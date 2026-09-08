@@ -334,3 +334,9 @@ MLS-only rooms and persists ordered opaque control/application events with fixed
 device bindings, CAS and restart/retry semantics. Its process proof uses generated
 opaque bytes, not actual encrypted application messages. Joining the trusted staged
 browser, outer authenticated framing and control/outbox/cursor remains next.
+
+[Native encrypted delivery](../experiments/openmls-browser/NATIVE-DELIVERY.md)
+now joins initial trusted group setup and application ciphertext to the native
+log in two disposable browsers. Actual MLS sender/inner/outer binding, full-state
+outbox/cursor and crash retry are checked. This remains a synthetic worker proof;
+subsequent commits, product UI and human-use acceptance remain outstanding.

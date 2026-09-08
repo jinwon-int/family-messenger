@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""Synthetic-only CF-style header injection; never a deployable auth proxy."""
+import argparse
+import base64
+import hashlib
+from http.cookies import SimpleCookie
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import http.client
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import struct
+import subprocess
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.request
+import zlib
+
+from playwright.sync_api import sync_playwright, expect, Error as BrowserError
+
+
+def main():
+    args = argparse.ArgumentParser()
+    args.add_argument('--bundle', required=True, type=Path)
+    args.add_argument('--binary', required=True, type=Path)
+    args.add_argument('--policy-binary', required=True, type=Path)
+    args = args.parse_args()
+    binary, policy = args.binary.resolve(strict=True), args.policy_binary.resolve(strict=True)
+    root = Path(__file__).resolve().parents[1]
+    work = Path(tempfile.mkdtemp(prefix='native-encrypted-browser-', dir=root / 'artifacts'))
+    state, auth, proposals = [work / n for n in ('state', 'auth', 'proposals')]
+    for d in (state, auth, proposals):
+        d.mkdir(mode=0o700)
+    proof = {'synthetic_only': True, 'production_cf_gate': False, 'e2ee': False, 'checks': {},
+             'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest()}
+    key = proposals / 'synthetic-private.pem'
+    key.write_bytes(subprocess.check_output(['openssl', 'genpkey', '-algorithm', 'RSA', '-pkeyopt', 'rsa_keygen_bits:2048'], stderr=subprocess.DEVNULL))
+    key.chmod(0o600)
+    modulus = subprocess.check_output(['openssl', 'rsa', '-in', str(key), '-noout', '-modulus'], stderr=subprocess.DEVNULL).decode().strip().split('=', 1)[1]
+    b64 = lambda b: base64.urlsafe_b64encode(b).decode().rstrip('=')
+    config = {'version': 1, 'issuer': 'https://synthetic.cloudflareaccess.com', 'audience': 'synthetic-app',
+              'keys': [{'kid': 'test-key', 'n': b64(bytes.fromhex(modulus)), 'e': 65537}],
+              'people': [{'subject': 'owner', 'actor': 'alice', 'owner': True}, {'subject': 'family', 'actor': 'bob', 'owner': False}]}
+    tokens = {}
+    for subject in ('owner', 'family'):
+        for expired in (False, True):
+            now = int(time.time())
+            claims = {'iss': config['issuer'], 'aud': [config['audience']], 'sub': subject, 'type': 'app',
+                      'iat': now - 60, 'nbf': now - 60, 'exp': now - 1 if expired else now + 900, 'role': 'owner'}
+            raw = b64(json.dumps({'alg': 'RS256', 'typ': 'JWT', 'kid': 'test-key'}).encode()) + '.' + b64(json.dumps(claims).encode())
+            tokens[subject, expired] = raw + '.' + b64(subprocess.check_output(['openssl', 'dgst', '-sha256', '-sign', str(key)], input=raw.encode()))
+    def commit(revision, people):
+        candidate = proposals / f'candidate-{revision}-{secrets.token_hex(6)}.json'
+        candidate.write_text(json.dumps({**config, 'people': people}))
+        candidate.chmod(0o600)
+        r = subprocess.run([str(policy), '--synthetic-only', '--auth-state', str(auth), '--input', str(candidate), '--expected-revision', str(revision)], capture_output=True, text=True, timeout=5)
+        assert r.returncode == 0, r.stderr
+        assert json.loads(r.stdout)['revision'] == revision + 1
+    commit(0, config['people'])
+    process = output = proxy = None
+    address = '127.0.0.1:0'
+    def start():
+        nonlocal process, output, address
+        log = work / 'server.log'
+        output = log.open('ab')
+        offset = log.stat().st_size
+        process = subprocess.Popen([str(binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--listen', address], stderr=output, stdout=subprocess.DEVNULL)
+        until = time.monotonic() + 10
+        while time.monotonic() < until:
+            assert process.poll() is None, 'server exited'
+            match = re.search(r'listening (127\.0\.0\.1:\d+)', log.read_bytes()[offset:].decode())
+            if match:
+                address = match[1]
+                return
+            time.sleep(.02)
+        raise AssertionError('server startup timeout')
+    def stop():
+        if process and process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        if output:
+            output.close()
+    def direct(subject, method, path, body=None):
+        r = urllib.request.Request('http://' + address + path, method=method, data=json.dumps(body).encode() if body is not None else None,
+                                   headers={'Cf-Access-Jwt-Assertion': tokens[subject, False], 'Content-Type': 'application/json','X-Family-Device':('alice' if subject=='owner' else 'bob')+'-first'})
+        try:
+            with urllib.request.urlopen(r, timeout=5) as response:
+                data = response.read()
+                return response.status, json.loads(data) if data else None
+        except urllib.error.HTTPError as e:
+            e.close()
+            return e.code, None
+
+    cookies=[secrets.token_hex(16),secrets.token_hex(16)]
+    bindings=dict(zip(cookies,['owner','family']))
+    assets={}
+    for name in ['native.html','main.js','native-worker.js','trust-directory.js']:
+        raw=(root/'experiments/openmls-browser/web'/name).read_bytes()
+        if name=='main.js':
+            old=b"durable ? './durable-worker.js' : './worker.js'"
+            assert raw.count(old)==1;raw=raw.replace(old,b"'./native-worker.js'")
+        assets['/' if name=='native.html' else '/'+name]=raw
+    for name in ['family_mls_browser_experiment.js','family_mls_browser_experiment_bg.wasm']:
+        p=args.bundle/name;st=p.lstat();assert not p.is_symlink() and st.st_nlink==1 and st.st_size<4*1024*1024
+        assets['/pkg/'+name]=p.read_bytes()
+    proof['original_assets_sha256']={name:hashlib.sha256(raw).hexdigest() for name,raw in assets.items()}
+    raw=assets['/native-worker.js'];at=raw.index(b" if(method==='prepare'){")
+    first,last=raw[:at],raw[at:]
+    needle=b"['','abort-before-write','abort-after-write']"
+    assert last.count(needle)==1;last=last.replace(needle,b"['','abort-before-write','abort-after-write','crash-before-complete','forged-inner']")
+    needle=b"const f=frame(arg.id,own(current).device_id,identity,current.group,arg.media_type,data);"
+    assert last.count(needle)==1;last=last.replace(needle,needle+b"if(arg.fault==='forged-inner')f.sender_actor='bob';")
+    raw=first+last;needle=b"s.put(r,'state');if(fault==='abort-after-write')"
+    assert raw.count(needle)==1;raw=raw.replace(needle,b"s.put(r,'state');if(fault==='crash-before-complete'){self.postMessage({test_crash_boundary:true});while(true){}}if(fault==='abort-after-write')")
+    assets['/native-worker.js']=raw
+    needle=b"    if (data.id !== id) return;";assert assets['/main.js'].count(needle)==1
+    assets['/main.js']=assets['/main.js'].replace(needle,b"    if(data.test_crash_boundary)window.test_crash_boundary=true;\n"+needle)
+    proof['assets_sha256']={name:hashlib.sha256(raw).hexdigest() for name,raw in assets.items()}
+    proof['test_instrumentation']='main selects native worker; served-only pending-write hold and deliberately forged inner sender fixture; proxy may hold/alter generated responses'
+    hold_next=[False];arrived=threading.Event();release=threading.Event();tamper=[None];previous_cipher=[None]
+    class Proxy(BaseHTTPRequestHandler):
+        def log_message(self,*args):pass
+        def do_GET(self):self.forward()
+        def do_POST(self):self.forward()
+        def forward(self):
+            if self.headers.get('Host')!=f'127.0.0.1:{self.server.server_port}' or not self.path.startswith('/') or self.path.startswith('//') or any(k.lower()=='authorization' or k.lower().startswith('cf-') for k in self.headers):self.send_error(400);return
+            cookie=SimpleCookie();cookie.load(self.headers.get('Cookie',''));v=cookie.get('synthetic_edge');subject=bindings.get(v.value if v else None)
+            if self.command=='GET' and self.path in assets:
+                raw=assets[self.path];self.send_response(200);self.send_header('Content-Type','application/wasm' if self.path.endswith('.wasm') else 'text/javascript' if self.path.endswith('.js') else 'text/html');self.send_header('Content-Length',str(len(raw)));self.send_header('Cache-Control','no-store');self.send_header('Content-Security-Policy',"default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'");self.end_headers();self.wfile.write(raw);return
+            size=int(self.headers.get('Content-Length','0'))
+            if size<0 or size>98304:self.send_error(413);return
+            body=self.rfile.read(size) if size else None
+            headers={k:v for k,v in self.headers.items() if k.lower() not in ('cookie','connection','host','content-length','transfer-encoding')}
+            headers['Host']=f'127.0.0.1:{self.server.server_port}'
+            if subject:headers['Cf-Access-Jwt-Assertion']=tokens[subject,False]
+            upstream=http.client.HTTPConnection(address,timeout=10)
+            try:
+                upstream.request(self.command,self.path,body=body,headers=headers);response=upstream.getresponse();raw=response.read()
+                if self.command=='POST' and self.path.endswith('/log') and response.status<300 and hold_next[0]:
+                    hold_next[0]=False;arrived.set();release.wait(5)
+                if self.command=='GET' and '/log?' in self.path and tamper[0] and response.status==200:
+                    data=json.loads(raw)
+                    for event in data:
+                        q=event['request']
+                        if q['kind']=='application':
+                            if tamper[0]=='cipher':
+                                b=bytearray(base64.b64decode(q['payload']));b[-1]^=1;q['payload']=base64.b64encode(b).decode()
+                            elif tamper[0]=='replay':q['payload']=previous_cipher[0]
+                            elif tamper[0]=='id':q['client_id']='app-substituted'
+                            elif tamper[0]=='room':q['group_id']='ff'*32
+                            elif tamper[0]=='device':q['device_id']='bob-first'
+                            event['sha256']=hashlib.sha256(json.dumps(q,separators=(',',':')).encode()).hexdigest()
+                    raw=json.dumps(data).encode()
+                if self.command=='GET' and self.path.endswith('/status') and tamper[0]=='binding' and response.status==200:
+                    data=json.loads(raw);data['group_id']='aa'*32;raw=json.dumps(data).encode()
+                self.send_response(response.status)
+                for k,v in response.getheaders():
+                    if k.lower() not in ('connection','transfer-encoding','server','date','content-length'):self.send_header(k,v)
+                self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
+            except (OSError,http.client.HTTPException):pass
+            finally:upstream.close()
+    try:
+        start();assert direct('owner','POST','/v1/mls/reservations',{'room':'family','peer_actor':'bob'})[0]==201
+        proxy=ThreadingHTTPServer(('127.0.0.1',0),Proxy);threading.Thread(target=proxy.serve_forever,daemon=True).start();url=f'http://127.0.0.1:{proxy.server_port}'
+        with sync_playwright() as pw:
+            profiles=[work/'alice-profile',work/'bob-profile']
+            for p in profiles:p.mkdir(mode=0o700)
+            contexts=[pw.chromium.launch_persistent_context(str(p)) for p in profiles]
+            proof['browser']=contexts[0].browser.version;proof['max_worker_linear_memory_bytes']=0
+            databases=['family-mls-native-synthetic-alice','family-mls-native-synthetic-bob']
+            def cookie(i,value=None):contexts[i].add_cookies([{'name':'synthetic_edge','value':value or cookies[i],'url':url,'httpOnly':True,'sameSite':'Strict'}])
+            for i in range(2):cookie(i)
+            def page(i):
+                p=contexts[i].new_page();p.add_init_script("window.testWorkers=[];const W=Worker;window.Worker=class extends W{constructor(...args){super(...args);window.testWorkers.push(this)}};");p.goto(url);p.wait_for_function('()=>window.ready===true');p.evaluate("spawn('device')");return p
+            def rpc(p,method,arg=None,reject=False):
+                r=p.evaluate('([m,a])=>call("device",m,a)',[method,arg]);proof['max_worker_linear_memory_bytes']=max(proof['max_worker_linear_memory_bytes'],r['memory_bytes']);assert r['memory_bytes']<=128*1024*1024
+                if reject:assert not r['ok'] and 'result' not in r;return
+                assert r['ok'],(method,r);return r['result']
+            def init(p,i,database=None,identity=None,selected_room='family',reject=False):return rpc(p,'init',{'identity':identity or ['alice','bob'][i],'room':selected_room,'database':database or databases[i]},reject)
+            def reopen(p,i):p.evaluate("stopWorker('device');spawn('device')");return init(p,i)
+            def crash(i):
+                session=contexts[i].browser.new_browser_cdp_session();pid=next(int(p['id']) for p in session.send('SystemInfo.getProcessInfo')['processInfo'] if p['type']=='browser');assert ('--user-data-dir='+str(profiles[i])).encode() in Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
+                import signal
+                os.kill(pid,signal.SIGKILL)
+                try:contexts[i].close()
+                except BrowserError:pass
+                contexts[i]=pw.chromium.launch_persistent_context(str(profiles[i]));cookie(i)
+            def digest(p,i,part='all',database=None):return p.evaluate("""async ([name,part])=>{const d=await new Promise((r,j)=>{const q=indexedDB.open(name);q.onsuccess=()=>r(q.result);q.onerror=j});const s=await new Promise((r,j)=>{const q=d.transaction('device').objectStore('device').get('state');q.onsuccess=()=>r(q.result);q.onerror=j});d.close();return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(part==='crypto'?s.crypto:part==='pending'?s.pending.request:s)))))}""",[database or databases[i],part])
+            def prepare(p,id,data,kind='text',fault='',reject=False):return rpc(p,'prepare',{'id':id,'bytes':list(data),'media_type':kind,'fault':fault},reject)
+            a,b=page(0),page(1);initial=[init(a,0),init(b,1)]
+            pins=[{'device_id':actor+'-first','actor':actor,'signing_key':bytes(x['public_key']).hex(),'fingerprint':hashlib.sha256(bytes(x['public_key'])).hexdigest(),'device_revision':1} for actor,x in zip(['alice','bob'],initial)]
+            config['devices']=[{**p,'subject':sub,'status':'active','acceptance':'out-of-band-fingerprint'} for p,sub in zip(pins,['owner','family'])];commit(1,config['people'])
+            until=time.monotonic()+5
+            while time.monotonic()<until:
+                code,d=direct('owner','GET','/v1/rooms/family/devices')
+                if code==200 and len(d['devices'])==2:break
+                time.sleep(.05)
+            else:raise AssertionError('directory reload')
+            for p in (a,b):rpc(p,'pin',{'pins':pins,'fault':''})
+            rpc(a,'create');rpc(a,'bind');rpc(b,'attach')
+            rpc(b,'advance');rpc(b,'flush');rpc(b,'sync');rpc(a,'sync')
+            rpc(a,'advance');rpc(a,'flush');rpc(a,'sync');rpc(b,'sync')
+            rpc(b,'advance');rpc(b,'flush');rpc(b,'sync');rpc(a,'sync')
+            assert rpc(a,'status')['phase']==rpc(b,'status')['phase']=='ready'
+            proof['checks']['native_keypackage_welcome_ack_actual_library_group']=True
+            message='synthetic native encrypted text / 한글'.encode();prepare(a,'app-text',message);rpc(a,'flush');rpc(a,'sync');got=rpc(b,'sync');assert base64.b64decode(got['messages'][-1]['payload'])==message
+            previous_cipher[0]=next(e['request']['payload'] for e in direct('owner','GET','/v1/mls/rooms/family/log?after=0')[1] if e['request']['kind']=='application')
+            file=bytes(range(256))*8;prepare(b,'app-file',file,'file');rpc(b,'flush');rpc(b,'sync');got=rpc(a,'sync');assert base64.b64decode(got['messages'][-1]['payload'])==file and got['messages'][-1]['media_type']=='file'
+            assert direct('owner','GET','/v1/rooms/family/messages')[0]==403
+            import sqlite3
+            with sqlite3.connect(f'file:{state}/messages.sqlite?mode=ro',uri=True) as connection:
+                stored=b''.join(row[0] for row in connection.execute('SELECT request FROM mls_events'))
+                assert message not in stored and base64.b64encode(message) not in stored
+                assert connection.execute('SELECT count(*) FROM messages').fetchone()[0]==0
+            proof['checks']['two_browsers_text_and_file_native_ciphertext_only']=True
+            before=digest(a,0);prepare(a,'app-abort',b'synthetic abort',fault='abort-after-write',reject=True);assert digest(a,0)==before;reopen(a,0)
+            prepare(a,'app-lost',b'synthetic lost response');hold_next[0]=True
+            a.evaluate('()=>{window.pending=call("device","flush",null).catch(()=>null)}');assert arrived.wait(3)
+            crash(0);release.set();a=page(0);restored=init(a,0);assert restored['public_key']==initial[0]['public_key'] and restored['pins']==pins and restored['pending']['client_id']=='app-lost'
+            before=digest(a,0);rpc(a,'flush');assert digest(a,0)==before;rpc(a,'sync');got=rpc(b,'sync');assert base64.b64decode(got['messages'][-1]['payload'])==b'synthetic lost response'
+            proof['checks']['atomic_outbox_and_browser_crash_lost_native_reply']=True
+            before=digest(b,1);crash(1);b=page(1);init(b,1);assert digest(b,1)==before;rpc(b,'sync');assert digest(b,1)==before
+            proof['checks']['receiver_restart_no_duplicate_decrypt_or_display']=True
+            prepare(a,'app-tamper',b'synthetic tamper target');rpc(a,'flush');rpc(a,'sync')
+            before=digest(b,1)
+            for kind in ['cipher','replay','id','room','device']:
+                tamper[0]=kind;rpc(b,'sync',reject=True);assert digest(b,1)==before;tamper[0]=None;reopen(b,1)
+            got=rpc(b,'sync');assert base64.b64decode(got['messages'][-1]['payload'])==b'synthetic tamper target'
+            proof['checks']['tamper_outer_id_group_device_rejected_without_ratchet_loss']=True
+            # Two tabs stage and reconcile one immutable application operation.
+            observer=page(0);init(observer,0)
+            args={'id':'app-tabs','bytes':list(b'synthetic two tabs'),'media_type':'text','fault':''}
+            a.evaluate('arg=>{window.pending=call("device","prepare",arg)}',args)
+            rpc(observer,'prepare',args);assert a.evaluate('window.pending')['ok']
+            first=rpc(a,'flush');second=rpc(observer,'flush');assert first['seq']==second['seq']
+            rpc(a,'sync');count=len(rpc(observer,'sync')['messages']);assert len(rpc(a,'sync')['messages'])==count
+            got=rpc(b,'sync');assert base64.b64decode(got['messages'][-1]['payload'])==b'synthetic two tabs'
+            proof['checks']['two_tabs_exact_native_ciphertext_and_self_echo_once']=True
+            before=digest(a,0);tamper[0]='binding';prepare(a,'app-binding',b'bad binding',reject=True);assert digest(a,0)==before;tamper[0]=None;reopen(a,0)
+            proof['checks']['changed_native_binding_denied_before_crypto_mutation']=True
+            before=digest(a,0);args={'id':'app-inflight','bytes':list(b'synthetic transaction hold'),'media_type':'text','fault':'crash-before-complete'}
+            a.evaluate('arg=>{window.pending=call("device","prepare",arg).catch(()=>null)}',args);a.wait_for_function('()=>window.test_crash_boundary===true',timeout=5000)
+            crash(0);a=page(0);init(a,0);assert digest(a,0)==before
+            prepare(a,'app-inflight',b'synthetic transaction hold');rpc(a,'flush');rpc(a,'sync');got=rpc(b,'sync');assert base64.b64decode(got['messages'][-1]['payload'])==b'synthetic transaction hold'
+            proof['checks']['inflight_browser_crash_retains_complete_crypto_and_native_outbox']=True
+            # Copy only inside the private disposable profile, then corrupt the copy.
+            corrupt_db=databases[0]+'-corrupt'
+            a.evaluate("""async([source,target])=>{const db=await new Promise((r,j)=>{const q=indexedDB.open(source);q.onsuccess=()=>r(q.result);q.onerror=j});const record=await new Promise((r,j)=>{const q=db.transaction('device').objectStore('device').get('state');q.onsuccess=()=>r(q.result);q.onerror=j});db.close();record.cursor++;await new Promise((r,j)=>{const q=indexedDB.open(target,1);q.onupgradeneeded=()=>q.result.createObjectStore('device').add(record,'state');q.onsuccess=()=>{q.result.close();r()};q.onerror=j})}""",[databases[0],corrupt_db])
+            before_bad=digest(a,0,database=corrupt_db);corrupt=page(0);init(corrupt,0,database=corrupt_db,reject=True);assert digest(a,0,database=corrupt_db)==before_bad
+            proof['checks']['corrupt_native_cursor_retained_and_denied']=True
+            before=digest(a,0);wrong=page(0);cookie(0,cookies[1]);init(wrong,0,identity='bob',reject=True);assert digest(wrong,0)==before;cookie(0)
+            assert direct('owner','POST','/v1/mls/reservations',{'room':'private','peer_actor':'bob'})[0]==201
+            wrong_room=page(0);init(wrong_room,0,selected_room='private',reject=True);assert digest(wrong_room,0)==before
+            fresh=page(0);init(fresh,0,database=databases[0]+'-missing',reject=True)
+            proof['checks']['account_binding_and_missing_registered_keys_fail_closed']=True
+            malformed=page(0);init(malformed,0);before=digest(a,0)
+            malformed.evaluate('window.testWorkers.at(-1).postMessage(null)');rpc(malformed,'status',reject=True);assert digest(a,0)==before
+            proof['checks']['malformed_command_retires_worker_with_bounded_failure_reply']=True
+            # A valid encryption from Alice with a forged inner sender label still fails.
+            prepare(a,'app-forged',b'synthetic wrong inner sender',fault='forged-inner');rpc(a,'flush');rpc(a,'sync')
+            before=digest(b,1);rpc(b,'sync',reject=True);assert digest(b,1)==before;reopen(b,1)
+            proof['checks']['valid_mls_ciphertext_cannot_substitute_inner_sender']=True
+            # A later unsupported control freezes the client. An unaccepted old
+            # pending application is retained/retired, never re-encrypted.
+            prepare(b,'app-stale',b'synthetic stale pending')
+            before_crypto=digest(b,1,'crypto');before_pending=digest(b,1,'pending')
+            room_status=direct('owner','GET','/v1/mls/rooms/family/status')[1]
+            q={'client_id':'opaque-update','device_id':'alice-first','group_id':room_status['group_id'],'kind':'commit','expected_revision':room_status['revision'],'epoch':room_status['epoch'],'target_device':'bob-first','payload':base64.b64encode(b'synthetic opaque future control').decode()}
+            assert direct('owner','POST','/v1/mls/rooms/family/log',q)[0]==201
+            rpc(b,'flush',reject=True);reopen(b,1);assert rpc(b,'status')['pending']=={'client_id':'app-stale','retired':True}
+            assert digest(b,1,'crypto')==before_crypto and digest(b,1,'pending')==before_pending
+            prepare(b,'app-stale',b'synthetic stale pending',reject=True);reopen(b,1)
+            proof['checks']['unaccepted_stale_pending_retained_and_retired']=True
+            stop();start();assert rpc(a,'status')['pins']==pins
+            config['devices'][1]['status']='revoked';config['devices'][1]['device_revision']=2;commit(2,config['people'])
+            until=time.monotonic()+5
+            while time.monotonic()<until:
+                code,d=direct('owner','GET','/v1/rooms/family/devices')
+                if code==200 and any(p['status']=='revoked' for p in d['devices']):break
+                time.sleep(.05)
+            else:raise AssertionError('revocation reload')
+            before=digest(a,0);rpc(a,'sync',reject=True);assert digest(a,0)==before
+            new=page(0);init(new,0,reject=True);rpc(b,'status',reject=True)
+            proof['checks']['durable_revocation_blocks_cache_and_reopen']=True
+            for c in contexts:c.close()
+        proof['native_encrypted_roundtrip']=True
+        proof['passed']=True
+    finally:
+        release.set()
+        if proxy:proxy.shutdown();proxy.server_close()
+        stop();(work/'verification.json').write_text(json.dumps(proof,indent=2)+'\n');print(work/'verification.json',flush=True)
+
+if __name__=='__main__':main()

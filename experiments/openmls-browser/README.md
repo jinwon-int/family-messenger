@@ -163,3 +163,7 @@ staged storage to native ciphertext/control transport.
 
 [Durable trusted-state qualification](TRUSTED-STATE.md) combines pins and staged
 crypto state across restart while preserving the earlier isolated fixtures.
+
+The [native encrypted delivery worker](NATIVE-DELIVERY.md) uses the native signed
+log for an actual two-browser encrypted roundtrip with durable outbox/self echoes.
+It preserves all earlier experiment namespaces and is not a product chat UI.
