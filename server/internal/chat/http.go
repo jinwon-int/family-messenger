@@ -1,0 +1,292 @@
+package chat
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Public, fixed test identities. This is deliberately NOT production authentication.
+var tokens = map[string]string{"synthetic-alice": "alice", "synthetic-bob": "bob", "synthetic-charlie": "charlie"}
+
+type API struct {
+	store   *Store
+	streams chan struct{}
+}
+
+func NewHandler(store *Store) http.Handler {
+	return &API{store: store, streams: make(chan struct{}, 16)}
+}
+
+func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(5 * time.Second))
+	// No browser UI yet: reject browser-origin requests and non-loopback hosts.
+	// In particular a DNS-rebinding hostname may not access this development service.
+	host, _, e := net.SplitHostPort(r.Host)
+	if e != nil || host != "127.0.0.1" || len(r.Header.Values("Origin")) > 0 || r.Header.Get("Sec-Fetch-Site") != "" {
+		http.Error(w, "local API clients only", http.StatusForbidden)
+		return
+	}
+	if len(r.Header.Values("Authorization")) != 1 {
+		http.Error(w, "unauthorized", 401)
+		return
+	}
+	actor, ok := tokens[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
+	if !ok || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+		http.Error(w, "unauthorized", 401)
+		return
+	}
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if r.URL.RawPath != "" || r.URL.Path != "/"+strings.Join(parts, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method == "GET" && r.URL.Path == "/health" {
+		writeJSON(w, 200, map[string]string{"mode": "synthetic-only", "status": "ok"})
+		return
+	}
+	if r.Method == "POST" && r.URL.Path == "/v1/rooms" {
+		var req struct {
+			ID      string   `json:"id"`
+			Members []string `json:"members"`
+		}
+		if !decode(w, r, &req) {
+			return
+		}
+		if e := a.store.CreateRoom(req.ID, actor, req.Members); e != nil {
+			fail(w, e)
+			return
+		}
+		writeJSON(w, 201, map[string]string{"id": req.ID})
+		return
+	}
+	if len(parts) < 4 || parts[0] != "v1" || parts[1] != "rooms" || !validID(parts[2]) {
+		http.NotFound(w, r)
+		return
+	}
+	room := parts[2]
+	if len(parts) == 5 && parts[3] == "members" && (r.Method == "PUT" || r.Method == "DELETE") {
+		if e := a.store.SetMember(room, actor, parts[4], r.Method == "PUT"); e != nil {
+			fail(w, e)
+			return
+		}
+		w.WriteHeader(204)
+		return
+	}
+	if len(parts) != 4 {
+		http.NotFound(w, r)
+		return
+	}
+	if parts[3] == "messages" && r.Method == "POST" {
+		var req struct {
+			ClientID string `json:"client_id"`
+			Payload  []byte `json:"payload"`
+		}
+		if !decode(w, r, &req) {
+			return
+		}
+		m, created, e := a.store.Send(room, actor, req.ClientID, req.Payload)
+		if e != nil {
+			fail(w, e)
+			return
+		}
+		status := 200
+		if created {
+			status = 201
+		}
+		writeJSON(w, status, m)
+		return
+	}
+	if (parts[3] == "messages" || parts[3] == "events") && r.Method == "GET" {
+		after, e := cursor(r)
+		if e != nil {
+			fail(w, e)
+			return
+		}
+		if parts[3] == "events" {
+			a.events(w, r, room, actor, after)
+			return
+		}
+		// Hold the ACL lock through the bounded response write. Once a revocation
+		// commits, no old membership snapshot can write further message bytes.
+		a.store.mu.Lock()
+		defer a.store.mu.Unlock()
+		ms, e := a.store.history(room, actor, after)
+		if e != nil {
+			fail(w, e)
+			return
+		}
+		writeJSON(w, 200, ms)
+		return
+	}
+	http.NotFound(w, r)
+}
+
+func decode(w http.ResponseWriter, r *http.Request, out any) bool {
+	if r.Header.Get("Content-Type") != "application/json" {
+		http.Error(w, "application/json required", 415)
+		return false
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 24*1024)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if e := dec.Decode(out); e != nil {
+		http.Error(w, "invalid JSON", 400)
+		return false
+	}
+	if e := dec.Decode(new(any)); e != io.EOF {
+		http.Error(w, "invalid JSON", 400)
+		return false
+	}
+	return true
+}
+func cursor(r *http.Request) (int64, error) {
+	vals, e := netQuery(r)
+	if e != nil {
+		return 0, e
+	}
+	v := vals
+	if h := r.Header.Values("Last-Event-ID"); len(h) > 0 {
+		if len(h) != 1 || h[0] == "" {
+			return 0, ErrInvalid
+		}
+		v = h[0]
+	}
+	if v == "" {
+		return 0, nil
+	}
+	for _, c := range v {
+		if c < '0' || c > '9' {
+			return 0, ErrInvalid
+		}
+	}
+	q, e := strconv.ParseInt(v, 10, 64)
+	if e != nil || q < 0 {
+		return 0, ErrInvalid
+	}
+	return q, nil
+}
+func netQuery(r *http.Request) (string, error) {
+	q, e := url.ParseQuery(r.URL.RawQuery)
+	if e != nil {
+		return "", ErrInvalid
+	}
+	// Only a single cursor argument is part of the protocol.
+	if len(q) > 1 {
+		return "", ErrInvalid
+	}
+	for k, v := range q {
+		if k != "after" || len(v) != 1 || v[0] == "" {
+			return "", ErrInvalid
+		}
+		return v[0], nil
+	}
+	if r.URL.RawQuery != "" {
+		return "", ErrInvalid
+	}
+	return "", nil
+}
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+func fail(w http.ResponseWriter, e error) {
+	status := 500
+	msg := "storage failure"
+	switch {
+	case errors.Is(e, ErrForbidden):
+		status = 403
+		msg = "forbidden"
+	case errors.Is(e, ErrConflict):
+		status = 409
+		msg = "conflict"
+	case errors.Is(e, ErrInvalid):
+		status = 400
+		msg = "invalid request"
+	case errors.Is(e, ErrLimit):
+		status = 507
+		msg = "prototype capacity reached"
+	}
+	http.Error(w, msg, status)
+}
+
+func (a *API) events(w http.ResponseWriter, r *http.Request, room, actor string, after int64) {
+	select {
+	case a.streams <- struct{}{}:
+		defer func() { <-a.streams }()
+	default:
+		http.Error(w, "stream limit", 429)
+		return
+	}
+	deadline := time.NewTimer(30 * time.Second)
+	defer deadline.Stop()
+	heartbeat := time.NewTicker(10 * time.Second)
+	defer heartbeat.Stop()
+	started := false
+	end := time.Now().Add(30 * time.Second)
+	for {
+		if r.Context().Err() != nil || time.Now().After(end) {
+			return
+		}
+		a.store.mu.Lock()
+		ms, e := a.store.history(room, actor, after)
+		if e != nil {
+			a.store.mu.Unlock()
+			if !started {
+				fail(w, e)
+			}
+			return
+		}
+		changed := a.store.changed
+		e = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(2 * time.Second))
+		if e == nil && !started {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("X-Accel-Buffering", "no")
+			_, e = io.WriteString(w, ": synthetic-only\n\n")
+			started = true
+		}
+		if e == nil && started && len(ms) == 0 {
+			_, e = io.WriteString(w, ": keepalive\n\n")
+		}
+		for _, m := range ms {
+			if e != nil {
+				break
+			}
+			var b []byte
+			b, e = json.Marshal(m)
+			if e == nil {
+				_, e = fmt.Fprintf(w, "id: %d\nevent: message\ndata: %s\n\n", m.Seq, b)
+				after = m.Seq
+			}
+		}
+		if e == nil {
+			e = http.NewResponseController(w).Flush()
+		}
+		a.store.mu.Unlock()
+		if e != nil {
+			return
+		}
+		if len(ms) == 100 {
+			continue
+		}
+		select {
+		case <-r.Context().Done():
+			return
+		case <-deadline.C:
+			return
+		case <-changed:
+		case <-heartbeat.C:
+			// Recheck membership before any subsequent stream write.
+		}
+	}
+}
