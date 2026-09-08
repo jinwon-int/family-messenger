@@ -203,10 +203,35 @@ def main():
               read.close(); record.identity='bob';
               const snapshot=JSON.parse(new TextDecoder().decode(record.crypto)); snapshot.identity='bob';
               record.crypto=new TextEncoder().encode(JSON.stringify(snapshot));
+              const hex=b=>Array.from(b,x=>x.toString(16).padStart(2,'0')).join('');
+              const canonical=JSON.stringify(['family-mls-state-v1',record.version,record.identity,record.revision,record.cursor,record.epoch,hex(record.crypto),record.ledger.map(x=>[x.id,x.method,x.sequence,x.epoch,hex(x.input),hex(x.output)])]);
+              record.checksum=new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(canonical)));
               await new Promise((r,j)=>{const q=indexedDB.open(target,1);q.onupgradeneeded=()=>q.result.createObjectStore('device').add(record,'state');q.onsuccess=()=>{q.result.close();r();};q.onerror=j;});
             }""", [databases['alice'], forged_db])
             forged = page(contexts[0]); init(forged, 'bob', forged_db, reject=True)
             proof['checks']['snapshot_actor_must_match_group_credential'] = True
+            # Clone only synthetic records, corrupt one field, retain and deny it.
+            for corruption in ['output', 'input', 'crypto', 'id', 'checksum']:
+                target = prefix + '-corrupt-' + corruption
+                before = alice.evaluate("""async ([source,target,kind]) => {
+                  const read=await new Promise((r,j)=>{const q=indexedDB.open(source);q.onsuccess=()=>r(q.result);q.onerror=j;});
+                  const record=await new Promise((r,j)=>{const q=read.transaction('device').objectStore('device').get('state');q.onsuccess=()=>r(q.result);q.onerror=j;});read.close();
+                  const item=record.ledger.find(x=>x.id==='send1');
+                  if(kind==='input'||kind==='output') item[kind][0]^=1;
+                  else if(kind==='id') item.id='changed-id';
+                  else record[kind][0]^=1;
+                  await new Promise((r,j)=>{const q=indexedDB.open(target,1);q.onupgradeneeded=()=>q.result.createObjectStore('device').add(record,'state');q.onsuccess=()=>{q.result.close();r();};q.onerror=j;});
+                  return JSON.stringify(record);
+                }""", [databases['alice'],target,corruption])
+                corrupt=page(contexts[0]);init(corrupt,'alice',target,reject=True)
+                op(corrupt,'send1','encrypt',text,reject=True)
+                after=corrupt.evaluate("""async name=>{
+                  const db=await new Promise((r,j)=>{const q=indexedDB.open(name);q.onsuccess=()=>r(q.result);q.onerror=j;});
+                  const value=await new Promise((r,j)=>{const q=db.transaction('device').objectStore('device').get('state');q.onsuccess=()=>r(q.result);q.onerror=j;});db.close();return JSON.stringify(value);
+                }""",target)
+                assert before==after
+                corrupt.close()
+            proof['checks']['corrupt_cached_result_input_state_metadata_checksum_retained_denied'] = True
             before = rpc(alice, 'status')
             commit = op(alice, 'remove', 'remove')['output']
             op(alice, 'future', 'encrypt', list(b'after restart'), reject=True)

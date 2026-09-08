@@ -76,6 +76,15 @@ until the full initial snapshot is committed. Unknown/corrupt material is retain
 A new program version must provide an explicit reviewed migration; the adapter
 never guesses that an unknown database is an empty new device.
 
+Before releasing any cached result, the transaction verifies a SHA-256 checksum
+binding the complete snapshot and ledger bytes, IDs, methods, sequences, epochs,
+identity, revision and cursor. It uses a fixed-order encoding and the existing
+RustCrypto provider synchronously; no awaited WebCrypto call can prematurely close
+the IndexedDB transaction. Same-shape accidental corruption is retained and denied.
+This checksum is not a MAC, actor authentication or protection from a writer who
+can replace both contents and checksum. Pre-checksum experiment records fail closed;
+there is no implicit migration or rewrite of earlier private test profiles.
+
 This assumes cooperating same-origin code. It is not an anti-rollback witness,
 secure enclave, or protection against a compromised browser/host/page replacing
 an entire valid database. Restoring a valid older complete snapshot can restore old
@@ -83,6 +92,8 @@ keys; production restore must reconcile externally or rejoin as a new device bef
 sending. No import, recovery/reset, migration or human enrollment UI is supplied.
 A browser deleting its entire profile destroys its keys; it does not justify silent
 identity replacement. Atomic IndexedDB commits are tested against browser SIGKILL,
+after confirmed commits, with controlled transaction aborts for precommit faults;
+an actual SIGKILL during an in-flight transaction remains unqualified. This is
 not sudden machine power loss or every browser/OS storage durability guarantee.
 
 ## Runnable evidence
@@ -107,7 +118,7 @@ Assertions cover failed Welcome then valid original, altered ciphertext then
 original, unchanged complete-state hash/cursor on abort, lost-response browser
 crash with exact ciphertext retry, concurrent tabs, receiver crash with replay
 rejection and future-message success, wrong actor, non-string ID rejection, forged snapshot identity,
-local epoch change, missing/unknown state and capacity preservation. Test fault
+local epoch change, corrupted cached input/output/state/metadata/checksum, missing/unknown state and capacity preservation. Test fault
 options live only in the isolated worker and no HTTP management route is added.
 They do not simulate a full node outage, human key recovery or production rollout.
 

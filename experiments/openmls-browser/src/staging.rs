@@ -119,3 +119,11 @@ fn epoch_of(device: &Device) -> String {
 pub fn staged_epoch(bytes: &[u8], identity: &str) -> Result<String, JsValue> {
     Ok(epoch_of(&load(bytes, identity)?))
 }
+
+/// Accidental-corruption checksum only, not authentication or rollback protection.
+/// Reuses the vetted provider synchronously so IndexedDB keeps its transaction open.
+#[wasm_bindgen]
+pub fn staged_checksum(bytes: &[u8]) -> Result<Vec<u8>, JsValue> {
+    bounded(bytes, 5 * 1024 * 1024)?;
+    OpenMlsRustCrypto::default().crypto().hash(HashType::Sha2_256, bytes).map_err(rejected)
+}

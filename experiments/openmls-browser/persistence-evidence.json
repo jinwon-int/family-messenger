@@ -10,48 +10,50 @@
     "receiver_browser_crash_and_future_message": true,
     "wrong_actor_cannot_reopen_state": true,
     "snapshot_actor_must_match_group_credential": true,
+    "corrupt_cached_result_input_state_metadata_checksum_retained_denied": true,
     "stale_epoch_outbox_retained_but_not_released": true,
     "missing_state_does_not_regenerate_keys": true,
     "capacity_preserves_committed_state": true,
     "unknown_record_preserved_and_reopen_denied": true
   },
-  "max_worker_linear_memory_bytes": 2097152,
+  "max_worker_linear_memory_bytes": 2424832,
   "assets_sha256": {
     "/": "6d10e089cac6a58aaa00f7261be71552bc35fd0d0a378586600d79db6cce25c1",
     "/main.js": "521f7d674333d18bc2174ffc86c9aa7d5c637f580d4476c4e7379f1625f0e881",
     "/worker.js": "e92df9cd5347d179679229ea25a9b621673c823b3a3f5128871a484575f39c83",
-    "/durable-worker.js": "b128b28448409194bbc3fd305b23e5dd880510c65bcfb05ecb1752f4026061f7",
-    "/pkg/family_mls_browser_experiment.js": "1527565b7e205a16f96a38e2ff5a83c15bc25a26f1e74643f90c240110c1ae86",
-    "/pkg/family_mls_browser_experiment_bg.wasm": "9d404366b6b51f7ebb6a346ff585f69834066ccb99a64419f7317335acd659fd"
+    "/durable-worker.js": "63722725940f7e2872a82d2b5609f9e91306e25d9c974fde0d4991997b067b80",
+    "/pkg/family_mls_browser_experiment.js": "1c4c4df21d9d908a0c9e0034bd1b5a3d89146b35bf241442e19fff770c55e55f",
+    "/pkg/family_mls_browser_experiment_bg.wasm": "cfe3b5dce2f3eaa8a3e2e4df9a54b99d19bd7431b2fdd548809f1b9cace0a205"
   },
   "browser": "151.0.7922.34",
   "passed": true,
-  "bundle_bytes": {
-    "family_mls_browser_experiment_bg.wasm": {
-      "bytes": 1420522,
-      "gzip_bytes": 494732
-    },
-    "family_mls_browser_experiment.js": {
-      "bytes": 19744,
-      "gzip_bytes": 4139
-    }
-  },
   "dependency_counts": {
     "wasm_direct": 8,
     "wasm_transitive": 151,
     "all_target_external": 197
   },
   "verified_toolchain_reference": "toolchain-evidence.json (PR27 distribution checksums, not current source hashes)",
-  "memory_only_regression_artifact": "artifacts/native-mls-browser-2uz2wu2d/verification.json",
   "measurement_scope": "single-worker linear memory maximum; not aggregate browser memory; synthetic profiles retained locally and excluded from CI uploads",
+  "persistence_artifact": "artifacts/native-mls-persistence-_zasxg2a/verification.json",
+  "memory_only_regression_artifact": "artifacts/native-mls-browser-fobnjt72/verification.json",
+  "bundle_bytes": {
+    "family_mls_browser_experiment_bg.wasm": {
+      "bytes": 1421107,
+      "gzip_bytes": 495008
+    },
+    "family_mls_browser_experiment.js": {
+      "bytes": 20362,
+      "gzip_bytes": 4252
+    }
+  },
   "source_sha256": {
     "experiments/openmls-browser/src/lib.rs": "bf14ac4ea2ac3ea380ed4dfa44cd1b7b1bfd13f10e4066ee64e2cf636f94479c",
-    "experiments/openmls-browser/src/staging.rs": "d9db66827bb3ec82c50ba26c42e5ac70cd410f8eb2606bf5bcdcba3ba3974f1c",
-    "experiments/openmls-browser/web/durable-worker.js": "b128b28448409194bbc3fd305b23e5dd880510c65bcfb05ecb1752f4026061f7",
+    "experiments/openmls-browser/src/staging.rs": "35794b503fb43fafb1102a3cfd36e8c8ff785cec77db408bebd1656f87911f06",
+    "experiments/openmls-browser/web/durable-worker.js": "63722725940f7e2872a82d2b5609f9e91306e25d9c974fde0d4991997b067b80",
     "experiments/openmls-browser/web/main.js": "521f7d674333d18bc2174ffc86c9aa7d5c637f580d4476c4e7379f1625f0e881",
     "experiments/openmls-browser/Cargo.toml": "178bc000ee683d208ab602dbdd5e73c37fba039436b3c3eca4edc5725695c46f",
     "experiments/openmls-browser/Cargo.lock": "917b9cee81c7dc6197b81b48af829245f23581605c22024c8fb9b77246f8279c",
-    "tests/native_mls_persistence_smoke.py": "7ba4666e4ff609ec6400521f410b36d47a94280b2328bb25f3f86bd463d4e4f0",
+    "tests/native_mls_persistence_smoke.py": "01ce99006c8cc2bb7096247e02a0f7be759bcb5afd4e8e931659c98fe628a0c5",
     "tests/native_mls_browser_smoke.py": "9ce1fc390c1a13e9a93bfc344b0ab15bdc3e71ab39ca816cb98a2adce2e0429b"
   }
 }
