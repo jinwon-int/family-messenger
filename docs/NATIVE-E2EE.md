@@ -293,3 +293,11 @@ These are acceptance gates, not implemented features or new approval requests.
 No human keys/accounts, production E2EE, Cloudflare changes or cutover occur in
 this design unit. The existing 57 Go groups, 74 Python tests and synthetic browser
 proofs establish the previous plaintext/admission contracts only.
+
+## Isolated browser experiment result
+
+The subsequent [OpenMLS browser experiment](../experiments/openmls-browser/README.md)
+provides a pinned runnable memory-only Chromium proof and dependency/license/cost
+evidence. It does not implement device trust, durable crypto state, native
+transport integration or production E2EE; the remaining acceptance gates above
+still apply.

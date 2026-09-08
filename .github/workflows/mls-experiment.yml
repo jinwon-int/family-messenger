@@ -1,0 +1,51 @@
+name: Isolated MLS browser experiment
+on:
+  push:
+    paths: ['experiments/openmls-browser/**', 'tests/native_mls_browser_smoke.py', '.github/workflows/mls-experiment.yml']
+  pull_request:
+    paths: ['experiments/openmls-browser/**', 'tests/native_mls_browser_smoke.py', '.github/workflows/mls-experiment.yml']
+permissions:
+  contents: read
+jobs:
+  synthetic-mls:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CARGO_HOME: ${{ runner.temp }}/mls-cargo
+      RUSTUP_HOME: ${{ runner.temp }}/mls-rustup
+      CARGO_TARGET_DIR: ${{ runner.temp }}/mls-target
+      RUSTFLAGS: '--cfg getrandom_backend="wasm_js"'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Isolated pinned Rust and WASM target
+        run: |
+          rustup toolchain install 1.91.1 --profile minimal --target wasm32-unknown-unknown
+          rustup run 1.91.1 rustc --version
+      - name: Build pinned library wrapper
+        run: rustup run 1.91.1 cargo build --locked --release --target wasm32-unknown-unknown --manifest-path experiments/openmls-browser/Cargo.toml
+      - name: Verify pinned binding generator
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download 0.2.126 --repo wasm-bindgen/wasm-bindgen --pattern wasm-bindgen-0.2.126-x86_64-unknown-linux-musl.tar.gz --dir "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP"
+          echo '064948d58e2d6c0a745216477a639ba696216d6309aaa902939d1b865b1d869d  wasm-bindgen-0.2.126-x86_64-unknown-linux-musl.tar.gz' | sha256sum --check --strict
+          tar xzf wasm-bindgen-0.2.126-x86_64-unknown-linux-musl.tar.gz
+      - name: Generate browser assets
+        run: |
+          mkdir -p artifacts/mls-browser-pkg
+          "$RUNNER_TEMP/wasm-bindgen-0.2.126-x86_64-unknown-linux-musl/wasm-bindgen" "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/family_mls_browser_experiment.wasm" --target web --out-dir artifacts/mls-browser-pkg
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Browser tooling
+        run: |
+          python -m pip install -r requirements-native-test.txt
+          python -m playwright install --with-deps chromium
+      - name: Two disposable browsers
+        run: python tests/native_mls_browser_smoke.py --bundle artifacts/mls-browser-pkg
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: synthetic-mls-proof
+          path: artifacts/native-mls-browser-*/verification.json
