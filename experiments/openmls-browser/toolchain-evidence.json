@@ -120,6 +120,13 @@
     "experiments/openmls-browser/Cargo.toml": "76d2459e6ab1ac6c4df478eb21075d80cd1e714994fe4872c12ee35469b67b22",
     "experiments/openmls-browser/Cargo.lock": "8298358c7a49873bde47b121e42b56eaccbd11aa75604bb27147895c2c02c711",
     "experiments/openmls-browser/src/lib.rs": "beb1b8aaaa7773b5d801b1dc2653935627ddf0b0777cdb97aae8a0b3f8fee5ec",
-    "tests/native_mls_browser_smoke.py": "8c474577311f452733fe0f08d0a31815fc23abb1b9f5ee50fb07d00df4b56aee"
+    "tests/native_mls_browser_smoke.py": "4c883109336fa476ad85114254489c4958f7a79c786322b394b290c66fe29399"
+  },
+  "rust_standard_library_notice": {
+    "license": "MIT OR Apache-2.0 except separately attributed components",
+    "location_in_verified_distribution": "share/doc/rust/COPYRIGHT-library.html",
+    "bytes": 398128,
+    "sha256": "3aa41caccecaeddad6fcf2f36ce14146ab7baae57064b05b12ecc6b52d5e917f",
+    "scope": "Rust standard-library component notices; not part of Cargo application graph; retain distribution notices before redistributing compiled bundles"
   }
 }

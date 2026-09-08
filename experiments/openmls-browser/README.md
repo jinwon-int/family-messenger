@@ -21,7 +21,12 @@ only initial two-member creation and removal, not adding third/fourth devices.
 
 Requirements: verified isolated Rust 1.91.1 + `wasm32-unknown-unknown`, exact
 wasm-bindgen CLI 0.2.126, Python with requirements-native-test.txt and Chromium.
-No npm, bundler, wasm-pack or new Go dependency. Refer to
+No npm, bundler, wasm-pack or new Go dependency. Rust/its standard library are
+MIT OR Apache-2.0 except separately attributed components; the verified distribution
+ships COPYRIGHT-library.html and its licenses. The toolchain receipt identifies
+that standard-library notice (outside the Cargo application graph). Keep the
+distribution notices with any later redistributed compiled bundle; this CI uploads
+only proof JSON, not a binary distribution. Refer to
 [toolchain-evidence.json](toolchain-evidence.json) for official component hashes
 and verified release asset hashes. Paths below are operator-selected *new* test
 locations; never point at production state. Rustup verifies the official component
@@ -95,7 +100,8 @@ wire overhead, engine and successful checks. This local observation is not a
 benchmark distribution or mobile qualification. The test records WASM memory's
 allocated linear-memory high-water at operation boundaries (WASM memory does not
 shrink); **it excludes JS objects, copies, browser/worker overhead and OS RSS**.
-Its 128 MiB check is an observation/experiment failure threshold, not a hard allocator
+Multiple fresh workers remain alive during the proof; the recorded maximum is
+**per worker, not aggregate client/browser memory**. Its 128 MiB check is an observation/experiment failure threshold, not a hard allocator
 sandbox. Startup measurement covers `init()` WASM fetch/compile/instantiate after
 JS module imports, not full page cold start. Separate cold/warm population and
 whole-browser peak memory remain unmeasured. Toolchain/downloads/cache/build use

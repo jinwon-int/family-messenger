@@ -13,6 +13,7 @@
     "removed_device_before_commit_after_commit_read_and_send": true
   },
   "memory_bytes": 1376256,
+  "memory_scope": "maximum per worker WASM linear memory, not aggregate context/browser memory; multiple workers remain live",
   "assets": {
     "/": {
       "bytes": 232,
@@ -42,8 +43,8 @@
   },
   "browser": "151.0.7922.34",
   "init_ms": [
-    34.099999994039536,
-    29.200000017881393
+    18.80000001192093,
+    21.5
   ],
   "wire_bytes": {
     "key_package": 275,

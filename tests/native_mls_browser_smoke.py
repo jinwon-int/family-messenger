@@ -31,6 +31,7 @@ def main():
             raise RuntimeError('unsafe or oversized asset')
         assets[route] = path.read_bytes()
     receipt = {'synthetic_only': True, 'durable_state': False, 'checks': {}, 'memory_bytes': 0,
+               'memory_scope': 'maximum per worker WASM linear memory, not aggregate context/browser memory; multiple workers remain live',
                'assets': {route: {'bytes': len(raw), 'gzip_bytes': len(gzip.compress(raw, mtime=0)),
                                    'sha256': hashlib.sha256(raw).hexdigest()} for route, raw in assets.items()}}
 
