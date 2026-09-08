@@ -301,3 +301,14 @@ provides a pinned runnable memory-only Chromium proof and dependency/license/cos
 evidence. It does not implement device trust, durable crypto state, native
 transport integration or production E2EE; the remaining acceptance gates above
 still apply.
+
+## Staged browser persistence result
+
+The subsequent [synthetic state adapter](../experiments/openmls-browser/PERSISTENCE.md)
+reconstructs the full provider for each candidate operation and commits its state,
+exact-byte retry ledger and receive cursor in one IndexedDB transaction before
+release. Two persistent Chromium clients qualify confirmed-commit process crashes,
+in-flight process crashes, controlled precommit aborts, concurrent retries and
+corruption rejection. This is an isolated storage prerequisite; native transport,
+self-echo/control cursor integration, device trust, human key protection and recovery
+still need qualification. Existing synthetic database formats are not migrated.
