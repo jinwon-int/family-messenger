@@ -28,3 +28,20 @@ jobs:
         run: go build -trimpath -o ../artifacts/family-dev ./cmd/family-dev
       - name: Real process restart and stream proof
         run: python3 tests/native_smoke.py --binary artifacts/family-dev
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install browser test tools
+        run: |
+          python -m pip install -r requirements-native-test.txt
+          python -m playwright install --with-deps chromium
+      - name: Two real browser clients
+        run: python tests/native_browser_smoke.py --binary artifacts/family-dev
+      - name: Preserve synthetic browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-browser-${{ github.event_name }}
+          path: |
+            artifacts/native-browser-*/verification.json
+            artifacts/native-browser-*/*.png

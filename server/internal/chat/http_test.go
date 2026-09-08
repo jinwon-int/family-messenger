@@ -83,7 +83,7 @@ func TestHTTPAuthorizationAndRequestBoundaries(t *testing.T) {
 	_, h := fixture(t)
 	status(t, req(t, h, "GET", "/health", "", nil, nil), 401)
 	status(t, req(t, h, "GET", "/health", "charlie", nil, nil), 200)
-	for _, hdr := range []map[string]string{{"Host": "attacker.invalid:80"}, {"Origin": "https://attacker.invalid"}, {"Origin": "null"}, {"Sec-Fetch-Site": "same-origin"}, {"Authorization": "Bearer synthetic-alice extra"}} {
+	for _, hdr := range []map[string]string{{"Host": "attacker.invalid:80"}, {"Origin": "https://attacker.invalid"}, {"Origin": "null"}, {"Sec-Fetch-Site": "cross-site"}, {"Authorization": "Bearer synthetic-alice extra"}} {
 		r := req(t, h, "GET", "/health", "alice", nil, hdr)
 		if r.StatusCode != 403 && r.StatusCode != 401 {
 			t.Fatal(r.StatusCode)
@@ -189,5 +189,58 @@ func TestSSEConnectionLimitAndRelease(t *testing.T) {
 			t.Fatal("stream slots leaked")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestWebAssetsAndStrictBrowserOrigin(t *testing.T) {
+	_, h := fixture(t)
+	for _, path := range []string{"/", "/app.js", "/app.css"} {
+		r := req(t, h, "GET", path, "", nil, map[string]string{"Sec-Fetch-Site": "none"})
+		if r.StatusCode != 200 || r.Header.Get("Content-Security-Policy") == "" || r.Header.Get("X-Frame-Options") != "DENY" {
+			t.Fatal(path, r.StatusCode, r.Header)
+		}
+		r.Body.Close()
+	}
+	status(t, req(t, h, "GET", "/v1/rooms", "alice", nil, map[string]string{"Origin": h.URL, "Sec-Fetch-Site": "same-origin"}), 200)
+	status(t, req(t, h, "POST", "/v1/rooms", "alice", map[string]any{"id": "browser"}, map[string]string{"Origin": h.URL, "Sec-Fetch-Site": "same-origin"}), 201)
+	for _, path := range []string{"/", "/app.js", "/v1/rooms", "/v1/rooms/family/events"} {
+		for _, headers := range []map[string]string{{"Origin": "http://127.0.0.1:1"}, {"Origin": "https://127.0.0.1:1"}, {"Origin": "null"}, {"Sec-Fetch-Site": "cross-site"}, {"Sec-Fetch-Site": "same-site"}, {"Host": "attacker.invalid"}} {
+			r := req(t, h, "GET", path, "alice", nil, headers)
+			if r.Header.Get("Access-Control-Allow-Origin") != "" {
+				t.Fatal("CORS enabled")
+			}
+			status(t, r, 403)
+		}
+	}
+	status(t, req(t, h, "GET", "/v1/rooms", "alice", nil, map[string]string{"Sec-Fetch-Site": "none"}), 403)
+	status(t, req(t, h, "GET", "/v1/rooms", "", nil, map[string]string{"Origin": h.URL, "Sec-Fetch-Site": "same-origin"}), 401)
+}
+
+func TestRoomListingOnlyCurrentMembership(t *testing.T) {
+	s, h := fixture(t)
+	if e := s.CreateRoom("private", "alice", nil); e != nil {
+		t.Fatal(e)
+	}
+	get := func(actor string) []Room {
+		r := req(t, h, "GET", "/v1/rooms", actor, nil, nil)
+		defer r.Body.Close()
+		var rooms []Room
+		if e := json.NewDecoder(r.Body).Decode(&rooms); e != nil {
+			t.Fatal(e)
+		}
+		return rooms
+	}
+	if rooms := get("alice"); len(rooms) != 2 {
+		t.Fatal(rooms)
+	}
+	if rooms := get("bob"); len(rooms) != 1 || rooms[0].ID != "family" || rooms[0].Owner != "alice" {
+		t.Fatal(rooms)
+	}
+	if rooms := get("charlie"); len(rooms) != 0 {
+		t.Fatal(rooms)
+	}
+	s.SetMember("family", "alice", "bob", false)
+	if rooms := get("bob"); len(rooms) != 0 {
+		t.Fatal(rooms)
 	}
 }

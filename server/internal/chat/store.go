@@ -389,3 +389,26 @@ func (s *Store) History(room, actor string, after int64) ([]Message, error) {
 	defer s.mu.Unlock()
 	return s.history(room, actor, after)
 }
+
+// rooms is called with mu held through the HTTP response, just like history.
+func (s *Store) rooms(actor string) ([]Room, error) {
+	rows, e := s.db.Query("SELECT r.id,r.owner FROM rooms r JOIN members m ON m.room=r.id WHERE m.actor=? ORDER BY r.id", actor)
+	if e != nil {
+		return nil, e
+	}
+	defer rows.Close()
+	out := make([]Room, 0)
+	for rows.Next() {
+		var r Room
+		if e = rows.Scan(&r.ID, &r.Owner); e != nil {
+			return nil, e
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+type Room struct {
+	ID    string `json:"id"`
+	Owner string `json:"owner"`
+}
