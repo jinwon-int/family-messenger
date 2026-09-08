@@ -1,0 +1,61 @@
+name: ${COMPOSE_PROJECT_NAME:-family-messenger}
+services:
+  postgres:
+    image: postgres:17@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
+    restart: unless-stopped
+    env_file: .runtime/postgres.env
+    environment:
+      POSTGRES_DB: synapse
+      POSTGRES_USER: synapse
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U synapse -d synapse]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    mem_limit: 512m
+    logging: &logging
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+  synapse:
+    image: ghcr.io/element-hq/synapse:v1.160.0@sha256:78de1d10bef02e375f861d1cc99f8bedd9381d4f9083ea8b2c22a053477b205f
+    restart: unless-stopped
+    user: ${SYNAPSE_UID:?Run scripts/init.py first}:${SYNAPSE_GID:?Run scripts/init.py first}
+    environment:
+      SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
+    volumes:
+      - ./.runtime/synapse:/data
+    ports:
+      - 127.0.0.1:${MATRIX_PORT:-18809}:8008
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8008/health',timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 1g
+    logging: *logging
+  element:
+    image: vectorim/element-web:v1.12.27@sha256:7050130b263bbcf0e4ad8da875a2821cd89dc55b2f04e93aaa13f682d013019e
+    restart: unless-stopped
+    ports:
+      - 127.0.0.1:${WEB_PORT:-18808}:80
+    volumes:
+      - ./.runtime/element.json:/app/config.json:ro
+      - ./web/family:/app/family:ro
+    healthcheck:
+      test: [CMD, wget, -q, --spider, http://127.0.0.1/]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    security_opt: [no-new-privileges:true]
+    mem_limit: 192m
+    logging: *logging
+volumes:
+  postgres-data:

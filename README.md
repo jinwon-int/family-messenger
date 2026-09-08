@@ -1,3 +1,64 @@
 # 서윤 가족 메신저
 
-Telegram과 독립된 가족 메신저의 초기 개발 저장소입니다.
+Telegram API를 통하지 않고 우리 서버에서 운영하는 가족 전용 메신저입니다.
+Matrix Synapse + PostgreSQL이 대화를 저장·동기화하고 Element Web이 화면을 제공합니다.
+서버 엔진이나 암호화 프로토콜을 새로 작성하지 않고, 검증된 프로젝트 위에 가족용 설정·화면·운영 도구를 구성합니다.
+
+## 첫 버전
+
+- 가족 계정 로그인, 초대 기반 개인·단체 대화, 사진·문서 첨부
+- 새 대화방의 종단간 암호화 기본 설정, 기기 간 동기화
+- 한국어 브랜드·시작 화면과 이용 안내
+- 공개 가입·게스트·외부 서버 연합 비활성화
+- 버전과 이미지 digest 고정, 로컬 전용 포트, 설정 생성·계정 발급·검증 도구
+
+현재는 **로컬 시험 버전**입니다. 운영 DNS·HTTPS·가족 계정을 연결하지 않았습니다.
+암호화 상태 설정과 메시지 이벤트 전달을 API로 검사하며, **실제 두 기기의 암호화·복호화·키 복구와 모바일 알림은 별도 인수검사 대상**입니다.
+웹 화면은 휴대폰에서도 접속할 수 있지만 모바일 설치·백그라운드 알림을 검증 완료한 PWA로 보장하지 않습니다.
+Element X 연결은 MAS/OIDC 등 호환 인증 구성을 확인한 뒤 지원합니다. 통화와 Telegram 기록 이관은 첫 버전에 포함하지 않습니다.
+
+## 로컬로 실행하기
+
+Linux, Python 3.11+, Docker Engine과 Compose v2가 필요합니다. Docker 접근 권한이 있는 운영자가 실행합니다.
+
+```bash
+python3 scripts/init.py --preview
+docker compose up -d --wait --wait-timeout 120
+python3 scripts/admin.py owner --admin
+```
+
+- 화면: <http://127.0.0.1:18808>
+- Matrix API: <http://127.0.0.1:18809>
+- 아이디: `@owner:preview.invalid` (로그인 화면에서는 `owner`도 사용 가능)
+- 계정 비밀번호는 대화형으로 입력하며 명령행·Git에 저장하지 않습니다.
+
+다른 PC에서 시험할 때 두 포트를 함께 전달합니다.
+
+```bash
+ssh -N -L 18808:127.0.0.1:18808 -L 18809:127.0.0.1:18809 seoseo
+```
+
+초기화는 기존 `.runtime` 또는 `.env`가 있으면 중단합니다. 다시 실행해도 기존 계정·서명키를 덮어쓰지 않습니다.
+`preview.invalid`는 시험 전용 신원입니다. 시험 데이터를 운영 신원으로 바꾸지 말고 운영은 새 설치로 시작합니다.
+기존 seo web bridge, Telegram 세션, 파일보관함은 사용하거나 변경하지 않습니다.
+
+## 검증
+
+```bash
+python3 -m unittest discover -s tests -v
+docker compose config --quiet
+python3 tests/smoke.py  # 시험 환경에서만 합성 계정·대화방·첨부 생성
+```
+
+검사 범위: 가입 차단, 초대/비초대 계정 권한, 방 암호화 상태, 중복 재시도 방지, `/sync` 이벤트 전달, 첨부 인증, federation HTTP 차단.
+`smoke.py`의 암호화 이벤트는 **전달 검사 전용 합성 데이터**로 실제 암호화 성공을 의미하지 않습니다.
+시험 데이터는 그대로 남으므로 개인 대화를 넣지 않습니다.
+
+## 운영 전 확인
+
+1. 바뀌지 않을 Matrix `server_name`과 웹/API의 서로 다른 HTTPS 호스트를 결정합니다.
+2. [운영 안내](docs/OPERATIONS.md)에 따라 새 운영 설정·TLS·프록시를 구성합니다.
+3. 두 기기에서 로그인, 암호화 대화, 첨부, 키 복구, 알림을 확인합니다.
+4. 백업을 별도 환경에 복원한 뒤 가족에게 배포합니다.
+
+[벤치마킹·선정 근거](docs/BENCHMARK.md) · [운영 안내](docs/OPERATIONS.md) · [개발 순서](docs/ROADMAP.md) · [구성요소·라이선스](THIRD_PARTY.md)
