@@ -30,6 +30,32 @@ Matrix API는 모바일 앱도 접근하므로 Cloudflare Access의 브라우저
 계정 인증은 Matrix가 담당하며 공개 가입은 닫혀 있습니다. 웹에 Access를 추가하더라도 앱·로그인 호환성을 먼저 확인합니다.
 자동 백엔드 업데이트를 켜지 않고 digest 변경 PR에서 새 버전 시험 후 교체합니다.
 
+Cloudflare Tunnel을 육손에서 직접 실행하는 경우에는 Caddy 대신
+`deploy/cloudflare-ingress.example.json`의 두 호스트를 확정한 이름으로 바꿔 전용 터널에 적용합니다.
+Matrix client/media와 클라이언트 발견 경로만 전달하고 나머지는 404로 막습니다.
+토큰은 root 전용 `/etc/family-messenger/cloudflared.token`에 저장하며,
+`deploy/family-messenger-tunnel.service`는 systemd credential로 읽습니다.
+기존 플릿 터널의 토큰이나 라우팅을 덮어쓰지 않습니다. 예시 파일은 자동 적용되지 않습니다.
+
+## 저장공간 경보
+
+`scripts/check_storage.py`는 데이터 삭제 없이 파일시스템 여유와 저장 트리의 할당량을 검사합니다.
+심볼릭 링크·다른 파일시스템·읽기 실패는 정상으로 처리하지 않습니다.
+
+```bash
+python3 scripts/check_storage.py .runtime --min-free-gib 100 --max-retained-gib 150
+```
+
+초기 운영 제안값은 육손 여유 100GiB 미만 또는 `.runtime` 150GiB 이상에서 경고입니다.
+이는 업로드 차단이나 자동 삭제 정책이 아닙니다. 메시지 DB는 별도 Docker 볼륨에 있으므로
+150GiB 트리 예산에는 포함되지 않으며, 전체 파일시스템 여유 검사에는 반영됩니다.
+백업 목적지의 여유와 보존 세대도 별도로 점검합니다.
+
+`deploy/family-messenger-storage.service`와 `.timer`는 `/opt/family-messenger` 설치를
+시간마다 점검하는 예시입니다. 경고는 JSON 출력과 service 실패 상태로 남습니다.
+외부 푸시 알림은 별도 연결이 필요하며, 타이머 설치만으로 가족에게 알림이 발송되지는 않습니다.
+운영 폴더와 상위 경로는 운영자 소유로 유지합니다. 측정 중 파일 생성·삭제로 실패하면 다시 점검합니다.
+
 ## 계정·암호화
 
 관리자가 가족 계정을 발급하고 필요한 방에 초대합니다. `--admin`은 운영자에게만 사용합니다.

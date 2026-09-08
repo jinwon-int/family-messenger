@@ -4,19 +4,19 @@ import argparse
 import json
 import os
 from pathlib import Path
-import shutil
 import stat
 
 GIB = 1024 ** 3
 
 
-def tree_bytes(root):
+def measure(root):
     """Count allocated bytes without following links or crossing filesystems."""
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    seen = set()
     def walk(fd, device, depth):
         if depth > 128:
             raise ValueError('storage tree exceeds depth limit')
-        total = 0
+        total = os.fstat(fd).st_blocks * 512
         with os.scandir(fd) as entries:
             for entry in entries:
                 info = entry.stat(follow_symlinks=False)
@@ -32,15 +32,32 @@ def tree_bytes(root):
                     finally:
                         os.close(child)
                 elif stat.S_ISREG(info.st_mode):
-                    total += info.st_blocks * 512
+                    key = (info.st_dev, info.st_ino)
+                    if key not in seen:
+                        seen.add(key)
+                        total += info.st_blocks * 512
                 else:
                     raise ValueError('special file in storage tree')
         return total
-    fd = os.open(root, flags)
+    root = Path(root)
+    if '..' in root.parts:
+        raise ValueError('parent traversal in storage path')
+    root = root.absolute()
+    fd = os.open('/', flags)
     try:
-        return walk(fd, os.fstat(fd).st_dev, 0)
+        for part in root.parts[1:]:
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        retained = walk(fd, os.fstat(fd).st_dev, 0)
+        disk = os.fstatvfs(fd)
+        return retained, disk.f_bavail*disk.f_frsize, disk.f_blocks*disk.f_frsize
     finally:
         os.close(fd)
+
+
+def tree_bytes(root):
+    return measure(root)[0]
 
 
 def evaluate(free, total, retained, min_free, max_retained):
@@ -64,9 +81,8 @@ def main():
         p.error('thresholds must be positive')
     try:
         # These trees must be owned by the operator, not writable by users.
-        retained = tree_bytes(a.directory)
-        disk = shutil.disk_usage(a.directory)
-        result = evaluate(disk.free, disk.total, retained,
+        retained, free, total = measure(a.directory)
+        result = evaluate(free, total, retained,
                           a.min_free_gib*GIB, a.max_retained_gib*GIB)
     except (OSError, ValueError):
         print(json.dumps({'status': 'error', 'alerts': ['storage_measurement_failed']}))

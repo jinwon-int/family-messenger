@@ -1,0 +1,11 @@
+[Unit]
+Description=Family messenger storage reserve and retention budget check
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/family-messenger/scripts/check_storage.py /opt/family-messenger/.runtime --min-free-gib 100 --max-retained-gib 150
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+UMask=0077
