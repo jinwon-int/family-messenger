@@ -421,3 +421,22 @@ func TestMediaDownloadRevocationStopsNextChunk(t *testing.T) {
 		t.Fatal("bytes written after revocation", w.body.Len())
 	}
 }
+
+func TestMediaRetryDoesNotAcknowledgeCorruptStoredBytes(t *testing.T) {
+	s, h := fixture(t)
+	body := []byte("abc")
+	meta := mediaMeta("corrupt-retry", body)
+	m, _, e := putMedia(t, s, meta, body)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.db.Exec("UPDATE attachments SET payload=? WHERE id=?", []byte("xyz"), m.ID); e != nil {
+		t.Fatal(e)
+	}
+	status(t, upload(t, h, meta, bytes.NewReader(body)), 422)
+	status(t, req(t, h, "GET", "/v1/rooms/family/attachments/"+m.ID, "alice", nil, nil), 422)
+	var preserved []byte
+	if e = s.db.QueryRow("SELECT payload FROM attachments WHERE id=?", m.ID).Scan(&preserved); e != nil || string(preserved) != "xyz" {
+		t.Fatal("corrupt evidence overwritten", e)
+	}
+}

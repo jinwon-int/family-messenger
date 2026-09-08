@@ -48,7 +48,9 @@ random server-assigned 128-bit hexadecimal strings. Retry after a lost response
 must repeat the original headers and full bytes: identical content returns the
 same ID/metadata with 200. Changed metadata for the same scoped ID returns 409;
 a body that does not match the declared digest returns 422, including on retry.
-Concurrent reuse of an active ID returns 409 to retry later. Quota returns 507,
+The retry also rechecks the stored BLOB: corruption returns 422 and is preserved,
+never silently overwritten or acknowledged as healthy. Concurrent reuse of an
+active ID returns 409 to retry later. Quota returns 507,
 transfer capacity 429 and invalid length/metadata 400. Retries after membership
 revocation return 403.
 

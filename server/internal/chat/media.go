@@ -165,7 +165,18 @@ func (s *Store) finishMedia(l *mediaLease, body []byte) (Attachment, bool, error
 	}
 	if l.existing {
 		m, e := scanAttachment(s.db.QueryRow("SELECT "+mediaColumns+" FROM attachments WHERE room=? AND actor=? AND client_id=?", l.meta.Room, l.meta.Actor, l.meta.ClientID))
-		return m, false, e
+		if e != nil || !sameUpload(m, l.meta) || !validAttachmentID(m.ID) {
+			return Attachment{}, false, ErrIntegrity
+		}
+		var stored []byte
+		if e = s.db.QueryRow("SELECT payload FROM attachments WHERE room=? AND id=? AND length(payload)=?", m.Room, m.ID, m.Size).Scan(&stored); e != nil {
+			return Attachment{}, false, ErrIntegrity
+		}
+		persistedDigest := sha256.Sum256(stored)
+		if hex.EncodeToString(persistedDigest[:]) != m.SHA256 {
+			return Attachment{}, false, ErrIntegrity
+		}
+		return m, false, nil
 	}
 	m := l.meta
 	var e error

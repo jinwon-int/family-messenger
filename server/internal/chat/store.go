@@ -128,7 +128,7 @@ func Open(dir string) (_ *Store, err error) {
 	// SQLite may remove a journal during initialization. Only pass an existing
 	// sidecar to it after recognizing its nonempty database (header check below).
 	if (hasJournal || hasSnapshots) && !hasNonemptyDB {
-		return nil, fmt.Errorf("orphan journal preserved; database missing or empty")
+		return nil, fmt.Errorf("orphan journal or snapshots preserved; database missing or empty")
 	}
 	path := filepath.Join(dir, "messages.sqlite")
 	fd, e = syscall.Open(path, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0600)
