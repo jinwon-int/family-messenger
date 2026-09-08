@@ -48,8 +48,7 @@ existing chat server. Its page explicitly says synthetic; no login or credential
 route exists. CSP permits only local scripts/workers/fetch and the narrow
 `wasm-unsafe-eval` needed for compilation, with no general `unsafe-eval` or CORS.
 
-Eight assertion groups cover two-way text, opaque bytes, a tampered ciphertext
-followed by valid traffic, ciphertext replay, wrong groups in both directions,
+Nine assertion groups cover two-way text, opaque bytes, a tampered ciphertext and damaged Welcome followed by permanent device retirement, ciphertext replay, wrong groups in both directions,
 nonmember Welcome rejection, an existing-group Welcome refusal, malformed/oversized
 input, and removal. The removed device cannot decrypt a new-epoch message even
 before receiving the removal commit; after applying it the device cannot send.
@@ -113,10 +112,37 @@ large-file format, real CF admission and approved AI-work-room integration.
 
 Incoming wire input is bounded before parsing (64 KiB); plaintext input is bounded
 to 16 KiB. Workers have a 10-second harness deadline and are discarded on timeout.
-These bounds do not constitute a hardened arbitrary-user API. Library errors may
-mutate in-memory state; only the tested authentication rejection paths are reused.
+These bounds do not constitute a hardened arbitrary-user API. Library errors can
+mutate in-memory state: every failed operation permanently retires this Device,
+including malformed/oversized input and duplicate operations. This conservative
+policy permits denial of service in the disposable fixture and is not a production
+recovery strategy. All exported operations then reject, and fresh tests use new
+workers/keys/groups. Retirement blocks use; it does not claim secure erasure of
+the provider's memory. There is no automatic reinitialization or recovery.
 Do not reuse this memory provider as a durable device, export its secrets to
 sessionStorage or silently reconstruct a lost device. The staged transaction/
 retirement contract in [NATIVE-E2EE.md](../../docs/NATIVE-E2EE.md) is the next gate,
 including old-epoch pending sends when membership changes. Existing synthetic
 plaintext data and native pending IDs are untouched; no downgrade or migration.
+
+## Independent-review finding and regression
+
+The independent reviewer reproduced two state-consumption failures on the initial
+wrapper: after rejecting an altered ciphertext, OpenMLS could no longer decrypt
+its unchanged original; after rejecting a damaged Welcome addressed to the device,
+OpenMLS could no longer join with its unchanged original. The first path consumes
+sender-ratchet state before AEAD validation; the second consumes the matching
+KeyPackage before later Welcome validation. No plaintext disclosure was observed.
+A subsequent *new generation* successfully decrypting does not establish safe
+retry of the rejected generation. The initial `tamper_then_valid` proof is therefore
+superseded by the permanent-retirement regression, not accepted as recovery proof.
+
+The final wrapper retires the entire disposable Device on every error, across
+all operations, and cannot continue using uncertain state. Negative cases use
+separate fresh groups. Tests explicitly cover altered-then-original ciphertext,
+damaged-then-original Welcome, and every API refusing a retired device. The next
+provider-transaction unit must stage **all** memory/group/key-package changes,
+not only its persistent writes, and prove discard-on-rejection, exact-byte retries,
+crash boundaries and replay state. Do not restore just the serialized group while
+leaving provider writes/consumed KeyPackages behind. Until that passes, this
+experiment is not a persistent receive/retry implementation.

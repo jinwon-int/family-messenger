@@ -2,14 +2,15 @@
   "synthetic_only": true,
   "durable_state": false,
   "checks": {
-    "nonmember_welcome_rejected": true,
+    "text_and_opaque_1024_bytes": true,
+    "replay_rejected_and_device_retired": true,
+    "nonmember_welcome_rejected_and_retired": true,
     "existing_group_welcome_rejected": true,
-    "text_and_replay": true,
-    "opaque_1024_bytes": true,
-    "tamper_then_valid": true,
+    "damaged_welcome_retires_original_retry": true,
+    "tamper_retires_original_retry_and_all_operations": true,
     "wrong_group_both_directions": true,
     "input_limits_and_malformed": true,
-    "removed_device_new_epoch_and_inactive": true
+    "removed_device_before_commit_after_commit_read_and_send": true
   },
   "memory_bytes": 1376256,
   "assets": {
@@ -29,20 +30,20 @@
       "sha256": "e92df9cd5347d179679229ea25a9b621673c823b3a3f5128871a484575f39c83"
     },
     "/pkg/family_mls_browser_experiment.js": {
-      "bytes": 15762,
-      "gzip_bytes": 3594,
-      "sha256": "eafb0c47b793a5a7f484f0441b5e7f1169ac9a6b435ea1b0a30e68f759856987"
+      "bytes": 15593,
+      "gzip_bytes": 3495,
+      "sha256": "ec3bc69f9759e7bc79d6d1cc669d8f801ffea03c69c93271b5d8e79f6f20fab3"
     },
     "/pkg/family_mls_browser_experiment_bg.wasm": {
-      "bytes": 1389071,
-      "gzip_bytes": 482708,
-      "sha256": "97b6a216a3c52bdca3e461966de0ded19962bf511256d7f598aa3f4e609245fb"
+      "bytes": 1389646,
+      "gzip_bytes": 483221,
+      "sha256": "beb6c74b003cc1977226043d8ee21152b3768ba4e15595bacb005469b96297e7"
     }
   },
   "browser": "151.0.7922.34",
   "init_ms": [
-    47.80000001192093,
-    28.399999976158142
+    34.099999994039536,
+    29.200000017881393
   ],
   "wire_bytes": {
     "key_package": 275,

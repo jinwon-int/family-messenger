@@ -83,51 +83,94 @@ def main():
                 assert value['ok'] is True, (method, value)
                 return value.get('result')
 
-            receipt['init_ms'] = [call(alice, 'init', 'alice')['init_ms'], call(bob, 'init', 'bob')['init_ms']]
-            package = call(bob, 'key_package')
-            call(alice, 'create')
-            welcome = call(alice, 'invite', package)
-            bob.evaluate("spawn('outsider')")
-            call(bob, 'init', 'outsider', name='outsider')
-            call(bob, 'join', welcome, name='outsider', reject=True)
-            receipt['checks']['nonmember_welcome_rejected'] = True
-            call(bob, 'join', welcome)
-            call(bob, 'join', welcome, reject=True)
-            receipt['checks']['existing_group_welcome_rejected'] = True
+            def pair(name, join=True):
+                if name != 'main':
+                    alice.evaluate('name => spawn(name)', name)
+                    bob.evaluate('name => spawn(name)', name)
+                times = [call(alice, 'init', 'alice', name=name)['init_ms'],
+                         call(bob, 'init', 'bob', name=name)['init_ms']]
+                package = call(bob, 'key_package', name=name)
+                call(alice, 'create', name=name)
+                welcome = call(alice, 'invite', package, name=name)
+                if join:
+                    call(bob, 'join', welcome, name=name)
+                return package, welcome, times
+
+            package, welcome, receipt['init_ms'] = pair('main')
             text = list('synthetic hello 한글'.encode())
             encrypted = call(alice, 'encrypt', text)
             assert bytes(text) not in bytes(encrypted)
             assert call(bob, 'decrypt', encrypted) == text
-            call(bob, 'decrypt', encrypted, reject=True)
-            receipt['checks']['text_and_replay'] = True
             raw = list(bytes(range(256)) * 4)
             encrypted_file = call(bob, 'encrypt', raw)
             assert bytes(raw) not in bytes(encrypted_file)
             assert call(alice, 'decrypt', encrypted_file) == raw
-            receipt['checks']['opaque_1024_bytes'] = True
-            altered = call(alice, 'encrypt', list(b'synthetic tamper'))
+            receipt['checks']['text_and_opaque_1024_bytes'] = True
+            call(bob, 'decrypt', encrypted, reject=True)
+            call(bob, 'encrypt', text, reject=True)
+            receipt['checks']['replay_rejected_and_device_retired'] = True
+
+            bob.evaluate("spawn('outsider')")
+            call(bob, 'init', 'outsider', name='outsider')
+            call(bob, 'join', welcome, name='outsider', reject=True)
+            call(bob, 'create', name='outsider', reject=True)
+            receipt['checks']['nonmember_welcome_rejected_and_retired'] = True
+            _, repeated_welcome, _ = pair('welcome')
+            call(bob, 'join', repeated_welcome, name='welcome', reject=True)
+            receipt['checks']['existing_group_welcome_rejected'] = True
+
+            _, original_welcome, _ = pair('damaged-welcome', join=False)
+            damaged_welcome = original_welcome.copy()
+            damaged_welcome[-1] ^= 1
+            call(bob, 'join', damaged_welcome, name='damaged-welcome', reject=True)
+            call(bob, 'join', original_welcome, name='damaged-welcome', reject=True)
+            call(bob, 'key_package', name='damaged-welcome', reject=True)
+            receipt['checks']['damaged_welcome_retires_original_retry'] = True
+
+            tamper_package, tamper_welcome, _ = pair('tamper')
+            original = call(alice, 'encrypt', list(b'synthetic tamper'), name='tamper')
+            altered = original.copy()
             altered[-1] ^= 1
-            call(bob, 'decrypt', altered, reject=True)
-            valid = call(alice, 'encrypt', list(b'synthetic after rejection'))
-            assert call(bob, 'decrypt', valid) == list(b'synthetic after rejection')
-            receipt['checks']['tamper_then_valid'] = True
-            call(bob, 'create', name='outsider')
-            call(bob, 'decrypt', valid, name='outsider', reject=True)
-            other = call(bob, 'encrypt', list(b'different group'), name='outsider')
-            call(alice, 'decrypt', other, reject=True)
+            call(bob, 'decrypt', altered, name='tamper', reject=True)
+            # Regression: OpenMLS can consume the generation before authentication.
+            # This memory-only wrapper must retire rather than silently reuse it.
+            call(bob, 'decrypt', original, name='tamper', reject=True)
+            for method, argument in [('encrypt', text), ('create', None), ('key_package', None),
+                                     ('invite', tamper_package), ('join', tamper_welcome),
+                                     ('remove', None), ('commit', [])]:
+                call(bob, method, argument, name='tamper', reject=True)
+            receipt['checks']['tamper_retires_original_retry_and_all_operations'] = True
+
+            pair('wrong')
+            pair('different')
+            other = call(bob, 'encrypt', list(b'different group'), name='different')
+            valid = call(alice, 'encrypt', text, name='wrong')
+            call(bob, 'decrypt', valid, name='different', reject=True)
+            call(alice, 'decrypt', other, name='wrong', reject=True)
             receipt['checks']['wrong_group_both_directions'] = True
-            call(alice, 'encrypt', [0] * 16385, reject=True)
-            call(bob, 'decrypt', [0] * 65537, reject=True)
-            call(bob, 'decrypt', [1, 2, 3], reject=True)
+            for name, method, value in [('largeplain', 'encrypt', [0] * 16385),
+                                        ('largewire', 'decrypt', [0] * 65537),
+                                        ('malformed', 'decrypt', [1, 2, 3])]:
+                pair(name)
+                call(bob, method, value, name=name, reject=True)
             receipt['checks']['input_limits_and_malformed'] = True
-            commit = call(alice, 'remove')
-            new_epoch = call(alice, 'encrypt', list(b'after removal'))
-            # Bob cannot decrypt new-epoch traffic even when the removal commit is withheld.
-            call(bob, 'decrypt', new_epoch, reject=True)
-            call(bob, 'commit', commit)
-            call(bob, 'decrypt', new_epoch, reject=True)
-            call(bob, 'encrypt', list(b'removed sender'), reject=True)
-            receipt['checks']['removed_device_new_epoch_and_inactive'] = True
+
+            # Separate pairs: failed receive deliberately retires a device, so it
+            # must not then process a removal commit using uncertain state.
+            pair('withheld')
+            call(alice, 'remove', name='withheld')
+            new_epoch = call(alice, 'encrypt', text, name='withheld')
+            call(bob, 'decrypt', new_epoch, name='withheld', reject=True)
+            pair('removed')
+            commit = call(alice, 'remove', name='removed')
+            call(bob, 'commit', commit, name='removed')
+            call(bob, 'encrypt', text, name='removed', reject=True)
+            pair('removed-read')
+            removed_commit = call(alice, 'remove', name='removed-read')
+            call(bob, 'commit', removed_commit, name='removed-read')
+            new_epoch = call(alice, 'encrypt', text, name='removed-read')
+            call(bob, 'decrypt', new_epoch, name='removed-read', reject=True)
+            receipt['checks']['removed_device_before_commit_after_commit_read_and_send'] = True
             receipt['wire_bytes'] = {'key_package': len(package), 'welcome': len(welcome), 'text': len(encrypted),
                                      'file': len(encrypted_file), 'remove_commit': len(commit)}
             for context in contexts:
