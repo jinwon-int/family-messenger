@@ -583,3 +583,12 @@ func (s *Store) reserveMLS(room, actor, peer string) (bool, error) {
 	}
 	return true, tx.Commit()
 }
+
+// Must run under the same Store lock as the legacy read/write it admits.
+// A route-level check alone races creation of an MLS reservation at that ID.
+func (s *Store) legacyMember(room, actor string) error {
+	if e := s.legacyRoom(room); e != nil {
+		return e
+	}
+	return s.member(room, actor)
+}

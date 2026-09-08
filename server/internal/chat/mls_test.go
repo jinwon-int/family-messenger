@@ -351,3 +351,48 @@ func TestMLSRoomCapacityRetainsExactRetries(t *testing.T) {
 		t.Fatal("exact retry lost at capacity", e)
 	}
 }
+
+func TestMLSStoreBoundaryAfterStaleLegacyCheck(t *testing.T) {
+	s := testStore(t)
+	// Deterministic schedule from the independently reproduced signed HTTP race:
+	// early route admits absent ID, then reservation wins before actual operation.
+	s.mu.Lock()
+	if e := s.legacyRoom("raced"); e != nil {
+		t.Fatal(e)
+	}
+	_, e := s.reserveMLS("raced", "alice", "bob")
+	s.mu.Unlock()
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, _, e = s.Send("raced", "alice", "plain", []byte("synthetic")); e != ErrForbidden {
+		t.Fatal("plaintext bypass", e)
+	}
+	if e = s.SetMember("raced", "alice", "charlie", true); e != ErrForbidden {
+		t.Fatal("membership bypass", e)
+	}
+	if _, e = s.History("raced", "alice", 0); e != ErrForbidden {
+		t.Fatal("history bypass", e)
+	}
+	meta := mediaMeta("file", []byte("x"))
+	meta.Room = "raced"
+	if _, e = s.beginMedia(meta); e != ErrForbidden {
+		t.Fatal("media upload bypass", e)
+	}
+	if _, _, _, e = s.loadMedia("raced", "alice", fmt.Sprintf("%032x", 1)); e != ErrForbidden {
+		t.Fatal("media download bypass", e)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, e = s.listMedia("raced", "alice"); e != ErrForbidden {
+		t.Fatal("media listing bypass", e)
+	}
+	if e = s.mediaAuthorized("raced", "alice", 0); e != ErrForbidden {
+		t.Fatal("media transfer bypass", e)
+	}
+	var count int
+	s.db.QueryRow("SELECT count(*) FROM messages WHERE room='raced'").Scan(&count)
+	if count != 0 {
+		t.Fatal("plaintext persisted")
+	}
+}

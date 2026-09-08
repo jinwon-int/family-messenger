@@ -300,6 +300,9 @@ func (s *Store) SetMember(room, owner, actor string, present bool) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if e := s.legacyRoom(room); e != nil {
+		return e
+	}
 	var actual string
 	e := s.db.QueryRow("SELECT owner FROM rooms WHERE id=?", room).Scan(&actual)
 	if e == sql.ErrNoRows {
@@ -335,7 +338,7 @@ func (s *Store) Send(room, actor, clientID string, payload []byte) (Message, boo
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if e := s.member(room, actor); e != nil {
+	if e := s.legacyMember(room, actor); e != nil {
 		return m, false, e
 	}
 	e := s.db.QueryRow("SELECT seq,payload,created_ms FROM messages WHERE room=? AND actor=? AND client_id=?", room, actor, clientID).Scan(&m.Seq, &m.Payload, &m.CreatedMS)
@@ -381,7 +384,7 @@ func (s *Store) Send(room, actor, clientID string, payload []byte) (Message, boo
 
 // history is called under mu; a future cursor is rejected instead of silently skipping messages.
 func (s *Store) history(room, actor string, after int64) ([]Message, error) {
-	if e := s.member(room, actor); e != nil {
+	if e := s.legacyMember(room, actor); e != nil {
 		return nil, e
 	}
 	var next int64

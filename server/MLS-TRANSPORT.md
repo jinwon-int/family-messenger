@@ -55,6 +55,9 @@ acquiring identity authority. The bound device must belong to the authenticated
 actor; its peer's public binding must also exactly match the stored pair.
 Account/device checks hold authority → Store through each bounded write/response.
 Room names such as `events` never opt into the legacy streaming authorization path.
+Legacy text/history/membership/media operations recheck the room mode under their
+actual Store lock, closing the race between an early route check and concurrent
+reservation of a previously absent room.
 
 There is one monotonically ordered room sequence for every log event. A separate
 control revision changes only on control events. New events require exact current
@@ -107,8 +110,9 @@ A version-1 upgrade keeps its pre-media version-1 snapshot before the two additi
 migrations, without a redundant intermediate snapshot. Fresh empty databases
 need no recovery copy. File owner/mode/symlink/hardlink checks, process lock,
 exclusive snapshot creation and file/directory fsync are unchanged. Four attempts
-per migration prefix/eight total bound retained snapshots. Unknown/partial files
-are retained and denied. Old binaries reject schema 3; restore the original snapshot
+per migration prefix/eight total bound retained snapshots. Unknown names or unsafe files are retained and denied. Recognized snapshot
+attempt files, including partial copies, remain retained and count toward the
+limit; they are never automatically selected for recovery. Old binaries reject schema 3; restore the original snapshot
 into an isolated private directory for recovery, never run an old binary on the new
 live database. No automatic rollback, deletion or production migration occurred.
 

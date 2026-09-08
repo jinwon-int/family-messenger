@@ -94,7 +94,7 @@ func (s *Store) beginMedia(m Attachment) (*mediaLease, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if e := s.member(m.Room, m.Actor); e != nil {
+	if e := s.legacyMember(m.Room, m.Actor); e != nil {
 		return nil, e
 	}
 	key := mediaKey{m.Room, m.Actor, m.ClientID}
@@ -143,7 +143,7 @@ func (s *Store) mediaAuthorized(room, actor string, epoch uint64) error {
 	if s.mediaEpoch[[2]string{room, actor}] != epoch {
 		return ErrForbidden
 	}
-	return s.member(room, actor)
+	return s.legacyMember(room, actor)
 }
 func (s *Store) checkMedia(l *mediaLease) error {
 	s.mu.Lock()
@@ -198,7 +198,7 @@ func (s *Store) finishMedia(l *mediaLease, body []byte) (Attachment, bool, error
 func (s *Store) loadMedia(room, actor, id string) (Attachment, []byte, uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if e := s.member(room, actor); e != nil {
+	if e := s.legacyMember(room, actor); e != nil {
 		return Attachment{}, nil, 0, e
 	}
 	if !validAttachmentID(id) {
@@ -222,7 +222,7 @@ func (s *Store) loadMedia(room, actor, id string) (Attachment, []byte, uint64, e
 	return m, body, s.mediaEpoch[[2]string{room, actor}], nil
 }
 func (s *Store) listMedia(room, actor string) ([]Attachment, error) {
-	if e := s.member(room, actor); e != nil {
+	if e := s.legacyMember(room, actor); e != nil {
 		return nil, e
 	}
 	rows, e := s.db.Query("SELECT "+mediaColumns+" FROM attachments WHERE room=? ORDER BY created_ms,id LIMIT 128", room)
