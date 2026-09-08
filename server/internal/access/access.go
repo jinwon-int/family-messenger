@@ -42,6 +42,7 @@ type Authority struct {
 	config     Config
 	people     map[string]Enrollment
 	generation uint64
+	disabled   bool
 }
 type Grant struct {
 	authority  *Authority
@@ -62,7 +63,7 @@ func identifier(s string, max int) bool {
 }
 func clone(c Config) (Config, map[string]Enrollment, error) {
 	u, e := url.Parse(c.Issuer)
-	if e != nil || u.Scheme != "https" || u.User != nil || u.Port() != "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || !strings.HasSuffix(u.Host, ".cloudflareaccess.com") || !identifier(strings.TrimSuffix(u.Host, ".cloudflareaccess.com"), 63) || !identifier(c.Audience, 128) || len(c.Keys) < 1 || len(c.Keys) > 16 || len(c.People) > 32 {
+	if e != nil || u.Scheme != "https" || u.User != nil || u.Port() != "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || c.Issuer != "https://"+u.Host || !strings.HasSuffix(u.Host, ".cloudflareaccess.com") || !identifier(strings.TrimSuffix(u.Host, ".cloudflareaccess.com"), 63) || !identifier(c.Audience, 128) || len(c.Keys) < 1 || len(c.Keys) > 16 || len(c.People) > 32 {
 		return Config{}, nil, ErrConfig
 	}
 	out := Config{Issuer: c.Issuer, Audience: c.Audience, Keys: make(map[string]*rsa.PublicKey)}
@@ -114,6 +115,7 @@ func (a *Authority) Replace(c Config) error {
 	a.config = out
 	a.people = people
 	a.generation++
+	a.disabled = false
 	return nil
 }
 
@@ -127,7 +129,7 @@ func (g *Grant) Run(fn func() error) error {
 	a := g.authority
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	if g.generation != a.generation || !time.Now().Before(g.expires) {
+	if a.disabled || g.generation != a.generation || !time.Now().Before(g.expires) {
 		return ErrDenied
 	}
 	return fn()
@@ -213,6 +215,9 @@ func (a *Authority) Verify(r *http.Request) (*Grant, error) {
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+	if a.disabled {
+		return nil, ErrDenied
+	}
 	c := jwt.MapClaims{}
 	tok, e := jwt.ParseWithClaims(h[0], c, func(t *jwt.Token) (any, error) {
 		kid, ok := t.Header["kid"].(string)
@@ -243,3 +248,6 @@ func (a *Authority) Verify(r *http.Request) (*Grant, error) {
 	}
 	return &Grant{authority: a, generation: a.generation, principal: Principal{Actor: p.Actor, Owner: p.Owner}, expires: expires.Time}, nil
 }
+
+// Suspend denies new verification and retires existing grants without fallback.
+func (a *Authority) Suspend() { a.mu.Lock(); defer a.mu.Unlock(); a.disabled = true; a.generation++ }

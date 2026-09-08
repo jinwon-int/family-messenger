@@ -2,6 +2,7 @@ package chat
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -381,6 +383,42 @@ func (w *gatedMediaWriter) Write(b []byte) (int, error) {
 	}
 	return w.body.Write(b)
 }
+
+// Pause exactly between the first admitted write and the next chunk's admission.
+// This test context avoids assuming goroutine scheduling or mutex fairness.
+type betweenChunksContext struct {
+	context.Context
+	checks           atomic.Int32
+	entered, release chan struct{}
+}
+
+func (c *betweenChunksContext) Err() error {
+	if c.checks.Add(1) == 2 {
+		close(c.entered)
+		<-c.release
+	}
+	return c.Context.Err()
+}
+func chunkBoundary(t *testing.T) *betweenChunksContext {
+	t.Helper()
+	c := &betweenChunksContext{Context: context.Background(), entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() {
+		select {
+		case <-c.release:
+		default:
+			close(c.release)
+		}
+	})
+	return c
+}
+func awaitChunkBoundary(t *testing.T, c *betweenChunksContext) {
+	t.Helper()
+	select {
+	case <-c.entered:
+	case <-time.After(time.Second):
+		t.Fatal("download did not reach next chunk boundary")
+	}
+}
 func TestMediaDownloadRevocationStopsNextChunk(t *testing.T) {
 	s := testStore(t)
 	room(t, s)
@@ -392,7 +430,9 @@ func TestMediaDownloadRevocationStopsNextChunk(t *testing.T) {
 	a := NewHandler(s).(*API)
 	w := &gatedMediaWriter{header: make(http.Header), entered: make(chan struct{}), release: make(chan struct{})}
 	done := make(chan struct{})
-	go func() { a.downloadMedia(w, httptest.NewRequest("GET", "/", nil), "family", "bob", m.ID); close(done) }()
+	boundary := chunkBoundary(t)
+	r := httptest.NewRequest("GET", "/", nil).WithContext(boundary)
+	go func() { a.downloadMedia(w, r, "family", "bob", m.ID); close(done) }()
 	select {
 	case <-w.entered:
 	case <-time.After(time.Second):
@@ -400,10 +440,8 @@ func TestMediaDownloadRevocationStopsNextChunk(t *testing.T) {
 	}
 	revoked := make(chan error, 1)
 	go func() { revoked <- s.SetMember("family", "alice", "bob", false) }()
-	// Allow the revoker to queue behind the one bounded write; Go's mutex hands
-	// off to a waiting revocation before the downloader's next permission check.
-	time.Sleep(15 * time.Millisecond)
 	close(w.release)
+	awaitChunkBoundary(t, boundary)
 	select {
 	case e := <-revoked:
 		if e != nil {
@@ -412,6 +450,9 @@ func TestMediaDownloadRevocationStopsNextChunk(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("revocation blocked")
 	}
+	// Only a completed revocation defines the point after which no new chunk
+	// may be admitted. The next write must recheck membership and epoch.
+	close(boundary.release)
 	select {
 	case <-done:
 	case <-time.After(time.Second):

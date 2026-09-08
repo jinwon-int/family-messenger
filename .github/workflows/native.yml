@@ -25,11 +25,15 @@ jobs:
           go vet ./...
       - name: Build standalone prototype
         working-directory: server
-        run: go build -trimpath -o ../artifacts/family-dev ./cmd/family-dev
+        run: |
+          go build -trimpath -o ../artifacts/family-dev ./cmd/family-dev
+          go build -trimpath -o ../artifacts/family-policy ./cmd/family-policy
       - name: Real process restart and stream proof
         run: python3 tests/native_smoke.py --binary artifacts/family-dev
       - name: Native media migration and crash proof
         run: python3 tests/native_media_smoke.py --binary artifacts/family-dev
+      - name: Signed policy persistence and reload proof
+        run: python3 tests/native_policy_smoke.py --binary artifacts/family-dev --policy-binary artifacts/family-policy
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -47,6 +51,7 @@ jobs:
         with:
           name: native-browser-${{ github.event_name }}
           path: |
+            artifacts/native-policy-*/verification.json
             artifacts/native-browser-*/verification.json
             artifacts/native-browser-*/*.png
             artifacts/native-media-browser-*/verification.json
