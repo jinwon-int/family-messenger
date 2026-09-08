@@ -133,3 +133,12 @@ CF 형식의 서명 토큰을 검증하는 별도 구성요소와 자체 방·�
 멈춘다. 이전 계정의 미확인 전송을 다른 계정으로 보내지 못하도록 요청마다
 계정을 대조한다. 합성 CF 방식 프록시와 두 브라우저로 검증하며 실제 CF 로그인
 설정이나 사람의 계정 연결이 운영에 적용된 것은 아니다.
+
+## Native E2EE qualification
+
+[NATIVE-E2EE.md](NATIVE-E2EE.md) records the reviewed protocol/library feasibility
+path: RFC 9420 MLS, with OpenMLS 0.9.0 selected only for an isolated browser
+experiment. It includes pinned source/dependency observations, audit scope,
+device trust, durable state/retry and recovery constraints. No E2EE dependency or
+human encryption is activated by this design; browser/provider and persistence
+qualification remain prerequisites before native integration.
