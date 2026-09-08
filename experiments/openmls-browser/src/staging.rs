@@ -127,3 +127,49 @@ pub fn staged_checksum(bytes: &[u8]) -> Result<Vec<u8>, JsValue> {
     bounded(bytes, 5 * 1024 * 1024)?;
     OpenMlsRustCrypto::default().crypto().hash(HashType::Sha2_256, bytes).map_err(rejected)
 }
+
+#[wasm_bindgen]
+pub fn staged_public_key(bytes: &[u8], identity: &str) -> Result<Vec<u8>, JsValue> {
+    Ok(load(bytes, identity)?.signer.public().to_vec())
+}
+#[wasm_bindgen]
+pub fn staged_group_id(bytes: &[u8], identity: &str) -> Result<Vec<u8>, JsValue> {
+    Ok(load(bytes, identity)?.group.as_ref().map(|g|g.group_id().as_slice().to_vec()).unwrap_or_default())
+}
+fn trusted_members(device: &Device, peer: &str, key: &[u8], require_pair: bool) -> Result<(), JsValue> {
+    if !["alice", "bob"].contains(&peer) || key.len()!=32 || key==device.signer.public() {return Err(rejected(()));}
+    let expected: Credential=BasicCredential::new(peer.as_bytes().to_vec()).into();
+    if let Some(group)=&device.group {
+        if !group.is_active(){return Err(rejected(()));}
+        let members: Vec<_>=group.members().collect();
+        if members.is_empty() || members.len()>2 || (require_pair && members.len()!=2){return Err(rejected(()));}
+        let own=members.iter().filter(|m|m.credential==device.credential.credential && m.signature_key==device.signer.public()).count();
+        let peers=members.iter().filter(|m|m.credential==expected && m.signature_key==key).count();
+        if own!=1 || own+peers!=members.len(){return Err(rejected(()));}
+    } else if require_pair {return Err(rejected(()));}
+    Ok(())
+}
+#[wasm_bindgen]
+pub fn staged_check_trust(bytes: &[u8], identity: &str, peer: &str, key: &[u8]) -> Result<(), JsValue> {
+    trusted_members(&load(bytes,identity)?,peer,key,false)
+}
+#[wasm_bindgen]
+pub fn staged_trusted_apply(bytes: &[u8], identity: &str, method: &str, input: &[u8], peer: &str, key: &[u8]) -> Result<Transition, JsValue> {
+    if input.len()>MAX_WIRE {return Err(rejected(()));}
+    let mut device=load(bytes,identity)?;
+    trusted_members(&device,peer,key,method=="encrypt"||method=="decrypt")?;
+    let output=match method {
+        "key_package" if input.is_empty()=>device.key_package_inner()?,
+        "create" if input.is_empty()=>{device.create_inner()?;vec![]},
+        "invite"=>device.invite_trusted(input,peer,key)?,
+        "join"=>{device.join_trusted(input,peer,key)?;vec![]},
+        "encrypt"=>device.encrypt_inner(input)?,
+        "decrypt"=>device.decrypt_inner(input)?,
+        _=>return Err(rejected(())),
+    };
+    if output.len()>MAX_WIRE{return Err(rejected(()));}
+    trusted_members(&device,peer,key,false)?;
+    let state=save(&device,identity)?;
+    trusted_members(&load(&state,identity)?,peer,key,false)?;
+    Ok(Transition{state,output,epoch:epoch_of(&device)})
+}

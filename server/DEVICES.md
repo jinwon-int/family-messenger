@@ -128,3 +128,10 @@ artifact and resource receipt; older experiment receipts are historical observat
 Production activation still requires device-state/transport integration, real CF
 admission, protected keys/recovery, mobile and backup acceptance. Family rooms do
 not automatically enroll bots; all 12 runtime credentials stay on their nodes.
+
+## Durable synthetic client follow-up
+
+[TRUSTED-STATE.md](../experiments/openmls-browser/TRUSTED-STATE.md) now joins
+independent pins to staged crypto/outbox state across browser restart, with fresh
+native directory admission. It retains the transport and human-use limitations
+above; the original memory-only gate stays as a regression fixture.

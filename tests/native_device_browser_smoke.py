@@ -103,7 +103,7 @@ def main():
     lock = threading.Lock()
     requests = []
     assets={}
-    for name in ['index.html','main.js','trust-worker.js']:
+    for name in ['index.html','main.js','trust-worker.js','trust-directory.js']:
         file=root/'experiments/openmls-browser/web'/name
         raw=file.read_bytes()
         if name=='trust-worker.js':raw=b"const testFetch=fetch;self.fetch=(url,options)=>{options?.signal?.addEventListener('abort',()=>self.postMessage({testAbortObserved:true}),{once:true});return testFetch(url,options);};\n"+raw
