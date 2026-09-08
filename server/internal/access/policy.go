@@ -136,7 +136,7 @@ func (w policyWire) config() (Config, error) {
 			return Config{}, ErrConfig
 		}
 		n, e := base64.RawURLEncoding.Strict().DecodeString(k.N)
-		if e != nil || len(n) < 256 || len(n) > 512 || n[0] == 0 {
+		if e != nil || base64.RawURLEncoding.EncodeToString(n) != k.N || len(n) < 256 || len(n) > 512 || n[0] == 0 {
 			return Config{}, ErrConfig
 		}
 		c.Keys[k.ID] = &rsa.PublicKey{N: new(big.Int).SetBytes(n), E: k.E}

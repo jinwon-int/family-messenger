@@ -65,6 +65,7 @@ func TestJWKSStrictAndBounded(t *testing.T) {
 	invalid := [][]byte{
 		[]byte(`{"keys":[]}`), []byte(`{"keys":null}`), append(good, good...), []byte(strings.Repeat("x", MaxJWKSBytes+1)),
 		bytes.Replace(good, []byte(`"keys":`), []byte(`"Keys":`), 1),
+		bytes.Replace(good, []byte(`"n":"`), []byte(`"n":"\r\n`), 1),
 		bytes.Replace(good, []byte(`"keys":`), []byte(`"keys":[],"keys":`), 1),
 	}
 	for _, pair := range [][2]string{{`"kid":"key-1"`, `"kid":"key-1","kid":"other"`}, {`"kid":"key-1"`, `"KID":"key-1"`}, {`"alg":"RS256"`, `"alg":"HS256"`}, {`"use":"sig"`, `"use":"enc"`}, {`"e":"AQAB"`, `"e":"AAEAAQ"`}, {`"kty":"RSA"`, `"kty":"EC"`}, {`"kid":"key-1"`, `"kid":"key-1","d":"private"`}, {`"kid":"key-1"`, `"kid":"key-1","x5u":"https://example.invalid"`}} {
@@ -248,10 +249,11 @@ func TestFetchedKeyRotationExpiryAndNoFallback(t *testing.T) {
 		t.Fatal("new key denied", e)
 	}
 	// A valid JWT with a later expiry cannot outlive the acquired key lease.
-	rotated.KeysFetchedAt = time.Now().Unix() - 3599
+	freshToken := sign(t, values(c), second)
+	rotated.KeysFetchedAt = time.Now().Unix() - 3597
 	rotated.KeysExpireAt = rotated.KeysFetchedAt + 3600
 	a.Replace(rotated)
-	g, e := verify(a, sign(t, values(c), second))
+	g, e := verify(a, freshToken)
 	if e != nil {
 		t.Fatal(e)
 	}
