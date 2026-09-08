@@ -1,9 +1,12 @@
 package chat
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/jinwon-int/family-messenger/server/internal/access"
 	"io"
 	"net"
 	"net/http"
@@ -17,6 +20,7 @@ import (
 var tokens = map[string]string{"synthetic-alice": "alice", "synthetic-bob": "bob", "synthetic-charlie": "charlie"}
 
 type API struct {
+	authority     *access.Authority
 	store         *Store
 	streams       chan struct{}
 	uploadSlots   chan struct{}
@@ -44,15 +48,87 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		serveAsset(w, r)
 		return
 	}
-	if len(r.Header.Values("Authorization")) != 1 {
-		http.Error(w, "unauthorized", 401)
+	var actor string
+	if a.authority != nil {
+		grant, err := a.authority.Verify(r)
+		if err != nil {
+			http.Error(w, "unauthorized", 401)
+			return
+		}
+		actor = grant.Principal().Actor
+		// This Store still contains only synthetic actors. Explicit mapping is
+		// required; a signed new subject never creates a database actor implicitly.
+		if !actors[actor] {
+			http.Error(w, "unenrolled app actor", 403)
+			return
+		}
+		r = r.WithContext(context.WithValue(r.Context(), grantKey{}, grant))
+	} else {
+		if len(r.Header.Values("Authorization")) != 1 {
+			http.Error(w, "unauthorized", 401)
+			return
+		}
+		var ok bool
+		actor, ok = tokens[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
+		if !ok || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+			http.Error(w, "unauthorized", 401)
+			return
+		}
+	}
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	// Uploads/SSE/downloads acquire authority only at bounded state/write steps.
+	streaming := len(parts) >= 4 && (parts[3] == "attachments" || parts[3] == "events")
+	if streaming {
+		a.route(w, r, actor)
 		return
 	}
-	actor, ok := tokens[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
-	if !ok || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
-		http.Error(w, "unauthorized", 401)
-		return
+	// Read small JSON bodies before acquiring identity authority too. A slow
+	// client cannot hold account revocation, and expiry is rechecked afterwards.
+	if a.authority != nil && (r.Method == "POST" || r.Method == "PUT") {
+		control := http.NewResponseController(w)
+		if control.SetReadDeadline(time.Now().Add(5*time.Second)) != nil {
+			fail(w, ErrInvalid)
+			return
+		}
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 24*1024))
+		if err != nil {
+			fail(w, ErrInvalid)
+			return
+		}
+		_ = control.SetReadDeadline(time.Time{})
+		r.Body = io.NopCloser(bytes.NewReader(body))
 	}
+	if err := authorize(r, func() error { a.route(w, r, actor); return nil }); err != nil {
+		fail(w, err)
+	}
+}
+
+type grantKey struct{}
+
+func authorize(r *http.Request, fn func() error) error {
+	if g, ok := r.Context().Value(grantKey{}).(*access.Grant); ok {
+		if e := g.Run(fn); e != nil {
+			if errors.Is(e, access.ErrDenied) {
+				return ErrForbidden
+			}
+			return e
+		}
+		return nil
+	}
+	return fn()
+}
+
+// NewAccessHandler is an isolated integration surface, not an exposed CF
+// deployment or a new fixture fallback. The CLI still runs public synthetic mode.
+func NewAccessHandler(store *Store, authority *access.Authority) (http.Handler, error) {
+	if store == nil || authority == nil {
+		return nil, ErrInvalid
+	}
+	a := NewHandler(store).(*API)
+	a.authority = authority
+	return a, nil
+}
+func (a *API) route(w http.ResponseWriter, r *http.Request, actor string) {
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if r.URL.RawPath != "" || r.URL.Path != "/"+strings.Join(parts, "/") {
 		http.NotFound(w, r)
@@ -270,45 +346,50 @@ func (a *API) events(w http.ResponseWriter, r *http.Request, room, actor string,
 		if r.Context().Err() != nil || time.Now().After(end) {
 			return
 		}
-		a.store.mu.Lock()
-		ms, e := a.store.history(room, actor, after)
+		var changed <-chan struct{}
+		count := 0
+		e := authorize(r, func() error {
+			a.store.mu.Lock()
+			defer a.store.mu.Unlock()
+			ms, e := a.store.history(room, actor, after)
+			if e != nil {
+				return e
+			}
+			changed = a.store.changed
+			count = len(ms)
+			e = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(2 * time.Second))
+			if e == nil && !started {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("X-Accel-Buffering", "no")
+				_, e = io.WriteString(w, ": synthetic-only\n\n")
+				started = true
+			}
+			if e == nil && started && len(ms) == 0 {
+				_, e = io.WriteString(w, ": keepalive\n\n")
+			}
+			for _, m := range ms {
+				if e != nil {
+					break
+				}
+				var b []byte
+				b, e = json.Marshal(m)
+				if e == nil {
+					_, e = fmt.Fprintf(w, "id: %d\nevent: message\ndata: %s\n\n", m.Seq, b)
+					after = m.Seq
+				}
+			}
+			if e == nil {
+				e = http.NewResponseController(w).Flush()
+			}
+			return e
+		})
 		if e != nil {
-			a.store.mu.Unlock()
 			if !started {
 				fail(w, e)
 			}
 			return
 		}
-		changed := a.store.changed
-		e = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(2 * time.Second))
-		if e == nil && !started {
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.Header().Set("X-Accel-Buffering", "no")
-			_, e = io.WriteString(w, ": synthetic-only\n\n")
-			started = true
-		}
-		if e == nil && started && len(ms) == 0 {
-			_, e = io.WriteString(w, ": keepalive\n\n")
-		}
-		for _, m := range ms {
-			if e != nil {
-				break
-			}
-			var b []byte
-			b, e = json.Marshal(m)
-			if e == nil {
-				_, e = fmt.Fprintf(w, "id: %d\nevent: message\ndata: %s\n\n", m.Seq, b)
-				after = m.Seq
-			}
-		}
-		if e == nil {
-			e = http.NewResponseController(w).Flush()
-		}
-		a.store.mu.Unlock()
-		if e != nil {
-			return
-		}
-		if len(ms) == 100 {
+		if count == 100 {
 			continue
 		}
 		select {

@@ -25,16 +25,22 @@ func (a *API) media(w http.ResponseWriter, r *http.Request, room, actor string, 
 		return
 	}
 	if len(parts) == 4 && r.Method == "GET" {
-		a.store.mu.Lock()
-		defer a.store.mu.Unlock()
-		ms, e := a.store.listMedia(room, actor)
+		e := authorize(r, func() error {
+			a.store.mu.Lock()
+			defer a.store.mu.Unlock()
+			ms, e := a.store.listMedia(room, actor)
+			if e != nil {
+				return e
+			}
+			writeJSON(w, 200, ms)
+			return nil
+		})
 		if e != nil {
 			fail(w, e)
-			return
 		}
-		writeJSON(w, 200, ms)
 		return
 	}
+
 	if len(parts) == 4 && r.Method == "POST" {
 		a.uploadMedia(w, r, room, actor)
 		return
@@ -78,7 +84,12 @@ func (a *API) uploadMedia(w http.ResponseWriter, r *http.Request, room, actor st
 		fail(w, e)
 		return
 	}
-	lease, e := a.store.beginMedia(Attachment{Room: room, Actor: actor, ClientID: id, Filename: filename, MediaType: kind, Size: r.ContentLength, SHA256: hash})
+	var lease *mediaLease
+	e = authorize(r, func() error {
+		var err error
+		lease, err = a.store.beginMedia(Attachment{Room: room, Actor: actor, ClientID: id, Filename: filename, MediaType: kind, Size: r.ContentLength, SHA256: hash})
+		return err
+	})
 	if e != nil {
 		fail(w, e)
 		return
@@ -99,7 +110,7 @@ func (a *API) uploadMedia(w http.ResponseWriter, r *http.Request, room, actor st
 		if r.Context().Err() != nil {
 			return
 		}
-		if e = a.store.checkMedia(lease); e != nil {
+		if e = authorize(r, func() error { return a.store.checkMedia(lease) }); e != nil {
 			fail(w, e)
 			return
 		}
@@ -140,17 +151,23 @@ func (a *API) uploadMedia(w http.ResponseWriter, r *http.Request, room, actor st
 	if r.Context().Err() != nil {
 		return
 	}
-	m, created, e := a.store.finishMedia(lease, body)
+	e = authorize(r, func() error {
+		m, created, err := a.store.finishMedia(lease, body)
+		if err != nil {
+			return err
+		}
+		status := 200
+		if created {
+			status = 201
+		}
+		writeJSON(w, status, m)
+		return nil
+	})
 	if e != nil {
 		fail(w, e)
-		return
 	}
-	status := 200
-	if created {
-		status = 201
-	}
-	writeJSON(w, status, m)
 }
+
 func (a *API) downloadMedia(w http.ResponseWriter, r *http.Request, room, actor, id string) {
 	select {
 	case a.downloadSlots <- struct{}{}:
@@ -163,7 +180,10 @@ func (a *API) downloadMedia(w http.ResponseWriter, r *http.Request, room, actor,
 		http.Error(w, "ranges not supported by prototype", 416)
 		return
 	}
-	m, body, epoch, e := a.store.loadMedia(room, actor, id)
+	var m Attachment
+	var body []byte
+	var epoch uint64
+	e := authorize(r, func() error { var err error; m, body, epoch, err = a.store.loadMedia(room, actor, id); return err })
 	if e != nil {
 		fail(w, e)
 		return
@@ -185,38 +205,40 @@ func (a *API) downloadMedia(w http.ResponseWriter, r *http.Request, room, actor,
 		if next > len(body) {
 			next = len(body)
 		}
-		a.store.mu.Lock()
-		if e = a.store.mediaAuthorized(room, actor, epoch); e != nil {
-			a.store.mu.Unlock()
-			if !started {
-				fail(w, e)
+		e = authorize(r, func() error {
+			a.store.mu.Lock()
+			defer a.store.mu.Unlock()
+			if e = a.store.mediaAuthorized(room, actor, epoch); e != nil {
+				return e
 			}
-			return
-		}
-		deadline := time.Now().Add(2 * time.Second)
-		if end.Before(deadline) {
-			deadline = end
-		}
-		e = http.NewResponseController(w).SetWriteDeadline(deadline)
-		if e == nil && !started {
-			w.Header().Set("Content-Type", "application/octet-stream")
-			w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": m.Filename}))
-			w.Header().Set("Content-Length", strconv.FormatInt(m.Size, 10))
-			w.Header().Set("X-Content-SHA256", m.SHA256)
-			w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'")
-			started = true
-		}
-		if e == nil {
-			var n int
-			n, e = w.Write(body[offset:next])
-			if n != next-offset && e == nil {
-				e = io.ErrShortWrite
+			deadline := time.Now().Add(2 * time.Second)
+			if end.Before(deadline) {
+				deadline = end
 			}
+			e = http.NewResponseController(w).SetWriteDeadline(deadline)
+			if e == nil && !started {
+				w.Header().Set("Content-Type", "application/octet-stream")
+				w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": m.Filename}))
+				w.Header().Set("Content-Length", strconv.FormatInt(m.Size, 10))
+				w.Header().Set("X-Content-SHA256", m.SHA256)
+				w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'")
+				started = true
+			}
+			if e == nil {
+				var n int
+				n, e = w.Write(body[offset:next])
+				if n != next-offset && e == nil {
+					e = io.ErrShortWrite
+				}
+			}
+			if e == nil {
+				e = http.NewResponseController(w).Flush()
+			}
+			return e
+		})
+		if e != nil && !started {
+			fail(w, e)
 		}
-		if e == nil {
-			e = http.NewResponseController(w).Flush()
-		}
-		a.store.mu.Unlock()
 		if e != nil {
 			return
 		}
