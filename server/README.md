@@ -8,9 +8,9 @@ Production Matrix services are not changed by building or running this code.
 
 ## Build and run
 
-Use Go 1.27.x, a C compiler and Linux libc development headers. The sole direct Go
-module is `github.com/mattn/go-sqlite3` v1.14.52 (MIT), with its bundled SQLite
-(public domain, bundled SQLite 3.53.4). `go list -m all` currently contains **one external module and
+Use Go 1.27.x, a C compiler and Linux libc development headers. The direct external Go modules are `github.com/golang-jwt/jwt/v5` v5.3.1 (MIT)
+and `github.com/mattn/go-sqlite3` v1.14.52 (MIT), with its bundled SQLite
+(public domain, bundled SQLite 3.53.4). `go list -m all` currently contains **two external modules and
 zero transitive Go modules**. SQLite is compiled into the app by cgo; a separate
 SQLite server/package, Python, Docker, Matrix and Node.js are not runtime
 requirements. The binary still depends on the host libc/loader. Go's standard
@@ -166,3 +166,10 @@ horizontal overflow. Synthetic screenshots and a JSON receipt remain under
 `artifacts/native-browser-*`. Playwright 1.62.0 and its Python/Chromium dependencies
 are **test-only**; no claim is made about full Safari/Firefox/mobile background or
 E2EE support. Do not initialize a human account in these disposable contexts.
+
+## Signed account admission component
+
+[AUTH.md](AUTH.md) describes the reviewed CF-shaped JWT/identity component and
+real loopback HTTP tests for room/media admission and live retirement. The CLI
+and current browser still use public synthetic fixtures; this does not activate
+a Cloudflare gate or implement a human login session.
