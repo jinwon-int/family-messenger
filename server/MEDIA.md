@@ -118,11 +118,12 @@ is preserved under `artifacts/native-media-*`. Browser preview/playback is verif
 ## Browser attachment protocol and limits
 
 `media.js` is embedded with the other assets; no new runtime/build libraries.
-Each new UI payload is UTF-8 `\x1eFAMILY/1\n` followed by JSON, then the normal
+Each new UI payload starts with binary `FF` then ASCII `FAMILY/1` and newline,
+followed by UTF-8 JSON, then the normal
 wire base64. `{"type":"text","text":"..."}` escapes text even if it starts with
 the reserved marker. `{"type":"attachment","attachment":{...}}` contains the
-exact uploaded metadata object. Existing unframed UTF-8 remains literal text;
-legacy bytes that start with the reserved marker occupy the new protocol namespace.
+exact uploaded metadata object. All existing UTF-8 remains literal text because byte FF is invalid in UTF-8.
+Legacy non-text binary bytes matching this exact marker occupy the new namespace.
 Invalid/unknown framed values show an unsupported-format placeholder. This is an
 experimental UI envelope, not server validation or encryption: the server retains
 opaque bytes. Other clients can send fabricated references; the UI checks room,
@@ -162,7 +163,8 @@ Run `python tests/native_media_browser_smoke.py --binary artifacts/family-dev`
 with the test-only Playwright environment. It spawns its own loopback server and
 two Chromium contexts: generated PNG decode, MP4 playback to ended, exact download,
 interrupted/lost upload and lost message responses across reload with stable IDs,
-wrong-file retry, forged metadata/cross-room envelope, modified download rejection,
+wrong-file retry both before/after reload, delayed helper-script startup, preserved
+legacy UTF-8 marker text, forged metadata/cross-room envelope, modified download rejection,
 active SVG exclusion, size limit, real restart/history, object URL cleanup, actor
 switch/removal and 390px layout. Evidence is `artifacts/native-media-browser-*`.
 This is not a real Android/iOS device or background playback qualification.

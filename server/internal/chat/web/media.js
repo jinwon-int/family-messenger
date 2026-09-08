@@ -1,14 +1,16 @@
 "use strict";
 // Versioned opaque payload. Legacy unframed UTF-8 remains text; new text is
 // framed too, so writing the reserved prefix cannot fabricate an attachment.
-const envelopePrefix = "\u001eFAMILY/1\n";
+const envelopePrefix = "\xffFAMILY/1\n";
 const maxFile = 8 * 1024 * 1024;
-function pack(value) {return btoa(String.fromCharCode(...encoder.encode(envelopePrefix+JSON.stringify(value))));}
+function pack(value) {return btoa(envelopePrefix+String.fromCharCode(...encoder.encode(JSON.stringify(value))));}
 function unpack(payload) {
-  const text=bytesText(payload);
-  if (!text.startsWith(envelopePrefix)) return {type:"text",text};
+  let raw;
+  try {raw=atob(payload);}catch{return {type:"text",text:"[텍스트가 아닌 시험 데이터]"};}
+  if (!raw.startsWith(envelopePrefix)) return {type:"text",text:bytesText(payload)};
   try {
-    const value=JSON.parse(text.slice(envelopePrefix.length));
+    const text=new TextDecoder("utf-8",{fatal:true}).decode(Uint8Array.from(raw.slice(envelopePrefix.length),c=>c.charCodeAt(0)));
+    const value=JSON.parse(text);
     if(value?.type==="text" && typeof value.text==="string")return value;
     if(value?.type==="attachment" && validMeta(value.attachment))return value;
   } catch {}
@@ -38,13 +40,13 @@ async function stageFile(s,file) {
     const media=await describe(file,crypto.randomUUID());
     if(current!==s || s.disabled)return;
     const p={actor:s.actor,room:s.room,client_id:crypto.randomUUID(),payload:null,media};
-    sessionStorage.setItem(pendingKey(s),JSON.stringify(p));s.pending=p;s.file=file;
+    sessionStorage.setItem(pendingKey(s),JSON.stringify(p));s.pending=p;
   } catch(e) {if(current===s)$("send-status").textContent=e.message;}
   finally {s.busy=false;controls(s);}
   if(s.pending)transmit(s);
 }
 async function uploadPending(s,p) {
-  const file=s.file || $("file").files[0];
+  const file=$("file").files[0];
   if(!file)throw new Error("같은 파일을 다시 선택한 뒤 전송을 확인해 주세요.");
   const actual=await describe(file,p.media.client_id);
   if(!sameDraft(actual,p.media))throw new Error("처음 선택한 파일과 다릅니다. 같은 이름과 내용의 파일을 선택해 주세요.");
@@ -58,7 +60,7 @@ async function uploadPending(s,p) {
   const next={...p,payload:pack({type:"attachment",attachment:m})};
   // Persist the immutable message before sending it. If this write fails the
   // old upload draft is retained; retrying it yields this same stored object.
-  sessionStorage.setItem(pendingKey(s),JSON.stringify(next));s.pending=next;s.file=null;
+  sessionStorage.setItem(pendingKey(s),JSON.stringify(next));s.pending=next;
   $("send-status").textContent="파일 저장 완료 · 메시지 전송을 확인하는 중…";
   return next;
 }

@@ -48,7 +48,7 @@ function acknowledge(s, m) {
   if (s.pending && m.actor === s.actor && m.client_id === s.pending.client_id && m.payload === s.pending.payload) {
     try { sessionStorage.removeItem(pendingKey(s)); }
     catch { s.disabled = true; $("send-status").textContent = "대기 기록을 갱신할 수 없습니다. 이 탭을 새로고침해 주세요."; controls(s); return; }
-    s.pending = null; s.file = null; $("file").value = "";
+    s.pending = null; $("file").value = "";
     if (current === s) { $("message").value = ""; $("send-status").textContent = "전송을 확인했습니다."; controls(s); }
   }
 }
@@ -146,8 +146,8 @@ async function connect(s,controller) {
   }
 }
 function selectRoom(room) {
-  current?.controller.abort(); if(current) {clearMedia(current);current.file=null;}
-  const s = {actor:$("actor").value,room:room.id,owner:room.owner,seq:0,controller:new AbortController(),pending:null,busy:false,disabled:false,file:null,mediaBusy:false,preview:null};
+  current?.controller.abort(); if(current) clearMedia(current);
+  const s = {actor:$("actor").value,room:room.id,owner:room.owner,seq:0,controller:new AbortController(),pending:null,busy:false,disabled:false,mediaBusy:false,preview:null};
   current = s;
   $("room-title").textContent = room.id;
   $("messages").replaceChildren(); $("messages").dataset.cursor = "0";
@@ -162,7 +162,7 @@ function selectRoom(room) {
   controls(s); connect(s,s.controller);
 }
 function clearRoom() {
-  current?.controller.abort(); if(current) {clearMedia(current);current.file=null;} current = null;
+  current?.controller.abort(); if(current) clearMedia(current); current = null;
   $("room-title").textContent = "대화방을 선택하세요";$("messages").replaceChildren();
   $("empty").hidden = false;$("empty").textContent = "새 대화방을 만들거나 목록에서 선택해 주세요.";
   $("owner-tools").hidden = true;$("message").value = "";$("send-status").textContent = "";

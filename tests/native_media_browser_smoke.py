@@ -66,6 +66,13 @@ def main():
             expect.set_options(timeout=20000)
             ac = browser.new_context(viewport={"width": 1180, "height": 900})
             bc = browser.new_context(viewport={"width": 1100, "height": 850})
+            for context in (ac,bc):
+                context.add_init_script("""(()=>{
+                    window.liveBlobs=new Set();
+                    const make=URL.createObjectURL.bind(URL),drop=URL.revokeObjectURL.bind(URL);
+                    URL.createObjectURL=b=>{const u=make(b);window.liveBlobs.add(u);return u};
+                    URL.revokeObjectURL=u=>{window.liveBlobs.delete(u);drop(u)};
+                })()""")
             a, b = ac.new_page(), bc.new_page()
             errors = []
             a.on("pageerror", lambda e: errors.append(str(e)))
@@ -76,7 +83,20 @@ def main():
             b.on("request", lambda r: b_events.append(urlparse(r.url).query) if "/events?" in r.url else None)
             request("POST", "/v1/rooms", {"id":"family","members":["bob"]})
             request("POST", "/v1/rooms", {"id":"private","members":[]})
-            a.goto(url)
+            # Delay the media helper asset while other network activity can
+            # finish. App startup must wait for its deferred dependencies.
+            held=[]
+            a.route("**/media.js",lambda route:held.append(route))
+            a.goto(url,wait_until="commit")
+            a.wait_for_function("()=>document.readyState === 'interactive'")
+            a.wait_for_timeout(1000)
+            assert len(held)==1
+            expect(a.locator("#send")).to_be_disabled()
+            held[0].continue_()
+            a.wait_for_load_state()
+            expect(a.locator("#room-title")).to_have_text("family")
+            a.unroute("**/media.js")
+            evidence["delayed_helper_asset_startup"]=True
             b.goto(url)
             b.locator("#actor").select_option("bob")
             expect(b.locator("#room-title")).to_have_text("family")
@@ -111,7 +131,7 @@ def main():
             assert Path(d.value.path()).read_bytes()==mp4
             assert d.value.suggested_filename=="blue.mp4"
             assert b.locator(".preview img").count()==0
-            assert b.evaluate("async u=>{try{await fetch(u);return false}catch{return true}}",old_url)
+            assert b.evaluate("u=>!window.liveBlobs.has(u)",old_url)
             evidence["two_clients_image_decode_video_playback_download_hash_and_blob_cleanup"]=True
             # An aborted upload has no message. Reload requires the same file,
             # preserves the upload ID, and rejects a different file locally.
@@ -123,6 +143,10 @@ def main():
             a.locator("#send").click()
             expect(a.locator("#send-status")).to_contain_text("확인하지 못했습니다")
             assert len(request("GET","/v1/rooms/family/messages"))==2
+            a.locator("#file").set_input_files({"name":"wrong.bin","mimeType":"application/octet-stream","buffer":b"wrong"})
+            a.locator("#retry").click()
+            expect(a.locator("#send-status")).to_contain_text("처음 선택한 파일과 다릅니다")
+            assert len(posts)==1, "visible reselection was ignored in favor of cached original"
             a.reload()
             a.locator('[data-room="family"]').click()
             a.locator("#retry").click()
@@ -196,19 +220,26 @@ def main():
             evidence["safe_active_files_reserved_text_limits_and_corruption_rejection"]=True
             # Forged same-room metadata passes envelope syntax but must fail
             # canonical metadata matching; cross-room envelopes are not opened.
-            original=json.loads(base64.b64decode(history[0]["payload"]).decode().split("\n",1)[1])
+            original=json.loads(base64.b64decode(history[0]["payload"]).split(b"\n",1)[1])
             forged=json.loads(json.dumps(original));forged["attachment"]["filename"]="forged.png"
-            request("POST","/v1/rooms/family/messages",{"client_id":"forged","payload":base64.b64encode(("\x1eFAMILY/1\n"+json.dumps(forged)).encode()).decode()})
+            request("POST","/v1/rooms/family/messages",{"client_id":"forged","payload":base64.b64encode(b"\xffFAMILY/1\n"+json.dumps(forged).encode()).decode()})
             card(b,"forged.png").locator(".open-media").click()
             expect(card(b,"forged.png").locator(".media-note")).to_have_text("파일 정보를 확인할 수 없습니다.")
             forged["attachment"]["room"]="private"
-            request("POST","/v1/rooms/family/messages",{"client_id":"cross-room","payload":base64.b64encode(("\x1eFAMILY/1\n"+json.dumps(forged)).encode()).decode()})
+            request("POST","/v1/rooms/family/messages",{"client_id":"cross-room","payload":base64.b64encode(b"\xffFAMILY/1\n"+json.dumps(forged).encode()).decode()})
             expect(b.locator(".body").last).to_have_text("[첨부 정보가 일치하지 않습니다]")
             evidence["forged_metadata_and_cross_room_envelope_rejected"]=True
+            # Any previously stored UTF-8 stays text, including the old
+            # draft marker followed by syntactically valid attachment JSON.
+            legacy="\x1eFAMILY/1\n"+json.dumps(original)
+            request("POST","/v1/rooms/family/messages",{"client_id":"legacy-prefix","payload":base64.b64encode(legacy.encode()).decode()})
+            expect(b.locator(".body").last).to_have_text(legacy)
+            assert b.locator(".body").last.locator("button").count()==0
+            evidence["legacy_utf8_reserved_prefix_preserved"]=True
             # Real process restart: history and attachments render again.
             process.kill();process.wait(timeout=5);output.close();start()
             a.reload();a.locator('[data-room="family"]').click()
-            expect(a.locator("#messages li")).to_have_count(7)
+            expect(a.locator("#messages li")).to_have_count(8)
             card(a,"synthetic.png").locator(".open-media").click()
             a.wait_for_function("()=>document.querySelector('.preview img')?.naturalWidth === 2")
             a.screenshot(path=str(work/"desktop.png"),full_page=True)
@@ -219,7 +250,7 @@ def main():
             url_before=a.locator(".preview img").get_attribute("src")
             a.locator('[data-room="private"]').click()
             assert a.locator(".attachment").count()==0
-            assert a.evaluate("async u=>{try{await fetch(u);return false}catch{return true}}",url_before)
+            assert a.evaluate("u=>!window.liveBlobs.has(u)",url_before)
             a.locator('[data-room="family"]').click()
             b.locator("#reconnect").click()
             card(b,"synthetic.png").locator(".open-media").click()
@@ -233,6 +264,7 @@ def main():
             a.locator("#member-actor").select_option("bob");a.locator("#remove-member").click()
             expect(b.locator("#connection")).to_have_text("접근 권한이 없습니다.")
             assert b.locator(".attachment").count()==0
+            assert b.evaluate("window.liveBlobs.size") == 0
             expect(b.locator("#file")).to_be_disabled()
             evidence["restart_history_mobile_and_room_actor_revocation_cleanup"]=True
             assert not errors,errors
