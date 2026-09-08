@@ -1,0 +1,30 @@
+name: Native prototype
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Verify dependency content
+        working-directory: server
+        run: go mod download && go mod verify
+      - name: Race and persistence tests
+        working-directory: server
+        run: |
+          umask 022
+          go test -race -count=1 ./...
+          umask 077
+          go test -count=1 ./...
+          go vet ./...
+      - name: Build standalone prototype
+        working-directory: server
+        run: go build -trimpath -o ../artifacts/family-dev ./cmd/family-dev
+      - name: Real process restart and stream proof
+        run: python3 tests/native_smoke.py --binary artifacts/family-dev

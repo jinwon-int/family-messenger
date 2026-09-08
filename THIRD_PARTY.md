@@ -10,3 +10,11 @@
 직접 작성한 부분은 배포 설정, 초기화·계정 도구, 테스트, 가족용 HTML/SVG와 문서입니다.
 Upstream의 라이선스·저작권 표시를 유지하며, 향후 해당 소스를 수정·배포할 때는 원래 라이선스의 소스 제공 등 의무를 적용합니다.
 각 이미지에 포함된 다른 구성요소는 해당 이미지의 원래 고지와 라이선스를 따릅니다.
+
+## Native prototype
+
+`server/go.mod` and `server/go.sum` pin `github.com/mattn/go-sqlite3` v1.14.52
+(MIT), including the SQLite amalgamation (public domain). The driver is linked
+through cgo; Go standard library/toolchain (BSD) and the host libc/loader remain
+dependencies. No Tinode, ntfy or Gotify code/assets were copied. See
+[server/README.md](server/README.md) for the runtime/build inventory and limits.
