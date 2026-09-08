@@ -1,0 +1,24 @@
+# Replace both names only after the production Matrix identity is chosen.
+chat.example.com {
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options SAMEORIGIN
+        Content-Security-Policy "frame-ancestors 'self'; base-uri 'self'"
+        Referrer-Policy strict-origin-when-cross-origin
+    }
+    reverse_proxy 127.0.0.1:18808
+}
+
+matrix.example.com {
+    request_body {
+        max_size 52MB
+    }
+    @client_api path /_matrix/client/* /_matrix/media/*
+    handle @client_api {
+        reverse_proxy 127.0.0.1:18809
+    }
+    # No admin API, federation endpoint or database exposure.
+    handle {
+        respond 404
+    }
+}

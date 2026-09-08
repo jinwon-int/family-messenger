@@ -1,0 +1,9 @@
+.env
+.runtime/
+.runtime-stage-*/
+.init.lock
+backups/
+__pycache__/
+*.pyc
+.venv/
+artifacts/

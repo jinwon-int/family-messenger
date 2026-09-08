@@ -1,0 +1,23 @@
+name: Verify
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configuration tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Initialize loopback fixture
+        run: python3 scripts/init.py --preview
+      - name: Validate compose and start
+        run: |
+          docker compose config --quiet
+          docker compose up -d --wait --wait-timeout 180
+      - name: Real Matrix integration
+        run: python3 tests/smoke.py
+      - name: Stop test services
+        if: always()
+        run: docker compose down
