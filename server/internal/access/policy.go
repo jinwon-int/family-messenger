@@ -47,6 +47,7 @@ type policyWire struct {
 	People        []person    `json:"people"`
 	KeysFetchedAt int64       `json:"keys_fetched_at,omitempty"`
 	KeysExpireAt  int64       `json:"keys_expire_at,omitempty"`
+	Devices       []Device    `json:"devices,omitempty"`
 }
 type policyRecord struct {
 	Revision     uint64     `json:"revision"`
@@ -62,7 +63,7 @@ func strictPolicy(data []byte, v any) error {
 		return ErrConfig
 	}
 	allowed := map[string]bool{}
-	for _, k := range []string{"version", "issuer", "audience", "keys", "people", "kid", "n", "e", "subject", "actor", "owner", "revision", "previous_sha256", "policy_sha256", "policy", "keys_fetched_at", "keys_expire_at"} {
+	for _, k := range []string{"version", "issuer", "audience", "keys", "people", "kid", "n", "e", "subject", "actor", "owner", "revision", "previous_sha256", "policy_sha256", "policy", "keys_fetched_at", "keys_expire_at", "devices", "device_id", "signing_key", "fingerprint", "status", "device_revision", "acceptance"} {
 		allowed[k] = true
 	}
 	d := json.NewDecoder(bytes.NewReader(data))
@@ -130,7 +131,7 @@ func (w policyWire) config() (Config, error) {
 	if w.Version != 1 || len(w.Keys) < 1 || len(w.Keys) > 16 || len(w.People) > 32 {
 		return Config{}, ErrConfig
 	}
-	c := Config{Issuer: w.Issuer, Audience: w.Audience, Keys: make(map[string]*rsa.PublicKey), KeysFetchedAt: w.KeysFetchedAt, KeysExpireAt: w.KeysExpireAt}
+	c := Config{Issuer: w.Issuer, Audience: w.Audience, Keys: make(map[string]*rsa.PublicKey), KeysFetchedAt: w.KeysFetchedAt, KeysExpireAt: w.KeysExpireAt, Devices: w.Devices}
 	for _, k := range w.Keys {
 		if _, ok := c.Keys[k.ID]; ok {
 			return Config{}, ErrConfig
@@ -152,7 +153,7 @@ func wire(c Config) (policyWire, error) {
 	if e != nil {
 		return policyWire{}, e
 	}
-	w := policyWire{Version: 1, Issuer: c.Issuer, Audience: c.Audience, Keys: []publicKey{}, People: []person{}, KeysFetchedAt: c.KeysFetchedAt, KeysExpireAt: c.KeysExpireAt}
+	w := policyWire{Version: 1, Issuer: c.Issuer, Audience: c.Audience, Keys: []publicKey{}, People: []person{}, KeysFetchedAt: c.KeysFetchedAt, KeysExpireAt: c.KeysExpireAt, Devices: c.Devices}
 	ids := make([]string, 0, len(c.Keys))
 	for id := range c.Keys {
 		ids = append(ids, id)
@@ -375,10 +376,11 @@ func records(d *os.File) (info PolicyInfo, c Config, err error) {
 		if rec.PolicySHA256 != hex.EncodeToString(checksum[:]) {
 			return info, Config{}, ErrPolicyState
 		}
-		c, e = rec.Policy.config()
-		if e != nil {
+		next, ce := rec.Policy.config()
+		if ce != nil || deviceTransition(c.Devices, next.Devices) != nil {
 			return info, Config{}, ErrPolicyState
 		}
+		c = next
 		h := sha256.Sum256(b)
 		info.SHA256 = hex.EncodeToString(h[:])
 	}
@@ -407,12 +409,15 @@ func (s *PolicyStore) Commit(expected uint64, c Config) (PolicyInfo, error) {
 	}
 	var out PolicyInfo
 	e = s.locked(func(d *os.File) error {
-		old, _, e := records(d)
+		old, previous, e := records(d)
 		if e != nil {
 			return e
 		}
 		if old.Revision != expected {
 			return ErrPolicyConflict
+		}
+		if deviceTransition(previous.Devices, c.Devices) != nil {
+			return ErrConfig
 		}
 		if old.Revision >= MaxPolicyRevisions {
 			return ErrPolicyState

@@ -209,6 +209,46 @@ func (a *API) route(w http.ResponseWriter, r *http.Request, actor string) {
 		http.NotFound(w, r)
 		return
 	}
+	if parts[3] == "devices" && r.Method == "GET" {
+		g, ok := r.Context().Value(grantKey{}).(*access.Grant)
+		if !ok {
+			fail(w, ErrForbidden)
+			return
+		}
+		if r.URL.RawQuery != "" {
+			fail(w, ErrInvalid)
+			return
+		}
+		a.store.mu.Lock()
+		defer a.store.mu.Unlock()
+		if e := a.store.member(room, actor); e != nil {
+			fail(w, e)
+			return
+		}
+		type publicDevice struct {
+			ID          string `json:"device_id"`
+			Actor       string `json:"actor"`
+			Key         string `json:"signing_key"`
+			Fingerprint string `json:"fingerprint"`
+			Status      string `json:"status"`
+			Revision    uint64 `json:"device_revision"`
+		}
+		out := []publicDevice{}
+		for _, d := range g.DeviceBindings() {
+			if e := a.store.member(room, d.Actor); e == nil {
+				out = append(out, publicDevice{d.ID, d.Actor, d.SigningKey, d.Fingerprint, d.Status, d.Revision})
+			} else if e != ErrForbidden {
+				fail(w, e)
+				return
+			}
+		}
+		writeJSON(w, 200, struct {
+			Version int            `json:"version"`
+			Room    string         `json:"room"`
+			Devices []publicDevice `json:"devices"`
+		}{1, room, out})
+		return
+	}
 	if parts[3] == "messages" && r.Method == "POST" {
 		var req struct {
 			ClientID string `json:"client_id"`
