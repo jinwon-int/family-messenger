@@ -9,13 +9,20 @@ import urllib.parse
 import urllib.request
 
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT/'scripts'))
-from admin import request,create_user
+from admin import request,create_user,local_base
 
 meta=json.loads((ROOT/'.runtime/installation.json').read_text())
 assert meta['mode']=='preview' and meta['server_name']=='preview.invalid','Never run test account creation on production'
 suffix=secrets.token_hex(4)
 users=[create_user('test_'+n+'_'+suffix,secrets.token_urlsafe(24)) for n in ('alice','bob','outsider')]
 a,b,outsider=users;passed=[]
+web_base='http://127.0.0.1:'+str(meta['web_port'])
+opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+with opener.open(web_base+'/config.json',timeout=10) as r:client_config=json.load(r)
+assert client_config['brand']=='서윤 가족 메신저'
+assert client_config['default_server_config']['m.homeserver']['base_url']==meta['matrix_url']
+with opener.open(web_base+'/family/welcome.html',timeout=10) as r:assert '가족 계정으로 로그인' in r.read().decode()
+passed.append('Element serves readable matching config and family welcome page')
 
 def denied(path,token=None,data=None,method=None,expected=(401,403,404)):
     try:request(path,data,token,method)
@@ -41,13 +48,13 @@ assert e1==e2;passed.append('retry transaction is idempotent')
 sync=request('/_matrix/client/v3/sync?timeout=0',token=b['access_token'])
 events=sync['rooms']['join'][room]['timeline']['events'];assert any(e['event_id']==e1 for e in events)
 passed.append('invited member receives encrypted-event fixture through sync')
-req=urllib.request.Request('http://127.0.0.1:18809/_matrix/media/v3/upload?filename=fixture.txt',data=b'private synthetic attachment',headers={'Authorization':'Bearer '+a['access_token'],'Content-Type':'text/plain'})
+req=urllib.request.Request(local_base()+'/_matrix/media/v3/upload?filename=fixture.txt',data=b'private synthetic attachment',headers={'Authorization':'Bearer '+a['access_token'],'Content-Type':'text/plain'})
 op=urllib.request.build_opener(urllib.request.ProxyHandler({}))
 with op.open(req,timeout=20) as r:uri=json.load(r)['content_uri']
 server,media=uri[6:].split('/',1)
 download='/_matrix/client/v1/media/download/'+server+'/'+media
 denied(download,expected=(401,))
-with op.open(urllib.request.Request('http://127.0.0.1:18809'+download,headers={'Authorization':'Bearer '+b['access_token']}),timeout=20) as r:assert r.read()==b'private synthetic attachment'
+with op.open(urllib.request.Request(local_base()+download,headers={'Authorization':'Bearer '+b['access_token']}),timeout=20) as r:assert r.read()==b'private synthetic attachment'
 passed.append('media requires authentication; authenticated fixture downloads correctly')
 denied('/_matrix/federation/v1/version',expected=(404,))
 passed.append('federation HTTP resource disabled')

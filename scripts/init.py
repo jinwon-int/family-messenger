@@ -29,6 +29,9 @@ def validated_urls(server, web, matrix, preview):
         raise ValueError('Element and Matrix API require separate hostnames')
     if preview and server != 'preview.invalid':
         raise ValueError('preview server-name must be preview.invalid')
+    ports=[u.port or (80 if u.scheme=='http' else 443) for u in parsed]
+    if preview and ports[0]==ports[1]:
+        raise ValueError('preview web and Matrix need different ports')
     return web.rstrip('/'), matrix.rstrip('/')
 
 
@@ -68,6 +71,7 @@ def configs(server, web, matrix, password, registration_secret):
 
 def write_new(path, content, mode=0o600):
     with os.fdopen(os.open(path, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, mode), 'w') as f:
+        os.fchmod(f.fileno(),mode)
         f.write(content)
         f.flush()
         os.fsync(f.fileno())
@@ -92,6 +96,8 @@ def _initialize(root, server, web, matrix, preview):
     staging = Path(tempfile.mkdtemp(prefix='.runtime-stage-', dir=root))
     syn = staging/'synapse'; syn.mkdir(mode=0o700)
     password = secrets.token_hex(32)
+    web_port=(urlsplit(web).port or 80) if preview else 18808
+    matrix_port=(urlsplit(matrix).port or 80) if preview else 18809
     homeserver, element = configs(server, web, matrix, password, secrets.token_hex(32))
     write_new(syn/'homeserver.yaml', json.dumps(homeserver, ensure_ascii=False, indent=2))
     write_new(syn/'log.config', json.dumps({'version':1, 'formatters':{'brief':{'format':'%(asctime)s %(name)s %(levelname)s %(message)s'}},
@@ -101,11 +107,12 @@ def _initialize(root, server, web, matrix, preview):
     write_new(staging/'postgres.env', 'POSTGRES_PASSWORD='+password+'\n')
     write_new(staging/'element.json', json.dumps(element, ensure_ascii=False, indent=2), 0o644)
     write_new(staging/'installation.json', json.dumps({'mode':'preview' if preview else 'production',
-              'server_name':server,'web_url':web,'matrix_url':matrix}, indent=2))
+              'server_name':server,'web_url':web,'matrix_url':matrix,
+              'web_port':web_port,'matrix_port':matrix_port}, indent=2))
     if os.getuid() == 0:
         for path in [*syn.iterdir(), syn]: os.chown(path, uid, gid)
     os.rename(staging, root/'.runtime')
-    write_new(root/'.env', f'COMPOSE_PROJECT_NAME=family-messenger{"-preview" if preview else ""}\nSYNAPSE_UID={uid}\nSYNAPSE_GID={gid}\nWEB_PORT=18808\nMATRIX_PORT=18809\n')
+    write_new(root/'.env', f'COMPOSE_PROJECT_NAME=family-messenger{"-preview" if preview else ""}\nSYNAPSE_UID={uid}\nSYNAPSE_GID={gid}\nWEB_PORT={web_port}\nMATRIX_PORT={matrix_port}\n')
     print('Initialized a new '+('loopback preview' if preview else 'production configuration')+'. No credentials printed.')
 
 

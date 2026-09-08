@@ -8,11 +8,27 @@ import json
 from pathlib import Path
 import re
 import urllib.request
+from urllib.parse import urlsplit
 
 ROOT=Path(__file__).resolve().parents[1]
 
 
-def request(path, data=None, token=None, method=None, base='http://127.0.0.1:18809'):
+def local_base(root=None):
+    root=ROOT if root is None else root
+    meta=json.loads((root/'.runtime/installation.json').read_text())
+    port=meta['matrix_port']
+    if not isinstance(port,int) or not 1<=port<=65535:raise ValueError('Invalid local Matrix port')
+    env=dict(line.split('=',1) for line in (root/'.env').read_text().splitlines() if '=' in line and not line.startswith('#'))
+    if env.get('MATRIX_PORT')!=str(port):raise ValueError('Matrix port drift; refusing to send credentials')
+    if meta['mode']=='preview':
+        u=urlsplit(meta['matrix_url'])
+        if u.scheme!='http' or u.hostname not in ('127.0.0.1','localhost') or (u.port or 80)!=port:
+            raise ValueError('Preview URL/port drift; refusing to send credentials')
+    return 'http://127.0.0.1:'+str(port)
+
+
+def request(path, data=None, token=None, method=None):
+    base=local_base()
     headers={}
     if data is not None:headers['Content-Type']='application/json'
     if token:headers['Authorization']='Bearer '+token

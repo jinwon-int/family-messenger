@@ -11,7 +11,9 @@ jobs:
       - name: Configuration tests
         run: python3 -m unittest discover -s tests -v
       - name: Initialize loopback fixture
-        run: python3 scripts/init.py --preview
+        run: |
+          umask 077
+          python3 scripts/init.py --preview
       - name: Validate compose and start
         run: |
           docker compose config --quiet
