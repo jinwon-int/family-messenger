@@ -2,11 +2,13 @@
 
 This unit implements a CF-shaped JWT verifier and connects it to native room,
 message, SSE and attachment admission through `chat.NewAccessHandler`. It is
-**not deployed Cloudflare Access, a human login flow, or E2EE**. The runnable
-`family-dev --synthetic-only` CLI still uses explicitly public bearer fixtures;
-it has no production-auth flag. The signed integration runs only on disposable
-loopback HTTP servers in Go tests, with RSA private keys generated in memory.
-No production services, CF applications, user keys, databases or schemas change.
+**not deployed Cloudflare Access, a human login flow, or E2EE**. The default
+`family-dev --synthetic-only` CLI uses public bearer fixtures. Explicit
+`--auth-state` selects signed synthetic assertions exclusively, with private
+persistent policy and live reload. The browser still uses fixture headers, so
+signed mode is currently an API test mode, not a browser login flow. Tests use
+locally generated RSA keys and disposable loopback servers. No production
+services, CF applications, human keys, chat databases or schemas change.
 
 ## Evidence and dependency choice
 
@@ -62,12 +64,10 @@ keys are rejected. No URL is fetched while checking a request. Service-token
 common_name is rejected even if a subject is present. Signed email/role/group
 claims cannot promote the local actor or owner flag.
 
-Pinned keys are supplied as trusted in-process public-key objects. There is no
-JWKS network fetch/cache/refresh, public-key file loader, or automatic enrollment
-in this unit. Unavailable/unknown keys fail closed. Before production, implement
-bounded trusted key acquisition/rotation and durable enrollment/revocation
-configuration, with recovery and malicious-network tests. No restart durability
-of an in-memory enrollment change is claimed.
+Pinned keys can be supplied in-process or through the private policy store below.
+There is no JWKS network fetch/cache/refresh or automatic enrollment. Unavailable/
+unknown keys fail closed. Bounded trusted key acquisition/rotation is the next
+unit; no request chooses a key source URL.
 
 ## Authority and room membership are separate
 
@@ -126,6 +126,101 @@ missing/expired/future claims, duplicate JSON/header attacks, org/service tokens
 input cloning, expiry, known-key rotation and old-grant retirement. Existing
 native/browser/media/migration tests remain in CI.
 
-Next: durable enrollment/key acquisition and a reviewed browser identity handoff,
+Next: bounded trusted key acquisition and a reviewed browser identity handoff,
 then E2EE/key recovery and production/mobile/backup acceptance. The user has not
 answered the E2EE preference question, so E2EE remains required before human use.
+
+## Private durable policy (synthetic only)
+
+`family-policy` is an offline local configuration writer. It has no HTTP endpoint,
+network fetch or private signing key. It accepts a complete immutable proposal:
+
+```json
+{"version":1,"issuer":"https://synthetic.cloudflareaccess.com","audience":"synthetic-app","keys":[{"kid":"synthetic-key","n":"BASE64URL_RSA_MODULUS","e":65537}],"people":[{"subject":"synthetic-subject","actor":"alice","owner":true}]}
+```
+
+The modulus placeholder must be replaced with a generated synthetic RSA public
+modulus. The process test below creates a runnable fixture; do not substitute
+human accounts/keys. JSON is bounded to 64 KiB, depth eight, exact unique field
+names at every depth, with unknown/case aliases and null rejected. Configuration
+limits above apply; an empty people list intentionally denies everyone. Existing
+chat actors remain alice/bob/charlie. This does not add arbitrary account creation.
+
+Create separate **new** mode-0700 auth and proposal directories owned by the
+current UID. Put a complete candidate JSON in a mode-0600, single-link regular
+file in the proposal directory, and never edit it in place while a reader uses
+it. Symlinks, unsafe parents, foreign owners and nonprivate modes are rejected.
+The tool does not create/repair directories or reset existing data.
+
+```sh
+# From server/, alongside the existing family-dev build:
+go build -trimpath -o ../artifacts/family-policy ./cmd/family-policy
+../artifacts/family-policy --synthetic-only --auth-state /absolute/auth \
+  --input /absolute/proposals/candidate.json --expected-revision 0
+../artifacts/family-policy --synthetic-only --auth-state /absolute/auth --inspect
+../artifacts/family-dev --synthetic-only --state /absolute/chat-state \
+  --auth-state /absolute/auth --listen 127.0.0.1:0
+```
+
+The auth directory is independent of chat SQLite and migration snapshots. The
+writer holds a cross-process exclusive flock across reading, revision comparison
+and commit. Initial expected revision is zero; subsequent changes must name the
+observed revision. Concurrent writers with the same expected revision cannot
+both succeed. No automatic conflict retry or merge occurs. Output contains only
+revision and hash, not subjects or keys.
+
+Each successful update adds `policy-000001.json`, etc., without replacing earlier
+revisions. Records contain the full policy, its canonical SHA-256 checksum and
+the previous record's raw-byte SHA-256. The checksum detects accidental semantic
+corruption of the latest record too; this chain is **not** a signature or witness
+against an authorized local writer rewriting history. At most 64 records of
+64 KiB each are accepted. Capacity fails closed; there is no automatic pruning or
+compaction. An empty regular private `lock` is the only other accepted file.
+
+Writes use a private random pending file, file fsync, rename to the next unused
+revision and directory fsync under the lock. Success means durable commit under
+the filesystem's fsync guarantees. Failure after writing is explicitly uncertain:
+inspect retained state before any retry. A crash can leave a pending file or a
+new visible revision without a success response. Pending/unknown files, gaps,
+corrupt chains, symlinks, hardlinks and mode drift are preserved and reject the
+whole policy; the reader never falls back to an older record. No application
+routine deletes, edits or automatically restores policy records.
+
+The selected auth state is validated **before opening chat state** at startup.
+Missing/empty/invalid selected state exits; it never switches to public fixtures.
+The CLI rereads under the policy lock every second. An unchanged valid revision
+keeps current grants. A new valid revision replaces authority and retires all
+old grants, including after re-enrollment or key re-addition. Polling, a two-second
+file-lock wait and already-admitted bounded operations mean disk commit is not
+instant live acknowledgement. Check the `auth revision applied N` log and
+application admission to confirm application. No token/body is logged.
+
+A failed refresh suspends identity admission and retires grants. Restoring file
+permissions or the same revision does **not** reactivate this running process:
+it requires a valid strictly newer revision beyond any observed revision floor.
+Managed lock order is policy, identity authority, then Store. Network request
+bodies still run outside identity/Store locks. Recovery requires inspection,
+retention of damaged material, and deliberate repair followed by a new valid
+revision; no automatic recovery command is provided. A complete chain must
+validate again at startup. The live failure latch is in memory: full offline
+rollback to an otherwise valid old directory prefix cannot be detected after
+restart without a separate monotonic witness. Same-UID/root interference is
+outside this cooperating-writer boundary; production rollback protection and
+operator recovery acceptance remain future work.
+
+```sh
+# Repo root; Python standard library + OpenSSL are test-only tools.
+python3 tests/native_policy_smoke.py --binary artifacts/family-dev \
+  --policy-binary artifacts/family-policy
+```
+
+This spawns only fresh loopback processes and generated RSA identities. It proves
+signed room/message/media access, no bearer/email fallback, durable removal and
+re-enrollment, real SIGKILL/server restart, failed reload/same-revision rejection,
+corrupt startup preserving bytes, concurrent CLI compare-and-swap and retained
+chat/media/history. Unit fault injection separately covers interruption after
+file sync and after rename; it does not emulate storage hardware power loss.
+Artifacts stay in `artifacts/native-policy-*`; generated private signing fixtures
+are synthetic, private and test-only. CI uploads only verification.json from
+these directories, not signing keys or auth/chat state. No runtime module was
+added by persistence; OpenSSL/Python are not server runtime dependencies.

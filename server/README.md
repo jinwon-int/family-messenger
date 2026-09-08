@@ -45,7 +45,7 @@ as part of committing; application data is not automatically deleted.
 
 ## Protocol v1 (experimental)
 
-All requests require `Authorization: Bearer synthetic-alice` (or
+In default fixture mode, API requests require `Authorization: Bearer synthetic-alice` (or
 `synthetic-bob`, `synthetic-charlie`). These strings are fixtures, **not secrets**.
 The root page, `/app.js`, `/media.js` and `/app.css` are public synthetic assets embedded in the
 binary. Browser API requests must be same-origin: an Origin header must exactly
@@ -54,7 +54,8 @@ match `http://127.0.0.1:<port>`, and Fetch Metadata may only be absent or
 origins, cross-site/same-site requests and non-loopback Hosts are rejected.
 The UI sends fixture bearer headers using fetch, including streamed SSE; it does
 not put tokens in URLs. API clients without browser metadata remain supported.
-No cookies, CORS, query-string tokens, CF identity headers or production logins.
+No cookies, CORS, query-string tokens or production logins. Explicit signed
+synthetic mode uses the verified assertion header described in [AUTH.md](AUTH.md).
 
 | Request | Behavior |
 |---|---|
@@ -171,5 +172,8 @@ E2EE support. Do not initialize a human account in these disposable contexts.
 
 [AUTH.md](AUTH.md) describes the reviewed CF-shaped JWT/identity component and
 real loopback HTTP tests for room/media admission and live retirement. The CLI
-and current browser still use public synthetic fixtures; this does not activate
-a Cloudflare gate or implement a human login session.
+also supports an explicit private `--auth-state` for durable signed synthetic
+policies; missing/invalid selected state fails without fixture fallback. The
+current browser still uses public fixtures. This does not activate a Cloudflare
+gate or implement a human login session. See AUTH.md for the policy CLI, reload
+behavior, recovery limits and actual process acceptance.
