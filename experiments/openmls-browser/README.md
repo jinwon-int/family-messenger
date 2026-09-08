@@ -160,3 +160,6 @@ experiment is not a persistent receive/retry implementation.
 The [native device trust proof](../../server/DEVICES.md) adds a separate memory-only
 first-device gate against a signed native public directory. It does not yet bind
 staged storage to native ciphertext/control transport.
+
+[Durable trusted-state qualification](TRUSTED-STATE.md) combines pins and staged
+crypto state across restart while preserving the earlier isolated fixtures.

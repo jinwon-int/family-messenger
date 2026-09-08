@@ -1,9 +1,9 @@
 name: Isolated MLS browser experiment
 on:
   push:
-    paths: ['experiments/openmls-browser/**', 'tests/native_mls_browser_smoke.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'server/**', '.github/workflows/mls-experiment.yml']
+    paths: ['experiments/openmls-browser/**', 'tests/native_mls_browser_smoke.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'tests/native_trusted_state_smoke.py', 'server/**', '.github/workflows/mls-experiment.yml']
   pull_request:
-    paths: ['experiments/openmls-browser/**', 'tests/native_mls_browser_smoke.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'server/**', '.github/workflows/mls-experiment.yml']
+    paths: ['experiments/openmls-browser/**', 'tests/native_mls_browser_smoke.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'tests/native_trusted_state_smoke.py', 'server/**', '.github/workflows/mls-experiment.yml']
 permissions:
   contents: read
 jobs:
@@ -54,6 +54,8 @@ jobs:
           go -C server build -trimpath -o ../artifacts/family-policy-trust ./cmd/family-policy
       - name: Native directory and independently pinned browser devices
         run: timeout 120s python tests/native_device_browser_smoke.py --bundle artifacts/mls-browser-pkg --binary artifacts/family-dev-trust --policy-binary artifacts/family-policy-trust
+      - name: Durable trusted clients and browser crash proof
+        run: timeout 120s python tests/native_trusted_state_smoke.py --bundle artifacts/mls-browser-pkg --binary artifacts/family-dev-trust --policy-binary artifacts/family-policy-trust
       - name: Two disposable browsers
         run: python tests/native_mls_browser_smoke.py --bundle artifacts/mls-browser-pkg
       - name: Atomic synthetic state and browser crash proof
@@ -66,3 +68,4 @@ jobs:
             artifacts/native-mls-browser-*/verification.json
             artifacts/native-mls-persistence-*/verification.json
             artifacts/native-device-browser-*/verification.json
+            artifacts/native-trusted-state-*/verification.json

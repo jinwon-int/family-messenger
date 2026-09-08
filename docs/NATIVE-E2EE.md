@@ -320,3 +320,11 @@ bindings/tombstones in signed policy and checks native room admission. A separat
 synthetic browser worker validates independent pins and actual MLS credentials
 for invitation/Welcome. Durable client pins, trusted staged-state integration,
 control transport and human enrollment/recovery remain outstanding.
+
+## Durable trusted-state qualification
+
+[The trusted-state adapter](../experiments/openmls-browser/TRUSTED-STATE.md)
+atomically retains independent pins, local room/group identity and complete MLS
+state/outbox across actual browser crashes. Signed native admission is checked
+outside IDB and matched against the latest transaction record. Native ordered
+control/room binding and ciphertext delivery remain the next integration gate.
