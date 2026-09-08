@@ -37,6 +37,8 @@ class Worker:
         self.task = self.session = self.turn_id = None
         self.pending = {}
         self.closed = False
+        self.stopping = False
+        self.failed = asyncio.Event()
 
     async def handle(self, command):
         if self.closed:
@@ -65,6 +67,7 @@ class Worker:
                 await self.emit({'type': 'rejected', 'turn_id': turn_id, 'reason': 'invalid-turn'})
                 return
             self.turn_id = turn_id
+            self.stopping = False
             self.task = asyncio.create_task(self._run(turn_id, prompt, session_id))
             self.task.add_done_callback(self._task_done)
         elif kind in {'approve', 'deny'}:
@@ -75,8 +78,10 @@ class Worker:
                 future.set_result(self.allow if kind == 'approve' else self.deny)
             await self.emit({'type': 'control', 'turn_id': turn_id, 'accepted': matched})
         elif kind == 'cancel':
-            matched = turn_id == self.turn_id and self.task is not None and not self.task.done()
+            matched = (turn_id == self.turn_id and self.task is not None
+                       and not self.task.done() and not self.stopping)
             if matched:
+                self.stopping = True
                 for future in self.pending.values():
                     if not future.done():
                         future.set_result(self.deny)
@@ -87,8 +92,9 @@ class Worker:
 
     def _task_done(self, task):
         # Retrieve exceptions even when the caller disconnects during output.
-        if not task.cancelled():
-            task.exception()
+        if not task.cancelled() and task.exception() is not None:
+            self.closed = True
+            self.failed.set()
         if self.task is task:
             self.task = None
             self.turn_id = self.session = None
@@ -125,59 +131,91 @@ class Worker:
                 # Cannot prove the old operation stopped. Refuse new work in
                 # this process instead of creating overlapping executions.
                 self.closed = True
+                self.failed.set()
                 try:
                     await asyncio.wait_for(self.runtime.close(), 10)
                 except Exception:
                     pass
 
-    async def _run(self, turn_id, prompt, session_id):
+    async def _execute(self, turn_id, prompt, session_id):
+        self.session = await self.runtime.start_or_resume(self.request_factory(session_id))
+        await self.emit({'type': 'session', 'turn_id': turn_id, 'session_id': self.session.session_id})
         answer = []
         size = 0
         terminal = False
+        async for event in self.session.send_turn(prompt, approval_handler=self._approval):
+            if event.kind == 'text_delta':
+                size += len(event.text.encode('utf-8'))
+                if size > MAX_REPLY_BYTES:
+                    raise ValueError('answer limit exceeded')
+                answer.append(event.text)
+            elif event.kind == 'completion':
+                if event.stop_reason != 'end_turn':
+                    raise RuntimeError('runtime did not finish normally')
+                terminal = True
+            elif event.kind == 'error':
+                raise RuntimeError('runtime reported error')
+        text = ''.join(answer)
+        bounded_text(text, MAX_REPLY_BYTES)
+        if not terminal:
+            raise RuntimeError('missing runtime completion')
+        return {'type': 'result', 'turn_id': turn_id, 'status': 'complete',
+                'session_id': self.session.session_id, 'text': text}
+
+    async def _run(self, turn_id, prompt, session_id):
+        execution = asyncio.create_task(self._execute(turn_id, prompt, session_id))
+        reason = None
         try:
             async with asyncio.timeout(self.turn_timeout):
-                self.session = await self.runtime.start_or_resume(self.request_factory(session_id))
-                await self.emit({'type': 'session', 'turn_id': turn_id, 'session_id': self.session.session_id})
-                async for event in self.session.send_turn(prompt, approval_handler=self._approval):
-                    if event.kind == 'text_delta':
-                        size += len(event.text.encode('utf-8'))
-                        if size > MAX_REPLY_BYTES:
-                            raise ValueError('answer limit exceeded')
-                        answer.append(event.text)
-                    elif event.kind == 'completion':
-                        if event.stop_reason != 'end_turn':
-                            raise RuntimeError('runtime did not finish normally')
-                        terminal = True
-                    elif event.kind == 'error':
-                        raise RuntimeError('runtime reported error')
-                text = ''.join(answer)
-                bounded_text(text, MAX_REPLY_BYTES)
-                if not terminal:
-                    raise RuntimeError('missing runtime completion')
-                await self.emit({'type': 'result', 'turn_id': turn_id, 'status': 'complete',
-                                 'session_id': self.session.session_id, 'text': text})
+                # Keep provider registry/iterator alive until interrupt is sent.
+                result = await asyncio.shield(execution)
+                await self.emit(result)
         except asyncio.CancelledError:
-            await self._interrupt()
-            await self.emit({'type': 'result', 'turn_id': turn_id, 'status': 'uncertain', 'reason': 'cancelled'})
+            reason = 'cancelled'
         except TimeoutError:
-            await self._interrupt()
-            await self.emit({'type': 'result', 'turn_id': turn_id, 'status': 'uncertain', 'reason': 'timeout'})
+            reason = 'timeout'
         except Exception:
+            reason = 'runtime-error'
+        if reason is not None:
+            self.stopping = True
+            # Runtime errors can have tool side effects too. Close the runtime
+            # if the iterator has already unwound and interrupt may be a no-op.
+            already_unwound = execution.done()
             await self._interrupt()
-            await self.emit({'type': 'result', 'turn_id': turn_id, 'status': 'uncertain', 'reason': 'runtime-error'})
+            execution.cancel()
+            await asyncio.gather(execution, return_exceptions=True)
+            if already_unwound:
+                self.closed = True
+                try:
+                    await asyncio.wait_for(self.runtime.close(), 10)
+                finally:
+                    self.failed.set()
+            await self.emit({'type': 'result', 'turn_id': turn_id,
+                             'status': 'uncertain', 'reason': reason})
 
     async def close(self):
         self.closed = True
         task = self.task
         if task is not None and not task.done():
-            task.cancel()
+            if not self.stopping:
+                self.stopping = True
+                task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         await asyncio.wait_for(self.runtime.close(), 10)
 
 
 async def serve(worker, reader):
+    failure = asyncio.create_task(worker.failed.wait())
+    reading = None
     try:
-        while line := await reader.readline():
+        while True:
+            reading = asyncio.create_task(reader.readline())
+            ready, _ = await asyncio.wait({reading, failure}, return_when=asyncio.FIRST_COMPLETED)
+            if failure in ready:
+                raise RuntimeError('worker cannot continue')
+            line = reading.result()
+            if not line:
+                break
             if len(line) > 65_536:
                 raise ValueError('input frame too large')
             try:
@@ -186,6 +224,10 @@ async def serve(worker, reader):
                 raise ValueError('invalid input frame') from None
             await worker.handle(command)
     finally:
+        pending = [t for t in (reading, failure) if t is not None]
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
         await worker.close()
 
 
@@ -199,13 +241,24 @@ async def main(args):
     reader = asyncio.StreamReader(limit=65_537)
     protocol = asyncio.StreamReaderProtocol(reader)
     await asyncio.get_running_loop().connect_read_pipe(lambda: protocol, sys.stdin.buffer)
+    loop = asyncio.get_running_loop()
+    output_transport, output_protocol = await loop.connect_write_pipe(
+        lambda: asyncio.streams.FlowControlMixin(loop=loop), sys.stdout.buffer)
+    writer = asyncio.StreamWriter(output_transport, output_protocol, None, loop)
     output_lock = asyncio.Lock()
     async def emit(message):
         payload = (json.dumps(message, ensure_ascii=True) + '\n').encode()
-        # stdout is a pipe to the authenticated parent, not a log sink.
-        async with output_lock:
-            await asyncio.to_thread(sys.stdout.buffer.write, payload)
-            await asyncio.to_thread(sys.stdout.buffer.flush)
+        if len(payload) > 524_288:
+            raise ValueError('output frame too large')
+        # Cancellable pipe backpressure; no blocking thread survives shutdown.
+        try:
+            async with asyncio.timeout(5):
+                async with output_lock:
+                    writer.write(payload)
+                    await writer.drain()
+        except BaseException:
+            output_transport.abort()
+            raise
     runtime = CodexRuntime(cli_path=args.codex_cli,
                            working_state_environment={'CCC_WORKING_STATE_ARCHIVE': '0'})
     def request(session_id):
@@ -213,7 +266,10 @@ async def main(args):
                               approval_policy='never', sandbox_policy={'type': 'readOnly'})
     worker = Worker(runtime, emit, request, ApprovalDecision.ALLOW, ApprovalDecision.DENY,
                     turn_timeout=args.turn_timeout)
-    await serve(worker, reader)
+    try:
+        await serve(worker, reader)
+    finally:
+        output_transport.close()
 
 
 if __name__ == '__main__':

@@ -39,6 +39,9 @@ JSON escaping으로 출력 프레임은 입력보다 클 수 있으므로 부모
 터미널 이벤트 누락은 `uncertain`이며 작업의 부수 효과가 없었다거나 취소가 모두 되돌렸다는 뜻이 아니다.
 중단 확인에 실패하면 새 작업을 받지 않고 runtime 종료를 시도한다. 결과를 확인한 뒤 부모 inbox에서
 조정하며 자동 재실행하지 않는다. stdin EOF/잘못된 프레임은 진행 작업 중단 및 runtime 종료로 이어진다.
+provider 이벤트 iterator를 먼저 취소하지 않고 shield된 실행부에 실제 interrupt를 보낸 후 정리한다.
+중복 취소/EOF는 이미 진행 중인 정리를 다시 취소하지 않는다. stdout은 비차단 pipe이며
+5초 이내에 출력할 수 없으면 연결을 중단해 부모의 출력 정체가 프로세스 종료를 막지 않도록 한다.
 
 부모는 `session` 이벤트를 영구 기록하되, 이 포트에는 실행 전 확인 응답(handshake)이 없으므로
 이를 실행 효과의 exactly-once 보장으로 해석하지 않는다. 앞 단계 inbox의 running/uncertain

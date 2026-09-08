@@ -1,5 +1,7 @@
 import asyncio
 import json
+import subprocess
+import time
 from pathlib import Path
 import sys
 from types import SimpleNamespace as N
@@ -125,8 +127,12 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         await w.handle({'type':'cancel','turn_id':'one'})
         result=await self.wait_for(out,'result')
         self.assertEqual(result['reason'],'cancelled')
-        await w.handle({'type':'approve','turn_id':'one','approval_id':a['approval_id']})
-        self.assertFalse(out[-1]['accepted'])
+        if w.closed:
+            with self.assertRaises(RuntimeError):
+                await w.handle({'type':'approve','turn_id':'one','approval_id':a['approval_id']})
+        else:
+            await w.handle({'type':'approve','turn_id':'one','approval_id':a['approval_id']})
+            self.assertFalse(out[-1]['accepted'])
 
     async def test_runtime_errors_never_claim_success_or_leak_message(self):
         for mode in ['error','oversize','missing-terminal','bad-terminal']:
@@ -180,6 +186,81 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_timeouts_rejected(self):
         for timeout in [0,-1,float('nan'),float('inf')]:
             with self.assertRaises(ValueError): await self.setup_worker(turn_timeout=timeout)
+
+    async def test_cancel_and_timeout_interrupt_before_iterator_unregisters(self):
+        class RegisteredSession(FakeSession):
+            async def send_turn(self, *args, **kwargs):
+                self.active = True
+                try:
+                    await asyncio.Event().wait()
+                    yield
+                finally:
+                    self.active = False
+            async def interrupt(self):
+                self.interrupted_while_active = self.active
+        for timeout in [False,True]:
+            w,r,out=await self.setup_worker(turn_timeout=.03 if timeout else 10)
+            r.session=RegisteredSession()
+            await w.handle({'type':'turn','turn_id':'one','prompt':'synthetic'})
+            await self.wait_for(out,'session')
+            if not timeout:
+                await w.handle({'type':'cancel','turn_id':'one'})
+            await self.wait_for(out,'result')
+            self.assertTrue(r.session.interrupted_while_active)
+            self.assertFalse(r.session.active)
+
+    async def test_repeat_cancel_and_eof_cannot_cancel_interrupt_cleanup(self):
+        started, release = asyncio.Event(), asyncio.Event()
+        w,r,out=await self.setup_worker('hang')
+        async def slow_interrupt():
+            started.set()
+            await release.wait()
+            r.session.interrupted=True
+        r.session.interrupt=slow_interrupt
+        await w.handle({'type':'turn','turn_id':'one','prompt':'synthetic'})
+        await self.wait_for(out,'session')
+        await w.handle({'type':'cancel','turn_id':'one'})
+        await asyncio.wait_for(started.wait(),1)
+        await w.handle({'type':'cancel','turn_id':'one'})
+        self.assertFalse(out[-1]['accepted'])
+        closing=asyncio.create_task(w.close())
+        await asyncio.sleep(.01)
+        self.assertFalse(closing.done())
+        release.set()
+        await asyncio.wait_for(closing,1)
+        self.assertTrue(r.session.interrupted)
+        self.assertEqual(len([x for x in out if x['type']=='result']),1)
+
+    async def test_output_failure_terminates_reader_and_closes_runtime(self):
+        r=FakeRuntime()
+        async def broken_output(item): raise BrokenPipeError()
+        w=Worker(r,broken_output,lambda sid: None,'allow','deny')
+        reader=asyncio.StreamReader()
+        reader.feed_data(b'{"type":"turn","turn_id":"one","prompt":"synthetic"}\n')
+        with self.assertRaises(RuntimeError):
+            await asyncio.wait_for(serve(w,reader),1)
+        self.assertTrue(r.closed)
+
+
+class PipeTests(unittest.TestCase):
+    def test_unread_stdout_does_not_pin_process_after_timeout_and_eof(self):
+        fixture=Path(__file__).parent/'fixtures/worker_backpressure.py'
+        proc=subprocess.Popen([sys.executable,str(fixture)],stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+        try:
+            proc.stdin.write(b'{"type":"turn","turn_id":"one","prompt":"synthetic"}\n')
+            proc.stdin.flush()
+            # Read only session readiness; leave the much larger reply unread.
+            self.assertEqual(json.loads(proc.stdout.readline())['type'],'session')
+            time.sleep(.1)
+            proc.stdin.close()
+            proc.wait(timeout=8)
+            self.assertIsNotNone(proc.returncode)
+        finally:
+            if proc.poll() is None:
+                proc.kill();proc.wait()
+            if not proc.stdin.closed:proc.stdin.close()
+            proc.stdout.close()
 
 
 if __name__=='__main__':
