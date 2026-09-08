@@ -39,10 +39,12 @@ type Message struct {
 }
 
 type Store struct {
-	mu      sync.Mutex // Serializes ACL changes with bounded stream writes as well as DB access.
-	db      *sql.DB
-	lock    *os.File
-	changed chan struct{}
+	mu         sync.Mutex // Serializes ACL changes with bounded stream writes as well as DB access.
+	db         *sql.DB
+	lock       *os.File
+	changed    chan struct{}
+	uploads    map[mediaKey]*mediaLease
+	mediaEpoch map[[2]string]uint64
 }
 
 // Open requires an existing, private directory. It never initializes over unknown data.
@@ -90,9 +92,16 @@ func Open(dir string) (_ *Store, err error) {
 	if e != nil {
 		return nil, e
 	}
-	hasJournal, hasNonemptyDB := false, false
+	hasJournal, hasNonemptyDB, hasSnapshots := false, false, false
 	for _, entry := range entries {
 		name := entry.Name()
+		if name == "snapshots" {
+			hasSnapshots = true
+			if e := inspectSnapshots(filepath.Join(dir, name)); e != nil {
+				return nil, e
+			}
+			continue
+		}
 		if name != "lock" && name != "messages.sqlite" && name != "messages.sqlite-journal" {
 			return nil, fmt.Errorf("unexpected state file")
 		}
@@ -118,8 +127,8 @@ func Open(dir string) (_ *Store, err error) {
 	}
 	// SQLite may remove a journal during initialization. Only pass an existing
 	// sidecar to it after recognizing its nonempty database (header check below).
-	if hasJournal && !hasNonemptyDB {
-		return nil, fmt.Errorf("orphan journal preserved; database missing or empty")
+	if (hasJournal || hasSnapshots) && !hasNonemptyDB {
+		return nil, fmt.Errorf("orphan journal or snapshots preserved; database missing or empty")
 	}
 	path := filepath.Join(dir, "messages.sqlite")
 	fd, e = syscall.Open(path, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0600)
@@ -137,7 +146,7 @@ func Open(dir string) (_ *Store, err error) {
 		} else if st.Size() != 0 {
 			header := make([]byte, 100)
 			_, e = io.ReadFull(f, header)
-			if e == nil && (string(header[:16]) != "SQLite format 3\x00" || binary.BigEndian.Uint32(header[68:72]) != 1179471188 || binary.BigEndian.Uint32(header[60:64]) != 1) {
+			if e == nil && (string(header[:16]) != "SQLite format 3\x00" || binary.BigEndian.Uint32(header[68:72]) != 1179471188 || (binary.BigEndian.Uint32(header[60:64]) != 1 && binary.BigEndian.Uint32(header[60:64]) != 2)) {
 				e = fmt.Errorf("not a supported synthetic messenger database")
 			}
 		}
@@ -165,10 +174,10 @@ func Open(dir string) (_ *Store, err error) {
 	if e = db.QueryRow("PRAGMA application_id").Scan(&appID); e != nil {
 		return nil, e
 	}
-	if (version == 1 && appID != 1179471188) || (version == 0 && appID != 0) {
+	if ((version == 1 || version == 2) && appID != 1179471188) || (version == 0 && appID != 0) {
 		return nil, fmt.Errorf("not a synthetic messenger database")
 	}
-	if version != 0 && version != 1 {
+	if version != 0 && version != 1 && version != 2 {
 		return nil, fmt.Errorf("unsupported schema")
 	}
 	if version == 0 {
@@ -190,7 +199,12 @@ func Open(dir string) (_ *Store, err error) {
 			return nil, e
 		}
 	}
-	return &Store{db: db, lock: lock, changed: make(chan struct{})}, nil
+	if version < 2 {
+		if e = migrateMedia(db, dir, version == 0); e != nil {
+			return nil, e
+		}
+	}
+	return &Store{db: db, lock: lock, changed: make(chan struct{}), uploads: make(map[mediaKey]*mediaLease), mediaEpoch: make(map[[2]string]uint64)}, nil
 }
 
 func checkFile(f *os.File) error {
@@ -301,6 +315,9 @@ func (s *Store) SetMember(room, owner, actor string, present bool) error {
 		_, e = s.db.Exec("DELETE FROM members WHERE room=? AND actor=?", room, actor)
 	}
 	if e == nil {
+		if !present {
+			s.mediaEpoch[[2]string{room, actor}]++
+		}
 		s.wake()
 	}
 	return e

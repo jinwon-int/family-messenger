@@ -36,7 +36,7 @@ mkdir -m 700 /absolute/new-synthetic-state
 ```
 
 Listen address is `127.0.0.1:18920`; other IPs are rejected. `--listen 127.0.0.1:0`
-selects an ephemeral port. State files must be regular, single-link, owned and
+selects an ephemeral port. State files (including schema migration snapshots) must be regular, single-link, owned and
 mode 0600. Symlinked paths, unsafe ancestors, unknown files/databases and a second
 process using the same state directory are rejected. Files are preserved on exit;
 there is no reset/delete command. Same-UID/root interference is outside this
@@ -94,8 +94,10 @@ streams, 100 messages per replay batch, 30-second stream lifetime and 10-second
 keepalives. Reconnect normally after EOF using the last applied sequence. Capacity
 returns 507 without deleting history; these are test limits, not a production
 storage policy. The executable bounds header/body/idle reads and stream writes.
-It has no mobile background delivery, file upload, retention, disk monitor,
-production authentication, E2EE, account/device revocation, backup/restore,
+A [private synthetic media API](MEDIA.md) now stores bounded attachments in SQLite
+with migration snapshots and room checks. It has no attachment UI/playback, mobile
+background delivery, retention, disk monitor,
+production authentication, E2EE, account/device revocation, production backup/restore,
 or fleet execution adapter yet.
 
 ## Verification
@@ -114,7 +116,7 @@ concurrent writers, pagination, room isolation, path/permission/lock rejection
 and stream capacity/release. CI also runs the race detector and both 022/077
 umasks. Existing Matrix tests remain while production still uses that stack.
 
-Next: read state and media;
+Next: attachment UI/playback and read state;
 then reviewed account authentication and E2EE/key recovery before human use,
 and transport binding to the existing fleet worker/guardian.
 

@@ -17,12 +17,14 @@ import (
 var tokens = map[string]string{"synthetic-alice": "alice", "synthetic-bob": "bob", "synthetic-charlie": "charlie"}
 
 type API struct {
-	store   *Store
-	streams chan struct{}
+	store         *Store
+	streams       chan struct{}
+	uploadSlots   chan struct{}
+	downloadSlots chan struct{}
 }
 
 func NewHandler(store *Store) http.Handler {
-	return &API{store: store, streams: make(chan struct{}, 16)}
+	return &API{store: store, streams: make(chan struct{}, 16), uploadSlots: make(chan struct{}, 2), downloadSlots: make(chan struct{}, 2)}
 }
 
 func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -91,6 +93,10 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	room := parts[2]
+	if parts[3] == "attachments" {
+		a.media(w, r, room, actor, parts)
+		return
+	}
 	if len(parts) == 5 && parts[3] == "members" && (r.Method == "PUT" || r.Method == "DELETE") {
 		if e := a.store.SetMember(room, actor, parts[4], r.Method == "PUT"); e != nil {
 			fail(w, e)
@@ -230,6 +236,15 @@ func fail(w http.ResponseWriter, e error) {
 	case errors.Is(e, ErrInvalid):
 		status = 400
 		msg = "invalid request"
+	case errors.Is(e, ErrIntegrity):
+		status = 422
+		msg = "attachment integrity failure"
+	case errors.Is(e, ErrNotFound):
+		status = 404
+		msg = "not found"
+	case errors.Is(e, ErrBusy):
+		status = 409
+		msg = "upload already active; retry later"
 	case errors.Is(e, ErrLimit):
 		status = 507
 		msg = "prototype capacity reached"
