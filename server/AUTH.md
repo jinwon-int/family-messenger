@@ -31,7 +31,7 @@ There are now **two direct external Go modules and zero transitive Go modules**:
 `github.com/golang-jwt/jwt/v5 v5.3.1` and `github.com/mattn/go-sqlite3 v1.14.52`.
 Both are MIT, with bundled SQLite public-domain code and Go's own license.
 `licenses/golang-jwt.txt` preserves the added notice; go.sum pins module content.
-Cgo/GCC/libc requirements remain. No JS, JWKS client, cookie/session, frontend
+Cgo/GCC/libc requirements remain. No JS, third-party JWKS client, cookie/session, frontend
 framework or database-server dependency is added. No resource/performance budget
 has been measured by this authentication unit.
 
@@ -65,9 +65,9 @@ common_name is rejected even if a subject is present. Signed email/role/group
 claims cannot promote the local actor or owner flag.
 
 Pinned keys can be supplied in-process or through the private policy store below.
-There is no JWKS network fetch/cache/refresh or automatic enrollment. Unavailable/
-unknown keys fail closed. Bounded trusted key acquisition/rotation is the next
-unit; no request chooses a key source URL.
+Explicit management-only key acquisition is described below. There is no
+request-driven network fetch, background refresh or automatic enrollment.
+Unavailable/unknown keys fail closed; no request chooses a key source URL.
 
 ## Authority and room membership are separate
 
@@ -127,14 +127,15 @@ missing/expired/future claims, duplicate JSON/header attacks, org/service tokens
 input cloning, expiry, known-key rotation and old-grant retirement. Existing
 native/browser/media/migration tests remain in CI.
 
-Next: bounded trusted key acquisition and a reviewed browser identity handoff,
+Next: a reviewed browser identity handoff and production refresh scheduling,
 then E2EE/key recovery and production/mobile/backup acceptance. The user has not
 answered the E2EE preference question, so E2EE remains required before human use.
 
 ## Private durable policy (synthetic only)
 
-`family-policy` is an offline local configuration writer. It has no HTTP endpoint,
-network fetch or private signing key. It accepts a complete immutable proposal:
+`family-policy` is a local configuration writer. It has no HTTP endpoint or
+private signing key. Its explicit `--fetch-keys` mode performs one management
+network request; `--input` and `--inspect` remain offline. It accepts a complete immutable proposal:
 
 ```json
 {"version":1,"issuer":"https://synthetic.cloudflareaccess.com","audience":"synthetic-app","keys":[{"kid":"synthetic-key","n":"BASE64URL_RSA_MODULUS","e":65537}],"people":[{"subject":"synthetic-subject","actor":"alice","owner":true}]}
@@ -225,3 +226,110 @@ Artifacts stay in `artifacts/native-policy-*`; generated private signing fixture
 are synthetic, private and test-only. CI uploads only verification.json from
 these directories, not signing keys or auth/chat state. No runtime module was
 added by persistence; OpenSSL/Python are not server runtime dependencies.
+
+## Explicit trusted key acquisition and rotation
+
+The [official CF validation documentation](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/)
+was checked again on 2026-09-09 KST. It documents a six-week default rotation,
+seven days of previous-key validity, and the current/previous JWKs in `keys` at
+`https://<team>.cloudflareaccess.com/cdn-cgi/access/certs`. Its `public_cert` and
+`public_certs` are alternative PEM presentations. We read only the JWKs; PEM
+metadata does not select keys or URLs. These are provider policy facts, not our
+application's refresh schedule or a guarantee against manual emergency rotation.
+
+After a private synthetic policy has been initialized, management can explicitly
+fetch from **its configured issuer**, then commit at the observed revision:
+
+```sh
+../artifacts/family-policy --synthetic-only --auth-state /absolute/auth \
+  --fetch-keys --expected-revision 1
+```
+
+This mode is mutually exclusive with `--input`/`--inspect`; it takes no source URL,
+request token, cookie, proxy or TLS-bypass option. Do not use human account policy
+for this prototype. The ordinary verification path never initiates network I/O,
+including for repeated unknown kids. There is no background refresh task and no
+request-driven retry/cache revalidation. Each explicit CLI invocation attempts
+at most one GET; repeated or concurrent invocations are trusted local management
+actions, not an exposed refresh API. Schedule/monitor integration before production
+remains unfinished. No automated job was installed by this change.
+
+The dedicated Go standard-library HTTP client verifies system TLS roots and the
+issuer hostname, requires TLS 1.2+, ignores proxy environment variables, refuses
+all redirects, requests uncompressed JSON and accepts only HTTP 200 with no
+content encoding. DNS, dial, TLS, headers and body share a three-second request
+budget; response headers are limited to 8 KiB, body to 64 KiB and the entire key
+set to 1–16 keys. Bodies/connections close on success and failure. The configured
+CF team origin is validated before any request; request-controlled issuer/jku/
+x5u fields cannot select a destination. Test-only dialing/root injection is an
+unexported helper, not a CLI/runtime configuration option.
+
+JWKs require exact `kid/kty/alg/use/n/e`, RSA/RS256/signature use, canonical
+base64url modulus, exponent AQAB (65537), and the existing 2048–4096-bit key limits.
+Duplicate top-level/JWK field names, case aliases, duplicate kids, empty/oversized
+sets, private key fields and unsupported key types reject the whole response;
+there is no partial acceptance. Bounded opaque PEM metadata is ignored, never
+interpreted or fetched. RSA construction uses Go's standard types and signature
+verification remains golang-jwt; no new cryptographic protocol or module is added.
+
+The operation reads the current complete policy under its existing lock, checks
+the caller's expected revision, releases that lock for network I/O, then commits
+with the **same** expected revision. Issuer/audience, enrollment and owner flags
+are cloned unchanged; only the key set and its acquisition times change. Any
+concurrent policy update, including removing a person, makes the result conflict
+rather than overwrite that decision. Fetch failures never change policy, advance
+a revision or extend key validity. Existing unknown/interrupted/corrupt policy
+state remains fail-closed and preserved. Commit uncertainty still requires
+inspection, as documented above. Disk commit is not live application; the server's
+next successful policy reload retires all old grants.
+
+A successful fetch stores `keys_fetched_at` at the start of the attempt and
+`keys_expire_at` exactly one hour later. Response Cache-Control cannot extend this
+hard lifetime. This is an application lease, not a CF key/certificate expiry.
+Verification and **every Grant.Run**, including owner execution and each native
+media/SSE authorization boundary, require the current time within that lease.
+Even a longer-lived JWT or a previously issued grant stops admitting operations
+at key expiry. Previously admitted bounded operations may finish as documented.
+Successful replacement uses exactly the fetched key set, so keys omitted by the
+trusted endpoint stop validating after application; previous keys remain accepted
+only if the endpoint still supplies them. Every applied revision retires grants,
+even if key IDs/material are unchanged or a removed key is re-added.
+
+During an outage an already acquired, unexpired snapshot remains usable until its
+stored deadline. No successful fetch means no extension. At expiry all signed
+admission denies, including after restart, with no fallback to old manual pins or
+public fixtures. Managed status/logs describe structural policy application, not
+key-service health; `/health` also requires current identity admission. Operator
+recovery needs a successful fetch/new revision or another deliberate complete
+policy decision. Trusted system time is required, as it already is for JWT expiry.
+
+Older explicit manual pinned policies omit both lease fields and retain their
+existing manual lifetime; adding zero-valued optional fields does not change their
+canonical checksum or rewrite their records. Both timestamps must be present and
+form the exact one-hour interval when nonzero. A deliberate trusted manual policy
+can remove the lease, but no acquisition/verification failure does this. New
+leased records are rejected by older binaries that do not understand the fields;
+there is no automatic backwards rewrite or rollback. No chat schema changes occur.
+
+### Acceptance evidence
+
+```sh
+# server/; all servers/certificates/identities are locally generated fixtures.
+go test -race -count=1 ./internal/access -run 'Test(JWKS|TrustedKey|KeyFetch|FetchedKey|Acquisition|AcquiredKeys)'
+```
+
+Real TLS listeners validate the exact CF hostname using a generated local root
+and test-only loopback dialing. Tests cover hostname/root rejection, redirect and
+status rejection, header/body bounds, truncated/compressed/invalid JWKS, canceled
+and stalled header/body requests, preserved issuer/audience/enrollment/owner,
+unknown-kid request flooding without new fetches, changed key material with reused
+kid, old-grant retirement, hard expiry, durable expired-state restart, no lease
+extension on failure and fetch/revocation CAS races. Application through the real
+PolicyStore/Managed authority is checked separately from disk commit. Existing
+room/media HTTP, process and browser regressions remain enabled. The network
+acquisition CLI has not been run against a real CF team; no production gate or
+human login is claimed. The actual-process policy smoke also checks expired
+lease metadata across SIGKILL/restart, subsequent explicit fresh-lease application
+with preserved membership/media, and CLI stale-revision/mixed-mode rejection.
+The lease in that process smoke is a generated private proposal, while the TLS
+fetch itself is exercised by the Go tests. This unit adds no runtime dependency.

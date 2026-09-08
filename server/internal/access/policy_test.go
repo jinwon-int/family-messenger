@@ -38,7 +38,7 @@ func TestPolicyEncodingAndStrictFields(t *testing.T) {
 	if e != nil || got.Issuer != c.Issuer || len(got.People) != 2 {
 		t.Fatal(e)
 	}
-	for _, bad := range [][]byte{bytes.Replace(b, []byte(`"owner":true`), []byte(`"Owner":true`), 1), bytes.Replace(b, []byte(`"owner":true`), []byte(`"owner":true,"owner":false`), 1), bytes.Replace(b, []byte(`"owner":true`), []byte(`"owner":null`), 1), append(b, b...), []byte(strings.Repeat("x", MaxPolicyBytes+1))} {
+	for _, bad := range [][]byte{bytes.Replace(b, []byte(`"n":"`), []byte(`"n":"\r\n`), 1), bytes.Replace(b, []byte(`"owner":true`), []byte(`"Owner":true`), 1), bytes.Replace(b, []byte(`"owner":true`), []byte(`"owner":true,"owner":false`), 1), bytes.Replace(b, []byte(`"owner":true`), []byte(`"owner":null`), 1), append(b, b...), []byte(strings.Repeat("x", MaxPolicyBytes+1))} {
 		if _, e = ParsePolicy(bad); e == nil {
 			t.Fatal("bad policy parsed")
 		}

@@ -1,5 +1,5 @@
 // Package access verifies CF-shaped application assertions against operator-pinned
-// keys/enrollment. It does not fetch keys, enroll accounts or configure Cloudflare.
+// keys/enrollment. Request verification never fetches keys or enrolls accounts.
 package access
 
 import (
@@ -26,9 +26,10 @@ type Enrollment struct {
 	Owner          bool
 }
 type Config struct {
-	Issuer, Audience string
-	Keys             map[string]*rsa.PublicKey
-	People           []Enrollment
+	Issuer, Audience            string
+	Keys                        map[string]*rsa.PublicKey
+	People                      []Enrollment
+	KeysFetchedAt, KeysExpireAt int64
 }
 type Principal struct {
 	Actor string
@@ -66,7 +67,10 @@ func clone(c Config) (Config, map[string]Enrollment, error) {
 	if e != nil || u.Scheme != "https" || u.User != nil || u.Port() != "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || c.Issuer != "https://"+u.Host || !strings.HasSuffix(u.Host, ".cloudflareaccess.com") || !identifier(strings.TrimSuffix(u.Host, ".cloudflareaccess.com"), 63) || !identifier(c.Audience, 128) || len(c.Keys) < 1 || len(c.Keys) > 16 || len(c.People) > 32 {
 		return Config{}, nil, ErrConfig
 	}
-	out := Config{Issuer: c.Issuer, Audience: c.Audience, Keys: make(map[string]*rsa.PublicKey)}
+	if (c.KeysFetchedAt != 0 || c.KeysExpireAt != 0) && (c.KeysFetchedAt < 1 || c.KeysFetchedAt > 253402297199 || c.KeysExpireAt-c.KeysFetchedAt != int64(FetchedKeyLifetime/time.Second)) {
+		return Config{}, nil, ErrConfig
+	}
+	out := Config{Issuer: c.Issuer, Audience: c.Audience, Keys: make(map[string]*rsa.PublicKey), KeysFetchedAt: c.KeysFetchedAt, KeysExpireAt: c.KeysExpireAt}
 	for id, k := range c.Keys {
 		if !identifier(id, 128) || k == nil || k.N == nil || k.N.Sign() <= 0 || k.N.BitLen() < 2048 || k.N.BitLen() > 4096 || k.N.Bit(0) != 1 || k.E != 65537 {
 			return Config{}, nil, ErrConfig
@@ -129,7 +133,7 @@ func (g *Grant) Run(fn func() error) error {
 	a := g.authority
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	if a.disabled || g.generation != a.generation || !time.Now().Before(g.expires) {
+	if a.disabled || !keysCurrent(a.config, time.Now()) || g.generation != a.generation || !time.Now().Before(g.expires) {
 		return ErrDenied
 	}
 	return fn()
@@ -215,7 +219,7 @@ func (a *Authority) Verify(r *http.Request) (*Grant, error) {
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	if a.disabled {
+	if a.disabled || !keysCurrent(a.config, time.Now()) {
 		return nil, ErrDenied
 	}
 	c := jwt.MapClaims{}
