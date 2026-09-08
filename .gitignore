@@ -7,3 +7,6 @@ __pycache__/
 *.pyc
 .venv/
 artifacts/
+
+# Isolated Rust experiment build products
+experiments/openmls-browser/target/
