@@ -55,6 +55,8 @@ Require RS256, JWT type, a known kid, valid signature, exact issuer, expected
 application audience, exp, non-future iat/nbf, exp after iat, app token type and an
 enrolled subject. Zero clock leeway is used. JWT-library parsing plus duplicate
 **top-level** JSON field rejection avoids ambiguous identity/header interpretation.
+Security claim names use exact-key MapClaims; noncanonical case-fold aliases
+(including Unicode folds) are rejected, avoiding Go struct JSON case insensitivity.
 Only alg/kid/typ headers are accepted; token-controlled jku/jwk/x5u/crit and unknown
 keys are rejected. No URL is fetched while checking a request. Service-token
 common_name is rejected even if a subject is present. Signed email/role/group

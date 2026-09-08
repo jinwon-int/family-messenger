@@ -141,12 +141,6 @@ func (g *Grant) RunOwner(fn func() error) error {
 	})
 }
 
-type claims struct {
-	jwt.RegisteredClaims
-	Type       string          `json:"type"`
-	CommonName json.RawMessage `json:"common_name"`
-}
-
 // Reject duplicate top-level fields so different JWT consumers cannot disagree
 // about issuer/subject/header interpretation. The JWT library verifies crypto.
 func object(encoded string) (map[string]json.RawMessage, error) {
@@ -203,12 +197,23 @@ func (a *Authority) Verify(r *http.Request) (*Grant, error) {
 	if string(header["alg"]) != `"RS256"` || string(header["typ"]) != `"JWT"` {
 		return nil, ErrDenied
 	}
-	if _, e = object(parts[1]); e != nil {
+	fields, err := object(parts[1])
+	if err != nil {
 		return nil, ErrDenied
+	}
+	// RFC7519 claim names are case-sensitive. Go struct JSON binding is not;
+	// use exact-key MapClaims and reject case-fold aliases to prevent different
+	// consumers interpreting the same signed claims differently.
+	for name := range fields {
+		for _, canonical := range []string{"iss", "sub", "aud", "exp", "nbf", "iat", "jti", "type", "common_name"} {
+			if name != canonical && strings.EqualFold(name, canonical) {
+				return nil, ErrDenied
+			}
+		}
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	c := new(claims)
+	c := jwt.MapClaims{}
 	tok, e := jwt.ParseWithClaims(h[0], c, func(t *jwt.Token) (any, error) {
 		kid, ok := t.Header["kid"].(string)
 		if !ok || !identifier(kid, 128) {
@@ -220,12 +225,21 @@ func (a *Authority) Verify(r *http.Request) (*Grant, error) {
 		}
 		return key, nil
 	}, jwt.WithValidMethods([]string{"RS256"}), jwt.WithIssuer(a.config.Issuer), jwt.WithAudience(a.config.Audience), jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithStrictDecoding())
-	if e != nil || !tok.Valid || c.Type != "app" || len(c.CommonName) != 0 || c.IssuedAt == nil || c.NotBefore == nil || c.ExpiresAt == nil || !c.ExpiresAt.After(c.IssuedAt.Time) || c.NotBefore.After(c.ExpiresAt.Time) {
+	if e != nil || !tok.Valid {
 		return nil, ErrDenied
 	}
-	p, ok := a.people[c.Subject]
+	typ, ok := c["type"].(string)
+	_, service := c["common_name"]
+	issued, ie := c.GetIssuedAt()
+	notBefore, ne := c.GetNotBefore()
+	expires, ee := c.GetExpirationTime()
+	subject, se := c.GetSubject()
+	if !ok || typ != "app" || service || ie != nil || ne != nil || ee != nil || se != nil || issued == nil || notBefore == nil || expires == nil || !expires.After(issued.Time) || notBefore.After(expires.Time) {
+		return nil, ErrDenied
+	}
+	p, ok := a.people[subject]
 	if !ok {
 		return nil, ErrDenied
 	}
-	return &Grant{authority: a, generation: a.generation, principal: Principal{Actor: p.Actor, Owner: p.Owner}, expires: c.ExpiresAt.Time}, nil
+	return &Grant{authority: a, generation: a.generation, principal: Principal{Actor: p.Actor, Owner: p.Owner}, expires: expires.Time}, nil
 }

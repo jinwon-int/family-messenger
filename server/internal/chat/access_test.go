@@ -116,7 +116,7 @@ func TestAccessUploadRevocationAndExpiry(t *testing.T) {
 			s.CreateRoom("family", "alice", []string{"bob"})
 			expires := time.Now().Add(time.Minute)
 			if mode == "expiry" {
-				expires = time.Now().Add(time.Second)
+				expires = time.Now().Add(2 * time.Second)
 			}
 			token := assertion(t, c, k, "family", expires)
 			reader, writer := io.Pipe()
@@ -157,6 +157,9 @@ func TestAccessUploadRevocationAndExpiry(t *testing.T) {
 				time.Sleep(time.Millisecond)
 			}
 			if mode == "expiry" {
+				remaining := time.Until(time.Unix(expires.Unix(), 0))
+				time.Sleep(remaining / 2)
+				writer.Write([]byte("b")) // Maintain progress while awaiting expiry.
 				time.Sleep(time.Until(time.Unix(expires.Unix(), 0)) + 10*time.Millisecond)
 			} else {
 				removed := c
@@ -175,7 +178,11 @@ func TestAccessUploadRevocationAndExpiry(t *testing.T) {
 					t.Fatal("re-add failed")
 				}
 			}
-			writer.Write([]byte("bc"))
+			if mode == "expiry" {
+				writer.Write([]byte("c"))
+			} else {
+				writer.Write([]byte("bc"))
+			}
 			writer.Close()
 			select {
 			case status := <-result:

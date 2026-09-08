@@ -234,3 +234,32 @@ func TestReplacementWaitsForBoundedOperation(t *testing.T) {
 		t.Fatal("grant not retired")
 	}
 }
+
+func TestSecurityClaimNamesAreExact(t *testing.T) {
+	c, k := fixture(t)
+	a, _ := New(c)
+	base := values(c)
+	base["sub"] = "person-2"
+	b, _ := json.Marshal(base)
+	for _, name := range []string{"SUB", "EXP", "TYPE", "ISS", "AUD", "NBF", "IAT", "JTI", "COMMON_NAME", "ſub", "iſſ"} {
+		t.Run(name, func(t *testing.T) {
+			suffix, _ := json.Marshal(map[string]any{name: "person-1"})
+			payload := strings.TrimSuffix(string(b), "}") + "," + strings.TrimPrefix(string(suffix), "{")
+			raw := rawSign(t, `{"alg":"RS256","typ":"JWT","kid":"key-1"}`, payload, k)
+			if _, e := verify(a, raw); e != ErrDenied {
+				t.Fatal("noncanonical security field accepted")
+			}
+		})
+	}
+	// Exact canonical fields still work, and an empty enrollment denies all.
+	if _, e := verify(a, sign(t, base, k)); e != nil {
+		t.Fatal(e)
+	}
+	c.People = nil
+	if a.Replace(c) != nil {
+		t.Fatal("empty enrollment rejected")
+	}
+	if _, e := verify(a, sign(t, base, k)); e != ErrDenied {
+		t.Fatal("empty enrollment authorized")
+	}
+}
