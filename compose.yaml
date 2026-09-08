@@ -49,6 +49,7 @@ services:
     volumes:
       - ./.runtime/element.json:/app/config.json:ro
       - ./web/family:/app/family:ro
+      - ./web/family/help.html:/app/help.html:ro
     healthcheck:
       test: [CMD, wget, -q, --spider, http://127.0.0.1/]
       interval: 10s
