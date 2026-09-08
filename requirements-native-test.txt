@@ -1,0 +1,2 @@
+# Browser verification only; not a messenger runtime dependency.
+playwright==1.62.0

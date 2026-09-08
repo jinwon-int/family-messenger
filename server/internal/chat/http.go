@@ -29,11 +29,17 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(5 * time.Second))
-	// No browser UI yet: reject browser-origin requests and non-loopback hosts.
-	// In particular a DNS-rebinding hostname may not access this development service.
+	// Loopback Host plus exact same-origin browser requests only; no CORS.
 	host, _, e := net.SplitHostPort(r.Host)
-	if e != nil || host != "127.0.0.1" || len(r.Header.Values("Origin")) > 0 || r.Header.Get("Sec-Fetch-Site") != "" {
-		http.Error(w, "local API clients only", http.StatusForbidden)
+	origins := r.Header.Values("Origin")
+	site := r.Header.Get("Sec-Fetch-Site")
+	asset := r.Method == "GET" && isAsset(r.URL.Path)
+	if e != nil || host != "127.0.0.1" || len(origins) > 1 || (len(origins) == 1 && origins[0] != "http://"+r.Host) || (site != "" && site != "same-origin" && !(asset && site == "none")) {
+		http.Error(w, "same-origin local clients only", http.StatusForbidden)
+		return
+	}
+	if asset && r.URL.RawPath == "" && r.URL.RawQuery == "" {
+		serveAsset(w, r)
 		return
 	}
 	if len(r.Header.Values("Authorization")) != 1 {
@@ -52,6 +58,17 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == "GET" && r.URL.Path == "/health" {
 		writeJSON(w, 200, map[string]string{"mode": "synthetic-only", "status": "ok"})
+		return
+	}
+	if r.Method == "GET" && r.URL.Path == "/v1/rooms" {
+		a.store.mu.Lock()
+		defer a.store.mu.Unlock()
+		rooms, e := a.store.rooms(actor)
+		if e != nil {
+			fail(w, e)
+			return
+		}
+		writeJSON(w, 200, rooms)
 		return
 	}
 	if r.Method == "POST" && r.URL.Path == "/v1/rooms" {
