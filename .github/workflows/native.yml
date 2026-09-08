@@ -45,12 +45,16 @@ jobs:
         run: python tests/native_browser_smoke.py --binary artifacts/family-dev
       - name: Two browser media and playback proof
         run: python tests/native_media_browser_smoke.py --binary artifacts/family-dev
+      - name: Signed identity browser handoff proof
+        run: python tests/native_signed_browser_smoke.py --binary artifacts/family-dev --policy-binary artifacts/family-policy
       - name: Preserve synthetic browser evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: native-browser-${{ github.event_name }}
           path: |
+            artifacts/native-signed-browser-*/verification.json
+            artifacts/native-signed-browser-*/*.png
             artifacts/native-policy-*/verification.json
             artifacts/native-browser-*/verification.json
             artifacts/native-browser-*/*.png

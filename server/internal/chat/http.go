@@ -45,7 +45,7 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if asset && r.URL.RawPath == "" && r.URL.RawQuery == "" {
-		serveAsset(w, r)
+		serveAsset(w, r, a.authority != nil)
 		return
 	}
 	var actor string
@@ -74,6 +74,30 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unauthorized", 401)
 			return
 		}
+	}
+	// The browser binds each request to its last verified app actor. A changed
+	// upstream account must not send an old tab's pending operation as that actor.
+	if expected := r.Header.Values("X-Family-Actor"); len(expected) > 0 && (len(expected) != 1 || expected[0] != actor) {
+		http.Error(w, "identity changed", 401)
+		return
+	}
+	w.Header().Set("X-Family-Actor", actor)
+	if r.URL.Path == "/v1/session" && r.Method == "GET" && r.URL.RawQuery == "" {
+		if err := authorize(r, func() error {
+			mode, owner := "fixture", false
+			if g, ok := r.Context().Value(grantKey{}).(*access.Grant); ok {
+				mode, owner = "signed", g.Principal().Owner
+			}
+			writeJSON(w, 200, struct {
+				Mode  string `json:"mode"`
+				Actor string `json:"actor"`
+				Owner bool   `json:"owner"`
+			}{mode, actor, owner})
+			return nil
+		}); err != nil {
+			fail(w, err)
+		}
+		return
 	}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	// Uploads/SSE/downloads acquire authority only at bounded state/write steps.

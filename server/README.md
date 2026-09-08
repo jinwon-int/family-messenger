@@ -54,11 +54,13 @@ match `http://127.0.0.1:<port>`, and Fetch Metadata may only be absent or
 origins, cross-site/same-site requests and non-loopback Hosts are rejected.
 The UI sends fixture bearer headers using fetch, including streamed SSE; it does
 not put tokens in URLs. API clients without browser metadata remain supported.
-No cookies, CORS, query-string tokens or production logins. Explicit signed
-synthetic mode uses the verified assertion header described in [AUTH.md](AUTH.md).
+Fixture requests omit cookies; there is no CORS, query-string token or production
+login. Signed browser mode sends same-origin upstream cookies, while the app
+verifies only the assertion header described in [AUTH.md](AUTH.md).
 
 | Request | Behavior |
 |---|---|
+| `GET /v1/session` | Verified current actor/mode and explicit owner flag; no token/subject/email |
 | `GET /health` | Authenticated synthetic-mode marker; not a disk/backup readiness check |
 | `GET /v1/rooms` | List only rooms the authenticated fixture actor currently belongs to |
 | `POST /v1/rooms` | JSON `{"id":"family","members":["bob"]}`; caller owns and joins the room |
@@ -174,6 +176,7 @@ E2EE support. Do not initialize a human account in these disposable contexts.
 real loopback HTTP tests for room/media admission and live retirement. The CLI
 also supports an explicit private `--auth-state` for durable signed synthetic
 policies; missing/invalid selected state fails without fixture fallback. The
-current browser still uses public fixtures. This does not activate a Cloudflare
+browser uses the verified current actor in signed mode and retains the separate
+public fixture selector only in fixture mode. This does not activate a Cloudflare
 gate or implement a human login session. See AUTH.md for the policy CLI, reload
 behavior, recovery limits and actual process acceptance.
