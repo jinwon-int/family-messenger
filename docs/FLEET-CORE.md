@@ -13,6 +13,8 @@
    SQLite와 잠금 파일은 0600이고 두 번째 프로세스는 잠금을 획득하지 못하면 종료한다.
    상태에는 복호화된 요청/답변이 저장되므로 일반 로그로 복사하지 않는다. 백업은 암호화한다.
 3. 승인된 이벤트 목록과 해당 `/sync` 응답의 next_batch를 `accept_batch`로 함께 커밋한다.
+   persistent adapter는 raw pending을 먼저 저장하고 `next_token=None`으로 요청만 기록한 뒤
+   배치 종료 시 별도 원자적 token 커밋을 수행할 수 있다(`FLEET-MATRIX.md`).
    실패하면 SDK의 메모리 sync 위치를 그대로 다음 요청에 사용하지 말고 Store의 마지막 token으로 재시도한다.
    SDK 암호화 to-device 상태와 동기화 위치를 어떻게 결합할지는 다음 transport 구현에서 검증한다.
 4. `claim`으로 실행을 확정한 뒤 AI를 호출한다. 같은 계정·방·발신자의 이전 결과가 전달되기 전에는

@@ -20,6 +20,11 @@ jobs:
           docker compose up -d --wait --wait-timeout 180
       - name: Real Matrix integration
         run: python3 tests/smoke.py
+      - name: Persistent encrypted frontend integration
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -r requirements-matrix.txt
+          .venv/bin/python tests/matrix_frontend_smoke.py
       - name: Stop test services
         if: always()
         run: docker compose down
