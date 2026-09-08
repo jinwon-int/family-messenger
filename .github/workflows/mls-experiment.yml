@@ -11,12 +11,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      CARGO_HOME: ${{ runner.temp }}/mls-cargo
-      RUSTUP_HOME: ${{ runner.temp }}/mls-rustup
-      CARGO_TARGET_DIR: ${{ runner.temp }}/mls-target
       RUSTFLAGS: '--cfg getrandom_backend="wasm_js"'
     steps:
       - uses: actions/checkout@v4
+      - name: Isolate tool and build paths
+        run: |
+          echo "CARGO_HOME=$RUNNER_TEMP/mls-cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$RUNNER_TEMP/mls-rustup" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/mls-target" >> "$GITHUB_ENV"
       - name: Isolated pinned Rust and WASM target
         run: |
           rustup toolchain install 1.91.1 --profile minimal --target wasm32-unknown-unknown
