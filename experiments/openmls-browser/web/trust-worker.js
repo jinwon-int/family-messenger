@@ -32,12 +32,15 @@ async function admission() {
       seen.add(p.actor);
     }
     if(seen.size!==2) reject();
-  } finally {clearTimeout(timer);}
+  } finally {controller.abort();clearTimeout(timer);}
 }
 let queue=Promise.resolve();
-self.onmessage=({data:{id,method,argument}})=>{
+self.onmessage=({data})=>{
  queue=queue.then(async()=>{
+  let id;
   try {
+   if(!exact(data,['id','method','argument'])||!Number.isSafeInteger(data.id)||data.id<1||typeof data.method!=='string')reject();
+   id=data.id;const {method,argument}=data;
    if(retired) reject();let result;
    if(method==='init') {if(device||!['alice','bob'].includes(argument))reject();actor=argument;device=new Device(actor);}
    else {

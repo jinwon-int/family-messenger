@@ -10,20 +10,23 @@
     "native_restart_preserves_accepted_directory": true,
     "directory_substitution_retires_worker_without_fallback": true,
     "device_revocation_restart_and_account_expiry_denied": true,
-    "valid_welcome_with_unaccepted_inviter_key_rejected_and_retired": true
+    "valid_welcome_with_unaccepted_inviter_key_rejected_and_retired": true,
+    "malformed_worker_command_retires_before_next_operation": true,
+    "rejected_identity_header_aborts_pending_fetch": true
   },
-  "binary_sha256": "1c8b00208c0315e27d49d273dbba1bf98ecd869ccaf1f294a96cc708293462f8",
+  "binary_sha256": "738f25c244cfd1409ccc119959f7c4667472cb9478d6ec804f33e356de8f8ebd",
+  "test_instrumentation": "main selects trust worker; worker fetch signal observer only; no keys/bodies observed",
   "assets_sha256": {
     "/": "6d10e089cac6a58aaa00f7261be71552bc35fd0d0a378586600d79db6cce25c1",
     "/main.js": "4133ed7e66b4782839f5b475e7c4dd9676bc300b27417be753c8194b8e6facb2",
-    "/trust-worker.js": "052abcfa8275cfdd053cc2551298d6fbf122a51a601911ce247ef8a8b0b77f79",
+    "/trust-worker.js": "5a2900ec27afe92919eeebf096f1d26c18b350c7bddf9796299c5333a29bfaeb",
     "/untrusted-worker.js": "e92df9cd5347d179679229ea25a9b621673c823b3a3f5128871a484575f39c83",
     "/pkg/family_mls_browser_experiment.js": "f4c603f29b49a86557ada7676688d6daf06e099df6696fa297b1022727b3930f",
     "/pkg/family_mls_browser_experiment_bg.wasm": "59ef6523f93f12ff726891a4b4465a06cc4cc59c2c9d5445ceded1dc1d882a41"
   },
   "browser": "151.0.7922.34",
   "passed": true,
-  "artifact": "artifacts/native-device-browser-gvcx3ema/verification.json",
+  "artifact": "artifacts/native-device-browser-bn7lyu5c/verification.json",
   "prior_persistence_artifact": "artifacts/native-mls-persistence-p_zm81ll/verification.json",
   "prior_browser_artifact": "artifacts/native-mls-browser-l56j9h5a/verification.json",
   "bundle": {
@@ -45,15 +48,17 @@
     "wasm_transitive": 151,
     "all_target_external": 197
   },
+  "scope": "synthetic first-device directory and memory-only independent pin gate; no native ciphertext transport or human enrollment",
   "source_sha256": {
     "server/internal/access/devices.go": "87f0a7f864df189a0600e84197d1ba5e0dc1b635bb74d87fbf7901e8fb0805c9",
     "server/internal/access/access.go": "72e90d9dd8c25a6bf3c4a5eeae5af2feecf443234ba5528b03b5612b38a88323",
-    "server/internal/access/policy.go": "d34b9acb52061d8acf842350f933148e4f59af7cd5e83208fc1fed77b56385e9",
+    "server/internal/access/policy.go": "91b59ad13749b07e1090ce2ceb79e10ed836950edb59054544da7b1c7d6f6667",
     "server/internal/chat/http.go": "b0961e44b9b1c3f9e9052515aeb888272b9fb4f58d52222e0fd75ded80820567",
     "experiments/openmls-browser/src/trust.rs": "0c897a6f7fa61bfcfc4e215ac5607fbb6219974c5b4fb9d33d303e4c0e4c79f9",
     "experiments/openmls-browser/src/lib.rs": "e81676ffb4ec57cf128c6c09aa1309337d3c5b8bd32202aae3480ac29b13896e",
-    "experiments/openmls-browser/web/trust-worker.js": "052abcfa8275cfdd053cc2551298d6fbf122a51a601911ce247ef8a8b0b77f79",
-    "tests/native_device_browser_smoke.py": "cce6cfa15f954fff2459f3d7e3e5f87b98dd6c12b88e94e74c509d9b95292417"
+    "experiments/openmls-browser/web/trust-worker.js": "3c2c5e1c4ac61cb930a0a88de3eef0053fa47b9227db5542bdf302ef21dab5ce",
+    "tests/native_device_browser_smoke.py": "19dfcf5ed6163f1a9a5de8a1dc2ee7a40ae1496ab9ca54473b27d7671c166d12"
   },
-  "scope": "synthetic first-device directory and memory-only independent pin gate; no native ciphertext transport or human enrollment"
+  "original_policy_regression": "artifacts/native-policy-32rsa803/verification.json",
+  "original_signed_browser_regression": "artifacts/native-signed-browser-z4yd0lnv/verification.json"
 }

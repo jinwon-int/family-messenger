@@ -106,6 +106,7 @@ def main():
     for name in ['index.html','main.js','trust-worker.js']:
         file=root/'experiments/openmls-browser/web'/name
         raw=file.read_bytes()
+        if name=='trust-worker.js':raw=b"const testFetch=fetch;self.fetch=(url,options)=>{options?.signal?.addEventListener('abort',()=>self.postMessage({testAbortObserved:true}),{once:true});return testFetch(url,options);};\n"+raw
         if name=='main.js':raw=raw.replace(b"durable ? './durable-worker.js' : './worker.js'",b"'./trust-worker.js'")
         assets['/' if name=='index.html' else '/'+name]=raw
     assets['/untrusted-worker.js']=(root/'experiments/openmls-browser/web/worker.js').read_bytes()
@@ -113,6 +114,7 @@ def main():
         file=args.bundle/name
         st=file.lstat();assert not file.is_symlink() and st.st_nlink==1 and st.st_size<4*1024*1024
         assets['/pkg/'+name]=file.read_bytes()
+    proof['test_instrumentation']='main selects trust worker; worker fetch signal observer only; no keys/bodies observed'
     proof['assets_sha256']={name:hashlib.sha256(raw).hexdigest() for name,raw in assets.items()}
     tamper={}
     class Proxy(BaseHTTPRequestHandler):
@@ -161,10 +163,12 @@ def main():
                 upstream.request(self.command, self.path, body=body, headers=headers)
                 response = upstream.getresponse()
                 if self.path.endswith('/devices') and response.status==200 and tamper.get(subject):
-                    data=json.loads(response.read());data['devices'][1]['signing_key']='01'*32
-                    data['devices'][1]['fingerprint']=hashlib.sha256(bytes.fromhex('01'*32)).hexdigest()
+                    data=json.loads(response.read())
+                    if tamper[subject]=='swap':
+                        data['devices'][1]['signing_key']='01'*32
+                        data['devices'][1]['fingerprint']=hashlib.sha256(bytes.fromhex('01'*32)).hexdigest()
                     raw=json.dumps(data).encode();self.send_response(200)
-                    self.send_header('Content-Type','application/json');self.send_header('X-Family-Actor','alice' if subject=='owner' else 'bob')
+                    self.send_header('Content-Type','application/json');self.send_header('X-Family-Actor','bob' if tamper[subject]=='header' else 'alice' if subject=='owner' else 'bob')
                     self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw);return
                 self.send_response(response.status)
                 for k, v in response.getheaders():
@@ -193,6 +197,7 @@ def main():
             contexts=[browser.new_context() for _ in cookies]
             pages=[]
             for ctx,cookie,actor in zip(contexts,cookies,['alice','bob']):
+                ctx.add_init_script("window.testWorkers=[];const W=Worker;window.Worker=class extends W{constructor(...args){super(...args);window.testWorkers.push({worker:this,url:String(args[0])});this.addEventListener('message',({data})=>{if(data?.testAbortObserved)window.testAborts=(window.testAborts||0)+1;});}};")
                 ctx.add_cookies([{'name':'synthetic_edge','value':cookie,'url':url,'httpOnly':True,'sameSite':'Strict'}])
                 p=ctx.new_page();p.goto(url);p.wait_for_function('() => window.ready === true');p.evaluate("spawn('device')");pages.append(p)
                 assert p.evaluate('document.cookie')==''
@@ -212,7 +217,9 @@ def main():
             commit(1,config['people'])
             until=time.monotonic()+5
             while time.monotonic()<until:
-                if len(direct('owner','GET','/v1/rooms/family/devices')[1]['devices'])==2:break
+                status,d=direct('owner','GET','/v1/rooms/family/devices')
+                assert status in (200,401,403), 'unexpected reload response'
+                if status==200 and len(d['devices'])==2:break
                 time.sleep(.05)
             else:raise AssertionError('device policy reload deadline')
             for p in pages:rpc(p,'pin',{'room':'family','pins':pins})
@@ -244,15 +251,16 @@ def main():
             rpc(a,'check');rpc(b,'check')
             proof['checks']['native_restart_preserves_accepted_directory']=True
             # Reject substituted directory key even if its advertised hash matches.
-            tamper['owner']=True
+            tamper['owner']='swap'
             rpc(a,'check',reject=True);tamper.clear();rpc(a,'encrypt',[1],reject=True)
             proof['checks']['directory_substitution_retires_worker_without_fallback']=True
             config['devices'][1]['status']='revoked';config['devices'][1]['device_revision']=2
             commit(2,config['people'])
             until=time.monotonic()+5
             while time.monotonic()<until:
-                d=direct('owner','GET','/v1/rooms/family/devices')[1]
-                if any(v['status']=='revoked' for v in d['devices']):break
+                status,d=direct('owner','GET','/v1/rooms/family/devices')
+                assert status in (200,401,403), 'unexpected revocation response'
+                if status==200 and any(v['status']=='revoked' for v in d['devices']):break
                 time.sleep(.05)
             else:raise AssertionError('revocation reload deadline')
             rpc(b,'check',reject=True);rpc(b,'encrypt',[1],reject=True)
@@ -288,6 +296,18 @@ def main():
             fake('init','alice');fake('create');forged=fake('invite',package2)
             rpc(b,'join',forged,reject=True);rpc(b,'encrypt',[1],reject=True)
             proof['checks']['valid_welcome_with_unaccepted_inviter_key_rejected_and_retired']=True
+            rpc(a,'check')
+            a.evaluate("window.testWorkers.filter(x=>x.url.includes('trust-worker.js')).at(-1).worker.postMessage(null)")
+            rpc(a,'check',reject=True)
+            proof['checks']['malformed_worker_command_retires_before_next_operation']=True
+            h=contexts[0].new_page();h.goto(url);h.wait_for_function('() => window.ready === true');h.evaluate("spawn('device')")
+            rpc(h,'init','alice');hkey=rpc(h,'public_key')
+            hpins=[{**pins2[0],'signing_key':bytes(hkey).hex(),'fingerprint':hashlib.sha256(bytes(hkey)).hexdigest()},pins2[1]]
+            tamper['owner']='header'
+            rpc(h,'pin',{'room':'family','pins':hpins},reject=True)
+            assert h.evaluate('window.testAborts || 0')==1
+            tamper.clear();rpc(h,'check',reject=True)
+            proof['checks']['rejected_identity_header_aborts_pending_fetch']=True
             browser.close()
         proof['passed']=True
     finally:

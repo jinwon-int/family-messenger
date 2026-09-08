@@ -416,7 +416,7 @@ func (s *PolicyStore) Commit(expected uint64, c Config) (PolicyInfo, error) {
 		if old.Revision != expected {
 			return ErrPolicyConflict
 		}
-		if deviceTransition(previous.Devices, c.Devices) != nil {
+		if deviceTransition(previous.Devices, w.Devices) != nil {
 			return ErrConfig
 		}
 		if old.Revision >= MaxPolicyRevisions {

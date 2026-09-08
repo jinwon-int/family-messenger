@@ -71,7 +71,8 @@ its own generated key, and fetches the actual signed native directory with the
 expected actor header. Each check/create/invite/join/encrypt/decrypt operation
 requires a fresh successful directory response matching the fixed room and both
 pins. Body reads are bounded to 16 KiB/5 seconds, redirects rejected, and the
-existing loopback Host/Origin boundary remains. Missing, extra, revoked, substituted
+existing loopback Host/Origin boundary remains. Malformed worker commands also retire the worker; failed admission aborts the
+fetch even when rejection happens before reading the body. Missing, extra, revoked, substituted
 or conflicting bindings, identity failure and unknown input retire the worker;
 there is no plaintext/fixture or automatic new-key fallback. A directory whose
 public key and advertised fingerprint are both substituted still fails against
@@ -111,7 +112,8 @@ timeout 120s .venv/bin/python tests/native_device_browser_smoke.py \
 The proof uses two Chromium contexts and a loopback-only CF-shaped test proxy;
 spoofed upstream identity headers are denied, generated signed assertions are
 injected only upstream, and no JWT reaches JS/storage/URLs. Test-served main.js
-selects the separate trust worker; served hashes are recorded. Native restart,
+selects the separate trust worker, and a test-only fetch-signal observer verifies
+cancellation without reading keys/bodies; served hashes are recorded. Native restart,
 policy reload and retained revocation are real processes. A second fresh private
 auth history tests the valid-but-unaccepted inviter-key case; earlier state and
 proposals remain retained. CI uploads verification JSON only, not private profiles,
