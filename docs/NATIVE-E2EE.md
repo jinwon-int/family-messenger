@@ -123,7 +123,7 @@ binding, not against untrusted sender labels in HTTP or encrypted text.
 
 For the first device, require an explicit verified key fingerprint ceremony with
 the person/operator outside the new server-supplied directory. For additional
-devices, require approval by an already trusted device and an explicit visible
+devices, require approval by that actor's already trusted device and an explicit visible
 key-change confirmation; CF account access alone cannot add a decrypting device.
 The exact maintained signing/verification mechanism and enrollment transcript
 are a separate reviewed implementation gate, not custom crypto specified here.
@@ -181,7 +181,14 @@ Self-echo handling must use the library contract and durable outbox identity.
 If storage fails or commit outcome is uncertain, retire the in-memory group,
 stop sends and retain diagnostic state without logging keys. Resume only from a
 known committed transaction; do not merge a partial state or reuse a rolled-back
-counter. The OpenMLS provider can perform multiple writes per operation, so the
+counter. If a membership commit wins while old-epoch ciphertext is durably queued,
+a fresh policy/epoch check must reject delivery under the old epoch. Preserve and
+retire that pending item without ratchet rollback, changing its bytes under the
+same ID, or silently re-encrypting it. A deliberate new send after catch-up is a
+new operation with a new ID; the old outcome must be reconciled first. Test this
+race with an actually persisted outbox and a removed recipient.
+
+The OpenMLS provider can perform multiple writes per operation, so the
 wrapper must stage all of them in one application transaction with the outbox/
 cursor and discard its mutated object on failure. **Whether a WASM/IndexedDB
 adapter can meet this synchronous-provider contract is a concrete blocker**;
