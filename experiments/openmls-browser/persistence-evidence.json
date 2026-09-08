@@ -2,6 +2,7 @@
   "synthetic_only": true,
   "keys_at_rest": "unencrypted synthetic IndexedDB only",
   "checks": {
+    "nonstring_id_rejected_without_mutation": true,
     "damaged_welcome_discards_complete_provider": true,
     "tamper_abort_and_original_exactly_once": true,
     "lost_reply_browser_crash_exact_ciphertext_retry": true,
@@ -19,22 +20,12 @@
     "/": "6d10e089cac6a58aaa00f7261be71552bc35fd0d0a378586600d79db6cce25c1",
     "/main.js": "521f7d674333d18bc2174ffc86c9aa7d5c637f580d4476c4e7379f1625f0e881",
     "/worker.js": "e92df9cd5347d179679229ea25a9b621673c823b3a3f5128871a484575f39c83",
-    "/durable-worker.js": "a3cc40909462fff8ca9cd243c8c77271f272639464055a36ace4c28d56e3ccc9",
+    "/durable-worker.js": "b128b28448409194bbc3fd305b23e5dd880510c65bcfb05ecb1752f4026061f7",
     "/pkg/family_mls_browser_experiment.js": "1527565b7e205a16f96a38e2ff5a83c15bc25a26f1e74643f90c240110c1ae86",
     "/pkg/family_mls_browser_experiment_bg.wasm": "9d404366b6b51f7ebb6a346ff585f69834066ccb99a64419f7317335acd659fd"
   },
   "browser": "151.0.7922.34",
   "passed": true,
-  "source_sha256": {
-    "experiments/openmls-browser/src/lib.rs": "bf14ac4ea2ac3ea380ed4dfa44cd1b7b1bfd13f10e4066ee64e2cf636f94479c",
-    "experiments/openmls-browser/src/staging.rs": "d9db66827bb3ec82c50ba26c42e5ac70cd410f8eb2606bf5bcdcba3ba3974f1c",
-    "experiments/openmls-browser/web/durable-worker.js": "a3cc40909462fff8ca9cd243c8c77271f272639464055a36ace4c28d56e3ccc9",
-    "experiments/openmls-browser/web/main.js": "521f7d674333d18bc2174ffc86c9aa7d5c637f580d4476c4e7379f1625f0e881",
-    "experiments/openmls-browser/Cargo.toml": "178bc000ee683d208ab602dbdd5e73c37fba039436b3c3eca4edc5725695c46f",
-    "experiments/openmls-browser/Cargo.lock": "917b9cee81c7dc6197b81b48af829245f23581605c22024c8fb9b77246f8279c",
-    "tests/native_mls_persistence_smoke.py": "6e2038b9bca3cb5d0b2b971e8aad1b814c1aa59f2cd360703aa44ebf38ca50e9",
-    "tests/native_mls_browser_smoke.py": "9ce1fc390c1a13e9a93bfc344b0ab15bdc3e71ab39ca816cb98a2adce2e0429b"
-  },
   "bundle_bytes": {
     "family_mls_browser_experiment_bg.wasm": {
       "bytes": 1420522,
@@ -52,5 +43,15 @@
   },
   "verified_toolchain_reference": "toolchain-evidence.json (PR27 distribution checksums, not current source hashes)",
   "memory_only_regression_artifact": "artifacts/native-mls-browser-2uz2wu2d/verification.json",
-  "measurement_scope": "single-worker linear memory maximum; not aggregate browser memory; synthetic profiles retained locally and excluded from CI uploads"
+  "measurement_scope": "single-worker linear memory maximum; not aggregate browser memory; synthetic profiles retained locally and excluded from CI uploads",
+  "source_sha256": {
+    "experiments/openmls-browser/src/lib.rs": "bf14ac4ea2ac3ea380ed4dfa44cd1b7b1bfd13f10e4066ee64e2cf636f94479c",
+    "experiments/openmls-browser/src/staging.rs": "d9db66827bb3ec82c50ba26c42e5ac70cd410f8eb2606bf5bcdcba3ba3974f1c",
+    "experiments/openmls-browser/web/durable-worker.js": "b128b28448409194bbc3fd305b23e5dd880510c65bcfb05ecb1752f4026061f7",
+    "experiments/openmls-browser/web/main.js": "521f7d674333d18bc2174ffc86c9aa7d5c637f580d4476c4e7379f1625f0e881",
+    "experiments/openmls-browser/Cargo.toml": "178bc000ee683d208ab602dbdd5e73c37fba039436b3c3eca4edc5725695c46f",
+    "experiments/openmls-browser/Cargo.lock": "917b9cee81c7dc6197b81b48af829245f23581605c22024c8fb9b77246f8279c",
+    "tests/native_mls_persistence_smoke.py": "7ba4666e4ff609ec6400521f410b36d47a94280b2328bb25f3f86bd463d4e4f0",
+    "tests/native_mls_browser_smoke.py": "9ce1fc390c1a13e9a93bfc344b0ab15bdc3e71ab39ca816cb98a2adce2e0429b"
+  }
 }

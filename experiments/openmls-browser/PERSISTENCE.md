@@ -44,7 +44,7 @@ ciphertext under a new ID is still rejected by OpenMLS after a committed receive
 ## Retry, concurrency and limits
 
 An immutable ID is scoped to one synthetic device database. Reuse requires exact
-method, bytes and receive sequence; changed content is rejected. Successful results
+method, bytes and receive sequence; non-string IDs are rejected without coercion; changed content is rejected. Successful results
 are retained in a bounded ledger. A lost response followed by process restart
 returns the same serialized ciphertext, not another encryption operation. All
 connections/tabs use read/write transactions over the same complete object store,
@@ -106,7 +106,7 @@ was found to hang awaiting a response and is not used.
 Assertions cover failed Welcome then valid original, altered ciphertext then
 original, unchanged complete-state hash/cursor on abort, lost-response browser
 crash with exact ciphertext retry, concurrent tabs, receiver crash with replay
-rejection and future-message success, wrong actor, forged snapshot identity,
+rejection and future-message success, wrong actor, non-string ID rejection, forged snapshot identity,
 local epoch change, missing/unknown state and capacity preservation. Test fault
 options live only in the isolated worker and no HTTP management route is added.
 They do not simulate a full node outage, human key recovery or production rollout.

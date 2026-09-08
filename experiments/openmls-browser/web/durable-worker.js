@@ -22,7 +22,7 @@ function valid(record) {
   const ids = new Set();
   for (const item of record.ledger) {
     if (!exact(item, ['id', 'method', 'input', 'output', 'sequence', 'epoch']) ||
-        !/^[a-zA-Z0-9_-]{1,64}$/.test(item.id) || ids.has(item.id) || !allowed.has(item.method) || typeof item.epoch !== 'string' ||
+        typeof item.id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(item.id) || ids.has(item.id) || !allowed.has(item.method) || typeof item.epoch !== 'string' ||
         !(item.input instanceof Uint8Array) || item.input.length > 65536 ||
         !(item.output instanceof Uint8Array) || item.output.length > 65536 ||
         !Number.isSafeInteger(item.sequence) || item.sequence < 0) fail();
@@ -32,7 +32,7 @@ function valid(record) {
   if (cursor !== record.cursor || size > MAX_BINARY || staged_epoch(record.crypto, identity) !== record.epoch) fail();
 }
 function open(name) {
-  if (!/^family-mls-synthetic-[a-z0-9-]{1,64}$/.test(name)) fail();
+  if (typeof name !== 'string' || !/^family-mls-synthetic-[a-z0-9-]{1,64}$/.test(name)) fail();
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(name, 1);
     request.onupgradeneeded = event => {
@@ -85,7 +85,7 @@ function transaction(operation, argument) {
             return;
           }
           if (!exact(argument, ['id', 'method', 'bytes', 'sequence', 'fault']) ||
-              !/^[a-zA-Z0-9_-]{1,64}$/.test(argument.id) || !allowed.has(argument.method) ||
+              typeof argument.id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(argument.id) || !allowed.has(argument.method) ||
               !Number.isSafeInteger(argument.sequence) || argument.sequence < 0 ||
               !['', 'abort-before-write', 'abort-after-write', 'lost-response'].includes(argument.fault)) fail();
           fault = argument.fault;

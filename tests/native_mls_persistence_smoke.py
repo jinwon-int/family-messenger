@@ -123,6 +123,11 @@ def main():
             alice, bob = page(contexts[0]), page(contexts[1])
             assert init(alice, 'alice')['revision'] == 1
             init(bob, 'bob')
+            before = state_digest(bob, databases['bob'])
+            invalid_id = arg('array-id', 'key_package'); invalid_id['id'] = ['array-id']
+            rpc(bob, 'operation', invalid_id, reject=True)
+            assert state_digest(bob, databases['bob']) == before
+            proof['checks']['nonstring_id_rejected_without_mutation'] = True
             package = op(bob, 'kp', 'key_package')['output']
             op(alice, 'create', 'create')
             welcome = op(alice, 'invite', 'invite', package)['output']
