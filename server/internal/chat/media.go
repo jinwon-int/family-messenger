@@ -94,7 +94,7 @@ func (s *Store) beginMedia(m Attachment) (*mediaLease, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if e := s.member(m.Room, m.Actor); e != nil {
+	if e := s.legacyMember(m.Room, m.Actor); e != nil {
 		return nil, e
 	}
 	key := mediaKey{m.Room, m.Actor, m.ClientID}
@@ -143,7 +143,7 @@ func (s *Store) mediaAuthorized(room, actor string, epoch uint64) error {
 	if s.mediaEpoch[[2]string{room, actor}] != epoch {
 		return ErrForbidden
 	}
-	return s.member(room, actor)
+	return s.legacyMember(room, actor)
 }
 func (s *Store) checkMedia(l *mediaLease) error {
 	s.mu.Lock()
@@ -198,7 +198,7 @@ func (s *Store) finishMedia(l *mediaLease, body []byte) (Attachment, bool, error
 func (s *Store) loadMedia(room, actor, id string) (Attachment, []byte, uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if e := s.member(room, actor); e != nil {
+	if e := s.legacyMember(room, actor); e != nil {
 		return Attachment{}, nil, 0, e
 	}
 	if !validAttachmentID(id) {
@@ -222,7 +222,7 @@ func (s *Store) loadMedia(room, actor, id string) (Attachment, []byte, uint64, e
 	return m, body, s.mediaEpoch[[2]string{room, actor}], nil
 }
 func (s *Store) listMedia(room, actor string) ([]Attachment, error) {
-	if e := s.member(room, actor); e != nil {
+	if e := s.legacyMember(room, actor); e != nil {
 		return nil, e
 	}
 	rows, e := s.db.Query("SELECT "+mediaColumns+" FROM attachments WHERE room=? ORDER BY created_ms,id LIMIT 128", room)
@@ -261,8 +261,12 @@ func inspectSnapshots(path string) error {
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		id := strings.TrimSuffix(strings.TrimPrefix(name, "v1-before-media-"), ".sqlite")
-		if name != "v1-before-media-"+id+".sqlite" || !validAttachmentID(id) {
+		prefix := "v1-before-media-"
+		if strings.HasPrefix(name, "v2-before-mls-") {
+			prefix = "v2-before-mls-"
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(name, prefix), ".sqlite")
+		if name != prefix+id+".sqlite" || !validAttachmentID(id) {
 			return fmt.Errorf("unknown snapshot file preserved")
 		}
 		f, e := os.OpenFile(filepath.Join(path, name), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
@@ -282,49 +286,8 @@ func inspectSnapshots(path string) error {
 // a previous attempt; a partial snapshot from a failed attempt stays preserved.
 func migrateMedia(db *sql.DB, dir string, fresh bool) error {
 	if !fresh {
-		snapshots := filepath.Join(dir, "snapshots")
-		if e := os.Mkdir(snapshots, 0700); e != nil && !os.IsExist(e) {
+		if e := snapshotSchema(db, dir, "v1-before-media-"); e != nil {
 			return e
-		}
-		if e := inspectSnapshots(snapshots); e != nil {
-			return e
-		}
-		entries, e := os.ReadDir(snapshots)
-		if e != nil {
-			return e
-		}
-		if len(entries) >= 4 {
-			return fmt.Errorf("snapshot attempts exhausted; preserve and inspect recovery files")
-		}
-		id, e := mediaID()
-		if e != nil {
-			return e
-		}
-		path := filepath.Join(snapshots, "v1-before-media-"+id+".sqlite")
-		f, e := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR|syscall.O_NOFOLLOW, 0600)
-		if e != nil {
-			return e
-		}
-		defer f.Close()
-		if e = checkFile(f); e != nil {
-			return e
-		}
-		if _, e = db.Exec("VACUUM INTO ?", path); e != nil {
-			return e
-		}
-		if e = f.Sync(); e != nil {
-			return e
-		}
-		for _, p := range []string{snapshots, dir} {
-			d, e := os.Open(p)
-			if e != nil {
-				return e
-			}
-			e = d.Sync()
-			d.Close()
-			if e != nil {
-				return e
-			}
 		}
 	}
 	_, e := db.Exec(`BEGIN IMMEDIATE;
@@ -332,4 +295,59 @@ func migrateMedia(db *sql.DB, dir string, fresh bool) error {
  PRAGMA user_version=2;
  COMMIT;`)
 	return e
+}
+
+func snapshotSchema(db *sql.DB, dir, prefix string) error {
+
+	snapshots := filepath.Join(dir, "snapshots")
+	if e := os.Mkdir(snapshots, 0700); e != nil && !os.IsExist(e) {
+		return e
+	}
+	if e := inspectSnapshots(snapshots); e != nil {
+		return e
+	}
+	entries, e := os.ReadDir(snapshots)
+	if e != nil {
+		return e
+	}
+	attempts := 0
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), prefix) {
+			attempts++
+		}
+	}
+	if len(entries) >= 8 || attempts >= 4 {
+		return fmt.Errorf("snapshot attempts exhausted; preserve and inspect recovery files")
+	}
+	id, e := mediaID()
+	if e != nil {
+		return e
+	}
+	path := filepath.Join(snapshots, prefix+id+".sqlite")
+	f, e := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR|syscall.O_NOFOLLOW, 0600)
+	if e != nil {
+		return e
+	}
+	defer f.Close()
+	if e = checkFile(f); e != nil {
+		return e
+	}
+	if _, e = db.Exec("VACUUM INTO ?", path); e != nil {
+		return e
+	}
+	if e = f.Sync(); e != nil {
+		return e
+	}
+	for _, p := range []string{snapshots, dir} {
+		d, e := os.Open(p)
+		if e != nil {
+			return e
+		}
+		e = d.Sync()
+		d.Close()
+		if e != nil {
+			return e
+		}
+	}
+	return nil
 }
