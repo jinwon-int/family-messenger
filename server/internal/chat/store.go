@@ -146,7 +146,7 @@ func Open(dir string) (_ *Store, err error) {
 		} else if st.Size() != 0 {
 			header := make([]byte, 100)
 			_, e = io.ReadFull(f, header)
-			if e == nil && (string(header[:16]) != "SQLite format 3\x00" || binary.BigEndian.Uint32(header[68:72]) != 1179471188 || (binary.BigEndian.Uint32(header[60:64]) != 1 && binary.BigEndian.Uint32(header[60:64]) != 2)) {
+			if e == nil && (string(header[:16]) != "SQLite format 3\x00" || binary.BigEndian.Uint32(header[68:72]) != 1179471188 || (binary.BigEndian.Uint32(header[60:64]) != 1 && binary.BigEndian.Uint32(header[60:64]) != 2 && binary.BigEndian.Uint32(header[60:64]) != 3)) {
 				e = fmt.Errorf("not a supported synthetic messenger database")
 			}
 		}
@@ -174,10 +174,10 @@ func Open(dir string) (_ *Store, err error) {
 	if e = db.QueryRow("PRAGMA application_id").Scan(&appID); e != nil {
 		return nil, e
 	}
-	if ((version == 1 || version == 2) && appID != 1179471188) || (version == 0 && appID != 0) {
+	if ((version == 1 || version == 2 || version == 3) && appID != 1179471188) || (version == 0 && appID != 0) {
 		return nil, fmt.Errorf("not a synthetic messenger database")
 	}
-	if version != 0 && version != 1 && version != 2 {
+	if version != 0 && version != 1 && version != 2 && version != 3 {
 		return nil, fmt.Errorf("unsupported schema")
 	}
 	if version == 0 {
@@ -201,6 +201,11 @@ func Open(dir string) (_ *Store, err error) {
 	}
 	if version < 2 {
 		if e = migrateMedia(db, dir, version == 0); e != nil {
+			return nil, e
+		}
+	}
+	if version < 3 {
+		if e = migrateMLS(db, dir, version < 2); e != nil {
 			return nil, e
 		}
 	}
@@ -409,7 +414,7 @@ func (s *Store) History(room, actor string, after int64) ([]Message, error) {
 
 // rooms is called with mu held through the HTTP response, just like history.
 func (s *Store) rooms(actor string) ([]Room, error) {
-	rows, e := s.db.Query("SELECT r.id,r.owner FROM rooms r JOIN members m ON m.room=r.id WHERE m.actor=? ORDER BY r.id", actor)
+	rows, e := s.db.Query("SELECT r.id,r.owner FROM rooms r JOIN members m ON m.room=r.id WHERE m.actor=? AND NOT EXISTS (SELECT 1 FROM mls_rooms x WHERE x.room=r.id) ORDER BY r.id", actor)
 	if e != nil {
 		return nil, e
 	}

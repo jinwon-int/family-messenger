@@ -101,7 +101,7 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	// Uploads/SSE/downloads acquire authority only at bounded state/write steps.
-	streaming := len(parts) >= 4 && (parts[3] == "attachments" || parts[3] == "events")
+	streaming := len(parts) >= 4 && parts[0] == "v1" && parts[1] == "rooms" && (parts[3] == "attachments" || parts[3] == "events")
 	if streaming {
 		a.route(w, r, actor)
 		return
@@ -114,7 +114,11 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail(w, ErrInvalid)
 			return
 		}
-		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 24*1024))
+		limit := int64(24 * 1024)
+		if strings.HasPrefix(r.URL.Path, "/v1/mls/") {
+			limit = 96 * 1024
+		}
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 		if err != nil {
 			fail(w, ErrInvalid)
 			return
@@ -158,6 +162,10 @@ func (a *API) route(w http.ResponseWriter, r *http.Request, actor string) {
 		http.NotFound(w, r)
 		return
 	}
+	if len(parts) >= 3 && parts[0] == "v1" && parts[1] == "mls" {
+		a.mlsRoute(w, r, actor, parts)
+		return
+	}
 	if r.Method == "GET" && r.URL.Path == "/health" {
 		writeJSON(w, 200, map[string]string{"mode": "synthetic-only", "status": "ok"})
 		return
@@ -193,6 +201,15 @@ func (a *API) route(w http.ResponseWriter, r *http.Request, actor string) {
 		return
 	}
 	room := parts[2]
+	if parts[3] != "devices" {
+		a.store.mu.Lock()
+		e := a.store.legacyRoom(room)
+		a.store.mu.Unlock()
+		if e != nil {
+			fail(w, e)
+			return
+		}
+	}
 	if parts[3] == "attachments" {
 		a.media(w, r, room, actor, parts)
 		return

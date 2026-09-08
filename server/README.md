@@ -180,3 +180,7 @@ browser uses the verified current actor in signed mode and retains the separate
 public fixture selector only in fixture mode. This does not activate a Cloudflare
 gate or implement a human login session. See AUTH.md for the policy CLI, reload
 behavior, recovery limits and actual process acceptance.
+
+The signed synthetic [MLS delivery boundary](MLS-TRANSPORT.md) now provides
+explicit reservations/group binding and a durable ordered opaque log. Existing
+plaintext UI rooms remain separate; browser E2EE delivery is not yet integrated.

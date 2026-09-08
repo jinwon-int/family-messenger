@@ -328,3 +328,9 @@ atomically retains independent pins, local room/group identity and complete MLS
 state/outbox across actual browser crashes. Signed native admission is checked
 outside IDB and matched against the latest transaction record. Native ordered
 control/room binding and ciphertext delivery remain the next integration gate.
+
+The [native transport boundary](../server/MLS-TRANSPORT.md) now reserves explicit
+MLS-only rooms and persists ordered opaque control/application events with fixed
+device bindings, CAS and restart/retry semantics. Its process proof uses generated
+opaque bytes, not actual encrypted application messages. Joining the trusted staged
+browser, outer authenticated framing and control/outbox/cursor remains next.
