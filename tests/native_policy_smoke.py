@@ -200,6 +200,37 @@ def main():
         assert all((auth / name).read_bytes() == data for name, data in before.items())
         assert len(list(auth.glob('policy-*.json'))) == 6
         proof['two_process_compare_and_swap_no_lost_update_or_overwrite'] = True
+
+        # Generated lease metadata exercises the actual CLI/server boundary;
+        # separate Go tests acquire the same shape through real synthetic TLS.
+        leased = json.loads(revoked.read_bytes())
+        leased['keys_fetched_at'] = int(time.time()) - 3601
+        leased['keys_expire_at'] = leased['keys_fetched_at'] + 3600
+        expired = proposals / 'expired-keys.json'
+        private_write(expired, json.dumps(leased).encode())
+        commit(6, expired)
+        wait_status('owner', 401)
+        stop()
+        start()
+        assert request('owner')[0] == 401
+        assert request('family')[0] == 401
+        stale_fetch = subprocess.run([str(policy_binary), '--synthetic-only', '--auth-state', str(auth),
+                                      '--fetch-keys', '--expected-revision', '6'], capture_output=True, timeout=5)
+        assert stale_fetch.returncode != 0 and b'revision conflict' in stale_fetch.stderr
+        mixed_fetch = subprocess.run([str(policy_binary), '--synthetic-only', '--auth-state', str(auth),
+                                      '--fetch-keys', '--inspect'], capture_output=True, timeout=5)
+        assert mixed_fetch.returncode != 0
+        leased['keys_fetched_at'] = int(time.time())
+        leased['keys_expire_at'] = leased['keys_fetched_at'] + 3600
+        fresh = proposals / 'fresh-keys.json'
+        private_write(fresh, json.dumps(leased).encode())
+        commit(7, fresh)
+        wait_status('owner', 200)
+        assert request('family')[0] == 401
+        assert request('owner', path) == (200, blob)
+        assert (auth / 'policy-000001.json').read_bytes() == old
+        proof['expired_key_lease_denies_after_restart_new_lease_preserves_enrollment_and_media'] = True
+        proof['fetch_cli_stale_revision_and_mixed_modes_rejected'] = True
         proof['ok'] = True
     finally:
         stop()

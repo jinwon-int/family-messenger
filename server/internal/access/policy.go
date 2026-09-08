@@ -40,11 +40,13 @@ type person struct {
 	Owner   bool   `json:"owner"`
 }
 type policyWire struct {
-	Version  int         `json:"version"`
-	Issuer   string      `json:"issuer"`
-	Audience string      `json:"audience"`
-	Keys     []publicKey `json:"keys"`
-	People   []person    `json:"people"`
+	Version       int         `json:"version"`
+	Issuer        string      `json:"issuer"`
+	Audience      string      `json:"audience"`
+	Keys          []publicKey `json:"keys"`
+	People        []person    `json:"people"`
+	KeysFetchedAt int64       `json:"keys_fetched_at,omitempty"`
+	KeysExpireAt  int64       `json:"keys_expire_at,omitempty"`
 }
 type policyRecord struct {
 	Revision     uint64     `json:"revision"`
@@ -60,7 +62,7 @@ func strictPolicy(data []byte, v any) error {
 		return ErrConfig
 	}
 	allowed := map[string]bool{}
-	for _, k := range []string{"version", "issuer", "audience", "keys", "people", "kid", "n", "e", "subject", "actor", "owner", "revision", "previous_sha256", "policy_sha256", "policy"} {
+	for _, k := range []string{"version", "issuer", "audience", "keys", "people", "kid", "n", "e", "subject", "actor", "owner", "revision", "previous_sha256", "policy_sha256", "policy", "keys_fetched_at", "keys_expire_at"} {
 		allowed[k] = true
 	}
 	d := json.NewDecoder(bytes.NewReader(data))
@@ -128,7 +130,7 @@ func (w policyWire) config() (Config, error) {
 	if w.Version != 1 || len(w.Keys) < 1 || len(w.Keys) > 16 || len(w.People) > 32 {
 		return Config{}, ErrConfig
 	}
-	c := Config{Issuer: w.Issuer, Audience: w.Audience, Keys: make(map[string]*rsa.PublicKey)}
+	c := Config{Issuer: w.Issuer, Audience: w.Audience, Keys: make(map[string]*rsa.PublicKey), KeysFetchedAt: w.KeysFetchedAt, KeysExpireAt: w.KeysExpireAt}
 	for _, k := range w.Keys {
 		if _, ok := c.Keys[k.ID]; ok {
 			return Config{}, ErrConfig
@@ -150,7 +152,7 @@ func wire(c Config) (policyWire, error) {
 	if e != nil {
 		return policyWire{}, e
 	}
-	w := policyWire{Version: 1, Issuer: c.Issuer, Audience: c.Audience, Keys: []publicKey{}, People: []person{}}
+	w := policyWire{Version: 1, Issuer: c.Issuer, Audience: c.Audience, Keys: []publicKey{}, People: []person{}, KeysFetchedAt: c.KeysFetchedAt, KeysExpireAt: c.KeysExpireAt}
 	ids := make([]string, 0, len(c.Keys))
 	for id := range c.Keys {
 		ids = append(ids, id)
