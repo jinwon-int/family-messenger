@@ -200,6 +200,7 @@ func TestRejectUnsafeState(t *testing.T) {
 				os.Chmod(dir, 0755)
 			case "database-mode":
 				os.WriteFile(filepath.Join(dir, "messages.sqlite"), nil, 0644)
+				os.Chmod(filepath.Join(dir, "messages.sqlite"), 0644)
 			case "database-symlink":
 				os.Symlink(outside, filepath.Join(dir, "messages.sqlite"))
 			case "journal-symlink":
@@ -293,5 +294,41 @@ func TestUnknownDatabaseIsUnchanged(t *testing.T) {
 	got, e := os.ReadFile(path)
 	if e != nil || string(got) != string(body) {
 		t.Fatal("foreign database modified", e)
+	}
+}
+
+func TestOrphanJournalIsPreserved(t *testing.T) {
+	for _, emptyDB := range []bool{false, true} {
+		t.Run(fmt.Sprint(emptyDB), func(t *testing.T) {
+			dir := t.TempDir()
+			os.Chmod(dir, 0700)
+			dbPath := filepath.Join(dir, "messages.sqlite")
+			journal := filepath.Join(dir, "messages.sqlite-journal")
+			body := []byte("unknown journal must survive initialization")
+			if e := os.WriteFile(journal, body, 0600); e != nil {
+				t.Fatal(e)
+			}
+			if emptyDB {
+				if e := os.WriteFile(dbPath, nil, 0600); e != nil {
+					t.Fatal(e)
+				}
+			}
+			if s, e := Open(dir); e == nil {
+				s.Close()
+				t.Fatal("orphan accepted")
+			}
+			got, e := os.ReadFile(journal)
+			if e != nil || string(got) != string(body) {
+				t.Fatal("journal not preserved", e)
+			}
+			st, e := os.Stat(dbPath)
+			if emptyDB {
+				if e != nil || st.Size() != 0 {
+					t.Fatal("empty DB changed", e)
+				}
+			} else if !os.IsNotExist(e) {
+				t.Fatal("DB created", e)
+			}
+		})
 	}
 }

@@ -90,6 +90,7 @@ func Open(dir string) (_ *Store, err error) {
 	if e != nil {
 		return nil, e
 	}
+	hasJournal, hasNonemptyDB := false, false
 	for _, entry := range entries {
 		name := entry.Name()
 		if name != "lock" && name != "messages.sqlite" && name != "messages.sqlite-journal" {
@@ -100,10 +101,25 @@ func Open(dir string) (_ *Store, err error) {
 			return nil, e
 		}
 		e = checkFile(f)
+		if e == nil {
+			st, statErr := f.Stat()
+			e = statErr
+			if statErr == nil && name == "messages.sqlite" {
+				hasNonemptyDB = st.Size() > 0
+			}
+			if name == "messages.sqlite-journal" {
+				hasJournal = true
+			}
+		}
 		f.Close()
 		if e != nil {
 			return nil, e
 		}
+	}
+	// SQLite may remove a journal during initialization. Only pass an existing
+	// sidecar to it after recognizing its nonempty database (header check below).
+	if hasJournal && !hasNonemptyDB {
+		return nil, fmt.Errorf("orphan journal preserved; database missing or empty")
 	}
 	path := filepath.Join(dir, "messages.sqlite")
 	fd, e = syscall.Open(path, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0600)
