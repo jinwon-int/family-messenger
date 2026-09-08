@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import tempfile
 import time
@@ -69,6 +70,8 @@ def main():
             errors = []
             a.on("pageerror", lambda e: errors.append(str(e)))
             b.on("pageerror", lambda e: errors.append(str(e)))
+            a_events = []
+            a.on("request", lambda r: a_events.append(urlparse(r.url).query) if "/events?" in r.url else None)
             b_events = []
             b.on("request", lambda r: b_events.append(urlparse(r.url).query) if "/events?" in r.url else None)
             a.goto(url)
@@ -145,6 +148,25 @@ def main():
             a.screenshot(path=str(work / "mobile.png"), full_page=True)
             evidence["mobile_layout_no_horizontal_overflow"] = True
 
+            # A live TCP connection can stop delivering without closing. Pause
+            # only our disposable server: Bob stalls in the body; Alice opens a
+            # new connection and stalls before headers. Both must retry on their
+            # own within the 25s watchdog, then recover after SIGCONT.
+            expect(b.locator(".body")).to_have_count(4)
+            expect(b.locator("#connection")).to_have_text("연결됨")
+            process.send_signal(signal.SIGSTOP)
+            before_a, before_b = len(a_events), len(b_events)
+            a.locator("#reconnect").click()
+            until = time.monotonic() + 35
+            while time.monotonic() < until and (len(a_events) < before_a + 2 or len(b_events) < before_b + 1):
+                a.wait_for_timeout(100)
+            assert len(a_events) >= before_a + 2, "header stall never retried"
+            assert len(b_events) >= before_b + 1, "body stall never retried"
+            process.send_signal(signal.SIGCONT)
+            expect(a.locator(".body")).to_have_count(4)
+            expect(b.locator("#connection")).to_have_text("연결됨")
+            evidence["open_connection_header_and_body_stall_recovery"] = True
+
             # Charlie sees no rooms. Removing Bob clears his active conversation
             # and prevents further writes and room discovery.
             b.locator("#actor").select_option("charlie")
@@ -166,6 +188,7 @@ def main():
             browser.close()
     finally:
         if process is not None and process.poll() is None:
+            process.send_signal(signal.SIGCONT)
             process.terminate()
             try:
                 process.wait(timeout=5)

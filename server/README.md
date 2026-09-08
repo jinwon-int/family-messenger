@@ -129,7 +129,11 @@ The runtime dependency inventory is unchanged.
 
 Each selected room has one abortable fetch/SSE stream. Actor/room changes cancel
 old streams, clear the transcript and discard stale responses. Reconnect uses the
-last fully validated/applied sequence with bounded backoff (0.5–8 seconds). A page
+last fully validated/applied sequence with bounded backoff (0.5–8 seconds). A
+25-second per-attempt watchdog aborts missing headers or complete frames (server
+keepalive is 10 seconds). Healthy streams reset backoff so normal 30-second EOF
+rotation does not accumulate an eight-second gap. Browser background throttling
+can delay timers; this is verified for foreground Chromium. A page
 reload replays from zero because transcript data is not cached; at most the latest
 200 received messages stay in the DOM. Membership rejection stops reconnect,
 clears the visible transcript and disables sending. The room list is refreshed
@@ -153,6 +157,7 @@ python tests/native_browser_smoke.py --binary artifacts/family-dev
 
 The test spawns only its own loopback server and two fresh Chromium contexts. It
 verifies two-way text, safe markup rendering, real server restart/cursor replay,
+a SIGSTOP stall before headers and during an open body with automatic recovery,
 a committed POST whose response is deliberately dropped followed by same-ID retry
 after reload, actor isolation, live membership removal, and a 390px layout without
 horizontal overflow. Synthetic screenshots and a JSON receipt remain under

@@ -68,7 +68,7 @@ function renderMessage(s, m, eventID) {
   $("messages").dataset.cursor = String(s.seq);
   acknowledge(s,m);
 }
-async function readStream(s, response, signal) {
+async function readStream(s, response, signal, alive) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder("utf-8",{fatal:true});
   let buffer = "";
@@ -83,10 +83,10 @@ async function readStream(s, response, signal) {
         if (frame.length > 32768) throw new ProtocolError();
         const fields = frame.split("\n");
         const data = fields.filter(x=>x.startsWith("data: "));
-        if (!data.length) continue;
+        if (!data.length) {alive();continue;}
         const ids = fields.filter(x=>x.startsWith("id: "));
         if (data.length !== 1 || ids.length !== 1 || !fields.includes("event: message")) throw new ProtocolError();
-        renderMessage(s,JSON.parse(data[0].slice(6)),ids[0].slice(4));
+        renderMessage(s,JSON.parse(data[0].slice(6)),ids[0].slice(4));alive();
       }
       if (buffer.length > 32768) throw new ProtocolError();
     }
@@ -110,21 +110,34 @@ function denied(s) {
 async function connect(s,controller) {
   let delay = 500;
   while (current === s && !controller.signal.aborted) {
+    const attempt = new AbortController();
+    const stop = ()=>attempt.abort();
+    controller.signal.addEventListener("abort",stop,{once:true});
+    let watchdog;
+    let openedAt;
+    const alive = ()=>{clearTimeout(watchdog);watchdog=setTimeout(stop,25000);};
+    alive(); // Bounds both missing response headers and missing complete SSE frames.
     try {
       $("connection").textContent = s.seq ? "대화를 이어 받는 중…" : "대화를 불러오는 중…";
-      const response = await api(s.actor,`/v1/rooms/${s.room}/events?after=${s.seq}`,{signal:controller.signal});
+      const response = await api(s.actor,`/v1/rooms/${s.room}/events?after=${s.seq}`,{signal:attempt.signal});
+      openedAt = performance.now();alive();
       if (!response.headers.get("Content-Type")?.startsWith("text/event-stream")) {await response.body?.cancel(); throw new ProtocolError();}
       if (current !== s || controller.signal.aborted) {await response.body.cancel(); return;}
       $("connection").textContent = "연결됨";
-      await readStream(s,response,controller.signal);
+      await readStream(s,response,attempt.signal,alive);
     } catch (e) {
       if (current !== s || controller.signal.aborted) return;
       if (e.status === 403) {denied(s);return;}
       if (e instanceof ProtocolError || e instanceof SyntaxError || e.status === 400) {
         s.disabled = true; controls(s); $("connection").textContent = "이력을 확인할 수 없습니다. 방을 다시 선택해 주세요."; return;
       }
+    } finally {
+      clearTimeout(watchdog);controller.signal.removeEventListener("abort",stop);attempt.abort();
     }
     if (current !== s || controller.signal.aborted) return;
+    // Normal 30s rotation should not accumulate an 8s delivery gap. Short,
+    // repeatedly failing attempts still back off even if headers were received.
+    if (openedAt !== undefined && performance.now()-openedAt >= 10000) delay=500;
     $("connection").textContent = "연결이 끊겼습니다. 자동으로 다시 연결합니다.";
     await pause(delay,controller.signal); delay = Math.min(delay*2,8000);
   }
