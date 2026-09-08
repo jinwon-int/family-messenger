@@ -20,5 +20,6 @@ if mode in ('approve','cancel'):
     emit(type='approval-resolved',approval_id='n'*32,allowed=True)
 emit(type='result',status='complete',text='synthetic answer',session_id='synthetic-session')
 if mode=='slow-close':time.sleep(.3)
+if mode=='hung-close':time.sleep(100)
 assert sys.stdin.read()==''
 sys.exit(1 if mode=='bad-close' else 0)
