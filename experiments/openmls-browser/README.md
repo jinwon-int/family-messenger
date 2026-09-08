@@ -1,3 +1,7 @@
+The PR27 memory-only proof below is preserved as historical evidence. The current
+bundle also includes the [staged IndexedDB adapter](PERSISTENCE.md); its current
+dependency counts, source hashes and persistence proof are documented separately.
+
 # Disposable OpenMLS browser experiment
 
 **Synthetic-only, memory-only library proof. Not the family messenger's E2EE

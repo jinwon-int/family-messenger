@@ -144,3 +144,5 @@ impl Device {
     pub fn remove_invitee(&mut self) -> Result<Vec<u8>, JsValue> { self.run(|s| s.remove_invitee_inner()) }
     pub fn apply_commit(&mut self, bytes: &[u8]) -> Result<(), JsValue> { self.run(|s| s.apply_commit_inner(bytes)) }
 }
+
+mod staging;

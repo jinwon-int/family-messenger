@@ -1,9 +1,9 @@
 // Synthetic harness only. Reload destroys all crypto state; never a product API.
 const workers = new Map();
 let serial = 0;
-window.spawn = (name) => new Promise((resolve, reject) => {
+window.spawn = (name, durable = false) => new Promise((resolve, reject) => {
   if (workers.has(name)) throw new Error('duplicate worker');
-  const worker = new Worker('./worker.js', {type: 'module'});
+  const worker = new Worker(durable ? './durable-worker.js' : './worker.js', {type: 'module'});
   workers.set(name, worker);
   const timer = setTimeout(() => { worker.terminate(); workers.delete(name); reject(new Error('boot deadline')); }, 10000);
   worker.addEventListener('message', function boot({data}) {
@@ -29,3 +29,5 @@ window.call = (name, method, argument) => new Promise((resolve, reject) => {
   worker.postMessage({id, method, argument});
 });
 window.ready = true;
+
+window.stopWorker = (name) => { workers.get(name)?.terminate(); workers.delete(name); };
