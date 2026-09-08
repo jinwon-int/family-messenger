@@ -312,3 +312,11 @@ in-flight process crashes, controlled precommit aborts, concurrent retries and
 corruption rejection. This is an isolated storage prerequisite; native transport,
 self-echo/control cursor integration, device trust, human key protection and recovery
 still need qualification. Existing synthetic database formats are not migrated.
+
+## Native device-directory qualification
+
+The [first-device implementation](../server/DEVICES.md) persists explicit public
+bindings/tombstones in signed policy and checks native room admission. A separate
+synthetic browser worker validates independent pins and actual MLS credentials
+for invitation/Welcome. Durable client pins, trusted staged-state integration,
+control transport and human enrollment/recovery remain outstanding.

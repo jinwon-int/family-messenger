@@ -156,3 +156,7 @@ not only its persistent writes, and prove discard-on-rejection, exact-byte retri
 crash boundaries and replay state. Do not restore just the serialized group while
 leaving provider writes/consumed KeyPackages behind. Until that passes, this
 experiment is not a persistent receive/retry implementation.
+
+The [native device trust proof](../../server/DEVICES.md) adds a separate memory-only
+first-device gate against a signed native public directory. It does not yet bind
+staged storage to native ciphertext/control transport.

@@ -408,3 +408,9 @@ browser/media suite remains in CI. Evidence is retained under
 `artifacts/native-signed-browser-*`; CI uploads only verification JSON/screenshots.
 No human account is initialized, no production CF gate is claimed, and E2EE is
 still required before human use.
+
+## Public first-device bindings
+
+[DEVICES.md](DEVICES.md) specifies the optional durable device policy, immutable
+first-device/tombstone rules and signed room directory. CF admission alone does
+not enroll a decrypting device. The browser/library proof remains synthetic.

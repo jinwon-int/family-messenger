@@ -29,6 +29,7 @@ type Config struct {
 	Issuer, Audience            string
 	Keys                        map[string]*rsa.PublicKey
 	People                      []Enrollment
+	Devices                     []Device
 	KeysFetchedAt, KeysExpireAt int64
 }
 type Principal struct {
@@ -50,6 +51,7 @@ type Grant struct {
 	generation uint64
 	principal  Principal
 	expires    time.Time
+	devices    []Device
 }
 
 func (g *Grant) Principal() Principal { return g.principal }
@@ -97,6 +99,10 @@ func clone(c Config) (Config, map[string]Enrollment, error) {
 	if owners > 1 {
 		return Config{}, nil, ErrConfig
 	}
+	out.Devices, e = cloneDevices(c.Devices, people)
+	if e != nil {
+		return Config{}, nil, e
+	}
 	return out, people, nil
 }
 func New(c Config) (*Authority, error) {
@@ -116,6 +122,11 @@ func (a *Authority) Replace(c Config) error {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.generation != 0 {
+		if e = deviceTransition(a.config.Devices, out.Devices); e != nil {
+			return e
+		}
+	}
 	a.config = out
 	a.people = people
 	a.generation++
@@ -250,7 +261,7 @@ func (a *Authority) Verify(r *http.Request) (*Grant, error) {
 	if !ok {
 		return nil, ErrDenied
 	}
-	return &Grant{authority: a, generation: a.generation, principal: Principal{Actor: p.Actor, Owner: p.Owner}, expires: expires.Time}, nil
+	return &Grant{authority: a, generation: a.generation, principal: Principal{Actor: p.Actor, Owner: p.Owner}, expires: expires.Time, devices: append([]Device(nil), a.config.Devices...)}, nil
 }
 
 // Suspend denies new verification and retires existing grants without fallback.
