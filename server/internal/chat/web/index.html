@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>우리 사이 · 가족 메신저 시험판</title>
-<link rel="stylesheet" href="/app.css"><script src="/app.js" defer></script>
+<link rel="stylesheet" href="/app.css"><script src="/app.js" defer></script><script src="/media.js" defer></script>
 </head>
 <body>
 <header class="masthead"><div class="brand"><span class="mark" aria-hidden="true">우</span><div><strong>우리 사이</strong><span>가까운 사람들과 나누는 이야기</span></div></div><span class="pill">로컬 시험판</span></header>
@@ -20,8 +20,8 @@
 <div id="owner-tools" hidden><label for="member-actor">방 구성원 관리</label><select id="member-actor"><option value="alice">앨리스</option><option value="bob">밥</option><option value="charlie">찰리</option></select><button id="add-member" class="quiet" type="button">추가</button><button id="remove-member" class="quiet" type="button">제외</button></div>
 <ol id="messages" aria-label="메시지 목록"></ol>
 <p id="empty" class="empty">새 대화방을 만들거나 왼쪽에서 선택해 주세요.</p>
-<div class="composer"><p id="send-status" role="status" aria-live="polite"></p><form id="send-form"><label class="sr-only" for="message">시험 메시지</label><textarea id="message" rows="2" maxlength="16384" placeholder="시험 메시지를 입력하세요" disabled></textarea><button id="send" type="submit" disabled>보내기</button><button id="retry" type="button" hidden>전송 다시 확인</button></form><small>Enter로 전송 · Shift+Enter로 줄바꿈 · 최근 200개 표시</small></div>
+<div class="composer"><p id="send-status" role="status" aria-live="polite"></p><label for="file">시험 첨부파일 · 최대 8 MiB</label><input id="file" type="file" disabled><form id="send-form"><label class="sr-only" for="message">시험 메시지</label><textarea id="message" rows="2" maxlength="16384" placeholder="시험 메시지를 입력하세요" disabled></textarea><button id="send" type="submit" disabled>보내기</button><button id="retry" type="button" hidden>전송 다시 확인</button></form><small>Enter로 전송 · Shift+Enter로 줄바꿈 · 최근 200개 표시</small></div>
 </section>
 </main>
-<footer>우리의 서버, 우리의 대화 공간. 사진·영상·실제 계정 연결은 준비 중입니다.</footer>
+<footer>우리의 서버, 우리의 대화 공간. 합성 파일로 사진·영상을 시험할 수 있습니다. 실제 계정 연결은 준비 중입니다.</footer>
 </body></html>

@@ -47,7 +47,7 @@ as part of committing; application data is not automatically deleted.
 
 All requests require `Authorization: Bearer synthetic-alice` (or
 `synthetic-bob`, `synthetic-charlie`). These strings are fixtures, **not secrets**.
-The root page, `/app.js` and `/app.css` are public synthetic assets embedded in the
+The root page, `/app.js`, `/media.js` and `/app.css` are public synthetic assets embedded in the
 binary. Browser API requests must be same-origin: an Origin header must exactly
 match `http://127.0.0.1:<port>`, and Fetch Metadata may only be absent or
 `same-origin` (`none` is accepted only for navigating static assets). Other
@@ -95,7 +95,7 @@ keepalives. Reconnect normally after EOF using the last applied sequence. Capaci
 returns 507 without deleting history; these are test limits, not a production
 storage policy. The executable bounds header/body/idle reads and stream writes.
 A [private synthetic media API](MEDIA.md) now stores bounded attachments in SQLite
-with migration snapshots and room checks. It has no attachment UI/playback, mobile
+with migration snapshots and room checks. The UI verifies synthetic image/video preview and playback. It has no mobile
 background delivery, retention, disk monitor,
 production authentication, E2EE, account/device revocation, production backup/restore,
 or fleet execution adapter yet.
@@ -116,7 +116,7 @@ concurrent writers, pagination, room isolation, path/permission/lock rejection
 and stream capacity/release. CI also runs the race detector and both 022/077
 umasks. Existing Matrix tests remain while production still uses that stack.
 
-Next: attachment UI/playback and read state;
+Next: read state;
 then reviewed account authentication and E2EE/key recovery before human use,
 and transport binding to the existing fleet worker/guardian.
 
@@ -124,7 +124,7 @@ and transport binding to the existing fleet worker/guardian.
 
 Open the loopback address after starting the binary. Select Alice/Bob/Charlie,
 create a room and choose other fixture members. Two separate browser contexts can
-send synthetic text; room owners can add/remove members. HTML-like message text
+send synthetic text and attachments ([media protocol](MEDIA.md)); room owners can add/remove members. HTML-like message text
 is rendered with `textContent`, never as markup. Same-origin static scripts/styles
 use a restrictive CSP and no external fonts, CDN, npm packages or frontend build.
 The runtime dependency inventory is unchanged.

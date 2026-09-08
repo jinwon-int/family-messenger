@@ -1,8 +1,8 @@
 # Private synthetic media API
 
 The native prototype accepts attachment bytes with fixture room authorization.
-This is **not E2EE or production file hosting**. The UI does not yet render/send
-attachments or verify playback. Existing production services are unchanged.
+This is **not E2EE or production file hosting**. The embedded UI can send attachments and open supported images/videos after
+authorized integrity checks. Existing production services are unchanged.
 
 ## Storage choice and limits
 
@@ -113,5 +113,56 @@ This spawns only disposable loopback processes with generated PNG, a generated
 blue MP4 and synthetic binary data. It checks hashes, duplicate/conflicting
 requests, room denial, SIGKILL during an incomplete upload, committed file
 survival, revocation and snapshot restoration in a separate directory. Evidence
-is preserved under `artifacts/native-media-*`. Byte transport success does not
-claim browser photo/video preview or playback; that is the next UI unit.
+is preserved under `artifacts/native-media-*`. Browser preview/playback is verified separately by the test below.
+
+## Browser attachment protocol and limits
+
+`media.js` is embedded with the other assets; no new runtime/build libraries.
+Each new UI payload is UTF-8 `\x1eFAMILY/1\n` followed by JSON, then the normal
+wire base64. `{"type":"text","text":"..."}` escapes text even if it starts with
+the reserved marker. `{"type":"attachment","attachment":{...}}` contains the
+exact uploaded metadata object. Existing unframed UTF-8 remains literal text;
+legacy bytes that start with the reserved marker occupy the new protocol namespace.
+Invalid/unknown framed values show an unsupported-format placeholder. This is an
+experimental UI envelope, not server validation or encryption: the server retains
+opaque bytes. Other clients can send fabricated references; the UI checks room,
+sender, exact canonical stored metadata, length and hash before using them.
+Only the original uploading actor can present their attachment as their message
+in this UI. Forwarding/captions are not implemented; text and files are separate.
+
+One pending message per actor/room/tab is retained in sessionStorage. Before the
+first upload the UI records an immutable upload ID, filename/type/size/SHA-256 and
+separate message ID. A received upload response becomes an immutable message
+payload in sessionStorage **before** POSTing the message. Upload success alone is
+not displayed as message delivery. Explicit retry repeats the original IDs. If
+reloaded before the upload response was saved, the same file must be reselected;
+name, MIME, size and digest must match. If the message payload was already saved,
+no file reselection or new upload occurs. A failed storage write stops progress;
+closing the tab/clearing storage can lose the pending record. Successfully stored
+but unsent attachments consume quota; no silent deletion/cancellation is offered.
+
+Files are fetched with bearer headers, full length and SHA verified, then a fresh
+membership check is made before creating a Blob URL. Exactly one preview/download
+Blob (at most 8 MiB encoded bytes) and one media read are active per view; selecting
+another file revokes the previous URL. Room/actor switches, revocation, and removal
+of the preview message from the 200-message window clear it. Each download button
+performs a fresh authorized read; URLs/credentials are never public server links.
+Network reads have a 35-second deadline. Decoded image/video memory and browser
+internal copies are additional costs, not an asserted 8 MiB total memory budget.
+
+Only PNG/JPEG/WebP and MP4/WebM get image/video elements; other types (including
+HTML/SVG) are download-only as octet-stream. CSP only adds `img-src blob:` and
+`media-src blob:`; scripts, frames and objects remain restricted. Browser codecs
+may reject unsupported content. Opening files in external programs is outside
+this prototype. No antivirus or semantic file safety guarantee is claimed.
+Already received/saved bytes cannot be recalled; SSE membership rejection clears
+the live view, with foreground reconnect/heartbeat timing as in the README.
+
+Run `python tests/native_media_browser_smoke.py --binary artifacts/family-dev`
+with the test-only Playwright environment. It spawns its own loopback server and
+two Chromium contexts: generated PNG decode, MP4 playback to ended, exact download,
+interrupted/lost upload and lost message responses across reload with stable IDs,
+wrong-file retry, forged metadata/cross-room envelope, modified download rejection,
+active SVG exclusion, size limit, real restart/history, object URL cleanup, actor
+switch/removal and 390px layout. Evidence is `artifacts/native-media-browser-*`.
+This is not a real Android/iOS device or background playback qualification.

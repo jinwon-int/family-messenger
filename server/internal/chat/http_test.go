@@ -194,7 +194,7 @@ func TestSSEConnectionLimitAndRelease(t *testing.T) {
 
 func TestWebAssetsAndStrictBrowserOrigin(t *testing.T) {
 	_, h := fixture(t)
-	for _, path := range []string{"/", "/app.js", "/app.css"} {
+	for _, path := range []string{"/", "/app.js", "/app.css", "/media.js"} {
 		r := req(t, h, "GET", path, "", nil, map[string]string{"Sec-Fetch-Site": "none"})
 		if r.StatusCode != 200 || r.Header.Get("Content-Security-Policy") == "" || r.Header.Get("X-Frame-Options") != "DENY" {
 			t.Fatal(path, r.StatusCode, r.Header)
@@ -203,7 +203,7 @@ func TestWebAssetsAndStrictBrowserOrigin(t *testing.T) {
 	}
 	status(t, req(t, h, "GET", "/v1/rooms", "alice", nil, map[string]string{"Origin": h.URL, "Sec-Fetch-Site": "same-origin"}), 200)
 	status(t, req(t, h, "POST", "/v1/rooms", "alice", map[string]any{"id": "browser"}, map[string]string{"Origin": h.URL, "Sec-Fetch-Site": "same-origin"}), 201)
-	for _, path := range []string{"/", "/app.js", "/v1/rooms", "/v1/rooms/family/events"} {
+	for _, path := range []string{"/", "/app.js", "/media.js", "/v1/rooms", "/v1/rooms/family/events"} {
 		for _, headers := range []map[string]string{{"Origin": "http://127.0.0.1:1"}, {"Origin": "https://127.0.0.1:1"}, {"Origin": "null"}, {"Sec-Fetch-Site": "cross-site"}, {"Sec-Fetch-Site": "same-site"}, {"Host": "attacker.invalid"}} {
 			r := req(t, h, "GET", path, "alice", nil, headers)
 			if r.Header.Get("Access-Control-Allow-Origin") != "" {

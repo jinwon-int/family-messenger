@@ -39,6 +39,8 @@ jobs:
           python -m playwright install --with-deps chromium
       - name: Two real browser clients
         run: python tests/native_browser_smoke.py --binary artifacts/family-dev
+      - name: Two browser media and playback proof
+        run: python tests/native_media_browser_smoke.py --binary artifacts/family-dev
       - name: Preserve synthetic browser evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -47,3 +49,5 @@ jobs:
           path: |
             artifacts/native-browser-*/verification.json
             artifacts/native-browser-*/*.png
+            artifacts/native-media-browser-*/verification.json
+            artifacts/native-media-browser-*/*.png
