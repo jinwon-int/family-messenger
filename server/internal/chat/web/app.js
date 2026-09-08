@@ -14,9 +14,9 @@ function statusText(error) {
   return ({400:"입력 내용을 확인해 주세요.",403:"이 대화방에 접근할 수 없습니다.",409:"같은 ID가 이미 사용되었습니다.",507:"시험 저장 한도에 도달했습니다."})[error.status] || "연결을 확인한 뒤 다시 시도해 주세요.";
 }
 async function api(actor, path, options = {}) {
-  const signal = path.includes("/events?") ? options.signal : AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(10000)]);
+  const signal = path.includes("/events?") ? options.signal : AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(path.includes("/attachments") ? 35000 : 10000)]);
   const response = await fetch(path, {...options, signal, credentials:"omit", cache:"no-store",
-    headers:{"Authorization":`Bearer synthetic-${actor}`, "Content-Type":"application/json"}});
+    headers:{"Authorization":`Bearer synthetic-${actor}`, "Content-Type":"application/json", ...options.headers}});
   if (!response.ok) { await response.body?.cancel(); throw new APIError(response.status); }
   return response;
 }
@@ -25,7 +25,9 @@ function pendingLoad(s) {
   const value = sessionStorage.getItem(pendingKey(s));
   if (value === null) return null;
   const p = JSON.parse(value);
-  if (p.actor !== s.actor || p.room !== s.room || !/^[A-Za-z0-9_-]{1,64}$/.test(p.client_id) || typeof p.payload !== "string") throw new ProtocolError();
+  if (p.actor !== s.actor || p.room !== s.room || !/^[A-Za-z0-9_-]{1,64}$/.test(p.client_id) || (typeof p.payload !== "string" && !(p.payload === null && validDraft(p.media)))) throw new ProtocolError();
+  if (p.media && !validDraft(p.media)) throw new ProtocolError();
+  if (p.payload === null) return p;
   const bytes = atob(p.payload);
   if (!bytes.length || bytes.length > 16384) throw new ProtocolError();
   return p;
@@ -36,6 +38,7 @@ function bytesText(payload) {
 }
 function controls(s) {
   if (current !== s) return;
+  $("file").disabled = s.disabled || s.busy || !!s.pending?.payload;
   $("message").disabled = s.disabled || !!s.pending || s.busy;
   $("send").disabled = s.disabled || !!s.pending || s.busy;
   $("retry").hidden = !s.pending;
@@ -45,13 +48,13 @@ function acknowledge(s, m) {
   if (s.pending && m.actor === s.actor && m.client_id === s.pending.client_id && m.payload === s.pending.payload) {
     try { sessionStorage.removeItem(pendingKey(s)); }
     catch { s.disabled = true; $("send-status").textContent = "대기 기록을 갱신할 수 없습니다. 이 탭을 새로고침해 주세요."; controls(s); return; }
-    s.pending = null;
+    s.pending = null; $("file").value = "";
     if (current === s) { $("message").value = ""; $("send-status").textContent = "전송을 확인했습니다."; controls(s); }
   }
 }
 function renderMessage(s, m, eventID) {
   if (current !== s) return;
-  if (!Number.isSafeInteger(m.seq) || m.seq < 1 || String(m.seq) !== eventID || m.room !== s.room || !names[m.actor] || typeof m.payload !== "string" || m.payload.length > 21848 || typeof m.client_id !== "string" || !Number.isSafeInteger(m.created_ms)) throw new ProtocolError();
+  if (!Number.isSafeInteger(m.seq) || m.seq < 1 || String(m.seq) !== eventID || m.room !== s.room || !Object.hasOwn(names,m.actor) || typeof m.payload !== "string" || m.payload.length > 21848 || typeof m.client_id !== "string" || !Number.isSafeInteger(m.created_ms)) throw new ProtocolError();
   if (m.seq <= s.seq) return;
   if (m.seq !== s.seq + 1) throw new ProtocolError();
   const li = document.createElement("li");
@@ -59,9 +62,9 @@ function renderMessage(s, m, eventID) {
   if (m.actor === s.actor) li.className = "mine";
   const meta = document.createElement("div"); meta.className = "meta";
   meta.textContent = `${names[m.actor]} · ${new Date(m.created_ms).toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"})}`;
-  const body = document.createElement("div"); body.className = "body"; body.textContent = bytesText(m.payload);
+  const body = document.createElement("div"); body.className = "body"; renderBody(s,m,body);
   li.append(meta,body); $("messages").append(li);
-  while ($("messages").children.length > 200) $("messages").firstChild.remove();
+  while ($("messages").children.length > 200) removeMessage(s,$("messages").firstChild);
   $("messages").scrollTop = $("messages").scrollHeight;
   $("empty").hidden = true;
   s.seq = m.seq; // Only advance after validating and applying the whole event.
@@ -101,7 +104,7 @@ function pause(ms,signal) {
 }
 function denied(s) {
   if (current !== s) return;
-  s.disabled = true;
+  s.disabled = true; s.controller.abort(); clearMedia(s);
   $("messages").replaceChildren(); $("empty").hidden = false;
   $("empty").textContent = "이 대화방에 접근할 수 없습니다.";
   $("connection").textContent = "접근 권한이 없습니다.";
@@ -143,27 +146,27 @@ async function connect(s,controller) {
   }
 }
 function selectRoom(room) {
-  current?.controller.abort();
-  const s = {actor:$("actor").value,room:room.id,owner:room.owner,seq:0,controller:new AbortController(),pending:null,busy:false,disabled:false};
+  current?.controller.abort(); if(current) clearMedia(current);
+  const s = {actor:$("actor").value,room:room.id,owner:room.owner,seq:0,controller:new AbortController(),pending:null,busy:false,disabled:false,mediaBusy:false,preview:null};
   current = s;
   $("room-title").textContent = room.id;
   $("messages").replaceChildren(); $("messages").dataset.cursor = "0";
   $("empty").hidden = false; $("empty").textContent = "첫 시험 메시지를 보내 보세요.";
-  $("send-status").textContent = ""; $("message").value = "";
+  $("send-status").textContent = ""; $("message").value = ""; $("file").value = "";
   $("owner-tools").hidden = room.owner !== s.actor; $("reconnect").disabled = false;
   for (const button of $("rooms").children) button.setAttribute("aria-current",String(button.dataset.room === s.room));
   try {
     s.pending = pendingLoad(s);
-    if (s.pending) {$("message").value = bytesText(s.pending.payload);$("send-status").textContent = "확인되지 않은 전송이 있습니다. 같은 요청으로 다시 확인할 수 있습니다.";}
+    if (s.pending) {$("message").value = s.pending.payload ? draftText(s.pending.payload) : "";$("send-status").textContent = "확인되지 않은 전송이 있습니다. 같은 요청으로 다시 확인할 수 있습니다.";}
   } catch {s.disabled = true;$("send-status").textContent = "대기 기록을 읽을 수 없습니다. 새 시험 탭을 사용해 주세요.";}
   controls(s); connect(s,s.controller);
 }
 function clearRoom() {
-  current?.controller.abort(); current = null;
+  current?.controller.abort(); if(current) clearMedia(current); current = null;
   $("room-title").textContent = "대화방을 선택하세요";$("messages").replaceChildren();
   $("empty").hidden = false;$("empty").textContent = "새 대화방을 만들거나 목록에서 선택해 주세요.";
   $("owner-tools").hidden = true;$("message").value = "";$("send-status").textContent = "";
-  $("message").disabled = true;$("send").disabled = true;$("retry").hidden = true;$("reconnect").disabled = true;
+  $("file").disabled = true;$("file").value = "";$("message").disabled = true;$("send").disabled = true;$("retry").hidden = true;$("reconnect").disabled = true;
 }
 async function refreshRooms(preferred) {
   const version = ++listVersion, actor = $("actor").value;
@@ -185,24 +188,30 @@ async function refreshRooms(preferred) {
 async function transmit(s) {
   if (!s.pending || s.busy || s.disabled || current !== s) return;
   s.busy = true;controls(s);$("send-status").textContent = "전송을 확인하는 중…";
-  const p = s.pending;
+  let p = s.pending;
   try {
+    if (!p.payload) {
+      p = await uploadPending(s,p);
+      if (current !== s || s.disabled) return;
+    }
     const response = await api(s.actor,`/v1/rooms/${s.room}/messages`,{method:"POST",body:JSON.stringify({client_id:p.client_id,payload:p.payload}),signal:s.controller.signal});
     const m = await response.json();
     if (current === s) acknowledge(s,m);
   } catch(e) {
     if (current === s && s.pending) {
-      $("send-status").textContent = e.status ? statusText(e) : "전송 결과를 확인하지 못했습니다. 같은 요청으로 다시 확인해 주세요.";
+      $("send-status").textContent = e.status ? statusText(e) : (e instanceof TypeError || e.name === "TimeoutError" || e.name === "AbortError" ? "전송 결과를 확인하지 못했습니다. 같은 요청으로 다시 확인해 주세요." : e.message || "전송 결과를 확인하지 못했습니다.");
       if (e.status === 403) denied(s);
     }
   } finally {s.busy = false;controls(s);}
 }
-$("send-form").addEventListener("submit",event=>{
+$("send-form").addEventListener("submit",async event=>{
   event.preventDefault();const s=current;
   if (!s || s.disabled || s.pending || s.busy) return;
-  const bytes = encoder.encode($("message").value);
-  if (!bytes.length || bytes.length>16384) {$("send-status").textContent="메시지는 UTF-8 기준 16 KiB까지 보낼 수 있습니다.";return;}
-  const p={actor:s.actor,room:s.room,client_id:crypto.randomUUID(),payload:btoa(String.fromCharCode(...bytes))};
+  if ($("file").files.length) { await stageFile(s,$("file").files[0]); return; }
+  const text = $("message").value;
+  const payload = pack({type:"text",text});
+  if (!text.length || atob(payload).length>16384) {$("send-status").textContent="메시지는 UTF-8 기준 16 KiB까지 보낼 수 있습니다.";return;}
+  const p={actor:s.actor,room:s.room,client_id:crypto.randomUUID(),payload};
   try {sessionStorage.setItem(pendingKey(s),JSON.stringify(p));}
   catch {$("send-status").textContent="대기 기록을 저장할 수 없어 전송하지 않았습니다.";return;}
   s.pending=p;transmit(s);

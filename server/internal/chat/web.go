@@ -5,20 +5,22 @@ import (
 	"net/http"
 )
 
-//go:embed web/index.html web/app.js web/app.css
+//go:embed web/index.html web/app.js web/app.css web/media.js
 var assets embed.FS
 
-func isAsset(path string) bool { return path == "/" || path == "/app.js" || path == "/app.css" }
+func isAsset(path string) bool {
+	return path == "/" || path == "/app.js" || path == "/app.css" || path == "/media.js"
+}
 func serveAsset(w http.ResponseWriter, r *http.Request) {
 	name, kind := "web/index.html", "text/html; charset=utf-8"
-	if r.URL.Path == "/app.js" {
-		name, kind = "web/app.js", "text/javascript; charset=utf-8"
+	if r.URL.Path == "/app.js" || r.URL.Path == "/media.js" {
+		name, kind = "web"+r.URL.Path, "text/javascript; charset=utf-8"
 	}
 	if r.URL.Path == "/app.css" {
 		name, kind = "web/app.css", "text/css; charset=utf-8"
 	}
 	w.Header().Set("Content-Type", kind)
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src blob:; media-src blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	data, e := assets.ReadFile(name)
