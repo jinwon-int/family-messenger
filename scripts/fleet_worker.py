@@ -178,20 +178,26 @@ class Worker:
             reason = 'runtime-error'
         if reason is not None:
             self.stopping = True
-            # Runtime errors can have tool side effects too. Close the runtime
-            # if the iterator has already unwound and interrupt may be a no-op.
-            already_unwound = execution.done()
-            await self._interrupt()
-            execution.cancel()
-            await asyncio.gather(execution, return_exceptions=True)
-            if already_unwound:
-                self.closed = True
+            # interrupt() is not an acknowledgement of remote termination:
+            # Codex has no turn id while awaiting turn/start. Retire this
+            # runtime for EVERY uncertain outcome, even if interrupt returns.
+            self.closed = True
+            try:
+                await self._interrupt()
+                execution.cancel()
+                await asyncio.gather(execution, return_exceptions=True)
+                cleanup_ok = True
                 try:
                     await asyncio.wait_for(self.runtime.close(), 10)
-                finally:
-                    self.failed.set()
-            await self.emit({'type': 'result', 'turn_id': turn_id,
-                             'status': 'uncertain', 'reason': reason})
+                except Exception:
+                    cleanup_ok = False
+                await self.emit({'type': 'result', 'turn_id': turn_id,
+                                 'status': 'uncertain', 'reason': reason,
+                                 'runtime_closed': cleanup_ok})
+            finally:
+                # Wake the input loop after the terminal notice, also when
+                # the peer's output pipe disappeared. Never accept new work.
+                self.failed.set()
 
     async def close(self):
         self.closed = True

@@ -221,8 +221,8 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         await self.wait_for(out,'session')
         await w.handle({'type':'cancel','turn_id':'one'})
         await asyncio.wait_for(started.wait(),1)
-        await w.handle({'type':'cancel','turn_id':'one'})
-        self.assertFalse(out[-1]['accepted'])
+        with self.assertRaises(RuntimeError):
+            await w.handle({'type':'cancel','turn_id':'one'})
         closing=asyncio.create_task(w.close())
         await asyncio.sleep(.01)
         self.assertFalse(closing.done())
@@ -240,6 +240,47 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             await asyncio.wait_for(serve(w,reader),1)
         self.assertTrue(r.closed)
+
+    async def test_start_response_race_retires_runtime_even_when_interrupt_noops(self):
+        class StartingSession(FakeSession):
+            async def send_turn(self, *args, **kwargs):
+                self.accepted = True  # Server accepted; response/turn id missing.
+                await asyncio.Event().wait()
+                yield
+            async def interrupt(self):
+                pass  # Actual CodexSession has no turn id to interrupt yet.
+        for mode in ['cancel', 'timeout', 'eof']:
+            w,r,out=await self.setup_worker(turn_timeout=.02 if mode=='timeout' else 10)
+            r.session=StartingSession()
+            await w.handle({'type':'turn','turn_id':'one','prompt':'synthetic'})
+            await self.wait_for(out,'session')
+            if mode=='cancel':
+                await w.handle({'type':'cancel','turn_id':'one'})
+            elif mode=='eof':
+                await w.close()
+            result=await self.wait_for(out,'result')
+            self.assertEqual(result['status'],'uncertain')
+            self.assertTrue(result['runtime_closed'])
+            self.assertTrue(w.closed)
+            self.assertTrue(r.closed)
+            with self.assertRaises(RuntimeError):
+                await w.handle({'type':'turn','turn_id':'two','prompt':'synthetic'})
+            self.assertEqual(len(r.requests),1)
+
+    async def test_runtime_close_failure_is_explicit_and_worker_stays_retired(self):
+        w,r,out=await self.setup_worker('hang')
+        normal_close=r.close
+        async def broken_close():raise RuntimeError('synthetic cleanup failure')
+        r.close=broken_close
+        await w.handle({'type':'turn','turn_id':'one','prompt':'synthetic'})
+        await self.wait_for(out,'session')
+        await w.handle({'type':'cancel','turn_id':'one'})
+        result=await self.wait_for(out,'result')
+        self.assertEqual(result['status'],'uncertain')
+        self.assertFalse(result['runtime_closed'])
+        with self.assertRaises(RuntimeError):
+            await w.handle({'type':'turn','turn_id':'two','prompt':'synthetic'})
+        r.close=normal_close
 
 
 class PipeTests(unittest.TestCase):
