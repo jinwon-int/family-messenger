@@ -24,7 +24,8 @@ class Lease:
         self.output_lock=asyncio.Lock()
 
     def halt(self,reason):
-        if self.reason is None:self.reason=reason
+        normal=('input-eof','worker-exit')
+        if self.reason is None or (self.reason in normal and reason not in normal):self.reason=reason
         self.stop.set()
 
     async def emit(self,data):

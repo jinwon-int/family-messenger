@@ -319,9 +319,17 @@ class Frontend:
                 async def closed():
                     nonlocal remote
                     if self.c.get('remote_worker'):
-                        line=await self.proc.stdout.readline()
-                        if len(line)>524_288:raise SafetyStop('remote-close-too-large')
-                        remote=json.loads(line) if line else None
+                        size=0
+                        for _ in range(32):
+                            line=await self.proc.stdout.readline();size+=len(line)
+                            if len(line)>524_288 or size>1_048_576:raise SafetyStop('remote-close-too-large')
+                            msg=json.loads(line) if line else None
+                            if not isinstance(msg,dict) or msg.get('type')=='remote_closed':
+                                remote=msg;break
+                            # A control acknowledgement may race the result.
+                            if msg.get('type') not in ('control','approval-resolved') or msg.get('turn_id')!=turn_id(job['event_id']):
+                                raise SafetyStop('unexpected-remote-output')
+                        else:raise SafetyStop('remote-close-missing')
                         if await self.proc.stdout.read(1):raise SafetyStop('extra-remote-output')
                     await self.proc.wait()
                 try:await asyncio.wait_for(closed(),25)

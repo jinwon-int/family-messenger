@@ -74,6 +74,21 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(frames[-1]['group_empty'])
         self.assertEqual(frames[-1]['worker_exit'],-signal.SIGKILL)
 
+    async def test_output_failure_after_eof_overrides_normal_close(self):
+        p=await self.spawn('bad-output',lease=3)
+        p.stdin.close();frames=await self.frames(p)
+        self.assertEqual(p.returncode,75)
+        self.assertFalse(frames[-1]['clean']);self.assertEqual(frames[-1]['reason'],'output-failed')
+
+    async def test_signal_during_eof_cleanup_overrides_normal_close(self):
+        p=await self.spawn('slow-close',lease=3,grace=1)
+        await p.stdout.readline();await p.stdout.readline()
+        p.stdin.close();await asyncio.sleep(.03)
+        p.send_signal(signal.SIGHUP)
+        frames=await self.frames(p)
+        self.assertEqual(p.returncode,75);self.assertFalse(frames[-1]['clean'])
+        self.assertEqual(frames[-1]['reason'],'service-stopped')
+
     async def test_uncertain_worker_can_retire_cleanly(self):
         p=await self.spawn('cancel',lease=3)
         await p.stdout.readline();await p.stdout.readline()
@@ -103,7 +118,7 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
             await f.close()
 
     async def test_frontend_remote_binding_finishes_after_marker(self):
-        c=config(self.temp.name);c['remote_worker']=True
+        c=config(self.temp.name,mode='late-control');c['remote_worker']=True
         c['worker_argv']=[sys.executable,str(ROOT/'scripts/fleet_remote.py'),'--',*c['worker_argv']]
         f=Frontend(c);task=None
         try:
