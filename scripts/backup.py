@@ -7,12 +7,29 @@ import os
 from pathlib import Path
 import secrets
 import signal
+import stat
 import subprocess
 
 from check_storage import measure, GIB
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE = Path('/var/lib/family-messenger-backups')
+DIRECTORIES = ('.runtime', 'web', 'scripts', 'deploy')
+FILES = ('.env', 'compose.yaml', '.runtime/postgres.env', '.runtime/element.json',
+         '.runtime/installation.json', '.runtime/synapse/homeserver.yaml',
+         '.runtime/synapse/log.config', '.runtime/synapse/server.signing.key')
+
+
+def validate_sources(root):
+    for name in DIRECTORIES:
+        measure(root/name)  # Reject missing dirs, links (including ancestors), and special files.
+    signatures = {}
+    for name in FILES:
+        info = (root/name).lstat()
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError('required backup source is not a regular file')
+        signatures[name] = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+    return signatures
 
 
 def run(command):
@@ -44,6 +61,7 @@ def snapshot_id(output):
 def backup_pair(root, execute=run):
     # Uploads store immutable originals before committing their DB references.
     # Do not run media purge, password/config changes, or upgrades during this job.
+    signatures = validate_sources(root)
     config = json.loads((root/'.runtime/synapse/homeserver.yaml').read_text())
     if config.get('media_retention'):
         raise ValueError('online backup requires media retention/purge disabled')
@@ -56,6 +74,8 @@ def backup_pair(root, execute=run):
         '-U', 'synapse', '-d', 'synapse', '-Fc']))
     files = snapshot_id(execute(common+['--tag', 'files', '--']+
         [str(root/p) for p in ('.runtime', '.env', 'compose.yaml', 'web', 'scripts', 'deploy')]))
+    if validate_sources(root) != signatures:
+        raise RuntimeError('configuration changed during backup; pair not complete')
     return {'pair': pair, 'database_snapshot': database, 'files_snapshot': files,
             'created_at': stamp, 'status': 'complete'}
 
@@ -64,19 +84,20 @@ def main():
     os.umask(0o077)
     try:
         STATE.mkdir(mode=0o700, exist_ok=True)
-        if STATE.is_symlink() or STATE.stat().st_uid != os.getuid():
+        if (STATE.is_symlink() or STATE.stat().st_uid != os.getuid()
+                or STATE.stat().st_mode & 0o077):
             raise ValueError('untrusted backup state directory')
         fd = os.open(STATE/'backup.lock', os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, 'w') as lock:
             os.fchmod(lock.fileno(), 0o600)
             fcntl.flock(lock, fcntl.LOCK_EX|fcntl.LOCK_NB)
-            _, free, _ = measure(ROOT/'.runtime')
+            retained, free, _ = measure(ROOT/'.runtime')
             if free < 100*GIB:
                 raise ValueError('source filesystem reserve below 100GiB')
             available = int(run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
                 'root@gongmyoung', 'python3 -c "import shutil; print(shutil.disk_usage(\'/var/backups/family-messenger\').free)"']).strip())
-            if available < 80*GIB:
-                raise ValueError('backup filesystem reserve below 80GiB')
+            if available < retained + 80*GIB:
+                raise ValueError('backup filesystem lacks full media size plus 80GiB reserve')
             record = backup_pair(ROOT)
             fd = os.open(STATE/(record['pair']+'.json'),
                          os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
