@@ -80,6 +80,14 @@ async def main(real_worker=False):
         assert device.ed25519==frontend.client.olm.account.identity_keys['ed25519']
         assert device.curve25519==frontend.client.olm.account.identity_keys['curve25519']
         owner.verify_device(device)
+        original_send=frontend.client._send
+        failed_shares=[]
+        async def fail_key_delivery(response_class,*args,**kwargs):
+            if response_class.__name__=='ShareGroupSessionResponse':
+                failed_shares.append(True)
+                raise aiohttp.ClientConnectionError('synthetic lost key delivery')
+            return await original_send(response_class,*args,**kwargs)
+        frontend.client._send=fail_key_delivery
         task=asyncio.create_task(frontend.run())
         request('/_matrix/client/v3/rooms/'+room+'/send/m.room.message/plaintext-probe',
                 {'msgtype':'m.text','body':'This plaintext must not execute.'},token=a['access_token'],method='PUT')
@@ -87,6 +95,10 @@ async def main(real_worker=False):
         sent=await owner.room_send(room,'m.room.message',{'msgtype':'m.text','body':
             'Reply only with '+token+'. Do not use tools or read files.'})
         assert type(sent).__name__=='RoomSendResponse'
+        async with asyncio.timeout(20):
+            while not failed_shares:await sync_owner()
+        assert frontend.store.db.execute("SELECT count(*) FROM jobs WHERE state='done'").fetchone()[0]==0
+        frontend.client._send=original_send
         await wait_reply(token)
         raw=request('/_matrix/client/v3/rooms/'+room+'/event/'+sent.event_id,token=a['access_token'])
         assert raw['type']=='m.room.encrypted' and 'body' not in raw['content']
@@ -138,6 +150,7 @@ async def main(real_worker=False):
         proof=dict(persistent_frontend=True,actual_ccc_runtime=real_worker,encrypted_request=True,
             encrypted_reply=True,device_fingerprints_pinned=True,raw_pending_replay_after_sdk_restart=True,
             scoped_session_resume=True,no_duplicate_execution=True,plaintext_not_executed=True,
+            failed_key_delivery_not_acknowledged_and_retried=True,
             sync_gap_preserved=True,wrong_device_pin_rejected=True,extra_member_rejected=True,
             scope='isolated loopback preview')
         (evidence/'verification.json').write_text(json.dumps(proof,indent=2))

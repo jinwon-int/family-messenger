@@ -150,5 +150,33 @@ class FrontendTests(unittest.IsolatedAsyncioTestCase):
         await self.f.input(req)
         self.assertIsNone(self.f.store.claim())
 
+    async def test_repeated_cancellation_during_cleanup_joins_worker(self):
+        await self.f.input(request(self.f));task=self.work('slow-close')
+        await self.until(lambda:self.f.store.get_meta('worker_cleanup_in_progress'))
+        proc=self.f.proc
+        for _ in range(3):task.cancel();await asyncio.sleep(.02)
+        await asyncio.gather(task,return_exceptions=True)
+        self.assertIsNotNone(proc.returncode)
+        self.assertTrue(self.f.store.uncertain())
+        self.assertFalse(self.f.store.get_meta('worker_cleanup_in_progress'))
+        self.assertFalse(any(j['reply']=='synthetic answer' for j in self.f.store.outbox()))
+
+    async def test_incomplete_key_sharing_never_sends_ciphertext(self):
+        from types import SimpleNamespace as N
+        from unittest.mock import AsyncMock,Mock
+        room=self.f.c['rooms'][0]
+        self.f.client=N(olm=N(should_share_group_session=Mock(return_value=True),
+            outbound_group_sessions={room:N(users_shared_with=set())}),
+            share_group_session=AsyncMock(),invalidate_outbound_session=Mock(),encrypt=Mock(),close=AsyncMock())
+        self.f.raw=AsyncMock()
+        with self.assertRaisesRegex(ConnectionError,'group-key-share-incomplete'):
+            await self.f.encrypted_send(room,'synthetic','txn')
+        self.f.client.encrypt.assert_not_called();self.f.raw.assert_not_called()
+        self.f.client.invalidate_outbound_session.assert_called_once_with(room)
+
+    async def test_crash_during_cleanup_blocks_restart(self):
+        self.f.store.set_meta('worker_cleanup_in_progress',True)
+        with self.assertRaises(SafetyStop):await self.f.run()
+
 
 if __name__=='__main__':unittest.main()

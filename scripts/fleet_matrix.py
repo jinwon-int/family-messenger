@@ -113,10 +113,12 @@ class Frontend:
             self.client.verify_device(stored)
 
     async def room_gate(self,room):
+        from nio import JoinedMembersResponse
         path='/_matrix/client/v3/rooms/'+quote(room,safe='')
         members=await self.raw('GET',path+'/joined_members')
         if set(members.get('joined',{}))!={self.c['owner'],self.c['account']}:
             raise SafetyStop('private-room-membership-changed')
+        await self.client.receive_response(JoinedMembersResponse.from_dict(members,room))
         encryption=await self.raw('GET',path+'/state/m.room.encryption')
         if encryption.get('algorithm')!='m.megolm.v1.aes-sha2':raise SafetyStop('encrypted-room-required')
         if room not in self.client.rooms or not self.client.rooms[room].encrypted:
@@ -213,12 +215,26 @@ class Frontend:
                     chunks=parts(job['reply'])
                     for i in range(self.store.delivered_parts(job['event_id']),len(chunks)):
                         tx=hashlib.sha256((job['txn_id']+':'+str(i)).encode()).hexdigest()
-                        result=await self.client.room_send(job['room_id'],'m.room.message',
-                            {'msgtype':'m.text','body':chunks[i]},tx_id=tx)
-                        if type(result).__name__!='RoomSendResponse':raise ConnectionError('matrix-send-failed')
+                        await self.encrypted_send(job['room_id'],chunks[i],tx)
                         self.store.mark_part(job['event_id'],i+1)
                     self.store.delivered(job['event_id'])
             await asyncio.sleep(.25)
+
+    async def encrypted_send(self,room,text,txn):
+        # nio 0.25.2 room_send ignores incomplete key sharing. Confirm every
+        # pinned recipient before encrypting, and avoid its implicit queries.
+        if self.client.olm.should_share_group_session(room):
+            await self.client.share_group_session(room)
+        session=self.client.olm.outbound_group_sessions.get(room)
+        expected={(self.c['owner'],device) for device in self.c['devices']}
+        if session is None or session.users_shared_with!=expected:
+            self.client.invalidate_outbound_session(room)
+            raise ConnectionError('group-key-share-incomplete')
+        kind,content=self.client.encrypt(room,'m.room.message',{'msgtype':'m.text','body':text})
+        if kind!='m.room.encrypted':raise SafetyStop('plaintext-output-refused')
+        result=await self.raw('PUT','/_matrix/client/v3/rooms/'+quote(room,safe='')+
+                              '/send/m.room.encrypted/'+txn,data=content)
+        bounded_text(result.get('event_id'),255)
 
     async def write_worker(self,command):
         payload=(json.dumps(command,ensure_ascii=False)+'\n').encode()
@@ -269,21 +285,40 @@ class Frontend:
                             self.store.set_meta('active_session',{'event_id':job['event_id'],'session_id':sid})
             finally:
                 self.active=None;self.approvals=set()
-                if self.proc:
-                    if self.proc.stdin:self.proc.stdin.close()
-                    try:await asyncio.wait_for(self.proc.wait(),25)
-                    except TimeoutError:
-                        os.killpg(self.proc.pid,signal.SIGKILL)
-                        await self.proc.wait()
-                        self.store.set_meta('worker_cleanup_unconfirmed',True)
-                    if (result is None or (result.get('status')=='complete' and self.proc.returncode!=0) or
-                            (result.get('status')!='complete' and result.get('runtime_closed') is not True)):
-                        self.store.set_meta('worker_cleanup_unconfirmed',True)
-                    self.proc=None
-                if result and result.get('status')=='complete' and not self.store.get_meta('worker_cleanup_unconfirmed'):
-                    self.store.finish(job['event_id'],result['text'],result.get('session_id'))
-                else:self.store.uncertain_job(job['event_id'])
-                if self.store.get_meta('worker_cleanup_unconfirmed'):raise SafetyStop('worker-cleanup-unconfirmed')
+                interrupted={'value':isinstance(sys.exc_info()[1],asyncio.CancelledError)}
+                cleanup=asyncio.create_task(self.cleanup_worker(job,result,interrupted))
+                # TaskGroup/SIGTERM can cancel during finally itself. Keep one
+                # cleanup task alive and join it, including repeated cancels.
+                while not cleanup.done():
+                    try:await asyncio.shield(cleanup)
+                    except asyncio.CancelledError:
+                        interrupted['value']=True
+                        self.store.uncertain_job(job['event_id'])
+                cleanup.result()
+                if interrupted['value']:raise asyncio.CancelledError
+
+    async def cleanup_worker(self,job,result,interrupted):
+        self.store.set_meta('worker_cleanup_in_progress',True)
+        confirmed=False
+        try:
+            if self.proc:
+                if self.proc.stdin:self.proc.stdin.close()
+                try:await asyncio.wait_for(self.proc.wait(),25)
+                except TimeoutError:
+                    os.killpg(self.proc.pid,signal.SIGKILL)
+                    await self.proc.wait()
+                else:
+                    confirmed=bool(result and (
+                        (result.get('status')=='complete' and self.proc.returncode==0) or
+                        (result.get('status')=='uncertain' and result.get('runtime_closed') is True)))
+            if confirmed and result.get('status')=='complete' and not interrupted['value']:
+                self.store.finish(job['event_id'],result['text'],result.get('session_id'))
+        finally:
+            self.store.uncertain_job(job['event_id'])
+            self.proc=None
+            self.store.set_meta('worker_cleanup_in_progress',False)
+            if not confirmed:self.store.set_meta('worker_cleanup_unconfirmed',True)
+        if not confirmed:raise SafetyStop('worker-cleanup-unconfirmed')
 
     async def retry(self,operation):
         import aiohttp
@@ -295,7 +330,8 @@ class Frontend:
                 await asyncio.sleep(delay);delay=min(delay*2,30)
 
     async def run(self):
-        if self.store.get_meta('worker_cleanup_unconfirmed'):raise SafetyStop('worker-cleanup-unconfirmed')
+        if self.store.get_meta('worker_cleanup_unconfirmed') or self.store.get_meta('worker_cleanup_in_progress'):
+            raise SafetyStop('worker-cleanup-unconfirmed')
         async with asyncio.TaskGroup() as group:
             group.create_task(self.retry(self.receive))
             group.create_task(self.retry(self.send))
