@@ -30,8 +30,23 @@ def main():
         st = file.lstat()
         assert file.is_file() and not file.is_symlink() and st.st_nlink == 1 and st.st_size <= 32 * 1024 * 1024
         assets[path] = file.read_bytes()
+    original_hashes = {name: hashlib.sha256(raw).hexdigest() for name, raw in assets.items()}
+    # Instrument only bytes served by this private test. Tracked runtime has no
+    # spin/kill command. Hold the callback after put so IDB cannot commit yet.
+    patches = {
+        '/durable-worker.js': [
+            (b"'abort-after-write', 'lost-response'", b"'abort-after-write', 'lost-response', 'crash-before-complete'"),
+            (b"            if (fault === 'abort-after-write')", b"            if (fault === 'crash-before-complete') { self.postMessage({test_crash_boundary:true}); while(true) {} }\n            if (fault === 'abort-after-write')")],
+        '/main.js': [(b'    if (data.id !== id) return;', b'    if (data.test_crash_boundary) window.test_crash_boundary=true;\n    if (data.id !== id) return;')],
+    }
+    for name, replacements in patches.items():
+        for old, new in replacements:
+            assert assets[name].count(old) == 1, 'test instrumentation boundary changed'
+            assets[name] = assets[name].replace(old, new)
     proof = {'synthetic_only': True, 'keys_at_rest': 'unencrypted synthetic IndexedDB only',
              'checks': {}, 'max_worker_linear_memory_bytes': 0,
+             'original_assets_sha256': original_hashes,
+             'test_instrumentation': 'served worker callback hold after put; served page marker; source unchanged',
              'assets_sha256': {name: hashlib.sha256(raw).hexdigest() for name, raw in assets.items()}}
 
     class Handler(BaseHTTPRequestHandler):
@@ -192,6 +207,19 @@ def main():
             future = op(alice, 'future', 'encrypt', list(b'after restart'))['output']
             assert op(bob, 'receive4', 'decrypt', future, sequence=4)['output'] == list(b'after restart')
             proof['checks']['receiver_browser_crash_and_future_message'] = True
+
+            # Kill after the write is issued, while the callback blocks commit.
+            before_crash = state_digest(alice, databases['alice'])
+            pending = arg('inflight', 'encrypt', list(b'in flight crash'), fault='crash-before-complete')
+            alice.evaluate('a=>{window.unfinished=call("device","operation",a).catch(()=>null)}', pending)
+            alice.wait_for_function('() => window.test_crash_boundary === true', timeout=5000)
+            crash_restart(0, alice)
+            alice = page(contexts[0]); init(alice, 'alice')
+            assert state_digest(alice, databases['alice']) == before_crash
+            retry = op(alice, 'inflight', 'encrypt', list(b'in flight crash'))
+            assert retry['replay'] is False
+            assert op(bob, 'receive5', 'decrypt', retry['output'], sequence=5)['output'] == list(b'in flight crash')
+            proof['checks']['inflight_transaction_browser_crash_preserves_complete_committed_state'] = True
 
             wrong = page(contexts[0]); init(wrong, 'bob', databases['alice'], reject=True)
             rpc(wrong, 'status', reject=True)

@@ -8,6 +8,7 @@
     "lost_reply_browser_crash_exact_ciphertext_retry": true,
     "concurrent_tabs_single_encryption": true,
     "receiver_browser_crash_and_future_message": true,
+    "inflight_transaction_browser_crash_preserves_complete_committed_state": true,
     "wrong_actor_cannot_reopen_state": true,
     "snapshot_actor_must_match_group_credential": true,
     "corrupt_cached_result_input_state_metadata_checksum_retained_denied": true,
@@ -17,11 +18,20 @@
     "unknown_record_preserved_and_reopen_denied": true
   },
   "max_worker_linear_memory_bytes": 2424832,
-  "assets_sha256": {
+  "original_assets_sha256": {
     "/": "6d10e089cac6a58aaa00f7261be71552bc35fd0d0a378586600d79db6cce25c1",
     "/main.js": "521f7d674333d18bc2174ffc86c9aa7d5c637f580d4476c4e7379f1625f0e881",
     "/worker.js": "e92df9cd5347d179679229ea25a9b621673c823b3a3f5128871a484575f39c83",
     "/durable-worker.js": "63722725940f7e2872a82d2b5609f9e91306e25d9c974fde0d4991997b067b80",
+    "/pkg/family_mls_browser_experiment.js": "1c4c4df21d9d908a0c9e0034bd1b5a3d89146b35bf241442e19fff770c55e55f",
+    "/pkg/family_mls_browser_experiment_bg.wasm": "cfe3b5dce2f3eaa8a3e2e4df9a54b99d19bd7431b2fdd548809f1b9cace0a205"
+  },
+  "test_instrumentation": "served worker callback hold after put; served page marker; source unchanged",
+  "assets_sha256": {
+    "/": "6d10e089cac6a58aaa00f7261be71552bc35fd0d0a378586600d79db6cce25c1",
+    "/main.js": "e977d04ca1a78cae46d2db507d8e771468fcad777693c3a0dd080886612fd406",
+    "/worker.js": "e92df9cd5347d179679229ea25a9b621673c823b3a3f5128871a484575f39c83",
+    "/durable-worker.js": "1a28d5d406de37bc893f04a400137345d80381428e5d4d918a1accc05a55f7dd",
     "/pkg/family_mls_browser_experiment.js": "1c4c4df21d9d908a0c9e0034bd1b5a3d89146b35bf241442e19fff770c55e55f",
     "/pkg/family_mls_browser_experiment_bg.wasm": "cfe3b5dce2f3eaa8a3e2e4df9a54b99d19bd7431b2fdd548809f1b9cace0a205"
   },
@@ -34,8 +44,6 @@
   },
   "verified_toolchain_reference": "toolchain-evidence.json (PR27 distribution checksums, not current source hashes)",
   "measurement_scope": "single-worker linear memory maximum; not aggregate browser memory; synthetic profiles retained locally and excluded from CI uploads",
-  "persistence_artifact": "artifacts/native-mls-persistence-_zasxg2a/verification.json",
-  "memory_only_regression_artifact": "artifacts/native-mls-browser-fobnjt72/verification.json",
   "bundle_bytes": {
     "family_mls_browser_experiment_bg.wasm": {
       "bytes": 1421107,
@@ -46,6 +54,9 @@
       "gzip_bytes": 4252
     }
   },
+  "memory_only_regression_artifact": "artifacts/native-mls-browser-fobnjt72/verification.json",
+  "persistence_artifact": "artifacts/native-mls-persistence-y8xy3np8/verification.json",
+  "uninstrumented_persistence_artifact": "artifacts/native-mls-persistence-_zasxg2a/verification.json",
   "source_sha256": {
     "experiments/openmls-browser/src/lib.rs": "bf14ac4ea2ac3ea380ed4dfa44cd1b7b1bfd13f10e4066ee64e2cf636f94479c",
     "experiments/openmls-browser/src/staging.rs": "35794b503fb43fafb1102a3cfd36e8c8ff785cec77db408bebd1656f87911f06",
@@ -53,7 +64,7 @@
     "experiments/openmls-browser/web/main.js": "521f7d674333d18bc2174ffc86c9aa7d5c637f580d4476c4e7379f1625f0e881",
     "experiments/openmls-browser/Cargo.toml": "178bc000ee683d208ab602dbdd5e73c37fba039436b3c3eca4edc5725695c46f",
     "experiments/openmls-browser/Cargo.lock": "917b9cee81c7dc6197b81b48af829245f23581605c22024c8fb9b77246f8279c",
-    "tests/native_mls_persistence_smoke.py": "01ce99006c8cc2bb7096247e02a0f7be759bcb5afd4e8e931659c98fe628a0c5",
+    "tests/native_mls_persistence_smoke.py": "a70b8baa1b742b672fa78f73c4acb315f7302dfa87d21f2815f61fb0fdbd18b9",
     "tests/native_mls_browser_smoke.py": "9ce1fc390c1a13e9a93bfc344b0ab15bdc3e71ab39ca816cb98a2adce2e0429b"
   }
 }

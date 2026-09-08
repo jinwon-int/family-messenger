@@ -92,9 +92,8 @@ keys; production restore must reconcile externally or rejoin as a new device bef
 sending. No import, recovery/reset, migration or human enrollment UI is supplied.
 A browser deleting its entire profile destroys its keys; it does not justify silent
 identity replacement. Atomic IndexedDB commits are tested against browser SIGKILL,
-after confirmed commits, with controlled transaction aborts for precommit faults;
-an actual SIGKILL during an in-flight transaction remains unqualified. This is
-not sudden machine power loss or every browser/OS storage durability guarantee.
+after confirmed commits and during an in-flight transaction, plus controlled
+transaction aborts. This is not sudden machine power loss or every browser/OS storage durability guarantee.
 
 ## Runnable evidence
 
@@ -112,7 +111,13 @@ computation and after issuing the write, and an intentional lost reply after
 commit. It obtains the PID of its own test browser through CDP, verifies the exact
 private `--user-data-dir` in that PID's command line, then SIGKILLs **only that
 browser** and opens the same profile again. The earlier CDP Browser.crash command
-was found to hang awaiting a response and is not used.
+was found to hang awaiting a response and is not used. For the in-flight crash,
+the test patches only served asset bytes to signal and hold the worker callback
+after `put` is issued, preventing transaction completion before SIGKILL. The
+tracked worker has no spin/kill command. Evidence records both original and
+instrumented asset hashes; the uninstrumented 13-group proof is also retained.
+After reopening, the complete committed state is unchanged and the same-ID retry
+executes once as a fresh operation, then decrypts successfully on the other client.
 
 Assertions cover failed Welcome then valid original, altered ciphertext then
 original, unchanged complete-state hash/cursor on abort, lost-response browser
