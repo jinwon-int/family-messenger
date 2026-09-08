@@ -323,3 +323,72 @@ func TestAccessSlowJSONDoesNotHoldRevocation(t *testing.T) {
 		t.Fatal("retired JSON write committed", e)
 	}
 }
+
+func TestSignedSessionAndExpectedActorBinding(t *testing.T) {
+	s, a, c, k, server := accessFixture(t)
+	room(t, s)
+	owner := assertion(t, c, k, "owner", time.Now().Add(time.Minute))
+	family := assertion(t, c, k, "family", time.Now().Add(time.Minute))
+	for _, item := range []struct {
+		token, actor string
+		owner        bool
+	}{{owner, "alice", true}, {family, "bob", false}} {
+		code, b := accessRequest(t, server, item.token, "GET", "/v1/session", nil, nil)
+		var got struct {
+			Mode, Actor string
+			Owner       bool
+		}
+		if json.Unmarshal(b, &got) != nil || code != 200 || got.Mode != "signed" || got.Actor != item.actor || got.Owner != item.owner {
+			t.Fatal("wrong principal", code, string(b))
+		}
+		if bytes.Contains(b, []byte(item.token)) || bytes.Contains(b, []byte("subject")) {
+			t.Fatal("identity assertion leaked")
+		}
+	}
+	for _, path := range []string{"/v1/session", "/v1/rooms", "/v1/rooms/family/messages"} {
+		code, _ := accessRequest(t, server, family, "GET", path, nil, map[string]string{"X-Family-Actor": "alice"})
+		if code != 401 {
+			t.Fatal("changed upstream actor accepted", path, code)
+		}
+	}
+	body := []byte(`{"client_id":"wrong-actor","payload":"eA=="}`)
+	code, _ := accessRequest(t, server, family, "POST", "/v1/rooms/family/messages", body, map[string]string{"X-Family-Actor": "alice"})
+	if code != 401 {
+		t.Fatal(code)
+	}
+	history, _ := s.History("family", "alice", 0)
+	if len(history) != 0 {
+		t.Fatal("old tab sent as new account")
+	}
+	r, _ := http.NewRequest("GET", server.URL+"/v1/session", nil)
+	r.Header.Set("Cf-Access-Jwt-Assertion", owner)
+	r.Header.Add("X-Family-Actor", "alice")
+	r.Header.Add("X-Family-Actor", "alice")
+	response, e := server.Client().Do(r)
+	if e != nil {
+		t.Fatal(e)
+	}
+	response.Body.Close()
+	if response.StatusCode != 401 {
+		t.Fatal("duplicate expected actor accepted")
+	}
+	code, _ = accessRequest(t, server, "", "GET", "/v1/session", nil, map[string]string{"Cookie": "CF_Authorization=fake", "Cf-Access-Authenticated-User-Email": "owner@example.invalid"})
+	if code != 401 {
+		t.Fatal("unsigned identity fallback")
+	}
+	c.People = c.People[:1]
+	a.Replace(c)
+	code, _ = accessRequest(t, server, family, "GET", "/v1/session", nil, nil)
+	if code != 401 {
+		t.Fatal("revoked bootstrap accepted")
+	}
+	response, e = server.Client().Get(server.URL + "/")
+	if e != nil {
+		t.Fatal(e)
+	}
+	b, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != 200 || !bytes.Contains(b, []byte(`data-auth-mode="signed"`)) {
+		t.Fatal("wrong embedded auth mode")
+	}
+}

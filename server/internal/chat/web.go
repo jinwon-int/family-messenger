@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"bytes"
 	"embed"
 	"net/http"
 )
@@ -11,7 +12,7 @@ var assets embed.FS
 func isAsset(path string) bool {
 	return path == "/" || path == "/app.js" || path == "/app.css" || path == "/media.js"
 }
-func serveAsset(w http.ResponseWriter, r *http.Request) {
+func serveAsset(w http.ResponseWriter, r *http.Request, signed bool) {
 	name, kind := "web/index.html", "text/html; charset=utf-8"
 	if r.URL.Path == "/app.js" || r.URL.Path == "/media.js" {
 		name, kind = "web"+r.URL.Path, "text/javascript; charset=utf-8"
@@ -27,6 +28,13 @@ func serveAsset(w http.ResponseWriter, r *http.Request) {
 	if e != nil {
 		http.Error(w, "asset unavailable", 500)
 		return
+	}
+	if r.URL.Path == "/" {
+		mode := "fixture"
+		if signed {
+			mode = "signed"
+		}
+		data = bytes.Replace(data, []byte(`data-auth-mode="pending"`), []byte(`data-auth-mode="`+mode+`"`), 1)
 	}
 	_, _ = w.Write(data)
 }

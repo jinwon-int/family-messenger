@@ -5,15 +5,16 @@
 <title>우리 사이 · 가족 메신저 시험판</title>
 <link rel="stylesheet" href="/app.css"><script src="/media.js" defer></script><script src="/app.js" defer></script>
 </head>
-<body>
+<body data-auth-mode="pending">
 <header class="masthead"><div class="brand"><span class="mark" aria-hidden="true">우</span><div><strong>우리 사이</strong><span>가까운 사람들과 나누는 이야기</span></div></div><span class="pill">로컬 시험판</span></header>
-<div class="notice"><strong>시험 대화만 입력해 주세요.</strong> 공개 시험 계정을 사용하며, 종단간 암호화가 아직 적용되지 않았습니다.</div>
+<div class="notice"><strong>시험 대화만 입력해 주세요.</strong> <span id="auth-notice">계정 상태를 확인합니다.</span> 종단간 암호화가 아직 적용되지 않았습니다.</div>
 <main class="shell">
 <aside class="sidebar">
-<label for="actor">시험 계정</label><select id="actor"><option value="alice">앨리스 · Alice</option><option value="bob">밥 · Bob</option><option value="charlie">찰리 · Charlie</option></select>
+<div id="fixture-identity" hidden><label for="actor">시험 계정</label><select id="actor" disabled><option value="alice">앨리스 · Alice</option><option value="bob">밥 · Bob</option><option value="charlie">찰리 · Charlie</option></select></div>
+<div id="signed-identity" hidden><strong id="identity-name">계정 확인 중…</strong><p id="identity-status" role="status"></p><button id="authenticate" class="quiet" type="button">계정 상태 다시 확인</button></div>
 <div class="section-head"><h1>대화방</h1><button id="refresh" class="quiet" type="button">새로고침</button></div>
 <nav id="rooms" aria-label="내 대화방"></nav><p id="room-note" class="muted"></p>
-<details><summary>새 대화방</summary><form id="create-form"><label for="room-id">방 ID</label><input id="room-id" placeholder="family-test" pattern="[A-Za-z0-9_-]{1,64}" maxlength="64" required autocomplete="off"><small>영문·숫자·밑줄·하이픈을 사용해 주세요.</small><fieldset><legend>함께할 시험 계정</legend><label><input type="checkbox" name="member" value="alice"> 앨리스</label><label><input type="checkbox" name="member" value="bob" checked> 밥</label><label><input type="checkbox" name="member" value="charlie"> 찰리</label></fieldset><button type="submit">방 만들기</button></form></details>
+<details id="create-box" hidden><summary>새 대화방</summary><form id="create-form"><label for="room-id">방 ID</label><input id="room-id" placeholder="family-test" pattern="[A-Za-z0-9_-]{1,64}" maxlength="64" required autocomplete="off"><small>영문·숫자·밑줄·하이픈을 사용해 주세요.</small><fieldset><legend>함께할 시험 계정</legend><label><input type="checkbox" name="member" value="alice"> 앨리스</label><label><input type="checkbox" name="member" value="bob" checked> 밥</label><label><input type="checkbox" name="member" value="charlie"> 찰리</label></fieldset><button type="submit">방 만들기</button></form></details>
 </aside>
 <section class="conversation" aria-label="대화">
 <div class="conversation-head"><div><h2 id="room-title">대화방을 선택하세요</h2><p id="connection" role="status" aria-live="polite">내 대화방을 불러옵니다.</p></div><button id="reconnect" class="quiet" type="button" disabled>다시 연결</button></div>

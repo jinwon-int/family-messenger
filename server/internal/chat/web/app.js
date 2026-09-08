@@ -5,22 +5,75 @@ const encoder = new TextEncoder();
 let current = null;
 let listVersion = 0;
 let roomList = [];
+const authMode = document.body.dataset.authMode;
+let authReady = false, authActor = null, authVersion = 0;
+let authController = new AbortController();
+function activeActor() { return authMode === "signed" ? authActor : $("actor").value; }
+function authControls() {
+  $("refresh").disabled = !authReady;
+  $("create-box").hidden = !authReady;
+  for (const input of $("create-form").elements) input.disabled = !authReady;
+}
+function clearIdentityView() {
+  ++listVersion; roomList = []; clearRoom(); $("rooms").replaceChildren(); $("room-note").textContent = ""; $("create-form").reset();
+}
+function authLost() {
+  ++authVersion; authReady = false; authActor = null;
+  authController.abort(); authController = new AbortController();
+  clearIdentityView(); authControls();
+  $("identity-name").textContent = "계정 확인 필요";
+  $("identity-status").textContent = "계정 또는 대화방 권한을 다시 확인해 주세요.";
+  $("connection").textContent = "인증된 계정으로 다시 연결해 주세요.";
+}
+async function authenticate() {
+  if (authMode !== "signed") return;
+  ++authVersion; const version = authVersion;
+  authController.abort(); authController = new AbortController();
+  authReady = false; authActor = null; clearIdentityView(); authControls();
+  $("identity-name").textContent = "계정 확인 중…"; $("identity-status").textContent = "";
+  try {
+    const response = await api(null,"/v1/session");
+    const identity = await response.json();
+    if (version !== authVersion) return;
+    if (identity?.mode !== "signed" || !Object.hasOwn(names,identity.actor) || typeof identity.owner !== "boolean" || response.headers.get("X-Family-Actor") !== identity.actor) throw new ProtocolError();
+    authActor = identity.actor; authReady = true; $("actor").value = identity.actor;
+    $("identity-name").textContent = names[identity.actor];
+    $("identity-status").textContent = "인증된 시험 계정"; authControls();
+    await refreshRooms();
+  } catch { if (version === authVersion) authLost(); }
+}
 
 class APIError extends Error {
   constructor(status) { super(`HTTP ${status}`); this.status = status; }
 }
 class ProtocolError extends Error {}
 function statusText(error) {
-  return ({400:"입력 내용을 확인해 주세요.",403:"이 대화방에 접근할 수 없습니다.",409:"같은 ID가 이미 사용되었습니다.",507:"시험 저장 한도에 도달했습니다."})[error.status] || "연결을 확인한 뒤 다시 시도해 주세요.";
+  return ({401:"계정 상태를 다시 확인해 주세요.",400:"입력 내용을 확인해 주세요.",403:"이 대화방에 접근할 수 없습니다.",409:"같은 ID가 이미 사용되었습니다.",507:"시험 저장 한도에 도달했습니다."})[error.status] || "연결을 확인한 뒤 다시 시도해 주세요.";
 }
 async function api(actor, path, options = {}) {
-  const signal = path.includes("/events?") ? options.signal : AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(path.includes("/attachments") ? 35000 : 10000)]);
-  const response = await fetch(path, {...options, signal, credentials:"omit", cache:"no-store",
-    headers:{"Authorization":`Bearer synthetic-${actor}`, "Content-Type":"application/json", ...options.headers}});
-  if (!response.ok) { await response.body?.cancel(); throw new APIError(response.status); }
+  const version = authVersion;
+  if (authMode !== "fixture" && authMode !== "signed") throw new APIError(401);
+  if (authMode === "signed" && path !== "/v1/session" && (!authReady || actor !== authActor)) throw new APIError(401);
+  const signals = [...(options.signal ? [options.signal] : [])];
+  if (authMode === "signed") signals.push(authController.signal);
+  if (!path.includes("/events?")) signals.push(AbortSignal.timeout(path.includes("/attachments") ? 35000 : 10000));
+  const headers = {"Content-Type":"application/json", ...options.headers};
+  if (authMode === "fixture") headers.Authorization = `Bearer synthetic-${actor}`;
+  else if (actor !== null) headers["X-Family-Actor"] = actor;
+  const response = await fetch(path, {...options, signal:AbortSignal.any(signals), redirect:"error",
+    credentials:authMode === "signed" ? "same-origin" : "omit", cache:"no-store", headers});
+  if (authMode === "signed" && version !== authVersion) { await response.body?.cancel(); throw new DOMException("identity changed","AbortError"); }
+  if (!response.ok) {
+    await response.body?.cancel();
+    if (authMode === "signed" && (response.status === 401 || response.status === 403)) authLost();
+    throw new APIError(response.status);
+  }
+  if (authMode === "signed" && (actor !== null && response.headers.get("X-Family-Actor") !== actor || !response.headers.has("X-Family-Actor"))) {
+    await response.body?.cancel(); authLost(); throw new ProtocolError();
+  }
   return response;
 }
-function pendingKey(s) { return `family-synthetic-pending-v1:${s.actor}:${s.room}`; }
+function pendingKey(s) { return `${authMode === "signed" ? "family-signed-pending-v1" : "family-synthetic-pending-v1"}:${s.actor}:${s.room}`; }
 function pendingLoad(s) {
   const value = sessionStorage.getItem(pendingKey(s));
   if (value === null) return null;
@@ -146,8 +199,9 @@ async function connect(s,controller) {
   }
 }
 function selectRoom(room) {
+  if (!authReady) return;
   current?.controller.abort(); if(current) clearMedia(current);
-  const s = {actor:$("actor").value,room:room.id,owner:room.owner,seq:0,controller:new AbortController(),pending:null,busy:false,disabled:false,mediaBusy:false,preview:null};
+  const s = {actor:activeActor(),room:room.id,owner:room.owner,seq:0,controller:new AbortController(),pending:null,busy:false,disabled:false,mediaBusy:false,preview:null};
   current = s;
   $("room-title").textContent = room.id;
   $("messages").replaceChildren(); $("messages").dataset.cursor = "0";
@@ -169,10 +223,11 @@ function clearRoom() {
   $("file").disabled = true;$("file").value = "";$("message").disabled = true;$("send").disabled = true;$("retry").hidden = true;$("reconnect").disabled = true;
 }
 async function refreshRooms(preferred) {
-  const version = ++listVersion, actor = $("actor").value;
+  if (!authReady) return;
+  const version = ++listVersion, actor = activeActor();
   try {
     const response = await api(actor,"/v1/rooms");const rooms = await response.json();
-    if (version !== listVersion || actor !== $("actor").value) return;
+    if (version !== listVersion || actor !== activeActor()) return;
     roomList = rooms; $("rooms").replaceChildren();
     for (const room of rooms) {
       const b = document.createElement("button");b.type = "button";b.dataset.room = room.id;b.textContent = room.id;
@@ -218,17 +273,18 @@ $("send-form").addEventListener("submit",async event=>{
 });
 $("retry").addEventListener("click",()=>{if(current)transmit(current);});
 $("message").addEventListener("keydown",event=>{if(event.key==="Enter"&&!event.shiftKey&&!event.isComposing){event.preventDefault();$("send-form").requestSubmit();}});
-$("actor").addEventListener("change",()=>{clearRoom();refreshRooms();});
+$("actor").addEventListener("change",()=>{if(authMode!=="fixture")return;clearRoom();refreshRooms();});
+$("authenticate").addEventListener("click",authenticate);
 $("refresh").addEventListener("click",()=>refreshRooms());
 $("reconnect").addEventListener("click",()=>{if(current){const r=roomList.find(r=>r.id===current.room);if(r)selectRoom(r);}});
 $("create-form").addEventListener("submit",async event=>{
-  event.preventDefault();const actor=$("actor").value,id=$("room-id").value;
+  event.preventDefault();if(!authReady)return;const actor=activeActor(),id=$("room-id").value;
   const button=event.submitter || $("create-form").querySelector("button");button.disabled=true;
   try {
     await api(actor,"/v1/rooms",{method:"POST",body:JSON.stringify({id,members:[...document.querySelectorAll('[name="member"]:checked')].map(e=>e.value)})});
-    if(actor===$("actor").value){$("room-id").value="";await refreshRooms(id);}
-  }catch(e){if(actor===$("actor").value)$("room-note").textContent=statusText(e);}
-  finally{button.disabled=false;}
+    if(actor===activeActor()){$("room-id").value="";await refreshRooms(id);}
+  }catch(e){if(actor===activeActor())$("room-note").textContent=statusText(e);}
+  finally{button.disabled=!authReady;}
 });
 async function membership(present){
   const s=current;if(!s||s.actor!==s.owner)return;
@@ -237,4 +293,12 @@ async function membership(present){
 }
 $("add-member").addEventListener("click",()=>membership(true));
 $("remove-member").addEventListener("click",()=>membership(false));
-refreshRooms();
+if (authMode === "fixture") {
+  authReady = true; $("fixture-identity").hidden = false; $("actor").disabled = false;
+  $("auth-notice").textContent = "공개 시험 계정을 사용합니다."; authControls(); refreshRooms();
+} else {
+  $("signed-identity").hidden = false; $("auth-notice").textContent = "서명으로 확인한 시험 계정을 사용합니다.";
+  authControls();
+  if (authMode === "signed") authenticate();
+  else {$("identity-name").textContent = "계정 설정을 확인할 수 없습니다.";$("authenticate").disabled = true;}
+}

@@ -5,8 +5,9 @@ message, SSE and attachment admission through `chat.NewAccessHandler`. It is
 **not deployed Cloudflare Access, a human login flow, or E2EE**. The default
 `family-dev --synthetic-only` CLI uses public bearer fixtures. Explicit
 `--auth-state` selects signed synthetic assertions exclusively, with private
-persistent policy and live reload. The browser still uses fixture headers, so
-signed mode is currently an API test mode, not a browser login flow. Tests use
+persistent policy and live reload. The browser now discovers the explicit mode and bootstraps a verified principal
+in signed mode. An isolated synthetic assertion proxy tests this handoff; no
+human login or actual Cloudflare application is connected. Tests use
 locally generated RSA keys and disposable loopback servers. No production
 services, CF applications, human keys, chat databases or schemas change.
 
@@ -127,7 +128,7 @@ missing/expired/future claims, duplicate JSON/header attacks, org/service tokens
 input cloning, expiry, known-key rotation and old-grant retirement. Existing
 native/browser/media/migration tests remain in CI.
 
-Next: a reviewed browser identity handoff and production refresh scheduling,
+Next: production identity/enrollment acceptance and refresh scheduling,
 then E2EE/key recovery and production/mobile/backup acceptance. The user has not
 answered the E2EE preference question, so E2EE remains required before human use.
 
@@ -333,3 +334,77 @@ lease metadata across SIGKILL/restart, subsequent explicit fresh-lease applicati
 with preserved membership/media, and CLI stale-revision/mixed-mode rejection.
 The lease in that process smoke is a generated private proposal, while the TLS
 fetch itself is exercised by the Go tests. This unit adds no runtime dependency.
+
+## Signed browser identity handoff (synthetic proxy acceptance)
+
+The root HTML now embeds an explicit `fixture` or `signed` mode from the server
+constructor. Missing/unknown mode leaves controls disabled. It is a UI hint, not
+an authorization decision: changing the HTML or actor selector cannot bypass the
+signed server's JWT/actor/room checks. Both modes retain the visible synthetic-only
+and no-E2EE notice. No alternate hostname, CORS rule or public binding was added.
+
+Signed mode hides/disables public actor selection and calls authenticated
+`GET /v1/session`. The JSON contains only `mode`, stable app `actor` and explicit
+local `owner`; `X-Family-Actor` also identifies the verified response principal.
+It exposes no assertion, subject, email or upstream cookie. The caller still needs
+an enrolled subject, a current signing-key lease and a valid JWT. A family actor
+claiming owner in its token remains `owner:false`; room administration and future
+operator execution remain separate. No fleet execution endpoint is added.
+
+Browser requests in signed mode use same-origin credentials so an upstream CF
+session cookie can reach that upstream gate. The app still does **not** authenticate
+cookies or email headers; it validates `Cf-Access-Jwt-Assertion`. The browser never
+reads, constructs, stores or places a JWT in a URL. Redirected fetches fail rather
+than treating a login page as an API response. Actual Cloudflare login/navigation,
+Access application policies and deployment remain unconfigured by this unit.
+Fixture mode alone sends public fixture bearer values and omits cookies.
+
+After bootstrap, every app UI request carries `X-Family-Actor` naming the last
+verified actor. The API checks a present header is unique and matches the current
+verified principal **before** admitting mutations. A changed upstream account
+therefore cannot send an old tab's pending operation as the new account. This is
+an additional browser binding, not proof of identity; ordinary signed API clients
+may omit it and are still attributed only to their verified JWT. Identity response
+headers are checked by the UI too. Pending records have separate fixture/signed
+namespaces and retain the existing per-tab actor/room/client-ID binding. Nothing
+migrates fixture pending messages into signed mode. Reload/re-authentication never
+automatically executes a pending send; returning to its actor requires explicit
+same-ID retry and exact file reselection when bytes were lost.
+
+Bootstrap attempts have generations and abort controllers; a superseded response
+cannot overwrite a newer principal. Identity refresh/denial aborts old requests and
+streams, clears rooms/transcript, form drafts and Blob previews, and disables send/
+create controls. Any signed 401/403 conservatively clears the whole active view
+(including room denial); the user explicitly rechecks identity to list still
+permitted rooms. There is no automatic fixture fallback or automatic re-enrollment.
+A transport outage retains normal bounded stream reconnect behavior. Changes are
+detected on the next checked operation/bootstrap; an already admitted stream or
+chunk follows the existing expiry/replacement bounds. Already downloaded files or
+previously seen bytes cannot be recalled. Browser background suspension can delay
+local cleanup; full mobile/session acceptance remains future work.
+
+```sh
+# Repo root; builds described above. Test dependencies only: Python/Playwright,
+# Chromium and OpenSSL. It spawns only its own loopback services.
+.venv/bin/python tests/native_signed_browser_smoke.py \
+  --binary artifacts/family-dev --policy-binary artifacts/family-policy
+```
+
+The test proxy is **not a deployable authentication proxy**. Locally generated
+opaque HttpOnly cookies map to synthetic subjects inside the test process; there
+is no login/control/token-issuing HTTP endpoint. Only generated server-side RSA
+assertions are injected upstream. Client Authorization/CF identity headers are
+rejected. Proxy/server bind loopback, preserve exact Host/Origin checking, and the
+proxy closes retained upstream streams and joins workers on shutdown. Private
+signing fixtures and policy state are not uploaded as CI evidence.
+
+Two Chromium contexts prove signed text, real generated PNG decoding, MP4 playback
+and byte-exact download; lost-response/reload same-ID retry; upstream account change
+rejecting a prior actor's pending send; durable removal/re-enrollment and expired
+bootstrap clearing tracked Blob URLs; absent identity with no fallback; a late old
+bootstrap unable to replace a newer actor; and SIGKILL/restart history recovery.
+A 390px layout and absence of browser JS errors are checked. The unchanged fixture
+browser/media suite remains in CI. Evidence is retained under
+`artifacts/native-signed-browser-*`; CI uploads only verification JSON/screenshots.
+No human account is initialized, no production CF gate is claimed, and E2EE is
+still required before human use.
