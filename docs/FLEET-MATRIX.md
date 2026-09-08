@@ -6,6 +6,9 @@
 시험 worker CLI는 Codex read-only / approval=never다. 프로토콜의 승인 UI는
 가상 worker로 검증하며 실제 도구 실행 권한이 열렸다는 뜻이 아니다.
 
+육손의 연결부에서 다른 노드의 실행부를 부를 때는 [SSH 실행 계약](FLEET-REMOTE.md)의
+guardian·heartbeat·종료 확인과 `remote_worker: true`를 함께 사용한다.
+
 ## 설치와 최초 장치 신뢰
 
 노드에 별도 venv를 만들고 `pip install -r requirements-matrix.txt`를 실행한다.

@@ -36,6 +36,7 @@ def validate_config(c):
     required = {'homeserver','account','device_id','access_token','pickle_key','state_directory',
                 'owner','rooms','devices','worker_argv','not_before_ms'}
     if required - c.keys(): raise SafetyStop('missing-config-fields')
+    if type(c.get('remote_worker',False)) is not bool:raise SafetyStop('invalid-remote-mode')
     url = urlsplit(c['homeserver'])
     if (url.username or url.password or url.query or url.fragment or url.path not in ('','/')
             or not url.hostname or not (url.scheme=='https' or

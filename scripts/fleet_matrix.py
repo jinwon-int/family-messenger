@@ -23,7 +23,9 @@ class Frontend:
         self.store=MatrixStore(config['state_directory'],config['account'])
         # A saved inbox must never be silently rerouted by editing configuration.
         policy={k:config[k] for k in ('owner','rooms','devices','worker_argv','not_before_ms')}
+        policy['remote_worker']=config.get('remote_worker',False)
         old=self.store.get_meta('policy')
+        if old is not None:old.setdefault('remote_worker',False)
         if old is not None and old!=policy:
             self.store.close()
             raise SafetyStop('saved-policy-changed')
@@ -33,6 +35,7 @@ class Frontend:
         self.client=self.http=self.proc=self.active=None
         self.approvals=set()
         self.matrix_lock=asyncio.Lock()
+        self.worker_input_lock=asyncio.Lock()
         self.stopping=False
 
     async def raw(self,method,path,data=None,params=None):
@@ -239,8 +242,14 @@ class Frontend:
     async def write_worker(self,command):
         payload=(json.dumps(command,ensure_ascii=False)+'\n').encode()
         if len(payload)>65_536:raise SafetyStop('worker-frame-too-large')
-        self.proc.stdin.write(payload)
-        await asyncio.wait_for(self.proc.stdin.drain(),5)
+        async with self.worker_input_lock:
+            self.proc.stdin.write(payload)
+            await asyncio.wait_for(self.proc.stdin.drain(),5)
+
+    async def heartbeat(self):
+        while True:
+            await asyncio.sleep(5)
+            await self.write_worker({'type':'heartbeat'})
 
     async def work(self):
         while True:
@@ -254,13 +263,14 @@ class Frontend:
             job=self.store.claim()
             if not job:await asyncio.sleep(.25);continue
             self.active=job;self.approvals=set()
-            result=None
+            result=None;heartbeat=None
             try:
                 self.proc=await asyncio.create_subprocess_exec(*self.c['worker_argv'],stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,limit=524_289,start_new_session=True)
                 tid=turn_id(job['event_id'])
                 await self.write_worker({'type':'turn','turn_id':tid,'prompt':job['body'],
                                          'session_id':self.store.session(job['scope'])})
+                if self.c.get('remote_worker'):heartbeat=asyncio.create_task(self.heartbeat())
                 self.store.notice(self.as_request(job),'started','작업을 시작했습니다. 취소 명령:\n/cancel '+tid)
                 async with asyncio.timeout(1200):
                     while frame:=await self.proc.stdout.readline():
@@ -285,8 +295,9 @@ class Frontend:
                             self.store.set_meta('active_session',{'event_id':job['event_id'],'session_id':sid})
             finally:
                 self.active=None;self.approvals=set()
+                if heartbeat:heartbeat.cancel()
                 interrupted={'value':isinstance(sys.exc_info()[1],asyncio.CancelledError)}
-                cleanup=asyncio.create_task(self.cleanup_worker(job,result,interrupted))
+                cleanup=asyncio.create_task(self.cleanup_worker(job,result,interrupted,heartbeat))
                 # TaskGroup/SIGTERM can cancel during finally itself. Keep one
                 # cleanup task alive and join it, including repeated cancels.
                 while not cleanup.done():
@@ -297,20 +308,44 @@ class Frontend:
                 cleanup.result()
                 if interrupted['value']:raise asyncio.CancelledError
 
-    async def cleanup_worker(self,job,result,interrupted):
+    async def cleanup_worker(self,job,result,interrupted,heartbeat=None):
         self.store.set_meta('worker_cleanup_in_progress',True)
         confirmed=False
         try:
+            if heartbeat:await asyncio.gather(heartbeat,return_exceptions=True)
             if self.proc:
                 if self.proc.stdin:self.proc.stdin.close()
-                try:await asyncio.wait_for(self.proc.wait(),25)
-                except TimeoutError:
-                    os.killpg(self.proc.pid,signal.SIGKILL)
+                remote=None
+                async def closed():
+                    nonlocal remote
+                    if self.c.get('remote_worker'):
+                        size=0
+                        for _ in range(32):
+                            line=await self.proc.stdout.readline();size+=len(line)
+                            if len(line)>524_288 or size>1_048_576:raise SafetyStop('remote-close-too-large')
+                            msg=json.loads(line) if line else None
+                            if not isinstance(msg,dict) or msg.get('type')=='remote_closed':
+                                remote=msg;break
+                            # A control acknowledgement may race the result.
+                            if msg.get('type') not in ('control','approval-resolved') or msg.get('turn_id')!=turn_id(job['event_id']):
+                                raise SafetyStop('unexpected-remote-output')
+                        else:raise SafetyStop('remote-close-missing')
+                        if await self.proc.stdout.read(1):raise SafetyStop('extra-remote-output')
+                    await self.proc.wait()
+                try:await asyncio.wait_for(closed(),25)
+                except Exception:
+                    try:os.killpg(self.proc.pid,signal.SIGKILL)
+                    except ProcessLookupError:pass
                     await self.proc.wait()
                 else:
                     confirmed=bool(result and (
                         (result.get('status')=='complete' and self.proc.returncode==0) or
                         (result.get('status')=='uncertain' and result.get('runtime_closed') is True)))
+                    if self.c.get('remote_worker'):
+                        confirmed=confirmed and bool(isinstance(remote,dict) and remote.get('type')=='remote_closed'
+                            and remote.get('turn_id')==turn_id(job['event_id']) and remote.get('clean') is True
+                            and remote.get('group_empty') is True and self.proc.returncode==0
+                            and remote.get('worker_exit')==(0 if result.get('status')=='complete' else 1))
             if confirmed and result.get('status')=='complete' and not interrupted['value']:
                 self.store.finish(job['event_id'],result['text'],result.get('session_id'))
         finally:
