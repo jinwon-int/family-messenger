@@ -120,8 +120,9 @@ private temporary SQLite state. They verify room/message/media success, outsider
 and room-admin rejection, spoofed owner claims, header/bearer fallback rejection,
 unknown subjects, live account removal, interrupted uploads across revoke/re-add
 and expiry, a slow JSON body during revocation, and SSE retirement. A controlled
-HTTP writer proves that a queued identity replacement stops download after the
-already admitted chunk. Unit cases cover wrong signature/algorithm/issuer/audience,
+HTTP writer and a deterministic between-chunk gate prove that a completed
+identity replacement stops download after the already admitted chunk. The test
+does not assume mutex fairness or goroutine scheduling order. Unit cases cover wrong signature/algorithm/issuer/audience,
 missing/expired/future claims, duplicate JSON/header attacks, org/service tokens,
 input cloning, expiry, known-key rotation and old-grant retirement. Existing
 native/browser/media/migration tests remain in CI.

@@ -243,6 +243,8 @@ func TestAccessDownloadReplacementStopsNextChunk(t *testing.T) {
 	w := &gatedMediaWriter{header: make(http.Header), entered: make(chan struct{}), release: make(chan struct{})}
 	r := httptest.NewRequest("GET", "http://127.0.0.1:18920/v1/rooms/family/attachments/"+m.ID, nil)
 	r.Header.Set("Cf-Access-Jwt-Assertion", assertion(t, c, k, "family", time.Now().Add(time.Minute)))
+	boundary := chunkBoundary(t)
+	r = r.WithContext(boundary)
 	done := make(chan struct{})
 	go func() { handler.ServeHTTP(w, r); close(done) }()
 	select {
@@ -252,8 +254,8 @@ func TestAccessDownloadReplacementStopsNextChunk(t *testing.T) {
 	}
 	replaced := make(chan error, 1)
 	go func() { replaced <- a.Replace(c) }()
-	time.Sleep(15 * time.Millisecond)
 	close(w.release)
+	awaitChunkBoundary(t, boundary)
 	select {
 	case e := <-replaced:
 		if e != nil {
@@ -262,6 +264,7 @@ func TestAccessDownloadReplacementStopsNextChunk(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("replacement blocked")
 	}
+	close(boundary.release)
 	select {
 	case <-done:
 	case <-time.After(time.Second):
