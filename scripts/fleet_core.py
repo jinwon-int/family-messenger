@@ -213,7 +213,8 @@ class Store:
 
     def accept_batch(self, requests, next_token):
         """Commit admitted input and the /sync token together, or neither."""
-        bounded_text(next_token, 4096)
+        if next_token is not None:
+            bounded_text(next_token, 4096)
         with self.db:
             for req in requests:
                 if (not isinstance(req, Request) or not identifier(req.event_id, "$")
@@ -238,7 +239,8 @@ class Store:
                 self.db.execute("INSERT INTO jobs(event_id,room_id,sender,scope,body,digest,state,txn_id) "
                                 "VALUES (?,?,?,?,?,?,'queued',?)",
                                 (req.event_id, req.room_id, req.sender, req.scope, req.body, digest, txn))
-            self.db.execute("INSERT OR REPLACE INTO meta VALUES ('sync_token',?)", (next_token,))
+            if next_token is not None:
+                self.db.execute("INSERT OR REPLACE INTO meta VALUES ('sync_token',?)", (next_token,))
 
     def claim(self):
         with self.db:
