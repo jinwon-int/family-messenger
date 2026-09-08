@@ -202,6 +202,15 @@ def main():
             else:raise AssertionError('directory reload')
             for p in (a,b):rpc(p,'pin',{'pins':pins,'fault':''})
             rpc(a,'create');rpc(a,'bind');rpc(b,'attach')
+            # Reject malformed no-payload commands before any directory/network or
+            # durable mutation; each failure retires its worker.
+            for method in ('sync','status','create','bind','attach','advance','flush'):
+                before=digest(b,1)
+                rpc(b,method,{'unexpected':'synthetic malformed payload'},reject=True)
+                assert digest(b,1)==before
+                rpc(b,'status',reject=True)
+                reopen(b,1)
+            proof['checks']['malformed_arguments_deny_without_mutation_and_retire']=True
             rpc(b,'advance');rpc(b,'flush');rpc(b,'sync');rpc(a,'sync')
             rpc(a,'advance');rpc(a,'flush');rpc(a,'sync');rpc(b,'sync')
             rpc(b,'advance');rpc(b,'flush');rpc(b,'sync');rpc(a,'sync')

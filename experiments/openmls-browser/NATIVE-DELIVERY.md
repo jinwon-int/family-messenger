@@ -118,7 +118,7 @@ The proof covers native KeyPackage/Welcome/ack, actual encrypted text/file, no
 plaintext in native storage, self echoes, two-tab retry, real browser SIGKILL after
 native acceptance with its response withheld, receiver restart, tamper/replay and
 outer/inner sender mismatch, corrupt state retention, stale pending retirement,
-malformed-command retirement and durable revocation. A test-served callback hold
+malformed-command/argument retirement before mutation and durable revocation. A test-served callback hold
 also stops the owned browser during a pending write; full crypto/outbox remain
 unchanged and the same operation can be staged once afterward.
 

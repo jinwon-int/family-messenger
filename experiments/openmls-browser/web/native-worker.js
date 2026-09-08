@@ -105,6 +105,7 @@ async function dispatch(method,arg){
  if(db||!exact(arg,['identity','room','database'])||!['alice','bob'].includes(arg.identity)||!name(arg.room))fail();identity=arg.identity;room=arg.room;const d=await readDirectory(identity,room);db=await open(arg.database);const op=r=>status(r);op.kind='init';return tx(d,op);
  }
  if(!db)fail();
+ if(['sync','status','create','bind','attach','advance','flush'].includes(method)&&arg!==null)fail();
  if(method==='sync')return sync();
  if(method==='status'){const r=await snapshot();return status(r);}
  if(method==='pin'){

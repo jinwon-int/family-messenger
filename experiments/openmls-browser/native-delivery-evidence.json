@@ -3,6 +3,7 @@
   "production_cf_gate": false,
   "e2ee": false,
   "checks": {
+    "malformed_arguments_deny_without_mutation_and_retire": true,
     "native_keypackage_welcome_ack_actual_library_group": true,
     "two_browsers_text_and_file_native_ciphertext_only": true,
     "atomic_outbox_and_browser_crash_lost_native_reply": true,
@@ -22,7 +23,7 @@
   "original_assets_sha256": {
     "/": "2e7ecbc7ffc7bcdff5646e6282c846a6d2ec307328af56ab25a39655c9013b28",
     "/main.js": "2668e49849ae1e652a8296087f5ab288b90e223feeb8f4358c398807c4239ac6",
-    "/native-worker.js": "943ca5ce1c332aa3823f0076875364c35bcf37ae0f91f9dc0aca51e3a44d5147",
+    "/native-worker.js": "164d54d33613c095ea6eff8ea6f52c161ac6489453130ef00e18f85cc65205a3",
     "/trust-directory.js": "63079de10d73ac4d0664b07de7bcacc4e4abe551977a293cfa4144029a80b04e",
     "/pkg/family_mls_browser_experiment.js": "d5b6a023f6e8d9884ac02054c458e254a4f6421b88e11431e902f3b4ba9bc996",
     "/pkg/family_mls_browser_experiment_bg.wasm": "aa4cd1baeff03789d39860097fdc12235427f6d5630627d9154e98b81835e987"
@@ -30,7 +31,7 @@
   "assets_sha256": {
     "/": "2e7ecbc7ffc7bcdff5646e6282c846a6d2ec307328af56ab25a39655c9013b28",
     "/main.js": "8b2eca1f49c1a37cfdddb0d4e3e9299cbc7172acc35b82477f59ffcf70eea821",
-    "/native-worker.js": "89a8f487d68ee022f9c7ce107099f9215bfdbf0a043822cc43fc528daa605449",
+    "/native-worker.js": "429b8b2d33d2e6065e08a74fb36777842eb54da2cfaa667f4f8991464f1ef448",
     "/trust-directory.js": "63079de10d73ac4d0664b07de7bcacc4e4abe551977a293cfa4144029a80b04e",
     "/pkg/family_mls_browser_experiment.js": "d5b6a023f6e8d9884ac02054c458e254a4f6421b88e11431e902f3b4ba9bc996",
     "/pkg/family_mls_browser_experiment_bg.wasm": "aa4cd1baeff03789d39860097fdc12235427f6d5630627d9154e98b81835e987"
@@ -40,7 +41,7 @@
   "max_worker_linear_memory_bytes": 1376256,
   "native_encrypted_roundtrip": true,
   "passed": true,
-  "artifact": "artifacts/native-encrypted-browser-2y0ioyz5/verification.json",
+  "artifact": "artifacts/native-encrypted-browser-fzfhkjfg/verification.json",
   "scope": "Synthetic native encrypted worker/harness; no product chat UI, subsequent commit handling, production CF gate or human key protection.",
   "prior_artifacts": [
     "artifacts/native-mls-persistence-o27rhut8/verification.json",
@@ -63,9 +64,9 @@
   "source_sha256": {
     "experiments/openmls-browser/src/staging.rs": "2367a4337cfc39cec4b56ad5692cc866ac1f82a97b10da51b4c6df923067ddff",
     "experiments/openmls-browser/src/trust.rs": "853747b390561b6290cbb92117a6172faede8c814bb07e16682d6ed2448982fd",
-    "experiments/openmls-browser/web/native-worker.js": "943ca5ce1c332aa3823f0076875364c35bcf37ae0f91f9dc0aca51e3a44d5147",
+    "experiments/openmls-browser/web/native-worker.js": "164d54d33613c095ea6eff8ea6f52c161ac6489453130ef00e18f85cc65205a3",
     "experiments/openmls-browser/web/native.html": "2e7ecbc7ffc7bcdff5646e6282c846a6d2ec307328af56ab25a39655c9013b28",
-    "tests/native_encrypted_browser_smoke.py": "1a5804b747141aa43898412a73e8723b0d49ec503a6f51fd6b6bb847c38e5bb2"
+    "tests/native_encrypted_browser_smoke.py": "fbca609f89a3d58767bf6ca16f9f173d455317ea9c9ddca8a4169a24ac61e8b0"
   },
   "dependencies": {
     "go_direct": 2,
