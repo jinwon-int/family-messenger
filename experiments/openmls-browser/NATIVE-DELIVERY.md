@@ -12,7 +12,7 @@ unchanged. All native processes still require loopback `--synthetic-only`.
 ## Bootstrap and identity
 
 The fixture reserves an explicitly MLS-only room before key generation. A new
-`family-mls-native-synthetic-...` namespace contains a version-3 client record;
+`family-mls-native-control-synthetic-...` namespace contains a version-4 client record;
 no old experiment database is opened or silently imported. The known initial
 marker can generate keys only after signed directory admission reports no own
 registered device. Missing registered keys, unknown schema, corrupt state and
@@ -39,7 +39,8 @@ separate from owner execution authority, and family rooms acquire no automatic b
 The worker exposes init/pin/create/bind/attach, `advance`, `prepare`, `flush`,
 `sync` and `status`. `advance` stages the next initial control operation: Bob's
 KeyPackage, Alice's Welcome, or Bob's acknowledgement after durable validated join.
-Only these initial controls are supported in this unit. Control IDs are fixed and
+The initial sequence is unchanged; subsequent fixed-pair encryption rekeys are
+described in [NATIVE-CONTROLS.md](NATIVE-CONTROLS.md). Control IDs are fixed and
 scoped by native room/device, and the client validates every expected sender,
 target, revision, epoch and resulting native state. The native log is ordered;
 control cursors are separate from cryptographic ratchet generations.
@@ -83,10 +84,10 @@ or valid database rollback. There is no automatic repair, repinning or ratchet r
 
 ## Later controls and limits
 
-Subsequent update/membership commits are explicitly **rejected** by this client;
-its provider and cursor remain unchanged, and it freezes instead of pretending to
-have validated a new epoch. Full commit/rotation/removal processing is next. The
-server's current support for opaque commit declarations is not client validation.
+Fixed-pair encryption updates now use the vetted ordered adapter in
+[NATIVE-CONTROLS.md](NATIVE-CONTROLS.md). Membership changes and device signing-key
+replacement remain denied. PR32's `native-delivery-evidence.json` is a historical
+version-3 receipt; current control evidence uses a separate version-4 namespace.
 
 If a never-accepted pending application is rejected by native CAS after the server
 advances control/epoch, the exact pending request is durably marked retired. Its
@@ -128,6 +129,6 @@ The exact owned profile argument is checked before SIGKILL. Generated profiles,
 private keys and policy state are never uploaded by CI; only verification JSON is.
 The normal native source contains no forged-sender or infinite-loop test command.
 See `native-delivery-evidence.json` for source/artifact/resource hashes. No external
-crate/module or runtime process was added. Next: vetted subsequent control handling
-and product UI integration, then human key/recovery/CF/mobile acceptance and an
+crate/module or runtime process was added. Next: product UI integration, then
+human key/recovery/CF/mobile acceptance and an
 isolated Yukson candidate before production cutover.
