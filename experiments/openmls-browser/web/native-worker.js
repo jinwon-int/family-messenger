@@ -2,8 +2,10 @@
 // protected at rest. No human accounts or production exposure.
 import init,{staged_init,staged_trusted_apply,staged_control_apply,staged_pending_commit,staged_epoch,staged_checksum,staged_public_key,staged_group_id,staged_check_trust,verify_device_package} from './pkg/family_mls_browser_experiment.js';
 import {exact,fail,hex,unhex,name,normalizePins,readDirectory,matchDirectory} from './trust-directory.js';
+export async function serveNative(storage=null){
 const wasm=await init(),enc=new TextEncoder(),decoder=new TextDecoder('utf-8',{fatal:true});
 let db,identity,room,retired=false;
+const memory=()=>wasm.memory.buffer.byteLength+(storage?storage.memoryBytes():0);
 const b64=b=>btoa(String.fromCharCode(...b));
 function bytes(s,max=65536){if(typeof s!=='string'||s.length>Math.ceil(max/3)*4)fail();const b=Uint8Array.from(atob(s),x=>x.charCodeAt(0));if(b.length>max||b64(b)!==s)fail();return b;}
 const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
@@ -44,10 +46,12 @@ function validate(r,check=true){
 function current(r,d){if(r.pins)matchDirectory(r.pins,d);else{const p=d.devices.find(x=>x.actor===identity);if(p&&(p.status!=='active'||p.signing_key!==hex(staged_public_key(r.crypto,identity))))fail();}}
 function status(r){return {public_key:Array.from(staged_public_key(r.crypto,identity)),pins:r.pins,group_id:r.group,cursor:r.cursor,revision:r.revision,epoch:r.epoch,phase:r.phase,pending:r.pending?{client_id:r.pending.request.client_id,retired:r.pending.retired}:null,messages:r.messages};}
 function open(database){
+ if(storage)return storage.open(database,identity,room);
  if(typeof database!=='string'||!/^family-mls-native-control-synthetic-[a-z0-9-]{1,64}$/.test(database))fail();
  return new Promise((resolve,reject)=>{const q=indexedDB.open(database,1);q.onupgradeneeded=e=>{if(e.oldVersion!==0){q.transaction.abort();return;}q.result.createObjectStore('device').add({version:0,identity,room},'state');};q.onerror=()=>reject(Error('state unavailable'));q.onblocked=()=>reject(Error('state blocked'));q.onsuccess=()=>{const d=q.result;if(d.objectStoreNames.length!==1||!d.objectStoreNames.contains('device')){d.close();reject(Error('schema'));return;}d.onversionchange=()=>d.close();resolve(d);};});
 }
 function tx(d,operation,fault=''){
+ if(storage)return storage.tx(d,operation,fault,{validate,current,checksum,publicKey:r=>hex(staged_public_key(r.crypto,identity)),initialize:()=>{let r={version:4,identity,room,pins:null,group:'',binding:null,cursor:0,revision:0,epoch:0,phase:'unbound',pending:null,receipts:[],messages:[],crypto:staged_init(identity),checksum:''};validate(r,false);r.checksum=checksum(r);return r;},admit:()=>readDirectory(identity,room)});
  return new Promise((resolve,reject)=>{const t=db.transaction('device','readwrite',{durability:'strict'}),s=t.objectStore('device');let result;
  const abort=()=>{try{t.abort()}catch(_){}};t.onerror=()=>{};t.onabort=()=>reject(Error('transaction rejected'));t.oncomplete=()=>resolve(result);
  const keys=s.getAllKeys(undefined,2);keys.onsuccess=()=>{if(keys.result.length!==1||keys.result[0]!=='state'){abort();return;}const q=s.get('state');q.onsuccess=()=>{try{
@@ -108,6 +112,7 @@ async function sync(){
 }
 async function dispatch(method,arg){
  if(method==='init'){
+ if(storage)arg=storage.argument(arg);
  if(db||!exact(arg,['identity','room','database'])||!['alice','bob'].includes(arg.identity)||!name(arg.room))fail();identity=arg.identity;room=arg.room;const d=await readDirectory(identity,room);db=await open(arg.database);const op=r=>status(r);op.kind='init';return tx(d,op);
  }
  if(!db)fail();
@@ -154,5 +159,8 @@ async function dispatch(method,arg){
  fail();
 }
 let queue=Promise.resolve();
-self.onmessage=({data})=>{queue=queue.then(async()=>{let id;try{if(!exact(data,['id','method','argument'])||!Number.isSafeInteger(data.id)||data.id<1||typeof data.method!=='string')fail();id=data.id;if(retired)fail();const result=await dispatch(data.method,data.argument);if(wasm.memory.buffer.byteLength>128*1024*1024)fail();self.postMessage({id,ok:true,result,memory_bytes:wasm.memory.buffer.byteLength});}catch(_){retired=true;if(db){db.close();db=undefined;}self.postMessage({id,ok:false,error:'native state rejected',memory_bytes:wasm.memory.buffer.byteLength});}});};
+self.onmessage=({data})=>{if(storage&&data?.method==='lock'){retired=true;storage.close();if(db)db.close();self.postMessage({id:data.id,ok:true,result:{locked:true},memory_bytes:memory()});self.close();return;}queue=queue.then(async()=>{let id;try{if(!exact(data,['id','method','argument'])||!Number.isSafeInteger(data.id)||data.id<1||typeof data.method!=='string')fail();id=data.id;if(retired)fail();const result=await dispatch(data.method,data.argument);if(memory()>128*1024*1024)fail();if(retired)fail();self.postMessage({id,ok:true,result,memory_bytes:memory()});}catch(_){retired=true;if(storage)storage.close();if(db){db.close();db=undefined;}self.postMessage({id,ok:false,error:'native state rejected',memory_bytes:memory()});}});};
 self.postMessage({boot:true});
+
+}
+if(new URL(import.meta.url).pathname===self.location.pathname)await serveNative();

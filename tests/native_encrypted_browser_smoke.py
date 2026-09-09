@@ -25,6 +25,7 @@ from playwright.sync_api import sync_playwright, expect, Error as BrowserError
 
 def main():
     args = argparse.ArgumentParser()
+    args.add_argument('--vault', action='store_true')
     args.add_argument('--embedded', action='store_true')
     args.add_argument('--ui', action='store_true')
     args.add_argument('--controls', action='store_true')
@@ -32,14 +33,16 @@ def main():
     args.add_argument('--binary', required=True, type=Path)
     args.add_argument('--policy-binary', required=True, type=Path)
     args = args.parse_args()
+    vault = args.vault
     control_proof = args.controls
     ui_proof = args.ui
     embedded = args.embedded
+    assert not vault or not (ui_proof or embedded)
     assert not embedded or ui_proof
     assert not (control_proof and ui_proof)
     binary, policy = args.binary.resolve(strict=True), args.policy_binary.resolve(strict=True)
     root = Path(__file__).resolve().parents[1]
-    work = Path(tempfile.mkdtemp(prefix='native-embedded-ui-' if embedded else 'native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
+    work = Path(tempfile.mkdtemp(prefix='native-vault-control-' if vault and control_proof else 'native-vault-browser-' if vault else 'native-embedded-ui-' if embedded else 'native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
     state, auth, proposals = [work / n for n in ('state', 'auth', 'proposals')]
     for d in (state, auth, proposals):
         d.mkdir(mode=0o700)
@@ -115,6 +118,9 @@ def main():
     for name in ['family_mls_browser_experiment.js','family_mls_browser_experiment_bg.wasm']:
         p=args.bundle/name;st=p.lstat();assert not p.is_symlink() and st.st_nlink==1 and st.st_size<4*1024*1024
         assets['/pkg/'+name]=p.read_bytes()
+    if vault:
+        from native_vault_checks import vault_assets
+        vault_assets(root,work,assets)
     proof['original_assets_sha256']={name:hashlib.sha256(raw).hexdigest() for name,raw in assets.items()}
     if not ui_proof:
         raw=assets['/native-worker.js'];at=raw.index(b" if(method==='prepare'){")
@@ -131,6 +137,9 @@ def main():
             assert raw.count(needle)==1;raw=raw.replace(needle,needle+b"if(method==='test-hold-sync'){testHoldSync=true;return null;}")
             needle=b'return status(r);});\n}\nasync function dispatch'
             assert raw.count(needle)==1;raw=raw.replace(needle,b"return status(r);},testHoldSync?'crash-before-complete':'');\n}\nasync function dispatch")
+        if vault:
+            needle=b'async function dispatch(method,arg){'
+            raw=raw.replace(needle,needle+b"if(method==='test-vault-digest'){const r=await snapshot();return hash(arg==='crypto'?hex(r.crypto):requestShape(r.pending.request));}")
         assets['/native-worker.js']=raw
         needle=b"    if (data.id !== id) return;";assert assets['/main.js'].count(needle)==1
         assets['/main.js']=assets['/main.js'].replace(needle,b"    if(data.test_crash_boundary)window.test_crash_boundary=true;\n"+needle)
@@ -212,7 +221,8 @@ def main():
             for p in profiles:p.mkdir(mode=0o700)
             contexts=[pw.chromium.launch_persistent_context(str(p)) for p in profiles]
             proof['browser']=contexts[0].browser.version;proof['max_worker_linear_memory_bytes']=0
-            databases=['family-mls-native-control-synthetic-alice','family-mls-native-control-synthetic-bob']
+            databases=[('family-mls-vault-synthetic-' if vault else 'family-mls-native-control-synthetic-')+x for x in ['alice','bob']]
+            initialized=set();vault_passwords=[secrets.token_urlsafe(32),secrets.token_urlsafe(32)]
             def cookie(i,value=None):contexts[i].add_cookies([{'name':'synthetic_edge','value':value or cookies[i],'url':url,'httpOnly':True,'sameSite':'Strict'}])
             for i in range(2):cookie(i)
             def page(i):
@@ -221,7 +231,13 @@ def main():
                 r=p.evaluate('([m,a])=>call("device",m,a)',[method,arg]);proof['max_worker_linear_memory_bytes']=max(proof['max_worker_linear_memory_bytes'],r['memory_bytes']);assert r['memory_bytes']<=128*1024*1024
                 if reject:assert not r['ok'] and 'result' not in r;return
                 assert r['ok'],(method,r);return r['result']
-            def init(p,i,database=None,identity=None,selected_room='family',reject=False):return rpc(p,'init',{'identity':identity or ['alice','bob'][i],'room':selected_room,'database':database or databases[i]},reject)
+            def init(p,i,database=None,identity=None,selected_room='family',reject=False):
+                selected=database or databases[i]
+                arg={'identity':identity or ['alice','bob'][i],'room':selected_room,'database':selected}
+                if vault:arg.update(password=vault_passwords[i],create=selected not in initialized)
+                result=rpc(p,'init',arg,reject)
+                if not reject:initialized.add(selected)
+                return result
             def reopen(p,i):p.evaluate("stopWorker('device');spawn('device')");return init(p,i)
             def crash(i):
                 session=contexts[i].browser.new_browser_cdp_session();pid=next(int(p['id']) for p in session.send('SystemInfo.getProcessInfo')['processInfo'] if p['type']=='browser');assert ('--user-data-dir='+str(profiles[i])).encode() in Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
@@ -230,7 +246,9 @@ def main():
                 try:contexts[i].close()
                 except BrowserError:pass
                 contexts[i]=pw.chromium.launch_persistent_context(str(profiles[i]));cookie(i)
-            def digest(p,i,part='all',database=None):return p.evaluate("""async ([name,part])=>{const d=await new Promise((r,j)=>{const q=indexedDB.open(name);q.onsuccess=()=>r(q.result);q.onerror=j});const s=await new Promise((r,j)=>{const q=d.transaction('device').objectStore('device').get('state');q.onsuccess=()=>r(q.result);q.onerror=j});d.close();return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(part==='crypto'?s.crypto:part==='pending'?s.pending.request:s)))))}""",[database or databases[i],part])
+            def digest(p,i,part='all',database=None):
+                if vault and part!='all':return rpc(p,'test-vault-digest',part)
+                return p.evaluate("""async ([name,part])=>{const d=await new Promise((r,j)=>{const q=indexedDB.open(name);q.onsuccess=()=>r(q.result);q.onerror=j});const s=await new Promise((r,j)=>{const q=d.transaction('device').objectStore('device').get('state');q.onsuccess=()=>r(q.result);q.onerror=j});d.close();return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(part==='crypto'?s.crypto:part==='pending'?s.pending.request:s)))))}""",[database or databases[i],part])
             def prepare(p,id,data,kind='text',fault='',reject=False):return rpc(p,'prepare',{'id':id,'bytes':list(data),'media_type':kind,'fault':fault},reject)
             a,b=page(0),page(1);initial=[init(a,0),init(b,1)]
             pins=[{'device_id':actor+'-first','actor':actor,'signing_key':bytes(x['public_key']).hex(),'fingerprint':hashlib.sha256(bytes(x['public_key'])).hexdigest(),'device_revision':1} for actor,x in zip(['alice','bob'],initial)]
@@ -357,6 +375,7 @@ def main():
             # Copy only inside the private disposable profile, then corrupt the copy.
             corrupt_db=databases[0]+'-corrupt'
             a.evaluate("""async([source,target])=>{const db=await new Promise((r,j)=>{const q=indexedDB.open(source);q.onsuccess=()=>r(q.result);q.onerror=j});const record=await new Promise((r,j)=>{const q=db.transaction('device').objectStore('device').get('state');q.onsuccess=()=>r(q.result);q.onerror=j});db.close();record.cursor++;await new Promise((r,j)=>{const q=indexedDB.open(target,1);q.onupgradeneeded=()=>q.result.createObjectStore('device').add(record,'state');q.onsuccess=()=>{q.result.close();r()};q.onerror=j})}""",[databases[0],corrupt_db])
+            if vault:initialized.add(corrupt_db)
             before_bad=digest(a,0,database=corrupt_db);corrupt=page(0);init(corrupt,0,database=corrupt_db,reject=True);assert digest(a,0,database=corrupt_db)==before_bad
             proof['checks']['corrupt_native_cursor_retained_and_denied']=True
             before=digest(a,0);wrong=page(0);cookie(0,cookies[1]);init(wrong,0,identity='bob',reject=True);assert digest(wrong,0)==before;cookie(0)
@@ -367,6 +386,9 @@ def main():
             malformed=page(0);init(malformed,0);before=digest(a,0)
             malformed.evaluate('window.testWorkers.at(-1).postMessage(null)');rpc(malformed,'status',reject=True);assert digest(a,0)==before
             proof['checks']['malformed_command_retires_worker_with_bounded_failure_reply']=True
+            if vault:
+                from native_vault_checks import vault_checks
+                vault_checks(a,b,databases,rpc,reopen,prepare,proof)
             # A valid encryption from Alice with a forged inner sender label still fails.
             prepare(a,'app-forged',b'synthetic wrong inner sender',fault='forged-inner');rpc(a,'flush');rpc(a,'sync')
             before=digest(b,1);rpc(b,'sync',reject=True);assert digest(b,1)==before;reopen(b,1)
