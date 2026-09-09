@@ -71,7 +71,7 @@ def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release
             open_page(a);assert a.locator('#fingerprint').get_attribute('data-public-key')==pins[0]['signing_key']
             for p in pages:pin(p);expect(p.locator('#join')).to_be_enabled()
             proof['checks']['signed_bootstrap_explicit_independent_fingerprints_and_wrong_pin_denial']=True
-            a.locator('#join').click();expect(a.locator('#join')).to_be_disabled();b.locator('#join').click()
+            a.locator('#join').click();expect(a.locator('#join')).to_be_hidden(timeout=10000);b.locator('#join').click()
             for p in pages:expect(p.locator('#phase')).to_contain_text('암호화 연결됨',timeout=20000)
             proof['checks']['dom_native_initial_handshake_ready']=True
             def send(p,text):p.locator('#text').fill(text);p.locator('#send').click()

@@ -1,6 +1,7 @@
 """Additional DOM custody checks with disposable passwords and encrypted bytes."""
 import json
 import time
+import re
 from playwright.sync_api import expect
 
 
@@ -75,7 +76,8 @@ def checks(a,b,contexts,pages,url,open_page,click_open,passwords,proof):
 
     # Hold native polling after the worker has begun an async sync operation.
     polls=[]
-    a.route('**/v1/mls/rooms/family/status',lambda route:polls.append(route))
+    poll_route=re.compile(r'/v1/mls/rooms/family/log\?after=\d+$')
+    a.route(poll_route,lambda route:polls.append(route))
     a.locator('#refresh').click()
     deadline=time.monotonic()+5
     while not polls and time.monotonic()<deadline:a.wait_for_timeout(25)
@@ -83,7 +85,7 @@ def checks(a,b,contexts,pages,url,open_page,click_open,passwords,proof):
     expect(a.locator('#send')).to_be_disabled();expect(a.locator('#refresh')).to_be_disabled()
     a.locator('#text').fill('synthetic send after busy poll')
     for route in polls:route.continue_()
-    a.unroute('**/v1/mls/rooms/family/status')
+    a.unroute(poll_route)
     expect(a.locator('#send')).to_be_enabled(timeout=10000)
     assert a.locator('#text').input_value()=='synthetic send after busy poll'
     a.locator('#send').click()
