@@ -164,7 +164,7 @@ def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release
             proof['checks']['mobile_width_layout_only']=True
             if vault:
                 from native_vault_ui_checks import checks
-                checks(a,b,contexts,pages,url,open_page,click_open,passwords,proof)
+                checks(a,b,contexts,pages,page_url or url,open_page,click_open,passwords,proof)
             config['devices'][1]['status']='revoked';config['devices'][1]['device_revision']=2;commit(2,config['people'])
             for p in pages:
                 expect(p.locator('#chat')).to_be_hidden(timeout=25000)

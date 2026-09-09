@@ -113,3 +113,6 @@ library copyright inventory (SHA-256
 `3aa41caccecaeddad6fcf2f36ce14146ab7baae57064b05b12ecc6b52d5e917f`).
 Python/Rust/wasm-bindgen/Go are build tools; Playwright is test-only. At runtime,
 the Go binary/libc and browser execute the own JS worker and pinned WASM.
+
+The separate [compiled custody UI](VAULT-UI.md) uses an explicit `synthetic_vault`
+build and `/vault/` entry; it preserves the original mode described here.

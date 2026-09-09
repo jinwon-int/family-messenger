@@ -16,6 +16,10 @@ import (
 
 //go:embed mls_bundle.json
 var encryptedManifest []byte
+
+//go:embed vault_bundle.json
+var vaultManifest []byte
+var compiledVaultAssets fs.FS
 var compiledEncryptedAssets fs.FS // Set only by the explicit synthetic_mls build.
 
 type encryptedFile struct {
@@ -37,21 +41,40 @@ type encryptedAsset struct {
 }
 
 // EncryptedAssets is immutable compiled public content, never a runtime directory.
-type EncryptedAssets struct{ files map[string]encryptedAsset }
+type EncryptedAssets struct {
+	files   map[string]encryptedAsset
+	version int
+}
 
 var encryptedPaths = map[string]string{
 	"chat.html": "/encrypted/", "chat.css": "/chat.css", "chat.js": "/chat.js", "native-worker.js": "/native-worker.js", "trust-directory.js": "/trust-directory.js",
 	"pkg.js": "/pkg/family_mls_browser_experiment.js", "pkg.wasm": "/pkg/family_mls_browser_experiment_bg.wasm", "cargo-notices.txt": "/encrypted/licenses/cargo.txt", "rust-notices.txt": "/encrypted/licenses/rust.txt",
 }
 
+var vaultPaths = func() map[string]string {
+	out := make(map[string]string)
+	for file, path := range encryptedPaths {
+		out[file] = path
+	}
+	for file, path := range map[string]string{
+		"vault-chat.html": "/vault/", "vault-chat.js": "/vault-chat.js", "vault-native-worker.js": "/vault-native-worker.js", "native-vault-store.js": "/native-vault-store.js", "age-notices.txt": "/vault/licenses/age.txt", "sodium-notices.txt": "/vault/licenses/sodium.txt",
+	} {
+		out[file] = path
+	}
+	return out
+}()
+
 func loadEncryptedAssets(source fs.FS, manifest []byte) (*EncryptedAssets, error) {
+	return loadAssetProfile(source, manifest, encryptedPaths, 1)
+}
+func loadAssetProfile(source fs.FS, manifest []byte, paths map[string]string, version int) (*EncryptedAssets, error) {
 	if source == nil || len(manifest) > 8192 {
 		return nil, fmt.Errorf("encrypted assets absent or invalid; build with prepared synthetic_mls assets")
 	}
 	var spec encryptedManifestSpec
 	decoder := json.NewDecoder(bytes.NewReader(manifest))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&spec) != nil || decoder.Decode(new(any)) != io.EOF || spec.Version != 1 || spec.WorkerState != 4 || len(spec.Files) != len(encryptedPaths) {
+	if decoder.Decode(&spec) != nil || decoder.Decode(new(any)) != io.EOF || spec.Version != version || spec.WorkerState != 4 || len(spec.Files) != len(paths) {
 		return nil, ErrInvalid
 	}
 	canonical, e := json.MarshalIndent(spec, "", "  ")
@@ -59,18 +82,18 @@ func loadEncryptedAssets(source fs.FS, manifest []byte) (*EncryptedAssets, error
 		return nil, ErrInvalid
 	}
 	entries, e := fs.ReadDir(source, ".")
-	if e != nil || len(entries) != len(encryptedPaths) {
+	if e != nil || len(entries) != len(paths) {
 		return nil, ErrInvalid
 	}
 	for _, entry := range entries {
-		if entry.Type() != 0 || encryptedPaths[entry.Name()] == "" {
+		if entry.Type() != 0 || paths[entry.Name()] == "" {
 			return nil, ErrInvalid
 		}
 	}
-	out := &EncryptedAssets{files: make(map[string]encryptedAsset)}
+	out := &EncryptedAssets{files: make(map[string]encryptedAsset), version: version}
 	total := 0
 	for _, entry := range spec.Files {
-		if encryptedPaths[entry.File] != entry.URL || entry.URL == "" || entry.Bytes <= 0 || entry.Bytes > 2*1024*1024 || len(entry.SHA256) != 64 {
+		if paths[entry.File] != entry.URL || entry.URL == "" || entry.Bytes <= 0 || entry.Bytes > 2*1024*1024 || len(entry.SHA256) != 64 {
 			return nil, ErrInvalid
 		}
 		if _, exists := out.files[entry.URL]; exists {
@@ -78,13 +101,13 @@ func loadEncryptedAssets(source fs.FS, manifest []byte) (*EncryptedAssets, error
 		}
 		kind := "text/javascript; charset=utf-8"
 		switch entry.File {
-		case "chat.html":
+		case "chat.html", "vault-chat.html":
 			kind = "text/html; charset=utf-8"
 		case "chat.css":
 			kind = "text/css; charset=utf-8"
 		case "pkg.wasm":
 			kind = "application/wasm"
-		case "cargo-notices.txt", "rust-notices.txt":
+		case "cargo-notices.txt", "rust-notices.txt", "age-notices.txt", "sodium-notices.txt":
 			kind = "text/plain; charset=utf-8"
 		}
 		if entry.Type != kind {
@@ -114,8 +137,11 @@ func loadEncryptedAssets(source fs.FS, manifest []byte) (*EncryptedAssets, error
 func LoadEncryptedAssets() (*EncryptedAssets, error) {
 	return loadEncryptedAssets(compiledEncryptedAssets, encryptedManifest)
 }
+func LoadVaultAssets() (*EncryptedAssets, error) {
+	return loadAssetProfile(compiledVaultAssets, vaultManifest, vaultPaths, 2)
+}
 func NewEncryptedAccessHandler(store *Store, authority *access.Authority, bundle *EncryptedAssets) (http.Handler, error) {
-	if bundle == nil || len(bundle.files) != len(encryptedPaths) {
+	if bundle == nil || (bundle.version != 1 && bundle.version != 2) || (bundle.version == 1 && len(bundle.files) != len(encryptedPaths)) || (bundle.version == 2 && len(bundle.files) != len(vaultPaths)) {
 		return nil, ErrInvalid
 	}
 	handler, e := NewAccessHandler(store, authority)

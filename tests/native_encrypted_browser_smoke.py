@@ -39,7 +39,7 @@ def main():
     control_proof = args.controls
     ui_proof = args.ui or vault_ui
     embedded = args.embedded
-    assert not vault_ui or not (vault or embedded or control_proof)
+    assert not vault_ui or not (vault or control_proof)
     assert not vault or not (ui_proof or embedded)
     assert not embedded or ui_proof
     assert not (control_proof and ui_proof)
@@ -82,7 +82,7 @@ def main():
         log = work / 'server.log'
         output = log.open('ab')
         offset = log.stat().st_size
-        process = subprocess.Popen([str(binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--listen', address]+(['--synthetic-mls-ui'] if embedded else []), stderr=output, stdout=subprocess.DEVNULL)
+        process = subprocess.Popen([str(binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--listen', address]+(['--synthetic-vault-ui' if vault_ui else '--synthetic-mls-ui'] if embedded else []), stderr=output, stdout=subprocess.DEVNULL)
         until = time.monotonic() + 10
         while time.monotonic() < until:
             assert process.poll() is None, 'server exited'
@@ -127,6 +127,17 @@ def main():
             assets['/'+name]=(root/'experiments/openmls-browser/web'/name).read_bytes()
         from password_worker_smoke import safe_bytes
         assets['/native-vault-store.js']=safe_bytes(root/'experiments/device-keystore/bundle/native-vault-store.js',1024*1024)
+    if embedded and vault_ui:
+        # Expected bytes are independent source inputs. Proxy only forwards;
+        # every manifest route is also requested before any identity revocation.
+        pin = json.loads((root/'server/internal/chat/vault_bundle.json').read_text())
+        assets = {}
+        for e in pin['files']:
+            source = args.bundle/e['source'][7:] if e['source'].startswith('bundle:') else root/e['source']
+            raw = source.read_bytes()
+            assert len(raw)==e['bytes'] and hashlib.sha256(raw).hexdigest()==e['sha256']
+            assets[e['url']] = raw
+        proof['manifest_sha256']=hashlib.sha256((root/'server/internal/chat/vault_bundle.json').read_bytes()).hexdigest()
     if vault:
         from native_vault_checks import vault_assets
         vault_original=vault_assets(root,work,assets)
@@ -178,7 +189,7 @@ def main():
             try:
                 upstream.request(self.command,self.path,body=body,headers=headers);response=upstream.getresponse();raw=response.read()
                 if embedded and self.command=='GET':
-                    asset_path='/' if self.path=='/encrypted/' else self.path
+                    asset_path='/' if self.path=='/encrypted/' and not vault_ui else self.path
                     if asset_path in assets and response.status==200:
                         actual=hashlib.sha256(raw).hexdigest()
                         assert actual==hashlib.sha256(assets[asset_path]).hexdigest(),'compiled asset mismatch'
@@ -219,9 +230,19 @@ def main():
     try:
         start();assert direct('owner','POST','/v1/mls/reservations',{'room':'family','peer_actor':'bob'})[0]==201
         proxy=ThreadingHTTPServer(('127.0.0.1',0),Proxy);threading.Thread(target=proxy.serve_forever,daemon=True).start();url=f'http://127.0.0.1:{proxy.server_port}'
+        if embedded and vault_ui:
+            for path in assets:
+                for principal, expected in ((None,401),(cookies[0],200)):
+                    headers={'Cookie':'synthetic_edge='+principal} if principal else {}
+                    connection=http.client.HTTPConnection('127.0.0.1',proxy.server_port,timeout=10)
+                    connection.request('GET',path,headers=headers)
+                    response=connection.getresponse();raw=response.read();connection.close()
+                    assert response.status==expected,(path,response.status)
+                    if expected==200:assert raw==assets[path]
+            proof['checks']['all_15_native_routes_require_signed_admission']=True
         if ui_proof:
             from native_chat_ui_checks import run_ui
-            run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=url+'/encrypted/' if embedded else url,restart=(lambda:(stop(),start())) if embedded else None,vault=vault_ui)
+            run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=url+('/vault/' if vault_ui else '/encrypted/') if embedded else url,restart=(lambda:(stop(),start())) if embedded else None,vault=vault_ui)
             if embedded:
                 proof['ui_packaging']='compiled native Go server assets; proxy only injects generated assertions'
                 proof['native_embedded_ui']=True

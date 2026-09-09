@@ -1,0 +1,33 @@
+{
+  "status": "isolated synthetic native asset packaging; no human-use or CF deployment claim",
+  "base": "245ba926c0c239ef197d83b5cb1bad3d443f0f88",
+  "browser_proof": "artifacts/native-vault-ui-1iees8dh/verification.json",
+  "browser_checks": 26,
+  "browser_version": "151.0.7922.34",
+  "activation_proof": "artifacts/native-asset-activation-n7hn72jm/verification.json",
+  "activation_checks": 8,
+  "native_served_assets": 15,
+  "manifest_sha256": "f9bf5be669ae06f9149df8e00d20b80304e74996ffea0e06e5b4f57ca6604138",
+  "manifest_bytes": 4539,
+  "embedded_public_bytes": 2883280,
+  "binary_sha256": "554daf70e0d2a77a79b02c1d4e56b515a44f4c4b5020f9c912e8a6129b0e85bb",
+  "binary_bytes": 16970688,
+  "binary_gzip_bytes": 9311700,
+  "dependencies_changed": false,
+  "ui_worker_crypto_sources_changed": false,
+  "limits_unchanged": {
+    "manifest_bytes": 8192,
+    "file_bytes": 2097152,
+    "total_asset_bytes": 4194304,
+    "small_file_bytes": 8192,
+    "wasm_budget_bytes": 134217728,
+    "js_scrypt_scratch_bytes": 268435456
+  },
+  "remaining": [
+    "human recovery and device lifecycle",
+    "mobile resource/lifecycle acceptance",
+    "actual CF account admission",
+    "backup restore and rollback witness",
+    "Yukson production cutover and fleet binding"
+  ]
+}

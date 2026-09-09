@@ -15,17 +15,18 @@ SPEC.loader.exec_module(m)
 PIN = json.loads(m.MANIFEST.read_text())
 
 class AssetPreparationTests(unittest.TestCase):
+    vault = False
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.output = self.root / 'server/internal/chat/mlsassets'
+        self.output = self.root / ('server/internal/chat/vaultassets' if self.vault else 'server/internal/chat/mlsassets')
         self.output.parent.mkdir(parents=True)
-        self.manifest = self.output.parent / 'mls_bundle.json'
+        self.manifest = self.output.parent / ('vault_bundle.json' if self.vault else 'mls_bundle.json')
         self.bundle = self.root / 'bundle'
         self.bundle.mkdir()
         self.sources = []
-        pin = json.loads(json.dumps(PIN))
+        pin = json.loads((m.ROOT/'server/internal/chat/vault_bundle.json').read_text()) if self.vault else json.loads(json.dumps(PIN))
         for entry in pin['files']:
             data = ('synthetic ' + entry['file']).encode()
             path = self.bundle / entry['source'][7:] if entry['source'].startswith('bundle:') else self.root / entry['source']
@@ -43,17 +44,17 @@ class AssetPreparationTests(unittest.TestCase):
 
     def rejected(self):
         with self.assertRaises((OSError, ValueError)):
-            m.prepare(self.bundle)
+            m.prepare(self.bundle, vault=self.vault)
 
     def test_exact_create_reuse_and_check(self):
         with self.assertRaises(ValueError):
-            m.prepare(self.bundle, True)
-        m.prepare(self.bundle)
+            m.prepare(self.bundle, True, vault=self.vault)
+        m.prepare(self.bundle, vault=self.vault)
         before = {p.name: (p.stat().st_ino, p.read_bytes()) for p in self.output.iterdir()}
         self.assertEqual(self.output.stat().st_mode & 0o777, 0o700)
         self.assertTrue(all(p.stat().st_mode & 0o777 == 0o600 for p in self.output.iterdir()))
-        m.prepare(self.bundle, True)
-        m.prepare(self.bundle)
+        m.prepare(self.bundle, True, vault=self.vault)
+        m.prepare(self.bundle, vault=self.vault)
         self.assertEqual(before, {p.name: (p.stat().st_ino, p.read_bytes()) for p in self.output.iterdir()})
 
     def test_wrong_source_hash_never_creates_output(self):
@@ -82,11 +83,11 @@ class AssetPreparationTests(unittest.TestCase):
         link = self.root / 'bundle-link'
         link.symlink_to(self.bundle, target_is_directory=True)
         with self.assertRaises(ValueError):
-            m.prepare(link)
+            m.prepare(link, vault=self.vault)
         self.assertFalse(self.output.exists())
 
     def test_unknown_corrupt_unsafe_output_retained(self):
-        m.prepare(self.bundle)
+        m.prepare(self.bundle, vault=self.vault)
         unknown = self.output / 'unknown'
         unknown.write_bytes(b'retain')
         self.rejected()
@@ -126,14 +127,14 @@ class AssetPreparationTests(unittest.TestCase):
             self.assertFalse(self.output.exists())
         finally:
             os.close(fd)
-        m.prepare(self.bundle)
+        m.prepare(self.bundle, vault=self.vault)
 
     def test_unsafe_lock_and_duplicate_manifest_denied(self):
         lock = self.output.parent / '.mls-build.lock'
         lock.symlink_to(self.manifest)
         self.rejected()
         lock.unlink()
-        self.manifest.write_text(self.manifest.read_text().replace('"version": 1', '"version": 1, "version": 1'))
+        self.manifest.write_text(self.manifest.read_text().replace('"version":', '"version": 7, "version":', 1))
         self.rejected()
         self.assertFalse(self.output.exists())
 
@@ -146,3 +147,40 @@ class AssetPreparationTests(unittest.TestCase):
         self.rejected()
         self.assertEqual(before, set(retained.iterdir()))
         self.assertFalse((retained / '.mls-build.lock').exists())
+
+class VaultAssetPreparationTests(AssetPreparationTests):
+    vault = True
+
+    def test_vault_driver_notices_and_profile_substitution_denied(self):
+        for leaf in ('native-vault-store.js','THIRD-PARTY-NOTICES.txt','SODIUM-NOTICES.txt'):
+            source = next(p for p in self.sources if p.name == leaf and 'device-keystore' in str(p))
+            original = source.read_bytes()
+            source.write_bytes(b'X'*len(original))
+            self.rejected()
+            self.assertFalse(self.output.exists())
+            source.write_bytes(original)
+        pin = json.loads(self.manifest.read_text())
+        pin['files'][-1]['source'] = 'experiments/openmls-browser/THIRD-PARTY-NOTICES.txt'
+        self.manifest.write_text(json.dumps(pin))
+        self.rejected()
+        self.assertFalse(self.output.exists())
+
+    def test_closed_manifest_rejected_before_output(self):
+        original = self.manifest.read_bytes()
+        changes = [('version',1),('worker_state',True),('url','/../outside'),('type','text/html'),('bytes',True),('sha256','f'*63)]
+        for field,value in changes:
+            pin=json.loads(original)
+            if field in ('version','worker_state'):pin[field]=value
+            else:pin['files'][-1][field]=value
+            self.manifest.write_text(json.dumps(pin,indent=2)+'\n')
+            self.rejected()
+            self.assertFalse(self.output.exists())
+        self.manifest.write_bytes(original)
+
+    def test_vault_does_not_touch_legacy_output(self):
+        legacy = self.output.parent/'mlsassets'
+        legacy.mkdir(mode=0o700)
+        (legacy/'retained').write_bytes(b'previous prepared bundle')
+        m.prepare(self.bundle, vault=True)
+        self.assertEqual((legacy/'retained').read_bytes(), b'previous prepared bundle')
+        self.assertEqual(len(list(self.output.iterdir())),15)
