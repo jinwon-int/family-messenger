@@ -12,6 +12,11 @@ activation. The design below describes the full lifecycle; its ready/bootstrap
 and healthy-signer custody requirements remain open. Disk retirement reaches a
 live server on its next validated reload, not synchronously when the CLI returns.
 
+The subsequent [intact-signer library boundary](../experiments/openmls-browser/IDENTITY-CONTEXT.md)
+constructs a signer-only fresh provider without changing the old group. It is an
+optional memory-only generated-data proof, not encrypted multi-room custody or
+replacement activation; its concrete atomic-storage follow-up remains required.
+
 ## Decision
 
 Keep two different authorization paths explicit. An intact, independently trusted

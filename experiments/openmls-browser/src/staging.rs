@@ -203,3 +203,6 @@ pub fn staged_control_apply(bytes:&[u8],identity:&str,method:&str,input:&[u8],pe
 pub fn staged_pending_commit(bytes:&[u8],identity:&str)->Result<bool,JsValue> {
     Ok(load(bytes,identity)?.group.as_ref().map(|g|g.pending_commit().is_some()).unwrap_or(false))
 }
+
+#[cfg(feature = "identity-context")]
+mod identity_context;

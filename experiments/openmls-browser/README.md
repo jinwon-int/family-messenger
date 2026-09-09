@@ -2,6 +2,10 @@ The PR27 memory-only proof below is preserved as historical evidence. The curren
 bundle also includes the [staged IndexedDB adapter](PERSISTENCE.md); its current
 dependency counts, source hashes and persistence proof are documented separately.
 
+The default-off [intact-signer context experiment](IDENTITY-CONTEXT.md) qualifies
+a fresh provider using an existing signer. It preserves these pinned default
+assets and does not activate native encrypted multi-room custody or replacement.
+
 # Disposable OpenMLS browser experiment
 
 **Synthetic-only, memory-only library proof. Not the family messenger's E2EE

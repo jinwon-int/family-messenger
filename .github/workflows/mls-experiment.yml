@@ -1,15 +1,15 @@
 name: Isolated MLS browser experiment
 on:
   push:
-    paths: ['experiments/openmls-browser/**', 'experiments/device-keystore/**', 'tests/device_keystore_smoke.py', 'tests/password_worker_smoke.py', 'tests/session_record_smoke.py', 'tests/native_mls_browser_smoke.py', 'tests/native_lifecycle_checks.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'tests/native_trusted_state_smoke.py', 'tests/native_encrypted_browser_smoke.py', 'tests/native_vault_checks.py', 'tests/native_vault_ui_checks.py', 'tests/native_history_checks.py', 'tests/fixtures/native-history/**', 'tests/fixtures/native-vault/**', 'tests/native_chat_ui_checks.py', 'tests/native_asset_activation_smoke.py', 'tests/test_mls_assets.py', 'tools/prepare_mls_assets.py', 'server/**', '.github/workflows/mls-experiment.yml']
+    paths: ['experiments/openmls-browser/**', 'experiments/device-keystore/**', 'tests/device_keystore_smoke.py', 'tests/password_worker_smoke.py', 'tests/session_record_smoke.py', 'tests/native_mls_browser_smoke.py', 'tests/native_lifecycle_checks.py', 'tests/native_identity_context_checks.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'tests/native_trusted_state_smoke.py', 'tests/native_encrypted_browser_smoke.py', 'tests/native_vault_checks.py', 'tests/native_vault_ui_checks.py', 'tests/native_history_checks.py', 'tests/fixtures/native-history/**', 'tests/fixtures/native-vault/**', 'tests/native_chat_ui_checks.py', 'tests/native_asset_activation_smoke.py', 'tests/test_mls_assets.py', 'tools/prepare_mls_assets.py', 'server/**', '.github/workflows/mls-experiment.yml']
   pull_request:
-    paths: ['experiments/openmls-browser/**', 'experiments/device-keystore/**', 'tests/device_keystore_smoke.py', 'tests/password_worker_smoke.py', 'tests/session_record_smoke.py', 'tests/native_mls_browser_smoke.py', 'tests/native_lifecycle_checks.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'tests/native_trusted_state_smoke.py', 'tests/native_encrypted_browser_smoke.py', 'tests/native_vault_checks.py', 'tests/native_vault_ui_checks.py', 'tests/native_history_checks.py', 'tests/fixtures/native-history/**', 'tests/fixtures/native-vault/**', 'tests/native_chat_ui_checks.py', 'tests/native_asset_activation_smoke.py', 'tests/test_mls_assets.py', 'tools/prepare_mls_assets.py', 'server/**', '.github/workflows/mls-experiment.yml']
+    paths: ['experiments/openmls-browser/**', 'experiments/device-keystore/**', 'tests/device_keystore_smoke.py', 'tests/password_worker_smoke.py', 'tests/session_record_smoke.py', 'tests/native_mls_browser_smoke.py', 'tests/native_lifecycle_checks.py', 'tests/native_identity_context_checks.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'tests/native_trusted_state_smoke.py', 'tests/native_encrypted_browser_smoke.py', 'tests/native_vault_checks.py', 'tests/native_vault_ui_checks.py', 'tests/native_history_checks.py', 'tests/fixtures/native-history/**', 'tests/fixtures/native-vault/**', 'tests/native_chat_ui_checks.py', 'tests/native_asset_activation_smoke.py', 'tests/test_mls_assets.py', 'tools/prepare_mls_assets.py', 'server/**', '.github/workflows/mls-experiment.yml']
 permissions:
   contents: read
 jobs:
   synthetic-mls:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       RUSTFLAGS: '--cfg getrandom_backend="wasm_js"'
     steps:
@@ -118,6 +118,11 @@ jobs:
           timeout 90s python tests/native_mls_browser_smoke.py --lifecycle --bundle artifacts/mls-browser-pkg
       - name: Atomic synthetic state and browser crash proof
         run: timeout 120s python tests/native_mls_persistence_smoke.py --bundle artifacts/mls-browser-pkg
+      - name: Isolated signer-only new conversation candidate
+        run: |
+          rustup run 1.91.1 cargo build --locked --release --target wasm32-unknown-unknown --features identity-context --manifest-path experiments/openmls-browser/Cargo.toml
+          "$RUNNER_TEMP/wasm-bindgen-0.2.126-x86_64-unknown-linux-musl/wasm-bindgen" "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/family_mls_browser_experiment.wasm" --target web --out-dir artifacts/mls-identity-context-pkg
+          timeout 90s python tests/native_mls_browser_smoke.py --identity-context --bundle artifacts/mls-identity-context-pkg
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -125,6 +130,7 @@ jobs:
           path: |
             artifacts/native-mls-browser-*/verification.json
             artifacts/native-mls-lifecycle-*/verification.json
+            artifacts/native-identity-context-*/verification.json
             artifacts/native-mls-persistence-*/verification.json
             artifacts/native-device-browser-*/verification.json
             artifacts/native-trusted-state-*/verification.json
