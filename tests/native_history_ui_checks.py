@@ -83,7 +83,13 @@ def reader_ui(a,b,contexts,url,expected,password,archive,pending_marker,proof):
         p.evaluate("()=>{window.historyFileReads=0;const read=File.prototype.arrayBuffer;File.prototype.arrayBuffer=function(){historyFileReads++;return read.call(this)}}")
         open_read(raw=b'x'*(6*1024*1024+1),ok=False)
         assert p.evaluate('historyFileReads')==0
-        proof['checks']['history_dom_oversized_file_denied_before_arraybuffer']=True
+        fill(p,expected,password,archive)
+        p.locator('#expected').fill(json.dumps(expected,ensure_ascii=False)[:-1]+',"extra":"'+('한'*1200)+'"}')
+        assert len(p.locator('#expected').input_value())<4096
+        p.locator('#read').click();expect(p.locator('#read')).to_be_enabled()
+        expect(p.locator('#status')).to_contain_text('입력과 파일 크기')
+        assert p.evaluate('historyFileReads')==0
+        proof['checks']['history_dom_oversized_file_and_utf8_binding_denied_before_arraybuffer']=True
         # Current signed actor cannot silently switch to a different archive owner.
         context.clear_cookies();context.add_cookies(b.context.cookies())
         open_read(ok=False)

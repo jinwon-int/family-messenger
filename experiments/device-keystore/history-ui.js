@@ -68,7 +68,7 @@ async function begin(exportSnapshot){
  const accepted=$('accepted').checked;
  lock(false);let s;
  try{
-  if(!accepted||password.length<32||password.length>128||raw.length>4096||(!exportSnapshot&&(!file||file.size<1||file.size>limit)))throw Error('input');
+  if(!accepted||password.length<32||password.length>128||raw.length>4096||new TextEncoder().encode(raw).byteLength>4096||(!exportSnapshot&&(!file||file.size<1||file.size>limit)))throw Error('input');
   const expected=JSON.parse(raw);raw=null;
   if(!exact(expected,'database,identity,room,group_id,pins')||!['alice','bob'].includes(expected.identity))throw Error('binding');
   s={generation,actor:expected.identity,expected,controller:new AbortController(),dead:false,busy:true,urls:new Set(),archive:null,messages:null,downloading:false};
