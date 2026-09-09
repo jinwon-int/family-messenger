@@ -137,6 +137,13 @@ room policy. No chat schema or content is rewritten.
 
 ## Evidence and remaining work
 
+[successor-evidence.json](successor-evidence.json) records clean source/binary
+hashes, the six process checks, seven new Go test groups and independent receipts.
+Review reproduced one medium correctness defect: the original minimum-admin
+constraint blocked emergency deny-all policies. Moving that constraint to first
+establishment fixed it; both the original failing case and restart/grant-denial
+regressions were independently rechecked.
+
 Run the generated process proof:
 
 ```sh

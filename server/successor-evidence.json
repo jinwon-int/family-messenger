@@ -1,0 +1,77 @@
+{
+  "status": "synthetic private management only; no replacement activation or human recovery",
+  "source_head": "d9905fc1c36df5561bdf76c9614392f79bc1c09d",
+  "clean_binary_vcs_modified": false,
+  "author_process": {
+    "path": "artifacts/native-successor-gknehvwq/verification.json",
+    "sha256": "b195e62417630a3562cfbbd4d91f14896ccf6e195d643809c108072cce2c7acf",
+    "receipt": {
+      "synthetic_only": true,
+      "production_cf_gate": false,
+      "e2ee": false,
+      "binary_sha256": "aead5d030cee7f4a07da5ecc34eccb00bf1790393ec8f048bb6d5dd9bd3a3e09",
+      "policy_binary_sha256": "8b1974e170741dd5d7ea5d5af8757a2f1269a2c2668efd1753cf0a83246af334",
+      "explicit_signed_mode_and_no_fixture_fallback": true,
+      "checks": {
+        "explicit_mode_owner_not_device_admin_expiry_and_candidate_denial": true,
+        "two_process_exact_acceptance_one_revision_atomic_retirement_no_candidate_admission": true,
+        "sigkill_restart_retains_revocation_and_old_chat_media_policy_bytes": true,
+        "conflicting_process_decisions_one_winner_no_old_policy_restore": true,
+        "unsafe_v2_policy_denied_and_retained_no_fixture_fallback": true,
+        "emergency_empty_people_and_administrators_survives_sigkill_restart": true
+      },
+      "ok": true
+    }
+  },
+  "legacy_process": {
+    "path": "artifacts/native-policy-_nryhq4w/verification.json",
+    "sha256": "d7ffed88a07a60459ed27a6a037cdc3865287e1560f7954b9502dacf1f873f3c",
+    "ok": true
+  },
+  "validation": {
+    "new_go_successor_groups": 7,
+    "all_go_race_umask": "022",
+    "all_go_normal_umask": "077",
+    "go_vet": "passed",
+    "python_unittest_count": 111
+  },
+  "independent_review": {
+    "head": "d9905fc1c36df5561bdf76c9614392f79bc1c09d",
+    "verdict": "clean after one reproduced medium finding fixed",
+    "old_failing_head": "5a3e85cc3994cb68e7f97a483cc92f3827c87753",
+    "finding": "nonempty-admin constraint prevented emergency empty-enrollment denial",
+    "fix": "permit zero administrators after explicit establishment; preserve intents/tombstones, deny approvals and revoked grants",
+    "receipts": {
+      "review.json": {
+        "path": "/root/work/family-messenger/artifacts/successor-reviewed-pww0mmjd/review.json",
+        "sha256": "f03e716bde7c63d1e4af6d4799e167655bdc5b76315b689643c094f53e7e1122"
+      },
+      "successor.json": {
+        "path": "/root/work/family-messenger/artifacts/successor-reviewed-pww0mmjd/successor.json",
+        "sha256": "b195e62417630a3562cfbbd4d91f14896ccf6e195d643809c108072cce2c7acf"
+      },
+      "legacy.json": {
+        "path": "/root/work/family-messenger/artifacts/successor-reviewed-pww0mmjd/legacy.json",
+        "sha256": "d7ffed88a07a60459ed27a6a037cdc3865287e1560f7954b9502dacf1f873f3c"
+      },
+      "finding.json": {
+        "path": "/root/work/family-messenger/artifacts/successor-reviewed-pww0mmjd/finding.json",
+        "sha256": "9d63f432ec2456df31b0ea200f224645e18e7719c83183624f1c81c963077c55"
+      }
+    }
+  },
+  "dependencies": {
+    "new": 0,
+    "go_direct": 2,
+    "go_transitive": 0,
+    "crypto_frontend_asset_changes": false
+  },
+  "unqualified": [
+    "candidate private-key possession or actual MLS package validation",
+    "human confirmer authentication and OOB ceremony",
+    "native replacement activation/new group/Welcome/ack",
+    "healthy enrolled signer across encrypted conversation contexts",
+    "actual CF/mobile/server backup/capacity/fleet/Yukson acceptance",
+    "whole valid rollback witness or real power loss during fsync"
+  ]
+}
