@@ -140,3 +140,11 @@ read-after-close lifecycle defect. Caller retirement now clears only internal
 references, terminates/settles despite a consumer callback error, and makes close
 terminal. Regression fixtures cover frozen inputs before/after ready, late output,
 closed reuse, callback/clone failures and oversized backing buffers.
+
+Final [history-evidence.json](history-evidence.json) records an independent
+36-check browser run and both caller lifecycle fixes on the reviewed runtime.
+The generated archive exported in 2,832.45 ms including worker startup/KDF and
+validation; observed combined linear memory was 5,570,560 bytes, excluding the
+separate 256 MiB JS KDF scratch and browser heap. These are desktop fixture
+measurements, not mobile acceptance. The full Python suite has 99 passing tests
+under umask022 and077. No product native code or dependencies changed.
