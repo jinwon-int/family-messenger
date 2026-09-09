@@ -6,12 +6,12 @@ device fingerprints, establish the fixed-pair room, send text and small files,
 read committed history and reopen after interruption through ordinary controls.
 No framework, new library, runtime daemon or Go/crypto change is introduced.
 
-**Packaging boundary:** the runnable test below serves an exact allowlist from a
+**Original PR34 proof boundary (retained):** the runnable test below serves an exact allowlist from a
 loopback-only synthetic assertion proxy. Original UI/worker/WASM hashes are captured
 before serving; UI bytes are not rewritten. This is not the Go binary's embedded
 UI or a deployable authentication proxy. Existing legacy UI/assets are unchanged.
-A reviewed asset packaging/activation step is still required; the production site
-and CF settings are unchanged. Test profiles contain generated keys and messages
+The subsequent [compiled native packaging](../../server/ENCRYPTED-UI.md) adds
+explicit signed synthetic activation; the production site and CF settings remain unchanged. Test profiles contain generated keys and messages
 only, without protected at-rest keys or human recovery.
 
 ## Account, room and trust
@@ -97,7 +97,7 @@ Blob URL creation/revocation. The generated test proxy can withhold/alter genera
 native responses. `chat-ui-evidence.json` records source/served asset hashes and
 proof paths. Native worker, WASM and server binaries are unchanged from PR33.
 
-Next: reviewed Go/static/WASM packaging and isolated candidate activation, followed
-by human key protection/recovery, device lifecycle, actual CF/mobile/backup
+Compiled Go/static/WASM packaging is documented separately above. Remaining
+work includes human key protection/recovery, device lifecycle, actual CF/mobile/backup
 acceptance before Yukson production cutover. No family data or original fleet
 credentials have moved, and Telegram remains the fallback.

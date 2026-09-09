@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "worker_state": 4,
+  "files": [
+    {
+      "file": "chat.html",
+      "url": "/encrypted/",
+      "type": "text/html; charset=utf-8",
+      "bytes": 1987,
+      "sha256": "6b274bb6d82c809df99c8702d0d8c0d20c12d23eeae8320744263646e031f603",
+      "source": "experiments/openmls-browser/web/chat.html"
+    },
+    {
+      "file": "chat.css",
+      "url": "/chat.css",
+      "type": "text/css; charset=utf-8",
+      "bytes": 961,
+      "sha256": "de99fa320fb038096057fe81cfe003e7163b57dd0af46730e8de3bb1c4c92a91",
+      "source": "experiments/openmls-browser/web/chat.css"
+    },
+    {
+      "file": "chat.js",
+      "url": "/chat.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 11873,
+      "sha256": "9b71e3ce50a7050186765132278917f7e6f30033d0a8c62464ab13fe873d3b37",
+      "source": "experiments/openmls-browser/web/chat.js"
+    },
+    {
+      "file": "native-worker.js",
+      "url": "/native-worker.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 20503,
+      "sha256": "becf46c70e21be2c14f41c33767eb42d03314ec6612a28695a503d615d44e24b",
+      "source": "experiments/openmls-browser/web/native-worker.js"
+    },
+    {
+      "file": "trust-directory.js",
+      "url": "/trust-directory.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 3086,
+      "sha256": "63079de10d73ac4d0664b07de7bcacc4e4abe551977a293cfa4144029a80b04e",
+      "source": "experiments/openmls-browser/web/trust-directory.js"
+    },
+    {
+      "file": "pkg.js",
+      "url": "/pkg/family_mls_browser_experiment.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 28136,
+      "sha256": "b52611d63fc964ffa4933bf46524ac9c8dfc8630aae242a699970534585d055d",
+      "source": "bundle:family_mls_browser_experiment.js"
+    },
+    {
+      "file": "pkg.wasm",
+      "url": "/pkg/family_mls_browser_experiment_bg.wasm",
+      "type": "application/wasm",
+      "bytes": 1449908,
+      "sha256": "e2f68733e8e911a22b7f3a97dcd0cadfd6c31b7c9505f0e649870a8c82d7c749",
+      "source": "bundle:family_mls_browser_experiment_bg.wasm"
+    },
+    {
+      "file": "cargo-notices.txt",
+      "url": "/encrypted/licenses/cargo.txt",
+      "type": "text/plain; charset=utf-8",
+      "bytes": 365656,
+      "sha256": "52ce5425ee2bfcbcd1271d72da46953233f2f40f97d9f7ae769c4447ea6e63fa",
+      "source": "experiments/openmls-browser/THIRD-PARTY-NOTICES.txt"
+    },
+    {
+      "file": "rust-notices.txt",
+      "url": "/encrypted/licenses/rust.txt",
+      "type": "text/plain; charset=utf-8",
+      "bytes": 398128,
+      "sha256": "3aa41caccecaeddad6fcf2f36ce14146ab7baae57064b05b12ecc6b52d5e917f",
+      "source": "experiments/openmls-browser/RUST-STDLIB-NOTICES.html"
+    }
+  ]
+}

@@ -348,3 +348,5 @@ OpenMLS pending/merge APIs. It does not replace signing keys or add devices, and
 does not complete the human-use acceptance gates.
 
 An own synthetic encrypted chat UI now exercises the durable native worker through browser controls. See [CHAT-UI.md](../experiments/openmls-browser/CHAT-UI.md) for the isolated test-serving boundary; this is not a deployed human-use UI or completed CF/key-recovery gate.
+
+The encrypted test UI can now be built into the native server through a fixed hash-pinned manifest and explicit signed synthetic activation. See [ENCRYPTED-UI.md](../server/ENCRYPTED-UI.md). This does not complete human-use key protection, recovery or actual CF/mobile/backup acceptance.

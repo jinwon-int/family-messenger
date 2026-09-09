@@ -6,7 +6,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
 
-def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper):
+def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=None,restart=None):
     with sync_playwright() as pw:
         profiles=[work/'ui-alice',work/'ui-bob']
         for p in profiles:p.mkdir(mode=0o700)
@@ -15,7 +15,7 @@ def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release
             for i,c in enumerate(contexts):c.add_cookies([{'name':'synthetic_edge','value':cookies[i],'url':url,'httpOnly':True,'sameSite':'Strict'}])
             for c in contexts:c.add_init_script("window.liveBlobURLs=new Set();const make=URL.createObjectURL,drop=URL.revokeObjectURL;URL.createObjectURL=function(...a){const u=make.apply(this,a);window.liveBlobURLs.add(u);return u};URL.revokeObjectURL=function(u){window.liveBlobURLs.delete(u);return drop.call(this,u)}")
             pages=[c.new_page() for c in contexts]
-            for p in pages:p.goto(url)
+            for p in pages:p.goto(page_url or url)
             proof['browser']=contexts[0].browser.version
             def open_page(p):
                 p.locator('#open').click();expect(p.locator('#device')).to_be_visible(timeout=15000)
@@ -63,10 +63,12 @@ def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release
             proof['checks']['encrypted_opaque_file_authenticated_download_integrity_no_active_preview']=True
             # Drop the first prepare command in the disposable page only. The
             # metadata draft exists, but bytes never reach the worker/IDB.
-            b.evaluate("()=>{window.heldPrepare=false;const post=Worker.prototype.postMessage;Worker.prototype.postMessage=function(data,...rest){if(data.method==='prepare'&&!window.heldPrepare){window.heldPrepare=true;return}return post.call(this,data,...rest)}}")
+            b.evaluate("()=>{window.heldPrepare=false;const post=Worker.prototype.postMessage;Worker.prototype.postMessage=function(data,...rest){if(data.method==='prepare'&&!window.heldPrepare){window.heldPrepare=true;setTimeout(()=>document.documentElement.dataset.syntheticHeldPrepare='true',150);return}return post.call(this,data,...rest)}}")
             reselect=b'synthetic exact reselection'
             b.locator('#file').set_input_files({'name':'reselect.bin','mimeType':'application/octet-stream','buffer':reselect});b.locator('#send').click()
-            b.wait_for_function('window.heldPrepare===true')
+            # A delayed DOM marker exercises async waiting without page-side eval
+            # (wait_for_function string predicates can violate the real CSP).
+            expect(b.locator('html')).to_have_attribute('data-synthetic-held-prepare','true')
             metadata=json.loads(b.evaluate('sessionStorage.getItem("family-native-ui-draft-v1:bob:family")'))
             assert metadata['size']==len(reselect) and metadata['sha256']==hashlib.sha256(reselect).hexdigest()
             retry_id=metadata['id'];b.reload();open_page(b)
@@ -99,6 +101,12 @@ def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release
             proof['checks']['lost_native_reply_reload_reconciles_exact_id_no_early_display']=True
             before=b.locator('#messages li').count();b.reload();open_page(b);expect(b.locator('#messages li')).to_have_count(before,timeout=15000)
             proof['checks']['receiver_reload_restores_committed_history_without_duplicates']=True
+            if restart:
+                restart()
+                for i,p in enumerate(pages):
+                    open_page(p);expect(p.locator('#messages')).to_contain_text(lost,timeout=15000)
+                    assert p.locator('#fingerprint').get_attribute('data-public-key')==pins[i]['signing_key']
+                proof['checks']['compiled_server_restart_preserves_identity_and_encrypted_history']=True
             tamper[0]='cipher';send(a,'synthetic UI altered wire')
             for p in pages:expect(p.locator('#chat')).to_be_hidden(timeout=15000)
             tamper[0]=None
