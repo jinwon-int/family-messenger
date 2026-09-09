@@ -72,3 +72,20 @@ def checks(a,b,contexts,pages,url,open_page,click_open,passwords,proof):
     expect(a.locator('#chat')).to_be_visible()
     proof['checks']['clone_failure_retires_immediately_old_deadline_does_not_lock_new_session']=True
     proof['checks']['idle_poll_backoff_bounds_sync_work_without_expanding_worker_quota']=True
+
+    # Hold native polling after the worker has begun an async sync operation.
+    polls=[]
+    a.route('**/v1/mls/rooms/family/status',lambda route:polls.append(route))
+    a.locator('#refresh').click()
+    deadline=time.monotonic()+5
+    while not polls and time.monotonic()<deadline:a.wait_for_timeout(25)
+    assert polls
+    expect(a.locator('#send')).to_be_disabled();expect(a.locator('#refresh')).to_be_disabled()
+    a.locator('#text').fill('synthetic send after busy poll')
+    for route in polls:route.continue_()
+    a.unroute('**/v1/mls/rooms/family/status')
+    expect(a.locator('#send')).to_be_enabled(timeout=10000)
+    assert a.locator('#text').input_value()=='synthetic send after busy poll'
+    a.locator('#send').click()
+    for p in [a,b]:expect(p.locator('#messages')).to_contain_text('synthetic send after busy poll',timeout=25000)
+    proof['checks']['async_poll_disables_actions_synchronously_and_preserves_unsent_composer']=True

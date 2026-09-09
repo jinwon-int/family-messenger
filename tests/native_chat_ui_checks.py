@@ -21,6 +21,11 @@ def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release
             for i,c in enumerate(contexts):configure(c,i)
             pages=[c.new_page() for c in contexts]
             for p in pages:p.goto(page_url or url)
+            if vault:
+                errors=[]
+                for p in pages:p.on('pageerror',lambda error:errors.append(str(error)));p.locator('#refresh').click();p.evaluate('()=>true')
+                assert not errors,errors
+                proof['checks']['refresh_before_unlock_is_safe']=True
             proof['browser']=contexts[0].browser.version
             def crash_page(i):
                 import os,signal

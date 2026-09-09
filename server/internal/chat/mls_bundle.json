@@ -22,8 +22,8 @@
       "file": "chat.js",
       "url": "/chat.js",
       "type": "text/javascript; charset=utf-8",
-      "bytes": 14064,
-      "sha256": "1d1c8d46844e707bc9176aa73c8f235a0315a39cc6c9cbcc32c6a7225d6d2b6e",
+      "bytes": 14297,
+      "sha256": "bcbb0bc60c74fa8b33ab0796535d46a0e9a6e7a46e4e87773f11e5db8c51df35",
       "source": "experiments/openmls-browser/web/chat.js"
     },
     {
