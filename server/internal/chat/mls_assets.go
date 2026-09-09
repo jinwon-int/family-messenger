@@ -85,7 +85,7 @@ func loadEncryptedAssets(source fs.FS, manifest []byte) (*EncryptedAssets, error
 }
 func loadAssetProfile(source fs.FS, manifest []byte, paths map[string]string, version int) (*EncryptedAssets, error) {
 	if source == nil || len(manifest) > 8192 {
-		return nil, fmt.Errorf("encrypted assets absent or invalid; build with prepared synthetic_mls assets")
+		return nil, fmt.Errorf("encrypted assets absent or invalid; build with prepared assets for the selected synthetic UI")
 	}
 	var spec encryptedManifestSpec
 	decoder := json.NewDecoder(bytes.NewReader(manifest))
