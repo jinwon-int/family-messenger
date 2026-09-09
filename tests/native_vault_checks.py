@@ -71,8 +71,10 @@ def vault_checks(a,b,databases,rpc,reopen,prepare,proof,page,passwords):
     # Clone failure must retire immediately; old timers cannot remove a new worker.
     denied=a.evaluate('()=>call("device","status",{extra:()=>{}})')
     assert not denied['ok'];reopen(a,0)
+    observer=page(0);assert observer.evaluate('arg=>call("device","init",arg)',first)['ok']
     a.evaluate('window.lockVaults()')
-    rpc(a,'status',reject=True);reopen(a,0)
+    observer.wait_for_function('()=>window.activeVaultWorkers()===0',timeout=5000)
+    rpc(observer,'status',reject=True);rpc(a,'status',reject=True);reopen(a,0)
     proof['checks']['explicit_cross_tab_lock_and_uncloneable_send_retire']=True
 
     invalid=a.evaluate("""()=>new Promise(resolve=>{const w=window.testWorkers.at(-1);w.addEventListener('message',e=>{if(e.data.id===0)resolve(e.data)},{once:true});w.postMessage({id:0,method:'lock',argument:{unexpected:true},extra:true})})""")

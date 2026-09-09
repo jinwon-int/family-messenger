@@ -6,6 +6,7 @@ function stop(name,expected=workers.get(name)){
   for(const finish of [...expected.pending.values()])finish({ok:false,error:'stopped',memory_bytes:0});
 }
 window.stopWorker=name=>stop(name);
+window.activeVaultWorkers=()=>workers.size;
 window.spawn=name=>new Promise((resolve,reject)=>{
   if(workers.has(name))throw Error('duplicate');const worker=new Worker('./vault-native-worker.js',{type:'module'});
   const r={worker,pending:new Map(),bootReject:reject};workers.set(name,r);
