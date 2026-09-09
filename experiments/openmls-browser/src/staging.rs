@@ -157,7 +157,7 @@ pub fn staged_check_trust(bytes: &[u8], identity: &str, peer: &str, key: &[u8]) 
 pub fn staged_trusted_apply(bytes: &[u8], identity: &str, method: &str, input: &[u8], peer: &str, key: &[u8]) -> Result<Transition, JsValue> {
     if input.len()>MAX_WIRE {return Err(rejected(()));}
     let mut device=load(bytes,identity)?;
-    trusted_members(&device,peer,key,method=="encrypt"||method=="decrypt")?;
+    trusted_members(&device,peer,key,method=="encrypt"||method=="decrypt"||method=="decrypt_peer")?;
     let output=match method {
         "key_package" if input.is_empty()=>device.key_package_inner()?,
         "create" if input.is_empty()=>{device.create_inner()?;vec![]},
@@ -165,6 +165,7 @@ pub fn staged_trusted_apply(bytes: &[u8], identity: &str, method: &str, input: &
         "join"=>{device.join_trusted(input,peer,key)?;vec![]},
         "encrypt"=>device.encrypt_inner(input)?,
         "decrypt"=>device.decrypt_inner(input)?,
+        "decrypt_peer"=>device.decrypt_peer_inner(input,peer,key)?,
         _=>return Err(rejected(())),
     };
     if output.len()>MAX_WIRE{return Err(rejected(()));}

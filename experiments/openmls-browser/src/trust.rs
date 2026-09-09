@@ -45,3 +45,25 @@ impl Device {
         })
     }
 }
+
+impl Device {
+    // Return plaintext only after checking the actual MLS-authenticated sender,
+    // credential and leaf signing key. Inner application labels are not proof.
+    pub(crate) fn decrypt_peer_inner(&mut self, bytes: &[u8], actor: &str, key: &[u8]) -> Result<Vec<u8>, JsValue> {
+        bounded(bytes, MAX_WIRE)?;
+        let expected = expected(actor,key)?;
+        let message = MlsMessageIn::tls_deserialize_exact_bytes(bytes).map_err(rejected)?
+            .try_into_protocol_message().map_err(rejected)?;
+        let group=self.group.as_mut().ok_or_else(||rejected(()))?;
+        let processed=group.process_message(&self.provider,message).map_err(rejected)?;
+        let Sender::Member(index)=processed.sender() else {return Err(rejected(()));};
+        let member=group.members().find(|m|m.index==*index).ok_or_else(||rejected(()))?;
+        if processed.credential()!=&expected.credential || member.credential!=expected.credential || member.signature_key!=key {
+            return Err(rejected(()));
+        }
+        match processed.into_content() {
+            ProcessedMessageContent::ApplicationMessage(message)=>Ok(message.into_bytes()),
+            _=>Err(rejected(())),
+        }
+    }
+}
