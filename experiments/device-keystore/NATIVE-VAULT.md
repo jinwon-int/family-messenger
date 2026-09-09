@@ -56,7 +56,8 @@ uncertain replies retain prior or committed complete state for explicit reopen.
 
 A separate origin-wide Web Lock serializes password KDF work across databases.
 Lock waits/operations have15-second abort signals, checked again before commit.
-No actor lock is held during network body reads. Worker closure aborts controllers
+No server authority lock or IDB transaction is held during network body reads;
+the cooperative per-database Web Lock remains held. Worker closure aborts controllers
 and live transactions, wipes the reachable root buffer and closes IDB. Root state
 handles remain library-owned; at most256 storage operations per session and the
 combined OpenMLS+sodium128MiB WASM limit bound activity. JS password KDF scratch
@@ -71,3 +72,31 @@ secrecy is claimed. Cooperative Web Locks do not constrain malicious same-origin
 code, extensions or a compromised OS. Physical JS/string memory zeroization is
 not promised. Human passwords, recovery/replacement devices, actual CF account
 activation, mobile and backup acceptance remain prerequisites for Yukson cutover.
+
+## Reproduce the isolated native boundary
+
+Use the existing pinned WASM bundle and synthetic native/policy binaries (see
+`../openmls-browser/NATIVE-DELIVERY.md`). Install only the locked candidate packages:
+
+```sh
+npm ci --ignore-scripts --no-audit --no-fund --prefix experiments/device-keystore
+node experiments/device-keystore/node_modules/esbuild/bin/esbuild experiments/device-keystore/native-vault-store.js --bundle --format=esm --platform=browser --target=es2023 --minify --outfile=experiments/device-keystore/bundle/native-vault-store.js
+.venv/bin/python tests/native_encrypted_browser_smoke.py --vault --bundle artifacts/mls-remapped-pkg --binary artifacts/family-dev-plain-final --policy-binary artifacts/family-policy-mls-fixed
+.venv/bin/python tests/native_encrypted_browser_smoke.py --vault --controls --bundle artifacts/mls-remapped-pkg --binary artifacts/family-dev-plain-final --policy-binary artifacts/family-policy-mls-fixed
+```
+
+The generated assertion proxy remains test-only and loopback-bound. The page
+fixture owns workers, terminates on lock/hidden/pagehide and broadcasts that lock
+to cooperating tabs; no password is persisted. Test-served instrumentation holds
+CAS/KDF/write boundaries and returns hashes of provider/outbox state, never private
+bytes. The proof records original and instrumented asset hashes separately.
+Corruption tests explicitly restore saved **synthetic encrypted** bytes to continue
+negative checks; that is test setup, not a supported active-leaf recovery feature.
+No live profile is deleted or reset. The lock command validates its full envelope
+before acknowledgement; malformed lock still retires.
+
+Dependencies are unchanged from the session-record candidate; see
+`native-vault-inventory.json` and the retained license notices. The runtime bundle
+includes age plus sodium WASM; it is not part of the Go default embedded bundle.
+The Go manifest changes only to pin the native engine factory refactor. Its direct
+worker path preserves prior synthetic behavior.

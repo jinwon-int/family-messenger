@@ -120,8 +120,9 @@ def main():
         assets['/pkg/'+name]=p.read_bytes()
     if vault:
         from native_vault_checks import vault_assets
-        vault_assets(root,work,assets)
+        vault_original=vault_assets(root,work,assets)
     proof['original_assets_sha256']={name:hashlib.sha256(raw).hexdigest() for name,raw in assets.items()}
+    if vault:proof['original_assets_sha256']['/native-vault-store.js']=hashlib.sha256(vault_original).hexdigest()
     if not ui_proof:
         raw=assets['/native-worker.js'];at=raw.index(b" if(method==='prepare'){")
         first,last=raw[:at],raw[at:]
@@ -139,12 +140,15 @@ def main():
             assert raw.count(needle)==1;raw=raw.replace(needle,b"return status(r);},testHoldSync?'crash-before-complete':'');\n}\nasync function dispatch")
         if vault:
             needle=b'async function dispatch(method,arg){'
-            raw=raw.replace(needle,needle+b"if(method==='test-vault-digest'){const r=await snapshot();return hash(arg==='crypto'?hex(r.crypto):requestShape(r.pending.request));}")
+            raw=raw.replace(b'self.onmessage=({data})=>{',b'self.onmessage=({data})=>{if(data?.test_vault_release){if(data.test_vault_release===\"cas\")self.testVaultCASRelease?.();else self.testVaultKDFRelease?.();return;}')
+            raw=raw.replace(needle,needle+b"if(method==='test-vault-hold-cas'){self.testHoldVaultCAS=true;return null;}if(method==='test-vault-hold-kdf'){self.testHoldVaultKDF=true;return null;}if(method==='test-vault-digest'){const r=await snapshot();return hash(arg==='crypto'?hex(r.crypto):requestShape(r.pending.request));}")
         assets['/native-worker.js']=raw
         needle=b"    if (data.id !== id) return;";assert assets['/main.js'].count(needle)==1
         assets['/main.js']=assets['/main.js'].replace(needle,b"    if(data.test_crash_boundary)window.test_crash_boundary=true;\n"+needle)
+    if vault:assets['/main.js']=assets['/main.js'].replace(b'    if (data.id !== id) return;',b'    if(data.test_vault_cas)window.test_vault_cas=true;if(data.test_kdf_waiting)window.test_kdf_waiting=true;if(data.test_kdf_entered)window.test_kdf_entered=true;\n    if (data.id !== id) return;')
     proof['assets_sha256']={name:hashlib.sha256(raw).hexdigest() for name,raw in assets.items()}
     proof['test_instrumentation']='UI assets unmodified; disposable page tracks Blob URLs and drops one prepare before worker admission; generated proxy responses may be held/altered' if ui_proof else 'main selects native worker; served-only pending-write hold and deliberately forged inner sender fixture; proxy may hold/alter generated responses'
+    if vault:proof['test_instrumentation']+='; encrypted driver held CAS/KDF/write, private-worker digests only, disposable lock-aware caller; original versus instrumented hashes recorded'
     hold_next=[False];arrived=threading.Event();release=threading.Event();tamper=[None];previous_cipher=[None];previous_commit=[None]
     class Proxy(BaseHTTPRequestHandler):
         def log_message(self,*args):pass
@@ -388,7 +392,7 @@ def main():
             proof['checks']['malformed_command_retires_worker_with_bounded_failure_reply']=True
             if vault:
                 from native_vault_checks import vault_checks
-                vault_checks(a,b,databases,rpc,reopen,prepare,proof)
+                vault_checks(a,b,databases,rpc,reopen,prepare,proof,page,vault_passwords)
             # A valid encryption from Alice with a forged inner sender label still fails.
             prepare(a,'app-forged',b'synthetic wrong inner sender',fault='forged-inner');rpc(a,'flush');rpc(a,'sync')
             before=digest(b,1);rpc(b,'sync',reject=True);assert digest(b,1)==before;reopen(b,1)

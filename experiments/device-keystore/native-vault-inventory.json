@@ -1,0 +1,27 @@
+{
+  "scope": "New native encrypted persistence driver; synthetic worker entry only, not Go UI activation",
+  "runtime_direct": 2,
+  "runtime_transitive_instances": 8,
+  "runtime_instances": 10,
+  "installed_build_instances": 2,
+  "all_platform_lock_external_instances": 37,
+  "new_dependencies": 0,
+  "age": "0.3.1",
+  "libsodium_wrappers": "0.8.4",
+  "libsodium_core": "1.0.22",
+  "build": "esbuild 0.27.2, Node 22.22.2; locked package-lock.json",
+  "license_notices": [
+    "THIRD-PARTY-NOTICES.txt",
+    "SODIUM-NOTICES.txt"
+  ],
+  "bundle": {
+    "bytes": 585011,
+    "gzip_bytes": 206769,
+    "sha256": "5f299163858e8bd46cf12e633f7e93d8dde15f542f5ad88a47a46234d3d74fc9"
+  },
+  "unchanged_openmls": "8 direct +151 transitive WASM crates, 197 all-target external; notices in experiments/openmls-browser",
+  "wasm_budget_bytes": 134217728,
+  "js_kdf_scratch_bytes": 268435456,
+  "kdf": "Unchanged default scrypt18, serialized origin-wide; measured separately from WASM",
+  "audit_limits": "No exact browser custody stack audit; historical libsodium audit predates secretstream. Same-origin compromise, full valid rollback after restart, recovery/mobile remain unqualified."
+}
