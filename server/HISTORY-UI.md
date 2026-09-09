@@ -113,3 +113,13 @@ Node/esbuild, Rust/wasm-bindgen, Go and Python/Playwright are build/test tools.
 The 128 MiB combined WASM and 5 GiB added-disk budgets remain, with separate
 256 MiB JS scrypt scratch; memory-heavy probes are serialized. No human data,
 credentials, production services, backups or Cloudflare settings change here.
+
+[history-ui-evidence.json](history-ui-evidence.json) records the independent
+39-check native history proof with 21 matching asset hashes, the unchanged
+15-file vault profile's 26-check browser proof, 10 activation checks and 35
+preparation tests. Combined-tag race tests/vet, default chat tests and 111 Python
+tests under both umasks pass. The final functional delta after the original
+native proof only corrects missing-bundle diagnostic guidance; fresh final
+activation and legacy-vault tests verify that head. No reproduced finding remains
+in the bounded synthetic review. Own-server packaging is complete; human/Yukson
+acceptance remains open.
