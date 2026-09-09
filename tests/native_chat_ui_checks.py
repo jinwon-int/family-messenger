@@ -77,6 +77,9 @@ def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release
             expect(b.locator('#chat')).to_be_hidden(timeout=10000);open_page(b)
             b.locator('#file').set_input_files({'name':'renamed.bin','mimeType':'application/octet-stream','buffer':reselect});b.locator('#send').click()
             expect(a.locator(f'#messages li[data-message-id="{retry_id}"]')).to_have_count(1,timeout=15000)
+            # Peer delivery can precede the sender's ordered self-echo/render.
+            # Only the sender's own committed history permits draft cleanup.
+            expect(b.locator(f'#messages li[data-message-id="{retry_id}"]')).to_have_count(1,timeout=15000)
             assert b.evaluate('sessionStorage.getItem("family-native-ui-draft-v1:bob:family")') is None
             proof['checks']['interrupted_before_stage_requires_exact_reselection_and_same_id']=True
             # UI rejects too-large files before creating another durable draft.
