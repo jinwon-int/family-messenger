@@ -30,6 +30,7 @@ type Config struct {
 	Keys                        map[string]*rsa.PublicKey
 	People                      []Enrollment
 	Devices                     []Device
+	Successors                  *SuccessorPolicy
 	KeysFetchedAt, KeysExpireAt int64
 }
 type Principal struct {
@@ -103,6 +104,10 @@ func clone(c Config) (Config, map[string]Enrollment, error) {
 	if e != nil {
 		return Config{}, nil, e
 	}
+	out.Successors, e = cloneSuccessors(c)
+	if e != nil {
+		return Config{}, nil, e
+	}
 	return out, people, nil
 }
 func New(c Config) (*Authority, error) {
@@ -124,6 +129,9 @@ func (a *Authority) Replace(c Config) error {
 	defer a.mu.Unlock()
 	if a.generation != 0 {
 		if e = deviceTransition(a.config.Devices, out.Devices); e != nil {
+			return e
+		}
+		if e = successorForward(a.config, out); e != nil {
 			return e
 		}
 	}

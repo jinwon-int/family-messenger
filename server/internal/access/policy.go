@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -40,14 +41,15 @@ type person struct {
 	Owner   bool   `json:"owner"`
 }
 type policyWire struct {
-	Version       int         `json:"version"`
-	Issuer        string      `json:"issuer"`
-	Audience      string      `json:"audience"`
-	Keys          []publicKey `json:"keys"`
-	People        []person    `json:"people"`
-	KeysFetchedAt int64       `json:"keys_fetched_at,omitempty"`
-	KeysExpireAt  int64       `json:"keys_expire_at,omitempty"`
-	Devices       []Device    `json:"devices,omitempty"`
+	Version       int              `json:"version"`
+	Issuer        string           `json:"issuer"`
+	Audience      string           `json:"audience"`
+	Keys          []publicKey      `json:"keys"`
+	People        []person         `json:"people"`
+	KeysFetchedAt int64            `json:"keys_fetched_at,omitempty"`
+	KeysExpireAt  int64            `json:"keys_expire_at,omitempty"`
+	Devices       []Device         `json:"devices,omitempty"`
+	Successors    *SuccessorPolicy `json:"successors,omitempty"`
 }
 type policyRecord struct {
 	Revision     uint64     `json:"revision"`
@@ -63,7 +65,7 @@ func strictPolicy(data []byte, v any) error {
 		return ErrConfig
 	}
 	allowed := map[string]bool{}
-	for _, k := range []string{"version", "issuer", "audience", "keys", "people", "kid", "n", "e", "subject", "actor", "owner", "revision", "previous_sha256", "policy_sha256", "policy", "keys_fetched_at", "keys_expire_at", "devices", "device_id", "signing_key", "fingerprint", "status", "device_revision", "acceptance"} {
+	for _, k := range []string{"version", "issuer", "audience", "keys", "people", "kid", "n", "e", "subject", "actor", "owner", "revision", "previous_sha256", "policy_sha256", "policy", "keys_fetched_at", "keys_expire_at", "devices", "device_id", "signing_key", "fingerprint", "status", "device_revision", "acceptance", "successors", "administrators", "intents", "intent_id", "action", "predecessor", "predecessor_key", "predecessor_revision", "candidate", "package_sha256", "previous_room", "previous_group", "next_room", "administrator", "base_revision", "created_at", "expires_at", "decided_at", "decision_revision"} {
 		allowed[k] = true
 	}
 	d := json.NewDecoder(bytes.NewReader(data))
@@ -128,10 +130,11 @@ func strictPolicy(data []byte, v any) error {
 	return nil
 }
 func (w policyWire) config() (Config, error) {
-	if w.Version != 1 || len(w.Keys) < 1 || len(w.Keys) > 16 || len(w.People) > 32 {
+	if (w.Version != 1 && w.Version != 2) || (w.Version == 1 && w.Successors != nil) || (w.Version == 2 && w.Successors == nil) || len(w.Keys) < 1 || len(w.Keys) > 16 || len(w.People) > 32 {
 		return Config{}, ErrConfig
 	}
 	c := Config{Issuer: w.Issuer, Audience: w.Audience, Keys: make(map[string]*rsa.PublicKey), KeysFetchedAt: w.KeysFetchedAt, KeysExpireAt: w.KeysExpireAt, Devices: w.Devices}
+	c.Successors = w.Successors
 	for _, k := range w.Keys {
 		if _, ok := c.Keys[k.ID]; ok {
 			return Config{}, ErrConfig
@@ -154,6 +157,10 @@ func wire(c Config) (policyWire, error) {
 		return policyWire{}, e
 	}
 	w := policyWire{Version: 1, Issuer: c.Issuer, Audience: c.Audience, Keys: []publicKey{}, People: []person{}, KeysFetchedAt: c.KeysFetchedAt, KeysExpireAt: c.KeysExpireAt, Devices: c.Devices}
+	if c.Successors != nil {
+		w.Version = 2
+		w.Successors = c.Successors
+	}
 	ids := make([]string, 0, len(c.Keys))
 	for id := range c.Keys {
 		ids = append(ids, id)
@@ -377,7 +384,7 @@ func records(d *os.File) (info PolicyInfo, c Config, err error) {
 			return info, Config{}, ErrPolicyState
 		}
 		next, ce := rec.Policy.config()
-		if ce != nil || deviceTransition(c.Devices, next.Devices) != nil {
+		if ce != nil || deviceTransition(c.Devices, next.Devices) != nil || successorTransition(c, next, rev-1, 0) != nil {
 			return info, Config{}, ErrPolicyState
 		}
 		c = next
@@ -403,6 +410,19 @@ func (s *PolicyStore) Read() (PolicyInfo, Config, error) {
 // Commit adds a new immutable revision with compare-and-swap. Uncertain writes
 // are never retried automatically; pending files and older revisions are retained.
 func (s *PolicyStore) Commit(expected uint64, c Config) (PolicyInfo, error) {
+	return s.commit(expected, c, false)
+}
+
+// CommitSuccessor explicitly selects version-2 lifecycle management. Only the
+// immediately preceding exact outcome may reconcile a lost response; no search,
+// implicit conflict retry, reactivation or candidate admission occurs.
+func (s *PolicyStore) CommitSuccessor(expected uint64, c Config) (PolicyInfo, error) {
+	if c.Successors == nil {
+		return PolicyInfo{}, ErrConfig
+	}
+	return s.commit(expected, c, true)
+}
+func (s *PolicyStore) commit(expected uint64, c Config, successor bool) (PolicyInfo, error) {
 	w, e := wire(c)
 	if e != nil {
 		return PolicyInfo{}, e
@@ -413,10 +433,23 @@ func (s *PolicyStore) Commit(expected uint64, c Config) (PolicyInfo, error) {
 		if e != nil {
 			return e
 		}
+		if successor && old.Revision == expected+1 && expected < MaxPolicyRevisions {
+			prior, pe := wire(previous)
+			a, _ := json.Marshal(prior)
+			b, _ := json.Marshal(w)
+			if pe == nil && bytes.Equal(a, b) {
+				out = old
+				return nil
+			}
+		}
 		if old.Revision != expected {
 			return ErrPolicyConflict
 		}
 		if deviceTransition(previous.Devices, w.Devices) != nil {
+			return ErrConfig
+		}
+		normalized, ce := w.config()
+		if ce != nil || (!successor && !reflect.DeepEqual(previous.Successors, normalized.Successors)) || successorTransition(previous, normalized, old.Revision, time.Now().Unix()) != nil {
 			return ErrConfig
 		}
 		if old.Revision >= MaxPolicyRevisions {

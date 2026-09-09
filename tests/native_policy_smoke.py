@@ -18,10 +18,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--binary', required=True, type=Path)
     parser.add_argument('--policy-binary', required=True, type=Path)
+    parser.add_argument('--successor', action='store_true', help='version-2 public intent/retirement process proof')
     args = parser.parse_args()
     binary, policy_binary = args.binary.resolve(strict=True), args.policy_binary.resolve(strict=True)
     root = Path(__file__).resolve().parents[1]
-    work = Path(tempfile.mkdtemp(prefix='native-policy-', dir=root / 'artifacts'))
+    work = Path(tempfile.mkdtemp(prefix='native-successor-' if args.successor else 'native-policy-', dir=root / 'artifacts'))
     auth, state, proposals = [work / x for x in ('auth', 'state', 'proposals')]
     for directory in (auth, state, proposals):
         directory.mkdir(mode=0o700)
@@ -49,6 +50,13 @@ def main():
               'keys': [{'kid': 'test-key', 'n': b64(bytes.fromhex(modulus)), 'e': 65537}],
               'people': [{'subject': 'owner', 'actor': 'alice', 'owner': True},
                          {'subject': 'family', 'actor': 'bob', 'owner': False}]}
+    if args.successor:
+        config['devices'] = []
+        for number, person in enumerate(config['people'], 1):
+            public = bytes([number]) * 32  # public policy fixture, no MLS key possession claim
+            config['devices'].append({'device_id': person['actor'] + '-first', 'actor': person['actor'],
+                'subject': person['subject'], 'signing_key': public.hex(), 'fingerprint': hashlib.sha256(public).hexdigest(),
+                'status': 'active', 'device_revision': 1, 'acceptance': 'out-of-band-fingerprint'})
     tokens = {}
     for subject in ('owner', 'family'):
         now = int(time.time())
@@ -149,6 +157,12 @@ def main():
         assert request(None, headers={'Cf-Access-Authenticated-User-Email': 'owner@example.invalid'})[0] == 401
         proof['explicit_signed_mode_and_no_fixture_fallback'] = True
 
+        if args.successor:
+            from native_successor_checks import run
+            run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, path)
+            proof['ok'] = True
+            return
+
         old = (auth / 'policy-000001.json').read_bytes()
         commit(1, revoked)
         wait_status('family', 401)
@@ -235,6 +249,8 @@ def main():
     finally:
         stop()
         (work / 'verification.json').write_text(json.dumps(proof, indent=2) + '\n')
+        if args.successor:
+            print(work / 'verification.json')
     print(work / 'verification.json')
 
 if __name__ == '__main__':
