@@ -107,3 +107,19 @@ proof must use a forwarding-only assertion fixture. Do not use this experimental
 static proxy as a production server or silently replace prior prepared output.
 Human replacement/recovery ceremony, mobile, real CF, server backup/restore and
 production actor/group/history capacity remain prerequisites for Yukson cutover.
+
+## Recorded review
+
+[history-ui-evidence.json](history-ui-evidence.json) records the initial author
+45-check proof and final independent 47-check browser proof on the repaired
+runtime. Independent real-browser probes reproduced two low issues: more than two
+live download URLs during the cleanup interval, and a metadata limit that counted
+characters instead of UTF-8 bytes. Both are fixed and regressions are retained.
+The UTF-8 regression uses an existing field, so unrelated unknown-key rejection
+cannot hide removal of the byte guard. Additional isolated UI probes cover a held
+file read finishing after lock/reopen, mismatched actor header/body, oversized
+session body and lock cleanup. Those lightweight probes use generated worker
+replies; actual library/native-client proof is the separate full47-check receipt.
+Python99 tests pass under both022 and077 umasks. No remaining reproduced finding
+was reported for this synthetic scope; native packaging and human acceptance are
+still outstanding.
