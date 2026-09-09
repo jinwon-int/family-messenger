@@ -21,7 +21,7 @@ window.call=(name,method,argument)=>new Promise(resolve=>{
   const onmessage=({data})=>{
     if (data.id !== id) return;
     finish(data);
-    if(!data.ok)stop(name,r);
+    if(!data.ok||method==='lock')stop(name,r);
   };
   r.pending.set(id,finish);r.worker.addEventListener('message',onmessage);
   timer=setTimeout(()=>stop(name,r),30000);

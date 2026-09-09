@@ -51,6 +51,12 @@ def vault_checks(a,b,databases,rpc,reopen,prepare,proof,page,passwords):
         a.evaluate("""async([name,key])=>{const d=await new Promise(r=>{const q=indexedDB.open(name);q.onsuccess=()=>r(q.result)});await new Promise((r,j)=>{const t=d.transaction('device','readwrite'),s=t.objectStore('device'),q=s.get('state');q.onsuccess=()=>{const v=q.result;v[key][v[key].length-1]^=1;s.put(v,'state')};t.oncomplete=r;t.onabort=j});d.close()}""",[databases[0],key])
         rpc(a,'status',reject=True);restore(a);reopen(a,0)
     proof['checks']['same_database_capsule_and_record_corruption_denied']=True
+    saved(a)
+    sparse=a.evaluate('()=>call("device","prepare",{id:"app-sparse",bytes:new Array(1),media_type:"file",fault:""})')
+    assert not sparse['ok']
+    assert a.evaluate("""async name=>{const d=await new Promise(r=>{const q=indexedDB.open(name);q.onsuccess=()=>r(q.result)});const v=await new Promise(r=>{const q=d.transaction('device').objectStore('device').get('state');q.onsuccess=()=>r(q.result)});d.close();return JSON.stringify(v)===JSON.stringify(window.savedVault)}""",databases[0])
+    reopen(a,0)
+    proof['checks']['sparse_native_input_denied_without_zero_normalization_or_state_change']=True
     # Two distinct DB operation locks must still share one origin-wide KDF slot.
     clone=databases[0]+'-kdf'
     saved(a)
@@ -79,5 +85,7 @@ def vault_checks(a,b,databases,rpc,reopen,prepare,proof,page,passwords):
 
     invalid=a.evaluate("""()=>new Promise(resolve=>{const w=window.testWorkers.at(-1);w.addEventListener('message',e=>{if(e.data.id===0)resolve(e.data)},{once:true});w.postMessage({id:0,method:'lock',argument:{unexpected:true},extra:true})})""")
     assert not invalid['ok'];reopen(a,0)
-    assert rpc(a,'lock')['locked'];reopen(a,0)
+    assert rpc(a,'lock')['locked']
+    assert a.evaluate('window.activeVaultWorkers()')==0
+    a.evaluate('spawn("device")');assert a.evaluate('arg=>call("device","init",arg)',first)['ok']
     proof['checks']['immediate_lock_validates_envelope_and_retires_on_malformed_command']=True

@@ -10,7 +10,7 @@ const b64=b=>btoa(String.fromCharCode(...b));
 function bytes(s,max=65536){if(typeof s!=='string'||s.length>Math.ceil(max/3)*4)fail();const b=Uint8Array.from(atob(s),x=>x.charCodeAt(0));if(b.length>max||b64(b)!==s)fail();return b;}
 const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 const hash=x=>hex(staged_checksum(enc.encode(JSON.stringify(x))));
-function input(a){if(!Array.isArray(a)||a.length>8192||a.length===0||!a.every(x=>Number.isInteger(x)&&x>=0&&x<=255))fail();return new Uint8Array(a);}
+function input(a){if(!Array.isArray(a)||a.length>8192||a.length===0)fail();for(let i=0;i<a.length;i++)if(!Object.hasOwn(a,i)||!Number.isInteger(a[i])||a[i]<0||a[i]>255)fail();return new Uint8Array(a);}
 const reqKeys=['client_id','device_id','group_id','kind','expected_revision','epoch','target_device','payload'];
 function requestShape(q){
  if(!exact(q,reqKeys)||!name(q.client_id)||!name(q.device_id)||typeof q.group_id!=='string'||!/^[a-f0-9]{32,256}$/.test(q.group_id)||q.group_id.length%2||!Number.isSafeInteger(q.expected_revision)||q.expected_revision<0||q.expected_revision>256||!Number.isSafeInteger(q.epoch)||q.epoch<0||q.epoch>256||!['key_package','welcome','ack','application','commit'].includes(q.kind)||(q.target_device!==''&&!name(q.target_device)))fail();bytes(q.payload);
