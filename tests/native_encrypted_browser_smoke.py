@@ -29,6 +29,7 @@ def main():
     args.add_argument('--history', action='store_true')
     args.add_argument('--vault-ui', action='store_true')
     args.add_argument('--vault', action='store_true')
+    args.add_argument('--aggregate', action='store_true')
     args.add_argument('--embedded', action='store_true')
     args.add_argument('--ui', action='store_true')
     args.add_argument('--controls', action='store_true')
@@ -40,6 +41,7 @@ def main():
     assert not history_proof or (args.vault_ui and (not args.embedded or (args.history_ui and not args.history)))
     vault_ui = args.vault_ui
     vault = args.vault
+    aggregate = args.aggregate
     control_proof = args.controls
     ui_proof = args.ui or vault_ui
     embedded = args.embedded
@@ -47,9 +49,10 @@ def main():
     assert not vault or not (ui_proof or embedded)
     assert not embedded or ui_proof
     assert not (control_proof and ui_proof)
+    assert not aggregate or not (vault or history_proof or ui_proof or embedded or control_proof)
     binary, policy = args.binary.resolve(strict=True), args.policy_binary.resolve(strict=True)
     root = Path(__file__).resolve().parents[1]
-    work = Path(tempfile.mkdtemp(prefix='native-history-' if history_proof else 'native-vault-ui-' if vault_ui else 'native-vault-control-' if vault and control_proof else 'native-vault-browser-' if vault else 'native-embedded-ui-' if embedded else 'native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
+    work = Path(tempfile.mkdtemp(prefix='native-aggregate-' if aggregate else 'native-history-' if history_proof else 'native-vault-ui-' if vault_ui else 'native-vault-control-' if vault and control_proof else 'native-vault-browser-' if vault else 'native-embedded-ui-' if embedded else 'native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
     state, auth, proposals = [work / n for n in ('state', 'auth', 'proposals')]
     for d in (state, auth, proposals):
         d.mkdir(mode=0o700)
@@ -158,8 +161,12 @@ def main():
     if vault:
         from native_vault_checks import vault_assets
         vault_original=vault_assets(root,work,assets)
+    if aggregate:
+        from native_aggregate_checks import aggregate_assets
+        aggregate_original=aggregate_assets(root,work,assets)
     proof['original_assets_sha256']={name:hashlib.sha256(raw).hexdigest() for name,raw in assets.items()}
     if vault:proof['original_assets_sha256']['/native-vault-store.js']=hashlib.sha256(vault_original).hexdigest()
+    if aggregate:proof['original_assets_sha256']['/aggregate-store.js']=hashlib.sha256(aggregate_original).hexdigest()
     if not ui_proof:
         raw=assets['/native-worker.js'];at=raw.index(b" if(method==='prepare'){")
         first,last=raw[:at],raw[at:]
@@ -179,13 +186,19 @@ def main():
             needle=b'async function dispatch(method,arg){'
             raw=raw.replace(b'self.onmessage=({data})=>{',b'self.onmessage=({data})=>{if(data?.test_vault_release){if(data.test_vault_release===\"cas\")self.testVaultCASRelease?.();else self.testVaultKDFRelease?.();return;}')
             raw=raw.replace(needle,needle+b"if(method==='test-vault-hold-cas'){self.testHoldVaultCAS=true;return null;}if(method==='test-vault-hold-kdf'){self.testHoldVaultKDF=true;return null;}if(method==='test-vault-digest'){const r=await snapshot();return hash(arg==='crypto'?hex(r.crypto):requestShape(r.pending.request));}")
+        if aggregate:
+            raw=raw.replace(b'self.onmessage=({data})=>{',b'self.onmessage=({data})=>{if(data?.test_aggregate_release){self.testAggregateRelease?.();return;}')
+            needle=b'async function dispatch(method,arg){'
+            raw=raw.replace(needle,needle+b"if(method==='test-aggregate-hold'){self.testAggregateHold=true;return null;}if(method==='test-aggregate-digest'){await snapshot();return self.testAggregateInspection;}if(method==='test-aggregate-forge'){self.testAggregateForge=arg;return null;}if(method==='test-aggregate-quota-proof'){return self.testAggregateQuotaIndividuallyValid===true;}")
         assets['/native-worker.js']=raw
         needle=b"    if (data.id !== id) return;";assert assets['/main.js'].count(needle)==1
         assets['/main.js']=assets['/main.js'].replace(needle,b"    if(data.test_crash_boundary)window.test_crash_boundary=true;\n"+needle)
     if vault:assets['/main.js']=assets['/main.js'].replace(b'    if (data.id !== id) return;',b'    if(data.test_vault_cas)window.test_vault_cas=true;if(data.test_kdf_waiting)window.test_kdf_waiting=true;if(data.test_kdf_entered)window.test_kdf_entered=true;\n    if (data.id !== id) return;')
+    if aggregate:assets['/main.js']=assets['/main.js'].replace(b'    if (data.id !== id) return;',b'    if(data.test_aggregate_cas)window.test_aggregate_cas=true;\n    if (data.id !== id) return;')
     proof['assets_sha256']={name:hashlib.sha256(raw).hexdigest() for name,raw in assets.items()}
     proof['test_instrumentation']='UI assets unmodified; disposable page tracks Blob URLs and drops one prepare before worker admission; generated proxy responses may be held/altered' if ui_proof else 'main selects native worker; served-only pending-write hold and deliberately forged inner sender fixture; proxy may hold/alter generated responses'
     if vault:proof['test_instrumentation']+='; encrypted driver held CAS/KDF/write, private-worker digests only, disposable lock-aware caller; original versus instrumented hashes recorded'
+    if aggregate:proof['test_instrumentation']+='; aggregate held CAS and base pending-write SIGKILL hook; whole native record digests only; separate original/instrumented driver hashes'
     hold_next=[False];arrived=threading.Event();release=threading.Event();tamper=[None];previous_cipher=[None];previous_commit=[None]
     class Proxy(BaseHTTPRequestHandler):
         def log_message(self,*args):pass
@@ -272,7 +285,7 @@ def main():
             for p in profiles:p.mkdir(mode=0o700)
             contexts=[pw.chromium.launch_persistent_context(str(p)) for p in profiles]
             proof['browser']=contexts[0].browser.version;proof['max_worker_linear_memory_bytes']=0
-            databases=[('family-mls-vault-synthetic-' if vault else 'family-mls-native-control-synthetic-')+x for x in ['alice','bob']]
+            databases=[('family-mls-device-vault-synthetic-' if aggregate else 'family-mls-vault-synthetic-' if vault else 'family-mls-native-control-synthetic-')+x for x in ['alice','bob']]
             initialized=set();vault_passwords=[secrets.token_urlsafe(32),secrets.token_urlsafe(32)]
             def cookie(i,value=None):contexts[i].add_cookies([{'name':'synthetic_edge','value':value or cookies[i],'url':url,'httpOnly':True,'sameSite':'Strict'}])
             for i in range(2):cookie(i)
@@ -285,7 +298,7 @@ def main():
             def init(p,i,database=None,identity=None,selected_room='family',reject=False):
                 selected=database or databases[i]
                 arg={'identity':identity or ['alice','bob'][i],'room':selected_room,'database':selected}
-                if vault:arg.update(password=vault_passwords[i],create=selected not in initialized)
+                if vault or aggregate:arg.update(password=vault_passwords[i],create=selected not in initialized)
                 result=rpc(p,'init',arg,reject)
                 if not reject:initialized.add(selected)
                 return result
@@ -326,6 +339,12 @@ def main():
             rpc(b,'advance');rpc(b,'flush');rpc(b,'sync');rpc(a,'sync')
             assert rpc(a,'status')['phase']==rpc(b,'status')['phase']=='ready'
             proof['checks']['native_keypackage_welcome_ack_actual_library_group']=True
+            if aggregate:
+                from native_aggregate_checks import aggregate_checks
+                aggregate_checks(a,b,databases,rpc,init,reopen,prepare,proof,page,vault_passwords,pins,direct,config,commit,crash,digest,hold_next,arrived,release,tamper)
+                for context in contexts:context.close()
+                proof['passed']=True
+                return
             if control_proof:
                 def update(p,id,fault='',reject=False):return rpc(p,'update',{'id':id,'fault':fault},reject)
                 before=digest(a,0);rpc(a,'update',{'id':'update-bad','extra':True},reject=True);assert digest(a,0)==before;reopen(a,0)
