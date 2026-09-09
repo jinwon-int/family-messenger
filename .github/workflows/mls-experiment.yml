@@ -1,9 +1,9 @@
 name: Isolated MLS browser experiment
 on:
   push:
-    paths: ['experiments/openmls-browser/**', 'experiments/device-keystore/**', 'tests/device_keystore_smoke.py', 'tests/password_worker_smoke.py', 'tests/native_mls_browser_smoke.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'tests/native_trusted_state_smoke.py', 'tests/native_encrypted_browser_smoke.py', 'tests/native_chat_ui_checks.py', 'tests/native_asset_activation_smoke.py', 'tests/test_mls_assets.py', 'tools/prepare_mls_assets.py', 'server/**', '.github/workflows/mls-experiment.yml']
+    paths: ['experiments/openmls-browser/**', 'experiments/device-keystore/**', 'tests/device_keystore_smoke.py', 'tests/password_worker_smoke.py', 'tests/session_record_smoke.py', 'tests/native_mls_browser_smoke.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'tests/native_trusted_state_smoke.py', 'tests/native_encrypted_browser_smoke.py', 'tests/native_chat_ui_checks.py', 'tests/native_asset_activation_smoke.py', 'tests/test_mls_assets.py', 'tools/prepare_mls_assets.py', 'server/**', '.github/workflows/mls-experiment.yml']
   pull_request:
-    paths: ['experiments/openmls-browser/**', 'experiments/device-keystore/**', 'tests/device_keystore_smoke.py', 'tests/password_worker_smoke.py', 'tests/native_mls_browser_smoke.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'tests/native_trusted_state_smoke.py', 'tests/native_encrypted_browser_smoke.py', 'tests/native_chat_ui_checks.py', 'tests/native_asset_activation_smoke.py', 'tests/test_mls_assets.py', 'tools/prepare_mls_assets.py', 'server/**', '.github/workflows/mls-experiment.yml']
+    paths: ['experiments/openmls-browser/**', 'experiments/device-keystore/**', 'tests/device_keystore_smoke.py', 'tests/password_worker_smoke.py', 'tests/session_record_smoke.py', 'tests/native_mls_browser_smoke.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'tests/native_trusted_state_smoke.py', 'tests/native_encrypted_browser_smoke.py', 'tests/native_chat_ui_checks.py', 'tests/native_asset_activation_smoke.py', 'tests/test_mls_assets.py', 'tools/prepare_mls_assets.py', 'server/**', '.github/workflows/mls-experiment.yml']
 permissions:
   contents: read
 jobs:
@@ -85,6 +85,10 @@ jobs:
         run: |
           node experiments/device-keystore/node_modules/esbuild/bin/esbuild experiments/device-keystore/password-worker.js --bundle --format=esm --platform=browser --target=es2023 --minify --outfile=experiments/device-keystore/bundle/password-worker.js
           timeout 180s python tests/password_worker_smoke.py --synthetic-only
+      - name: Authenticated worker session records
+        run: |
+          node experiments/device-keystore/node_modules/esbuild/bin/esbuild experiments/device-keystore/session-worker.js --bundle --format=esm --platform=browser --target=es2023 --minify --outfile=experiments/device-keystore/bundle/session-worker.js
+          timeout 180s python tests/session_record_smoke.py --synthetic-only
       - name: Two disposable browsers
         run: python tests/native_mls_browser_smoke.py --bundle artifacts/mls-browser-pkg
       - name: Atomic synthetic state and browser crash proof
@@ -105,3 +109,4 @@ jobs:
             artifacts/native-asset-activation-*/verification.json
             artifacts/device-keystore-*/verification.json
             artifacts/password-worker-*/verification.json
+            artifacts/session-record-*/verification.json
