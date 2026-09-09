@@ -15,16 +15,22 @@ from playwright.sync_api import sync_playwright
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--bundle', required=True, type=Path)
-    parser.add_argument('--lifecycle', action='store_true', help='isolated replacement library qualification, no native enrollment')
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument('--lifecycle', action='store_true', help='isolated replacement library qualification, no native enrollment')
+    modes.add_argument('--identity-context', action='store_true', help='isolated same-signer candidate, no native custody')
     args = parser.parse_args()
     os.umask(0o077)
     repo = Path(__file__).resolve().parents[1]
-    evidence = Path(tempfile.mkdtemp(prefix='native-mls-lifecycle-' if args.lifecycle else 'native-mls-browser-', dir=repo / 'artifacts'))
+    prefix = 'native-identity-context-' if args.identity_context else 'native-mls-lifecycle-' if args.lifecycle else 'native-mls-browser-'
+    evidence = Path(tempfile.mkdtemp(prefix=prefix, dir=repo / 'artifacts'))
     paths = {'/': repo / 'experiments/openmls-browser/web/index.html'}
     for name in ['main.js', 'worker.js', 'durable-worker.js']:
         paths['/' + name] = repo / 'experiments/openmls-browser/web' / name
     if args.lifecycle:
         paths['/worker.js'] = repo / 'experiments/openmls-browser/web/lifecycle-worker.js'
+        del paths['/durable-worker.js']
+    if args.identity_context:
+        paths['/worker.js'] = repo / 'experiments/openmls-browser/web/identity-context-worker.js'
         del paths['/durable-worker.js']
     for name in ['family_mls_browser_experiment.js', 'family_mls_browser_experiment_bg.wasm']:
         paths['/pkg/' + name] = args.bundle / name
@@ -101,8 +107,11 @@ def main():
                     call(bob, 'join', welcome, name=name)
                 return package, welcome, times
 
-            if args.lifecycle:
-                from native_lifecycle_checks import run
+            if args.lifecycle or args.identity_context:
+                if args.identity_context:
+                    from native_identity_context_checks import run
+                else:
+                    from native_lifecycle_checks import run
                 run(pages, call, receipt)
                 for context in contexts:
                     context.close()

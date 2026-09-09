@@ -1,0 +1,50 @@
+{
+  "status": "author qualification; independent review pending",
+  "synthetic_only": true,
+  "native_custody": false,
+  "native_replacement_activation": false,
+  "durable_state": false,
+  "production_cf_gate": false,
+  "source_api": {
+    "crate": "openmls_basic_credential 0.6.0",
+    "commit": "3a3e35de3feeca8f6605143c464d5452ae584d43",
+    "source_sha256": "7e2185c9dc4b03956ef850dca2a5d6ec457c5037f2b73c41065474e1880b32a7",
+    "apis": [
+      "SignatureKeyPair::store",
+      "SignatureKeyPair::read",
+      "SignatureKeyPair::public",
+      "SignatureKeyPair::signature_scheme"
+    ]
+  },
+  "feature": "identity-context (default off)",
+  "default_assets_unchanged": true,
+  "dependencies": {
+    "wasm_external": 159,
+    "direct": 8,
+    "transitive": 151,
+    "all_target_external": 197,
+    "external_graph_and_features_equal_default": true,
+    "new_packages": 0,
+    "notices": "THIRD-PARTY-NOTICES.txt; unchanged"
+  },
+  "author_receipt": "artifacts/native-identity-context-cphiuyr5/verification.json",
+  "author_receipt_sha256": "67a284b5811a166911f52adcfe774b5129fa80efad08695fdc58373967511d6d",
+  "checks": 13,
+  "max_worker_wasm_bytes": 2424832,
+  "memory_excludes": "JS/browser/aggregate; no password KDF in this probe",
+  "assets": {
+    "family_mls_browser_experiment.js": {
+      "sha256": "b937381156c39a683d8f42ff96cfa608f3c6a90de841795ff8d116512729789f",
+      "bytes": 29748,
+      "gzip_bytes": 4995,
+      "default_unchanged_sha256": "b52611d63fc964ffa4933bf46524ac9c8dfc8630aae242a699970534585d055d"
+    },
+    "family_mls_browser_experiment_bg.wasm": {
+      "sha256": "94482525c6e2deaa95183e91a86ca83cf46c89af97ca149006abbeaea9bdd13d",
+      "bytes": 1452247,
+      "gzip_bytes": 507122,
+      "default_unchanged_sha256": "e2f68733e8e911a22b7f3a97dcd0cadfd6c31b7c9505f0e649870a8c82d7c749"
+    }
+  },
+  "remaining": "Encrypted aggregate custody/CAS, signed admission, native room control/Welcome/ack, actual crash/restart/revocation and human/mobile/CF/backup/capacity/fleet acceptance. No active-leaf archive restore."
+}
