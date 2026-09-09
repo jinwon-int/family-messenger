@@ -35,7 +35,28 @@ def read(path, maximum, private=False):
         return data
     finally:os.close(fd)
 
-def parse_manifest(data):
+BASE_SOURCES = {
+    **{name: 'experiments/openmls-browser/web/' + name for name in ('chat.html','chat.css','chat.js','native-worker.js','trust-directory.js')},
+    'pkg.js': 'bundle:family_mls_browser_experiment.js',
+    'pkg.wasm': 'bundle:family_mls_browser_experiment_bg.wasm',
+    'cargo-notices.txt': 'experiments/openmls-browser/THIRD-PARTY-NOTICES.txt',
+    'rust-notices.txt': 'experiments/openmls-browser/RUST-STDLIB-NOTICES.html',
+}
+VAULT_SOURCES = {
+    **BASE_SOURCES,
+    **{name: 'experiments/openmls-browser/web/' + name for name in ('vault-chat.html','vault-chat.js','vault-native-worker.js')},
+    'native-vault-store.js': 'experiments/device-keystore/bundle/native-vault-store.js',
+    'age-notices.txt': 'experiments/device-keystore/THIRD-PARTY-NOTICES.txt',
+    'sodium-notices.txt': 'experiments/device-keystore/SODIUM-NOTICES.txt',
+}
+
+ASSET_URLS = {name: '/'+name for name in VAULT_SOURCES}
+ASSET_URLS.update({'chat.html':'/encrypted/','vault-chat.html':'/vault/',
+    'pkg.js':'/pkg/family_mls_browser_experiment.js','pkg.wasm':'/pkg/family_mls_browser_experiment_bg.wasm',
+    'cargo-notices.txt':'/encrypted/licenses/cargo.txt','rust-notices.txt':'/encrypted/licenses/rust.txt',
+    'age-notices.txt':'/vault/licenses/age.txt','sodium-notices.txt':'/vault/licenses/sodium.txt'})
+
+def parse_manifest(data, vault=False):
     def pairs(items):
         out={}
         for key,value in items:
@@ -43,24 +64,33 @@ def parse_manifest(data):
             out[key]=value
         return out
     m=json.loads(data,object_pairs_hook=pairs)
-    if set(m)!={'version','worker_state','files'} or m['version']!=1 or m['worker_state']!=4 or len(m['files'])!=9:raise ValueError('manifest')
+    sources=VAULT_SOURCES if vault else BASE_SOURCES
+    if set(m)!={'version','worker_state','files'} or type(m['version']) is not int or m['version']!=(2 if vault else 1) or type(m['worker_state']) is not int or m['worker_state']!=4 or len(m['files'])!=len(sources):raise ValueError('manifest')
     files=set()
     for entry in m['files']:
-        if set(entry)!={'file','url','type','bytes','sha256','source'} or entry['file'] in files or not 0<entry['bytes']<=2*1024*1024:raise ValueError('entry')
+        if set(entry)!={'file','url','type','bytes','sha256','source'} or entry['file'] in files or type(entry['bytes']) is not int or not 0<entry['bytes']<=2*1024*1024:raise ValueError('entry')
         file=entry['file']
-        if file not in {'chat.html','chat.css','chat.js','native-worker.js','trust-directory.js','pkg.js','pkg.wasm','cargo-notices.txt','rust-notices.txt'}:raise ValueError('file')
+        if file not in sources or entry['source']!=sources[file]:raise ValueError('file or source')
+        kind = 'application/wasm' if file=='pkg.wasm' else 'text/html; charset=utf-8' if file.endswith('.html') else 'text/css; charset=utf-8' if file.endswith('.css') else 'text/plain; charset=utf-8' if file.endswith('.txt') else 'text/javascript; charset=utf-8'
+        if entry['url']!=ASSET_URLS[file] or entry['type']!=kind or not isinstance(entry['sha256'],str) or len(entry['sha256'])!=64 or any(c not in '0123456789abcdef' for c in entry['sha256']):raise ValueError('route, type or hash')
         files.add(file)
+    if sum(e['bytes'] for e in m['files'])>4*1024*1024:raise ValueError('bundle size')
+    # Match Go's struct field order, not the input object's insertion order.
+    canonical={'version':m['version'],'worker_state':m['worker_state'],'files':[{key:e[key] for key in ('file','url','type','bytes','sha256','source')} for e in m['files']]}
+    if (json.dumps(canonical,indent=2)+'\n').encode()!=data:raise ValueError('noncanonical manifest')
     return m
 
-def prepare(bundle, check=False):
-    lock=OUTPUT.parent/'.mls-build.lock'
+def prepare(bundle, check=False, vault=False):
+    output=ROOT/'server/internal/chat/vaultassets' if vault else OUTPUT
+    manifest_path=ROOT/'server/internal/chat/vault_bundle.json' if vault else MANIFEST
+    lock=output.parent/'.mls-build.lock'
     check_parent_chain(lock)
     fd=os.open(lock,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
     try:
         st=os.fstat(fd)
         if not stat.S_ISREG(st.st_mode) or st.st_uid!=os.geteuid() or st.st_nlink!=1 or stat.S_IMODE(st.st_mode)!=0o600:raise ValueError('unsafe build lock')
         fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        manifest=parse_manifest(read(MANIFEST,8192))
+        manifest=parse_manifest(read(manifest_path,8192),vault)
         assets={}
         for e in manifest['files']:
             source=e['source']
@@ -69,36 +99,35 @@ def prepare(bundle, check=False):
                 if leaf not in ('family_mls_browser_experiment.js','family_mls_browser_experiment_bg.wasm'):raise ValueError('source')
                 path=bundle/leaf
             else:
-                if source not in ('experiments/openmls-browser/web/'+e['file'],'experiments/openmls-browser/THIRD-PARTY-NOTICES.txt','experiments/openmls-browser/RUST-STDLIB-NOTICES.html'):raise ValueError('source')
                 path=ROOT/source
             data=read(path,e['bytes'])
             if len(data)!=e['bytes'] or hashlib.sha256(data).hexdigest()!=e['sha256']:raise ValueError('source hash mismatch')
             assets[e['file']]=data
-        if OUTPUT.exists() or OUTPUT.is_symlink():
-            st=OUTPUT.lstat()
+        if output.exists() or output.is_symlink():
+            st=output.lstat()
             if not stat.S_ISDIR(st.st_mode) or st.st_uid!=os.geteuid() or stat.S_IMODE(st.st_mode)!=0o700:raise ValueError('unsafe output directory')
-            if set(os.listdir(OUTPUT))!=set(assets):raise ValueError('unknown or incomplete output retained')
+            if set(os.listdir(output))!=set(assets):raise ValueError('unknown or incomplete output retained')
             for name,data in assets.items():
-                if read(OUTPUT/name,len(data),True)!=data:raise ValueError('output mismatch retained')
+                if read(output/name,len(data),True)!=data:raise ValueError('output mismatch retained')
             return
         if check:raise ValueError('missing prepared bundle')
-        OUTPUT.mkdir(mode=0o700)
+        output.mkdir(mode=0o700)
         for name,data in assets.items():
-            dest=os.open(OUTPUT/name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+            dest=os.open(output/name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
             try:
                 os.fchmod(dest,0o600)
                 view=memoryview(data)
                 while view:view=view[os.write(dest,view):]
                 os.fsync(dest)
             finally:os.close(dest)
-        for path in (OUTPUT,OUTPUT.parent):
+        for path in (output,output.parent):
             d=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
             try:os.fsync(d)
             finally:os.close(d)
     finally:os.close(fd)
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--bundle',type=Path,required=True);p.add_argument('--check',action='store_true');a=p.parse_args()
-    try:prepare(a.bundle,a.check)
+    p=argparse.ArgumentParser();p.add_argument('--bundle',type=Path,required=True);p.add_argument('--check',action='store_true');p.add_argument('--vault',action='store_true');a=p.parse_args()
+    try:prepare(a.bundle,a.check,a.vault)
     except (OSError,ValueError,KeyError,TypeError) as e:raise SystemExit('asset preparation rejected; existing files retained: '+str(e))
     print('Pinned synthetic assets verified; no runtime directory dependency.')

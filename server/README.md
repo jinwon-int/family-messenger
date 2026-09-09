@@ -186,3 +186,6 @@ behavior, recovery limits and actual process acceptance.
 The signed synthetic [MLS delivery boundary](MLS-TRANSPORT.md) now provides
 explicit reservations/group binding and a durable ordered opaque log. Existing
 plaintext UI rooms remain separate; browser E2EE delivery is not yet integrated.
+
+The separately selected [compiled custody UI](VAULT-UI.md) embeds password-unlocked
+synthetic encrypted storage at `/vault/`; human-use rollout remains gated.

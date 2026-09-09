@@ -13,6 +13,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--plain-binary', type=Path, required=True)
+    parser.add_argument('--vault', action='store_true')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     directory = Path(tempfile.mkdtemp(prefix='native-asset-activation-', dir=root / 'artifacts'))
@@ -28,6 +29,10 @@ def main():
         ('bundle_absent_in_default_binary', plain, ['--synthetic-only', '--synthetic-mls-ui', '--auth-state', str(directory / 'missing')], 'encrypted assets absent'),
         ('invalid_selected_policy', binary, ['--synthetic-only', '--synthetic-mls-ui', '--auth-state', str(directory / 'missing')], None),
     ]
+    if args.vault:
+        cases = [(n,b,[f.replace('--synthetic-mls-ui','--synthetic-vault-ui') for f in flags],e) for n,b,flags,e in cases]
+        cases.append(('mutually_exclusive_modes', binary, ['--synthetic-only','--synthetic-mls-ui','--synthetic-vault-ui'], 'select only one encrypted UI mode'))
+        cases.append(('old_bundle_absent_in_vault_binary', binary, ['--synthetic-only','--synthetic-mls-ui','--auth-state',str(directory/'missing')], 'encrypted assets absent'))
     for name, executable, flags, error in cases:
         state = directory / name
         state.mkdir(mode=0o700)
@@ -37,7 +42,7 @@ def main():
         if error:
             assert error in result.stderr, name
         checks[name] = True
-    proof = {'synthetic_only': True, 'checks': checks, 'binaries': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (binary, plain)}}
+    proof = {'synthetic_only': True, 'vault_mode': args.vault, 'checks': checks, 'binaries': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (binary, plain)}}
     path = directory / 'verification.json'
     path.write_text(json.dumps(proof, indent=2) + '\n')
     path.chmod(0o600)

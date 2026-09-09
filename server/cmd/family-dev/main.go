@@ -28,6 +28,7 @@ func run() error {
 	synthetic := flag.Bool("synthetic-only", false, "acknowledge synthetic test data only; not production-ready")
 	authState := flag.String("auth-state", "", "explicit private signed synthetic auth state; no fixture fallback")
 	encryptedUI := flag.Bool("synthetic-mls-ui", false, "enable compiled encrypted test UI; requires signed auth-state and synthetic_mls build")
+	vaultUI := flag.Bool("synthetic-vault-ui", false, "enable compiled synthetic custody UI; requires signed auth-state and synthetic_vault build")
 	flag.Parse()
 	authSelected := false
 	flag.Visit(func(f *flag.Flag) {
@@ -42,12 +43,19 @@ func run() error {
 	if e != nil || host != "127.0.0.1" || port == "" {
 		return fmt.Errorf("only 127.0.0.1 is supported")
 	}
+	if *encryptedUI && *vaultUI {
+		return fmt.Errorf("select only one encrypted UI mode")
+	}
 	var bundle *chat.EncryptedAssets
-	if *encryptedUI {
+	if *encryptedUI || *vaultUI {
 		if !authSelected || *authState == "" {
 			return fmt.Errorf("encrypted UI requires explicit signed auth-state")
 		}
-		bundle, e = chat.LoadEncryptedAssets()
+		if *vaultUI {
+			bundle, e = chat.LoadVaultAssets()
+		} else {
+			bundle, e = chat.LoadEncryptedAssets()
+		}
 		if e != nil {
 			return e
 		}
@@ -76,7 +84,7 @@ func run() error {
 	defer stop()
 	handler := chat.NewHandler(store)
 	if managed != nil {
-		if *encryptedUI {
+		if *encryptedUI || *vaultUI {
 			handler, e = chat.NewEncryptedAccessHandler(store, managed.Authority, bundle)
 		} else {
 			handler, e = chat.NewAccessHandler(store, managed.Authority)
@@ -97,8 +105,11 @@ func run() error {
 		fmt.Fprintln(os.Stderr, "auth revision applied", last.Revision)
 	}
 	cryptoMode := "legacy plaintext test UI"
-	if *encryptedUI {
+	if *encryptedUI || *vaultUI {
 		cryptoMode = "compiled encrypted test UI /encrypted/; no human key protection"
+	}
+	if *vaultUI {
+		cryptoMode = "compiled synthetic custody UI /vault/; human recovery not qualified"
 	}
 	fmt.Fprintln(os.Stderr, "SYNTHETIC ONLY;", mode, ";", cryptoMode, "; listening", listener.Addr())
 	tick := time.NewTicker(time.Second)

@@ -16,9 +16,12 @@ import (
 )
 
 func assetFixture(t *testing.T) (fstest.MapFS, []byte) {
+	return assetProfileFixture(t, encryptedManifest)
+}
+func assetProfileFixture(t *testing.T, manifest []byte) (fstest.MapFS, []byte) {
 	t.Helper()
 	var spec encryptedManifestSpec
-	if json.Unmarshal(encryptedManifest, &spec) != nil {
+	if json.Unmarshal(manifest, &spec) != nil {
 		t.Fatal("manifest")
 	}
 	files := fstest.MapFS{}
@@ -37,9 +40,19 @@ func assetFixture(t *testing.T) (fstest.MapFS, []byte) {
 	return files, append(data, '\n')
 }
 func TestEncryptedAssetIntegrityAndClosedManifest(t *testing.T) {
+	testAssetIntegrityAndClosedManifest(t, encryptedManifest, encryptedPaths, 1)
+}
+func TestVaultAssetIntegrityAndClosedManifest(t *testing.T) {
+	testAssetIntegrityAndClosedManifest(t, vaultManifest, vaultPaths, 2)
+}
+func testAssetIntegrityAndClosedManifest(t *testing.T, pin []byte, paths map[string]string, version int) {
+	assetFixture := func(t *testing.T) (fstest.MapFS, []byte) { return assetProfileFixture(t, pin) }
+	loadEncryptedAssets := func(source fs.FS, manifest []byte) (*EncryptedAssets, error) {
+		return loadAssetProfile(source, manifest, paths, version)
+	}
 	files, manifest := assetFixture(t)
 	bundle, e := loadEncryptedAssets(files, manifest)
-	if e != nil || len(bundle.files) != 9 {
+	if e != nil || len(bundle.files) != len(paths) {
 		t.Fatal(e)
 	}
 	for _, change := range []string{"missing", "unknown", "corrupt", "oversize", "symlink", "directory", "wrong-version", "wrong-worker", "duplicate-key", "alias", "trailing", "wrong-mime", "duplicate-file", "wrong-path"} {
@@ -61,7 +74,7 @@ func TestEncryptedAssetIntegrityAndClosedManifest(t *testing.T) {
 			case "directory":
 				files["chat.js"].Mode = fs.ModeDir | 0700
 			case "wrong-version":
-				spec.Version = 2
+				spec.Version = 99
 			case "wrong-worker":
 				spec.WorkerState = 3
 			case "wrong-mime":
@@ -77,7 +90,7 @@ func TestEncryptedAssetIntegrityAndClosedManifest(t *testing.T) {
 			}
 			switch change {
 			case "duplicate-key":
-				raw = bytes.Replace(raw, []byte(`"version": 1,`), []byte(`"version": 7, "version": 1,`), 1)
+				raw = bytes.Replace(raw, []byte(`"version":`), []byte(`"version": 7, "version":`), 1)
 			case "alias":
 				raw = bytes.Replace(raw, []byte(`"version"`), []byte(`"Version"`), 1)
 			case "trailing":
@@ -93,6 +106,16 @@ func TestEncryptedAssetIntegrityAndClosedManifest(t *testing.T) {
 	}
 }
 func TestEncryptedAssetAdmissionRoutingAndLegacyPreservation(t *testing.T) {
+	testAssetAdmissionRoutingAndLegacyPreservation(t, encryptedManifest, encryptedPaths, 1)
+}
+func TestVaultAssetAdmissionRoutingAndLegacyPreservation(t *testing.T) {
+	testAssetAdmissionRoutingAndLegacyPreservation(t, vaultManifest, vaultPaths, 2)
+}
+func testAssetAdmissionRoutingAndLegacyPreservation(t *testing.T, pin []byte, paths map[string]string, version int) {
+	assetFixture := func(t *testing.T) (fstest.MapFS, []byte) { return assetProfileFixture(t, pin) }
+	loadEncryptedAssets := func(source fs.FS, manifest []byte) (*EncryptedAssets, error) {
+		return loadAssetProfile(source, manifest, paths, version)
+	}
 	store, authority, config, key, legacy := accessFixture(t)
 	files, manifest := assetFixture(t)
 	bundle, e := loadEncryptedAssets(files, manifest)
@@ -106,7 +129,7 @@ func TestEncryptedAssetAdmissionRoutingAndLegacyPreservation(t *testing.T) {
 	server := httptest.NewServer(h)
 	defer server.Close()
 	token := assertion(t, config, key, "owner", time.Now().Add(time.Minute))
-	for _, entry := range encryptedPaths {
+	for _, entry := range paths {
 		code, _ := accessRequest(t, server, "", "GET", entry, nil, nil)
 		if code != 401 {
 			t.Fatalf("unauth %s %d", entry, code)
@@ -128,7 +151,7 @@ func TestEncryptedAssetAdmissionRoutingAndLegacyPreservation(t *testing.T) {
 			t.Fatal("CSP")
 		}
 	}
-	for _, path := range []string{"/encrypted", "/%65ncrypted/", "/encrypted/?v=1", "/encrypted/?", "/pkg/unknown.wasm", "/encrypted/../chat.html"} {
+	for _, path := range []string{"/encrypted", "/%65ncrypted/", "/encrypted/?v=1", "/encrypted/?", "/pkg/unknown.wasm", "/encrypted/../chat.html", "/vault", "/%76ault/", "/vault/?", "/vault/?v=1", "/vault/../vault-chat.js"} {
 		code, _ := accessRequest(t, server, token, "GET", path, nil, nil)
 		if code == 200 {
 			t.Fatal("alias served", path)
@@ -174,5 +197,38 @@ func TestCompiledEncryptedBundleSelectedOnlyWhenPresent(t *testing.T) {
 	}
 	if !bytes.HasPrefix(bundle.files["/pkg/family_mls_browser_experiment_bg.wasm"].data, []byte{0, 'a', 's', 'm', 1, 0, 0, 0}) {
 		t.Fatal("not WASM1")
+	}
+}
+
+func TestCompiledVaultBundleSelectedOnlyWhenPresent(t *testing.T) {
+	bundle, err := LoadVaultAssets()
+	if compiledVaultAssets == nil {
+		if err == nil || bundle != nil {
+			t.Fatal("unbundled vault accepted")
+		}
+		return
+	}
+	if err != nil || len(bundle.files) != 15 || bundle.version != 2 {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(bundle.files["/pkg/family_mls_browser_experiment_bg.wasm"].data, []byte{0, 'a', 's', 'm', 1, 0, 0, 0}) {
+		t.Fatal("not WASM1")
+	}
+}
+func TestVaultAssetProfileCannotSubstituteLegacy(t *testing.T) {
+	files, raw := assetProfileFixture(t, vaultManifest)
+	if _, err := loadEncryptedAssets(files, raw); err == nil {
+		t.Fatal("vault accepted as legacy")
+	}
+	files, raw = assetFixture(t)
+	if _, err := loadAssetProfile(files, raw, vaultPaths, 2); err == nil {
+		t.Fatal("legacy accepted as vault")
+	}
+	for _, name := range []string{"vault-chat.html", "vault-native-worker.js", "native-vault-store.js", "age-notices.txt", "sodium-notices.txt"} {
+		files, raw := assetProfileFixture(t, vaultManifest)
+		files[name].Data[0] ^= 1
+		if _, err := loadAssetProfile(files, raw, vaultPaths, 2); err == nil {
+			t.Fatal("tamper", name)
+		}
 	}
 }

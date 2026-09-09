@@ -1,0 +1,53 @@
+{
+  "status": "isolated synthetic native asset packaging; no human-use or CF deployment claim",
+  "base": "245ba926c0c239ef197d83b5cb1bad3d443f0f88",
+  "browser_proof": "artifacts/native-vault-ui-1iees8dh/verification.json",
+  "browser_checks": 26,
+  "browser_version": "151.0.7922.34",
+  "activation_proof": "artifacts/native-asset-activation-n7hn72jm/verification.json",
+  "activation_checks": 8,
+  "native_served_assets": 15,
+  "manifest_sha256": "f9bf5be669ae06f9149df8e00d20b80304e74996ffea0e06e5b4f57ca6604138",
+  "manifest_bytes": 4539,
+  "embedded_public_bytes": 2883280,
+  "binary_sha256": "554daf70e0d2a77a79b02c1d4e56b515a44f4c4b5020f9c912e8a6129b0e85bb",
+  "binary_bytes": 16970688,
+  "binary_gzip_bytes": 9311700,
+  "dependencies_changed": false,
+  "ui_worker_crypto_sources_changed": false,
+  "limits_unchanged": {
+    "manifest_bytes": 8192,
+    "file_bytes": 2097152,
+    "total_asset_bytes": 4194304,
+    "small_file_bytes": 8192,
+    "wasm_budget_bytes": 134217728,
+    "js_scrypt_scratch_bytes": 268435456
+  },
+  "remaining": [
+    "human recovery and device lifecycle",
+    "mobile resource/lifecycle acceptance",
+    "actual CF account admission",
+    "backup restore and rollback witness",
+    "Yukson production cutover and fleet binding"
+  ],
+  "runtime_reviewed_head": "4892743a9980591d6feda3982b4df9e7ffab147f",
+  "independent_browser_proof": "/root/work/family-vault-assets-review-4892743/artifacts/native-vault-ui-mq78m3ix/verification.json",
+  "independent_activation_proof": "/root/work/family-vault-assets-review-4892743/artifacts/native-asset-activation-1s4m367z/verification.json",
+  "legacy_browser_proof": "artifacts/native-embedded-ui-dcn6z80o/verification.json",
+  "legacy_browser_checks": 17,
+  "go_test_groups": 75,
+  "go_validation": [
+    "synthetic_vault race umask022",
+    "synthetic_vault normal umask077",
+    "synthetic_vault vet"
+  ],
+  "asset_preparation_tests": 23,
+  "review_findings_fixed": [
+    "Low: preparation now requires the exact Go top-level and entry field order; reordered manifests deny before output creation."
+  ],
+  "python_tests": 98,
+  "python_umasks": [
+    "022",
+    "077"
+  ]
+}
