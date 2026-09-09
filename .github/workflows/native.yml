@@ -35,7 +35,9 @@ jobs:
       - name: Ordered synthetic MLS transport and restart proof
         run: python3 tests/native_mls_transport_smoke.py --binary artifacts/family-dev --policy-binary artifacts/family-policy
       - name: Signed policy persistence and reload proof
-        run: python3 tests/native_policy_smoke.py --binary artifacts/family-dev --policy-binary artifacts/family-policy
+        run: |
+          python3 tests/native_policy_smoke.py --binary artifacts/family-dev --policy-binary artifacts/family-policy
+          python3 tests/native_policy_smoke.py --successor --binary artifacts/family-dev --policy-binary artifacts/family-policy
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -58,6 +60,7 @@ jobs:
             artifacts/native-signed-browser-*/verification.json
             artifacts/native-signed-browser-*/*.png
             artifacts/native-policy-*/verification.json
+            artifacts/native-successor-*/verification.json
             artifacts/native-mls-transport-*/verification.json
             artifacts/native-browser-*/verification.json
             artifacts/native-browser-*/*.png

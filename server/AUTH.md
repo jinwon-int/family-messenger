@@ -1,5 +1,9 @@
 # Account verification and application authority (synthetic integration)
 
+[Version-2 public successor management](SUCCESSORS.md) adds explicit private
+candidate/decision records and atomic old-device retirement. It preserves v1
+encoding, account/owner separation and the original admitted-device list.
+
 This unit implements a CF-shaped JWT verifier and connects it to native room,
 message, SSE and attachment admission through `chat.NewAccessHandler`. It is
 **not deployed Cloudflare Access, a human login flow, or E2EE**. The default

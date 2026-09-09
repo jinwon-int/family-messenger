@@ -6,6 +6,12 @@ denied by [the native policy](../server/DEVICES.md). CF login identifies an
 enrolled account; it does not approve a new decrypting key. Nothing in this
 change alters the server, asset manifests, production services or old profiles.
 
+Subsequent implementation: [public successor policy](../server/SUCCESSORS.md)
+records candidates and atomic retirement, while continuing to deny new-device
+activation. The design below describes the full lifecycle; its ready/bootstrap
+and healthy-signer custody requirements remain open. Disk retirement reaches a
+live server on its next validated reload, not synchronously when the CLI returns.
+
 ## Decision
 
 Keep two different authorization paths explicit. An intact, independently trusted

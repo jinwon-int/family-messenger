@@ -3,6 +3,9 @@
 Current lifecycle qualification and planned successor semantics are documented in
 [DEVICE-LIFECYCLE.md](../docs/DEVICE-LIFECYCLE.md). That library/design experiment
 does not relax any enrollment or immutable tombstone constraint in this server.
+The [version-2 successor policy](SUCCESSORS.md) now records public intent and
+atomic predecessor retirement. Its candidates remain outside this device list;
+it still cannot activate an additional or replacement device.
 
 This implements a durable **public device directory** in the existing private
 signed-account policy, plus an isolated browser trust gate using OpenMLS. It is
