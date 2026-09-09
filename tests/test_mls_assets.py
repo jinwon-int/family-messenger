@@ -138,6 +138,20 @@ class AssetPreparationTests(unittest.TestCase):
         self.rejected()
         self.assertFalse(self.output.exists())
 
+    def test_reordered_fields_rejected_before_output(self):
+        original = self.manifest.read_bytes()
+        pin = json.loads(original)
+        top = {k:pin[k] for k in ('files','version','worker_state')}
+        entry = json.loads(original)
+        entry['files'][0] = {k:entry['files'][0][k] for k in ('source','sha256','bytes','type','url','file')}
+        for changed in (top,entry):
+            self.manifest.write_text(json.dumps(changed,indent=2)+'\n')
+            self.rejected()
+            self.assertFalse(self.output.exists())
+        self.manifest.write_bytes(original)
+        m.prepare(self.bundle,vault=self.vault)
+        self.assertTrue(self.output.exists())
+
     def test_symlinked_lock_parent_rejects_before_creating_files(self):
         original = self.output.parent
         retained = self.root / 'retained-chat'

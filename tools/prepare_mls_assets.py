@@ -75,7 +75,9 @@ def parse_manifest(data, vault=False):
         if entry['url']!=ASSET_URLS[file] or entry['type']!=kind or not isinstance(entry['sha256'],str) or len(entry['sha256'])!=64 or any(c not in '0123456789abcdef' for c in entry['sha256']):raise ValueError('route, type or hash')
         files.add(file)
     if sum(e['bytes'] for e in m['files'])>4*1024*1024:raise ValueError('bundle size')
-    if (json.dumps(m,indent=2)+'\n').encode()!=data:raise ValueError('noncanonical manifest')
+    # Match Go's struct field order, not the input object's insertion order.
+    canonical={'version':m['version'],'worker_state':m['worker_state'],'files':[{key:e[key] for key in ('file','url','type','bytes','sha256','source')} for e in m['files']]}
+    if (json.dumps(canonical,indent=2)+'\n').encode()!=data:raise ValueError('noncanonical manifest')
     return m
 
 def prepare(bundle, check=False, vault=False):
