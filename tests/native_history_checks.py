@@ -25,8 +25,12 @@ def checks(a,b,contexts,pages,url,passwords,pins,proof,crash_page,open_page,dire
     def install(p):
         p.evaluate("async()=>{const {HistoryReader}=await import('/history-client.js');window.historyCaller=new HistoryReader(()=>{window.readHistory=null});}")
     install(a)
+    export_started=time.monotonic()
     exported=a.evaluate('''async arg=>{const r=await historyCaller.read(arg,true);if(!r.ok)return {ok:false};window.encryptedHistoryArchive=r.result.archive;return {ok:true,archive:Array.from(r.result.archive),memory:r.memory_bytes}}''',{'expected':expected,'password':passwords[0]})
     assert exported['ok'] and exported['memory']<=128*1024*1024
+    proof['history_export_total_ms']=round((time.monotonic()-export_started)*1000,2)
+    proof['history_max_linear_bytes']=exported['memory']
+    proof['history_read_total_ms']=[]
     archive=exported['archive'];assert digest(a)==original
     wire=json.loads(bytes(archive));assert set(wire)=={'format','database','state'} and set(wire['state'])=={'v','identity','room','vault','revision','capsule','header','cipher'}
     proof['checks']['coherent_readonly_export_does_not_mutate_live_encrypted_state']=True
@@ -37,10 +41,13 @@ def checks(a,b,contexts,pages,url,passwords,pins,proof,crash_page,open_page,dire
     requests=[];reader_context.on('request',lambda request:requests.append(request.url))
     assert reader.evaluate('async()=>await indexedDB.databases()')==[]
     def read(raw=archive,exp=expected,password=passwords[0],accept=True):
+        started=time.monotonic()
         result=reader.evaluate('''async arg=>{arg.archive=new Uint8Array(arg.archive);const r=await historyCaller.read(arg);window.readHistory=r.ok?r.result:null;return {ok:r.ok,memory:r.memory_bytes,result:r.ok?r.result:null}}''',{'expected':exp,'password':password,'archive':raw})
+        proof['history_read_total_ms'].append(round((time.monotonic()-started)*1000,2))
         assert result['ok'] is accept,result
         if accept:
             assert result['memory']<=128*1024*1024
+            proof['history_max_linear_bytes']=max(proof['history_max_linear_bytes'],result['memory'])
             assert set(result['result'])=={'identity','room','group_id','pins','cursor','epoch','messages'}
         return result['result']
     try:

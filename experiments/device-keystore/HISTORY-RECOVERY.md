@@ -111,6 +111,12 @@ node experiments/device-keystore/node_modules/esbuild/bin/esbuild \
   experiments/device-keystore/history-export-worker.js --bundle --format=esm \
   --platform=browser --target=es2023 --minify '--external:/pkg/*' \
   --outdir=experiments/device-keystore/bundle
+node experiments/device-keystore/node_modules/esbuild/bin/esbuild \
+  tests/fixtures/native-history/forge-worker.js --bundle --format=esm \
+  --platform=browser --target=es2023 --minify '--external:/pkg/*' \
+  --alias:age-encryption=./experiments/device-keystore/node_modules/age-encryption \
+  --alias:libsodium-wrappers=./experiments/device-keystore/node_modules/libsodium-wrappers \
+  --outfile=artifacts/history-forge-worker.js
 .venv/bin/python tests/native_encrypted_browser_smoke.py --vault-ui --history \
   --bundle artifacts/mls-remapped-pkg --binary artifacts/family-dev-vault-plain \
   --policy-binary artifacts/family-policy-mls-fixed
