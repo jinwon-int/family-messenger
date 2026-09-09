@@ -1,0 +1,41 @@
+{
+  "synthetic_only": true,
+  "human_key_protection": false,
+  "native_integration": false,
+  "virtual_authenticator_only": true,
+  "uv_recovery_probe": false,
+  "checks": {
+    "real_library_virtual_prf_encrypt_decrypt": true,
+    "fresh_ciphertext_for_same_generated_bytes": true,
+    "other_virtual_credential_cannot_decrypt": true,
+    "tamper_truncation_rejected_original_still_readable": true,
+    "ciphertext_and_credential_hint_reload_without_private_key_export": true,
+    "valid_old_file_still_decrypts_no_antirollback_claim": true,
+    "unrelated_rp_id_rejected": true,
+    "no_prf_authenticator_rejected_without_fallback": true,
+    "worker_credentials_api_unavailable_blocker": true
+  },
+  "asset_sha256": {
+    "/": "9979a2f4e5562470f9baa22454a0f1990d33de4e9b9594540d7da78b02bb41b4",
+    "/probe.js": "26e3f0760a8dc4c22745ae9c1b93c3b14b4d1a0a50075de10b0c0086ec812247",
+    "/worker.js": "51c093e44bb8e192c86b0d4d5d4384ef031c8b1f044bd2a3e2e2396572a4c2f6"
+  },
+  "browser": "151.0.7922.34",
+  "timing_seconds": 1.683,
+  "passed": true,
+  "artifact": "artifacts/device-keystore-vwm4c__0/verification.json",
+  "scope": "Library-only dummy bytes in Window; no MLS provider, production auth, protected key store or human recovery",
+  "negative_lifecycle_artifact": "artifacts/device-keystore-nsgghwh0/verification.json",
+  "negative_lifecycle_outcome": "Optional UV-failure/re-enable probe failed at restored decrypt with NotAllowedError; unresolved virtual/browser behavior, not qualified lock/recovery",
+  "resources": {
+    "installed_candidate_node_modules_bytes": 16544521,
+    "filesystem_available_bytes": 77655105536,
+    "new_wasm_modules": 0,
+    "human_mobile_memory_qualified": false
+  },
+  "npm_advisory_snapshot": {
+    "date": "2026-09-09",
+    "reported_production_vulnerabilities": 0,
+    "full_audit": false
+  }
+}

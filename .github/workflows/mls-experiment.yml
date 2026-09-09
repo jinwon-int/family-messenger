@@ -1,9 +1,9 @@
 name: Isolated MLS browser experiment
 on:
   push:
-    paths: ['experiments/openmls-browser/**', 'tests/native_mls_browser_smoke.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'tests/native_trusted_state_smoke.py', 'tests/native_encrypted_browser_smoke.py', 'tests/native_chat_ui_checks.py', 'tests/native_asset_activation_smoke.py', 'tests/test_mls_assets.py', 'tools/prepare_mls_assets.py', 'server/**', '.github/workflows/mls-experiment.yml']
+    paths: ['experiments/openmls-browser/**', 'experiments/device-keystore/**', 'tests/device_keystore_smoke.py', 'tests/native_mls_browser_smoke.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'tests/native_trusted_state_smoke.py', 'tests/native_encrypted_browser_smoke.py', 'tests/native_chat_ui_checks.py', 'tests/native_asset_activation_smoke.py', 'tests/test_mls_assets.py', 'tools/prepare_mls_assets.py', 'server/**', '.github/workflows/mls-experiment.yml']
   pull_request:
-    paths: ['experiments/openmls-browser/**', 'tests/native_mls_browser_smoke.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'tests/native_trusted_state_smoke.py', 'tests/native_encrypted_browser_smoke.py', 'tests/native_chat_ui_checks.py', 'tests/native_asset_activation_smoke.py', 'tests/test_mls_assets.py', 'tools/prepare_mls_assets.py', 'server/**', '.github/workflows/mls-experiment.yml']
+    paths: ['experiments/openmls-browser/**', 'experiments/device-keystore/**', 'tests/device_keystore_smoke.py', 'tests/native_mls_browser_smoke.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'tests/native_trusted_state_smoke.py', 'tests/native_encrypted_browser_smoke.py', 'tests/native_chat_ui_checks.py', 'tests/native_asset_activation_smoke.py', 'tests/test_mls_assets.py', 'tools/prepare_mls_assets.py', 'server/**', '.github/workflows/mls-experiment.yml']
 permissions:
   contents: read
 jobs:
@@ -73,6 +73,14 @@ jobs:
         run: timeout 120s python tests/native_encrypted_browser_smoke.py --controls --bundle artifacts/mls-browser-pkg --binary artifacts/family-dev-trust --policy-binary artifacts/family-policy-trust
       - name: Own encrypted chat UI through two browsers
         run: timeout 150s python tests/native_encrypted_browser_smoke.py --ui --bundle artifacts/mls-browser-pkg --binary artifacts/family-dev-trust --policy-binary artifacts/family-policy-trust
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.2'
+      - name: Isolated pinned key-custody candidate
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund --prefix experiments/device-keystore
+          node experiments/device-keystore/node_modules/esbuild/bin/esbuild experiments/device-keystore/probe.js --bundle --format=esm --platform=browser --target=es2023 --minify --outfile=experiments/device-keystore/bundle/probe.js
+          timeout 90s python tests/device_keystore_smoke.py --synthetic-only
       - name: Two disposable browsers
         run: python tests/native_mls_browser_smoke.py --bundle artifacts/mls-browser-pkg
       - name: Atomic synthetic state and browser crash proof
@@ -91,3 +99,4 @@ jobs:
             artifacts/native-chat-ui-*/verification.json
             artifacts/native-embedded-ui-*/verification.json
             artifacts/native-asset-activation-*/verification.json
+            artifacts/device-keystore-*/verification.json
