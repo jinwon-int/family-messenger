@@ -84,7 +84,8 @@ def reader_ui(a,b,contexts,url,expected,password,archive,pending_marker,proof):
         open_read(raw=b'x'*(6*1024*1024+1),ok=False)
         assert p.evaluate('historyFileReads')==0
         fill(p,expected,password,archive)
-        p.locator('#expected').fill(json.dumps(expected,ensure_ascii=False)[:-1]+',"extra":"'+('한'*1200)+'"}')
+        oversized=copy.deepcopy(expected);oversized['database']='한'*1500
+        p.locator('#expected').fill(json.dumps(oversized,ensure_ascii=False))
         assert len(p.locator('#expected').input_value())<4096
         p.locator('#read').click();expect(p.locator('#read')).to_be_enabled()
         expect(p.locator('#status')).to_contain_text('입력과 파일 크기')
