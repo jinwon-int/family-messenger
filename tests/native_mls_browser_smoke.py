@@ -15,13 +15,17 @@ from playwright.sync_api import sync_playwright
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--bundle', required=True, type=Path)
+    parser.add_argument('--lifecycle', action='store_true', help='isolated replacement library qualification, no native enrollment')
     args = parser.parse_args()
     os.umask(0o077)
     repo = Path(__file__).resolve().parents[1]
-    evidence = Path(tempfile.mkdtemp(prefix='native-mls-browser-', dir=repo / 'artifacts'))
+    evidence = Path(tempfile.mkdtemp(prefix='native-mls-lifecycle-' if args.lifecycle else 'native-mls-browser-', dir=repo / 'artifacts'))
     paths = {'/': repo / 'experiments/openmls-browser/web/index.html'}
     for name in ['main.js', 'worker.js', 'durable-worker.js']:
         paths['/' + name] = repo / 'experiments/openmls-browser/web' / name
+    if args.lifecycle:
+        paths['/worker.js'] = repo / 'experiments/openmls-browser/web/lifecycle-worker.js'
+        del paths['/durable-worker.js']
     for name in ['family_mls_browser_experiment.js', 'family_mls_browser_experiment_bg.wasm']:
         paths['/pkg/' + name] = args.bundle / name
     assets = {}
@@ -96,6 +100,15 @@ def main():
                 if join:
                     call(bob, 'join', welcome, name=name)
                 return package, welcome, times
+
+            if args.lifecycle:
+                from native_lifecycle_checks import run
+                run(pages, call, receipt)
+                for context in contexts:
+                    context.close()
+                browser.close()
+                receipt['passed'] = True
+                return
 
             package, welcome, receipt['init_ms'] = pair('main')
             text = list('synthetic hello 한글'.encode())

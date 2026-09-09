@@ -1,9 +1,9 @@
 name: Isolated MLS browser experiment
 on:
   push:
-    paths: ['experiments/openmls-browser/**', 'experiments/device-keystore/**', 'tests/device_keystore_smoke.py', 'tests/password_worker_smoke.py', 'tests/session_record_smoke.py', 'tests/native_mls_browser_smoke.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'tests/native_trusted_state_smoke.py', 'tests/native_encrypted_browser_smoke.py', 'tests/native_vault_checks.py', 'tests/native_vault_ui_checks.py', 'tests/native_history_checks.py', 'tests/fixtures/native-history/**', 'tests/fixtures/native-vault/**', 'tests/native_chat_ui_checks.py', 'tests/native_asset_activation_smoke.py', 'tests/test_mls_assets.py', 'tools/prepare_mls_assets.py', 'server/**', '.github/workflows/mls-experiment.yml']
+    paths: ['experiments/openmls-browser/**', 'experiments/device-keystore/**', 'tests/device_keystore_smoke.py', 'tests/password_worker_smoke.py', 'tests/session_record_smoke.py', 'tests/native_mls_browser_smoke.py', 'tests/native_lifecycle_checks.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'tests/native_trusted_state_smoke.py', 'tests/native_encrypted_browser_smoke.py', 'tests/native_vault_checks.py', 'tests/native_vault_ui_checks.py', 'tests/native_history_checks.py', 'tests/fixtures/native-history/**', 'tests/fixtures/native-vault/**', 'tests/native_chat_ui_checks.py', 'tests/native_asset_activation_smoke.py', 'tests/test_mls_assets.py', 'tools/prepare_mls_assets.py', 'server/**', '.github/workflows/mls-experiment.yml']
   pull_request:
-    paths: ['experiments/openmls-browser/**', 'experiments/device-keystore/**', 'tests/device_keystore_smoke.py', 'tests/password_worker_smoke.py', 'tests/session_record_smoke.py', 'tests/native_mls_browser_smoke.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'tests/native_trusted_state_smoke.py', 'tests/native_encrypted_browser_smoke.py', 'tests/native_vault_checks.py', 'tests/native_vault_ui_checks.py', 'tests/native_history_checks.py', 'tests/fixtures/native-history/**', 'tests/fixtures/native-vault/**', 'tests/native_chat_ui_checks.py', 'tests/native_asset_activation_smoke.py', 'tests/test_mls_assets.py', 'tools/prepare_mls_assets.py', 'server/**', '.github/workflows/mls-experiment.yml']
+    paths: ['experiments/openmls-browser/**', 'experiments/device-keystore/**', 'tests/device_keystore_smoke.py', 'tests/password_worker_smoke.py', 'tests/session_record_smoke.py', 'tests/native_mls_browser_smoke.py', 'tests/native_lifecycle_checks.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'tests/native_trusted_state_smoke.py', 'tests/native_encrypted_browser_smoke.py', 'tests/native_vault_checks.py', 'tests/native_vault_ui_checks.py', 'tests/native_history_checks.py', 'tests/fixtures/native-history/**', 'tests/fixtures/native-vault/**', 'tests/native_chat_ui_checks.py', 'tests/native_asset_activation_smoke.py', 'tests/test_mls_assets.py', 'tools/prepare_mls_assets.py', 'server/**', '.github/workflows/mls-experiment.yml']
 permissions:
   contents: read
 jobs:
@@ -113,7 +113,9 @@ jobs:
           python tests/native_asset_activation_smoke.py --history --binary artifacts/family-dev-history-embedded --plain-binary artifacts/family-dev-trust
           timeout 360s python tests/native_encrypted_browser_smoke.py --vault-ui --history-ui --embedded --bundle artifacts/mls-browser-pkg --binary artifacts/family-dev-history-embedded --policy-binary artifacts/family-policy-trust
       - name: Two disposable browsers
-        run: python tests/native_mls_browser_smoke.py --bundle artifacts/mls-browser-pkg
+        run: |
+          python tests/native_mls_browser_smoke.py --bundle artifacts/mls-browser-pkg
+          timeout 90s python tests/native_mls_browser_smoke.py --lifecycle --bundle artifacts/mls-browser-pkg
       - name: Atomic synthetic state and browser crash proof
         run: timeout 120s python tests/native_mls_persistence_smoke.py --bundle artifacts/mls-browser-pkg
       - uses: actions/upload-artifact@v4
@@ -122,6 +124,7 @@ jobs:
           name: synthetic-mls-proof
           path: |
             artifacts/native-mls-browser-*/verification.json
+            artifacts/native-mls-lifecycle-*/verification.json
             artifacts/native-mls-persistence-*/verification.json
             artifacts/native-device-browser-*/verification.json
             artifacts/native-trusted-state-*/verification.json
