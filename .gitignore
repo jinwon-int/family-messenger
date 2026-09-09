@@ -14,3 +14,7 @@ experiments/openmls-browser/target/
 # Pinned generated assets; explicit synthetic_mls builds only
 server/internal/chat/mlsassets/
 server/internal/chat/.mls-build.lock
+
+# Isolated key-custody feasibility packages and bundle
+experiments/device-keystore/node_modules/
+experiments/device-keystore/bundle/
