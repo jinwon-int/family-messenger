@@ -23,7 +23,8 @@ A canonical UTF-8 JSON file has exactly `format: family-history-v1`, the origina
 `database`, and the eight existing outer-state fields. Capsule/header/ciphertext
 are canonical base64. Maximum file size is 6 MiB, sufficient for the existing
 4 MiB+17 ciphertext, 8192-byte capsule and 24-byte header with encoding overhead.
-Counts, types, names, versions, fields and canonical serialization are checked
+Both the archive view and backing buffer are bounded before caller structured
+cloning and reader parsing. Counts, types, names, versions, fields and canonical serialization are checked
 before password work. The snapshot's full encrypted provider is confidential
 backup material: compromise of its password/root exposes the backed-up state and
 history. Do not claim a history-only key archive, forward secrecy of backups or
@@ -82,7 +83,9 @@ Web Lock shares the existing KDF admission slot; a 15-second deadline includes
 queue/read/decrypt/validation time and is checked after synchronous work. The
 caller owns termination, boot/request timeouts and generation guards because a
 synchronous KDF cannot process an in-band cancel. Lock/hidden/pagehide/clone error
-retires an in-flight worker and clears its transient password reference. No
+retires an in-flight worker and clears its own transient password reference without mutating caller-owned inputs.
+`close()` is terminal. The consumer still owns clearing its original password
+input/reference; JavaScript cannot erase immutable caller-owned strings. No
 secret is persisted by the caller. Its consumer must clear any rendered history
 through `onLock`; the isolated proof has no product history UI.
 
@@ -125,3 +128,9 @@ requires an explicit original-profile retry, never a recovery import.
 Human device loss/replacement trust, independent backup factor/location/retention,
 mobile resource/lifecycle, actual CF account gate, server backup/restore and
 production enrollment/history/group/fleet limits remain separate open gates.
+
+Independent review reproduced a medium immutable-input cleanup failure and a low
+read-after-close lifecycle defect. Caller retirement now clears only internal
+references, terminates/settles despite a consumer callback error, and makes close
+terminal. Regression fixtures cover frozen inputs before/after ready, late output,
+closed reuse, callback/clone failures and oversized backing buffers.

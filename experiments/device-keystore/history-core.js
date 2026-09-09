@@ -28,7 +28,7 @@ export function encodeArchive(r,e){
  const result=enc.encode(JSON.stringify(value));byte(result,LIMIT);return result;
 }
 export function decodeArchive(raw,e){
- byte(raw,LIMIT);const x=JSON.parse(dec.decode(raw));
+ byte(raw,LIMIT);if(raw.buffer.byteLength>LIMIT)fail();const x=JSON.parse(dec.decode(raw));
  if(!exact(x,'format,database,state')||x.format!=='family-history-v1'||x.database!==e.database||!exact(x.state,'v,identity,room,vault,revision,capsule,header,cipher'))fail();
  const r={...x.state,capsule:unb64(x.state.capsule,8192),header:unb64(x.state.header,24,24),cipher:unb64(x.state.cipher,MAX+17,17)};
  outer(r,e);const canonical=encodeArchive(r,e);if(raw.length!==canonical.length||!raw.every((v,i)=>v===canonical[i]))fail();return r;

@@ -77,6 +77,7 @@ def checks(a,b,contexts,pages,url,passwords,pins,proof,crash_page,open_page,dire
         read(raw=archive[:-1],accept=False)
         proof['checks']['capsule_header_cipher_metadata_revision_tamper_and_truncation_deny']=True
         bad=reader.evaluate('''async arg=>{arg.archive=new Uint8Array(6*1024*1024+1);return (await historyCaller.read(arg)).ok}''',{'expected':expected,'password':passwords[0]});assert not bad
+        backing=reader.evaluate('''async arg=>{arg.archive=new Uint8Array(new ArrayBuffer(6*1024*1024+1),0,1);return (await historyCaller.read(arg)).ok}''',{'expected':expected,'password':passwords[0]});assert not backing
         duplicate=list(bytes(archive).replace(b'"format":',b'"format":"wrong","format":',1));read(raw=duplicate,accept=False)
         proof['checks']['oversized_and_duplicate_field_archives_denied']=True
         # Hold the cooperative global KDF lock to make late cancellation deterministic.

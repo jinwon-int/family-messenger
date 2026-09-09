@@ -143,8 +143,11 @@ def main():
         proof['manifest_sha256']=hashlib.sha256((root/'server/internal/chat/vault_bundle.json').read_bytes()).hexdigest()
     if history_proof:
         from password_worker_smoke import safe_bytes
+        inventory=json.loads(safe_bytes(root/'experiments/device-keystore/history-inventory.json',65536))
         for name in ('history-worker.js','history-export-worker.js'):
-            assets['/'+name]=safe_bytes(root/'experiments/device-keystore/bundle'/name,1024*1024)
+            raw=safe_bytes(root/'experiments/device-keystore/bundle'/name,1024*1024)
+            assert len(raw)==inventory['bundles'][name]['bytes'] and hashlib.sha256(raw).hexdigest()==inventory['bundles'][name]['sha256']
+            assets['/'+name]=raw
         assets['/history-client.js']=safe_bytes(root/'experiments/device-keystore/history-client.js',65536)
         assets['/history-forge-worker.js']=safe_bytes(root/'artifacts/history-forge-worker.js',1024*1024)
     if vault:

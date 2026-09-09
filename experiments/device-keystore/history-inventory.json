@@ -18,9 +18,9 @@
   ],
   "bundles": {
     "history-worker.js": {
-      "bytes": 564015,
-      "gzip_bytes": 199905,
-      "sha256": "89480dc5396f8c8fafc01ef05993943336eb57109f0573f6c71f7f0662cb4ff7"
+      "bytes": 564044,
+      "gzip_bytes": 199906,
+      "sha256": "cc77cb7380e5233108e2aeabded4df764a0b53ced2447c071e085cde6021fe2a"
     },
     "history-export-worker.js": {
       "bytes": 564461,
