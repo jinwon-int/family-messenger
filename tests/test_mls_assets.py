@@ -136,3 +136,13 @@ class AssetPreparationTests(unittest.TestCase):
         self.manifest.write_text(self.manifest.read_text().replace('"version": 1', '"version": 1, "version": 1'))
         self.rejected()
         self.assertFalse(self.output.exists())
+
+    def test_symlinked_lock_parent_rejects_before_creating_files(self):
+        original = self.output.parent
+        retained = self.root / 'retained-chat'
+        original.rename(retained)
+        original.symlink_to(retained, target_is_directory=True)
+        before = set(retained.iterdir())
+        self.rejected()
+        self.assertEqual(before, set(retained.iterdir()))
+        self.assertFalse((retained / '.mls-build.lock').exists())

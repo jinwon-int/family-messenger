@@ -83,7 +83,7 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("X-Family-Actor", actor)
-	if r.Method == "GET" && a.encryptedAsset(r.URL.Path) && r.URL.RawPath == "" && r.URL.RawQuery == "" {
+	if r.Method == "GET" && a.encryptedAsset(r.URL.Path) && r.URL.RawPath == "" && r.URL.RawQuery == "" && !r.URL.ForceQuery {
 		a.serveEncryptedAsset(w, r)
 		return
 	}

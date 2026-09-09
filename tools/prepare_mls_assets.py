@@ -12,11 +12,14 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / 'server/internal/chat/mls_bundle.json'
 OUTPUT = ROOT / 'server/internal/chat/mlsassets'
 
+def check_parent_chain(path):
+    # Validate before any open, including creation of the build lock.
+    for parent in reversed(Path(path).absolute().parents):
+        if parent.is_symlink() or not parent.is_dir():raise ValueError('unsafe directory')
+
 def read(path, maximum, private=False):
     path = Path(path).absolute()
-    # No symlinked ancestors, even for caller-selected public bundle input.
-    for parent in [*reversed(path.parents), path.parent]:
-        if parent.is_symlink() or not parent.is_dir():raise ValueError('unsafe directory')
+    check_parent_chain(path)
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         st = os.fstat(fd)
@@ -51,6 +54,7 @@ def parse_manifest(data):
 
 def prepare(bundle, check=False):
     lock=OUTPUT.parent/'.mls-build.lock'
+    check_parent_chain(lock)
     fd=os.open(lock,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
     try:
         st=os.fstat(fd)

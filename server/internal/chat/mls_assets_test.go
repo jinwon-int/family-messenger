@@ -128,7 +128,7 @@ func TestEncryptedAssetAdmissionRoutingAndLegacyPreservation(t *testing.T) {
 			t.Fatal("CSP")
 		}
 	}
-	for _, path := range []string{"/encrypted", "/%65ncrypted/", "/encrypted/?v=1", "/pkg/unknown.wasm", "/encrypted/../chat.html"} {
+	for _, path := range []string{"/encrypted", "/%65ncrypted/", "/encrypted/?v=1", "/encrypted/?", "/pkg/unknown.wasm", "/encrypted/../chat.html"} {
 		code, _ := accessRequest(t, server, token, "GET", path, nil, nil)
 		if code == 200 {
 			t.Fatal("alias served", path)
