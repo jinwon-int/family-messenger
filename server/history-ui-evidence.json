@@ -1,0 +1,84 @@
+{
+  "scope": "Compiled synthetic read-only history UI; no human recovery/CF/Yukson activation",
+  "profile": {
+    "version": 3,
+    "worker_state": 4,
+    "tag": "synthetic_history",
+    "flag": "--synthetic-history-ui",
+    "files": 21,
+    "total_bytes": 4024687,
+    "manifest_bytes": 6315,
+    "manifest_sha256": "2a33b7f9656df2719817ee2398432dd3070fe5715bcecae1510b32b9fcee06c9"
+  },
+  "author": {
+    "receipt": "artifacts/native-history-xkx8xi8q/verification.json",
+    "sha256": "e53e2601f2a740c4bc5e3d6016b6b3f93b34a78f3c291e5c59db33a86bac881f",
+    "checks": 39,
+    "actual_native_asset_hashes": 21,
+    "all_passed": true,
+    "activation_receipt": "artifacts/native-asset-activation-6g4dc8v2/verification.json",
+    "activation_checks": 10,
+    "go": "history tagged race022/normal077 and vet passed",
+    "python_tests": 111,
+    "python_umasks": [
+      "022",
+      "077"
+    ],
+    "asset_preparation_tests": 35,
+    "source_equivalent_commit": "9634bc3f8cfce0055f97221eadf7285bd3548cd1",
+    "binary_note": "Author built before freezing source commit; prefer independent clean-commit provenance."
+  },
+  "diagnostic_only_head": "c297025566d74ff9d54203ce2ee5fa6eb779e8e4",
+  "independent_review": {
+    "verdict": "clean; no reproduced finding in bounded scope",
+    "reviewed_head": "c297025566d74ff9d54203ce2ee5fa6eb779e8e4",
+    "receipts": {
+      "review.json": {
+        "path": "/root/work/family-messenger/artifacts/history-assets-reviewed-w0v_yee2/review.json",
+        "sha256": "3301bcd23e3875879d28c3d405a609d05e318d8ed89eb6eccee24c7777797bc5"
+      },
+      "native.json": {
+        "path": "/root/work/family-messenger/artifacts/history-assets-reviewed-w0v_yee2/native.json",
+        "sha256": "d04f0158743a2369917d9fac7607396df29369b98b257e47307bfacfe411f166"
+      },
+      "legacy-vault.json": {
+        "path": "/root/work/family-messenger/artifacts/history-assets-reviewed-w0v_yee2/legacy-vault.json",
+        "sha256": "9a7cd81531aa6fb75b7cf14a783da2781fa400597d17e718a991bef16d990934"
+      },
+      "activation.json": {
+        "path": "/root/work/family-messenger/artifacts/history-assets-reviewed-w0v_yee2/activation.json",
+        "sha256": "b8691d8b90cb70253a82695e48d1e607df771ee083d925e049e455feae4d0b66"
+      }
+    },
+    "old_vault_checks": 26,
+    "old_vault_assets": 15,
+    "activation_checks": 10,
+    "asset_tests": 35,
+    "additional": "all3tags chat race/vet; default chat; exact prepared9/15/21 inode/mode/byte preservation"
+  },
+  "new_dependencies": 0,
+  "build_runtime": "Immutable Go embed only; no runtime filesystem root/Node service/CDN",
+  "limits": {
+    "manifest": 8192,
+    "file": 2097152,
+    "bundle": 4194304,
+    "wasm": 134217728,
+    "separate_js_scrypt_scratch": 268435456
+  },
+  "preserves": "Existing9 and15 asset profiles/output/manifests, synthetic data/old IDB namespaces, no import/reset/forger",
+  "production_cf_gate": false,
+  "human_recovery_qualified": false,
+  "production_deployment": false,
+  "prior_ui_crypto_sources_changed": false,
+  "independent_native": {
+    "receipt": "/root/work/family-history-assets-review-9634bc3/artifacts/native-history-95_dz_hv/verification.json",
+    "sha256": "d04f0158743a2369917d9fac7607396df29369b98b257e47307bfacfe411f166",
+    "checks": 39,
+    "native_asset_hashes": 21,
+    "all_passed": true,
+    "source_commit": "9634bc3f8cfce0055f97221eadf7285bd3548cd1",
+    "binary_sha256": "37479c21e7a89e321db88e96c91360c29b1b0b1171eefddc0b49aeafb50189b7",
+    "vcs_modified": false,
+    "diagnostic_only_followup": "Final diagnostic head verified with fresh activation and old15 browser proof; UI/helper/manifests identical."
+  }
+}

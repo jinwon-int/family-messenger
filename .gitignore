@@ -20,3 +20,5 @@ experiments/device-keystore/node_modules/
 experiments/device-keystore/bundle/
 
 server/internal/chat/vaultassets/
+
+server/internal/chat/historyassets/

@@ -7,7 +7,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
 
-def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=None,restart=None,vault=False,history=False,history_ui=False):
+def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=None,restart=None,vault=False,history=False,history_ui=False,history_embedded=False):
     passwords=[secrets.token_urlsafe(32),secrets.token_urlsafe(32)]
     initialized=set();draft_prefix='family-vault-ui-draft-v1' if vault else 'family-native-ui-draft-v1'
     with sync_playwright() as pw:
@@ -163,8 +163,12 @@ def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release
             a.screenshot(path=str(work/'synthetic-ui-390.png'),full_page=True)
             proof['checks']['mobile_width_layout_only']=True
             if history:
-                from native_history_checks import checks as history_checks
-                a=history_checks(a,b,contexts,pages,url,passwords,pins,proof,crash_page,open_page,direct,history_ui=history_ui)
+                if history_embedded:
+                    from native_history_ui_checks import native_checks
+                    a=native_checks(a,b,contexts,url,passwords,pins,proof,crash_page,open_page,direct)
+                else:
+                    from native_history_checks import checks as history_checks
+                    a=history_checks(a,b,contexts,pages,url,passwords,pins,proof,crash_page,open_page,direct,history_ui=history_ui)
             if vault:
                 from native_vault_ui_checks import checks
                 checks(a,b,contexts,pages,page_url or url,open_page,click_open,passwords,proof)

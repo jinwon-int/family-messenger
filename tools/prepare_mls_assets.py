@@ -50,13 +50,20 @@ VAULT_SOURCES = {
     'sodium-notices.txt': 'experiments/device-keystore/SODIUM-NOTICES.txt',
 }
 
-ASSET_URLS = {name: '/'+name for name in VAULT_SOURCES}
-ASSET_URLS.update({'chat.html':'/encrypted/','vault-chat.html':'/vault/',
+HISTORY_SOURCES = {
+    **VAULT_SOURCES,
+    **{name: 'experiments/device-keystore/' + name for name in ('history.html','history.css','history-ui.js','history-client.js')},
+    **{name: 'experiments/device-keystore/bundle/' + name for name in ('history-worker.js','history-export-worker.js')},
+}
+
+ASSET_URLS = {name: '/'+name for name in HISTORY_SOURCES}
+ASSET_URLS.update({'chat.html':'/encrypted/','vault-chat.html':'/vault/','history.html':'/history/',
     'pkg.js':'/pkg/family_mls_browser_experiment.js','pkg.wasm':'/pkg/family_mls_browser_experiment_bg.wasm',
     'cargo-notices.txt':'/encrypted/licenses/cargo.txt','rust-notices.txt':'/encrypted/licenses/rust.txt',
     'age-notices.txt':'/vault/licenses/age.txt','sodium-notices.txt':'/vault/licenses/sodium.txt'})
 
-def parse_manifest(data, vault=False):
+def parse_manifest(data, vault=False, history=False):
+    if vault and history:raise ValueError('select only one asset profile')
     def pairs(items):
         out={}
         for key,value in items:
@@ -64,8 +71,8 @@ def parse_manifest(data, vault=False):
             out[key]=value
         return out
     m=json.loads(data,object_pairs_hook=pairs)
-    sources=VAULT_SOURCES if vault else BASE_SOURCES
-    if set(m)!={'version','worker_state','files'} or type(m['version']) is not int or m['version']!=(2 if vault else 1) or type(m['worker_state']) is not int or m['worker_state']!=4 or len(m['files'])!=len(sources):raise ValueError('manifest')
+    sources=HISTORY_SOURCES if history else VAULT_SOURCES if vault else BASE_SOURCES
+    if set(m)!={'version','worker_state','files'} or type(m['version']) is not int or m['version']!=(3 if history else 2 if vault else 1) or type(m['worker_state']) is not int or m['worker_state']!=4 or len(m['files'])!=len(sources):raise ValueError('manifest')
     files=set()
     for entry in m['files']:
         if set(entry)!={'file','url','type','bytes','sha256','source'} or entry['file'] in files or type(entry['bytes']) is not int or not 0<entry['bytes']<=2*1024*1024:raise ValueError('entry')
@@ -80,9 +87,10 @@ def parse_manifest(data, vault=False):
     if (json.dumps(canonical,indent=2)+'\n').encode()!=data:raise ValueError('noncanonical manifest')
     return m
 
-def prepare(bundle, check=False, vault=False):
-    output=ROOT/'server/internal/chat/vaultassets' if vault else OUTPUT
-    manifest_path=ROOT/'server/internal/chat/vault_bundle.json' if vault else MANIFEST
+def prepare(bundle, check=False, vault=False, history=False):
+    if vault and history:raise ValueError('select only one asset profile')
+    output=ROOT/'server/internal/chat/historyassets' if history else ROOT/'server/internal/chat/vaultassets' if vault else OUTPUT
+    manifest_path=ROOT/'server/internal/chat/history_bundle.json' if history else ROOT/'server/internal/chat/vault_bundle.json' if vault else MANIFEST
     lock=output.parent/'.mls-build.lock'
     check_parent_chain(lock)
     fd=os.open(lock,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
@@ -90,7 +98,7 @@ def prepare(bundle, check=False, vault=False):
         st=os.fstat(fd)
         if not stat.S_ISREG(st.st_mode) or st.st_uid!=os.geteuid() or st.st_nlink!=1 or stat.S_IMODE(st.st_mode)!=0o600:raise ValueError('unsafe build lock')
         fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        manifest=parse_manifest(read(manifest_path,8192),vault)
+        manifest=parse_manifest(read(manifest_path,8192),vault,history)
         assets={}
         for e in manifest['files']:
             source=e['source']
@@ -127,7 +135,7 @@ def prepare(bundle, check=False, vault=False):
     finally:os.close(fd)
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--bundle',type=Path,required=True);p.add_argument('--check',action='store_true');p.add_argument('--vault',action='store_true');a=p.parse_args()
-    try:prepare(a.bundle,a.check,a.vault)
+    p=argparse.ArgumentParser();p.add_argument('--bundle',type=Path,required=True);p.add_argument('--check',action='store_true');mode=p.add_mutually_exclusive_group();mode.add_argument('--vault',action='store_true');mode.add_argument('--history',action='store_true');a=p.parse_args()
+    try:prepare(a.bundle,a.check,a.vault,a.history)
     except (OSError,ValueError,KeyError,TypeError) as e:raise SystemExit('asset preparation rejected; existing files retained: '+str(e))
     print('Pinned synthetic assets verified; no runtime directory dependency.')

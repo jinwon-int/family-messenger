@@ -29,6 +29,7 @@ func run() error {
 	authState := flag.String("auth-state", "", "explicit private signed synthetic auth state; no fixture fallback")
 	encryptedUI := flag.Bool("synthetic-mls-ui", false, "enable compiled encrypted test UI; requires signed auth-state and synthetic_mls build")
 	vaultUI := flag.Bool("synthetic-vault-ui", false, "enable compiled synthetic custody UI; requires signed auth-state and synthetic_vault build")
+	historyUI := flag.Bool("synthetic-history-ui", false, "enable compiled synthetic read-only recovery UI; requires signed auth-state and synthetic_history build")
 	flag.Parse()
 	authSelected := false
 	flag.Visit(func(f *flag.Flag) {
@@ -43,15 +44,17 @@ func run() error {
 	if e != nil || host != "127.0.0.1" || port == "" {
 		return fmt.Errorf("only 127.0.0.1 is supported")
 	}
-	if *encryptedUI && *vaultUI {
+	if (*encryptedUI && *vaultUI) || (*encryptedUI && *historyUI) || (*vaultUI && *historyUI) {
 		return fmt.Errorf("select only one encrypted UI mode")
 	}
 	var bundle *chat.EncryptedAssets
-	if *encryptedUI || *vaultUI {
+	if *encryptedUI || *vaultUI || *historyUI {
 		if !authSelected || *authState == "" {
 			return fmt.Errorf("encrypted UI requires explicit signed auth-state")
 		}
-		if *vaultUI {
+		if *historyUI {
+			bundle, e = chat.LoadHistoryAssets()
+		} else if *vaultUI {
 			bundle, e = chat.LoadVaultAssets()
 		} else {
 			bundle, e = chat.LoadEncryptedAssets()
@@ -84,7 +87,7 @@ func run() error {
 	defer stop()
 	handler := chat.NewHandler(store)
 	if managed != nil {
-		if *encryptedUI || *vaultUI {
+		if *encryptedUI || *vaultUI || *historyUI {
 			handler, e = chat.NewEncryptedAccessHandler(store, managed.Authority, bundle)
 		} else {
 			handler, e = chat.NewAccessHandler(store, managed.Authority)
@@ -105,11 +108,14 @@ func run() error {
 		fmt.Fprintln(os.Stderr, "auth revision applied", last.Revision)
 	}
 	cryptoMode := "legacy plaintext test UI"
-	if *encryptedUI || *vaultUI {
+	if *encryptedUI || *vaultUI || *historyUI {
 		cryptoMode = "compiled encrypted test UI /encrypted/; no human key protection"
 	}
 	if *vaultUI {
 		cryptoMode = "compiled synthetic custody UI /vault/; human recovery not qualified"
+	}
+	if *historyUI {
+		cryptoMode = "compiled read-only synthetic history UI /history/; no active device recovery"
 	}
 	fmt.Fprintln(os.Stderr, "SYNTHETIC ONLY;", mode, ";", cryptoMode, "; listening", listener.Addr())
 	tick := time.NewTicker(time.Second)

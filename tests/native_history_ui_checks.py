@@ -131,3 +131,30 @@ def reader_ui(a,b,contexts,url,expected,password,archive,pending_marker,proof):
         assert p.evaluate('document.documentElement.scrollWidth<=innerWidth')
         proof['checks']['history_dom_390px_layout']=True
     finally:context.close()
+
+
+def native_checks(a,b,contexts,url,passwords,pins,proof,crash_page,open_page,direct):
+    """Compiled Go entry only. No proxy-served forger or substitute UI/module."""
+    database='family-mls-vault-synthetic-ui-alice-family'
+    code,status=direct('owner','GET','/v1/mls/rooms/family/status');assert code==200
+    expected={'database':database,'identity':'alice','room':'family','group_id':status['group_id'],'pins':pins}
+    def digest(page):
+        return page.evaluate('''async n=>{const d=await new Promise((r,j)=>{const q=indexedDB.open(n,1);q.onsuccess=()=>r(q.result);q.onerror=j});const v=await new Promise((r,j)=>{const t=d.transaction('device','readonly');const q=t.objectStore('device').get('state');q.onsuccess=()=>r(q.result);q.onerror=j});d.close();return {revision:v.revision,hash:Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',v.cipher))).join(',')}}''',database)
+    marker='synthetic native history excludes unaccepted pending'
+    def block(route):
+        if route.request.method=='POST':route.abort()
+        else:route.continue_()
+    a.route('**/log',block)
+    expect(a.locator('#send')).to_be_enabled(timeout=20000)
+    a.locator('#text').fill(marker);a.locator('#send').click();expect(a.locator('#chat')).to_be_hidden(timeout=25000)
+    original=digest(a);archive=export_ui(a,url,expected,passwords[0],proof)
+    assert digest(a)==original
+    a=crash_page(0);assert digest(a)==original
+    reader_ui(a,b,contexts,url,expected,passwords[0],archive,marker,proof)
+    assert digest(a)==original
+    proof['checks']['compiled_history_coherent_export_crash_and_reader_preserve_source_ciphertext']=True
+    open_page(a);expect(a.locator('#retry')).to_be_visible(timeout=25000);a.locator('#retry').click()
+    for p in (a,b):expect(p.locator('#messages')).to_contain_text(marker,timeout=25000)
+    proof['checks']['compiled_history_original_device_resumes_only_by_explicit_retry']=True
+    proof['native_history_ui']=True
+    return a
