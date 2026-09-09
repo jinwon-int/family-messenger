@@ -346,3 +346,5 @@ The subsequent fixed-pair encryption rekey adapter is documented in
 old-epoch inbound processing until the accepted ordered own commit, using vetted
 OpenMLS pending/merge APIs. It does not replace signing keys or add devices, and
 does not complete the human-use acceptance gates.
+
+An own synthetic encrypted chat UI now exercises the durable native worker through browser controls. See [CHAT-UI.md](../experiments/openmls-browser/CHAT-UI.md) for the isolated test-serving boundary; this is not a deployed human-use UI or completed CF/key-recovery gate.
