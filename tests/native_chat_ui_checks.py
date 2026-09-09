@@ -63,10 +63,12 @@ def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release
             proof['checks']['encrypted_opaque_file_authenticated_download_integrity_no_active_preview']=True
             # Drop the first prepare command in the disposable page only. The
             # metadata draft exists, but bytes never reach the worker/IDB.
-            b.evaluate("()=>{window.heldPrepare=false;const post=Worker.prototype.postMessage;Worker.prototype.postMessage=function(data,...rest){if(data.method==='prepare'&&!window.heldPrepare){window.heldPrepare=true;return}return post.call(this,data,...rest)}}")
+            b.evaluate("()=>{window.heldPrepare=false;const post=Worker.prototype.postMessage;Worker.prototype.postMessage=function(data,...rest){if(data.method==='prepare'&&!window.heldPrepare){window.heldPrepare=true;setTimeout(()=>document.documentElement.dataset.syntheticHeldPrepare='true',150);return}return post.call(this,data,...rest)}}")
             reselect=b'synthetic exact reselection'
             b.locator('#file').set_input_files({'name':'reselect.bin','mimeType':'application/octet-stream','buffer':reselect});b.locator('#send').click()
-            b.wait_for_function('window.heldPrepare===true')
+            # A delayed DOM marker exercises async waiting without page-side eval
+            # (wait_for_function string predicates can violate the real CSP).
+            expect(b.locator('html')).to_have_attribute('data-synthetic-held-prepare','true')
             metadata=json.loads(b.evaluate('sessionStorage.getItem("family-native-ui-draft-v1:bob:family")'))
             assert metadata['size']==len(reselect) and metadata['sha256']==hashlib.sha256(reselect).hexdigest()
             retry_id=metadata['id'];b.reload();open_page(b)
