@@ -78,3 +78,5 @@ a full typage WebAuthn audit. The distributed WebAuthn APIs are explicitly
 marked `@experimental`; they are not selected as a stable live keystore API. Browser heap/startup timing here is not a real-phone
 memory/latency benchmark. Physical key protection, browser/OS/provider backups,
 passkey sync, user gestures and cancellation require separate acceptance.
+
+The separate [worker-only password archive probe](PASSWORD-WORKER.md) qualifies another invocation boundary with the same locked dependencies. It does not repair or relabel the negative virtual WebAuthn UV probe.
