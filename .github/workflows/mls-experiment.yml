@@ -1,9 +1,9 @@
 name: Isolated MLS browser experiment
 on:
   push:
-    paths: ['experiments/openmls-browser/**', 'tests/native_mls_browser_smoke.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'tests/native_trusted_state_smoke.py', 'tests/native_encrypted_browser_smoke.py', 'tests/native_chat_ui_checks.py', 'server/**', '.github/workflows/mls-experiment.yml']
+    paths: ['experiments/openmls-browser/**', 'tests/native_mls_browser_smoke.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'tests/native_trusted_state_smoke.py', 'tests/native_encrypted_browser_smoke.py', 'tests/native_chat_ui_checks.py', 'tests/native_asset_activation_smoke.py', 'tests/test_mls_assets.py', 'tools/prepare_mls_assets.py', 'server/**', '.github/workflows/mls-experiment.yml']
   pull_request:
-    paths: ['experiments/openmls-browser/**', 'tests/native_mls_browser_smoke.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'tests/native_trusted_state_smoke.py', 'tests/native_encrypted_browser_smoke.py', 'tests/native_chat_ui_checks.py', 'server/**', '.github/workflows/mls-experiment.yml']
+    paths: ['experiments/openmls-browser/**', 'tests/native_mls_browser_smoke.py', 'tests/native_mls_persistence_smoke.py', 'tests/native_device_browser_smoke.py', 'tests/native_trusted_state_smoke.py', 'tests/native_encrypted_browser_smoke.py', 'tests/native_chat_ui_checks.py', 'tests/native_asset_activation_smoke.py', 'tests/test_mls_assets.py', 'tools/prepare_mls_assets.py', 'server/**', '.github/workflows/mls-experiment.yml']
 permissions:
   contents: read
 jobs:
@@ -19,6 +19,7 @@ jobs:
           echo "CARGO_HOME=$RUNNER_TEMP/mls-cargo" >> "$GITHUB_ENV"
           echo "RUSTUP_HOME=$RUNNER_TEMP/mls-rustup" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/mls-target" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=--cfg getrandom_backend=\"wasm_js\" --remap-path-prefix=$RUNNER_TEMP/mls-cargo=/cargo --remap-path-prefix=$GITHUB_WORKSPACE=/workspace" >> "$GITHUB_ENV"
       - name: Isolated pinned Rust and WASM target
         run: |
           rustup toolchain install 1.91.1 --profile minimal --target wasm32-unknown-unknown
@@ -52,6 +53,16 @@ jobs:
         run: |
           go -C server build -trimpath -o ../artifacts/family-dev-trust ./cmd/family-dev
           go -C server build -trimpath -o ../artifacts/family-policy-trust ./cmd/family-policy
+      - name: Prepare and verify pinned compiled synthetic UI
+        run: |
+          python tools/prepare_mls_assets.py --bundle artifacts/mls-browser-pkg
+          python tools/prepare_mls_assets.py --bundle artifacts/mls-browser-pkg --check
+          python -m unittest discover -s tests -p test_mls_assets.py -v
+          go -C server test -race -tags synthetic_mls ./...
+          go -C server build -tags synthetic_mls -trimpath -o ../artifacts/family-dev-embedded ./cmd/family-dev
+          python tests/native_asset_activation_smoke.py --binary artifacts/family-dev-embedded --plain-binary artifacts/family-dev-trust
+      - name: Own-server encrypted UI bytes and two-browser restart proof
+        run: timeout 150s python tests/native_encrypted_browser_smoke.py --ui --embedded --bundle artifacts/mls-browser-pkg --binary artifacts/family-dev-embedded --policy-binary artifacts/family-policy-trust
       - name: Native directory and independently pinned browser devices
         run: timeout 120s python tests/native_device_browser_smoke.py --bundle artifacts/mls-browser-pkg --binary artifacts/family-dev-trust --policy-binary artifacts/family-policy-trust
       - name: Durable trusted clients and browser crash proof
@@ -78,3 +89,5 @@ jobs:
             artifacts/native-encrypted-browser-*/verification.json
             artifacts/native-control-browser-*/verification.json
             artifacts/native-chat-ui-*/verification.json
+            artifacts/native-embedded-ui-*/verification.json
+            artifacts/native-asset-activation-*/verification.json

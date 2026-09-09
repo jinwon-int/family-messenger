@@ -1,8 +1,10 @@
 # Native messenger prototype
 
 This Linux-only prototype tests our own storage and HTTP delivery contract. It is
-**localhost-only, synthetic-data-only, and not E2EE**. It has three deliberately
-public test identities, a small embedded browser UI, and no human account authentication.
+**localhost-only and synthetic-data-only**. The default UI is plaintext with
+three deliberately public test identities. Explicit signed mode and a separately
+built [encrypted test UI](ENCRYPTED-UI.md) are available; neither is human-use
+authentication/E2EE acceptance.
 Do not expose it through a proxy/tunnel or put real family messages in it.
 Production Matrix services are not changed by building or running this code.
 

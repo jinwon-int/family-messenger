@@ -25,8 +25,9 @@ func main() {
 func run() error {
 	dir := flag.String("state", "", "existing absolute mode-0700 directory for synthetic data")
 	addr := flag.String("listen", "127.0.0.1:18920", "IPv4 loopback listen address")
-	synthetic := flag.Bool("synthetic-only", false, "acknowledge public test accounts and NO E2EE")
+	synthetic := flag.Bool("synthetic-only", false, "acknowledge synthetic test data only; not production-ready")
 	authState := flag.String("auth-state", "", "explicit private signed synthetic auth state; no fixture fallback")
+	encryptedUI := flag.Bool("synthetic-mls-ui", false, "enable compiled encrypted test UI; requires signed auth-state and synthetic_mls build")
 	flag.Parse()
 	authSelected := false
 	flag.Visit(func(f *flag.Flag) {
@@ -40,6 +41,16 @@ func run() error {
 	host, port, e := net.SplitHostPort(*addr)
 	if e != nil || host != "127.0.0.1" || port == "" {
 		return fmt.Errorf("only 127.0.0.1 is supported")
+	}
+	var bundle *chat.EncryptedAssets
+	if *encryptedUI {
+		if !authSelected || *authState == "" {
+			return fmt.Errorf("encrypted UI requires explicit signed auth-state")
+		}
+		bundle, e = chat.LoadEncryptedAssets()
+		if e != nil {
+			return e
+		}
 	}
 	var managed *access.Managed
 	if authSelected {
@@ -65,7 +76,11 @@ func run() error {
 	defer stop()
 	handler := chat.NewHandler(store)
 	if managed != nil {
-		handler, e = chat.NewAccessHandler(store, managed.Authority)
+		if *encryptedUI {
+			handler, e = chat.NewEncryptedAccessHandler(store, managed.Authority, bundle)
+		} else {
+			handler, e = chat.NewAccessHandler(store, managed.Authority)
+		}
 		if e != nil {
 			return e
 		}
@@ -81,7 +96,11 @@ func run() error {
 		last, _ = managed.Status()
 		fmt.Fprintln(os.Stderr, "auth revision applied", last.Revision)
 	}
-	fmt.Fprintln(os.Stderr, "SYNTHETIC ONLY;", mode, "; no E2EE; listening", listener.Addr())
+	cryptoMode := "legacy plaintext test UI"
+	if *encryptedUI {
+		cryptoMode = "compiled encrypted test UI /encrypted/; no human key protection"
+	}
+	fmt.Fprintln(os.Stderr, "SYNTHETIC ONLY;", mode, ";", cryptoMode, "; listening", listener.Addr())
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 loop:

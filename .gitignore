@@ -10,3 +10,7 @@ artifacts/
 
 # Isolated Rust experiment build products
 experiments/openmls-browser/target/
+
+# Pinned generated assets; explicit synthetic_mls builds only
+server/internal/chat/mlsassets/
+server/internal/chat/.mls-build.lock

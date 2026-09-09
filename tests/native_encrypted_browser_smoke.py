@@ -25,6 +25,7 @@ from playwright.sync_api import sync_playwright, expect, Error as BrowserError
 
 def main():
     args = argparse.ArgumentParser()
+    args.add_argument('--embedded', action='store_true')
     args.add_argument('--ui', action='store_true')
     args.add_argument('--controls', action='store_true')
     args.add_argument('--bundle', required=True, type=Path)
@@ -33,10 +34,12 @@ def main():
     args = args.parse_args()
     control_proof = args.controls
     ui_proof = args.ui
+    embedded = args.embedded
+    assert not embedded or ui_proof
     assert not (control_proof and ui_proof)
     binary, policy = args.binary.resolve(strict=True), args.policy_binary.resolve(strict=True)
     root = Path(__file__).resolve().parents[1]
-    work = Path(tempfile.mkdtemp(prefix='native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
+    work = Path(tempfile.mkdtemp(prefix='native-embedded-ui-' if embedded else 'native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
     state, auth, proposals = [work / n for n in ('state', 'auth', 'proposals')]
     for d in (state, auth, proposals):
         d.mkdir(mode=0o700)
@@ -73,7 +76,7 @@ def main():
         log = work / 'server.log'
         output = log.open('ab')
         offset = log.stat().st_size
-        process = subprocess.Popen([str(binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--listen', address], stderr=output, stdout=subprocess.DEVNULL)
+        process = subprocess.Popen([str(binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--listen', address]+(['--synthetic-mls-ui'] if embedded else []), stderr=output, stdout=subprocess.DEVNULL)
         until = time.monotonic() + 10
         while time.monotonic() < until:
             assert process.poll() is None, 'server exited'
@@ -141,7 +144,7 @@ def main():
         def forward(self):
             if self.headers.get('Host')!=f'127.0.0.1:{self.server.server_port}' or not self.path.startswith('/') or self.path.startswith('//') or any(k.lower()=='authorization' or k.lower().startswith('cf-') for k in self.headers):self.send_error(400);return
             cookie=SimpleCookie();cookie.load(self.headers.get('Cookie',''));v=cookie.get('synthetic_edge');subject=bindings.get(v.value if v else None)
-            if self.command=='GET' and self.path in assets:
+            if not embedded and self.command=='GET' and self.path in assets:
                 raw=assets[self.path];self.send_response(200);self.send_header('Content-Type','application/wasm' if self.path.endswith('.wasm') else 'text/javascript' if self.path.endswith('.js') else 'text/css' if self.path.endswith('.css') else 'text/html');self.send_header('Content-Length',str(len(raw)));self.send_header('Cache-Control','no-store');self.send_header('Content-Security-Policy',"default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; worker-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'");self.end_headers();self.wfile.write(raw);return
             size=int(self.headers.get('Content-Length','0'))
             if size<0 or size>98304:self.send_error(413);return
@@ -152,6 +155,12 @@ def main():
             upstream=http.client.HTTPConnection(address,timeout=10)
             try:
                 upstream.request(self.command,self.path,body=body,headers=headers);response=upstream.getresponse();raw=response.read()
+                if embedded and self.command=='GET':
+                    asset_path='/' if self.path=='/encrypted/' else self.path
+                    if asset_path in assets and response.status==200:
+                        actual=hashlib.sha256(raw).hexdigest()
+                        assert actual==hashlib.sha256(assets[asset_path]).hexdigest(),'compiled asset mismatch'
+                        proof.setdefault('native_served_assets_sha256',{})[asset_path]=actual
                 if self.command=='POST' and self.path.endswith('/log') and response.status<300 and hold_next[0]:
                     hold_next[0]=False;arrived.set();release.wait(5)
                 if self.command=='GET' and '/log?' in self.path and tamper[0] and response.status==200:
@@ -190,7 +199,12 @@ def main():
         proxy=ThreadingHTTPServer(('127.0.0.1',0),Proxy);threading.Thread(target=proxy.serve_forever,daemon=True).start();url=f'http://127.0.0.1:{proxy.server_port}'
         if ui_proof:
             from native_chat_ui_checks import run_ui
-            run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper)
+            run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=url+'/encrypted/' if embedded else url,restart=(lambda:(stop(),start())) if embedded else None)
+            if embedded:
+                proof['ui_packaging']='compiled native Go server assets; proxy only injects generated assertions'
+                proof['native_embedded_ui']=True
+                assert set(proof['native_served_assets_sha256'])==set(assets)
+                proof['checks']['all_ui_worker_wasm_bytes_verified_from_native_server']=True
             proof['passed']=True
             return
         with sync_playwright() as pw:
