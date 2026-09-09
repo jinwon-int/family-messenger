@@ -42,7 +42,7 @@ function decode(payload){
  if(!bytes.length||bytes.length>8192||btoa(String.fromCharCode(...bytes))!==payload)throw Error('file');return bytes;
 }
 async function download(s,bytes,name){
- if(!live(s)||s.downloading)return;s.downloading=true;
+ if(!live(s)||s.downloading||s.urls.size>=2)return;s.downloading=true;
  try{await admission(s);check(s);const u=URL.createObjectURL(new Blob([bytes],{type:'application/octet-stream'}));s.urls.add(u);
   const a=document.createElement('a');a.href=u;a.download=name;a.click();
   setTimeout(()=>{URL.revokeObjectURL(u);s.urls.delete(u);},1000);

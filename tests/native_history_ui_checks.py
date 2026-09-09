@@ -48,9 +48,19 @@ def reader_ui(a,b,contexts,url,expected,password,archive,pending_marker,proof):
         open_read()
         assert pending_marker not in p.locator('#messages').inner_text()
         assert p.locator('#messages img,iframe,video').count()==0 and p.locator('#send').count()==0
+        p.evaluate("()=>{window.historyURLTimers=[];window.originalHistoryTimer=window.setTimeout;window.setTimeout=function(fn,ms,...args){if(ms===1000){historyURLTimers.push(()=>fn(...args));return 0}return originalHistoryTimer(fn,ms,...args)};window.historyFetches=0;const fetcher=window.fetch;window.fetch=function(...args){historyFetches++;return fetcher.apply(this,args)}}")
         with p.expect_download() as event:p.locator('#messages button').first.click()
         download=event.value;assert download.suggested_filename.startswith('history-app-') and download.suggested_filename.endswith('.bin')
         assert Path(download.path()).read_bytes()==bytes(range(256))*4
+        with p.expect_download() as event:p.locator('#messages button').first.click()
+        assert Path(event.value.path()).read_bytes()==bytes(range(256))*4
+        assert p.evaluate('liveBlobURLs.size')==2
+        before=p.evaluate('historyFetches')
+        p.locator('#messages button').first.click()
+        assert p.evaluate('historyFetches')==before and p.evaluate('liveBlobURLs.size')==2
+        p.evaluate('()=>{window.setTimeout=originalHistoryTimer;for(const fn of historyURLTimers)fn();historyURLTimers=[]}')
+        assert p.evaluate('liveBlobURLs.size')==0
+        proof['checks']['history_dom_download_urls_bounded_before_fresh_admission']=True
         proof['checks']['history_dom_source_crash_readonly_text_file_integrity_pending_exclusion']=True
         p.locator('#lock').click()
         assert p.locator('#messages li').count()==0 and p.evaluate('liveBlobURLs.size')==0

@@ -55,7 +55,7 @@ Only inert text nodes and explicit application/octet-stream downloads are render
 There are at most 32 messages of at most 8 KiB each. No archive filename becomes an
 output path; generated archive/file names are fixed or bounded validated message
 IDs. HTML/SVG/media execution and automatic downloads are absent. At most one
-download admission runs at a time; Blob URLs expire after one second and are all
+download admission runs at a time, with at most two live Blob URLs; URLs expire after one second and are all
 revoked on retirement. The original archive remains encrypted when downloaded.
 
 Lock, hidden view, pagehide, signed failure or a cooperating sibling's existing
