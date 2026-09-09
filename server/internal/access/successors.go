@@ -75,7 +75,7 @@ func cloneSuccessors(c Config) (*SuccessorPolicy, error) {
 		return nil, nil
 	}
 	s := c.Successors
-	if len(s.Administrators) < 1 || len(s.Administrators) > 8 || len(s.Intents) > 16 {
+	if len(s.Administrators) > 8 || len(s.Intents) > 16 {
 		return nil, ErrConfig
 	}
 	out := &SuccessorPolicy{Administrators: append([]DeviceAdministrator{}, s.Administrators...), Intents: append([]SuccessorIntent{}, s.Intents...)}
@@ -174,7 +174,7 @@ func successorTransition(old, next Config, previousRevision uint64, now int64) e
 	}
 	if old.Successors == nil {
 		// Explicitly establish administrators before proposing any replacement.
-		if len(next.Successors.Intents) != 0 {
+		if len(next.Successors.Intents) != 0 || len(next.Successors.Administrators) == 0 {
 			return ErrConfig
 		}
 		return nil

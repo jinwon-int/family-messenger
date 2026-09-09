@@ -48,6 +48,11 @@ First establish the administrator list in an intent-free v2 revision. A subseque
 revision may create a `candidate` intent for an existing active device. Administrators
 must already be listed and enrolled in both prior and proposed policy; a new
 administrator cannot approve itself in the same change.
+After establishment the administrator list may be empty to deny all new approvals.
+Emergency management can revoke all devices and clear people/administrators in
+one revision, while retaining every intent and tombstone. No minimum administrator
+requirement may prevent account revocation. A later re-enrollment still cannot
+resurrect old devices or approve a candidate in the same administrator-setup step.
 
 An intent contains immutable ID/action (`replace`), actor/subject, predecessor
 ID/key/revision, unique candidate ID/key/fingerprint, package SHA-256 reference,

@@ -348,3 +348,90 @@ func TestSuccessorVersionStrictFieldsAndHistory(t *testing.T) {
 		t.Fatal("changed historical intent accepted")
 	}
 }
+
+func TestSuccessorEmergencyDenyAllSurvivesRestart(t *testing.T) {
+	s, c := successorFixture(t)
+	c = proposed(c)
+	if _, e := s.CommitSuccessor(2, c); e != nil {
+		t.Fatal(e)
+	}
+	m, e := OpenManaged(s.dir)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer m.Close()
+	_, key := fixture(t)
+	token := sign(t, values(c), key)
+	g, e := verify(m.Authority, token)
+	if e != nil {
+		t.Fatal(e)
+	}
+	c.People = nil
+	c.Successors.Administrators = nil
+	c.Devices[0].Status = "revoked"
+	c.Devices[0].Revision = 2
+	if _, e = s.CommitSuccessor(3, c); e != nil {
+		t.Fatal("emergency deny-all rejected", e)
+	}
+	if e = m.Refresh(); e != nil {
+		t.Fatal(e)
+	}
+	if g.Run(func() error { return nil }) != ErrDenied {
+		t.Fatal("old grant survived deny-all")
+	}
+	m.Close()
+	m, e = OpenManaged(s.dir)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer m.Close()
+	if _, e = verify(m.Authority, token); e != ErrDenied {
+		t.Fatal("account restored on restart")
+	}
+	_, saved, e := s.Read()
+	if e != nil || len(saved.People) != 0 || len(saved.Successors.Administrators) != 0 || len(saved.Successors.Intents) != 1 || saved.Devices[0].Status != "revoked" {
+		t.Fatal("deny-all history lost", e)
+	}
+	// An explicit first v2 configuration still establishes a real administrator.
+	other, initial := storePolicy(t)
+	initial.Successors = &SuccessorPolicy{}
+	if _, e = other.CommitSuccessor(0, initial); e == nil {
+		t.Fatal("empty initial v2 administration")
+	}
+}
+
+func TestSuccessorCancelledIntentAllowsFreshCandidateButNeverKeyReuse(t *testing.T) {
+	s, c := successorFixture(t)
+	c = proposed(c)
+	if _, e := s.CommitSuccessor(2, c); e != nil {
+		t.Fatal(e)
+	}
+	c.Successors.Intents[0].Status = "cancelled"
+	c.Successors.Intents[0].DecidedAt = time.Now().Unix()
+	c.Successors.Intents[0].DecisionRevision = 4
+	if _, e := s.CommitSuccessor(3, c); e != nil {
+		t.Fatal(e)
+	}
+	n := c.Successors.Intents[0]
+	n.ID = "fresh-intent"
+	n.Candidate = "fresh-candidate"
+	n.BaseRevision = 4
+	n.Status = "candidate"
+	n.DecidedAt = 0
+	n.DecisionRevision = 0
+	c.Successors.Intents = append(c.Successors.Intents, n)
+	if _, e := s.CommitSuccessor(4, c); e == nil {
+		t.Fatal("cancelled public key reused")
+	}
+	k := bytes.Repeat([]byte{51}, 32)
+	h := sha256.Sum256(k)
+	c.Successors.Intents[1].SigningKey = hex.EncodeToString(k)
+	c.Successors.Intents[1].Fingerprint = hex.EncodeToString(h[:])
+	if _, e := s.CommitSuccessor(4, c); e != nil {
+		t.Fatal("fresh replacement after cancellation denied", e)
+	}
+	_, saved, e := s.Read()
+	if e != nil || len(saved.Successors.Intents) != 2 || saved.Successors.Intents[0].Status != "cancelled" {
+		t.Fatal("lost cancellation tombstone", e)
+	}
+}

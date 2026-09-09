@@ -127,3 +127,21 @@ def run(config, auth, proposals, proof, request, start, stop, command, private_w
     start()
     assert log_status('owner', 'alice-first') == 403
     checks['unsafe_v2_policy_denied_and_retained_no_fixture_fallback'] = True
+
+    current['people'] = []
+    current['successors']['administrators'] = []
+    for device in current['devices']:
+        device.update(status='revoked', device_revision=2)
+    assert commit(6, current)['revision'] == 7
+    deadline = time.monotonic() + 6
+    while time.monotonic() < deadline and request('owner')[0] != 401:
+        time.sleep(0.05)
+    assert request('owner')[0] == 401 and request('family')[0] == 401
+    stop()
+    start()
+    assert request('owner')[0] == 401 and request('family')[0] == 401
+    saved = json.loads((auth / 'policy-000007.json').read_text())['policy']
+    assert len(saved['successors']['intents']) == 2
+    assert all(d['status'] == 'revoked' for d in saved['devices'])
+    assert (auth / 'policy-000001.json').read_bytes() == legacy
+    checks['emergency_empty_people_and_administrators_survives_sigkill_restart'] = True
