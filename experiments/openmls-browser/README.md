@@ -167,3 +167,5 @@ crypto state across restart while preserving the earlier isolated fixtures.
 The [native encrypted delivery worker](NATIVE-DELIVERY.md) uses the native signed
 log for an actual two-browser encrypted roundtrip with durable outbox/self echoes.
 It preserves all earlier experiment namespaces and is not a product chat UI.
+
+The own encrypted synthetic chat page and DOM proof are described in [CHAT-UI.md](CHAT-UI.md); Go asset packaging and production activation remain separate.

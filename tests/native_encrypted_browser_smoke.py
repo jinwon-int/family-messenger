@@ -25,15 +25,18 @@ from playwright.sync_api import sync_playwright, expect, Error as BrowserError
 
 def main():
     args = argparse.ArgumentParser()
+    args.add_argument('--ui', action='store_true')
     args.add_argument('--controls', action='store_true')
     args.add_argument('--bundle', required=True, type=Path)
     args.add_argument('--binary', required=True, type=Path)
     args.add_argument('--policy-binary', required=True, type=Path)
     args = args.parse_args()
     control_proof = args.controls
+    ui_proof = args.ui
+    assert not (control_proof and ui_proof)
     binary, policy = args.binary.resolve(strict=True), args.policy_binary.resolve(strict=True)
     root = Path(__file__).resolve().parents[1]
-    work = Path(tempfile.mkdtemp(prefix='native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
+    work = Path(tempfile.mkdtemp(prefix='native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
     state, auth, proposals = [work / n for n in ('state', 'auth', 'proposals')]
     for d in (state, auth, proposals):
         d.mkdir(mode=0o700)
@@ -100,35 +103,36 @@ def main():
     cookies=[secrets.token_hex(16),secrets.token_hex(16)]
     bindings=dict(zip(cookies,['owner','family']))
     assets={}
-    for name in ['native.html','main.js','native-worker.js','trust-directory.js']:
+    for name in (['chat.html','chat.js','chat.css','native-worker.js','trust-directory.js'] if ui_proof else ['native.html','main.js','native-worker.js','trust-directory.js']):
         raw=(root/'experiments/openmls-browser/web'/name).read_bytes()
         if name=='main.js':
             old=b"durable ? './durable-worker.js' : './worker.js'"
             assert raw.count(old)==1;raw=raw.replace(old,b"'./native-worker.js'")
-        assets['/' if name=='native.html' else '/'+name]=raw
+        assets['/' if name in ('native.html','chat.html') else '/'+name]=raw
     for name in ['family_mls_browser_experiment.js','family_mls_browser_experiment_bg.wasm']:
         p=args.bundle/name;st=p.lstat();assert not p.is_symlink() and st.st_nlink==1 and st.st_size<4*1024*1024
         assets['/pkg/'+name]=p.read_bytes()
     proof['original_assets_sha256']={name:hashlib.sha256(raw).hexdigest() for name,raw in assets.items()}
-    raw=assets['/native-worker.js'];at=raw.index(b" if(method==='prepare'){")
-    first,last=raw[:at],raw[at:]
-    needle=b"['','abort-before-write','abort-after-write']"
-    assert last.count(needle)==1;last=last.replace(needle,b"['','abort-before-write','abort-after-write','crash-before-complete','forged-inner']")
-    needle=b"const f=frame(arg.id,own(current).device_id,identity,current.group,arg.media_type,data);"
-    assert last.count(needle)==1;last=last.replace(needle,needle+b"if(arg.fault==='forged-inner')f.sender_actor='bob';")
-    raw=first+last;needle=b"s.put(r,'state');if(fault==='abort-after-write')"
-    assert raw.count(needle)==1;raw=raw.replace(needle,b"s.put(r,'state');if(fault==='crash-before-complete'){self.postMessage({test_crash_boundary:true});while(true){}}if(fault==='abort-after-write')")
-    if control_proof:
-        raw=raw.replace(b'let db,identity,room,retired=false;',b'let db,identity,room,retired=false;let testHoldSync=false;')
-        needle=b'async function dispatch(method,arg){'
-        assert raw.count(needle)==1;raw=raw.replace(needle,needle+b"if(method==='test-hold-sync'){testHoldSync=true;return null;}")
-        needle=b'return status(r);});\n}\nasync function dispatch'
-        assert raw.count(needle)==1;raw=raw.replace(needle,b"return status(r);},testHoldSync?'crash-before-complete':'');\n}\nasync function dispatch")
-    assets['/native-worker.js']=raw
-    needle=b"    if (data.id !== id) return;";assert assets['/main.js'].count(needle)==1
-    assets['/main.js']=assets['/main.js'].replace(needle,b"    if(data.test_crash_boundary)window.test_crash_boundary=true;\n"+needle)
+    if not ui_proof:
+        raw=assets['/native-worker.js'];at=raw.index(b" if(method==='prepare'){")
+        first,last=raw[:at],raw[at:]
+        needle=b"['','abort-before-write','abort-after-write']"
+        assert last.count(needle)==1;last=last.replace(needle,b"['','abort-before-write','abort-after-write','crash-before-complete','forged-inner']")
+        needle=b"const f=frame(arg.id,own(current).device_id,identity,current.group,arg.media_type,data);"
+        assert last.count(needle)==1;last=last.replace(needle,needle+b"if(arg.fault==='forged-inner')f.sender_actor='bob';")
+        raw=first+last;needle=b"s.put(r,'state');if(fault==='abort-after-write')"
+        assert raw.count(needle)==1;raw=raw.replace(needle,b"s.put(r,'state');if(fault==='crash-before-complete'){self.postMessage({test_crash_boundary:true});while(true){}}if(fault==='abort-after-write')")
+        if control_proof:
+            raw=raw.replace(b'let db,identity,room,retired=false;',b'let db,identity,room,retired=false;let testHoldSync=false;')
+            needle=b'async function dispatch(method,arg){'
+            assert raw.count(needle)==1;raw=raw.replace(needle,needle+b"if(method==='test-hold-sync'){testHoldSync=true;return null;}")
+            needle=b'return status(r);});\n}\nasync function dispatch'
+            assert raw.count(needle)==1;raw=raw.replace(needle,b"return status(r);},testHoldSync?'crash-before-complete':'');\n}\nasync function dispatch")
+        assets['/native-worker.js']=raw
+        needle=b"    if (data.id !== id) return;";assert assets['/main.js'].count(needle)==1
+        assets['/main.js']=assets['/main.js'].replace(needle,b"    if(data.test_crash_boundary)window.test_crash_boundary=true;\n"+needle)
     proof['assets_sha256']={name:hashlib.sha256(raw).hexdigest() for name,raw in assets.items()}
-    proof['test_instrumentation']='main selects native worker; served-only pending-write hold and deliberately forged inner sender fixture; proxy may hold/alter generated responses'
+    proof['test_instrumentation']='UI assets unmodified; disposable page tracks Blob URLs and drops one prepare before worker admission; generated proxy responses may be held/altered' if ui_proof else 'main selects native worker; served-only pending-write hold and deliberately forged inner sender fixture; proxy may hold/alter generated responses'
     hold_next=[False];arrived=threading.Event();release=threading.Event();tamper=[None];previous_cipher=[None];previous_commit=[None]
     class Proxy(BaseHTTPRequestHandler):
         def log_message(self,*args):pass
@@ -138,7 +142,7 @@ def main():
             if self.headers.get('Host')!=f'127.0.0.1:{self.server.server_port}' or not self.path.startswith('/') or self.path.startswith('//') or any(k.lower()=='authorization' or k.lower().startswith('cf-') for k in self.headers):self.send_error(400);return
             cookie=SimpleCookie();cookie.load(self.headers.get('Cookie',''));v=cookie.get('synthetic_edge');subject=bindings.get(v.value if v else None)
             if self.command=='GET' and self.path in assets:
-                raw=assets[self.path];self.send_response(200);self.send_header('Content-Type','application/wasm' if self.path.endswith('.wasm') else 'text/javascript' if self.path.endswith('.js') else 'text/html');self.send_header('Content-Length',str(len(raw)));self.send_header('Cache-Control','no-store');self.send_header('Content-Security-Policy',"default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'");self.end_headers();self.wfile.write(raw);return
+                raw=assets[self.path];self.send_response(200);self.send_header('Content-Type','application/wasm' if self.path.endswith('.wasm') else 'text/javascript' if self.path.endswith('.js') else 'text/css' if self.path.endswith('.css') else 'text/html');self.send_header('Content-Length',str(len(raw)));self.send_header('Cache-Control','no-store');self.send_header('Content-Security-Policy',"default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; worker-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'");self.end_headers();self.wfile.write(raw);return
             size=int(self.headers.get('Content-Length','0'))
             if size<0 or size>98304:self.send_error(413);return
             body=self.rfile.read(size) if size else None
@@ -184,6 +188,11 @@ def main():
     try:
         start();assert direct('owner','POST','/v1/mls/reservations',{'room':'family','peer_actor':'bob'})[0]==201
         proxy=ThreadingHTTPServer(('127.0.0.1',0),Proxy);threading.Thread(target=proxy.serve_forever,daemon=True).start();url=f'http://127.0.0.1:{proxy.server_port}'
+        if ui_proof:
+            from native_chat_ui_checks import run_ui
+            run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper)
+            proof['passed']=True
+            return
         with sync_playwright() as pw:
             profiles=[work/'alice-profile',work/'bob-profile']
             for p in profiles:p.mkdir(mode=0o700)
