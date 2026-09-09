@@ -109,7 +109,7 @@ node experiments/device-keystore/node_modules/esbuild/bin/esbuild \
 The exact three-asset loopback test server supplies a restrictive self-only
 script/worker CSP, no unsafe-eval/CORS, exact Host/Origin/path checks, nosniff and
 no-store. Fixed files are bounded, owner/mode/single-link checked and opened without
-following symlinks; the bundled worker SHA must match `password-inventory.json`.
+following symlinks, with nonblocking open so a FIFO cannot hang before the regular-file check; the bundled worker SHA must match `password-inventory.json`.
 Owned temporary artifacts/profiles are retained privately; there is no archive
 pruning or deletion of unknown user files. Do not upload the retained browser
 profile as CI evidence; the workflow uploads only body-free `verification.json`.
@@ -123,9 +123,11 @@ unchanged. The bundle still includes code from the dependency graph; no claim of
 removing the resolved PQ dependencies is made. This is not a full-stack security
 audit. Browser memory and lock limitations must accompany the roundtrip result.
 
-Next qualify a maintained standard high-level recipient API for per-record
+Next qualify a maintained high-level authenticated record/session API for per-record
 protection after a bounded worker-only unlock, without exporting private material
-or assembling custom wrapping. If suitable, stage full provider/pins/exact outbox/
+or assembling custom wrapping. Public-recipient encryption alone does not authenticate
+state authorship; knowing a recipient permits creating another valid ciphertext.
+A recipient roundtrip cannot substitute for that separate requirement. If suitable, stage full provider/pins/exact outbox/
 cursor together outside IDB and atomically compare the prior encrypted record
 before commit. Lost reply must reconcile exact bytes; stale candidates retire,
 never roll back/re-encrypt. An archive-only roundtrip must not substitute for that

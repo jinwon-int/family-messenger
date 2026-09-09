@@ -11,7 +11,6 @@ import stat
 import tempfile
 import threading
 import time
-from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
 CSP = "default-src 'none'; script-src 'self'; worker-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'"
@@ -21,7 +20,7 @@ def safe_bytes(path, limit):
     for parent in path.parents:
         s = parent.lstat()
         assert stat.S_ISDIR(s.st_mode) and not s.st_mode & 0o022
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         s = os.fstat(fd)
         assert stat.S_ISREG(s.st_mode) and s.st_uid == os.geteuid() and s.st_nlink == 1
@@ -38,6 +37,7 @@ def main():
     parser.add_argument('--synthetic-only', action='store_true')
     args = parser.parse_args()
     assert args.synthetic_only, 'explicit generated-data acknowledgement required'
+    from playwright.sync_api import sync_playwright
     artifacts = ROOT / 'artifacts'
     for path in [artifacts, *artifacts.parents]:
         s = path.lstat()
