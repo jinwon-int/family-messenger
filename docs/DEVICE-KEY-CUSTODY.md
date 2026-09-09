@@ -189,6 +189,13 @@ uses a standard password capsule for a library-generated symmetric root and
 high-level secretstream records inside a worker. It qualifies a per-record API
 boundary, not native persistent provider protection, recovery or human use.
 
+The [native encrypted persistence driver](../experiments/device-keystore/NATIVE-VAULT.md)
+now protects the actual staged provider, accepted pins, outbox, cached results and
+native cursor in a separate synthetic IDB namespace. Exact encrypted-state CAS
+precedes output. It is an isolated worker entry; the compiled chat UI still uses
+its prior synthetic store. Human lock/unlock UX, recovery and deployment gates
+remain open.
+
 ## Primary sources consulted 2026-09-09
 
 - [WebAuthn Level 3 Recommendation, 2026-08-25, PRF extension](https://www.w3.org/TR/2026/REC-webauthn-3-20260825/#prf-extension): outputs are credential-scoped PRF results; API exposure and extension support are separate from app authentication policy.

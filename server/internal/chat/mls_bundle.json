@@ -30,8 +30,8 @@
       "file": "native-worker.js",
       "url": "/native-worker.js",
       "type": "text/javascript; charset=utf-8",
-      "bytes": 20503,
-      "sha256": "becf46c70e21be2c14f41c33767eb42d03314ec6612a28695a503d615d44e24b",
+      "bytes": 21655,
+      "sha256": "ca0f105d7afc5a0954e782548e3d09b2412fca3318bfae6e13515484b93ab18a",
       "source": "experiments/openmls-browser/web/native-worker.js"
     },
     {
