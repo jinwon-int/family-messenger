@@ -84,3 +84,9 @@ store rollback after restart, human recovery and replacement devices remain
 unqualified. Human keys/data, real CF login/settings, Yukson cutover, all12 fleet
 credentials and existing services/backups remain unchanged. No new dependency is
 installed or copied into the product bundle by this unit.
+
+Review reproduced two low UI contract defects: Refresh before any session, and an
+enabled Send action during asynchronous polling. The live guard now handles no
+session, and action controls render disabled synchronously while busy. The proof
+waits for the actual committed room binding (hidden Join), since disabled Join
+also indicates work in progress. See `vault-ui-evidence.json` for final receipts.

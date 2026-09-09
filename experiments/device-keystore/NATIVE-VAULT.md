@@ -113,3 +113,7 @@ peaked at 5,636,096 bytes; browser/JS heap and the separately admitted 256 MiB K
 scratch are excluded. The driver bundle is 585,011 bytes / 206,769 gzip. These
 measurements describe generated two-member state, not worst-case records or mobile
 acceptance. See `native-vault-evidence.json` for exact receipts and limitations.
+
+The follow-up [isolated custody UI](../openmls-browser/VAULT-UI.md) supplies explicit
+unlock/lock and actual DOM delivery/restart tests for this unchanged driver. Its
+vault assets are still test-proxy-served; native Go packaging is a separate gate.
