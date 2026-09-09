@@ -37,7 +37,7 @@ def main():
     args.add_argument('--policy-binary', required=True, type=Path)
     args = args.parse_args()
     history_proof=args.history or args.history_ui
-    assert not history_proof or (args.vault_ui and not args.embedded)
+    assert not history_proof or (args.vault_ui and (not args.embedded or (args.history_ui and not args.history)))
     vault_ui = args.vault_ui
     vault = args.vault
     control_proof = args.controls
@@ -86,7 +86,7 @@ def main():
         log = work / 'server.log'
         output = log.open('ab')
         offset = log.stat().st_size
-        process = subprocess.Popen([str(binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--listen', address]+(['--synthetic-vault-ui' if vault_ui else '--synthetic-mls-ui'] if embedded else []), stderr=output, stdout=subprocess.DEVNULL)
+        process = subprocess.Popen([str(binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--listen', address]+(['--synthetic-history-ui' if args.history_ui else '--synthetic-vault-ui' if vault_ui else '--synthetic-mls-ui'] if embedded else []), stderr=output, stdout=subprocess.DEVNULL)
         until = time.monotonic() + 10
         while time.monotonic() < until:
             assert process.poll() is None, 'server exited'
@@ -134,15 +134,16 @@ def main():
     if embedded and vault_ui:
         # Expected bytes are independent source inputs. Proxy only forwards;
         # every manifest route is also requested before any identity revocation.
-        pin = json.loads((root/'server/internal/chat/vault_bundle.json').read_text())
+        manifest_path=root/('server/internal/chat/history_bundle.json' if args.history_ui else 'server/internal/chat/vault_bundle.json')
+        pin = json.loads(manifest_path.read_text())
         assets = {}
         for e in pin['files']:
             source = args.bundle/e['source'][7:] if e['source'].startswith('bundle:') else root/e['source']
             raw = source.read_bytes()
             assert len(raw)==e['bytes'] and hashlib.sha256(raw).hexdigest()==e['sha256']
             assets[e['url']] = raw
-        proof['manifest_sha256']=hashlib.sha256((root/'server/internal/chat/vault_bundle.json').read_bytes()).hexdigest()
-    if history_proof:
+        proof['manifest_sha256']=hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    if history_proof and not embedded:
         from password_worker_smoke import safe_bytes
         inventory=json.loads(safe_bytes(root/'experiments/device-keystore/history-inventory.json',65536))
         for name in ('history-worker.js','history-export-worker.js'):
@@ -255,10 +256,10 @@ def main():
                     response=connection.getresponse();raw=response.read();connection.close()
                     assert response.status==expected,(path,response.status)
                     if expected==200:assert raw==assets[path]
-            proof['checks']['all_15_native_routes_require_signed_admission']=True
+            proof['checks']['all_'+str(len(assets))+'_native_routes_require_signed_admission']=True
         if ui_proof:
             from native_chat_ui_checks import run_ui
-            run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=url+('/vault/' if vault_ui else '/encrypted/') if embedded else url,restart=(lambda:(stop(),start())) if embedded else None,vault=vault_ui,history=history_proof,history_ui=args.history_ui)
+            run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=url+('/vault/' if vault_ui else '/encrypted/') if embedded else url,restart=(lambda:(stop(),start())) if embedded else None,vault=vault_ui,history=history_proof,history_ui=args.history_ui,history_embedded=embedded and args.history_ui)
             if embedded:
                 proof['ui_packaging']='compiled native Go server assets; proxy only injects generated assertions'
                 proof['native_embedded_ui']=True

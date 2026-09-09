@@ -19,6 +19,10 @@ var encryptedManifest []byte
 
 //go:embed vault_bundle.json
 var vaultManifest []byte
+
+//go:embed history_bundle.json
+var historyManifest []byte
+var compiledHistoryAssets fs.FS
 var compiledVaultAssets fs.FS
 var compiledEncryptedAssets fs.FS // Set only by the explicit synthetic_mls build.
 
@@ -64,6 +68,18 @@ var vaultPaths = func() map[string]string {
 	return out
 }()
 
+var historyPaths = func() map[string]string {
+	out := make(map[string]string)
+	for file, path := range vaultPaths {
+		out[file] = path
+	}
+	for _, file := range []string{"history.css", "history-ui.js", "history-client.js", "history-worker.js", "history-export-worker.js"} {
+		out[file] = "/" + file
+	}
+	out["history.html"] = "/history/"
+	return out
+}()
+
 func loadEncryptedAssets(source fs.FS, manifest []byte) (*EncryptedAssets, error) {
 	return loadAssetProfile(source, manifest, encryptedPaths, 1)
 }
@@ -101,9 +117,9 @@ func loadAssetProfile(source fs.FS, manifest []byte, paths map[string]string, ve
 		}
 		kind := "text/javascript; charset=utf-8"
 		switch entry.File {
-		case "chat.html", "vault-chat.html":
+		case "chat.html", "vault-chat.html", "history.html":
 			kind = "text/html; charset=utf-8"
-		case "chat.css":
+		case "chat.css", "history.css":
 			kind = "text/css; charset=utf-8"
 		case "pkg.wasm":
 			kind = "application/wasm"
@@ -140,8 +156,11 @@ func LoadEncryptedAssets() (*EncryptedAssets, error) {
 func LoadVaultAssets() (*EncryptedAssets, error) {
 	return loadAssetProfile(compiledVaultAssets, vaultManifest, vaultPaths, 2)
 }
+func LoadHistoryAssets() (*EncryptedAssets, error) {
+	return loadAssetProfile(compiledHistoryAssets, historyManifest, historyPaths, 3)
+}
 func NewEncryptedAccessHandler(store *Store, authority *access.Authority, bundle *EncryptedAssets) (http.Handler, error) {
-	if bundle == nil || (bundle.version != 1 && bundle.version != 2) || (bundle.version == 1 && len(bundle.files) != len(encryptedPaths)) || (bundle.version == 2 && len(bundle.files) != len(vaultPaths)) {
+	if bundle == nil || (bundle.version != 1 && bundle.version != 2 && bundle.version != 3) || (bundle.version == 1 && len(bundle.files) != len(encryptedPaths)) || (bundle.version == 2 && len(bundle.files) != len(vaultPaths)) || (bundle.version == 3 && len(bundle.files) != len(historyPaths)) {
 		return nil, ErrInvalid
 	}
 	handler, e := NewAccessHandler(store, authority)

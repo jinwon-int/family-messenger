@@ -151,7 +151,7 @@ func testAssetAdmissionRoutingAndLegacyPreservation(t *testing.T, pin []byte, pa
 			t.Fatal("CSP")
 		}
 	}
-	for _, path := range []string{"/encrypted", "/%65ncrypted/", "/encrypted/?v=1", "/encrypted/?", "/pkg/unknown.wasm", "/encrypted/../chat.html", "/vault", "/%76ault/", "/vault/?", "/vault/?v=1", "/vault/../vault-chat.js"} {
+	for _, path := range []string{"/encrypted", "/%65ncrypted/", "/encrypted/?v=1", "/encrypted/?", "/pkg/unknown.wasm", "/encrypted/../chat.html", "/vault", "/%76ault/", "/vault/?", "/vault/?v=1", "/vault/../vault-chat.js", "/history", "/%68istory/", "/history/?", "/history/?v=1", "/history/../history-ui.js", "/history-forge-worker.js"} {
 		code, _ := accessRequest(t, server, token, "GET", path, nil, nil)
 		if code == 200 {
 			t.Fatal("alias served", path)
@@ -228,6 +228,55 @@ func TestVaultAssetProfileCannotSubstituteLegacy(t *testing.T) {
 		files, raw := assetProfileFixture(t, vaultManifest)
 		files[name].Data[0] ^= 1
 		if _, err := loadAssetProfile(files, raw, vaultPaths, 2); err == nil {
+			t.Fatal("tamper", name)
+		}
+	}
+}
+
+func TestHistoryAssetIntegrityAndClosedManifest(t *testing.T) {
+	testAssetIntegrityAndClosedManifest(t, historyManifest, historyPaths, 3)
+}
+func TestHistoryAssetAdmissionRoutingAndLegacyPreservation(t *testing.T) {
+	testAssetAdmissionRoutingAndLegacyPreservation(t, historyManifest, historyPaths, 3)
+}
+func TestCompiledHistoryBundleSelectedOnlyWhenPresent(t *testing.T) {
+	bundle, err := LoadHistoryAssets()
+	if compiledHistoryAssets == nil {
+		if err == nil || bundle != nil {
+			t.Fatal("unbundled history accepted")
+		}
+		return
+	}
+	if err != nil || len(bundle.files) != 21 || bundle.version != 3 {
+		t.Fatal(err)
+	}
+	if _, ok := bundle.files["/history-forge-worker.js"]; ok {
+		t.Fatal("test code included")
+	}
+	if !bytes.HasPrefix(bundle.files["/pkg/family_mls_browser_experiment_bg.wasm"].data, []byte{0, 'a', 's', 'm', 1, 0, 0, 0}) {
+		t.Fatal("not WASM1")
+	}
+}
+func TestHistoryProfileRejectsSubstitutionAndRecoveryAssetTamper(t *testing.T) {
+	files, raw := assetProfileFixture(t, historyManifest)
+	for _, profile := range []struct {
+		paths   map[string]string
+		version int
+	}{{encryptedPaths, 1}, {vaultPaths, 2}} {
+		if _, err := loadAssetProfile(files, raw, profile.paths, profile.version); err == nil {
+			t.Fatal("history substituted older profile")
+		}
+	}
+	for _, pin := range [][]byte{encryptedManifest, vaultManifest} {
+		files, raw := assetProfileFixture(t, pin)
+		if _, err := loadAssetProfile(files, raw, historyPaths, 3); err == nil {
+			t.Fatal("older profile substituted history")
+		}
+	}
+	for _, name := range []string{"history.html", "history.css", "history-ui.js", "history-client.js", "history-worker.js", "history-export-worker.js", "age-notices.txt", "sodium-notices.txt"} {
+		files, raw := assetProfileFixture(t, historyManifest)
+		files[name].Data[0] ^= 1
+		if _, err := loadAssetProfile(files, raw, historyPaths, 3); err == nil {
 			t.Fatal("tamper", name)
 		}
 	}

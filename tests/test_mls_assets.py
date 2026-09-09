@@ -16,17 +16,18 @@ PIN = json.loads(m.MANIFEST.read_text())
 
 class AssetPreparationTests(unittest.TestCase):
     vault = False
+    history = False
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.output = self.root / ('server/internal/chat/vaultassets' if self.vault else 'server/internal/chat/mlsassets')
+        self.output = self.root / ('server/internal/chat/historyassets' if self.history else 'server/internal/chat/vaultassets' if self.vault else 'server/internal/chat/mlsassets')
         self.output.parent.mkdir(parents=True)
-        self.manifest = self.output.parent / ('vault_bundle.json' if self.vault else 'mls_bundle.json')
+        self.manifest = self.output.parent / ('history_bundle.json' if self.history else 'vault_bundle.json' if self.vault else 'mls_bundle.json')
         self.bundle = self.root / 'bundle'
         self.bundle.mkdir()
         self.sources = []
-        pin = json.loads((m.ROOT/'server/internal/chat/vault_bundle.json').read_text()) if self.vault else json.loads(json.dumps(PIN))
+        pin = json.loads((m.ROOT/'server/internal/chat/history_bundle.json').read_text()) if self.history else json.loads((m.ROOT/'server/internal/chat/vault_bundle.json').read_text()) if self.vault else json.loads(json.dumps(PIN))
         for entry in pin['files']:
             data = ('synthetic ' + entry['file']).encode()
             path = self.bundle / entry['source'][7:] if entry['source'].startswith('bundle:') else self.root / entry['source']
@@ -44,17 +45,17 @@ class AssetPreparationTests(unittest.TestCase):
 
     def rejected(self):
         with self.assertRaises((OSError, ValueError)):
-            m.prepare(self.bundle, vault=self.vault)
+            m.prepare(self.bundle, vault=self.vault,history=self.history)
 
     def test_exact_create_reuse_and_check(self):
         with self.assertRaises(ValueError):
-            m.prepare(self.bundle, True, vault=self.vault)
-        m.prepare(self.bundle, vault=self.vault)
+            m.prepare(self.bundle, True, vault=self.vault,history=self.history)
+        m.prepare(self.bundle, vault=self.vault,history=self.history)
         before = {p.name: (p.stat().st_ino, p.read_bytes()) for p in self.output.iterdir()}
         self.assertEqual(self.output.stat().st_mode & 0o777, 0o700)
         self.assertTrue(all(p.stat().st_mode & 0o777 == 0o600 for p in self.output.iterdir()))
-        m.prepare(self.bundle, True, vault=self.vault)
-        m.prepare(self.bundle, vault=self.vault)
+        m.prepare(self.bundle, True, vault=self.vault,history=self.history)
+        m.prepare(self.bundle, vault=self.vault,history=self.history)
         self.assertEqual(before, {p.name: (p.stat().st_ino, p.read_bytes()) for p in self.output.iterdir()})
 
     def test_wrong_source_hash_never_creates_output(self):
@@ -83,11 +84,11 @@ class AssetPreparationTests(unittest.TestCase):
         link = self.root / 'bundle-link'
         link.symlink_to(self.bundle, target_is_directory=True)
         with self.assertRaises(ValueError):
-            m.prepare(link, vault=self.vault)
+            m.prepare(link, vault=self.vault,history=self.history)
         self.assertFalse(self.output.exists())
 
     def test_unknown_corrupt_unsafe_output_retained(self):
-        m.prepare(self.bundle, vault=self.vault)
+        m.prepare(self.bundle, vault=self.vault,history=self.history)
         unknown = self.output / 'unknown'
         unknown.write_bytes(b'retain')
         self.rejected()
@@ -127,7 +128,7 @@ class AssetPreparationTests(unittest.TestCase):
             self.assertFalse(self.output.exists())
         finally:
             os.close(fd)
-        m.prepare(self.bundle, vault=self.vault)
+        m.prepare(self.bundle, vault=self.vault,history=self.history)
 
     def test_unsafe_lock_and_duplicate_manifest_denied(self):
         lock = self.output.parent / '.mls-build.lock'
@@ -149,7 +150,7 @@ class AssetPreparationTests(unittest.TestCase):
             self.rejected()
             self.assertFalse(self.output.exists())
         self.manifest.write_bytes(original)
-        m.prepare(self.bundle,vault=self.vault)
+        m.prepare(self.bundle,vault=self.vault,history=self.history)
         self.assertTrue(self.output.exists())
 
     def test_symlinked_lock_parent_rejects_before_creating_files(self):
@@ -198,3 +199,29 @@ class VaultAssetPreparationTests(AssetPreparationTests):
         m.prepare(self.bundle, vault=True)
         self.assertEqual((legacy/'retained').read_bytes(), b'previous prepared bundle')
         self.assertEqual(len(list(self.output.iterdir())),15)
+
+class HistoryAssetPreparationTests(AssetPreparationTests):
+    history = True
+
+    def test_history_profiles_and_test_code_are_not_substitutable(self):
+        original=self.manifest.read_bytes()
+        for field,value in [('version',2),('source','tests/fixtures/native-history/forge-worker.js'),('url','/history-forge-worker.js')]:
+            pin=json.loads(original)
+            if field=='version':pin[field]=value
+            else:pin['files'][-1][field]=value
+            self.manifest.write_text(json.dumps(pin,indent=2)+'\n')
+            self.rejected();self.assertFalse(self.output.exists())
+        self.manifest.write_bytes(original)
+        for name in ('mlsassets','vaultassets'):
+            old=self.output.parent/name;old.mkdir(mode=0o700);(old/'retained').write_bytes(b'previous bundle')
+        m.prepare(self.bundle,history=True)
+        self.assertEqual(len(list(self.output.iterdir())),21)
+        for name in ('mlsassets','vaultassets'):self.assertEqual((self.output.parent/name/'retained').read_bytes(),b'previous bundle')
+
+    def test_history_workers_and_private_output_links_denied(self):
+        source=next(p for p in self.sources if p.name=='history-export-worker.js')
+        saved=source.read_bytes();source.write_bytes(b'X'*len(saved));self.rejected();self.assertFalse(self.output.exists());source.write_bytes(saved)
+        m.prepare(self.bundle,history=True)
+        p=self.output/'history-worker.js';retained=self.root/'retained-worker';p.rename(retained);p.symlink_to(retained)
+        self.rejected();self.assertTrue(p.is_symlink());self.assertTrue(retained.exists())
+        with self.assertRaises(ValueError):m.prepare(self.bundle,vault=True,history=True)
