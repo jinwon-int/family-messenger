@@ -25,13 +25,15 @@ from playwright.sync_api import sync_playwright, expect, Error as BrowserError
 
 def main():
     args = argparse.ArgumentParser()
+    args.add_argument('--controls', action='store_true')
     args.add_argument('--bundle', required=True, type=Path)
     args.add_argument('--binary', required=True, type=Path)
     args.add_argument('--policy-binary', required=True, type=Path)
     args = args.parse_args()
+    control_proof = args.controls
     binary, policy = args.binary.resolve(strict=True), args.policy_binary.resolve(strict=True)
     root = Path(__file__).resolve().parents[1]
-    work = Path(tempfile.mkdtemp(prefix='native-encrypted-browser-', dir=root / 'artifacts'))
+    work = Path(tempfile.mkdtemp(prefix='native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
     state, auth, proposals = [work / n for n in ('state', 'auth', 'proposals')]
     for d in (state, auth, proposals):
         d.mkdir(mode=0o700)
@@ -116,12 +118,18 @@ def main():
     assert last.count(needle)==1;last=last.replace(needle,needle+b"if(arg.fault==='forged-inner')f.sender_actor='bob';")
     raw=first+last;needle=b"s.put(r,'state');if(fault==='abort-after-write')"
     assert raw.count(needle)==1;raw=raw.replace(needle,b"s.put(r,'state');if(fault==='crash-before-complete'){self.postMessage({test_crash_boundary:true});while(true){}}if(fault==='abort-after-write')")
+    if control_proof:
+        raw=raw.replace(b'let db,identity,room,retired=false;',b'let db,identity,room,retired=false;let testHoldSync=false;')
+        needle=b'async function dispatch(method,arg){'
+        assert raw.count(needle)==1;raw=raw.replace(needle,needle+b"if(method==='test-hold-sync'){testHoldSync=true;return null;}")
+        needle=b'return status(r);});\n}\nasync function dispatch'
+        assert raw.count(needle)==1;raw=raw.replace(needle,b"return status(r);},testHoldSync?'crash-before-complete':'');\n}\nasync function dispatch")
     assets['/native-worker.js']=raw
     needle=b"    if (data.id !== id) return;";assert assets['/main.js'].count(needle)==1
     assets['/main.js']=assets['/main.js'].replace(needle,b"    if(data.test_crash_boundary)window.test_crash_boundary=true;\n"+needle)
     proof['assets_sha256']={name:hashlib.sha256(raw).hexdigest() for name,raw in assets.items()}
     proof['test_instrumentation']='main selects native worker; served-only pending-write hold and deliberately forged inner sender fixture; proxy may hold/alter generated responses'
-    hold_next=[False];arrived=threading.Event();release=threading.Event();tamper=[None];previous_cipher=[None]
+    hold_next=[False];arrived=threading.Event();release=threading.Event();tamper=[None];previous_cipher=[None];previous_commit=[None]
     class Proxy(BaseHTTPRequestHandler):
         def log_message(self,*args):pass
         def do_GET(self):self.forward()
@@ -146,6 +154,16 @@ def main():
                     data=json.loads(raw)
                     for event in data:
                         q=event['request']
+                        if q['kind']=='commit' and tamper[0].startswith('control-'):
+                            kind=tamper[0][8:]
+                            if kind=='cipher':
+                                b=bytearray(base64.b64decode(q['payload']));b[-1]^=1;q['payload']=base64.b64encode(b).decode()
+                            elif kind=='id':q['client_id']='update-substituted'
+                            elif kind=='replay':q['payload']=previous_commit[0]
+                            elif kind=='group':q['group_id']='ff'*32
+                            elif kind=='device':q['device_id']='bob-first'
+                            elif kind=='target':q['target_device']='alice-first'
+                            event['sha256']=hashlib.sha256(json.dumps(q,separators=(',',':')).encode()).hexdigest()
                         if q['kind']=='application':
                             if tamper[0]=='cipher':
                                 b=bytearray(base64.b64decode(q['payload']));b[-1]^=1;q['payload']=base64.b64encode(b).decode()
@@ -171,7 +189,7 @@ def main():
             for p in profiles:p.mkdir(mode=0o700)
             contexts=[pw.chromium.launch_persistent_context(str(p)) for p in profiles]
             proof['browser']=contexts[0].browser.version;proof['max_worker_linear_memory_bytes']=0
-            databases=['family-mls-native-synthetic-alice','family-mls-native-synthetic-bob']
+            databases=['family-mls-native-control-synthetic-alice','family-mls-native-control-synthetic-bob']
             def cookie(i,value=None):contexts[i].add_cookies([{'name':'synthetic_edge','value':value or cookies[i],'url':url,'httpOnly':True,'sameSite':'Strict'}])
             for i in range(2):cookie(i)
             def page(i):
@@ -216,6 +234,63 @@ def main():
             rpc(b,'advance');rpc(b,'flush');rpc(b,'sync');rpc(a,'sync')
             assert rpc(a,'status')['phase']==rpc(b,'status')['phase']=='ready'
             proof['checks']['native_keypackage_welcome_ack_actual_library_group']=True
+            if control_proof:
+                def update(p,id,fault='',reject=False):return rpc(p,'update',{'id':id,'fault':fault},reject)
+                before=digest(a,0);rpc(a,'update',{'id':'update-bad','extra':True},reject=True);assert digest(a,0)==before;reopen(a,0)
+                before=digest(b,1);update(b,'update-peer',reject=True);assert digest(b,1)==before;reopen(b,1)
+                before=digest(a,0);update(a,'update-first',fault='abort-after-write',reject=True);assert digest(a,0)==before;reopen(a,0)
+                proof['checks']['control_malformed_wrong_creator_and_aborted_candidate_denied']=True
+                # Two tabs stage one immutable commit, retaining the old epoch.
+                tab=page(0);init(tab,0)
+                a.evaluate('()=>{window.pending=call("device","update",{id:"update-first",fault:""})}')
+                update(tab,'update-first');assert a.evaluate('window.pending')['ok']
+                before_pending=digest(a,0,'pending');assert rpc(a,'status')['epoch']==1
+                prepare(b,'app-before-update',b'synthetic old epoch while pending');rpc(b,'flush');rpc(b,'sync')
+                got=rpc(a,'sync');assert got['epoch']==1 and got['pending']['client_id']=='update-first'
+                assert base64.b64decode(got['messages'][-1]['payload'])==b'synthetic old epoch while pending' and digest(a,0,'pending')==before_pending
+                proof['checks']['pending_commit_persists_old_epoch_and_accepts_preceding_peer_application']=True
+                prepare(b,'app-before-echo',b'synthetic old epoch before own echo');rpc(b,'flush');rpc(b,'sync')
+                first=rpc(a,'flush');assert rpc(tab,'flush')['seq']==first['seq']
+                assert rpc(a,'status')['epoch']==1
+                got=rpc(a,'sync');assert got['epoch']==2 and got['phase']=='ack' and got['pending'] is None
+                assert base64.b64decode(got['messages'][-1]['payload'])==b'synthetic old epoch before own echo'
+                before=digest(a,0);rpc(tab,'sync');rpc(a,'sync');assert digest(a,0)==before
+                proof['checks']['ordered_self_echo_merges_after_old_traffic_once_across_tabs']=True
+                before=digest(b,1)
+                for kind in ('cipher','id','group','device','target'):
+                    tamper[0]='control-'+kind;rpc(b,'sync',reject=True);assert digest(b,1)==before;tamper[0]=None;reopen(b,1)
+                proof['checks']['authenticated_control_aad_cipher_and_outer_identity_deny_without_state_loss']=True
+                before=digest(b,1);rpc(b,'test-hold-sync')
+                b.evaluate('()=>{window.pending=call("device","sync",null).catch(()=>null)}');b.wait_for_function('()=>window.test_crash_boundary===true',timeout=5000)
+                crash(1);b=page(1);init(b,1);assert digest(b,1)==before
+                proof['checks']['browser_crash_during_peer_control_merge_retains_full_old_state']=True
+                got=rpc(b,'sync');assert got['epoch']==2 and got['phase']=='ack'
+                before=digest(b,1);crash(1);b=page(1);init(b,1);assert digest(b,1)==before
+                before=digest(a,0);prepare(a,'app-before-ack',b'premature',reject=True);assert digest(a,0)==before;reopen(a,0)
+                rpc(b,'advance');rpc(b,'flush');rpc(b,'sync');rpc(a,'sync')
+                assert rpc(a,'status')['phase']==rpc(b,'status')['phase']=='ready'
+                proof['checks']['peer_control_merge_restart_and_ack_barrier']=True
+                previous_commit[0]=next(e['request']['payload'] for e in direct('owner','GET','/v1/mls/rooms/family/log?after=0')[1] if e['request']['kind']=='commit')
+                before=digest(a,0);update(a,'update-first');assert digest(a,0)==before
+                # A new update's lost response followed by actual browser SIGKILL
+                # must load its pending provider and retry the exact native bytes.
+                update(a,'update-second');before_pending=digest(a,0,'pending');before_crypto=digest(a,0,'crypto')
+                hold_next[0]=True;arrived.clear();release.clear()
+                a.evaluate('()=>{window.pending=call("device","flush",null).catch(()=>null)}');assert arrived.wait(3)
+                crash(0);release.set();a=page(0);got=init(a,0)
+                assert got['epoch']==2 and got['pending']['client_id']=='update-second'
+                assert digest(a,0,'pending')==before_pending and digest(a,0,'crypto')==before_crypto
+                rpc(a,'flush');rpc(a,'sync');assert rpc(a,'status')['epoch']==3
+                proof['checks']['control_lost_reply_browser_restart_exact_pending_commit_retry']=True
+                before=digest(b,1);tamper[0]='control-replay';rpc(b,'sync',reject=True);assert digest(b,1)==before;tamper[0]=None;reopen(b,1)
+                rpc(b,'sync');rpc(b,'advance');rpc(b,'flush');rpc(b,'sync');rpc(a,'sync')
+                proof['checks']['prior_epoch_commit_replay_denied_original_then_applies']=True
+                before=digest(a,0);update(a,'update-second');assert digest(a,0)==before
+                assert rpc(a,'status')['epoch']==rpc(b,'status')['epoch']==3
+                prepare(a,'app-new-epoch',b'synthetic new epoch');rpc(a,'flush');rpc(a,'sync');got=rpc(b,'sync')
+                assert base64.b64decode(got['messages'][-1]['payload'])==b'synthetic new epoch'
+                proof['checks']['repeated_updates_and_new_epoch_application_delivery']=True
+                arrived.clear();release.clear()
             message='synthetic native encrypted text / 한글'.encode();prepare(a,'app-text',message);rpc(a,'flush');rpc(a,'sync');got=rpc(b,'sync');assert base64.b64decode(got['messages'][-1]['payload'])==message
             previous_cipher[0]=next(e['request']['payload'] for e in direct('owner','GET','/v1/mls/rooms/family/log?after=0')[1] if e['request']['kind']=='application')
             file=bytes(range(256))*8;prepare(b,'app-file',file,'file');rpc(b,'flush');rpc(b,'sync');got=rpc(a,'sync');assert base64.b64decode(got['messages'][-1]['payload'])==file and got['messages'][-1]['media_type']=='file'
@@ -279,7 +354,10 @@ def main():
             before_crypto=digest(b,1,'crypto');before_pending=digest(b,1,'pending')
             room_status=direct('owner','GET','/v1/mls/rooms/family/status')[1]
             q={'client_id':'opaque-update','device_id':'alice-first','group_id':room_status['group_id'],'kind':'commit','expected_revision':room_status['revision'],'epoch':room_status['epoch'],'target_device':'bob-first','payload':base64.b64encode(b'synthetic opaque future control').decode()}
-            assert direct('owner','POST','/v1/mls/rooms/family/log',q)[0]==201
+            if control_proof:
+                update(a,'update-stale-peer');rpc(a,'flush');rpc(a,'sync')
+                assert rpc(a,'status')['epoch']==4
+            else:assert direct('owner','POST','/v1/mls/rooms/family/log',q)[0]==201
             rpc(b,'flush',reject=True);reopen(b,1);assert rpc(b,'status')['pending']=={'client_id':'app-stale','retired':True}
             assert digest(b,1,'crypto')==before_crypto and digest(b,1,'pending')==before_pending
             prepare(b,'app-stale',b'synthetic stale pending',reject=True);reopen(b,1)

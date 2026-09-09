@@ -174,3 +174,32 @@ pub fn staged_trusted_apply(bytes: &[u8], identity: &str, method: &str, input: &
     trusted_members(&load(&state,identity)?,peer,key,false)?;
     Ok(Transition{state,output,epoch:epoch_of(&device)})
 }
+
+/// Fixed-pair rekey controls; complete candidate state is never released live.
+#[wasm_bindgen]
+pub fn staged_control_apply(bytes:&[u8],identity:&str,method:&str,input:&[u8],peer:&str,key:&[u8],aad:&[u8])->Result<Transition,JsValue> {
+    if input.len()>MAX_WIRE || aad.is_empty() || aad.len()>2048 {return Err(rejected(()));}
+    let mut device=load(bytes,identity)?;
+    trusted_members(&device,peer,key,true)?;
+    let before=device.group.as_ref().ok_or_else(||rejected(()))?.epoch().as_u64();
+    let output=match method {
+        "update" if identity=="alice" && input.is_empty()=>device.stage_update_inner(aad)?,
+        "merge_update" if identity=="alice" && input.is_empty()=>{device.merge_update_inner()?;vec![]},
+        "peer_update" if identity=="bob"=>{device.peer_update_inner(input,peer,key,aad)?;vec![]},
+        _=>return Err(rejected(())),
+    };
+    if output.len()>MAX_WIRE {return Err(rejected(()));}
+    let group=device.group.as_ref().ok_or_else(||rejected(()))?;
+    let expected=if method=="update" {before} else {before.checked_add(1).ok_or_else(||rejected(()))?};
+    if group.epoch().as_u64()!=expected || group.pending_commit().is_some()!=(method=="update") {return Err(rejected(()));}
+    trusted_members(&device,peer,key,true)?;
+    let state=save(&device,identity)?;
+    let restored=load(&state,identity)?;
+    trusted_members(&restored,peer,key,true)?;
+    if restored.group.as_ref().ok_or_else(||rejected(()))?.pending_commit().is_some()!=(method=="update") {return Err(rejected(()));}
+    Ok(Transition{state,output,epoch:epoch_of(&device)})
+}
+#[wasm_bindgen]
+pub fn staged_pending_commit(bytes:&[u8],identity:&str)->Result<bool,JsValue> {
+    Ok(load(bytes,identity)?.group.as_ref().map(|g|g.pending_commit().is_some()).unwrap_or(false))
+}

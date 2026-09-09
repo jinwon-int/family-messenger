@@ -67,3 +67,39 @@ impl Device {
         }
     }
 }
+
+impl Device {
+    // Rekey the leaf's encryption material, retaining independently pinned signing
+    // keys. Do not merge here: old-epoch inbound traffic may precede acceptance.
+    pub(crate) fn stage_update_inner(&mut self, aad: &[u8]) -> Result<Vec<u8>, JsValue> {
+        let group=self.group.as_mut().ok_or_else(||rejected(()))?;
+        if group.pending_commit().is_some() || group.pending_proposals().next().is_some() {return Err(rejected(()));}
+        group.set_aad(aad.to_vec());
+        let bundle=group.self_update(&self.provider,&self.signer,LeafNodeParameters::default()).map_err(rejected)?;
+        if bundle.welcome().is_some() {return Err(rejected(()));}
+        bundle.commit().tls_serialize_detached().map_err(rejected)
+    }
+    pub(crate) fn merge_update_inner(&mut self) -> Result<(),JsValue> {
+        let group=self.group.as_mut().ok_or_else(||rejected(()))?;
+        let commit=group.pending_commit().ok_or_else(||rejected(()))?;
+        if commit.queued_proposals().next().is_some() {return Err(rejected(()));}
+        group.merge_pending_commit(&self.provider).map_err(rejected)
+    }
+    pub(crate) fn peer_update_inner(&mut self,bytes:&[u8],actor:&str,key:&[u8],aad:&[u8])->Result<(),JsValue> {
+        bounded(bytes,MAX_WIRE)?;
+        let expected=expected(actor,key)?;
+        let message=MlsMessageIn::tls_deserialize_exact_bytes(bytes).map_err(rejected)?.try_into_protocol_message().map_err(rejected)?;
+        let group=self.group.as_mut().ok_or_else(||rejected(()))?;
+        if group.pending_commit().is_some() {return Err(rejected(()));}
+        let processed=group.process_message(&self.provider,message).map_err(rejected)?;
+        let Sender::Member(index)=processed.sender() else {return Err(rejected(()));};
+        let member=group.members().find(|m|m.index==*index).ok_or_else(||rejected(()))?;
+        if processed.credential()!=&expected.credential || member.credential!=expected.credential || member.signature_key!=key
+            || processed.aad()!=aad {return Err(rejected(()));}
+        let ProcessedMessageContent::StagedCommitMessage(commit)=processed.into_content() else {return Err(rejected(()));};
+        // Only a path rekey of the fixed pair. All membership/PSK/context and
+        // other proposals require a separate application authorization contract.
+        if commit.queued_proposals().next().is_some() {return Err(rejected(()));}
+        group.merge_staged_commit(&self.provider,*commit).map_err(rejected)
+    }
+}

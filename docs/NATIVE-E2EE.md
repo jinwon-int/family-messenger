@@ -340,3 +340,9 @@ now joins initial trusted group setup and application ciphertext to the native
 log in two disposable browsers. Actual MLS sender/inner/outer binding, full-state
 outbox/cursor and crash retry are checked. This remains a synthetic worker proof;
 subsequent commits, product UI and human-use acceptance remain outstanding.
+
+The subsequent fixed-pair encryption rekey adapter is documented in
+[Native controls](../experiments/openmls-browser/NATIVE-CONTROLS.md). It retains
+old-epoch inbound processing until the accepted ordered own commit, using vetted
+OpenMLS pending/merge APIs. It does not replace signing keys or add devices, and
+does not complete the human-use acceptance gates.
