@@ -25,6 +25,7 @@ from playwright.sync_api import sync_playwright, expect, Error as BrowserError
 
 def main():
     args = argparse.ArgumentParser()
+    args.add_argument('--history', action='store_true')
     args.add_argument('--vault-ui', action='store_true')
     args.add_argument('--vault', action='store_true')
     args.add_argument('--embedded', action='store_true')
@@ -34,6 +35,8 @@ def main():
     args.add_argument('--binary', required=True, type=Path)
     args.add_argument('--policy-binary', required=True, type=Path)
     args = args.parse_args()
+    history_proof=args.history
+    assert not history_proof or (args.vault_ui and not args.embedded)
     vault_ui = args.vault_ui
     vault = args.vault
     control_proof = args.controls
@@ -45,7 +48,7 @@ def main():
     assert not (control_proof and ui_proof)
     binary, policy = args.binary.resolve(strict=True), args.policy_binary.resolve(strict=True)
     root = Path(__file__).resolve().parents[1]
-    work = Path(tempfile.mkdtemp(prefix='native-vault-ui-' if vault_ui else 'native-vault-control-' if vault and control_proof else 'native-vault-browser-' if vault else 'native-embedded-ui-' if embedded else 'native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
+    work = Path(tempfile.mkdtemp(prefix='native-history-' if history_proof else 'native-vault-ui-' if vault_ui else 'native-vault-control-' if vault and control_proof else 'native-vault-browser-' if vault else 'native-embedded-ui-' if embedded else 'native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
     state, auth, proposals = [work / n for n in ('state', 'auth', 'proposals')]
     for d in (state, auth, proposals):
         d.mkdir(mode=0o700)
@@ -138,6 +141,15 @@ def main():
             assert len(raw)==e['bytes'] and hashlib.sha256(raw).hexdigest()==e['sha256']
             assets[e['url']] = raw
         proof['manifest_sha256']=hashlib.sha256((root/'server/internal/chat/vault_bundle.json').read_bytes()).hexdigest()
+    if history_proof:
+        from password_worker_smoke import safe_bytes
+        inventory=json.loads(safe_bytes(root/'experiments/device-keystore/history-inventory.json',65536))
+        for name in ('history-worker.js','history-export-worker.js'):
+            raw=safe_bytes(root/'experiments/device-keystore/bundle'/name,1024*1024)
+            assert len(raw)==inventory['bundles'][name]['bytes'] and hashlib.sha256(raw).hexdigest()==inventory['bundles'][name]['sha256']
+            assets['/'+name]=raw
+        assets['/history-client.js']=safe_bytes(root/'experiments/device-keystore/history-client.js',65536)
+        assets['/history-forge-worker.js']=safe_bytes(root/'artifacts/history-forge-worker.js',1024*1024)
     if vault:
         from native_vault_checks import vault_assets
         vault_original=vault_assets(root,work,assets)
@@ -242,7 +254,7 @@ def main():
             proof['checks']['all_15_native_routes_require_signed_admission']=True
         if ui_proof:
             from native_chat_ui_checks import run_ui
-            run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=url+('/vault/' if vault_ui else '/encrypted/') if embedded else url,restart=(lambda:(stop(),start())) if embedded else None,vault=vault_ui)
+            run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=url+('/vault/' if vault_ui else '/encrypted/') if embedded else url,restart=(lambda:(stop(),start())) if embedded else None,vault=vault_ui,history=history_proof)
             if embedded:
                 proof['ui_packaging']='compiled native Go server assets; proxy only injects generated assertions'
                 proof['native_embedded_ui']=True

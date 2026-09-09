@@ -8,6 +8,9 @@ jobs:
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.2'
       - name: Configuration tests
         run: python3 -m unittest discover -s tests -v
       - name: Initialize loopback fixture
