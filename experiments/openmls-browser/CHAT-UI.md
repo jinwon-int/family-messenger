@@ -52,7 +52,9 @@ message. If a native reply is lost, reopening loads the existing outbox and pull
 its exact accepted echo; a still-unaccepted stored operation has an explicit retry
 button. If interruption occurred before the worker received the bytes, reopening
 retains the descriptor and requires identical text/file bytes with the same ID.
-A changed selection is denied. Unknown/malformed descriptors are retained and
+A changed selection is denied. Text/file inputs are disabled during an active
+send or durable pending operation, so completion cannot erase a newer draft.
+When only a descriptor remains, these inputs stay enabled for exact reselection. Unknown/malformed descriptors are retained and
 denied, not silently discarded or repaired. An actual accepted self echo clears
 its matching tab descriptor. A retired stale outbox remains frozen as specified
 in NATIVE-CONTROLS.md; there is no clear/reset/re-encrypt command.

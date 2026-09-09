@@ -10,6 +10,7 @@
     "encrypted_opaque_file_authenticated_download_integrity_no_active_preview": true,
     "interrupted_before_stage_requires_exact_reselection_and_same_id": true,
     "ui_small_file_limit_denies_before_draft_creation": true,
+    "pending_send_freezes_composer_without_blocking_metadata_reselection": true,
     "lost_native_reply_reload_reconciles_exact_id_no_early_display": true,
     "receiver_reload_restores_committed_history_without_duplicates": true,
     "tampered_native_log_hides_view_then_original_reconciles": true,
@@ -21,7 +22,7 @@
   "binary_sha256": "e07e674295bc58b9f1481ec640db9ac15e524e7e50486ce493e4c6decbfe4659",
   "original_assets_sha256": {
     "/": "6b274bb6d82c809df99c8702d0d8c0d20c12d23eeae8320744263646e031f603",
-    "/chat.js": "cc035ed88386b60c6d5ba5f55c325519d6117269a59cbe309050c1e95f89f41f",
+    "/chat.js": "9b71e3ce50a7050186765132278917f7e6f30033d0a8c62464ab13fe873d3b37",
     "/chat.css": "de99fa320fb038096057fe81cfe003e7163b57dd0af46730e8de3bb1c4c92a91",
     "/native-worker.js": "becf46c70e21be2c14f41c33767eb42d03314ec6612a28695a503d615d44e24b",
     "/trust-directory.js": "63079de10d73ac4d0664b07de7bcacc4e4abe551977a293cfa4144029a80b04e",
@@ -30,7 +31,7 @@
   },
   "assets_sha256": {
     "/": "6b274bb6d82c809df99c8702d0d8c0d20c12d23eeae8320744263646e031f603",
-    "/chat.js": "cc035ed88386b60c6d5ba5f55c325519d6117269a59cbe309050c1e95f89f41f",
+    "/chat.js": "9b71e3ce50a7050186765132278917f7e6f30033d0a8c62464ab13fe873d3b37",
     "/chat.css": "de99fa320fb038096057fe81cfe003e7163b57dd0af46730e8de3bb1c4c92a91",
     "/native-worker.js": "becf46c70e21be2c14f41c33767eb42d03314ec6612a28695a503d615d44e24b",
     "/trust-directory.js": "63079de10d73ac4d0664b07de7bcacc4e4abe551977a293cfa4144029a80b04e",
@@ -42,7 +43,7 @@
   "native_encrypted_ui": true,
   "ui_packaging": "isolated exact-allowlist test proxy; not Go embedded or deployed",
   "passed": true,
-  "artifact": "artifacts/native-chat-ui-98nh4ett/verification.json",
+  "artifact": "artifacts/native-chat-ui-1qnvet0p/verification.json",
   "scope": "Own encrypted UI in exact-allowlist generated assertion proxy; no Go asset packaging, production account gate or human key protection.",
   "prior_artifacts": [
     "artifacts/native-control-browser-kjgo4vl_/verification.json",
@@ -51,10 +52,10 @@
   "source_sha256": {
     "experiments/openmls-browser/web/chat.html": "6b274bb6d82c809df99c8702d0d8c0d20c12d23eeae8320744263646e031f603",
     "experiments/openmls-browser/web/chat.css": "de99fa320fb038096057fe81cfe003e7163b57dd0af46730e8de3bb1c4c92a91",
-    "experiments/openmls-browser/web/chat.js": "cc035ed88386b60c6d5ba5f55c325519d6117269a59cbe309050c1e95f89f41f",
+    "experiments/openmls-browser/web/chat.js": "9b71e3ce50a7050186765132278917f7e6f30033d0a8c62464ab13fe873d3b37",
     "experiments/openmls-browser/web/native-worker.js": "becf46c70e21be2c14f41c33767eb42d03314ec6612a28695a503d615d44e24b",
     "tests/native_encrypted_browser_smoke.py": "e6008f14efad196c82c9c2b58ba8372c1ea73bc4646efedc70fda03de988552a",
-    "tests/native_chat_ui_checks.py": "9bf8292eae1f2248a0d39b33562b9e481dfca4fc2f76d520c2734012cc719f82"
+    "tests/native_chat_ui_checks.py": "dd016503e65d5815615ee3c7e9f316a5552180f86499022ff47148ae2c7e6882"
   },
   "bundle": {
     "family_mls_browser_experiment_bg.wasm": {

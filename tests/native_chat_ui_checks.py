@@ -70,7 +70,7 @@ def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release
             metadata=json.loads(b.evaluate('sessionStorage.getItem("family-native-ui-draft-v1:bob:family")'))
             assert metadata['size']==len(reselect) and metadata['sha256']==hashlib.sha256(reselect).hexdigest()
             retry_id=metadata['id'];b.reload();open_page(b)
-            expect(b.locator('#pending')).to_contain_text('다시 선택')
+            expect(b.locator('#pending')).to_contain_text('다시 선택');expect(b.locator('#file')).to_be_enabled();expect(b.locator('#text')).to_be_enabled()
             b.locator('#file').set_input_files({'name':'wrong.bin','mimeType':'application/octet-stream','buffer':b'wrong bytes'});b.locator('#send').click()
             expect(b.locator('#chat')).to_be_hidden(timeout=10000);open_page(b)
             b.locator('#file').set_input_files({'name':'renamed.bin','mimeType':'application/octet-stream','buffer':reselect});b.locator('#send').click()
@@ -87,6 +87,8 @@ def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release
             hold_next[0]=True;arrived.clear();release.clear();lost='synthetic UI lost response'
             send(a,lost);assert arrived.wait(4)
             expect(a.locator('#pending')).to_contain_text('암호화 저장됨')
+            expect(a.locator('#text')).to_be_disabled();expect(a.locator('#file')).to_be_disabled()
+            proof['checks']['pending_send_freezes_composer_without_blocking_metadata_reselection']=True
             pending_id=a.locator('#pending').get_attribute('data-client-id');assert pending_id.startswith('app-')
             assert a.locator(f'#messages li[data-message-id="{pending_id}"]').count()==0
             saved=a.evaluate('Object.values(sessionStorage)');assert saved and all(lost not in s and 'eyJ' not in s for s in saved)
