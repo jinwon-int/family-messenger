@@ -33,7 +33,8 @@ a lower observed revision during a live session is denied. Fresh directory/pins
 and the real provider public key must match after decoded state validation.
 
 The whole native version4 payload uses canonical base64 for its binary provider,
-with native validation preserving the1MiB provider and2MiB aggregate ledger limit.
+with native validation preserving the 1 MiB provider and 2 MiB aggregate binary
+state/ledger limit (the provider counts toward that aggregate).
 The serialized envelope is capped at4MiB before secretstream protection. Native
 fields are already bounded ASCII/base64/integers; this accommodates the base64
 expansion plus bounded field names/metadata. Ciphertext is at most4MiB+17 and has
@@ -100,3 +101,15 @@ Dependencies are unchanged from the session-record candidate; see
 includes age plus sodium WASM; it is not part of the Go default embedded bundle.
 The Go manifest changes only to pin the native engine factory refactor. Its direct
 worker path preserves prior synthetic behavior.
+
+The native input boundary also rejects sparse arrays before normalization, so a
+missing file byte cannot silently become zero and enter the exact outbox. A valid
+lock response removes the caller handle immediately; reopening does not depend on
+a timeout or an explicit cleanup of a closed worker.
+
+Recorded final control proof has 31 assertions and a 60,502-byte encrypted whole
+record, 24-byte header and 456-byte capsule. Combined OpenMLS+sodium linear memory
+peaked at 5,636,096 bytes; browser/JS heap and the separately admitted 256 MiB KDF
+scratch are excluded. The driver bundle is 585,011 bytes / 206,769 gzip. These
+measurements describe generated two-member state, not worst-case records or mobile
+acceptance. See `native-vault-evidence.json` for exact receipts and limitations.
