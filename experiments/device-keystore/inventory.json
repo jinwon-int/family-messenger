@@ -261,12 +261,15 @@
     "bytes": 149445,
     "gzip_bytes": 54327,
     "sha256": "26e3f0760a8dc4c22745ae9c1b93c3b14b4d1a0a50075de10b0c0086ec812247",
-    "included_source_modules": 50
+    "included_source_modules": 50,
+    "post_quantum_included_modules": 19,
+    "post_quantum_contributing_bytes": 55339
   },
   "notes": [
-    "Unused post-quantum implementation is present in the locked dependency graph; no post-quantum recipient is enabled by this proof.",
+    "Post-quantum support code is included in the bundle as well as the lock; no post-quantum recipient is selected by this proof.",
     "Npm advisory snapshot has zero reported production vulnerabilities; this is not an independent audit of typage or these exact versions.",
     "No independent complete typage WebAuthn audit established by bounded primary-source lookup. Noble historical audits do not establish coverage of all current dependencies.",
-    "Node22.22.2/npm10.9.7 build tooling; esbuild0.27.2 only build; no new WASM/Go modules."
+    "Node22.22.2/npm10.9.7 build tooling; esbuild0.27.2 only build; no new WASM/Go modules.",
+    "Distributed createCredential/WebAuthnRecipient/WebAuthnIdentity declarations are @experimental; no production interface qualification."
   ]
 }

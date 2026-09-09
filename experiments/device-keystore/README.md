@@ -52,7 +52,9 @@ messenger database, existing browser profile, file archive or backup is rewritte
 `--uv-recovery-probe` additionally forces virtual user verification to fail, then
 re-enables it and tries to reopen the same stored file. It currently fails locally
 at reopen with `NotAllowedError` (artifact `device-keystore-nsgghwh0`). The cause is
-not established. This diagnostic remains runnable and its failure is **not**
+not fully established. Independent raw WebAuthn PRF and non-PRF requests also
+fail afterward, narrowing the observation to browser/virtual-authenticator request
+state rather than demonstrated file-decryption damage. This diagnostic remains runnable and its failure is **not**
 converted to a success/fallback; CI's nine-assertion feasibility run does not claim
 UV-failure recovery qualification. It is separate from the known-good direct
 PRF/file API probe, and must be resolved along with actual device lock/recovery
@@ -68,10 +70,11 @@ The generated page/library bundle is 149,445 bytes / 54,327 gzip bytes in the
 recorded build, without an extra WASM module. Installed node_modules is about
 17 MiB. No production Go/Rust/UI dependencies changed.
 
-`THIRD-PARTY-NOTICES.txt` includes the eight runtime instance licenses. The unused
-post-quantum package is still in the resolved dependency graph; no post-quantum
-mode is enabled by this probe. A zero npm advisory report is not an independent
+`THIRD-PARTY-NOTICES.txt` includes the eight runtime instance licenses. Post-quantum support is in both the resolved dependency graph and the bundle
+(19 source modules / 55,339 contributing bytes); it was not removed by bundling.
+No post-quantum mode is selected by this probe. A zero npm advisory report is not an independent
 audit or guarantee about the exact versions. The bounded research did not establish
-a full typage WebAuthn audit. Browser heap/startup timing here is not a real-phone
+a full typage WebAuthn audit. The distributed WebAuthn APIs are explicitly
+marked `@experimental`; they are not selected as a stable live keystore API. Browser heap/startup timing here is not a real-phone
 memory/latency benchmark. Physical key protection, browser/OS/provider backups,
 passkey sync, user gestures and cancellation require separate acceptance.

@@ -20,6 +20,11 @@ Do not move human provider snapshots through page code to make an experiment wor
 | Android Keystore | Platform key-use authorization and non-exportable keys, optionally hardware-bound | Strong future native-app custody boundary. Requires an actual native bridge, hardware capability checks and lifecycle/recovery qualification. A web page/WebView does not automatically obtain this boundary; no SDK/NDK installation in this unit |
 | Persisted non-extractable WebCrypto `CryptoKey` alone | Prevents direct key export through that API | Insufficient unlock/recovery boundary by itself: same-origin code can use a stored key, and browser-profile portability/OS protection is not guaranteed by `extractable:false`. Not selected as a human vault |
 
+An Android hardware-backed wrapping key would not keep every OpenMLS provider
+secret in hardware: unlocked provider state still needs application memory.
+A native custody boundary must be designed and tested rather than inferred from
+the presence of a Keystore API.
+
 The candidate is pinned at upstream commit
 `38b8b10cb22409de0eaa8a617a01f16dc2e3f9f4`, matching npm 0.3.1's `gitHead` and
 lockfile integrity. The package declares BSD-3-Clause; its Noble/Scure dependencies
@@ -27,7 +32,10 @@ have MIT notices. It is referenced by the age author's implementation and primar
 WebAuthn article. Bounded primary-source research did **not establish a complete
 independent audit of this exact typage/WebAuthn stack**. Noble's historical audits
 must not be presented as an audit of every current dependency or our integration.
-The candidate uses vetted library APIs, but is not accepted as production-audited.
+The distributed `createCredential`, `WebAuthnRecipient` and `WebAuthnIdentity`
+types are explicitly marked **`@experimental`** by upstream. This probe qualifies
+those maintained library contracts only; it does not make that experimental API
+a production-audited or stable keystore interface.
 
 ## Concrete blockers before a live adapter
 
@@ -57,9 +65,11 @@ The candidate uses vetted library APIs, but is not accepted as production-audite
    they do not qualify biometric prompts, hardware extraction resistance, passkey
    provider sync, Android WebView support, background suspension or OS backups.
    A further optional virtual UV-failure/re-enable probe failed to reopen with
-   `NotAllowedError` in the local browser. Its cause is not established; the
-   failing artifact is retained and normal PRF success is not called lock/unlock
-   recovery acceptance. Actual hardware and cancellation/lifecycle tests remain.
+   `NotAllowedError` in the local browser. Independent raw WebAuthn calls also
+   fail afterward, including non-PRF requests: this narrows it to browser/virtual
+   authenticator request state, not demonstrated file-decryption damage. The exact
+   cause remains unestablished; artifacts are retained and normal PRF success is
+   not called lock/unlock recovery acceptance. Actual hardware and cancellation/lifecycle tests remain.
 
 These blockers stop human-use keystore activation, not repository implementation
 or independent review of this design. No existing profile is rewritten, reset,
@@ -153,8 +163,15 @@ rejection, reload of encrypted bytes/public hints, wrong RP rejection, no PRF fa
 and the two concrete worker/rollback limitations. No human credential is created,
 exported or loaded; CDP virtual authenticator keys never enter proof JSON.
 
-Proceed next with a narrowly reviewed **custody adapter decision/prototype** that
-satisfies the Window/worker and prompt/session boundaries above. If browser APIs
+Proceed next with a narrowly reviewed **worker-only unlock feasibility prototype**
+that satisfies the Window/worker and prompt/session boundaries above. A standard
+password-encrypted age archive decoded entirely in a worker is a separate
+candidate worth measuring: the password is transient user input, never an MLS
+key/provider returned to the page. Keep the library default password work factor
+and measure memory/latency before selection; do not weaken it to pass a budget.
+It would still need a reviewed per-record protection/session mechanism, complete
+state CAS, recovery policy and same-origin compromise qualifications. No password
+or recovery secret should be persisted in the page, server, logs or URLs. If browser APIs
 cannot preserve those requirements, document the exact native keystore boundary
 needed before shipping an Android client; do not quietly weaken key custody or
 claim actual CF/mobile/Yukson acceptance. The existing synthetic messenger remains

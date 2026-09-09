@@ -26,7 +26,7 @@
   "artifact": "artifacts/device-keystore-vwm4c__0/verification.json",
   "scope": "Library-only dummy bytes in Window; no MLS provider, production auth, protected key store or human recovery",
   "negative_lifecycle_artifact": "artifacts/device-keystore-nsgghwh0/verification.json",
-  "negative_lifecycle_outcome": "Optional UV-failure/re-enable probe failed at restored decrypt with NotAllowedError; unresolved virtual/browser behavior, not qualified lock/recovery",
+  "negative_lifecycle_outcome": "Optional UV-failure/re-enable probe failed at reopen; independent raw PRF and non-PRF WebAuthn requests fail afterward too. Browser/virtual authenticator request-layer state, exact cause unresolved; no demonstrated age ciphertext damage or human recovery qualification.",
   "resources": {
     "installed_candidate_node_modules_bytes": 16544521,
     "filesystem_available_bytes": 77655105536,
@@ -37,5 +37,6 @@
     "date": "2026-09-09",
     "reported_production_vulnerabilities": 0,
     "full_audit": false
-  }
+  },
+  "negative_lifecycle_independent_artifact": "/tmp/family-custody-review-e90144f/artifacts/device-keystore-6w_3y91v/verification.json"
 }
