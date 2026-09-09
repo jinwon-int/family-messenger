@@ -1,5 +1,9 @@
 # Synthetic first-device enrollment and browser trust gate
 
+Current lifecycle qualification and planned successor semantics are documented in
+[DEVICE-LIFECYCLE.md](../docs/DEVICE-LIFECYCLE.md). That library/design experiment
+does not relax any enrollment or immutable tombstone constraint in this server.
+
 This implements a durable **public device directory** in the existing private
 signed-account policy, plus an isolated browser trust gate using OpenMLS. It is
 a step toward the requested application, not live CF login, human enrollment or

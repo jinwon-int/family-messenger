@@ -128,6 +128,12 @@ they do not solve whole-valid-store rollback after restart.
 
 ## Recovery and device lifecycle
 
+The [lost/replacement-device qualification](DEVICE-LIFECYCLE.md) now specifies
+the required successor authorization and a first operator-assisted new-conversation
+path. Its real browser library proof does not enable native replacement or human
+recovery. The native one-device policy remains closed until the versioned
+successor/retirement transition and fresh-group custody are implemented.
+
 Recovery has two distinct products; neither is implemented by an age roundtrip.
 
 - **Read-only history recovery:** an explicitly exported, complete encrypted archive
