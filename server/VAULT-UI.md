@@ -110,6 +110,12 @@ remain at `/encrypted/licenses/`. Distribute Go `server/licenses/` with binaries
 
 Local receipt [vault-ui-evidence.json](vault-ui-evidence.json) records 26 browser
 checks, 15 native asset hashes and eight executable selection failures. Asset
-preparation has 21 tests; tagged Go race (umask 022), normal (077), vet and the
+preparation has 23 tests; tagged Go race (umask 022), normal (077), vet and the
 full Python suite pass. The embedded public bundle is 2,883,280 bytes within
 the unchanged 4 MiB limit; no new toolchain installation was needed.
+
+Independent review reproduced a low preparation/runtime mismatch for reordered
+JSON fields. Preparation now uses the same fixed top-level and entry ordering as
+the Go parser; both profiles reject reordered input before creating output. The
+reviewer also ran all 26 DOM checks with an independently built binary containing
+both tags, eight vault-only activation denials, and both-tag chat race tests.

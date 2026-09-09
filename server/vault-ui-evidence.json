@@ -29,5 +29,25 @@
     "actual CF account admission",
     "backup restore and rollback witness",
     "Yukson production cutover and fleet binding"
+  ],
+  "runtime_reviewed_head": "4892743a9980591d6feda3982b4df9e7ffab147f",
+  "independent_browser_proof": "/root/work/family-vault-assets-review-4892743/artifacts/native-vault-ui-mq78m3ix/verification.json",
+  "independent_activation_proof": "/root/work/family-vault-assets-review-4892743/artifacts/native-asset-activation-1s4m367z/verification.json",
+  "legacy_browser_proof": "artifacts/native-embedded-ui-dcn6z80o/verification.json",
+  "legacy_browser_checks": 17,
+  "go_test_groups": 75,
+  "go_validation": [
+    "synthetic_vault race umask022",
+    "synthetic_vault normal umask077",
+    "synthetic_vault vet"
+  ],
+  "asset_preparation_tests": 23,
+  "review_findings_fixed": [
+    "Low: preparation now requires the exact Go top-level and entry field order; reordered manifests deny before output creation."
+  ],
+  "python_tests": 98,
+  "python_umasks": [
+    "022",
+    "077"
   ]
 }
