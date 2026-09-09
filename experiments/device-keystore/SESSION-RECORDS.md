@@ -51,7 +51,7 @@ to replay old ratchets/outbox as a live device.
 
 ## Lifecycle and limits to prove
 
-One worker per page, bounded 32 commands, 8 KiB dummy record, bounded capsule and
+One worker per page, bounded 32 commands, 2 KiB dummy record, bounded capsule and
 metadata. No network, real family data or actual MLS state. Commands require the
 right locked/open phase and one in-flight operation. Page-owned generation guards
 and worker termination handle lock/hidden/restart/error; a message cannot interrupt
@@ -152,7 +152,7 @@ all-platform lock has37 external instances. The old `inventory.json` and passwor
 proof remain historical PR36/37 records; `session-inventory.json` records this
 candidate. No product Go/Rust/native UI dependency or manifest is changed.
 
-The candidate bundle contains embedded WASM plus JavaScript (581260bytes /205536gzip
+The candidate bundle contains embedded WASM plus JavaScript (581326bytes /205547gzip
 in the recorded build); only the wrapper heap measures WASM linear memory, not
 aggregate Chromium/JS/password KDF usage. The scrypt default256MiB scratch and
 ~2s unlock cost remain separate. The build reuses Node22.22.2/esbuild0.27.2 with
@@ -165,6 +165,12 @@ CAS before output, cross-tab origin resource/lifecycle admission and crash/lostr
 proof. Preserve existing profiles without reinterpretation. Runtime/device trust,
 recovery, actual CF, mobile and backup acceptance still precede Yukson activation.
 
-Initial browser receipt `session-evidence.json` records13 passing groups, 4MiB
-WASM heap, and measured root/record timings. This is desktop synthetic evidence,
-not a real-phone benchmark or successful persistent native integration.
+The final `session-evidence.json` records15 passing groups, 4MiB WASM heap,
+and measured root/record timings. This is desktop synthetic evidence, not a
+real-phone benchmark or successful persistent native integration.
+
+The suite includes immediate session retirement on uncloneable `postMessage`
+input and explicit dense byte-array validation. A sparse hole in a zero byte must
+not become a valid zero through normalization: the fixture denies it and verifies
+the untouched original only after explicit restart/unlock. All full-record
+cryptographic authentication still occurs inside the library.

@@ -76,7 +76,22 @@ def main():
                 if p is None: p=a
                 start(p);r=call(p,'unlock',password=password,capsule=root_value['capsule'],vault=root_value['vault']);assert r.get('opened'),r
                 return r
+            denied=a.evaluate('()=>sessionProbe.command({op:"status",extra:()=>{}})')
+            assert denied=={'denied':True,'locked':True,'kdf':False}
+            assert a.evaluate('sessionProbe.active()') is None
+            proof['checks']['uncloneable_command_immediately_retires_open_root']=True
             proof['timings_ms']['root_unlock']=reopen()['ms']
+            # Force a hole without changing cryptographic bytes: choose an
+            # existing zero, which the old Uint8Array normalization restored.
+            sparse=record
+            for _ in range(8):
+                if 0 in sparse['ciphertext']:break
+                sparse=seal(a)['record']
+            assert 0 in sparse['ciphertext']
+            denied=a.evaluate('r=>{delete r.ciphertext[r.ciphertext.indexOf(0)];return sessionProbe.command({op:"read",id:"record-a",revision:1,record:r})}',sparse)
+            assert denied['denied'] and a.evaluate('sessionProbe.active()') is None
+            reopen();assert read(a,record)['matched']
+            proof['checks']['sparse_array_denied_without_normalizing_to_valid_zero']=True
             bad=call(a,'unlock',password=password,capsule=root['capsule'],vault=root['vault']);assert bad['denied']
             assert a.evaluate('sessionProbe.active()') is None
             proof['checks']['wrong_phase_retires_session']=True

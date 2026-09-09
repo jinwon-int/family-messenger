@@ -23,6 +23,6 @@ async function start(){
 function command(data){
   if(!current||current.boot||current.resolve)throw Error('unavailable or busy');
   const c=current;c.kdf=false;
-  return new Promise(resolve=>{c.resolve=resolve;c.timer=setTimeout(lock,20000);c.worker.postMessage(data);});
+  return new Promise(resolve=>{c.resolve=resolve;c.timer=setTimeout(lock,20000);try{c.worker.postMessage(data);}catch{lock();}});
 }
 window.sessionProbe={start,command,lock,active:()=>current?{busy:!!current.resolve,kdf:current.kdf}:null};

@@ -25,7 +25,10 @@ function exact(object, fields) {
   if (!object || typeof object !== 'object' || Array.isArray(object) || Object.keys(object).sort().join(',') !== fields.split(',').sort().join(',')) throw Error('shape');
 }
 function bytes(value, min, max=min) {
-  if (!Array.isArray(value) || value.length < min || value.length > max || !value.every(x=>Number.isInteger(x)&&x>=0&&x<=255)) throw Error('bytes');
+  if (!Array.isArray(value) || value.length < min || value.length > max) throw Error('bytes');
+  for(let i=0;i<value.length;i++) {
+    if(!Object.hasOwn(value,i) || !Number.isInteger(value[i]) || value[i]<0 || value[i]>255) throw Error('bytes');
+  }
   return new Uint8Array(value);
 }
 function vaultID(id) { if (typeof id !== 'string' || !/^[0-9a-f]{32}$/.test(id)) throw Error('vault'); return id; }
