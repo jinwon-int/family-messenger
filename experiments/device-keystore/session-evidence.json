@@ -1,0 +1,70 @@
+{
+  "synthetic_only": true,
+  "native_integration": false,
+  "human_key_protection": false,
+  "checks": {
+    "actual_wasm_worker_root_capsule_and_authenticated_record": true,
+    "fresh_headers_old_valid_record_still_readable_no_rollback_claim": true,
+    "unlocked_records_do_not_repeat_password_kdf": true,
+    "wrong_phase_retires_session": true,
+    "independently_expected_id_revision_authenticated": true,
+    "valid_nonfinal_tags_rejected": true,
+    "header_and_payload_tamper_retires": true,
+    "truncated_appended_concatenated_records_denied": true,
+    "wrong_root_key_and_expected_vault_denied": true,
+    "capsule_password_and_work_admission_fail_closed": true,
+    "cross_tab_lock_during_kdf_has_no_late_session": true,
+    "command_budget_retires_root_session": true,
+    "actual_browser_restart_reopens_retained_capsule_record": true
+  },
+  "asset_sha256": {
+    "/": "c3ba97e23f06c5ba2360faee63cc2ec2978583bf1fd7cb396602afea51363ab7",
+    "/session-page.js": "9613f315c5b4760a556691cfd1e24feb4c70fabeb043c9af80a5c8e01b0e15bf",
+    "/session-worker.js": "e9a0b602061c7f2129c8bbb1c65167375f0a27bb0de68d03d944d1f0f40195a0"
+  },
+  "browser": "151.0.7922.34",
+  "wasm_heap_bytes": 4194304,
+  "timings_ms": {
+    "root_create": 2225.6,
+    "first_seal": 2.1,
+    "first_read": 2.3,
+    "root_unlock": 1985.2
+  },
+  "record_timings_ms": [
+    [
+      0.8,
+      0.7
+    ],
+    [
+      0.4,
+      0.5
+    ],
+    [
+      0.5,
+      0.6
+    ],
+    [
+      0.5,
+      1.9
+    ],
+    [
+      0.5,
+      0.5
+    ],
+    [
+      0.4,
+      0.4
+    ],
+    [
+      0.6,
+      1.5
+    ],
+    [
+      0.4,
+      0.4
+    ]
+  ],
+  "passed": true,
+  "timing_seconds": 39.567,
+  "source_receipt": "artifacts/session-record-u3kbc7gv/verification.json"
+}
