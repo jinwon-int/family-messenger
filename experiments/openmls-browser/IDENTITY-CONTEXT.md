@@ -89,6 +89,13 @@ The source-provider digest includes any library pending commit, but there is no
 native cursor/outbox in this fixture. Exact memory retry is not durable retry.
 Those distinctions are recorded in `identity-context-evidence.json`.
 
+Independent review reproduced both default and optional builds byte-for-byte.
+The 13 candidate checks plus four independent worker-boundary groups passed
+(sparse arguments, duplicate initialization, malformed envelopes and queued denial
+after retirement), as did the nine default and 13 prior lifecycle groups. No
+findings were reproduced. The regular Python suite passed 111 tests. This review
+does not extend the proof to encrypted custody or human authorization.
+
 ## Concrete custody decision and next implementation
 
 Do not wire this candidate into the current `NativeVaultStore.tx` by simply
