@@ -8,7 +8,7 @@ import time
 from playwright.sync_api import expect
 
 
-def checks(a,b,contexts,pages,url,passwords,pins,proof,crash_page,open_page,direct):
+def checks(a,b,contexts,pages,url,passwords,pins,proof,crash_page,open_page,direct,history_ui=False):
     database='family-mls-vault-synthetic-ui-alice-family'
     code,status=direct('owner','GET','/v1/mls/rooms/family/status');assert code==200
     expected={'database':database,'identity':'alice','room':'family','group_id':status['group_id'],'pins':pins}
@@ -24,6 +24,9 @@ def checks(a,b,contexts,pages,url,passwords,pins,proof,crash_page,open_page,dire
     original=digest(a)
     def install(p):
         p.evaluate("async()=>{const {HistoryReader}=await import('/history-client.js');window.historyCaller=new HistoryReader(()=>{window.readHistory=null});}")
+    if history_ui:
+        from native_history_ui_checks import export_ui
+        archive_ui=export_ui(a, url, expected, passwords[0], proof)
     install(a)
     export_started=time.monotonic()
     exported=a.evaluate('''async arg=>{const r=await historyCaller.read(arg,true);if(!r.ok)return {ok:false};window.encryptedHistoryArchive=r.result.archive;return {ok:true,archive:Array.from(r.result.archive),memory:r.memory_bytes}}''',{'expected':expected,'password':passwords[0]})
@@ -32,6 +35,7 @@ def checks(a,b,contexts,pages,url,passwords,pins,proof,crash_page,open_page,dire
     proof['history_max_linear_bytes']=exported['memory']
     proof['history_read_total_ms']=[]
     archive=exported['archive'];assert digest(a)==original
+    if history_ui:assert archive_ui==bytes(archive)
     wire=json.loads(bytes(archive));assert set(wire)=={'format','database','state'} and set(wire['state'])=={'v','identity','room','vault','revision','capsule','header','cipher'}
     proof['checks']['coherent_readonly_export_does_not_mutate_live_encrypted_state']=True
     proof['history_archive_bytes']=len(archive)
@@ -104,6 +108,10 @@ def checks(a,b,contexts,pages,url,passwords,pins,proof,crash_page,open_page,dire
         assert reader.evaluate('sessionStorage.length+localStorage.length')==0
         proof['checks']['reader_send_import_commands_denied_and_no_persisted_recovery_secrets']=True
     finally:reader_context.close()
+    if history_ui:
+        from native_history_ui_checks import reader_ui
+        reader_ui(a, b, contexts, url, expected, passwords[0], bytes(archive), marker, proof)
+        assert digest(a)==original
     # Continuing the live fixture is explicit original-device retry, never archive import.
     open_page(a);expect(a.locator('#retry')).to_be_visible(timeout=25000);a.locator('#retry').click()
     for p in (a,b):expect(p.locator('#messages')).to_contain_text(marker,timeout=25000)

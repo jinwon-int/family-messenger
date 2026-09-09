@@ -94,11 +94,11 @@ jobs:
           node experiments/device-keystore/node_modules/esbuild/bin/esbuild experiments/device-keystore/native-vault-store.js --bundle --format=esm --platform=browser --target=es2023 --minify --outfile=experiments/device-keystore/bundle/native-vault-store.js
           timeout 240s python tests/native_encrypted_browser_smoke.py --vault --bundle artifacts/mls-browser-pkg --binary artifacts/family-dev-trust --policy-binary artifacts/family-policy-trust
           timeout 240s python tests/native_encrypted_browser_smoke.py --vault --controls --bundle artifacts/mls-browser-pkg --binary artifacts/family-dev-trust --policy-binary artifacts/family-policy-trust
-      - name: Encrypted custody UI and read-only history recovery
+      - name: Encrypted custody UI and explicit read-only history UI
         run: |
           node experiments/device-keystore/node_modules/esbuild/bin/esbuild experiments/device-keystore/history-worker.js experiments/device-keystore/history-export-worker.js --bundle --format=esm --platform=browser --target=es2023 --minify '--external:/pkg/*' --outdir=experiments/device-keystore/bundle
           node experiments/device-keystore/node_modules/esbuild/bin/esbuild tests/fixtures/native-history/forge-worker.js --bundle --format=esm --platform=browser --target=es2023 --minify '--external:/pkg/*' --alias:age-encryption=./experiments/device-keystore/node_modules/age-encryption --alias:libsodium-wrappers=./experiments/device-keystore/node_modules/libsodium-wrappers --outfile=artifacts/history-forge-worker.js
-          timeout 420s python tests/native_encrypted_browser_smoke.py --vault-ui --history --bundle artifacts/mls-browser-pkg --binary artifacts/family-dev-trust --policy-binary artifacts/family-policy-trust
+          timeout 420s python tests/native_encrypted_browser_smoke.py --vault-ui --history-ui --bundle artifacts/mls-browser-pkg --binary artifacts/family-dev-trust --policy-binary artifacts/family-policy-trust
       - name: Own-server pinned custody UI and restart proof
         run: |
           python tools/prepare_mls_assets.py --vault --bundle artifacts/mls-browser-pkg

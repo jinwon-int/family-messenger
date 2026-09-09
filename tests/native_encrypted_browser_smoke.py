@@ -25,6 +25,7 @@ from playwright.sync_api import sync_playwright, expect, Error as BrowserError
 
 def main():
     args = argparse.ArgumentParser()
+    args.add_argument('--history-ui', action='store_true')
     args.add_argument('--history', action='store_true')
     args.add_argument('--vault-ui', action='store_true')
     args.add_argument('--vault', action='store_true')
@@ -35,7 +36,7 @@ def main():
     args.add_argument('--binary', required=True, type=Path)
     args.add_argument('--policy-binary', required=True, type=Path)
     args = args.parse_args()
-    history_proof=args.history
+    history_proof=args.history or args.history_ui
     assert not history_proof or (args.vault_ui and not args.embedded)
     vault_ui = args.vault_ui
     vault = args.vault
@@ -149,6 +150,9 @@ def main():
             assert len(raw)==inventory['bundles'][name]['bytes'] and hashlib.sha256(raw).hexdigest()==inventory['bundles'][name]['sha256']
             assets['/'+name]=raw
         assets['/history-client.js']=safe_bytes(root/'experiments/device-keystore/history-client.js',65536)
+        if args.history_ui:
+            for name in ('history.html','history.css','history-ui.js'):
+                assets['/history/' if name=='history.html' else '/'+name]=safe_bytes(root/'experiments/device-keystore'/name,65536)
         assets['/history-forge-worker.js']=safe_bytes(root/'artifacts/history-forge-worker.js',1024*1024)
     if vault:
         from native_vault_checks import vault_assets
@@ -254,7 +258,7 @@ def main():
             proof['checks']['all_15_native_routes_require_signed_admission']=True
         if ui_proof:
             from native_chat_ui_checks import run_ui
-            run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=url+('/vault/' if vault_ui else '/encrypted/') if embedded else url,restart=(lambda:(stop(),start())) if embedded else None,vault=vault_ui,history=history_proof)
+            run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=url+('/vault/' if vault_ui else '/encrypted/') if embedded else url,restart=(lambda:(stop(),start())) if embedded else None,vault=vault_ui,history=history_proof,history_ui=args.history_ui)
             if embedded:
                 proof['ui_packaging']='compiled native Go server assets; proxy only injects generated assertions'
                 proof['native_embedded_ui']=True
