@@ -25,6 +25,7 @@ from playwright.sync_api import sync_playwright, expect, Error as BrowserError
 
 def main():
     args = argparse.ArgumentParser()
+    args.add_argument('--vault-ui', action='store_true')
     args.add_argument('--vault', action='store_true')
     args.add_argument('--embedded', action='store_true')
     args.add_argument('--ui', action='store_true')
@@ -33,16 +34,18 @@ def main():
     args.add_argument('--binary', required=True, type=Path)
     args.add_argument('--policy-binary', required=True, type=Path)
     args = args.parse_args()
+    vault_ui = args.vault_ui
     vault = args.vault
     control_proof = args.controls
-    ui_proof = args.ui
+    ui_proof = args.ui or vault_ui
     embedded = args.embedded
+    assert not vault_ui or not (vault or embedded or control_proof)
     assert not vault or not (ui_proof or embedded)
     assert not embedded or ui_proof
     assert not (control_proof and ui_proof)
     binary, policy = args.binary.resolve(strict=True), args.policy_binary.resolve(strict=True)
     root = Path(__file__).resolve().parents[1]
-    work = Path(tempfile.mkdtemp(prefix='native-vault-control-' if vault and control_proof else 'native-vault-browser-' if vault else 'native-embedded-ui-' if embedded else 'native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
+    work = Path(tempfile.mkdtemp(prefix='native-vault-ui-' if vault_ui else 'native-vault-control-' if vault and control_proof else 'native-vault-browser-' if vault else 'native-embedded-ui-' if embedded else 'native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
     state, auth, proposals = [work / n for n in ('state', 'auth', 'proposals')]
     for d in (state, auth, proposals):
         d.mkdir(mode=0o700)
@@ -118,6 +121,12 @@ def main():
     for name in ['family_mls_browser_experiment.js','family_mls_browser_experiment_bg.wasm']:
         p=args.bundle/name;st=p.lstat();assert not p.is_symlink() and st.st_nlink==1 and st.st_size<4*1024*1024
         assets['/pkg/'+name]=p.read_bytes()
+    if vault_ui:
+        assets['/']=(root/'experiments/openmls-browser/web/vault-chat.html').read_bytes()
+        for name in ['vault-chat.js','vault-native-worker.js']:
+            assets['/'+name]=(root/'experiments/openmls-browser/web'/name).read_bytes()
+        from password_worker_smoke import safe_bytes
+        assets['/native-vault-store.js']=safe_bytes(root/'experiments/device-keystore/bundle/native-vault-store.js',1024*1024)
     if vault:
         from native_vault_checks import vault_assets
         vault_original=vault_assets(root,work,assets)
@@ -212,7 +221,7 @@ def main():
         proxy=ThreadingHTTPServer(('127.0.0.1',0),Proxy);threading.Thread(target=proxy.serve_forever,daemon=True).start();url=f'http://127.0.0.1:{proxy.server_port}'
         if ui_proof:
             from native_chat_ui_checks import run_ui
-            run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=url+'/encrypted/' if embedded else url,restart=(lambda:(stop(),start())) if embedded else None)
+            run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=url+'/encrypted/' if embedded else url,restart=(lambda:(stop(),start())) if embedded else None,vault=vault_ui)
             if embedded:
                 proof['ui_packaging']='compiled native Go server assets; proxy only injects generated assertions'
                 proof['native_embedded_ui']=True
