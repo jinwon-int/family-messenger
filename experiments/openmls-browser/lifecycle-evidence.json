@@ -118,5 +118,30 @@
     "browser SIGKILL / server restart during replacement",
     "human/mobile/CF/backup/production capacities/fleet acceptance",
     "whole valid rollback protection"
-  ]
+  ],
+  "independent_review": {
+    "head": "8f0fa69371d8fefe598c2a8d8c4f74be544cdd91",
+    "verdict": "clean",
+    "findings": 0,
+    "lifecycle_checks": 13,
+    "original_checks": 9,
+    "receipts": {
+      "lifecycle.json": {
+        "path": "/root/work/family-messenger/artifacts/lifecycle-reviewed-b9un3d08/lifecycle.json",
+        "sha256": "78e7eed19b1df8976f2c252fc4019f114bd311e2c4e0e4f820ab7b86cc666e83"
+      },
+      "original.json": {
+        "path": "/root/work/family-messenger/artifacts/lifecycle-reviewed-b9un3d08/original.json",
+        "sha256": "f14103a1e03079425101618a0282c9cb1708151649c239d01050192bdbc6b95a"
+      },
+      "review.json": {
+        "path": "/root/work/family-messenger/artifacts/lifecycle-reviewed-b9un3d08/review.json",
+        "sha256": "d29166f604cdfce302a521ca653381eb55c4b76eb1761854ad8297153f5e0c00"
+      }
+    }
+  },
+  "local_regressions": {
+    "python_unittest": 111,
+    "go_access": "go test -count=1 -race ./internal/access passed; no Go code change"
+  }
 }
