@@ -53,7 +53,7 @@ func (s *Store) successorReservation(context successorContext) (successorReserva
 	}
 	// No later target phase has been qualified yet. Do not treat a changed or
 	// partially missing target as a fresh reservation, or repair it silently.
-	r, e := s.mlsRoom(room)
+	r, e := s.loadMLSRoom(room, true)
 	if e != nil {
 		return p, true, e
 	}

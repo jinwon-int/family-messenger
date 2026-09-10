@@ -317,3 +317,41 @@ func TestSuccessorReservationConflictRaceAndQuota(t *testing.T) {
 		t.Fatal("quota allocated target")
 	}
 }
+
+func TestSuccessorReservationCorruptStateCannotUseOrdinaryNativeRoutes(t *testing.T) {
+	for _, kind := range []string{"duplicated-active-pins", "substituted-active-members"} {
+		t.Run(kind, func(t *testing.T) {
+			s, _, c, call := successorContextFixture(t)
+			q := reservationRequest(t, call("owner", "GET", successorPath, nil, "alice-next", 200))
+			call("owner", "POST", successorReservationPath, q, "alice-next", 201)
+			group := "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+			if kind == "duplicated-active-pins" {
+				bob, e := activePin(c.Devices, "bob-first")
+				if e != nil {
+					t.Fatal(e)
+				}
+				pins, _ := json.Marshal([]MLSPin{bob, bob})
+				_, e = s.db.Exec("UPDATE mls_rooms SET group_id=?,creator='bob-first',peer='bob-first',pins=?,revision=3,epoch=1,phase='ready',next_seq=4 WHERE room='target'", group, pins)
+				if e != nil {
+					t.Fatal(e)
+				}
+			} else {
+				// Even a reserved-state directory must not look like a normal fresh
+				// context after damaged membership, causing client slot consumption.
+				if _, e := s.db.Exec("UPDATE members SET actor='charlie' WHERE room='target' AND actor='alice'"); e != nil {
+					t.Fatal(e)
+				}
+			}
+			for _, endpoint := range []string{"log", "context", "status", "preparation"} {
+				call("family", "GET", "/v1/mls/rooms/target/"+endpoint, nil, "bob-first", 403)
+			}
+			call("family", "POST", "/v1/mls/reservations", map[string]string{"room": "target", "peer_actor": "alice"}, "bob-first", 403)
+			call("family", "POST", "/v1/mls/rooms/target/log", MLSRequest{"forbidden-corrupt-send", "bob-first", group, "application", 3, 1, "", []byte("generated ciphertext")}, "bob-first", 403)
+			var n int
+			s.db.QueryRow("SELECT count(*) FROM mls_events WHERE room='target'").Scan(&n)
+			if n != 0 {
+				t.Fatal("ordinary route appended to inactive successor")
+			}
+		})
+	}
+}

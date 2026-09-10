@@ -50,8 +50,8 @@ browser IndexedDB or the separately reloaded policy store.
 
 ## Admission stays closed
 
-Ordinary MLS bind explicitly rejects successor reservations, including a peer
-trying to reuse ordinary context preparation. Candidate keys remain outside
+All ordinary MLS room reads and bind routes explicitly reject successor reservations, including a peer
+trying to reuse ordinary context preparation. Only the separately authorized reservation reader may inspect its empty target. A corrupt ready-phase or active-pin declaration cannot open the ordinary log/status/context routes. Candidate keys remain outside
 DeviceBindings/activePin; old-room delivery still denies because its predecessor
 is retired. Legacy text/media/member mutation cannot convert this new MLS room.
 The old source provider, pending client frames, outbox, cursor and all server
