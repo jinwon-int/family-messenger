@@ -18,6 +18,7 @@ def successor_assets(root, work, assets, proof, original_only=False):
     def build(raw, name):
         result = subprocess.run(['node','node_modules/esbuild/bin/esbuild','--bundle','--format=esm','--platform=browser','--target=es2023','--minify',
             '--sourcefile=successor-peer-store.js','--external:/pkg/*','--external:/trust-directory.js'],input=raw,cwd=cwd,check=True,capture_output=True)
+        assert len(result.stdout)<1024*1024
         fd=os.open(work/name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
         with os.fdopen(fd,'wb') as f:f.write(result.stdout);f.flush();os.fsync(f.fileno())
         return result.stdout
@@ -43,7 +44,6 @@ def successor_assets(root, work, assets, proof, original_only=False):
     worker=safe_bytes(root/'experiments/openmls-browser/web/successor-peer-worker.js',65536)
     worker=worker.replace(b"self.onmessage=async({data})=>{",b"self.onmessage=async({data})=>{if(data?.testRelease){self.testRelease?.();return;}if(data?.testSetup){Object.assign(self,data.testSetup);return;}")
     worker=worker.replace(b'self.postMessage({id,ok:true,result,memory_bytes:memory});',b'self.postMessage({id,ok:true,result:{...result,test_source_digest:self.testSourceDigest},memory_bytes:memory});')
-    worker=worker.replace(b'}catch(_){close();self.postMessage({id,ok:false,memory_bytes:0});',b'}catch(error){close();self.postMessage({id,ok:false,memory_bytes:0,test_error:String(error?.stack)});')
     assets['/successor-peer-worker.js']=worker
     assets['/main.js']=assets['/main.js'].replace(b"name==='fork'?'./aggregate-fork-worker.js'",b"name==='fork'?'./successor-peer-worker.js'")
     assets['/main.js']=assets['/main.js'].replace(b"||method==='fork'",b"||method==='fork'||method==='successor'")
