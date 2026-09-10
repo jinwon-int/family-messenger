@@ -115,6 +115,15 @@ unconfirmed; an unchanged rerun passed all 45 checks without extending the
 deadline. The successful receipt does not establish that this fixture can never
 be intermittent. CI still has to qualify the final submitted head.
 
+The first PR CI attempt found a separate deterministic test regression: two
+default-mode turn fixtures reassigned the command-line `args` variable to a
+dictionary. The new startup-label check then failed at the later server restart.
+`fc0aa68` names both dictionaries `turn_args`, preserving configuration across
+restart. Runtime and asset bytes are unchanged; the evidence retains both failed
+CI runs, an independent old-head reproduction, and passing fixed default (15)
+and control (24) browser checks. This failure is distinct
+from the intermittent preparation marker above.
+
 No Go, Rust, age or sodium dependency versions change. Existing inventories
 remain: Go 2 direct/0 transitive; OpenMLS 8 direct/151 transitive WASM crates;
 age/sodium 2 direct/8 transitive instances. Go/cgo/libc are runtime requirements;

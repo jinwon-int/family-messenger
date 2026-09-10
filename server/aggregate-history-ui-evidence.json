@@ -114,5 +114,40 @@
     "reviewed_head": "96b93be53058f2643ea0213af51f700b03014116",
     "verdict": "CLEAN",
     "scope": "Runtime and test qualification; final evidence metadata reviewed separately"
+  },
+  "ci_followup": {
+    "failed_head": "0047feeec9883aa9990737559d258d9bd602561e",
+    "failed_workflows": [
+      34448709023,
+      34448721315
+    ],
+    "failure": "Default native browser restart accessed command-line args after two turn fixtures reassigned it to a dict; AttributeError before newer UI steps.",
+    "scope": "Test harness regression introduced by new startup mode assertion, unrelated to prior intermittent preparation marker timeout.",
+    "fix_commit": "fc0aa68",
+    "fix": "Rename both local turn fixture dictionaries to turn_args; command-line Namespace remains intact.",
+    "failure_logs": "artifacts/aggregate-history-ci-fix-womrzkcy",
+    "runtime_assets_changed": false,
+    "validation": "Independent exact old default failure reproduced; fixed default15/15 and controls24/24 passed. Source diff only fixture names, UI returns before those paths. Exact-head CI remains required.",
+    "fixed_default": {
+      "receipt": "artifacts/aggregate-history-ci-fix-womrzkcy/fixed-default.json",
+      "checks": 15,
+      "sha256": "647b3f211d22d3c20ea5c0feff859d0916d59c447304e31d12130297519af0d6"
+    },
+    "fixed_controls": {
+      "receipt": "artifacts/aggregate-history-ci-fix-womrzkcy/fixed-controls.json",
+      "checks": 24,
+      "sha256": "f8f61f377d0d66770069a2e465192945cfc7a9e529556ac6151a9c61b5c054ac"
+    },
+    "old_default_failure": {
+      "receipt": "artifacts/aggregate-history-ci-fix-womrzkcy/before-default.json",
+      "checks_completed": 14,
+      "sha256": "c3a447e5d19518ab90f2ac10ecc1bfb6da3abab75185ea252816de867076f580"
+    },
+    "independent_review": {
+      "path": "artifacts/aggregate-history-ci-fix-womrzkcy/independent-review.json",
+      "sha256": "106b83960f8cf33821a1332848df5cf88276db399906331378a7126ada061b6c",
+      "verdict": "CLEAN",
+      "reviewed_head": "fc0aa68"
+    }
   }
 }
