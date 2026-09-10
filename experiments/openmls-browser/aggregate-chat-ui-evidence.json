@@ -1,0 +1,141 @@
+{
+  "version": 1,
+  "scope": "Isolated generated-data DOM UI for complete AggregateStore; not Go-served, deployed or human-use acceptance",
+  "runtime_head": "d99cfe5fa69b93dbfcc8313e5ae9ee3a863f08cd",
+  "new_runtime_dependencies": 0,
+  "new_build_dependencies": 0,
+  "selected_path": "aggregate-native-worker -> complete aggregate-store; protected prepared-fork-worker",
+  "separate_generic_pr54": "Preserved code/tests; not imported or automatically trusted by this UI",
+  "preserved": "All old9/15/21 manifests and sources, profiles and prepared outputs unchanged",
+  "assets": [
+    {
+      "url": "/",
+      "bytes": 3563,
+      "gzip_bytes": 1560,
+      "sha256": "321ec82d594a700749fc9803f23d27c0e27802fe82c38c9f7d298ee4696ba063"
+    },
+    {
+      "url": "/chat.css",
+      "bytes": 961,
+      "gzip_bytes": 501,
+      "sha256": "de99fa320fb038096057fe81cfe003e7163b57dd0af46730e8de3bb1c4c92a91"
+    },
+    {
+      "url": "/native-worker.js",
+      "bytes": 21655,
+      "gzip_bytes": 6145,
+      "sha256": "ca0f105d7afc5a0954e782548e3d09b2412fca3318bfae6e13515484b93ab18a"
+    },
+    {
+      "url": "/trust-directory.js",
+      "bytes": 3086,
+      "gzip_bytes": 1371,
+      "sha256": "63079de10d73ac4d0664b07de7bcacc4e4abe551977a293cfa4144029a80b04e"
+    },
+    {
+      "url": "/pkg/family_mls_browser_experiment.js",
+      "bytes": 29748,
+      "gzip_bytes": 4995,
+      "sha256": "b937381156c39a683d8f42ff96cfa608f3c6a90de841795ff8d116512729789f"
+    },
+    {
+      "url": "/pkg/family_mls_browser_experiment_bg.wasm",
+      "bytes": 1452247,
+      "gzip_bytes": 507122,
+      "sha256": "94482525c6e2deaa95183e91a86ca83cf46c89af97ca149006abbeaea9bdd13d"
+    },
+    {
+      "url": "/aggregate-native-worker.js",
+      "bytes": 227,
+      "gzip_bytes": 164,
+      "sha256": "9b931c11ca5e8221b05ba8df061f363a7bc2fe2ba35caddf13d26c86b4cfdd94"
+    },
+    {
+      "url": "/aggregate-store.js",
+      "bytes": 601367,
+      "gzip_bytes": 211271,
+      "sha256": "c5c82ef05af684395a645269d7dab00630665b95fde0e00e38d6ac4e51409ef5"
+    },
+    {
+      "url": "/prepared-fork-worker.js",
+      "bytes": 4090,
+      "gzip_bytes": 1692,
+      "sha256": "d994a55bead63e92c79ec9c4b0f63d2423b67eb1090a2eeaeb0d88e5a79c9a1a"
+    },
+    {
+      "url": "/aggregate-chat.js",
+      "bytes": 19561,
+      "gzip_bytes": 6669,
+      "sha256": "3d2b08a26a60b3e4a20bc576578a0ae73a13952611feddcfafee83fd2eeb5510"
+    }
+  ],
+  "total_served_bytes": 2136505,
+  "crypto_inventory": "../device-keystore/aggregate-inventory.json",
+  "notices_required_for_packaging": [
+    "THIRD-PARTY-NOTICES.txt",
+    "RUST-STDLIB-NOTICES.html",
+    "../device-keystore/THIRD-PARTY-NOTICES.txt",
+    "../device-keystore/SODIUM-NOTICES.txt"
+  ],
+  "author_receipt": {
+    "path": "artifacts/native-aggregate-ui-qmdsrxlb/verification.json",
+    "sha256": "9877139aff5ffc9ed8fa6845b2f9120f722012e9b352b7cff92bc5ff709f9ff1",
+    "checks": 29,
+    "all_true": true,
+    "limits": "First run29 excludes later added pending-source DOM case; independently verified in frozen30 receipt"
+  },
+  "local_checks": {
+    "python022": 120,
+    "python077": 120,
+    "go_race": true,
+    "go_vet": true,
+    "go_source": "identical reviewed cf38122; binaries retained from that independent review"
+  },
+  "review": {
+    "verdict": "clean",
+    "head": "d99cfe5fa69b93dbfcc8313e5ae9ee3a863f08cd",
+    "findings": [],
+    "path": "artifacts/aggregate-ui-review-bnl0k8kh/verdict.json",
+    "sha256": "97d50d70f937dcfcea89a45f0cdc69c19e860df70db8f65914aa5ac6506ca6fd"
+  },
+  "resource_limits": {
+    "wasm_per_worker_bytes": 134217728,
+    "js_scrypt_scratch_bytes": 268435456,
+    "additional_disk_bytes": 5368709120,
+    "note": "unchanged cryptographic quotas; desktop JS/browser aggregate memory and mobile acceptance remain separate"
+  },
+  "remaining_gates": [
+    "immutable own-server packaging",
+    "aggregate historical recovery and device lifecycle",
+    "real CF account gate",
+    "mobile resources",
+    "backup restore",
+    "production capacity and actor limits",
+    "all12 original-node runtime binding",
+    "Yukson isolated candidate and cutover"
+  ],
+  "independent_browser": {
+    "head": "d99cfe5fa69b93dbfcc8313e5ae9ee3a863f08cd",
+    "path": "/root/work/family-messenger/artifacts/aggregate-ui-review-bnl0k8kh/aggregate-browser.json",
+    "original_path": "/root/work/family-aggregate-review-d99cfe5/artifacts/native-aggregate-ui-sph60yq5/verification.json",
+    "sha256": "fc7277f97b4951715be5f03fac1e5a3ae1650c42a673821fe736e88d20bd83dc",
+    "checks": 30,
+    "all_true": true,
+    "original_served_assets_equal": true
+  },
+  "independent_page_boundaries": {
+    "path": "artifacts/aggregate-ui-review-bnl0k8kh/page-boundaries-final.json",
+    "original_path": "/root/work/family-aggregate-review-d99cfe5/artifacts/review-ui-boundaries.json",
+    "sha256": "1842500dc969e154893bcbb82d56d0bf452682f37fdd6f872c96d5ba41de17d0",
+    "checks": 8,
+    "all_true": true,
+    "scope": "Actual Chromium UI with separate generated worker/HTTP fixtures; page lifetime/validation only, no crypto qualification"
+  },
+  "independent_legacy_vault_ui": {
+    "path": "artifacts/aggregate-ui-review-bnl0k8kh/legacy-vault.json",
+    "sha256": "a9e7a64e6c06aca6f044caf69ed3b0739b74d3b9c11baf310099724f4d2e8996",
+    "checks": 23,
+    "all_true": true,
+    "note": "Actual legacy single-room UI with unchanged default WASM/driver; exercises shared test-helper parameterization"
+  }
+}

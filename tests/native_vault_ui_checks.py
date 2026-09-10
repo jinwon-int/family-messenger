@@ -5,10 +5,10 @@ import re
 from playwright.sync_api import expect
 
 
-def checks(a,b,contexts,pages,url,open_page,click_open,passwords,proof):
+def checks(a,b,contexts,pages,url,open_page,click_open,passwords,proof,database='family-mls-vault-synthetic-ui-alice-family'):
     # Public ciphertext only; never read decoded private provider/cache in page.
     def snapshot(p):
-        return p.evaluate('''async()=>{const d=await new Promise((r,j)=>{const q=indexedDB.open('family-mls-vault-synthetic-ui-alice-family');q.onsuccess=()=>r(q.result);q.onerror=j});const v=await new Promise((r,j)=>{const q=d.transaction('device').objectStore('device').get('state');q.onsuccess=()=>r(q.result);q.onerror=j});d.close();return {keys:Object.keys(v).sort(),capsule:Array.from(v.capsule),header:Array.from(v.header),cipher:Array.from(v.cipher),revision:v.revision}}''')
+        return p.evaluate('''async database=>{const d=await new Promise((r,j)=>{const q=indexedDB.open(database);q.onsuccess=()=>r(q.result);q.onerror=j});const v=await new Promise((r,j)=>{const q=d.transaction('device').objectStore('device').get('state');q.onsuccess=()=>r(q.result);q.onerror=j});d.close();return {keys:Object.keys(v).sort(),capsule:Array.from(v.capsule),header:Array.from(v.header),cipher:Array.from(v.cipher),revision:v.revision}}''',database)
     before=snapshot(a)
     assert before['keys']==sorted(['v','identity','room','vault','revision','capsule','header','cipher'])
     for i,p in enumerate(pages):
@@ -52,11 +52,11 @@ def checks(a,b,contexts,pages,url,open_page,click_open,passwords,proof):
     proof['checks']['late_bootstrap_after_lock_cannot_unlock_or_restore_protected_view']=True
     # Corruption in the actual UI database, not merely another namespace.
     a.locator('#lock').click()
-    a.evaluate('''async()=>{const d=await new Promise(r=>{const q=indexedDB.open('family-mls-vault-synthetic-ui-alice-family');q.onsuccess=()=>r(q.result)});await new Promise((r,j)=>{const t=d.transaction('device','readwrite'),s=t.objectStore('device'),q=s.get('state');q.onsuccess=()=>{window.savedEncryptedVault=q.result;const v=structuredClone(q.result);v.cipher[v.cipher.length-1]^=1;s.put(v,'state')};t.oncomplete=r;t.onabort=j});d.close()}''')
+    a.evaluate('''async database=>{const d=await new Promise(r=>{const q=indexedDB.open(database);q.onsuccess=()=>r(q.result)});await new Promise((r,j)=>{const t=d.transaction('device','readwrite'),s=t.objectStore('device'),q=s.get('state');q.onsuccess=()=>{window.savedEncryptedVault=q.result;const v=structuredClone(q.result);v.cipher[v.cipher.length-1]^=1;s.put(v,'state')};t.oncomplete=r;t.onabort=j});d.close()}''',database)
     damaged=snapshot(a);click_open(a)
     expect(a.locator('#status')).to_contain_text('연결 또는 기기 확인',timeout=25000)
     assert snapshot(a)==damaged
-    a.evaluate('''async()=>{const d=await new Promise(r=>{const q=indexedDB.open('family-mls-vault-synthetic-ui-alice-family');q.onsuccess=()=>r(q.result)});await new Promise((r,j)=>{const t=d.transaction('device','readwrite');t.objectStore('device').put(window.savedEncryptedVault,'state');t.oncomplete=r;t.onabort=j});d.close()}''')
+    a.evaluate('''async database=>{const d=await new Promise(r=>{const q=indexedDB.open(database);q.onsuccess=()=>r(q.result)});await new Promise((r,j)=>{const t=d.transaction('device','readwrite');t.objectStore('device').put(window.savedEncryptedVault,'state');t.oncomplete=r;t.onabort=j});d.close()}''',database)
     open_page(a)
     proof['checks']['ui_corrupt_record_retained_and_denied_no_plaintext_or_reset_fallback']=True
     # Force structured-clone failure at init. New worker must retire immediately;
