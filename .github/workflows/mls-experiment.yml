@@ -127,6 +127,7 @@ jobs:
           node experiments/device-keystore/node_modules/esbuild/bin/esbuild experiments/device-keystore/native-aggregate-vault.js --bundle --format=esm --platform=browser --target=es2023 --minify --outfile=experiments/device-keystore/bundle/native-aggregate-vault.js
           timeout 120s python tests/native_mls_browser_smoke.py --identity-context --bundle artifacts/mls-identity-context-pkg --aggregate-store experiments/device-keystore/bundle/native-aggregate-vault.js
           timeout 120s python tests/native_aggregate_server_smoke.py --bundle artifacts/mls-identity-context-pkg --aggregate-store experiments/device-keystore/bundle/native-aggregate-vault.js --binary artifacts/family-dev-trust --policy-binary artifacts/family-policy-trust
+          timeout 300s python tests/native_aggregate_capacity.py --synthetic-only --seal-sample 64
       - name: Atomic encrypted two-conversation device custody
         run: timeout 480s python tests/native_encrypted_browser_smoke.py --aggregate --bundle artifacts/mls-identity-context-pkg --binary artifacts/family-dev-trust --policy-binary artifacts/family-policy-trust
       - name: Protected aggregate chat through two actual browser UIs
