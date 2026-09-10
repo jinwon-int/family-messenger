@@ -22,7 +22,7 @@ class AssetPreparationTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.output = self.root / ('server/internal/chat/aggregateassets' if self.aggregate else 'server/internal/chat/historyassets' if self.history else 'server/internal/chat/vaultassets' if self.vault else 'server/internal/chat/mlsassets')
+        self.output = self.root / ('server/internal/chat/aggregateassets' if self.aggregate else 'server/internal/chat/historyassets_v5' if self.history else 'server/internal/chat/vaultassets' if self.vault else 'server/internal/chat/mlsassets')
         self.output.parent.mkdir(parents=True)
         self.manifest = self.output.parent / ('aggregate_bundle.json' if self.aggregate else 'history_bundle.json' if self.history else 'vault_bundle.json' if self.vault else 'mls_bundle.json')
         self.bundle = self.root / 'bundle'
@@ -206,18 +206,18 @@ class HistoryAssetPreparationTests(AssetPreparationTests):
 
     def test_history_profiles_and_test_code_are_not_substitutable(self):
         original=self.manifest.read_bytes()
-        for field,value in [('version',2),('source','tests/fixtures/native-history/forge-worker.js'),('url','/history-forge-worker.js')]:
+        for field,value in [('version',2),('version',3),('source','tests/fixtures/native-history/forge-worker.js'),('url','/history-forge-worker.js')]:
             pin=json.loads(original)
             if field=='version':pin[field]=value
             else:pin['files'][-1][field]=value
             self.manifest.write_text(json.dumps(pin,indent=2)+'\n')
             self.rejected();self.assertFalse(self.output.exists())
         self.manifest.write_bytes(original)
-        for name in ('mlsassets','vaultassets'):
+        for name in ('mlsassets','vaultassets','historyassets','aggregateassets'):
             old=self.output.parent/name;old.mkdir(mode=0o700);(old/'retained').write_bytes(b'previous bundle')
         m.prepare(self.bundle,history=True)
         self.assertEqual(len(list(self.output.iterdir())),21)
-        for name in ('mlsassets','vaultassets'):self.assertEqual((self.output.parent/name/'retained').read_bytes(),b'previous bundle')
+        for name in ('mlsassets','vaultassets','historyassets','aggregateassets'):self.assertEqual((self.output.parent/name/'retained').read_bytes(),b'previous bundle')
 
     def test_history_workers_and_private_output_links_denied(self):
         source=next(p for p in self.sources if p.name=='history-export-worker.js')
@@ -231,11 +231,11 @@ class AggregateAssetPreparationTests(AssetPreparationTests):
     aggregate = True
 
     def test_independent_profile_preserves_all_previous_outputs(self):
-        for name in ('mlsassets','vaultassets','historyassets'):
+        for name in ('mlsassets','vaultassets','historyassets','historyassets_v5'):
             old=self.output.parent/name;old.mkdir(mode=0o700);(old/'retained').write_bytes(b'previous bundle')
         m.prepare(self.bundle,aggregate=True)
         self.assertEqual(len(list(self.output.iterdir())),14)
-        for name in ('mlsassets','vaultassets','historyassets'):
+        for name in ('mlsassets','vaultassets','historyassets','historyassets_v5'):
             self.assertEqual((self.output.parent/name/'retained').read_bytes(),b'previous bundle')
         for other in ('vault','history'):
             with self.assertRaises(ValueError):m.prepare(self.bundle,aggregate=True,**{other:True})

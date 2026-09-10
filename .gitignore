@@ -24,3 +24,5 @@ server/internal/chat/vaultassets/
 server/internal/chat/historyassets/
 
 server/internal/chat/aggregateassets/
+
+/server/internal/chat/historyassets_v5/

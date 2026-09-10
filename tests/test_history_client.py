@@ -38,11 +38,6 @@ console.log('immutable before/after ready, terminal close, callback failure, bac
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertIn('pass',result.stdout)
 
-
-class AggregateHistoryCallerTests(HistoryCallerTests):
-    module = 'aggregate-history-client.js'
-    reader = 'AggregateHistoryReader'
-
     def test_metadata_and_password_caps_before_worker_creation(self):
         script = '''
 import assert from 'node:assert/strict';
@@ -55,7 +50,7 @@ const good={archive:new Uint8Array([1]),expected:{},password:'s'.repeat(32)};
 for(const value of [{...good,password:'s'.repeat(129)}, {...good,password:'short'},
  {...good,expected:{huge:'한'.repeat(1400)}}])assert.equal((await c.read(value)).ok,false);
 assert.equal(workers,0);c.close();
-'''.replace('MODULE',json.dumps((ROOT/'experiments/device-keystore'/self.module).as_uri()))
+'''.replace('AggregateHistoryReader',self.reader).replace('MODULE',json.dumps((ROOT/'experiments/device-keystore'/self.module).as_uri()))
         result=subprocess.run(['node','--input-type=module','-e',script],text=True,capture_output=True,timeout=10)
         self.assertEqual(result.returncode,0,result.stderr)
 
@@ -77,6 +72,11 @@ c.close();assert.equal((await pending).ok,false);assert(w.dead);
 // not overwrite or orphan that operation's handle.
 let inner=null,reenter=false;c=new AggregateHistoryReader(()=>{if(!reenter){reenter=true;inner=c.read(argument())}});
 assert.equal((await c.read(argument())).ok,false);assert(c.active);const live=workers.at(-1);c.close();assert.equal((await inner).ok,false);assert(live.dead);
-'''.replace('MODULE',json.dumps((ROOT/'experiments/device-keystore'/self.module).as_uri()))
+'''.replace('AggregateHistoryReader',self.reader).replace('MODULE',json.dumps((ROOT/'experiments/device-keystore'/self.module).as_uri()))
         result=subprocess.run(['node','--input-type=module','-e',script],text=True,capture_output=True,timeout=10)
         self.assertEqual(result.returncode,0,result.stderr)
+
+
+class AggregateHistoryCallerTests(HistoryCallerTests):
+    module = 'aggregate-history-client.js'
+    reader = 'AggregateHistoryReader'

@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 3,
   "worker_state": 4,
   "files": [
     {
@@ -150,8 +150,8 @@
       "file": "history-client.js",
       "url": "/history-client.js",
       "type": "text/javascript; charset=utf-8",
-      "bytes": 2691,
-      "sha256": "cc355c3804f7f88225f8811c3a3d5730554fc6bd6241891c182f453cfced02f5",
+      "bytes": 2032,
+      "sha256": "e8e11aaea36eb642cb3104e661a04fd8eb55c7af843a4e8cfeea772c92d70d46",
       "source": "experiments/device-keystore/history-client.js"
     },
     {
