@@ -1,11 +1,14 @@
 // Synthetic multi-conversation aggregate custody container (#49 first slice).
 // One device-scoped namespace holds at most two complete conversation records
 // under ONE authenticated encrypted record guarded by ONE strict IndexedDB CAS.
-// This is the container boundary only: no MLS provider binding, no signed
-// admission, no peer pins and no UI live here. The format, label, capsule
-// payload and AAD are deliberately disjoint from native-vault-store.js so the
-// two profiles cannot be confused; the old single-room databases are never
-// opened, imported, rewritten or deleted by this store.
+// This is the container boundary only: no signed admission, no peer pins and no
+// UI live here. The MLS identity binding (#49 second slice) seals the aggregate
+// under the caller-supplied signer public key: the key rides in the capsule
+// payload and is bound into the AAD (label version 2), so a record sealed under
+// one identity never opens under another. The format, label, capsule payload
+// and AAD are deliberately disjoint from native-vault-store.js so the two
+// profiles cannot be confused; the old single-room databases are never opened,
+// imported, rewritten or deleted by this store.
 import {Encrypter,Decrypter} from 'age-encryption';
 let sodium;
 const instantiate=WebAssembly.instantiate,memories=[];
@@ -68,7 +71,7 @@ export class AggregateVaultStore {
   if(exact(a,'v,actor')&&a.v===0)return exact(b,'v,actor')&&b.v===0&&a.actor===b.actor;
   this.outer(a);this.outer(b);return ['v','actor','vault','revision'].every(k=>a[k]===b[k])&&['capsule','header','cipher'].every(k=>sameBytes(a[k],b[k]));
  }
- aad(revision){return enc.encode(JSON.stringify(['family-native-aggregate',1,this.database,this.actor,this.root.id,revision]));}
+ aad(revision){return enc.encode(JSON.stringify(['family-native-aggregate',2,this.database,this.actor,this.root.id,this.root.pub,revision]));}
  async key(record,plain,devicePub){
   if(this.root){if(this.create||record.vault!==this.root.id||record.revision<this.root.seen||!sameBytes(record.capsule,this.root.capsule)||this.root.pub!==devicePub)fail();return;}
   await this.lock('family-native-aggregate-kdf',async live=>{

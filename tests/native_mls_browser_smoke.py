@@ -18,7 +18,11 @@ def main():
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--lifecycle', action='store_true', help='isolated replacement library qualification, no native enrollment')
     modes.add_argument('--identity-context', action='store_true', help='isolated same-signer candidate, no native custody')
+    parser.add_argument('--aggregate-store', type=Path,
+                        help='identity-context only: bundled native-aggregate-vault.js for the identity-bound custody proof')
     args = parser.parse_args()
+    if args.aggregate_store and not args.identity_context:
+        parser.error('--aggregate-store requires --identity-context')
     os.umask(0o077)
     repo = Path(__file__).resolve().parents[1]
     prefix = 'native-identity-context-' if args.identity_context else 'native-mls-lifecycle-' if args.lifecycle else 'native-mls-browser-'
@@ -32,6 +36,12 @@ def main():
     if args.identity_context:
         paths['/worker.js'] = repo / 'experiments/openmls-browser/web/identity-context-worker.js'
         del paths['/durable-worker.js']
+    if args.identity_context and args.aggregate_store:
+        # The identity-bound aggregate custody proof (#49 second slice) rides
+        # on the same disposable page: one bundled store plus its fixture
+        # worker, both served same-origin under the fixture CSP.
+        paths['/native-aggregate-vault.js'] = args.aggregate_store
+        paths['/aggregate-vault-worker.js'] = repo / 'experiments/openmls-browser/web/aggregate-vault-worker.js'
     for name in ['family_mls_browser_experiment.js', 'family_mls_browser_experiment_bg.wasm']:
         paths['/pkg/' + name] = args.bundle / name
     assets = {}
@@ -110,9 +120,13 @@ def main():
             if args.lifecycle or args.identity_context:
                 if args.identity_context:
                     from native_identity_context_checks import run
+                    run(pages, call, receipt)
+                    if args.aggregate_store:
+                        from native_aggregate_binding_checks import run as run_binding
+                        run_binding(pages, call, receipt)
                 else:
                     from native_lifecycle_checks import run
-                run(pages, call, receipt)
+                    run(pages, call, receipt)
                 for context in contexts:
                     context.close()
                 browser.close()
