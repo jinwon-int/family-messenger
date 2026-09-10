@@ -1,13 +1,13 @@
 # Aggregate custody container: multiple conversations under one sealed record
 
-Status: **isolated runnable container qualification, the first slice of the
-new device-vault namespace defined by
-[IDENTITY-CONTEXT.md](IDENTITY-CONTEXT.md) and tracked as #49; the second
-slice (#49, this document) binds the seal to the REAL MLS signer identity from
-the same candidate.** It proves the custody container and its signer binding.
-It does not fetch signed admission, does not establish peer pins and is not
-replacement activation, encrypted-IDB production storage or a human profile
-migration.
+Status: **isolated runnable qualification, the first two slices of the new
+device-vault namespace defined by
+[IDENTITY-CONTEXT.md](IDENTITY-CONTEXT.md) and tracked as #49: the custody
+container, its REAL MLS signer binding (#51), and now the SIGNED ADMISSION
+contract.** It proves the container, the signer binding and the admission
+enforcement. Peer pins are committed only as far as the admission grants them;
+it is not replacement activation, encrypted-IDB production storage or a human
+profile migration.
 
 The complete native-state/admission continuation is documented in
 [the device custody adapter](../device-keystore/AGGREGATE-VAULT.md). This earlier
@@ -31,11 +31,19 @@ namespace alongside, never replacing, the single-room
   (`family-native-aggregate`, label version 2) binding database/actor/vault-id/
   **signer public key**/revision, and a decoded-envelope guard that refuses the
   single-room record shape.
-- The signer public key rides in the capsule payload and the AAD, so a record
-  sealed under one MLS identity never opens under another: the second slice
-  seals the namespace under the real signer extracted from the qualified
-  identity-context candidate and denies unlocking with a different real signer
-  or a synthetic key no MLS context ever produced.
+- The signer public key rides in the capsule payload and the AAD (label
+  version 2), so a record sealed under one MLS identity never opens under
+  another: the second slice seals the namespace under the real signer
+  extracted from the qualified identity-context candidate and denies unlocking
+  with a different real signer or a synthetic key no MLS context ever produced.
+- **Every write carries a fresh Ed25519-signed admission** received outside
+  IndexedDB (the per-write `admit()` re-read): the signature covers the rooms,
+  actor, device id, signer key, peer pins, revision and expiry under the fixed
+  policy public key; the admission grants the revision (current or next) and
+  the fresh re-received document must match the verified one exactly.
+- The committed rooms and peer pins live INSIDE the sealed plaintext and in
+  the capsule payload/AAD (label version 3): they are immutable after the
+  first seal — a later admission that changes them cannot seal a record.
 - Every write re-seals the whole aggregate with `TAG_FINAL` and commits through
   **one strict durability readwrite transaction** whose exact-bytes CAS compare
   runs inside the transaction. An unchanged candidate is an exact retry: no
@@ -72,14 +80,19 @@ commit boundary with no torn state**, lost-reply-after-commit exact retry
 without double advance, and foreign single-room profile preservation.
 `aggregate-evidence.json` records the receipt; CI runs the same harness.
 
-The identity binding slice (`#49` second slice) runs on the identity-context
-harness: the candidate signer key from the qualified two-browser proof seals a
-namespace, the same identity reopens and advances it across a worker restart, a
-different real signer and a signerless synthetic key are both denied at unlock
-with the committed record untouched, and a synthetic-key namespace stays
-isolated from the real-signer one. Five checks are recorded in the
-identity-context verification receipt; CI runs the same harness with the
-bundled store.
+The identity binding slice (`#49` second slice) and the signed-admission slice
+run on the identity-context harness: the candidate signer key from the
+qualified two-browser proof seals a namespace under a signed admission, the
+same identity reopens and advances it across a worker restart, a different real
+signer and a signerless synthetic key are both denied at unlock with the
+committed record untouched, a synthetic-key namespace stays isolated from the
+real-signer one, and the admission contract is enforced: forged signatures,
+tampered documents, expired admissions, stale revisions, changed peer pins and
+mismatched fresh re-receipts are all denied with the committed record
+untouched, while an honest admission advances the seal. The container matrix
+twelve checks pass unchanged on the new label version, and thirteen checks are
+recorded in the identity-context verification receipt; CI runs the same
+harness with the bundled store.
 
 ## Costs and limits
 

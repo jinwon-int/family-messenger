@@ -42,6 +42,13 @@ def main():
         # worker, both served same-origin under the fixture CSP.
         paths['/native-aggregate-vault.js'] = args.aggregate_store
         paths['/aggregate-vault-worker.js'] = repo / 'experiments/openmls-browser/web/aggregate-vault-worker.js'
+        signer = args.aggregate_store.parent / 'aggregate-policy-signer.js'
+        signer.write_bytes(b"import{policySigner,policyKeypair} from '/native-aggregate-vault.js';"
+                           b"window.policySigner=policySigner;window.policyKeypair=policyKeypair;")
+        paths['/aggregate-policy-signer.js'] = signer
+        # The signer is a static module on the page (CSP script-src 'self'):
+        # it stands in for the admission server, on the page, outside workers.
+        paths['/'] = repo / 'tests/fixtures/aggregate-vault/page.html'
     for name in ['family_mls_browser_experiment.js', 'family_mls_browser_experiment_bg.wasm']:
         paths['/pkg/' + name] = args.bundle / name
     assets = {}
@@ -124,6 +131,8 @@ def main():
                     if args.aggregate_store:
                         from native_aggregate_binding_checks import run as run_binding
                         run_binding(pages, call, receipt)
+                        from native_aggregate_admission_checks import run as run_admission
+                        run_admission(pages, call, receipt)
                 else:
                     from native_lifecycle_checks import run
                     run(pages, call, receipt)
