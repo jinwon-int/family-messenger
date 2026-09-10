@@ -71,5 +71,11 @@
   "independent target peer pins and immutable intent/room/device bindings",
   "native transport binding: ordered native CAS, targeted Welcome and ack barrier",
   "capacity measurement beyond two conversation records"
- ]
+ ],
+ "historical_evidence": {
+  "source_head": "20386ef3f3cd59979be3433aa0ea5f5da1621222",
+  "scope": "Preserved PR50 first-slice evidence only; hashes and AAD describe that source, not the later PR51 or complete native adapter.",
+  "current_contract": "AGGREGATE-VAULT.md; complete native continuation ../device-keystore/AGGREGATE-VAULT.md",
+  "migration": "No old container import or reinterpretation"
+ }
 }
