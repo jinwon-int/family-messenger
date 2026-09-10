@@ -84,7 +84,7 @@ def parse_manifest(data, vault=False, history=False, aggregate=False):
         return out
     m=json.loads(data,object_pairs_hook=pairs)
     sources=AGGREGATE_SOURCES if aggregate else HISTORY_SOURCES if history else VAULT_SOURCES if vault else BASE_SOURCES
-    if set(m)!={'version','worker_state','files'} or type(m['version']) is not int or m['version']!=(4 if aggregate else 3 if history else 2 if vault else 1) or type(m['worker_state']) is not int or m['worker_state']!=4 or len(m['files'])!=len(sources):raise ValueError('manifest')
+    if set(m)!={'version','worker_state','files'} or type(m['version']) is not int or m['version']!=(4 if aggregate else 5 if history else 2 if vault else 1) or type(m['worker_state']) is not int or m['worker_state']!=4 or len(m['files'])!=len(sources):raise ValueError('manifest')
     files=set()
     for entry in m['files']:
         if set(entry)!={'file','url','type','bytes','sha256','source'} or entry['file'] in files or type(entry['bytes']) is not int or not 0<entry['bytes']<=2*1024*1024:raise ValueError('entry')
@@ -101,7 +101,7 @@ def parse_manifest(data, vault=False, history=False, aggregate=False):
 
 def prepare(bundle, check=False, vault=False, history=False, aggregate=False):
     if sum((vault,history,aggregate))>1:raise ValueError('select only one asset profile')
-    output=ROOT/'server/internal/chat/aggregateassets' if aggregate else ROOT/'server/internal/chat/historyassets' if history else ROOT/'server/internal/chat/vaultassets' if vault else OUTPUT
+    output=ROOT/'server/internal/chat/aggregateassets' if aggregate else ROOT/'server/internal/chat/historyassets_v5' if history else ROOT/'server/internal/chat/vaultassets' if vault else OUTPUT
     manifest_path=ROOT/'server/internal/chat/aggregate_bundle.json' if aggregate else ROOT/'server/internal/chat/history_bundle.json' if history else ROOT/'server/internal/chat/vault_bundle.json' if vault else MANIFEST
     lock=output.parent/'.mls-build.lock'
     check_parent_chain(lock)

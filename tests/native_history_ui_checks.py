@@ -46,6 +46,20 @@ def reader_ui(a,b,contexts,url,expected,password,archive,pending_marker,proof):
     try:
         assert p.locator('#expected').input_value()==''
         open_read()
+        # Exercise the actual native-served caller, not a mocked UI label.
+        lifecycle=p.evaluate('''async arg=>{
+         const {HistoryReader}=await import('/history-client.js');
+         const Base=Worker;let created=0;window.Worker=class extends Base{constructor(...args){super(...args);created++}};
+         let once=false,c=new HistoryReader(()=>{if(!once){once=true;c.close()}});
+         const closed=await c.read({password:arg.password,expected:arg.expected,archive:new Uint8Array(arg.archive)});
+         window.Worker=Base;
+         if(closed.ok||created)return {ok:false};
+         c=new HistoryReader();const value={password:arg.password,expected:structuredClone(arg.expected),archive:new Uint8Array(arg.archive)};
+         const pending=c.read(value);value.archive=new Uint8Array(6*1024*1024+1);value.expected.identity='bob';value.password='changed';
+         const result=await pending;c.close();return {ok:result.ok,room:result.result?.room};
+        }''',{'password':password,'expected':expected,'archive':list(archive)})
+        assert lifecycle=={'ok':True,'room':expected['room']}
+        proof['checks']['native_history_caller_cleanup_close_and_owned_input_clone_verified']=True
         assert pending_marker not in p.locator('#messages').inner_text()
         assert p.locator('#messages img,iframe,video').count()==0 and p.locator('#send').count()==0
         p.evaluate("()=>{window.historyURLTimers=[];window.originalHistoryTimer=window.setTimeout;window.setTimeout=function(fn,ms,...args){if(ms===1000){historyURLTimers.push(()=>fn(...args));return 0}return originalHistoryTimer(fn,ms,...args)};window.historyFetches=0;const fetcher=window.fetch;window.fetch=function(...args){historyFetches++;return fetcher.apply(this,args)}}")

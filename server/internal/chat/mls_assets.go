@@ -23,6 +23,9 @@ var vaultManifest []byte
 //go:embed history_bundle.json
 var historyManifest []byte
 
+//go:embed history_bundle_v3.json
+var retiredHistoryManifest []byte
+
 //go:embed aggregate_bundle.json
 var aggregateManifest []byte
 var compiledAggregateAssets fs.FS
@@ -117,6 +120,31 @@ var aggregateSources = map[string]string{
 	"sodium-notices.txt":         "experiments/device-keystore/SODIUM-NOTICES.txt",
 }
 
+// Current history profile has an explicit source allowlist as well as byte pins.
+var historySources = map[string]string{
+	"chat.html":                "experiments/openmls-browser/web/chat.html",
+	"chat.css":                 "experiments/openmls-browser/web/chat.css",
+	"chat.js":                  "experiments/openmls-browser/web/chat.js",
+	"native-worker.js":         "experiments/openmls-browser/web/native-worker.js",
+	"trust-directory.js":       "experiments/openmls-browser/web/trust-directory.js",
+	"pkg.js":                   "bundle:family_mls_browser_experiment.js",
+	"pkg.wasm":                 "bundle:family_mls_browser_experiment_bg.wasm",
+	"cargo-notices.txt":        "experiments/openmls-browser/THIRD-PARTY-NOTICES.txt",
+	"rust-notices.txt":         "experiments/openmls-browser/RUST-STDLIB-NOTICES.html",
+	"vault-chat.html":          "experiments/openmls-browser/web/vault-chat.html",
+	"vault-chat.js":            "experiments/openmls-browser/web/vault-chat.js",
+	"vault-native-worker.js":   "experiments/openmls-browser/web/vault-native-worker.js",
+	"native-vault-store.js":    "experiments/device-keystore/bundle/native-vault-store.js",
+	"age-notices.txt":          "experiments/device-keystore/THIRD-PARTY-NOTICES.txt",
+	"sodium-notices.txt":       "experiments/device-keystore/SODIUM-NOTICES.txt",
+	"history.html":             "experiments/device-keystore/history.html",
+	"history.css":              "experiments/device-keystore/history.css",
+	"history-ui.js":            "experiments/device-keystore/history-ui.js",
+	"history-client.js":        "experiments/device-keystore/history-client.js",
+	"history-worker.js":        "experiments/device-keystore/bundle/history-worker.js",
+	"history-export-worker.js": "experiments/device-keystore/bundle/history-export-worker.js",
+}
+
 func loadEncryptedAssets(source fs.FS, manifest []byte) (*EncryptedAssets, error) {
 	return loadAssetProfile(source, manifest, encryptedPaths, 1)
 }
@@ -163,7 +191,7 @@ func loadAssetProfile(source fs.FS, manifest []byte, paths map[string]string, ve
 		case "cargo-notices.txt", "rust-notices.txt", "age-notices.txt", "sodium-notices.txt":
 			kind = "text/plain; charset=utf-8"
 		}
-		if entry.Type != kind || (version == 4 && aggregateSources[entry.File] != entry.Source) {
+		if entry.Type != kind || (version == 4 && aggregateSources[entry.File] != entry.Source) || (version == 5 && historySources[entry.File] != entry.Source) {
 			return nil, ErrInvalid
 		}
 		f, e := source.Open(entry.File)
@@ -194,13 +222,13 @@ func LoadVaultAssets() (*EncryptedAssets, error) {
 	return loadAssetProfile(compiledVaultAssets, vaultManifest, vaultPaths, 2)
 }
 func LoadHistoryAssets() (*EncryptedAssets, error) {
-	return loadAssetProfile(compiledHistoryAssets, historyManifest, historyPaths, 3)
+	return loadAssetProfile(compiledHistoryAssets, historyManifest, historyPaths, 5)
 }
 func LoadAggregateAssets() (*EncryptedAssets, error) {
 	return loadAssetProfile(compiledAggregateAssets, aggregateManifest, aggregatePaths, 4)
 }
 func NewEncryptedAccessHandler(store *Store, authority *access.Authority, bundle *EncryptedAssets, admission *AdmissionAuthority) (http.Handler, error) {
-	if bundle == nil || (bundle.version != 1 && bundle.version != 2 && bundle.version != 3 && bundle.version != 4) || (bundle.version == 1 && len(bundle.files) != len(encryptedPaths)) || (bundle.version == 2 && len(bundle.files) != len(vaultPaths)) || (bundle.version == 3 && len(bundle.files) != len(historyPaths)) || (bundle.version == 4 && len(bundle.files) != len(aggregatePaths)) {
+	if bundle == nil || (bundle.version != 1 && bundle.version != 2 && bundle.version != 5 && bundle.version != 4) || (bundle.version == 1 && len(bundle.files) != len(encryptedPaths)) || (bundle.version == 2 && len(bundle.files) != len(vaultPaths)) || (bundle.version == 5 && len(bundle.files) != len(historyPaths)) || (bundle.version == 4 && len(bundle.files) != len(aggregatePaths)) {
 		return nil, ErrInvalid
 	}
 	handler, e := NewAccessHandler(store, authority, admission)

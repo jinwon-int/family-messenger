@@ -123,3 +123,10 @@ replies; actual library/native-client proof is the separate full47-check receipt
 Python99 tests pass under both022 and077 umasks. No remaining reproduced finding
 was reported for this synthetic scope; native packaging and human acceptance are
 still outstanding.
+
+
+The caller lifecycle was hardened for #60: cleanup callbacks are followed by
+terminal/generation checks, and validated input is cloned before asynchronous
+worker boot. Later caller mutation cannot change the admitted archive, identity
+expectations or password. Native activation uses the reviewed version-5 history
+asset profile; previous prepared bundles remain historical artifacts.

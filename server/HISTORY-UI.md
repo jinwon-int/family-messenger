@@ -24,11 +24,13 @@ artifacts/family-dev-history-embedded --synthetic-only --synthetic-history-ui \
   --state /absolute/private-synthetic-chat --listen 127.0.0.1:18920
 ```
 
-`history_bundle.json` version 3 pins exactly 21 files: the previous 15-file vault
+`history_bundle.json` version 5 pins exactly 21 files: the previous 15-file vault
 content plus the three history UI files, caller and two archive worker bundles.
-The private build-only `historyassets/` directory is independent of `mlsassets/`
-and `vaultassets/`. Original manifests, prepared outputs and build tags are
-unchanged. No test forger, generated identity, private provider or instrumented
+The private build-only `historyassets_v5/` directory is independent of `mlsassets/`
+and `vaultassets/`. The original version-3 manifest is retained byte-for-byte as
+`history_bundle_v3.json`; previous `historyassets/` output and binaries remain
+untouched. Version 3 is retired from new runtime activation. Build tags and CLI
+selection stay the same, with no fallback to the old output. No test forger, generated identity, private provider or instrumented
 worker is embedded. Rust, age and sodium license notices remain included.
 
 Preparation shares the original cooperating build lock and validates exact
@@ -40,10 +42,10 @@ denied; there is no overwrite, pruning, repinning or automatic repair. Mixed
 
 The runtime revalidates the immutable embedded manifest and file bytes. Limits
 remain 8 KiB manifest, 2 MiB per file and 4 MiB total. Current manifest is 6,315
-bytes and content totals 4,024,687 bytes. No runtime static directory, CDN or
+bytes and content totals 4,025,346 bytes. No runtime static directory, CDN or
 Node service is introduced. An untagged binary rejects selection; a missing
 prepared bundle fails the tagged build. Invalid selected assets fail before
-opening auth policy or chat state. All three UI flags are mutually exclusive,
+opening auth policy or chat state. All four UI flags are mutually exclusive,
 including a binary built with multiple tags. A build tag alone activates nothing.
 
 Selection requires explicit nonempty signed `--auth-state`, `--synthetic-only`
@@ -57,6 +59,25 @@ no query/encoded aliases, same-origin Host/Origin constraints, no-store/nosniff,
 inert notice MIME, worker/WASM-only script allowances and no broad CORS remain.
 Unknown resources, including `/history-forge-worker.js`, are not served. Signed
 asset admission grants no device enrollment, room or owner execution privilege.
+
+## Caller lifecycle fix (#60)
+
+The previous caller could start work after its cleanup callback closed it, and
+caller-owned arguments could change after the initial size check during worker
+boot. The current caller rechecks terminal/generation/active state after cleanup,
+clones bounded input before boot, and rechecks bounds before posting. Callback
+reentry cannot orphan a new request; archive/expected/password mutation cannot
+change the admitted operation. The original failure reproductions and byte/inode
+inventory of the prior prepared output are retained with the verification record.
+
+Only `history-client.js` changes among the 21 public files. The revised profile
+uses version 5 (version 4 belongs to the separate aggregate UI) and its own output
+directory. Older binaries retain their original behavior and require an explicit
+replacement; this source change does not patch an already running binary. The
+retired manifest refers to source commit `25bf0eb`; rebuilding it requires that
+historical checkout. The active helper denies version-3 substitution and never
+rewrites its output. Default/vault/aggregate manifests, crypto/WASM, archive
+format and live data remain unchanged.
 
 ## Unchanged recovery boundary
 

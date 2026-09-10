@@ -238,10 +238,47 @@ func TestVaultAssetProfileCannotSubstituteLegacy(t *testing.T) {
 }
 
 func TestHistoryAssetIntegrityAndClosedManifest(t *testing.T) {
-	testAssetIntegrityAndClosedManifest(t, historyManifest, historyPaths, 3)
+	testAssetIntegrityAndClosedManifest(t, historyManifest, historyPaths, 5)
+}
+func TestRetiredHistoryV3CannotActivateAsCurrentHistory(t *testing.T) {
+	sum := sha256.Sum256(retiredHistoryManifest)
+	if hex.EncodeToString(sum[:]) != "2a33b7f9656df2719817ee2398432dd3070fe5715bcecae1510b32b9fcee06c9" {
+		t.Fatal("retired manifest changed")
+	}
+	files, raw := assetProfileFixture(t, retiredHistoryManifest)
+	if _, err := loadAssetProfile(files, raw, historyPaths, 5); err == nil {
+		t.Fatal("retired version accepted")
+	}
+	legacy, err := loadAssetProfile(files, raw, historyPaths, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, authority, _, _, _ := accessFixture(t)
+	if _, err := NewEncryptedAccessHandler(store, authority, legacy, nil); err == nil {
+		t.Fatal("retired profile activated")
+	}
+}
+func TestCurrentHistorySourceSubstitutionDenied(t *testing.T) {
+	files, raw := assetProfileFixture(t, historyManifest)
+	var spec encryptedManifestSpec
+	if json.Unmarshal(raw, &spec) != nil {
+		t.Fatal("fixture")
+	}
+	for i := range spec.Files {
+		if spec.Files[i].File == "history-client.js" {
+			spec.Files[i].Source = "experiments/device-keystore/aggregate-history-client.js"
+		}
+	}
+	altered, err := json.MarshalIndent(spec, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = loadAssetProfile(files, append(altered, '\n'), historyPaths, 5); err == nil {
+		t.Fatal("source substituted")
+	}
 }
 func TestHistoryAssetAdmissionRoutingAndLegacyPreservation(t *testing.T) {
-	testAssetAdmissionRoutingAndLegacyPreservation(t, historyManifest, historyPaths, 3)
+	testAssetAdmissionRoutingAndLegacyPreservation(t, historyManifest, historyPaths, 5)
 }
 func TestCompiledHistoryBundleSelectedOnlyWhenPresent(t *testing.T) {
 	bundle, err := LoadHistoryAssets()
@@ -251,7 +288,7 @@ func TestCompiledHistoryBundleSelectedOnlyWhenPresent(t *testing.T) {
 		}
 		return
 	}
-	if err != nil || len(bundle.files) != 21 || bundle.version != 3 {
+	if err != nil || len(bundle.files) != 21 || bundle.version != 5 {
 		t.Fatal(err)
 	}
 	if _, ok := bundle.files["/history-forge-worker.js"]; ok {
@@ -273,14 +310,14 @@ func TestHistoryProfileRejectsSubstitutionAndRecoveryAssetTamper(t *testing.T) {
 	}
 	for _, pin := range [][]byte{encryptedManifest, vaultManifest} {
 		files, raw := assetProfileFixture(t, pin)
-		if _, err := loadAssetProfile(files, raw, historyPaths, 3); err == nil {
+		if _, err := loadAssetProfile(files, raw, historyPaths, 5); err == nil {
 			t.Fatal("older profile substituted history")
 		}
 	}
 	for _, name := range []string{"history.html", "history.css", "history-ui.js", "history-client.js", "history-worker.js", "history-export-worker.js", "age-notices.txt", "sodium-notices.txt"} {
 		files, raw := assetProfileFixture(t, historyManifest)
 		files[name].Data[0] ^= 1
-		if _, err := loadAssetProfile(files, raw, historyPaths, 3); err == nil {
+		if _, err := loadAssetProfile(files, raw, historyPaths, 5); err == nil {
 			t.Fatal("tamper", name)
 		}
 	}
@@ -318,7 +355,7 @@ func TestAggregateSourcesAndProfileSubstitutionDenied(t *testing.T) {
 		paths   map[string]string
 		version int
 	}{
-		{encryptedManifest, encryptedPaths, 1}, {vaultManifest, vaultPaths, 2}, {historyManifest, historyPaths, 3},
+		{encryptedManifest, encryptedPaths, 1}, {vaultManifest, vaultPaths, 2}, {historyManifest, historyPaths, 5},
 	} {
 		f, r := assetProfileFixture(t, prior.raw)
 		if _, e := loadAssetProfile(f, r, aggregatePaths, 4); e == nil {
