@@ -1,0 +1,30 @@
+{
+  "scope": "Isolated intact-peer inactive successor custody worker only; explicit inner aggregate1->2 transition, no UI/static activation",
+  "runtime_direct": 2,
+  "runtime_transitive_instances": 8,
+  "runtime_instances": 10,
+  "installed_build_instances": 2,
+  "all_platform_lock_external_instances": 37,
+  "new_dependencies": 0,
+  "age": "0.3.1",
+  "libsodium_wrappers": "0.8.4",
+  "libsodium_core": "1.0.22",
+  "build": "esbuild 0.27.2, Node 22.22.2; locked package-lock.json",
+  "license_notices": [
+    "THIRD-PARTY-NOTICES.txt",
+    "SODIUM-NOTICES.txt"
+  ],
+  "bundle": {
+    "bytes": 608160,
+    "gzip_bytes": 212866,
+    "sha256": "e15897fc902a89449d18f108cb1db6689007d0fb2b42ae3d6dbf84f789970b0e"
+  },
+  "unchanged_openmls": "8 direct +151 transitive WASM crates, 197 all-target external; notices in experiments/openmls-browser",
+  "wasm_budget_bytes": 134217728,
+  "js_kdf_scratch_bytes": 268435456,
+  "kdf": "Unchanged default scrypt18, serialized origin-wide; measured separately from WASM",
+  "audit_limits": "No exact browser custody stack audit; historical libsodium audit predates secretstream. Same-origin compromise, full valid rollback after restart, recovery/mobile remain unqualified.",
+  "optional_openmls": "PR47 identity-context feature, candidate SHA94482525c6e2deaa95183e91a86ca83cf46c89af97ca149006abbeaea9bdd13d; default 9/15/21 asset pins unchanged",
+  "max_observed_combined_worker_wasm_bytes": 5636096,
+  "memory_excludes": "Separate 256MiB JS scrypt scratch, JS/browser/worker aggregate copies and concurrent workers; desktop evidence is not mobile acceptance"
+}

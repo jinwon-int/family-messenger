@@ -58,7 +58,9 @@ The old source provider, pending client frames, outbox, cursor and all server
 history are unchanged. No public declaration of private storage is accepted by
 this unit. A returned descriptor is not permission to commit a new client slot:
 the separately qualified custody/activation protocol must still enforce that
-boundary. No browser is wired to this new route yet.
+boundary. The separate [intact-peer custody experiment](../experiments/device-keystore/SUCCESSOR-PEER-CUSTODY.md)
+now reads this route solely to preserve an existing peer signer in an inactive
+encrypted target context. Candidate custody and delivery are still unavailable.
 
 Expiry/revocation also denies reads and exact retries of a previously committed
 reservation, while retaining it. Neither reloading nor restart renews the original
@@ -81,9 +83,9 @@ live database back after writes. No automatic pruning or schema downgrade exists
 
 At most 16 reservations and the existing 32 rooms are permitted; canonical public
 context is at most 4 KiB. No new dependencies, crypto, UI assets, private key
-handling, auth fallback, CORS or production services are introduced. All tests use
-generated signed loopback data and opaque server payload fixtures, not browser
-MLS or human recovery evidence.
+handling, auth fallback, CORS or production services are introduced. Server-boundary tests use
+generated signed loopback data and opaque payload fixtures; the separate browser
+custody proof is linked above and is not human recovery evidence.
 
 ```sh
 python3 tests/native_policy_smoke.py --successor --successor-context \
@@ -91,8 +93,10 @@ python3 tests/native_policy_smoke.py --successor --successor-context \
   --policy-binary /private/build/family-policy
 ```
 
-Next: qualify the intact peer and candidate's protected client custody against
-this reservation, with independent pins/intent and commit-before-output, then
+The isolated intact-peer worker qualifies signer-only storage with independent
+pins/intent and commit-before-output; its new inner format is not yet a product
+client or history-reader migration. Next: qualify the candidate's own protected
+private key and context against this reservation, then
 explicit durable declarations and separately reviewed activation/Welcome/ack.
 Human ceremony, lifecycle renewal, mobile, actual CF, isolated backups, capacity
 and fleet acceptance remain before Yukson cutover.
