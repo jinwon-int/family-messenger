@@ -126,7 +126,7 @@ func testAssetAdmissionRoutingAndLegacyPreservation(t *testing.T, pin []byte, pa
 	if e != nil {
 		t.Fatal(e)
 	}
-	h, e := NewEncryptedAccessHandler(store, authority, bundle)
+	h, e := NewEncryptedAccessHandler(store, authority, bundle, nil)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -184,7 +184,7 @@ func testAssetAdmissionRoutingAndLegacyPreservation(t *testing.T, pin []byte, pa
 	if code != 401 {
 		t.Fatal("revoked asset", code)
 	}
-	if _, e := NewEncryptedAccessHandler(store, nil, bundle); e == nil {
+	if _, e := NewEncryptedAccessHandler(store, nil, bundle, nil); e == nil {
 		t.Fatal("fixture fallback")
 	}
 }

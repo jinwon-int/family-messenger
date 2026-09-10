@@ -31,6 +31,7 @@ type Config struct {
 	People                      []Enrollment
 	Devices                     []Device
 	Successors                  *SuccessorPolicy
+	AdmissionPublic             string
 	KeysFetchedAt, KeysExpireAt int64
 }
 type Principal struct {
@@ -108,6 +109,9 @@ func clone(c Config) (Config, map[string]Enrollment, error) {
 	if e != nil {
 		return Config{}, nil, e
 	}
+	// The admission public key hex is already validated by the wire decoder;
+	// clone keeps the exact committed value so the pin survives replacement.
+	out.AdmissionPublic = c.AdmissionPublic
 	return out, people, nil
 }
 func New(c Config) (*Authority, error) {
@@ -270,6 +274,17 @@ func (a *Authority) Verify(r *http.Request) (*Grant, error) {
 		return nil, ErrDenied
 	}
 	return &Grant{authority: a, generation: a.generation, principal: Principal{Actor: p.Actor, Owner: p.Owner}, expires: expires.Time, devices: append([]Device(nil), a.config.Devices...)}, nil
+}
+
+// Suspend denies new verification and retires existing grants without fallback.
+// AdmissionPublic returns the aggregate-admission Ed25519 public key hex
+// committed through the signed policy document, or "" when the policy does
+// not enable the aggregate admission service. This is the out-of-band pin
+// channel: clients learn the key from here, not from an HTTP endpoint.
+func (a *Authority) AdmissionPublic() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.config.AdmissionPublic
 }
 
 // Suspend denies new verification and retires existing grants without fallback.

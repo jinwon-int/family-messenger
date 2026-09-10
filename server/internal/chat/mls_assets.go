@@ -199,11 +199,11 @@ func LoadHistoryAssets() (*EncryptedAssets, error) {
 func LoadAggregateAssets() (*EncryptedAssets, error) {
 	return loadAssetProfile(compiledAggregateAssets, aggregateManifest, aggregatePaths, 4)
 }
-func NewEncryptedAccessHandler(store *Store, authority *access.Authority, bundle *EncryptedAssets) (http.Handler, error) {
+func NewEncryptedAccessHandler(store *Store, authority *access.Authority, bundle *EncryptedAssets, admission *AdmissionAuthority) (http.Handler, error) {
 	if bundle == nil || (bundle.version != 1 && bundle.version != 2 && bundle.version != 3 && bundle.version != 4) || (bundle.version == 1 && len(bundle.files) != len(encryptedPaths)) || (bundle.version == 2 && len(bundle.files) != len(vaultPaths)) || (bundle.version == 3 && len(bundle.files) != len(historyPaths)) || (bundle.version == 4 && len(bundle.files) != len(aggregatePaths)) {
 		return nil, ErrInvalid
 	}
-	handler, e := NewAccessHandler(store, authority)
+	handler, e := NewAccessHandler(store, authority, admission)
 	if e != nil {
 		return nil, e
 	}

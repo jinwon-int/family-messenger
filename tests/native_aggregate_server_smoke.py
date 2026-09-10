@@ -59,6 +59,20 @@ def main():
     key.chmod(0o600)
     modulus = subprocess.check_output(['openssl', 'rsa', '-in', str(key), '-noout', '-modulus'], stderr=subprocess.DEVNULL).decode().strip().split('=', 1)[1]
     device_keys = {actor: secrets.token_hex(32) for actor in ('alice', 'bob')}
+    # The admission keypair is generated out-of-band (the harness IS the key
+    # ceremony here): the PUBLIC half is committed through the signed policy
+    # document, the private seed reaches family-dev through a private file —
+    # the two channels the client's pin is derived from.
+    keypair = json.loads(subprocess.check_output(['node', '-e', '''
+const {generateKeyPairSync} = require('crypto');
+const {publicKey, privateKey} = generateKeyPairSync('ed25519');
+const pub = publicKey.export({type: 'spki', format: 'der'}).subarray(12);
+const seed = privateKey.export({type: 'pkcs8', format: 'der'}).subarray(16);
+console.log(JSON.stringify({public: pub.toString('hex'), seed: seed.toString('hex')}));
+''']))
+    admission_seed_file = work / 'admission-seed.bin'
+    admission_seed_file.write_bytes(bytes.fromhex(keypair['seed']))
+    admission_seed_file.chmod(0o600)
     devices = []
     for actor, subject in (('alice', 'owner'), ('bob', 'family')):
         dev_key = device_keys[actor]
@@ -69,6 +83,7 @@ def main():
               'keys': [{'kid': 'test-key', 'n': b64(bytes.fromhex(modulus)), 'e': 65537}],
               'people': [{'subject': 'owner', 'actor': 'alice', 'owner': True},
                          {'subject': 'family', 'actor': 'bob', 'owner': False}],
+              'admission_public': keypair['public'],
               'devices': devices}
     tokens = {}
     for subject in ('owner', 'family'):
@@ -91,7 +106,7 @@ def main():
         nonlocal process, output, address
         output = log.open('ab')
         offset = log.stat().st_size
-        process = subprocess.Popen([str(binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--listen', address], stderr=output, stdout=subprocess.DEVNULL)
+        process = subprocess.Popen([str(binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--admission-key', str(admission_seed_file), '--listen', address], stderr=output, stdout=subprocess.DEVNULL)
         until = time.monotonic() + 10
         while time.monotonic() < until:
             assert process.poll() is None, 'server exited'
@@ -122,13 +137,22 @@ def main():
                                  headers={'Cf-Access-Jwt-Assertion': tokens['owner'], 'Content-Type': 'application/json'})
     with urllib.request.urlopen(req, timeout=5) as response:
         assert response.status == 201
-    status, key_doc = direct('owner', 'GET', '/v1/aggregate/policy-key')
-    assert status == 200 and len(key_doc['public']) == 64, key_doc
-    policy_public = key_doc['public']
-
+    # OUT-OF-BAND PIN: the policy public key is read from the signed policy
+    # document on disk (the auth state the policy binary committed), never
+    # from an HTTP endpoint. The served policy-key endpoint is cross-checked
+    # against this pin afterwards.
+    policy_files = list(auth.glob('policy-*.json'))
+    assert len(policy_files) == 1, policy_files
+    policy_record = json.loads(policy_files[0].read_text())
+    policy_public = policy_record['policy']['admission_public']
+    assert len(policy_public) == 64
     proof = {'synthetic_only': True, 'native_server': True, 'production_cf_gate': False, 'human_keys': False,
              'checks': {}, 'policy_public_sha256': hashlib.sha256(policy_public.encode()).hexdigest(),
              'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest()}
+    served_key_doc = direct('owner', 'GET', '/v1/aggregate/policy-key')
+    assert served_key_doc[0] == 200 and served_key_doc[1]['public'] == policy_public, \
+        'served policy key must match the signed policy pin'
+    proof['checks']['policy_key_pinned_from_signed_policy_document'] = True
 
     signer = args.aggregate_store.parent / 'aggregate-policy-signer.js'
     signer.write_bytes(b"import{policySigner,policyKeypair} from '/native-aggregate-vault.js';"
