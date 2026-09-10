@@ -51,7 +51,10 @@ the shared origin-wide `family-native-vault-kdf` lock. Close is terminal;
 lock/hide/pagehide/clone failure terminates pending workers and discards late
 callbacks. Archive view and backing allocation are bounded before cloning;
 public expected metadata and the generated 32–128-character password are bounded
-as well. The consuming page must clear its own input strings, file references
+as well. After cleanup callbacks, terminal/generation state is rechecked; a
+validated owned input clone is taken before worker boot, and bounds are checked
+again at posting. Later caller mutations cannot change the admitted operation.
+The consuming page must clear its own input strings, file references
 and rendered results; JavaScript cannot erase immutable caller-owned strings.
 Private provider/root/password never returns from the worker. No secret is
 stored in page storage, URLs or logs. Same-origin hostile code, extensions, OS

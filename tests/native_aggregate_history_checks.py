@@ -96,6 +96,11 @@ def history_checks(a,b,sa,sb,databases,rpc,init,prepare,proof,page,passwords,pin
         assert digest(a,0)==before and reader.evaluate('indexedDB.databases()')==[]
         assert not any('/v1/' in u for u in requests)
         check['aggregate_reader_has_zero_native_requests_imports_or_live_writes']=True
+        closed=reader.evaluate('''async()=>{const {AggregateHistoryReader}=await import('/aggregate-history-client.js');let once=false;const c=new AggregateHistoryReader(()=>{if(!once){once=true;c.close()}});return await c.read({expected:{},password:'s'.repeat(32),archive:new Uint8Array([1])})}''')
+        assert not closed['ok']
+        immutable=reader.evaluate('''async arg=>{arg.archive=new Uint8Array(arg.archive);const p=archiveReader.read(arg);arg.archive=new Uint8Array(6*1024*1024+1);arg.expected.identity='bob';arg.password='changed';return await p}''',{'archive':archive,'expected':expected,'password':passwords[0]})
+        assert immutable['ok'] and immutable['result']==recovered
+        check['browser_cleanup_close_denies_and_input_mutation_cannot_change_admitted_clone']=True
 
         forged=reader.evaluate('''arg=>new Promise(resolve=>{const w=new Worker('/aggregate-history-forge-worker.js',{type:'module'});w.onmessage=({data})=>{if(data.ready)w.postMessage(arg);else{w.terminate();resolve(data)}}})''',{'archive':archive,'password':passwords[0]})
         assert forged['ok']

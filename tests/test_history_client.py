@@ -58,3 +58,25 @@ assert.equal(workers,0);c.close();
 '''.replace('MODULE',json.dumps((ROOT/'experiments/device-keystore'/self.module).as_uri()))
         result=subprocess.run(['node','--input-type=module','-e',script],text=True,capture_output=True,timeout=10)
         self.assertEqual(result.returncode,0,result.stderr)
+
+    def test_callback_close_and_mutable_argument_cannot_bypass_admission(self):
+        script = r'''
+import assert from 'node:assert/strict';
+const workers=[];globalThis.document={hidden:false};globalThis.addEventListener=()=>{};
+globalThis.Worker=class{constructor(){workers.push(this);this.sent=[]}terminate(){this.dead=true}postMessage(x){this.sent.push(x)}};
+const {AggregateHistoryReader}=await import(MODULE);
+const argument=()=>({archive:new Uint8Array([1]),expected:{identity:'alice'},password:'s'.repeat(32)});
+let once=false,c=new AggregateHistoryReader(()=>{if(!once){once=true;c.close()}});
+assert.equal((await c.read(argument())).ok,false);assert.equal(workers.length,0);
+c=new AggregateHistoryReader();const arg=argument(),pending=c.read(arg),w=workers.at(-1);
+arg.archive=new Uint8Array(6*1024*1024+1);arg.expected.identity='bob';arg.password='different-password';
+w.onmessage({data:{ready:true}});assert.equal(w.sent.length,1);
+assert.deepEqual(Array.from(w.sent[0].argument.archive),[1]);assert.equal(w.sent[0].argument.expected.identity,'alice');assert.equal(w.sent[0].argument.password,'s'.repeat(32));
+c.close();assert.equal((await pending).ok,false);assert(w.dead);
+// Reentrant cleanup can start a new operation; the superseded outer read must
+// not overwrite or orphan that operation's handle.
+let inner=null,reenter=false;c=new AggregateHistoryReader(()=>{if(!reenter){reenter=true;inner=c.read(argument())}});
+assert.equal((await c.read(argument())).ok,false);assert(c.active);const live=workers.at(-1);c.close();assert.equal((await inner).ok,false);assert(live.dead);
+'''.replace('MODULE',json.dumps((ROOT/'experiments/device-keystore'/self.module).as_uri()))
+        result=subprocess.run(['node','--input-type=module','-e',script],text=True,capture_output=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stderr)
