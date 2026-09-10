@@ -25,6 +25,8 @@ returning either room. The page then constructs both room sections off-DOM and
 publishes only a complete validated result. Each room has at most32 accepted
 cached messages; pending frames are never delivered history. Room labels and
 text are inert nodes; files are explicit8KiB maximum generic binary downloads.
+Duplicate checks use sender device plus message ID, matching the native log;
+different devices may legitimately use the same message ID.
 No live composer, task/AI execution, enrollment, resending, native transport or
 IDB import/write path is exposed by the reader UI.
 
@@ -79,8 +81,9 @@ It checks room labels/text/files, both pending exclusions, exact source cipherte
 zero native sends/live writes, wrong password/pins/target group/fork/tamper,
 truncation/size/UTF8 admission, signed actor change and durable account revocation,
 lock/sibling/hide/late completion/Blob cleanup, empty reader IDB/storage and390px
-layout. Native preparation uses the existing separately hashed test instrumentation;
-reader/UI/workers retain their original bytes. No forged worker is served by this
+layout including a maximum-length room label. Native preparation uses the existing separately hashed test instrumentation;
+reader/UI/workers retain their original bytes; six actual fixture response hashes
+match their source pins. No forged worker is served by this
 UI proof. The separate unchanged full-library aggregate history suite retains
 its authenticated invalid-state fixtures and26 checks. A viewport check is not
 mobile resource or human recovery acceptance.

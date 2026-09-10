@@ -52,6 +52,14 @@ def reader_ui(a,b,url,expected,password,archive,pending_marker,proof,direct,conf
         assert p.locator('#messages section').nth(0).get_attribute('data-room')=='family'
         assert p.locator('#messages section').nth(1).get_attribute('data-room')=='second'
         assert 'synthetic preceding old epoch' in p.locator('#messages').inner_text()
+        shared=p.locator('#messages [data-message-id=app-shared]')
+        assert shared.count()==2
+        assert {shared.nth(i).get_attribute('data-sender-device') for i in range(2)}=={'alice-first','bob-first'}
+        assert 'accepted alice <svg onload=alert(1)>' in p.locator('#messages').inner_text()
+        assert 'accepted bob same id' in p.locator('#messages').inner_text()
+        assert p.locator('#messages svg').count()==0
+        proof['checks']['aggregate_history_dom_distinct_senders_same_native_id_both_render_as_inert_text']=True
+
         assert p.locator('#messages img,iframe,video').count()==0 and p.locator('#send').count()==0
         p.evaluate("()=>{window.historyURLTimers=[];window.originalHistoryTimer=window.setTimeout;window.setTimeout=function(fn,ms,...args){if(ms===1000){historyURLTimers.push(()=>fn(...args));return 0}return originalHistoryTimer(fn,ms,...args)};window.historyFetches=0;const fetcher=window.fetch;window.fetch=function(...args){historyFetches++;return fetcher.apply(this,args)}}")
         with p.expect_download() as event:p.locator('#messages section[data-room=second] button').first.click()
@@ -146,6 +154,8 @@ def reader_ui(a,b,url,expected,password,archive,pending_marker,proof,direct,conf
         assert not errors,errors
         proof['checks']['aggregate_history_dom_reload_no_secrets_no_native_delivery_or_idb_import']=True
         p.set_viewport_size({'width':390,'height':844})
+        # Layout boundary uses a valid maximum-length identifier, without changing crypto fixtures.
+        p.locator('#messages h3').first.evaluate("h=>h.textContent='W'.repeat(64)+' · 기록 32까지'")
         assert p.evaluate('document.documentElement.scrollWidth<=innerWidth')
         proof['checks']['aggregate_history_dom_390px_layout']=True
         config['devices'][1]['status']='revoked';config['devices'][1]['device_revision']=2
@@ -165,7 +175,7 @@ def reader_ui(a,b,url,expected,password,archive,pending_marker,proof,direct,conf
         end=time.monotonic()+5
         while time.monotonic()<end:
             code,_=direct('owner','GET','/v1/session')
-            if code==403:break
+            if code==401:break
             time.sleep(.05)
         else:raise AssertionError('account revocation reload')
         p.locator('#messages section[data-room=second] button').first.click()
@@ -181,6 +191,9 @@ def history_checks(a,b,sa,sb,databases,rpc,init,prepare,proof,page,passwords,pin
     groups=[rpc(p,'status')['group_id'] for p in (a,sa)]
     expected={'database':databases[0],'identity':'alice','primary_room':'family',
         'rooms':[{'room':room,'group_id':group,'pins':pins} for room,group in zip(('family','second'),groups)],'fork':intent}
+    # Native dedup is per device, not a global message ID within the room.
+    for sender,receiver,body in ((a,b,b'accepted alice <svg onload=alert(1)>'),(b,a,b'accepted bob same id')):
+        prepare(sender,'app-shared',body);rpc(sender,'flush');rpc(sender,'sync');rpc(receiver,'sync')
     prepare(a,'app-history-pending',b'not delivered from source')
     prepare(sa,'app-history-pending-target',b'not delivered from target')
     before=digest(a,0);other_before=digest(b,1)

@@ -393,6 +393,16 @@ def main():
             if aggregate:
                 from native_aggregate_checks import aggregate_checks
                 aggregate_checks(a,b,databases,rpc,init,reopen,prepare,proof,page,vault_passwords,pins,direct,config,commit,crash,digest,hold_next,arrived,release,tamper,history='ui' if args.aggregate_history_ui else args.aggregate_history)
+                if args.aggregate_history_ui:
+                    routes=['/aggregate-history/','/aggregate-history.css','/aggregate-history-ui.js','/aggregate-history-client.js','/aggregate-history-worker.js','/aggregate-history-export-worker.js']
+                    observed={}
+                    for route in routes:
+                        with urllib.request.urlopen(url+route,timeout=5) as response:raw=response.read(1024*1024)
+                        observed[route]=hashlib.sha256(raw).hexdigest()
+                        assert observed[route]==proof['original_assets_sha256'][route]==proof['assets_sha256'][route]
+                    assert '/aggregate-history-forge-worker.js' not in assets
+                    proof['aggregate_history_ui_fixture_served_sha256']=observed
+                    proof['checks']['aggregate_history_ui_original_six_fixture_response_hashes_verified_no_forger']=True
                 for context in contexts:context.close()
                 proof['passed']=True
                 return

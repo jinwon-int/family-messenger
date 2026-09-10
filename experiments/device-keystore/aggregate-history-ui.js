@@ -60,8 +60,9 @@ function render(s,result){
   const heading=document.createElement('h3');heading.textContent=r.room+' · 기록 '+r.cursor+'까지';section.append(heading);
   const messages=document.createElement('ol'),seen=new Set();
   for(const m of r.messages){
-   if(!['alice','bob'].includes(m.sender_actor)||!/^app-[a-zA-Z0-9_-]{1,60}$/.test(m.client_id)||seen.has(m.client_id))throw Error('message');seen.add(m.client_id);
-   const bytes=decode(m.payload),li=document.createElement('li');li.textContent=m.sender_actor+': ';li.dataset.messageId=m.client_id;
+   if(!['alice','bob'].includes(m.sender_actor)||!/^app-[a-zA-Z0-9_-]{1,60}$/.test(m.client_id)||typeof m.sender_device!=='string'||!/^[a-zA-Z0-9_-]{1,64}$/.test(m.sender_device))throw Error('message');
+   const key=m.sender_device+':'+m.client_id;if(seen.has(key))throw Error('message');seen.add(key);
+   const bytes=decode(m.payload),li=document.createElement('li');li.textContent=m.sender_actor+': ';li.dataset.messageId=m.client_id;li.dataset.senderDevice=m.sender_device;
    if(m.media_type==='text')li.append(document.createTextNode(decoder.decode(bytes)));
    else if(m.media_type==='file'){const button=document.createElement('button');button.textContent='과거 파일 내려받기 ('+bytes.length+' bytes)';button.addEventListener('click',()=>download(s,decode(m.payload),'history-'+r.room+'-'+m.client_id+'.bin'));li.append(button);}
    else throw Error('type');messages.append(li);total++;
