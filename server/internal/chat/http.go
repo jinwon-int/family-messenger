@@ -171,6 +171,23 @@ func (a *API) route(w http.ResponseWriter, r *http.Request, actor string) {
 		a.mlsRoute(w, r, actor, parts)
 		return
 	}
+	if len(parts) == 3 && parts[0] == "v1" && parts[1] == "aggregate" {
+		if parts[2] == "policy-key" && r.Method == "GET" {
+			a.aggregatePolicyKey(w)
+			return
+		}
+		if parts[2] == "admission" && r.Method == "GET" {
+			g, ok := r.Context().Value(grantKey{}).(*access.Grant)
+			if !ok {
+				fail(w, ErrForbidden)
+				return
+			}
+			a.aggregateAdmission(w, r, g, actor)
+			return
+		}
+		http.NotFound(w, r)
+		return
+	}
 	if r.Method == "GET" && r.URL.Path == "/health" {
 		writeJSON(w, 200, map[string]string{"mode": "synthetic-only", "status": "ok"})
 		return

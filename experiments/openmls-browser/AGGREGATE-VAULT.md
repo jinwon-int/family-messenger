@@ -1,13 +1,12 @@
 # Aggregate custody container: multiple conversations under one sealed record
 
-Status: **isolated runnable qualification, the first two slices of the new
-device-vault namespace defined by
-[IDENTITY-CONTEXT.md](IDENTITY-CONTEXT.md) and tracked as #49: the custody
-container, its REAL MLS signer binding (#51), and now the SIGNED ADMISSION
-contract.** It proves the container, the signer binding and the admission
-enforcement. Peer pins are committed only as far as the admission grants them;
-it is not replacement activation, encrypted-IDB production storage or a human
-profile migration.
+Status: **isolated runnable qualification of the device-vault namespace
+defined by [IDENTITY-CONTEXT.md](IDENTITY-CONTEXT.md) and tracked as #49:
+the custody container, its REAL MLS signer binding (#51), the SIGNED
+ADMISSION contract (#54), and the REAL ADMISSION SERVICE — the Go server
+issues the signed admissions behind the same CF-Access-JWT grant as every
+other endpoint.** It is not replacement activation, encrypted-IDB production
+storage or a human profile migration.
 
 The complete native-state/admission continuation is documented in
 [the device custody adapter](../device-keystore/AGGREGATE-VAULT.md). This earlier
@@ -90,9 +89,20 @@ real-signer one, and the admission contract is enforced: forged signatures,
 tampered documents, expired admissions, stale revisions, changed peer pins and
 mismatched fresh re-receipts are all denied with the committed record
 untouched, while an honest admission advances the seal. The container matrix
-twelve checks pass unchanged on the new label version, and thirteen checks are
-recorded in the identity-context verification receipt; CI runs the same
-harness with the bundled store.
+twelve checks pass unchanged on the new label version.
+
+The real admission service (`#49` fourth slice,
+`tests/native_aggregate_server_smoke.py`) points the same store at the Go
+server: the worker fetches its own admissions from
+`/v1/aggregate/admission` (behind the CF-Access-JWT grant) over same-origin
+fetch, the policy public key is pinned from `/v1/aggregate/policy-key`, the
+server signs one document per (rooms, actor, device, peers, revision, expiry)
+tuple with its deterministic Ed25519 admission key, identical requests inside
+one expiry bucket return the identical document, and five checks cover the
+signed seal, the next-revision issuance, the unauthenticated-fetch denial, a
+foreign policy signature denial and an honest advance under the registered
+device key. Go tests pin the canonical tuple and the signature; CI runs the
+same smoke against the built binaries.
 
 ## Costs and limits
 
