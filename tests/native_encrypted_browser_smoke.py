@@ -31,6 +31,7 @@ def main():
     args.add_argument('--vault', action='store_true')
     args.add_argument('--aggregate-ui', action='store_true')
     args.add_argument('--aggregate', action='store_true')
+    args.add_argument('--aggregate-history', action='store_true')
     args.add_argument('--preparation', action='store_true')
     args.add_argument('--embedded', action='store_true')
     args.add_argument('--ui', action='store_true')
@@ -46,7 +47,8 @@ def main():
     vault = args.vault
     preparation = args.preparation or aggregate_ui
     assert not preparation or not args.aggregate
-    aggregate = args.aggregate or preparation
+    aggregate = args.aggregate or preparation or args.aggregate_history
+    assert not args.aggregate_history or not (args.aggregate or preparation or history_proof or args.embedded)
     control_proof = args.controls
     ui_proof = args.ui or vault_ui
     embedded = args.embedded
@@ -57,7 +59,7 @@ def main():
     assert not aggregate or not (vault or history_proof or (ui_proof and not aggregate_ui) or (embedded and not aggregate_ui) or control_proof)
     binary, policy = args.binary.resolve(strict=True), args.policy_binary.resolve(strict=True)
     root = Path(__file__).resolve().parents[1]
-    work = Path(tempfile.mkdtemp(prefix='native-aggregate-ui-' if aggregate_ui else 'native-preparation-' if preparation else 'native-aggregate-' if aggregate else 'native-history-' if history_proof else 'native-vault-ui-' if vault_ui else 'native-vault-control-' if vault and control_proof else 'native-vault-browser-' if vault else 'native-embedded-ui-' if embedded else 'native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
+    work = Path(tempfile.mkdtemp(prefix='native-aggregate-history-' if args.aggregate_history else 'native-aggregate-ui-' if aggregate_ui else 'native-preparation-' if preparation else 'native-aggregate-' if aggregate else 'native-history-' if history_proof else 'native-vault-ui-' if vault_ui else 'native-vault-control-' if vault and control_proof else 'native-vault-browser-' if vault else 'native-embedded-ui-' if embedded else 'native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
     state, auth, proposals = [work / n for n in ('state', 'auth', 'proposals')]
     for d in (state, auth, proposals):
         d.mkdir(mode=0o700)
@@ -172,6 +174,9 @@ def main():
     if preparation and not embedded:
         assets['/prepared-fork-worker.js']=(root/'experiments/openmls-browser/web/prepared-fork-worker.js').read_bytes()
         assets['/main.js']=assets['/main.js'].replace(b'./aggregate-fork-worker.js',b'./prepared-fork-worker.js')
+    if args.aggregate_history:
+        from native_aggregate_history_checks import history_assets
+        history_assets(root,work,assets,proof)
     if aggregate_ui and not embedded:
         for name in ('aggregate-chat.html','aggregate-chat.js'):
             assets['/' if name.endswith('.html') else '/'+name]=(root/'experiments/openmls-browser/web'/name).read_bytes()
@@ -378,7 +383,7 @@ def main():
                 return
             if aggregate:
                 from native_aggregate_checks import aggregate_checks
-                aggregate_checks(a,b,databases,rpc,init,reopen,prepare,proof,page,vault_passwords,pins,direct,config,commit,crash,digest,hold_next,arrived,release,tamper)
+                aggregate_checks(a,b,databases,rpc,init,reopen,prepare,proof,page,vault_passwords,pins,direct,config,commit,crash,digest,hold_next,arrived,release,tamper,history=args.aggregate_history)
                 for context in contexts:context.close()
                 proof['passed']=True
                 return
