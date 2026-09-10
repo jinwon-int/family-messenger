@@ -168,7 +168,10 @@ def aggregate_checks(a,b,databases,rpc,init,reopen,prepare,proof,page,passwords,
     proof['checks']['native_source_pending_control_old_epoch_receive_survives_target_writes']=True
 
     if history:
-        from native_aggregate_history_checks import history_checks
+        if history=='ui':
+            from native_aggregate_history_ui_checks import history_checks
+        else:
+            from native_aggregate_history_checks import history_checks
         history_checks(a,b,second_a,second_b,databases,rpc,init,prepare,proof,page,passwords,pins,direct,config,commit,crash,digest,intent)
         return
 
