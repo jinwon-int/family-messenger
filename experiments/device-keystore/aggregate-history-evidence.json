@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "scope": "Isolated generated-data read-only complete aggregate history; no product UI, human recovery or deployment",
+  "runtime_head": "234d1b5ad37a9f5bea0712ed89e86a82f8e7c017",
+  "independent_browser": {
+    "path": "artifacts/aggregate-history-reviewed-khot3uwf/browser.json",
+    "sha256": "886d06c3b26dbbfcec3c5793b5cbc11a3490dbcdccf5c706373774bcb62d58d0",
+    "checks": 26,
+    "invalid_idb_schema_cases": [
+      "wrong-version",
+      "extra-store",
+      "extra-key",
+      "missing-state",
+      "empty-store",
+      "creation-marker"
+    ],
+    "browser": "151.0.7922.34",
+    "reader_workers": {
+      "aggregate-history-worker.js": "9f0fbeb771f6e1b295dbc28336c5c2351813f2004ebb7b109e1509396df955bc",
+      "aggregate-history-export-worker.js": "9077dd04162033e2aaf779b6eeb3dfc8d1678d4433795ef3cd28b448a401847b"
+    },
+    "original_reader_client": "5385d059fb48d8d70b0b765248d8961b2b77cc35ca5e4098b655a7906fd10737",
+    "optional_js": "b937381156c39a683d8f42ff96cfa608f3c6a90de841795ff8d116512729789f",
+    "optional_wasm": "94482525c6e2deaa95183e91a86ca83cf46c89af97ca149006abbeaea9bdd13d",
+    "native_fixture_instrumentation": "main selects native worker; served-only pending-write hold and deliberately forged inner sender fixture; proxy may hold/alter generated responses; aggregate held CAS and base pending-write SIGKILL hook; whole native record digests only; separate original/instrumented driver hashes",
+    "test_forger_sha256": "3a8def4758c1afbc339842ad92a1d2dafcba8c9c17b382e901e4d22a141a984f",
+    "actual_reader_export_workers_unmodified": true,
+    "archive_bytes": 154773,
+    "export_ms": 3811.2,
+    "reader_combined_linear_bytes": 5570560,
+    "live_worker_linear_bytes": 5636096,
+    "api_binary_sha256": "70903cfc191532a0baff709e772f6c656dd3c5c93079523ecc5416bd1dfdac1d"
+  },
+  "review": "pending report",
+  "python": {
+    "umask022": 135,
+    "umask077": 135,
+    "caller_tests": 4
+  },
+  "reverse_checks": {
+    "path": "artifacts/aggregate-history-reverse-15da6of0/verification.json",
+    "terminal_guard_removal": "unsettled request timeout",
+    "owned_clone_removal": "assertion failure"
+  },
+  "limits": {
+    "archive_bytes": 6291456,
+    "live_serialized_bytes": 4194304,
+    "contexts": 2,
+    "provider_each_bytes": 1048576,
+    "combined_binary_bytes": 2097152,
+    "wasm_budget_bytes": 134217728,
+    "js_scrypt_separate_bytes": 268435456,
+    "added_disk_budget_bytes": 5368709120
+  },
+  "dependencies": "No additions; see aggregate-history-inventory.json and existing age/sodium/OpenMLS notices",
+  "unchanged": [
+    "old archive codecs/callers/profiles",
+    "live aggregate/native vault custody and validators",
+    "Go runtime/API",
+    "9/15/21/14 asset manifests and prepared outputs",
+    "default and optional WASM bundles"
+  ],
+  "remaining": [
+    "legacy single-room caller issues tracked in #60",
+    "aggregate recovery UI and immutable native packaging",
+    "human device lifecycle, CF, mobile, backup restore, capacity and fleet acceptance before Yukson cutover"
+  ],
+  "claims": [
+    "Possessed archive/password reads historical data after server revocation",
+    "No active sender/outbox import, execution, repin or rollback freshness claim",
+    "Only two independently expected bound contexts are supported"
+  ]
+}
