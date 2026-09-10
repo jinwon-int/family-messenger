@@ -185,7 +185,8 @@ behavior, recovery limits and actual process acceptance.
 
 The signed synthetic [MLS delivery boundary](MLS-TRANSPORT.md) now provides
 explicit reservations/group binding and a durable ordered opaque log. Existing
-plaintext UI rooms remain separate; browser E2EE delivery is not yet integrated.
+plaintext UI rooms remain separate from the explicitly selected synthetic encrypted
+clients. These development modes do not qualify human-use E2EE or production login.
 
 The separately selected [compiled custody UI](VAULT-UI.md) embeds password-unlocked
 synthetic encrypted storage at `/vault/`; human-use rollout remains gated.
@@ -194,3 +195,9 @@ The [two-device preparation boundary](PREPARATION.md) adds an explicitly protect
 new-conversation reservation. Both admitted devices must declare committed local
 custody before native binding. Schema4 preserves a private prior snapshot; this
 is a generated-data control prerequisite, not aggregate UI or human recovery.
+
+The separate [compiled aggregate history profile](AGGREGATE-HISTORY-UI.md)
+serves the two-conversation `/aggregate/` chat and read-only `/aggregate-history/`
+viewer from 20 pinned Go assets. It requires `synthetic_aggregate_history` and
+explicit signed synthetic activation. Earlier asset modes and data are preserved;
+archives never import an active sender or automatically resend pending messages.
