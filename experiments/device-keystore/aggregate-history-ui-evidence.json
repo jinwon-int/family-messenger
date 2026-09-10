@@ -1,0 +1,133 @@
+{
+  "scope": "Isolated synthetic read-only two-context history DOM; generated assertion fixture serves UI, native signed API admits actors; not Go static activation or human recovery",
+  "runtime_commit": "0a528098c88ea8f623dd7eb067e6a027cf650765",
+  "base_commit": "51f6e5aabf378ae4a73ec06d71a886b3c73f4e56",
+  "author": {
+    "receipt": "artifacts/native-aggregate-history-ui-3s5ox20s/verification.json",
+    "sha256": "29dbfacdc0453799ad9ee2508e4580ba64f26bcd5ada2ac33b80c75c883d7cbc",
+    "checks": 28,
+    "all_passed": true,
+    "actual_fixture_asset_hashes": {
+      "/aggregate-history/": "36ebe3191833b4b46e3f9d3eef51611e386141c5c0be638f536431cc11e28672",
+      "/aggregate-history.css": "2b6d6fbdbb643ea0590f3b53b5f9cc3de084970909713e232d5ad825b888d007",
+      "/aggregate-history-ui.js": "f267ac910abf624ef2c17a55f9a0e885a17720eef6ac3f3273e6a50dc7a36faf",
+      "/aggregate-history-client.js": "5385d059fb48d8d70b0b765248d8961b2b77cc35ca5e4098b655a7906fd10737",
+      "/aggregate-history-worker.js": "9f0fbeb771f6e1b295dbc28336c5c2351813f2004ebb7b109e1509396df955bc",
+      "/aggregate-history-export-worker.js": "9077dd04162033e2aaf779b6eeb3dfc8d1678d4433795ef3cd28b448a401847b"
+    },
+    "original_worker_hashes": {
+      "aggregate-history-worker.js": "9f0fbeb771f6e1b295dbc28336c5c2351813f2004ebb7b109e1509396df955bc",
+      "aggregate-history-export-worker.js": "9077dd04162033e2aaf779b6eeb3dfc8d1678d4433795ef3cd28b448a401847b"
+    },
+    "native_api_binary": "artifacts/aggregate-history-ui-fixed-7vad_tul/family-dev",
+    "native_api_sha256": "f2bfedfb3b7d0e5fb3eb0e5a6d057bf6cc81a1e281d0a21f95c2567845168317",
+    "vcs_modified": false,
+    "browser": "151.0.7922.34",
+    "native_client_max_linear_bytes": 5636096,
+    "memory_note": "Native setup maximum only; unchanged history worker enforces combined128MiB ceiling before output. JS KDF/browser/DOM memory separate.",
+    "python_tests": 137,
+    "python_umasks": [
+      "022",
+      "077"
+    ],
+    "go": "Clean API/policy builds; Go runtime source unchanged from base"
+  },
+  "independent_review": {
+    "status": "clean; reproduced findings fixed and full UI/prior library regressions passed",
+    "findings_fixed": [
+      {
+        "severity": "medium",
+        "issue": "UI rejected valid messages with same client_id from different sending devices",
+        "fix": "Match native/history dedup scope sender_device+client_id; actual two-sender encrypted archive regression",
+        "reverse_fixture": "artifacts/aggregate-ui-id-reverse-abbv59ex",
+        "reverse_note": "old and fixed VM result, with fresh-DOM invalid-second-result check; actual full-browser proof separately verifies native accepted frames"
+      },
+      {
+        "severity": "low",
+        "issue": "Valid maximum-length room identifier overflowed390px viewport",
+        "fix": "h3 overflow-wrap:anywhere and64-character room-label layout regression"
+      }
+    ],
+    "native_receipt": "artifacts/aggregate-history-ui-reviewed-rduno0qk/native-ui.json",
+    "native_sha256": "2e6b0f406b9471d3b9520638089c7b7c4af2584636cf8371722687ebd615e569",
+    "native_checks": 28,
+    "actual_fixture_asset_hashes": {
+      "/aggregate-history/": "36ebe3191833b4b46e3f9d3eef51611e386141c5c0be638f536431cc11e28672",
+      "/aggregate-history.css": "2b6d6fbdbb643ea0590f3b53b5f9cc3de084970909713e232d5ad825b888d007",
+      "/aggregate-history-ui.js": "f267ac910abf624ef2c17a55f9a0e885a17720eef6ac3f3273e6a50dc7a36faf",
+      "/aggregate-history-client.js": "5385d059fb48d8d70b0b765248d8961b2b77cc35ca5e4098b655a7906fd10737",
+      "/aggregate-history-worker.js": "9f0fbeb771f6e1b295dbc28336c5c2351813f2004ebb7b109e1509396df955bc",
+      "/aggregate-history-export-worker.js": "9077dd04162033e2aaf779b6eeb3dfc8d1678d4433795ef3cd28b448a401847b"
+    },
+    "native_api_sha256": "f2bfedfb3b7d0e5fb3eb0e5a6d057bf6cc81a1e281d0a21f95c2567845168317",
+    "light_receipt": "artifacts/aggregate-history-ui-reviewed-rduno0qk/light.json",
+    "light_sha256": "83f0c5afa081d7eb31a15d2382ee265a06eeb5e5fbff1eb71164af35a8e34298",
+    "supplemental_ui_cases": 15,
+    "light_scope": "Actual UI source in minimal DOM/mocked admission; separate real Chromium geometry with stub reader; not cryptographic/deployment proof",
+    "fixed_layout_screenshot": "artifacts/aggregate-history-ui-reviewed-rduno0qk/layout-fixed.png",
+    "screenshot_sha256": "5093b617bfa29f5afd6cb3ec31f1243f9fd228cd30a82307701206ddc92ee310",
+    "reviewed_runtime": "0a528098c88ea8f623dd7eb067e6a027cf650765",
+    "report": "artifacts/aggregate-history-ui-reviewed-rduno0qk/review.json",
+    "report_sha256": "e33c1c6502cb086e08fce188b76fd556b1b6d9d178347be32e78ede6465e9988",
+    "legacy_library_receipt": "artifacts/aggregate-history-ui-reviewed-rduno0qk/legacy-library.json",
+    "legacy_library_sha256": "6ef277faedcf9803b44ce6c24933ba07eb5c64c6f4f368208e7269bc76e6cd7e",
+    "legacy_library_checks": 26,
+    "preserved_profiles_receipt": "artifacts/aggregate-history-ui-reviewed-rduno0qk/preserved-profiles.json",
+    "preserved_profiles_sha256": "bb96346984addd22e107cae8835d779b2044c3d77d42aa4bd61ccc83cdb1bbf0",
+    "preservation_scope": "Current9/15/21v3/21v5/14 prepared file bytes match unchanged base pins; each regular and single-link, not a new before/after inode measurement",
+    "caller_tests": 6
+  },
+  "public_ui": {
+    "aggregate-history.html": {
+      "bytes": 2493,
+      "sha256": "36ebe3191833b4b46e3f9d3eef51611e386141c5c0be638f536431cc11e28672"
+    },
+    "aggregate-history.css": {
+      "bytes": 826,
+      "sha256": "2b6d6fbdbb643ea0590f3b53b5f9cc3de084970909713e232d5ad825b888d007"
+    },
+    "aggregate-history-ui.js": {
+      "bytes": 8763,
+      "sha256": "f267ac910abf624ef2c17a55f9a0e885a17720eef6ac3f3273e6a50dc7a36faf"
+    },
+    "aggregate-history-client.js": {
+      "bytes": 2720,
+      "sha256": "5385d059fb48d8d70b0b765248d8961b2b77cc35ca5e4098b655a7906fd10737"
+    }
+  },
+  "limits": {
+    "expected_utf8_bytes": 4096,
+    "archive_and_backing_bytes": 6291456,
+    "password_chars": [
+      32,
+      128
+    ],
+    "rooms": 2,
+    "messages_per_room": 32,
+    "file_bytes": 8192,
+    "live_blob_urls": 2,
+    "view_ms": 300000,
+    "session_refresh_ms": 15000,
+    "session_request_ms": 5000,
+    "wasm_bytes": 134217728,
+    "separate_js_scrypt_scratch_bytes": 268435456
+  },
+  "new_dependencies": 0,
+  "preserved": [
+    "Existing single-room UI and profile5/retained3 plus default9/vault15/aggregate14 outputs",
+    "AggregateStore providers/pins/exact outboxes/cursors and native admission/control contracts",
+    "Archive format, vetted cryptographic APIs, default scrypt18 and all old worker hashes",
+    "Existing data/profiles/services/backups and original-node credentials"
+  ],
+  "test_instrumentation": "main selects native worker; served-only pending-write hold and deliberately forged inner sender fixture; proxy may hold/alter generated responses; aggregate held CAS and base pending-write SIGKILL hook; whole native record digests only; separate original/instrumented driver hashes; separate generated DOM label at64-character limit; original UI and reader/export worker bytes verified at six actual fixture HTTP routes; no served archive forger",
+  "limitations": [
+    "Initial message exchange uses existing instrumented native worker fixture; history export/read/download use actual DOM and unmodified reader workers",
+    "Possessed archive/password reads past data after device/account revocation; signed UI admission is not cryptographic deletion",
+    "Complete encrypted provider archive is not a history-only key backup, rollback witness or sender restore",
+    "Native immutable assets and human lifecycle/mobile/CF/backup/capacity/fleet/Yukson acceptance remain later"
+  ],
+  "production_cf_gate": false,
+  "human_recovery_qualified": false,
+  "native_asset_activation": false,
+  "production_deployment": false
+}

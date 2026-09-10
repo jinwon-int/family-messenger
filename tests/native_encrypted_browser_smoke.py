@@ -32,6 +32,7 @@ def main():
     args.add_argument('--aggregate-ui', action='store_true')
     args.add_argument('--aggregate', action='store_true')
     args.add_argument('--aggregate-history', action='store_true')
+    args.add_argument('--aggregate-history-ui', action='store_true')
     args.add_argument('--preparation', action='store_true')
     args.add_argument('--embedded', action='store_true')
     args.add_argument('--ui', action='store_true')
@@ -40,6 +41,8 @@ def main():
     args.add_argument('--binary', required=True, type=Path)
     args.add_argument('--policy-binary', required=True, type=Path)
     args = args.parse_args()
+    assert not (args.aggregate_history and args.aggregate_history_ui)
+    aggregate_history=args.aggregate_history or args.aggregate_history_ui
     history_proof=args.history or args.history_ui
     assert not history_proof or (args.vault_ui and (not args.embedded or (args.history_ui and not args.history)))
     aggregate_ui = args.aggregate_ui
@@ -47,8 +50,8 @@ def main():
     vault = args.vault
     preparation = args.preparation or aggregate_ui
     assert not preparation or not args.aggregate
-    aggregate = args.aggregate or preparation or args.aggregate_history
-    assert not args.aggregate_history or not (args.aggregate or preparation or history_proof or args.embedded)
+    aggregate = args.aggregate or preparation or aggregate_history
+    assert not aggregate_history or not (args.aggregate or preparation or history_proof or args.embedded)
     control_proof = args.controls
     ui_proof = args.ui or vault_ui
     embedded = args.embedded
@@ -59,7 +62,7 @@ def main():
     assert not aggregate or not (vault or history_proof or (ui_proof and not aggregate_ui) or (embedded and not aggregate_ui) or control_proof)
     binary, policy = args.binary.resolve(strict=True), args.policy_binary.resolve(strict=True)
     root = Path(__file__).resolve().parents[1]
-    work = Path(tempfile.mkdtemp(prefix='native-aggregate-history-' if args.aggregate_history else 'native-aggregate-ui-' if aggregate_ui else 'native-preparation-' if preparation else 'native-aggregate-' if aggregate else 'native-history-' if history_proof else 'native-vault-ui-' if vault_ui else 'native-vault-control-' if vault and control_proof else 'native-vault-browser-' if vault else 'native-embedded-ui-' if embedded else 'native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
+    work = Path(tempfile.mkdtemp(prefix='native-aggregate-history-ui-' if args.aggregate_history_ui else 'native-aggregate-history-' if aggregate_history else 'native-aggregate-ui-' if aggregate_ui else 'native-preparation-' if preparation else 'native-aggregate-' if aggregate else 'native-history-' if history_proof else 'native-vault-ui-' if vault_ui else 'native-vault-control-' if vault and control_proof else 'native-vault-browser-' if vault else 'native-embedded-ui-' if embedded else 'native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
     state, auth, proposals = [work / n for n in ('state', 'auth', 'proposals')]
     for d in (state, auth, proposals):
         d.mkdir(mode=0o700)
@@ -174,9 +177,15 @@ def main():
     if preparation and not embedded:
         assets['/prepared-fork-worker.js']=(root/'experiments/openmls-browser/web/prepared-fork-worker.js').read_bytes()
         assets['/main.js']=assets['/main.js'].replace(b'./aggregate-fork-worker.js',b'./prepared-fork-worker.js')
-    if args.aggregate_history:
+    if aggregate_history:
         from native_aggregate_history_checks import history_assets
         history_assets(root,work,assets,proof)
+        if args.aggregate_history_ui:
+            from password_worker_smoke import safe_bytes
+            for name in ('aggregate-history.html','aggregate-history.css','aggregate-history-ui.js'):
+                assets['/aggregate-history/' if name.endswith('.html') else '/'+name]=safe_bytes(root/'experiments/device-keystore'/name,65536)
+            assets.pop('/aggregate-history-forge-worker.js',None)
+            proof['aggregate_history_ui_packaging']='isolated synthetic fixture-served original UI/workers; native signed API; not compiled Go assets'
     if aggregate_ui and not embedded:
         for name in ('aggregate-chat.html','aggregate-chat.js'):
             assets['/' if name.endswith('.html') else '/'+name]=(root/'experiments/openmls-browser/web'/name).read_bytes()
@@ -383,7 +392,17 @@ def main():
                 return
             if aggregate:
                 from native_aggregate_checks import aggregate_checks
-                aggregate_checks(a,b,databases,rpc,init,reopen,prepare,proof,page,vault_passwords,pins,direct,config,commit,crash,digest,hold_next,arrived,release,tamper,history=args.aggregate_history)
+                aggregate_checks(a,b,databases,rpc,init,reopen,prepare,proof,page,vault_passwords,pins,direct,config,commit,crash,digest,hold_next,arrived,release,tamper,history='ui' if args.aggregate_history_ui else args.aggregate_history)
+                if args.aggregate_history_ui:
+                    routes=['/aggregate-history/','/aggregate-history.css','/aggregate-history-ui.js','/aggregate-history-client.js','/aggregate-history-worker.js','/aggregate-history-export-worker.js']
+                    observed={}
+                    for route in routes:
+                        with urllib.request.urlopen(url+route,timeout=5) as response:raw=response.read(1024*1024)
+                        observed[route]=hashlib.sha256(raw).hexdigest()
+                        assert observed[route]==proof['original_assets_sha256'][route]==proof['assets_sha256'][route]
+                    assert '/aggregate-history-forge-worker.js' not in assets
+                    proof['aggregate_history_ui_fixture_served_sha256']=observed
+                    proof['checks']['aggregate_history_ui_original_six_fixture_response_hashes_verified_no_forger']=True
                 for context in contexts:context.close()
                 proof['passed']=True
                 return
