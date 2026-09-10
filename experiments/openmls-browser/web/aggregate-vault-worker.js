@@ -2,7 +2,9 @@
 // delivered by the Go server and never a product entry: it holds at most one
 // namespace store in worker memory, accepts one explicit test intent per call
 // and returns only public status fields or the synthetic application result.
-// Admissions arrive as page-signed documents; the worker only ever sees the
+// Admissions arrive as documents; with an admissionUrl the worker re-receives
+// the fresh admission from the admission service over same-origin fetch
+// (outside IndexedDB) — the real receive path. The worker sees only the
 // policy public key, never the policy secret.
 import {AggregateVaultStore} from '/native-aggregate-vault.js';
 self.postMessage({boot:true});
@@ -10,6 +12,15 @@ let store=null,retired=false;
 const holds={};
 const live=()=>{if(retired||!store||store.dead)throw Error('retired');};
 const retire=()=>{retired=true;store?.close();store=null;};
+const fetchAdmission=async(url,token)=>{
+ if(typeof url!=='string'||!url.startsWith('/v1/aggregate/admission'))throw Error('bad admission url: '+url);
+ let r;
+ try{r=await fetch(url,{credentials:'omit',cache:'no-store',redirect:'error',
+  headers:typeof token==='string'&&token?{'Cf-Access-Jwt-Assertion':token}:{}});}
+ catch(e){throw Error('admission fetch failed: '+String(e&&e.message||e));}
+ if(!r.ok)throw Error('admission status '+r.status);
+ return await r.json();
+};
 self.onmessage=({data})=>{
  if(data?.test_aggregate_release){const release=holds[data.test_aggregate_release];holds[data.test_aggregate_release]=null;release?.();return;}
  const {id,method,argument}=data??{};
@@ -21,10 +32,10 @@ self.onmessage=({data})=>{
    store=new AggregateVaultStore();
    const scope=store.argument(argument??{});await store.open(scope.database,scope.actor);result={opened:true};
   }else if(method==='put-room'){
-   console.log('WORKER_PUTARG admission='+(argument&&argument.admission!==undefined?typeof argument.admission+':'+JSON.stringify(Object.keys(argument.admission||{})):'MISSING')+' argkeys='+(argument?Object.keys(argument).join('|'):'null'));
    live();
-   result=await store.tx(argument.admission,{kind:'put',room:argument.room,bytes:Uint8Array.from(argument.bytes??[])},
-    argument.fault??'',live,async()=>argument.freshAdmission??argument.admission);
+   const doc=argument.admission??await fetchAdmission(argument.admissionUrl,argument.token);
+   result=await store.tx(doc,{kind:'put',room:argument.room,bytes:Uint8Array.from(argument.bytes??[])},
+    argument.fault??'',live,()=>argument.freshAdmission??argument.admission??fetchAdmission(argument.admissionUrl,argument.token));
   }else if(method==='test-aggregate-hold-cas'){live();self.testHoldAggregateCAS=true;result=null;}
   else if(method==='test-aggregate-hold-kdf'){live();self.testHoldAggregateKDF=true;result=null;}
   else throw Error('unknown method');
