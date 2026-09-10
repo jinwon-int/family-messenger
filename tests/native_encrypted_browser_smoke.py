@@ -29,6 +29,7 @@ def main():
     args.add_argument('--history', action='store_true')
     args.add_argument('--vault-ui', action='store_true')
     args.add_argument('--vault', action='store_true')
+    args.add_argument('--aggregate-ui', action='store_true')
     args.add_argument('--aggregate', action='store_true')
     args.add_argument('--preparation', action='store_true')
     args.add_argument('--embedded', action='store_true')
@@ -40,9 +41,10 @@ def main():
     args = args.parse_args()
     history_proof=args.history or args.history_ui
     assert not history_proof or (args.vault_ui and (not args.embedded or (args.history_ui and not args.history)))
-    vault_ui = args.vault_ui
+    aggregate_ui = args.aggregate_ui
+    vault_ui = args.vault_ui or aggregate_ui
     vault = args.vault
-    preparation = args.preparation
+    preparation = args.preparation or aggregate_ui
     assert not preparation or not args.aggregate
     aggregate = args.aggregate or preparation
     control_proof = args.controls
@@ -52,10 +54,10 @@ def main():
     assert not vault or not (ui_proof or embedded)
     assert not embedded or ui_proof
     assert not (control_proof and ui_proof)
-    assert not aggregate or not (vault or history_proof or ui_proof or embedded or control_proof)
+    assert not aggregate or not (vault or history_proof or (ui_proof and not aggregate_ui) or embedded or control_proof)
     binary, policy = args.binary.resolve(strict=True), args.policy_binary.resolve(strict=True)
     root = Path(__file__).resolve().parents[1]
-    work = Path(tempfile.mkdtemp(prefix='native-preparation-' if preparation else 'native-aggregate-' if aggregate else 'native-history-' if history_proof else 'native-vault-ui-' if vault_ui else 'native-vault-control-' if vault and control_proof else 'native-vault-browser-' if vault else 'native-embedded-ui-' if embedded else 'native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
+    work = Path(tempfile.mkdtemp(prefix='native-aggregate-ui-' if aggregate_ui else 'native-preparation-' if preparation else 'native-aggregate-' if aggregate else 'native-history-' if history_proof else 'native-vault-ui-' if vault_ui else 'native-vault-control-' if vault and control_proof else 'native-vault-browser-' if vault else 'native-embedded-ui-' if embedded else 'native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
     state, auth, proposals = [work / n for n in ('state', 'auth', 'proposals')]
     for d in (state, auth, proposals):
         d.mkdir(mode=0o700)
@@ -170,6 +172,12 @@ def main():
     if preparation:
         assets['/prepared-fork-worker.js']=(root/'experiments/openmls-browser/web/prepared-fork-worker.js').read_bytes()
         assets['/main.js']=assets['/main.js'].replace(b'./aggregate-fork-worker.js',b'./prepared-fork-worker.js')
+    if aggregate_ui:
+        for name in ('aggregate-chat.html','aggregate-chat.js'):
+            assets['/' if name.endswith('.html') else '/'+name]=(root/'experiments/openmls-browser/web'/name).read_bytes()
+        assets['/aggregate-store.js']=aggregate_original
+        for route in ('/main.js','/chat.js','/vault-chat.js','/vault-native-worker.js','/native-vault-store.js','/aggregate-fork-worker.js'):
+            assets.pop(route,None)
     proof['original_assets_sha256']={name:hashlib.sha256(raw).hexdigest() for name,raw in assets.items()}
     if vault:proof['original_assets_sha256']['/native-vault-store.js']=hashlib.sha256(vault_original).hexdigest()
     if aggregate:proof['original_assets_sha256']['/aggregate-store.js']=hashlib.sha256(aggregate_original).hexdigest()
@@ -200,11 +208,11 @@ def main():
         needle=b"    if (data.id !== id) return;";assert assets['/main.js'].count(needle)==1
         assets['/main.js']=assets['/main.js'].replace(needle,b"    if(data.test_crash_boundary)window.test_crash_boundary=true;\n"+needle)
     if vault:assets['/main.js']=assets['/main.js'].replace(b'    if (data.id !== id) return;',b'    if(data.test_vault_cas)window.test_vault_cas=true;if(data.test_kdf_waiting)window.test_kdf_waiting=true;if(data.test_kdf_entered)window.test_kdf_entered=true;\n    if (data.id !== id) return;')
-    if aggregate:assets['/main.js']=assets['/main.js'].replace(b'    if (data.id !== id) return;',b'    if(data.test_aggregate_cas)window.test_aggregate_cas=true;\n    if (data.id !== id) return;')
+    if aggregate and not aggregate_ui:assets['/main.js']=assets['/main.js'].replace(b'    if (data.id !== id) return;',b'    if(data.test_aggregate_cas)window.test_aggregate_cas=true;\n    if (data.id !== id) return;')
     proof['assets_sha256']={name:hashlib.sha256(raw).hexdigest() for name,raw in assets.items()}
     proof['test_instrumentation']='UI assets unmodified; disposable page tracks Blob URLs and drops one prepare before worker admission; generated proxy responses may be held/altered' if ui_proof else 'main selects native worker; served-only pending-write hold and deliberately forged inner sender fixture; proxy may hold/alter generated responses'
     if vault:proof['test_instrumentation']+='; encrypted driver held CAS/KDF/write, private-worker digests only, disposable lock-aware caller; original versus instrumented hashes recorded'
-    if aggregate:proof['test_instrumentation']+='; aggregate held CAS and base pending-write SIGKILL hook; whole native record digests only; separate original/instrumented driver hashes'
+    if aggregate and not aggregate_ui:proof['test_instrumentation']+='; aggregate held CAS and base pending-write SIGKILL hook; whole native record digests only; separate original/instrumented driver hashes'
     hold_next=[False];arrived=threading.Event();release=threading.Event();tamper=[None];previous_cipher=[None];previous_commit=[None]
     class Proxy(BaseHTTPRequestHandler):
         def log_message(self,*args):pass
@@ -295,7 +303,7 @@ def main():
             proof['checks']['all_'+str(len(assets))+'_native_routes_require_signed_admission']=True
         if ui_proof:
             from native_chat_ui_checks import run_ui
-            run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=url+('/vault/' if vault_ui else '/encrypted/') if embedded else url,restart=(lambda:(stop(),start())) if embedded else None,vault=vault_ui,history=history_proof,history_ui=args.history_ui,history_embedded=embedded and args.history_ui)
+            run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=url+('/vault/' if vault_ui else '/encrypted/') if embedded else url,restart=(lambda:(stop(),start())) if embedded else None,vault=vault_ui,history=history_proof,history_ui=args.history_ui,history_embedded=embedded and args.history_ui,aggregate=aggregate_ui)
             if embedded:
                 proof['ui_packaging']='compiled native Go server assets; proxy only injects generated assertions'
                 proof['native_embedded_ui']=True

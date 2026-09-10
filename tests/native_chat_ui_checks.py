@@ -7,9 +7,9 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
 
-def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=None,restart=None,vault=False,history=False,history_ui=False,history_embedded=False):
+def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=None,restart=None,vault=False,history=False,history_ui=False,history_embedded=False,aggregate=False):
     passwords=[secrets.token_urlsafe(32),secrets.token_urlsafe(32)]
-    initialized=set();draft_prefix='family-vault-ui-draft-v1' if vault else 'family-native-ui-draft-v1'
+    initialized=set();draft_prefix='family-aggregate-ui-draft-v1' if aggregate else 'family-vault-ui-draft-v1' if vault else 'family-native-ui-draft-v1'
     with sync_playwright() as pw:
         profiles=[work/'ui-alice',work/'ui-bob']
         for p in profiles:p.mkdir(mode=0o700)
@@ -141,6 +141,9 @@ def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release
                     open_page(p);expect(p.locator('#messages')).to_contain_text(lost,timeout=25000)
                     assert p.locator('#fingerprint').get_attribute('data-public-key')==pins[i]['signing_key']
                 proof['checks']['compiled_server_restart_preserves_identity_and_encrypted_history']=True
+            if aggregate:
+                from native_aggregate_ui_checks import checks as aggregate_checks
+                a=aggregate_checks(a,b,contexts,pages,url,open_page,click_open,passwords,pins,proof,direct,crash_page,hold_next,arrived,release)
             tamper[0]='cipher';send(a,'synthetic UI altered wire')
             for p in pages:expect(p.locator('#chat')).to_be_hidden(timeout=25000)
             tamper[0]=None
@@ -171,14 +174,15 @@ def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release
                     a=history_checks(a,b,contexts,pages,url,passwords,pins,proof,crash_page,open_page,direct,history_ui=history_ui)
             if vault:
                 from native_vault_ui_checks import checks
-                checks(a,b,contexts,pages,page_url or url,open_page,click_open,passwords,proof)
+                checks(a,b,contexts,pages,page_url or url,open_page,click_open,passwords,proof,database='family-mls-device-vault-synthetic-ui-alice' if aggregate else 'family-mls-vault-synthetic-ui-alice-family')
             config['devices'][1]['status']='revoked';config['devices'][1]['device_revision']=2;commit(2,config['people'])
             for p in pages:
                 expect(p.locator('#chat')).to_be_hidden(timeout=25000)
                 assert p.locator('#messages li').count()==0 and p.locator('#fingerprint').inner_text()==''
                 click_open(p);expect(p.locator('#status')).to_contain_text('연결 또는 기기 확인',timeout=25000)
             proof['checks']['durable_revocation_clears_ui_and_denies_reopen']=True
-            if vault:proof['native_vault_ui']=True
+            if aggregate:proof['native_aggregate_ui']=True
+            elif vault:proof['native_vault_ui']=True
             proof['native_encrypted_ui']=True
             proof['ui_packaging']='isolated exact-allowlist test proxy; not Go embedded or deployed'
         finally:
