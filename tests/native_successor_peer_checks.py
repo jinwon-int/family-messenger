@@ -23,6 +23,11 @@ def successor_assets(root, work, assets, proof, original_only=False):
         return result.stdout
     original=build(source,'successor-peer-original.js')
     # Test-only worker-private source checksum; never expose provider bytes.
+    source=source.replace(b'{fresh,publicKey}',b'{fresh,publicKey,checksum as testChecksum}')
+    needle=b'if(validatePeer(a,this.identity,expected)!==this.root.pub)fail();candidate=encode(a);'
+    assert source.count(needle)==1
+    source=source.replace(needle,b"if(self.testExtraTarget){const target=a.rooms[1],snapshot=JSON.parse(dec.decode(target.crypto));snapshot.entries.push([[253,252,251],[1]]);target.crypto=enc.encode(JSON.stringify(snapshot));target.checksum=testChecksum(target);}"+needle)
+
     needle=b'candidate=encode(a);this.maxSerialized=candidate.length;'
     assert source.count(needle)==1
     source=source.replace(needle,needle+b"self.testSourceDigest=sodium.to_hex(sodium.crypto_generichash(32,enc.encode(JSON.stringify({...a.rooms[0],crypto:b64(a.rooms[0].crypto)}))));")
@@ -122,6 +127,8 @@ def run(a,b,databases,rpc,init,reopen,prepare,proof,page,passwords,pins,direct,c
         proof['checks']['uninstrumented_original_bundle_first_transition_restart_exact_retry_inactive']=True
         proof['boundary']='Original unchanged worker and bundle, synthetic peer custody only; not candidate private-key possession or delivery'
         return
+    call(a,reject=True,setup={'testExtraTarget':True});assert digest(a,0)==before
+    proof['checks']['target_requires_exact_library_signer_only_snapshot_not_empty_group_label']=True
     start(a,setup={'testHold':True});a.wait_for_function('()=>window.test_successor_boundary===true',timeout=15000)
     a.evaluate("stopWorker('fork')");finish(a,True);assert digest(a,0)==before
     # A retired caller cannot publish a late staged result or commit.

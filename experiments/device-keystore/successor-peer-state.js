@@ -1,7 +1,7 @@
 // Restricted inactive custody metadata. This never makes a candidate active.
 import {validateAggregate,validateRecord,publicKey} from './aggregate-state-v4.js';
 import {exact,fail,name,hex,unhex,normalizePins} from '/trust-directory.js';
-import {staged_checksum} from '/pkg/family_mls_browser_experiment.js';
+import {staged_checksum,staged_identity_context} from '/pkg/family_mls_browser_experiment.js';
 const enc=new TextEncoder();
 export const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 const hash=s=>typeof s==='string'&&/^[a-f0-9]{64}$/.test(s);
@@ -34,5 +34,13 @@ export function validatePeer(a,identity,expected){
  }
  const source=a.rooms[0];
  if(a.primary_room!==c.source_room||source.room!==c.source_room||!source.binding||source.group!==c.source_group||source.phase!=='ready'||source.pending?.retired||!same(source.pins,pair(c))||publicKey(source)!==c.peer.signing_key)fail();
+ if(a.version===2){
+  // An empty group label does not prove an empty provider. Reconstruct the
+  // exact signer-only snapshot through the vetted public API, without parsing
+  // or inventing rules for OpenMLS's private storage entries.
+  const expected=staged_identity_context(source.crypto,identity,unhex(c.peer.signing_key),unhex(c.source_group),c.predecessor.actor,unhex(c.predecessor.signing_key));
+  try{const actual=a.rooms[1].crypto;if(actual.length!==expected.length||!actual.every((v,i)=>v===expected[i]))fail();}
+  finally{expected.fill(0);}
+ }
  return publicKey(source);
 }
