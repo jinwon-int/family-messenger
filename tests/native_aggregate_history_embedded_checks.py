@@ -108,7 +108,7 @@ def native_checks(a,b,contexts,url,passwords,pins,proof,crash_page,open_page,dir
         p.evaluate('()=>delete document.hidden');read()
         # Hold one File completion across a fresh successful reader operation.
         p.evaluate("()=>{const original=File.prototype.arrayBuffer;let once=true;File.prototype.arrayBuffer=function(){if(once){once=false;window.fileHeld=true;return new Promise(resolve=>{window.finishOldFile=()=>original.call(this).then(resolve)})}return original.call(this)}}")
-        fill(p,expected[0],passwords[0],archives[0]);p.locator('#read').click();p.wait_for_function('()=>window.fileHeld===true')
+        p.locator('#lock').click();fill(p,expected[0],passwords[0],archives[0]);p.locator('#read').click();p.wait_for_function('()=>window.fileHeld===true')
         p.locator('#lock').click();read();p.evaluate('()=>finishOldFile()')
         expect(p.locator('#messages')).to_contain_text('synthetic second-room only')
         proof['checks']['compiled_aggregate_history_actor_switch_kdf_lock_sibling_hide_and_late_file_are_terminal']=True

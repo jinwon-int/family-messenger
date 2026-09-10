@@ -192,6 +192,10 @@ def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release
             proof['ui_packaging']='isolated exact-allowlist test proxy; not Go embedded or deployed'
         finally:
             if not proof.get('native_encrypted_ui'):
-                for p in pages:print('UI diagnostic:',p.locator('#status').inner_text(),p.locator('#phase').inner_text(),p.locator('#pending').inner_text(),flush=True)
+                for p in pages:
+                    try:
+                        labels=[p.locator('#'+key).inner_text(timeout=500) if p.locator('#'+key).count() else '' for key in ('status','phase','pending')]
+                        print('UI diagnostic:',*labels,flush=True)
+                    except Exception:pass  # Never mask the actual failure after navigation/close.
             release.set()
             for c in contexts:c.close()
