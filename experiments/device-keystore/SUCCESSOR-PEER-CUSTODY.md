@@ -17,6 +17,12 @@ Acceptance must be supplied independently; neither a directory response, CF
 login, archive password nor the boolean alone proves a human ceremony. The
 worker accepts only the descriptor's intact peer, never its candidate actor.
 
+The future UI caller must bound and own public arguments before structured
+clone, clear its transient password input, and immediately retire the worker on
+clone/boot/timeout errors. This unit uses the existing disposable fixture caller;
+it does not qualify a new product caller. The worker validates individual bounded
+fields before serializing metadata and exposes no general native commands.
+
 The caller explicitly selects this experimental entry for an existing **single
 context**, encrypted AggregateStore database. Opening it never creates a root,
 signer or missing record. The one atomic write changes the authenticated inner
@@ -41,7 +47,9 @@ The existing age scrypt18 capsule/root and libsodium secretstream FINAL APIs are
 reused without new ciphers, nonces, KDFs or wrapping. The existing device scope,
 database/identity/vault/revision AAD and capsule are retained. Full validation
 authenticates both native records, actual provider signing keys and group state,
-source pins and pending state. The target has the same actual own signer and the
+source pins and pending state. A group marked empty alone is insufficient: the validator recomputes the exact
+signer-only provider through the vetted API and compares all target bytes,
+wiping the temporary result. The target has the same actual own signer and the
 independently accepted **new** peer pins, but no group, active leaf, history,
 outbox, cursor or messages.
 

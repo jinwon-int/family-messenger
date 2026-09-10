@@ -189,6 +189,14 @@ This is not a SIGKILL/restart proof of a persistent replacement implementation.
    services/backups and Telegram fallback. Readonly history recovery does not
    guarantee continuing conversations after complete device loss.
 
+The subsequent [protected intact-peer experiment](../experiments/device-keystore/SUCCESSOR-PEER-CUSTODY.md)
+qualifies same-database encrypted custody of a fresh signer-only context against
+an inactive reservation, preserving the complete old record and pending update.
+It introduces an explicitly selected inner format that older drivers reject;
+candidate private custody, activation, client/history support and human-use
+acceptance remain open. It does not turn this design's library probe into a
+complete replacement-device or recovery workflow.
+
 ## Primary sources and costs
 
 [lifecycle-evidence.json](../experiments/openmls-browser/lifecycle-evidence.json)
