@@ -208,3 +208,10 @@ snapshots prior v4 data before adding its reservation table. Both exact retries
 and reads require current unexpired policy/source bindings; all ordinary native
 routes deny these targets. Client custody and candidate activation are not yet
 connected, and no existing UI silently selects this protocol.
+
+[Paired successor custody declarations](SUCCESSOR-CUSTODY.md) add per-role
+immutable receipts and a separate readiness response. Schema 6 preserves a v5
+snapshot and existing reservation bytes. Two declarations remain inactive;
+private-client orchestration, activation and exact-package Welcome/ack follow.
+See [verification evidence](successor-custody-evidence.json) for the synthetic
+server/process scope and existing custody worker compatibility.

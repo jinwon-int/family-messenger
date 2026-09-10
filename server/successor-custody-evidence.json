@@ -1,0 +1,210 @@
+{
+  "scope": "Server-only paired public custody declarations; no client POST orchestration, activation or deployment",
+  "runtime_source": "abcb26d5bcba6f540ae2483bf73b3100ca9d8025",
+  "base": "835bc9e57cd84345f58403ed0f72abe119ce4d3c",
+  "author": {
+    "runtime_source": "abcb26d5bcba6f540ae2483bf73b3100ca9d8025",
+    "vcs_modified": false,
+    "build_go": "1.27.1",
+    "binaries": {
+      "family-dev": "d186b0ae8a19ab80e8ec3f193bc9013fd20aabd3e1438737742b943413e02643",
+      "family-policy": "f8becf82ed5c2a29c1b981145b799f22723d3430218785a1191356aa2532b6c2"
+    },
+    "legacy_schema5_binary_sha256": "e76f47241197e9eef5ec34054c20c9480e7ceb46dcbd6449441c7b3e83786e1d",
+    "go_default_race": "passed",
+    "go_default_normal_umask077": "passed",
+    "go_vet": "passed",
+    "python_tests_both_umasks": 149,
+    "process_receipt": "artifacts/native-successor-fzfesmui/verification.json",
+    "peer_original_receipt": "artifacts/native-successor-peer-qg6nwgja/verification.json",
+    "candidate_original_precommit_receipt": "artifacts/native-candidate-hkm1w00w/verification.json",
+    "no_new_dependencies": true,
+    "no_client_changes": true,
+    "no_deployment": true
+  },
+  "clean_process": {
+    "synthetic_only": true,
+    "production_cf_gate": false,
+    "e2ee": false,
+    "binary_sha256": "d186b0ae8a19ab80e8ec3f193bc9013fd20aabd3e1438737742b943413e02643",
+    "policy_binary_sha256": "f8becf82ed5c2a29c1b981145b799f22723d3430218785a1191356aa2532b6c2",
+    "explicit_signed_mode_and_no_fixture_fallback": true,
+    "checks": {
+      "explicit_mode_owner_not_device_admin_expiry_and_candidate_denial": true,
+      "two_process_exact_acceptance_one_revision_atomic_retirement_no_candidate_admission": true,
+      "signed_current_pair_context_no_old_or_candidate_delivery": true,
+      "concurrent_http_reservation_one_commit_exact_bytes_conflict_no_legacy_conversion": true,
+      "actual_v5_migration_snapshot_old_binary_denial_and_isolated_restore": true,
+      "paired_custody_role_cas_concurrent_exact_retry_and_partial_sigkill_no_activation": true,
+      "reservation_sigkill_lost_response_retry_same_outcome_and_both_native_delivery_denied": true,
+      "paired_declaration_sigkill_lost_reply_exact_reconciliation_and_immutable_reservation": true,
+      "sigkill_restart_retains_revocation_and_old_chat_media_policy_bytes": true,
+      "conflicting_process_decisions_one_winner_no_old_policy_restore": true,
+      "unsafe_v2_policy_denied_and_retained_no_fixture_fallback": true,
+      "reservation_denied_after_emergency_revocation_and_restart": true,
+      "paired_custody_denies_revoked_accounts_after_restart": true,
+      "emergency_empty_people_and_administrators_survives_sigkill_restart": true
+    },
+    "ok": true
+  },
+  "peer_original_compatibility": {
+    "synthetic_only": true,
+    "production_cf_gate": false,
+    "e2ee": false,
+    "checks": {
+      "malformed_arguments_deny_without_mutation_and_retire": true,
+      "native_keypackage_welcome_ack_actual_library_group": true,
+      "real_pair_text_8192file_pending_rekey_retirement_and_inactive_reservation": true,
+      "wrong_identity_missing_state_password_intent_pins_and_acceptance_deny_unchanged": true,
+      "bounded_fresh_signed_reservation_no_directory_fallback": true,
+      "uninstrumented_original_bundle_first_transition_restart_exact_retry_inactive": true
+    },
+    "binary_sha256": "d186b0ae8a19ab80e8ec3f193bc9013fd20aabd3e1438737742b943413e02643",
+    "successor_original_only": true,
+    "successor_bundles": {
+      "original_sha256": "e15897fc902a89449d18f108cb1db6689007d0fb2b42ae3d6dbf84f789970b0e",
+      "served_instrumented_sha256": "e15897fc902a89449d18f108cb1db6689007d0fb2b42ae3d6dbf84f789970b0e",
+      "bytes": 608160
+    },
+    "original_assets_sha256": {
+      "/": "2e7ecbc7ffc7bcdff5646e6282c846a6d2ec307328af56ab25a39655c9013b28",
+      "/main.js": "d18dace83748c44cec118bae7f24bd144ac4eea824b3fce06781d481ecd5b2e2",
+      "/native-worker.js": "ca0f105d7afc5a0954e782548e3d09b2412fca3318bfae6e13515484b93ab18a",
+      "/trust-directory.js": "63079de10d73ac4d0664b07de7bcacc4e4abe551977a293cfa4144029a80b04e",
+      "/pkg/family_mls_browser_experiment.js": "b937381156c39a683d8f42ff96cfa608f3c6a90de841795ff8d116512729789f",
+      "/pkg/family_mls_browser_experiment_bg.wasm": "94482525c6e2deaa95183e91a86ca83cf46c89af97ca149006abbeaea9bdd13d",
+      "/aggregate-native-worker.js": "9b931c11ca5e8221b05ba8df061f363a7bc2fe2ba35caddf13d26c86b4cfdd94",
+      "/aggregate-fork-worker.js": "76227036c6351966b8d576597f7d446e1289be9e98e38c1b70c7c0d9bc627926",
+      "/aggregate-store.js": "c5c82ef05af684395a645269d7dab00630665b95fde0e00e38d6ac4e51409ef5",
+      "/successor-peer-store.js": "e15897fc902a89449d18f108cb1db6689007d0fb2b42ae3d6dbf84f789970b0e",
+      "/successor-peer-worker.js": "9530f1edd40cf82d2fba6eb7f3e668185c3feb553bbb1c74a029dd9058f502c1"
+    },
+    "assets_sha256": {
+      "/": "2e7ecbc7ffc7bcdff5646e6282c846a6d2ec307328af56ab25a39655c9013b28",
+      "/main.js": "e0264fb38c997388f34a8e3305424f263190521a438fa22ee6d7898ec5561b57",
+      "/native-worker.js": "c758b80e468c5ea785ec6e7e361771cc147ea1a97229cf26425a4d3d736597a2",
+      "/trust-directory.js": "63079de10d73ac4d0664b07de7bcacc4e4abe551977a293cfa4144029a80b04e",
+      "/pkg/family_mls_browser_experiment.js": "b937381156c39a683d8f42ff96cfa608f3c6a90de841795ff8d116512729789f",
+      "/pkg/family_mls_browser_experiment_bg.wasm": "94482525c6e2deaa95183e91a86ca83cf46c89af97ca149006abbeaea9bdd13d",
+      "/aggregate-native-worker.js": "9b931c11ca5e8221b05ba8df061f363a7bc2fe2ba35caddf13d26c86b4cfdd94",
+      "/aggregate-fork-worker.js": "76227036c6351966b8d576597f7d446e1289be9e98e38c1b70c7c0d9bc627926",
+      "/aggregate-store.js": "befe1826c066b43144a398eaa8b021a212fb11b0cc474a591cf739eeb9676ce9",
+      "/successor-peer-store.js": "e15897fc902a89449d18f108cb1db6689007d0fb2b42ae3d6dbf84f789970b0e",
+      "/successor-peer-worker.js": "9530f1edd40cf82d2fba6eb7f3e668185c3feb553bbb1c74a029dd9058f502c1"
+    },
+    "test_instrumentation": "main selects native worker; served-only pending-write hold and deliberately forged inner sender fixture; proxy may hold/alter generated responses; aggregate held CAS and base pending-write SIGKILL hook; whole native record digests only; separate original/instrumented driver hashes",
+    "browser": "151.0.7922.34",
+    "max_worker_linear_memory_bytes": 5636096,
+    "boundary": "Original unchanged worker and bundle, synthetic peer custody only; not candidate private-key possession or delivery",
+    "passed": true
+  },
+  "candidate_original_compatibility_precommit_equivalent_code": {
+    "synthetic_only": true,
+    "production_cf_gate": false,
+    "e2ee": false,
+    "checks": {
+      "malformed_arguments_deny_without_mutation_and_retire": true,
+      "native_keypackage_welcome_ack_actual_library_group": true,
+      "proposal_has_no_enrolled_id_override_and_strict_bounded_arguments": true,
+      "actual_signed_proposal_commit_package_hash_restart_exact_retry_no_regeneration": true,
+      "encrypted_outer_only_public_result_no_private_provider_page_output": true,
+      "independent_candidate_actor_key_package_reservation_required_missing_state_never_created": true,
+      "bounded_signed_candidate_admission_no_directory_or_fixture_fallback": true,
+      "bound_exact_retry_cross_tab_restart_same_package_old_source_pending_unchanged_delivery_denied": true,
+      "current_peer_revocation_denies_candidate_no_membership_activation": true
+    },
+    "binary_sha256": "df7985316f2fa232baf2c5b130d7bd214d51c3fb9db297c26e421ff1eee140fc",
+    "candidate_original_only": true,
+    "candidate_bundles": {
+      "original_sha256": "052c1d279afaf9cdc9671268e30e4d44e5994d127ac410c9ddf29c1f097b81ed",
+      "served_sha256": "052c1d279afaf9cdc9671268e30e4d44e5994d127ac410c9ddf29c1f097b81ed",
+      "bytes": 591720
+    },
+    "original_assets_sha256": {
+      "/": "2e7ecbc7ffc7bcdff5646e6282c846a6d2ec307328af56ab25a39655c9013b28",
+      "/main.js": "7b738a93a7ea9adb7c231f0da36a454d182ff6a266642e3274f63e4108619299",
+      "/native-worker.js": "ca0f105d7afc5a0954e782548e3d09b2412fca3318bfae6e13515484b93ab18a",
+      "/trust-directory.js": "63079de10d73ac4d0664b07de7bcacc4e4abe551977a293cfa4144029a80b04e",
+      "/pkg/family_mls_browser_experiment.js": "b937381156c39a683d8f42ff96cfa608f3c6a90de841795ff8d116512729789f",
+      "/pkg/family_mls_browser_experiment_bg.wasm": "94482525c6e2deaa95183e91a86ca83cf46c89af97ca149006abbeaea9bdd13d",
+      "/aggregate-native-worker.js": "9b931c11ca5e8221b05ba8df061f363a7bc2fe2ba35caddf13d26c86b4cfdd94",
+      "/aggregate-fork-worker.js": "76227036c6351966b8d576597f7d446e1289be9e98e38c1b70c7c0d9bc627926",
+      "/aggregate-store.js": "c5c82ef05af684395a645269d7dab00630665b95fde0e00e38d6ac4e51409ef5",
+      "/candidate-store.js": "052c1d279afaf9cdc9671268e30e4d44e5994d127ac410c9ddf29c1f097b81ed",
+      "/candidate-worker.js": "966f5ea358f2d46e60f4b53e4013d214cd9fe2f0dfd46e7e1e284267b5f65d87"
+    },
+    "assets_sha256": {
+      "/": "2e7ecbc7ffc7bcdff5646e6282c846a6d2ec307328af56ab25a39655c9013b28",
+      "/main.js": "40c24400ef7158aec7d547b4027c20744b716e00ef51a10f068c97cfe26917f8",
+      "/native-worker.js": "c758b80e468c5ea785ec6e7e361771cc147ea1a97229cf26425a4d3d736597a2",
+      "/trust-directory.js": "63079de10d73ac4d0664b07de7bcacc4e4abe551977a293cfa4144029a80b04e",
+      "/pkg/family_mls_browser_experiment.js": "b937381156c39a683d8f42ff96cfa608f3c6a90de841795ff8d116512729789f",
+      "/pkg/family_mls_browser_experiment_bg.wasm": "94482525c6e2deaa95183e91a86ca83cf46c89af97ca149006abbeaea9bdd13d",
+      "/aggregate-native-worker.js": "9b931c11ca5e8221b05ba8df061f363a7bc2fe2ba35caddf13d26c86b4cfdd94",
+      "/aggregate-fork-worker.js": "76227036c6351966b8d576597f7d446e1289be9e98e38c1b70c7c0d9bc627926",
+      "/aggregate-store.js": "befe1826c066b43144a398eaa8b021a212fb11b0cc474a591cf739eeb9676ce9",
+      "/candidate-store.js": "052c1d279afaf9cdc9671268e30e4d44e5994d127ac410c9ddf29c1f097b81ed",
+      "/candidate-worker.js": "966f5ea358f2d46e60f4b53e4013d214cd9fe2f0dfd46e7e1e284267b5f65d87"
+    },
+    "test_instrumentation": "main selects native worker; served-only pending-write hold and deliberately forged inner sender fixture; proxy may hold/alter generated responses; aggregate held CAS and base pending-write SIGKILL hook; whole native record digests only; separate original/instrumented driver hashes",
+    "browser": "151.0.7922.34",
+    "max_worker_linear_memory_bytes": 5636096,
+    "boundary": "Synthetic inactive candidate private proposal/custody; no declarations, activation, native successor delivery, human recovery, or compiled UI",
+    "passed": true
+  },
+  "independent_review": {
+    "verdict": "CLEAN",
+    "reviewed_head": "abcb26d5bcba6f540ae2483bf73b3100ca9d8025",
+    "base": "835bc9e57cd84345f58403ed0f72abe119ce4d3c",
+    "scope": "Server-only durable per-role successor custody declarations; complete diff and adjacent authority, reservation, ordinary delivery, storage and migration paths",
+    "findings": [],
+    "independent_checks": {
+      "full_chat_access_go_race": "PASS (43.476s chat /14.343s access)",
+      "additional_go_race_groups": 6,
+      "additional_go_race_repetitions": 3,
+      "additional_go_race_seconds": 9.488,
+      "additional_tests": [
+        "Duplicate/case/null/type/Unicode-alias POST fields denied; maximum64-character declaration IDs and role scoping succeed",
+        "SQL RAISE(IGNORE) zero-row CAS yields conflict without receipt or state mutation",
+        "Corrupted target after both declarations denies read/retry/ordinary delivery and preserves declaration bytes",
+        "Stored unknown/duplicate/case-alias/null fields deny and retain corruption",
+        "Schema5 object collision fails migration without reinterpreting unknown table or advancing schema; snapshot retained",
+        "Raw1024-byte decoding cap enforced independent of fixture marshaling"
+      ],
+      "process_proof": "/root/work/review-successor-custody-abcb26d/artifacts/native-successor-o6rmkpx1/verification.json",
+      "process_checks": 14,
+      "process_pass": true,
+      "clean_binary_vcs_modified": false,
+      "process_includes": [
+        "actual old schema5 binary upgrade",
+        "private snapshot",
+        "old binary denial with DB hash unchanged",
+        "isolated old snapshot restore",
+        "two-role concurrent exact retry",
+        "partial/full declaration SIGKILL/restart",
+        "current emergency revocation denial"
+      ]
+    },
+    "test_author_corrections": [
+      "Initial extra trailing-space RawMessage test was compacted by helper json.Marshal; replaced by direct raw decoder cap test. Not product finding.",
+      "Initial expected403 for malformed target corrected to422 integrity rejection; no access allowed. Not product finding."
+    ],
+    "residual_limits": [
+      "Declarations do not prove private custody or human approval, do not activate target/candidate and are not a distributed lease.",
+      "Client declaration orchestration, activation and native Welcome/ack remain later work.",
+      "Whole valid historical DB rollback has no external witness; existing documented synthetic limitation."
+    ],
+    "artifacts": {
+      "artifacts/independent-tests.go": "44b6ecfa4d9fc06284c4af0ab62a87d5c31d4f4367d3a38baa7b12e6625137f7",
+      "artifacts/independent-tests.log": "f3b3a18d0acd8161d3c141c4f0f996968d586bd13ed0ba5772b6303ff815f801",
+      "artifacts/binary-provenance.txt": "188681898b42be21840c7917f26ed6797432f1f71b13dc3fa52a2505ae3639ea",
+      "artifacts/native-successor-o6rmkpx1/verification.json": "394cdc2de4d74250b7e71f3b1b08548ecee822962fd63e5d7d2138b3cae4806f"
+    }
+  },
+  "independent_review_sha256": "c84cb6ba8b71993a0538bb0980aeb3af5cc64382cfb676fb6f3741c103089862",
+  "remaining": [
+    "Persist/reconcile exact client declaration after protected local commit",
+    "Separate activation using candidate exact accepted KeyPackage, Welcome and ack",
+    "Human lifecycle/mobile/actual CF/server backup/capacity/fleet acceptance"
+  ]
+}
