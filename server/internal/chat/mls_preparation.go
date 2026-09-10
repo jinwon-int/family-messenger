@@ -111,6 +111,12 @@ func (s *Store) reserveContext(q contextReservation, actor, device string, devic
 	if e = s.mlsAdmit(source, actor, device, devices); e != nil {
 		return contextPreparation{}, false, e
 	}
+	// Existing native creation stores pins in canonical ID order. Do not copy a
+	// corrupted source into an immutable target that the preparation reader
+	// would reject. Preserve the source; never normalize it as a repair.
+	if source.Pins[0].ID >= source.Pins[1].ID || source.Pins[0].Actor == source.Pins[1].Actor {
+		return contextPreparation{}, false, ErrIntegrity
+	}
 	if source.Group != q.Group || source.Creator != device {
 		return contextPreparation{}, false, ErrForbidden
 	}

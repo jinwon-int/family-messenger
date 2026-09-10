@@ -149,3 +149,8 @@ Next: integrate PR30's actual browser/library with this delivery boundary, expan
 membership controls through vetted APIs and test authenticated outer framing and
 atomic outbox/cursor. Human protected keys/recovery, actual CF and mobile acceptance
 remain prerequisites for an isolated Yukson candidate and production cutover.
+
+For aggregate second conversations, use the opt-in [preparation protocol](PREPARATION.md).
+Schema4 adds a durable required-custody marker and public declarations; old room
+wire formats remain unchanged. Neither declarations nor opaque server logs prove
+private client storage or MLS validity.

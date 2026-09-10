@@ -132,6 +132,32 @@ func TestPreparationConcurrentIntentWriters(t *testing.T) {
 		t.Fatal(ok, conflict)
 	}
 }
+
+func TestPreparationNoncanonicalSourceDeniedBeforeWrite(t *testing.T) {
+	s, _, _, _, call := mlsFixture(t)
+	group := readySource(t, call)
+	var raw []byte
+	if e := s.db.QueryRow("SELECT pins FROM mls_rooms WHERE room='source'").Scan(&raw); e != nil {
+		t.Fatal(e)
+	}
+	var pins []MLSPin
+	if e := json.Unmarshal(raw, &pins); e != nil {
+		t.Fatal(e)
+	}
+	pins[0], pins[1] = pins[1], pins[0]
+	corrupt, _ := json.Marshal(pins)
+	if _, e := s.db.Exec("UPDATE mls_rooms SET pins=? WHERE room='source'", corrupt); e != nil {
+		t.Fatal(e)
+	}
+	call("owner", "POST", "/v1/mls/context-reservations", contextReservation{"target", "source", group}, "alice-first", 422)
+	var n int
+	if e := s.db.QueryRow("SELECT count(*) FROM rooms WHERE id='target'").Scan(&n); e != nil || n != 0 {
+		t.Fatal("allocated on corrupt source", n, e)
+	}
+	if e := s.db.QueryRow("SELECT pins FROM mls_rooms WHERE room='source'").Scan(&raw); e != nil || !bytes.Equal(raw, corrupt) {
+		t.Fatal("source changed", e)
+	}
+}
 func TestPreparationV3SnapshotAndRestart(t *testing.T) {
 	dir := t.TempDir()
 	os.Chmod(dir, 0700)

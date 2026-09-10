@@ -145,6 +145,19 @@ def main():
                 assert old.execute('PRAGMA user_version').fetchone()[0]==args.legacy_version
                 assert old.execute('SELECT count(*) FROM messages').fetchone()[0]==1
             proof['actual_v'+str(args.legacy_version)+'_binary_migration_snapshot']=True
+            if args.legacy_version==3:
+                stop()
+                before=hashlib.sha256((state/'messages.sqlite').read_bytes()).hexdigest()
+                serving_binary=args.legacy_binary.resolve(strict=True)
+                start(want_success=False)
+                assert hashlib.sha256((state/'messages.sqlite').read_bytes()).hexdigest()==before
+                saved_state=state
+                state=work/'isolated-v3-restore';state.mkdir(mode=0o700)
+                private_write(state/'messages.sqlite',snapshots[0].read_bytes())
+                start()
+                assert len(call('family','/v1/rooms/legacy/messages'))==1
+                stop();state=saved_state;serving_binary=binary;start()
+                proof['old_binary_denies_new_state_and_isolated_v3_snapshot_restores']=True
         call('owner','/v1/mls/reservations','POST',{'room':'secure','peer_actor':'bob'},201)
         call('family','/v1/rooms/secure/devices')
         call('owner','/v1/rooms/secure/messages','POST',{'client_id':'bad','payload':'eA=='},403)
