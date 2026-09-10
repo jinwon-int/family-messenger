@@ -143,7 +143,7 @@ def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release
                 proof['checks']['compiled_server_restart_preserves_identity_and_encrypted_history']=True
             if aggregate:
                 from native_aggregate_ui_checks import checks as aggregate_checks
-                a=aggregate_checks(a,b,contexts,pages,url,open_page,click_open,passwords,pins,proof,direct,crash_page,hold_next,arrived,release)
+                a=aggregate_checks(a,b,contexts,pages,url,open_page,click_open,passwords,pins,proof,direct,crash_page,hold_next,arrived,release,restart=restart)
             tamper[0]='cipher';send(a,'synthetic UI altered wire')
             for p in pages:expect(p.locator('#chat')).to_be_hidden(timeout=25000)
             tamper[0]=None

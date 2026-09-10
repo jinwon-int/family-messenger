@@ -54,7 +54,7 @@ def main():
     assert not vault or not (ui_proof or embedded)
     assert not embedded or ui_proof
     assert not (control_proof and ui_proof)
-    assert not aggregate or not (vault or history_proof or (ui_proof and not aggregate_ui) or embedded or control_proof)
+    assert not aggregate or not (vault or history_proof or (ui_proof and not aggregate_ui) or (embedded and not aggregate_ui) or control_proof)
     binary, policy = args.binary.resolve(strict=True), args.policy_binary.resolve(strict=True)
     root = Path(__file__).resolve().parents[1]
     work = Path(tempfile.mkdtemp(prefix='native-aggregate-ui-' if aggregate_ui else 'native-preparation-' if preparation else 'native-aggregate-' if aggregate else 'native-history-' if history_proof else 'native-vault-ui-' if vault_ui else 'native-vault-control-' if vault and control_proof else 'native-vault-browser-' if vault else 'native-embedded-ui-' if embedded else 'native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
@@ -94,7 +94,7 @@ def main():
         log = work / 'server.log'
         output = log.open('ab')
         offset = log.stat().st_size
-        process = subprocess.Popen([str(binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--listen', address]+(['--synthetic-history-ui' if args.history_ui else '--synthetic-vault-ui' if vault_ui else '--synthetic-mls-ui'] if embedded else []), stderr=output, stdout=subprocess.DEVNULL)
+        process = subprocess.Popen([str(binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--listen', address]+(['--synthetic-aggregate-ui' if aggregate_ui else '--synthetic-history-ui' if args.history_ui else '--synthetic-vault-ui' if vault_ui else '--synthetic-mls-ui'] if embedded else []), stderr=output, stdout=subprocess.DEVNULL)
         until = time.monotonic() + 10
         while time.monotonic() < until:
             assert process.poll() is None, 'server exited'
@@ -133,7 +133,7 @@ def main():
     for name in ['family_mls_browser_experiment.js','family_mls_browser_experiment_bg.wasm']:
         p=args.bundle/name;st=p.lstat();assert not p.is_symlink() and st.st_nlink==1 and st.st_size<4*1024*1024
         assets['/pkg/'+name]=p.read_bytes()
-    if vault_ui:
+    if vault_ui and not aggregate_ui:
         assets['/']=(root/'experiments/openmls-browser/web/vault-chat.html').read_bytes()
         for name in ['vault-chat.js','vault-native-worker.js']:
             assets['/'+name]=(root/'experiments/openmls-browser/web'/name).read_bytes()
@@ -142,7 +142,7 @@ def main():
     if embedded and vault_ui:
         # Expected bytes are independent source inputs. Proxy only forwards;
         # every manifest route is also requested before any identity revocation.
-        manifest_path=root/('server/internal/chat/history_bundle.json' if args.history_ui else 'server/internal/chat/vault_bundle.json')
+        manifest_path=root/('server/internal/chat/aggregate_bundle.json' if aggregate_ui else 'server/internal/chat/history_bundle.json' if args.history_ui else 'server/internal/chat/vault_bundle.json')
         pin = json.loads(manifest_path.read_text())
         assets = {}
         for e in pin['files']:
@@ -166,13 +166,13 @@ def main():
     if vault:
         from native_vault_checks import vault_assets
         vault_original=vault_assets(root,work,assets)
-    if aggregate:
+    if aggregate and not embedded:
         from native_aggregate_checks import aggregate_assets
         aggregate_original=aggregate_assets(root,work,assets)
-    if preparation:
+    if preparation and not embedded:
         assets['/prepared-fork-worker.js']=(root/'experiments/openmls-browser/web/prepared-fork-worker.js').read_bytes()
         assets['/main.js']=assets['/main.js'].replace(b'./aggregate-fork-worker.js',b'./prepared-fork-worker.js')
-    if aggregate_ui:
+    if aggregate_ui and not embedded:
         for name in ('aggregate-chat.html','aggregate-chat.js'):
             assets['/' if name.endswith('.html') else '/'+name]=(root/'experiments/openmls-browser/web'/name).read_bytes()
         assets['/aggregate-store.js']=aggregate_original
@@ -180,7 +180,7 @@ def main():
             assets.pop(route,None)
     proof['original_assets_sha256']={name:hashlib.sha256(raw).hexdigest() for name,raw in assets.items()}
     if vault:proof['original_assets_sha256']['/native-vault-store.js']=hashlib.sha256(vault_original).hexdigest()
-    if aggregate:proof['original_assets_sha256']['/aggregate-store.js']=hashlib.sha256(aggregate_original).hexdigest()
+    if aggregate and not embedded:proof['original_assets_sha256']['/aggregate-store.js']=hashlib.sha256(aggregate_original).hexdigest()
     if not ui_proof:
         raw=assets['/native-worker.js'];at=raw.index(b" if(method==='prepare'){")
         first,last=raw[:at],raw[at:]
@@ -303,7 +303,7 @@ def main():
             proof['checks']['all_'+str(len(assets))+'_native_routes_require_signed_admission']=True
         if ui_proof:
             from native_chat_ui_checks import run_ui
-            run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=url+('/vault/' if vault_ui else '/encrypted/') if embedded else url,restart=(lambda:(stop(),start())) if embedded else None,vault=vault_ui,history=history_proof,history_ui=args.history_ui,history_embedded=embedded and args.history_ui,aggregate=aggregate_ui)
+            run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=url+('/aggregate/' if aggregate_ui else '/vault/' if vault_ui else '/encrypted/') if embedded else url,restart=(lambda:(stop(),start())) if embedded else None,vault=vault_ui,history=history_proof,history_ui=args.history_ui,history_embedded=embedded and args.history_ui,aggregate=aggregate_ui)
             if embedded:
                 proof['ui_packaging']='compiled native Go server assets; proxy only injects generated assertions'
                 proof['native_embedded_ui']=True

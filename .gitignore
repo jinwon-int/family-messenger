@@ -22,3 +22,5 @@ experiments/device-keystore/bundle/
 server/internal/chat/vaultassets/
 
 server/internal/chat/historyassets/
+
+server/internal/chat/aggregateassets/
