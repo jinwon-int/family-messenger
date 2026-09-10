@@ -7,7 +7,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
 
-def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=None,restart=None,vault=False,history=False,history_ui=False,history_embedded=False,aggregate=False):
+def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=None,restart=None,vault=False,history=False,history_ui=False,history_embedded=False,aggregate=False,aggregate_history_embedded=False):
     passwords=[secrets.token_urlsafe(32),secrets.token_urlsafe(32)]
     initialized=set();draft_prefix='family-aggregate-ui-draft-v1' if aggregate else 'family-vault-ui-draft-v1' if vault else 'family-native-ui-draft-v1'
     with sync_playwright() as pw:
@@ -175,12 +175,17 @@ def run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release
             if vault:
                 from native_vault_ui_checks import checks
                 checks(a,b,contexts,pages,page_url or url,open_page,click_open,passwords,proof,database='family-mls-device-vault-synthetic-ui-alice' if aggregate else 'family-mls-vault-synthetic-ui-alice-family')
+            recovered_after_revocation=None
+            if aggregate_history_embedded:
+                from native_aggregate_history_embedded_checks import native_checks
+                a,recovered_after_revocation=native_checks(a,b,contexts,url,passwords,pins,proof,crash_page,open_page,direct,restart,config,commit)
             config['devices'][1]['status']='revoked';config['devices'][1]['device_revision']=2;commit(2,config['people'])
             for p in pages:
                 expect(p.locator('#chat')).to_be_hidden(timeout=25000)
                 assert p.locator('#messages li').count()==0 and p.locator('#fingerprint').inner_text()==''
                 click_open(p);expect(p.locator('#status')).to_contain_text('연결 또는 기기 확인',timeout=25000)
             proof['checks']['durable_revocation_clears_ui_and_denies_reopen']=True
+            if recovered_after_revocation:recovered_after_revocation()
             if aggregate:proof['native_aggregate_ui']=True
             elif vault:proof['native_vault_ui']=True
             proof['native_encrypted_ui']=True

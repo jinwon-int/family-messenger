@@ -155,7 +155,7 @@ func testAssetAdmissionRoutingAndLegacyPreservation(t *testing.T, pin []byte, pa
 			t.Fatal("CSP")
 		}
 	}
-	for _, path := range []string{"/encrypted", "/%65ncrypted/", "/encrypted/?v=1", "/encrypted/?", "/pkg/unknown.wasm", "/encrypted/../chat.html", "/vault", "/%76ault/", "/vault/?", "/vault/?v=1", "/vault/../vault-chat.js", "/history", "/%68istory/", "/history/?", "/history/?v=1", "/history/../history-ui.js", "/history-forge-worker.js", "/aggregate", "/%61ggregate/", "/aggregate/?", "/aggregate/?v=1", "/aggregate/../aggregate-chat.js", "/aggregate-store-instrumented.js"} {
+	for _, path := range []string{"/encrypted", "/%65ncrypted/", "/encrypted/?v=1", "/encrypted/?", "/pkg/unknown.wasm", "/encrypted/../chat.html", "/vault", "/%76ault/", "/vault/?", "/vault/?v=1", "/vault/../vault-chat.js", "/history", "/%68istory/", "/history/?", "/history/?v=1", "/history/../history-ui.js", "/history-forge-worker.js", "/aggregate", "/%61ggregate/", "/aggregate/?", "/aggregate/?v=1", "/aggregate/../aggregate-chat.js", "/aggregate-store-instrumented.js", "/aggregate-history", "/%61ggregate-history/", "/aggregate-history/?", "/aggregate-history/?v=1", "/aggregate-history/../aggregate-history-ui.js", "/aggregate-history-forge-worker.js"} {
 		code, _ := accessRequest(t, server, token, "GET", path, nil, nil)
 		if code == 200 {
 			t.Fatal("alias served", path)
@@ -385,5 +385,62 @@ func TestAggregateSourcesAndProfileSubstitutionDenied(t *testing.T) {
 	raw = append(raw, '\n')
 	if _, e := loadAssetProfile(files, raw, aggregatePaths, 4); e == nil {
 		t.Fatal("generic precursor accepted")
+	}
+}
+
+func TestAggregateHistoryAssetIntegrityAndClosedManifest(t *testing.T) {
+	testAssetIntegrityAndClosedManifest(t, aggregateHistoryManifest, aggregateHistoryPaths, 6)
+}
+func TestAggregateHistoryAssetAdmissionRoutingAndLegacyPreservation(t *testing.T) {
+	testAssetAdmissionRoutingAndLegacyPreservation(t, aggregateHistoryManifest, aggregateHistoryPaths, 6)
+}
+func TestCompiledAggregateHistorySelection(t *testing.T) {
+	b, e := LoadAggregateHistoryAssets()
+	if compiledAggregateHistoryAssets == nil {
+		if e == nil || b != nil {
+			t.Fatal("implicit activation")
+		}
+		return
+	}
+	if e != nil || b.version != 6 || len(b.files) != 20 {
+		t.Fatal(e)
+	}
+	for _, p := range []string{"/history/", "/vault/", "/encrypted/", "/aggregate-history-forge-worker.js", "/main.js", "/native-aggregate-vault.js"} {
+		if _, ok := b.files[p]; ok {
+			t.Fatal("foreign asset", p)
+		}
+	}
+}
+func TestAggregateHistoryProfileAndSourceSubstitution(t *testing.T) {
+	for _, pin := range [][]byte{encryptedManifest, vaultManifest, retiredHistoryManifest, historyManifest, aggregateManifest} {
+		f, r := assetProfileFixture(t, pin)
+		if _, e := loadAssetProfile(f, r, aggregateHistoryPaths, 6); e == nil {
+			t.Fatal("old profile accepted")
+		}
+	}
+	for _, field := range []string{"source", "recovery-tamper", "total-limit"} {
+		f, r := assetProfileFixture(t, aggregateHistoryManifest)
+		var spec encryptedManifestSpec
+		json.Unmarshal(r, &spec)
+		if field == "source" {
+			spec.Files[len(spec.Files)-1].Source = "tests/fixtures/native-history/aggregate-forge-worker.js"
+		}
+		if field == "recovery-tamper" {
+			f["aggregate-history-worker.js"].Data[0] ^= 1
+		}
+		if field == "total-limit" {
+			for i := range spec.Files {
+				d := bytes.Repeat([]byte{1}, 256*1024)
+				h := sha256.Sum256(d)
+				spec.Files[i].Bytes = len(d)
+				spec.Files[i].SHA256 = hex.EncodeToString(h[:])
+				f[spec.Files[i].File].Data = d
+			}
+		}
+		r, _ = json.MarshalIndent(spec, "", "  ")
+		r = append(r, '\n')
+		if _, e := loadAssetProfile(f, r, aggregateHistoryPaths, 6); e == nil {
+			t.Fatal(field)
+		}
 	}
 }

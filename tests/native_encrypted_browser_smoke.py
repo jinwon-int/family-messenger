@@ -33,6 +33,7 @@ def main():
     args.add_argument('--aggregate', action='store_true')
     args.add_argument('--aggregate-history', action='store_true')
     args.add_argument('--aggregate-history-ui', action='store_true')
+    args.add_argument('--aggregate-history-embedded', action='store_true')
     args.add_argument('--preparation', action='store_true')
     args.add_argument('--embedded', action='store_true')
     args.add_argument('--ui', action='store_true')
@@ -45,6 +46,7 @@ def main():
     aggregate_history=args.aggregate_history or args.aggregate_history_ui
     history_proof=args.history or args.history_ui
     assert not history_proof or (args.vault_ui and (not args.embedded or (args.history_ui and not args.history)))
+    assert not args.aggregate_history_embedded or (args.aggregate_ui and args.embedded and not aggregate_history and not history_proof)
     aggregate_ui = args.aggregate_ui
     vault_ui = args.vault_ui or aggregate_ui
     vault = args.vault
@@ -99,7 +101,7 @@ def main():
         log = work / 'server.log'
         output = log.open('ab')
         offset = log.stat().st_size
-        process = subprocess.Popen([str(binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--listen', address]+(['--synthetic-aggregate-ui' if aggregate_ui else '--synthetic-history-ui' if args.history_ui else '--synthetic-vault-ui' if vault_ui else '--synthetic-mls-ui'] if embedded else []), stderr=output, stdout=subprocess.DEVNULL)
+        process = subprocess.Popen([str(binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--listen', address]+(['--synthetic-aggregate-history-ui' if args.aggregate_history_embedded else '--synthetic-aggregate-ui' if aggregate_ui else '--synthetic-history-ui' if args.history_ui else '--synthetic-vault-ui' if vault_ui else '--synthetic-mls-ui'] if embedded else []), stderr=output, stdout=subprocess.DEVNULL)
         until = time.monotonic() + 10
         while time.monotonic() < until:
             assert process.poll() is None, 'server exited'
@@ -147,7 +149,7 @@ def main():
     if embedded and vault_ui:
         # Expected bytes are independent source inputs. Proxy only forwards;
         # every manifest route is also requested before any identity revocation.
-        manifest_path=root/('server/internal/chat/aggregate_bundle.json' if aggregate_ui else 'server/internal/chat/history_bundle.json' if args.history_ui else 'server/internal/chat/vault_bundle.json')
+        manifest_path=root/('server/internal/chat/aggregate_history_bundle.json' if args.aggregate_history_embedded else 'server/internal/chat/aggregate_bundle.json' if aggregate_ui else 'server/internal/chat/history_bundle.json' if args.history_ui else 'server/internal/chat/vault_bundle.json')
         pin = json.loads(manifest_path.read_text())
         assets = {}
         for e in pin['files']:
@@ -317,7 +319,7 @@ def main():
             proof['checks']['all_'+str(len(assets))+'_native_routes_require_signed_admission']=True
         if ui_proof:
             from native_chat_ui_checks import run_ui
-            run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=url+('/aggregate/' if aggregate_ui else '/vault/' if vault_ui else '/encrypted/') if embedded else url,restart=(lambda:(stop(),start())) if embedded else None,vault=vault_ui,history=history_proof,history_ui=args.history_ui,history_embedded=embedded and args.history_ui,aggregate=aggregate_ui)
+            run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=url+('/aggregate/' if aggregate_ui else '/vault/' if vault_ui else '/encrypted/') if embedded else url,restart=(lambda:(stop(),start())) if embedded else None,vault=vault_ui,history=history_proof,history_ui=args.history_ui,history_embedded=embedded and args.history_ui,aggregate=aggregate_ui,aggregate_history_embedded=args.aggregate_history_embedded)
             if embedded:
                 proof['ui_packaging']='compiled native Go server assets; proxy only injects generated assertions'
                 proof['native_embedded_ui']=True
