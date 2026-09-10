@@ -63,7 +63,7 @@ def aggregate_assets(root, work, assets):
     return original
 
 
-def aggregate_checks(a,b,databases,rpc,init,reopen,prepare,proof,page,passwords,pins,direct,config,commit,crash,digest,hold_next,arrived,release,tamper):
+def aggregate_checks(a,b,databases,rpc,init,reopen,prepare,proof,page,passwords,pins,direct,config,commit,crash,digest,hold_next,arrived,release,tamper,history=False):
     def inspect(p):
         return rpc(p, 'test-aggregate-digest')
     def open_room(p,i,room):
@@ -166,6 +166,11 @@ def aggregate_checks(a,b,databases,rpc,init,reopen,prepare,proof,page,passwords,
     assert rpc(a,'status')['epoch']==rpc(b,'status')['epoch']==2
     assert rpc(second_a,'status')['epoch']==rpc(second_b,'status')['epoch']==1
     proof['checks']['native_source_pending_control_old_epoch_receive_survives_target_writes']=True
+
+    if history:
+        from native_aggregate_history_checks import history_checks
+        history_checks(a,b,second_a,second_b,databases,rpc,init,prepare,proof,page,passwords,pins,direct,config,commit,crash,digest,intent)
+        return
 
     # Strict IDB pending-write SIGKILL, then exact retry from the old aggregate.
     before=digest(a,0);source_before=inspect(a)[0]

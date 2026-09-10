@@ -7,6 +7,8 @@ import unittest
 ROOT=Path(__file__).resolve().parents[1]
 
 class HistoryCallerTests(unittest.TestCase):
+    module = 'history-client.js'
+    reader = 'HistoryReader'
     def test_retirement_with_immutable_input_and_terminal_close(self):
         script=r'''
 import assert from 'node:assert/strict';
@@ -31,7 +33,28 @@ c=new HistoryReader();const before=workers.length;assert.equal((await c.read({..
 c=new HistoryReader();p=c.read(argument());w=workers.at(-1);w.postMessage=()=>{throw Error('clone failed')};w.onmessage({data:{ready:true}});assert.equal((await p).ok,false);assert(w.terminated);assert.equal(timers.size,0);c.close();
 console.log('immutable before/after ready, terminal close, callback failure, backing cap, clone failure: pass');
 '''
-        script=script.replace('MODULE',json.dumps((ROOT/'experiments/device-keystore/history-client.js').as_uri()))
+        script=script.replace('HistoryReader',self.reader).replace('MODULE',json.dumps((ROOT/'experiments/device-keystore'/self.module).as_uri()))
         result=subprocess.run(['node','--input-type=module','-e',script],text=True,capture_output=True,timeout=10)
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertIn('pass',result.stdout)
+
+
+class AggregateHistoryCallerTests(HistoryCallerTests):
+    module = 'aggregate-history-client.js'
+    reader = 'AggregateHistoryReader'
+
+    def test_metadata_and_password_caps_before_worker_creation(self):
+        script = '''
+import assert from 'node:assert/strict';
+globalThis.addEventListener=()=>{};
+globalThis.document={hidden:false};
+let workers=0;globalThis.Worker=class{constructor(){workers++}};
+const {AggregateHistoryReader}=await import(MODULE);
+const c=new AggregateHistoryReader();
+const good={archive:new Uint8Array([1]),expected:{},password:'s'.repeat(32)};
+for(const value of [{...good,password:'s'.repeat(129)}, {...good,password:'short'},
+ {...good,expected:{huge:'한'.repeat(1400)}}])assert.equal((await c.read(value)).ok,false);
+assert.equal(workers,0);c.close();
+'''.replace('MODULE',json.dumps((ROOT/'experiments/device-keystore'/self.module).as_uri()))
+        result=subprocess.run(['node','--input-type=module','-e',script],text=True,capture_output=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stderr)
