@@ -251,8 +251,25 @@ def main():
                     raw=json.dumps(data).encode()
                 if self.command=='GET' and self.path.endswith('/status') and tamper[0]=='binding' and response.status==200:
                     data=json.loads(raw);data['group_id']='aa'*32;raw=json.dumps(data).encode()
+                context_bad_header=False
+                if aggregate and self.command=='GET' and isinstance(tamper[0],dict) and self.path==tamper[0]['path'] and response.status==200:
+                    hook=tamper[0];hook['seen']+=1;mode=hook['context'];data=json.loads(raw)
+                    if mode=='invalid-json':raw=b'{'
+                    elif mode=='oversize':raw=b' '*4097
+                    elif mode=='wrong-header':context_bad_header=True
+                    elif mode=='advance':
+                        if hook['seen']==1:hook['after_first']()
+                    else:
+                        if mode=='wrong-room':data['room']='substituted'
+                        elif mode=='wrong-key':data['pins'][1]['signing_key']='ff'*32
+                        elif mode=='duplicate-pin':data['pins'][1]=data['pins'][0]
+                        elif mode=='wrong-phase':data['phase']='ready'
+                        elif mode=='wrong-group':data['group_id']='cd'*32
+                        else:raise AssertionError('unknown generated context mutation')
+                        raw=json.dumps(data).encode()
                 self.send_response(response.status)
                 for k,v in response.getheaders():
+                    if context_bad_header and k.lower()=='x-family-actor':v='bob'
                     if k.lower() not in ('connection','transfer-encoding','server','date','content-length'):self.send_header(k,v)
                 self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
             except (OSError,http.client.HTTPException):pass

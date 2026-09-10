@@ -63,14 +63,37 @@ export class AggregateStore extends NativeVaultStore {
    const r=selected(a),result=operation(r);options.validate(r,false);r.checksum=options.checksum(r);options.validate(r);return result;
   },fault);
  }
+ async targetContext(intent,creating,target){
+  this.live();const own=intent.pins.find(p=>p.actor===this.identity),c=new AbortController();this.controllers.add(c);const timer=setTimeout(()=>c.abort(),5000);
+  try{
+   const response=await fetch('/v1/mls/rooms/'+intent.target+'/context',{credentials:'same-origin',cache:'no-store',redirect:'error',headers:{'X-Family-Actor':this.identity,'X-Family-Device':own.device_id},signal:c.signal});
+   if(!response.ok||response.headers.get('X-Family-Actor')!==this.identity)fail();
+   const reader=response.body.getReader();let n=0,parts=[];
+   for(;;){const {done,value}=await reader.read();if(done)break;n+=value.length;if(n>4096)fail();parts.push(value);}
+   const raw=new Uint8Array(n);let at=0;for(const p of parts){raw.set(p,at);at+=p.length;}
+   const v=JSON.parse(dec.decode(raw));
+   if(!exact(v,['version','room','group_id','phase','pins'])||v.version!==1||v.room!==intent.target||!['reserved','key-package','welcome','ack','ready'].includes(v.phase)||typeof v.group_id!=='string'||!Array.isArray(v.pins)||v.pins.length!==2)fail();
+   if(v.phase==='reserved'?v.group_id!=='':!/^(?:[a-f0-9]{2}){16,128}$/.test(v.group_id))fail();
+   const seen=new Set();for(const p of v.pins){if(!exact(p,['device_id','actor','signing_key','device_revision'])||seen.has(p.actor))fail();seen.add(p.actor);const expected=intent.pins.find(x=>x.actor===p.actor);if(!expected||Object.keys(p).some(k=>p[k]!==expected[k]))fail();}
+   // Both clients must establish local custody before either binds the target.
+   // An exact committed retry may observe a progressed, still-authorized room.
+   if(creating&&v.phase!=='reserved')fail();
+   if(!creating&&target?.group&&target.group!==v.group_id)fail();
+   this.live();
+  }finally{c.abort();clearTimeout(timer);this.controllers.delete(c);}
+ }
  async fork(arg){
   if(!exact(arg,['id','source','target','source_group','pins'])||!name(arg.id)||!arg.id.startsWith('context-')||!name(arg.source)||!name(arg.target)||arg.source===arg.target||arg.source!==this.selectedRoom||typeof arg.source_group!=='string'||!/^(?:[a-f0-9]{2}){16,128}$/.test(arg.source_group))fail();
-  const intent={...arg,pins:normalizePins(arg.pins)};
+  const intent={...arg,pins:normalizePins(arg.pins)};let creating;
   return this.transaction(null,async a=>{
+   // Capture committed state on the first admission, not the staged candidate
+   // seen on the second check after operation(a) has already set a.fork.
+   if(creating===undefined)creating=a.fork===null;
    const source=a.rooms[0];if(source.room!==intent.source||!source.binding||source.group!==intent.source_group||!same(source.pins,intent.pins)||(!a.fork&&(source.phase!=='ready'||source.pending?.retired)))fail();
    // No revoked-peer exception: both original and target room admissions apply.
    matchDirectory(intent.pins,await readDirectory(this.identity,intent.source));
    matchDirectory(intent.pins,await readDirectory(this.identity,intent.target));
+   await this.targetContext(intent,creating,a.rooms[1]);
   },a=>{
    if(a.fork){if(!same(a.fork,intent))fail();}
    else {

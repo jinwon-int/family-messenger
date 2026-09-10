@@ -59,6 +59,17 @@ Legacy text/history/membership/media operations recheck the room mode under thei
 actual Store lock, closing the race between an early route check and concurrent
 reservation of a previously absent room.
 
+`GET /v1/mls/rooms/{room}/context` is a separate **read-only custody check**.
+It returns exact `version:1,room,group_id,phase,pins`, with public pins shaped as
+`device_id,actor,signing_key,device_revision`. A single `X-Family-Device` must
+belong to the signed actor. For an unbound reservation, both member actors must
+have active enrolled devices; bound rooms retain the ordinary both-pin admission.
+Legacy/missing rooms, substituted devices, inactive peers, extra query parameters
+and non-GET methods deny. It neither enrolls devices nor writes/resets/reserves a
+group or a log entry. The existing strict device-directory wire is unchanged.
+Reserved transport status/log are still denied. This response is a current
+observation under authority → Store, not a lease across future client IDB work.
+
 There is one monotonically ordered room sequence for every log event. A separate
 control revision changes only on control events. New events require exact current
 control revision and epoch; applications from an old epoch cannot be appended.

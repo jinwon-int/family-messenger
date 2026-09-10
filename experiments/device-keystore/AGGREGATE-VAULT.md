@@ -78,6 +78,18 @@ not expose a raw-provider import or change the normal registered-create denial.
 Before first creation the source must be native-ready, with no retired outbox;
 a pending ordinary application or staged source rekey is preserved. Both source
 and target room directories must freshly authorize the exact original active pins.
+The target must also pass the signed, device-authenticated native `context` check
+(5 seconds/4 KiB, exact fields/pins/room/actor header, no redirect or cache). First
+creation requires phase `reserved` with no group; **both clients must finish this
+local custody step before either binds the target group**. An already bound target
+is deliberately denied for first creation. The original creating/retrying decision
+is retained through the second admission even after the staged candidate gains its
+fork intent. If the target is bound between those checks, the candidate is discarded
+without using a slot. Legacy rooms with otherwise valid pair directories deny
+before the irreversible slot commit; no automatic clear/re-pin workaround exists.
+An exact committed retry may observe a later authorized phase and, if the retained
+target has a group, that group must still match. It returns the known local outcome,
+not permission to skip the native handshake or server CAS.
 There is **no revoked-peer exception**. PR46 successor candidates remain inactive.
 The actual group/key/pair goes through the vetted `staged_identity_context` API.
 The target starts with the same signer, independently accepted pins and empty
@@ -93,6 +105,12 @@ outer byte/revision and exact store key count before committing the single seale
 aggregate. Only completion permits output. This is one database transaction;
 no cross-database atomicity is claimed. A bypassing writer's change is retained
 and rejects the candidate without automatic conflict retry or re-encryption.
+The server can still advance after the final bounded read and before the local
+commit. There is no distributed server/IDB lease: later native admission can deny
+and freeze that context. The protocol deliberately does not roll back a committed
+slot. Product orchestration and recovery acceptance must address this usability
+limit before human use; this unit only closes the proven legacy/known-ineligible
+target admission defect and changes observed before the final check.
 
 Exact context-intent replay returns the known committed target without new key,
 group or ciphertext generation. A different intent, source/group/pins or target

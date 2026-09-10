@@ -83,6 +83,38 @@ def aggregate_checks(a,b,databases,rpc,init,reopen,prepare,proof,page,passwords,
     assert direct('owner','POST','/v1/mls/reservations',{'room':'second','peer_actor':'bob'})[0]==201
     # Preserve an exact unaccepted source application while creating new contexts.
     prepare(a,'app-old-pending',b'synthetic source still pending')
+    stable=digest(a,0)
+    assert direct('owner','POST','/v1/rooms',{'id':'legacy-target','members':['bob']})[0]==201
+    assert direct('owner','GET','/v1/rooms/legacy-target/devices')[0]==200
+    fork(a,0,{**intent,'id':'context-legacy','target':'legacy-target'},reject=True)
+    assert digest(a,0)==stable
+    assert direct('owner','GET','/v1/rooms/legacy-target/messages')[0]==200
+    assert direct('owner','POST','/v1/mls/rooms',{'room':'bound-target','group_id':'ca'*32,'device_id':pins[0]['device_id'],'peer_device':pins[1]['device_id']})[0]==201
+    fork(a,0,{**intent,'id':'context-bound','target':'bound-target'},reject=True)
+    assert digest(a,0)==stable
+    proof['checks']['legacy_or_already_bound_target_denied_before_immutable_slot_commit']=True
+
+    # Actual worker fetches must validate the entire bounded signed context.
+    for mode in ('invalid-json','oversize','wrong-room','wrong-key','duplicate-pin','wrong-phase','wrong-header'):
+        hook={'context':mode,'seen':0,'path':'/v1/mls/rooms/second/context'};tamper[0]=hook
+        try:
+            fork(a,0,intent,reject=True)
+            assert hook['seen']==1
+        finally:tamper[0]=None
+        assert digest(a,0)==stable
+    proof['checks']['bounded_context_body_pins_room_phase_and_actor_header_validated']=True
+
+    # The second admission must use the original "creating" decision even
+    # though the staged candidate now has a.fork. Bind a real reserved target
+    # immediately after the first context read, then require denial before CAS.
+    assert direct('owner','POST','/v1/mls/reservations',{'room':'raced-target','peer_actor':'bob'})[0]==201
+    def advance_target():
+        assert direct('owner','POST','/v1/mls/rooms',{'room':'raced-target','group_id':'cb'*32,'device_id':pins[0]['device_id'],'peer_device':pins[1]['device_id']})[0]==201
+    hook={'context':'advance','path':'/v1/mls/rooms/raced-target/context','seen':0,'after_first':advance_target};tamper[0]=hook
+    try:fork(a,0,{**intent,'id':'context-raced','target':'raced-target'},reject=True)
+    finally:tamper[0]=None
+    assert hook['seen']==2 and digest(a,0)==stable
+    proof['checks']['target_advance_between_admissions_discards_candidate_before_cas']=True
     before_a,before_b=inspect(a),inspect(b)
     ka=fork(a,0,intent);kb=fork(b,1,intent)
     assert bytes(ka['public_key']).hex()==pins[0]['signing_key']
@@ -100,6 +132,13 @@ def aggregate_checks(a,b,databases,rpc,init,reopen,prepare,proof,page,passwords,
     assert rpc(second_a,'status')['phase']==rpc(second_b,'status')['phase']=='ready'
     assert rpc(second_a,'status')['group_id']!=group
     assert inspect(a)[0]==before_a[0] and inspect(b)[0]==before_b[0]
+    stable=digest(a,0)
+    hook={'context':'wrong-group','seen':0,'path':'/v1/mls/rooms/second/context'};tamper[0]=hook
+    try:fork(a,0,intent,reject=True)
+    finally:tamper[0]=None
+    assert hook['seen']==1 and digest(a,0)==stable
+    assert fork(a,0,intent)==ka and digest(a,0)==stable
+    proof['checks']['committed_context_retry_accepts_progress_but_rejects_changed_group']=True
     prepare(second_a,'app-new-text','synthetic second room 한글'.encode())
     rpc(second_a,'flush');rpc(second_a,'sync');rpc(second_b,'sync')
     payload=bytes(range(256))*32
