@@ -2,6 +2,8 @@
 // delivered by the Go server and never a product entry: it holds at most one
 // namespace store in worker memory, accepts one explicit test intent per call
 // and returns only public status fields or the synthetic application result.
+// Admissions arrive as page-signed documents; the worker only ever sees the
+// policy public key, never the policy secret.
 import {AggregateVaultStore} from '/native-aggregate-vault.js';
 self.postMessage({boot:true});
 let store=null,retired=false;
@@ -19,10 +21,10 @@ self.onmessage=({data})=>{
    store=new AggregateVaultStore();
    const scope=store.argument(argument??{});await store.open(scope.database,scope.actor);result={opened:true};
   }else if(method==='put-room'){
+   console.log('WORKER_PUTARG admission='+(argument&&argument.admission!==undefined?typeof argument.admission+':'+JSON.stringify(Object.keys(argument.admission||{})):'MISSING')+' argkeys='+(argument?Object.keys(argument).join('|'):'null'));
    live();
-   const directory=argument.directory??{devices:[]};
-   result=await store.tx(directory,{kind:'put',room:argument.room,bytes:Uint8Array.from(argument.bytes??[])},
-    argument.fault??'',live,async()=>argument.freshDirectory??directory);
+   result=await store.tx(argument.admission,{kind:'put',room:argument.room,bytes:Uint8Array.from(argument.bytes??[])},
+    argument.fault??'',live,async()=>argument.freshAdmission??argument.admission);
   }else if(method==='test-aggregate-hold-cas'){live();self.testHoldAggregateCAS=true;result=null;}
   else if(method==='test-aggregate-hold-kdf'){live();self.testHoldAggregateKDF=true;result=null;}
   else throw Error('unknown method');

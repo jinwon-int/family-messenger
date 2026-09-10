@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Aggregate custody container qualification (#49): one sealed record, one strict CAS.
 
-Synthetic generated conversation records only. No MLS provider binding, signed
-admission, peer pins, human keys, Cloudflare or native server take part. Real
+Synthetic generated conversation records only. No native server, human keys,
+Cloudflare or real admission service take part: the page-side policy signer
+stands in for the admission server, and every record write carries a fresh
+Ed25519-signed admission that fixes the committed rooms and peer pins. Real
 Chromium browser processes are SIGKILLed at commit boundaries to prove the
 absence of torn state; every refusal must leave the committed record unchanged.
 """
@@ -61,15 +63,21 @@ def main():
     original,instrumented,served_store=bundled_store(ROOT,work)
     fixture=(ROOT/'tests/fixtures/aggregate-vault/main.js').read_bytes()
     worker=(ROOT/'experiments/openmls-browser/web/aggregate-vault-worker.js').read_bytes()
-    page=b'<!doctype html><meta charset="utf-8"><title>Synthetic aggregate custody</title><script type="module" src="/main.js"></script>'
+    signer=(b"import{policySigner,policyKeypair} from '/native-aggregate-vault.js';"
+            b"window.policySigner=policySigner;window.policyKeypair=policyKeypair;")
+    (work/'aggregate-policy-signer.js').write_bytes(signer)
+    page=(b'<!doctype html><meta charset="utf-8"><title>Synthetic aggregate custody</title>'
+          b'<script type="module" src="/main.js"></script>'
+          b'<script type="module" src="/aggregate-policy-signer.js"></script>')
     needle=b"  if (data.id !== id) return;"
     assert fixture.count(needle)==1
     fixture=fixture.replace(needle,b"  if(data.test_crash_boundary)window.test_crash_boundary=true;if(data.test_aggregate_cas)window.test_aggregate_cas=true;\n"+needle)
     if os.environ.get('AGG_DEBUG'):
         worker=worker.replace(b".catch(()=>{retire();self.postMessage({id,ok:false,error:'refused',memory_bytes:0});});",
             b".catch(e=>{retire();self.postMessage({id,ok:false,error:String(e&&e.message||'refused'),memory_bytes:0});});")
-    assets={'/':page,'/main.js':fixture,'/aggregate-vault-worker.js':worker,'/native-aggregate-vault.js':served_store}
-    proof={'synthetic_only':True,'mls_provider_binding':False,'signed_admission':False,'native_server':False,
+    assets={'/':page,'/main.js':fixture,'/aggregate-vault-worker.js':worker,'/native-aggregate-vault.js':served_store,
+            '/aggregate-policy-signer.js':(work/'aggregate-policy-signer.js').read_bytes()}
+    proof={'synthetic_only':True,'signed_admission':False,'native_server':False,
            'human_keys':False,'checks':{},
            'store_source_sha256':hashlib.sha256(source:=STORE.read_bytes()).hexdigest(),
            'original_bundle_sha256':hashlib.sha256(original).hexdigest(),
@@ -98,7 +106,9 @@ def main():
             def page(i):
                 page_=contexts[i].new_page()
                 page_.add_init_script("window.testWorkers=[];const W=Worker;window.Worker=class extends W{constructor(...args){super(...args);window.testWorkers.push(this)}};")
+                if os.environ.get('AGG_DEBUG'):page_.on('console',lambda m:print('WORKER-CONSOLE',m.text[:200]))
                 page_.goto(url);page_.wait_for_function('()=>window.ready===true')
+                page_.wait_for_function('()=>window.policySigner!==undefined')
                 page_.evaluate("spawn('device')")
                 return page_
             def rpc(p_,method,arg=None,reject=False):
@@ -107,8 +117,23 @@ def main():
                 assert r['memory_bytes']<=128*1024*1024
                 if reject:assert not r['ok'] and 'result' not in r;return
                 assert r['ok'],(method,r);return r.get('result')
+            signer_page=contexts[0].new_page()
+            signer_page.goto(url);signer_page.wait_for_function('()=>window.policyKeypair!==undefined')
+            policy=signer_page.evaluate("()=>window.policyKeypair()")
+            signer_page.close()
+            def put(p_,i,room,payload,revision,rooms=('room-alpha','room-beta'),peers=None,reject=False,raw=False,**kw):
+                act=kw.pop('actor',['alice','bob'][i])
+                device_id=kw.pop('device_id',act+'-device')
+                not_after_ms=kw.pop('not_after_ms',int(time.time()*1000)+300000)
+                doc={'v':1,'rooms':list(rooms),'actor':act,'device_id':device_id,
+                     'signing_key':pubs[i],'peers':[] if peers is None else peers,'revision':revision,
+                     'not_after':not_after_ms,'signature':''}
+                doc['signature']=p_.evaluate('([d,s])=>window.policySigner(s)(d)',[doc,policy['secret']])
+                arg={'room':room,'bytes':list(payload) if isinstance(payload,(bytes,bytearray)) else payload,'admission':doc,**kw}
+                if raw:return arg
+                return rpc(p_,'put-room',arg,reject=reject)
             def open_args(i,database=None,create=False):
-                return {'actor':['alice','bob'][i],'database':database or databases[i],'password':passwords[i],'create':create,'pub':pubs[i]}
+                return {'actor':['alice','bob'][i],'database':database or databases[i],'password':passwords[i],'create':create,'pub':pubs[i],'policy':policy['public']}
             def reopen(p_,i,database=None):
                 p_.evaluate("stopWorker('device');spawn('device')");rpc(p_,'open',open_args(i,database))
             def crash(i):
@@ -118,52 +143,58 @@ def main():
                 try:contexts[i].close()
                 except Exception:pass
                 contexts[i]=pw.chromium.launch_persistent_context(str(profiles[i]))
-            # Namespace creation seals on the first record; the envelope exposes
-            # only sealed fields, never the record plaintext.
+            # Namespace creation seals on the first record under the FIRST
+            # signed admission (revision 1); the envelope exposes only sealed
+            # fields, never the record plaintext or the admission document.
             a=page(0)
             rpc(a,'open',open_args(0,create=True))
-            got=rpc(a,'put-room',{'room':'room-alpha','bytes':list(b'synthetic aggregate alpha')})
-            assert got['revision']==1 and got['rooms']==[{'room':'room-alpha','bytes':25,'checksum':got['rooms'][0]['checksum']}]
-            got=rpc(a,'put-room',{'room':'room-beta','bytes':list(b'synthetic aggregate beta')})
-            assert got['revision']==2 and [x['room'] for x in got['rooms']]==['room-alpha','room-beta']
+            got=put(a,0,'room-alpha',b'synthetic aggregate alpha',1)
+            assert got['revision']==1 and got['records']==[{'room':'room-alpha','bytes':25,'checksum':got['records'][0]['checksum']}]
+            assert got['rooms']==['room-alpha','room-beta'] and got['pins']==[]
+            got=put(a,0,'room-beta',b'synthetic aggregate beta',2)
+            assert got['revision']==2 and [x['room'] for x in got['records']]==['room-alpha','room-beta']
             envelope=read_record(a,databases[0])
             assert sorted(envelope)==['actor','capsule','cipher','header','revision','v','vault']
             assert 'records' not in envelope and envelope['v']==1 and len(envelope['header'])==24 and envelope['revision']==2
             proof['checks']['aggregate_envelope_exposes_only_sealed_fields']=True
             # An unchanged candidate is an exact retry: no re-seal, same bytes.
             sealed=digest(a,databases[0])
-            got=rpc(a,'put-room',{'room':'room-beta','bytes':list(b'synthetic aggregate beta')})
+            got=put(a,0,'room-beta',b'synthetic aggregate beta',3)
             assert got['revision']==2 and digest(a,databases[0])==sealed
             proof['checks']['unchanged_candidate_exact_retry_without_reseal']=True
-            got=rpc(a,'put-room',{'room':'room-beta','bytes':list(b'synthetic aggregate beta v2')})
+            got=put(a,0,'room-beta',b'synthetic aggregate beta v2',3)
             assert got['revision']==3;sealed=digest(a,databases[0])
-            # Budget and shape refusals never mutate the committed record.
-            rpc(a,'put-room',{'room':'room-gamma','bytes':[0]*65537},reject=True);reopen(a,0)
-            rpc(a,'put-room',{'room':'room-gamma','bytes':[1]},reject=True);reopen(a,0)
-            rpc(a,'put-room',{'room':'Room-Alpha','bytes':[1]},reject=True);reopen(a,0)
-            rpc(a,'put-room',{'room':'room-alpha','bytes':[]},reject=True);reopen(a,0)
+            # Budget, identifier-shape and uncommitted-room denials never mutate
+            # the committed record.
+            put(a,0,'room-alpha',[0]*65537,4,rooms=('room-alpha','room-gamma'),reject=True);reopen(a,0)
+            put(a,0,'room-gamma',[1],4,reject=True);reopen(a,0)
+            put(a,0,'Room-Alpha',[1],4,reject=True);reopen(a,0)
+            put(a,0,'room-alpha',[],4,reject=True);reopen(a,0)
             assert digest(a,databases[0])==sealed
             proof['checks']['room_budget_shape_and_id_denials_never_mutate']=True
-            # A directory-listed actor may not initialize another namespace.
+            # An admission for a DIFFERENT actor cannot initialize a namespace
+            # under this device key, and a revision jump is refused outright.
             third=databases[0]+'-registered'
             a.evaluate("stopWorker('device');spawn('device')")
-            rpc(a,'open',{'actor':'carol','database':third,'password':passwords[0],'create':True,'pub':pubs[0]})
-            rpc(a,'put-room',{'room':'room-x','bytes':[1],'directory':{'devices':[{'actor':'carol'}]}},reject=True)
+            rpc(a,'open',open_args(0,third,create=True))
+            put(a,0,'room-x',[1],2,rooms=('room-x',),actor='carol',reject=True)
             assert read_record(a,third)['v']==0
             reopen(a,0)
-            proof['checks']['registered_actor_namespace_init_denied']=True
+            proof['checks']['foreign_actor_and_revision_jump_init_denied']=True
             # Second device: isolated namespace, independent revisions.
             b=page(1);rpc(b,'open',open_args(1,create=True))
-            got=rpc(b,'put-room',{'room':'room-bob','bytes':list(b'synthetic bob record')})
+            got=put(b,1,'room-bob',b'synthetic bob record',1,rooms=('room-bob',))
             assert got['revision']==1 and digest(b,databases[1])!=digest(a,databases[0])
             proof['checks']['per_device_namespaces_do_not_mix']=True
-            # Two tabs of one device write through one serialized lock.
+            # Two tabs of one device write through one serialized lock. The
+            # second tab carries the next revision (the admission server issues
+            # admissions per pending write, in order).
             tab=page(0);rpc(tab,'open',open_args(0))
-            a.evaluate('arg=>{window.pending=call("device","put-room",arg)}',{'room':'room-alpha','bytes':list(b'synthetic tab-a variant')})
-            tab.evaluate('arg=>{window.pending=call("device","put-room",arg)}',{'room':'room-beta','bytes':list(b'synthetic tab-b variant')})
+            a.evaluate('arg=>{window.pending=call("device","put-room",arg)}',put(a,0,'room-alpha',b'synthetic tab-a variant',4,raw=True))
+            tab.evaluate('arg=>{window.pending=call("device","put-room",arg)}',put(tab,0,'room-beta',b'synthetic tab-b variant',5,raw=True))
             assert a.evaluate('()=>window.pending')['ok'] and tab.evaluate('()=>window.pending')['ok']
             assert digest(a,databases[0])==digest(tab,databases[0])
-            assert rpc(tab,'put-room',{'room':'room-alpha','bytes':[7]})['revision']==6
+            assert put(tab,0,'room-alpha',[7],6)['revision']==6
             proof['checks']['cross_tab_writes_serialize_and_converge']=True
             reopen(a,0)
             # A concurrent external write wins; the staged candidate is discarded.
@@ -173,7 +204,7 @@ def main():
             pre_hold=digest(a,databases[0]);revision_before_hold=read_record(a,databases[0])['revision']
             a.evaluate('''async name=>{const d=await new Promise((r,j)=>{const q=indexedDB.open(name);q.onsuccess=()=>r(q.result);q.onerror=j});window.savedAggregate=await new Promise((r,j)=>{const q=d.transaction('aggregate').objectStore('aggregate').get('state');q.onsuccess=()=>r(q.result);q.onerror=j});d.close()}''',databases[0])
             rpc(a,'test-aggregate-hold-cas')
-            a.evaluate('arg=>{window.pending=call("device","put-room",arg).catch(()=>({ok:false}))}',{'room':'room-alpha','bytes':list(b'synthetic lost candidate')})
+            a.evaluate('arg=>{window.pending=call("device","put-room",arg).catch(()=>({ok:false}))}',put(a,0,'room-alpha',b'synthetic lost candidate',revision_before_hold+1,raw=True))
             a.wait_for_function('()=>window.test_aggregate_cas===true',timeout=5000)
             a.evaluate('''async name=>{const d=await new Promise((r,j)=>{const q=indexedDB.open(name);q.onsuccess=()=>r(q.result);q.onerror=j});await new Promise((r,j)=>{const t=d.transaction('aggregate','readwrite'),s=t.objectStore('aggregate'),q=s.get('state');q.onsuccess=()=>{const v=q.result;v.revision++;s.put(v,'state')};t.oncomplete=r;t.onabort=j});d.close()}''',databases[0])
             a.evaluate('window.testWorkers.at(-1).postMessage({test_aggregate_release:"cas"})')
@@ -188,7 +219,7 @@ def main():
             for key in ('cipher','capsule'):
                 a.evaluate('''async ([name,key])=>{const d=await new Promise((r,j)=>{const q=indexedDB.open(name);q.onsuccess=()=>r(q.result);q.onerror=j});window.savedAggregate=await new Promise((r,j)=>{const q=d.transaction('aggregate').objectStore('aggregate').get('state');q.onsuccess=()=>r(q.result);q.onerror=j});d.close()}''',[databases[0],key])
                 a.evaluate('''async ([name,key])=>{const d=await new Promise((r,j)=>{const q=indexedDB.open(name);q.onsuccess=()=>r(q.result);q.onerror=j});await new Promise((r,j)=>{const t=d.transaction('aggregate','readwrite'),s=t.objectStore('aggregate'),q=s.get('state');q.onsuccess=()=>{const v=q.result;v[key][v[key].length-1]^=1;s.put(v,'state')};t.oncomplete=r;t.onabort=j});d.close()}''',[databases[0],key])
-                rpc(a,'put-room',{'room':'room-alpha','bytes':[1]},reject=True)
+                put(a,0,'room-alpha',[1],read_record(a,databases[0])['revision']+1,reject=True)
                 a.evaluate('''async name=>{const d=await new Promise((r,j)=>{const q=indexedDB.open(name);q.onsuccess=()=>r(q.result);q.onerror=j});await new Promise((r,j)=>{const t=d.transaction('aggregate','readwrite');t.objectStore('aggregate').put(window.savedAggregate,'state');t.oncomplete=r;t.onabort=j});d.close()}''',databases[0])
                 reopen(a,0)
             assert digest(a,databases[0])==before_corruption
@@ -197,14 +228,14 @@ def main():
             a.evaluate("stopWorker('device');spawn('device')")
             swapped=databases[0]+'-swapped'
             a.evaluate('''async ([source,target])=>{const d=await new Promise((r,j)=>{const q=indexedDB.open(source);q.onsuccess=()=>r(q.result);q.onerror=j});const rec=await new Promise((r,j)=>{const q=d.transaction('aggregate').objectStore('aggregate').get('state');q.onsuccess=()=>r(q.result);q.onerror=j});d.close();await new Promise((r,j)=>{const q=indexedDB.open(target,1);q.onupgradeneeded=()=>q.result.createObjectStore('aggregate').add(rec,'state');q.onsuccess=()=>{q.result.close();r()};q.onerror=j})}''',[databases[0],swapped])
-            rpc(a,'open',{'actor':'alice','database':swapped,'password':passwords[0],'create':False,'pub':pubs[0]})
+            rpc(a,'open',{'actor':'alice','database':swapped,'password':passwords[0],'create':False,'pub':pubs[0],'policy':policy['public']})
             before_swap=digest(a,swapped)
-            rpc(a,'put-room',{'room':'room-alpha','bytes':[1]},reject=True)
+            put(a,0,'room-alpha',[1],read_record(a,swapped)['revision']+1,reject=True)
             assert digest(a,swapped)==before_swap;reopen(a,0)
             proof['checks']['record_swapped_across_database_names_denied']=True
             # SIGKILL between the write and the commit event: old or new, never torn.
             before=digest(a,databases[0]);revision_before=read_record(a,databases[0])['revision']
-            a.evaluate('arg=>{window.pending=call("device","put-room",arg).catch(()=>({ok:false}))}',{'room':'room-beta','bytes':list(b'synthetic crashed variant'),'fault':'crash-before-complete'})
+            a.evaluate('arg=>{window.pending=call("device","put-room",arg).catch(()=>({ok:false}))}',put(a,0,'room-beta',b'synthetic crashed variant',revision_before+1,fault='crash-before-complete',raw=True))
             try:
                 a.wait_for_function('()=>window.test_crash_boundary===true',timeout=5000)
             except Exception:
@@ -215,26 +246,26 @@ def main():
             crash(0);a=page(0);reopen(a,0)
             revision_after=read_record(a,databases[0])['revision']
             assert revision_after in (revision_before,revision_before+1)
-            got=rpc(a,'put-room',{'room':'room-beta','bytes':list(b'synthetic crashed variant')})
+            got=put(a,0,'room-beta',b'synthetic crashed variant',revision_before+1)
             assert got['revision']==revision_before+1
             proof['checks']['browser_sigkill_at_commit_boundary_never_tears_state']=True
             # A committed result whose reply was lost retries exactly once, in place.
             before=digest(a,databases[0]);revision_before=read_record(a,databases[0])['revision']
-            a.evaluate('arg=>{window.pending=call("device","put-room",arg).catch(()=>({ok:false}))}',{'room':'room-alpha','bytes':list(b'synthetic lost reply variant'),'fault':'crash-after-commit'})
+            a.evaluate('arg=>{window.pending=call("device","put-room",arg).catch(()=>({ok:false}))}',put(a,0,'room-alpha',b'synthetic lost reply variant',revision_before+1,fault='crash-after-commit',raw=True))
             a.wait_for_function('()=>window.test_crash_boundary===true',timeout=5000)
             crash(0);a=page(0);reopen(a,0)
             committed=digest(a,databases[0])
             assert committed!=before and read_record(a,databases[0])['revision']==revision_before+1
-            got=rpc(a,'put-room',{'room':'room-alpha','bytes':list(b'synthetic lost reply variant')})
+            got=put(a,0,'room-alpha',b'synthetic lost reply variant',revision_before+1)
             assert got['revision']==revision_before+1 and digest(a,databases[0])==committed
             proof['checks']['lost_reply_after_commit_exact_retry_without_double_advance']=True
             # The old single-room profile namespace is foreign and untouched.
             sentinel='family-mls-vault-synthetic-preserve'
             a.evaluate('''async name=>{await new Promise((r,j)=>{const q=indexedDB.open(name,1);q.onupgradeneeded=()=>q.result.createObjectStore('device').add({sentinel:'family-single-room-profile',blob:[1,2,3]},'state');q.onsuccess=()=>{q.result.close();r()};q.onerror=j})}''',sentinel)
             before=digest(a,sentinel,store='device')
-            rpc(a,'put-room',{'room':'room-alpha','bytes':list(b'synthetic unrelated work')})
-            rpc(a,'put-room',{'room':'room-alpha','bytes':[9]});reopen(a,0)
-            rpc(a,'put-room',{'room':'room-alpha','bytes':[10]})
+            put(a,0,'room-alpha',b'synthetic unrelated work',read_record(a,databases[0])['revision']+1)
+            put(a,0,'room-alpha',[9],read_record(a,databases[0])['revision']+1);reopen(a,0)
+            put(a,0,'room-alpha',[10],read_record(a,databases[0])['revision']+1)
             assert digest(a,sentinel,store='device')==before
             proof['checks']['foreign_single_room_profile_untouched']=True
             for context in contexts:context.close()
