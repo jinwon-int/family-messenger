@@ -345,7 +345,7 @@ func TestSuccessorReservationCorruptStateCannotUseOrdinaryNativeRoutes(t *testin
 			for _, endpoint := range []string{"log", "context", "status", "preparation"} {
 				call("family", "GET", "/v1/mls/rooms/target/"+endpoint, nil, "bob-first", 403)
 			}
-			call("family", "POST", "/v1/mls/reservations", map[string]string{"room": "target", "peer_actor": "alice"}, "bob-first", 403)
+			call("family", "POST", "/v1/mls/reservations", map[string]string{"room": "target", "peer_actor": "alice"}, "bob-first", 409)
 			call("family", "POST", "/v1/mls/rooms/target/log", MLSRequest{"forbidden-corrupt-send", "bob-first", group, "application", 3, 1, "", []byte("generated ciphertext")}, "bob-first", 403)
 			var n int
 			s.db.QueryRow("SELECT count(*) FROM mls_events WHERE room='target'").Scan(&n)
