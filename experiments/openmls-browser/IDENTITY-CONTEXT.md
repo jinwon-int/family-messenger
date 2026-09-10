@@ -106,6 +106,12 @@ a new target does not prove they committed together. A cooperative Web Lock
 alone does not close writes that bypass that lock. This is the remaining concrete
 integration boundary, not a library inability to reuse the healthy signer.
 
+The first slice of that synthetic implementation (the custody container) is
+qualified in [AGGREGATE-VAULT.md](AGGREGATE-VAULT.md); its second slice seals
+that namespace under the real signer identity reused from this candidate, so
+the container and the library signer are bound cryptographically (capsule
+payload plus AAD label version 2). Signed admission and peer pins remain
+future slices.
 For the next synthetic implementation, qualify a **new device-vault namespace**
 initialized with generated unregistered devices, holding a bounded aggregate of
 complete conversation records under one authenticated encrypted record and one

@@ -2,10 +2,12 @@
 
 Status: **isolated runnable container qualification, the first slice of the
 new device-vault namespace defined by
-[IDENTITY-CONTEXT.md](IDENTITY-CONTEXT.md) and tracked as #49.** It proves the
-custody container only. It does not bind an MLS provider, does not fetch signed
-admission, does not establish peer pins and is not replacement activation,
-encrypted-IDB production storage or a human profile migration.
+[IDENTITY-CONTEXT.md](IDENTITY-CONTEXT.md) and tracked as #49; the second
+slice (#49, this document) binds the seal to the REAL MLS signer identity from
+the same candidate.** It proves the custody container and its signer binding.
+It does not fetch signed admission, does not establish peer pins and is not
+replacement activation, encrypted-IDB production storage or a human profile
+migration.
 
 ## Container contract
 
@@ -20,8 +22,14 @@ namespace alongside, never replacing, the single-room
   65536 bytes each, canonical room-sorted order, per-record SHA-512 checksum.
 - The format is deliberately disjoint from the single-room vault: a different
   capsule payload arity (6 fields), a different AAD label
-  (`family-native-aggregate`) binding database/actor/vault-id/revision, and a
-  decoded-envelope guard that refuses the single-room record shape.
+  (`family-native-aggregate`, label version 2) binding database/actor/vault-id/
+  **signer public key**/revision, and a decoded-envelope guard that refuses the
+  single-room record shape.
+- The signer public key rides in the capsule payload and the AAD, so a record
+  sealed under one MLS identity never opens under another: the second slice
+  seals the namespace under the real signer extracted from the qualified
+  identity-context candidate and denies unlocking with a different real signer
+  or a synthetic key no MLS context ever produced.
 - Every write re-seals the whole aggregate with `TAG_FINAL` and commits through
   **one strict durability readwrite transaction** whose exact-bytes CAS compare
   runs inside the transaction. An unchanged candidate is an exact retry: no
@@ -57,6 +65,15 @@ denial, cross-database record-swap denial, **actual browser SIGKILL at the
 commit boundary with no torn state**, lost-reply-after-commit exact retry
 without double advance, and foreign single-room profile preservation.
 `aggregate-evidence.json` records the receipt; CI runs the same harness.
+
+The identity binding slice (`#49` second slice) runs on the identity-context
+harness: the candidate signer key from the qualified two-browser proof seals a
+namespace, the same identity reopens and advances it across a worker restart, a
+different real signer and a signerless synthetic key are both denied at unlock
+with the committed record untouched, and a synthetic-key namespace stays
+isolated from the real-signer one. Five checks are recorded in the
+identity-context verification receipt; CI runs the same harness with the
+bundled store.
 
 ## Costs and limits
 
