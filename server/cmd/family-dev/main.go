@@ -139,7 +139,7 @@ func run() error {
 		cryptoMode = "compiled read-only synthetic history UI /history/; no active device recovery"
 	}
 	if *aggregateHistoryUI {
-		bundle, e = chat.LoadAggregateHistoryAssets()
+		cryptoMode = "compiled synthetic two-room history /aggregate-history/ and custody /aggregate/; no active device recovery"
 	} else if *aggregateUI {
 		cryptoMode = "compiled synthetic two-room custody UI /aggregate/; human recovery not qualified"
 	}

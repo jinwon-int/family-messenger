@@ -107,6 +107,10 @@ def main():
             assert process.poll() is None, 'server exited'
             match = re.search(r'listening (127\.0\.0\.1:\d+)', log.read_bytes()[offset:].decode())
             if match:
+                if args.aggregate_history_embedded:
+                    label=log.read_bytes()[offset:].decode()
+                    assert 'two-room history /aggregate-history/ and custody /aggregate/' in label and 'UI /encrypted/' not in label, 'wrong selected UI startup label'
+                    proof['checks']['compiled_aggregate_history_startup_and_restart_label_matches_selected_routes']=True
                 address = match[1]
                 return
             time.sleep(.02)
