@@ -201,3 +201,10 @@ serves the two-conversation `/aggregate/` chat and read-only `/aggregate-history
 viewer from 20 pinned Go assets. It requires `synthetic_aggregate_history` and
 explicit signed synthetic activation. Earlier asset modes and data are preserved;
 archives never import an active sender or automatically resend pending messages.
+
+[Successor reservations](SUCCESSOR-RESERVATION.md) now allocate an immutable,
+**inactive** replacement target through signed synthetic admission. Schema 5
+snapshots prior v4 data before adding its reservation table. Both exact retries
+and reads require current unexpired policy/source bindings; all ordinary native
+routes deny these targets. Client custody and candidate activation are not yet
+connected, and no existing UI silently selects this protocol.

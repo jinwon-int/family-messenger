@@ -97,6 +97,13 @@ func activePin(devices []access.Device, id string) (MLSPin, error) {
 	return MLSPin{}, ErrForbidden
 }
 func (s *Store) mlsRoom(room string) (MLSRoom, error) {
+	return s.loadMLSRoom(room, false)
+}
+
+// The only successor inspection caller is the fresh-authorized reservation
+// reader, which validates the complete empty target. Every ordinary native
+// route denies successor rows, regardless of a corrupt phase/pin declaration.
+func (s *Store) loadMLSRoom(room string, successorInspection bool) (MLSRoom, error) {
 	var out MLSRoom
 	var required bool
 	var pins []byte
@@ -110,9 +117,16 @@ func (s *Store) mlsRoom(room string) (MLSRoom, error) {
 	if len(pins) > 2048 || json.Unmarshal(pins, &out.Pins) != nil || (len(out.Pins) != 2 && !(out.Phase == "reserved" && len(out.Pins) == 0)) {
 		return out, ErrIntegrity
 	}
+	var successor int
+	if e := s.db.QueryRow("SELECT count(*) FROM mls_successor_reservations WHERE room=?", room).Scan(&successor); e != nil {
+		return out, e
+	}
+	if successor != 0 && !successorInspection {
+		return out, ErrForbidden
+	}
 	if _, exists, e := s.preparation(room); e != nil {
 		return out, e
-	} else if exists != required {
+	} else if (exists && successor != 0) || (exists || successor == 1) != required {
 		return out, ErrIntegrity
 	}
 	return out, nil

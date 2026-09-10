@@ -197,6 +197,13 @@ func (s *Store) prepareContext(p contextPreparation, device, intent string) (con
 
 // The existing bind route also enforces this gate under its Store lock.
 func (s *Store) preparationBind(room, actor, device string, devices []access.Device) error {
+	var successor int
+	if e := s.db.QueryRow("SELECT count(*) FROM mls_successor_reservations WHERE room=?", room).Scan(&successor); e != nil {
+		return e
+	}
+	if successor != 0 {
+		return ErrForbidden
+	} // no successor activation in this protocol version
 	p, exists, e := s.preparation(room)
 	if e != nil {
 		return e

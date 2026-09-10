@@ -1,5 +1,7 @@
 # Signed replacement context preflight
 
+[Durable inactive reservation](SUCCESSOR-RESERVATION.md) is implemented separately; client custody and candidate activation remain denied.
+
 This is a runnable **read-only authorization boundary**, not replacement activation
 or completed recovery. `GET /v1/mls/successors/{intent_id}/context` connects a
 version-2 accepted [successor intent](SUCCESSORS.md) to the actual old native room.
@@ -70,8 +72,8 @@ account/administrator/peer revocation, cancelled/unknown intents, wrong room/gro
 corrupt pins/creator/epoch, extra/missing members and unacked source controls.
 
 No schema/migration, custody/crypto, UI/asset pins, dependency/license or production
-service changes. Existing limits and profiles remain. Next: explicit durable
-successor target reservation and custody barrier, preserving the intact peer's
+service changes. Existing limits and profiles remain. Next: client custody against the separately implemented durable
+successor target reservation, preserving the intact peer's
 source and pending state; new candidate worker custody; independent acceptance;
 targeted Welcome/ack before new-room delivery. Do not disable old-room admission
 to reuse ordinary both-active context preparation. Human ceremony, expired-intent
