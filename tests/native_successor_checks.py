@@ -1,12 +1,13 @@
 """Generated public intent fixtures and actual signed loopback process admission."""
 import copy
+import base64
 import hashlib
 import json
 import subprocess
 import time
 
 
-def run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, media_path):
+def run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, media_path, context=False):
     checks = proof['checks'] = {}
     serial = 0
 
@@ -38,6 +39,17 @@ def run(config, auth, proposals, proof, request, start, stop, command, private_w
     assert request('owner', '/v1/mls/reservations', 'POST', obj={'room': 'old-secure', 'peer_actor': 'bob'})[0] == 201
     assert request('owner', '/v1/mls/rooms', 'POST', obj={'room': 'old-secure', 'group_id': group, 'device_id': 'alice-first', 'peer_device': 'bob-first'})[0] == 201
     assert log_status('owner', 'alice-first') == 200
+    if context:
+        for number, (who, device, kind, revision, epoch, target, data) in enumerate([
+            ('family', 'bob-first', 'key_package', 0, 0, 'alice-first', b'generated public package'),
+            ('owner', 'alice-first', 'welcome', 1, 0, 'bob-first', b'generated opaque welcome'),
+            ('family', 'bob-first', 'ack', 2, 1, 'alice-first', b''),
+        ]):
+            q = dict(client_id='context-' + str(number), device_id=device, group_id=group,
+                     kind=kind, expected_revision=revision, epoch=epoch, target_device=target,
+                     payload=base64.b64encode(data).decode())
+            assert request(who, '/v1/mls/rooms/old-secure/log', 'POST', obj=q,
+                           headers={'X-Family-Device': device})[0] == 201
     legacy = (auth / 'policy-000001.json').read_bytes()
     current = copy.deepcopy(config)
     current['version'] = 2
@@ -66,6 +78,9 @@ def run(config, auth, proposals, proof, request, start, stop, command, private_w
     expired['successors']['intents'][0]['expires_at'] -= 300
     commit(2, expired, want=False)
     assert commit(2, current)['revision'] == 3
+    context_path = '/v1/mls/successors/replacement-1/context'
+    if context:
+        assert request('owner', context_path, headers={'X-Family-Device': 'alice-candidate'})[0] == 403
     assert log_status('owner', 'alice-candidate') == 403
     assert commit(2, current)['revision'] == 3  # same proposal lost-response reconciliation
     checks['explicit_mode_owner_not_device_admin_expiry_and_candidate_denial'] = True
@@ -85,6 +100,25 @@ def run(config, auth, proposals, proof, request, start, stop, command, private_w
     assert log_status('owner', 'alice-candidate') == 403
     checks['two_process_exact_acceptance_one_revision_atomic_retirement_no_candidate_admission'] = True
 
+    def context_read():
+        result = request('owner', context_path, headers={'X-Family-Device': 'alice-candidate'})
+        assert result[0] == 200 and len(result[1]) < 4096
+        assert request('family', context_path, headers={'X-Family-Device': 'bob-first'}) == result
+        data = json.loads(result[1])
+        assert data['admission'] == 'preflight-only' and data['decision_revision'] == 4
+        assert data['source_group'] == group and data['candidate']['device_id'] == 'alice-candidate'
+        assert data['peer']['device_id'] == 'bob-first' and data['target_room'] == 'new-secure-1'
+        assert request('owner', context_path, headers={'X-Family-Device': 'alice-first'})[0] == 403
+        assert request('family', context_path, headers={'X-Family-Device': 'alice-candidate'})[0] == 403
+        assert request(None, context_path, headers={'X-Family-Device': 'alice-candidate'})[0] == 401
+        assert request('owner', '/v1/mls/rooms', 'POST', obj=dict(room='new-secure-1', group_id='cd'*16,
+            device_id='alice-candidate', peer_device='bob-first'))[0] == 403
+        return result
+
+    if context:
+        observed = context_read()
+        checks['signed_current_pair_context_no_old_or_candidate_delivery'] = True
+
     stop()  # actual owned server SIGKILL after durable acceptance
     start()
     assert log_status('owner', 'alice-first') == 403
@@ -94,6 +128,12 @@ def run(config, auth, proposals, proof, request, start, stop, command, private_w
     history = json.loads(request('owner', '/v1/rooms/family/messages')[1])
     assert len(history) == 1 and history[0]['client_id'] == 'retained'
     assert (auth / 'policy-000001.json').read_bytes() == legacy
+    if context:
+        assert context_read() == observed
+        # New legacy occupation is observed, never converted/deleted by preflight.
+        assert request('owner', '/v1/rooms', 'POST', obj={'id': 'new-secure-1', 'members': ['bob']})[0] == 201
+        assert request('family', context_path, headers={'X-Family-Device': 'bob-first'})[0] == 409
+        checks['readonly_context_exact_restart_and_late_target_occupation_denied'] = True
     checks['sigkill_restart_retains_revocation_and_old_chat_media_policy_bytes'] = True
 
     # Distinct real-process decisions race; only one may win the next CAS.

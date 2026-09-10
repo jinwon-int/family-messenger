@@ -1,0 +1,61 @@
+{
+  "scope": "read-only accepted successor context; no candidate activation, custody, browser E2EE or deployment claim",
+  "runtime_source_head": "f31d4843ec70156347aeafcaaece91756d611ed1",
+  "validation": {
+    "go_race_022": "all packages passed",
+    "go_normal_077": "all packages passed",
+    "go_vet": "passed",
+    "python_unittest": 149
+  },
+  "dependencies_added": 0,
+  "schemas_changed": false,
+  "assets_changed": false,
+  "remaining": [
+    "durable successor reservation",
+    "candidate and intact peer custody with exact source preservation",
+    "Welcome/ack and activation",
+    "expired intent renewal and unacked control recovery",
+    "human/mobile/CF/backup/capacity/fleet acceptance"
+  ],
+  "author_precommit_process_proof": {
+    "synthetic_only": true,
+    "production_cf_gate": false,
+    "e2ee": false,
+    "binary_sha256": "8a481c1e7e583f575ac3038980b891667b5e125d3ee7f794e8d71c9836557413",
+    "policy_binary_sha256": "106bd3f1f58d17a6676590dacf756a35dd1c641eee7e1b0ac598ecda14352e6f",
+    "explicit_signed_mode_and_no_fixture_fallback": true,
+    "checks": {
+      "explicit_mode_owner_not_device_admin_expiry_and_candidate_denial": true,
+      "two_process_exact_acceptance_one_revision_atomic_retirement_no_candidate_admission": true,
+      "signed_current_pair_context_no_old_or_candidate_delivery": true,
+      "readonly_context_exact_restart_and_late_target_occupation_denied": true,
+      "sigkill_restart_retains_revocation_and_old_chat_media_policy_bytes": true,
+      "conflicting_process_decisions_one_winner_no_old_policy_restore": true,
+      "unsafe_v2_policy_denied_and_retained_no_fixture_fallback": true,
+      "emergency_empty_people_and_administrators_survives_sigkill_restart": true
+    },
+    "ok": true
+  },
+  "author_precommit_provenance": "Built before f31d484 commit; embedded vcs.revision is base2f1d2c9 and vcs.modified=true. Retained as author evidence, not a clean-head build.",
+  "process_proof": {
+    "synthetic_only": true,
+    "production_cf_gate": false,
+    "e2ee": false,
+    "binary_sha256": "a84fb58e2ff5dfa8bb78d123f2572c92bd5d829330cc06bff95dbba0d0df4314",
+    "policy_binary_sha256": "7bd49a8db161a7f75747cab400b6ff459cb5cd7be2964c72fb5c219b59ba87be",
+    "explicit_signed_mode_and_no_fixture_fallback": true,
+    "checks": {
+      "explicit_mode_owner_not_device_admin_expiry_and_candidate_denial": true,
+      "two_process_exact_acceptance_one_revision_atomic_retirement_no_candidate_admission": true,
+      "signed_current_pair_context_no_old_or_candidate_delivery": true,
+      "readonly_context_exact_restart_and_late_target_occupation_denied": true,
+      "sigkill_restart_retains_revocation_and_old_chat_media_policy_bytes": true,
+      "conflicting_process_decisions_one_winner_no_old_policy_restore": true,
+      "unsafe_v2_policy_denied_and_retained_no_fixture_fallback": true,
+      "emergency_empty_people_and_administrators_survives_sigkill_restart": true
+    },
+    "ok": true
+  },
+  "clean_process_build_head": "f31d4843ec70156347aeafcaaece91756d611ed1",
+  "clean_process_build_modified": false
+}

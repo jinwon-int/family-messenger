@@ -101,6 +101,27 @@ func TestSuccessorAtomicRetirementReplayAndRestart(t *testing.T) {
 		t.Fatal(e)
 	}
 	d := g.DeviceBindings()
+	if e = g.Run(func() error {
+		i, err := g.AcceptedSuccessor("intent-one")
+		if err != nil || i != c.Successors.Intents[0] {
+			t.Fatal("accepted context snapshot", err)
+		}
+		i.SigningKey = "caller-mutation"
+		if original, _ := g.AcceptedSuccessor("intent-one"); original.SigningKey == i.SigningKey {
+			t.Fatal("mutable successor alias")
+		}
+		if _, err = g.AcceptedSuccessor("missing"); err != ErrDenied {
+			t.Fatal("unknown successor")
+		}
+		// Deterministic expiry after Verify, without wall-clock scheduling sleeps.
+		g.successors[0].ExpiresAt = time.Now().Unix()
+		if _, err = g.AcceptedSuccessor("intent-one"); err != ErrDenied {
+			t.Fatal("expired successor snapshot")
+		}
+		return nil
+	}); e != nil {
+		t.Fatal(e)
+	}
 	if len(d) != 1 || d[0].Status != "revoked" {
 		t.Fatal("candidate leaked into admitted devices")
 	}

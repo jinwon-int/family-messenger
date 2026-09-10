@@ -1,5 +1,9 @@
 # Lost and replacement devices: qualification and implementation decision
 
+The subsequent [signed successor context preflight](../server/SUCCESSOR-CONTEXT.md)
+checks accepted intent against the actual old room and healthy peer. It is
+read-only; replacement custody, activation and human acceptance remain open.
+
 Status: **reviewable design and isolated library evidence, no native enrollment
 change or human recovery acceptance**. Additional/replacement devices remain
 denied by [the native policy](../server/DEVICES.md). CF login identifies an
