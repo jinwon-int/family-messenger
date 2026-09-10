@@ -474,6 +474,10 @@ func (a *API) mlsRoute(w http.ResponseWriter, r *http.Request, actor string, par
 		fail(w, ErrForbidden)
 		return
 	}
+	if len(parts) >= 3 && parts[2] == "successors" {
+		a.successorContextRoute(w, r, actor, g, parts)
+		return
+	}
 	if (len(parts) == 3 && parts[2] == "context-reservations") || (len(parts) == 5 && parts[2] == "rooms" && parts[4] == "preparation") {
 		a.preparationRoute(w, r, actor, g, parts)
 		return

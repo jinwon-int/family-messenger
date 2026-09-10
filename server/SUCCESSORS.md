@@ -1,5 +1,9 @@
 # Private public-device succession intents
 
+Subsequent [signed context preflight](SUCCESSOR-CONTEXT.md) checks an accepted
+intent against the actual retired source and active peer without activating the
+candidate or changing custody. Target reservation and readiness remain required.
+
 This implements the **candidate/decision/retirement portion** of
 [DEVICE-LIFECYCLE.md](../docs/DEVICE-LIFECYCLE.md), in synthetic signed mode only.
 It does not activate a replacement device, create a new conversation, restore an

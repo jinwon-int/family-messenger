@@ -54,6 +54,7 @@ type Grant struct {
 	principal  Principal
 	expires    time.Time
 	devices    []Device
+	successors []SuccessorIntent
 }
 
 func (g *Grant) Principal() Principal { return g.principal }
@@ -273,7 +274,16 @@ func (a *Authority) Verify(r *http.Request) (*Grant, error) {
 	if !ok {
 		return nil, ErrDenied
 	}
-	return &Grant{authority: a, generation: a.generation, principal: Principal{Actor: p.Actor, Owner: p.Owner}, expires: expires.Time, devices: append([]Device(nil), a.config.Devices...)}, nil
+	g := &Grant{authority: a, generation: a.generation, principal: Principal{Actor: p.Actor, Owner: p.Owner}, expires: expires.Time, devices: append([]Device(nil), a.config.Devices...)}
+	if a.config.Successors != nil {
+		for _, intent := range a.config.Successors.Intents {
+			person, enrolled := a.people[intent.Subject]
+			if enrolled && person.Actor == intent.Actor && administratorCurrent(a.config, intent.Administrator) && intent.Status == "accepted" {
+				g.successors = append(g.successors, intent)
+			}
+		}
+	}
+	return g, nil
 }
 
 // Suspend denies new verification and retires existing grants without fallback.

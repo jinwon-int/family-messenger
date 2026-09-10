@@ -19,7 +19,10 @@ def main():
     parser.add_argument('--binary', required=True, type=Path)
     parser.add_argument('--policy-binary', required=True, type=Path)
     parser.add_argument('--successor', action='store_true', help='version-2 public intent/retirement process proof')
+    parser.add_argument('--successor-context', action='store_true', help='also qualify read-only replacement context; requires --successor')
     args = parser.parse_args()
+    if args.successor_context and not args.successor:
+        parser.error('--successor-context requires --successor')
     binary, policy_binary = args.binary.resolve(strict=True), args.policy_binary.resolve(strict=True)
     root = Path(__file__).resolve().parents[1]
     work = Path(tempfile.mkdtemp(prefix='native-successor-' if args.successor else 'native-policy-', dir=root / 'artifacts'))
@@ -159,7 +162,7 @@ def main():
 
         if args.successor:
             from native_successor_checks import run
-            run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, path)
+            run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, path, context=args.successor_context)
             proof['ok'] = True
             return
 

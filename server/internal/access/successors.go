@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"reflect"
+	"time"
 )
 
 // SuccessorPolicy is private management state, never a device admission list.
@@ -39,6 +40,18 @@ type SuccessorIntent struct {
 	Status              string              `json:"status"`
 	DecidedAt           int64               `json:"decided_at"`
 	DecisionRevision    uint64              `json:"decision_revision"`
+}
+
+// AcceptedSuccessor is a snapshot for a bounded consumer INSIDE Grant.Run.
+// It is not device admission. Policy replacement retires the enclosing grant;
+// expiry is checked again at use, including a grant created before expiry.
+func (g *Grant) AcceptedSuccessor(id string) (SuccessorIntent, error) {
+	for _, i := range g.successors {
+		if i.ID == id && time.Now().Unix() < i.ExpiresAt {
+			return i, nil
+		}
+	}
+	return SuccessorIntent{}, ErrDenied
 }
 
 func canonicalHex(s string, min, max int) bool {
