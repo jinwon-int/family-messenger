@@ -1,0 +1,116 @@
+{
+  "scope": "Synthetic durable inactive successor reservation; no client custody, activation or production deployment",
+  "runtime_source": "d6a3659a895bc4483296a30fedd74816fe3a3e7d",
+  "base": "34958cc0f5eeec6aa2617a159a1cda37c12bb658",
+  "binary_provenance": {
+    "go": "1.27.1",
+    "vcs_modified": false,
+    "process": {
+      "synthetic_only": true,
+      "production_cf_gate": false,
+      "e2ee": false,
+      "binary_sha256": "e76f47241197e9eef5ec34054c20c9480e7ceb46dcbd6449441c7b3e83786e1d",
+      "policy_binary_sha256": "233ca745304d357621a497afca9547928f8a04b40cdf28db43cda6fa4177a376",
+      "explicit_signed_mode_and_no_fixture_fallback": true,
+      "checks": {
+        "explicit_mode_owner_not_device_admin_expiry_and_candidate_denial": true,
+        "two_process_exact_acceptance_one_revision_atomic_retirement_no_candidate_admission": true,
+        "signed_current_pair_context_no_old_or_candidate_delivery": true,
+        "concurrent_http_reservation_one_commit_exact_bytes_conflict_no_legacy_conversion": true,
+        "reservation_sigkill_lost_response_retry_same_outcome_and_both_native_delivery_denied": true,
+        "sigkill_restart_retains_revocation_and_old_chat_media_policy_bytes": true,
+        "conflicting_process_decisions_one_winner_no_old_policy_restore": true,
+        "unsafe_v2_policy_denied_and_retained_no_fixture_fallback": true,
+        "reservation_denied_after_emergency_revocation_and_restart": true,
+        "emergency_empty_people_and_administrators_survives_sigkill_restart": true
+      },
+      "ok": true
+    }
+  },
+  "author_checks": {
+    "go_race_umask022": "passed",
+    "go_normal_umask077": "passed",
+    "go_vet": "passed",
+    "python_unittest": 149,
+    "python_result": "passed",
+    "native_text": "artifacts/native-live-ikggzhyg/verification.json",
+    "native_media": "artifacts/native-media-e7qfzlzp/verification.json",
+    "native_mls_preparation": "artifacts/native-mls-transport-h1xesvzr/verification.json",
+    "two_browser_legacy": "artifacts/native-browser-y5fjlgwm/verification.json",
+    "legacy_proof_runtime_source": "f07f613b632e258b20c79b8c43e5db732f6de519",
+    "final_go_race_umask022": "passed",
+    "final_go_normal_umask077": "passed",
+    "final_go_vet": "passed",
+    "final_test_head": "afcebbd8f115ff6914eabe0f9a29f44f545f7081"
+  },
+  "migration": {
+    "checks": {
+      "actual_v4_binary_data_upgraded_to_v5_exact_logical_snapshot": true,
+      "old_binary_denies_new_state_before_mutation": true,
+      "isolated_old_snapshot_restore_write_does_not_change_current_state": true
+    },
+    "synthetic_only": true,
+    "source": "d6a3659a895bc4483296a30fedd74816fe3a3e7d",
+    "old_sha256": "a84fb58e2ff5dfa8bb78d123f2572c92bd5d829330cc06bff95dbba0d0df4314",
+    "new_sha256": "e76f47241197e9eef5ec34054c20c9480e7ceb46dcbd6449441c7b3e83786e1d"
+  },
+  "migration_script_sha256": "55c55b657894690030fa2dfc1ec3c70e6433cd5ce1e89d787e57bd60f27aa173",
+  "independent_review": {
+    "verdict": "CLEAN",
+    "head": "afcebbd8f115ff6914eabe0f9a29f44f545f7081",
+    "runtime_head": "d6a3659a895bc4483296a30fedd74816fe3a3e7d",
+    "resolved_findings": [
+      "M1"
+    ],
+    "unresolved_findings": [],
+    "full_go_race": true,
+    "independent_groups": 7,
+    "repetitions": 3,
+    "report_sha256": "61f1c8f1238a1a30361c84239283fc6aa93531cd600ba7765e0bd198fc4ec004",
+    "independent_source": "/root/work/review-successor-reservation-d6a3659/server/internal/chat/review_successor_reservation_test.go",
+    "independent_source_sha256": "6decc3efe48184575c18a97f6a2c9cb097ac53e49436e2f45d6c5cb2977c48fd",
+    "proofs": [
+      {
+        "path": "/root/work/review-successor-reservation-d6a3659/artifacts/native-successor-ja59x2z3/verification.json",
+        "sha256": "61f2ecfc6fed9b7e68ab05271b7a7636789dc4386c452977f91b2d6370c8e268",
+        "checks": 10
+      },
+      {
+        "path": "/root/work/review-successor-reservation-d6a3659/artifacts/native-successor-8f6ajux1/verification.json",
+        "sha256": "4c77aa0c1feb62ab97a6e432ac3add581508d39d433c7ea42908ae85e470a17c",
+        "checks": 8
+      }
+    ],
+    "binary_sha256": "e62115b9f6c095620e9373d4d7047f686a7d14f6f9b8f81fa2312305e14d9dfb",
+    "policy_binary_sha256": "afc5e467b0580416c5791ff8e4049e0ac43fa6d8a692f20eefd0162c5b3b0878",
+    "vcs_modified": false
+  },
+  "dependencies_changed": false,
+  "retained_limits": {
+    "rooms": 32,
+    "reservations": 16,
+    "context_bytes": 4096,
+    "request_bytes": 1024
+  },
+  "limitations": [
+    "No proof of human ceremony or private custody",
+    "All participants and policy must remain eligible even for exact read/retry",
+    "Expiry retains reservation but denies access; no renewal",
+    "Accepted unacked source control denies",
+    "No whole valid rollback witness or browser/server distributed lease",
+    "Candidate activation and client custody remain disabled"
+  ],
+  "qualified_test_head": "afcebbd8f115ff6914eabe0f9a29f44f545f7081",
+  "findings": [
+    {
+      "severity": "medium",
+      "id": "M1",
+      "trigger": "Local target row corruption into ready state with duplicated currently active peer pins",
+      "before": "Reservation reader denied but ordinary native log accepted GET/POST",
+      "fix": "All ordinary native room loads deny successor rows; only separately authorized full reservation inspection may read target state",
+      "runtime_fix": "d6a3659a895bc4483296a30fedd74816fe3a3e7d",
+      "limitation": "Not a demonstrated remote mutation path, compromise of device keys or break of MLS encryption"
+    }
+  ],
+  "independent_report": "/root/work/review-successor-reservation-d6a3659/artifacts/review-successor-reservation/final-review.md"
+}
