@@ -55,12 +55,13 @@ trying to reuse ordinary context preparation. Only the separately authorized res
 DeviceBindings/activePin; old-room delivery still denies because its predecessor
 is retired. Legacy text/media/member mutation cannot convert this new MLS room.
 The old source provider, pending client frames, outbox, cursor and all server
-history are unchanged. No public declaration of private storage is accepted by
-this unit. A returned descriptor is not permission to commit a new client slot:
+history are unchanged. The separate [custody declaration route](SUCCESSOR-CUSTODY.md) records
+public statements without activating the target; it preserves this descriptor. A returned descriptor is not permission to commit a new client slot:
 the separately qualified custody/activation protocol must still enforce that
 boundary. The separate [intact-peer custody experiment](../experiments/device-keystore/SUCCESSOR-PEER-CUSTODY.md)
 now reads this route solely to preserve an existing peer signer in an inactive
-encrypted target context. Candidate custody and delivery are still unavailable.
+encrypted target context. The candidate custody experiment also preserves exact public package/private
+provider state; native delivery remains unavailable.
 
 Expiry/revocation also denies reads and exact retries of a previously committed
 reservation, while retaining it. Neither reloading nor restart renews the original
@@ -96,7 +97,7 @@ python3 tests/native_policy_smoke.py --successor --successor-context \
 The isolated intact-peer worker qualifies signer-only storage with independent
 pins/intent and commit-before-output; its new inner format is not yet a product
 client or history-reader migration. Next: qualify the candidate's own protected
-private key and context against this reservation, then
-explicit durable declarations and separately reviewed activation/Welcome/ack.
+private key and context against this reservation, then connect both committed clients to the new durable declaration route and
+separately reviewed activation/Welcome/ack.
 Human ceremony, lifecycle renewal, mobile, actual CF, isolated backups, capacity
 and fleet acceptance remain before Yukson cutover.

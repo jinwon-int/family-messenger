@@ -21,7 +21,13 @@ def main():
     parser.add_argument('--successor', action='store_true', help='version-2 public intent/retirement process proof')
     parser.add_argument('--successor-context', action='store_true', help='also qualify read-only replacement context; requires --successor')
     parser.add_argument("--successor-reservation", action="store_true", help="durable inactive reservation proof; requires --successor-context")
+    parser.add_argument("--successor-custody", action="store_true", help="inactive paired declarations; requires --successor-reservation")
+    parser.add_argument("--legacy-binary", type=Path, help="actual schema5 binary for isolated custody migration proof")
     args = parser.parse_args()
+    if args.successor_custody and not args.successor_reservation:
+        parser.error("--successor-custody requires --successor-reservation")
+    if args.legacy_binary and not args.successor_custody:
+        parser.error("--legacy-binary requires --successor-custody")
     if args.successor_reservation and not args.successor_context:
         parser.error("--successor-reservation requires --successor-context")
     if args.successor_context and not args.successor:
@@ -35,6 +41,7 @@ def main():
     proof = {'synthetic_only': True, 'production_cf_gate': False, 'e2ee': False,
              'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
              'policy_binary_sha256': hashlib.sha256(policy_binary.read_bytes()).hexdigest()}
+    serving_binary = args.legacy_binary.resolve(strict=True) if args.legacy_binary else binary
     process = output = None
     log = work / 'server.log'
     address = '127.0.0.1:0'
@@ -95,7 +102,7 @@ def main():
         nonlocal process, output, address, url
         output = log.open('ab')
         offset = log.stat().st_size
-        process = subprocess.Popen([str(binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--listen', address], stdout=subprocess.DEVNULL, stderr=output)
+        process = subprocess.Popen([str(serving_binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--listen', address], stdout=subprocess.DEVNULL, stderr=output)
         if not want_success:
             assert process.wait(timeout=5) != 0
             assert b'listening' not in log.read_bytes()[offset:]
@@ -133,6 +140,38 @@ def main():
         with response:
             return response.status, response.read()
 
+    def upgrade():
+        nonlocal serving_binary, state
+        if not args.legacy_binary:
+            return
+        import sqlite3
+        stop()
+        serving_binary = binary
+        start()
+        snapshots = list((state / 'snapshots').glob('v5-before-successor-custody-*.sqlite'))
+        assert len(snapshots) == 1
+        with sqlite3.connect(snapshots[0]) as db:
+            assert db.execute('PRAGMA user_version').fetchone()[0] == 5
+            assert db.execute('SELECT count(*) FROM mls_successor_reservations').fetchone()[0] == 1
+            assert db.execute('SELECT count(*) FROM messages').fetchone()[0] == 1
+        stop()
+        before = hashlib.sha256((state / 'messages.sqlite').read_bytes()).hexdigest()
+        serving_binary = args.legacy_binary.resolve(strict=True)
+        start(False)
+        assert hashlib.sha256((state / 'messages.sqlite').read_bytes()).hexdigest() == before
+        original_state = state
+        state = work / 'isolated-v5-restore'
+        state.mkdir(mode=0o700)
+        private_write(state / 'messages.sqlite', snapshots[0].read_bytes())
+        start()
+        assert len(json.loads(request('owner', '/v1/rooms/family/messages')[1])) == 1
+        assert request('owner', '/v1/mls/successors/replacement-1/reservation', headers={'X-Family-Device':'alice-candidate'})[0] == 200
+        stop()
+        state = original_state
+        serving_binary = binary
+        start()
+        proof['checks']['actual_v5_migration_snapshot_old_binary_denial_and_isolated_restore'] = True
+
     def wait_status(who, status):
         until = time.monotonic() + 6
         while time.monotonic() < until:
@@ -165,7 +204,7 @@ def main():
 
         if args.successor:
             from native_successor_checks import run
-            run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, path, context=args.successor_context, reservation=args.successor_reservation)
+            run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, path, context=args.successor_context, reservation=args.successor_reservation, custody=args.successor_custody, upgrade=upgrade)
             proof['ok'] = True
             return
 

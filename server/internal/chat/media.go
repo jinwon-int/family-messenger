@@ -271,6 +271,9 @@ func inspectSnapshots(path string) error {
 		if strings.HasPrefix(name, "v4-before-successor-reservation-") {
 			prefix = "v4-before-successor-reservation-"
 		}
+		if strings.HasPrefix(name, "v5-before-successor-custody-") {
+			prefix = "v5-before-successor-custody-"
+		}
 		id := strings.TrimSuffix(strings.TrimPrefix(name, prefix), ".sqlite")
 		if name != prefix+id+".sqlite" || !validAttachmentID(id) {
 			return fmt.Errorf("unknown snapshot file preserved")

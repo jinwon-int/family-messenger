@@ -93,6 +93,9 @@ func (s *Store) successorReservation(context successorContext) (successorReserva
 			return p, true, e
 		}
 	}
+	if _, _, e = s.successorCustody(p); e != nil {
+		return p, true, e
+	}
 	return p, true, nil
 }
 
@@ -154,6 +157,9 @@ func (s *Store) reserveSuccessor(context successorContext, q successorReservatio
 		return p, false, e
 	}
 	if _, e = tx.Exec("INSERT INTO mls_successor_reservations VALUES(?,?,?,?)", context.Intent, context.Target, q.ID, raw); e != nil {
+		return p, false, e
+	}
+	if _, e = tx.Exec("INSERT INTO mls_successor_custody VALUES(?,?)", context.Intent, []byte("[]")); e != nil {
 		return p, false, e
 	}
 	p.ID = q.ID
