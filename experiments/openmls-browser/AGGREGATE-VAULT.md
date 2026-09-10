@@ -9,6 +9,12 @@ It does not fetch signed admission, does not establish peer pins and is not
 replacement activation, encrypted-IDB production storage or a human profile
 migration.
 
+The complete native-state/admission continuation is documented in
+[the device custody adapter](../device-keystore/AGGREGATE-VAULT.md). This earlier
+container and namespace remain an isolated proof, with no migration or product
+activation. The signing key is caller-supplied to this container; its fixture uses
+an actual MLS key, but that does not make the container a full provider validator.
+
 ## Container contract
 
 `experiments/device-keystore/native-aggregate-vault.js` adds a device-scoped

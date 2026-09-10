@@ -143,6 +143,61 @@ func (s *Store) mlsAdmit(room MLSRoom, actor, device string, devices []access.De
 	}
 	return nil
 }
+
+// Read-only custody admission, under Grant.Run -> Store.mu. Unlike transport
+// status, a reservation can be inspected, but only by an active member device
+// while both enrolled member devices are active. This does not reserve a lease
+// across a client's later local transaction or permit legacy room conversion.
+func (s *Store) mlsContext(room MLSRoom, actor, device string, devices []access.Device) (MLSRoom, error) {
+	if room.Phase != "reserved" {
+		return room, s.mlsAdmit(room, actor, device, devices)
+	}
+	if room.Group != "" || room.Creator != "" || room.Peer != "" || len(room.Pins) != 0 || room.Revision != 0 || room.Epoch != 0 || room.Next != 1 {
+		return room, ErrIntegrity
+	}
+	rows, err := s.db.Query("SELECT actor FROM members WHERE room=? ORDER BY actor LIMIT 3", room.Room)
+	if err != nil {
+		return room, err
+	}
+	var members []string
+	for rows.Next() {
+		var member string
+		if err = rows.Scan(&member); err != nil {
+			rows.Close()
+			return room, err
+		}
+		members = append(members, member)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return room, err
+	}
+	if len(members) != 2 {
+		return room, ErrForbidden
+	}
+	found := false
+	for _, member := range members {
+		var id string
+		for _, d := range devices {
+			if d.Actor == member {
+				id = d.ID
+			}
+		}
+		pin, e := activePin(devices, id)
+		if e != nil || pin.Actor != member {
+			return room, ErrForbidden
+		}
+		room.Pins = append(room.Pins, pin)
+		if member == actor && pin.ID == device {
+			found = true
+		}
+	}
+	if !found {
+		return room, ErrForbidden
+	}
+	return room, nil
+}
 func (s *Store) createMLS(q mlsCreate, actor string, devices []access.Device) (MLSRoom, bool, error) {
 	if !validID(q.Room) || !canonicalGroup(q.Group) || !validID(q.Device) || !validID(q.Peer) || q.Device == q.Peer {
 		return MLSRoom{}, false, ErrInvalid
@@ -463,7 +518,7 @@ func (a *API) mlsRoute(w http.ResponseWriter, r *http.Request, actor string, par
 		writeJSON(w, status, room)
 		return
 	}
-	if len(parts) != 5 || !validID(parts[3]) || (parts[4] != "log" && parts[4] != "status") {
+	if len(parts) != 5 || !validID(parts[3]) || (parts[4] != "log" && parts[4] != "status" && parts[4] != "context") {
 		http.NotFound(w, r)
 		return
 	}
@@ -490,6 +545,27 @@ func (a *API) mlsRoute(w http.ResponseWriter, r *http.Request, actor string, par
 	a.store.mu.Lock()
 	defer a.store.mu.Unlock()
 	room, e := a.store.mlsRoom(parts[3])
+	if parts[4] == "context" {
+		if r.Method != "GET" || r.URL.RawQuery != "" {
+			fail(w, ErrInvalid)
+			return
+		}
+		if e == nil {
+			room, e = a.store.mlsContext(room, actor, device, g.DeviceBindings())
+		}
+		if e != nil {
+			fail(w, e)
+			return
+		}
+		writeJSON(w, 200, struct {
+			Version int      `json:"version"`
+			Room    string   `json:"room"`
+			Group   string   `json:"group_id"`
+			Phase   string   `json:"phase"`
+			Pins    []MLSPin `json:"pins"`
+		}{1, room.Room, room.Group, room.Phase, room.Pins})
+		return
+	}
 	if e == nil {
 		e = a.store.mlsAdmit(room, actor, device, g.DeviceBindings())
 	}
