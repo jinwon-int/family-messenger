@@ -9,7 +9,8 @@ permissions:
 jobs:
   synthetic-mls:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Prior exact-head run took ~23 minutes; new native history proof is bounded to 10 more.
+    timeout-minutes: 35
     env:
       RUSTFLAGS: '--cfg getrandom_backend="wasm_js"'
     steps:
