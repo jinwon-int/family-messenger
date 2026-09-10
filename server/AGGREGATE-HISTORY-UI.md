@@ -98,6 +98,23 @@ transport boundaries; no replacement module or forger is served. The original
 isolated history UI and full-library negative fixtures remain separate CI steps,
 including same-ID/different-sender and epoch-control regressions.
 
+The [packaging evidence](aggregate-history-ui-evidence.json) records an independent
+45-check native browser pass using a clean `be1410b` executable and all 20 matching
+original/native hashes. Author activation checks pass 14 cases; Python passes
+149 tests under both 022 and 077. Independent default/all-tag race suites each
+pass 109 top-level groups and 154 subtests, plus vet, 100 rejected manifest
+mutations and all 31 nonempty flag combinations. All 80 prior prepared files
+retain their inode, bytes and hash. The reviewed startup-label defect was fixed
+in `911c79f` and reverse-tested against the old binary.
+
+Failed attempts are retained rather than counted as passes. An author fixture
+tried editing a locked form and then masked its error in chat-only diagnostics;
+`be1410b` fixes those test paths. The first independent attempt timed out on an
+unchanged pre-history pending marker after 14 checks. Its cause remains
+unconfirmed; an unchanged rerun passed all 45 checks without extending the
+deadline. The successful receipt does not establish that this fixture can never
+be intermittent. CI still has to qualify the final submitted head.
+
 No Go, Rust, age or sodium dependency versions change. Existing inventories
 remain: Go 2 direct/0 transitive; OpenMLS 8 direct/151 transitive WASM crates;
 age/sodium 2 direct/8 transitive instances. Go/cgo/libc are runtime requirements;

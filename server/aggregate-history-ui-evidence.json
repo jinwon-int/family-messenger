@@ -1,0 +1,109 @@
+{
+  "scope": "Profile 6 immutable native aggregate history packaging; generated signed fixtures only",
+  "production_deployed": false,
+  "human_recovery_qualified": false,
+  "runtime_commit": "911c79f88a294cb8587576c2a1cbdbcf7a3f2862",
+  "browser_test_commit": "be1410bb529782e7a400252f74e221d8f5065c87",
+  "profile": 6,
+  "files": 20,
+  "public_bytes": 4062333,
+  "canonical_manifest_bytes": 6305,
+  "manifest_sha256": "81ad3a04057a4e45e405fec083ebd3b146f3a421e3b49343390b342cc1406a7c",
+  "native_browser": {
+    "receipt": "artifacts/aggregate-history-assets-t0_3nf5i/independent-native-browser.json",
+    "sha256": "15351c5d1358371bbb356ab4ec9f0d348ff07de0df83e6f0dbf8215a7f5160bf",
+    "checks": 45,
+    "passed": true,
+    "browser": "151.0.7922.34",
+    "binary_sha256": "2aab13d47994ad23a34735f6b1225aeac8e3e89d7877529c2c7bdfa021c40b6d",
+    "binary_vcs_modified": false,
+    "all_original_response_hashes_equal": true,
+    "asset_hashes": {
+      "/aggregate/": "321ec82d594a700749fc9803f23d27c0e27802fe82c38c9f7d298ee4696ba063",
+      "/aggregate-chat.js": "3d2b08a26a60b3e4a20bc576578a0ae73a13952611feddcfafee83fd2eeb5510",
+      "/chat.css": "de99fa320fb038096057fe81cfe003e7163b57dd0af46730e8de3bb1c4c92a91",
+      "/native-worker.js": "ca0f105d7afc5a0954e782548e3d09b2412fca3318bfae6e13515484b93ab18a",
+      "/trust-directory.js": "63079de10d73ac4d0664b07de7bcacc4e4abe551977a293cfa4144029a80b04e",
+      "/aggregate-native-worker.js": "9b931c11ca5e8221b05ba8df061f363a7bc2fe2ba35caddf13d26c86b4cfdd94",
+      "/prepared-fork-worker.js": "d994a55bead63e92c79ec9c4b0f63d2423b67eb1090a2eeaeb0d88e5a79c9a1a",
+      "/pkg/family_mls_browser_experiment.js": "b937381156c39a683d8f42ff96cfa608f3c6a90de841795ff8d116512729789f",
+      "/pkg/family_mls_browser_experiment_bg.wasm": "94482525c6e2deaa95183e91a86ca83cf46c89af97ca149006abbeaea9bdd13d",
+      "/aggregate/licenses/cargo.txt": "52ce5425ee2bfcbcd1271d72da46953233f2f40f97d9f7ae769c4447ea6e63fa",
+      "/aggregate/licenses/rust.txt": "3aa41caccecaeddad6fcf2f36ce14146ab7baae57064b05b12ecc6b52d5e917f",
+      "/aggregate-store.js": "c5c82ef05af684395a645269d7dab00630665b95fde0e00e38d6ac4e51409ef5",
+      "/aggregate/licenses/age.txt": "e9d3a269b88304762fcd8aba0b34d816f2f1d3253790281089ca5a75b9797adc",
+      "/aggregate/licenses/sodium.txt": "13c31cd4449e71922c68980a2d3d82356a747716e9b74a7ad83e2448245e8629",
+      "/aggregate-history/": "36ebe3191833b4b46e3f9d3eef51611e386141c5c0be638f536431cc11e28672",
+      "/aggregate-history.css": "2b6d6fbdbb643ea0590f3b53b5f9cc3de084970909713e232d5ad825b888d007",
+      "/aggregate-history-ui.js": "f267ac910abf624ef2c17a55f9a0e885a17720eef6ac3f3273e6a50dc7a36faf",
+      "/aggregate-history-client.js": "5385d059fb48d8d70b0b765248d8961b2b77cc35ca5e4098b655a7906fd10737",
+      "/aggregate-history-worker.js": "9f0fbeb771f6e1b295dbc28336c5c2351813f2004ebb7b109e1509396df955bc",
+      "/aggregate-history-export-worker.js": "9077dd04162033e2aaf779b6eeb3dfc8d1678d4433795ef3cd28b448a401847b"
+    }
+  },
+  "activation": {
+    "receipt": "artifacts/native-asset-activation-4g6r3p1_/verification.json",
+    "checks": 14,
+    "passed": true
+  },
+  "author_tests": {
+    "python": 149,
+    "umasks": [
+      "022",
+      "077"
+    ],
+    "asset_helper": 59
+  },
+  "independent_tests": {
+    "go_top_level_groups_per_mode": 109,
+    "go_subtests_per_mode": 154,
+    "go_modes": [
+      "default race",
+      "all five tags race"
+    ],
+    "vet": true,
+    "asset_helper_per_umask": 59,
+    "manifest_mutations_denied": 100,
+    "all_tag_flag_combinations": 31,
+    "plain_binary_absent_tag_cases": 5
+  },
+  "preservation": {
+    "old_prepared_files": 80,
+    "inode_bytes_hash_unchanged": true,
+    "default_and_optional_wasm_retained": true,
+    "old_profiles": [
+      1,
+      2,
+      3,
+      5,
+      4
+    ],
+    "no_browser_state_migration": true,
+    "no_new_dependencies": true
+  },
+  "findings": [
+    {
+      "severity": "P3",
+      "problem": "Selected history mode reported encrypted route and loaded assets again in startup banner branch",
+      "fixed_in": "911c79f88a294cb8587576c2a1cbdbcf7a3f2862",
+      "verification": "Old binary reverse test fails; fixed startup and restart label passes"
+    }
+  ],
+  "failed_attempts_retained": [
+    {
+      "receipt": "artifacts/native-aggregate-ui-_n8k3apb/verification.json",
+      "result": "Author fixture tried filling locked form after 37 checks; diagnostic then masked original error. Test-only fix be1410b."
+    },
+    {
+      "receipt": "/root/work/family-messenger-review-aggregate-history-assets/artifacts/native-aggregate-ui-_r2ddsxu/verification.json",
+      "result": "Independent first attempt timed out at unchanged pre-history data-source-pending 5s fixture after 14 checks. Root cause unconfirmed; unchanged rerun passed 45 checks, no timeout widened."
+    }
+  ],
+  "limits": [
+    "No actual CF gate, human data, keys or production activation",
+    "Past archive/password remains readable after server revocation; no sender restore or rollback witness",
+    "Mobile check is viewport layout only, not mobile resource acceptance",
+    "Compiled proof uses original assets and generated proxy/page failure injection; prior full-library forger/control suites remain separate",
+    "5 GiB added disk and 128 MiB WASM budgets retained; JS scrypt scratch 256 MiB separate"
+  ]
+}
