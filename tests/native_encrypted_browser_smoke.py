@@ -495,17 +495,17 @@ def main():
             proof['checks']['tamper_outer_id_group_device_rejected_without_ratchet_loss']=True
             # Two tabs stage and reconcile one immutable application operation.
             observer=page(0);init(observer,0)
-            args={'id':'app-tabs','bytes':list(b'synthetic two tabs'),'media_type':'text','fault':''}
-            a.evaluate('arg=>{window.pending=call("device","prepare",arg)}',args)
-            rpc(observer,'prepare',args);assert a.evaluate('window.pending')['ok']
+            turn_args={'id':'app-tabs','bytes':list(b'synthetic two tabs'),'media_type':'text','fault':''}
+            a.evaluate('arg=>{window.pending=call("device","prepare",arg)}',turn_args)
+            rpc(observer,'prepare',turn_args);assert a.evaluate('window.pending')['ok']
             first=rpc(a,'flush');second=rpc(observer,'flush');assert first['seq']==second['seq']
             rpc(a,'sync');count=len(rpc(observer,'sync')['messages']);assert len(rpc(a,'sync')['messages'])==count
             got=rpc(b,'sync');assert base64.b64decode(got['messages'][-1]['payload'])==b'synthetic two tabs'
             proof['checks']['two_tabs_exact_native_ciphertext_and_self_echo_once']=True
             before=digest(a,0);tamper[0]='binding';prepare(a,'app-binding',b'bad binding',reject=True);assert digest(a,0)==before;tamper[0]=None;reopen(a,0)
             proof['checks']['changed_native_binding_denied_before_crypto_mutation']=True
-            before=digest(a,0);args={'id':'app-inflight','bytes':list(b'synthetic transaction hold'),'media_type':'text','fault':'crash-before-complete'}
-            a.evaluate('arg=>{window.pending=call("device","prepare",arg).catch(()=>null)}',args);a.wait_for_function('()=>window.test_crash_boundary===true',timeout=5000)
+            before=digest(a,0);turn_args={'id':'app-inflight','bytes':list(b'synthetic transaction hold'),'media_type':'text','fault':'crash-before-complete'}
+            a.evaluate('arg=>{window.pending=call("device","prepare",arg).catch(()=>null)}',turn_args);a.wait_for_function('()=>window.test_crash_boundary===true',timeout=5000)
             crash(0);a=page(0);init(a,0);assert digest(a,0)==before
             prepare(a,'app-inflight',b'synthetic transaction hold');rpc(a,'flush');rpc(a,'sync');got=rpc(b,'sync');assert base64.b64decode(got['messages'][-1]['payload'])==b'synthetic transaction hold'
             proof['checks']['inflight_browser_crash_retains_complete_crypto_and_native_outbox']=True
