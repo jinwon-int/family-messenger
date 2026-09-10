@@ -65,7 +65,9 @@
     "asset_helper_per_umask": 59,
     "manifest_mutations_denied": 100,
     "all_tag_flag_combinations": 31,
-    "plain_binary_absent_tag_cases": 5
+    "plain_binary_absent_tag_cases": 5,
+    "tag_alone_inactive_routes": 5,
+    "missing_prepared_output_denies_tagged_build": true
   },
   "preservation": {
     "old_prepared_files": 80,
@@ -105,5 +107,12 @@
     "Mobile check is viewport layout only, not mobile resource acceptance",
     "Compiled proof uses original assets and generated proxy/page failure injection; prior full-library forger/control suites remain separate",
     "5 GiB added disk and 128 MiB WASM budgets retained; JS scrypt scratch 256 MiB separate"
-  ]
+  ],
+  "independent_report": {
+    "path": "artifacts/aggregate-history-assets-t0_3nf5i/independent-review.json",
+    "sha256": "b3e222d5cffff50dd2fe74df0aa6f5fb3eff85fe94eb6984f069f5d4217c9550",
+    "reviewed_head": "96b93be53058f2643ea0213af51f700b03014116",
+    "verdict": "CLEAN",
+    "scope": "Runtime and test qualification; final evidence metadata reviewed separately"
+  }
 }
