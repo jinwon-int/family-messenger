@@ -30,7 +30,7 @@ func accessFixture(t *testing.T) (*Store, *access.Authority, access.Config, *rsa
 	if e != nil {
 		t.Fatal(e)
 	}
-	h, e := NewAccessHandler(s, a)
+	h, e := NewAccessHandler(s, a, nil)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -239,7 +239,7 @@ func TestAccessDownloadReplacementStopsNextChunk(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	handler, _ := NewAccessHandler(s, a)
+	handler, _ := NewAccessHandler(s, a, nil)
 	w := &gatedMediaWriter{header: make(http.Header), entered: make(chan struct{}), release: make(chan struct{})}
 	r := httptest.NewRequest("GET", "http://127.0.0.1:18920/v1/rooms/family/attachments/"+m.ID, nil)
 	r.Header.Set("Cf-Access-Jwt-Assertion", assertion(t, c, k, "family", time.Now().Add(time.Minute)))

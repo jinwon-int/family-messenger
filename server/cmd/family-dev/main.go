@@ -27,6 +27,7 @@ func run() error {
 	addr := flag.String("listen", "127.0.0.1:18920", "IPv4 loopback listen address")
 	synthetic := flag.Bool("synthetic-only", false, "acknowledge synthetic test data only; not production-ready")
 	authState := flag.String("auth-state", "", "explicit private signed synthetic auth state; no fixture fallback")
+	admissionKeyPath := flag.String("admission-key", "", "private 32-byte Ed25519 admission seed file (0600); enables /v1/aggregate/* only when the signed policy pins the matching key")
 	encryptedUI := flag.Bool("synthetic-mls-ui", false, "enable compiled encrypted test UI; requires signed auth-state and synthetic_mls build")
 	vaultUI := flag.Bool("synthetic-vault-ui", false, "enable compiled synthetic custody UI; requires signed auth-state and synthetic_vault build")
 	historyUI := flag.Bool("synthetic-history-ui", false, "enable compiled synthetic read-only recovery UI; requires signed auth-state and synthetic_history build")
@@ -96,10 +97,18 @@ func run() error {
 	defer stop()
 	handler := chat.NewHandler(store)
 	if managed != nil {
+		var admission *chat.AdmissionAuthority
+		if *admissionKeyPath != "" {
+			key, keyErr := chat.LoadAdmissionSeed(*admissionKeyPath)
+			if keyErr != nil {
+				return keyErr
+			}
+			admission = &chat.AdmissionAuthority{Key: key}
+		}
 		if selectedUI == 1 {
-			handler, e = chat.NewEncryptedAccessHandler(store, managed.Authority, bundle)
+			handler, e = chat.NewEncryptedAccessHandler(store, managed.Authority, bundle, admission)
 		} else {
-			handler, e = chat.NewAccessHandler(store, managed.Authority)
+			handler, e = chat.NewAccessHandler(store, managed.Authority, admission)
 		}
 		if e != nil {
 			return e

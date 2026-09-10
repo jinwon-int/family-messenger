@@ -11,9 +11,10 @@ package chat
 
 import (
 	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -22,10 +23,6 @@ import (
 )
 
 const (
-	// admissionSeed is the deterministic synthetic seed for the admission
-	// keypair. Synthetic only: a real deployment loads the key from the
-	// signed auth state instead.
-	admissionSeed = "family-synthetic-aggregate-admission-v1"
 	// admissionTTLBucket is the decisional expiry bucket in milliseconds:
 	// identical requests inside one bucket return the identical document, so
 	// the store's fresh re-receipt check passes across its two reads.
@@ -34,28 +31,60 @@ const (
 	admissionValidity = int64(120_000)
 )
 
-var admissionPublic ed25519.PublicKey
-
-func admissionKey() ed25519.PrivateKey {
-	seed := sha256.Sum256([]byte(admissionSeed))
-	return ed25519.NewKeyFromSeed(seed[:])
+// AdmissionAuthority holds the aggregate-admission signing key injected by
+// family-dev. The key is loaded from a private seed file whose public half is
+// committed through the signed policy document — the out-of-band pin channel
+// (#49). A nil key disables the aggregate endpoints.
+type AdmissionAuthority struct {
+	Key ed25519.PrivateKey
 }
 
-func init() { admissionPublic = admissionKey().Public().(ed25519.PublicKey) }
+// Public returns the hex public half, or "" when disabled.
+func (aa *AdmissionAuthority) Public() string {
+	if aa == nil || aa.Key == nil {
+		return ""
+	}
+	return hex.EncodeToString(aa.Key.Public().(ed25519.PublicKey))
+}
+
+// Enabled reports whether the aggregate admission endpoints may answer.
+func (aa *AdmissionAuthority) Enabled() bool { return aa != nil && aa.Key != nil }
+
+// MatchesPolicy verifies the injected key against the hex public key the
+// signed policy document committed. A mismatch is a configuration error: the
+// server must not sign admissions under a key the policy did not pin.
+func (aa *AdmissionAuthority) MatchesPolicy(pinnedHex string) bool {
+	if !aa.Enabled() || pinnedHex == "" {
+		return false
+	}
+	return strings.EqualFold(aa.Public(), pinnedHex)
+}
+
+// LoadAdmissionSeed reads a 32-byte Ed25519 seed from a private file.
+func LoadAdmissionSeed(path string) (ed25519.PrivateKey, error) {
+	raw, e := os.ReadFile(path)
+	if e != nil {
+		return nil, e
+	}
+	if len(raw) != ed25519.SeedSize {
+		return nil, fmt.Errorf("admission seed must be %d bytes, got %d", ed25519.SeedSize, len(raw))
+	}
+	return ed25519.NewKeyFromSeed(raw), nil
+}
 
 // admissionDocument mirrors the store's canonical tuple exactly:
 // JSON.stringify([1,rooms,actor,device_id,signing_key,peers,revision,not_after])
 // with peers as {"actor":..,"signing_key":..} objects in actor order.
 type admissionDocument struct {
-	V          int                    `json:"v"`
-	Rooms      []string               `json:"rooms"`
-	Actor      string                 `json:"actor"`
-	DeviceID   string                 `json:"device_id"`
-	SigningKey string                 `json:"signing_key"`
-	Peers      []admissionPeer        `json:"peers"`
-	Revision   uint64                 `json:"revision"`
-	NotAfter   int64                  `json:"not_after"`
-	Signature  string                 `json:"signature"`
+	V          int             `json:"v"`
+	Rooms      []string        `json:"rooms"`
+	Actor      string          `json:"actor"`
+	DeviceID   string          `json:"device_id"`
+	SigningKey string          `json:"signing_key"`
+	Peers      []admissionPeer `json:"peers"`
+	Revision   uint64          `json:"revision"`
+	NotAfter   int64           `json:"not_after"`
+	Signature  string          `json:"signature"`
 }
 
 type admissionPeer struct {
@@ -86,11 +115,12 @@ func (d *admissionDocument) sign(key ed25519.PrivateKey) {
 	d.Signature = hex.EncodeToString(ed25519.Sign(key, d.canonical()))
 }
 
-// aggregatePolicyKey serves the pinned admission public key. Synthetic only.
+// aggregatePolicyKey serves the pinned admission public key — the value the
+// signed policy document committed, which is also the out-of-band pin source.
 func (a *API) aggregatePolicyKey(w http.ResponseWriter) {
 	writeJSON(w, 200, map[string]string{
 		"algorithm": "ed25519",
-		"public":     hex.EncodeToString(admissionPublic),
+		"public":    a.authority.AdmissionPublic(),
 	})
 }
 
@@ -98,7 +128,7 @@ func (a *API) aggregatePolicyKey(w http.ResponseWriter) {
 // The revision comes from the caller: the store enforces that it covers the
 // next write. The rooms are the actor's committed rooms; the peers are the
 // other active devices bound to the members of those rooms.
-func (a *API) aggregateAdmission(w http.ResponseWriter, r *http.Request, g *access.Grant, actor string) {
+func (a *API) aggregateAdmission(w http.ResponseWriter, r *http.Request, g *access.Grant, actor string, admission *AdmissionAuthority) {
 	if r.URL.RawQuery == "" {
 		fail(w, ErrInvalid)
 		return
@@ -168,6 +198,6 @@ func (a *API) aggregateAdmission(w http.ResponseWriter, r *http.Request, g *acce
 		V: 1, Rooms: roomIDs, Actor: actor, DeviceID: device.id, SigningKey: device.key,
 		Peers: peers, Revision: revision, NotAfter: notAfter,
 	}
-	doc.sign(admissionKey())
+	doc.sign(admission.Key)
 	writeJSON(w, 200, doc)
 }

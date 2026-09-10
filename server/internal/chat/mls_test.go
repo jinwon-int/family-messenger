@@ -284,7 +284,7 @@ func TestMLSSlowBodyCannotHoldRevocationOrUseRetiredGrant(t *testing.T) {
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("X-Family-Device", "bob-first")
 	w := mlsDeadlineRecorder{httptest.NewRecorder()}
-	handler, _ := NewAccessHandler(s, a)
+	handler, _ := NewAccessHandler(s, a, nil)
 	done := make(chan struct{})
 	go func() { handler.ServeHTTP(w, r); close(done) }()
 	select {

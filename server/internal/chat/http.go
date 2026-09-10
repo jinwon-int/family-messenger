@@ -22,6 +22,7 @@ var tokens = map[string]string{"synthetic-alice": "alice", "synthetic-bob": "bob
 type API struct {
 	encrypted     *EncryptedAssets
 	authority     *access.Authority
+	admission     *AdmissionAuthority
 	store         *Store
 	streams       chan struct{}
 	uploadSlots   chan struct{}
@@ -153,12 +154,23 @@ func authorize(r *http.Request, fn func() error) error {
 
 // NewAccessHandler is an isolated integration surface, not an exposed CF
 // deployment or a new fixture fallback. The CLI still runs public synthetic mode.
-func NewAccessHandler(store *Store, authority *access.Authority) (http.Handler, error) {
+func NewAccessHandler(store *Store, authority *access.Authority, admission *AdmissionAuthority) (http.Handler, error) {
 	if store == nil || authority == nil {
+		return nil, ErrInvalid
+	}
+	// The aggregate admission endpoints answer only when the signed policy
+	// document pins an admission key AND the injected private key matches it.
+	// A policy without a pinned key, or a key that does not match, keeps the
+	// endpoints disabled — the server never signs under an unpinned key.
+	if (admission == nil || !admission.Enabled()) != (authority.AdmissionPublic() == "") {
+		return nil, ErrInvalid
+	}
+	if admission != nil && !admission.MatchesPolicy(authority.AdmissionPublic()) {
 		return nil, ErrInvalid
 	}
 	a := NewHandler(store).(*API)
 	a.authority = authority
+	a.admission = admission
 	return a, nil
 }
 func (a *API) route(w http.ResponseWriter, r *http.Request, actor string) {
@@ -172,6 +184,12 @@ func (a *API) route(w http.ResponseWriter, r *http.Request, actor string) {
 		return
 	}
 	if len(parts) == 3 && parts[0] == "v1" && parts[1] == "aggregate" {
+		// Disabled unless the signed policy pins an admission key that the
+		// injected private key matches (checked in NewAccessHandler).
+		if a.admission == nil || !a.admission.Enabled() {
+			http.NotFound(w, r)
+			return
+		}
 		if parts[2] == "policy-key" && r.Method == "GET" {
 			a.aggregatePolicyKey(w)
 			return
@@ -182,7 +200,7 @@ func (a *API) route(w http.ResponseWriter, r *http.Request, actor string) {
 				fail(w, ErrForbidden)
 				return
 			}
-			a.aggregateAdmission(w, r, g, actor)
+			a.aggregateAdmission(w, r, g, actor, a.admission)
 			return
 		}
 		http.NotFound(w, r)

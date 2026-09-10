@@ -50,6 +50,10 @@ type policyWire struct {
 	KeysExpireAt  int64            `json:"keys_expire_at,omitempty"`
 	Devices       []Device         `json:"devices,omitempty"`
 	Successors    *SuccessorPolicy `json:"successors,omitempty"`
+	// AdmissionPublic is the hex Ed25519 aggregate-admission public key. It
+	// reaches the client through this SIGNED policy document — the
+	// out-of-band pin channel — never through an unsigned endpoint.
+	AdmissionPublic string `json:"admission_public,omitempty"`
 }
 type policyRecord struct {
 	Revision     uint64     `json:"revision"`
@@ -65,7 +69,7 @@ func strictPolicy(data []byte, v any) error {
 		return ErrConfig
 	}
 	allowed := map[string]bool{}
-	for _, k := range []string{"version", "issuer", "audience", "keys", "people", "kid", "n", "e", "subject", "actor", "owner", "revision", "previous_sha256", "policy_sha256", "policy", "keys_fetched_at", "keys_expire_at", "devices", "device_id", "signing_key", "fingerprint", "status", "device_revision", "acceptance", "successors", "administrators", "intents", "intent_id", "action", "predecessor", "predecessor_key", "predecessor_revision", "candidate", "package_sha256", "previous_room", "previous_group", "next_room", "administrator", "base_revision", "created_at", "expires_at", "decided_at", "decision_revision"} {
+	for _, k := range []string{"version", "issuer", "audience", "keys", "people", "kid", "n", "e", "subject", "actor", "owner", "revision", "previous_sha256", "policy_sha256", "policy", "keys_fetched_at", "keys_expire_at", "devices", "device_id", "signing_key", "fingerprint", "status", "device_revision", "acceptance", "successors", "admission_public", "administrators", "intents", "intent_id", "action", "predecessor", "predecessor_key", "predecessor_revision", "candidate", "package_sha256", "previous_room", "previous_group", "next_room", "administrator", "base_revision", "created_at", "expires_at", "decided_at", "decision_revision"} {
 		allowed[k] = true
 	}
 	d := json.NewDecoder(bytes.NewReader(data))
@@ -135,6 +139,13 @@ func (w policyWire) config() (Config, error) {
 	}
 	c := Config{Issuer: w.Issuer, Audience: w.Audience, Keys: make(map[string]*rsa.PublicKey), KeysFetchedAt: w.KeysFetchedAt, KeysExpireAt: w.KeysExpireAt, Devices: w.Devices}
 	c.Successors = w.Successors
+	if w.AdmissionPublic != "" {
+		raw, e := hex.DecodeString(w.AdmissionPublic)
+		if e != nil || len(raw) != 32 || hex.EncodeToString(raw) != w.AdmissionPublic {
+			return Config{}, ErrConfig
+		}
+		c.AdmissionPublic = w.AdmissionPublic
+	}
 	for _, k := range w.Keys {
 		if _, ok := c.Keys[k.ID]; ok {
 			return Config{}, ErrConfig
@@ -160,6 +171,9 @@ func wire(c Config) (policyWire, error) {
 	if c.Successors != nil {
 		w.Version = 2
 		w.Successors = c.Successors
+	}
+	if c.AdmissionPublic != "" {
+		w.AdmissionPublic = c.AdmissionPublic
 	}
 	ids := make([]string, 0, len(c.Keys))
 	for id := range c.Keys {
