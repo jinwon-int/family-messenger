@@ -135,12 +135,11 @@ The 128 MiB combined WASM and 5 GiB added-disk budgets remain, with separate
 256 MiB JS scrypt scratch; memory-heavy probes are serialized. No human data,
 credentials, production services, backups or Cloudflare settings change here.
 
-[history-ui-evidence.json](history-ui-evidence.json) records the independent
-39-check native history proof with 21 matching asset hashes, the unchanged
-15-file vault profile's 26-check browser proof, 10 activation checks and 35
-preparation tests. Combined-tag race tests/vet, default chat tests and 111 Python
-tests under both umasks pass. The final functional delta after the original
-native proof only corrects missing-bundle diagnostic guidance; fresh final
-activation and legacy-vault tests verify that head. No reproduced finding remains
-in the bounded synthetic review. Own-server packaging is complete; human/Yukson
-acceptance remains open.
+[history-v5-evidence.json](history-v5-evidence.json) records the current caller
+fix and version-5 transition: 40 native browser checks with 21 matching asset
+hashes, 10 activation checks, 47 preparation tests, six caller tests and 137
+Python tests under both umasks. Default and all-four-tag Go race tests and vet
+cover the current source. The original version-3
+[history-ui-evidence.json](history-ui-evidence.json) remains historical evidence;
+its earlier clean verdict predates the two caller findings in issue #60 and does
+not qualify version 5. Human/Yukson acceptance remains open.

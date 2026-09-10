@@ -1,0 +1,111 @@
+{
+  "scope": "Issue60 legacy historical caller lifecycle and immutable version5 synthetic activation; not human recovery or Yukson deployment",
+  "runtime_commit": "2529e3e229bbd20de14c85d6e689db43b82a01df",
+  "profile": {
+    "version": 5,
+    "worker_state": 4,
+    "tag": "synthetic_history",
+    "flag": "--synthetic-history-ui",
+    "prepared_output": "historyassets_v5",
+    "files": 21,
+    "content_bytes": 4025346,
+    "manifest_bytes": 6315,
+    "manifest_sha256": "6ef6d97052eeb5b02db4c2ccd924148bc339ff718bba6fe72fade7da4b00924a",
+    "retained_version3_manifest_sha256": "2a33b7f9656df2719817ee2398432dd3070fe5715bcecae1510b32b9fcee06c9",
+    "only_changed_public_asset": "/history-client.js",
+    "caller_sha256": "cc355c3804f7f88225f8811c3a3d5730554fc6bd6241891c182f453cfced02f5"
+  },
+  "before_fix": {
+    "receipt": "artifacts/legacy-history-before-imkyb0dh/verification.json",
+    "sha256": "9849d765ed131617329bdae6645b7a93f43364d82e9b3b0a28a80cf2c56490dd",
+    "reproduced": [
+      "cleanup callback close then outer worker starts and accepts result",
+      "caller mutation during worker boot posts archive larger than admitted bound"
+    ],
+    "preservation": "Original21 output bytes and inodes retained; no old profile/data rewrite"
+  },
+  "author": {
+    "native_receipt": "artifacts/native-history-1m9ktqtu/verification.json",
+    "native_sha256": "e1993937f0f5e6d0113a81ed0261187ef450b70c9bb3309cef3968673ebac4d0",
+    "native_checks": 40,
+    "all_passed": true,
+    "native_asset_hashes": 21,
+    "original_runtime_native_hashes_equal": true,
+    "binary_sha256": "90aa9563e40efdd37a2baf639059036c3e4ad63f1f8b4ea7674ac87d56354e33",
+    "activation_receipt": "artifacts/native-asset-activation-iwfytx5p/verification.json",
+    "activation_sha256": "347cccaf5a3b73090ece4a4ba9fd78ca38d2dca8321043adf15f5edc50fd49e9",
+    "activation_checks": 10,
+    "activation_all_passed": true,
+    "caller_tests": 6,
+    "asset_helper_tests": 47,
+    "python_tests": 137,
+    "python_umasks": [
+      "022",
+      "077"
+    ],
+    "go": "Default and all4tags race plus all4tags vet passed",
+    "vcs_modified": false,
+    "binary_path": "artifacts/history-v5-build-09rzqqen/family-dev-history",
+    "go_version": "go1.27.1",
+    "browser": "151.0.7922.34"
+  },
+  "independent_review": {
+    "verdict": "clean; no reproduced finding in bounded scope",
+    "reviewed_runtime": "2529e3e229bbd20de14c85d6e689db43b82a01df",
+    "native_receipt": "artifacts/history-v5-reviewed-808twa7v/native.json",
+    "native_sha256": "e1993937f0f5e6d0113a81ed0261187ef450b70c9bb3309cef3968673ebac4d0",
+    "native_checks": 40,
+    "native_asset_hashes": 21,
+    "all_passed": true,
+    "activation_receipt": "artifacts/history-v5-reviewed-808twa7v/activation.json",
+    "activation_sha256": "2320eb3476cbcc9e3d7fcc8144e73fdfd261151e7732871558c021c33f7b9654",
+    "activation_checks": 10,
+    "caller_tests": 6,
+    "supplemental_caller_checks": 11,
+    "asset_helper_tests": 47,
+    "go_top_level_tests_each_mode": 105,
+    "go": "Default and all-four-tag race plus vet passed",
+    "binary_sha256": "90aa9563e40efdd37a2baf639059036c3e4ad63f1f8b4ea7674ac87d56354e33",
+    "vcs_modified": false,
+    "transition_checks": [
+      "Retained version3 exact files preserved by hash/inode",
+      "Old-only prepared output cannot build new tagged binary",
+      "Only history-client.js differs among21 public files",
+      "Retired3 cannot activate through current loader or handler",
+      "Unknown new output retained and denied",
+      "All profiles1/2/4/5 actual HTTP routing, signed admission and revocation",
+      "All11 conflicting UI flag combinations denied"
+    ],
+    "report": "artifacts/history-v5-reviewed-808twa7v/review.json",
+    "report_sha256": "9712b4e4ae66c65b34edbe4b153e29b3803597d538992fb5b00294540a054271"
+  },
+  "limits": {
+    "manifest_bytes": 8192,
+    "asset_bytes": 2097152,
+    "bundle_bytes": 4194304,
+    "archive_backing_bytes": 6291456,
+    "expected_utf8_bytes": 4096,
+    "password_chars": [
+      32,
+      128
+    ],
+    "wasm_budget_bytes": 134217728,
+    "separate_js_scrypt_scratch_bytes": 268435456
+  },
+  "new_dependencies": 0,
+  "unchanged": [
+    "archive format and vetted cryptographic implementation",
+    "default/vault/aggregate profile manifests and prepared output",
+    "prior history21 prepared files and binaries",
+    "existing synthetic state, data, services and backups"
+  ],
+  "limitations": [
+    "Already running old binaries retain old behavior until explicit replacement",
+    "Archives and passwords permit past-history reads after server revocation",
+    "No sender restoration, live profile import, enrollment or rollback witness",
+    "Historical version3 source rebuild requires the original checkout"
+  ],
+  "production_cf_gate": false,
+  "human_recovery_qualified": false,
+  "production_deployment": false
+}
