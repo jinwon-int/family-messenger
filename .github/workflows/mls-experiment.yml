@@ -128,8 +128,15 @@ jobs:
           timeout 120s python tests/native_mls_browser_smoke.py --identity-context --bundle artifacts/mls-identity-context-pkg --aggregate-store experiments/device-keystore/bundle/native-aggregate-vault.js
       - name: Atomic encrypted two-conversation device custody
         run: timeout 480s python tests/native_encrypted_browser_smoke.py --aggregate --bundle artifacts/mls-identity-context-pkg --binary artifacts/family-dev-trust --policy-binary artifacts/family-policy-trust
-      - name: Protected aggregate chat through two actual browser UIs
-        run: timeout 480s python tests/native_encrypted_browser_smoke.py --aggregate-ui --bundle artifacts/mls-identity-context-pkg --binary artifacts/family-dev-trust --policy-binary artifacts/family-policy-trust
+      - name: Own-server pinned protected aggregate chat
+        run: |
+          node experiments/device-keystore/node_modules/esbuild/bin/esbuild experiments/device-keystore/aggregate-store.js --bundle --format=esm --platform=browser --target=es2023 --minify '--external:/pkg/*' '--external:/trust-directory.js' --outfile=experiments/device-keystore/bundle/aggregate-store.js
+          python tools/prepare_mls_assets.py --aggregate --bundle artifacts/mls-identity-context-pkg
+          python tools/prepare_mls_assets.py --aggregate --bundle artifacts/mls-identity-context-pkg --check
+          go -C server test -race -tags synthetic_aggregate ./...
+          go -C server build -tags synthetic_aggregate -trimpath -o ../artifacts/family-dev-aggregate-embedded ./cmd/family-dev
+          python tests/native_asset_activation_smoke.py --aggregate --binary artifacts/family-dev-aggregate-embedded --plain-binary artifacts/family-dev-trust
+          timeout 480s python tests/native_encrypted_browser_smoke.py --aggregate-ui --embedded --bundle artifacts/mls-identity-context-pkg --binary artifacts/family-dev-aggregate-embedded --policy-binary artifacts/family-policy-trust
       - name: Two-device committed custody preparation barrier
         run: timeout 240s python tests/native_encrypted_browser_smoke.py --preparation --bundle artifacts/mls-identity-context-pkg --binary artifacts/family-dev-trust --policy-binary artifacts/family-policy-trust
       - uses: actions/upload-artifact@v4

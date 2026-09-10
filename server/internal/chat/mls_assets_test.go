@@ -62,17 +62,17 @@ func testAssetIntegrityAndClosedManifest(t *testing.T, pin []byte, paths map[str
 			json.Unmarshal(raw, &spec)
 			switch change {
 			case "missing":
-				delete(files, "chat.js")
+				delete(files, "native-worker.js")
 			case "unknown":
 				files["unexpected"] = &fstest.MapFile{Data: []byte("retained")}
 			case "corrupt":
-				files["chat.js"].Data = []byte("changed")
+				files["native-worker.js"].Data = []byte("changed")
 			case "oversize":
-				files["chat.js"].Data = bytes.Repeat([]byte{1}, 2*1024*1024+1)
+				files["native-worker.js"].Data = bytes.Repeat([]byte{1}, 2*1024*1024+1)
 			case "symlink":
-				files["chat.js"].Mode = fs.ModeSymlink | 0600
+				files["native-worker.js"].Mode = fs.ModeSymlink | 0600
 			case "directory":
-				files["chat.js"].Mode = fs.ModeDir | 0700
+				files["native-worker.js"].Mode = fs.ModeDir | 0700
 			case "wrong-version":
 				spec.Version = 99
 			case "wrong-worker":
@@ -116,6 +116,10 @@ func testAssetAdmissionRoutingAndLegacyPreservation(t *testing.T, pin []byte, pa
 	loadEncryptedAssets := func(source fs.FS, manifest []byte) (*EncryptedAssets, error) {
 		return loadAssetProfile(source, manifest, paths, version)
 	}
+	entryPath := paths["chat.html"]
+	if entryPath == "" {
+		entryPath = paths["aggregate-chat.html"]
+	}
 	store, authority, config, key, legacy := accessFixture(t)
 	files, manifest := assetFixture(t)
 	bundle, e := loadEncryptedAssets(files, manifest)
@@ -151,14 +155,14 @@ func testAssetAdmissionRoutingAndLegacyPreservation(t *testing.T, pin []byte, pa
 			t.Fatal("CSP")
 		}
 	}
-	for _, path := range []string{"/encrypted", "/%65ncrypted/", "/encrypted/?v=1", "/encrypted/?", "/pkg/unknown.wasm", "/encrypted/../chat.html", "/vault", "/%76ault/", "/vault/?", "/vault/?v=1", "/vault/../vault-chat.js", "/history", "/%68istory/", "/history/?", "/history/?v=1", "/history/../history-ui.js", "/history-forge-worker.js"} {
+	for _, path := range []string{"/encrypted", "/%65ncrypted/", "/encrypted/?v=1", "/encrypted/?", "/pkg/unknown.wasm", "/encrypted/../chat.html", "/vault", "/%76ault/", "/vault/?", "/vault/?v=1", "/vault/../vault-chat.js", "/history", "/%68istory/", "/history/?", "/history/?v=1", "/history/../history-ui.js", "/history-forge-worker.js", "/aggregate", "/%61ggregate/", "/aggregate/?", "/aggregate/?v=1", "/aggregate/../aggregate-chat.js", "/aggregate-store-instrumented.js"} {
 		code, _ := accessRequest(t, server, token, "GET", path, nil, nil)
 		if code == 200 {
 			t.Fatal("alias served", path)
 		}
 	}
 	for _, headers := range []map[string]string{{"Origin": "https://other.invalid"}, {"Sec-Fetch-Site": "cross-site"}, {"X-Family-Actor": "bob"}, {"Authorization": "Bearer synthetic-alice", "Cf-Access-Jwt-Assertion": "invalid"}} {
-		code, _ := accessRequest(t, server, token, "GET", "/encrypted/", nil, headers)
+		code, _ := accessRequest(t, server, token, "GET", entryPath, nil, headers)
 		if code == 200 {
 			t.Fatal("bad admission accepted")
 		}
@@ -168,7 +172,7 @@ func testAssetAdmissionRoutingAndLegacyPreservation(t *testing.T, pin []byte, pa
 	if code != 200 || !bytes.Equal(before, after) {
 		t.Fatal("legacy changed")
 	}
-	code, _ = accessRequest(t, legacy, token, "GET", "/encrypted/", nil, nil)
+	code, _ = accessRequest(t, legacy, token, "GET", entryPath, nil, nil)
 	if code == 200 {
 		t.Fatal("implicit activation")
 	}
@@ -176,7 +180,7 @@ func testAssetAdmissionRoutingAndLegacyPreservation(t *testing.T, pin []byte, pa
 	if e := authority.Replace(config); e != nil {
 		t.Fatal(e)
 	}
-	code, _ = accessRequest(t, server, token, "GET", "/encrypted/", nil, nil)
+	code, _ = accessRequest(t, server, token, "GET", entryPath, nil, nil)
 	if code != 401 {
 		t.Fatal("revoked asset", code)
 	}
@@ -279,5 +283,70 @@ func TestHistoryProfileRejectsSubstitutionAndRecoveryAssetTamper(t *testing.T) {
 		if _, err := loadAssetProfile(files, raw, historyPaths, 3); err == nil {
 			t.Fatal("tamper", name)
 		}
+	}
+}
+
+func TestAggregateAssetIntegrityAndClosedManifest(t *testing.T) {
+	testAssetIntegrityAndClosedManifest(t, aggregateManifest, aggregatePaths, 4)
+}
+func TestAggregateAssetAdmissionRoutingAndLegacyPreservation(t *testing.T) {
+	testAssetAdmissionRoutingAndLegacyPreservation(t, aggregateManifest, aggregatePaths, 4)
+}
+func TestCompiledAggregateBundleSelectedOnlyWhenPresent(t *testing.T) {
+	bundle, err := LoadAggregateAssets()
+	if compiledAggregateAssets == nil {
+		if err == nil || bundle != nil {
+			t.Fatal("unbundled aggregate accepted")
+		}
+		return
+	}
+	if err != nil || len(bundle.files) != 14 || bundle.version != 4 {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/encrypted/", "/vault/", "/history/", "/aggregate-store-instrumented.js", "/native-aggregate-vault.js"} {
+		if _, ok := bundle.files[path]; ok {
+			t.Fatal("mixed profile", path)
+		}
+	}
+	if !bytes.HasPrefix(bundle.files["/pkg/family_mls_browser_experiment_bg.wasm"].data, []byte{0, 'a', 's', 'm', 1, 0, 0, 0}) {
+		t.Fatal("not WASM1")
+	}
+}
+func TestAggregateSourcesAndProfileSubstitutionDenied(t *testing.T) {
+	for _, prior := range []struct {
+		raw     []byte
+		paths   map[string]string
+		version int
+	}{
+		{encryptedManifest, encryptedPaths, 1}, {vaultManifest, vaultPaths, 2}, {historyManifest, historyPaths, 3},
+	} {
+		f, r := assetProfileFixture(t, prior.raw)
+		if _, e := loadAssetProfile(f, r, aggregatePaths, 4); e == nil {
+			t.Fatal("old substituted aggregate")
+		}
+		f, r = assetProfileFixture(t, aggregateManifest)
+		if _, e := loadAssetProfile(f, r, prior.paths, prior.version); e == nil {
+			t.Fatal("aggregate substituted old")
+		}
+	}
+	for _, name := range []string{"aggregate-chat.js", "aggregate-native-worker.js", "prepared-fork-worker.js", "aggregate-store.js", "pkg.wasm", "age-notices.txt", "sodium-notices.txt"} {
+		files, raw := assetProfileFixture(t, aggregateManifest)
+		files[name].Data[0] ^= 1
+		if _, e := loadAssetProfile(files, raw, aggregatePaths, 4); e == nil {
+			t.Fatal("tamper", name)
+		}
+	}
+	files, raw := assetProfileFixture(t, aggregateManifest)
+	var spec encryptedManifestSpec
+	json.Unmarshal(raw, &spec)
+	for i := range spec.Files {
+		if spec.Files[i].File == "aggregate-store.js" {
+			spec.Files[i].Source = "experiments/device-keystore/bundle/native-aggregate-vault.js"
+		}
+	}
+	raw, _ = json.MarshalIndent(spec, "", "  ")
+	raw = append(raw, '\n')
+	if _, e := loadAssetProfile(files, raw, aggregatePaths, 4); e == nil {
+		t.Fatal("generic precursor accepted")
 	}
 }

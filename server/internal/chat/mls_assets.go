@@ -22,6 +22,10 @@ var vaultManifest []byte
 
 //go:embed history_bundle.json
 var historyManifest []byte
+
+//go:embed aggregate_bundle.json
+var aggregateManifest []byte
+var compiledAggregateAssets fs.FS
 var compiledHistoryAssets fs.FS
 var compiledVaultAssets fs.FS
 var compiledEncryptedAssets fs.FS // Set only by the explicit synthetic_mls build.
@@ -80,6 +84,39 @@ var historyPaths = func() map[string]string {
 	return out
 }()
 
+var aggregatePaths = map[string]string{
+	"aggregate-chat.html":        "/aggregate/",
+	"aggregate-chat.js":          "/aggregate-chat.js",
+	"chat.css":                   "/chat.css",
+	"native-worker.js":           "/native-worker.js",
+	"trust-directory.js":         "/trust-directory.js",
+	"aggregate-native-worker.js": "/aggregate-native-worker.js",
+	"prepared-fork-worker.js":    "/prepared-fork-worker.js",
+	"pkg.js":                     "/pkg/family_mls_browser_experiment.js",
+	"pkg.wasm":                   "/pkg/family_mls_browser_experiment_bg.wasm",
+	"cargo-notices.txt":          "/aggregate/licenses/cargo.txt",
+	"rust-notices.txt":           "/aggregate/licenses/rust.txt",
+	"aggregate-store.js":         "/aggregate-store.js",
+	"age-notices.txt":            "/aggregate/licenses/age.txt",
+	"sodium-notices.txt":         "/aggregate/licenses/sodium.txt",
+}
+var aggregateSources = map[string]string{
+	"aggregate-chat.html":        "experiments/openmls-browser/web/aggregate-chat.html",
+	"aggregate-chat.js":          "experiments/openmls-browser/web/aggregate-chat.js",
+	"chat.css":                   "experiments/openmls-browser/web/chat.css",
+	"native-worker.js":           "experiments/openmls-browser/web/native-worker.js",
+	"trust-directory.js":         "experiments/openmls-browser/web/trust-directory.js",
+	"aggregate-native-worker.js": "experiments/openmls-browser/web/aggregate-native-worker.js",
+	"prepared-fork-worker.js":    "experiments/openmls-browser/web/prepared-fork-worker.js",
+	"pkg.js":                     "bundle:family_mls_browser_experiment.js",
+	"pkg.wasm":                   "bundle:family_mls_browser_experiment_bg.wasm",
+	"cargo-notices.txt":          "experiments/openmls-browser/THIRD-PARTY-NOTICES.txt",
+	"rust-notices.txt":           "experiments/openmls-browser/RUST-STDLIB-NOTICES.html",
+	"aggregate-store.js":         "experiments/device-keystore/bundle/aggregate-store.js",
+	"age-notices.txt":            "experiments/device-keystore/THIRD-PARTY-NOTICES.txt",
+	"sodium-notices.txt":         "experiments/device-keystore/SODIUM-NOTICES.txt",
+}
+
 func loadEncryptedAssets(source fs.FS, manifest []byte) (*EncryptedAssets, error) {
 	return loadAssetProfile(source, manifest, encryptedPaths, 1)
 }
@@ -117,7 +154,7 @@ func loadAssetProfile(source fs.FS, manifest []byte, paths map[string]string, ve
 		}
 		kind := "text/javascript; charset=utf-8"
 		switch entry.File {
-		case "chat.html", "vault-chat.html", "history.html":
+		case "chat.html", "vault-chat.html", "history.html", "aggregate-chat.html":
 			kind = "text/html; charset=utf-8"
 		case "chat.css", "history.css":
 			kind = "text/css; charset=utf-8"
@@ -126,7 +163,7 @@ func loadAssetProfile(source fs.FS, manifest []byte, paths map[string]string, ve
 		case "cargo-notices.txt", "rust-notices.txt", "age-notices.txt", "sodium-notices.txt":
 			kind = "text/plain; charset=utf-8"
 		}
-		if entry.Type != kind {
+		if entry.Type != kind || (version == 4 && aggregateSources[entry.File] != entry.Source) {
 			return nil, ErrInvalid
 		}
 		f, e := source.Open(entry.File)
@@ -159,8 +196,11 @@ func LoadVaultAssets() (*EncryptedAssets, error) {
 func LoadHistoryAssets() (*EncryptedAssets, error) {
 	return loadAssetProfile(compiledHistoryAssets, historyManifest, historyPaths, 3)
 }
+func LoadAggregateAssets() (*EncryptedAssets, error) {
+	return loadAssetProfile(compiledAggregateAssets, aggregateManifest, aggregatePaths, 4)
+}
 func NewEncryptedAccessHandler(store *Store, authority *access.Authority, bundle *EncryptedAssets) (http.Handler, error) {
-	if bundle == nil || (bundle.version != 1 && bundle.version != 2 && bundle.version != 3) || (bundle.version == 1 && len(bundle.files) != len(encryptedPaths)) || (bundle.version == 2 && len(bundle.files) != len(vaultPaths)) || (bundle.version == 3 && len(bundle.files) != len(historyPaths)) {
+	if bundle == nil || (bundle.version != 1 && bundle.version != 2 && bundle.version != 3 && bundle.version != 4) || (bundle.version == 1 && len(bundle.files) != len(encryptedPaths)) || (bundle.version == 2 && len(bundle.files) != len(vaultPaths)) || (bundle.version == 3 && len(bundle.files) != len(historyPaths)) || (bundle.version == 4 && len(bundle.files) != len(aggregatePaths)) {
 		return nil, ErrInvalid
 	}
 	handler, e := NewAccessHandler(store, authority)

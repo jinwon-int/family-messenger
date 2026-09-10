@@ -5,7 +5,7 @@ from pathlib import Path
 from playwright.sync_api import expect
 
 
-def checks(a,b,contexts,pages,url,open_page,click_open,passwords,pins,proof,direct,crash_page,hold_next,arrived,release):
+def checks(a,b,contexts,pages,url,open_page,click_open,passwords,pins,proof,direct,crash_page,hold_next,arrived,release,restart=None):
     def select(p,room):
         p.locator('#room').fill(room);expect(p.locator('#chat')).to_be_hidden();open_page(p)
     def prepare(p,i):
@@ -65,6 +65,12 @@ def checks(a,b,contexts,pages,url,open_page,click_open,passwords,pins,proof,dire
     with a.expect_download() as download:a.locator('#messages button').click()
     assert hashlib.sha256(Path(download.value.path()).read_bytes()).digest()==hashlib.sha256(payload).digest()
     proof['checks']['dom_second_room_text_and_actual_8kib_encrypted_download']=True
+    if restart:
+        restart()
+        for i,p in enumerate(pages):
+            open_page(p);expect(p.locator('#messages')).to_contain_text(text,timeout=25000)
+            assert p.locator('#fingerprint').get_attribute('data-public-key')==pins[i]['signing_key']
+        proof['checks']['native_restart_preserves_both_preparations_group_and_second_room_history']=True
     for p in pages:
         select(p,'family');expect(p.locator('#messages')).to_contain_text('synthetic UI lost response',timeout=25000)
         assert text not in p.locator('#messages').inner_text()
