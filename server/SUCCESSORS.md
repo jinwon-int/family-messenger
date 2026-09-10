@@ -1,5 +1,7 @@
 # Private public-device succession intents
 
+[Durable inactive reservation](SUCCESSOR-RESERVATION.md) is implemented separately; client custody and candidate activation remain denied.
+
 Subsequent [signed context preflight](SUCCESSOR-CONTEXT.md) checks an accepted
 intent against the actual retired source and active peer without activating the
 candidate or changing custody. Target reservation and readiness remain required.

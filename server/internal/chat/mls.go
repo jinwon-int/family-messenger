@@ -110,9 +110,13 @@ func (s *Store) mlsRoom(room string) (MLSRoom, error) {
 	if len(pins) > 2048 || json.Unmarshal(pins, &out.Pins) != nil || (len(out.Pins) != 2 && !(out.Phase == "reserved" && len(out.Pins) == 0)) {
 		return out, ErrIntegrity
 	}
+	var successor int
+	if e := s.db.QueryRow("SELECT count(*) FROM mls_successor_reservations WHERE room=?", room).Scan(&successor); e != nil {
+		return out, e
+	}
 	if _, exists, e := s.preparation(room); e != nil {
 		return out, e
-	} else if exists != required {
+	} else if (exists && successor != 0) || (exists || successor == 1) != required {
 		return out, ErrIntegrity
 	}
 	return out, nil

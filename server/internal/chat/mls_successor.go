@@ -95,17 +95,25 @@ func (s *Store) successorContext(i access.SuccessorIntent, actor, device string,
 			return deny, e
 		}
 	}
-	var occupied int
-	if e = s.db.QueryRow("SELECT count(*) FROM rooms WHERE id=?", i.NextRoom).Scan(&occupied); e != nil {
-		return deny, e
-	}
-	if occupied != 0 {
-		return deny, ErrConflict
-	}
 	return successorContext{1, i.ID, i.DecisionRevision, i.ExpiresAt, source.Room, source.Group, i.NextRoom, predecessor, MLSPin{i.Candidate, i.Actor, i.SigningKey, 1}, peer, i.Fingerprint, i.PackageSHA256, "preflight-only"}, nil
 }
 
+func (s *Store) successorTargetUnused(room string) error {
+	var occupied int
+	if e := s.db.QueryRow("SELECT count(*) FROM rooms WHERE id=?", room).Scan(&occupied); e != nil {
+		return e
+	}
+	if occupied != 0 {
+		return ErrConflict
+	}
+	return nil
+}
+
 func (a *API) successorContextRoute(w http.ResponseWriter, r *http.Request, actor string, g *access.Grant, parts []string) {
+	if len(parts) == 5 && validID(parts[3]) && parts[4] == "reservation" {
+		a.successorReservationRoute(w, r, actor, g, parts[3])
+		return
+	}
 	if len(parts) != 5 || !validID(parts[3]) || parts[4] != "context" {
 		http.NotFound(w, r)
 		return
@@ -127,6 +135,9 @@ func (a *API) successorContextRoute(w http.ResponseWriter, r *http.Request, acto
 		return
 	}
 	context, e := a.store.successorContext(i, actor, device, g.DeviceBindings())
+	if e == nil {
+		e = a.store.successorTargetUnused(context.Target)
+	}
 	if e != nil {
 		fail(w, e)
 		return

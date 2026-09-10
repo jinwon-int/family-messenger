@@ -7,7 +7,7 @@ import subprocess
 import time
 
 
-def run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, media_path, context=False):
+def run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, media_path, context=False, reservation=False):
     checks = proof['checks'] = {}
     serial = 0
 
@@ -118,8 +118,29 @@ def run(config, auth, proposals, proof, request, start, stop, command, private_w
     if context:
         observed = context_read()
         checks['signed_current_pair_context_no_old_or_candidate_delivery'] = True
+    if reservation:
+        from concurrent.futures import ThreadPoolExecutor
+        reservation_path = '/v1/mls/successors/replacement-1/reservation'
+        # The server encodes one final LF; CAS hashes only the canonical object.
+        q = {'reservation_id': 'shared-synthetic-reservation',
+             'context_sha256': hashlib.sha256(observed[1].removesuffix(b'\n')).hexdigest()}
+        def reserve():
+            return request('owner', reservation_path, 'POST', obj=q,
+                           headers={'X-Family-Device': 'alice-candidate'})
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(lambda _: reserve(), range(8)))
+        assert sorted(x[0] for x in results) == [200]*7 + [201]
+        reserved = results[0][1]
+        assert all(x[1] == reserved for x in results)
+        assert json.loads(reserved)['phase'] == 'reserved-inactive'
+        assert request('family', reservation_path, headers={'X-Family-Device': 'bob-first'}) == (200, reserved)
+        wrong = dict(q, reservation_id='conflicting-id')
+        assert request('owner', reservation_path, 'POST', obj=wrong, headers={'X-Family-Device':'alice-candidate'})[0] == 409
+        assert request('owner', '/v1/rooms', 'POST', obj={'id':'new-secure-1','members':['bob']})[0] == 409
+        assert request('owner', context_path, headers={'X-Family-Device':'alice-candidate'})[0] == 409
+        checks['concurrent_http_reservation_one_commit_exact_bytes_conflict_no_legacy_conversion'] = True
 
-    stop()  # actual owned server SIGKILL after durable acceptance
+    stop()  # actual owned server SIGKILL after durable acceptance/reservation
     start()
     assert log_status('owner', 'alice-first') == 403
     assert log_status('family', 'bob-first') == 403
@@ -128,9 +149,17 @@ def run(config, auth, proposals, proof, request, start, stop, command, private_w
     history = json.loads(request('owner', '/v1/rooms/family/messages')[1])
     assert len(history) == 1 and history[0]['client_id'] == 'retained'
     assert (auth / 'policy-000001.json').read_bytes() == legacy
-    if context:
+    if reservation:
+        assert reserve() == (200, reserved)
+        assert request('family', reservation_path, headers={'X-Family-Device':'bob-first'}) == (200,reserved)
+        for who, device in [('owner','alice-candidate'),('family','bob-first')]:
+            assert log_status(who,device,'new-secure-1') == 403
+            assert request(who, '/v1/rooms/new-secure-1/messages',headers={'X-Family-Device':device})[0] == 403
+        assert request('owner', '/v1/mls/rooms', 'POST', obj=dict(room='new-secure-1', group_id='cd'*16,
+            device_id='alice-candidate', peer_device='bob-first'))[0] == 403
+        checks['reservation_sigkill_lost_response_retry_same_outcome_and_both_native_delivery_denied'] = True
+    elif context:
         assert context_read() == observed
-        # New legacy occupation is observed, never converted/deleted by preflight.
         assert request('owner', '/v1/rooms', 'POST', obj={'id': 'new-secure-1', 'members': ['bob']})[0] == 201
         assert request('family', context_path, headers={'X-Family-Device': 'bob-first'})[0] == 409
         checks['readonly_context_exact_restart_and_late_target_occupation_denied'] = True
@@ -184,4 +213,8 @@ def run(config, auth, proposals, proof, request, start, stop, command, private_w
     assert len(saved['successors']['intents']) == 2
     assert all(d['status'] == 'revoked' for d in saved['devices'])
     assert (auth / 'policy-000001.json').read_bytes() == legacy
+    if reservation:
+        assert request('owner', reservation_path, headers={'X-Family-Device':'alice-candidate'})[0] == 401
+        assert request('family', reservation_path, headers={'X-Family-Device':'bob-first'})[0] == 401
+        checks['reservation_denied_after_emergency_revocation_and_restart'] = True
     checks['emergency_empty_people_and_administrators_survives_sigkill_restart'] = True

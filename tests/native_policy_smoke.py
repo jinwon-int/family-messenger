@@ -20,7 +20,10 @@ def main():
     parser.add_argument('--policy-binary', required=True, type=Path)
     parser.add_argument('--successor', action='store_true', help='version-2 public intent/retirement process proof')
     parser.add_argument('--successor-context', action='store_true', help='also qualify read-only replacement context; requires --successor')
+    parser.add_argument("--successor-reservation", action="store_true", help="durable inactive reservation proof; requires --successor-context")
     args = parser.parse_args()
+    if args.successor_reservation and not args.successor_context:
+        parser.error("--successor-reservation requires --successor-context")
     if args.successor_context and not args.successor:
         parser.error('--successor-context requires --successor')
     binary, policy_binary = args.binary.resolve(strict=True), args.policy_binary.resolve(strict=True)
@@ -162,7 +165,7 @@ def main():
 
         if args.successor:
             from native_successor_checks import run
-            run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, path, context=args.successor_context)
+            run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, path, context=args.successor_context, reservation=args.successor_reservation)
             proof['ok'] = True
             return
 
