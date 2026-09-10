@@ -99,3 +99,19 @@ instances are unchanged. Keep128MiB combined WASM/5GiB additional disk and
 separate256MiB JS scrypt scratch budgets; memory-heavy tests run serially.
 Human lifecycle/recovery/mobile/CF/backup/capacity/fleet acceptance and Yukson
 cutover remain open.
+
+## Review evidence
+
+[aggregate-history-ui-evidence.json](aggregate-history-ui-evidence.json) records
+28 actual browser checks and six matching original fixture response hashes.
+Independent review reproduced two defects before the final runtime: a medium
+error treating message IDs as globally unique across senders, and a low overflow
+of a maximum-length room label. Native two-sender same-ID messages now both
+render, and a64-character label fits390px. Fifteen separate minimal-DOM/admission
+probes exercise invalid second-room results, inert text and stale callbacks;
+these are UI boundary tests, distinct from the actual cryptographic archive run.
+The independent original worker/archive suite also passes all26 checks; it
+remains separate and unchanged. Both reported findings are fixed, with no
+remaining reproduced issue in the bounded synthetic review. Python137
+passes under both022/077umasks. The Go/API binaries are clean builds; Go, Rust,
+archive/custody source and old asset manifests did not change in this unit.
