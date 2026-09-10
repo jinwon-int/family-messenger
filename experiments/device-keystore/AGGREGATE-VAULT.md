@@ -7,6 +7,28 @@ transport engine and standard password/record protection. No existing profile is
 imported, migrated, reset, reinterpreted or deleted. The old single-room driver,
 native worker, history reader and 9/15/21-file compiled bundles stay unchanged.
 
+## Relationship to the earlier container qualification (#49)
+
+PR50/51 qualified `native-aggregate-vault.js` in the separate
+`family-mls-aggregate-synthetic-*` namespace. That fixture container stores two
+opaque records of at most64KiB and accepts a caller-supplied public key. Its real
+signer fixture demonstrates the supplied key's binding, but its store API does
+not validate complete native providers or run the native engine's staged callback.
+It remains a preserved, isolated precursor with its original tests and data.
+
+This adapter is the continuation of #49 for complete native state and authenticated
+transport. It extends the already qualified single-room `NativeVaultStore`, so
+password/record protection, retirement and strict IDB CAS reuse the existing
+implementation. Replacing the generic container's `put` API with this full native
+state contract would silently change its format,64KiB limits and proof semantics;
+there is no such replacement or import. Neither experiment is a second production
+backend. Follow-up UI/packaging should select this complete adapter only after its
+remaining acceptance gates; keep the precursor as evidence, not another live path.
+The two experiments use distinct KDF lock names and must not be concurrently
+activated on a shared origin. Their proofs run sequentially; this adapter shares
+the existing single-room origin KDF lock and does not claim to serialize unrelated
+experimental containers.
+
 ## One device record, one atomic write
 
 `AggregateStore` extends the unchanged `NativeVaultStore`. It reuses its standard
@@ -138,8 +160,8 @@ required when the previous experiments' tools are present:
 ```sh
 .venv/bin/python tests/native_encrypted_browser_smoke.py --aggregate \
   --bundle artifacts/identity-context-build-smmbyhm5/candidate \
-  --binary artifacts/family-dev-successor-fixed \
-  --policy-binary artifacts/family-policy-successor-fixed
+  --binary artifacts/aggregate-clean-build-926fj_4h/family-dev \
+  --policy-binary artifacts/aggregate-clean-build-926fj_4h/family-policy
 ```
 
 The exact-allowlist loopback proxy injects generated CF-shaped assertions and

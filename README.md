@@ -73,4 +73,4 @@ python3 tests/smoke.py  # 시험 환경에서만 합성 계정·대화방·첨�
 3. 두 기기에서 로그인, 암호화 텍스트 대화, 사진 열람·영상 재생·일반 파일 다운로드, 키 복구, 알림을 확인합니다.
 4. 백업을 별도 환경에 복원한 뒤 가족에게 배포합니다.
 
-[벤치마킹·선정 근거](docs/BENCHMARK.md) · [운영 안내](docs/OPERATIONS.md) · [개발 순서](docs/ROADMAP.md) · [구성요소·라이선스](THIRD_PARTY.md)
+[벤치마킹·선정 근거](docs/BENCHMARK.md) · [운영 안내](docs/OPERATIONS.md) · [개발 순서](docs/ROADMAP.md) · [구성요소·라이선스](THIRD_PARTY.md) · [의존성·프로세스·자원 기록](docs/DEPENDENCIES-AND-RESOURCES.md)
