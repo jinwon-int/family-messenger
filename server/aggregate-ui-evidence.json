@@ -1,0 +1,159 @@
+{
+  "version": 1,
+  "scope": "Compiled synthetic aggregate UI; no production CF, human data, recovery or cutover claim",
+  "runtime_head": "7b1252e422a2843ae2c57b56133a792eed9120be",
+  "manifest": {
+    "path": "server/internal/chat/aggregate_bundle.json",
+    "sha256": "9f11b0dce90dba00d5a3b7526616f6770522799b56cdf1e9be6d107793696e98",
+    "bytes": 4349,
+    "file_count": 14,
+    "public_bytes": 2911818
+  },
+  "author_browser": {
+    "path": "artifacts/native-aggregate-ui-thujdgea/verification.json",
+    "sha256": "91eabd3af9237a9ef8ef08d8afa5bb6bcf7e50818e6d7d818da2de2cc86d7bb9",
+    "checks": 34,
+    "all_true": true,
+    "actual_native_hashes": {
+      "/aggregate/": "321ec82d594a700749fc9803f23d27c0e27802fe82c38c9f7d298ee4696ba063",
+      "/aggregate-chat.js": "3d2b08a26a60b3e4a20bc576578a0ae73a13952611feddcfafee83fd2eeb5510",
+      "/chat.css": "de99fa320fb038096057fe81cfe003e7163b57dd0af46730e8de3bb1c4c92a91",
+      "/native-worker.js": "ca0f105d7afc5a0954e782548e3d09b2412fca3318bfae6e13515484b93ab18a",
+      "/trust-directory.js": "63079de10d73ac4d0664b07de7bcacc4e4abe551977a293cfa4144029a80b04e",
+      "/aggregate-native-worker.js": "9b931c11ca5e8221b05ba8df061f363a7bc2fe2ba35caddf13d26c86b4cfdd94",
+      "/prepared-fork-worker.js": "d994a55bead63e92c79ec9c4b0f63d2423b67eb1090a2eeaeb0d88e5a79c9a1a",
+      "/pkg/family_mls_browser_experiment.js": "b937381156c39a683d8f42ff96cfa608f3c6a90de841795ff8d116512729789f",
+      "/pkg/family_mls_browser_experiment_bg.wasm": "94482525c6e2deaa95183e91a86ca83cf46c89af97ca149006abbeaea9bdd13d",
+      "/aggregate/licenses/cargo.txt": "52ce5425ee2bfcbcd1271d72da46953233f2f40f97d9f7ae769c4447ea6e63fa",
+      "/aggregate/licenses/rust.txt": "3aa41caccecaeddad6fcf2f36ce14146ab7baae57064b05b12ecc6b52d5e917f",
+      "/aggregate-store.js": "c5c82ef05af684395a645269d7dab00630665b95fde0e00e38d6ac4e51409ef5",
+      "/aggregate/licenses/age.txt": "e9d3a269b88304762fcd8aba0b34d816f2f1d3253790281089ca5a75b9797adc",
+      "/aggregate/licenses/sodium.txt": "13c31cd4449e71922c68980a2d3d82356a747716e9b74a7ad83e2448245e8629"
+    },
+    "all_native_original_served_hashes_equal": true,
+    "proxy": "generated assertions and forwarding only; no UI or library byte replacement"
+  },
+  "author_activation": {
+    "path": "artifacts/native-asset-activation-fq1t2o1m/verification.json",
+    "sha256": "7cae4a4ddc6e26df12c4916510093eff684e2e18e6912dc819e49c7db56cc426",
+    "checks": 12,
+    "all_true": true
+  },
+  "binaries": {
+    "family-dev": {
+      "sha256": "e4eef006d93a051fe9651767af57772ac71fc3d9db6f9b75c0201e7403390669",
+      "bytes": 14177832,
+      "source_head": "7b1252e422a2843ae2c57b56133a792eed9120be",
+      "vcs_modified": false
+    },
+    "family-dev-aggregate": {
+      "sha256": "bf960d9ceaa182567cff0ba835ef8dc1c73f66f322744b7b19b7b5703dcb9c6a",
+      "bytes": 17101496,
+      "source_head": "7b1252e422a2843ae2c57b56133a792eed9120be",
+      "vcs_modified": false
+    },
+    "family-dev-all": {
+      "sha256": "49b816612053ed18d56aaa44c05f8ad0bbf0c9adddd8fbc8a84a3c5113a4bf9f",
+      "bytes": 20330424,
+      "source_head": "7b1252e422a2843ae2c57b56133a792eed9120be",
+      "vcs_modified": false
+    },
+    "family-policy": {
+      "sha256": "884274cccc296e72a4b4d318a437c16318b50f1f9f5109180a81fe5f512357be",
+      "bytes": 10112779,
+      "source_head": "7b1252e422a2843ae2c57b56133a792eed9120be",
+      "vcs_modified": false
+    }
+  },
+  "local_checks": {
+    "asset_helper": 47,
+    "python022": 132,
+    "python077": 132,
+    "go_default_and_all4tags_race022": true,
+    "go_all4tags_normal077": true,
+    "go_all4tags_vet": true
+  },
+  "review": {
+    "verdict": "CLEAN",
+    "reviewed_runtime_head": "7b1252e422a2843ae2c57b56133a792eed9120be",
+    "path": "artifacts/aggregate-assets-reviewed-ycwk5k6h/review.json",
+    "sha256": "9660aea07f7759124c796afccd7e9919692bc0a85dbe2a41a5e051b9d7805091",
+    "findings": [],
+    "validation": {
+      "helper_tests": {
+        "umask_022": 47,
+        "umask_077": 47
+      },
+      "go_default_race_top_level_tests": 98,
+      "go_all_four_tags_race_top_level_tests": 98,
+      "go_all_four_tags_vet": true,
+      "prepared_real_assets": {
+        "mls": 9,
+        "vault": 15,
+        "history": 21,
+        "aggregate": 14
+      },
+      "activation_rejection_cases": 12,
+      "all_tag_conflicting_combinations": 11,
+      "all_tag_profiles_http_and_revocation": true,
+      "no_flag_no_profile_routes": true,
+      "aggregate_actual_dom_checks": 34,
+      "prior_mls_actual_dom_checks": 17,
+      "browser": "151.0.7922.34"
+    },
+    "receipts": {
+      "aggregate_dom": {
+        "path": "artifacts/aggregate-assets-reviewed-ycwk5k6h/aggregate_dom.json",
+        "sha256": "91eabd3af9237a9ef8ef08d8afa5bb6bcf7e50818e6d7d818da2de2cc86d7bb9"
+      },
+      "prior_mls_dom": {
+        "path": "artifacts/aggregate-assets-reviewed-ycwk5k6h/prior_mls_dom.json",
+        "sha256": "c24d35e03150998f190206a99be6dd32d9cc187b241edceda5141f949f2e0a90"
+      },
+      "mode_matrix": {
+        "path": "artifacts/aggregate-assets-reviewed-ycwk5k6h/mode_matrix.json",
+        "sha256": "5073945d365a2b5bdb1862a118339d2ff92b0fbbc91fa3e2c501fa4ba0c2e061"
+      },
+      "activation": {
+        "path": "artifacts/aggregate-assets-reviewed-ycwk5k6h/activation.json",
+        "sha256": "06f607d98b97ef2b53da5c0340fe5817f0cbeb28ccddb74ad52deddf5104b54c"
+      }
+    }
+  },
+  "unchanged": [
+    "old9/15/21 manifests and prepared outputs",
+    "UI/worker/crypto source",
+    "complete aggregate-store c5c82ef0",
+    "optional identity-context WASM94482525/default WASM",
+    "existing profiles/data/snapshots",
+    "dependency versions and runtime processes"
+  ],
+  "dependencies": {
+    "new": 0,
+    "go_direct": 2,
+    "go_transitive": 0,
+    "wasm_direct": 8,
+    "wasm_transitive": 151,
+    "custody_direct": 2,
+    "custody_transitive_instances": 8,
+    "build": "Existing pinned Go/Rust/wasm-bindgen/Node/esbuild/Python; no install or global upgrade"
+  },
+  "limits": {
+    "public_asset_bytes": 4194304,
+    "file_bytes": 2097152,
+    "manifest_bytes": 8192,
+    "wasm_perworker_bytes": 134217728,
+    "js_scrypt_separate_bytes": 268435456,
+    "additional_disk_bytes": 5368709120
+  },
+  "remaining": [
+    "aggregate historical export/reader",
+    "device lifecycle/recovery",
+    "real CF gate",
+    "mobile resources",
+    "backup restore",
+    "production capacity/actor limits",
+    "all12 real runtimes",
+    "Yukson candidate and cutover"
+  ]
+}
