@@ -19,6 +19,8 @@ def main():
     parser.add_argument('--binary', required=True, type=Path)
     parser.add_argument('--policy-binary', required=True, type=Path)
     parser.add_argument('--legacy-binary', type=Path)
+    parser.add_argument('--legacy-version', type=int, choices=[2,3], default=2)
+    parser.add_argument('--preparation', action='store_true')
     args = parser.parse_args()
     binary, policy_binary = args.binary.resolve(strict=True), args.policy_binary.resolve(strict=True)
     root = Path(__file__).resolve().parents[1]
@@ -137,12 +139,25 @@ def main():
         if args.legacy_binary:
             stop(); serving_binary=binary; start()
             import sqlite3
-            snapshots=list((state/'snapshots').glob('v2-before-mls-*.sqlite'))
+            snapshots=list((state/'snapshots').glob('v3-before-preparation-*.sqlite' if args.legacy_version==3 else 'v2-before-mls-*.sqlite'))
             assert len(snapshots)==1
             with sqlite3.connect(snapshots[0]) as old:
-                assert old.execute('PRAGMA user_version').fetchone()[0]==2
+                assert old.execute('PRAGMA user_version').fetchone()[0]==args.legacy_version
                 assert old.execute('SELECT count(*) FROM messages').fetchone()[0]==1
-            proof['actual_v2_binary_migration_snapshot']=True
+            proof['actual_v'+str(args.legacy_version)+'_binary_migration_snapshot']=True
+            if args.legacy_version==3:
+                stop()
+                before=hashlib.sha256((state/'messages.sqlite').read_bytes()).hexdigest()
+                serving_binary=args.legacy_binary.resolve(strict=True)
+                start(want_success=False)
+                assert hashlib.sha256((state/'messages.sqlite').read_bytes()).hexdigest()==before
+                saved_state=state
+                state=work/'isolated-v3-restore';state.mkdir(mode=0o700)
+                private_write(state/'messages.sqlite',snapshots[0].read_bytes())
+                start()
+                assert len(call('family','/v1/rooms/legacy/messages'))==1
+                stop();state=saved_state;serving_binary=binary;start()
+                proof['old_binary_denies_new_state_and_isolated_v3_snapshot_restores']=True
         call('owner','/v1/mls/reservations','POST',{'room':'secure','peer_actor':'bob'},201)
         call('family','/v1/rooms/secure/devices')
         call('owner','/v1/rooms/secure/messages','POST',{'client_id':'bad','payload':'eA=='},403)
@@ -170,6 +185,23 @@ def main():
         stop();start();assert call('owner',path,'POST',data)==accepted
         assert call('family',path+'?after=3')[0]==accepted
         proof['opaque_large_application_restart_history']=True
+        if args.preparation:
+            reservation={'room':'prepared','source_room':'secure','source_group':group}
+            call('owner','/v1/mls/context-reservations','POST',reservation,201)
+            p='/v1/mls/rooms/prepared/preparation'
+            bind2={**bind,'room':'prepared','group_id':'cd'*32}
+            declaration={'source_room':'secure','source_group':group,'intent_id':'context-fixture'}
+            one=call('owner',p,'POST',declaration,201)
+            stop();start()
+            assert call('owner',p,'POST',declaration)==one
+            call('owner','/v1/mls/rooms','POST',bind2,409)
+            two=call('family',p,'POST',declaration,201)
+            stop();start()
+            assert call('family',p,'POST',declaration)==two
+            call('owner','/v1/mls/rooms','POST',bind2,201)
+            call('owner','/v1/mls/rooms','POST',bind2)
+            assert len(call('family',p)['prepared'])==2
+            proof['two_declarations_restart_exact_retry_and_bind_barrier']=True
         control=q('commit','alice','commit',3,1,'bob',b'opaque commit')
         call('owner',path,'POST',control,201)
         stale=dict(data,client_id='stale');call('owner',path,'POST',stale,409)

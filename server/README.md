@@ -189,3 +189,8 @@ plaintext UI rooms remain separate; browser E2EE delivery is not yet integrated.
 
 The separately selected [compiled custody UI](VAULT-UI.md) embeds password-unlocked
 synthetic encrypted storage at `/vault/`; human-use rollout remains gated.
+
+The [two-device preparation boundary](PREPARATION.md) adds an explicitly protected
+new-conversation reservation. Both admitted devices must declare committed local
+custody before native binding. Schema4 preserves a private prior snapshot; this
+is a generated-data control prerequisite, not aggregate UI or human recovery.

@@ -1,0 +1,65 @@
+{
+  "status": "independently reviewed clean after source-order fix",
+  "synthetic_only": true,
+  "human_use": false,
+  "product_ui": false,
+  "production_cf_gate": false,
+  "native_replacement_activation": false,
+  "runtime_head": "4d9f07191a7dfa283b27cd99bfc49c8909f14dcf",
+  "schema": 4,
+  "contract": "PREPARATION.md",
+  "meaning": "Authenticated own-device declarations after selected worker commits complete local custody; not cryptographic proof of hostile-client storage or a distributed server/IDB lease.",
+  "author_browser": {
+    "receipt": "artifacts/native-preparation-sfrjhinp/verification.json",
+    "sha256": "44e03dcd966583bb2e753301da411941b9424dc111e8a0df04ca692f5d4651f0",
+    "groups": 7
+  },
+  "author_process": {
+    "receipt": "artifacts/native-mls-transport-9r6y0zzb/verification.json",
+    "sha256": "164763a8ed7438344eee793c80d546f8813c28d666fe6badff8692b43bc9b343",
+    "actual_v3_upgrade_and_isolated_restore": true,
+    "old_binary_denies_new_state_unchanged": true
+  },
+  "validation": {
+    "go_groups": 94,
+    "race022": true,
+    "normal077": true,
+    "vet": true,
+    "python022_and077": 120,
+    "log": "artifacts/preparation-fixed-validation.log"
+  },
+  "new_worker": {
+    "bytes": 4090,
+    "sha256": "d994a55bead63e92c79ec9c4b0f63d2423b67eb1090a2eeaeb0d88e5a79c9a1a",
+    "embedded": false
+  },
+  "dependencies_added": 0,
+  "old_worker_asset_profile_changes": 0,
+  "resources": {
+    "observed_native_device_rpc_wasm_bytes": 5570560,
+    "note": "Device RPC measurements; one-shot fork checks128MiB internally but its peak is not collected in this receipt. Separate JS scrypt256MiB/browser memory remain outside WASM measurement.",
+    "wasm_budget_bytes": 134217728,
+    "js_kdf_scratch_bytes": 268435456
+  },
+  "remaining": "Aggregate DOM UI/orchestration and immutable asset packaging; human lifecycle/mobile/CF/backup/capacity/fleet acceptance before Yukson cutover. No data/key import, reset, repin or silent re-encryption.",
+  "fixed_finding": "Low: a corrupted ready source with reversed pin order allocated a target whose preparation parser then denied. cf38122 rejects noncanonical order/distinctness before allocation; source remains unchanged.",
+  "fixed_runtime_head": "cf3812200cab89111988f480fbbb5ff82c246a4a",
+  "independent_before_fix": {
+    "receipt": "artifacts/preparation-review-o6odowz3/review-before-fix.json",
+    "sha256": "b68b828e55dc7d73acaa567480176d88c944ce280dd2e1e8806969cc52f2fcfa",
+    "preparation_groups": 9,
+    "default_groups": 15,
+    "remaining_at_that_head": "one low source-order finding; fixed re-review pending"
+  },
+  "independent_fixed": {
+    "head": "cf3812200cab89111988f480fbbb5ff82c246a4a",
+    "verdict": "clean",
+    "review": "artifacts/preparation-review-o6odowz3/review-fixed.json",
+    "review_sha256": "e03e006f2bf516477dcee833da9d7263d58e7d653afa45bdea61f7e5c9921b21",
+    "process_receipt": "artifacts/preparation-review-o6odowz3/process-fixed.json",
+    "process_sha256": "ee4e7833f318451e5d3e0d6726a1e57bdd9f3a82a25aec6f81286003f24279fc",
+    "checks": "original failing source-order PoC now denies before allocation; isolated old-runtime substitution fails regression; full chat race/vet and extended process proof pass",
+    "browser_evidence": "worker/browser sources unchanged from independently verified preparation9/default15",
+    "binary_provenance": "cf38122 vcs.modified=false; independent dev42c9293d27c8801f38cc39454d914a774712fbbe1daea82a0e9b278a4b33cec8 / policy9800fb7328e1a954e94d16679b624cb445f53ec736a8fe0da09ac820169de660"
+  }
+}

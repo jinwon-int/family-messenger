@@ -33,7 +33,7 @@ jobs:
       - name: Native media migration and crash proof
         run: python3 tests/native_media_smoke.py --binary artifacts/family-dev
       - name: Ordered synthetic MLS transport and restart proof
-        run: python3 tests/native_mls_transport_smoke.py --binary artifacts/family-dev --policy-binary artifacts/family-policy
+        run: python3 tests/native_mls_transport_smoke.py --preparation --binary artifacts/family-dev --policy-binary artifacts/family-policy
       - name: Signed policy persistence and reload proof
         run: |
           python3 tests/native_policy_smoke.py --binary artifacts/family-dev --policy-binary artifacts/family-policy

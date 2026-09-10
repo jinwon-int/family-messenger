@@ -98,8 +98,9 @@ func activePin(devices []access.Device, id string) (MLSPin, error) {
 }
 func (s *Store) mlsRoom(room string) (MLSRoom, error) {
 	var out MLSRoom
+	var required bool
 	var pins []byte
-	e := s.db.QueryRow("SELECT room,coalesce(group_id,''),creator,peer,pins,revision,epoch,phase,next_seq FROM mls_rooms WHERE room=?", room).Scan(&out.Room, &out.Group, &out.Creator, &out.Peer, &pins, &out.Revision, &out.Epoch, &out.Phase, &out.Next)
+	e := s.db.QueryRow("SELECT room,coalesce(group_id,''),creator,peer,pins,revision,epoch,phase,next_seq,custody_required FROM mls_rooms WHERE room=?", room).Scan(&out.Room, &out.Group, &out.Creator, &out.Peer, &pins, &out.Revision, &out.Epoch, &out.Phase, &out.Next, &required)
 	if e == sql.ErrNoRows {
 		return out, ErrForbidden
 	}
@@ -107,6 +108,11 @@ func (s *Store) mlsRoom(room string) (MLSRoom, error) {
 		return out, e
 	}
 	if len(pins) > 2048 || json.Unmarshal(pins, &out.Pins) != nil || (len(out.Pins) != 2 && !(out.Phase == "reserved" && len(out.Pins) == 0)) {
+		return out, ErrIntegrity
+	}
+	if _, exists, e := s.preparation(room); e != nil {
+		return out, e
+	} else if exists != required {
 		return out, ErrIntegrity
 	}
 	return out, nil
@@ -210,6 +216,9 @@ func (s *Store) createMLS(q mlsCreate, actor string, devices []access.Device) (M
 	if e != nil || peer.Actor == actor {
 		return MLSRoom{}, false, ErrForbidden
 	}
+	if e = s.preparationBind(q.Room, actor, q.Device, devices); e != nil {
+		return MLSRoom{}, false, e
+	}
 	pins := []MLSPin{own, peer}
 	sort.Slice(pins, func(i, j int) bool { return pins[i].ID < pins[j].ID })
 	var exists int
@@ -273,7 +282,7 @@ func (s *Store) createMLS(q mlsCreate, actor string, devices []access.Device) (M
 				return MLSRoom{}, false, e
 			}
 		}
-		if _, e = tx.Exec("INSERT INTO mls_rooms VALUES(?,?,?,?,?,0,0,'key-package',1)", q.Room, q.Group, q.Device, q.Peer, raw); e != nil {
+		if _, e = tx.Exec("INSERT INTO mls_rooms(room,group_id,creator,peer,pins,revision,epoch,phase,next_seq) VALUES(?,?,?,?,?,0,0,'key-package',1)", q.Room, q.Group, q.Device, q.Peer, raw); e != nil {
 			return MLSRoom{}, false, e
 		}
 	} else {
@@ -465,6 +474,10 @@ func (a *API) mlsRoute(w http.ResponseWriter, r *http.Request, actor string, par
 		fail(w, ErrForbidden)
 		return
 	}
+	if (len(parts) == 3 && parts[2] == "context-reservations") || (len(parts) == 5 && parts[2] == "rooms" && parts[4] == "preparation") {
+		a.preparationRoute(w, r, actor, g, parts)
+		return
+	}
 	if len(parts) == 3 && parts[2] == "reservations" && r.Method == "POST" {
 		if r.URL.RawQuery != "" {
 			fail(w, ErrInvalid)
@@ -614,6 +627,11 @@ func (a *API) mlsRoute(w http.ResponseWriter, r *http.Request, actor string, par
 // Reserve an explicitly MLS-only empty room before device key generation.
 // It is never writable through the legacy message/media/membership routes.
 func (s *Store) reserveMLS(room, actor, peer string) (bool, error) {
+	if _, exists, e := s.preparation(room); e != nil {
+		return false, e
+	} else if exists {
+		return false, ErrConflict
+	}
 	if !validID(room) || !actors[actor] || !actors[peer] || actor == peer {
 		return false, ErrInvalid
 	}
@@ -654,7 +672,7 @@ func (s *Store) reserveMLS(room, actor, peer string) (bool, error) {
 			return false, e
 		}
 	}
-	if _, e = tx.Exec("INSERT INTO mls_rooms VALUES(?,NULL,'','',?,0,0,'reserved',1)", room, []byte("[]")); e != nil {
+	if _, e = tx.Exec("INSERT INTO mls_rooms(room,group_id,creator,peer,pins,revision,epoch,phase,next_seq) VALUES(?,NULL,'','',?,0,0,'reserved',1)", room, []byte("[]")); e != nil {
 		return false, e
 	}
 	return true, tx.Commit()

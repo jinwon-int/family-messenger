@@ -30,6 +30,7 @@ def main():
     args.add_argument('--vault-ui', action='store_true')
     args.add_argument('--vault', action='store_true')
     args.add_argument('--aggregate', action='store_true')
+    args.add_argument('--preparation', action='store_true')
     args.add_argument('--embedded', action='store_true')
     args.add_argument('--ui', action='store_true')
     args.add_argument('--controls', action='store_true')
@@ -41,7 +42,9 @@ def main():
     assert not history_proof or (args.vault_ui and (not args.embedded or (args.history_ui and not args.history)))
     vault_ui = args.vault_ui
     vault = args.vault
-    aggregate = args.aggregate
+    preparation = args.preparation
+    assert not preparation or not args.aggregate
+    aggregate = args.aggregate or preparation
     control_proof = args.controls
     ui_proof = args.ui or vault_ui
     embedded = args.embedded
@@ -52,7 +55,7 @@ def main():
     assert not aggregate or not (vault or history_proof or ui_proof or embedded or control_proof)
     binary, policy = args.binary.resolve(strict=True), args.policy_binary.resolve(strict=True)
     root = Path(__file__).resolve().parents[1]
-    work = Path(tempfile.mkdtemp(prefix='native-aggregate-' if aggregate else 'native-history-' if history_proof else 'native-vault-ui-' if vault_ui else 'native-vault-control-' if vault and control_proof else 'native-vault-browser-' if vault else 'native-embedded-ui-' if embedded else 'native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
+    work = Path(tempfile.mkdtemp(prefix='native-preparation-' if preparation else 'native-aggregate-' if aggregate else 'native-history-' if history_proof else 'native-vault-ui-' if vault_ui else 'native-vault-control-' if vault and control_proof else 'native-vault-browser-' if vault else 'native-embedded-ui-' if embedded else 'native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
     state, auth, proposals = [work / n for n in ('state', 'auth', 'proposals')]
     for d in (state, auth, proposals):
         d.mkdir(mode=0o700)
@@ -164,6 +167,9 @@ def main():
     if aggregate:
         from native_aggregate_checks import aggregate_assets
         aggregate_original=aggregate_assets(root,work,assets)
+    if preparation:
+        assets['/prepared-fork-worker.js']=(root/'experiments/openmls-browser/web/prepared-fork-worker.js').read_bytes()
+        assets['/main.js']=assets['/main.js'].replace(b'./aggregate-fork-worker.js',b'./prepared-fork-worker.js')
     proof['original_assets_sha256']={name:hashlib.sha256(raw).hexdigest() for name,raw in assets.items()}
     if vault:proof['original_assets_sha256']['/native-vault-store.js']=hashlib.sha256(vault_original).hexdigest()
     if aggregate:proof['original_assets_sha256']['/aggregate-store.js']=hashlib.sha256(aggregate_original).hexdigest()
@@ -224,7 +230,7 @@ def main():
                         actual=hashlib.sha256(raw).hexdigest()
                         assert actual==hashlib.sha256(assets[asset_path]).hexdigest(),'compiled asset mismatch'
                         proof.setdefault('native_served_assets_sha256',{})[asset_path]=actual
-                if self.command=='POST' and self.path.endswith('/log') and response.status<300 and hold_next[0]:
+                if self.command=='POST' and (self.path.endswith('/log') or (preparation and self.path.endswith('/preparation'))) and response.status<300 and hold_next[0]:
                     hold_next[0]=False;arrived.set();release.wait(5)
                 if self.command=='GET' and '/log?' in self.path and tamper[0] and response.status==200:
                     data=json.loads(raw)
@@ -356,6 +362,12 @@ def main():
             rpc(b,'advance');rpc(b,'flush');rpc(b,'sync');rpc(a,'sync')
             assert rpc(a,'status')['phase']==rpc(b,'status')['phase']=='ready'
             proof['checks']['native_keypackage_welcome_ack_actual_library_group']=True
+            if preparation:
+                from native_preparation_checks import run
+                run(a,b,databases,rpc,init,reopen,prepare,proof,page,vault_passwords,pins,direct,config,commit,crash,digest,hold_next,arrived,release,tamper,lambda:(stop(),start()))
+                for c in contexts:c.close()
+                proof['passed']=True
+                return
             if aggregate:
                 from native_aggregate_checks import aggregate_checks
                 aggregate_checks(a,b,databases,rpc,init,reopen,prepare,proof,page,vault_passwords,pins,direct,config,commit,crash,digest,hold_next,arrived,release,tamper)

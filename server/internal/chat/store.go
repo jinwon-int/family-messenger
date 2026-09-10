@@ -146,7 +146,7 @@ func Open(dir string) (_ *Store, err error) {
 		} else if st.Size() != 0 {
 			header := make([]byte, 100)
 			_, e = io.ReadFull(f, header)
-			if e == nil && (string(header[:16]) != "SQLite format 3\x00" || binary.BigEndian.Uint32(header[68:72]) != 1179471188 || (binary.BigEndian.Uint32(header[60:64]) != 1 && binary.BigEndian.Uint32(header[60:64]) != 2 && binary.BigEndian.Uint32(header[60:64]) != 3)) {
+			if e == nil && (string(header[:16]) != "SQLite format 3\x00" || binary.BigEndian.Uint32(header[68:72]) != 1179471188 || (binary.BigEndian.Uint32(header[60:64]) != 1 && binary.BigEndian.Uint32(header[60:64]) != 2 && binary.BigEndian.Uint32(header[60:64]) != 3 && binary.BigEndian.Uint32(header[60:64]) != 4)) {
 				e = fmt.Errorf("not a supported synthetic messenger database")
 			}
 		}
@@ -174,10 +174,10 @@ func Open(dir string) (_ *Store, err error) {
 	if e = db.QueryRow("PRAGMA application_id").Scan(&appID); e != nil {
 		return nil, e
 	}
-	if ((version == 1 || version == 2 || version == 3) && appID != 1179471188) || (version == 0 && appID != 0) {
+	if ((version == 1 || version == 2 || version == 3 || version == 4) && appID != 1179471188) || (version == 0 && appID != 0) {
 		return nil, fmt.Errorf("not a synthetic messenger database")
 	}
-	if version != 0 && version != 1 && version != 2 && version != 3 {
+	if version != 0 && version != 1 && version != 2 && version != 3 && version != 4 {
 		return nil, fmt.Errorf("unsupported schema")
 	}
 	if version == 0 {
@@ -206,6 +206,11 @@ func Open(dir string) (_ *Store, err error) {
 	}
 	if version < 3 {
 		if e = migrateMLS(db, dir, version < 2); e != nil {
+			return nil, e
+		}
+	}
+	if version < 4 {
+		if e = migratePreparation(db, dir, version < 3); e != nil {
 			return nil, e
 		}
 	}
