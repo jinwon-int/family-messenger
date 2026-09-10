@@ -28,6 +28,10 @@ var retiredHistoryManifest []byte
 
 //go:embed aggregate_bundle.json
 var aggregateManifest []byte
+
+//go:embed aggregate_history_bundle.json
+var aggregateHistoryManifest []byte
+var compiledAggregateHistoryAssets fs.FS
 var compiledAggregateAssets fs.FS
 var compiledHistoryAssets fs.FS
 var compiledVaultAssets fs.FS
@@ -120,6 +124,31 @@ var aggregateSources = map[string]string{
 	"sodium-notices.txt":         "experiments/device-keystore/SODIUM-NOTICES.txt",
 }
 
+var aggregateHistoryPaths = func() map[string]string {
+	out := make(map[string]string)
+	for file, path := range aggregatePaths {
+		out[file] = path
+	}
+	for _, file := range []string{"aggregate-history.css", "aggregate-history-ui.js", "aggregate-history-client.js", "aggregate-history-worker.js", "aggregate-history-export-worker.js"} {
+		out[file] = "/" + file
+	}
+	out["aggregate-history.html"] = "/aggregate-history/"
+	return out
+}()
+var aggregateHistorySources = func() map[string]string {
+	out := make(map[string]string)
+	for file, source := range aggregateSources {
+		out[file] = source
+	}
+	for _, file := range []string{"aggregate-history.html", "aggregate-history.css", "aggregate-history-ui.js", "aggregate-history-client.js"} {
+		out[file] = "experiments/device-keystore/" + file
+	}
+	for _, file := range []string{"aggregate-history-worker.js", "aggregate-history-export-worker.js"} {
+		out[file] = "experiments/device-keystore/bundle/" + file
+	}
+	return out
+}()
+
 // Current history profile has an explicit source allowlist as well as byte pins.
 var historySources = map[string]string{
 	"chat.html":                "experiments/openmls-browser/web/chat.html",
@@ -182,16 +211,16 @@ func loadAssetProfile(source fs.FS, manifest []byte, paths map[string]string, ve
 		}
 		kind := "text/javascript; charset=utf-8"
 		switch entry.File {
-		case "chat.html", "vault-chat.html", "history.html", "aggregate-chat.html":
+		case "chat.html", "vault-chat.html", "history.html", "aggregate-chat.html", "aggregate-history.html":
 			kind = "text/html; charset=utf-8"
-		case "chat.css", "history.css":
+		case "chat.css", "history.css", "aggregate-history.css":
 			kind = "text/css; charset=utf-8"
 		case "pkg.wasm":
 			kind = "application/wasm"
 		case "cargo-notices.txt", "rust-notices.txt", "age-notices.txt", "sodium-notices.txt":
 			kind = "text/plain; charset=utf-8"
 		}
-		if entry.Type != kind || (version == 4 && aggregateSources[entry.File] != entry.Source) || (version == 5 && historySources[entry.File] != entry.Source) {
+		if entry.Type != kind || (version == 4 && aggregateSources[entry.File] != entry.Source) || (version == 5 && historySources[entry.File] != entry.Source) || (version == 6 && aggregateHistorySources[entry.File] != entry.Source) {
 			return nil, ErrInvalid
 		}
 		f, e := source.Open(entry.File)
@@ -227,8 +256,11 @@ func LoadHistoryAssets() (*EncryptedAssets, error) {
 func LoadAggregateAssets() (*EncryptedAssets, error) {
 	return loadAssetProfile(compiledAggregateAssets, aggregateManifest, aggregatePaths, 4)
 }
+func LoadAggregateHistoryAssets() (*EncryptedAssets, error) {
+	return loadAssetProfile(compiledAggregateHistoryAssets, aggregateHistoryManifest, aggregateHistoryPaths, 6)
+}
 func NewEncryptedAccessHandler(store *Store, authority *access.Authority, bundle *EncryptedAssets, admission *AdmissionAuthority) (http.Handler, error) {
-	if bundle == nil || (bundle.version != 1 && bundle.version != 2 && bundle.version != 5 && bundle.version != 4) || (bundle.version == 1 && len(bundle.files) != len(encryptedPaths)) || (bundle.version == 2 && len(bundle.files) != len(vaultPaths)) || (bundle.version == 5 && len(bundle.files) != len(historyPaths)) || (bundle.version == 4 && len(bundle.files) != len(aggregatePaths)) {
+	if bundle == nil || (bundle.version != 1 && bundle.version != 2 && bundle.version != 5 && bundle.version != 4 && bundle.version != 6) || (bundle.version == 1 && len(bundle.files) != len(encryptedPaths)) || (bundle.version == 2 && len(bundle.files) != len(vaultPaths)) || (bundle.version == 5 && len(bundle.files) != len(historyPaths)) || (bundle.version == 4 && len(bundle.files) != len(aggregatePaths)) || (bundle.version == 6 && len(bundle.files) != len(aggregateHistoryPaths)) {
 		return nil, ErrInvalid
 	}
 	handler, e := NewAccessHandler(store, authority, admission)

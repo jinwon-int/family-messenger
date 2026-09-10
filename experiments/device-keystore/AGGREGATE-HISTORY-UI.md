@@ -66,7 +66,7 @@ URLs are allowed, with one-second expiry and complete retirement cleanup.
 Forms stay disabled after success until explicit lock; no automatic password
 reuse or acceptance survives reload. No browser storage is used by this page.
 
-## Runnable proof and next packaging
+## Runnable isolated proof and native packaging
 
 ```sh
 .venv/bin/python tests/native_encrypted_browser_smoke.py --aggregate-history-ui \
@@ -88,15 +88,14 @@ UI proof. The separate unchanged full-library aggregate history suite retains
 its authenticated invalid-state fixtures and26 checks. A viewport check is not
 mobile resource or human recovery acceptance.
 
-The next bounded packaging step must use an explicit new immutable profile/output
-with exact source/route/MIME/hash/size pins, optional identity-context WASM and
-existing age/sodium/Cargo/Rust notices. Preserve default WASM and every old
-profile/output; never silently repin an old binary. A forwarding-only assertion
-fixture must then verify actual Go-served bytes. This isolated UI is not that
-activation. No runtime/build dependencies or cryptographic protocols are added.
-OpenMLS8direct/151transitive WASM crates and age/sodium2direct/8transitive runtime
-instances are unchanged. Keep128MiB combined WASM/5GiB additional disk and
-separate256MiB JS scrypt scratch budgets; memory-heavy tests run serially.
+The separate [native profile 6](../../server/AGGREGATE-HISTORY-UI.md) now
+packages the original viewer through Go with the optional identity-context WASM.
+This document and its original evidence describe the isolated fixture proof;
+the native proof uses a forwarding-only assertion proxy and its own receipts.
+Old profiles/output and cryptographic protocols remain unchanged. OpenMLS
+8 direct/151 transitive WASM crates and age/sodium 2 direct/8 transitive runtime
+instances remain. Keep 128 MiB combined WASM/5 GiB added disk and separate
+256 MiB JS scrypt scratch budgets; memory-heavy tests run serially.
 Human lifecycle/recovery/mobile/CF/backup/capacity/fleet acceptance and Yukson
 cutover remain open.
 

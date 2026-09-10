@@ -9,7 +9,8 @@ permissions:
 jobs:
   synthetic-mls:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Prior exact-head run took ~23 minutes; new native history proof is bounded to 10 more.
+    timeout-minutes: 35
     env:
       RUSTFLAGS: '--cfg getrandom_backend="wasm_js"'
     steps:
@@ -143,6 +144,15 @@ jobs:
           go -C server build -tags synthetic_aggregate -trimpath -o ../artifacts/family-dev-aggregate-embedded ./cmd/family-dev
           python tests/native_asset_activation_smoke.py --aggregate --binary artifacts/family-dev-aggregate-embedded --plain-binary artifacts/family-dev-trust
           timeout 480s python tests/native_encrypted_browser_smoke.py --aggregate-ui --embedded --bundle artifacts/mls-identity-context-pkg --binary artifacts/family-dev-aggregate-embedded --policy-binary artifacts/family-policy-trust
+      - name: Own-server immutable aggregate history and protected chat
+        run: |
+          node experiments/device-keystore/node_modules/esbuild/bin/esbuild experiments/device-keystore/aggregate-history-worker.js experiments/device-keystore/aggregate-history-export-worker.js --bundle --format=esm --platform=browser --target=es2023 --minify '--external:/pkg/*' '--external:/trust-directory.js' --outdir=experiments/device-keystore/bundle
+          python tools/prepare_mls_assets.py --aggregate-history --bundle artifacts/mls-identity-context-pkg
+          python tools/prepare_mls_assets.py --aggregate-history --bundle artifacts/mls-identity-context-pkg --check
+          go -C server test -race -tags 'synthetic_mls synthetic_vault synthetic_history synthetic_aggregate synthetic_aggregate_history' ./...
+          go -C server build -tags synthetic_aggregate_history -trimpath -o ../artifacts/family-dev-aggregate-history-embedded ./cmd/family-dev
+          python tests/native_asset_activation_smoke.py --aggregate-history --binary artifacts/family-dev-aggregate-history-embedded --plain-binary artifacts/family-dev-trust
+          timeout 600s python tests/native_encrypted_browser_smoke.py --aggregate-ui --embedded --aggregate-history-embedded --bundle artifacts/mls-identity-context-pkg --binary artifacts/family-dev-aggregate-history-embedded --policy-binary artifacts/family-policy-trust
       - name: Two-device committed custody preparation barrier
         run: timeout 240s python tests/native_encrypted_browser_smoke.py --preparation --bundle artifacts/mls-identity-context-pkg --binary artifacts/family-dev-trust --policy-binary artifacts/family-policy-trust
       - uses: actions/upload-artifact@v4

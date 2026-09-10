@@ -32,6 +32,7 @@ func run() error {
 	vaultUI := flag.Bool("synthetic-vault-ui", false, "enable compiled synthetic custody UI; requires signed auth-state and synthetic_vault build")
 	historyUI := flag.Bool("synthetic-history-ui", false, "enable compiled synthetic read-only recovery UI; requires signed auth-state and synthetic_history build")
 	aggregateUI := flag.Bool("synthetic-aggregate-ui", false, "enable compiled synthetic two-room custody UI; requires signed auth-state and synthetic_aggregate build")
+	aggregateHistoryUI := flag.Bool("synthetic-aggregate-history-ui", false, "enable compiled synthetic two-room history and custody UI; requires signed auth-state and synthetic_aggregate_history build")
 	flag.Parse()
 	authSelected := false
 	flag.Visit(func(f *flag.Flag) {
@@ -47,7 +48,7 @@ func run() error {
 		return fmt.Errorf("only 127.0.0.1 is supported")
 	}
 	selectedUI := 0
-	for _, selected := range []bool{*encryptedUI, *vaultUI, *historyUI, *aggregateUI} {
+	for _, selected := range []bool{*encryptedUI, *vaultUI, *historyUI, *aggregateUI, *aggregateHistoryUI} {
 		if selected {
 			selectedUI++
 		}
@@ -60,7 +61,9 @@ func run() error {
 		if !authSelected || *authState == "" {
 			return fmt.Errorf("encrypted UI requires explicit signed auth-state")
 		}
-		if *aggregateUI {
+		if *aggregateHistoryUI {
+			bundle, e = chat.LoadAggregateHistoryAssets()
+		} else if *aggregateUI {
 			bundle, e = chat.LoadAggregateAssets()
 		} else if *historyUI {
 			bundle, e = chat.LoadHistoryAssets()
@@ -135,7 +138,9 @@ func run() error {
 	if *historyUI {
 		cryptoMode = "compiled read-only synthetic history UI /history/; no active device recovery"
 	}
-	if *aggregateUI {
+	if *aggregateHistoryUI {
+		cryptoMode = "compiled synthetic two-room history /aggregate-history/ and custody /aggregate/; no active device recovery"
+	} else if *aggregateUI {
 		cryptoMode = "compiled synthetic two-room custody UI /aggregate/; human recovery not qualified"
 	}
 	fmt.Fprintln(os.Stderr, "SYNTHETIC ONLY;", mode, ";", cryptoMode, "; listening", listener.Addr())

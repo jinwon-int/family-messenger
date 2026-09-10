@@ -14,6 +14,7 @@ def main():
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--plain-binary', type=Path, required=True)
     mode=parser.add_mutually_exclusive_group();mode.add_argument('--vault', action='store_true');mode.add_argument('--history', action='store_true');mode.add_argument('--aggregate', action='store_true')
+    mode.add_argument('--aggregate-history', action='store_true')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     directory = Path(tempfile.mkdtemp(prefix='native-asset-activation-', dir=root / 'artifacts'))
@@ -43,6 +44,11 @@ def main():
         for other in ('mls','vault','history'):
             cases.append(('mutually_exclusive_'+other,binary,['--synthetic-only','--synthetic-aggregate-ui','--synthetic-'+other+'-ui'],'select only one encrypted UI mode'))
             cases.append(('old_'+other+'_bundle_absent',binary,['--synthetic-only','--synthetic-'+other+'-ui','--auth-state',str(directory/'missing')],'encrypted assets absent'))
+    if args.aggregate_history:
+        cases = [(n,b,[f.replace('--synthetic-mls-ui','--synthetic-aggregate-history-ui') for f in flags],e) for n,b,flags,e in cases]
+        for other in ('mls','vault','history','aggregate'):
+            cases.append(('mutually_exclusive_'+other,binary,['--synthetic-only','--synthetic-aggregate-history-ui','--synthetic-'+other+'-ui'],'select only one encrypted UI mode'))
+            cases.append(('old_'+other+'_bundle_absent',binary,['--synthetic-only','--synthetic-'+other+'-ui','--auth-state',str(directory/'missing')],'encrypted assets absent'))
     for name, executable, flags, error in cases:
         state = directory / name
         state.mkdir(mode=0o700)
@@ -52,7 +58,7 @@ def main():
         if error:
             assert error in result.stderr, name
         checks[name] = True
-    proof = {'synthetic_only': True, 'vault_mode': args.vault, 'history_mode': args.history, 'aggregate_mode':args.aggregate, 'checks': checks, 'binaries': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (binary, plain)}}
+    proof = {'synthetic_only': True, 'vault_mode': args.vault, 'history_mode': args.history, 'aggregate_mode':args.aggregate, 'aggregate_history_mode':args.aggregate_history, 'checks': checks, 'binaries': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (binary, plain)}}
     path = directory / 'verification.json'
     path.write_text(json.dumps(proof, indent=2) + '\n')
     path.chmod(0o600)

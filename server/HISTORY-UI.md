@@ -45,7 +45,7 @@ remain 8 KiB manifest, 2 MiB per file and 4 MiB total. Current manifest is 6,315
 bytes and content totals 4,025,346 bytes. No runtime static directory, CDN or
 Node service is introduced. An untagged binary rejects selection; a missing
 prepared bundle fails the tagged build. Invalid selected assets fail before
-opening auth policy or chat state. All four UI flags are mutually exclusive,
+opening auth policy or chat state. All five UI flags are mutually exclusive,
 including a binary built with multiple tags. A build tag alone activates nothing.
 
 Selection requires explicit nonempty signed `--auth-state`, `--synthetic-only`

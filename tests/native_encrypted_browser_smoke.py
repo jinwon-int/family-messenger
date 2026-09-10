@@ -33,6 +33,7 @@ def main():
     args.add_argument('--aggregate', action='store_true')
     args.add_argument('--aggregate-history', action='store_true')
     args.add_argument('--aggregate-history-ui', action='store_true')
+    args.add_argument('--aggregate-history-embedded', action='store_true')
     args.add_argument('--preparation', action='store_true')
     args.add_argument('--embedded', action='store_true')
     args.add_argument('--ui', action='store_true')
@@ -45,6 +46,7 @@ def main():
     aggregate_history=args.aggregate_history or args.aggregate_history_ui
     history_proof=args.history or args.history_ui
     assert not history_proof or (args.vault_ui and (not args.embedded or (args.history_ui and not args.history)))
+    assert not args.aggregate_history_embedded or (args.aggregate_ui and args.embedded and not aggregate_history and not history_proof)
     aggregate_ui = args.aggregate_ui
     vault_ui = args.vault_ui or aggregate_ui
     vault = args.vault
@@ -99,12 +101,16 @@ def main():
         log = work / 'server.log'
         output = log.open('ab')
         offset = log.stat().st_size
-        process = subprocess.Popen([str(binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--listen', address]+(['--synthetic-aggregate-ui' if aggregate_ui else '--synthetic-history-ui' if args.history_ui else '--synthetic-vault-ui' if vault_ui else '--synthetic-mls-ui'] if embedded else []), stderr=output, stdout=subprocess.DEVNULL)
+        process = subprocess.Popen([str(binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--listen', address]+(['--synthetic-aggregate-history-ui' if args.aggregate_history_embedded else '--synthetic-aggregate-ui' if aggregate_ui else '--synthetic-history-ui' if args.history_ui else '--synthetic-vault-ui' if vault_ui else '--synthetic-mls-ui'] if embedded else []), stderr=output, stdout=subprocess.DEVNULL)
         until = time.monotonic() + 10
         while time.monotonic() < until:
             assert process.poll() is None, 'server exited'
             match = re.search(r'listening (127\.0\.0\.1:\d+)', log.read_bytes()[offset:].decode())
             if match:
+                if args.aggregate_history_embedded:
+                    label=log.read_bytes()[offset:].decode()
+                    assert 'two-room history /aggregate-history/ and custody /aggregate/' in label and 'UI /encrypted/' not in label, 'wrong selected UI startup label'
+                    proof['checks']['compiled_aggregate_history_startup_and_restart_label_matches_selected_routes']=True
                 address = match[1]
                 return
             time.sleep(.02)
@@ -147,7 +153,7 @@ def main():
     if embedded and vault_ui:
         # Expected bytes are independent source inputs. Proxy only forwards;
         # every manifest route is also requested before any identity revocation.
-        manifest_path=root/('server/internal/chat/aggregate_bundle.json' if aggregate_ui else 'server/internal/chat/history_bundle.json' if args.history_ui else 'server/internal/chat/vault_bundle.json')
+        manifest_path=root/('server/internal/chat/aggregate_history_bundle.json' if args.aggregate_history_embedded else 'server/internal/chat/aggregate_bundle.json' if aggregate_ui else 'server/internal/chat/history_bundle.json' if args.history_ui else 'server/internal/chat/vault_bundle.json')
         pin = json.loads(manifest_path.read_text())
         assets = {}
         for e in pin['files']:
@@ -317,7 +323,7 @@ def main():
             proof['checks']['all_'+str(len(assets))+'_native_routes_require_signed_admission']=True
         if ui_proof:
             from native_chat_ui_checks import run_ui
-            run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=url+('/aggregate/' if aggregate_ui else '/vault/' if vault_ui else '/encrypted/') if embedded else url,restart=(lambda:(stop(),start())) if embedded else None,vault=vault_ui,history=history_proof,history_ui=args.history_ui,history_embedded=embedded and args.history_ui,aggregate=aggregate_ui)
+            run_ui(work,url,cookies,config,commit,direct,proof,hold_next,arrived,release,tamper,page_url=url+('/aggregate/' if aggregate_ui else '/vault/' if vault_ui else '/encrypted/') if embedded else url,restart=(lambda:(stop(),start())) if embedded else None,vault=vault_ui,history=history_proof,history_ui=args.history_ui,history_embedded=embedded and args.history_ui,aggregate=aggregate_ui,aggregate_history_embedded=args.aggregate_history_embedded)
             if embedded:
                 proof['ui_packaging']='compiled native Go server assets; proxy only injects generated assertions'
                 proof['native_embedded_ui']=True
@@ -489,17 +495,17 @@ def main():
             proof['checks']['tamper_outer_id_group_device_rejected_without_ratchet_loss']=True
             # Two tabs stage and reconcile one immutable application operation.
             observer=page(0);init(observer,0)
-            args={'id':'app-tabs','bytes':list(b'synthetic two tabs'),'media_type':'text','fault':''}
-            a.evaluate('arg=>{window.pending=call("device","prepare",arg)}',args)
-            rpc(observer,'prepare',args);assert a.evaluate('window.pending')['ok']
+            turn_args={'id':'app-tabs','bytes':list(b'synthetic two tabs'),'media_type':'text','fault':''}
+            a.evaluate('arg=>{window.pending=call("device","prepare",arg)}',turn_args)
+            rpc(observer,'prepare',turn_args);assert a.evaluate('window.pending')['ok']
             first=rpc(a,'flush');second=rpc(observer,'flush');assert first['seq']==second['seq']
             rpc(a,'sync');count=len(rpc(observer,'sync')['messages']);assert len(rpc(a,'sync')['messages'])==count
             got=rpc(b,'sync');assert base64.b64decode(got['messages'][-1]['payload'])==b'synthetic two tabs'
             proof['checks']['two_tabs_exact_native_ciphertext_and_self_echo_once']=True
             before=digest(a,0);tamper[0]='binding';prepare(a,'app-binding',b'bad binding',reject=True);assert digest(a,0)==before;tamper[0]=None;reopen(a,0)
             proof['checks']['changed_native_binding_denied_before_crypto_mutation']=True
-            before=digest(a,0);args={'id':'app-inflight','bytes':list(b'synthetic transaction hold'),'media_type':'text','fault':'crash-before-complete'}
-            a.evaluate('arg=>{window.pending=call("device","prepare",arg).catch(()=>null)}',args);a.wait_for_function('()=>window.test_crash_boundary===true',timeout=5000)
+            before=digest(a,0);turn_args={'id':'app-inflight','bytes':list(b'synthetic transaction hold'),'media_type':'text','fault':'crash-before-complete'}
+            a.evaluate('arg=>{window.pending=call("device","prepare",arg).catch(()=>null)}',turn_args);a.wait_for_function('()=>window.test_crash_boundary===true',timeout=5000)
             crash(0);a=page(0);init(a,0);assert digest(a,0)==before
             prepare(a,'app-inflight',b'synthetic transaction hold');rpc(a,'flush');rpc(a,'sync');got=rpc(b,'sync');assert base64.b64decode(got['messages'][-1]['payload'])==b'synthetic transaction hold'
             proof['checks']['inflight_browser_crash_retains_complete_crypto_and_native_outbox']=True
