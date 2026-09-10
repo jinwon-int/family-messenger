@@ -34,6 +34,8 @@ def main():
     args.add_argument('--aggregate-history', action='store_true')
     args.add_argument('--aggregate-history-ui', action='store_true')
     args.add_argument('--aggregate-history-embedded', action='store_true')
+    args.add_argument('--successor-peer-original', action='store_true')
+    args.add_argument('--successor-peer', action='store_true')
     args.add_argument('--preparation', action='store_true')
     args.add_argument('--embedded', action='store_true')
     args.add_argument('--ui', action='store_true')
@@ -43,6 +45,7 @@ def main():
     args.add_argument('--policy-binary', required=True, type=Path)
     args = args.parse_args()
     assert not (args.aggregate_history and args.aggregate_history_ui)
+    assert not args.successor_peer_original or args.successor_peer
     aggregate_history=args.aggregate_history or args.aggregate_history_ui
     history_proof=args.history or args.history_ui
     assert not history_proof or (args.vault_ui and (not args.embedded or (args.history_ui and not args.history)))
@@ -52,7 +55,8 @@ def main():
     vault = args.vault
     preparation = args.preparation or aggregate_ui
     assert not preparation or not args.aggregate
-    aggregate = args.aggregate or preparation or aggregate_history
+    aggregate = args.aggregate or preparation or aggregate_history or args.successor_peer
+    assert not args.successor_peer or not (preparation or aggregate_history or args.aggregate or args.embedded)
     assert not aggregate_history or not (args.aggregate or preparation or history_proof or args.embedded)
     control_proof = args.controls
     ui_proof = args.ui or vault_ui
@@ -64,7 +68,7 @@ def main():
     assert not aggregate or not (vault or history_proof or (ui_proof and not aggregate_ui) or (embedded and not aggregate_ui) or control_proof)
     binary, policy = args.binary.resolve(strict=True), args.policy_binary.resolve(strict=True)
     root = Path(__file__).resolve().parents[1]
-    work = Path(tempfile.mkdtemp(prefix='native-aggregate-history-ui-' if args.aggregate_history_ui else 'native-aggregate-history-' if aggregate_history else 'native-aggregate-ui-' if aggregate_ui else 'native-preparation-' if preparation else 'native-aggregate-' if aggregate else 'native-history-' if history_proof else 'native-vault-ui-' if vault_ui else 'native-vault-control-' if vault and control_proof else 'native-vault-browser-' if vault else 'native-embedded-ui-' if embedded else 'native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
+    work = Path(tempfile.mkdtemp(prefix='native-successor-peer-' if args.successor_peer else 'native-aggregate-history-ui-' if args.aggregate_history_ui else 'native-aggregate-history-' if aggregate_history else 'native-aggregate-ui-' if aggregate_ui else 'native-preparation-' if preparation else 'native-aggregate-' if aggregate else 'native-history-' if history_proof else 'native-vault-ui-' if vault_ui else 'native-vault-control-' if vault and control_proof else 'native-vault-browser-' if vault else 'native-embedded-ui-' if embedded else 'native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
     state, auth, proposals = [work / n for n in ('state', 'auth', 'proposals')]
     for d in (state, auth, proposals):
         d.mkdir(mode=0o700)
@@ -90,7 +94,7 @@ def main():
         candidate = proposals / f'candidate-{revision}-{secrets.token_hex(6)}.json'
         candidate.write_text(json.dumps({**config, 'people': people}))
         candidate.chmod(0o600)
-        r = subprocess.run([str(policy), '--synthetic-only', '--auth-state', str(auth), '--input', str(candidate), '--expected-revision', str(revision)], capture_output=True, text=True, timeout=5)
+        r = subprocess.run([str(policy), '--synthetic-only', '--auth-state', str(auth), '--input', str(candidate), '--expected-revision', str(revision)]+(['--successor-policy'] if config['version']==2 else []), capture_output=True, text=True, timeout=5)
         assert r.returncode == 0, r.stderr
         assert json.loads(r.stdout)['revision'] == revision + 1
     commit(0, config['people'])
@@ -180,6 +184,9 @@ def main():
     if aggregate and not embedded:
         from native_aggregate_checks import aggregate_assets
         aggregate_original=aggregate_assets(root,work,assets)
+    if args.successor_peer:
+        from native_successor_peer_checks import successor_assets
+        successor_assets(root,work,assets,proof,args.successor_peer_original)
     if preparation and not embedded:
         assets['/prepared-fork-worker.js']=(root/'experiments/openmls-browser/web/prepared-fork-worker.js').read_bytes()
         assets['/main.js']=assets['/main.js'].replace(b'./aggregate-fork-worker.js',b'./prepared-fork-worker.js')
@@ -390,6 +397,12 @@ def main():
             rpc(b,'advance');rpc(b,'flush');rpc(b,'sync');rpc(a,'sync')
             assert rpc(a,'status')['phase']==rpc(b,'status')['phase']=='ready'
             proof['checks']['native_keypackage_welcome_ack_actual_library_group']=True
+            if args.successor_peer:
+                from native_successor_peer_checks import run
+                run(a,b,databases,rpc,init,reopen,prepare,proof,page,vault_passwords,pins,direct,config,commit,crash,digest,tamper,lambda:(stop(),start()),args.successor_peer_original)
+                for c in contexts:c.close()
+                proof['passed']=True
+                return
             if preparation:
                 from native_preparation_checks import run
                 run(a,b,databases,rpc,init,reopen,prepare,proof,page,vault_passwords,pins,direct,config,commit,crash,digest,hold_next,arrived,release,tamper,lambda:(stop(),start()))
