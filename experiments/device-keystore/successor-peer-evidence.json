@@ -35,7 +35,7 @@
   "old_assets_and_profiles_not_selected_unchanged": true,
   "remaining": "candidate private custody/declarations/activation/Welcome/ack; version2 client/history support; lifecycle renewal/mobile/CF/backup/capacity/fleet before human use",
   "fixture_head": "11518245cc7c6fd38b6442713bc2e1a388d44e63",
-  "python_validation_head": "e19677bee5a424fe4fbe8d14e6b255bd8c738822",
+  "python_validation_head": "38f3079b2f206c7aec2aac30c0a91dec54f86696",
   "fixed_finding": {
     "scope": "Target provider emptiness postcondition",
     "reproduction": "Independent actual OpenMLS helper accepted12storage entries with an empty group label, compared with signer-only1entry. No sealed-v2 original-worker acceptance claim.",
@@ -58,5 +58,16 @@
     "standard_groups": 15,
     "original_groups": 6,
     "original_bundle_matches_author": true
+  },
+  "final_light_checks": {
+    "receipt": "artifacts/successor-peer-final-checks-0dq04sfc/verification.json",
+    "sha256": "09d3b633a2ca28e85344e249750d4ecf5038b16f613ca4f53d4956526fb79d84",
+    "source_head": "38f3079b2f206c7aec2aac30c0a91dec54f86696",
+    "python_each_umask": 149,
+    "old_asset_profiles": [
+      "aggregate14",
+      "history-v5-21",
+      "aggregate-history20"
+    ]
   }
 }

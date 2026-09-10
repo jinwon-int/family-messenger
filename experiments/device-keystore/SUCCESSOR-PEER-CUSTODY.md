@@ -106,3 +106,7 @@ experimental assets. It is not a deployed CF gate. Source-digest, abort,
 pending-transaction SIGKILL and lost-reply holds are separately hashed test-only
 instrumentation. They are not shipped as native embedded assets. Only generated
 pair state, passwords, bytes and public candidate declarations are used.
+
+[Evidence and source versions](successor-peer-evidence.json) and
+[dependency/resource inventory](successor-peer-inventory.json) distinguish the
+original bundle from test-only instrumentation and the remaining acceptance work.
