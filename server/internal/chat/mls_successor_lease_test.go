@@ -191,6 +191,7 @@ func TestSuccessorLeaseConcurrentApprovalsCorruptionExpiry(t *testing.T) {
 	if _, _, e = s.appendLeaseMessage(expired, leaseMessage{"expired", "alice-next", []byte("x")}); e != ErrForbidden {
 		t.Fatal(e)
 	}
+	s.db.Exec("DELETE FROM mls_successor_enrollments WHERE intent=?", p.Context.Intent)
 	s.db.Exec("DELETE FROM mls_successor_retirements WHERE intent=?", p.Context.Intent)
 	s.db.Exec("DELETE FROM mls_successor_leases WHERE intent=?", p.Context.Intent)
 	if _, _, e = s.successorLease(p); e != ErrIntegrity {

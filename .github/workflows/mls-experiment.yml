@@ -422,3 +422,42 @@ jobs:
         with:
           name: successor-retirement-proof
           path: artifacts/native-custody-*/verification.json
+
+  successor-enrollment:
+    needs: synthetic-mls
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: custody-proof-inputs
+          path: artifacts
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-native-test.txt
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ hashFiles('requirements-native-test.txt') }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.2'
+      - name: Install pinned browser and protected store tooling
+        run: |
+          python -m pip install -r requirements-native-test.txt
+          python -m playwright install --with-deps chromium
+          npm --prefix experiments/device-keystore ci --ignore-scripts
+          chmod 700 artifacts/family-dev-trust artifacts/family-policy-trust
+      - name: Explicit persistent enrollment, actual expiry and preserved custody in both roles
+        run: |
+          for candidate_actor in alice bob; do
+            timeout 720s python tests/native_encrypted_browser_smoke.py --enrollment --lease --confirmation --exchange --exchange-candidate "$candidate_actor" --custody-order concurrent --bundle artifacts/mls-successor-lease-pkg --binary artifacts/family-dev-trust --policy-binary artifacts/family-policy-trust
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: successor-enrollment-proof
+          path: artifacts/native-custody-*/verification.json

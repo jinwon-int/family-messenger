@@ -72,7 +72,7 @@ def run(a,b,databases,rpc,prepare,proof,page,passwords,pins,direct,config,commit
     config['successors']={'administrators':[admin],'intents':[]};commit(2,config['people'])
     intent={'intent_id':'replace-bob','action':'replace','actor':candidate_actor,'subject':('family' if candidate_actor=='bob' else 'owner'),'predecessor':old['device_id'],'predecessor_key':old['signing_key'],'predecessor_revision':1,
             'candidate':candidate_actor+'-candidate','signing_key':proposal['public_key'],'fingerprint':hashlib.sha256(bytes.fromhex(proposal['public_key'])).hexdigest(),'package_sha256':proposal['package_sha256'],
-            'previous_room':'family','previous_group':group,'next_room':'successor-room','administrator':admin,'acceptance':'out-of-band-fingerprint','base_revision':3,'created_at':now-1,'expires_at':now+850,'status':'candidate','decided_at':0,'decision_revision':0}
+            'previous_room':'family','previous_group':group,'next_room':'successor-room','administrator':admin,'acceptance':'out-of-band-fingerprint','base_revision':3,'created_at':now-1,'expires_at':now+hooks.get('intent_ttl',850),'status':'candidate','decided_at':0,'decision_revision':0}
     config['successors']['intents']=[intent];commit(3,config['people'])
     intent.update(status='accepted',decided_at=int(time.time()),decision_revision=5);old.update(status='revoked',device_revision=2);commit(4,config['people'])
     path='/v1/mls/successors/replace-bob/reservation'

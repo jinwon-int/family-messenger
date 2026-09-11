@@ -37,6 +37,7 @@ def main():
     args.add_argument('--exchange-candidate', choices=['alice','bob'], default='bob')
     args.add_argument('--lease', action='store_true')
     args.add_argument('--retirement', action='store_true')
+    args.add_argument('--enrollment', action='store_true')
     args.add_argument('--confirmation', action='store_true')
     args.add_argument('--exchange', action='store_true')
     args.add_argument('--custody-order', choices=['candidate','peer','concurrent'])
@@ -55,6 +56,7 @@ def main():
     assert not (args.aggregate_history and args.aggregate_history_ui)
     assert not args.lease or args.confirmation
     assert not args.retirement or args.lease
+    assert not args.enrollment or (args.lease and not args.retirement)
     assert not args.confirmation or args.exchange
     assert not args.exchange or args.custody_order
     assert not args.successor_peer_original or args.successor_peer
@@ -109,7 +111,7 @@ def main():
         candidate = proposals / f'candidate-{revision}-{secrets.token_hex(6)}.json'
         candidate.write_text(json.dumps({**config, 'people': people}))
         candidate.chmod(0o600)
-        r = subprocess.run([str(policy), '--synthetic-only', '--auth-state', str(auth), '--input', str(candidate), '--expected-revision', str(revision)]+(['--successor-policy'] if config['version']==2 else []), capture_output=True, text=True, timeout=5)
+        r = subprocess.run([str(policy), '--synthetic-only', '--auth-state', str(auth), '--input', str(candidate), '--expected-revision', str(revision)]+(['--activation-policy'] if config['version']==3 else ['--successor-policy'] if config['version']==2 else []), capture_output=True, text=True, timeout=5)
         assert r.returncode == 0, r.stderr
         assert json.loads(r.stdout)['revision'] == revision + 1
     commit(0, config['people'])
@@ -211,6 +213,9 @@ def main():
                 if args.lease:
                     from native_lease_checks import lease_assets
                     lease_assets(root,work,assets,proof)
+                    if args.enrollment:
+                        from native_enrollment_checks import enrollment_assets
+                        enrollment_assets(root,work,assets,proof)
                     if args.retirement:
                         from native_retirement_checks import retirement_assets
                         retirement_assets(root,work,assets,proof)
@@ -277,10 +282,12 @@ def main():
     lease_hooks={"callback":None,"posts":[],"channel_callback":None,"channel_posts":[]}
     confirmation_hooks={"callback":None,"posts":[]}
     exchange_hooks={"callback":None,"posts":[]}
+    if args.enrollment:lease_hooks["enrollment"]={"callback":None,"posts":[],"channel_callback":None,"channel_posts":[]}
     if args.retirement:lease_hooks["retirement"]={"callback":None,"posts":[]}
     if args.lease:confirmation_hooks["lease"]=lease_hooks
     if args.confirmation:exchange_hooks["confirmation"]=confirmation_hooks
     custody_hooks={"callback":None,"posts":[]}
+    if args.enrollment:custody_hooks["intent_ttl"]=480
     class Proxy(BaseHTTPRequestHandler):
         def log_message(self,*args):pass
         def do_GET(self):self.forward()
@@ -296,6 +303,8 @@ def main():
             headers={k:v for k,v in self.headers.items() if k.lower() not in ('cookie','connection','host','content-length','transfer-encoding')}
             headers['Host']=f'127.0.0.1:{self.server.server_port}'
             if subject:headers['Cf-Access-Jwt-Assertion']=tokens[subject,False]
+            if args.enrollment and self.command=='POST' and self.path.endswith('/'+(lease_hooks['enrollment'].get('drop_before') or 'unused')):
+                lease_hooks['enrollment'].setdefault('dropped',[]).append(json.loads(body));self.close_connection=True;return
             if args.retirement and self.command=='POST' and self.path.endswith('/retirement') and lease_hooks['retirement'].get('drop_before'):
                 lease_hooks['retirement'].setdefault('dropped',[]).append(json.loads(body));self.close_connection=True;return
             if args.lease and self.command=='POST' and self.path.endswith('/'+(lease_hooks.get('drop_before') or 'unused')):
@@ -357,6 +366,10 @@ def main():
                         else:raise AssertionError('unknown generated context mutation')
                         raw=json.dumps(data).encode()
                 status=response.status
+                if args.enrollment and (self.path.endswith('/enrollment') or self.path.endswith('/enrolled-channel')):
+                    hook=lease_hooks['enrollment'];prefix='channel_' if self.path.endswith('/enrolled-channel') else ''
+                    if self.command=='POST':hook[prefix+'posts'].append(json.loads(body))
+                    if hook[prefix+'callback']:status,raw,context_bad_header=hook[prefix+'callback'](self.command,status,raw)
                 if args.retirement and self.path.endswith('/retirement'):
                     hook=lease_hooks['retirement']
                     if self.command=='POST':hook['posts'].append(json.loads(body))

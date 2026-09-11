@@ -31,6 +31,7 @@ type Config struct {
 	People                      []Enrollment
 	Devices                     []Device
 	Successors                  *SuccessorPolicy
+	Activations                 []Activation
 	AdmissionPublic             string
 	KeysFetchedAt, KeysExpireAt int64
 }
@@ -49,12 +50,13 @@ type Authority struct {
 	disabled   bool
 }
 type Grant struct {
-	authority  *Authority
-	generation uint64
-	principal  Principal
-	expires    time.Time
-	devices    []Device
-	successors []SuccessorIntent
+	authority   *Authority
+	generation  uint64
+	principal   Principal
+	expires     time.Time
+	devices     []Device
+	successors  []SuccessorIntent
+	activations []Activation
 }
 
 func (g *Grant) Principal() Principal { return g.principal }
@@ -110,6 +112,11 @@ func clone(c Config) (Config, map[string]Enrollment, error) {
 	if e != nil {
 		return Config{}, nil, e
 	}
+	out.Activations = c.Activations
+	out.Activations, e = cloneActivations(out)
+	if e != nil {
+		return Config{}, nil, e
+	}
 	// The admission public key hex is already validated by the wire decoder;
 	// clone keeps the exact committed value so the pin survives replacement.
 	out.AdmissionPublic = c.AdmissionPublic
@@ -134,6 +141,9 @@ func (a *Authority) Replace(c Config) error {
 	defer a.mu.Unlock()
 	if a.generation != 0 {
 		if e = deviceTransition(a.config.Devices, out.Devices); e != nil {
+			return e
+		}
+		if e = activationForward(a.config, out); e != nil {
 			return e
 		}
 		if e = successorForward(a.config, out); e != nil {
@@ -275,6 +285,7 @@ func (a *Authority) Verify(r *http.Request) (*Grant, error) {
 		return nil, ErrDenied
 	}
 	g := &Grant{authority: a, generation: a.generation, principal: Principal{Actor: p.Actor, Owner: p.Owner}, expires: expires.Time, devices: append([]Device(nil), a.config.Devices...)}
+	g.activations = append([]Activation(nil), a.config.Activations...)
 	if a.config.Successors != nil {
 		for _, intent := range a.config.Successors.Intents {
 			person, enrolled := a.people[intent.Subject]

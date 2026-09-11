@@ -25,6 +25,7 @@ func run() error {
 	inspect := flag.Bool("inspect", false, "print revision/hash only; no identities or keys")
 	synthetic := flag.Bool("synthetic-only", false, "acknowledge synthetic account configuration only")
 	successor := flag.Bool("successor-policy", false, "explicit version-2 public intent/retirement management; never activates a candidate")
+	activation := flag.Bool("activation-policy", false, "explicit persistent target enrollment authority; requires paired server consent digest")
 	flag.Parse()
 	modes := 0
 	for _, selected := range []bool{*inspect, *fetch, *input != ""} {
@@ -32,7 +33,7 @@ func run() error {
 			modes++
 		}
 	}
-	if !*synthetic || flag.NArg() != 0 || *dir == "" || modes != 1 || (*successor && *input == "") {
+	if !*synthetic || flag.NArg() != 0 || *dir == "" || modes != 1 || ((*successor || *activation) && *input == "") || (*successor && *activation) {
 		return fmt.Errorf("requires --synthetic-only --auth-state and one of --inspect, --input or --fetch-keys")
 	}
 	s, e := access.OpenPolicyStore(*dir)
@@ -48,7 +49,9 @@ func run() error {
 		var c access.Config
 		c, e = access.ReadCandidate(*input)
 		if e == nil {
-			if *successor {
+			if *activation {
+				info, e = s.CommitActivation(*expected, c)
+			} else if *successor {
 				info, e = s.CommitSuccessor(*expected, c)
 			} else {
 				info, e = s.Commit(*expected, c)

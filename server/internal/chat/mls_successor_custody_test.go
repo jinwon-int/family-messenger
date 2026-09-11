@@ -286,7 +286,7 @@ func TestSuccessorCustodyV5SnapshotPreservesReservationAndRestart(t *testing.T) 
 		t.Fatal(e)
 	}
 	// Fixture-only downgrade reconstructs the exact previous additive schema.
-	if _, e := s.db.Exec("DROP TABLE mls_successor_lease_events; DROP TABLE mls_successor_retirements; DROP TABLE mls_successor_leases; DROP TABLE mls_successor_confirmation; DROP TABLE mls_successor_handshake; DROP TABLE mls_successor_custody; PRAGMA user_version=5"); e != nil {
+	if _, e := s.db.Exec("DROP TABLE mls_successor_lease_events; DROP TABLE mls_successor_enrolled_events; DROP TABLE mls_successor_enrollments; DROP TABLE mls_successor_retirements; DROP TABLE mls_successor_leases; DROP TABLE mls_successor_confirmation; DROP TABLE mls_successor_handshake; DROP TABLE mls_successor_custody; PRAGMA user_version=5"); e != nil {
 		t.Fatal(e)
 	}
 	s.Close()
