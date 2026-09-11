@@ -217,7 +217,7 @@ func TestSuccessorReservationV4SnapshotAndRestart(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	_, e = db.Exec("DROP TABLE mls_successor_handshake; DROP TABLE mls_successor_custody; DROP TABLE mls_successor_reservations; PRAGMA user_version=4")
+	_, e = db.Exec("DROP TABLE mls_successor_confirmation; DROP TABLE mls_successor_handshake; DROP TABLE mls_successor_custody; DROP TABLE mls_successor_reservations; PRAGMA user_version=4")
 	db.Close()
 	if e != nil {
 		t.Fatal(e)

@@ -7,7 +7,7 @@ import subprocess
 import time
 
 
-def run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, media_path, context=False, reservation=False, custody=False, upgrade=None, handshake=False):
+def run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, media_path, context=False, reservation=False, custody=False, upgrade=None, handshake=False, confirmation=False):
     checks = proof['checks'] = {}
     serial = 0
 
@@ -179,9 +179,13 @@ def run(config, auth, proposals, proof, request, start, stop, command, private_w
         checks['paired_custody_role_cas_concurrent_exact_retry_and_partial_sigkill_no_activation'] = True
 
     if handshake:
-        upgrade()
+        if not confirmation:upgrade()
         from native_successor_handshake_checks import exchange
         handshake_path,handshake_final=exchange(request,q,start,stop,checks)
+    if confirmation:
+        upgrade()
+        from native_successor_confirmation_checks import confirm
+        confirmation_path,confirmation_final=confirm(request,q,handshake_final,start,stop,checks)
 
     stop()  # actual owned server SIGKILL after durable acceptance/reservation
     start()
@@ -212,6 +216,8 @@ def run(config, auth, proposals, proof, request, start, stop, command, private_w
         checks['paired_declaration_sigkill_lost_reply_exact_reconciliation_and_immutable_reservation'] = True
     if handshake:
         assert request('owner',handshake_path,headers={'X-Family-Device':'alice-candidate'})==(200,handshake_final)
+    if confirmation:
+        assert request("owner",confirmation_path,headers={"X-Family-Device":"alice-candidate"})==(200,confirmation_final)
     checks['sigkill_restart_retains_revocation_and_old_chat_media_policy_bytes'] = True
 
     # Distinct real-process decisions race; only one may win the next CAS.
@@ -273,4 +279,7 @@ def run(config, auth, proposals, proof, request, start, stop, command, private_w
     if handshake:
         assert request('family',handshake_path,headers={'X-Family-Device':'bob-first'})[0]==401
         checks['handshake_current_revocation_denies_after_restart']=True
+    if confirmation:
+        assert request('family',confirmation_path,headers={'X-Family-Device':'bob-first'})[0]==401
+        checks['confirmation_current_revocation_denies_after_restart']=True
     checks['emergency_empty_people_and_administrators_survives_sigkill_restart'] = True

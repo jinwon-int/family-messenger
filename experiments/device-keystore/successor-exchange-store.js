@@ -99,3 +99,6 @@ export class PeerExchangeStore extends SuccessorPeerStore {advance(e,remote){ret
 
 export {candidateReservation} from './candidate-store.js';
 export {reservation} from './successor-peer-store.js';
+
+// Shared strict decoding/validation for the explicitly selected next format.
+export {validate as validateExchange,checksum as exchangeChecksum,encode,decode,target,wipe,apply};
