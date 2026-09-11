@@ -7,7 +7,7 @@ import subprocess
 import time
 
 
-def run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, media_path, context=False, reservation=False):
+def run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, media_path, context=False, reservation=False, custody=False, upgrade=None):
     checks = proof['checks'] = {}
     serial = 0
 
@@ -140,6 +140,44 @@ def run(config, auth, proposals, proof, request, start, stop, command, private_w
         assert request('owner', context_path, headers={'X-Family-Device':'alice-candidate'})[0] == 409
         checks['concurrent_http_reservation_one_commit_exact_bytes_conflict_no_legacy_conversion'] = True
 
+    if custody:
+        upgrade()
+        custody_path = '/v1/mls/successors/replacement-1/custody'
+        candidate = dict(q, role='candidate', declaration_id='candidate-committed')
+        peer = dict(q, role='peer', declaration_id='peer-committed')
+        def declare(who, device, body):
+            return request(who, custody_path, 'POST', obj=body, headers={'X-Family-Device':device})
+        initial = json.loads(request('owner', custody_path, headers={'X-Family-Device':'alice-candidate'})[1])
+        assert initial['revision'] == 0 and initial['declarations'] == []
+        assert declare('family','bob-first',candidate)[0] == 403
+        assert declare('owner','alice-candidate',peer)[0] == 403
+        assert declare('owner','alice-first',candidate)[0] == 403
+        assert request(None,custody_path)[0] == 401
+        assert declare('owner','alice-candidate',dict(candidate,context_sha256='0'*64))[0] == 409
+        # First role exact racing sends are one durable slot; discard its reply.
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            candidate_results = list(pool.map(lambda _: declare('owner','alice-candidate',candidate), range(8)))
+        assert sorted(x[0] for x in candidate_results) == [200]*7+[201]
+        assert all(x[1] == candidate_results[0][1] for x in candidate_results)
+        stop(); start()
+        partial = declare('owner','alice-candidate',candidate)
+        assert partial == (200,candidate_results[0][1])
+        assert json.loads(partial[1])['revision'] == 1
+        # A different process instance resumes the other independent role.
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            peer_results = list(pool.map(lambda _: declare('family','bob-first',peer), range(8)))
+        assert sorted(x[0] for x in peer_results) == [200]*7+[201]
+        declared = peer_results[0][1]
+        assert all(x[1] == declared for x in peer_results)
+        result = json.loads(declared)
+        assert result['phase'] == 'pair-declared-inactive' and result['revision'] == 2
+        assert [x['role'] for x in result['declarations']] == ['candidate','peer']
+        assert all(x['context_sha256'] == q['context_sha256'] and x['reservation_id'] == q['reservation_id'] for x in result['declarations'])
+        assert declare('owner','alice-candidate',candidate) == (200,declared)
+        assert declare('owner','alice-candidate',dict(candidate,declaration_id='changed'))[0] == 409
+        assert reserve() == (200,reserved)
+        checks['paired_custody_role_cas_concurrent_exact_retry_and_partial_sigkill_no_activation'] = True
+
     stop()  # actual owned server SIGKILL after durable acceptance/reservation
     start()
     assert log_status('owner', 'alice-first') == 403
@@ -163,6 +201,10 @@ def run(config, auth, proposals, proof, request, start, stop, command, private_w
         assert request('owner', '/v1/rooms', 'POST', obj={'id': 'new-secure-1', 'members': ['bob']})[0] == 201
         assert request('family', context_path, headers={'X-Family-Device': 'bob-first'})[0] == 409
         checks['readonly_context_exact_restart_and_late_target_occupation_denied'] = True
+    if custody:
+        assert declare('owner','alice-candidate',candidate) == (200,declared)
+        assert declare('family','bob-first',peer) == (200,declared)
+        checks['paired_declaration_sigkill_lost_reply_exact_reconciliation_and_immutable_reservation'] = True
     checks['sigkill_restart_retains_revocation_and_old_chat_media_policy_bytes'] = True
 
     # Distinct real-process decisions race; only one may win the next CAS.
@@ -217,4 +259,8 @@ def run(config, auth, proposals, proof, request, start, stop, command, private_w
         assert request('owner', reservation_path, headers={'X-Family-Device':'alice-candidate'})[0] == 401
         assert request('family', reservation_path, headers={'X-Family-Device':'bob-first'})[0] == 401
         checks['reservation_denied_after_emergency_revocation_and_restart'] = True
+    if custody:
+        assert declare('owner','alice-candidate',candidate)[0] == 401
+        assert request('family',custody_path,headers={'X-Family-Device':'bob-first'})[0] == 401
+        checks['paired_custody_denies_revoked_accounts_after_restart'] = True
     checks['emergency_empty_people_and_administrators_survives_sigkill_restart'] = True
