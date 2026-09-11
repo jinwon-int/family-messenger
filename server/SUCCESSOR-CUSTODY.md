@@ -44,11 +44,11 @@ not a policy revision, MLS epoch or authorization to send.
 The existing `/reservation` response remains byte-identical, with
 `phase:reserved-inactive`, after either declaration. Current candidate and peer
 custody workers therefore keep their immutable descriptor and exact retry
-contract. They do **not yet call this new endpoint**. The next client unit must
-persist an immutable declaration ID together with its entire protected local
-commit and reconcile uncertain POST results without regenerating keys/packages
-or rewriting source state. Candidate handshake must retain the accepted exact
-KeyPackage; the ordinary new-package handshake is not a substitute.
+contract. Those original workers remain unchanged. Separate paired client workers
+now derive the immutable public retry ID from the exact binding authenticated by
+the protected commit, then POST and reconcile current readiness. This replaces
+the proposed additional persisted random ID; see [client custody](CLIENT-CUSTODY.md)
+for its frozen encoding, paired browser proof, and limits.
 
 ## Fresh authorization and retained failures
 
