@@ -51,3 +51,4 @@ async function transaction(store,e,h,c,role,operation){
 export class CandidateLeaseStore extends CandidateConfirmationStore {operateLease(e,h,c,op){return transaction(this,e,h,c,'candidate',op);}}
 export class PeerLeaseStore extends PeerConfirmationStore {operateLease(e,h,c,op){return transaction(this,e,h,c,'peer',op);}}
 export {candidateReservation,reservation} from './successor-confirmation-store.js';
+export {validated as validateLease};

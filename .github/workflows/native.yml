@@ -47,10 +47,18 @@ jobs:
           path: artifacts/schema8-source
       - name: Build schema-8 rollback probe
         run: go -C artifacts/schema8-source/server build -trimpath -o ../../family-dev-schema8 ./cmd/family-dev
+      - name: Checkout pinned schema-9 migration source
+        uses: actions/checkout@v4
+        with:
+          ref: f40f33e3643f8db9ebd213a9d78b71621c412d4f
+          path: artifacts/schema9-source
+      - name: Build schema-9 rollback probe
+        run: go -C artifacts/schema9-source/server build -trimpath -o ../../family-dev-schema9 ./cmd/family-dev
       - name: Signed policy persistence and reload proof
         run: |
           python3 tests/native_policy_smoke.py --binary artifacts/family-dev --policy-binary artifacts/family-policy
           python3 tests/native_policy_smoke.py --successor --successor-context --successor-reservation --successor-custody --successor-handshake --successor-confirmation --lease-migration --legacy-binary artifacts/family-dev-schema8 --binary artifacts/family-dev --policy-binary artifacts/family-policy
+          python3 tests/native_policy_smoke.py --successor --successor-context --successor-reservation --successor-custody --successor-handshake --successor-confirmation --lease-migration --retirement-migration --legacy-binary artifacts/family-dev-schema9 --binary artifacts/family-dev --policy-binary artifacts/family-policy
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'

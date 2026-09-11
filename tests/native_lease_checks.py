@@ -43,6 +43,9 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
         return r
     def snapshots():return [digest(a,0),digest(b,1),digest(b,1,database=database)]
     original=snapshots()
+    if 'retirement' in hooks:
+        from native_retirement_checks import saved_state
+        hooks['retirement']['prelease']=[saved_state(a,databases[0]),saved_state(b,database)]
     for p,role in ((a,'peer'),(b,'candidate')):
         for setup in ({'testFault':'abort-before-write'},{'testFault':'abort-after-write'},{'testExpireAtCAS':True}):
             invoke(p,role,setup=setup,reject=True);assert snapshots()==original and not hooks['posts']
@@ -107,6 +110,10 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
         assert snapshots()==stable
     for p,role in ((a,'peer'),(b,'candidate')):
         bad=args(role,{'kind':'sync'});bad['intent']['reservation']['context']['expires_at']=1;invoke(p,role,arg=bad,reject=True)
+    if 'retirement' in hooks:
+        from native_retirement_checks import run as retirement_run
+        retirement_run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,restart,hooks['retirement'],expected,source,proposal,database,candidate_actor,invoke,snapshots)
+        return
     next(d for d in config['devices'] if d['actor']==peer_actor).update(status='revoked',device_revision=2);commit(5,config['people'])
     deadline=time.monotonic()+6
     while time.monotonic()<deadline:

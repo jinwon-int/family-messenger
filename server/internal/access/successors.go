@@ -54,6 +54,19 @@ func (g *Grant) AcceptedSuccessor(id string) (SuccessorIntent, error) {
 	return SuccessorIntent{}, ErrDenied
 }
 
+// SuccessorRetirementHistory permits only a terminal lifecycle observation.
+// Unlike AcceptedSuccessor it includes expired intents. It is never write or
+// device admission authority. The enclosing Grant.Run still requires current
+// enrollment, administrator, assertion lifetime and authority generation.
+func (g *Grant) SuccessorRetirementHistory(id string) (SuccessorIntent, error) {
+	for _, i := range g.successors {
+		if i.ID == id {
+			return i, nil
+		}
+	}
+	return SuccessorIntent{}, ErrDenied
+}
+
 func canonicalHex(s string, min, max int) bool {
 	b, e := hex.DecodeString(s)
 	return e == nil && len(b) >= min && len(b) <= max && hex.EncodeToString(b) == s
