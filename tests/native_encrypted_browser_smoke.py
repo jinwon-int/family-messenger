@@ -34,6 +34,7 @@ def main():
     args.add_argument('--aggregate-history', action='store_true')
     args.add_argument('--aggregate-history-ui', action='store_true')
     args.add_argument('--aggregate-history-embedded', action='store_true')
+    args.add_argument('--custody-order', choices=['candidate','peer','concurrent'])
     args.add_argument('--candidate', action='store_true')
     args.add_argument('--candidate-original', action='store_true')
     args.add_argument('--successor-peer-original', action='store_true')
@@ -50,6 +51,7 @@ def main():
     assert not args.successor_peer_original or args.successor_peer
     assert not args.candidate_original or args.candidate
     assert not args.candidate or not args.successor_peer
+    assert not args.custody_order or not (args.candidate or args.successor_peer)
     aggregate_history=args.aggregate_history or args.aggregate_history_ui
     history_proof=args.history or args.history_ui
     assert not history_proof or (args.vault_ui and (not args.embedded or (args.history_ui and not args.history)))
@@ -59,8 +61,8 @@ def main():
     vault = args.vault
     preparation = args.preparation or aggregate_ui
     assert not preparation or not args.aggregate
-    aggregate = args.aggregate or preparation or aggregate_history or args.successor_peer or args.candidate
-    assert not (args.successor_peer or args.candidate) or not (preparation or aggregate_history or args.aggregate or args.embedded)
+    aggregate = args.aggregate or preparation or aggregate_history or args.successor_peer or args.candidate or args.custody_order
+    assert not (args.successor_peer or args.candidate or args.custody_order) or not (preparation or aggregate_history or args.aggregate or args.embedded)
     assert not aggregate_history or not (args.aggregate or preparation or history_proof or args.embedded)
     control_proof = args.controls
     ui_proof = args.ui or vault_ui
@@ -72,7 +74,7 @@ def main():
     assert not aggregate or not (vault or history_proof or (ui_proof and not aggregate_ui) or (embedded and not aggregate_ui) or control_proof)
     binary, policy = args.binary.resolve(strict=True), args.policy_binary.resolve(strict=True)
     root = Path(__file__).resolve().parents[1]
-    work = Path(tempfile.mkdtemp(prefix='native-candidate-' if args.candidate else 'native-successor-peer-' if args.successor_peer else 'native-aggregate-history-ui-' if args.aggregate_history_ui else 'native-aggregate-history-' if aggregate_history else 'native-aggregate-ui-' if aggregate_ui else 'native-preparation-' if preparation else 'native-aggregate-' if aggregate else 'native-history-' if history_proof else 'native-vault-ui-' if vault_ui else 'native-vault-control-' if vault and control_proof else 'native-vault-browser-' if vault else 'native-embedded-ui-' if embedded else 'native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
+    work = Path(tempfile.mkdtemp(prefix='native-custody-' if args.custody_order else 'native-candidate-' if args.candidate else 'native-successor-peer-' if args.successor_peer else 'native-aggregate-history-ui-' if args.aggregate_history_ui else 'native-aggregate-history-' if aggregate_history else 'native-aggregate-ui-' if aggregate_ui else 'native-preparation-' if preparation else 'native-aggregate-' if aggregate else 'native-history-' if history_proof else 'native-vault-ui-' if vault_ui else 'native-vault-control-' if vault and control_proof else 'native-vault-browser-' if vault else 'native-embedded-ui-' if embedded else 'native-chat-ui-' if ui_proof else 'native-control-browser-' if control_proof else 'native-encrypted-browser-', dir=root / 'artifacts'))
     state, auth, proposals = [work / n for n in ('state', 'auth', 'proposals')]
     for d in (state, auth, proposals):
         d.mkdir(mode=0o700)
@@ -188,6 +190,9 @@ def main():
     if aggregate and not embedded:
         from native_aggregate_checks import aggregate_assets
         aggregate_original=aggregate_assets(root,work,assets)
+    if args.custody_order:
+        from native_custody_checks import custody_assets
+        custody_assets(root,work,assets,proof)
     if args.candidate:
         from native_candidate_checks import candidate_assets
         candidate_assets(root,work,assets,proof,args.candidate_original)
@@ -248,6 +253,7 @@ def main():
     if vault:proof['test_instrumentation']+='; encrypted driver held CAS/KDF/write, private-worker digests only, disposable lock-aware caller; original versus instrumented hashes recorded'
     if aggregate and not aggregate_ui:proof['test_instrumentation']+='; aggregate held CAS and base pending-write SIGKILL hook; whole native record digests only; separate original/instrumented driver hashes'
     hold_next=[False];arrived=threading.Event();release=threading.Event();tamper=[None];previous_cipher=[None];previous_commit=[None]
+    custody_hooks={"callback":None,"posts":[]}
     class Proxy(BaseHTTPRequestHandler):
         def log_message(self,*args):pass
         def do_GET(self):self.forward()
@@ -315,9 +321,15 @@ def main():
                         elif mode=='wrong-group':data['group_id']='cd'*32
                         else:raise AssertionError('unknown generated context mutation')
                         raw=json.dumps(data).encode()
-                self.send_response(response.status)
+                status=response.status
+                if args.custody_order and self.path.endswith('/custody'):
+                    if self.command=='POST':custody_hooks['posts'].append(json.loads(body))
+                    if custody_hooks['callback']:
+                        status,raw,context_bad_header=custody_hooks['callback'](self.command,status,raw)
+                self.send_response(status)
+                if status==307:self.send_header('Location','/v1/session')
                 for k,v in response.getheaders():
-                    if context_bad_header and k.lower()=='x-family-actor':v='bob'
+                    if context_bad_header and k.lower()=='x-family-actor':v='invalid'
                     if k.lower() not in ('connection','transfer-encoding','server','date','content-length'):self.send_header(k,v)
                 self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
             except (OSError,http.client.HTTPException):pass
@@ -404,6 +416,12 @@ def main():
             rpc(b,'advance');rpc(b,'flush');rpc(b,'sync');rpc(a,'sync')
             assert rpc(a,'status')['phase']==rpc(b,'status')['phase']=='ready'
             proof['checks']['native_keypackage_welcome_ack_actual_library_group']=True
+            if args.custody_order:
+                from native_custody_checks import run
+                run(a,b,databases,rpc,prepare,proof,page,vault_passwords,pins,direct,config,commit,crash,digest,tamper,lambda:(stop(),start()),custody_hooks,args.custody_order)
+                for c in contexts:c.close()
+                proof['passed']=True
+                return
             if args.candidate:
                 from native_candidate_checks import run
                 run(a,b,databases,rpc,prepare,proof,page,vault_passwords,pins,direct,config,commit,crash,digest,tamper,lambda:(stop(),start()),args.candidate_original)
