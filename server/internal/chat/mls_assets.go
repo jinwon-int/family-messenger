@@ -32,6 +32,10 @@ var aggregateManifest []byte
 //go:embed aggregate_history_bundle.json
 var aggregateHistoryManifest []byte
 
+//go:embed peer_bundle.json
+var peerManifest []byte
+var compiledPeerAssets fs.FS
+
 //go:embed candidate_bundle.json
 var candidateManifest []byte
 
@@ -220,16 +224,16 @@ func loadAssetProfile(source fs.FS, manifest []byte, paths map[string]string, ve
 		}
 		kind := "text/javascript; charset=utf-8"
 		switch entry.File {
-		case "chat.html", "vault-chat.html", "history.html", "aggregate-chat.html", "aggregate-history.html", "successor.html", "successor-handoff.html", "candidate-preparation.html":
+		case "chat.html", "vault-chat.html", "history.html", "aggregate-chat.html", "aggregate-history.html", "successor.html", "successor-handoff.html", "candidate-preparation.html", "peer-preparation.html":
 			kind = "text/html; charset=utf-8"
-		case "chat.css", "history.css", "aggregate-history.css", "successor-ui.css", "candidate-preparation.css":
+		case "chat.css", "history.css", "aggregate-history.css", "successor-ui.css", "candidate-preparation.css", "peer-preparation.css":
 			kind = "text/css; charset=utf-8"
 		case "pkg.wasm":
 			kind = "application/wasm"
 		case "cargo-notices.txt", "rust-notices.txt", "age-notices.txt", "sodium-notices.txt":
 			kind = "text/plain; charset=utf-8"
 		}
-		if entry.Type != kind || (version == 4 && aggregateSources[entry.File] != entry.Source) || (version == 5 && historySources[entry.File] != entry.Source) || (version == 6 && aggregateHistorySources[entry.File] != entry.Source) || (version == 7 && successorSources[entry.File] != entry.Source) || (version == 8 && candidateSources[entry.File] != entry.Source) {
+		if entry.Type != kind || (version == 4 && aggregateSources[entry.File] != entry.Source) || (version == 5 && historySources[entry.File] != entry.Source) || (version == 6 && aggregateHistorySources[entry.File] != entry.Source) || (version == 7 && successorSources[entry.File] != entry.Source) || (version == 8 && candidateSources[entry.File] != entry.Source) || (version == 9 && peerSources[entry.File] != entry.Source) {
 			return nil, ErrInvalid
 		}
 		f, e := source.Open(entry.File)
@@ -269,7 +273,7 @@ func LoadAggregateHistoryAssets() (*EncryptedAssets, error) {
 	return loadAssetProfile(compiledAggregateHistoryAssets, aggregateHistoryManifest, aggregateHistoryPaths, 6)
 }
 func NewEncryptedAccessHandler(store *Store, authority *access.Authority, bundle *EncryptedAssets, admission *AdmissionAuthority) (http.Handler, error) {
-	if bundle == nil || (bundle.version != 1 && bundle.version != 2 && bundle.version != 5 && bundle.version != 4 && bundle.version != 6 && bundle.version != 7 && bundle.version != 8) || (bundle.version == 1 && len(bundle.files) != len(encryptedPaths)) || (bundle.version == 2 && len(bundle.files) != len(vaultPaths)) || (bundle.version == 5 && len(bundle.files) != len(historyPaths)) || (bundle.version == 4 && len(bundle.files) != len(aggregatePaths)) || (bundle.version == 6 && len(bundle.files) != len(aggregateHistoryPaths)) || (bundle.version == 7 && len(bundle.files) != len(successorPaths)) || (bundle.version == 8 && len(bundle.files) != len(candidatePaths)) {
+	if bundle == nil || (bundle.version != 1 && bundle.version != 2 && bundle.version != 5 && bundle.version != 4 && bundle.version != 6 && bundle.version != 7 && bundle.version != 8 && bundle.version != 9) || (bundle.version == 1 && len(bundle.files) != len(encryptedPaths)) || (bundle.version == 2 && len(bundle.files) != len(vaultPaths)) || (bundle.version == 5 && len(bundle.files) != len(historyPaths)) || (bundle.version == 4 && len(bundle.files) != len(aggregatePaths)) || (bundle.version == 6 && len(bundle.files) != len(aggregateHistoryPaths)) || (bundle.version == 7 && len(bundle.files) != len(successorPaths)) || (bundle.version == 8 && len(bundle.files) != len(candidatePaths)) || (bundle.version == 9 && len(bundle.files) != len(peerPaths)) {
 		return nil, ErrInvalid
 	}
 	handler, e := NewAccessHandler(store, authority, admission)
