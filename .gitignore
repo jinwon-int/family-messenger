@@ -30,3 +30,5 @@ server/internal/chat/aggregateassets/
 /server/internal/chat/aggregatehistoryassets/
 
 /server/internal/chat/successorassets/
+
+server/internal/chat/candidateassets/

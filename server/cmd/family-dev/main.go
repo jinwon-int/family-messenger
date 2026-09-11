@@ -34,6 +34,7 @@ func run() error {
 	aggregateUI := flag.Bool("synthetic-aggregate-ui", false, "enable compiled synthetic two-room custody UI; requires signed auth-state and synthetic_aggregate build")
 	aggregateHistoryUI := flag.Bool("synthetic-aggregate-history-ui", false, "enable compiled synthetic two-room history and custody UI; requires signed auth-state and synthetic_aggregate_history build")
 	successorUI := flag.Bool("synthetic-successor-ui", false, "enable compiled synthetic successor handoff/lifecycle; requires signed auth-state and synthetic_successor build")
+	candidateUI := flag.Bool("synthetic-candidate-ui", false, "enable compiled synthetic candidate preparation; requires signed auth-state and synthetic_candidate build")
 	flag.Parse()
 	authSelected := false
 	flag.Visit(func(f *flag.Flag) {
@@ -49,7 +50,7 @@ func run() error {
 		return fmt.Errorf("only 127.0.0.1 is supported")
 	}
 	selectedUI := 0
-	for _, selected := range []bool{*encryptedUI, *vaultUI, *historyUI, *aggregateUI, *aggregateHistoryUI, *successorUI} {
+	for _, selected := range []bool{*encryptedUI, *vaultUI, *historyUI, *aggregateUI, *aggregateHistoryUI, *successorUI, *candidateUI} {
 		if selected {
 			selectedUI++
 		}
@@ -62,7 +63,9 @@ func run() error {
 		if !authSelected || *authState == "" {
 			return fmt.Errorf("encrypted UI requires explicit signed auth-state")
 		}
-		if *successorUI {
+		if *candidateUI {
+			bundle, e = chat.LoadCandidateAssets()
+		} else if *successorUI {
 			bundle, e = chat.LoadSuccessorAssets()
 		} else if *aggregateHistoryUI {
 			bundle, e = chat.LoadAggregateHistoryAssets()
@@ -141,7 +144,9 @@ func run() error {
 	if *historyUI {
 		cryptoMode = "compiled read-only synthetic history UI /history/; no active device recovery"
 	}
-	if *successorUI {
+	if *candidateUI {
+		cryptoMode = "compiled synthetic candidate preparation /candidate-preparation/; no device enrollment"
+	} else if *successorUI {
 		cryptoMode = "compiled synthetic successor handoff /successor-handoff/ and lifecycle /successor/; existing private custody required"
 	} else if *aggregateHistoryUI {
 		cryptoMode = "compiled synthetic two-room history /aggregate-history/ and custody /aggregate/; no active device recovery"
