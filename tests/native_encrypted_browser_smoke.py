@@ -34,6 +34,8 @@ def main():
     args.add_argument('--aggregate-history', action='store_true')
     args.add_argument('--aggregate-history-ui', action='store_true')
     args.add_argument('--aggregate-history-embedded', action='store_true')
+    args.add_argument('--exchange-candidate', choices=['alice','bob'], default='bob')
+    args.add_argument('--exchange', action='store_true')
     args.add_argument('--custody-order', choices=['candidate','peer','concurrent'])
     args.add_argument('--candidate', action='store_true')
     args.add_argument('--candidate-original', action='store_true')
@@ -48,6 +50,7 @@ def main():
     args.add_argument('--policy-binary', required=True, type=Path)
     args = args.parse_args()
     assert not (args.aggregate_history and args.aggregate_history_ui)
+    assert not args.exchange or args.custody_order
     assert not args.successor_peer_original or args.successor_peer
     assert not args.candidate_original or args.candidate
     assert not args.candidate or not args.successor_peer
@@ -193,6 +196,9 @@ def main():
     if args.custody_order:
         from native_custody_checks import custody_assets
         custody_assets(root,work,assets,proof)
+        if args.exchange:
+            from native_exchange_checks import exchange_assets
+            exchange_assets(root,work,assets,proof)
     if args.candidate:
         from native_candidate_checks import candidate_assets
         candidate_assets(root,work,assets,proof,args.candidate_original)
@@ -253,6 +259,7 @@ def main():
     if vault:proof['test_instrumentation']+='; encrypted driver held CAS/KDF/write, private-worker digests only, disposable lock-aware caller; original versus instrumented hashes recorded'
     if aggregate and not aggregate_ui:proof['test_instrumentation']+='; aggregate held CAS and base pending-write SIGKILL hook; whole native record digests only; separate original/instrumented driver hashes'
     hold_next=[False];arrived=threading.Event();release=threading.Event();tamper=[None];previous_cipher=[None];previous_commit=[None]
+    exchange_hooks={"callback":None,"posts":[]}
     custody_hooks={"callback":None,"posts":[]}
     class Proxy(BaseHTTPRequestHandler):
         def log_message(self,*args):pass
@@ -269,6 +276,8 @@ def main():
             headers={k:v for k,v in self.headers.items() if k.lower() not in ('cookie','connection','host','content-length','transfer-encoding')}
             headers['Host']=f'127.0.0.1:{self.server.server_port}'
             if subject:headers['Cf-Access-Jwt-Assertion']=tokens[subject,False]
+            if args.exchange and self.command=='POST' and self.path.endswith('/handshake') and exchange_hooks.get('drop_before'):
+                exchange_hooks.setdefault('dropped',[]).append(json.loads(body));self.close_connection=True;return
             upstream=http.client.HTTPConnection(address,timeout=10)
             try:
                 upstream.request(self.command,self.path,body=body,headers=headers);response=upstream.getresponse();raw=response.read()
@@ -322,6 +331,10 @@ def main():
                         else:raise AssertionError('unknown generated context mutation')
                         raw=json.dumps(data).encode()
                 status=response.status
+                if args.exchange and self.path.endswith('/handshake'):
+                    if self.command=='POST':exchange_hooks['posts'].append(json.loads(body))
+                    if exchange_hooks['callback']:
+                        status,raw,context_bad_header=exchange_hooks['callback'](self.command,status,raw)
                 if args.custody_order and self.path.endswith('/custody'):
                     if self.command=='POST':custody_hooks['posts'].append(json.loads(body))
                     if custody_hooks['callback']:
@@ -418,7 +431,7 @@ def main():
             proof['checks']['native_keypackage_welcome_ack_actual_library_group']=True
             if args.custody_order:
                 from native_custody_checks import run
-                run(a,b,databases,rpc,prepare,proof,page,vault_passwords,pins,direct,config,commit,crash,digest,tamper,lambda:(stop(),start()),custody_hooks,args.custody_order)
+                run(a,b,databases,rpc,prepare,proof,page,vault_passwords,pins,direct,config,commit,crash,digest,tamper,lambda:(stop(),start()),custody_hooks,args.custody_order,exchange_hooks if args.exchange else None,args.exchange_candidate)
                 for c in contexts:c.close()
                 proof['passed']=True
                 return
