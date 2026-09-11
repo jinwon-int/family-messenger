@@ -147,7 +147,7 @@ func TestRetirementCorruptionFailsClosed(t *testing.T) {
 		call("owner", "GET", channelPath, nil, "alice-next", 422)
 	}
 	s.db.Exec("DELETE FROM mls_successor_enrolled_events")
-	s.db.Exec("DELETE FROM mls_successor_enrollments")
+	s.db.Exec("DELETE FROM mls_successor_closures; DELETE FROM mls_successor_enrollments")
 	s.db.Exec("DELETE FROM mls_successor_retirements")
 	if _, e := s.retirementRequest(p); e != ErrIntegrity {
 		t.Fatal(e)
@@ -164,7 +164,7 @@ func TestRetirementV9MigrationRetainsLeasedChannel(t *testing.T) {
 	eventsBefore := call("owner", "GET", channelPath, nil, "alice-next", 200)
 	var path string
 	s.db.QueryRow("SELECT file FROM pragma_database_list WHERE name='main'").Scan(&path)
-	if _, e := s.db.Exec("DROP TABLE mls_successor_enrolled_events; DROP TABLE mls_successor_enrollments; DROP TABLE mls_successor_retirements; PRAGMA user_version=9"); e != nil {
+	if _, e := s.db.Exec("DROP TABLE mls_successor_closures; DROP TABLE mls_successor_enrolled_events; DROP TABLE mls_successor_enrollments; DROP TABLE mls_successor_retirements; PRAGMA user_version=9"); e != nil {
 		t.Fatal(e)
 	}
 	s.Close()

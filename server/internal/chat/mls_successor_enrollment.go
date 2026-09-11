@@ -86,7 +86,7 @@ func (s *Store) enrollmentApprovals(p successorReservation) ([]leaseApproval, er
 	}
 	return qs, nil
 }
-func (s *Store) enrollmentStatus(p successorReservation) (enrollmentStatus, error) {
+func (s *Store) enrollmentState(p successorReservation) (enrollmentStatus, error) {
 	var out enrollmentStatus
 	v, _, e := s.successorLease(p)
 	if e != nil {
@@ -122,6 +122,23 @@ func (s *Store) enrollmentStatus(p successorReservation) (enrollmentStatus, erro
 		return out, e
 	}
 	return enrollmentStatus{1, enrollmentRecord{1, v, qs}, h, c, false}, nil
+}
+
+// A mandatory closure row is checked for every persistent admission. Missing or
+// corrupt tombstones fail closed; historical reconstruction stays separate.
+func (s *Store) enrollmentStatus(p successorReservation) (enrollmentStatus, error) {
+	v, e := s.enrollmentState(p)
+	if e != nil {
+		return v, e
+	}
+	q, e := s.closureRequest(p, v.Enrollment)
+	if e != nil {
+		return v, e
+	}
+	if q != nil {
+		return v, ErrForbidden
+	}
+	return v, nil
 }
 func (s *Store) approveEnrollment(p successorReservation, actor, device string, q leaseApproval) (enrollmentStatus, bool, error) {
 	out, e := s.enrollmentStatus(p)

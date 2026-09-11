@@ -61,3 +61,5 @@ async function transaction(store,e,role,operation){
 export class CandidateEnrollmentStore extends CandidateLeaseStore {enroll(e,op){return transaction(this,e,'candidate',op);}}
 export class PeerEnrollmentStore extends PeerLeaseStore {enroll(e,op){return transaction(this,e,'peer',op);}}
 export {candidateReservation,reservation} from './successor-lease-store.js';
+
+export {serialize as enrollmentEncode,deserialize as enrollmentDecode,validate as validateEnrollment};

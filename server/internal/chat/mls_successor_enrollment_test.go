@@ -86,7 +86,7 @@ func TestEnrollmentUsedRetiredMissingAndWrongPolicyDeny(t *testing.T) {
 				v, _, _ := s.successorLease(p)
 				call("owner", "POST", retirementPath, leaseApproval{"candidate", ed25519.Sign(leaseKey(9), retirementFrame(v, "candidate"))}, "alice-next", 201)
 			case "missing":
-				if _, e := s.db.Exec("DELETE FROM mls_successor_enrollments"); e != nil {
+				if _, e := s.db.Exec("DELETE FROM mls_successor_closures; DELETE FROM mls_successor_enrollments"); e != nil {
 					t.Fatal(e)
 				}
 			case "wrong-policy":
@@ -195,7 +195,7 @@ func TestSchema10EnrollmentMigrationRetainsAllFormerRows(t *testing.T) {
 	}
 	before, _ := s.retirementRequest(p)
 	retained, _ := json.Marshal(before)
-	if _, e = s.db.Exec("DROP TABLE mls_successor_enrolled_events; DROP TABLE mls_successor_enrollments; PRAGMA user_version=10;"); e != nil {
+	if _, e = s.db.Exec("DROP TABLE mls_successor_closures; DROP TABLE mls_successor_enrolled_events; DROP TABLE mls_successor_enrollments; PRAGMA user_version=10;"); e != nil {
 		t.Fatal(e)
 	}
 	var dbSeq int

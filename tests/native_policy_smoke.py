@@ -22,6 +22,7 @@ def main():
     parser.add_argument('--successor-context', action='store_true', help='also qualify read-only replacement context; requires --successor')
     parser.add_argument("--successor-reservation", action="store_true", help="durable inactive reservation proof; requires --successor-context")
     parser.add_argument("--successor-custody", action="store_true", help="inactive paired declarations; requires --successor-reservation")
+    parser.add_argument("--closure-migration", action="store_true", help="schema11 snapshot and rollback proof")
     parser.add_argument("--enrollment-migration", action="store_true", help="schema10 snapshot and rollback proof; requires retirement-migration")
     parser.add_argument("--retirement-migration", action="store_true", help="schema9 migration after completed confirmation; requires lease-migration")
     parser.add_argument("--lease-migration", action="store_true", help="schema8 migration after complete confirmations")
@@ -29,6 +30,8 @@ def main():
     parser.add_argument("--successor-handshake", action="store_true", help="restricted inactive handshake relay; requires --successor-custody")
     parser.add_argument("--legacy-binary", type=Path, help="schema5 (custody), schema6 (handshake), or schema7 (confirmation) binary for isolated migration proof")
     args = parser.parse_args()
+    if args.closure_migration and not args.enrollment_migration:
+        parser.error("--closure-migration requires --enrollment-migration")
     if args.enrollment_migration and not args.retirement_migration:
         parser.error("--enrollment-migration requires --retirement-migration")
     if args.retirement_migration and not args.lease_migration:
@@ -173,8 +176,8 @@ def main():
         stop()
         serving_binary = binary
         start()
-        prior_version=10 if args.enrollment_migration else 9 if args.retirement_migration else 8 if args.lease_migration else 7 if args.successor_confirmation else 6 if args.successor_handshake else 5
-        pattern='v10-before-successor-enrollment-*.sqlite' if args.enrollment_migration else 'v9-before-successor-retirement-*.sqlite' if args.retirement_migration else 'v8-before-successor-lease-*.sqlite' if args.lease_migration else 'v7-before-successor-confirmation-*.sqlite' if args.successor_confirmation else 'v6-before-successor-handshake-*.sqlite' if args.successor_handshake else 'v5-before-successor-custody-*.sqlite'
+        prior_version=11 if args.closure_migration else 10 if args.enrollment_migration else 9 if args.retirement_migration else 8 if args.lease_migration else 7 if args.successor_confirmation else 6 if args.successor_handshake else 5
+        pattern='v11-before-successor-closure-*.sqlite' if args.closure_migration else 'v10-before-successor-enrollment-*.sqlite' if args.enrollment_migration else 'v9-before-successor-retirement-*.sqlite' if args.retirement_migration else 'v8-before-successor-lease-*.sqlite' if args.lease_migration else 'v7-before-successor-confirmation-*.sqlite' if args.successor_confirmation else 'v6-before-successor-handshake-*.sqlite' if args.successor_handshake else 'v5-before-successor-custody-*.sqlite'
         snapshots = list((state / 'snapshots').glob(pattern))
         assert len(snapshots) == 1
         with sqlite3.connect(snapshots[0]) as db:
