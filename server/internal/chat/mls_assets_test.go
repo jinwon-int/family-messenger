@@ -120,6 +120,9 @@ func testAssetAdmissionRoutingAndLegacyPreservation(t *testing.T, pin []byte, pa
 	if entryPath == "" {
 		entryPath = paths["aggregate-chat.html"]
 	}
+	if entryPath == "" {
+		entryPath = paths["successor-handoff.html"]
+	}
 	store, authority, config, key, legacy := accessFixture(t)
 	files, manifest := assetFixture(t)
 	bundle, e := loadEncryptedAssets(files, manifest)

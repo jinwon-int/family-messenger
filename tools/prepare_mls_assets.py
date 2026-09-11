@@ -82,8 +82,23 @@ ASSET_URLS.update({'chat.html':'/encrypted/','vault-chat.html':'/vault/','histor
     'cargo-notices.txt':'/encrypted/licenses/cargo.txt','rust-notices.txt':'/encrypted/licenses/rust.txt',
     'age-notices.txt':'/vault/licenses/age.txt','sodium-notices.txt':'/vault/licenses/sodium.txt'})
 
-def parse_manifest(data, vault=False, history=False, aggregate=False, aggregate_history=False):
-    if sum((vault,history,aggregate,aggregate_history))>1:raise ValueError('select only one asset profile')
+# Standalone successor lifecycle, with no legacy/test worker entrypoints.
+SUCCESSOR_SOURCES = {
+    **{name: 'experiments/openmls-browser/web/' + name for name in (
+        'successor.html','successor-ui.js','successor-ui.css','successor-handoff.html','successor-handoff.js','successor-handoff-ui.js',
+        'successor-lifecycle-worker.js','candidate-lifecycle-worker.js','peer-lifecycle-worker.js',
+        'trust-directory.js','custody-declaration.js','handshake-wire.js','confirmation-wire.js','lease-wire.js','enrollment-wire.js','closure-wire.js')},
+    **{name: BASE_SOURCES[name] for name in ('pkg.js','pkg.wasm','cargo-notices.txt','rust-notices.txt')},
+    'successor-closure-store.js': 'experiments/device-keystore/bundle/successor-closure-store.js',
+    **{name: VAULT_SOURCES[name] for name in ('age-notices.txt','sodium-notices.txt')},
+}
+SUCCESSOR_URLS = {name:'/'+name for name in SUCCESSOR_SOURCES}
+SUCCESSOR_URLS.update({'successor.html':'/successor/','successor-handoff.html':'/successor-handoff/',
+    'pkg.js':'/pkg/family_mls_browser_experiment.js','pkg.wasm':'/pkg/family_mls_browser_experiment_bg.wasm',
+    **{name+'-notices.txt':'/successor/licenses/'+name+'.txt' for name in ('cargo','rust','age','sodium')}})
+
+def parse_manifest(data, vault=False, history=False, aggregate=False, aggregate_history=False, successor=False):
+    if sum((vault,history,aggregate,aggregate_history,successor))>1:raise ValueError('select only one asset profile')
     def pairs(items):
         out={}
         for key,value in items:
@@ -91,15 +106,15 @@ def parse_manifest(data, vault=False, history=False, aggregate=False, aggregate_
             out[key]=value
         return out
     m=json.loads(data,object_pairs_hook=pairs)
-    sources=AGGREGATE_HISTORY_SOURCES if aggregate_history else AGGREGATE_SOURCES if aggregate else HISTORY_SOURCES if history else VAULT_SOURCES if vault else BASE_SOURCES
-    if set(m)!={'version','worker_state','files'} or type(m['version']) is not int or m['version']!=(6 if aggregate_history else 4 if aggregate else 5 if history else 2 if vault else 1) or type(m['worker_state']) is not int or m['worker_state']!=4 or len(m['files'])!=len(sources):raise ValueError('manifest')
+    sources=SUCCESSOR_SOURCES if successor else AGGREGATE_HISTORY_SOURCES if aggregate_history else AGGREGATE_SOURCES if aggregate else HISTORY_SOURCES if history else VAULT_SOURCES if vault else BASE_SOURCES
+    if set(m)!={'version','worker_state','files'} or type(m['version']) is not int or m['version']!=(7 if successor else 6 if aggregate_history else 4 if aggregate else 5 if history else 2 if vault else 1) or type(m['worker_state']) is not int or m['worker_state']!=4 or len(m['files'])!=len(sources):raise ValueError('manifest')
     files=set()
     for entry in m['files']:
         if set(entry)!={'file','url','type','bytes','sha256','source'} or entry['file'] in files or type(entry['bytes']) is not int or not 0<entry['bytes']<=2*1024*1024:raise ValueError('entry')
         file=entry['file']
         if file not in sources or entry['source']!=sources[file]:raise ValueError('file or source')
         kind = 'application/wasm' if file=='pkg.wasm' else 'text/html; charset=utf-8' if file.endswith('.html') else 'text/css; charset=utf-8' if file.endswith('.css') else 'text/plain; charset=utf-8' if file.endswith('.txt') else 'text/javascript; charset=utf-8'
-        if entry['url']!=(AGGREGATE_HISTORY_URLS if aggregate_history else AGGREGATE_URLS if aggregate else ASSET_URLS)[file] or entry['type']!=kind or not isinstance(entry['sha256'],str) or len(entry['sha256'])!=64 or any(c not in '0123456789abcdef' for c in entry['sha256']):raise ValueError('route, type or hash')
+        if entry['url']!=(SUCCESSOR_URLS if successor else AGGREGATE_HISTORY_URLS if aggregate_history else AGGREGATE_URLS if aggregate else ASSET_URLS)[file] or entry['type']!=kind or not isinstance(entry['sha256'],str) or len(entry['sha256'])!=64 or any(c not in '0123456789abcdef' for c in entry['sha256']):raise ValueError('route, type or hash')
         files.add(file)
     if sum(e['bytes'] for e in m['files'])>4*1024*1024:raise ValueError('bundle size')
     # Match Go's struct field order, not the input object's insertion order.
@@ -107,10 +122,10 @@ def parse_manifest(data, vault=False, history=False, aggregate=False, aggregate_
     if (json.dumps(canonical,indent=2)+'\n').encode()!=data:raise ValueError('noncanonical manifest')
     return m
 
-def prepare(bundle, check=False, vault=False, history=False, aggregate=False, aggregate_history=False):
-    if sum((vault,history,aggregate,aggregate_history))>1:raise ValueError('select only one asset profile')
-    output=ROOT/'server/internal/chat/aggregatehistoryassets' if aggregate_history else ROOT/'server/internal/chat/aggregateassets' if aggregate else ROOT/'server/internal/chat/historyassets_v5' if history else ROOT/'server/internal/chat/vaultassets' if vault else OUTPUT
-    manifest_path=ROOT/'server/internal/chat/aggregate_history_bundle.json' if aggregate_history else ROOT/'server/internal/chat/aggregate_bundle.json' if aggregate else ROOT/'server/internal/chat/history_bundle.json' if history else ROOT/'server/internal/chat/vault_bundle.json' if vault else MANIFEST
+def prepare(bundle, check=False, vault=False, history=False, aggregate=False, aggregate_history=False, successor=False):
+    if sum((vault,history,aggregate,aggregate_history,successor))>1:raise ValueError('select only one asset profile')
+    output=ROOT/'server/internal/chat/successorassets' if successor else ROOT/'server/internal/chat/aggregatehistoryassets' if aggregate_history else ROOT/'server/internal/chat/aggregateassets' if aggregate else ROOT/'server/internal/chat/historyassets_v5' if history else ROOT/'server/internal/chat/vaultassets' if vault else OUTPUT
+    manifest_path=ROOT/'server/internal/chat/successor_bundle.json' if successor else ROOT/'server/internal/chat/aggregate_history_bundle.json' if aggregate_history else ROOT/'server/internal/chat/aggregate_bundle.json' if aggregate else ROOT/'server/internal/chat/history_bundle.json' if history else ROOT/'server/internal/chat/vault_bundle.json' if vault else MANIFEST
     lock=output.parent/'.mls-build.lock'
     check_parent_chain(lock)
     fd=os.open(lock,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
@@ -118,7 +133,7 @@ def prepare(bundle, check=False, vault=False, history=False, aggregate=False, ag
         st=os.fstat(fd)
         if not stat.S_ISREG(st.st_mode) or st.st_uid!=os.geteuid() or st.st_nlink!=1 or stat.S_IMODE(st.st_mode)!=0o600:raise ValueError('unsafe build lock')
         fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        manifest=parse_manifest(read(manifest_path,8192),vault,history,aggregate,aggregate_history)
+        manifest=parse_manifest(read(manifest_path,8192),vault,history,aggregate,aggregate_history,successor)
         assets={}
         for e in manifest['files']:
             source=e['source']
@@ -155,7 +170,7 @@ def prepare(bundle, check=False, vault=False, history=False, aggregate=False, ag
     finally:os.close(fd)
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--bundle',type=Path,required=True);p.add_argument('--check',action='store_true');mode=p.add_mutually_exclusive_group();mode.add_argument('--vault',action='store_true');mode.add_argument('--history',action='store_true');mode.add_argument('--aggregate',action='store_true');mode.add_argument('--aggregate-history',action='store_true');a=p.parse_args()
-    try:prepare(a.bundle,a.check,a.vault,a.history,a.aggregate,a.aggregate_history)
+    p=argparse.ArgumentParser();p.add_argument('--bundle',type=Path,required=True);p.add_argument('--check',action='store_true');mode=p.add_mutually_exclusive_group();mode.add_argument('--vault',action='store_true');mode.add_argument('--history',action='store_true');mode.add_argument('--aggregate',action='store_true');mode.add_argument('--aggregate-history',action='store_true');mode.add_argument('--successor',action='store_true');a=p.parse_args()
+    try:prepare(a.bundle,a.check,a.vault,a.history,a.aggregate,a.aggregate_history,a.successor)
     except (OSError,ValueError,KeyError,TypeError) as e:raise SystemExit('asset preparation rejected; existing files retained: '+str(e))
     print('Pinned synthetic assets verified; no runtime directory dependency.')

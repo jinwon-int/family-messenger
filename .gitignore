@@ -28,3 +28,5 @@ server/internal/chat/aggregateassets/
 /server/internal/chat/historyassets_v5/
 
 /server/internal/chat/aggregatehistoryassets/
+
+/server/internal/chat/successorassets/
