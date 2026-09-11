@@ -104,6 +104,12 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
     if 'ui' in hooks:
         for p,role in ((a,'peer'),(b,'candidate')):assert invoke(p,role,{'kind':'observe'})['active']
     stable=snapshots()
+    if hooks.get('ui_handoff'):
+        posts=len(hooks['posts'])
+        for p,role in ((a,'peer'),(b,'candidate')):
+            hooks['ui']['handoff_check'](p,role)
+            assert snapshots()==stable and len(hooks['posts'])==posts
+        proof['checks']['handoff_substituted_scope_rejected_by_real_custody_zero_POST']=True
     for p,role in ((a,'peer'),(b,'candidate')):
         invoke(p,role,{'kind':'send','id':'abort','text':'generated'},setup={'testFault':'abort-after-write'},reject=True);assert snapshots()==stable and not hooks['channel_posts']
     hooks['drop_before']='enrolled-channel';invoke(b,'candidate',{'kind':'send','id':'one','text':'persistent candidate hello'},reject=True);hooks['drop_before']=None;pending=snapshots();crash(1);b=page(1)
