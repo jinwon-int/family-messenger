@@ -35,7 +35,7 @@ lifetime; after restart no scope, action or credential is selected automatically
 There is no durable acknowledgment/history UI in this unit.
 
 Actual browser evidence starts from an encrypted native pair with text, an 8KiB
-file and pending rekey, plus a real saved candidate package supplied by explicit
+file and pending work (Alice rekey, Bob unsent application), plus a real saved candidate package supplied by explicit
 separate fixtures. The synthetic administrator installs accepted policy and
 reservation outside this page. Normal page/worker bytes come from the compiled
 Go server. An explicitly separate abort-only fixture checks local commit failure;
@@ -44,6 +44,8 @@ inspection worker only authenticates existing v2, refuses any transition, and
 returns the full old source-record digest. It never exports providers or writes
 a new state. Its hashes are recorded separately from the native graph.
 
+Bob first verifies the unchanged leader-only rekey rejection without a write,
+then reopens create=false and prepares an actual unsent application.
 Both Alice and Bob run as intact peer, including concurrency and browser/server
 restart. Alice waits real intent expiry; Bob proves current peer revocation while
 the original intent is still unexpired. These are distinct attributed cases.

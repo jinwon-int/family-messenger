@@ -43,8 +43,17 @@ def route_checks(port,cookies,compiled,proof):
 def run(a,b,databases,rpc,prepare,proof,page,passwords,pins,direct,config,commit,crash,digest,tamper,restart,hooks,actor):
     index=['alice','bob'].index(actor);candidate_index=1-index;candidate=['alice','bob'][candidate_index];oldpages=[a,b]
     group=rpc(a,'status')['group_id'];prepare(a,'app-old-text',b'generated prior conversation');rpc(a,'flush');rpc(a,'sync');rpc(b,'sync')
-    prepare(b,'app-old-file',bytes(range(256))*32,'file');rpc(b,'flush');rpc(b,'sync');rpc(a,'sync');rpc(oldpages[index],'update',{'id':'update-peer-pending','fault':''})
-    source=rpc(oldpages[index],'test-aggregate-digest')[0];assert source['pending']=='update-peer-pending'
+    prepare(b,'app-old-file',bytes(range(256))*32,'file');rpc(b,'flush');rpc(b,'sync');rpc(a,'sync')
+    if actor=='alice':
+        pending_id='update-peer-pending';rpc(a,'update',{'id':pending_id,'fault':''})
+    else:
+        # Preserve the existing leader-only rekey rule, including its rejection
+        # without mutation. Bob's real pending work is an unsent application.
+        rejected_before=digest(b,1);rpc(b,'update',{'id':'update-peer-pending','fault':''},reject=True);assert digest(b,1)==rejected_before
+        b.evaluate("stopWorker('device');spawn('device')");rpc(b,'init',{'identity':'bob','room':'family','database':databases[1],'password':passwords[1],'create':False})
+        pending_id='app-peer-pending';prepare(b,pending_id,b'generated unsent peer message')
+    source=rpc(oldpages[index],'test-aggregate-digest')[0];assert source['pending']==pending_id
+    proof['checks']['peer_pending_command_matches_actor_authority_with_rejected_update_unchanged']=True
     for p in (a,b):p.evaluate("stopWorker('device')")
     before=digest(oldpages[index],index);candidate_old=digest(oldpages[candidate_index],candidate_index);hooks['posts']=0;database=databases[index];password=passwords[index]
     def once(p,worker,method,argument):
