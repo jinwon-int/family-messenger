@@ -258,6 +258,14 @@ func (a *API) successorLeaseRoute(w http.ResponseWriter, r *http.Request, actor 
 		fail(w, e)
 		return
 	}
+	retired, e := a.store.retirementRequest(p)
+	if e != nil || retired != nil {
+		if e == nil {
+			e = ErrForbidden
+		}
+		fail(w, e)
+		return
+	}
 	if action == "lease" {
 		var v successorLease
 		created := false

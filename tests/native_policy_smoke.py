@@ -22,11 +22,14 @@ def main():
     parser.add_argument('--successor-context', action='store_true', help='also qualify read-only replacement context; requires --successor')
     parser.add_argument("--successor-reservation", action="store_true", help="durable inactive reservation proof; requires --successor-context")
     parser.add_argument("--successor-custody", action="store_true", help="inactive paired declarations; requires --successor-reservation")
+    parser.add_argument("--retirement-migration", action="store_true", help="schema9 migration after completed confirmation; requires lease-migration")
     parser.add_argument("--lease-migration", action="store_true", help="schema8 migration after complete confirmations")
     parser.add_argument("--successor-confirmation", action="store_true", help="MLS confirmation relay; requires handshake")
     parser.add_argument("--successor-handshake", action="store_true", help="restricted inactive handshake relay; requires --successor-custody")
     parser.add_argument("--legacy-binary", type=Path, help="schema5 (custody), schema6 (handshake), or schema7 (confirmation) binary for isolated migration proof")
     args = parser.parse_args()
+    if args.retirement_migration and not args.lease_migration:
+        parser.error("--retirement-migration requires --lease-migration")
     if args.lease_migration and not args.successor_confirmation:
         parser.error("--lease-migration requires --successor-confirmation")
     if args.successor_confirmation and not args.successor_handshake:
@@ -161,11 +164,14 @@ def main():
         retained_handshake=request("owner",handshake_path,headers=custody_headers) if args.successor_confirmation else None
         confirmation_path="/v1/mls/successors/replacement-1/confirmation"
         retained_confirmation=request("owner",confirmation_path,headers=custody_headers) if args.lease_migration else None
+        lease_path="/v1/mls/successors/replacement-1/lease"
+        retained_lease=request("owner",lease_path,headers=custody_headers) if args.retirement_migration else None
+        if retained_lease:assert retained_lease[0]==200
         stop()
         serving_binary = binary
         start()
-        prior_version=8 if args.lease_migration else 7 if args.successor_confirmation else 6 if args.successor_handshake else 5
-        pattern='v8-before-successor-lease-*.sqlite' if args.lease_migration else 'v7-before-successor-confirmation-*.sqlite' if args.successor_confirmation else 'v6-before-successor-handshake-*.sqlite' if args.successor_handshake else 'v5-before-successor-custody-*.sqlite'
+        prior_version=9 if args.retirement_migration else 8 if args.lease_migration else 7 if args.successor_confirmation else 6 if args.successor_handshake else 5
+        pattern='v9-before-successor-retirement-*.sqlite' if args.retirement_migration else 'v8-before-successor-lease-*.sqlite' if args.lease_migration else 'v7-before-successor-confirmation-*.sqlite' if args.successor_confirmation else 'v6-before-successor-handshake-*.sqlite' if args.successor_handshake else 'v5-before-successor-custody-*.sqlite'
         snapshots = list((state / 'snapshots').glob(pattern))
         assert len(snapshots) == 1
         with sqlite3.connect(snapshots[0]) as db:
