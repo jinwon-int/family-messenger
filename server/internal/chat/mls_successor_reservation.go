@@ -171,6 +171,9 @@ func (s *Store) reserveSuccessor(context successorContext, q successorReservatio
 	if _, e = tx.Exec("INSERT INTO mls_successor_enrollments VALUES(?,CAST('[]' AS BLOB))", context.Intent); e != nil {
 		return p, false, e
 	}
+	if _, e = tx.Exec("INSERT INTO mls_successor_closures VALUES(?,NULL)", context.Intent); e != nil {
+		return p, false, e
+	}
 	if _, e = tx.Exec("INSERT INTO mls_successor_retirements VALUES(?,NULL)", context.Intent); e != nil {
 		return p, false, e
 	}

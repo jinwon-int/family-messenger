@@ -13,9 +13,9 @@ import (
 )
 
 // The raw database header can differ from the page restored by a hot journal.
-// Check both schema 9 (the previous guard) and schema 10 after real recovery.
+// Check all recent schemas, including persistent enrollment and closure, after real recovery.
 func TestRecoveredDatabaseIdentity(t *testing.T) {
-	for _, version := range []int{9, 10} {
+	for _, version := range []int{9, 10, 11, 12} {
 		t.Run(strconv.Itoa(version), func(t *testing.T) {
 			dir := t.TempDir()
 			if err := os.Chmod(dir, 0700); err != nil {
@@ -63,7 +63,7 @@ func TestRecoveryJournalFixture(t *testing.T) {
 		return
 	}
 	version, err := strconv.Atoi(os.Getenv("FAMILY_RECOVERY_VERSION"))
-	if err != nil || (version != 9 && version != 10) {
+	if err != nil || (version != 9 && version != 10 && version != 11 && version != 12) {
 		t.Fatal("invalid fixture version")
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)

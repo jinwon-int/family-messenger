@@ -121,6 +121,10 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
     for p,role in ((a,'peer'),(b,'candidate')):invoke(p,role,{'kind':'observe'},setup={'testObserve':True})
     assert snapshots()[1]==original[1] and len(retained)==2
     proof['checks']['actual_server_expiry_and_worker_server_restart_persistent_admission_full_old_bytes_retained']=True
+    if 'closure' in hooks:
+        from native_closure_checks import run as closure_run
+        closure_run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,restart,hooks,expected,database,candidate_actor,invoke)
+        return
     stable=snapshots();config['activations'][0]['status']='revoked';commit(6,config['people'])
     deadline=time.monotonic()+6
     while time.monotonic()<deadline:

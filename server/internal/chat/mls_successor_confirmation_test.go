@@ -193,7 +193,7 @@ func TestSuccessorConfirmationV7MigrationKeepsCompleteHandshake(t *testing.T) {
 	before, _, _ := s.successorHandshake(p)
 	var path string
 	s.db.QueryRow("SELECT file FROM pragma_database_list WHERE name='main'").Scan(&path)
-	if _, e := s.db.Exec("DROP TABLE mls_successor_lease_events; DROP TABLE mls_successor_enrolled_events; DROP TABLE mls_successor_enrollments; DROP TABLE mls_successor_retirements; DROP TABLE mls_successor_leases; DROP TABLE mls_successor_confirmation; PRAGMA user_version=7"); e != nil {
+	if _, e := s.db.Exec("DROP TABLE mls_successor_lease_events; DROP TABLE mls_successor_closures; DROP TABLE mls_successor_enrolled_events; DROP TABLE mls_successor_enrollments; DROP TABLE mls_successor_retirements; DROP TABLE mls_successor_leases; DROP TABLE mls_successor_confirmation; PRAGMA user_version=7"); e != nil {
 		t.Fatal(e)
 	}
 	s.Close()
