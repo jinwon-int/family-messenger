@@ -39,6 +39,7 @@ def main():
     args.add_argument('--retirement', action='store_true')
     args.add_argument('--enrollment', action='store_true')
     args.add_argument('--closure', action='store_true')
+    args.add_argument('--successor-ui', action='store_true')
     args.add_argument('--confirmation', action='store_true')
     args.add_argument('--exchange', action='store_true')
     args.add_argument('--custody-order', choices=['candidate','peer','concurrent'])
@@ -56,6 +57,7 @@ def main():
     args = args.parse_args()
     assert not (args.aggregate_history and args.aggregate_history_ui)
     assert not args.lease or args.confirmation
+    assert not args.successor_ui or args.closure
     assert not args.closure or args.enrollment
     assert not args.retirement or args.lease
     assert not args.enrollment or (args.lease and not args.retirement)
@@ -221,6 +223,9 @@ def main():
                     if args.closure:
                         from native_closure_checks import closure_assets
                         closure_assets(root,work,assets,proof)
+                        if args.successor_ui:
+                            from native_successor_ui_checks import ui_assets
+                            ui_assets(root,assets,proof)
                     if args.retirement:
                         from native_retirement_checks import retirement_assets
                         retirement_assets(root,work,assets,proof)
@@ -288,6 +293,7 @@ def main():
     confirmation_hooks={"callback":None,"posts":[]}
     exchange_hooks={"callback":None,"posts":[]}
     if args.enrollment:lease_hooks["enrollment"]={"callback":None,"posts":[],"channel_callback":None,"channel_posts":[]}
+    if args.successor_ui:lease_hooks["enrollment"].update(ui_enabled=True,ui_asset_map=assets)
     if args.closure:lease_hooks["enrollment"]["closure"]={"callback":None,"posts":[]}
     if args.retirement:lease_hooks["retirement"]={"callback":None,"posts":[]}
     if args.lease:confirmation_hooks["lease"]=lease_hooks

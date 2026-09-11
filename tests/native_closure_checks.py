@@ -39,11 +39,19 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
     names={'peer':databases[0],'candidate':database};retained={};path='/v1/mls/successors/replace-bob/closure';h=hooks['closure']
     def args(role,kind):return {'identity':peer_actor if role=='peer' else candidate_actor,'database':names[role],'password':passwords[0 if role=='peer' else 1],'intent':{'accepted':True,'reservation':copy.deepcopy(expected)},'operation':{'kind':kind}}
     def invoke(p,role,kind='close',setup=None,reject=False,arg=None):
+        ui_state=None
+        if 'ui' in hooks and setup is None and arg is None:
+            ui_state=hooks['ui']['perform'](p,role,'closure-close' if kind=='close' else 'closure-observe')
+            if reject:
+                assert ui_state=='unknown';return
+            assert ui_state in ('closed','local-closed');kind='observe'
         v=p.evaluate('''([role,arg,setup])=>new Promise(resolve=>{const w=new Worker('/'+(setup?'':'original-')+role+'-closure-worker.js',{type:'module'});const timer=setTimeout(()=>{w.terminate();resolve({ok:false,timeout:true})},25000);w.onerror=e=>{clearTimeout(timer);resolve({ok:false,error:e.message})};w.onmessage=({data})=>{if(data.boot){if(setup)w.postMessage({testSetup:setup});w.postMessage({id:1,method:'closure',argument:arg})}else if(data.id===1){clearTimeout(timer);resolve(data);w.terminate()}}})''',[role,arg or args(role,kind),setup])
         snap=v.get('test_snapshot') or v.get('result',{}).get('test_snapshot')
         if snap:assert len(snap)==64 and retained.setdefault(role,snap)==snap
         if reject:assert not v['ok'] and 'result' not in v,v;return
-        assert v['ok'],v;r=v['result'];assert r['committed'] and r['local_closed'] and v['memory_bytes']<=128*1024*1024;return r
+        assert v['ok'],v;r=v['result'];assert r['committed'] and r['local_closed'] and v['memory_bytes']<=128*1024*1024
+        if ui_state is not None:assert ui_state==('closed' if r['server_closed'] else 'local-closed')
+        return r
     def snapshots():return [digest(a,0),digest(b,1),digest(b,1,database=database)]
     def current(role,method,route,body=None):
         return direct(subjects[role],method,route,body,device=expected['context'][role]['device_id'])
@@ -54,6 +62,11 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
     # The provider has advanced bidirectionally. Freeze a real unsent ciphertext too.
     hooks['drop_before']='enrolled-channel';enrollment_invoke(b,'candidate',{'kind':'send','id':'closure-pending','text':'must remain sealed'},reject=True);hooks['drop_before']=None
     original=snapshots();baseline=[saved_state(a,databases[0]),saved_state(b,database)];oldposts=len(hooks['channel_posts'])
+    if 'ui' in hooks:
+        for p,role in ((a,'peer'),(b,'candidate')):
+            assert hooks['ui']['fault'](p,role)=='unknown'
+            assert snapshots()==original and not h['posts']
+        proof['checks']['actual_DOM_local_closure_CAS_failure_zero_POST_preserves_pending']=True
     for p,role in ((a,'peer'),(b,'candidate')):
         for fault in ('abort-before-write','abort-after-write'):
             invoke(p,role,setup={'testFault':fault},reject=True);assert snapshots()==original and not h['posts']
@@ -79,6 +92,7 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
     order=['candidate','peer'] if candidate_actor=='bob' else ['peer','candidate']
     for role in order:
         p=b if role=='candidate' else a;h['drop_before']=True;invoke(p,role,setup={'testObserve':True},reject=True);h['drop_before']=False
+        if 'ui' in hooks:assert not invoke(p,role,'observe')['server_closed']
         enrollment_invoke(p,role,{'kind':'sync'},reject=True)
     sealed=snapshots();assert len(h['dropped'])==2 and not h['posts'] and len(hooks['channel_posts'])==oldposts
     crash(0);a=page(0);crash(1);b=page(1)
@@ -95,6 +109,7 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
     restart();crash(0);a=page(0);crash(1);b=page(1)
     for p,role in ((a,'peer'),(b,'candidate')):
         r=invoke(p,role,setup={'testObserve':True});assert r['server_closed']
+        if 'ui' in hooks:assert invoke(p,role,'observe')['server_closed']
         enrollment_invoke(p,role,{'kind':'sync'},reject=True)
     assert len(h['posts'])==1 and len(retained)==2 and snapshots()[1]==original[1]
     stable=snapshots()
@@ -124,4 +139,7 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
     for p,role in ((a,'peer'),(b,'candidate')):invoke(p,role,'observe',reject=True)
     assert snapshots()==stable
     proof['checks']['closure_policy_revocation_restart_preserves_terminal_custody_and_pending']=True
+    if 'ui' in hooks:
+        from native_successor_ui_checks import finish
+        finish(hooks,proof)
     proof['boundary']='Synthetic persistent target unilateral closure after actual expiry; all original and enrolled private state retained; no global device enrollment or production cutover'
