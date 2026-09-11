@@ -76,6 +76,24 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
     assert snapshots()[1]==original[1]
     proof['checks']['actual_native_channel_bidirectional_MLS_protected_commit_lost_posts_exact_retry_restart']=True
     proof['checks']['lease_preserves_full_source_pending_package_legacy_bytes_no_global_device_admission']=True
+    # Fill to 63 with real protected sends, then hold an already sealed request
+    # while the peer consumes the final slot. Full sync must retain that pending
+    # ciphertext, stop reposting it, and return newly decrypted messages.
+    for i in range(61):invoke(b,'candidate',{'kind':'send','id':'capacity-'+str(i),'text':'generated capacity '+str(i)})
+    hooks['drop_before']='channel';invoke(b,'candidate',{'kind':'send','id':'capacity-race','text':'generated pending at capacity'},reject=True);hooks['drop_before']=None
+    invoke(a,'peer',{'kind':'send','id':'final-slot','text':'generated final peer message'})
+    post_count=len(hooks['channel_posts']);assert post_count==64
+    full=invoke(b,'candidate',{'kind':'sync'});assert full['channel_full'] and full['outbox_status']=='blocked-capacity' and full['received'][-1]=={'seq':64,'text':'generated final peer message'}
+    stable=snapshots();assert len(hooks['channel_posts'])==post_count
+    crash(1);b=page(1);assert invoke(b,'candidate',{'kind':'sync'})==full and snapshots()==stable and len(hooks['channel_posts'])==post_count
+    # A used, now impossible request remains represented; a fresh request never
+    # advances the sender at an already observed full log, for either role.
+    for p,role in ((a,'peer'),(b,'candidate')):
+        invoke(p,role,{'kind':'send','id':'overflow','text':'generated overflow'},reject=True)
+        assert snapshots()==stable and len(hooks['channel_posts'])==post_count
+    assert invoke(b,'candidate',{'kind':'send','id':'capacity-race','text':'generated pending at capacity'})==full and snapshots()==stable
+    assert invoke(a,'peer',{'kind':'sync'})['channel_full'] and snapshots()==stable
+    proof['checks']['full_channel_race_preserves_pending_stops_reposts_and_keeps_reading_after_restart']=True
     for mode in ('json','oversize','redirect','header','rollback'):
         def mutate(method,status,raw):
             if mode=='json':return status,b'{',False

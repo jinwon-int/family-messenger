@@ -15,7 +15,7 @@ export function leaseWorker(wasm,store,normalize,role){
  const h=await current(store,e,role),c=await confirmationHTTP(store,e,h,role);if(c.revision!==2)fail();await store.open(selected.database,selected.identity,selected.room);
  let local=await store.operateLease(e,h,c,operation);if(!local.committed||dead)fail();
  if(operation.kind==='activate'){const accepted=await leaseHTTP(store,e,h,c,role,'lease',local.approval);local.phase=accepted.phase;}
- else if(local.pending){await leaseHTTP(store,e,h,c,role,'channel',local.pending);local=await store.operateLease(e,h,c,{kind:'sync'});}
+ else if(local.pending&&!local.channel_full){await leaseHTTP(store,e,h,c,role,'channel',local.pending);local=await store.operateLease(e,h,c,{kind:'sync'});}
  const memory=wasm.memory.buffer.byteLength+store.memoryBytes();if(dead||Date.now()>=e.context.expires_at*1000||memory>128*1024*1024)fail();const {approval,pending,...result}=local;self.postMessage({id,ok:true,result,memory_bytes:memory});close();self.close();
  }catch(_){close();self.postMessage({id,ok:false,memory_bytes:0});self.close();}};self.postMessage({boot:true});
 }

@@ -49,7 +49,12 @@ Unknown POST outcomes preserve the exact pending ciphertext and ID. Reopening
 uses create=false; a complete public own approval cannot reconstruct missing
 private lease state. The worker supports activate/send/sync and at most 256
 UTF-8 plaintext bytes per message. It rejects changed plaintext under a used ID,
-conflicting pending sends, stale receipts and malformed responses. Separate
+conflicting pending sends, stale receipts and malformed responses. A fresh send
+against an observed full log is rejected before encryption. If the peer fills
+the last slot after a local send was sealed, sync retains that exact pending
+request and sender state, returns `outbox_status=blocked-capacity`, and keeps
+received messages readable without repeatedly posting an impossible request.
+`channel_full` is null during activate, which does not inspect channel history. Separate
 workers own immutable arguments before any await, with bounded HTTP deadlines,
 redirect rejection, fresh authority checks and expiry-aware IndexedDB CAS.
 

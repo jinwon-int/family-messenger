@@ -26,9 +26,9 @@ async function transaction(store,e,h,c,role,operation){
  if(await validated(a,e,h,c,role)!==store.root.pub)fail();original=encode(a,role);const r=target(a,role);
  const remote=await leaseHTTP(store,e,h,c,role,'lease');live();
  if(!r.lease){if(remote.approvals.some(x=>x.role===role))fail();const other=e.context[role==='candidate'?'peer':'candidate'];a.version++;r.lease={version:1,approval:{role,signature:b64(staged_lease_signature(r.crypto,r.identity,other.actor,unhex(other.signing_key),leaseDigest(e,h,c,role)))},seen:[],sent:[],pending:null,received:[]};}
- const l=r.lease;for(const x of remote.approvals)if(x.role===role&&!same(x,l.approval))fail();
+ const l=r.lease;let channelFull=null;for(const x of remote.approvals)if(x.role===role&&!same(x,l.approval))fail();
  if(operation.kind!=='activate'){
- if(remote.phase!=='leased')fail();const history=await leaseHTTP(store,e,h,c,role,'channel');live();if(history.length<l.seen.length||l.seen.some((x,i)=>x!==history[i].sha256))fail();
+ if(remote.phase!=='leased')fail();const history=await leaseHTTP(store,e,h,c,role,'channel');live();channelFull=history.length===64;if(history.length<l.seen.length||l.seen.some((x,i)=>x!==history[i].sha256))fail();
  for(const ev of history.slice(l.seen.length)){
   const q=ev.message;
   if(q.device_id===e.context[role].device_id){const own=l.sent.find(x=>x.id===q.client_id)??l.pending;if(!own||!same(own.message,q))fail();if(l.pending?.id===q.client_id){l.sent.push(l.pending);l.pending=null;}}
@@ -37,14 +37,14 @@ async function transaction(store,e,h,c,role,operation){
  }
  if(operation.kind==='send'){
  const {id,text}=operation;const sha=jsonHash(text);const prior=l.sent.find(x=>x.id===id)??(l.pending?.id===id?l.pending:null);
- if(prior){if(prior.text_sha256!==sha)fail();}else{if(l.pending||l.sent.length>=64)fail();const plain=enc.encode(JSON.stringify(['family-successor-channel',e.reservation_id,jsonHash(c),id,text]));try{l.pending={id,text_sha256:sha,message:{client_id:id,device_id:e.context[role].device_id,payload:b64(apply(r,e,role,'encrypt',plain))}};}finally{plain.fill(0);}}
+ if(prior){if(prior.text_sha256!==sha)fail();}else{if(l.pending||l.sent.length>=64||channelFull)fail();const plain=enc.encode(JSON.stringify(['family-successor-channel',e.reservation_id,jsonHash(c),id,text]));try{l.pending={id,text_sha256:sha,message:{client_id:id,device_id:e.context[role].device_id,payload:b64(apply(r,e,role,'encrypt',plain))}};}finally{plain.fill(0);}}
  }
  }
  if(role==='candidate')a.checksum=exchangeChecksum(a);if(await validated(a,e,h,c,role)!==store.root.pub)fail();next=encode(a,role);store.maxSerialized=next.length;let after=null;
  if(original.length!==next.length||original.some((x,i)=>x!==next[i])){const revision=before.revision+1;if(revision>512)fail();const {state,header}=sodium.crypto_secretstream_xchacha20poly1305_init_push(store.root.key);after={...before,revision,header,cipher:sodium.crypto_secretstream_xchacha20poly1305_push(state,next,store.aad(revision),sodium.crypto_secretstream_xchacha20poly1305_TAG_FINAL)};}
  await current(store,e,role,h);live();const fresh=await confirmationHTTP(store,e,h,role);if(!same(fresh,c))fail();const final=await leaseHTTP(store,e,h,c,role,'lease');live();if(remote.approvals.some(x=>!final.approvals.some(y=>same(x,y))))fail();
  await store.commit(before,after,'',live);live();store.root.seen=(after??before).revision;
- return {committed:true,role,approval:l.approval,pending:l.pending?.message??null,received:l.received,phase:final.phase};
+ return {committed:true,role,approval:l.approval,pending:l.pending?.message??null,received:l.received,phase:final.phase,channel_full:channelFull,outbox_status:l.pending?(channelFull?'blocked-capacity':'pending'):'empty'};
  }finally{if(original)sodium.memzero(original);if(next)sodium.memzero(next);wipe(a,role);}
  });
 }
