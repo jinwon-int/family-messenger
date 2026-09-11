@@ -129,6 +129,9 @@ func testAssetAdmissionRoutingAndLegacyPreservation(t *testing.T, pin []byte, pa
 	if version == 9 {
 		entryPath = paths["peer-preparation.html"]
 	}
+	if version == 10 {
+		entryPath = paths["custody-ceremony.html"]
+	}
 	store, authority, config, key, legacy := accessFixture(t)
 	files, manifest := assetFixture(t)
 	bundle, e := loadEncryptedAssets(files, manifest)
