@@ -37,8 +37,17 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
     def args(role,op):
         i=0 if role=='peer' else 1
         return {'identity':[peer_actor,candidate_actor][i],'database':databases[0] if i==0 else database,'password':passwords[i],'intent':{'accepted':True,'reservation':copy.deepcopy(expected)},'operation':op}
+    if hooks.get('ui_enabled'):
+        from native_successor_ui_checks import install
+        install(hooks,expected,databases,database,passwords,candidate_actor,proof)
     retained={}
     def invoke(p,role,op=None,setup=None,reject=False,arg=None):
+        ui_state=None
+        if 'ui' in hooks and setup is None and arg is None and (op or {'kind':'enroll'})['kind'] in ('enroll','observe'):
+            kind=(op or {'kind':'enroll'})['kind'];ui_state=hooks['ui']['perform'](p,role,'enroll' if kind=='enroll' else 'enrollment-observe')
+            if reject:
+                assert ui_state=='unknown';return
+            assert ui_state!='unknown';op={'kind':'observe'}
         v=p.evaluate('''([role,arg,setup])=>new Promise(resolve=>{const w=new Worker('/'+(setup?'':'original-')+role+'-enrollment-worker.js',{type:'module'});const timer=setTimeout(()=>{w.terminate();resolve({ok:false,timeout:true})},25000);w.onerror=e=>{clearTimeout(timer);resolve({ok:false,error:e.message})};w.onmessage=({data})=>{if(data.boot){if(setup)w.postMessage({testSetup:setup});w.postMessage({id:1,method:'enrollment',argument:arg})}else if(data.id===1){clearTimeout(timer);resolve(data);w.terminate()}}})''',[role,arg or args(role,op or {'kind':'enroll'}),setup])
         if v.get('test_snapshot'):
             snap=v['test_snapshot'];assert len(snap)==64;assert retained.setdefault(role,snap)==snap
@@ -46,6 +55,9 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
         assert v['ok'],v;r=v['result'];assert r['committed'] and v['memory_bytes']<=128*1024*1024
         if 'test_snapshot' in r:
             snap=r.pop('test_snapshot');assert len(snap)==64;assert retained.setdefault(role,snap)==snap
+        if ui_state is not None:
+            expected_state='active' if r['active'] else 'awaiting-admin' if r['pair_declared'] else 'awaiting-peer' if r['own_declared'] else 'local-saved'
+            assert ui_state==expected_state,(ui_state,r)
         return r
     def snapshots():return [digest(a,0),digest(b,1),digest(b,1,database=database)]
     original=snapshots();original_devices=copy.deepcopy(config['devices']);old_states=[saved_state(a,databases[0]),saved_state(b,database)]
@@ -59,6 +71,7 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
     order=[('candidate',b),('peer',a)] if candidate_actor=='bob' else [('peer',a),('candidate',b)]
     for role,p in order:
         hooks['drop_before']='enrollment';invoke(p,role,setup={'testObserve':True},reject=True);hooks['drop_before']=None
+        if 'ui' in hooks:assert not invoke(p,role,{'kind':'observe'})['own_declared']
         lease_invoke(p,role,{'kind':'sync'},reject=True)
     pending=snapshots();assert not hooks['posts'] and len(hooks['dropped'])==2
     crash(0);a=page(0);crash(1);b=page(1)
@@ -88,6 +101,8 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
         time.sleep(.05)
     else:raise AssertionError('explicit activation policy reload')
     for p,role in ((a,'peer'),(b,'candidate')):assert invoke(p,role,{'kind':'observe'},setup={'testObserve':True})['active']
+    if 'ui' in hooks:
+        for p,role in ((a,'peer'),(b,'candidate')):assert invoke(p,role,{'kind':'observe'})['active']
     stable=snapshots()
     for p,role in ((a,'peer'),(b,'candidate')):
         invoke(p,role,{'kind':'send','id':'abort','text':'generated'},setup={'testFault':'abort-after-write'},reject=True);assert snapshots()==stable and not hooks['channel_posts']
