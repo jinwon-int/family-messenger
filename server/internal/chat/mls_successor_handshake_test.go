@@ -417,3 +417,78 @@ func TestSuccessorHandshakeMaximumPayloadAndCanonicalWire(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestSuccessorHandshakeGroupClaimExcludesOrdinaryRoomBothOrders(t *testing.T) {
+	for _, first := range []string{"handshake", "ordinary"} {
+		t.Run(first, func(t *testing.T) {
+			_, _, _, call := successorContextFixture(t)
+			_, q := handshakeReserve(t, call)
+			handshakePair(t, call, q)
+			qs := handshakeRequests(q)
+			call("owner", "POST", handshakePath, qs[0], "alice-next", 201)
+			ordinary := mlsCreate{"unrelated", qs[1].Group, "charlie-first", "bob-first"}
+			if first == "handshake" {
+				call("family", "POST", handshakePath, qs[1], "bob-first", 201)
+				// Both fresh create and existing ordinary reservation bind share the guard.
+				call("outsider", "POST", "/v1/mls/rooms", ordinary, "charlie-first", 409)
+				call("outsider", "POST", "/v1/mls/reservations", map[string]string{"room": "unrelated", "peer_actor": "bob"}, "charlie-first", 201)
+				call("outsider", "POST", "/v1/mls/rooms", ordinary, "charlie-first", 409)
+			} else {
+				call("outsider", "POST", "/v1/mls/rooms", ordinary, "charlie-first", 201)
+				call("family", "POST", handshakePath, qs[1], "bob-first", 409)
+			}
+			call("owner", "GET", handshakePath, nil, "alice-next", 200)
+			call("owner", "GET", successorReservationPath, nil, "alice-next", 200)
+			call("owner", "GET", successorCustodyPath, nil, "alice-next", 200)
+		})
+	}
+}
+
+func TestSuccessorHandshakeOrdinaryAndWelcomeRaceOneGroupClaim(t *testing.T) {
+	for range 8 {
+		s, _, c, call := successorContextFixture(t)
+		p, q := handshakeReserve(t, call)
+		handshakePair(t, call, q)
+		qs := handshakeRequests(q)
+		call("owner", "POST", handshakePath, qs[0], "alice-next", 201)
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		wins, conflicts := 0, 0
+		gate := make(chan struct{})
+		for i := range 2 {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-gate
+				s.mu.Lock()
+				var created bool
+				var e error
+				if i == 0 {
+					_, created, e = s.appendSuccessorHandshake(p, "bob", "bob-first", qs[1])
+				} else {
+					_, created, e = s.createMLS(mlsCreate{"unrelated", qs[1].Group, "charlie-first", "bob-first"}, "charlie", c.Devices)
+				}
+				s.mu.Unlock()
+				mu.Lock()
+				defer mu.Unlock()
+				if e == ErrConflict {
+					conflicts++
+				} else if e != nil {
+					t.Error(e)
+				} else if created {
+					wins++
+				} else {
+					t.Error("unexpected retry")
+				}
+			}(i)
+		}
+		close(gate)
+		wg.Wait()
+		if wins != 1 || conflicts != 1 {
+			t.Fatal(wins, conflicts)
+		}
+		if _, _, e := s.successorHandshake(p); e != nil {
+			t.Fatal("race made retained transcript unreadable", e)
+		}
+	}
+}

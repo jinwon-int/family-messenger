@@ -269,7 +269,7 @@ func (s *Store) createMLS(q mlsCreate, actor string, devices []access.Device) (M
 		}
 	}
 
-	if e = s.db.QueryRow("SELECT count(*) FROM mls_rooms WHERE group_id=?", q.Group).Scan(&exists); e != nil {
+	if e = s.db.QueryRow("SELECT (SELECT count(*) FROM mls_rooms WHERE group_id=?)+(SELECT count(*) FROM mls_successor_handshake WHERE group_id=?)", q.Group, q.Group).Scan(&exists); e != nil {
 		return MLSRoom{}, false, e
 	}
 	if exists != 0 {
