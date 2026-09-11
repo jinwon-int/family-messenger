@@ -24,7 +24,9 @@ Public room/device metadata in this list is not encrypted.
 
 Imports first lock the old action and clear selections. A generation invalidates
 late file reads after another import/load, manual lock, cross-tab lock, page hide
-or navigation. Successful import displays an unverified-list message. Neither
+or navigation. Interrupting an in-flight or unknown operation leaves a separate
+visible uncertainty warning throughout this page lifetime; replacing/loading
+public lists cannot acknowledge that earlier operation. Successful import displays an unverified-list message. Neither
 import nor save claims current participation or possession. Providers, passwords,
 pending messages and tombstones remain in unchanged protected stores.
 

@@ -2,7 +2,7 @@ import {installScopes} from './successor-ui.js';
 import {LIMIT,STORAGE_KEY,parseHandoff} from './successor-handoff.js';
 const $=id=>document.getElementById(id);let generation=0,documentText=null;
 const say=s=>{$('handoff-status').textContent=s;};
-function clear(){generation++;documentText=null;$('handoff-save').disabled=true;$('handoff-file').value='';$('action').value='';installScopes([]);}
+function clear(){if(['working','local-committed','unknown'].includes($('status').dataset.state))$('handoff-uncertain').hidden=false;generation++;documentText=null;$('handoff-save').disabled=true;$('handoff-file').value='';$('action').value='';installScopes([]);}
 function cancel(){clear();say('잠겼습니다. 요청을 다시 불러오세요.');}
 function accept(raw,g){
  if(g!==generation||document.hidden)return;
