@@ -7,7 +7,7 @@ import subprocess
 import time
 
 
-def run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, media_path, context=False, reservation=False, custody=False, upgrade=None, handshake=False, confirmation=False):
+def run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, media_path, context=False, reservation=False, custody=False, upgrade=None, handshake=False, confirmation=False, lease_migration=False):
     checks = proof['checks'] = {}
     serial = 0
 
@@ -183,9 +183,10 @@ def run(config, auth, proposals, proof, request, start, stop, command, private_w
         from native_successor_handshake_checks import exchange
         handshake_path,handshake_final=exchange(request,q,start,stop,checks)
     if confirmation:
-        upgrade()
+        if not lease_migration:upgrade()
         from native_successor_confirmation_checks import confirm
         confirmation_path,confirmation_final=confirm(request,q,handshake_final,start,stop,checks)
+        if lease_migration:upgrade()
 
     stop()  # actual owned server SIGKILL after durable acceptance/reservation
     start()

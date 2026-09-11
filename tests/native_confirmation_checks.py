@@ -125,6 +125,10 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
         try:confirm(b,'candidate',reject=True)
         finally:hooks['callback']=None
         assert snapshots()==stable
+    if 'lease' in hooks:
+        from native_lease_checks import reject_premature
+        reject_premature(b,'candidate',args('candidate'));assert snapshots()==stable and not hooks['lease']['posts']
+        proof['checks']['lease_rejects_public_complete_confirmation_before_candidate_private_receive_commit']=True
     candidate=confirm(b,'candidate');assert candidate['peer_verified'] and candidate['group_id']==peer['group_id'] and candidate['transcript_revision']==peer['transcript_revision']==2
     proof['checks']['actual_context_bound_peer_authenticated_MLS_confirmation_both_directions']=True
     proof['checks']['confirmation_unknown_posts_same_role_race_and_lost_replies_exact_ciphertext']=True
@@ -164,6 +168,10 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
     for p,role in ((a,'peer'),(b,'candidate')):
         bad=args(role);bad['intent']['reservation']['context']['expires_at']=1;confirm(p,role,bad,reject=True)
     assert direct(peer_subject,'GET','/v1/mls/rooms/successor-room/log')[0]==403
+    if 'lease' in hooks:
+        from native_lease_checks import run as lease_run
+        lease_run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,restart,hooks['lease'],expected,source,proposal,database,candidate_actor)
+        return
     next(d for d in config['devices'] if d['actor']==peer_actor).update(status='revoked',device_revision=2);commit(5,config['people'])
     deadline=time.monotonic()+6
     while time.monotonic()<deadline:

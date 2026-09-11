@@ -39,3 +39,15 @@ pub fn staged_identity_context(
     }
     Ok(state)
 }
+
+/// Domain-separated signature for an explicit short-lived successor lease.
+/// A signature is released by the worker only after its protected local commit.
+#[wasm_bindgen]
+pub fn staged_lease_signature(bytes:&[u8],identity:&str,peer:&str,key:&[u8],digest:&[u8])->Result<Vec<u8>,JsValue>{
+    use openmls_traits::signatures::Signer;
+    if digest.len()!=32{return Err(rejected(()));}
+    let device=load(bytes,identity)?;trusted_members(&device,peer,key,true)?;
+    if device.group.as_ref().ok_or_else(||rejected(()))?.epoch().as_u64()!=1{return Err(rejected(()));}
+    let mut message=b"family-successor-lease-v1\0".to_vec();message.extend_from_slice(digest);
+    device.signer.sign(&message).map_err(rejected)
+}

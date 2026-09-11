@@ -73,3 +73,5 @@ async function transaction(store,e,h,role,remote){
 export class CandidateConfirmationStore extends CandidateExchangeStore {confirm(e,h,r){return transaction(this,e,h,'candidate',r);}}
 export class PeerConfirmationStore extends PeerExchangeStore {confirm(e,h,r){return transaction(this,e,h,'peer',r);}}
 export {candidateReservation,reservation} from './successor-exchange-store.js';
+
+export {validate as validateConfirmation};

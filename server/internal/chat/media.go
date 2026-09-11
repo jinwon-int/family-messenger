@@ -277,6 +277,9 @@ func inspectSnapshots(path string) error {
 		if strings.HasPrefix(name, "v5-before-successor-custody-") {
 			prefix = "v5-before-successor-custody-"
 		}
+		if strings.HasPrefix(name, "v8-before-successor-lease-") {
+			prefix = "v8-before-successor-lease-"
+		}
 		if strings.HasPrefix(name, "v7-before-successor-confirmation-") {
 			prefix = "v7-before-successor-confirmation-"
 		}
