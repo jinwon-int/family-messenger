@@ -45,6 +45,7 @@ def main():
     args.add_argument('--confirmation', action='store_true')
     args.add_argument('--exchange', action='store_true')
     args.add_argument('--custody-order', choices=['candidate','peer','concurrent'])
+    args.add_argument('--custody-ceremony', action='store_true')
     args.add_argument('--peer-ceremony', action='store_true')
     args.add_argument('--candidate-ceremony', action='store_true')
     args.add_argument('--candidate', action='store_true')
@@ -69,6 +70,7 @@ def main():
     assert not args.enrollment or (args.lease and not args.retirement)
     assert not args.confirmation or args.exchange
     assert not args.exchange or args.custody_order
+    assert not args.custody_ceremony or (args.custody_order and not args.exchange and not args.successor_embedded)
     assert not args.peer_ceremony or (args.successor_peer and args.successor_peer_original and not args.successor_embedded)
     assert not args.successor_peer_original or args.successor_peer
     assert not args.candidate_ceremony or (args.candidate and args.candidate_original and not args.successor_embedded)
@@ -134,7 +136,7 @@ def main():
         log = work / 'server.log'
         output = log.open('ab')
         offset = log.stat().st_size
-        process = subprocess.Popen([str(binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--listen', address]+(['--synthetic-aggregate-history-ui' if args.aggregate_history_embedded else '--synthetic-aggregate-ui' if aggregate_ui else '--synthetic-history-ui' if args.history_ui else '--synthetic-vault-ui' if vault_ui else '--synthetic-mls-ui'] if embedded else ['--synthetic-successor-ui'] if args.successor_embedded else ['--synthetic-peer-ui'] if args.peer_ceremony else ['--synthetic-candidate-ui'] if args.candidate_ceremony else []), stderr=output, stdout=subprocess.DEVNULL)
+        process = subprocess.Popen([str(binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--listen', address]+(['--synthetic-aggregate-history-ui' if args.aggregate_history_embedded else '--synthetic-aggregate-ui' if aggregate_ui else '--synthetic-history-ui' if args.history_ui else '--synthetic-vault-ui' if vault_ui else '--synthetic-mls-ui'] if embedded else ['--synthetic-successor-ui'] if args.successor_embedded else ['--synthetic-custody-ui'] if args.custody_ceremony else ['--synthetic-peer-ui'] if args.peer_ceremony else ['--synthetic-candidate-ui'] if args.candidate_ceremony else []), stderr=output, stdout=subprocess.DEVNULL)
         until = time.monotonic() + 10
         while time.monotonic() < until:
             assert process.poll() is None, 'server exited'
@@ -306,6 +308,9 @@ def main():
     if args.peer_ceremony:
         from native_peer_ceremony_checks import compiled_assets
         successor_compiled=compiled_assets(root,args.bundle,assets,proof,work)
+    if args.custody_ceremony:
+        from native_custody_ceremony_checks import compiled_assets
+        successor_compiled=compiled_assets(root,args.bundle,assets,proof,work)
     proof['assets_sha256']={name:hashlib.sha256(raw).hexdigest() for name,raw in assets.items()}
     proof['test_instrumentation']='UI assets unmodified; disposable page tracks Blob URLs and drops one prepare before worker admission; generated proxy responses may be held/altered' if ui_proof else 'main selects native worker; served-only pending-write hold and deliberately forged inner sender fixture; proxy may hold/alter generated responses'
     if vault:proof['test_instrumentation']+='; encrypted driver held CAS/KDF/write, private-worker digests only, disposable lock-aware caller; original versus instrumented hashes recorded'
@@ -329,7 +334,7 @@ def main():
         def forward(self):
             if self.headers.get('Host')!=f'127.0.0.1:{self.server.server_port}' or not self.path.startswith('/') or self.path.startswith('//') or any(k.lower()=='authorization' or k.lower().startswith('cf-') for k in self.headers):self.send_error(400);return
             cookie=SimpleCookie();cookie.load(self.headers.get('Cookie',''));v=cookie.get('synthetic_edge');subject=bindings.get(v.value if v else None)
-            successor_fault=(args.peer_ceremony and candidate_hooks['fault'] and self.path=='/successor-peer-worker.js') or (args.candidate_ceremony and candidate_hooks['fault'] and self.path=='/candidate-worker.js') or args.successor_embedded and lease_hooks['enrollment'].get('ui_fault_active') and self.path in ('/candidate-lifecycle-worker.js','/peer-lifecycle-worker.js')
+            successor_fault=(args.custody_ceremony and candidate_hooks['fault'] and self.path in ('/candidate-worker.js','/successor-peer-worker.js','/candidate-custody-worker.js','/peer-custody-worker.js')) or (args.peer_ceremony and candidate_hooks['fault'] and self.path=='/successor-peer-worker.js') or (args.candidate_ceremony and candidate_hooks['fault'] and self.path=='/candidate-worker.js') or args.successor_embedded and lease_hooks['enrollment'].get('ui_fault_active') and self.path in ('/candidate-lifecycle-worker.js','/peer-lifecycle-worker.js')
             if not embedded and self.command=='GET' and self.path in assets and (self.path not in successor_compiled or successor_fault):
                 raw=assets[self.path];self.send_response(200);self.send_header('Content-Type','application/wasm' if self.path.endswith('.wasm') else 'text/javascript' if self.path.endswith('.js') else 'text/css' if self.path.endswith('.css') else 'text/html');self.send_header('Content-Length',str(len(raw)));self.send_header('Cache-Control','no-store');self.send_header('Content-Security-Policy',"default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; worker-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'");self.end_headers();self.wfile.write(raw);return
             size=int(self.headers.get('Content-Length','0'))
@@ -359,7 +364,7 @@ def main():
                     assert response.getheader('X-Content-Type-Options')=='nosniff'
                     assert response.getheader('Cache-Control')=='no-store'
                     assert "frame-ancestors 'none'" in response.getheader('Content-Security-Policy','')
-                    proof.setdefault('peer_native_served_sha256' if args.peer_ceremony else 'candidate_native_served_sha256' if args.candidate_ceremony else 'successor_native_served_sha256',{})[self.path]=hashlib.sha256(raw).hexdigest()
+                    proof.setdefault('custody_native_served_sha256' if args.custody_ceremony else 'peer_native_served_sha256' if args.peer_ceremony else 'candidate_native_served_sha256' if args.candidate_ceremony else 'successor_native_served_sha256',{})[self.path]=hashlib.sha256(raw).hexdigest()
                 if embedded and self.command=='GET':
                     asset_path='/' if self.path=='/encrypted/' and not vault_ui else self.path
                     if asset_path in assets and response.status==200:
@@ -458,6 +463,9 @@ def main():
         if args.peer_ceremony:
             from native_peer_ceremony_checks import route_checks
             route_checks(proxy.server_port,cookies,successor_compiled,proof)
+        if args.custody_ceremony:
+            from native_custody_ceremony_checks import route_checks
+            route_checks(proxy.server_port,cookies,successor_compiled,proof)
         if embedded and vault_ui:
             for path in assets:
                 for principal, expected in ((None,401),(cookies[0],200)):
@@ -537,6 +545,12 @@ def main():
             rpc(b,'advance');rpc(b,'flush');rpc(b,'sync');rpc(a,'sync')
             assert rpc(a,'status')['phase']==rpc(b,'status')['phase']=='ready'
             proof['checks']['native_keypackage_welcome_ack_actual_library_group']=True
+            if args.custody_ceremony:
+                from native_custody_ceremony_checks import run
+                run(a,b,databases,rpc,prepare,proof,page,vault_passwords,pins,direct,config,commit,crash,digest,tamper,lambda:(stop(),start()),candidate_hooks,args.exchange_candidate,custody_hooks,args.custody_order)
+                for c in contexts:c.close()
+                proof['passed']=True
+                return
             if args.custody_order:
                 from native_custody_checks import run
                 run(a,b,databases,rpc,prepare,proof,page,vault_passwords,pins,direct,config,commit,crash,digest,tamper,lambda:(stop(),start()),custody_hooks,args.custody_order,exchange_hooks if args.exchange else None,args.exchange_candidate)

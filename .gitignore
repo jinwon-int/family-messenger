@@ -34,3 +34,5 @@ server/internal/chat/aggregateassets/
 server/internal/chat/candidateassets/
 
 server/internal/chat/peerassets/
+
+server/internal/chat/custodyassets/

@@ -34,6 +34,7 @@ func run() error {
 	aggregateUI := flag.Bool("synthetic-aggregate-ui", false, "enable compiled synthetic two-room custody UI; requires signed auth-state and synthetic_aggregate build")
 	aggregateHistoryUI := flag.Bool("synthetic-aggregate-history-ui", false, "enable compiled synthetic two-room history and custody UI; requires signed auth-state and synthetic_aggregate_history build")
 	successorUI := flag.Bool("synthetic-successor-ui", false, "enable compiled synthetic successor handoff/lifecycle; requires signed auth-state and synthetic_successor build")
+	custodyUI := flag.Bool("synthetic-custody-ui", false, "enable compiled synthetic custody declaration; requires signed auth-state and synthetic_custody build")
 	peerUI := flag.Bool("synthetic-peer-ui", false, "enable compiled synthetic intact-peer preparation; requires signed auth-state and synthetic_peer build")
 	candidateUI := flag.Bool("synthetic-candidate-ui", false, "enable compiled synthetic candidate preparation; requires signed auth-state and synthetic_candidate build")
 	flag.Parse()
@@ -51,7 +52,7 @@ func run() error {
 		return fmt.Errorf("only 127.0.0.1 is supported")
 	}
 	selectedUI := 0
-	for _, selected := range []bool{*encryptedUI, *vaultUI, *historyUI, *aggregateUI, *aggregateHistoryUI, *successorUI, *candidateUI, *peerUI} {
+	for _, selected := range []bool{*encryptedUI, *vaultUI, *historyUI, *aggregateUI, *aggregateHistoryUI, *successorUI, *candidateUI, *peerUI, *custodyUI} {
 		if selected {
 			selectedUI++
 		}
@@ -64,7 +65,9 @@ func run() error {
 		if !authSelected || *authState == "" {
 			return fmt.Errorf("encrypted UI requires explicit signed auth-state")
 		}
-		if *peerUI {
+		if *custodyUI {
+			bundle, e = chat.LoadCustodyAssets()
+		} else if *peerUI {
 			bundle, e = chat.LoadPeerAssets()
 		} else if *candidateUI {
 			bundle, e = chat.LoadCandidateAssets()
@@ -147,7 +150,9 @@ func run() error {
 	if *historyUI {
 		cryptoMode = "compiled read-only synthetic history UI /history/; no active device recovery"
 	}
-	if *peerUI {
+	if *custodyUI {
+		cryptoMode = "compiled synthetic custody declaration /custody-ceremony/; no device enrollment"
+	} else if *peerUI {
 		cryptoMode = "compiled synthetic intact-peer preparation /peer-preparation/; no device enrollment"
 	} else if *candidateUI {
 		cryptoMode = "compiled synthetic candidate preparation /candidate-preparation/; no device enrollment"
