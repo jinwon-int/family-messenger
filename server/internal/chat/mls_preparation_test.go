@@ -172,7 +172,7 @@ func TestPreparationV3SnapshotAndRestart(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	_, e = db.Exec("DROP TABLE mls_successor_custody; DROP TABLE mls_successor_reservations; DROP TABLE mls_preparations; ALTER TABLE mls_rooms DROP COLUMN custody_required; PRAGMA user_version=3")
+	_, e = db.Exec("DROP TABLE mls_successor_handshake; DROP TABLE mls_successor_custody; DROP TABLE mls_successor_reservations; DROP TABLE mls_preparations; ALTER TABLE mls_rooms DROP COLUMN custody_required; PRAGMA user_version=3")
 	db.Close()
 	if e != nil {
 		t.Fatal(e)

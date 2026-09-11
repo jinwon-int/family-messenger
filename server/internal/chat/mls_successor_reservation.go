@@ -96,6 +96,9 @@ func (s *Store) successorReservation(context successorContext) (successorReserva
 	if _, _, e = s.successorCustody(p); e != nil {
 		return p, true, e
 	}
+	if _, _, e = s.successorHandshake(p); e != nil {
+		return p, true, e
+	}
 	return p, true, nil
 }
 
@@ -160,6 +163,9 @@ func (s *Store) reserveSuccessor(context successorContext, q successorReservatio
 		return p, false, e
 	}
 	if _, e = tx.Exec("INSERT INTO mls_successor_custody VALUES(?,?)", context.Intent, []byte("[]")); e != nil {
+		return p, false, e
+	}
+	if _, e = tx.Exec("INSERT INTO mls_successor_handshake VALUES(?,NULL,?)", context.Intent, []byte("[]")); e != nil {
 		return p, false, e
 	}
 	p.ID = q.ID

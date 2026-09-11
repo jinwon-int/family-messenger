@@ -146,7 +146,7 @@ func Open(dir string) (_ *Store, err error) {
 		} else if st.Size() != 0 {
 			header := make([]byte, 100)
 			_, e = io.ReadFull(f, header)
-			if e == nil && (string(header[:16]) != "SQLite format 3\x00" || binary.BigEndian.Uint32(header[68:72]) != 1179471188 || (binary.BigEndian.Uint32(header[60:64]) != 1 && binary.BigEndian.Uint32(header[60:64]) != 2 && binary.BigEndian.Uint32(header[60:64]) != 3 && binary.BigEndian.Uint32(header[60:64]) != 4 && binary.BigEndian.Uint32(header[60:64]) != 5 && binary.BigEndian.Uint32(header[60:64]) != 6)) {
+			if e == nil && (string(header[:16]) != "SQLite format 3\x00" || binary.BigEndian.Uint32(header[68:72]) != 1179471188 || (binary.BigEndian.Uint32(header[60:64]) != 1 && binary.BigEndian.Uint32(header[60:64]) != 2 && binary.BigEndian.Uint32(header[60:64]) != 3 && binary.BigEndian.Uint32(header[60:64]) != 4 && binary.BigEndian.Uint32(header[60:64]) != 5 && binary.BigEndian.Uint32(header[60:64]) != 6 && binary.BigEndian.Uint32(header[60:64]) != 7)) {
 				e = fmt.Errorf("not a supported synthetic messenger database")
 			}
 		}
@@ -174,10 +174,10 @@ func Open(dir string) (_ *Store, err error) {
 	if e = db.QueryRow("PRAGMA application_id").Scan(&appID); e != nil {
 		return nil, e
 	}
-	if ((version == 1 || version == 2 || version == 3 || version == 4 || version == 5 || version == 6) && appID != 1179471188) || (version == 0 && appID != 0) {
+	if ((version == 1 || version == 2 || version == 3 || version == 4 || version == 5 || version == 6 || version == 7) && appID != 1179471188) || (version == 0 && appID != 0) {
 		return nil, fmt.Errorf("not a synthetic messenger database")
 	}
-	if version != 0 && version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 {
+	if version != 0 && version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 {
 		return nil, fmt.Errorf("unsupported schema")
 	}
 	if version == 0 {
@@ -224,6 +224,12 @@ func Open(dir string) (_ *Store, err error) {
 			return nil, e
 		}
 	}
+	if version < 7 {
+		if e = migrateSuccessorHandshake(db, dir, version < 6); e != nil {
+			return nil, e
+		}
+	}
+
 	return &Store{db: db, lock: lock, changed: make(chan struct{}), uploads: make(map[mediaKey]*mediaLease), mediaEpoch: make(map[[2]string]uint64)}, nil
 }
 

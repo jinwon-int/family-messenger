@@ -43,7 +43,7 @@ jobs:
       - name: Signed policy persistence and reload proof
         run: |
           python3 tests/native_policy_smoke.py --binary artifacts/family-dev --policy-binary artifacts/family-policy
-          python3 tests/native_policy_smoke.py --successor --successor-context --successor-reservation --successor-custody --binary artifacts/family-dev --policy-binary artifacts/family-policy
+          python3 tests/native_policy_smoke.py --successor --successor-context --successor-reservation --successor-custody --successor-handshake --binary artifacts/family-dev --policy-binary artifacts/family-policy
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
