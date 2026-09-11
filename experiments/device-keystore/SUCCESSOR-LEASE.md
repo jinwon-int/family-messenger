@@ -63,6 +63,10 @@ Schema-8 upgrades first preserve a 0600 snapshot. Tests run the actual pinned
 schema-8 executable, complete confirmations before upgrading, check its refusal
 to open schema 9, and restore the snapshot into a separate generated directory.
 Original successful bundles are tested separately from fault-injection bundles.
+The lease helper requires the isolated Rust `successor-lease` feature, which
+includes `identity-context`. CI builds it into `mls-successor-lease-pkg` for the
+lease browser proof. Default and identity-context bundles retain their original
+pinned bytes and serve the existing UI and custody/confirmation proofs.
 The browser proof covers real bidirectional MLS messages using saved ratchets,
 local commit failure, lost replies, restart, expiry, revocation and preservation.
 

@@ -9,7 +9,8 @@ crate-type = ["cdylib"]
 
 [features]
 # Isolated qualification only; never enabled by the pinned native UI builds.
-identity-context = ["dep:openmls_traits"]
+identity-context = []
+successor-lease = ["identity-context", "dep:openmls_traits"]
 
 [dependencies]
 openmls = { version = "=0.9.0", default-features = false, features = ["js"] }
