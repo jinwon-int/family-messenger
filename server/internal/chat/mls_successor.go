@@ -110,6 +110,10 @@ func (s *Store) successorTargetUnused(room string) error {
 }
 
 func (a *API) successorContextRoute(w http.ResponseWriter, r *http.Request, actor string, g *access.Grant, parts []string) {
+	if len(parts) == 5 && validID(parts[3]) && (parts[4] == "enrollment" || parts[4] == "enrolled-channel") {
+		a.successorEnrollmentRoute(w, r, actor, g, parts[3], parts[4])
+		return
+	}
 	if len(parts) == 5 && validID(parts[3]) && parts[4] == "retirement" {
 		a.successorRetirementRoute(w, r, actor, g, parts[3])
 		return

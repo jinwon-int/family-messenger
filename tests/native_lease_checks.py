@@ -59,6 +59,10 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
     crash(0);a=page(0);assert invoke(a,'peer')['phase']=='leased';assert invoke(b,'candidate')['phase']=='leased'
     assert len(hooks['posts'])==5
     proof['checks']['actual_pinned_signatures_pair_gate_exact_approval_retry_lost_reply_restart']=True
+    if 'enrollment' in hooks:
+        from native_enrollment_checks import run as enrollment_run
+        enrollment_run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,restart,hooks['enrollment'],expected,source,proposal,database,candidate_actor,invoke)
+        return
     stable=snapshots()
     for p,role in ((a,'peer'),(b,'candidate')):
         for fault in ('abort-before-write','abort-after-write'):
