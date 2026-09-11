@@ -41,6 +41,7 @@ def main():
     args.add_argument('--closure', action='store_true')
     args.add_argument('--successor-ui', action='store_true')
     args.add_argument('--successor-handoff', action='store_true')
+    args.add_argument('--successor-embedded', action='store_true')
     args.add_argument('--confirmation', action='store_true')
     args.add_argument('--exchange', action='store_true')
     args.add_argument('--custody-order', choices=['candidate','peer','concurrent'])
@@ -60,6 +61,7 @@ def main():
     assert not args.lease or args.confirmation
     assert not args.successor_ui or args.closure
     assert not args.successor_handoff or args.successor_ui
+    assert not args.successor_embedded or args.successor_handoff
     assert not args.closure or args.enrollment
     assert not args.retirement or args.lease
     assert not args.enrollment or (args.lease and not args.retirement)
@@ -128,7 +130,7 @@ def main():
         log = work / 'server.log'
         output = log.open('ab')
         offset = log.stat().st_size
-        process = subprocess.Popen([str(binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--listen', address]+(['--synthetic-aggregate-history-ui' if args.aggregate_history_embedded else '--synthetic-aggregate-ui' if aggregate_ui else '--synthetic-history-ui' if args.history_ui else '--synthetic-vault-ui' if vault_ui else '--synthetic-mls-ui'] if embedded else []), stderr=output, stdout=subprocess.DEVNULL)
+        process = subprocess.Popen([str(binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--listen', address]+(['--synthetic-aggregate-history-ui' if args.aggregate_history_embedded else '--synthetic-aggregate-ui' if aggregate_ui else '--synthetic-history-ui' if args.history_ui else '--synthetic-vault-ui' if vault_ui else '--synthetic-mls-ui'] if embedded else ['--synthetic-successor-ui'] if args.successor_embedded else []), stderr=output, stdout=subprocess.DEVNULL)
         until = time.monotonic() + 10
         while time.monotonic() < until:
             assert process.poll() is None, 'server exited'
@@ -289,6 +291,10 @@ def main():
         assets['/main.js']=assets['/main.js'].replace(needle,b"    if(data.test_crash_boundary)window.test_crash_boundary=true;\n"+needle)
     if vault:assets['/main.js']=assets['/main.js'].replace(b'    if (data.id !== id) return;',b'    if(data.test_vault_cas)window.test_vault_cas=true;if(data.test_kdf_waiting)window.test_kdf_waiting=true;if(data.test_kdf_entered)window.test_kdf_entered=true;\n    if (data.id !== id) return;')
     if aggregate and not aggregate_ui:assets['/main.js']=assets['/main.js'].replace(b'    if (data.id !== id) return;',b'    if(data.test_aggregate_cas)window.test_aggregate_cas=true;\n    if (data.id !== id) return;')
+    successor_compiled={}
+    if args.successor_embedded:
+        from native_successor_asset_checks import compiled_assets
+        successor_compiled=compiled_assets(root,args.bundle,assets,proof)
     proof['assets_sha256']={name:hashlib.sha256(raw).hexdigest() for name,raw in assets.items()}
     proof['test_instrumentation']='UI assets unmodified; disposable page tracks Blob URLs and drops one prepare before worker admission; generated proxy responses may be held/altered' if ui_proof else 'main selects native worker; served-only pending-write hold and deliberately forged inner sender fixture; proxy may hold/alter generated responses'
     if vault:proof['test_instrumentation']+='; encrypted driver held CAS/KDF/write, private-worker digests only, disposable lock-aware caller; original versus instrumented hashes recorded'
@@ -298,7 +304,7 @@ def main():
     confirmation_hooks={"callback":None,"posts":[]}
     exchange_hooks={"callback":None,"posts":[]}
     if args.enrollment:lease_hooks["enrollment"]={"callback":None,"posts":[],"channel_callback":None,"channel_posts":[]}
-    if args.successor_ui:lease_hooks["enrollment"].update(ui_enabled=True,ui_asset_map=assets,ui_handoff=args.successor_handoff)
+    if args.successor_ui:lease_hooks["enrollment"].update(ui_enabled=True,ui_asset_map=assets,ui_handoff=args.successor_handoff,ui_embedded=args.successor_embedded)
     if args.closure:lease_hooks["enrollment"]["closure"]={"callback":None,"posts":[]}
     if args.retirement:lease_hooks["retirement"]={"callback":None,"posts":[]}
     if args.lease:confirmation_hooks["lease"]=lease_hooks
@@ -312,7 +318,8 @@ def main():
         def forward(self):
             if self.headers.get('Host')!=f'127.0.0.1:{self.server.server_port}' or not self.path.startswith('/') or self.path.startswith('//') or any(k.lower()=='authorization' or k.lower().startswith('cf-') for k in self.headers):self.send_error(400);return
             cookie=SimpleCookie();cookie.load(self.headers.get('Cookie',''));v=cookie.get('synthetic_edge');subject=bindings.get(v.value if v else None)
-            if not embedded and self.command=='GET' and self.path in assets:
+            successor_fault=args.successor_embedded and lease_hooks['enrollment'].get('ui_fault_active') and self.path in ('/candidate-lifecycle-worker.js','/peer-lifecycle-worker.js')
+            if not embedded and self.command=='GET' and self.path in assets and (self.path not in successor_compiled or successor_fault):
                 raw=assets[self.path];self.send_response(200);self.send_header('Content-Type','application/wasm' if self.path.endswith('.wasm') else 'text/javascript' if self.path.endswith('.js') else 'text/css' if self.path.endswith('.css') else 'text/html');self.send_header('Content-Length',str(len(raw)));self.send_header('Cache-Control','no-store');self.send_header('Content-Security-Policy',"default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; worker-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'");self.end_headers();self.wfile.write(raw);return
             size=int(self.headers.get('Content-Length','0'))
             if size<0 or size>98304:self.send_error(413);return
@@ -335,6 +342,12 @@ def main():
             upstream=http.client.HTTPConnection(address,timeout=10)
             try:
                 upstream.request(self.command,self.path,body=body,headers=headers);response=upstream.getresponse();raw=response.read()
+                if self.command=='GET' and self.path in successor_compiled and response.status==200:
+                    assert raw==successor_compiled[self.path],'compiled successor bytes differ'
+                    assert response.getheader('X-Content-Type-Options')=='nosniff'
+                    assert response.getheader('Cache-Control')=='no-store'
+                    assert "frame-ancestors 'none'" in response.getheader('Content-Security-Policy','')
+                    proof.setdefault('successor_native_served_sha256',{})[self.path]=hashlib.sha256(raw).hexdigest()
                 if embedded and self.command=='GET':
                     asset_path='/' if self.path=='/encrypted/' and not vault_ui else self.path
                     if asset_path in assets and response.status==200:
@@ -424,6 +437,9 @@ def main():
     try:
         start();assert direct('owner','POST','/v1/mls/reservations',{'room':'family','peer_actor':'bob'})[0]==201
         proxy=ThreadingHTTPServer(('127.0.0.1',0),Proxy);threading.Thread(target=proxy.serve_forever,daemon=True).start();url=f'http://127.0.0.1:{proxy.server_port}'
+        if args.successor_embedded:
+            from native_successor_asset_checks import route_checks
+            route_checks(proxy.server_port,cookies,successor_compiled,proof)
         if embedded and vault_ui:
             for path in assets:
                 for principal, expected in ((None,401),(cookies[0],200)):

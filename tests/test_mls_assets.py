@@ -19,17 +19,18 @@ class AssetPreparationTests(unittest.TestCase):
     history = False
     aggregate = False
     aggregate_history = False
+    successor = False
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.output = self.root / ('server/internal/chat/aggregatehistoryassets' if self.aggregate_history else 'server/internal/chat/aggregateassets' if self.aggregate else 'server/internal/chat/historyassets_v5' if self.history else 'server/internal/chat/vaultassets' if self.vault else 'server/internal/chat/mlsassets')
+        self.output = self.root / ('server/internal/chat/successorassets' if self.successor else 'server/internal/chat/aggregatehistoryassets' if self.aggregate_history else 'server/internal/chat/aggregateassets' if self.aggregate else 'server/internal/chat/historyassets_v5' if self.history else 'server/internal/chat/vaultassets' if self.vault else 'server/internal/chat/mlsassets')
         self.output.parent.mkdir(parents=True)
-        self.manifest = self.output.parent / ('aggregate_history_bundle.json' if self.aggregate_history else 'aggregate_bundle.json' if self.aggregate else 'history_bundle.json' if self.history else 'vault_bundle.json' if self.vault else 'mls_bundle.json')
+        self.manifest = self.output.parent / ('successor_bundle.json' if self.successor else 'aggregate_history_bundle.json' if self.aggregate_history else 'aggregate_bundle.json' if self.aggregate else 'history_bundle.json' if self.history else 'vault_bundle.json' if self.vault else 'mls_bundle.json')
         self.bundle = self.root / 'bundle'
         self.bundle.mkdir()
         self.sources = []
-        pin = json.loads((m.ROOT/'server/internal/chat/aggregate_history_bundle.json').read_text()) if self.aggregate_history else json.loads((m.ROOT/'server/internal/chat/aggregate_bundle.json').read_text()) if self.aggregate else json.loads((m.ROOT/'server/internal/chat/history_bundle.json').read_text()) if self.history else json.loads((m.ROOT/'server/internal/chat/vault_bundle.json').read_text()) if self.vault else json.loads(json.dumps(PIN))
+        pin = json.loads((m.ROOT/'server/internal/chat/successor_bundle.json').read_text()) if self.successor else json.loads((m.ROOT/'server/internal/chat/aggregate_history_bundle.json').read_text()) if self.aggregate_history else json.loads((m.ROOT/'server/internal/chat/aggregate_bundle.json').read_text()) if self.aggregate else json.loads((m.ROOT/'server/internal/chat/history_bundle.json').read_text()) if self.history else json.loads((m.ROOT/'server/internal/chat/vault_bundle.json').read_text()) if self.vault else json.loads(json.dumps(PIN))
         for entry in pin['files']:
             data = ('synthetic ' + entry['file']).encode()
             path = self.bundle / entry['source'][7:] if entry['source'].startswith('bundle:') else self.root / entry['source']
@@ -47,17 +48,17 @@ class AssetPreparationTests(unittest.TestCase):
 
     def rejected(self):
         with self.assertRaises((OSError, ValueError)):
-            m.prepare(self.bundle, vault=self.vault,history=self.history,aggregate=self.aggregate,aggregate_history=self.aggregate_history)
+            m.prepare(self.bundle, vault=self.vault,history=self.history,aggregate=self.aggregate,aggregate_history=self.aggregate_history,successor=self.successor)
 
     def test_exact_create_reuse_and_check(self):
         with self.assertRaises(ValueError):
-            m.prepare(self.bundle, True, vault=self.vault,history=self.history,aggregate=self.aggregate,aggregate_history=self.aggregate_history)
-        m.prepare(self.bundle, vault=self.vault,history=self.history,aggregate=self.aggregate,aggregate_history=self.aggregate_history)
+            m.prepare(self.bundle, True, vault=self.vault,history=self.history,aggregate=self.aggregate,aggregate_history=self.aggregate_history,successor=self.successor)
+        m.prepare(self.bundle, vault=self.vault,history=self.history,aggregate=self.aggregate,aggregate_history=self.aggregate_history,successor=self.successor)
         before = {p.name: (p.stat().st_ino, p.read_bytes()) for p in self.output.iterdir()}
         self.assertEqual(self.output.stat().st_mode & 0o777, 0o700)
         self.assertTrue(all(p.stat().st_mode & 0o777 == 0o600 for p in self.output.iterdir()))
-        m.prepare(self.bundle, True, vault=self.vault,history=self.history,aggregate=self.aggregate,aggregate_history=self.aggregate_history)
-        m.prepare(self.bundle, vault=self.vault,history=self.history,aggregate=self.aggregate,aggregate_history=self.aggregate_history)
+        m.prepare(self.bundle, True, vault=self.vault,history=self.history,aggregate=self.aggregate,aggregate_history=self.aggregate_history,successor=self.successor)
+        m.prepare(self.bundle, vault=self.vault,history=self.history,aggregate=self.aggregate,aggregate_history=self.aggregate_history,successor=self.successor)
         self.assertEqual(before, {p.name: (p.stat().st_ino, p.read_bytes()) for p in self.output.iterdir()})
 
     def test_wrong_source_hash_never_creates_output(self):
@@ -86,11 +87,11 @@ class AssetPreparationTests(unittest.TestCase):
         link = self.root / 'bundle-link'
         link.symlink_to(self.bundle, target_is_directory=True)
         with self.assertRaises(ValueError):
-            m.prepare(link, vault=self.vault,history=self.history,aggregate=self.aggregate,aggregate_history=self.aggregate_history)
+            m.prepare(link, vault=self.vault,history=self.history,aggregate=self.aggregate,aggregate_history=self.aggregate_history,successor=self.successor)
         self.assertFalse(self.output.exists())
 
     def test_unknown_corrupt_unsafe_output_retained(self):
-        m.prepare(self.bundle, vault=self.vault,history=self.history,aggregate=self.aggregate,aggregate_history=self.aggregate_history)
+        m.prepare(self.bundle, vault=self.vault,history=self.history,aggregate=self.aggregate,aggregate_history=self.aggregate_history,successor=self.successor)
         unknown = self.output / 'unknown'
         unknown.write_bytes(b'retain')
         self.rejected()
@@ -130,7 +131,7 @@ class AssetPreparationTests(unittest.TestCase):
             self.assertFalse(self.output.exists())
         finally:
             os.close(fd)
-        m.prepare(self.bundle, vault=self.vault,history=self.history,aggregate=self.aggregate,aggregate_history=self.aggregate_history)
+        m.prepare(self.bundle, vault=self.vault,history=self.history,aggregate=self.aggregate,aggregate_history=self.aggregate_history,successor=self.successor)
 
     def test_unsafe_lock_and_duplicate_manifest_denied(self):
         lock = self.output.parent / '.mls-build.lock'
@@ -152,7 +153,7 @@ class AssetPreparationTests(unittest.TestCase):
             self.rejected()
             self.assertFalse(self.output.exists())
         self.manifest.write_bytes(original)
-        m.prepare(self.bundle,vault=self.vault,history=self.history,aggregate=self.aggregate,aggregate_history=self.aggregate_history)
+        m.prepare(self.bundle,vault=self.vault,history=self.history,aggregate=self.aggregate,aggregate_history=self.aggregate_history,successor=self.successor)
         self.assertTrue(self.output.exists())
 
     def test_symlinked_lock_parent_rejects_before_creating_files(self):
@@ -277,3 +278,23 @@ class AggregateHistoryAssetPreparationTests(AssetPreparationTests):
         m.prepare(self.bundle,aggregate_history=True)
         p=self.output/'aggregate-history-worker.js';retained=self.root/'old-worker';p.rename(retained);p.symlink_to(retained)
         self.rejected();self.assertTrue(p.is_symlink());self.assertTrue(retained.exists())
+
+class SuccessorAssetPreparationTests(AssetPreparationTests):
+    successor = True
+
+    def test_successor_closed_sources_old_profiles_and_outputs(self):
+        original=self.manifest.read_bytes()
+        for field,value in [('version',6),('source','artifacts/closure-instrumented.js'),('url','/main.js')]:
+            pin=json.loads(original)
+            if field=='version':pin[field]=value
+            else:next(e for e in pin['files'] if e['file']=='successor-closure-store.js')[field]=value
+            self.manifest.write_text(json.dumps(pin,indent=2)+'\n');self.rejected();self.assertFalse(self.output.exists())
+        self.manifest.write_bytes(original)
+        for name in ('mlsassets','vaultassets','historyassets_v5','aggregateassets','aggregatehistoryassets'):
+            old=self.output.parent/name;old.mkdir(mode=0o700);(old/'retained').write_bytes(b'prior bundle')
+        m.prepare(self.bundle,successor=True)
+        self.assertEqual(len(list(self.output.iterdir())),23)
+        for name in ('mlsassets','vaultassets','historyassets_v5','aggregateassets','aggregatehistoryassets'):
+            self.assertEqual((self.output.parent/name/'retained').read_bytes(),b'prior bundle')
+        for flag in ('vault','history','aggregate','aggregate_history'):
+            with self.assertRaises(ValueError):m.prepare(self.bundle,successor=True,**{flag:True})

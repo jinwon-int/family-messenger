@@ -49,8 +49,13 @@ def install(hooks,expected,databases,database,passwords,candidate_actor,proof):
     def fault(p,role):
         assets=hooks['ui_asset_map'];key='/'+role+'-lifecycle-worker.js';old=assets[key]
         assets[key]=old.replace(b'./closure-original-store.js',b'./successor-closure-store.js').replace(b'lifecycleWorker(await init(),',b"self.testFault='abort-after-write';lifecycleWorker(await init(),")
+        if hooks.get('ui_embedded'):
+            assets[key]=old.replace(b'./successor-closure-store.js',b'./fixture-successor-closure-store.js').replace(b'lifecycleWorker(await init(),',b"self.testFault='abort-after-write';lifecycleWorker(await init(),")
+            hooks['ui_fault_active']=True
         try:return perform(p,role,'closure-close')
-        finally:assets[key]=old
+        finally:
+            assets[key]=old
+            hooks['ui_fault_active']=False
     hooks['ui']={'fault':fault,'perform':perform,'seen':seen,'states':states,'scope':scope}
     if hooks.get('ui_handoff'):hooks['ui']['handoff_check']=lambda p,role:handoff_check(p,role,perform)
 
