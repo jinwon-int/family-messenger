@@ -25,16 +25,26 @@ def custody_assets(root,work,assets,proof):
     assets['/custody-worker.js']=raw
 
 
-def run(a,b,databases,rpc,prepare,proof,page,passwords,pins,direct,config,commit,crash,digest,tamper,restart,hooks,order):
+def run(a,b,databases,rpc,prepare,proof,page,passwords,pins,direct,config,commit,crash,digest,tamper,restart,hooks,order,exchange_hooks=None,candidate_actor='bob'):
+    peer_actor='alice' if candidate_actor=='bob' else 'bob'
+    peer_subject='owner' if peer_actor=='alice' else 'family'
+    if candidate_actor=='alice':
+        assert exchange_hooks is not None
+        a,b=b,a;databases=databases[::-1];passwords=passwords[::-1];pins=pins[::-1]
+        original_page,original_crash,original_digest=page,crash,digest
+        page=lambda i:original_page(1-i)
+        crash=lambda i:original_crash(1-i)
+        digest=lambda p,i,**kw:original_digest(p,1-i,**kw)
     group=rpc(a,'status')['group_id']
     prepare(a,'app-prior-text',b'generated old conversation');rpc(a,'flush');rpc(a,'sync');rpc(b,'sync')
     prepare(b,'app-prior-file',bytes(range(256))*32,'file');rpc(b,'flush');rpc(b,'sync');rpc(a,'sync')
-    rpc(a,'update',{'id':'update-old-pending','fault':''})
+    if peer_actor=='alice':rpc(a,'update',{'id':'update-old-pending','fault':''})
+    else:prepare(a,'app-old-pending',b'generated retained peer outbox')
     source_record=rpc(a,'test-aggregate-digest')[0]
-    assert source_record['pending']=='update-old-pending'
+    assert source_record['pending']==('update-old-pending' if peer_actor=='alice' else 'app-old-pending')
     a.evaluate("stopWorker('device')");b.evaluate("stopWorker('device')")
-    database='family-mls-candidate-synthetic-bob-proposal'
-    def argument(create=False,identity='bob',db=None):return {'identity':identity,'database':db or database,'password':passwords[1],'create':create}
+    database='family-mls-candidate-synthetic-'+candidate_actor+'-proposal'
+    def argument(create=False,identity=candidate_actor,db=None):return {'identity':identity,'database':db or database,'password':passwords[1],'create':create}
     def start(p,method,arg,setup=None):
         p.evaluate("async()=>{stopWorker('fork');window.test_candidate_boundary=false;await spawn('fork')}")
         if setup:p.evaluate('s=>window.testWorkers.at(-1).postMessage({testSetup:s})',setup)
@@ -58,24 +68,24 @@ def run(a,b,databases,rpc,prepare,proof,page,passwords,pins,direct,config,commit
     shape=b.evaluate("""async name=>{const d=await new Promise(r=>{const q=indexedDB.open(name);q.onsuccess=()=>r(q.result)});const s=await new Promise(r=>{const q=d.transaction('device').objectStore('device').get('state');q.onsuccess=()=>r(q.result)});d.close();return {keys:Object.keys(s).sort(),cipher:s.cipher.length,capsule:s.capsule.length}}""",database)
     assert shape['keys']==sorted(['v','identity','room','vault','revision','capsule','header','cipher']) and shape['cipher']>1000 and shape['capsule']<8192
     proof['checks']['encrypted_outer_only_public_result_no_private_provider_page_output']=True
-    now=int(time.time());old=config['devices'][1];config['version']=2;admin={'subject':'owner','actor':'alice'}
+    now=int(time.time());old=next(d for d in config['devices'] if d['actor']==candidate_actor);config['version']=2;admin={'subject':'owner','actor':'alice'}
     config['successors']={'administrators':[admin],'intents':[]};commit(2,config['people'])
-    intent={'intent_id':'replace-bob','action':'replace','actor':'bob','subject':'family','predecessor':old['device_id'],'predecessor_key':old['signing_key'],'predecessor_revision':1,
-            'candidate':'bob-candidate','signing_key':proposal['public_key'],'fingerprint':hashlib.sha256(bytes.fromhex(proposal['public_key'])).hexdigest(),'package_sha256':proposal['package_sha256'],
+    intent={'intent_id':'replace-bob','action':'replace','actor':candidate_actor,'subject':('family' if candidate_actor=='bob' else 'owner'),'predecessor':old['device_id'],'predecessor_key':old['signing_key'],'predecessor_revision':1,
+            'candidate':candidate_actor+'-candidate','signing_key':proposal['public_key'],'fingerprint':hashlib.sha256(bytes.fromhex(proposal['public_key'])).hexdigest(),'package_sha256':proposal['package_sha256'],
             'previous_room':'family','previous_group':group,'next_room':'successor-room','administrator':admin,'acceptance':'out-of-band-fingerprint','base_revision':3,'created_at':now-1,'expires_at':now+850,'status':'candidate','decided_at':0,'decision_revision':0}
     config['successors']['intents']=[intent];commit(3,config['people'])
     intent.update(status='accepted',decided_at=int(time.time()),decision_revision=5);old.update(status='revoked',device_revision=2);commit(4,config['people'])
     path='/v1/mls/successors/replace-bob/reservation'
     deadline=time.monotonic()+6
     while time.monotonic()<deadline:
-        code,c=direct('owner','GET','/v1/mls/successors/replace-bob/context')
+        code,c=direct(peer_subject,'GET','/v1/mls/successors/replace-bob/context')
         if code==200:break
         time.sleep(.05)
     else:raise AssertionError('accepted context reload')
-    code,expected=direct('owner','POST',path,{'reservation_id':'candidate-reservation','context_sha256':hashlib.sha256(json.dumps(c,separators=(',',':')).encode()).hexdigest()});assert code==201
+    code,expected=direct(peer_subject,'POST',path,{'reservation_id':'candidate-reservation','context_sha256':hashlib.sha256(json.dumps(c,separators=(',',':')).encode()).hexdigest()});assert code==201
     def args(role,db=None):
         i=0 if role=='peer' else 1
-        return {'identity':['alice','bob'][i],'database':db or (databases[0] if i==0 else database),'password':passwords[i],'intent':{'accepted':True,'reservation':copy.deepcopy(expected)}}
+        return {'identity':[peer_actor,candidate_actor][i],'database':db or (databases[0] if i==0 else database),'password':passwords[i],'intent':{'accepted':True,'reservation':copy.deepcopy(expected)}}
     def begin(p,role,arg=None,setup=None):
         p.evaluate('''async ([role,arg,setup])=>{
           window.cw?.terminate();const w=new Worker('/'+(role==='peer'?'peer':'candidate')+'-custody-worker.js',{type:'module'});window.cw=w;
@@ -127,7 +137,7 @@ def run(a,b,databases,rpc,prepare,proof,page,passwords,pins,direct,config,commit
         valid(declare(first[1],first[0]),first[0],1);assert snapshots()==committed
         valid(declare(second[1],second[0]),second[0],2)
     stable=snapshots();assert stable[0]!=before[0] and stable[1]==before[1] and stable[2]!=before[2]
-    assert call(b,'bind',{'identity':'bob','database':database,'password':passwords[1],'intent':{'accepted':True,'reservation':expected}})['package']==proposal['package']
+    assert call(b,'bind',{'identity':candidate_actor,'database':database,'password':passwords[1],'intent':{'accepted':True,'reservation':expected}})['package']==proposal['package']
     assert snapshots()==stable
     for p,role in ((a,'peer'),(b,'candidate')):valid(declare(p,role,setup={'testMutateIntent':True}),role,2)
     # Same-role cross-tab retry and both-role requests all observe immutable slots.
@@ -138,6 +148,10 @@ def run(a,b,databases,rpc,prepare,proof,page,passwords,pins,direct,config,commit
     assert all(p['declaration_id']==stable_id(p['role']) for p in hooks['posts'])
     proof['checks']['paired_'+order+'_order_exact_public_id_lost_reply_browser_worker_server_restart_no_reseal']=True
     proof['checks']['actual_accepted_package_full_peer_source_pending_and_legacy_bob_cipher_preserved']=True
+    if exchange_hooks is not None:
+        from native_exchange_checks import run as exchange_run
+        exchange_run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,restart,exchange_hooks,expected,source_record,proposal,database,candidate_actor)
+        return
     def mutation(mode):
         def apply(method,status,raw):
             value=json.loads(raw)
