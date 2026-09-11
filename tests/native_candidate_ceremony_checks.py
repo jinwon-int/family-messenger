@@ -87,12 +87,15 @@ def run(a,b,databases,rpc,prepare,proof,page,passwords,pins,direct,config,commit
     now=int(time.time());old=config['devices'][index];admin={'subject':'owner','actor':'alice'};config['version']=2;config['successors']={'administrators':[admin],'intents':[]};commit(2,config['people'])
     intent={'intent_id':'replace-'+actor,'action':'replace','actor':actor,'subject':['owner','family'][index],'predecessor':old['device_id'],'predecessor_key':old['signing_key'],'predecessor_revision':1,'candidate':actor+'-candidate','signing_key':proposal['public_key'],'fingerprint':hashlib.sha256(bytes.fromhex(proposal['public_key'])).hexdigest(),'package_sha256':proposal['package_sha256'],'previous_room':'family','previous_group':group,'next_room':'successor-room','administrator':admin,'acceptance':'out-of-band-fingerprint','base_revision':3,'created_at':now-1,'expires_at':now+240,'status':'candidate','decided_at':0,'decision_revision':0}
     config['successors']['intents']=[intent];commit(3,config['people']);intent.update(status='accepted',decided_at=int(time.time()),decision_revision=5);old.update(status='revoked',device_revision=2);commit(4,config['people']);path='/v1/mls/successors/'+intent['intent_id']+'/reservation'
+    peer_subject=['owner','family'][peer_index];peer_device=pins[peer_index]['device_id'];context_path='/v1/mls/successors/'+intent['intent_id']+'/context'
     for _ in range(100):
-        code,context=direct('owner','GET','/v1/mls/successors/'+intent['intent_id']+'/context')
+        code,context=direct(peer_subject,'GET',context_path,device=peer_device)
         if code==200:break
         time.sleep(.05)
     assert code==200
-    code,expected=direct('owner','POST',path,{'reservation_id':'ceremony-reservation','context_sha256':hashlib.sha256(json.dumps(context,separators=(',',':')).encode()).hexdigest()});assert code==201
+    assert direct(['owner','family'][index],'GET',context_path,device=old['device_id'])[0]==403
+    proof['checks']['candidate_dom_revoked_predecessor_denied_intact_peer_explicit_authority']=True
+    code,expected=direct(peer_subject,'POST',path,{'reservation_id':'ceremony-reservation','context_sha256':hashlib.sha256(json.dumps(context,separators=(',',':')).encode()).hexdigest()},device=peer_device);assert code==201
     def document(reservation=expected,db=None):return json.dumps({'version':1,'scopes':[{'identity':actor,'role':'candidate','database':db or database,'reservation':reservation}]},separators=(',',':'))
     confirmation=hashlib.sha256(json.dumps(expected,separators=(',',':'),sort_keys=True).encode()).hexdigest()
     def load(p,raw=None):p.locator('#request-file').set_input_files({'name':'request.json','mimeType':'application/json','buffer':(raw or document()).encode()});p.locator('#request-load').click();p.wait_for_function("()=>document.getElementById('request-status').textContent.includes('요청을 읽었습니다')||document.getElementById('request-status').textContent.includes('형식')")
