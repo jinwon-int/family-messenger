@@ -40,17 +40,17 @@ jobs:
         run: python3 tests/native_media_smoke.py --binary artifacts/family-dev
       - name: Ordered synthetic MLS transport and restart proof
         run: python3 tests/native_mls_transport_smoke.py --preparation --binary artifacts/family-dev --policy-binary artifacts/family-policy
-      - name: Checkout pinned schema-7 migration source
+      - name: Checkout pinned schema-8 migration source
         uses: actions/checkout@v4
         with:
-          ref: 5525a0cad7b53889821bc6642d3b9cba00a9e97c
-          path: artifacts/schema7-source
-      - name: Build schema-7 rollback probe
-        run: go -C artifacts/schema7-source/server build -trimpath -o ../../family-dev-schema7 ./cmd/family-dev
+          ref: 16c763bddc9fcc99e8521e745a8caccee524320b
+          path: artifacts/schema8-source
+      - name: Build schema-8 rollback probe
+        run: go -C artifacts/schema8-source/server build -trimpath -o ../../family-dev-schema8 ./cmd/family-dev
       - name: Signed policy persistence and reload proof
         run: |
           python3 tests/native_policy_smoke.py --binary artifacts/family-dev --policy-binary artifacts/family-policy
-          python3 tests/native_policy_smoke.py --successor --successor-context --successor-reservation --successor-custody --successor-handshake --successor-confirmation --legacy-binary artifacts/family-dev-schema7 --binary artifacts/family-dev --policy-binary artifacts/family-policy
+          python3 tests/native_policy_smoke.py --successor --successor-context --successor-reservation --successor-custody --successor-handshake --successor-confirmation --lease-migration --legacy-binary artifacts/family-dev-schema8 --binary artifacts/family-dev --policy-binary artifacts/family-policy
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
