@@ -219,3 +219,8 @@ server/process scope and existing custody worker compatibility.
 Paired experimental protected-store declaration orchestration and retry semantics
 are documented in [CLIENT-CUSTODY.md](CLIENT-CUSTODY.md). It does not activate a
 successor or change production deployment.
+
+The [restricted successor handshake relay](SUCCESSOR-HANDSHAKE.md) adds ordered
+exact-package/Welcome/ack slots after paired declarations. The opaque transcript
+remains inactive; protected client integration and cryptographic completion are
+still required before activation.

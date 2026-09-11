@@ -7,7 +7,7 @@ import subprocess
 import time
 
 
-def run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, media_path, context=False, reservation=False, custody=False, upgrade=None):
+def run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, media_path, context=False, reservation=False, custody=False, upgrade=None, handshake=False):
     checks = proof['checks'] = {}
     serial = 0
 
@@ -141,7 +141,7 @@ def run(config, auth, proposals, proof, request, start, stop, command, private_w
         checks['concurrent_http_reservation_one_commit_exact_bytes_conflict_no_legacy_conversion'] = True
 
     if custody:
-        upgrade()
+        if not handshake:upgrade()
         custody_path = '/v1/mls/successors/replacement-1/custody'
         candidate = dict(q, role='candidate', declaration_id='candidate-committed')
         peer = dict(q, role='peer', declaration_id='peer-committed')
@@ -178,6 +178,11 @@ def run(config, auth, proposals, proof, request, start, stop, command, private_w
         assert reserve() == (200,reserved)
         checks['paired_custody_role_cas_concurrent_exact_retry_and_partial_sigkill_no_activation'] = True
 
+    if handshake:
+        upgrade()
+        from native_successor_handshake_checks import exchange
+        handshake_path,handshake_final=exchange(request,q,start,stop,checks)
+
     stop()  # actual owned server SIGKILL after durable acceptance/reservation
     start()
     assert log_status('owner', 'alice-first') == 403
@@ -205,6 +210,8 @@ def run(config, auth, proposals, proof, request, start, stop, command, private_w
         assert declare('owner','alice-candidate',candidate) == (200,declared)
         assert declare('family','bob-first',peer) == (200,declared)
         checks['paired_declaration_sigkill_lost_reply_exact_reconciliation_and_immutable_reservation'] = True
+    if handshake:
+        assert request('owner',handshake_path,headers={'X-Family-Device':'alice-candidate'})==(200,handshake_final)
     checks['sigkill_restart_retains_revocation_and_old_chat_media_policy_bytes'] = True
 
     # Distinct real-process decisions race; only one may win the next CAS.
@@ -263,4 +270,7 @@ def run(config, auth, proposals, proof, request, start, stop, command, private_w
         assert declare('owner','alice-candidate',candidate)[0] == 401
         assert request('family',custody_path,headers={'X-Family-Device':'bob-first'})[0] == 401
         checks['paired_custody_denies_revoked_accounts_after_restart'] = True
+    if handshake:
+        assert request('family',handshake_path,headers={'X-Family-Device':'bob-first'})[0]==401
+        checks['handshake_current_revocation_denies_after_restart']=True
     checks['emergency_empty_people_and_administrators_survives_sigkill_restart'] = True

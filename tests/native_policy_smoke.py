@@ -22,8 +22,11 @@ def main():
     parser.add_argument('--successor-context', action='store_true', help='also qualify read-only replacement context; requires --successor')
     parser.add_argument("--successor-reservation", action="store_true", help="durable inactive reservation proof; requires --successor-context")
     parser.add_argument("--successor-custody", action="store_true", help="inactive paired declarations; requires --successor-reservation")
-    parser.add_argument("--legacy-binary", type=Path, help="actual schema5 binary for isolated custody migration proof")
+    parser.add_argument("--successor-handshake", action="store_true", help="restricted inactive handshake relay; requires --successor-custody")
+    parser.add_argument("--legacy-binary", type=Path, help="schema5 (custody) or schema6 (handshake) binary for isolated migration proof")
     args = parser.parse_args()
+    if args.successor_handshake and not args.successor_custody:
+        parser.error("--successor-handshake requires --successor-custody")
     if args.successor_custody and not args.successor_reservation:
         parser.error("--successor-custody requires --successor-reservation")
     if args.legacy_binary and not args.successor_custody:
@@ -145,13 +148,18 @@ def main():
         if not args.legacy_binary:
             return
         import sqlite3
+        custody_path="/v1/mls/successors/replacement-1/custody"
+        custody_headers={"X-Family-Device":"alice-candidate"}
+        retained_custody=request("owner",custody_path,headers=custody_headers) if args.successor_handshake else None
         stop()
         serving_binary = binary
         start()
-        snapshots = list((state / 'snapshots').glob('v5-before-successor-custody-*.sqlite'))
+        prior_version=6 if args.successor_handshake else 5
+        pattern='v6-before-successor-handshake-*.sqlite' if args.successor_handshake else 'v5-before-successor-custody-*.sqlite'
+        snapshots = list((state / 'snapshots').glob(pattern))
         assert len(snapshots) == 1
         with sqlite3.connect(snapshots[0]) as db:
-            assert db.execute('PRAGMA user_version').fetchone()[0] == 5
+            assert db.execute('PRAGMA user_version').fetchone()[0] == prior_version
             assert db.execute('SELECT count(*) FROM mls_successor_reservations').fetchone()[0] == 1
             assert db.execute('SELECT count(*) FROM messages').fetchone()[0] == 1
         stop()
@@ -160,17 +168,19 @@ def main():
         start(False)
         assert hashlib.sha256((state / 'messages.sqlite').read_bytes()).hexdigest() == before
         original_state = state
-        state = work / 'isolated-v5-restore'
+        state = work / ('isolated-v'+str(prior_version)+'-restore')
         state.mkdir(mode=0o700)
         private_write(state / 'messages.sqlite', snapshots[0].read_bytes())
         start()
         assert len(json.loads(request('owner', '/v1/rooms/family/messages')[1])) == 1
         assert request('owner', '/v1/mls/successors/replacement-1/reservation', headers={'X-Family-Device':'alice-candidate'})[0] == 200
+        if retained_custody:assert request('owner',custody_path,headers=custody_headers)==retained_custody
         stop()
         state = original_state
         serving_binary = binary
         start()
-        proof['checks']['actual_v5_migration_snapshot_old_binary_denial_and_isolated_restore'] = True
+        if retained_custody:assert request('owner',custody_path,headers=custody_headers)==retained_custody
+        proof['checks']['actual_v'+str(prior_version)+'_migration_snapshot_old_binary_denial_and_isolated_restore'] = True
 
     def wait_status(who, status):
         until = time.monotonic() + 6
@@ -204,7 +214,7 @@ def main():
 
         if args.successor:
             from native_successor_checks import run
-            run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, path, context=args.successor_context, reservation=args.successor_reservation, custody=args.successor_custody, upgrade=upgrade)
+            run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, path, context=args.successor_context, reservation=args.successor_reservation, custody=args.successor_custody, upgrade=upgrade, handshake=args.successor_handshake)
             proof['ok'] = True
             return
 

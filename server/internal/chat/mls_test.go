@@ -199,7 +199,7 @@ func TestMLSSchemaSnapshotRestartPreservesLegacy(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	_, e = db.Exec("DROP TABLE mls_successor_custody; DROP TABLE mls_successor_reservations; DROP TABLE mls_preparations; DROP TABLE mls_events; DROP TABLE mls_rooms; PRAGMA user_version=2")
+	_, e = db.Exec("DROP TABLE mls_successor_handshake; DROP TABLE mls_successor_custody; DROP TABLE mls_successor_reservations; DROP TABLE mls_preparations; DROP TABLE mls_events; DROP TABLE mls_rooms; PRAGMA user_version=2")
 	db.Close()
 	if e != nil {
 		t.Fatal(e)
