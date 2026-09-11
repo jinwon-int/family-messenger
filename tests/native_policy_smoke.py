@@ -22,9 +22,12 @@ def main():
     parser.add_argument('--successor-context', action='store_true', help='also qualify read-only replacement context; requires --successor')
     parser.add_argument("--successor-reservation", action="store_true", help="durable inactive reservation proof; requires --successor-context")
     parser.add_argument("--successor-custody", action="store_true", help="inactive paired declarations; requires --successor-reservation")
+    parser.add_argument("--successor-confirmation", action="store_true", help="MLS confirmation relay; requires handshake")
     parser.add_argument("--successor-handshake", action="store_true", help="restricted inactive handshake relay; requires --successor-custody")
-    parser.add_argument("--legacy-binary", type=Path, help="schema5 (custody) or schema6 (handshake) binary for isolated migration proof")
+    parser.add_argument("--legacy-binary", type=Path, help="schema5 (custody), schema6 (handshake), or schema7 (confirmation) binary for isolated migration proof")
     args = parser.parse_args()
+    if args.successor_confirmation and not args.successor_handshake:
+        parser.error("--successor-confirmation requires --successor-handshake")
     if args.successor_handshake and not args.successor_custody:
         parser.error("--successor-handshake requires --successor-custody")
     if args.successor_custody and not args.successor_reservation:
@@ -151,11 +154,13 @@ def main():
         custody_path="/v1/mls/successors/replacement-1/custody"
         custody_headers={"X-Family-Device":"alice-candidate"}
         retained_custody=request("owner",custody_path,headers=custody_headers) if args.successor_handshake else None
+        handshake_path="/v1/mls/successors/replacement-1/handshake"
+        retained_handshake=request("owner",handshake_path,headers=custody_headers) if args.successor_confirmation else None
         stop()
         serving_binary = binary
         start()
-        prior_version=6 if args.successor_handshake else 5
-        pattern='v6-before-successor-handshake-*.sqlite' if args.successor_handshake else 'v5-before-successor-custody-*.sqlite'
+        prior_version=7 if args.successor_confirmation else 6 if args.successor_handshake else 5
+        pattern='v7-before-successor-confirmation-*.sqlite' if args.successor_confirmation else 'v6-before-successor-handshake-*.sqlite' if args.successor_handshake else 'v5-before-successor-custody-*.sqlite'
         snapshots = list((state / 'snapshots').glob(pattern))
         assert len(snapshots) == 1
         with sqlite3.connect(snapshots[0]) as db:
@@ -214,7 +219,7 @@ def main():
 
         if args.successor:
             from native_successor_checks import run
-            run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, path, context=args.successor_context, reservation=args.successor_reservation, custody=args.successor_custody, upgrade=upgrade, handshake=args.successor_handshake)
+            run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, path, context=args.successor_context, reservation=args.successor_reservation, custody=args.successor_custody, upgrade=upgrade, handshake=args.successor_handshake, confirmation=args.successor_confirmation)
             proof['ok'] = True
             return
 

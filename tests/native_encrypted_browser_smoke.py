@@ -35,6 +35,7 @@ def main():
     args.add_argument('--aggregate-history-ui', action='store_true')
     args.add_argument('--aggregate-history-embedded', action='store_true')
     args.add_argument('--exchange-candidate', choices=['alice','bob'], default='bob')
+    args.add_argument('--confirmation', action='store_true')
     args.add_argument('--exchange', action='store_true')
     args.add_argument('--custody-order', choices=['candidate','peer','concurrent'])
     args.add_argument('--candidate', action='store_true')
@@ -50,6 +51,7 @@ def main():
     args.add_argument('--policy-binary', required=True, type=Path)
     args = args.parse_args()
     assert not (args.aggregate_history and args.aggregate_history_ui)
+    assert not args.confirmation or args.exchange
     assert not args.exchange or args.custody_order
     assert not args.successor_peer_original or args.successor_peer
     assert not args.candidate_original or args.candidate
@@ -199,6 +201,9 @@ def main():
         if args.exchange:
             from native_exchange_checks import exchange_assets
             exchange_assets(root,work,assets,proof)
+            if args.confirmation:
+                from native_confirmation_checks import confirmation_assets
+                confirmation_assets(root,work,assets,proof)
     if args.candidate:
         from native_candidate_checks import candidate_assets
         candidate_assets(root,work,assets,proof,args.candidate_original)
@@ -259,7 +264,9 @@ def main():
     if vault:proof['test_instrumentation']+='; encrypted driver held CAS/KDF/write, private-worker digests only, disposable lock-aware caller; original versus instrumented hashes recorded'
     if aggregate and not aggregate_ui:proof['test_instrumentation']+='; aggregate held CAS and base pending-write SIGKILL hook; whole native record digests only; separate original/instrumented driver hashes'
     hold_next=[False];arrived=threading.Event();release=threading.Event();tamper=[None];previous_cipher=[None];previous_commit=[None]
+    confirmation_hooks={"callback":None,"posts":[]}
     exchange_hooks={"callback":None,"posts":[]}
+    if args.confirmation:exchange_hooks["confirmation"]=confirmation_hooks
     custody_hooks={"callback":None,"posts":[]}
     class Proxy(BaseHTTPRequestHandler):
         def log_message(self,*args):pass
@@ -276,6 +283,8 @@ def main():
             headers={k:v for k,v in self.headers.items() if k.lower() not in ('cookie','connection','host','content-length','transfer-encoding')}
             headers['Host']=f'127.0.0.1:{self.server.server_port}'
             if subject:headers['Cf-Access-Jwt-Assertion']=tokens[subject,False]
+            if args.confirmation and self.command=='POST' and self.path.endswith('/confirmation') and confirmation_hooks.get('drop_before'):
+                confirmation_hooks.setdefault('dropped',[]).append(json.loads(body));self.close_connection=True;return
             if args.exchange and self.command=='POST' and self.path.endswith('/handshake') and exchange_hooks.get('drop_before'):
                 exchange_hooks.setdefault('dropped',[]).append(json.loads(body));self.close_connection=True;return
             upstream=http.client.HTTPConnection(address,timeout=10)
@@ -331,6 +340,10 @@ def main():
                         else:raise AssertionError('unknown generated context mutation')
                         raw=json.dumps(data).encode()
                 status=response.status
+                if args.confirmation and self.path.endswith('/confirmation'):
+                    if self.command=='POST':confirmation_hooks['posts'].append(json.loads(body))
+                    if confirmation_hooks['callback']:
+                        status,raw,context_bad_header=confirmation_hooks['callback'](self.command,status,raw)
                 if args.exchange and self.path.endswith('/handshake'):
                     if self.command=='POST':exchange_hooks['posts'].append(json.loads(body))
                     if exchange_hooks['callback']:

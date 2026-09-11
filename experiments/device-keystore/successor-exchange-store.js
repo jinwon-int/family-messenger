@@ -76,7 +76,8 @@ function advance(a,e,role,remote){
 }
 async function transaction(store,e,role,remote){
  remote=transcript(remote,e);store.live();if(store.create||++store.operations>32)fail();
- return store.lock('family-native-vault-state:'+store.database,async live=>{
+ return store.lock('family-native-vault-state:'+store.database,async lockLive=>{
+  const live=()=>{lockLive();if(e.context.expires_at*1000<=Date.now())fail();};live();
   const before=await store.read();store.outer(before);let a,original,next;
   try{
    await store.key(before,null,{});live();
@@ -99,3 +100,6 @@ export class PeerExchangeStore extends SuccessorPeerStore {advance(e,remote){ret
 
 export {candidateReservation} from './candidate-store.js';
 export {reservation} from './successor-peer-store.js';
+
+// Shared strict decoding/validation for the explicitly selected next format.
+export {validate as validateExchange,checksum as exchangeChecksum,encode,decode,target,wipe,apply};

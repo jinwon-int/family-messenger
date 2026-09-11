@@ -21,7 +21,12 @@ def exchange_assets(root,work,assets,proof):
     original=build(source,'exchange-original.js')
     needle=b"await store.commit(before,after,'',live);"
     assert source.count(needle)==1
-    source=source.replace(needle,b"await store.commit(before,after,self.testFault??'',live);")
+    source=source.replace(needle,b'''if(self.testExpireBeforeCommit)Date.now=()=>e.context.expires_at*1000+1;
+     let testCASCalls=0;
+     await store.commit(before,after,self.testFault??'',()=>{
+      if(self.testExpireAtCAS&&++testCASCalls===2)Date.now=()=>e.context.expires_at*1000+1;
+      live();
+     });''')
     needle=b'store.root.seen=(after??before).revision;return result;'
     assert source.count(needle)==1
     source=source.replace(needle,b'''store.root.seen=(after??before).revision;
@@ -71,10 +76,14 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
         for fault in ('abort-before-write','abort-after-write'):
             exchange(p,role,setup={'testFault':fault},reject=True)
             assert snapshots()==original and not hooks['posts']
+        for flag in ('testExpireBeforeCommit','testExpireAtCAS'):
+            exchange(p,role,setup={flag:True},reject=True)
+            assert snapshots()==original and not hooks['posts']
         bad=args(role);bad['database']+='-missing';exchange(p,role,bad,reject=True)
         bad=args(role);bad['password']='w'*48;exchange(p,role,bad,reject=True)
         assert snapshots()==original and not hooks['posts']
     proof['checks']['exchange_local_abort_missing_wrong_password_zero_handshake_posts']=True
+    proof['checks']['exchange_expiry_before_commit_and_at_cas_preserves_cipher_zero_posts']=True
     # Peer may wait first without generating a group or sending anything.
     waiting=exchange(a,'peer');assert waiting['phase']=='awaiting-key-package' and waiting['group_id']=='' and not hooks['posts']
     kp=exchange(b,'candidate');assert kp['phase']=='awaiting-welcome'
@@ -128,6 +137,10 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
         assert opened==plaintext and snapshots()==stable
     proof['checks']['bidirectional_actual_saved_private_crypto_continuity_disposable_transitions']=True
     proof['checks']['original_uninstrumented_workers_perform_all_successful_protocol_writes']=True
+    if 'confirmation' in hooks:
+        from native_confirmation_checks import run as confirm_run
+        confirm_run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,restart,hooks['confirmation'],expected,source,proposal,database,candidate_actor)
+        return
     def malformed(mode):
         def change(method,status,raw):
             v=json.loads(raw)
