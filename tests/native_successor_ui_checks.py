@@ -17,15 +17,20 @@ def ui_assets(root,assets,proof):
 def install(hooks,expected,databases,database,passwords,candidate_actor,proof):
     peer_actor='alice' if candidate_actor=='bob' else 'bob';seen=set();states=[]
     def scope(role):return {'identity':candidate_actor if role=='candidate' else peer_actor,'role':role,'database':database if role=='candidate' else databases[0],'reservation':copy.deepcopy(expected)}
+    if hooks.get('ui_handoff'):
+        from native_successor_handoff_checks import handoff_driver
+        handoff_prepare,handoff_check=handoff_driver(scope,proof)
     def prepare(p,role):
-        if not p.url.endswith('/successor/'):
+        if hooks.get('ui_handoff'):
+            handoff_prepare(p,role)
+        elif not p.url.endswith('/successor/'):
             p.goto(p.url.split('/',3)[0]+'//'+p.url.split('/')[2]+'/successor/');p.wait_for_selector('#scope')
             assert p.locator('#scope').input_value()=='' and p.locator('#action').input_value()==''
             assert p.locator('#run').is_disabled()
             p.evaluate("async x=>{const m=await import('/successor-ui.js');m.installScopes([x]);x.reservation.context.target_room='mutated-after-install';}",scope(role))
             assert p.locator('#scope').input_value()=='' and p.locator('#run').is_disabled()
         p.select_option('#scope','1')
-        assert expected['context']['target_room'] in p.locator('#selection').inner_text()
+        if not hooks.get('ui_handoff'):assert expected['context']['target_room'] in p.locator('#selection').inner_text()
         assert expected['context'][role]['device_id'] in p.locator('#selection').inner_text()
         seen.add(role)
     def perform(p,role,kind):
@@ -47,6 +52,7 @@ def install(hooks,expected,databases,database,passwords,candidate_actor,proof):
         try:return perform(p,role,'closure-close')
         finally:assets[key]=old
     hooks['ui']={'fault':fault,'perform':perform,'seen':seen,'states':states,'scope':scope}
+    if hooks.get('ui_handoff'):hooks['ui']['handoff_check']=lambda p,role:handoff_check(p,role,perform)
 
 
 def finish(hooks,proof):
