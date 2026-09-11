@@ -45,7 +45,12 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
         if reject:assert not v['ok'] and 'result' not in v,v;return
         assert v['ok'],v;r=v['result'];assert r['committed'] and r['local_closed'] and v['memory_bytes']<=128*1024*1024;return r
     def snapshots():return [digest(a,0),digest(b,1),digest(b,1,database=database)]
+    def current(role,method,route,body=None):
+        return direct(subjects[role],method,route,body,device=expected['context'][role]['device_id'])
     assert time.time()>expected['context']['expires_at']
+    for role in ('candidate','peer'):
+        code,v=current(role,'GET',path);assert code==200 and v['closure'] is None
+        assert current(role,'GET','/v1/mls/successors/replace-bob/enrolled-channel')[0]==200
     # The provider has advanced bidirectionally. Freeze a real unsent ciphertext too.
     hooks['drop_before']='enrolled-channel';enrollment_invoke(b,'candidate',{'kind':'send','id':'closure-pending','text':'must remain sealed'},reject=True);hooks['drop_before']=None
     original=snapshots();baseline=[saved_state(a,databases[0]),saved_state(b,database)];oldposts=len(hooks['channel_posts'])
@@ -80,11 +85,12 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
     def lost(method,status,raw):return (status,b'{',False) if method=='POST' else (status,raw,False)
     winner=order[0];h['callback']=lost;invoke(b if winner=='candidate' else a,winner,reject=True);h['callback']=None
     assert snapshots()==sealed and h['posts']==[h['dropped'][0]]
-    code,receipt=direct(subjects[winner],'GET',path);assert code==200 and receipt['closure']['role']==winner
+    code,receipt=current(winner,'GET',path);assert code==200 and receipt['closure']['role']==winner
     # One POST alone closes both directions, even with the other participant offline.
     for role in ('candidate','peer'):
         for action in ('enrollment','enrolled-channel'):
-            assert direct(subjects[role],'GET','/v1/mls/successors/replace-bob/'+action)[0]==403
+            assert current(role,'GET','/v1/mls/successors/replace-bob/'+action)[0]==403
+        assert current(role,'POST','/v1/mls/successors/replace-bob/enrolled-channel',{'client_id':'closed-'+role,'device_id':expected['context'][role]['device_id'],'payload':'AQ=='})[0]==403
     proof['checks']['one_participant_POST_after_actual_expiry_closes_both_directions_lost_reply_exact']=True
     restart();crash(0);a=page(0);crash(1);b=page(1)
     for p,role in ((a,'peer'),(b,'candidate')):
@@ -111,7 +117,7 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
     config['activations'][0]['status']='revoked';commit(6,config['people'])
     until=time.monotonic()+6
     while time.monotonic()<until:
-        if direct(subjects['peer'],'GET',path)[0]==403:break
+        if current('peer','GET',path)[0]==403:break
         time.sleep(.05)
     else:raise AssertionError('closure authority revocation reload')
     restart()

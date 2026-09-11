@@ -144,9 +144,9 @@ def main():
             process.wait(timeout=5)
         if output:
             output.close()
-    def direct(subject, method, path, body=None):
+    def direct(subject, method, path, body=None, *, device=None):
         r = urllib.request.Request('http://' + address + path, method=method, data=json.dumps(body).encode() if body is not None else None,
-                                   headers={'Cf-Access-Jwt-Assertion': tokens[subject, False], 'Content-Type': 'application/json','X-Family-Device':('alice' if subject=='owner' else 'bob')+'-first'})
+                                   headers={'Cf-Access-Jwt-Assertion': tokens[subject, False], 'Content-Type': 'application/json','X-Family-Device':device if device is not None else ('alice' if subject=='owner' else 'bob')+'-first'})
         try:
             with urllib.request.urlopen(r, timeout=5) as response:
                 data = response.read()
