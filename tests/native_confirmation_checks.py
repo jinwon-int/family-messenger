@@ -21,7 +21,12 @@ def confirmation_assets(root,work,assets,proof):
     source=source.replace(b'{exact,fail}',b'{exact,fail,unhex}').replace(b'{same,bytes,request,jsonHash}',b'{same,bytes,request,jsonHash,hash,b64}')
     source=b"import {staged_trusted_apply} from '/pkg/family_mls_browser_experiment.js';\n"+source
     needle=b"await store.commit(before,after,'',live);";assert source.count(needle)==1
-    source=source.replace(needle,b"await store.commit(before,after,self.testFault??'',live);")
+    source=source.replace(needle,b'''if(self.testExpireBeforeCommit)Date.now=()=>e.context.expires_at*1000+1;
+     let testCASCalls=0;
+     await store.commit(before,after,self.testFault??'',()=>{
+      if(self.testExpireAtCAS&&++testCASCalls===2)Date.now=()=>e.context.expires_at*1000+1;
+      live();
+     });''')
     needle=b'store.root.seen=(after??before).revision;return result;';assert source.count(needle)==1
     source=source.replace(needle,b'''store.root.seen=(after??before).revision;
      self.testSnapshot={provider:hash(target(a,role).crypto),source:role==='peer'?sodium.to_hex(sodium.crypto_generichash(32,enc.encode(JSON.stringify({...a.rooms[0],crypto:b64(a.rooms[0].crypto)})))):null,package:role==='candidate'?a.package:null};
@@ -66,6 +71,9 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
     for p,role in ((a,'peer'),(b,'candidate')):
         for fault in ('abort-before-write','abort-after-write'):
             confirm(p,role,setup={'testFault':fault},reject=True);assert snapshots()==original and not hooks['posts']
+        for flag in ('testExpireBeforeCommit','testExpireAtCAS'):
+            confirm(p,role,setup={flag:True},reject=True)
+            assert snapshots()==original and not hooks['posts']
         bad=args(role);bad['database']+='-missing';confirm(p,role,bad,reject=True)
         bad=args(role);bad['password']='w'*48;confirm(p,role,bad,reject=True)
         count=[0]
@@ -77,6 +85,7 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
         finally:hooks['callback']=None
         assert count[0]==2 and snapshots()==original and not hooks['posts']
     proof['checks']['confirmation_local_abort_missing_password_and_fresh_denial_zero_posts']=True
+    proof['checks']['confirm_expiry_before_commit_and_at_cas_preserves_cipher_zero_posts']=True
     wait=confirm(a,'peer');assert not wait['peer_verified'] and wait['phase']=='awaiting-candidate-proof'
     # Two candidate tabs own the same saved pending ciphertext even when no
     # request reaches the server. Both library sender transitions cannot commit.
