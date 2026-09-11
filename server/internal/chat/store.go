@@ -174,7 +174,7 @@ func Open(dir string) (_ *Store, err error) {
 	if e = db.QueryRow("PRAGMA application_id").Scan(&appID); e != nil {
 		return nil, e
 	}
-	if ((version == 1 || version == 2 || version == 3 || version == 4 || version == 5 || version == 6 || version == 7 || version == 8 || version == 9) && appID != 1179471188) || (version == 0 && appID != 0) {
+	if (version != 0 && appID != 1179471188) || (version == 0 && appID != 0) {
 		return nil, fmt.Errorf("not a synthetic messenger database")
 	}
 	if version != 0 && version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10 {
