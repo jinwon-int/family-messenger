@@ -805,3 +805,62 @@ jobs:
             artifacts/native-custody-*/verification.json
             artifacts/custody-protocol-*/verification.json
             artifacts/native-asset-activation-*/verification.json
+
+  welcome-ceremony:
+    needs: synthetic-mls
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: custody-proof-inputs
+          path: artifacts
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-native-test.txt
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ hashFiles('requirements-native-test.txt') }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.2'
+      - name: Install pinned browser and protected store tooling
+        run: |
+          python -m pip install -r requirements-native-test.txt
+          python -m playwright install --with-deps chromium
+          npm --prefix experiments/device-keystore ci --ignore-scripts
+          chmod 700 artifacts/family-dev-trust artifacts/family-policy-trust
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Prepare separate pinned preceding ceremony and Welcome assets and verify explicit activation
+        run: |
+          node experiments/device-keystore/node_modules/esbuild/bin/esbuild experiments/device-keystore/candidate-store.js --bundle --format=esm --platform=browser --target=es2023 --minify --external:/pkg/* --external:/trust-directory.js --outfile=experiments/device-keystore/bundle/candidate-store.js
+          node experiments/device-keystore/node_modules/esbuild/bin/esbuild experiments/device-keystore/successor-peer-store.js --bundle --format=esm --platform=browser --target=es2023 --minify --external:/pkg/* --external:/trust-directory.js --outfile=experiments/device-keystore/bundle/successor-peer-store.js
+          node experiments/device-keystore/node_modules/esbuild/bin/esbuild experiments/device-keystore/successor-exchange-store.js --bundle --format=esm --platform=browser --target=es2023 --minify --external:/pkg/* --external:/trust-directory.js --external:/handshake-wire.js --outfile=experiments/device-keystore/bundle/successor-exchange-store.js
+          python tools/prepare_mls_assets.py --welcome --bundle artifacts/mls-successor-lease-pkg
+          python tools/prepare_mls_assets.py --welcome --check --bundle artifacts/mls-successor-lease-pkg
+          go -C server test -race -tags synthetic_welcome ./...
+          go -C server build -tags synthetic_welcome -trimpath -o ../artifacts/family-dev-welcome-embedded ./cmd/family-dev
+          python tests/native_asset_activation_smoke.py --welcome --binary artifacts/family-dev-welcome-embedded --plain-binary artifacts/family-dev-trust
+      - name: Actual preceding DOM and saved-package Welcome exchange in both roles
+        run: |
+          for case in candidate:alice peer:bob; do
+            order="${case%:*}"; actor="${case#*:}"
+            timeout 1200s python tests/native_encrypted_browser_smoke.py --custody-order "$order" --custody-ceremony --welcome-ceremony --exchange-candidate "$actor" --bundle artifacts/mls-successor-lease-pkg --binary artifacts/family-dev-welcome-embedded --policy-binary artifacts/family-policy-trust
+          done
+      - name: Separate Welcome caller protocol failures
+        run: timeout 60s python tests/native_welcome_ceremony_protocol.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: welcome-ceremony-proof
+          path: |
+            artifacts/native-custody-*/verification.json
+            artifacts/welcome-protocol-*/verification.json
+            artifacts/native-asset-activation-*/verification.json

@@ -4,8 +4,8 @@ from pathlib import Path
 from password_worker_smoke import safe_bytes
 
 
-def compiled_assets(root,bundle,assets,proof,work):
-    path=root/'server/internal/chat/custody_bundle.json';manifest=json.loads(safe_bytes(path,8192));compiled={}
+def compiled_assets(root,bundle,assets,proof,work,profile="custody"):
+    path=root/('server/internal/chat/'+profile+'_bundle.json');manifest=json.loads(safe_bytes(path,12288 if profile=='welcome' else 8192));compiled={}
     for e in manifest['files']:
         raw=safe_bytes(bundle/e['source'][7:] if e['source'].startswith('bundle:') else root/e['source'],2*1024*1024)
         assert len(raw)==e['bytes'] and hashlib.sha256(raw).hexdigest()==e['sha256'];compiled[e['url']]=raw
@@ -25,7 +25,7 @@ def compiled_assets(root,bundle,assets,proof,work):
     assets['/peer-inspection-store.js']=build(inspection,'successor-peer-store.js');assets['/peer-inspection-worker.js']=worker.replace(needle,b"'./peer-inspection-store.js'")
     assets['/candidate-store.js']=build(safe_bytes(cwd/'candidate-store.js',65536),'candidate-store.js');assets['/candidate-worker.js']=safe_bytes(root/'experiments/openmls-browser/web/candidate-worker.js',65536)
     proof['custody_separate_fixture_sha256']={k:hashlib.sha256(assets[k]).hexdigest() for k in ('/successor-peer-worker.js','/peer-fault-store.js','/peer-inspection-worker.js','/peer-inspection-store.js','/candidate-store.js','/candidate-worker.js')}
-    proof['custody_compiled_manifest_sha256']=hashlib.sha256(path.read_bytes()).hexdigest();proof['custody_compiled_expected_sha256']={k:hashlib.sha256(v).hexdigest() for k,v in compiled.items()}
+    proof[profile+'_compiled_manifest_sha256']=hashlib.sha256(path.read_bytes()).hexdigest();proof[profile+'_compiled_expected_sha256']={k:hashlib.sha256(v).hexdigest() for k,v in compiled.items()}
     csource=safe_bytes(cwd/'candidate-store.js',65536);needle=b'export class CandidateStore extends NativeVaultStore {';assert csource.count(needle)==1
     csource=csource.replace(needle,needle+b" async commit(before,after,fault,live){return super.commit(before,after,'abort-after-write',live);}")
     assets['/candidate-fault-store.js']=build(csource,'candidate-store.js')
@@ -47,7 +47,7 @@ def route_checks(port,cookies,compiled,proof):
     proof['checks']['custody_compiled_unknown_and_other_profile_routes_denied']=True
 
 
-def run(a,b,databases,rpc,prepare,proof,page,passwords,pins,direct,config,commit,crash,digest,tamper,restart,hooks,actor,custody_hooks,order):
+def run(a,b,databases,rpc,prepare,proof,page,passwords,pins,direct,config,commit,crash,digest,tamper,restart,hooks,actor,custody_hooks,order,continuation=None):
     index=['alice','bob'].index(actor);candidate_index=1-index;candidate=['alice','bob'][candidate_index];oldpages=[a,b]
     group=rpc(a,'status')['group_id'];prepare(a,'app-old-text',b'generated prior conversation');rpc(a,'flush');rpc(a,'sync');rpc(b,'sync')
     prepare(b,'app-old-file',bytes(range(256))*32,'file');rpc(b,'flush');rpc(b,'sync');rpc(a,'sync')
@@ -138,6 +138,8 @@ def run(a,b,databases,rpc,prepare,proof,page,passwords,pins,direct,config,commit
         for n,role in enumerate(sequence):select(pages[role],role);execute(pages[role],role,'own-declared' if n==0 else 'pair-declared');valid(pages[role],role)
     assert snapshots()==prepared
     proof['checks']['custody_dom_actual_paired_order_slots_stable_id_no_reseal']=True
+    if continuation:
+        return continuation(oldpages[index],oldpages[candidate_index],[databases[index],databases[candidate_index]],proof,lambda i:page([index,candidate_index][i]),[passwords[index],passwords[candidate_index]],direct,config,commit,lambda i:crash([index,candidate_index][i]),lambda p,i,**kw:digest(p,[index,candidate_index][i],**kw),restart,expected,source,proposal,candidate_db,candidate)
     # Destroy a reply to an actual server-committed POST. No new declaration ID
     # after the unknown result, including a whole browser/server restart.
     role=sequence[0];p=pages[role];select(p,role)
