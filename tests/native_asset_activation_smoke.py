@@ -19,11 +19,6 @@ def main():
     root = Path(__file__).resolve().parents[1]
     directory = Path(tempfile.mkdtemp(prefix='native-asset-activation-', dir=root / 'artifacts'))
     directory.chmod(0o700)
-    if args.successor:
-        cases = [(n,b,[f.replace('--synthetic-mls-ui','--synthetic-successor-ui') for f in flags],e) for n,b,flags,e in cases]
-        for other in ('mls','vault','history','aggregate','aggregate-history'):
-            cases.append(('mutually_exclusive_'+other,binary,['--synthetic-only','--synthetic-successor-ui','--synthetic-'+other+'-ui'],'select only one encrypted UI mode'))
-            cases.append(('old_'+other+'_bundle_absent',binary,['--synthetic-only','--synthetic-'+other+'-ui','--auth-state',str(directory/'missing')],'encrypted assets absent'))
     checks = {}
     binary = args.binary.resolve()
     plain = args.plain_binary.resolve()
@@ -53,6 +48,11 @@ def main():
         cases = [(n,b,[f.replace('--synthetic-mls-ui','--synthetic-aggregate-history-ui') for f in flags],e) for n,b,flags,e in cases]
         for other in ('mls','vault','history','aggregate'):
             cases.append(('mutually_exclusive_'+other,binary,['--synthetic-only','--synthetic-aggregate-history-ui','--synthetic-'+other+'-ui'],'select only one encrypted UI mode'))
+            cases.append(('old_'+other+'_bundle_absent',binary,['--synthetic-only','--synthetic-'+other+'-ui','--auth-state',str(directory/'missing')],'encrypted assets absent'))
+    if args.successor:
+        cases = [(n,b,[f.replace('--synthetic-mls-ui','--synthetic-successor-ui') for f in flags],e) for n,b,flags,e in cases]
+        for other in ('mls','vault','history','aggregate','aggregate-history'):
+            cases.append(('mutually_exclusive_'+other,binary,['--synthetic-only','--synthetic-successor-ui','--synthetic-'+other+'-ui'],'select only one encrypted UI mode'))
             cases.append(('old_'+other+'_bundle_absent',binary,['--synthetic-only','--synthetic-'+other+'-ui','--auth-state',str(directory/'missing')],'encrypted assets absent'))
     for name, executable, flags, error in cases:
         state = directory / name
