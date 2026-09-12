@@ -129,8 +129,14 @@ func testAssetAdmissionRoutingAndLegacyPreservation(t *testing.T, pin []byte, pa
 	if version == 9 {
 		entryPath = paths["peer-preparation.html"]
 	}
+	if version == 11 {
+		entryPath = paths["welcome-ceremony.html"]
+	}
 	if version == 10 {
 		entryPath = paths["custody-ceremony.html"]
+	}
+	if entryPath == "" {
+		t.Fatal("missing selected profile entry path")
 	}
 	store, authority, config, key, legacy := accessFixture(t)
 	files, manifest := assetFixture(t)

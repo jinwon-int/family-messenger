@@ -32,6 +32,10 @@ var aggregateManifest []byte
 //go:embed aggregate_history_bundle.json
 var aggregateHistoryManifest []byte
 
+//go:embed welcome_bundle.json
+var welcomeManifest []byte
+var compiledWelcomeAssets fs.FS
+
 //go:embed custody_bundle.json
 var custodyManifest []byte
 var compiledCustodyAssets fs.FS
@@ -195,7 +199,11 @@ func loadEncryptedAssets(source fs.FS, manifest []byte) (*EncryptedAssets, error
 	return loadAssetProfile(source, manifest, encryptedPaths, 1)
 }
 func loadAssetProfile(source fs.FS, manifest []byte, paths map[string]string, version int) (*EncryptedAssets, error) {
-	if source == nil || len(manifest) > 8192 {
+	manifestLimit := 8192
+	if version == 11 {
+		manifestLimit = 12288
+	} // Combined preceding and exchange graph only.
+	if source == nil || len(manifest) > manifestLimit {
 		return nil, fmt.Errorf("encrypted assets absent or invalid; build with prepared assets for the selected synthetic UI")
 	}
 	var spec encryptedManifestSpec
@@ -228,16 +236,16 @@ func loadAssetProfile(source fs.FS, manifest []byte, paths map[string]string, ve
 		}
 		kind := "text/javascript; charset=utf-8"
 		switch entry.File {
-		case "chat.html", "vault-chat.html", "history.html", "aggregate-chat.html", "aggregate-history.html", "successor.html", "successor-handoff.html", "candidate-preparation.html", "peer-preparation.html", "custody-ceremony.html":
+		case "chat.html", "vault-chat.html", "history.html", "aggregate-chat.html", "aggregate-history.html", "successor.html", "successor-handoff.html", "candidate-preparation.html", "peer-preparation.html", "custody-ceremony.html", "welcome-ceremony.html":
 			kind = "text/html; charset=utf-8"
-		case "chat.css", "history.css", "aggregate-history.css", "successor-ui.css", "candidate-preparation.css", "peer-preparation.css", "custody-ceremony.css":
+		case "chat.css", "history.css", "aggregate-history.css", "successor-ui.css", "candidate-preparation.css", "peer-preparation.css", "custody-ceremony.css", "welcome-ceremony.css":
 			kind = "text/css; charset=utf-8"
 		case "pkg.wasm":
 			kind = "application/wasm"
 		case "cargo-notices.txt", "rust-notices.txt", "age-notices.txt", "sodium-notices.txt":
 			kind = "text/plain; charset=utf-8"
 		}
-		if entry.Type != kind || (version == 4 && aggregateSources[entry.File] != entry.Source) || (version == 5 && historySources[entry.File] != entry.Source) || (version == 6 && aggregateHistorySources[entry.File] != entry.Source) || (version == 7 && successorSources[entry.File] != entry.Source) || (version == 8 && candidateSources[entry.File] != entry.Source) || (version == 9 && peerSources[entry.File] != entry.Source) || (version == 10 && custodySources[entry.File] != entry.Source) {
+		if entry.Type != kind || (version == 4 && aggregateSources[entry.File] != entry.Source) || (version == 5 && historySources[entry.File] != entry.Source) || (version == 6 && aggregateHistorySources[entry.File] != entry.Source) || (version == 7 && successorSources[entry.File] != entry.Source) || (version == 8 && candidateSources[entry.File] != entry.Source) || (version == 9 && peerSources[entry.File] != entry.Source) || (version == 10 && custodySources[entry.File] != entry.Source) || (version == 11 && welcomeSources[entry.File] != entry.Source) {
 			return nil, ErrInvalid
 		}
 		f, e := source.Open(entry.File)
@@ -277,7 +285,7 @@ func LoadAggregateHistoryAssets() (*EncryptedAssets, error) {
 	return loadAssetProfile(compiledAggregateHistoryAssets, aggregateHistoryManifest, aggregateHistoryPaths, 6)
 }
 func NewEncryptedAccessHandler(store *Store, authority *access.Authority, bundle *EncryptedAssets, admission *AdmissionAuthority) (http.Handler, error) {
-	if bundle == nil || (bundle.version != 1 && bundle.version != 2 && bundle.version != 5 && bundle.version != 4 && bundle.version != 6 && bundle.version != 7 && bundle.version != 8 && bundle.version != 9 && bundle.version != 10) || (bundle.version == 1 && len(bundle.files) != len(encryptedPaths)) || (bundle.version == 2 && len(bundle.files) != len(vaultPaths)) || (bundle.version == 5 && len(bundle.files) != len(historyPaths)) || (bundle.version == 4 && len(bundle.files) != len(aggregatePaths)) || (bundle.version == 6 && len(bundle.files) != len(aggregateHistoryPaths)) || (bundle.version == 7 && len(bundle.files) != len(successorPaths)) || (bundle.version == 8 && len(bundle.files) != len(candidatePaths)) || (bundle.version == 9 && len(bundle.files) != len(peerPaths)) || (bundle.version == 10 && len(bundle.files) != len(custodyPaths)) {
+	if bundle == nil || (bundle.version != 1 && bundle.version != 2 && bundle.version != 5 && bundle.version != 4 && bundle.version != 6 && bundle.version != 7 && bundle.version != 8 && bundle.version != 9 && bundle.version != 10 && bundle.version != 11) || (bundle.version == 1 && len(bundle.files) != len(encryptedPaths)) || (bundle.version == 2 && len(bundle.files) != len(vaultPaths)) || (bundle.version == 5 && len(bundle.files) != len(historyPaths)) || (bundle.version == 4 && len(bundle.files) != len(aggregatePaths)) || (bundle.version == 6 && len(bundle.files) != len(aggregateHistoryPaths)) || (bundle.version == 7 && len(bundle.files) != len(successorPaths)) || (bundle.version == 8 && len(bundle.files) != len(candidatePaths)) || (bundle.version == 9 && len(bundle.files) != len(peerPaths)) || (bundle.version == 10 && len(bundle.files) != len(custodyPaths)) || (bundle.version == 11 && len(bundle.files) != len(welcomePaths)) {
 		return nil, ErrInvalid
 	}
 	handler, e := NewAccessHandler(store, authority, admission)

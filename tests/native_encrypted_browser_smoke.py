@@ -46,6 +46,7 @@ def main():
     args.add_argument('--exchange', action='store_true')
     args.add_argument('--custody-order', choices=['candidate','peer','concurrent'])
     args.add_argument('--custody-ceremony', action='store_true')
+    args.add_argument('--welcome-ceremony', action='store_true')
     args.add_argument('--peer-ceremony', action='store_true')
     args.add_argument('--candidate-ceremony', action='store_true')
     args.add_argument('--candidate', action='store_true')
@@ -70,6 +71,7 @@ def main():
     assert not args.enrollment or (args.lease and not args.retirement)
     assert not args.confirmation or args.exchange
     assert not args.exchange or args.custody_order
+    assert not args.welcome_ceremony or args.custody_ceremony
     assert not args.custody_ceremony or (args.custody_order and not args.exchange and not args.successor_embedded)
     assert not args.peer_ceremony or (args.successor_peer and args.successor_peer_original and not args.successor_embedded)
     assert not args.successor_peer_original or args.successor_peer
@@ -136,7 +138,7 @@ def main():
         log = work / 'server.log'
         output = log.open('ab')
         offset = log.stat().st_size
-        process = subprocess.Popen([str(binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--listen', address]+(['--synthetic-aggregate-history-ui' if args.aggregate_history_embedded else '--synthetic-aggregate-ui' if aggregate_ui else '--synthetic-history-ui' if args.history_ui else '--synthetic-vault-ui' if vault_ui else '--synthetic-mls-ui'] if embedded else ['--synthetic-successor-ui'] if args.successor_embedded else ['--synthetic-custody-ui'] if args.custody_ceremony else ['--synthetic-peer-ui'] if args.peer_ceremony else ['--synthetic-candidate-ui'] if args.candidate_ceremony else []), stderr=output, stdout=subprocess.DEVNULL)
+        process = subprocess.Popen([str(binary), '--synthetic-only', '--state', str(state), '--auth-state', str(auth), '--listen', address]+(['--synthetic-aggregate-history-ui' if args.aggregate_history_embedded else '--synthetic-aggregate-ui' if aggregate_ui else '--synthetic-history-ui' if args.history_ui else '--synthetic-vault-ui' if vault_ui else '--synthetic-mls-ui'] if embedded else ['--synthetic-successor-ui'] if args.successor_embedded else ['--synthetic-welcome-ui'] if args.welcome_ceremony else ['--synthetic-custody-ui'] if args.custody_ceremony else ['--synthetic-peer-ui'] if args.peer_ceremony else ['--synthetic-candidate-ui'] if args.candidate_ceremony else []), stderr=output, stdout=subprocess.DEVNULL)
         until = time.monotonic() + 10
         while time.monotonic() < until:
             assert process.poll() is None, 'server exited'
@@ -218,7 +220,7 @@ def main():
     if args.custody_order:
         from native_custody_checks import custody_assets
         custody_assets(root,work,assets,proof)
-        if args.exchange:
+        if args.exchange or args.welcome_ceremony:
             from native_exchange_checks import exchange_assets
             exchange_assets(root,work,assets,proof)
             if args.confirmation:
@@ -308,7 +310,10 @@ def main():
     if args.peer_ceremony:
         from native_peer_ceremony_checks import compiled_assets
         successor_compiled=compiled_assets(root,args.bundle,assets,proof,work)
-    if args.custody_ceremony:
+    if args.welcome_ceremony:
+        from native_welcome_ceremony_checks import compiled_assets
+        successor_compiled=compiled_assets(root,args.bundle,assets,proof,work)
+    elif args.custody_ceremony:
         from native_custody_ceremony_checks import compiled_assets
         successor_compiled=compiled_assets(root,args.bundle,assets,proof,work)
     proof['assets_sha256']={name:hashlib.sha256(raw).hexdigest() for name,raw in assets.items()}
@@ -334,7 +339,7 @@ def main():
         def forward(self):
             if self.headers.get('Host')!=f'127.0.0.1:{self.server.server_port}' or not self.path.startswith('/') or self.path.startswith('//') or any(k.lower()=='authorization' or k.lower().startswith('cf-') for k in self.headers):self.send_error(400);return
             cookie=SimpleCookie();cookie.load(self.headers.get('Cookie',''));v=cookie.get('synthetic_edge');subject=bindings.get(v.value if v else None)
-            successor_fault=(args.custody_ceremony and candidate_hooks['fault'] and self.path in ('/candidate-worker.js','/successor-peer-worker.js','/candidate-custody-worker.js','/peer-custody-worker.js')) or (args.peer_ceremony and candidate_hooks['fault'] and self.path=='/successor-peer-worker.js') or (args.candidate_ceremony and candidate_hooks['fault'] and self.path=='/candidate-worker.js') or args.successor_embedded and lease_hooks['enrollment'].get('ui_fault_active') and self.path in ('/candidate-lifecycle-worker.js','/peer-lifecycle-worker.js')
+            successor_fault=(args.welcome_ceremony and exchange_hooks.get('ui_fault') and self.path in ('/candidate-exchange-worker.js','/peer-exchange-worker.js')) or (args.custody_ceremony and candidate_hooks['fault'] and self.path in ('/candidate-worker.js','/successor-peer-worker.js','/candidate-custody-worker.js','/peer-custody-worker.js')) or (args.peer_ceremony and candidate_hooks['fault'] and self.path=='/successor-peer-worker.js') or (args.candidate_ceremony and candidate_hooks['fault'] and self.path=='/candidate-worker.js') or args.successor_embedded and lease_hooks['enrollment'].get('ui_fault_active') and self.path in ('/candidate-lifecycle-worker.js','/peer-lifecycle-worker.js')
             if not embedded and self.command=='GET' and self.path in assets and (self.path not in successor_compiled or successor_fault):
                 raw=assets[self.path];self.send_response(200);self.send_header('Content-Type','application/wasm' if self.path.endswith('.wasm') else 'text/javascript' if self.path.endswith('.js') else 'text/css' if self.path.endswith('.css') else 'text/html');self.send_header('Content-Length',str(len(raw)));self.send_header('Cache-Control','no-store');self.send_header('Content-Security-Policy',"default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; worker-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'");self.end_headers();self.wfile.write(raw);return
             size=int(self.headers.get('Content-Length','0'))
@@ -354,7 +359,7 @@ def main():
                 lease_hooks.setdefault('dropped',[]).append(json.loads(body));self.close_connection=True;return
             if args.confirmation and self.command=='POST' and self.path.endswith('/confirmation') and confirmation_hooks.get('drop_before'):
                 confirmation_hooks.setdefault('dropped',[]).append(json.loads(body));self.close_connection=True;return
-            if args.exchange and self.command=='POST' and self.path.endswith('/handshake') and exchange_hooks.get('drop_before'):
+            if (args.exchange or args.welcome_ceremony) and self.command=='POST' and self.path.endswith('/handshake') and exchange_hooks.get('drop_before'):
                 exchange_hooks.setdefault('dropped',[]).append(json.loads(body));self.close_connection=True;return
             upstream=http.client.HTTPConnection(address,timeout=10)
             try:
@@ -364,7 +369,7 @@ def main():
                     assert response.getheader('X-Content-Type-Options')=='nosniff'
                     assert response.getheader('Cache-Control')=='no-store'
                     assert "frame-ancestors 'none'" in response.getheader('Content-Security-Policy','')
-                    proof.setdefault('custody_native_served_sha256' if args.custody_ceremony else 'peer_native_served_sha256' if args.peer_ceremony else 'candidate_native_served_sha256' if args.candidate_ceremony else 'successor_native_served_sha256',{})[self.path]=hashlib.sha256(raw).hexdigest()
+                    proof.setdefault('welcome_native_served_sha256' if args.welcome_ceremony else 'custody_native_served_sha256' if args.custody_ceremony else 'peer_native_served_sha256' if args.peer_ceremony else 'candidate_native_served_sha256' if args.candidate_ceremony else 'successor_native_served_sha256',{})[self.path]=hashlib.sha256(raw).hexdigest()
                 if embedded and self.command=='GET':
                     asset_path='/' if self.path=='/encrypted/' and not vault_ui else self.path
                     if asset_path in assets and response.status==200:
@@ -435,7 +440,7 @@ def main():
                     if self.command=='POST':confirmation_hooks['posts'].append(json.loads(body))
                     if confirmation_hooks['callback']:
                         status,raw,context_bad_header=confirmation_hooks['callback'](self.command,status,raw)
-                if args.exchange and self.path.endswith('/handshake'):
+                if (args.exchange or args.welcome_ceremony) and self.path.endswith('/handshake'):
                     if self.command=='POST':exchange_hooks['posts'].append(json.loads(body))
                     if exchange_hooks['callback']:
                         status,raw,context_bad_header=exchange_hooks['callback'](self.command,status,raw)
@@ -463,7 +468,10 @@ def main():
         if args.peer_ceremony:
             from native_peer_ceremony_checks import route_checks
             route_checks(proxy.server_port,cookies,successor_compiled,proof)
-        if args.custody_ceremony:
+        if args.welcome_ceremony:
+            from native_welcome_ceremony_checks import route_checks
+            route_checks(proxy.server_port,cookies,successor_compiled,proof)
+        elif args.custody_ceremony:
             from native_custody_ceremony_checks import route_checks
             route_checks(proxy.server_port,cookies,successor_compiled,proof)
         if embedded and vault_ui:
@@ -547,7 +555,12 @@ def main():
             proof['checks']['native_keypackage_welcome_ack_actual_library_group']=True
             if args.custody_ceremony:
                 from native_custody_ceremony_checks import run
-                run(a,b,databases,rpc,prepare,proof,page,vault_passwords,pins,direct,config,commit,crash,digest,tamper,lambda:(stop(),start()),candidate_hooks,args.exchange_candidate,custody_hooks,args.custody_order)
+                continuation=None
+                if args.welcome_ceremony:
+                    from native_welcome_ceremony_checks import run as exchange_ui_run
+                    def continuation(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,restart,expected,source,proposal,database,candidate):
+                        return exchange_ui_run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,restart,exchange_hooks,expected,source,proposal,database,candidate)
+                run(a,b,databases,rpc,prepare,proof,page,vault_passwords,pins,direct,config,commit,crash,digest,tamper,lambda:(stop(),start()),candidate_hooks,args.exchange_candidate,custody_hooks,args.custody_order,continuation=continuation)
                 for c in contexts:c.close()
                 proof['passed']=True
                 return
