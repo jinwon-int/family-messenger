@@ -38,3 +38,5 @@ server/internal/chat/peerassets/
 server/internal/chat/custodyassets/
 
 /server/internal/chat/welcomeassets/
+
+server/internal/chat/confirmationassets/

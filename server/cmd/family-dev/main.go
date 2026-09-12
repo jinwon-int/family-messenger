@@ -34,6 +34,7 @@ func run() error {
 	aggregateUI := flag.Bool("synthetic-aggregate-ui", false, "enable compiled synthetic two-room custody UI; requires signed auth-state and synthetic_aggregate build")
 	aggregateHistoryUI := flag.Bool("synthetic-aggregate-history-ui", false, "enable compiled synthetic two-room history and custody UI; requires signed auth-state and synthetic_aggregate_history build")
 	successorUI := flag.Bool("synthetic-successor-ui", false, "enable compiled synthetic successor handoff/lifecycle; requires signed auth-state and synthetic_successor build")
+	confirmationUI := flag.Bool("synthetic-confirmation-ui", false, "enable compiled synthetic protected confirmation; requires signed auth-state and synthetic_confirmation build")
 	welcomeUI := flag.Bool("synthetic-welcome-ui", false, "enable compiled synthetic exact-package exchange; requires signed auth-state and synthetic_welcome build")
 	custodyUI := flag.Bool("synthetic-custody-ui", false, "enable compiled synthetic custody declaration; requires signed auth-state and synthetic_custody build")
 	peerUI := flag.Bool("synthetic-peer-ui", false, "enable compiled synthetic intact-peer preparation; requires signed auth-state and synthetic_peer build")
@@ -53,7 +54,7 @@ func run() error {
 		return fmt.Errorf("only 127.0.0.1 is supported")
 	}
 	selectedUI := 0
-	for _, selected := range []bool{*encryptedUI, *vaultUI, *historyUI, *aggregateUI, *aggregateHistoryUI, *successorUI, *candidateUI, *peerUI, *custodyUI, *welcomeUI} {
+	for _, selected := range []bool{*encryptedUI, *vaultUI, *historyUI, *aggregateUI, *aggregateHistoryUI, *successorUI, *candidateUI, *peerUI, *custodyUI, *welcomeUI, *confirmationUI} {
 		if selected {
 			selectedUI++
 		}
@@ -66,7 +67,9 @@ func run() error {
 		if !authSelected || *authState == "" {
 			return fmt.Errorf("encrypted UI requires explicit signed auth-state")
 		}
-		if *welcomeUI {
+		if *confirmationUI {
+			bundle, e = chat.LoadConfirmationAssets()
+		} else if *welcomeUI {
 			bundle, e = chat.LoadWelcomeAssets()
 		} else if *custodyUI {
 			bundle, e = chat.LoadCustodyAssets()
@@ -152,6 +155,9 @@ func run() error {
 	}
 	if *historyUI {
 		cryptoMode = "compiled read-only synthetic history UI /history/; no active device recovery"
+	}
+	if *confirmationUI {
+		cryptoMode = "compiled synthetic private confirmation /confirmation-ceremony/; no active admission"
 	}
 	if *welcomeUI {
 		cryptoMode = "compiled synthetic Welcome/ack /welcome-ceremony/; no active admission or possession proof"

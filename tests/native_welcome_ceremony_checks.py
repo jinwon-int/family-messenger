@@ -154,6 +154,8 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
         assert opened==plaintext and snapshots()==stable
     proof['checks']['bidirectional_actual_saved_private_crypto_continuity_disposable_transitions']=True
     proof['checks']['original_uninstrumented_workers_perform_all_successful_protocol_writes']=True
+    if 'ui_continuation' in hooks:
+        return hooks['ui_continuation'](a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,restart,expected,source,proposal,database,candidate_actor)
     if 'confirmation' in hooks:
         from native_confirmation_checks import run as confirm_run
         confirm_run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,restart,hooks['confirmation'],expected,source,proposal,database,candidate_actor)
