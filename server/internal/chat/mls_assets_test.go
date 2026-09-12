@@ -129,6 +129,9 @@ func testAssetAdmissionRoutingAndLegacyPreservation(t *testing.T, pin []byte, pa
 	if version == 9 {
 		entryPath = paths["peer-preparation.html"]
 	}
+	if version == 12 {
+		entryPath = paths["confirmation-ceremony.html"]
+	}
 	if version == 11 {
 		entryPath = paths["welcome-ceremony.html"]
 	}
