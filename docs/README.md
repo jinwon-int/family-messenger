@@ -1,0 +1,52 @@
+# 문서 색인
+
+`docs/`의 모든 파일을 한 줄씩 적는다. 상태는 **현행**(지금 따르는 문서), **이력**(결정 과정·수용 기준으로
+보존, 일부 내용은 대체됨), **보관**(동결된 네이티브 MLS 트랙의 증거·기록)이다.
+문서끼리 어긋나면 [이슈 #92](https://github.com/jinwon-int/family-messenger/issues/92)가 우선한다.
+
+## 먼저 볼 것
+
+- [DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md](DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md) — 결정 D: 전달·암호화는 Matrix 스택(단일 바이너리 홈서버 + `matrix-sdk-crypto`), 화면·AI 층은 직접. 대안 비교·대가·홈서버 평가 결과(Tuwunel 1.9.1 확정)·코드 처분표 — **현행**
+- [이슈 #92](https://github.com/jinwon-int/family-messenger/issues/92) — 로드맵 진행 추적과 결정에 이른 대화 기록. 문서와 어긋나면 #92가 우선 — **현행**
+- [ROADMAP.md](ROADMAP.md) — 개발 순서 0~5단계와 단계별 KPI 게이트. 0단계 "멈추고 정리"가 진행 중 — **현행**
+- [VISION.md](VISION.md) — 제품 비전, 원칙 6개, 첫 버전 수용 기준(결정 D로 변경 없음) — **현행**
+
+## 운영·의존성
+
+- [OPERATIONS.md](OPERATIONS.md) — 현재 운영 Synapse/Element/Postgres 구성의 설치 신원·포트·계정 발급·매일 restic 백업(`backup.env`)·복구 절차·첫 운영 전 완료 기준. 1단계 홈서버 교체 시 대체 예정 — **현행**
+- [DEPENDENCIES-AND-RESOURCES.md](DEPENDENCIES-AND-RESOURCES.md) — 구성요소별 직접·간접 의존성, 고정 이미지·툴체인, 서버 프로세스 수, 자원 실측 기록(`scripts/resource_report.py`로 재생성) — **현행**
+- [BENCHMARK.md](BENCHMARK.md) — 2026-09-08 오픈소스 비교와 Matrix 채택 근거. 기존 운영 구성을 설명하는 기록 — **이력**
+
+## 에이전트 연결부(`scripts/fleet_*.py`) — 결정 D로 재사용·확장
+
+- [FLEET-BRIDGE.md](FLEET-BRIDGE.md) — 전체 플릿(노드별 Matrix 신원·운영자 권한·승인/취소·불확실 작업)의 가족 메신저 참여 설계. 가족방·mention 모드는 1단계 — **현행**
+- [FLEET-CORE.md](FLEET-CORE.md) — `fleet_core.py`: 네트워크 없는 수신 허용·큐·outbox·불확실 작업 계약 — **현행**
+- [FLEET-MATRIX.md](FLEET-MATRIX.md) — `fleet_matrix.py`: 암호화 개인방 연결부 설치·최초 장치 신뢰·수신/복구/실행 경계·제어·`SafetyStop` 차단과 운영자 해제 도구(`fleet_matrix_state.py unblock`) — **현행**
+- [FLEET-WORKER.md](FLEET-WORKER.md) — `fleet_worker.py`: 노드 실행부의 상주 JSON 포트(ccc-node AgentRuntime, 현재 Codex read-only 시험 바인딩) — **현행**
+- [FLEET-REMOTE.md](FLEET-REMOTE.md) — `fleet_remote.py`: 운영 서버에서 노드 실행부를 SSH로 호출하는 guardian·heartbeat·종료 확인 계약 — **현행**
+
+## 네이티브 트랙 설계 — 결정 D로 전달층에서는 폐기, 위협 모델·기기 정책·수용 기준은 인수검사 기준으로 유지
+
+- [OWN-SYSTEM.md](OWN-SYSTEM.md) — 2026-09-08 "직접 만드는 가족 메신저" 방향과 구현 계약. "서버·전달·암호화를 직접 만든다" 부분은 결정 D로 대체됨 — **이력**
+- [NATIVE-E2EE.md](NATIVE-E2EE.md) — OpenMLS 기반 네이티브 E2EE 타당성·통합 결정. 통합 경로는 대체됐고 위협 모델·수용 기준은 유효 — **이력**
+- [DEVICE-KEY-CUSTODY.md](DEVICE-KEY-CUSTODY.md) — 기기 키 보관·복구 후보 설계(passkey 보호 아카이브 검토). 네이티브 트랙 전제이며 사람 사용 활성화 아님 — **이력**
+- [DEVICE-LIFECYCLE.md](DEVICE-LIFECYCLE.md) — 분실·교체 기기 자격·successor 절차 설계. 참조하는 서버 코드는 `archive/native-mls/`에 있음 — **이력**
+
+## evidence/ — 측정·평가 원본
+
+- [evidence/homeserver-eval-20260913.md](evidence/homeserver-eval-20260913.md) — 결정 D 0단계 홈서버 격리 평가 전문(Tuwunel 1.9.1 vs continuwuity 26.8.1, 항목 a~h) — **현행**
+- [evidence/e2ee-feasibility-20260909.json](evidence/e2ee-feasibility-20260909.json) — `family.e2ee.feasibility.v1`: OpenMLS 버전·설계 전용 타당성 기록(암호 의존성 미설치 상태) — **이력**
+- `evidence/server/` — PR #90에서 `server/*-evidence.json`을 옮긴 네이티브 MLS 단계별 합성 증거. 어떤 단계도 사람 사용을 활성화하지 않음 — 모두 **보관**
+  - [evidence/server/preparation-evidence.json](evidence/server/preparation-evidence.json) — 네이티브 E2EE 준비 단계 증거
+  - [evidence/server/encrypted-ui-evidence.json](evidence/server/encrypted-ui-evidence.json) — 암호화 채팅 UI 합성 검증
+  - [evidence/server/history-ui-evidence.json](evidence/server/history-ui-evidence.json) — 이력 UI 합성 검증
+  - [evidence/server/history-v5-evidence.json](evidence/server/history-v5-evidence.json) — 이력 v5 저장 형식 검증
+  - [evidence/server/vault-ui-evidence.json](evidence/server/vault-ui-evidence.json) — 키 보관(vault) UI 합성 검증
+  - [evidence/server/aggregate-ui-evidence.json](evidence/server/aggregate-ui-evidence.json) — 통합 UI 합성 검증
+  - [evidence/server/aggregate-history-ui-evidence.json](evidence/server/aggregate-history-ui-evidence.json) — 통합 이력 UI 합성 검증
+  - [evidence/server/successor-evidence.json](evidence/server/successor-evidence.json) — successor(기기 교체) 기본 단계 증거
+  - [evidence/server/successor-reservation-evidence.json](evidence/server/successor-reservation-evidence.json) — successor 예약 단계 증거
+  - [evidence/server/successor-context-evidence.json](evidence/server/successor-context-evidence.json) — successor 서명 컨텍스트 preflight 증거
+  - [evidence/server/successor-custody-evidence.json](evidence/server/successor-custody-evidence.json) — successor custody 단계 증거
+
+새 문서를 추가하거나 상태가 바뀌면 이 색인의 해당 줄을 같은 PR에서 고친다.
