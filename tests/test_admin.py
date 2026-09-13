@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 from pathlib import Path
 import re
@@ -251,6 +253,26 @@ class RunCommandTests(unittest.TestCase):
             run_command(parse(['create', 'fam', '--display-name', '가족']))
             self.assertEqual(stub.instance.init, ('http://127.0.0.1:18809', 'family.example', 'tok'))
             self.assertEqual(stub.instance.created, ('fam', 'password1234', False, '가족'))
+
+    def test_create_prints_full_user_id_from_name_user_id_or_fallback(self):
+        loaded = {'base': 'http://127.0.0.1:18809', 'server_name': 'family.example',
+                  'database': Path('/tmp/db'), 'config_path': Path('/tmp/t.toml')}
+        cases = [({'name': '@fam:family.example'}, '@fam:family.example'),  # Tuwunel PUT v2/users
+                 ({'user_id': '@fam:family.example'}, '@fam:family.example'),  # Synapse
+                 ({}, '@fam:family.example')]  # neither: derived from username + server_name
+        for result, expected in cases:
+            with self.subTest(result=result):
+                client = AdminClient('http://127.0.0.1:18809', 'family.example', 'tok',
+                                     send=lambda *a, result=result: result)
+                out = io.StringIO()
+                with mock.patch('getpass.getpass', return_value='password1234'), \
+                     mock.patch('admin.load_tuwunel_config', return_value=loaded), \
+                     mock.patch('admin.load_admin_token', return_value='tok'), \
+                     mock.patch('admin.AdminClient', return_value=client), \
+                     contextlib.redirect_stdout(out):
+                    run_command(parse(['create', 'fam']))
+                self.assertEqual(out.getvalue(), 'Created ' + expected + '; credentials were not logged.\n')
+                self.assertNotIn('Created fam;', out.getvalue())
 
     def test_deactivate_refuses_without_yes(self):
         with self.assertRaises(ValueError):

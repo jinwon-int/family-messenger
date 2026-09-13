@@ -157,7 +157,9 @@ def run_command(args):
         config=load_tuwunel_config()
         client=AdminClient(config['base'],config['server_name'],load_admin_token())
         result=client.create_user(args.username,password,args.admin,args.display_name)
-        print('Created '+result.get('user_id',args.username)+'; credentials were not logged.')
+        # Tuwunel's PUT v2/users answers with `name`; Synapse uses `user_id`.
+        created=result.get('name') or result.get('user_id') or client.user_id(args.username)
+        print('Created '+created+'; credentials were not logged.')
     elif args.command=='deactivate':
         if not args.yes:raise ValueError('deactivation requires --yes')
         config=load_tuwunel_config()
