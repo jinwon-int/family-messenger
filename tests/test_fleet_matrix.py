@@ -418,6 +418,38 @@ class FamilyRoomTests(unittest.IsolatedAsyncioTestCase):
             await self.f.encrypted_send(FAMILY,'가족 답변','txn1')
         self.f.client.encrypt.assert_called_once()
 
+    async def test_initial_snapshot_sync_is_not_a_timeline_gap(self):
+        # Servers flag timeline.limited=true for every room on the first sync
+        # (no `since`). Only an incremental sync with limited=true is a gap.
+        direct=self.f.c['rooms'][0]
+        identity={'ed25519':'agent-ed','curve25519':'agent-cu'}
+        self.client_mock(rooms={FAMILY:self.healthy_members(),direct:{self.owner,self.account}},
+                         devices={self.owner:{'OWNER':pinned_device('a','b')},DAD:{'DAD1':pinned_device('c')}},
+                         identity=identity)
+        bot_keys={'keys':{'ed25519:BOT':'agent-ed','curve25519:BOT':'agent-cu'}}
+        self.route_raw(('keys',''),{'device_keys':{self.account:{'BOT':bot_keys},
+                                                   self.owner:{'OWNER':{}},DAD:{'DAD1':{}}}},
+                       *self.gate_routes(self.healthy_members()),
+                       (direct,'/joined_members'),{'joined':{self.owner:{},self.account:{}}},
+                       (direct,'/state/m.room.encryption'),{'algorithm':'m.megolm.v1.aes-sha2'})
+        class SyncResponse:
+            @classmethod
+            def from_dict(cls,raw):
+                response=cls();response.rooms=types.SimpleNamespace(join={});return response
+        self.nio.SyncResponse=SyncResponse
+        limited={'next_batch':'s1','rooms':{'join':{FAMILY:{'timeline':{'events':[],'limited':True}}}}}
+        self.assertIsNone(self.f.store.token())
+        self.f.store.stage_sync(limited)
+        with patch.dict(sys.modules,{'nio':self.nio}):
+            await self.f.process_pending()  # snapshot sync: must not stop
+        self.assertEqual(self.f.store.token(),'s1')
+        self.assertEqual(self.f.store.get_meta('health')['state'],'ready')
+        self.f.store.stage_sync({**limited,'next_batch':'s2'})
+        with patch.dict(sys.modules,{'nio':self.nio}):
+            with self.assertRaisesRegex(SafetyStop,'timeline-gap-requires-backfill'):
+                await self.f.process_pending()  # incremental sync with a gap
+        self.assertEqual(self.f.store.token(),'s1')  # gap is never committed
+
     async def test_family_admission_pinned_verified_mentioned_humans_only(self):
         mention={'msgtype':'m.text','body':'호출','m.mentions':{'user_ids':[self.account]}}
         self.f.c['not_before_ms']=self.now-1000
