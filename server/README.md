@@ -3,10 +3,16 @@
 This Linux-only prototype tests our own storage and HTTP delivery contract. It is
 **localhost-only and synthetic-data-only**. The default UI is plaintext with
 three deliberately public test identities. Explicit signed mode and a separately
-built [encrypted test UI](ENCRYPTED-UI.md) are available; neither is human-use
+built [encrypted test UI](../archive/native-mls/server/ENCRYPTED-UI.md) are available; neither is human-use
 authentication/E2EE acceptance.
 Do not expose it through a proxy/tunnel or put real family messages in it.
 Production Matrix services are not changed by building or running this code.
+
+> **Frozen native MLS track (2026-09-13, decision D).** The `/v1/mls/*` transport,
+> successor stages and compiled synthetic UI bundles described further down are no
+> longer part of this build; their code, contracts and drivers live in
+> [`archive/native-mls/`](../archive/native-mls/README.md). Schema migrations 3..12
+> and the `mls_*` tables remain so existing databases open unchanged.
 
 ## Build and run
 
@@ -183,44 +189,44 @@ public fixture selector only in fixture mode. This does not activate a Cloudflar
 gate or implement a human login session. See AUTH.md for the policy CLI, reload
 behavior, recovery limits and actual process acceptance.
 
-The signed synthetic [MLS delivery boundary](MLS-TRANSPORT.md) now provides
+The signed synthetic [MLS delivery boundary](../archive/native-mls/server/MLS-TRANSPORT.md) now provides
 explicit reservations/group binding and a durable ordered opaque log. Existing
 plaintext UI rooms remain separate from the explicitly selected synthetic encrypted
 clients. These development modes do not qualify human-use E2EE or production login.
 
-The separately selected [compiled custody UI](VAULT-UI.md) embeds password-unlocked
+The separately selected [compiled custody UI](../archive/native-mls/server/VAULT-UI.md) embeds password-unlocked
 synthetic encrypted storage at `/vault/`; human-use rollout remains gated.
 
-The [two-device preparation boundary](PREPARATION.md) adds an explicitly protected
+The [two-device preparation boundary](../archive/native-mls/server/PREPARATION.md) adds an explicitly protected
 new-conversation reservation. Both admitted devices must declare committed local
 custody before native binding. Schema4 preserves a private prior snapshot; this
 is a generated-data control prerequisite, not aggregate UI or human recovery.
 
-The separate [compiled aggregate history profile](AGGREGATE-HISTORY-UI.md)
+The separate [compiled aggregate history profile](../archive/native-mls/server/AGGREGATE-HISTORY-UI.md)
 serves the two-conversation `/aggregate/` chat and read-only `/aggregate-history/`
 viewer from 20 pinned Go assets. It requires `synthetic_aggregate_history` and
 explicit signed synthetic activation. Earlier asset modes and data are preserved;
 archives never import an active sender or automatically resend pending messages.
 
-[Successor reservations](SUCCESSOR-RESERVATION.md) now allocate an immutable,
+[Successor reservations](../archive/native-mls/server/SUCCESSOR-RESERVATION.md) now allocate an immutable,
 **inactive** replacement target through signed synthetic admission. Schema 5
 snapshots prior v4 data before adding its reservation table. Both exact retries
 and reads require current unexpired policy/source bindings; all ordinary native
 routes deny these targets. Candidate activation is not yet
 connected, and no existing UI silently selects this protocol.
 
-[Paired successor custody declarations](SUCCESSOR-CUSTODY.md) add per-role
+[Paired successor custody declarations](../archive/native-mls/server/SUCCESSOR-CUSTODY.md) add per-role
 immutable receipts and a separate readiness response. Schema 6 preserves a v5
 snapshot and existing reservation bytes. Two declarations remain inactive;
-paired private-client orchestration is described in [CLIENT-CUSTODY.md](CLIENT-CUSTODY.md); activation and exact-package Welcome/ack remain.
+paired private-client orchestration is described in [CLIENT-CUSTODY.md](../archive/native-mls/server/CLIENT-CUSTODY.md); activation and exact-package Welcome/ack remain.
 See [verification evidence](../docs/evidence/server/successor-custody-evidence.json) for the synthetic
 server/process scope and existing custody worker compatibility.
 
 Paired experimental protected-store declaration orchestration and retry semantics
-are documented in [CLIENT-CUSTODY.md](CLIENT-CUSTODY.md). It does not activate a
+are documented in [CLIENT-CUSTODY.md](../archive/native-mls/server/CLIENT-CUSTODY.md). It does not activate a
 successor or change production deployment.
 
-The [restricted successor handshake relay](SUCCESSOR-HANDSHAKE.md) adds ordered
+The [restricted successor handshake relay](../archive/native-mls/server/SUCCESSOR-HANDSHAKE.md) adds ordered
 exact-package/Welcome/ack slots after paired declarations. The opaque transcript
 remains inactive; protected client integration and cryptographic completion are
 still required before activation.

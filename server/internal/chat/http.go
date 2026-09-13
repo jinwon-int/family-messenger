@@ -20,7 +20,6 @@ import (
 var tokens = map[string]string{"synthetic-alice": "alice", "synthetic-bob": "bob", "synthetic-charlie": "charlie"}
 
 type API struct {
-	encrypted     *EncryptedAssets
 	authority     *access.Authority
 	admission     *AdmissionAuthority
 	store         *Store
@@ -41,12 +40,12 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	host, _, e := net.SplitHostPort(r.Host)
 	origins := r.Header.Values("Origin")
 	site := r.Header.Get("Sec-Fetch-Site")
-	asset := r.Method == "GET" && (isAsset(r.URL.Path) || a.encryptedAsset(r.URL.Path))
+	asset := r.Method == "GET" && isAsset(r.URL.Path)
 	if e != nil || host != "127.0.0.1" || len(origins) > 1 || (len(origins) == 1 && origins[0] != "http://"+r.Host) || (site != "" && site != "same-origin" && !(asset && site == "none")) {
 		http.Error(w, "same-origin local clients only", http.StatusForbidden)
 		return
 	}
-	if asset && isAsset(r.URL.Path) && r.URL.RawPath == "" && r.URL.RawQuery == "" {
+	if asset && r.URL.RawPath == "" && r.URL.RawQuery == "" {
 		serveAsset(w, r, a.authority != nil)
 		return
 	}
@@ -84,10 +83,6 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("X-Family-Actor", actor)
-	if r.Method == "GET" && a.encryptedAsset(r.URL.Path) && r.URL.RawPath == "" && r.URL.RawQuery == "" && !r.URL.ForceQuery {
-		a.serveEncryptedAsset(w, r)
-		return
-	}
 	if r.URL.Path == "/v1/session" && r.Method == "GET" && r.URL.RawQuery == "" {
 		if err := authorize(r, func() error {
 			mode, owner := "fixture", false
@@ -120,11 +115,7 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail(w, ErrInvalid)
 			return
 		}
-		limit := int64(24 * 1024)
-		if strings.HasPrefix(r.URL.Path, "/v1/mls/") {
-			limit = 96 * 1024
-		}
-		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 24*1024))
 		if err != nil {
 			fail(w, ErrInvalid)
 			return
@@ -179,10 +170,8 @@ func (a *API) route(w http.ResponseWriter, r *http.Request, actor string) {
 		http.NotFound(w, r)
 		return
 	}
-	if len(parts) >= 3 && parts[0] == "v1" && parts[1] == "mls" {
-		a.mlsRoute(w, r, actor, parts)
-		return
-	}
+	// /v1/mls/* (native MLS transport, successor stages) is no longer served;
+	// the code lives in archive/native-mls/ and every such path is 404 now.
 	if len(parts) == 3 && parts[0] == "v1" && parts[1] == "aggregate" {
 		// Disabled unless the signed policy pins an admission key that the
 		// injected private key matches (checked in NewAccessHandler).

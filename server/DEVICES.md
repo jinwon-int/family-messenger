@@ -3,7 +3,7 @@
 Current lifecycle qualification and planned successor semantics are documented in
 [DEVICE-LIFECYCLE.md](../docs/DEVICE-LIFECYCLE.md). That library/design experiment
 does not relax any enrollment or immutable tombstone constraint in this server.
-The [version-2 successor policy](SUCCESSORS.md) now records public intent and
+The [version-2 successor policy](../archive/native-mls/server/SUCCESSORS.md) now records public intent and
 atomic predecessor retirement. Its candidates remain outside this device list;
 it still cannot activate an additional or replacement device.
 
@@ -72,7 +72,7 @@ new operation using an old snapshot. A directory read grants no execution right.
 
 ## Browser/library validation and limits
 
-`experiments/openmls-browser/web/trust-worker.js` is a separate **memory-only**
+`../archive/experiments/openmls-browser/web/trust-worker.js` is a separate **memory-only**
 synthetic worker. It accepts two independently supplied immutable pins, checks
 its own generated key, and fetches the actual signed native directory with the
 expected actor header. Each check/create/invite/join/encrypt/decrypt operation
@@ -130,7 +130,7 @@ The prior native, 14 staged-persistence and 9 memory-only browser regressions re
 
 No runtime module was added: Go remains 2 direct/0 transitive external modules;
 WASM remains 8 direct/151 transitive external packages. Existing notices apply.
-See `experiments/openmls-browser/device-evidence.json` for this version's source,
+See `../archive/experiments/openmls-browser/device-evidence.json` for this version's source,
 artifact and resource receipt; older experiment receipts are historical observations.
 Production activation still requires device-state/transport integration, real CF
 admission, protected keys/recovery, mobile and backup acceptance. Family rooms do
@@ -138,7 +138,7 @@ not automatically enroll bots; all 12 runtime credentials stay on their nodes.
 
 ## Durable synthetic client follow-up
 
-[TRUSTED-STATE.md](../experiments/openmls-browser/TRUSTED-STATE.md) now joins
+[TRUSTED-STATE.md](../archive/experiments/openmls-browser/TRUSTED-STATE.md) now joins
 independent pins to staged crypto/outbox state across browser restart, with fresh
 native directory admission. It retains the transport and human-use limitations
 above; the original memory-only gate stays as a regression fixture.

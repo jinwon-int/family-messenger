@@ -59,7 +59,7 @@ artifacts/family-dev-embedded --synthetic-only --synthetic-mls-ui \
   --state /absolute/private-synthetic-chat --listen 127.0.0.1:18920
 ```
 
-The selected auth state must already be valid under [AUTH.md](AUTH.md). Omitting
+The selected auth state must already be valid under [AUTH.md](../../../server/AUTH.md). Omitting
 it, selecting an empty/invalid state, omitting synthetic acknowledgement or using
 a non-loopback listen address fails closed without fixture fallback. Merely
 building tagged assets does not enable them. The legacy root page and routes

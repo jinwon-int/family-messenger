@@ -18,48 +18,19 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--binary', required=True, type=Path)
     parser.add_argument('--policy-binary', required=True, type=Path)
-    parser.add_argument('--successor', action='store_true', help='version-2 public intent/retirement process proof')
-    parser.add_argument('--successor-context', action='store_true', help='also qualify read-only replacement context; requires --successor')
-    parser.add_argument("--successor-reservation", action="store_true", help="durable inactive reservation proof; requires --successor-context")
-    parser.add_argument("--successor-custody", action="store_true", help="inactive paired declarations; requires --successor-reservation")
-    parser.add_argument("--closure-migration", action="store_true", help="schema11 snapshot and rollback proof")
-    parser.add_argument("--enrollment-migration", action="store_true", help="schema10 snapshot and rollback proof; requires retirement-migration")
-    parser.add_argument("--retirement-migration", action="store_true", help="schema9 migration after completed confirmation; requires lease-migration")
-    parser.add_argument("--lease-migration", action="store_true", help="schema8 migration after complete confirmations")
-    parser.add_argument("--successor-confirmation", action="store_true", help="MLS confirmation relay; requires handshake")
-    parser.add_argument("--successor-handshake", action="store_true", help="restricted inactive handshake relay; requires --successor-custody")
-    parser.add_argument("--legacy-binary", type=Path, help="schema5 (custody), schema6 (handshake), or schema7 (confirmation) binary for isolated migration proof")
+    # The --successor* / --*-migration / --legacy-binary probes moved with the
+    # native MLS freeze to archive/native-mls/tests/native_successor_checks.py.
     args = parser.parse_args()
-    if args.closure_migration and not args.enrollment_migration:
-        parser.error("--closure-migration requires --enrollment-migration")
-    if args.enrollment_migration and not args.retirement_migration:
-        parser.error("--enrollment-migration requires --retirement-migration")
-    if args.retirement_migration and not args.lease_migration:
-        parser.error("--retirement-migration requires --lease-migration")
-    if args.lease_migration and not args.successor_confirmation:
-        parser.error("--lease-migration requires --successor-confirmation")
-    if args.successor_confirmation and not args.successor_handshake:
-        parser.error("--successor-confirmation requires --successor-handshake")
-    if args.successor_handshake and not args.successor_custody:
-        parser.error("--successor-handshake requires --successor-custody")
-    if args.successor_custody and not args.successor_reservation:
-        parser.error("--successor-custody requires --successor-reservation")
-    if args.legacy_binary and not args.successor_custody:
-        parser.error("--legacy-binary requires --successor-custody")
-    if args.successor_reservation and not args.successor_context:
-        parser.error("--successor-reservation requires --successor-context")
-    if args.successor_context and not args.successor:
-        parser.error('--successor-context requires --successor')
     binary, policy_binary = args.binary.resolve(strict=True), args.policy_binary.resolve(strict=True)
     root = Path(__file__).resolve().parents[1]
-    work = Path(tempfile.mkdtemp(prefix='native-successor-' if args.successor else 'native-policy-', dir=root / 'artifacts'))
+    work = Path(tempfile.mkdtemp(prefix='native-policy-', dir=root / 'artifacts'))
     auth, state, proposals = [work / x for x in ('auth', 'state', 'proposals')]
     for directory in (auth, state, proposals):
         directory.mkdir(mode=0o700)
     proof = {'synthetic_only': True, 'production_cf_gate': False, 'e2ee': False,
              'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
              'policy_binary_sha256': hashlib.sha256(policy_binary.read_bytes()).hexdigest()}
-    serving_binary = args.legacy_binary.resolve(strict=True) if args.legacy_binary else binary
+    serving_binary = binary
     process = output = None
     log = work / 'server.log'
     address = '127.0.0.1:0'
@@ -81,13 +52,6 @@ def main():
               'keys': [{'kid': 'test-key', 'n': b64(bytes.fromhex(modulus)), 'e': 65537}],
               'people': [{'subject': 'owner', 'actor': 'alice', 'owner': True},
                          {'subject': 'family', 'actor': 'bob', 'owner': False}]}
-    if args.successor:
-        config['devices'] = []
-        for number, person in enumerate(config['people'], 1):
-            public = bytes([number]) * 32  # public policy fixture, no MLS key possession claim
-            config['devices'].append({'device_id': person['actor'] + '-first', 'actor': person['actor'],
-                'subject': person['subject'], 'signing_key': public.hex(), 'fingerprint': hashlib.sha256(public).hexdigest(),
-                'status': 'active', 'device_revision': 1, 'acceptance': 'out-of-band-fingerprint'})
     tokens = {}
     for subject in ('owner', 'family'):
         now = int(time.time())
@@ -158,56 +122,6 @@ def main():
         with response:
             return response.status, response.read()
 
-    def upgrade():
-        nonlocal serving_binary, state
-        if not args.legacy_binary:
-            return
-        import sqlite3
-        custody_path="/v1/mls/successors/replacement-1/custody"
-        custody_headers={"X-Family-Device":"alice-candidate"}
-        retained_custody=request("owner",custody_path,headers=custody_headers) if args.successor_handshake else None
-        handshake_path="/v1/mls/successors/replacement-1/handshake"
-        retained_handshake=request("owner",handshake_path,headers=custody_headers) if args.successor_confirmation else None
-        confirmation_path="/v1/mls/successors/replacement-1/confirmation"
-        retained_confirmation=request("owner",confirmation_path,headers=custody_headers) if args.lease_migration else None
-        lease_path="/v1/mls/successors/replacement-1/lease"
-        retained_lease=request("owner",lease_path,headers=custody_headers) if args.retirement_migration else None
-        if retained_lease:assert retained_lease[0]==200
-        stop()
-        serving_binary = binary
-        start()
-        prior_version=11 if args.closure_migration else 10 if args.enrollment_migration else 9 if args.retirement_migration else 8 if args.lease_migration else 7 if args.successor_confirmation else 6 if args.successor_handshake else 5
-        pattern='v11-before-successor-closure-*.sqlite' if args.closure_migration else 'v10-before-successor-enrollment-*.sqlite' if args.enrollment_migration else 'v9-before-successor-retirement-*.sqlite' if args.retirement_migration else 'v8-before-successor-lease-*.sqlite' if args.lease_migration else 'v7-before-successor-confirmation-*.sqlite' if args.successor_confirmation else 'v6-before-successor-handshake-*.sqlite' if args.successor_handshake else 'v5-before-successor-custody-*.sqlite'
-        snapshots = list((state / 'snapshots').glob(pattern))
-        assert len(snapshots) == 1
-        with sqlite3.connect(snapshots[0]) as db:
-            assert db.execute('PRAGMA user_version').fetchone()[0] == prior_version
-            assert db.execute('SELECT count(*) FROM mls_successor_reservations').fetchone()[0] == 1
-            assert db.execute('SELECT count(*) FROM messages').fetchone()[0] == 1
-        stop()
-        before = hashlib.sha256((state / 'messages.sqlite').read_bytes()).hexdigest()
-        serving_binary = args.legacy_binary.resolve(strict=True)
-        start(False)
-        assert hashlib.sha256((state / 'messages.sqlite').read_bytes()).hexdigest() == before
-        original_state = state
-        state = work / ('isolated-v'+str(prior_version)+'-restore')
-        state.mkdir(mode=0o700)
-        private_write(state / 'messages.sqlite', snapshots[0].read_bytes())
-        start()
-        assert len(json.loads(request('owner', '/v1/rooms/family/messages')[1])) == 1
-        assert request('owner', '/v1/mls/successors/replacement-1/reservation', headers={'X-Family-Device':'alice-candidate'})[0] == 200
-        if retained_custody:assert request('owner',custody_path,headers=custody_headers)==retained_custody
-        if retained_handshake:assert request('owner',handshake_path,headers=custody_headers)==retained_handshake
-        if retained_confirmation:assert request('owner',confirmation_path,headers=custody_headers)==retained_confirmation
-        stop()
-        state = original_state
-        serving_binary = binary
-        start()
-        if retained_custody:assert request('owner',custody_path,headers=custody_headers)==retained_custody
-        if retained_handshake:assert request('owner',handshake_path,headers=custody_headers)==retained_handshake
-        if retained_confirmation:assert request('owner',confirmation_path,headers=custody_headers)==retained_confirmation
-        proof['checks']['actual_v'+str(prior_version)+'_migration_snapshot_old_binary_denial_and_isolated_restore'] = True
-
     def wait_status(who, status):
         until = time.monotonic() + 6
         while time.monotonic() < until:
@@ -237,12 +151,6 @@ def main():
         assert request(None, headers={'Authorization': 'Bearer synthetic-alice'})[0] == 401
         assert request(None, headers={'Cf-Access-Authenticated-User-Email': 'owner@example.invalid'})[0] == 401
         proof['explicit_signed_mode_and_no_fixture_fallback'] = True
-
-        if args.successor:
-            from native_successor_checks import run
-            run(config, auth, proposals, proof, request, start, stop, command, private_write, blob, path, context=args.successor_context, reservation=args.successor_reservation, custody=args.successor_custody, upgrade=upgrade, handshake=args.successor_handshake, confirmation=args.successor_confirmation, lease_migration=args.lease_migration)
-            proof['ok'] = True
-            return
 
         old = (auth / 'policy-000001.json').read_bytes()
         commit(1, revoked)
@@ -330,8 +238,6 @@ def main():
     finally:
         stop()
         (work / 'verification.json').write_text(json.dumps(proof, indent=2) + '\n')
-        if args.successor:
-            print(work / 'verification.json')
     print(work / 'verification.json')
 
 if __name__ == '__main__':

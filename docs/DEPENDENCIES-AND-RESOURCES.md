@@ -17,7 +17,7 @@ OWN-SYSTEM.md 구현 순서 1번의 기록 의무("직접/간접 패키지 목�
 | 구성요소 | 직접 | 간접 | 비고 |
 | --- | --- | --- | --- |
 | 네이티브 서버 (Go, `server/`) | 2 — `github.com/golang-jwt/jwt/v5` v5.3.1, `github.com/mattn/go-sqlite3` v1.14.52 | go.sum 고유 모듈 2 (직접 2와 동일 — 간접 모듈 추가 없음) | `server/go.mod`, `server/go.sum` |
-| 브라우저 MLS 실험 (WASM) | 8 | 151 (락 전체 외부 패키지 197) | `experiments/openmls-browser/dependencies.json` 고정 기록(패키지별 라이선스·해시 포함). 소스 그래프 기준이며 도달가능성 분석이 아니다 |
+| 브라우저 MLS 실험 (WASM) | 8 | 151 (락 전체 외부 패키지 197) | `archive/experiments/openmls-browser/dependencies.json` 고정 기록(패키지별 라이선스·해시 포함). 소스 그래프 기준이며 도달가능성 분석이 아니다 |
 | Matrix 브리지 시험 (Python) | `matrix-nio[e2e]==0.25.2` | 해당 SDK 의존 그래프 | 운영 런타임 의존성이 아니라 기존 Matrix 연결부 시험용이다 |
 | 브라우저 검증 (Python) | `playwright==1.62.0` | 해당 도구 의존 그래프 | 검증 전용이며 메신저 런타임 의존성이 아니다 |
 
@@ -74,7 +74,7 @@ media_store 60 KB, 사용자 3, 방 2. 호스트 디스크 1 TB 중 864 GB 가�
 RSS는 서버 프로세스의 커널 기록 누적 최댓값이라 신뢰할 수 있고, CPU 합계는
 구동기 Python을 포함한 하위 트리 값이라 서버 단독 값과 다르다. 루프백 합성
 부하이며 처리량·지연·동시 사용자 주장으로 읽지 않는다. 브라우저(WASM) 메모리
-측정은 이미 `experiments/openmls-browser/IDENTITY-CONTEXT.md` 비용 절에 기록돼
+측정은 이미 `archive/experiments/openmls-browser/IDENTITY-CONTEXT.md` 비용 절에 기록돼
 있어 여기서 반복하지 않는다.
 
 ## 한계

@@ -17,7 +17,7 @@ loaded; only the complete native AggregateStore path is selected.
 ## Reproducible build
 
 Use the pinned isolated Rust 1.91.1 / wasm-bindgen 0.2.126 procedure from
-[IDENTITY-CONTEXT.md](../experiments/openmls-browser/IDENTITY-CONTEXT.md), with the
+[IDENTITY-CONTEXT.md](../../experiments/openmls-browser/IDENTITY-CONTEXT.md), with the
 optional `identity-context` feature. Its WASM SHA256 is
 `94482525c6e2deaa95183e91a86ca83cf46c89af97ca149006abbeaea9bdd13d`.
 The older default bundle is not repinned or overwritten. Build in a fresh
@@ -70,8 +70,8 @@ instances. Toolchains and Node/Python remain build/test tools only.
 
 ## Behavior and verification
 
-[AGGREGATE-CHAT-UI.md](../experiments/openmls-browser/AGGREGATE-CHAT-UI.md),
-[AGGREGATE-VAULT.md](../experiments/device-keystore/AGGREGATE-VAULT.md) and
+[AGGREGATE-CHAT-UI.md](../../experiments/openmls-browser/AGGREGATE-CHAT-UI.md),
+[AGGREGATE-VAULT.md](../../experiments/device-keystore/AGGREGATE-VAULT.md) and
 [PREPARATION.md](PREPARATION.md) retain the exact UI/custody/preparation contracts.
 Runtime UI and crypto sources are unchanged by packaging: independent pins,
 explicit generated passwords, complete encrypted provider/outbox/history/cursor,
