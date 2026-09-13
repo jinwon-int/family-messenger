@@ -1,0 +1,14 @@
+{
+  "$comment": "cloudflared 터널 ingress 예시. 웹 화면(chat.<domain>)은 정적 파일 서버로, Matrix API(matrix.<domain>)는 Tuwunel 127.0.0.1:8008 로 보낸다. 노출 경로는 client API·인증 미디어·well-known 만이다. /_synapse/admin, /_matrix/federation, /_matrix/key 는 규칙이 없으므로 마지막 http_status:404 로 떨어진다. 실제 도메인·터널 ID는 저장소에 쓰지 않는다.",
+  "tunnel": "<tunnel-id>",
+  "credentials-file": "/etc/cloudflared/<tunnel-id>.json",
+  "ingress": [
+    { "hostname": "chat.example.com", "path": "^/\\.well-known/matrix/client$", "service": "http://127.0.0.1:8008" },
+    { "hostname": "chat.example.com", "service": "http://127.0.0.1:8090", "originRequest": { "httpHostHeader": "chat.example.com" } },
+    { "hostname": "matrix.example.com", "path": "^/\\.well-known/matrix/client$", "service": "http://127.0.0.1:8008" },
+    { "hostname": "matrix.example.com", "path": "^/_matrix/client/", "service": "http://127.0.0.1:8008", "originRequest": { "connectTimeout": "30s", "noHappyEyeballs": true } },
+    { "hostname": "matrix.example.com", "path": "^/_matrix/media/", "service": "http://127.0.0.1:8008" },
+    { "hostname": "matrix.example.com", "path": "^/_matrix/versions$", "service": "http://127.0.0.1:8008" },
+    { "service": "http_status:404" }
+  ]
+}

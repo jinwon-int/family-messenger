@@ -1,0 +1,31 @@
+{
+  "$comment": "Tuwunel 릴리스 고정값. 업스트림은 체크섬·서명을 공개하지 않으므로(2026-09-13 확인) 이 파일이 유일한 무결성 기준이다. 값은 격리 평가(docs/evidence/homeserver-eval-20260913.md)에서 실측한 sha256이며, fetch-tuwunel.sh가 다운로드 후 대조한다. 버전을 올릴 때는 두 자산(deb·zst)을 각각 받아 추출 바이너리 해시가 서로 일치하는지 교차 확인한 뒤 이 파일을 갱신하고 PR로 기록한다.",
+  "version": "v1.9.1",
+  "published_at": "2026-09-12T11:16:40Z",
+  "release_url": "https://github.com/matrix-construct/tuwunel/releases/tag/v1.9.1",
+  "target": "x86_64-v3-linux-gnu",
+  "cpu_requirement": "x86-64-v3 (avx avx2 bmi1 bmi2 f16c fma lzcnt movbe xsave) — 미지원 CPU에서는 Illegal instruction; fetch-tuwunel.sh가 사전 검사",
+  "assets": {
+    "deb": {
+      "name": "v1.9.1-release-all-x86_64-v3-linux-gnu-tuwunel.deb",
+      "size": 40373354,
+      "sha256": "1706674d8eead2c1bacf72cf954aa04930198d388f1978d83e546af4f7fc294c",
+      "status": "verified",
+      "note": "평가 시 다운로드한 파일과 릴리스 자산 크기 일치. dpkg-deb -x 추출본 /usr/sbin/tuwunel 해시가 binary.sha256과 일치(교차 검증)."
+    },
+    "zst": {
+      "name": "v1.9.1-release-all-x86_64-v3-linux-gnu-tuwunel.zst",
+      "size": 33573603,
+      "sha256": null,
+      "status": "reverify",
+      "note": "평가 시 받은 zst(33,449,649 B, sha256 93900dab42fabc7f82ee5335595be0e30faf0f9165da0e6de177b74b7fa64503)는 현재 릴리스 자산 크기(33,573,603 B)와 다르다. 자산이 재업로드됐거나 다른 variant였을 수 있으므로 deb를 기본 경로로 쓰고, zst는 재다운로드·추출 바이너리 해시가 binary.sha256과 일치하는지 확인한 뒤 값을 채운다."
+    }
+  },
+  "binary": {
+    "path_in_deb": "usr/sbin/tuwunel",
+    "size": 107045776,
+    "sha256": "e365ba0c54186d9312369f6c89b58af3f62eaa314337aea5da17954ad388acea",
+    "static": true,
+    "version_string": "tuwunel 1.9.1"
+  }
+}
