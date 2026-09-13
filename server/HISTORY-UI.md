@@ -135,11 +135,11 @@ The 128 MiB combined WASM and 5 GiB added-disk budgets remain, with separate
 256 MiB JS scrypt scratch; memory-heavy probes are serialized. No human data,
 credentials, production services, backups or Cloudflare settings change here.
 
-[history-v5-evidence.json](history-v5-evidence.json) records the current caller
+[history-v5-evidence.json](../docs/evidence/server/history-v5-evidence.json) records the current caller
 fix and version-5 transition: 40 native browser checks with 21 matching asset
 hashes, 10 activation checks, 47 preparation tests, six caller tests and 137
 Python tests under both umasks. Default and all-four-tag Go race tests and vet
 cover the current source. The original version-3
-[history-ui-evidence.json](history-ui-evidence.json) remains historical evidence;
+[history-ui-evidence.json](../docs/evidence/server/history-ui-evidence.json) remains historical evidence;
 its earlier clean verdict predates the two caller findings in issue #60 and does
 not qualify version 5. Human/Yukson acceptance remains open.

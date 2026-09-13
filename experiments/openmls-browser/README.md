@@ -1,4 +1,9 @@
 The PR27 memory-only proof below is preserved as historical evidence. The current
+
+> **Frozen (2026-09-13).** Owner decision D adopts the Matrix cryptography stack; this
+> experiment is no longer an integration path and is kept for reference only. See
+> `docs/DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md`. Do not extend it.
+
 bundle also includes the [staged IndexedDB adapter](PERSISTENCE.md); its current
 dependency counts, source hashes and persistence proof are documented separately.
 

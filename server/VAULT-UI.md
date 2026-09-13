@@ -108,7 +108,7 @@ provider/audit qualifications. Age and sodium notices are embedded at
 `/vault/licenses/age.txt` and `/vault/licenses/sodium.txt`; Rust/Cargo notices
 remain at `/encrypted/licenses/`. Distribute Go `server/licenses/` with binaries.
 
-Local receipt [vault-ui-evidence.json](vault-ui-evidence.json) records 26 browser
+Local receipt [vault-ui-evidence.json](../docs/evidence/server/vault-ui-evidence.json) records 26 browser
 checks, 15 native asset hashes and eight executable selection failures. Asset
 preparation has 23 tests; tagged Go race (umask 022), normal (077), vet and the
 full Python suite pass. The embedded public bundle is 2,883,280 bytes within
