@@ -1,6 +1,12 @@
 # Native E2EE feasibility and integration decision
 
-Status: **reviewable design, not implemented E2EE**. Evidence checked 2026-09-09.
+Status: **superseded as an integration path (2026-09-13)** — owner decision
+[D](DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md) adopts the Matrix cryptography stack
+(`matrix-sdk-crypto` WASM) instead of integrating OpenMLS ourselves. The OpenMLS browser
+experiment, staged persistence adapters and native successor ceremony are frozen and
+archived. This document is retained because its threat model, device-trust rules, durable-state
+requirements and observer table remain the **acceptance criteria** the adopted stack must satisfy.
+Previously: reviewable design, not implemented E2EE; evidence checked 2026-09-09.
 Tracking: [family #16](https://github.com/jinwon-int/family-messenger/issues/16).
 
 ## Decision
