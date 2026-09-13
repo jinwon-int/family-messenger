@@ -85,7 +85,29 @@ guardian·heartbeat·종료 확인과 `remote_worker: true`를 함께 사용한�
 막는 `worker_cleanup_unconfirmed`도 남긴다. 이 경우 `/ack`만으로 서비스를 재개하지 않는다.
 `worker_cleanup_in_progress`가 재시작 후 남은 경우도 동일하게 중단한다.
 운영자가 해당 worker/runtime 프로세스 종료와 결과를 먼저 확인하고, private 상태를 백업한 후
-원인을 해결해야 한다. 임의로 DB를 초기화해서 이 제한을 우회하지 않는다.
+원인을 해결해야 한다. 그 다음 아래 도구로만 차단을 해제한다. DB를 직접 편집하거나 초기화해서
+이 제한을 우회하지 않는다.
+
+### 운영자 차단 해제 도구
+
+```bash
+# 서비스를 먼저 멈춘다. 잠금을 쥔 프로세스가 있으면 도구가 거부한다(exit 2).
+systemctl stop family-matrix-pilot.service
+python3 scripts/fleet_matrix_state.py status  --config /private/config.json
+python3 scripts/fleet_matrix_state.py unblock --config /private/config.json \
+    --scope <status가 보여준 blocked_scopes 값> \
+    --reason "worker pid 1234 종료·결과 대조 완료, 원인: ..."
+```
+
+- `--config` 대신 `--state <state_directory> --account <봇 계정>`을 줄 수 있다.
+- `status`는 `worker_cleanup_unconfirmed`/`worker_cleanup_in_progress` 값과 차단이 귀속된
+  scope(`blocked_scopes`), 불확실 작업이 남은 scope(`uncertain_scopes`)를 본문 없이 보여준다.
+- `unblock`은 지정한 scope에 귀속된 차단만 지운다. 다른 scope, 차단이 없는 상태, 빈 사유는
+  거부하고 아무것도 바꾸지 않는다. 성공 시 지운 키·scope·감사 번호·이전 값을 JSON으로 출력한다.
+- 매 해제는 같은 SQLite의 `operator_audit` 표에 누가(`사용자#uid`, `SUDO_USER` 우선)·언제·
+  어느 scope·왜·이전 값을 남긴다. 이 표는 삭제하지 않는다.
+- 해제는 불확실 작업을 다시 실행하거나 상태를 바꾸지 않는다. 남은 불확실 작업은 서비스 재시작 후
+  `/ack 작업번호`로 각각 확인한다. 예전 상태(값이 `true`만 있는 경우)는 불확실 작업의 scope로 귀속한다.
 
 `meta.health`에는 시각·상태·본문 없는 중단 사유를 남긴다. systemd exit 78은 자동 재시작하지
 않는다. SIGTERM 시 자식 stdin을 닫고 최대 25초 종료를 기다리며, systemd는 cgroup 전체를

@@ -1,13 +1,32 @@
-"""Private configuration and replay state for the bounded Matrix pilot."""
+"""Private configuration and replay state for the bounded Matrix pilot.
+
+Run as a script this module is the operator tool for the permanent
+``worker_cleanup_unconfirmed`` block::
+
+    python3 scripts/fleet_matrix_state.py status  --state DIR --account @bot:example
+    python3 scripts/fleet_matrix_state.py unblock --state DIR --account @bot:example \\
+        --scope <64 hex> --reason "checked runtime pid 1234 exited; result reconciled"
+
+``--config PATH`` (the private pilot config) may replace ``--state``/``--account``.
+The tool takes the same process lock as the service, so it refuses while the
+service still runs. Every unblock leaves a row in ``operator_audit``.
+"""
+import argparse
+import getpass
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import stat
+import sys
+import time
 from urllib.parse import urlsplit
 
-from fleet_core import Store, Policy, Request, bounded_text, private_directory, MAX_REPLY_BYTES
+from fleet_core import Store, Policy, bounded_text, private_directory, MAX_REPLY_BYTES
+
+BLOCK_KEYS = ('worker_cleanup_unconfirmed', 'worker_cleanup_in_progress')
+SCOPE_PATTERN = re.compile(r'[0-9a-f]{64}')
 
 
 class SafetyStop(RuntimeError):
@@ -89,10 +108,43 @@ class MatrixStore(Store):
             self.db.executescript('''
                 CREATE TABLE IF NOT EXISTS deliveries(event_id TEXT PRIMARY KEY, part INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS controls(event_id TEXT PRIMARY KEY, digest TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS operator_audit(seq INTEGER PRIMARY KEY, at REAL NOT NULL,
+                    actor TEXT NOT NULL, action TEXT NOT NULL, scope TEXT NOT NULL,
+                    reason TEXT NOT NULL, before TEXT NOT NULL);
             ''')
         except BaseException:
             self.close()
             raise
+
+    def block(self):
+        """Describe the permanent SafetyStop block without message bodies, or return None."""
+        flags={key:self.get_meta(key) for key in BLOCK_KEYS}
+        if not any(flags.values()):return None
+        unconfirmed=flags['worker_cleanup_unconfirmed']
+        recorded=unconfirmed.get('scope') if isinstance(unconfirmed,dict) else None
+        uncertain=sorted({row['scope'] for row in self.uncertain()})
+        # Before the scope was recorded, the block could only be attributed through uncertain jobs.
+        scopes=[recorded] if isinstance(recorded,str) else uncertain
+        return {**flags,'blocked_scopes':scopes,'uncertain_scopes':uncertain}
+
+    def unblock(self,scope,reason,actor):
+        """Operator decision: clear the block attributed to one scope and audit who/when/why."""
+        if not isinstance(scope,str) or not SCOPE_PATTERN.fullmatch(scope):raise ValueError('invalid-scope')
+        bounded_text(reason,1024);bounded_text(actor,255)
+        before=self.block()
+        if before is None:raise ValueError('no-block')
+        if scope not in before['blocked_scopes']:raise ValueError('scope-not-blocked')
+        at=time.time()
+        with self.db:
+            self.db.execute("UPDATE meta SET value='null' WHERE key='worker_cleanup_unconfirmed'")
+            self.db.execute("UPDATE meta SET value='false' WHERE key='worker_cleanup_in_progress'")
+            seq=self.db.execute('INSERT INTO operator_audit(at,actor,action,scope,reason,before) VALUES (?,?,?,?,?,?)',
+                (at,actor,'unblock',scope,reason,json.dumps(before))).lastrowid
+        return {'cleared':[key for key in BLOCK_KEYS if before[key]],'scope':scope,'actor':actor,'at':at,
+                'audit_seq':seq,'before':before}
+
+    def audit(self):
+        return [dict(row) for row in self.db.execute('SELECT * FROM operator_audit ORDER BY seq')]
 
     def get_meta(self,key):
         row=self.db.execute('SELECT value FROM meta WHERE key=?',(key,)).fetchone()
@@ -153,3 +205,56 @@ class MatrixStore(Store):
 
     def uncertain_job(self,event):
         with self.db:self.db.execute("UPDATE jobs SET state='uncertain' WHERE event_id=? AND state='running'",(event,))
+
+
+def operator_name(environ=None):
+    environ=os.environ if environ is None else environ
+    try:name=environ.get('SUDO_USER') or getpass.getuser()
+    except (KeyError,OSError):name='uid'+str(os.getuid())
+    return name+'#'+str(os.getuid())
+
+
+def parse_args(argv):
+    parser=argparse.ArgumentParser(description='Inspect or clear the pilot SafetyStop block (exit 78).')
+    sub=parser.add_subparsers(dest='command',required=True)
+    for name in ('status','unblock'):
+        p=sub.add_parser(name)
+        p.add_argument('--config',help='private pilot config; supplies --state and --account')
+        p.add_argument('--state',help='state_directory (or its inbox.sqlite3)')
+        p.add_argument('--account',help='bot account, e.g. @agent:example')
+        if name=='unblock':
+            p.add_argument('--scope',required=True,help='64-hex scope shown by status')
+            p.add_argument('--reason',required=True,help='what was verified before clearing')
+    args=parser.parse_args(argv)
+    if args.config:
+        c=load_config(args.config)
+        args.state=args.state or c['state_directory'];args.account=args.account or c['account']
+    if not args.state or not args.account:parser.error('--config or both --state and --account are required')
+    state=Path(args.state)
+    args.state=state.parent if state.name=='inbox.sqlite3' else state
+    return args
+
+
+def main(argv=None,out=None,err=None):
+    out=sys.stdout if out is None else out;err=sys.stderr if err is None else err
+    try:args=parse_args(argv)
+    except SafetyStop as exc:
+        print('refused: '+str(exc),file=err);return 2
+    try:store=MatrixStore(args.state,args.account)
+    except BlockingIOError:
+        print('refused: state is locked by a running fleet_matrix.py process; stop the service first',file=err);return 2
+    except (OSError,ValueError) as exc:
+        print('refused: '+type(exc).__name__+': '+str(exc),file=err);return 2
+    with store:
+        if args.command=='status':
+            print(json.dumps({'account':args.account,'block':store.block()},indent=1,sort_keys=True),file=out);return 0
+        try:result=store.unblock(args.scope,args.reason,operator_name())
+        except ValueError as exc:
+            print('refused: '+str(exc)+'; run status to see blocked_scopes',file=err);return 2
+        print(json.dumps({'account':args.account,'unblocked':result},indent=1,sort_keys=True),file=out)
+    return 0
+
+
+if __name__=='__main__':
+    os.umask(0o077)
+    sys.exit(main())
