@@ -26,7 +26,7 @@ jobs:
       # No lockfile is committed; dependencies are pinned exactly in
       # package.json, so a plain install is reproducible.
       - name: Install pinned dependencies
-        run: npm install --no-package-lock --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
       - name: Matrix SDK and Rust crypto smoke
         run: node tests/transport_smoke.mjs
       - name: Bundle app
