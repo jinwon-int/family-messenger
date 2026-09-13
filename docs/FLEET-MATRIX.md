@@ -1,4 +1,4 @@
-# 상시 Matrix 연결부: 서서 개인방 시험
+# 상시 Matrix 연결부: 개발 노드 개인방 시험
 
 `scripts/fleet_matrix.py`는 암호화 개인방의 텍스트 요청을 저장하고 별도 노드 실행부로
 전달한다. 이 파일을 추가한 것만으로 운영 봇이 설치되지는 않는다. #10/#1602의
@@ -6,7 +6,7 @@
 시험 worker CLI는 Codex read-only / approval=never다. 프로토콜의 승인 UI는
 가상 worker로 검증하며 실제 도구 실행 권한이 열렸다는 뜻이 아니다.
 
-육손의 연결부에서 다른 노드의 실행부를 부를 때는 [SSH 실행 계약](FLEET-REMOTE.md)의
+운영 서버의 연결부에서 다른 노드의 실행부를 부를 때는 [SSH 실행 계약](FLEET-REMOTE.md)의
 guardian·heartbeat·종료 확인과 `remote_worker: true`를 함께 사용한다.
 
 ## 설치와 최초 장치 신뢰

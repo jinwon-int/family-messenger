@@ -1,6 +1,6 @@
-# 육손에서 노드 실행부를 호출하는 SSH 시험
+# 운영 서버에서 노드 실행부를 호출하는 SSH 시험
 
-Matrix/암호화 상태는 육손에 두고 AI·GitHub 자격 증명은 각 노드에 유지한다.
+Matrix/암호화 상태는 운영 서버에 두고 AI·GitHub 자격 증명은 각 노드에 유지한다.
 `fleet_remote.py`는 노드에서 worker 한 개를 감시한다. `fleet_matrix.py` 설정에
 `"remote_worker": true`를 넣으면 부모가 5초마다 heartbeat를 전송하고, 최종 응답 후
 원격 종료 증거도 확인한다. 이 설정 변경은 기존 상태를 자동 전환하지 않는다.
@@ -13,11 +13,11 @@ StrictHostKeyChecking=yes, ConnectTimeout=10, ServerAliveInterval=5,
 ServerAliveCountMax=3을 사용하며 PTY를 만들지 않는다.
 
 Linux 운영 호출은 **고정된 노드별 systemd service** 안에서 guardian을 실행한다.
-예를 들어 서서에서는 다음 고정 명령을 SSH로 호출하도록 구성한다.
+예를 들어 개발 노드에서는 다음 고정 명령을 SSH로 호출하도록 구성한다.
 
 ```sh
 systemd-run --quiet --pipe --wait --collect \
-  --unit=family-matrix-worker-seoseo \
+  --unit=family-matrix-worker-agent-a \
   --property=KillMode=control-group --property=RuntimeMaxSec=1200 \
   --property=TimeoutStopSec=25 --property=UMask=0077 \
   --property=StandardError=null \
@@ -53,5 +53,5 @@ systemd-run --quiet --pipe --wait --collect \
 
 검증: `python3 -m unittest discover -s tests -v`의 원격 프로토콜 검사는 실제 자식 프로세스로
 EOF·heartbeat·임대 만료·SIGHUP·강제 종료·marker 없는 성공 거부를 재현한다.
-운영 활성화 전에는 육손→대상 노드의 실제 SSH/systemd 호출, provider 두 턴 재개와 종료,
+운영 활성화 전에는 운영 서버→대상 노드의 실제 SSH/systemd 호출, provider 두 턴 재개와 종료,
 합성 작업 중 연결 단절을 각각 확인한다. 사용자 Matrix 기기를 시험용으로 생성하지 않는다.

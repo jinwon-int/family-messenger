@@ -1,5 +1,8 @@
 # 구성요소와 출처
 
+직접 작성한 코드·문서는 루트 [MIT License](LICENSE)를 따릅니다.
+이 라이선스는 외부 코드·패키지·컨테이너·고지의 기존 라이선스를 변경하지 않습니다.
+
 | 구성요소 | 출처 | 라이선스 |
 |---|---|---|
 | Synapse 1.160.0 | https://github.com/element-hq/synapse | AGPL-3.0 (해당 릴리스 원문 기준) |
@@ -18,3 +21,11 @@ Upstream의 라이선스·저작권 표시를 유지하며, 향후 해당 소스
 through cgo; Go standard library/toolchain (BSD) and the host libc/loader remain
 dependencies. No Tinode, ntfy or Gotify code/assets were copied. See
 [server/README.md](server/README.md) for the runtime/build inventory and limits.
+
+## 암호화·브라우저 실험
+
+OpenMLS/Rust 의존성의 버전·출처·라이선스는
+`experiments/openmls-browser/dependencies.json`과 `THIRD-PARTY-NOTICES.txt`,
+`RUST-STDLIB-NOTICES.html`을 따릅니다. 기기 보관 실험의 age·libsodium 및 번들 의존성은
+`experiments/device-keystore/THIRD-PARTY-NOTICES.txt`, `SODIUM-NOTICES.txt`와 잠금 파일을 따릅니다.
+생성된 WASM·브라우저 번들·서버 바이너리를 배포할 때에도 포함된 외부 라이선스와 고지를 유지해야 합니다.
