@@ -1,4 +1,3 @@
-import copy
 import importlib.util
 import os
 from pathlib import Path
@@ -177,7 +176,6 @@ class StoreTests(unittest.TestCase):
         self.directory.mkdir(mode=0o700)
         target = real/'sentinel'; target.write_text('do not alter')
         for name in ['inbox.lock', 'inbox.sqlite3', 'inbox.sqlite3-journal']:
-            link = self.directory/name
             # Use isolated store directories so test-created links need not be removed.
             sub = real/name.replace('.', '_'); sub.mkdir(mode=0o700)
             (sub/name).symlink_to(target)

@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 from pathlib import Path
 import signal
 import sys
@@ -9,7 +8,6 @@ import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
-from fleet_remote import Lease
 from fleet_matrix import Frontend
 from test_fleet_matrix import config,request
 

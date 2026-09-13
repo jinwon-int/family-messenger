@@ -28,7 +28,9 @@ OWN-SYSTEM.md 구현 순서 1번의 기록 의무("직접/간접 패키지 목�
 - `vectorim/element-web:v1.12.27@sha256:7050130b…682d013019e` — 상한 192 MiB
 
 고정 툴체인(CI가 해시·버전으로 고정): Go 1.27.1(`server/go.mod`), Rust 1.91.1 +
-wasm-bindgen 0.2.126(MLS 실험), Node 22.22.2, Python 3.11(verify)/3.12(MLS 실험).
+wasm-bindgen 0.2.126(보관된 MLS 실험, 수동 실행만), Node 22.22.2, Python 3.11(`verify.yml`의
+단위 시험·린트 job이 `actions/setup-python`으로 고정 — README의 3.11+ 하한을 실제로 검증;
+compose/스모크 단계도 같은 job이므로 동일 버전). `ruff==0.16.7`·`mypy==2.3.1`(린트 job, mypy는 비차단).
 
 ## 서버 프로세스 수
 

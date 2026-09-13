@@ -1,0 +1,26 @@
+# Stage-0 hygiene floor (docs/ROADMAP.md 0단계, #92): catch real errors without
+# reformatting the compact fleet_* modules. Tighten rule by rule in later PRs.
+line-length = 120
+target-version = "py311"
+include = ["scripts/**/*.py", "tests/**/*.py"]
+
+[lint]
+select = ["E", "F", "W", "B006", "B008"]
+# E701/E702 (multiple statements on one line) and E231/E225/E228 (missing whitespace)
+# are the deliberate compact style of the fleet_* files and their tests.
+ignore = ["E701", "E702", "E231", "E225", "E226", "E228", "E227"]
+
+[lint.per-file-ignores]
+# Test modules insert the scripts directory into sys.path before importing from it.
+"tests/*.py" = ["E402"]
+# Pre-existing compact files: long lines are accepted as-is rather than reformatted wholesale.
+"scripts/admin.py" = ["E501"]
+"scripts/fleet_core.py" = ["E501"]
+"scripts/fleet_matrix.py" = ["E501"]
+"scripts/fleet_matrix_state.py" = ["E501"]
+"scripts/fleet_remote.py" = ["E501"]
+"scripts/init.py" = ["E501"]
+"tests/smoke.py" = ["E501"]
+"tests/test_config.py" = ["E501"]
+# Frozen native-track smoke drivers (decision D); kept verbatim until they are archived or deleted.
+"tests/native_*_smoke.py" = ["E401", "E501", "E731"]
