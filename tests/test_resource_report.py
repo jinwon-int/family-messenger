@@ -1,7 +1,6 @@
 import importlib.util
 import json
 from pathlib import Path
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -23,9 +22,9 @@ class CensusTests(unittest.TestCase):
             'example.com/direct v1.2.3 h1:x=\n'
             'example.com/direct v1.2.3/go.mod h1:y=\n'
             'example.com/indirect v9.9.9 h1:z=\n')
-        (root / 'experiments').mkdir()
-        (root / 'experiments' / 'openmls-browser').mkdir()
-        (root / 'experiments' / 'openmls-browser' / 'dependencies.json').write_text(json.dumps({
+        record = root / rr.WASM_RECORD
+        record.parent.mkdir(parents=True)
+        record.write_text(json.dumps({
             'schema': 'fixture.v1', 'external_direct': 8, 'external_transitive': 151,
             'full_lock_external_packages': 197, 'scope': 'fixture scope'}))
         (root / 'requirements-matrix.txt').write_text(
@@ -48,6 +47,7 @@ class CensusTests(unittest.TestCase):
             # go.sum pins both the binary and /go.mod hashes of one module;
             # the census counts distinct modules, not hash lines.
             self.assertEqual(report['go']['distinct_summed_modules'], 2)
+            self.assertEqual(report['wasm']['status'], 'archived')
             self.assertEqual(report['wasm']['external_direct'], 8)
             self.assertEqual(report['wasm']['external_transitive'], 151)
             self.assertEqual(
@@ -56,6 +56,19 @@ class CensusTests(unittest.TestCase):
             self.assertEqual(
                 report['images'],
                 ['example/db:1@sha256:aa', 'ghcr.io/example/app:v2@sha256:bb'])
+
+    def test_archived_wasm_record_is_skipped_with_a_note_not_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_manifests(root)
+            (root / rr.WASM_RECORD).unlink()
+            report = rr.census(root)
+            self.assertEqual(report['wasm']['status'], 'skipped')
+            self.assertIn('archived', report['wasm']['note'])
+            self.assertEqual(report['wasm']['record'], 'archive/experiments/openmls-browser/dependencies.json')
+            self.assertNotIn('external_direct', report['wasm'])
+            # The live manifests are still counted in full.
+            self.assertEqual(report['go']['distinct_summed_modules'], 2)
 
     def test_census_requires_every_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
