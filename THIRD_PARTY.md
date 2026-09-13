@@ -25,7 +25,7 @@ dependencies. No Tinode, ntfy or Gotify code/assets were copied. See
 ## 암호화·브라우저 실험
 
 OpenMLS/Rust 의존성의 버전·출처·라이선스는
-`experiments/openmls-browser/dependencies.json`과 `THIRD-PARTY-NOTICES.txt`,
+`archive/experiments/openmls-browser/dependencies.json`과 `THIRD-PARTY-NOTICES.txt`,
 `RUST-STDLIB-NOTICES.html`을 따릅니다. 기기 보관 실험의 age·libsodium 및 번들 의존성은
-`experiments/device-keystore/THIRD-PARTY-NOTICES.txt`, `SODIUM-NOTICES.txt`와 잠금 파일을 따릅니다.
+`archive/experiments/device-keystore/THIRD-PARTY-NOTICES.txt`, `SODIUM-NOTICES.txt`와 잠금 파일을 따릅니다.
 생성된 WASM·브라우저 번들·서버 바이너리를 배포할 때에도 포함된 외부 라이선스와 고지를 유지해야 합니다.

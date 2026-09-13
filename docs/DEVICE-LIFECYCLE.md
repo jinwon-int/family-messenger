@@ -1,6 +1,6 @@
 # Lost and replacement devices: qualification and implementation decision
 
-The subsequent [signed successor context preflight](../server/SUCCESSOR-CONTEXT.md)
+The subsequent [signed successor context preflight](../archive/native-mls/server/SUCCESSOR-CONTEXT.md)
 checks accepted intent against the actual old room and healthy peer. It is
 read-only; replacement custody, activation and human acceptance remain open.
 
@@ -10,13 +10,13 @@ denied by [the native policy](../server/DEVICES.md). CF login identifies an
 enrolled account; it does not approve a new decrypting key. Nothing in this
 change alters the server, asset manifests, production services or old profiles.
 
-Subsequent implementation: [public successor policy](../server/SUCCESSORS.md)
+Subsequent implementation: [public successor policy](../archive/native-mls/server/SUCCESSORS.md)
 records candidates and atomic retirement, while continuing to deny new-device
 activation. The design below describes the full lifecycle; its ready/bootstrap
 and healthy-signer custody requirements remain open. Disk retirement reaches a
 live server on its next validated reload, not synchronously when the CLI returns.
 
-The subsequent [intact-signer library boundary](../experiments/openmls-browser/IDENTITY-CONTEXT.md)
+The subsequent [intact-signer library boundary](../archive/experiments/openmls-browser/IDENTITY-CONTEXT.md)
 constructs a signer-only fresh provider without changing the old group. It is an
 optional memory-only generated-data proof, not encrypted multi-room custody or
 replacement activation; its concrete atomic-storage follow-up remains required.
@@ -129,7 +129,7 @@ not decrypt future-epoch traffic; withholding a commit is not a safety bypass.
 Run from the repository root with the already verified pinned browser bundle:
 
 ```sh
-.venv/bin/python tests/native_mls_browser_smoke.py --lifecycle \
+.venv/bin/python archive/native-mls/tests/native_mls_browser_smoke.py --lifecycle \
   --bundle artifacts/mls-remapped-pkg
 ```
 
@@ -189,7 +189,7 @@ This is not a SIGKILL/restart proof of a persistent replacement implementation.
    services/backups and Telegram fallback. Readonly history recovery does not
    guarantee continuing conversations after complete device loss.
 
-The subsequent [protected intact-peer experiment](../experiments/device-keystore/SUCCESSOR-PEER-CUSTODY.md)
+The subsequent [protected intact-peer experiment](../archive/experiments/device-keystore/SUCCESSOR-PEER-CUSTODY.md)
 qualifies same-database encrypted custody of a fresh signer-only context against
 an inactive reservation, preserving the complete old record and pending update.
 It introduces an explicitly selected inner format that older drivers reject;
@@ -199,7 +199,7 @@ complete replacement-device or recovery workflow.
 
 ## Primary sources and costs
 
-[lifecycle-evidence.json](../experiments/openmls-browser/lifecycle-evidence.json)
+[lifecycle-evidence.json](../archive/experiments/openmls-browser/lifecycle-evidence.json)
 records the receipt, source references and pinned versions. RFC 9420 §5.3 calls
 BasicCredential a **bare assertion**; §5.3.1 assigns credential validation to the
 application's authentication service. §5.3.3 warns that identifiers can be

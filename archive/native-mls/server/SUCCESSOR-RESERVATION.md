@@ -58,7 +58,7 @@ The old source provider, pending client frames, outbox, cursor and all server
 history are unchanged. The separate [custody declaration route](SUCCESSOR-CUSTODY.md) records
 public statements without activating the target; it preserves this descriptor. A returned descriptor is not permission to commit a new client slot:
 the separately qualified custody/activation protocol must still enforce that
-boundary. The separate [intact-peer custody experiment](../experiments/device-keystore/SUCCESSOR-PEER-CUSTODY.md)
+boundary. The separate [intact-peer custody experiment](../../experiments/device-keystore/SUCCESSOR-PEER-CUSTODY.md)
 now reads this route solely to preserve an existing peer signer in an inactive
 encrypted target context. The candidate custody experiment also preserves exact public package/private
 provider state; native delivery remains unavailable.

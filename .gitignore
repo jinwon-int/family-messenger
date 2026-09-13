@@ -8,35 +8,25 @@ __pycache__/
 .venv/
 artifacts/
 
+# archive/ (frozen native MLS track, decision D 2026-09-13) — build products only
 # Isolated Rust experiment build products
-experiments/openmls-browser/target/
-
-# Pinned generated assets; explicit synthetic_mls builds only
-server/internal/chat/mlsassets/
-server/internal/chat/.mls-build.lock
+archive/experiments/openmls-browser/target/
 
 # Isolated key-custody feasibility packages and bundle
-experiments/device-keystore/node_modules/
-experiments/device-keystore/bundle/
+archive/experiments/device-keystore/node_modules/
+archive/experiments/device-keystore/bundle/
 
-server/internal/chat/vaultassets/
-
-server/internal/chat/historyassets/
-
-server/internal/chat/aggregateassets/
-
-/server/internal/chat/historyassets_v5/
-
-/server/internal/chat/aggregatehistoryassets/
-
-/server/internal/chat/successorassets/
-
-server/internal/chat/candidateassets/
-
-server/internal/chat/peerassets/
-
-server/internal/chat/custodyassets/
-
-/server/internal/chat/welcomeassets/
-
-server/internal/chat/confirmationassets/
+# Pinned generated synthetic UI assets; only explicit -tags synthetic_* builds of the archived code
+archive/native-mls/server/internal/chat/.mls-build.lock
+archive/native-mls/server/internal/chat/mlsassets/
+archive/native-mls/server/internal/chat/vaultassets/
+archive/native-mls/server/internal/chat/historyassets/
+archive/native-mls/server/internal/chat/historyassets_v5/
+archive/native-mls/server/internal/chat/aggregateassets/
+archive/native-mls/server/internal/chat/aggregatehistoryassets/
+archive/native-mls/server/internal/chat/successorassets/
+archive/native-mls/server/internal/chat/candidateassets/
+archive/native-mls/server/internal/chat/peerassets/
+archive/native-mls/server/internal/chat/custodyassets/
+archive/native-mls/server/internal/chat/welcomeassets/
+archive/native-mls/server/internal/chat/confirmationassets/

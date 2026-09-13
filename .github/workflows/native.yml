@@ -38,43 +38,11 @@ jobs:
         run: python3 tests/native_smoke.py --binary artifacts/family-dev
       - name: Native media migration and crash proof
         run: python3 tests/native_media_smoke.py --binary artifacts/family-dev
-      - name: Ordered synthetic MLS transport and restart proof
-        run: python3 tests/native_mls_transport_smoke.py --preparation --binary artifacts/family-dev --policy-binary artifacts/family-policy
-      - name: Checkout pinned schema-8 migration source
-        uses: actions/checkout@v4
-        with:
-          ref: 16c763bddc9fcc99e8521e745a8caccee524320b
-          path: artifacts/schema8-source
-      - name: Build schema-8 rollback probe
-        run: go -C artifacts/schema8-source/server build -trimpath -o ../../family-dev-schema8 ./cmd/family-dev
-      - name: Checkout pinned schema-9 migration source
-        uses: actions/checkout@v4
-        with:
-          ref: f40f33e3643f8db9ebd213a9d78b71621c412d4f
-          path: artifacts/schema9-source
-      - name: Build schema-9 rollback probe
-        run: go -C artifacts/schema9-source/server build -trimpath -o ../../family-dev-schema9 ./cmd/family-dev
-      - name: Checkout pinned schema-10 migration source
-        uses: actions/checkout@v4
-        with:
-          ref: 89c32caf4d7aeb428fb75b1c9f02eb7f05c4f808
-          path: artifacts/schema10-source
-      - name: Build schema-10 rollback probe
-        run: go -C artifacts/schema10-source/server build -trimpath -o ../../family-dev-schema10 ./cmd/family-dev
-      - name: Checkout pinned schema-11 migration source
-        uses: actions/checkout@v4
-        with:
-          ref: a1983b65990d838c0cb20bfe581c21be9797dd3c
-          path: artifacts/schema11-source
-      - name: Build schema-11 rollback probe
-        run: go -C artifacts/schema11-source/server build -trimpath -o ../../family-dev-schema11 ./cmd/family-dev
+      # The synthetic MLS transport smoke and the schema-8..11 successor probes
+      # (pinned-source rebuilds + native_policy_smoke --successor*) left with the
+      # native MLS freeze; see archive/native-mls/README.md.
       - name: Signed policy persistence and reload proof
-        run: |
-          python3 tests/native_policy_smoke.py --binary artifacts/family-dev --policy-binary artifacts/family-policy
-          python3 tests/native_policy_smoke.py --successor --successor-context --successor-reservation --successor-custody --successor-handshake --successor-confirmation --lease-migration --legacy-binary artifacts/family-dev-schema8 --binary artifacts/family-dev --policy-binary artifacts/family-policy
-          python3 tests/native_policy_smoke.py --successor --successor-context --successor-reservation --successor-custody --successor-handshake --successor-confirmation --lease-migration --retirement-migration --legacy-binary artifacts/family-dev-schema9 --binary artifacts/family-dev --policy-binary artifacts/family-policy
-          python3 tests/native_policy_smoke.py --successor --successor-context --successor-reservation --successor-custody --successor-handshake --successor-confirmation --lease-migration --retirement-migration --enrollment-migration --legacy-binary artifacts/family-dev-schema10 --binary artifacts/family-dev --policy-binary artifacts/family-policy
-          python3 tests/native_policy_smoke.py --successor --successor-context --successor-reservation --successor-custody --successor-handshake --successor-confirmation --lease-migration --retirement-migration --enrollment-migration --closure-migration --legacy-binary artifacts/family-dev-schema11 --binary artifacts/family-dev --policy-binary artifacts/family-policy
+        run: python3 tests/native_policy_smoke.py --binary artifacts/family-dev --policy-binary artifacts/family-policy
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -104,8 +72,6 @@ jobs:
             artifacts/native-signed-browser-*/verification.json
             artifacts/native-signed-browser-*/*.png
             artifacts/native-policy-*/verification.json
-            artifacts/native-successor-*/verification.json
-            artifacts/native-mls-transport-*/verification.json
             artifacts/native-browser-*/verification.json
             artifacts/native-browser-*/*.png
             artifacts/native-media-browser-*/verification.json

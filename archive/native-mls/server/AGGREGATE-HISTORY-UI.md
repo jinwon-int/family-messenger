@@ -62,7 +62,7 @@ or AI execution privilege. Rust/Cargo/age/sodium notices are included; distribut
 
 ## Recovery boundary and evidence
 
-[AGGREGATE-HISTORY-UI.md](../experiments/device-keystore/AGGREGATE-HISTORY-UI.md)
+[AGGREGATE-HISTORY-UI.md](../../experiments/device-keystore/AGGREGATE-HISTORY-UI.md)
 and its library contracts remain authoritative for the unchanged viewer. Both
 rooms, actual provider identity, independently expected pins/groups/fork and
 complete FINAL authentication must validate before any history is rendered.
@@ -98,7 +98,7 @@ transport boundaries; no replacement module or forger is served. The original
 isolated history UI and full-library negative fixtures remain separate CI steps,
 including same-ID/different-sender and epoch-control regressions.
 
-The [packaging evidence](../docs/evidence/server/aggregate-history-ui-evidence.json) records an independent
+The [packaging evidence](../../../docs/evidence/server/aggregate-history-ui-evidence.json) records an independent
 45-check native browser pass using a clean `be1410b` executable and all 20 matching
 original/native hashes. Author activation checks pass 14 cases; Python passes
 149 tests under both 022 and 077. Independent default/all-tag race suites each

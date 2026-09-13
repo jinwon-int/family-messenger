@@ -10,7 +10,7 @@ loopback synthetic activation, not human device recovery or Yukson cutover.
 
 Use the pinned OpenMLS output and custody driver from [VAULT-UI.md](VAULT-UI.md),
 and the pinned history worker build from
-[HISTORY-RECOVERY.md](../experiments/device-keystore/HISTORY-RECOVERY.md).
+[HISTORY-RECOVERY.md](../../experiments/device-keystore/HISTORY-RECOVERY.md).
 Build changed inputs in a fresh isolated output/checkout; retain older bundles.
 
 ```sh
@@ -81,7 +81,7 @@ format and live data remain unchanged.
 
 ## Unchanged recovery boundary
 
-[HISTORY-UI.md](../experiments/device-keystore/HISTORY-UI.md) defines the unchanged
+[HISTORY-UI.md](../../experiments/device-keystore/HISTORY-UI.md) defines the unchanged
 DOM/caller contract. Independent expected public bindings and a generated
 32–128 character password are explicit. The file and backing buffer are bounded
 before reading/cloning; age default scrypt18 and secretstream FINAL authentication
@@ -135,11 +135,11 @@ The 128 MiB combined WASM and 5 GiB added-disk budgets remain, with separate
 256 MiB JS scrypt scratch; memory-heavy probes are serialized. No human data,
 credentials, production services, backups or Cloudflare settings change here.
 
-[history-v5-evidence.json](../docs/evidence/server/history-v5-evidence.json) records the current caller
+[history-v5-evidence.json](../../../docs/evidence/server/history-v5-evidence.json) records the current caller
 fix and version-5 transition: 40 native browser checks with 21 matching asset
 hashes, 10 activation checks, 47 preparation tests, six caller tests and 137
 Python tests under both umasks. Default and all-four-tag Go race tests and vet
 cover the current source. The original version-3
-[history-ui-evidence.json](../docs/evidence/server/history-ui-evidence.json) remains historical evidence;
+[history-ui-evidence.json](../../../docs/evidence/server/history-ui-evidence.json) remains historical evidence;
 its earlier clean verdict predates the two caller findings in issue #60 and does
 not qualify version 5. Human/Yukson acceptance remains open.
