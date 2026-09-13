@@ -1,4 +1,5 @@
-"""Persistent, owner-only encrypted Matrix pilot. See docs/FLEET-MATRIX.md."""
+"""Persistent encrypted Matrix pilot: owner direct rooms plus mention-gated
+family rooms (roadmap stage 1). See docs/FLEET-MATRIX.md and docs/FLEET-BRIDGE.md."""
 import argparse
 import asyncio
 import hashlib
@@ -17,21 +18,81 @@ from fleet_core import Policy, Request, QueueFull, private_directory, bounded_te
 from fleet_matrix_state import MatrixStore, SafetyStop, load_config, parts, turn_id
 
 
+FAMILY_NOTICE='이 AI는 이 방을 읽을 수 있으며 답변에 필요한 내용이 제공업체에 전달될 수 있습니다.'
+
+
+def family_config(config):
+    """Validate optional family-room settings; absent settings stay direct-only."""
+    for key in ('family_rooms','family_users'):
+        value=config.get(key,[])
+        if (not isinstance(value,list) or len(value)>12
+                or any(not isinstance(entry,str) or not entry for entry in value)
+                or len(set(value))!=len(value)):
+            raise SafetyStop('invalid-'+key)
+    rooms=config.get('family_rooms',[])
+    if any(room not in config['rooms'] for room in rooms):raise SafetyStop('invalid-family-rooms')
+    users=config.get('family_users',[])
+    if (config['account'] in users or rooms and not users
+            or any(not re.fullmatch(r'@[a-zA-Z0-9._=-]+:[a-zA-Z0-9.:-]+',user) for user in users)):
+        raise SafetyStop('invalid-family-users')
+    pins=config.get('family_devices',{})
+    if (not isinstance(pins,dict) or config['owner'] in pins
+            or any(user not in users for user in pins)):
+        raise SafetyStop('invalid-family-devices')
+    total=0;cleaned={}
+    for user,devices in pins.items():
+        if not isinstance(devices,dict) or not 1<=len(devices)<=10:
+            raise SafetyStop('invalid-family-devices')
+        entries={}
+        for device,keys in devices.items():
+            if not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}',device) or not isinstance(keys,dict):
+                raise SafetyStop('invalid-family-device-pin')
+            for kind in ('ed25519','curve25519'):
+                if not isinstance(keys.get(kind),str) or not re.fullmatch(r'[A-Za-z0-9+/]{43}',keys[kind]):
+                    raise SafetyStop('invalid-family-device-pin')
+            entries[device]={'ed25519':keys['ed25519'],'curve25519':keys['curve25519']}
+        total+=len(entries)
+        cleaned[user]=entries
+    if total>32:raise SafetyStop('invalid-family-devices')
+    text=config.get('family_notice_text')
+    if text is not None:
+        try:bounded_text(text,512)
+        except ValueError:raise SafetyStop('invalid-family-notice-text') from None
+    return frozenset(rooms),frozenset(users),cleaned
+
+
 class Frontend:
     def __init__(self, config):
         self.c=config
+        # Family settings are a trust boundary; reject them before opening state.
+        self.family_rooms,self.family_users,self.family_devices=family_config(config)
+        self.pins={config['owner']:config['devices'],**self.family_devices}
+        self.senders=frozenset([config['owner']])|self.family_users
+        self.family_allowed=self.senders|frozenset([config['account']])
         self.store=MatrixStore(config['state_directory'],config['account'])
         # A saved inbox must never be silently rerouted by editing configuration.
         policy={k:config[k] for k in ('owner','rooms','devices','worker_argv','not_before_ms')}
         policy['remote_worker']=config.get('remote_worker',False)
+        policy['family_rooms']=sorted(self.family_rooms)
+        policy['family_users']=sorted(self.family_users)
+        policy['family_devices']=self.family_devices
         old=self.store.get_meta('policy')
-        if old is not None:old.setdefault('remote_worker',False)
+        if old is not None:
+            old.setdefault('remote_worker',False)
+            # Stage-1 predecessors had no family settings; empty is the safe upgrade.
+            old.setdefault('family_rooms',[])
+            old.setdefault('family_users',[])
+            old.setdefault('family_devices',{})
         if old is not None and old!=policy:
             self.store.close()
             raise SafetyStop('saved-policy-changed')
         self.store.set_meta('policy',policy)
-        self.policy=Policy(config['account'],frozenset([config['owner']]),frozenset([config['account']]),
-                           {r:'direct' for r in config['rooms']},config['not_before_ms'])
+        # Family rooms reuse fleet_core mention admission; direct rooms are unchanged.
+        self.policy=Policy(config['account'],self.senders,frozenset([config['account']]),
+                           {r:'mention' if r in self.family_rooms else 'direct' for r in config['rooms']},
+                           config['not_before_ms'])
+        self.blocked=set(self.store.get_meta('room_gate_blocked') or ())
+        self.room_members={}
         self.client=self.http=self.proc=self.active=None
         self.approvals=set()
         self.matrix_lock=asyncio.Lock()
@@ -96,8 +157,8 @@ class Frontend:
 
     async def pin_devices(self):
         from nio import KeysQueryResponse
-        raw=await self.raw('POST','/_matrix/client/v3/keys/query',
-                           {'device_keys':{self.c['owner']:[],self.c['account']:[]}})
+        query={self.c['account']:[],self.c['owner']:[],**{u:[] for u in self.family_users}}
+        raw=await self.raw('POST','/_matrix/client/v3/keys/query',{'device_keys':query})
         response=KeysQueryResponse.from_dict(raw)
         if type(response).__name__!='KeysQueryResponse':raise SafetyStop('device-query-failed')
         await self.client.receive_response(response)
@@ -113,20 +174,73 @@ class Frontend:
             if stored.ed25519!=pin['ed25519'] or stored.curve25519!=pin['curve25519']:
                 raise SafetyStop('owner-device-key-changed')
             self.client.verify_device(stored)
+        # Family devices are pinned per user. Each user keeps the strict pin
+        # check, while extra unpinned family devices stay merely untrusted and
+        # are handled by exclude_unpinned_devices at session-share time.
+        for user,pins in sorted(self.family_devices.items()):
+            for device,pin in pins.items():
+                stored=self.client.device_store[user].get(device)
+                if stored is None:raise SafetyStop('pinned-device-missing')
+                if stored.ed25519!=pin['ed25519'] or stored.curve25519!=pin['curve25519']:
+                    raise SafetyStop('pinned-device-key-changed')
+                self.client.verify_device(stored)
 
     async def room_gate(self,room):
         from nio import JoinedMembersResponse
         path='/_matrix/client/v3/rooms/'+quote(room,safe='')
         members=await self.raw('GET',path+'/joined_members')
-        if set(members.get('joined',{}))!={self.c['owner'],self.c['account']}:
+        joined=set(members.get('joined',{}))
+        if room not in self.family_rooms and joined!={self.c['owner'],self.c['account']}:
             raise SafetyStop('private-room-membership-changed')
         await self.client.receive_response(JoinedMembersResponse.from_dict(members,room))
         encryption=await self.raw('GET',path+'/state/m.room.encryption')
         if encryption.get('algorithm')!='m.megolm.v1.aes-sha2':raise SafetyStop('encrypted-room-required')
         if room not in self.client.rooms or not self.client.rooms[room].encrypted:
             raise SafetyStop('sdk-encryption-state-missing')
-        if set(self.client.rooms[room].users)!={self.c['owner'],self.c['account']}:
+        users=set(self.client.rooms[room].users)
+        if room in self.family_rooms:
+            # A family room fails closed per room: exactly one bot plus the
+            # allowlisted family members. An unauthorized member mutes only
+            # that room and is recorded in state; no plaintext fallback exists.
+            if (self.c['account'] not in joined or not joined<=self.family_allowed
+                    or self.c['account'] not in users or not users<=self.family_allowed):
+                self.block_room(room,joined)
+                return False
+            self.unblock_room(room)
+            self.room_members[room]=joined
+            await self.family_notice(room)
+            return True
+        if users!={self.c['owner'],self.c['account']}:
             raise SafetyStop('sdk-room-membership-changed')
+        self.room_members[room]=joined
+        return True
+
+    def block_room(self,room,members):
+        state=self.store.get_meta('room_gate_blocked') or {}
+        record={'reason':'unauthorized-room-member','members':sorted(members)}
+        if state.get(room)!=record:
+            state[room]=record
+            self.store.set_meta('room_gate_blocked',state)
+        self.blocked.add(room)
+
+    def unblock_room(self,room):
+        if room not in self.blocked:return
+        state=self.store.get_meta('room_gate_blocked') or {}
+        state.pop(room,None)
+        self.store.set_meta('room_gate_blocked',state)
+        self.blocked.discard(room)
+
+    async def family_notice(self,room):
+        # First healthy join posts the disclosure notice once per room. The
+        # saved marker plus the notice dedup keep it from ever repeating.
+        sent=self.store.get_meta('family_room_notice') or {}
+        if room in sent:return
+        req=Request('$family-join-'+hashlib.sha256(room.encode()).hexdigest()[:32],room,
+                    self.c['account'],'family-join',
+                    hashlib.sha256(json.dumps([self.c['account'],room,'family-notice']).encode()).hexdigest())
+        self.store.notice(req,'family-join',self.c.get('family_notice_text') or FAMILY_NOTICE)
+        sent[room]=True
+        self.store.set_meta('family_room_notice',sent)
 
     def as_request(self,job):
         return Request(job['event_id'],job['room_id'],job['sender'],job['body'],job['scope'])
@@ -178,7 +292,7 @@ class Frontend:
             await self.process_pending()
 
     async def process_pending(self):
-        from nio import SyncResponse,MegolmEvent,RoomMessageText
+        from nio import SyncResponse
         raw=self.store.get_meta('pending_sync')
         if raw is None:return
         async with self.matrix_lock:
@@ -194,26 +308,34 @@ class Frontend:
             for room,info in response.rooms.join.items():
                 if room not in self.c['rooms']:continue
                 for event in info.timeline.events:
-                    if event.sender!=self.c['owner']:continue
-                    if event.server_timestamp < self.c['not_before_ms']:continue
-                    if isinstance(event,MegolmEvent):raise SafetyStop('undecrypted-owner-event')
-                    if not isinstance(event,RoomMessageText):continue
-                    if not event.decrypted:continue  # No plaintext task execution.
-                    if not event.verified or event.sender_key not in {v['curve25519'] for v in self.c['devices'].values()}:
-                        raise SafetyStop('unverified-owner-event')
-                    req=self.policy.admit(room,event.source,decrypted=event.decrypted,now_ms=int(time.time()*1000))
+                    req=self.admit_event(room,event)
                     if req:await self.input(req)
             self.store.commit_sync(raw['next_batch'])
             if self.client.should_upload_keys:
                 if type(await self.client.keys_upload()).__name__!='KeysUploadResponse':raise SafetyStop('key-upload-failed')
             self.store.set_meta('health',{'state':'ready','updated':time.time()})
 
+    def admit_event(self,room,event):
+        """Admit only decrypted text from allowed senders' verified pinned devices."""
+        from nio import MegolmEvent,RoomMessageText
+        if event.sender not in self.senders or room in self.blocked:return None
+        if event.server_timestamp < self.c['not_before_ms']:return None
+        if isinstance(event,MegolmEvent):raise SafetyStop('undecrypted-event')
+        if not isinstance(event,RoomMessageText):return None
+        if not event.decrypted:return None  # No plaintext task execution.
+        pins=self.pins.get(event.sender)
+        if not event.verified or not pins or event.sender_key not in {v['curve25519'] for v in pins.values()}:
+            raise SafetyStop('unverified-owner-event' if event.sender==self.c['owner']
+                             else 'unverified-family-event')
+        return self.policy.admit(room,event.source,decrypted=event.decrypted,now_ms=int(time.time()*1000))
+
     async def send(self):
         while True:
             for job in self.store.outbox():
+                if job['room_id'] in self.blocked:continue  # Muted room keeps its pending replies.
                 async with self.matrix_lock:
                     await self.pin_devices()
-                    await self.room_gate(job['room_id'])
+                    if not await self.room_gate(job['room_id']):continue
                     chunks=parts(job['reply'])
                     for i in range(self.store.delivered_parts(job['event_id']),len(chunks)):
                         tx=hashlib.sha256((job['txn_id']+':'+str(i)).encode()).hexdigest()
@@ -226,9 +348,10 @@ class Frontend:
         # nio 0.25.2 room_send ignores incomplete key sharing. Confirm every
         # pinned recipient before encrypting, and avoid its implicit queries.
         if self.client.olm.should_share_group_session(room):
+            if room in self.family_rooms:self.exclude_unpinned_devices(room)
             await self.client.share_group_session(room)
         session=self.client.olm.outbound_group_sessions.get(room)
-        expected={(self.c['owner'],device) for device in self.c['devices']}
+        expected=self.expected_recipients(room)
         if session is None or session.users_shared_with!=expected:
             self.client.invalidate_outbound_session(room)
             raise ConnectionError('group-key-share-incomplete')
@@ -237,6 +360,29 @@ class Frontend:
         result=await self.raw('PUT','/_matrix/client/v3/rooms/'+quote(room,safe='')+
                               '/send/m.room.encrypted/'+txn,data=content)
         bounded_text(result.get('event_id'),255)
+
+    def expected_recipients(self,room):
+        """Pinned devices of every room member; direct rooms keep owner-only pins."""
+        members=self.room_members.get(room,frozenset([self.c['owner'],self.c['account']]))
+        return {(user,device) for user in members if user!=self.c['account']
+                for device in self.pins.get(user,{})}
+
+    def exclude_unpinned_devices(self,room):
+        # Unpinned family devices never receive megolm sessions; the warning is
+        # recorded in state, while sending still waits for every pinned device.
+        unpinned={}
+        for user in self.room_members.get(room,()):
+            if user==self.c['account']:continue
+            missing=sorted(d for d in self.client.device_store[user] if d not in self.pins.get(user,{}))
+            if missing:unpinned[user]=missing
+        if unpinned:
+            warnings=self.store.get_meta('family_room_devices') or {}
+            if warnings.get(room)!=unpinned:
+                warnings[room]=unpinned
+                self.store.set_meta('family_room_devices',warnings)
+        for user,devices in unpinned.items():
+            for device in devices:
+                self.client.blacklist_device(self.client.device_store[user][device])
 
     async def write_worker(self,command):
         payload=(json.dumps(command,ensure_ascii=False)+'\n').encode()

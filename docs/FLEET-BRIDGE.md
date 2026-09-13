@@ -2,8 +2,8 @@
 
 **개발 방향(2026-09-13 갱신):** [결정 D](DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md)로 전달층은 Matrix 스택을
 채택했으므로 아래 Matrix ID·연결부 구성은 **다시 현행 설계**다(2026-09-08의 "새 프로토콜" 보류는 해제).
-구현은 `scripts/fleet_matrix.py` 계열을 확장한다 — 현재는 운영자 1명↔봇 1개 개인방만 허용하므로
-가족방 모드와 mention 모드 연결이 [ROADMAP 1단계](ROADMAP.md)의 작업이다.
+구현은 `scripts/fleet_matrix.py` 계열을 확장하며, [ROADMAP 1단계](ROADMAP.md)의
+**가족방 모드(가족 사용자 + mention 게이트)**는 이 문서의 아래 "가족방 모드" 절로 연결됐다.
 노드별 신원·운영자 권한·승인/취소·불확실 작업·모든 대상의 실제 응답의 검증 요구는 그대로 유효하다.
 
 연결 대상은 배포별 설정으로 주입한다. 먼저 가족방과 AI 한 명의 경험을 검증한 뒤
@@ -31,6 +31,38 @@
 - 봇끼리 자동 응답을 이어가지 않는다. 방 이름·표시 이름이 아니라 검증된 계정 ID와 허용된 room ID로 판단한다.
 - 노드·방·발신자별 세션을 분리한다. Telegram 대화 기록을 자동 이관하지 않는다.
 - E2EE 키는 영구 장치별로 보관·백업한다. 사용자의 복구 키를 수집하지 않으며 복호화 실패를 평문 전환으로 숨기지 않는다.
+
+## 가족방 모드(1단계)
+
+`scripts/fleet_matrix.py`는 운영자와의 개인방(direct) 외에 가족방(family) 모드를 지원한다.
+가족방에서 AI는 명시적으로 mention된 경우에만 응답한다.
+
+- `rooms`는 봇이 참여하는 모든 방이다. 그중 `family_rooms`에 나열한 방이 가족방 모드로 동작하고, 나머지는 기존 개인방 규칙을 그대로 따른다.
+- 가족방 허용 멤버는 `family_users`에 설정한 가족 사용자 ID + 운영자 + 봇 1개다. 판단 근거는 검증된 user ID뿐이며 방 이름·표시 이름은 쓰지 않는다. 허용 집합 밖 멤버가 방에 들어오면 **그 방의 응답만 중단**하고 `room_gate_blocked` 상태로 기록한다. 평문 폴백은 없으며, 멤버가 다시 허용 집합 안으로 돌아오면 응답을 재개한다.
+- 가족방 메시지는 `fleet_core.Policy`의 mention 판정을 통과한 암호화 텍스트만 실행한다. `m.mentions.user_ids`에 봇이 포함된 경우뿐이다. 발신자가 봇이면 무시해 봇-봇 연쇄를 금지한다.
+- 개인방 운영자 기기 고정(`devices`)은 그대로다. 가족 사용자의 기기는 `family_devices`에 사용자별 기기 집합으로 고정한다. 고정되지 않은 기기에는 megolm 세션을 배포하지 않고 `family_room_devices` 상태에 경고를 기록한다. **모든 고정 기기에 세션 배포가 끝나기 전에는 그 방으로 송신하지 않는다**(개인방과 같은 원칙).
+- 고정되지 않은 기기에서 온 가족 메시지는 실행하지 않고 중단 사유로 기록한다. 복호화·검증 실패를 평문 전환으로 숨기지 않는다.
+- 봇이 가족방에 처음 참여해 방 검증을 통과하면 한 번 안내 문구를 보낸다. 기본 문구는 "이 AI는 이 방을 읽을 수 있으며 답변에 필요한 내용이 제공업체에 전달될 수 있습니다."이며 `family_notice_text`로 바꿀 수 있다. 기존 notice dedup과 상태 기록으로 반복 전송하지 않는다.
+- 가족 설정은 저장 정책의 일부다. 가족 설정을 추가·변경하면 저장 정책과 달라져 프런트엔드가 중단(SafetyStop)하고 운영자 확인이 필요하다. 이전 단계의 저장 정책은 빈 가족 설정으로 자동 승격된다.
+
+### 가족방 설정 예시
+
+아래 ID·도메인·키는 모두 예시다. 실제 값은 각 노드의 비공개 설정(디렉터리 0700, 파일 0600)에 둔다.
+나머지 필드는 [상시 Matrix 연결부](FLEET-MATRIX.md)의 설정과 같다.
+
+```json
+{
+  "rooms": ["!private-room:matrix.example.com", "!family-room:matrix.example.com"],
+  "family_rooms": ["!family-room:matrix.example.com"],
+  "family_users": ["@dad:matrix.example.com", "@mom:matrix.example.com"],
+  "family_devices": {
+    "@dad:matrix.example.com": {
+      "DAD_PHONE": {"ed25519": "43_BASE64_CHARACTERS", "curve25519": "43_BASE64_CHARACTERS"}
+    }
+  },
+  "family_notice_text": "이 AI는 이 방을 읽을 수 있으며 답변에 필요한 내용이 제공업체에 전달될 수 있습니다."
+}
+```
 
 ## 연결 구조
 

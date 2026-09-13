@@ -4,11 +4,13 @@ from pathlib import Path
 import sys
 import tempfile
 import time
+import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock,Mock,patch
+from urllib.parse import quote
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
-from fleet_matrix import Frontend
+from fleet_matrix import FAMILY_NOTICE, Frontend
 from fleet_matrix_state import MatrixStore, SafetyStop, load_config, parts, turn_id, validate_config
 
 
@@ -177,6 +179,275 @@ class FrontendTests(unittest.IsolatedAsyncioTestCase):
     async def test_crash_during_cleanup_blocks_restart(self):
         self.f.store.set_meta('worker_cleanup_in_progress',True)
         with self.assertRaises(SafetyStop):await self.f.run()
+
+FAMILY='!family:test.invalid'
+DAD='@dad:test.invalid'
+MOM='@mom:test.invalid'
+STRANGER='@stranger:test.invalid'
+
+
+def keyset(char):
+    return {'ed25519':char*43,'curve25519':char*43}
+
+
+def pinned_device(ed,curve=None):
+    return types.SimpleNamespace(ed25519=ed*43,curve25519=(curve or ed)*43)
+
+
+def family_config(root):
+    c=config(root)
+    return {**c,'rooms':[c['rooms'][0],FAMILY],'family_rooms':[FAMILY],'family_users':[DAD,MOM],
+            'family_devices':{DAD:{'DAD1':keyset('c')}}}
+
+
+def fake_nio():
+    """Minimal stand-in for the nio module; the frontend imports it lazily."""
+    module=types.ModuleType('synthetic-nio')
+    class MegolmEvent:pass
+    class RoomMessageText:
+        def __init__(self,sender='',body='',source=None,verified=True,decrypted=True,sender_key='',ts=0):
+            self.sender=sender;self.body=body;self.source=source or {}
+            self.verified=verified;self.decrypted=decrypted
+            self.sender_key=sender_key;self.server_timestamp=ts
+    class KeysQueryResponse:
+        @classmethod
+        def from_dict(cls,raw):return cls()
+    class JoinedMembersResponse:
+        @classmethod
+        def from_dict(cls,raw,room):return cls()
+    for name,cls in [('MegolmEvent',MegolmEvent),('RoomMessageText',RoomMessageText),
+                     ('KeysQueryResponse',KeysQueryResponse),('JoinedMembersResponse',JoinedMembersResponse)]:
+        setattr(module,name,cls)
+    return module
+
+
+class FamilyConfigTests(unittest.TestCase):
+    def test_family_config_validation(self):
+        with tempfile.TemporaryDirectory() as root:
+            base=family_config(root)
+            for update in ({'family_rooms':['!elsewhere:test.invalid']},
+                           {'family_users':[base['account']]},
+                           {'family_users':['표시이름']},
+                           {'family_users':[DAD,DAD]},
+                           {'family_rooms':[FAMILY],'family_users':[]},
+                           {'family_devices':{MOM:{}}},
+                           {'family_devices':{STRANGER:{'S1':keyset('s')}}},
+                           {'family_devices':{DAD:{'DAD1':{'ed25519':'c'*42,'curve25519':'d'*43}}}},
+                           {'family_notice_text':123}):
+                with self.subTest(update=update):
+                    with self.assertRaises(SafetyStop):Frontend({**base,**update})
+            f=Frontend(base)
+            self.assertEqual(f.policy.rooms[FAMILY],'mention')
+            self.assertEqual(f.policy.rooms[base['rooms'][0]],'direct')
+            f.store.close()
+
+    def test_saved_policy_upgrade_and_family_change_fails_closed(self):
+        with tempfile.TemporaryDirectory() as root:
+            c=config(root)
+            f=Frontend(c)
+            old={k:c[k] for k in ('owner','rooms','devices','worker_argv','not_before_ms')}
+            old['remote_worker']=False
+            f.store.set_meta('policy',old)  # Stage-0 saved policy without family keys.
+            f.store.close()
+            f=Frontend(c)  # Upgrades silently to empty family settings.
+            self.assertEqual(f.store.get_meta('policy')['family_users'],[])
+            f.store.close()
+            with self.assertRaises(SafetyStop):Frontend({**c,'family_rooms':[c['rooms'][0]],
+                'family_users':[DAD],'family_devices':{DAD:{'D1':keyset('d')}}})
+            f=Frontend(c);f.store.close()  # Failure released the process lock.
+
+
+class FamilyRoomTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp=tempfile.TemporaryDirectory()
+        self.f=Frontend(family_config(self.temp.name))
+        self.nio=fake_nio()
+        self.owner=self.f.c['owner']
+        self.account=self.f.c['account']
+        self.now=int(time.time()*1000)
+
+    async def asyncTearDown(self):
+        await self.f.close();self.temp.cleanup()
+
+    def client_mock(self,rooms=None,devices=None,identity=None):
+        self.f.client=types.SimpleNamespace(
+            rooms={room:types.SimpleNamespace(encrypted=True,users=set(users))
+                   for room,users in (rooms or {}).items()},
+            receive_response=AsyncMock(),
+            device_store={user:dict(ds) for user,ds in (devices or {}).items()},
+            verify_device=Mock(),blacklist_device=Mock(),
+            share_group_session=AsyncMock(),invalidate_outbound_session=Mock(),
+            encrypt=Mock(return_value=('m.room.encrypted',{})),
+            keys_upload=AsyncMock(),should_upload_keys=False,next_batch=None,
+            olm=types.SimpleNamespace(should_share_group_session=Mock(return_value=False),
+                                      outbound_group_sessions={},
+                                      account=types.SimpleNamespace(identity_keys=identity or {})),
+            close=AsyncMock())
+
+    def route_raw(self,*routes):
+        table={routes[i]:routes[i+1] for i in range(0,len(routes),2)}
+        async def fake(method,path,data=None,params=None):
+            for (room,suffix),payload in table.items():
+                if room=='keys':
+                    if method=='POST' and path=='/_matrix/client/v3/keys/query':return payload
+                    continue
+                if method=='GET' and quote(room,safe='') in path and path.endswith(suffix):return payload
+            raise AssertionError('unexpected raw call: '+method+' '+path)
+        self.f.raw=fake
+
+    def healthy_members(self):
+        return {self.owner,DAD,MOM,self.account}
+
+    def gate_routes(self,joined,algorithm='m.megolm.v1.aes-sha2'):
+        return ((FAMILY,'/joined_members'),{'joined':{user:{} for user in joined}},
+                (FAMILY,'/state/m.room.encryption'),{'algorithm':algorithm})
+
+    async def test_family_gate_allows_family_blocks_stranger_and_recovers(self):
+        self.client_mock(rooms={FAMILY:self.healthy_members()})
+        self.route_raw(*self.gate_routes(self.healthy_members()))
+        with patch.dict(sys.modules,{'nio':self.nio}):
+            self.assertTrue(await self.f.room_gate(FAMILY))
+        # 가족방은 mention 없이는 입장되지 않는다(정책은 어댑터에서도 유지된다).
+        probe=dict(type='m.room.message',event_id='$probe',sender=DAD,origin_server_ts=self.now,
+                   content={'msgtype':'m.text','body':'멘션 없음'})
+        self.assertIsNone(self.f.policy.admit(FAMILY,probe,decrypted=True,now_ms=self.now))
+        notices=[job for job in self.f.store.outbox() if job['reply']==FAMILY_NOTICE]
+        self.assertEqual(len(notices),1)
+        self.assertEqual(notices[0]['room_id'],FAMILY)
+        self.assertEqual(self.f.store.get_meta('family_room_notice'),{FAMILY:True})
+        self.f.store.delivered(notices[0]['event_id'])
+        joined=self.healthy_members()|{STRANGER}
+        self.route_raw(*self.gate_routes(joined))
+        with patch.dict(sys.modules,{'nio':self.nio}):
+            self.assertFalse(await self.f.room_gate(FAMILY))
+        self.assertIn(FAMILY,self.f.blocked)
+        blocked=self.f.store.get_meta('room_gate_blocked')[FAMILY]
+        self.assertEqual(blocked['members'],sorted(joined))
+        self.assertEqual(self.f.store.outbox(),[])  # 중단된 방에는 안내도 답변도 없다.
+        self.route_raw(*self.gate_routes(self.healthy_members()))
+        with patch.dict(sys.modules,{'nio':self.nio}):
+            self.assertTrue(await self.f.room_gate(FAMILY))
+        self.assertNotIn(FAMILY,self.f.blocked)
+        self.assertFalse(self.f.store.get_meta('room_gate_blocked'))
+        self.assertEqual(self.f.store.outbox(),[])  # 초대 안내는 한 번만 머문다.
+
+    async def test_direct_gate_regression_and_family_encryption_required(self):
+        direct=self.f.c['rooms'][0]
+        self.client_mock(rooms={FAMILY:self.healthy_members(),direct:{self.owner,self.account}})
+        self.route_raw((direct,'/joined_members'),
+                       {'joined':{self.owner:{},STRANGER:{},self.account:{}}},
+                       (direct,'/state/m.room.encryption'),{'algorithm':'m.megolm.v1.aes-sha2'})
+        with patch.dict(sys.modules,{'nio':self.nio}):
+            with self.assertRaisesRegex(SafetyStop,'private-room-membership-changed'):
+                await self.f.room_gate(direct)
+        self.route_raw(*self.gate_routes(self.healthy_members(),algorithm='m.plain'))
+        with patch.dict(sys.modules,{'nio':self.nio}):
+            with self.assertRaisesRegex(SafetyStop,'encrypted-room-required'):
+                await self.f.room_gate(FAMILY)
+        self.assertNotIn(FAMILY,self.f.blocked)
+
+    async def test_pin_devices_pins_each_family_user_and_detects_changes(self):
+        identity={'ed25519':'agent-ed','curve25519':'agent-cu'}
+        devices={self.owner:{'OWNER':pinned_device('a','b')},
+                 DAD:{'DAD1':pinned_device('c'),'DAD2':pinned_device('e')},
+                 MOM:{'MOM1':pinned_device('f')}}
+        bot_keys={'keys':{'ed25519:BOT':'agent-ed','curve25519:BOT':'agent-cu'}}
+        self.client_mock(devices=devices,identity=identity)
+        self.route_raw(('keys',''),{'device_keys':{self.account:{'BOT':bot_keys},
+            self.owner:{'OWNER':{}},DAD:{'DAD1':{},'DAD2':{}},MOM:{'MOM1':{}}}})
+        with patch.dict(sys.modules,{'nio':self.nio}):
+            await self.f.pin_devices()
+        verified=[call.args[0] for call in self.f.client.verify_device.call_args_list]
+        self.assertEqual(len(verified),2)  # OWNER+DAD1; unpinned DAD2/MOM1 stay unverified.
+        self.assertIn(devices[DAD]['DAD1'],verified)
+        self.assertIn(devices[self.owner]['OWNER'],verified)
+        self.client_mock(devices={**devices,DAD:{'DAD1':pinned_device('z'),'DAD2':pinned_device('e')}},
+                         identity=identity)
+        self.route_raw(('keys',''),{'device_keys':{self.account:{'BOT':bot_keys},
+            self.owner:{'OWNER':{}},DAD:{'DAD1':{},'DAD2':{}},MOM:{'MOM1':{}}}})
+        with patch.dict(sys.modules,{'nio':self.nio}):
+            with self.assertRaisesRegex(SafetyStop,'pinned-device-key-changed'):
+                await self.f.pin_devices()
+        self.client_mock(devices={self.owner:{'OWNER':pinned_device('a','b')},
+                                  DAD:{'DAD2':pinned_device('e')},MOM:{'MOM1':pinned_device('f')}},
+                         identity=identity)  # Query rebuilt the store without pinned DAD1.
+        self.route_raw(('keys',''),{'device_keys':{self.account:{'BOT':bot_keys},
+            self.owner:{'OWNER':{}},DAD:{'DAD2':{}},MOM:{'MOM1':{}}}})
+        with patch.dict(sys.modules,{'nio':self.nio}):
+            with self.assertRaisesRegex(SafetyStop,'pinned-device-missing'):
+                await self.f.pin_devices()
+        self.client_mock(devices=devices,identity=identity)
+        self.route_raw(('keys',''),{'device_keys':{self.account:{'BOT':bot_keys},
+            self.owner:{'OWNER':{},'OWN2':{}},DAD:{'DAD1':{},'DAD2':{}},MOM:{'MOM1':{}}}})
+        with patch.dict(sys.modules,{'nio':self.nio}):
+            with self.assertRaisesRegex(SafetyStop,'owner-device-set-changed'):
+                await self.f.pin_devices()
+
+    async def test_family_send_excludes_unpinned_and_requires_pinned_delivery(self):
+        self.f.room_members[FAMILY]=set(self.healthy_members())
+        devices={self.owner:{'OWNER':pinned_device('a','b')},
+                 DAD:{'DAD1':pinned_device('c'),'DAD2':pinned_device('e')},
+                 MOM:{'MOM1':pinned_device('f')}}
+        self.client_mock(devices=devices)
+        self.f.client.olm.should_share_group_session=Mock(return_value=True)
+        session=types.SimpleNamespace(users_shared_with={(self.owner,'OWNER'),(DAD,'DAD1')})
+        self.f.client.olm.outbound_group_sessions={FAMILY:session}
+        sent=[]
+        async def fake(method,path,data=None,params=None):
+            if method=='PUT' and path.endswith('/send/m.room.encrypted/txn1'):
+                sent.append(path);return {'event_id':'$sent'}
+            raise AssertionError('unexpected raw call: '+method+' '+path)
+        self.f.raw=fake
+        await self.f.encrypted_send(FAMILY,'가족 답변','txn1')
+        blacklisted=[call.args[0] for call in self.f.client.blacklist_device.call_args_list]
+        self.assertIn(devices[DAD]['DAD2'],blacklisted)
+        self.assertIn(devices[MOM]['MOM1'],blacklisted)
+        self.assertNotIn(devices[DAD]['DAD1'],blacklisted)
+        self.assertEqual(len(sent),1)
+        self.assertEqual(self.f.store.get_meta('family_room_devices')[FAMILY],
+                         {DAD:['DAD2'],MOM:['MOM1']})
+        # 모든 고정 기기에 세션이 배포되기 전에는 송신하지 않는다.
+        session.users_shared_with={(DAD,'DAD1')}
+        with self.assertRaisesRegex(ConnectionError,'group-key-share-incomplete'):
+            await self.f.encrypted_send(FAMILY,'가족 답변','txn1')
+        self.f.client.invalidate_outbound_session.assert_called_with(FAMILY)
+        self.f.client.encrypt.assert_called_once()  # Missing pinned delivery refused to encrypt.
+        # 미고정 기기가 세션을 받았다면 송신을 거부한다.
+        session.users_shared_with={(self.owner,'OWNER'),(DAD,'DAD1'),(DAD,'DAD2'),(MOM,'MOM1')}
+        with self.assertRaisesRegex(ConnectionError,'group-key-share-incomplete'):
+            await self.f.encrypted_send(FAMILY,'가족 답변','txn1')
+        self.f.client.encrypt.assert_called_once()
+
+    async def test_family_admission_pinned_verified_mentioned_humans_only(self):
+        mention={'msgtype':'m.text','body':'호출','m.mentions':{'user_ids':[self.account]}}
+        self.f.c['not_before_ms']=self.now-1000
+        with patch.dict(sys.modules,{'nio':self.nio}):
+            def event(sender=DAD,verified=True,key='c'*43,content=None):
+                source={'type':'m.room.message','event_id':'$family','sender':sender,
+                        'origin_server_ts':self.now,'content':content or dict(mention)}
+                return self.nio.RoomMessageText(sender=sender,source=source,
+                                                verified=verified,sender_key=key,ts=self.now)
+            self.assertIsNotNone(self.f.admit_event(FAMILY,event()))
+            self.assertIsNone(self.f.admit_event(FAMILY,
+                event(content={'msgtype':'m.text','body':'멘션 없음'})))
+            self.assertIsNone(self.f.admit_event(FAMILY,
+                event(content={'msgtype':'m.text','body':self.account+' 이름 호출'})))
+            self.assertIsNone(self.f.admit_event(FAMILY,event(sender=self.account)))  # 봇 발신 무시.
+            self.assertIsNone(self.f.admit_event(FAMILY,event(sender=STRANGER)))
+            with self.assertRaisesRegex(SafetyStop,'unverified-family-event'):
+                self.f.admit_event(FAMILY,event(verified=False))
+            with self.assertRaisesRegex(SafetyStop,'unverified-family-event'):
+                self.f.admit_event(FAMILY,event(key='z'*43))
+            self.f.blocked.add(FAMILY)
+            self.assertIsNone(self.f.admit_event(FAMILY,event()))  # 중단된 방은 무시한다.
+            self.f.blocked.discard(FAMILY)
+            direct=self.f.c['rooms'][0]
+            owner_event=self.nio.RoomMessageText(sender=self.owner,
+                source={'type':'m.room.message','event_id':'$direct','sender':self.owner,
+                        'origin_server_ts':self.now,
+                        'content':{'msgtype':'m.text','body':'개인방'}},
+                verified=True,sender_key='b'*43,ts=self.now)
+            self.assertIsNotNone(self.f.admit_event(direct,owner_event))
 
 
 if __name__=='__main__':unittest.main()
