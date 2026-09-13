@@ -1,0 +1,51 @@
+# Tuwunel 1.9.x 설정 예시 — 가족 메신저 (docs/DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md 결정 D)
+# 격리 평가(docs/evidence/homeserver-eval-20260913.md)에서 확인한 값이다. 실제 값은
+# /etc/tuwunel/tuwunel.toml (root:tuwunel 0640)에 두고, 이 파일은 예시로만 저장소에 남긴다.
+# <...> 자리표시자는 배포 시 채운다. 도메인·토큰·경로 실제값은 저장소에 쓰지 않는다.
+
+[global]
+# 한 번 정하면 바꿀 수 없다. Matrix ID(@user:<server_name>)의 도메인 부분이다.
+server_name = "<server_name, 예: example.com>"
+
+database_path = "/var/lib/tuwunel"
+# 리버스 프록시(cloudflared) 뒤에서만 듣는다. 외부 노출 금지.
+address = ["127.0.0.1"]
+port = 8008
+
+# --- 접근 정책 ---------------------------------------------------------------
+# 가입은 등록 토큰 파일이 있을 때만. 토큰 값은 systemd LoadCredential로 주입되는 파일에 둔다.
+allow_registration = true
+registration_token_file = "/run/credentials/tuwunel.service/registration_token"
+allow_guest_registration = false
+# 가족 전용 단일 서버. 연합 완전 차단.
+allow_federation = false
+allow_public_room_directory_over_federation = false
+allow_device_name_federation = false
+
+# --- 암호화 -------------------------------------------------------------------
+allow_encryption = true
+# createRoom preset이 private_chat/trusted_private_chat("invite")이면 암호화를 기본으로 켠다.
+# 평가에서 암호화 미지정 private_chat이 자동으로 megolm이 되는 것을 확인했다.
+encryption_enabled_by_default_for_room_type = "invite"
+
+# --- 미디어 -------------------------------------------------------------------
+# 영상 수십 MiB. Cloudflare 요청 본문 한도(100 MB)와 같은 경계이므로 터널 경유 대용량 업로드는 1단계에서 실측한다.
+max_request_size = "100 MiB"
+# 비인증 legacy 미디어 엔드포인트는 끈 채로 둔다(평가: 403 확인). 클라이언트는 인증된 /_matrix/client/v1/media/* 를 쓴다.
+allow_legacy_media = false
+# URL 미리보기는 서버가 외부 URL을 대신 열게 하므로 끈다(허용목록 비움).
+url_preview_domain_contains_allowlist = []
+url_preview_domain_explicit_allowlist = []
+url_preview_url_contains_allowlist = []
+
+# --- 리버스 프록시 신뢰 -------------------------------------------------------
+# cloudflared 뒤에서는 반드시 설정한다. 미설정 시 헤더 스캔 폴백이 IP 위조를 허용한다.
+ip_source = "cf_connecting_ip"
+
+# --- 표시 ---------------------------------------------------------------------
+# 기본값 "💕" 접미사를 비운다(가족 표시명은 그대로).
+new_user_displayname_suffix = ""
+
+[global.well_known]
+# 클라이언트 자동 발견. 프록시가 https://<server_name>/.well-known/matrix/client 를 이 서버로 넘기면 여기서 제공한다.
+client = "https://<matrix_api_host, 예: matrix.example.com>"
