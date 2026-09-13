@@ -1,5 +1,9 @@
 # Generated-data passkey/file-encryption feasibility
 
+> **Frozen (2026-09-13).** Owner decision D adopts the Matrix cryptography stack; this
+> experiment is no longer an integration path and is kept for reference only. See
+> `docs/DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md`. Do not extend it.
+
 This is a separate library probe supporting [the custody decision](../../docs/DEVICE-KEY-CUSTODY.md).
 It is not part of the native UI bundle, a keystore adapter or human E2EE acceptance.
 No existing MLS state, real account/passkey or production service is used. The

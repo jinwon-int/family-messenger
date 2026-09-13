@@ -213,7 +213,7 @@ connected, and no existing UI silently selects this protocol.
 immutable receipts and a separate readiness response. Schema 6 preserves a v5
 snapshot and existing reservation bytes. Two declarations remain inactive;
 paired private-client orchestration is described in [CLIENT-CUSTODY.md](CLIENT-CUSTODY.md); activation and exact-package Welcome/ack remain.
-See [verification evidence](successor-custody-evidence.json) for the synthetic
+See [verification evidence](../docs/evidence/server/successor-custody-evidence.json) for the synthetic
 server/process scope and existing custody worker compatibility.
 
 Paired experimental protected-store declaration orchestration and retry semantics
