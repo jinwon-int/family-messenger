@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-label="패밀리챗">
+  <rect width="192" height="192" rx="44" fill="#4168d8"/>
+  <path d="M52 66a30 30 0 0 1 30-30h28a30 30 0 0 1 30 30v14a30 30 0 0 1-30 30h-8l-18 16v-16h-2a30 30 0 0 1-30-30z" fill="#ffffff"/>
+  <path d="M96 92c-9-8-19-13-19-23a10 10 0 0 1 19-4 10 10 0 0 1 19 4c0 10-10 15-19 23z" fill="#4168d8"/>
+  <circle cx="76" cy="70" r="4" fill="#4168d8"/>
+  <circle cx="96" cy="70" r="4" fill="#4168d8"/>
+  <circle cx="116" cy="70" r="4" fill="#4168d8"/>
+</svg>
