@@ -5,7 +5,9 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / 'scripts'))
-from tuwunel_backup import backup_pair, load_config, online_backup, parse_backup_ids, setting, snapshot_id, validate_sources
+from tuwunel_backup import (
+    backup_pair, load_config, online_backup, parse_backup_ids, setting, snapshot_id, validate_sources,
+)
 from tuwunel_restore_drill import drill, local_url, probe
 
 
