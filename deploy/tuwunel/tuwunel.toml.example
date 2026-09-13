@@ -8,6 +8,9 @@
 server_name = "<server_name, 예: example.com>"
 
 database_path = "/var/lib/tuwunel"
+# 내장 온라인 백업(`server backup-database`)이 쓰는 디렉터리. scripts/tuwunel_backup.py와
+# 복원 드릴이 이 값을 요구하며, database_path 안쪽 경로는 거부한다(복원 시 함께 이동되기 때문).
+database_backup_path = "/var/lib/tuwunel-backups"
 # 리버스 프록시(cloudflared) 뒤에서만 듣는다. 외부 노출 금지.
 address = ["127.0.0.1"]
 port = 8008

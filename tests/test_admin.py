@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -8,14 +9,19 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).parents[1] / 'scripts'))
 from admin import AdminClient, load_admin_token, load_tuwunel_config, parse, run_command, setting
 
+EXAMPLE = Path(__file__).parents[1] / 'deploy' / 'tuwunel' / 'tuwunel.toml.example'
 
-def write_config(root, address='127.0.0.1', port='18809', server='family.example', database='data/db'):
+
+def write_config(root, address=('127.0.0.1',), port='18809', server='family.example', database='data/db',
+                 backups='data/backups'):
+    """Config in the deploy/tuwunel/tuwunel.toml.example shape: [global], list address, database_path."""
     config = root / 'tuwunel.toml'
-    config.write_text('server_name = ' + json.dumps(server) + '\n'
-                      'address = ' + json.dumps(address) + '\n'
-                      'port = ' + str(port) + '\n'
-                      '[database]\n'
-                      'path = ' + json.dumps(str(root / database)) + '\n')
+    lines = ['[global]', 'server_name = ' + json.dumps(server),
+             'address = ' + (json.dumps(list(address)) if isinstance(address, tuple) else address),
+             'port = ' + str(port), 'database_path = ' + json.dumps(str(root / database))]
+    if backups is not None:
+        lines.append('database_backup_path = ' + json.dumps(str(root / backups)))
+    config.write_text('\n'.join(lines) + '\n')
     return config
 
 
@@ -39,7 +45,9 @@ def recording_client(server='family.example', token='tok'):
 class SettingTests(unittest.TestCase):
     def test_top_level_then_global_section(self):
         self.assertEqual(setting({'server_name': 'a.example'}, 'server_name'), 'a.example')
+        self.assertEqual(setting({'global': {'database_path': '/x'}}, 'database_path'), '/x')
         self.assertEqual(setting({'global': {'database': {'path': '/x'}}}, 'database', 'path'), '/x')
+        self.assertIsNone(setting({}, 'database_backup_path', default=None))
         with self.assertRaises(KeyError):
             setting({}, 'server_name')
 
@@ -51,25 +59,48 @@ class LoadConfigTests(unittest.TestCase):
             loaded = load_tuwunel_config(config)
             self.assertEqual(loaded['base'], 'http://127.0.0.1:18809')
             self.assertEqual(loaded['server_name'], 'family.example')
+            self.assertEqual(loaded['address'], ['127.0.0.1'])
             self.assertEqual(loaded['database'], Path(tmp) / 'data' / 'db')
+            self.assertEqual(loaded['database_backup_path'], Path(tmp) / 'data' / 'backups')
             self.assertEqual(loaded['config_path'], config)
 
-    def test_global_section_fallback(self):
+    def test_address_string_form_and_multiple_loopback_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(load_tuwunel_config(write_config(Path(tmp), address='"127.0.0.1"'))['address'],
+                             ['127.0.0.1'])
+            self.assertEqual(load_tuwunel_config(write_config(Path(tmp), address=('127.0.0.1', '::1')))['address'],
+                             ['127.0.0.1', '::1'])
+
+    def test_legacy_top_level_and_database_table_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'tuwunel.toml'
-            config.write_text('[global]\n'
-                              'server_name = "family.example"\n'
+            config.write_text('server_name = "family.example"\n'
                               'address = "127.0.0.1"\n'
                               'port = 18809\n'
-                              '[global.database]\n'
+                              '[database]\n'
                               'path = ' + json.dumps(str(Path(tmp) / 'db')) + '\n')
-            self.assertEqual(load_tuwunel_config(config)['base'], 'http://127.0.0.1:18809')
+            loaded = load_tuwunel_config(config)
+            self.assertEqual(loaded['base'], 'http://127.0.0.1:18809')
+            self.assertEqual(loaded['database'], Path(tmp) / 'db')
+            self.assertIsNone(loaded['database_backup_path'])
+
+    def test_parses_shipped_example_config(self):
+        text = re.sub(r'<[^>\n]*>', 'example.com', EXAMPLE.read_text())
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'tuwunel.toml'
+            config.write_text(text)
+            loaded = load_tuwunel_config(config)
+            self.assertEqual(loaded['base'], 'http://127.0.0.1:8008')
+            self.assertEqual(loaded['server_name'], 'example.com')
+            self.assertEqual(loaded['address'], ['127.0.0.1'])
+            self.assertEqual(loaded['database'], Path('/var/lib/tuwunel'))
+            self.assertEqual(loaded['database_backup_path'], Path('/var/lib/tuwunel-backups'))
 
     def test_refuses_non_loopback_address(self):
         with tempfile.TemporaryDirectory() as tmp:
-            config = write_config(Path(tmp), address='0.0.0.0')
-            with self.assertRaises(ValueError):
-                load_tuwunel_config(config)
+            for address in ('"0.0.0.0"', ('127.0.0.1', '0.0.0.0'), '[]', '8008'):
+                with self.subTest(address=address), self.assertRaises(ValueError):
+                    load_tuwunel_config(write_config(Path(tmp), address=address))
 
     def test_refuses_non_integer_port(self):
         with tempfile.TemporaryDirectory() as tmp:

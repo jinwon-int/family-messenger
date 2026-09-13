@@ -10,18 +10,17 @@ import getpass
 import hashlib
 import hmac
 import json
-from pathlib import Path
 import re
-import stat
 import sys
-import tomllib
 import urllib.error
 import urllib.request
 from urllib.parse import quote, urlsplit, urlencode
 
-ROOT=Path(__file__).resolve().parents[1]
-TUWUNEL_CONFIG=ROOT/'.runtime/tuwunel/tuwunel.toml'
-TUWUNEL_TOKEN=ROOT/'.runtime/tuwunel/admin_token'
+from tuwunel_config import (  # noqa: F401  (setting/load_admin_token re-exported for callers and tests)
+    ROOT, TUWUNEL_CONFIG, TUWUNEL_TOKEN, load_admin_token, setting,
+)
+import tuwunel_config
+
 LOCALPART=re.compile(r'[a-z0-9][a-z0-9._=-]{0,63}')
 
 
@@ -61,43 +60,9 @@ def create_user(username,password,admin=False):
     return request('/_synapse/admin/v1/register',{'nonce':nonce,'username':username,'password':password,'admin':admin,'mac':digest})
 
 
-def setting(config,*keys):
-    """Read a config key from either top level or the legacy [global] section."""
-    for section in (config,config.get('global') if isinstance(config.get('global'),dict) else None):
-        if section is None:continue
-        node=section
-        for key in keys:
-            if not isinstance(node,dict) or key not in node:node=None;break
-            node=node[key]
-        if node is not None:return node
-    raise KeyError('.'.join(keys))
-
-
 def load_tuwunel_config(path=None):
-    """Load the stage-1 homeserver config and require a loopback-only admin API."""
-    path=Path(path or TUWUNEL_CONFIG)
-    with open(path,'rb') as f:config=tomllib.load(f)
-    address=setting(config,'address')
-    if address not in ('127.0.0.1','localhost','::1'):
-        raise ValueError('admin API requires a loopback bind; refusing non-loopback address')
-    port=setting(config,'port')
-    if not isinstance(port,int) or not 1<=port<=65535:raise ValueError('invalid admin API port')
-    server_name=setting(config,'server_name')
-    if not isinstance(server_name,str) or not server_name:raise ValueError('missing server_name')
-    database=Path(setting(config,'database','path'))
-    return {'config_path':path,'base':'http://127.0.0.1:'+str(port),
-            'server_name':server_name,'database':database}
-
-
-def load_admin_token(path=None):
-    """Read the admin API bearer token; never log or echo its contents."""
-    path=Path(path or TUWUNEL_TOKEN)
-    info=path.lstat()
-    if not stat.S_ISREG(info.st_mode):raise ValueError('admin token is not a regular file')
-    if info.st_mode & 0o077:raise ValueError('admin token must not be readable by group or others')
-    token=path.read_text().strip()
-    if not token:raise ValueError('admin token file is empty')
-    return token
+    """Load the stage-1 homeserver config (tuwunel.toml.example shape) via the shared loader."""
+    return tuwunel_config.load_tuwunel_config(path or TUWUNEL_CONFIG)
 
 
 class AdminClient:
