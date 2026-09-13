@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock,Mock,patch
 from urllib.parse import quote
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
-from fleet_core import Request
 from fleet_matrix import FAMILY_NOTICE, Frontend
 from fleet_matrix_state import MatrixStore, SafetyStop, load_config, parts, turn_id, validate_config
 
