@@ -69,7 +69,7 @@ verifies only the assertion header described in [AUTH.md](AUTH.md).
 | Request | Behavior |
 |---|---|
 | `GET /v1/session` | Verified current actor/mode and explicit owner flag; no token/subject/email |
-| `GET /health` | Authenticated synthetic-mode marker; not a disk/backup readiness check |
+| `GET /health` | Unauthenticated liveness marker `{"status":"ok","mode":"synthetic-only"}`; same-origin/loopback checks still apply; not a disk/backup readiness check |
 | `GET /v1/rooms` | List only rooms the authenticated fixture actor currently belongs to |
 | `POST /v1/rooms` | JSON `{"id":"family","members":["bob"]}`; caller owns and joins the room |
 | `PUT /v1/rooms/{room}/members/{actor}` | Owner adds a fixture actor; current members see all room history |
@@ -110,6 +110,59 @@ with migration snapshots and room checks. The UI verifies synthetic image/video 
 background delivery, retention, disk monitor,
 production authentication, E2EE, account/device revocation, production backup/restore,
 or fleet execution adapter yet.
+
+## 운영 형태 최소치 (0단계)
+
+[결정 D](../docs/DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md)에 따라 이 서버는 "AI 참여
+서비스"로 역할이 바뀌지만, 이 단계에서 바뀐 것은 운영 형태의 최소치만이다
+([ROADMAP](../docs/ROADMAP.md) 0단계, #92). 루프백 전용 listen과 `--synthetic-only`
+게이트는 그대로다(해제는 1단계).
+
+- **`GET /health` 는 인증 밖.** 자격 증명 없이 `{"status":"ok","mode":"synthetic-only"}`
+  만 돌려주며 데이터를 싣지 않는다. Host/Origin/Fetch Metadata 검사는 그대로 적용되고,
+  그 외 모든 경로(`/v1/session` 포함)는 여전히 인증 뒤에 있다. 계정 상태를 확인하려면
+  `/v1/session`을 호출한다.
+- **구조화 로그.** stderr에 JSON 한 줄씩(`log/slog`, 표준 라이브러리만). 요청마다
+  `ts`, `level`, `msg="request"`, `method`, `path`(쿼리 문자열 제외), `status`,
+  `duration_ms`, 인증된 경우 `actor`. 토큰·쿠키·본문·헤더·첨부 파일 이름은 기록하지
+  않는다. 수준은 `--log-level debug|info|warn|error`(기본 `info`). 기동 메시지는
+  `"SYNTHETIC ONLY; listening 127.0.0.1:<port>"` 문구를 유지한다(스모크 테스트가 이
+  문구로 포트를 찾는다).
+- **오류 ID.** 저장소/프로토콜 오류 응답은 이제 JSON
+  `{"error":"<code>","id":"<12자리 hex>"}` 이다. 코드: `storage_failure`(500),
+  `forbidden`, `conflict`, `invalid_request`, `attachment_integrity_failure`,
+  `not_found`, `upload_busy`, `capacity_reached`. 같은 `id`로 로그의
+  `msg="request failed"` 레코드(원인 텍스트 `cause` 포함)와 요청 레코드의 `error_id`를
+  찾을 수 있다. 5xx는 `ERROR`, 클라이언트 거부는 `DEBUG` 수준이다. 응답 본문에
+  원인 텍스트는 실리지 않는다. 인증 단계의 `401`/`403` 평문 응답은 바뀌지 않았다.
+- **`--admission-key` 파일**도 다른 상태 파일과 같은 규율을 따른다: 심볼릭 링크를
+  따라가지 않고, 소유자 본인·링크 수 1·모드 0600인 일반 파일이어야 한다.
+- **업로드 선할당 한도.** 클라이언트가 선언한 `Content-Length` 대신 64 KiB(또는 첨부
+  한도 중 작은 값)까지만 미리 잡고, 나머지는 실제 도착한 바이트만큼 늘린다.
+
+### 설정 파일 `--config <file>`
+
+플래그 이름을 키로 하는 JSON 객체 하나. 값은 모두 문자열이며, 명령줄 플래그가 파일
+값을 항상 이긴다. 허용 키: `state`, `listen`, `auth-state`, `admission-key`,
+`log-level`. `synthetic-only`(운영자의 명시적 확인)와 `config`(중첩)는 파일에서 받지
+않고 오류로 끝난다. 모르는 키, 문자열이 아닌 값, 객체 뒤의 잉여 데이터, 64 KiB 초과,
+일반 파일이 아닌 경로도 오류다. 파일에 비밀은 들어가지 않는다(경로와 수준만).
+
+```json
+{"state":"/var/lib/family-ai-service/chat","listen":"127.0.0.1:18920","log-level":"info"}
+```
+
+```sh
+../artifacts/family-dev --synthetic-only --config /etc/family-ai-service/config.json
+```
+
+### systemd 예시 유닛
+
+[`deploy/family-ai-service.service.example`](../deploy/family-ai-service.service.example)
+은 전용 사용자, `ProtectSystem=strict`, 상태 디렉터리만 `ReadWritePaths`,
+`NoNewPrivileges`, 루프백만 허용하는 `IPAddressAllow`로 구성한 예시다. 저장소의
+어떤 스크립트도 이 유닛을 설치하지 않는다. `DynamicUser=`를 쓰지 않는 이유는 상태
+경로가 `/var/lib/private/`로의 심볼릭 링크가 되어 스토어가 거부하기 때문이다.
 
 ## Verification
 
