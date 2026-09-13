@@ -1,0 +1,72 @@
+# EXAMPLE ONLY — not installed by anything in this repository.
+#
+# Runs the Go "AI participation service" (server/cmd/family-dev) as a hardened
+# system service. The binary still refuses to listen anywhere but 127.0.0.1 and
+# still requires the explicit --synthetic-only acknowledgement (stage 0 gates);
+# a reverse proxy/tunnel in front of it is a later, separate decision.
+#
+# Expected layout (create before enabling):
+#   /usr/local/bin/family-dev                  built with: go build -trimpath ./cmd/family-dev
+#   /etc/family-ai-service/config.json         {"state":"/var/lib/family-ai-service/chat","listen":"127.0.0.1:18920","log-level":"info"}
+#   /var/lib/family-ai-service/{chat,auth}     created by StateDirectory=, owned by family-ai, mode 0700
+#   useradd --system --home /var/lib/family-ai-service --shell /usr/sbin/nologin family-ai
+#
+# A dedicated user rather than DynamicUser=: with DynamicUser the state path is a
+# symlink into /var/lib/private/, and the store rejects symlinked state paths.
+
+[Unit]
+Description=Family AI participation service (loopback-only Go server)
+Documentation=https://github.com/jinwon-int/family-messenger/blob/main/server/README.md
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=family-ai
+Group=family-ai
+UMask=0077
+StateDirectory=family-ai-service/chat family-ai-service/auth
+StateDirectoryMode=0700
+ConfigurationDirectory=family-ai-service
+ExecStart=/usr/local/bin/family-dev --synthetic-only --config /etc/family-ai-service/config.json
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+KillMode=control-group
+StandardOutput=null
+StandardError=journal
+LimitCORE=0
+
+# Sandbox: the process needs only its state directory writable.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/family-ai-service
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @debug @cpu-emulation @obsolete
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

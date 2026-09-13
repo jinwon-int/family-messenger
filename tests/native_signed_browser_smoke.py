@@ -327,7 +327,7 @@ def main():
             b.wait_for_function("()=>document.querySelector('.preview img')?.naturalWidth===2")
             commit(1,config['people'][:1])
             until=time.monotonic()+5
-            while direct('family','GET','/health')[0]!=401:
+            while direct('family','GET','/v1/session')[0]!=401:
                 assert time.monotonic()<until
                 time.sleep(.05)
             b.locator('#refresh').click()
@@ -337,7 +337,7 @@ def main():
             expect(b.locator('#send')).to_be_disabled()
             commit(2,config['people'])
             until=time.monotonic()+5
-            while direct('family','GET','/health')[0]!=200:
+            while direct('family','GET','/v1/session')[0]!=200:
                 assert time.monotonic()<until
                 time.sleep(.05)
             b.locator('#authenticate').click()

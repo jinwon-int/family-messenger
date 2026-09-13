@@ -81,10 +81,10 @@ func event(t *testing.T, r *bufio.Reader) Message {
 
 func TestHTTPAuthorizationAndRequestBoundaries(t *testing.T) {
 	_, h := fixture(t)
-	status(t, req(t, h, "GET", "/health", "", nil, nil), 401)
-	status(t, req(t, h, "GET", "/health", "charlie", nil, nil), 200)
+	status(t, req(t, h, "GET", "/v1/rooms", "", nil, nil), 401)
+	status(t, req(t, h, "GET", "/v1/rooms", "charlie", nil, nil), 200)
 	for _, hdr := range []map[string]string{{"Host": "attacker.invalid:80"}, {"Origin": "https://attacker.invalid"}, {"Origin": "null"}, {"Sec-Fetch-Site": "cross-site"}, {"Authorization": "Bearer synthetic-alice extra"}} {
-		r := req(t, h, "GET", "/health", "alice", nil, hdr)
+		r := req(t, h, "GET", "/v1/rooms", "alice", nil, hdr)
 		if r.StatusCode != 403 && r.StatusCode != 401 {
 			t.Fatal(r.StatusCode)
 		}

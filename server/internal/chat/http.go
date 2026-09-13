@@ -49,6 +49,14 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		serveAsset(w, r, a.authority != nil)
 		return
 	}
+	// Liveness answers before any identity check so a supervisor can probe it
+	// without holding a credential. The loopback/same-origin discipline above
+	// still applies, the body carries no data, and every other route stays
+	// behind authentication.
+	if r.Method == "GET" && r.URL.Path == "/health" && r.URL.RawPath == "" && r.URL.RawQuery == "" {
+		writeJSON(w, 200, map[string]string{"mode": "synthetic-only", "status": "ok"})
+		return
+	}
 	var actor string
 	if a.authority != nil {
 		grant, err := a.authority.Verify(r)
@@ -193,10 +201,6 @@ func (a *API) route(w http.ResponseWriter, r *http.Request, actor string) {
 			return
 		}
 		http.NotFound(w, r)
-		return
-	}
-	if r.Method == "GET" && r.URL.Path == "/health" {
-		writeJSON(w, 200, map[string]string{"mode": "synthetic-only", "status": "ok"})
 		return
 	}
 	if r.Method == "GET" && r.URL.Path == "/v1/rooms" {
@@ -409,33 +413,27 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
-func fail(w http.ResponseWriter, e error) {
-	status := 500
-	msg := "storage failure"
+
+// statusOf maps an error to its HTTP status and stable wire code. Anything not
+// recognised is a storage failure; its text reaches the log, never the client.
+func statusOf(e error) (int, string) {
 	switch {
 	case errors.Is(e, ErrForbidden):
-		status = 403
-		msg = "forbidden"
+		return 403, "forbidden"
 	case errors.Is(e, ErrConflict):
-		status = 409
-		msg = "conflict"
+		return 409, "conflict"
 	case errors.Is(e, ErrInvalid):
-		status = 400
-		msg = "invalid request"
+		return 400, "invalid_request"
 	case errors.Is(e, ErrIntegrity):
-		status = 422
-		msg = "attachment integrity failure"
+		return 422, "attachment_integrity_failure"
 	case errors.Is(e, ErrNotFound):
-		status = 404
-		msg = "not found"
+		return 404, "not_found"
 	case errors.Is(e, ErrBusy):
-		status = 409
-		msg = "upload already active; retry later"
+		return 409, "upload_busy"
 	case errors.Is(e, ErrLimit):
-		status = 507
-		msg = "prototype capacity reached"
+		return 507, "capacity_reached"
 	}
-	http.Error(w, msg, status)
+	return 500, "storage_failure"
 }
 
 func (a *API) events(w http.ResponseWriter, r *http.Request, room, actor string, after int64) {

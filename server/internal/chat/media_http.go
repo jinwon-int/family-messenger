@@ -12,6 +12,19 @@ import (
 	"time"
 )
 
+// uploadInitialCap is the most an upload preallocates before any body byte has
+// arrived. It is deliberately far below MaxAttachment.
+const uploadInitialCap = 64 * 1024
+
+// uploadCapacity bounds the initial buffer for a declared Content-Length: the
+// smaller of the declaration, uploadInitialCap and the attachment limit.
+func uploadCapacity(declared int64) int {
+	if declared < 0 {
+		return 0
+	}
+	return int(min(declared, int64(min(uploadInitialCap, MaxAttachment))))
+}
+
 func singleHeader(r *http.Request, name string) (string, error) {
 	v := r.Header.Values(name)
 	if len(v) != 1 || v[0] == "" {
@@ -97,7 +110,9 @@ func (a *API) uploadMedia(w http.ResponseWriter, r *http.Request, room, actor st
 	defer a.store.releaseMedia(lease)
 	// No transaction or chat mutex is held while reading the network. Body memory
 	// is bounded by the declared size and two admission slots; nothing is spooled.
-	body := make([]byte, 0, int(r.ContentLength))
+	// The declared size is client input, so only a small buffer is reserved up
+	// front and growth is paid as bytes actually arrive.
+	body := make([]byte, 0, uploadCapacity(r.ContentLength))
 	buf := make([]byte, 32*1024)
 	end := time.Now().Add(30 * time.Second)
 	control := http.NewResponseController(w)

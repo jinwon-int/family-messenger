@@ -13,6 +13,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 )
@@ -103,4 +105,56 @@ func hexDup(prefix byte) string {
 
 func TestMatchesPolicyAgainstClonedConfig(t *testing.T) {
 	_ = sha256.Sum256
+}
+
+func TestLoadAdmissionSeedRequiresPrivateRegularFile(t *testing.T) {
+	dir := t.TempDir()
+	seed := sha256.Sum256([]byte("family-synthetic-aggregate-admission-v1"))
+	path := filepath.Join(dir, "seed")
+	if e := os.WriteFile(path, seed[:], 0600); e != nil {
+		t.Fatal(e)
+	}
+	key, e := LoadAdmissionSeed(path)
+	if e != nil || !key.Equal(admissionTestKey()) {
+		t.Fatalf("a private 0600 seed must load to the deterministic key: %v", e)
+	}
+	// Same discipline as other state files: mode, link count and symlinks.
+	if e = os.Chmod(path, 0640); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = LoadAdmissionSeed(path); e == nil {
+		t.Fatal("group-readable seed must be rejected")
+	}
+	if e = os.Chmod(path, 0600); e != nil {
+		t.Fatal(e)
+	}
+	link := filepath.Join(dir, "hardlink")
+	if e = os.Link(path, link); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = LoadAdmissionSeed(path); e == nil {
+		t.Fatal("multi-link seed must be rejected")
+	}
+	if e = os.Remove(link); e != nil {
+		t.Fatal(e)
+	}
+	symlink := filepath.Join(dir, "symlink")
+	if e = os.Symlink(path, symlink); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = LoadAdmissionSeed(symlink); e == nil {
+		t.Fatal("symlinked seed must be rejected")
+	}
+	for _, size := range []int{ed25519.SeedSize - 1, ed25519.SeedSize + 1} {
+		wrong := filepath.Join(dir, strconv.Itoa(size))
+		if e = os.WriteFile(wrong, make([]byte, size), 0600); e != nil {
+			t.Fatal(e)
+		}
+		if _, e = LoadAdmissionSeed(wrong); e == nil {
+			t.Fatalf("%d-byte seed must be rejected", size)
+		}
+	}
+	if _, e = LoadAdmissionSeed(filepath.Join(dir, "missing")); e == nil {
+		t.Fatal("missing seed must be rejected")
+	}
 }
