@@ -53,6 +53,21 @@
 
 통과 조건: 위 항목 전부 "확인함"으로 기록. 결과는 이 문서에 추기한다.
 
+### 평가 결과 (2026-09-13, 육손 격리 디렉터리, 운영 무변경) — **Tuwunel 1.9.1 확정**
+
+전문: [evidence/homeserver-eval-20260913.md](evidence/homeserver-eval-20260913.md). 두 후보 모두 항목 a~h "확인함"이었고, 결정을 가른 실측 차이는 다음 넷이다.
+
+| 항목 | Tuwunel 1.9.1 | continuwuity 26.8.1 |
+|---|---|---|
+| 백업·복원 | 내장 `verify-backup` + `--restore-backup` 원샷(330 ms, 20/20 메시지·event_id 일치) | 수동 `.sst` 이름 변경 절차, 검증 명령 없음(복원은 성공) |
+| 스크립트 관리 | **Synapse Admin API**(HTTP+Bearer) — `admin.py`가 JSON으로 계정·방·미디어 관리 | admin 방 텍스트 명령만(`/_synapse/admin` 404) |
+| 가족방 안전 기본값 | 방 기본 암호화 knob(private_chat 자동 megolm 실측), 게스트 knob, **비인증 legacy 미디어 다운로드 403** | 셋 다 없음 — 비인증 다운로드로 90 MiB 전체 제공 |
+| 자원 | 유휴 RSS 150 MiB | 209 MiB (정지 <40 ms·시작 <300 ms는 동급) |
+
+continuwuity는 대안으로 유지한다(릴리스 주기가 더 짧음). 첫 계정 토큰이 로그에 평문 출력되고 설정 파일 토큰이 첫 계정에 거부되는 동작, HTTP 관리 API 부재가 무인 운영과 맞지 않는다.
+
+**열린 위험(1단계에서 처리)**: ① 두 프로젝트 모두 릴리스 체크섬·서명 미공개 → 다운로드 sha256을 저장소에 고정하고 deb↔zst 교차 일치 반복 확인(1.9.1: `e365ba0c…`). ② Tuwunel `PUT /_synapse/admin/v2/users`에 `admin:false` 포함 시 500(사용자는 생성됨) → `admin.py`에서 필드 생략 또는 업스트림 이슈. ③ 온라인 백업은 `media/` 제외 → 별도 백업 필수, 복원 시 `cp -a src/. dst/` 형태. ④ `max_request_size` 100 MiB는 CF 요청 본문 한도 경계 → 터널 경유 대용량 업로드 미검증. ⑤ 1.8→1.9 첫 기동 시 DB 마이그레이션 중 강제 종료 금지 → 업그레이드 전 백업 자동화. ⑥ 서버 계정명 `@conduit:` 표시명 처리. ⑦ 유휴 스레드 602개는 저사양 노드 재측정.
+
 ## 코드 처분
 
 | 대상 | 처분 |
