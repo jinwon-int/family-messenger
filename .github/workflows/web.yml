@@ -1,0 +1,59 @@
+name: Web app
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web/app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.2'
+      # Dependency-free unit tests run before any install.
+      - name: Unit tests
+        run: npm test
+      # No lockfile is committed; dependencies are pinned exactly in
+      # package.json, so a plain install is reproducible.
+      - name: Install pinned dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Matrix SDK and Rust crypto smoke
+        run: node tests/transport_smoke.mjs
+      - name: Bundle app
+        run: npm run build
+      - name: Serve dist and probe app shell
+        run: |
+          set -euo pipefail
+          node serve.mjs &
+          server_pid=$!
+          trap 'kill $server_pid 2>/dev/null || true' EXIT
+          for _ in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8080/ >/dev/null 2>&1; then break; fi
+            sleep 0.5
+          done
+          curl -fsS http://127.0.0.1:8080/ | grep -q '패밀리챗'
+          curl -fsS http://127.0.0.1:8080/manifest.webmanifest | grep -q '"lang"'
+          curl -fsSI http://127.0.0.1:8080/manifest.webmanifest | grep -qi '^content-type: application/manifest'
+          curl -fsSI http://127.0.0.1:8080/icons/icon.svg | grep -qi '^content-type: image/svg'
+          # rust-crypto WASM asset must be reachable at the path the glue expects
+          curl -fsSI http://127.0.0.1:8080/pkg/matrix_sdk_crypto_wasm_bg.wasm | grep -qi '^content-type: application/wasm'
+          test -s dist/main.js
+          test -f dist/sw.js
+          test -s dist/pkg/matrix_sdk_crypto_wasm_bg.wasm
+      - name: Preserve bundle evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-app-dist-${{ github.event_name }}
+          path: web/app/dist
+          if-no-files-found: ignore

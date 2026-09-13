@@ -1,0 +1,221 @@
+// matrix-js-sdk adapter.
+//
+// The SDK is loaded lazily (dynamic import) so the pure product logic in
+// src/*.js stays dependency-free and testable without node_modules; the
+// loader is injectable, which is also how tests drive this file with a
+// fake SDK. E2EE uses the Rust crypto stack (@matrix-org/matrix-sdk-
+// crypto-wasm, pulled in by matrix-js-sdk) — decision D: we do not
+// assemble cryptography ourselves.
+
+import { classifyRoom, roomDisplayName } from '../rooms.js';
+import { splitParticipants } from '../participants.js';
+
+/** @returns {Promise<object>} the matrix-js-sdk module */
+export function defaultSdkLoader() {
+  return import('matrix-js-sdk');
+}
+
+/** Raised when a send would go to a room we can prove is unencrypted. */
+export class PlaintextRefusedError extends Error {
+  constructor(roomId) {
+    super(`plaintext send refused for ${roomId}`);
+    this.name = 'PlaintextRefusedError';
+    this.roomId = roomId;
+  }
+}
+
+/**
+ * Password login against a homeserver; returns raw credentials for
+ * createFamilyClient. Mirrors the SDK contract (m.login.password).
+ */
+export async function loginWithPassword({
+  homeserverUrl,
+  user,
+  password,
+  sdkLoader = defaultSdkLoader,
+  clientFactory,
+} = {}) {
+  for (const [name, value] of Object.entries({ homeserverUrl, user, password })) {
+    if (typeof value !== 'string' || value.length === 0) {
+      throw new TypeError(`loginWithPassword: ${name} is required`);
+    }
+  }
+  const sdk = await sdkLoader();
+  const client = clientFactory ? clientFactory(sdk, { baseUrl: homeserverUrl }) : sdk.createClient({ baseUrl: homeserverUrl });
+  return client.login('m.login.password', { identifier: { type: 'm.id.user', user }, password });
+}
+
+/**
+ * @param {{homeserverUrl: string, userId: string, accessToken: string,
+ *          deviceId: string, sdkLoader?: () => Promise<object>,
+ *          clientFactory?: (sdk: object, opts: object) => object}} opts
+ * @returns {Promise<ClientAdapter>}
+ */
+export async function createFamilyClient({
+  homeserverUrl,
+  userId,
+  accessToken,
+  deviceId,
+  sdkLoader = defaultSdkLoader,
+  clientFactory,
+} = {}) {
+  for (const [name, value] of Object.entries({ homeserverUrl, userId, accessToken, deviceId })) {
+    if (typeof value !== 'string' || value.length === 0) {
+      throw new TypeError(`createFamilyClient: ${name} is required`);
+    }
+  }
+  const sdk = await sdkLoader();
+  const opts = { baseUrl: homeserverUrl, userId, accessToken, deviceId };
+  const client = clientFactory
+    ? clientFactory(sdk, opts)
+    : sdk.createClient(opts);
+  return new ClientAdapter(client, userId);
+}
+
+export class ClientAdapter {
+  /** @param {object} client a matrix-js-sdk MatrixClient */
+  constructor(client, myUserId) {
+    this.client = client;
+    this.myUserId = myUserId;
+  }
+
+  /**
+   * Turn on Rust (WASM) end-to-end encryption. Must run before
+   * start(); resolves when crypto is ready to upload device keys.
+   */
+  async enableEncryption() {
+    if (typeof this.client.initRustCrypto !== 'function') {
+      throw new Error('initRustCrypto unavailable: matrix-js-sdk without rust crypto');
+    }
+    await this.client.initRustCrypto({ useIndexedDB: true });
+  }
+
+  /** Begin syncing. @param {(state: string) => void} [onSyncState] */
+  start(onSyncState) {
+    if (onSyncState) {
+      this.client.on('sync', (state) => onSyncState(state));
+    }
+    this.client.startClient({ initialSyncLimit: 20 });
+  }
+
+  stop() {
+    this.client.stopClient();
+  }
+
+  /**
+   * Room ids flagged as direct messages by the m.direct account data,
+   * i.e. 1:1 개인방.
+   */
+  directRoomIds() {
+    const content = this.client.getAccountData?.('m.direct')?.getContent?.() ?? {};
+    const ids = new Set();
+    for (const rooms of Object.values(content)) {
+      if (Array.isArray(rooms)) for (const id of rooms) ids.add(id);
+    }
+    return ids;
+  }
+
+  /**
+   * Summaries for the room list: product kind, display name, participant
+   * split (human vs AI).
+   * @param {{agentUserIds?: Iterable<string>}} [opts]
+   */
+  roomSummaries(opts = {}) {
+    const rooms = this.client.getRooms?.() ?? [];
+    const direct = this.directRoomIds();
+    return rooms.map((room) => {
+      const members = (room.getMembers?.() ?? []).map((m) => ({
+        userId: m.userId,
+        name: m.name,
+        content: m.events?.member?.getContent?.() ?? {},
+      }));
+      const isDirect = direct.has(room.roomId);
+      const memberCount = typeof room.getJoinedMemberCount === 'function'
+        ? room.getJoinedMemberCount()
+        : members.length;
+      const otherMemberNames = members.filter((m) => m.userId !== this.myUserId).map((m) => m.name);
+      const { agents, humans } = splitParticipants(members, opts);
+      return {
+        roomId: room.roomId,
+        name: room.name,
+        otherMemberNames,
+        displayName: roomDisplayName({ name: room.name, otherMemberNames }),
+        isDirect,
+        memberCount,
+        kind: classifyRoom({ isDirect, memberCount }),
+        agents,
+        humans,
+      };
+    });
+  }
+
+  /** Whether the room is end-to-end encrypted (best effort). */
+  isRoomEncrypted(roomId) {
+    try {
+      return Boolean(this.client.isRoomEncrypted?.(roomId));
+    } catch {
+      return false;
+    }
+  }
+
+  /** Send m.text. Refuses provable-plaintext rooms, hides no failures. */
+  async sendText(roomId, text) {
+    const body = String(text ?? '').trim();
+    if (body.length === 0) return null;
+    if (!this.isRoomEncrypted(roomId)) throw new PlaintextRefusedError(roomId);
+    return this.client.sendEvent(roomId, 'm.room.message', { msgtype: 'm.text', body });
+  }
+
+  /** Send an attachment whose mxc URL is already uploaded. */
+  async sendAttachment(roomId, content) {
+    if (!this.isRoomEncrypted(roomId)) throw new PlaintextRefusedError(roomId);
+    return this.client.sendEvent(roomId, 'm.room.message', content);
+  }
+
+  /**
+   * Upload a file and return its mxc URL.
+   * @param {File|{name: string, type?: string}} file
+   * @param {ArrayBuffer|Uint8Array} data
+   */
+  uploadMedia(file, data) {
+    return this.client.uploadContent(data, {
+      name: file.name,
+      type: file.type ?? 'application/octet-stream',
+    });
+  }
+
+  /** Subscribe to live timeline events for rendering. */
+  onTimeline(handler) {
+    this.client.on('Room.timeline', handler);
+    return () => this.client.removeListener('Room.timeline', handler);
+  }
+
+  /**
+   * Emoji (SAS) device verification driver.
+   *
+   * `start` sends a verification request (own-user device verification
+   * when no room/user is given, otherwise an in-room request) and drives
+   * the SAS exchange:
+   *   onEmojis(emojis, {confirm, mismatch}) — seven [emoji, name] pairs;
+   *   onDone() once both sides accepted; onCancelled() otherwise.
+   * Throws when rust crypto is not enabled yet.
+   */
+  async startEmojiVerification({ userId, roomId, onEmojis, onDone, onCancelled }) {
+    const crypto = this.client.getCrypto?.();
+    if (!crypto) throw new Error('rust crypto not enabled');
+    const request = roomId && userId
+      ? await crypto.requestVerificationDM(userId, roomId)
+      : await crypto.requestOwnUserVerification();
+    const verifier = await request.startVerification('m.sas.v1');
+    verifier.on('show_sas', (sasEvent) => {
+      const emojis = Array.isArray(sasEvent?.sas?.emoji) ? sasEvent.sas.emoji : [];
+      onEmojis(emojis, {
+        confirm: () => sasEvent.confirm().then(onDone).catch(onCancelled),
+        mismatch: () => sasEvent.mismatch(),
+      });
+    });
+    verifier.on('cancel', () => onCancelled?.());
+    await verifier.verify();
+    return request;
+  }
+}

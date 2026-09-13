@@ -30,3 +30,7 @@ archive/native-mls/server/internal/chat/peerassets/
 archive/native-mls/server/internal/chat/custodyassets/
 archive/native-mls/server/internal/chat/welcomeassets/
 archive/native-mls/server/internal/chat/confirmationassets/
+
+# web app build outputs
+web/app/node_modules/
+web/app/dist/

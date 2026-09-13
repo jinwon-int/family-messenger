@@ -1,0 +1,107 @@
+# 우리 웹 화면 (web/app) — 1단계 착수 슬라이스
+
+> **상태(2026-09-13): 1단계 착수 코드.** [개발 순서](ROADMAP.md) 1단계의 "우리 웹 화면" 항목을
+> [결정 D](DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md)에 따라 `matrix-js-sdk`(Rust 암호화 WASM) 기반으로
+> 만들기 시작한 첫 조각이다. 실제 가족 대화(실기기 100건) 게이트는 아직이다. 아래 "아직 하지 않은 것"을
+> 함께 읽으시오.
+
+## 목적과 범위
+
+가족이 쓰는 화면을 Element 없이 직접 소유한다(결정 D). 첫 슬라이스는 다음을 담는다.
+
+| 요구(1단계) | 이 슬라이스의 상태 |
+|---|---|
+| 한국어·휴대폰 우선 | 모든 문구는 `src/strings.js`에 한국어로 모아둔다. 레이아웃은 560~680px 단일 컬럼, 하단 작성바, safe-area 대응 |
+| PWA 설치 | `manifest.webmanifest` + `sw.js`(앱 껍데기 캐시, `/_matrix` 우회). 홈 화면 추가로 앱처럼 실행 |
+| 개인방·가족방 | `m.direct` 표시·참여자 수로 분류(`src/rooms.js`). 판단 불가 방은 보수적으로 "다른 방" |
+| 텍스트·사진·영상·일반 파일 | `m.text`·`m.image`·`m.video`·`m.file` 작성·표시. 업로드는 홈서버 미디어 저장소 경유(mxc URL) |
+| 기기 검증(이모지 비교) | SDK Rust crypto의 SAS를 이모지 시트로 진행(`src/verification.js` + `startEmojiVerification`). 이모지 한국어 라벨표 포함, 없는 항목은 SDK 영어 이름 표시 |
+| 복구 키 생성·보관 안내 | 로컬 생성(base58, 32바이트) → 한 번만 표시 → 다시 입력 확인(`src/recovery.js`). **키는 어디로도 전송되지 않는다** |
+| 사람과 AI 구별 표시 | 플릿 계약의 봇 사용자 ID 목록 또는 멤버 이벤트 표식(`us.familychat.kind: "agent"`)으로 AI 배지 표시(`src/participants.js`) |
+
+보안 경계(이 슬라이스에서 지킬 것):
+
+- 접속 토큰은 `sessionStorage`에만 둔다. 창을 닫으면 다시 로그인한다. 토큰이 영속 저장소에
+  들어가는 경로는 없고, 단위 시험이 이 규칙을 검증한다.
+- 암호화가 확인되지 않는 방으로의 전송은 거부한다("평문 전환으로 숨기지 않는다", 결정 D).
+- 복구 키는 서버로 수집하지 않는다.
+
+## 구성
+
+```
+web/app/
+├── index.html            # 앱 껍데기 (lang="ko")
+├── styles.css            # 모바일 우선 스타일
+├── manifest.webmanifest  # PWA
+├── sw.js                 # 껍데기 캐시 서비스 워커
+├── build.mjs             # esbuild 번들(스크립트: npm run build)
+├── serve.mjs             # dist 정적 서버(스크립트: npm run serve)
+├── package.json          # matrix-js-sdk 42.3.0 고정, esbuild 0.28.2
+├── src/
+│   ├── strings.js        # 사용자 문구(한국어) 단일 출처
+│   ├── rooms.js          # 개인방·가족방 분류, 표시 이름
+│   ├── participants.js   # 사람/AI 참여자 분리
+│   ├── verification.js   # 기기 검증 상태기계 + 이모지 한국어 라벨
+│   ├── recovery.js       # 복구 키 생성·입력 확인 (base58)
+│   ├── messages.js       # msgtype 분류·용량 표시·첨부 본문
+│   ├── session.js        # 토큰 휘발성 저장 경계
+│   ├── ui.js             # 화면 렌더링(로직 없음)
+│   ├── main.js           # 연결·화면 전환
+│   └── matrix/client.js  # matrix-js-sdk 어댑터(지연 로딩)
+└── tests/                # node --test 단위 시험 + SDK 스모크
+```
+
+의존성 원칙: 순수 로직 모듈(`src/*.js`)은 의존성 0으로 `node --test`에서 바로 돈다.
+`matrix-js-sdk`는 `src/matrix/client.js`에서만 동적으로 불러오고, SDK 미설치 환경에서는
+가짜 주입(테스트)으로 계약을 검증한다. `package-lock.json`은 커밋하지 않고 버전을
+package.json에 고정한다(정확 버전, `^` 없음).
+
+## 실행
+
+Linux/macOS, Node 22 이상.
+
+```bash
+cd web/app
+npm install --no-package-lock --no-audit --no-fund
+npm test                 # 단위 시험 (의존성 설치 없이도 가능: node --test tests/)
+node tests/transport_smoke.mjs   # SDK·Rust 암호화 WASM 스모크 (설치 후)
+npm run build            # dist/ 번들 (matrix-js-sdk + Rust 암호화 WASM 자산 복사 포함)
+npm run serve            # http://127.0.0.1:8080 에서 dist 서빙
+```
+
+빌드는 Rust crypto WASM(`@matrix-org/matrix-sdk-crypto-wasm`)의 `.wasm` 바이너리를
+glue가 기대하는 상대 경로 `dist/pkg/`로 복사하고, 번들이 그 경로를 참조하는지 검사한다.
+번들 결과(main.js 약 1.1 MB + wasm 약 7.8 MB)는 브라우저 캐시 관점에서 무겁지만
+1단계에서는 정확성을 우선한다.
+
+로컬 시험은 가족 데이터 없는 새 계정으로만 하고, 운영 홈서버는 쓰지 않는다.
+홈서버 주소 예시는 `https://<homeserver>` 형태로만 문서에 적는다.
+
+## 시험
+
+| 시험 | 내용 |
+|---|---|
+| `npm test` (`node --test tests/`) | strings·방 분류·참여자 분리·검증 상태기계·복구 키·메시지 본문·세션 경계·SDK 어댑터 계약(가짜 주입) |
+| `tests/transport_smoke.mjs` | 고정 버전 matrix-js-sdk 로딩, `initRustCrypto`·`login`·`uploadContent`·WASM 패키지 존재 |
+| `npm run build` | 브라우저 번들 성공(WASM 자산 포함) |
+| CI (`.github/workflows/web.yml`) | 위 전부 + dist 서빙·껍데기 응답 검사, 번들 아티팩트 보존 |
+
+실행 기록은 PR 본문에 붙인다. 브라우저에서의 실기기 검증(이모지 비교 양쪽 화면)은
+1단계 후반 실가족 게이트에서 진행한다.
+
+## 아직 하지 않은 것 (1단계 남은 일)
+
+- 실제 홈서버(1단계 단일 바이너리)와의 종단간 E2EE 대화 검증 — 이 슬라이스는 로컬 시험까지만.
+- 푸시 알림(2단계), 사진·영상 실기기 재생·용량 초과 안내(2단계).
+- 복구 키를 SDK 비밀 저장소(secret storage)와 연결하고, "새 기기에서 이력 복구" 흐름 완성.
+  현재 시트는 키 생성·확인 안내까지만 담당한다.
+- 검증 요청이 도착했을 때 수신 쪽 시트 자동 연결(현재는 내가 요청을 보내는 쪽 흐름).
+- 타임라인 페이지네이션(이전 대화 불러오기), 읽음 표시, 알림 뱃지.
+- 가족방 초대 수락 화면, AI 초대 시 "이 AI가 읽는 범위·제공업체 전달 범위" 동의 안내(원칙 1).
+- 배포 경로(compose/터널) 대체 — `compose.yaml` 교체는 별도 작업(선언 범위 밖).
+
+## 관련 문서
+
+- [개발 순서 1단계](ROADMAP.md) — 게이트: 가족 2명 + AI 1, 실제 대화 100건(E2EE, 두 기기).
+- [결정 D](DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md) — 왜 Matrix 스택 + 직접 만드는 화면인가.
+- [홈서버 평가](evidence/homeserver-eval-20260913.md) — 미디어 한도(100 MiB)·비인증 다운로드 403 등 이 화면이 따르는 서버 실측.
