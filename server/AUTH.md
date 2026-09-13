@@ -304,7 +304,8 @@ During an outage an already acquired, unexpired snapshot remains usable until it
 stored deadline. No successful fetch means no extension. At expiry all signed
 admission denies, including after restart, with no fallback to old manual pins or
 public fixtures. Managed status/logs describe structural policy application, not
-key-service health; `/health` also requires current identity admission. Operator
+key-service health; `GET /health` is an unauthenticated liveness marker and says
+nothing about identity admission — probe `/v1/session` for that. Operator
 recovery needs a successful fetch/new revision or another deliberate complete
 policy decision. Trusted system time is required, as it already is for JWT expiry.
 
