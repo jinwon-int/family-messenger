@@ -73,9 +73,14 @@ PostgreSQL 덤프와 파일을 두 Restic 스냅샷으로 백업합니다. DB를
 수동 유지보수는 타이머를 중지하고 `/var/lib/family-messenger-backups/backup.lock` 잠금이 풀린 뒤 수행합니다.
 이미 저장된 미디어 원본을 유지한다는 조건이며, 쓰기가 완전히 멈춘 스냅샷과 같지는 않습니다.
 
-`/etc/family-messenger/backup.env`에는 Restic 저장소 URL과 비밀번호 파일 경로를 넣습니다.
+`/etc/family-messenger/backup.env`에는 Restic 저장소 URL과 비밀번호 파일 경로(`RESTIC_*`), 그리고
+여유 공간 사전 점검 대상인 백업 서버 `BACKUP_TARGET_HOST`(`[사용자@]호스트`)와
+`BACKUP_TARGET_PATH`(절대 경로)를 넣습니다. systemd `EnvironmentFile=`이 이 파일을 환경 변수로 넘기며,
+두 값이 없거나 형식이 틀리면 `backup.py`는 어떤 명령도 실행하지 않고 실패합니다(스크립트에 호스트를 적지 않습니다).
 실제 비밀번호는 root 전용 파일에 보관하고 Git/로그에 넣지 않습니다.
 운영 서버 파일시스템 여유 100GiB, 백업 서버에는 현재 미디어 전체 크기와 추가 80GiB를 수용할 여유가 있어야 시작합니다.
+실패 시 stdout에는 `{"status":"failed","error_type":...}`만, stderr(journal)에는 예외 종류·메시지와
+traceback이 남습니다. 메시지에는 비밀·DB 출력·하위 프로세스 stderr가 들어가지 않습니다.
 자동 prune/forget/메시지 삭제는 하지 않습니다. 보관량이 증가하면 별도 용량 확보·보존 정책을 검토합니다.
 
 두 스냅샷이 성공하고 필수 설정 파일이 유지됐을 때만

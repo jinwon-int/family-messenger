@@ -39,7 +39,6 @@ class Frontend:
         self.stopping=False
 
     async def raw(self,method,path,data=None,params=None):
-        import aiohttp
         async with self.http.request(method,self.c['homeserver'].rstrip('/')+path,json=data,
                                      params=params,allow_redirects=False) as response:
             if response.status in (429,500,502,503,504):raise ConnectionError('matrix-temporary-error')
@@ -352,7 +351,9 @@ class Frontend:
             self.store.uncertain_job(job['event_id'])
             self.proc=None
             self.store.set_meta('worker_cleanup_in_progress',False)
-            if not confirmed:self.store.set_meta('worker_cleanup_unconfirmed',True)
+            # Scope (not body) is recorded so the operator unblock tool can target this block.
+            if not confirmed:self.store.set_meta('worker_cleanup_unconfirmed',
+                {'scope':job['scope'],'event_id':job['event_id'],'updated':time.time()})
         if not confirmed:raise SafetyStop('worker-cleanup-unconfirmed')
 
     async def retry(self,operation):

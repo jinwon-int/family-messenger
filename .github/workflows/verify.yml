@@ -9,6 +9,23 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
+  lint:
+    # Stage-0 hygiene floor (docs/ROADMAP.md 0단계, #92). ruff is blocking; mypy is
+    # advisory until the scripts carry annotations, so it must not gate merges yet.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned linters
+        run: python3 -m pip install --quiet ruff==0.16.7 mypy==2.3.1
+      - name: ruff
+        run: ruff check scripts tests
+      - name: mypy (advisory)
+        continue-on-error: true
+        run: mypy scripts --ignore-missing-imports
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 12
@@ -17,6 +34,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.22.2'
+      # README states Python 3.11+ as the floor; run the unit tests on exactly that
+      # version instead of whatever ubuntu-latest ships.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - name: Configuration tests
         run: python3 -m unittest discover -s tests -v
       - name: Initialize loopback fixture

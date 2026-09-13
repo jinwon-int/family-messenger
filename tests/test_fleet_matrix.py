@@ -1,7 +1,5 @@
 import asyncio
-import copy
 import json
-import os
 from pathlib import Path
 import sys
 import tempfile
@@ -10,7 +8,6 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
-from fleet_core import Request
 from fleet_matrix import Frontend
 from fleet_matrix_state import MatrixStore, SafetyStop, load_config, parts, turn_id, validate_config
 
@@ -139,7 +136,10 @@ class FrontendTests(unittest.IsolatedAsyncioTestCase):
         await self.f.input(request(self.f));task=self.work('bad-close')
         await self.until(task.done)
         self.assertIsInstance(task.exception(),SafetyStop)
-        self.assertTrue(self.f.store.get_meta('worker_cleanup_unconfirmed'))
+        block=self.f.store.get_meta('worker_cleanup_unconfirmed')
+        self.assertEqual((block['scope'],block['event_id']),(request(self.f).scope,'$request'))
+        self.assertEqual(self.f.store.block()['blocked_scopes'],[block['scope']])
+        with self.assertRaises(SafetyStop):await self.f.run()
         self.assertTrue(self.f.store.uncertain())
         self.assertFalse(any(j['reply']=='synthetic answer' for j in self.f.store.outbox()))
 

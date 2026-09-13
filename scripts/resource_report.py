@@ -52,11 +52,20 @@ def census_go(root):
     return {'direct': direct, 'distinct_summed_modules': len(summed)}
 
 
+WASM_RECORD = Path('archive') / 'experiments' / 'openmls-browser' / 'dependencies.json'
+WASM_NOTE = ('archived: the browser MLS experiment was frozen by decision D (2026-09-13) '
+             'and is excluded from the build; its pinned record is read from archive/ '
+             'when present and skipped otherwise')
+
+
 def census_wasm(root):
-    """Reuse the pinned per-package record instead of re-deriving it."""
-    record = json.loads(
-        (root / 'experiments' / 'openmls-browser' / 'dependencies.json').read_text())
-    return {'schema': record.get('schema'),
+    """Reuse the pinned per-package record of the archived experiment; never re-derive it."""
+    path = root / WASM_RECORD
+    if not path.is_file():
+        return {'status': 'skipped', 'note': WASM_NOTE, 'record': str(WASM_RECORD)}
+    record = json.loads(path.read_text())
+    return {'status': 'archived', 'note': WASM_NOTE, 'record': str(WASM_RECORD),
+            'schema': record.get('schema'),
             'external_direct': record.get('external_direct'),
             'external_transitive': record.get('external_transitive'),
             'full_lock_external_packages': record.get('full_lock_external_packages'),
@@ -83,8 +92,9 @@ def census_images(root):
 
 
 def census(root):
-    # All four inputs are fixed manifests relative to the repository root;
-    # a missing one raises rather than silently producing a partial census.
+    # Live inputs are fixed manifests relative to the repository root; a missing
+    # one raises rather than silently producing a partial census. The archived
+    # WASM record is the exception: it reports 'skipped' with a note when absent.
     root = Path(root)
     return {'schema': CENSUS_SCHEMA,
             'go': census_go(root),
