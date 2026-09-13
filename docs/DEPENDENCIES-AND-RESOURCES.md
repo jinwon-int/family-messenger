@@ -6,8 +6,8 @@ OWN-SYSTEM.md 구현 순서 1번의 기록 의무("직접/간접 패키지 목�
 기록 갱신은 `scripts/resource_report.py`로 재측정해 이 표를 바꾸는 방식으로 한다.
 
 - 최초 측정: 2026-09-09 (커밋 `ce0f461`)
-- 운영 스택 측정 환경: 육손(vps5) — 읽기전용 `docker stats`/`docker exec psql`/`du`
-- 프로토타입 측정 환경: 서서(vps2, 2 vCPU) — 합성 데이터 루프백 스모크
+- 운영 스택 측정 환경: 전용 운영 서버 — 읽기전용 `docker stats`/`docker exec psql`/`du`
+- 프로토타입 측정 환경: 개발 서버(2 vCPU) — 합성 데이터 루프백 스모크
 - 실제 가족 기기·모바일·백업 복원 시점의 사용량은 이 기록에 없다.
 
 ## 구성요소별 직접·간접 의존성
@@ -42,7 +42,7 @@ running 3, 컨테이너 내 프로세스 수(PIDs) 각각 11/18/13.
 
 ## 실측 기록
 
-### Matrix 운영 스택 — 육손, 2026-09-09
+### Matrix 운영 스택 — 운영 서버, 2026-09-09
 
 `docker compose -p family-messenger stats --no-stream --format '{{json .}}'` 두 차례:
 
@@ -59,7 +59,7 @@ media_store 60 KB, 사용자 3, 방 2. 호스트 디스크 1 TB 중 864 GB 가�
 이 규모는 운영 초기 가족 사용량이며 용량 계획의 근거로 쓰려면
 `scripts/check_storage.py` 상시 점검 값과 함께 봐야 한다.
 
-### 네이티브 프로토타입 — 서서(2 vCPU), 합성 루프백, 2026-09-09
+### 네이티브 프로토타입 — 개발 서버(2 vCPU), 합성 루프백, 2026-09-09
 
 `python3 scripts/resource_report.py watch --grace-seconds 0.5 -- python3 tests/native_smoke.py --binary artifacts/family-dev`
 를 세 차례 실행한 결과(본문 없는 JSON 출력):

@@ -30,7 +30,7 @@ Matrix API는 모바일 앱도 접근하므로 Cloudflare Access의 브라우저
 계정 인증은 Matrix가 담당하며 공개 가입은 닫혀 있습니다. 웹에 Access를 추가하더라도 앱·로그인 호환성을 먼저 확인합니다.
 자동 백엔드 업데이트를 켜지 않고 digest 변경 PR에서 새 버전 시험 후 교체합니다.
 
-Cloudflare Tunnel을 육손에서 직접 실행하는 경우에는 Caddy 대신
+Cloudflare Tunnel을 운영 서버에서 직접 실행하는 경우에는 Caddy 대신
 `deploy/cloudflare-ingress.example.json`의 두 호스트를 확정한 이름으로 바꿔 전용 터널에 적용합니다.
 Matrix client/media와 클라이언트 발견 경로만 전달하고 나머지는 404로 막습니다.
 토큰은 root 전용 `/etc/family-messenger/cloudflared.token`에 저장하며,
@@ -46,7 +46,7 @@ Matrix client/media와 클라이언트 발견 경로만 전달하고 나머지�
 python3 scripts/check_storage.py .runtime --min-free-gib 100 --max-retained-gib 150
 ```
 
-초기 운영 제안값은 육손 여유 100GiB 미만 또는 `.runtime` 150GiB 이상에서 경고입니다.
+초기 운영 제안값은 운영 서버 여유 100GiB 미만 또는 `.runtime` 150GiB 이상에서 경고입니다.
 이는 업로드 차단이나 자동 삭제 정책이 아닙니다. 메시지 DB는 별도 Docker 볼륨에 있으므로
 150GiB 트리 예산에는 포함되지 않으며, 전체 파일시스템 여유 검사에는 반영됩니다.
 백업 목적지의 여유와 보존 세대도 별도로 점검합니다.
@@ -75,7 +75,7 @@ PostgreSQL 덤프와 파일을 두 Restic 스냅샷으로 백업합니다. DB를
 
 `/etc/family-messenger/backup.env`에는 Restic 저장소 URL과 비밀번호 파일 경로를 넣습니다.
 실제 비밀번호는 root 전용 파일에 보관하고 Git/로그에 넣지 않습니다.
-육손 파일시스템 여유 100GiB, 공명에는 현재 미디어 전체 크기와 추가 80GiB를 수용할 여유가 있어야 시작합니다.
+운영 서버 파일시스템 여유 100GiB, 백업 서버에는 현재 미디어 전체 크기와 추가 80GiB를 수용할 여유가 있어야 시작합니다.
 자동 prune/forget/메시지 삭제는 하지 않습니다. 보관량이 증가하면 별도 용량 확보·보존 정책을 검토합니다.
 
 두 스냅샷이 성공하고 필수 설정 파일이 유지됐을 때만
