@@ -53,6 +53,30 @@ func upload(t *testing.T, h *httptest.Server, m Attachment, body io.Reader) *htt
 	t.Cleanup(func() { resp.Body.Close() })
 	return resp
 }
+func TestUploadPreallocationIsBoundedByDeclaredLengthAndCap(t *testing.T) {
+	for declared, want := range map[int64]int{-1: 0, 0: 0, 1: 1, uploadInitialCap - 1: uploadInitialCap - 1, uploadInitialCap: uploadInitialCap, MaxAttachment: uploadInitialCap, 1 << 40: uploadInitialCap} {
+		if got := uploadCapacity(declared); got != want {
+			t.Fatalf("uploadCapacity(%d) = %d, want %d", declared, got, want)
+		}
+	}
+	if uploadInitialCap >= MaxAttachment {
+		t.Fatal("the initial cap must stay well below the attachment limit")
+	}
+	// A body larger than the initial cap still uploads intact: growth happens
+	// as bytes arrive instead of trusting the declared Content-Length.
+	_, h := fixture(t)
+	body := bytes.Repeat([]byte("g"), 3*uploadInitialCap+17)
+	r := upload(t, h, mediaMeta("grow", body), bytes.NewReader(body))
+	if r.StatusCode != 201 {
+		t.Fatal(r.StatusCode)
+	}
+	var m Attachment
+	if e := json.NewDecoder(r.Body).Decode(&m); e != nil || m.Size != int64(len(body)) {
+		t.Fatalf("%v %+v", e, m)
+	}
+	status(t, req(t, h, "GET", "/v1/rooms/family/attachments/"+m.ID, "bob", nil, nil), 200)
+}
+
 func TestMediaRetryIntegrityAndIsolation(t *testing.T) {
 	s, h := fixture(t)
 	body := []byte("synthetic attachment")

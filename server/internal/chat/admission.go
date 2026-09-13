@@ -13,10 +13,12 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jinwon-int/family-messenger/server/internal/access"
@@ -60,9 +62,20 @@ func (aa *AdmissionAuthority) MatchesPolicy(pinnedHex string) bool {
 	return strings.EqualFold(aa.Public(), pinnedHex)
 }
 
-// LoadAdmissionSeed reads a 32-byte Ed25519 seed from a private file.
+// LoadAdmissionSeed reads a 32-byte Ed25519 seed from a private file. The seed
+// follows the state-file discipline: opened without following a symlink, and
+// it must be a regular single-link file owned by this user with mode 0600.
 func LoadAdmissionSeed(path string) (ed25519.PrivateKey, error) {
-	raw, e := os.ReadFile(path)
+	fd, e := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	if e != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: e}
+	}
+	f := os.NewFile(uintptr(fd), "admission seed")
+	defer f.Close()
+	if e = checkFile(f); e != nil {
+		return nil, fmt.Errorf("admission seed: %w", e)
+	}
+	raw, e := io.ReadAll(io.LimitReader(f, ed25519.SeedSize+1))
 	if e != nil {
 		return nil, e
 	}
