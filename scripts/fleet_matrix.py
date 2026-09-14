@@ -296,9 +296,13 @@ class Frontend:
         raw=self.store.get_meta('pending_sync')
         if raw is None:return
         async with self.matrix_lock:
-            for room,info in raw.get('rooms',{}).get('join',{}).items():
-                if room in self.c['rooms'] and info.get('timeline',{}).get('limited'):
-                    raise SafetyStop('timeline-gap-requires-backfill')
+            # `limited` marks a real gap only for an incremental sync. The first
+            # sync (no saved token) is a snapshot: servers set limited=true for
+            # every room joined since "never", and open() already primed state.
+            if self.store.token() is not None:
+                for room,info in raw.get('rooms',{}).get('join',{}).items():
+                    if room in self.c['rooms'] and info.get('timeline',{}).get('limited'):
+                        raise SafetyStop('timeline-gap-requires-backfill')
             await self.pin_devices()
             response=SyncResponse.from_dict(raw)
             if type(response).__name__!='SyncResponse':raise SafetyStop('invalid-sync-response')

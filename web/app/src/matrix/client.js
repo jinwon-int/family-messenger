@@ -82,12 +82,16 @@ export class ClientAdapter {
   /**
    * Turn on Rust (WASM) end-to-end encryption. Must run before
    * start(); resolves when crypto is ready to upload device keys.
+   * The crypto store is persisted in IndexedDB when the runtime has one
+   * (browsers); without it (Node drivers, some private-mode browsers) an
+   * in-memory store is used so the adapter stays usable.
+   * @param {{useIndexedDB?: boolean}} [opts]
    */
-  async enableEncryption() {
+  async enableEncryption({ useIndexedDB = typeof indexedDB !== 'undefined' } = {}) {
     if (typeof this.client.initRustCrypto !== 'function') {
       throw new Error('initRustCrypto unavailable: matrix-js-sdk without rust crypto');
     }
-    await this.client.initRustCrypto({ useIndexedDB: true });
+    await this.client.initRustCrypto({ useIndexedDB });
   }
 
   /** Begin syncing. @param {(state: string) => void} [onSyncState] */

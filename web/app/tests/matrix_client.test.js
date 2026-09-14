@@ -147,7 +147,9 @@ test('rust crypto 활성화 후 클라이언트를 시작한다', async () => {
   const sdk = fakeSdk();
   const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
   await adapter.enableEncryption();
-  assert.deepEqual(adapter.client.initRustCryptoOpts, { useIndexedDB: true });
+  // Node has no IndexedDB: the crypto store falls back to memory instead of failing.
+  assert.equal(typeof indexedDB, 'undefined');
+  assert.deepEqual(adapter.client.initRustCryptoOpts, { useIndexedDB: false });
   const states = [];
   adapter.start((state) => states.push(state));
   assert.ok(adapter.client.started);
@@ -155,6 +157,22 @@ test('rust crypto 활성화 후 클라이언트를 시작한다', async () => {
   assert.deepEqual(states, ['PREPARED']);
   adapter.stop();
   assert.ok(adapter.client.stopped);
+});
+
+test('IndexedDB가 있으면 영구 저장소를 쓰고, 명시 옵션이 우선한다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  globalThis.indexedDB = {};
+  try {
+    await adapter.enableEncryption();
+    assert.deepEqual(adapter.client.initRustCryptoOpts, { useIndexedDB: true });
+    await adapter.enableEncryption({ useIndexedDB: false });
+    assert.deepEqual(adapter.client.initRustCryptoOpts, { useIndexedDB: false });
+  } finally {
+    delete globalThis.indexedDB;
+  }
+  await adapter.enableEncryption({ useIndexedDB: true });
+  assert.deepEqual(adapter.client.initRustCryptoOpts, { useIndexedDB: true });
 });
 
 test('rust crypto가 없으면 활성화가 실패한다', async () => {
