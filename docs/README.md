@@ -13,9 +13,11 @@
 
 ## 운영·의존성
 
-- [OPERATIONS.md](OPERATIONS.md) — 현재 운영 Synapse/Element/Postgres 구성의 설치 신원·포트·계정 발급·매일 restic 백업(`backup.env`)·복구 절차·첫 운영 전 완료 기준. 1단계 홈서버 교체 시 대체 예정 — **현행**
-- [DEPENDENCIES-AND-RESOURCES.md](DEPENDENCIES-AND-RESOURCES.md) — 구성요소별 직접·간접 의존성, 고정 이미지·툴체인, 서버 프로세스 수, 자원 실측 기록(`scripts/resource_report.py`로 재생성) — **현행**
-- [BENCHMARK.md](BENCHMARK.md) — 2026-09-08 오픈소스 비교와 Matrix 채택 근거. 기존 운영 구성을 설명하는 기록 — **이력**
+- [OPERATIONS.md](OPERATIONS.md) — Tuwunel 운영면 기준 설치 신원·계정 발급(`scripts/admin.py create`)·저장공간 경보·백업/복원 참조·첫 운영 전 완료 기준. Synapse 시대 절차는 `archive/synapse-stack/` 보관 — **현행**
+- [DEPENDENCIES-AND-RESOURCES.md](DEPENDENCIES-AND-RESOURCES.md) — 구성요소별 직접·간접 의존성, 고정 홈서버 핀·툴체인, 서버 프로세스 수, 자원 실측 기록(`scripts/resource_report.py`로 재생성) — **현행**
+- [BENCHMARK.md](BENCHMARK.md) — 2026-09-08 오픈소스 비교와 Matrix 채택 근거. 보관된 Synapse 구성(`archive/synapse-stack/`)을 설명하는 역사적 기록 — **이력**
+- [TUWUNEL-DEPLOY.md](TUWUNEL-DEPLOY.md) — 단일 바이너리 홈서버 Tuwunel 배포 런북: 고정 핀 바이너리 확보·설정·터널 ingress·첫 관리자와 검증 체크리스트·백업/복원 요약. 실제 배포는 별도 승인 후 — **현행**
+- [TUWUNEL-OPERATIONS.md](TUWUNEL-OPERATIONS.md) — Tuwunel 운영 기준: 보안 기본값, `scripts/admin.py` 계정 관리, `scripts/tuwunel_backup.py` 백업과 `scripts/tuwunel_restore_drill.py` 복원 드릴 — **현행**
 
 ## 에이전트 연결부(`scripts/fleet_*.py`) — 결정 D로 재사용·확장
 

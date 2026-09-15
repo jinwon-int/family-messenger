@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Read-only disk/retention-budget check. Never purges messages or media."""
+"""Read-only disk/retention-budget check. Never purges messages or media.
+
+Storage trees are operator-supplied arguments; the module itself carries no
+compose-project coupling. It remains the measure for the Tuwunel plane: the
+retained storage timer runs it against the data tree, and the Tuwunel backup
+path (scripts/tuwunel_backup.py) imports measure()/GIB for its free-space
+prechecks. The compose-era example path (.runtime) retired with
+archive/synapse-stack/.
+"""
 import argparse
 import json
 import os

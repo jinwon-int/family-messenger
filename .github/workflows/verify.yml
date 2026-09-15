@@ -27,35 +27,179 @@ jobs:
         continue-on-error: true
         run: mypy scripts --ignore-missing-imports
   verify:
+    # Loopback Tuwunel integration (#104). The retired Synapse/Element/Postgres
+    # compose stack lives in archive/synapse-stack/ and is no longer started.
+    # Every runtime artifact stays under the gitignored .runtime/; the runner is
+    # disposable, so nothing is pushed to a live host and no evidence is uploaded.
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22.22.2'
       # README states Python 3.11+ as the floor; run the unit tests on exactly that
       # version instead of whatever ubuntu-latest ships.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Configuration tests
+      - name: Unit tests
         run: python3 -m unittest discover -s tests -v
-      - name: Initialize loopback fixture
+      - name: Fetch pinned Tuwunel binary (size and sha256 verified)
+        run: deploy/tuwunel/fetch-tuwunel.sh --dest .runtime/tuwunel-dist
+      - name: Write loopback config and validate it via scripts/tuwunel_config.py
         run: |
           umask 077
-          python3 scripts/init.py --preview
-      - name: Validate compose and start
+          mkdir -p .runtime/tuwunel
+          python3 - <<'PY'
+          import secrets
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, 'scripts')
+          runtime = Path.cwd() / '.runtime' / 'tuwunel'
+          db = runtime / 'db'
+          backups = runtime / 'backups'
+          registration_secret = secrets.token_urlsafe(32)
+          # Loopback-only synthetic configuration in the shape of
+          # deploy/tuwunel/tuwunel.toml.example. The registration shared secret is
+          # generated here and never printed; it exists only for this runner.
+          config = f'''[global]
+          server_name = "preview.invalid"
+          database_path = "{db}"
+          database_backup_path = "{backups}"
+          address = ["127.0.0.1"]
+          port = 18809
+          allow_registration = false
+          allow_guest_registration = false
+          allow_federation = false
+          allow_encryption = true
+          encryption_enabled_by_default_for_room_type = "invite"
+          allow_legacy_media = false
+          grant_admin_to_first_user = true
+          new_user_displayname_suffix = ""
+          url_preview_domain_contains_allowlist = []
+          url_preview_domain_explicit_allowlist = []
+          url_preview_url_contains_allowlist = []
+          max_request_size = "100 MiB"
+          registration_shared_secret = "{registration_secret}"
+          '''
+          target = runtime / 'tuwunel.toml'
+          target.write_text(config)
+          target.chmod(0o600)
+          import tuwunel_config
+          loaded = tuwunel_config.load_tuwunel_config(target)
+          assert loaded['base'].startswith('http://127.0.0.1:')
+          assert loaded['database_backup_path'] is not None
+          assert loaded['database'] not in loaded['database_backup_path'].parents
+          print('loopback config validated:', loaded['base'], loaded['server_name'])
+          PY
+      - name: Start Tuwunel loopback and wait for readiness
         run: |
-          docker compose config --quiet
-          docker compose up -d --wait --wait-timeout 180
-      - name: Real Matrix integration
-        run: python3 tests/smoke.py
-      - name: Persistent encrypted frontend integration
+          umask 077
+          ./.runtime/tuwunel-dist/tuwunel -c .runtime/tuwunel/tuwunel.toml > .runtime/tuwunel/server.log 2>&1 &
+          echo $! > .runtime/tuwunel/server.pid
+          ready=0
+          for i in $(seq 1 45); do
+            if curl -fsS --max-time 2 http://127.0.0.1:18809/_matrix/client/versions >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != 1 ]; then
+            echo "tuwunel did not become ready on 127.0.0.1:18809"
+            tail -n 60 .runtime/tuwunel/server.log || true
+            exit 1
+          fi
+          echo "tuwunel ready"
+      - name: Bootstrap admin, create users via scripts/admin.py, verify admin API
+        run: |
+          umask 077
+          python3 - <<'PY'
+          import hashlib
+          import hmac
+          import json
+          import secrets
+          import subprocess
+          import sys
+          import tomllib
+          import urllib.request
+          from pathlib import Path
+
+          sys.path.insert(0, 'scripts')
+          runtime = Path.cwd() / '.runtime' / 'tuwunel'
+          config = tomllib.loads((runtime / 'tuwunel.toml').read_text())
+          secret = config['global']['registration_shared_secret']
+          base = 'http://127.0.0.1:18809'
+
+          def api(path, data=None):
+              body = json.dumps(data).encode() if data is not None else None
+              headers = {'Content-Type': 'application/json'} if data is not None else {}
+              request = urllib.request.Request(base + path, data=body, headers=headers)
+              opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+              with opener.open(request, timeout=30) as response:
+                  return json.load(response)
+
+          # Bootstrap account via the Synapse-compatible register endpoint, which
+          # tuwunel offers when registration_shared_secret is set. With
+          # grant_admin_to_first_user this account becomes the server admin whose
+          # access token scripts/admin.py then uses through the shared loader.
+          nonce = api('/_synapse/admin/v1/register')['nonce']
+          admin_user = 'smoke_admin'
+          admin_password = secrets.token_urlsafe(24)
+          mac = hmac.new(secret.encode(),
+                         '\0'.join([nonce, admin_user, admin_password, 'admin']).encode(),
+                         hashlib.sha1).hexdigest()
+          created = api('/_synapse/admin/v1/register', {
+              'nonce': nonce, 'username': admin_user, 'password': admin_password,
+              'admin': True, 'mac': mac})
+          login = api('/_matrix/client/v3/login', {
+              'type': 'm.login.password',
+              'identifier': {'type': 'm.id.user', 'user': admin_user},
+              'password': admin_password})
+          token_path = runtime / 'admin_token'
+          token_path.write_text(login['access_token'] + '\n')
+          token_path.chmod(0o600)
+          print('bootstrap admin:', created.get('user_id'))
+
+          # Roundtrip accounts are created exactly as operators would:
+          # scripts/admin.py create, passwords supplied over stdin, never echoed.
+          accounts = []
+          for name in ('smoke_alice', 'smoke_bob'):
+              password = secrets.token_urlsafe(24)
+              result = subprocess.run(
+                  [sys.executable, 'scripts/admin.py', 'create', name],
+                  input=password + '\n' + password + '\n', text=True, capture_output=True)
+              print(result.stdout.strip())
+              if result.returncode:
+                  sys.exit('scripts/admin.py create ' + name + ' failed: ' + result.stderr.strip())
+              accounts.append({'username': name, 'password': password})
+          credentials = runtime / 'smoke.credentials.json'
+          credentials.write_text(json.dumps(accounts))
+          credentials.chmod(0o600)
+
+          from admin import AdminClient
+          from tuwunel_config import load_admin_token, load_tuwunel_config
+          loaded = load_tuwunel_config(runtime / 'tuwunel.toml')
+          client = AdminClient(loaded['base'], loaded['server_name'],
+                               load_admin_token(runtime / 'admin_token'))
+          users = client.list_users().get('users', [])
+          names = {u.get('name') for u in users}
+          missing = ['@' + a['username'] + ':' + loaded['server_name']
+                     for a in accounts if '@' + a['username'] + ':' + loaded['server_name'] not in names]
+          if missing:
+              sys.exit('list-users is missing: ' + ', '.join(missing))
+          print('scripts/admin.py list-users confirms both roundtrip accounts')
+          PY
+      - name: E2EE encrypted roundtrip (tests/tuwunel_smoke.py)
         run: |
           python3 -m venv .venv
-          .venv/bin/pip install -r requirements-matrix.txt
-          .venv/bin/python tests/matrix_frontend_smoke.py
-      - name: Stop test services
+          .venv/bin/pip install --quiet -r requirements-matrix.txt
+          umask 077
+          .venv/bin/python tests/tuwunel_smoke.py --credentials .runtime/tuwunel/smoke.credentials.json
+      - name: Stop Tuwunel loopback
         if: always()
-        run: docker compose down
+        run: |
+          if [ -f .runtime/tuwunel/server.pid ]; then
+            kill "$(cat .runtime/tuwunel/server.pid)" 2>/dev/null || true
+          fi
+          if [ -f .runtime/tuwunel/server.log ]; then
+            tail -n 40 .runtime/tuwunel/server.log || true
+          fi

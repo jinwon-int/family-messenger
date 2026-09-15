@@ -5,14 +5,15 @@ Records the facts required by docs/OWN-SYSTEM.md step 1: direct and indirect
 package lists, server process counts and measured resource use. The script
 never sends network traffic, never reads message content, and never writes
 outside its output stream. Census inputs are repository manifest files; watch
-sampling reads /proc for the descendant tree of one locally started command;
-docker sampling calls read-only docker stats for one compose project.
+sampling reads /proc for the descendant tree of one locally started command.
+The homeserver census records the pinned Tuwunel single-binary release from
+deploy/tuwunel/tuwunel.pins.json; the archived compose project is measured
+nowhere (its image census left with archive/synapse-stack/).
 """
 import argparse
 import json
 import os
 from pathlib import Path
-import re
 import resource
 import subprocess
 import sys
@@ -20,7 +21,7 @@ import time
 
 CENSUS_SCHEMA = "family.resource.census.v1"
 WATCH_SCHEMA = "family.resource.watch.v1"
-DOCKER_SCHEMA = "family.resource.docker.v1"
+TUWUNEL_PINS = Path('deploy') / 'tuwunel' / 'tuwunel.pins.json'
 
 
 def census_go(root):
@@ -82,13 +83,22 @@ def census_python(root):
     return pins
 
 
-def census_images(root):
-    images = []
-    for raw in (root / 'compose.yaml').read_text().splitlines():
-        match = re.match(r'\s*image:\s*(\S+)\s*$', raw)
-        if match:
-            images.append(match.group(1))
-    return images
+def census_tuwunel(root):
+    """Pinned single-binary homeserver record, read verbatim from the pins file.
+
+    tuwunel.pins.json is the only integrity reference for the release (upstream
+    publishes no checksums), so the census repeats its values instead of
+    re-deriving anything. A missing pins file raises: it is a live manifest and
+    the census never reports a partial record.
+    """
+    pins = json.loads((root / TUWUNEL_PINS).read_text())
+    asset = pins['assets']['deb']
+    binary = pins['binary']
+    return {'version': pins['version'], 'release_url': pins['release_url'],
+            'asset': {'name': asset['name'], 'size': asset['size'], 'sha256': asset['sha256']},
+            'binary': {'path_in_deb': binary['path_in_deb'], 'size': binary['size'],
+                       'sha256': binary['sha256'], 'static': bool(binary.get('static'))},
+            'record': str(TUWUNEL_PINS)}
 
 
 def census(root):
@@ -100,7 +110,7 @@ def census(root):
             'go': census_go(root),
             'wasm': census_wasm(root),
             'python': census_python(root),
-            'images': census_images(root)}
+            'tuwunel': census_tuwunel(root)}
 
 
 def _read_proc(pid):
@@ -199,39 +209,6 @@ def watch(command, poll_seconds=0.05, grace_seconds=0.3):
             'peak_descendant_rss_bytes': peak_rss}
 
 
-_MEM = re.compile(r'^([0-9.]+)(KiB|MiB|GiB|B)$')
-
-
-def parse_memory(text):
-    match = _MEM.match(text.strip())
-    if not match:
-        raise ValueError(f'unreadable memory figure: {text!r}')
-    factor = {'B': 1, 'KiB': 1024, 'MiB': 1024 ** 2, 'GiB': 1024 ** 3}[match.group(2)]
-    return int(float(match.group(1)) * factor)
-
-
-def parse_docker_stats_line(line):
-    """Parse one `docker stats --format '{{json .}}'` line into safe numbers."""
-    fields = json.loads(line)
-    used, _, limit = fields['MemUsage'].partition(' / ')
-    return {'name': fields['Name'],
-            'memory_used_bytes': parse_memory(used),
-            'memory_limit_bytes': parse_memory(limit),
-            'cpu_percent': float(fields['CPUPerc'].removesuffix('%'))}
-
-
-def docker_stats(project=None, timeout=30):
-    """Read-only snapshot of running container usage; requires docker CLI."""
-    command = ['docker', 'stats', '--no-stream', '--format', '{{json .}}']
-    if project:
-        command = ['docker', 'compose', '-p', project, 'stats', '--no-stream',
-                   '--format', '{{json .}}']
-    raw = subprocess.run(command, capture_output=True, text=True,
-                         timeout=timeout, check=True).stdout
-    containers = [parse_docker_stats_line(line) for line in raw.splitlines() if line.strip()]
-    return {'schema': DOCKER_SCHEMA, 'containers': containers,
-            'container_count': len(containers)}
-
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -242,16 +219,12 @@ def main():
     w.add_argument('--poll-seconds', type=float, default=0.05)
     w.add_argument('--grace-seconds', type=float, default=0.3)
     w.add_argument('command', nargs='+')
-    d = sub.add_parser('docker', help='read-only running container usage')
-    d.add_argument('--project', default=None)
     args = parser.parse_args()
     if args.mode == 'census':
         report = census(args.root)
-    elif args.mode == 'watch':
+    else:
         report = watch(args.command, poll_seconds=args.poll_seconds,
                        grace_seconds=args.grace_seconds)
-    else:
-        report = docker_stats(args.project)
     json.dump(report, sys.stdout, indent=1, sort_keys=True)
     sys.stdout.write('\n')
 
