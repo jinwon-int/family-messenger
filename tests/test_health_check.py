@@ -65,6 +65,23 @@ def bot_db(directory, health=None):
 
 
 class UrlCheckTest(unittest.TestCase):
+    def test_fetch_sends_custom_user_agent(self):
+        # CF 터널은 urllib 기본 UA에 403 — 커스텀 UA를 보내야 한다(2026-09-16 실측).
+        captured = {}
+        class Resp:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            status = 200
+        class FakeOpener:
+            def open(self, req, timeout):
+                captured['ua'] = req.headers.get('User-agent')
+                return Resp()
+        with mock.patch.object(hc.urllib.request, 'build_opener', return_value=FakeOpener()):
+            self.assertEqual(hc.fetch('http://127.0.0.1:8/versions'), 200)
+        self.assertEqual(captured['ua'], 'family-messenger-health/1')
+
     def test_ok_and_fail_and_error(self):
         args = hc.parse_args(['--url', 'http://127.0.0.1:8008/_matrix/client/v3/versions'])
         fetch = fake_fetch({'http://127.0.0.1:8008/_matrix/client/v3/versions': 200})

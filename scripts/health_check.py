@@ -28,9 +28,17 @@ from tuwunel_config import load_admin_token, load_tuwunel_config
 MAX_DETAIL = 400  # notice length guard; details are static phrases and paths, never content
 
 
+GET_HEADERS = {'User-Agent': 'family-messenger-health/1'}
+
+
 def fetch(url):
-    """GET a URL and return the HTTP status code; no redirects, no proxy, 10s timeout."""
-    req = urllib.request.Request(url, method='GET')
+    """GET a URL and return the HTTP status code; no redirects, no proxy, 10s timeout.
+
+    The custom User-Agent matters: Cloudflare answers 403 to the default
+    Python-urllib UA on the tunnel (measured 2026-09-16 from the bot node),
+    which would make every remote probe report the homeserver as down.
+    """
+    req = urllib.request.Request(url, method='GET', headers=GET_HEADERS)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
         with opener.open(req, timeout=10) as response:
