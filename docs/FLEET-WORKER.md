@@ -2,6 +2,9 @@
 
 `scripts/fleet_worker.py`는 신뢰된 부모 프로세스의 stdin/stdout으로 ccc-node
 AgentRuntime에 연결한다. Telegram/Matrix 접속이나 새 네트워크 리스너는 만들지 않는다.
+런타임 시임은 ccc-node의 정식 인터페이스 `telegram_bot.contracts`(ccc-node #1756)를
+우선 사용하고, 그 이전 체크아웃에서는 하위 호환 shim인 `telegram_bot.core` 경로로
+자동 폴백한다 — 혼합 플릿 롤아웃에서도 노드 포트가 깨지지 않는다.
 현재 실제 CLI 바인딩은 **Codex read-only + approval=never 시험용**이다.
 `Worker`의 승인·거절·취소 제어부는 provider-neutral 이벤트로 테스트하지만,
 실사용 승인 UI와 다른 provider의 실행 정책까지 구현되었다는 뜻은 아니다.

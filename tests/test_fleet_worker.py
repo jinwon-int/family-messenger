@@ -306,3 +306,56 @@ class PipeTests(unittest.TestCase):
 
 if __name__=='__main__':
     unittest.main()
+
+
+class InterfaceSeamTests(unittest.TestCase):
+    """The node-local port consumes the formal contracts seam when available.
+
+    ccc-node #1756 promoted the provider-neutral contracts to
+    ``telegram_bot.contracts``. ``fleet_worker.main`` must prefer the formal
+    path and fall back to the back-compatible ``core`` shim on checkouts that
+    predate it, so mixed-fleet rollouts never break the port.
+    """
+
+    def _resolve(self, modules):
+        import ast
+        from pathlib import Path
+        source = Path(__file__).resolve().parent.parent / 'scripts' / 'fleet_worker.py'
+        tree = ast.parse(source.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Try) and any(
+                isinstance(h, ast.ExceptHandler) and h.type.id == 'ImportError'
+                for h in node.handlers
+            ):
+                target = node.body if modules == 'formal' else node.handlers[0].body
+                names = []
+                for stmt in target:
+                    if isinstance(stmt, ast.ImportFrom):
+                        names.extend(a.name for a in stmt.names)
+                return names
+        raise AssertionError('formal-interface try/except import block not found')
+
+    def test_formal_path_preferred_with_core_fallback(self):
+        for kind in ('formal', 'fallback'):
+            names = self._resolve(kind)
+            self.assertIn('ApprovalDecision', names)
+            self.assertIn('SessionRequest', names)
+            self.assertIn('CodexRuntime', names)
+        self.assertEqual(
+            self._resolve('formal'),
+            ['ApprovalDecision', 'SessionRequest', 'CodexRuntime'],
+        )
+
+    def test_both_paths_bind_identical_symbols_on_current_checkouts(self):
+        """On a checkout that has contracts, both import paths agree.
+
+        Skipped when the deployed ccc runtime predates the contracts package.
+        """
+        try:
+            import importlib
+            contracts = importlib.import_module('telegram_bot.contracts.agent_runtime')
+        except ImportError:
+            self.skipTest('deployed ccc-node lacks telegram_bot.contracts')
+        core = importlib.import_module('telegram_bot.core.agent_runtime')
+        for name in ('ApprovalDecision', 'SessionRequest'):
+            self.assertIs(getattr(core, name), getattr(contracts, name))
