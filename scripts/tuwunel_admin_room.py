@@ -118,6 +118,19 @@ class AdminRoom:
             raise RuntimeError('admin reply to "' + text + '" lacks expected phrase: ' + ', '.join(missing))
         return reply
 
+    def notice(self, text):
+        """Post a plain notice as an ordinary room message; returns the acknowledged event id.
+
+        Unlike command() this waits for no server reply — used by the health check's
+        transition alert, where the content is a static status line (no secrets).
+        """
+        sent = self._request('PUT', self._room_path() + '/send/m.room.message/' + secrets.token_hex(16),
+                             {'msgtype': 'm.text', 'body': text})
+        event_id = sent.get('event_id')
+        if not isinstance(event_id, str) or not event_id:
+            raise RuntimeError('notice was not acknowledged with an event id')
+        return event_id
+
     def backup_database(self):
         return self.command('server backup-database', expect=('Done',))
 

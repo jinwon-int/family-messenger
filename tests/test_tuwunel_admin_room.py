@@ -135,6 +135,25 @@ class AdminRoomTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'not acknowledged'):
             AdminRoom('http://127.0.0.1:18809', SERVER, 'tok', http=http_no_ack).command('server list-backups')
 
+    def test_notice_posts_plain_message_without_waiting_for_reply(self):
+        hs = FakeHomeserver()
+        admin = room(hs)
+        event_id = admin.notice('family messenger health: UNHEALTHY — url u')
+        self.assertTrue(event_id.startswith('$cmd'))
+        sent = [c for c in hs.calls if c['method'] == 'PUT' and '/send/m.room.message/' in c['path']]
+        self.assertEqual(len(sent), 1)
+        body = json.loads(sent[0]['body'])
+        self.assertEqual(body['body'], 'family messenger health: UNHEALTHY — url u')
+        self.assertEqual(body['msgtype'], 'm.text')
+        # notice는 /messages 폴링을 하지 않는다 — 명령 읽기 호출이 없어야 한다.
+        self.assertNotIn('/messages', ' '.join(c['path'] for c in hs.calls))
+
+    def test_notice_without_ack_fails_closed(self):
+        def http_no_ack(method, path, body, headers):
+            return {'room_id': ROOM} if '/directory/' in path else {}
+        with self.assertRaisesRegex(RuntimeError, 'not acknowledged'):
+            AdminRoom('http://127.0.0.1:18809', SERVER, 'tok', http=http_no_ack).notice('x')
+
 
 if __name__ == '__main__':
     unittest.main()

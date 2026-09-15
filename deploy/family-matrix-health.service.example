@@ -1,0 +1,20 @@
+# [2026-09-16 seoseo 운영 반영] family 모드 fleet_matrix 헬스 점검 유닛 예시(봇 노드용).
+# 봇 유닛 활성 + 홈서버 client API 도달 + 봇 sync 루프 신선도(meta.health)를 점검한다.
+# 관리방 통지(--alert-admin)는 봉인 토큰이 있는 홈서버 노드 유닛(deploy/tuwunel/)이 담당한다.
+# 도메인·경로는 노드에 맞게 조정한다. timer 예시는 family-matrix-health.timer.example.
+[Unit]
+Description=Family messenger bot health check (fleet_matrix node)
+After=network-online.target family-matrix.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/family-messenger/.venv/bin/python /opt/family-messenger/scripts/health_check.py --url https://matrix.example.invalid/_matrix/client/v3/versions --require-active family-matrix.service --bot-state /var/lib/family-matrix-pilot/inbox.sqlite3 --max-bot-age-seconds 600 --state-file /var/lib/family-matrix-health/state.json
+TimeoutStartSec=5min
+UMask=0077
+NoNewPrivileges=true
+StateDirectory=family-matrix-health
+StateDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target

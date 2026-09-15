@@ -3,7 +3,9 @@ Description=Family messenger storage reserve and retention budget check
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 /opt/family-messenger/scripts/check_storage.py /opt/family-messenger/.runtime --min-free-gib 100 --max-retained-gib 150
+# [2026-09-16 운영 전환] 측정 트리를 퇴역한 compose 런타임 경로에서 Tuwunel 데이터 트리로 옮긴다.
+# check_storage는 Tuwunel 평면의 척도로 남는다(scripts/check_storage.py 모듈 문서).
+ExecStart=/usr/bin/python3 /opt/family-messenger-tuwunel/scripts/check_storage.py /var/lib/tuwunel --min-free-gib 100 --max-retained-gib 150
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

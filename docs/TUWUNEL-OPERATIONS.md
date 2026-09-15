@@ -148,6 +148,36 @@ python3 scripts/tuwunel_restore_drill.py \
   되돌리는 기본 동작을 바꾸지는 못한다. 과거 시점 선택이 필요하면 수동 절차로 확정해야 한다.
   출력이 다른 id를 확인하면 위의 자동 되돌림이 동작한다.
 
+## 상시 운영 자동화 (systemd 타이머)
+
+운영 평면의 세 타이머는 배포 패키지 유닛(`deploy/tuwunel/`)을 호스트에 설치해 운영한다. 이름과
+실행 창은 Synapse 시절 일정을 이어받는다. 2026-09-15 퇴역 뒤 구 `family-messenger-backup.timer`는
+퇴역한 compose 스택 스크립트를 가리켜 매일 04:30 실패했고(2026-09-16 실측), 같은 이름의 아래
+유닛으로 대체하며 해소한다.
+
+| 타이머 | 주기 | 하는 일 |
+|---|---|---|
+| `family-messenger-backup.timer` | 매일 04:30 Asia/Seoul | `scripts/tuwunel_backup.py` — 관리방 온라인 백업 + restic 쌍. restic 저장소·비밀번호는 환경 파일(예시 `/etc/family-messenger/backup.env`), admin 토큰 경로가 다른 호스트는 드롭인으로 ExecStart를 재지정 |
+| `family-messenger-storage.timer` | 매시 | `scripts/check_storage.py`를 Tuwunel 데이터 트리(`/var/lib/tuwunel`)에 실행 — 여유·보존 예산 경계 검사 |
+| `family-messenger-health.timer` | 매시 | `scripts/health_check.py` — client API 200·필수 유닛 활성·마지막 완료 백업 신선도(기본 26시간). `--alert-admin`이면 healthy↔unhealthy 전환 시에만 관리방 통지(0600 상태 파일로 중복 억제, 첫 실행은 기록만) |
+
+```bash
+install -m 0644 deploy/tuwunel/family-messenger-backup.service deploy/tuwunel/family-messenger-backup.timer \
+  deploy/tuwunel/family-messenger-health.service deploy/tuwunel/family-messenger-health.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now family-messenger-backup.timer family-messenger-health.timer
+systemctl start family-messenger-backup.service   # 첫 수동 실행으로 기록을 확인한다
+```
+
+- 유닛이 환경 파일을 요구하므로(`EnvironmentFile=`) 설치 전에 restic 환경을 준비한다. 파일이
+  없으면 유닛이 시작하지 않는다(의도된 fail-loud).
+- 봇 노드는 `deploy/family-matrix-health.service.example`+`.timer.example`로
+  family-matrix 유닛 활성·홈서버 도달·봇 sync 신선도(`meta.health`)를 점검한다. 관리방 통지는
+  봉인 토큰이 있는 홈서버 노드 유닛이 담당한다. 관리방 밖 외부 경보는 여전히 후속 작업이다.
+- 헬스 점검은 읽기 전용이며 백업·스토리지 타이머와 충돌하지 않는다(백업은 자체 잠금 파일로
+  동시 실행을 막는다). 실패한 백업 실행은 기록 json을 쓰지 않으므로, 신선도 검사는
+  마지막 **완료** 쌍을 기준으로 한다.
+
 ## 업그레이드 주의
 
 - 1.8.x → 1.9 첫 기동 시 DB 마이그레이션이 리스너 오픈 전에 실행된다. 이 구간 강제 종료는
