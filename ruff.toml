@@ -19,8 +19,5 @@ ignore = ["E701", "E702", "E231", "E225", "E226", "E228", "E227"]
 "scripts/fleet_matrix.py" = ["E501"]
 "scripts/fleet_matrix_state.py" = ["E501"]
 "scripts/fleet_remote.py" = ["E501"]
-"scripts/init.py" = ["E501"]
-"tests/smoke.py" = ["E501"]
-"tests/test_config.py" = ["E501"]
 # Frozen native-track smoke drivers (decision D); kept verbatim until they are archived or deleted.
 "tests/native_*_smoke.py" = ["E401", "E501", "E731"]

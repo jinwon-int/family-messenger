@@ -45,7 +45,8 @@ guardian·heartbeat·종료 확인과 `remote_worker: true`를 함께 사용한�
    초기화한다. 재시작은 같은 config와 같은 crypto/state를 사용한다. 토큰·장치·키·서버,
    소유자·방·실행 명령·기준 시각이 저장값과 다르면 중단한다. 암호화 상태가 남았는데
    식별 마커가 없는 경우 자동 재생성하지 않는다.
-5. `deploy/family-matrix-pilot.service`의 경로와 실제 실행 사용자를 노드에 맞춘다.
+5. 예시 systemd 단위 `archive/synapse-stack/deploy/family-matrix-pilot.service`(Synapse 시대
+   자산, #104 아카이브)의 경로와 실제 실행 사용자를 노드에 맞춘다.
    실행 전 개인 상태의 암호화 백업과 가용 공간을 확인한다. 원본 설정·상태를 보존한다.
    배포 후 비밀을 출력하지 않고 health, 실제 암호화 왕복, 재시작 후 수신을 확인한다.
 
@@ -120,8 +121,9 @@ python3 scripts/fleet_matrix_state.py unblock --config /private/config.json \
 ## 검증
 
 `python3 -m unittest discover -s tests -v`는 SDK/계정 없이 상태·제어·worker 종료를 검사한다.
-loopback preview를 실행한 뒤 `python tests/matrix_frontend_smoke.py`는 실제 Matrix 암호화와
-SDK 처리 후 재시작·raw pending 재처리·session 분리를 검사한다. `--real-worker`는 명시적으로
+루프백 Tuwunel을 기동한 뒤 `python tests/tuwunel_smoke.py --credentials <0600 계정 파일>`은
+실제 Matrix E2EE(megolm) 암호화 왕복을 검사한다(#104; verify.yml 루프백 통합이 같은 흐름).
+Synapse 시대 드라이버 `matrix_frontend_smoke.py`는 `archive/synapse-stack/tests/`에 보존됐다. `--real-worker`는 명시적으로
 허용된 CCC 노드에서 실제 read-only Codex 연결을 검사한다. 결과는 private `artifacts/`에 저장된다.
 실제 사용자 장치나 운영 가족방을 시험 도구에 입력하지 않는다.
 
