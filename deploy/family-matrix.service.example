@@ -1,0 +1,19 @@
+# [2026-09-15 yukson→seoseo 운영 반영] family 모드 fleet_matrix 기동 유닛 실제 예시.
+# PYTHONPATH는 telegram_bot.contracts 시임(#1756→PR #1757) import를 위해 bridge 체크아웃을 가리킨다.
+[Unit]
+Description=Family messenger Matrix bridge (fleet_matrix, family mode #92)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Environment=PYTHONPATH=/opt/ccc-node/bridge
+Environment=HOME=/root
+WorkingDirectory=/opt/family-messenger
+ExecStart=/opt/family-messenger/.venv/bin/python /opt/family-messenger/scripts/fleet_matrix.py --config /etc/family-matrix/config.json
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
