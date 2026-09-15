@@ -1,0 +1,20 @@
+# [2026-09-16 운영 전환] Synapse 시절 family-messenger-backup.* 유닛을 Tuwunel 평면으로 대체한다.
+# 퇴역(2026-09-15) 후 구 유닛은 compose 스택 스크립트를 가리켜 매일 04:30 실패했다(2026-09-16 실측).
+# 같은 이름·같은 창(04:30 Asia/Seoul)으로 설치하면 구 타이머를 그대로 교체한다.
+# restic 저장소·비밀번호는 환경 파일이 정하고(코드에 박지 않는다), admin 토큰 경로가 다른 호스트는
+# 드롭인으로 ExecStart를 재지정한다(docs/TUWUNEL-OPERATIONS.md 상시 운영 자동화).
+[Unit]
+Description=Family messenger Tuwunel paired backup (online + restic)
+After=network-online.target tuwunel.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/family-messenger/backup.env
+ExecStart=/usr/bin/python3 /opt/family-messenger-tuwunel/scripts/tuwunel_backup.py --config /etc/tuwunel/tuwunel.toml --admin-token-file /etc/family-messenger/tuwunel-admin-token --state /var/lib/family-messenger-backups
+TimeoutStartSec=45min
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true

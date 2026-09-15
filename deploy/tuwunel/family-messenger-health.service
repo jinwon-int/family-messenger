@@ -1,0 +1,20 @@
+# 홈서버 노드용 시간별 헬스 점검. client API·필수 유닛·마지막 완료 백업 신선도를 점검하고
+# healthy<->unhealthy 전환 시에만 관리방으로 통지한다(0600 상태 파일로 중복 억제).
+# 홈서버가 내려간 경우 관리방 통지는 실패하지만 점검 자체는 journal exit 1로 남는다.
+# 외부 경보(관리방 밖)는 후속 작업이다(docs/FLEET-MATRIX.md).
+[Unit]
+Description=Family messenger operations health check (homeserver node)
+After=network-online.target tuwunel.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/family-messenger-tuwunel/scripts/health_check.py --url http://127.0.0.1:8008/_matrix/client/v3/versions --require-active tuwunel.service --backup-state /var/lib/family-messenger-backups --max-backup-age-hours 26 --alert-admin --config /etc/tuwunel/tuwunel.toml --admin-token-file /etc/family-messenger/tuwunel-admin-token --state-file /var/lib/family-messenger-health/state.json
+TimeoutStartSec=5min
+UMask=0077
+NoNewPrivileges=true
+StateDirectory=family-messenger-health
+StateDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target

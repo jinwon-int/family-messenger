@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly family messenger bot health check
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
+Unit=family-matrix-health.service
+
+[Install]
+WantedBy=timers.target

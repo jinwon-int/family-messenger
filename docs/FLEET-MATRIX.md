@@ -119,6 +119,14 @@ python3 scripts/fleet_matrix_state.py unblock --config /private/config.json \
 시험 한도는 파일시스템 여유 256MiB 이상, inbox DB 128MiB 이하이며 초과 시 중단한다.
 자동 삭제·이력 만료는 하지 않는다. 장기 운영용 보존/아카이브와 외부 경보는 후속 작업이다.
 
+## 헬스 점검 (타이머)
+
+봇 노드 운영자는 `deploy/family-matrix-health.service.example`+`.timer.example`(시간별)로
+`family-matrix` 유닛 활성, 홈서버 client API 도달, sync 루프의 `meta.health` 신선도(기본 600초)를
+점검한다. `scripts/health_check.py`는 stdout에 1행 JSON을 남기고 healthy면 exit 0, 아니면 1이다.
+관리방 통지(`--alert-admin`, 전환 시에만 발화)는 봉인 admin 토큰이 있는 홈서버 노드 유닛이
+담당하며, 관리방 밖 외부 경보는 후속 작업이다.
+
 ## 검증
 
 `python3 -m unittest discover -s tests -v`는 SDK/계정 없이 상태·제어·worker 종료를 검사한다.

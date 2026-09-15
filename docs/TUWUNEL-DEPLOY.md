@@ -71,6 +71,8 @@ URL 미리보기 허용목록 비움, `ip_source="cf_connecting_ip"`(미설정 �
 ## 5. 백업·복원 (요약; 상세는 #97 산출 `docs/TUWUNEL-OPERATIONS.md`)
 
 - 온라인 백업은 **RocksDB만** 포함한다. `media/`는 별도로 restic에 넣어 **쌍**으로 기록한다.
+- 예정 실행: `deploy/tuwunel/family-messenger-backup.timer`(매일 04:30 Asia/Seoul)와
+  헬스·스토리지 타이머 — 설치와 조정은 [`TUWUNEL-OPERATIONS.md`](TUWUNEL-OPERATIONS.md)의 상시 운영 자동화 절차.
 - 복원: 서비스 정지 → `mv /var/lib/tuwunel/db /var/lib/tuwunel/db.pre-restore` → `tuwunel -c tuwunel.toml --restore-backup --maintenance --execute "server shutdown"` → 미디어 `cp -a src/. dst/`(Tuwunel이 빈 `media/`를 먼저 만들어 `cp -a src dst`는 건너뛴다) → 시작 → 메시지 수·로그인 확인. 평가에서 330 ms, 20/20 event_id 일치.
 - 복원 드릴은 격리 디렉터리·임시 포트에서 월 1회.
 

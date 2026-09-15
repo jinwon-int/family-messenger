@@ -114,5 +114,50 @@ class FetchScriptTest(unittest.TestCase):
         self.assertFalse(Path("/nonexistent/should-not-be-created").exists())
 
 
+class OperationsTimersTest(unittest.TestCase):
+    """상시 운영 타이머 유닛(#92 자동화)의 구조·경계 검사 — 실행 없이 파일만 본다."""
+
+    def test_backup_timer_replaces_synapse_era_schedule(self):
+        timer = (PKG / "family-messenger-backup.timer").read_text(encoding="utf-8")
+        self.assertIn("OnCalendar=*-*-* 04:30:00 Asia/Seoul", timer)
+        self.assertIn("Persistent=true", timer)
+        self.assertIn("family-messenger-backup.service", timer)
+
+    def test_backup_service_runs_tuwunel_backup(self):
+        unit = (PKG / "family-messenger-backup.service").read_text(encoding="utf-8")
+        self.assertIn("scripts/tuwunel_backup.py", unit)
+        self.assertIn("--config /etc/tuwunel/tuwunel.toml", unit)
+        self.assertIn("EnvironmentFile=/etc/family-messenger/backup.env", unit)
+        self.assertIn("After=network-online.target tuwunel.service", unit)
+        # 백업은 홈서버의 관리방 명령으로 진행되므로 tuwunel.service 뒤에 있어야 한다.
+        self.assertNotIn("docker", unit)
+
+    def test_health_units_shape(self):
+        unit = (PKG / "family-messenger-health.service").read_text(encoding="utf-8")
+        self.assertIn("scripts/health_check.py", unit)
+        self.assertIn("--require-active tuwunel.service", unit)
+        self.assertIn("--backup-state /var/lib/family-messenger-backups", unit)
+        self.assertIn("--alert-admin", unit)
+        self.assertIn("StateDirectoryMode=0700", unit)
+        timer = (PKG / "family-messenger-health.timer").read_text(encoding="utf-8")
+        self.assertIn("OnUnitActiveSec=1h", timer)
+
+    def test_storage_unit_measures_tuwunel_tree(self):
+        unit = (ROOT / "deploy" / "family-messenger-storage.service").read_text(encoding="utf-8")
+        self.assertIn("check_storage.py /var/lib/tuwunel", unit)
+        self.assertNotIn(".runtime", unit)
+
+    def test_no_real_hosts_in_operation_units(self):
+        paths = [PKG / name for name in (
+            "family-messenger-backup.service", "family-messenger-backup.timer",
+            "family-messenger-health.service", "family-messenger-health.timer",
+        )] + [ROOT / "deploy" / "family-matrix-health.service.example",
+              ROOT / "deploy" / "family-matrix-health.timer.example"]
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            self.assertNotRegex(text, r"seoyoon-family\.com|racknerd|vps\d", str(path))
+            self.assertNotRegex(text, r"BEGIN [A-Z ]*PRIVATE KEY", str(path))
+
+
 if __name__ == "__main__":
     unittest.main()
