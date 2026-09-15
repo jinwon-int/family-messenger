@@ -49,7 +49,9 @@ class TuwunelConfigExampleTest(unittest.TestCase):
         self.assertFalse(self.cfg["allow_guest_registration"])
         self.assertFalse(self.cfg["allow_federation"])
         self.assertTrue(self.cfg["allow_registration"])
-        self.assertTrue(self.cfg["registration_token_file"].startswith("/run/credentials/"))
+        # [2026-09-15 yukson 실측] LoadCredential 경로는 서비스 정지 시 사라져 복원 드릴 원샷이
+        # 실패하므로, 서비스 사용자가 직접 읽는 정적 경로(root:tuwunel 0640)를 쓴다.
+        self.assertEqual(self.cfg["registration_token_file"], "/etc/tuwunel/registration_token")
         self.assertTrue(self.cfg["allow_encryption"])
         self.assertEqual(self.cfg["encryption_enabled_by_default_for_room_type"], "invite")
         self.assertFalse(self.cfg["allow_legacy_media"])
@@ -71,8 +73,9 @@ class TuwunelServiceUnitTest(unittest.TestCase):
             "NoNewPrivileges=yes",
             "ProtectSystem=strict",
             "ProtectHome=yes",
-            "LoadCredential=registration_token:",
-            "ReadWritePaths=/var/lib/tuwunel",
+            # LoadCredential은 복원 드릴 원샷과 충돌해 제거 — 정적 경로(root:tuwunel 0640) 사용
+            "ReadWritePaths=/var/lib/tuwunel /var/lib/tuwunel-backups",
+            "SystemCallFilter=io_uring_setup io_uring_enter io_uring_register sched_setaffinity",
             "CapabilityBoundingSet=",
             "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX",
         ):
