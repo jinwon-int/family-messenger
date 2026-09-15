@@ -302,6 +302,7 @@ class DrillTests(unittest.TestCase):
             self.assertEqual(calls[0], ['stop'])
             self.assertEqual(calls[1][:1], ['tuwunel'])
             self.assertIn('--restore-backup', calls[1])
+            self.assertEqual(calls[1][calls[1].index('--restore-backup') + 1], '2')  # explicit id
             self.assertIn('--maintenance', calls[1])
             self.assertEqual(calls[1][-2:], ['--execute', 'server shutdown'])
             self.assertEqual(calls[2], ['start'])
@@ -363,7 +364,12 @@ class DrillTests(unittest.TestCase):
             self.assertEqual((database / 'CURRENT').read_text(), 'db')  # database is back regardless
             self.assertTrue(any('start FAILED after rollback' in line for line in logs))
 
-    def test_wrong_backup_id_in_output_rolls_back(self):
+    def test_empty_restored_database_rolls_back(self):
+        # Tuwunel 1.9.1 confirms a restore only by effect: a missing id fails
+        # with a nonzero exit (binary fail-closed), but a successful one-shot
+        # prints just the shutdown line. An empty database directory after a
+        # zero-exit restore therefore means nothing was restored — drill must
+        # roll back instead of reporting success.
         with tempfile.TemporaryDirectory() as tmp:
             config, database, _ = fixture(Path(tmp))
             calls = []
@@ -371,12 +377,18 @@ class DrillTests(unittest.TestCase):
             def execute(command):
                 calls.append(command)
                 if '--restore-backup' in command:
-                    (database / 'CURRENT').write_text('wrong')
-                    return 'Restored database backup backup_id=1'
+                    (database / 'media').mkdir()  # restore scaffolding, no data
+                    return 'Shutting down server...'
                 return 'ok'
 
-            with self.assertRaises(RuntimeError):
-                self.run_drill(config, execute)
+            drill_logs = []
+
+            def run():
+                self.run_drill(config, execute, log=drill_logs.append)
+
+            with self.assertRaisesRegex(RuntimeError, 'rolled back'):
+                run()
+            self.assertTrue(any('empty database directory' in line for line in drill_logs))
             self.assertEqual((database / 'CURRENT').read_text(), 'db')
             self.assertEqual(calls[-1], ['start'])
             self.assertEqual(len(list((Path(tmp) / 'data').glob('db.failed-restore-*'))), 1)

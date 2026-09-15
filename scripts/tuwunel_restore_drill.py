@@ -21,7 +21,6 @@ import argparse
 import datetime
 import json
 from pathlib import Path
-import re
 import shlex
 import shutil
 import subprocess
@@ -124,11 +123,24 @@ def drill(config_path, binary, stop_command, start_command, admin, backup_id=Non
     database.rename(saved)
     database.mkdir(parents=True)
     try:
-        output = execute([binary, '-c', str(config_path), '--restore-backup',
-                          '--maintenance', '--execute', 'server shutdown'])
-        restored = re.search(r'backup_id=(\d+)', output)
-        if restored is None or int(restored.group(1)) != target:
-            raise RuntimeError('restore did not confirm backup id ' + str(target))
+        # The pinned binary (1.9.1, measured 2026-09-15) prints only its
+        # shutdown line on a successful restore and never echoes the backup
+        # id; a missing id fails with a nonzero exit before opening anything.
+        # The id is therefore passed explicitly and the restore is confirmed
+        # by the effect the binary cannot fake: a nonzero exit or an empty
+        # database directory means nothing was restored (the drill created
+        # the directory empty; media subdirectories are part of a real
+        # restore output).
+        execute([binary, '-c', str(config_path), '--restore-backup', str(target),
+                 '--maintenance', '--execute', 'server shutdown'])
+        # An empty `media` directory alone is restore scaffolding the binary
+        # can create without restoring anything (measured: a failed id leaves
+        # nothing at all); real output always carries database files.
+        restored_entries = [p for p in database.iterdir()
+                            if not (p.is_dir() and p.name == 'media' and not any(p.iterdir()))]
+        if not restored_entries:
+            raise RuntimeError('restore produced an empty database directory for backup '
+                               + str(target))
     except Exception as e:
         log('restore step failed (' + type(e).__name__ + ': ' + str(e) + '); rolling back')
         rollback(database, saved, stamp, start_command, execute, log)
