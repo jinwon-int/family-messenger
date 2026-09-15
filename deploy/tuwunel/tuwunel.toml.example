@@ -18,7 +18,7 @@ port = 8008
 # --- 접근 정책 ---------------------------------------------------------------
 # 가입은 등록 토큰 파일이 있을 때만. 토큰 값은 systemd LoadCredential로 주입되는 파일에 둔다.
 allow_registration = true
-registration_token_file = "/run/credentials/tuwunel.service/registration_token"
+registration_token_file = "/etc/tuwunel/registration_token"
 allow_guest_registration = false
 # 가족 전용 단일 서버. 연합 완전 차단.
 allow_federation = false

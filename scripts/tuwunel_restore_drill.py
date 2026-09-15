@@ -47,7 +47,8 @@ def run_text(command, timeout=600):
     except subprocess.TimeoutExpired:
         raise RuntimeError('restore subprocess timed out') from None
     if proc.returncode:
-        raise RuntimeError('restore subprocess failed with exit ' + str(proc.returncode))
+        raise RuntimeError('restore subprocess failed with exit ' + str(proc.returncode)
+                           + '; output tail: ' + ' | '.join((proc.stdout + proc.stderr).splitlines()[-3:]))
     return proc.stdout + proc.stderr
 
 

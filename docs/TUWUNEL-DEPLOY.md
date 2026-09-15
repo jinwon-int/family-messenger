@@ -28,11 +28,14 @@ deploy/tuwunel/fetch-tuwunel.sh --dest /opt/tuwunel        # deb 자산 → sha2
 ```bash
 useradd --system --home-dir /var/lib/tuwunel --shell /usr/sbin/nologin tuwunel
 install -d -m 0700 -o tuwunel -g tuwunel /var/lib/tuwunel
+install -d -m 0700 -o tuwunel -g tuwunel /var/lib/tuwunel-backups  # 백업 도구가 요구 — 바이너리가 자동 생성하지 않는다(2026-09-15 실측)
 install -d -m 0750 -o root -g tuwunel /etc/tuwunel
 install -m 0640 -o root -g tuwunel deploy/tuwunel/tuwunel.toml.example /etc/tuwunel/tuwunel.toml
 # server_name, well_known.client 채우기. server_name은 나중에 바꿀 수 없다.
 python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > /etc/tuwunel/registration_token
-chmod 0600 /etc/tuwunel/registration_token                   # 값은 어디에도 기록하지 않는다
+chown root:tuwunel /etc/tuwunel/registration_token && chmod 0640 /etc/tuwunel/registration_token  # 값은 어디에도 기록하지 않는다
+# [2026-09-15 yukson 실측] LoadCredential(/run/credentials/...)은 서비스 정지 시 사라져 복원 드릴의
+# 원샷 복원이 실패한다 — 서비스 사용자가 직접 읽는 정적 경로를 쓴다(소유 root:tuwunel 0640).
 install -m 0644 deploy/tuwunel/tuwunel.service /etc/systemd/system/tuwunel.service
 systemctl daemon-reload && systemctl enable --now tuwunel
 journalctl -u tuwunel -n 50 --no-pager                       # "listening" 확인, WARN 없는지
