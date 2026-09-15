@@ -122,8 +122,18 @@ async def run_roundtrip(loaded, accounts, deadline_seconds):
             passed('private room created megolm-encrypted by the server default')
 
             assert_ok(await bob.join(room_id), 'receiver join')
-            # Sender re-syncs so the receiver's device keys are known before encrypting.
+            # Deterministic device discovery before any olm/megolm traffic.
+            # A plain sync() never issues the device-key query (only
+            # sync_forever does), and room_send skips its joined-members/
+            # keys-query branch once room members are already synced — so
+            # without explicit queries alice encrypts the megolm session to
+            # her own devices only and bob can never decrypt (first CI run).
             assert_ok(await alice.sync(timeout=0), 'sender membership sync')
+            assert_ok(await bob.sync(timeout=0), 'receiver membership sync')
+            if alice.should_query_keys:
+                assert_ok(await alice.keys_query(), 'sender device-key query')
+            if bob.should_query_keys:
+                assert_ok(await bob.keys_query(), 'receiver device-key query')
 
             body = 'tuwunel-e2ee-roundtrip-' + secrets.token_hex(8)
             sent = await alice.room_send(room_id, 'm.room.message',
