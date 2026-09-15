@@ -1,5 +1,9 @@
 # 오픈소스 비교 및 선정 — 2026-09-08
 
+**역사적 기록:** 이 문서가 설명하는 Synapse v1.160.0·Element Web v1.12.27·PostgreSQL 17 구성은
+`archive/synapse-stack/`으로 보관됐으며 런타임·CI에서 사용하지 않는다(#104). 현재 홈서버는
+[Tuwunel](TUWUNEL-DEPLOY.md)이다. 아래 비교·수치는 당시 채택 판단의 기록으로 보존한다.
+
 **후속 방향 변경:** 운영자가 의존성을 줄인 자체 서버/화면을 요청했다.
 현재 방향과 Tinode·ntfy·Gotify의 설계 비교는 [OWN-SYSTEM.md](OWN-SYSTEM.md)에 기록했다.
 아래 Matrix 채택은 기존 운영 구성을 설명하는 이력이다.
@@ -19,7 +23,7 @@ GitHub 별 개수나 화면 유사성보다 가족용 대화, 독립 운영, 기
 - Synapse `v1.160.0` ([릴리스](https://github.com/element-hq/synapse/releases/tag/v1.160.0))
 - Element Web `v1.12.27` ([릴리스](https://github.com/element-hq/element-web/releases/tag/v1.12.27))
 - PostgreSQL 17: 공식 이미지의 조회 당시 digest 고정
-- 세 이미지 모두 `compose.yaml`에 tag와 digest를 함께 기록합니다. 자동 `latest` 갱신은 하지 않습니다.
+- 세 이미지 모두 보관된 `archive/synapse-stack/compose.yaml`에 tag와 digest를 함께 기록하고 있다. 자동 `latest` 갱신은 하지 않는다.
 
 ## 참고한 계약·운영 지침
 

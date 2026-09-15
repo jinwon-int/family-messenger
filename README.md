@@ -27,7 +27,7 @@
 |---|---|
 | AI 참여 서비스 (`server/`) | Go·SQLite 기반. 인증(`internal/access`)·정책 스토어·저장·이벤트를 유지하고 역할을 "채팅 서버"에서 "신원·기억·승인·에이전트 레지스트리"로 바꿉니다. 현재는 루프백·합성 데이터 시험판입니다. 실제 가족 대화를 넣거나 인터넷에 노출하지 마세요. |
 | 네이티브 MLS 전송·successor 세레모니·실험 (`archive/native-mls/`, `archive/experiments/`) | **동결·보관됨(빌드·CI 제외).** 결정 D로 전달층에서는 폐기했으며, 위협 모델·기기 정책은 수용 기준으로 남깁니다. |
-| Matrix 홈서버 구성 (`compose.yaml`) | 현재 Synapse/Element/Postgres 운영 구성. 로드맵 1단계에서 단일 바이너리 홈서버와 직접 만든 웹 화면으로 교체합니다. |
+| Matrix 홈서버 (`deploy/tuwunel/`) | 단일 바이너리 홈서버 Tuwunel(고정 핀) 배포 패키지. 이전 Synapse/Element/Postgres 구성은 `archive/synapse-stack/`에 보관됐으며, 운영 호스트 전환은 별도 운영 작업(1단계 배포)입니다. |
 | 에이전트 연결 (`scripts/fleet_*.py`) | 운영자↔봇 1:1 개인방 계약(권한·작업·승인·취소·재연결)이 검증됐습니다. 가족방·mention 모드는 1단계 작업입니다. |
 
 AI가 참여한 방에서는 해당 에이전트가 대화를 읽을 수 있으며, 답변에 필요한 내용이
@@ -42,23 +42,16 @@ AI 초대 시 이 범위를 알리고 동의받는 것이 제품 요구입니다
 암호화 연구 범위는 [네이티브 E2EE](docs/NATIVE-E2EE.md), 구현 계약은
 [자체 시스템 설계](docs/OWN-SYSTEM.md)를 참고하세요.
 
-기존 Matrix 구성을 로컬에서 시험하려면 Linux, Python 3.11+, Docker와 Compose v2가 필요합니다.
-
-```bash
-python3 scripts/init.py --preview
-docker compose up -d --wait --wait-timeout 120
-python3 scripts/admin.py owner --admin
-```
-
-- 웹: <http://127.0.0.1:18808>, Matrix API: <http://127.0.0.1:18809>
-- 시험 계정 신원: `@owner:preview.invalid`; 비밀번호는 대화형으로 입력합니다.
-- 초기화는 기존 `.runtime` 또는 `.env`가 있으면 중단합니다.
-- 실제 배포는 별도 설치 신원과 새 데이터로 [운영 안내](docs/OPERATIONS.md)를 따릅니다.
+홈서버는 단일 바이너리 Tuwunel입니다. 로컬·CI에서는 루프백으로만 기동하며,
+`.github/workflows/verify.yml` 통합 구간이 다음 흐름을 그대로 수행합니다:
+`deploy/tuwunel/fetch-tuwunel.sh`(고정 핀 검증) → `scripts/tuwunel_config.py` 루프백 구성 검증 →
+`scripts/admin.py` 계정 생성 → `tests/tuwunel_smoke.py` E2EE 암호화 왕복.
+절차·검증 체크리스트는 [Tuwunel 배포 런북](docs/TUWUNEL-DEPLOY.md)을, 운영 기준은
+[운영 안내](docs/OPERATIONS.md)와 [Tuwunel 운영](docs/TUWUNEL-OPERATIONS.md)을 따릅니다.
+이전 Synapse/Element/Postgres 구성은 `archive/synapse-stack/`에 보관돼 있으며 런타임·CI에서 쓰지 않습니다.
 
 ```bash
 python3 -m unittest discover -s tests -v
-docker compose config --quiet
-python3 tests/smoke.py  # 별도 시험 환경에서만 합성 데이터 생성
 ```
 
 ## 기여와 공개 범위

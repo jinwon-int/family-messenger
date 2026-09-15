@@ -6,9 +6,11 @@ OWN-SYSTEM.md 구현 순서 1번의 기록 의무("직접/간접 패키지 목�
 기록 갱신은 `scripts/resource_report.py`로 재측정해 이 표를 바꾸는 방식으로 한다.
 
 - 최초 측정: 2026-09-09 (커밋 `ce0f461`)
-- 운영 스택 측정 환경: 전용 운영 서버 — 읽기전용 `docker stats`/`docker exec psql`/`du`
+- 운영 스택 측정 환경: 전용 운영 서버 — 읽기전용 `docker stats`/`docker exec psql`/`du` (보관된 이전 구성 기록)
 - 프로토타입 측정 환경: 개발 서버(2 vCPU) — 합성 데이터 루프백 스모크
 - 실제 가족 기기·모바일·백업 복원 시점의 사용량은 이 기록에 없다.
+- `resource_report.py`의 census는 고정 홈서버 핀(`tuwunel` 키)을 보고한다. 이전 compose 이미지
+  census(`images` 키)는 `archive/synapse-stack/` 보관과 함께 폐지됐다.
 
 ## 구성요소별 직접·간접 의존성
 
@@ -18,33 +20,34 @@ OWN-SYSTEM.md 구현 순서 1번의 기록 의무("직접/간접 패키지 목�
 | --- | --- | --- | --- |
 | 네이티브 서버 (Go, `server/`) | 2 — `github.com/golang-jwt/jwt/v5` v5.3.1, `github.com/mattn/go-sqlite3` v1.14.52 | go.sum 고유 모듈 2 (직접 2와 동일 — 간접 모듈 추가 없음) | `server/go.mod`, `server/go.sum` |
 | 브라우저 MLS 실험 (WASM) | 8 | 151 (락 전체 외부 패키지 197) | `archive/experiments/openmls-browser/dependencies.json` 고정 기록(패키지별 라이선스·해시 포함). 소스 그래프 기준이며 도달가능성 분석이 아니다 |
-| Matrix 브리지 시험 (Python) | `matrix-nio[e2e]==0.25.2` | 해당 SDK 의존 그래프 | 운영 런타임 의존성이 아니라 기존 Matrix 연결부 시험용이다 |
+| Matrix 브리지 시험 (Python) | `matrix-nio[e2e]==0.25.2` | 해당 SDK 의존 그래프 | 노드 측 fleet_matrix 연결부와 `tests/tuwunel_smoke.py` 루프백 통합 시험 의존성이다(운영 런타임 의존성 아님) |
 | 브라우저 검증 (Python) | `playwright==1.62.0` | 해당 도구 의존 그래프 | 검증 전용이며 메신저 런타임 의존성이 아니다 |
 
-고정 컨테이너 이미지(digest 고정, `compose.yaml`):
+고정 홈서버(`deploy/tuwunel/tuwunel.pins.json` — 업스트림이 체크섬·서명을 공개하지 않으므로 이 기록이 유일한 무결성 기준이다):
 
-- `postgres:17@sha256:67f41722…ad5675` — 상한 512 MiB
-- `ghcr.io/element-hq/synapse:v1.160.0@sha256:78de1d10…477b205f` — 상한 1 GiB
-- `vectorim/element-web:v1.12.27@sha256:7050130b…682d013019e` — 상한 192 MiB
+- Tuwunel `v1.9.1` — x86-64-v3 정적 단일 바이너리. 추출 바이너리 107,045,776 B, sha256 `e365ba0c…88acea`; deb 자산 크기·sha256 고정. `deploy/tuwunel/fetch-tuwunel.sh`가 다운로드·추출 후 대조하고 불일치 시 삭제한다.
+- 이전 compose 고정 이미지(postgres 17, Synapse v1.160.0, Element Web v1.12.27)는 `archive/synapse-stack/compose.yaml`에 보관됐다.
 
 고정 툴체인(CI가 해시·버전으로 고정): Go 1.27.1(`server/go.mod`), Rust 1.91.1 +
 wasm-bindgen 0.2.126(보관된 MLS 실험, 수동 실행만), Node 22.22.2, Python 3.11(`verify.yml`의
 단위 시험·린트 job이 `actions/setup-python`으로 고정 — README의 3.11+ 하한을 실제로 검증;
-compose/스모크 단계도 같은 job이므로 동일 버전). `ruff==0.16.7`·`mypy==2.3.1`(린트 job, mypy는 비차단).
+Tuwunel 루프백 통합 단계도 같은 job이므로 동일 버전). `ruff==0.16.7`·`mypy==2.3.1`(린트 job, mypy는 비차단).
 
 ## 서버 프로세스 수
 
 | 배포 형태 | 프로세스 구성 |
 | --- | --- |
-| Matrix 운영 스택 (현재 운영) | 컨테이너 3개: postgres, synapse, element. 호스트 쪽 Cloudflare 터널·caddy는 운영 노드 구성 소속이며 이 레포가 관리하지 않는다 |
+| Matrix 홈서버 (Tuwunel, 1단계 대상) | 프로세스 1개(정적 단일 바이너리, systemd 유닛 `deploy/tuwunel/tuwunel.service`). 호스트 쪽 cloudflared 터널은 운영 노드 구성 소속이며 이 레포가 관리하지 않는다 |
+| Matrix 운영 스택 (이전 구성 — 보관, 역사 기록) | 컨테이너 3개: postgres, synapse, element. 2026-09-09 실측값이며 `archive/synapse-stack/` 보관 구성이다 |
 | 네이티브 프로토타입 (`server/`) | 프로세스 1개(단일 Go 바이너리, loopback 전용). 합성 서명이 필요한 시험에서 `family-policy`가 별도 프로세스 1개로 추가된다 |
 
-재생성(운영 스택): `docker compose -p family-messenger ps` — 2026-09-09 기준
-running 3, 컨테이너 내 프로세스 수(PIDs) 각각 11/18/13.
+재생성(보관 스택): `docker compose -p family-messenger ps` — 2026-09-09 기준
+running 3, 컨테이너 내 프로세스 수(PIDs) 각각 11/18/13. Tuwunel 전환 후 재측정은
+`scripts/resource_report.py watch -- python3 tests/tuwunel_smoke.py …` 형태로 같은 방식을 쓴다.
 
 ## 실측 기록
 
-### Matrix 운영 스택 — 운영 서버, 2026-09-09
+### Matrix 운영 스택 — 운영 서버, 2026-09-09 (보관 구성의 역사 기록)
 
 `docker compose -p family-messenger stats --no-stream --format '{{json .}}'` 두 차례:
 
@@ -55,6 +58,7 @@ running 3, 컨테이너 내 프로세스 수(PIDs) 각각 11/18/13.
 | element | 10.4 MiB / 192 MiB | 5.4% | 0.00% |
 
 postgres CPU 샘플 편차는 docker stats의 순간 값 성격 때문이며 별도 원인 근거는 없다.
+이 절 전체는 `archive/synapse-stack/`에 보관된 이전 운영 구성의 기록이며 현재 홈서버(Tuwunel)와 무관하다.
 
 보관량(같은 시점, 읽기전용): Postgres DB 15 MB, pgdata 볼륨 71 MB,
 media_store 60 KB, 사용자 3, 방 2. 호스트 디스크 1 TB 중 864 GB 가용.

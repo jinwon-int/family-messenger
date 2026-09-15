@@ -11,6 +11,9 @@ spec = importlib.util.spec_from_file_location(
 rr = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rr)
 
+SHA_A = 'a' * 64
+SHA_B = 'b' * 64
+
 
 class CensusTests(unittest.TestCase):
     def write_manifests(self, root):
@@ -32,9 +35,17 @@ class CensusTests(unittest.TestCase):
         (root / 'requirements-native-test.txt').write_text(
             '# Browser verification only; not a messenger runtime dependency.\n'
             'playwright==1.62.0\n')
-        (root / 'compose.yaml').write_text(
-            'services:\n  db:\n    image: example/db:1@sha256:aa\n'
-            '  app:\n    image: ghcr.io/example/app:v2@sha256:bb\n')
+        # Live homeserver manifest: the pinned Tuwunel single binary replaced the
+        # archived compose image census (archive/synapse-stack/).
+        pins = root / 'deploy' / 'tuwunel' / 'tuwunel.pins.json'
+        pins.parent.mkdir(parents=True)
+        pins.write_text(json.dumps({
+            'version': 'v1.9.1',
+            'release_url': 'https://github.com/matrix-construct/tuwunel/releases/tag/v1.9.1',
+            'assets': {'deb': {'name': 'v1.9.1-fixture.deb', 'size': 40373354,
+                               'sha256': SHA_A, 'status': 'verified'}},
+            'binary': {'path_in_deb': 'usr/sbin/tuwunel', 'size': 107045776,
+                       'sha256': SHA_B, 'static': True}}))
 
     def test_census_counts_direct_and_indirect_without_network(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -53,9 +64,13 @@ class CensusTests(unittest.TestCase):
             self.assertEqual(
                 [p['pin'] for p in report['python']],
                 ['matrix-nio[e2e]==0.25.2', 'playwright==1.62.0'])
-            self.assertEqual(
-                report['images'],
-                ['example/db:1@sha256:aa', 'ghcr.io/example/app:v2@sha256:bb'])
+            self.assertEqual(report['tuwunel']['version'], 'v1.9.1')
+            self.assertEqual(report['tuwunel']['asset']['name'], 'v1.9.1-fixture.deb')
+            self.assertEqual(report['tuwunel']['asset']['sha256'], SHA_A)
+            self.assertEqual(report['tuwunel']['binary']['path_in_deb'], 'usr/sbin/tuwunel')
+            self.assertEqual(report['tuwunel']['binary']['sha256'], SHA_B)
+            self.assertTrue(report['tuwunel']['binary']['static'])
+            self.assertEqual(report['tuwunel']['record'], 'deploy/tuwunel/tuwunel.pins.json')
 
     def test_archived_wasm_record_is_skipped_with_a_note_not_an_error(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -76,6 +91,16 @@ class CensusTests(unittest.TestCase):
             (root / 'server').mkdir()
             # No fallback: a missing manifest must fail loudly, never emit a
             # partial census that could be mistaken for the full record.
+            with self.assertRaises(FileNotFoundError):
+                rr.census(root)
+
+    def test_census_requires_the_homeserver_pins(self):
+        # Unlike the archived WASM record, the Tuwunel pin is a live manifest:
+        # without it the census fails instead of reporting an unpinned homeserver.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_manifests(root)
+            (root / 'deploy' / 'tuwunel' / 'tuwunel.pins.json').unlink()
             with self.assertRaises(FileNotFoundError):
                 rr.census(root)
 
@@ -100,23 +125,6 @@ class WatchTests(unittest.TestCase):
                           grace_seconds=0.0)
         self.assertEqual(report['exit_code'], 7)
         self.assertEqual(report['max_descendant_process_count'], 0)
-
-
-class DockerStatsParsingTests(unittest.TestCase):
-    def test_stats_line_is_reduced_to_safe_numbers(self):
-        line = ('{"BlockIO":"1.2MB / 0B","CPUPerc":"0.15%","Container":"demo",'
-                '"ID":"abcdef123456","MemPerc":"1.20%","MemUsage":"12.5MiB / 512MiB",'
-                '"Name":"family-demo-synapse-1","NetIO":"0B / 0B",'
-                '"PIDs":"7"}')
-        parsed = rr.parse_docker_stats_line(line)
-        self.assertEqual(parsed['name'], 'family-demo-synapse-1')
-        self.assertEqual(parsed['memory_used_bytes'], int(12.5 * 1024 * 1024))
-        self.assertEqual(parsed['memory_limit_bytes'], 512 * 1024 * 1024)
-        self.assertEqual(parsed['cpu_percent'], 0.15)
-
-    def test_unreadable_memory_figure_is_refused(self):
-        with self.assertRaises(ValueError):
-            rr.parse_memory('about a bucket')
 
 
 if __name__ == '__main__':
