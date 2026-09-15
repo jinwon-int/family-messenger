@@ -4,6 +4,7 @@ import { strings } from './strings.js';
 import * as session from './session.js';
 import { createFamilyClient, loginWithPassword, PlaintextRefusedError } from './matrix/client.js';
 import { messageKind, humanFileSize, validateAttachment, attachmentContent } from './messages.js';
+import { extractMentions } from './mentions.js';
 import { splitParticipants } from './participants.js';
 import * as ui from './ui.js';
 
@@ -117,7 +118,8 @@ function openRoom(roomId) {
 async function sendText(text) {
   const entry = state.rooms.get(state.currentRoomId);
   try {
-    await state.client.sendText(state.currentRoomId, text);
+    const handles = state.client.roomMemberHandles(state.currentRoomId);
+    await state.client.sendText(state.currentRoomId, text, extractMentions(text, handles));
   } catch (error) {
     if (error instanceof PlaintextRefusedError) {
       entry.notice = strings.errors.plaintextRefused;

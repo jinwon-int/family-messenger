@@ -54,6 +54,10 @@ class FakeClient extends EventEmitter {
     return [...this.roomsById.values()];
   }
 
+  getRoom(roomId) {
+    return this.roomsById.get(roomId) ?? null;
+  }
+
   isRoomEncrypted(roomId) {
     return this.encrypted.has(roomId);
   }
@@ -316,4 +320,39 @@ test('SAS 불일치를 신고하면 검증이 실패로 끝난다', async () => 
   );
   assert.equal(shown.length, 1);
   assert.equal(cancelled, 0);
+});
+
+test('sendText는 멘션 목록을 m.mentions 구조로 실어 보낸다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  adapter.client.encrypted.add('!family:example.com');
+  const sent = await adapter.sendText('!family:example.com', '안녕', [
+    '@helper:example.com', '@helper:example.com', 'not-a-user-id',
+  ]);
+  assert.match(sent.event_id, /e\d/);
+  assert.deepEqual(adapter.client.sent[0].content['m.mentions'].user_ids, ['@helper:example.com']);
+});
+
+test('멘션이 없으면 m.mentions 필드를 넣지 않는다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  adapter.client.encrypted.add('!family:example.com');
+  await adapter.sendText('!family:example.com', '안녕', []);
+  assert.equal(adapter.client.sent[0].content['m.mentions'], undefined);
+});
+
+test('roomMemberHandles는 가입 멤버의 localpart를 돌려준다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  adapter.client.addRoom(room('!r:example.com', {
+    name: 'r',
+    members: [
+      { userId: '@minseo:example.com', name: '민서', events: { member: { getContent: () => ({ membership: 'join' }) } } },
+      { userId: '@guest:example.com', name: 'g', events: { member: { getContent: () => ({ membership: 'invite' }) } } },
+    ],
+  }));
+  assert.deepEqual(adapter.roomMemberHandles('!r:example.com'), [
+    { userId: '@minseo:example.com', localpart: 'minseo' },
+  ]);
+  assert.deepEqual(adapter.roomMemberHandles('!missing:example.com'), []);
 });

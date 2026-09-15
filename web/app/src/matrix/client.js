@@ -153,6 +153,20 @@ export class ClientAdapter {
     });
   }
 
+  /**
+   * Joined-member handles for mention building: full user id plus localpart
+   * (the part after @ that users type in the composer).
+   * @param {string} roomId
+   */
+  roomMemberHandles(roomId) {
+    const room = this.client.getRoom?.(roomId);
+    if (!room) return [];
+    return (room.getMembers?.() ?? [])
+      .filter((m) => (m.events?.member?.getContent?.().membership ?? 'join') === 'join')
+      .map((m) => ({ userId: m.userId, localpart: String(m.userId.split(':')[0] ?? '').slice(1) }))
+      .filter((h) => h.localpart.length > 0);
+  }
+
   /** Whether the room is end-to-end encrypted (best effort). */
   isRoomEncrypted(roomId) {
     try {
@@ -162,12 +176,19 @@ export class ClientAdapter {
     }
   }
 
-  /** Send m.text. Refuses provable-plaintext rooms, hides no failures. */
-  async sendText(roomId, text) {
+  /** Send m.text. Refuses provable-plaintext rooms, hides no failures.
+   * `mentions` (optional) is an iterable of full user ids; it becomes the
+   * spec'd m.mentions structure so homeserver/bridges can see the mention
+   * (fleet_matrix family mode gates replies on this structure).
+   */
+  async sendText(roomId, text, mentions) {
     const body = String(text ?? '').trim();
     if (body.length === 0) return null;
     if (!this.isRoomEncrypted(roomId)) throw new PlaintextRefusedError(roomId);
-    return this.client.sendEvent(roomId, 'm.room.message', { msgtype: 'm.text', body });
+    const content = { msgtype: 'm.text', body };
+    const ids = [...new Set(mentions ?? [])].filter((id) => typeof id === 'string' && id.startsWith('@'));
+    if (ids.length > 0) content['m.mentions'] = { user_ids: ids };
+    return this.client.sendEvent(roomId, 'm.room.message', content);
   }
 
   /** Send an attachment whose mxc URL is already uploaded. */
