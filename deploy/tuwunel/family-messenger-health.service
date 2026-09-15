@@ -9,7 +9,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 /opt/family-messenger-tuwunel/scripts/health_check.py --url http://127.0.0.1:8008/_matrix/client/v3/versions --require-active tuwunel.service --backup-state /var/lib/family-messenger-backups --max-backup-age-hours 26 --alert-admin --config /etc/tuwunel/tuwunel.toml --admin-token-file /etc/family-messenger/tuwunel-admin-token --state-file /var/lib/family-messenger-health/state.json
+ExecStart=/usr/bin/python3 /opt/family-messenger-tuwunel/scripts/health_check.py --url http://127.0.0.1:8008/_matrix/client/versions --require-active tuwunel.service --backup-state /var/lib/family-messenger-backups --max-backup-age-hours 26 --alert-admin --config /etc/tuwunel/tuwunel.toml --admin-token-file /etc/family-messenger/tuwunel-admin-token --state-file /var/lib/family-messenger-health/state.json
 TimeoutStartSec=5min
 UMask=0077
 NoNewPrivileges=true
