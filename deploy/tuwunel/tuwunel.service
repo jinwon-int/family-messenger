@@ -47,6 +47,10 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources
+# [2026-09-15 yukson 실측] Tuwunel 1.9.1(RocksDB·Tokio)은 io_uring 3종과 스레드/우선순위
+# 호출(sched_setaffinity·nice·setpriority·sched_setattr·ioprio_set·getpriority)을 필수로
+# 사용하며 @resources에 속해 있다. 이 재허용 줄이 없으면 SIGSYS로 기동 사망한다.
+SystemCallFilter=io_uring_setup io_uring_enter io_uring_register sched_setaffinity nice setpriority sched_setattr ioprio_set getpriority
 CapabilityBoundingSet=
 AmbientCapabilities=
 # DB와 미디어만 쓰기 허용. 설정은 읽기 전용.
