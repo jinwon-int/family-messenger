@@ -65,6 +65,9 @@ def read_credentials(path):
 def make_client(base, user, store):
     # Same client shape the retired matrix_frontend_smoke driver proved against
     # Synapse: fresh crypto store per run, no sync-token reuse, no retry storms.
+    # nio 0.25 does not create the store directory itself; the retired driver
+    # mkdir'd it (0700) before constructing the client — do the same.
+    store.mkdir(mode=0o700)
     return AsyncClient(base, user, store_path=str(store),
                        config=AsyncClientConfig(pickle_key=secrets.token_urlsafe(32),
                                                 store_sync_tokens=False, max_timeouts=0,
