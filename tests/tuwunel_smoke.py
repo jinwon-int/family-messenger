@@ -88,6 +88,21 @@ async def wait_for_decryption(client, received, body, deadline_seconds):
     raise AssertionError('roundtrip message did not decrypt within the deadline')
 
 
+async def prime_e2ee(client, label):
+    """Upload identity/one-time keys and query peer device keys.
+
+    A plain nio sync() performs neither keys_upload() nor keys_query() — only
+    sync_forever() does. Skipping the upload leaves the server holding no
+    device or one-time keys at all: every keys_query then returns empty, no
+    olm session can be created and the megolm room key is never delivered
+    (observed on the first CI runs).
+    """
+    if client.should_upload_keys:
+        assert_ok(await client.keys_upload(), label + ' key upload')
+    if client.should_query_keys:
+        assert_ok(await client.keys_query(), label + ' device-key query')
+
+
 async def run_roundtrip(loaded, accounts, deadline_seconds):
     base = loaded['base']
     alice_id = '@' + accounts[0]['username'] + ':' + loaded['server_name']
@@ -106,7 +121,10 @@ async def run_roundtrip(loaded, accounts, deadline_seconds):
         try:
             assert_ok(await alice.login(accounts[0]['password']), 'sender login')
             assert_ok(await bob.login(accounts[1]['password']), 'receiver login')
-            # First sync uploads each device's identity keys before any room exists.
+            # Publish each account's device and one-time keys before any room
+            # or sync exists (see prime_e2ee: plain sync() never uploads).
+            await prime_e2ee(alice, 'sender')
+            await prime_e2ee(bob, 'receiver')
             assert_ok(await alice.sync(timeout=0), 'sender initial sync')
             assert_ok(await bob.sync(timeout=0), 'receiver initial sync')
 
@@ -130,10 +148,10 @@ async def run_roundtrip(loaded, accounts, deadline_seconds):
             # her own devices only and bob can never decrypt (first CI run).
             assert_ok(await alice.sync(timeout=0), 'sender membership sync')
             assert_ok(await bob.sync(timeout=0), 'receiver membership sync')
-            if alice.should_query_keys:
-                assert_ok(await alice.keys_query(), 'sender device-key query')
-            if bob.should_query_keys:
-                assert_ok(await bob.keys_query(), 'receiver device-key query')
+            # The membership syncs mark the room peers for device-key queries;
+            # prime_e2ee issues them explicitly (key upload is a no-op here).
+            await prime_e2ee(alice, 'sender')
+            await prime_e2ee(bob, 'receiver')
 
             body = 'tuwunel-e2ee-roundtrip-' + secrets.token_hex(8)
             sent = await alice.room_send(room_id, 'm.room.message',
