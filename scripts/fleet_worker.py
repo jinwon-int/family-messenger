@@ -240,8 +240,15 @@ async def serve(worker, reader):
 async def main(args):
     # Import the deployed ccc runtime in its own interpreter; no settings/token
     # transfer from the node to the messenger host is needed.
-    from telegram_bot.core.agent_runtime import ApprovalDecision, SessionRequest
-    from telegram_bot.core.codex_runtime import CodexRuntime
+    # The formal interface seam (telegram_bot.contracts, ccc-node #1756) is
+    # preferred; checkouts predating it keep working through the back-compatible
+    # shim module, so mixed-fleet rollouts never break the node-local port.
+    try:
+        from telegram_bot.contracts.agent_runtime import ApprovalDecision, SessionRequest
+        from telegram_bot.contracts.codex_runtime import CodexRuntime
+    except ImportError:
+        from telegram_bot.core.agent_runtime import ApprovalDecision, SessionRequest
+        from telegram_bot.core.codex_runtime import CodexRuntime
     if not Path(args.workdir).is_dir() or not Path(args.codex_cli).is_file():
         raise ValueError('worker paths unavailable')
     reader = asyncio.StreamReader(limit=65_537)
