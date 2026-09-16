@@ -1,8 +1,8 @@
 // Service worker: app-shell cache for PWA installs.
 // Never touches /_matrix (homeserver API) or media traffic.
 
-const CACHE = 'familychat-shell-v4'; // v4: strings 참조 수정 + 셸 network-first(핫픽스 고착 방지)
-const SHELL = ['./', './index.html', './main.js?v=3', './styles.css', './manifest.webmanifest', './icons/icon.svg'];
+const CACHE = 'familychat-shell-v5'; // v5: main.js?v=4 캐시 버스팅 — 구 SW(v3 cache-first)에 갇힌 깨진 번호 우회
+const SHELL = ['./', './index.html', './main.js?v=4', './styles.css', './manifest.webmanifest', './icons/icon.svg'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
