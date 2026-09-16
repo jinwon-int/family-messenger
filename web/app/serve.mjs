@@ -38,7 +38,12 @@ const server = createServer(async (req, res) => {
     const info = await stat(resolved).catch(() => null);
     const target = info?.isFile() ? resolved : join(root, 'index.html');
     const body = await readFile(target);
-    res.writeHead(200, { 'content-type': MIME[extname(target)] ?? 'application/octet-stream' });
+    const ext = extname(target);
+    // 코드 자산은 재배포가 즉시 보이도록 캐시 금지; 불변에 가까운 바이너리·아이콘만 짧게 캐시.
+    const cacheControl = ext === '.wasm' || ext === '.svg' || ext === '.png' || ext === '.ico'
+      ? 'public, max-age=86400'
+      : 'no-store';
+    res.writeHead(200, { 'content-type': MIME[ext] ?? 'application/octet-stream', 'cache-control': cacheControl });
     res.end(body);
   } catch {
     res.writeHead(404).end('not found');

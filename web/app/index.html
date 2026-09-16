@@ -12,7 +12,26 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app"><p style="font-family: sans-serif; padding: 24px; color: #666;">시작 중…</p></div>
+    <script>
+      // 모듈 로드·실행 실패를 빈 화면 대신 화면에 그대로 보여준다(진단용, 비밀값 없음).
+      (function () {
+        function show(message) {
+          var app = document.getElementById('app');
+          if (!app) return;
+          var note = document.createElement('pre');
+          note.style.cssText = 'font-family: monospace; padding: 24px; white-space: pre-wrap; color: #b00;';
+          note.textContent = '화면을 시작하지 못했습니다.\n' + message;
+          app.replaceChildren(note);
+        }
+        window.onerror = function (message, source, line, col) {
+          show(message + ' (' + (source || '?') + ':' + (line || '?') + ')');
+        };
+        window.addEventListener('unhandledrejection', function (event) {
+          show('promise: ' + (event.reason && (event.reason.message || event.reason)));
+        });
+      })();
+    </script>
     <noscript><p style="font-family: sans-serif; padding: 24px;">이 앱은 JavaScript가 필요합니다. 브라우저 설정에서 JavaScript를 켜 주세요.</p></noscript>
     <script type="module" src="./main.js?v=3"></script>
   </body>
