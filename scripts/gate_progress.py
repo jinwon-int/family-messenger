@@ -33,7 +33,9 @@ def fetch_json(base, token, path):
         return json.load(response)
 
 
-def count_room(base, token, room, fetch=fetch_json, page_limit=200):
+def count_room(base, token, room, fetch=None, page_limit=200):
+    # fetch는 정의 시점 바인딩을 피해 여기서 해석한다 — 테스트가 gp.fetch_json을 패치할 수 있도록.
+    fetch = fetch or fetch_json
     """Two single-page fetches (forward + backward); unique conversation counts.
 
     ``complete`` is true when the two windows overlap or the room-create event
@@ -114,13 +116,16 @@ def parse_args(argv):
     return args
 
 
-def main(argv=None, fetch=count_room, notify=None):
+def main(argv=None, counter=count_room, notify=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
     try:
         loaded = load_tuwunel_config(args.config)
         token = load_admin_token(args.admin_token_file)
         state = open_state(args.state)
-        record = {'room': args.room, **count_room(loaded['base'], token, args.room, fetch), 'status': 'ok'}
+        # counter: injectable counting function — DO NOT name it `fetch`: count_room's
+        # 4th positional is the http function and passing count_room itself recursed
+        # with the path as the room (double-encoded URL, M_BAD_JSON 400; measured).
+        record = {'room': args.room, **counter(loaded['base'], token, args.room), 'status': 'ok'}
         alert = 'off'
         if args.notify_every:
             previous = previous_total(state)
