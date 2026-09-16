@@ -5,6 +5,7 @@ import * as session from './session.js';
 import { createFamilyClient, loginWithPassword, PlaintextRefusedError } from './matrix/client.js';
 import { messageKind, humanFileSize, validateAttachment, attachmentContent } from './messages.js';
 import { extractMentions } from './mentions.js';
+import { describeInvite } from './invites.js';
 import { splitParticipants } from './participants.js';
 import * as ui from './ui.js';
 
@@ -15,6 +16,8 @@ const state = {
   client: null,
   myUserId: null,
   summaries: [],
+  invites: [],
+  aiConsentRooms: new Set(), // 방별 AI 동의 — 세션 안에서만 유지한다
   rooms: new Map(), // roomId -> {summary, timeline: []}
   currentRoomId: null,
   syncState: 'idle',
@@ -39,6 +42,17 @@ function renderCurrent() {
       onSelect: (room) => openRoom(room.roomId),
       onOpenVerification: openVerification,
       onOpenRecovery: openRecovery,
+      invites: state.invites.map((i) => i.view),
+      inviteHandlers: {
+        isAiConsentAcknowledged: (invite) => state.aiConsentRooms.has(invite.roomId),
+        onAiConsentChange: (invite, checked) => {
+          if (checked) state.aiConsentRooms.add(invite.roomId);
+          else state.aiConsentRooms.delete(invite.roomId);
+          renderCurrent();
+        },
+        onAccept: (invite) => respondInvite(invite, 'join'),
+        onDecline: (invite) => respondInvite(invite, 'decline'),
+      },
     });
   }
 }
@@ -59,17 +73,36 @@ async function connect(creds) {
     if (event.getType() !== 'm.room.message') return;
     appendTimeline(event);
   });
+  // 새 방이 보이면 목록·초대를 즉시 갱신한다(세션 중 도착한 초대 포함).
+  state.client.onRoomAdded(() => refreshSummaries());
   openRooms();
 }
 
 function refreshSummaries() {
   state.summaries = state.client.roomSummaries();
+  state.invites = state.client.inviteSummaries().map((summary) => ({ summary, view: describeInvite(summary) }));
+  const known = new Set([...state.summaries, ...state.invites.map((i) => i.summary)].map((s) => s.roomId));
+  for (const roomId of state.aiConsentRooms) {
+    if (!known.has(roomId)) state.aiConsentRooms.delete(roomId);
+  }
   for (const summary of state.summaries) {
     const existing = state.rooms.get(summary.roomId);
     if (existing) existing.summary = summary;
     else state.rooms.set(summary.roomId, { summary, timeline: [], notice: null });
   }
   renderCurrent();
+}
+
+async function respondInvite(invite, action) {
+  try {
+    if (action === 'join') await state.client.joinRoom(invite.roomId);
+    else await state.client.declineInvite(invite.roomId);
+    state.aiConsentRooms.delete(invite.roomId);
+    refreshSummaries();
+  } catch (error) {
+    console.error('invite action failed', error);
+    ui.setStatus(root, strings.invite.failed, 'error');
+  }
 }
 
 function agentUserIds(summary) {

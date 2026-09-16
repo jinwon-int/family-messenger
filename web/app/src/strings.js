@@ -28,6 +28,17 @@ export const strings = {
     unnamed: '이름 없는 대화',
     memberCount: (n) => `멤버 ${n}명`,
   },
+  invite: {
+    title: '초대',
+    from: (name) => `${name}님이 초대했습니다`,
+    accept: '수락',
+    decline: '거절',
+    aiConsentHeading: '이 방에는 AI 참여자가 있습니다',
+    aiConsentBody: '이 AI는 이 방을 읽을 수 있으며 답변에 필요한 내용이 제공업체에 전달될 수 있습니다.',
+    aiConsentLabel: '이해했으며 동의합니다',
+    aiConsentRequired: 'AI 안내에 동의해야 수락할 수 있습니다.',
+    failed: '초대 처리에 실패했습니다. 다시 시도하세요.',
+  },
   chat: {
     messagePlaceholder: '메시지 입력',
     send: '보내기',

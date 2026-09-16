@@ -4,6 +4,7 @@
 
 import { emojiLabel, transition } from './verification.js';
 import { createRecoveryFlow } from './recovery.js';
+import { canAccept } from './invites.js';
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -72,8 +73,58 @@ function roomBadge(kind) {
   return strings.rooms.otherBadge;
 }
 
+/** One pending-invitation card. handlers: {isAiConsentAcknowledged, onAiConsentChange, onAccept, onDecline}. */
+function inviteCard(invite, handlers) {
+  const acknowledged = handlers.isAiConsentAcknowledged(invite);
+  const gate = canAccept(invite, { aiConsentAcknowledged: acknowledged });
+  return el(
+    'article',
+    { class: 'invite-item' },
+    el(
+      'div',
+      { class: 'invite-head' },
+      el('span', { class: 'room-name' }, invite.displayName || strings.rooms.unnamed),
+      el('span', { class: `pill kind-${invite.kind}` }, roomBadge(invite.kind)),
+      invite.agentCount > 0
+        ? el('span', { class: 'pill ai', title: strings.participants.aiTitle }, strings.participants.aiBadge)
+        : null,
+    ),
+    invite.inviterName ? el('p', { class: 'hint' }, strings.invite.from(invite.inviterName)) : null,
+    el('p', { class: 'meta' }, strings.rooms.memberCount(invite.memberCount)),
+    invite.requiresAiConsent
+      ? el(
+          'div',
+          { class: 'invite-consent' },
+          el('p', { class: 'invite-consent-heading' }, strings.invite.aiConsentHeading),
+          el('p', {}, strings.invite.aiConsentBody),
+          el(
+            'label',
+            { class: 'invite-consent-check' },
+            el('input', {
+              type: 'checkbox',
+              checked: acknowledged || null,
+              onchange: (event) => handlers.onAiConsentChange(invite, event.target.checked),
+            }),
+            strings.invite.aiConsentLabel,
+          ),
+          gate.allowed ? null : el('p', { class: 'hint' }, strings.invite.aiConsentRequired),
+        )
+      : null,
+    el(
+      'div',
+      { class: 'row gap' },
+      el(
+        'button',
+        { type: 'button', class: 'primary', disabled: gate.allowed ? null : true, onclick: () => handlers.onAccept(invite) },
+        strings.invite.accept,
+      ),
+      el('button', { type: 'button', class: 'secondary', onclick: () => handlers.onDecline(invite) }, strings.invite.decline),
+    ),
+  );
+}
+
 /** Left pane: room list. Calls onSelect(room). */
-export function renderRoomList(root, { summaries, onSelect, syncState, onOpenVerification, onOpenRecovery }) {
+export function renderRoomList(root, { summaries, onSelect, syncState, onOpenVerification, onOpenRecovery, invites = [], inviteHandlers = null }) {
   root.replaceChildren();
   const body = syncState === 'loading'
     ? el('p', { class: 'empty' }, strings.rooms.loading)
@@ -100,6 +151,14 @@ export function renderRoomList(root, { summaries, onSelect, syncState, onOpenVer
             ),
           ),
         );
+  const inviteSection = inviteHandlers && invites.length > 0
+    ? el(
+        'section',
+        { class: 'card invites', 'aria-label': strings.invite.title },
+        el('h2', {}, strings.invite.title),
+        invites.map((invite) => inviteCard(invite, inviteHandlers)),
+      )
+    : null;
   root.append(
     el(
       'main',
@@ -111,6 +170,7 @@ export function renderRoomList(root, { summaries, onSelect, syncState, onOpenVer
         el('button', { type: 'button', class: 'secondary', onclick: onOpenVerification }, strings.verification.title),
         el('button', { type: 'button', class: 'secondary', onclick: onOpenRecovery }, strings.recovery.title),
       ),
+      inviteSection,
       body,
     ),
   );
