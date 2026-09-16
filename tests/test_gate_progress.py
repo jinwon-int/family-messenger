@@ -80,12 +80,15 @@ class StateAndNotifyTest(unittest.TestCase):
         gp.open_state(self.state)
         self.chunk = [ev('@a'), ev('@b', 2_000)]
 
-    def run_main(self, argv, notify=None):
+    def fake_counter(self):
         fetch, _ = fake_pages(page(self.chunk), page(list(reversed(self.chunk))))
+        return lambda base, token, room: gp.count_room(base, token, room, fetch)
+
+    def run_main(self, argv, notify=None):
         with mock.patch.object(gp, 'load_tuwunel_config',
                                return_value={'base': 'http://127.0.0.1:8008', 'server_name': 'example.com'}), \
                 mock.patch.object(gp, 'load_admin_token', return_value='tok'):
-            return gp.main(self.argv(argv), fetch=fetch, notify=notify)
+            return gp.main(self.argv(argv), counter=self.fake_counter(), notify=notify)
 
     def argv(self, extra=()):
         return ['--room', ROOM, '--state', str(self.state), *extra]
@@ -123,6 +126,18 @@ class StateAndNotifyTest(unittest.TestCase):
         latest = json.loads((self.state / 'latest.json').read_text())
         self.assertEqual(latest['notify'], 'unchanged')
 
+    def test_main_default_counter_does_not_recurse(self):
+        # 회귀(#118): main의 주입 파라미터 이름이 count_room의 http 함수 파라미터와
+        # 충돌해 count_room 자신이 fetch로 재귀 호출됐다(경로 이중 인코딩 → 400).
+        with mock.patch.object(gp, 'fetch_json', side_effect=
+                lambda base, token, path: page(self.chunk) if 'dir=f' in path else page(list(reversed(self.chunk)))), \
+                mock.patch.object(gp, 'load_tuwunel_config',
+                                  return_value={'base': 'http://127.0.0.1:8008', 'server_name': 'example.com'}), \
+                mock.patch.object(gp, 'load_admin_token', return_value='tok'):
+            code = gp.main(self.argv([]))  # counter 미지정 — 실제 count_room 기본 경로
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads((self.state / 'latest.json').read_text())['total'], 2)
+
     def test_untrusted_state_dir_rejected(self):
         import os
         loose = Path(self.dir.name) / 'loose'
@@ -133,11 +148,10 @@ class StateAndNotifyTest(unittest.TestCase):
         self.assertEqual(list(loose.iterdir()), [])
 
     def run_main_with_state(self, state_dir):
-        fetch, _ = fake_pages(page(self.chunk), page(list(reversed(self.chunk))))
         with mock.patch.object(gp, 'load_tuwunel_config',
                                return_value={'base': 'http://127.0.0.1:8008', 'server_name': 'example.com'}), \
                 mock.patch.object(gp, 'load_admin_token', return_value='tok'):
-            return gp.main(['--room', ROOM, '--state', str(state_dir)], fetch=fetch)
+            return gp.main(['--room', ROOM, '--state', str(state_dir)], counter=self.fake_counter())
 
 
 class ArgvTest(unittest.TestCase):
