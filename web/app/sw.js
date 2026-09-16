@@ -1,8 +1,8 @@
 // Service worker: app-shell cache for PWA installs.
 // Never touches /_matrix (homeserver API) or media traffic.
 
-const CACHE = 'familychat-shell-v2'; // v2: 초대·수락 화면
-const SHELL = ['./', './index.html', './main.js', './styles.css', './manifest.webmanifest', './icons/icon.svg'];
+const CACHE = 'familychat-shell-v3'; // v3: 구형 브라우저 호환 번호(target 하한)+캐시 버스팅
+const SHELL = ['./', './index.html', './main.js?v=3', './styles.css', './manifest.webmanifest', './icons/icon.svg'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)));
