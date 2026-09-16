@@ -46,6 +46,9 @@ await build({
   entryPoints: [join(here, 'src/main.js')],
   bundle: true,
   format: 'esm',
+  // esnext 기본값은 가족 기기의 구형 모바일 브라우저에서 파싱 실패로 빈 화면을 만든다
+  // (2026-09-16 첫 공개에서 관측). 명시 하한으로 내린다.
+  target: ['es2020'],
   outfile: join(dist, 'main.js'),
   minify: true,
   sourcemap: false,
