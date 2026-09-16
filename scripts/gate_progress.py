@@ -33,27 +33,33 @@ def fetch_json(base, token, path):
         return json.load(response)
 
 
-def count_room(base, token, room, fetch=fetch_json):
-    """Paginate /messages backwards: total, per-sender counts, newest timestamp."""
+def count_room(base, token, room, fetch=fetch_json, page_limit=200):
+    """Two single-page fetches (forward + backward); unique conversation counts.
+
+    ``complete`` is true when the two windows overlap or the room-create event
+    is in the union — the whole room then provably fits in one page. On this
+    server the page cap is 40 events (limit is ignored above that), so a big
+    room yields a newest-window lower bound with ``complete`` false.
+    """
     quoted = urllib.parse.quote(room, safe='')
-    total, by_sender, newest, to = 0, {}, 0, ''
-    while True:
-        params = {'dir': 'b', 'limit': '200'}
-        if to:
-            params['to'] = to
-        page = fetch(base, token, '/_matrix/client/v3/rooms/' + quoted + '/messages?' + urllib.parse.urlencode(params))
-        chunk = page.get('chunk', [])
-        for event in chunk:
-            if event.get('type') in CONVERSATION_TYPES:
-                total += 1
-                sender = event.get('sender', '?')
-                by_sender[sender] = by_sender.get(sender, 0) + 1
-                newest = max(newest, int(event.get('origin_server_ts') or 0))
-        end = page.get('end')
-        if not chunk or not end or end == to:
-            break
-        to = end
-    return {'total': total, 'by_sender': by_sender, 'last_event_ms': newest}
+    path = '/_matrix/client/v3/rooms/' + quoted + '/messages?'
+    forward = fetch(base, token, path + urllib.parse.urlencode({'dir': 'f', 'limit': page_limit}))
+    backward = fetch(base, token, path + urllib.parse.urlencode({'dir': 'b', 'limit': page_limit}))
+    events = {}
+    for page in (forward, backward):
+        for event in page.get('chunk', []):
+            events[event.get('event_id')] = event
+    total, by_sender, newest = 0, {}, 0
+    for event in events.values():
+        if event.get('type') in CONVERSATION_TYPES:
+            total += 1
+            sender = event.get('sender', '?')
+            by_sender[sender] = by_sender.get(sender, 0) + 1
+            newest = max(newest, int(event.get('origin_server_ts') or 0))
+    complete = bool({e.get('event_id') for e in forward.get('chunk', [])}
+                    & {e.get('event_id') for e in backward.get('chunk', [])}) \
+        or any(e.get('type') == 'm.room.create' for e in events.values())
+    return {'total': total, 'by_sender': by_sender, 'last_event_ms': newest, 'complete': complete}
 
 
 def open_state(state):
