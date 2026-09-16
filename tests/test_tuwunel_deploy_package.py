@@ -147,6 +147,24 @@ class OperationsTimersTest(unittest.TestCase):
         self.assertIn("check_storage.py /var/lib/tuwunel", unit)
         self.assertNotIn(".runtime", unit)
 
+    def test_gate_progress_units(self):
+        unit = (PKG / "family-messenger-gate-progress.service").read_text(encoding="utf-8")
+        self.assertIn("scripts/gate_progress.py", unit)
+        self.assertIn("EnvironmentFile=/etc/family-messenger/gate.env", unit)
+        self.assertIn("StateDirectoryMode=0700", unit)
+        timer = (PKG / "family-messenger-gate-progress.timer").read_text(encoding="utf-8")
+        self.assertIn("OnCalendar=*-*-* 09:00:00 Asia/Seoul", timer)
+
+    def test_web_service_serves_loopback_dist(self):
+        unit = (ROOT / "deploy" / "web" / "family-chat-web.service").read_text(encoding="utf-8")
+        self.assertIn("node serve.mjs", unit)
+        self.assertIn("WorkingDirectory=/opt/family-messenger-tuwunel/web/app", unit)
+        self.assertIn("PORT=8090", unit)
+        self.assertIn("ProtectSystem=strict", unit)
+        build = (ROOT / "deploy" / "web" / "build.sh")
+        self.assertTrue(build.exists())
+        self.assertIn("npm run build", build.read_text(encoding="utf-8"))
+
     def test_no_real_hosts_in_operation_units(self):
         paths = [PKG / name for name in (
             "family-messenger-backup.service", "family-messenger-backup.timer",

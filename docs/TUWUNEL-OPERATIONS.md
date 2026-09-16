@@ -160,6 +160,7 @@ python3 scripts/tuwunel_restore_drill.py \
 | `family-messenger-backup.timer` | 매일 04:30 Asia/Seoul | `scripts/tuwunel_backup.py` — 관리방 온라인 백업 + restic 쌍. restic 저장소·비밀번호는 환경 파일(예시 `/etc/family-messenger/backup.env`), admin 토큰 경로가 다른 호스트는 드롭인으로 ExecStart를 재지정 |
 | `family-messenger-storage.timer` | 매시 | `scripts/check_storage.py`를 Tuwunel 데이터 트리(`/var/lib/tuwunel`)에 실행 — 여유·보존 예산 경계 검사 |
 | `family-messenger-health.timer` | 매시 | `scripts/health_check.py` — client API 200·필수 유닛 활성·마지막 완료 백업 신선도(기본 26시간). `--alert-admin`이면 healthy↔unhealthy 전환 시에만 관리방 통지(0600 상태 파일로 중복 억제, 첫 실행은 기록만) |
+| `family-messenger-gate-progress.timer` | 매일 09:00 Asia/Seoul | `scripts/gate_progress.py` — 가족방 대화 이벤트 수(발신자별) 기록. 복호화 없이 개수만 세며, 기록은 `--state`의 `latest.json`+`history.jsonl`. 방 ID는 환경 파일(`GATE_ROOM_ID`)로 공급 |
 
 ```bash
 install -m 0644 deploy/tuwunel/family-messenger-backup.service deploy/tuwunel/family-messenger-backup.timer \

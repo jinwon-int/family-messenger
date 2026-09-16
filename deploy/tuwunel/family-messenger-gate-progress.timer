@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily family messenger gate progress record
+
+[Timer]
+OnCalendar=*-*-* 09:00:00 Asia/Seoul
+RandomizedDelaySec=10min
+Persistent=true
+Unit=family-messenger-gate-progress.service
+
+[Install]
+WantedBy=timers.target
