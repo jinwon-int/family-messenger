@@ -1,0 +1,21 @@
+[Unit]
+Description=Family chat web app (static dist server, loopback only)
+After=network.target
+
+[Service]
+Type=simple
+# dist/ 는 deploy/web/build.sh 로 미리 빌드한다(유닛은 서빙만 — npm 설치는 네트워크를 요구).
+WorkingDirectory=/opt/family-messenger-tuwunel/web/app
+Environment=NODE_ENV=production
+Environment=PORT=8090
+ExecStart=/usr/bin/node serve.mjs
+Restart=on-failure
+RestartSec=10
+UMask=0027
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
