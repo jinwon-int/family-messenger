@@ -94,3 +94,16 @@ dialog.sheet .column { margin-top: 10px; }
   main.center { margin-top: 6vh; }
   .timeline { min-height: 52dvh; }
 }
+
+/* 초대·수락 (src/invites.js) */
+.invites { display: flex; flex-direction: column; gap: 12px; margin-bottom: 4px; }
+.invites h2 { margin: 0; font-size: 1.05rem; }
+.invite-item { border-top: 1px solid var(--line); padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.invite-item:first-of-type { border-top: 0; padding-top: 0; }
+.invite-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.invite-head .room-name { font-weight: 700; }
+.invite-consent { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; background: #f6f8fd; }
+.invite-consent p { margin: 0; }
+.invite-consent-heading { font-weight: 700; }
+.invite-consent-check { display: flex; gap: 8px; align-items: center; font-weight: 600; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }

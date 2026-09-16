@@ -18,6 +18,7 @@
 | 기기 검증(이모지 비교) | SDK Rust crypto의 SAS를 이모지 시트로 진행(`src/verification.js` + `startEmojiVerification`). 이모지 한국어 라벨표 포함, 없는 항목은 SDK 영어 이름 표시 |
 | 복구 키 생성·보관 안내 | 로컬 생성(base58, 32바이트) → 한 번만 표시 → 다시 입력 확인(`src/recovery.js`). **키는 어디로도 전송되지 않는다** |
 | 사람과 AI 구별 표시 | 플릿 계약의 봇 사용자 ID 목록 또는 멤버 이벤트 표식(`us.familychat.kind: "agent"`)으로 AI 배지 표시(`src/participants.js`) |
+| 가족방 초대 수락 | 초대 목록·수락/거절(`src/invites.js` + 어댑터 `inviteSummaries`/`joinRoom`/`declineInvite`). AI 참여 방은 원칙 1 동의 확인 후에만 수락 활성화 |
 
 보안 경계(이 슬라이스에서 지킬 것):
 
@@ -97,7 +98,6 @@ glue가 기대하는 상대 경로 `dist/pkg/`로 복사하고, 번들이 그 �
   현재 시트는 키 생성·확인 안내까지만 담당한다.
 - 검증 요청이 도착했을 때 수신 쪽 시트 자동 연결(현재는 내가 요청을 보내는 쪽 흐름).
 - 타임라인 페이지네이션(이전 대화 불러오기), 읽음 표시, 알림 뱃지.
-- 가족방 초대 수락 화면, AI 초대 시 "이 AI가 읽는 범위·제공업체 전달 범위" 동의 안내(원칙 1).
 - 배포 경로(compose/터널) 대체 — `compose.yaml` 교체는 별도 작업(선언 범위 밖).
 
 ## 관련 문서

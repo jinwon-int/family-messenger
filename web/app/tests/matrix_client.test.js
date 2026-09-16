@@ -86,6 +86,15 @@ class FakeClient extends EventEmitter {
     return { user_id: '@a:example.com', access_token: 'tok', device_id: 'D' };
   }
 
+  async joinRoom(roomId) {
+    this.joinedRooms = [...(this.joinedRooms ?? []), roomId];
+    return { roomId };
+  }
+
+  async leave(roomId) {
+    this.leftRooms = [...(this.leftRooms ?? []), roomId];
+  }
+
   addRoom(room) {
     this.roomsById.set(room.roomId, room);
   }
@@ -355,4 +364,62 @@ test('roomMemberHandles는 가입 멤버의 localpart를 돌려준다', async ()
     { userId: '@minseo:example.com', localpart: 'minseo' },
   ]);
   assert.deepEqual(adapter.roomMemberHandles('!missing:example.com'), []);
+});
+
+test('초대 목록: 초대된 방만, 초대자와 AI 참여자를 요약한다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  const fakeMember = (userId, name, { membership = 'join', kind, sender } = {}) => ({
+    userId,
+    name,
+    events: {
+      member: {
+        getContent: () => (kind ? { 'us.familychat.kind': kind } : { membership }),
+        ...(sender ? { getSender: () => sender } : {}),
+      },
+    },
+  });
+  // 내 멤버십이 join인 방 — 초대 목록에서 제외된다.
+  adapter.client.addRoom(room('!family:example.com', { name: '우리 가족', members: [fakeMember('@minseo:example.com', '민서')] }));
+  // 초대된 가족방: AI(봇) 참여자 + 초대자 표시.
+  adapter.client.addRoom({
+    roomId: '!invited:example.com',
+    name: '',
+    getMembers: () => [
+      fakeMember('@haejun:example.com', '해준', { sender: '@haejun:example.com' }),
+      fakeMember('@helper:example.com', '도우미', { kind: 'agent' }),
+      fakeMember('@minseo:example.com', '민서', { membership: 'invite', sender: '@haejun:example.com' }),
+    ],
+    getJoinedMemberCount: () => 2,
+    getMyMember: () => ({ membership: 'invite', events: { member: { getSender: () => '@haejun:example.com' } } }),
+  });
+  const invites = adapter.inviteSummaries();
+  assert.deepEqual(invites.map((i) => i.roomId), ['!invited:example.com']);
+  const invite = invites[0];
+  assert.equal(invite.kind, 'family'); // 합류 2 + 나(초대) = 전체 3명 기준
+  assert.equal(invite.memberCount, 3);
+  assert.equal(invite.inviterName, '해준'); // 초대 이벤트 sender의 표시 이름
+  assert.deepEqual(invite.agents.map((m) => m.userId), ['@helper:example.com']);
+  assert.equal(invite.requiresAiConsent === undefined, true); // 게이트 판정은 describeInvite가 담당
+});
+
+test('수락·거절은 SDK joinRoom/leave로 전달된다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  await adapter.joinRoom('!invited:example.com');
+  await adapter.declineInvite('!other:example.com');
+  assert.deepEqual(adapter.client.joinedRooms, ['!invited:example.com']);
+  assert.deepEqual(adapter.client.leftRooms, ['!other:example.com']);
+});
+
+test('새 방이 보이면 onRoomAdded 콜백이 불리고 해제된다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  const seen = [];
+  const off = adapter.onRoomAdded((roomObj) => seen.push(roomObj.roomId));
+  adapter.client.emit('Room', { roomId: '!invited:example.com' });
+  adapter.client.emit('Room', { roomId: '!second:example.com' });
+  off();
+  adapter.client.emit('Room', { roomId: '!third:example.com' });
+  assert.deepEqual(seen, ['!invited:example.com', '!second:example.com']);
 });

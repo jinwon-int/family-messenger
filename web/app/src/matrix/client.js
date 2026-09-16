@@ -216,6 +216,63 @@ export class ClientAdapter {
   }
 
   /**
+   * Pending invitations: rooms where my own membership is 'invite'.
+   * Same summary shape as roomSummaries plus the inviter's display name.
+   * @param {{agentUserIds?: Iterable<string>}} [opts]
+   */
+  inviteSummaries(opts = {}) {
+    const rooms = this.client.getRooms?.() ?? [];
+    const direct = this.directRoomIds();
+    const summaries = [];
+    for (const room of rooms) {
+      const mine = room.getMyMember?.() ?? room.getMember?.(this.myUserId);
+      if ((mine?.membership ?? '') !== 'invite') continue;
+      const members = (room.getMembers?.() ?? []).map((m) => ({
+        userId: m.userId,
+        name: m.name,
+        content: m.events?.member?.getContent?.() ?? {},
+      }));
+      const isDirect = direct.has(room.roomId);
+      // 초대 시점에는 아직 합류하지 않았으므로 합류 수 대신 전체 멤버 수(합류+초대)를 쓴다 —
+      // 표시와 방 분류(가족방 기준 3명 이상) 모두 수락 뒤의 모습을 기준으로 한다.
+      const memberCount = members.length;
+      const otherMemberNames = members.filter((m) => m.userId !== this.myUserId).map((m) => m.name);
+      const { agents, humans } = splitParticipants(members, opts);
+      const senderId = mine?.events?.member?.getSender?.() ?? null;
+      const inviter = members.find((m) => m.userId === senderId) ?? null;
+      summaries.push({
+        roomId: room.roomId,
+        name: room.name,
+        otherMemberNames,
+        displayName: roomDisplayName({ name: room.name, otherMemberNames }),
+        isDirect,
+        memberCount,
+        kind: classifyRoom({ isDirect, memberCount }),
+        agents,
+        humans,
+        inviterName: inviter?.name ?? senderId ?? '',
+      });
+    }
+    return summaries;
+  }
+
+  /** Accept a pending invitation. */
+  joinRoom(roomId) {
+    return this.client.joinRoom(roomId);
+  }
+
+  /** Decline a pending invitation (leave a room we never joined). */
+  declineInvite(roomId) {
+    return this.client.leave(roomId);
+  }
+
+  /** Subscribe to rooms appearing in the store (new room, incoming invite). */
+  onRoomAdded(handler) {
+    this.client.on('Room', handler);
+    return () => this.client.removeListener('Room', handler);
+  }
+
+  /**
    * Emoji (SAS) device verification driver.
    *
    * `start` sends a verification request (own-user device verification
