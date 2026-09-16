@@ -1,12 +1,13 @@
 // Service worker: app-shell cache for PWA installs.
 // Never touches /_matrix (homeserver API) or media traffic.
 
-const CACHE = 'familychat-shell-v3'; // v3: 구형 브라우저 호환 번호(target 하한)+캐시 버스팅
+const CACHE = 'familychat-shell-v4'; // v4: strings 참조 수정 + 셸 network-first(핫픽스 고착 방지)
 const SHELL = ['./', './index.html', './main.js?v=3', './styles.css', './manifest.webmanifest', './icons/icon.svg'];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)));
-  self.skipWaiting();
+  event.waitUntil(
+    caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()),
+  );
 });
 
 self.addEventListener('activate', (event) => {
@@ -17,6 +18,20 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
+  const reqUrl = new URL(event.request.url);
+  const isShellDoc = event.request.mode === 'navigate'
+    || reqUrl.pathname === '/' || reqUrl.pathname.endsWith('/index.html') || reqUrl.pathname.endsWith('/main.js');
+  if (event.request.method === 'GET' && isShellDoc && reqUrl.origin === self.location.origin) {
+    // 셸·번들은 항상 네트워크 우선 — 핫픽스가 기기 캐시에 갇히지 않게 한다.
+    event.respondWith(
+      fetch(event.request).then((response) => {
+        const copy = response.clone();
+        caches.open(CACHE).then((cache) => cache.put(event.request, copy));
+        return response;
+      }).catch(() => caches.match(event.request)),
+    );
+    return;
+  }
   const request = event.request;
   if (request.method !== 'GET') return;
   const url = new URL(request.url);

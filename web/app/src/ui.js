@@ -2,6 +2,7 @@
 // modules in src/ into screens. All copy comes from src/strings.js and
 // every text is inserted as a text node (no HTML injection).
 
+import { strings } from './strings.js';
 import { emojiLabel, transition } from './verification.js';
 import { createRecoveryFlow } from './recovery.js';
 import { canAccept } from './invites.js';

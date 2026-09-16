@@ -10,7 +10,30 @@ import { splitParticipants } from './participants.js';
 import * as ui from './ui.js';
 
 const root = document.getElementById('app');
-const stores = { persistent: window.localStorage, volatile: window.sessionStorage };
+
+// iOS Safari '모든 쿠키 차단' 등에서 storage 프로퍼티 접근 자체가 throw한다 —
+// 모듈 전체가 죽어 빈 화면이 되는 것을 막는다(세션 지속만 포기).
+function safeStorage(candidate, label) {
+  try {
+    const probe = candidate.getItem('__probe__');
+    void probe;
+    return candidate;
+  } catch (error) {
+    console.warn(label + ' unavailable, using in-memory shim', error?.name);
+    const map = new Map();
+    return {
+      getItem: (key) => (map.has(key) ? map.get(key) : null),
+      setItem: (key, value) => map.set(key, String(value)),
+      removeItem: (key) => map.delete(key),
+      clear: () => map.clear(),
+    };
+  }
+}
+
+const stores = {
+  persistent: safeStorage(window.localStorage, 'localStorage'),
+  volatile: safeStorage(window.sessionStorage, 'sessionStorage'),
+};
 
 const state = {
   client: null,
