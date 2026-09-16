@@ -12,42 +12,64 @@ import gate_progress as gp
 ROOM = '!family:example.com'
 
 
-def fake_pages(pages):
-    """pages: dir=b 요청 순서대로 반환할 chunk 목록. 소진 뒤엔 빈 chunk를 반환한다(서버 동일)."""
-    calls = {'n': 0}
+def fake_pages(forward, backward):
+    """방향별 한 페이지씩: 서버는 limit 위와 무관하게 40개 창만 준다(2026-09-16 실측)."""
+    calls = []
 
     def fetch(base, token, path):
-        idx = calls['n']
-        calls['n'] += 1
-        if idx >= len(pages):
-            return {'chunk': [], 'end': pages[-1]['end']}
-        return {'chunk': pages[idx]['chunk'], 'end': pages[idx]['end']}
+        calls.append(path)
+        if 'dir=f' in path:
+            return forward
+        return backward
 
     return fetch, calls
 
 
-def ev(sender, ts=1_000, kind='m.room.encrypted'):
-    return {'type': kind, 'sender': sender, 'origin_server_ts': ts}
+def page(chunk, end='t'):
+    return {'chunk': chunk, 'end': end}
+
+
+def ev(sender, ts=1_000, kind='m.room.encrypted', event_id=None):
+    return {'type': kind, 'sender': sender, 'origin_server_ts': ts,
+            'event_id': event_id or ('$' + str(ts) + sender + kind)}
 
 
 class CountRoomTest(unittest.TestCase):
-    def test_pages_aggregate_and_stop_at_last_end(self):
-        pages = [
-            {'chunk': [ev('@a'), ev('@b'), ev('@a', 2_000, 'm.room.message')], 'end': 't1'},
-            {'chunk': [ev('@b', 500), {'type': 'm.room.member', 'sender': '@x'}], 'end': 't0'},
-        ]
-        fetch, calls = fake_pages(pages)
+    def test_small_room_counts_and_complete(self):
+        chunk = [ev('@a'), ev('@b'), ev('@a', 2_000, 'm.room.message'),
+                 {'type': 'm.room.create', 'sender': '@a', 'event_id': '$create'}]
+        fetch, calls = fake_pages(page(chunk), page(list(reversed(chunk))))
         result = gp.count_room('http://127.0.0.1:8008', 'tok', ROOM, fetch)
-        self.assertEqual(result['total'], 4)
-        self.assertEqual(result['by_sender'], {'@a': 2, '@b': 2})
+        self.assertEqual(result['total'], 3)
+        self.assertEqual(result['by_sender'], {'@a': 2, '@b': 1})
         self.assertEqual(result['last_event_ms'], 2_000)
-        self.assertEqual(calls['n'], 3)  # 마지막 end 재도달 확인 후 소진(빈 chunk)으로 정지
+        self.assertTrue(result['complete'])  # 양방향 창이 겹친다 — 방 전체가 한 페이지 안
+        self.assertEqual(len(calls), 2)  # f/b 각 1회 — to 체이닝 없음(Tuwunel은 to가 창을 못 옮긴다)
 
-    def test_empty_room(self):
-        fetch, _ = fake_pages([{'chunk': [], 'end': 't0'}])
+    def test_disjoint_windows_report_incomplete(self):
+        old = [ev('@a', 100, event_id='$old1'), {'type': 'm.room.create', 'sender': '@a', 'event_id': '$c'}]
+        new = [ev('@b', 9_000, event_id='$new1'), ev('@a', 9_100, event_id='$new2')]
+        fetch, _ = fake_pages(page(old), page(new))
         result = gp.count_room('http://127.0.0.1:8008', 'tok', ROOM, fetch)
-        self.assertEqual(result['total'], 0)
-        self.assertEqual(result['by_sender'], {})
+        # 창이 어긋나도 create가 관측되면 방 전체가 관측 범위 안이다.
+        self.assertTrue(result['complete'])
+        self.assertEqual(result['total'], 3)  # old1+new1+new2 — create는 대화 이벤트가 아니다
+
+    def test_overlap_beats_missing_create(self):
+        chunk = [ev('@a', 5_000, event_id='$x1'), ev('@b', 6_000, event_id='$x2')]
+        fetch, _ = fake_pages(page(chunk), page(list(reversed(chunk))))
+        result = gp.count_room('http://127.0.0.1:8008', 'tok', ROOM, fetch)
+        self.assertTrue(result['complete'])
+        self.assertEqual(result['total'], 2)
+
+    def test_big_room_lower_bound_flagged(self):
+        # 창이 어긋나고 create도 없으면(방이 페이지보다 크면) 하한임을 표시한다.
+        old = [ev('@a', 100 + i, event_id=f'$o{i}') for i in range(5)]
+        new = [ev('@b', 9_000 + i, event_id=f'$n{i}') for i in range(5)]
+        fetch, _ = fake_pages(page(old), page(new))
+        result = gp.count_room('http://127.0.0.1:8008', 'tok', ROOM, fetch)
+        self.assertFalse(result['complete'])
+        self.assertEqual(result['total'], 10)
 
 
 class StateAndNotifyTest(unittest.TestCase):
@@ -56,55 +78,66 @@ class StateAndNotifyTest(unittest.TestCase):
         self.addCleanup(self.dir.cleanup)
         self.state = Path(self.dir.name)
         gp.open_state(self.state)
+        self.chunk = [ev('@a'), ev('@b', 2_000)]
+
+    def run_main(self, argv, notify=None):
+        fetch, _ = fake_pages(page(self.chunk), page(list(reversed(self.chunk))))
+        with mock.patch.object(gp, 'load_tuwunel_config',
+                               return_value={'base': 'http://127.0.0.1:8008', 'server_name': 'example.com'}), \
+                mock.patch.object(gp, 'load_admin_token', return_value='tok'):
+            return gp.main(self.argv(argv), fetch=fetch, notify=notify)
 
     def argv(self, extra=()):
         return ['--room', ROOM, '--state', str(self.state), *extra]
 
-    def run_main(self, argv, fetch, notify=None):
-        with mock.patch.object(gp, 'load_tuwunel_config',
-                               return_value={'base': 'http://127.0.0.1:8008', 'server_name': 'example.com'}), \
-                mock.patch.object(gp, 'load_admin_token', return_value='tok'):
-            return gp.main(argv, fetch=fetch, notify=notify)
-
     def test_first_run_records_without_notify(self):
         notified = []
-        code = self.run_main(self.argv(['--notify-every', '100']),
-                             fetch=fake_pages([{'chunk': [ev('@a')], 'end': 't0'}])[0],
-                             notify=notified.append)
+        code = self.run_main(['--notify-every', '100'], notify=notified.append)
         self.assertEqual(code, 0)
         self.assertEqual(notified, [])
         latest = json.loads((self.state / 'latest.json').read_text())
-        self.assertEqual(latest['total'], 1)
+        self.assertEqual(latest['total'], 2)
+        self.assertEqual(latest['complete'], True)
         self.assertEqual(latest['notify'], 'recorded')
         history = (self.state / 'history.jsonl').read_text().strip().splitlines()
         self.assertEqual(len(history), 1)
 
     def test_threshold_crossing_notifies_once(self):
-        def run(total, notified):
-            pages = [{'chunk': [ev('@a', 1_000 + total) for _ in range(total)], 'end': 't0'}]
-            return self.run_main(self.argv(['--notify-every', '100']), fetch=fake_pages(pages)[0],
-                                 notify=notified.append)
-
-        run(1, [])  # 기록만 — notified 무시
-        self.assertEqual(json.loads((self.state / 'latest.json').read_text())['total'], 1)
         notified = []
-        self.assertEqual(run(150, notified), 0)
+        self.run_main(['--notify-every', '100'], notify=notified.append)  # total=2 기록
+        self.assertEqual(notified, [])
+        self.chunk = [ev('@a', 1_000 + i * 10) for i in range(150)] + \
+                     [{'type': 'm.room.create', 'sender': '@a', 'event_id': '$c'}]
+        code = self.run_main(['--notify-every', '100'], notify=notified.append)
+        self.assertEqual(code, 0)
         self.assertEqual(len(notified), 1)
         self.assertIn('150 conversation events', notified[0])
-        self.assertEqual(run(180, notified), 0)
-        self.assertEqual(len(notified), 1)  # 같은 경계(100) — 무음
-        self.assertEqual(run(250, notified), 0)
-        self.assertEqual(len(notified), 2)  # 다음 경계(200) 통과
+        latest = json.loads((self.state / 'latest.json').read_text())
+        self.assertEqual(latest['notify'], 'sent')
+
+    def test_same_threshold_is_silent(self):
+        notified = []
+        self.run_main(['--notify-every', '100'], notify=notified.append)
+        self.run_main(['--notify-every', '100'], notify=notified.append)  # total 동일
+        self.assertEqual(notified, [])
+        latest = json.loads((self.state / 'latest.json').read_text())
+        self.assertEqual(latest['notify'], 'unchanged')
 
     def test_untrusted_state_dir_rejected(self):
         import os
         loose = Path(self.dir.name) / 'loose'
         loose.mkdir(mode=0o755)
         os.chmod(loose, 0o755)
-        code = self.run_main(['--room', ROOM, '--state', str(loose)],
-                             fetch=fake_pages([{'chunk': [ev('@a')], 'end': 't0'}])[0])
+        code = self.run_main_with_state(loose)
         self.assertEqual(code, 1)
         self.assertEqual(list(loose.iterdir()), [])
+
+    def run_main_with_state(self, state_dir):
+        fetch, _ = fake_pages(page(self.chunk), page(list(reversed(self.chunk))))
+        with mock.patch.object(gp, 'load_tuwunel_config',
+                               return_value={'base': 'http://127.0.0.1:8008', 'server_name': 'example.com'}), \
+                mock.patch.object(gp, 'load_admin_token', return_value='tok'):
+            return gp.main(['--room', ROOM, '--state', str(state_dir)], fetch=fetch)
 
 
 class ArgvTest(unittest.TestCase):
