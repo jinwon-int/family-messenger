@@ -184,7 +184,7 @@ test('rust crypto 활성화 후 클라이언트를 시작한다', async () => {
   await adapter.enableEncryption();
   // Node has no IndexedDB: the crypto store falls back to memory instead of failing.
   assert.equal(typeof indexedDB, 'undefined');
-  assert.deepEqual(adapter.client.initRustCryptoOpts, { useIndexedDB: false });
+  assert.deepEqual(adapter.client.initRustCryptoOpts, { useIndexedDB: false, cryptoDatabasePrefix: 'familychat::_minseo_example.com::' });
   const states = [];
   adapter.start((state) => states.push(state));
   assert.ok(adapter.client.started);
@@ -200,14 +200,14 @@ test('IndexedDB가 있으면 영구 저장소를 쓰고, 명시 옵션이 우선
   globalThis.indexedDB = {};
   try {
     await adapter.enableEncryption();
-    assert.deepEqual(adapter.client.initRustCryptoOpts, { useIndexedDB: true });
+    assert.equal(adapter.client.initRustCryptoOpts.useIndexedDB, true);
     await adapter.enableEncryption({ useIndexedDB: false });
-    assert.deepEqual(adapter.client.initRustCryptoOpts, { useIndexedDB: false });
+    assert.equal(adapter.client.initRustCryptoOpts.useIndexedDB, false);
   } finally {
     delete globalThis.indexedDB;
   }
   await adapter.enableEncryption({ useIndexedDB: true });
-  assert.deepEqual(adapter.client.initRustCryptoOpts, { useIndexedDB: true });
+  assert.equal(adapter.client.initRustCryptoOpts.useIndexedDB, true);
 });
 
 test('rust crypto가 없으면 활성화가 실패한다', async () => {
@@ -688,4 +688,21 @@ test('resetLocalStores: clearStores를 부르고, 다른 탭이 잡고 있어 �
   await assert.rejects(adapter.resetLocalStores({ timeoutMs: 20 }), /timed out/);
   adapter.client.clearStores = undefined;
   assert.equal(await adapter.resetLocalStores(), false);
+});
+
+test('암호화 저장소 이름은 계정+기기별이고, 초기화·비우기·로그아웃이 같은 이름을 쓴다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  adapter.client.getDeviceId = () => 'DEVICE1';
+  assert.equal(adapter.cryptoDatabasePrefix(), 'familychat::_minseo_example.com::DEVICE1');
+  await adapter.enableEncryption();
+  assert.equal(adapter.client.initRustCryptoOpts.cryptoDatabasePrefix, 'familychat::_minseo_example.com::DEVICE1');
+  const seen = [];
+  adapter.client.clearStores = async (args) => { seen.push(args); };
+  await adapter.resetLocalStores();
+  adapter.client.logout = async () => {};
+  await adapter.logout();
+  assert.deepEqual(seen, [{ cryptoDatabasePrefix: 'familychat::_minseo_example.com::DEVICE1' }, { cryptoDatabasePrefix: 'familychat::_minseo_example.com::DEVICE1' }]);
+  adapter.client.getDeviceId = () => 'DEVICE2';
+  assert.notEqual(adapter.cryptoDatabasePrefix(), 'familychat::_minseo_example.com::DEVICE1', '다른 기기는 다른 저장소');
 });

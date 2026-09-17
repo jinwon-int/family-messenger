@@ -126,7 +126,20 @@ export class ClientAdapter {
     if (typeof this.client.initRustCrypto !== 'function') {
       throw new Error('initRustCrypto unavailable: matrix-js-sdk without rust crypto');
     }
-    await this.client.initRustCrypto({ useIndexedDB });
+    await this.client.initRustCrypto({ useIndexedDB, cryptoDatabasePrefix: this.cryptoDatabasePrefix() });
+  }
+
+  /**
+   * IndexedDB name prefix for the rust crypto store, unique per account+device.
+   * Every login gets a fresh device id, so a shared prefix made the store from
+   * a previous device collide ("the account in the store doesn't match …"),
+   * and deleting it at login raced with open handles (NotFoundError on the
+   * object stores, 2026-09-17). A per-device name needs no deletion at all.
+   */
+  cryptoDatabasePrefix() {
+    const device = this.client.getDeviceId?.() ?? this.client.deviceId ?? '';
+    const safe = (value) => String(value ?? '').replace(/[^A-Za-z0-9._-]/g, '_');
+    return `familychat::${safe(this.myUserId)}::${safe(device)}`;
   }
 
   /** Begin syncing. @param {(state: string) => void} [onSyncState] */
@@ -323,7 +336,7 @@ export class ClientAdapter {
       timer = setTimeout(() => reject(new Error('resetLocalStores: timed out (store open in another tab?)')), timeoutMs);
     });
     try {
-      await Promise.race([this.client.clearStores(), timeout]);
+      await Promise.race([this.client.clearStores({ cryptoDatabasePrefix: this.cryptoDatabasePrefix() }), timeout]);
       return true;
     } finally {
       clearTimeout(timer);
@@ -337,7 +350,7 @@ export class ClientAdapter {
     } finally {
       try {
         this.client.stopClient?.();
-        await this.client.clearStores?.();
+        await this.client.clearStores?.({ cryptoDatabasePrefix: this.cryptoDatabasePrefix() });
       } catch (error) {
         console.warn('clearStores after logout failed', error);
       }
