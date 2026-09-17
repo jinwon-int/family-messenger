@@ -40,3 +40,19 @@ export function splitParticipants(members, opts = {}) {
   }
   return { agents, humans };
 }
+
+const MXID_RE = /^@([^:\s]+):[^\s]+$/;
+
+/**
+ * Display label for a sender. The SDK falls back to the full Matrix id
+ * (@user:server) when a member has no display name; families read the
+ * localpart, so that case is shortened to "@user". Real display names and
+ * anything that is not a Matrix id pass through untouched.
+ * @param {string|null|undefined} name
+ * @returns {string}
+ */
+export function shortHandle(name) {
+  const text = String(name ?? '').trim();
+  const match = MXID_RE.exec(text);
+  return match ? `@${match[1]}` : text;
+}

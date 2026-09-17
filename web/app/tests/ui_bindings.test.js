@@ -35,3 +35,13 @@ test('ui.js는 인자 있는 replaceChildren을 직접 호출하지 않는다', 
   const withArgs = calls.filter((args) => args.length > 0 && !args.startsWith('...children'));
   assert.deepEqual(withArgs, []);
 });
+
+// 캐시 버스팅 드리프트 방지: index.html이 참조하는 styles.css 버전과 sw.js 셸 목록이 같아야
+// 구 SW(cache-first)에 갇힌 옛 스타일이 새 번들과 섞이지 않는다(2026-09-17 실기기 관측).
+test('index.html의 styles.css 버전은 sw.js 셸 목록과 일치한다', () => {
+  const html = readFileSync(join(import.meta.dirname, '..', 'index.html'), 'utf-8');
+  const sw = readFileSync(join(import.meta.dirname, '..', 'sw.js'), 'utf-8');
+  const htmlRef = /href="\.\/(styles\.css\?v=\d+)"/.exec(html)?.[1];
+  assert.ok(htmlRef, 'index.html은 styles.css?v=N 형태로 참조해야 한다');
+  assert.ok(sw.includes(`'./${htmlRef}'`), `sw.js SHELL에 ${htmlRef}가 있어야 한다`);
+});
