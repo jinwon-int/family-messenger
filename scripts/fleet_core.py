@@ -7,6 +7,7 @@ Each account owns one private directory and one process for the lifetime of Stor
 from dataclasses import dataclass
 import fcntl
 import hashlib
+import re
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,12 @@ from types import MappingProxyType
 
 MAX_TEXT_BYTES = 16_384
 MAX_REPLY_BYTES = 65_536
+
+
+def HANDLE_RE(account):
+    """Whole-token @localpart of a Matrix account, case-insensitive (e.g. @fambot for @fambot:hs)."""
+    localpart = account[1:].split(":", 1)[0]
+    return re.compile(r"(?<![\w.@-])@" + re.escape(localpart) + r"(?![\w.:-])", re.IGNORECASE)
 
 
 def identifier(value, prefix):
@@ -84,19 +91,30 @@ class Policy:
         relation = content.get("m.relates_to", {})
         if not isinstance(relation, dict) or "rel_type" in relation:
             return None
-        if self.rooms[room_id] == "mention":
-            mentions = content.get("m.mentions", {})
-            if not isinstance(mentions, dict):
-                return None
-            ids = mentions.get("user_ids", [])
-            if not isinstance(ids, list) or self.account not in ids:
-                return None
         try:
             body = bounded_text(content.get("body"), MAX_TEXT_BYTES)
         except ValueError:
             return None
+        if self.rooms[room_id] == "mention" and not self.addressed(content, body):
+            return None
         scope = hashlib.sha256(json.dumps([self.account, room_id, sender]).encode()).hexdigest()
         return Request(event["event_id"], room_id, sender, body, scope)
+
+
+    def addressed(self, content, body):
+        """Family-room gate: spec'd m.mentions, or a typed @localpart handle in the body.
+
+        Element X only emits m.mentions for pill mentions; family members on
+        the phone type "@fambot" as plain text (owner request 2026-09-17).
+        The handle must match the bot's own localpart as a whole token —
+        display names and partial matches still do not count.
+        """
+        mentions = content.get("m.mentions", {})
+        if isinstance(mentions, dict):
+            ids = mentions.get("user_ids", [])
+            if isinstance(ids, list) and self.account in ids:
+                return True
+        return bool(HANDLE_RE(self.account).search(body))
 
 
 class QueueFull(RuntimeError):

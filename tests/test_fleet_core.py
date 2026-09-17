@@ -42,13 +42,22 @@ class AdmissionTests(unittest.TestCase):
                 (ROOM, event(sender='@intruder:example.test'), True), (ROOM, event(sender=BOT), True)]:
             self.assertIsNone(p.admit(room, e, decrypted=decrypted, now_ms=NOW))
 
-    def test_group_requires_structured_mention_not_display_name(self):
+    def test_group_requires_structured_mention_or_typed_handle(self):
         p = policy()
-        e = event()
-        e['content']['body'] = BOT + ' please respond'
-        self.assertIsNone(p.admit(GROUP, e, decrypted=True, now_ms=NOW))
-        e['content']['m.mentions'] = {'user_ids': [BOT]}
+        local = BOT[1:].split(':')[0]
+        # 이름이나 부분 문자열로는 안 된다.
+        for body in ['please respond', 'Fambot please', '@' + local + 'x help', 'mail@' + local + '.com', 'x@' + local]:
+            e = event(); e['content']['body'] = body
+            self.assertIsNone(p.admit(GROUP, e, decrypted=True, now_ms=NOW), body)
+        # 스펙 m.mentions는 그대로 통과.
+        e = event(); e['content']['m.mentions'] = {'user_ids': [BOT]}
         self.assertIsNotNone(p.admit(GROUP, e, decrypted=True, now_ms=NOW))
+        # 본문에 @localpart를 통째로 치면 통과(휴대폰 앱은 pill 선택만 m.mentions를 만든다, 2026-09-17).
+        for body in ['@' + local + ' 오늘 일정 알려줘', '오늘 일정 @' + local.upper(), '(@' + local + ')', '@' + local + ', 안녕']:
+            e = event(); e['content']['body'] = body
+            self.assertIsNotNone(p.admit(GROUP, e, decrypted=True, now_ms=NOW), body)
+        # 직접방은 멘션 없이도 그대로.
+        self.assertIsNotNone(p.admit(ROOM, event(), decrypted=True, now_ms=NOW))
 
     def test_reject_edits_plain_files_old_future_and_malformed_events(self):
         p = policy()
