@@ -45,3 +45,17 @@ test('index.html의 styles.css 버전은 sw.js 셸 목록과 일치한다', () =
   assert.ok(htmlRef, 'index.html은 styles.css?v=N 형태로 참조해야 한다');
   assert.ok(sw.includes(`'./${htmlRef}'`), `sw.js SHELL에 ${htmlRef}가 있어야 한다`);
 });
+
+// 전송 순서 회귀 방지(2026-09-17 실기기): onSend가 동기 로컬 에코로 renderRoom을 재진입시키므로
+// 작성창은 onSend 호출 *전에* 비워야 초안 보존이 보낸 본문을 되살리지 않는다.
+test('composer submit은 onSend 호출 전에 작성창을 비운다', () => {
+  const source = readFileSync(join(SRC, 'ui.js'), 'utf-8');
+  const start = source.indexOf("class: 'composer',");
+  assert.ok(start >= 0, 'composer 폼을 찾지 못했다');
+  const handler = /onsubmit: \(event\) => \{[\s\S]*?\n      \},/.exec(source.slice(start))?.[0];
+  assert.ok(handler, 'composer onsubmit 핸들러를 찾지 못했다');
+  const clearAt = handler.indexOf("input.value = ''");
+  const sendAt = handler.indexOf('onSend(');
+  assert.ok(clearAt >= 0 && sendAt >= 0);
+  assert.ok(clearAt < sendAt, `input.value=''(${clearAt})가 onSend(${sendAt})보다 앞서야 한다`);
+});
