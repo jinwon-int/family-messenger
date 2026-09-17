@@ -9,8 +9,9 @@
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="./icons/icon.svg" />
-    <!-- build.mjs가 아래 참조들을 내용 해시가 붙은 파일명으로 바꾼다(styles-XXXXXXXX.css, boot-XXXXXXXX.js, main-XXXXXXXX.js).
-         수동 버전 쿼리는 더 쓰지 않는다 — 옛 서비스 워커에 갇힌 번들(#120~#122)의 재발 방지. -->
+    <!-- build.mjs가 아래 참조들을 내용 해시가 붙은 파일명(이름-8자리해시.확장자)으로 바꾼다.
+         수동 버전 쿼리는 더 쓰지 않는다 — 옛 서비스 워커에 갇힌 번들(#120~#122)의 재발 방지.
+         (주석에 해시 파일명 꼴의 예시를 적지 않는다: 검증·CI grep이 주석을 먼저 잡는다.) -->
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
