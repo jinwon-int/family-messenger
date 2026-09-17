@@ -46,14 +46,20 @@ class AdmissionTests(unittest.TestCase):
         p = policy()
         local = BOT[1:].split(':')[0]
         # 이름이나 부분 문자열로는 안 된다.
-        for body in ['please respond', 'Fambot please', '@' + local + 'x help', 'mail@' + local + '.com', 'x@' + local]:
+        rejected = ['please respond', 'Fambot please', '@' + local + 'x help', 'mail@' + local + '.com', 'x@' + local]
+        for body in rejected:
             e = event(); e['content']['body'] = body
             self.assertIsNone(p.admit(GROUP, e, decrypted=True, now_ms=NOW), body)
         # 스펙 m.mentions는 그대로 통과.
         e = event(); e['content']['m.mentions'] = {'user_ids': [BOT]}
         self.assertIsNotNone(p.admit(GROUP, e, decrypted=True, now_ms=NOW))
         # 본문에 @localpart를 통째로 치면 통과(휴대폰 앱은 pill 선택만 m.mentions를 만든다, 2026-09-17).
-        typed = ['@' + local + ' 오늘 일정 알려줘', '오늘 일정 @' + local.upper(), '(@' + local + ')', '@' + local + ', 안녕']
+        typed = [
+            '@' + local + ' 오늘 일정 알려줘',
+            '오늘 일정 @' + local.upper(),
+            '(@' + local + ')',
+            '@' + local + ', 안녕',
+        ]
         for body in typed:
             e = event(); e['content']['body'] = body
             self.assertIsNotNone(p.admit(GROUP, e, decrypted=True, now_ms=NOW), body)
