@@ -4,5 +4,6 @@
 # family-chat-web.service; re-run and restart the unit on every update.
 set -euo pipefail
 cd "$(dirname "$0")/../../web/app"
-npm install --no-package-lock --no-audit --no-fund
+# 잠금 파일(package-lock.json)이 커밋돼 있으므로 CI와 같은 npm ci로 재현 가능하게 설치한다.
+npm ci --no-audit --no-fund
 npm run build

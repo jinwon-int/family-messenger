@@ -67,8 +67,9 @@ web/app/
 
 의존성 원칙: 순수 로직 모듈(`src/*.js`)은 의존성 0으로 `node --test`에서 바로 돈다.
 `matrix-js-sdk`는 `src/matrix/client.js`에서만 동적으로 불러오고, SDK 미설치 환경에서는
-가짜 주입(테스트)으로 계약을 검증한다. `package-lock.json`은 커밋하지 않고 버전을
-package.json에 고정한다(정확 버전, `^` 없음).
+가짜 주입(테스트)으로 계약을 검증한다. 버전은 package.json에 정확히 고정하고(`^` 없음)
+`package-lock.json`을 **커밋한다** — CI(`web.yml`)와 배포(`deploy/web/build.sh`)는 `npm ci`로 잠금 파일
+그대로 설치한다(2026-09-17 정정: 이전 문서의 "락파일 미커밋"은 #102 이후 실제와 달랐다).
 
 ## 실행
 
@@ -76,7 +77,7 @@ Linux/macOS, Node 22 이상.
 
 ```bash
 cd web/app
-npm install --no-package-lock --no-audit --no-fund
+npm ci --no-audit --no-fund
 npm test                 # 단위 시험 (의존성 설치 없이도 가능: node --test tests/)
 node tests/transport_smoke.mjs   # SDK·Rust 암호화 WASM 스모크 (설치 후)
 npm run build            # dist/ 번들 (matrix-js-sdk + Rust 암호화 WASM 자산 복사 포함)
