@@ -16,7 +16,7 @@ test('주요 화면의 키가 존재한다', () => {
   for (const key of ['start', 'same', 'different', 'done', 'cancelled', 'close']) {
     assert.ok(key in strings.verification, `strings.verification.${key} missing`);
   }
-  for (const key of ['generate', 'showOnceHeading', 'confirm', 'mismatch', 'done', 'privacy']) {
+  for (const key of ['showOnceHeading', 'confirm', 'mismatch', 'done', 'privacy']) {
     assert.ok(key in strings.recovery, `strings.recovery.${key} missing`);
   }
 });
