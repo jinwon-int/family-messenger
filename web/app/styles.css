@@ -394,6 +394,9 @@ main.shell[data-view="room"] .pane-list { display: none; }
   min-height: 0;
   overscroll-behavior: contain;
 }
+.load-earlier { display: flex; justify-content: center; padding: var(--space-1) 0 var(--space-2); }
+.load-earlier button { min-height: 36px; font-size: var(--text-s); }
+.load-earlier .hint { font-size: var(--text-xs); color: var(--text-3); }
 .new-messages {
   position: absolute;
   left: 50%;

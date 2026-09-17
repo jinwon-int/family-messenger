@@ -244,6 +244,28 @@ export class ClientAdapter {
     });
   }
 
+  /** True while the live timeline still has a backwards pagination token. */
+  canLoadEarlier(roomId) {
+    const room = this.client.getRoom?.(roomId);
+    const timeline = room?.getLiveTimeline?.();
+    if (!timeline || typeof timeline.getPaginationToken !== 'function') return false;
+    return timeline.getPaginationToken('b') != null;
+  }
+
+  /**
+   * Fetch one page of older events into the live timeline (SDK scrollback);
+   * they arrive through onTimeline with atStart=true. Resolves with the
+   * number of events added (0 = reached the beginning or nothing older).
+   */
+  async loadEarlier(roomId, limit = 30) {
+    const room = this.client.getRoom?.(roomId);
+    if (!room || typeof this.client.scrollback !== 'function') return 0;
+    const before = room.getLiveTimeline?.()?.getEvents?.().length ?? 0;
+    await this.client.scrollback(room, limit);
+    const after = room.getLiveTimeline?.()?.getEvents?.().length ?? before;
+    return Math.max(0, after - before);
+  }
+
   /**
    * Download an attachment through the authenticated media endpoint and
    * decrypt it when it was sent end-to-end encrypted. Returns a Blob typed
@@ -276,16 +298,20 @@ export class ClientAdapter {
    * so the handler may see the same event id again and must replace).
    */
   onTimeline(handler) {
-    const listener = (event) => {
+    // SDK 인자: (event, room, toStartOfTimeline, removed, data). 이전 대화(scrollback)는
+    // toStartOfTimeline=true로 오고, removed=true는 로컬 에코 제거이므로 그리지 않는다.
+    const listener = (event, _room, toStartOfTimeline, removed) => {
+      if (removed) return;
+      const meta = { atStart: Boolean(toStartOfTimeline) };
       const encrypted = typeof event?.isEncrypted === 'function' && event.isEncrypted();
       if (!encrypted || typeof event.on !== 'function') {
-        handler(event);
+        handler(event, meta);
         return;
       }
-      event.on('Event.decrypted', () => handler(event));
+      event.on('Event.decrypted', () => handler(event, meta));
       const pending = typeof event.isBeingDecrypted === 'function' && event.isBeingDecrypted();
       const stillCiphertext = typeof event.getType === 'function' && event.getType() === 'm.room.encrypted';
-      if (!pending && !stillCiphertext) handler(event);
+      if (!pending && !stillCiphertext) handler(event, meta);
     };
     this.client.on('Room.timeline', listener);
     return () => this.client.removeListener('Room.timeline', listener);

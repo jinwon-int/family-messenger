@@ -66,6 +66,8 @@ export const strings = {
     decryptFailedShort: '열 수 없는 메시지',
     unreadable: '표시할 수 없는 메시지입니다.',
     historyLoading: '이전 대화를 불러오는 중…',
+    loadEarlier: '이전 대화 불러오기',
+    historyStart: '대화의 처음입니다',
   },
   participants: {
     aiBadge: 'AI',
