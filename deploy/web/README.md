@@ -21,7 +21,7 @@ curl -s http://127.0.0.1:8090/ | grep -o "<title>[^<]*"        # 껍데기 응�
 
 갱신: `git pull` → `bash deploy/web/build.sh` → `systemctl restart family-chat-web`.
 
-설정(선택): `web/app/config.json`(git-ignored, `config.example.json` 참고)에 파일보관함 URL을 적으면 빌드가
+설정(선택): `web/app/config.json`(git-ignored, `config.example.json` 참고)에 `homeserverUrl`을 적으면 로그인 화면이 홈서버 주소를 미리 채우고 "고급"으로 접어 두어 가족은 아이디·비밀번호만 입력한다(펼쳐서 바꿀 수 있음). 파일보관함 URL을 적으면 빌드가
 `dist/config.json`으로 싣고 앱 오른쪽 보관함 pane에 "파일보관함" 탭(iframe)이 생긴다. 파일이 없으면 첨부 탭만
 보인다. 임베드 대상 호스트는 이 앱 오리진의 프레임 삽입을 허용해야 하고(`frame-ancestors`), 접근 통제(예: Cloudflare
 Access)가 있으면 가족 계정이 허용 목록에 있어야 한다 — 첫 로그인은 "새 창에서 열기"로 한다.

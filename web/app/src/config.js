@@ -2,11 +2,24 @@
 // real hostnames: build.mjs copies web/app/config.json (git-ignored) when it
 // exists and writes `{}` otherwise. Only https URLs are accepted.
 
-export const DEFAULT_CONFIG = Object.freeze({ filebox: null });
+export const DEFAULT_CONFIG = Object.freeze({ filebox: null, homeserverUrl: null });
 
-/** @returns {{filebox: null|{url: string, title: string|null}}} */
+/** https URL string or null. */
+function httpsUrl(value) {
+  if (typeof value !== 'string') return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** @returns {{filebox: null|{url: string, title: string|null}, homeserverUrl: string|null}} */
 export function sanitizeConfig(raw) {
   let filebox = null;
+  // 로그인 화면의 기본 홈서버 주소(가족은 아이디·비밀번호만 입력). 끝 슬래시는 뗀다.
+  const homeserverUrl = httpsUrl(raw && typeof raw === 'object' ? raw.homeserverUrl : null)?.replace(/\/$/, '') ?? null;
   const candidate = raw && typeof raw === 'object' ? raw.filebox : null;
   if (candidate && typeof candidate.url === 'string') {
     try {
@@ -18,7 +31,7 @@ export function sanitizeConfig(raw) {
       filebox = null;
     }
   }
-  return { filebox };
+  return { filebox, homeserverUrl };
 }
 
 /** Fetch ./config.json; any failure yields the defaults (the app works without it). */

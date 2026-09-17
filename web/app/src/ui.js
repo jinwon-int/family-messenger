@@ -54,9 +54,16 @@ function timeLabel(ts) {
   }
 }
 
-/** Login screen. Calls onSubmit({homeserverUrl, user, password}). */
-export function renderLogin(root, { onSubmit }) {
+/**
+ * Login screen. Calls onSubmit({homeserverUrl, user, password}).
+ * defaults.homeserverUrl (deploy config / last login) pre-fills the server and
+ * folds the field under an "advanced" disclosure; defaults.user pre-fills the id.
+ */
+export function renderLogin(root, { onSubmit, defaults = {} }) {
   root.replaceChildren();
+  const homeserverDefault = typeof defaults.homeserverUrl === 'string' ? defaults.homeserverUrl : '';
+  const userDefault = typeof defaults.user === 'string' ? defaults.user : '';
+  const homeserverField = field(strings.login.homeserverLabel, { name: 'homeserverUrl', type: 'url', required: true, placeholder: strings.login.homeserverPlaceholder, autocomplete: 'url', inputmode: 'url', value: homeserverDefault || null });
   const form = el(
     'form',
     {
@@ -70,8 +77,10 @@ export function renderLogin(root, { onSubmit }) {
         });
       },
     },
-    field(strings.login.homeserverLabel, { name: 'homeserverUrl', type: 'url', required: true, placeholder: strings.login.homeserverPlaceholder, autocomplete: 'url', inputmode: 'url' }),
-    field(strings.login.userLabel, { name: 'user', required: true, autocomplete: 'username', placeholder: strings.login.userPlaceholder, autocapitalize: 'none', spellcheck: 'false' }),
+    homeserverDefault
+      ? el('details', { class: 'advanced' }, el('summary', {}, strings.login.homeserverAdvanced), homeserverField)
+      : homeserverField,
+    field(strings.login.userLabel, { name: 'user', required: true, autocomplete: 'username', placeholder: strings.login.userPlaceholder, autocapitalize: 'none', spellcheck: 'false', value: userDefault || null }),
     field(strings.login.passwordLabel, { name: 'password', type: 'password', required: true, autocomplete: 'current-password', placeholder: strings.login.passwordPlaceholder }),
     el('button', { type: 'submit', class: 'primary block' }, strings.login.submit),
   );
@@ -89,6 +98,9 @@ export function renderLogin(root, { onSubmit }) {
     el('p', { class: 'login-note' }, strings.login.encryptedNote),
   );
   root.append(el('main', { class: 'center login-wrap' }, card));
+  // 기본값이 채워졌으면 비어 있는 첫 칸(아이디 또는 비밀번호)에 커서를 둔다.
+  const firstEmpty = [...form.querySelectorAll('input')].find((input) => !input.value && !input.closest('details'));
+  firstEmpty?.focus();
 }
 
 /** Inline status line inside the current main element. */

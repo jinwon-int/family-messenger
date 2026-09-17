@@ -8,6 +8,7 @@ export const strings = {
     title: '가족 계정으로 로그인',
     hint: '가족 관리자가 발급한 계정으로 시작합니다.',
     homeserverLabel: '홈서버 주소',
+    homeserverAdvanced: '홈서버 주소 바꾸기 (기본값 사용 중)',
     homeserverPlaceholder: 'https://<homeserver>',
     userLabel: '사용자 이름',
     userPlaceholder: '예: minseo',

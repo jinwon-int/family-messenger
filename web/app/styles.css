@@ -268,6 +268,10 @@ button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
 .card.login button.primary { margin-top: var(--space-2); }
 .login-note { display: flex; align-items: flex-start; gap: var(--space-2); color: var(--text-3); font-size: var(--text-xs); line-height: 1.5; }
 
+details.advanced { border: 1px dashed var(--line-strong); border-radius: var(--radius); padding: var(--space-2) var(--space-3); }
+details.advanced summary { cursor: pointer; font-size: var(--text-s); color: var(--text-2); font-weight: 600; }
+details.advanced[open] summary { margin-bottom: var(--space-2); }
+
 /* ---------- 대화 목록 ---------- */
 
 .section-title { font-size: var(--text-s); font-weight: 700; color: var(--text-2); text-transform: none; letter-spacing: 0.02em; padding: var(--space-1) var(--space-1) 0; }
