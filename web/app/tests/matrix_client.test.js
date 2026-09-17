@@ -676,3 +676,16 @@ test('logout: 서버 로그아웃(stopClient) 후 로컬 저장소를 비운다'
   await adapter.logout();
   assert.deepEqual(calls, [['logout', true], ['clearStores']]);
 });
+
+test('resetLocalStores: clearStores를 부르고, 다른 탭이 잡고 있어 안 끝나면 제한 시간에 실패한다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  let cleared = 0;
+  adapter.client.clearStores = async () => { cleared += 1; };
+  assert.equal(await adapter.resetLocalStores(), true);
+  assert.equal(cleared, 1);
+  adapter.client.clearStores = () => new Promise(() => {});
+  await assert.rejects(adapter.resetLocalStores({ timeoutMs: 20 }), /timed out/);
+  adapter.client.clearStores = undefined;
+  assert.equal(await adapter.resetLocalStores(), false);
+});

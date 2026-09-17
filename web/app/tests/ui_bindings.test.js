@@ -107,3 +107,11 @@ test('ui.js renderShell은 같은 방이면 composer-wrap을 교체하지 않는
   assert.match(fn, /built\.mount\(\{ keepComposer: true \}\)/);
   assert.ok(fn.indexOf('built.mount({ keepComposer: true })') < fn.indexOf('root.replaceChildren()'), '부분 갱신 경로가 전체 재구성보다 먼저 와야 한다');
 });
+
+// 재로그인 저장소 불일치 회귀 방지(2026-09-17): 새 로그인은 저장소를 먼저 비우고, 복원 세션은 불일치일 때만 비우고 재시도.
+test('main.js는 새 로그인에서 저장소를 비우고 불일치 오류에 한해 재시도한다', () => {
+  const main = readFileSync(join(SRC, 'main.js'), 'utf-8');
+  assert.match(main, /account in the store doesn't match/);
+  assert.match(main, /await connect\(fresh, \{ fresh: true \}\)/);
+  assert.match(main, /if \(!fresh && isStoreMismatch\(error\)\)/);
+});

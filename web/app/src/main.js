@@ -170,16 +170,51 @@ async function openAttachment(attachment) {
   }
 }
 
-async function connect(creds) {
+/** The rust store belongs to another (previous) device of this account. */
+function isStoreMismatch(error) {
+  return /account in the store doesn't match/i.test(String(error?.message ?? error ?? ''));
+}
+
+async function enableEncryptionWithRecovery(client, { fresh }) {
+  // 새 로그인은 항상 새 기기 ID를 받으므로 이전 기기의 IndexedDB 암호화 저장소는 쓸 수 없다 —
+  // 그대로 두면 initRustCrypto가 "the account in the store doesn't match …"로 거부한다
+  // (2026-09-17 실기기: 같은 브라우저 재로그인 후 배너). 먼저 비운다.
+  if (fresh) {
+    try {
+      await client.resetLocalStores();
+    } catch (error) {
+      console.warn('store reset before first crypto init failed', error);
+    }
+  }
+  try {
+    await client.enableEncryption();
+    return null;
+  } catch (error) {
+    console.error('rust crypto unavailable', error);
+    // 복원된 세션은 기기가 같아 저장소에 방 키가 있을 수 있으니, 불일치 오류일 때만 비우고 한 번 재시도한다.
+    if (!fresh && isStoreMismatch(error)) {
+      try {
+        await client.resetLocalStores();
+        await client.enableEncryption();
+        return null;
+      } catch (retryError) {
+        console.error('rust crypto unavailable after store reset', retryError);
+        return retryError;
+      }
+    }
+    return error;
+  }
+}
+
+async function connect(creds, { fresh = false } = {}) {
   state.myUserId = creds.userId;
   state.client = await createFamilyClient(creds);
   state.cryptoError = null;
-  try {
-    await state.client.enableEncryption();
-  } catch (error) {
-    // 콘솔에만 남기면 이후 모든 전송이 조용히 실패하는 이유를 가족이 알 수 없다(#126) — 화면에 상시 배너.
-    console.error('rust crypto unavailable', error);
-    state.cryptoError = strings.errors.cryptoUnavailable;
+  const cryptoFailure = await enableEncryptionWithRecovery(state.client, { fresh });
+  if (cryptoFailure) {
+    // 콘솔에만 남기면 이후 모든 전송이 조용히 실패하는 이유를 가족이 알 수 없다(#126) — 화면에 상시 배너 + 원인.
+    const detail = String(cryptoFailure?.message ?? cryptoFailure).slice(0, 160);
+    state.cryptoError = `${strings.errors.cryptoUnavailable} (${detail})`;
   }
   state.client.start((syncState) => {
     state.syncState = syncState === 'PREPARED' || syncState === 'SYNCING' ? 'live' : syncState === 'ERROR' ? 'error' : state.syncState;
@@ -491,7 +526,7 @@ function renderLogin(previousError) {
           deviceId: creds.device_id,
         };
         session.saveSession(fresh, stores);
-        await connect(fresh);
+        await connect(fresh, { fresh: true });
       } catch (error) {
         console.error(error);
         ui.setStatus(root, strings.login.error, 'error');
