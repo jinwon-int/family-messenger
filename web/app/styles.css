@@ -131,6 +131,10 @@ p { margin: 0; }
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
 
+/* 부팅 안내(index.html — 인라인 style 대신 클래스, CSP style-src 'self') */
+.boot-note { font-family: sans-serif; padding: 24px; color: #666; }
+.boot-error { font-family: monospace; padding: 24px; white-space: pre-wrap; color: #b00; }
+
 /* ---------- 표면 ---------- */
 
 .card {
