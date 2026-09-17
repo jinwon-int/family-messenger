@@ -430,34 +430,32 @@ function buildRoom({ room, timeline, onSend, onAttach, onBack, notice, onToggleB
     }),
     el('button', { type: 'submit', class: 'primary' }, strings.chat.send),
   );
-  const pane = el(
-    'section',
-    { class: 'room-screen', 'data-room-id': room.roomId ?? '' },
+  const header = el(
+    'header',
+    { class: 'appbar' },
+    el('button', { type: 'button', class: 'icon ghost back', 'aria-label': strings.chat.back, onclick: onBack }, '←'),
     el(
-      'header',
-      { class: 'appbar' },
-      el('button', { type: 'button', class: 'icon ghost back', 'aria-label': strings.chat.back, onclick: onBack }, '←'),
-      el(
-        'div',
-        { class: 'titles' },
-        el('h2', {}, room.displayName || strings.rooms.unnamed),
-        el('span', { class: 'subtitle lock' }, `${roomBadge(room.kind)} · ${strings.rooms.memberCount(room.memberCount)} · ${strings.chat.encryptedShort}`),
-      ),
-      onToggleBox ? el('button', { type: 'button', class: 'icon ghost box-toggle', 'aria-label': strings.box.toggle, onclick: onToggleBox }, '📎') : null,
+      'div',
+      { class: 'titles' },
+      el('h2', {}, room.displayName || strings.rooms.unnamed),
+      el('span', { class: 'subtitle lock' }, `${roomBadge(room.kind)} · ${strings.rooms.memberCount(room.memberCount)} · ${strings.chat.encryptedShort}`),
     ),
-    notice ? el('p', { class: 'status error', role: 'alert' }, notice) : null,
-    el('div', { class: 'timeline-wrap' }, list, badge),
-    el('div', { class: 'composer-wrap' }, attachBar, composer),
+    onToggleBox ? el('button', { type: 'button', class: 'icon ghost box-toggle', 'aria-label': strings.box.toggle, onclick: onToggleBox }, '📎') : null,
   );
+  const noticeNode = notice ? el('p', { class: 'status error', role: 'alert' }, notice) : null;
+  const timelineWrap = el('div', { class: 'timeline-wrap' }, list, badge);
+  const composerWrap = el('div', { class: 'composer-wrap' }, attachBar, composer);
+  const pane = el('section', { class: 'room-screen', 'data-room-id': room.roomId ?? '' }, header, noticeNode, timelineWrap, composerWrap);
   const sameRoom = snap.roomId != null && snap.roomId === (room.roomId ?? '');
-  const mount = () => {
+  /** keepComposer: the existing composer stays in the DOM (incremental update) — don't touch draft/focus. */
+  const mount = ({ keepComposer = false } = {}) => {
     const input = composer.querySelector('textarea[name=body]');
-    if (sameRoom && snap.draft) {
+    if (!keepComposer && sameRoom && snap.draft) {
       input.value = snap.draft;
       input.style.height = 'auto';
       input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
     }
-    if (sameRoom && snap.hadFocus) {
+    if (!keepComposer && sameRoom && snap.hadFocus) {
       input.focus();
       const end = input.value.length;
       input.setSelectionRange(end, end);
@@ -474,7 +472,7 @@ function buildRoom({ room, timeline, onSend, onAttach, onBack, notice, onToggleB
       if (timeline.length > snap.count) badge.hidden = false;
     }
   };
-  return { pane, mount };
+  return { pane, mount, parts: { header, notice: noticeNode, timelineWrap, composerWrap } };
 }
 
 function fileRow(file, onOpen) {
@@ -557,9 +555,36 @@ function isWide() {
  */
 export function renderShell(root, { list, room, box = null }) {
   const snap = snapshotRoomPane(root);
-  root.replaceChildren();
   const onToggleBox = box ? box.onToggle : null;
+  // 좁은 화면에서만 보관함이 별도 화면이 된다; 1200px부터는 세 번째 열로 항상 보인다.
+  const view = box?.open && !isWide() ? 'box' : room ? 'room' : 'list';
   const listPane = buildRoomList({ ...list, currentRoomId: room?.room?.roomId ?? null, onToggleBox });
+
+  // 같은 방을 다시 그릴 때는 작성창(composer-wrap)을 절대 교체하지 않는다 — 요소를 새로 만들어
+  // value를 다시 넣으면 한글 IME 조합이 끊겨 "내가"가 "ㄴㅐㄱㅏ"로 깨지고 화면이 깜빡였다
+  // (2026-09-17 실기기). 목록·헤더·타임라인·보관함만 부분 교체한다.
+  const existingShell = root.querySelector('main.shell');
+  const existingScreen = existingShell?.querySelector('.room-screen') ?? null;
+  const sameRoom = Boolean(room && existingScreen && existingScreen.dataset.roomId === (room.room.roomId ?? ''));
+  if (existingShell && sameRoom && existingScreen.querySelector('.composer-wrap')) {
+    const built = buildRoom({ ...room, onToggleBox }, snap);
+    existingShell.querySelector('.pane-list')?.replaceWith(listPane);
+    existingScreen.querySelector(':scope > header.appbar')?.replaceWith(built.parts.header);
+    existingScreen.querySelector(':scope > .status')?.remove();
+    const oldWrap = existingScreen.querySelector(':scope > .timeline-wrap');
+    if (built.parts.notice) existingScreen.insertBefore(built.parts.notice, oldWrap);
+    oldWrap?.replaceWith(built.parts.timelineWrap);
+    const oldBox = existingShell.querySelector(':scope > .pane-box');
+    const newBox = box ? buildBox(box) : null;
+    if (oldBox && newBox) oldBox.replaceWith(newBox);
+    else if (newBox) existingShell.append(newBox);
+    else oldBox?.remove();
+    existingShell.dataset.view = view;
+    built.mount({ keepComposer: true });
+    return;
+  }
+
+  root.replaceChildren();
   let roomPane;
   let mount = null;
   if (room) {
@@ -570,8 +595,6 @@ export function renderShell(root, { list, room, box = null }) {
     roomPane = el('section', { class: 'pane pane-room' }, el('p', { class: 'empty pane-empty' }, strings.rooms.selectHint));
   }
   const boxPane = box ? buildBox(box) : null;
-  // 좁은 화면에서만 보관함이 별도 화면이 된다; 1200px부터는 세 번째 열로 항상 보인다.
-  const view = box?.open && !isWide() ? 'box' : room ? 'room' : 'list';
   root.append(el('main', { class: 'shell', 'data-view': view }, listPane, roomPane, boxPane));
   mount?.();
 }
