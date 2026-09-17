@@ -1,8 +1,10 @@
 """Node-local JSON-lines runtime port. No Matrix/Telegram credentials cross this port.
 
 The caller is trusted and must enforce actor/room authorization before forwarding
-input. One process has one active turn. Only Codex read-only pilot binding is
-provided; control logic accepts the existing provider-neutral AgentRuntime seam.
+input. One process has one active turn. The Codex binding is the same ccc-node
+runtime the Telegram bridge uses; the harness flags (workdir, memory materializer,
+approval/sandbox policy) decide how much of that node harness a room gets. Control
+logic accepts the existing provider-neutral AgentRuntime seam.
 """
 import argparse
 import asyncio
@@ -10,11 +12,24 @@ from collections.abc import Mapping
 import json
 import logging
 import math
+import os
 from pathlib import Path
+import re
 import secrets
 import sys
 
 from fleet_core import MAX_REPLY_BYTES, MAX_TEXT_BYTES, bounded_text
+
+# Codex app-server sandbox contracts, mirrored from the ccc-node Telegram bridge mapping.
+SANDBOX_POLICIES = {
+    'readOnly': {'type': 'readOnly'},
+    'workspaceWrite': {'type': 'workspaceWrite', 'networkAccess': False},
+    'dangerFullAccess': {'type': 'dangerFullAccess'},
+}
+APPROVAL_POLICIES = ('never', 'on-request', 'on-failure', 'untrusted')
+ROOM_KINDS = ('direct', 'family')
+NAME_RE = re.compile(r'[A-Za-z0-9._-]{1,64}')
+SENDER_RE = re.compile(r'@[a-zA-Z0-9._=-]{1,200}:[a-zA-Z0-9.:-]{1,64}')
 
 
 def plain(value):
@@ -23,6 +38,55 @@ def plain(value):
     if isinstance(value, (tuple, list)):
         return [plain(v) for v in value]
     return value
+
+
+def harness_options(args, environment):
+    """Map the fixed CLI flags onto ccc-node runtime/session keyword arguments.
+
+    Defaults reproduce the stage-1 pilot binding exactly (read-only sandbox,
+    approval=never, working-state archive off, no memory materializer), so a
+    parent that passes only ``--workdir``/``--codex-cli`` sees no behaviour change.
+    """
+    runtime = {'cli_path': args.codex_cli}
+    if getattr(args, 'working_state', 'off') == 'inherit':
+        # The service unit's CCC_* environment (not the message) configures working state.
+        runtime['working_state_environment'] = dict(environment)
+    else:
+        runtime['working_state_environment'] = {'CCC_WORKING_STATE_ARCHIVE': '0'}
+    materializer = getattr(args, 'memory_materializer', None)
+    if materializer is not None:
+        path = Path(materializer)
+        if not path.is_absolute() or not path.is_file():
+            raise ValueError('memory materializer unavailable')
+        runtime['memory_materializer_path'] = str(path)
+    approval_policy = getattr(args, 'approval_policy', 'never')
+    sandbox = getattr(args, 'sandbox', 'readOnly')
+    if approval_policy not in APPROVAL_POLICIES or sandbox not in SANDBOX_POLICIES:
+        raise ValueError('unknown execution policy')
+    request = {'working_directory': str(Path(args.workdir).resolve()),
+               'approval_policy': approval_policy,
+               'sandbox_policy': dict(SANDBOX_POLICIES[sandbox])}
+    for key in ('model', 'effort'):
+        value = getattr(args, key, None)
+        if value is not None:
+            if not NAME_RE.fullmatch(value):
+                raise ValueError('invalid ' + key)
+            request[key] = value
+    return runtime, request
+
+
+def compose_prompt(body, sender=None, room_kind=None):
+    """Prefix admitted routing context so a shared room's model knows who is speaking.
+
+    The parent already gated sender and room; this header is bounded by the
+    validators in ``Worker.handle`` and never derived from message text.
+    """
+    if sender is None and room_kind is None:
+        return body
+    header = '[가족방 메시지' if room_kind == 'family' else '[개인방 메시지'
+    if sender is not None:
+        header += ' · 보낸 사람: ' + sender
+    return header + ']\n' + body
 
 
 class Worker:
@@ -63,6 +127,13 @@ class Worker:
                 session_id = command.get('session_id')
                 if session_id is not None:
                     bounded_text(session_id, 255)
+                sender = command.get('sender')
+                room_kind = command.get('room_kind')
+                if sender is not None and not (isinstance(sender, str) and SENDER_RE.fullmatch(sender)):
+                    raise ValueError('invalid sender')
+                if room_kind is not None and room_kind not in ROOM_KINDS:
+                    raise ValueError('invalid room kind')
+                prompt = compose_prompt(prompt, sender, room_kind)
             except ValueError:
                 await self.emit({'type': 'rejected', 'turn_id': turn_id, 'reason': 'invalid-turn'})
                 return
@@ -251,6 +322,7 @@ async def main(args):
         from telegram_bot.core.codex_runtime import CodexRuntime
     if not Path(args.workdir).is_dir() or not Path(args.codex_cli).is_file():
         raise ValueError('worker paths unavailable')
+    runtime_options, request_options = harness_options(args, os.environ)
     reader = asyncio.StreamReader(limit=65_537)
     protocol = asyncio.StreamReaderProtocol(reader)
     await asyncio.get_running_loop().connect_read_pipe(lambda: protocol, sys.stdin.buffer)
@@ -272,13 +344,11 @@ async def main(args):
         except BaseException:
             output_transport.abort()
             raise
-    runtime = CodexRuntime(cli_path=args.codex_cli,
-                           working_state_environment={'CCC_WORKING_STATE_ARCHIVE': '0'})
+    runtime = CodexRuntime(**runtime_options)
     def request(session_id):
-        return SessionRequest(working_directory=str(Path(args.workdir).resolve()), session_id=session_id,
-                              approval_policy='never', sandbox_policy={'type': 'readOnly'})
+        return SessionRequest(session_id=session_id, **request_options)
     worker = Worker(runtime, emit, request, ApprovalDecision.ALLOW, ApprovalDecision.DENY,
-                    turn_timeout=args.turn_timeout)
+                    turn_timeout=args.turn_timeout, approval_timeout=getattr(args, 'approval_timeout', 120))
     try:
         await serve(worker, reader)
     finally:
@@ -287,9 +357,20 @@ async def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--workdir', required=True)
+    parser.add_argument('--workdir', required=True,
+                        help='Codex working directory; the node harness root (AGENTS.md, memory) when bound')
     parser.add_argument('--codex-cli', required=True)
     parser.add_argument('--turn-timeout', type=float, default=900)
+    parser.add_argument('--approval-timeout', type=float, default=120,
+                        help='seconds a room may take to answer /approve before the request is denied')
+    parser.add_argument('--memory-materializer', default=None,
+                        help='ccc-node Codex memory materializer script (same as CCC_CODEX_MEMORY_MATERIALIZER_PATH)')
+    parser.add_argument('--approval-policy', choices=APPROVAL_POLICIES, default='never')
+    parser.add_argument('--sandbox', choices=sorted(SANDBOX_POLICIES), default='readOnly')
+    parser.add_argument('--working-state', choices=('off', 'inherit'), default='off',
+                        help="'inherit' passes the service environment's CCC_WORKING_STATE_* keys through")
+    parser.add_argument('--model', default=None)
+    parser.add_argument('--effort', default=None)
     args = parser.parse_args()
     logging.basicConfig(level=logging.CRITICAL, stream=sys.stderr)
     try:
