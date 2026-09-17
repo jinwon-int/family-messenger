@@ -310,6 +310,26 @@ export class ClientAdapter {
     }
   }
 
+  /**
+   * Delete the local sync + rust crypto stores (IndexedDB). Only valid before
+   * start(). Used when a store left by a previous device would block
+   * initRustCrypto ("the account in the store doesn't match …"). Bounded, so a
+   * store held open by another tab cannot hang the login.
+   */
+  async resetLocalStores({ timeoutMs = 8000 } = {}) {
+    if (typeof this.client.clearStores !== 'function') return false;
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('resetLocalStores: timed out (store open in another tab?)')), timeoutMs);
+    });
+    try {
+      await Promise.race([this.client.clearStores(), timeout]);
+      return true;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /** Invalidate this session's token on the server, stop syncing and wipe local stores. */
   async logout() {
     try {
