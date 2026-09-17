@@ -585,6 +585,9 @@ export function renderShell(root, { list, room, box = null }) {
     return;
   }
 
+  // 전체 재구성은 열려 있는 시트(<dialog open>)를 지우면 안 된다 — 설정 메뉴가 닫히며 재렌더될 때
+  // 방금 연 기기 검증 시트가 사라졌다(2026-09-17 실기기, 목록 화면). 떼어 두었다가 다시 붙인다.
+  const openDialogs = [...root.querySelectorAll(':scope > dialog[open]')];
   root.replaceChildren();
   let roomPane;
   let mount = null;
@@ -596,7 +599,7 @@ export function renderShell(root, { list, room, box = null }) {
     roomPane = el('section', { class: 'pane pane-room' }, el('p', { class: 'empty pane-empty' }, strings.rooms.selectHint));
   }
   const boxPane = box ? buildBox(box) : null;
-  root.append(el('main', { class: 'shell', 'data-view': view }, listPane, roomPane, boxPane));
+  root.append(el('main', { class: 'shell', 'data-view': view }, listPane, roomPane, boxPane), ...openDialogs);
   mount?.();
 }
 
