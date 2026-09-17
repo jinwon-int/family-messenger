@@ -13,13 +13,15 @@
     "smoke:sdk": "node tests/transport_smoke.mjs",
     "build": "node build.mjs",
     "serve": "node serve.mjs",
-    "dev": "node build.mjs && node serve.mjs"
+    "dev": "node build.mjs && node serve.mjs",
+    "test:dom": "node --test tests/dom/*.test.mjs"
   },
   "dependencies": {
     "matrix-encrypt-attachment": "1.0.3",
     "matrix-js-sdk": "42.3.0"
   },
   "devDependencies": {
-    "esbuild": "0.28.2"
+    "esbuild": "0.28.2",
+    "happy-dom": "20.14.5"
   }
 }
