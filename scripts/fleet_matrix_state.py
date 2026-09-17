@@ -80,9 +80,13 @@ def validate_config(c):
         for kind in ['ed25519','curve25519']:
             if not isinstance(keys.get(kind),str) or not re.fullmatch(r'[A-Za-z0-9+/]{43}',keys[kind]):
                 raise SafetyStop('invalid-key-pin')
-    argv=c['worker_argv']
-    if (not isinstance(argv,list) or not 1<=len(argv)<=20 or not all(isinstance(v,str) and v and '\x00' not in v for v in argv)
-            or not Path(argv[0]).is_absolute()): raise SafetyStop('invalid-worker-command')
+    # `worker_argv_family` optionally binds family rooms to a differently-scoped worker
+    # (e.g. read-only harness) while direct owner rooms keep `worker_argv`.
+    for key in ('worker_argv','worker_argv_family'):
+        if key not in c:continue
+        argv=c[key]
+        if (not isinstance(argv,list) or not 1<=len(argv)<=20 or not all(isinstance(v,str) and v and '\x00' not in v for v in argv)
+                or not Path(argv[0]).is_absolute()): raise SafetyStop('invalid-worker-command')
     return c
 
 

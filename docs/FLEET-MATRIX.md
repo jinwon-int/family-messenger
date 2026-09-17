@@ -3,8 +3,11 @@
 `scripts/fleet_matrix.py`는 암호화 개인방의 텍스트 요청을 저장하고 별도 노드 실행부로
 전달한다. 이 파일을 추가한 것만으로 운영 봇이 설치되지는 않는다. #10/#1602의
 단계적 구현이며, 단체방·첨부·다른 provider·쓰기 작업의 실사용 정책은 후속 범위다.
-시험 worker CLI는 Codex read-only / approval=never다. 프로토콜의 승인 UI는
-가상 worker로 검증하며 실제 도구 실행 권한이 열렸다는 뜻이 아니다.
+worker CLI의 기본값은 Codex read-only / approval=never이고, 노드 하네스에 붙이는 플래그는
+[FLEET-WORKER.md](FLEET-WORKER.md#하네스-플래그)에 있다. `worker_argv_family`를 두면 가족방만
+다른(예: read-only) worker 인자로 실행하고 개인방은 `worker_argv`를 쓴다. 두 값 모두 저장
+정책에 포함되므로 바꾸면 `saved-policy-changed`로 멈춘다(의도된 재확인 절차).
+approval이 `never`가 아니면 worker의 승인 요청이 요청한 방의 `/approve`·`/deny`로 나간다.
 
 운영 서버의 연결부에서 다른 노드의 실행부를 부를 때는 [SSH 실행 계약](FLEET-REMOTE.md)의
 guardian·heartbeat·종료 확인과 `remote_worker: true`를 함께 사용한다.

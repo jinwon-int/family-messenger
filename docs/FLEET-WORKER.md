@@ -5,17 +5,42 @@ AgentRuntime에 연결한다. Telegram/Matrix 접속이나 새 네트워크 리�
 런타임 시임은 ccc-node의 정식 인터페이스 `telegram_bot.contracts`(ccc-node #1756)를
 우선 사용하고, 그 이전 체크아웃에서는 하위 호환 shim인 `telegram_bot.core` 경로로
 자동 폴백한다 — 혼합 플릿 롤아웃에서도 노드 포트가 깨지지 않는다.
-현재 실제 CLI 바인딩은 **Codex read-only + approval=never 시험용**이다.
-`Worker`의 승인·거절·취소 제어부는 provider-neutral 이벤트로 테스트하지만,
-실사용 승인 UI와 다른 provider의 실행 정책까지 구현되었다는 뜻은 아니다.
+CLI 바인딩은 Telegram 브리지와 **같은 ccc-node `CodexRuntime`**이다. 플래그 없이 실행하면
+시험용 기본값(빈 작업 폴더·read-only·approval=never·메모리 미주입)이고, 아래 하네스
+플래그를 주면 그 노드의 Telegram 경로와 같은 하네스(AGENTS.md·메모리 materializer·
+working-state·승인 정책)에 붙는다. 다른 provider의 실행 정책은 아직 구현되지 않았다.
 
 노드의 ccc-node가 설치된 Python으로 실행한다. SDK 의존성과 AI 자격 증명은
 해당 노드에 유지한다. 부모가 고정된 인자로 실행하고 메시지를 셸 명령에 삽입하지 않는다.
 
 ```sh
+# 시험용 기본값(기존과 동일)
 /path/to/ccc-python scripts/fleet_worker.py \
   --workdir /path/to/pilot-workspace --codex-cli /path/to/ccc-codex
+# 노드 하네스 바인딩(Telegram 브리지와 같은 project root·메모리)
+/path/to/ccc-python scripts/fleet_worker.py \
+  --workdir /root --codex-cli /path/to/ccc-codex \
+  --memory-materializer /path/to/ccc-node/bridge/.../ccc_codex_memory.py \
+  --working-state inherit --approval-policy on-request --sandbox workspaceWrite \
+  --approval-timeout 300
 ```
+
+## 하네스 플래그
+
+| 플래그 | 기본값 | 뜻 |
+| --- | --- | --- |
+| `--workdir` | (필수) | Codex 작업 디렉터리. 노드 하네스에 붙일 때는 Telegram 브리지의 project root(예: `/root`)와 같게 둔다. Codex는 여기서 `AGENTS.md`·`.codex/` 설정을 읽는다. |
+| `--memory-materializer` | 없음 | ccc-node의 Codex 메모리 materializer 절대 경로(브리지 `.env`의 `CCC_CODEX_MEMORY_MATERIALIZER_PATH`와 같은 파일). 없으면 메모리 미주입. |
+| `--working-state` | `off` | `inherit`이면 서비스 단위 환경의 `CCC_WORKING_STATE_*` 키를 런타임에 전달한다. `off`는 archive를 끈다. |
+| `--approval-policy` | `never` | Codex app-server 승인 정책(`never`·`on-request`·`on-failure`·`untrusted`). `never`가 아니면 승인 요청이 방의 `/approve`·`/deny` UI로 나간다. |
+| `--sandbox` | `readOnly` | `readOnly`·`workspaceWrite`(네트워크 차단)·`dangerFullAccess`. 브리지의 bash 정책 매핑과 같은 계약이다. |
+| `--approval-timeout` | `120` | 방이 `/approve`에 답할 수 있는 시간(초). 초과하면 거절로 처리한다. |
+| `--model` · `--effort` | 없음 | 비우면 노드 `.codex/config.toml`의 값을 쓴다. |
+
+부모(`fleet_matrix.py`)는 방 종류별로 다른 인자를 줄 수 있다(`worker_argv` = 개인방,
+`worker_argv_family` = 가족방). 가족방은 read-only로 두고 소유자 개인방만 쓰기·승인을
+여는 구성이 기본 권장이다. **`--sandbox readOnly`도 파일 시스템 전체 읽기를 허용**하므로,
+하네스 root 아래의 비밀값 노출은 방 참여자 신뢰 범위로 판단한다.
 
 ## 프로토콜
 
@@ -23,7 +48,10 @@ AgentRuntime에 연결한다. Telegram/Matrix 접속이나 새 네트워크 리�
 1~128자다. 한 번에 작업 하나만 실행한다. 다음 입력을 기다리는 동안 작업은 별도 asyncio
 task로 실행되므로 승인/취소 입력이 작업 뒤에 막히지 않는다.
 
-- `{"type":"turn","turn_id":"job-1","prompt":"...","session_id":null}`
+- `{"type":"turn","turn_id":"job-1","prompt":"...","session_id":null,"sender":"@owner:example","room_kind":"direct"}`
+  — `sender`(Matrix ID)·`room_kind`(`direct`|`family`)는 선택이며 부모가 이미 허용한 값만
+  넣는다. worker는 이를 `[가족방 메시지 · 보낸 사람: @dad:example]` 머리글로 프롬프트 앞에
+  붙여 모델이 공용방의 발신자를 구분하게 한다. 형식이 틀리면 `invalid-turn`으로 거절한다.
 - `{"type":"approve","turn_id":"job-1","approval_id":"worker-generated-nonce"}`
 - `{"type":"deny","turn_id":"job-1","approval_id":"worker-generated-nonce"}`
 - `{"type":"cancel","turn_id":"job-1"}`

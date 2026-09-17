@@ -73,12 +73,15 @@ class Frontend:
         # A saved inbox must never be silently rerouted by editing configuration.
         policy={k:config[k] for k in ('owner','rooms','devices','worker_argv','not_before_ms')}
         policy['remote_worker']=config.get('remote_worker',False)
+        policy['worker_argv_family']=config.get('worker_argv_family')
         policy['family_rooms']=sorted(self.family_rooms)
         policy['family_users']=sorted(self.family_users)
         policy['family_devices']=self.family_devices
         old=self.store.get_meta('policy')
         if old is not None:
             old.setdefault('remote_worker',False)
+            # Predecessors ran one worker command for every room.
+            old.setdefault('worker_argv_family',None)
             # Stage-1 predecessors had no family settings; empty is the safe upgrade.
             old.setdefault('family_rooms',[])
             old.setdefault('family_users',[])
@@ -244,6 +247,12 @@ class Frontend:
 
     def as_request(self,job):
         return Request(job['event_id'],job['room_id'],job['sender'],job['body'],job['scope'])
+
+    def worker_argv(self,job):
+        """Family rooms may run a differently-scoped worker; direct rooms always use `worker_argv`."""
+        if job['room_id'] in self.family_rooms and self.c.get('worker_argv_family'):
+            return self.c['worker_argv_family']
+        return self.c['worker_argv']
 
     async def input(self,req):
         if self.store.seen_control(req,record=False):return
@@ -414,11 +423,14 @@ class Frontend:
             self.active=job;self.approvals=set()
             result=None;heartbeat=None
             try:
-                self.proc=await asyncio.create_subprocess_exec(*self.c['worker_argv'],stdin=asyncio.subprocess.PIPE,
+                family=job['room_id'] in self.family_rooms
+                self.proc=await asyncio.create_subprocess_exec(*self.worker_argv(job),stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,limit=524_289,start_new_session=True)
                 tid=turn_id(job['event_id'])
+                # Routing context is admitted data (sender/room passed the gate), not user text.
                 await self.write_worker({'type':'turn','turn_id':tid,'prompt':job['body'],
-                                         'session_id':self.store.session(job['scope'])})
+                                         'session_id':self.store.session(job['scope']),
+                                         'sender':job['sender'],'room_kind':'family' if family else 'direct'})
                 if self.c.get('remote_worker'):heartbeat=asyncio.create_task(self.heartbeat())
                 self.store.notice(self.as_request(job),'started','작업을 시작했습니다. 취소 명령:\n/cancel '+tid)
                 async with asyncio.timeout(1200):

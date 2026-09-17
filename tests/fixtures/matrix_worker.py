@@ -8,6 +8,9 @@ tid=command['turn_id']
 def emit(**kw):print(json.dumps({'turn_id':tid,**kw}),flush=True)
 emit(type='session',session_id='synthetic-session')
 mode=sys.argv[1]
+if mode=='context':
+    # The frontend forwards admitted routing context with every turn (direct rooms in these tests).
+    assert command['room_kind']=='direct' and command['sender'].startswith('@'), 'missing routing context'
 if mode in ('approve','cancel'):
     emit(type='approval',approval_id='n'*32,description='Synthetic action',arguments={'value':1})
     control=json.loads(sys.stdin.readline())

@@ -42,7 +42,8 @@ class StateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             c=config(root)
             for update in ({'homeserver':'http://example.invalid'}, {'account':c['owner']},
-                           {'devices':{}},{'worker_argv':['relative']}, {'state_directory':'relative'}):
+                           {'devices':{}},{'worker_argv':['relative']}, {'state_directory':'relative'},
+                           {'worker_argv_family':['relative']},{'worker_argv_family':[]},{'worker_argv_family':'/abs'}):
                 with self.subTest(update=update),self.assertRaises((SafetyStop,ValueError)):
                     validate_config({**c,**update})
 
@@ -144,6 +145,10 @@ class FrontendTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(SafetyStop):await self.f.run()
         self.assertTrue(self.f.store.uncertain())
         self.assertFalse(any(j['reply']=='synthetic answer' for j in self.f.store.outbox()))
+
+    async def test_turn_carries_admitted_sender_and_room_kind(self):
+        req=request(self.f);await self.f.input(req);self.work('context')
+        await self.until(lambda:self.f.store.session(req.scope) is not None)
 
     async def test_complete_worker_result_and_replay_only_execute_once(self):
         req=request(self.f);await self.f.input(req);self.work()
@@ -249,12 +254,26 @@ class FamilyConfigTests(unittest.TestCase):
             old['remote_worker']=False
             f.store.set_meta('policy',old)  # Stage-0 saved policy without family keys.
             f.store.close()
-            f=Frontend(c)  # Upgrades silently to empty family settings.
+            f=Frontend(c)  # Upgrades silently to empty family settings and no family worker.
             self.assertEqual(f.store.get_meta('policy')['family_users'],[])
+            self.assertIsNone(f.store.get_meta('policy')['worker_argv_family'])
             f.store.close()
             with self.assertRaises(SafetyStop):Frontend({**c,'family_rooms':[c['rooms'][0]],
                 'family_users':[DAD],'family_devices':{DAD:{'D1':keyset('d')}}})
+            # Re-scoping the family worker command is a policy change, like editing worker_argv.
+            with self.assertRaises(SafetyStop):Frontend({**c,'worker_argv_family':['/other/worker']})
             f=Frontend(c);f.store.close()  # Failure released the process lock.
+
+    def test_family_rooms_select_family_worker_only_when_configured(self):
+        with tempfile.TemporaryDirectory() as root:
+            c=family_config(root);f=Frontend(c)
+            direct={'room_id':c['rooms'][0]};family={'room_id':FAMILY}
+            self.assertEqual(f.worker_argv(family),c['worker_argv'])
+            f.store.close()
+            f=Frontend({**c,'state_directory':str(Path(root)/'other'),'worker_argv_family':['/family/worker','--sandbox','readOnly']})
+            self.assertEqual(f.worker_argv(family),['/family/worker','--sandbox','readOnly'])
+            self.assertEqual(f.worker_argv(direct),c['worker_argv'])
+            f.store.close()
 
 
 class FamilyRoomTests(unittest.IsolatedAsyncioTestCase):
