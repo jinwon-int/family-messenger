@@ -109,3 +109,18 @@ test('시트: 설정 메뉴·기기 관리·검증·복구·미리보기가 "nul
   assert.equal(app.querySelector('dialog.preview img').getAttribute('alt'), 'p.jpg');
   closePreview();
 });
+
+test('설정 메뉴 항목이 연 시트는 메뉴 닫힘·전체 재렌더 뒤에도 남아 있다', async () => {
+  const app = root();
+  ui.renderShell(app, { list: listProps(), room: null, box: boxProps() });
+  let opened = null;
+  const closeMenu = ui.openMenuSheet(app, { items: [{ label: '기기 검증', onClick() { opened = ui.openVerificationSheet(app, { driver: async () => {} }); } }] });
+  app.querySelector('dialog.menu .menu-items button').click();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.ok(app.querySelector('dialog.sheet:not(.menu)'), '메뉴가 닫힌 뒤에도 검증 시트가 있어야 한다');
+  // 목록 화면 전체 재구성(방 없음)도 열린 시트를 보존해야 한다
+  ui.renderShell(app, { list: listProps(), room: null, box: boxProps() });
+  assert.ok(app.querySelector('dialog.sheet[open]'), '전체 재렌더 후에도 시트가 남아야 한다');
+  assert.equal(app.querySelectorAll('main.shell').length, 1);
+  closeMenu; opened?.();
+});

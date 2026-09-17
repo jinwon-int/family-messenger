@@ -444,7 +444,7 @@ function openMenu() {
       { label: strings.account.devicesTitle, onClick: openDevices },
       { label: strings.account.logout, onClick: logout, danger: true },
     ],
-    onClose: () => renderCurrent(),
+    // 메뉴가 닫힐 때 재렌더하지 않는다 — 닫힘(close) 이벤트가 비동기라 항목이 연 시트를 지웠다.
   });
 }
 
