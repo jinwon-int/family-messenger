@@ -21,5 +21,10 @@ curl -s http://127.0.0.1:8090/ | grep -o "<title>[^<]*"        # 껍데기 응�
 
 갱신: `git pull` → `bash deploy/web/build.sh` → `systemctl restart family-chat-web`.
 
+설정(선택): `web/app/config.json`(git-ignored, `config.example.json` 참고)에 파일보관함 URL을 적으면 빌드가
+`dist/config.json`으로 싣고 앱 오른쪽 보관함 pane에 "파일보관함" 탭(iframe)이 생긴다. 파일이 없으면 첨부 탭만
+보인다. 임베드 대상 호스트는 이 앱 오리진의 프레임 삽입을 허용해야 하고(`frame-ancestors`), 접근 통제(예: Cloudflare
+Access)가 있으면 가족 계정이 허용 목록에 있어야 한다 — 첫 로그인은 "새 창에서 열기"로 한다.
+
 터널 hostname 라우팅(예시: `app.<도메인>` → `http://127.0.0.1:8090`)은 Cloudflare 쪽
 설정이며, 이 저장소는 도메인·터널 ID를 갖지 않는다.

@@ -2,7 +2,7 @@
 // WASM) and copies the static shell. Run via `npm run build`.
 
 import { build } from 'esbuild';
-import { copyFile, cp, mkdir, readdir, readFile, rm } from 'node:fs/promises';
+import { copyFile, cp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -60,6 +60,11 @@ for (const file of ['index.html', 'styles.css', 'manifest.webmanifest', 'sw.js']
   await cp(join(here, file), join(dist, file));
 }
 await cp(join(here, 'icons'), join(dist, 'icons'), { recursive: true });
+
+// 배포 시 설정(web/app/config.json, git-ignored)을 dist에 싣는다. 없으면 빈 설정 —
+// 공개 저장소에는 실제 호스트명을 두지 않는다(config.example.json 참고).
+const configSource = join(here, 'config.json');
+await writeFile(join(dist, 'config.json'), existsSync(configSource) ? await readFile(configSource) : '{}\n');
 
 // Fail the build if the bundle does not reference the copied wasm.
 const bundle = await readFile(join(dist, 'main.js'), 'utf8');

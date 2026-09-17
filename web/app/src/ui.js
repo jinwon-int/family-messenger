@@ -7,6 +7,7 @@ import { emojiLabel, transition } from './verification.js';
 import { createRecoveryFlow } from './recovery.js';
 import { composerKeyAction } from './keyboard.js';
 import { canAccept } from './invites.js';
+import { humanFileSize } from './messages.js';
 
 /** replaceChildren that drops null/false entries (a bare null would render the text "null"). */
 function setChildren(node, ...children) {
@@ -192,7 +193,7 @@ function roomListItem(room, onSelect, active = false) {
 }
 
 /** Room list pane content (appbar, invites, rooms). */
-function buildRoomList({ summaries, onSelect, syncState, onOpenVerification, onOpenRecovery, invites = [], inviteHandlers = null, currentRoomId = null }) {
+function buildRoomList({ summaries, onSelect, syncState, onOpenVerification, onOpenRecovery, invites = [], inviteHandlers = null, currentRoomId = null, onToggleBox = null }) {
   const body = syncState === 'loading'
     ? el('p', { class: 'empty' }, strings.rooms.loading)
     : summaries.length === 0
@@ -218,6 +219,7 @@ function buildRoomList({ summaries, onSelect, syncState, onOpenVerification, onO
         { class: 'tools' },
         el('button', { type: 'button', class: 'ghost', onclick: onOpenVerification }, strings.verification.title),
         el('button', { type: 'button', class: 'ghost', onclick: onOpenRecovery }, strings.recovery.title),
+        onToggleBox ? el('button', { type: 'button', class: 'ghost box-toggle', onclick: onToggleBox }, strings.box.toggle) : null,
       ),
     ),
     syncState === 'error' && summaries.length > 0 ? el('p', { class: 'status warn', role: 'status' }, strings.rooms.syncError) : null,
@@ -282,7 +284,7 @@ function snapshotRoomPane(root) {
  * at the bottom; new message while scrolled up → keep the position and show
  * a floating "새 메시지" badge that jumps down on click.
  */
-function buildRoom({ room, timeline, onSend, onAttach, onBack, notice }, snap) {
+function buildRoom({ room, timeline, onSend, onAttach, onBack, notice, onToggleBox = null }, snap) {
   const list = el(
     'ul',
     { class: 'timeline', 'aria-live': 'polite' },
@@ -399,6 +401,7 @@ function buildRoom({ room, timeline, onSend, onAttach, onBack, notice }, snap) {
         el('h2', {}, room.displayName || strings.rooms.unnamed),
         el('span', { class: 'subtitle lock' }, `${roomBadge(room.kind)} · ${strings.rooms.memberCount(room.memberCount)} · ${strings.chat.encryptedShort}`),
       ),
+      onToggleBox ? el('button', { type: 'button', class: 'icon ghost box-toggle', 'aria-label': strings.box.toggle, onclick: onToggleBox }, '📎') : null,
     ),
     notice ? el('p', { class: 'status error', role: 'alert' }, notice) : null,
     el('div', { class: 'timeline-wrap' }, list, badge),
@@ -427,26 +430,122 @@ function buildRoom({ room, timeline, onSend, onAttach, onBack, notice }, snap) {
   return { pane, mount };
 }
 
+function fileRow(file, onOpen) {
+  const foot = [
+    file.size != null ? humanFileSize(file.size) : null,
+    file.roomName || null,
+    timeLabel(file.ts) || null,
+  ].filter(Boolean);
+  return el(
+    'li',
+    {},
+    el(
+      'button',
+      { type: 'button', class: 'file-item', onclick: () => onOpen(file) },
+      el('span', { class: `pill kind-${file.kind}` }, attachmentLabel(file.kind)),
+      el(
+        'span',
+        { class: 'texts' },
+        el('span', { class: 'file-name' }, file.name),
+        el('span', { class: 'meta' }, foot.join(' · ')),
+      ),
+      el('span', { class: 'chevron', 'aria-hidden': 'true' }, '›'),
+    ),
+  );
+}
+
+/** Right pane: attachments across rooms + optional embedded filebox (config.json). */
+function buildBox({ open, tab, attachments, filebox, onToggle, onTab, onRefresh, onOpen }) {
+  const tabs = filebox
+    ? el(
+        'div',
+        { class: 'box-tabs', role: 'tablist' },
+        el('button', { type: 'button', role: 'tab', 'aria-selected': tab === 'attachments' ? 'true' : 'false', onclick: () => onTab('attachments') }, strings.box.tabAttachments),
+        el('button', { type: 'button', role: 'tab', 'aria-selected': tab === 'filebox' ? 'true' : 'false', onclick: () => onTab('filebox') }, filebox.title),
+      )
+    : null;
+  const body = tab === 'filebox' && filebox
+    ? el(
+        'div',
+        { class: 'box-body filebox' },
+        el(
+          'div',
+          { class: 'filebox-tools' },
+          el('button', { type: 'button', class: 'secondary', onclick: onRefresh }, `🔄 ${strings.box.refresh}`),
+          el('a', { class: 'button ghost', href: filebox.homeUrl, target: '_blank', rel: 'noopener noreferrer' }, strings.box.newWindow),
+        ),
+        el('p', { class: 'hint' }, strings.box.loginHint),
+        el('div', { class: 'filebox-frame' }, el('iframe', { src: filebox.url, title: filebox.title, loading: 'lazy', referrerpolicy: 'strict-origin-when-cross-origin' })),
+      )
+    : el(
+        'div',
+        { class: 'box-body' },
+        attachments.length === 0
+          ? el('p', { class: 'empty' }, strings.box.empty)
+          : el('ul', { class: 'files' }, attachments.map((file) => fileRow(file, onOpen))),
+      );
+  return el(
+    'section',
+    { class: 'pane pane-box', 'aria-label': strings.box.title, 'data-open': open ? 'true' : 'false' },
+    el(
+      'header',
+      { class: 'appbar' },
+      el('button', { type: 'button', class: 'icon ghost back', 'aria-label': strings.box.close, onclick: onToggle }, '←'),
+      el('div', { class: 'titles' }, el('h2', {}, strings.box.title)),
+    ),
+    tabs,
+    body,
+  );
+}
+
+/** Wide layout (three columns) — the box pane is always visible there. */
+function isWide() {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 1200px)').matches;
+}
+
 /**
- * Whole app layout after login: list pane + room pane. On phones one pane is
+ * Whole app layout after login: list pane + room pane (+ box pane). On phones one pane is
  * shown at a time (data-view); from 900px both are side by side.
  * `room` may be null (nothing selected → placeholder on desktop).
  */
-export function renderShell(root, { list, room }) {
+export function renderShell(root, { list, room, box = null }) {
   const snap = snapshotRoomPane(root);
   root.replaceChildren();
-  const listPane = buildRoomList({ ...list, currentRoomId: room?.room?.roomId ?? null });
+  const onToggleBox = box ? box.onToggle : null;
+  const listPane = buildRoomList({ ...list, currentRoomId: room?.room?.roomId ?? null, onToggleBox });
   let roomPane;
   let mount = null;
   if (room) {
-    const built = buildRoom(room, snap);
+    const built = buildRoom({ ...room, onToggleBox }, snap);
     roomPane = el('section', { class: 'pane pane-room' }, built.pane);
     mount = built.mount;
   } else {
     roomPane = el('section', { class: 'pane pane-room' }, el('p', { class: 'empty pane-empty' }, strings.rooms.selectHint));
   }
-  root.append(el('main', { class: 'shell', 'data-view': room ? 'room' : 'list' }, listPane, roomPane));
+  const boxPane = box ? buildBox(box) : null;
+  // 좁은 화면에서만 보관함이 별도 화면이 된다; 1200px부터는 세 번째 열로 항상 보인다.
+  const view = box?.open && !isWide() ? 'box' : room ? 'room' : 'list';
+  root.append(el('main', { class: 'shell', 'data-view': view }, listPane, roomPane, boxPane));
   mount?.();
+}
+
+/** Photo preview sheet for an attachment already fetched to an object URL. */
+export function openPreviewSheet(root, { name, src, onClose }) {
+  const dialog = el('dialog', { class: 'sheet preview', 'aria-label': strings.box.previewTitle });
+  const close = () => dialog.close();
+  dialog.addEventListener('close', () => {
+    dialog.remove();
+    onClose?.();
+  });
+  setChildren(
+    dialog,
+    el('h2', {}, name),
+    el('img', { src, alt: name }),
+    el('div', { class: 'row end' }, el('button', { type: 'button', class: 'ghost', onclick: close }, strings.verification.close)),
+  );
+  root.append(dialog);
+  dialog.showModal();
+  return close;
 }
 
 /** Chat pane only (mobile room screen). Kept for callers/tests; renderShell is the full layout. */

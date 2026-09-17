@@ -18,6 +18,7 @@
 | 기기 검증(이모지 비교) | SDK Rust crypto의 SAS를 이모지 시트로 진행(`src/verification.js` + `startEmojiVerification`). 이모지 한국어 라벨표 포함, 없는 항목은 SDK 영어 이름 표시 |
 | 복구 키 생성·보관 안내 | 로컬 생성(base58, 32바이트) → 한 번만 표시 → 다시 입력 확인(`src/recovery.js`). **키는 어디로도 전송되지 않는다** |
 | 사람과 AI 구별 표시 | 플릿 계약의 봇 사용자 ID 목록 또는 멤버 이벤트 표식(`us.familychat.kind: "agent"`)으로 AI 배지 표시(`src/participants.js`) |
+| 보관함(첨부 + 파일보관함) | 오른쪽 pane(1200px부터 세 번째 열, 좁은 화면은 별도 화면). 첨부 탭은 참여한 모든 방의 사진·영상·파일을 최신순으로 모아 인증 미디어 엔드포인트로 받고(암호화 첨부는 `matrix-encrypt-attachment`로 복호화) 사진은 미리보기, 나머지는 다운로드. 파일보관함 탭은 `dist/config.json`의 `filebox.url`이 있을 때만 iframe으로 임베드(🔄 새로고침·새 창에서 열기, seo web bridge와 같은 방식) |
 | 가족방 초대 수락 | 초대 목록·수락/거절(`src/invites.js` + 어댑터 `inviteSummaries`/`joinRoom`/`declineInvite`). AI 참여 방은 원칙 1 동의 확인 후에만 수락 활성화 |
 
 화면 규칙(2026-09-17 재디자인):

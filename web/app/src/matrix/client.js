@@ -9,6 +9,7 @@
 
 import { classifyRoom, roomDisplayName } from '../rooms.js';
 import { splitParticipants } from '../participants.js';
+import { mediaDownloadPath } from '../attachments.js';
 
 /** @returns {Promise<object>} the matrix-js-sdk module */
 export function defaultSdkLoader() {
@@ -241,6 +242,26 @@ export class ClientAdapter {
       name: file.name,
       type: file.type ?? 'application/octet-stream',
     });
+  }
+
+  /**
+   * Download an attachment through the authenticated media endpoint and
+   * decrypt it when it was sent end-to-end encrypted. Returns a Blob typed
+   * with the attachment mimetype. `fetchFn`/`decrypt` are injectable for tests.
+   */
+  async fetchAttachment(attachment, { fetchFn = globalThis.fetch, decrypt } = {}) {
+    const path = mediaDownloadPath(attachment?.url);
+    if (!path) throw new Error('fetchAttachment: mxc:// URL required');
+    const base = String(this.client.getHomeserverUrl?.() ?? this.client.baseUrl ?? '').replace(/\/$/, '');
+    const token = this.client.getAccessToken?.();
+    const response = await fetchFn(base + path, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    if (!response.ok) throw new Error(`fetchAttachment: media download failed (${response.status})`);
+    let data = await response.arrayBuffer();
+    if (attachment.encrypted) {
+      const decryptFn = decrypt ?? (await import('matrix-encrypt-attachment')).decryptAttachment;
+      data = await decryptFn(data, attachment.encrypted);
+    }
+    return new Blob([data], { type: attachment.mimetype || 'application/octet-stream' });
   }
 
   /**
