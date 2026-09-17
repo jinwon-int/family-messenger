@@ -109,9 +109,9 @@ test('ui.js renderShell은 같은 방이면 composer-wrap을 교체하지 않는
 });
 
 // 재로그인 저장소 불일치 회귀 방지(2026-09-17): 새 로그인은 저장소를 먼저 비우고, 복원 세션은 불일치일 때만 비우고 재시도.
-test('main.js는 새 로그인에서 저장소를 비우고 불일치 오류에 한해 재시도한다', () => {
+test('main.js는 로그인 시 저장소를 지우지 않고, 불일치·손상 오류에 한해 기기별 저장소를 비우고 재시도한다', () => {
   const main = readFileSync(join(SRC, 'main.js'), 'utf-8');
   assert.match(main, /account in the store doesn't match/);
-  assert.match(main, /await connect\(fresh, \{ fresh: true \}\)/);
-  assert.match(main, /if \(!fresh && isStoreMismatch\(error\)\)/);
+  assert.match(main, /if \(isStoreMismatch\(error\) \|\| isBrokenStore\(error\)\)/);
+  assert.doesNotMatch(main, /if \(fresh\) \{\s*try \{\s*await client\.resetLocalStores/, '로그인 시 저장소 삭제는 blocked 경쟁을 만든다 — 기기별 이름으로 대체');
 });

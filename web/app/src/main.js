@@ -175,24 +175,24 @@ function isStoreMismatch(error) {
   return /account in the store doesn't match/i.test(String(error?.message ?? error ?? ''));
 }
 
+/** IndexedDB left half-deleted or with a stale schema (NotFoundError on object stores, VersionError). */
+function isBrokenStore(error) {
+  const text = String(error?.message ?? error ?? '');
+  return /object stores? was not found|NotFoundError|VersionError/i.test(text) || error?.name === 'NotFoundError' || error?.name === 'VersionError';
+}
+
 async function enableEncryptionWithRecovery(client, { fresh }) {
-  // 새 로그인은 항상 새 기기 ID를 받으므로 이전 기기의 IndexedDB 암호화 저장소는 쓸 수 없다 —
-  // 그대로 두면 initRustCrypto가 "the account in the store doesn't match …"로 거부한다
-  // (2026-09-17 실기기: 같은 브라우저 재로그인 후 배너). 먼저 비운다.
-  if (fresh) {
-    try {
-      await client.resetLocalStores();
-    } catch (error) {
-      console.warn('store reset before first crypto init failed', error);
-    }
-  }
+  // 저장소 이름이 계정+기기별이라(client.cryptoDatabasePrefix) 새 로그인은 항상 빈 저장소를 연다 —
+  // 로그인 시 삭제하지 않는다(삭제는 다른 탭이 잡고 있으면 blocked돼 반쯤 지워진 DB를 남겼다:
+  // NotFoundError "object stores was not found", 2026-09-17 실기기).
+  void fresh;
   try {
     await client.enableEncryption();
     return null;
   } catch (error) {
     console.error('rust crypto unavailable', error);
-    // 복원된 세션은 기기가 같아 저장소에 방 키가 있을 수 있으니, 불일치 오류일 때만 비우고 한 번 재시도한다.
-    if (!fresh && isStoreMismatch(error)) {
+    // 같은 이름의 저장소가 깨져 있거나(반쯤 지워진 DB) 다른 계정 것이면 이 기기 이름의 저장소만 비우고 한 번 재시도한다.
+    if (isStoreMismatch(error) || isBrokenStore(error)) {
       try {
         await client.resetLocalStores();
         await client.enableEncryption();
