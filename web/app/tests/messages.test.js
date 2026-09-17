@@ -77,3 +77,12 @@ test('mergeTimelineEntry: 같은 event id는 치환하고, id 없는 항목은 �
   assert.equal(mergeTimelineEntry(timeline, { body: '무명' }), 'appended');
   assert.deepEqual(timeline.map((e) => e.body), ['복호화됨', '둘째', '무명', '무명']);
 });
+
+test('mergeTimelineEntry: atStart는 앞에 붙이고(이전 대화), 같은 id는 치환한다', () => {
+  const timeline = [{ eventId: '$c', body: '셋' }];
+  assert.equal(mergeTimelineEntry(timeline, { eventId: '$b', body: '둘' }, { atStart: true }), 'prepended');
+  assert.equal(mergeTimelineEntry(timeline, { eventId: '$a', body: '하나' }, { atStart: true }), 'prepended');
+  assert.equal(mergeTimelineEntry(timeline, { eventId: '$d', body: '넷' }), 'appended');
+  assert.equal(mergeTimelineEntry(timeline, { eventId: '$b', body: '둘!' }, { atStart: true }), 'replaced');
+  assert.deepEqual(timeline.map((e) => e.body), ['하나', '둘!', '셋', '넷']);
+});

@@ -79,6 +79,9 @@ function renderCurrent() {
           room: current.summary,
           timeline: current.timeline,
           notice: current.notice,
+          hasMore: current.hasMore !== false,
+          loadingEarlier: current.loadingEarlier === true,
+          onLoadEarlier: () => loadEarlier(state.currentRoomId),
           onBack: openRooms,
           onSend: (text) => sendText(text),
           onAttach: (file) => sendAttachment(file),
@@ -175,10 +178,11 @@ async function connect(creds) {
   state.client.start((syncState) => {
     state.syncState = syncState === 'PREPARED' || syncState === 'SYNCING' ? 'live' : syncState === 'ERROR' ? 'error' : state.syncState;
     if (syncState === 'PREPARED' || syncState === 'ERROR') refreshSummaries();
+    if (syncState === 'PREPARED') backfillPreviews();
   });
-  state.client.onTimeline((event) => {
+  state.client.onTimeline((event, meta) => {
     if (event.getType() !== 'm.room.message') return;
-    appendTimeline(event);
+    appendTimeline(event, meta?.atStart === true);
   });
   // 새 방이 보이면 목록·초대를 즉시 갱신한다(세션 중 도착한 초대 포함).
   state.client.onRoomAdded(() => refreshSummaries());
@@ -270,13 +274,47 @@ function timelineEntry(event, summary) {
   };
 }
 
-function appendTimeline(event) {
+function appendTimeline(event, atStart = false) {
   const roomId = event.getRoomId?.();
   const entry0 = state.rooms.get(roomId);
   if (!entry0) return;
   // 복호화 재시도는 같은 event id로 다시 전달된다 — 자리표시를 본문으로 치환한다.
-  mergeTimelineEntry(entry0.timeline, timelineEntry(event, entry0.summary));
+  mergeTimelineEntry(entry0.timeline, timelineEntry(event, entry0.summary), { atStart });
   if (roomId === state.currentRoomId) renderCurrent();
+}
+
+const EARLIER_PAGE = 30;
+const OPEN_MIN_MESSAGES = 15;
+
+/** Pull one older page for a room; guarded so only one request runs per room. */
+async function loadEarlier(roomId, limit = EARLIER_PAGE) {
+  const entry = state.rooms.get(roomId);
+  if (!entry || entry.loadingEarlier || entry.hasMore === false) return 0;
+  entry.loadingEarlier = true;
+  if (roomId === state.currentRoomId) renderCurrent();
+  let added = 0;
+  try {
+    added = await state.client.loadEarlier(roomId, limit);
+    entry.hasMore = added > 0 && state.client.canLoadEarlier(roomId);
+  } catch (error) {
+    console.error('load earlier failed', error);
+  } finally {
+    entry.loadingEarlier = false;
+  }
+  if (roomId === state.currentRoomId) renderCurrent();
+  return added;
+}
+
+// 동기화 직후 미리보기(마지막 메시지)가 없는 방은 한 페이지씩 조용히 채운다(목록 미리보기·보관함용).
+let backfillStarted = false;
+async function backfillPreviews() {
+  if (backfillStarted) return;
+  backfillStarted = true;
+  const targets = [...state.rooms.entries()].filter(([, entry]) => entry.timeline.length === 0).slice(0, 12);
+  for (const [roomId] of targets) {
+    await loadEarlier(roomId, 20);
+    renderCurrent();
+  }
 }
 
 function openRooms() {
@@ -286,7 +324,11 @@ function openRooms() {
 
 function openRoom(roomId) {
   state.currentRoomId = roomId;
+  const entry = state.rooms.get(roomId);
+  if (entry && entry.hasMore === undefined) entry.hasMore = state.client.canLoadEarlier(roomId);
   renderCurrent();
+  // 방을 열었는데 보이는 메시지가 적으면 이전 페이지를 한 번 자동으로 채운다.
+  if (entry && entry.timeline.length < OPEN_MIN_MESSAGES && entry.hasMore !== false) loadEarlier(roomId);
   // 포인터가 정밀한(데스크톱) 환경에서는 방을 열면 바로 입력 가능하게 한다.
   // 모바일은 자동 포커스가 키보드를 띄워 방해가 되므로 제외.
   if (window.matchMedia('(pointer: fine)').matches) {

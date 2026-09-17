@@ -105,13 +105,18 @@ export function attachmentContent(file, mxcUrl, meta = {}) {
  * @param {{eventId?: string}} entry
  * @returns {'appended'|'replaced'}
  */
-export function mergeTimelineEntry(timeline, entry) {
+export function mergeTimelineEntry(timeline, entry, { atStart = false } = {}) {
   if (entry.eventId) {
     const index = timeline.findIndex((item) => item.eventId === entry.eventId);
     if (index >= 0) {
       timeline[index] = entry;
       return 'replaced';
     }
+  }
+  // 이전 대화(scrollback)는 오래된 순서로 하나씩 앞에 붙는다 — 뒤가 아니라 앞에 넣는다.
+  if (atStart) {
+    timeline.unshift(entry);
+    return 'prepended';
   }
   timeline.push(entry);
   return 'appended';

@@ -594,3 +594,30 @@ test('fetchAttachment: 인증 미디어 경로로 Bearer 요청, 암호화 첨�
   await assert.rejects(adapter.fetchAttachment({ url: 'https://x' }, { fetchFn }), /mxc/);
   await assert.rejects(adapter.fetchAttachment({ url: 'mxc://h/x' }, { fetchFn: async () => ({ ok: false, status: 403 }) }), /403/);
 });
+
+test('onTimeline: toStartOfTimeline은 atStart로 전달하고 removed(로컬 에코 제거)는 무시한다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  const seen = [];
+  adapter.onTimeline((event, meta) => seen.push([event, meta.atStart]));
+  const plain = { isEncrypted: () => false, getType: () => 'm.room.message', on() {} };
+  adapter.client.emit('Room.timeline', plain, {}, true, false);
+  adapter.client.emit('Room.timeline', plain, {}, false, false);
+  adapter.client.emit('Room.timeline', plain, {}, undefined, true);
+  assert.deepEqual(seen, [[plain, true], [plain, false]]);
+});
+
+test('loadEarlier/canLoadEarlier: scrollback으로 이전 페이지를 받고 추가된 수를 돌려준다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  let events = ['e3'];
+  let token = 't1';
+  const room = { roomId: '!r:example.com', getLiveTimeline: () => ({ getEvents: () => events, getPaginationToken: (dir) => (dir === 'b' ? token : null) }) };
+  adapter.client.addRoom(room);
+  adapter.client.scrollback = async (r, limit) => { assert.equal(r, room); assert.equal(limit, 30); events = ['e1', 'e2', ...events]; token = null; return r; };
+  assert.equal(adapter.canLoadEarlier('!r:example.com'), true);
+  assert.equal(await adapter.loadEarlier('!r:example.com'), 2);
+  assert.equal(adapter.canLoadEarlier('!r:example.com'), false);
+  assert.equal(await adapter.loadEarlier('!missing:example.com'), 0);
+  assert.equal(adapter.canLoadEarlier('!missing:example.com'), false);
+});

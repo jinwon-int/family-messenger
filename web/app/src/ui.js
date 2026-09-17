@@ -258,7 +258,7 @@ function bubble(entry) {
   const foot = [entry.meta, time].filter(Boolean);
   return el(
     'li',
-    { class: `bubble kind-${entry.kind}`, 'data-me': entry.isMe ? 'true' : 'false' },
+    { class: `bubble kind-${entry.kind}`, 'data-me': entry.isMe ? 'true' : 'false', 'data-event-id': entry.eventId ?? null },
     entry.isMe ? null : el('span', { class: 'who' }, participantLabel(entry, entry)),
     el('p', { class: 'body' }, attach ? el('span', { class: 'attach-label' }, attach) : null, entry.body),
     foot.length > 0 ? el('span', { class: 'foot' }, foot.map((text, i) => (i > 0 ? ` · ${text}` : text))) : null,
@@ -279,6 +279,7 @@ function isNearBottom(list) {
 function snapshotRoomPane(root) {
   const previous = root.querySelector('.composer textarea[name=body]');
   const list = root.querySelector('.timeline');
+  const firstBubble = list?.querySelector('li.bubble');
   return {
     roomId: root.querySelector('.room-screen')?.dataset.roomId ?? null,
     draft: previous?.value ?? '',
@@ -286,6 +287,8 @@ function snapshotRoomPane(root) {
     scrollTop: list?.scrollTop ?? 0,
     nearBottom: list ? isNearBottom(list) : true,
     count: list ? list.querySelectorAll('li.bubble').length : 0,
+    firstEventId: firstBubble?.dataset.eventId ?? null,
+    firstOffset: firstBubble ? firstBubble.offsetTop - list.offsetTop : 0,
   };
 }
 
@@ -295,12 +298,29 @@ function snapshotRoomPane(root) {
  * at the bottom; new message while scrolled up → keep the position and show
  * a floating "새 메시지" badge that jumps down on click.
  */
-function buildRoom({ room, timeline, onSend, onAttach, onBack, notice, onToggleBox = null }, snap) {
+function buildRoom({ room, timeline, onSend, onAttach, onBack, notice, onToggleBox = null, hasMore = false, loadingEarlier = false, onLoadEarlier = null }, snap) {
+  // 맨 위 행: 이전 대화 불러오기 버튼 / 불러오는 중 / 대화의 처음.
+  const earlierRow = el(
+    'li',
+    { class: 'load-earlier' },
+    loadingEarlier
+      ? el('span', { class: 'hint' }, strings.chat.historyLoading)
+      : hasMore && onLoadEarlier
+        ? el('button', { type: 'button', class: 'ghost', onclick: () => onLoadEarlier() }, strings.chat.loadEarlier)
+        : timeline.length > 0 ? el('span', { class: 'hint' }, strings.chat.historyStart) : null,
+  );
   const list = el(
     'ul',
     { class: 'timeline', 'aria-live': 'polite' },
-    timeline.length === 0 ? el('li', { class: 'empty' }, strings.chat.empty) : timeline.map(bubble),
+    earlierRow,
+    timeline.length === 0 && !loadingEarlier ? el('li', { class: 'empty' }, strings.chat.empty) : timeline.map(bubble),
   );
+  // 맨 위 근처까지 올리면 자동으로 이전 페이지를 요청한다(한 번에 하나, main.js가 가드).
+  if (hasMore && onLoadEarlier) {
+    list.addEventListener('scroll', () => {
+      if (list.scrollTop <= 40 && !loadingEarlier) onLoadEarlier();
+    });
+  }
   const badge = el(
     'button',
     {
@@ -431,7 +451,12 @@ function buildRoom({ room, timeline, onSend, onAttach, onBack, notice, onToggleB
       const end = input.value.length;
       input.setSelectionRange(end, end);
     }
-    if (!sameRoom || snap.nearBottom) {
+    // 앞에 붙은 이전 대화가 있으면(이전 첫 말풍선이 더 아래로 밀림) 보던 위치를 유지한다.
+    const anchor = sameRoom && snap.firstEventId ? list.querySelector(`li.bubble[data-event-id="${CSS.escape(snap.firstEventId)}"]`) : null;
+    const anchorIndex = anchor ? [...list.querySelectorAll('li.bubble')].indexOf(anchor) : -1;
+    if (anchorIndex > 0) {
+      list.scrollTop = (anchor.offsetTop - list.offsetTop) - snap.firstOffset + snap.scrollTop;
+    } else if (!sameRoom || snap.nearBottom) {
       list.scrollTop = list.scrollHeight;
     } else {
       list.scrollTop = snap.scrollTop;
