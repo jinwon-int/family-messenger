@@ -571,3 +571,26 @@ test('들어온 자기 기기 검증 요청은 수락한 뒤 같은 흐름으로
   adapter.client.emit('crypto.verificationRequestReceived', fakeRequest());
   assert.equal(seen.length, 1);
 });
+
+test('fetchAttachment: 인증 미디어 경로로 Bearer 요청, 암호화 첨부는 주입된 decrypt로 복호화', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  adapter.client.getHomeserverUrl = () => 'https://matrix.example.com/';
+  adapter.client.getAccessToken = () => 'syt-token';
+  const calls = [];
+  const fetchFn = async (url, opts) => { calls.push([url, opts.headers]); return { ok: true, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer }; };
+  const plain = await adapter.fetchAttachment({ url: 'mxc://matrix.example.com/abc', mimetype: 'image/png', encrypted: null }, { fetchFn });
+  assert.equal(plain.type, 'image/png');
+  assert.equal(plain.size, 3);
+  assert.deepEqual(calls[0], ['https://matrix.example.com/_matrix/client/v1/media/download/matrix.example.com/abc', { Authorization: 'Bearer syt-token' }]);
+  let decrypted = 0;
+  const enc = { key: {}, iv: 'iv', hashes: { sha256: 'h' } };
+  const blob = await adapter.fetchAttachment({ url: 'mxc://matrix.example.com/enc', mimetype: 'application/pdf', encrypted: enc }, {
+    fetchFn,
+    decrypt: async (data, info) => { decrypted += 1; assert.equal(info, enc); assert.equal(data.byteLength, 3); return new Uint8Array([9]).buffer; },
+  });
+  assert.equal(decrypted, 1);
+  assert.equal(blob.size, 1);
+  await assert.rejects(adapter.fetchAttachment({ url: 'https://x' }, { fetchFn }), /mxc/);
+  await assert.rejects(adapter.fetchAttachment({ url: 'mxc://h/x' }, { fetchFn: async () => ({ ok: false, status: 403 }) }), /403/);
+});

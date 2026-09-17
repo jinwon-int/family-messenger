@@ -1,7 +1,7 @@
 // Service worker: app-shell cache for PWA installs.
 // Never touches /_matrix (homeserver API) or media traffic.
 
-const CACHE = 'familychat-shell-v10'; // v10: 2열 셸 레이아웃 + 타임라인 단일 스크롤러(styles.css?v=3)
+const CACHE = 'familychat-shell-v11'; // v11: 보관함 pane + config.json 네트워크 우선
 const SHELL = ['./', './index.html', './main.js?v=5', './styles.css?v=3', './manifest.webmanifest', './icons/icon.svg'];
 
 self.addEventListener('install', (event) => {
@@ -21,7 +21,7 @@ self.addEventListener('fetch', (event) => {
   const reqUrl = new URL(event.request.url);
   const isShellDoc = event.request.mode === 'navigate'
     || reqUrl.pathname === '/' || reqUrl.pathname.endsWith('/index.html') || reqUrl.pathname.endsWith('/main.js')
-    || reqUrl.pathname.endsWith('/styles.css');
+    || reqUrl.pathname.endsWith('/styles.css') || reqUrl.pathname.endsWith('/config.json');
   if (event.request.method === 'GET' && isShellDoc && reqUrl.origin === self.location.origin) {
     // 셸·번들은 항상 네트워크 우선 — 핫픽스가 기기 캐시에 갇히지 않게 한다.
     event.respondWith(

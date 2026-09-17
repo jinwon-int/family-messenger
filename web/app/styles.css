@@ -549,3 +549,61 @@ dialog.sheet .column { margin-top: var(--space-2); }
   .room-screen .appbar .back { display: none; }
   .bubble { max-width: min(70%, 640px); }
 }
+
+/* ---------- 보관함 pane (첨부 + 파일보관함 임베드) ---------- */
+
+.pane-box {
+  display: none;
+  flex: 1;
+  width: 100%;
+  max-width: var(--column);
+  margin: 0 auto;
+  padding: 0 var(--space-4) var(--space-4);
+  gap: var(--space-2);
+}
+main.shell[data-view="box"] .pane-box { display: flex; }
+main.shell[data-view="box"] .pane-list, main.shell[data-view="box"] .pane-room { display: none; }
+.pane-box .appbar { position: static; flex: none; }
+.box-tabs { display: flex; gap: var(--space-2); flex: none; }
+.box-tabs button { min-height: 36px; padding: 0 var(--space-3); font-size: var(--text-s); background: transparent; border-color: var(--line-strong); color: var(--text-2); }
+.box-tabs button[aria-selected="true"] { background: var(--brand-soft); color: var(--brand-strong); border-color: transparent; }
+.box-body { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; display: flex; flex-direction: column; gap: var(--space-2); }
+ul.files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.file-item {
+  width: 100%;
+  min-height: 60px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+  font-weight: 400;
+}
+.file-item:hover { background: var(--surface-2); }
+.file-item .texts { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.file-item .file-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-item .meta { font-size: var(--text-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-item .chevron { color: var(--text-3); flex: none; }
+.filebox-tools { display: flex; gap: var(--space-2); flex-wrap: wrap; flex: none; }
+.filebox-tools .button { display: inline-flex; align-items: center; min-height: var(--touch); padding: 0 var(--space-4); border-radius: var(--radius); font-weight: 600; text-decoration: none; }
+.filebox-tools .button.ghost { border: 1px solid var(--line-strong); color: var(--text-2); }
+.filebox-frame { flex: 1; min-height: 320px; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+.filebox-frame iframe { display: block; width: 100%; height: 100%; border: 0; }
+dialog.sheet.preview img { display: block; max-width: 100%; max-height: 70vh; margin: 0 auto; border-radius: var(--radius); }
+
+@media (min-width: 1200px) {
+  main.shell .pane-box {
+    display: flex;
+    flex: 0 0 360px;
+    max-width: none;
+    margin: 0;
+    border-left: 1px solid var(--line);
+    background: var(--surface);
+  }
+  main.shell[data-view="box"] .pane-list, main.shell[data-view="box"] .pane-room { display: flex; }
+  .box-toggle, .pane-box .back { display: none; }
+  .pane-box .appbar { background: var(--surface); }
+}

@@ -8,6 +8,8 @@ import { extractMentions } from './mentions.js';
 import { describeInvite } from './invites.js';
 import { viewKeyAction } from './keyboard.js';
 import { splitParticipants, shortHandle } from './participants.js';
+import { attachmentFromContent, collectAttachments, fileboxRefreshUrl } from './attachments.js';
+import { DEFAULT_CONFIG, loadConfig } from './config.js';
 import * as ui from './ui.js';
 
 const root = document.getElementById('app');
@@ -45,6 +47,8 @@ const state = {
   rooms: new Map(), // roomId -> {summary, timeline: []}
   currentRoomId: null,
   syncState: 'idle',
+  config: DEFAULT_CONFIG,
+  box: { open: false, tab: 'attachments', refresh: 0 }, // 보관함 pane
 };
 
 function renderCurrent() {
@@ -79,7 +83,56 @@ function renderCurrent() {
           onAttach: (file) => sendAttachment(file),
         }
       : null,
+    box: {
+      open: state.box.open,
+      tab: state.config.filebox ? state.box.tab : 'attachments',
+      attachments: collectAttachments(state.rooms.values()),
+      filebox: state.config.filebox
+        ? {
+            url: fileboxRefreshUrl(state.config.filebox.url, state.box.refresh),
+            homeUrl: state.config.filebox.url,
+            title: state.config.filebox.title ?? strings.box.tabFilebox,
+          }
+        : null,
+      onToggle: () => {
+        state.box.open = !state.box.open;
+        renderCurrent();
+      },
+      onTab: (tab) => {
+        state.box.tab = tab;
+        renderCurrent();
+      },
+      onRefresh: () => {
+        state.box.refresh += 1;
+        renderCurrent();
+      },
+      onOpen: (attachment) => openAttachment(attachment),
+    },
   });
+}
+
+async function openAttachment(attachment) {
+  try {
+    ui.setStatus(root, strings.box.loading);
+    const blob = await state.client.fetchAttachment(attachment);
+    ui.setStatus(root, null);
+    const objectUrl = URL.createObjectURL(blob);
+    if (attachment.kind === 'photo') {
+      ui.openPreviewSheet(root, { name: attachment.name, src: objectUrl, onClose: () => URL.revokeObjectURL(objectUrl) });
+      return;
+    }
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = attachment.name;
+    link.rel = 'noopener';
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+  } catch (error) {
+    console.error('attachment open failed', error);
+    ui.setStatus(root, strings.box.downloadFailed, 'error');
+  }
 }
 
 async function connect(creds) {
@@ -170,6 +223,7 @@ function timelineEntry(event, summary) {
   const { agents } = splitParticipants([sender], { agentUserIds: agentUserIds(summary) });
   const meta = !undecryptable && content.info?.size ? humanFileSize(content.info.size) : null;
   return {
+    attachment: undecryptable ? null : attachmentFromContent(content),
     eventId: event.getId?.() ?? null,
     userId: event.getSender?.(),
     name: shortHandle(sender.name ?? event.getSender?.()),
@@ -279,6 +333,10 @@ function openRecovery() {
 }
 
 function start() {
+  loadConfig().then((config) => {
+    state.config = config;
+    renderCurrent();
+  });
   const stored = session.readSession(stores);
   if (session.hasLiveSession(stored)) {
     connect(stored).catch((error) => {
