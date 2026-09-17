@@ -7,6 +7,7 @@ import { messageKind, humanFileSize, validateAttachment, attachmentContent, merg
 import { extractMentions } from './mentions.js';
 import { describeInvite } from './invites.js';
 import { splitParticipants } from './participants.js';
+import { viewKeyAction } from './keyboard.js';
 import * as ui from './ui.js';
 
 const root = document.getElementById('app');
@@ -98,7 +99,29 @@ async function connect(creds) {
   });
   // 새 방이 보이면 목록·초대를 즉시 갱신한다(세션 중 도착한 초대 포함).
   state.client.onRoomAdded(() => refreshSummaries());
+  installKeyboardShortcuts();
   openRooms();
+}
+
+// 방 화면 키보드 단축키: 대화형 요소 밖 Enter=작성창 커서, Esc=방 목록.
+// 시트(verification/recovery)가 열려 있으면 가로채지 않는다 — 시트 Esc는 자체 닫기.
+function installKeyboardShortcuts() {
+  document.addEventListener('keydown', (event) => {
+    if (!state.currentRoomId) return;
+    if (root.querySelector('dialog[open]')) return;
+    const action = viewKeyAction({ key: event.key, target: event.target });
+    if (!action) return;
+    if (action === 'back') {
+      event.preventDefault();
+      openRooms();
+      return;
+    }
+    const input = root.querySelector('.composer textarea[name=body]');
+    if (input && document.activeElement !== input) {
+      event.preventDefault();
+      input.focus();
+    }
+  });
 }
 
 function refreshSummaries() {
@@ -173,6 +196,11 @@ function openRooms() {
 function openRoom(roomId) {
   state.currentRoomId = roomId;
   renderCurrent();
+  // 포인터가 정밀한(데스크톱) 환경에서는 방을 열면 바로 입력 가능하게 한다.
+  // 모바일은 자동 포커스가 키보드를 띄워 방해가 되므로 제외.
+  if (window.matchMedia('(pointer: fine)').matches) {
+    root.querySelector('.composer textarea[name=body]')?.focus();
+  }
 }
 
 async function sendText(text) {

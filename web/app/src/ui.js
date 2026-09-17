@@ -5,6 +5,7 @@
 import { strings } from './strings.js';
 import { emojiLabel, transition } from './verification.js';
 import { createRecoveryFlow } from './recovery.js';
+import { composerKeyAction } from './keyboard.js';
 import { canAccept } from './invites.js';
 
 /** replaceChildren that drops null/false entries (a bare null would render the text "null"). */
@@ -251,8 +252,8 @@ function bubble(entry) {
 
 /** Chat pane for one room. onSend(text), onAttach(file). */
 export function renderRoom(root, { room, timeline, onSend, onAttach, onBack, notice }) {
-  // 전체 재렌더 사이에 작성 중인 초안과 포커스를 보존한다(메시지 도착마다 입력이 사라지지 않게).
-  const previous = root.querySelector('.composer input[name=body]');
+  // 전체 재렌더 사이에 작성 중인 초안과 포커스·캐럿을 보존한다(메시지 도착마다 입력이 사라지지 않게).
+  const previous = root.querySelector('.composer textarea[name=body]');
   const draft = previous?.value ?? '';
   const hadFocus = previous != null && document.activeElement === previous;
   root.replaceChildren();
@@ -306,16 +307,35 @@ export function renderRoom(root, { room, timeline, onSend, onAttach, onBack, not
       class: 'composer',
       onsubmit: (event) => {
         event.preventDefault();
-        const input = composer.querySelector('input[name=body]');
+        const input = composer.querySelector('textarea[name=body]');
         if (input.value.trim().length > 0) {
           onSend(input.value);
           input.value = '';
+          input.style.height = '';
         }
         input.focus();
       },
     },
     attachToggle,
-    el('input', { name: 'body', type: 'text', placeholder: strings.chat.messagePlaceholder, autocomplete: 'off', 'aria-label': strings.chat.messagePlaceholder, enterkeyhint: 'send' }),
+    el('textarea', {
+      name: 'body',
+      rows: '1',
+      placeholder: strings.chat.messagePlaceholder,
+      autocomplete: 'off',
+      'aria-label': strings.chat.messagePlaceholder,
+      enterkeyhint: 'send',
+      onkeydown: (event) => {
+        const action = composerKeyAction(event);
+        if (action !== 'send') return; // Shift+Enter 등 줄바꿈은 기본 동작
+        event.preventDefault();
+        composer.requestSubmit();
+      },
+      oninput: (event) => {
+        const input = event.currentTarget;
+        input.style.height = 'auto';
+        input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
+      },
+    }),
     el('button', { type: 'submit', class: 'primary' }, strings.chat.send),
   );
   root.append(
@@ -339,9 +359,17 @@ export function renderRoom(root, { room, timeline, onSend, onAttach, onBack, not
     ),
   );
   list.scrollTop = list.scrollHeight;
-  const input = composer.querySelector('input[name=body]');
-  if (draft) input.value = draft;
-  if (hadFocus) input.focus();
+  const input = composer.querySelector('textarea[name=body]');
+  if (draft) {
+    input.value = draft;
+    input.style.height = 'auto';
+    input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
+  }
+  if (hadFocus) {
+    input.focus();
+    const end = input.value.length;
+    input.setSelectionRange(end, end);
+  }
 }
 
 /**
