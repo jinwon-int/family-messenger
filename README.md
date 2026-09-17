@@ -26,7 +26,7 @@
 | 구성 | 상태와 사용 범위 |
 |---|---|
 | AI 참여 서비스 (`server/`) | Go·SQLite 기반. 인증(`internal/access`)·정책 스토어·저장·이벤트를 유지하고 역할을 "채팅 서버"에서 "신원·기억·승인·에이전트 레지스트리"로 바꿉니다. 현재는 루프백·합성 데이터 시험판입니다. 실제 가족 대화를 넣거나 인터넷에 노출하지 마세요. |
-| 네이티브 MLS 전송·successor 세레모니·실험 (`archive/native-mls/`, `archive/experiments/`) | **동결·보관됨(빌드·CI 제외).** 결정 D로 전달층에서는 폐기했으며, 위협 모델·기기 정책은 수용 기준으로 남깁니다. |
+| 네이티브 MLS 전송·successor 세레모니·실험 (보존 브랜치 [`archive-frozen-20260917`](https://github.com/jinwon-int/family-messenger/tree/archive-frozen-20260917/archive)의 `archive/native-mls/`, `archive/experiments/`) | **동결·보관됨(2026-09-17 main에서 분리, 빌드·CI 제외).** 결정 D로 전달층에서는 폐기했으며, 위협 모델·기기 정책은 수용 기준으로 남깁니다. |
 | Matrix 홈서버 (`deploy/tuwunel/`) | 단일 바이너리 홈서버 Tuwunel(고정 핀) 배포 패키지. 이전 Synapse/Element/Postgres 구성은 `archive/synapse-stack/`에 보관됐으며, 운영 호스트 전환은 별도 운영 작업(1단계 배포)입니다. |
 | 에이전트 연결 (`scripts/fleet_*.py`) | 운영자↔봇 1:1 개인방 계약(권한·작업·승인·취소·재연결)이 검증됐습니다. 가족방·mention 모드는 1단계 작업입니다. |
 
@@ -48,7 +48,7 @@ AI 초대 시 이 범위를 알리고 동의받는 것이 제품 요구입니다
 `scripts/admin.py` 계정 생성 → `tests/tuwunel_smoke.py` E2EE 암호화 왕복.
 절차·검증 체크리스트는 [Tuwunel 배포 런북](docs/TUWUNEL-DEPLOY.md)을, 운영 기준은
 [운영 안내](docs/OPERATIONS.md)와 [Tuwunel 운영](docs/TUWUNEL-OPERATIONS.md)을 따릅니다.
-이전 Synapse/Element/Postgres 구성은 `archive/synapse-stack/`에 보관돼 있으며 런타임·CI에서 쓰지 않습니다.
+이전 Synapse/Element/Postgres 구성은 보존 브랜치 [`archive-frozen-20260917`](https://github.com/jinwon-int/family-messenger/tree/archive-frozen-20260917/archive/synapse-stack)의 `archive/synapse-stack/`에 있으며 런타임·CI에서 쓰지 않습니다(2026-09-17 main에서 분리).
 
 ```bash
 python3 -m unittest discover -s tests -v

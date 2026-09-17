@@ -8,28 +8,10 @@ __pycache__/
 .venv/
 artifacts/
 
-# archive/ (frozen native MLS track, decision D 2026-09-13) — build products only
 # Isolated Rust experiment build products
-archive/experiments/openmls-browser/target/
 
 # Isolated key-custody feasibility packages and bundle
-archive/experiments/device-keystore/node_modules/
-archive/experiments/device-keystore/bundle/
 
-# Pinned generated synthetic UI assets; only explicit -tags synthetic_* builds of the archived code
-archive/native-mls/server/internal/chat/.mls-build.lock
-archive/native-mls/server/internal/chat/mlsassets/
-archive/native-mls/server/internal/chat/vaultassets/
-archive/native-mls/server/internal/chat/historyassets/
-archive/native-mls/server/internal/chat/historyassets_v5/
-archive/native-mls/server/internal/chat/aggregateassets/
-archive/native-mls/server/internal/chat/aggregatehistoryassets/
-archive/native-mls/server/internal/chat/successorassets/
-archive/native-mls/server/internal/chat/candidateassets/
-archive/native-mls/server/internal/chat/peerassets/
-archive/native-mls/server/internal/chat/custodyassets/
-archive/native-mls/server/internal/chat/welcomeassets/
-archive/native-mls/server/internal/chat/confirmationassets/
 
 # web app build outputs
 web/app/node_modules/
