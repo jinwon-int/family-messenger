@@ -49,8 +49,10 @@ jobs:
           curl -fsSI http://127.0.0.1:8080/pkg/matrix_sdk_crypto_wasm_bg.wasm | grep -qi '^content-type: application/wasm'
           # 해시 파일명 번들·스타일이 존재하고 index.html이 그것을 참조해야 한다
           ls dist/main-*.js dist/styles-*.css dist/boot-*.js
-          grep -q 'main-[A-Za-z0-9]*\.js' dist/index.html
-          grep -q 'styles-[a-f0-9]*\.css' dist/index.html
+          # 주석이 아니라 실제 참조 속성에서만 해시 이름을 찾는다
+          grep -qE 'src="\./main-[A-Za-z0-9]{8}\.js"' dist/index.html
+          grep -qE 'href="\./styles-[a-f0-9]{8}\.css"' dist/index.html
+          grep -qE 'src="\./boot-[a-f0-9]{8}\.js"' dist/index.html
           test -f dist/sw.js && ! grep -q '__CACHE_NAME__\|__SHELL_ASSETS__' dist/sw.js
           test -f dist/config.json
           # 보안 헤더(CSP 등)와 해시 자산 immutable 캐시
