@@ -96,3 +96,14 @@ test('styles.css: 휴대폰 가로모드 미디어 쿼리가 목록|대화 2열�
   assert.match(block, /main\.shell\[data-view="room"\] \.pane-list \{ display: flex; \}/);
   assert.match(block, /\.pane-list \{[^}]*flex: 0 0 280px/);
 });
+
+// IME 회귀 방지(2026-09-17 실기기): 같은 방을 다시 그릴 때 작성창 요소를 교체하면 한글 조합이 끊겨
+// "내가"가 "ㄴㅐㄱㅏ"로 깨지고 화면이 깜빡였다. renderShell은 부분 교체 경로를 유지해야 한다.
+test('ui.js renderShell은 같은 방이면 composer-wrap을 교체하지 않는 부분 갱신 경로를 갖는다', () => {
+  const ui = readFileSync(join(SRC, 'ui.js'), 'utf-8');
+  const fn = ui.slice(ui.indexOf('export function renderShell('));
+  assert.match(fn, /existingScreen\.dataset\.roomId === \(room\.room\.roomId \?\? ''\)/);
+  assert.match(fn, /existingScreen\.querySelector\('\.composer-wrap'\)/);
+  assert.match(fn, /built\.mount\(\{ keepComposer: true \}\)/);
+  assert.ok(fn.indexOf('built.mount({ keepComposer: true })') < fn.indexOf('root.replaceChildren()'), '부분 갱신 경로가 전체 재구성보다 먼저 와야 한다');
+});
