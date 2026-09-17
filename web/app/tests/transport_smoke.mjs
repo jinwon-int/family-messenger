@@ -20,6 +20,10 @@ check('MatrixClient export', typeof sdk.MatrixClient === 'function');
 check('MatrixClient#initRustCrypto (rust/WASM crypto)', typeof sdk.MatrixClient.prototype.initRustCrypto === 'function');
 check('MatrixClient#login (m.login.password)', typeof sdk.MatrixClient.prototype.login === 'function');
 check('MatrixClient#uploadContent', typeof sdk.MatrixClient.prototype.uploadContent === 'function');
+// src/matrix/client.js pins VerificationPhase numerically (no SDK import in the adapter) — keep them in lock-step.
+check('VerificationPhase Requested/Ready/Started/Cancelled/Done = 2/3/4/5/6',
+  sdk.VerificationPhase?.Requested === 2 && sdk.VerificationPhase?.Ready === 3 && sdk.VerificationPhase?.Started === 4
+  && sdk.VerificationPhase?.Cancelled === 5 && sdk.VerificationPhase?.Done === 6);
 
 const cryptoWasm = require('@matrix-org/matrix-sdk-crypto-wasm');
 check('@matrix-org/matrix-sdk-crypto-wasm resolvable', Boolean(cryptoWasm));

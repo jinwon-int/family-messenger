@@ -4,9 +4,31 @@ import { EventEmitter } from 'node:events';
 import {
   ClientAdapter,
   PlaintextRefusedError,
+  VERIFICATION_PHASE,
   createFamilyClient,
   loginWithPassword,
+  waitForVerifier,
 } from '../src/matrix/client.js';
+
+/** Fake SDK VerificationRequest: phase + 'change' emitter + startVerification. */
+function fakeRequest({ phase = VERIFICATION_PHASE.Ready, verifier = null, startVerification } = {}) {
+  const req = new EventEmitter();
+  req.phase = phase;
+  req.verifier = verifier;
+  req.isSelfVerification = true;
+  req.startCalls = 0;
+  req.startVerification = async (method) => {
+    req.startCalls += 1;
+    req.phase = VERIFICATION_PHASE.Started;
+    return startVerification(method);
+  };
+  req.setPhase = (next, opts = {}) => {
+    req.phase = next;
+    if (opts.verifier) req.verifier = opts.verifier;
+    req.emit('change');
+  };
+  return req;
+}
 
 function fakeSdk() {
   const calls = { createClient: [] };
@@ -265,8 +287,8 @@ test('이모지 기기 검증: SAS 표시 → 확인 → 완료', async () => {
         },
       });
     });
-  adapter.client.crypto.requestOwnUserVerification = async () => ({
-    startVerification: async (method) => {
+  adapter.client.crypto.requestOwnUserVerification = async () => fakeRequest({
+    startVerification: (method) => {
       assert.equal(method, 'm.sas.v1');
       return verifier;
     },
@@ -308,9 +330,7 @@ test('SAS 불일치를 신고하면 검증이 실패로 끝난다', async () => 
         },
       });
     });
-  adapter.client.crypto.requestOwnUserVerification = async () => ({
-    startVerification: async () => verifier,
-  });
+  adapter.client.crypto.requestOwnUserVerification = async () => fakeRequest({ startVerification: () => verifier });
 
   let cancelled = 0;
   const shown = [];
@@ -464,4 +484,90 @@ test('이미 복호화된 암호화 이벤트와 평문 이벤트는 즉시 전�
   off();
   adapter.client.emit('Room.timeline', encryptedEvent({ decrypted: true }));
   assert.equal(seen.length, 3);
+});
+
+function sasVerifier(emoji = [['🐶', 'dog']]) {
+  const verifier = new EventEmitter();
+  verifier.verify = () =>
+    new Promise((resolve) => {
+      verifier.emit('show_sas', { sas: { emoji }, confirm: async () => resolve(), mismatch() {} });
+    });
+  return verifier;
+}
+
+test('검증 요청 직후에는 SAS를 시작하지 않고 상대 기기의 수락(Ready)을 기다린다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  await adapter.enableEncryption();
+  const verifier = sasVerifier();
+  const req = fakeRequest({ phase: VERIFICATION_PHASE.Requested, startVerification: () => verifier });
+  adapter.client.crypto.requestOwnUserVerification = async () => req;
+  const order = [];
+  const run = adapter.startEmojiVerification({
+    onRequested: () => order.push('requested'),
+    onEmojis: (_e, c) => { order.push('emojis'); c.confirm(); },
+    onDone: () => order.push('done'),
+    onCancelled: () => order.push('cancelled'),
+  });
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(req.startCalls, 0, 'Requested 단계에서는 startVerification을 부르면 안 된다(SDK가 throw)');
+  assert.deepEqual(order, ['requested']);
+  req.setPhase(VERIFICATION_PHASE.Ready);
+  await run;
+  assert.equal(req.startCalls, 1);
+  assert.deepEqual(order, ['requested', 'emojis', 'done']);
+});
+
+test('상대 기기가 먼저 SAS를 시작하면 그 verifier를 쓰고 우리는 시작하지 않는다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  await adapter.enableEncryption();
+  const theirs = sasVerifier([['🐱', 'cat']]);
+  const req = fakeRequest({ phase: VERIFICATION_PHASE.Requested, startVerification: () => assert.fail('시작하면 안 된다') });
+  adapter.client.crypto.requestOwnUserVerification = async () => req;
+  const shown = [];
+  const run = adapter.startEmojiVerification({ onEmojis: (e, c) => { shown.push(e); c.confirm(); }, onDone() {}, onCancelled() {} });
+  await new Promise((r) => setTimeout(r, 5));
+  req.setPhase(VERIFICATION_PHASE.Started, { verifier: theirs });
+  await run;
+  assert.equal(req.startCalls, 0);
+  assert.deepEqual(shown, [[['🐱', 'cat']]]);
+});
+
+test('수락 전에 취소되면 onCancelled만 부르고 끝난다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  await adapter.enableEncryption();
+  const req = fakeRequest({ phase: VERIFICATION_PHASE.Requested, startVerification: () => assert.fail('시작하면 안 된다') });
+  adapter.client.crypto.requestOwnUserVerification = async () => req;
+  let cancelled = 0;
+  const run = adapter.startEmojiVerification({ onEmojis: () => assert.fail('이모지가 나오면 안 된다'), onDone() {}, onCancelled: () => { cancelled += 1; } });
+  await new Promise((r) => setTimeout(r, 5));
+  req.setPhase(VERIFICATION_PHASE.Cancelled);
+  await run;
+  assert.equal(cancelled, 1);
+  assert.equal(await waitForVerifier(fakeRequest({ phase: VERIFICATION_PHASE.Done })), null);
+});
+
+test('들어온 자기 기기 검증 요청은 수락한 뒤 같은 흐름으로 진행한다; 타인 요청은 무시', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  await adapter.enableEncryption();
+  const seen = [];
+  const off = adapter.onVerificationRequest((r) => seen.push(r));
+  const mine = fakeRequest({ phase: VERIFICATION_PHASE.Requested, startVerification: () => sasVerifier() });
+  let accepted = 0;
+  mine.accept = async () => { accepted += 1; mine.setPhase(VERIFICATION_PHASE.Ready); };
+  const theirs = fakeRequest({ phase: VERIFICATION_PHASE.Requested });
+  theirs.isSelfVerification = false;
+  adapter.client.emit('crypto.verificationRequestReceived', theirs);
+  adapter.client.emit('crypto.verificationRequestReceived', mine);
+  assert.deepEqual(seen, [mine]);
+  let done = 0;
+  await adapter.acceptEmojiVerification(mine, { onEmojis: (_e, c) => c.confirm(), onDone: () => { done += 1; }, onCancelled() {} });
+  assert.equal(accepted, 1);
+  assert.equal(done, 1);
+  off();
+  adapter.client.emit('crypto.verificationRequestReceived', fakeRequest());
+  assert.equal(seen.length, 1);
 });

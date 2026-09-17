@@ -72,6 +72,40 @@ export async function createFamilyClient({
   return new ClientAdapter(client, userId);
 }
 
+/**
+ * matrix-js-sdk VerificationPhase (pinned 42.3.0; tests/transport_smoke.mjs
+ * checks these against the installed SDK).
+ */
+export const VERIFICATION_PHASE = Object.freeze({ Unsent: 1, Requested: 2, Ready: 3, Started: 4, Cancelled: 5, Done: 6 });
+
+/**
+ * Resolve with a verifier once the request can run SAS: if the other side
+ * already started one, use it; once the request is Ready, start our own.
+ * Resolves null when the request is cancelled or finished first.
+ */
+export function waitForVerifier(request) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn) => {
+      if (settled) return;
+      settled = true;
+      request.removeListener?.('change', check);
+      fn();
+    };
+    const check = () => {
+      if (request.verifier) return finish(() => resolve(request.verifier));
+      const phase = request.phase;
+      if (phase === VERIFICATION_PHASE.Cancelled || phase === VERIFICATION_PHASE.Done) return finish(() => resolve(null));
+      if (phase === VERIFICATION_PHASE.Ready) {
+        return finish(() => request.startVerification('m.sas.v1').then(resolve, reject));
+      }
+      return undefined;
+    };
+    request.on?.('change', check);
+    check();
+  });
+}
+
 export class ClientAdapter {
   /** @param {object} client a matrix-js-sdk MatrixClient */
   constructor(client, myUserId) {
@@ -296,20 +330,63 @@ export class ClientAdapter {
   /**
    * Emoji (SAS) device verification driver.
    *
-   * `start` sends a verification request (own-user device verification
-   * when no room/user is given, otherwise an in-room request) and drives
-   * the SAS exchange:
+   * `startEmojiVerification` sends a verification request (own-user device
+   * verification when no room/user is given, otherwise an in-room request),
+   * waits for the other device to accept it, then drives the SAS exchange:
+   *   onRequested()                      — request sent, other device must accept;
    *   onEmojis(emojis, {confirm, mismatch}) — seven [emoji, name] pairs;
    *   onDone() once both sides accepted; onCancelled() otherwise.
    * Throws when rust crypto is not enabled yet.
+   *
+   * Calling startVerification() straight after the request used to throw
+   * "other device is unknown" (the SDK only learns the peer device once the
+   * request reaches phase Ready) and the sheet showed "cancelled" the moment
+   * the button was pressed (2026-09-17, company PC).
    */
-  async startEmojiVerification({ userId, roomId, onEmojis, onDone, onCancelled }) {
+  async startEmojiVerification({ userId, roomId, onRequested, onEmojis, onDone, onCancelled }) {
     const crypto = this.client.getCrypto?.();
     if (!crypto) throw new Error('rust crypto not enabled');
     const request = roomId && userId
       ? await crypto.requestVerificationDM(userId, roomId)
       : await crypto.requestOwnUserVerification();
-    const verifier = await request.startVerification('m.sas.v1');
+    onRequested?.();
+    await this.driveVerificationRequest(request, { onEmojis, onDone, onCancelled });
+    return request;
+  }
+
+  /**
+   * Incoming verification requests (another of my devices, e.g. the phone
+   * app, asked to verify this one). handler(request) — pass the request to
+   * acceptEmojiVerification to proceed. Non-self requests are ignored.
+   */
+  onVerificationRequest(handler) {
+    const listener = (request) => {
+      if (request?.isSelfVerification === false) return;
+      handler(request);
+    };
+    this.client.on('crypto.verificationRequestReceived', listener);
+    return () => this.client.removeListener('crypto.verificationRequestReceived', listener);
+  }
+
+  /** Accept an incoming request and drive the SAS exchange with the same callbacks. */
+  async acceptEmojiVerification(request, { onEmojis, onDone, onCancelled }) {
+    if (request.phase === VERIFICATION_PHASE.Requested && typeof request.accept === 'function') {
+      await request.accept();
+    }
+    await this.driveVerificationRequest(request, { onEmojis, onDone, onCancelled });
+    return request;
+  }
+
+  /**
+   * Wait for phase Ready (or a verifier the other side already started),
+   * start SAS if nobody did, then run the emoji exchange.
+   */
+  async driveVerificationRequest(request, { onEmojis, onDone, onCancelled }) {
+    const verifier = await waitForVerifier(request);
+    if (!verifier) {
+      onCancelled?.();
+      return null;
+    }
     verifier.on('show_sas', (sasEvent) => {
       const emojis = Array.isArray(sasEvent?.sas?.emoji) ? sasEvent.sas.emoji : [];
       onEmojis(emojis, {
@@ -319,6 +396,6 @@ export class ClientAdapter {
     });
     verifier.on('cancel', () => onCancelled?.());
     await verifier.verify();
-    return request;
+    return verifier;
   }
 }

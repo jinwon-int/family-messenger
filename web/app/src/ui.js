@@ -384,9 +384,10 @@ export function renderRoom(root, { room, timeline, onSend, onAttach, onBack, not
  * `driver(callbacks)` starts the SDK SAS exchange; callbacks are
  * onEmojis(emojis, {confirm, mismatch}), onDone, onCancelled.
  */
-export function openVerificationSheet(root, { driver, onClose }) {
+export function openVerificationSheet(root, { driver, onClose, incoming = false }) {
   const close = () => dialog.close();
   let state = { state: 'idle' };
+  let hint = null; // 'requested' while the other device still has to accept
   let confirmers = null;
   const dialog = el('dialog', { class: 'sheet', 'aria-labelledby': 'verify-title' });
   const apply = (action) => {
@@ -401,7 +402,12 @@ export function openVerificationSheet(root, { driver, onClose }) {
     setChildren(dialog, 
       el('h2', { id: 'verify-title' }, strings.verification.title),
       el('p', { class: 'hint' }, strings.verification.intro),
-      state.state === 'idle' ? el('button', { type: 'button', class: 'primary block', onclick: start }, strings.verification.start) : null,
+      state.state === 'idle' && incoming
+        ? el('div', { class: 'status' }, el('strong', {}, strings.verification.incomingTitle), el('br'), strings.verification.incomingBody)
+        : null,
+      state.state === 'idle'
+        ? el('button', { type: 'button', class: 'primary block', onclick: start }, incoming ? strings.verification.acceptRequest : strings.verification.start)
+        : null,
       state.state === 'ready'
         ? el(
             'div',
@@ -411,13 +417,26 @@ export function openVerificationSheet(root, { driver, onClose }) {
             el(
               'div',
               { class: 'actions' },
-              el('button', { type: 'button', class: 'primary', onclick: () => confirmers?.confirm() }, strings.verification.same),
+              el(
+                'button',
+                {
+                  type: 'button',
+                  class: 'primary',
+                  onclick: () => {
+                    // ready → waiting(내가 확인) → matched(상대도 확인). 이전에는 accept 단계를
+                    // 건너뛰어 confirm 전이가 거부되고 완료 화면이 뜨지 않았다.
+                    apply({ type: 'accept' });
+                    confirmers?.confirm();
+                  },
+                },
+                strings.verification.same,
+              ),
               el('button', { type: 'button', class: 'danger', onclick: () => confirmers?.mismatch() }, strings.verification.different),
             ),
           )
         : null,
       state.state === 'requested' || state.state === 'waiting'
-        ? el('p', { class: 'status' }, strings.verification.waiting)
+        ? el('p', { class: 'status' }, hint === 'requested' ? strings.verification.requested : strings.verification.waiting)
         : null,
       state.state === 'matched' ? el('p', { class: 'status ok' }, strings.verification.done) : null,
       state.state === 'mismatched'
@@ -430,7 +449,12 @@ export function openVerificationSheet(root, { driver, onClose }) {
   const start = () => {
     apply({ type: 'request' });
     driver({
+      onRequested: () => {
+        hint = 'requested';
+        render();
+      },
       onEmojis: (emojis, sdkConfirmers) => {
+        hint = null;
         confirmers = sdkConfirmers;
         apply({ type: 'ready', emojis });
       },
