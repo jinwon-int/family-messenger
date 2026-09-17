@@ -23,8 +23,7 @@ jobs:
       # Dependency-free unit tests run before any install.
       - name: Unit tests
         run: npm test
-      # No lockfile is committed; dependencies are pinned exactly in
-      # package.json, so a plain install is reproducible.
+      # package-lock.json is committed; npm ci installs exactly what it pins.
       - name: Install pinned dependencies
         run: npm ci --no-audit --no-fund
       - name: Matrix SDK and Rust crypto smoke
