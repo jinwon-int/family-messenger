@@ -216,7 +216,7 @@ function roomListItem(room, onSelect, active = false) {
 }
 
 /** Room list pane content (appbar, invites, rooms). */
-function buildRoomList({ summaries, onSelect, syncState, onOpenVerification, onOpenRecovery, onOpenMenu = null, invites = [], inviteHandlers = null, currentRoomId = null, onToggleBox = null }) {
+function buildRoomList({ summaries, onSelect, syncState, onOpenVerification, onOpenRecovery, onOpenMenu = null, invites = [], inviteHandlers = null, currentRoomId = null, onToggleBox = null, banner = null }) {
   const body = syncState === 'loading'
     ? el('p', { class: 'empty' }, strings.rooms.loading)
     : summaries.length === 0
@@ -244,6 +244,7 @@ function buildRoomList({ summaries, onSelect, syncState, onOpenVerification, onO
         el('button', { type: 'button', class: 'ghost', 'aria-label': strings.menu.open, onclick: onOpenMenu ?? onOpenVerification }, `⚙ ${strings.menu.open}`),
       ),
     ),
+    banner ? el('p', { class: 'status error banner', role: 'alert' }, banner) : null,
     syncState === 'error' && summaries.length > 0 ? el('p', { class: 'status warn', role: 'status' }, strings.rooms.syncError) : null,
     inviteSection,
     summaries.length > 0 ? el('p', { class: 'section-title' }, strings.rooms.listTitle) : null,
