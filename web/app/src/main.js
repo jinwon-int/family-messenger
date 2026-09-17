@@ -50,6 +50,7 @@ const state = {
   syncState: 'idle',
   config: DEFAULT_CONFIG,
   box: { open: false, tab: 'attachments', refresh: 0 }, // 보관함 pane
+  cryptoError: null, // 암호화 모듈(rust crypto) 초기화 실패 배너
 };
 
 function renderCurrent() {
@@ -59,6 +60,7 @@ function renderCurrent() {
     list: {
       summaries: listSummaries(),
       syncState: state.syncState,
+      banner: state.cryptoError,
       onSelect: (room) => openRoom(room.roomId),
       onOpenVerification: openVerification,
       onOpenRecovery: openRecovery,
@@ -171,10 +173,13 @@ async function openAttachment(attachment) {
 async function connect(creds) {
   state.myUserId = creds.userId;
   state.client = await createFamilyClient(creds);
+  state.cryptoError = null;
   try {
     await state.client.enableEncryption();
   } catch (error) {
+    // 콘솔에만 남기면 이후 모든 전송이 조용히 실패하는 이유를 가족이 알 수 없다(#126) — 화면에 상시 배너.
     console.error('rust crypto unavailable', error);
+    state.cryptoError = strings.errors.cryptoUnavailable;
   }
   state.client.start((syncState) => {
     state.syncState = syncState === 'PREPARED' || syncState === 'SYNCING' ? 'live' : syncState === 'ERROR' ? 'error' : state.syncState;
@@ -440,6 +445,7 @@ async function logout() {
   state.currentRoomId = null;
   state.syncState = 'idle';
   state.box = { open: false, tab: 'attachments', refresh: 0 };
+  state.cryptoError = null;
   renderLogin();
 }
 

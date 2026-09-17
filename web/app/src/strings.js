@@ -61,7 +61,6 @@ export const strings = {
     attachFile: '파일 보내기',
     encrypted: '이 대화는 종단간 암호화됩니다.',
     encryptedShort: '종단간 암호화',
-    sending: '보내는 중…',
     sendFailed: '전송에 실패했습니다. 다시 시도하세요.',
     decryptFailed: '메시지를 열 수 없습니다. 이 기기가 아직 암호화 기록을 받지 못했을 수 있습니다.',
     decryptFailedShort: '열 수 없는 메시지',
@@ -73,7 +72,6 @@ export const strings = {
   participants: {
     aiBadge: 'AI',
     aiTitle: 'AI 에이전트입니다. 명시적으로 부를 때만 응답합니다.',
-    humanTitle: '가족 참여자',
     youLabel: '나',
   },
   verification: {
@@ -97,12 +95,8 @@ export const strings = {
   recovery: {
     title: '복구 키',
     intro: '기기를 잃어버려도 복구 키가 있으면 대화 기록을 되찾을 수 있습니다.',
-    generate: '복구 키 만들기',
-    generating: '만드는 중…',
     showOnceHeading: '지금 한 번만 표시됩니다',
     showOnceBody: '이 키를 종이에 적어 가족과 정한 안전한 곳에 보관하세요. 스크린샷이나 메모 앱에 두지 마세요.',
-    keyLabel: '복구 키',
-    copied: '복사되었습니다.',
     confirmLabel: '복구 키를 다시 입력해 확인하세요',
     confirmPlaceholder: '복구 키 입력',
     confirm: '확인',
@@ -157,11 +151,8 @@ export const strings = {
     deleteFailed: '기기 삭제에 실패했습니다. 비밀번호를 확인하세요.',
     refresh: '새로고침',
   },
-  install: {
-    hint: '설치하면 앱처럼 켤 수 있습니다.',
-    dismiss: '다음에',
-  },
   errors: {
+    cryptoUnavailable: '이 기기에서 암호화 모듈을 켜지 못했습니다. 메시지를 보낼 수 없고 새 메시지를 열 수 없습니다. 새로고침하거나 다른 브라우저(사생활 보호 모드 해제)로 다시 시도하세요.',
     plaintextRefused: '암호화되지 않은 전송은 거부되었습니다. 이 방은 암호화가 켜져 있어야 합니다.',
     generic: '문제가 생겼습니다. 잠시 후 다시 시도하세요.',
   },
