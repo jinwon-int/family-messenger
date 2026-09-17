@@ -26,3 +26,12 @@ test('index.html은 모듈 실패 시 사용자에게 보이는 폴백을 가진
   assert.match(html, /시작 중…/);
   assert.match(html, /<noscript>/);
 });
+
+// 시트 렌더 회귀 방지(2026-09-17): dialog.replaceChildren(..., null, ...)이 텍스트 "null"을
+// 화면에 그렸다. 조건부 자식은 반드시 null을 거르는 setChildren/el 경유로만 넣는다.
+test('ui.js는 인자 있는 replaceChildren을 직접 호출하지 않는다', () => {
+  const source = readFileSync(join(SRC, 'ui.js'), 'utf-8');
+  const calls = [...source.matchAll(/replaceChildren\(([^)]*)\)/g)].map((m) => m[1].trim());
+  const withArgs = calls.filter((args) => args.length > 0 && !args.startsWith('...children'));
+  assert.deepEqual(withArgs, []);
+});

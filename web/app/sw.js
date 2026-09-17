@@ -1,7 +1,7 @@
 // Service worker: app-shell cache for PWA installs.
 // Never touches /_matrix (homeserver API) or media traffic.
 
-const CACHE = 'familychat-shell-v5'; // v5: main.js?v=4 캐시 버스팅 — 구 SW(v3 cache-first)에 갇힌 깨진 번호 우회
+const CACHE = 'familychat-shell-v6'; // v6: styles.css 재디자인 — 스타일도 네트워크 우선으로 바꿔 캐시에 갇히지 않게 한다
 const SHELL = ['./', './index.html', './main.js?v=4', './styles.css', './manifest.webmanifest', './icons/icon.svg'];
 
 self.addEventListener('install', (event) => {
@@ -20,7 +20,8 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const reqUrl = new URL(event.request.url);
   const isShellDoc = event.request.mode === 'navigate'
-    || reqUrl.pathname === '/' || reqUrl.pathname.endsWith('/index.html') || reqUrl.pathname.endsWith('/main.js');
+    || reqUrl.pathname === '/' || reqUrl.pathname.endsWith('/index.html') || reqUrl.pathname.endsWith('/main.js')
+    || reqUrl.pathname.endsWith('/styles.css');
   if (event.request.method === 'GET' && isShellDoc && reqUrl.origin === self.location.origin) {
     // 셸·번들은 항상 네트워크 우선 — 핫픽스가 기기 캐시에 갇히지 않게 한다.
     event.respondWith(

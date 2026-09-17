@@ -144,6 +144,7 @@ function timelineEntry(event, summary) {
     isAgent: agents.length > 0,
     isMe: event.getSender?.() === state.myUserId,
     kind: kind === 'unknown' ? 'file' : kind,
+    ts: typeof event.getTs === 'function' ? event.getTs() : null,
     body: typeof content.body === 'string' && kind !== 'unknown' && kind !== 'file'
       ? content.body
       : typeof content.body === 'string'

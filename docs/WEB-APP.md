@@ -20,6 +20,15 @@
 | 사람과 AI 구별 표시 | 플릿 계약의 봇 사용자 ID 목록 또는 멤버 이벤트 표식(`us.familychat.kind: "agent"`)으로 AI 배지 표시(`src/participants.js`) |
 | 가족방 초대 수락 | 초대 목록·수락/거절(`src/invites.js` + 어댑터 `inviteSummaries`/`joinRoom`/`declineInvite`). AI 참여 방은 원칙 1 동의 확인 후에만 수락 활성화 |
 
+화면 규칙(2026-09-17 재디자인):
+
+- 스타일은 `styles.css`의 토큰(색·간격·글자 크기)만으로 조정한다. 본문 16px 이상, 터치 대상 44px 이상,
+  시스템 다크 모드(`prefers-color-scheme`)와 움직임 줄이기(`prefers-reduced-motion`)를 따른다.
+- 내 메시지는 오른쪽 브랜드색, 상대 메시지는 왼쪽 표면색에 보낸 사람·AI 배지를 붙인다. 첨부는 종류(사진·영상·파일)
+  라벨과 용량·시각을 함께 보인다. 시트(기기 검증·복구 키)는 휴대폰에서 하단 시트, 데스크톱에서 중앙 대화상자다.
+- 조건부 자식은 `el()`/`setChildren()`을 거쳐야 한다(맨 `replaceChildren(null)`은 "null" 글자를 그린다 — 정적 시험이 막는다).
+- `styles.css`는 서비스 워커에서 셸·번들과 같이 네트워크 우선이다. 스타일 변경 시 `sw.js`의 `CACHE` 이름을 올린다.
+
 보안 경계(이 슬라이스에서 지킬 것):
 
 - 접속 토큰은 `sessionStorage`에만 둔다. 창을 닫으면 다시 로그인한다. 토큰이 영속 저장소에
