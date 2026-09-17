@@ -99,6 +99,8 @@ async function connect(creds) {
   });
   // 새 방이 보이면 목록·초대를 즉시 갱신한다(세션 중 도착한 초대 포함).
   state.client.onRoomAdded(() => refreshSummaries());
+  // 내 다른 기기(휴대폰 앱 등)가 이 기기 검증을 요청하면 수락 시트를 연다.
+  state.client.onVerificationRequest((request) => openIncomingVerification(request));
   installKeyboardShortcuts();
   openRooms();
 }
@@ -247,6 +249,18 @@ async function sendAttachment(file) {
 function openVerification() {
   const close = ui.openVerificationSheet(root, {
     driver: (callbacks) => state.client.startEmojiVerification(callbacks),
+    onClose: () => {
+      close();
+      renderCurrent();
+    },
+  });
+}
+
+function openIncomingVerification(request) {
+  if (root.querySelector('dialog[open]')) return; // 시트가 이미 떠 있으면 겹치지 않는다
+  const close = ui.openVerificationSheet(root, {
+    incoming: true,
+    driver: (callbacks) => state.client.acceptEmojiVerification(request, callbacks),
     onClose: () => {
       close();
       renderCurrent();
