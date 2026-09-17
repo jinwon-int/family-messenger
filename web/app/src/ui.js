@@ -308,12 +308,19 @@ export function renderRoom(root, { room, timeline, onSend, onAttach, onBack, not
       onsubmit: (event) => {
         event.preventDefault();
         const input = composer.querySelector('textarea[name=body]');
-        if (input.value.trim().length > 0) {
-          onSend(input.value);
-          input.value = '';
-          input.style.height = '';
+        const text = input.value;
+        if (text.trim().length === 0) {
+          input.focus();
+          return;
         }
-        input.focus();
+        // 먼저 비우고 나서 보낸다. onSend는 SDK 로컬 에코를 동기적으로 발행해 renderRoom이
+        // 즉시 다시 그려지는데, 그때 초안 보존이 아직 남아 있는 본문을 새 작성창으로 옮겨
+        // "엔터를 쳐도 글이 안 사라지는" 회귀가 있었다(2026-09-17 실기기 관측).
+        input.value = '';
+        input.style.height = '';
+        onSend(text);
+        // 재렌더로 작성창이 교체됐을 수 있으니 현재 것을 찾아 포커스한다.
+        (root.querySelector('.composer textarea[name=body]') ?? input).focus();
       },
     },
     attachToggle,
