@@ -95,3 +95,24 @@ export function attachmentContent(file, mxcUrl, meta = {}) {
   if (Number.isFinite(meta.durationSec)) info.duration = Math.round(meta.durationSec);
   return { msgtype, body: file.name, url: mxcUrl, info };
 }
+
+/**
+ * Insert or replace a timeline entry by event id (in place). Decryption
+ * retries re-deliver the same event, so a failure placeholder must give way
+ * to the decrypted body instead of duplicating. Entries without an id are
+ * always appended.
+ * @param {Array<{eventId?: string}>} timeline
+ * @param {{eventId?: string}} entry
+ * @returns {'appended'|'replaced'}
+ */
+export function mergeTimelineEntry(timeline, entry) {
+  if (entry.eventId) {
+    const index = timeline.findIndex((item) => item.eventId === entry.eventId);
+    if (index >= 0) {
+      timeline[index] = entry;
+      return 'replaced';
+    }
+  }
+  timeline.push(entry);
+  return 'appended';
+}

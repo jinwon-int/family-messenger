@@ -423,3 +423,45 @@ test('새 방이 보이면 onRoomAdded 콜백이 불리고 해제된다', async 
   adapter.client.emit('Room', { roomId: '!third:example.com' });
   assert.deepEqual(seen, ['!invited:example.com', '!second:example.com']);
 });
+
+function encryptedEvent({ decrypted = false, pending = !decrypted } = {}) {
+  const ev = new EventEmitter();
+  let clear = decrypted;
+  ev.isEncrypted = () => true;
+  ev.isBeingDecrypted = () => pending && !clear;
+  ev.getType = () => (clear ? 'm.room.message' : 'm.room.encrypted');
+  ev.finishDecryption = () => {
+    clear = true;
+    ev.emit('Event.decrypted', ev);
+  };
+  return ev;
+}
+
+test('암호화 이벤트는 복호화가 끝난 뒤에만 전달된다 (#125)', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  const seen = [];
+  adapter.onTimeline((event) => seen.push(event.getType()));
+  const ev = encryptedEvent();
+  adapter.client.emit('Room.timeline', ev);
+  assert.deepEqual(seen, [], 'Room.timeline 시점(암호문)에는 전달하지 않는다');
+  ev.finishDecryption();
+  assert.deepEqual(seen, ['m.room.message']);
+  // 키가 늦게 도착해 다시 복호화되면 같은 이벤트가 한 번 더 전달된다(치환은 소비자 몫).
+  ev.finishDecryption();
+  assert.deepEqual(seen, ['m.room.message', 'm.room.message']);
+});
+
+test('이미 복호화된 암호화 이벤트와 평문 이벤트는 즉시 전달된다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  const seen = [];
+  const off = adapter.onTimeline((event) => seen.push(typeof event === 'string' ? event : event.getType()));
+  adapter.client.emit('Room.timeline', encryptedEvent({ decrypted: true }));
+  adapter.client.emit('Room.timeline', { isEncrypted: () => false, getType: () => 'm.room.message', on() {} });
+  adapter.client.emit('Room.timeline', 'plain');
+  assert.deepEqual(seen, ['m.room.message', 'm.room.message', 'plain']);
+  off();
+  adapter.client.emit('Room.timeline', encryptedEvent({ decrypted: true }));
+  assert.equal(seen.length, 3);
+});

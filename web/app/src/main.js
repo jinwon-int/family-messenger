@@ -3,7 +3,7 @@
 import { strings } from './strings.js';
 import * as session from './session.js';
 import { createFamilyClient, loginWithPassword, PlaintextRefusedError } from './matrix/client.js';
-import { messageKind, humanFileSize, validateAttachment, attachmentContent } from './messages.js';
+import { messageKind, humanFileSize, validateAttachment, attachmentContent, mergeTimelineEntry } from './messages.js';
 import { extractMentions } from './mentions.js';
 import { describeInvite } from './invites.js';
 import { splitParticipants } from './participants.js';
@@ -134,19 +134,21 @@ function agentUserIds(summary) {
 
 function timelineEntry(event, summary) {
   const content = event.getContent?.() ?? {};
-  const kind = messageKind(content);
+  const undecryptable = typeof event.isDecryptionFailure === 'function' && event.isDecryptionFailure();
+  const kind = undecryptable ? 'undecryptable' : messageKind(content);
   const sender = event.sender ?? {};
   const { agents } = splitParticipants([sender], { agentUserIds: agentUserIds(summary) });
-  const meta = content.info?.size ? humanFileSize(content.info.size) : null;
+  const meta = !undecryptable && content.info?.size ? humanFileSize(content.info.size) : null;
   return {
+    eventId: event.getId?.() ?? null,
     userId: event.getSender?.(),
     name: sender.name ?? event.getSender?.(),
     isAgent: agents.length > 0,
     isMe: event.getSender?.() === state.myUserId,
     kind: kind === 'unknown' ? 'file' : kind,
     ts: typeof event.getTs === 'function' ? event.getTs() : null,
-    body: typeof content.body === 'string' && kind !== 'unknown' && kind !== 'file'
-      ? content.body
+    body: undecryptable
+      ? strings.chat.decryptFailed
       : typeof content.body === 'string'
         ? content.body
         : strings.chat.unreadable,
@@ -158,7 +160,8 @@ function appendTimeline(event) {
   const roomId = event.getRoomId?.();
   const entry0 = state.rooms.get(roomId);
   if (!entry0) return;
-  entry0.timeline.push(timelineEntry(event, entry0.summary));
+  // 복호화 재시도는 같은 event id로 다시 전달된다 — 자리표시를 본문으로 치환한다.
+  mergeTimelineEntry(entry0.timeline, timelineEntry(event, entry0.summary));
   if (roomId === state.currentRoomId) renderCurrent();
 }
 
