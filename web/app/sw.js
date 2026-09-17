@@ -1,7 +1,7 @@
 // Service worker: app-shell cache for PWA installs.
 // Never touches /_matrix (homeserver API) or media traffic.
 
-const CACHE = 'familychat-shell-v6'; // v6: styles.css 재디자인 — 스타일도 네트워크 우선으로 바꿔 캐시에 갇히지 않게 한다
+const CACHE = 'familychat-shell-v7'; // v7: #125 복호화 대기 + 복호화 실패 버블 스타일
 const SHELL = ['./', './index.html', './main.js?v=4', './styles.css', './manifest.webmanifest', './icons/icon.svg'];
 
 self.addEventListener('install', (event) => {

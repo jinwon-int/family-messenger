@@ -5,6 +5,7 @@ import {
   attachmentContent,
   humanFileSize,
   messageKind,
+  mergeTimelineEntry,
   validateAttachment,
 } from '../src/messages.js';
 
@@ -65,4 +66,14 @@ test('영상은 duration을, 알 수 없는 형식은 m.file로 보낸다', () =
   assert.equal(other.info.mimetype, 'application/octet-stream');
   assert.throws(() => attachmentContent({ name: 'x', size: 1 }, 'https://example.com/not-mxc'));
   assert.throws(() => attachmentContent({ name: 'x', size: 1 }, ''));
+});
+
+test('mergeTimelineEntry: 같은 event id는 치환하고, id 없는 항목은 항상 덧붙인다 (#125)', () => {
+  const timeline = [];
+  assert.equal(mergeTimelineEntry(timeline, { eventId: '$a', body: '열 수 없음' }), 'appended');
+  assert.equal(mergeTimelineEntry(timeline, { eventId: '$b', body: '둘째' }), 'appended');
+  assert.equal(mergeTimelineEntry(timeline, { eventId: '$a', body: '복호화됨' }), 'replaced');
+  assert.equal(mergeTimelineEntry(timeline, { body: '무명' }), 'appended');
+  assert.equal(mergeTimelineEntry(timeline, { body: '무명' }), 'appended');
+  assert.deepEqual(timeline.map((e) => e.body), ['복호화됨', '둘째', '무명', '무명']);
 });

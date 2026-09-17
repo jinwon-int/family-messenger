@@ -373,6 +373,7 @@ ul.rooms { list-style: none; margin: 0; padding: 0; display: flex; flex-directio
 }
 .bubble.kind-photo .body, .bubble.kind-video .body, .bubble.kind-file .body { font-weight: 600; }
 .bubble .body .attach-label { display: inline-block; font-size: var(--text-xs); font-weight: 700; margin-right: var(--space-2); opacity: 0.85; }
+.bubble.kind-undecryptable .body { color: var(--text-2); font-style: italic; border-style: dashed; }
 .bubble.kind-notice { align-self: center; max-width: 92%; }
 .bubble.kind-notice .body { background: transparent; border: 0; box-shadow: none; color: var(--text-2); font-size: var(--text-s); text-align: center; }
 .bubble.kind-notice .who { display: none; }

@@ -209,10 +209,31 @@ export class ClientAdapter {
     });
   }
 
-  /** Subscribe to live timeline events for rendering. */
+  /**
+   * Subscribe to live timeline events for rendering.
+   *
+   * The SDK emits Room.timeline as soon as an event lands, while decryption
+   * runs in the background (event-mapper starts it without awaiting). An
+   * encrypted event therefore still reports type m.room.encrypted at that
+   * moment; consumers that filter on getType() would drop every incoming
+   * E2EE message (#125). Encrypted events are delivered once per
+   * 'Event.decrypted' (success or failure — a later key arrival re-emits it,
+   * so the handler may see the same event id again and must replace).
+   */
   onTimeline(handler) {
-    this.client.on('Room.timeline', handler);
-    return () => this.client.removeListener('Room.timeline', handler);
+    const listener = (event) => {
+      const encrypted = typeof event?.isEncrypted === 'function' && event.isEncrypted();
+      if (!encrypted || typeof event.on !== 'function') {
+        handler(event);
+        return;
+      }
+      event.on('Event.decrypted', () => handler(event));
+      const pending = typeof event.isBeingDecrypted === 'function' && event.isBeingDecrypted();
+      const stillCiphertext = typeof event.getType === 'function' && event.getType() === 'm.room.encrypted';
+      if (!pending && !stillCiphertext) handler(event);
+    };
+    this.client.on('Room.timeline', listener);
+    return () => this.client.removeListener('Room.timeline', listener);
   }
 
   /**
