@@ -105,7 +105,17 @@ test('ui.js renderShell은 같은 방이면 composer-wrap을 교체하지 않는
   assert.match(fn, /existingScreen\.dataset\.roomId === \(room\.room\.roomId \?\? ''\)/);
   assert.match(fn, /existingScreen\.querySelector\('\.composer-wrap'\)/);
   assert.match(fn, /built\.mount\(\{ keepComposer: true \}\)/);
-  assert.ok(fn.indexOf('built.mount({ keepComposer: true })') < fn.indexOf('root.replaceChildren()'), '부분 갱신 경로가 전체 재구성보다 먼저 와야 한다');
+  assert.ok(fn.indexOf('built.mount({ keepComposer: true })') < fn.indexOf('existingShell.replaceWith(shell)'), '부분 갱신 경로가 전체 재구성보다 먼저 와야 한다');
+  // 시트 회귀 방지(2026-09-17 실기기): 전체 재구성이 열린 <dialog>를 떼었다 붙이면 top layer에서 빠져
+  // "첨부처럼" 인라인으로 깔린다. root.replaceChildren()로 전부 지우는 경로가 있으면 안 된다.
+  assert.equal(fn.indexOf('root.replaceChildren()'), -1, '전체 재구성은 root를 통째로 비우면 안 된다');
+});
+
+// 매번 기기 검증 회귀 방지(2026-09-17 실기기): 재로그인이 저장된 device_id를 재사용해야 새 기기가 생기지 않는다.
+test('main.js는 같은 계정 재로그인에 저장된 deviceId를 넘긴다', () => {
+  const main = readFileSync(join(SRC, 'main.js'), 'utf-8');
+  assert.match(main, /deviceId: sameUser \? stored\.deviceId : undefined/);
+  assert.match(main, /deviceDisplayName: strings\.login\.deviceName/);
 });
 
 // 재로그인 저장소 불일치 회귀 방지(2026-09-17): 새 로그인은 저장소를 먼저 비우고, 복원 세션은 불일치일 때만 비우고 재시도.

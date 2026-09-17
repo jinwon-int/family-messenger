@@ -585,10 +585,10 @@ export function renderShell(root, { list, room, box = null }) {
     return;
   }
 
-  // 전체 재구성은 열려 있는 시트(<dialog open>)를 지우면 안 된다 — 설정 메뉴가 닫히며 재렌더될 때
-  // 방금 연 기기 검증 시트가 사라졌다(2026-09-17 실기기, 목록 화면). 떼어 두었다가 다시 붙인다.
-  const openDialogs = [...root.querySelectorAll(':scope > dialog[open]')];
-  root.replaceChildren();
+  // 전체 재구성은 열려 있는 시트(<dialog open>)를 건드리면 안 된다 — 지우면 시트가 사라지고,
+  // 떼었다 다시 붙이면 top layer(모달)에서 빠져 첨부 카드처럼 화면 아래에 인라인으로 깔린다
+  // (2026-09-17 실기기: 목록 화면에서 2초 갱신마다 기기 검증 시트가 "첨부처럼" 떴다).
+  // 그래서 main.shell만 제자리에서 교체하고 시트는 손대지 않는다.
   let roomPane;
   let mount = null;
   if (room) {
@@ -599,7 +599,13 @@ export function renderShell(root, { list, room, box = null }) {
     roomPane = el('section', { class: 'pane pane-room' }, el('p', { class: 'empty pane-empty' }, strings.rooms.selectHint));
   }
   const boxPane = box ? buildBox(box) : null;
-  root.append(el('main', { class: 'shell', 'data-view': view }, listPane, roomPane, boxPane), ...openDialogs);
+  const shell = el('main', { class: 'shell', 'data-view': view }, listPane, roomPane, boxPane);
+  if (existingShell) existingShell.replaceWith(shell);
+  else {
+    // 로그인 화면 등 다른 내용은 걷어내되 열린 시트는 그대로 둔다.
+    for (const child of [...root.children]) if (!(child.tagName === 'DIALOG' && child.open)) child.remove();
+    root.prepend(shell);
+  }
   mount?.();
 }
 
@@ -792,7 +798,20 @@ export function openVerificationSheet(root, { driver, onClose, incoming = false 
   let state = { state: 'idle' };
   let hint = null; // 'requested' while the other device still has to accept
   let confirmers = null;
+  let request = null; // SDK VerificationRequest once the driver created/accepted one
   const dialog = el('dialog', { class: 'sheet', 'aria-labelledby': 'verify-title' });
+  dialog.addEventListener('close', () => {
+    // 시트를 닫으면 상대 기기가 시간 초과까지 기다리지 않도록 진행 중인 요청을 취소한다.
+    if (!['matched', 'mismatched', 'cancelled', 'idle'].includes(state.state)) {
+      try {
+        request?.cancel?.();
+      } catch {
+        /* best-effort: the other device times out on its own */
+      }
+    }
+    dialog.remove();
+    onClose?.();
+  });
   const apply = (action) => {
     state = transition(state, action);
     render();
@@ -852,6 +871,9 @@ export function openVerificationSheet(root, { driver, onClose, incoming = false 
   const start = () => {
     apply({ type: 'request' });
     driver({
+      onRequest: (sdkRequest) => {
+        request = sdkRequest;
+      },
       onRequested: () => {
         hint = 'requested';
         render();

@@ -178,6 +178,27 @@ test('로그인은 m.login.password로 홈서버에 요청한다', async () => {
   await assert.rejects(loginWithPassword({ homeserverUrl: 'https://matrix.example.com', user: '', password: 'pw', sdkLoader: async () => sdk }));
 });
 
+test('재로그인은 저장된 device_id와 기기 이름을 함께 보내 새 기기를 만들지 않는다', async () => {
+  const sdk = fakeSdk();
+  await loginWithPassword({
+    homeserverUrl: 'https://matrix.example.com',
+    user: 'minseo',
+    password: 'pw',
+    deviceId: 'OLDDEV',
+    deviceDisplayName: '패밀리챗 웹',
+    sdkLoader: async () => sdk,
+  });
+  assert.deepEqual(sdk.clients[0].loginCall.data, {
+    identifier: { type: 'm.id.user', user: 'minseo' },
+    password: 'pw',
+    device_id: 'OLDDEV',
+    initial_device_display_name: '패밀리챗 웹',
+  });
+  // 빈 값은 보내지 않는다(서버가 임의 기기를 만들도록 둔다).
+  await loginWithPassword({ homeserverUrl: 'https://matrix.example.com', user: 'minseo', password: 'pw', deviceId: '', sdkLoader: async () => sdk });
+  assert.equal('device_id' in sdk.clients[1].loginCall.data, false);
+});
+
 test('rust crypto 활성화 후 클라이언트를 시작한다', async () => {
   const sdk = fakeSdk();
   const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
