@@ -46,7 +46,10 @@ test('index.html은 ?v= 없는 자리표시 참조만 갖고, sw.js는 템플릿
   assert.match(html, /src="\.\/boot\.js"/);
   assert.match(html, /src="\.\/main\.js"/);
   assert.doesNotMatch(html, /\?v=/);
-  assert.doesNotMatch(html, /<script>|style="/, '인라인 스크립트·스타일 속성 금지(CSP)');
+  // 정규식 대신 문자열 검사(CodeQL js/bad-tag-filter 회피): 인라인 <script>·style= 속성이 없어야 CSP가 통한다.
+  const lower = html.toLowerCase();
+  assert.ok(!lower.includes('<script>'), '인라인 <script> 금지(CSP script-src self)');
+  assert.ok(!lower.includes('style='), '인라인 style 속성 금지(CSP style-src self)');
   assert.ok(sw.includes("'__CACHE_NAME__'") && sw.includes('__SHELL_ASSETS__'));
 });
 
