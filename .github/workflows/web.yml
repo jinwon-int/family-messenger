@@ -47,8 +47,16 @@ jobs:
           curl -fsSI http://127.0.0.1:8080/icons/icon.svg | grep -qi '^content-type: image/svg'
           # rust-crypto WASM asset must be reachable at the path the glue expects
           curl -fsSI http://127.0.0.1:8080/pkg/matrix_sdk_crypto_wasm_bg.wasm | grep -qi '^content-type: application/wasm'
-          test -s dist/main.js
-          test -f dist/sw.js
+          # 해시 파일명 번들·스타일이 존재하고 index.html이 그것을 참조해야 한다
+          ls dist/main-*.js dist/styles-*.css dist/boot-*.js
+          grep -q 'main-[A-Za-z0-9]*\.js' dist/index.html
+          grep -q 'styles-[a-f0-9]*\.css' dist/index.html
+          test -f dist/sw.js && ! grep -q '__CACHE_NAME__\|__SHELL_ASSETS__' dist/sw.js
+          test -f dist/config.json
+          # 보안 헤더(CSP 등)와 해시 자산 immutable 캐시
+          curl -fsSI http://127.0.0.1:8080/ | grep -qi "^content-security-policy: default-src 'self'"
+          curl -fsSI http://127.0.0.1:8080/ | grep -qi '^cache-control: no-store'
+          curl -fsSI "http://127.0.0.1:8080/$(ls dist | grep '^main-')" | grep -qi '^cache-control: public, max-age=31536000, immutable'
           test -s dist/pkg/matrix_sdk_crypto_wasm_bg.wasm
       - name: Preserve bundle evidence
         if: always()

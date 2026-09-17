@@ -22,7 +22,8 @@ test('strings.을 쓰는 모든 src 모듈은 strings.js를 import한다', () =>
 
 test('index.html은 모듈 실패 시 사용자에게 보이는 폴백을 가진다', () => {
   const html = readFileSync(join(import.meta.dirname, '..', 'index.html'), 'utf-8');
-  assert.match(html, /window\.onerror/);
+  const boot = readFileSync(join(import.meta.dirname, '..', 'boot.js'), 'utf-8');
+  assert.match(boot, /window\.onerror/);
   assert.match(html, /시작 중…/);
   assert.match(html, /<noscript>/);
 });
@@ -36,14 +37,20 @@ test('ui.js는 인자 있는 replaceChildren을 직접 호출하지 않는다', 
   assert.deepEqual(withArgs, []);
 });
 
-// 캐시 버스팅 드리프트 방지: index.html이 참조하는 styles.css 버전과 sw.js 셸 목록이 같아야
-// 구 SW(cache-first)에 갇힌 옛 스타일이 새 번들과 섞이지 않는다(2026-09-17 실기기 관측).
-test('index.html의 styles.css 버전은 sw.js 셸 목록과 일치한다', () => {
+// 해시 파일명 규칙(2026-09-17): 소스 index.html은 자리표시 참조만 갖고, build.mjs가 해시 이름으로 바꾼다.
+// 수동 ?v= 버전이 다시 들어오면 옛 서비스 워커에 갇히는 회귀(#120~#122)가 재발할 수 있다.
+test('index.html은 ?v= 없는 자리표시 참조만 갖고, sw.js는 템플릿 자리표시자를 갖는다', () => {
   const html = readFileSync(join(import.meta.dirname, '..', 'index.html'), 'utf-8');
   const sw = readFileSync(join(import.meta.dirname, '..', 'sw.js'), 'utf-8');
-  const htmlRef = /href="\.\/(styles\.css\?v=\d+)"/.exec(html)?.[1];
-  assert.ok(htmlRef, 'index.html은 styles.css?v=N 형태로 참조해야 한다');
-  assert.ok(sw.includes(`'./${htmlRef}'`), `sw.js SHELL에 ${htmlRef}가 있어야 한다`);
+  assert.match(html, /href="\.\/styles\.css"/);
+  assert.match(html, /src="\.\/boot\.js"/);
+  assert.match(html, /src="\.\/main\.js"/);
+  assert.doesNotMatch(html, /\?v=/);
+  // 정규식 대신 문자열 검사(CodeQL js/bad-tag-filter 회피): 인라인 <script>·style= 속성이 없어야 CSP가 통한다.
+  const lower = html.toLowerCase();
+  assert.ok(!lower.includes('<script>'), '인라인 <script> 금지(CSP script-src self)');
+  assert.ok(!lower.includes('style='), '인라인 style 속성 금지(CSP style-src self)');
+  assert.ok(sw.includes("'__CACHE_NAME__'") && sw.includes('__SHELL_ASSETS__'));
 });
 
 // 전송 순서 회귀 방지(2026-09-17 실기기): onSend가 동기 로컬 에코로 renderRoom을 재진입시키므로

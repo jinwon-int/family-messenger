@@ -9,30 +9,14 @@
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="./icons/icon.svg" />
-    <link rel="stylesheet" href="./styles.css?v=3" />
+    <!-- build.mjs가 아래 참조들을 내용 해시가 붙은 파일명으로 바꾼다(styles-XXXXXXXX.css, boot-XXXXXXXX.js, main-XXXXXXXX.js).
+         수동 버전 쿼리는 더 쓰지 않는다 — 옛 서비스 워커에 갇힌 번들(#120~#122)의 재발 방지. -->
+    <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <div id="app"><p style="font-family: sans-serif; padding: 24px; color: #666;">시작 중…</p></div>
-    <script>
-      // 모듈 로드·실행 실패를 빈 화면 대신 화면에 그대로 보여준다(진단용, 비밀값 없음).
-      (function () {
-        function show(message) {
-          var app = document.getElementById('app');
-          if (!app) return;
-          var note = document.createElement('pre');
-          note.style.cssText = 'font-family: monospace; padding: 24px; white-space: pre-wrap; color: #b00;';
-          note.textContent = '화면을 시작하지 못했습니다.\n' + message;
-          app.replaceChildren(note);
-        }
-        window.onerror = function (message, source, line, col) {
-          show(message + ' (' + (source || '?') + ':' + (line || '?') + ')');
-        };
-        window.addEventListener('unhandledrejection', function (event) {
-          show('promise: ' + (event.reason && (event.reason.message || event.reason)));
-        });
-      })();
-    </script>
-    <noscript><p style="font-family: sans-serif; padding: 24px;">이 앱은 JavaScript가 필요합니다. 브라우저 설정에서 JavaScript를 켜 주세요.</p></noscript>
-    <script type="module" src="./main.js?v=5"></script>
+    <div id="app"><p class="boot-note">시작 중…</p></div>
+    <script src="./boot.js"></script>
+    <noscript><p class="boot-note">이 앱은 JavaScript가 필요합니다. 브라우저 설정에서 JavaScript를 켜 주세요.</p></noscript>
+    <script type="module" src="./main.js"></script>
   </body>
 </html>
