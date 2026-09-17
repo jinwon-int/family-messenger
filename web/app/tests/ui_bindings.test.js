@@ -86,3 +86,13 @@ test('ui.js는 renderShell을 내보내고 main.js는 그것으로 화면을 그
   assert.match(ui, /export function renderShell\(/);
   assert.match(main, /ui\.renderShell\(/);
 });
+
+// 휴대폰 가로모드 2열(2026-09-17 오너 요청): landscape 640~899px에서 목록·대화가 나란히 보여야 한다.
+test('styles.css: 휴대폰 가로모드 미디어 쿼리가 목록|대화 2열을 켠다', () => {
+  const css = readFileSync(join(import.meta.dirname, '..', 'styles.css'), 'utf-8');
+  const block = /@media \(orientation: landscape\) and \(min-width: 640px\) and \(max-width: 899px\) \{[\s\S]*?\n\}/.exec(css)?.[0] ?? '';
+  assert.ok(block, '가로모드 미디어 쿼리 블록이 있어야 한다');
+  assert.match(block, /main\.shell \{ flex-direction: row; \}/);
+  assert.match(block, /main\.shell\[data-view="room"\] \.pane-list \{ display: flex; \}/);
+  assert.match(block, /\.pane-list \{[^}]*flex: 0 0 280px/);
+});

@@ -541,6 +541,37 @@ dialog.sheet .column { margin-top: var(--space-2); }
   .emojis { grid-template-columns: repeat(7, 1fr); }
 }
 
+/* ---------- 휴대폰 가로모드: 목록 | 대화 (폭 640~899px, 낮은 높이) ---------- */
+
+@media (orientation: landscape) and (min-width: 640px) and (max-width: 899px) {
+  main.shell { flex-direction: row; }
+  main.shell[data-view="list"] .pane-room, main.shell[data-view="room"] .pane-list { display: flex; }
+  /* 보관함을 열면 대화 자리에 보관함, 목록은 유지 */
+  /* 뒤쪽 보관함 절의 display:none보다 특이도를 높여(.pane.pane-list) 목록을 유지한다 */
+  main.shell[data-view="box"] .pane.pane-list { display: flex; }
+  main.shell[data-view="box"] .pane.pane-room { display: none; }
+  main.shell[data-view="box"] .pane.pane-box { display: flex; flex: 1; max-width: none; margin: 0; }
+  .pane-list {
+    flex: 0 0 280px;
+    max-width: none;
+    margin: 0;
+    padding: 0 var(--space-3) var(--space-3);
+    border-right: 1px solid var(--line);
+    background: var(--surface);
+  }
+  .pane-list .appbar { background: var(--surface); margin: 0 calc(-1 * var(--space-3)); padding-left: var(--space-3); padding-right: var(--space-3); }
+  .pane-list .room-item { box-shadow: none; min-height: 60px; }
+  .pane-room { flex: 1; }
+  .room-screen { max-width: none; padding: 0 var(--space-3); }
+  .room-screen .appbar .back { display: none; }
+  .appbar { min-height: 44px; padding: var(--space-1) 0; }
+  .appbar h1 { font-size: var(--text-l); }
+  .appbar .subtitle { display: none; }
+  .composer-wrap { padding-top: var(--space-1); padding-bottom: calc(var(--space-2) + env(safe-area-inset-bottom)); }
+  .bubble { max-width: min(80%, 520px); }
+  .card.invites { padding: var(--space-3); }
+}
+
 /* ---------- 2열 구도 (목록 | 대화) ---------- */
 
 @media (min-width: 900px) {
