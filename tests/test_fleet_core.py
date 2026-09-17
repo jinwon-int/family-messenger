@@ -53,7 +53,8 @@ class AdmissionTests(unittest.TestCase):
         e = event(); e['content']['m.mentions'] = {'user_ids': [BOT]}
         self.assertIsNotNone(p.admit(GROUP, e, decrypted=True, now_ms=NOW))
         # 본문에 @localpart를 통째로 치면 통과(휴대폰 앱은 pill 선택만 m.mentions를 만든다, 2026-09-17).
-        for body in ['@' + local + ' 오늘 일정 알려줘', '오늘 일정 @' + local.upper(), '(@' + local + ')', '@' + local + ', 안녕']:
+        typed = ['@' + local + ' 오늘 일정 알려줘', '오늘 일정 @' + local.upper(), '(@' + local + ')', '@' + local + ', 안녕']
+        for body in typed:
             e = event(); e['content']['body'] = body
             self.assertIsNotNone(p.admit(GROUP, e, decrypted=True, now_ms=NOW), body)
         # 직접방은 멘션 없이도 그대로.
