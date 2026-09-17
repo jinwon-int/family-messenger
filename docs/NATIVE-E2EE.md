@@ -302,7 +302,7 @@ proofs establish the previous plaintext/admission contracts only.
 
 ## Isolated browser experiment result
 
-The subsequent [OpenMLS browser experiment](../archive/experiments/openmls-browser/README.md)
+The subsequent [OpenMLS browser experiment](https://github.com/jinwon-int/family-messenger/blob/archive-frozen-20260917/archive/experiments/openmls-browser/README.md)
 provides a pinned runnable memory-only Chromium proof and dependency/license/cost
 evidence. It does not implement device trust, durable crypto state, native
 transport integration or production E2EE; the remaining acceptance gates above
@@ -310,7 +310,7 @@ still apply.
 
 ## Staged browser persistence result
 
-The subsequent [synthetic state adapter](../archive/experiments/openmls-browser/PERSISTENCE.md)
+The subsequent [synthetic state adapter](https://github.com/jinwon-int/family-messenger/blob/archive-frozen-20260917/archive/experiments/openmls-browser/PERSISTENCE.md)
 reconstructs the full provider for each candidate operation and commits its state,
 exact-byte retry ledger and receive cursor in one IndexedDB transaction before
 release. Two persistent Chromium clients qualify confirmed-commit process crashes,
@@ -329,32 +329,32 @@ control transport and human enrollment/recovery remain outstanding.
 
 ## Durable trusted-state qualification
 
-[The trusted-state adapter](../archive/experiments/openmls-browser/TRUSTED-STATE.md)
+[The trusted-state adapter](https://github.com/jinwon-int/family-messenger/blob/archive-frozen-20260917/archive/experiments/openmls-browser/TRUSTED-STATE.md)
 atomically retains independent pins, local room/group identity and complete MLS
 state/outbox across actual browser crashes. Signed native admission is checked
 outside IDB and matched against the latest transaction record. Native ordered
 control/room binding and ciphertext delivery remain the next integration gate.
 
-The [native transport boundary](../archive/native-mls/server/MLS-TRANSPORT.md) now reserves explicit
+The [native transport boundary](https://github.com/jinwon-int/family-messenger/blob/archive-frozen-20260917/archive/native-mls/server/MLS-TRANSPORT.md) now reserves explicit
 MLS-only rooms and persists ordered opaque control/application events with fixed
 device bindings, CAS and restart/retry semantics. Its process proof uses generated
 opaque bytes, not actual encrypted application messages. Joining the trusted staged
 browser, outer authenticated framing and control/outbox/cursor remains next.
 
-[Native encrypted delivery](../archive/experiments/openmls-browser/NATIVE-DELIVERY.md)
+[Native encrypted delivery](https://github.com/jinwon-int/family-messenger/blob/archive-frozen-20260917/archive/experiments/openmls-browser/NATIVE-DELIVERY.md)
 now joins initial trusted group setup and application ciphertext to the native
 log in two disposable browsers. Actual MLS sender/inner/outer binding, full-state
 outbox/cursor and crash retry are checked. This remains a synthetic worker proof;
 subsequent commits, product UI and human-use acceptance remain outstanding.
 
 The subsequent fixed-pair encryption rekey adapter is documented in
-[Native controls](../archive/experiments/openmls-browser/NATIVE-CONTROLS.md). It retains
+[Native controls](https://github.com/jinwon-int/family-messenger/blob/archive-frozen-20260917/archive/experiments/openmls-browser/NATIVE-CONTROLS.md). It retains
 old-epoch inbound processing until the accepted ordered own commit, using vetted
 OpenMLS pending/merge APIs. It does not replace signing keys or add devices, and
 does not complete the human-use acceptance gates.
 
-An own synthetic encrypted chat UI now exercises the durable native worker through browser controls. See [CHAT-UI.md](../archive/experiments/openmls-browser/CHAT-UI.md) for the isolated test-serving boundary; this is not a deployed human-use UI or completed CF/key-recovery gate.
+An own synthetic encrypted chat UI now exercises the durable native worker through browser controls. See [CHAT-UI.md](https://github.com/jinwon-int/family-messenger/blob/archive-frozen-20260917/archive/experiments/openmls-browser/CHAT-UI.md) for the isolated test-serving boundary; this is not a deployed human-use UI or completed CF/key-recovery gate.
 
-The encrypted test UI can now be built into the native server through a fixed hash-pinned manifest and explicit signed synthetic activation. See [ENCRYPTED-UI.md](../archive/native-mls/server/ENCRYPTED-UI.md). This does not complete human-use key protection, recovery or actual CF/mobile/backup acceptance.
+The encrypted test UI can now be built into the native server through a fixed hash-pinned manifest and explicit signed synthetic activation. See [ENCRYPTED-UI.md](https://github.com/jinwon-int/family-messenger/blob/archive-frozen-20260917/archive/native-mls/server/ENCRYPTED-UI.md). This does not complete human-use key protection, recovery or actual CF/mobile/backup acceptance.
 
 [Device key custody and recovery](DEVICE-KEY-CUSTODY.md) records the next human-use boundary and a pinned synthetic typage/WebAuthn feasibility probe. It does not replace the current unprotected provider store or approve human keys.

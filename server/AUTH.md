@@ -1,6 +1,6 @@
 # Account verification and application authority (synthetic integration)
 
-[Version-2 public successor management](../archive/native-mls/server/SUCCESSORS.md) adds explicit private
+[Version-2 public successor management](https://github.com/jinwon-int/family-messenger/blob/archive-frozen-20260917/archive/native-mls/server/SUCCESSORS.md) adds explicit private
 candidate/decision records and atomic old-device retirement. It preserves v1
 encoding, account/owner separation and the original admitted-device list.
 

@@ -1,5 +1,7 @@
 # 문서 색인
 
+> **보관 코드 위치(2026-09-17)**: `archive/`(네이티브 MLS·실험·Synapse 스택, 352파일)는 main에서 분리돼 보존 브랜치/태그 [`archive-frozen-20260917`](https://github.com/jinwon-int/family-messenger/tree/archive-frozen-20260917/archive)에 있다. 아래 문서들의 `archive/…` 링크는 그 브랜치를 가리킨다.
+
 `docs/`의 모든 파일을 한 줄씩 적는다. 상태는 **현행**(지금 따르는 문서), **이력**(결정 과정·수용 기준으로
 보존, 일부 내용은 대체됨), **보관**(동결된 네이티브 MLS 트랙의 증거·기록)이다.
 문서끼리 어긋나면 [이슈 #92](https://github.com/jinwon-int/family-messenger/issues/92)가 우선한다.

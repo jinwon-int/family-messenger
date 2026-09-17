@@ -3,7 +3,7 @@
 Current lifecycle qualification and planned successor semantics are documented in
 [DEVICE-LIFECYCLE.md](../docs/DEVICE-LIFECYCLE.md). That library/design experiment
 does not relax any enrollment or immutable tombstone constraint in this server.
-The [version-2 successor policy](../archive/native-mls/server/SUCCESSORS.md) now records public intent and
+The [version-2 successor policy](https://github.com/jinwon-int/family-messenger/blob/archive-frozen-20260917/archive/native-mls/server/SUCCESSORS.md) now records public intent and
 atomic predecessor retirement. Its candidates remain outside this device list;
 it still cannot activate an additional or replacement device.
 
@@ -138,7 +138,7 @@ not automatically enroll bots; all 12 runtime credentials stay on their nodes.
 
 ## Durable synthetic client follow-up
 
-[TRUSTED-STATE.md](../archive/experiments/openmls-browser/TRUSTED-STATE.md) now joins
+[TRUSTED-STATE.md](https://github.com/jinwon-int/family-messenger/blob/archive-frozen-20260917/archive/experiments/openmls-browser/TRUSTED-STATE.md) now joins
 independent pins to staged crypto/outbox state across browser restart, with fresh
 native directory admission. It retains the transport and human-use limitations
 above; the original memory-only gate stays as a regression fixture.
