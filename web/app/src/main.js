@@ -6,8 +6,8 @@ import { createFamilyClient, loginWithPassword, PlaintextRefusedError } from './
 import { messageKind, humanFileSize, validateAttachment, attachmentContent, mergeTimelineEntry } from './messages.js';
 import { extractMentions } from './mentions.js';
 import { describeInvite } from './invites.js';
-import { splitParticipants } from './participants.js';
 import { viewKeyAction } from './keyboard.js';
+import { splitParticipants, shortHandle } from './participants.js';
 import * as ui from './ui.js';
 
 const root = document.getElementById('app');
@@ -151,6 +151,10 @@ async function respondInvite(invite, action) {
   }
 }
 
+function sameUser(a, b) {
+  return typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase();
+}
+
 function agentUserIds(summary) {
   return new Set(summary.agents.map((a) => a.userId));
 }
@@ -165,9 +169,9 @@ function timelineEntry(event, summary) {
   return {
     eventId: event.getId?.() ?? null,
     userId: event.getSender?.(),
-    name: sender.name ?? event.getSender?.(),
+    name: shortHandle(sender.name ?? event.getSender?.()),
     isAgent: agents.length > 0,
-    isMe: event.getSender?.() === state.myUserId,
+    isMe: sameUser(event.getSender?.(), state.myUserId),
     kind: kind === 'unknown' ? 'file' : kind,
     ts: typeof event.getTs === 'function' ? event.getTs() : null,
     body: undecryptable

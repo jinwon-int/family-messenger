@@ -1,8 +1,8 @@
 // Service worker: app-shell cache for PWA installs.
 // Never touches /_matrix (homeserver API) or media traffic.
 
-const CACHE = 'familychat-shell-v8'; // v8: #128 키보드 단축키(Shift+Enter 줄바꿈·Esc·커서 자동 이동)
-const SHELL = ['./', './index.html', './main.js?v=4', './styles.css', './manifest.webmanifest', './icons/icon.svg'];
+const CACHE = 'familychat-shell-v9'; // v9: #128 키보드 단축키(main.js?v=5) + styles.css?v=2(구 SW cache-first에 갇힌 옛 CSS 우회)
+const SHELL = ['./', './index.html', './main.js?v=5', './styles.css?v=2', './manifest.webmanifest', './icons/icon.svg'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
