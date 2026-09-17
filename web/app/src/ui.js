@@ -7,6 +7,11 @@ import { emojiLabel, transition } from './verification.js';
 import { createRecoveryFlow } from './recovery.js';
 import { canAccept } from './invites.js';
 
+/** replaceChildren that drops null/false entries (a bare null would render the text "null"). */
+function setChildren(node, ...children) {
+  node.replaceChildren(...children.flat(Infinity).filter((child) => child != null && child !== false));
+}
+
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs)) {
@@ -22,13 +27,36 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+/** label + input pair; keeps the field markup in one place. */
+function field(labelText, inputAttrs) {
+  const id = `f-${inputAttrs.name}`;
+  return el('div', { class: 'field' }, el('label', { for: id }, labelText), el('input', { id, ...inputAttrs }));
+}
+
+/** First visible character of a name for the avatar circle. */
+function initial(name) {
+  const text = String(name ?? '').trim();
+  if (!text) return '·';
+  const first = [...text][0];
+  return first.toUpperCase();
+}
+
+/** Formats a message timestamp for the bubble footer; empty when unknown. */
+function timeLabel(ts) {
+  if (!Number.isFinite(ts) || ts <= 0) return '';
+  try {
+    return new Intl.DateTimeFormat('ko-KR', { hour: 'numeric', minute: '2-digit' }).format(new Date(ts));
+  } catch {
+    return '';
+  }
+}
+
 /** Login screen. Calls onSubmit({homeserverUrl, user, password}). */
 export function renderLogin(root, { onSubmit }) {
   root.replaceChildren();
   const form = el(
     'form',
     {
-      class: 'card login',
       onsubmit: (event) => {
         event.preventDefault();
         const data = new FormData(form);
@@ -39,17 +67,25 @@ export function renderLogin(root, { onSubmit }) {
         });
       },
     },
-    el('h1', {}, strings.appName),
-    el('p', { class: 'hint' }, strings.login.hint),
-    el('label', {}, strings.login.homeserverLabel),
-    el('input', { name: 'homeserverUrl', type: 'url', required: true, placeholder: strings.login.homeserverPlaceholder, autocomplete: 'url' }),
-    el('label', {}, strings.login.userLabel),
-    el('input', { name: 'user', required: true, autocomplete: 'username', placeholder: strings.login.userPlaceholder }),
-    el('label', {}, strings.login.passwordLabel),
-    el('input', { name: 'password', type: 'password', required: true, autocomplete: 'current-password', placeholder: strings.login.passwordPlaceholder }),
-    el('button', { type: 'submit', class: 'primary' }, strings.login.submit),
+    field(strings.login.homeserverLabel, { name: 'homeserverUrl', type: 'url', required: true, placeholder: strings.login.homeserverPlaceholder, autocomplete: 'url', inputmode: 'url' }),
+    field(strings.login.userLabel, { name: 'user', required: true, autocomplete: 'username', placeholder: strings.login.userPlaceholder, autocapitalize: 'none', spellcheck: 'false' }),
+    field(strings.login.passwordLabel, { name: 'password', type: 'password', required: true, autocomplete: 'current-password', placeholder: strings.login.passwordPlaceholder }),
+    el('button', { type: 'submit', class: 'primary block' }, strings.login.submit),
   );
-  root.append(el('main', { class: 'center' }, form));
+  const card = el(
+    'section',
+    { class: 'card login', 'aria-labelledby': 'login-title' },
+    el(
+      'div',
+      { class: 'brand-mark' },
+      el('img', { src: './icons/icon.svg', alt: '', width: 44, height: 44 }),
+      el('h1', { id: 'login-title' }, strings.appName),
+    ),
+    el('p', { class: 'hint' }, strings.login.hint),
+    form,
+    el('p', { class: 'login-note' }, strings.login.encryptedNote),
+  );
+  root.append(el('main', { class: 'center login-wrap' }, card));
 }
 
 /** Inline status line inside the current main element. */
@@ -90,8 +126,12 @@ function inviteCard(invite, handlers) {
         ? el('span', { class: 'pill ai', title: strings.participants.aiTitle }, strings.participants.aiBadge)
         : null,
     ),
-    invite.inviterName ? el('p', { class: 'hint' }, strings.invite.from(invite.inviterName)) : null,
-    el('p', { class: 'meta' }, strings.rooms.memberCount(invite.memberCount)),
+    el(
+      'p',
+      { class: 'meta' },
+      invite.inviterName ? `${strings.invite.from(invite.inviterName)} · ` : '',
+      strings.rooms.memberCount(invite.memberCount),
+    ),
     invite.requiresAiConsent
       ? el(
           'div',
@@ -113,13 +153,39 @@ function inviteCard(invite, handlers) {
       : null,
     el(
       'div',
-      { class: 'row gap' },
+      { class: 'actions' },
       el(
         'button',
         { type: 'button', class: 'primary', disabled: gate.allowed ? null : true, onclick: () => handlers.onAccept(invite) },
         strings.invite.accept,
       ),
-      el('button', { type: 'button', class: 'secondary', onclick: () => handlers.onDecline(invite) }, strings.invite.decline),
+      el('button', { type: 'button', class: 'ghost', onclick: () => handlers.onDecline(invite) }, strings.invite.decline),
+    ),
+  );
+}
+
+function roomListItem(room, onSelect) {
+  const agentCount = Array.isArray(room.agents) ? room.agents.length : 0;
+  return el(
+    'li',
+    {},
+    el(
+      'button',
+      { type: 'button', class: 'room-item', onclick: () => onSelect(room) },
+      el('span', { class: `avatar kind-${room.kind}`, 'aria-hidden': 'true' }, initial(room.displayName || strings.rooms.unnamed)),
+      el(
+        'span',
+        { class: 'texts' },
+        el('span', { class: 'room-name' }, room.displayName || strings.rooms.unnamed),
+        el(
+          'span',
+          { class: 'meta' },
+          el('span', { class: `pill kind-${room.kind}` }, roomBadge(room.kind)),
+          agentCount > 0 ? el('span', { class: 'pill ai', title: strings.participants.aiTitle }, strings.participants.aiBadge) : null,
+          strings.rooms.memberCount(room.memberCount),
+        ),
+      ),
+      el('span', { class: 'chevron', 'aria-hidden': 'true' }, '›'),
     ),
   );
 }
@@ -131,32 +197,12 @@ export function renderRoomList(root, { summaries, onSelect, syncState, onOpenVer
     ? el('p', { class: 'empty' }, strings.rooms.loading)
     : summaries.length === 0
       ? el('p', { class: 'empty' }, syncState === 'error' ? strings.rooms.syncError : strings.rooms.empty)
-      : el(
-          'ul',
-          { class: 'rooms' },
-          summaries.map((room) =>
-            el(
-              'li',
-              {},
-              el(
-                'button',
-                { class: 'room-item', onclick: () => onSelect(room) },
-                el('span', { class: 'room-name' }, room.displayName || strings.rooms.unnamed),
-                el(
-                  'span',
-                  { class: 'meta' },
-                  el('span', { class: `pill kind-${room.kind}` }, roomBadge(room.kind)),
-                  strings.rooms.memberCount(room.memberCount),
-                ),
-              ),
-            ),
-          ),
-        );
+      : el('ul', { class: 'rooms' }, summaries.map((room) => roomListItem(room, onSelect)));
   const inviteSection = inviteHandlers && invites.length > 0
     ? el(
         'section',
         { class: 'card invites', 'aria-label': strings.invite.title },
-        el('h2', {}, strings.invite.title),
+        el('h2', {}, strings.invite.title, el('span', { class: 'pill count' }, strings.invite.count(invites.length))),
         invites.map((invite) => inviteCard(invite, inviteHandlers)),
       )
     : null;
@@ -164,34 +210,95 @@ export function renderRoomList(root, { summaries, onSelect, syncState, onOpenVer
     el(
       'main',
       { class: 'center rooms-screen' },
-      el('header', { class: 'row between' }, el('h1', {}, strings.rooms.title), el('span', { class: 'pill brand' }, strings.appName)),
       el(
-        'div',
-        { class: 'row gap' },
-        el('button', { type: 'button', class: 'secondary', onclick: onOpenVerification }, strings.verification.title),
-        el('button', { type: 'button', class: 'secondary', onclick: onOpenRecovery }, strings.recovery.title),
+        'header',
+        { class: 'appbar' },
+        el('div', { class: 'titles' }, el('h1', {}, strings.rooms.title), el('span', { class: 'subtitle' }, strings.appName)),
+        el(
+          'div',
+          { class: 'tools' },
+          el('button', { type: 'button', class: 'ghost', onclick: onOpenVerification }, strings.verification.title),
+          el('button', { type: 'button', class: 'ghost', onclick: onOpenRecovery }, strings.recovery.title),
+        ),
       ),
+      syncState === 'error' && summaries.length > 0 ? el('p', { class: 'status warn', role: 'status' }, strings.rooms.syncError) : null,
       inviteSection,
+      summaries.length > 0 ? el('p', { class: 'section-title' }, strings.rooms.listTitle) : null,
       body,
     ),
   );
 }
 
+function attachmentLabel(kind) {
+  if (kind === 'photo') return strings.media.photo;
+  if (kind === 'video') return strings.media.video;
+  if (kind === 'file') return strings.media.file;
+  return null;
+}
+
+function bubble(entry) {
+  const attach = attachmentLabel(entry.kind);
+  const time = timeLabel(entry.ts);
+  const foot = [entry.meta, time].filter(Boolean);
+  return el(
+    'li',
+    { class: `bubble kind-${entry.kind}`, 'data-me': entry.isMe ? 'true' : 'false' },
+    entry.isMe ? null : el('span', { class: 'who' }, participantLabel(entry, entry)),
+    el('p', { class: 'body' }, attach ? el('span', { class: 'attach-label' }, attach) : null, entry.body),
+    foot.length > 0 ? el('span', { class: 'foot' }, foot.map((text, i) => (i > 0 ? ` · ${text}` : text))) : null,
+  );
+}
+
 /** Chat pane for one room. onSend(text), onAttach(file). */
 export function renderRoom(root, { room, timeline, onSend, onAttach, onBack, notice }) {
+  // 전체 재렌더 사이에 작성 중인 초안과 포커스를 보존한다(메시지 도착마다 입력이 사라지지 않게).
+  const previous = root.querySelector('.composer input[name=body]');
+  const draft = previous?.value ?? '';
+  const hadFocus = previous != null && document.activeElement === previous;
   root.replaceChildren();
   const list = el(
     'ul',
     { class: 'timeline', 'aria-live': 'polite' },
-    timeline.map((entry) =>
-      el(
-        'li',
-        { class: `bubble kind-${entry.kind}` },
-        participantLabel(entry, entry),
-        el('p', { class: 'body' }, entry.body),
-        entry.meta ? el('span', { class: 'meta' }, entry.meta) : null,
-      ),
-    ),
+    timeline.length === 0 ? el('li', { class: 'empty' }, strings.chat.empty) : timeline.map(bubble),
+  );
+  const attachInput = (accept, label) => {
+    const input = el('input', {
+      type: 'file',
+      accept,
+      hidden: true,
+      onchange: () => {
+        const file = input.files?.[0];
+        if (file) onAttach(file);
+        input.value = '';
+        attachBar.hidden = true;
+        attachToggle.setAttribute('aria-expanded', 'false');
+      },
+    });
+    const button = el('button', { type: 'button', class: 'secondary', onclick: () => input.click() }, label);
+    return [button, input];
+  };
+  const attachBar = el(
+    'div',
+    { class: 'attach-bar', hidden: true, id: 'attach-bar' },
+    attachInput('image/*', strings.chat.attachPhoto),
+    attachInput('video/*', strings.chat.attachVideo),
+    attachInput('', strings.chat.attachFile),
+  );
+  const attachToggle = el(
+    'button',
+    {
+      type: 'button',
+      class: 'icon',
+      'aria-label': strings.chat.attach,
+      'aria-expanded': 'false',
+      'aria-controls': 'attach-bar',
+      onclick: () => {
+        const open = attachBar.hidden;
+        attachBar.hidden = !open;
+        attachToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      },
+    },
+    '+',
   );
   const composer = el(
     'form',
@@ -204,49 +311,37 @@ export function renderRoom(root, { room, timeline, onSend, onAttach, onBack, not
           onSend(input.value);
           input.value = '';
         }
+        input.focus();
       },
     },
-    el('input', { name: 'body', type: 'text', placeholder: strings.chat.messagePlaceholder, autocomplete: 'off' }),
+    attachToggle,
+    el('input', { name: 'body', type: 'text', placeholder: strings.chat.messagePlaceholder, autocomplete: 'off', 'aria-label': strings.chat.messagePlaceholder, enterkeyhint: 'send' }),
     el('button', { type: 'submit', class: 'primary' }, strings.chat.send),
   );
-  const attach = (accept, label) => {
-    const input = el('input', {
-      type: 'file',
-      accept,
-      hidden: true,
-      onchange: () => {
-        const file = input.files?.[0];
-        if (file) onAttach(file);
-        input.value = '';
-      },
-    });
-    const button = el('button', { type: 'button', class: 'secondary', onclick: () => input.click() }, label);
-    return el('span', { class: 'row gap' }, button, input);
-  };
   root.append(
     el(
       'main',
       { class: 'room-screen' },
       el(
         'header',
-        { class: 'row between' },
-        el('button', { type: 'button', class: 'secondary back', onclick: onBack }, '←'),
-        el('h2', {}, room.displayName || strings.rooms.unnamed),
-        el('span', { class: 'meta' }, strings.chat.encrypted),
+        { class: 'appbar' },
+        el('button', { type: 'button', class: 'icon ghost back', 'aria-label': strings.chat.back, onclick: onBack }, '←'),
+        el(
+          'div',
+          { class: 'titles' },
+          el('h2', {}, room.displayName || strings.rooms.unnamed),
+          el('span', { class: 'subtitle lock' }, `${roomBadge(room.kind)} · ${strings.rooms.memberCount(room.memberCount)} · ${strings.chat.encryptedShort}`),
+        ),
       ),
       notice ? el('p', { class: 'status error', role: 'alert' }, notice) : null,
       list,
-      el(
-        'div',
-        { class: 'row gap' },
-        attach('image/*', strings.chat.attachPhoto),
-        attach('video/*', strings.chat.attachVideo),
-        attach('', strings.chat.attachFile),
-      ),
-      composer,
+      el('div', { class: 'composer-wrap' }, attachBar, composer),
     ),
   );
   list.scrollTop = list.scrollHeight;
+  const input = composer.querySelector('input[name=body]');
+  if (draft) input.value = draft;
+  if (hadFocus) input.focus();
 }
 
 /**
@@ -258,7 +353,7 @@ export function openVerificationSheet(root, { driver, onClose }) {
   const close = () => dialog.close();
   let state = { state: 'idle' };
   let confirmers = null;
-  const dialog = el('dialog', { class: 'sheet' });
+  const dialog = el('dialog', { class: 'sheet', 'aria-labelledby': 'verify-title' });
   const apply = (action) => {
     state = transition(state, action);
     render();
@@ -268,33 +363,33 @@ export function openVerificationSheet(root, { driver, onClose }) {
       const glyph = Array.isArray(emoji) ? emoji[0] : emoji?.emoji;
       return el('li', {}, el('span', { class: 'emoji' }, glyph ?? ''), el('span', { class: 'meta' }, emojiLabel(emoji)));
     });
-    dialog.replaceChildren(
-      el('h2', {}, strings.verification.title),
-      el('p', {}, strings.verification.intro),
-      state.state === 'idle' ? el('button', { type: 'button', class: 'primary', onclick: start }, strings.verification.start) : null,
+    setChildren(dialog, 
+      el('h2', { id: 'verify-title' }, strings.verification.title),
+      el('p', { class: 'hint' }, strings.verification.intro),
+      state.state === 'idle' ? el('button', { type: 'button', class: 'primary block', onclick: start }, strings.verification.start) : null,
       state.state === 'ready'
         ? el(
             'div',
-            {},
+            { class: 'column' },
             el('p', { class: 'compare' }, strings.verification.compareHeading),
             el('ul', { class: 'emojis' }, rows),
             el(
               'div',
-              { class: 'row gap' },
+              { class: 'actions' },
               el('button', { type: 'button', class: 'primary', onclick: () => confirmers?.confirm() }, strings.verification.same),
               el('button', { type: 'button', class: 'danger', onclick: () => confirmers?.mismatch() }, strings.verification.different),
             ),
           )
         : null,
       state.state === 'requested' || state.state === 'waiting'
-        ? el('p', { class: 'empty' }, strings.verification.waiting)
+        ? el('p', { class: 'status' }, strings.verification.waiting)
         : null,
       state.state === 'matched' ? el('p', { class: 'status ok' }, strings.verification.done) : null,
       state.state === 'mismatched'
-        ? el('div', {}, el('h3', {}, strings.verification.mismatchTitle), el('p', {}, strings.verification.mismatchBody))
+        ? el('div', { class: 'status error' }, el('strong', {}, strings.verification.mismatchTitle), el('br'), strings.verification.mismatchBody)
         : null,
-      state.state === 'cancelled' ? el('p', { class: 'empty' }, strings.verification.cancelled) : null,
-      el('div', { class: 'row end' }, el('button', { type: 'button', class: 'secondary', onclick: close }, strings.verification.close)),
+      state.state === 'cancelled' ? el('p', { class: 'status warn' }, strings.verification.cancelled) : null,
+      el('div', { class: 'row end' }, el('button', { type: 'button', class: 'ghost', onclick: close }, strings.verification.close)),
     );
   };
   const start = () => {
@@ -322,13 +417,12 @@ export function openRecoverySheet(root, { onClose }) {
   const flow = createRecoveryFlow();
   let confirmed = false;
   const close = () => dialog.close();
-  const dialog = el('dialog', { class: 'sheet' });
+  const dialog = el('dialog', { class: 'sheet', 'aria-labelledby': 'recovery-title' });
   const render = () => {
-    dialog.replaceChildren(
-      el('h2', {}, strings.recovery.title),
-      el('p', {}, strings.recovery.intro),
-      el('p', { class: 'status warn' }, strings.recovery.showOnceHeading),
-      el('p', {}, strings.recovery.showOnceBody),
+    setChildren(dialog, 
+      el('h2', { id: 'recovery-title' }, strings.recovery.title),
+      el('p', { class: 'hint' }, strings.recovery.intro),
+      el('p', { class: 'status warn' }, el('strong', {}, strings.recovery.showOnceHeading), el('br'), strings.recovery.showOnceBody),
       el('code', { class: 'recovery-key' }, flow.formatted),
       el('p', { class: 'meta' }, strings.recovery.privacy),
       confirmed
@@ -349,12 +443,11 @@ export function openRecoverySheet(root, { onClose }) {
                 }
               },
             },
-            el('label', {}, strings.recovery.confirmLabel),
-            el('input', { name: 'confirm', autocomplete: 'off', spellcheck: 'false' }),
-            el('span', { class: 'feedback error' }),
-            el('button', { class: 'primary', type: 'submit' }, strings.recovery.confirm),
+            field(strings.recovery.confirmLabel, { name: 'confirm', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'none', placeholder: strings.recovery.confirmPlaceholder }),
+            el('span', { class: 'feedback', role: 'alert' }),
+            el('button', { class: 'primary block', type: 'submit' }, strings.recovery.confirm),
           ),
-      el('div', { class: 'row end' }, el('button', { type: 'button', class: 'secondary', onclick: close }, strings.verification.close)),
+      el('div', { class: 'row end' }, el('button', { type: 'button', class: 'ghost', onclick: close }, strings.verification.close)),
     );
   };
   root.append(dialog);
