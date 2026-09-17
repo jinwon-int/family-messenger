@@ -27,6 +27,8 @@ jobs:
       # package.json, so a plain install is reproducible.
       - name: Install pinned dependencies
         run: npm ci --no-audit --no-fund
+      - name: DOM smoke (happy-dom renders the main screens)
+        run: npm run test:dom
       - name: Matrix SDK and Rust crypto smoke
         run: node tests/transport_smoke.mjs
       - name: Bundle app

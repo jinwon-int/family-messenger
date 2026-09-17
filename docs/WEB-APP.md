@@ -95,6 +95,7 @@ glue가 기대하는 상대 경로 `dist/pkg/`로 복사하고, 번들이 그 �
 
 | 시험 | 내용 |
 |---|---|
+| `npm run test:dom` (`tests/dom/*.test.mjs`, happy-dom 20.14.5 고정) | 로그인·셸(목록/대화/보관함)·시트 5종을 실제 DOM으로 그려 "null" 글자·초안 유실·작성창 교체(IME) 같은 화면 결함을 잡는다. 의존성이 필요해 설치 후 실행(CI는 `npm ci` 뒤) |
 | `npm test` (`node --test tests/`) | strings·방 분류·참여자 분리·검증 상태기계·복구 키·메시지 본문·세션 경계·SDK 어댑터 계약(가짜 주입) |
 | `tests/transport_smoke.mjs` | 고정 버전 matrix-js-sdk 로딩, `initRustCrypto`·`login`·`uploadContent`·WASM 패키지 존재 |
 | `npm run build` | 브라우저 번들 성공(WASM 자산 포함) |
