@@ -7,6 +7,7 @@ import { emojiLabel, transition } from './verification.js';
 import { createRecoveryFlow } from './recovery.js';
 import { composerKeyAction } from './keyboard.js';
 import { canAccept } from './invites.js';
+import { relativeTime } from './rooms.js';
 import { humanFileSize } from './messages.js';
 
 /** replaceChildren that drops null/false entries (a bare null would render the text "null"). */
@@ -168,6 +169,15 @@ function inviteCard(invite, handlers) {
 
 function roomListItem(room, onSelect, active = false) {
   const agentCount = Array.isArray(room.agents) ? room.agents.length : 0;
+  const last = room.lastMessage ?? null;
+  const when = last
+    ? relativeTime(last.ts, Date.now(), {
+        justNow: strings.rooms.justNow,
+        minutesAgo: strings.rooms.minutesAgo,
+        hoursAgo: strings.rooms.hoursAgo,
+        yesterday: strings.rooms.yesterday,
+      })
+    : '';
   return el(
     'li',
     {},
@@ -178,16 +188,17 @@ function roomListItem(room, onSelect, active = false) {
       el(
         'span',
         { class: 'texts' },
-        el('span', { class: 'room-name' }, room.displayName || strings.rooms.unnamed),
         el(
           'span',
-          { class: 'meta' },
-          el('span', { class: `pill kind-${room.kind}` }, roomBadge(room.kind)),
+          { class: 'room-head' },
+          el('span', { class: 'room-name' }, room.displayName || strings.rooms.unnamed),
           agentCount > 0 ? el('span', { class: 'pill ai', title: strings.participants.aiTitle }, strings.participants.aiBadge) : null,
-          strings.rooms.memberCount(room.memberCount),
+          when ? el('span', { class: 'when' }, when) : null,
         ),
+        last
+          ? el('span', { class: 'preview' }, last.sender ? el('span', { class: 'preview-sender' }, `${last.sender}: `) : null, last.text)
+          : el('span', { class: 'preview empty-preview' }, `${roomBadge(room.kind)} · ${strings.rooms.memberCount(room.memberCount)} · ${strings.rooms.noMessages}`),
       ),
-      el('span', { class: 'chevron', 'aria-hidden': 'true' }, '›'),
     ),
   );
 }

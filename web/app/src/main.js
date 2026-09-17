@@ -6,6 +6,7 @@ import { createFamilyClient, loginWithPassword, PlaintextRefusedError } from './
 import { messageKind, humanFileSize, validateAttachment, attachmentContent, mergeTimelineEntry } from './messages.js';
 import { extractMentions } from './mentions.js';
 import { describeInvite } from './invites.js';
+import { lastMessagePreview, listSignature, sortByActivity } from './rooms.js';
 import { viewKeyAction } from './keyboard.js';
 import { splitParticipants, shortHandle } from './participants.js';
 import { attachmentFromContent, collectAttachments, fileboxRefreshUrl } from './attachments.js';
@@ -56,7 +57,7 @@ function renderCurrent() {
   const current = state.currentRoomId ? state.rooms.get(state.currentRoomId) : null;
   ui.renderShell(root, {
     list: {
-      summaries: state.summaries,
+      summaries: listSummaries(),
       syncState: state.syncState,
       onSelect: (room) => openRoom(room.roomId),
       onOpenVerification: openVerification,
@@ -111,6 +112,34 @@ function renderCurrent() {
   });
 }
 
+const PREVIEW_LABELS = () => ({ photo: strings.media.photo, video: strings.media.video, file: strings.media.file, undecryptable: strings.chat.decryptFailedShort });
+const TIME_LABELS = () => ({ justNow: strings.rooms.justNow, minutesAgo: strings.rooms.minutesAgo, hoursAgo: strings.rooms.hoursAgo, yesterday: strings.rooms.yesterday });
+
+/** Room summaries decorated with the last message preview, newest activity first. */
+function listSummaries() {
+  const decorated = state.summaries.map((summary) => {
+    const entry = state.rooms.get(summary.roomId)?.timeline.at(-1) ?? null;
+    const preview = lastMessagePreview(entry, PREVIEW_LABELS());
+    return { ...summary, lastMessage: preview ? { ...preview, ts: entry.ts ?? null, eventId: entry.eventId ?? null } : null };
+  });
+  return sortByActivity(decorated);
+}
+
+// 목록은 이벤트가 올 때 즉시 갱신되지만, 상대 시간 라벨("3분 전")과 놓친 변화를 위해
+// 2초마다 서명을 비교해 실제로 달라졌을 때만 다시 그린다(초안·스크롤 보존은 renderShell 몫).
+let listTicker = null;
+let lastListSignature = '';
+function startListTicker() {
+  if (listTicker) return;
+  listTicker = setInterval(() => {
+    if (!state.client) return;
+    const signature = listSignature(listSummaries(), Date.now(), TIME_LABELS());
+    if (signature === lastListSignature) return;
+    lastListSignature = signature;
+    renderCurrent();
+  }, 2000);
+}
+
 async function openAttachment(attachment) {
   try {
     ui.setStatus(root, strings.box.loading);
@@ -153,6 +182,7 @@ async function connect(creds) {
   });
   // 새 방이 보이면 목록·초대를 즉시 갱신한다(세션 중 도착한 초대 포함).
   state.client.onRoomAdded(() => refreshSummaries());
+  startListTicker();
   // 내 다른 기기(휴대폰 앱 등)가 이 기기 검증을 요청하면 수락 시트를 연다.
   state.client.onVerificationRequest((request) => openIncomingVerification(request));
   installKeyboardShortcuts();
