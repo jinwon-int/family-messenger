@@ -452,11 +452,9 @@ function openRecovery() {
   });
 }
 
-function start() {
-  loadConfig().then((config) => {
-    state.config = config;
-    renderCurrent();
-  });
+async function start() {
+  // 설정(기본 홈서버 주소·파일보관함)은 같은 오리진의 작은 파일이라 로그인 화면 전에 기다린다.
+  state.config = await loadConfig();
   const stored = session.readSession(stores);
   if (session.hasLiveSession(stored)) {
     connect(stored).catch((error) => {
@@ -469,7 +467,13 @@ function start() {
 }
 
 function renderLogin(previousError) {
+  const stored = session.readSession(stores);
+  const localpart = typeof stored?.userId === 'string' && stored.userId.startsWith('@') ? stored.userId.slice(1).split(':')[0] : '';
   ui.renderLogin(root, {
+    defaults: {
+      homeserverUrl: stored?.homeserverUrl || state.config.homeserverUrl || '',
+      user: localpart,
+    },
     onSubmit: async ({ homeserverUrl, user, password }) => {
       try {
         ui.setStatus(root, strings.login.submitting);

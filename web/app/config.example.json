@@ -1,4 +1,5 @@
 {
+  "homeserverUrl": "https://matrix.<도메인>",
   "filebox": {
     "url": "https://files.<도메인>/",
     "title": "파일보관함"
