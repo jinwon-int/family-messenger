@@ -59,3 +59,23 @@ test('composer submit은 onSend 호출 전에 작성창을 비운다', () => {
   assert.ok(clearAt >= 0 && sendAt >= 0);
   assert.ok(clearAt < sendAt, `input.value=''(${clearAt})가 onSend(${sendAt})보다 앞서야 한다`);
 });
+
+// 스크롤 회귀 방지(2026-09-17 실기기): 셸은 높이를 고정하고 타임라인만 스크롤해야 한다.
+// 기본 main의 flex:1(=basis 0%)이 height:100dvh를 덮어써 셸이 내용만큼 늘어나면
+// 타임라인이 넘치지 않는 스크롤 컨테이너가 되고 overscroll-behavior:contain이 휠·터치를 삼킨다.
+test('styles.css: main.shell은 flex:none + 고정 높이, .timeline은 min-height:0 스크롤러다', () => {
+  const css = readFileSync(join(import.meta.dirname, '..', 'styles.css'), 'utf-8');
+  const shell = /main\.shell \{[^}]*\}/.exec(css)?.[0] ?? '';
+  assert.match(shell, /flex:\s*none/);
+  assert.match(shell, /height:\s*100dvh/);
+  const timeline = /\n\.timeline \{[^}]*\}/.exec(css)?.[0] ?? '';
+  assert.match(timeline, /min-height:\s*0/);
+  assert.match(timeline, /overflow-y:\s*auto/);
+});
+
+test('ui.js는 renderShell을 내보내고 main.js는 그것으로 화면을 그린다', () => {
+  const ui = readFileSync(join(SRC, 'ui.js'), 'utf-8');
+  const main = readFileSync(join(SRC, 'main.js'), 'utf-8');
+  assert.match(ui, /export function renderShell\(/);
+  assert.match(main, /ui\.renderShell\(/);
+});

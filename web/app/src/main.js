@@ -50,17 +50,8 @@ const state = {
 function renderCurrent() {
   if (!state.client) return;
   const current = state.currentRoomId ? state.rooms.get(state.currentRoomId) : null;
-  if (current) {
-    ui.renderRoom(root, {
-      room: current.summary,
-      timeline: current.timeline,
-      notice: current.notice,
-      onBack: openRooms,
-      onSend: (text) => sendText(text),
-      onAttach: (file) => sendAttachment(file),
-    });
-  } else {
-    ui.renderRoomList(root, {
+  ui.renderShell(root, {
+    list: {
       summaries: state.summaries,
       syncState: state.syncState,
       onSelect: (room) => openRoom(room.roomId),
@@ -77,8 +68,18 @@ function renderCurrent() {
         onAccept: (invite) => respondInvite(invite, 'join'),
         onDecline: (invite) => respondInvite(invite, 'decline'),
       },
-    });
-  }
+    },
+    room: current
+      ? {
+          room: current.summary,
+          timeline: current.timeline,
+          notice: current.notice,
+          onBack: openRooms,
+          onSend: (text) => sendText(text),
+          onAttach: (file) => sendAttachment(file),
+        }
+      : null,
+  });
 }
 
 async function connect(creds) {
