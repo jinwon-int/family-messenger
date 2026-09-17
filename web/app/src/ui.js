@@ -204,7 +204,7 @@ function roomListItem(room, onSelect, active = false) {
 }
 
 /** Room list pane content (appbar, invites, rooms). */
-function buildRoomList({ summaries, onSelect, syncState, onOpenVerification, onOpenRecovery, invites = [], inviteHandlers = null, currentRoomId = null, onToggleBox = null }) {
+function buildRoomList({ summaries, onSelect, syncState, onOpenVerification, onOpenRecovery, onOpenMenu = null, invites = [], inviteHandlers = null, currentRoomId = null, onToggleBox = null }) {
   const body = syncState === 'loading'
     ? el('p', { class: 'empty' }, strings.rooms.loading)
     : summaries.length === 0
@@ -228,9 +228,8 @@ function buildRoomList({ summaries, onSelect, syncState, onOpenVerification, onO
       el(
         'div',
         { class: 'tools' },
-        el('button', { type: 'button', class: 'ghost', onclick: onOpenVerification }, strings.verification.title),
-        el('button', { type: 'button', class: 'ghost', onclick: onOpenRecovery }, strings.recovery.title),
         onToggleBox ? el('button', { type: 'button', class: 'ghost box-toggle', onclick: onToggleBox }, strings.box.toggle) : null,
+        el('button', { type: 'button', class: 'ghost', 'aria-label': strings.menu.open, onclick: onOpenMenu ?? onOpenVerification }, `⚙ ${strings.menu.open}`),
       ),
     ),
     syncState === 'error' && summaries.length > 0 ? el('p', { class: 'status warn', role: 'status' }, strings.rooms.syncError) : null,
@@ -563,6 +562,161 @@ export function renderShell(root, { list, room, box = null }) {
   const view = box?.open && !isWide() ? 'box' : room ? 'room' : 'list';
   root.append(el('main', { class: 'shell', 'data-view': view }, listPane, roomPane, boxPane));
   mount?.();
+}
+
+/** Settings menu sheet: a vertical list of actions. items: [{label, onClick, danger?}]. */
+export function openMenuSheet(root, { items, onClose }) {
+  const dialog = el('dialog', { class: 'sheet menu', 'aria-label': strings.menu.title });
+  const close = () => dialog.close();
+  dialog.addEventListener('close', () => {
+    dialog.remove();
+    onClose?.();
+  });
+  setChildren(
+    dialog,
+    el('h2', {}, strings.menu.title),
+    el(
+      'div',
+      { class: 'menu-items' },
+      items.map((item) =>
+        el(
+          'button',
+          {
+            type: 'button',
+            class: item.danger ? 'danger block' : 'block',
+            onclick: () => {
+              close();
+              item.onClick();
+            },
+          },
+          item.label,
+        ),
+      ),
+    ),
+    el('div', { class: 'row end' }, el('button', { type: 'button', class: 'ghost', onclick: close }, strings.verification.close)),
+  );
+  root.append(dialog);
+  dialog.showModal();
+  return close;
+}
+
+function deviceWhen(ts) {
+  if (!Number.isFinite(ts) || ts <= 0) return strings.account.neverSeen;
+  try {
+    return strings.account.lastSeen(new Intl.DateTimeFormat('ko-KR', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(ts)));
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Device management sheet: list my sessions with signing status, delete the
+ * selected ones after a password re-check (user-interactive auth).
+ * load() → devices[], remove(ids, password) → {deleted}.
+ */
+export function openDevicesSheet(root, { load, remove, onClose }) {
+  const dialog = el('dialog', { class: 'sheet devices', 'aria-labelledby': 'devices-title' });
+  const close = () => dialog.close();
+  dialog.addEventListener('close', () => {
+    dialog.remove();
+    onClose?.();
+  });
+  let devices = null;
+  let selected = new Set();
+  let status = null; // {tone, text}
+  let busy = false;
+  const render = () => {
+    const rows = (devices ?? []).map((device) =>
+      el(
+        'li',
+        { class: 'device-item' },
+        el('input', {
+          type: 'checkbox',
+          disabled: device.isCurrent || busy ? true : null,
+          checked: selected.has(device.deviceId) || null,
+          'aria-label': device.deviceId,
+          onchange: (event) => {
+            if (event.target.checked) selected.add(device.deviceId);
+            else selected.delete(device.deviceId);
+            render();
+          },
+        }),
+        el(
+          'span',
+          { class: 'texts' },
+          el(
+            'span',
+            { class: 'device-head' },
+            el('span', { class: 'device-name' }, device.displayName || device.deviceId),
+            device.isCurrent ? el('span', { class: 'pill you' }, strings.account.thisDevice) : null,
+            device.crossSigned === true
+              ? el('span', { class: 'pill kind-family' }, strings.account.signed)
+              : device.crossSigned === false
+                ? el('span', { class: 'pill warn' }, strings.account.unsigned)
+                : el('span', { class: 'pill' }, strings.account.unknownSigning),
+          ),
+          el('span', { class: 'meta' }, `${device.deviceId} · ${deviceWhen(device.lastSeenTs)}${device.lastSeenIp ? ` · ${device.lastSeenIp}` : ''}`),
+        ),
+      ),
+    );
+    const form = el(
+      'form',
+      {
+        class: 'column',
+        onsubmit: async (event) => {
+          event.preventDefault();
+          const password = form.querySelector('input[name=password]').value;
+          const ids = [...selected];
+          if (ids.length === 0 || busy) return;
+          busy = true;
+          status = null;
+          render();
+          try {
+            const result = await remove(ids, password);
+            status = { tone: 'ok', text: strings.account.deleteDone(result.deleted.length) };
+            selected = new Set();
+            devices = await load();
+          } catch (error) {
+            console.error('device delete failed', error);
+            status = { tone: 'error', text: strings.account.deleteFailed };
+          } finally {
+            busy = false;
+            render();
+          }
+        },
+      },
+      field(strings.account.passwordLabel, { name: 'password', type: 'password', autocomplete: 'current-password', placeholder: strings.account.passwordPlaceholder, required: true }),
+      el('button', { type: 'submit', class: 'danger block', disabled: selected.size === 0 || busy ? true : null }, strings.account.deleteSelected(selected.size)),
+    );
+    setChildren(
+      dialog,
+      el('h2', { id: 'devices-title' }, strings.account.devicesTitle),
+      el('p', { class: 'hint' }, strings.account.devicesIntro),
+      status ? el('p', { class: `status ${status.tone}`, role: 'status' }, status.text) : null,
+      devices == null
+        ? el('p', { class: 'empty' }, strings.account.devicesLoading)
+        : devices.length === 0
+          ? el('p', { class: 'empty' }, strings.account.devicesEmpty)
+          : el('ul', { class: 'devices' }, rows),
+      devices && devices.some((d) => !d.isCurrent) ? form : null,
+      el(
+        'div',
+        { class: 'row end' },
+        el('button', { type: 'button', class: 'ghost', disabled: busy ? true : null, onclick: async () => { devices = null; render(); devices = await load(); render(); } }, strings.account.refresh),
+        el('button', { type: 'button', class: 'ghost', onclick: close }, strings.verification.close),
+      ),
+    );
+  };
+  root.append(dialog);
+  dialog.showModal();
+  render();
+  load().then((list) => { devices = list; render(); }).catch((error) => {
+    console.error('device list failed', error);
+    devices = [];
+    status = { tone: 'error', text: strings.errors.generic };
+    render();
+  });
+  return close;
 }
 
 /** Photo preview sheet for an attachment already fetched to an object URL. */

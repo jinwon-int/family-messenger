@@ -62,6 +62,7 @@ function renderCurrent() {
       onSelect: (room) => openRoom(room.roomId),
       onOpenVerification: openVerification,
       onOpenRecovery: openRecovery,
+      onOpenMenu: openMenu,
       invites: state.invites.map((i) => i.view),
       inviteHandlers: {
         isAiConsentAcknowledged: (invite) => state.aiConsentRooms.has(invite.roomId),
@@ -393,6 +394,53 @@ function openIncomingVerification(request) {
       renderCurrent();
     },
   });
+}
+
+function openMenu() {
+  ui.openMenuSheet(root, {
+    items: [
+      { label: strings.verification.title, onClick: openVerification },
+      { label: strings.recovery.title, onClick: openRecovery },
+      { label: strings.account.devicesTitle, onClick: openDevices },
+      { label: strings.account.logout, onClick: logout, danger: true },
+    ],
+    onClose: () => renderCurrent(),
+  });
+}
+
+function openDevices() {
+  ui.openDevicesSheet(root, {
+    load: () => state.client.listDevices(),
+    remove: (ids, password) => state.client.deleteDevices(ids, { password }),
+    onClose: () => renderCurrent(),
+  });
+}
+
+async function logout() {
+  if (!window.confirm(strings.account.logoutConfirm)) return;
+  const client = state.client;
+  try {
+    ui.setStatus(root, strings.login.submitting);
+    if (listTicker) {
+      clearInterval(listTicker);
+      listTicker = null;
+    }
+    await client.logout();
+  } catch (error) {
+    console.error('logout failed', error);
+    ui.setStatus(root, strings.account.logoutFailed, 'error');
+    return;
+  }
+  session.clearSession(stores);
+  state.client = null;
+  state.myUserId = null;
+  state.summaries = [];
+  state.invites = [];
+  state.rooms = new Map();
+  state.currentRoomId = null;
+  state.syncState = 'idle';
+  state.box = { open: false, tab: 'attachments', refresh: 0 };
+  renderLogin();
 }
 
 function openRecovery() {
