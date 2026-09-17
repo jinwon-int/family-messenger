@@ -621,3 +621,58 @@ test('loadEarlier/canLoadEarlier: scrollback으로 이전 페이지를 받고 �
   assert.equal(await adapter.loadEarlier('!missing:example.com'), 0);
   assert.equal(adapter.canLoadEarlier('!missing:example.com'), false);
 });
+
+test('listDevices: 내 기기 목록에 서명 상태·현재 기기 표식을 붙이고 현재 기기를 앞에 둔다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  await adapter.enableEncryption();
+  adapter.client.getDeviceId = () => 'DEVICE1';
+  adapter.client.getDevices = async () => ({ devices: [
+    { device_id: 'OLDPC', display_name: '', last_seen_ts: 100 },
+    { device_id: 'DEVICE1', display_name: '웹', last_seen_ts: 50 },
+    { device_id: 'PHONE', display_name: 'Element X iOS', last_seen_ts: 200, last_seen_ip: '1.2.3.4' },
+  ] });
+  adapter.client.crypto.getDeviceVerificationStatus = async (userId, deviceId) => {
+    assert.equal(userId, CREDS.userId);
+    if (deviceId === 'PHONE') return { crossSigningVerified: true };
+    if (deviceId === 'OLDPC') return { crossSigningVerified: false };
+    return null;
+  };
+  const devices = await adapter.listDevices();
+  assert.deepEqual(devices.map((d) => [d.deviceId, d.isCurrent, d.crossSigned]), [['DEVICE1', true, null], ['PHONE', false, true], ['OLDPC', false, false]]);
+  assert.equal(devices[1].lastSeenIp, '1.2.3.4');
+});
+
+test('deleteDevices: 401 UIA면 비밀번호로 재시도하고, 현재 기기는 제외하며, 비밀번호 없으면 auth-required', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  adapter.client.getDeviceId = () => 'DEVICE1';
+  const calls = [];
+  adapter.client.deleteMultipleDevices = async (ids, auth) => {
+    calls.push([ids, auth]);
+    if (!auth) {
+      const error = new Error('UIA');
+      error.httpStatus = 401;
+      error.data = { session: 'sess1', flows: [{ stages: ['m.login.password'] }] };
+      throw error;
+    }
+  };
+  const result = await adapter.deleteDevices(['OLDPC', 'DEVICE1', 'OLDPC'], { password: 'pw' });
+  assert.deepEqual(result, { deleted: ['OLDPC'] });
+  assert.deepEqual(calls, [
+    [['OLDPC'], undefined],
+    [['OLDPC'], { type: 'm.login.password', identifier: { type: 'm.id.user', user: CREDS.userId }, password: 'pw', session: 'sess1' }],
+  ]);
+  await assert.rejects(adapter.deleteDevices(['OLDPC']), (e) => e.code === 'auth-required');
+  assert.deepEqual(await adapter.deleteDevices(['DEVICE1']), { deleted: [] });
+});
+
+test('logout: 서버 로그아웃(stopClient) 후 로컬 저장소를 비운다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  const calls = [];
+  adapter.client.logout = async (stop) => calls.push(['logout', stop]);
+  adapter.client.clearStores = async () => calls.push(['clearStores']);
+  await adapter.logout();
+  assert.deepEqual(calls, [['logout', true], ['clearStores']]);
+});

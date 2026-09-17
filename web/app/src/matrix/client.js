@@ -244,6 +244,86 @@ export class ClientAdapter {
     });
   }
 
+  /** This session's device id. */
+  deviceId() {
+    return this.client.getDeviceId?.() ?? null;
+  }
+
+  /**
+   * My devices with cross-signing status (crossSigned: true/false, null when
+   * crypto cannot tell). The current session is flagged so the UI never
+   * offers to delete it from this list.
+   */
+  async listDevices() {
+    const response = await this.client.getDevices();
+    const crypto = this.client.getCrypto?.();
+    const current = this.deviceId();
+    const devices = [];
+    for (const device of response?.devices ?? []) {
+      let crossSigned = null;
+      if (crypto?.getDeviceVerificationStatus) {
+        try {
+          const status = await crypto.getDeviceVerificationStatus(this.myUserId, device.device_id);
+          crossSigned = status ? Boolean(status.crossSigningVerified) : null;
+        } catch {
+          crossSigned = null;
+        }
+      }
+      devices.push({
+        deviceId: device.device_id,
+        displayName: typeof device.display_name === 'string' ? device.display_name : '',
+        lastSeenTs: Number.isFinite(device.last_seen_ts) ? device.last_seen_ts : null,
+        lastSeenIp: typeof device.last_seen_ip === 'string' ? device.last_seen_ip : '',
+        isCurrent: device.device_id === current,
+        crossSigned,
+      });
+    }
+    return devices.sort((a, b) => (b.isCurrent - a.isCurrent) || ((b.lastSeenTs ?? 0) - (a.lastSeenTs ?? 0)));
+  }
+
+  /**
+   * Delete other sessions. The homeserver requires user-interactive auth:
+   * the first call answers 401 with a session id, the second carries the
+   * password. Throws {code: 'auth-required'} when no password was given.
+   */
+  async deleteDevices(deviceIds, { password } = {}) {
+    const ids = [...new Set(deviceIds)].filter((id) => typeof id === 'string' && id.length > 0 && id !== this.deviceId());
+    if (ids.length === 0) return { deleted: [] };
+    try {
+      await this.client.deleteMultipleDevices(ids);
+      return { deleted: ids };
+    } catch (error) {
+      const session = error?.httpStatus === 401 ? error?.data?.session : null;
+      if (!session) throw error;
+      if (!password) {
+        const authRequired = new Error('deleteDevices: password required');
+        authRequired.code = 'auth-required';
+        throw authRequired;
+      }
+      await this.client.deleteMultipleDevices(ids, {
+        type: 'm.login.password',
+        identifier: { type: 'm.id.user', user: this.myUserId },
+        password,
+        session,
+      });
+      return { deleted: ids };
+    }
+  }
+
+  /** Invalidate this session's token on the server, stop syncing and wipe local stores. */
+  async logout() {
+    try {
+      await this.client.logout(true);
+    } finally {
+      try {
+        this.client.stopClient?.();
+        await this.client.clearStores?.();
+      } catch (error) {
+        console.warn('clearStores after logout failed', error);
+      }
+    }
+  }
+
   /** True while the live timeline still has a backwards pagination token. */
   canLoadEarlier(roomId) {
     const room = this.client.getRoom?.(roomId);
