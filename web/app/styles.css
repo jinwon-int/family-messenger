@@ -283,6 +283,7 @@ ul.rooms { list-style: none; margin: 0; padding: 0; display: flex; flex-directio
   box-shadow: var(--shadow-1);
 }
 .room-item:hover { background: var(--surface-2); }
+.room-item[aria-current="true"] { border-color: var(--brand); background: var(--brand-soft); }
 .room-item .texts { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .room-item .room-name { font-weight: 700; font-size: var(--text-m); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .room-item .meta { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
@@ -329,7 +330,48 @@ ul.rooms { list-style: none; margin: 0; padding: 0; display: flex; flex-directio
 
 /* ---------- 대화방 ---------- */
 
-.room-screen { max-width: var(--column-wide); padding-bottom: 0; }
+/* 셸: 목록 pane + 방 pane. 휴대폰은 data-view로 한 번에 하나만, 900px부터 나란히.
+ * 화면 높이를 셸이 고정하고 스크롤은 목록 pane과 타임라인만 담당한다 — 이전에는
+ * 타임라인 상위가 내용만큼 늘어나 타임라인이 넘치지 않는 스크롤 컨테이너가 되면서
+ * overscroll-behavior: contain이 휠·터치를 페이지로도 넘기지 않아 스크롤이 죽었다. */
+main.shell {
+  flex: none; /* 기본 main의 flex:1(=basis 0%)이 컬럼 컨테이너에서 height를 덮어써 내용만큼 늘어난다 */
+  max-width: none;
+  padding: 0;
+  gap: 0;
+  height: 100dvh;
+  flex-direction: column;
+  overflow: hidden;
+}
+.pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.pane-list {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  width: 100%;
+  max-width: var(--column);
+  margin: 0 auto;
+  padding: 0 var(--space-4) var(--space-4);
+  gap: var(--space-4);
+}
+.pane-list .appbar { margin: 0 calc(-1 * var(--space-4)); padding-left: var(--space-4); padding-right: var(--space-4); }
+.pane-room { flex: 1; }
+.pane-empty { margin: auto; }
+main.shell[data-view="list"] .pane-room { display: none; }
+main.shell[data-view="room"] .pane-list { display: none; }
+
+.room-screen {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: var(--column-wide);
+  margin: 0 auto;
+  padding: 0 var(--space-4);
+}
+.room-screen .appbar { position: static; flex: none; }
+.timeline-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .timeline {
   list-style: none;
   margin: 0;
@@ -338,10 +380,26 @@ ul.rooms { list-style: none; margin: 0; padding: 0; display: flex; flex-directio
   flex-direction: column;
   gap: var(--space-3);
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   flex: 1;
-  min-height: 40dvh;
+  min-height: 0;
   overscroll-behavior: contain;
 }
+.new-messages {
+  position: absolute;
+  left: 50%;
+  bottom: var(--space-3);
+  transform: translateX(-50%);
+  min-height: 36px;
+  padding: 0 var(--space-4);
+  border-radius: 999px;
+  background: var(--brand);
+  color: var(--on-brand);
+  font-size: var(--text-s);
+  box-shadow: var(--shadow-2);
+  z-index: 1;
+}
+.new-messages[hidden] { display: none; }
 .bubble {
   max-width: min(78%, 560px);
   align-self: flex-start;
@@ -379,8 +437,7 @@ ul.rooms { list-style: none; margin: 0; padding: 0; display: flex; flex-directio
 .bubble.kind-notice .who { display: none; }
 
 .composer-wrap {
-  position: sticky;
-  bottom: 0;
+  flex: none;
   background: var(--bg);
   padding: var(--space-2) 0 calc(var(--space-3) + env(safe-area-inset-bottom));
   display: flex;
@@ -461,9 +518,8 @@ dialog.sheet .column { margin-top: var(--space-2); }
 /* ---------- 데스크톱 ---------- */
 
 @media (min-width: 720px) {
-  main { padding: var(--space-6); }
+  main:not(.shell) { padding: var(--space-6); }
   .card.login { margin-top: 8vh; padding: var(--space-8); }
-  .timeline { min-height: 52dvh; }
   dialog.sheet {
     width: min(92vw, 440px);
     margin: auto;
@@ -471,4 +527,25 @@ dialog.sheet .column { margin-top: var(--space-2); }
     padding: var(--space-6);
   }
   .emojis { grid-template-columns: repeat(7, 1fr); }
+}
+
+/* ---------- 2열 구도 (목록 | 대화) ---------- */
+
+@media (min-width: 900px) {
+  main.shell { flex-direction: row; }
+  main.shell[data-view="list"] .pane-room, main.shell[data-view="room"] .pane-list { display: flex; }
+  .pane-list {
+    flex: 0 0 340px;
+    max-width: none;
+    margin: 0;
+    padding: 0 var(--space-4) var(--space-4);
+    border-right: 1px solid var(--line);
+    background: var(--surface);
+  }
+  .pane-list .appbar { background: var(--surface); }
+  .pane-list .room-item { box-shadow: none; }
+  .pane-room { background: var(--bg); }
+  .room-screen { max-width: none; padding: 0 var(--space-6); }
+  .room-screen .appbar .back { display: none; }
+  .bubble { max-width: min(70%, 640px); }
 }

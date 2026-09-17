@@ -29,6 +29,7 @@ export const strings = {
     unnamed: '이름 없는 대화',
     memberCount: (n) => `멤버 ${n}명`,
     listTitle: '참여 중인 대화',
+    selectHint: '왼쪽 목록에서 대화를 선택하세요.',
   },
   invite: {
     title: '초대',
@@ -48,6 +49,7 @@ export const strings = {
     back: '대화 목록으로',
     attach: '첨부',
     empty: '아직 메시지가 없습니다. 첫 인사를 보내 보세요.',
+    newMessages: '새 메시지 ↓',
     attachPhoto: '사진 보내기',
     attachVideo: '영상 보내기',
     attachFile: '파일 보내기',

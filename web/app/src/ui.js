@@ -94,7 +94,7 @@ export function setStatus(root, message, tone = 'info') {
   root.querySelector('.status')?.remove();
   if (!message) return;
   const line = el('p', { class: `status ${tone}`, role: 'status' }, message);
-  root.querySelector('main')?.append(line);
+  (root.querySelector('.pane-list') ?? root.querySelector('main'))?.append(line);
 }
 
 /** Participant name with badges for AI agents and self. */
@@ -165,14 +165,14 @@ function inviteCard(invite, handlers) {
   );
 }
 
-function roomListItem(room, onSelect) {
+function roomListItem(room, onSelect, active = false) {
   const agentCount = Array.isArray(room.agents) ? room.agents.length : 0;
   return el(
     'li',
     {},
     el(
       'button',
-      { type: 'button', class: 'room-item', onclick: () => onSelect(room) },
+      { type: 'button', class: 'room-item', 'aria-current': active ? 'true' : null, onclick: () => onSelect(room) },
       el('span', { class: `avatar kind-${room.kind}`, 'aria-hidden': 'true' }, initial(room.displayName || strings.rooms.unnamed)),
       el(
         'span',
@@ -191,14 +191,13 @@ function roomListItem(room, onSelect) {
   );
 }
 
-/** Left pane: room list. Calls onSelect(room). */
-export function renderRoomList(root, { summaries, onSelect, syncState, onOpenVerification, onOpenRecovery, invites = [], inviteHandlers = null }) {
-  root.replaceChildren();
+/** Room list pane content (appbar, invites, rooms). */
+function buildRoomList({ summaries, onSelect, syncState, onOpenVerification, onOpenRecovery, invites = [], inviteHandlers = null, currentRoomId = null }) {
   const body = syncState === 'loading'
     ? el('p', { class: 'empty' }, strings.rooms.loading)
     : summaries.length === 0
       ? el('p', { class: 'empty' }, syncState === 'error' ? strings.rooms.syncError : strings.rooms.empty)
-      : el('ul', { class: 'rooms' }, summaries.map((room) => roomListItem(room, onSelect)));
+      : el('ul', { class: 'rooms' }, summaries.map((room) => roomListItem(room, onSelect, room.roomId === currentRoomId)));
   const inviteSection = inviteHandlers && invites.length > 0
     ? el(
         'section',
@@ -207,27 +206,30 @@ export function renderRoomList(root, { summaries, onSelect, syncState, onOpenVer
         invites.map((invite) => inviteCard(invite, inviteHandlers)),
       )
     : null;
-  root.append(
+  return el(
+    'aside',
+    { class: 'pane pane-list rooms-screen', 'aria-label': strings.rooms.title },
     el(
-      'main',
-      { class: 'center rooms-screen' },
+      'header',
+      { class: 'appbar' },
+      el('div', { class: 'titles' }, el('h1', {}, strings.rooms.title), el('span', { class: 'subtitle' }, strings.appName)),
       el(
-        'header',
-        { class: 'appbar' },
-        el('div', { class: 'titles' }, el('h1', {}, strings.rooms.title), el('span', { class: 'subtitle' }, strings.appName)),
-        el(
-          'div',
-          { class: 'tools' },
-          el('button', { type: 'button', class: 'ghost', onclick: onOpenVerification }, strings.verification.title),
-          el('button', { type: 'button', class: 'ghost', onclick: onOpenRecovery }, strings.recovery.title),
-        ),
+        'div',
+        { class: 'tools' },
+        el('button', { type: 'button', class: 'ghost', onclick: onOpenVerification }, strings.verification.title),
+        el('button', { type: 'button', class: 'ghost', onclick: onOpenRecovery }, strings.recovery.title),
       ),
-      syncState === 'error' && summaries.length > 0 ? el('p', { class: 'status warn', role: 'status' }, strings.rooms.syncError) : null,
-      inviteSection,
-      summaries.length > 0 ? el('p', { class: 'section-title' }, strings.rooms.listTitle) : null,
-      body,
     ),
+    syncState === 'error' && summaries.length > 0 ? el('p', { class: 'status warn', role: 'status' }, strings.rooms.syncError) : null,
+    inviteSection,
+    summaries.length > 0 ? el('p', { class: 'section-title' }, strings.rooms.listTitle) : null,
+    body,
   );
+}
+
+/** Left pane only (mobile list screen). Kept for callers/tests; renderShell is the full layout. */
+export function renderRoomList(root, props) {
+  renderShell(root, { list: props, room: null });
 }
 
 function attachmentLabel(kind) {
@@ -250,18 +252,58 @@ function bubble(entry) {
   );
 }
 
-/** Chat pane for one room. onSend(text), onAttach(file). */
-export function renderRoom(root, { room, timeline, onSend, onAttach, onBack, notice }) {
-  // 전체 재렌더 사이에 작성 중인 초안과 포커스·캐럿을 보존한다(메시지 도착마다 입력이 사라지지 않게).
+/** Pixels from the bottom within which the timeline counts as "at bottom". */
+const NEAR_BOTTOM_PX = 48;
+
+function isNearBottom(list) {
+  return list.scrollHeight - list.scrollTop - list.clientHeight <= NEAR_BOTTOM_PX;
+}
+
+/**
+ * Snapshot of the mounted room pane taken before a re-render: composer draft,
+ * focus, and timeline scroll position (see scrollMode below).
+ */
+function snapshotRoomPane(root) {
   const previous = root.querySelector('.composer textarea[name=body]');
-  const draft = previous?.value ?? '';
-  const hadFocus = previous != null && document.activeElement === previous;
-  root.replaceChildren();
+  const list = root.querySelector('.timeline');
+  return {
+    roomId: root.querySelector('.room-screen')?.dataset.roomId ?? null,
+    draft: previous?.value ?? '',
+    hadFocus: previous != null && document.activeElement === previous,
+    scrollTop: list?.scrollTop ?? 0,
+    nearBottom: list ? isNearBottom(list) : true,
+    count: list ? list.querySelectorAll('li.bubble').length : 0,
+  };
+}
+
+/**
+ * Room pane content. Scroll rules (seo-chat #82 decision, adopted here):
+ * opening a room → force bottom; new message while near the bottom → stay
+ * at the bottom; new message while scrolled up → keep the position and show
+ * a floating "새 메시지" badge that jumps down on click.
+ */
+function buildRoom({ room, timeline, onSend, onAttach, onBack, notice }, snap) {
   const list = el(
     'ul',
     { class: 'timeline', 'aria-live': 'polite' },
     timeline.length === 0 ? el('li', { class: 'empty' }, strings.chat.empty) : timeline.map(bubble),
   );
+  const badge = el(
+    'button',
+    {
+      type: 'button',
+      class: 'new-messages',
+      hidden: true,
+      onclick: () => {
+        list.scrollTop = list.scrollHeight;
+        badge.hidden = true;
+      },
+    },
+    strings.chat.newMessages,
+  );
+  list.addEventListener('scroll', () => {
+    if (isNearBottom(list)) badge.hidden = true;
+  });
   const attachInput = (accept, label) => {
     const input = el('input', {
       type: 'file',
@@ -313,14 +355,13 @@ export function renderRoom(root, { room, timeline, onSend, onAttach, onBack, not
           input.focus();
           return;
         }
-        // 먼저 비우고 나서 보낸다. onSend는 SDK 로컬 에코를 동기적으로 발행해 renderRoom이
+        // 먼저 비우고 나서 보낸다. onSend는 SDK 로컬 에코를 동기적으로 발행해 화면이
         // 즉시 다시 그려지는데, 그때 초안 보존이 아직 남아 있는 본문을 새 작성창으로 옮겨
         // "엔터를 쳐도 글이 안 사라지는" 회귀가 있었다(2026-09-17 실기기 관측).
         input.value = '';
         input.style.height = '';
         onSend(text);
-        // 재렌더로 작성창이 교체됐을 수 있으니 현재 것을 찾아 포커스한다.
-        (root.querySelector('.composer textarea[name=body]') ?? input).focus();
+        (document.querySelector('.composer textarea[name=body]') ?? input).focus();
       },
     },
     attachToggle,
@@ -345,38 +386,72 @@ export function renderRoom(root, { room, timeline, onSend, onAttach, onBack, not
     }),
     el('button', { type: 'submit', class: 'primary' }, strings.chat.send),
   );
-  root.append(
+  const pane = el(
+    'section',
+    { class: 'room-screen', 'data-room-id': room.roomId ?? '' },
     el(
-      'main',
-      { class: 'room-screen' },
+      'header',
+      { class: 'appbar' },
+      el('button', { type: 'button', class: 'icon ghost back', 'aria-label': strings.chat.back, onclick: onBack }, '←'),
       el(
-        'header',
-        { class: 'appbar' },
-        el('button', { type: 'button', class: 'icon ghost back', 'aria-label': strings.chat.back, onclick: onBack }, '←'),
-        el(
-          'div',
-          { class: 'titles' },
-          el('h2', {}, room.displayName || strings.rooms.unnamed),
-          el('span', { class: 'subtitle lock' }, `${roomBadge(room.kind)} · ${strings.rooms.memberCount(room.memberCount)} · ${strings.chat.encryptedShort}`),
-        ),
+        'div',
+        { class: 'titles' },
+        el('h2', {}, room.displayName || strings.rooms.unnamed),
+        el('span', { class: 'subtitle lock' }, `${roomBadge(room.kind)} · ${strings.rooms.memberCount(room.memberCount)} · ${strings.chat.encryptedShort}`),
       ),
-      notice ? el('p', { class: 'status error', role: 'alert' }, notice) : null,
-      list,
-      el('div', { class: 'composer-wrap' }, attachBar, composer),
     ),
+    notice ? el('p', { class: 'status error', role: 'alert' }, notice) : null,
+    el('div', { class: 'timeline-wrap' }, list, badge),
+    el('div', { class: 'composer-wrap' }, attachBar, composer),
   );
-  list.scrollTop = list.scrollHeight;
-  const input = composer.querySelector('textarea[name=body]');
-  if (draft) {
-    input.value = draft;
-    input.style.height = 'auto';
-    input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
+  const sameRoom = snap.roomId != null && snap.roomId === (room.roomId ?? '');
+  const mount = () => {
+    const input = composer.querySelector('textarea[name=body]');
+    if (sameRoom && snap.draft) {
+      input.value = snap.draft;
+      input.style.height = 'auto';
+      input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
+    }
+    if (sameRoom && snap.hadFocus) {
+      input.focus();
+      const end = input.value.length;
+      input.setSelectionRange(end, end);
+    }
+    if (!sameRoom || snap.nearBottom) {
+      list.scrollTop = list.scrollHeight;
+    } else {
+      list.scrollTop = snap.scrollTop;
+      if (timeline.length > snap.count) badge.hidden = false;
+    }
+  };
+  return { pane, mount };
+}
+
+/**
+ * Whole app layout after login: list pane + room pane. On phones one pane is
+ * shown at a time (data-view); from 900px both are side by side.
+ * `room` may be null (nothing selected → placeholder on desktop).
+ */
+export function renderShell(root, { list, room }) {
+  const snap = snapshotRoomPane(root);
+  root.replaceChildren();
+  const listPane = buildRoomList({ ...list, currentRoomId: room?.room?.roomId ?? null });
+  let roomPane;
+  let mount = null;
+  if (room) {
+    const built = buildRoom(room, snap);
+    roomPane = el('section', { class: 'pane pane-room' }, built.pane);
+    mount = built.mount;
+  } else {
+    roomPane = el('section', { class: 'pane pane-room' }, el('p', { class: 'empty pane-empty' }, strings.rooms.selectHint));
   }
-  if (hadFocus) {
-    input.focus();
-    const end = input.value.length;
-    input.setSelectionRange(end, end);
-  }
+  root.append(el('main', { class: 'shell', 'data-view': room ? 'room' : 'list' }, listPane, roomPane));
+  mount?.();
+}
+
+/** Chat pane only (mobile room screen). Kept for callers/tests; renderShell is the full layout. */
+export function renderRoom(root, props) {
+  renderShell(root, { list: { summaries: [], syncState: 'live', onSelect() {}, onOpenVerification() {}, onOpenRecovery() {} }, room: props });
 }
 
 /**
