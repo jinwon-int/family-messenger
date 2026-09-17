@@ -33,6 +33,8 @@ export async function loginWithPassword({
   homeserverUrl,
   user,
   password,
+  deviceId,
+  deviceDisplayName,
   sdkLoader = defaultSdkLoader,
   clientFactory,
 } = {}) {
@@ -43,7 +45,15 @@ export async function loginWithPassword({
   }
   const sdk = await sdkLoader();
   const client = clientFactory ? clientFactory(sdk, { baseUrl: homeserverUrl }) : sdk.createClient({ baseUrl: homeserverUrl });
-  return client.login('m.login.password', { identifier: { type: 'm.id.user', user }, password });
+  const data = { identifier: { type: 'm.id.user', user }, password };
+  // 같은 브라우저에서 다시 로그인할 때 기존 device_id를 재사용한다. 그래야 서버가 새 기기를
+  // 만들지 않고, 기기별 crypto 저장소(familychat::user::device)의 서명 상태가 그대로 이어져
+  // 로그인마다 기기 검증을 다시 하지 않는다 (2026-09-17 실기기: 세션마다 새 기기 → 매번 검증).
+  if (typeof deviceId === 'string' && deviceId.length > 0) data.device_id = deviceId;
+  if (typeof deviceDisplayName === 'string' && deviceDisplayName.length > 0) {
+    data.initial_device_display_name = deviceDisplayName;
+  }
+  return client.login('m.login.password', data);
 }
 
 /**
@@ -503,12 +513,13 @@ export class ClientAdapter {
    * request reaches phase Ready) and the sheet showed "cancelled" the moment
    * the button was pressed (2026-09-17, company PC).
    */
-  async startEmojiVerification({ userId, roomId, onRequested, onEmojis, onDone, onCancelled }) {
+  async startEmojiVerification({ userId, roomId, onRequest, onRequested, onEmojis, onDone, onCancelled }) {
     const crypto = this.client.getCrypto?.();
     if (!crypto) throw new Error('rust crypto not enabled');
     const request = roomId && userId
       ? await crypto.requestVerificationDM(userId, roomId)
       : await crypto.requestOwnUserVerification();
+    onRequest?.(request);
     onRequested?.();
     await this.driveVerificationRequest(request, { onEmojis, onDone, onCancelled });
     return request;
@@ -529,7 +540,8 @@ export class ClientAdapter {
   }
 
   /** Accept an incoming request and drive the SAS exchange with the same callbacks. */
-  async acceptEmojiVerification(request, { onEmojis, onDone, onCancelled }) {
+  async acceptEmojiVerification(request, { onRequest, onEmojis, onDone, onCancelled }) {
+    onRequest?.(request);
     if (request.phase === VERIFICATION_PHASE.Requested && typeof request.accept === 'function') {
       await request.accept();
     }

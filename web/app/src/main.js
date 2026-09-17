@@ -518,7 +518,15 @@ function renderLogin(previousError) {
     onSubmit: async ({ homeserverUrl, user, password }) => {
       try {
         ui.setStatus(root, strings.login.submitting);
-        const creds = await loginWithPassword({ homeserverUrl, user, password });
+        // 같은 계정이 같은 브라우저에서 다시 로그인하면 기존 기기 ID를 재사용한다(다른 계정이면 새 기기).
+        const sameUser = Boolean(stored?.deviceId) && (user === localpart || user === stored?.userId);
+        const creds = await loginWithPassword({
+          homeserverUrl,
+          user,
+          password,
+          deviceId: sameUser ? stored.deviceId : undefined,
+          deviceDisplayName: strings.login.deviceName,
+        });
         const fresh = {
           homeserverUrl,
           userId: creds.user_id,

@@ -18,6 +18,7 @@ export const strings = {
     submitting: '접속 중…',
     error: '로그인에 실패했습니다. 주소와 계정을 다시 확인하세요.',
     encryptedNote: '대화는 종단간 암호화되며, 접속 정보는 이 창을 닫으면 지워집니다.',
+    deviceName: '패밀리챗 웹',
   },
   rooms: {
     title: '대화',

@@ -100,7 +100,26 @@ test('시트: 설정 메뉴·기기 관리·검증·복구·미리보기가 "nul
   assert.equal(app.querySelectorAll('dialog.sheet .emojis li').length, 1);
   assert.ok(app.querySelector('dialog.sheet .emojis .meta').textContent.includes('강아지'));
   noNullText(app.querySelector('dialog.sheet'));
+  // 목록 화면 전체 재구성(2초 갱신)이 열린 시트를 떼었다 붙이면 모달에서 빠진다 — 같은 노드가 제자리에 남아야 한다.
+  const sheet = app.querySelector('dialog.sheet');
+  const removed = [];
+  const observer = new window.MutationObserver((records) => records.forEach((r) => removed.push(...r.removedNodes)));
+  observer.observe(app, { childList: true });
+  ui.renderShell(app, { list: listProps(), room: null, box: boxProps() });
+  ui.renderShell(app, { list: listProps(), room: roomProps(), box: boxProps() });
+  observer.takeRecords().forEach((r) => removed.push(...r.removedNodes));
+  observer.disconnect();
+  assert.equal(removed.includes(sheet), false, '전체 재구성이 열린 시트를 DOM에서 떼면 안 된다');
+  assert.ok(sheet.isConnected && sheet.open && app.querySelector('main.shell'), '시트와 셸이 함께 남아야 한다');
   closeVerify();
+  assert.equal(app.querySelector('dialog.sheet'), null, '닫힌 검증 시트는 DOM에서 제거된다');
+  // 진행 중(상대 수락 대기)에 시트를 닫으면 요청을 취소해 상대 기기가 시간 초과까지 기다리지 않는다.
+  let cancelled = 0;
+  const closePending = ui.openVerificationSheet(app, { driver: async (cb) => { cb.onRequest?.({ cancel() { cancelled += 1; } }); cb.onRequested?.(); await new Promise(() => {}); } });
+  app.querySelector('dialog.sheet button.primary').click();
+  await new Promise((r) => setTimeout(r, 5));
+  closePending();
+  assert.equal(cancelled, 1, '대기 중 닫기는 SDK 요청을 취소한다');
   const closeRecovery = ui.openRecoverySheet(app, {});
   assert.match(app.querySelector('dialog.sheet .recovery-key').textContent, /\S{4}/);
   noNullText(app.querySelector('dialog.sheet'));
