@@ -79,7 +79,7 @@ web/app/
 
 ## 실행
 
-Linux/macOS, Node 22 이상.
+Linux/macOS, Node `^22.22.2 || ^24.15.0 || >=26` (CI: 22.22.2).
 
 ```bash
 cd web/app

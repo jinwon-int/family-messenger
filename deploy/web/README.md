@@ -8,7 +8,7 @@
 | 파일 | 용도 |
 |---|---|
 | `family-chat-web.service` | `web/app/serve.mjs`로 dist 서빙(127.0.0.1:8090, 터널 전용 — 바인딩은 루프백 고정) |
-| `build.sh` | `npm install` + `npm run build`(Node >= 22). 설치·갱신 때마다 실행 |
+| `build.sh` | `npm ci` + `npm run build`(Node `^22.22.2 \|\| ^24.15.0 \|\| >=26`, CI: 22.22.2). 설치·갱신 때마다 실행 |
 
 설치(예시 — 실제 경로·호스트명은 노드에 맞춘다):
 
