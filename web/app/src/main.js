@@ -3,7 +3,7 @@
 import { strings } from './strings.js';
 import * as session from './session.js';
 import { createFamilyClient, loginWithPassword, PlaintextRefusedError } from './matrix/client.js';
-import { messageKind, humanFileSize, validateAttachment, attachmentContent, mergeTimelineEntry } from './messages.js';
+import { messageKind, humanFileSize, validateAttachment, attachmentContent, mergeTimelineEntry, formattedMessageBody } from './messages.js';
 import { extractMentions } from './mentions.js';
 import { describeInvite } from './invites.js';
 import { lastMessagePreview, listSignature, sortByActivity } from './rooms.js';
@@ -309,6 +309,7 @@ function timelineEntry(event, summary) {
     isAgent: agents.length > 0,
     isMe: sameUser(event.getSender?.(), state.myUserId),
     kind: kind === 'unknown' ? 'file' : kind,
+    formattedBody: undecryptable ? null : formattedMessageBody(content),
     ts: typeof event.getTs === 'function' ? event.getTs() : null,
     body: undecryptable
       ? strings.chat.decryptFailed

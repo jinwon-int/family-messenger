@@ -9,6 +9,7 @@ import { composerKeyAction } from './keyboard.js';
 import { canAccept } from './invites.js';
 import { relativeTime } from './rooms.js';
 import { humanFileSize } from './messages.js';
+import { richMessageFragment } from './rich-text.js';
 import { shortHandle } from './participants.js';
 
 /** replaceChildren that drops null/false entries (a bare null would render the text "null"). */
@@ -267,13 +268,14 @@ function attachmentLabel(kind) {
 
 function bubble(entry) {
   const attach = attachmentLabel(entry.kind);
+  const rich = ['text', 'notice'].includes(entry.kind) ? richMessageFragment(entry.formattedBody) : null;
   const time = timeLabel(entry.ts);
   const foot = [entry.meta, time].filter(Boolean);
   return el(
     'li',
     { class: `bubble kind-${entry.kind}`, 'data-me': entry.isMe ? 'true' : 'false', 'data-event-id': entry.eventId ?? null },
     entry.isMe ? null : el('span', { class: 'who' }, participantLabel(entry, entry)),
-    el('p', { class: 'body' }, attach ? el('span', { class: 'attach-label' }, attach) : null, entry.body),
+    el('div', { class: rich ? 'body rich-text' : 'body' }, attach ? el('span', { class: 'attach-label' }, attach) : null, rich ?? entry.body),
     foot.length > 0 ? el('span', { class: 'foot' }, foot.map((text, i) => (i > 0 ? ` · ${text}` : text))) : null,
   );
 }

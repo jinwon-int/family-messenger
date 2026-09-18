@@ -45,6 +45,17 @@ export function messageKind(content) {
   }
 }
 
+/** Only explicit Matrix HTML on text messages is eligible for rich display.
+ * Keep this separate from the DOM sanitizer: event content is still untrusted.
+ */
+export function formattedMessageBody(content) {
+  if (!['text', 'notice'].includes(messageKind(content))) return null;
+  return content?.format === 'org.matrix.custom.html'
+    && typeof content.formatted_body === 'string'
+    && content.formatted_body.length <= 100_000
+    ? content.formatted_body : null;
+}
+
 /** Korean-friendly size label: 512 바이트, 3.5 KB, 1.2 MB, 2.0 GB. */
 export function humanFileSize(bytes) {
   const n = Number(bytes);

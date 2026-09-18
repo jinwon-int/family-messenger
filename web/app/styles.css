@@ -447,6 +447,20 @@ main.shell[data-view="room"] .pane-list { display: none; }
 }
 .bubble.kind-photo .body, .bubble.kind-video .body, .bubble.kind-file .body { font-weight: 600; }
 .bubble .body .attach-label { display: inline-block; font-size: var(--text-xs); font-weight: 700; margin-right: var(--space-2); opacity: 0.85; }
+.bubble .body.rich-text { white-space: normal; line-height: 1.65; min-width: 0; max-width: 100%; }
+.rich-text > :first-child { margin-top: 0; }
+.rich-text > :last-child { margin-bottom: 0; }
+.rich-text p, .rich-text ul, .rich-text ol, .rich-text blockquote, .rich-text pre { margin: 0.65em 0; }
+.rich-text h1, .rich-text h2, .rich-text h3, .rich-text h4, .rich-text h5, .rich-text h6 { font-size: 1.1em; line-height: 1.4; margin: 0.9em 0 0.4em; }
+.rich-text ul, .rich-text ol { padding-left: 1.5em; }
+.rich-text li + li { margin-top: 0.25em; }
+.rich-text a { color: inherit; text-decoration: underline; text-underline-offset: 0.15em; }
+.rich-text blockquote { border-left: 3px solid currentColor; padding-left: 0.8em; margin-left: 0; margin-right: 0; }
+.rich-text code { font-family: ui-monospace, monospace; font-size: 0.9em; background: rgba(127, 127, 127, 0.12); border-radius: 4px; padding: 0.1em 0.25em; }
+.rich-text pre { overflow-x: auto; white-space: pre; max-width: 100%; padding: 0.75em; border: 1px solid var(--line); border-radius: var(--radius-s); }
+.rich-text pre code { background: transparent; padding: 0; }
+.rich-text table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 0.65em 0; }
+.rich-text th, .rich-text td { border: 1px solid var(--line); padding: 0.35em 0.6em; text-align: left; }
 .bubble.kind-undecryptable .body { color: var(--text-2); font-style: italic; border-style: dashed; }
 .bubble.kind-notice { align-self: center; max-width: 92%; }
 .bubble.kind-notice .body { background: transparent; border: 0; box-shadow: none; color: var(--text-2); font-size: var(--text-s); text-align: center; }
