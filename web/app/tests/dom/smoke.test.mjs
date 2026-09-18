@@ -169,11 +169,11 @@ test('설정 메뉴 항목이 연 시트는 메뉴 닫힘·전체 재렌더 뒤�
 
 test('입력 중 표시: 방 이름 옆 .typing이 그려지고, 없으면 숨긴다', () => {
   const app = root();
-  ui.renderShell(app, { list: listProps(), room: { ...roomProps(), typing: '엄마님이 입력중입니다…' }, box: boxProps() });
+  ui.renderShell(app, { list: listProps(), room: { ...roomProps(), typing: '입력중..' }, box: boxProps() });
   const row = app.querySelector('.room-screen .appbar .title-row');
   assert.ok(row, '제목 행(.title-row)이 있어야 한다');
   assert.equal(row.querySelector('h2').textContent, '우리 가족');
-  assert.equal(row.querySelector('.typing').textContent, '엄마님이 입력중입니다…');
+  assert.equal(row.querySelector('.typing').textContent, '입력중..');
   noNullText(app);
   // 라벨이 빈 문자열이면 요소 자체가 없어야 한다(자리만 차지하지 않게).
   const app2 = root();

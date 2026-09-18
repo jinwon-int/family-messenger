@@ -54,10 +54,8 @@ const state = {
   config: DEFAULT_CONFIG,
   box: { open: false, tab: 'attachments', refresh: 0 }, // 보관함 pane
   cryptoError: null, // 암호화 모듈(rust crypto) 초기화 실패 배너
-  typing: createTypingState(), // roomId -> Map(userId -> {name, ts}) — 방 헤더 "입력중입니다"
+  typing: createTypingState(), // roomId -> Map(userId -> {name, ts}) — 방 헤더 "입력중.."
 };
-
-const TYPING_LABELS = () => ({ one: strings.chat.typingOne, many: strings.chat.typingMany });
 
 function renderCurrent() {
   if (!state.client) return;
@@ -98,7 +96,7 @@ function renderCurrent() {
           onSend: (text) => sendText(text),
           onAttach: (file) => sendAttachment(file),
           onTyping: (hasText) => handleComposerTyping(state.currentRoomId, hasText),
-          typing: typingIndicator(typingNames(state.typing, current.summary.roomId, { myUserId: state.myUserId }), TYPING_LABELS()),
+          typing: typingIndicator(typingNames(state.typing, current.summary.roomId, { myUserId: state.myUserId }), strings.chat.typing),
         }
       : null,
     box: {

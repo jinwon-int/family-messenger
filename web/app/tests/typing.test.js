@@ -56,9 +56,8 @@ test('pruneTyping: 만료된 항목을 걷고 영향받은 방 id를 돌려준�
   assert.deepEqual(pruneTyping(state, T0 + TYPING_MAX_AGE_MS + 1), []);
 });
 
-test('typingIndicator: 1명→one, 여럿→many, 없음→빈 문자열', () => {
-  const labels = { one: (name) => `${name}님이 입력중입니다…`, many: (names) => `${names.join(', ')}님이 입력중입니다…` };
-  assert.equal(typingIndicator([], labels), '');
-  assert.equal(typingIndicator(['엄마'], labels), '엄마님이 입력중입니다…');
-  assert.equal(typingIndicator(['엄마', '아빠'], labels), '엄마, 아빠님이 입력중입니다…');
+test('typingIndicator: 누군가 입력 중이면 단일 문구, 없으면 빈 문자열', () => {
+  assert.equal(typingIndicator([], '입력중..'), '');
+  assert.equal(typingIndicator(['엄마'], '입력중..'), '입력중..');
+  assert.equal(typingIndicator(['엄마', '아빠'], '입력중..'), '입력중..');
 });
