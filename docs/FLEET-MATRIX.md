@@ -48,7 +48,7 @@ guardian·heartbeat·종료 확인과 `remote_worker: true`를 함께 사용한�
    초기화한다. 재시작은 같은 config와 같은 crypto/state를 사용한다. 토큰·장치·키·서버,
    소유자·방·실행 명령·기준 시각이 저장값과 다르면 중단한다. 암호화 상태가 남았는데
    식별 마커가 없는 경우 자동 재생성하지 않는다.
-5. 예시 systemd 단위 `deploy/family-matrix.service.example`(2026-09-15 seoseo 운영 반영본)의
+5. 예시 systemd 단위 `deploy/family-matrix.service.example`(2026-09-15 운영 반영본)의
    경로와 실제 실행 사용자를 노드에 맞춘다. PYTHONPATH는 telegram_bot.contracts 시임 import를
    위해 bridge 체크아웃을 가리킨다.
    실행 전 개인 상태의 암호화 백업과 가용 공간을 확인한다. 원본 설정·상태를 보존한다.

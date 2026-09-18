@@ -180,7 +180,7 @@ state CAS, recovery policy and same-origin compromise qualifications. No passwor
 or recovery secret should be persisted in the page, server, logs or URLs. If browser APIs
 cannot preserve those requirements, document the exact native keystore boundary
 needed before shipping an Android client; do not quietly weaken key custody or
-claim actual CF/mobile/Yukson acceptance. The existing synthetic messenger remains
+claim actual CF/mobile/production-host acceptance. The existing synthetic messenger remains
 runnable while this prerequisite is resolved. Full-size encrypted media and all12
 real-runtime integration remain tracked separately in #16/#10/CCC1602.
 

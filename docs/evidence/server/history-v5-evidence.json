@@ -1,5 +1,5 @@
 {
-  "scope": "Issue60 legacy historical caller lifecycle and immutable version5 synthetic activation; not human recovery or Yukson deployment",
+  "scope": "Issue60 legacy historical caller lifecycle and immutable version5 synthetic activation; not human recovery or production-host deployment",
   "runtime_commit": "2529e3e229bbd20de14c85d6e689db43b82a01df",
   "profile": {
     "version": 5,

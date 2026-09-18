@@ -28,7 +28,7 @@
     "mobile resource/lifecycle acceptance",
     "actual CF account admission",
     "backup restore and rollback witness",
-    "Yukson production cutover and fleet binding"
+    "production-host production cutover and fleet binding"
   ],
   "runtime_reviewed_head": "4892743a9980591d6feda3982b4df9e7ffab147f",
   "independent_browser_proof": "/root/work/family-vault-assets-review-4892743/artifacts/native-vault-ui-mq78m3ix/verification.json",

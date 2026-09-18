@@ -154,6 +154,6 @@
     "backup restore",
     "production capacity/actor limits",
     "all12 real runtimes",
-    "Yukson candidate and cutover"
+    "production-host candidate and cutover"
   ]
 }
