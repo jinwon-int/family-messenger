@@ -211,6 +211,10 @@ async function connect(creds, { fresh = false } = {}) {
   state.client = await createFamilyClient(creds);
   state.cryptoError = null;
   const cryptoFailure = await enableEncryptionWithRecovery(state.client, { fresh });
+  if (!cryptoFailure) {
+    // 이 브라우저에 이 기기의 암호화 저장소가 실제로 생겼다 — 다음 로그인에서만 기기 ID를 재사용한다.
+    session.saveSession({ cryptoDeviceId: creds.deviceId }, stores);
+  }
   if (cryptoFailure) {
     // 콘솔에만 남기면 이후 모든 전송이 조용히 실패하는 이유를 가족이 알 수 없다(#126) — 화면에 상시 배너 + 원인.
     const detail = String(cryptoFailure?.message ?? cryptoFailure).slice(0, 160);
@@ -518,8 +522,11 @@ function renderLogin(previousError) {
     onSubmit: async ({ homeserverUrl, user, password }) => {
       try {
         ui.setStatus(root, strings.login.submitting);
-        // 같은 계정이 같은 브라우저에서 다시 로그인하면 기존 기기 ID를 재사용한다(다른 계정이면 새 기기).
-        const sameUser = Boolean(stored?.deviceId) && (user === localpart || user === stored?.userId);
+        // 같은 계정이 같은 브라우저에서 다시 로그인하고, 그 기기의 암호화 저장소가 이 브라우저에 남아 있을 때만
+        // 기존 기기 ID를 재사용한다. 저장소가 없는데 ID만 재사용하면 옛 ID에 새 키가 올라가 다른 기기의
+        // 검증이 키 불일치로 취소된다(2026-09-18). 다른 계정이거나 저장소가 없으면 새 기기.
+        const sameUser = Boolean(stored?.deviceId) && (user === localpart || user === stored?.userId)
+          && stored.cryptoDeviceId === stored.deviceId;
         const creds = await loginWithPassword({
           homeserverUrl,
           user,

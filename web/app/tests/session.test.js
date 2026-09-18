@@ -59,3 +59,18 @@ test('읽기·지우기 왕복', () => {
   assert.equal(hasLiveSession({ accessToken: 't' }), false);
   assert.equal(hasLiveSession({ accessToken: 't', homeserverUrl: 'h', userId: '@a:example.com' }), true);
 });
+
+test('암호화 저장소 마커(cryptoDeviceId)는 영속 저장소에만, 토큰과 분리되어 저장된다', () => {
+  const persistent = memoryStorage();
+  const volatile = memoryStorage();
+  const stores = { persistent, volatile };
+  saveSession({ homeserverUrl: 'https://chat.example.com', userId: '@a:example.com', deviceId: 'D', accessToken: 'tok' }, stores);
+  assert.equal(readSession(stores).cryptoDeviceId, undefined);
+  saveSession({ cryptoDeviceId: 'D' }, stores);
+  const read = readSession(stores);
+  assert.equal(read.cryptoDeviceId, 'D');
+  assert.equal(read.accessToken, 'tok');
+  assert.equal(volatile.getItem('familychat.cryptoDeviceId'), null, '마커는 sessionStorage에 가지 않는다');
+  clearSession(stores);
+  assert.equal(readSession(stores).cryptoDeviceId, undefined);
+});

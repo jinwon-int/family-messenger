@@ -91,6 +91,7 @@ export const strings = {
     mismatchTitle: '이모지가 일치하지 않습니다',
     mismatchBody: '검증을 중단했습니다. 이 기기의 연결이 바뀌었을 수 있습니다. 가족과 직접 확인한 뒤 다시 시도하세요.',
     cancelled: '검증이 취소되었습니다.',
+    cancelDetail: (code, by) => `사유: ${code || '알 수 없음'}${by ? ` · 취소한 쪽: ${by}` : ''}`,
     close: '닫기',
   },
   recovery: {

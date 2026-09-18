@@ -559,14 +559,22 @@ export class ClientAdapter {
       onCancelled?.();
       return null;
     }
+    // Why a verification stopped matters to the person holding two devices
+    // ("이모지가 같았는데 취소됐다", 2026-09-18): pass the SDK's cancellation
+    // code and which user cancelled so the sheet can show them.
+    const reason = (error) => ({
+      code: request.cancellationCode ?? null,
+      by: request.cancellingUserId ?? null,
+      message: error instanceof Error ? error.message : typeof error === 'string' ? error : null,
+    });
     verifier.on('show_sas', (sasEvent) => {
       const emojis = Array.isArray(sasEvent?.sas?.emoji) ? sasEvent.sas.emoji : [];
       onEmojis(emojis, {
-        confirm: () => sasEvent.confirm().then(onDone).catch(onCancelled),
+        confirm: () => sasEvent.confirm().then(onDone).catch((error) => onCancelled?.(reason(error))),
         mismatch: () => sasEvent.mismatch(),
       });
     });
-    verifier.on('cancel', () => onCancelled?.());
+    verifier.on('cancel', (error) => onCancelled?.(reason(error)));
     await verifier.verify();
     return verifier;
   }

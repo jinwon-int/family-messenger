@@ -115,6 +115,9 @@ test('ui.js renderShell은 같은 방이면 composer-wrap을 교체하지 않는
 test('main.js는 같은 계정 재로그인에 저장된 deviceId를 넘긴다', () => {
   const main = readFileSync(join(SRC, 'main.js'), 'utf-8');
   assert.match(main, /deviceId: sameUser \? stored\.deviceId : undefined/);
+  // 저장소 없는 ID 재사용 금지(2026-09-18): 재사용 조건에 cryptoDeviceId 일치가 포함돼야 한다.
+  assert.match(main, /stored\.cryptoDeviceId === stored\.deviceId/);
+  assert.match(main, /session\.saveSession\(\{ cryptoDeviceId: creds\.deviceId \}, stores\)/);
   assert.match(main, /deviceDisplayName: strings\.login\.deviceName/);
 });
 
