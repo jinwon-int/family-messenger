@@ -5,9 +5,20 @@ import {
   attachmentContent,
   humanFileSize,
   messageKind,
+  formattedMessageBody,
   mergeTimelineEntry,
   validateAttachment,
 } from '../src/messages.js';
+
+test('Matrix HTML is preserved only on explicit formatted text, with a size bound', () => {
+  const content = { msgtype: 'm.text', body: '**안녕**', format: 'org.matrix.custom.html', formatted_body: '<strong>안녕</strong>' };
+  assert.equal(formattedMessageBody(content), content.formatted_body);
+  assert.equal(formattedMessageBody({ ...content, msgtype: 'm.notice' }), content.formatted_body);
+  for (const change of [{ format: undefined }, { msgtype: 'm.image' }, { formatted_body: {} }, { formatted_body: 'x'.repeat(100_001) }]) {
+    assert.equal(formattedMessageBody({ ...content, ...change }), null);
+  }
+  assert.equal(formattedMessageBody(null), null);
+});
 
 test('메시지 종류 분류', () => {
   assert.equal(messageKind({ msgtype: 'm.text', body: '안녕' }), 'text');

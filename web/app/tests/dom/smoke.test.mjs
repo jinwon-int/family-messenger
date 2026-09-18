@@ -35,6 +35,25 @@ const boxProps = () => ({ open: false, tab: 'attachments', attachments: [{ kind:
 
 const noNullText = (node) => assert.ok(!/\bnull\b|undefined/.test(node.textContent), '화면에 null/undefined 글자가 있다');
 
+test('conversation bubbles use sanitized Matrix HTML and retain literal plain/attachment fallbacks', () => {
+  const app = root();
+  ui.renderShell(app, { list: listProps(), room: { ...roomProps(), timeline: [
+    { ...timeline[0], body: '**정상**', formattedBody: '<p><strong>정상</strong></p><ul><li>확인 완료</li></ul>' },
+    { ...timeline[1], body: '<img src=x>.jpg', formattedBody: '<strong>attachment must stay plain</strong>' },
+    { ...timeline[2], formattedBody: '<strong>failure must stay plain</strong>' },
+    { ...timeline[0], eventId: '$plain', body: '**원문** <script>x()</script>' },
+    { ...timeline[0], eventId: '$empty', body: '대체 본문', formattedBody: '<img src="https://example.com">' },
+  ] } });
+  assert.equal(app.querySelector('.rich-text strong').textContent, '정상');
+  assert.equal(app.querySelector('.rich-text li').textContent, '확인 완료');
+  assert.equal(app.querySelectorAll('.rich-text').length, 1);
+  assert.equal(app.querySelector('.kind-photo strong'), null);
+  assert.equal(app.querySelector('.kind-undecryptable strong'), null);
+  assert.equal(app.querySelector('[data-event-id="$plain"] .body').textContent, '**원문** <script>x()</script>');
+  assert.equal(app.querySelector('[data-event-id="$empty"] .body').textContent, '대체 본문');
+  assert.equal(app.querySelector('img,script'), null);
+});
+
 test('로그인 화면: 기본값이 있으면 홈서버 칸이 접히고 아이디가 채워진다', () => {
   const app = root();
   ui.renderLogin(app, { onSubmit() {}, defaults: { homeserverUrl: 'https://matrix.example.test', user: 'minseo' } });

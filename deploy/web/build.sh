@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build the family chat web app bundle (web/app/dist) on the deploy host.
-# Requires Node >= 22 (esbuild 0.28.2). Run before starting/enabling
+# Requires Node ^22.22.2 || ^24.15.0 || >=26 (see web/app/package.json).
+# Run before starting/enabling
 # family-chat-web.service; re-run and restart the unit on every update.
 set -euo pipefail
 cd "$(dirname "$0")/../../web/app"
