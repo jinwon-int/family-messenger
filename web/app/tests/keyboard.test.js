@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { composerKeyAction, viewKeyAction, listPageMove } from '../src/keyboard.js';
+import { composerKeyAction, viewKeyAction, listPageMove, isSplitLayout, listPageNavAction } from '../src/keyboard.js';
 
 test('작성창 Enter는 전송이다', () => {
   assert.equal(composerKeyAction({ key: 'Enter', shiftKey: false, isComposing: false }), 'send');
@@ -70,4 +70,22 @@ test('대화목록 Page Up/Page Down: 빈 목록이거나 Page Up/Page Down 키�
   assert.equal(listPageMove({ key: 'ArrowUp', count: 3, currentIndex: 1 }), null);
   assert.equal(listPageMove({ key: 'ArrowDown', count: 3, currentIndex: 1 }), null);
   assert.equal(listPageMove({}), null);
+});
+
+test('2분할: 900px 이상이거나 휴대폰 가로(640~899)이면 목록|대화가 나란히다', () => {
+  assert.equal(isSplitLayout((query) => ({ matches: query === '(min-width: 900px)' })), true);
+  assert.equal(isSplitLayout((query) => ({ matches: query.includes('orientation: landscape') })), true);
+  assert.equal(isSplitLayout(() => ({ matches: false })), false);
+  assert.equal(isSplitLayout(), false);
+});
+
+test('Page Up/Down: 2분할 목록·방 화면은 바로 미리보고, 단일 pane 목록만 포커스 이동이다', () => {
+  assert.equal(listPageNavAction({ key: 'PageDown', split: true, view: 'list' }), 'preview');
+  assert.equal(listPageNavAction({ key: 'PageUp', split: true, view: 'room', composerFocused: true }), 'preview');
+  assert.equal(listPageNavAction({ key: 'PageDown', split: false, view: 'list' }), 'navigate');
+  assert.equal(listPageNavAction({ key: 'PageDown', split: false, view: 'list', composerFocused: true }), null);
+  assert.equal(listPageNavAction({ key: 'PageDown', split: false, view: 'room' }), null);
+  assert.equal(listPageNavAction({ key: 'PageDown', split: true, view: 'box' }), null);
+  assert.equal(listPageNavAction({ key: 'Enter', split: true, view: 'list' }), null);
+  assert.equal(listPageNavAction({}), null);
 });

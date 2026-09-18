@@ -29,6 +29,33 @@ export function listPageMove({ key, count, currentIndex = -1 } = {}) {
   return Math.min(count - 1, Math.max(0, from + delta));
 }
 
+// styles.css와 같은 미디어 쿼리 — 900px부터 2열, 휴대폰 가로(640~899)도 목록|대화.
+const SPLIT_WIDE = '(min-width: 900px)';
+const SPLIT_LANDSCAPE = '(orientation: landscape) and (min-width: 640px) and (max-width: 899px)';
+
+/**
+ * 목록|대화가 나란히 보이는 2분할인지. 휴대폰 세로(한 pane)에서는 Page Up/Down이
+ * 방을 바로 열면 목록이 가려지므로 미리보기를 켜지 않는다.
+ * @param {(query: string) => {matches?: boolean}|null|undefined} matchMedia
+ */
+export function isSplitLayout(matchMedia) {
+  if (typeof matchMedia !== 'function') return false;
+  return Boolean(matchMedia(SPLIT_WIDE)?.matches) || Boolean(matchMedia(SPLIT_LANDSCAPE)?.matches);
+}
+
+/**
+ * Page Up/Page Down 전역 판정.
+ * 2분할이면 방을 오른쪽에 바로 미리 본다(작성창 포커스는 두지 않는다).
+ * 단일 pane 목록에서는 포커스만 옮긴다. 작성 중이거나 방 화면이면 가로채지 않는다.
+ * @returns {'preview'|'navigate'|null}
+ */
+export function listPageNavAction({ key, split, view, composerFocused } = {}) {
+  if (key !== 'PageDown' && key !== 'PageUp') return null;
+  if (split && (view === 'list' || view === 'room')) return 'preview';
+  if (!split && view === 'list' && !composerFocused) return 'navigate';
+  return null;
+}
+
 const INTERACTIVE = new Set(['INPUT', 'TEXTAREA', 'BUTTON', 'A', 'SELECT', 'LABEL', 'SUMMARY']);
 
 /**

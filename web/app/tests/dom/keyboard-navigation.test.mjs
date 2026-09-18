@@ -19,14 +19,19 @@ const bundle = await build({
   } }],
 });
 
-async function app(t, { finePointer = false } = {}) {
+async function app(t, { finePointer = false, split = false } = {}) {
   const window = new Window({ url: 'https://chat.example.test/' });
   t.after(() => window.happyDOM.abort());
   const { document } = window;
   document.body.innerHTML = '<div id="app"></div>';
   window.fetch = async () => ({ ok: true, json: async () => ({}) });
   const matchMedia = window.matchMedia.bind(window);
-  window.matchMedia = (query) => query === '(pointer: fine)' ? { matches: finePointer } : matchMedia(query);
+  window.matchMedia = (query) => {
+    if (query === '(pointer: fine)') return { matches: finePointer };
+    if (query === '(min-width: 900px)') return { matches: split };
+    if (query === '(orientation: landscape) and (min-width: 640px) and (max-width: 899px)') return { matches: false };
+    return matchMedia(query);
+  };
   let summaries = ['a', 'b', 'c'].map((id) => ({
     roomId: `!${id}:example.test`, displayName: id, kind: 'private', memberCount: 2, agents: [],
   }));
@@ -62,6 +67,8 @@ test('Enter opens a room and focuses composer even without a fine pointer; Home 
   key('PageDown');
   key('PageDown');
   assert.ok(document.activeElement === buttons()[1]);
+  assert.equal(document.querySelector('main.shell').dataset.view, 'list', '단일 pane에서는 Enter 전에 방을 열지 않는다');
+  assert.equal(document.querySelector('.room-screen'), null);
   key('Enter');
   const input = document.querySelector('.composer textarea');
   assert.ok(document.activeElement === input, "composer must retain focus");
@@ -119,6 +126,31 @@ test('IME and open dialogs retain Home; ordinary composer arrows remain text edi
   dialog.close(); dialog.remove(); input.focus();
   key('Home');
   assert.equal(document.querySelector('main.shell').dataset.view, 'list');
+});
+
+test('2분할에서 Page Up/Down은 Enter 없이 오른쪽 대화를 열고, Enter는 작성창, 다시 Page Down은 목록 탐색이다', async (t) => {
+  const { document, buttons, key } = await app(t, { split: true });
+  key('PageDown');
+  assert.equal(document.querySelector('main.shell').dataset.view, 'room');
+  assert.equal(document.querySelector('.room-screen')?.dataset.roomId, '!a:example.test');
+  assert.equal(document.activeElement.dataset.roomId, '!a:example.test');
+  assert.notEqual(document.activeElement.tagName, 'TEXTAREA', '미리보기는 작성창에 커서를 두지 않는다');
+  key('PageDown');
+  assert.equal(document.querySelector('.room-screen')?.dataset.roomId, '!b:example.test');
+  assert.equal(document.activeElement.dataset.roomId, '!b:example.test');
+  key('Enter');
+  const input = document.querySelector('.composer textarea');
+  assert.ok(document.activeElement === input, 'Enter는 작성창으로 커서를 옮긴다');
+  input.value = '작성 중인 초안';
+  key('PageDown');
+  assert.equal(document.querySelector('main.shell').dataset.view, 'room', '목록 탐색으로 돌아가도 대화는 그대로');
+  assert.equal(document.querySelector('.room-screen')?.dataset.roomId, '!c:example.test');
+  assert.equal(document.activeElement.dataset.roomId, '!c:example.test');
+  assert.notEqual(document.activeElement.tagName, 'TEXTAREA');
+  key('PageUp');
+  key('Enter');
+  assert.equal(document.activeElement.value, '작성 중인 초안', '미리보기 전환은 초안을 버리지 않는다');
+  assert.equal(document.querySelector('.room-screen')?.dataset.roomId, '!b:example.test');
 });
 
 test('hybrid devices use the actual touch pointer instead of the primary fine-pointer setting', async (t) => {

@@ -97,6 +97,16 @@ test('styles.css: 휴대폰 가로모드 미디어 쿼리가 목록|대화 2열�
   assert.match(block, /\.pane-list \{[^}]*flex: 0 0 280px/);
 });
 
+// 2분할 미리보기(Page Up/Down)가 CSS가 실제로 두 pane을 보여주는 구간에서만 켜지게 한다.
+test('keyboard.js 2분할 쿼리는 styles.css 미디어 쿼리와 같다', () => {
+  const kb = readFileSync(join(SRC, 'keyboard.js'), 'utf-8');
+  const css = readFileSync(join(import.meta.dirname, '..', 'styles.css'), 'utf-8');
+  assert.match(kb, /const SPLIT_WIDE = '\(min-width: 900px\)'/);
+  assert.match(kb, /const SPLIT_LANDSCAPE = '\(orientation: landscape\) and \(min-width: 640px\) and \(max-width: 899px\)'/);
+  assert.match(css, /@media \(min-width: 900px\)/);
+  assert.match(css, /@media \(orientation: landscape\) and \(min-width: 640px\) and \(max-width: 899px\)/);
+});
+
 // IME 회귀 방지(2026-09-17 실기기): 같은 방을 다시 그릴 때 작성창 요소를 교체하면 한글 조합이 끊겨
 // "내가"가 "ㄴㅐㄱㅏ"로 깨지고 화면이 깜빡였다. renderShell은 부분 교체 경로를 유지해야 한다.
 test('ui.js renderShell은 같은 방이면 composer-wrap을 교체하지 않는 부분 갱신 경로를 갖는다', () => {
