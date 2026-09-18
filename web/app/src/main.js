@@ -7,7 +7,7 @@ import { messageKind, humanFileSize, validateAttachment, attachmentContent, merg
 import { extractMentions } from './mentions.js';
 import { describeInvite } from './invites.js';
 import { lastMessagePreview, listSignature, sortByActivity } from './rooms.js';
-import { viewKeyAction, listArrowMove } from './keyboard.js';
+import { viewKeyAction, listPageMove } from './keyboard.js';
 import { splitParticipants, shortHandle } from './participants.js';
 import { attachmentFromContent, collectAttachments, fileboxRefreshUrl } from './attachments.js';
 import { DEFAULT_CONFIG, loadConfig } from './config.js';
@@ -47,7 +47,7 @@ const state = {
   aiConsentRooms: new Set(), // 방별 AI 동의 — 세션 안에서만 유지한다
   rooms: new Map(), // roomId -> {summary, timeline: []}
   currentRoomId: null,
-  listFocusIndex: -1, // 대화목록 ↑/↓ 포커스 위치 — 목록이 다시 그려져도 유지한다
+  listFocusIndex: -1, // 대화목록 Page Up/Page Down 포커스 위치 — 목록이 다시 그려져도 유지한다
   listFocusRoomId: null,
   syncState: 'idle',
   config: DEFAULT_CONFIG,
@@ -245,9 +245,9 @@ async function connect(creds, { fresh = false } = {}) {
   openRooms();
 }
 
-// 방 화면 키보드 단축키: 대화형 요소 밖 Enter=작성창 커서, Esc=방 목록.
+// 방 화면 키보드 단축키: 대화형 요소 밖 Enter=작성창 커서, Home=방 목록.
 // 시트(verification/recovery)가 열려 있으면 가로채지 않는다 — 시트 Esc는 자체 닫기.
-// 대화목록 ↑/↓ 탐색: 방 항목(.room-item) 사이에서 포커스를 옮긴다(roving focus).
+// 대화목록 Page Up/Page Down 탐색: 방 항목(.room-item) 사이에서 포커스를 옮긴다(roving focus).
 // Enter 열기는 포커스된 버튼의 원래 동작이라 여기서 가로채지 않는다.
 // 시트(<dialog open>)가 열려 있거나 글자를 쓰는 중(입력 가능 요소)에는 끓어쓰지 않는다.
 const EDITABLE_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
@@ -278,11 +278,11 @@ function installRoomListKeyboardNav() {
     const shell = root.querySelector('main.shell');
     if (!shell || shell.dataset.view !== 'list') return; // 대화목록 화면에서만 동작한다
     if (root.querySelector('dialog[open]')) return;
-    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    if (event.key !== 'PageDown' && event.key !== 'PageUp') return;
     const target = event.target;
     if (target && (target.isContentEditable === true || EDITABLE_TAGS.has(target.tagName))) return;
     const buttons = listRoomButtons();
-    const next = listArrowMove({ key: event.key, count: buttons.length, currentIndex: buttons.indexOf(document.activeElement) });
+    const next = listPageMove({ key: event.key, count: buttons.length, currentIndex: buttons.indexOf(document.activeElement) });
     if (next === null) return;
     event.preventDefault(); // 화면 스크롤 대신 목록 이동으로 쓴다
     state.listFocusIndex = next;

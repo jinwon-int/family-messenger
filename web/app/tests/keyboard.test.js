@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { composerKeyAction, viewKeyAction, listArrowMove } from '../src/keyboard.js';
+import { composerKeyAction, viewKeyAction, listPageMove } from '../src/keyboard.js';
 
 test('작성창 Enter는 전송이다', () => {
   assert.equal(composerKeyAction({ key: 'Enter', shiftKey: false, isComposing: false }), 'send');
@@ -17,7 +17,7 @@ test('한글 조합 중 Enter는 무시한다(조합 확정)', () => {
 
 test('작성창 다른 키는 판정 대상이 아니다', () => {
   assert.equal(composerKeyAction({ key: 'a', shiftKey: false, isComposing: false }), null);
-  assert.equal(composerKeyAction({ key: 'Escape', shiftKey: false, isComposing: false }), null);
+  assert.equal(composerKeyAction({ key: 'Home', shiftKey: false, isComposing: false }), null);
   assert.equal(composerKeyAction(), null);
 });
 
@@ -34,37 +34,40 @@ test('대화형 요소 위 Enter는 뺏지 않는다(버튼 활성화 등 원래
   assert.equal(viewKeyAction({ key: 'Enter', target: { tagName: 'DIV', isContentEditable: true } }), null);
 });
 
-test('Esc는 어디서든 방 목록 뒤로가기다', () => {
-  assert.equal(viewKeyAction({ key: 'Escape', target: { tagName: 'BODY' } }), 'back');
-  assert.equal(viewKeyAction({ key: 'Escape', target: { tagName: 'TEXTAREA' } }), 'back');
+test('Home은 어디서든 방 목록 뒤로가기다', () => {
+  assert.equal(viewKeyAction({ key: 'Home', target: { tagName: 'BODY' } }), 'back');
+  assert.equal(viewKeyAction({ key: 'Home', target: { tagName: 'TEXTAREA' } }), 'back');
 });
 
 test('다른 키는 뷰 판정 대상이 아니다', () => {
   assert.equal(viewKeyAction({ key: 'a', target: { tagName: 'BODY' } }), null);
+  assert.equal(viewKeyAction({ key: 'Escape' }), null);
   assert.equal(viewKeyAction(), null);
 });
 
-test('대화목록 ↑/↓: 선택이 없으면 ↓는 첫 항목, ↑는 마지막 항목에서 시작한다', () => {
-  assert.equal(listArrowMove({ key: 'ArrowDown', count: 3, currentIndex: -1 }), 0);
-  assert.equal(listArrowMove({ key: 'ArrowUp', count: 3, currentIndex: -1 }), 2);
+test('대화목록 Page Up/Page Down: 선택이 없으면 Page Down은 첫 항목, Page Up은 마지막 항목에서 시작한다', () => {
+  assert.equal(listPageMove({ key: 'PageDown', count: 3, currentIndex: -1 }), 0);
+  assert.equal(listPageMove({ key: 'PageUp', count: 3, currentIndex: -1 }), 2);
 });
 
-test('대화목록 ↑/↓: 한 항목씩 옮기고 끝에서 멈춘다', () => {
-  assert.equal(listArrowMove({ key: 'ArrowDown', count: 3, currentIndex: 0 }), 1);
-  assert.equal(listArrowMove({ key: 'ArrowDown', count: 3, currentIndex: 2 }), 2, '마지막에서 ↓는 제자리');
-  assert.equal(listArrowMove({ key: 'ArrowUp', count: 3, currentIndex: 2 }), 1);
-  assert.equal(listArrowMove({ key: 'ArrowUp', count: 3, currentIndex: 0 }), 0, '첫 항목에서 ↑는 제자리');
+test('대화목록 Page Up/Page Down: 한 항목씩 옮기고 끝에서 멈춘다', () => {
+  assert.equal(listPageMove({ key: 'PageDown', count: 3, currentIndex: 0 }), 1);
+  assert.equal(listPageMove({ key: 'PageDown', count: 3, currentIndex: 2 }), 2, '마지막에서 Page Down은 제자리');
+  assert.equal(listPageMove({ key: 'PageUp', count: 3, currentIndex: 2 }), 1);
+  assert.equal(listPageMove({ key: 'PageUp', count: 3, currentIndex: 0 }), 0, '첫 항목에서 Page Up은 제자리');
 });
 
-test('대화목록 ↑/↓: 범위를 벗난 현재 위치는 시작점 규칙으로 돌아온다', () => {
-  assert.equal(listArrowMove({ key: 'ArrowDown', count: 2, currentIndex: 5 }), 0);
-  assert.equal(listArrowMove({ key: 'ArrowUp', count: 2, currentIndex: 5 }), 1);
+test('대화목록 Page Up/Page Down: 범위를 벗난 현재 위치는 시작점 규칙으로 돌아온다', () => {
+  assert.equal(listPageMove({ key: 'PageDown', count: 2, currentIndex: 5 }), 0);
+  assert.equal(listPageMove({ key: 'PageUp', count: 2, currentIndex: 5 }), 1);
 });
 
-test('대화목록 ↑/↓: 빈 목록이거나 ↑/↓가 아니면 판정하지 않는다', () => {
-  assert.equal(listArrowMove({ key: 'ArrowDown', count: 0 }), null);
-  assert.equal(listArrowMove({ key: 'ArrowDown', count: -1 }), null);
-  assert.equal(listArrowMove({ key: 'Enter', count: 3, currentIndex: 0 }), null);
-  assert.equal(listArrowMove({ key: 'a', count: 3, currentIndex: 0 }), null);
-  assert.equal(listArrowMove({}), null);
+test('대화목록 Page Up/Page Down: 빈 목록이거나 Page Up/Page Down 키가 아니면 판정하지 않는다', () => {
+  assert.equal(listPageMove({ key: 'PageDown', count: 0 }), null);
+  assert.equal(listPageMove({ key: 'PageDown', count: -1 }), null);
+  assert.equal(listPageMove({ key: 'Enter', count: 3, currentIndex: 0 }), null);
+  assert.equal(listPageMove({ key: 'a', count: 3, currentIndex: 0 }), null);
+  assert.equal(listPageMove({ key: 'ArrowUp', count: 3, currentIndex: 1 }), null);
+  assert.equal(listPageMove({ key: 'ArrowDown', count: 3, currentIndex: 1 }), null);
+  assert.equal(listPageMove({}), null);
 });
