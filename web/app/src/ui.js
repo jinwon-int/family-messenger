@@ -9,6 +9,7 @@ import { composerKeyAction } from './keyboard.js';
 import { canAccept } from './invites.js';
 import { relativeTime } from './rooms.js';
 import { humanFileSize } from './messages.js';
+import { shortHandle } from './participants.js';
 
 /** replaceChildren that drops null/false entries (a bare null would render the text "null"). */
 function setChildren(node, ...children) {
@@ -799,6 +800,7 @@ export function openVerificationSheet(root, { driver, onClose, incoming = false 
   let hint = null; // 'requested' while the other device still has to accept
   let confirmers = null;
   let request = null; // SDK VerificationRequest once the driver created/accepted one
+  let cancelInfo = null; // '사유: m.user · 취소한 쪽: @…' once the SDK tells us why
   const dialog = el('dialog', { class: 'sheet', 'aria-labelledby': 'verify-title' });
   dialog.addEventListener('close', () => {
     // 시트를 닫으면 상대 기기가 시간 초과까지 기다리지 않도록 진행 중인 요청을 취소한다.
@@ -864,7 +866,9 @@ export function openVerificationSheet(root, { driver, onClose, incoming = false 
       state.state === 'mismatched'
         ? el('div', { class: 'status error' }, el('strong', {}, strings.verification.mismatchTitle), el('br'), strings.verification.mismatchBody)
         : null,
-      state.state === 'cancelled' ? el('p', { class: 'status warn' }, strings.verification.cancelled) : null,
+      state.state === 'cancelled'
+        ? el('p', { class: 'status warn' }, strings.verification.cancelled, cancelInfo ? el('br') : null, cancelInfo ? el('small', {}, cancelInfo) : null)
+        : null,
       el('div', { class: 'row end' }, el('button', { type: 'button', class: 'ghost', onclick: close }, strings.verification.close)),
     );
   };
@@ -884,7 +888,12 @@ export function openVerificationSheet(root, { driver, onClose, incoming = false 
         apply({ type: 'ready', emojis });
       },
       onDone: () => apply({ type: 'confirm' }),
-      onCancelled: () => apply({ type: 'cancel' }),
+      onCancelled: (reason) => {
+        if (reason && (reason.code || reason.by || reason.message)) {
+          cancelInfo = strings.verification.cancelDetail(reason.code || reason.message, shortHandle(reason.by || ''));
+        }
+        apply({ type: 'cancel' });
+      },
     }).catch(() => apply({ type: 'cancel' }));
   };
   root.append(dialog);

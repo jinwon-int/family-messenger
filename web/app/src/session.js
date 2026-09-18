@@ -13,6 +13,12 @@ export const PERSIST_KEYS = Object.freeze({
   homeserverUrl: 'familychat.homeserverUrl',
   userId: 'familychat.userId',
   deviceId: 'familychat.deviceId',
+  // Device whose rust crypto store was initialised in THIS browser. Re-login
+  // reuses a device id only when this matches: reusing the id after the
+  // local store is gone (site data cleared, device deleted and re-created)
+  // publishes NEW keys under an OLD id, and every other device then fails
+  // verification with m.key_mismatch (aERCaRWsm4 / u5rWMgBd4l, 2026-09-18).
+  cryptoDeviceId: 'familychat.cryptoDeviceId',
 });
 
 export const VOLATILE_KEYS = Object.freeze({

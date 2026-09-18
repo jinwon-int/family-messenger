@@ -727,3 +727,24 @@ test('암호화 저장소 이름은 계정+기기별이고, 초기화·비우기
   adapter.client.getDeviceId = () => 'DEVICE2';
   assert.notEqual(adapter.cryptoDatabasePrefix(), 'familychat::_minseo_example.com::DEVICE1', '다른 기기는 다른 저장소');
 });
+
+test('취소 사유(코드·취소한 쪽)가 onCancelled로 전달된다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  await adapter.enableEncryption();
+  const verifier = new EventEmitter();
+  verifier.verify = () => new Promise((resolve) => {
+    verifier.emit('show_sas', { sas: { emoji: [['🐱', 'cat']] }, confirm: async () => { setTimeout(resolve, 0); throw new Error('m.key_mismatch'); }, mismatch() {} });
+  });
+  const req = fakeRequest({ phase: VERIFICATION_PHASE.Ready, startVerification: () => verifier });
+  req.cancellationCode = 'm.key_mismatch';
+  req.cancellingUserId = '@a:example.com';
+  adapter.client.crypto.requestOwnUserVerification = async () => req;
+  const reasons = [];
+  await adapter.startEmojiVerification({ onEmojis: (e, c) => c.confirm(), onDone: () => assert.fail('완료되면 안 된다'), onCancelled: (r) => reasons.push(r) });
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(reasons.length, 1);
+  assert.equal(reasons[0].code, 'm.key_mismatch');
+  assert.equal(reasons[0].by, '@a:example.com');
+  assert.equal(reasons[0].message, 'm.key_mismatch');
+});
