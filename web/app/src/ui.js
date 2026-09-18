@@ -197,7 +197,7 @@ function roomListItem(room, onSelect, active = false) {
     {},
     el(
       'button',
-      { type: 'button', class: 'room-item', 'aria-current': active ? 'true' : null, onclick: () => onSelect(room) },
+      { type: 'button', class: 'room-item', 'data-room-id': room.roomId, 'aria-current': active ? 'true' : null, onclick: (event) => onSelect(room, event) },
       el('span', { class: `avatar kind-${room.kind}`, 'aria-hidden': 'true' }, initial(room.displayName || strings.rooms.unnamed)),
       el(
         'span',

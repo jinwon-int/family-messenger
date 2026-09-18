@@ -48,6 +48,7 @@ const state = {
   rooms: new Map(), // roomId -> {summary, timeline: []}
   currentRoomId: null,
   listFocusIndex: -1, // 대화목록 ↑/↓ 포커스 위치 — 목록이 다시 그려져도 유지한다
+  listFocusRoomId: null,
   syncState: 'idle',
   config: DEFAULT_CONFIG,
   box: { open: false, tab: 'attachments', refresh: 0 }, // 보관함 pane
@@ -62,7 +63,10 @@ function renderCurrent() {
       summaries: listSummaries(),
       syncState: state.syncState,
       banner: state.cryptoError,
-      onSelect: (room) => openRoom(room.roomId),
+      onSelect: (room, event) => openRoom(room.roomId, {
+        keyboard: event?.detail === 0,
+        touch: event?.pointerType === 'touch',
+      }),
       onOpenVerification: openVerification,
       onOpenRecovery: openRecovery,
       onOpenMenu: openMenu,
@@ -252,22 +256,25 @@ function listRoomButtons() {
   return Array.from(root.querySelectorAll('.pane-list .room-item'));
 }
 
-function restoreRoomListFocus() {
+function restoreRoomListFocus({ force = false } = {}) {
   if (state.currentRoomId || state.listFocusIndex < 0) return;
   const shell = root.querySelector('main.shell');
   if (!shell || shell.dataset.view !== 'list') return;
   if (root.querySelector('dialog[open]')) return;
   // 2초 갱신이 목록을 갈아끊우면 포커스가 body로 떨어진다 — 그 때만 되살린다.
-  if (document.activeElement && document.activeElement !== document.body) return;
+  if (!force && document.activeElement && document.activeElement !== document.body) return;
   const buttons = listRoomButtons();
   if (!buttons.length) { state.listFocusIndex = -1; return; }
-  const index = Math.min(state.listFocusIndex, buttons.length - 1);
+  const remembered = buttons.findIndex((button) => button.dataset.roomId === state.listFocusRoomId);
+  const index = remembered >= 0 ? remembered : Math.min(state.listFocusIndex, buttons.length - 1);
   state.listFocusIndex = index;
+  state.listFocusRoomId = buttons[index].dataset.roomId;
   buttons[index].focus({ preventScroll: true });
 }
 
 function installRoomListKeyboardNav() {
   document.addEventListener('keydown', (event) => {
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
     const shell = root.querySelector('main.shell');
     if (!shell || shell.dataset.view !== 'list') return; // 대화목록 화면에서만 동작한다
     if (root.querySelector('dialog[open]')) return;
@@ -279,12 +286,14 @@ function installRoomListKeyboardNav() {
     if (next === null) return;
     event.preventDefault(); // 화면 스크롤 대신 목록 이동으로 쓴다
     state.listFocusIndex = next;
+    state.listFocusRoomId = buttons[next].dataset.roomId;
     buttons[next].focus();
   });
 }
 
 function installKeyboardShortcuts() {
   document.addEventListener('keydown', (event) => {
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
     if (!state.currentRoomId) return;
     if (root.querySelector('dialog[open]')) return;
     const action = viewKeyAction({ key: event.key, target: event.target });
@@ -406,22 +415,45 @@ async function backfillPreviews() {
   }
 }
 
-function openRooms() {
-  state.currentRoomId = null;
-  refreshSummaries();
+function saveRoomDraft() {
+  const entry = state.rooms.get(state.currentRoomId);
+  const input = root.querySelector('.composer textarea[name=body]');
+  if (entry && input) entry.draft = input.value;
 }
 
-function openRoom(roomId) {
+function openRooms() {
+  const returning = Boolean(state.currentRoomId);
+  saveRoomDraft();
+  if (returning) {
+    state.listFocusRoomId = state.currentRoomId;
+    state.listFocusIndex = Math.max(0, listRoomButtons().findIndex((button) => button.dataset.roomId === state.currentRoomId));
+  }
+  state.currentRoomId = null;
+  state.box.open = false;
+  refreshSummaries();
+  if (returning) restoreRoomListFocus({ force: true });
+}
+
+function openRoom(roomId, { keyboard = false, touch = false } = {}) {
+  saveRoomDraft();
   state.currentRoomId = roomId;
+  state.listFocusRoomId = roomId;
+  state.listFocusIndex = Math.max(0, listRoomButtons().findIndex((button) => button.dataset.roomId === roomId));
+  state.box.open = false;
   const entry = state.rooms.get(roomId);
   if (entry && entry.hasMore === undefined) entry.hasMore = state.client.canLoadEarlier(roomId);
   renderCurrent();
   // 방을 열었는데 보이는 메시지가 적으면 이전 페이지를 한 번 자동으로 채운다.
   if (entry && entry.timeline.length < OPEN_MIN_MESSAGES && entry.hasMore !== false) loadEarlier(roomId);
-  // 포인터가 정밀한(데스크톱) 환경에서는 방을 열면 바로 입력 가능하게 한다.
-  // 모바일은 자동 포커스가 키보드를 띄워 방해가 되므로 제외.
-  if (window.matchMedia('(pointer: fine)').matches) {
-    root.querySelector('.composer textarea[name=body]')?.focus();
+  const input = root.querySelector('.composer textarea[name=body]');
+  if (input && entry?.draft != null) {
+    input.value = entry.draft;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  // 키보드로 선택하면 터치 기기의 외장 키보드에서도 바로 작성한다.
+  // 터치 탭은 화면 키보드를 자동으로 띄우지 않는다.
+  if (keyboard || (!touch && window.matchMedia('(pointer: fine)').matches)) {
+    input?.focus();
   }
 }
 
@@ -526,6 +558,8 @@ async function logout() {
   state.invites = [];
   state.rooms = new Map();
   state.currentRoomId = null;
+  state.listFocusIndex = -1;
+  state.listFocusRoomId = null;
   state.syncState = 'idle';
   state.box = { open: false, tab: 'attachments', refresh: 0 };
   state.cryptoError = null;
