@@ -7,7 +7,7 @@ import { messageKind, humanFileSize, validateAttachment, attachmentContent, merg
 import { extractMentions } from './mentions.js';
 import { describeInvite } from './invites.js';
 import { lastMessagePreview, listSignature, sortByActivity } from './rooms.js';
-import { viewKeyAction, listPageMove } from './keyboard.js';
+import { viewKeyAction, listPageMove, isSplitLayout, listPageNavAction } from './keyboard.js';
 import { splitParticipants, shortHandle } from './participants.js';
 import { attachmentFromContent, collectAttachments, fileboxRefreshUrl } from './attachments.js';
 import { DEFAULT_CONFIG, loadConfig } from './config.js';
@@ -248,18 +248,36 @@ async function connect(creds, { fresh = false } = {}) {
 // 방 화면 키보드 단축키: 대화형 요소 밖 Enter=작성창 커서, Home=방 목록.
 // 시트(verification/recovery)가 열려 있으면 가로채지 않는다 — 시트 Esc는 자체 닫기.
 // 대화목록 Page Up/Page Down 탐색: 방 항목(.room-item) 사이에서 포커스를 옮긴다(roving focus).
+// 2분할(목록|대화)에서는 옮긴 방을 오른쪽에 바로 미리 보고, Enter가 작성창으로 커서를 보낸다.
+// 작성창에서 다시 Page Up/Down이면 목록 탐색으로 돌아간다(대화는 그대로).
 // Enter 열기는 포커스된 버튼의 원래 동작이라 여기서 가로채지 않는다.
-// 시트(<dialog open>)가 열려 있거나 글자를 쓰는 중(입력 가능 요소)에는 끓어쓰지 않는다.
+// 시트(<dialog open>)가 열려 있으면 끓어쓰지 않는다.
 const EDITABLE_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
+
+function splitLayout() {
+  return isSplitLayout((query) => window.matchMedia(query));
+}
 
 function listRoomButtons() {
   return Array.from(root.querySelectorAll('.pane-list .room-item'));
 }
 
+function currentListIndex(buttons) {
+  const focused = buttons.indexOf(document.activeElement);
+  if (focused >= 0) return focused;
+  const id = state.listFocusRoomId || state.currentRoomId;
+  return id ? buttons.findIndex((button) => button.dataset.roomId === id) : -1;
+}
+
 function restoreRoomListFocus({ force = false } = {}) {
-  if (state.currentRoomId || state.listFocusIndex < 0) return;
+  if (state.listFocusIndex < 0) return;
   const shell = root.querySelector('main.shell');
-  if (!shell || shell.dataset.view !== 'list') return;
+  if (!shell) return;
+  const split = splitLayout();
+  const listVisible = shell.dataset.view === 'list' || (split && shell.dataset.view === 'room');
+  if (!listVisible) return;
+  // 단일 pane 방 화면에서는 목록이 숨겨져 있으니 포커스를 되살리지 않는다.
+  if (!split && state.currentRoomId) return;
   if (root.querySelector('dialog[open]')) return;
   // 2초 갱신이 목록을 갈아끊우면 포커스가 body로 떨어진다 — 그 때만 되살린다.
   if (!force && document.activeElement && document.activeElement !== document.body) return;
@@ -276,17 +294,28 @@ function installRoomListKeyboardNav() {
   document.addEventListener('keydown', (event) => {
     if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
     const shell = root.querySelector('main.shell');
-    if (!shell || shell.dataset.view !== 'list') return; // 대화목록 화면에서만 동작한다
+    if (!shell) return;
     if (root.querySelector('dialog[open]')) return;
-    if (event.key !== 'PageDown' && event.key !== 'PageUp') return;
     const target = event.target;
-    if (target && (target.isContentEditable === true || EDITABLE_TAGS.has(target.tagName))) return;
+    const composerFocused = Boolean(target && (target.isContentEditable === true || EDITABLE_TAGS.has(target.tagName)));
+    const action = listPageNavAction({
+      key: event.key,
+      split: splitLayout(),
+      view: shell.dataset.view,
+      composerFocused,
+    });
+    if (!action) return;
     const buttons = listRoomButtons();
-    const next = listPageMove({ key: event.key, count: buttons.length, currentIndex: buttons.indexOf(document.activeElement) });
+    const next = listPageMove({ key: event.key, count: buttons.length, currentIndex: currentListIndex(buttons) });
     if (next === null) return;
     event.preventDefault(); // 화면 스크롤 대신 목록 이동으로 쓴다
     state.listFocusIndex = next;
     state.listFocusRoomId = buttons[next].dataset.roomId;
+    if (action === 'preview') {
+      openRoom(buttons[next].dataset.roomId, { preview: true });
+      restoreRoomListFocus({ force: true });
+      return;
+    }
     buttons[next].focus();
   });
 }
@@ -434,7 +463,7 @@ function openRooms() {
   if (returning) restoreRoomListFocus({ force: true });
 }
 
-function openRoom(roomId, { keyboard = false, touch = false } = {}) {
+function openRoom(roomId, { keyboard = false, touch = false, preview = false } = {}) {
   saveRoomDraft();
   state.currentRoomId = roomId;
   state.listFocusRoomId = roomId;
@@ -450,6 +479,8 @@ function openRoom(roomId, { keyboard = false, touch = false } = {}) {
     input.value = entry.draft;
     input.dispatchEvent(new Event('input', { bubbles: true }));
   }
+  // 2분할 미리보기는 작성창에 커서를 두지 않는다 — Enter가 작성, Page Up/Down이 목록 탐색.
+  if (preview) return;
   // 키보드로 선택하면 터치 기기의 외장 키보드에서도 바로 작성한다.
   // 터치 탭은 화면 키보드를 자동으로 띄우지 않는다.
   if (keyboard || (!touch && window.matchMedia('(pointer: fine)').matches)) {
