@@ -57,24 +57,24 @@ async function app(t, { finePointer = false } = {}) {
   return { window, document, buttons, key, sent, refresh, reorder() { summaries = [summaries[1], summaries[0], summaries[2]]; refresh(); } };
 }
 
-test('Enter opens a room and focuses composer even without a fine pointer; Escape restores the same row', async (t) => {
+test('Enter opens a room and focuses composer even without a fine pointer; Home restores the same row', async (t) => {
   const { document, buttons, key, sent } = await app(t);
-  key('ArrowDown');
-  key('ArrowDown');
+  key('PageDown');
+  key('PageDown');
   assert.ok(document.activeElement === buttons()[1]);
   key('Enter');
   const input = document.querySelector('.composer textarea');
   assert.ok(document.activeElement === input, "composer must retain focus");
   assert.equal(sent.length, 0, 'opening Enter must not send a message');
   input.value = '작성 중인 초안';
-  key('Escape');
+  key('Home');
   assert.equal(document.querySelector('main.shell').dataset.view, 'list');
   assert.equal(document.activeElement.dataset.roomId, '!b:example.test');
-  key('ArrowDown');
+  key('PageDown');
   assert.equal(document.activeElement.dataset.roomId, '!c:example.test');
-  key('ArrowUp');
+  key('PageUp');
   key('Enter');
-  assert.equal(document.activeElement.value, '작성 중인 초안', 'Escape must not discard the draft');
+  assert.equal(document.activeElement.value, '작성 중인 초안', 'Home must not discard the draft');
 });
 
 test('pointer-selected room returns to its row and follows room identity after list reordering', async (t) => {
@@ -82,12 +82,12 @@ test('pointer-selected room returns to its row and follows room identity after l
   buttons()[1].dispatchEvent(new window.MouseEvent('click', { bubbles: true, detail: 1 }));
   assert.equal(document.activeElement.tagName, 'TEXTAREA');
   reorder();
-  key('Escape');
+  key('Home');
   assert.ok(document.activeElement === buttons()[0]);
   assert.equal(document.activeElement.dataset.roomId, '!b:example.test');
   refresh();
   assert.equal(document.activeElement.dataset.roomId, '!b:example.test', 'list refresh keeps keyboard focus');
-  key('ArrowDown');
+  key('PageDown');
   assert.equal(document.activeElement.dataset.roomId, '!a:example.test');
 });
 
@@ -95,26 +95,29 @@ test('touch taps do not open a software keyboard; hardware Enter does', async (t
   const { window, document, buttons, key } = await app(t);
   buttons()[0].dispatchEvent(new window.MouseEvent('click', { bubbles: true, detail: 1 }));
   assert.notEqual(document.activeElement.tagName, 'TEXTAREA');
-  key('Escape');
+  key('Home');
   assert.ok(document.activeElement === buttons()[0]);
   key('Enter');
   assert.equal(document.activeElement.tagName, 'TEXTAREA');
 });
 
-test('IME and open dialogs retain Escape; ordinary composer arrows remain text editing', async (t) => {
+test('IME and open dialogs retain Home; ordinary composer arrows remain text editing', async (t) => {
   const { window, document, key } = await app(t);
-  key('ArrowDown'); key('Enter');
+  key('PageDown'); key('Enter');
   const input = document.activeElement;
-  key('Escape', { isComposing: true });
+  key('Home', { isComposing: true });
   assert.ok(document.activeElement === input, "composer must retain focus");
+  assert.equal(key('PageDown').defaultPrevented, false);
   assert.equal(key('ArrowDown').defaultPrevented, false);
+  assert.equal(key('Escape').defaultPrevented, false);
+  assert.ok(document.activeElement === input);
   const dialog = document.createElement('dialog');
   document.getElementById('app').append(dialog);
   dialog.showModal();
-  key('Escape');
+  key('Home');
   assert.equal(document.querySelector('main.shell').dataset.view, 'room');
   dialog.close(); dialog.remove(); input.focus();
-  key('Escape');
+  key('Home');
   assert.equal(document.querySelector('main.shell').dataset.view, 'list');
 });
 
@@ -122,6 +125,6 @@ test('hybrid devices use the actual touch pointer instead of the primary fine-po
   const { window, document, buttons, key } = await app(t, { finePointer: true });
   buttons()[0].dispatchEvent(new window.PointerEvent('click', { bubbles: true, detail: 1, pointerType: 'touch' }));
   assert.notEqual(document.activeElement.tagName, 'TEXTAREA');
-  key('Escape'); key('Enter');
+  key('Home'); key('Enter');
   assert.equal(document.activeElement.tagName, 'TEXTAREA', 'hardware keyboard still focuses composer');
 });
