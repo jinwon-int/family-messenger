@@ -38,3 +38,13 @@ test('missing, empty, non-text and oversized rich bodies fall back to the plain 
     assert.equal(richMessageFragment(html), null);
   }
 });
+
+test('other Matrix clients retain block boundaries and ordered-list numbering', () => {
+  const fragment = richMessageFragment('<div>첫 문단</div><div>다음 문단</div><ol start="4"><li>넷째</li><li value="9">아홉째</li></ol><p start="3" value="7">본문</p><ol start="no"><li value="1e9">항목</li></ol>');
+  assert.equal(fragment.querySelectorAll('div').length, 2);
+  assert.equal(fragment.querySelector('ol').getAttribute('start'), '4');
+  assert.equal(fragment.querySelector('li[value]').getAttribute('value'), '9');
+  assert.equal(fragment.querySelector('p').attributes.length, 0);
+  assert.equal(fragment.querySelectorAll('ol')[1].attributes.length, 0);
+  assert.equal(fragment.querySelectorAll('li')[2].attributes.length, 0);
+});

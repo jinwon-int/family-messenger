@@ -464,6 +464,7 @@ main.shell[data-view="room"] .pane-list { display: none; }
 .bubble.kind-undecryptable .body { color: var(--text-2); font-style: italic; border-style: dashed; }
 .bubble.kind-notice { align-self: center; max-width: 92%; }
 .bubble.kind-notice .body { background: transparent; border: 0; box-shadow: none; color: var(--text-2); font-size: var(--text-s); text-align: center; }
+.bubble.kind-notice .body.rich-text { text-align: left; }
 .bubble.kind-notice .who { display: none; }
 
 .composer-wrap {
