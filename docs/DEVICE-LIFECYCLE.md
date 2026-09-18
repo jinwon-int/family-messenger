@@ -185,7 +185,7 @@ This is not a SIGKILL/restart proof of a persistent replacement implementation.
    separately qualified verifier/management boundary; it remains deferred.
 4. Human ceremony, mobile memory/lock behavior, actual CF account gate, isolated
    server-backup restore, production actors/groups/history capacity and approved
-   fleet binding remain acceptance gates before Yukson cutover. Preserve existing
+   fleet binding remain acceptance gates before production-host cutover. Preserve existing
    services/backups and Telegram fallback. Readonly history recovery does not
    guarantee continuing conversations after complete device loss.
 

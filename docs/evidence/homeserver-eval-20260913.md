@@ -1,7 +1,7 @@
-# 홈서버 0단계 격리 평가 — Tuwunel vs continuwuity (2026-09-13, yukson)
+# 홈서버 0단계 격리 평가 — Tuwunel vs continuwuity (2026-09-13, 운영 호스트)
 
 기준: `docs/DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md` "홈서버 선정 — 1주 평가".
-범위: yukson(`vps5`, 12 vCPU, 32 GiB, `/opt` 862 GiB free) `/opt/family-messenger-eval/`(0700) 안에서만. 운영 `family-messenger-*` 컨테이너·터널·포트 무변경(종료 시 재확인: synapse/element/postgres Up 4 days, tunnel active). 두 서버는 127.0.0.1:28008(Tuwunel) / 28018(continuwuity)에만 바인딩, 종료 후 LISTEN 0. 모든 계정·토큰은 `eval-*.invalid` 일회용. 증거 파일: `<eval>/{tuwunel,continuwuity}/{hs_eval.run.log,cycle.log,state.json.results.json,*.toml,*.log}`, 스크립트 `hs_eval.py`, `admin_cmd.py`, `cycle_*.sh`.
+범위: 운영 호스트의 격리 평가 디렉터리(0700) 안에서만(호스트 식별자·사양·경로는 내부 운영 기록 참조). 운영 `family-messenger-*` 컨테이너·터널·포트 무변경(종료 시 재확인: synapse/element/postgres Up 4 days, tunnel active). 두 서버는 127.0.0.1:28008(Tuwunel) / 28018(continuwuity)에만 바인딩, 종료 후 LISTEN 0. 모든 계정·토큰은 `eval-*.invalid` 일회용. 증거 파일: `<eval>/{tuwunel,continuwuity}/{hs_eval.run.log,cycle.log,state.json.results.json,*.toml,*.log}`, 스크립트 `hs_eval.py`, `admin_cmd.py`, `cycle_*.sh`.
 
 ## 비교표
 
@@ -39,4 +39,4 @@ continuwuity는 **대안으로 유지 가능**: 기능은 모두 "확인함"이�
 - **미검증 항목**: `well_known.client` 실제 제공(404 기본만 확인), `registration_shared_secret` 경로, `--execute "users create-user"` 무인 생성, federation off의 외부 트래픽 부재(설정 수용만 확인), 장기 메모리·컴팩션, 두 포크 간 DB 마이그레이션(Tuwunel 1.9.1 노트에 conduwuit DB "adopt" 언급, 미실측).
 - **Tuwunel 1.9.x 마이그레이션**: 1.8.x→1.9 첫 기동 시 리스너 오픈 전에 DB 마이그레이션 실행, 강제 kill 시 손상 가능(릴리스 노트) → 업그레이드 전 백업 자동화 필요.
 - **서버 계정 이름** 양쪽 모두 `@conduit:<server>` — 가족 UI에서 표시명 처리 필요.
-- 유휴 스레드 602개(Tuwunel)는 저사양 노드에서 재측정 필요. 본 측정은 12 vCPU/32 GiB 호스트 값.
+- 유휴 스레드 602개(Tuwunel)는 저사양 노드에서 재측정 필요. 본 측정은 고성능 호스트 기준 값.
