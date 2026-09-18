@@ -40,7 +40,7 @@ async function app(t, { finePointer = false, split = false } = {}) {
   window.testClient = {
     enableEncryption: async () => {}, start() {}, onTimeline() {}, onVerificationRequest() {},
     onRoomAdded(callback) { refresh = callback; },
-    roomSummaries: () => summaries, inviteSummaries: () => [], canLoadEarlier: () => false,
+    onTyping() {}, roomSummaries: () => summaries, inviteSummaries: () => [], canLoadEarlier: () => false,
     roomMemberHandles: () => [], sendText: async (...args) => sent.push(args),
   };
   saveSession({ homeserverUrl: 'https://matrix.example.test', userId: '@reader:example.test', deviceId: 'TEST', accessToken: 'synthetic' }, {

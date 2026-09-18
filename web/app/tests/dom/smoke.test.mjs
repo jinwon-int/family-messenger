@@ -166,3 +166,29 @@ test('설정 메뉴 항목이 연 시트는 메뉴 닫힘·전체 재렌더 뒤�
   assert.equal(app.querySelectorAll('main.shell').length, 1);
   closeMenu; opened?.();
 });
+
+test('입력 중 표시: 방 이름 옆 .typing이 그려지고, 없으면 숨긴다', () => {
+  const app = root();
+  ui.renderShell(app, { list: listProps(), room: { ...roomProps(), typing: '엄마님이 입력중입니다…' }, box: boxProps() });
+  const row = app.querySelector('.room-screen .appbar .title-row');
+  assert.ok(row, '제목 행(.title-row)이 있어야 한다');
+  assert.equal(row.querySelector('h2').textContent, '우리 가족');
+  assert.equal(row.querySelector('.typing').textContent, '엄마님이 입력중입니다…');
+  noNullText(app);
+  // 라벨이 빈 문자열이면 요소 자체가 없어야 한다(자리만 차지하지 않게).
+  const app2 = root();
+  ui.renderShell(app2, { list: listProps(), room: { ...roomProps(), typing: '' }, box: boxProps() });
+  assert.equal(app2.querySelector('.room-screen .appbar .typing'), null);
+});
+
+test('입력 중 전송: 실제 입력만 onTyping으로 전달하고 초안 복원 같은 스크립트 이벤트는 걸러낸다', () => {
+  const app = root();
+  const activity = [];
+  ui.renderShell(app, { list: listProps(), room: { ...roomProps(), onTyping: (hasText) => activity.push(hasText) }, box: boxProps() });
+  const ta = app.querySelector('.composer textarea[name=body]');
+  // 스크립트가 만든 input 이벤트(isTrusted=false)는 초안 복원(#160) 같은 프로그램적 갱신이다.
+  // 이 경로를 타이핑으로 치면 방을 열기만 해도 상대에게 "입력중"이 뜬다.
+  ta.value = '안녕';
+  ta.dispatchEvent(new window.Event('input', { bubbles: true }));
+  assert.deepEqual(activity, [], '프로그램적 input 이벤트는 타이핑으로 치지 않는다');
+});

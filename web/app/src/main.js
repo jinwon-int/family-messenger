@@ -10,6 +10,7 @@ import { lastMessagePreview, listSignature, sortByActivity } from './rooms.js';
 import { viewKeyAction, listPageMove, isSplitLayout, listPageNavAction } from './keyboard.js';
 import { splitParticipants, shortHandle } from './participants.js';
 import { attachmentFromContent, collectAttachments, fileboxRefreshUrl } from './attachments.js';
+import { applyTypingEvent, createTypingState, pruneTyping, typingIndicator, typingNames } from './typing.js';
 import { DEFAULT_CONFIG, loadConfig } from './config.js';
 import * as ui from './ui.js';
 
@@ -53,7 +54,10 @@ const state = {
   config: DEFAULT_CONFIG,
   box: { open: false, tab: 'attachments', refresh: 0 }, // 보관함 pane
   cryptoError: null, // 암호화 모듈(rust crypto) 초기화 실패 배너
+  typing: createTypingState(), // roomId -> Map(userId -> {name, ts}) — 방 헤더 "입력중입니다"
 };
+
+const TYPING_LABELS = () => ({ one: strings.chat.typingOne, many: strings.chat.typingMany });
 
 function renderCurrent() {
   if (!state.client) return;
@@ -93,6 +97,8 @@ function renderCurrent() {
           onBack: openRooms,
           onSend: (text) => sendText(text),
           onAttach: (file) => sendAttachment(file),
+          onTyping: (hasText) => handleComposerTyping(state.currentRoomId, hasText),
+          typing: typingIndicator(typingNames(state.typing, current.summary.roomId, { myUserId: state.myUserId }), TYPING_LABELS()),
         }
       : null,
     box: {
@@ -145,8 +151,10 @@ function startListTicker() {
   if (listTicker) return;
   listTicker = setInterval(() => {
     if (!state.client) return;
+    // 만료된 타이핑 표시를 걷는다 — 연결이 끊긴 사이 남은 표시가 헤더에 고착하지 않게.
+    const prunedRooms = pruneTyping(state.typing);
     const signature = listSignature(listSummaries(), Date.now(), TIME_LABELS());
-    if (signature === lastListSignature) return;
+    if (signature === lastListSignature && !(prunedRooms.length > 0 && prunedRooms.includes(state.currentRoomId))) return;
     lastListSignature = signature;
     renderCurrent();
   }, 2000);
@@ -237,6 +245,11 @@ async function connect(creds, { fresh = false } = {}) {
   });
   // 새 방이 보이면 목록·초대를 즉시 갱신한다(세션 중 도착한 초대 포함).
   state.client.onRoomAdded(() => refreshSummaries());
+  // 다른 사람의 입력 중 상태(m.typing)가 바뀌면 방 헤더 표시를 갱신한다.
+  state.client.onTyping((info) => {
+    if (!applyTypingEvent(state.typing, info)) return;
+    if (info.roomId === state.currentRoomId) renderCurrent();
+  });
   startListTicker();
   // 내 다른 기기(휴대폰 앱 등)가 이 기기 검증을 요청하면 수락 시트를 연다.
   state.client.onVerificationRequest((request) => openIncomingVerification(request));
@@ -457,6 +470,7 @@ function openRooms() {
     state.listFocusRoomId = state.currentRoomId;
     state.listFocusIndex = Math.max(0, listRoomButtons().findIndex((button) => button.dataset.roomId === state.currentRoomId));
   }
+  stopTyping(state.currentRoomId);
   state.currentRoomId = null;
   state.box.open = false;
   refreshSummaries();
@@ -465,6 +479,7 @@ function openRooms() {
 
 function openRoom(roomId, { keyboard = false, touch = false, preview = false } = {}) {
   saveRoomDraft();
+  if (state.currentRoomId && state.currentRoomId !== roomId) stopTyping(state.currentRoomId);
   state.currentRoomId = roomId;
   state.listFocusRoomId = roomId;
   state.listFocusIndex = Math.max(0, listRoomButtons().findIndex((button) => button.dataset.roomId === roomId));
@@ -488,11 +503,59 @@ function openRoom(roomId, { keyboard = false, touch = false, preview = false } =
   }
 }
 
+// --- 입력 중 표시 전송: 작성창 활동을 m.typing으로 변환한다 ---
+// 홈서버는 timeout 후 스스로 만료시키므로(기본 30초), 계속 입력하면 만료 전에 재알림하고
+// 뜸하거나 전송·방 전환하면 즉시 끈다. 실패는 조용히 무시한다(표시 기능일 뿐이다).
+const TYPING_TIMEOUT_MS = 30_000; // 홈서버에 요청하는 유지 창
+const TYPING_REFRESH_MS = 20_000; // 계속 입력 중일 때 재알림 주기(만료 전)
+const TYPING_IDLE_MS = 6_000;     // 입력이 뜸하면 끄기까지의 대기
+let typingActive = false;
+let typingSentAt = 0;
+let typingIdleTimer = null;
+
+async function pushTyping(roomId, isTyping) {
+  try {
+    await state.client?.sendTyping(roomId, isTyping, TYPING_TIMEOUT_MS);
+  } catch (error) {
+    console.warn('typing send failed', error);
+  }
+}
+
+/** Stop announcing typing for a room (and remember nothing across rooms). */
+function stopTyping(roomId) {
+  if (typingIdleTimer) {
+    clearTimeout(typingIdleTimer);
+    typingIdleTimer = null;
+  }
+  if (!typingActive) return;
+  typingActive = false;
+  if (roomId) void pushTyping(roomId, false);
+}
+
+/** Composer activity from ui: hasText = the textarea has content. */
+function handleComposerTyping(roomId, hasText) {
+  if (!state.client || !roomId || roomId !== state.currentRoomId) return;
+  if (!hasText) {
+    stopTyping(roomId);
+    return;
+  }
+  const now = Date.now();
+  if (!typingActive || now - typingSentAt >= TYPING_REFRESH_MS) {
+    typingActive = true;
+    typingSentAt = now;
+    void pushTyping(roomId, true);
+  }
+  if (typingIdleTimer) clearTimeout(typingIdleTimer);
+  typingIdleTimer = setTimeout(() => stopTyping(roomId), TYPING_IDLE_MS);
+}
+
 async function sendText(text) {
   const entry = state.rooms.get(state.currentRoomId);
+  const roomId = state.currentRoomId;
   try {
-    const handles = state.client.roomMemberHandles(state.currentRoomId);
-    await state.client.sendText(state.currentRoomId, text, extractMentions(text, handles));
+    const handles = state.client.roomMemberHandles(roomId);
+    await state.client.sendText(roomId, text, extractMentions(text, handles));
+    stopTyping(roomId);
   } catch (error) {
     if (error instanceof PlaintextRefusedError) {
       entry.notice = strings.errors.plaintextRefused;
@@ -594,6 +657,8 @@ async function logout() {
   state.syncState = 'idle';
   state.box = { open: false, tab: 'attachments', refresh: 0 };
   state.cryptoError = null;
+  stopTyping(null);
+  state.typing = createTypingState();
   renderLogin();
 }
 

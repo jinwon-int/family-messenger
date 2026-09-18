@@ -249,6 +249,30 @@ export class ClientAdapter {
     return this.client.sendEvent(roomId, 'm.room.message', content);
   }
 
+  /**
+   * Send (or clear) my typing state for a room. `timeoutMs` is the window the
+   * homeserver keeps the flag before auto-expiring it (spec: m.typing), so a
+   * crashed tab cannot type forever. Best-effort: callers may ignore failures.
+   */
+  sendTyping(roomId, isTyping, timeoutMs = 30_000) {
+    if (typeof this.client.sendTyping !== 'function') return Promise.resolve();
+    return this.client.sendTyping(roomId, isTyping, timeoutMs);
+  }
+
+  /**
+   * Subscribe to other people's typing state changes (SDK RoomMember.typing,
+   * emitted from the sync's ephemeral m.typing list). handler receives a flat
+   * {roomId, userId, name, typing}; returns an unsubscribe function.
+   */
+  onTyping(handler) {
+    const listener = (_event, member) => {
+      if (!member?.roomId || !member?.userId) return;
+      handler({ roomId: member.roomId, userId: member.userId, name: member.name ?? '', typing: Boolean(member.typing) });
+    };
+    this.client.on('RoomMember.typing', listener);
+    return () => this.client.removeListener('RoomMember.typing', listener);
+  }
+
   /** Send an attachment whose mxc URL is already uploaded. */
   async sendAttachment(roomId, content) {
     if (!this.isRoomEncrypted(roomId)) throw new PlaintextRefusedError(roomId);

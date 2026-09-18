@@ -313,7 +313,7 @@ function snapshotRoomPane(root) {
  * at the bottom; new message while scrolled up → keep the position and show
  * a floating "새 메시지" badge that jumps down on click.
  */
-function buildRoom({ room, timeline, onSend, onAttach, onBack, notice, onToggleBox = null, hasMore = false, loadingEarlier = false, onLoadEarlier = null }, snap) {
+function buildRoom({ room, timeline, onSend, onAttach, onTyping = null, onBack, notice, onToggleBox = null, hasMore = false, loadingEarlier = false, onLoadEarlier = null, typing = '' }, snap) {
   // 맨 위 행: 이전 대화 불러오기 버튼 / 불러오는 중 / 대화의 처음.
   const earlierRow = el(
     'li',
@@ -430,6 +430,9 @@ function buildRoom({ room, timeline, onSend, onAttach, onBack, notice, onToggleB
         const input = event.currentTarget;
         input.style.height = 'auto';
         input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
+        // 입력 활동을 알린다(main.js가 서버 타이핑 알림으로 변환 — m.typing).
+        // 프로그램적 input 이벤트(초안 복원 등)는 실제 타이핑이 아니므로 isTrusted로 걸러낸다.
+        if (event.isTrusted) onTyping?.(input.value.trim().length > 0);
       },
     }),
     el('button', { type: 'submit', class: 'primary' }, strings.chat.send),
@@ -441,7 +444,13 @@ function buildRoom({ room, timeline, onSend, onAttach, onBack, notice, onToggleB
     el(
       'div',
       { class: 'titles' },
-      el('h2', {}, room.displayName || strings.rooms.unnamed),
+      el(
+        'div',
+        { class: 'title-row' },
+        el('h2', {}, room.displayName || strings.rooms.unnamed),
+        // 이름 옆 "…님이 입력중입니다" — main.js가 typingNames로 채운다. 빈 문자열이면 숨긴다.
+        typing ? el('span', { class: 'typing', role: 'status' }, typing) : null,
+      ),
       el('span', { class: 'subtitle lock' }, `${roomBadge(room.kind)} · ${strings.rooms.memberCount(room.memberCount)} · ${strings.chat.encryptedShort}`),
     ),
     onToggleBox ? el('button', { type: 'button', class: 'icon ghost box-toggle', 'aria-label': strings.box.toggle, onclick: onToggleBox }, '📎') : null,
