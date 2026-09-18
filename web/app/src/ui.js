@@ -210,7 +210,7 @@ function roomListItem(room, onSelect, active = false) {
           when ? el('span', { class: 'when' }, when) : null,
         ),
         last
-          ? el('span', { class: 'preview' }, last.sender ? el('span', { class: 'preview-sender' }, `${last.sender}: `) : null, last.text)
+          ? el('span', { class: 'preview' }, room.kind === 'family' && last.sender ? el('span', { class: 'preview-sender' }, `${last.sender}: `) : null, last.text)
           : el('span', { class: 'preview empty-preview' }, `${roomBadge(room.kind)} · ${strings.rooms.memberCount(room.memberCount)} · ${strings.rooms.noMessages}`),
       ),
     ),

@@ -21,7 +21,7 @@ const root = () => {
 };
 const rooms = [
   { roomId: '!a:x', displayName: '우리 가족', kind: 'family', memberCount: 4, agents: [{ userId: '@fambot:x' }], lastMessage: { sender: '팸봇', text: '안녕', ts: Date.now() - 30_000, eventId: '$1' } },
-  { roomId: '!b:x', displayName: '엄마', kind: 'private', memberCount: 2, agents: [], lastMessage: null },
+  { roomId: '!b:x', displayName: '엄마', kind: 'private', memberCount: 2, agents: [], lastMessage: { sender: '엄마', text: '잘자', ts: Date.now() - 10_000, eventId: '$2' } },
 ];
 const timeline = [
   { eventId: '$e1', name: '아빠', isMe: false, kind: 'text', body: '저녁 먹자', ts: Date.now() - 60_000 },
@@ -71,7 +71,11 @@ test('셸: 목록·대화·보관함이 그려지고 내 메시지는 data-me, �
   ui.renderShell(app, { list: listProps(), room: roomProps(), box: boxProps() });
   assert.equal(app.querySelectorAll('.room-item').length, 2);
   assert.equal(app.querySelector('.room-item[aria-current="true"] .room-name').textContent, '우리 가족');
-  assert.ok(app.querySelector('.room-item .preview').textContent.includes('팸봇: 안녕'));
+  const previews = [...app.querySelectorAll('.room-item .preview')].map((n) => n.textContent);
+  assert.equal(previews[0], '팸봇: 안녕');
+  assert.equal(previews[1], '잘자');
+  assert.equal(app.querySelectorAll('.room-item')[0].querySelector('.preview-sender').textContent, '팸봇: ');
+  assert.equal(app.querySelectorAll('.room-item')[1].querySelector('.preview-sender'), null);
   assert.equal(app.querySelectorAll('li.bubble').length, 3);
   assert.equal(app.querySelector('li.bubble[data-me="true"] .body').textContent.includes('menu.jpg'), true);
   assert.ok(app.querySelector('li.bubble.kind-undecryptable .body').textContent.includes(strings.chat.decryptFailed));
