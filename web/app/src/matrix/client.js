@@ -400,6 +400,16 @@ export class ClientAdapter {
   }
 
   /**
+   * Events currently on the SDK live timeline (initial sync + scrollback + live).
+   * The UI keeps its own copy; this is the source of truth after a missed Room.timeline.
+   */
+  liveTimelineEvents(roomId) {
+    const room = this.client.getRoom?.(roomId);
+    const events = room?.getLiveTimeline?.()?.getEvents?.();
+    return Array.isArray(events) ? events : [];
+  }
+
+  /**
    * Fetch one page of older events into the live timeline (SDK scrollback);
    * they arrive through onTimeline with atStart=true. Resolves with the
    * number of events added (0 = reached the beginning or nothing older).
@@ -462,6 +472,13 @@ export class ClientAdapter {
     };
     this.client.on('Room.timeline', listener);
     return () => this.client.removeListener('Room.timeline', listener);
+  }
+
+  /** Limited sync 등으로 SDK가 live timeline을 비우면 화면 복사본도 다시 읽어야 한다. */
+  onTimelineReset(handler) {
+    const listener = (room) => handler(room?.roomId);
+    this.client.on('Room.timelineReset', listener);
+    return () => this.client.removeListener('Room.timelineReset', listener);
   }
 
   /**

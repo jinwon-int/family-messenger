@@ -234,11 +234,7 @@ async function connect(creds, { fresh = false } = {}) {
     const detail = String(cryptoFailure?.message ?? cryptoFailure).slice(0, 160);
     state.cryptoError = `${strings.errors.cryptoUnavailable} (${detail})`;
   }
-  state.client.start((syncState) => {
-    state.syncState = syncState === 'PREPARED' || syncState === 'SYNCING' ? 'live' : syncState === 'ERROR' ? 'error' : state.syncState;
-    if (syncState === 'PREPARED' || syncState === 'ERROR') refreshSummaries();
-    if (syncState === 'PREPARED') backfillPreviews();
-  });
+  // 리스너를 start보다 먼저 건다 — 초기 sync의 Room.timeline을 놓치지 않기 위해.
   state.client.onTimeline((event, meta) => {
     if (event.getType() !== 'm.room.message') return;
     appendTimeline(event, meta?.atStart === true);
@@ -250,9 +246,27 @@ async function connect(creds, { fresh = false } = {}) {
     if (!applyTypingEvent(state.typing, info)) return;
     if (info.roomId === state.currentRoomId) renderCurrent();
   });
-  startListTicker();
+  state.client.onTimelineReset?.((roomId) => {
+    const entry = state.rooms.get(roomId);
+    if (!entry) return;
+    entry.timeline = [];
+    hydrateFromSdk(roomId);
+    if (roomId === state.currentRoomId) renderCurrent();
+  });
   // 내 다른 기기(휴대폰 앱 등)가 이 기기 검증을 요청하면 수락 시트를 연다.
   state.client.onVerificationRequest((request) => openIncomingVerification(request));
+  state.client.start((syncState) => {
+    state.syncState = syncState === 'PREPARED' || syncState === 'SYNCING' ? 'live' : syncState === 'ERROR' ? 'error' : state.syncState;
+    if (syncState === 'PREPARED' || syncState === 'ERROR') refreshSummaries();
+    if (syncState === 'PREPARED') {
+      // 초기 sync 이벤트가 방 Map보다 먼저 오면 appendTimeline이 버려
+      // 최신이 빠진 채 scrollback만 남는 방이 생긴다 — SDK live timeline으로 채운다.
+      for (const roomId of state.rooms.keys()) hydrateFromSdk(roomId);
+      renderCurrent();
+      backfillPreviews();
+    }
+  });
+  startListTicker();
   installKeyboardShortcuts();
   installRoomListKeyboardNav();
   openRooms();
@@ -414,13 +428,42 @@ function timelineEntry(event, summary) {
   };
 }
 
+function ensureRoomEntry(roomId) {
+  let entry = state.rooms.get(roomId);
+  if (entry) return entry;
+  entry = { summary: { roomId, displayName: roomId, kind: 'other', memberCount: 0, agents: [] }, timeline: [], notice: null };
+  state.rooms.set(roomId, entry);
+  return entry;
+}
+
 function appendTimeline(event, atStart = false) {
   const roomId = event.getRoomId?.();
-  const entry0 = state.rooms.get(roomId);
-  if (!entry0) return;
+  if (!roomId) return;
+  // 초기 sync는 방 목록 갱신보다 Room.timeline이 먼저 올 수 있다 — 버리면 최신이 빠진다.
+  const entry0 = ensureRoomEntry(roomId);
   // 복호화 재시도는 같은 event id로 다시 전달된다 — 자리표시를 본문으로 치환한다.
   mergeTimelineEntry(entry0.timeline, timelineEntry(event, entry0.summary), { atStart });
   if (roomId === state.currentRoomId) renderCurrent();
+}
+
+/** SDK live timeline에 있는데 화면 복사본에 없는 메시지(놓친 초기 sync)를 채운다. */
+function hydrateFromSdk(roomId) {
+  if (!state.client || typeof state.client.liveTimelineEvents !== 'function') return;
+  const entry = state.rooms.get(roomId);
+  if (!entry) return;
+  const events = state.client.liveTimelineEvents(roomId);
+  if (!Array.isArray(events) || events.length === 0) return;
+  for (const event of events) {
+    if (event.getType?.() === 'm.room.message') {
+      mergeTimelineEntry(entry.timeline, timelineEntry(event, entry.summary));
+      continue;
+    }
+    if (typeof event.isEncrypted === 'function' && event.isEncrypted() && typeof event.once === 'function') {
+      event.once('Event.decrypted', () => {
+        if (event.getType?.() === 'm.room.message') appendTimeline(event, false);
+      });
+    }
+  }
 }
 
 const EARLIER_PAGE = 30;
@@ -486,6 +529,7 @@ function openRoom(roomId, { keyboard = false, touch = false, preview = false } =
   state.box.open = false;
   const entry = state.rooms.get(roomId);
   if (entry && entry.hasMore === undefined) entry.hasMore = state.client.canLoadEarlier(roomId);
+  hydrateFromSdk(roomId);
   renderCurrent();
   // 방을 열었는데 보이는 메시지가 적으면 이전 페이지를 한 번 자동으로 채운다.
   if (entry && entry.timeline.length < OPEN_MIN_MESSAGES && entry.hasMore !== false) loadEarlier(roomId);
