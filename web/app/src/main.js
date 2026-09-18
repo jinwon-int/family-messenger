@@ -63,7 +63,10 @@ function renderCurrent() {
       summaries: listSummaries(),
       syncState: state.syncState,
       banner: state.cryptoError,
-      onSelect: (room, event) => openRoom(room.roomId, { keyboard: event?.detail === 0 }),
+      onSelect: (room, event) => openRoom(room.roomId, {
+        keyboard: event?.detail === 0,
+        touch: event?.pointerType === 'touch',
+      }),
       onOpenVerification: openVerification,
       onOpenRecovery: openRecovery,
       onOpenMenu: openMenu,
@@ -431,7 +434,7 @@ function openRooms() {
   if (returning) restoreRoomListFocus({ force: true });
 }
 
-function openRoom(roomId, { keyboard = false } = {}) {
+function openRoom(roomId, { keyboard = false, touch = false } = {}) {
   saveRoomDraft();
   state.currentRoomId = roomId;
   state.listFocusRoomId = roomId;
@@ -449,7 +452,7 @@ function openRoom(roomId, { keyboard = false } = {}) {
   }
   // 키보드로 선택하면 터치 기기의 외장 키보드에서도 바로 작성한다.
   // 터치 탭은 화면 키보드를 자동으로 띄우지 않는다.
-  if (keyboard || window.matchMedia('(pointer: fine)').matches) {
+  if (keyboard || (!touch && window.matchMedia('(pointer: fine)').matches)) {
     input?.focus();
   }
 }

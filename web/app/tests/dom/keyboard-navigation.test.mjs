@@ -117,3 +117,11 @@ test('IME and open dialogs retain Escape; ordinary composer arrows remain text e
   key('Escape');
   assert.equal(document.querySelector('main.shell').dataset.view, 'list');
 });
+
+test('hybrid devices use the actual touch pointer instead of the primary fine-pointer setting', async (t) => {
+  const { window, document, buttons, key } = await app(t, { finePointer: true });
+  buttons()[0].dispatchEvent(new window.PointerEvent('click', { bubbles: true, detail: 1, pointerType: 'touch' }));
+  assert.notEqual(document.activeElement.tagName, 'TEXTAREA');
+  key('Escape'); key('Enter');
+  assert.equal(document.activeElement.tagName, 'TEXTAREA', 'hardware keyboard still focuses composer');
+});
