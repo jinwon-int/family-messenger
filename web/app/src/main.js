@@ -131,12 +131,17 @@ function renderCurrent() {
 const PREVIEW_LABELS = () => ({ photo: strings.media.photo, video: strings.media.video, file: strings.media.file, undecryptable: strings.chat.decryptFailedShort });
 const TIME_LABELS = () => ({ justNow: strings.rooms.justNow, minutesAgo: strings.rooms.minutesAgo, hoursAgo: strings.rooms.hoursAgo, yesterday: strings.rooms.yesterday });
 
-/** Room summaries decorated with the last message preview, newest activity first. */
+/** Room summaries decorated with the last message preview + typing label, newest activity first. */
 function listSummaries() {
   const decorated = state.summaries.map((summary) => {
     const entry = state.rooms.get(summary.roomId)?.timeline.at(-1) ?? null;
     const preview = lastMessagePreview(entry, PREVIEW_LABELS());
-    return { ...summary, lastMessage: preview ? { ...preview, ts: entry.ts ?? null, eventId: entry.eventId ?? null } : null };
+    return {
+      ...summary,
+      lastMessage: preview ? { ...preview, ts: entry.ts ?? null, eventId: entry.eventId ?? null } : null,
+      // 목록에서도 이름 옆 "입력중.." — 내 입력은 제외된다(typingNames).
+      typing: typingIndicator(typingNames(state.typing, summary.roomId, { myUserId: state.myUserId }), strings.chat.typing),
+    };
   });
   return sortByActivity(decorated);
 }
@@ -149,10 +154,10 @@ function startListTicker() {
   if (listTicker) return;
   listTicker = setInterval(() => {
     if (!state.client) return;
-    // 만료된 타이핑 표시를 걷는다 — 연결이 끊긴 사이 남은 표시가 헤더에 고착하지 않게.
+    // 만료된 타이핑 표시를 걷는다 — 연결이 끊긴 사이 남은 표시가 헤더·목록에 고착하지 않게.
     const prunedRooms = pruneTyping(state.typing);
     const signature = listSignature(listSummaries(), Date.now(), TIME_LABELS());
-    if (signature === lastListSignature && !(prunedRooms.length > 0 && prunedRooms.includes(state.currentRoomId))) return;
+    if (signature === lastListSignature && prunedRooms.length === 0) return;
     lastListSignature = signature;
     renderCurrent();
   }, 2000);
@@ -243,10 +248,10 @@ async function connect(creds, { fresh = false } = {}) {
   });
   // 새 방이 보이면 목록·초대를 즉시 갱신한다(세션 중 도착한 초대 포함).
   state.client.onRoomAdded(() => refreshSummaries());
-  // 다른 사람의 입력 중 상태(m.typing)가 바뀌면 방 헤더 표시를 갱신한다.
+  // 다른 사람의 입력 중 상태(m.typing)가 바뀌면 방 헤더와 목록 표시를 갱신한다.
   state.client.onTyping((info) => {
     if (!applyTypingEvent(state.typing, info)) return;
-    if (info.roomId === state.currentRoomId) renderCurrent();
+    renderCurrent();
   });
   startListTicker();
   // 내 다른 기기(휴대폰 앱 등)가 이 기기 검증을 요청하면 수락 시트를 연다.
