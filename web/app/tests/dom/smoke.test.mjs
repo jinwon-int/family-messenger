@@ -52,7 +52,8 @@ test('셸: 목록·대화·보관함이 그려지고 내 메시지는 data-me, �
   ui.renderShell(app, { list: listProps(), room: roomProps(), box: boxProps() });
   assert.equal(app.querySelectorAll('.room-item').length, 2);
   assert.equal(app.querySelector('.room-item[aria-current="true"] .room-name').textContent, '우리 가족');
-  assert.ok(app.querySelector('.room-item .preview').textContent.includes('팸봇: 안녕'));
+  assert.equal(app.querySelector('.room-item .preview').textContent, '안녕');
+  assert.equal(app.querySelector('.room-item .preview-sender'), null);
   assert.equal(app.querySelectorAll('li.bubble').length, 3);
   assert.equal(app.querySelector('li.bubble[data-me="true"] .body').textContent.includes('menu.jpg'), true);
   assert.ok(app.querySelector('li.bubble.kind-undecryptable .body').textContent.includes(strings.chat.decryptFailed));
