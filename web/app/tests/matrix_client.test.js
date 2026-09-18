@@ -52,6 +52,7 @@ class FakeClient extends EventEmitter {
     this.started = false;
     this.stopped = false;
     this.sent = [];
+    this.typingCalls = [];
     this.uploads = [];
     this.roomsById = new Map();
     this.directContent = {};
@@ -87,6 +88,11 @@ class FakeClient extends EventEmitter {
   async sendEvent(roomId, type, content) {
     this.sent.push({ roomId, type, content });
     return { event_id: `e${this.sent.length}` };
+  }
+
+  async sendTyping(roomId, isTyping, timeoutMs) {
+    this.typingCalls.push({ roomId, isTyping, timeoutMs });
+    return {};
   }
 
   async uploadContent(data, opts) {
@@ -747,4 +753,36 @@ test('취소 사유(코드·취소한 쪽)가 onCancelled로 전달된다', asyn
   assert.equal(reasons[0].code, 'm.key_mismatch');
   assert.equal(reasons[0].by, '@a:example.com');
   assert.equal(reasons[0].message, 'm.key_mismatch');
+});
+
+test('sendTyping: 방·상태·만료 창을 SDK로 전달하고, SDK에 없으면 조용히 건너뛴다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  await adapter.sendTyping('!r:example.com', true);
+  assert.deepEqual(adapter.client.typingCalls, [{ roomId: '!r:example.com', isTyping: true, timeoutMs: 30_000 }]);
+  await adapter.sendTyping('!r:example.com', false, 10_000);
+  assert.deepEqual(adapter.client.typingCalls[1], { roomId: '!r:example.com', isTyping: false, timeoutMs: 10_000 });
+  delete adapter.client.sendTyping;
+  adapter.client.sendTyping = undefined; // 프로토타입 메서드는 delete가 안 되므로 own property로 가린다
+  await adapter.sendTyping('!r:example.com', true); // throw하지 않아야 한다
+  assert.equal(adapter.client.typingCalls.length, 2);
+});
+
+test('onTyping: RoomMember.typing을 평탄화해 전달하고 구독 해제하면 멈춘다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  const seen = [];
+  const unsubscribe = adapter.onTyping((info) => seen.push(info));
+  const event = { getType: () => 'm.typing' };
+  adapter.client.emit('RoomMember.typing', event, { roomId: '!r:example.com', userId: '@mom:example.com', name: '엄마', typing: true });
+  adapter.client.emit('RoomMember.typing', event, { roomId: '!r:example.com', userId: '@mom:example.com', name: '엄마', typing: false });
+  // 멤버 정보가 없으면 콜백을 부르지 않는다.
+  adapter.client.emit('RoomMember.typing', event, null);
+  assert.deepEqual(seen, [
+    { roomId: '!r:example.com', userId: '@mom:example.com', name: '엄마', typing: true },
+    { roomId: '!r:example.com', userId: '@mom:example.com', name: '엄마', typing: false },
+  ]);
+  unsubscribe();
+  adapter.client.emit('RoomMember.typing', event, { roomId: '!r:example.com', userId: '@mom:example.com', name: '엄마', typing: true });
+  assert.equal(seen.length, 2);
 });

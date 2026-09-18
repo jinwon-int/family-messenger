@@ -166,3 +166,30 @@ test('설정 메뉴 항목이 연 시트는 메뉴 닫힘·전체 재렌더 뒤�
   assert.equal(app.querySelectorAll('main.shell').length, 1);
   closeMenu; opened?.();
 });
+
+test('입력 중 표시: 방 이름 옆 .typing이 그려지고, 없으면 숨긴다', () => {
+  const app = root();
+  ui.renderShell(app, { list: listProps(), room: { ...roomProps(), typing: '엄마님이 입력중입니다…' }, box: boxProps() });
+  const row = app.querySelector('.room-screen .appbar .title-row');
+  assert.ok(row, '제목 행(.title-row)이 있어야 한다');
+  assert.equal(row.querySelector('h2').textContent, '우리 가족');
+  assert.equal(row.querySelector('.typing').textContent, '엄마님이 입력중입니다…');
+  noNullText(app);
+  // 라벨이 빈 문자열이면 요소 자체가 없어야 한다(자리만 차지하지 않게).
+  const app2 = root();
+  ui.renderShell(app2, { list: listProps(), room: { ...roomProps(), typing: '' }, box: boxProps() });
+  assert.equal(app2.querySelector('.room-screen .appbar .typing'), null);
+});
+
+test('입력 중 전송: 작성창 입력 활동이 onTyping(true/false)으로 전달된다', () => {
+  const app = root();
+  const activity = [];
+  ui.renderShell(app, { list: listProps(), room: { ...roomProps(), onTyping: (hasText) => activity.push(hasText) }, box: boxProps() });
+  const ta = app.querySelector('.composer textarea[name=body]');
+  ta.value = '안녕';
+  ta.dispatchEvent(new window.Event('input', { bubbles: true }));
+  assert.deepEqual(activity, [true]);
+  ta.value = '';
+  ta.dispatchEvent(new window.Event('input', { bubbles: true }));
+  assert.deepEqual(activity, [true, false]);
+});
