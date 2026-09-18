@@ -41,7 +41,7 @@
     "wasm_budget_bytes": 134217728,
     "js_kdf_scratch_bytes": 268435456
   },
-  "remaining": "Aggregate DOM UI/orchestration and immutable asset packaging; human lifecycle/mobile/CF/backup/capacity/fleet acceptance before Yukson cutover. No data/key import, reset, repin or silent re-encryption.",
+  "remaining": "Aggregate DOM UI/orchestration and immutable asset packaging; human lifecycle/mobile/CF/backup/capacity/fleet acceptance before production-host cutover. No data/key import, reset, repin or silent re-encryption.",
   "fixed_finding": "Low: a corrupted ready source with reversed pin order allocated a target whose preparation parser then denied. cf38122 rejects noncanonical order/distinctness before allocation; source remains unchanged.",
   "fixed_runtime_head": "cf3812200cab89111988f480fbbb5ff82c246a4a",
   "independent_before_fix": {

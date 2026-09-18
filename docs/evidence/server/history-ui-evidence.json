@@ -1,5 +1,5 @@
 {
-  "scope": "Compiled synthetic read-only history UI; no human recovery/CF/Yukson activation",
+  "scope": "Compiled synthetic read-only history UI; no human recovery/CF/production-host activation",
   "profile": {
     "version": 3,
     "worker_state": 4,

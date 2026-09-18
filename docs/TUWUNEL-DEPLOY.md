@@ -34,7 +34,7 @@ install -m 0640 -o root -g tuwunel deploy/tuwunel/tuwunel.toml.example /etc/tuwu
 # server_name, well_known.client 채우기. server_name은 나중에 바꿀 수 없다.
 python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > /etc/tuwunel/registration_token
 chown root:tuwunel /etc/tuwunel/registration_token && chmod 0640 /etc/tuwunel/registration_token  # 값은 어디에도 기록하지 않는다
-# [2026-09-15 yukson 실측] LoadCredential(/run/credentials/...)은 서비스 정지 시 사라져 복원 드릴의
+# [2026-09-15 운영 호스트 실측] LoadCredential(/run/credentials/...)은 서비스 정지 시 사라져 복원 드릴의
 # 원샷 복원이 실패한다 — 서비스 사용자가 직접 읽는 정적 경로를 쓴다(소유 root:tuwunel 0640).
 install -m 0644 deploy/tuwunel/tuwunel.service /etc/systemd/system/tuwunel.service
 systemctl daemon-reload && systemctl enable --now tuwunel
@@ -88,4 +88,4 @@ URL 미리보기 허용목록 비움, `ip_source="cf_connecting_ip"`(미설정 �
 - 릴리스 체크섬·서명 미공개 → 해시 고정 + deb↔zst 교차 확인을 릴리스마다 반복.
 - CF 요청 본문 100 MB 한도 = `max_request_size`와 같은 경계 → 터널 경유 대용량 실측 필수.
 - 서버 계정명이 `@conduit:<server_name>`로 표시됨 → 웹 화면에서 표시명 처리(#95).
-- 유휴 스레드 600여 개는 12 vCPU 호스트 측정값 → 저사양 호스트 재측정.
+- 유휴 스레드 600여 개는 고성능 호스트 측정값 → 저사양 호스트 재측정.

@@ -27,7 +27,7 @@ const timeline = [
   { eventId: '$e1', name: '아빠', isMe: false, kind: 'text', body: '저녁 먹자', ts: Date.now() - 60_000 },
   { eventId: '$e2', name: '나', isMe: true, kind: 'photo', body: 'menu.jpg', meta: '2.4 MB', ts: Date.now() },
   // main.js timelineEntry가 복호화 실패 본문을 strings.chat.decryptFailed로 채운다 — ui는 body를 그대로 그린다.
-  { eventId: '$e3', name: '정인', isMe: false, kind: 'undecryptable', body: strings.chat.decryptFailed, ts: Date.now() },
+  { eventId: '$e3', name: '홍길동', isMe: false, kind: 'undecryptable', body: strings.chat.decryptFailed, ts: Date.now() },
 ];
 const listProps = () => ({ summaries: rooms, syncState: 'live', onSelect() {}, onOpenVerification() {}, onOpenRecovery() {}, onOpenMenu() {}, invites: [{ roomId: '!i:x', displayName: '여행', kind: 'family', memberCount: 3, agentCount: 1, requiresAiConsent: true, inviterName: '아빠' }], inviteHandlers: { isAiConsentAcknowledged: () => false, onAiConsentChange() {}, onAccept() {}, onDecline() {} } });
 const roomProps = () => ({ room: rooms[0], timeline, onSend() {}, onAttach() {}, onBack() {}, hasMore: true, onLoadEarlier() {} });
@@ -181,15 +181,14 @@ test('입력 중 표시: 방 이름 옆 .typing이 그려지고, 없으면 숨�
   assert.equal(app2.querySelector('.room-screen .appbar .typing'), null);
 });
 
-test('입력 중 전송: 작성창 입력 활동이 onTyping(true/false)으로 전달된다', () => {
+test('입력 중 전송: 실제 입력만 onTyping으로 전달하고 초안 복원 같은 스크립트 이벤트는 걸러낸다', () => {
   const app = root();
   const activity = [];
   ui.renderShell(app, { list: listProps(), room: { ...roomProps(), onTyping: (hasText) => activity.push(hasText) }, box: boxProps() });
   const ta = app.querySelector('.composer textarea[name=body]');
+  // 스크립트가 만든 input 이벤트(isTrusted=false)는 초안 복원(#160) 같은 프로그램적 갱신이다.
+  // 이 경로를 타이핑으로 치면 방을 열기만 해도 상대에게 "입력중"이 뜬다.
   ta.value = '안녕';
   ta.dispatchEvent(new window.Event('input', { bubbles: true }));
-  assert.deepEqual(activity, [true]);
-  ta.value = '';
-  ta.dispatchEvent(new window.Event('input', { bubbles: true }));
-  assert.deepEqual(activity, [true, false]);
+  assert.deepEqual(activity, [], '프로그램적 input 이벤트는 타이핑으로 치지 않는다');
 });

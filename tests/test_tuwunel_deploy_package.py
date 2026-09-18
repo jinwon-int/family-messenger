@@ -49,7 +49,7 @@ class TuwunelConfigExampleTest(unittest.TestCase):
         self.assertFalse(self.cfg["allow_guest_registration"])
         self.assertFalse(self.cfg["allow_federation"])
         self.assertTrue(self.cfg["allow_registration"])
-        # [2026-09-15 yukson 실측] LoadCredential 경로는 서비스 정지 시 사라져 복원 드릴 원샷이
+        # [2026-09-15 운영 호스트 실측] LoadCredential 경로는 서비스 정지 시 사라져 복원 드릴 원샷이
         # 실패하므로, 서비스 사용자가 직접 읽는 정적 경로(root:tuwunel 0640)를 쓴다.
         self.assertEqual(self.cfg["registration_token_file"], "/etc/tuwunel/registration_token")
         self.assertTrue(self.cfg["allow_encryption"])

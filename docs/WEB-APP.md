@@ -31,6 +31,7 @@
   라벨과 용량·시각을 함께 보인다. 시트(기기 검증·복구 키)는 휴대폰에서 하단 시트, 데스크톱에서 중앙 대화상자다.
 - 같은 방을 다시 그릴 때 `renderShell`은 목록·헤더·타임라인·보관함만 부분 교체하고 **작성창(`composer-wrap`)은 그대로 둔다** — 요소를 교체하고 값을 다시 넣으면 한글 IME 조합이 끊긴다(자모 분리·깜빡임, 2026-09-17). 방을 바꿀 때만 전체 재구성.
 - 조건부 자식은 `el()`/`setChildren()`을 거쳐야 한다(맨 `replaceChildren(null)`은 "null" 글자를 그린다 — 정적 시험이 막는다).
+- 대화목록은 Page Up/Page Down으로 이전/다음 항목에 포커스를 옮기고, Enter로 방을 열어 바로 작성창에 커서를 둔다(roving focus, `src/keyboard.js` `listPageMove`). Home은 작성 중인 글을 유지하며 목록의 원래 방으로 돌아간다. 목록은 2초 갱신마다 갈아끊워지므로 포커스가 body로 떨어졌을 때만 마지막 위치로 되살린다(`restoreRoomListFocus`) — 시트가 열려 있거나 글자를 쓰는 중에는 끓어쓰지 않는다.
 - 번들·스타일·boot 스크립트는 빌드가 **내용 해시 파일명**(`main-XXXXXXXX.js`, `styles-xxxxxxxx.css`, `boot-xxxxxxxx.js`)으로 내보내고 `index.html`·`sw.js`(캐시 이름 = 빌드 해시)를 다시 쓴다. 소스에는 `?v=` 버전을 두지 않는다(정적 시험이 막는다). 문서·`config.json`·매니페스트는 네트워크 우선, 해시 자산·wasm은 캐시 우선.
 - `serve.mjs`가 CSP(`default-src 'self'`, `script-src 'self' 'wasm-unsafe-eval'`, `connect-src https: wss:`, `frame-src https:`, `frame-ancestors 'none'`)·HSTS·nosniff·Referrer-Policy·Permissions-Policy를 붙인다. 인라인 `<script>`·`style=` 속성은 쓰지 않는다(`boot.js` 분리, 클래스 사용).
 

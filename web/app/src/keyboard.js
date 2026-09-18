@@ -14,15 +14,30 @@ export function composerKeyAction({ key, shiftKey, isComposing } = {}) {
 }
 
 // Enter 활성화가 의미 있는 대화형 요소 — 이 위의 Enter는 뺏지 않는다.
+/**
+ * 대화목록 Page Up/Page Down 판정. 방 목록에서 포커스를 한 항목씩 옮긴다(roving focus).
+ * 포커스된 항목이 없거나 범위를 벗났으면 Page Down은 첫 항목, Page Up은 마지막 항목에서 시작한다.
+ * @param {{key?: string, count?: number, currentIndex?: number}} input
+ * @returns {number|null} 옮길 항목 index — Page Up/Page Down 키가 아니거나 목록이 비었으면 null
+ */
+export function listPageMove({ key, count, currentIndex = -1 } = {}) {
+  if (key !== 'PageDown' && key !== 'PageUp') return null;
+  if (!Number.isInteger(count) || count <= 0) return null;
+  const delta = key === 'PageDown' ? 1 : -1;
+  const from = Number.isInteger(currentIndex) && currentIndex >= 0 && currentIndex < count ? currentIndex : -1;
+  if (from === -1) return delta > 0 ? 0 : count - 1;
+  return Math.min(count - 1, Math.max(0, from + delta));
+}
+
 const INTERACTIVE = new Set(['INPUT', 'TEXTAREA', 'BUTTON', 'A', 'SELECT', 'LABEL', 'SUMMARY']);
 
 /**
  * 방 화면 전역 keydown 판정.
- * 대화형 요소 밖 Enter=작성창으로 커서 이동, Esc=방 목록으로 뒤로가기.
+ * 대화형 요소 밖 Enter=작성창으로 커서 이동, Home=방 목록으로 뒤로가기.
  * @returns {'focus-composer'|'back'|null}
  */
 export function viewKeyAction({ key, target } = {}) {
-  if (key === 'Escape') return 'back';
+  if (key === 'Home') return 'back';
   if (key !== 'Enter') return null;
   const tag = target?.tagName ?? '';
   if (INTERACTIVE.has(tag) || target?.isContentEditable === true) return null;

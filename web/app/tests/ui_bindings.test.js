@@ -128,3 +128,13 @@ test('main.js는 로그인 시 저장소를 지우지 않고, 불일치·손상 
   assert.match(main, /if \(isStoreMismatch\(error\) \|\| isBrokenStore\(error\)\)/);
   assert.doesNotMatch(main, /if \(fresh\) \{\s*try \{\s*await client\.resetLocalStores/, '로그인 시 저장소 삭제는 blocked 경쟁을 만든다 — 기기별 이름으로 대체');
 });
+
+// 타이핑 표시 정합성(2026-09-18): 초안 복원이 만드는 프로그램적 input 이벤트(isTrusted=false)를
+// 타이핑으로 치면 방을 열기만 해도 상대에게 "입력중입니다"가 떴다. 가드는 onTyping 호출보다 앞에 있어야 한다.
+test('composer oninput은 isTrusted 가드 뒤에서만 onTyping을 부른다', () => {
+  const source = readFileSync(join(SRC, 'ui.js'), 'utf-8');
+  const guardAt = source.indexOf('if (event.isTrusted)');
+  const callAt = source.indexOf('onTyping?.(');
+  assert.ok(guardAt >= 0, 'isTrusted 가드가 있어야 한다');
+  assert.ok(callAt > guardAt, 'onTyping 호출은 가드 뒤에 있어야 한다');
+});

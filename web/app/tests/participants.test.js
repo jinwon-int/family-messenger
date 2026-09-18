@@ -31,10 +31,10 @@ test('참여자 분리는 중복 없이 순서를 유지한다', () => {
 });
 
 test('shortHandle: 표시 이름이 없어 MXID로 떨어진 이름은 @localpart로 줄인다', () => {
-  assert.equal(shortHandle('@jungin:matrix.seoyoon-family.com'), '@jungin');
+  assert.equal(shortHandle('@gildong:example.org'), '@gildong');
   assert.equal(shortHandle('@fam.bot_1:example.com:8448'), '@fam.bot_1');
-  assert.equal(shortHandle('정인'), '정인'); // 실제 표시 이름은 그대로
-  assert.equal(shortHandle('@jungin'), '@jungin'); // 이미 짧은 손잡이
+  assert.equal(shortHandle('홍길동'), '홍길동'); // 실제 표시 이름은 그대로
+  assert.equal(shortHandle('@gildong'), '@gildong'); // 이미 짧은 손잡이
   assert.equal(shortHandle('email@example.com'), 'email@example.com'); // MXID가 아니면 손대지 않는다
   assert.equal(shortHandle(null), '');
 });

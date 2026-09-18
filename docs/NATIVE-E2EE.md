@@ -253,7 +253,7 @@ files, snapshots and pending IDs; no silent migration or reinterpretation.
 
 | Observer | Intended visibility after implementation |
 | --- | --- |
-| Yukson delivery host, proxy/CF | Account admission, room/device routing, IP/timing, approximate sizes, ciphertext and access records; not message/file plaintext or device private keys merely by storing/forwarding traffic. |
+| Delivery host, proxy/CF | Account admission, room/device routing, IP/timing, approximate sizes, ciphertext and access records; not message/file plaintext or device private keys merely by storing/forwarding traffic. |
 | Approved family devices | Plaintext of groups/epochs they join; saved content remains accessible after removal. |
 | Fleet node explicitly invited to a work room | Plaintext needed for approved work, through that node's own crypto device. Its AI provider can receive task content under the existing runtime's policy. |
 | Other fleet nodes or bots | No automatic family-room membership, key distribution or plaintext access. |
@@ -292,7 +292,7 @@ Telegram remains the fallback throughout qualification.
    exact-byte lost-response retries and encrypted file limits/metadata tests.
 4. **Human-use acceptance.** Actual CF gate and enrollment/refresh, E2EE recovery/
    backup, mobile browser and release-integrity acceptance, then an explicitly
-   approved pilot. Separate Seoseo work-room binding/owner approval/cancel proof
+   approved pilot. Separate AI-node work-room binding/owner approval/cancel proof
    precedes the remaining 11-node rollout and eventual cutover.
 
 These are acceptance gates, not implemented features or new approval requests.

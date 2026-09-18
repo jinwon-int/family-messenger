@@ -9,7 +9,7 @@ test('lastMessagePreview: 텍스트는 한 줄로, 첨부는 종류 라벨, 복�
   assert.deepEqual(lastMessagePreview({ kind: 'text', name: '엄마', body: '저녁\n먹자  ' }, LABELS), { text: '저녁 먹자', sender: '엄마' });
   assert.deepEqual(lastMessagePreview({ kind: 'photo', name: '아빠', body: 'menu.jpg' }, LABELS), { text: '[사진] menu.jpg', sender: '아빠' });
   assert.equal(lastMessagePreview({ kind: 'file', name: '나', body: 'a.pdf' }, LABELS).text, '[파일] a.pdf');
-  assert.deepEqual(lastMessagePreview({ kind: 'undecryptable', name: '정인', body: '...' }, LABELS), { text: '열 수 없는 메시지', sender: '정인' });
+  assert.deepEqual(lastMessagePreview({ kind: 'undecryptable', name: '홍길동', body: '...' }, LABELS), { text: '열 수 없는 메시지', sender: '홍길동' });
   assert.equal(lastMessagePreview({ kind: 'text', name: '나', body: '   ' }, LABELS), null);
   assert.equal(lastMessagePreview(null, LABELS), null);
 });

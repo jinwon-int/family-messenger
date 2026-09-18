@@ -197,7 +197,7 @@ function roomListItem(room, onSelect, active = false) {
     {},
     el(
       'button',
-      { type: 'button', class: 'room-item', 'aria-current': active ? 'true' : null, onclick: () => onSelect(room) },
+      { type: 'button', class: 'room-item', 'data-room-id': room.roomId, 'aria-current': active ? 'true' : null, onclick: (event) => onSelect(room, event) },
       el('span', { class: `avatar kind-${room.kind}`, 'aria-hidden': 'true' }, initial(room.displayName || strings.rooms.unnamed)),
       el(
         'span',
@@ -431,7 +431,8 @@ function buildRoom({ room, timeline, onSend, onAttach, onTyping = null, onBack, 
         input.style.height = 'auto';
         input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
         // 입력 활동을 알린다(main.js가 서버 타이핑 알림으로 변환 — m.typing).
-        onTyping?.(input.value.trim().length > 0);
+        // 프로그램적 input 이벤트(초안 복원 등)는 실제 타이핑이 아니므로 isTrusted로 걸러낸다.
+        if (event.isTrusted) onTyping?.(input.value.trim().length > 0);
       },
     }),
     el('button', { type: 'submit', class: 'primary' }, strings.chat.send),
