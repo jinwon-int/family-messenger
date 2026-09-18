@@ -27,7 +27,7 @@ const timeline = [
   { eventId: '$e1', name: '아빠', isMe: false, kind: 'text', body: '저녁 먹자', ts: Date.now() - 60_000 },
   { eventId: '$e2', name: '나', isMe: true, kind: 'photo', body: 'menu.jpg', meta: '2.4 MB', ts: Date.now() },
   // main.js timelineEntry가 복호화 실패 본문을 strings.chat.decryptFailed로 채운다 — ui는 body를 그대로 그린다.
-  { eventId: '$e3', name: '정인', isMe: false, kind: 'undecryptable', body: strings.chat.decryptFailed, ts: Date.now() },
+  { eventId: '$e3', name: '홍길동', isMe: false, kind: 'undecryptable', body: strings.chat.decryptFailed, ts: Date.now() },
 ];
 const listProps = () => ({ summaries: rooms, syncState: 'live', onSelect() {}, onOpenVerification() {}, onOpenRecovery() {}, onOpenMenu() {}, invites: [{ roomId: '!i:x', displayName: '여행', kind: 'family', memberCount: 3, agentCount: 1, requiresAiConsent: true, inviterName: '아빠' }], inviteHandlers: { isAiConsentAcknowledged: () => false, onAiConsentChange() {}, onAccept() {}, onDecline() {} } });
 const roomProps = () => ({ room: rooms[0], timeline, onSend() {}, onAttach() {}, onBack() {}, hasMore: true, onLoadEarlier() {} });
