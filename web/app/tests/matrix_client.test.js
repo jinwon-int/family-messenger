@@ -649,6 +649,26 @@ test('loadEarlier/canLoadEarlier: scrollback으로 이전 페이지를 받고 �
   assert.equal(adapter.canLoadEarlier('!missing:example.com'), false);
 });
 
+test('liveTimelineEvents: SDK live timeline 이벤트를 돌려주고, 없는 방은 빈 배열이다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  const events = [{ getType: () => 'm.room.message' }];
+  adapter.client.addRoom({ roomId: '!r:example.com', getLiveTimeline: () => ({ getEvents: () => events }) });
+  assert.equal(adapter.liveTimelineEvents('!r:example.com'), events);
+  assert.deepEqual(adapter.liveTimelineEvents('!missing:example.com'), []);
+});
+
+test('onTimelineReset: Room.timelineReset의 방 id를 전달하고 해제된다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  const seen = [];
+  const off = adapter.onTimelineReset((roomId) => seen.push(roomId));
+  adapter.client.emit('Room.timelineReset', { roomId: '!r:example.com' });
+  off();
+  adapter.client.emit('Room.timelineReset', { roomId: '!x:example.com' });
+  assert.deepEqual(seen, ['!r:example.com']);
+});
+
 test('listDevices: 내 기기 목록에 서명 상태·현재 기기 표식을 붙이고 현재 기기를 앞에 둔다', async () => {
   const sdk = fakeSdk();
   const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
