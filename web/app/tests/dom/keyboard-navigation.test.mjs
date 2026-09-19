@@ -19,7 +19,7 @@ const bundle = await build({
   } }],
 });
 
-async function app(t, { finePointer = false, split = false } = {}) {
+async function app(t, { finePointer = false, split = false, liveEvents = {} } = {}) {
   const window = new Window({ url: 'https://chat.example.test/' });
   t.after(() => window.happyDOM.abort());
   const { document } = window;
@@ -42,6 +42,7 @@ async function app(t, { finePointer = false, split = false } = {}) {
     onRoomAdded(callback) { refresh = callback; },
     onTyping() {}, roomSummaries: () => summaries, inviteSummaries: () => [], canLoadEarlier: () => false,
     roomMemberHandles: () => [], sendText: async (...args) => sent.push(args),
+    liveTimelineEvents: (roomId) => liveEvents[roomId] ?? [],
   };
   saveSession({ homeserverUrl: 'https://matrix.example.test', userId: '@reader:example.test', deviceId: 'TEST', accessToken: 'synthetic' }, {
     persistent: window.localStorage, volatile: window.sessionStorage,
@@ -159,4 +160,19 @@ test('hybrid devices use the actual touch pointer instead of the primary fine-po
   assert.notEqual(document.activeElement.tagName, 'TEXTAREA');
   key('Home'); key('Enter');
   assert.equal(document.activeElement.tagName, 'TEXTAREA', 'hardware keyboard still focuses composer');
+});
+
+test('Room.timeline을 놓쳐도 방을 열면 SDK live timeline의 최신 메시지를 그린다', async (t) => {
+  const latest = {
+    getType: () => 'm.room.message',
+    getRoomId: () => '!a:example.test',
+    getId: () => '$latest',
+    getSender: () => '@other:example.test',
+    getContent: () => ({ body: '놓친 최신 메시지', msgtype: 'm.text' }),
+    getTs: () => Date.now(),
+    sender: { name: '상대' },
+  };
+  const { window, document, buttons } = await app(t, { liveEvents: { '!a:example.test': [latest] } });
+  buttons()[0].dispatchEvent(new window.MouseEvent('click', { bubbles: true, detail: 1 }));
+  assert.match(document.querySelector('.timeline')?.textContent ?? '', /놓친 최신 메시지/);
 });
