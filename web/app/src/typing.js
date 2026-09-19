@@ -97,14 +97,13 @@ export function typingNames(typingByRoom, roomId, { myUserId = null, now = Date.
 }
 
 /**
- * Header label for a room's typing state ('' = hide the indicator).
- * labels: {one: (name) => string, many: (names) => string} — 문구 콜백은 strings 모듈에서 주입한다.
+ * Header label for a room's typing state ('' = hide the indicator). The copy
+ * is a single static phrase (오너 지정 "입력중.."); the string table is the one place for copy.
  * @param {string[]} names
- * @param {{one: (name: string) => string, many: (names: string[]) => string}} labels
+ * @param {string} label
  * @returns {string}
  */
-export function typingIndicator(names, labels) {
+export function typingIndicator(names, label) {
   if (!Array.isArray(names) || names.length === 0) return '';
-  if (names.length === 1) return labels.one(names[0]);
-  return labels.many(names);
+  return label;
 }

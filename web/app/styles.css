@@ -252,10 +252,11 @@ button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
 }
 .appbar .titles { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0; }
 .appbar h1, .appbar h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* 방 이름과 같은 행에 붙는 "입력중입니다" 표시(m.typing) — 좁은 화면에서도 보인다. */
+/* 방 이름과 같은 행에 붙는 표시용 행(머리글) */
 .appbar .title-row { display: flex; align-items: baseline; gap: var(--space-2); min-width: 0; }
 .appbar .title-row h2 { min-width: 0; }
-.appbar .typing { flex: none; color: var(--brand); font-size: var(--text-xs); font-weight: 600; white-space: nowrap; animation: typing-pulse 1.4s ease-in-out infinite; }
+/* 입력 중 표시 — 방 머리글·대화목록 공용. 브랜드색 맥박 애니메이션. */
+.typing { flex: none; color: var(--brand); font-size: var(--text-xs); font-weight: 600; white-space: nowrap; animation: typing-pulse 1.4s ease-in-out infinite; }
 @keyframes typing-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
 .appbar .subtitle { color: var(--text-2); font-size: var(--text-xs); line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .appbar .subtitle.lock::before { content: "🔒 "; }

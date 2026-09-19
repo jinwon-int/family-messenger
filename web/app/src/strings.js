@@ -69,8 +69,7 @@ export const strings = {
     historyLoading: '이전 대화를 불러오는 중…',
     loadEarlier: '이전 대화 불러오기',
     historyStart: '대화의 처음입니다',
-    typingOne: (name) => `${name}님이 입력중입니다…`,
-    typingMany: (names) => `${names.join(', ')}님이 입력중입니다…`,
+    typing: '입력중..',
   },
   participants: {
     aiBadge: 'AI',

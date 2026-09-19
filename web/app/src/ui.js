@@ -206,6 +206,8 @@ function roomListItem(room, onSelect, active = false) {
           'span',
           { class: 'room-head' },
           el('span', { class: 'room-name' }, room.displayName || strings.rooms.unnamed),
+          // 이름 옆 "입력중.." — 다른 방의 입력도 보이므로 방별 typing 라벨(main.js가 계산).
+          room.typing ? el('span', { class: 'typing', role: 'status' }, room.typing) : null,
           agentCount > 0 ? el('span', { class: 'pill ai', title: strings.participants.aiTitle }, strings.participants.aiBadge) : null,
           when ? el('span', { class: 'when' }, when) : null,
         ),
