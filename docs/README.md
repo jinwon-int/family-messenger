@@ -3,15 +3,16 @@
 > **보관 코드 위치(2026-09-21)**: `archive/native-mls/`와 `archive/experiments/`는 결정 E로 main에 복원됐다(빌드·기본 CI 제외). 개요는 [archive/README.md](../archive/README.md). 퇴역 Synapse 스택은 태그 [`archive-frozen-20260917`](https://github.com/jinwon-int/family-messenger/tree/archive-frozen-20260917/archive/synapse-stack)에만 있다.
 
 `docs/`의 모든 파일을 한 줄씩 적는다. 상태는 **현행**(지금 따르는 문서), **이력**(결정 과정·수용 기준으로
-보존, 일부 내용은 대체됨), **보관**(동결된 네이티브 MLS 트랙의 증거·기록)이다.
+보존, 일부 내용은 대체됨), **보관**(네이티브 MLS 트랙의 단계별 합성 증거·기록)이다.
 문서끼리 어긋나면 [이슈 #92](https://github.com/jinwon-int/family-messenger/issues/92)가 우선한다.
 
 ## 먼저 볼 것
 
-- [DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md](DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md) — 결정 D: 전달·암호화는 Matrix 스택(단일 바이너리 홈서버 + `matrix-sdk-crypto`), 화면·AI 층은 직접. 대안 비교·대가·홈서버 평가 결과(Tuwunel 1.9.1 확정)·코드 처분표 — **현행**
+- [DECISION-2026-09-21-MATRIX-PLUS-NATIVE-E2EE.md](DECISION-2026-09-21-MATRIX-PLUS-NATIVE-E2EE.md) — 결정 E: Matrix는 운영 전달층으로 유지, 독자 E2EE는 병행 개발. 해동·CI·컷오버는 이 문서의 범위 밖 — **현행**
+- [DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md](DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md) — 결정 D: 운영 전달·암호화는 Matrix 스택(단일 바이너리 홈서버 + `matrix-sdk-crypto`), 화면·AI 층은 직접. 대안 비교·대가·홈서버 평가 결과(Tuwunel 1.9.1 확정)·코드 처분표. 개발 동결 문장은 결정 E가 대체 — **현행**(운영 전달층)
 - [이슈 #92](https://github.com/jinwon-int/family-messenger/issues/92) — 로드맵 진행 추적과 결정에 이른 대화 기록. 문서와 어긋나면 #92가 우선 — **현행**
-- [ROADMAP.md](ROADMAP.md) — 개발 순서 0~5단계와 단계별 KPI 게이트. 0단계 "멈추고 정리"가 진행 중 — **현행**
-- [VISION.md](VISION.md) — 제품 비전, 원칙 6개, 첫 버전 수용 기준(결정 D로 변경 없음) — **현행**
+- [ROADMAP.md](ROADMAP.md) — Matrix 제품 순서 0~4단계와 KPI, 5단계 독자 E2EE 병행 — **현행**
+- [VISION.md](VISION.md) — 제품 비전, 원칙 6개, 첫 버전 수용 기준(결정 D·E로 변경 없음) — **현행**
 
 ## 운영·의존성
 
@@ -29,10 +30,10 @@
 - [FLEET-WORKER.md](FLEET-WORKER.md) — `fleet_worker.py`: 노드 실행부의 상주 JSON 포트(ccc-node AgentRuntime, 현재 Codex read-only 시험 바인딩) — **현행**
 - [FLEET-REMOTE.md](FLEET-REMOTE.md) — `fleet_remote.py`: 운영 서버에서 노드 실행부를 SSH로 호출하는 guardian·heartbeat·종료 확인 계약 — **현행**
 
-## 네이티브 트랙 설계 — 결정 D로 전달층에서는 폐기, 위협 모델·기기 정책·수용 기준은 인수검사 기준으로 유지
+## 네이티브 트랙 설계 — 운영 전달층은 Matrix(결정 D). 개발은 병행(결정 E). 수용 기준은 유효
 
-- [OWN-SYSTEM.md](OWN-SYSTEM.md) — 2026-09-08 "직접 만드는 가족 메신저" 방향과 구현 계약. "서버·전달·암호화를 직접 만든다" 부분은 결정 D로 대체됨 — **이력**
-- [NATIVE-E2EE.md](NATIVE-E2EE.md) — OpenMLS 기반 네이티브 E2EE 타당성·통합 결정. 통합 경로는 대체됐고 위협 모델·수용 기준은 유효 — **이력**
+- [OWN-SYSTEM.md](OWN-SYSTEM.md) — 2026-09-08 "직접 만드는 가족 메신저" 방향과 구현 계약. 운영 전달·암호화 문장은 결정 D로 대체됨 — **이력**
+- [NATIVE-E2EE.md](NATIVE-E2EE.md) — OpenMLS 기반 네이티브 E2EE 타당성·통합. 운영 투입 경로는 결정 D가 대체. 위협 모델·수용 기준은 병행 트랙의 인수검사 — **현행**(수용 기준) / 운영 투입은 **이력**
 - [DEVICE-KEY-CUSTODY.md](DEVICE-KEY-CUSTODY.md) — 기기 키 보관·복구 후보 설계(passkey 보호 아카이브 검토). 네이티브 트랙 전제이며 사람 사용 활성화 아님 — **이력**
 - [DEVICE-LIFECYCLE.md](DEVICE-LIFECYCLE.md) — 분실·교체 기기 자격·successor 절차 설계. 참조하는 서버 코드는 `archive/native-mls/`에 있음 — **이력**
 
