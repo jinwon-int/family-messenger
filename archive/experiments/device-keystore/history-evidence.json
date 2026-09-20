@@ -1,0 +1,73 @@
+{
+  "status": "isolated read-only encrypted history recovery, not active-device restore or human deployment",
+  "reviewed_runtime_head": "1b14ae3c222b35dfc42a8dd1425ea15b759381bc",
+  "independent_proof": "/root/work/family-history-review-6ec8848/artifacts/native-history-gl2knw70/verification.json",
+  "independent_proof_sha256": "4035d92395118a66cd4c286bd5eabc2e1bfbcf8aeaab5fac3de1f46639df2586",
+  "browser_checks": 36,
+  "browser": "151.0.7922.34",
+  "archive_bytes": 67879,
+  "export_total_ms": 2832.45,
+  "read_total_ms": [
+    3144.13,
+    3239.39,
+    3017.82,
+    2795.19,
+    2771.04,
+    2841.76,
+    637.06,
+    685.62,
+    789.14,
+    2795.28,
+    2839.62,
+    2771.01,
+    2834.26,
+    2724.07,
+    2858.53,
+    2666.99,
+    674.22,
+    735.1,
+    2924.73
+  ],
+  "max_observed_linear_bytes": 5570560,
+  "timing_scope": "whole worker boot/read/KDF/validation roundtrip; not isolated KDF or phone measurement",
+  "js_scrypt_scratch_bytes": 268435456,
+  "python_tests": 99,
+  "python_umasks": [
+    "022",
+    "077"
+  ],
+  "caller_fixture": "tests/test_history_client.py: frozen before/after ready, late result, terminal close, callback failure, oversized backing allocation, clone failure",
+  "independent_caller_fixes": "/root/work/family-history-review-6ec8848/artifacts/caller-fixed-verification.json",
+  "findings_fixed": [
+    {
+      "severity": "medium",
+      "finding": "Immutable caller input could throw during cleanup before worker termination or promise settlement",
+      "fix": "Clear only internal argument references; retirement completes despite consumer callback errors"
+    },
+    {
+      "severity": "low",
+      "finding": "A closed reader could start a worker after removal from lifecycle tracking",
+      "fix": "Make close terminal; no worker created on later read"
+    }
+  ],
+  "additional_hardening": "Bound full archive backing allocation before caller structured clone and reader parse",
+  "previous_author_proofs": [
+    "artifacts/native-history-ynjcugx0/verification.json",
+    "artifacts/native-history-bz408fve/verification.json"
+  ],
+  "production_cf_gate": false,
+  "active_device_restore": false,
+  "new_dependencies": 0,
+  "unchanged": [
+    "native provider/driver/UI/Go assets",
+    "age/sodium/OpenMLS versions",
+    "existing profiles and services"
+  ],
+  "remaining": [
+    "recovery UI/native packaging",
+    "device replacement and trust ceremony",
+    "mobile and actual CF account gate",
+    "server backup/restore",
+    "production capacity/group/fleet acceptance and Yukson cutover"
+  ]
+}

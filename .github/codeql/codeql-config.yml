@@ -1,0 +1,6 @@
+name: family-messenger
+# archive/ is the parallel native-E2EE tree (decision E). It is not compiled
+# into server/ or default CI. Exclude it so GHAS does not fail PRs that only
+# restore historical experiments.
+paths-ignore:
+  - archive/**

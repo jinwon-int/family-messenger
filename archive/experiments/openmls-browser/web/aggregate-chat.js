@@ -1,0 +1,98 @@
+// Isolated aggregate UI derived from our pinned chat.js. Old embedded assets stay unchanged.
+// Complete AggregateStore only; the separate generic admission experiment is not loaded.
+function serveAggregateChat(){
+const vault=true;
+const $=id=>document.getElementById(id),encoder=new TextEncoder(),decoder=new TextDecoder('utf-8',{fatal:true});
+let generation=0,current=null;const channel=vault?new BroadcastChannel('family-aggregate-ui-lock-v1'):null;const names={alice:'앨리스',bob:'밥'};
+const exact=(o,ks)=>o&&Object.getPrototypeOf(o)===Object.prototype&&Object.keys(o).sort().join(',')===ks.sort().join(',');
+const validName=x=>typeof x==='string'&&/^[a-zA-Z0-9_-]{1,64}$/.test(x);
+const hex=b=>Array.from(b,x=>x.toString(16).padStart(2,'0')).join('');
+const hash=async b=>hex(new Uint8Array(await crypto.subtle.digest('SHA-256',b)));
+const live=s=>!!s&&current===s&&s.generation===generation&&!s.dead;
+function check(s){if(!live(s))throw Error('stale');}
+function clearView(){$('prepare-password').value='';$('prepare-section').hidden=true;$('preparation-status').textContent='';if(vault)$('vault-password').value=''; $('text').value='';$('file').value='';$('alice-pin').value='';$('bob-pin').value=''; $('messages').replaceChildren();$('fingerprint').textContent='';$('fingerprint').removeAttribute('data-public-key');$('pending').textContent='';$('chat').hidden=true;$('device').hidden=true;$('send').disabled=true;$('join').disabled=true;$('retry').hidden=true; }
+function retire(s){if(!s)return;s.dead=true;s.state=null;clearTimeout(s.timer);clearTimeout(s.expiry);clearTimeout(s.bootTimer);s.bootReject?.(Error('retired'));s.bootReject=null;s.controller.abort();s.worker?.terminate();for(const pending of s.calls.values()){clearTimeout(pending.timer);pending.reject(Error('retired'));}s.calls.clear();for(const url of s.urls)URL.revokeObjectURL(url);s.urls.clear();}
+function fail(s){if(current!==s||s.dead)return;if(vault){lockView(true,'연결 또는 기기 확인이 필요합니다. 저장된 전송은 유지됩니다. 다시 잠금을 해제해 주세요.');return;}retire(s);clearView();$('identity').textContent='계정 확인 필요';$('status').textContent='연결 또는 기기 확인이 필요합니다. 저장된 전송은 유지됩니다. 다시 연결해 주세요.';}
+async function json(s,path,max=16384,options={}){check(s);let reader;const response=await fetch(path,{credentials:'same-origin',cache:'no-store',redirect:'error',signal:AbortSignal.any([s.controller.signal,AbortSignal.timeout(5000)]),...options,headers:{...(s.actor?{'X-Family-Actor':s.actor}:{}),...(options.headers||{})}});try{if(!response.ok)throw Error('admission');reader=response.body.getReader();let n=0,parts=[];for(;;){const {done,value}=await reader.read();if(done)break;n+=value.length;if(n>max)throw Error('limit');parts.push(value);}check(s);const bytes=new Uint8Array(n);let at=0;for(const part of parts){bytes.set(part,at);at+=part.length;}return {body:JSON.parse(decoder.decode(bytes)),actor:response.headers.get('X-Family-Actor')};}finally{if(reader)await reader.cancel().catch(()=>{});else await response.body?.cancel().catch(()=>{});}}
+function lockView(broadcast=true,message='잠겼습니다. 시험 비밀번호로 다시 열어 주세요.'){
+ ++generation;const previous=current;current=null;retire(previous);clearView();$('identity').textContent='계정 확인 전';$('status').textContent=message;if(broadcast&&channel)channel.postMessage('lock');
+}
+if(channel){channel.onmessage=()=>lockView(false);$('lock').addEventListener('click',()=>lockView());$('refresh').addEventListener('click',()=>{const s=current;if(live(s)&&s.state){clearTimeout(s.timer);s.timer=null;pump(s);}});}
+async function boot(s,path='/aggregate-native-worker.js'){s.worker=new Worker(path,{type:'module'});await new Promise((resolve,reject)=>{
+ s.bootReject=reject;s.bootTimer=setTimeout(()=>{reject(Error('boot'));fail(s);},10000);
+ s.worker.onmessage=({data})=>{if(!data||typeof data!=='object'){fail(s);return;}if(data.boot){clearTimeout(s.bootTimer);s.bootReject=null;resolve();return;}const pending=s.calls.get(data.id);if(!pending)return;s.calls.delete(data.id);clearTimeout(pending.timer);if(!live(s)||!data.ok){pending.reject(Error('worker'));fail(s);}else pending.resolve(data.result);};
+ s.worker.onerror=s.worker.onmessageerror=()=>{reject(Error('worker'));fail(s);};});check(s);}
+function call(s,method,argument=null){check(s);return new Promise((resolve,reject)=>{const id=++s.serial;const timer=setTimeout(()=>{s.calls.delete(id);reject(Error('deadline'));fail(s);},vault?30000:12000);s.calls.set(id,{resolve,reject,timer});try{s.worker.postMessage({id,method,argument});}catch{fail(s);}});}
+function draftKey(s){return 'family-aggregate-ui-draft-v1:'+s.actor+':'+s.room;}
+function draft(s){const raw=sessionStorage.getItem(draftKey(s));if(raw===null)return null;if(raw.length>1024)throw Error('draft');const d=JSON.parse(raw);if(!exact(d,['version','actor','room','id','type','size','sha256'])||d.version!==1||d.actor!==s.actor||d.room!==s.room||!validName(d.id)||!d.id.startsWith('app-')||!['text','file'].includes(d.type)||!Number.isInteger(d.size)||d.size<1||d.size>8192||!/^[a-f0-9]{64}$/.test(d.sha256))throw Error('draft');return d;}
+function decode(payload){if(typeof payload!=='string'||payload.length>10924)throw Error('size');const b=Uint8Array.from(atob(payload),c=>c.charCodeAt(0));if(!b.length||b.length>8192||btoa(String.fromCharCode(...b))!==payload)throw Error('payload');return b;}
+function render(s,state){check(s);if(!Array.isArray(state.messages)||state.messages.length>32)throw Error('state');s.state=state;let d=draft(s);if(d&&state.messages.some(m=>m.client_id===d.id&&m.sender_actor===s.actor)){sessionStorage.removeItem(draftKey(s));d=null;$('text').value='';$('file').value='';}
+ $('prepare-section').hidden=s.room!=='family'||!state.pins||state.phase!=='ready';$('prepare-room').disabled=s.busy;
+ $('device').hidden=false;$('pin-form').hidden=!!state.pins;$('pin-note').textContent=state.pins?'독립적으로 확인한 기기 정보를 사용하고 있습니다.':'별도로 전달받은 두 기기의 지문을 입력하세요.';$('join').hidden=state.phase!=='unbound';$('join').disabled=s.busy||!state.pins||state.phase!=='unbound';$('pin-form').querySelector('button').disabled=s.busy;$('retry').disabled=s.busy;if(vault)$('refresh').disabled=s.busy;$('chat').hidden=!state.pins;
+ $('phase').textContent=state.phase==='ready'?'암호화 연결됨 · 단계 '+state.epoch:'기기 간 암호화 연결 확인 중';
+ $('messages').replaceChildren();for(const m of state.messages){const bytes=decode(m.payload);const li=document.createElement('li');li.dataset.messageId=m.client_id;li.dataset.sender=m.sender_actor;li.textContent=(names[m.sender_actor]||'알 수 없는 기기')+': ';if(m.media_type==='text')li.append(document.createTextNode(decoder.decode(bytes)));else if(m.media_type==='file'){const button=document.createElement('button');button.textContent='파일 내려받기 ('+bytes.length+' bytes)';button.addEventListener('click',()=>download(s,m.client_id,m.sender_device));li.append(button);}else throw Error('type');$('messages').append(li);}
+ const p=state.pending;$('text').disabled=!!p||!!s.sending;$('file').disabled=!!p||!!s.sending;$('pending').dataset.clientId=p?.client_id||d?.id||'';$('retry').hidden=!p||p.retired;$('send').disabled=s.busy||state.phase!=='ready'||!!p;
+ $('pending').textContent=p?(p.retired?'이전 전송을 확정할 수 없어 중단되었습니다.':s.accepted===p.client_id?'서버 저장 확인됨 · 대화 기록 확인 중':'암호화 저장됨 · 서버 확인 대기'):d?'같은 문자 또는 파일을 다시 선택해 전송을 확인하세요.':'전송 대기 없음';
+}
+async function download(s,id,device){if(s.downloading||s.urls.size>=2)return;s.downloading=true;try{check(s);const state=await call(s,'status');check(s);const message=state.messages.find(m=>m.client_id===id&&m.sender_device===device&&m.media_type==='file');if(!message)throw Error('missing');const bytes=decode(message.payload);const url=URL.createObjectURL(new Blob([bytes],{type:'application/octet-stream'}));s.urls.add(url);const a=document.createElement('a');a.href=url;a.download='synthetic-'+id+'.bin';a.click();setTimeout(()=>{URL.revokeObjectURL(url);s.urls.delete(url);},1000);}catch{fail(s);}finally{s.downloading=false;}}
+async function flush(s){const out=await call(s,'flush');check(s);if(out.accepted!==true)throw Error('receipt');s.accepted=s.state.pending?.client_id;render(s,s.state);render(s,await call(s,'sync'));}
+function schedule(s){if(live(s)&&!s.timer)s.timer=setTimeout(()=>{s.timer=null;pump(s);},vault?(s.state?.phase==='ready'?s.delay:1500):1500);}
+async function pump(s){if(!live(s)||s.busy)return;s.busy=true;try{render(s,s.state);const previous=s.state;let state=await call(s,'sync');if(vault)s.delay=previous&&previous.cursor===state.cursor&&previous.phase===state.phase?Math.min(15000,s.delay*2):3000;render(s,state);if(!state.pending&&((s.actor==='alice'&&state.phase==='welcome')||(s.actor==='bob'&&['key-package','ack'].includes(state.phase)))){state=await call(s,'advance');render(s,state);}if(state.pending&&!state.pending.retired&&state.pending.client_id.startsWith('control-'))await flush(s);check(s);}catch{fail(s);}finally{s.busy=false;if(live(s)){render(s,s.state);schedule(s);}}}
+async function open(event){event.preventDefault();const room=$('room').value;if(!/^[a-zA-Z0-9_-]{1,32}$/.test(room))return;let password=vault?$('vault-password').value:null;const create=vault&&$('vault-create').checked;if(create&&room!=='family'){lockView();return;}if(vault){$('vault-create').checked=false;if(password.length<32||password.length>128){password=null;lockView();return;}}retire(current);++generation;clearView();const s={generation,room,actor:null,dead:false,controller:new AbortController(),calls:new Map(),serial:0,urls:new Set(),timer:null,busy:false,accepted:null,delay:3000};current=s;$('status').textContent='시험 계정 확인 중…';try{const {body,actor}=await json(s,'/v1/session',4096);if(!exact(body,['mode','actor','owner'])||body.mode!=='signed'||!Object.hasOwn(names,body.actor)||actor!==body.actor||typeof body.owner!=='boolean')throw Error('identity');s.actor=actor;draft(s);await boot(s);const arg={identity:actor,room,database:database(actor)};if(vault)Object.assign(arg,{password,create});const initializing=call(s,'init',arg);password=null;delete arg.password;const state=await initializing;check(s);if(vault)s.expiry=setTimeout(()=>lockView(true,'시험 잠금 해제 시간이 끝났습니다. 다시 열어 주세요.'),300000);check(s);const key=new Uint8Array(state.public_key);if(key.length!==32)throw Error('key');const fingerprint=await hash(key);check(s);$('identity').textContent=names[actor]+' · 인증된 시험 계정';$('fingerprint').textContent=fingerprint;$('fingerprint').dataset.publicKey=hex(key);render(s,state);$('status').textContent=state.pins?'저장된 기기 확인을 복원했습니다.':'별도로 전달받은 기기 지문을 확인하세요.';if(state.phase!=='unbound')schedule(s);}catch{fail(s);}finally{password=null;}}
+$('open-form').addEventListener('submit',open);
+$('room').addEventListener('input',()=>{if(vault){lockView();return;}if(current){retire(current);clearView();$('status').textContent='선택한 대화방에 다시 연결해 주세요.';}});
+$('pin-form').addEventListener('submit',async event=>{event.preventDefault();const s=current;if(!live(s)||s.busy)return;s.busy=true;try{render(s,s.state);const entered={alice:$('alice-pin').value,bob:$('bob-pin').value};if(!Object.values(entered).every(v=>/^[a-f0-9]{64}$/.test(v)))throw Error('fingerprint');const {body,actor}=await json(s,'/v1/rooms/'+s.room+'/devices');if(actor!==s.actor||!exact(body,['version','room','devices'])||body.version!==1||body.room!==s.room||!Array.isArray(body.devices)||body.devices.length!==2)throw Error('directory');const pins=body.devices.map(p=>{if(!exact(p,['device_id','actor','signing_key','fingerprint','device_revision','status'])||p.status!=='active'||p.device_revision!==1||!Object.hasOwn(entered,p.actor)||p.fingerprint!==entered[p.actor])throw Error('pin');const {status,...pin}=p;return pin;});render(s,await call(s,'pin',{pins,fault:''}));$('status').textContent='두 기기의 지문을 확인했습니다.';$('alice-pin').value='';$('bob-pin').value='';}catch{fail(s);}finally{s.busy=false;if(live(s))render(s,s.state);}});
+$('join').addEventListener('click',async()=>{const s=current;if(!live(s)||s.busy)return;s.busy=true;try{render(s,s.state);if(s.room!=='family'){const p=await descriptor(s,s.room,s.state.pins);if(p.prepared.length!==2){$('status').textContent='상대 기기의 준비를 기다립니다. 연결은 아직 시작하지 않았습니다.';return;}}if(s.actor==='alice'){render(s,await call(s,'create'));render(s,await call(s,'bind'));}else render(s,await call(s,'attach'));}catch{fail(s);}finally{s.busy=false;if(live(s)){render(s,s.state);if(s.state.phase!=='unbound')schedule(s);}}});
+$('send-form').addEventListener('submit',async event=>{event.preventDefault();const s=current;if(!live(s)||s.busy||s.state.phase!=='ready'||s.state.pending)return;s.busy=true;s.sending=true;render(s,s.state);try{const file=$('file').files[0],text=$('text').value;if(file&&text)throw Error('choose one');if(file&&file.size>8192)throw Error('size');const bytes=file?new Uint8Array(await file.arrayBuffer()):encoder.encode(text);if(!bytes.length||bytes.length>8192)throw Error('size');const type=file?'file':'text',sha256=await hash(bytes);check(s);let d=draft(s);if(d){if(d.type!==type||d.size!==bytes.length||d.sha256!==sha256)throw Error('reselect exact');}else{d={version:1,actor:s.actor,room:s.room,id:'app-'+crypto.randomUUID(),type,size:bytes.length,sha256};sessionStorage.setItem(draftKey(s),JSON.stringify(d));}render(s,await call(s,'prepare',{id:d.id,bytes:Array.from(bytes),media_type:type,fault:''}));await flush(s);}catch{fail(s);}finally{s.sending=false;s.busy=false;if(live(s)){render(s,s.state);schedule(s);}}});
+$('retry').addEventListener('click',async()=>{const s=current;if(!live(s)||s.busy||!s.state.pending||s.state.pending.retired)return;s.busy=true;try{render(s,s.state);await flush(s);}catch{fail(s);}finally{s.busy=false;if(live(s)){render(s,s.state);schedule(s);}}});
+
+function database(actor){return 'family-mls-device-vault-synthetic-ui-'+actor;}
+function intentKey(actor){return 'family-aggregate-ui-intent-v1:'+actor;}
+function validateIntent(i,actor){
+ if(!exact(i,['id','source','target','source_group','pins'])||!validName(i.id)||!i.id.startsWith('context-')||i.source!=='family'||typeof i.target!=='string'||!/^[a-zA-Z0-9_-]{1,32}$/.test(i.target)||i.target==='family'||typeof i.source_group!=='string'||!/^(?:[a-f0-9]{2}){16,128}$/.test(i.source_group)||!Array.isArray(i.pins)||i.pins.length!==2||!i.pins.some(p=>p.actor===actor))throw Error('intent');
+ if(encoder.encode(JSON.stringify(i)).length>4096)throw Error('intent limit');return i;
+}
+async function descriptor(s,room,pins,method='GET',intent=null){
+ const own=pins.find(p=>p.actor===s.actor);if(!own)throw Error('own pin');
+ const options={method,headers:{'X-Family-Device':own.device_id}};
+ if(method==='POST'){options.headers['Content-Type']='application/json';options.body=JSON.stringify({room,source_room:intent.source,source_group:intent.source_group});}
+ const {body:p,actor}=await json(s,method==='POST'?'/v1/mls/context-reservations':'/v1/mls/rooms/'+room+'/preparation',4096,options);
+ if(actor!==s.actor||!exact(p,['version','room','source_room','source_group','pins','prepared'])||p.version!==1||p.room!==room||p.source_room!=='family'||typeof p.source_group!=='string'||!/^(?:[a-f0-9]{2}){16,128}$/.test(p.source_group)||!Array.isArray(p.pins)||p.pins.length!==2||!Array.isArray(p.prepared)||p.prepared.length>2)throw Error('preparation');
+ if(intent&&p.source_group!==intent.source_group)throw Error('source');
+ const seen=new Set();for(const pin of p.pins){const expected=pins.find(x=>x.device_id===pin.device_id);if(!exact(pin,['device_id','actor','signing_key','device_revision'])||!expected||seen.has(pin.device_id)||Object.keys(pin).some(k=>pin[k]!==expected[k]))throw Error('pin');seen.add(pin.device_id);}
+ const ready=new Set();for(const item of p.prepared){if(!exact(item,['device_id','intent_id'])||!seen.has(item.device_id)||ready.has(item.device_id)||!validName(item.intent_id)||!item.intent_id.startsWith('context-'))throw Error('declaration');ready.add(item.device_id);if(intent&&item.device_id===own.device_id&&item.intent_id!==intent.id)throw Error('intent');}
+ return p;
+}
+$('prepare-form').addEventListener('submit',async event=>{
+ event.preventDefault();const old=current;if(!live(old)||old.busy||old.room!=='family'||old.state?.phase!=='ready'||!old.state.pins)return;
+ let password=$('prepare-password').value;$('prepare-password').value='';
+ const target=$('target-room').value,id=$('context-id').value;
+ if(password.length<32||password.length>128){password=null;lockView();return;}
+ let intent;
+ try{
+  intent=validateIntent({id,source:old.room,target,source_group:old.state.group_id,pins:old.state.pins},old.actor);
+  const saved=sessionStorage.getItem(intentKey(old.actor));
+  if(saved!==null){if(encoder.encode(saved).length>4096||JSON.stringify(validateIntent(JSON.parse(saved),old.actor))!==JSON.stringify(intent))throw Error('immutable intent');}
+  else sessionStorage.setItem(intentKey(old.actor),JSON.stringify(intent));
+ }catch{password=null;fail(old);return;}
+ // No live crypto worker or decrypted conversation survives the one-shot handoff.
+ const actor=old.actor;lockView();
+ const s={generation,room:'family',actor,dead:false,controller:new AbortController(),calls:new Map(),serial:0,urls:new Set(),timer:null,busy:true};current=s;
+ $('status').textContent='새 대화방 준비 중 · 아직 연결되거나 전송되지 않았습니다.';
+ try{
+  // Only the existing source creator reserves. The peer checks that exact descriptor.
+  await descriptor(s,target,intent.pins,actor==='alice'?'POST':'GET',intent);check(s);
+  await boot(s,'/prepared-fork-worker.js');
+  const arg={identity:actor,database:database(actor),password,intent};const pending=call(s,'fork',arg);password=null;delete arg.password;
+  const result=await pending;check(s);
+  if(!exact(result,['committed','room','public_key','intent_id','preparation_accepted','pair_prepared'])||result.committed!==true||result.room!==target||result.intent_id!==id||result.preparation_accepted!==true||typeof result.pair_prepared!=='boolean'||!Array.isArray(result.public_key)||hex(result.public_key)!==intent.pins.find(p=>p.actor===actor).signing_key)throw Error('receipt');
+  lockView(false);$('preparation-status').textContent='이 기기 저장 완료 · 서버 준비 접수 완료 · '+(result.pair_prepared?'양쪽 기기 준비 완료':'상대 기기 준비 대기');
+  $('status').textContent='준비 결과를 확인했습니다. 선택한 대화방을 잠금 해제한 뒤 연결하세요. 암호화 연결과 메시지 전송은 별도 확인합니다.';
+ }catch{fail(s);}finally{password=null;}
+});
+
+window.addEventListener('pagehide',()=>{if(vault)lockView();else{retire(current);clearView();}});
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&current){if(vault){lockView();return;}retire(current);clearView();$('status').textContent='화면을 다시 열었습니다. 연결을 눌러 계정을 확인하세요.';}});
+
+}
+serveAggregateChat();
