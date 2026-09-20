@@ -182,6 +182,10 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
     for p,role in ((a,'peer'),(b,'candidate')):
         bad=args(role);bad['intent']['reservation']['context']['expires_at']=1;confirm(p,role,bad,reject=True)
     assert direct(peer_subject,'GET','/v1/mls/rooms/successor-room/log')[0]==403
+    if 'lease_ceremony' in hooks:
+        from native_lease_ceremony_checks import run as lease_ui_run
+        lease_ui_run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,restart,hooks['lease_ceremony'],expected,source,proposal,database,candidate_actor)
+        return
     if 'lease' in hooks:
         from native_lease_checks import run as lease_run
         lease_run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,restart,hooks['lease'],expected,source,proposal,database,candidate_actor)

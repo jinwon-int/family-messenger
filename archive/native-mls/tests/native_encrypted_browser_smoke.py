@@ -48,6 +48,7 @@ def main():
     args.add_argument('--custody-ceremony', action='store_true')
     args.add_argument('--welcome-ceremony', action='store_true')
     args.add_argument('--confirmation-ceremony', action='store_true')
+    args.add_argument('--lease-ceremony', action='store_true')
     args.add_argument('--peer-ceremony', action='store_true')
     args.add_argument('--candidate-ceremony', action='store_true')
     args.add_argument('--candidate', action='store_true')
@@ -72,6 +73,7 @@ def main():
     assert not args.enrollment or (args.lease and not args.retirement)
     assert not args.confirmation or args.exchange
     assert not args.confirmation_ceremony or (args.welcome_ceremony and not args.confirmation and not args.lease)
+    assert not args.lease_ceremony or args.confirmation_ceremony
     assert not args.exchange or args.custody_order
     assert not args.welcome_ceremony or args.custody_ceremony
     assert not args.custody_ceremony or (args.custody_order and not args.exchange and not args.successor_embedded)
@@ -122,7 +124,7 @@ def main():
         for expired in (False, True):
             now = int(time.time())
             claims = {'iss': config['issuer'], 'aud': [config['audience']], 'sub': subject, 'type': 'app',
-                      'iat': now - 60, 'nbf': now - 60, 'exp': now - 1 if expired else now + 900, 'role': 'owner'}
+                      'iat': now - 60, 'nbf': now - 60, 'exp': now - 1 if expired else now + (1800 if args.lease_ceremony else 900), 'role': 'owner'}
             raw = b64(json.dumps({'alg': 'RS256', 'typ': 'JWT', 'kid': 'test-key'}).encode()) + '.' + b64(json.dumps(claims).encode())
             tokens[subject, expired] = raw + '.' + b64(subprocess.check_output(['openssl', 'dgst', '-sha256', '-sign', str(key)], input=raw.encode()))
     def commit(revision, people):
@@ -229,7 +231,7 @@ def main():
             if args.confirmation or args.confirmation_ceremony:
                 from native_confirmation_checks import confirmation_assets
                 confirmation_assets(root,work,assets,proof)
-                if args.lease:
+                if args.lease or args.lease_ceremony:
                     from native_lease_checks import lease_assets
                     lease_assets(root,work,assets,proof)
                     if args.enrollment:
@@ -323,6 +325,9 @@ def main():
     if args.confirmation_ceremony:
         from native_confirmation_ceremony_checks import compiled_assets
         confirmation_compiled=compiled_assets(root,args.bundle,assets,proof,work)
+    if args.lease_ceremony:
+        from native_lease_ceremony_checks import fixture_assets
+        fixture_assets(root,assets,proof)
     proof['assets_sha256']={name:hashlib.sha256(raw).hexdigest() for name,raw in assets.items()}
     proof['test_instrumentation']='UI assets unmodified; disposable page tracks Blob URLs and drops one prepare before worker admission; generated proxy responses may be held/altered' if ui_proof else 'main selects native worker; served-only pending-write hold and deliberately forged inner sender fixture; proxy may hold/alter generated responses'
     if vault:proof['test_instrumentation']+='; encrypted driver held CAS/KDF/write, private-worker digests only, disposable lock-aware caller; original versus instrumented hashes recorded'
@@ -336,6 +341,7 @@ def main():
     if args.closure:lease_hooks["enrollment"]["closure"]={"callback":None,"posts":[]}
     if args.retirement:lease_hooks["retirement"]={"callback":None,"posts":[]}
     if args.lease:confirmation_hooks["lease"]=lease_hooks
+    if args.lease_ceremony:confirmation_hooks["lease_ceremony"]=lease_hooks
     if args.confirmation:exchange_hooks["confirmation"]=confirmation_hooks
     custody_hooks={"callback":None,"posts":[]}
     if args.enrollment:custody_hooks["intent_ttl"]=480
@@ -347,8 +353,9 @@ def main():
             if self.headers.get('Host')!=f'127.0.0.1:{self.server.server_port}' or not self.path.startswith('/') or self.path.startswith('//') or any(k.lower()=='authorization' or k.lower().startswith('cf-') for k in self.headers):self.send_error(400);return
             cookie=SimpleCookie();cookie.load(self.headers.get('Cookie',''));v=cookie.get('synthetic_edge');subject=bindings.get(v.value if v else None)
             successor_fault=(args.confirmation_ceremony and confirmation_hooks.get('ui_fault') and self.path in ('/candidate-confirmation-worker.js','/peer-confirmation-worker.js')) or (args.welcome_ceremony and exchange_hooks.get('ui_fault') and self.path in ('/candidate-exchange-worker.js','/peer-exchange-worker.js')) or (args.custody_ceremony and candidate_hooks['fault'] and self.path in ('/candidate-worker.js','/successor-peer-worker.js','/candidate-custody-worker.js','/peer-custody-worker.js')) or (args.peer_ceremony and candidate_hooks['fault'] and self.path=='/successor-peer-worker.js') or (args.candidate_ceremony and candidate_hooks['fault'] and self.path=='/candidate-worker.js') or args.successor_embedded and lease_hooks['enrollment'].get('ui_fault_active') and self.path in ('/candidate-lifecycle-worker.js','/peer-lifecycle-worker.js')
-            if not embedded and self.command=='GET' and self.path in assets and (self.path not in successor_compiled or successor_fault):
-                raw=assets[self.path];self.send_response(200);self.send_header('Content-Type','application/wasm' if self.path.endswith('.wasm') else 'text/javascript' if self.path.endswith('.js') else 'text/css' if self.path.endswith('.css') else 'text/html');self.send_header('Content-Length',str(len(raw)));self.send_header('Cache-Control','no-store');self.send_header('Content-Security-Policy',"default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; worker-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'");self.end_headers();self.wfile.write(raw);return
+            lease_ui_fault=args.lease_ceremony and lease_hooks.get('ui_fault') and self.path in ('/candidate-lease-worker.js','/peer-lease-worker.js')
+            if not embedded and self.command=='GET' and (self.path in assets or lease_ui_fault) and (self.path not in successor_compiled or successor_fault or lease_ui_fault):
+                raw=assets['/fault-'+self.path.lstrip('/')] if lease_ui_fault else assets[self.path];self.send_response(200);self.send_header('Content-Type','application/wasm' if self.path.endswith('.wasm') else 'text/javascript' if self.path.endswith('.js') else 'text/css' if self.path.endswith('.css') else 'text/html');self.send_header('Content-Length',str(len(raw)));self.send_header('Cache-Control','no-store');self.send_header('Content-Security-Policy',"default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; worker-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'");self.end_headers();self.wfile.write(raw);return
             size=int(self.headers.get('Content-Length','0'))
             if size<0 or size>98304:self.send_error(413);return
             body=self.rfile.read(size) if size else None
@@ -362,7 +369,7 @@ def main():
                 lease_hooks['enrollment'].setdefault('dropped',[]).append(json.loads(body));self.close_connection=True;return
             if args.retirement and self.command=='POST' and self.path.endswith('/retirement') and lease_hooks['retirement'].get('drop_before'):
                 lease_hooks['retirement'].setdefault('dropped',[]).append(json.loads(body));self.close_connection=True;return
-            if args.lease and self.command=='POST' and self.path.endswith('/'+(lease_hooks.get('drop_before') or 'unused')):
+            if (args.lease or args.lease_ceremony) and self.command=='POST' and self.path.endswith('/'+(lease_hooks.get('drop_before') or 'unused')):
                 lease_hooks.setdefault('dropped',[]).append(json.loads(body));self.close_connection=True;return
             if (args.confirmation or args.confirmation_ceremony) and self.command=='POST' and self.path.endswith('/confirmation') and confirmation_hooks.get('drop_before'):
                 confirmation_hooks.setdefault('dropped',[]).append(json.loads(body));self.close_connection=True;return
@@ -439,7 +446,7 @@ def main():
                     hook=lease_hooks['retirement']
                     if self.command=='POST':hook['posts'].append(json.loads(body))
                     if hook['callback']:status,raw,context_bad_header=hook['callback'](self.command,status,raw)
-                if args.lease and (self.path.endswith('/lease') or self.path.endswith('/channel')):
+                if (args.lease or args.lease_ceremony) and (self.path.endswith('/lease') or self.path.endswith('/channel')):
                     prefix='channel_' if self.path.endswith('/channel') else ''
                     if self.command=='POST':lease_hooks[prefix+'posts'].append(json.loads(body))
                     if lease_hooks[prefix+'callback']:status,raw,context_bad_header=lease_hooks[prefix+'callback'](self.command,status,raw)

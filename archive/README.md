@@ -19,5 +19,6 @@
 내부 문서의 상대 경로·「동결」배너는 태그 시점 그대로인 곳이 있다. 상태의 정본은
 이 파일과 결정 E다. 사람 키·실대화·운영 호스트는 범위가 아니다.
 
-다음 구현 단위는 [NATIVE-E2EE.md](../docs/NATIVE-E2EE.md) 수용 순서에서 아직 안 끝난
-사람 사용 게이트의 **한 단계**만 이슈로 연다. 스키마 13·컷오버는 여기 포함이 아니다.
+다음 구현 단위는 [이슈 #173](https://github.com/jinwon-int/family-messenger/issues/173)
+(확인 의식 다음 successor lease/channel 의식 UI). 스키마 13·컷오버는 여기 포함이 아니다.
+설명: [experiments/device-keystore/LEASE-CEREMONY-UI.md](experiments/device-keystore/LEASE-CEREMONY-UI.md).
