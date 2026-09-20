@@ -14,6 +14,7 @@
 | `experiments/device-keystore/` | 기기 키 보관 프로브 | 복원. 기본 CI 없음 |
 | `synapse-stack/` | 퇴역 Synapse/Element/Postgres | **복원하지 않음.** 태그에만 남김 |
 | `.github/workflows/mls-experiment.yml` | 옛 16 job/535분 팬아웃 | **복원하지 않음.** 재가동 금지 |
+| CodeQL | GHAS 기본 설정 | `archive/`는 `.github/codeql/codeql-config.yml`의 `paths-ignore` |
 
 내부 문서의 상대 경로·「동결」배너는 태그 시점 그대로인 곳이 있다. 상태의 정본은
 이 파일과 결정 E다. 사람 키·실대화·운영 호스트는 범위가 아니다.
