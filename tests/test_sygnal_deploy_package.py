@@ -1,4 +1,5 @@
 """deploy/sygnal 배포 패키지의 정합성 검사 — 네트워크·실행 없이 파일만 본다."""
+import fnmatch
 import json
 import re
 import subprocess
@@ -132,18 +133,36 @@ class SygnalConfigExampleTest(unittest.TestCase):
         self.assertTrue(set(app) <= understood, f"미지원 키: {set(app) - understood}")
 
     def test_allowed_endpoints_is_set_and_covers_apple(self):
-        """미설정은 SSRF, Apple 누락은 조용한 유실 — 둘 다 나쁘다."""
+        """미설정은 SSRF, Apple 누락은 조용한 유실 — 둘 다 나쁘다.
+
+        sygnal은 endpoint의 netloc을 allowed_endpoints 글로브와 **fullmatch**로 비교한다
+        (webpushpushkin.py). 여기서도 같은 방식으로 검사한다 — 부분 문자열 포함으로
+        확인하면 'push.apple.com.attacker.net' 같은 값도 통과하는 느슨한 검사가 된다.
+        """
         try:
             import yaml
         except ImportError:  # pragma: no cover
             self.skipTest("PyYAML 없음")
         app = next(iter(yaml.safe_load(self.text)["apps"].values()))
         endpoints = app["allowed_endpoints"]
-        self.assertTrue(endpoints)
+        self.assertTrue(endpoints, "미설정은 모든 엔드포인트 허용 = SSRF 노출")
         self.assertTrue(
-            any("push.apple.com" in e for e in endpoints),
-            "Apple 엔드포인트가 없으면 iOS 알림이 조용히 사라진다",
+            any(fnmatch.fnmatch("web.push.apple.com", pattern) for pattern in endpoints),
+            "Apple 엔드포인트가 허용 목록에 매칭되지 않으면 iOS 알림이 조용히 사라진다",
         )
+
+    def test_allowed_endpoints_do_not_overmatch(self):
+        """허용 패턴이 남의 도메인까지 덮지 않아야 한다."""
+        try:
+            import yaml
+        except ImportError:  # pragma: no cover
+            self.skipTest("PyYAML 없음")
+        app = next(iter(yaml.safe_load(self.text)["apps"].values()))
+        for hostile in ("push.apple.com.attacker.net", "evil.net", "notfcm.googleapis.com.evil.net"):
+            self.assertFalse(
+                any(fnmatch.fnmatch(hostile, pattern) for pattern in app["allowed_endpoints"]),
+                f"허용 목록이 {hostile} 까지 매칭한다",
+            )
 
     def test_app_id_is_literal_not_glob(self):
         """글로브 app_id는 find_pushkins 모호성 → pushkey reject → pusher 삭제."""
