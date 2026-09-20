@@ -74,6 +74,25 @@ test('sanitizeConfig: applicationServerKey는 디코딩해서 65바이트·0x04�
   assert.equal(sanitizeConfig({ push: { ...PUSH, applicationServerKey: compressedKey } }).push, null, '0x04로 시작하지 않는 점');
 });
 
+test('sanitizeConfig: 비정준 base64url은 같은 65바이트로 풀려도 거부한다', () => {
+  // 87번째 문자는 쓰이지 않는 2비트를 싣는다. 그래서 같은 키를 나타내는 문자열이
+  // 네 가지 있고, 길이·접두 검사만으로는 마지막 글자 오타를 잡지 못한다.
+  // 그 문자열이 그대로 PushManager.subscribe로 가면 게이트웨이에서야 실패한다.
+  const decoded = Buffer.from(SAMPLE_KEY, 'base64url');
+  const variants = new Set();
+  for (const ch of 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_') {
+    const candidate = SAMPLE_KEY.slice(0, 86) + ch;
+    if (candidate === SAMPLE_KEY) continue;
+    if (Buffer.from(candidate, 'base64url').equals(decoded)) variants.add(candidate);
+  }
+  assert.ok(variants.size > 0, '같은 바이트로 풀리는 변종이 존재해야 시험이 의미가 있다');
+  for (const variant of variants) {
+    assert.equal(sanitizeConfig({ push: { ...PUSH, applicationServerKey: variant } }).push, null, `비정준형 ${variant.slice(-1)}`);
+  }
+  // 정준형은 통과한다.
+  assert.equal(sanitizeConfig({ push: PUSH }).push?.applicationServerKey, SAMPLE_KEY);
+});
+
 test('sanitizeConfig: homeserverUrl은 https만, 끝 슬래시는 뗀다', () => {
   assert.equal(sanitizeConfig({ homeserverUrl: 'https://matrix.example.com/' }).homeserverUrl, 'https://matrix.example.com');
   assert.equal(sanitizeConfig({ homeserverUrl: 'https://matrix.example.com' }).homeserverUrl, 'https://matrix.example.com');

@@ -36,8 +36,16 @@ const APP_ID = /^[A-Za-z0-9._-]{1,64}$/;
 function applicationServerKey(value) {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{87}$/.test(value)) return null;
   try {
-    const binary = atob(value.replaceAll('-', '+').replaceAll('_', '/'));
+    // replaceAll은 ES2021이다. build.mjs가 target es2020을 명시하고 있고(구형 모바일
+    // 브라우저에서 파싱 실패로 빈 화면이 났던 2026-09-16 사고), esbuild는 메서드를
+    // 폴리필하지 않는다. 정규식 replace로 둔다.
+    const binary = atob(value.replace(/-/g, '+').replace(/_/g, '/'));
     if (binary.length !== 65 || binary.charCodeAt(0) !== 0x04) return null;
+    // 87번째 문자는 쓰이지 않는 2비트를 싣는다. 같은 65바이트로 디코딩되는 변종이
+    // 네 가지 있어서 길이·접두 검사만으로는 오타를 잡지 못한다. 다시 인코딩해
+    // 정준형과 같은지 본다.
+    const canonical = btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    if (canonical !== value) return null;
   } catch {
     return null;
   }

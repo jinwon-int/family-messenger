@@ -148,3 +148,30 @@ test('composer oninput은 isTrusted 가드 뒤에서만 onTyping을 부른다', 
   assert.ok(guardAt >= 0, 'isTrusted 가드가 있어야 한다');
   assert.ok(callAt > guardAt, 'onTyping 호출은 가드 뒤에 있어야 한다');
 });
+
+// ES2020 하한 회귀 방지(#167): build.mjs가 target es2020을 명시하는 근거는 실제
+// 사고다 — esnext 기본값이 구형 모바일 브라우저에서 파싱 실패로 빈 화면을 만들었다
+// (2026-09-16 첫 공개 관측). esbuild는 문법은 낮춰도 **메서드는 폴리필하지 않으므로**
+// ES2021+ 메서드를 쓰면 번들에 그대로 남아 런타임에서 조용히 터진다.
+// sw.js는 번들조차 거치지 않아 소스가 곧 배포본이다.
+test('런타임 소스는 ES2021+ 메서드를 쓰지 않는다', () => {
+  const banned = [
+    ['replaceAll', /\.replaceAll\s*\(/],      // ES2021
+    ['at', /\.at\s*\(\s*-/],                  // ES2022 (음수 인덱스 용법)
+    ['findLast', /\.findLast(Index)?\s*\(/],  // ES2023
+    ['hasOwn', /\bObject\.hasOwn\s*\(/],      // ES2022
+    ['structuredClone', /\bstructuredClone\s*\(/],
+  ];
+  const files = [
+    ...readdirSync(SRC).filter((n) => n.endsWith('.js')).map((n) => ['src/' + n, join(SRC, n)]),
+    ['sw.js', join(import.meta.dirname, '..', 'sw.js')],
+  ];
+  const offenders = [];
+  for (const [label, path] of files) {
+    const source = readFileSync(path, 'utf-8');
+    for (const [name, pattern] of banned) {
+      if (pattern.test(source)) offenders.push(`${label}: ${name}`);
+    }
+  }
+  assert.deepEqual(offenders, []);
+});
