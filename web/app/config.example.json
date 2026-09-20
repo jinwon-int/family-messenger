@@ -3,5 +3,10 @@
   "filebox": {
     "url": "https://files.<도메인>/",
     "title": "파일보관함"
+  },
+  "push": {
+    "gatewayUrl": "https://push.<도메인>/_matrix/push/v1/notify",
+    "appId": "com.<조직>.familychat.web",
+    "applicationServerKey": "<vapid_application_server_key.txt의 87자 base64url 문자열>"
   }
 }

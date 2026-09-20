@@ -166,13 +166,37 @@ systemctl status sygnal --no-pager
 
 - **pusher가 사라졌다** → 404/410은 정상 동작(구독 만료 시 pushkey reject → 홈서버가 pusher 정리).
   웹앱에서 알림을 다시 켜면 된다
-- **한 기기에서 계정을 바꾼 뒤 앞사람 알림이 끊겼다** → 웹앱이 `append: true` 없이 pusher를 등록했다(#167).
-  서비스워커/origin당 구독이 하나라 계정이 달라도 pushkey(p256dh)가 같다
+- **한 기기에서 계정을 바꾼 뒤 앞사람 알림이 끊겼다** → 서비스워커/origin당 구독이 하나라
+  계정이 달라도 pushkey(p256dh)가 같다. 단 **Tuwunel에서는 이 경로가 나타나지 않는다**:
+  `append`를 아예 읽지 않고(`src/api/client/push/pushers_set.rs`의 `// - TODO: Handle append`),
+  pusher 저장 키가 `(sender_user, pushkey)`라 타 사용자 pusher를 지우는 경로 자체가 없다.
+  이 증상은 Synapse(`remove_pushers_by_app_id_and_pushkey_not_user`) 기준이다.
+  웹앱은 스펙대로 `append: true`를 계속 보내되, 홈서버를 바꾸기 전에는 이 증상을 의심하지 않는다
+  (2026-09-21 Tuwunel main 소스 확인)
 - **"site has been updated in the background"가 뜬다** → pusher `data`에 `events_only: true`가 없다.
   event_id 없는 정리용 푸시를 서비스워커가 표시하지 않아 브라우저가 대신 띄운 것이다.
   **iOS에서는 알림을 안 띄우면 Safari가 푸시 권한을 박탈**하므로 그냥 두면 안 된다
-- **홈서버 쪽 확인** → Tuwunel은 게이트웨이 응답의 `rejected` 목록을 보고 pusher를 삭제한다.
+- **홈서버 쪽 확인** → Tuwunel은 게이트웨이 응답의 `rejected` 목록을 보고 pusher를 삭제한다
+  (`src/service/pusher/send.rs`의 `send_http_notice` → `delete_pusher`).
   pusher가 계속 사라지면 sygnal이 pushkey를 reject하고 있는지 로그를 본다
+- **알림 내용이 비어 있다** → pusher `data`에 `format`을 넣었는지 본다. `format: "event_id_only"`면
+  Tuwunel이 `content`·`sender`·`type`·tweaks를 빼고 보내서 webpush 평문 페이로드가 사실상 빈다.
+  **`format`은 설정하지 않는다**
+- **pusher 등록 자체가 "forbidden remote address"로 거부된다** → Tuwunel의 `ip_range_denylist`가
+  기본적으로 loopback/사설 대역을 막는다. sygnal을 터널 뒤 공인 호스트명으로 등록해야 한다
+  (이 배포는 `https://push.<도메인>/_matrix/push/v1/notify`라 해당 없음)
+
+### Tuwunel에서 확인된 전달 필드 (2026-09-21, main 소스)
+
+sygnal webpush가 평문 payload에 싣는 것 중 Tuwunel이 **보내는 것**: `room_id`, `room_name`,
+`room_alias`, `event_id`, `sender`, `sender_display_name`, `type`, `content`, `counts.unread`,
+`user_is_target`, `prio`.
+**보내지 않는 것**: `membership`(ruma `Notification` 타입에 필드가 없다), `counts.missed_calls`.
+⚠ `sender_display_name`은 룸 멤버 이벤트가 아니라 **로컬 프로필 저장소** 조회(`services.profile.displayname`)라
+**원격 서버 사용자의 이벤트에서는 빠질 수 있다** — 웹앱은 표시명이 없을 때를 반드시 처리해야 한다.
+pusher `data`의 비-스펙 키(`endpoint`/`auth`/`events_only`/`only_last_per_room`/`default_payload`)는
+ruma `HttpPusherData`의 `#[serde(flatten)] data: JsonObject`로 보존되어 그대로 게이트웨이에 전달된다.
+`data`에 대한 크기 제한은 없다(제한은 `pushkey` 512바이트, `app_id` 64바이트뿐).
 
 ## 9. 업그레이드
 

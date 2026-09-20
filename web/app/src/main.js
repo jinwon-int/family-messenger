@@ -134,7 +134,10 @@ const TIME_LABELS = () => ({ justNow: strings.rooms.justNow, minutesAgo: strings
 /** Room summaries decorated with the last message preview + typing label, newest activity first. */
 function listSummaries() {
   const decorated = state.summaries.map((summary) => {
-    const entry = state.rooms.get(summary.roomId)?.timeline.at(-1) ?? null;
+    // Array.prototype.at은 ES2022다. 빌드 타깃이 es2020이고 esbuild는 메서드를
+    // 폴리필하지 않아 구형 모바일에서 TypeError가 난다(빈 화면 사고와 같은 종류).
+    const timeline = state.rooms.get(summary.roomId)?.timeline;
+    const entry = timeline && timeline.length > 0 ? timeline[timeline.length - 1] : null;
     const preview = lastMessagePreview(entry, PREVIEW_LABELS());
     return {
       ...summary,
