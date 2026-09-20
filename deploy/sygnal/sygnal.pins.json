@@ -1,0 +1,33 @@
+{
+  "$comment": "Sygnal 푸시 게이트웨이 고정값. sygnal은 단일 바이너리도 PyPI 배포도 없으므로(2026-09-21 확인: pypi.org/pypi/sygnal, /matrix-sygnal 모두 404) 공식 배포 경로는 컨테이너 이미지뿐이다. 이미지는 poetry.lock에서 내보낸 해시 포함 requirements로 빌드되므로(docker/Dockerfile stage 0의 poetry export; 해시 생략은 TEST_ONLY_SKIP_DEP_HASH_VERIFICATION 빌드에서만) 이미지 digest를 고정하면 의존성 트리 전체가 고정된다. 버전을 올릴 때는 index digest와 linux/amd64 digest를 함께 갱신하고 PR로 기록한다.",
+  "version": "v0.17.0",
+  "source_repo": "https://github.com/element-hq/sygnal",
+  "release_url": "https://github.com/element-hq/sygnal/releases/tag/v0.17.0",
+  "released_at": "2025-11-05T15:06:54Z",
+  "repo_note": "matrix-org/sygnal은 2025-07-21 아카이브(read-only). 유지보수는 element-hq/sygnal. 단 컨테이너 이미지는 이전 후에도 같은 DockerHub 네임스페이스 matrixdotorg/sygnal로 계속 배포된다(v0.17.0이 2025-12-10 푸시됨 — 2026-09-21 확인).",
+  "license": "AGPL-3.0-only OR LicenseRef-Element-Commercial (2025-06 전환). 무수정 자체 운영은 무난하나, 수정 후 운영하면 AGPL 네트워크 조항이 적용된다. 수정이 필요해지면 법적 판단이 선행한다.",
+  "image": {
+    "registry": "docker.io",
+    "repository": "matrixdotorg/sygnal",
+    "tag": "v0.17.0",
+    "pushed_at": "2025-12-10T14:57:06Z (DockerHub tags API의 last_updated. 레지스트리 manifest에는 이 값이 없어 별도 검증 불가)",
+    "index_digest": "sha256:141f5e72fdf99a28e29ca87f3a46c19ed1cf21d5074aa3ef9df7c067e0c1c46a",
+    "platform_digests": {
+      "linux/amd64": "sha256:656ee00cb0e44e0cdf9311458228b07084cfcf11d9de9ecddb705c21dac29dde",
+      "linux/arm64": "sha256:920e62b3a23cd5c5c74db3b7a22b309a3da738a732bcd99ba6d2fc4759223aa5"
+    },
+    "size_mb_compressed": 56,
+    "$size_note": "DockerHub가 보고하는 압축 크기. pull 후 실제 디스크 사용량은 약 175MB다.",
+    "base": "docker.io/library/python:3.12-slim-bookworm",
+    "entrypoint": "python -m sygnal.sygnal",
+    "exposed_port": 5000,
+    "healthcheck_path": "/health",
+    "config_env": "SYGNAL_CONF (기본값은 cwd의 sygnal.yaml — sygnal/sygnal.py:253)"
+  },
+  "webpush_support": {
+    "status": "included",
+    "note": "py-vapid>=1.7.0 · pywebpush>=1.13.0가 pyproject.toml [tool.poetry.dependencies] 최상위에 있다(extras 아님, v0.17.0 실측). 별도 설치 없이 type: webpush 앱이 동작한다.",
+    "maturity_warning": "webpush는 sygnal에서 2등 시민이다. README는 'two supported App Types: apns, gcm'이라며 webpush를 누락하고 sygnal.yaml.sample에도 예시가 없다(문서는 docs/applications.md의 WebPush 절에만 존재). 실질 기능 변경이 2021-12 이후 없고, webpush 관련 Sentry 오류 조사 티켓 2건(element-hq/sygnal#205 RequestGenerationFailed, #204 ResponseNeverReceived)이 open으로 남아 있다 — 확정된 결함이라기보다 미조사 상태다. 운영 시 전송 실패 로그를 반드시 관측한다.",
+    "ios_status": "미확인 — 프로토콜 적합성은 Apple 요구사항과 일치하나(VAPID·aes128gcm·JWT aud/sub/exp·TTL·Urgency·Topic 32자·TLS SNI), 'sygnal webpush를 iOS 홈화면 PWA에 붙여 동작했다'는 1차 보고를 찾지 못했다. 실기기 검증 전까지 동작을 가정하지 않는다."
+  }
+}

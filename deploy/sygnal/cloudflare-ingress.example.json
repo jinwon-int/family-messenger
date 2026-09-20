@@ -1,0 +1,14 @@
+{
+  "$comment": "cloudflared 터널 ingress 예시 — 푸시 게이트웨이 전용 호스트. 홈서버가 POST /_matrix/push/v1/notify 로만 도달하면 되므로 그 경로 하나만 노출하고 나머지는 404로 떨어뜨린다. sygnal의 /health 는 노출하지 않는다(로컬 헬스체크로 충분하고, 게이트웨이 존재를 외부에 알릴 이유가 없다). 실제 도메인·터널 ID는 저장소에 쓰지 않는다. 기존 family-messenger 터널에 이 규칙을 합쳐도 되고 별도 터널을 써도 된다 — 합칠 경우 matrix/chat 규칙보다 뒤, 404 앞에 둔다.",
+  "tunnel": "<tunnel-id>",
+  "credentials-file": "/etc/cloudflared/<tunnel-id>.json",
+  "ingress": [
+    {
+      "hostname": "push.example.com",
+      "path": "^/_matrix/push/v1/notify$",
+      "service": "http://127.0.0.1:5000",
+      "originRequest": { "connectTimeout": "30s", "noHappyEyeballs": true }
+    },
+    { "service": "http_status:404" }
+  ]
+}

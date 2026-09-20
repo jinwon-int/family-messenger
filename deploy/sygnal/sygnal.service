@@ -1,0 +1,98 @@
+# Sygnal 푸시 게이트웨이 systemd 유닛 — 가족 메신저
+# (예시; /etc/systemd/system/sygnal.service 로 복사 후 조정)
+#
+# 왜 컨테이너인가: sygnal은 단일 바이너리도 PyPI 배포도 없다(2026-09-21 확인).
+# 공식 배포 경로가 컨테이너 이미지뿐이므로 Tuwunel처럼 바이너리를 해시 고정해
+# 받을 수 없다. 대신 이미지 digest를 고정한다(sygnal.pins.json) — `podman pull`의
+# digest 참조가 곧 무결성 검증이라 fetch-tuwunel.sh 같은 별도 대조 스크립트가 필요 없다.
+#
+# 왜 유닛은 root로 돌고 격리는 컨테이너가 하는가:
+#   rootless podman(User=sygnal)은 /etc/subuid 범위·XDG_RUNTIME_DIR·newuidmap
+#   setuid 승격·cgroup 위임을 전부 요구한다. `useradd --system`은 subuid를 할당하지
+#   않고(shadow: --system이면 should_assign_subuid=false), NoNewPrivileges=yes는
+#   newuidmap을 막으며, ProtectHome=yes는 /run/user를 지운다 — 유닛 하드닝과
+#   rootless podman은 서로를 깨뜨린다. 그래서 podman 자체는 root로 두고,
+#   권한 축소는 컨테이너 경계에서 한다: --user로 비권한 UID, --cap-drop=ALL,
+#   --read-only, no-new-privileges. sygnal은 무상태라 이 조합으로 충분하다.
+#
+# 준비 (자세한 절차는 docs/SYGNAL-DEPLOY.md):
+#   groupadd --system sygnal && useradd --system --gid sygnal \
+#       --home-dir /nonexistent --shell /usr/sbin/nologin sygnal
+#   install -d -o root -g sygnal -m 0750 /etc/sygnal
+#   # /etc/sygnal 에 둔다 (컨테이너 안에서는 /sygnal):
+#   #   sygnal.yaml            0640 root:sygnal
+#   #   vapid_private_key.pem  0640 root:sygnal   ← gen-vapid-key.sh 로 생성
+#
+# 이미지는 반드시 digest로 당긴다(태그는 이동할 수 있다):
+#   podman image pull docker.io/matrixdotorg/sygnal@sha256:<linux/amd64 digest>
+
+[Unit]
+Description=Sygnal push gateway (family messenger)
+Documentation=https://github.com/element-hq/sygnal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+# podman 자체는 root로 실행한다(위 주석 참조). 컨테이너 안에서는 --user로 떨어뜨린다.
+
+# --- 이미지 digest -----------------------------------------------------------
+# sygnal.pins.json의 image.platform_digests["linux/amd64"]와 반드시 일치해야 한다.
+# tests/test_sygnal_deploy_package.py가 이 동기화를 검사한다. 핀을 올릴 때 함께 바꾼다.
+Environment=SYGNAL_IMAGE=docker.io/matrixdotorg/sygnal@sha256:656ee00cb0e44e0cdf9311458228b07084cfcf11d9de9ecddb705c21dac29dde
+
+# 컨테이너 안에서 sygnal이 실행될 UID:GID. 호스트의 sygnal 사용자와 맞춘다.
+# 이미지에 USER 지시자가 없어 기본이 root이므로 반드시 내려준다.
+#   id -u sygnal / id -g sygnal 로 확인해 아래를 조정한다.
+Environment=SYGNAL_UID=
+
+# 기동 전 이미지가 로컬에 있는지 확인하고 없으면 시작을 실패시킨다.
+# 자동 pull은 네트워크 장애 시 조용히 옛 이미지로 떨어질 여지를 만든다.
+# ⚠ 이 검사는 podman을 실행하는 사용자의 저장소를 본다. 유닛이 root이므로
+#   pull도 반드시 root로 해야 한다(docs/SYGNAL-DEPLOY.md §2와 일치).
+ExecStartPre=/usr/bin/podman image exists ${SYGNAL_IMAGE}
+
+ExecStart=/usr/bin/podman run \
+    --rm \
+    --replace \
+    --name sygnal \
+    --user ${SYGNAL_UID} \
+    --read-only \
+    --cap-drop=ALL \
+    --security-opt=no-new-privileges \
+    --publish 127.0.0.1:5000:5000 \
+    --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+    --volume /etc/sygnal:/sygnal:ro \
+    --env SYGNAL_CONF=/sygnal/sygnal.yaml \
+    ${SYGNAL_IMAGE}
+
+ExecStop=/usr/bin/podman stop --ignore --time 20 sygnal
+
+# --publish 로 호스트 루프백에만 노출한다. --network=host 를 쓰지 않는 이유:
+# host netns를 공유하면 게이트웨이가 홈서버(127.0.0.1:8008) 등 다른 루프백
+# 서비스에 전부 도달할 수 있다. 외부 노출은 Cloudflare 터널 ingress가 단독 결정한다.
+#
+# ⚠ Type=exec 는 execve 성공을 "기동"으로 본다. sygnal이 실제로 준비됐는지는
+#   보지 않으므로, 배포 후 반드시 /health 를 직접 확인한다(런북 §7.1).
+#   Type=notify 로 바꾸려면 --sdnotify=conmon 을 함께 줘야 한다 — podman 기본값
+#   container 는 sygnal이 READY=1을 보내지 않아 무한 대기한다.
+
+TimeoutStartSec=120
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+
+# --- 유닛 수준 격리 ----------------------------------------------------------
+# podman/conmon/runc는 네임스페이스·cgroup·mount를 조작해야 하므로 Tuwunel 유닛만큼
+# 조일 수 없다. 여기서 더 넣으면 컨테이너 기동 자체가 깨진다. 실질 격리는
+# ExecStart의 --user/--cap-drop/--read-only/no-new-privileges 가 담당한다.
+ProtectHome=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

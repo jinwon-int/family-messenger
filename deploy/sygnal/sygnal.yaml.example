@@ -1,0 +1,93 @@
+# Sygnal 푸시 게이트웨이 설정 (예시; /sygnal/sygnal.yaml 로 복사 후 조정)
+#
+# ⚠ 업스트림 sygnal.yaml.sample에는 webpush 예시가 없다. 이 파일은 소스
+#   (sygnal/webpushpushkin.py의 UNDERSTOOD_CONFIG_FIELDS)와 docs/applications.md에서
+#   조립한 것이다. 키 이름을 바꾸기 전에 그 두 곳을 먼저 확인한다.
+#
+# 실제 도메인·이메일·키 파일은 저장소에 쓰지 않는다. <>는 배포 시 치환한다.
+
+log:
+  setup:
+    version: 1
+    formatters:
+      normal:
+        format: "%(asctime)s [%(process)d] %(levelname)-5s %(name)s %(message)s"
+    handlers:
+      stderr:
+        class: logging.StreamHandler
+        formatter: normal
+        stream: "ext://sys.stderr"
+    loggers:
+      sygnal:
+        level: INFO
+      sygnal.access:
+        level: INFO
+    root:
+      level: INFO
+      handlers: [stderr]
+  access:
+    x_forwarded_for: true   # Cloudflare 터널 뒤에 있으므로 원 IP는 헤더에서 온다
+
+http:
+  # ⚠ 루프백만 바인드한다. 외부 노출은 Cloudflare 터널이 담당하며
+  #   /_matrix/push/v1/notify 경로만 ingress에 있다(cloudflare-ingress.example.json).
+  bind_addresses: ['127.0.0.1']
+  port: 5000
+
+metrics:
+  prometheus:
+    enabled: false
+  opentracing:
+    enabled: false
+  sentry:
+    enabled: false
+
+apps:
+  # ---------------------------------------------------------------------------
+  # PWA (웹 화면) — 지금 쓰는 것
+  # ---------------------------------------------------------------------------
+  # ⚠ app_id는 반드시 리터럴로 둔다. 글로브 패턴을 쓰면 find_pushkins가 2개 이상
+  #   매칭될 때(len > 1) pushkey를 rejected로 반환하고, 홈서버가 pusher를 삭제한다.
+  #   (sygnal/http.py: "Got notification for an ambiguous app ID")
+  com.example.familychat.web:
+    type: webpush
+
+    # VAPID 개인키 — 문자열이 아니라 **PEM 파일 경로**다.
+    # 미설정 / 경로 없음 / 파싱 실패는 각각 PushkinSetupException으로 기동 실패한다.
+    # 생성은 gen-vapid-key.sh 참조. 키 파일은 저장소에 넣지 않는다.
+    vapid_private_key: /sygnal/vapid_private_key.pem
+
+    # 코드가 "mailto:{}".format(...)로 감싸므로 **이메일 주소만** 적는다.
+    vapid_contact_email: <admin-email>
+
+    # ⚠ 미설정 시 모든 엔드포인트가 허용되어 SSRF에 노출된다. 반드시 설정한다.
+    # ⚠ 차단되면 sygnal은 return [] 만 하고 pushkey를 reject하지 않는다 →
+    #   홈서버는 정상으로 알고 알림만 조용히 사라진다. Apple을 빠뜨리면 여기 걸린다.
+    #   매칭은 호스트명(netloc) 전체 일치이며 글로브를 지원한다.
+    allowed_endpoints:
+      - "*.push.apple.com"                    # Apple 공식 허용 목록 표기
+      - "updates.push.services.mozilla.com"   # Firefox
+      - "fcm.googleapis.com"                  # Chrome/Edge
+      - "*.notify.windows.com"                # Windows(WNS) — Edge on Windows 포함
+
+    # 미배달 폐기까지의 시간(초). 기본 900.
+    # iOS 기기는 오래 잠들 수 있어 900초가 짧을 수 있다 — 실기기 관측 후 조정한다.
+    ttl: 900
+
+    max_connections: 20
+
+  # ---------------------------------------------------------------------------
+  # 네이티브 iOS — 착수 시 주석 해제 (family-messenger #165)
+  # ---------------------------------------------------------------------------
+  # sygnal은 apps: 아래 app_id별로 type을 독립 지정하므로(sygnal/sygnal.py의
+  # _make_pushkin이 type 값으로 모듈을 동적 import), webpush와 apns를 한 인스턴스가
+  # 동시에 처리한다. 네이티브 착수 시 이 블록만 해제하면 된다.
+  #
+  # ⚠ p8 키 파일은 저장소에 넣지 않는다. 볼륨에만 두고 권한은 런북을 따른다.
+  #
+  # com.example.familychat.ios:
+  #   type: apns
+  #   keyfile: /sygnal/apns_auth_key.p8
+  #   key_id: <apns-key-id>
+  #   team_id: <apple-team-id>
+  #   topic: com.example.familychat     # 앱 번들 ID
