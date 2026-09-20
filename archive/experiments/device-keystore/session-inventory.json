@@ -1,0 +1,34 @@
+{
+  "wrapper_version": "0.8.4",
+  "shipped_core_version": "1.0.22",
+  "upstream_git_head": "2830fcf2ce8cefd3fdc7e1efc9fc1cee1d2d95b7",
+  "bundle": {
+    "bytes": 581326,
+    "gzip_bytes": 205547,
+    "sha256": "7b53f2037593e01066a57372f364b7dbad9ec27b846f1e4393b7b2f593456c18"
+  },
+  "runtime_direct": 2,
+  "runtime_transitive_instances": 8,
+  "runtime_instances": 10,
+  "installed_build_instances": 2,
+  "all_platform_lock_external_instances": 37,
+  "added_packages": {
+    "node_modules/libsodium": {
+      "version": "0.8.4",
+      "resolved": "https://registry.npmjs.org/libsodium/-/libsodium-0.8.4.tgz",
+      "integrity": "sha512-lMcYaRi0zcs7tarATsQUYC7rstliIXZuoq0c6zXSgNtSNtdvBgkSegjWhpMJAXzKX3SUSwIp7+zEsob+j3LuRw==",
+      "license": "ISC"
+    },
+    "node_modules/libsodium-wrappers": {
+      "version": "0.8.4",
+      "resolved": "https://registry.npmjs.org/libsodium-wrappers/-/libsodium-wrappers-0.8.4.tgz",
+      "integrity": "sha512-mu8aAWucZjTB5O/BtGXtW4e1agy7uHxNYG7zPthmmD1jU43LCDmSWZLN4JhflbdPXj3yDO4lxM1O9hLDgIOXDw==",
+      "license": "ISC",
+      "dependencies": {
+        "libsodium": "^0.8.0"
+      }
+    }
+  },
+  "npm_reported_vulnerabilities": 0,
+  "audit_scope": "Historical PIA audit1.0.12/13 predates secretstream1.0.14; no exact stack audit established."
+}

@@ -1,0 +1,59 @@
+{
+  "date": "2026-09-09",
+  "scope": "Isolated synthetic native encrypted persistence; no actual CF/human keys/UI vault activation/cutover",
+  "author_proofs": [
+    {
+      "path": "artifacts/native-vault-control-o4w4jf1v/verification.json",
+      "sha256": "1530f75b11b68f6e4ee3c580281da3b672b1dfa9bded5506014f2b221477a6c8",
+      "checks": 31,
+      "note": "final encrypted state/control31"
+    },
+    {
+      "path": "artifacts/native-embedded-ui-ncxh7lj8/verification.json",
+      "sha256": "e73e0b66039eba0ef24afd33317fb3dae2366de4e8c3b1ffdfd34c45ecc6306c",
+      "checks": 17,
+      "note": "final default own-server UI17"
+    },
+    {
+      "path": "artifacts/native-control-browser-l9h5gwak/verification.json",
+      "sha256": "27fc633e1d0862bcd804ceeee01fc8df77b4dc0ff08964a8b8a513288fa7de7f",
+      "checks": 24,
+      "note": "default control24 before strict-input amendment"
+    }
+  ],
+  "tests": {
+    "python": 84,
+    "go": "tagged synthetic_mls race022, normal077 and vet passed; default behavior exercised by native controls24 and embedded UI17"
+  },
+  "limits": {
+    "serialized_record_bytes": 4194304,
+    "provider_bytes": 1048576,
+    "native_ledger_bytes": 2097152,
+    "max_observed_combined_wasm_bytes": 5636096,
+    "js_kdf_scratch_bytes": 268435456
+  },
+  "same_origin_compromise_protection": false,
+  "whole_valid_restart_rollback_protection": false,
+  "human_recovery_qualified": false,
+  "existing_profiles_migrated": false,
+  "review_findings": [
+    "low: immediate lock command accepted malformed envelope; fixed and regression",
+    "low: caller retained successfully closed worker handle; fixed with direct fresh-spawn regression",
+    "low: sparse native byte input normalized holes to zero; fixed with unchanged-encrypted-state regression"
+  ],
+  "measured_record": {
+    "control_run_cipher_bytes": 60502,
+    "header_bytes": 24,
+    "capsule_bytes_range": [
+      456,
+      457
+    ],
+    "note": "Generated actual provider/ledger; measurement is not proof of maximum-sized state capacity"
+  },
+  "independent_basic_proof": {
+    "reviewed_code_head": "7e150e277410eeae294e9183e0bb0d6d18ca84e4",
+    "path": "/root/work/family-vault-final-review-7e150e2/artifacts/native-vault-browser-9owse0j9/verification.json",
+    "sha256": "3697f09a3dab75baebe81d09302178b4707f9b5b1b2cdecda3a25fa777331650",
+    "checks": 22
+  }
+}

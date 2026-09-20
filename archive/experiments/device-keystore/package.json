@@ -1,0 +1,14 @@
+{
+  "name": "family-device-keystore-feasibility",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Isolated generated-data library feasibility only; not messenger integration",
+  "dependencies": {
+    "age-encryption": "0.3.1",
+    "libsodium-wrappers": "0.8.4"
+  },
+  "devDependencies": {
+    "esbuild": "0.27.2"
+  }
+}

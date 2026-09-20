@@ -1,0 +1,182 @@
+{
+  "version": 12,
+  "worker_state": 4,
+  "files": [
+    {
+      "file": "confirmation-ceremony.html",
+      "url": "/confirmation-ceremony/",
+      "type": "text/html; charset=utf-8",
+      "bytes": 3854,
+      "sha256": "dfa58c39c233f8fefcc4e7203fa7f65646ded85ec4e0ff4b82cb7fe02025c824",
+      "source": "experiments/openmls-browser/web/confirmation-ceremony.html"
+    },
+    {
+      "file": "confirmation-ceremony.css",
+      "url": "/confirmation-ceremony.css",
+      "type": "text/css; charset=utf-8",
+      "bytes": 1189,
+      "sha256": "376e604d19a7de365c5982add307069e14df7639cce84ab1a06c1512dda59c9e",
+      "source": "experiments/openmls-browser/web/confirmation-ceremony.css"
+    },
+    {
+      "file": "confirmation-ceremony-ui.js",
+      "url": "/confirmation-ceremony-ui.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 6288,
+      "sha256": "5a668d0f0028fa70cec586ab63a7b82bd76827d559cbb04d88c15b67cd9f85d1",
+      "source": "experiments/openmls-browser/web/confirmation-ceremony-ui.js"
+    },
+    {
+      "file": "confirmation-ceremony-client.js",
+      "url": "/confirmation-ceremony-client.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 2385,
+      "sha256": "9279e228b0734d7939ea5acf17d2a7cfe7a9bd08789ff0cbbfc5d8efb9d84fe0",
+      "source": "experiments/openmls-browser/web/confirmation-ceremony-client.js"
+    },
+    {
+      "file": "custody-ceremony-client.js",
+      "url": "/custody-ceremony-client.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 3536,
+      "sha256": "3017c4ad3478c7757143509e38d3f3b75c0801dc08d0af8f6f8edbdf42a89423",
+      "source": "experiments/openmls-browser/web/custody-ceremony-client.js"
+    },
+    {
+      "file": "candidate-preparation-client.js",
+      "url": "/candidate-preparation-client.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 2503,
+      "sha256": "8c22d3ae0aaaf6f853c16cae417b202543c9edde4b0f08113b435ed13f841918",
+      "source": "experiments/openmls-browser/web/candidate-preparation-client.js"
+    },
+    {
+      "file": "peer-preparation-client.js",
+      "url": "/peer-preparation-client.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 2363,
+      "sha256": "0c60f736f2cc70a5d6ef1f737c2a97e5bbe162c3dc86e73d3773e47666815ed7",
+      "source": "experiments/openmls-browser/web/peer-preparation-client.js"
+    },
+    {
+      "file": "successor-handoff.js",
+      "url": "/successor-handoff.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 2556,
+      "sha256": "ca0f3b7c78cecf0e8ed7e0fbfaf3f702f17e51fda46ec1fc051ccc6b790e5d31",
+      "source": "experiments/openmls-browser/web/successor-handoff.js"
+    },
+    {
+      "file": "trust-directory.js",
+      "url": "/trust-directory.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 3086,
+      "sha256": "63079de10d73ac4d0664b07de7bcacc4e4abe551977a293cfa4144029a80b04e",
+      "source": "experiments/openmls-browser/web/trust-directory.js"
+    },
+    {
+      "file": "custody-declaration.js",
+      "url": "/custody-declaration.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 3875,
+      "sha256": "57ccc4f3bfa608e2ba0c604898acd44bbff7f54ed09ecdc5ad2a781c48358a8b",
+      "source": "experiments/openmls-browser/web/custody-declaration.js"
+    },
+    {
+      "file": "handshake-wire.js",
+      "url": "/handshake-wire.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 4357,
+      "sha256": "09de377473b86afc6cfae666d972343bf892af967a4bc1721db6d4e3a7b65519",
+      "source": "experiments/openmls-browser/web/handshake-wire.js"
+    },
+    {
+      "file": "confirmation-wire.js",
+      "url": "/confirmation-wire.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 3395,
+      "sha256": "8132d0344ed046c54e27672ee268571d396f9e7fcef0a332f4e4de72630dea6f",
+      "source": "experiments/openmls-browser/web/confirmation-wire.js"
+    },
+    {
+      "file": "confirmation-worker.js",
+      "url": "/confirmation-worker.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 2109,
+      "sha256": "d5f8bf313da0e030e671d2a09f600445e1b9ae1b92f62bc53220676c255149f4",
+      "source": "experiments/openmls-browser/web/confirmation-worker.js"
+    },
+    {
+      "file": "candidate-confirmation-worker.js",
+      "url": "/candidate-confirmation-worker.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 319,
+      "sha256": "e6be714647ff756d3c84efdc1bcd2ae7633f9c5f57b103b69d45c875f339501a",
+      "source": "experiments/openmls-browser/web/candidate-confirmation-worker.js"
+    },
+    {
+      "file": "peer-confirmation-worker.js",
+      "url": "/peer-confirmation-worker.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 286,
+      "sha256": "208cdd6ecbae0cee8e489a779ea8efaf4f1519a6629d63235a2b2ede0bee881b",
+      "source": "experiments/openmls-browser/web/peer-confirmation-worker.js"
+    },
+    {
+      "file": "pkg.js",
+      "url": "/pkg/family_mls_browser_experiment.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 31008,
+      "sha256": "bc03928772dc972fef6ce615feb8ece18568b90d388dff0839f4c65192953201",
+      "source": "bundle:family_mls_browser_experiment.js"
+    },
+    {
+      "file": "pkg.wasm",
+      "url": "/pkg/family_mls_browser_experiment_bg.wasm",
+      "type": "application/wasm",
+      "bytes": 1453493,
+      "sha256": "34dc989314e06a745940cc95dd061c15f996b6ed5b7b57df52a13bd5f5934c04",
+      "source": "bundle:family_mls_browser_experiment_bg.wasm"
+    },
+    {
+      "file": "cargo-notices.txt",
+      "url": "/confirmation-ceremony/licenses/cargo.txt",
+      "type": "text/plain; charset=utf-8",
+      "bytes": 365656,
+      "sha256": "52ce5425ee2bfcbcd1271d72da46953233f2f40f97d9f7ae769c4447ea6e63fa",
+      "source": "experiments/openmls-browser/THIRD-PARTY-NOTICES.txt"
+    },
+    {
+      "file": "rust-notices.txt",
+      "url": "/confirmation-ceremony/licenses/rust.txt",
+      "type": "text/plain; charset=utf-8",
+      "bytes": 398128,
+      "sha256": "3aa41caccecaeddad6fcf2f36ce14146ab7baae57064b05b12ecc6b52d5e917f",
+      "source": "experiments/openmls-browser/RUST-STDLIB-NOTICES.html"
+    },
+    {
+      "file": "age-notices.txt",
+      "url": "/confirmation-ceremony/licenses/age.txt",
+      "type": "text/plain; charset=utf-8",
+      "bytes": 9798,
+      "sha256": "e9d3a269b88304762fcd8aba0b34d816f2f1d3253790281089ca5a75b9797adc",
+      "source": "experiments/device-keystore/THIRD-PARTY-NOTICES.txt"
+    },
+    {
+      "file": "sodium-notices.txt",
+      "url": "/confirmation-ceremony/licenses/sodium.txt",
+      "type": "text/plain; charset=utf-8",
+      "bytes": 1731,
+      "sha256": "13c31cd4449e71922c68980a2d3d82356a747716e9b74a7ad83e2448245e8629",
+      "source": "experiments/device-keystore/SODIUM-NOTICES.txt"
+    },
+    {
+      "file": "successor-confirmation-store.js",
+      "url": "/successor-confirmation-store.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 623374,
+      "sha256": "dbe5eee07ed9f6cc5f5bc115715c441ed6955c0c49729e526e63f65632546044",
+      "source": "experiments/device-keystore/bundle/successor-confirmation-store.js"
+    }
+  ]
+}
