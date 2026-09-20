@@ -1,0 +1,31 @@
+{
+  "scope": "Isolated readonly complete two-context aggregate history, no UI or Go asset integration",
+  "new_dependencies": 0,
+  "runtime_direct": 2,
+  "runtime_transitive_instances": 8,
+  "runtime_instances": 10,
+  "age": "0.3.1",
+  "libsodium_wrappers": "0.8.4",
+  "libsodium_core": "1.0.22",
+  "installed_build_instances": 2,
+  "build": "Node22.22.2/esbuild0.27.2; existing lock; MLS module external same-origin pinned bundle",
+  "openmls_external_target": "8 direct/151 transitive external crates; unchanged pinned WASM",
+  "licenses": [
+    "THIRD-PARTY-NOTICES.txt",
+    "SODIUM-NOTICES.txt",
+    "../openmls-browser/THIRD-PARTY-NOTICES.txt",
+    "../openmls-browser/RUST-STDLIB-NOTICES.html"
+  ],
+  "bundles": {
+    "aggregate-history-worker.js": {
+      "bytes": 567653,
+      "gzip_bytes": 200944,
+      "sha256": "9f0fbeb771f6e1b295dbc28336c5c2351813f2004ebb7b109e1509396df955bc"
+    },
+    "aggregate-history-export-worker.js": {
+      "bytes": 568060,
+      "gzip_bytes": 201142,
+      "sha256": "9077dd04162033e2aaf779b6eeb3dfc8d1678d4433795ef3cd28b448a401847b"
+    }
+  }
+}

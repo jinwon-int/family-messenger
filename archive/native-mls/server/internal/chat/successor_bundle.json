@@ -1,0 +1,190 @@
+{
+  "version": 7,
+  "worker_state": 4,
+  "files": [
+    {
+      "file": "successor.html",
+      "url": "/successor/",
+      "type": "text/html; charset=utf-8",
+      "bytes": 1855,
+      "sha256": "3af2f28ac0058803a6f58bcaeba7140008cdb862ac5c5504029c647903ffb738",
+      "source": "experiments/openmls-browser/web/successor.html"
+    },
+    {
+      "file": "successor-ui.js",
+      "url": "/successor-ui.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 7298,
+      "sha256": "3e9364855fc5957c9fb3ed0bc807431eb7fdfb4ed479e77f87c28dfece4036a3",
+      "source": "experiments/openmls-browser/web/successor-ui.js"
+    },
+    {
+      "file": "successor-ui.css",
+      "url": "/successor-ui.css",
+      "type": "text/css; charset=utf-8",
+      "bytes": 1189,
+      "sha256": "376e604d19a7de365c5982add307069e14df7639cce84ab1a06c1512dda59c9e",
+      "source": "experiments/openmls-browser/web/successor-ui.css"
+    },
+    {
+      "file": "successor-handoff.html",
+      "url": "/successor-handoff/",
+      "type": "text/html; charset=utf-8",
+      "bytes": 2967,
+      "sha256": "d179f0b72ebcddda33c51b61ddc575e4dae97b58da4120ec83df8a0f8adc7017",
+      "source": "experiments/openmls-browser/web/successor-handoff.html"
+    },
+    {
+      "file": "successor-handoff.js",
+      "url": "/successor-handoff.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 2556,
+      "sha256": "ca0f3b7c78cecf0e8ed7e0fbfaf3f702f17e51fda46ec1fc051ccc6b790e5d31",
+      "source": "experiments/openmls-browser/web/successor-handoff.js"
+    },
+    {
+      "file": "successor-handoff-ui.js",
+      "url": "/successor-handoff-ui.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 2417,
+      "sha256": "1af99b99be1de2b84fa43b70cfcf5132f2126d87f6cd2051917f39bcb82a3271",
+      "source": "experiments/openmls-browser/web/successor-handoff-ui.js"
+    },
+    {
+      "file": "successor-lifecycle-worker.js",
+      "url": "/successor-lifecycle-worker.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 2440,
+      "sha256": "e9394ba274280c97edc1c75929f1bcbdf7ef0ab6e67ca860044d2dd7ed4cfe55",
+      "source": "experiments/openmls-browser/web/successor-lifecycle-worker.js"
+    },
+    {
+      "file": "candidate-lifecycle-worker.js",
+      "url": "/candidate-lifecycle-worker.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 305,
+      "sha256": "7abfb8c64ae26776648c62d039fd905a743af1eb2b346554a37cb6ab5549373e",
+      "source": "experiments/openmls-browser/web/candidate-lifecycle-worker.js"
+    },
+    {
+      "file": "peer-lifecycle-worker.js",
+      "url": "/peer-lifecycle-worker.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 272,
+      "sha256": "28d94eba37364519ae85381e29f213ce163994172ab614e9e53c97c0aa71594d",
+      "source": "experiments/openmls-browser/web/peer-lifecycle-worker.js"
+    },
+    {
+      "file": "trust-directory.js",
+      "url": "/trust-directory.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 3086,
+      "sha256": "63079de10d73ac4d0664b07de7bcacc4e4abe551977a293cfa4144029a80b04e",
+      "source": "experiments/openmls-browser/web/trust-directory.js"
+    },
+    {
+      "file": "custody-declaration.js",
+      "url": "/custody-declaration.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 3875,
+      "sha256": "57ccc4f3bfa608e2ba0c604898acd44bbff7f54ed09ecdc5ad2a781c48358a8b",
+      "source": "experiments/openmls-browser/web/custody-declaration.js"
+    },
+    {
+      "file": "handshake-wire.js",
+      "url": "/handshake-wire.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 4357,
+      "sha256": "09de377473b86afc6cfae666d972343bf892af967a4bc1721db6d4e3a7b65519",
+      "source": "experiments/openmls-browser/web/handshake-wire.js"
+    },
+    {
+      "file": "confirmation-wire.js",
+      "url": "/confirmation-wire.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 3395,
+      "sha256": "8132d0344ed046c54e27672ee268571d396f9e7fcef0a332f4e4de72630dea6f",
+      "source": "experiments/openmls-browser/web/confirmation-wire.js"
+    },
+    {
+      "file": "lease-wire.js",
+      "url": "/lease-wire.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 3825,
+      "sha256": "69320f0f4d5798de16ece78a56c515377ea75fbb9ee384d93b860fbb07c42b33",
+      "source": "experiments/openmls-browser/web/lease-wire.js"
+    },
+    {
+      "file": "enrollment-wire.js",
+      "url": "/enrollment-wire.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 3719,
+      "sha256": "9d92e96e4295214503bb014d72c9b076d50d6b6b8f0318985a7faa6a4b9bf8ff",
+      "source": "experiments/openmls-browser/web/enrollment-wire.js"
+    },
+    {
+      "file": "closure-wire.js",
+      "url": "/closure-wire.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 2867,
+      "sha256": "d081771501690fdabfba64f75515bf3742cccd30e04022bc4caef414d6678454",
+      "source": "experiments/openmls-browser/web/closure-wire.js"
+    },
+    {
+      "file": "pkg.js",
+      "url": "/pkg/family_mls_browser_experiment.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 31008,
+      "sha256": "bc03928772dc972fef6ce615feb8ece18568b90d388dff0839f4c65192953201",
+      "source": "bundle:family_mls_browser_experiment.js"
+    },
+    {
+      "file": "pkg.wasm",
+      "url": "/pkg/family_mls_browser_experiment_bg.wasm",
+      "type": "application/wasm",
+      "bytes": 1453493,
+      "sha256": "34dc989314e06a745940cc95dd061c15f996b6ed5b7b57df52a13bd5f5934c04",
+      "source": "bundle:family_mls_browser_experiment_bg.wasm"
+    },
+    {
+      "file": "cargo-notices.txt",
+      "url": "/successor/licenses/cargo.txt",
+      "type": "text/plain; charset=utf-8",
+      "bytes": 365656,
+      "sha256": "52ce5425ee2bfcbcd1271d72da46953233f2f40f97d9f7ae769c4447ea6e63fa",
+      "source": "experiments/openmls-browser/THIRD-PARTY-NOTICES.txt"
+    },
+    {
+      "file": "rust-notices.txt",
+      "url": "/successor/licenses/rust.txt",
+      "type": "text/plain; charset=utf-8",
+      "bytes": 398128,
+      "sha256": "3aa41caccecaeddad6fcf2f36ce14146ab7baae57064b05b12ecc6b52d5e917f",
+      "source": "experiments/openmls-browser/RUST-STDLIB-NOTICES.html"
+    },
+    {
+      "file": "successor-closure-store.js",
+      "url": "/successor-closure-store.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 636830,
+      "sha256": "d8cfdb494294be27bc5960335abbe281160ec81f64149365499b0fcc3960de28",
+      "source": "experiments/device-keystore/bundle/successor-closure-store.js"
+    },
+    {
+      "file": "age-notices.txt",
+      "url": "/successor/licenses/age.txt",
+      "type": "text/plain; charset=utf-8",
+      "bytes": 9798,
+      "sha256": "e9d3a269b88304762fcd8aba0b34d816f2f1d3253790281089ca5a75b9797adc",
+      "source": "experiments/device-keystore/THIRD-PARTY-NOTICES.txt"
+    },
+    {
+      "file": "sodium-notices.txt",
+      "url": "/successor/licenses/sodium.txt",
+      "type": "text/plain; charset=utf-8",
+      "bytes": 1731,
+      "sha256": "13c31cd4449e71922c68980a2d3d82356a747716e9b74a7ad83e2448245e8629",
+      "source": "experiments/device-keystore/SODIUM-NOTICES.txt"
+    }
+  ]
+}

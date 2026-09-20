@@ -1,0 +1,118 @@
+{
+  "version": 9,
+  "worker_state": 4,
+  "files": [
+    {
+      "file": "peer-preparation.html",
+      "url": "/peer-preparation/",
+      "type": "text/html; charset=utf-8",
+      "bytes": 3239,
+      "sha256": "d7a7468b61eeaf918a2db0ef51f2d280c32eaf1ec83453a7060bbb9ad13c3085",
+      "source": "experiments/openmls-browser/web/peer-preparation.html"
+    },
+    {
+      "file": "peer-preparation.css",
+      "url": "/peer-preparation.css",
+      "type": "text/css; charset=utf-8",
+      "bytes": 1189,
+      "sha256": "376e604d19a7de365c5982add307069e14df7639cce84ab1a06c1512dda59c9e",
+      "source": "experiments/openmls-browser/web/peer-preparation.css"
+    },
+    {
+      "file": "peer-preparation-ui.js",
+      "url": "/peer-preparation-ui.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 6244,
+      "sha256": "a831e90e6a62393576bbd7d56e17b1f7fce49f42231e31b6fbb4fe91f72f9cd7",
+      "source": "experiments/openmls-browser/web/peer-preparation-ui.js"
+    },
+    {
+      "file": "peer-preparation-client.js",
+      "url": "/peer-preparation-client.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 2363,
+      "sha256": "0c60f736f2cc70a5d6ef1f737c2a97e5bbe162c3dc86e73d3773e47666815ed7",
+      "source": "experiments/openmls-browser/web/peer-preparation-client.js"
+    },
+    {
+      "file": "successor-handoff.js",
+      "url": "/successor-handoff.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 2556,
+      "sha256": "ca0f3b7c78cecf0e8ed7e0fbfaf3f702f17e51fda46ec1fc051ccc6b790e5d31",
+      "source": "experiments/openmls-browser/web/successor-handoff.js"
+    },
+    {
+      "file": "successor-peer-worker.js",
+      "url": "/successor-peer-worker.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 1639,
+      "sha256": "9530f1edd40cf82d2fba6eb7f3e668185c3feb553bbb1c74a029dd9058f502c1",
+      "source": "experiments/openmls-browser/web/successor-peer-worker.js"
+    },
+    {
+      "file": "trust-directory.js",
+      "url": "/trust-directory.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 3086,
+      "sha256": "63079de10d73ac4d0664b07de7bcacc4e4abe551977a293cfa4144029a80b04e",
+      "source": "experiments/openmls-browser/web/trust-directory.js"
+    },
+    {
+      "file": "pkg.js",
+      "url": "/pkg/family_mls_browser_experiment.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 31008,
+      "sha256": "bc03928772dc972fef6ce615feb8ece18568b90d388dff0839f4c65192953201",
+      "source": "bundle:family_mls_browser_experiment.js"
+    },
+    {
+      "file": "pkg.wasm",
+      "url": "/pkg/family_mls_browser_experiment_bg.wasm",
+      "type": "application/wasm",
+      "bytes": 1453493,
+      "sha256": "34dc989314e06a745940cc95dd061c15f996b6ed5b7b57df52a13bd5f5934c04",
+      "source": "bundle:family_mls_browser_experiment_bg.wasm"
+    },
+    {
+      "file": "cargo-notices.txt",
+      "url": "/peer-preparation/licenses/cargo.txt",
+      "type": "text/plain; charset=utf-8",
+      "bytes": 365656,
+      "sha256": "52ce5425ee2bfcbcd1271d72da46953233f2f40f97d9f7ae769c4447ea6e63fa",
+      "source": "experiments/openmls-browser/THIRD-PARTY-NOTICES.txt"
+    },
+    {
+      "file": "rust-notices.txt",
+      "url": "/peer-preparation/licenses/rust.txt",
+      "type": "text/plain; charset=utf-8",
+      "bytes": 398128,
+      "sha256": "3aa41caccecaeddad6fcf2f36ce14146ab7baae57064b05b12ecc6b52d5e917f",
+      "source": "experiments/openmls-browser/RUST-STDLIB-NOTICES.html"
+    },
+    {
+      "file": "successor-peer-store.js",
+      "url": "/successor-peer-store.js",
+      "type": "text/javascript; charset=utf-8",
+      "bytes": 608160,
+      "sha256": "e15897fc902a89449d18f108cb1db6689007d0fb2b42ae3d6dbf84f789970b0e",
+      "source": "experiments/device-keystore/bundle/successor-peer-store.js"
+    },
+    {
+      "file": "age-notices.txt",
+      "url": "/peer-preparation/licenses/age.txt",
+      "type": "text/plain; charset=utf-8",
+      "bytes": 9798,
+      "sha256": "e9d3a269b88304762fcd8aba0b34d816f2f1d3253790281089ca5a75b9797adc",
+      "source": "experiments/device-keystore/THIRD-PARTY-NOTICES.txt"
+    },
+    {
+      "file": "sodium-notices.txt",
+      "url": "/peer-preparation/licenses/sodium.txt",
+      "type": "text/plain; charset=utf-8",
+      "bytes": 1731,
+      "sha256": "13c31cd4449e71922c68980a2d3d82356a747716e9b74a7ad83e2448245e8629",
+      "source": "experiments/device-keystore/SODIUM-NOTICES.txt"
+    }
+  ]
+}
