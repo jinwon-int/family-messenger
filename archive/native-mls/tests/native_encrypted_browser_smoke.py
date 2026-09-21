@@ -534,8 +534,8 @@ def main():
             def crash(i):
                 needle=('--user-data-dir='+str(profiles[i])).encode()
                 def cmdline(pid):
-                    try:return Path(f'/proc/{int(pid)}/cmdline').read_bytes().split(b'\0')
-                    except (FileNotFoundError,ValueError,ProcessLookupError,PermissionError):return []
+                    try:return Path(f'/proc/{int(pid)}/cmdline').read_bytes()
+                    except (FileNotFoundError,ValueError,ProcessLookupError,PermissionError):return b''
                 session=contexts[i].browser.new_browser_cdp_session()
                 pid=next((int(p['id']) for p in session.send('SystemInfo.getProcessInfo')['processInfo'] if needle in cmdline(p['id'])),None)
                 if pid is None:
