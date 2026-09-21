@@ -13,6 +13,55 @@ import { strings } from './strings.js';
 export const PUSHER_KIND = 'http';
 export const PUSHER_LANG = 'ko';
 
+/**
+ * 설정 화면이 무엇을 보여줄지 결정한다. 브라우저 판별을 전부 인자로 받아
+ * DOM 없이 시험한다.
+ *
+ * @returns {'not-configured'|'ios-needs-install'|'unsupported'|'denied'|'denied-ios'|'on'|'off'}
+ *
+ * **ios-needs-install이 unsupported보다 먼저다.** iOS Safari 탭에는 Notification도
+ * PushManager도 없어서 기능 검사만 하면 "이 브라우저는 지원하지 않습니다"가 뜨는데,
+ * 사실은 홈화면에 추가하면 된다. 그 안내를 못 보면 가족은 영영 알림을 못 켠다.
+ *
+ * 다만 **기능이 실제로 있으면 iOS 판별과 무관하게 진행한다.** isIosDevice는
+ * 터치 디스플레이를 붙인 Mac을 오판할 수 있는데(iPadOS가 자신을 Macintosh로
+ * 보고하는 것과 구분할 방법이 터치 지점 수뿐이다), 그때 홈화면 안내를 띄우면
+ * 토글이 사라져 **이미 켜 둔 알림을 끌 수조차 없게 된다**. 진짜 iOS Safari
+ * 탭에는 API가 없으므로 이 조건으로도 필요한 사람에게는 안내가 나간다.
+ */
+export function pushAvailability({ push, hasServiceWorker, hasPushManager, hasNotification, permission, subscribed, isIos, isStandalone }) {
+  if (!push) return 'not-configured';
+  const missingWebPush = !hasPushManager || !hasNotification;
+  if (isIos && !isStandalone && missingWebPush) return 'ios-needs-install';
+  if (!hasServiceWorker || missingWebPush) return 'unsupported';
+  // iOS 홈화면 앱에는 주소창도 "사이트 권한" 메뉴도 없다. 자물쇠 아이콘을
+  // 가리키는 안내를 주면 막다른 길이 된다.
+  if (permission === 'denied') return isIos ? 'denied-ios' : 'denied';
+  return subscribed ? 'on' : 'off';
+}
+
+/**
+ * 홈서버에 이 구독에 해당하는 pusher가 실제로 있는가.
+ *
+ * 브라우저 구독만 보고 "켜짐"이라고 하면 안 된다. enablePush가 기존 구독을
+ * 재사용한 경로에서 setPusher가 실패하면 구독은 남고 pusher만 없는 상태가
+ * 되는데, 그때 화면은 "켜져 있습니다"라고 하면서 알림은 오지 않는다.
+ */
+export function hasMatchingPusher(pushers, pushkey, appId) {
+  if (!Array.isArray(pushers) || typeof pushkey !== 'string' || typeof appId !== 'string') return false;
+  return pushers.some((pusher) => pusher && pusher.pushkey === pushkey && pusher.app_id === appId);
+}
+
+/**
+ * iPhone·iPad인가. iPadOS 13+는 자신을 Macintosh로 보고하므로 터치 지점 수로
+ * 가른다(데스크톱 Mac은 maxTouchPoints가 0이다).
+ */
+export function isIosDevice({ userAgent, maxTouchPoints }) {
+  const ua = String(userAgent ?? '');
+  if (/iPad|iPhone|iPod/.test(ua)) return true;
+  return ua.includes('Macintosh') && Number(maxTouchPoints ?? 0) > 1;
+}
+
 const isText = (value) => typeof value === 'string' && value.length > 0;
 
 /**

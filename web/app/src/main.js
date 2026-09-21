@@ -12,7 +12,7 @@ import { splitParticipants, shortHandle } from './participants.js';
 import { attachmentFromContent, collectAttachments, fileboxRefreshUrl } from './attachments.js';
 import { applyTypingEvent, createTypingState, pruneTyping, typingIndicator, typingNames } from './typing.js';
 import { DEFAULT_CONFIG, loadConfig } from './config.js';
-import { disablePush, enablePush } from './push.js';
+import { disablePush, enablePush, hasMatchingPusher, isIosDevice, pushAvailability, readSubscription } from './push.js';
 import * as ui from './ui.js';
 
 const root = document.getElementById('app');
@@ -292,9 +292,14 @@ async function connect(creds, { fresh = false } = {}) {
 async function resumePush() {
   if (!state.config.push) return;
   if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  // ⚠ 사용자가 껐으면 되살리지 않는다. disablePush는 브라우저 권한을 취소할 수
+  //    없어서(JS로 불가) 끈 뒤에도 permission은 granted로 남는다. 권한만 보고
+  //    재등록하면 끄기 버튼이 새로고침 한 번에 무효가 된다.
+  if (session.readPushPreference(stores) === 'off') return;
   if (!('serviceWorker' in navigator)) return;
   try {
-    const registration = await navigator.serviceWorker.ready;
+    const registration = await serviceWorkerReady();
+    if (!registration) return;
     await enablePush({
       registration,
       push: state.config.push,
@@ -696,10 +701,95 @@ function openMenu() {
     items: [
       { label: strings.verification.title, onClick: openVerification },
       { label: strings.recovery.title, onClick: openRecovery },
+      { label: strings.notifications.title, onClick: openNotifications },
       { label: strings.account.devicesTitle, onClick: openDevices },
       { label: strings.account.logout, onClick: logout, danger: true },
     ],
     // 메뉴가 닫힐 때 재렌더하지 않는다 — 닫힘(close) 이벤트가 비동기라 항목이 연 시트를 지웠다.
+  });
+}
+
+// navigator.serviceWorker.ready는 등록이 없으면 **거부되지 않고 영원히 pending**이다.
+// 등록은 best-effort라(아래 register().catch) 실패해 있을 수 있고, 그러면 "알림 켜기"가
+// "처리 중…"에서 영영 안 돌아온다. 상한을 두고 null로 끝낸다.
+const SERVICE_WORKER_READY_TIMEOUT_MS = 5000;
+
+async function serviceWorkerReady() {
+  if (!('serviceWorker' in navigator)) return null;
+  let timer;
+  try {
+    return await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise((resolve) => { timer = setTimeout(() => resolve(null), SERVICE_WORKER_READY_TIMEOUT_MS); }),
+    ]);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** 지금 이 브라우저의 푸시 상태. 판단은 push.js의 순수 함수가 한다. */
+async function readPushAvailability() {
+  const hasServiceWorker = 'serviceWorker' in navigator;
+  let subscribed = false;
+  if (hasServiceWorker && state.config.push) {
+    try {
+      const registration = await navigator.serviceWorker.getRegistration();
+      const subscription = await registration?.pushManager?.getSubscription();
+      const parsed = readSubscription(subscription);
+      // ⚠ 구독이 있다고 "켜짐"이라 하면 안 된다. 홈서버에 pusher가 없으면
+      //    알림은 오지 않는데 화면만 켜졌다고 말한다. 양쪽을 다 본다.
+      //    조회에 실패하면 "꺼짐"으로 본다 — 다시 켜기는 멱등이라 값싸고,
+      //    "켜졌는데 안 온다"는 상태보다 진단이 쉽다.
+      subscribed = parsed ? hasMatchingPusher(await state.client.getPushers(), parsed.p256dh, state.config.push.appId) : false;
+    } catch {
+      subscribed = false;
+    }
+  }
+  return pushAvailability({
+    push: state.config.push,
+    hasServiceWorker,
+    hasPushManager: typeof PushManager !== 'undefined',
+    hasNotification: typeof Notification !== 'undefined',
+    permission: typeof Notification !== 'undefined' ? Notification.permission : 'default',
+    subscribed,
+    isIos: isIosDevice({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints }),
+    // 홈화면 앱인가. iOS Safari는 navigator.standalone, 그 밖은 display-mode로 본다.
+    isStandalone: navigator.standalone === true || window.matchMedia?.('(display-mode: standalone)').matches === true,
+  });
+}
+
+function openNotifications() {
+  ui.openNotificationsSheet(root, {
+    load: readPushAvailability,
+    enable: async () => {
+      // ⚠ requestPermission을 클릭 핸들러의 **첫 await**로 둔다. 다른 비동기
+      //    작업을 먼저 기다리면 사용자 제스처가 끊겨 브라우저가 요청을 무시한다.
+      //    (tests/ui_bindings.test.js의 정적 가드가 이 순서를 지킨다.)
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') return { ok: false, reason: 'no-permission' };
+      const registration = await serviceWorkerReady();
+      if (!registration) return { ok: false, reason: 'unsupported' };
+      const result = await enablePush({
+        registration,
+        push: state.config.push,
+        client: state.client,
+        userId: state.myUserId,
+        deviceDisplayName: state.client?.deviceId() ?? undefined,
+        permission,
+      });
+      if (result.ok) session.savePushPreference('on', stores);
+      return result;
+    },
+    disable: async () => {
+      // 선호를 먼저 적는다. 해제가 중간에 실패해도 다음 로그인에서 다시 켜지지
+      // 않아야 한다 — 사용자는 분명히 끄겠다고 눌렀다.
+      session.savePushPreference('off', stores);
+      const registration = await navigator.serviceWorker.getRegistration();
+      if (!registration) return { ok: true, removed: false, unsubscribed: false };
+      return disablePush({ registration, push: state.config.push, client: state.client });
+    },
   });
 }
 

@@ -175,3 +175,49 @@ test('런타임 소스는 ES2021+ 메서드를 쓰지 않는다', () => {
   }
   assert.deepEqual(offenders, []);
 });
+
+// 사용자 제스처 보존(#167 C): Notification.requestPermission()은 사용자 제스처
+// 안에서 불려야 한다. 다른 비동기 작업을 먼저 기다리면 제스처가 끊겨 브라우저가
+// 요청을 조용히 무시하고, 알림 켜기 버튼이 아무 일도 안 하는 것처럼 보인다.
+// 이 클래스의 회귀는 시험으로 잡기 어려워(제스처는 모킹되지 않는다) 정적으로 막는다.
+test('알림 켜기: requestPermission이 클릭 핸들러의 첫 await다', () => {
+  const source = readFileSync(join(SRC, 'main.js'), 'utf-8');
+  const enableBlock = source.slice(source.indexOf('enable: async () =>'));
+  assert.ok(enableBlock.length > 0, 'enable 핸들러를 찾지 못했다');
+  const body = enableBlock.slice(0, enableBlock.indexOf('disable: async () =>'));
+  const firstAwait = body.match(/await\s+([^\s;(]+)/);
+  assert.ok(firstAwait, 'enable 핸들러에 await가 없다');
+  assert.equal(firstAwait[1], 'Notification.requestPermission', `첫 await가 ${firstAwait[1]}이다 — 제스처가 끊긴다`);
+});
+
+// #176 검토(2026-09-21) High 1·2, Medium 3b — 셋 다 main.js에 있어 DOM/단위 시험이
+// 닿지 않는다. 배선이 빠지면 조용히 옛 결함으로 돌아가므로 정적으로 막는다.
+test('알림 재개·상태 판정 배선: 끄기 선호를 존중하고, pusher를 교차 확인하고, SW ready에 상한을 둔다', () => {
+  const source = readFileSync(join(SRC, 'main.js'), 'utf-8');
+  const block = (start, end) => {
+    const from = source.indexOf(start);
+    assert.ok(from >= 0, `${start}를 찾지 못했다`);
+    const to = source.indexOf(end, from);
+    return source.slice(from, to > from ? to : undefined);
+  };
+
+  // High 1: 사용자가 끈 뒤 새로고침하면 권한이 granted라도 되살리지 않는다.
+  const resume = block('async function resumePush()', 'catch (error)');
+  const guardAt = resume.indexOf("readPushPreference(stores) === 'off'");
+  const enableAt = resume.indexOf('enablePush(');
+  assert.ok(guardAt >= 0, 'resumePush가 끄기 선호를 읽지 않는다 — 끄기가 새로고침 한 번에 무효가 된다');
+  assert.ok(enableAt > guardAt, '끄기 선호 확인이 enablePush보다 뒤에 있다');
+
+  // High 2: 브라우저 구독만으로 "켜짐"이라 하지 않는다 — 홈서버 pusher를 교차 확인한다.
+  const availability = block('async function readPushAvailability()', 'return pushAvailability(');
+  assert.ok(availability.includes('hasMatchingPusher('), 'readPushAvailability가 pusher를 확인하지 않는다 — 구독만 있고 pusher가 없으면 거짓 "켜짐"이 뜬다');
+  assert.ok(availability.includes('getPushers()'), 'readPushAvailability가 홈서버 pusher 목록을 조회하지 않는다');
+
+  // Medium 3b: navigator.serviceWorker.ready는 등록이 없으면 영원히 pending이라
+  // 반드시 상한이 있는 serviceWorkerReady()를 통해서만 기다린다.
+  const codeOnly = source.split('\n').filter((line) => !line.trim().startsWith('//')).join('\n');
+  const rawReady = codeOnly.split('navigator.serviceWorker.ready').length - 1;
+  assert.equal(rawReady, 1, `navigator.serviceWorker.ready 직접 참조가 ${rawReady}곳 — serviceWorkerReady() 안 한 곳만 허용`);
+  const helper = block('async function serviceWorkerReady()', '\n}\n');
+  assert.ok(helper.includes('navigator.serviceWorker.ready') && helper.includes('Promise.race('), 'serviceWorkerReady()가 상한 없이 ready를 기다린다');
+});

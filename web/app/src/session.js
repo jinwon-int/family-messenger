@@ -73,3 +73,24 @@ export function clearSession({ persistent, volatile } = {}) {
 export function hasLiveSession(session) {
   return Boolean(session?.accessToken && session?.homeserverUrl && session?.userId);
 }
+
+// 알림 선호. 세션이 아니라 **이 브라우저의 선택**이라 PERSIST_KEYS에 넣지 않고
+// clearSession도 지우지 않는다.
+//
+// 왜 필요한가: 알림을 끄면 구독과 pusher는 지워지지만 브라우저 권한은 granted로
+// 남는다(JS로 권한을 취소할 수 없다). 로그인할 때마다 "권한이 granted면 다시
+// 등록"하면 사용자가 끈 것이 새로고침 한 번에 되살아난다 — 끄기 버튼이 한
+// 세션짜리가 된다.
+export const PUSH_PREFERENCE_KEY = 'familychat.pushEnabled';
+
+/** @returns {'on'|'off'|null} null이면 사용자가 아직 고른 적이 없다. */
+export function readPushPreference({ persistent } = {}) {
+  const value = persistent?.getItem?.(PUSH_PREFERENCE_KEY);
+  return value === 'on' || value === 'off' ? value : null;
+}
+
+/** @param {'on'|'off'} value */
+export function savePushPreference(value, { persistent } = {}) {
+  if (value !== 'on' && value !== 'off') return;
+  persistent?.setItem?.(PUSH_PREFERENCE_KEY, value);
+}

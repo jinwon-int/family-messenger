@@ -5,7 +5,9 @@ import {
   VOLATILE_KEYS,
   clearSession,
   hasLiveSession,
+  readPushPreference,
   readSession,
+  savePushPreference,
   saveSession,
   splitSession,
 } from '../src/session.js';
@@ -73,4 +75,38 @@ test('암호화 저장소 마커(cryptoDeviceId)는 영속 저장소에만, 토�
   assert.equal(volatile.getItem('familychat.cryptoDeviceId'), null, '마커는 sessionStorage에 가지 않는다');
   clearSession(stores);
   assert.equal(readSession(stores).cryptoDeviceId, undefined);
+});
+
+// 알림 선호 (#167 C). 세션이 아니라 이 브라우저의 선택이라 clearSession이 지우지 않는다.
+test('알림 선호: 끄기는 새로고침과 로그아웃을 넘어 유지된다', () => {
+  const persistent = new Map();
+  const volatile = new Map();
+  const stores = {
+    persistent: { getItem: (k) => persistent.get(k) ?? null, setItem: (k, v) => persistent.set(k, v), removeItem: (k) => persistent.delete(k) },
+    volatile: { getItem: (k) => volatile.get(k) ?? null, setItem: (k, v) => volatile.set(k, v), removeItem: (k) => volatile.delete(k) },
+  };
+  // 고른 적이 없으면 null — 권한이 이미 granted인 기기는 예전처럼 자동 등록된다.
+  assert.equal(readPushPreference(stores), null);
+
+  savePushPreference('off', stores);
+  assert.equal(readPushPreference(stores), 'off');
+
+  // ⚠ 로그아웃해도 남아야 한다. disablePush는 브라우저 권한을 취소할 수 없어서
+  //    끈 뒤에도 permission은 granted다 — 선호가 사라지면 다음 로그인에 되살아난다.
+  clearSession(stores);
+  assert.equal(readPushPreference(stores), 'off', '로그아웃이 알림 선호를 지우면 끄기가 무효가 된다');
+
+  savePushPreference('on', stores);
+  assert.equal(readPushPreference(stores), 'on');
+
+  // 알 수 없는 값은 무시한다.
+  savePushPreference('maybe', stores);
+  assert.equal(readPushPreference(stores), 'on');
+});
+
+test('알림 선호: 저장소가 없어도 터지지 않는다', () => {
+  assert.equal(readPushPreference(), null);
+  assert.equal(readPushPreference({}), null);
+  assert.doesNotThrow(() => savePushPreference('off'));
+  assert.doesNotThrow(() => savePushPreference('off', {}));
 });
