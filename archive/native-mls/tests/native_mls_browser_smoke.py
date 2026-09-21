@@ -15,40 +15,15 @@ from playwright.sync_api import sync_playwright
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--bundle', required=True, type=Path)
-    modes = parser.add_mutually_exclusive_group()
-    modes.add_argument('--lifecycle', action='store_true', help='isolated replacement library qualification, no native enrollment')
-    modes.add_argument('--identity-context', action='store_true', help='isolated same-signer candidate, no native custody')
-    parser.add_argument('--aggregate-store', type=Path,
-                        help='identity-context only: bundled native-aggregate-vault.js for the identity-bound custody proof')
     args = parser.parse_args()
-    if args.aggregate_store and not args.identity_context:
-        parser.error('--aggregate-store requires --identity-context')
     os.umask(0o077)
-    repo = Path(__file__).resolve().parents[1]
-    prefix = 'native-identity-context-' if args.identity_context else 'native-mls-lifecycle-' if args.lifecycle else 'native-mls-browser-'
+    repo = Path(__file__).resolve().parents[2]  # archive/
+    (repo / 'artifacts').mkdir(mode=0o700, exist_ok=True)
+    prefix = 'native-mls-browser-'
     evidence = Path(tempfile.mkdtemp(prefix=prefix, dir=repo / 'artifacts'))
     paths = {'/': repo / 'experiments/openmls-browser/web/index.html'}
     for name in ['main.js', 'worker.js', 'durable-worker.js']:
         paths['/' + name] = repo / 'experiments/openmls-browser/web' / name
-    if args.lifecycle:
-        paths['/worker.js'] = repo / 'experiments/openmls-browser/web/lifecycle-worker.js'
-        del paths['/durable-worker.js']
-    if args.identity_context:
-        paths['/worker.js'] = repo / 'experiments/openmls-browser/web/identity-context-worker.js'
-        del paths['/durable-worker.js']
-    if args.identity_context and args.aggregate_store:
-        # The identity-bound aggregate custody proof (#49 second slice) rides
-        # on the same disposable page: one bundled store plus its fixture
-        # worker, both served same-origin under the fixture CSP.
-        paths['/native-aggregate-vault.js'] = args.aggregate_store
-        paths['/aggregate-vault-worker.js'] = repo / 'experiments/openmls-browser/web/aggregate-vault-worker.js'
-        signer = args.aggregate_store.parent / 'aggregate-policy-signer.js'
-        signer.write_bytes(b"import{policySigner,policyKeypair} from '/native-aggregate-vault.js';"
-                           b"window.policySigner=policySigner;window.policyKeypair=policyKeypair;")
-        paths['/aggregate-policy-signer.js'] = signer
-        # The signer is a static module on the page (CSP script-src 'self'):
-        # it stands in for the admission server, on the page, outside workers.
-        paths['/'] = repo / 'tests/fixtures/aggregate-vault/page.html'
     for name in ['family_mls_browser_experiment.js', 'family_mls_browser_experiment_bg.wasm']:
         paths['/pkg/' + name] = args.bundle / name
     assets = {}
@@ -111,6 +86,8 @@ def main():
                 assert value['ok'] is True, (method, value)
                 return value.get('result')
 
+            keys = {}
+
             def pair(name, join=True):
                 if name != 'main':
                     alice.evaluate('name => spawn(name)', name)
@@ -118,29 +95,12 @@ def main():
                 times = [call(alice, 'init', 'alice', name=name)['init_ms'],
                          call(bob, 'init', 'bob', name=name)['init_ms']]
                 package = call(bob, 'key_package', name=name)
+                keys[name] = call(bob, 'public_key', name=name)
                 call(alice, 'create', name=name)
                 welcome = call(alice, 'invite', package, name=name)
                 if join:
                     call(bob, 'join', welcome, name=name)
                 return package, welcome, times
-
-            if args.lifecycle or args.identity_context:
-                if args.identity_context:
-                    from native_identity_context_checks import run
-                    run(pages, call, receipt)
-                    if args.aggregate_store:
-                        from native_aggregate_binding_checks import run as run_binding
-                        run_binding(pages, call, receipt)
-                        from native_aggregate_admission_checks import run as run_admission
-                        run_admission(pages, call, receipt)
-                else:
-                    from native_lifecycle_checks import run
-                    run(pages, call, receipt)
-                for context in contexts:
-                    context.close()
-                browser.close()
-                receipt['passed'] = True
-                return
 
             package, welcome, receipt['init_ms'] = pair('main')
             text = list('synthetic hello 한글'.encode())
@@ -183,7 +143,7 @@ def main():
             call(bob, 'decrypt', original, name='tamper', reject=True)
             for method, argument in [('encrypt', text), ('create', None), ('key_package', None),
                                      ('invite', tamper_package), ('join', tamper_welcome),
-                                     ('remove', None), ('commit', [])]:
+                                     ('remove', keys['tamper']), ('commit', [])]:
                 call(bob, method, argument, name='tamper', reject=True)
             receipt['checks']['tamper_retires_original_retry_and_all_operations'] = True
 
@@ -204,19 +164,25 @@ def main():
             # Separate pairs: failed receive deliberately retires a device, so it
             # must not then process a removal commit using uncertain state.
             pair('withheld')
-            call(alice, 'remove', name='withheld')
+            call(alice, 'remove', keys['withheld'], name='withheld')
             new_epoch = call(alice, 'encrypt', text, name='withheld')
             call(bob, 'decrypt', new_epoch, name='withheld', reject=True)
             pair('removed')
-            commit = call(alice, 'remove', name='removed')
+            commit = call(alice, 'remove', keys['removed'], name='removed')
             call(bob, 'commit', commit, name='removed')
             call(bob, 'encrypt', text, name='removed', reject=True)
             pair('removed-read')
-            removed_commit = call(alice, 'remove', name='removed-read')
+            removed_commit = call(alice, 'remove', keys['removed-read'], name='removed-read')
             call(bob, 'commit', removed_commit, name='removed-read')
             new_epoch = call(alice, 'encrypt', text, name='removed-read')
             call(bob, 'decrypt', new_epoch, name='removed-read', reject=True)
             receipt['checks']['removed_device_before_commit_after_commit_read_and_send'] = True
+            pair('remove-wrong-key')
+            call(alice, 'remove', [0] * 32, name='remove-wrong-key', reject=True)
+            pair('remove-self')
+            own = call(alice, 'public_key', name='remove-self')
+            call(alice, 'remove', own, name='remove-self', reject=True)
+            receipt['checks']['remove_unknown_or_own_key_rejected'] = True
             receipt['wire_bytes'] = {'key_package': len(package), 'welcome': len(welcome), 'text': len(encrypted),
                                      'file': len(encrypted_file), 'remove_commit': len(commit)}
             for context in contexts:

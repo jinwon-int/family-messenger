@@ -20,7 +20,8 @@ self.onmessage = ({data: {id, method, argument}}) => {
         case 'join': result = device.join(new Uint8Array(argument)); break;
         case 'encrypt': result = device.encrypt(new Uint8Array(argument)); break;
         case 'decrypt': result = device.decrypt(new Uint8Array(argument)); break;
-        case 'remove': result = device.remove_invitee(); break;
+        case 'public_key': result = device.public_key(); break;
+        case 'remove': result = device.remove_member(new Uint8Array(argument)); break;
         case 'commit': result = device.apply_commit(new Uint8Array(argument)); break;
         default: throw new Error('unknown method');
       }

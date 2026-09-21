@@ -1,5 +1,14 @@
 # Lost and replacement devices: qualification and implementation decision
 
+> **2026-09-21 — superseded in shape by [#177](https://github.com/jinwon-int/family-messenger/issues/177).**
+> The authorization principles below (trusted-device approval only, no login/directory/
+> archive approval, immutable tombstones, new group after total loss) are kept. The
+> 9-stage successor protocol and its `SUCCESSOR-*` links were removed from `archive/`
+> in M0 and are replaced by five operations (enroll-first / add-device / revoke /
+> recover-all-lost / restore-history) with device replacement as one MLS Add/Remove
+> commit and at most 4 active devices per actor. Links to `archive-frozen-20260917`
+> remain valid as v1 history.
+
 The subsequent [signed successor context preflight](https://github.com/jinwon-int/family-messenger/blob/archive-frozen-20260917/archive/native-mls/server/SUCCESSOR-CONTEXT.md)
 checks accepted intent against the actual old room and healthy peer. It is
 read-only; replacement custody, activation and human acceptance remain open.

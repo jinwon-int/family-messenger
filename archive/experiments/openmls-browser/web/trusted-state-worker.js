@@ -178,7 +178,7 @@ self.onmessage=({data})=>{
    if(!exact(data,['id','method','argument'])||!Number.isSafeInteger(data.id)||data.id<1||typeof data.method!=='string')fail();
    id=data.id;const {method,argument}=data;if(retired)fail();let result;
    if(method==='init'){
-    if(db||!exact(argument,['identity','room','database'])||!['alice','bob'].includes(argument.identity)||typeof argument.room!=='string'||!/^[a-zA-Z0-9_-]{1,64}$/.test(argument.room))fail();
+    if(db||!exact(argument,['identity','room','database'])||typeof argument.identity!=='string'||!/^[a-zA-Z0-9_.:-]{1,64}$/.test(argument.identity)||typeof argument.room!=='string'||!/^[a-zA-Z0-9_-]{1,64}$/.test(argument.room))fail();
     identity=argument.identity;room=argument.room;
     const directory=await readDirectory(identity,room);
     db=await open(argument.database);result=await transaction('initialize',undefined,directory);

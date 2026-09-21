@@ -1,47 +1,39 @@
-# archive/native-mls — 네이티브 MLS 전달층 (빌드·기본 CI 제외)
+# archive/native-mls — 독자 MLS 전달층 (v1 제거, v2는 #177 M1)
 
-**상태:** 병행 개발(2026-09-21 결정 E). `server/`와 함께 컴파일되지 않고 기본 CI에서
-돌지 않는다. 운영 전달층은 Matrix다. 트리 개요는 [archive/README.md](../README.md).
+**상태:** 병행 개발(2026-09-21 결정 E → 재설계 [#177](https://github.com/jinwon-int/family-messenger/issues/177)).
+운영 전달층은 Matrix다. 트리 개요는 [archive/README.md](../README.md).
 
-## 이것은 무엇인가
+## 무엇이 있었나 (v1, M0에서 제거)
 
-우리 Go 서버(`server/`)가 직접 E2EE 전달층이 되려던 시도의 코드·문서·시험 드라이버다.
-[결정 D](../../docs/DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md)와
-[ROADMAP 0단계](../../docs/ROADMAP.md)에 따라 원래 경로를 그대로 유지한 채 여기로 옮겼다.
+우리 Go 서버(`server/`)가 직접 E2EE 전달층이 되려던 v1 코드: `/v1/mls/*` 16 라우트, 스키마 3→12의
+`mls_*` 13 테이블, successor 9단계(context·reservation·custody·handshake·confirmation·lease·retirement·
+enrollment·closure), `-tags synthetic_*` UI 번들 12종. 약 8,100줄 Go + 12,400줄 테스트로 "2인 방 기기
+1대 교체" 하나를 만들었지만 그 교체를 완성하지 못했다(#177 §1.1·§1.4). 이 코드는 라이브 `chat` 패키지의
+`Store`·스키마에 의존해 단독 컴파일이 불가했다.
 
-| 위치 | 원래 위치 | 내용 |
+전부 태그 [`archive-frozen-20260917`](https://github.com/jinwon-int/family-messenger/tree/archive-frozen-20260917/archive/native-mls)에
+남아 있다. v1에서 v2로 가져갈 계약(#177 §1.2): 방당 단일 전순서 로그, epoch/revision CAS,
+`UNIQUE(room,device,client_id)` + 바이트 동일 재시도(200/201), 엄격 JSON 디코더 `decodeMLS`.
+
+## 운영 서버에 남은 것
+
+- `server/internal/chat/schema_frozen.go`의 스키마 3~12 마이그레이션과 `mls_*` 테이블은 **그대로**다. 기존
+  스키마-12 DB는 이전처럼 열린다. 테이블 삭제·변경·스키마 13 추가는 하지 않는다.
+- `/v1/mls/*`는 404. `internal/access`의 `successors.go`·`activation.go`(정책 v2·v3)는 M3 정책 v4에서 정리한다.
+
+## v2 (#177 §3.4, M1)
+
+`archive/native-mls/server/`에 **별도 Go 모듈·별도 SQLite 파일**로 새로 만든다: 라우트 4개
+(`keypackages` POST/GET, `events` POST/GET), 테이블 3개(`mls_rooms`·`mls_events`·`mls_keypackages`),
+서버 측 MLS 상태기계 없음, 멤버 누구나 commit, Welcome 타깃 필터링, 바이트 기준 보존/프루닝,
+`BEGIN IMMEDIATE` 안의 CAS.
+
+## tests/
+
+| 파일 | 대상 | 서버 필요 |
 |---|---|---|
-| `server/internal/chat/mls*.go` | `server/internal/chat/` | `/v1/mls/*` 합성 MLS 전달(예약·그룹 바인딩·불투명 로그), 준비 장벽, successor 9단계(context·reservation·custody·handshake·confirmation·lease·retirement·enrollment·closure) |
-| `server/internal/chat/*_assets*.go`, `*_bundle*.json` | 같음 | `-tags synthetic_*`로만 임베드되던 합성 UI 번들 12종과 해시 고정 매니페스트 |
-| `server/*.md` | `server/` | 위 흐름만 설명하는 계약 문서(MLS-TRANSPORT, PREPARATION, SUCCESSOR*, CLIENT-CUSTODY, ENCRYPTED-UI, VAULT-UI, HISTORY-UI, AGGREGATE*) |
-| `tests/` | `tests/` | MLS·successor·번들 흐름만 검증하던 `native_*` 드라이버·검사 모듈, 실험 스모크, 픽스처 |
-| `tools/prepare_mls_assets.py` | `tools/` | 번들 준비·검증 도구 |
-| `../experiments/{openmls-browser,device-keystore}` | `experiments/` | OpenMLS WASM 브라우저 실험, 기기 키 보관 실험 |
-
-증거 JSON은 [`docs/evidence/server/`](../../docs/evidence/server/)에 있다.
-
-## 왜 동결했나
-
-결정 D: 전달·암호화는 Matrix 스택(단일 바이너리 Rust 홈서버 + `matrix-sdk-crypto`)을 채택하고,
-우리는 화면과 AI 참여 층을 만든다. 이 코드는 "2인 방 기기 1대 교체"를 위해 스키마 12판·테이블 10개·
-서브리소스 10개를 쌓았지만 사람이 쓸 수 있는 상태에 이르지 못했고, 위협 모델·수용 기준만
-D의 인수검사 기준으로 계승한다.
-
-## 남아 있는 것과 남지 않는 것
-
-- **남아 있는 것:** SQLite 스키마 3~12의 마이그레이션(`server/internal/chat/schema_frozen.go`)과
-  `mls_*` 테이블. 기존 스키마-12 데이터베이스는 이전과 똑같이 열리고, 옛 판은 같은 스냅숏을 남기며
-  12판까지 올라간다. 테이블은 삭제·변경하지 않는다. 스키마 13은 추가하지 않는다.
-- **남지 않는 것:** `/v1/mls/*` 라우트 전부(지금은 404), `family-dev`의 `--synthetic-*-ui` 플래그,
-  `-tags synthetic_*` 빌드, `native_policy_smoke.py --successor*` 프로브, `.github/workflows/native.yml`의
-  MLS 전송 스모크와 스키마 8~11 롤백 프로브.
-- `internal/access`의 `successors.go`·`activation.go`는 서명 정책 스토어(정책 버전 2·3)의 일부이므로
-  코드에 남아 있다. 다른 것과 함께 검토해 정리한다.
-- `.github/workflows/mls-experiment.yml`은 `workflow_dispatch` 전용으로 남아 있으나 옛 경로를 가리키며
-  실행되지 않는다. 참고용이다.
-
-## 삭제 계획 — 폐기됨
-
-결정 E가 이 트리를 병행 개발용으로 복원했다. 1단계 게이트 이후 삭제하지 않는다.
-이 디렉터리의 코드는 현재 `server/` 모듈과 함께 컴파일되지 않는다. 기본 CI에
-`mls-experiment.yml`을 되돌리지 않는다.
+| `native_mls_browser_smoke.py` | 메모리 전용 워커 2 컨텍스트 왕복·변조·재생·잘못된 그룹·제거 | 없음 |
+| `native_mls_persistence_smoke.py` | `durable-worker.js` IDB 단일 tx·결함 주입·손상 거부 | 없음 |
+| `native_trusted_state_smoke.py` | `trusted-state-worker.js` 핀 + 서명 디렉터리 | 라이브 `family-dev`/`family-policy` |
+| `native_device_browser_smoke.py` | `trust-worker.js` 첫 기기 디렉터리 게이트 | 라이브 `family-dev`/`family-policy` |
+| `device_keystore_smoke.py` · `password_worker_smoke.py` · `session_record_smoke.py` | 키 커스터디 프로브 | 없음 (esbuild 번들 필요) |

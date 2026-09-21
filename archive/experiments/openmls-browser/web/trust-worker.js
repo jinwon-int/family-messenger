@@ -14,7 +14,7 @@ self.onmessage=({data})=>{
    if(!exact(data,['id','method','argument'])||!Number.isSafeInteger(data.id)||data.id<1||typeof data.method!=='string')reject();
    id=data.id;const {method,argument}=data;
    if(retired) reject();let result;
-   if(method==='init') {if(device||!['alice','bob'].includes(argument))reject();actor=argument;device=new Device(actor);}
+   if(method==='init') {if(device||!name(argument))reject();actor=argument;device=new Device(actor);}
    else {
     if(!device)reject();
     if(method==='public_key') result=device.public_key();

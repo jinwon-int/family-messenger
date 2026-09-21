@@ -8,6 +8,12 @@ use wasm_bindgen::prelude::*;
 const SUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 const MAX_WIRE: usize = 65536;
 fn rejected<T>(_: T) -> JsValue { JsValue::from_str("MLS operation rejected") }
+/// Identity labels are opaque application identifiers (`actor/device`), validated by
+/// shape only. Trust never comes from the label; it comes from independently pinned keys.
+fn valid_identity(identity: &str) -> bool {
+    !identity.is_empty() && identity.len() <= 64
+        && identity.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b))
+}
 fn bounded(bytes: &[u8], max: usize) -> Result<(), JsValue> {
     if bytes.is_empty() || bytes.len() > max { Err(JsValue::from_str("size rejected")) } else { Ok(()) }
 }
@@ -26,9 +32,7 @@ pub struct Device {
 impl Device {
     #[wasm_bindgen(constructor)]
     pub fn new(identity: &str) -> Result<Device, JsValue> {
-        if !["alice", "bob", "outsider", "alice-second"].contains(&identity) {
-            return Err(JsValue::from_str("synthetic identities only"));
-        }
+        if !valid_identity(identity) { return Err(JsValue::from_str("identity rejected")); }
         let provider = OpenMlsRustCrypto::default();
         let signer = SignatureKeyPair::new(SUITE.signature_algorithm()).map_err(rejected)?;
         signer.store(provider.storage()).map_err(rejected)?;
@@ -97,11 +101,14 @@ impl Device {
         }
     }
 
-    /// Remove the sole invited leaf in this two-member experiment.
-    fn remove_invitee_inner(&mut self) -> Result<Vec<u8>, JsValue> {
+    /// Remove the member whose leaf signing key equals `key` (never our own leaf).
+    /// The target is identified by its pinned public key, not by a leaf index or label.
+    fn remove_member_inner(&mut self, key: &[u8]) -> Result<Vec<u8>, JsValue> {
+        if key.len() != 32 || key == self.signer.public() { return Err(rejected(())); }
         let group = self.group.as_mut().ok_or_else(|| rejected(()))?;
-        if group.members().count() != 2 { return Err(rejected(())); }
-        let (commit, _, _) = group.remove_members(&self.provider, &self.signer, &[LeafNodeIndex::new(1)]).map_err(rejected)?;
+        let targets: Vec<LeafNodeIndex> = group.members().filter(|m| m.signature_key == key).map(|m| m.index).collect();
+        let [target] = targets[..] else { return Err(rejected(())); };
+        let (commit, _, _) = group.remove_members(&self.provider, &self.signer, &[target]).map_err(rejected)?;
         group.merge_pending_commit(&self.provider).map_err(rejected)?;
         commit.tls_serialize_detached().map_err(rejected)
     }
@@ -141,7 +148,7 @@ impl Device {
     pub fn join(&mut self, bytes: &[u8]) -> Result<(), JsValue> { self.run(|s| s.join_inner(bytes)) }
     pub fn encrypt(&mut self, bytes: &[u8]) -> Result<Vec<u8>, JsValue> { self.run(|s| s.encrypt_inner(bytes)) }
     pub fn decrypt(&mut self, bytes: &[u8]) -> Result<Vec<u8>, JsValue> { self.run(|s| s.decrypt_inner(bytes)) }
-    pub fn remove_invitee(&mut self) -> Result<Vec<u8>, JsValue> { self.run(|s| s.remove_invitee_inner()) }
+    pub fn remove_member(&mut self, key: &[u8]) -> Result<Vec<u8>, JsValue> { self.run(|s| s.remove_member_inner(key)) }
     pub fn apply_commit(&mut self, bytes: &[u8]) -> Result<(), JsValue> { self.run(|s| s.apply_commit_inner(bytes)) }
 }
 
