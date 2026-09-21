@@ -1,5 +1,5 @@
 """Original protected lease workers through an explicit synthetic DOM."""
-import copy,hashlib,json,threading,time
+import copy,hashlib,json,subprocess,threading,time
 from urllib.parse import urlsplit
 from password_worker_smoke import safe_bytes
 
@@ -10,13 +10,20 @@ def fixture_assets(root,assets,proof):
     mapping={'lease-ceremony.html':'/lease-ceremony/','lease-ceremony.css':'/lease-ceremony.css','lease-ceremony-ui.js':'/lease-ceremony-ui.js','lease-ceremony-client.js':'/lease-ceremony-client.js'}
     for name,url in mapping.items():
         raw=safe_bytes(web/name,65536);assets[url]=raw
-    # Page loads /{role}-lease-worker.js; keep originals there. Fault copies stay named.
+    cwd=root/'experiments/device-keystore'
+    if not cwd.exists():
+        cwd=root.parent/'experiments/device-keystore'
+    source=safe_bytes(cwd/'successor-lease-store.js',65536)
+    needle=b"await store.commit(before,after,'',live);"
+    assert source.count(needle)==1
+    raw=subprocess.run(['node','node_modules/esbuild/bin/esbuild','--bundle','--format=esm','--platform=browser','--target=es2023','--minify','--sourcefile=successor-lease-store.js','--external:/pkg/*','--external:/trust-directory.js','--external:/handshake-wire.js','--external:/confirmation-wire.js','--external:/lease-wire.js'],input=source.replace(needle,b"await store.commit(before,after,'abort-after-write',live);"),cwd=cwd,capture_output=True,check=True).stdout
+    assets['/lease-ceremony-fault-store.js']=raw
     for role in ('candidate','peer'):
-        original=assets.get('/original-'+role+'-lease-worker.js')
+        original=assets.get('/original-'+role+'-lease-worker.js') or assets.get('/'+role+'-lease-worker.js')
         if original is None:continue
-        assets['/fault-'+role+'-lease-worker.js']=assets['/'+role+'-lease-worker.js']
         assets['/'+role+'-lease-worker.js']=original
-    proof['lease_ceremony_packaging']='isolated synthetic fixture-served original UI; existing lease workers; not compiled Go assets'
+        assets['/fault-'+role+'-lease-worker.js']=original.replace(b'./successor-lease-store.js',b'./lease-ceremony-fault-store.js')
+    proof['lease_ceremony_packaging']='isolated synthetic fixture-served original UI; abort-after-write fault workers; not compiled Go assets'
     proof['lease_ceremony_fixture_sha256']={k:hashlib.sha256(assets[k]).hexdigest() for k in mapping.values()}
     return mapping
 
