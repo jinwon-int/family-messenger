@@ -8,7 +8,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decodeApplicationServerKey, disablePush, enablePush, isIosDevice, pushAvailability, pusherPayload, readSubscription } from '../src/push.js';
+import { decodeApplicationServerKey, disablePush, enablePush, hasMatchingPusher, isIosDevice, pushAvailability, pusherPayload, readSubscription } from '../src/push.js';
 
 const SAMPLE_KEY = 'BIY-ucjgRHPAYhdIh6AU91y-yCYABUaROXg3L-_ghS-tRwZAxJsu8KxM_p7pWyUcLxM_LDbGZJlzf54BkzeAuSI';
 const PUSH = {
@@ -316,14 +316,39 @@ test('pushAvailability: 설정이 없으면 다른 모든 판단보다 먼저 �
 });
 
 test('pushAvailability: iOS 탭은 "지원 안 함"이 아니라 "홈화면에 추가"다', () => {
-  // iOS Safari 탭에는 PushManager가 아예 없다. 기능 검사만 하면 "이 브라우저는
-  // 지원하지 않습니다"가 뜨는데, 사실은 홈화면에 추가하면 된다. 그 안내를 못 보면
-  // 가족은 영영 알림을 못 켠다.
+  // iOS Safari 탭에는 Notification도 PushManager도 없다. 기능 검사만 하면
+  // "이 브라우저는 지원하지 않습니다"가 뜨는데, 사실은 홈화면에 추가하면 된다.
   assert.equal(pushAvailability({ ...BASE, isIos: true, isStandalone: false, hasPushManager: false }), 'ios-needs-install');
-  assert.equal(pushAvailability({ ...BASE, isIos: true, isStandalone: false }), 'ios-needs-install');
+  assert.equal(pushAvailability({ ...BASE, isIos: true, isStandalone: false, hasNotification: false }), 'ios-needs-install');
   // 홈화면 앱이면 평범하게 켤 수 있다.
   assert.equal(pushAvailability({ ...BASE, isIos: true, isStandalone: true }), 'off');
   assert.equal(pushAvailability({ ...BASE, isIos: true, isStandalone: true, subscribed: true }), 'on');
+});
+
+test('pushAvailability: 기능이 실제로 있으면 iOS 오판이 토글을 지우지 않는다', () => {
+  // isIosDevice는 터치 디스플레이를 붙인 Mac을 오판할 수 있다. 그때 홈화면 안내를
+  // 띄우면 켜기·끄기 버튼이 둘 다 사라져 **이미 켜 둔 알림을 끌 수조차 없다**.
+  // 진짜 iOS Safari 탭에는 API가 없으므로 이 조건으로도 안내는 필요한 사람에게 간다.
+  assert.equal(pushAvailability({ ...BASE, isIos: true, isStandalone: false }), 'off');
+  assert.equal(pushAvailability({ ...BASE, isIos: true, isStandalone: false, subscribed: true }), 'on');
+});
+
+test('pushAvailability: iOS 홈화면에서 차단되면 자물쇠가 아니라 iOS 설정을 가리킨다', () => {
+  // 홈화면 앱에는 주소창도 "사이트 권한" 메뉴도 없다 — 일반 안내는 막다른 길이다.
+  assert.equal(pushAvailability({ ...BASE, isIos: true, isStandalone: true, permission: 'denied' }), 'denied-ios');
+  assert.equal(pushAvailability({ ...BASE, isIos: false, permission: 'denied' }), 'denied');
+});
+
+test('hasMatchingPusher: 구독만으로 "켜짐"이라 하지 않기 위한 확인', () => {
+  const mine = { pushkey: 'P256DH-VALUE', app_id: PUSH.appId };
+  assert.equal(hasMatchingPusher([mine], 'P256DH-VALUE', PUSH.appId), true);
+  // 다른 기기/다른 앱의 pusher는 내 것이 아니다.
+  assert.equal(hasMatchingPusher([{ pushkey: 'OTHER', app_id: PUSH.appId }], 'P256DH-VALUE', PUSH.appId), false);
+  assert.equal(hasMatchingPusher([{ pushkey: 'P256DH-VALUE', app_id: 'com.other.app' }], 'P256DH-VALUE', PUSH.appId), false);
+  assert.equal(hasMatchingPusher([], 'P256DH-VALUE', PUSH.appId), false);
+  assert.equal(hasMatchingPusher(null, 'P256DH-VALUE', PUSH.appId), false);
+  assert.equal(hasMatchingPusher([null, mine], 'P256DH-VALUE', PUSH.appId), true);
+  assert.equal(hasMatchingPusher([mine], null, PUSH.appId), false);
 });
 
 test('pushAvailability: 미지원·차단·켜짐·꺼짐', () => {

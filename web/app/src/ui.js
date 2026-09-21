@@ -814,11 +814,16 @@ export function openNotificationsSheet(root, { load, enable, disable, onClose })
     } catch (error) {
       console.error('notification toggle failed', error);
       status = { tone: 'error', text: failureText };
-    } finally {
-      busy = false;
-      availability = await load();
-      render();
     }
+    // ⚠ load()를 finally에 두면 그것이 던질 때 render()가 영영 안 불려
+    //    버튼이 "처리 중…"으로 고정된다(openDevicesSheet는 try 안에 둔다).
+    try {
+      availability = await load();
+    } catch (error) {
+      console.error('notification state failed', error);
+    }
+    busy = false;
+    render();
   };
 
   const render = () => {
@@ -834,8 +839,9 @@ export function openNotificationsSheet(root, { load, enable, disable, onClose })
         el('p', { class: 'hint' }, strings.notifications.iosSteps),
         el('p', { class: 'status error', role: 'status' }, strings.notifications.iosOrder),
       );
-    } else if (availability === 'denied') {
-      body.push(el('p', { class: 'status error', role: 'status' }, strings.notifications.denied));
+    } else if (availability === 'denied' || availability === 'denied-ios') {
+      // iOS 홈화면 앱에는 주소창도 사이트 권한 메뉴도 없다 — 다른 경로를 알려준다.
+      body.push(el('p', { class: 'status error', role: 'status' }, availability === 'denied-ios' ? strings.notifications.deniedIos : strings.notifications.denied));
     } else if (availability === 'on') {
       body.push(
         el('p', { class: 'hint' }, strings.notifications.on),
@@ -860,7 +866,9 @@ export function openNotificationsSheet(root, { load, enable, disable, onClose })
     setChildren(
       dialog,
       el('h2', { id: 'notifications-title' }, availability === 'ios-needs-install' ? strings.notifications.iosTitle : strings.notifications.title),
-      el('p', { class: 'hint' }, strings.notifications.intro),
+      // 켤 수 없는 상태에서는 "앱을 닫아도 알려줍니다" 바로 밑에 "지원하지
+      // 않습니다"가 붙어 서로 어긋난다 — 켜고 끌 수 있을 때만 보여준다.
+      availability === 'off' || availability === 'on' ? el('p', { class: 'hint' }, strings.notifications.intro) : null,
       status ? el('p', { class: `status ${status.tone}`, role: 'status' }, status.text) : null,
       ...body,
       el('div', { class: 'row end' }, el('button', { type: 'button', class: 'ghost', onclick: close }, strings.verification.close)),

@@ -311,6 +311,12 @@ export class ClientAdapter {
     return this.client.removePusher(pushKey, appId);
   }
 
+  /** This account's pushers. Used to tell "really on" from "subscribed but not registered". */
+  async getPushers() {
+    const response = await this.client.getPushers();
+    return Array.isArray(response?.pushers) ? response.pushers : [];
+  }
+
   /**
    * My devices with cross-signing status (crossSigned: true/false, null when
    * crypto cannot tell). The current session is flagged so the UI never

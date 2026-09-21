@@ -24,20 +24,31 @@ const root = () => {
   return document.getElementById('app');
 };
 
-/** 시트를 열고 첫 load()가 반영될 때까지 기다린다. */
+/**
+ * 시트를 열고 첫 load()가 반영될 때까지 기다린다.
+ *
+ * ⚠ load()가 **실제 상태를 반영**하도록 만든다. 앞선 판(2026-09-21 검토 지적)은
+ *    테스트가 load의 반환값을 미리 정해두고 그 값이 화면에 왔는지만 봐서,
+ *    enable이 실패했는데도 "켜짐"이 뜨는 모순 화면을 구조적으로 못 잡았다.
+ *    여기서는 enable/disable의 결과가 그대로 다음 load()에 반영된다.
+ */
 async function openSheet(availability, handlers = {}) {
   const node = root();
   let current = availability;
+  const wrap = (fn, onOk) => async () => {
+    const result = await fn();
+    if (result?.ok) current = onOk;
+    return result;
+  };
   ui.openNotificationsSheet(node, {
-    load: async () => current,
-    enable: handlers.enable ?? (async () => ({ ok: true })),
-    disable: handlers.disable ?? (async () => ({ ok: true })),
+    load: handlers.load ?? (async () => current),
+    enable: wrap(handlers.enable ?? (async () => ({ ok: true })), 'on'),
+    disable: wrap(handlers.disable ?? (async () => ({ ok: true })), 'off'),
   });
   await new Promise((resolve) => setTimeout(resolve, 0));
   return {
     node,
     dialog: node.querySelector('dialog'),
-    set: (value) => { current = value; },
     text: () => node.querySelector('dialog').textContent,
     button: (label) => [...node.querySelectorAll('button')].find((b) => b.textContent === label) ?? null,
   };
@@ -85,7 +96,6 @@ test('알림 시트: 차단·미지원·미설정은 각각 다른 이유를 보
 test('알림 시트: 켜기에 성공하면 켜짐 상태로 다시 그린다', async () => {
   let called = 0;
   const sheet = await openSheet('off', { enable: async () => { called += 1; return { ok: true }; } });
-  sheet.set('on');
   sheet.button(strings.notifications.enable).click();
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(called, 1);
@@ -107,6 +117,39 @@ test('알림 시트: 켜기가 실패하면 이유를 보여주고 꺼짐으로 
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.ok(sheet.text().includes(strings.notifications.enableFailed));
   assert.ok(sheet.button(strings.notifications.enable), '다시 시도할 수 있어야 한다');
+  // 실패했는데 "켜져 있습니다"가 같이 뜨면 가족은 켜졌다고 믿는다.
+  assert.ok(!sheet.text().includes(strings.notifications.on), '실패 후 켜짐으로 보이면 안 된다');
+  assert.equal(sheet.button(strings.notifications.disable), null);
+});
+
+test('알림 시트: load가 던져도 버튼이 "처리 중…"에 고착되지 않는다', async () => {
+  // finally에서 await load()를 하면 그것이 던질 때 render()가 영영 안 불린다.
+  let first = true;
+  const sheet = await openSheet('off', {
+    load: async () => { if (first) { first = false; return 'off'; } throw new Error('network'); },
+  });
+  sheet.button(strings.notifications.enable).click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(sheet.button(strings.notifications.working), null, '"처리 중…"에 고착되면 안 된다');
+  assert.ok(sheet.button(strings.notifications.enable) || sheet.button(strings.notifications.disable), '다시 누를 수 있어야 한다');
+});
+
+test('알림 시트: iOS 홈화면에서 차단되면 iOS 설정 경로를 안내한다', async () => {
+  // 홈화면 앱에는 주소창도 사이트 권한 메뉴도 없다 — 자물쇠 안내는 막다른 길이다.
+  const sheet = await openSheet('denied-ios');
+  assert.ok(sheet.text().includes(strings.notifications.deniedIos));
+  assert.ok(!sheet.text().includes(strings.notifications.denied), '자물쇠 안내를 주면 안 된다');
+});
+
+test('알림 시트: 켤 수 없는 상태에서는 "앱을 닫아도 알려줍니다"를 붙이지 않는다', async () => {
+  for (const availability of ['unsupported', 'not-configured', 'ios-needs-install', 'denied', 'denied-ios']) {
+    const sheet = await openSheet(availability);
+    assert.ok(!sheet.text().includes(strings.notifications.intro), `${availability}: 안내가 서로 어긋난다`);
+  }
+  for (const availability of ['off', 'on']) {
+    const sheet = await openSheet(availability);
+    assert.ok(sheet.text().includes(strings.notifications.intro), availability);
+  }
 });
 
 test('알림 시트: 켜기가 던져도 시트가 살아 있다', async () => {
@@ -119,7 +162,6 @@ test('알림 시트: 켜기가 던져도 시트가 살아 있다', async () => {
 
 test('알림 시트: 끄기에 성공하면 꺼짐 상태로 다시 그린다', async () => {
   const sheet = await openSheet('on', { disable: async () => ({ ok: true, removed: true, unsubscribed: true }) });
-  sheet.set('off');
   sheet.button(strings.notifications.disable).click();
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.ok(sheet.text().includes(strings.notifications.off));
@@ -127,7 +169,7 @@ test('알림 시트: 끄기에 성공하면 꺼짐 상태로 다시 그린다', 
 
 test('알림 시트: 화면에 "null"이나 "undefined" 글자가 나오지 않는다', async () => {
   // #126 회귀: replaceChildren(..., null, ...)이 텍스트 "null"을 그렸다.
-  for (const availability of ['off', 'on', 'denied', 'unsupported', 'not-configured', 'ios-needs-install']) {
+  for (const availability of ['off', 'on', 'denied', 'denied-ios', 'unsupported', 'not-configured', 'ios-needs-install']) {
     const sheet = await openSheet(availability);
     const text = sheet.text();
     assert.ok(!text.includes('null'), `${availability}: "null"이 화면에 있다`);
