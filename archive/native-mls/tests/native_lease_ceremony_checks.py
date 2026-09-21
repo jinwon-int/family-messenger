@@ -32,11 +32,12 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
             assert p.locator('#identity').input_value()==p.locator('#role').input_value()==p.locator('#action').input_value()=='' and p.locator('#run').is_disabled()
             assert p.locator('#password').input_value()=='' and not p.locator('#consent').is_checked()
             kind=q['operation']['kind'];p.select_option('#identity',q['identity']);p.select_option('#role',role);p.fill('#database',q['database']);p.select_option('#action',kind)
-            if kind=='send':
-                p.fill('#message-id',q['operation']['id']);p.fill('#message-text',q['operation']['text'])
             doc={'version':1,'scopes':[{'identity':q['identity'],'role':role,'database':q['database'],'reservation':q['intent']['reservation']}]}
             p.locator('#request-file').set_input_files({'name':'request.json','mimeType':'application/json','buffer':json.dumps(doc).encode()});p.click('#request-load');p.wait_for_function("()=>document.getElementById('request-status').textContent.includes('요청을 읽었습니다')")
-            p.fill('#confirmation',hashlib.sha256(json.dumps(q['intent']['reservation'],sort_keys=True,separators=(',',':')).encode()).hexdigest());p.fill('#password',q['password']);p.check('#consent')
+            p.fill('#confirmation',hashlib.sha256(json.dumps(q['intent']['reservation'],sort_keys=True,separators=(',',':')).encode()).hexdigest());p.fill('#password',q['password'])
+            if kind=='send':
+                p.fill('#message-id',q['operation']['id']);p.fill('#message-text',q['operation']['text'])
+            p.check('#consent')
             if submit:p.click('#run')
             return
         p.evaluate('window.leaseTestMode=false')

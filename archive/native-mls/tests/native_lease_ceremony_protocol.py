@@ -18,8 +18,9 @@ reservation={'version':1,'reservation_id':'generated-reservation','context':cont
 server=ThreadingHTTPServer(('127.0.0.1',0),Handler);threading.Thread(target=server.serve_forever,daemon=True).start();checks={}
 def fill(p,action='activate'):
  p.select_option('#identity','alice');p.select_option('#role','peer');p.fill('#database',scope['database']);p.select_option('#action',action)
+ p.locator('#request-file').set_input_files({'name':'request.json','mimeType':'application/json','buffer':json.dumps(doc).encode()});p.click('#request-load');expect(p.locator('#request-status')).to_contain_text('요청을 읽었습니다');p.fill('#confirmation',expected);p.fill('#password','generated-password-for-protocol-only-000')
  if action=='send':p.fill('#message-id','message-one');p.fill('#message-text','generated hello')
- p.locator('#request-file').set_input_files({'name':'request.json','mimeType':'application/json','buffer':json.dumps(doc).encode()});p.click('#request-load');expect(p.locator('#request-status')).to_contain_text('요청을 읽었습니다');p.fill('#confirmation',expected);p.fill('#password','generated-password-for-protocol-only-000');p.check('#consent')
+ p.check('#consent')
 try:
  with sync_playwright() as pw:
   browser=pw.chromium.launch();p=browser.new_page()
