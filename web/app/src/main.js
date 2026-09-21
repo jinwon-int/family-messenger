@@ -12,6 +12,7 @@ import { splitParticipants, shortHandle } from './participants.js';
 import { attachmentFromContent, collectAttachments, fileboxRefreshUrl } from './attachments.js';
 import { applyTypingEvent, createTypingState, pruneTyping, typingIndicator, typingNames } from './typing.js';
 import { DEFAULT_CONFIG, loadConfig } from './config.js';
+import { disablePush, enablePush } from './push.js';
 import * as ui from './ui.js';
 
 const root = document.getElementById('app');
@@ -276,6 +277,36 @@ async function connect(creds, { fresh = false } = {}) {
   installKeyboardShortcuts();
   installRoomListKeyboardNav();
   openRooms();
+  resumePush();
+}
+
+/**
+ * 이미 알림을 허용한 기기에서만 pusher를 조용히 다시 등록한다.
+ *
+ * **권한을 여기서 요청하지 않는다.** 로그인 직후 팝업을 띄우면 거절당했을 때
+ * 회복이 어렵다(#167 C — 설정의 명시적 토글로 켠다). 여기가 필요한 이유는 따로
+ * 있다: pusher는 홈서버의 계정에 붙고 구독은 브라우저에 붙는데, 홈서버가 pushkey를
+ * 정리했거나(구독 만료 후 재구독) 다른 계정으로 로그인하면 둘이 어긋난다.
+ * 로그인할 때마다 다시 등록하면 그 어긋남이 한 번의 로그인으로 낫는다.
+ */
+async function resumePush() {
+  if (!state.config.push) return;
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    await enablePush({
+      registration,
+      push: state.config.push,
+      client: state.client,
+      userId: state.myUserId,
+      deviceDisplayName: state.client.deviceId() ?? undefined,
+      permission: Notification.permission,
+    });
+  } catch (error) {
+    // 알림이 없다고 채팅을 막지 않는다. 원인은 콘솔에만 남긴다.
+    console.error('push registration failed', error);
+  }
 }
 
 // 방 화면 키보드 단축키: 대화형 요소 밖 Enter=작성창 커서, Home=방 목록.
@@ -680,6 +711,18 @@ function openDevices() {
   });
 }
 
+/** 로그아웃 전 pusher 해제. 실패는 삼킨다 — 로그아웃 자체를 막으면 안 된다. */
+async function removePushForLogout(client) {
+  if (!state.config.push || !('serviceWorker' in navigator)) return;
+  try {
+    const registration = await navigator.serviceWorker.getRegistration();
+    if (!registration) return;
+    await disablePush({ registration, push: state.config.push, client });
+  } catch (error) {
+    console.error('push removal failed', error);
+  }
+}
+
 async function logout() {
   if (!window.confirm(strings.account.logoutConfirm)) return;
   const client = state.client;
@@ -689,6 +732,10 @@ async function logout() {
       clearInterval(listTicker);
       listTicker = null;
     }
+    // ⚠ logout()보다 **먼저** 지운다. 토큰이 사라진 뒤에는 pusher를 못 지우고,
+    //   그러면 이 기기를 떠난 뒤에도 알림이 계속 간다(#126). 실패해도 로그아웃은
+    //   진행한다 — 남은 pusher는 다음 발송에서 410을 받아 홈서버가 정리한다.
+    await removePushForLogout(client);
     await client.logout();
   } catch (error) {
     console.error('logout failed', error);
@@ -780,6 +827,14 @@ if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(() => {
       /* installable PWA is best-effort; the app works without it */
     });
+  });
+  // 알림을 누르면 서비스워커가 이 메시지를 보낸다. 앱에 URL 라우팅이 없어
+  // (방 선택은 메모리 상태) 딥링크 대신 메시지로 방을 연다.
+  navigator.serviceWorker.addEventListener?.('message', (event) => {
+    if (event?.data?.type !== 'familychat:open-room') return;
+    const roomId = event.data.roomId;
+    if (typeof roomId !== 'string' || !state.rooms.has(roomId)) return;
+    openRoom(roomId);
   });
 }
 
