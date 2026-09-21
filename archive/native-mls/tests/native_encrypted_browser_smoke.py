@@ -532,7 +532,15 @@ def main():
                 return result
             def reopen(p,i):p.evaluate("stopWorker('device');spawn('device')");return init(p,i)
             def crash(i):
-                session=contexts[i].browser.new_browser_cdp_session();pid=next(int(p['id']) for p in session.send('SystemInfo.getProcessInfo')['processInfo'] if p['type']=='browser');assert ('--user-data-dir='+str(profiles[i])).encode() in Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
+                needle=('--user-data-dir='+str(profiles[i])).encode()
+                def cmdline(pid):
+                    try:return Path(f'/proc/{int(pid)}/cmdline').read_bytes().split(b'\0')
+                    except (FileNotFoundError,ValueError,ProcessLookupError,PermissionError):return []
+                session=contexts[i].browser.new_browser_cdp_session()
+                pid=next((int(p['id']) for p in session.send('SystemInfo.getProcessInfo')['processInfo'] if needle in cmdline(p['id'])),None)
+                if pid is None:
+                    pid=next((int(proc.name) for proc in Path('/proc').iterdir() if proc.name.isdigit() and needle in cmdline(proc.name)),None)
+                assert pid is not None and needle in cmdline(pid)
                 import signal
                 os.kill(pid,signal.SIGKILL)
                 try:contexts[i].close()
