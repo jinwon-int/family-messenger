@@ -297,6 +297,21 @@ export class ClientAdapter {
   }
 
   /**
+   * Register/replace a push gateway pusher. The body goes to
+   * POST /_matrix/client/v3/pushers/set verbatim — the SDK does not reshape it,
+   * so the non-spec `data` keys sygnal reads (endpoint/auth/events_only/
+   * only_last_per_room) survive. Build it with src/push.js, not by hand.
+   */
+  setPusher(pusher) {
+    return this.client.setPusher(pusher);
+  }
+
+  /** Delete a pusher (sends kind: null). pushKey is the subscription's p256dh. */
+  removePusher(pushKey, appId) {
+    return this.client.removePusher(pushKey, appId);
+  }
+
+  /**
    * My devices with cross-signing status (crossSigned: true/false, null when
    * crypto cannot tell). The current session is flagged so the UI never
    * offers to delete it from this list.
