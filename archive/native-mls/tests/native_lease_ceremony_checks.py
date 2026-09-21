@@ -69,6 +69,11 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
         r=v['result'];assert r['committed'] and 'pending' not in r and 'approval' not in r
         return r
     def lease(p,role,op=None,arg=None,setup=None,reject=False):begin(p,role,op,arg,setup);return done(p,reject)
+    def invoke(p,role,op=None,arg=None,setup=None,reject=False):
+        q=arg or args(role,op)
+        v=p.evaluate('''([role,arg,setup])=>new Promise(resolve=>{const w=new Worker('/'+(setup?'':'original-')+role+'-lease-worker.js',{type:'module'});const timer=setTimeout(()=>{w.terminate();resolve({ok:false,timeout:true})},25000);w.onerror=e=>{clearTimeout(timer);resolve({ok:false,error:e.message})};w.onmessage=({data})=>{if(data.boot){if(setup)w.postMessage({testSetup:setup});w.postMessage({id:1,method:'lease',argument:arg});}else if(data.id===1){clearTimeout(timer);resolve(data);w.terminate()}}})''',[role,q,setup])
+        if reject:assert not v.get('ok') and 'result' not in v,v;return v
+        assert v['ok'],v;r=v['result'];assert r['committed'];assert v['memory_bytes']<=128*1024*1024;return r
     def snapshots():return [digest(a,0),digest(b,1),digest(b,1,database=database)]
     original=snapshots()
     for p,role in ((a,'peer'),(b,'candidate')):
@@ -81,25 +86,25 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
     proof['checks']['lease_dom_no_selection_bounded_files_independent_digest_and_no_post']=True
     for p,role in ((a,'peer'),(b,'candidate')):
         for setup in ({'testFault':'abort-before-write'},{'testFault':'abort-after-write'},{'testExpireAtCAS':True}):
-            lease(p,role,setup=setup,reject=True);assert snapshots()==original and not hooks['posts']
-        bad=args(role);bad['password']='w'*48;lease(p,role,arg=bad,reject=True)
+            invoke(p,role,setup=setup,reject=True);assert snapshots()==original and not hooks['posts']
+        bad=args(role);bad['password']='w'*48;invoke(p,role,arg=bad,reject=True)
     proof['checks']['lease_ceremony_both_roles_local_abort_actual_CAS_expiry_wrong_password_zero_approvals']=True
     def lost(method,status,raw):return (status,b'{',False) if method=='POST' else (status,raw,False)
-    hooks['drop_before']='lease';lease(b,'candidate',reject=True);hooks['drop_before']=None;pending=snapshots();crash(1);b=page(1)
-    hooks['callback']=lost;lease(b,'candidate',reject=True);hooks['callback']=None;assert hooks['posts']==[hooks['dropped'][-1]] and snapshots()==pending
+    hooks['drop_before']='lease';invoke(b,'candidate',reject=True);hooks['drop_before']=None;pending=snapshots();crash(1);b=page(1)
+    hooks['callback']=lost;invoke(b,'candidate',reject=True);hooks['callback']=None;assert hooks['posts']==[hooks['dropped'][-1]] and snapshots()==pending
     lease(b,'candidate');lease(b,'candidate',{'kind':'sync'},reject=True)
-    hooks['callback']=lost;lease(a,'peer',reject=True);hooks['callback']=None
+    hooks['callback']=lost;invoke(a,'peer',reject=True);hooks['callback']=None
     crash(0);a=page(0);assert lease(a,'peer')['phase']=='leased';assert lease(b,'candidate')['phase']=='leased'
     proof['checks']['lease_ceremony_actual_dom_pair_gate_exact_approval_retry_lost_reply_restart']=True
     stable=snapshots()
     for p,role in ((a,'peer'),(b,'candidate')):
         for fault in ('abort-before-write','abort-after-write'):
-            lease(p,role,{'kind':'send','id':'abort','text':'generated abort'},setup={'testFault':fault},reject=True);assert snapshots()==stable and not hooks['channel_posts']
-    hooks['drop_before']='channel';lease(b,'candidate',{'kind':'send','id':'message-one','text':'generated candidate hello'},reject=True);hooks['drop_before']=None;pending=snapshots();message=hooks['dropped'][-1];crash(1);b=page(1)
-    hooks['channel_callback']=lost;lease(b,'candidate',{'kind':'sync'},reject=True);hooks['channel_callback']=None
+            invoke(p,role,{'kind':'send','id':'abort','text':'generated abort'},setup={'testFault':fault},reject=True);assert snapshots()==stable and not hooks['channel_posts']
+    hooks['drop_before']='channel';invoke(b,'candidate',{'kind':'send','id':'message-one','text':'generated candidate hello'},reject=True);hooks['drop_before']=None;pending=snapshots();message=hooks['dropped'][-1];crash(1);b=page(1)
+    hooks['channel_callback']=lost;invoke(b,'candidate',{'kind':'sync'},reject=True);hooks['channel_callback']=None
     assert hooks['channel_posts']==[message] and snapshots()==pending
     lease(b,'candidate',{'kind':'sync'});stable=snapshots()
-    lease(a,'peer',{'kind':'sync'},setup={'testFault':'abort-after-write'},reject=True);assert snapshots()==stable
+    invoke(a,'peer',{'kind':'sync'},setup={'testFault':'abort-after-write'},reject=True);assert snapshots()==stable
     received=lease(a,'peer',{'kind':'sync'});assert received['received']==[{'seq':1,'text':'generated candidate hello'}]
     lease(a,'peer',{'kind':'send','id':'message-two','text':'generated peer reply'})
     received=lease(b,'candidate',{'kind':'sync'});assert received['received']==[{'seq':2,'text':'generated peer reply'}]
@@ -109,7 +114,7 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
     assert lease(b,'candidate',{'kind':'sync'})['received']==received['received'] and snapshots()==stable
     proof['checks']['lease_ceremony_actual_dom_bidirectional_messages_lost_posts_exact_retry_restart']=True
     for i in range(61):lease(b,'candidate',{'kind':'send','id':'capacity-'+str(i),'text':'generated capacity '+str(i)})
-    hooks['drop_before']='channel';lease(b,'candidate',{'kind':'send','id':'capacity-race','text':'generated pending at capacity'},reject=True);hooks['drop_before']=None
+    hooks['drop_before']='channel';invoke(b,'candidate',{'kind':'send','id':'capacity-race','text':'generated pending at capacity'},reject=True);hooks['drop_before']=None
     lease(a,'peer',{'kind':'send','id':'final-slot','text':'generated final peer message'})
     post_count=len(hooks['channel_posts']);assert post_count==64
     full=lease(b,'candidate',{'kind':'sync'});assert full['channel_full'] and full['outbox_status']=='blocked-capacity' and full['received'][-1]=={'seq':64,'text':'generated final peer message'}
@@ -126,7 +131,7 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
     assert snapshots()==stable
     proof['checks']['lease_ceremony_lock_during_in_flight_post_zero_success']=True
     for p,role in ((a,'peer'),(b,'candidate')):
-        bad=args(role,{'kind':'sync'});bad['intent']['reservation']['context']['expires_at']=1;lease(p,role,arg=bad,reject=True)
+        bad=args(role,{'kind':'sync'});bad['intent']['reservation']['context']['expires_at']=1;invoke(p,role,arg=bad,reject=True)
     next(d for d in config['devices'] if d['actor']==peer_actor).update(status='revoked',device_revision=2);commit(5,config['people'])
     deadline=time.monotonic()+6
     while time.monotonic()<deadline:
