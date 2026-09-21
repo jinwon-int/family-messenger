@@ -65,13 +65,14 @@
 오너가 Matrix를 사용해 본 뒤, 1~4단계가 끝나기 전에 전달층 자체화 **개발**을 다시 연다.
 운영 전달층은 Matrix로 둔다. 독자 스택 컷오버는 이 단계의 기본값이 아니다.
 
-- 보존 브랜치 [`archive-frozen-20260917`](https://github.com/jinwon-int/family-messenger/tree/archive-frozen-20260917/archive)의 네이티브 MLS·실험을 개발 가능한 트리로 복원하는 것은 **별도 PR**. 이 로드맵 개정만으로 해동하지 않는다.
-- 옛 `mls-experiment.yml` 팬아웃(535분)을 그대로 켜지 않는다. 독자 CI는 예산 상한을 명시한 새 워크플로만.
-- 수용 기준은 [NATIVE-E2EE.md](NATIVE-E2EE.md). 이미 끝난 합성 왕복·스테이징 저장·합성 배달을 반복하지 않고, 남은 사람 사용 게이트부터 이어 간다.
-- Matrix 2~4단계를 막거나 운영 경로에 독자 스키마를 섞지 않는다.
+- 해동은 PR #169로 끝났다(`archive/`). **2026-09-21 재설계 [#177](https://github.com/jinwon-int/family-messenger/issues/177)**이 이 트랙의 구현 설계다: successor 9단계·aggregate vault·의식 UI를 버리고, 서버는 순서 로그 + epoch CAS + 서명 기기 디렉터리(라우트 4개·테이블 3개), 기기 수명주기는 5연산(enroll-first / add-device / revoke / recover-all-lost / restore-history), 기기 교체는 별도 프로토콜이 아니라 MLS Add/Remove commit 하나. 오너 결정: 삭제 전부, actor당 활성 기기 4대, 봇은 Rust native + `openmls_sqlite_storage`, 지문 UI는 `archive/` 독립.
+- 구현 순서는 #177 §4: **M0 정리 → M1 N인 그룹+서버 v2 → M2 저장 v2 → M3 기기 v2 → M4 바인딩·실기기 → M5 파일·봇**. 각 PR 본문에 삭제/추가 줄 수와 CI 분을 숫자로 적는다.
+- 옛 `mls-experiment.yml` 팬아웃(535분)을 그대로 켜지 않는다. 독자 CI는 `native-mls.yml` **1 job ≤25분**(`workflow_dispatch` + `archive/**` 경로 필터)만.
+- 수용 기준은 [NATIVE-E2EE.md](NATIVE-E2EE.md)로 불변. #177은 그 기준을 만족하는 더 작은 구현 형태를 정한 것이다.
+- Matrix 2~4단계를 막거나 운영 경로에 독자 스키마를 섞지 않는다. 운영 `server/` 스키마 12는 손대지 않고, v2 서버는 `archive/` 안 별도 Go 모듈·별도 DB 파일이다.
 - 사람 키·실대화·운영 호스트는 기본 범위가 아니다. 복호화 실패를 평문으로 숨기지 않고, 복구 키를 서버가 수집하지 않는다.
 
-**게이트:** 독자 트랙의 다음 합성 단위가 [NATIVE-E2EE.md](NATIVE-E2EE.md) 수용 순서상 이전 단계를 전제로 통과 기록을 남긴다. 운영 컷오버는 오너 별도 결정.
+**게이트:** #177 M0~M5 각 단위의 완료 기준 통과 기록 → NATIVE-E2EE §4 사람 사용 인수검사 → 운영 컷오버는 오너 별도 결정.
 
 음성·영상 통화는 현재 범위 밖이다. 기존 대화 기록 이관은 별도 동의와 대상 선정 후 진행한다.
 공개 저장소는 코드와 합성 검증 자료를 위한 공간이며 운영 데이터 이전을 수행하지 않는다.

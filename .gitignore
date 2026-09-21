@@ -17,3 +17,7 @@ artifacts/
 web/app/node_modules/
 web/app/dist/
 web/app/config.json
+
+# native E2EE track WASM bundle (built by archive/experiments/openmls-browser/build.sh)
+archive/experiments/openmls-browser/pkg/
+archive/experiments/openmls-browser/target/

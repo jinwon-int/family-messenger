@@ -5,8 +5,9 @@ export const fail=()=>{throw new Error('rejected');};
 export const hex=b=>Array.from(b,x=>x.toString(16).padStart(2,'0')).join('');
 export const unhex=s=>new Uint8Array(s.match(/../g).map(x=>parseInt(x,16)));
 export const name=s=>typeof s==='string'&&/^[a-zA-Z0-9_-]{1,64}$/.test(s);
+// Actor labels are opaque identifiers validated by shape only; trust comes from pins.
 export function validPin(p){
- if(!exact(p,['device_id','actor','signing_key','fingerprint','device_revision'])||!name(p.device_id)||!['alice','bob'].includes(p.actor)||typeof p.signing_key!=='string'||!/^[a-f0-9]{64}$/.test(p.signing_key)||p.device_revision!==1||p.fingerprint!==hex(staged_checksum(unhex(p.signing_key))))fail();
+ if(!exact(p,['device_id','actor','signing_key','fingerprint','device_revision'])||!name(p.device_id)||!name(p.actor)||typeof p.signing_key!=='string'||!/^[a-f0-9]{64}$/.test(p.signing_key)||p.device_revision!==1||p.fingerprint!==hex(staged_checksum(unhex(p.signing_key))))fail();
 }
 export function normalizePins(p){
  if(!Array.isArray(p)||p.length!==2)fail();for(const x of p)validPin(x);
@@ -14,7 +15,7 @@ export function normalizePins(p){
  return p.map(x=>({device_id:x.device_id,actor:x.actor,signing_key:x.signing_key,fingerprint:x.fingerprint,device_revision:x.device_revision})).sort((a,b)=>a.actor.localeCompare(b.actor));
 }
 export async function readDirectory(actor,room){
- if(!['alice','bob'].includes(actor)||!name(room))fail();
+ if(!name(actor)||!name(room))fail();
  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),5000);
  try{
   const response=await fetch('/v1/rooms/'+room+'/devices',{credentials:'same-origin',cache:'no-store',redirect:'error',headers:{'X-Family-Actor':actor},signal:controller.signal});

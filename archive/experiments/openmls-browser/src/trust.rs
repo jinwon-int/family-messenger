@@ -2,7 +2,7 @@
 use super::*;
 
 fn expected(actor: &str, key: &[u8]) -> Result<CredentialWithKey, JsValue> {
-    if !["alice", "bob", "outsider", "alice-second"].contains(&actor) || key.len() != 32 {
+    if !valid_identity(actor) || key.len() != 32 {
         return Err(rejected(()));
     }
     Ok(CredentialWithKey {credential: BasicCredential::new(actor.as_bytes().to_vec()).into(), signature_key: key.to_vec().into()})

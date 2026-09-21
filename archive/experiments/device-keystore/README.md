@@ -1,10 +1,18 @@
 # Generated-data passkey/file-encryption feasibility
 
-> **Parallel track (2026-09-21, decision E).** Matrix remains the live transport.
-> This probe is back on main for independent E2EE work. It is not human-key
-> acceptance and is not in default CI. See `archive/README.md`.
+> **Parallel track (2026-09-21, decision E → redesign [#177](https://github.com/jinwon-int/family-messenger/issues/177)).**
+> Matrix remains the live transport. This probe is not human-key acceptance and is
+> not in default CI. See `archive/README.md`.
+>
+> **M0 (2026-09-21):** this directory now holds only the custody kernel evidence —
+> the typage/WebAuthn PRF probe (`probe.js`, `worker.js`), the worker-only age
+> password archive (`password-*`) and the session-records model (`session-*`,
+> [SESSION-RECORDS.md](SESSION-RECORDS.md)), which #177 §3.5 selects as the single
+> v2 custody stack. The aggregate vault, native vault store, candidate/peer/successor
+> stores, history-recovery UI and ceremony UI docs were removed; see tag
+> `archive-frozen-20260917` for that v1 work.
 
-This is a separate library probe supporting [the custody decision](../../docs/DEVICE-KEY-CUSTODY.md).
+This is a separate library probe supporting [the custody decision](../../../docs/DEVICE-KEY-CUSTODY.md).
 It is not part of the native UI bundle, a keystore adapter or human E2EE acceptance.
 No existing MLS state, real account/passkey or production service is used. The
 page handles only a constant generated 2 KiB payload. It deliberately runs typage

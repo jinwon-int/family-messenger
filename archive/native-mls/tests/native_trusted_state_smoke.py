@@ -30,7 +30,8 @@ def main():
     args.add_argument('--policy-binary', required=True, type=Path)
     args = args.parse_args()
     binary, policy = args.binary.resolve(strict=True), args.policy_binary.resolve(strict=True)
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]  # archive/
+    (root / 'artifacts').mkdir(mode=0o700, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='native-trusted-state-', dir=root / 'artifacts'))
     state, auth, proposals = [work / n for n in ('state', 'auth', 'proposals')]
     for d in (state, auth, proposals):

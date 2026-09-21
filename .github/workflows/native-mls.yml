@@ -1,0 +1,81 @@
+name: Native MLS track
+# Native E2EE parallel track (#177). Budget: exactly 1 job, 25 minutes, on demand or
+# when archive/ changes. Never re-enable the old 16-job mls-experiment fan-out.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'archive/**'
+      - '.github/workflows/native-mls.yml'
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+env:
+  RUST_TOOLCHAIN: 1.91.1
+  WASM_BINDGEN_VERSION: 0.2.126
+  WASM_BINDGEN_SHA256: 064948d58e2d6c0a745216477a639ba696216d6309aaa902939d1b865b1d869d
+jobs:
+  native-mls:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pinned Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target wasm32-unknown-unknown
+          rustc "+$RUST_TOOLCHAIN" --version
+      - name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            archive/experiments/openmls-browser/target
+          key: native-mls-cargo-${{ runner.os }}-${{ hashFiles('archive/experiments/openmls-browser/Cargo.lock') }}
+      - name: Pinned wasm-bindgen CLI
+        run: |
+          curl -sSfL -o wb.tar.gz "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${WASM_BINDGEN_VERSION}/wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          echo "${WASM_BINDGEN_SHA256}  wb.tar.gz" | sha256sum -c
+          tar xzf wb.tar.gz
+          echo "MLS_WASM_BINDGEN=$PWD/wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl/wasm-bindgen" >> "$GITHUB_ENV"
+      - name: Build WASM bundle
+        run: archive/experiments/openmls-browser/build.sh artifacts/mls-pkg
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Build live server binaries for the trust-gate smokes
+        working-directory: server
+        run: |
+          go build -trimpath -o ../artifacts/family-dev ./cmd/family-dev
+          go build -trimpath -o ../artifacts/family-policy ./cmd/family-policy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-native-test.txt
+      - name: Restore Playwright browser cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ hashFiles('requirements-native-test.txt') }}
+      - name: Install browser test tools
+        run: |
+          python -m pip install -r requirements-native-test.txt
+          python -m playwright install --with-deps chromium
+      - name: Memory-only two-context roundtrip
+        run: python archive/native-mls/tests/native_mls_browser_smoke.py --bundle artifacts/mls-pkg
+      - name: Staged IndexedDB persistence
+        run: python archive/native-mls/tests/native_mls_persistence_smoke.py --bundle artifacts/mls-pkg
+      - name: First-device directory trust gate
+        run: python archive/native-mls/tests/native_device_browser_smoke.py --bundle artifacts/mls-pkg --binary artifacts/family-dev --policy-binary artifacts/family-policy
+      - name: Durable trusted state
+        run: python archive/native-mls/tests/native_trusted_state_smoke.py --bundle artifacts/mls-pkg --binary artifacts/family-dev --policy-binary artifacts/family-policy
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-mls-${{ github.event_name }}
+          path: archive/artifacts/native-*/verification.json

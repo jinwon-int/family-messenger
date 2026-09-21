@@ -1,5 +1,5 @@
 // Development-only synthetic keys in IndexedDB. No production key protection.
-import init, {staged_init, staged_apply, staged_epoch, staged_checksum} from './pkg/family_mls_browser_experiment.js';
+import init, {staged_init, staged_apply, staged_epoch, staged_checksum, staged_public_key} from './pkg/family_mls_browser_experiment.js';
 const wasm = await init();
 const MAX_STATE = 1024 * 1024, MAX_BINARY = 2 * 1024 * 1024, MAX_LEDGER = 32;
 const allowed = new Set(['key_package', 'create', 'invite', 'join', 'encrypt', 'decrypt', 'remove', 'commit']);
@@ -92,7 +92,8 @@ function transaction(operation, argument) {
           }
           valid(record);
           if (operation === 'status') {
-            response = {revision: record.revision, cursor: record.cursor, operations: record.ledger.map(x => x.id)};
+            response = {revision: record.revision, cursor: record.cursor, operations: record.ledger.map(x => x.id),
+              public_key: Array.from(staged_public_key(record.crypto, identity))};
             return;
           }
           if (!exact(argument, ['id', 'method', 'bytes', 'sequence', 'fault']) ||
@@ -141,7 +142,7 @@ self.onmessage = ({data: {id, method, argument}}) => {
       let result;
       if (method === 'init') {
         if (db || !exact(argument, ['identity', 'database']) ||
-            !['alice', 'bob', 'outsider', 'alice-second'].includes(argument.identity)) fail();
+            typeof argument.identity !== 'string' || !/^[a-zA-Z0-9_.:-]{1,64}$/.test(argument.identity)) fail();
         identity = argument.identity; db = await open(argument.database);
         result = await transaction('initialize');
       } else {

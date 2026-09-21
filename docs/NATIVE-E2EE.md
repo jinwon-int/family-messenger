@@ -10,6 +10,18 @@ Threat model, device-trust rules, durable-state requirements and the observer ta
 Previously: reviewable design, not implemented E2EE; evidence checked 2026-09-09.
 Tracking: [family #92](https://github.com/jinwon-int/family-messenger/issues/92) (supersedes #16).
 
+**2026-09-21 redesign: [#177](https://github.com/jinwon-int/family-messenger/issues/177).**
+The acceptance criteria below are unchanged. #177 evaluates the archived v1 code
+(keep/drop, 12 defects) and fixes the v2 shape that must satisfy them: server =
+signed device directory + per-room total-order opaque log + epoch CAS (4 routes,
+3 tables, no server-side MLS state machine); device lifecycle = 5 operations
+(enroll-first / add-device / revoke / recover-all-lost / restore-history) instead of
+the 9-stage successor protocol; device replacement = one MLS Add/Remove commit; at
+most 4 active devices per actor; bot nodes use native Rust + `openmls_sqlite_storage`.
+M0 (cleanup) removed the successor, aggregate-vault, ceremony and v1 Go transport
+code from `archive/`; the "qualification" sections at the end of this document
+describe that v1 work and link to the preserved tag `archive-frozen-20260917`.
+
 ## Decision
 
 Use RFC 9420 MLS as the first protocol to qualify, with **OpenMLS 0.9.0 as

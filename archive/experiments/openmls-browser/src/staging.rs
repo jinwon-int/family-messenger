@@ -34,8 +34,7 @@ fn load(bytes: &[u8], identity: &str) -> Result<Device, JsValue> {
     bounded(bytes, MAX_STATE)?;
     let state: Snapshot = serde_json::from_slice(bytes).map_err(rejected)?;
     if state.version != 1 || state.identity != identity || state.entries.len() > MAX_ENTRIES
-        || state.public_key.len() != 32
-        || !["alice", "bob", "outsider", "alice-second"].contains(&identity) {
+        || state.public_key.len() != 32 || !valid_identity(identity) {
         return Err(rejected(()));
     }
     let provider = OpenMlsRustCrypto::default();
@@ -100,7 +99,7 @@ pub fn staged_apply(bytes: &[u8], identity: &str, method: &str, input: &[u8]) ->
         "join" => { device.join_inner(input)?; vec![] },
         "encrypt" => device.encrypt_inner(input)?,
         "decrypt" => device.decrypt_inner(input)?,
-        "remove" if input.is_empty() => device.remove_invitee_inner()?,
+        "remove" => device.remove_member_inner(input)?,
         "commit" => { device.apply_commit_inner(input)?; vec![] },
         _ => return Err(rejected(())),
     };
@@ -137,7 +136,7 @@ pub fn staged_group_id(bytes: &[u8], identity: &str) -> Result<Vec<u8>, JsValue>
     Ok(load(bytes, identity)?.group.as_ref().map(|g|g.group_id().as_slice().to_vec()).unwrap_or_default())
 }
 fn trusted_members(device: &Device, peer: &str, key: &[u8], require_pair: bool) -> Result<(), JsValue> {
-    if !["alice", "bob"].contains(&peer) || key.len()!=32 || key==device.signer.public() {return Err(rejected(()));}
+    if !valid_identity(peer) || key.len()!=32 || key==device.signer.public() {return Err(rejected(()));}
     let expected: Credential=BasicCredential::new(peer.as_bytes().to_vec()).into();
     if let Some(group)=&device.group {
         if !group.is_active(){return Err(rejected(()));}
@@ -176,6 +175,8 @@ pub fn staged_trusted_apply(bytes: &[u8], identity: &str, method: &str, input: &
 }
 
 /// Fixed-pair rekey controls; complete candidate state is never released live.
+/// Roles are chosen by the caller per operation: the committer stages/merges its own
+/// update, the other member applies it. No identity label is privileged.
 #[wasm_bindgen]
 pub fn staged_control_apply(bytes:&[u8],identity:&str,method:&str,input:&[u8],peer:&str,key:&[u8],aad:&[u8])->Result<Transition,JsValue> {
     if input.len()>MAX_WIRE || aad.is_empty() || aad.len()>2048 {return Err(rejected(()));}
@@ -183,9 +184,9 @@ pub fn staged_control_apply(bytes:&[u8],identity:&str,method:&str,input:&[u8],pe
     trusted_members(&device,peer,key,true)?;
     let before=device.group.as_ref().ok_or_else(||rejected(()))?.epoch().as_u64();
     let output=match method {
-        "update" if identity=="alice" && input.is_empty()=>device.stage_update_inner(aad)?,
-        "merge_update" if identity=="alice" && input.is_empty()=>{device.merge_update_inner()?;vec![]},
-        "peer_update" if identity=="bob"=>{device.peer_update_inner(input,peer,key,aad)?;vec![]},
+        "update" if input.is_empty()=>device.stage_update_inner(aad)?,
+        "merge_update" if input.is_empty()=>{device.merge_update_inner()?;vec![]},
+        "peer_update"=>{device.peer_update_inner(input,peer,key,aad)?;vec![]},
         _=>return Err(rejected(())),
     };
     if output.len()>MAX_WIRE {return Err(rejected(()));}
@@ -203,6 +204,3 @@ pub fn staged_control_apply(bytes:&[u8],identity:&str,method:&str,input:&[u8],pe
 pub fn staged_pending_commit(bytes:&[u8],identity:&str)->Result<bool,JsValue> {
     Ok(load(bytes,identity)?.group.as_ref().map(|g|g.pending_commit().is_some()).unwrap_or(false))
 }
-
-#[cfg(feature = "identity-context")]
-mod identity_context;

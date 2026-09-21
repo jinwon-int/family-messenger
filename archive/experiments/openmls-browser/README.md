@@ -1,15 +1,23 @@
+> **Parallel track (2026-09-21, decision E → redesign [#177](https://github.com/jinwon-int/family-messenger/issues/177)).**
+> Matrix remains the live transport. This experiment is the kernel of the native
+> E2EE track (#177 §1.2 K1–K3): the OpenMLS facade (`src/lib.rs`, `src/trust.rs`),
+> the staged provider (`src/staging.rs`) and the single-transaction IndexedDB
+> workers (`web/durable-worker.js`, `web/trusted-state-worker.js`). It is not
+> production crypto and is not in default CI; `.github/workflows/native-mls.yml`
+> builds and runs it (1 job, ≤25 min).
+>
+> **M0 (2026-09-21):** removed the successor/candidate/peer worker families, the
+> `*-wire.js` modules, the four ceremony UIs, the aggregate vault, the
+> `identity-context`/`successor-lease` Cargo features and the hardcoded four-name
+> identity allowlist. Identities are now opaque `[A-Za-z0-9_.:-]{1,64}` labels
+> validated by shape only; trust still comes from independently supplied pins.
+> `remove` now takes the 32-byte signing public key of the member to remove
+> instead of a hardcoded leaf index. Groups are still limited to two members
+> until M1. Build with [`build.sh`](build.sh) using the pinned toolchain.
+
 The PR27 memory-only proof below is preserved as historical evidence. The current
-
-> **Parallel track (2026-09-21, decision E).** Matrix remains the live transport.
-> This experiment is back on main for independent E2EE work. It is not production
-> crypto and is not in default CI. See `archive/README.md`.
-
 bundle also includes the [staged IndexedDB adapter](PERSISTENCE.md); its current
 dependency counts, source hashes and persistence proof are documented separately.
-
-The default-off [intact-signer context experiment](IDENTITY-CONTEXT.md) qualifies
-a fresh provider using an existing signer. It preserves these pinned default
-assets and does not activate native encrypted multi-room custody or replacement.
 
 # Disposable OpenMLS browser experiment
 
@@ -140,7 +148,7 @@ workers/keys/groups. Retirement blocks use; it does not claim secure erasure of
 the provider's memory. There is no automatic reinitialization or recovery.
 Do not reuse this memory provider as a durable device, export its secrets to
 sessionStorage or silently reconstruct a lost device. The staged transaction/
-retirement contract in [NATIVE-E2EE.md](../../docs/NATIVE-E2EE.md) is the next gate,
+retirement contract in [NATIVE-E2EE.md](../../../docs/NATIVE-E2EE.md) is the next gate,
 including old-epoch pending sends when membership changes. Existing synthetic
 plaintext data and native pending IDs are untouched; no downgrade or migration.
 
@@ -166,7 +174,7 @@ crash boundaries and replay state. Do not restore just the serialized group whil
 leaving provider writes/consumed KeyPackages behind. Until that passes, this
 experiment is not a persistent receive/retry implementation.
 
-The [native device trust proof](../../server/DEVICES.md) adds a separate memory-only
+The [native device trust proof](../../../server/DEVICES.md) adds a separate memory-only
 first-device gate against a signed native public directory. It does not yet bind
 staged storage to native ciphertext/control transport.
 

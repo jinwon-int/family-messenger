@@ -18,7 +18,8 @@ def main():
     parser.add_argument('--bundle', required=True, type=Path)
     args = parser.parse_args()
     os.umask(0o077)
-    repo = Path(__file__).resolve().parents[1]
+    repo = Path(__file__).resolve().parents[2]  # archive/
+    (repo / 'artifacts').mkdir(mode=0o700, exist_ok=True)
     evidence = Path(tempfile.mkdtemp(prefix='native-mls-persistence-', dir=repo / 'artifacts'))
     assets = {}
     files = {'/': repo / 'experiments/openmls-browser/web/index.html'}
@@ -261,7 +262,7 @@ def main():
                 corrupt.close()
             proof['checks']['corrupt_cached_result_input_state_metadata_checksum_retained_denied'] = True
             before = rpc(alice, 'status')
-            commit = op(alice, 'remove', 'remove')['output']
+            commit = op(alice, 'remove', 'remove', rpc(bob, 'status')['public_key'])['output']
             op(alice, 'future', 'encrypt', list(b'after restart'), reject=True)
             assert rpc(alice, 'status')['operations'] == before['operations'] + ['remove']
             op(bob, 'remove', 'commit', commit)

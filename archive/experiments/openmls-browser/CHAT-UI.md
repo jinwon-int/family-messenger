@@ -10,7 +10,7 @@ No framework, new library, runtime daemon or Go/crypto change is introduced.
 loopback-only synthetic assertion proxy. Original UI/worker/WASM hashes are captured
 before serving; UI bytes are not rewritten. This is not the Go binary's embedded
 UI or a deployable authentication proxy. Existing legacy UI/assets are unchanged.
-The subsequent [compiled native packaging](../../server/ENCRYPTED-UI.md) adds
+The subsequent [compiled native packaging](https://github.com/jinwon-int/family-messenger/blob/archive-frozen-20260917/archive/native-mls/server/ENCRYPTED-UI.md) adds
 explicit signed synthetic activation; the production site and CF settings remain unchanged. Test profiles contain generated keys and messages
 only, without protected at-rest keys or human recovery.
 

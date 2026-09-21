@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Reproducible WASM bundle build for the native E2EE track (#177 M0).
+#
+# Pins (must match toolchain-evidence.json):
+#   rustc/cargo 1.91.1 with target wasm32-unknown-unknown
+#   wasm-bindgen CLI 0.2.126
+#
+# Usage:
+#   MLS_WASM_BINDGEN=/path/to/wasm-bindgen ./build.sh [out-dir]
+# Optional: RUSTUP_TOOLCHAIN (default 1.91.1), CARGO_TARGET_DIR.
+# Output: <out-dir>/family_mls_browser_experiment.js + _bg.wasm and their sha256.
+# Never installs anything; fails closed on any version mismatch.
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+out="${1:-$here/pkg}"
+toolchain="${RUSTUP_TOOLCHAIN:-1.91.1}"
+bindgen="${MLS_WASM_BINDGEN:?set MLS_WASM_BINDGEN to the pinned wasm-bindgen 0.2.126 binary}"
+
+expect() { # expect <label> <actual> <required>
+  if [ "$2" != "$3" ]; then echo "build.sh: $1 is '$2', required '$3'" >&2; exit 2; fi
+}
+rustc_version="$(rustc "+$toolchain" --version | awk '{print $2}')"
+expect rustc "$rustc_version" "1.91.1"
+bindgen_version="$("$bindgen" --version | awk '{print $2}')"
+expect wasm-bindgen "$bindgen_version" "0.2.126"
+rustup "+$toolchain" target list --installed | grep -qx wasm32-unknown-unknown \
+  || { echo "build.sh: wasm32-unknown-unknown target missing for $toolchain" >&2; exit 2; }
+
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$here/target}"
+export RUSTFLAGS='--cfg getrandom_backend="wasm_js"'
+cargo "+$toolchain" build --locked --release --target wasm32-unknown-unknown \
+  --manifest-path "$here/Cargo.toml"
+
+rm -rf "$out"; mkdir -p "$out"
+"$bindgen" "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/family_mls_browser_experiment.wasm" \
+  --target web --out-dir "$out"
+# Only the two runtime assets are served; drop the TypeScript declarations.
+rm -f "$out"/*.d.ts
+
+echo "bundle: $out"
+for f in family_mls_browser_experiment.js family_mls_browser_experiment_bg.wasm; do
+  printf '%s  %s  %s bytes\n' "$(sha256sum "$out/$f" | cut -d' ' -f1)" "$f" "$(stat -c %s "$out/$f")"
+done

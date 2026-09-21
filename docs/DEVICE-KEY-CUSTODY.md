@@ -1,5 +1,13 @@
 # Device key custody and recovery decision
 
+> **2026-09-21 — [#177](https://github.com/jinwon-int/family-messenger/issues/177) keeps this
+> decision's principles** (worker-only key boundary, no server escrow, no recovery secret
+> in backups/logs/URLs, no hand-rolled KDF) and selects **one** custody stack for v2:
+> age/scrypt once per unlock + libsodium `secretstream` per record (the session-records
+> model). The aggregate vault, per-file password worker path and vault-based history
+> recovery were removed from `archive/` in M0; read-only history restore returns as
+> operation E5 on the single stack in a later milestone.
+
 Status: **candidate feasibility and integration design, not human-use activation**.
 Keep the current messenger synthetic-only. A browser file-encryption roundtrip
 cannot make its unprotected MLS provider/receipt snapshots suitable for family
