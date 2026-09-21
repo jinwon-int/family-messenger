@@ -778,6 +778,106 @@ export function openDevicesSheet(root, { load, remove, onClose }) {
   return close;
 }
 
+/**
+ * 알림 켜기/끄기 시트.
+ *
+ * `load()`가 src/push.js의 pushAvailability 문자열을 돌려주고, 이 함수는 그것을
+ * 화면으로 옮기기만 한다(판단은 전부 순수 모듈에 있다).
+ * `enable()`/`disable()`은 `{ok, reason}`을 돌려준다.
+ *
+ * 로그인 직후 권한 팝업을 띄우지 않는다 — 거절당하면 브라우저 설정에서 손대야
+ * 해서 회복이 어렵다. 여기 버튼을 누르는 것이 유일한 요청 시점이다.
+ */
+export function openNotificationsSheet(root, { load, enable, disable, onClose }) {
+  const dialog = el('dialog', { class: 'sheet notifications', 'aria-labelledby': 'notifications-title' });
+  const close = () => dialog.close();
+  dialog.addEventListener('close', () => {
+    dialog.remove();
+    onClose?.();
+  });
+  let availability = null; // null이면 아직 읽는 중
+  let status = null; // {tone, text}
+  let busy = false;
+
+  const run = async (action, failureText) => {
+    if (busy) return;
+    busy = true;
+    status = null;
+    render();
+    try {
+      const result = await action();
+      if (result?.ok) {
+        status = null;
+      } else {
+        status = { tone: 'error', text: result?.reason === 'no-permission' ? strings.notifications.permissionRefused : failureText };
+      }
+    } catch (error) {
+      console.error('notification toggle failed', error);
+      status = { tone: 'error', text: failureText };
+    } finally {
+      busy = false;
+      availability = await load();
+      render();
+    }
+  };
+
+  const render = () => {
+    const body = [];
+    if (availability === null) {
+      body.push(el('p', { class: 'empty' }, strings.notifications.working));
+    } else if (availability === 'not-configured') {
+      body.push(el('p', { class: 'hint' }, strings.notifications.notConfigured));
+    } else if (availability === 'unsupported') {
+      body.push(el('p', { class: 'hint' }, strings.notifications.unsupported));
+    } else if (availability === 'ios-needs-install') {
+      body.push(
+        el('p', { class: 'hint' }, strings.notifications.iosSteps),
+        el('p', { class: 'status error', role: 'status' }, strings.notifications.iosOrder),
+      );
+    } else if (availability === 'denied') {
+      body.push(el('p', { class: 'status error', role: 'status' }, strings.notifications.denied));
+    } else if (availability === 'on') {
+      body.push(
+        el('p', { class: 'hint' }, strings.notifications.on),
+        el('button', {
+          type: 'button',
+          class: 'ghost block',
+          disabled: busy ? true : null,
+          onclick: () => run(disable, strings.notifications.disableFailed),
+        }, busy ? strings.notifications.working : strings.notifications.disable),
+      );
+    } else {
+      body.push(
+        el('p', { class: 'hint' }, strings.notifications.off),
+        el('button', {
+          type: 'button',
+          class: 'block',
+          disabled: busy ? true : null,
+          onclick: () => run(enable, strings.notifications.enableFailed),
+        }, busy ? strings.notifications.working : strings.notifications.enable),
+      );
+    }
+    setChildren(
+      dialog,
+      el('h2', { id: 'notifications-title' }, availability === 'ios-needs-install' ? strings.notifications.iosTitle : strings.notifications.title),
+      el('p', { class: 'hint' }, strings.notifications.intro),
+      status ? el('p', { class: `status ${status.tone}`, role: 'status' }, status.text) : null,
+      ...body,
+      el('div', { class: 'row end' }, el('button', { type: 'button', class: 'ghost', onclick: close }, strings.verification.close)),
+    );
+  };
+
+  root.append(dialog);
+  dialog.showModal();
+  render();
+  Promise.resolve(load()).then((value) => { availability = value; render(); }).catch((error) => {
+    console.error('notification state failed', error);
+    availability = 'unsupported';
+    render();
+  });
+  return close;
+}
+
 /** Photo preview sheet for an attachment already fetched to an object URL. */
 export function openPreviewSheet(root, { name, src, onClose }) {
   const dialog = el('dialog', { class: 'sheet preview', 'aria-label': strings.box.previewTitle });

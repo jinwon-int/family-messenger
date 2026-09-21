@@ -13,6 +13,34 @@ import { strings } from './strings.js';
 export const PUSHER_KIND = 'http';
 export const PUSHER_LANG = 'ko';
 
+/**
+ * 설정 화면이 무엇을 보여줄지 결정한다. 브라우저 판별을 전부 인자로 받아
+ * DOM 없이 시험한다.
+ *
+ * @returns {'not-configured'|'ios-needs-install'|'unsupported'|'denied'|'on'|'off'}
+ *
+ * **ios-needs-install이 unsupported보다 먼저다.** iOS Safari 탭에는 PushManager가
+ * 아예 없어서 기능 검사만 하면 "이 브라우저는 지원하지 않습니다"가 뜨는데,
+ * 사실은 홈화면에 추가하면 된다. 그 안내를 못 보면 가족은 영영 알림을 못 켠다.
+ */
+export function pushAvailability({ push, hasServiceWorker, hasPushManager, hasNotification, permission, subscribed, isIos, isStandalone }) {
+  if (!push) return 'not-configured';
+  if (isIos && !isStandalone) return 'ios-needs-install';
+  if (!hasServiceWorker || !hasPushManager || !hasNotification) return 'unsupported';
+  if (permission === 'denied') return 'denied';
+  return subscribed ? 'on' : 'off';
+}
+
+/**
+ * iPhone·iPad인가. iPadOS 13+는 자신을 Macintosh로 보고하므로 터치 지점 수로
+ * 가른다(데스크톱 Mac은 maxTouchPoints가 0이다).
+ */
+export function isIosDevice({ userAgent, maxTouchPoints }) {
+  const ua = String(userAgent ?? '');
+  if (/iPad|iPhone|iPod/.test(ua)) return true;
+  return ua.includes('Macintosh') && Number(maxTouchPoints ?? 0) > 1;
+}
+
 const isText = (value) => typeof value === 'string' && value.length > 0;
 
 /**

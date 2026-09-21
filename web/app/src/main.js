@@ -12,7 +12,7 @@ import { splitParticipants, shortHandle } from './participants.js';
 import { attachmentFromContent, collectAttachments, fileboxRefreshUrl } from './attachments.js';
 import { applyTypingEvent, createTypingState, pruneTyping, typingIndicator, typingNames } from './typing.js';
 import { DEFAULT_CONFIG, loadConfig } from './config.js';
-import { disablePush, enablePush } from './push.js';
+import { disablePush, enablePush, isIosDevice, pushAvailability } from './push.js';
 import * as ui from './ui.js';
 
 const root = document.getElementById('app');
@@ -696,10 +696,63 @@ function openMenu() {
     items: [
       { label: strings.verification.title, onClick: openVerification },
       { label: strings.recovery.title, onClick: openRecovery },
+      { label: strings.notifications.title, onClick: openNotifications },
       { label: strings.account.devicesTitle, onClick: openDevices },
       { label: strings.account.logout, onClick: logout, danger: true },
     ],
     // 메뉴가 닫힐 때 재렌더하지 않는다 — 닫힘(close) 이벤트가 비동기라 항목이 연 시트를 지웠다.
+  });
+}
+
+/** 지금 이 브라우저의 푸시 상태. 판단은 push.js의 순수 함수가 한다. */
+async function readPushAvailability() {
+  const hasServiceWorker = 'serviceWorker' in navigator;
+  let subscribed = false;
+  if (hasServiceWorker && state.config.push) {
+    try {
+      const registration = await navigator.serviceWorker.getRegistration();
+      const subscription = await registration?.pushManager?.getSubscription();
+      subscribed = Boolean(subscription);
+    } catch {
+      subscribed = false;
+    }
+  }
+  return pushAvailability({
+    push: state.config.push,
+    hasServiceWorker,
+    hasPushManager: typeof PushManager !== 'undefined',
+    hasNotification: typeof Notification !== 'undefined',
+    permission: typeof Notification !== 'undefined' ? Notification.permission : 'default',
+    subscribed,
+    isIos: isIosDevice({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints }),
+    // 홈화면 앱인가. iOS Safari는 navigator.standalone, 그 밖은 display-mode로 본다.
+    isStandalone: navigator.standalone === true || window.matchMedia?.('(display-mode: standalone)').matches === true,
+  });
+}
+
+function openNotifications() {
+  ui.openNotificationsSheet(root, {
+    load: readPushAvailability,
+    enable: async () => {
+      // ⚠ requestPermission을 클릭 핸들러의 **첫 await**로 둔다. 다른 비동기
+      //    작업을 먼저 기다리면 사용자 제스처가 끊겨 브라우저가 요청을 무시한다.
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') return { ok: false, reason: 'no-permission' };
+      const registration = await navigator.serviceWorker.ready;
+      return enablePush({
+        registration,
+        push: state.config.push,
+        client: state.client,
+        userId: state.myUserId,
+        deviceDisplayName: state.client?.deviceId() ?? undefined,
+        permission,
+      });
+    },
+    disable: async () => {
+      const registration = await navigator.serviceWorker.getRegistration();
+      if (!registration) return { ok: true, removed: false, unsubscribed: false };
+      return disablePush({ registration, push: state.config.push, client: state.client });
+    },
   });
 }
 
