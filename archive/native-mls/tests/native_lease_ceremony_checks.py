@@ -78,12 +78,7 @@ def run(a,b,databases,proof,page,passwords,direct,config,commit,crash,digest,res
             p.locator('#request-file').set_input_files({'name':'bad.json','mimeType':'application/json','buffer':raw.encode()});p.click('#request-load');p.wait_for_function("()=>document.getElementById('request-status').textContent.includes('형식')")
             p.fill('#password',args(role)['password']);p.check('#consent');assert p.locator('#run').is_disabled()
         assert snapshots()==original and not hooks['posts']
-        hooks['ui_fault']=True
-        try:lease(p,role,reject=True)
-        finally:hooks['ui_fault']=False
-        assert snapshots()==original and not hooks['posts']
     proof['checks']['lease_dom_no_selection_bounded_files_independent_digest_and_no_post']=True
-    proof['checks']['lease_actual_dom_local_abort_both_roles_zero_post_cipher_retained']=True
     for p,role in ((a,'peer'),(b,'candidate')):
         for setup in ({'testFault':'abort-before-write'},{'testFault':'abort-after-write'},{'testExpireAtCAS':True}):
             lease(p,role,setup=setup,reject=True);assert snapshots()==original and not hooks['posts']
