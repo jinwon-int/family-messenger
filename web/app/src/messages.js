@@ -125,7 +125,8 @@ function dropHeldProgress(timeline, entry) {
   if (entry.isProgress || !entry.userId) return;
   for (let i = timeline.length - 1; i >= 0; i -= 1) {
     const item = timeline[i];
-    if (item.isProgress && item.held && sameSender(item.userId, entry.userId)) timeline.splice(i, 1);
+    if (item.isProgress && item.held && sameSender(item.userId, entry.userId)
+      && (!Number.isFinite(item.ts) || !Number.isFinite(entry.ts) || entry.ts >= item.ts)) timeline.splice(i, 1);
   }
 }
 

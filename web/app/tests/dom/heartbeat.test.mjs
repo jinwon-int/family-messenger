@@ -385,3 +385,17 @@ test('equal-timestamp heartbeats keep the newer SDK event after a late decryptio
   assert.equal(a.bubbles().length, 1);
   assert.match(a.bubbles()[0], /Working — 9s/);
 });
+
+
+test('resume with older answers does not erase a held progress bubble', async (t) => {
+  const a = await app(t);
+  await a.send('$old-answer', 100, content('OLDER_ANSWER'));
+  await a.send('$progress', 200, content('⏳ Working — 2s'));
+  await a.redact('$progress');
+  a.window.dispatchEvent(new a.window.Event('online'));
+  assert.equal(a.bubbles().length, 2);
+  assert.match(a.bubbles()[1], /Working — 2s/);
+  await a.send('$new-answer', 300, content('NEW_ANSWER'));
+  assert.equal(a.bubbles().length, 2);
+  assert.doesNotMatch(a.bubbles().join(' '), /Working/);
+});
