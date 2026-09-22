@@ -3,7 +3,7 @@
 import { strings } from './strings.js';
 import * as session from './session.js';
 import { createFamilyClient, loginWithPassword, PlaintextRefusedError } from './matrix/client.js';
-import { messageKind, humanFileSize, validateAttachment, attachmentContent, mergeTimelineEntry, formattedMessageBody } from './messages.js';
+import { messageKind, humanFileSize, validateAttachment, attachmentContent, mergeTimelineEntry, formattedMessageBody, isMessageEdit, isProgressContent } from './messages.js';
 import { extractMentions } from './mentions.js';
 import { describeInvite } from './invites.js';
 import { lastMessagePreview, listSignature, sortByActivity } from './rooms.js';
@@ -252,7 +252,12 @@ async function connect(creds, { fresh = false } = {}) {
   }
   // 리스너를 start보다 먼저 건다 — 초기 sync의 Room.timeline을 놓치지 않기 위해.
   state.client.onTimeline((event, meta) => {
-    if (event.getType() !== 'm.room.message') return;
+    if (meta?.removed) {
+      const entry = state.rooms.get(meta.roomId);
+      if (entry) entry.timeline = entry.timeline.filter((item) => item.eventId !== meta.eventId);
+      if (meta.roomId === state.currentRoomId) renderCurrent();
+      return;
+    }
     appendTimeline(event, meta?.atStart === true);
   });
   // 새 방이 보이면 목록·초대를 즉시 갱신한다(세션 중 도착한 초대 포함).
@@ -455,6 +460,9 @@ function agentUserIds(summary) {
 
 function timelineEntry(event, summary) {
   const content = event.getContent?.() ?? {};
+  const original = event.getOriginalContent?.() ?? content;
+  const isProgress = isProgressContent(original) && isProgressContent(content);
+  const updatedAt = isProgress ? event.replacingEventDate?.()?.getTime() : null;
   const undecryptable = typeof event.isDecryptionFailure === 'function' && event.isDecryptionFailure();
   const kind = undecryptable ? 'undecryptable' : messageKind(content);
   const sender = event.sender ?? {};
@@ -469,7 +477,8 @@ function timelineEntry(event, summary) {
     isMe: sameUser(event.getSender?.(), state.myUserId),
     kind: kind === 'unknown' ? 'file' : kind,
     formattedBody: undecryptable ? null : formattedMessageBody(content),
-    ts: typeof event.getTs === 'function' ? event.getTs() : null,
+    isProgress,
+    ts: Number.isFinite(updatedAt) ? Math.max(event.getTs?.() ?? 0, updatedAt) : event.getTs?.() ?? null,
     body: undecryptable
       ? strings.chat.decryptFailed
       : typeof content.body === 'string'
@@ -488,13 +497,22 @@ function ensureRoomEntry(roomId) {
 }
 
 function appendTimeline(event, atStart = false) {
+  if (event.getType?.() !== 'm.room.message' && !event.isRedacted?.()) return;
   const roomId = event.getRoomId?.();
   if (!roomId) return;
   // 초기 sync는 방 목록 갱신보다 Room.timeline이 먼저 올 수 있다 — 버리면 최신이 빠진다.
   const entry0 = ensureRoomEntry(roomId);
   // 복호화 재시도는 같은 event id로 다시 전달된다 — 자리표시를 본문으로 치환한다.
-  mergeTimelineEntry(entry0.timeline, timelineEntry(event, entry0.summary), { atStart });
+  mergeEvent(entry0, event, atStart);
   if (roomId === state.currentRoomId) renderCurrent();
+}
+
+function mergeEvent(entry, event, atStart = false) {
+  if (event.isRedacted?.()) {
+    entry.timeline = entry.timeline.filter((item) => item.eventId !== event.getId?.());
+  } else if (event.getType?.() === 'm.room.message' && !isMessageEdit(event)) {
+    mergeTimelineEntry(entry.timeline, timelineEntry(event, entry.summary), { atStart });
+  }
 }
 
 /** SDK live timeline에 있는데 화면 복사본에 없는 메시지(놓친 초기 sync)를 채운다. */
@@ -505,8 +523,8 @@ function hydrateFromSdk(roomId) {
   const events = state.client.liveTimelineEvents(roomId);
   if (!Array.isArray(events) || events.length === 0) return;
   for (const event of events) {
-    if (event.getType?.() === 'm.room.message') {
-      mergeTimelineEntry(entry.timeline, timelineEntry(event, entry.summary));
+    if (event.getType?.() === 'm.room.message' || event.isRedacted?.()) {
+      mergeEvent(entry, event);
       continue;
     }
     if (typeof event.isEncrypted === 'function' && event.isEncrypted() && typeof event.once === 'function') {

@@ -76,7 +76,7 @@ export async function createFamilyClient({
     }
   }
   const sdk = await sdkLoader();
-  const opts = { baseUrl: homeserverUrl, userId, accessToken, deviceId };
+  const opts = { baseUrl: homeserverUrl, userId, accessToken, deviceId, timelineSupport: true };
   const client = clientFactory
     ? clientFactory(sdk, opts)
     : sdk.createClient(opts);
@@ -122,6 +122,7 @@ export class ClientAdapter {
   constructor(client, myUserId) {
     this.client = client;
     this.myUserId = myUserId;
+    this.timelineSubscriptions = new Set();
   }
 
   /**
@@ -161,6 +162,7 @@ export class ClientAdapter {
   }
 
   stop() {
+    for (const off of this.timelineSubscriptions) off();
     this.client.stopClient();
   }
 
@@ -404,7 +406,7 @@ export class ClientAdapter {
       await this.client.logout(true);
     } finally {
       try {
-        this.client.stopClient?.();
+        this.stop();
         await this.client.clearStores?.({ cryptoDatabasePrefix: this.cryptoDatabasePrefix() });
       } catch (error) {
         console.warn('clearStores after logout failed', error);
@@ -478,21 +480,77 @@ export class ClientAdapter {
   onTimeline(handler) {
     // SDK 인자: (event, room, toStartOfTimeline, removed, data). 이전 대화(scrollback)는
     // toStartOfTimeline=true로 오고, removed=true는 로컬 에코 제거이므로 그리지 않는다.
+    let active = true;
+    const subscriptions = new Map();
+    const pendingTargets = new Set();
+    // A fresh sync may contain only heartbeat edits: the original can be older
+    // than initialSyncLimit. Ask the SDK for its context rather than displaying
+    // an unvalidated edit as a new message. Fetch once per target in flight.
+    const recoverTarget = (event) => {
+      const relation = event?.getRelation?.();
+      if (relation?.rel_type !== 'm.replace' || !relation.event_id || event.isRedacted?.()) return;
+      const room = this.client.getRoom?.(event.getRoomId?.());
+      if (!room || room.findEventById?.(relation.event_id)) return;
+      const set = room.getUnfilteredTimelineSet?.();
+      const key = `${room.roomId}/${relation.event_id}`;
+      if (!set || !this.client.getEventTimeline || pendingTargets.has(key) || pendingTargets.size >= 16) return;
+      pendingTargets.add(key);
+      Promise.resolve().then(() => active ? this.client.getEventTimeline(set, relation.event_id) : null)
+        .then((timeline) => {
+          if (!active) return;
+          const target = timeline?.getEvents?.().find((item) => item.getId?.() === relation.event_id);
+          if (target) listener(target, room, true, false);
+        })
+        .catch(() => { /* History may be unavailable; a later edit/scrollback can retry. */ })
+        .finally(() => pendingTargets.delete(key));
+    };
+    const deliver = (event, meta) => {
+      if (!active) return;
+      recoverTarget(event);
+      handler(event, meta);
+    };
     const listener = (event, _room, toStartOfTimeline, removed) => {
       if (removed) return;
       const meta = { atStart: Boolean(toStartOfTimeline) };
       const encrypted = typeof event?.isEncrypted === 'function' && event.isEncrypted();
       if (!encrypted || typeof event.on !== 'function') {
-        handler(event, meta);
+        deliver(event, meta);
         return;
       }
-      event.on('Event.decrypted', () => handler(event, meta));
+      if (!subscriptions.has(event)) {
+        const decrypted = () => deliver(event, meta);
+        subscriptions.set(event, decrypted);
+        event.on('Event.decrypted', decrypted);
+      }
       const pending = typeof event.isBeingDecrypted === 'function' && event.isBeingDecrypted();
       const stillCiphertext = typeof event.getType === 'function' && event.getType() === 'm.room.encrypted';
-      if (!pending && !stillCiphertext) handler(event, meta);
+      if (!pending && !stillCiphertext) deliver(event, meta);
     };
+    // matrix-js-sdk aggregates edits (including sender/ordering validation) and
+    // re-emits this on the client with the ORIGINAL event and updated content.
+    const replaced = (event) => deliver(event, { atStart: false });
+    const redacted = (event, room) => deliver(event, {
+      removed: true, roomId: room?.roomId ?? event.getRoomId?.(), eventId: event.getAssociatedId?.(),
+    });
     this.client.on('Room.timeline', listener);
-    return () => this.client.removeListener('Room.timeline', listener);
+    // Unknown-parent relations may not enter any Room.timeline (SDK threads).
+    this.client.on('event', recoverTarget);
+    this.client.on('Event.decrypted', recoverTarget);
+    this.client.on('Event.replaced', replaced);
+    this.client.on('Room.redaction', redacted);
+    const off = () => {
+      active = false;
+      this.client.removeListener('Room.timeline', listener);
+      this.client.removeListener('event', recoverTarget);
+      this.client.removeListener('Event.decrypted', recoverTarget);
+      this.client.removeListener('Event.replaced', replaced);
+      this.client.removeListener('Room.redaction', redacted);
+      for (const [event, callback] of subscriptions) event.removeListener?.('Event.decrypted', callback);
+      subscriptions.clear();
+      this.timelineSubscriptions.delete(off);
+    };
+    this.timelineSubscriptions.add(off);
+    return off;
   }
 
   /** Limited sync 등으로 SDK가 live timeline을 비우면 화면 복사본도 다시 읽어야 한다. */
