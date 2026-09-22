@@ -116,7 +116,7 @@ export function attachmentContent(file, mxcUrl, meta = {}) {
  * @param {{eventId?: string}} entry
  * @returns {'appended'|'replaced'}
  */
-export function mergeTimelineEntry(timeline, entry, { atStart = false } = {}) {
+export function mergeTimelineEntry(timeline, entry, { atStart = false, chronological = false } = {}) {
   let result = 'appended';
   if (entry.eventId) {
     const index = timeline.findIndex((item) => item.eventId === entry.eventId);
@@ -131,6 +131,13 @@ export function mergeTimelineEntry(timeline, entry, { atStart = false } = {}) {
       timeline.unshift(entry);
       result = 'prepended';
     } else timeline.push(entry);
+  }
+  // SDK context lookup can return a missing ordinary message from the middle
+  // of the conversation, not just an older page. Restore its original place.
+  if (chronological && Number.isFinite(entry.ts)) {
+    timeline.splice(timeline.indexOf(entry), 1);
+    const index = timeline.findIndex((other) => Number.isFinite(other.ts) && other.ts > entry.ts);
+    timeline.splice(index < 0 ? timeline.length : index, 0, entry);
   }
   // A heartbeat belongs at its last update's position, even after hydration,
   // scrollback or delayed decryption. Never use callback arrival time here.

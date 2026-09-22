@@ -499,7 +499,7 @@ export class ClientAdapter {
         .then((timeline) => {
           if (!active) return;
           const target = timeline?.getEvents?.().find((item) => item.getId?.() === relation.event_id);
-          if (target) listener(target, room, true, false);
+          if (target) listener(target, room, true, false, { chronological: true });
         })
         .catch(() => { /* History may be unavailable; a later edit/scrollback can retry. */ })
         .finally(() => pendingTargets.delete(key));
@@ -509,9 +509,13 @@ export class ClientAdapter {
       recoverTarget(event);
       handler(event, meta);
     };
-    const listener = (event, _room, toStartOfTimeline, removed) => {
+    const listener = (event, room, toStartOfTimeline, removed, data) => {
       if (removed) return;
-      const meta = { atStart: Boolean(toStartOfTimeline) };
+      const meta = {
+        atStart: Boolean(toStartOfTimeline),
+        chronological: data?.chronological === true
+          || Boolean(data?.timeline && data.timeline !== room?.getLiveTimeline?.()),
+      };
       const encrypted = typeof event?.isEncrypted === 'function' && event.isEncrypted();
       if (!encrypted || typeof event.on !== 'function') {
         deliver(event, meta);

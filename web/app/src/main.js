@@ -258,7 +258,7 @@ async function connect(creds, { fresh = false } = {}) {
       if (meta.roomId === state.currentRoomId) renderCurrent();
       return;
     }
-    appendTimeline(event, meta?.atStart === true);
+    appendTimeline(event, meta?.atStart === true, meta?.chronological === true);
   });
   // 새 방이 보이면 목록·초대를 즉시 갱신한다(세션 중 도착한 초대 포함).
   state.client.onRoomAdded(() => refreshSummaries());
@@ -496,22 +496,22 @@ function ensureRoomEntry(roomId) {
   return entry;
 }
 
-function appendTimeline(event, atStart = false) {
+function appendTimeline(event, atStart = false, chronological = false) {
   if (event.getType?.() !== 'm.room.message' && !event.isRedacted?.()) return;
   const roomId = event.getRoomId?.();
   if (!roomId) return;
   // 초기 sync는 방 목록 갱신보다 Room.timeline이 먼저 올 수 있다 — 버리면 최신이 빠진다.
   const entry0 = ensureRoomEntry(roomId);
   // 복호화 재시도는 같은 event id로 다시 전달된다 — 자리표시를 본문으로 치환한다.
-  mergeEvent(entry0, event, atStart);
+  mergeEvent(entry0, event, atStart, chronological);
   if (roomId === state.currentRoomId) renderCurrent();
 }
 
-function mergeEvent(entry, event, atStart = false) {
+function mergeEvent(entry, event, atStart = false, chronological = false) {
   if (event.isRedacted?.()) {
     entry.timeline = entry.timeline.filter((item) => item.eventId !== event.getId?.());
   } else if (event.getType?.() === 'm.room.message' && !isMessageEdit(event)) {
-    mergeTimelineEntry(entry.timeline, timelineEntry(event, entry.summary), { atStart });
+    mergeTimelineEntry(entry.timeline, timelineEntry(event, entry.summary), { atStart, chronological });
   }
 }
 

@@ -168,3 +168,20 @@ test('late encrypted edits collapse into the original; an older decrypt cannot o
   await a.redact('$work');
   assert.equal(a.bubbles().length, 0);
 });
+
+test('context-recovered ordinary edits return to their original chronological position', async (t) => {
+  const a = await app(t);
+  await a.send('$old', 50, content('먼저 온 대화'));
+  await a.send('$newer', 300, content('나중 대화'));
+  a.client.getEventContext = async () => ({
+    event: { event_id: '$missing', room_id: roomId, type: 'm.room.message', sender: bot,
+      origin_server_ts: 100, content: content('원래 답변') },
+    events_before: [], events_after: [], state: [],
+  });
+  await a.edit('$edit-missing', '$missing', 400, '수정된 중간 답변');
+  for (let i = 0; i < 10 && a.bubbles().length < 3; i++) await flush();
+  assert.equal(a.bubbles().length, 3);
+  assert.match(a.bubbles()[0], /먼저 온 대화/);
+  assert.match(a.bubbles()[1], /수정된 중간 답변/);
+  assert.match(a.bubbles()[2], /나중 대화/);
+});
