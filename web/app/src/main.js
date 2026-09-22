@@ -278,6 +278,7 @@ async function connect(creds, { fresh = false } = {}) {
     renderCurrent();
   });
   state.client.onTimelineReset?.((roomId) => {
+    clearHydratedDecryptions(roomId);
     const entry = state.rooms.get(roomId);
     if (!entry) return;
     entry.timeline = [];
@@ -551,14 +552,21 @@ function mergeEvent(entry, event, atStart = false, chronological = false) {
   if (event.getType?.() === 'm.room.message' && !isMessageEdit(event)) {
     // Decryption and key retries may finish in any order. Ordinary messages
     // must use their original timestamp just as recovered context events do.
-    mergeTimelineEntry(entry.timeline, timelineEntry(event, entry.summary), { atStart, chronological: true });
-    return 'merged';
+    const eventOrder = state.client.liveTimelineEvents?.(event.getRoomId?.())?.map((item) => item.getId?.()) ?? [];
+    return mergeTimelineEntry(entry.timeline, timelineEntry(event, entry.summary), { atStart, chronological: true, eventOrder });
   }
   return 'ignored';
 }
 
 /** SDK live timeline에 있는데 화면 복사본에 없는 메시지(놓친 초기 sync)를 채운다. */
-const hydratedDecryptions = new WeakSet();
+const hydratedDecryptions = new Map();
+function clearHydratedDecryptions(roomId) {
+  for (const [event, subscription] of hydratedDecryptions) {
+    if (roomId !== undefined && subscription.roomId !== roomId) continue;
+    event.removeListener?.('Event.decrypted', subscription.callback);
+    hydratedDecryptions.delete(event);
+  }
+}
 function hydrateFromSdk(roomId) {
   if (!state.client || typeof state.client.liveTimelineEvents !== 'function') return;
   const entry = state.rooms.get(roomId);
@@ -566,16 +574,19 @@ function hydrateFromSdk(roomId) {
   const events = state.client.liveTimelineEvents(roomId);
   if (!Array.isArray(events) || events.length === 0) return;
   for (const event of events) {
+    if (event.isEncrypted?.() && typeof event.on === 'function' && !hydratedDecryptions.has(event)) {
+      const client = state.client;
+      const callback = () => {
+        if (state.client === client && client.liveTimelineEvents(roomId).includes(event)
+          && event.getType?.() === 'm.room.message') appendTimeline(event, false);
+      };
+      hydratedDecryptions.set(event, { roomId, callback });
+      event.on('Event.decrypted', callback);
+    }
+    // A failed decryption is m.room.message/m.bad.encrypted, but still needs
+    // the retry subscription above when its room key arrives later.
     if (event.getType?.() === 'm.room.message' || event.isRedacted?.()) {
       mergeEvent(entry, event);
-      continue;
-    }
-    if (event.isEncrypted?.() && typeof event.on === 'function' && !hydratedDecryptions.has(event)) {
-      hydratedDecryptions.add(event);
-      const client = state.client;
-      event.on('Event.decrypted', () => {
-        if (state.client === client && event.getType?.() === 'm.room.message') appendTimeline(event, false);
-      });
     }
   }
 }
@@ -923,6 +934,7 @@ async function logout() {
   }
   session.clearSession(stores);
   removeSyncRecovery?.();
+  clearHydratedDecryptions();
   photoPreviews.clear();
   state.client = null;
   state.myUserId = null;

@@ -542,6 +542,13 @@ export class ClientAdapter {
     const redacted = (event, room) => deliver(event, {
       removed: true, roomId: room?.roomId ?? event.getRoomId?.(), eventId: event.getAssociatedId?.(),
     });
+    const reset = (room) => {
+      for (const [event, callback] of subscriptions) {
+        if (event.getRoomId?.() !== room?.roomId) continue;
+        event.removeListener?.('Event.decrypted', callback);
+        subscriptions.delete(event);
+      }
+    };
     // The SDK mutates a pending event's ID/status in place; it does not emit a
     // second Room.timeline event when the send response or remote echo arrives.
     const localEcho = (event, room, oldEventId) => {
@@ -554,6 +561,7 @@ export class ClientAdapter {
     };
     this.client.on('Room.timeline', listener);
     this.client.on('Room.localEchoUpdated', localEcho);
+    this.client.on('Room.timelineReset', reset);
     // Unknown-parent relations may not enter any Room.timeline (SDK threads).
     this.client.on('event', recoverTarget);
     this.client.on('Event.decrypted', recoverTarget);
@@ -563,6 +571,7 @@ export class ClientAdapter {
       active = false;
       this.client.removeListener('Room.timeline', listener);
       this.client.removeListener('Room.localEchoUpdated', localEcho);
+      this.client.removeListener('Room.timelineReset', reset);
       this.client.removeListener('event', recoverTarget);
       this.client.removeListener('Event.decrypted', recoverTarget);
       this.client.removeListener('Event.replaced', replaced);

@@ -34,7 +34,7 @@ async function app(t, initial = []) {
   const client = sdk.createClient({ baseUrl: 'https://matrix.example.test', userId: '@owner:example.test', accessToken: 'synthetic', timelineSupport: true });
   const room = new sdk.Room(roomId, client, '@owner:example.test', { timelineSupport: true });
   client.store.storeRoom(room);
-  client.reEmitter.reEmit(room, ['Room.timeline', 'Room.redaction', 'Room.localEchoUpdated']);
+  client.reEmitter.reEmit(room, ['Room.timeline', 'Room.redaction', 'Room.localEchoUpdated', 'Room.timelineReset']);
   const adapter = new ClientAdapter(client, '@owner:example.test');
   let synced;
   Object.assign(adapter, {
@@ -310,4 +310,78 @@ test('ordinary edits and resume preserve equal-timestamp message order', async (
   await a.edit('$edit', '$first', 200, 'FIRST_EDITED');
   a.window.dispatchEvent(new a.window.Event('pageshow'));
   assert.deepEqual([...a.window.document.querySelectorAll('li.bubble')].map(e => e.dataset.eventId), ['$first', '$second']);
+});
+
+
+async function encryptedEvent(a, id, ts) {
+  const event = a.client.getEventMapper({ decrypt: false })({ event_id: id, room_id: roomId, sender: bot,
+    origin_server_ts: ts, type: 'm.room.encrypted', content: { algorithm: 'm.megolm.v1.aes-sha2' } });
+  await a.room.addLiveEvents([event], { addToState: false });
+  return event;
+}
+async function decryptEvent(event, body) {
+  await event.attemptDecryption({ decryptEvent: async () => ({ clearEvent: { type: 'm.room.message', content: content(body) } }) });
+  await flush();
+}
+
+test('equal-timestamp encrypted messages retain SDK order when decryption completes backwards', async (t) => {
+  const a = await app(t);
+  const first = await encryptedEvent(a, '$first', 100);
+  const second = await encryptedEvent(a, '$second', 100);
+  await decryptEvent(second, 'SECOND');
+  await decryptEvent(first, 'FIRST');
+  assert.deepEqual([...a.window.document.querySelectorAll('li.bubble')].map(e => e.dataset.eventId), ['$first', '$second']);
+});
+
+test('hydrated failed decryptions update after the missing key arrives', async (t) => {
+  const a = await app(t);
+  a.client.reEmitter.stopReEmitting(a.room, ['Room.timeline']);
+  const event = await encryptedEvent(a, '$missed-encrypted', 100);
+  await event.attemptDecryption({ decryptEvent: async () => { throw new Error('synthetic missing key'); } });
+  a.client.reEmitter.reEmit(a.room, ['Room.timeline']);
+  a.window.dispatchEvent(new a.window.Event('online'));
+  assert.equal(a.bubbles().length, 1);
+  assert.doesNotMatch(a.bubbles()[0], /RECOVERED_KEY/);
+  await decryptEvent(event, 'RECOVERED_KEY');
+  assert.match(a.bubbles()[0], /RECOVERED_KEY/);
+});
+
+test('timeline reset invalidates both hydration and live decryption subscriptions', async (t) => {
+  const a = await app(t);
+  const live = await encryptedEvent(a, '$old-live', 100);
+  a.client.reEmitter.stopReEmitting(a.room, ['Room.timeline']);
+  const missed = await encryptedEvent(a, '$old-missed', 200);
+  a.client.reEmitter.reEmit(a.room, ['Room.timeline']);
+  a.window.dispatchEvent(new a.window.Event('online'));
+  a.room.resetLiveTimeline(null, null);
+  await decryptEvent(live, 'STALE_LIVE');
+  await decryptEvent(missed, 'STALE_MISSED');
+  assert.equal(a.bubbles().length, 0);
+  await a.send('$new', 300, content('CURRENT'));
+  assert.equal(a.bubbles().length, 1);
+  assert.match(a.bubbles()[0], /CURRENT/);
+});
+
+test('late old progress cannot replace the newest heartbeat during decryption or resume', async (t) => {
+  const a = await app(t);
+  const old = await encryptedEvent(a, '$old', 100);
+  const current = await encryptedEvent(a, '$current', 200);
+  await decryptEvent(current, '⏳ Working — 9s');
+  await decryptEvent(old, '⏳ Working — 1s');
+  assert.equal(a.bubbles().length, 1);
+  assert.match(a.bubbles()[0], /Working — 9s/);
+  a.window.dispatchEvent(new a.window.Event('online'));
+  assert.equal(a.bubbles().length, 1);
+  assert.match(a.bubbles()[0], /Working — 9s/);
+});
+
+
+test('equal-timestamp heartbeats keep the newer SDK event after a late decryption', async (t) => {
+  const a = await app(t);
+  const old = await encryptedEvent(a, '$old', 100);
+  const current = await encryptedEvent(a, '$current', 100);
+  await decryptEvent(current, '⏳ Working — 9s');
+  await decryptEvent(old, '⏳ Working — 1s');
+  assert.equal(a.bubbles().length, 1);
+  assert.match(a.bubbles()[0], /Working — 9s/);
 });
