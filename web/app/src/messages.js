@@ -125,7 +125,8 @@ function dropHeldProgress(timeline, entry) {
   if (entry.isProgress || !entry.userId) return;
   for (let i = timeline.length - 1; i >= 0; i -= 1) {
     const item = timeline[i];
-    if (item.isProgress && item.held && sameSender(item.userId, entry.userId)) timeline.splice(i, 1);
+    if (item.isProgress && item.held && sameSender(item.userId, entry.userId)
+      && (!Number.isFinite(item.ts) || !Number.isFinite(entry.ts) || entry.ts >= item.ts)) timeline.splice(i, 1);
   }
 }
 
@@ -133,14 +134,20 @@ function dropHeldProgress(timeline, entry) {
  * The bridge deletes a buried heartbeat and posts a new event id.
  * Keep one progress bubble per sender instead of appending a second one.
  */
-function replaceSenderProgress(timeline, entry) {
-  if (!entry.isProgress || !entry.userId || !entry.eventId) return false;
+function replaceSenderProgress(timeline, entry, eventOrder) {
+  if (!entry.isProgress || !entry.userId || !entry.eventId) return null;
   const index = timeline.findIndex((item) => item.isProgress
     && sameSender(item.userId, entry.userId)
     && item.eventId !== entry.eventId);
-  if (index < 0) return false;
+  if (index < 0) return null;
+  if (Number.isFinite(timeline[index].ts) && Number.isFinite(entry.ts) && timeline[index].ts > entry.ts) return 'ignored';
+  if (timeline[index].ts === entry.ts) {
+    const oldRank = eventOrder.indexOf(timeline[index].eventId);
+    const newRank = eventOrder.indexOf(entry.eventId);
+    if (oldRank >= 0 && newRank >= 0 && oldRank > newRank) return 'ignored';
+  }
   timeline[index] = entry;
-  return true;
+  return 'replaced';
 }
 
 function placeProgress(timeline) {
@@ -182,7 +189,7 @@ export function retainProgressRedaction(timeline, eventId) {
   return 'held';
 }
 
-export function mergeTimelineEntry(timeline, entry, { atStart = false, chronological = false } = {}) {
+export function mergeTimelineEntry(timeline, entry, { atStart = false, chronological = false, eventOrder = [] } = {}) {
   dropHeldProgress(timeline, entry);
   let result = 'appended';
   if (entry.eventId) {
@@ -193,7 +200,11 @@ export function mergeTimelineEntry(timeline, entry, { atStart = false, chronolog
     }
   }
   // A new heartbeat event id replaces that sender's bubble. It is not a second message.
-  if (result !== 'replaced' && replaceSenderProgress(timeline, entry)) result = 'replaced';
+  if (result !== 'replaced') {
+    const progressResult = replaceSenderProgress(timeline, entry, eventOrder);
+    if (progressResult === 'ignored') return 'ignored';
+    if (progressResult) result = progressResult;
+  }
   // 이전 대화(scrollback)는 오래된 순서로 하나씩 앞에 붙는다 — 뒤가 아니라 앞에 넣는다.
   if (result !== 'replaced') {
     if (atStart) {
@@ -201,12 +212,17 @@ export function mergeTimelineEntry(timeline, entry, { atStart = false, chronolog
       result = 'prepended';
     } else timeline.push(entry);
   }
-  // SDK context lookup can return a missing ordinary message from the middle
-  // of the conversation, not just an older page. Restore its original place.
-  if (chronological && Number.isFinite(entry.ts)) {
-    timeline.splice(timeline.indexOf(entry), 1);
-    const index = timeline.findIndex((other) => Number.isFinite(other.ts) && other.ts > entry.ts);
-    timeline.splice(index < 0 ? timeline.length : index, 0, entry);
+  // Decryption can complete out of order, even for equal server timestamps.
+  // Use the SDK's event sequence to break ties; retain stable order otherwise.
+  if (chronological) {
+    const ranks = new Map(eventOrder.map((id, index) => [id, index]));
+    const ordered = timeline.filter((item) => Number.isFinite(item.ts));
+    ordered.sort((a, b) => a.ts - b.ts
+      || (ranks.get(a.eventId) ?? Infinity) - (ranks.get(b.eventId) ?? Infinity));
+    let index = 0;
+    for (let i = 0; i < timeline.length; i++) {
+      if (Number.isFinite(timeline[i].ts)) timeline[i] = ordered[index++];
+    }
   }
   // A heartbeat belongs at its last update's position, even after hydration,
   // scrollback or delayed decryption. Never use callback arrival time here.
