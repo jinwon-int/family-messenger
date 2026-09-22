@@ -268,7 +268,19 @@ function attachmentLabel(kind) {
   return null;
 }
 
-function bubble(entry) {
+function photoPreview(attachment, previews, onOpen) {
+  if (attachment?.kind !== 'photo' || !previews) return null;
+  const preview = previews.get(attachment);
+  if (preview?.status === 'ready') {
+    return el('button', { type: 'button', class: 'photo-preview', 'aria-label': `${strings.box.previewTitle}: ${attachment.name}`, onclick: () => onOpen?.(attachment) },
+      el('img', { src: preview.src, alt: attachment.name, onerror: () => previews.fail(attachment) }));
+  }
+  return el('div', { class: 'photo-preview' }, preview?.status === 'error'
+    ? el('button', { type: 'button', class: 'photo-retry', onclick: () => previews.retry(attachment) }, strings.media.photoFailed)
+    : el('span', { role: 'status' }, strings.box.loading));
+}
+
+function bubble(entry, photoPreviews, onOpenAttachment) {
   const attach = attachmentLabel(entry.kind);
   const rich = ['text', 'notice'].includes(entry.kind) ? richMessageFragment(entry.formattedBody) : null;
   const time = timeLabel(entry.ts);
@@ -277,7 +289,7 @@ function bubble(entry) {
     'li',
     { class: `bubble kind-${entry.kind}`, 'data-me': entry.isMe ? 'true' : 'false', 'data-event-id': entry.eventId ?? null },
     entry.isMe ? null : el('span', { class: 'who' }, participantLabel(entry, entry)),
-    el('div', { class: rich ? 'body rich-text' : 'body' }, attach ? el('span', { class: 'attach-label' }, attach) : null, rich ?? entry.body),
+    el('div', { class: rich ? 'body rich-text' : 'body' }, photoPreview(entry.attachment, photoPreviews, onOpenAttachment), attach ? el('span', { class: 'attach-label' }, attach) : null, rich ?? entry.body),
     foot.length > 0 ? el('span', { class: 'foot' }, foot.map((text, i) => (i > 0 ? ` · ${text}` : text))) : null,
   );
 }
@@ -315,7 +327,7 @@ function snapshotRoomPane(root) {
  * at the bottom; new message while scrolled up → keep the position and show
  * a floating "새 메시지" badge that jumps down on click.
  */
-function buildRoom({ room, timeline, onSend, onAttach, onTyping = null, onBack, notice, onToggleBox = null, hasMore = false, loadingEarlier = false, onLoadEarlier = null, typing = '' }, snap) {
+function buildRoom({ room, timeline, onSend, onAttach, photoPreviews = null, onOpenAttachment = null, onTyping = null, onBack, notice, onToggleBox = null, hasMore = false, loadingEarlier = false, onLoadEarlier = null, typing = '' }, snap) {
   // 맨 위 행: 이전 대화 불러오기 버튼 / 불러오는 중 / 대화의 처음.
   const earlierRow = el(
     'li',
@@ -330,7 +342,7 @@ function buildRoom({ room, timeline, onSend, onAttach, onTyping = null, onBack, 
     'ul',
     { class: 'timeline', 'aria-live': 'polite' },
     earlierRow,
-    timeline.length === 0 && !loadingEarlier ? el('li', { class: 'empty' }, strings.chat.empty) : timeline.map(bubble),
+    timeline.length === 0 && !loadingEarlier ? el('li', { class: 'empty' }, strings.chat.empty) : timeline.map((entry) => bubble(entry, photoPreviews, onOpenAttachment)),
   );
   // 맨 위 근처까지 올리면 자동으로 이전 페이지를 요청한다(한 번에 하나, main.js가 가드).
   if (hasMore && onLoadEarlier) {
