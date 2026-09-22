@@ -109,6 +109,7 @@ export const strings = {
   },
   media: {
     photo: '사진',
+    photoFailed: '사진을 불러오지 못했습니다. 눌러서 다시 시도',
     video: '영상',
     file: '파일',
     tooLarge: '파일이 너무 큽니다. 최대 90 MB까지 보낼 수 있습니다.',

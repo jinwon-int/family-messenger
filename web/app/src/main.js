@@ -10,6 +10,7 @@ import { lastMessagePreview, listSignature, sortByActivity } from './rooms.js';
 import { viewKeyAction, listPageMove, isSplitLayout, listPageNavAction } from './keyboard.js';
 import { splitParticipants, shortHandle } from './participants.js';
 import { attachmentFromContent, collectAttachments, fileboxRefreshUrl } from './attachments.js';
+import { PhotoPreviews } from './photo-previews.js';
 import { applyTypingEvent, createTypingState, pruneTyping, typingIndicator, typingNames } from './typing.js';
 import { DEFAULT_CONFIG, loadConfig } from './config.js';
 import { disablePush, enablePush, hasMatchingPusher, isIosDevice, pushAvailability, readSubscription } from './push.js';
@@ -58,9 +59,15 @@ const state = {
   typing: createTypingState(), // roomId -> Map(userId -> {name, ts}) — 방 헤더 "입력중.."
 };
 
+const photoPreviews = new PhotoPreviews({
+  fetchPhoto: (attachment, options) => state.client.fetchAttachment(attachment, options),
+  onChange: () => renderCurrent(),
+});
+
 function renderCurrent() {
   if (!state.client) return;
   const current = state.currentRoomId ? state.rooms.get(state.currentRoomId) : null;
+  photoPreviews.sync(current?.summary.roomId ?? null, current?.timeline.map((entry) => entry.attachment) ?? []);
   ui.renderShell(root, {
     list: {
       summaries: listSummaries(),
@@ -96,6 +103,8 @@ function renderCurrent() {
           onBack: openRooms,
           onSend: (text) => sendText(text),
           onAttach: (file) => sendAttachment(file),
+          photoPreviews,
+          onOpenAttachment: openAttachment,
           onTyping: (hasText) => handleComposerTyping(state.currentRoomId, hasText),
           typing: typingIndicator(typingNames(state.typing, current.summary.roomId, { myUserId: state.myUserId }), strings.chat.typing),
         }
@@ -850,6 +859,7 @@ async function logout() {
     return;
   }
   session.clearSession(stores);
+  photoPreviews.clear();
   state.client = null;
   state.myUserId = null;
   state.summaries = [];

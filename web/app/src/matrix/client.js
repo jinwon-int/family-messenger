@@ -449,12 +449,12 @@ export class ClientAdapter {
    * decrypt it when it was sent end-to-end encrypted. Returns a Blob typed
    * with the attachment mimetype. `fetchFn`/`decrypt` are injectable for tests.
    */
-  async fetchAttachment(attachment, { fetchFn = globalThis.fetch, decrypt } = {}) {
+  async fetchAttachment(attachment, { fetchFn = globalThis.fetch, decrypt, signal } = {}) {
     const path = mediaDownloadPath(attachment?.url);
     if (!path) throw new Error('fetchAttachment: mxc:// URL required');
     const base = String(this.client.getHomeserverUrl?.() ?? this.client.baseUrl ?? '').replace(/\/$/, '');
     const token = this.client.getAccessToken?.();
-    const response = await fetchFn(base + path, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    const response = await fetchFn(base + path, { headers: token ? { Authorization: `Bearer ${token}` } : {}, ...(signal ? { signal } : {}) });
     if (!response.ok) throw new Error(`fetchAttachment: media download failed (${response.status})`);
     let data = await response.arrayBuffer();
     if (attachment.encrypted) {
