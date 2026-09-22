@@ -7,6 +7,7 @@ import {
   messageKind,
   formattedMessageBody,
   mergeTimelineEntry,
+  retainProgressRedaction,
   validateAttachment,
 } from '../src/messages.js';
 
@@ -96,4 +97,33 @@ test('mergeTimelineEntry: atStart는 앞에 붙이고(이전 대화), 같은 id�
   assert.equal(mergeTimelineEntry(timeline, { eventId: '$d', body: '넷' }), 'appended');
   assert.equal(mergeTimelineEntry(timeline, { eventId: '$b', body: '둘!' }, { atStart: true }), 'replaced');
   assert.deepEqual(timeline.map((e) => e.body), ['하나', '둘!', '셋', '넷']);
+});
+
+test('진행 말풍선 삭제는 자리를 유지하고, 재게시·답이 그 자리를 이어받는다', () => {
+  const timeline = [
+    { eventId: '$work', userId: '@bot:example.test', isProgress: true, ts: 100, body: '⏳ Working — 1s' },
+    { eventId: '$chat', userId: '@owner:example.test', ts: 200, body: '중간에 온 말' },
+  ];
+  assert.equal(retainProgressRedaction(timeline, '$work'), 'held');
+  assert.equal(timeline[0].held, true);
+  assert.equal(timeline.length, 2);
+  assert.equal(mergeTimelineEntry(timeline, {
+    eventId: '$work2', userId: '@bot:example.test', isProgress: true, ts: 300, body: '⏳ Waiting for progress — 3s',
+  }), 'replaced');
+  assert.deepEqual(timeline.map((item) => item.eventId), ['$chat', '$work2']);
+  assert.equal(timeline[1].held, undefined);
+  retainProgressRedaction(timeline, '$work2');
+  assert.equal(timeline.some((item) => item.held), true);
+  mergeTimelineEntry(timeline, { eventId: '$answer', userId: '@bot:example.test', ts: 400, body: '최종 답변' });
+  assert.deepEqual(timeline.map((item) => item.eventId), ['$chat', '$answer']);
+});
+
+test('답이 이미 아래에 있으면 진행 말풍선 삭제는 바로 빼는 것이다', () => {
+  const timeline = [
+    { eventId: '$work', userId: '@bot:example.test', isProgress: true, ts: 100, body: '⏳ Working — 1s' },
+    { eventId: '$answer', userId: '@bot:example.test', ts: 200, body: '최종 답변' },
+  ];
+  assert.equal(retainProgressRedaction(timeline, '$work'), 'removed');
+  assert.deepEqual(timeline.map((item) => item.eventId), ['$answer']);
+  assert.equal(retainProgressRedaction([{ eventId: '$chat', body: '일반' }], '$chat'), 'removed');
 });

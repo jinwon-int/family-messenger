@@ -116,7 +116,74 @@ export function attachmentContent(file, mxcUrl, meta = {}) {
  * @param {{eventId?: string}} entry
  * @returns {'appended'|'replaced'}
  */
+function sameSender(a, b) {
+  return typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase();
+}
+
+/** The answer arrived: drop only a progress bubble the bridge already redacted. */
+function dropHeldProgress(timeline, entry) {
+  if (entry.isProgress || !entry.userId) return;
+  for (let i = timeline.length - 1; i >= 0; i -= 1) {
+    const item = timeline[i];
+    if (item.isProgress && item.held && sameSender(item.userId, entry.userId)) timeline.splice(i, 1);
+  }
+}
+
+/**
+ * The bridge deletes a buried heartbeat and posts a new event id.
+ * Keep one progress bubble per sender instead of appending a second one.
+ */
+function replaceSenderProgress(timeline, entry) {
+  if (!entry.isProgress || !entry.userId || !entry.eventId) return false;
+  const index = timeline.findIndex((item) => item.isProgress
+    && sameSender(item.userId, entry.userId)
+    && item.eventId !== entry.eventId);
+  if (index < 0) return false;
+  timeline[index] = entry;
+  return true;
+}
+
+function placeProgress(timeline) {
+  const progress = timeline.filter((item) => item.isProgress && Number.isFinite(item.ts));
+  if (!progress.length) return;
+  const messages = timeline.filter((item) => !progress.includes(item));
+  for (const item of progress.sort((a, b) => a.ts - b.ts)) {
+    const index = messages.findIndex((other) => Number.isFinite(other.ts) && other.ts > item.ts);
+    messages.splice(index < 0 ? messages.length : index, 0, item);
+  }
+  timeline.splice(0, timeline.length, ...messages);
+}
+
+/**
+ * A progress redaction must not collapse the timeline. The bridge still
+ * deletes and reposts a buried heartbeat; removing the bubble before the
+ * replacement arrives makes the chat scroll shrink, then grow.
+ * Hold the bubble until that replacement, or until this sender's answer.
+ * If the answer is already below the bubble, the turn is over — remove now.
+ * @param {Array<{eventId?: string, isProgress?: boolean, held?: boolean, userId?: string}>} timeline
+ * @param {string|null|undefined} eventId
+ * @returns {'held'|'removed'|'absent'}
+ */
+export function retainProgressRedaction(timeline, eventId) {
+  if (!eventId) return 'absent';
+  const index = timeline.findIndex((item) => item.eventId === eventId);
+  if (index < 0) return 'absent';
+  const item = timeline[index];
+  if (!item.isProgress) {
+    timeline.splice(index, 1);
+    return 'removed';
+  }
+  const answered = timeline.slice(index + 1).some((other) => !other.isProgress && sameSender(other.userId, item.userId));
+  if (answered) {
+    timeline.splice(index, 1);
+    return 'removed';
+  }
+  timeline[index] = { ...item, held: true };
+  return 'held';
+}
+
 export function mergeTimelineEntry(timeline, entry, { atStart = false, chronological = false } = {}) {
+  dropHeldProgress(timeline, entry);
   let result = 'appended';
   if (entry.eventId) {
     const index = timeline.findIndex((item) => item.eventId === entry.eventId);
@@ -125,6 +192,8 @@ export function mergeTimelineEntry(timeline, entry, { atStart = false, chronolog
       result = 'replaced';
     }
   }
+  // A new heartbeat event id replaces that sender's bubble. It is not a second message.
+  if (result !== 'replaced' && replaceSenderProgress(timeline, entry)) result = 'replaced';
   // 이전 대화(scrollback)는 오래된 순서로 하나씩 앞에 붙는다 — 뒤가 아니라 앞에 넣는다.
   if (result !== 'replaced') {
     if (atStart) {
@@ -141,15 +210,7 @@ export function mergeTimelineEntry(timeline, entry, { atStart = false, chronolog
   }
   // A heartbeat belongs at its last update's position, even after hydration,
   // scrollback or delayed decryption. Never use callback arrival time here.
-  const progress = timeline.filter((item) => item.isProgress && Number.isFinite(item.ts));
-  if (progress.length) {
-    const messages = timeline.filter((item) => !progress.includes(item));
-    for (const item of progress.sort((a, b) => a.ts - b.ts)) {
-      const index = messages.findIndex((other) => Number.isFinite(other.ts) && other.ts > item.ts);
-      messages.splice(index < 0 ? messages.length : index, 0, item);
-    }
-    timeline.splice(0, timeline.length, ...messages);
-  }
+  placeProgress(timeline);
   return result;
 }
 

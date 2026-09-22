@@ -166,7 +166,38 @@ test('late encrypted edits collapse into the original; an older decrypt cannot o
   assert.equal(a.bubbles().length, 1);
   assert.match(a.bubbles()[0], /Working — 3s/);
   await a.redact('$work');
-  assert.equal(a.bubbles().length, 0);
+  assert.equal(a.bubbles().length, 1, 'progress redact waits for the answer instead of collapsing the scroller');
+  await a.send('$done', 400, content('최종 답변'));
+  assert.equal(a.bubbles().length, 1);
+  assert.match(a.bubbles()[0], /최종 답변/);
+});
+
+test('redact then repost keeps one progress bubble and the same timeline element', async (t) => {
+  const a = await app(t);
+  await a.send('$work', 100, content('⏳ Working — 1s'));
+  await a.send('$chat', 200, content('중간에 온 말'), '@owner:example.test');
+  const list = a.window.document.querySelector('.timeline');
+  const bubble = a.window.document.querySelector('li.bubble.is-progress');
+  assert.ok(list);
+  assert.ok(bubble);
+  await a.edit('$edit', '$work', 250, '⏳ Working — 9s | Read: file.py');
+  assert.ok(a.window.document.querySelector('.timeline') === list, 'edit keeps timeline');
+  assert.ok(a.window.document.querySelector('li.bubble.is-progress') === bubble, 'edit keeps progress node');
+  assert.match(bubble.textContent, /Read: file.py/);
+  await a.redact('$work');
+  assert.equal(a.bubbles().length, 2);
+  assert.ok(a.window.document.querySelector('.timeline') === list, 'redact keeps timeline');
+  await a.send('$work2', 300, content('⏳ Waiting for progress — 3s'));
+  assert.equal(a.bubbles().length, 2);
+  assert.ok(a.window.document.querySelector('.timeline') === list, 'repost keeps timeline');
+  assert.ok(a.window.document.querySelector('li.bubble.is-progress') === bubble, 'repost keeps progress node');
+  assert.match(bubble.textContent, /Waiting for progress/);
+  assert.doesNotMatch(bubble.textContent, /Working — 1s/);
+  await a.redact('$work2');
+  await a.send('$answer', 400, content('최종 답변'));
+  assert.equal(a.bubbles().length, 2);
+  assert.match(a.bubbles().join('\n'), /최종 답변/);
+  assert.doesNotMatch(a.bubbles().join('\n'), /Waiting for progress/);
 });
 
 test('context-recovered ordinary edits return to their original chronological position', async (t) => {

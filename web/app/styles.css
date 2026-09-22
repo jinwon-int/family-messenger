@@ -489,6 +489,15 @@ main.shell[data-view="room"] .pane-list { display: none; }
 .bubble.kind-notice .body { background: transparent; border: 0; box-shadow: none; color: var(--text-2); font-size: var(--text-s); text-align: center; }
 .bubble.kind-notice .body.rich-text { text-align: left; }
 .bubble.kind-notice .who { display: none; }
+/* 진행 말풍선은 한 줄로 고정한다. 경과 문구가 줄바꿈되면 스크롤 높이가 같이 변한다. */
+.bubble.is-progress { min-width: 0; }
+.bubble.is-progress .body {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  max-width: 100%;
+}
 
 .composer-wrap {
   flex: none;
