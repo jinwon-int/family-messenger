@@ -34,7 +34,7 @@ async function app(t, initial = []) {
   const client = sdk.createClient({ baseUrl: 'https://matrix.example.test', userId: '@owner:example.test', accessToken: 'synthetic', timelineSupport: true });
   const room = new sdk.Room(roomId, client, '@owner:example.test', { timelineSupport: true });
   client.store.storeRoom(room);
-  client.reEmitter.reEmit(room, ['Room.timeline', 'Room.redaction']);
+  client.reEmitter.reEmit(room, ['Room.timeline', 'Room.redaction', 'Room.localEchoUpdated']);
   const adapter = new ClientAdapter(client, '@owner:example.test');
   let synced;
   Object.assign(adapter, {
@@ -64,7 +64,7 @@ async function app(t, initial = []) {
   window.document.querySelector('.room-item').click();
   const bubbles = () => [...window.document.querySelectorAll('.timeline .bubble')].map((node) => node.textContent);
   const redact = (target) => send('$redact-' + target, 500, {}, bot, { type: 'm.room.redaction', redacts: target });
-  return { window, client, room, send, edit, redact, bubbles, synced };
+  return { window, client, room, adapter, send, edit, redact, bubbles, synced };
 }
 
 test('SDK edits update one heartbeat, move it after intervening chat, and retain the draft', async (t) => {
@@ -215,4 +215,99 @@ test('context-recovered ordinary edits return to their original chronological po
   assert.match(a.bubbles()[0], /먼저 온 대화/);
   assert.match(a.bubbles()[1], /수정된 중간 답변/);
   assert.match(a.bubbles()[2], /나중 대화/);
+});
+
+test('delayed ordinary decryption preserves server order', async (t) => {
+  const a = await app(t);
+  const event = a.client.getEventMapper({ decrypt: false })({ event_id: '$early', room_id: roomId, sender: bot,
+    origin_server_ts: 100, type: 'm.room.encrypted', content: { algorithm: 'm.megolm.v1.aes-sha2' } });
+  await a.room.addLiveEvents([event], { addToState: false });
+  await a.send('$mine', 200, content('LATER_SELF'), '@owner:example.test');
+  await event.attemptDecryption({ decryptEvent: async () => ({ clearEvent: {
+    type: 'm.room.message', content: content('EARLIER_OTHER'),
+  } }) });
+  await flush();
+  assert.deepEqual(a.bubbles().map(s => s.includes('EARLIER_OTHER') ? 'early' : 'late'), ['early', 'late']);
+});
+
+
+test('own sent echo updates the displayed event identity', async (t) => {
+  const a = await app(t);
+  const local = new sdk.MatrixEvent({ event_id: '~local', room_id: roomId, sender: '@owner:example.test',
+    origin_server_ts: 100, type: 'm.room.message', content: content('SELF_MESSAGE') });
+  local.setStatus(sdk.EventStatus.SENDING);
+  a.room.addPendingEvent(local, 'test-txn');
+  await flush();
+  a.room.updatePendingEvent(local, sdk.EventStatus.SENT, '$confirmed');
+  await flush();
+  assert.deepEqual([...a.window.document.querySelectorAll('li.bubble')].map(e => e.dataset.eventId), ['$confirmed']);
+});
+
+
+test('remote echo and subsequent hydration keep one message with server time', async (t) => {
+  const a = await app(t);
+  const local = new sdk.MatrixEvent({ event_id: '~local', room_id: roomId, sender: '@owner:example.test',
+    origin_server_ts: 999, type: 'm.room.message', content: content('SELF_MESSAGE') });
+  local.setStatus(sdk.EventStatus.SENDING);
+  a.room.addPendingEvent(local, 'test-txn');
+  await a.send('$other', 200, content('OTHER_MESSAGE'));
+  a.room.updatePendingEvent(local, sdk.EventStatus.SENT, '$confirmed');
+  await a.send('$confirmed', 100, content('SELF_MESSAGE'), '@owner:example.test', { unsigned: { transaction_id: 'test-txn' } });
+  a.synced('PREPARED');
+  assert.deepEqual([...a.window.document.querySelectorAll('li.bubble')].map(e => e.dataset.eventId), ['$confirmed', '$other']);
+});
+
+test('cancelled pending sends disappear instead of surviving as stale bubbles', async (t) => {
+  const a = await app(t);
+  const local = new sdk.MatrixEvent({ event_id: '~cancel', room_id: roomId, sender: '@owner:example.test',
+    origin_server_ts: 100, type: 'm.room.message', content: content('UNSENT') });
+  local.setStatus(sdk.EventStatus.NOT_SENT);
+  a.room.addPendingEvent(local, 'cancel-txn');
+  assert.equal(a.bubbles().length, 1);
+  a.room.updatePendingEvent(local, sdk.EventStatus.CANCELLED);
+  assert.equal(a.bubbles().length, 0);
+});
+
+async function addMissedEvent(a) {
+  // Simulate the SDK having newer history than the app snapshot after suspension.
+  a.client.reEmitter.stopReEmitting(a.room, ['Room.timeline']);
+  await a.send('$missed', 100, content('RECOVERED'));
+  a.client.reEmitter.reEmit(a.room, ['Room.timeline']);
+  assert.equal(a.bubbles().length, 0);
+}
+
+test('SYNCING after reconnect reconciles missed SDK history and retains composer draft', async (t) => {
+  const a = await app(t);
+  const input = a.window.document.querySelector('textarea');
+  input.value = 'draft';
+  a.synced('RECONNECTING');
+  await addMissedEvent(a);
+  a.synced('SYNCING');
+  assert.equal(a.bubbles().length, 1);
+  assert.match(a.bubbles()[0], /RECOVERED/);
+  assert.equal(a.window.document.querySelector('textarea').value, 'draft');
+  assert.equal(a.window.document.querySelector('.status.warn'), null);
+});
+
+test('returning to the app nudges sync and recovers missed history without another login', async (t) => {
+  const a = await app(t);
+  let retries = 0;
+  a.client.retryImmediately = () => { retries++; };
+  await addMissedEvent(a);
+  a.window.document.dispatchEvent(new a.window.Event('visibilitychange'));
+  assert.equal(retries, 1);
+  assert.equal(a.bubbles().length, 1);
+  a.window.dispatchEvent(new a.window.Event('online'));
+  assert.equal(retries, 2);
+  assert.equal(a.bubbles().length, 1);
+});
+
+
+test('ordinary edits and resume preserve equal-timestamp message order', async (t) => {
+  const a = await app(t);
+  await a.send('$first', 100, content('FIRST'));
+  await a.send('$second', 100, content('SECOND'));
+  await a.edit('$edit', '$first', 200, 'FIRST_EDITED');
+  a.window.dispatchEvent(new a.window.Event('pageshow'));
+  assert.deepEqual([...a.window.document.querySelectorAll('li.bubble')].map(e => e.dataset.eventId), ['$first', '$second']);
 });

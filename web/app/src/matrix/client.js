@@ -166,6 +166,11 @@ export class ClientAdapter {
     this.client.stopClient();
   }
 
+  /** Nudge the SDK's existing retry loop after the browser comes back online. */
+  retrySync() {
+    return this.client.retryImmediately?.();
+  }
+
   /**
    * Room ids flagged as direct messages by the m.direct account data,
    * i.e. 1:1 개인방.
@@ -513,6 +518,7 @@ export class ClientAdapter {
       if (removed) return;
       const meta = {
         atStart: Boolean(toStartOfTimeline),
+        previousEventId: data?.previousEventId,
         chronological: data?.chronological === true
           || Boolean(data?.timeline && data.timeline !== room?.getLiveTimeline?.()),
       };
@@ -536,7 +542,18 @@ export class ClientAdapter {
     const redacted = (event, room) => deliver(event, {
       removed: true, roomId: room?.roomId ?? event.getRoomId?.(), eventId: event.getAssociatedId?.(),
     });
+    // The SDK mutates a pending event's ID/status in place; it does not emit a
+    // second Room.timeline event when the send response or remote echo arrives.
+    const localEcho = (event, room, oldEventId) => {
+      if (event.status === 'cancelled') {
+        deliver(event, { removed: true, cancelled: true, roomId: room?.roomId,
+          eventId: oldEventId ?? event.getId?.() });
+      } else {
+        listener(event, room, false, false, { previousEventId: oldEventId });
+      }
+    };
     this.client.on('Room.timeline', listener);
+    this.client.on('Room.localEchoUpdated', localEcho);
     // Unknown-parent relations may not enter any Room.timeline (SDK threads).
     this.client.on('event', recoverTarget);
     this.client.on('Event.decrypted', recoverTarget);
@@ -545,6 +562,7 @@ export class ClientAdapter {
     const off = () => {
       active = false;
       this.client.removeListener('Room.timeline', listener);
+      this.client.removeListener('Room.localEchoUpdated', localEcho);
       this.client.removeListener('event', recoverTarget);
       this.client.removeListener('Event.decrypted', recoverTarget);
       this.client.removeListener('Event.replaced', replaced);

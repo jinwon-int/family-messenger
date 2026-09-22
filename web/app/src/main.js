@@ -254,10 +254,19 @@ async function connect(creds, { fresh = false } = {}) {
   state.client.onTimeline((event, meta) => {
     if (meta?.removed) {
       const entry = state.rooms.get(meta.roomId);
+      if (meta.cancelled) {
+        if (entry) entry.timeline = entry.timeline.filter((item) => item.eventId !== meta.eventId);
+        if (meta.roomId === state.currentRoomId) renderCurrent();
+        return;
+      }
       // 진행 말풍선 삭제는 자리를 유지한다. 바로 빼면 재게시 사이에 스크롤이 줄었다 늘어난다.
       const outcome = entry ? retainProgressRedaction(entry.timeline, meta.eventId) : 'absent';
       if (outcome !== 'held' && meta.roomId === state.currentRoomId) renderCurrent();
       return;
+    }
+    if (meta?.previousEventId && meta.previousEventId !== event.getId?.()) {
+      const entry = state.rooms.get(event.getRoomId?.());
+      if (entry) entry.timeline = entry.timeline.filter((item) => item.eventId !== meta.previousEventId);
     }
     appendTimeline(event, meta?.atStart === true, meta?.chronological === true);
   });
@@ -278,21 +287,47 @@ async function connect(creds, { fresh = false } = {}) {
   // 내 다른 기기(휴대폰 앱 등)가 이 기기 검증을 요청하면 수락 시트를 연다.
   state.client.onVerificationRequest((request) => openIncomingVerification(request));
   state.client.start((syncState) => {
-    state.syncState = syncState === 'PREPARED' || syncState === 'SYNCING' ? 'live' : syncState === 'ERROR' ? 'error' : state.syncState;
-    if (syncState === 'PREPARED' || syncState === 'ERROR') refreshSummaries();
-    if (syncState === 'PREPARED') {
-      // 초기 sync 이벤트가 방 Map보다 먼저 오면 appendTimeline이 버려
-      // 최신이 빠진 채 scrollback만 남는 방이 생긴다 — SDK live timeline으로 채운다.
-      for (const roomId of state.rooms.keys()) hydrateFromSdk(roomId);
-      renderCurrent();
+    const wasLive = state.syncState === 'live';
+    const live = syncState === 'PREPARED' || syncState === 'SYNCING';
+    state.syncState = live ? 'live'
+      : ['ERROR', 'RECONNECTING', 'CATCHUP', 'STOPPED'].includes(syncState) ? 'error' : state.syncState;
+    if (live && (!wasLive || syncState === 'PREPARED')) {
+      reconcileLiveRooms();
       backfillPreviews();
-    }
+    } else if (!live) renderCurrent();
   });
+  installSyncRecovery();
   startListTicker();
   installKeyboardShortcuts();
   installRoomListKeyboardNav();
   openRooms();
   resumePush();
+}
+
+function reconcileLiveRooms() {
+  refreshSummaries();
+  for (const roomId of state.rooms.keys()) hydrateFromSdk(roomId);
+  renderCurrent();
+}
+
+let removeSyncRecovery = null;
+function installSyncRecovery() {
+  removeSyncRecovery?.();
+  const client = state.client;
+  const resume = () => {
+    if (state.client !== client || document.visibilityState === 'hidden') return;
+    client.retrySync?.();
+    reconcileLiveRooms();
+  };
+  document.addEventListener('visibilitychange', resume);
+  window.addEventListener('online', resume);
+  window.addEventListener('pageshow', resume);
+  removeSyncRecovery = () => {
+    document.removeEventListener('visibilitychange', resume);
+    window.removeEventListener('online', resume);
+    window.removeEventListener('pageshow', resume);
+    removeSyncRecovery = null;
+  };
 }
 
 /**
@@ -514,13 +549,16 @@ function appendTimeline(event, atStart = false, chronological = false) {
 function mergeEvent(entry, event, atStart = false, chronological = false) {
   if (event.isRedacted?.()) return retainProgressRedaction(entry.timeline, event.getId?.());
   if (event.getType?.() === 'm.room.message' && !isMessageEdit(event)) {
-    mergeTimelineEntry(entry.timeline, timelineEntry(event, entry.summary), { atStart, chronological });
+    // Decryption and key retries may finish in any order. Ordinary messages
+    // must use their original timestamp just as recovered context events do.
+    mergeTimelineEntry(entry.timeline, timelineEntry(event, entry.summary), { atStart, chronological: true });
     return 'merged';
   }
   return 'ignored';
 }
 
 /** SDK live timeline에 있는데 화면 복사본에 없는 메시지(놓친 초기 sync)를 채운다. */
+const hydratedDecryptions = new WeakSet();
 function hydrateFromSdk(roomId) {
   if (!state.client || typeof state.client.liveTimelineEvents !== 'function') return;
   const entry = state.rooms.get(roomId);
@@ -532,9 +570,11 @@ function hydrateFromSdk(roomId) {
       mergeEvent(entry, event);
       continue;
     }
-    if (typeof event.isEncrypted === 'function' && event.isEncrypted() && typeof event.once === 'function') {
-      event.once('Event.decrypted', () => {
-        if (event.getType?.() === 'm.room.message') appendTimeline(event, false);
+    if (event.isEncrypted?.() && typeof event.on === 'function' && !hydratedDecryptions.has(event)) {
+      hydratedDecryptions.add(event);
+      const client = state.client;
+      event.on('Event.decrypted', () => {
+        if (state.client === client && event.getType?.() === 'm.room.message') appendTimeline(event, false);
       });
     }
   }
@@ -882,6 +922,7 @@ async function logout() {
     return;
   }
   session.clearSession(stores);
+  removeSyncRecovery?.();
   photoPreviews.clear();
   state.client = null;
   state.myUserId = null;

@@ -185,9 +185,11 @@ export function retainProgressRedaction(timeline, eventId) {
 export function mergeTimelineEntry(timeline, entry, { atStart = false, chronological = false } = {}) {
   dropHeldProgress(timeline, entry);
   let result = 'appended';
+  let previousTs;
   if (entry.eventId) {
     const index = timeline.findIndex((item) => item.eventId === entry.eventId);
     if (index >= 0) {
+      previousTs = timeline[index].ts;
       timeline[index] = entry;
       result = 'replaced';
     }
@@ -203,7 +205,9 @@ export function mergeTimelineEntry(timeline, entry, { atStart = false, chronolog
   }
   // SDK context lookup can return a missing ordinary message from the middle
   // of the conversation, not just an older page. Restore its original place.
-  if (chronological && Number.isFinite(entry.ts)) {
+  // An edit or repeated hydration with the same timestamp must not move a
+  // message after its equal-timestamp neighbours.
+  if (chronological && Number.isFinite(entry.ts) && previousTs !== entry.ts) {
     timeline.splice(timeline.indexOf(entry), 1);
     const index = timeline.findIndex((other) => Number.isFinite(other.ts) && other.ts > entry.ts);
     timeline.splice(index < 0 ? timeline.length : index, 0, entry);
