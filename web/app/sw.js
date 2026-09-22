@@ -22,7 +22,9 @@ self.addEventListener('activate', (event) => {
 });
 
 // 문서·설정·매니페스트는 항상 네트워크 우선(핫픽스가 기기 캐시에 갇히지 않게).
-// 해시가 붙은 자산과 wasm은 내용이 곧 이름이므로 캐시 우선.
+// 해시가 붙은 자산은 내용이 곧 이름이므로 캐시 우선. wasm은 이름이 고정 경로지만
+// install이 프리캐시하고 캐시 이름이 빌드마다 바뀌므로(위 헤더 주석) 캐시 우선이
+// 안전하다 — 새 glue에 오래된 wasm이 엮일 일이 없다.
 function isNetworkFirst(request, url) {
   if (request.mode === 'navigate') return true;
   const path = url.pathname;

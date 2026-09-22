@@ -94,6 +94,8 @@ npm run serve            # http://127.0.0.1:8080 에서 dist 서빙
 
 빌드는 Rust crypto WASM(`@matrix-org/matrix-sdk-crypto-wasm`)의 `.wasm` 바이너리를
 glue가 기대하는 상대 경로 `dist/pkg/`로 복사하고, 번들이 그 경로를 참조하는지 검사한다.
+wasm은 glue가 고정 경로로 찾아 해시 파일명을 붙일 수 없고, 대신 서비스 워커 프리캐시
+셸에 들어간다 — 캐시 이름이 빌드마다 바뀌므로 새 glue에 오래된 wasm이 엮일 일이 없다.
 번들 결과(main.js 약 1.1 MB + wasm 약 7.8 MB)는 브라우저 캐시 관점에서 무겁지만
 1단계에서는 정확성을 우선한다.
 
