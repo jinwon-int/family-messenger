@@ -80,7 +80,10 @@ const indexHtml = rewriteIndex(await readFile(join(here, 'index.html'), 'utf8'),
 });
 await writeFile(join(dist, 'index.html'), indexHtml);
 const buildId = shortHash(Buffer.concat([stylesBytes, bootBytes, await readFile(join(dist, bundleName)), Buffer.from(indexHtml)]));
-const shell = ['./', './index.html', `./${bundleName}`, `./${stylesName}`, `./${bootName}`, './manifest.webmanifest', './icons/icon.svg'];
+// wasm은 glue가 `new URL("./pkg/…", import.meta.url)`로 고정 경로를 찾아 이름에 해시를
+// 붙일 수 없다. 대신 프리캐시 목록에 넣는다 — 캐시 이름이 빌드마다 바뀌므로 매 배포마다
+// 이번 빌드의 wasm이 반드시 새로 내려오고, 새 glue와 오래된 wasm의 조합이 생기지 않는다.
+const shell = ['./', './index.html', `./${bundleName}`, `./${stylesName}`, `./${bootName}`, './manifest.webmanifest', './icons/icon.svg', './pkg/matrix_sdk_crypto_wasm_bg.wasm'];
 await writeFile(join(dist, 'sw.js'), rewriteServiceWorker(await readFile(join(here, 'sw.js'), 'utf8'), { cacheName: `familychat-${buildId}`, shell }));
 
 // 배포 시 설정(web/app/config.json, git-ignored)을 dist에 싣는다. 없으면 빈 설정 —

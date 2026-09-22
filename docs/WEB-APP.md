@@ -94,6 +94,8 @@ npm run serve            # http://127.0.0.1:8080 에서 dist 서빙
 
 빌드는 Rust crypto WASM(`@matrix-org/matrix-sdk-crypto-wasm`)의 `.wasm` 바이너리를
 glue가 기대하는 상대 경로 `dist/pkg/`로 복사하고, 번들이 그 경로를 참조하는지 검사한다.
+wasm은 glue가 고정 경로로 찾아 해시 파일명을 붙일 수 없고, 대신 서비스 워커 프리캐시
+셸에 들어간다 — 캐시 이름이 빌드마다 바뀌므로 새 glue에 오래된 wasm이 엮일 일이 없다.
 번들 결과(main.js 약 1.1 MB + wasm 약 7.8 MB)는 브라우저 캐시 관점에서 무겁지만
 1단계에서는 정확성을 우선한다.
 
@@ -109,6 +111,10 @@ glue가 기대하는 상대 경로 `dist/pkg/`로 복사하고, 번들이 그 �
 | `tests/transport_smoke.mjs` | 고정 버전 matrix-js-sdk 로딩, `initRustCrypto`·`login`·`uploadContent`·WASM 패키지 존재 |
 | `npm run build` | 브라우저 번들 성공(WASM 자산 포함) |
 | CI (`.github/workflows/web.yml`) | 위 전부 + dist 서빙·껍데기 응답 검사, 번들 아티팩트 보존 |
+
+두 `node --test` 스크립트에는 자식 힙 상한(`--max-old-space-size=2048`)과 동시성 상한(`--test-concurrency=4`)이
+있다. 전체 글롭 병렬 실행 중 자식 하나가 수십 GB로 폭주해 호스트 OOM 킬을 유발한 사례(#179, 2026-09-21 2회)가
+있어서다. 폭주가 재발하면 호스트 대신 해당 파일만 힙 OOM으로 죽고 `node --test` 리포터에 실패 파일명이 남는다.
 
 실행 기록은 PR 본문에 붙인다. 브라우저에서의 실기기 검증(이모지 비교 양쪽 화면)은
 1단계 후반 실가족 게이트에서 진행한다.
