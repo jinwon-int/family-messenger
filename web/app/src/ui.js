@@ -287,7 +287,7 @@ function bubble(entry, photoPreviews, onOpenAttachment) {
   const foot = [entry.meta, time].filter(Boolean);
   return el(
     'li',
-    { class: `bubble kind-${entry.kind}`, 'data-me': entry.isMe ? 'true' : 'false', 'data-event-id': entry.eventId ?? null },
+    { class: `bubble kind-${entry.kind}${entry.isProgress ? ' is-progress' : ''}`, 'data-me': entry.isMe ? 'true' : 'false', 'data-event-id': entry.eventId ?? null, 'data-body': entry.body ?? '' },
     entry.isMe ? null : el('span', { class: 'who' }, participantLabel(entry, entry)),
     el('div', { class: rich ? 'body rich-text' : 'body' }, photoPreview(entry.attachment, photoPreviews, onOpenAttachment), attach ? el('span', { class: 'attach-label' }, attach) : null, rich ?? entry.body),
     foot.length > 0 ? el('span', { class: 'foot' }, foot.map((text, i) => (i > 0 ? ` · ${text}` : text))) : null,
@@ -299,6 +299,94 @@ const NEAR_BOTTOM_PX = 48;
 
 function isNearBottom(list) {
   return list.scrollHeight - list.scrollTop - list.clientHeight <= NEAR_BOTTOM_PX;
+}
+
+function footLabel(entry) {
+  const time = timeLabel(entry.ts);
+  return [entry.meta, time].filter(Boolean).join(' · ');
+}
+
+/** The earlier-row controls must still rebuild; a progress patch must not freeze them. */
+function earlierRowCurrent(list, { hasMore, loadingEarlier, onLoadEarlier, count }) {
+  const row = list.querySelector('li.load-earlier');
+  if (!row) return false;
+  const button = row.querySelector('button');
+  const text = row.textContent ?? '';
+  if (loadingEarlier) return !button && text.includes(strings.chat.historyLoading);
+  if (hasMore && onLoadEarlier) return Boolean(button);
+  if (count > 0) return !button && text.includes(strings.chat.historyStart);
+  return !button && text.trim() === '';
+}
+
+/**
+ * Same non-progress messages, and the same number of progress bubbles.
+ * A heartbeat edit or redact+repost only changes the progress event id, text, or slot.
+ * @returns {Array<{node: Element, entry: object}>|null}
+ */
+function planProgressPatch(list, timeline) {
+  if (!Array.isArray(timeline)) return null;
+  const nodes = [...list.querySelectorAll('li.bubble')];
+  if (nodes.some((node) => !node.dataset.eventId) || timeline.some((entry) => !entry.eventId)) return null;
+  const oldNon = nodes.filter((node) => !node.classList.contains('is-progress'));
+  const newNon = timeline.filter((entry) => !entry.isProgress);
+  if (oldNon.map((node) => node.dataset.eventId).join('\0') !== newNon.map((entry) => entry.eventId).join('\0')) return null;
+  // 본문이 바뀐 일반 메시지는 다시 그린다. data-body는 마지막에 그린 entry.body다.
+  if (oldNon.some((node, i) => (node.dataset.body ?? '') !== (newNon[i].body ?? ''))) return null;
+  const oldProg = nodes.filter((node) => node.classList.contains('is-progress'));
+  const newProg = timeline.filter((entry) => entry.isProgress);
+  if (oldProg.length !== newProg.length) return null;
+  const unused = new Set(oldProg);
+  const pairs = [];
+  for (const entry of newProg) {
+    let node = oldProg.find((item) => item.dataset.eventId === entry.eventId && unused.has(item));
+    if (!node) node = oldProg.find((item) => unused.has(item));
+    if (!node) return null;
+    unused.delete(node);
+    pairs.push({ node, entry });
+  }
+  return pairs;
+}
+
+/** Patch only when a progress bubble's identity, text, or slot changed. */
+function progressNeedsPatch(list, timeline, pairs) {
+  if (!pairs || pairs.length === 0) return false;
+  if (pairs.some(({ node, entry }) => node.dataset.eventId !== entry.eventId || (node.dataset.body ?? '') !== (entry.body ?? ''))) return true;
+  const current = [...list.querySelectorAll('li.bubble')].map((node) => node.dataset.eventId).join('\0');
+  return current !== timeline.map((entry) => entry.eventId).join('\0');
+}
+
+/** Update progress bubbles in place. A pinned view moves by the height delta only. */
+function applyProgressPatch(list, timeline, pairs) {
+  const near = isNearBottom(list);
+  const top = list.scrollTop;
+  const before = list.scrollHeight;
+  for (const { node, entry } of pairs) {
+    node.dataset.eventId = entry.eventId;
+    node.dataset.body = entry.body ?? '';
+    node.classList.add('is-progress');
+    const body = node.querySelector('.body');
+    if (body) body.textContent = entry.body ?? '';
+    const label = footLabel(entry);
+    const foot = node.querySelector('.foot');
+    if (label) {
+      if (foot) foot.textContent = label;
+      else node.append(el('span', { class: 'foot' }, label));
+    } else foot?.remove();
+  }
+  const byId = new Map([...list.querySelectorAll('li.bubble')].map((node) => [node.dataset.eventId, node]));
+  let cursor = list.querySelector('li.load-earlier');
+  for (const entry of timeline) {
+    const node = byId.get(entry.eventId);
+    if (!node) return;
+    const next = cursor ? cursor.nextElementSibling : list.firstElementChild;
+    if (next !== node) {
+      if (cursor) cursor.after(node);
+      else list.prepend(node);
+    }
+    cursor = node;
+  }
+  const delta = list.scrollHeight - before;
+  list.scrollTop = near ? top + delta : top;
 }
 
 /**
@@ -600,14 +688,27 @@ export function renderShell(root, { list, room, box = null }) {
     existingScreen.querySelector(':scope > .status')?.remove();
     const oldWrap = existingScreen.querySelector(':scope > .timeline-wrap');
     if (built.parts.notice) existingScreen.insertBefore(built.parts.notice, oldWrap);
-    oldWrap?.replaceWith(built.parts.timelineWrap);
+    // 진행 말풍선만 바뀌면 스크롤러를 갈아끼우지 않는다. 통째 교체는 scrollTop이 0으로
+    // 돌아갔다가 바닥으로 붙으며, 삭제·재게시 사이에는 높이가 줄었다 늘어난다.
+    const existingList = oldWrap?.querySelector('.timeline');
+    const progressPairs = existingList && earlierRowCurrent(existingList, {
+      hasMore: room.hasMore,
+      loadingEarlier: room.loadingEarlier,
+      onLoadEarlier: room.onLoadEarlier,
+      count: room.timeline?.length ?? 0,
+    })
+      ? planProgressPatch(existingList, room.timeline)
+      : null;
+    const patch = progressPairs && progressNeedsPatch(existingList, room.timeline, progressPairs) ? progressPairs : null;
+    if (patch) applyProgressPatch(existingList, room.timeline, patch);
+    else oldWrap?.replaceWith(built.parts.timelineWrap);
     const oldBox = existingShell.querySelector(':scope > .pane-box');
     const newBox = box ? buildBox(box) : null;
     if (oldBox && newBox) oldBox.replaceWith(newBox);
     else if (newBox) existingShell.append(newBox);
     else oldBox?.remove();
     existingShell.dataset.view = view;
-    built.mount({ keepComposer: true });
+    if (!patch) built.mount({ keepComposer: true });
     return;
   }
 

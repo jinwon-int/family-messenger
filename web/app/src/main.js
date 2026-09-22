@@ -3,7 +3,7 @@
 import { strings } from './strings.js';
 import * as session from './session.js';
 import { createFamilyClient, loginWithPassword, PlaintextRefusedError } from './matrix/client.js';
-import { messageKind, humanFileSize, validateAttachment, attachmentContent, mergeTimelineEntry, formattedMessageBody, isMessageEdit, isProgressContent } from './messages.js';
+import { messageKind, humanFileSize, validateAttachment, attachmentContent, mergeTimelineEntry, formattedMessageBody, isMessageEdit, isProgressContent, retainProgressRedaction } from './messages.js';
 import { extractMentions } from './mentions.js';
 import { describeInvite } from './invites.js';
 import { lastMessagePreview, listSignature, sortByActivity } from './rooms.js';
@@ -254,8 +254,9 @@ async function connect(creds, { fresh = false } = {}) {
   state.client.onTimeline((event, meta) => {
     if (meta?.removed) {
       const entry = state.rooms.get(meta.roomId);
-      if (entry) entry.timeline = entry.timeline.filter((item) => item.eventId !== meta.eventId);
-      if (meta.roomId === state.currentRoomId) renderCurrent();
+      // 진행 말풍선 삭제는 자리를 유지한다. 바로 빼면 재게시 사이에 스크롤이 줄었다 늘어난다.
+      const outcome = entry ? retainProgressRedaction(entry.timeline, meta.eventId) : 'absent';
+      if (outcome !== 'held' && meta.roomId === state.currentRoomId) renderCurrent();
       return;
     }
     appendTimeline(event, meta?.atStart === true, meta?.chronological === true);
@@ -503,16 +504,20 @@ function appendTimeline(event, atStart = false, chronological = false) {
   // 초기 sync는 방 목록 갱신보다 Room.timeline이 먼저 올 수 있다 — 버리면 최신이 빠진다.
   const entry0 = ensureRoomEntry(roomId);
   // 복호화 재시도는 같은 event id로 다시 전달된다 — 자리표시를 본문으로 치환한다.
-  mergeEvent(entry0, event, atStart, chronological);
+  // 수정 봉투(m.replace)는 원본 갱신 전에 한 번 더 도착한다. 그때 다시 그리면
+  // 타임라인 DOM이 갈아끼워져 스크롤이 흔들린다. 내용이 안 바뀌면 그리지 않는다.
+  const outcome = mergeEvent(entry0, event, atStart, chronological);
+  if (outcome === 'ignored' || outcome === 'held') return;
   if (roomId === state.currentRoomId) renderCurrent();
 }
 
 function mergeEvent(entry, event, atStart = false, chronological = false) {
-  if (event.isRedacted?.()) {
-    entry.timeline = entry.timeline.filter((item) => item.eventId !== event.getId?.());
-  } else if (event.getType?.() === 'm.room.message' && !isMessageEdit(event)) {
+  if (event.isRedacted?.()) return retainProgressRedaction(entry.timeline, event.getId?.());
+  if (event.getType?.() === 'm.room.message' && !isMessageEdit(event)) {
     mergeTimelineEntry(entry.timeline, timelineEntry(event, entry.summary), { atStart, chronological });
+    return 'merged';
   }
+  return 'ignored';
 }
 
 /** SDK live timeline에 있는데 화면 복사본에 없는 메시지(놓친 초기 sync)를 채운다. */
