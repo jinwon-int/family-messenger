@@ -116,19 +116,52 @@ export function attachmentContent(file, mxcUrl, meta = {}) {
  * @param {{eventId?: string}} entry
  * @returns {'appended'|'replaced'}
  */
-export function mergeTimelineEntry(timeline, entry, { atStart = false } = {}) {
+export function mergeTimelineEntry(timeline, entry, { atStart = false, chronological = false } = {}) {
+  let result = 'appended';
   if (entry.eventId) {
     const index = timeline.findIndex((item) => item.eventId === entry.eventId);
     if (index >= 0) {
       timeline[index] = entry;
-      return 'replaced';
+      result = 'replaced';
     }
   }
   // 이전 대화(scrollback)는 오래된 순서로 하나씩 앞에 붙는다 — 뒤가 아니라 앞에 넣는다.
-  if (atStart) {
-    timeline.unshift(entry);
-    return 'prepended';
+  if (result !== 'replaced') {
+    if (atStart) {
+      timeline.unshift(entry);
+      result = 'prepended';
+    } else timeline.push(entry);
   }
-  timeline.push(entry);
-  return 'appended';
+  // SDK context lookup can return a missing ordinary message from the middle
+  // of the conversation, not just an older page. Restore its original place.
+  if (chronological && Number.isFinite(entry.ts)) {
+    timeline.splice(timeline.indexOf(entry), 1);
+    const index = timeline.findIndex((other) => Number.isFinite(other.ts) && other.ts > entry.ts);
+    timeline.splice(index < 0 ? timeline.length : index, 0, entry);
+  }
+  // A heartbeat belongs at its last update's position, even after hydration,
+  // scrollback or delayed decryption. Never use callback arrival time here.
+  const progress = timeline.filter((item) => item.isProgress && Number.isFinite(item.ts));
+  if (progress.length) {
+    const messages = timeline.filter((item) => !progress.includes(item));
+    for (const item of progress.sort((a, b) => a.ts - b.ts)) {
+      const index = messages.findIndex((other) => Number.isFinite(other.ts) && other.ts > item.ts);
+      messages.splice(index < 0 ? messages.length : index, 0, item);
+    }
+    timeline.splice(0, timeline.length, ...messages);
+  }
+  return result;
+}
+
+/** Edit envelopes are not independent bubbles; the SDK validates and applies them. */
+export function isMessageEdit(event) {
+  const relation = event.getRelation?.() ?? event.getOriginalContent?.()?.['m.relates_to']
+    ?? event.getContent?.()?.['m.relates_to'];
+  return relation?.rel_type === 'm.replace';
+}
+
+/** The bridge's existing heartbeat wire format (including stalled work). */
+export function isProgressContent(content) {
+  return ['m.text', 'm.notice'].includes(content?.msgtype)
+    && /^⏳ (?:Working|Waiting for progress) — \d/.test(content?.body ?? '');
 }

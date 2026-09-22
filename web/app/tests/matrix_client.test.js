@@ -160,6 +160,7 @@ test('자격 증명이 그대로 SDK 클라이언트 생성자로 전달된다',
     userId: CREDS.userId,
     accessToken: CREDS.accessToken,
     deviceId: CREDS.deviceId,
+    timelineSupport: true,
   });
   assert.ok(adapter instanceof ClientAdapter);
   for (const key of Object.keys(CREDS)) {
