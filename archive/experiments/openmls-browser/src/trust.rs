@@ -37,7 +37,7 @@ impl Device {
             s.join_inner(bytes)?;
             let group = s.group.as_ref().ok_or_else(|| rejected(()))?;
             let members: Vec<_> = group.members().collect();
-            if members.len() != 2 {return Err(rejected(()));}
+            if members.len() < 2 {return Err(rejected(()));}
             let own = members.iter().filter(|m| m.credential == s.credential.credential && m.signature_key == s.signer.public()).count();
             let peer = members.iter().filter(|m| m.credential == expected.credential && m.signature_key == key).count();
             if own != 1 || peer != 1 || s.signer.public() == key {return Err(rejected(()));}
@@ -97,8 +97,10 @@ impl Device {
         if processed.credential()!=&expected.credential || member.credential!=expected.credential || member.signature_key!=key
             || processed.aad()!=aad {return Err(rejected(()));}
         let ProcessedMessageContent::StagedCommitMessage(commit)=processed.into_content() else {return Err(rejected(()));};
-        // Only a path rekey of the fixed pair. All membership/PSK/context and
-        // other proposals require a separate application authorization contract.
+        // Only a bare path rekey: any queued proposal (add/remove/update/PSK/
+        // context) is rejected. N-member self-update rekeys stage an update
+        // path only (empty proposal store), so this stays the single
+        // authorization gate for membership changes.
         if commit.queued_proposals().next().is_some() {return Err(rejected(()));}
         group.merge_staged_commit(&self.provider,*commit).map_err(rejected)
     }

@@ -17,6 +17,7 @@ self.onmessage = ({data: {id, method, argument}}) => {
         case 'key_package': result = device.key_package(); break;
         case 'create': result = device.create(); break;
         case 'invite': result = device.invite(new Uint8Array(argument)); break;
+        case 'invite_with_commit': result = device.invite_with_commit(new Uint8Array(argument)); break;
         case 'join': result = device.join(new Uint8Array(argument)); break;
         case 'encrypt': result = device.encrypt(new Uint8Array(argument)); break;
         case 'decrypt': result = device.decrypt(new Uint8Array(argument)); break;

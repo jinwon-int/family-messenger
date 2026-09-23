@@ -2,7 +2,7 @@
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
-use tls_codec::Serialize;
+use tls_codec::{Deserialize as TlsDeserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 const SUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
@@ -59,16 +59,43 @@ impl Device {
         Ok(())
     }
 
-    /// Synthetic delivery coordinator accepts the commit before forwarding Welcome.
-    fn invite_inner(&mut self, key_package: &[u8]) -> Result<Vec<u8>, JsValue> {
-        bounded(key_package, MAX_WIRE)?;
-        let package = KeyPackageIn::tls_deserialize_exact_bytes(key_package).map_err(rejected)?
-            .validate(self.provider.crypto(), ProtocolVersion::Mls10).map_err(rejected)?;
+    /// Welcome-only add kept verbatim for the M0 smokes and worker dispatch.
+    fn invite_inner(&mut self, key_packages: &[u8]) -> Result<Vec<u8>, JsValue> {
+        let (_, welcome) = self.add_members_inner(key_packages)?;
+        Ok(welcome)
+    }
+
+    /// Same single-transaction add as `invite_inner`, but returns both wire
+    /// artifacts the §3.4 v2 coordinator needs from one atomic add: the commit
+    /// (POSTed to the server for CAS and total order — after `merge_pending_commit`
+    /// it is otherwise unrecoverable) and the multi-target Welcome (forwarded to
+    /// targets only), framed as `u32 LE commit_len || commit || welcome`.
+    fn invite_with_commit_inner(&mut self, key_packages: &[u8]) -> Result<Vec<u8>, JsValue> {
+        let (commit, welcome) = self.add_members_inner(key_packages)?;
+        let mut framed = Vec::with_capacity(4 + commit.len() + welcome.len());
+        framed.extend_from_slice(&(commit.len() as u32).to_le_bytes());
+        framed.extend_from_slice(&commit);
+        framed.extend_from_slice(&welcome);
+        Ok(framed)
+    }
+
+    /// Accepts one or more concatenated TLS-serialized KeyPackages; every added
+    /// device receives the same multi-target Welcome. Valid at any group size.
+    fn add_members_inner(&mut self, key_packages: &[u8]) -> Result<(Vec<u8>, Vec<u8>), JsValue> {
+        bounded(key_packages, MAX_WIRE)?;
+        let mut parsed = Vec::new();
+        let mut rest = key_packages;
+        while !rest.is_empty() {
+            let package = KeyPackageIn::tls_deserialize(&mut rest).map_err(rejected)?
+                .validate(self.provider.crypto(), ProtocolVersion::Mls10).map_err(rejected)?;
+            parsed.push(package);
+        }
         let group = self.group.as_mut().ok_or_else(|| rejected(()))?;
-        if group.members().count() != 1 { return Err(JsValue::from_str("two-member experiment only")); }
-        let (_, welcome, _) = group.add_members(&self.provider, &self.signer, &[package]).map_err(rejected)?;
+        let (commit, welcome, _) = group.add_members(&self.provider, &self.signer, &parsed).map_err(rejected)?;
         group.merge_pending_commit(&self.provider).map_err(rejected)?;
-        welcome.tls_serialize_detached().map_err(rejected)
+        let commit = commit.tls_serialize_detached().map_err(rejected)?;
+        let welcome = welcome.tls_serialize_detached().map_err(rejected)?;
+        Ok((commit, welcome))
     }
 
     fn join_inner(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
@@ -145,6 +172,7 @@ impl Device {
     pub fn key_package(&mut self) -> Result<Vec<u8>, JsValue> { self.run(|s| s.key_package_inner()) }
     pub fn create(&mut self) -> Result<(), JsValue> { self.run(|s| s.create_inner()) }
     pub fn invite(&mut self, bytes: &[u8]) -> Result<Vec<u8>, JsValue> { self.run(|s| s.invite_inner(bytes)) }
+    pub fn invite_with_commit(&mut self, bytes: &[u8]) -> Result<Vec<u8>, JsValue> { self.run(|s| s.invite_with_commit_inner(bytes)) }
     pub fn join(&mut self, bytes: &[u8]) -> Result<(), JsValue> { self.run(|s| s.join_inner(bytes)) }
     pub fn encrypt(&mut self, bytes: &[u8]) -> Result<Vec<u8>, JsValue> { self.run(|s| s.encrypt_inner(bytes)) }
     pub fn decrypt(&mut self, bytes: &[u8]) -> Result<Vec<u8>, JsValue> { self.run(|s| s.decrypt_inner(bytes)) }

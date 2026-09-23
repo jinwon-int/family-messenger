@@ -141,10 +141,10 @@ fn trusted_members(device: &Device, peer: &str, key: &[u8], require_pair: bool) 
     if let Some(group)=&device.group {
         if !group.is_active(){return Err(rejected(()));}
         let members: Vec<_>=group.members().collect();
-        if members.is_empty() || members.len()>2 || (require_pair && members.len()!=2){return Err(rejected(()));}
+        if members.is_empty() || (require_pair && members.len()<2){return Err(rejected(()));}
         let own=members.iter().filter(|m|m.credential==device.credential.credential && m.signature_key==device.signer.public()).count();
         let peers=members.iter().filter(|m|m.credential==expected && m.signature_key==key).count();
-        if own!=1 || own+peers!=members.len(){return Err(rejected(()));}
+        if own!=1 || peers!=1 {return Err(rejected(()));}
     } else if require_pair {return Err(rejected(()));}
     Ok(())
 }
