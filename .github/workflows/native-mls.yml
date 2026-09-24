@@ -95,6 +95,7 @@ jobs:
           go vet ./...
           go build -trimpath ./...
           go test -race -count=1 ./...
+          go build -trimpath -o ../../../artifacts/native-mls-relay .
       - uses: actions/setup-python@v5
         if: steps.scope.outputs.run == 'true'
         with:
@@ -124,6 +125,9 @@ jobs:
       - name: Durable trusted state
         if: steps.scope.outputs.run == 'true'
         run: python archive/native-mls/tests/native_trusted_state_smoke.py --bundle artifacts/mls-pkg --binary artifacts/family-dev --policy-binary artifacts/family-policy
+      - name: v2 relay client — 4 devices, fault injection a–g
+        if: steps.scope.outputs.run == 'true'
+        run: python archive/native-mls/tests/native_v2_relay_smoke.py --bundle artifacts/mls-pkg --relay-binary artifacts/native-mls-relay
       - name: Preserve evidence
         if: always() && steps.scope.outputs.run == 'true'
         uses: actions/upload-artifact@v4
