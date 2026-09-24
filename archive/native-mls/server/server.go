@@ -41,15 +41,14 @@ func defaultPolicy() policy {
 	}
 }
 
-// relay owns the single SQLite connection and the per-room per-device cursor
-// map used by application-event pruning. Every write path takes mu, so with
+// relay owns the single SQLite connection. Every write path takes mu, so with
 // SetMaxOpenConns(1) exactly one BEGIN IMMEDIATE transaction is in flight at
-// a time (B2/B3) and the cursor map cannot drift from the database.
+// a time (B2/B3). Pruning cursors live in mls_cursors, not in memory, so they
+// survive a restart.
 type relay struct {
-	mu      sync.Mutex
-	db      *sql.DB
-	cursors map[string]map[string]int64
-	policy  policy
+	mu     sync.Mutex
+	db     *sql.DB
+	policy policy
 }
 
 // ---- wire types ----
