@@ -99,7 +99,7 @@ pub fn staged_apply(bytes: &[u8], identity: &str, method: &str, input: &[u8]) ->
         "join" => { device.join_inner(input)?; vec![] },
         "encrypt" => device.encrypt_inner(input)?,
         "decrypt" => device.decrypt_inner(input)?,
-        "remove" => device.remove_member_inner(input)?,
+        "remove" => device.remove_member_inner(input, true)?,
         "commit" => { device.apply_commit_inner(input)?; vec![] },
         _ => return Err(rejected(())),
     };
