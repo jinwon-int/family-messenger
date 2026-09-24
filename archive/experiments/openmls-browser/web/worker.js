@@ -24,6 +24,9 @@ self.onmessage = ({data: {id, method, argument}}) => {
         case 'public_key': result = device.public_key(); break;
         case 'remove': result = device.remove_member(new Uint8Array(argument)); break;
         case 'commit': result = device.apply_commit(new Uint8Array(argument)); break;
+        case 'remove_pending': result = device.remove_member_pending(new Uint8Array(argument)); break;
+        case 'merge_pending': device.merge_pending(); result = null; break;
+        case 'clear_pending': device.clear_pending(); result = null; break;
         default: throw new Error('unknown method');
       }
     }
