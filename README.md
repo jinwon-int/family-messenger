@@ -64,3 +64,4 @@ python3 -m unittest discover -s tests -v
 
 직접 작성한 코드는 [MIT License](LICENSE)를 따릅니다. 외부 구성요소의 라이선스와 고지는
 별도로 유지합니다: [구성요소·출처](THIRD_PARTY.md), [의존성·자원 기록](docs/DEPENDENCIES-AND-RESOURCES.md).
+
