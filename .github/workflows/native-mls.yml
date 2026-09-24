@@ -45,12 +45,23 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: server/go.mod
-          cache-dependency-path: server/go.sum
+          cache-dependency-path: |
+            server/go.sum
+            archive/native-mls/server/go.sum
       - name: Build live server binaries for the trust-gate smokes
         working-directory: server
         run: |
           go build -trimpath -o ../artifacts/family-dev ./cmd/family-dev
           go build -trimpath -o ../artifacts/family-policy ./cmd/family-policy
+      # v2 relay (#177 §3.4) is its own Go module; cgo go-sqlite3 needs the runner's gcc.
+      - name: v2 relay module — gofmt, vet, test
+        working-directory: archive/native-mls/server
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then echo "gofmt needed:"; echo "$unformatted"; exit 1; fi
+          go vet ./...
+          go build -trimpath ./...
+          go test -race -count=1 ./...
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
