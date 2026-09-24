@@ -56,6 +56,12 @@ CREATE TABLE IF NOT EXISTS mls_keypackages (
 	expires_at  INTEGER NOT NULL,
 	PRIMARY KEY (room, device, ref)
 );
+CREATE TABLE IF NOT EXISTS mls_cursors (
+	room   TEXT NOT NULL REFERENCES mls_rooms(room),
+	device TEXT NOT NULL,
+	seq    INTEGER NOT NULL,
+	PRIMARY KEY (room, device)
+);
 `
 
 func openStore(dataDir string) (*sql.DB, error) {
@@ -67,7 +73,7 @@ func openStore(dataDir string) (*sql.DB, error) {
 		return nil, err
 	}
 	// One writer connection: BEGIN IMMEDIATE plus busy_timeout then never
-	// races itself, and the in-memory cursor map stays consistent with it.
+	// races itself.
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
@@ -181,13 +187,9 @@ func (s *relay) storeEvent(room string, ev eventInput) (storedEvent, error) {
 	if row.closed {
 		return storedEvent{}, errClosed
 	}
-	if ev.revision != nil && *ev.revision != row.revision {
-		return storedEvent{}, casMismatch{row.epoch, row.revision}
-	}
-	if ev.epoch != row.epoch {
-		return storedEvent{}, casMismatch{row.epoch, row.revision}
-	}
-	// K4: UNIQUE(room, device, client_id) + byte-equal replay -> 200.
+	// K4 before CAS: a byte-equal replay of a stored event is the 200 duplicate
+	// even if a commit has since moved the epoch (lost response + concurrent
+	// commit); different bytes under a taken client_id are reuse regardless.
 	var prevSeq int64
 	var prevEpoch int64
 	var prevBytes []byte
@@ -200,6 +202,12 @@ func (s *relay) storeEvent(room string, ev eventInput) (storedEvent, error) {
 		return storedEvent{}, clientIDReuse{Device: ev.device, ClientID: ev.clientID}
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return storedEvent{}, err
+	}
+	if ev.revision != nil && *ev.revision != row.revision {
+		return storedEvent{}, casMismatch{row.epoch, row.revision}
+	}
+	if ev.epoch != row.epoch {
+		return storedEvent{}, casMismatch{row.epoch, row.revision}
 	}
 	if ev.kind == "welcome" && len(ev.targets) == 0 {
 		return storedEvent{}, errWelcomeTargets
@@ -225,6 +233,20 @@ func (s *relay) storeEvent(room string, ev eventInput) (storedEvent, error) {
 		room, seq, ev.device, ev.clientID, ev.kind, ev.epoch, targets, ev.bytes, sha256Hex(ev.bytes), now); err != nil {
 		return storedEvent{}, err
 	}
+	// Every device that posts, and every Welcome target, becomes a known
+	// reader of the room: its durable cursor gates application-event pruning
+	// until it reads (poster from 0, a Welcome target from just before its
+	// Welcome — it cannot decrypt anything earlier).
+	if err := registerCursor(tx, room, ev.device, 0); err != nil {
+		return storedEvent{}, err
+	}
+	if ev.kind == "welcome" {
+		for _, target := range ev.targets {
+			if err := registerCursor(tx, room, target, seq-1); err != nil {
+				return storedEvent{}, err
+			}
+		}
+	}
 	newEpoch, newRevision := row.epoch, row.revision+1
 	if ev.kind == "commit" {
 		newEpoch = row.epoch + 1
@@ -243,7 +265,7 @@ func (s *relay) storeEvent(room string, ev eventInput) (storedEvent, error) {
 
 // readEvents returns the per-room total order after seq, filtering welcome
 // events targeted at other devices (B4: filter, never 403). The requesting
-// device's cursor is recorded in memory for application-event pruning.
+// device's cursor is recorded durably (mls_cursors) for application-event pruning.
 func (s *relay) readEvents(room, device string, after int64) ([]storedRow, roomRow, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -282,12 +304,11 @@ func (s *relay) readEvents(room, device string, after int64) ([]storedRow, roomR
 	if err := rows.Err(); err != nil {
 		return nil, roomRow{}, err
 	}
-	// Cursor bookkeeping for pruning; devices that never GET block pruning.
-	if s.cursors[room] == nil {
-		s.cursors[room] = map[string]int64{}
-	}
-	if cur, ok := s.cursors[room][device]; !ok || maxSeq > cur {
-		s.cursors[room][device] = maxSeq
+	rows.Close()
+	// Durable cursor bookkeeping for pruning: only ever moves forward.
+	if _, err := s.db.Exec(`INSERT INTO mls_cursors (room, device, seq) VALUES (?, ?, ?)
+		ON CONFLICT (room, device) DO UPDATE SET seq = MAX(seq, excluded.seq)`, room, device, maxSeq); err != nil {
+		return nil, roomRow{}, err
 	}
 	return out, row, nil
 }
@@ -380,7 +401,9 @@ func (s *relay) consumeKeyPackage(room, device, consumer string) (storedKeyPacka
 // prune enforces the §3.4 retention rules inside the caller's write
 // transaction: application events once every recorded cursor passed them and
 // the TTL elapsed, commit/welcome events outside the last N epochs, and
-// expired key packages. Devices without a recorded cursor block pruning.
+// expired key packages. The gate is the minimum durable cursor over every
+// known reader (posters and Welcome targets), so a device that has not read
+// yet — including one offline across a relay restart — blocks deletion.
 func (s *relay) prune(tx *sql.Tx, room string, epoch int64, now int64) error {
 	if _, err := tx.Exec(`DELETE FROM mls_keypackages WHERE room = ? AND expires_at <= ?`, room, now); err != nil {
 		return err
@@ -410,12 +433,15 @@ func (s *relay) prune(tx *sql.Tx, room string, epoch int64, now int64) error {
 	if len(stale) == 0 {
 		return nil
 	}
-	minCursor, ok := minCursorValue(s.cursors[room])
-	if !ok {
-		return nil // nobody ever read the room: keep everything
+	var minCursor sql.NullInt64
+	if err := tx.QueryRow(`SELECT MIN(seq) FROM mls_cursors WHERE room = ?`, room).Scan(&minCursor); err != nil {
+		return err
+	}
+	if !minCursor.Valid {
+		return nil // no known reader: keep everything
 	}
 	for _, seq := range stale {
-		if minCursor >= seq {
+		if minCursor.Int64 >= seq {
 			if _, err := tx.Exec(`DELETE FROM mls_events WHERE room = ? AND seq = ?`, room, seq); err != nil {
 				return err
 			}
@@ -424,14 +450,12 @@ func (s *relay) prune(tx *sql.Tx, room string, epoch int64, now int64) error {
 	return nil
 }
 
-func minCursorValue(cursors map[string]int64) (int64, bool) {
-	min := int64(-1)
-	for _, cur := range cursors {
-		if min < 0 || cur < min {
-			min = cur
-		}
-	}
-	return min, min >= 0
+// registerCursor makes device a known reader of room without moving an
+// existing cursor (INSERT OR IGNORE): a first post or Welcome sets the floor,
+// only reads advance it.
+func registerCursor(tx *sql.Tx, room, device string, seq int64) error {
+	_, err := tx.Exec(`INSERT OR IGNORE INTO mls_cursors (room, device, seq) VALUES (?, ?, ?)`, room, device, seq)
+	return err
 }
 
 func targetedAt(encoded, device string) bool {

@@ -47,7 +47,7 @@ func main() {
 		pol.AppEventTTLSeconds = *appEventTTL
 	}
 
-	relay := &relay{db: db, cursors: map[string]map[string]int64{}, policy: pol}
+	relay := &relay{db: db, policy: pol}
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           relay.routes(),

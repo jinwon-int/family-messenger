@@ -5,8 +5,9 @@
 // stale-revision CAS 409, client_id reuse 409, room byte cap 413, oversized
 // body 413 and strict-JSON duplicate-key 400. Scenario pins: the 3-device
 // commit → stale-epoch 409 → re-encrypt flow with Welcome target filtering
-// (B4), and application-event pruning gated on cursors re-recorded after a
-// relay restart.
+// (B4), application-event pruning gated on every known device's durable
+// cursor across a relay restart and on Welcome targets that have not read
+// yet, and the K4 byte-equal retry winning over a stale-epoch CAS.
 package main
 
 import (
@@ -36,7 +37,7 @@ func newTestRelayAt(t *testing.T, pol policy, dir string) (*relay, *httptest.Ser
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	r := &relay{db: db, cursors: map[string]map[string]int64{}, policy: pol}
+	r := &relay{db: db, policy: pol}
 	srv := httptest.NewServer(r.routes())
 	t.Cleanup(srv.Close)
 	return r, srv, dir
@@ -402,15 +403,16 @@ func TestThreeDeviceCommitWelcomeTargetingScenario(t *testing.T) {
 	}
 }
 
-// TestPruneAfterRestartKeepsUntilCursorsReRecorded pins cursor-gated
-// application-event pruning across a relay restart: cursors live only in
-// memory, so the restarted relay's first prune must keep everything (an empty
-// cursor map never deletes), and only after a device re-GETs do subsequent
-// writes delete stale application events — and only up to the minimum
-// recorded cursor. created_at is wall-clock now, so the policy runs with a
-// negative AppEventTTLSeconds: every stored application event is stale at
-// prune time, which isolates the cursor gate from clock assumptions.
-func TestPruneAfterRestartKeepsUntilCursorsReRecorded(t *testing.T) {
+// TestPruneAfterRestartWaitsForEveryKnownDevice pins cursor-gated
+// application-event pruning across a relay restart. Cursors are durable
+// (mls_cursors), and every device that posted to the room is known with a
+// cursor from its first post, so a device that has not read yet blocks
+// deletion before AND after the restart — a restart must not turn "b1 has not
+// come back yet" into "b1 never existed". Only once b1 reads do stale events
+// up to the minimum cursor go. created_at is wall-clock now, so the policy
+// runs with a negative AppEventTTLSeconds: every stored application event is
+// stale at prune time, which isolates the cursor gate from clock assumptions.
+func TestPruneAfterRestartWaitsForEveryKnownDevice(t *testing.T) {
 	pol := testPolicy()
 	pol.AppEventTTLSeconds = -1
 	dir := t.TempDir()
@@ -432,44 +434,128 @@ func TestPruneAfterRestartKeepsUntilCursorsReRecorded(t *testing.T) {
 		t.Fatalf("close relay 1: %v", err)
 	}
 
-	// Relay instance 2 over the same file: the in-memory cursor map is gone.
+	// Relay instance 2 over the same file.
 	_, srvB, _ := newTestRelayAt(t, pol, dir)
+	getAll := func(device string) eventsResponse {
+		t.Helper()
+		st, raw := doJSON(t, srvB, "GET", "/v2/rooms/r/events?device="+device, nil)
+		if st != http.StatusOK {
+			t.Fatalf("get %s: status=%d body=%s", device, st, raw)
+		}
+		return decodeEventsResponse(t, raw)
+	}
 
-	// First write after the restart: seq 1 and 2 are stale (negative TTL)
-	// but no device has re-read yet, so prune must keep everything.
+	// a1 reads everything after the restart (cursor 2), then writes seq 3,
+	// which prunes. b1 posted before the restart and has not read: nothing
+	// it has not seen may go.
+	if got := getAll("a1"); len(got.Events) != 2 {
+		t.Fatalf("restart kept %d events, want 2: %+v", len(got.Events), got.Events)
+	}
 	st, raw = doJSON(t, srvB, "POST", "/v2/rooms/r/events",
-		postEventBody(t, "b1", "c3", "application", 0, nil, nil, []byte("message-three")))
+		postEventBody(t, "a1", "c3", "application", 0, nil, nil, []byte("message-three")))
 	if st != http.StatusCreated {
 		t.Fatalf("post-restart write: status=%d body=%s", st, raw)
 	}
-	st, raw = doJSON(t, srvB, "GET", "/v2/rooms/r/events?device=a1", nil)
-	if st != http.StatusOK {
-		t.Fatalf("get after restart: status=%d body=%s", st, raw)
+	if got := getAll("b1"); len(got.Events) != 3 {
+		t.Fatalf("b1 (offline across restart) sees %d events, want all 3: %+v", len(got.Events), got.Events)
 	}
-	if got := decodeEventsResponse(t, raw); len(got.Events) != 3 {
-		t.Fatalf("restart kept %d events, want all 3 (empty cursor map never deletes): %+v",
-			len(got.Events), got.Events)
-	}
-	// The GET above re-recorded a1's cursor at 3; b1 never re-reads.
-
-	// Next write: stale events up to the minimum cursor (3) are deleted;
-	// the just-written seq 4 sits beyond it and survives.
+	// That GET moved b1's cursor to 3; a1 re-reads to 3 as well. The next
+	// write prunes everything up to the minimum cursor (3); seq 4 survives.
+	getAll("a1")
 	st, raw = doJSON(t, srvB, "POST", "/v2/rooms/r/events",
 		postEventBody(t, "a1", "c4", "application", 0, nil, nil, []byte("message-four")))
 	if st != http.StatusCreated {
 		t.Fatalf("post-cursor write: status=%d body=%s", st, raw)
 	}
-	st, raw = doJSON(t, srvB, "GET", "/v2/rooms/r/events?device=a1", nil)
-	if st != http.StatusOK {
-		t.Fatalf("get after prune: status=%d body=%s", st, raw)
-	}
-	got := decodeEventsResponse(t, raw)
+	got := getAll("a1")
 	if len(got.Events) != 1 || got.Events[0].Seq != 4 || string(got.Events[0].Bytes) != "message-four" {
-		t.Fatalf("after prune = %+v, want only seq 4 (stale <= cursor 3 deleted, seq 4 beyond cursor kept)",
+		t.Fatalf("after prune = %+v, want only seq 4 (stale <= min cursor 3 deleted, seq 4 beyond it kept)",
 			got.Events)
 	}
 	if got.Epoch != 0 || got.Revision != 4 {
 		t.Fatalf("epoch/revision after prune = %d/%d, want 0/4 (deletes never touch CAS state)",
 			got.Epoch, got.Revision)
+	}
+}
+
+// TestLostResponseRetryAfterCommitReturns200Duplicate pins K4 over CAS: a
+// device whose POST landed but whose response was lost retries the exact
+// same bytes after another device's commit moved the epoch. The original row
+// is already stored, so the retry must be the byte-equal 200 duplicate — not
+// a stale-epoch 409 that would push the client into re-encrypting an event
+// the room already holds (and then into client_id_reuse).
+func TestLostResponseRetryAfterCommitReturns200Duplicate(t *testing.T) {
+	_, srv := newTestRelay(t, testPolicy())
+	app := postEventBody(t, "a1", "a1-m1", "application", 0, nil, nil, []byte("hello at epoch 0"))
+	st, raw := doJSON(t, srv, "POST", "/v2/rooms/r/events", app)
+	if st != http.StatusCreated {
+		t.Fatalf("first send: status=%d body=%s", st, raw)
+	}
+	first := decodeEventResponse(t, raw)
+	// Response "lost"; meanwhile b1 commits and the room moves to epoch 1.
+	st, raw = doJSON(t, srv, "POST", "/v2/rooms/r/events",
+		postEventBody(t, "b1", "b1-c1", "commit", 0, nil, nil, []byte("commit 0->1")))
+	if st != http.StatusCreated {
+		t.Fatalf("commit: status=%d body=%s", st, raw)
+	}
+	st, raw = doJSON(t, srv, "POST", "/v2/rooms/r/events", app)
+	if st != http.StatusOK {
+		t.Fatalf("byte-equal retry after commit: status=%d body=%s, want 200 duplicate (K4 before CAS)", st, raw)
+	}
+	got := decodeEventResponse(t, raw)
+	if !got.Duplicate || got.Seq != first.Seq {
+		t.Fatalf("retry = %+v, want duplicate of seq %d", got, first.Seq)
+	}
+	// Different bytes under the same client_id stay a reuse conflict even
+	// when the epoch is stale: the id is taken, whatever the epoch says.
+	st, raw = doJSON(t, srv, "POST", "/v2/rooms/r/events",
+		postEventBody(t, "a1", "a1-m1", "application", 0, nil, nil, []byte("different bytes")))
+	if st != http.StatusConflict || errField(t, raw) != "client_id_reuse" {
+		t.Fatalf("reuse with stale epoch: status=%d body=%s, want 409 client_id_reuse", st, raw)
+	}
+}
+
+// TestPruneWaitsForWelcomeTargetToRead pins that a device added by a
+// targeted Welcome blocks pruning of everything after that Welcome until it
+// reads, without any restart: the relay must not delete application events
+// the newest member has never seen just because the older members read them.
+// Events before the Welcome are not gated on the new device (it cannot
+// decrypt them anyway).
+func TestPruneWaitsForWelcomeTargetToRead(t *testing.T) {
+	pol := testPolicy()
+	pol.AppEventTTLSeconds = -1
+	_, srv := newTestRelay(t, pol)
+	post := func(device, clientID, kind string, epoch int64, targets []string, payload string) {
+		t.Helper()
+		st, raw := doJSON(t, srv, "POST", "/v2/rooms/r/events",
+			postEventBody(t, device, clientID, kind, epoch, nil, targets, []byte(payload)))
+		if st != http.StatusCreated {
+			t.Fatalf("post %s/%s: status=%d body=%s", device, clientID, st, raw)
+		}
+	}
+	get := func(device string) eventsResponse {
+		t.Helper()
+		st, raw := doJSON(t, srv, "GET", "/v2/rooms/r/events?device="+device, nil)
+		if st != http.StatusOK {
+			t.Fatalf("get %s: status=%d body=%s", device, st, raw)
+		}
+		return decodeEventsResponse(t, raw)
+	}
+	post("a1", "m1", "application", 0, nil, "before welcome")    // seq 1
+	get("a1")                                                    // a1 cursor 1
+	post("a1", "w1", "welcome", 0, []string{"b1"}, "welcome b1") // seq 2
+	post("a1", "m3", "application", 0, nil, "after welcome")     // seq 3
+	get("a1")                                                    // a1 cursor 3
+	post("a1", "m4", "application", 0, nil, "trigger prune")     // seq 4, prunes
+
+	seen := map[int64]bool{}
+	for _, ev := range get("b1").Events {
+		seen[ev.Seq] = true
+	}
+	if !seen[3] {
+		t.Fatalf("b1 lost seq 3 before ever reading (min cursor ignored the welcome target): saw %v", seen)
+	}
+	if seen[1] {
+		t.Fatalf("seq 1 predates b1's welcome and a1 read it; it should have been pruned: saw %v", seen)
 	}
 }
