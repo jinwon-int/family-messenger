@@ -12,6 +12,19 @@ import { humanFileSize } from './messages.js';
 import { richMessageFragment } from './rich-text.js';
 import { shortHandle } from './participants.js';
 
+// 같은 방 재렌더에서 DOM을 갈아끼우지 않기 위한 렌더 서명(#194). 서명이 같으면 이미 붙어 있는
+// 노드를 그대로 둔다 — 교체하면 크롬이 드래그·선택한 글자를 버리고, 호버가 한 프레임 꺼지고,
+// 포커스가 body로 떨어지고, 보관함 iframe이 다시 로드된다.
+const renderedSignature = new WeakMap();
+/** Remembers what a freshly built node shows; returns the node. */
+function signed(node, signature) {
+  renderedSignature.set(node, signature);
+  return node;
+}
+const signatureOf = (node) => (node ? renderedSignature.get(node) : undefined);
+/** Timeline scroller behaviour that must follow the latest props even when the scroller is kept. */
+const timelineProps = new WeakMap();
+
 /** replaceChildren that drops null/false entries (a bare null would render the text "null"). */
 function setChildren(node, ...children) {
   node.replaceChildren(...children.flat(Infinity).filter((child) => child != null && child !== false));
@@ -107,9 +120,11 @@ export function renderLogin(root, { onSubmit, defaults = {} }) {
 
 /** Inline status line inside the current main element. */
 export function setStatus(root, message, tone = 'info') {
-  root.querySelector('.status')?.remove();
+  // 자기가 붙인 줄만 지운다. 목록 pane은 재렌더에도 유지되므로(#194) 첫 .status를 지우면
+  // 암호화 실패 배너·동기화 경고가 다시 그려지지 않고 사라진다.
+  root.querySelector('.status[data-transient]')?.remove();
   if (!message) return;
-  const line = el('p', { class: `status ${tone}`, role: 'status' }, message);
+  const line = el('p', { class: `status ${tone}`, role: 'status', 'data-transient': true }, message);
   (root.querySelector('.pane-list') ?? root.querySelector('main'))?.append(line);
 }
 
@@ -192,9 +207,13 @@ function roomListItem(room, onSelect, active = false) {
         yesterday: strings.rooms.yesterday,
       })
     : '';
-  return el(
+  const signature = JSON.stringify([
+    room.roomId, active, room.kind, room.displayName, room.typing || '', agentCount, when, room.memberCount,
+    last ? [room.kind === 'family' ? last.sender ?? '' : '', last.text] : null,
+  ]);
+  return signed(el(
     'li',
-    {},
+    { 'data-room-id': room.roomId },
     el(
       'button',
       { type: 'button', class: 'room-item', 'data-room-id': room.roomId, 'aria-current': active ? 'true' : null, onclick: (event) => onSelect(room, event) },
@@ -216,7 +235,7 @@ function roomListItem(room, onSelect, active = false) {
           : el('span', { class: 'preview empty-preview' }, `${roomBadge(room.kind)} · ${strings.rooms.memberCount(room.memberCount)} · ${strings.rooms.noMessages}`),
       ),
     ),
-  );
+  ), signature);
 }
 
 /** Room list pane content (appbar, invites, rooms). */
@@ -234,7 +253,12 @@ function buildRoomList({ summaries, onSelect, syncState, onOpenVerification, onO
         invites.map((invite) => inviteCard(invite, inviteHandlers)),
       )
     : null;
-  return el(
+  // 방 항목을 뺀 목록 pane의 틀. 같으면 pane을 두고 방 항목만 맞춘다(reconcileRoomList).
+  const frame = JSON.stringify([
+    syncState, banner ?? '', summaries.length > 0, Boolean(onToggleBox),
+    inviteHandlers ? invites.map((invite) => [invite, inviteHandlers.isAiConsentAcknowledged(invite)]) : null,
+  ]);
+  return signed(el(
     'aside',
     { class: 'pane pane-list rooms-screen', 'aria-label': strings.rooms.title },
     el(
@@ -253,7 +277,7 @@ function buildRoomList({ summaries, onSelect, syncState, onOpenVerification, onO
     inviteSection,
     summaries.length > 0 ? el('p', { class: 'section-title' }, strings.rooms.listTitle) : null,
     body,
-  );
+  ), frame);
 }
 
 /** Left pane only (mobile list screen). Kept for callers/tests; renderShell is the full layout. */
@@ -285,13 +309,20 @@ function bubble(entry, photoPreviews, onOpenAttachment) {
   const rich = ['text', 'notice'].includes(entry.kind) ? richMessageFragment(entry.formattedBody) : null;
   const time = timeLabel(entry.ts);
   const foot = [entry.meta, time].filter(Boolean);
-  return el(
+  const preview = entry.attachment?.kind === 'photo' && photoPreviews ? photoPreviews.get(entry.attachment) : null;
+  // 화면에 보이는 것 전부. 같으면 붙어 있는 말풍선을 그대로 둔다(선택·사진 img 유지).
+  const signature = JSON.stringify([
+    entry.eventId ?? null, entry.kind, Boolean(entry.isMe), Boolean(entry.isProgress), Boolean(entry.isAgent),
+    entry.name ?? null, entry.userId ?? null, entry.body ?? '', entry.formattedBody ?? null, foot,
+    entry.attachment ?? null, preview ? [preview.status ?? null, preview.src ?? null] : null,
+  ]);
+  return signed(el(
     'li',
-    { class: `bubble kind-${entry.kind}${entry.isProgress ? ' is-progress' : ''}`, 'data-me': entry.isMe ? 'true' : 'false', 'data-event-id': entry.eventId ?? null, 'data-body': entry.body ?? '' },
+    { class: `bubble kind-${entry.kind}${entry.isProgress ? ' is-progress' : ''}`, 'data-me': entry.isMe ? 'true' : 'false', 'data-event-id': entry.eventId ?? null },
     entry.isMe ? null : el('span', { class: 'who' }, participantLabel(entry, entry)),
     el('div', { class: rich ? 'body rich-text' : 'body' }, photoPreview(entry.attachment, photoPreviews, onOpenAttachment), attach ? el('span', { class: 'attach-label' }, attach) : null, rich ?? entry.body),
     foot.length > 0 ? el('span', { class: 'foot' }, foot.map((text, i) => (i > 0 ? ` · ${text}` : text))) : null,
-  );
+  ), signature);
 }
 
 /** Pixels from the bottom within which the timeline counts as "at bottom". */
@@ -301,92 +332,107 @@ function isNearBottom(list) {
   return list.scrollHeight - list.scrollTop - list.clientHeight <= NEAR_BOTTOM_PX;
 }
 
-function footLabel(entry) {
-  const time = timeLabel(entry.ts);
-  return [entry.meta, time].filter(Boolean).join(' · ');
-}
-
-/** The earlier-row controls must still rebuild; a progress patch must not freeze them. */
-function earlierRowCurrent(list, { hasMore, loadingEarlier, onLoadEarlier, count }) {
-  const row = list.querySelector('li.load-earlier');
-  if (!row) return false;
-  const button = row.querySelector('button');
-  const text = row.textContent ?? '';
-  if (loadingEarlier) return !button && text.includes(strings.chat.historyLoading);
-  if (hasMore && onLoadEarlier) return Boolean(button);
-  if (count > 0) return !button && text.includes(strings.chat.historyStart);
-  return !button && text.trim() === '';
+/** Reconcile key of a timeline row: bubbles by event id, the two fixed rows by role. */
+function timelineKey(node) {
+  if (node.classList.contains('load-earlier')) return 'earlier';
+  if (node.classList.contains('empty')) return 'empty';
+  const id = node.dataset?.eventId;
+  return id ? `event:${id}` : null;
 }
 
 /**
- * Same non-progress messages, and the same number of progress bubbles.
- * A heartbeat edit or redact+repost only changes the progress event id, text, or slot.
- * @returns {Array<{node: Element, entry: object}>|null}
+ * Make `parent`'s children equal `desired` (freshly built, unmounted) while keeping every
+ * mounted child whose key and render signature match — it is moved at most, never rebuilt.
+ * Rows that changed are replaced one by one; rows that vanished are removed.
+ * @returns {Element[]} the children now mounted, in order
  */
-function planProgressPatch(list, timeline) {
-  if (!Array.isArray(timeline)) return null;
-  const nodes = [...list.querySelectorAll('li.bubble')];
-  if (nodes.some((node) => !node.dataset.eventId) || timeline.some((entry) => !entry.eventId)) return null;
-  const oldNon = nodes.filter((node) => !node.classList.contains('is-progress'));
-  const newNon = timeline.filter((entry) => !entry.isProgress);
-  if (oldNon.map((node) => node.dataset.eventId).join('\0') !== newNon.map((entry) => entry.eventId).join('\0')) return null;
-  // 본문이 바뀐 일반 메시지는 다시 그린다. data-body는 마지막에 그린 entry.body다.
-  if (oldNon.some((node, i) => (node.dataset.body ?? '') !== (newNon[i].body ?? ''))) return null;
-  const oldProg = nodes.filter((node) => node.classList.contains('is-progress'));
-  const newProg = timeline.filter((entry) => entry.isProgress);
-  if (oldProg.length !== newProg.length) return null;
-  const unused = new Set(oldProg);
-  const pairs = [];
-  for (const entry of newProg) {
-    let node = oldProg.find((item) => item.dataset.eventId === entry.eventId && unused.has(item));
-    if (!node) node = oldProg.find((item) => unused.has(item));
-    if (!node) return null;
-    unused.delete(node);
-    pairs.push({ node, entry });
+function reconcileChildren(parent, desired, keyOf, { patch = null } = {}) {
+  const mounted = new Map();
+  for (const child of [...parent.children]) {
+    const key = keyOf(child);
+    if (key != null && !mounted.has(key)) mounted.set(key, child);
   }
-  return pairs;
+  const next = desired.map((fresh) => {
+    const key = keyOf(fresh);
+    const old = key == null ? null : mounted.get(key);
+    const same = old && signatureOf(old) !== undefined && signatureOf(old) === signatureOf(fresh);
+    if (same) return old;
+    // 바뀌었지만 노드 자체는 남겨야 하는 행(진행 말풍선)은 안쪽만 갈아끼운다.
+    if (old && patch?.(old, fresh)) {
+      renderedSignature.set(old, signatureOf(fresh));
+      return old;
+    }
+    return fresh;
+  });
+  let previous = null;
+  for (const node of next) {
+    const expected = previous ? previous.nextSibling : parent.firstChild;
+    if (expected !== node) parent.insertBefore(node, expected);
+    previous = node;
+  }
+  while (previous ? previous.nextSibling : parent.firstChild) (previous ? previous.nextSibling : parent.firstChild).remove();
+  return next;
 }
 
-/** Patch only when a progress bubble's identity, text, or slot changed. */
-function progressNeedsPatch(list, timeline, pairs) {
-  if (!pairs || pairs.length === 0) return false;
-  if (pairs.some(({ node, entry }) => node.dataset.eventId !== entry.eventId || (node.dataset.body ?? '') !== (entry.body ?? ''))) return true;
-  const current = [...list.querySelectorAll('li.bubble')].map((node) => node.dataset.eventId).join('\0');
-  return current !== timeline.map((entry) => entry.eventId).join('\0');
+/** Rewrite a mounted progress bubble in place from a freshly built one (same slot, new text or id). */
+function patchProgressBubble(old, fresh) {
+  if (!old.classList.contains('is-progress') || !fresh.classList.contains('is-progress')) return false;
+  old.className = fresh.className;
+  for (const name of ['data-event-id', 'data-me']) {
+    if (fresh.hasAttribute(name)) old.setAttribute(name, fresh.getAttribute(name));
+    else old.removeAttribute(name);
+  }
+  setChildren(old, [...fresh.childNodes]);
+  return true;
 }
 
-/** Update progress bubbles in place. A pinned view moves by the height delta only. */
-function applyProgressPatch(list, timeline, pairs) {
+/** First bubble whose bottom edge is below the scroller's top — the one the reader is looking at. */
+function firstVisibleBubble(list) {
+  const top = list.scrollTop + list.offsetTop;
+  for (const node of list.querySelectorAll('li.bubble')) {
+    if (node.offsetTop + node.offsetHeight > top) return node;
+  }
+  return null;
+}
+
+/**
+ * Same room, kept scroller: bring the timeline rows up to date without replacing the scroller
+ * (#194 — the old code swapped the whole .timeline-wrap, dropping selections and scroll state).
+ * Scroll rules match buildRoom: near the bottom stays pinned by the height delta (#184), a
+ * scrolled-up reader keeps the bubble they were looking at in place, and new messages below
+ * show the floating badge.
+ */
+function updateTimeline(oldWrap, fresh, { count }) {
+  const list = oldWrap.querySelector('.timeline');
+  const freshList = fresh.querySelector('.timeline');
+  const badge = oldWrap.querySelector('.new-messages');
   const near = isNearBottom(list);
   const top = list.scrollTop;
-  const before = list.scrollHeight;
-  for (const { node, entry } of pairs) {
-    node.dataset.eventId = entry.eventId;
-    node.dataset.body = entry.body ?? '';
-    node.classList.add('is-progress');
-    const body = node.querySelector('.body');
-    if (body) body.textContent = entry.body ?? '';
-    const label = footLabel(entry);
-    const foot = node.querySelector('.foot');
-    if (label) {
-      if (foot) foot.textContent = label;
-      else node.append(el('span', { class: 'foot' }, label));
-    } else foot?.remove();
+  const height = list.scrollHeight;
+  const anchor = near ? null : firstVisibleBubble(list);
+  const anchorOffset = anchor ? anchor.offsetTop : 0;
+  const before = new Set(list.querySelectorAll('li.bubble'));
+  // 진행 말풍선은 event id가 아니라 자리(n번째)로 맞춘다. 하트비트 편집·삭제 후 재게시는 id가
+  // 바뀌어도 같은 말풍선이며, 노드를 바꾸면 사이에 높이가 줄었다 늘어난다(#181·#184).
+  const keys = new Map();
+  const assignKeys = (nodes) => {
+    let progress = 0;
+    for (const node of nodes) keys.set(node, node.classList.contains('is-progress') ? `progress:${progress++}` : timelineKey(node));
+  };
+  const desired = [...freshList.children];
+  assignKeys([...list.children]);
+  assignKeys(desired);
+  reconcileChildren(list, desired, (node) => keys.get(node) ?? null, { patch: patchProgressBubble });
+  timelineProps.set(list, timelineProps.get(freshList));
+  if (near) {
+    list.scrollTop = top + (list.scrollHeight - height);
+  } else if (anchor && anchor.isConnected) {
+    list.scrollTop = top + (anchor.offsetTop - anchorOffset);
+  } else {
+    list.scrollTop = top;
   }
-  const byId = new Map([...list.querySelectorAll('li.bubble')].map((node) => [node.dataset.eventId, node]));
-  let cursor = list.querySelector('li.load-earlier');
-  for (const entry of timeline) {
-    const node = byId.get(entry.eventId);
-    if (!node) return;
-    const next = cursor ? cursor.nextElementSibling : list.firstElementChild;
-    if (next !== node) {
-      if (cursor) cursor.after(node);
-      else list.prepend(node);
-    }
-    cursor = node;
-  }
-  const delta = list.scrollHeight - before;
-  list.scrollTop = near ? top + delta : top;
+  const added = [...list.querySelectorAll('li.bubble')].some((node) => !before.has(node));
+  if (!near && added && list.querySelectorAll('li.bubble').length > count && badge) badge.hidden = false;
 }
 
 /**
@@ -417,27 +463,31 @@ function snapshotRoomPane(root) {
  */
 function buildRoom({ room, timeline, onSend, onAttach, photoPreviews = null, onOpenAttachment = null, onTyping = null, onBack, notice, onToggleBox = null, hasMore = false, loadingEarlier = false, onLoadEarlier = null, typing = '' }, snap) {
   // 맨 위 행: 이전 대화 불러오기 버튼 / 불러오는 중 / 대화의 처음.
-  const earlierRow = el(
+  const earlierMode = loadingEarlier ? 'loading' : hasMore && onLoadEarlier ? 'button' : timeline.length > 0 ? 'start' : 'none';
+  const earlierRow = signed(el(
     'li',
     { class: 'load-earlier' },
-    loadingEarlier
+    earlierMode === 'loading'
       ? el('span', { class: 'hint' }, strings.chat.historyLoading)
-      : hasMore && onLoadEarlier
-        ? el('button', { type: 'button', class: 'ghost', onclick: () => onLoadEarlier() }, strings.chat.loadEarlier)
-        : timeline.length > 0 ? el('span', { class: 'hint' }, strings.chat.historyStart) : null,
-  );
+      : earlierMode === 'button'
+        // 유지된 행에서도 최신 콜백을 부른다(timelineProps).
+        ? el('button', { type: 'button', class: 'ghost', onclick: () => timelineProps.get(list)?.onLoadEarlier?.() }, strings.chat.loadEarlier)
+        : earlierMode === 'start' ? el('span', { class: 'hint' }, strings.chat.historyStart) : null,
+  ), earlierMode);
   const list = el(
     'ul',
     { class: 'timeline', 'aria-live': 'polite' },
     earlierRow,
-    timeline.length === 0 && !loadingEarlier ? el('li', { class: 'empty' }, strings.chat.empty) : timeline.map((entry) => bubble(entry, photoPreviews, onOpenAttachment)),
+    timeline.length === 0 && !loadingEarlier ? signed(el('li', { class: 'empty' }, strings.chat.empty), 'empty') : timeline.map((entry) => bubble(entry, photoPreviews, onOpenAttachment)),
   );
+  // 스크롤러는 같은 방 재렌더에서 유지된다(updateTimeline) — 리스너는 만들 때의 값이 아니라
+  // 가장 최근 렌더의 값을 읽어야 한다.
+  timelineProps.set(list, { hasMore, loadingEarlier, onLoadEarlier });
   // 맨 위 근처까지 올리면 자동으로 이전 페이지를 요청한다(한 번에 하나, main.js가 가드).
-  if (hasMore && onLoadEarlier) {
-    list.addEventListener('scroll', () => {
-      if (list.scrollTop <= 40 && !loadingEarlier) onLoadEarlier();
-    });
-  }
+  list.addEventListener('scroll', () => {
+    const props = timelineProps.get(list);
+    if (props?.hasMore && props.onLoadEarlier && !props.loadingEarlier && list.scrollTop <= 40) props.onLoadEarlier();
+  });
   const badge = el(
     'button',
     {
@@ -539,7 +589,7 @@ function buildRoom({ room, timeline, onSend, onAttach, photoPreviews = null, onO
     }),
     el('button', { type: 'submit', class: 'primary' }, strings.chat.send),
   );
-  const header = el(
+  const header = signed(el(
     'header',
     { class: 'appbar' },
     el('button', { type: 'button', class: 'icon ghost back', 'aria-label': strings.chat.back, onclick: onBack }, '←'),
@@ -556,8 +606,8 @@ function buildRoom({ room, timeline, onSend, onAttach, photoPreviews = null, onO
       el('span', { class: 'subtitle lock' }, `${roomBadge(room.kind)} · ${strings.rooms.memberCount(room.memberCount)} · ${strings.chat.encryptedShort}`),
     ),
     onToggleBox ? el('button', { type: 'button', class: 'icon ghost box-toggle', 'aria-label': strings.box.toggle, onclick: onToggleBox }, '📎') : null,
-  );
-  const noticeNode = notice ? el('p', { class: 'status error', role: 'alert' }, notice) : null;
+  ), JSON.stringify([room.displayName, typing || '', room.kind, room.memberCount, Boolean(onToggleBox)]));
+  const noticeNode = notice ? signed(el('p', { class: 'status error', role: 'alert' }, notice), notice) : null;
   const timelineWrap = el('div', { class: 'timeline-wrap' }, list, badge);
   const composerWrap = el('div', { class: 'composer-wrap' }, attachBar, composer);
   const pane = el('section', { class: 'room-screen', 'data-room-id': room.roomId ?? '' }, header, noticeNode, timelineWrap, composerWrap);
@@ -644,7 +694,13 @@ function buildBox({ open, tab, attachments, filebox, onToggle, onTab, onRefresh,
           ? el('p', { class: 'empty' }, strings.box.empty)
           : el('ul', { class: 'files' }, attachments.map((file) => fileRow(file, onOpen))),
       );
-  return el(
+  // 파일보관함 탭은 iframe이다 — 서명이 같으면 pane을 유지해 다시 로드하지 않는다(#194).
+  // 새로고침 버튼은 url(refresh 카운터)을 바꿔 교체를 일으킨다.
+  const signature = JSON.stringify([
+    open, tab, filebox ? [filebox.url, filebox.homeUrl, filebox.title] : null,
+    tab === 'filebox' && filebox ? null : attachments.map((file) => [file.kind, file.name, file.size ?? null, file.roomName ?? null, timeLabel(file.ts), file.url ?? null]),
+  ]);
+  return signed(el(
     'section',
     { class: 'pane pane-box', 'aria-label': strings.box.title, 'data-open': open ? 'true' : 'false' },
     el(
@@ -655,12 +711,37 @@ function buildBox({ open, tab, attachments, filebox, onToggle, onTab, onRefresh,
     ),
     tabs,
     body,
-  );
+  ), signature);
 }
 
 /** Wide layout (three columns) — the box pane is always visible there. */
 function isWide() {
   return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 1200px)').matches;
+}
+
+/** List pane: keep it when its frame is unchanged and reconcile only the room rows. */
+function updateListPane(shell, fresh) {
+  const old = shell.querySelector(':scope > .pane-list');
+  if (!old) {
+    shell.prepend(fresh);
+    return;
+  }
+  const oldRooms = old.querySelector('ul.rooms');
+  const freshRooms = fresh.querySelector('ul.rooms');
+  if (signatureOf(old) !== signatureOf(fresh) || !oldRooms || !freshRooms) {
+    old.replaceWith(fresh);
+    return;
+  }
+  reconcileChildren(oldRooms, [...freshRooms.children], (node) => (node.dataset?.roomId ? `room:${node.dataset.roomId}` : null));
+}
+
+/** Box pane: keep it (and the filebox iframe) unless what it shows changed. */
+function updateBoxPane(shell, fresh) {
+  const old = shell.querySelector(':scope > .pane-box');
+  if (old && fresh) {
+    if (signatureOf(old) !== signatureOf(fresh)) old.replaceWith(fresh);
+  } else if (fresh) shell.append(fresh);
+  else old?.remove();
 }
 
 /**
@@ -682,33 +763,32 @@ export function renderShell(root, { list, room, box = null }) {
   const existingScreen = existingShell?.querySelector('.room-screen') ?? null;
   const sameRoom = Boolean(room && existingScreen && existingScreen.dataset.roomId === (room.room.roomId ?? ''));
   if (existingShell && sameRoom && existingScreen.querySelector('.composer-wrap')) {
+    // 같은 방: 붙어 있는 노드를 유지하고 바뀐 것만 맞춘다(#194). 통째 교체는 드래그·선택한 글자,
+    // 호버, 목록 포커스, 스크롤 관성, 보관함 iframe을 매번 날렸다.
     const built = buildRoom({ ...room, onToggleBox }, snap);
-    existingShell.querySelector('.pane-list')?.replaceWith(listPane);
-    existingScreen.querySelector(':scope > header.appbar')?.replaceWith(built.parts.header);
-    existingScreen.querySelector(':scope > .status')?.remove();
+    updateListPane(existingShell, listPane);
+    const oldHeader = existingScreen.querySelector(':scope > header.appbar');
+    if (oldHeader && signatureOf(oldHeader) !== signatureOf(built.parts.header)) oldHeader.replaceWith(built.parts.header);
     const oldWrap = existingScreen.querySelector(':scope > .timeline-wrap');
-    if (built.parts.notice) existingScreen.insertBefore(built.parts.notice, oldWrap);
-    // 진행 말풍선만 바뀌면 스크롤러를 갈아끼우지 않는다. 통째 교체는 scrollTop이 0으로
-    // 돌아갔다가 바닥으로 붙으며, 삭제·재게시 사이에는 높이가 줄었다 늘어난다.
-    const existingList = oldWrap?.querySelector('.timeline');
-    const progressPairs = existingList && earlierRowCurrent(existingList, {
-      hasMore: room.hasMore,
-      loadingEarlier: room.loadingEarlier,
-      onLoadEarlier: room.onLoadEarlier,
-      count: room.timeline?.length ?? 0,
-    })
-      ? planProgressPatch(existingList, room.timeline)
-      : null;
-    const patch = progressPairs && progressNeedsPatch(existingList, room.timeline, progressPairs) ? progressPairs : null;
-    if (patch) applyProgressPatch(existingList, room.timeline, patch);
-    else oldWrap?.replaceWith(built.parts.timelineWrap);
-    const oldBox = existingShell.querySelector(':scope > .pane-box');
-    const newBox = box ? buildBox(box) : null;
-    if (oldBox && newBox) oldBox.replaceWith(newBox);
-    else if (newBox) existingShell.append(newBox);
-    else oldBox?.remove();
+    const oldNotice = existingScreen.querySelector(':scope > .status');
+    if (signatureOf(oldNotice) !== signatureOf(built.parts.notice ?? undefined)) {
+      oldNotice?.remove();
+      if (built.parts.notice) existingScreen.insertBefore(built.parts.notice, oldWrap);
+    }
+    if (oldWrap?.querySelector('.timeline')) updateTimeline(oldWrap, built.parts.timelineWrap, { count: snap.count });
+    else {
+      oldWrap?.replaceWith(built.parts.timelineWrap);
+      built.mount({ keepComposer: true });
+    }
+    updateBoxPane(existingShell, box ? buildBox(box) : null);
     existingShell.dataset.view = view;
-    if (!patch) built.mount({ keepComposer: true });
+    return;
+  }
+  // 방을 열지 않은 목록 화면도 같은 방식으로 목록·보관함만 맞춘다(목록 호버·포커스 유지).
+  if (existingShell && !room && !existingScreen && existingShell.querySelector(':scope > .pane-room')) {
+    updateListPane(existingShell, listPane);
+    updateBoxPane(existingShell, box ? buildBox(box) : null);
+    existingShell.dataset.view = view;
     return;
   }
 

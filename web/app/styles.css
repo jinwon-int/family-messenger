@@ -404,6 +404,10 @@ main.shell[data-view="room"] .pane-list { display: none; }
   min-height: 0;
   overscroll-behavior: contain;
 }
+/* 스크롤바 자리를 미리 잡는다(#194). Windows 크롬의 일반 스크롤바는 폭을 차지해, 내용이 넘치다
+ * 말다 하면(상태 줄·새 메시지·입력중 표시) 목록·말풍선이 가로로 흔들린다. 오버레이 스크롤바(맥·
+ * 모바일)에서는 아무 영향이 없다. */
+.pane-list, .timeline, .box-body { scrollbar-gutter: stable; }
 .load-earlier { display: flex; justify-content: center; padding: var(--space-1) 0 var(--space-2); }
 .load-earlier button { min-height: 36px; font-size: var(--text-s); }
 .load-earlier .hint { font-size: var(--text-xs); color: var(--text-3); }
