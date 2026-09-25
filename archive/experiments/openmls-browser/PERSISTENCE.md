@@ -35,13 +35,21 @@ custom messaging cryptography, or serializing the nonpublic MlsGroup layout.
   flight until the worker's IndexedDB transaction succeeds (`commit`) or fails
   (`abort` → pre-operation store and group). A rejected operation is rolled back the
   same way instead of retiring the device. Full serializations happen only in
-  `open`/`export` and are counted.
+  `open`/`export` and are counted. `apply` refuses (and rolls back) any state that
+  `open` could not load again (512 entries / framed size), as the snapshot `save`
+  did. Opening an older format is a two-phase rewrite: `export` → one transaction
+  replacing every entry → `commit`; until then `apply` is refused, and `abort`
+  keeps the session migrated.
+- **No downgrade**: snapshots saved by this build say `version: 2`, which pre-M2
+  builds reject. Rolling the facade back therefore needs a v2→v1 export first
+  (not provided — synthetic profiles are disposable); rolling forward is automatic.
 - **Measured** (`cargo test -- --nocapture`, CI step "Facade unit tests"; one run —
   sizes vary by a few bytes with random key material): store bytes after 10 /
   100 / 1,000 received messages 5,137 / 5,137 / 5,137 (12 entries); largest
   per-message delta 1,159 B; zero full serializations per message; the same epoch-12
   two-member state is 31,153 B as a format-1 JSON snapshot and 6,108 B as format-2
-  entries.
+  entries. Format-1 states holding a pending commit (string-keyed JSON maps in the
+  staged diff) migrate and still merge (`format1_with_pending_commit_migrates`).
 - **Not yet** (M2b): the workers in `web/` still use the snapshot API; per-room IDB
   records from `Session` changes, HMAC record authentication, the single custody
   stack and outbox pruning (cap 256) move the SIGKILL smokes onto `Session`.

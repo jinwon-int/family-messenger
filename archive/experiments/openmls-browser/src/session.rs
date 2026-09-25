@@ -25,6 +25,8 @@ use super::*;
 /// u32::MAX` (no value bytes) marks a deletion. Only `changes` may contain
 /// deletions.
 const DELETED: u32 = u32::MAX;
+/// Largest framed entry set `open` accepts.
+const OPEN_LIMIT: usize = 5 * staging::MAX_STATE;
 
 pub(crate) fn frame(entries: &[(Vec<u8>, Option<Vec<u8>>)]) -> Vec<u8> {
     let size = 4 + entries.iter().map(|(k, v)| 8 + k.len() + v.as_ref().map_or(0, Vec::len)).sum::<usize>();
@@ -88,13 +90,20 @@ pub struct Session {
     /// Group id at the last durable state (`None`: no group yet).
     baseline_group: Option<GroupId>,
     /// Loaded from an older format: the caller must replace every persisted
-    /// entry with `export()` (keys are re-encoded, so old keys must go).
+    /// entry with `export()` (keys are re-encoded, so old keys must go) and
+    /// `commit()` once that transaction succeeded. Until then no `apply`.
     migrated: bool,
     full_serializations: u32,
 }
 
 impl Session {
     fn store(&self) -> &store::Store { self.device.provider.storage() }
+
+    /// Would `open` accept the current store? (entry count, framed size)
+    fn reopenable(&self) -> bool {
+        let (count, bytes) = (self.store().len(), self.store().byte_size());
+        count <= staging::MAX_ENTRIES && 4 + 8 * count + bytes <= OPEN_LIMIT
+    }
 
     fn epoch(&self) -> String {
         self.device.group.as_ref().map(|g| g.epoch().as_u64().to_string()).unwrap_or_else(|| "none".into())
@@ -161,7 +170,7 @@ impl Session {
     /// `version`; format 1 is migrated in place (see `migrate`). An empty
     /// `group_id` means no group yet.
     pub fn open(identity: &str, public_key: &[u8], group_id: &[u8], version: u32, entries: &[u8]) -> Result<Session, Rejected> {
-        bounded(entries, 5 * staging::MAX_STATE)?;
+        bounded(entries, OPEN_LIMIT)?;
         let entries = unframe(entries, false).ok_or_else(|| rejected(()))?
             .into_iter().map(|(k, v)| (k, v.expect("no deletions"))).collect();
         let group_id = (!group_id.is_empty()).then(|| group_id.to_vec());
@@ -177,6 +186,12 @@ impl Session {
     pub fn apply(&mut self, method: &str, input: &[u8]) -> Result<Step, Rejected> {
         if self.in_flight || self.migrated || self.device.retired { return Err(rejected(())); }
         match self.dispatch(method, input) {
+            Ok(_) if !self.reopenable() => {
+                // What `open` could not load must never become durable (the old
+                // snapshot `save` enforced the same bounds).
+                self.restore_committed()?;
+                Err(Rejected("state limit"))
+            }
             Ok(output) => {
                 self.in_flight = true;
                 Ok(Step { output, changes: frame(&self.store().changes()), epoch: self.epoch() })
@@ -196,6 +211,7 @@ impl Session {
         if !self.in_flight || self.device.retired { return Err(rejected(())); }
         self.store().commit();
         self.in_flight = false;
+        self.migrated = false;
         self.baseline_group = self.device.group.as_ref().map(|g| g.group_id().clone());
         Ok(())
     }
@@ -203,15 +219,22 @@ impl Session {
     /// Persisting the in-flight changes failed: return to the last durable state.
     pub fn abort(&mut self) -> Result<(), Rejected> {
         if !self.in_flight { return Err(rejected(())); }
+        if self.migrated {
+            // The format rewrite failed: the old-format entries are still what is
+            // durable, and nothing in memory changed. Stay migrated.
+            self.in_flight = false;
+            return Ok(());
+        }
         self.restore_committed()
     }
 
     /// Every entry, framed — the one full serialization (backup / format upgrade).
     pub fn export(&mut self) -> Result<Vec<u8>, Rejected> {
         if self.in_flight || self.device.retired { return Err(rejected(())); }
-        // Exporting is how a migrated session is rewritten; the caller replaces
-        // every old entry with this output in one transaction.
-        self.migrated = false;
+        // Exporting is how a migrated session is rewritten: the caller replaces
+        // every old entry with this output in one transaction, then `commit`s
+        // (or `abort`s). Until then the rewrite is in flight.
+        if self.migrated { self.in_flight = true; }
         self.full_serializations += 1;
         let entries: Vec<_> = self.store().entries().into_iter().map(|(k, v)| (k, Some(v))).collect();
         Ok(frame(&entries))

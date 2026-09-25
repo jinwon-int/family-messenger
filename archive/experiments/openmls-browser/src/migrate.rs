@@ -24,9 +24,36 @@ pub(crate) fn upgrade(version: u32, entries: Entries) -> Option<Entries> {
     }
 }
 
-/// Transcode one complete JSON value to CBOR.
+/// JSON forces map keys to strings: `BTreeMap<LeafNodeIndex, _>` (the
+/// `leaf_diff`/`parent_diff` of a pending commit's staged diff) is stored as
+/// `{"0": …}`, while typed CBOR encodes the integer key `0`. Turn canonical
+/// decimal text keys back into integers, recursively. Safe for struct maps:
+/// Rust field names cannot start with a digit.
+fn integer_keys(value: &mut ciborium::Value) {
+    use ciborium::Value;
+    match value {
+        Value::Map(entries) => {
+            for (key, item) in entries.iter_mut() {
+                if let Value::Text(text) = key {
+                    let canonical = !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit())
+                        && (text.len() == 1 || !text.starts_with('0'));
+                    if let Some(number) = canonical.then(|| text.parse::<u64>().ok()).flatten() {
+                        *key = Value::Integer(number.into());
+                    }
+                }
+                integer_keys(item);
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(integer_keys),
+        Value::Tag(_, inner) => integer_keys(inner),
+        _ => {}
+    }
+}
+
+/// Transcode one complete JSON value to CBOR (typed-equivalent, see `integer_keys`).
 fn cbor_of_json(json: &[u8]) -> Option<Vec<u8>> {
-    let value: ciborium::Value = serde_json::from_slice(json).ok()?;
+    let mut value: ciborium::Value = serde_json::from_slice(json).ok()?;
+    integer_keys(&mut value);
     let mut out = Vec::new();
     ciborium::into_writer(&value, &mut out).ok()?;
     Some(out)
@@ -50,7 +77,8 @@ fn split_key(key: &[u8]) -> Option<(&'static [u8], &[u8])> {
 /// First JSON value of `bytes` as CBOR, plus the unparsed remainder.
 fn leading_value(bytes: &[u8]) -> Option<(Vec<u8>, &[u8])> {
     let mut stream = serde_json::Deserializer::from_slice(bytes).into_iter::<ciborium::Value>();
-    let value = stream.next()?.ok()?;
+    let mut value = stream.next()?.ok()?;
+    integer_keys(&mut value);
     let rest = &bytes[stream.byte_offset()..];
     let mut out = Vec::new();
     ciborium::into_writer(&value, &mut out).ok()?;

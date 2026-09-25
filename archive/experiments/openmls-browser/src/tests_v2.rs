@@ -219,6 +219,8 @@ fn format1_snapshot_migrates_and_keeps_talking() {
     eprintln!("M2 same state (epoch 12, 2 members): format-1 JSON snapshot {} B -> format-2 entries {} B",
         v1.len(), rewritten.len());
     assert!(rewritten.len() * 2 < v1.len(), "binary codec must at least halve the snapshot");
+    assert!(session.migrated(), "still migrated until the rewrite is durable");
+    session.commit().unwrap();
     assert!(!session.migrated());
     let reopened = Session::open("alice", signer.public(), group.group_id().as_slice(),
         Session::format_version(), &rewritten).expect("rewritten entries open as format 2");
@@ -245,4 +247,107 @@ fn stores_nobody_commits_do_not_journal() {
     }
     assert!(alice.provider.storage().changes().is_empty());
     assert!(bob.provider.storage().changes().is_empty());
+}
+
+/// A pre-M2 (format-1) alice on the real `openmls_memory_storage` provider, in a
+/// group with bob. Returns (provider, signer, group, bob).
+fn v1_alice_with_bob() -> (openmls_rust_crypto::OpenMlsRustCrypto, SignatureKeyPair, MlsGroup, Device) {
+    let provider = openmls_rust_crypto::OpenMlsRustCrypto::default();
+    let signer = SignatureKeyPair::new(SUITE.signature_algorithm()).unwrap();
+    signer.store(provider.storage()).unwrap();
+    let credential = CredentialWithKey {
+        credential: BasicCredential::new(b"alice".to_vec()).into(),
+        signature_key: signer.public().into(),
+    };
+    let config = MlsGroupCreateConfig::builder().ciphersuite(SUITE).use_ratchet_tree_extension(true).build();
+    let mut group = MlsGroup::new(&provider, &signer, &config, credential).unwrap();
+    let mut bob = Device::new("bob").unwrap();
+    let package = KeyPackageIn::tls_deserialize_exact_bytes(&bob.key_package_inner().unwrap()).unwrap()
+        .validate(provider.crypto(), ProtocolVersion::Mls10).unwrap();
+    let (_, welcome, _) = group.add_members(&provider, &signer, &[package]).unwrap();
+    group.merge_pending_commit(&provider).unwrap();
+    bob.join_inner(&welcome.tls_serialize_detached().unwrap()).unwrap();
+    (provider, signer, group, bob)
+}
+
+fn v1_entries(provider: &openmls_rust_crypto::OpenMlsRustCrypto) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut entries: Vec<_> = provider.storage().values.read().unwrap()
+        .iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    entries.sort();
+    entries
+}
+
+fn framed_entries(entries: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
+    let framed: Vec<_> = entries.iter().map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
+    session::frame(&framed)
+}
+
+/// Review F1: JSON turns the integer map keys of a pending commit's staged diff
+/// (`leaf_diff: BTreeMap<LeafNodeIndex, _>`) into strings; a format-1 state saved
+/// between "update" and "merge_update" must still migrate, and the migrated
+/// pending commit must still merge and interoperate.
+#[test]
+fn format1_with_pending_commit_migrates() {
+    let (provider, signer, mut group, mut bob) = v1_alice_with_bob();
+    let bundle = group.self_update(&provider, &signer, LeafNodeParameters::default()).unwrap();
+    assert!(group.pending_commit().is_some());
+    let entries = v1_entries(&provider);
+    let state = &entries.iter().find(|(k, _)| k.starts_with(b"GroupState")).unwrap().1;
+    assert!(String::from_utf8_lossy(state).contains("\"0\":"), "fixture must hold a string-keyed map");
+
+    let mut session = Session::open("alice", signer.public(), group.group_id().as_slice(), 1,
+        &framed_entries(&entries)).expect("format-1 state with a pending commit migrates");
+    assert!(session.has_pending_commit());
+    let rewritten = session.export().unwrap();
+    session.commit().unwrap();
+    let mut alice = Session::open("alice", signer.public(), group.group_id().as_slice(),
+        Session::format_version(), &rewritten).unwrap();
+    alice.apply("merge_pending", &[]).expect("migrated pending commit merges");
+    alice.commit().unwrap();
+    bob.apply_commit_inner(&bundle.commit().tls_serialize_detached().unwrap()).unwrap();
+    let step = alice.apply("encrypt", b"after migrated merge").unwrap();
+    assert_eq!(bob.decrypt_inner(&step.output()).unwrap(), b"after migrated merge");
+}
+
+/// Review F2: a session must never make durable a state `open` would refuse.
+#[test]
+fn session_refuses_states_open_could_not_load() {
+    let mut session = Session::create("alice").unwrap();
+    session.commit().unwrap();
+    let mut rejected_at = None;
+    for i in 0..=staging::MAX_ENTRIES {
+        match session.apply("key_package", &[]) {
+            Ok(_) => session.commit().unwrap(),
+            Err(error) => { rejected_at = Some((i, error)); break; }
+        }
+    }
+    let (_, error) = rejected_at.expect("unused key packages must hit the entry bound");
+    assert_eq!(error, Rejected("state limit"));
+    assert!(session.entry_count() as usize <= staging::MAX_ENTRIES);
+    let public_key = session.public_key();
+    let exported = session.export().unwrap();
+    Session::open("alice", &public_key, &[], Session::format_version(), &exported)
+        .expect("the last durable state reopens");
+}
+
+/// Review F3: the format rewrite is two-phase; an export that was never made
+/// durable must not unlock `apply` (deltas would mix v2 keys into a v1 store).
+#[test]
+fn migration_rewrite_is_two_phase() {
+    let (provider, signer, group, _bob) = v1_alice_with_bob();
+    let entries = framed_entries(&v1_entries(&provider));
+    let open = || Session::open("alice", signer.public(), group.group_id().as_slice(), 1, &entries).unwrap();
+
+    let mut session = open();
+    let _lost = session.export().unwrap();
+    assert!(session.apply("key_package", &[]).is_err(), "rewrite in flight");
+    session.abort().unwrap();
+    assert!(session.migrated(), "failed rewrite leaves the session migrated");
+    assert!(session.apply("key_package", &[]).is_err());
+
+    let mut session = open();
+    let _rewritten = session.export().unwrap();
+    session.commit().unwrap();
+    assert!(!session.migrated());
+    session.apply("key_package", &[]).expect("usable once the rewrite is durable");
 }
