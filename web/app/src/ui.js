@@ -806,9 +806,18 @@ export function renderShell(root, { list, room, box = null }) {
     roomPane = el('section', { class: 'pane pane-room' }, el('p', { class: 'empty pane-empty' }, strings.rooms.selectHint));
   }
   const boxPane = box ? buildBox(box) : null;
-  const shell = el('main', { class: 'shell', 'data-view': view }, listPane, roomPane, boxPane);
-  if (existingShell) existingShell.replaceWith(shell);
-  else {
+  if (existingShell) {
+    // 방 전환(소교 → 육손 등)·목록↔방: 방 pane만 새로 만들고, 목록은 바뀐 항목만, 보관함은
+    // 제자리에 둔다. 보관함은 방과 무관한데 shell을 통째 바꾸면 파일보관함 iframe이 다시
+    // 로드됐다(#194 후속). iframe은 떼었다 붙여도 다시 로드되므로 옮기지 않고 형제만 바꾼다.
+    updateListPane(existingShell, listPane);
+    const oldRoomPane = existingShell.querySelector(':scope > .pane-room');
+    if (oldRoomPane) oldRoomPane.replaceWith(roomPane);
+    else existingShell.querySelector(':scope > .pane-list')?.after(roomPane);
+    updateBoxPane(existingShell, boxPane);
+    existingShell.dataset.view = view;
+  } else {
+    const shell = el('main', { class: 'shell', 'data-view': view }, listPane, roomPane, boxPane);
     // 로그인 화면 등 다른 내용은 걷어내되 열린 시트는 그대로 둔다.
     for (const child of [...root.children]) if (!(child.tagName === 'DIALOG' && child.open)) child.remove();
     root.prepend(shell);
