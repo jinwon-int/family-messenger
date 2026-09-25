@@ -245,6 +245,7 @@ impl Device {
 }
 
 mod migrate;
+mod record;
 mod session;
 mod staging;
 mod store;

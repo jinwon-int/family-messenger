@@ -85,12 +85,13 @@ KeyPackage consumption or post-restart Welcome replay protection**.
 
 Cargo.lock pins **202 external packages across all targets**, not the earlier
 upstream 485-package workspace. Target-filtered cargo metadata resolves **163
-external packages: 10 direct, 153 transitive**, including build/procedural-macro
+external packages: 12 direct, 151 transitive**, including build/procedural-macro
 requirements. This is a dependency graph, not an assertion that all their code is
 reachable in the optimized WASM. Direct imports are OpenMLS 0.9.0, RustCrypto
 provider 0.6.0, BasicCredential 0.6.0, openmls_traits 0.6.0 (the storage trait
 implemented by `src/store.rs`), tls_codec 0.5.0, wasm-bindgen 0.2.126, serde/serde_json,
-ciborium 0.2.2 (storage v2 CBOR codec, #177 M2) and getrandom 0.2.17 for the older
+ciborium 0.2.2 (storage v2 CBOR codec, #177 M2), hmac 0.12.1 + sha2 0.10.9 (record
+authentication, `src/record.rs`; already in the graph via the provider) and getrandom 0.2.17 for the older
 entropy bridge. The newer getrandom also needs the
 explicit wasm_js backend flag. No unsafe/custom entropy fallback is installed.
 
