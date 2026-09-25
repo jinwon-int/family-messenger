@@ -1,5 +1,7 @@
 # Generated-data passkey/file-encryption feasibility
 
+> **이력 문서** — [#177](https://github.com/jinwon-int/family-messenger/issues/177) M2b-3c(2026-09-26)에서 설명 대상 코드가 삭제되어 `archive/experiments/device-keystore/README.md`에서 옮겨 왔다. 본문의 경로·명령·증거 해시는 삭제 전 기준이며, 코드는 태그 [`archive-frozen-20260917`](https://github.com/jinwon-int/family-messenger/tree/archive-frozen-20260917/archive)과 삭제 커밋의 부모에서 볼 수 있다.
+
 > **Parallel track (2026-09-21, decision E → redesign [#177](https://github.com/jinwon-int/family-messenger/issues/177)).**
 > Matrix remains the live transport. This probe is not human-key acceptance and is
 > not in default CI. See `archive/README.md`.
@@ -12,7 +14,7 @@
 > stores, history-recovery UI and ceremony UI docs were removed; see tag
 > `archive-frozen-20260917` for that v1 work.
 
-This is a separate library probe supporting [the custody decision](../../../docs/DEVICE-KEY-CUSTODY.md).
+This is a separate library probe supporting [the custody decision](../../DEVICE-KEY-CUSTODY.md).
 It is not part of the native UI bundle, a keystore adapter or human E2EE acceptance.
 No existing MLS state, real account/passkey or production service is used. The
 page handles only a constant generated 2 KiB payload. It deliberately runs typage

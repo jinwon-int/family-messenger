@@ -1,5 +1,9 @@
 # Authenticated session records — design for isolated qualification
 
+> **이력 문서** — [#177](https://github.com/jinwon-int/family-messenger/issues/177) M2b-3c(2026-09-26)에서 설명 대상 코드가 삭제되어 `archive/experiments/device-keystore/SESSION-RECORDS.md`에서 옮겨 왔다. 본문의 경로·명령·증거 해시는 삭제 전 기준이며, 코드는 태그 [`archive-frozen-20260917`](https://github.com/jinwon-int/family-messenger/tree/archive-frozen-20260917/archive)과 삭제 커밋의 부모에서 볼 수 있다.
+>
+> 이 모델(age scrypt 1회/unlock → 레코드 키)은 `archive/experiments/openmls-browser/custody/custody.js`로 흡수됐다. 단, 레코드 암호는 M2b-3b([PR #201](https://github.com/jinwon-int/family-messenger/pull/201))에서 secretstream 대신 **일회성 XChaCha20-Poly1305 AEAD**로 바뀌었다(libsodium-wrappers secretstream 상태 누수). 현행 규격은 `archive/experiments/openmls-browser/PERSISTENCE.md`를 따른다.
+
 Status: implemented generated-data library experiment, not a live keystore or human activation.
 Native OpenMLS provider state, transport, policy and all existing profiles remain
 unchanged. This unit qualifies library invocation and custody; active-state CAS,

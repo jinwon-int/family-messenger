@@ -1,11 +1,11 @@
 // Custody (#177 §3.5, M2b-3): the single at-rest key stack for the native E2EE
-// workers — the SESSION-RECORDS model from archive/experiments/device-keystore.
+// workers — the SESSION-RECORDS model (docs/history/native-mls/SESSION-RECORDS.md).
 // Bundled by build.sh (esbuild) to <bundle>/custody.js; the source is never served.
 //
 // - One age password capsule per device database, default scrypt work factor
 //   (logN 18, never reduced), holding a 32-byte root key and a public vault id.
 //   Unlock admits only a single default-work scrypt recipient before the full
-//   (expensive) decryption, as in device-keystore/session-worker.js.
+//   (expensive) decryption, as in the former device-keystore session worker.
 // - Per-purpose subkeys come from libsodium crypto_kdf_derive_from_key (BLAKE2b)
 //   under a fixed 8-byte context: no custom KDF.
 // - Asynchronous work (scrypt) happens here, before any IndexedDB transaction;

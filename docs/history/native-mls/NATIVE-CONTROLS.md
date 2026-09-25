@@ -1,5 +1,7 @@
 # Ordered synthetic native rekey controls
 
+> **이력 문서** — [#177](https://github.com/jinwon-int/family-messenger/issues/177) M2b-3c(2026-09-26)에서 설명 대상 코드가 삭제되어 `archive/experiments/openmls-browser/NATIVE-CONTROLS.md`에서 옮겨 왔다. 본문의 경로·명령·증거 해시는 삭제 전 기준이며, 코드는 태그 [`archive-frozen-20260917`](https://github.com/jinwon-int/family-messenger/tree/archive-frozen-20260917/archive)과 삭제 커밋의 부모에서 볼 수 있다.
+
 The native worker now supports creator-initiated MLS encryption rekeys for the
 same independently pinned pair. It uses OpenMLS 0.9.0 public `self_update`,
 `pending_commit`, `process_message`, `merge_pending_commit` and

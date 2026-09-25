@@ -1,7 +1,8 @@
 # Custody bundle third-party notices (<bundle>/custody.js, #177 M2b-3)
 
-Resolved from openmls-browser/package-lock.json (identical to device-keystore/package-lock.json).
-Copied from device-keystore/THIRD-PARTY-NOTICES.txt and SODIUM-NOTICES.txt; build.sh ships this file as <bundle>/custody-notices.txt.
+Resolved from openmls-browser/package-lock.json. Originally copied from the former device-keystore
+probe's THIRD-PARTY-NOTICES.txt and SODIUM-NOTICES.txt (removed in #177 M2b-3c); build.sh ships this
+file as <bundle>/custody-notices.txt.
 
 
 

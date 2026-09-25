@@ -36,4 +36,3 @@ enrollment·closure), `-tags synthetic_*` UI 번들 12종. 약 8,100줄 Go + 12,
 | `native_mls_persistence_smoke.py` | `durable-worker.js` IDB 단일 tx·결함 주입·손상 거부 | 없음 |
 | `native_trusted_state_smoke.py` | `trusted-state-worker.js` 핀 + 서명 디렉터리 | 라이브 `family-dev`/`family-policy` |
 | `native_device_browser_smoke.py` | `trust-worker.js` 첫 기기 디렉터리 게이트 | 라이브 `family-dev`/`family-policy` |
-| `device_keystore_smoke.py` · `password_worker_smoke.py` · `session_record_smoke.py` | 키 커스터디 프로브 | 없음 (esbuild 번들 필요) |
