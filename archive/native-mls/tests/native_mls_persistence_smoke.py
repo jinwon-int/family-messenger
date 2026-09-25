@@ -273,7 +273,7 @@ def main():
               const meta = metas[metaKeys.indexOf('state')];
               const hex = b => Array.from(b, x => x.toString(16).padStart(2,'0')).join('');
               const reseal = async () => {  // what an attacker holding the record key could do (src/record.rs construction)
-                const body = new TextEncoder().encode(JSON.stringify(['family-mls-meta-v2', meta.version, meta.identity, meta.room,
+                const body = new TextEncoder().encode(JSON.stringify(['family-mls-meta-v3/durable', meta.version, meta.identity, meta.room,
                   hex(meta.public_key), hex(meta.group_id), meta.format, meta.revision, meta.cursor, meta.epoch, hex(meta.set),
                   meta.count, meta.ledger.map(x => [x.id, x.method, x.sequence, x.epoch, hex(x.input), hex(x.output)]), meta.acked, null]));  // null: durable worker has no extra meta
                 const domain = new TextEncoder().encode('family-mls-v2/meta\\u0000');

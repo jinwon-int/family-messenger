@@ -91,7 +91,7 @@ self.onmessage = ({data}) => {
         if (key.length !== 32) fail();
         identity = argument.identity; room = argument.room;
         const directory = await readDirectory(identity, room);
-        const opened = createStore(api, {identity, room, key, allowed, extra: pinsExtra,
+        const opened = createStore(api, {kind: 'trusted', identity, room, key, allowed, extra: pinsExtra,
           namePattern: /^family-mls-trusted-synthetic-[a-z0-9-]{1,64}$/});
         await opened.open(argument.database);
         store = opened;

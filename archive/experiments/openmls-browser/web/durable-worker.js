@@ -40,7 +40,7 @@ self.onmessage = ({data: {id, method, argument}}) => {
             typeof argument.room !== 'string' || !/^[a-z0-9-]{1,64}$/.test(argument.room)) fail();
         const key = input(argument.record_key, 32);
         if (key.length !== 32) fail();
-        const opened = createStore(api, {identity: argument.identity, room: argument.room, key, allowed,
+        const opened = createStore(api, {kind: 'durable', identity: argument.identity, room: argument.room, key, allowed,
           namePattern: /^family-mls-synthetic-[a-z0-9-]{1,64}$/, extra: noExtra});
         await opened.open(argument.database);
         store = opened;

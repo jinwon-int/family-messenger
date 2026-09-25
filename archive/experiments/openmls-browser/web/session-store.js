@@ -3,7 +3,10 @@
 // set digest, tab reload and commit/abort pairing exist exactly once.
 // Development-only synthetic keys: entries are authenticated (HMAC), not encrypted (M2b-3).
 //
-// Database version 2: store `meta` holds exactly one record `state`; store
+// Database version 2: store `meta` holds exactly one record `state` (meta version 3
+// since M2b-2: its authenticated encoding is labelled with the worker kind, so a
+// durable meta never verifies as a trusted one and M2b-1 (meta version 2)
+// databases are denied as an older format rather than as corrupt); store
 // `entries` holds one record per Session store entry, key [room, entry key],
 // value {v, t} with t = entry_tag(record key, room, entry key, v). `meta` binds
 // the entry count, a set digest (SHA-256 over (key, tag) sorted by key), the
@@ -48,14 +51,17 @@ export function unframe(bytes) {
   return changes;
 }
 
+const META_VERSION = 3;
+
 /**
  * One device's durable Session state.
  * @param api   wasm exports: Session, entry_tag, entry_verify, meta_tag, meta_verify, staged_checksum
- * @param opts  {identity, room, key (32-byte record key), namePattern, allowed (methods),
+ * @param opts  {kind ('durable'|'trusted'), identity, room, key (32-byte record key), namePattern, allowed (methods),
  *               extra: {keys, initial(), bytes(meta) -> JSON-able, valid(meta, session)}}
  *               `extra` adds worker-specific authenticated meta fields (e.g. trust pins).
  */
-export function createStore(api, {identity, room, key, namePattern, allowed, extra}) {
+export function createStore(api, {kind, identity, room, key, namePattern, allowed, extra}) {
+  if (!/^[a-z]{1,16}$/.test(kind)) fail();
   const {Session, entry_tag, entry_verify, meta_tag, meta_verify, staged_checksum} = api;
   const META_KEYS = ['version', 'identity', 'room', 'public_key', 'group_id', 'format', 'revision', 'cursor', 'epoch',
     'set', 'count', 'ledger', 'acked', 'tag', ...extra.keys];
@@ -76,13 +82,13 @@ export function createStore(api, {identity, room, key, namePattern, allowed, ext
   }
   // Fixed field order and byte hex encoding; no host-dependent object serialization.
   function metaBytes(meta) {
-    return new TextEncoder().encode(JSON.stringify(['family-mls-meta-v2', meta.version, meta.identity, meta.room,
+    return new TextEncoder().encode(JSON.stringify(['family-mls-meta-v3/' + kind, meta.version, meta.identity, meta.room,
       hex(meta.public_key), hex(meta.group_id), meta.format, meta.revision, meta.cursor, meta.epoch, hex(meta.set),
       meta.count, meta.ledger.map(x => [x.id, x.method, x.sequence, x.epoch, hex(x.input), hex(x.output)]), meta.acked,
       extra.bytes(meta)]));
   }
   function validMeta(meta, verifyTag = true) {
-    if (!exact(meta, META_KEYS) || meta.version !== 2 || meta.identity !== identity || meta.room !== room ||
+    if (!exact(meta, META_KEYS) || meta.version !== META_VERSION || meta.identity !== identity || meta.room !== room ||
         !(meta.public_key instanceof Uint8Array) || meta.public_key.length !== 32 ||
         !(meta.group_id instanceof Uint8Array) || meta.group_id.length > 128 || meta.format !== Session.format_version() ||
         !Number.isSafeInteger(meta.revision) || meta.revision < 1 || !Number.isSafeInteger(meta.cursor) || meta.cursor < 0 ||
@@ -214,7 +220,7 @@ export function createStore(api, {identity, room, key, namePattern, allowed, ext
         create(fields = {}) {
           dropSession();
           session = Session.create(identity); inflight = true;
-          const fresh = {version: 2, identity, room, public_key: session.public_key(), group_id: new Uint8Array(0),
+          const fresh = {version: META_VERSION, identity, room, public_key: session.public_key(), group_id: new Uint8Array(0),
             format: Session.format_version(), revision: 0, cursor: 0, epoch: 'none', set: new Uint8Array(TAG),
             count: 0, ledger: [], acked: [], tag: new Uint8Array(TAG), ...extra.initial(), ...fields};
           persist(fresh, unframe(session.pending_changes()));

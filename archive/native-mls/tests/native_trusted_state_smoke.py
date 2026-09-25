@@ -266,8 +266,9 @@ def main():
               const meta=metas[metaKeys.indexOf('state')];
               const hex=b=>Array.from(b,x=>x.toString(16).padStart(2,'0')).join('');
               if(kind.includes('pins'))meta.pins[1].device_id='corrupted';
+              if(kind.includes('order'))meta.pins.reverse();  // non-canonical order: only the load-time pin check sees it
               if(kind.includes('reseal')){
-                const body=new TextEncoder().encode(JSON.stringify(['family-mls-meta-v2',meta.version,meta.identity,meta.room,hex(meta.public_key),hex(meta.group_id),meta.format,meta.revision,meta.cursor,meta.epoch,hex(meta.set),meta.count,meta.ledger.map(x=>[x.id,x.method,x.sequence,x.epoch,hex(x.input),hex(x.output)]),meta.acked,meta.pins]));
+                const body=new TextEncoder().encode(JSON.stringify(['family-mls-meta-v3/trusted',meta.version,meta.identity,meta.room,hex(meta.public_key),hex(meta.group_id),meta.format,meta.revision,meta.cursor,meta.epoch,hex(meta.set),meta.count,meta.ledger.map(x=>[x.id,x.method,x.sequence,x.epoch,hex(x.input),hex(x.output)]),meta.acked,meta.pins]));
                 const domain=new TextEncoder().encode('family-mls-v2/meta\\u0000');
                 const message=new Uint8Array(domain.length+4+body.length);message.set(domain);new DataView(message.buffer).setUint32(domain.length,body.length,true);message.set(body,domain.length+4);
                 const k=await crypto.subtle.importKey('raw',new Uint8Array(key),{name:'HMAC',hash:'SHA-256'},false,['sign']);
@@ -293,6 +294,9 @@ def main():
                     time.sleep(.05)
                 raise AssertionError('directory reload deadline')
             await_directory(lambda d:len(d['devices'])==2)
+            mismatched=[dict(p) for p in pins];mismatched[1]['device_id']='not-in-directory'
+            before=digest(a,databases[0]);rpc(a,'pin',{'pins':mismatched,'fault':''},reject=True)
+            assert digest(a,databases[0])==before;reopen(a,0)
             before=digest(a,databases[0]);rpc(a,'pin',{'pins':pins,'fault':'abort-after-write'},reject=True)
             assert digest(a,databases[0])==before;assert reopen(a,0)['pins'] is None
             for p in [a,b]:assert rpc(p,'pin',{'pins':pins,'fault':''})['pins']==pins
@@ -373,13 +377,20 @@ def main():
             changed=[dict(p) for p in pins];changed[1]['device_id']='changed'
             rpc(a,'pin',{'pins':changed,'fault':''},reject=True);assert digest(a,databases[0])==before;reopen(a,0)
             proof['checks']['accepted_pins_cannot_be_replaced']=True
+            # Outbox pruning in the trusted worker: ack removes, the id stays tombstoned.
+            listed=rpc(a,'status')['operations'];assert 'send' in listed
+            assert 'send' not in rpc(a,'ack',{'ids':['send']})['operations']
+            op(a,'send','encrypt',list(b'synthetic durable trusted text'),reject=True);reopen(a,0)
+            assert rpc(a,'status')['operations']==[x for x in listed if x!='send']
+            before=digest(a,databases[0])
+            proof['checks']['ack_prunes_trusted_ledger_and_tombstones_ids']=True
             # Preserve cloned corrupt synthetic records; never alter the good DB.
             # Positive control: a reseal alone reopens, so the resealed-pins case below is
             # denied by the pin/directory check, not by a tag mismatch.
             control_db=databases[0]+'-reseal'
             a.evaluate(CLONE,[databases[0],control_db,'reseal',record_keys[0]])
             control=page(0);assert init(control,0,db=control_db)['pins']==pins;control.close()
-            for kind in ['pins','pins-reseal']:
+            for kind in ['pins','pins-reseal','order-reseal']:
                 corrupt_db=databases[0]+'-corrupt-'+kind
                 a.evaluate(CLONE,[databases[0],corrupt_db,kind,record_keys[0]])
                 before_bad=digest(a,corrupt_db);corrupt=page(0);init(corrupt,0,db=corrupt_db,reject=True)

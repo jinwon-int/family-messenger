@@ -97,6 +97,10 @@ custom messaging cryptography, or serializing the nonpublic MlsGroup layout.
   control that makes the forged-actor case test the credential check. Mutation-
   checked: removing entry verification, the set-digest compare, the stale-tab
   rebuild, meta verification or `known` tracking each fails the smoke.
+- **Meta version 3** (M2b-2): the authenticated meta encoding is labelled with the
+  worker kind (`family-mls-meta-v3/durable` / `…/trusted`), so one worker's meta never
+  verifies as the other's. Databases written by M2b-1 (meta version 2) are denied as
+  an older format — synthetic profiles are disposable; there is no rewrite.
 - **Old databases**: a version-1 (pre-M2) database is retained untouched and denied —
   synthetic profiles are disposable; the format migration itself lives in Rust.
 
