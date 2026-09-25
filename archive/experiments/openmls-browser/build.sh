@@ -48,6 +48,7 @@ cargo "+$toolchain" build --locked --release --target wasm32-unknown-unknown \
   --manifest-path "$here/Cargo.toml"
 
 rm -rf "$out"; mkdir -p "$out"
+out="$(cd "$out" && pwd)"  # absolute: later steps run from other directories
 "$bindgen" "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/family_mls_browser_experiment.wasm" \
   --target web --out-dir "$out"
 # Only the two runtime assets are served; drop the TypeScript declarations.
@@ -61,6 +62,9 @@ rm -f "$out"/*.d.ts
 cp "$here/custody/THIRD-PARTY-NOTICES.txt" "$out/custody-notices.txt"
 
 echo "bundle: $out"
+for f in family_mls_browser_experiment.js family_mls_browser_experiment_bg.wasm custody.js custody-notices.txt; do
+  [ -s "$out/$f" ] || { echo "build.sh: missing $out/$f" >&2; exit 2; }
+done
 for f in family_mls_browser_experiment.js family_mls_browser_experiment_bg.wasm custody.js; do
   printf '%s  %s  %s bytes\n' "$(sha256sum "$out/$f" | cut -d' ' -f1)" "$f" "$(stat -c %s "$out/$f")"
 done
