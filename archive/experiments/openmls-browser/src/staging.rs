@@ -1,10 +1,9 @@
 //! Full provider/group staging. Secret snapshots stay inside the synthetic worker.
 use super::*;
 use serde::{Deserialize, Serialize as SerdeSerialize};
-use std::collections::HashMap;
 
-const MAX_STATE: usize = 1024 * 1024;
-const MAX_ENTRIES: usize = 512;
+pub(crate) const MAX_STATE: usize = 1024 * 1024;
+pub(crate) const MAX_ENTRIES: usize = 512;
 
 #[derive(SerdeSerialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -16,13 +15,11 @@ struct Snapshot {
     entries: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
-fn save(device: &Device, identity: &str) -> Result<Vec<u8>, JsValue> {
-    let values = device.provider.storage().values.read().map_err(rejected)?;
-    if values.len() > MAX_ENTRIES { return Err(rejected(())); }
-    let mut entries: Vec<_> = values.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
+fn save(device: &Device, identity: &str) -> Result<Vec<u8>, Rejected> {
+    let entries = device.provider.storage().entries();
+    if entries.len() > MAX_ENTRIES { return Err(rejected(())); }
     let state = Snapshot {
-        version: 1, identity: identity.into(), public_key: device.signer.public().into(),
+        version: migrate::FORMAT_CURRENT, identity: identity.into(), public_key: device.signer.public().into(),
         group_id: device.group.as_ref().map(|g| g.group_id().as_slice().to_vec()), entries,
     };
     let bytes = serde_json::to_vec(&state).map_err(rejected)?;
@@ -30,24 +27,34 @@ fn save(device: &Device, identity: &str) -> Result<Vec<u8>, JsValue> {
     Ok(bytes)
 }
 
-fn load(bytes: &[u8], identity: &str) -> Result<Device, JsValue> {
+fn load(bytes: &[u8], identity: &str) -> Result<Device, Rejected> {
     bounded(bytes, MAX_STATE)?;
     let state: Snapshot = serde_json::from_slice(bytes).map_err(rejected)?;
-    if state.version != 1 || state.identity != identity || state.entries.len() > MAX_ENTRIES
-        || state.public_key.len() != 32 || !valid_identity(identity) {
+    if state.identity != identity { return Err(rejected(())); }
+    restore(identity, &state.public_key, state.group_id, state.version, state.entries)
+}
+
+#[cfg(test)]
+pub(crate) fn load_for_test(bytes: &[u8], identity: &str) -> Result<Device, Rejected> { load(bytes, identity) }
+
+/// Rebuild a device from persisted store entries in format `version`, verifying
+/// the signer and own leaf against `identity`/`public_key`. Shared by the snapshot
+/// API above and `session::Session::open`.
+pub(crate) fn restore(identity: &str, public_key: &[u8], group_id: Option<Vec<u8>>, version: u32,
+    entries: Vec<(Vec<u8>, Vec<u8>)>) -> Result<Device, Rejected> {
+    if entries.len() > MAX_ENTRIES || public_key.len() != 32 || !valid_identity(identity) {
         return Err(rejected(()));
     }
-    let provider = OpenMlsRustCrypto::default();
-    let mut values = HashMap::new();
-    for (key, value) in state.entries {
-        if key.is_empty() || key.len() > MAX_WIRE || value.is_empty() || value.len() > MAX_STATE
-            || values.insert(key, value).is_some() { return Err(rejected(())); }
+    // Format-1 (pre-M2 JSON) snapshots are upgraded here, once; see `migrate`.
+    let entries = migrate::upgrade(version, entries).ok_or_else(|| rejected(()))?;
+    if entries.iter().any(|(key, value)| key.len() > MAX_WIRE || value.len() > MAX_STATE) {
+        return Err(rejected(()));
     }
-    *provider.storage().values.write().map_err(rejected)? = values;
-    let signer = SignatureKeyPair::read(provider.storage(), &state.public_key, SUITE.signature_algorithm())
+    let provider = Provider::with_store(store::Store::from_entries(entries).ok_or_else(|| rejected(()))?);
+    let signer = SignatureKeyPair::read(provider.storage(), public_key, SUITE.signature_algorithm())
         .ok_or_else(|| rejected(()))?;
-    if signer.public() != state.public_key { return Err(rejected(())); }
-    let group = match state.group_id {
+    if signer.public() != public_key { return Err(rejected(())); }
+    let group = match group_id {
         Some(id) => {
             bounded(&id, 128)?;
             Some(MlsGroup::load(provider.storage(), &GroupId::from_slice(&id)).map_err(rejected)?
@@ -57,7 +64,7 @@ fn load(bytes: &[u8], identity: &str) -> Result<Device, JsValue> {
     };
     let credential = CredentialWithKey {
         credential: BasicCredential::new(identity.as_bytes().to_vec()).into(),
-        signature_key: state.public_key.into(),
+        signature_key: public_key.to_vec().into(),
     };
     if let Some(group) = &group {
         if group.is_active() {
@@ -81,7 +88,7 @@ impl Transition {
 }
 
 #[wasm_bindgen]
-pub fn staged_init(identity: &str) -> Result<Vec<u8>, JsValue> {
+pub fn staged_init(identity: &str) -> Result<Vec<u8>, Rejected> {
     let device = Device::new(identity)?;
     save(&device, identity)
 }
@@ -89,7 +96,7 @@ pub fn staged_init(identity: &str) -> Result<Vec<u8>, JsValue> {
 /// Reconstruct all mutable state in an isolated provider for each operation.
 /// Rejection discards the candidate, including consumed Welcome/ratchet keys.
 #[wasm_bindgen]
-pub fn staged_apply(bytes: &[u8], identity: &str, method: &str, input: &[u8]) -> Result<Transition, JsValue> {
+pub fn staged_apply(bytes: &[u8], identity: &str, method: &str, input: &[u8]) -> Result<Transition, Rejected> {
     if input.len() > MAX_WIRE { return Err(rejected(())); }
     let mut device = load(bytes, identity)?;
     let output = match method {
@@ -115,24 +122,24 @@ fn epoch_of(device: &Device) -> String {
     device.group.as_ref().map(|g| g.epoch().as_u64().to_string()).unwrap_or_else(|| "none".into())
 }
 #[wasm_bindgen]
-pub fn staged_epoch(bytes: &[u8], identity: &str) -> Result<String, JsValue> {
+pub fn staged_epoch(bytes: &[u8], identity: &str) -> Result<String, Rejected> {
     Ok(epoch_of(&load(bytes, identity)?))
 }
 
 /// Accidental-corruption checksum only, not authentication or rollback protection.
 /// Reuses the vetted provider synchronously so IndexedDB keeps its transaction open.
 #[wasm_bindgen]
-pub fn staged_checksum(bytes: &[u8]) -> Result<Vec<u8>, JsValue> {
+pub fn staged_checksum(bytes: &[u8]) -> Result<Vec<u8>, Rejected> {
     bounded(bytes, 5 * 1024 * 1024)?;
-    OpenMlsRustCrypto::default().crypto().hash(HashType::Sha2_256, bytes).map_err(rejected)
+    RustCrypto::default().hash(HashType::Sha2_256, bytes).map_err(rejected)
 }
 
 #[wasm_bindgen]
-pub fn staged_public_key(bytes: &[u8], identity: &str) -> Result<Vec<u8>, JsValue> {
+pub fn staged_public_key(bytes: &[u8], identity: &str) -> Result<Vec<u8>, Rejected> {
     Ok(load(bytes, identity)?.signer.public().to_vec())
 }
 #[wasm_bindgen]
-pub fn staged_group_id(bytes: &[u8], identity: &str) -> Result<Vec<u8>, JsValue> {
+pub fn staged_group_id(bytes: &[u8], identity: &str) -> Result<Vec<u8>, Rejected> {
     Ok(load(bytes, identity)?.group.as_ref().map(|g|g.group_id().as_slice().to_vec()).unwrap_or_default())
 }
 /// 신뢰 거부 사유. JsValue를 생성하지 않아 호스트 단위 테스트에서도 검증 가능하다.
@@ -164,15 +171,15 @@ fn trusted_members_check(device: &Device, peer: &str, key: &[u8], require_pair: 
     Ok(())
 }
 
-fn trusted_members(device: &Device, peer: &str, key: &[u8], require_pair: bool) -> Result<(), JsValue> {
+fn trusted_members(device: &Device, peer: &str, key: &[u8], require_pair: bool) -> Result<(), Rejected> {
     trusted_members_check(device, peer, key, require_pair).map_err(rejected)
 }
 #[wasm_bindgen]
-pub fn staged_check_trust(bytes: &[u8], identity: &str, peer: &str, key: &[u8]) -> Result<(), JsValue> {
+pub fn staged_check_trust(bytes: &[u8], identity: &str, peer: &str, key: &[u8]) -> Result<(), Rejected> {
     trusted_members(&load(bytes,identity)?,peer,key,false)
 }
 #[wasm_bindgen]
-pub fn staged_trusted_apply(bytes: &[u8], identity: &str, method: &str, input: &[u8], peer: &str, key: &[u8]) -> Result<Transition, JsValue> {
+pub fn staged_trusted_apply(bytes: &[u8], identity: &str, method: &str, input: &[u8], peer: &str, key: &[u8]) -> Result<Transition, Rejected> {
     if input.len()>MAX_WIRE {return Err(rejected(()));}
     let mut device=load(bytes,identity)?;
     trusted_members(&device,peer,key,method=="encrypt"||method=="decrypt"||method=="decrypt_peer")?;
@@ -197,7 +204,7 @@ pub fn staged_trusted_apply(bytes: &[u8], identity: &str, method: &str, input: &
 /// Roles are chosen by the caller per operation: the committer stages/merges its own
 /// update, the other member applies it. No identity label is privileged.
 #[wasm_bindgen]
-pub fn staged_control_apply(bytes:&[u8],identity:&str,method:&str,input:&[u8],peer:&str,key:&[u8],aad:&[u8])->Result<Transition,JsValue> {
+pub fn staged_control_apply(bytes:&[u8],identity:&str,method:&str,input:&[u8],peer:&str,key:&[u8],aad:&[u8])->Result<Transition,Rejected> {
     if input.len()>MAX_WIRE || aad.is_empty() || aad.len()>2048 {return Err(rejected(()));}
     let mut device=load(bytes,identity)?;
     trusted_members(&device,peer,key,true)?;
@@ -220,7 +227,7 @@ pub fn staged_control_apply(bytes:&[u8],identity:&str,method:&str,input:&[u8],pe
     Ok(Transition{state,output,epoch:epoch_of(&device)})
 }
 #[wasm_bindgen]
-pub fn staged_pending_commit(bytes:&[u8],identity:&str)->Result<bool,JsValue> {
+pub fn staged_pending_commit(bytes:&[u8],identity:&str)->Result<bool,Rejected> {
     Ok(load(bytes,identity)?.group.as_ref().map(|g|g.pending_commit().is_some()).unwrap_or(false))
 }
 
