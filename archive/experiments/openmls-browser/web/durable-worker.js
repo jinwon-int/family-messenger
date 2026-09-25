@@ -35,7 +35,8 @@ async function unlock(opened, passphrase) {
   const {fresh, custody} = await opened.readCustody();
   const vault = fresh ? await createVault(passphrase) : null;
   const keys = fresh ? vault.keys : await unlockVault(custody.capsule, custody.vault, passphrase);
-  opened.unlock(keys.auth, keys.enc, fresh ? vault : custody);
+  try { opened.unlock(keys.auth, keys.enc, fresh ? vault : custody); }
+  catch (error) { keys.auth.fill(0); keys.enc.fill(0); throw error; }
 }
 // A timed-out caller must close the worker and reopen the DB, then reconcile its
 // exact immutable operation ID.

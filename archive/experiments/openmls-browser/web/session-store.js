@@ -2,9 +2,12 @@
 // durable-worker.js and trusted-state-worker.js so the authenticated layout,
 // set digest, tab reload and commit/abort pairing exist exactly once.
 // At rest (#177 M2b-3b) every entry and the meta record are sealed with the
-// custody encryption subkey (custody.js sealRecord: one new secretstream per
-// record) and entry keys are replaced by an HMAC index, so IndexedDB holds no
-// plaintext state, messages or key structure. Development-only synthetic custody.
+// custody encryption subkey (custody.js sealRecord: XChaCha20-Poly1305 AEAD, fresh
+// random nonce per record) and entry keys are replaced by an HMAC index, so state
+// values, messages, labels, group ids and epochs are not readable in IndexedDB.
+// Still visible (documented in PERSISTENCE.md): the room name, record sizes and
+// count, which records an operation rewrites, and the meta length — whose change
+// between snapshots reveals each operation's message size. Development-only custody.
 //
 // Database version 2: store `meta` holds `state` and `custody`. `state` is
 // {version: 4, sealed}: the meta fields, sealed with additional data

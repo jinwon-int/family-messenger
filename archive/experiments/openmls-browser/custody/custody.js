@@ -35,35 +35,41 @@ export function validVault(value) {
 
 function derive(root) {
   if (!(root instanceof Uint8Array) || root.length !== sodium.crypto_kdf_KEYBYTES) throw new Error('root');
-  return {
+  const keys = {
     auth: sodium.crypto_kdf_derive_from_key(32, SUBKEY.auth, CONTEXT, root),
     enc: sodium.crypto_kdf_derive_from_key(32, SUBKEY.enc, CONTEXT, root),
   };
+  // Key separation invariant: authentication and encryption never share a key.
+  if (sodium.memcmp(keys.auth, keys.enc)) throw new Error('key separation');
+  return keys;
 }
 
-// Saved records (#177 M2b-3b), as SESSION-RECORDS.md specifies: every record is a
-// **new** library secretstream (init_push, library-generated header), exactly one
-// chunk tagged TAG_FINAL, canonical metadata as additional data. Output is
-// header ‖ ciphertext. No stream is resumed, no nonce/counter is managed here.
-const HEADER = sodium.crypto_secretstream_xchacha20poly1305_HEADERBYTES;
-const OVERHEAD = sodium.crypto_secretstream_xchacha20poly1305_ABYTES;
+// Saved records (#177 M2b-3b): libsodium's one-shot AEAD
+// crypto_aead_xchacha20poly1305_ietf with a fresh 24-byte nonce from the library's
+// randombytes per record; output nonce ‖ ciphertext ‖ tag, canonical metadata as
+// additional data. SESSION-RECORDS.md chose one secretstream per record, but
+// libsodium-wrappers never frees a secretstream state (56 bytes of WASM memory per
+// init_push/init_pull): acceptable for its 32-command probe, unbounded for a
+// resident worker. Both are XChaCha20-Poly1305 constructions of the same library;
+// for records that are always exactly one chunk, secretstream's streaming properties
+// (chunk ordering, truncation across chunks, rekeying) add nothing, while the
+// one-shot call allocates no state. Random XChaCha nonces (192 bit) are the
+// library-recommended use; no counter, nonce derivation or custom scheme.
+const NONCE = sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES;
+const OVERHEAD = sodium.crypto_aead_xchacha20poly1305_ietf_ABYTES;
 export function sealRecord(key, ad, plaintext) {
   if (!(key instanceof Uint8Array) || key.length !== 32) throw new Error('record key');
-  const {state, header} = sodium.crypto_secretstream_xchacha20poly1305_init_push(key);
-  const cipher = sodium.crypto_secretstream_xchacha20poly1305_push(state, plaintext, ad,
-    sodium.crypto_secretstream_xchacha20poly1305_TAG_FINAL);
-  const out = new Uint8Array(header.length + cipher.length);
-  out.set(header); out.set(cipher, header.length);
+  const nonce = sodium.randombytes_buf(NONCE);
+  const cipher = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(plaintext, ad, null, nonce, key);
+  const out = new Uint8Array(nonce.length + cipher.length);
+  out.set(nonce); out.set(cipher, nonce.length);
   return out;
 }
-/** Plaintext of one saved record, or throw: authentication, TAG_FINAL and no extra chunk. */
+/** Plaintext of one saved record, or throw (authentication failure, wrong AD, truncation). */
 export function openRecord(key, ad, sealed) {
   if (!(key instanceof Uint8Array) || key.length !== 32) throw new Error('record key');
-  if (!(sealed instanceof Uint8Array) || sealed.length < HEADER + OVERHEAD) throw new Error('record');
-  const state = sodium.crypto_secretstream_xchacha20poly1305_init_pull(sealed.subarray(0, HEADER), key);
-  const result = sodium.crypto_secretstream_xchacha20poly1305_pull(state, sealed.subarray(HEADER), ad);
-  if (!result || result.tag !== sodium.crypto_secretstream_xchacha20poly1305_TAG_FINAL) throw new Error('record');
-  return result.message;
+  if (!(sealed instanceof Uint8Array) || sealed.length < NONCE + OVERHEAD) throw new Error('record');
+  return sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(null, sealed.subarray(NONCE), ad, sealed.subarray(0, NONCE), key);
 }
 
 /** New root key + vault id sealed in an age password capsule. */

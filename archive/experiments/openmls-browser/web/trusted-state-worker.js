@@ -102,7 +102,8 @@ self.onmessage = ({data}) => {
         if (fresh && directory.devices.some(x => x.actor === identity)) fail();
         const vault = fresh ? await createVault(passphrase) : null;
         const keys = fresh ? vault.keys : await unlockVault(custody.capsule, custody.vault, passphrase);
-        opened.unlock(keys.auth, keys.enc, fresh ? vault : custody);
+        try { opened.unlock(keys.auth, keys.enc, fresh ? vault : custody); }
+        catch (error) { keys.auth.fill(0); keys.enc.fill(0); throw error; }
         result = await handle('initialize', undefined, directory);
       } else {
         if (!store || !['status', 'pin', 'ack', 'operation'].includes(method)) fail();

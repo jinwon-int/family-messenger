@@ -64,16 +64,27 @@ custom messaging cryptography, or serializing the nonpublic MlsGroup layout.
 - **Database version 2**, two stores: `meta` holds `custody` (the capsule, below) and
   `state` = `{version: 4, sealed}`: the meta fields (identity, room, signer public key,
   group id, store format, revision, cursor, epoch, ledger, acknowledged-id tombstones,
-  entry count, set digest, tag) sealed with `custody.js` `sealRecord` (a new
-  XChaCha20-Poly1305 secretstream per record, single `TAG_FINAL` chunk, additional data
-  `family-mls-meta-v4/<kind>\0identity\0room`). `entries` holds one record per store
+  entry count, set digest, tag) sealed with `custody.js` `sealRecord` (libsodium
+  one-shot XChaCha20-Poly1305 AEAD, fresh random 24-byte nonce per record, additional
+  data `family-mls-meta-v4/<kind>\0identity\0room`). SESSION-RECORDS.md chose one
+  secretstream per record; libsodium-wrappers never frees secretstream state (56 B of
+  WASM memory per record — unbounded in a resident worker), and single-chunk records
+  gain nothing from streaming, so the one-shot AEAD of the same library is used
+  (110,000 seal+open: WASM heap unchanged). `entries` holds one record per store
   entry: key `[room, index]` with `index = entry_index(auth key, room, entry key)` (an
   HMAC, so labels, group ids and epochs never appear in keys), value `{e, t}` where `e`
   seals `key length ‖ entry key ‖ value` (additional data: domain, room, index) and
   `t = entry_tag(auth key, room, index, e)`; loading re-derives the index from the
-  decrypted key. The smoke asserts that neither database contains a message plaintext,
-  a store label, an actor label or a public key (mutation-checked: disabling the seal
-  fails exactly that check).
+  decrypted key. The smokes assert that no durable or trusted database contains a
+  message plaintext, a store label, an actor/device label, a pin or a public key
+  (mutation-checked: disabling the seal fails exactly that check).
+- **What remains visible at rest**: the room name (in every entry key), the size of
+  every record and their count, which records each operation rewrites (the index is
+  deterministic), and the length of the sealed meta — the ledger is inside it, so the
+  length change between two snapshots reveals each operation's message size. Records
+  deleted or overwritten may persist in the browser's storage files and stay
+  decryptable by anyone who later learns the passphrase. Padding sizes is a possible
+  follow-up; none of this is claimed hidden.
   An operation writes only the entries the session changed — an encrypt writes one
   entry (≈1.1 KB) instead of the whole snapshot — plus the `meta` record, which
   carries the ledger and is rewritten on every operation (reported as `meta_bytes`;

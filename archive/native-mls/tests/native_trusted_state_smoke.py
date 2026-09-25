@@ -340,6 +340,14 @@ def main():
             assert digest(b,databases[1])==before;reopen(b,1)
             assert op(b,'receive','decrypt',cipher,1)['output']==message
             proof['checks']['trusted_group_tamper_and_abort_preserve_complete_state']=True
+            # At rest (#177 M2b-3b): no message plaintext (bob's ledger caches it), store label,
+            # actor/device label, pin or public key in either trusted database.
+            dump=a.evaluate(DUMP,databases[0])+b.evaluate(DUMP,databases[1])
+            needles=[bytes(message),b'GroupState',b'SignatureKeyPair',b'alice',b'bob']+[p['device_id'].encode() for p in pins]
+            needles+=[bytes.fromhex(p['signing_key']) for p in pins]+[p['fingerprint'].encode() for p in pins]
+            for needle in needles:
+                assert needle.hex() not in dump and needle.decode('latin-1') not in dump,'plaintext at rest'
+            proof['checks']['no_plaintext_pins_labels_or_keys_at_rest']=True
             observer=page(0);init(observer,0)
             lost=op_arg('lost','encrypt',list(b'lost trusted response'),fault='lost-response')
             a.evaluate('arg=>{window.pending=call("device","operation",arg).catch(()=>null)}',lost)
