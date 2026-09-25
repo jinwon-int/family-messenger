@@ -351,3 +351,40 @@ fn migration_rewrite_is_two_phase() {
     assert!(!session.migrated());
     session.apply("key_package", &[]).expect("usable once the rewrite is durable");
 }
+
+/// M2b-2: the trusted Session path enforces the pins before and after each
+/// operation and rolls a rejection back instead of retiring the device.
+#[test]
+fn trusted_session_enforces_pins_and_rolls_back() {
+    let mut alice = Peer::new("alice");
+    let mut bob = Peer::new("bob");
+    let (alice_key, bob_key) = (alice.session.public_key(), bob.session.public_key());
+    let trusted = |peer: &mut Peer, method: &str, input: &[u8], actor: &str, key: &[u8]| {
+        let step = peer.session.apply_trusted(method, input, actor, key)?;
+        persist(&mut peer.mirror, &step.changes());
+        peer.session.commit().unwrap();
+        peer.assert_durable();
+        Ok::<_, Rejected>(step.output())
+    };
+    trusted(&mut alice, "create", &[], "bob", &bob_key).unwrap();
+    let package = trusted(&mut bob, "key_package", &[], "alice", &alice_key).unwrap();
+    // A KeyPackage that is not the pinned peer's is refused and rolled back.
+    let mallory = Peer::new("mallory").session.apply("key_package", &[]).unwrap().output();
+    let before = session_entries(&alice.session);
+    assert!(alice.session.apply_trusted("invite", &mallory, "bob", &bob_key).is_err());
+    assert_eq!(session_entries(&alice.session), before, "rejected invite leaves the store unchanged");
+    // Wrong pinned key for the right actor is refused too.
+    assert!(alice.session.apply_trusted("invite", &package, "bob", &alice_key).is_err());
+    let welcome = trusted(&mut alice, "invite", &package, "bob", &bob_key).unwrap();
+    trusted(&mut bob, "join", &welcome, "alice", &alice_key).unwrap();
+    alice.session.check_trust("bob", &bob_key).unwrap();
+    assert!(alice.session.check_trust("bob", &alice_key).is_err());
+    // Pair-only operations need the exact pinned pair.
+    assert!(alice.session.apply_trusted("encrypt", b"x", "carol", &bob_key).is_err());
+    let ciphertext = trusted(&mut alice, "encrypt", b"pinned hello", "bob", &bob_key).unwrap();
+    // decrypt_peer checks the MLS-authenticated sender against the pin.
+    let before = session_entries(&bob.session);
+    assert!(bob.session.apply_trusted("decrypt_peer", &ciphertext, "alice", &bob_key).is_err());
+    assert_eq!(session_entries(&bob.session), before, "sender-key mismatch rolls back (ratchet not consumed)");
+    assert_eq!(trusted(&mut bob, "decrypt_peer", &ciphertext, "alice", &alice_key).unwrap(), b"pinned hello");
+}

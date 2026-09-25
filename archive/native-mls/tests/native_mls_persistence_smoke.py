@@ -24,7 +24,7 @@ def main():
     evidence = Path(tempfile.mkdtemp(prefix='native-mls-persistence-', dir=repo / 'artifacts'))
     assets = {}
     files = {'/': repo / 'experiments/openmls-browser/web/index.html'}
-    for name in ['main.js', 'worker.js', 'durable-worker.js']:
+    for name in ['main.js', 'worker.js', 'durable-worker.js', 'session-store.js']:
         files['/' + name] = repo / 'experiments/openmls-browser/web' / name
     for name in ['family_mls_browser_experiment.js', 'family_mls_browser_experiment_bg.wasm']:
         files['/pkg/' + name] = args.bundle / name
@@ -36,9 +36,9 @@ def main():
     # Instrument only bytes served by this private test. Tracked runtime has no
     # spin/kill command. Hold the callback after put so IDB cannot commit yet.
     patches = {
-        '/durable-worker.js': [
+        '/session-store.js': [
             (b"'abort-after-write', 'lost-response'", b"'abort-after-write', 'lost-response', 'crash-before-complete'"),
-            (b"      if (fault === 'abort-after-write')", b"      if (fault === 'crash-before-complete') { self.postMessage({test_crash_boundary:true}); while(true) {} }\n      if (fault === 'abort-after-write')")],
+            (b"if (fault === 'abort-after-write') { abort(); return undefined; }", b"if (fault === 'crash-before-complete') { self.postMessage({test_crash_boundary:true}); while(true) {} }\n          if (fault === 'abort-after-write') { abort(); return undefined; }")],
         '/main.js': [(b'    if (data.id !== id) return;', b'    if (data.test_crash_boundary) window.test_crash_boundary=true;\n    if (data.id !== id) return;')],
     }
     for name, replacements in patches.items():
@@ -273,9 +273,9 @@ def main():
               const meta = metas[metaKeys.indexOf('state')];
               const hex = b => Array.from(b, x => x.toString(16).padStart(2,'0')).join('');
               const reseal = async () => {  // what an attacker holding the record key could do (src/record.rs construction)
-                const body = new TextEncoder().encode(JSON.stringify(['family-mls-meta-v2', meta.version, meta.identity, meta.room,
+                const body = new TextEncoder().encode(JSON.stringify(['family-mls-meta-v3/durable', meta.version, meta.identity, meta.room,
                   hex(meta.public_key), hex(meta.group_id), meta.format, meta.revision, meta.cursor, meta.epoch, hex(meta.set),
-                  meta.count, meta.ledger.map(x => [x.id, x.method, x.sequence, x.epoch, hex(x.input), hex(x.output)]), meta.acked]));
+                  meta.count, meta.ledger.map(x => [x.id, x.method, x.sequence, x.epoch, hex(x.input), hex(x.output)]), meta.acked, null]));  // null: durable worker has no extra meta
                 const domain = new TextEncoder().encode('family-mls-v2/meta\\u0000');
                 const message = new Uint8Array(domain.length + 4 + body.length);
                 message.set(domain); new DataView(message.buffer).setUint32(domain.length, body.length, true); message.set(body, domain.length + 4);

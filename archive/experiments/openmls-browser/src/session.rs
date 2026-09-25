@@ -185,7 +185,51 @@ impl Session {
     /// rejection the state is rolled back and the session stays usable.
     pub fn apply(&mut self, method: &str, input: &[u8]) -> Result<Step, Rejected> {
         if self.in_flight || self.migrated || self.device.retired { return Err(rejected(())); }
-        match self.dispatch(method, input) {
+        let result = self.dispatch(method, input);
+        self.finish(result)
+    }
+
+    /// Same contract as `apply`, restricted to a pinned pair (the snapshot API's
+    /// `staged_trusted_apply`): the membership must match the pins before and
+    /// after the operation — exactly the pair for encrypt/decrypt — and only a
+    /// KeyPackage/Welcome that carries the pinned credential and key is accepted.
+    pub fn apply_trusted(&mut self, method: &str, input: &[u8], peer: &str, key: &[u8]) -> Result<Step, Rejected> {
+        if self.in_flight || self.migrated || self.device.retired { return Err(rejected(())); }
+        let result = self.dispatch_trusted(method, input, peer, key);
+        self.finish(result)
+    }
+
+    /// The group (if any) holds exactly our leaf and, when present, the pinned peer.
+    pub fn check_trust(&self, peer: &str, key: &[u8]) -> Result<(), Rejected> {
+        staging::trusted_members(&self.device, peer, key, false)
+    }
+}
+
+impl Session {
+    fn dispatch_trusted(&mut self, method: &str, input: &[u8], peer: &str, key: &[u8]) -> Result<Vec<u8>, Rejected> {
+        if input.len() > MAX_WIRE { return Err(rejected(())); }
+        let pair = matches!(method, "encrypt" | "decrypt" | "decrypt_peer");
+        staging::trusted_members(&self.device, peer, key, pair)?;
+        let device = &mut self.device;
+        let output = match method {
+            "key_package" if input.is_empty() => device.key_package_inner()?,
+            "create" if input.is_empty() => { device.create_inner()?; vec![] },
+            "invite" => device.invite_trusted_inner(input, peer, key)?,
+            "join" => { device.join_trusted_inner(input, peer, key)?; vec![] },
+            "encrypt" => device.encrypt_inner(input)?,
+            "decrypt" => device.decrypt_inner(input)?,
+            "decrypt_peer" => device.decrypt_peer_inner(input, peer, key)?,
+            _ => return Err(rejected(())),
+        };
+        if output.len() > MAX_WIRE { return Err(rejected(())); }
+        staging::trusted_members(&self.device, peer, key, false)?;
+        Ok(output)
+    }
+
+    /// Common tail of `apply`/`apply_trusted`: in flight on success; rolled back
+    /// on rejection or when `open` could not reload the result.
+    fn finish(&mut self, result: Result<Vec<u8>, Rejected>) -> Result<Step, Rejected> {
+        match result {
             Ok(_) if !self.reopenable() => {
                 // What `open` could not load must never become durable (the old
                 // snapshot `save` enforced the same bounds).
@@ -202,7 +246,10 @@ impl Session {
             }
         }
     }
+}
 
+#[wasm_bindgen]
+impl Session {
     /// Changes currently in flight (after `create` or `apply`).
     pub fn pending_changes(&self) -> Vec<u8> { frame(&self.store().changes()) }
 

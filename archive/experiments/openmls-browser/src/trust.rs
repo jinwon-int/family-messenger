@@ -26,23 +26,30 @@ impl Device {
         self.run(|s| Ok(s.signer.public().to_vec()))
     }
     pub fn invite_trusted(&mut self, bytes: &[u8], actor: &str, key: &[u8]) -> Result<Vec<u8>, Rejected> {
-        self.run(|s| {
-            verify_device_package(bytes, actor, key)?;
-            s.invite_inner(bytes)
-        })
+        self.run(|s| s.invite_trusted_inner(bytes, actor, key))
     }
     pub fn join_trusted(&mut self, bytes: &[u8], actor: &str, key: &[u8]) -> Result<(), Rejected> {
-        self.run(|s| {
-            let expected = expected(actor, key)?;
-            s.join_inner(bytes)?;
-            let group = s.group.as_ref().ok_or_else(|| rejected(()))?;
-            let members: Vec<_> = group.members().collect();
-            if members.len() < 2 {return Err(rejected(()));}
-            let own = members.iter().filter(|m| m.credential == s.credential.credential && m.signature_key == s.signer.public()).count();
-            let peer = members.iter().filter(|m| m.credential == expected.credential && m.signature_key == key).count();
-            if own != 1 || peer != 1 || s.signer.public() == key {return Err(rejected(()));}
-            Ok(())
-        })
+        self.run(|s| s.join_trusted_inner(bytes, actor, key))
+    }
+}
+
+impl Device {
+    /// Add only a KeyPackage whose credential and signing key equal the pin.
+    pub(crate) fn invite_trusted_inner(&mut self, bytes: &[u8], actor: &str, key: &[u8]) -> Result<Vec<u8>, Rejected> {
+        verify_device_package(bytes, actor, key)?;
+        self.invite_inner(bytes)
+    }
+    /// Join, then require exactly our own leaf and the pinned peer's leaf.
+    pub(crate) fn join_trusted_inner(&mut self, bytes: &[u8], actor: &str, key: &[u8]) -> Result<(), Rejected> {
+        let expected = expected(actor, key)?;
+        self.join_inner(bytes)?;
+        let group = self.group.as_ref().ok_or_else(|| rejected(()))?;
+        let members: Vec<_> = group.members().collect();
+        if members.len() < 2 {return Err(rejected(()));}
+        let own = members.iter().filter(|m| m.credential == self.credential.credential && m.signature_key == self.signer.public()).count();
+        let peer = members.iter().filter(|m| m.credential == expected.credential && m.signature_key == key).count();
+        if own != 1 || peer != 1 || self.signer.public() == key {return Err(rejected(()));}
+        Ok(())
     }
 }
 

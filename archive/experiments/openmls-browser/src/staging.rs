@@ -171,7 +171,7 @@ fn trusted_members_check(device: &Device, peer: &str, key: &[u8], require_pair: 
     Ok(())
 }
 
-fn trusted_members(device: &Device, peer: &str, key: &[u8], require_pair: bool) -> Result<(), Rejected> {
+pub(crate) fn trusted_members(device: &Device, peer: &str, key: &[u8], require_pair: bool) -> Result<(), Rejected> {
     trusted_members_check(device, peer, key, require_pair).map_err(rejected)
 }
 #[wasm_bindgen]
@@ -186,8 +186,8 @@ pub fn staged_trusted_apply(bytes: &[u8], identity: &str, method: &str, input: &
     let output=match method {
         "key_package" if input.is_empty()=>device.key_package_inner()?,
         "create" if input.is_empty()=>{device.create_inner()?;vec![]},
-        "invite"=>device.invite_trusted(input,peer,key)?,
-        "join"=>{device.join_trusted(input,peer,key)?;vec![]},
+        "invite"=>device.invite_trusted_inner(input,peer,key)?,
+        "join"=>{device.join_trusted_inner(input,peer,key)?;vec![]},
         "encrypt"=>device.encrypt_inner(input)?,
         "decrypt"=>device.decrypt_inner(input)?,
         "decrypt_peer"=>device.decrypt_peer_inner(input,peer,key)?,

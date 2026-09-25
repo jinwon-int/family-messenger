@@ -104,7 +104,7 @@ def main():
     lock = threading.Lock()
     requests = []
     assets={}
-    for name in ['index.html','main.js','trust-worker.js','trust-directory.js','trusted-state-worker.js']:
+    for name in ['index.html','main.js','trust-worker.js','trust-directory.js','trusted-state-worker.js','session-store.js']:
         file=root/'experiments/openmls-browser/web'/name
         raw=file.read_bytes()
         if name=='trust-worker.js':raw=b"const testFetch=fetch;self.fetch=(url,options)=>{options?.signal?.addEventListener('abort',()=>self.postMessage({testAbortObserved:true}),{once:true});return testFetch(url,options);};\n"+raw
@@ -117,11 +117,11 @@ def main():
         assets['/pkg/'+name]=file.read_bytes()
     original_hashes={name:hashlib.sha256(raw).hexdigest() for name,raw in assets.items()}
     old=b"'abort-after-write', 'lost-response'"
-    assert assets['/trusted-state-worker.js'].count(old)==1
-    assets['/trusted-state-worker.js']=assets['/trusted-state-worker.js'].replace(old,b"'abort-after-write', 'lost-response', 'crash-before-complete'")
-    old=b"            if (fault === 'abort-after-write')"
-    assert assets['/trusted-state-worker.js'].count(old)==1
-    assets['/trusted-state-worker.js']=assets['/trusted-state-worker.js'].replace(old,b"            if (fault === 'crash-before-complete') {self.postMessage({test_crash_boundary:true});while(true){}}\n"+old)
+    assert assets['/session-store.js'].count(old)==1
+    assets['/session-store.js']=assets['/session-store.js'].replace(old,b"'abort-after-write', 'lost-response', 'crash-before-complete'")
+    old=b"if (fault === 'abort-after-write') { abort(); return undefined; }"
+    assert assets['/session-store.js'].count(old)==1
+    assets['/session-store.js']=assets['/session-store.js'].replace(old,b"if (fault === 'crash-before-complete') {self.postMessage({test_crash_boundary:true});while(true){}}\n          "+old)
     old=b"    if (data.id !== id) return;"
     assert assets['/main.js'].count(old)==1
     assets['/main.js']=assets['/main.js'].replace(old,b"    if(data.test_crash_boundary)window.test_crash_boundary=true;\n"+old)
@@ -213,6 +213,8 @@ def main():
             contexts=[pw.chromium.launch_persistent_context(str(p)) for p in profiles]
             proof['browser']=contexts[0].browser.version;proof['max_worker_linear_memory_bytes']=0
             databases=['family-mls-trusted-synthetic-alice','family-mls-trusted-synthetic-bob']
+            # Stand-in for the custody-unlock-derived record key (#177 M2b-3). Never logged.
+            record_keys=[list(secrets.token_bytes(32)) for _ in databases]
             def cookie(index,value=None):
                 contexts[index].add_cookies([{'name':'synthetic_edge','value':value or cookies[index],'url':url,'httpOnly':True,'sameSite':'Strict'}])
             for i in range(2):cookie(i)
@@ -226,7 +228,7 @@ def main():
                 assert r['ok'] is True,(method,r)
                 return r.get('result')
             def init(p,index,room='family',db=None,actor=None,reject=False):
-                return rpc(p,'init',{'identity':actor or ['alice','bob'][index],'room':room,'database':db or databases[index]},reject)
+                return rpc(p,'init',{'identity':actor or ['alice','bob'][index],'room':room,'database':db or databases[index],'record_key':record_keys[index]},reject)
             def op_arg(id,method,data=None,seq=0,fault=''):
                 return {'id':id,'method':method,'bytes':data or [],'sequence':seq,'fault':fault}
             def op(p,id,method,data=None,seq=0,fault='',reject=False):
@@ -243,12 +245,40 @@ def main():
                 try:contexts[index].close()
                 except BrowserError:pass
                 contexts[index]=pw.chromium.launch_persistent_context(str(profiles[index]));cookie(index)
+            # Whole durable state (storage v2): meta record + every entry, canonically encoded.
+            DUMP="""async name=>{
+              const db=await new Promise((r,j)=>{const q=indexedDB.open(name);q.onsuccess=()=>r(q.result);q.onerror=j;});
+              const names=Array.from(db.objectStoreNames).sort();
+              const read=(store,kind)=>new Promise((r,j)=>{const q=db.transaction(store).objectStore(store)[kind]();q.onsuccess=()=>r(q.result);q.onerror=j;});
+              const hex=b=>Array.from(b instanceof ArrayBuffer?new Uint8Array(b):b,x=>x.toString(16).padStart(2,'0')).join('');
+              const enc=v=>v instanceof Uint8Array||v instanceof ArrayBuffer?'x'+hex(v):Array.isArray(v)?v.map(enc):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,enc(v[k])])):v;
+              const out={names};for(const s of names)out[s]={keys:enc(await read(s,'getAllKeys')),values:enc(await read(s,'getAll'))};
+              db.close();return JSON.stringify(out);
+            }"""
             def digest(p,db):
-                return p.evaluate("""async name=>{
-                  const db=await new Promise((r,j)=>{const q=indexedDB.open(name);q.onsuccess=()=>r(q.result);q.onerror=j;});
-                  const record=await new Promise((r,j)=>{const q=db.transaction('device').objectStore('device').get('state');q.onsuccess=()=>r(q.result);q.onerror=j;});db.close();
-                  return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(record)))));
-                }""",db)
+                return hashlib.sha256(p.evaluate(DUMP,db).encode()).hexdigest()
+            # Clone a database; 'pins' edits the pinned peer device id, 'reseal' re-tags meta
+            # with the record key exactly as src/record.rs does (an attacker holding the key).
+            CLONE="""async([source,target,kind,key])=>{
+              const src=await new Promise((r,j)=>{const q=indexedDB.open(source);q.onsuccess=()=>r(q.result);q.onerror=j;});
+              const read=(s,w)=>new Promise((r,j)=>{const q=src.transaction(s).objectStore(s)[w]();q.onsuccess=()=>r(q.result);q.onerror=j;});
+              const metaKeys=await read('meta','getAllKeys'),metas=await read('meta','getAll'),entryKeys=await read('entries','getAllKeys'),entries=await read('entries','getAll');src.close();
+              const meta=metas[metaKeys.indexOf('state')];
+              const hex=b=>Array.from(b,x=>x.toString(16).padStart(2,'0')).join('');
+              if(kind.includes('pins'))meta.pins[1].device_id='corrupted';
+              if(kind.includes('order'))meta.pins.reverse();  // non-canonical order: only the load-time pin check sees it
+              if(kind.includes('reseal')){
+                const body=new TextEncoder().encode(JSON.stringify(['family-mls-meta-v3/trusted',meta.version,meta.identity,meta.room,hex(meta.public_key),hex(meta.group_id),meta.format,meta.revision,meta.cursor,meta.epoch,hex(meta.set),meta.count,meta.ledger.map(x=>[x.id,x.method,x.sequence,x.epoch,hex(x.input),hex(x.output)]),meta.acked,meta.pins]));
+                const domain=new TextEncoder().encode('family-mls-v2/meta\\u0000');
+                const message=new Uint8Array(domain.length+4+body.length);message.set(domain);new DataView(message.buffer).setUint32(domain.length,body.length,true);message.set(body,domain.length+4);
+                const k=await crypto.subtle.importKey('raw',new Uint8Array(key),{name:'HMAC',hash:'SHA-256'},false,['sign']);
+                meta.tag=new Uint8Array(await crypto.subtle.sign('HMAC',k,message));
+              }
+              await new Promise((r,j)=>{const q=indexedDB.open(target,2);q.onupgradeneeded=()=>{
+                const m=q.result.createObjectStore('meta');metaKeys.forEach((k,i)=>m.add(k==='state'?meta:metas[i],k));
+                const e=q.result.createObjectStore('entries');entryKeys.forEach((k,i)=>e.add(entries[i],k));
+              };q.onsuccess=()=>{q.result.close();r();};q.onerror=j;});
+            }"""
             a,b=page(0),page(1)
             initial=[init(a,0),init(b,1)];assert all(x['pins'] is None for x in initial)
             op(a,'unconfirmed','create',reject=True);assert reopen(a,0)['public_key']==initial[0]['public_key']
@@ -264,12 +294,28 @@ def main():
                     time.sleep(.05)
                 raise AssertionError('directory reload deadline')
             await_directory(lambda d:len(d['devices'])==2)
+            mismatched=[dict(p) for p in pins];mismatched[1]['device_id']='not-in-directory'
+            before=digest(a,databases[0]);rpc(a,'pin',{'pins':mismatched,'fault':''},reject=True)
+            assert digest(a,databases[0])==before;reopen(a,0)
             before=digest(a,databases[0]);rpc(a,'pin',{'pins':pins,'fault':'abort-after-write'},reject=True)
             assert digest(a,databases[0])==before;assert reopen(a,0)['pins'] is None
             for p in [a,b]:assert rpc(p,'pin',{'pins':pins,'fault':''})['pins']==pins
             assert rpc(a,'pin',{'pins':pins,'fault':''})['revision']==2
             proof['checks']['explicit_pin_atomicity_and_unconfirmed_crypto_denial']=True
             package=op(b,'kp','key_package')['output'];op(a,'create','create')
+            # A KeyPackage from an unpinned third device (memory-only worker) must never be
+            # invited: the pinned-pair check runs inside the Session (apply_trusted).
+            outsider=a.evaluate('''()=>new Promise((resolve,reject)=>{
+              const w=new Worker('./untrusted-worker.js',{type:'module'});
+              w.onmessage=({data})=>{
+                if(data.boot){w.postMessage({id:1,method:'init',argument:'mallory'});return;}
+                if(data.id===1){w.postMessage({id:2,method:'key_package'});return;}
+                if(data.id===2){w.terminate();data.ok?resolve(data.result):reject(new Error('key package'));}
+              };
+            })''')
+            before=digest(a,databases[0]);op(a,'invite-outsider','invite',outsider,reject=True)
+            assert digest(a,databases[0])==before;reopen(a,0)
+            proof['checks']['unpinned_key_package_never_invited']=True
             welcome=op(a,'invite','invite',package)['output']
             before=digest(b,databases[1]);bad=welcome.copy();bad[-1]^=1
             op(b,'join','join',bad,reject=True);assert digest(b,databases[1])==before
@@ -331,15 +377,24 @@ def main():
             changed=[dict(p) for p in pins];changed[1]['device_id']='changed'
             rpc(a,'pin',{'pins':changed,'fault':''},reject=True);assert digest(a,databases[0])==before;reopen(a,0)
             proof['checks']['accepted_pins_cannot_be_replaced']=True
-            # Preserve a cloned corrupt synthetic record; never alter the good DB.
-            corrupt_db=databases[0]+'-corrupt'
-            a.evaluate("""async([source,target])=>{
-              const db=await new Promise((r,j)=>{const q=indexedDB.open(source);q.onsuccess=()=>r(q.result);q.onerror=j;});
-              const record=await new Promise((r,j)=>{const q=db.transaction('device').objectStore('device').get('state');q.onsuccess=()=>r(q.result);q.onerror=j;});db.close();record.pins[1].device_id='corrupted';
-              await new Promise((r,j)=>{const q=indexedDB.open(target,1);q.onupgradeneeded=()=>q.result.createObjectStore('device').add(record,'state');q.onsuccess=()=>{q.result.close();r();};q.onerror=j;});
-            }""",[databases[0],corrupt_db])
-            before_bad=digest(a,corrupt_db);corrupt=page(0);init(corrupt,0,db=corrupt_db,reject=True)
-            assert digest(corrupt,corrupt_db)==before_bad
+            # Outbox pruning in the trusted worker: ack removes, the id stays tombstoned.
+            listed=rpc(a,'status')['operations'];assert 'send' in listed
+            assert 'send' not in rpc(a,'ack',{'ids':['send']})['operations']
+            op(a,'send','encrypt',list(b'synthetic durable trusted text'),reject=True);reopen(a,0)
+            assert rpc(a,'status')['operations']==[x for x in listed if x!='send']
+            before=digest(a,databases[0])
+            proof['checks']['ack_prunes_trusted_ledger_and_tombstones_ids']=True
+            # Preserve cloned corrupt synthetic records; never alter the good DB.
+            # Positive control: a reseal alone reopens, so the resealed-pins case below is
+            # denied by the pin/directory check, not by a tag mismatch.
+            control_db=databases[0]+'-reseal'
+            a.evaluate(CLONE,[databases[0],control_db,'reseal',record_keys[0]])
+            control=page(0);assert init(control,0,db=control_db)['pins']==pins;control.close()
+            for kind in ['pins','pins-reseal','order-reseal']:
+                corrupt_db=databases[0]+'-corrupt-'+kind
+                a.evaluate(CLONE,[databases[0],corrupt_db,kind,record_keys[0]])
+                before_bad=digest(a,corrupt_db);corrupt=page(0);init(corrupt,0,db=corrupt_db,reject=True)
+                assert digest(corrupt,corrupt_db)==before_bad;corrupt.close()
             proof['checks']['corrupt_trust_state_retained_and_denied']=True
             stop();start();assert rpc(a,'status')['pins']==pins
             config['devices'][1]['status']='revoked';config['devices'][1]['device_revision']=2;commit(2,config['people'])
