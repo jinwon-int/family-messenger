@@ -10,18 +10,21 @@ disposable browser profiles. No production service, CF setting or human key chan
 
 ## State and explicit acceptance
 
-`trusted-state-worker.js` uses a new `family-mls-trusted-synthetic-` database namespace
-and version-2 state record. Existing version-1 experiment databases are not opened,
-rewritten or migrated. A new database atomically creates a known initialization
+`trusted-state-worker.js` uses the `family-mls-trusted-synthetic-` database namespace
+and, since #177 M2b-2, the shared storage v2 layout of `session-store.js` (IndexedDB
+version 2: one authenticated `meta` record + one record per Session store entry; see
+PERSISTENCE.md). Older (version-1) experiment databases are retained and denied, not
+opened, rewritten or migrated. A new database atomically creates a known initialization
 marker. Initialization first requires a successful signed room-directory read;
 only an actor with no registered device can generate initial keys from that marker.
 An existing registration plus missing local keys is denied, not silently replaced.
 An unexpected/missing record, old/unknown schema or corrupt state is retained and
 rejected. Database/profile eviction is not a recovery ceremony.
 
-The complete record contains actor, fixed room, accepted public pins or an explicit
-unconfirmed state, group ID, provider snapshot, revision, exact operation ledger,
-receive cursor, epoch and checksum. Initialization releases only the public key
+The durable state contains actor, fixed room, accepted public pins (an authenticated
+`meta` field) or an explicit unconfirmed state, group ID, the Session store entries,
+revision, exact operation ledger with acknowledged-id tombstones, receive cursor and
+epoch. Initialization releases only the public key
 and public status after commit. No group operation is available while unconfirmed.
 The caller must explicitly supply independently accepted own/peer pins; directory
 results never become pins automatically. Pin acceptance checks the generated own
@@ -29,11 +32,20 @@ key and native directory and commits with the full state in one transaction.
 Repeating identical acceptance is idempotent; changed pins are rejected. This is
 still a synthetic ceremony fixture, not a human verification UI.
 
-All local record fields, including pins and room/group identity, are bound by the
-existing synchronous provider SHA-256 checksum. This detects accidental corruption;
-it is not a MAC, key transparency or resistance to a same-origin/host attacker
-rewriting a complete valid record and checksum. Whole-valid-snapshot rollback still
-requires an external witness/reconciliation policy before human use.
+All local fields, including pins and room/group identity, are bound by HMAC-SHA256
+under the record key (`src/record.rs`): per-entry tags, and a `meta` tag over the
+entry count, sorted (key, tag) set digest, ledger and pins. Without the record key
+nothing can be modified undetected; the smoke also shows that an attacker *with* the
+key who rewrites the pins is still denied by the live directory check. Until #177
+M2b-3 the record key is supplied to `init` by the caller. This is not key
+transparency, and whole-database rollback still requires an external
+witness/reconciliation policy before human use.
+
+Operations run on a resident `Session` through `apply_trusted`: before and after
+each operation the group must hold exactly our leaf and, where present, the pinned
+peer (exactly the pair for encrypt/decrypt), and invite/join accept only the pinned
+credential and signing key. A rejection is rolled back inside the session; the
+worker still retires itself on any failure, as before.
 
 ## Admission, staging and retry
 
@@ -79,10 +91,10 @@ fresh admission before continuing. A malformed message follows that retirement
 path too. A lost completion requires reopen/reconciliation, never re-encryption
 or ratchet rollback. Unknown/corrupt records are not repaired automatically.
 
-Limits remain one group, two accepted synthetic actors, 32 ledger operations,
-64 KiB wire, 16 KiB application plaintext, 1 MiB provider snapshot and 2 MiB total
-binary state/ledger, plus bounded public metadata. Pin acceptance is one additional
-revision. No automatic pruning, history restore or import/reset UI exists.
+Limits remain one group and two accepted synthetic actors; 256 ledger operations
+(`ack` prunes delivered items), 512 store entries, 64 KiB wire, 16 KiB application
+plaintext and 2 MiB ledger binary, plus bounded public metadata. Pin acceptance is
+one additional revision. No history restore or import/reset UI exists.
 
 ## Runnable proof
 

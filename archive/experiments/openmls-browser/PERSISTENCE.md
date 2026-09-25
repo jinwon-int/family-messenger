@@ -50,11 +50,14 @@ custom messaging cryptography, or serializing the nonpublic MlsGroup layout.
   two-member state is 31,153 B as a format-1 JSON snapshot and 6,108 B as format-2
   entries. Format-1 states holding a pending commit (string-keyed JSON maps in the
   staged diff) migrate and still merge (`format1_with_pending_commit_migrates`).
-- **Workers**: `web/durable-worker.js` runs on `Session` since M2b-1 (next section).
-  `trusted-state-worker.js`/`native-worker.js` still use the snapshot API (M2b-2);
-  at-rest encryption and the record key from the custody unlock are M2b-3.
+- **Workers**: `web/durable-worker.js` (M2b-1) and `web/trusted-state-worker.js`
+  (M2b-2, pins → `Session.apply_trusted`) run on `Session`; the storage layer below is
+  the shared `web/session-store.js`. `native-worker.js` still uses the snapshot API —
+  it has no CI smoke and references files that do not exist, so it is not migrated
+  blind (to be removed or given a smoke first). At-rest encryption and the record
+  key from the custody unlock are M2b-3.
 
-## Durable worker v2 (#177 M2b-1)
+## Storage v2 in the workers (#177 M2b-1/M2b-2, `web/session-store.js`)
 
 - **Database version 2**, two stores: `meta` holds exactly one record `state`
   (identity, room, signer public key, group id, store format, revision, cursor, epoch,
