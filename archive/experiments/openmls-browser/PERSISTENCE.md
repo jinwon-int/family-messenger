@@ -2,8 +2,10 @@
 
 This extends the library experiment toward the requested messenger integration.
 It is an isolated **synthetic development state adapter**, not human E2EE storage,
-a deployed messenger or CF login. Device keys and local inbox/outbox are stored
-**unencrypted in private disposable browser profiles** for this test. No actual
+a deployed messenger or CF login. In the Session workers (#177 M2b-3b) device keys,
+group state and the local inbox/outbox are **sealed at rest** under a key from a
+synthetic passphrase capsule; the snapshot-API worker (`native-worker.js`) still stores
+them unencrypted. Profiles are private and disposable. No actual
 family identity, native server database or production service is used.
 
 ## Complete candidate state and atomic release
@@ -55,14 +57,34 @@ custom messaging cryptography, or serializing the nonpublic MlsGroup layout.
   the shared `web/session-store.js`. `native-worker.js` still uses the snapshot API —
   it has no CI smoke and references files that do not exist, so it is not migrated
   blind (to be removed or given a smoke first). The record key comes from the custody
-  unlock (M2b-3a); at-rest encryption is M2b-3b.
+  unlock (M2b-3a); every record is sealed at rest (M2b-3b).
 
 ## Storage v2 in the workers (#177 M2b-1/M2b-2, `web/session-store.js`)
 
-- **Database version 2**, two stores: `meta` holds exactly one record `state`
-  (identity, room, signer public key, group id, store format, revision, cursor, epoch,
-  ledger, acknowledged-id tombstones, entry count, set digest, tag); `entries` holds one record per store entry,
-  key `[room, entry key]`, value `{v, t}` with `t = entry_tag(key, room, entry key, v)`.
+- **Database version 2**, two stores: `meta` holds `custody` (the capsule, below) and
+  `state` = `{version: 4, sealed}`: the meta fields (identity, room, signer public key,
+  group id, store format, revision, cursor, epoch, ledger, acknowledged-id tombstones,
+  entry count, set digest, tag) sealed with `custody.js` `sealRecord` (libsodium
+  one-shot XChaCha20-Poly1305 AEAD, fresh random 24-byte nonce per record, additional
+  data `family-mls-meta-v4/<kind>\0identity\0room`). SESSION-RECORDS.md chose one
+  secretstream per record; libsodium-wrappers never frees secretstream state (56 B of
+  WASM memory per record — unbounded in a resident worker), and single-chunk records
+  gain nothing from streaming, so the one-shot AEAD of the same library is used
+  (110,000 seal+open: WASM heap unchanged). `entries` holds one record per store
+  entry: key `[room, index]` with `index = entry_index(auth key, room, entry key)` (an
+  HMAC, so labels, group ids and epochs never appear in keys), value `{e, t}` where `e`
+  seals `key length ‖ entry key ‖ value` (additional data: domain, room, index) and
+  `t = entry_tag(auth key, room, index, e)`; loading re-derives the index from the
+  decrypted key. The smokes assert that no durable or trusted database contains a
+  message plaintext, a store label, an actor/device label, a pin or a public key
+  (mutation-checked: disabling the seal fails exactly that check).
+- **What remains visible at rest**: the room name (in every entry key), the size of
+  every record and their count, which records each operation rewrites (the index is
+  deterministic), and the length of the sealed meta — the ledger is inside it, so the
+  length change between two snapshots reveals each operation's message size. Records
+  deleted or overwritten may persist in the browser's storage files and stay
+  decryptable by anyone who later learns the passphrase. Padding sizes is a possible
+  follow-up; none of this is claimed hidden.
   An operation writes only the entries the session changed — an encrypt writes one
   entry (≈1.1 KB) instead of the whole snapshot — plus the `meta` record, which
   carries the ledger and is rewritten on every operation (reported as `meta_bytes`;

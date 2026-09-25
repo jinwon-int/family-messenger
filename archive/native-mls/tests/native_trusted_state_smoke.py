@@ -263,21 +263,30 @@ def main():
               const src=await new Promise((r,j)=>{const q=indexedDB.open(source);q.onsuccess=()=>r(q.result);q.onerror=j;});
               const read=(s,w)=>new Promise((r,j)=>{const q=src.transaction(s).objectStore(s)[w]();q.onsuccess=()=>r(q.result);q.onerror=j;});
               const metaKeys=await read('meta','getAllKeys'),metas=await read('meta','getAll'),entryKeys=await read('entries','getAllKeys'),entries=await read('entries','getAll');src.close();
-              const meta=metas[metaKeys.indexOf('state')];
+              const stateAt=metaKeys.indexOf('state'),custodyAt=metaKeys.indexOf('custody');
               const hex=b=>Array.from(b,x=>x.toString(16).padStart(2,'0')).join('');
-              if(kind.includes('pins'))meta.pins[1].device_id='corrupted';
-              if(kind.includes('order'))meta.pins.reverse();  // non-canonical order: only the load-time pin check sees it
+              const fromHex=s=>new Uint8Array((s.match(/../g)||[]).map(x=>parseInt(x,16)));
+              const utf8=s=>new TextEncoder().encode(s);
+              if(kind==='meta-flip')metas[stateAt].sealed[metas[stateAt].sealed.length-1]^=1;  // no key: ciphertext bit flip
               if(kind.includes('reseal')){
-                const body=new TextEncoder().encode(JSON.stringify(['family-mls-meta-v3/trusted',meta.version,meta.identity,meta.room,hex(meta.public_key),hex(meta.group_id),meta.format,meta.revision,meta.cursor,meta.epoch,hex(meta.set),meta.count,meta.ledger.map(x=>[x.id,x.method,x.sequence,x.epoch,hex(x.input),hex(x.output)]),meta.acked,meta.pins]));
-                const domain=new TextEncoder().encode('family-mls-v2/meta\\u0000');
+                // Attacker knowing the passphrase: unlock, open the sealed meta (session-store.js
+                // construction reproduced here), change the pins, re-tag and re-seal.
+                const custody=await import('/pkg/custody.js'),stored=metas[custodyAt];
+                const keys=await custody.unlockVault(stored.capsule,stored.vault,passphrase);
+                const ad=utf8('family-mls-meta-v4/trusted\\u0000alice\\u0000family');
+                const meta=JSON.parse(new TextDecoder().decode(custody.openRecord(keys.enc,ad,metas[stateAt].sealed)),
+                  (_,v)=>v&&typeof v==='object'&&!Array.isArray(v)&&'$b' in v?fromHex(v.$b):v);
+                if(kind.includes('pins'))meta.pins[1].device_id='corrupted';
+                if(kind.includes('order'))meta.pins.reverse();  // non-canonical order: only the load-time pin check sees it
+                const body=utf8(JSON.stringify(['family-mls-meta-v4/trusted',meta.version,meta.identity,meta.room,hex(meta.public_key),hex(meta.group_id),meta.format,meta.revision,meta.cursor,meta.epoch,hex(meta.set),meta.count,meta.ledger.map(x=>[x.id,x.method,x.sequence,x.epoch,hex(x.input),hex(x.output)]),meta.acked,meta.pins]));
+                const domain=utf8('family-mls-v2/meta\\u0000');
                 const message=new Uint8Array(domain.length+4+body.length);message.set(domain);new DataView(message.buffer).setUint32(domain.length,body.length,true);message.set(body,domain.length+4);
-                const stored=metas[metaKeys.indexOf('custody')],custody=await import('/pkg/custody.js');
-                const keys=await custody.unlockVault(stored.capsule,stored.vault,passphrase);  // attacker knowing the passphrase
                 const k=await crypto.subtle.importKey('raw',keys.auth,{name:'HMAC',hash:'SHA-256'},false,['sign']);
                 meta.tag=new Uint8Array(await crypto.subtle.sign('HMAC',k,message));
+                metas[stateAt]={version:4,sealed:custody.sealRecord(keys.enc,ad,utf8(JSON.stringify(meta,(_,v)=>v instanceof Uint8Array?{$b:hex(v)}:v)))};
               }
               await new Promise((r,j)=>{const q=indexedDB.open(target,2);q.onupgradeneeded=()=>{
-                const m=q.result.createObjectStore('meta');metaKeys.forEach((k,i)=>m.add(k==='state'?meta:metas[i],k));
+                const m=q.result.createObjectStore('meta');metaKeys.forEach((k,i)=>m.add(metas[i],k));
                 const e=q.result.createObjectStore('entries');entryKeys.forEach((k,i)=>e.add(entries[i],k));
               };q.onsuccess=()=>{q.result.close();r();};q.onerror=j;});
             }"""
@@ -331,6 +340,14 @@ def main():
             assert digest(b,databases[1])==before;reopen(b,1)
             assert op(b,'receive','decrypt',cipher,1)['output']==message
             proof['checks']['trusted_group_tamper_and_abort_preserve_complete_state']=True
+            # At rest (#177 M2b-3b): no message plaintext (bob's ledger caches it), store label,
+            # actor/device label, pin or public key in either trusted database.
+            dump=a.evaluate(DUMP,databases[0])+b.evaluate(DUMP,databases[1])
+            needles=[bytes(message),b'GroupState',b'SignatureKeyPair',b'alice',b'bob']+[p['device_id'].encode() for p in pins]
+            needles+=[bytes.fromhex(p['signing_key']) for p in pins]+[p['fingerprint'].encode() for p in pins]
+            for needle in needles:
+                assert needle.hex() not in dump and needle.decode('latin-1') not in dump,'plaintext at rest'
+            proof['checks']['no_plaintext_pins_labels_or_keys_at_rest']=True
             observer=page(0);init(observer,0)
             lost=op_arg('lost','encrypt',list(b'lost trusted response'),fault='lost-response')
             a.evaluate('arg=>{window.pending=call("device","operation",arg).catch(()=>null)}',lost)
@@ -392,7 +409,7 @@ def main():
             control_db=databases[0]+'-reseal'
             a.evaluate(CLONE,[databases[0],control_db,'reseal',passphrases[0]])
             control=page(0);assert init(control,0,db=control_db)['pins']==pins;control.close()
-            for kind in ['pins','pins-reseal','order-reseal']:
+            for kind in ['meta-flip','pins-reseal','order-reseal']:
                 corrupt_db=databases[0]+'-corrupt-'+kind
                 a.evaluate(CLONE,[databases[0],corrupt_db,kind,passphrases[0]])
                 before_bad=digest(a,corrupt_db);corrupt=page(0);init(corrupt,0,db=corrupt_db,reject=True)

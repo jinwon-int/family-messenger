@@ -1,16 +1,24 @@
 // Storage v2 for Session-backed workers (#177 §3.5, M2b). Shared by
 // durable-worker.js and trusted-state-worker.js so the authenticated layout,
 // set digest, tab reload and commit/abort pairing exist exactly once.
-// Development-only synthetic keys: entries are authenticated (HMAC), not encrypted (M2b-3).
+// At rest (#177 M2b-3b) every entry and the meta record are sealed with the
+// custody encryption subkey (custody.js sealRecord: XChaCha20-Poly1305 AEAD, fresh
+// random nonce per record) and entry keys are replaced by an HMAC index, so state
+// values, messages, labels, group ids and epochs are not readable in IndexedDB.
+// Still visible (documented in PERSISTENCE.md): the room name, record sizes and
+// count, which records an operation rewrites, and the meta length — whose change
+// between snapshots reveals each operation's message size. Development-only custody.
 //
-// Database version 2: store `meta` holds exactly one record `state` (meta version 3
-// since M2b-2: its authenticated encoding is labelled with the worker kind, so a
-// durable meta never verifies as a trusted one and M2b-1 (meta version 2)
-// databases are denied as an older format rather than as corrupt); store
-// `entries` holds one record per Session store entry, key [room, entry key],
-// value {v, t} with t = entry_tag(record key, room, entry key, v). `meta` binds
-// the entry count, a set digest (SHA-256 over (key, tag) sorted by key), the
-// ledger (outbox) and acknowledged-id tombstones, and is itself HMAC-tagged.
+// Database version 2: store `meta` holds `state` and `custody`. `state` is
+// {version: 4, sealed}: the meta fields, sealed with additional data
+// "family-mls-meta-v4/<kind>\0identity\0room" (older meta versions are denied as
+// an older format). Inside, `meta` binds the entry count, a set digest (SHA-256
+// over (index, tag) sorted by index), the ledger (outbox) and acknowledged-id
+// tombstones, and carries its own HMAC tag (labelled with the worker kind).
+// Store `entries` holds one record per Session store entry: key [room, index]
+// with index = entry_index(auth key, room, entry key), value {e, t} where e seals
+// u32 LE key_len ‖ entry key ‖ value (additional data: domain, room, index) and
+// t = entry_tag(auth key, room, index, e).
 export const MAX_BINARY = 2 * 1024 * 1024, MAX_LEDGER = 256, ACKED = 256, TAG = 32;
 export const FAULTS = ['', 'abort-before-write', 'abort-after-write', 'lost-response'];
 export const fail = () => { throw new Error('rejected'); };
@@ -51,24 +59,39 @@ export function unframe(bytes) {
   return changes;
 }
 
-const META_VERSION = 3;
+const META_VERSION = 4;
+const utf8 = s => new TextEncoder().encode(s);
+// Meta fields as JSON; byte arrays as {"$b": hex}. Decoding accepts exactly that shape.
+const encodeMeta = meta => utf8(JSON.stringify(meta, (_, v) => v instanceof Uint8Array ? {$b: hex(v)} : v));
+const decodeMeta = bytes => JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(bytes), (_, v) => {
+  if (v && typeof v === 'object' && !Array.isArray(v) && '$b' in v) {
+    if (!exact(v, ['$b']) || typeof v.$b !== 'string' || !/^([0-9a-f]{2})*$/.test(v.$b)) fail();
+    return fromHex(v.$b);
+  }
+  return v;
+});
 
 /**
  * One device's durable Session state.
- * @param api   wasm exports: Session, entry_tag, entry_verify, meta_tag, meta_verify, staged_checksum
+ * @param api   wasm exports: Session, entry_tag, entry_verify, entry_index, meta_tag, meta_verify, staged_checksum
  * @param opts  {kind ('durable'|'trusted'), identity, room, namePattern, allowed (methods),
+ *               records: {sealRecord, openRecord} (custody.js),
  *               extra: {keys, initial(), bytes(meta) -> JSON-able, valid(meta, session)}}
  *               `extra` adds worker-specific authenticated meta fields (e.g. trust pins).
  */
-export function createStore(api, {kind, identity, room, namePattern, allowed, extra}) {
+export function createStore(api, {kind, identity, room, namePattern, allowed, extra, records}) {
   if (!/^[a-z]{1,16}$/.test(kind)) fail();
-  const {Session, entry_tag, entry_verify, meta_tag, meta_verify, staged_checksum} = api;
+  const {Session, entry_tag, entry_verify, entry_index, meta_tag, meta_verify, staged_checksum} = api;
+  const {sealRecord, openRecord} = records;
+  const META_AD = utf8(`family-mls-meta-v4/${kind}\0${identity}\0${room}`);
+  const ENTRY_AD = utf8(`family-mls-entry-v1\0${room}\0`);
+  const entryAd = index => { const ad = new Uint8Array(ENTRY_AD.length + index.length); ad.set(ENTRY_AD); ad.set(index, ENTRY_AD.length); return ad; };
   const META_KEYS = ['version', 'identity', 'room', 'public_key', 'group_id', 'format', 'revision', 'cursor', 'epoch',
     'set', 'count', 'ledger', 'acked', 'tag', ...extra.keys];
   let db;
-  // Record (HMAC) key derived from the custody root (custody.js) and the exact
-  // custody record it came from; both are fixed by unlock() before any transaction.
-  let key = null, custody = null;
+  // Record (HMAC) key and encryption key derived from the custody root (custody.js)
+  // and the exact custody record they came from; fixed by unlock() before any transaction.
+  let key = null, enc = null, custody = null;
   // Resident state, valid only while `known` equals the durable meta revision.
   // tags: hex(entry key) -> {k, t}. reloads: full rebuilds of the resident session.
   let session = null, known = -1, tags = new Map(), reloads = 0;
@@ -85,7 +108,7 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
   }
   // Fixed field order and byte hex encoding; no host-dependent object serialization.
   function metaBytes(meta) {
-    return new TextEncoder().encode(JSON.stringify(['family-mls-meta-v3/' + kind, meta.version, meta.identity, meta.room,
+    return new TextEncoder().encode(JSON.stringify(['family-mls-meta-v4/' + kind, meta.version, meta.identity, meta.room,
       hex(meta.public_key), hex(meta.group_id), meta.format, meta.revision, meta.cursor, meta.epoch, hex(meta.set),
       meta.count, meta.ledger.map(x => [x.id, x.method, x.sequence, x.epoch, hex(x.input), hex(x.output)]), meta.acked,
       extra.bytes(meta)]));
@@ -142,7 +165,22 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
       };
     });
   }
-  function close() { if (db) { db.close(); db = undefined; } dropSession(); if (key) key.fill(0); key = null; }
+  function close() {
+    if (db) { db.close(); db = undefined; }
+    dropSession();
+    if (key) key.fill(0);
+    if (enc) enc.fill(0);
+    key = enc = null;
+  }
+  // meta/state at rest: {version: META_VERSION, sealed}; the fields are validated after opening.
+  function readMeta(stored) {
+    if (!exact(stored, ['version', 'sealed']) || stored.version !== META_VERSION || !(stored.sealed instanceof Uint8Array) ||
+        stored.sealed.length > 4 * MAX_BINARY) fail();
+    const meta = decodeMeta(openRecord(enc, META_AD, stored.sealed));
+    validMeta(meta);
+    return meta;
+  }
+  const sealMeta = meta => ({version: META_VERSION, sealed: sealRecord(enc, META_AD, encodeMeta(meta))});
 
   // `meta/custody` = {version: 1, vault, capsule}: the age password capsule. It is
   // written once, together with the initial state, and must never change.
@@ -168,11 +206,11 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
       };
     });
   }
-  /** Fix the record key (32 bytes) and the custody record it was derived from. */
-  function unlock(authKey, record) {
-    if (key || !(authKey instanceof Uint8Array) || authKey.length !== 32 ||
-        !validCustody({version: 1, vault: record.vault, capsule: record.capsule})) fail();
-    key = authKey; custody = {version: 1, vault: record.vault, capsule: record.capsule};
+  /** Fix the record keys (32 bytes each) and the custody record they were derived from. */
+  function unlock(authKey, encKey, record) {
+    if (key || !(authKey instanceof Uint8Array) || authKey.length !== 32 || !(encKey instanceof Uint8Array) ||
+        encKey.length !== 32 || !validCustody({version: 1, vault: record.vault, capsule: record.capsule})) fail();
+    key = authKey; enc = encKey; custody = {version: 1, vault: record.vault, capsule: record.capsule};
   }
 
   /**
@@ -182,7 +220,7 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
    * Read/write transactions across tabs serialize the complete read-modify-write.
    */
   function transaction(handler) {
-    if (!db || !key) fail();
+    if (!db || !key || !enc) fail();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(['meta', 'entries'], 'readwrite', {durability: 'strict'});
       const metaStore = tx.objectStore('meta'), entryStore = tx.objectStore('entries');
@@ -206,18 +244,23 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
         const nextTags = new Map(tags);
         let written = 0;
         for (const [k, v] of changes) {
-          const id = hex(k);
-          if (v === null) { if (!nextTags.delete(id)) fail(); entryStore.delete([room, k]); continue; }
-          const t = entry_tag(key, room, k, v);
-          nextTags.set(id, {k, t});
-          entryStore.put({v, t}, [room, k]); written += k.length + v.length;
+          const index = entry_index(key, room, k), id = hex(index);
+          if (v === null) { if (!nextTags.delete(id)) fail(); entryStore.delete([room, index]); continue; }
+          const plain = new Uint8Array(4 + k.length + v.length);
+          new DataView(plain.buffer).setUint32(0, k.length, true); plain.set(k, 4); plain.set(v, 4 + k.length);
+          const e = sealRecord(enc, entryAd(index), plain);
+          plain.fill(0);
+          const t = entry_tag(key, room, index, e);
+          nextTags.set(id, {k: index, t});
+          entryStore.put({e, t}, [room, index]); written += e.length;
         }
         meta.set = setDigest(nextTags); meta.count = nextTags.size; meta.revision++;
         seal(meta);
-        metaStore.put(meta, 'state');
+        const stored = sealMeta(meta);
+        metaStore.put(stored, 'state');
         next = {tags: nextTags, revision: meta.revision};
         // The meta record (ledger included) is rewritten on every operation.
-        return {entries: written, meta: metaBytes(meta).length};
+        return {entries: written, meta: stored.sealed.length};
       }
       // Rebuild the resident session from durable entries (other tab wrote, or first use).
       function load(meta, then) {
@@ -229,10 +272,19 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
             const loaded = new Map(), entries = [];
             keys.forEach((pair, i) => {
               const value = values[i];
-              if (!Array.isArray(pair) || pair.length !== 2 || pair[0] !== room || !exact(value, ['v', 't'])) fail();
-              const k = bytesOf(pair[1]), v = bytesOf(value.v), t = bytesOf(value.t);
-              if (!entry_verify(key, room, k, v, t)) fail();
-              loaded.set(hex(k), {k, t}); entries.push([k, v]);
+              if (!Array.isArray(pair) || pair.length !== 2 || pair[0] !== room || !exact(value, ['e', 't'])) fail();
+              const index = bytesOf(pair[1]), e = bytesOf(value.e), t = bytesOf(value.t);
+              if (!entry_verify(key, room, index, e, t)) fail();
+              const plain = openRecord(enc, entryAd(index), e);
+              const view = new DataView(plain.buffer, plain.byteOffset, plain.byteLength);
+              if (plain.length < 4) fail();
+              const length = view.getUint32(0, true);
+              if (length < 1 || 4 + length > plain.length) fail();
+              const k = plain.slice(4, 4 + length), v = plain.slice(4 + length);
+              plain.fill(0);
+              // The index must be the one this key maps to (no entry moved to another index).
+              if (!equal(entry_index(key, room, k), index)) fail();
+              loaded.set(hex(index), {k: index, t}); entries.push([k, v]);
             });
             if (loaded.size !== meta.count || !equal(setDigest(loaded), meta.set)) fail();
             dropSession();
@@ -325,15 +377,15 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
       const get = metaStore.get('state');
       get.onsuccess = () => {
           try {
-            const meta = get.result, names = metaKeys.result.slice().sort().join(',');
-            if (names === 'state' && isMarker(meta)) {
+            const names = metaKeys.result.slice().sort().join(',');
+            if (names === 'state' && isMarker(get.result)) {
               response = handler(ctx, null);
               return;
             }
             // The capsule this worker unlocked must still be the stored one.
             if (names !== 'custody,state' || !validCustody(stored.result) || stored.result.vault !== custody.vault ||
                 !equal(stored.result.capsule, custody.capsule)) fail();
-            validMeta(meta);
+            const meta = readMeta(get.result);
             const run = () => { try { response = handler(ctx, meta); } catch (_) { abort(); } };
             if (!session || known !== meta.revision) load(meta, run); else run();
           } catch (_) { abort(); }

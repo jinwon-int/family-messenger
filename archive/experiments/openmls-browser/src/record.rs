@@ -18,6 +18,7 @@ use sha2::Sha256;
 
 const ENTRY: &[u8] = b"family-mls-v2/entry\0";
 const META: &[u8] = b"family-mls-v2/meta\0";
+const INDEX: &[u8] = b"family-mls-v2/index\0";
 pub(crate) const TAG_LEN: usize = 32;
 
 fn keyed(key: &[u8], domain: &[u8], parts: &[&[u8]]) -> Result<Hmac<Sha256>, Rejected> {
@@ -46,6 +47,15 @@ pub fn entry_tag(key: &[u8], room: &str, entry_key: &[u8], value: &[u8]) -> Resu
 #[wasm_bindgen]
 pub fn entry_verify(key: &[u8], room: &str, entry_key: &[u8], value: &[u8], tag: &[u8]) -> Result<bool, Rejected> {
     Ok(tag.len() == TAG_LEN && entry_mac(key, room, entry_key, value)?.verify_slice(tag).is_ok())
+}
+
+/// Opaque IndexedDB key for a store entry (#177 M2b-3b): the stored key never
+/// reveals the entry's structure (labels, group ids, epochs). Deterministic, so
+/// updates and deletes find the same record.
+#[wasm_bindgen]
+pub fn entry_index(key: &[u8], room: &str, entry_key: &[u8]) -> Result<Vec<u8>, Rejected> {
+    if room.is_empty() || room.len() > 128 || entry_key.is_empty() { return Err(rejected(())); }
+    Ok(keyed(key, INDEX, &[room.as_bytes(), entry_key])?.finalize().into_bytes().to_vec())
 }
 
 #[wasm_bindgen]
@@ -81,6 +91,12 @@ mod tests {
         assert!(!meta_verify(&key, b"x", &meta[..31]).unwrap(), "short tag");
         assert_eq!(meta_tag(&[1u8; 31], b"x"), Err(Rejected("record key rejected")));
         assert!(entry_tag(&key, "", b"k", b"v").is_err());
+        // The index is its own domain: never equal to a tag over the same parts.
+        let index = entry_index(&key, "room", b"k").unwrap();
+        assert_eq!(index, entry_index(&key, "room", b"k").unwrap(), "deterministic");
+        assert_ne!(index, entry_index(&key, "room", b"k2").unwrap());
+        assert_ne!(index, entry_index(&key, "room2", b"k").unwrap());
+        assert_ne!(index, entry_tag(&key, "room", b"k", b"").unwrap());
     }
 
     /// Matches the documented construction computed independently (what the
