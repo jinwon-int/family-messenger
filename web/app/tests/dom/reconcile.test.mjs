@@ -176,3 +176,50 @@ test('switching rooms still rebuilds the room pane', () => {
   assert.ok(q(app, '.timeline') !== timeline);
   assert.equal(q(app, '.room-screen').dataset.roomId, '!b:x');
 });
+
+// #194 후속(2026-09-25 오너 실사용): 대화 상대를 바꾸면(소교 → 육손) 오른쪽 파일보관함이 다시 로드됐다.
+// 방 전환은 전체 재구성 경로라 main.shell을 통째 바꿨다. 보관함은 방과 무관하므로 제자리에 둔다.
+test('switching rooms, opening a room from the list, and going back keep the filebox iframe', () => {
+  const app = root();
+  const inRoom = (index, overrides = {}) => {
+    const next = props(overrides);
+    next.room = { ...next.room, room: rooms()[index], timeline: [{ eventId: `$r${index}`, name: '가족', kind: 'text', body: `방 ${index}`, ts: now }] };
+    return next;
+  };
+  const listOnly = () => ({ ...props(), room: null });
+  ui.renderShell(app, listOnly());
+  const frame = q(app, '.filebox-frame iframe');
+  const boxPane = q(app, '.pane-box');
+  ui.renderShell(app, inRoom(0));
+  same(q(app, '.filebox-frame iframe'), frame, '목록에서 방을 열 때 파일보관함이 다시 로드됐다');
+  const timeline = q(app, '.timeline');
+  const untouched = q(app, '.room-item[data-room-id="!b:x"]');
+  ui.renderShell(app, inRoom(1));
+  same(q(app, '.filebox-frame iframe'), frame, '대화 상대를 바꿀 때 파일보관함이 다시 로드됐다');
+  same(q(app, '.pane-box'), boxPane, '보관함 pane이 교체됐다');
+  assert.ok(q(app, '.timeline') !== timeline, '다른 방의 타임라인은 새로 그려야 한다');
+  assert.equal(q(app, '.room-screen').dataset.roomId, '!b:x');
+  assert.match(q(app, '.timeline').textContent, /방 1/);
+  // 선택 표시(aria-current)가 옮겨 간 두 항목만 바뀐다 — 여기서는 !b가 새로 선택돼 바뀐다.
+  assert.equal(q(app, '.room-item[data-room-id="!b:x"]').getAttribute('aria-current'), 'true');
+  assert.ok(untouched, '방 항목이 있어야 한다');
+  ui.renderShell(app, listOnly());
+  same(q(app, '.filebox-frame iframe'), frame, '방에서 목록으로 돌아갈 때 파일보관함이 다시 로드됐다');
+  assert.equal(app.querySelectorAll('main.shell').length, 1);
+  assert.deepEqual([...q(app, 'main.shell').children].map((node) => node.classList[1]), ['pane-list', 'pane-room', 'pane-box']);
+});
+
+test('an open sheet survives a room switch', () => {
+  const app = root();
+  const inRoom = (index) => {
+    const next = props();
+    next.room = { ...next.room, room: rooms()[index] };
+    return next;
+  };
+  ui.renderShell(app, inRoom(0));
+  const close = ui.openMenuSheet(app, { items: [{ label: '설정', onClick() {} }], onClose() {} });
+  const dialog = q(app, 'dialog.sheet');
+  ui.renderShell(app, inRoom(1));
+  same(q(app, 'dialog.sheet'), dialog, '방 전환에 시트가 사라졌다');
+  close();
+});

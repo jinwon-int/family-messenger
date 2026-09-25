@@ -115,7 +115,11 @@ test('ui.js renderShell은 같은 방이면 composer-wrap을 교체하지 않는
   assert.match(fn, /existingScreen\.dataset\.roomId === \(room\.room\.roomId \?\? ''\)/);
   assert.match(fn, /existingScreen\.querySelector\('\.composer-wrap'\)/);
   assert.match(fn, /built\.mount\(\{ keepComposer: true \}\)/);
-  assert.ok(fn.indexOf('built.mount({ keepComposer: true })') < fn.indexOf('existingShell.replaceWith(shell)'), '부분 갱신 경로가 전체 재구성보다 먼저 와야 한다');
+  const roomSwitch = fn.indexOf('oldRoomPane.replaceWith(roomPane)');
+  assert.ok(roomSwitch > 0, '방 전환은 방 pane만 교체해야 한다');
+  assert.ok(fn.indexOf('built.mount({ keepComposer: true })') < roomSwitch, '부분 갱신 경로가 전체 재구성보다 먼저 와야 한다');
+  // #194 후속: 방 전환에서 main.shell을 통째 바꾸면 보관함(파일보관함 iframe)이 다시 로드된다.
+  assert.equal(fn.indexOf('existingShell.replaceWith('), -1, '방 전환이 main.shell을 통째로 교체하면 안 된다');
   // 시트 회귀 방지(2026-09-17 실기기): 전체 재구성이 열린 <dialog>를 떼었다 붙이면 top layer에서 빠져
   // "첨부처럼" 인라인으로 깔린다. root.replaceChildren()로 전부 지우는 경로가 있으면 안 된다.
   assert.equal(fn.indexOf('root.replaceChildren()'), -1, '전체 재구성은 root를 통째로 비우면 안 된다');
