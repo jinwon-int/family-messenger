@@ -36,8 +36,9 @@ All local fields, including pins and room/group identity, are bound by HMAC-SHA2
 under the record key (`src/record.rs`): per-entry tags, and a `meta` tag over the
 entry count, sorted (key, tag) set digest, ledger and pins. Without the record key
 nothing can be modified undetected; the smoke also shows that an attacker *with* the
-key who rewrites the pins is still denied by the live directory check. Until #177
-M2b-3 the record key is supplied to `init` by the caller. This is not key
+key who rewrites the pins is still denied by the live directory check. The record key
+is derived from the device's custody capsule, unlocked with the `init` passphrase
+(#177 M2b-3a, see PERSISTENCE.md); a registered device never gets a new capsule. This is not key
 transparency, and whole-database rollback still requires an external
 witness/reconciliation policy before human use.
 

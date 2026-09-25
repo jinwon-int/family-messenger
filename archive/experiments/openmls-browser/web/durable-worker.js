@@ -1,8 +1,10 @@
-// Development-only synthetic keys in IndexedDB. No production key protection:
-// entries are authenticated (HMAC) but not encrypted until the custody stack (#177 M2b-3).
+// Development-only synthetic keys in IndexedDB. The record key comes from the
+// custody capsule (./pkg/custody.js, #177 M2b-3a); entries are authenticated, not
+// yet encrypted (M2b-3b).
 // Storage layout, authentication and tab reload: ./session-store.js (see PERSISTENCE.md).
 import init, * as api from './pkg/family_mls_browser_experiment.js';
-import {createStore, exact, fail, input} from './session-store.js';
+import {createStore, exact, fail} from './session-store.js';
+import {createVault, unlockVault, validPassphrase, sodium} from './pkg/custody.js';
 const wasm = await init();
 const allowed = new Set(['key_package', 'create', 'invite', 'join', 'encrypt', 'decrypt', 'remove', 'commit']);
 let store;
@@ -27,6 +29,15 @@ function handle(operation, argument) {
     return ctx.operation(meta, argument, bytes => ctx.session.apply(argument.method, bytes));
   });
 }
+// Custody runs outside any IndexedDB transaction (scrypt is asynchronous): a new
+// database gets a fresh capsule, an existing one must open with this passphrase.
+async function unlock(opened, passphrase) {
+  const {fresh, custody} = await opened.readCustody();
+  const vault = fresh ? await createVault(passphrase) : null;
+  const keys = fresh ? vault.keys : await unlockVault(custody.capsule, custody.vault, passphrase);
+  sodium.memzero(keys.enc);  // at-rest encryption key: used from M2b-3b
+  opened.unlock(keys.auth, fresh ? vault : custody);
+}
 // A timed-out caller must close the worker and reopen the DB, then reconcile its
 // exact immutable operation ID.
 let queue = Promise.resolve();
@@ -35,16 +46,21 @@ self.onmessage = ({data: {id, method, argument}}) => {
     try {
       let result;
       if (method === 'init') {
-        if (store || !exact(argument, ['identity', 'database', 'room', 'record_key']) ||
+        if (store || !exact(argument, ['identity', 'database', 'room', 'passphrase']) ||
             typeof argument.identity !== 'string' || !/^[a-zA-Z0-9_.:-]{1,64}$/.test(argument.identity) ||
             typeof argument.room !== 'string' || !/^[a-z0-9-]{1,64}$/.test(argument.room)) fail();
-        const key = input(argument.record_key, 32);
-        if (key.length !== 32) fail();
-        const opened = createStore(api, {kind: 'durable', identity: argument.identity, room: argument.room, key, allowed,
+        const passphrase = validPassphrase(argument.passphrase);
+        const opened = createStore(api, {kind: 'durable', identity: argument.identity, room: argument.room, allowed,
           namePattern: /^family-mls-synthetic-[a-z0-9-]{1,64}$/, extra: noExtra});
         await opened.open(argument.database);
-        store = opened;
-        result = await handle('initialize');
+        try {
+          await unlock(opened, passphrase);
+          store = opened;
+          result = await handle('initialize');
+        } catch (error) {
+          // Includes losing a fresh-database race to another tab: close and forget the key.
+          opened.close(); store = undefined; throw error;
+        }
       } else {
         if (!store || !['status', 'ack', 'operation'].includes(method)) fail();
         result = await handle(method, argument);

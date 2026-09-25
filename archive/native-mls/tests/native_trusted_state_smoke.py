@@ -111,7 +111,7 @@ def main():
         if name=='main.js':raw=raw.replace(b"durable ? './durable-worker.js' : './worker.js'",b"'./trusted-state-worker.js'")
         assets['/' if name=='index.html' else '/'+name]=raw
     assets['/untrusted-worker.js']=(root/'experiments/openmls-browser/web/worker.js').read_bytes()
-    for name in ['family_mls_browser_experiment.js','family_mls_browser_experiment_bg.wasm']:
+    for name in ['family_mls_browser_experiment.js','family_mls_browser_experiment_bg.wasm','custody.js']:
         file=args.bundle/name
         st=file.lstat();assert not file.is_symlink() and st.st_nlink==1 and st.st_size<4*1024*1024
         assets['/pkg/'+name]=file.read_bytes()
@@ -213,8 +213,8 @@ def main():
             contexts=[pw.chromium.launch_persistent_context(str(p)) for p in profiles]
             proof['browser']=contexts[0].browser.version;proof['max_worker_linear_memory_bytes']=0
             databases=['family-mls-trusted-synthetic-alice','family-mls-trusted-synthetic-bob']
-            # Stand-in for the custody-unlock-derived record key (#177 M2b-3). Never logged.
-            record_keys=[list(secrets.token_bytes(32)) for _ in databases]
+            # Custody passphrases (#177 M2b-3a): the record key is derived from the capsule. Never logged.
+            passphrases=[secrets.token_urlsafe(32) for _ in databases]
             def cookie(index,value=None):
                 contexts[index].add_cookies([{'name':'synthetic_edge','value':value or cookies[index],'url':url,'httpOnly':True,'sameSite':'Strict'}])
             for i in range(2):cookie(i)
@@ -228,7 +228,7 @@ def main():
                 assert r['ok'] is True,(method,r)
                 return r.get('result')
             def init(p,index,room='family',db=None,actor=None,reject=False):
-                return rpc(p,'init',{'identity':actor or ['alice','bob'][index],'room':room,'database':db or databases[index],'record_key':record_keys[index]},reject)
+                return rpc(p,'init',{'identity':actor or ['alice','bob'][index],'room':room,'database':db or databases[index],'passphrase':passphrases[index]},reject)
             def op_arg(id,method,data=None,seq=0,fault=''):
                 return {'id':id,'method':method,'bytes':data or [],'sequence':seq,'fault':fault}
             def op(p,id,method,data=None,seq=0,fault='',reject=False):
@@ -259,7 +259,7 @@ def main():
                 return hashlib.sha256(p.evaluate(DUMP,db).encode()).hexdigest()
             # Clone a database; 'pins' edits the pinned peer device id, 'reseal' re-tags meta
             # with the record key exactly as src/record.rs does (an attacker holding the key).
-            CLONE="""async([source,target,kind,key])=>{
+            CLONE="""async([source,target,kind,passphrase])=>{
               const src=await new Promise((r,j)=>{const q=indexedDB.open(source);q.onsuccess=()=>r(q.result);q.onerror=j;});
               const read=(s,w)=>new Promise((r,j)=>{const q=src.transaction(s).objectStore(s)[w]();q.onsuccess=()=>r(q.result);q.onerror=j;});
               const metaKeys=await read('meta','getAllKeys'),metas=await read('meta','getAll'),entryKeys=await read('entries','getAllKeys'),entries=await read('entries','getAll');src.close();
@@ -271,7 +271,9 @@ def main():
                 const body=new TextEncoder().encode(JSON.stringify(['family-mls-meta-v3/trusted',meta.version,meta.identity,meta.room,hex(meta.public_key),hex(meta.group_id),meta.format,meta.revision,meta.cursor,meta.epoch,hex(meta.set),meta.count,meta.ledger.map(x=>[x.id,x.method,x.sequence,x.epoch,hex(x.input),hex(x.output)]),meta.acked,meta.pins]));
                 const domain=new TextEncoder().encode('family-mls-v2/meta\\u0000');
                 const message=new Uint8Array(domain.length+4+body.length);message.set(domain);new DataView(message.buffer).setUint32(domain.length,body.length,true);message.set(body,domain.length+4);
-                const k=await crypto.subtle.importKey('raw',new Uint8Array(key),{name:'HMAC',hash:'SHA-256'},false,['sign']);
+                const stored=metas[metaKeys.indexOf('custody')],custody=await import('/pkg/custody.js');
+                const keys=await custody.unlockVault(stored.capsule,stored.vault,passphrase);  // attacker knowing the passphrase
+                const k=await crypto.subtle.importKey('raw',keys.auth,{name:'HMAC',hash:'SHA-256'},false,['sign']);
                 meta.tag=new Uint8Array(await crypto.subtle.sign('HMAC',k,message));
               }
               await new Promise((r,j)=>{const q=indexedDB.open(target,2);q.onupgradeneeded=()=>{
@@ -388,11 +390,11 @@ def main():
             # Positive control: a reseal alone reopens, so the resealed-pins case below is
             # denied by the pin/directory check, not by a tag mismatch.
             control_db=databases[0]+'-reseal'
-            a.evaluate(CLONE,[databases[0],control_db,'reseal',record_keys[0]])
+            a.evaluate(CLONE,[databases[0],control_db,'reseal',passphrases[0]])
             control=page(0);assert init(control,0,db=control_db)['pins']==pins;control.close()
             for kind in ['pins','pins-reseal','order-reseal']:
                 corrupt_db=databases[0]+'-corrupt-'+kind
-                a.evaluate(CLONE,[databases[0],corrupt_db,kind,record_keys[0]])
+                a.evaluate(CLONE,[databases[0],corrupt_db,kind,passphrases[0]])
                 before_bad=digest(a,corrupt_db);corrupt=page(0);init(corrupt,0,db=corrupt_db,reject=True)
                 assert digest(corrupt,corrupt_db)==before_bad;corrupt.close()
             proof['checks']['corrupt_trust_state_retained_and_denied']=True

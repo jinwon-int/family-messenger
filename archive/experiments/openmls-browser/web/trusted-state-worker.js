@@ -1,10 +1,12 @@
-// Development-only synthetic keys in IndexedDB. No production key protection:
-// entries are authenticated (HMAC) but not encrypted until the custody stack (#177 M2b-3).
+// Development-only synthetic keys in IndexedDB. The record key comes from the
+// custody capsule (./pkg/custody.js, #177 M2b-3a); entries are authenticated, not
+// yet encrypted (M2b-3b).
 // Storage layout, authentication and tab reload: ./session-store.js (see PERSISTENCE.md).
 // Trust: a pinned pair (independent ceremony) that must match the live directory
 // on every transaction; the Session enforces the pinned membership in Rust.
 import init, * as api from './pkg/family_mls_browser_experiment.js';
-import {createStore, exact, fail, input, hex, fromHex} from './session-store.js';
+import {createStore, exact, fail, hex, fromHex} from './session-store.js';
+import {createVault, unlockVault, validPassphrase, sodium} from './pkg/custody.js';
 import {normalizePins, readDirectory, matchDirectory} from './trust-directory.js';
 const wasm = await init();
 const allowed = new Set(['key_package', 'create', 'invite', 'join', 'encrypt', 'decrypt']);
@@ -84,17 +86,23 @@ self.onmessage = ({data}) => {
       if (retired) fail();
       let result;
       if (method === 'init') {
-        if (store || !exact(argument, ['identity', 'room', 'database', 'record_key']) ||
+        if (store || !exact(argument, ['identity', 'room', 'database', 'passphrase']) ||
             typeof argument.identity !== 'string' || !/^[a-zA-Z0-9_.:-]{1,64}$/.test(argument.identity) ||
             typeof argument.room !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(argument.room)) fail();
-        const key = input(argument.record_key, 32);
-        if (key.length !== 32) fail();
+        const passphrase = validPassphrase(argument.passphrase);
         identity = argument.identity; room = argument.room;
         const directory = await readDirectory(identity, room);
-        const opened = createStore(api, {kind: 'trusted', identity, room, key, allowed, extra: pinsExtra,
+        const opened = createStore(api, {kind: 'trusted', identity, room, allowed, extra: pinsExtra,
           namePattern: /^family-mls-trusted-synthetic-[a-z0-9-]{1,64}$/});
         await opened.open(argument.database);
         store = opened;
+        // Custody outside any transaction; a registered device never gets a new capsule.
+        const {fresh, custody} = await opened.readCustody();
+        if (fresh && directory.devices.some(x => x.actor === identity)) fail();
+        const vault = fresh ? await createVault(passphrase) : null;
+        const keys = fresh ? vault.keys : await unlockVault(custody.capsule, custody.vault, passphrase);
+        sodium.memzero(keys.enc);  // at-rest encryption key: used from M2b-3b
+        opened.unlock(keys.auth, fresh ? vault : custody);
         result = await handle('initialize', undefined, directory);
       } else {
         if (!store || !['status', 'pin', 'ack', 'operation'].includes(method)) fail();

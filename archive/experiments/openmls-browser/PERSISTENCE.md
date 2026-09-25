@@ -54,8 +54,8 @@ custom messaging cryptography, or serializing the nonpublic MlsGroup layout.
   (M2b-2, pins → `Session.apply_trusted`) run on `Session`; the storage layer below is
   the shared `web/session-store.js`. `native-worker.js` still uses the snapshot API —
   it has no CI smoke and references files that do not exist, so it is not migrated
-  blind (to be removed or given a smoke first). At-rest encryption and the record
-  key from the custody unlock are M2b-3.
+  blind (to be removed or given a smoke first). The record key comes from the custody
+  unlock (M2b-3a); at-rest encryption is M2b-3b.
 
 ## Storage v2 in the workers (#177 M2b-1/M2b-2, `web/session-store.js`)
 
@@ -68,15 +68,30 @@ custom messaging cryptography, or serializing the nonpublic MlsGroup layout.
   carries the ledger and is rewritten on every operation (reported as `meta_bytes`;
   bounded by the ledger cap, so acknowledge promptly). Moving ledger items into their
   own records is a possible follow-up.
-- **Authentication** (`src/record.rs`, HMAC-SHA256 under a 32-byte record key given
-  to `init`): every entry is tagged; `meta` carries the entry count and a set digest —
+- **Authentication** (`src/record.rs`, HMAC-SHA256 under a 32-byte record key derived
+  from the custody capsule): every entry is tagged; `meta` carries the entry count and a set digest —
   SHA-256 over all `(key, tag)` pairs sorted by key — and `meta` itself is tagged. So
   a modified, added, removed or swapped entry, a mix of old and new validly tagged
   entries, and any modified meta/ledger field are detected at load. (An XOR of tags
   was rejected in review: it is linear, so enough old entry versions can be combined
   to match without the key.) Each operation hashes ≤512 `(key, tag)` pairs. A whole older database restored as a unit is **not**
-  detected (no external witness). Until M2b-3 the record key is supplied by the
-  caller (the smoke keeps it in memory); a wrong key is denied without mutation.
+  detected (no external witness). The record key is derived from the custody capsule (below).
+- **Custody** (#177 M2b-3a, `custody/custody.js` → `<bundle>/custody.js`): `init` takes a
+  passphrase, not a key. A new database gets a fresh 32-byte root key + vault id sealed
+  in an age password capsule (default scrypt logN 18, never reduced), stored as
+  `meta/custody` in the same transaction as the initial state (marker CAS). An existing
+  database is unlocked outside any transaction (scrypt is asynchronous); only a single
+  default-work scrypt recipient is admitted before the KDF. The record (HMAC) key is
+  `crypto_kdf_derive_from_key(…, "fmlsvlt1", root)`; a second subkey is reserved for
+  at-rest encryption (M2b-3b). Every transaction re-checks that the stored capsule is the
+  one this worker unlocked. Wrong passphrase, corrupted capsule, a swapped capsule
+  (another valid capsule under the same passphrase), the same payload re-sealed at a
+  reduced work factor, a relabelled vault id, and a capsule replaced under a worker
+  that already unlocked are all denied without mutation. Initialization costs one
+  scrypt per `init` (≈3.4 s max in the smoke); `web/main.js` gives `init` a 60 s
+  deadline (other calls 10 s) instead of ever lowering the KDF.
+  Two tabs initializing one fresh database race on the `meta/custody` add: exactly
+  one wins; the loser closes its store and forgets its key.
 - **Resident session and tabs**: the worker keeps the `Session` between operations.
   Every transaction first reads `meta`; if its revision differs from the one the
   session was built from (another tab wrote, or first use) the session is rebuilt
@@ -89,8 +104,9 @@ custom messaging cryptography, or serializing the nonpublic MlsGroup layout.
   ack reply) is rejected instead of encrypting again; ids must never be reused at
   all (use random ids). A full ledger rejects new operations until acknowledged;
   exact retries of retained items remain available.
-- **Smoke** (`native_mls_persistence_smoke.py`, 18 checks): the original 14 on the v2
-  layout plus wrong record key, legacy v1 database, stale-tab rebuild (exactly one
+- **Smoke** (`native_mls_persistence_smoke.py`, 20 checks): the original 14 on the v2
+  layout plus wrong passphrase, corrupted/swapped/weakened/relabelled custody capsule,
+  capsule replaced under a live worker, legacy v1 database, stale-tab rebuild (exactly one
   rebuild after another tab wrote, none for same-tab operations) and ack/tombstones.
   Load verification is exercised by rolling one entry back after an encrypt (value
   only → entry tag; value+tag → set digest); a WebCrypto reseal is the positive

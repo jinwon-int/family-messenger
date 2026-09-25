@@ -21,3 +21,4 @@ web/app/config.json
 # native E2EE track WASM bundle (built by archive/experiments/openmls-browser/build.sh)
 archive/experiments/openmls-browser/pkg/
 archive/experiments/openmls-browser/target/
+archive/experiments/openmls-browser/node_modules/

@@ -95,6 +95,15 @@ authentication, `src/record.rs`; already in the graph via the provider) and getr
 entropy bridge. The newer getrandom also needs the
 explicit wasm_js backend flag. No unsafe/custom entropy fallback is installed.
 
+The custody bundle (`custody/custody.js` → `<bundle>/custody.js`, #177 M2b-3) comes from
+`package.json`/`package-lock.json`: age-encryption 0.3.1 and libsodium-wrappers 0.8.4
+(+ esbuild 0.27.2 to bundle). The resolved tree is identical to
+`../device-keystore/package-lock.json`. Its notices (age BSD-3-Clause, noble/scure MIT,
+libsodium ISC) are in `custody/THIRD-PARTY-NOTICES.txt`, shipped next to the bundle as
+`custody-notices.txt`. CI runs `npm ci --ignore-scripts`; build.sh then fails closed
+unless esbuild is 0.27.2 and `node_modules` matches the lock (versions + integrity),
+and bundles from its own directory so the output does not depend on the caller's cwd.
+
 [dependencies.json](dependencies.json) records exact versions, checksums, enabled
 features, directness and license expressions. `THIRD-PARTY-NOTICES.txt` retains
 packaged notices and, when a published crate omitted its workspace license file,

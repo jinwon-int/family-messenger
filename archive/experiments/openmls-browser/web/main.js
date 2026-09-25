@@ -15,9 +15,12 @@ window.call = (name, method, argument) => new Promise((resolve, reject) => {
   const worker = workers.get(name);
   if (!worker) return reject(new Error('missing worker'));
   const id = ++serial;
+  // `init` of a durable worker runs one custody scrypt (logN 18, #177 M2b-3): about
+  // 3 s on one desktop core, several times that on a slow phone. Never lower the KDF;
+  // give that call its own deadline instead.
   const timer = setTimeout(() => {
     worker.terminate(); workers.delete(name); cleanup(); reject(new Error('worker deadline'));
-  }, 10000);
+  }, method === 'init' ? 60000 : 10000);
   const onmessage = ({data}) => {
     if (data.id !== id) return;
     cleanup(); resolve(data);
