@@ -46,8 +46,8 @@ def main():
         for old, new in replacements:
             assert assets[name].count(old) == 1, 'test instrumentation boundary changed'
             assets[name] = assets[name].replace(old, new)
-    proof = {'synthetic_only': True, 'keys_at_rest': 'unencrypted synthetic IndexedDB only; entries and meta HMAC-authenticated (storage v2)',
-             'storage': 'v2: resident Session, one IDB record per changed store entry + authenticated meta (#177 M2b-1)',
+    proof = {'synthetic_only': True, 'keys_at_rest': 'sealed (secretstream) under a synthetic passphrase capsule; HMAC-indexed keys (#177 M2b-3b)',
+             'storage': 'v2: resident Session, one IDB record per changed store entry + sealed authenticated meta (#177 M2b)',
              'checks': {}, 'max_worker_linear_memory_bytes': 0,
              'original_assets_sha256': original_hashes,
              'test_instrumentation': 'served worker callback hold after put; served page marker; source unchanged',
@@ -200,6 +200,14 @@ def main():
             assert again['replay'] and again['revision'] == received['revision']
             op(bob, 'new-id-replay', 'decrypt', cipher, sequence=2, reject=True)
             proof['checks']['tamper_abort_and_original_exactly_once'] = True
+            # At rest (#177 M2b-3b): neither database holds a plaintext message (bob's ledger
+            # caches the decrypted text), a store label, an actor label or a public key.
+            dump = alice.evaluate(DUMP, databases['alice']) + bob.evaluate(DUMP, databases['bob'])
+            needles = [bytes(text), b'GroupState', b'SignatureKeyPair', b'MessageSecrets', b'alice', b'bob',
+                       bytes(rpc(alice, 'status')['public_key']), bytes(rpc(bob, 'status')['public_key'])]
+            for needle in needles:
+                assert needle.hex() not in dump and needle.decode('latin-1') not in dump, 'plaintext at rest'
+            proof['checks']['no_plaintext_labels_or_keys_at_rest'] = True
 
             # Read/write IDB transactions across connections provide the serialization.
             observer = page(contexts[0]); init(observer, 'alice')
@@ -274,28 +282,37 @@ def main():
               const metaKeys = await read('meta','getAllKeys'), metas = await read('meta','getAll');
               const entryKeys = await read('entries','getAllKeys'), entries = await read('entries','getAll');
               src.close();
-              const meta = metas[metaKeys.indexOf('state')], custodyAt = metaKeys.indexOf('custody');
+              const stateAt = metaKeys.indexOf('state'), custodyAt = metaKeys.indexOf('custody');
               const custody = await import('/pkg/custody.js');
               const hex = b => Array.from(b, x => x.toString(16).padStart(2,'0')).join('');
-              const reseal = async () => {  // what an attacker holding the record key could do (src/record.rs construction)
-                const body = new TextEncoder().encode(JSON.stringify(['family-mls-meta-v3/durable', meta.version, meta.identity, meta.room,
+              const fromHex = s => new Uint8Array((s.match(/../g) || []).map(x => parseInt(x, 16)));
+              const utf8 = s => new TextEncoder().encode(s);
+              // An attacker who knows the passphrase: unlock the capsule, open the sealed meta
+              // (session-store.js construction, reproduced here), change it, re-tag and re-seal.
+              const metaAd = identity => utf8(`family-mls-meta-v4/durable\\u0000${identity}\\u0000main`);
+              const keysOf = () => custody.unlockVault(metas[custodyAt].capsule, metas[custodyAt].vault, passphrase);
+              const openMeta = keys => JSON.parse(new TextDecoder().decode(custody.openRecord(keys.enc, metaAd('alice'), metas[stateAt].sealed)),
+                (_, v) => v && typeof v === 'object' && !Array.isArray(v) && '$b' in v ? fromHex(v.$b) : v);
+              const resealMeta = async (keys, meta) => {
+                const body = utf8(JSON.stringify(['family-mls-meta-v4/durable', meta.version, meta.identity, meta.room,
                   hex(meta.public_key), hex(meta.group_id), meta.format, meta.revision, meta.cursor, meta.epoch, hex(meta.set),
-                  meta.count, meta.ledger.map(x => [x.id, x.method, x.sequence, x.epoch, hex(x.input), hex(x.output)]), meta.acked, null]));  // null: durable worker has no extra meta
-                const domain = new TextEncoder().encode('family-mls-v2/meta\\u0000');
+                  meta.count, meta.ledger.map(x => [x.id, x.method, x.sequence, x.epoch, hex(x.input), hex(x.output)]), meta.acked, null]));  // null: no extra meta
+                const domain = utf8('family-mls-v2/meta\\u0000');
                 const message = new Uint8Array(domain.length + 4 + body.length);
                 message.set(domain); new DataView(message.buffer).setUint32(domain.length, body.length, true); message.set(body, domain.length + 4);
-                const stored = metas[custodyAt];  // an attacker who knows the passphrase derives the record key
-                const keys = await custody.unlockVault(stored.capsule, stored.vault, passphrase);
                 const k = await crypto.subtle.importKey('raw', keys.auth, {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
                 meta.tag = new Uint8Array(await crypto.subtle.sign('HMAC', k, message));
+                const plain = utf8(JSON.stringify(meta, (_, v) => v instanceof Uint8Array ? {$b: hex(v)} : v));
+                metas[stateAt] = {version: 4, sealed: custody.sealRecord(keys.enc, metaAd(meta.identity), plain)};
               };
-              const item = meta.ledger.find(x => x.id === 'send1');
-              if (kind === 'actor') { meta.identity = 'bob'; await reseal(); }
-              else if (kind === 'reseal') await reseal();
-              else if (kind === 'input' || kind === 'output') item[kind][0] ^= 1;
-              else if (kind === 'id') item.id = 'changed-id';
-              else if (kind === 'tag') meta.tag[0] ^= 1;
-              else if (kind === 'entry') entries[0].v[0] ^= 1;
+              if (kind === 'actor' || kind === 'reseal') {
+                const keys = await keysOf(), meta = openMeta(keys);
+                if (kind === 'actor') meta.identity = 'bob';
+                await resealMeta(keys, meta);
+              }
+              else if (kind === 'meta-flip') metas[stateAt].sealed[metas[stateAt].sealed.length - 1] ^= 1;
+              else if (kind === 'tag') entries[0].t[0] ^= 1;
+              else if (kind === 'entry') entries[0].e[entries[0].e.length - 1] ^= 1;
               else if (kind === 'capsule-flip') metas[custodyAt].capsule[metas[custodyAt].capsule.length - 1] ^= 1;
               else if (kind === 'capsule-swap') {  // another valid capsule under the same passphrase
                 const other = await custody.createVault(passphrase);
@@ -309,21 +326,21 @@ def main():
               }
               else if (kind === 'vault-label') metas[custodyAt] = {...metas[custodyAt], vault: 'f'.repeat(32)};
               else if (kind === 'rollback-value' || kind === 'rollback-entry') {
-                // One entry back to its value (and tag) from before the last encrypt.
+                // One entry back to its sealed value (and tag) from before the last encrypt.
                 const old = new Map(window.entrySnapshot.keys.map((k, i) => [hex(new Uint8Array(k[1])), window.entrySnapshot.values[i]]));
-                const i = entryKeys.findIndex((k, n) => { const o = old.get(hex(new Uint8Array(k[1]))); return o && hex(o.v) !== hex(entries[n].v); });
+                const i = entryKeys.findIndex((k, n) => { const o = old.get(hex(new Uint8Array(k[1]))); return o && hex(o.e) !== hex(entries[n].e); });
                 if (i < 0) throw new Error('no changed entry to roll back');
                 const o = old.get(hex(new Uint8Array(entryKeys[i][1])));
-                entries[i] = kind === 'rollback-value' ? {v: o.v, t: entries[i].t} : o;
+                entries[i] = kind === 'rollback-value' ? {e: o.e, t: entries[i].t} : o;
               }
               let skip = kind === 'missing' ? 0 : -1;
               await new Promise((r,j)=>{const q=indexedDB.open(target,2);q.onupgradeneeded=()=>{
-                const m=q.result.createObjectStore('meta'); metaKeys.forEach((k,i)=>m.add(k==='state'?meta:metas[i],k));
+                const m=q.result.createObjectStore('meta'); metaKeys.forEach((k,i)=>m.add(metas[i],k));
                 const e=q.result.createObjectStore('entries'); entryKeys.forEach((k,i)=>{ if(i!==skip) e.add(entries[i],k); });
               };q.onsuccess=()=>{q.result.close();r();};q.onerror=j;});
             }'''
-            # Positive control: the WebCrypto reseal reproduces src/record.rs exactly, so the
-            # forged-actor rejection below is the credential check, not a tag mismatch.
+            # Positive control: the reseal (independent reproduction of the meta seal + tag) reopens,
+            # so the forged-actor rejection below is the credential check, not a seal/tag mismatch.
             resealed_db = prefix + '-resealed'
             alice.evaluate(CLONE, [databases['alice'], resealed_db, 'reseal', passphrases['alice']])
             resealed = page(contexts[0]); init(resealed, 'alice', resealed_db)
@@ -342,7 +359,7 @@ def main():
             }''', databases['alice'])
             op(alice, 'rollback-probe', 'encrypt', list(b'rollback probe'))
             # Clone only synthetic records, corrupt one field (or drop / roll back one entry), retain and deny it.
-            for corruption in ['output', 'input', 'id', 'entry', 'tag', 'missing', 'rollback-value', 'rollback-entry',
+            for corruption in ['meta-flip', 'entry', 'tag', 'missing', 'rollback-value', 'rollback-entry',
                                'capsule-flip', 'capsule-swap', 'capsule-weak', 'vault-label']:
                 target = prefix + '-corrupt-' + corruption
                 alice.evaluate(CLONE, [databases['alice'], target, corruption, passphrases['alice']])
@@ -351,7 +368,7 @@ def main():
                 op(corrupt,'send1','encrypt',text,reject=True)
                 assert before == corrupt.evaluate(DUMP, target)
                 corrupt.close()
-            proof['checks']['corrupt_ledger_entry_tag_missing_or_rolled_back_entry_retained_denied'] = True
+            proof['checks']['corrupt_sealed_meta_entry_tag_missing_or_rolled_back_entry_retained_denied'] = True
             proof['checks']['corrupt_weak_relabelled_or_swapped_custody_capsule_retained_denied'] = True
             # A worker that already unlocked must notice its capsule being replaced underneath it.
             live_db = prefix + '-live-swap'

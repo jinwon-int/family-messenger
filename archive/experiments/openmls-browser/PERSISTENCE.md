@@ -2,8 +2,10 @@
 
 This extends the library experiment toward the requested messenger integration.
 It is an isolated **synthetic development state adapter**, not human E2EE storage,
-a deployed messenger or CF login. Device keys and local inbox/outbox are stored
-**unencrypted in private disposable browser profiles** for this test. No actual
+a deployed messenger or CF login. In the Session workers (#177 M2b-3b) device keys,
+group state and the local inbox/outbox are **sealed at rest** under a key from a
+synthetic passphrase capsule; the snapshot-API worker (`native-worker.js`) still stores
+them unencrypted. Profiles are private and disposable. No actual
 family identity, native server database or production service is used.
 
 ## Complete candidate state and atomic release
@@ -55,14 +57,23 @@ custom messaging cryptography, or serializing the nonpublic MlsGroup layout.
   the shared `web/session-store.js`. `native-worker.js` still uses the snapshot API —
   it has no CI smoke and references files that do not exist, so it is not migrated
   blind (to be removed or given a smoke first). The record key comes from the custody
-  unlock (M2b-3a); at-rest encryption is M2b-3b.
+  unlock (M2b-3a); every record is sealed at rest (M2b-3b).
 
 ## Storage v2 in the workers (#177 M2b-1/M2b-2, `web/session-store.js`)
 
-- **Database version 2**, two stores: `meta` holds exactly one record `state`
-  (identity, room, signer public key, group id, store format, revision, cursor, epoch,
-  ledger, acknowledged-id tombstones, entry count, set digest, tag); `entries` holds one record per store entry,
-  key `[room, entry key]`, value `{v, t}` with `t = entry_tag(key, room, entry key, v)`.
+- **Database version 2**, two stores: `meta` holds `custody` (the capsule, below) and
+  `state` = `{version: 4, sealed}`: the meta fields (identity, room, signer public key,
+  group id, store format, revision, cursor, epoch, ledger, acknowledged-id tombstones,
+  entry count, set digest, tag) sealed with `custody.js` `sealRecord` (a new
+  XChaCha20-Poly1305 secretstream per record, single `TAG_FINAL` chunk, additional data
+  `family-mls-meta-v4/<kind>\0identity\0room`). `entries` holds one record per store
+  entry: key `[room, index]` with `index = entry_index(auth key, room, entry key)` (an
+  HMAC, so labels, group ids and epochs never appear in keys), value `{e, t}` where `e`
+  seals `key length ‖ entry key ‖ value` (additional data: domain, room, index) and
+  `t = entry_tag(auth key, room, index, e)`; loading re-derives the index from the
+  decrypted key. The smoke asserts that neither database contains a message plaintext,
+  a store label, an actor label or a public key (mutation-checked: disabling the seal
+  fails exactly that check).
   An operation writes only the entries the session changed — an encrypt writes one
   entry (≈1.1 KB) instead of the whole snapshot — plus the `meta` record, which
   carries the ledger and is rewritten on every operation (reported as `meta_bytes`;

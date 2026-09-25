@@ -41,6 +41,31 @@ function derive(root) {
   };
 }
 
+// Saved records (#177 M2b-3b), as SESSION-RECORDS.md specifies: every record is a
+// **new** library secretstream (init_push, library-generated header), exactly one
+// chunk tagged TAG_FINAL, canonical metadata as additional data. Output is
+// header ‖ ciphertext. No stream is resumed, no nonce/counter is managed here.
+const HEADER = sodium.crypto_secretstream_xchacha20poly1305_HEADERBYTES;
+const OVERHEAD = sodium.crypto_secretstream_xchacha20poly1305_ABYTES;
+export function sealRecord(key, ad, plaintext) {
+  if (!(key instanceof Uint8Array) || key.length !== 32) throw new Error('record key');
+  const {state, header} = sodium.crypto_secretstream_xchacha20poly1305_init_push(key);
+  const cipher = sodium.crypto_secretstream_xchacha20poly1305_push(state, plaintext, ad,
+    sodium.crypto_secretstream_xchacha20poly1305_TAG_FINAL);
+  const out = new Uint8Array(header.length + cipher.length);
+  out.set(header); out.set(cipher, header.length);
+  return out;
+}
+/** Plaintext of one saved record, or throw: authentication, TAG_FINAL and no extra chunk. */
+export function openRecord(key, ad, sealed) {
+  if (!(key instanceof Uint8Array) || key.length !== 32) throw new Error('record key');
+  if (!(sealed instanceof Uint8Array) || sealed.length < HEADER + OVERHEAD) throw new Error('record');
+  const state = sodium.crypto_secretstream_xchacha20poly1305_init_pull(sealed.subarray(0, HEADER), key);
+  const result = sodium.crypto_secretstream_xchacha20poly1305_pull(state, sealed.subarray(HEADER), ad);
+  if (!result || result.tag !== sodium.crypto_secretstream_xchacha20poly1305_TAG_FINAL) throw new Error('record');
+  return result.message;
+}
+
 /** New root key + vault id sealed in an age password capsule. */
 export async function createVault(passphrase) {
   const password = validPassphrase(passphrase);

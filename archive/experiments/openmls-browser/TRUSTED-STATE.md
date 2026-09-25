@@ -5,8 +5,9 @@ and independent first-device pins from PR29. It is an isolated runnable
 **synthetic client-state adapter**. The native server authenticates directory
 reads; the test coordinator still relays the small MLS exchange. Native ordered
 control/ciphertext delivery and production human enrollment are not implemented.
-Generated private keys and cached local plaintext remain unencrypted in private
-disposable browser profiles. No production service, CF setting or human key changes.
+Generated private keys, pins and cached local plaintext are sealed at rest under the
+device's custody key (#177 M2b-3b, see PERSISTENCE.md) in private disposable browser
+profiles. No production service, CF setting or human key changes.
 
 ## State and explicit acceptance
 

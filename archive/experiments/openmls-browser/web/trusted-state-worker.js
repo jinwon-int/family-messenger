@@ -1,12 +1,12 @@
-// Development-only synthetic keys in IndexedDB. The record key comes from the
-// custody capsule (./pkg/custody.js, #177 M2b-3a); entries are authenticated, not
-// yet encrypted (M2b-3b).
+// Development-only synthetic custody. Record keys come from the custody capsule
+// (./pkg/custody.js, #177 M2b-3a); every entry and the meta record are sealed at
+// rest (M2b-3b) — see ./session-store.js and PERSISTENCE.md.
 // Storage layout, authentication and tab reload: ./session-store.js (see PERSISTENCE.md).
 // Trust: a pinned pair (independent ceremony) that must match the live directory
 // on every transaction; the Session enforces the pinned membership in Rust.
 import init, * as api from './pkg/family_mls_browser_experiment.js';
 import {createStore, exact, fail, hex, fromHex} from './session-store.js';
-import {createVault, unlockVault, validPassphrase, sodium} from './pkg/custody.js';
+import {createVault, unlockVault, validPassphrase, sealRecord, openRecord} from './pkg/custody.js';
 import {normalizePins, readDirectory, matchDirectory} from './trust-directory.js';
 const wasm = await init();
 const allowed = new Set(['key_package', 'create', 'invite', 'join', 'encrypt', 'decrypt']);
@@ -93,6 +93,7 @@ self.onmessage = ({data}) => {
         identity = argument.identity; room = argument.room;
         const directory = await readDirectory(identity, room);
         const opened = createStore(api, {kind: 'trusted', identity, room, allowed, extra: pinsExtra,
+          records: {sealRecord, openRecord},
           namePattern: /^family-mls-trusted-synthetic-[a-z0-9-]{1,64}$/});
         await opened.open(argument.database);
         store = opened;
@@ -101,8 +102,7 @@ self.onmessage = ({data}) => {
         if (fresh && directory.devices.some(x => x.actor === identity)) fail();
         const vault = fresh ? await createVault(passphrase) : null;
         const keys = fresh ? vault.keys : await unlockVault(custody.capsule, custody.vault, passphrase);
-        sodium.memzero(keys.enc);  // at-rest encryption key: used from M2b-3b
-        opened.unlock(keys.auth, fresh ? vault : custody);
+        opened.unlock(keys.auth, keys.enc, fresh ? vault : custody);
         result = await handle('initialize', undefined, directory);
       } else {
         if (!store || !['status', 'pin', 'ack', 'operation'].includes(method)) fail();
