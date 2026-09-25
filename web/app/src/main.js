@@ -14,6 +14,7 @@ import { PhotoPreviews } from './photo-previews.js';
 import { applyTypingEvent, createTypingState, pruneTyping, typingIndicator, typingNames } from './typing.js';
 import { DEFAULT_CONFIG, loadConfig } from './config.js';
 import { disablePush, enablePush, hasMatchingPusher, isIosDevice, pushAvailability, readSubscription } from './push.js';
+import { renderHold, selectionInRenderedArea } from './render-guard.js';
 import * as ui from './ui.js';
 
 const root = document.getElementById('app');
@@ -61,11 +62,90 @@ const state = {
 
 const photoPreviews = new PhotoPreviews({
   fetchPhoto: (attachment, options) => state.client.fetchAttachment(attachment, options),
-  onChange: () => renderCurrent(),
+  onChange: () => scheduleRender(),
 });
+
+// --- 백그라운드 재렌더 스케줄(#194) ---
+// 동기화·입력중·상대시간·사진 미리보기 갱신은 한 프레임으로 모으고, 사용자가 타임라인·목록의
+// 글자를 드래그 중이거나 선택해 둔 동안에는 미룬다(renderHold 상한까지). 재렌더는 DOM을
+// 갈아끼워 크롬이 선택을 버린다. 사용자 조작(방 열기·목록 복귀 등)은 renderCurrent로 즉시 그린다.
+let renderFrame = 0;
+let renderRetryTimer = null;
+let renderHeldSince = 0;
+let pointerIsDown = false;
+
+const hasFrames = typeof requestAnimationFrame === 'function' && typeof cancelAnimationFrame === 'function';
+
+function scheduleRender() {
+  if (renderFrame) return;
+  renderFrame = (hasFrames ? requestAnimationFrame(flushScheduledRender) : setTimeout(flushScheduledRender, 16)) || 1;
+}
+
+function cancelScheduledRender() {
+  if (!renderFrame) return;
+  if (hasFrames) cancelAnimationFrame(renderFrame);
+  else clearTimeout(renderFrame);
+  renderFrame = 0;
+}
+
+function flushScheduledRender() {
+  renderFrame = 0;
+  if (renderRetryTimer) {
+    clearTimeout(renderRetryTimer);
+    renderRetryTimer = null;
+  }
+  const now = Date.now();
+  const decision = renderHold({
+    pointerDown: pointerIsDown,
+    selectionActive: selectionInRenderedArea(document.getSelection?.()),
+    heldMs: renderHeldSince ? now - renderHeldSince : 0,
+  });
+  if (decision.hold) {
+    if (!renderHeldSince) renderHeldSince = now;
+    renderRetryTimer = setTimeout(scheduleRender, decision.retryInMs);
+    return;
+  }
+  renderCurrent();
+}
+
+/** 보류 중인 백그라운드 재렌더가 있으면 다시 판정한다(포인터 뗌·선택 해제 시). */
+function resumeHeldRender() {
+  if (renderHeldSince) scheduleRender();
+}
+
+function installRenderGuard() {
+  const down = (event) => {
+    // 주 버튼 드래그만 선택·스크롤바 조작이 된다.
+    if (event.button === 0) pointerIsDown = true;
+  };
+  const up = () => {
+    pointerIsDown = false;
+    resumeHeldRender();
+  };
+  document.addEventListener('pointerdown', down, true);
+  document.addEventListener('pointerup', up, true);
+  document.addEventListener('pointercancel', up, true);
+  // 스크롤바 드래그 뒤에는 pointerup이 안 올 수 있다 — 버튼 없이 움직이면 뗀 것으로 본다.
+  // (안 그러면 눌림 상태가 고착돼 이후 모든 갱신이 매번 상한까지 밀린다.)
+  document.addEventListener('pointermove', (event) => {
+    if (pointerIsDown && event.buttons === 0) up();
+  }, true);
+  window.addEventListener('blur', up);
+  document.addEventListener('selectionchange', () => {
+    if (!selectionInRenderedArea(document.getSelection?.())) resumeHeldRender();
+  });
+}
+installRenderGuard();
 
 function renderCurrent() {
   if (!state.client) return;
+  // 즉시 그리면 예약·보류 중이던 백그라운드 갱신도 반영된 것이다.
+  cancelScheduledRender();
+  renderHeldSince = 0;
+  if (renderRetryTimer) {
+    clearTimeout(renderRetryTimer);
+    renderRetryTimer = null;
+  }
   const current = state.currentRoomId ? state.rooms.get(state.currentRoomId) : null;
   photoPreviews.sync(current?.summary.roomId ?? null, current?.timeline.map((entry) => entry.attachment) ?? []);
   ui.renderShell(root, {
@@ -172,7 +252,7 @@ function startListTicker() {
     const signature = listSignature(listSummaries(), Date.now(), TIME_LABELS());
     if (signature === lastListSignature && prunedRooms.length === 0) return;
     lastListSignature = signature;
-    renderCurrent();
+    scheduleRender();
   }, 2000);
 }
 
@@ -256,12 +336,12 @@ async function connect(creds, { fresh = false } = {}) {
       const entry = state.rooms.get(meta.roomId);
       if (meta.cancelled) {
         if (entry) entry.timeline = entry.timeline.filter((item) => item.eventId !== meta.eventId);
-        if (meta.roomId === state.currentRoomId) renderCurrent();
+        if (meta.roomId === state.currentRoomId) scheduleRender();
         return;
       }
       // 진행 말풍선 삭제는 자리를 유지한다. 바로 빼면 재게시 사이에 스크롤이 줄었다 늘어난다.
       const outcome = entry ? retainProgressRedaction(entry.timeline, meta.eventId) : 'absent';
-      if (outcome !== 'held' && meta.roomId === state.currentRoomId) renderCurrent();
+      if (outcome !== 'held' && meta.roomId === state.currentRoomId) scheduleRender();
       return;
     }
     if (meta?.previousEventId && meta.previousEventId !== event.getId?.()) {
@@ -271,11 +351,14 @@ async function connect(creds, { fresh = false } = {}) {
     appendTimeline(event, meta?.atStart === true, meta?.chronological === true);
   });
   // 새 방이 보이면 목록·초대를 즉시 갱신한다(세션 중 도착한 초대 포함).
-  state.client.onRoomAdded(() => refreshSummaries());
+  state.client.onRoomAdded(() => refreshSummaries({ deferRender: true }));
   // 다른 사람의 입력 중 상태(m.typing)가 바뀌면 방 헤더와 목록 표시를 갱신한다.
+  // 내 입력 알림이 서버에서 되돌아온 것(echo)은 화면에 안 보이므로(typingNames가 나를 뺀다)
+  // 기록하지 않는다 — 기록하면 입력을 시작·멈출 때마다 전체 재렌더가 났다(#194).
   state.client.onTyping((info) => {
+    if (sameUser(info?.userId, state.myUserId)) return;
     if (!applyTypingEvent(state.typing, info)) return;
-    renderCurrent();
+    scheduleRender();
   });
   state.client.onTimelineReset?.((roomId) => {
     clearHydratedDecryptions(roomId);
@@ -283,7 +366,7 @@ async function connect(creds, { fresh = false } = {}) {
     if (!entry) return;
     entry.timeline = [];
     hydrateFromSdk(roomId);
-    if (roomId === state.currentRoomId) renderCurrent();
+    if (roomId === state.currentRoomId) scheduleRender();
   });
   // 내 다른 기기(휴대폰 앱 등)가 이 기기 검증을 요청하면 수락 시트를 연다.
   state.client.onVerificationRequest((request) => openIncomingVerification(request));
@@ -295,7 +378,7 @@ async function connect(creds, { fresh = false } = {}) {
     if (live && (!wasLive || syncState === 'PREPARED')) {
       reconcileLiveRooms();
       backfillPreviews();
-    } else if (!live) renderCurrent();
+    } else if (!live) scheduleRender();
   });
   installSyncRecovery();
   startListTicker();
@@ -306,9 +389,9 @@ async function connect(creds, { fresh = false } = {}) {
 }
 
 function reconcileLiveRooms() {
-  refreshSummaries();
+  refreshSummaries({ deferRender: true });
   for (const roomId of state.rooms.keys()) hydrateFromSdk(roomId);
-  renderCurrent();
+  scheduleRender();
 }
 
 let removeSyncRecovery = null;
@@ -460,7 +543,8 @@ function installKeyboardShortcuts() {
   });
 }
 
-function refreshSummaries() {
+/** deferRender: 백그라운드 호출(방 추가·재연결)은 다음 프레임에 모아 그린다. */
+function refreshSummaries({ deferRender = false } = {}) {
   state.summaries = state.client.roomSummaries();
   state.invites = state.client.inviteSummaries().map((summary) => ({ summary, view: describeInvite(summary) }));
   const known = new Set([...state.summaries, ...state.invites.map((i) => i.summary)].map((s) => s.roomId));
@@ -472,7 +556,8 @@ function refreshSummaries() {
     if (existing) existing.summary = summary;
     else state.rooms.set(summary.roomId, { summary, timeline: [], notice: null });
   }
-  renderCurrent();
+  if (deferRender) scheduleRender();
+  else renderCurrent();
 }
 
 async function respondInvite(invite, action) {
@@ -544,7 +629,7 @@ function appendTimeline(event, atStart = false, chronological = false) {
   // 타임라인 DOM이 갈아끼워져 스크롤이 흔들린다. 내용이 안 바뀌면 그리지 않는다.
   const outcome = mergeEvent(entry0, event, atStart, chronological);
   if (outcome === 'ignored' || outcome === 'held') return;
-  if (roomId === state.currentRoomId) renderCurrent();
+  if (roomId === state.currentRoomId) scheduleRender();
 }
 
 function mergeEvent(entry, event, atStart = false, chronological = false) {
@@ -599,7 +684,7 @@ async function loadEarlier(roomId, limit = EARLIER_PAGE) {
   const entry = state.rooms.get(roomId);
   if (!entry || entry.loadingEarlier || entry.hasMore === false) return 0;
   entry.loadingEarlier = true;
-  if (roomId === state.currentRoomId) renderCurrent();
+  if (roomId === state.currentRoomId) scheduleRender();
   let added = 0;
   try {
     added = await state.client.loadEarlier(roomId, limit);
@@ -609,7 +694,7 @@ async function loadEarlier(roomId, limit = EARLIER_PAGE) {
   } finally {
     entry.loadingEarlier = false;
   }
-  if (roomId === state.currentRoomId) renderCurrent();
+  if (roomId === state.currentRoomId) scheduleRender();
   return added;
 }
 
@@ -621,7 +706,7 @@ async function backfillPreviews() {
   const targets = [...state.rooms.entries()].filter(([, entry]) => entry.timeline.length === 0).slice(0, 12);
   for (const [roomId] of targets) {
     await loadEarlier(roomId, 20);
-    renderCurrent();
+    scheduleRender();
   }
 }
 

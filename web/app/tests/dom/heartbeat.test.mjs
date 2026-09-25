@@ -64,7 +64,9 @@ async function app(t, initial = []) {
   window.document.querySelector('.room-item').click();
   const bubbles = () => [...window.document.querySelectorAll('.timeline .bubble')].map((node) => node.textContent);
   const redact = (target) => send('$redact-' + target, 500, {}, bot, { type: 'm.room.redaction', redacts: target });
-  return { window, client, room, adapter, send, edit, redact, bubbles, synced };
+  // 백그라운드 갱신은 다음 프레임에 모아 그린다(#194) — 동기 이벤트 뒤에는 한 프레임을 기다린다.
+  const settle = () => new Promise((resolve) => window.requestAnimationFrame(() => resolve())).then(flush);
+  return { window, client, room, adapter, send, edit, redact, bubbles, synced, settle };
 }
 
 test('SDK edits update one heartbeat, move it after intervening chat, and retain the draft', async (t) => {
@@ -263,8 +265,10 @@ test('cancelled pending sends disappear instead of surviving as stale bubbles', 
     origin_server_ts: 100, type: 'm.room.message', content: content('UNSENT') });
   local.setStatus(sdk.EventStatus.NOT_SENT);
   a.room.addPendingEvent(local, 'cancel-txn');
+  await a.settle();
   assert.equal(a.bubbles().length, 1);
   a.room.updatePendingEvent(local, sdk.EventStatus.CANCELLED);
+  await a.settle();
   assert.equal(a.bubbles().length, 0);
 });
 
@@ -283,6 +287,7 @@ test('SYNCING after reconnect reconciles missed SDK history and retains composer
   a.synced('RECONNECTING');
   await addMissedEvent(a);
   a.synced('SYNCING');
+  await a.settle();
   assert.equal(a.bubbles().length, 1);
   assert.match(a.bubbles()[0], /RECOVERED/);
   assert.equal(a.window.document.querySelector('textarea').value, 'draft');
@@ -296,9 +301,11 @@ test('returning to the app nudges sync and recovers missed history without anoth
   await addMissedEvent(a);
   a.window.document.dispatchEvent(new a.window.Event('visibilitychange'));
   assert.equal(retries, 1);
+  await a.settle();
   assert.equal(a.bubbles().length, 1);
   a.window.dispatchEvent(new a.window.Event('online'));
   assert.equal(retries, 2);
+  await a.settle();
   assert.equal(a.bubbles().length, 1);
 });
 
@@ -340,9 +347,11 @@ test('hydrated failed decryptions update after the missing key arrives', async (
   await event.attemptDecryption({ decryptEvent: async () => { throw new Error('synthetic missing key'); } });
   a.client.reEmitter.reEmit(a.room, ['Room.timeline']);
   a.window.dispatchEvent(new a.window.Event('online'));
+  await a.settle();
   assert.equal(a.bubbles().length, 1);
   assert.doesNotMatch(a.bubbles()[0], /RECOVERED_KEY/);
   await decryptEvent(event, 'RECOVERED_KEY');
+  await a.settle();
   assert.match(a.bubbles()[0], /RECOVERED_KEY/);
 });
 
@@ -398,4 +407,73 @@ test('resume with older answers does not erase a held progress bubble', async (t
   await a.send('$new-answer', 300, content('NEW_ANSWER'));
   assert.equal(a.bubbles().length, 2);
   assert.doesNotMatch(a.bubbles().join(' '), /Working/);
+});
+
+
+// #194 — 같은 방 재렌더가 타임라인 DOM을 갈아끼워 PC 크롬에서 드래그·선택한 글자가 사라졌다.
+test('my own typing echo does not rebuild the timeline', async (t) => {
+  const a = await app(t);
+  await a.send('$hello', 100, content('HELLO'));
+  const timeline = a.window.document.querySelector('.timeline');
+  const typing = (userId, on) => a.client.emit('RoomMember.typing', {}, { roomId, userId, name: userId, typing: on });
+  typing('@owner:example.test', true);
+  await a.settle();
+  typing('@owner:example.test', false);
+  await a.settle();
+  // DOM 노드는 assert.equal로 비교하지 않는다 — 실패 시 happy-dom 객체 전체를 diff하다 힙이 터진다.
+  assert.ok(a.window.document.querySelector('.timeline') === timeline, '내 입력 알림 echo로 타임라인이 교체됐다');
+  // 대조군: 다른 사람의 입력은 머리글 표시를 갱신한다.
+  typing(bot, true);
+  await a.settle();
+  assert.ok(a.window.document.querySelector('.room-screen .typing'), '상대 입력 중 표시가 없다');
+});
+
+test('a text selection in the timeline holds background renders until it is released', async (t) => {
+  const a = await app(t);
+  await a.send('$first', 100, content('SELECT_ME'));
+  const doc = a.window.document;
+  const body = doc.querySelector('li.bubble .body');
+  const range = doc.createRange();
+  range.setStart(body.firstChild, 0);
+  range.setEnd(body.firstChild, 6);
+  doc.getSelection().removeAllRanges();
+  doc.getSelection().addRange(range);
+  await a.send('$second', 200, content('ARRIVED'));
+  await a.settle();
+  assert.ok(doc.querySelector('li.bubble .body') === body, '선택 중에 말풍선이 교체됐다');
+  assert.equal(a.bubbles().length, 1, '선택 중인데 새 메시지 렌더를 미루지 않았다');
+  doc.getSelection().removeAllRanges();
+  doc.dispatchEvent(new a.window.Event('selectionchange'));
+  await a.settle();
+  assert.equal(a.bubbles().length, 2, '선택을 풀었는데 미룬 렌더가 반영되지 않았다');
+  assert.match(a.bubbles()[1], /ARRIVED/);
+});
+
+test('holding the mouse button defers background renders until pointerup', async (t) => {
+  const a = await app(t);
+  await a.send('$first', 100, content('FIRST'));
+  const doc = a.window.document;
+  const timeline = doc.querySelector('.timeline');
+  timeline.dispatchEvent(new a.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }));
+  await a.send('$second', 200, content('DURING_DRAG'));
+  await a.settle();
+  assert.ok(doc.querySelector('.timeline') === timeline, '드래그 중에 타임라인이 교체됐다');
+  assert.equal(a.bubbles().length, 1);
+  doc.dispatchEvent(new a.window.PointerEvent('pointerup', { bubbles: true, button: 0 }));
+  await a.settle();
+  assert.equal(a.bubbles().length, 2, '포인터를 뗐는데 미룬 렌더가 반영되지 않았다');
+});
+
+test('a lost pointerup (scrollbar drag) is released by the next buttonless pointermove', async (t) => {
+  const a = await app(t);
+  await a.send('$first', 100, content('FIRST'));
+  const doc = a.window.document;
+  doc.querySelector('.timeline').dispatchEvent(new a.window.PointerEvent('pointerdown', { bubbles: true, button: 0, buttons: 1 }));
+  await a.send('$second', 200, content('AFTER_SCROLLBAR'));
+  await a.settle();
+  assert.equal(a.bubbles().length, 1);
+  // pointerup 없이 버튼을 뗀 채 움직인다.
+  doc.dispatchEvent(new a.window.PointerEvent('pointermove', { bubbles: true, buttons: 0 }));
+  await a.settle();
+  assert.equal(a.bubbles().length, 2, '눌림 상태가 고착돼 렌더가 계속 밀렸다');
 });
