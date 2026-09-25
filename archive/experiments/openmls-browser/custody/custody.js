@@ -16,6 +16,9 @@ import sodiumModule from 'libsodium-wrappers';
 
 await sodiumModule.ready;
 export const sodium = sodiumModule;
+// Re-exported only so the smokes can build adversarial capsules (e.g. a reduced
+// work factor) with the same library; the workers use createVault/unlockVault.
+export {Encrypter, Decrypter};
 
 const CONTEXT = 'fmlsvlt1';            // crypto_kdf context (exactly 8 bytes)
 const SUBKEY = {auth: 1, enc: 2};      // record authentication / record encryption (M2b-3b)

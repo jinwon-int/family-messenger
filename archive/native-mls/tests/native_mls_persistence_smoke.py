@@ -9,6 +9,7 @@ import signal
 from pathlib import Path
 import tempfile
 import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from playwright.sync_api import sync_playwright, Error
@@ -122,8 +123,11 @@ def main():
                 return value['result']
 
             def init(p, actor, db=None, reject=False, passphrase=None):
-                return rpc(p, 'init', {'identity': actor, 'database': db or databases[actor], 'room': 'main',
-                                       'passphrase': passphrase or passphrases[actor]}, reject)
+                started = time.monotonic()
+                result = rpc(p, 'init', {'identity': actor, 'database': db or databases[actor], 'room': 'main',
+                                         'passphrase': passphrase or passphrases[actor]}, reject)
+                proof['init_seconds_max'] = round(max(proof.get('init_seconds_max', 0), time.monotonic() - started), 2)
+                return result
 
             def arg(id, method, data=None, sequence=0, fault=''):
                 return {'id': id, 'method': method, 'bytes': data or [], 'sequence': sequence, 'fault': fault}
@@ -297,6 +301,13 @@ def main():
                 const other = await custody.createVault(passphrase);
                 metas[custodyAt] = {version: 1, vault: other.vault, capsule: other.capsule};
               }
+              else if (kind === 'capsule-weak') {  // same payload, re-sealed at a reduced work factor
+                const d = new custody.Decrypter(); d.addPassphrase(passphrase);
+                const payload = await d.decrypt(metas[custodyAt].capsule);
+                const e = new custody.Encrypter(); e.setPassphrase(passphrase); e.setScryptWorkFactor(10);
+                metas[custodyAt] = {...metas[custodyAt], capsule: await e.encrypt(payload)};
+              }
+              else if (kind === 'vault-label') metas[custodyAt] = {...metas[custodyAt], vault: 'f'.repeat(32)};
               else if (kind === 'rollback-value' || kind === 'rollback-entry') {
                 // One entry back to its value (and tag) from before the last encrypt.
                 const old = new Map(window.entrySnapshot.keys.map((k, i) => [hex(new Uint8Array(k[1])), window.entrySnapshot.values[i]]));
@@ -332,7 +343,7 @@ def main():
             op(alice, 'rollback-probe', 'encrypt', list(b'rollback probe'))
             # Clone only synthetic records, corrupt one field (or drop / roll back one entry), retain and deny it.
             for corruption in ['output', 'input', 'id', 'entry', 'tag', 'missing', 'rollback-value', 'rollback-entry',
-                               'capsule-flip', 'capsule-swap']:
+                               'capsule-flip', 'capsule-swap', 'capsule-weak', 'vault-label']:
                 target = prefix + '-corrupt-' + corruption
                 alice.evaluate(CLONE, [databases['alice'], target, corruption, passphrases['alice']])
                 before = alice.evaluate(DUMP, target)
@@ -341,7 +352,20 @@ def main():
                 assert before == corrupt.evaluate(DUMP, target)
                 corrupt.close()
             proof['checks']['corrupt_ledger_entry_tag_missing_or_rolled_back_entry_retained_denied'] = True
-            proof['checks']['corrupt_or_swapped_custody_capsule_retained_denied'] = True
+            proof['checks']['corrupt_weak_relabelled_or_swapped_custody_capsule_retained_denied'] = True
+            # A worker that already unlocked must notice its capsule being replaced underneath it.
+            live_db = prefix + '-live-swap'
+            alice.evaluate(CLONE, [databases['alice'], live_db, '', passphrases['alice']])
+            live = page(contexts[0]); init(live, 'alice', live_db)
+            alice.evaluate('''async ([name, passphrase]) => {
+              const custody = await import('/pkg/custody.js'), other = await custody.createVault(passphrase);
+              const db = await new Promise((r,j)=>{const q=indexedDB.open(name);q.onsuccess=()=>r(q.result);q.onerror=j;});
+              await new Promise((r,j)=>{const t=db.transaction('meta','readwrite');t.objectStore('meta').put({version:1,vault:other.vault,capsule:other.capsule},'custody');t.oncomplete=r;t.onabort=j;});
+              db.close();
+            }''', [live_db, passphrases['alice']])
+            rpc(live, 'status', reject=True)
+            live.close()
+            proof['checks']['capsule_replaced_under_unlocked_worker_denied'] = True
             before = rpc(alice, 'status')
             commit = op(alice, 'remove', 'remove', rpc(bob, 'status')['public_key'])['output']
             op(alice, 'future', 'encrypt', list(b'after restart'), reject=True)

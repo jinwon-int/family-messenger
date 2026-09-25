@@ -84,9 +84,14 @@ custom messaging cryptography, or serializing the nonpublic MlsGroup layout.
   default-work scrypt recipient is admitted before the KDF. The record (HMAC) key is
   `crypto_kdf_derive_from_key(…, "fmlsvlt1", root)`; a second subkey is reserved for
   at-rest encryption (M2b-3b). Every transaction re-checks that the stored capsule is the
-  one this worker unlocked. Wrong passphrase, corrupted capsule and a swapped capsule
-  (another valid capsule under the same passphrase) are denied without mutation.
-  Initialization now costs one scrypt per `init` (smokes: persistence ≈2 min).
+  one this worker unlocked. Wrong passphrase, corrupted capsule, a swapped capsule
+  (another valid capsule under the same passphrase), the same payload re-sealed at a
+  reduced work factor, a relabelled vault id, and a capsule replaced under a worker
+  that already unlocked are all denied without mutation. Initialization costs one
+  scrypt per `init` (≈3.4 s max in the smoke); `web/main.js` gives `init` a 60 s
+  deadline (other calls 10 s) instead of ever lowering the KDF.
+  Two tabs initializing one fresh database race on the `meta/custody` add: exactly
+  one wins; the loser closes its store and forgets its key.
 - **Resident session and tabs**: the worker keeps the `Session` between operations.
   Every transaction first reads `meta`; if its revision differs from the one the
   session was built from (another tab wrote, or first use) the session is rebuilt
@@ -99,8 +104,9 @@ custom messaging cryptography, or serializing the nonpublic MlsGroup layout.
   ack reply) is rejected instead of encrypting again; ids must never be reused at
   all (use random ids). A full ledger rejects new operations until acknowledged;
   exact retries of retained items remain available.
-- **Smoke** (`native_mls_persistence_smoke.py`, 19 checks): the original 14 on the v2
-  layout plus wrong passphrase, corrupted/swapped custody capsule, legacy v1 database, stale-tab rebuild (exactly one
+- **Smoke** (`native_mls_persistence_smoke.py`, 20 checks): the original 14 on the v2
+  layout plus wrong passphrase, corrupted/swapped/weakened/relabelled custody capsule,
+  capsule replaced under a live worker, legacy v1 database, stale-tab rebuild (exactly one
   rebuild after another tab wrote, none for same-tab operations) and ack/tombstones.
   Load verification is exercised by rolling one entry back after an encrypt (value
   only → entry tag; value+tag → set digest); a WebCrypto reseal is the positive

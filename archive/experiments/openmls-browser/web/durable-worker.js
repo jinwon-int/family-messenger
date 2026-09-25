@@ -53,9 +53,14 @@ self.onmessage = ({data: {id, method, argument}}) => {
         const opened = createStore(api, {kind: 'durable', identity: argument.identity, room: argument.room, allowed,
           namePattern: /^family-mls-synthetic-[a-z0-9-]{1,64}$/, extra: noExtra});
         await opened.open(argument.database);
-        try { await unlock(opened, passphrase); } catch (error) { opened.close(); throw error; }
-        store = opened;
-        result = await handle('initialize');
+        try {
+          await unlock(opened, passphrase);
+          store = opened;
+          result = await handle('initialize');
+        } catch (error) {
+          // Includes losing a fresh-database race to another tab: close and forget the key.
+          opened.close(); store = undefined; throw error;
+        }
       } else {
         if (!store || !['status', 'ack', 'operation'].includes(method)) fail();
         result = await handle(method, argument);
