@@ -9,13 +9,50 @@ family identity, native server database or production service is used.
 ## Complete candidate state and atomic release
 
 Each operation reconstructs an entirely new OpenMLS provider from a bounded,
-versioned JSON snapshot of all its storage values. `SignatureKeyPair::read` and
+versioned JSON snapshot of all its storage entries. `SignatureKeyPair::read` and
 `MlsGroup::load` reconstruct the signer and group; an active group's own credential
 and public key must match the snapshot identity. The snapshot records group ID,
 actor and signer public key plus **all** provider entries, including consumed
-KeyPackages and sender/receiver ratchets. This uses the public storage map and
+KeyPackages and sender/receiver ratchets. Since storage v2 (below) the entries come
+from this crate's own `StorageProvider` (`src/store.rs`, `Store::entries`), with
 normal public load APIs, without `test-utils`, debug/draft/unchecked features,
 custom messaging cryptography, or serializing the nonpublic MlsGroup layout.
+
+## Storage v2 (#177 M2, Rust layer)
+
+- **Store**: `src/store.rs` is `openmls_memory_storage` 0.6.0 vendored with an
+  audited, listed set of changes: keys and values are **CBOR** (binary,
+  self-describing — OpenMLS 0.9 does not support non-self-describing formats), and
+  the map journals the pre-image of every touched key. Nothing reads another crate's
+  internals (the old `provider.storage().values` access is gone).
+- **Formats**: snapshots now carry `version: 2`. A `version: 1` snapshot (JSON
+  values) is upgraded once at load by `src/migrate.rs`; later OpenMLS storage or
+  codec changes add one arm there plus one fixture test. The v1 `EpochKeyPairs` key
+  concatenates `group ‖ epoch ‖ leaf` without separators; the split is fixed by the
+  group's recorded own leaf index, and rejected (not guessed) when that is missing.
+- **Resident session** (`src/session.rs`, `Session`): the device stays in WASM;
+  `apply` returns only the changed entries (upserts/deletes, framed), which stay in
+  flight until the worker's IndexedDB transaction succeeds (`commit`) or fails
+  (`abort` → pre-operation store and group). A rejected operation is rolled back the
+  same way instead of retiring the device. Full serializations happen only in
+  `open`/`export` and are counted. `apply` refuses (and rolls back) any state that
+  `open` could not load again (512 entries / framed size), as the snapshot `save`
+  did. Opening an older format is a two-phase rewrite: `export` → one transaction
+  replacing every entry → `commit`; until then `apply` is refused, and `abort`
+  keeps the session migrated.
+- **No downgrade**: snapshots saved by this build say `version: 2`, which pre-M2
+  builds reject. Rolling the facade back therefore needs a v2→v1 export first
+  (not provided — synthetic profiles are disposable); rolling forward is automatic.
+- **Measured** (`cargo test -- --nocapture`, CI step "Facade unit tests"; one run —
+  sizes vary by a few bytes with random key material): store bytes after 10 /
+  100 / 1,000 received messages 5,137 / 5,137 / 5,137 (12 entries); largest
+  per-message delta 1,159 B; zero full serializations per message; the same epoch-12
+  two-member state is 31,153 B as a format-1 JSON snapshot and 6,108 B as format-2
+  entries. Format-1 states holding a pending commit (string-keyed JSON maps in the
+  staged diff) migrate and still merge (`format1_with_pending_commit_migrates`).
+- **Not yet** (M2b): the workers in `web/` still use the snapshot API; per-room IDB
+  records from `Session` changes, HMAC record authentication, the single custody
+  stack and outbox pruning (cap 256) move the SIGKILL smokes onto `Session`.
 
 There is no live crypto object shared between requests. `staged_apply` mutates only
 that candidate, checks the output snapshot can load, and returns candidate bytes

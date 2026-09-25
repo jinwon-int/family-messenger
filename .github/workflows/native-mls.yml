@@ -72,6 +72,12 @@ jobs:
       - name: Build WASM bundle
         if: steps.scope.outputs.run == 'true'
         run: archive/experiments/openmls-browser/build.sh artifacts/mls-pkg
+      # Host-target unit tests: storage v2 dirty set / rollback / 1,000-message
+      # growth / format-1 migration (#177 M2), plus the trust checks.
+      - name: Facade unit tests (cargo test, host)
+        if: steps.scope.outputs.run == 'true'
+        working-directory: archive/experiments/openmls-browser
+        run: cargo test --locked -- --nocapture
       - uses: actions/setup-go@v5
         if: steps.scope.outputs.run == 'true'
         with:

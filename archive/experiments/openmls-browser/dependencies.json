@@ -1,9 +1,9 @@
 {
   "schema": "family.mls.dependencies.v1",
   "scope": "wasm32-unknown-unknown resolved graph, includes build dependencies; not dead-code reachable binary analysis",
-  "external_direct": 8,
-  "external_transitive": 151,
-  "full_lock_external_packages": 197,
+  "external_direct": 10,
+  "external_transitive": 153,
+  "full_lock_external_packages": 202,
   "packages": [
     {
       "name": "aead",
@@ -261,6 +261,54 @@
         {
           "name": "LICENSE-MIT",
           "sha256": "3c0dfa33fd2e6976038555b52095699452653b1fcabe113074f14e0848a6b11e"
+        }
+      ]
+    },
+    {
+      "name": "ciborium",
+      "version": "0.2.2",
+      "direct": true,
+      "license": "Apache-2.0",
+      "registry_sha256": "42e69ffd6f0917f5c029256a24d0161db17cea3997d185db0d35926308770f0e",
+      "features": [
+        "default",
+        "std"
+      ],
+      "notice_files": [
+        {
+          "name": "LICENSE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+        }
+      ]
+    },
+    {
+      "name": "ciborium-io",
+      "version": "0.2.2",
+      "direct": false,
+      "license": "Apache-2.0",
+      "registry_sha256": "05afea1e0a06c9be33d539b876f1ce3692f4afea2cb41f740e7743225ed1c757",
+      "features": [
+        "alloc",
+        "std"
+      ],
+      "notice_files": [
+        {
+          "name": "LICENSE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+        }
+      ]
+    },
+    {
+      "name": "ciborium-ll",
+      "version": "0.2.2",
+      "direct": false,
+      "license": "Apache-2.0",
+      "registry_sha256": "57663b653d948a338bfb3eeba9bb2fd5fcfaecb9e199e87e1eda4d9e8b240fd9",
+      "features": [],
+      "notice_files": [
+        {
+          "name": "LICENSE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
         }
       ]
     },
@@ -941,6 +989,24 @@
         {
           "name": "LICENSE-MIT",
           "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        }
+      ]
+    },
+    {
+      "name": "half",
+      "version": "2.7.1",
+      "direct": false,
+      "license": "MIT OR Apache-2.0",
+      "registry_sha256": "6ea2d84b969582b4b1864a92dc5d27cd2b77b622a8d79306834f1be5ba20d84b",
+      "features": [],
+      "notice_files": [
+        {
+          "name": "LICENSE-APACHE",
+          "sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9"
+        },
+        {
+          "name": "LICENSE-MIT",
+          "sha256": "508a77d2e7b51d98adeed32648ad124b7b30241a8e70b2e72c99f92d8e5874d1"
         }
       ]
     },
@@ -1931,7 +1997,7 @@
     {
       "name": "openmls_traits",
       "version": "0.6.0",
-      "direct": false,
+      "direct": true,
       "license": "MIT",
       "registry_sha256": "ac13edad8698eb1917cbc1dab99591fa1594d84320904fe3fc5121854f95831c",
       "features": [
