@@ -50,11 +50,42 @@ custom messaging cryptography, or serializing the nonpublic MlsGroup layout.
   two-member state is 31,153 B as a format-1 JSON snapshot and 6,108 B as format-2
   entries. Format-1 states holding a pending commit (string-keyed JSON maps in the
   staged diff) migrate and still merge (`format1_with_pending_commit_migrates`).
-- **Not yet** (M2b): the workers in `web/` still use the snapshot API; per-room IDB
-  records from `Session` changes, HMAC record authentication, the single custody
-  stack and outbox pruning (cap 256) move the SIGKILL smokes onto `Session`.
+- **Workers**: `web/durable-worker.js` runs on `Session` since M2b-1 (next section).
+  `trusted-state-worker.js`/`native-worker.js` still use the snapshot API (M2b-2);
+  at-rest encryption and the record key from the custody unlock are M2b-3.
 
-There is no live crypto object shared between requests. `staged_apply` mutates only
+## Durable worker v2 (#177 M2b-1)
+
+- **Database version 2**, two stores: `meta` holds exactly one record `state`
+  (identity, room, signer public key, group id, store format, revision, cursor, epoch,
+  ledger, entry count, set digest, tag); `entries` holds one record per store entry,
+  key `[room, entry key]`, value `{v, t}` with `t = entry_tag(key, room, entry key, v)`.
+  An operation writes only the entries the session changed — an encrypt writes one
+  entry (≈1.1 KB) instead of the whole snapshot.
+- **Authentication** (`src/record.rs`, HMAC-SHA256 under a 32-byte record key given
+  to `init`): every entry is tagged; `meta` carries the XOR of all entry tags and the
+  entry count, and `meta` itself is tagged. So a modified, added, removed or swapped
+  entry, and any modified meta/ledger field, is detected at load, while each operation
+  costs only its changes. A whole older database restored as a unit is **not**
+  detected (no external witness). Until M2b-3 the record key is supplied by the
+  caller (the smoke keeps it in memory); a wrong key is denied without mutation.
+- **Resident session and tabs**: the worker keeps the `Session` between operations.
+  Every transaction first reads `meta`; if its revision differs from the one the
+  session was built from (another tab wrote, or first use) the session is rebuilt
+  from all entries inside that transaction (the one full deserialization, verified
+  tags + set digest). Changes are committed to the session only in `oncomplete`;
+  `onabort` calls `abort()`, so memory never runs ahead of IndexedDB.
+- **Ledger (outbox)**: at most 256 items; `ack({ids})` removes delivered/processed
+  items (§3.5 pruning), unknown ids reject. A full ledger rejects new operations
+  until acknowledged; exact retries of retained items remain available.
+- **Old databases**: a version-1 (pre-M2) database is retained untouched and denied —
+  synthetic profiles are disposable; the format migration itself lives in Rust.
+
+*The rest of this page describes the snapshot-API contract that the durable worker
+kept in v2 (and that the other workers still use): same operation IDs, faults, epoch
+gate and fail-closed rules; storage and authentication details are as above.*
+
+In the snapshot API, `staged_apply` mutates only
 that candidate, checks the output snapshot can load, and returns candidate bytes
 and output to the dedicated worker. The worker stores candidate state and immutable
 operation ID/input/output in **one IndexedDB read/write transaction** with strict
@@ -93,8 +124,9 @@ The ledger retains the post-operation epoch. Releasing a previous **encrypt** re
 is rejected if the locally committed epoch has since changed; the record is retained,
 not silently re-encrypted or deleted. This is a local stale-outbox gate. A real send
 still needs current server room/device policy and epoch admission; an offline client
-cannot infer a removal it has not received. Control-event reconciliation, explicit
-outbox acknowledgment/retirement UX and native room binding are not implemented here.
+cannot infer a removal it has not received. Control-event reconciliation, an
+acknowledgment/retirement UX and native room binding are not implemented here (the
+durable worker's `ack` is the storage primitive for it).
 
 Limits: 64 KiB incoming wire, 16 KiB application plaintext, 1 MiB encoded crypto
 snapshot, 512 provider entries, 32 committed operations and 2 MiB total stored binary
@@ -113,7 +145,8 @@ until the full initial snapshot is committed. Unknown/corrupt material is retain
 A new program version must provide an explicit reviewed migration; the adapter
 never guesses that an unknown database is an empty new device.
 
-Before releasing any cached result, the transaction verifies a SHA-256 checksum
+*(Snapshot-API workers; the durable worker uses the HMAC scheme above.)* Before
+releasing any cached result, the transaction verifies a SHA-256 checksum
 binding the complete snapshot and ledger bytes, IDs, methods, sequences, epochs,
 identity, revision and cursor. It uses a fixed-order encoding and the existing
 RustCrypto provider synchronously; no awaited WebCrypto call can prematurely close

@@ -1,8 +1,8 @@
 {
   "schema": "family.mls.dependencies.v1",
   "scope": "wasm32-unknown-unknown resolved graph, includes build dependencies; not dead-code reachable binary analysis",
-  "external_direct": 10,
-  "external_transitive": 153,
+  "external_direct": 12,
+  "external_transitive": 151,
   "full_lock_external_packages": 202,
   "packages": [
     {
@@ -1082,7 +1082,7 @@
     {
       "name": "hmac",
       "version": "0.12.1",
-      "direct": false,
+      "direct": true,
       "license": "MIT OR Apache-2.0",
       "registry_sha256": "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e",
       "features": [
@@ -2649,7 +2649,7 @@
     {
       "name": "sha2",
       "version": "0.10.9",
-      "direct": false,
+      "direct": true,
       "license": "MIT OR Apache-2.0",
       "registry_sha256": "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283",
       "features": [

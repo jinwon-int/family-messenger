@@ -522,12 +522,14 @@ version = "0.1.0"
 dependencies = [
  "ciborium",
  "getrandom 0.2.17",
+ "hmac 0.12.1",
  "openmls",
  "openmls_basic_credential",
  "openmls_rust_crypto",
  "openmls_traits",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tls_codec",
  "wasm-bindgen",
 ]
