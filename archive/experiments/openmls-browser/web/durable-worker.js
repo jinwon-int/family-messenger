@@ -1,6 +1,6 @@
 // Development-only synthetic keys in IndexedDB. No production key protection:
 // entries are authenticated (HMAC) but not encrypted until the custody stack (#177 M2b-3).
-import init, {Session, entry_tag, entry_verify, meta_verify, meta_tag} from './pkg/family_mls_browser_experiment.js';
+import init, {Session, entry_tag, entry_verify, meta_verify, meta_tag, staged_checksum} from './pkg/family_mls_browser_experiment.js';
 const wasm = await init();
 // Storage v2 (#177 §3.5): the device lives in a resident WASM `Session`; each
 // operation persists only the changed store entries, one IDB record per entry
@@ -9,7 +9,8 @@ const MAX_BINARY = 2 * 1024 * 1024, MAX_LEDGER = 256, TAG = 32;
 const allowed = new Set(['key_package', 'create', 'invite', 'join', 'encrypt', 'decrypt', 'remove', 'commit']);
 let db, identity, room, key;
 // Resident state, valid only while `known` equals the durable meta revision.
-let session = null, known = -1, tags = new Map();
+// tags: hex(entry key) -> {k, t}. reloads: full rebuilds of the resident session.
+let session = null, known = -1, tags = new Map(), reloads = 0;
 const fail = () => { throw new Error('rejected'); };
 const exact = (value, keys) => value && Object.getPrototypeOf(value) === Object.prototype &&
   Object.keys(value).sort().join(',') === keys.sort().join(',');
@@ -20,16 +21,27 @@ function input(value, max = 65536) {
   if (!Array.isArray(value) || value.length > max || !value.every(v => Number.isInteger(v) && v >= 0 && v <= 255)) fail();
   return new Uint8Array(value);
 }
-function xor(into, tag) { for (let i = 0; i < TAG; i++) into[i] ^= tag[i]; }
+// Digest of the whole entry set: SHA-256 over entries sorted by key (hex order =
+// byte order), each u32 LE key_len ‖ key ‖ tag. Not linear (unlike an XOR of tags),
+// so a mix of old and new validly tagged entries cannot be made to match.
+function setDigest(map) {
+  const items = Array.from(map.keys()).sort().map(id => map.get(id));
+  const out = new Uint8Array(items.reduce((n, x) => n + 4 + x.k.length + TAG, 0)), view = new DataView(out.buffer);
+  let at = 0;
+  for (const {k, t} of items) { view.setUint32(at, k.length, true); at += 4; out.set(k, at); at += k.length; out.set(t, at); at += TAG; }
+  return staged_checksum(out);
+}
+const ACKED = 256;  // recently acknowledged ids kept as tombstones (exactly-once after ack)
+const validId = id => typeof id === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(id);
 
 // Fixed field order and byte hex encoding; no host-dependent object serialization.
 function metaBytes(meta) {
   return new TextEncoder().encode(JSON.stringify(['family-mls-meta-v2', meta.version, meta.identity, meta.room,
     hex(meta.public_key), hex(meta.group_id), meta.format, meta.revision, meta.cursor, meta.epoch, hex(meta.set),
-    meta.count, meta.ledger.map(x => [x.id, x.method, x.sequence, x.epoch, hex(x.input), hex(x.output)])]));
+    meta.count, meta.ledger.map(x => [x.id, x.method, x.sequence, x.epoch, hex(x.input), hex(x.output)]), meta.acked]));
 }
 const META_KEYS = ['version', 'identity', 'room', 'public_key', 'group_id', 'format', 'revision', 'cursor', 'epoch',
-  'set', 'count', 'ledger', 'tag'];
+  'set', 'count', 'ledger', 'acked', 'tag'];
 function validMeta(meta, verifyTag = true) {
   if (!exact(meta, META_KEYS) || meta.version !== 2 || meta.identity !== identity || meta.room !== room ||
       !(meta.public_key instanceof Uint8Array) || meta.public_key.length !== 32 ||
@@ -37,12 +49,14 @@ function validMeta(meta, verifyTag = true) {
       !Number.isSafeInteger(meta.revision) || meta.revision < 1 || !Number.isSafeInteger(meta.cursor) || meta.cursor < 0 ||
       typeof meta.epoch !== 'string' || meta.epoch.length > 20 || !(meta.set instanceof Uint8Array) || meta.set.length !== TAG ||
       !Number.isSafeInteger(meta.count) || meta.count < 1 || !(meta.tag instanceof Uint8Array) || meta.tag.length !== TAG ||
-      !Array.isArray(meta.ledger) || meta.ledger.length > MAX_LEDGER) fail();
+      !Array.isArray(meta.ledger) || meta.ledger.length > MAX_LEDGER ||
+      !Array.isArray(meta.acked) || meta.acked.length > ACKED || !meta.acked.every(validId) ||
+      new Set(meta.acked).size !== meta.acked.length) fail();
   let size = 0;
   const ids = new Set();
   for (const item of meta.ledger) {
     if (!exact(item, ['id', 'method', 'input', 'output', 'sequence', 'epoch']) ||
-        typeof item.id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(item.id) || ids.has(item.id) || !allowed.has(item.method) ||
+        !validId(item.id) || ids.has(item.id) || meta.acked.includes(item.id) || !allowed.has(item.method) ||
         typeof item.epoch !== 'string' || item.epoch.length > 20 ||
         !(item.input instanceof Uint8Array) || item.input.length > 65536 ||
         !(item.output instanceof Uint8Array) || item.output.length > 65536 ||
@@ -127,21 +141,21 @@ function transaction(operation, argument) {
     };
     // Persist session changes + meta in this transaction; `meta` is updated in place.
     function persist(meta, changes) {
-      const nextTags = new Map(tags), set = meta.set.slice();
+      const nextTags = new Map(tags);
       let written = 0;
       for (const [k, v] of changes) {
-        const id = hex(k), old = nextTags.get(id);
-        if (old) { xor(set, old); nextTags.delete(id); meta.count--; }
-        if (v === null) { if (!old) fail(); entryStore.delete([room, k]); continue; }
+        const id = hex(k);
+        if (v === null) { if (!nextTags.delete(id)) fail(); entryStore.delete([room, k]); continue; }
         const t = entry_tag(key, room, k, v);
-        xor(set, t); nextTags.set(id, t); meta.count++;
+        nextTags.set(id, {k, t});
         entryStore.put({v, t}, [room, k]); written += k.length + v.length;
       }
-      meta.set = set; meta.revision++;
+      meta.set = setDigest(nextTags); meta.count = nextTags.size; meta.revision++;
       seal(meta);
       metaStore.put(meta, 'state');
       next = {tags: nextTags, revision: meta.revision};
-      return written;
+      // The meta record (ledger included) is rewritten on every operation.
+      return {entries: written, meta: metaBytes(meta).length};
     }
     // Rebuild the resident session from durable entries (other tab wrote, or first use).
     function load(meta, then) {
@@ -150,21 +164,21 @@ function transaction(operation, argument) {
         try {
           const keys = keysRequest.result, values = valuesRequest.result;
           if (keys.length !== meta.count || values.length !== keys.length) fail();
-          const set = new Uint8Array(TAG), loaded = new Map(), entries = [];
+          const loaded = new Map(), entries = [];
           keys.forEach((pair, i) => {
             const value = values[i];
             if (!Array.isArray(pair) || pair.length !== 2 || pair[0] !== room || !exact(value, ['v', 't'])) fail();
             const k = bytesOf(pair[1]), v = bytesOf(value.v), t = bytesOf(value.t);
             if (!entry_verify(key, room, k, v, t)) fail();
-            xor(set, t); loaded.set(hex(k), t); entries.push([k, v]);
+            loaded.set(hex(k), {k, t}); entries.push([k, v]);
           });
-          if (!equal(set, meta.set)) fail();
+          if (loaded.size !== meta.count || !equal(setDigest(loaded), meta.set)) fail();
           dropSession();
           const opened = Session.open(identity, meta.public_key, meta.group_id, meta.format, frame(entries));
           if (opened.migrated() || opened.current_epoch() !== meta.epoch || !equal(opened.public_key(), meta.public_key)) {
             opened.free(); fail();
           }
-          session = opened; known = meta.revision; tags = loaded;
+          session = opened; known = meta.revision; tags = loaded; reloads++;
           then();
         } catch (_) { abort(); }
       };
@@ -183,7 +197,7 @@ function transaction(operation, argument) {
             session = Session.create(identity); inflight = true;
             const fresh = {version: 2, identity, room, public_key: session.public_key(), group_id: new Uint8Array(0),
               format: Session.format_version(), revision: 0, cursor: 0, epoch: 'none', set: new Uint8Array(TAG),
-              count: 0, ledger: [], tag: new Uint8Array(TAG)};
+              count: 0, ledger: [], acked: [], tag: new Uint8Array(TAG)};
             persist(fresh, unframe(session.pending_changes()));
             response = {revision: fresh.revision, cursor: fresh.cursor};
             return;
@@ -199,21 +213,24 @@ function transaction(operation, argument) {
       if (operation === 'initialize' || operation === 'status') {
         response = {revision: meta.revision, cursor: meta.cursor, operations: meta.ledger.map(x => x.id),
           public_key: Array.from(meta.public_key), entries: meta.count,
-          full_serializations: session.full_serializations()};
+          full_serializations: session.full_serializations(), reloads};
         return;
       }
       if (operation === 'ack') {
         // Delivered/processed items leave the ledger (§3.5 pruning). Unknown ids reject.
+        // The last ACKED ids stay as tombstones, so a retry after a lost ack reply is
+        // rejected instead of re-encrypting. Callers must never reuse an id at all.
         if (!exact(argument, ['ids']) || !Array.isArray(argument.ids) || !argument.ids.length ||
             argument.ids.length > MAX_LEDGER || new Set(argument.ids).size !== argument.ids.length ||
             !argument.ids.every(id => meta.ledger.some(x => x.id === id))) fail();
         meta.ledger = meta.ledger.filter(x => !argument.ids.includes(x.id));
+        meta.acked = meta.acked.concat(argument.ids).slice(-ACKED);
         persist(meta, []);
         response = {revision: meta.revision, operations: meta.ledger.map(x => x.id)};
         return;
       }
       if (!exact(argument, ['id', 'method', 'bytes', 'sequence', 'fault']) ||
-          typeof argument.id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(argument.id) || !allowed.has(argument.method) ||
+          !validId(argument.id) || meta.acked.includes(argument.id) || !allowed.has(argument.method) ||
           !Number.isSafeInteger(argument.sequence) || argument.sequence < 0 ||
           !['', 'abort-before-write', 'abort-after-write', 'lost-response'].includes(argument.fault)) fail();
       fault = argument.fault;
@@ -241,7 +258,7 @@ function transaction(operation, argument) {
       const written = persist(meta, changes);
       if (fault === 'abort-after-write') { abort(); return; }
       response = {output: Array.from(output), revision: meta.revision, cursor: meta.cursor, replay: false,
-        changed: changes.length, bytes_written: written};
+        changed: changes.length, bytes_written: written.entries, meta_bytes: written.meta};
     }
   });
 }

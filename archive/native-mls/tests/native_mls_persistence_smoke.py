@@ -182,6 +182,7 @@ def main():
             sent = op(alice, 'send1', 'encrypt', text)
             cipher = sent['output']
             proof['per_operation'] = {'encrypt_changed_entries': sent['changed'], 'encrypt_bytes_written': sent['bytes_written'],
+                                      'encrypt_meta_bytes': sent['meta_bytes'],
                                       'store_entries': rpc(alice, 'status')['entries']}
             before = state_digest(bob, databases['bob'])
             damaged = cipher.copy(); damaged[-1] ^= 1
@@ -226,13 +227,16 @@ def main():
             # Each tab keeps a resident session: a tab must continue from the other
             # tab's committed state (reload on a newer revision), never from its own
             # stale copy — that would reuse a sending generation.
+            reloads = rpc(alice, 'status')['reloads']
             first = op(alice, 'tab-one', 'encrypt', list(b'from tab one'))['output']
+            assert rpc(alice, 'status')['reloads'] == reloads, 'same-tab operations must not rebuild the session'
             second = op(observer, 'tab-two', 'encrypt', list(b'from tab two'))['output']
             third = op(alice, 'tab-one-again', 'encrypt', list(b'tab one again'))['output']
+            assert rpc(alice, 'status')['reloads'] == reloads + 1, 'exactly one rebuild after the other tab wrote'
             assert op(bob, 'receive-tab1', 'decrypt', first, sequence=4)['output'] == list(b'from tab one')
             assert op(bob, 'receive-tab2', 'decrypt', second, sequence=5)['output'] == list(b'from tab two')
             assert op(bob, 'receive-tab1b', 'decrypt', third, sequence=6)['output'] == list(b'tab one again')
-            proof['checks']['stale_tab_session_reloads_before_new_operation'] = True
+            proof['checks']['stale_tab_session_reloads_once_before_new_operation'] = True
 
             # Receiver restart preserves replay state, cursor, and future decryption.
             crash_restart(1, bob)
@@ -271,7 +275,7 @@ def main():
               const reseal = async () => {  // what an attacker holding the record key could do (src/record.rs construction)
                 const body = new TextEncoder().encode(JSON.stringify(['family-mls-meta-v2', meta.version, meta.identity, meta.room,
                   hex(meta.public_key), hex(meta.group_id), meta.format, meta.revision, meta.cursor, meta.epoch, hex(meta.set),
-                  meta.count, meta.ledger.map(x => [x.id, x.method, x.sequence, x.epoch, hex(x.input), hex(x.output)])]));
+                  meta.count, meta.ledger.map(x => [x.id, x.method, x.sequence, x.epoch, hex(x.input), hex(x.output)]), meta.acked]));
                 const domain = new TextEncoder().encode('family-mls-v2/meta\\u0000');
                 const message = new Uint8Array(domain.length + 4 + body.length);
                 message.set(domain); new DataView(message.buffer).setUint32(domain.length, body.length, true); message.set(body, domain.length + 4);
@@ -285,6 +289,14 @@ def main():
               else if (kind === 'id') item.id = 'changed-id';
               else if (kind === 'tag') meta.tag[0] ^= 1;
               else if (kind === 'entry') entries[0].v[0] ^= 1;
+              else if (kind === 'rollback-value' || kind === 'rollback-entry') {
+                // One entry back to its value (and tag) from before the last encrypt.
+                const old = new Map(window.entrySnapshot.keys.map((k, i) => [hex(new Uint8Array(k[1])), window.entrySnapshot.values[i]]));
+                const i = entryKeys.findIndex((k, n) => { const o = old.get(hex(new Uint8Array(k[1]))); return o && hex(o.v) !== hex(entries[n].v); });
+                if (i < 0) throw new Error('no changed entry to roll back');
+                const o = old.get(hex(new Uint8Array(entryKeys[i][1])));
+                entries[i] = kind === 'rollback-value' ? {v: o.v, t: entries[i].t} : o;
+              }
               let skip = kind === 'missing' ? 0 : -1;
               await new Promise((r,j)=>{const q=indexedDB.open(target,2);q.onupgradeneeded=()=>{
                 const m=q.result.createObjectStore('meta'); metaKeys.forEach((k,i)=>m.add(k==='state'?meta:metas[i],k));
@@ -302,8 +314,16 @@ def main():
             alice.evaluate(CLONE, [databases['alice'], forged_db, 'actor', record_keys['alice']])
             forged = page(contexts[0]); init(forged, 'bob', forged_db, reject=True, key=record_keys['alice'])
             proof['checks']['snapshot_actor_must_match_group_credential'] = True
-            # Clone only synthetic records, corrupt one field (or drop one entry), retain and deny it.
-            for corruption in ['output', 'input', 'id', 'entry', 'tag', 'missing']:
+            # Snapshot the entries, encrypt once, then roll one changed entry back:
+            # value only (entry tag must fail) or value+tag (set digest must fail).
+            alice.evaluate('''async name => {
+              const db = await new Promise((r,j)=>{const q=indexedDB.open(name);q.onsuccess=()=>r(q.result);q.onerror=j;});
+              const read = what => new Promise((r,j)=>{const q=db.transaction('entries').objectStore('entries')[what]();q.onsuccess=()=>r(q.result);q.onerror=j;});
+              window.entrySnapshot = {keys: await read('getAllKeys'), values: await read('getAll')}; db.close();
+            }''', databases['alice'])
+            op(alice, 'rollback-probe', 'encrypt', list(b'rollback probe'))
+            # Clone only synthetic records, corrupt one field (or drop / roll back one entry), retain and deny it.
+            for corruption in ['output', 'input', 'id', 'entry', 'tag', 'missing', 'rollback-value', 'rollback-entry']:
                 target = prefix + '-corrupt-' + corruption
                 alice.evaluate(CLONE, [databases['alice'], target, corruption, record_keys['alice']])
                 before = alice.evaluate(DUMP, target)
@@ -311,7 +331,7 @@ def main():
                 op(corrupt,'send1','encrypt',text,reject=True)
                 assert before == corrupt.evaluate(DUMP, target)
                 corrupt.close()
-            proof['checks']['corrupt_ledger_entry_tag_or_missing_entry_retained_denied'] = True
+            proof['checks']['corrupt_ledger_entry_tag_missing_or_rolled_back_entry_retained_denied'] = True
             before = rpc(alice, 'status')
             commit = op(alice, 'remove', 'remove', rpc(bob, 'status')['public_key'])['output']
             op(alice, 'future', 'encrypt', list(b'after restart'), reject=True)
@@ -364,8 +384,9 @@ def main():
             after = rpc(alice, 'status')
             assert 'send1' not in after['operations'] and 'lost' not in after['operations'] and len(after['operations']) == len(listed) - 2
             rpc(alice, 'ack', {'ids': ['send1']}, reject=True)
+            op(alice, 'send1', 'encrypt', text, reject=True)  # acked id retried: tombstone, no second encryption
             proof['full_serializations_after_reopen'] = after['full_serializations']
-            proof['checks']['ack_prunes_ledger'] = True
+            proof['checks']['ack_prunes_ledger_and_tombstones_ids'] = True
             for context in contexts:
                 context.close()
         proof['passed'] = True
