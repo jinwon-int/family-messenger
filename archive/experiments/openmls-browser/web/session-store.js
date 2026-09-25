@@ -56,16 +56,19 @@ const META_VERSION = 3;
 /**
  * One device's durable Session state.
  * @param api   wasm exports: Session, entry_tag, entry_verify, meta_tag, meta_verify, staged_checksum
- * @param opts  {kind ('durable'|'trusted'), identity, room, key (32-byte record key), namePattern, allowed (methods),
+ * @param opts  {kind ('durable'|'trusted'), identity, room, namePattern, allowed (methods),
  *               extra: {keys, initial(), bytes(meta) -> JSON-able, valid(meta, session)}}
  *               `extra` adds worker-specific authenticated meta fields (e.g. trust pins).
  */
-export function createStore(api, {kind, identity, room, key, namePattern, allowed, extra}) {
+export function createStore(api, {kind, identity, room, namePattern, allowed, extra}) {
   if (!/^[a-z]{1,16}$/.test(kind)) fail();
   const {Session, entry_tag, entry_verify, meta_tag, meta_verify, staged_checksum} = api;
   const META_KEYS = ['version', 'identity', 'room', 'public_key', 'group_id', 'format', 'revision', 'cursor', 'epoch',
     'set', 'count', 'ledger', 'acked', 'tag', ...extra.keys];
   let db;
+  // Record (HMAC) key derived from the custody root (custody.js) and the exact
+  // custody record it came from; both are fixed by unlock() before any transaction.
+  let key = null, custody = null;
   // Resident state, valid only while `known` equals the durable meta revision.
   // tags: hex(entry key) -> {k, t}. reloads: full rebuilds of the resident session.
   let session = null, known = -1, tags = new Map(), reloads = 0;
@@ -139,7 +142,38 @@ export function createStore(api, {kind, identity, room, key, namePattern, allowe
       };
     });
   }
-  function close() { if (db) { db.close(); db = undefined; } dropSession(); }
+  function close() { if (db) { db.close(); db = undefined; } dropSession(); if (key) key.fill(0); key = null; }
+
+  // `meta/custody` = {version: 1, vault, capsule}: the age password capsule. It is
+  // written once, together with the initial state, and must never change.
+  const validCustody = value => exact(value, ['version', 'vault', 'capsule']) && value.version === 1 &&
+    typeof value.vault === 'string' && /^[0-9a-f]{32}$/.test(value.vault) &&
+    value.capsule instanceof Uint8Array && value.capsule.length > 0 && value.capsule.length <= 8192;
+  const isMarker = value => exact(value, ['version', 'identity', 'room']) && value.version === 0 &&
+    value.identity === identity && value.room === room;
+
+  /** Read-only: {fresh: true} for the pending-initialization marker, or the custody record. */
+  function readCustody() {
+    if (!db) fail();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('meta', 'readonly');
+      const store = tx.objectStore('meta');
+      const keys = store.getAllKeys(undefined, 3), state = store.get('state'), record = store.get('custody');
+      tx.onabort = tx.onerror = () => reject(new Error('state unavailable'));
+      tx.oncomplete = () => {
+        const names = keys.result.slice().sort().join(',');
+        if (names === 'state' && isMarker(state.result)) resolve({fresh: true, custody: null});
+        else if (names === 'custody,state' && validCustody(record.result)) resolve({fresh: false, custody: record.result});
+        else reject(new Error('unknown state'));
+      };
+    });
+  }
+  /** Fix the record key (32 bytes) and the custody record it was derived from. */
+  function unlock(authKey, record) {
+    if (key || !(authKey instanceof Uint8Array) || authKey.length !== 32 ||
+        !validCustody({version: 1, vault: record.vault, capsule: record.capsule})) fail();
+    key = authKey; custody = {version: 1, vault: record.vault, capsule: record.capsule};
+  }
 
   /**
    * One read/write transaction. `handler(ctx)` runs synchronously once `meta`
@@ -148,7 +182,7 @@ export function createStore(api, {kind, identity, room, key, namePattern, allowe
    * Read/write transactions across tabs serialize the complete read-modify-write.
    */
   function transaction(handler) {
-    if (!db) fail();
+    if (!db || !key) fail();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(['meta', 'entries'], 'readwrite', {durability: 'strict'});
       const metaStore = tx.objectStore('meta'), entryStore = tx.objectStore('entries');
@@ -214,6 +248,7 @@ export function createStore(api, {kind, identity, room, key, namePattern, allowe
 
       const ctx = {
         get session() { return session; },
+        get vault() { return custody.vault; },
         get reloads() { return reloads; },
         persist,
         // A new identity from the pending-initialization marker.
@@ -224,6 +259,7 @@ export function createStore(api, {kind, identity, room, key, namePattern, allowe
             format: Session.format_version(), revision: 0, cursor: 0, epoch: 'none', set: new Uint8Array(TAG),
             count: 0, ledger: [], acked: [], tag: new Uint8Array(TAG), ...extra.initial(), ...fields};
           persist(fresh, unframe(session.pending_changes()));
+          metaStore.add(custody, 'custody');  // add: fails if a custody record appeared meanwhile
           return fresh;
         },
         // Delivered/processed items leave the ledger (§3.5 pruning). Unknown ids
@@ -284,26 +320,26 @@ export function createStore(api, {kind, identity, room, key, namePattern, allowe
         },
       };
 
-      const metaKeys = metaStore.getAllKeys(undefined, 2);
-      metaKeys.onsuccess = () => {
-        if (metaKeys.result.length !== 1 || metaKeys.result[0] !== 'state') { abort(); return; }
-        const get = metaStore.get('state');
-        get.onsuccess = () => {
+      const metaKeys = metaStore.getAllKeys(undefined, 3);
+      const stored = metaStore.get('custody');
+      const get = metaStore.get('state');
+      get.onsuccess = () => {
           try {
-            const meta = get.result;
-            if (exact(meta, ['version', 'identity', 'room']) && meta.version === 0 &&
-                meta.identity === identity && meta.room === room) {
+            const meta = get.result, names = metaKeys.result.slice().sort().join(',');
+            if (names === 'state' && isMarker(meta)) {
               response = handler(ctx, null);
               return;
             }
+            // The capsule this worker unlocked must still be the stored one.
+            if (names !== 'custody,state' || !validCustody(stored.result) || stored.result.vault !== custody.vault ||
+                !equal(stored.result.capsule, custody.capsule)) fail();
             validMeta(meta);
             const run = () => { try { response = handler(ctx, meta); } catch (_) { abort(); } };
             if (!session || known !== meta.revision) load(meta, run); else run();
           } catch (_) { abort(); }
-        };
       };
     });
   }
 
-  return {open, close, transaction, metaBytes};
+  return {open, close, readCustody, unlock, transaction, metaBytes};
 }

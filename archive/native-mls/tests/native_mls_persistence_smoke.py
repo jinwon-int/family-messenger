@@ -26,7 +26,7 @@ def main():
     files = {'/': repo / 'experiments/openmls-browser/web/index.html'}
     for name in ['main.js', 'worker.js', 'durable-worker.js', 'session-store.js']:
         files['/' + name] = repo / 'experiments/openmls-browser/web' / name
-    for name in ['family_mls_browser_experiment.js', 'family_mls_browser_experiment_bg.wasm']:
+    for name in ['family_mls_browser_experiment.js', 'family_mls_browser_experiment_bg.wasm', 'custody.js']:
         files['/pkg/' + name] = args.bundle / name
     for path, file in files.items():
         st = file.lstat()
@@ -101,8 +101,8 @@ def main():
                 contexts[index] = pw.chromium.launch_persistent_context(str(profiles[index]))
             prefix = 'family-mls-synthetic-' + uuid.uuid4().hex
             databases = {'alice': prefix + '-alice', 'bob': prefix + '-bob'}
-            # Stand-in for the custody-unlock-derived record key (M2b-3). Never logged.
-            record_keys = {actor: list(secrets.token_bytes(32)) for actor in databases}
+            # Custody passphrases (#177 M2b-3a): the record key is derived from the capsule. Never logged.
+            passphrases = {actor: secrets.token_urlsafe(32) for actor in databases}
 
             def page(context):
                 result = context.new_page()
@@ -121,9 +121,9 @@ def main():
                 assert value['ok'] is True, (method, value)
                 return value['result']
 
-            def init(p, actor, db=None, reject=False, key=None):
+            def init(p, actor, db=None, reject=False, passphrase=None):
                 return rpc(p, 'init', {'identity': actor, 'database': db or databases[actor], 'room': 'main',
-                                       'record_key': key or record_keys[actor]}, reject)
+                                       'passphrase': passphrase or passphrases[actor]}, reject)
 
             def arg(id, method, data=None, sequence=0, fault=''):
                 return {'id': id, 'method': method, 'bytes': data or [], 'sequence': sequence, 'fault': fault}
@@ -156,10 +156,10 @@ def main():
             assert init(alice, 'alice')['revision'] == 1
             init(bob, 'bob')
             before = state_digest(bob, databases['bob'])
-            wrong_key = page(contexts[1]); init(wrong_key, 'bob', key=list(secrets.token_bytes(32)), reject=True)
+            wrong_key = page(contexts[1]); init(wrong_key, 'bob', passphrase=secrets.token_urlsafe(32), reject=True)
             assert state_digest(bob, databases['bob']) == before
             wrong_key.close()
-            proof['checks']['wrong_record_key_denied_without_mutation'] = True
+            proof['checks']['wrong_passphrase_denied_without_mutation'] = True
             before = state_digest(bob, databases['bob'])
             invalid_id = arg('array-id', 'key_package'); invalid_id['id'] = ['array-id']
             rpc(bob, 'operation', invalid_id, reject=True)
@@ -264,13 +264,14 @@ def main():
             rpc(wrong, 'status', reject=True)
             proof['checks']['wrong_actor_cannot_reopen_state'] = True
             # Clone a database, optionally mutating it (runs in the page; no key material leaves it).
-            CLONE = '''async ([source, target, kind, key]) => {
+            CLONE = '''async ([source, target, kind, passphrase]) => {
               const src = await new Promise((r,j)=>{const q=indexedDB.open(source);q.onsuccess=()=>r(q.result);q.onerror=j;});
               const read = (store, what) => new Promise((r,j)=>{const q=src.transaction(store).objectStore(store)[what]();q.onsuccess=()=>r(q.result);q.onerror=j;});
               const metaKeys = await read('meta','getAllKeys'), metas = await read('meta','getAll');
               const entryKeys = await read('entries','getAllKeys'), entries = await read('entries','getAll');
               src.close();
-              const meta = metas[metaKeys.indexOf('state')];
+              const meta = metas[metaKeys.indexOf('state')], custodyAt = metaKeys.indexOf('custody');
+              const custody = await import('/pkg/custody.js');
               const hex = b => Array.from(b, x => x.toString(16).padStart(2,'0')).join('');
               const reseal = async () => {  // what an attacker holding the record key could do (src/record.rs construction)
                 const body = new TextEncoder().encode(JSON.stringify(['family-mls-meta-v3/durable', meta.version, meta.identity, meta.room,
@@ -279,7 +280,9 @@ def main():
                 const domain = new TextEncoder().encode('family-mls-v2/meta\\u0000');
                 const message = new Uint8Array(domain.length + 4 + body.length);
                 message.set(domain); new DataView(message.buffer).setUint32(domain.length, body.length, true); message.set(body, domain.length + 4);
-                const k = await crypto.subtle.importKey('raw', new Uint8Array(key), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
+                const stored = metas[custodyAt];  // an attacker who knows the passphrase derives the record key
+                const keys = await custody.unlockVault(stored.capsule, stored.vault, passphrase);
+                const k = await crypto.subtle.importKey('raw', keys.auth, {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
                 meta.tag = new Uint8Array(await crypto.subtle.sign('HMAC', k, message));
               };
               const item = meta.ledger.find(x => x.id === 'send1');
@@ -289,6 +292,11 @@ def main():
               else if (kind === 'id') item.id = 'changed-id';
               else if (kind === 'tag') meta.tag[0] ^= 1;
               else if (kind === 'entry') entries[0].v[0] ^= 1;
+              else if (kind === 'capsule-flip') metas[custodyAt].capsule[metas[custodyAt].capsule.length - 1] ^= 1;
+              else if (kind === 'capsule-swap') {  // another valid capsule under the same passphrase
+                const other = await custody.createVault(passphrase);
+                metas[custodyAt] = {version: 1, vault: other.vault, capsule: other.capsule};
+              }
               else if (kind === 'rollback-value' || kind === 'rollback-entry') {
                 // One entry back to its value (and tag) from before the last encrypt.
                 const old = new Map(window.entrySnapshot.keys.map((k, i) => [hex(new Uint8Array(k[1])), window.entrySnapshot.values[i]]));
@@ -306,13 +314,13 @@ def main():
             # Positive control: the WebCrypto reseal reproduces src/record.rs exactly, so the
             # forged-actor rejection below is the credential check, not a tag mismatch.
             resealed_db = prefix + '-resealed'
-            alice.evaluate(CLONE, [databases['alice'], resealed_db, 'reseal', record_keys['alice']])
+            alice.evaluate(CLONE, [databases['alice'], resealed_db, 'reseal', passphrases['alice']])
             resealed = page(contexts[0]); init(resealed, 'alice', resealed_db)
             assert rpc(resealed, 'status')['operations'] == rpc(alice, 'status')['operations']
             resealed.close()
             forged_db = prefix + '-forged'
-            alice.evaluate(CLONE, [databases['alice'], forged_db, 'actor', record_keys['alice']])
-            forged = page(contexts[0]); init(forged, 'bob', forged_db, reject=True, key=record_keys['alice'])
+            alice.evaluate(CLONE, [databases['alice'], forged_db, 'actor', passphrases['alice']])
+            forged = page(contexts[0]); init(forged, 'bob', forged_db, reject=True, passphrase=passphrases['alice'])
             proof['checks']['snapshot_actor_must_match_group_credential'] = True
             # Snapshot the entries, encrypt once, then roll one changed entry back:
             # value only (entry tag must fail) or value+tag (set digest must fail).
@@ -323,15 +331,17 @@ def main():
             }''', databases['alice'])
             op(alice, 'rollback-probe', 'encrypt', list(b'rollback probe'))
             # Clone only synthetic records, corrupt one field (or drop / roll back one entry), retain and deny it.
-            for corruption in ['output', 'input', 'id', 'entry', 'tag', 'missing', 'rollback-value', 'rollback-entry']:
+            for corruption in ['output', 'input', 'id', 'entry', 'tag', 'missing', 'rollback-value', 'rollback-entry',
+                               'capsule-flip', 'capsule-swap']:
                 target = prefix + '-corrupt-' + corruption
-                alice.evaluate(CLONE, [databases['alice'], target, corruption, record_keys['alice']])
+                alice.evaluate(CLONE, [databases['alice'], target, corruption, passphrases['alice']])
                 before = alice.evaluate(DUMP, target)
                 corrupt=page(contexts[0]);init(corrupt,'alice',target,reject=True)
                 op(corrupt,'send1','encrypt',text,reject=True)
                 assert before == corrupt.evaluate(DUMP, target)
                 corrupt.close()
             proof['checks']['corrupt_ledger_entry_tag_missing_or_rolled_back_entry_retained_denied'] = True
+            proof['checks']['corrupt_or_swapped_custody_capsule_retained_denied'] = True
             before = rpc(alice, 'status')
             commit = op(alice, 'remove', 'remove', rpc(bob, 'status')['public_key'])['output']
             op(alice, 'future', 'encrypt', list(b'after restart'), reject=True)

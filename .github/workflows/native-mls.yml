@@ -69,6 +69,17 @@ jobs:
           echo "${WASM_BINDGEN_SHA256}  wb.tar.gz" | sha256sum -c
           tar xzf wb.tar.gz
           echo "MLS_WASM_BINDGEN=$PWD/wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl/wasm-bindgen" >> "$GITHUB_ENV"
+      # Custody bundle (#177 M2b-3): age + libsodium from the pinned lock, bundled by build.sh.
+      - uses: actions/setup-node@v4
+        if: steps.scope.outputs.run == 'true'
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: archive/experiments/openmls-browser/package-lock.json
+      - name: Custody bundle dependencies (npm ci)
+        if: steps.scope.outputs.run == 'true'
+        working-directory: archive/experiments/openmls-browser
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Build WASM bundle
         if: steps.scope.outputs.run == 'true'
         run: archive/experiments/openmls-browser/build.sh artifacts/mls-pkg
