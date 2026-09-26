@@ -36,6 +36,9 @@ async function app(t, { finePointer = false, split = false, liveEvents = {} } = 
     roomId: `!${id}:example.test`, displayName: id, kind: 'private', memberCount: 2, agents: [],
   }));
   let refresh;
+  // 목록 순서는 SDK 방 순서가 아니라 저장된 고정 순서(account data)를 따른다.
+  let order = [];
+  let orderChanged = () => {};
   const sent = [];
   window.testClient = {
     enableEncryption: async () => {}, start() {}, onTimeline() {}, onVerificationRequest() {},
@@ -43,6 +46,7 @@ async function app(t, { finePointer = false, split = false, liveEvents = {} } = 
     onTyping() {}, roomSummaries: () => summaries, inviteSummaries: () => [], canLoadEarlier: () => false,
     roomMemberHandles: () => [], sendText: async (...args) => sent.push(args),
     liveTimelineEvents: (roomId) => liveEvents[roomId] ?? [],
+    roomOrder: () => order, onRoomOrderChange(callback) { orderChanged = callback; }, setRoomOrder: async (ids) => { order = ids; },
   };
   saveSession({ homeserverUrl: 'https://matrix.example.test', userId: '@reader:example.test', deviceId: 'TEST', accessToken: 'synthetic' }, {
     persistent: window.localStorage, volatile: window.sessionStorage,
@@ -60,7 +64,12 @@ async function app(t, { finePointer = false, split = false, liveEvents = {} } = 
     if (value === 'Enter' && target.tagName === 'BUTTON' && !event.defaultPrevented) target.click();
     return event;
   };
-  return { window, document, buttons, key, sent, refresh, reorder() { summaries = [summaries[1], summaries[0], summaries[2]]; refresh(); } };
+  return { window, document, buttons, key, sent, refresh, reorder() {
+    // 다른 기기에서 b를 맨 위로 옮긴 것과 같다.
+    order = [summaries[1], summaries[0], summaries[2]].map((room) => room.roomId);
+    orderChanged(order);
+    refresh();
+  } };
 }
 
 test('Enter opens a room and focuses composer even without a fine pointer; Home restores the same row', async (t) => {

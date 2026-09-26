@@ -10,6 +10,7 @@
 import { classifyRoom, roomDisplayName } from '../rooms.js';
 import { splitParticipants } from '../participants.js';
 import { mediaDownloadPath } from '../attachments.js';
+import { ROOM_ORDER_EVENT, parseRoomOrder } from '../room-order.js';
 
 /** @returns {Promise<object>} the matrix-js-sdk module */
 export function defaultSdkLoader() {
@@ -182,6 +183,30 @@ export class ClientAdapter {
       if (Array.isArray(rooms)) for (const id of rooms) ids.add(id);
     }
     return ids;
+  }
+
+  /** 대화 목록 고정 순서(방 ID 배열). 저장된 적이 없으면 빈 배열 = 기본 순서. */
+  roomOrder() {
+    return parseRoomOrder(this.client.getAccountData?.(ROOM_ORDER_EVENT)?.getContent?.());
+  }
+
+  /** 대화 목록 순서를 계정 account data에 저장한다(같은 계정의 다른 기기로 동기화된다). */
+  async setRoomOrder(roomIds) {
+    await this.client.setAccountData(ROOM_ORDER_EVENT, { rooms: [...roomIds] });
+  }
+
+  /**
+   * 대화 목록 순서가 바뀌면(다른 기기에서 옮김, 내 저장의 되울림) 호출한다.
+   * @param {(roomIds: string[]) => void} handler
+   * @returns {() => void} unsubscribe
+   */
+  onRoomOrderChange(handler) {
+    const listener = (event) => {
+      if (event?.getType?.() !== ROOM_ORDER_EVENT) return;
+      handler(parseRoomOrder(event.getContent?.()));
+    };
+    this.client.on('accountData', listener);
+    return () => this.client.removeListener?.('accountData', listener);
   }
 
   /**

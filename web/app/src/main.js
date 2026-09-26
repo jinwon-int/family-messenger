@@ -6,7 +6,8 @@ import { createFamilyClient, loginWithPassword, PlaintextRefusedError } from './
 import { messageKind, humanFileSize, validateAttachment, attachmentContent, mergeTimelineEntry, formattedMessageBody, isMessageEdit, isProgressContent, retainProgressRedaction } from './messages.js';
 import { extractMentions } from './mentions.js';
 import { describeInvite } from './invites.js';
-import { lastMessagePreview, listSignature, sortByActivity } from './rooms.js';
+import { lastMessagePreview, listSignature } from './rooms.js';
+import { moveRoom, orderRooms } from './room-order.js';
 import { viewKeyAction, listPageMove, isSplitLayout, listPageNavAction } from './keyboard.js';
 import { splitParticipants, shortHandle } from './participants.js';
 import { attachmentFromContent, collectAttachments, fileboxRefreshUrl } from './attachments.js';
@@ -58,6 +59,10 @@ const state = {
   box: { open: false, tab: 'attachments', refresh: 0 }, // 보관함 pane
   cryptoError: null, // 암호화 모듈(rust crypto) 초기화 실패 배너
   typing: createTypingState(), // roomId -> Map(userId -> {name, ts}) — 방 헤더 "입력중.."
+  roomOrder: [], // 대화 목록 고정 순서(방 ID) — 계정 account data와 동기화
+  roomOrderSaving: null, // 진행 중인 저장의 토큰 — 저장은 한 번에 하나만 보낸다
+  roomOrderQueued: null, // 저장 중에 옮긴 최신 순서 — 진행 중인 저장이 끝나면 이어서 보낸다
+  orderEditing: false, // 대화 목록 순서 편집 모드
 };
 
 const photoPreviews = new PhotoPreviews({
@@ -152,6 +157,15 @@ function renderCurrent() {
     list: {
       summaries: listSummaries(),
       syncState: state.syncState,
+      orderEditing: state.orderEditing,
+      // 순서를 저장할 수 없는 클라이언트면 편집 버튼 자체를 두지 않는다.
+      onToggleOrderEdit: state.client.setRoomOrder
+        ? () => {
+            state.orderEditing = !state.orderEditing;
+            renderCurrent();
+          }
+        : null,
+      onMoveRoom: (roomId, toIndex, focus) => moveRoomInList(roomId, toIndex, focus),
       banner: state.cryptoError,
       onSelect: (room, event) => openRoom(room.roomId, {
         keyboard: event?.detail === 0,
@@ -221,7 +235,7 @@ function renderCurrent() {
 const PREVIEW_LABELS = () => ({ photo: strings.media.photo, video: strings.media.video, file: strings.media.file, undecryptable: strings.chat.decryptFailedShort });
 const TIME_LABELS = () => ({ justNow: strings.rooms.justNow, minutesAgo: strings.rooms.minutesAgo, hoursAgo: strings.rooms.hoursAgo, yesterday: strings.rooms.yesterday });
 
-/** Room summaries decorated with the last message preview + typing label, newest activity first. */
+/** Room summaries decorated with the last message preview + typing label, in the user's fixed order. */
 function listSummaries() {
   const decorated = state.summaries.map((summary) => {
     // Array.prototype.at은 ES2022다. 빌드 타깃이 es2020이고 esbuild는 메서드를
@@ -236,7 +250,60 @@ function listSummaries() {
       typing: typingIndicator(typingNames(state.typing, summary.roomId, { myUserId: state.myUserId }), strings.chat.typing),
     };
   });
-  return sortByActivity(decorated);
+  return orderRooms(decorated, state.roomOrder);
+}
+
+// 대화 목록에서 방 하나를 옮긴다. 화면은 즉시 바꾸고 account data 저장은 뒤따른다.
+function moveRoomInList(roomId, toIndex, focus = null) {
+  if (!state.client?.setRoomOrder) return;
+  const visibleIds = listSummaries().map((room) => room.roomId);
+  const next = moveRoom(visibleIds, roomId, toIndex, state.roomOrder);
+  if (!next) return;
+  state.roomOrder = next;
+  state.roomOrderQueued = next;
+  renderCurrent();
+  if (focus) ui.focusRoomOrderControl(root, roomId, focus);
+  flushRoomOrder();
+}
+
+const sameOrder = (a, b) => a.length === b.length && a.every((id, i) => id === b[i]);
+
+// 저장은 한 번에 하나만 보낸다. matrix-js-sdk의 setAccountData는 같은 종류의 account data가
+// 동기화로 "아무거나" 돌아오면 끝나고, 저장소 값과 같으면 PUT 없이 바로 끝난다. 그래서 저장을
+// 겹쳐 보내면 빠른 되돌리기(▼ 뒤 ▲)가 PUT 없이 끝나 앞 저장의 되울림에 덮이거나, 그 사이 다른
+// 기기가 바꾼 순서를 내 되울림으로 착각한다. 끝날 때마다 저장소(=서버가 마지막으로 알려 준 값)와
+// 화면을 맞추고, 그 사이 옮긴 것이 있으면 그 최신 순서만 이어서 보낸다.
+function flushRoomOrder() {
+  const client = state.client;
+  if (!client?.setRoomOrder || state.roomOrderSaving || !state.roomOrderQueued) return;
+  const order = state.roomOrderQueued;
+  const token = {};
+  state.roomOrderQueued = null;
+  state.roomOrderSaving = token;
+  const settle = (error) => {
+    if (state.client !== client || state.roomOrderSaving !== token) return; // 로그아웃 뒤 늦게 끝난 저장
+    state.roomOrderSaving = null;
+    if (error) console.error('room order save failed', error);
+    if (state.roomOrderQueued) {
+      flushRoomOrder();
+      return;
+    }
+    if (error) ui.setStatus(root, strings.rooms.orderSaveFailed, 'error');
+    const stored = client.roomOrder?.() ?? [];
+    if (sameOrder(stored, state.roomOrder)) return;
+    state.roomOrder = stored;
+    scheduleRender();
+  };
+  client.setRoomOrder(order).then(() => settle(null), (error) => settle(error ?? new Error('room order save failed')));
+}
+
+// 다른 기기에서 옮긴 순서(또는 내 저장의 되울림). 내 저장이 진행 중이면 끝날 때 저장소 값으로
+// 맞추므로(flushRoomOrder) 여기서는 건드리지 않는다.
+function applyRemoteRoomOrder(roomIds) {
+  if (state.roomOrderSaving || state.roomOrderQueued) return;
+  if (sameOrder(roomIds, state.roomOrder)) return;
+  state.roomOrder = roomIds;
+  scheduleRender();
 }
 
 // 목록은 이벤트가 올 때 즉시 갱신되지만, 상대 시간 라벨("3분 전")과 놓친 변화를 위해
@@ -350,6 +417,9 @@ async function connect(creds, { fresh = false } = {}) {
     }
     appendTimeline(event, meta?.atStart === true, meta?.chronological === true);
   });
+  // 대화 목록 고정 순서 — 다른 기기에서 옮기면 여기서도 바뀐다.
+  state.roomOrder = state.client.roomOrder?.() ?? [];
+  state.client.onRoomOrderChange?.((roomIds) => applyRemoteRoomOrder(roomIds));
   // 새 방이 보이면 목록·초대를 즉시 갱신한다(세션 중 도착한 초대 포함).
   state.client.onRoomAdded(() => refreshSummaries({ deferRender: true }));
   // 다른 사람의 입력 중 상태(m.typing)가 바뀌면 방 헤더와 목록 표시를 갱신한다.
@@ -389,6 +459,8 @@ async function connect(creds, { fresh = false } = {}) {
 }
 
 function reconcileLiveRooms() {
+  // 첫 동기화에 실려 온 저장 순서를 확실히 반영한다(저장 중이면 되울림을 기다린다).
+  if (!state.roomOrderSaving && !state.roomOrderQueued) state.roomOrder = state.client.roomOrder?.() ?? [];
   refreshSummaries({ deferRender: true });
   for (const roomId of state.rooms.keys()) hydrateFromSdk(roomId);
   scheduleRender();
@@ -462,7 +534,7 @@ function splitLayout() {
 }
 
 function listRoomButtons() {
-  return Array.from(root.querySelectorAll('.pane-list .room-item'));
+  return Array.from(root.querySelectorAll('.pane-list button.room-item'));
 }
 
 function currentListIndex(buttons) {
@@ -499,6 +571,8 @@ function installRoomListKeyboardNav() {
     const shell = root.querySelector('main.shell');
     if (!shell) return;
     if (root.querySelector('dialog[open]')) return;
+    // 순서 편집 중에는 Page Up/Down으로 방을 열지 않는다(행을 눌러도 안 열리는 것과 같게).
+    if (state.orderEditing) return;
     const target = event.target;
     const composerFocused = Boolean(target && (target.isContentEditable === true || EDITABLE_TAGS.has(target.tagName)));
     const action = listPageNavAction({
@@ -731,6 +805,8 @@ function openRooms() {
 }
 
 function openRoom(roomId, { keyboard = false, touch = false, preview = false } = {}) {
+  // 알림 등 다른 경로로 방이 열리면 순서 편집을 끝낸다 — 목록에 돌아왔을 때 저절로 편집 중이지 않게.
+  state.orderEditing = false;
   saveRoomDraft();
   if (state.currentRoomId && state.currentRoomId !== roomId) stopTyping(state.currentRoomId);
   state.currentRoomId = roomId;
@@ -1032,6 +1108,10 @@ async function logout() {
   state.syncState = 'idle';
   state.box = { open: false, tab: 'attachments', refresh: 0 };
   state.cryptoError = null;
+  state.roomOrder = [];
+  state.roomOrderSaving = null;
+  state.roomOrderQueued = null;
+  state.orderEditing = false;
   stopTyping(null);
   state.typing = createTypingState();
   renderLogin();

@@ -83,19 +83,6 @@ export function relativeTime(ts, now, labels) {
   return `${d.getMonth() + 1}.${d.getDate()}.`;
 }
 
-/** Newest activity first; rooms without any message keep their original order at the end. */
-export function sortByActivity(summaries) {
-  return [...summaries]
-    .map((summary, index) => ({ summary, index }))
-    .sort((a, b) => {
-      const ta = a.summary.lastMessage?.ts ?? -1;
-      const tb = b.summary.lastMessage?.ts ?? -1;
-      if (tb !== ta) return tb - ta;
-      return a.index - b.index;
-    })
-    .map((item) => item.summary);
-}
-
 /**
  * Cheap change signature for the list so a periodic tick re-renders only
  * when something visible changed (name, member count, last message, label).

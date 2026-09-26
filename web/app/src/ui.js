@@ -196,7 +196,14 @@ function inviteCard(invite, handlers) {
   );
 }
 
-function roomListItem(room, onSelect, active = false) {
+/**
+ * @param {object} room
+ * @param {Function} onSelect
+ * @param {boolean} active
+ * @param {{index: number, count: number, onMove: (roomId: string, toIndex: number, focus?: 'up'|'down') => void}|null} order
+ *   순서 편집 중일 때만 — 행에 ▲▼가 붙고, PC에서는 행을 끌어 옮길 수 있다.
+ */
+function roomListItem(room, onSelect, active = false, order = null) {
   const agentCount = Array.isArray(room.agents) ? room.agents.length : 0;
   const last = room.lastMessage ?? null;
   const when = last
@@ -210,41 +217,108 @@ function roomListItem(room, onSelect, active = false) {
   const signature = JSON.stringify([
     room.roomId, active, room.kind, room.displayName, room.typing || '', agentCount, when, room.memberCount,
     last ? [room.kind === 'family' ? last.sender ?? '' : '', last.text] : null,
+    // 편집 중에는 자리(▲▼ 핸들러가 쓰는 위치)도 보이는 값이다.
+    order ? [order.index, order.count] : null,
   ]);
-  return signed(el(
-    'li',
-    { 'data-room-id': room.roomId },
+  const name = room.displayName || strings.rooms.unnamed;
+  const dragAttrs = order
+    ? {
+        class: 'reorderable',
+        draggable: 'true',
+        ondragstart: (event) => {
+          event.dataTransfer?.setData('text/plain', room.roomId);
+          if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+          event.currentTarget.classList.add('dragging');
+        },
+        ondragend: (event) => event.currentTarget.classList.remove('dragging'),
+        ondragover: (event) => {
+          event.preventDefault();
+          if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+        },
+        ondrop: (event) => {
+          event.preventDefault();
+          const dragged = event.dataTransfer?.getData('text/plain');
+          if (dragged && dragged !== room.roomId) order.onMove(dragged, order.index);
+        },
+      }
+    : {};
+  const content = [
+    el('span', { class: `avatar kind-${room.kind}`, 'aria-hidden': 'true' }, initial(name)),
     el(
-      'button',
-      { type: 'button', class: 'room-item', 'data-room-id': room.roomId, 'aria-current': active ? 'true' : null, onclick: (event) => onSelect(room, event) },
-      el('span', { class: `avatar kind-${room.kind}`, 'aria-hidden': 'true' }, initial(room.displayName || strings.rooms.unnamed)),
+      'span',
+      { class: 'texts' },
       el(
         'span',
-        { class: 'texts' },
-        el(
-          'span',
-          { class: 'room-head' },
-          el('span', { class: 'room-name' }, room.displayName || strings.rooms.unnamed),
-          // 이름 옆 "입력중.." — 다른 방의 입력도 보이므로 방별 typing 라벨(main.js가 계산).
-          room.typing ? el('span', { class: 'typing', role: 'status' }, room.typing) : null,
-          agentCount > 0 ? el('span', { class: 'pill ai', title: strings.participants.aiTitle }, strings.participants.aiBadge) : null,
-          when ? el('span', { class: 'when' }, when) : null,
-        ),
-        last
-          ? el('span', { class: 'preview' }, room.kind === 'family' && last.sender ? el('span', { class: 'preview-sender' }, `${last.sender}: `) : null, last.text)
-          : el('span', { class: 'preview empty-preview' }, `${roomBadge(room.kind)} · ${strings.rooms.memberCount(room.memberCount)} · ${strings.rooms.noMessages}`),
+        { class: 'room-head' },
+        el('span', { class: 'room-name' }, name),
+        // 이름 옆 "입력중.." — 다른 방의 입력도 보이므로 방별 typing 라벨(main.js가 계산).
+        room.typing ? el('span', { class: 'typing', role: 'status' }, room.typing) : null,
+        agentCount > 0 ? el('span', { class: 'pill ai', title: strings.participants.aiTitle }, strings.participants.aiBadge) : null,
+        when ? el('span', { class: 'when' }, when) : null,
       ),
+      last
+        ? el('span', { class: 'preview' }, room.kind === 'family' && last.sender ? el('span', { class: 'preview-sender' }, `${last.sender}: `) : null, last.text)
+        : el('span', { class: 'preview empty-preview' }, `${roomBadge(room.kind)} · ${strings.rooms.memberCount(room.memberCount)} · ${strings.rooms.noMessages}`),
     ),
+  ];
+  return signed(el(
+    'li',
+    { 'data-room-id': room.roomId, ...dragAttrs },
+    // 순서 편집 중에는 행이 버튼이 아니다 — 눌러도 방이 열리지 않고(▲▼ 옆을 잘못 눌러 화면이
+    // 넘어가지 않게), Firefox는 <button>에서 끌기를 시작하지 않으므로 행 자체를 끌 수 있게 한다.
+    order
+      ? el('div', { class: 'room-item', 'data-room-id': room.roomId, 'aria-current': active ? 'true' : null }, content)
+      : el(
+          'button',
+          { type: 'button', class: 'room-item', 'data-room-id': room.roomId, 'aria-current': active ? 'true' : null, onclick: (event) => onSelect(room, event) },
+          content,
+        ),
+    order
+      ? el(
+          'span',
+          { class: 'order-tools' },
+          el('button', {
+            type: 'button', class: 'order-btn order-up', 'aria-label': strings.rooms.moveUp(name),
+            disabled: order.index === 0 ? true : null, onclick: () => order.onMove(room.roomId, order.index - 1, 'up'),
+          }, '▲'),
+          el('button', {
+            type: 'button', class: 'order-btn order-down', 'aria-label': strings.rooms.moveDown(name),
+            disabled: order.index === order.count - 1 ? true : null, onclick: () => order.onMove(room.roomId, order.index + 1, 'down'),
+          }, '▼'),
+        )
+      : null,
   ), signature);
 }
 
+/**
+ * 방을 옮긴 뒤 같은 방의 같은 방향 버튼에 포커스를 돌려준다 — 행이 다시 그려져 포커스가
+ * body로 떨어지지 않게, 키보드로 ▲를 연달아 누를 수 있게. 끝에 닿아 비활성이면 반대쪽으로.
+ * @param {Element} root
+ * @param {string} roomId
+ * @param {'up'|'down'} direction
+ */
+export function focusRoomOrderControl(root, roomId, direction) {
+  const row = [...root.querySelectorAll('ul.rooms > li')].find((li) => li.dataset.roomId === roomId);
+  if (!row) return;
+  const wanted = row.querySelector(`.order-${direction}`);
+  const other = row.querySelector(`.order-${direction === 'up' ? 'down' : 'up'}`);
+  const target = wanted && !wanted.disabled ? wanted : other && !other.disabled ? other : null;
+  target?.focus();
+}
+
 /** Room list pane content (appbar, invites, rooms). */
-function buildRoomList({ summaries, onSelect, syncState, onOpenVerification, onOpenRecovery, onOpenMenu = null, invites = [], inviteHandlers = null, currentRoomId = null, onToggleBox = null, banner = null }) {
+function buildRoomList({ summaries, onSelect, syncState, onOpenVerification, onOpenRecovery, onOpenMenu = null, invites = [], inviteHandlers = null, currentRoomId = null, onToggleBox = null, banner = null, orderEditing = false, onToggleOrderEdit = null, onMoveRoom = null }) {
+  // 순서 편집은 옮길 방이 둘 이상일 때만 의미가 있다.
+  const canReorder = Boolean(onToggleOrderEdit && onMoveRoom) && summaries.length > 1;
+  const editing = canReorder && orderEditing;
   const body = syncState === 'loading'
     ? el('p', { class: 'empty' }, strings.rooms.loading)
     : summaries.length === 0
       ? el('p', { class: 'empty' }, syncState === 'error' ? strings.rooms.syncError : strings.rooms.empty)
-      : el('ul', { class: 'rooms' }, summaries.map((room) => roomListItem(room, onSelect, room.roomId === currentRoomId)));
+      : el('ul', { class: editing ? 'rooms editing' : 'rooms' }, summaries.map((room, index) => roomListItem(
+          room, onSelect, room.roomId === currentRoomId,
+          editing ? { index, count: summaries.length, onMove: onMoveRoom } : null,
+        )));
   const inviteSection = inviteHandlers && invites.length > 0
     ? el(
         'section',
@@ -255,7 +329,7 @@ function buildRoomList({ summaries, onSelect, syncState, onOpenVerification, onO
     : null;
   // 방 항목을 뺀 목록 pane의 틀. 같으면 pane을 두고 방 항목만 맞춘다(reconcileRoomList).
   const frame = JSON.stringify([
-    syncState, banner ?? '', summaries.length > 0, Boolean(onToggleBox),
+    syncState, banner ?? '', summaries.length > 0, Boolean(onToggleBox), canReorder, editing,
     inviteHandlers ? invites.map((invite) => [invite, inviteHandlers.isAiConsentAcknowledged(invite)]) : null,
   ]);
   return signed(el(
@@ -269,6 +343,12 @@ function buildRoomList({ summaries, onSelect, syncState, onOpenVerification, onO
         'div',
         { class: 'tools' },
         onToggleBox ? el('button', { type: 'button', class: 'ghost box-toggle', onclick: onToggleBox }, strings.box.toggle) : null,
+        canReorder
+          ? el('button', { type: 'button', class: editing ? 'primary order-toggle' : 'ghost order-toggle', 'aria-pressed': editing ? 'true' : 'false', 'aria-label': editing ? strings.rooms.orderDoneLabel : strings.rooms.orderEditLabel, onclick: onToggleOrderEdit }, editing
+              ? strings.rooms.orderDone
+              // 아주 좁은 화면에서는 글자를 숨기고 ↕만 남긴다(제목이 잘리지 않게 — styles.css).
+              : [el('span', { class: 'order-icon', 'aria-hidden': 'true' }, strings.rooms.orderEditIcon), el('span', { class: 'order-label' }, strings.rooms.orderEdit)])
+          : null,
         el('button', { type: 'button', class: 'ghost', 'aria-label': strings.menu.open, onclick: onOpenMenu ?? onOpenVerification }, `⚙ ${strings.menu.open}`),
       ),
     ),
@@ -276,6 +356,7 @@ function buildRoomList({ summaries, onSelect, syncState, onOpenVerification, onO
     syncState === 'error' && summaries.length > 0 ? el('p', { class: 'status warn', role: 'status' }, strings.rooms.syncError) : null,
     inviteSection,
     summaries.length > 0 ? el('p', { class: 'section-title' }, strings.rooms.listTitle) : null,
+    editing ? el('p', { class: 'order-hint', role: 'status' }, strings.rooms.orderHint) : null,
     body,
   ), frame);
 }
