@@ -97,8 +97,8 @@ explicit wasm_js backend flag. No unsafe/custom entropy fallback is installed.
 
 The custody bundle (`custody/custody.js` → `<bundle>/custody.js`, #177 M2b-3) comes from
 `package.json`/`package-lock.json`: age-encryption 0.3.1 and libsodium-wrappers 0.8.4
-(+ esbuild 0.27.2 to bundle). The resolved tree is identical to
-`../device-keystore/package-lock.json`. Its notices (age BSD-3-Clause, noble/scure MIT,
+(+ esbuild 0.27.2 to bundle), the same pins the former `device-keystore` probe used
+(removed in #177 M2b-3c). Its notices (age BSD-3-Clause, noble/scure MIT,
 libsodium ISC) are in `custody/THIRD-PARTY-NOTICES.txt`, shipped next to the bundle as
 `custody-notices.txt`. CI runs `npm ci --ignore-scripts`; build.sh then fails closed
 unless esbuild is 0.27.2 and `node_modules` matches the lock (versions + integrity),
@@ -194,8 +194,6 @@ staged storage to native ciphertext/control transport.
 [Durable trusted-state qualification](TRUSTED-STATE.md) combines pins and staged
 crypto state across restart while preserving the earlier isolated fixtures.
 
-The [native encrypted delivery worker](NATIVE-DELIVERY.md) uses the native signed
-log for an actual two-browser encrypted roundtrip with durable outbox/self echoes.
-It preserves all earlier experiment namespaces and is not a product chat UI.
-
-The own encrypted synthetic chat page and DOM proof are described in [CHAT-UI.md](CHAT-UI.md); Go asset packaging and production activation remain separate.
+The former native delivery worker (`native-worker.js`), its rekey controls and the synthetic
+chat page had no CI smoke and were removed in #177 M2b-3c; their design notes are kept as
+history in [`docs/history/native-mls/`](../../../docs/history/native-mls/).

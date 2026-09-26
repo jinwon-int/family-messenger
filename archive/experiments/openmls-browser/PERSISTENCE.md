@@ -4,8 +4,8 @@ This extends the library experiment toward the requested messenger integration.
 It is an isolated **synthetic development state adapter**, not human E2EE storage,
 a deployed messenger or CF login. In the Session workers (#177 M2b-3b) device keys,
 group state and the local inbox/outbox are **sealed at rest** under a key from a
-synthetic passphrase capsule; the snapshot-API worker (`native-worker.js`) still stores
-them unencrypted. Profiles are private and disposable. No actual
+synthetic passphrase capsule (the unencrypted snapshot-API `native-worker.js` was removed
+in M2b-3c). Profiles are private and disposable. No actual
 family identity, native server database or production service is used.
 
 ## Complete candidate state and atomic release
@@ -54,9 +54,9 @@ custom messaging cryptography, or serializing the nonpublic MlsGroup layout.
   staged diff) migrate and still merge (`format1_with_pending_commit_migrates`).
 - **Workers**: `web/durable-worker.js` (M2b-1) and `web/trusted-state-worker.js`
   (M2b-2, pins → `Session.apply_trusted`) run on `Session`; the storage layer below is
-  the shared `web/session-store.js`. `native-worker.js` still uses the snapshot API —
-  it has no CI smoke and references files that do not exist, so it is not migrated
-  blind (to be removed or given a smoke first). The record key comes from the custody
+  the shared `web/session-store.js`. The snapshot-API `native-worker.js` (no CI smoke,
+  referenced files that did not exist) was removed in M2b-3c rather than migrated
+  blind. The record key comes from the custody
   unlock (M2b-3a); every record is sealed at rest (M2b-3b).
 
 ## Storage v2 in the workers (#177 M2b-1/M2b-2, `web/session-store.js`)
@@ -66,7 +66,7 @@ custom messaging cryptography, or serializing the nonpublic MlsGroup layout.
   group id, store format, revision, cursor, epoch, ledger, acknowledged-id tombstones,
   entry count, set digest, tag) sealed with `custody.js` `sealRecord` (libsodium
   one-shot XChaCha20-Poly1305 AEAD, fresh random 24-byte nonce per record, additional
-  data `family-mls-meta-v4/<kind>\0identity\0room`). SESSION-RECORDS.md chose one
+  data `family-mls-meta-v4/<kind>\0identity\0room`). [SESSION-RECORDS.md](../../../docs/history/native-mls/SESSION-RECORDS.md) chose one
   secretstream per record; libsodium-wrappers never frees secretstream state (56 B of
   WASM memory per record — unbounded in a resident worker), and single-chunk records
   gain nothing from streaming, so the one-shot AEAD of the same library is used
