@@ -149,7 +149,7 @@ siblings) was removed in #177 M2b-3c together with its last caller, `native-work
 `Session` now implements this contract.*
 
 In the snapshot API, `staged_apply` mutated only
-that candidate, checks the output snapshot can load, and returns candidate bytes
+that candidate, checked the output snapshot could load, and returned candidate bytes
 and output to the dedicated worker. The worker stores candidate state and immutable
 operation ID/input/output in **one IndexedDB read/write transaction** with strict
 durability requested. Only the transaction's completion event releases the output
