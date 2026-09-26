@@ -8,11 +8,6 @@ __pycache__/
 .venv/
 artifacts/
 
-# Isolated Rust experiment build products
-
-# Isolated key-custody feasibility packages and bundle
-
-
 # web app build outputs
 web/app/node_modules/
 web/app/dist/
@@ -22,3 +17,5 @@ web/app/config.json
 archive/experiments/openmls-browser/pkg/
 archive/experiments/openmls-browser/target/
 archive/experiments/openmls-browser/node_modules/
+# native-mls v2 relay: CI builds it to artifacts/native-mls-relay; a local `go build` lands here
+archive/native-mls/server/server
