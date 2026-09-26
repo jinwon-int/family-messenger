@@ -143,11 +143,13 @@ custom messaging cryptography, or serializing the nonpublic MlsGroup layout.
   synthetic profiles are disposable; the format migration itself lives in Rust.
 
 *The rest of this page describes the snapshot-API contract that the durable worker
-kept in v2 (and that the other workers still use): same operation IDs, faults, epoch
-gate and fail-closed rules; storage and authentication details are as above.*
+kept in v2: same operation IDs, faults, epoch gate and fail-closed rules; storage and
+authentication details are as above. The wasm snapshot API itself (`staged_apply` and
+siblings) was removed in #177 M2b-3c together with its last caller, `native-worker.js`;
+`Session` now implements this contract.*
 
-In the snapshot API, `staged_apply` mutates only
-that candidate, checks the output snapshot can load, and returns candidate bytes
+In the snapshot API, `staged_apply` mutated only
+that candidate, checked the output snapshot could load, and returned candidate bytes
 and output to the dedicated worker. The worker stores candidate state and immutable
 operation ID/input/output in **one IndexedDB read/write transaction** with strict
 durability requested. Only the transaction's completion event releases the output

@@ -189,8 +189,8 @@ impl Session {
         self.finish(result)
     }
 
-    /// Same contract as `apply`, restricted to a pinned pair (the snapshot API's
-    /// `staged_trusted_apply`): the membership must match the pins before and
+    /// Same contract as `apply`, restricted to a pinned pair (formerly the snapshot
+    /// API's `staged_trusted_apply`, removed in #177 M2b-3c): the membership must match the pins before and
     /// after the operation — exactly the pair for encrypt/decrypt — and only a
     /// KeyPackage/Welcome that carries the pinned credential and key is accepted.
     pub fn apply_trusted(&mut self, method: &str, input: &[u8], peer: &str, key: &[u8]) -> Result<Step, Rejected> {
