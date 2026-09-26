@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { lastMessagePreview, listSignature, relativeTime, sortByActivity } from '../src/rooms.js';
+import { lastMessagePreview, listSignature, relativeTime } from '../src/rooms.js';
 
 const LABELS = { photo: '사진', video: '영상', file: '파일', undecryptable: '열 수 없는 메시지' };
 const TIME = { justNow: '방금', minutesAgo: (n) => `${n}분 전`, hoursAgo: (n) => `${n}시간 전`, yesterday: '어제' };
@@ -25,18 +25,6 @@ test('relativeTime: 방금/분/시간/어제/월.일. — 분 단위라 2초 갱
   assert.equal(relativeTime(new Date(2026, 8, 10, 9, 0).getTime(), now, TIME), '9.10.');
   assert.equal(relativeTime(null, now, TIME), '');
   assert.equal(relativeTime(now + 10_000, now, TIME), '방금');
-});
-
-test('sortByActivity: 최근 메시지 순, 메시지 없는 방은 원래 순서로 뒤에', () => {
-  const rooms = [
-    { roomId: 'a', lastMessage: { ts: 100 } },
-    { roomId: 'b', lastMessage: null },
-    { roomId: 'c', lastMessage: { ts: 300 } },
-    { roomId: 'd' },
-    { roomId: 'e', lastMessage: { ts: 200 } },
-  ];
-  assert.deepEqual(sortByActivity(rooms).map((r) => r.roomId), ['c', 'e', 'a', 'b', 'd']);
-  assert.deepEqual(rooms.map((r) => r.roomId), ['a', 'b', 'c', 'd', 'e'], '입력은 바꾸지 않는다');
 });
 
 test('listSignature: 보이는 값이 같으면 같고, 마지막 메시지·라벨·이름·인원이 바뀌면 달라진다', () => {

@@ -73,6 +73,12 @@ class FakeClient extends EventEmitter {
     return { getContent: () => this.directContent[type] };
   }
 
+  async setAccountData(type, content) {
+    this.accountDataWrites = [...(this.accountDataWrites ?? []), { type, content }];
+    this.directContent[type] = content;
+    return {};
+  }
+
   getRooms() {
     return [...this.roomsById.values()];
   }
@@ -806,4 +812,25 @@ test('onTyping: RoomMember.typing을 평탄화해 전달하고 구독 해제하�
   unsubscribe();
   adapter.client.emit('RoomMember.typing', event, { roomId: '!r:example.com', userId: '@mom:example.com', name: '엄마', typing: true });
   assert.equal(seen.length, 2);
+});
+
+test('대화 목록 순서: account data에서 읽고 쓰며, 다른 기기의 변경만 골라 알린다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  assert.deepEqual(adapter.roomOrder(), [], '저장된 적이 없으면 빈 배열(기본 순서)');
+  adapter.client.directContent['us.familychat.room_order'] = { rooms: ['!b:example.com', 7, '!a:example.com', '!b:example.com'] };
+  assert.deepEqual(adapter.roomOrder(), ['!b:example.com', '!a:example.com'], '형식이 틀린 값은 걸러 읽는다');
+
+  await adapter.setRoomOrder(['!a:example.com', '!b:example.com']);
+  assert.deepEqual(adapter.client.accountDataWrites, [{ type: 'us.familychat.room_order', content: { rooms: ['!a:example.com', '!b:example.com'] } }]);
+
+  const seen = [];
+  const off = adapter.onRoomOrderChange((ids) => seen.push(ids));
+  const accountEvent = (type, content) => ({ getType: () => type, getContent: () => content });
+  adapter.client.emit('accountData', accountEvent('m.direct', { '@x:example.com': ['!dm:example.com'] }));
+  adapter.client.emit('accountData', accountEvent('us.familychat.room_order', { rooms: ['!c:example.com'] }));
+  assert.deepEqual(seen, [['!c:example.com']], '다른 account data는 무시한다');
+  off();
+  adapter.client.emit('accountData', accountEvent('us.familychat.room_order', { rooms: ['!d:example.com'] }));
+  assert.equal(seen.length, 1, '구독을 끊으면 더 알리지 않는다');
 });
