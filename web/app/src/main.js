@@ -167,10 +167,7 @@ function renderCurrent() {
         : null,
       onMoveRoom: (roomId, toIndex, focus) => moveRoomInList(roomId, toIndex, focus),
       banner: state.cryptoError,
-      onSelect: (room, event) => openRoom(room.roomId, {
-        keyboard: event?.detail === 0,
-        touch: event?.pointerType === 'touch',
-      }),
+      onSelect: (room) => openRoom(room.roomId),
       onOpenVerification: openVerification,
       onOpenRecovery: openRecovery,
       onOpenMenu: openMenu,
@@ -524,8 +521,8 @@ async function resumePush() {
 // 작성창 Esc=대화 내용으로 포커스(초안 유지), 대화 내용에서 ↑/↓=스크롤.
 // 시트(verification/recovery)가 열려 있으면 가로채지 않는다 — 시트 Esc는 자체 닫기.
 // 대화목록 Page Up/Page Down 탐색: 방 항목(.room-item) 사이에서 포커스를 옮긴다(roving focus).
-// 2분할(목록|대화)에서는 옮긴 방을 오른쪽에 바로 미리 보고, Enter가 작성창으로 커서를 보낸다.
-// 작성창에서 다시 Page Up/Down이면 목록 탐색으로 돌아간다(대화는 그대로).
+// 2분할(목록|대화)에서는 옮긴 방을 오른쪽에 바로 열고 작성창에 커서를 둔다.
+// 작성창에서 다시 Page Up/Down이면 목록 순서대로 다음 방을 연다.
 // 휴대폰 세로(단일 pane) 방 화면에서는 목록 순서대로 이전/다음 방으로 바로 넘어간다.
 // Enter 열기는 포커스된 버튼의 원래 동작이라 여기서 가로채지 않는다.
 // 시트(<dialog open>)가 열려 있으면 끓어쓰지 않는다.
@@ -591,15 +588,15 @@ function installRoomListKeyboardNav() {
     const nextRoomId = buttons[next].dataset.roomId;
     if (action === 'switch') {
       // 휴대폰 세로 방 화면: 목록 순서대로 이전/다음 방을 바로 연다. 첫·마지막 방에서는 제자리.
-      // 작성창에서 눌렀으면 새 방에서도 작성창에 커서를 두고, 아니면 두지 않는다(Enter가 작성창).
-      if (nextRoomId !== state.currentRoomId) openRoom(nextRoomId, { keyboard: composerFocused, preview: !composerFocused });
+      // 새 방에서도 바로 작성창에 커서가 있다(초안은 방별 보존).
+      if (nextRoomId !== state.currentRoomId) openRoom(nextRoomId);
       return;
     }
     state.listFocusIndex = next;
     state.listFocusRoomId = nextRoomId;
     if (action === 'preview') {
-      openRoom(buttons[next].dataset.roomId, { preview: true });
-      restoreRoomListFocus({ force: true });
+      // 2분할: 오른쪽에 바로 열고 작성창에 커서. 작성창에서 다시 Page Up/Down이면 다음 방으로.
+      openRoom(buttons[next].dataset.roomId);
       return;
     }
     buttons[next].focus();
@@ -826,7 +823,7 @@ function openRooms() {
   if (returning) restoreRoomListFocus({ force: true });
 }
 
-function openRoom(roomId, { keyboard = false, touch = false, preview = false } = {}) {
+function openRoom(roomId) {
   // 알림 등 다른 경로로 방이 열리면 순서 편집을 끝낸다 — 목록에 돌아왔을 때 저절로 편집 중이지 않게.
   state.orderEditing = false;
   saveRoomDraft();
@@ -846,13 +843,9 @@ function openRoom(roomId, { keyboard = false, touch = false, preview = false } =
     input.value = entry.draft;
     input.dispatchEvent(new Event('input', { bubbles: true }));
   }
-  // 2분할 미리보기는 작성창에 커서를 두지 않는다 — Enter가 작성, Page Up/Down이 목록 탐색.
-  if (preview) return;
-  // 키보드로 선택하면 터치 기기의 외장 키보드에서도 바로 작성한다.
-  // 터치 탭은 화면 키보드를 자동으로 띄우지 않는다.
-  if (keyboard || (!touch && window.matchMedia('(pointer: fine)').matches)) {
-    input?.focus();
-  }
+  // 방에 들어가면 어떤 경로로 열었든(클릭·터치·Enter·Page Up/Down·알림) 바로 작성창에 커서를 둔다
+  // (오너 요청 2026-09-27). 터치 기기에서는 화면 키보드도 함께 올라온다.
+  input?.focus();
 }
 
 // --- 입력 중 표시 전송: 작성창 활동을 m.typing으로 변환한다 ---

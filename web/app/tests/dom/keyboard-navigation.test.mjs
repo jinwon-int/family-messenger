@@ -108,10 +108,10 @@ test('pointer-selected room returns to its row and follows room identity after l
   assert.equal(document.activeElement.dataset.roomId, '!a:example.test');
 });
 
-test('touch taps do not open a software keyboard; hardware Enter does', async (t) => {
+test('터치 탭으로 방에 들어가도 바로 작성창에 커서가 있다; Home 뒤 Enter도 같다', async (t) => {
   const { window, document, buttons, key } = await app(t);
   buttons()[0].dispatchEvent(new window.MouseEvent('click', { bubbles: true, detail: 1 }));
-  assert.notEqual(document.activeElement.tagName, 'TEXTAREA');
+  assert.equal(document.activeElement.tagName, 'TEXTAREA', '방에 들어가면 따로 누르지 않아도 작성창');
   key('Home');
   assert.ok(document.activeElement === buttons()[0]);
   key('Enter');
@@ -139,48 +139,44 @@ test('IME and open dialogs retain Home; ordinary composer arrows remain text edi
   assert.equal(document.querySelector('main.shell').dataset.view, 'list');
 });
 
-test('2분할에서 Page Up/Down은 Enter 없이 오른쪽 대화를 열고, Enter는 작성창, 다시 Page Down은 목록 탐색이다', async (t) => {
-  const { document, buttons, key } = await app(t, { split: true });
+test('2분할에서 Page Up/Down은 오른쪽 대화를 열고 바로 작성창에 커서, 작성창에서 다시 누르면 다음 방이다', async (t) => {
+  const { document, key } = await app(t, { split: true });
+  const screen = () => document.querySelector('.room-screen')?.dataset.roomId;
+  const input = () => document.querySelector('.composer textarea');
   key('PageDown');
   assert.equal(document.querySelector('main.shell').dataset.view, 'room');
-  assert.equal(document.querySelector('.room-screen')?.dataset.roomId, '!a:example.test');
-  assert.equal(document.activeElement.dataset.roomId, '!a:example.test');
-  assert.notEqual(document.activeElement.tagName, 'TEXTAREA', '미리보기는 작성창에 커서를 두지 않는다');
+  assert.equal(screen(), '!a:example.test');
+  assert.ok(document.activeElement === input(), '방을 열면 Enter 없이도 작성창에 커서');
   key('PageDown');
-  assert.equal(document.querySelector('.room-screen')?.dataset.roomId, '!b:example.test');
-  assert.equal(document.activeElement.dataset.roomId, '!b:example.test');
-  key('Enter');
-  const input = document.querySelector('.composer textarea');
-  assert.ok(document.activeElement === input, 'Enter는 작성창으로 커서를 옮긴다');
-  input.value = '작성 중인 초안';
+  assert.equal(screen(), '!b:example.test');
+  assert.ok(document.activeElement === input());
+  input().value = '작성 중인 초안';
   key('PageDown');
-  assert.equal(document.querySelector('main.shell').dataset.view, 'room', '목록 탐색으로 돌아가도 대화는 그대로');
-  assert.equal(document.querySelector('.room-screen')?.dataset.roomId, '!c:example.test');
-  assert.equal(document.activeElement.dataset.roomId, '!c:example.test');
-  assert.notEqual(document.activeElement.tagName, 'TEXTAREA');
+  assert.equal(document.querySelector('main.shell').dataset.view, 'room');
+  assert.equal(screen(), '!c:example.test');
+  assert.ok(document.activeElement === input(), '넘긴 방에서도 작성창에 커서');
+  assert.equal(input().value, '', '다른 방 초안이 따라오지 않는다');
   key('PageUp');
-  key('Enter');
-  assert.equal(document.activeElement.value, '작성 중인 초안', '미리보기 전환은 초안을 버리지 않는다');
-  assert.equal(document.querySelector('.room-screen')?.dataset.roomId, '!b:example.test');
+  assert.equal(screen(), '!b:example.test');
+  assert.equal(document.activeElement.value, '작성 중인 초안', '방 전환은 초안을 버리지 않는다');
 });
 
 test('휴대폰 세로(단일 pane) 방 화면에서 Page Up/Down은 목록 순서대로 대화 상대를 바꾼다', async (t) => {
   const { window, document, buttons, key, reorder } = await app(t);
   const screen = () => document.querySelector('.room-screen')?.dataset.roomId;
   const view = () => document.querySelector('main.shell').dataset.view;
-  // 터치 탭으로 a를 연다 — 작성창 커서 없음.
+  // 터치 탭으로 a를 연다 — 바로 작성창에 커서.
   buttons()[0].dispatchEvent(new window.MouseEvent('click', { bubbles: true, detail: 1 }));
   assert.equal(view(), 'room');
   assert.equal(screen(), '!a:example.test');
+  assert.equal(document.activeElement.tagName, 'TEXTAREA');
   assert.equal(key('PageUp').defaultPrevented, true, '첫 방에서 Page Up은 화면 스크롤 대신 제자리');
   assert.equal(screen(), '!a:example.test');
   key('PageDown');
   assert.equal(view(), 'room', '목록으로 돌아가지 않고 방 화면 그대로');
   assert.equal(screen(), '!b:example.test');
-  assert.notEqual(document.activeElement.tagName, 'TEXTAREA', '작성창 밖에서 넘기면 작성창 커서를 두지 않는다');
-  key('Enter');
   const inputB = document.querySelector('.composer textarea');
-  assert.ok(document.activeElement === inputB, 'Enter는 작성창');
+  assert.ok(document.activeElement === inputB, '넘긴 방에서도 바로 작성창');
   inputB.value = 'b에 쓰던 초안';
   key('PageDown');
   assert.equal(screen(), '!c:example.test');
@@ -201,10 +197,15 @@ test('휴대폰 세로(단일 pane) 방 화면에서 Page Up/Down은 목록 순�
   assert.equal(document.activeElement.dataset.roomId, '!a:example.test', 'Home은 마지막으로 본 방 행으로 돌아간다');
 });
 
-test('hybrid devices use the actual touch pointer instead of the primary fine-pointer setting', async (t) => {
+test('하이브리드 기기의 터치 탭·Esc 뒤 대화 내용에서 방을 넘겨도 작성창에 커서', async (t) => {
   const { window, document, buttons, key } = await app(t, { finePointer: true });
   buttons()[0].dispatchEvent(new window.PointerEvent('click', { bubbles: true, detail: 1, pointerType: 'touch' }));
-  assert.notEqual(document.activeElement.tagName, 'TEXTAREA');
+  assert.equal(document.activeElement.tagName, 'TEXTAREA');
+  key('Escape');
+  assert.ok(document.activeElement === document.querySelector('.room-screen .timeline'));
+  key('PageDown');
+  assert.equal(document.querySelector('.room-screen')?.dataset.roomId, '!b:example.test');
+  assert.equal(document.activeElement.tagName, 'TEXTAREA', '대화 내용에서 넘겨도 새 방은 작성창');
   key('Home'); key('Enter');
   assert.equal(document.activeElement.tagName, 'TEXTAREA', 'hardware keyboard still focuses composer');
 });
