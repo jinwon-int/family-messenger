@@ -46,13 +46,16 @@ export function isSplitLayout(matchMedia) {
 /**
  * Page Up/Page Down 전역 판정.
  * 2분할이면 방을 오른쪽에 바로 미리 본다(작성창 포커스는 두지 않는다).
- * 단일 pane 목록에서는 포커스만 옮긴다. 작성 중이거나 방 화면이면 가로채지 않는다.
- * @returns {'preview'|'navigate'|null}
+ * 단일 pane 목록에서는 포커스만 옮긴다(작성 중이면 가로채지 않는다).
+ * 단일 pane 방 화면(휴대폰 세로)에서는 목록 순서대로 이전/다음 방으로 바로 넘어간다 —
+ * 목록이 가려져 있어도 대화 상대를 바꿀 수 있게. 작성 중이어도 넘어간다(초안은 방별로 보존).
+ * @returns {'preview'|'navigate'|'switch'|null}
  */
 export function listPageNavAction({ key, split, view, composerFocused } = {}) {
   if (key !== 'PageDown' && key !== 'PageUp') return null;
   if (split && (view === 'list' || view === 'room')) return 'preview';
   if (!split && view === 'list' && !composerFocused) return 'navigate';
+  if (!split && view === 'room') return 'switch';
   return null;
 }
 
