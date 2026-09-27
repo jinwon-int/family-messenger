@@ -79,12 +79,14 @@ test('2분할: 900px 이상이거나 휴대폰 가로(640~899)이면 목록|대�
   assert.equal(isSplitLayout(), false);
 });
 
-test('Page Up/Down: 2분할 목록·방 화면은 바로 미리보고, 단일 pane 목록만 포커스 이동이다', () => {
+test('Page Up/Down: 2분할은 미리보기, 단일 pane 목록은 포커스 이동, 단일 pane 방 화면은 방 전환이다', () => {
   assert.equal(listPageNavAction({ key: 'PageDown', split: true, view: 'list' }), 'preview');
   assert.equal(listPageNavAction({ key: 'PageUp', split: true, view: 'room', composerFocused: true }), 'preview');
   assert.equal(listPageNavAction({ key: 'PageDown', split: false, view: 'list' }), 'navigate');
   assert.equal(listPageNavAction({ key: 'PageDown', split: false, view: 'list', composerFocused: true }), null);
-  assert.equal(listPageNavAction({ key: 'PageDown', split: false, view: 'room' }), null);
+  assert.equal(listPageNavAction({ key: 'PageDown', split: false, view: 'room' }), 'switch');
+  assert.equal(listPageNavAction({ key: 'PageUp', split: false, view: 'room', composerFocused: true }), 'switch');
+  assert.equal(listPageNavAction({ key: 'PageDown', split: false, view: 'box' }), null);
   assert.equal(listPageNavAction({ key: 'PageDown', split: true, view: 'box' }), null);
   assert.equal(listPageNavAction({ key: 'Enter', split: true, view: 'list' }), null);
   assert.equal(listPageNavAction({}), null);

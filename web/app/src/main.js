@@ -525,6 +525,7 @@ async function resumePush() {
 // 대화목록 Page Up/Page Down 탐색: 방 항목(.room-item) 사이에서 포커스를 옮긴다(roving focus).
 // 2분할(목록|대화)에서는 옮긴 방을 오른쪽에 바로 미리 보고, Enter가 작성창으로 커서를 보낸다.
 // 작성창에서 다시 Page Up/Down이면 목록 탐색으로 돌아간다(대화는 그대로).
+// 휴대폰 세로(단일 pane) 방 화면에서는 목록 순서대로 이전/다음 방으로 바로 넘어간다.
 // Enter 열기는 포커스된 버튼의 원래 동작이라 여기서 가로채지 않는다.
 // 시트(<dialog open>)가 열려 있으면 끓어쓰지 않는다.
 const EDITABLE_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
@@ -586,8 +587,15 @@ function installRoomListKeyboardNav() {
     const next = listPageMove({ key: event.key, count: buttons.length, currentIndex: currentListIndex(buttons) });
     if (next === null) return;
     event.preventDefault(); // 화면 스크롤 대신 목록 이동으로 쓴다
+    const nextRoomId = buttons[next].dataset.roomId;
+    if (action === 'switch') {
+      // 휴대폰 세로 방 화면: 목록 순서대로 이전/다음 방을 바로 연다. 첫·마지막 방에서는 제자리.
+      // 작성창에서 눌렀으면 새 방에서도 작성창에 커서를 두고, 아니면 두지 않는다(Enter가 작성창).
+      if (nextRoomId !== state.currentRoomId) openRoom(nextRoomId, { keyboard: composerFocused, preview: !composerFocused });
+      return;
+    }
     state.listFocusIndex = next;
-    state.listFocusRoomId = buttons[next].dataset.roomId;
+    state.listFocusRoomId = nextRoomId;
     if (action === 'preview') {
       openRoom(buttons[next].dataset.roomId, { preview: true });
       restoreRoomListFocus({ force: true });
