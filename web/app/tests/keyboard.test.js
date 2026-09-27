@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { composerKeyAction, viewKeyAction, listPageMove, isSplitLayout, listPageNavAction } from '../src/keyboard.js';
+import { composerKeyAction, viewKeyAction, listPageMove, isSplitLayout, listPageNavAction, timelineKeyAction } from '../src/keyboard.js';
 
 test('작성창 Enter는 전송이다', () => {
   assert.equal(composerKeyAction({ key: 'Enter', shiftKey: false, isComposing: false }), 'send');
@@ -90,4 +90,19 @@ test('Page Up/Down: 2분할은 미리보기, 단일 pane 목록은 포커스 이
   assert.equal(listPageNavAction({ key: 'PageDown', split: true, view: 'box' }), null);
   assert.equal(listPageNavAction({ key: 'Enter', split: true, view: 'list' }), null);
   assert.equal(listPageNavAction({}), null);
+});
+
+test('작성창 Esc는 대화 내용으로 포커스를 옮긴다', () => {
+  assert.equal(timelineKeyAction({ key: 'Escape', inComposer: true }), 'focus-timeline');
+  assert.equal(timelineKeyAction({ key: 'Escape', inComposer: false }), null, '작성창 밖 Esc는 뺏지 않는다');
+  assert.equal(timelineKeyAction({ key: 'Escape', onTimeline: true }), null);
+});
+
+test('대화 내용에 포커스가 있을 때만 ↑/↓가 스크롤이다', () => {
+  assert.equal(timelineKeyAction({ key: 'ArrowUp', onTimeline: true }), 'scroll-up');
+  assert.equal(timelineKeyAction({ key: 'ArrowDown', onTimeline: true }), 'scroll-down');
+  assert.equal(timelineKeyAction({ key: 'ArrowUp', inComposer: true }), null, '작성창 ↑/↓는 커서 이동 그대로');
+  assert.equal(timelineKeyAction({ key: 'ArrowDown' }), null);
+  assert.equal(timelineKeyAction({ key: 'Enter', onTimeline: true }), null, 'Enter는 기존 작성창 이동 규칙');
+  assert.equal(timelineKeyAction(), null);
 });

@@ -66,6 +66,7 @@ export const strings = {
     attach: '첨부',
     empty: '아직 메시지가 없습니다. 첫 인사를 보내 보세요.',
     newMessages: '새 메시지 ↓',
+    timelineLabel: '대화 내용 — ↑/↓ 스크롤, Enter 작성창',
     attachPhoto: '사진 보내기',
     attachVideo: '영상 보내기',
     attachFile: '파일 보내기',
