@@ -98,6 +98,16 @@ test('작성창 Esc는 대화 내용으로 포커스를 옮긴다', () => {
   assert.equal(timelineKeyAction({ key: 'Escape', onTimeline: true }), null);
 });
 
+test('작성창 End도 Esc처럼 대화 내용으로 포커스를 옮긴다(수정키 없을 때만)', () => {
+  assert.equal(timelineKeyAction({ key: 'End', inComposer: true }), 'focus-timeline');
+  assert.equal(timelineKeyAction({ key: 'End', inComposer: false }), null, '작성창 밖 End는 뺏지 않는다');
+  assert.equal(timelineKeyAction({ key: 'End', onTimeline: true }), null, '대화 내용 End는 브라우저 기본(맨 아래)');
+  for (const modifier of ['shiftKey', 'ctrlKey', 'altKey', 'metaKey']) {
+    assert.equal(timelineKeyAction({ key: 'End', inComposer: true, [modifier]: true }), null, `${modifier}+End는 편집 동작`);
+  }
+  assert.equal(timelineKeyAction({ key: 'Escape', inComposer: true, shiftKey: true }), 'focus-timeline', 'Esc 규칙은 그대로');
+});
+
 test('대화 내용에 포커스가 있을 때만 ↑/↓가 스크롤이다', () => {
   assert.equal(timelineKeyAction({ key: 'ArrowUp', onTimeline: true }), 'scroll-up');
   assert.equal(timelineKeyAction({ key: 'ArrowDown', onTimeline: true }), 'scroll-down');

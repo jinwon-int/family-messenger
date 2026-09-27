@@ -225,6 +225,25 @@ test('Room.timeline을 놓쳐도 방을 열면 SDK live timeline의 최신 메�
   assert.match(document.querySelector('.timeline')?.textContent ?? '', /놓친 최신 메시지/);
 });
 
+test('작성창 End도 대화 내용으로 포커스를 옮기고, Shift+End는 편집 그대로 둔다', async (t) => {
+  const { document, key } = await app(t);
+  key('PageDown'); key('Enter');
+  const input = document.activeElement;
+  assert.equal(input.tagName, 'TEXTAREA');
+  input.value = '쓰던 글';
+  const list = document.querySelector('.room-screen .timeline');
+  assert.equal(key('End', { shiftKey: true }).defaultPrevented, false, 'Shift+End는 텍스트 선택 그대로');
+  assert.equal(key('End', { ctrlKey: true }).defaultPrevented, false, 'Ctrl+End는 글 끝으로 그대로');
+  assert.ok(document.activeElement === input, '수정키 End는 작성창에 남는다');
+  assert.equal(key('End').defaultPrevented, true);
+  assert.ok(document.activeElement === list, 'End는 대화 내용으로 포커스');
+  assert.equal(document.querySelector('main.shell').dataset.view, 'room', 'End는 방을 닫지 않는다');
+  assert.equal(key('End').defaultPrevented, false, '대화 내용 End는 브라우저 기본(맨 아래 스크롤)');
+  key('Enter');
+  assert.ok(document.activeElement === input, 'Enter는 작성창');
+  assert.equal(input.value, '쓰던 글', 'End는 초안을 버리지 않는다');
+});
+
 test('작성창 Esc는 대화 내용으로 포커스를 옮기고, ↑/↓로 스크롤하며, Enter는 초안 그대로 작성창으로 돌아간다', async (t) => {
   const { document, key } = await app(t);
   key('PageDown'); key('Enter');

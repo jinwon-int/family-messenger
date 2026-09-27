@@ -64,14 +64,22 @@ export const TIMELINE_ARROW_STEP_PX = 60;
 
 /**
  * 대화 내용 읽기 판정.
- * 작성창에서 Esc = 대화 내용(타임라인)으로 포커스를 옮긴다 — 작성 중인 글은 그대로 두고 위 대화를 읽기 위해.
+ * 작성창에서 Esc 또는 End = 대화 내용(타임라인)으로 포커스를 옮긴다 — 작성 중인 글은 그대로 두고 위 대화를 읽기 위해.
+ * End는 Home(방 목록)의 짝이다. 수정키가 붙은 End(Shift+End 선택, Ctrl/⌘+End 글 끝으로)는 편집 동작이라 뺏지 않는다.
+ * 대화 내용에서의 End는 브라우저 기본(맨 아래로 스크롤) 그대로 둔다.
  * 대화 내용에 포커스가 있으면 ↑/↓ = 위/아래 스크롤. 돌아가기는 기존 Enter(작성창)·Home(목록).
  * IME 조합 중 Esc는 조합 취소라 뺏지 않는다(호출부가 isComposing을 거른다).
- * @param {{key?: string, inComposer?: boolean, onTimeline?: boolean}} input
+ * @param {{key?: string, inComposer?: boolean, onTimeline?: boolean, shiftKey?: boolean, ctrlKey?: boolean, altKey?: boolean, metaKey?: boolean}} input
  * @returns {'focus-timeline'|'scroll-up'|'scroll-down'|null}
  */
-export function timelineKeyAction({ key, inComposer = false, onTimeline = false } = {}) {
+export function timelineKeyAction({
+  key, inComposer = false, onTimeline = false, shiftKey = false, ctrlKey = false, altKey = false, metaKey = false,
+} = {}) {
   if (key === 'Escape') return inComposer ? 'focus-timeline' : null;
+  if (key === 'End') {
+    const modified = shiftKey || ctrlKey || altKey || metaKey;
+    return inComposer && !modified ? 'focus-timeline' : null;
+  }
   if (!onTimeline) return null;
   if (key === 'ArrowUp') return 'scroll-up';
   if (key === 'ArrowDown') return 'scroll-down';
