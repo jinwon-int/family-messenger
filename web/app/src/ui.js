@@ -557,7 +557,7 @@ function buildRoom({ room, timeline, onSend, onAttach, photoPreviews = null, onO
   ), earlierMode);
   const list = el(
     'ul',
-    // tabindex -1: 탭 순서는 그대로, 작성창 Esc가 여기로 포커스를 옮겨 ↑/↓ 스크롤한다(main.js).
+    // tabindex -1: 탭 순서는 그대로, 작성창 Esc·End가 여기로 포커스를 옮겨 ↑/↓ 스크롤한다(main.js).
     { class: 'timeline', 'aria-live': 'polite', tabindex: '-1', 'aria-label': strings.chat.timelineLabel },
     earlierRow,
     timeline.length === 0 && !loadingEarlier ? signed(el('li', { class: 'empty' }, strings.chat.empty), 'empty') : timeline.map((entry) => bubble(entry, photoPreviews, onOpenAttachment)),

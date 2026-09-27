@@ -518,7 +518,7 @@ async function resumePush() {
 }
 
 // 방 화면 키보드 단축키: 대화형 요소 밖 Enter=작성창 커서, Home=방 목록,
-// 작성창 Esc=대화 내용으로 포커스(초안 유지), 대화 내용에서 ↑/↓=스크롤.
+// 작성창 Esc·End=대화 내용으로 포커스(초안 유지, End는 수정키 없을 때만), 대화 내용에서 ↑/↓=스크롤.
 // 시트(verification/recovery)가 열려 있으면 가로채지 않는다 — 시트 Esc는 자체 닫기.
 // 대화목록 Page Up/Page Down 탐색: 방 항목(.room-item) 사이에서 포커스를 옮긴다(roving focus).
 // 2분할(목록|대화)에서는 옮긴 방을 오른쪽에 바로 열고 작성창에 커서를 둔다.
@@ -608,13 +608,17 @@ function installKeyboardShortcuts() {
     if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
     if (!state.currentRoomId) return;
     if (root.querySelector('dialog[open]')) return;
-    // 작성창 Esc → 대화 내용으로 포커스, 대화 내용에서 ↑/↓ → 스크롤(채팅 내용 확인용).
+    // 작성창 Esc·End → 대화 내용으로 포커스, 대화 내용에서 ↑/↓ → 스크롤(채팅 내용 확인용).
     const list = root.querySelector('.room-screen .timeline');
     const input = root.querySelector('.composer textarea[name=body]');
     const readAction = timelineKeyAction({
       key: event.key,
       inComposer: Boolean(input) && event.target === input,
       onTimeline: Boolean(list) && event.target === list,
+      shiftKey: event.shiftKey,
+      ctrlKey: event.ctrlKey,
+      altKey: event.altKey,
+      metaKey: event.metaKey,
     });
     if (readAction && list) {
       event.preventDefault();
