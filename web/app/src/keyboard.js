@@ -59,6 +59,25 @@ export function listPageNavAction({ key, split, view, composerFocused } = {}) {
   return null;
 }
 
+/** 대화 내용에서 ↑/↓ 한 번에 스크롤하는 거리(px). 브라우저 기본 한 줄 스크롤과 비슷하게. */
+export const TIMELINE_ARROW_STEP_PX = 60;
+
+/**
+ * 대화 내용 읽기 판정.
+ * 작성창에서 Esc = 대화 내용(타임라인)으로 포커스를 옮긴다 — 작성 중인 글은 그대로 두고 위 대화를 읽기 위해.
+ * 대화 내용에 포커스가 있으면 ↑/↓ = 위/아래 스크롤. 돌아가기는 기존 Enter(작성창)·Home(목록).
+ * IME 조합 중 Esc는 조합 취소라 뺏지 않는다(호출부가 isComposing을 거른다).
+ * @param {{key?: string, inComposer?: boolean, onTimeline?: boolean}} input
+ * @returns {'focus-timeline'|'scroll-up'|'scroll-down'|null}
+ */
+export function timelineKeyAction({ key, inComposer = false, onTimeline = false } = {}) {
+  if (key === 'Escape') return inComposer ? 'focus-timeline' : null;
+  if (!onTimeline) return null;
+  if (key === 'ArrowUp') return 'scroll-up';
+  if (key === 'ArrowDown') return 'scroll-down';
+  return null;
+}
+
 const INTERACTIVE = new Set(['INPUT', 'TEXTAREA', 'BUTTON', 'A', 'SELECT', 'LABEL', 'SUMMARY']);
 
 /**

@@ -127,7 +127,7 @@ test('IME and open dialogs retain Home; ordinary composer arrows remain text edi
   assert.equal(key('PageDown', { isComposing: true }).defaultPrevented, false, 'IME 조합 중 Page Down은 방을 바꾸지 않는다');
   assert.equal(document.querySelector('.room-screen')?.dataset.roomId, '!a:example.test');
   assert.equal(key('ArrowDown').defaultPrevented, false);
-  assert.equal(key('Escape').defaultPrevented, false);
+  assert.equal(key('Escape', { isComposing: true }).defaultPrevented, false, 'IME 조합 중 Esc는 조합 취소라 뺏지 않는다');
   assert.ok(document.activeElement === input);
   const dialog = document.createElement('dialog');
   document.getElementById('app').append(dialog);
@@ -222,4 +222,31 @@ test('Room.timeline을 놓쳐도 방을 열면 SDK live timeline의 최신 메�
   const { window, document, buttons } = await app(t, { liveEvents: { '!a:example.test': [latest] } });
   buttons()[0].dispatchEvent(new window.MouseEvent('click', { bubbles: true, detail: 1 }));
   assert.match(document.querySelector('.timeline')?.textContent ?? '', /놓친 최신 메시지/);
+});
+
+test('작성창 Esc는 대화 내용으로 포커스를 옮기고, ↑/↓로 스크롤하며, Enter는 초안 그대로 작성창으로 돌아간다', async (t) => {
+  const { document, key } = await app(t);
+  key('PageDown'); key('Enter');
+  const input = document.activeElement;
+  assert.equal(input.tagName, 'TEXTAREA');
+  input.value = '쓰던 글';
+  const list = document.querySelector('.room-screen .timeline');
+  assert.equal(list.getAttribute('tabindex'), '-1', '탭 순서에는 끼지 않는다');
+  assert.equal(key('Escape').defaultPrevented, true);
+  assert.ok(document.activeElement === list, 'Esc는 대화 내용으로 포커스');
+  assert.equal(document.querySelector('main.shell').dataset.view, 'room', 'Esc는 방을 닫지 않는다');
+  const scrolls = [];
+  list.scrollBy = (options) => scrolls.push(options.top);
+  assert.equal(key('ArrowUp').defaultPrevented, true);
+  assert.equal(key('ArrowUp').defaultPrevented, true);
+  assert.equal(key('ArrowDown').defaultPrevented, true);
+  assert.deepEqual(scrolls, [-60, -60, 60]);
+  assert.ok(document.activeElement === list, '스크롤 중에도 포커스 유지');
+  key('Enter');
+  assert.ok(document.activeElement === input, 'Enter는 작성창');
+  assert.equal(input.value, '쓰던 글', 'Esc·스크롤은 초안을 버리지 않는다');
+  assert.equal(key('ArrowUp').defaultPrevented, false, '작성창 ↑/↓는 텍스트 편집 그대로');
+  key('Escape');
+  key('Home');
+  assert.equal(document.querySelector('main.shell').dataset.view, 'list', '대화 내용에서 Home은 목록');
 });

@@ -418,6 +418,8 @@ main.shell[data-view="room"] .pane-list { display: none; }
  * 말다 하면(상태 줄·새 메시지·입력중 표시) 목록·말풍선이 가로로 흔들린다. 오버레이 스크롤바(맥·
  * 모바일)에서는 아무 영향이 없다. */
 .pane-list, .timeline, .box-body { scrollbar-gutter: stable; }
+/* 작성창 Esc로 대화 내용에 포커스가 오면(↑/↓ 스크롤) 테두리를 안쪽에 그린다 — 바깥 여백은 잘린다. */
+.timeline:focus-visible { outline-offset: -3px; }
 .load-earlier { display: flex; justify-content: center; padding: var(--space-1) 0 var(--space-2); }
 .load-earlier button { min-height: 36px; font-size: var(--text-s); }
 .load-earlier .hint { font-size: var(--text-xs); color: var(--text-3); }
