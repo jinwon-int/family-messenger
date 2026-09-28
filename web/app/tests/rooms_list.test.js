@@ -37,3 +37,11 @@ test('listSignature: 보이는 값이 같으면 같고, 마지막 메시지·라
   assert.equal(listSignature(base, now, TIME), listSignature(base, now + 2_000, TIME), '2초 뒤엔 라벨이 같다');
   assert.notEqual(listSignature(base, now, TIME), listSignature([{ ...base[0], memberCount: 4 }], now, TIME));
 });
+
+test('listSignature: 안 읽음(NEW 배지)이 켜지거나 꺼지면 달라진다 — 영수증만 와도 목록을 다시 그린다', () => {
+  const now = Date.now();
+  const read = [{ roomId: 'a', displayName: '가족', memberCount: 3, lastMessage: { eventId: '$1', text: '안녕', ts: now }, unread: false }];
+  const unread = [{ ...read[0], unread: true }];
+  assert.notEqual(listSignature(read, now, TIME), listSignature(unread, now, TIME));
+  assert.equal(listSignature(read, now, TIME), listSignature([{ ...read[0], unread: undefined }], now, TIME), '값이 없으면 읽음과 같다');
+});

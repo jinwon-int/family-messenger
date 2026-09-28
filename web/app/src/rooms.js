@@ -85,7 +85,8 @@ export function relativeTime(ts, now, labels) {
 
 /**
  * Cheap change signature for the list so a periodic tick re-renders only
- * when something visible changed (name, member count, last message, label).
+ * when something visible changed (name, member count, last message, label,
+ * unread badge — a read receipt alone flips it).
  */
 export function listSignature(summaries, now, labels) {
   return JSON.stringify(summaries.map((room) => [
@@ -95,5 +96,6 @@ export function listSignature(summaries, now, labels) {
     room.lastMessage?.eventId ?? '',
     room.lastMessage?.text ?? '',
     relativeTime(room.lastMessage?.ts, now, labels),
+    room.unread === true,
   ]));
 }

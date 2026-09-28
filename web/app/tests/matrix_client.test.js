@@ -834,3 +834,56 @@ test('대화 목록 순서: account data에서 읽고 쓰며, 다른 기기의 �
   adapter.client.emit('accountData', accountEvent('us.familychat.room_order', { rooms: ['!d:example.com'] }));
   assert.equal(seen.length, 1, '구독을 끊으면 더 알리지 않는다');
 });
+
+test('hasReadEvent: SDK 영수증(hasUserReadEvent)으로 판정하고, 모르는 방·이벤트는 null', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  const asked = [];
+  const known = new Set(['$old', '$new']);
+  adapter.client.addRoom({
+    roomId: '!r:example.com',
+    findEventById: (id) => (known.has(id) ? { getId: () => id } : undefined),
+    hasUserReadEvent: (userId, id) => { asked.push([userId, id]); return id === '$old'; },
+    getEventReadUpTo: () => '$gone',
+  });
+  assert.equal(adapter.hasReadEvent('!r:example.com', '$old'), true);
+  assert.equal(adapter.hasReadEvent('!r:example.com', '$new'), false);
+  assert.deepEqual(asked, [[CREDS.userId, '$old'], [CREDS.userId, '$new']], '내 계정으로 묻는다');
+  assert.equal(adapter.hasReadEvent('!r:example.com', '$gone'), true, 'SDK에 없는 이벤트는 영수증이 정확히 가리킬 때만 읽음');
+  assert.equal(adapter.hasReadEvent('!r:example.com', '$unknown'), null, '없는 이벤트는 경고 로그 대신 모름');
+  assert.equal(adapter.hasReadEvent('!missing:example.com', '$old'), null);
+  adapter.client.addRoom({ roomId: '!t:example.com', findEventById: () => ({}), hasUserReadEvent: () => { throw new Error('x'); } });
+  assert.equal(adapter.hasReadEvent('!t:example.com', '$old'), null);
+});
+
+test('sendReadReceipt: 방의 실제 이벤트로 공개 m.read 영수증을 보내고, 없는·전송 중 이벤트는 건너뛴다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  const receipts = [];
+  adapter.client.sendReadReceipt = async (event, ...rest) => { receipts.push([event.getId(), ...rest]); return {}; };
+  const events = {
+    $done: { getId: () => '$done', status: null },
+    $pending: { getId: () => '$pending', status: 'sending' },
+  };
+  adapter.client.addRoom({ roomId: '!r:example.com', findEventById: (id) => events[id] });
+  assert.equal(await adapter.sendReadReceipt('!r:example.com', '$done'), true);
+  assert.equal(await adapter.sendReadReceipt('!r:example.com', '$pending'), false);
+  assert.equal(await adapter.sendReadReceipt('!r:example.com', '$missing'), false);
+  assert.equal(await adapter.sendReadReceipt('!missing:example.com', '$done'), false);
+  assert.deepEqual(receipts, [['$done']], '영수증 종류는 SDK 기본값(m.read)');
+});
+
+test('onOwnReceipt: 내 영수증이 담긴 Room.receipt만 방 id로 알리고 해제된다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  const seen = [];
+  const off = adapter.onOwnReceipt((roomId) => seen.push(roomId));
+  const receipt = (userId, type = 'm.read') => ({ getContent: () => ({ $e: { [type]: { [userId]: { ts: 1 } } } }) });
+  adapter.client.emit('Room.receipt', receipt('@other:example.com'), { roomId: '!other:example.com' });
+  adapter.client.emit('Room.receipt', receipt(CREDS.userId), { roomId: '!mine:example.com' });
+  adapter.client.emit('Room.receipt', receipt(CREDS.userId, 'm.read.private'), { roomId: '!private:example.com' });
+  adapter.client.emit('Room.receipt', { getContent: () => null }, { roomId: '!broken:example.com' });
+  off();
+  adapter.client.emit('Room.receipt', receipt(CREDS.userId), { roomId: '!after:example.com' });
+  assert.deepEqual(seen, ['!mine:example.com', '!private:example.com']);
+});
