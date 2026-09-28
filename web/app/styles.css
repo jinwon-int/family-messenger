@@ -34,6 +34,9 @@
   --bubble-me: var(--brand);
   --bubble-me-text: var(--on-brand);
   --focus: #7c9bff;
+  /* 안 읽음 NEW 배지 — 흰 글자 대비 4.58:1, 다크 카드(#171d2c) 위 3.67:1이라 두 모드 공용 */
+  --unread: #d93a26;
+  --on-unread: #ffffff;
 
   /* 모양 */
   --radius-s: 10px;
@@ -129,6 +132,20 @@ p { margin: 0; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+
+/* 화면에는 안 보이고 스크린리더만 읽는 글자 */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* 부팅 안내(index.html — 인라인 style 대신 클래스, CSP style-src 'self') */
@@ -311,6 +328,28 @@ ul.rooms > li.reorderable.dragging { opacity: 0.5; }
 .room-item .texts { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .room-item .room-head { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
 .room-item .room-name { flex: 1; min-width: 0; font-weight: 700; font-size: var(--text-m); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 이름 + NEW 배지 묶음: 묶음이 남는 폭을 차지하고, 이름만 줄어들며 말줄임된다(배지는 항상 보인다). */
+.room-item .room-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
+.room-item .room-title .room-name { flex: 0 1 auto; min-width: 0; }
+/* 안 읽은 방: 이름을 더 굵게, 미리보기를 본문색으로(읽은 방은 기존 모양 그대로). */
+.room-item.unread .room-name { font-weight: 800; }
+.room-item.unread .preview { color: var(--text); }
+.unread-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--unread);
+  color: var(--on-unread);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
 .room-item .when { flex: none; font-size: var(--text-xs); color: var(--text-3); }
 .room-item .preview { display: block; font-size: var(--text-s); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .room-item .preview-sender { color: var(--text); font-weight: 600; }

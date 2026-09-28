@@ -16,6 +16,7 @@ import { applyTypingEvent, createTypingState, pruneTyping, typingIndicator, typi
 import { DEFAULT_CONFIG, loadConfig } from './config.js';
 import { disablePush, enablePush, hasMatchingPusher, isIosDevice, pushAvailability, readSubscription } from './push.js';
 import { renderHold, selectionInRenderedArea } from './render-guard.js';
+import { createReadReceiptSender, isRoomUnread } from './read-receipts.js';
 import * as ui from './ui.js';
 
 const root = document.getElementById('app');
@@ -191,6 +192,7 @@ function renderCurrent() {
           hasMore: current.hasMore !== false,
           loadingEarlier: current.loadingEarlier === true,
           onLoadEarlier: () => loadEarlier(state.currentRoomId),
+          onReachBottom: requestReadReceipt,
           onBack: openRooms,
           onSend: (text) => sendText(text),
           onAttach: (file) => sendAttachment(file),
@@ -227,12 +229,19 @@ function renderCurrent() {
     },
   });
   restoreRoomListFocus();
+  // 방이 열려 있으면(새 메시지 도착·방 열기 포함) 최신 메시지가 보이는지 보고 읽음 확인을 보낸다.
+  if (state.currentRoomId) requestReadReceipt();
 }
 
 const PREVIEW_LABELS = () => ({ photo: strings.media.photo, video: strings.media.video, file: strings.media.file, undecryptable: strings.chat.decryptFailedShort });
 const TIME_LABELS = () => ({ justNow: strings.rooms.justNow, minutesAgo: strings.rooms.minutesAgo, hoursAgo: strings.rooms.hoursAgo, yesterday: strings.rooms.yesterday });
 
-/** Room summaries decorated with the last message preview + typing label, in the user's fixed order. */
+/** 내가 이 방의 이벤트를 읽었는가(SDK 영수증). 모르면 null — 어댑터가 없는 테스트 클라이언트도 null. */
+function hasReadEvent(roomId, eventId) {
+  return state.client?.hasReadEvent?.(roomId, eventId) ?? null;
+}
+
+/** Room summaries decorated with the last message preview + typing label + unread flag, in the user's fixed order. */
 function listSummaries() {
   const decorated = state.summaries.map((summary) => {
     // Array.prototype.at은 ES2022다. 빌드 타깃이 es2020이고 esbuild는 메서드를
@@ -243,6 +252,8 @@ function listSummaries() {
     return {
       ...summary,
       lastMessage: preview ? { ...preview, ts: entry.ts ?? null, eventId: entry.eventId ?? null } : null,
+      // 이름 옆 NEW 배지 — 마지막 표시 메시지가 남의 것이고 내 읽음 영수증이 그 앞에 있으면 안 읽음.
+      unread: isRoomUnread(timeline, (eventId) => hasReadEvent(summary.roomId, eventId)),
       // 목록에서도 이름 옆 "입력중.." — 내 입력은 제외된다(typingNames).
       typing: typingIndicator(typingNames(state.typing, summary.roomId, { myUserId: state.myUserId }), strings.chat.typing),
     };
@@ -427,6 +438,8 @@ async function connect(creds, { fresh = false } = {}) {
     if (!applyTypingEvent(state.typing, info)) return;
     scheduleRender();
   });
+  // 내 읽음 영수증이 바뀌면(다른 기기에서 읽음, 여기서 보낸 영수증의 로컬 에코) NEW 배지를 다시 그린다.
+  state.client.onOwnReceipt?.(() => scheduleRender());
   state.client.onTimelineReset?.((roomId) => {
     clearHydratedDecryptions(roomId);
     const entry = state.rooms.get(roomId);
@@ -852,6 +865,49 @@ function openRoom(roomId) {
   input?.focus();
 }
 
+// --- 읽음 확인(read receipt) 전송 ---
+// 방이 열려 있고, 탭이 보이며 창에 포커스가 있고, 타임라인이 맨 아래(최신 메시지가 보임)일 때
+// 마지막 표시 메시지에 공개 m.read 영수증을 보낸다. 재렌더·스크롤이 몰려도 짧게 모아 한 번만
+// 판단하고(READ_RECEIPT_DELAY_MS), 같은 이벤트·이미 읽은(더 오래된) 이벤트·내 메시지에는 다시
+// 보내지 않는다(read-receipts.js). 실패는 기록만 한다 — 화면 동작과 무관하다.
+const READ_RECEIPT_DELAY_MS = 150;
+const readReceipts = createReadReceiptSender({
+  send: (roomId, eventId) => state.client?.sendReadReceipt?.(roomId, eventId),
+  onError: (error) => console.warn('read receipt failed', error),
+});
+let readReceiptTimer = null;
+
+function requestReadReceipt() {
+  if (readReceiptTimer || !state.client?.sendReadReceipt) return;
+  readReceiptTimer = setTimeout(() => {
+    readReceiptTimer = null;
+    flushReadReceipt();
+  }, READ_RECEIPT_DELAY_MS);
+}
+
+function flushReadReceipt() {
+  const roomId = state.currentRoomId;
+  if (!state.client?.sendReadReceipt || !roomId) return;
+  try {
+    readReceipts.maybeSend({
+      roomId,
+      timeline: state.rooms.get(roomId)?.timeline ?? [],
+      visible: document.visibilityState !== 'hidden',
+      focused: typeof document.hasFocus === 'function' ? document.hasFocus() : true,
+      atBottom: ui.timelineShowsLatest(root),
+      hasRead: (eventId) => hasReadEvent(roomId, eventId),
+    });
+  } catch (error) {
+    console.warn('read receipt check failed', error);
+  }
+}
+
+// 탭이 다시 보이거나 창이 포커스를 되찾으면(다른 앱에서 돌아옴) 그 사이 온 메시지를 읽은 것으로 보낸다.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'hidden') requestReadReceipt();
+});
+window.addEventListener('focus', requestReadReceipt);
+
 // --- 입력 중 표시 전송: 작성창 활동을 m.typing으로 변환한다 ---
 // 홈서버는 timeout 후 스스로 만료시키므로(기본 30초), 계속 입력하면 만료 전에 재알림하고
 // 뜸하거나 전송·방 전환하면 즉시 끈다. 실패는 조용히 무시한다(표시 기능일 뿐이다).
@@ -1132,6 +1188,9 @@ async function logout() {
   state.roomOrderQueued = null;
   state.orderEditing = false;
   stopTyping(null);
+  if (readReceiptTimer) clearTimeout(readReceiptTimer);
+  readReceiptTimer = null;
+  readReceipts.reset();
   state.typing = createTypingState();
   renderLogin();
 }

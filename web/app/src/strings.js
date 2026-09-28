@@ -46,6 +46,9 @@ export const strings = {
     moveUp: (name) => `${name} 위로 이동`,
     moveDown: (name) => `${name} 아래로 이동`,
     orderSaveFailed: '대화 순서를 저장하지 못했습니다. 다시 시도하세요.',
+    // 안 읽은 방 이름 옆 둥근 배지(카카오톡식 N). 글자 N은 보조기기에서 숨기고 unreadLabel을 읽는다.
+    unreadBadge: 'N',
+    unreadLabel: '새 메시지',
   },
   invite: {
     title: '초대',

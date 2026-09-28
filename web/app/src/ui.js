@@ -215,7 +215,7 @@ function roomListItem(room, onSelect, active = false, order = null) {
       })
     : '';
   const signature = JSON.stringify([
-    room.roomId, active, room.kind, room.displayName, room.typing || '', agentCount, when, room.memberCount,
+    room.roomId, active, room.kind, room.displayName, room.typing || '', agentCount, when, room.memberCount, room.unread === true,
     last ? [room.kind === 'family' ? last.sender ?? '' : '', last.text] : null,
     // 편집 중에는 자리(▲▼ 핸들러가 쓰는 위치)도 보이는 값이다.
     order ? [order.index, order.count] : null,
@@ -250,7 +250,20 @@ function roomListItem(room, onSelect, active = false, order = null) {
       el(
         'span',
         { class: 'room-head' },
-        el('span', { class: 'room-name' }, name),
+        // 이름과 NEW 배지를 한 묶음으로 둔다 — 긴 이름은 말줄임되고 배지는 이름 바로 옆에 항상 보인다.
+        el(
+          'span',
+          { class: 'room-title' },
+          el('span', { class: 'room-name' }, name),
+          room.unread
+            ? el(
+                'span',
+                { class: 'unread-badge', title: strings.rooms.unreadLabel },
+                el('span', { 'aria-hidden': 'true' }, strings.rooms.unreadBadge),
+                el('span', { class: 'visually-hidden' }, strings.rooms.unreadLabel),
+              )
+            : null,
+        ),
         // 이름 옆 "입력중.." — 다른 방의 입력도 보이므로 방별 typing 라벨(main.js가 계산).
         room.typing ? el('span', { class: 'typing', role: 'status' }, room.typing) : null,
         agentCount > 0 ? el('span', { class: 'pill ai', title: strings.participants.aiTitle }, strings.participants.aiBadge) : null,
@@ -261,16 +274,17 @@ function roomListItem(room, onSelect, active = false, order = null) {
         : el('span', { class: 'preview empty-preview' }, `${roomBadge(room.kind)} · ${strings.rooms.memberCount(room.memberCount)} · ${strings.rooms.noMessages}`),
     ),
   ];
+  const itemClass = room.unread ? 'room-item unread' : 'room-item';
   return signed(el(
     'li',
     { 'data-room-id': room.roomId, ...dragAttrs },
     // 순서 편집 중에는 행이 버튼이 아니다 — 눌러도 방이 열리지 않고(▲▼ 옆을 잘못 눌러 화면이
     // 넘어가지 않게), Firefox는 <button>에서 끌기를 시작하지 않으므로 행 자체를 끌 수 있게 한다.
     order
-      ? el('div', { class: 'room-item', 'data-room-id': room.roomId, 'aria-current': active ? 'true' : null }, content)
+      ? el('div', { class: itemClass, 'data-room-id': room.roomId, 'aria-current': active ? 'true' : null }, content)
       : el(
           'button',
-          { type: 'button', class: 'room-item', 'data-room-id': room.roomId, 'aria-current': active ? 'true' : null, onclick: (event) => onSelect(room, event) },
+          { type: 'button', class: itemClass, 'data-room-id': room.roomId, 'aria-current': active ? 'true' : null, onclick: (event) => onSelect(room, event) },
           content,
         ),
     order
@@ -413,6 +427,17 @@ function isNearBottom(list) {
   return list.scrollHeight - list.scrollTop - list.clientHeight <= NEAR_BOTTOM_PX;
 }
 
+/**
+ * 열린 방의 최신 메시지가 지금 화면에 보이는가 — 방 화면이 표시 중이고(좁은 화면의 보관함에
+ * 가려지지 않음) 타임라인이 맨 아래 근처일 때만 true. 읽음 확인 전송 판단용(main.js).
+ */
+export function timelineShowsLatest(root) {
+  const shell = root?.querySelector?.('main.shell');
+  if (!shell || shell.dataset.view !== 'room') return false;
+  const list = shell.querySelector('.room-screen .timeline');
+  return Boolean(list) && isNearBottom(list);
+}
+
 /** Reconcile key of a timeline row: bubbles by event id, the two fixed rows by role. */
 function timelineKey(node) {
   if (node.classList.contains('load-earlier')) return 'earlier';
@@ -542,7 +567,7 @@ function snapshotRoomPane(root) {
  * at the bottom; new message while scrolled up → keep the position and show
  * a floating "새 메시지" badge that jumps down on click.
  */
-function buildRoom({ room, timeline, onSend, onAttach, photoPreviews = null, onOpenAttachment = null, onTyping = null, onBack, notice, onToggleBox = null, hasMore = false, loadingEarlier = false, onLoadEarlier = null, typing = '' }, snap) {
+function buildRoom({ room, timeline, onSend, onAttach, photoPreviews = null, onOpenAttachment = null, onTyping = null, onBack, notice, onToggleBox = null, hasMore = false, loadingEarlier = false, onLoadEarlier = null, onReachBottom = null, typing = '' }, snap) {
   // 맨 위 행: 이전 대화 불러오기 버튼 / 불러오는 중 / 대화의 처음.
   const earlierMode = loadingEarlier ? 'loading' : hasMore && onLoadEarlier ? 'button' : timeline.length > 0 ? 'start' : 'none';
   const earlierRow = signed(el(
@@ -564,7 +589,7 @@ function buildRoom({ room, timeline, onSend, onAttach, photoPreviews = null, onO
   );
   // 스크롤러는 같은 방 재렌더에서 유지된다(updateTimeline) — 리스너는 만들 때의 값이 아니라
   // 가장 최근 렌더의 값을 읽어야 한다.
-  timelineProps.set(list, { hasMore, loadingEarlier, onLoadEarlier });
+  timelineProps.set(list, { hasMore, loadingEarlier, onLoadEarlier, onReachBottom });
   // 맨 위 근처까지 올리면 자동으로 이전 페이지를 요청한다(한 번에 하나, main.js가 가드).
   list.addEventListener('scroll', () => {
     const props = timelineProps.get(list);
@@ -584,7 +609,10 @@ function buildRoom({ room, timeline, onSend, onAttach, photoPreviews = null, onO
     strings.chat.newMessages,
   );
   list.addEventListener('scroll', () => {
-    if (isNearBottom(list)) badge.hidden = true;
+    if (!isNearBottom(list)) return;
+    badge.hidden = true;
+    // 최신 메시지가 화면에 들어왔다 — main.js가 읽음 확인을 보낼지 판단한다.
+    timelineProps.get(list)?.onReachBottom?.();
   });
   const attachInput = (accept, label) => {
     const input = el('input', {

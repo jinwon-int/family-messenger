@@ -609,6 +609,52 @@ export class ClientAdapter {
     return off;
   }
 
+  /**
+   * 내가 이 이벤트를 읽었는가 — SDK 영수증(Room.hasUserReadEvent: 서버·로컬 에코 영수증,
+   * 내가 마지막으로 보낸 메시지까지)으로 판정한다. true/false, 판단할 수 없으면 null.
+   * SDK가 모르는 이벤트에 hasUserReadEvent를 부르면 매번 경고 로그를 남기므로 먼저 확인한다.
+   */
+  hasReadEvent(roomId, eventId) {
+    const room = this.client.getRoom?.(roomId);
+    if (!room || typeof eventId !== 'string') return null;
+    try {
+      if (!room.findEventById?.(eventId)) {
+        return room.getEventReadUpTo?.(this.myUserId) === eventId ? true : null;
+      }
+      return Boolean(room.hasUserReadEvent(this.myUserId, eventId));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 읽음 확인(공개 m.read 영수증 — SDK 기본값)을 보낸다. SDK가 로컬 에코 영수증을 바로
+   * 남기므로 hasReadEvent가 곧바로 true가 된다. 방·이벤트가 없거나 아직 전송 중인 로컬
+   * 에코(status가 있음 — SDK가 throw한다)면 보내지 않고 false.
+   */
+  async sendReadReceipt(roomId, eventId) {
+    const event = this.client.getRoom?.(roomId)?.findEventById?.(eventId);
+    if (!event || event.status != null || typeof this.client.sendReadReceipt !== 'function') return false;
+    await this.client.sendReadReceipt(event);
+    return true;
+  }
+
+  /**
+   * 내 읽음 영수증이 바뀐 방(다른 기기에서 읽음, 내 전송의 로컬 에코·서버 되울림)을 알린다.
+   * 남의 영수증은 목록 표시와 무관하므로 거른다. handler(roomId); 해제 함수를 돌려준다.
+   */
+  onOwnReceipt(handler) {
+    const listener = (event, room) => {
+      const content = event?.getContent?.();
+      if (!content || typeof content !== 'object' || !room?.roomId) return;
+      const mine = Object.values(content).some((byType) => byType && typeof byType === 'object'
+        && Object.values(byType).some((byUser) => byUser && typeof byUser === 'object' && this.myUserId in byUser));
+      if (mine) handler(room.roomId);
+    };
+    this.client.on('Room.receipt', listener);
+    return () => this.client.removeListener('Room.receipt', listener);
+  }
+
   /** Limited sync 등으로 SDK가 live timeline을 비우면 화면 복사본도 다시 읽어야 한다. */
   onTimelineReset(handler) {
     const listener = (room) => handler(room?.roomId);
