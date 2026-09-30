@@ -70,6 +70,9 @@ fingerprint=key 해시 일치, `trusted` acceptance에는 `approved_by` 필수, 
   revision, 폐기면 tombstone revision)에 묶인다. 한 번 쓰인 `approved_by`는 불변.
 - `approved_by`는 **관리 선언**이다. 사람이 실제로 지문을 비교했다는 암호학적 증명이
   아니다(`server/DEVICES.md` 원칙 유지).
+- 폐기 서명(`-revoke` + `-input` 증거)은 대상에 아직 `approved_by`가 없을 때(E1 등록)
+  만 받는다. E2로 등록된 기기는 등록 시 증거를 이미 썼으므로 plain revoke만 허용된다 —
+  증거는 정책당 정확히 한 번 쓰인다.
 
 ## 릴레이 멤버십 강제 (M3b)
 
@@ -100,8 +103,9 @@ fingerprint=key 해시 일치, `trusted` acceptance에는 `approved_by` 필수, 
 
 멤버십은 `mls_members(room, device, actor, added_seq)`에 커밋 insert와 같은
 BEGIN IMMEDIATE 트랜잭션으로 기록된다(B2/B3 규율 유지). v2 릴레이 smoke
-(`native_v2_relay_smoke.py`)은 아직 등록 없이 구 모드로 도는데, 클라이언트 정책 등록과
-함께 M3c에서 전환된다.
+(`native_v2_relay_smoke.py`)은 M3c에서 `-device-state` 강제 모드로 전환됐다 —
+정책 체인은 실제 owner CLI(native-devices)로 만들고, E2 승인 증거는 브라우저
+파사드가 서명하며, commit은 post-commit 멤버 목록을 outer JSON에 복제한다.
 
 ## 구 바이너리 거부 (검증됨)
 
@@ -123,9 +127,13 @@ BEGIN IMMEDIATE 트랜잭션으로 기록된다(B2/B3 규율 유지). v2 릴레�
 ## 증명하지 않는 것
 
 - 릴레이가 revoke 이후 그 device의 POST를 거부하는 것 — **M3b에서 증명**(위 섹션,
-  Go HTTP·단위 테스트). 단, GET은 열려 있다(POST-only 거부).
+  Go HTTP·단위 테스트), M3c v2 smoke이 등록된 기기로 종단 재확인(event·keypackage
+  POST 403 `device_not_allowed`, 새 에포크는 해독 불가). 단, GET은 열려 있다
+  (POST-only 거부).
 - MLS `Add`/`Remove` commit과 Welcome — 클라이언트(M3c 파사드). 릴레이는 outer
   복제 목록만 검증하며 outer·내부 불일치 검증은 클라이언트 몫이다.
-- v2 릴레이 smoke의 등록된 기기 전환, 지문 비교 UI와 실제 대역외 비교 수행 — M3c·사람.
+- v2 릴레이 smoke의 등록된 기기 전환 — M3c PR에서 완료: E1·E2 등록(두 지문 화면
+  일치 확인), E2·E3 폐기 증거(브라우저 서명 → Go CLI 검증), E4 revoke-all과 대체 기기의
+  새 방. 남는 것은 지문 비교 UI의 **실제 대역외 비교 수행** — 사람.
 - 64 revision 소진 후 컴팩션, E5 restore-history, 파일·봇(M5).
 - 브라우저/실기기 동작 — 이 유닛은 순수 서버 측 Go다.

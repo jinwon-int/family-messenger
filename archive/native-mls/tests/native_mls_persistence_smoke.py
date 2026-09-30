@@ -25,7 +25,7 @@ def main():
     evidence = Path(tempfile.mkdtemp(prefix='native-mls-persistence-', dir=repo / 'artifacts'))
     assets = {}
     files = {'/': repo / 'experiments/openmls-browser/web/index.html'}
-    for name in ['main.js', 'worker.js', 'durable-worker.js', 'session-store.js']:
+    for name in ['main.js', 'worker.js', 'durable-worker.js', 'session-store.js', 'enroll.js']:
         files['/' + name] = repo / 'experiments/openmls-browser/web' / name
     for name in ['family_mls_browser_experiment.js', 'family_mls_browser_experiment_bg.wasm', 'custody.js']:
         files['/pkg/' + name] = args.bundle / name

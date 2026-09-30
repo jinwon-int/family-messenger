@@ -22,7 +22,7 @@ def main():
     prefix = 'native-mls-browser-'
     evidence = Path(tempfile.mkdtemp(prefix=prefix, dir=repo / 'artifacts'))
     paths = {'/': repo / 'experiments/openmls-browser/web/index.html'}
-    for name in ['main.js', 'worker.js', 'durable-worker.js']:
+    for name in ['main.js', 'worker.js', 'durable-worker.js', 'enroll.js']:
         paths['/' + name] = repo / 'experiments/openmls-browser/web' / name
     for name in ['family_mls_browser_experiment.js', 'family_mls_browser_experiment_bg.wasm']:
         paths['/pkg/' + name] = args.bundle / name
