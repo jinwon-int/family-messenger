@@ -170,6 +170,15 @@ func TestRelayWithoutDeviceStoreKeepsLegacyContract(t *testing.T) {
 	if st != http.StatusCreated {
 		t.Fatalf("legacy app: status=%d body=%s", st, raw)
 	}
+	// Key packages too — a nil device store must never 403 a poster (this
+	// exact gap broke the v2 relay smoke once; it stays pinned).
+	kp, err := json.Marshal(keyPackagePost{Device: "b1", Packages: []keyPackageInput{{Ref: "k1", Bytes: []byte("pkg")}}})
+	if err != nil {
+		t.Fatalf("marshal keypackages: %v", err)
+	}
+	if st, raw = doJSON(t, srv, "POST", "/v2/rooms/r/keypackages", kp); st != http.StatusCreated {
+		t.Fatalf("legacy keypackages: status=%d body=%s", st, raw)
+	}
 }
 
 func TestUnknownAndRevokedDevicesGet403(t *testing.T) {

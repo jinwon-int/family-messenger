@@ -504,11 +504,14 @@ func (s *relay) postKeyPackages(room, device string, pkgs []keyPackageInput) (in
 	}
 	defer tx.Rollback()
 	// M3b: policy-active gate before any room state is touched, so a denied
-	// device cannot even materialize a room row.
+	// device cannot even materialize a room row. A nil active set (no
+	// -device-state) means enforcement is off: every device may post.
 	if active, err := s.enforceDevicePolicy(); err != nil {
 		return 0, err
-	} else if _, ok := active[device]; !ok {
-		return 0, deviceNotAllowed{Device: device}
+	} else if active != nil {
+		if _, ok := active[device]; !ok {
+			return 0, deviceNotAllowed{Device: device}
+		}
 	}
 	if _, err := ensureRoom(tx, room, "", now); err != nil {
 		return 0, err
