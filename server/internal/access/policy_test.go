@@ -2,6 +2,8 @@ package access
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -401,5 +403,44 @@ func TestPolicyLatestSemanticCorruptionRejected(t *testing.T) {
 	os.WriteFile(p, changed, 0600)
 	if _, _, e := s.Read(); e == nil {
 		t.Fatal("latest valid JSON corruption accepted")
+	}
+}
+
+// TestPolicyRejectsNativeV4Shape pins the structural rejection duty of old
+// binaries (#177 M3a): the operational v1 policy must never silently accept the
+// native v4 device policy shape — version 4, the approved_by evidence object,
+// the trusted-device acceptance value, or more than one device per actor.
+func TestPolicyRejectsNativeV4Shape(t *testing.T) {
+	c, _ := fixture(t)
+	b, e := EncodePolicy(c)
+	if e != nil {
+		t.Fatal(e)
+	}
+	key := strings.Repeat("ab", 32)
+	raw, e := hex.DecodeString(key)
+	if e != nil {
+		t.Fatal(e)
+	}
+	sum := sha256.Sum256(raw)
+	device := `{"device_id":"dev-1","actor":"alice","subject":"person-1","signing_key":"` + key + `","fingerprint":"` + hex.EncodeToString(sum[:]) + `","status":"active","device_revision":1,"acceptance":"out-of-band-fingerprint"}`
+	withDevice := bytes.Replace(b, []byte(`"version":1`), []byte(`"version":1,"devices":[`+device+`]`), 1)
+	if bytes.Equal(withDevice, b) {
+		t.Fatal("fixture has no version field to splice")
+	}
+	// Positive control: a conforming v1 device parses.
+	if _, e = ParsePolicy(withDevice); e != nil {
+		t.Fatalf("conforming v1 device rejected: %v", e)
+	}
+	for name, doc := range map[string][]byte{
+		"native-version-4":         bytes.Replace(withDevice, []byte(`"version":1`), []byte(`"version":4`), 1),
+		"approved-by-field":        bytes.Replace(withDevice, []byte(device), []byte(strings.TrimSuffix(device, "}")+`,"approved_by":{"device_id":"dev-1","revision":3}}`), 1),
+		"trusted-acceptance":       bytes.Replace(withDevice, []byte(`"acceptance":"out-of-band-fingerprint"`), []byte(`"acceptance":"trusted-device-fingerprint"`), 1),
+		"second-device-same-actor": bytes.Replace(withDevice, []byte(`"devices":[`+device+`]`), []byte(`"devices":[`+device+`,`+strings.Replace(device, "dev-1", "dev-2", 1)+`]`), 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, e := ParsePolicy(doc); e == nil {
+				t.Fatal("native v4 shape accepted by the v1 policy")
+			}
+		})
 	}
 }
