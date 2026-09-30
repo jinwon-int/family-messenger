@@ -6,8 +6,9 @@
 > 9-stage successor protocol and its `SUCCESSOR-*` links were removed from `archive/`
 > in M0 and are replaced by five operations (enroll-first / add-device / revoke /
 > recover-all-lost / restore-history) with device replacement as one MLS Add/Remove
-> commit and at most 4 active devices per actor. Links to `archive-frozen-20260917`
-> remain valid as v1 history.
+> commit and at most 4 active devices per actor. The implemented v4 policy contract
+> lives at [archive/native-mls/server/DEVICES-V4.md](../archive/native-mls/server/DEVICES-V4.md).
+> Links to `archive-frozen-20260917` remain valid as v1 history.
 
 The subsequent [signed successor context preflight](https://github.com/jinwon-int/family-messenger/blob/archive-frozen-20260917/archive/native-mls/server/SUCCESSOR-CONTEXT.md)
 checks accepted intent against the actual old room and healthy peer. It is
