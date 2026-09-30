@@ -1,4 +1,4 @@
-import init, { Device } from './pkg/family_mls_browser_experiment.js';
+import init, { Device, policy_fingerprint } from './pkg/family_mls_browser_experiment.js';
 const started = performance.now();
 const wasm = await init();
 const initMs = performance.now() - started;
@@ -22,6 +22,15 @@ self.onmessage = ({data: {id, method, argument}}) => {
         case 'encrypt': result = device.encrypt(new Uint8Array(argument)); break;
         case 'decrypt': result = device.decrypt(new Uint8Array(argument)); break;
         case 'public_key': result = device.public_key(); break;
+        case 'fingerprint': result = device.fingerprint(); break;
+        case 'members': result = device.members(); break;
+        case 'policy_fingerprint': result = policy_fingerprint(argument); break;
+        case 'sign_approval':
+          if (!argument || typeof argument !== 'object') throw new Error('bad argument');
+          result = device.sign_approval(argument.action, argument.device_id, argument.actor,
+            argument.subject, argument.signing_key, argument.acceptance,
+            BigInt(argument.base_revision));
+          break;
         case 'remove': result = device.remove_member(new Uint8Array(argument)); break;
         case 'commit': result = device.apply_commit(new Uint8Array(argument)); break;
         case 'remove_pending': result = device.remove_member_pending(new Uint8Array(argument)); break;

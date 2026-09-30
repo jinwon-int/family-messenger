@@ -1,3 +1,8 @@
 <!doctype html><html lang="en"><meta charset="utf-8"><title>Synthetic MLS experiment</title>
 <p>Disposable synthetic MLS experiment. No durable keys, login or product E2EE.</p>
-<script type="module" src="./main.js"></script></html>
+<div id="device-screen" hidden><span id="device-identity"></span> 지문: <code id="own-fingerprint"></code></div>
+<div id="trust-screen" hidden><span id="candidate-identity"></span> 지문: <code id="candidate-fingerprint"></code>
+<button id="approve" type="button" disabled>이 지문이 맞습니다</button>
+<button id="deny" type="button" disabled>거부</button></div>
+<script type="module" src="./main.js"></script>
+<script type="module" src="./enroll.js"></script></html>

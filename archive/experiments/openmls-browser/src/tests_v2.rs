@@ -388,3 +388,128 @@ fn trusted_session_enforces_pins_and_rolls_back() {
     assert_eq!(session_entries(&bob.session), before, "sender-key mismatch rolls back (ratchet not consumed)");
     assert_eq!(trusted(&mut bob, "decrypt_peer", &ciphertext, "alice", &alice_key).unwrap(), b"pinned hello");
 }
+
+// ---- policy v4 approval evidence (#177 M3c, DEVICES-V4.md) ----
+
+fn hex(bytes: &[u8]) -> String { bytes.iter().map(|b| format!("{b:02x}")).collect() }
+fn unhex(value: &str) -> Vec<u8> {
+    (0..value.len()).step_by(2).map(|i| u8::from_str_radix(&value[i..i + 2], 16).unwrap()).collect()
+}
+
+/// Parsed `members()` frame: sorted (identity, signing key) pairs.
+fn roster(frame: &[u8]) -> Vec<(String, Vec<u8>)> {
+    let count = u32::from_le_bytes(frame[..4].try_into().unwrap()) as usize;
+    let mut rest = &frame[4..];
+    let mut out = Vec::new();
+    for _ in 0..count {
+        let len = u32::from_le_bytes(rest[..4].try_into().unwrap()) as usize;
+        let identity = String::from_utf8(rest[4..4 + len].to_vec()).unwrap();
+        rest = &rest[4 + len..];
+        let key = rest[..32].to_vec();
+        rest = &rest[32..];
+        out.push((identity, key));
+    }
+    assert!(rest.is_empty(), "trailing bytes in members frame");
+    out
+}
+
+/// Canonical payload + signature from `sign_approval`, split at the length prefix.
+fn evidence(device: &mut Device, action: &str, acceptance: &str, base_revision: u64)
+            -> (Vec<u8>, Vec<u8>) {
+    let framed = device.sign_approval(action, "a:2", "a", "person-a", CANDIDATE_KEY_HEX,
+                                      acceptance, base_revision).expect("evidence");
+    let len = u32::from_le_bytes(framed[..4].try_into().unwrap()) as usize;
+    (framed[4..4 + len].to_vec(), framed[4 + len..].to_vec())
+}
+
+/// Generated from `devicepolicy.ApprovalMessage` (Go, module archive/native-mls/server)
+/// for the payloads pinned below. If this test fails, the facade and the owner CLI
+/// disagree on canonical bytes — never regenerate the fixture from the Rust side.
+const GO_APPROVE_MESSAGE_HEX: &str = "66616d696c792d6d6c732d76322f617070726f76652d646576696365007550e65fb9904401f483271345196164be5f338390c93c2349802963c63da75f";
+const GO_REVOKE_MESSAGE_HEX: &str = "66616d696c792d6d6c732d76322f7265766f6b652d646576696365005e8b2e5748c9b372614550137243c11bcaffbd7a47a6c468791da17e66968a4a";
+const CANDIDATE_KEY_HEX: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+const CANDIDATE_FINGERPRINT_HEX: &str = "02d449a31fbb267c8f352e9968a79e3e5fc95c1bbeaa502fd6454ebde5a4bedc";
+
+#[test]
+fn approval_message_bytes_match_go_approval_message() {
+    let mut approver = Device::new("a:1").unwrap();
+    let (canonical, signature) = evidence(&mut approver, "approve-device",
+                                          "trusted-device-fingerprint", 3);
+    assert_eq!(String::from_utf8(canonical.clone()).unwrap(), format!(
+        r#"{{"action":"approve-device","device_id":"a:2","actor":"a","subject":"person-a","signing_key":"{CANDIDATE_KEY_HEX}","fingerprint":"{CANDIDATE_FINGERPRINT_HEX}","acceptance":"trusted-device-fingerprint","base_revision":3}}"#),
+        "canonical payload is the exact Go field order, compact");
+    let message = [b"family-mls-v2/approve-device\0".as_slice(),
+                   &staging::staged_checksum(&canonical).unwrap()].concat();
+    assert_eq!(hex(&message), GO_APPROVE_MESSAGE_HEX, "domain-separated digest matches Go");
+    assert_eq!(signature.len(), 64, "compact Ed25519 signature (Go crypto/ed25519 verifies)");
+
+    // The Go fixture above was generated with the out-of-band acceptance (E1 target).
+    let (canonical, signature) = evidence(&mut approver, "revoke-device",
+                                          "out-of-band-fingerprint", 6);
+    let message = [b"family-mls-v2/revoke-device\0".as_slice(),
+                   &staging::staged_checksum(&canonical).unwrap()].concat();
+    assert_eq!(hex(&message), GO_REVOKE_MESSAGE_HEX);
+    assert_eq!(signature.len(), 64);
+}
+
+#[test]
+fn approval_rejections_are_pure_and_self_approval_is_refused() {
+    let mut approver = Device::new("a:1").unwrap();
+    let own_key_hex = hex(&approver.public_key().unwrap());
+    // 자기 승인: own id or own key, for both actions.
+    for action in ["approve-device", "revoke-device"] {
+        assert!(approver.sign_approval(action, "a:1", "a", "person-a", CANDIDATE_KEY_HEX,
+                                       "trusted-device-fingerprint", 2).is_err(), "own id");
+        assert!(approver.sign_approval(action, "a:2", "a", "person-a", &own_key_hex,
+                                       "trusted-device-fingerprint", 2).is_err(), "own key");
+    }
+    // Every malformed input is refused before any state is touched.
+    for (action, device, subject, key, acceptance, base) in [
+        ("sign-device", "a:2", "person-a", CANDIDATE_KEY_HEX, "trusted-device-fingerprint", 2), // unknown action
+        ("approve-device", "a:2", "person-a", CANDIDATE_KEY_HEX, "out-of-band-fingerprint", 2), // approve is trusted-only
+        ("revoke-device", "a:2", "person-a", CANDIDATE_KEY_HEX, "free-fingerprint", 2),         // unknown acceptance
+        ("approve-device", "a:2", "person-a", CANDIDATE_KEY_HEX, "trusted-device-fingerprint", 0), // revision 0
+        ("approve-device", "a:2", "person-a", &"AB".repeat(32), "trusted-device-fingerprint", 2), // uppercase hex
+        ("approve-device", "a:2", "person-a", "1111", "trusted-device-fingerprint", 2),         // short key
+        ("approve-device", "a:2", "person a", CANDIDATE_KEY_HEX, "trusted-device-fingerprint", 2), // charset
+        ("approve-device", "a/2", "person-a", CANDIDATE_KEY_HEX, "trusted-device-fingerprint", 2), // charset
+    ] {
+        assert!(approver.sign_approval(action, device, "a", subject, key, acceptance, base)
+            .is_err(), "{action} {device} {subject}");
+    }
+    // The device survived every pure rejection: it still creates a group and talks.
+    approver.create().unwrap();
+    let plaintext = approver.encrypt(b"still usable").unwrap();
+    assert!(!plaintext.is_empty());
+    assert_eq!(approver.fingerprint().unwrap(),
+               policy::policy_fingerprint(&own_key_hex).unwrap(),
+               "fingerprint stays sha256(public key)");
+}
+
+#[test]
+fn members_tracks_add_and_remove() {
+    let mut a1 = Device::new("a:1").unwrap();
+    let mut a2 = Device::new("a:2").unwrap();
+    let key2 = a2.public_key().unwrap();
+    a1.create().unwrap();
+    assert_eq!(roster(&a1.members().unwrap()),
+        vec![("a:1".into(), a1.public_key().unwrap())], "creator alone after create");
+    let welcome = a1.invite(&a2.key_package().unwrap()).unwrap();
+    let listed = roster(&a1.members().unwrap());
+    assert_eq!(listed, vec![("a:1".into(), a1.public_key().unwrap()), ("a:2".into(), key2.clone())],
+        "post-commit roster, sorted by identity");
+    a2.join(&welcome).unwrap();
+    assert_eq!(a2.members().unwrap(), a1.members().unwrap(), "both sides agree");
+    a1.remove_member(&key2).unwrap();
+    assert_eq!(roster(&a1.members().unwrap()), vec![("a:1".into(), a1.public_key().unwrap())],
+        "removal leaves the sender alone");
+    assert!(Device::new("a:3").unwrap().members().is_err(), "no group, no roster");
+}
+
+#[test]
+fn policy_fingerprint_is_sha256_of_key_bytes() {
+    assert_eq!(policy::policy_fingerprint(CANDIDATE_KEY_HEX).unwrap(), CANDIDATE_FINGERPRINT_HEX);
+    assert!(policy::policy_fingerprint("1111").is_err(), "32 bytes required");
+    assert!(policy::policy_fingerprint(&"AB".repeat(32)).is_err(), "lowercase hex only");
+}
+
