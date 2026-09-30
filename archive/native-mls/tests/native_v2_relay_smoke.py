@@ -72,6 +72,21 @@ CSP = ("default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'se
        "connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
 
 
+# §3.6 binding frames (M4): the main worker is a byte passthrough, so this driver
+# frames per message. encrypt = u32 LE len ‖ room ‖ u32 LE len ‖ client ‖ plaintext;
+# decrypt = u32 LE len ‖ room ‖ ciphertext.
+def bound(client, plaintext, room=ROOM):
+    out = bytearray()
+    for part in (room.encode(), client.encode()):
+        out += len(part).to_bytes(4, 'little') + part
+    return list(out + bytes(plaintext))
+
+
+def sealed(ciphertext, room=ROOM):
+    part = room.encode()
+    return list(len(part).to_bytes(4, 'little') + part + bytes(ciphertext))
+
+
 class Relay:
     """The v2 relay binary on a loopback port; restartable over one data dir."""
 
@@ -344,7 +359,7 @@ def main():
                         if ev['kind'] == 'commit':
                             self.call('commit', data)
                         else:
-                            plain.append(bytes(self.call('decrypt', data)))
+                            plain.append(bytes(self.call('decrypt', sealed(data, room=room))))
                     self.epoch = body['epoch']
                     return plain
 
@@ -446,7 +461,7 @@ def main():
             add_commit_size, welcome_size, _ = a1.add(b1)
             b1.sync()
             assert b1.joined and b1.epoch == 1
-            a1.post_ok('application', a1.call('encrypt', list(b'hello b1')), 'm')
+            a1.post_ok('application', a1.call('encrypt', bound(a1.dev, list(b'hello b1'))), 'm')
             expect(b1, 'hello b1')
             a1.add(a2)
             expect(b1)  # b-1 applies the a-2 add commit; the a-2 Welcome must not reach it
@@ -456,14 +471,14 @@ def main():
 
             # --- a: stale-epoch application -> 409 -> apply commit -> re-encrypt -> 201.
             stale_plain = list('epoch-2 draft 재암호화'.encode())
-            stale = a1.call('encrypt', stale_plain)
+            stale = a1.call('encrypt', bound(a1.dev, stale_plain))
             stale_id = a1.client_id('stale')
             _, _, _ = b1.add(b2)  # any member commits (not only the creator); room -> epoch 3
             status, body = a1.post('application', stale, stale_id)
             assert status == 409 and body['error'] == 'cas_mismatch' and body['epoch'] == 3, (status, body)
             assert a1.sync() == []  # applies b-1's commit; b-2's Welcome is filtered
             assert a1.epoch == 3
-            fresh = a1.call('encrypt', stale_plain)
+            fresh = a1.call('encrypt', bound(a1.dev, stale_plain))
             status, body = a1.post('application', fresh, stale_id)  # the 409'd id was never stored
             assert status == 201 and body['epoch'] == 3, (status, body)
             # b-2 joins from b-1's Welcome (a non-creator Welcome must carry the tree)
@@ -475,7 +490,7 @@ def main():
 
             # --- b: lost response -> byte-equal retry after a concurrent commit -> 200 duplicate,
             # --- g: commit race: a-1 and b-1 both commit b-2's removal at epoch 3.
-            lost = a2.call('encrypt', list(b'lost response'))
+            lost = a2.call('encrypt', bound(a2.dev, list(b'lost response')))
             lost_id = a2.client_id('lost')
             status, first = a2.post('application', lost, lost_id)
             assert status == 201, (status, first)  # ...and the response is "lost"
@@ -505,17 +520,17 @@ def main():
             assert a2.sync() == [] and a2.epoch == 4
 
             # --- c: same client_id, different bytes -> 409 client_id_reuse; sender keeps going.
-            other = a2.call('encrypt', list(b'different bytes'))
+            other = a2.call('encrypt', bound(a2.dev, list(b'different bytes')))
             status, body = a2.post('application', other, lost_id)
             assert status == 409 and body['error'] == 'client_id_reuse', (status, body)
-            a2.post_ok('application', a2.call('encrypt', list(b'after reuse')), 'after-reuse')
+            a2.post_ok('application', a2.call('encrypt', bound(a2.dev, list(b'after reuse'))), 'after-reuse')
             expect(a1, 'after reuse')
             expect(b1, 'after reuse')
             receipt['checks']['c_client_id_reuse_409_sender_not_retired_gap_tolerated'] = True
             removed_view = b2.raw_events(b2.cursor)
             b2.cursor = max([b2.cursor] + [ev['seq'] for ev in removed_view['events']])
             [after_removal] = [ev for ev in removed_view['events'] if ev['kind'] == 'application']
-            b2.call('decrypt', list(base64.b64decode(after_removal['bytes'])), reject=True)
+            b2.call('decrypt', sealed(base64.b64decode(after_removal['bytes'])), reject=True)
             receipt['checks']['removed_device_cannot_read_next_epoch'] = True
 
             # --- e: every Welcome reached exactly its target and nobody else.
@@ -527,7 +542,7 @@ def main():
             # --- f: room byte cap 413; the sender is not retired and the room stays live.
             big_sent = []
             for i in range(32):
-                big = a1.call('encrypt', list(bytes([i]) * BIG_PLAINTEXT))
+                big = a1.call('encrypt', bound(a1.dev, list(bytes([i]) * BIG_PLAINTEXT)))
                 status, body = a1.post('application', big, a1.client_id('big'))
                 if status == 413:
                     break
@@ -540,20 +555,20 @@ def main():
             receipt['cap_413'] = {'used_bytes': body['used_bytes'], 'cap_bytes': body['cap_bytes'],
                                   'accepted_big_messages': len(big_sent)}
             assert remaining >= 600, f'tune --room-bytes-cap: only {remaining} bytes left after 413'
-            a1.post_ok('application', a1.call('encrypt', list(b'after cap')), 'after-cap')
+            a1.post_ok('application', a1.call('encrypt', bound(a1.dev, list(b'after cap'))), 'after-cap')
             for device in [a2, b1]:
                 assert device.sync() == big_sent + [b'after cap'], device.dev
             receipt['checks']['f_room_cap_413_sender_not_retired_room_live'] = True
 
             # --- d: SIGKILL the relay; b-1 is offline across the restart.
-            a1.post_ok('application', a1.call('encrypt', list(b'before kill')), 'before-kill')
+            a1.post_ok('application', a1.call('encrypt', bound(a1.dev, list(b'before kill'))), 'before-kill')
             relay.sigkill()
             relay.start(app_event_ttl=1)  # same data dir; every application event is soon stale
             time.sleep(2.2)  # created_at is whole seconds
             expect(a2, 'before kill')
             a1.sync()
             b2.cursor = max([b2.cursor] + [ev['seq'] for ev in b2.raw_events(b2.cursor)['events']])
-            a1.post_ok('application', a1.call('encrypt', list(b'after restart')), 'after-restart')  # prunes
+            a1.post_ok('application', a1.call('encrypt', bound(a1.dev, list(b'after restart'))), 'after-restart')  # prunes
             expect(b1, 'before kill', 'after restart')  # unread by b-1 -> must have survived
             receipt['checks']['d_sigkill_restart_cursor_resume_offline_unread_kept'] = True
 
@@ -563,7 +578,7 @@ def main():
             b2.raw_events(b2.cursor)
             before = [ev['seq'] for ev in a1.raw_events()['events'] if ev['kind'] == 'application']
             time.sleep(2.2)
-            a1.post_ok('application', a1.call('encrypt', list(b'prune trigger')), 'prune-trigger')
+            a1.post_ok('application', a1.call('encrypt', bound(a1.dev, list(b'prune trigger'))), 'prune-trigger')
             after = [ev['seq'] for ev in a1.raw_events()['events'] if ev['kind'] == 'application']
             assert len(after) == 1 and after[0] > max(before), (before, after)
             expect(a2, 'prune trigger')
@@ -590,7 +605,7 @@ def main():
             view = policy.mutate(['-revoke', 'a-2'], policy.revision)
             by_id = {d['device_id']: d for d in view['devices']}
             assert by_id['a-2']['status'] == 'revoked' and by_id['a-2']['approved_by']['device_id'] == 'a-1', view
-            status, body = a2.post('application', a2.call('encrypt', list(b'still here?')), a2.client_id('revoked'))
+            status, body = a2.post('application', a2.call('encrypt', bound(a2.dev, list(b'still here?'))), a2.client_id('revoked'))
             assert status == 403 and body['error'] == 'device_not_allowed', (status, body)
             status, body = relay.http('POST', f'/v2/rooms/{ROOM}/keypackages',
                                       {'device': 'a-2', 'packages': [{'ref': 'kp-x', 'bytes': b64(a2.call('key_package'))}]})
@@ -600,7 +615,7 @@ def main():
             removal = a1.call('remove_pending', list(bytes.fromhex(a2.key_hex)))
             rosters[ROOM].remove('a-2')  # outer list = post-commit roster (§3.3)
             a1.commit_ok(removal, 'remove-a2', rosters[ROOM])
-            a1.post_ok('application', a1.call('encrypt', list(b'after revoke')), 'post-revoke')
+            a1.post_ok('application', a1.call('encrypt', bound(a1.dev, list(b'after revoke'))), 'post-revoke')
             expect(b1, 'after revoke')  # b-1 merges the removal commit, then reads the new-epoch message
             assert a1.epoch == b1.epoch and a1.epoch > 4
             # a-2 applies its own removal from the open feed, then cannot decrypt the
@@ -611,7 +626,7 @@ def main():
                 if event['kind'] == 'commit':
                     a2.call('commit', list(base64.b64decode(event['bytes'])))
             [after_revoke] = [event for event in feed['events'] if event['kind'] == 'application']
-            a2.call('decrypt', list(base64.b64decode(after_revoke['bytes'])), reject=True)
+            a2.call('decrypt', sealed(base64.b64decode(after_revoke['bytes'])), reject=True)
             assert a2.raw_events(a2.cursor)['epoch'] == a1.epoch  # GET stays open by design
             receipt['checks']['h_revoked_device_cannot_read_new_epoch'] = True
 
@@ -619,7 +634,8 @@ def main():
             # --- gets in through E1 and finds the old room read-only.
             view = policy.mutate(['-revoke-all', 'a'], policy.revision)
             assert all(d['status'] == 'revoked' for d in view['devices'] if d['actor'] == 'a'), view
-            status, body = a1.post('application', a1.call('encrypt', list(b'lost everything')),
+            status, body = a1.post('application', a1.call('encrypt',
+                                   bound(a1.dev, list(b'lost everything'))),
                                    a1.client_id('lost-all'))
             assert status == 403 and body['error'] == 'device_not_allowed', (status, body)
             receipt['checks']['i_revoke_all_locks_every_lost_device'] = True
@@ -676,7 +692,7 @@ def main():
             # device on ANY failed operation (this experiment has no recovery), so a-3's
             # real worker must stay clean for family-2 below.
             probe = Device('a-3-probe')
-            probe.call('decrypt', [1, 2, 3], reject=True)
+            probe.call('decrypt', sealed([1, 2, 3]), reject=True)
             probe.context.close()
             receipt['checks']['i_old_room_read_only_for_replacement'] = True
 
@@ -690,7 +706,7 @@ def main():
             a3.add(b1n, room=ROOM2)  # the founding-membership bootstrap seeds [a-3, b-1]
             b1n.sync(ROOM2)
             assert b1n.joined and b1n.epoch == 1
-            a3.post_ok('application', a3.call('encrypt', list(b'new room after total loss')), 'room2', room=ROOM2)
+            a3.post_ok('application', a3.call('encrypt', bound(a3.dev, list(b'new room after total loss'), room=ROOM2)), 'room2', room=ROOM2)
             assert b1n.sync(ROOM2) == [b'new room after total loss']
             receipt['checks']['i_new_room_after_total_loss'] = True
             receipt['final_policy_revision'] = policy.revision

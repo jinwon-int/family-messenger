@@ -59,6 +59,103 @@ impl Peer {
 
 fn session_entries(session: &Session) -> Vec<(Vec<u8>, Vec<u8>)> { session.store_entries_for_test() }
 
+/// Room used by every §3.6-bound encrypt/decrypt below.
+const ROOM: &str = "family";
+
+/// §3.6 binding frames: the encrypt input is `u32 LE len ‖ room ‖ u32 LE len ‖
+/// client_id ‖ plaintext`, the decrypt input is `u32 LE len ‖ room ‖
+/// ciphertext` — exactly what the facade parses before the MLS operation.
+fn enc(room: &str, client: &str, payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for part in [room.as_bytes(), client.as_bytes()] {
+        out.extend_from_slice(&(part.len() as u32).to_le_bytes());
+        out.extend_from_slice(part);
+    }
+    out.extend_from_slice(payload);
+    out
+}
+fn dec(room: &str, wire: &[u8]) -> Vec<u8> {
+    let mut out = (room.len() as u32).to_le_bytes().to_vec();
+    out.extend_from_slice(room.as_bytes());
+    out.extend_from_slice(wire);
+    out
+}
+
+/// A pre-M4 caller (no binding header) or any tampered header must be refused
+/// before MLS state is touched.
+#[test]
+fn aad_frame_rejects_malformed_caller_input() {
+    let mut alice = Device::new("alice").unwrap();
+    alice.create_inner().unwrap();
+    for input in [&b""[..], &[1u8, 0, 0, 0], &[u8::MAX, 0, 0, 0], b"\x06\x00\x00\x00famil\x00"] {
+        assert!(alice.encrypt_inner(input).is_err(), "{input:?}");
+        assert!(alice.decrypt_inner(input).is_err(), "{input:?}");
+    }
+    // Bad identity charset ('?'), oversized identity (65 > 64), non-UTF-8 room.
+    for room in ["bad room", &"a".repeat(65)[..], "\u{ff}"] {
+        assert!(alice.decrypt_inner(&dec(room, &[1, 2, 3])).is_err(), "{room:?}");
+    }
+    // Raw non-UTF-8 bytes fail before the identity check (dec() is always UTF-8).
+    let mut raw = vec![2u8, 0, 0, 0];
+    raw.extend_from_slice(&[0xC3, 0xBF]);
+    raw.extend_from_slice(&[1, 2, 3]);
+    assert!(alice.decrypt_inner(&raw).is_err());
+    // Encrypt also parses the client id.
+    assert!(alice.encrypt_inner(&enc(ROOM, "", b"x")).is_err());
+    assert!(alice.encrypt_inner(&enc(ROOM, "bad client", b"x")).is_err());
+    assert!(alice.encrypt_inner(&enc(ROOM, "person-a", &[])).is_err(), "empty plaintext");
+}
+
+/// The canonical AAD wire form parses strictly; nothing loose is accepted.
+#[test]
+fn aad_parse_rejects_malformed_frames() {
+    fn len(part: &[u8]) -> Vec<u8> { let mut o = (part.len() as u32).to_le_bytes().to_vec(); o.extend_from_slice(part); o }
+    let good = aad_bytes(b"family", &[9; 16], b"a-1", b"person-a", 7);
+    let parsed = parse_aad(&good).unwrap();
+    assert_eq!((parsed.room.as_slice(), parsed.group_id.as_slice(),
+        parsed.sender_device.as_slice(), parsed.epoch),
+        (b"family".as_slice(), &[9; 16][..], b"a-1".as_slice(), 7));
+    // Every truncation and any trailing byte is refused.
+    for n in 0..good.len() { assert!(parse_aad(&good[..n]).is_none(), "truncated at {n}"); }
+    let mut trailing = good.clone();
+    trailing.push(0);
+    assert!(parse_aad(&trailing).is_none());
+    // Length fields that lie, invalid identity charset, oversized identity,
+    // empty group id, empty client id, missing epoch.
+    let bad = |room: &[u8], group: &[u8], sender: &[u8], client: &[u8], epoch: &[u8]|
+        parse_aad(&[len(room), len(group), len(sender), len(client), epoch.to_vec()].concat()).is_none();
+    assert!(bad(b"family", &[9; 16], b"a-1", b"person-a", &[]), "epoch truncated");
+    assert!(bad(b"bad room", &[9; 16], b"a-1", b"person-a", &7u64.to_le_bytes()), "room charset");
+    assert!(bad(b"family", &[], b"a-1", b"person-a", &7u64.to_le_bytes()), "empty group");
+    assert!(bad(b"family", &[9; 16], b"", b"person-a", &7u64.to_le_bytes()), "empty sender");
+    assert!(bad(b"family", &[9; 16], b"a-1", b"", &7u64.to_le_bytes()), "empty client");
+    assert!(bad(&[b'a'; 65], &[9; 16], b"a-1", b"person-a", &7u64.to_le_bytes()), "oversized room");
+    assert!(bad(b"family", &[9; 16], &[b'x'; 65], b"person-a", &7u64.to_le_bytes()), "oversized sender");
+    // A lying length field consumes past the end (no panic, just rejection).
+    assert!(parse_aad(&[(&65u32).to_le_bytes().as_slice(), b"fam".as_slice()].concat()).is_none());
+}
+
+/// §3.6: a message encrypted for one room must not open under another, and a
+/// rejection after MLS authentication must not consume ratchet state.
+#[test]
+fn aad_binding_rejects_wrong_room_and_rolls_back() {
+    let (mut alice, mut bob) = pair();
+    let ciphertext = alice.step("encrypt", &enc(ROOM, "person-a", b"hello"));
+    assert_eq!(bob.step("decrypt", &dec(ROOM, &ciphertext)), b"hello");
+    // A second message, declared in the wrong room context: the AAD gate fires
+    // only after MLS authentication has consumed the ratchet secret.
+    let ciphertext = alice.step("encrypt", &enc(ROOM, "person-a", b"secret"));
+    let before = session_entries(&bob.session);
+    assert!(bob.session.apply("decrypt", &dec("elsewhere", &ciphertext)).is_err());
+    assert_eq!(session_entries(&bob.session), before, "AAD rejection restores the store");
+    assert_eq!(bob.step("decrypt", &dec(ROOM, &ciphertext)), b"secret", "session survives an AAD rejection");
+    // The plaintext bound applies to the framed payload, not the whole input.
+    assert!(alice.session.apply("encrypt", &enc(ROOM, "person-a", &[0; 16385])).is_err());
+    let step = alice.session.apply("encrypt", &enc(ROOM, "person-a", &[0; 16384])).unwrap();
+    persist(&mut alice.mirror, &step.changes());
+    alice.session.commit().unwrap();
+}
+
 /// alice creates, invites bob through the v2 relay flow (pending commit → merge).
 fn pair() -> (Peer, Peer) {
     let mut alice = Peer::new("alice");
@@ -77,10 +174,10 @@ fn pair() -> (Peer, Peer) {
 fn dirty_set_reproduces_store_and_reopens() {
     let (mut alice, mut bob) = pair();
     for i in 0..20u8 {
-        let ciphertext = alice.step("encrypt", &[i; 10]);
-        assert_eq!(bob.step("decrypt", &ciphertext), vec![i; 10]);
-        let reply = bob.step("encrypt", &[i, i]);
-        assert_eq!(alice.step("decrypt", &reply), vec![i, i]);
+        let ciphertext = alice.step("encrypt", &enc(ROOM, "alice", &[i; 10]));
+        assert_eq!(bob.step("decrypt", &dec(ROOM, &ciphertext)), vec![i; 10]);
+        let reply = bob.step("encrypt", &enc(ROOM, "bob", &[i, i]));
+        assert_eq!(alice.step("decrypt", &dec(ROOM, &reply)), vec![i, i]);
     }
     assert_eq!(alice.session.full_serializations(), 0, "no full serialization per operation");
     assert_eq!(bob.session.full_serializations(), 0);
@@ -88,42 +185,42 @@ fn dirty_set_reproduces_store_and_reopens() {
     // A fresh session opened from nothing but the persisted changes keeps talking.
     let mut reopened = bob.reopen("bob");
     assert_eq!(reopened.full_serializations(), 1, "open is the one full (de)serialization");
-    let ciphertext = alice.step("encrypt", b"after reopen");
-    let step = reopened.apply("decrypt", &ciphertext).expect("reopened decrypts");
+    let ciphertext = alice.step("encrypt", &enc(ROOM, "alice", b"after reopen"));
+    let step = reopened.apply("decrypt", &dec(ROOM, &ciphertext)).expect("reopened decrypts");
     assert_eq!(step.output(), b"after reopen");
     reopened.commit().unwrap();
-    let back = reopened.apply("encrypt", b"reply").expect("reopened encrypts");
-    assert_eq!(alice.step("decrypt", &back.output()), b"reply");
+    let back = reopened.apply("encrypt", &enc(ROOM, "bob", b"reply")).expect("reopened encrypts");
+    assert_eq!(alice.step("decrypt", &dec(ROOM, &back.output())), b"reply");
 }
 
 #[test]
 fn rejected_and_aborted_operations_roll_back() {
     let (mut alice, mut bob) = pair();
-    let ciphertext = alice.step("encrypt", b"one");
+    let ciphertext = alice.step("encrypt", &enc(ROOM, "alice", b"one"));
 
     // Tampered ciphertext: rejected, nothing in flight, store unchanged, still usable.
     let mut forged = ciphertext.clone();
     let last = forged.len() - 1;
     forged[last] ^= 1;
     let before = session_entries(&bob.session);
-    assert!(bob.session.apply("decrypt", &forged).is_err());
+    assert!(bob.session.apply("decrypt", &dec(ROOM, &forged)).is_err());
     assert!(bob.session.pending_changes() == session::frame(&[]), "rejection leaves nothing in flight");
     assert_eq!(session_entries(&bob.session), before, "rejection restores the store");
-    assert_eq!(bob.step("decrypt", &ciphertext), b"one", "session survives a rejection");
+    assert_eq!(bob.step("decrypt", &dec(ROOM, &ciphertext)), b"one", "session survives a rejection");
 
     // Replay: the ratchet key was consumed and committed; the replay is rejected.
     let before = session_entries(&bob.session);
-    assert!(bob.session.apply("decrypt", &ciphertext).is_err());
+    assert!(bob.session.apply("decrypt", &dec(ROOM, &ciphertext)).is_err());
     assert_eq!(session_entries(&bob.session), before);
 
     // Abort (IDB transaction failed): the decrypt is undone, so the same
     // ciphertext decrypts again — the consumed key was restored.
-    let second = alice.step("encrypt", b"two");
-    bob.session.apply("decrypt", &second).expect("decrypt");
-    assert!(bob.session.apply("decrypt", &second).is_err(), "no apply while changes are in flight");
+    let second = alice.step("encrypt", &enc(ROOM, "alice", b"two"));
+    bob.session.apply("decrypt", &dec(ROOM, &second)).expect("decrypt");
+    assert!(bob.session.apply("decrypt", &dec(ROOM, &second)).is_err(), "no apply while changes are in flight");
     bob.session.abort().expect("abort");
     bob.assert_durable();
-    assert_eq!(bob.step("decrypt", &second), b"two");
+    assert_eq!(bob.step("decrypt", &dec(ROOM, &second)), b"two");
 
     // Unknown methods and malformed input are rejected without state change.
     let before = session_entries(&bob.session);
@@ -138,8 +235,8 @@ fn thousand_messages_do_not_grow_the_store_linearly() {
     let mut sizes = Vec::new();
     let mut max_change = 0usize;
     for i in 0..1000u32 {
-        let ciphertext = alice.step("encrypt", &i.to_le_bytes());
-        let step = bob.session.apply("decrypt", &ciphertext).expect("decrypt");
+        let ciphertext = alice.step("encrypt", &enc(ROOM, "alice", &i.to_le_bytes()));
+        let step = bob.session.apply("decrypt", &dec(ROOM, &ciphertext)).expect("decrypt");
         max_change = max_change.max(step.changes().len());
         persist(&mut bob.mirror, &step.changes());
         bob.session.commit().unwrap();
@@ -199,22 +296,22 @@ fn format1_snapshot_migrates_and_keeps_talking() {
     // Snapshot API path (format 1 → 2 at load).
     let mut alice = staging::load_for_test(&v1, "alice").expect("format-1 snapshot migrates");
     assert_eq!(alice.group.as_ref().unwrap().epoch().as_u64(), 12);
-    let ciphertext = bob.encrypt_inner(b"to migrated alice").unwrap();
-    assert_eq!(alice.decrypt_inner(&ciphertext).unwrap(), b"to migrated alice");
+    let ciphertext = bob.encrypt_inner(&enc(ROOM, "bob", b"to migrated alice")).unwrap();
+    assert_eq!(alice.decrypt_inner(&dec(ROOM, &ciphertext)).unwrap(), b"to migrated alice");
     // bob commits: alice needs her epoch-12 encryption key pair (the migrated key).
     let bundle = bob.group.as_mut().unwrap()
         .self_update(&bob.provider, &bob.signer, LeafNodeParameters::default()).unwrap();
     bob.group.as_mut().unwrap().merge_pending_commit(&bob.provider).unwrap();
     alice.apply_commit_inner(&bundle.commit().tls_serialize_detached().unwrap()).expect("migrated alice applies commit");
-    let reply = alice.encrypt_inner(b"from migrated alice").unwrap();
-    assert_eq!(bob.decrypt_inner(&reply).unwrap(), b"from migrated alice");
+    let reply = alice.encrypt_inner(&enc(ROOM, "alice", b"from migrated alice")).unwrap();
+    assert_eq!(bob.decrypt_inner(&dec(ROOM, &reply)).unwrap(), b"from migrated alice");
 
     // Session path: a migrated open must be rewritten (export) before use.
     let framed_v1: Vec<_> = entries.iter().map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
     let mut session = Session::open("alice", signer.public(), group.group_id().as_slice(), 1,
         &session::frame(&framed_v1)).expect("format-1 entries open");
     assert!(session.migrated());
-    assert!(session.apply("encrypt", b"x").is_err(), "no operation before the rewrite");
+    assert!(session.apply("encrypt", &enc(ROOM, "alice", b"x")).is_err(), "no operation before the rewrite");
     let rewritten = session.export().expect("export");
     eprintln!("M2 same state (epoch 12, 2 members): format-1 JSON snapshot {} B -> format-2 entries {} B",
         v1.len(), rewritten.len());
@@ -242,8 +339,8 @@ fn stores_nobody_commits_do_not_journal() {
     let welcome = alice.invite_inner(&bob.key_package_inner().unwrap()).unwrap();
     bob.join_inner(&welcome).unwrap();
     for i in 0..50u8 {
-        let ciphertext = alice.encrypt_inner(&[i]).unwrap();
-        bob.decrypt_inner(&ciphertext).unwrap();
+        let ciphertext = alice.encrypt_inner(&enc(ROOM, "alice", &[i])).unwrap();
+        bob.decrypt_inner(&dec(ROOM, &ciphertext)).unwrap();
     }
     assert!(alice.provider.storage().changes().is_empty());
     assert!(bob.provider.storage().changes().is_empty());
@@ -305,8 +402,8 @@ fn format1_with_pending_commit_migrates() {
     alice.apply("merge_pending", &[]).expect("migrated pending commit merges");
     alice.commit().unwrap();
     bob.apply_commit_inner(&bundle.commit().tls_serialize_detached().unwrap()).unwrap();
-    let step = alice.apply("encrypt", b"after migrated merge").unwrap();
-    assert_eq!(bob.decrypt_inner(&step.output()).unwrap(), b"after migrated merge");
+    let step = alice.apply("encrypt", &enc(ROOM, "alice", b"after migrated merge")).unwrap();
+    assert_eq!(bob.decrypt_inner(&dec(ROOM, &step.output())).unwrap(), b"after migrated merge");
 }
 
 /// Review F2: a session must never make durable a state `open` would refuse.
@@ -380,21 +477,18 @@ fn trusted_session_enforces_pins_and_rolls_back() {
     alice.session.check_trust("bob", &bob_key).unwrap();
     assert!(alice.session.check_trust("bob", &alice_key).is_err());
     // Pair-only operations need the exact pinned pair.
-    assert!(alice.session.apply_trusted("encrypt", b"x", "carol", &bob_key).is_err());
-    let ciphertext = trusted(&mut alice, "encrypt", b"pinned hello", "bob", &bob_key).unwrap();
+    assert!(alice.session.apply_trusted("encrypt", &enc(ROOM, "alice", b"x"), "carol", &bob_key).is_err());
+    let ciphertext = trusted(&mut alice, "encrypt", &enc(ROOM, "alice", b"pinned hello"), "bob", &bob_key).unwrap();
     // decrypt_peer checks the MLS-authenticated sender against the pin.
     let before = session_entries(&bob.session);
-    assert!(bob.session.apply_trusted("decrypt_peer", &ciphertext, "alice", &bob_key).is_err());
+    assert!(bob.session.apply_trusted("decrypt_peer", &dec(ROOM, &ciphertext), "alice", &bob_key).is_err());
     assert_eq!(session_entries(&bob.session), before, "sender-key mismatch rolls back (ratchet not consumed)");
-    assert_eq!(trusted(&mut bob, "decrypt_peer", &ciphertext, "alice", &alice_key).unwrap(), b"pinned hello");
+    assert_eq!(trusted(&mut bob, "decrypt_peer", &dec(ROOM, &ciphertext), "alice", &alice_key).unwrap(), b"pinned hello");
 }
 
 // ---- policy v4 approval evidence (#177 M3c, DEVICES-V4.md) ----
 
 fn hex(bytes: &[u8]) -> String { bytes.iter().map(|b| format!("{b:02x}")).collect() }
-fn unhex(value: &str) -> Vec<u8> {
-    (0..value.len()).step_by(2).map(|i| u8::from_str_radix(&value[i..i + 2], 16).unwrap()).collect()
-}
 
 /// Parsed `members()` frame: sorted (identity, signing key) pairs.
 fn roster(frame: &[u8]) -> Vec<(String, Vec<u8>)> {
@@ -479,7 +573,7 @@ fn approval_rejections_are_pure_and_self_approval_is_refused() {
     }
     // The device survived every pure rejection: it still creates a group and talks.
     approver.create().unwrap();
-    let plaintext = approver.encrypt(b"still usable").unwrap();
+    let plaintext = approver.encrypt(&enc(ROOM, "person-a", b"still usable")).unwrap();
     assert!(!plaintext.is_empty());
     assert_eq!(approver.fingerprint().unwrap(),
                policy::policy_fingerprint(&own_key_hex).unwrap(),
