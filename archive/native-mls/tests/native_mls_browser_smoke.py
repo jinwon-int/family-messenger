@@ -88,6 +88,18 @@ def main():
 
             keys = {}
 
+            # §3.6 binding frames (M4): encrypt = u32 LE len ‖ room ‖ u32 LE len ‖
+            # client ‖ plaintext; decrypt = u32 LE len ‖ room ‖ ciphertext.
+            ROOM = 'family'
+            def bound(client, plaintext, room=ROOM):
+                out = bytearray()
+                for part in (room.encode(), client.encode()):
+                    out += len(part).to_bytes(4, 'little') + part
+                return list(out + bytes(plaintext))
+            def sealed(ciphertext, room=ROOM):
+                part = room.encode()
+                return list(len(part).to_bytes(4, 'little') + part + bytes(ciphertext))
+
             def pair(name, join=True):
                 if name != 'main':
                     alice.evaluate('name => spawn(name)', name)
@@ -104,16 +116,16 @@ def main():
 
             package, welcome, receipt['init_ms'] = pair('main')
             text = list('synthetic hello 한글'.encode())
-            encrypted = call(alice, 'encrypt', text)
+            encrypted = call(alice, 'encrypt', bound('alice', text))
             assert bytes(text) not in bytes(encrypted)
-            assert call(bob, 'decrypt', encrypted) == text
+            assert call(bob, 'decrypt', sealed(encrypted)) == text
             raw = list(bytes(range(256)) * 4)
-            encrypted_file = call(bob, 'encrypt', raw)
+            encrypted_file = call(bob, 'encrypt', bound('bob', raw))
             assert bytes(raw) not in bytes(encrypted_file)
-            assert call(alice, 'decrypt', encrypted_file) == raw
+            assert call(alice, 'decrypt', sealed(encrypted_file)) == raw
             receipt['checks']['text_and_opaque_1024_bytes'] = True
-            call(bob, 'decrypt', encrypted, reject=True)
-            call(bob, 'encrypt', text, reject=True)
+            call(bob, 'decrypt', sealed(encrypted), reject=True)
+            call(bob, 'encrypt', bound('bob', text), reject=True)
             receipt['checks']['replay_rejected_and_device_retired'] = True
 
             bob.evaluate("spawn('outsider')")
@@ -134,14 +146,14 @@ def main():
             receipt['checks']['damaged_welcome_retires_original_retry'] = True
 
             tamper_package, tamper_welcome, _ = pair('tamper')
-            original = call(alice, 'encrypt', list(b'synthetic tamper'), name='tamper')
+            original = call(alice, 'encrypt', bound('alice', list(b'synthetic tamper')), name='tamper')
             altered = original.copy()
             altered[-1] ^= 1
-            call(bob, 'decrypt', altered, name='tamper', reject=True)
+            call(bob, 'decrypt', sealed(altered), name='tamper', reject=True)
             # Regression: OpenMLS can consume the generation before authentication.
             # This memory-only wrapper must retire rather than silently reuse it.
-            call(bob, 'decrypt', original, name='tamper', reject=True)
-            for method, argument in [('encrypt', text), ('create', None), ('key_package', None),
+            call(bob, 'decrypt', sealed(original), name='tamper', reject=True)
+            for method, argument in [('encrypt', bound('bob', text)), ('create', None), ('key_package', None),
                                      ('invite', tamper_package), ('join', tamper_welcome),
                                      ('remove', keys['tamper']), ('commit', [])]:
                 call(bob, method, argument, name='tamper', reject=True)
@@ -149,33 +161,41 @@ def main():
 
             pair('wrong')
             pair('different')
-            other = call(bob, 'encrypt', list(b'different group'), name='different')
-            valid = call(alice, 'encrypt', text, name='wrong')
-            call(bob, 'decrypt', valid, name='different', reject=True)
-            call(alice, 'decrypt', other, name='wrong', reject=True)
+            other = call(bob, 'encrypt', bound('bob', list(b'different group')), name='different')
+            valid = call(alice, 'encrypt', bound('alice', text), name='wrong')
+            call(bob, 'decrypt', sealed(valid), name='different', reject=True)
+            call(alice, 'decrypt', sealed(other), name='wrong', reject=True)
             receipt['checks']['wrong_group_both_directions'] = True
-            for name, method, value in [('largeplain', 'encrypt', [0] * 16385),
-                                        ('largewire', 'decrypt', [0] * 65537),
-                                        ('malformed', 'decrypt', [1, 2, 3])]:
+            for name, method, value in [('largeplain', 'encrypt', bound('bob', [0] * 16385)),
+                                        ('largewire', 'decrypt', sealed([0] * 65537)),
+                                        ('malformed', 'decrypt', sealed([1, 2, 3]))]:
                 pair(name)
                 call(bob, method, value, name=name, reject=True)
             receipt['checks']['input_limits_and_malformed'] = True
+
+            # §3.6 (M4): a message refuses to open under a different room context
+            # even though the MLS layer itself would accept it.
+            pair('room-binding')
+            bound_message = call(alice, 'encrypt', bound('alice', text), name='room-binding')
+            assert call(bob, 'decrypt', sealed(bound_message), name='room-binding') == text
+            call(bob, 'decrypt', sealed(bound_message, room='elsewhere'), name='room-binding', reject=True)
+            receipt['checks']['aad_room_binding_enforced'] = True
 
             # Separate pairs: failed receive deliberately retires a device, so it
             # must not then process a removal commit using uncertain state.
             pair('withheld')
             call(alice, 'remove', keys['withheld'], name='withheld')
-            new_epoch = call(alice, 'encrypt', text, name='withheld')
-            call(bob, 'decrypt', new_epoch, name='withheld', reject=True)
+            new_epoch = call(alice, 'encrypt', bound('alice', text), name='withheld')
+            call(bob, 'decrypt', sealed(new_epoch), name='withheld', reject=True)
             pair('removed')
             commit = call(alice, 'remove', keys['removed'], name='removed')
             call(bob, 'commit', commit, name='removed')
-            call(bob, 'encrypt', text, name='removed', reject=True)
+            call(bob, 'encrypt', bound('bob', text), name='removed', reject=True)
             pair('removed-read')
             removed_commit = call(alice, 'remove', keys['removed-read'], name='removed-read')
             call(bob, 'commit', removed_commit, name='removed-read')
-            new_epoch = call(alice, 'encrypt', text, name='removed-read')
-            call(bob, 'decrypt', new_epoch, name='removed-read', reject=True)
+            new_epoch = call(alice, 'encrypt', bound('alice', text), name='removed-read')
+            call(bob, 'decrypt', sealed(new_epoch), name='removed-read', reject=True)
             receipt['checks']['removed_device_before_commit_after_commit_read_and_send'] = True
             pair('remove-wrong-key')
             call(alice, 'remove', [0] * 32, name='remove-wrong-key', reject=True)

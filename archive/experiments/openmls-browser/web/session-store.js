@@ -34,6 +34,22 @@ export function input(value, max = 65536) {
   return new Uint8Array(value);
 }
 
+// §3.6 message binding: encrypt input = u32 LE room_len ‖ room ‖ u32 LE
+// client_len ‖ client_id ‖ plaintext, decrypt input = u32 LE room_len ‖ room ‖
+// ciphertext. The worker adds its own room/client — the caller of the worker
+// cannot choose either — and the Rust facade refuses any AAD mismatch (M4).
+const lenPrefixed = (parts, payload) => {
+  const size = parts.reduce((n, p) => n + 4 + p.length, 0) + payload.length;
+  const out = new Uint8Array(size), view = new DataView(out.buffer);
+  let at = 0;
+  for (const part of parts) { view.setUint32(at, part.length, true); at += 4; out.set(part, at); at += part.length; }
+  out.set(payload, at);
+  return out;
+};
+export const bindEncrypt = (room, client, payload) =>
+  lenPrefixed([utf8(room), utf8(client)], payload);
+export const bindDecrypt = (room, payload) => lenPrefixed([utf8(room)], payload);
+
 // Session framing (src/session.rs): u32 LE count, then per entry
 // u32 LE key_len ‖ key ‖ u32 LE value_len ‖ value (value_len 0xFFFFFFFF = delete).
 export function frame(entries) {

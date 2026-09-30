@@ -5,7 +5,7 @@
 // Trust: a pinned pair (independent ceremony) that must match the live directory
 // on every transaction; the Session enforces the pinned membership in Rust.
 import init, * as api from './pkg/family_mls_browser_experiment.js';
-import {createStore, exact, fail, hex, fromHex} from './session-store.js';
+import {createStore, exact, fail, hex, fromHex, bindEncrypt, bindDecrypt} from './session-store.js';
 import {createVault, unlockVault, validPassphrase, sealRecord, openRecord} from './pkg/custody.js';
 import {normalizePins, readDirectory, matchDirectory} from './trust-directory.js';
 const wasm = await init();
@@ -69,8 +69,12 @@ function handle(operation, argument, directory) {
     if (operation === 'ack') return ctx.ack(meta, argument);
     if (operation !== 'operation') fail();
     const peer = meta.pins.find(x => x.actor !== identity);
+    // §3.6: room/client come from this worker's own init, never per request.
     return ctx.operation(meta, argument,
-      bytes => ctx.session.apply_trusted(argument.method, bytes, peer.actor, fromHex(peer.signing_key)));
+      bytes => ctx.session.apply_trusted(argument.method,
+        argument.method === 'encrypt' ? bindEncrypt(room, identity, bytes) :
+        argument.method === 'decrypt' ? bindDecrypt(room, bytes) : bytes,
+        peer.actor, fromHex(peer.signing_key)));
   });
 }
 // Network admission is always outside IDB; each transaction re-reads and

@@ -209,6 +209,18 @@ def main():
                 if reject:assert r['ok'] is False and 'result' not in r;return
                 assert r['ok'] is True,(method,r)
                 return r.get('result')
+            # §3.6 binding frames (M4): the trust worker passes bytes through, so the
+            # driver frames per message: encrypt = u32 LE len ‖ room ‖ u32 LE len ‖
+            # client ‖ plaintext; decrypt = u32 LE len ‖ room ‖ ciphertext.
+            ROOM = 'family'
+            def bound(client, plaintext, room=ROOM):
+                out = bytearray()
+                for part in (room.encode(), client.encode()):
+                    out += len(part).to_bytes(4, 'little') + part
+                return list(out + bytes(plaintext))
+            def sealed(ciphertext, room=ROOM):
+                part = room.encode()
+                return list(len(part).to_bytes(4, 'little') + part + bytes(ciphertext))
             for p,actor in zip(pages,['alice','bob']):rpc(p,'init',actor)
             pub=[rpc(p,'public_key') for p in pages]
             pins=[{'device_id':actor+'-first','actor':actor,'signing_key':bytes(key).hex(),'fingerprint':hashlib.sha256(bytes(key)).hexdigest(),'device_revision':1} for actor,key in zip(['alice','bob'],pub)]
@@ -238,8 +250,8 @@ def main():
             assert not verify_package('bob',pub[1],[0]*65537)
             proof['checks']['actual_mls_package_actor_key_signature_and_bounds']=True
             rpc(a,'create');welcome=rpc(a,'invite',package);rpc(b,'join',welcome)
-            cipher=rpc(a,'encrypt',list(b'synthetic trusted hello'))
-            assert rpc(b,'decrypt',cipher)==list(b'synthetic trusted hello')
+            cipher=rpc(a,'encrypt',bound('alice',list(b'synthetic trusted hello')))
+            assert rpc(b,'decrypt',sealed(cipher))==list(b'synthetic trusted hello')
             proof['checks']['trusted_invite_join_and_synthetic_ciphertext']=True
             for path in ['/v1/rooms/private/devices','/v1/rooms/family/devices?actor=alice']:
                 expected=403 if 'private' in path else 400
@@ -253,7 +265,7 @@ def main():
             proof['checks']['native_restart_preserves_accepted_directory']=True
             # Reject substituted directory key even if its advertised hash matches.
             tamper['owner']='swap'
-            rpc(a,'check',reject=True);tamper.clear();rpc(a,'encrypt',[1],reject=True)
+            rpc(a,'check',reject=True);tamper.clear();rpc(a,'encrypt',bound('alice',[1]),reject=True)
             proof['checks']['directory_substitution_retires_worker_without_fallback']=True
             config['devices'][1]['status']='revoked';config['devices'][1]['device_revision']=2
             commit(2,config['people'])
@@ -264,7 +276,7 @@ def main():
                 if status==200 and any(v['status']=='revoked' for v in d['devices']):break
                 time.sleep(.05)
             else:raise AssertionError('revocation reload deadline')
-            rpc(b,'check',reject=True);rpc(b,'encrypt',[1],reject=True)
+            rpc(b,'check',reject=True);rpc(b,'encrypt',bound('bob',[1]),reject=True)
             stop();start()
             assert any(v['status']=='revoked' for v in direct('owner','GET','/v1/rooms/family/devices')[1]['devices'])
             with lock:expired.add(cookies[0])
@@ -295,7 +307,7 @@ def main():
                   window.fake.postMessage({id:1,method,argument});
                 })""",[method,argument])
             fake('init','alice');fake('create');forged=fake('invite',package2)
-            rpc(b,'join',forged,reject=True);rpc(b,'encrypt',[1],reject=True)
+            rpc(b,'join',forged,reject=True);rpc(b,'encrypt',bound('bob',[1]),reject=True)
             proof['checks']['valid_welcome_with_unaccepted_inviter_key_rejected_and_retired']=True
             rpc(a,'check')
             a.evaluate("window.testWorkers.filter(x=>x.url.includes('trust-worker.js')).at(-1).worker.postMessage(null)")

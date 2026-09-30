@@ -3,11 +3,11 @@
 // rest (M2b-3b) — see ./session-store.js and PERSISTENCE.md.
 // Storage layout, authentication and tab reload: ./session-store.js (see PERSISTENCE.md).
 import init, * as api from './pkg/family_mls_browser_experiment.js';
-import {createStore, exact, fail} from './session-store.js';
+import {createStore, exact, fail, bindEncrypt, bindDecrypt} from './session-store.js';
 import {createVault, unlockVault, validPassphrase, sealRecord, openRecord} from './pkg/custody.js';
 const wasm = await init();
 const allowed = new Set(['key_package', 'create', 'invite', 'join', 'encrypt', 'decrypt', 'remove', 'commit']);
-let store;
+let store, identity, room;
 const noExtra = {keys: [], initial: () => ({}), bytes: () => null, valid: () => {}};
 
 function status(ctx, meta) {
@@ -26,7 +26,11 @@ function handle(operation, argument) {
     if (operation === 'initialize' || operation === 'status') return status(ctx, meta);
     if (operation === 'ack') return ctx.ack(meta, argument);
     if (operation !== 'operation') fail();
-    return ctx.operation(meta, argument, bytes => ctx.session.apply(argument.method, bytes));
+    // §3.6: the room and client come from this worker's own init, never from
+    // the per-operation request, so a caller cannot re-room a ciphertext.
+    return ctx.operation(meta, argument, bytes => ctx.session.apply(argument.method,
+      argument.method === 'encrypt' ? bindEncrypt(room, identity, bytes) :
+      argument.method === 'decrypt' ? bindDecrypt(room, bytes) : bytes));
   });
 }
 // Custody runs outside any IndexedDB transaction (scrypt is asynchronous): a new
@@ -49,6 +53,7 @@ self.onmessage = ({data: {id, method, argument}}) => {
         if (store || !exact(argument, ['identity', 'database', 'room', 'passphrase']) ||
             typeof argument.identity !== 'string' || !/^[a-zA-Z0-9_.:-]{1,64}$/.test(argument.identity) ||
             typeof argument.room !== 'string' || !/^[a-z0-9-]{1,64}$/.test(argument.room)) fail();
+        identity = argument.identity; room = argument.room;
         const passphrase = validPassphrase(argument.passphrase);
         const opened = createStore(api, {kind: 'durable', identity: argument.identity, room: argument.room, allowed,
           namePattern: /^family-mls-synthetic-[a-z0-9-]{1,64}$/, extra: noExtra, records: {sealRecord, openRecord}});

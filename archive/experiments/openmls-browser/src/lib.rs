@@ -26,6 +26,77 @@ fn bounded(bytes: &[u8], max: usize) -> Result<(), Rejected> {
     if bytes.is_empty() || bytes.len() > max { Err(Rejected("size rejected")) } else { Ok(()) }
 }
 
+/// §3.6 application-message binding (#177 B9): every application message
+/// carries AAD = `room ‖ group_id ‖ sender_device ‖ client_id ‖ epoch`,
+/// canonically framed as `u32 LE length ‖ bytes` per field plus a trailing
+/// `u64 LE` epoch, so fields cannot shift into one another. The receiver
+/// re-derives what it knows independently (its room, the group id, the
+/// MLS-authenticated sender device, the wire epoch) and refuses any mismatch,
+/// even though the AEAD itself would still open.
+pub(crate) fn aad_bytes(room: &[u8], group_id: &[u8], sender_device: &[u8], client_id: &[u8], epoch: u64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(24 + room.len() + group_id.len() + sender_device.len() + client_id.len());
+    for field in [room, group_id, sender_device, client_id] {
+        out.extend_from_slice(&(field.len() as u32).to_le_bytes());
+        out.extend_from_slice(field);
+    }
+    out.extend_from_slice(&epoch.to_le_bytes());
+    out
+}
+
+pub(crate) struct Aad {
+    pub room: Vec<u8>,
+    pub group_id: Vec<u8>,
+    pub sender_device: Vec<u8>,
+    pub epoch: u64,
+}
+
+/// Strict inverse of `aad_bytes`: exact bounds (identities ≤ 64 bytes like
+/// `valid_identity`, group id ≤ 64, non-empty), `valid_identity` text for
+/// room/sender/client, no trailing bytes. The `client_id` field is validated
+/// for shape but not returned: nothing on the receiving side can check it
+/// independently here — its device binding is the §3.3 roster check.
+pub(crate) fn parse_aad(bytes: &[u8]) -> Option<Aad> {
+    fn field(rest: &mut &[u8], max: usize, identity: bool) -> Option<Vec<u8>> {
+        if rest.len() < 4 { return None; }
+        let len = u32::from_le_bytes(rest[..4].try_into().ok()?) as usize;
+        if rest.len() - 4 < len || len > max { return None; }
+        let (value, tail) = rest.split_at(4 + len);
+        let value = &value[4..];
+        *rest = tail;
+        if identity { valid_identity(std::str::from_utf8(value).ok()?).then_some(())?; }
+        Some(value.to_vec())
+    }
+    let mut rest = bytes;
+    let room = field(&mut rest, 64, true)?;
+    let group_id = field(&mut rest, 64, false)?;
+    if group_id.is_empty() { return None; }
+    let sender_device = field(&mut rest, 64, true)?;
+    field(&mut rest, 64, true)?;
+    if rest.len() != 8 { return None; }
+    let epoch = u64::from_le_bytes(rest.try_into().ok()?);
+    Some(Aad { room, group_id, sender_device, epoch })
+}
+
+/// `u32 LE length ‖ identity ‖ rest` — the caller-declared part of the
+/// encrypt/decrypt input (the room, then the client id for encrypt). The
+/// caller declares these per message; trust stays with the MLS checks.
+pub(crate) fn split_identity(bytes: &[u8]) -> Result<(&str, &[u8]), Rejected> {
+    if bytes.len() < 4 { return Err(rejected(())); }
+    let len = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
+    let rest = bytes.get(4 + len..).ok_or_else(|| rejected(()))?;
+    let identity = std::str::from_utf8(&bytes[4..4 + len]).map_err(|_| rejected(()))?;
+    if !valid_identity(identity) { return Err(rejected(())); }
+    Ok((identity, rest))
+}
+
+/// MLS-authenticated application sender as this facade's devices see it: the
+/// AAD-checked device identity, the roster credential and leaf signing key.
+pub(crate) struct AuthenticatedSender {
+    pub device: Vec<u8>,
+    pub credential: Credential,
+    pub signature_key: Vec<u8>,
+}
+
 /// Crypto from `openmls_rust_crypto`, storage from this crate's v2 [`store::Store`]
 /// (#177 §3.5) — the only provider the facade uses.
 #[derive(Default)]
@@ -152,22 +223,57 @@ impl Device {
     }
 
     fn encrypt_inner(&mut self, bytes: &[u8]) -> Result<Vec<u8>, Rejected> {
-        bounded(bytes, 16384)?;
-        self.group.as_mut().ok_or_else(|| rejected(()))?
-            .create_message(&self.provider, &self.signer, bytes).map_err(rejected)?
+        let (room, rest) = split_identity(bytes)?;
+        let (client_id, plaintext) = split_identity(rest)?;
+        bounded(plaintext, 16384)?;
+        let group = self.group.as_mut().ok_or_else(|| rejected(()))?;
+        // Ephemeral in OpenMLS: `create_message` clears the AAD again on
+        // success, and any failure retires the device — it never leaks into a
+        // later commit.
+        let aad = aad_bytes(room.as_bytes(), group.group_id().as_slice(),
+            self.credential.credential.serialized_content(), client_id.as_bytes(), group.epoch().as_u64());
+        group.set_aad(aad);
+        group.create_message(&self.provider, &self.signer, plaintext).map_err(rejected)?
             .tls_serialize_detached().map_err(rejected)
     }
 
-    fn decrypt_inner(&mut self, bytes: &[u8]) -> Result<Vec<u8>, Rejected> {
-        bounded(bytes, MAX_WIRE)?;
-        let message = MlsMessageIn::tls_deserialize_exact_bytes(bytes).map_err(rejected)?
+    /// MLS-authenticated application sender as this facade's devices see it:
+    /// the AAD-checked device identity, the roster credential and leaf key.
+    /// Shared §3.6 decrypt path: MLS-authenticate, then require the sender's
+    /// AAD to name exactly this room, this group, the MLS-authenticated sender
+    /// device and the epoch the wire message itself carries. `client_id` is
+    /// shape-checked here; its binding to the device is the §3.3 roster check,
+    /// which the client validates after MLS processing.
+    fn decrypt_checked_inner(&mut self, room: &str, ciphertext: &[u8]) -> Result<(Vec<u8>, AuthenticatedSender), Rejected> {
+        let message = MlsMessageIn::tls_deserialize_exact_bytes(ciphertext).map_err(rejected)?
             .try_into_protocol_message().map_err(rejected)?;
-        let processed = self.group.as_mut().ok_or_else(|| rejected(()))?
-            .process_message(&self.provider, message).map_err(rejected)?;
-        match processed.into_content() {
-            ProcessedMessageContent::ApplicationMessage(message) => Ok(message.into_bytes()),
-            _ => Err(rejected(())),
+        let group = self.group.as_mut().ok_or_else(|| rejected(()))?;
+        let processed = group.process_message(&self.provider, message).map_err(rejected)?;
+        let parsed = parse_aad(processed.aad()).ok_or_else(|| rejected(()))?;
+        let (sender_device, credential, signature_key) = match processed.sender() {
+            Sender::Member(index) => {
+                let member = group.members().find(|m| m.index == *index).ok_or_else(|| rejected(()))?;
+                // Every device in this facade carries a BasicCredential whose
+                // serialized content is exactly the identity string.
+                (member.credential.serialized_content().to_vec(), member.credential, member.signature_key)
+            }
+            _ => return Err(rejected(())),
+        };
+        let epoch = processed.epoch().as_u64();
+        let content = processed.into_content();
+        if parsed.room != room.as_bytes() || parsed.group_id != group.group_id().as_slice()
+            || parsed.sender_device != sender_device || parsed.epoch != epoch {
+            return Err(rejected(()));
         }
+        let ProcessedMessageContent::ApplicationMessage(message) = content else { return Err(rejected(())); };
+        Ok((message.into_bytes(), AuthenticatedSender { device: sender_device, credential, signature_key }))
+    }
+
+    /// Input: `u32 LE room_len ‖ room ‖ ciphertext`.
+    fn decrypt_inner(&mut self, bytes: &[u8]) -> Result<Vec<u8>, Rejected> {
+        let (room, ciphertext) = split_identity(bytes)?;
+        bounded(ciphertext, MAX_WIRE)?;
+        self.decrypt_checked_inner(room, ciphertext).map(|(plaintext, _)| plaintext)
     }
 
     /// Remove the member whose leaf signing key equals `key` (never our own leaf).
