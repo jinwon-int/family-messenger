@@ -12,7 +12,7 @@ import { viewKeyAction, listPageMove, isSplitLayout, listPageNavAction, timeline
 import { splitParticipants, shortHandle } from './participants.js';
 import { attachmentFromContent, collectAttachments, fileboxRefreshUrl } from './attachments.js';
 import { PhotoPreviews } from './photo-previews.js';
-import { applyTypingEvent, createTypingState, pruneTyping, typingIndicator, typingNames } from './typing.js';
+import { applyTypingEvent, createTypingSender, createTypingState, pruneTyping, typingIndicator, typingNames } from './typing.js';
 import { DEFAULT_CONFIG, loadConfig } from './config.js';
 import { disablePush, enablePush, hasMatchingPusher, isIosDevice, pushAvailability, readSubscription } from './push.js';
 import { renderHold, selectionInRenderedArea } from './render-guard.js';
@@ -909,50 +909,33 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('focus', requestReadReceipt);
 
 // --- 입력 중 표시 전송: 작성창 활동을 m.typing으로 변환한다 ---
-// 홈서버는 timeout 후 스스로 만료시키므로(기본 30초), 계속 입력하면 만료 전에 재알림하고
-// 뜸하거나 전송·방 전환하면 즉시 끈다. 실패는 조용히 무시한다(표시 기능일 뿐이다).
-const TYPING_TIMEOUT_MS = 30_000; // 홈서버에 요청하는 유지 창
-const TYPING_REFRESH_MS = 20_000; // 계속 입력 중일 때 재알림 주기(만료 전)
-const TYPING_IDLE_MS = 6_000;     // 입력이 뜸하면 끄기까지의 대기
-let typingActive = false;
-let typingSentAt = 0;
-let typingIdleTimer = null;
+// 규칙·상수는 typing.js createTypingSender에 있다: 글이 있고 창이 포커스·표시 중이면 키 입력이 없어도
+// 만료 전에 재알림(keep-alive)하고, 전송·비움·방 전환·blur·hidden·3분 상한이면 즉시 끈다.
+// 실패는 조용히 기록만 한다(표시 기능일 뿐이다).
+const typingSender = createTypingSender({
+  send: (roomId, isTyping, timeoutMs) => state.client?.sendTyping(roomId, isTyping, timeoutMs),
+  onError: (error) => console.warn('typing send failed', error),
+  isFocused: () => (typeof document.hasFocus === 'function' ? document.hasFocus() : true),
+  isVisible: () => document.visibilityState !== 'hidden',
+});
 
-async function pushTyping(roomId, isTyping) {
-  try {
-    await state.client?.sendTyping(roomId, isTyping, TYPING_TIMEOUT_MS);
-  } catch (error) {
-    console.warn('typing send failed', error);
-  }
-}
-
-/** Stop announcing typing for a room (and remember nothing across rooms). */
+/** Stop announcing typing (sends typing=false to the room it was announced in). `null` = 로그아웃, 보내지 않고 비운다. */
 function stopTyping(roomId) {
-  if (typingIdleTimer) {
-    clearTimeout(typingIdleTimer);
-    typingIdleTimer = null;
-  }
-  if (!typingActive) return;
-  typingActive = false;
-  if (roomId) void pushTyping(roomId, false);
+  if (roomId === null) typingSender.reset();
+  else typingSender.stop();
 }
 
 /** Composer activity from ui: hasText = the textarea has content. */
 function handleComposerTyping(roomId, hasText) {
   if (!state.client || !roomId || roomId !== state.currentRoomId) return;
-  if (!hasText) {
-    stopTyping(roomId);
-    return;
-  }
-  const now = Date.now();
-  if (!typingActive || now - typingSentAt >= TYPING_REFRESH_MS) {
-    typingActive = true;
-    typingSentAt = now;
-    void pushTyping(roomId, true);
-  }
-  if (typingIdleTimer) clearTimeout(typingIdleTimer);
-  typingIdleTimer = setTimeout(() => stopTyping(roomId), TYPING_IDLE_MS);
+  typingSender.activity(roomId, hasText);
 }
+
+// 창이 포커스를 잃거나 탭이 숨겨지면 더 쓰고 있다고 볼 수 없다 — 즉시 끈다(되찾으면 다음 키 입력에 다시 켠다).
+window.addEventListener('blur', () => typingSender.focusChanged(false));
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') typingSender.visibilityChanged(false);
+});
 
 async function sendText(text) {
   const entry = state.rooms.get(state.currentRoomId);
