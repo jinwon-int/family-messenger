@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/jinwon-int/family-messenger/archive/native-mls/server/internal/devicepolicy"
 )
 
 // policy carries the §3.4 retention defaults. Tests override the fields
@@ -44,24 +46,37 @@ func defaultPolicy() policy {
 // relay owns the single SQLite connection. Every write path takes mu, so with
 // SetMaxOpenConns(1) exactly one BEGIN IMMEDIATE transaction is in flight at
 // a time (B2/B3). Pruning cursors live in mls_cursors, not in memory, so they
-// survive a restart.
+// survive a restart. devices is the native device-policy chain (M3b): nil
+// means -device-state was not given and membership enforcement is off.
 type relay struct {
-	mu     sync.Mutex
-	db     *sql.DB
-	policy policy
+	mu      sync.Mutex
+	db      *sql.DB
+	policy  policy
+	devices *devicepolicy.DevicePolicyStore
 }
 
 // ---- wire types ----
 
 type eventPost struct {
-	Device   string   `json:"device"`
-	ClientID string   `json:"client_id"`
-	Kind     string   `json:"kind"`
-	Epoch    int64    `json:"epoch"`
-	Revision *int64   `json:"revision"`
-	GroupID  string   `json:"group_id"`
-	Targets  []string `json:"targets"`
-	Bytes    []byte   `json:"bytes"`
+	Device   string       `json:"device"`
+	ClientID string       `json:"client_id"`
+	Kind     string       `json:"kind"`
+	Epoch    int64        `json:"epoch"`
+	Revision *int64       `json:"revision"`
+	GroupID  string       `json:"group_id"`
+	Targets  []string     `json:"targets"`
+	Members  []memberWire `json:"members"`
+	Bytes    []byte       `json:"bytes"`
+}
+
+// memberWire is one client-replicated leaf entry of a commit: the relay
+// cannot parse MLS commit payloads, so the sender device and the post-commit
+// member list travel in the outer JSON (#177 §3.3). Clients verify outer and
+// inner agree after MLS processing and reject mismatches; the relay enforces
+// its membership policy against the replicated list alone.
+type memberWire struct {
+	Device string `json:"device"`
+	Actor  string `json:"actor"`
 }
 
 type eventResponse struct {
@@ -130,6 +145,50 @@ type keyPackageLimit struct{ Live, Max int }
 
 func (e keyPackageLimit) Error() string {
 	return fmt.Sprintf("too many live key packages: live=%d max=%d", e.Live, e.Max)
+}
+
+// ---- M3b device-policy enforcement errors ----
+
+// deviceNotAllowed: the posting device is unknown to or revoked in the native
+// device policy (403). This is the revoke-then-POST-403 contract line.
+type deviceNotAllowed struct{ Device string }
+
+func (e deviceNotAllowed) Error() string {
+	return fmt.Sprintf("device %q is not active in the native device policy", e.Device)
+}
+
+// policyUnavailable: the device policy chain failed fail-closed verification
+// (500). No write proceeds while the chain is unreadable.
+type policyUnavailable struct{ Err error }
+
+func (e policyUnavailable) Error() string {
+	return fmt.Sprintf("native device policy chain: %v", e.Err)
+}
+
+// commitSenderNotMember: a policy-active device that is not a tracked member
+// of the room tried to commit (403).
+type commitSenderNotMember struct{ Device string }
+
+func (e commitSenderNotMember) Error() string {
+	return fmt.Sprintf("commit sender %q is not a member of the room", e.Device)
+}
+
+// commitMemberNotActive: a commit tried to seed or add a device that the
+// device policy does not show as active (403).
+type commitMemberNotActive struct{ Device string }
+
+func (e commitMemberNotActive) Error() string {
+	return fmt.Sprintf("commit lists device %q which is not active in the device policy", e.Device)
+}
+
+// commitActorNotInRoster: a commit tried to add a device whose actor is not
+// already on the room's actor roster — new devices join existing actors
+// (§3.3); new actors join rooms client-side by creating or being invited into
+// a group whose creation commit seeds the roster (403).
+type commitActorNotInRoster struct{ Actor string }
+
+func (e commitActorNotInRoster) Error() string {
+	return fmt.Sprintf("commit adds a device of actor %q who is not on the room roster", e.Actor)
 }
 
 // apiError is the single JSON error shape; the CAS variant carries the
@@ -321,6 +380,13 @@ func (s *relay) handlePostKeyPackages(w http.ResponseWriter, req *http.Request) 
 		writeJSON(w, http.StatusCreated, map[string]int{"stored": n})
 	case errors.Is(err, errClosed):
 		s.fail(w, http.StatusGone, apiError{Error: "room_closed"})
+	case errors.As(err, new(policyUnavailable)):
+		log.Printf("post keypackages room=%s: %v", room, err)
+		s.fail(w, http.StatusInternalServerError, apiError{Error: "device_policy_unavailable", Detail: "device policy chain unreadable; writes fail closed"})
+	case errors.As(err, new(deviceNotAllowed)):
+		var na deviceNotAllowed
+		errors.As(err, &na)
+		s.fail(w, http.StatusForbidden, apiError{Error: "device_not_allowed", Detail: na.Error()})
 	case errors.As(err, new(keyPackageLimit)):
 		var lim keyPackageLimit
 		errors.As(err, &lim)
@@ -388,6 +454,35 @@ func (s *relay) handlePostEvent(w http.ResponseWriter, req *http.Request) {
 		s.fail(w, http.StatusBadRequest, apiError{Error: "welcome_targets_required"})
 		return
 	}
+	// M3b: with a device-policy store wired, a commit must replicate the
+	// post-commit member list in the outer JSON (§3.3). Structural faults are
+	// 400; membership and policy verdicts happen inside the store transaction.
+	if s.devices != nil && post.Kind == "commit" {
+		if len(post.Members) == 0 {
+			s.fail(w, http.StatusBadRequest, apiError{Error: "commit_members_required", Detail: "a commit must replicate the post-commit member list"})
+			return
+		}
+		seen := map[string]bool{}
+		senderListed := false
+		for i, m := range post.Members {
+			if m.Device == "" || m.Actor == "" {
+				s.fail(w, http.StatusBadRequest, apiError{Error: "bad_member", Detail: fmt.Sprintf("members[%d] needs non-empty device and actor", i)})
+				return
+			}
+			if seen[m.Device] {
+				s.fail(w, http.StatusBadRequest, apiError{Error: "duplicate_member", Detail: fmt.Sprintf("members[%d] repeats device %q", i, m.Device)})
+				return
+			}
+			seen[m.Device] = true
+			if m.Device == post.Device {
+				senderListed = true
+			}
+		}
+		if !senderListed {
+			s.fail(w, http.StatusBadRequest, apiError{Error: "commit_sender_not_listed", Detail: "the sender device must appear in the replicated member list"})
+			return
+		}
+	}
 	ev := eventInput{
 		groupID:  post.GroupID,
 		device:   post.Device,
@@ -396,6 +491,7 @@ func (s *relay) handlePostEvent(w http.ResponseWriter, req *http.Request) {
 		epoch:    post.Epoch,
 		revision: post.Revision,
 		targets:  post.Targets,
+		members:  post.Members,
 		bytes:    post.Bytes,
 	}
 	stored, err := s.storeEvent(room, ev)
@@ -420,6 +516,25 @@ func (s *relay) handlePostEvent(w http.ResponseWriter, req *http.Request) {
 		var cap roomBytesCap
 		errors.As(err, &cap)
 		s.fail(w, http.StatusRequestEntityTooLarge, apiError{Error: "room_bytes_cap", Used: cap.Used, Cap: cap.Cap})
+	case errors.As(err, new(policyUnavailable)):
+		log.Printf("post event room=%s: %v", room, err)
+		s.fail(w, http.StatusInternalServerError, apiError{Error: "device_policy_unavailable", Detail: "device policy chain unreadable; writes fail closed"})
+	case errors.As(err, new(deviceNotAllowed)):
+		var na deviceNotAllowed
+		errors.As(err, &na)
+		s.fail(w, http.StatusForbidden, apiError{Error: "device_not_allowed", Detail: na.Error()})
+	case errors.As(err, new(commitSenderNotMember)):
+		var sm commitSenderNotMember
+		errors.As(err, &sm)
+		s.fail(w, http.StatusForbidden, apiError{Error: "commit_sender_not_member", Detail: sm.Error()})
+	case errors.As(err, new(commitMemberNotActive)):
+		var ma commitMemberNotActive
+		errors.As(err, &ma)
+		s.fail(w, http.StatusForbidden, apiError{Error: "commit_member_not_active", Detail: ma.Error()})
+	case errors.As(err, new(commitActorNotInRoster)):
+		var ra commitActorNotInRoster
+		errors.As(err, &ra)
+		s.fail(w, http.StatusForbidden, apiError{Error: "commit_actor_not_in_roster", Detail: ra.Error()})
 	case errors.Is(err, errWelcomeTargets):
 		s.fail(w, http.StatusBadRequest, apiError{Error: "welcome_targets_required"})
 	default:

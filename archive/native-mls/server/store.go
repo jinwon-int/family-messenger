@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jinwon-int/family-messenger/archive/native-mls/server/internal/devicepolicy"
+
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -62,6 +64,13 @@ CREATE TABLE IF NOT EXISTS mls_cursors (
 	seq    INTEGER NOT NULL,
 	PRIMARY KEY (room, device)
 );
+CREATE TABLE IF NOT EXISTS mls_members (
+	room      TEXT NOT NULL REFERENCES mls_rooms(room),
+	device    TEXT NOT NULL,
+	actor     TEXT NOT NULL,
+	added_seq INTEGER NOT NULL,
+	PRIMARY KEY (room, device)
+);
 `
 
 func openStore(dataDir string) (*sql.DB, error) {
@@ -86,6 +95,9 @@ var errClosed = errors.New("room closed")
 
 // eventInput is the validated store-side form of one POST /events body.
 // revision is a pointer so an absent CAS field and epoch=0 stay distinct.
+// members is the client-replicated post-commit leaf list (§3.3); the relay
+// enforces its membership policy against it because it cannot parse MLS
+// commit payloads.
 type eventInput struct {
 	groupID  string
 	device   string
@@ -94,6 +106,7 @@ type eventInput struct {
 	epoch    int64
 	revision *int64
 	targets  []string
+	members  []memberWire
 	bytes    []byte
 }
 
@@ -187,6 +200,14 @@ func (s *relay) storeEvent(room string, ev eventInput) (storedEvent, error) {
 	if row.closed {
 		return storedEvent{}, errClosed
 	}
+	// M3b: authorization runs before the K4 replay and the CAS reads on
+	// purpose — a revoked or non-member sender gets 403 without learning the
+	// current epoch/revision from a 409, while an allowed sender's byte-equal
+	// retry below still replays as the 200 duplicate.
+	active, tracked, err := s.authorizeEvent(tx, room, ev)
+	if err != nil {
+		return storedEvent{}, err
+	}
 	// K4 before CAS: a byte-equal replay of a stored event is the 200 duplicate
 	// even if a commit has since moved the epoch (lost response + concurrent
 	// commit); different bytes under a taken client_id are reuse regardless.
@@ -247,6 +268,13 @@ func (s *relay) storeEvent(room string, ev eventInput) (storedEvent, error) {
 			}
 		}
 	}
+	// M3b: apply the membership diff in the same transaction as the commit
+	// insert, so a crash cannot leave membership and the log disagree.
+	if active != nil && ev.kind == "commit" {
+		if err := applyMembership(tx, room, tracked, ev, seq); err != nil {
+			return storedEvent{}, err
+		}
+	}
 	newEpoch, newRevision := row.epoch, row.revision+1
 	if ev.kind == "commit" {
 		newEpoch = row.epoch + 1
@@ -254,13 +282,164 @@ func (s *relay) storeEvent(room string, ev eventInput) (storedEvent, error) {
 	if _, err := tx.Exec(`UPDATE mls_rooms SET epoch = ?, revision = ? WHERE room = ?`, newEpoch, newRevision, room); err != nil {
 		return storedEvent{}, err
 	}
-	if err := s.prune(tx, room, newEpoch, now); err != nil {
+	if err := s.prune(tx, room, newEpoch, now, active); err != nil {
 		return storedEvent{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return storedEvent{}, err
 	}
 	return storedEvent{seq: seq, epoch: newEpoch, revision: newRevision}, nil
+}
+
+// enforceDevicePolicy replays the native device-policy chain (M3b) and
+// returns the active-device set. A nil set with nil error means the relay
+// runs without -device-state: enforcement is off and POSTs behave exactly as
+// before. A chain error is fail-closed: no write proceeds.
+func (s *relay) enforceDevicePolicy() (map[string]devicepolicy.DeviceV4, error) {
+	if s.devices == nil {
+		return nil, nil
+	}
+	_, wire, err := s.devices.Read()
+	if err != nil {
+		return nil, policyUnavailable{Err: err}
+	}
+	active := make(map[string]devicepolicy.DeviceV4, len(wire.Devices))
+	for _, d := range wire.Devices {
+		if d.Status == devicepolicy.StatusActive {
+			active[d.ID] = d
+		}
+	}
+	return active, nil
+}
+
+// authorizeEvent is the §3.3 membership gate, run inside the store
+// transaction. Every poster must be policy-active; a commit's sender must be
+// a tracked member, and its replicated member list may only seed the first
+// membership (every seeded device active) or add active devices of actors
+// already on the room roster and drop tracked devices. Returns the active set
+// and the pre-commit tracked membership (nil tracked = bootstrap commit).
+func (s *relay) authorizeEvent(tx *sql.Tx, room string, ev eventInput) (map[string]devicepolicy.DeviceV4, []memberRow, error) {
+	active, err := s.enforceDevicePolicy()
+	if err != nil {
+		return nil, nil, err
+	}
+	if active == nil {
+		return nil, nil, nil
+	}
+	if _, ok := active[ev.device]; !ok {
+		return nil, nil, deviceNotAllowed{Device: ev.device}
+	}
+	if ev.kind != "commit" {
+		return active, nil, nil
+	}
+	tracked, err := readMembers(tx, room)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(tracked) == 0 {
+		// Bootstrap: the room's first commit carries the founding member
+		// list; every founding device must be policy-active.
+		for _, m := range ev.members {
+			if _, ok := active[m.Device]; !ok {
+				return nil, nil, commitMemberNotActive{Device: m.Device}
+			}
+		}
+		return active, nil, nil
+	}
+	senderTracked := false
+	roster := map[string]bool{}
+	byDevice := map[string]bool{}
+	for _, m := range tracked {
+		roster[m.Actor] = true
+		byDevice[m.Device] = true
+		if m.Device == ev.device {
+			senderTracked = true
+		}
+	}
+	if !senderTracked {
+		return nil, nil, commitSenderNotMember{Device: ev.device}
+	}
+	for _, m := range ev.members {
+		if byDevice[m.Device] {
+			continue
+		}
+		if _, ok := active[m.Device]; !ok {
+			return nil, nil, commitMemberNotActive{Device: m.Device}
+		}
+		if !roster[m.Actor] {
+			return nil, nil, commitActorNotInRoster{Actor: m.Actor}
+		}
+	}
+	return active, tracked, nil
+}
+
+// memberRow is one tracked room membership entry.
+type memberRow struct {
+	Device string
+	Actor  string
+}
+
+func readMembers(tx *sql.Tx, room string) ([]memberRow, error) {
+	rows, err := tx.Query(`SELECT device, actor FROM mls_members WHERE room = ? ORDER BY rowid`, room)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []memberRow{}
+	for rows.Next() {
+		var m memberRow
+		if err := rows.Scan(&m.Device, &m.Actor); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// applyMembership applies the commit's replicated member list on top of the
+// tracked membership, inside the caller's transaction. An empty tracked set
+// is the bootstrap seed; afterwards the diff adds new devices and removes
+// tracked devices the list no longer contains, deleting a removed device's
+// reader cursor so it cannot block application-event pruning.
+func applyMembership(tx *sql.Tx, room string, tracked []memberRow, ev eventInput, seq int64) error {
+	if len(tracked) == 0 {
+		for _, m := range ev.members {
+			if _, err := tx.Exec(`INSERT OR IGNORE INTO mls_members (room, device, actor, added_seq) VALUES (?, ?, ?, ?)`,
+				room, m.Device, m.Actor, seq); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	trackedSet := make(map[string]bool, len(tracked))
+	for _, m := range tracked {
+		trackedSet[m.Device] = true
+	}
+	for _, m := range ev.members {
+		if trackedSet[m.Device] {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO mls_members (room, device, actor, added_seq) VALUES (?, ?, ?, ?)`,
+			room, m.Device, m.Actor, seq); err != nil {
+			return err
+		}
+	}
+	postedList := make(map[string]bool, len(ev.members))
+	for _, m := range ev.members {
+		postedList[m.Device] = true
+	}
+	for _, m := range tracked {
+		if postedList[m.Device] {
+			continue
+		}
+		if _, err := tx.Exec(`DELETE FROM mls_members WHERE room = ? AND device = ?`, room, m.Device); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM mls_cursors WHERE room = ? AND device = ?`, room, m.Device); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // readEvents returns the per-room total order after seq, filtering welcome
@@ -324,6 +503,13 @@ func (s *relay) postKeyPackages(room, device string, pkgs []keyPackageInput) (in
 		return 0, err
 	}
 	defer tx.Rollback()
+	// M3b: policy-active gate before any room state is touched, so a denied
+	// device cannot even materialize a room row.
+	if active, err := s.enforceDevicePolicy(); err != nil {
+		return 0, err
+	} else if _, ok := active[device]; !ok {
+		return 0, deviceNotAllowed{Device: device}
+	}
 	if _, err := ensureRoom(tx, room, "", now); err != nil {
 		return 0, err
 	}
@@ -403,10 +589,18 @@ func (s *relay) consumeKeyPackage(room, device, consumer string) (storedKeyPacka
 // the TTL elapsed, commit/welcome events outside the last N epochs, and
 // expired key packages. The gate is the minimum durable cursor over every
 // known reader (posters and Welcome targets), so a device that has not read
-// yet — including one offline across a relay restart — blocks deletion.
-func (s *relay) prune(tx *sql.Tx, room string, epoch int64, now int64) error {
+// yet — including one offline across a relay restart — blocks deletion. With
+// enforcement on (active != nil), cursors of devices that have left the
+// device policy are dropped first: a revoked device never reads again and
+// must not hold the room's pruning hostage.
+func (s *relay) prune(tx *sql.Tx, room string, epoch int64, now int64, active map[string]devicepolicy.DeviceV4) error {
 	if _, err := tx.Exec(`DELETE FROM mls_keypackages WHERE room = ? AND expires_at <= ?`, room, now); err != nil {
 		return err
+	}
+	if active != nil {
+		if err := dropStaleCursors(tx, room, active); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.Exec(`DELETE FROM mls_events WHERE room = ? AND kind IN ('commit','welcome') AND epoch <= ?`,
 		room, epoch-s.policy.CommitWelcomeKeepEpochs); err != nil {
@@ -456,6 +650,37 @@ func (s *relay) prune(tx *sql.Tx, room string, epoch int64, now int64) error {
 func registerCursor(tx *sql.Tx, room, device string, seq int64) error {
 	_, err := tx.Exec(`INSERT OR IGNORE INTO mls_cursors (room, device, seq) VALUES (?, ?, ?)`, room, device, seq)
 	return err
+}
+
+// dropStaleCursors removes reader cursors of devices no longer active in the
+// device policy (revoked or vanished). M1 follow-up: a removed or tombstoned
+// device must not pin application events forever.
+func dropStaleCursors(tx *sql.Tx, room string, active map[string]devicepolicy.DeviceV4) error {
+	rows, err := tx.Query(`SELECT DISTINCT device FROM mls_cursors WHERE room = ?`, room)
+	if err != nil {
+		return err
+	}
+	var stale []string
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			rows.Close()
+			return err
+		}
+		if _, ok := active[d]; !ok {
+			stale = append(stale, d)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, d := range stale {
+		if _, err := tx.Exec(`DELETE FROM mls_cursors WHERE room = ? AND device = ?`, room, d); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func targetedAt(encoded, device string) bool {

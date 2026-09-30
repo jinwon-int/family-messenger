@@ -1,8 +1,8 @@
-# 네이티브 기기 정책 v4 — 계약 (#177 §3.1·§3.2, M3a)
+# 네이티브 기기 정책 v4 — 계약 (#177 §3.1·§3.2, M3a+M3b)
 
-**상태:** 구현됨 (M3a). 이 문서는 `archive/native-mls/server`의 정책 체인과 오너 CLI가
-무엇을 보장하고 무엇을 증명하지 않는지 묶는다. **M3b**(릴레이 멤버십 강제 — commit
-sender active 검사, revoke 이후 POST 403)와 **M3c**(지문 비교 UI)는 별도 PR이다.
+**상태:** 구현됨 (M3a 정책 체인·CLI, M3b 릴레이 강제). 이 문서는 `archive/native-mls/server`의
+정책 체인, 오너 CLI와 릴레이가 무엇을 보장하고 무엇을 증명하지 않는지 묶는다.
+**M3c**(지문 비교 UI, 클라이언트의 정책 등록 연동, v2 릴레이 smoke의 등록 전환)는 별도 PR이다.
 서버는 아래 다섯 연산을 위해 **라우트를 추가하지 않는다**(#177 §3.2).
 
 ## 파일과 저장 커널
@@ -71,6 +71,38 @@ fingerprint=key 해시 일치, `trusted` acceptance에는 `approved_by` 필수, 
 - `approved_by`는 **관리 선언**이다. 사람이 실제로 지문을 비교했다는 암호학적 증명이
   아니다(`server/DEVICES.md` 원칙 유지).
 
+## 릴레이 멤버십 강제 (M3b)
+
+릴레이는 `-device-state <dir>`로 정책 체인에 붙는다. 기동 시 체인을 재생하지 못하면
+**시작을 거부**하고(운영 중 손상은 쓰기 전부 500 `device_policy_unavailable` — fail-closed),
+플래그가 없으면 강제 없이 구 동작을 유지하며 경고를 남긴다. 체인 읽기는 모든 쓰기
+경로에서 커밋 트랜잭션 안에서 다시 이뤄진다(revoke와 POST의 경쟁 창을 트랜잭션으로 닫음).
+
+- **모든 POST**(events, keypackages): 게시 device가 정책상 active여야 한다. 모르는
+  device든 revoked든 **403 `device_not_allowed`**. GET은 막지 않는다(거부는 POST-only —
+  과거 로그는 읽히되 MLS 에포크가 해독 불가로 만든다).
+- **commit 외부 멤버 목록**: 릴레이는 MLS commit을 해석하지 않으므로, 클라이언트가
+  post-commit 멤버 목록(`members: [{device, actor}...]`)을 outer JSON에 복제해 보낸다
+  (§3.3). 강제 on 시 commit에 필수이고 sender가 목록에 있어야 하며 중복 device 금지 —
+  구조 위반은 400. (클라이언트는 MLS 처리 후 outer와 내부 일치를 검증한다.)
+- **승인 순서**: 인가는 K4 재생·CAS 읽기보다 **먼저**다. revoked/비멤버 sender는 현재
+  epoch/revision을 409에서 훔쳐볼 수 없고, 허용된 sender의 바이트 동일 재시도는 그대로
+  200 duplicate다.
+- **부트스트랩**: 방의 첫 commit이 창립 멤버 목록을 시드한다. 시드되는 모든 device가
+  정책상 active여야 한다.
+- **이후 commit**: sender는 추적 멤버여야 하고(403 `commit_sender_not_member`),
+  추가되는 device는 정책상 active(403 `commit_member_not_active`)이며 그 actor가 방
+  로스터에 있어야 한다(403 `commit_actor_not_in_roster`) — 새 기기는 기존 actor에,
+  새 actor는 방 생성 클라이언트 쪽으로. 제거된 device는 멤버 행과 읽기 커서가 같은
+  트랜잭션에서 삭제된다(제거된 기기가 프루닝을 막지 않는다 — M1 후속).
+- **프루닝**: 정책을 떠난(revoke/소멸) device의 커서는 프루닝 계산에서 먼저 삭제된다.
+  tombstone 기기가 application 이벤트를 영구 점유하지 않는다.
+
+멤버십은 `mls_members(room, device, actor, added_seq)`에 커밋 insert와 같은
+BEGIN IMMEDIATE 트랜잭션으로 기록된다(B2/B3 규율 유지). v2 릴레이 smoke
+(`native_v2_relay_smoke.py`)은 아직 등록 없이 구 모드로 도는데, 클라이언트 정책 등록과
+함께 M3c에서 전환된다.
+
 ## 구 바이너리 거부 (검증됨)
 
 운영 v1 정책은 v4 모양을 구조적으로 거부해야 하고, 그렇다:
@@ -90,8 +122,10 @@ fingerprint=key 해시 일치, `trusted` acceptance에는 `approved_by` 필수, 
 
 ## 증명하지 않는 것
 
-- 릴레이가 revoke 이후 그 device의 POST를 거부하는 것 — M3b.
-- MLS `Add`/`Remove` commit과 Welcome — M3b·클라이언트.
-- 지문 비교 UI와 실제 대역외 비교 수행 — M3c·사람.
+- 릴레이가 revoke 이후 그 device의 POST를 거부하는 것 — **M3b에서 증명**(위 섹션,
+  Go HTTP·단위 테스트). 단, GET은 열려 있다(POST-only 거부).
+- MLS `Add`/`Remove` commit과 Welcome — 클라이언트(M3c 파사드). 릴레이는 outer
+  복제 목록만 검증하며 outer·내부 불일치 검증은 클라이언트 몫이다.
+- v2 릴레이 smoke의 등록된 기기 전환, 지문 비교 UI와 실제 대역외 비교 수행 — M3c·사람.
 - 64 revision 소진 후 컴팩션, E5 restore-history, 파일·봇(M5).
 - 브라우저/실기기 동작 — 이 유닛은 순수 서버 측 Go다.
