@@ -114,6 +114,11 @@ sudo chown root:sygnal /etc/sygnal/sygnal.yaml && sudo chmod 0640 /etc/sygnal/sy
 
 치환할 것: `com.example.familychat.web`(app_id) · `<admin-email>` · `allowed_endpoints`.
 
+`http.bind_addresses`는 **`['0.0.0.0']`로 둔다** — 컨테이너 안의 바인드이며 호스트 노출은 유닛의
+`--publish 127.0.0.1:5000:5000`이 루프백으로 제한한다. 127.0.0.1로 바꾸면 publish가 컨테이너에 닿지 못해
+`/health`가 connection reset이 된다(2026-10-01 육손 실측). 호스트 쪽 비노출은 §7.1의 "외부에서 /health 404"와
+`ss -ltn`/DNAT 규칙(`-d 127.0.0.1/32`)으로 확인한다.
+
 ⚠ **`vapid_contact_email`은 치환을 잊어도 기동이 성공한다.** sygnal은 "비어 있지 않은 문자열"만
 확인하므로 `vapid_private_key`와 달리 fail-closed가 아니다. 플레이스홀더가 그대로 남으면
 VAPID JWT의 `sub`가 `mailto:<admin-email>`로 나가 푸시 서비스가 거부할 수 있다.

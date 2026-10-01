@@ -160,7 +160,9 @@ class SygnalConfigExampleTest(unittest.TestCase):
         except ImportError:  # pragma: no cover - PyYAML 없는 환경
             self.skipTest("PyYAML 없음")
         doc = yaml.safe_load(self.text)
-        self.assertEqual(doc["http"]["bind_addresses"], ["127.0.0.1"])
+        # 컨테이너 안 바인드는 0.0.0.0 — 호스트 루프백 제한은 유닛의 --publish가 담당한다.
+        # (127.0.0.1로 두면 publish DNAT가 닿지 못한다, 2026-10-01 실측)
+        self.assertEqual(doc["http"]["bind_addresses"], ["0.0.0.0"])
         self.assertEqual(doc["http"]["port"], 5000)
         apps = doc["apps"]
         self.assertEqual(len(apps), 1, "활성 앱은 webpush 하나여야 한다(apns는 주석)")
