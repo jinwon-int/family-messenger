@@ -35,11 +35,32 @@ impl From<std::io::Error> for HttpError {
     fn from(e: std::io::Error) -> Self { HttpError::Io(e) }
 }
 
-/// `base` is `http://host:port`; `path_qs` starts with `/`.
-pub fn request(base: &str, method: &str, path_qs: &str, body: Option<&[u8]>) -> Result<Response, HttpError> {
+/// `base` is `http://host:port`; `path_qs` starts with `/`; `extra_headers`
+/// are emitted verbatim after `Host` (caller auth injects the CF Access
+/// assertion this way, review C1 fallback path).
+pub fn request(
+    base: &str,
+    method: &str,
+    path_qs: &str,
+    body: Option<&[u8]>,
+    extra_headers: &[(&str, &str)],
+) -> Result<Response, HttpError> {
     let (host, port) = split_base(base)?;
+    // Header injection guard: CR/LF in a value would smuggle a second header
+    // (or request) — validate before any socket is opened.
+    let mut headers_block = String::new();
+    for (name, value) in extra_headers {
+        if name.is_empty() || value.is_empty()
+            || name.chars().any(|c| c == '\r' || c == '\n' || c == ':')
+            || value.chars().any(|c| c == '\r' || c == '\n')
+        {
+            return Err(HttpError::BadUrl);
+        }
+        headers_block.push_str(&format!("{name}: {value}\r\n"));
+    }
     let mut stream = TcpStream::connect((host, port))?;
     let mut req = format!("{method} {path_qs} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n");
+    req.push_str(&headers_block);
     match body {
         Some(bytes) => {
             req.push_str("Content-Type: application/json\r\n");
@@ -106,5 +127,61 @@ fn decode_chunked(mut rest: &[u8]) -> Result<Vec<u8>, HttpError> {
         if rest.len() < size + 2 { return Err(HttpError::BadResponse("truncated chunk")); }
         out.extend_from_slice(&rest[..size]);
         rest = &rest[size + 2..];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    /// Read until the request header terminator — the client keeps its write
+    /// side open (no half-close), so reading to EOF would deadlock.
+    fn read_request(stream: &mut std::net::TcpStream) -> String {
+        let mut raw = Vec::new();
+        let mut buf = [0u8; 1024];
+        while !raw.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = stream.read(&mut buf).expect("read request");
+            assert!(n > 0, "eof before header terminator");
+            raw.extend_from_slice(&buf[..n]);
+        }
+        String::from_utf8(raw).expect("utf8 request")
+    }
+
+    fn respond(stream: &mut std::net::TcpStream) {
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{\"ok\":true}")
+            .expect("write response");
+    }
+
+    /// The auth header must reach the wire verbatim, and a CR/LF smuggle in a
+    /// header value must be rejected before anything is written.
+    #[test]
+    fn extra_headers_reach_the_wire_and_injection_is_rejected() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let text = read_request(&mut stream);
+            assert!(text.contains("Cf-Access-Jwt-Assertion: tok-1\r\n"), "header missing: {text}");
+            respond(&mut stream);
+        });
+        let resp = request(
+            &format!("http://127.0.0.1:{}", addr.port()),
+            "GET",
+            "/v2/health",
+            None,
+            &[("Cf-Access-Jwt-Assertion", "tok-1")],
+        )
+        .expect("request");
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body, b"{\"ok\":true}");
+        server.join().expect("server thread");
+
+        // A header value with CRLF must be refused before any socket is
+        // opened — nothing is listening here, so a connect attempt would
+        // surface as an io error instead of the injection rejection.
+        let err = request("http://127.0.0.1:1", "GET", "/v2/health", None, &[("X-Bad", "v\r\nX: 1")]);
+        assert!(matches!(err, Err(HttpError::BadUrl)));
     }
 }

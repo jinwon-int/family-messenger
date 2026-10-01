@@ -140,15 +140,71 @@ pub struct ApiErrorBody {
 
 pub struct Client {
     base: String,
+    access: Access,
+}
+
+/// Caller authentication source (relay `-access-mode required`, review C1).
+/// The JWT must carry `sub` equal to the device-policy subject of the device
+/// each request acts as; the relay verifies iss/aud/exp/nbf against the
+/// operator's JWKS. CF Access assertions are short-lived, so the file source
+/// is re-read before every request — an external refresher (service token
+/// cron, operator script) rotates the token without restarting the bot.
+#[derive(Clone, Debug, Default)]
+pub enum Access {
+    #[default]
+    None,
+    /// One fixed JWT (env `NATIVE_MLS_BOT_ACCESS_JWT`) — dev/test only.
+    Static(String),
+    /// Path to a file holding the current JWT (`--access-jwt-file`,
+    /// env `NATIVE_MLS_BOT_ACCESS_JWT_FILE`).
+    File(std::path::PathBuf),
+}
+
+impl Access {
+    /// Resolve the header value; `None` when authentication is off.
+    fn token(&self) -> Result<Option<String>> {
+        match self {
+            Access::None => Ok(None),
+            Access::Static(raw) => {
+                let token = raw.trim();
+                if token.is_empty() {
+                    Err(BotError::Local("access token (env) is empty"))
+                } else {
+                    Ok(Some(token.to_string()))
+                }
+            }
+            Access::File(path) => {
+                let raw = std::fs::read_to_string(path)
+                    .map_err(|_| BotError::Local("access token file unreadable"))?;
+                let token = raw.trim();
+                if token.is_empty() {
+                    Err(BotError::Local("access token file is empty"))
+                } else {
+                    Ok(Some(token.to_string()))
+                }
+            }
+        }
+    }
 }
 
 impl Client {
-    pub fn new(base: &str) -> Client {
-        Client { base: base.trim_end_matches('/').to_string() }
+    pub fn with_access(base: &str, access: Access) -> Client {
+        Client { base: base.trim_end_matches('/').to_string(), access }
+    }
+
+    /// Every contract route carries the CF Access assertion when caller auth
+    /// is configured; the relay accepts it on the production header name.
+    fn send(&self, method: &str, path_qs: &str, body: Option<&[u8]>) -> Result<http::Response> {
+        let mut headers: Vec<(&str, String)> = Vec::new();
+        if let Some(token) = self.access.token()? {
+            headers.push(("Cf-Access-Jwt-Assertion", token));
+        }
+        let refs: Vec<(&str, &str)> = headers.iter().map(|(name, value)| (*name, value.as_str())).collect();
+        Ok(http::request(&self.base, method, path_qs, body, &refs)?)
     }
 
     pub fn health(&self) -> Result<bool> {
-        let resp = http::request(&self.base, "GET", "/v2/health", None)?;
+        let resp = self.send("GET", "/v2/health", None)?;
         let body: serde_json::Value = serde_json::from_slice(&resp.body)?;
         Ok(resp.status == 200 && body["ok"] == serde_json::Value::Bool(true))
     }
@@ -161,8 +217,7 @@ impl Client {
                 .map(|(r, bytes)| KeyPackageRef { r#ref: r, bytes: bytes.clone() })
                 .collect(),
         };
-        let resp = http::request(
-            &self.base,
+        let resp = self.send(
             "POST",
             &format!("/v2/rooms/{room}/keypackages"),
             Some(serde_json::to_vec(&post)?.as_slice()),
@@ -174,8 +229,7 @@ impl Client {
     /// Consume one live key package of `device` (the server hands each package
     /// out once per consumer — that is what keeps invites single-use).
     pub fn consume_key_package(&self, room: &str, device: &str, consumer: &str) -> Result<Option<StoredKeyPackage>> {
-        let resp = http::request(
-            &self.base,
+        let resp = self.send(
             "GET",
             &format!("/v2/rooms/{room}/keypackages?device={device}&consumer={consumer}"),
             None,
@@ -194,8 +248,7 @@ impl Client {
     }
 
     pub fn post_event(&self, room: &str, post: &EventPost) -> Result<EventResponse> {
-        let resp = http::request(
-            &self.base,
+        let resp = self.send(
             "POST",
             &format!("/v2/rooms/{room}/events"),
             Some(serde_json::to_vec(post)?.as_slice()),
@@ -205,8 +258,7 @@ impl Client {
     }
 
     pub fn get_events(&self, room: &str, device: &str, after: i64) -> Result<EventsResponse> {
-        let resp = http::request(
-            &self.base,
+        let resp = self.send(
             "GET",
             &format!("/v2/rooms/{room}/events?device={device}&after={after}"),
             None,
@@ -216,7 +268,7 @@ impl Client {
     }
 
     pub fn close_room(&self, room: &str) -> Result<bool> {
-        let resp = http::request(&self.base, "POST", &format!("/v2/rooms/{room}/close"), None)?;
+        let resp = self.send("POST", &format!("/v2/rooms/{room}/close"), None)?;
         let body: serde_json::Value = self.decode(resp)?;
         Ok(body["closed"] == serde_json::Value::Bool(true))
     }
@@ -248,4 +300,67 @@ pub fn ref_hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(64);
     for b in digest { out.push_str(&format!("{b:02x}")); }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    /// The file source resolves the current content on every call, so an
+    /// external refresher can rotate short-lived tokens; missing and empty
+    /// files fail closed.
+    #[test]
+    fn token_file_rotates_and_fails_closed() {
+        let dir = std::env::temp_dir().join(format!("native-mls-bot-access-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let path = dir.join("token");
+        let access = Access::File(path.clone());
+
+        assert!(matches!(access.token(), Err(BotError::Local("access token file unreadable"))));
+
+        std::fs::write(&path, "tok-1\n").expect("write");
+        assert_eq!(access.token().expect("token").as_deref(), Some("tok-1"));
+
+        // Rotation: the next call must see the new content.
+        std::fs::write(&path, "tok-2").expect("rewrite");
+        assert_eq!(access.token().expect("token").as_deref(), Some("tok-2"));
+
+        // Whitespace-only fails closed.
+        std::fs::write(&path, "  \n").expect("blank");
+        assert!(matches!(access.token(), Err(BotError::Local("access token file is empty"))));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// With auth configured, every request carries the production header
+    /// name; with auth off, none does.
+    #[test]
+    fn send_carries_assertion_only_when_configured() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = std::thread::spawn(move || {
+            for authed in [true, false] {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = stream.read(&mut buf).expect("read request");
+                    assert!(n > 0, "eof before header terminator");
+                    raw.extend_from_slice(&buf[..n]);
+                }
+                let text = String::from_utf8(raw).expect("utf8");
+                assert_eq!(text.contains("Cf-Access-Jwt-Assertion:"), authed, "{text}");
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{\"ok\":true}")
+                    .expect("write response");
+            }
+        });
+        let base = format!("http://127.0.0.1:{}", addr.port());
+        let authed = Client::with_access(&base, Access::Static("jwt-1".into()));
+        assert!(authed.health().expect("authed health"));
+        let plain = Client::with_access(&base, Access::None);
+        assert!(plain.health().expect("plain health"));
+        server.join().expect("server thread");
+    }
 }
