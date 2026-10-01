@@ -29,9 +29,13 @@ log:
     x_forwarded_for: true   # Cloudflare 터널 뒤에 있으므로 원 IP는 헤더에서 온다
 
 http:
-  # ⚠ 루프백만 바인드한다. 외부 노출은 Cloudflare 터널이 담당하며
-  #   /_matrix/push/v1/notify 경로만 ingress에 있다(cloudflare-ingress.example.json).
-  bind_addresses: ['127.0.0.1']
+  # ⚠ 컨테이너 **안**에서는 모든 인터페이스에 바인드한다. 컨테이너 netns는 격리돼
+  #   있고, 호스트 노출은 유닛의 `--publish 127.0.0.1:5000:5000`이 루프백으로 못 박는다.
+  #   여기를 127.0.0.1로 두면 publish(컨테이너 eth0로 DNAT)가 닿지 못해 호스트에서
+  #   /health가 connection reset이 난다(2026-10-01 육손 docker 실측 — podman도 동일).
+  #   외부 노출은 Cloudflare 터널이 담당하며 /_matrix/push/v1/notify 경로만
+  #   ingress에 있다(cloudflare-ingress.example.json).
+  bind_addresses: ['0.0.0.0']
   port: 5000
 
 metrics:
