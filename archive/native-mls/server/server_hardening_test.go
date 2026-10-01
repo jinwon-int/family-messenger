@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -93,7 +94,7 @@ func TestGetPrunesWhenCursorAdvances(t *testing.T) {
 			t.Fatalf("seed %d: status=%d body=%s", i, code, raw)
 		}
 	}
-	code, raw := doJSON(t, srv, "GET", "/v2/rooms/r/events?device=a1", nil)
+	code, raw := getAck(t, srv, "r", "a1")
 	if code != http.StatusOK {
 		t.Fatalf("get: status=%d body=%s", code, raw)
 	}
@@ -303,7 +304,7 @@ func TestRemovedMemberCursorGrace(t *testing.T) {
 		must("bootstrap", postCommitBody(t, "a1", "c1", 0, nil, membersOf([2]string{"a1", "alice"}, [2]string{"b1", "bob"}), []byte("boot"))) // 1
 		must("b1 app", postEventBody(t, "b1", "c2", "application", 1, nil, nil, []byte("from b1")))                                           // 2
 		must("a1 app", postEventBody(t, "a1", "c3", "application", 1, nil, nil, []byte("from a1")))                                           // 3
-		if code, _ := doJSON(t, srv, "GET", "/v2/rooms/r/events?device=a1", nil); code != http.StatusOK {
+		if code, _ := getAck(t, srv, "r", "a1"); code != http.StatusOK {
 			t.Fatal("a1 read")
 		}
 		if n := tableCount(t, r, `SELECT COUNT(*) FROM mls_events WHERE room = 'r' AND kind = 'application'`); n != 2 {
@@ -318,7 +319,7 @@ func TestRemovedMemberCursorGrace(t *testing.T) {
 
 	t.Run("gates until the removed device reads its removal", func(t *testing.T) {
 		r, srv, _ := setup(t, 7*24*3600)
-		if code, _ := doJSON(t, srv, "GET", "/v2/rooms/r/events?device=a1", nil); code != http.StatusOK {
+		if code, _ := getAck(t, srv, "r", "a1"); code != http.StatusOK {
 			t.Fatal("a1 read")
 		}
 		if n := appRows(t, r); n != 2 {
@@ -328,7 +329,7 @@ func TestRemovedMemberCursorGrace(t *testing.T) {
 			t.Fatalf("b1 cursor not marked removed at seq 4: %d", n)
 		}
 		// b1 reads: sees everything up to and including its removal (ack).
-		code, raw := doJSON(t, srv, "GET", "/v2/rooms/r/events?device=b1", nil)
+		code, raw := getAck(t, srv, "r", "b1")
 		if code != http.StatusOK {
 			t.Fatalf("b1 read: status=%d body=%s", code, raw)
 		}
@@ -341,9 +342,13 @@ func TestRemovedMemberCursorGrace(t *testing.T) {
 		if n := appRows(t, r); n != 0 {
 			t.Fatalf("after the ack the stale events prune: %d left", n)
 		}
-		// Reading again as a non-member does not resurrect a gate.
+		// Reading again as a non-member is allowed (GET stays open) but does
+		// not resurrect a gate, and an ack from it is refused (M2).
 		if code, _ := doJSON(t, srv, "GET", "/v2/rooms/r/events?device=b1", nil); code != http.StatusOK {
 			t.Fatal("b1 second read")
+		}
+		if code, raw := doJSON(t, srv, "GET", "/v2/rooms/r/events?device=b1&ack=4", nil); code != http.StatusForbidden || errField(t, raw) != "not_a_member" {
+			t.Fatalf("removed b1 ack after drop: status=%d body=%s, want 403 not_a_member", code, raw)
 		}
 		if n := tableCount(t, r, `SELECT COUNT(*) FROM mls_cursors WHERE room = 'r' AND device = 'b1'`); n != 0 {
 			t.Fatalf("non-member read created a cursor: %d rows", n)
@@ -352,7 +357,7 @@ func TestRemovedMemberCursorGrace(t *testing.T) {
 
 	t.Run("drops after the grace elapsed", func(t *testing.T) {
 		r, srv, _ := setup(t, -1)
-		if code, _ := doJSON(t, srv, "GET", "/v2/rooms/r/events?device=a1", nil); code != http.StatusOK {
+		if code, _ := getAck(t, srv, "r", "a1"); code != http.StatusOK {
 			t.Fatal("a1 read")
 		}
 		if n := tableCount(t, r, `SELECT COUNT(*) FROM mls_cursors WHERE room = 'r' AND device = 'b1'`); n != 0 {
@@ -452,14 +457,20 @@ INSERT INTO mls_cursors VALUES ('r', 'a1', 7);`
 	if err := db.QueryRow(`SELECT removed_at FROM mls_cursors WHERE room = 'r' AND device = 'a1'`).Scan(&removed); err != nil || removed.Valid {
 		t.Fatalf("removed_at after migration = %v err=%v", removed, err)
 	}
-	// Reopening is idempotent.
+	// Reopening is idempotent. The data-dir lock (H3 -reset-room safety)
+	// admits one holder at a time, so a second open while the first is live
+	// must fail closed; after closing it reopens cleanly.
+	if _, err := openStore(dir); !errors.Is(err, errStoreLocked) {
+		t.Fatalf("second open while held = %v, want errStoreLocked", err)
+	}
+	db.Close()
 	db2, err := openStore(dir)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	db2.Close()
+	t.Cleanup(func() { db2.Close() })
 	// And the next event continues at seq 8 through the real path.
-	r := &relay{db: db, policy: testPolicy()}
+	r := &relay{db: db2, policy: testPolicy()}
 	stored, err := r.storeEvent("r", eventInput{device: "a1", clientID: "c8", kind: "application", bytes: []byte("x")})
 	if err != nil || stored.seq != 8 {
 		t.Fatalf("post after migration = %+v err=%v, want seq 8", stored, err)

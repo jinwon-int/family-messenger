@@ -13,7 +13,6 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -77,7 +76,7 @@ func defaultPolicy() policy {
 // verifier (C1): nil means -access-mode disabled — local dev only.
 type relay struct {
 	mu      sync.Mutex
-	db      *sql.DB
+	db      *store
 	policy  policy
 	devices *devicepolicy.DevicePolicyStore
 	access  *accessVerifier
@@ -134,6 +133,9 @@ type eventsResponse struct {
 	Revision  int64       `json:"revision"`
 	Events    []storedRow `json:"events"`
 	NextAfter int64       `json:"next_after"`
+	// Cursor is the device's durable acknowledged position after this
+	// request (M2): reads never move it; only ?ack= does.
+	Cursor int64 `json:"cursor"`
 }
 
 // keyPackageInput is one posted KeyPackage: an opaque caller-chosen ref as
@@ -765,13 +767,31 @@ func (s *relay) handleGetEvents(w http.ResponseWriter, req *http.Request) {
 		}
 		limit = min(v, maxEventsLimit)
 	}
+	// M2: ?ack=<seq> is the only thing that moves the device's durable
+	// cursor (the application-event pruning gate). A client acks after it
+	// has durably processed every event up to seq; `after` stays a pure read
+	// offset so a response lost on the wire can be fetched again.
+	var ack *int64
+	if raw := req.URL.Query().Get("ack"); raw != "" {
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || v < 0 {
+			s.fail(w, http.StatusBadRequest, apiError{Error: "bad_ack"})
+			return
+		}
+		ack = &v
+	}
 	if !s.bindDevice(w, c, device) {
 		return
 	}
-	rows, roomRow, nextAfter, err := s.readEvents(room, device, after, limit)
+	page, err := s.readEvents(room, device, after, limit, ack)
+	var bad badAck
 	switch {
 	case err == nil:
-		writeJSON(w, http.StatusOK, eventsResponse{Epoch: roomRow.epoch, Revision: roomRow.revision, Events: rows, NextAfter: nextAfter})
+		writeJSON(w, http.StatusOK, eventsResponse{Epoch: page.room.epoch, Revision: page.room.revision, Events: page.rows, NextAfter: page.nextAfter, Cursor: page.cursor})
+	case errors.As(err, &bad):
+		s.fail(w, http.StatusBadRequest, apiError{Error: "bad_ack", Detail: bad.Error()})
+	case errors.Is(err, errNotMember):
+		s.fail(w, http.StatusForbidden, apiError{Error: "not_a_member"})
 	case errors.Is(err, errNoRoom):
 		s.fail(w, http.StatusNotFound, apiError{Error: "no_such_room"})
 	case errors.Is(err, errClosed):

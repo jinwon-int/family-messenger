@@ -14,12 +14,59 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jinwon-int/family-messenger/archive/native-mls/server/internal/devicepolicy"
 
 	_ "github.com/mattn/go-sqlite3"
 )
+
+const (
+	storeFile = "native-mls-v2.db"
+	// storeLockFile is a zero-size flock anchor next to the database. The
+	// relay holds it exclusively for its whole lifetime; the offline
+	// -reset-room path takes the same lock, so it cannot run under a live
+	// relay and a second relay cannot open the same data dir (H3 recovery).
+	storeLockFile = "native-mls-v2.lock"
+)
+
+// errStoreLocked: another process (normally the running relay) holds the
+// data-dir lock.
+var errStoreLocked = errors.New("data dir is locked by another process (is the relay running?)")
+
+// store is the relay's SQLite handle plus the data-dir lock; Close releases
+// both so a restart (or the offline reset tool) can take over the file.
+type store struct {
+	*sql.DB
+	lock *os.File
+}
+
+func (s *store) Close() error {
+	err := s.DB.Close()
+	if s.lock != nil {
+		_ = syscall.Flock(int(s.lock.Fd()), syscall.LOCK_UN)
+		s.lock.Close()
+		s.lock = nil
+	}
+	return err
+}
+
+// lockDataDir takes the exclusive, non-blocking data-dir lock.
+func lockDataDir(dataDir string) (*os.File, error) {
+	f, err := os.OpenFile(filepath.Join(dataDir, storeLockFile), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, errStoreLocked
+		}
+		return nil, fmt.Errorf("lock %s: %w", storeLockFile, err)
+	}
+	return f, nil
+}
 
 // sqliteURI mirrors server/internal/chat/sqlite.go sqliteURI() for the
 // durability posture (DELETE journal, synchronous FULL, foreign keys,
@@ -82,27 +129,33 @@ CREATE TABLE IF NOT EXISTS mls_members (
 );
 `
 
-func openStore(dataDir string) (*sql.DB, error) {
+func openStore(dataDir string) (*store, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite3", sqliteURI(filepath.Join(dataDir, "native-mls-v2.db")))
+	lock, err := lockDataDir(dataDir)
 	if err != nil {
 		return nil, err
 	}
+	db, err := sql.Open("sqlite3", sqliteURI(filepath.Join(dataDir, storeFile)))
+	if err != nil {
+		lock.Close()
+		return nil, err
+	}
+	st := &store{DB: db, lock: lock}
 	// One connection: with _txlock=immediate every Begin takes the write
 	// lock, and busy_timeout covers an external reader; the relay mutex on
 	// top means the process never races itself.
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(schema); err != nil {
-		db.Close()
+		st.Close()
 		return nil, err
 	}
 	if err := migrate(db); err != nil {
-		db.Close()
+		st.Close()
 		return nil, err
 	}
-	return db, nil
+	return st, nil
 }
 
 // migrate adds columns to tables created before they existed (CREATE TABLE
@@ -275,7 +328,7 @@ func closeRoom(db *sql.DB, room, device string, enforce bool, now int64) error {
 func (s *relay) closeRoomDB(room, device string, now int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return closeRoom(s.db, room, device, s.devices != nil, now)
+	return closeRoom(s.db.DB, room, device, s.devices != nil, now)
 }
 
 // storeEvent appends one event under CAS discipline. Body validation happened
@@ -386,6 +439,7 @@ func (s *relay) storeEvent(room string, ev eventInput) (storedEvent, error) {
 	}
 	// M3b: apply the membership diff in the same transaction as the commit
 	// insert, so a crash cannot leave membership and the log disagree.
+	founding := active != nil && ev.kind == "commit" && len(tracked) == 0
 	if active != nil && ev.kind == "commit" {
 		if err := applyMembership(tx, room, tracked, ev, seq, now); err != nil {
 			return storedEvent{}, err
@@ -397,7 +451,25 @@ func (s *relay) storeEvent(room string, ev eventInput) (storedEvent, error) {
 	if err := tx.Commit(); err != nil {
 		return storedEvent{}, err
 	}
+	if founding {
+		// H3: room names are first-come among authenticated devices. The
+		// founding commit is the squatting-relevant moment, so it is logged
+		// with sender, actor and the seeded roster; -reset-room is the
+		// operator's recovery path (DEVICES-V4.md).
+		log.Printf("room %s founded: sender=%s actor=%s seq=%d members=%s",
+			room, ev.device, active[ev.device].Actor, seq, describeMembers(ev.members))
+	}
 	return storedEvent{seq: seq, epoch: newEpoch, revision: newRevision}, nil
+}
+
+// describeMembers renders a replicated member list as device(actor),... for
+// the founding-commit log line.
+func describeMembers(members []memberWire) string {
+	parts := make([]string, 0, len(members))
+	for _, m := range members {
+		parts = append(parts, m.Device+"("+m.Actor+")")
+	}
+	return strings.Join(parts, ",")
 }
 
 // enforceDevicePolicy replays the native device-policy chain (M3b) and
@@ -570,64 +642,88 @@ func applyMembership(tx *sql.Tx, room string, tracked []memberRow, ev eventInput
 	return nil
 }
 
+// eventsPage is readEvents' result: one page of rows, the room's CAS state,
+// the highest seq scanned (next_after) and the device's durable cursor after
+// the request (the ack'd value, 0 for a device that never acked).
+type eventsPage struct {
+	rows      []storedRow
+	room      roomRow
+	nextAfter int64
+	cursor    int64
+}
+
 // readEvents returns one page (limit rows scanned in seq order after `after`)
 // of the per-room total order, filtering welcome events targeted at other
-// devices (B4: filter, never 403). nextAfter is the highest seq scanned. The
-// requesting device's cursor is recorded durably (mls_cursors) for
-// application-event pruning, and when that cursor advances the room is
-// pruned in the same transaction (H2) — reads are what unlock retention.
-// With membership tracking on, a non-member of a seeded room never gains a
-// new cursor (a removed member's existing one still advances so it can ack
-// its removal); it must not become a pruning gate by merely reading.
-func (s *relay) readEvents(room, device string, after int64, limit int) ([]storedRow, roomRow, int64, error) {
+// devices (B4: filter, never 403). nextAfter is the highest seq scanned.
+//
+// M2: reading never moves the device's durable cursor — `after` is a pure
+// read offset, so a response lost on the wire can be re-read. The cursor
+// (mls_cursors, the application-event pruning gate) moves only on an explicit
+// acknowledgement (ack != nil): the device asserts it has durably processed
+// everything up to ack, the cursor becomes max(current, ack), and when that
+// advanced the room is pruned in the same transaction (H2). ack must not
+// exceed the room's last_seq (badAck) and is accepted only from a known
+// reader: a device with a cursor (poster, Welcome target, removed member
+// within its grace) or a tracked member of the room; with membership
+// tracking on, any other device of a seeded room is errNotMember — it must
+// not become a pruning gate by merely reading.
+func (s *relay) readEvents(room, device string, after int64, limit int, ack *int64) (eventsPage, error) {
 	now := time.Now().Unix()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx, err := s.db.Begin()
 	if err != nil {
-		return nil, roomRow{}, 0, err
+		return eventsPage{}, err
 	}
 	defer tx.Rollback()
 	row, err := readRoom(tx, room)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, roomRow{}, 0, errNoRoom
+		return eventsPage{}, errNoRoom
 	}
 	if err != nil {
-		return nil, roomRow{}, 0, err
+		return eventsPage{}, err
 	}
 	if row.closed {
-		return nil, roomRow{}, 0, errClosed
+		return eventsPage{}, errClosed
 	}
 	rows, err := tx.Query(`SELECT seq, device, client_id, kind, epoch, targets, bytes, sha256, created_at
 		FROM mls_events WHERE room = ? AND seq > ? ORDER BY seq LIMIT ?`, room, after, limit)
 	if err != nil {
-		return nil, roomRow{}, 0, err
+		return eventsPage{}, err
 	}
-	out := []storedRow{}
-	nextAfter := after
+	page := eventsPage{rows: []storedRow{}, room: row, nextAfter: after}
 	for rows.Next() {
 		var r storedRow
 		var targets sql.NullString
 		if err := rows.Scan(&r.Seq, &r.Device, &r.ClientID, &r.Kind, &r.Epoch, &targets, &r.Bytes, &r.Sha256, &r.CreatedAt); err != nil {
 			rows.Close()
-			return nil, roomRow{}, 0, err
+			return eventsPage{}, err
 		}
-		if r.Seq > nextAfter {
-			nextAfter = r.Seq
+		if r.Seq > page.nextAfter {
+			page.nextAfter = r.Seq
 		}
 		if r.Kind == "welcome" && !targetedAt(targets.String, device) {
 			continue
 		}
-		out = append(out, r)
+		page.rows = append(page.rows, r)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, roomRow{}, 0, err
+		return eventsPage{}, err
 	}
-	advanced, err := advanceCursor(tx, s.devices != nil, room, device, nextAfter)
+	if ack == nil {
+		cur, err := readCursor(tx, room, device)
+		if err != nil {
+			return eventsPage{}, err
+		}
+		page.cursor = cur
+		return page, tx.Commit()
+	}
+	cur, advanced, err := ackCursor(tx, s.devices != nil, room, device, *ack, row.lastSeq)
 	if err != nil {
-		return nil, roomRow{}, 0, err
+		return eventsPage{}, err
 	}
+	page.cursor = cur
 	if advanced {
 		// A chain that cannot be read must not close GET (deny is write-side);
 		// the prune simply waits for the next write.
@@ -635,37 +731,51 @@ func (s *relay) readEvents(room, device string, after int64, limit int) ([]store
 		if err != nil {
 			log.Printf("get events room=%s: prune skipped: %v", room, err)
 		} else if err := s.prune(tx, room, row.epoch, now, active); err != nil {
-			return nil, roomRow{}, 0, err
+			return eventsPage{}, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, roomRow{}, 0, err
+		return eventsPage{}, err
 	}
-	return out, row, nextAfter, nil
+	return page, nil
 }
 
-// advanceCursor moves the reader's durable cursor forward (never back) and
-// reports whether it moved. New cursors are only created for legitimate
-// readers: with membership tracking on and a seeded room, that is a tracked
-// member.
-func advanceCursor(tx *sql.Tx, membership bool, room, device string, seq int64) (bool, error) {
+// badAck: ?ack= names a seq the room has not produced yet (400).
+type badAck struct{ Ack, LastSeq int64 }
+
+func (e badAck) Error() string {
+	return fmt.Sprintf("ack %d exceeds the room's last_seq %d", e.Ack, e.LastSeq)
+}
+
+// readCursor returns the device's durable cursor, 0 when it has none.
+func readCursor(tx *sql.Tx, room, device string) (int64, error) {
+	var cur int64
+	err := tx.QueryRow(`SELECT seq FROM mls_cursors WHERE room = ? AND device = ?`, room, device).Scan(&cur)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return cur, err
+}
+
+// ackCursor applies an acknowledgement: the reader's durable cursor becomes
+// max(current, ack) and the result plus whether it moved are returned. A
+// device without a cursor row may only create one when it is a legitimate
+// reader: with membership tracking on and a seeded room, a tracked member
+// (errNotMember otherwise — a removed member whose grace already dropped its
+// row is a non-member too). ack above the room's last_seq is badAck; the
+// membership verdict comes first so the 400 does not act as an oracle for
+// outsiders.
+func ackCursor(tx *sql.Tx, membership bool, room, device string, ack, lastSeq int64) (int64, bool, error) {
 	var prev int64
 	err := tx.QueryRow(`SELECT seq FROM mls_cursors WHERE room = ? AND device = ?`, room, device).Scan(&prev)
-	switch {
-	case err == nil:
-		if seq <= prev {
-			return false, nil
-		}
-		_, err := tx.Exec(`UPDATE mls_cursors SET seq = ? WHERE room = ? AND device = ?`, seq, room, device)
-		return err == nil, err
-	case errors.Is(err, sql.ErrNoRows):
-	default:
-		return false, err
+	exists := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, false, err
 	}
-	if membership {
+	if !exists && membership {
 		tracked, err := readMembers(tx, room)
 		if err != nil {
-			return false, err
+			return 0, false, err
 		}
 		if len(tracked) > 0 {
 			member := false
@@ -675,12 +785,22 @@ func advanceCursor(tx *sql.Tx, membership bool, room, device string, seq int64) 
 				}
 			}
 			if !member {
-				return false, nil
+				return 0, false, errNotMember
 			}
 		}
 	}
-	_, err = tx.Exec(`INSERT INTO mls_cursors (room, device, seq) VALUES (?, ?, ?)`, room, device, seq)
-	return err == nil, err
+	if ack > lastSeq {
+		return 0, false, badAck{Ack: ack, LastSeq: lastSeq}
+	}
+	if exists {
+		if ack <= prev {
+			return prev, false, nil
+		}
+		_, err := tx.Exec(`UPDATE mls_cursors SET seq = ? WHERE room = ? AND device = ?`, ack, room, device)
+		return ack, err == nil, err
+	}
+	_, err = tx.Exec(`INSERT INTO mls_cursors (room, device, seq) VALUES (?, ?, ?)`, room, device, ack)
+	return ack, err == nil, err
 }
 
 // keyPackagesResult is postKeyPackages' outcome in store terms.
@@ -871,7 +991,7 @@ func (s *relay) prune(tx *sql.Tx, room string, epoch int64, now int64, active ma
 
 // registerCursor makes device a known reader of room without moving an
 // existing cursor (INSERT OR IGNORE): a first post or Welcome sets the floor,
-// only reads advance it.
+// only an explicit ?ack= advances it (M2).
 func registerCursor(tx *sql.Tx, room, device string, seq int64) error {
 	_, err := tx.Exec(`INSERT OR IGNORE INTO mls_cursors (room, device, seq) VALUES (?, ?, ?)`, room, device, seq)
 	return err
