@@ -10,7 +10,7 @@
 ## 0. 전제
 
 - 홈서버(Tuwunel)가 이미 운영 중이고, 게이트웨이로 아웃바운드 HTTP를 낼 수 있다.
-- 컨테이너 런타임(podman 권장, docker 가능)이 있다.
+- 컨테이너 런타임(podman 권장 → `sygnal.service`, docker만 있으면 → `sygnal-docker.service`, §2a)이 있다.
 - **게이트웨이만으로는 알림이 오지 않는다.** 웹앱이 pusher를 등록하고 서비스워커가
   `push` 이벤트를 처리해야 한다(#167). 두 쪽이 다 끝나야 알림 1건이 도착한다.
 
@@ -47,8 +47,28 @@ sudo podman image pull "docker.io/matrixdotorg/sygnal@${DIGEST}"
 sudo podman image exists "docker.io/matrixdotorg/sygnal@${DIGEST}" && echo "이미지 확보"
 ```
 
-핀을 올릴 때는 **`sygnal.pins.json`과 `sygnal.service`의 `SYGNAL_IMAGE`를 함께** 바꾸고 PR로 기록한다.
+핀을 올릴 때는 **`sygnal.pins.json`과 `sygnal.service`·`sygnal-docker.service`의 `SYGNAL_IMAGE`를 함께** 바꾸고 PR로 기록한다.
 `tests/test_sygnal_deploy_package.py`가 이 동기화를 검사한다.
+
+### 2a. docker 호스트 (podman이 없을 때)
+
+호스트에 podman이 없고 docker만 있으면(2026-10-01 육손 실측: docker 26.1) `deploy/sygnal/sygnal-docker.service`를
+쓴다. 컨테이너 격리 플래그는 podman 유닛과 **동일**하고(테스트가 두 유닛의 `run` 플래그 집합이 같은지 검사),
+차이는 런타임 CLI뿐이다. **둘 중 하나만** `/etc/systemd/system/sygnal.service`로 설치한다.
+
+```bash
+DIGEST=$(python3 -c 'import json;print(json.load(open("deploy/sygnal/sygnal.pins.json"))["image"]["platform_digests"]["linux/amd64"])')
+sudo docker image pull "docker.io/matrixdotorg/sygnal@${DIGEST}"
+sudo docker image inspect --format '{{.Id}}' "docker.io/matrixdotorg/sygnal@${DIGEST}" && echo "이미지 확보"
+```
+
+- docker는 이미지 저장소가 데몬 하나뿐이라 §2의 "pull 사용자" 함정은 없다. 그래도 pull은 root로 한다.
+- `--replace`가 없어 유닛이 기동 전 잔존 컨테이너를 `docker rm -f sygnal`로 지운다(이 ExecStartPre만 실패 무시).
+- `--log-driver=none`이라 로그는 `journalctl -u sygnal`로만 본다(`docker logs sygnal`은 비어 있다 — 정상).
+- §3의 `gen-vapid-key.sh`는 podman이 없으면 docker를 자동 선택한다. §5 설치 명령에서 파일명만
+  `sygnal-docker.service`로 바꾼다: `sudo cp deploy/sygnal/sygnal-docker.service /etc/systemd/system/sygnal.service`.
+- 데몬 의존(`Requires=docker.service`): docker 재시작 시 sygnal도 함께 멈췄다 `Restart=on-failure`로 돌아온다.
+  §7.1을 다시 확인한다.
 
 ## 3. VAPID 키 생성
 
