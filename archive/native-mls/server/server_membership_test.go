@@ -348,18 +348,21 @@ func TestCommitMembershipLifecycle(t *testing.T) {
 		t.Fatalf("rejected adds wrote membership: %d", n)
 	}
 
-	// Removing b1 drops its membership and its reader cursor in the same
-	// transaction as the commit.
+	// Removing b1 drops its membership in the same transaction as the
+	// commit; its reader cursor is not deleted but marked removed at the
+	// removal commit's seq (H3a grace: it keeps gating pruning until b1
+	// reads its removal or the grace elapses).
 	removeB1 := postCommitBody(t, "a1", "d3", 3, nil, membersOf([2]string{"a1", "alice"}, [2]string{"a2", "alice"}), []byte("remove-b1"))
 	code, raw := doJSON(t, srv, "POST", "/v2/rooms/r/events", removeB1)
 	if code != http.StatusCreated {
 		t.Fatalf("remove b1: status=%d body=%s", code, raw)
 	}
+	removal := decodeEventResponse(t, raw)
 	if n := tableCount(t, r, `SELECT COUNT(*) FROM mls_members WHERE room = 'r' AND device = 'b1'`); n != 0 {
 		t.Fatalf("b1 membership survived removal: %d", n)
 	}
-	if n := tableCount(t, r, `SELECT COUNT(*) FROM mls_cursors WHERE room = 'r' AND device = 'b1'`); n != 0 {
-		t.Fatalf("b1 cursor survived removal: %d", n)
+	if n := tableCount(t, r, `SELECT COUNT(*) FROM mls_cursors WHERE room = 'r' AND device = 'b1' AND removed_at IS NOT NULL AND removed_seq = ?`, removal.Seq); n != 1 {
+		t.Fatalf("b1 cursor not marked removed at seq %d: %d rows", removal.Seq, n)
 	}
 
 	// b1 is still policy-active, so application posts stay possible — the
@@ -386,6 +389,10 @@ func TestCommitMembershipLifecycle(t *testing.T) {
 	}
 	if !resp.Duplicate {
 		t.Fatalf("K4 replay not marked duplicate: %+v", resp)
+	}
+	// L1: the replayed commit answers the epoch it produced, as its 201 did.
+	if resp.Epoch != removal.Epoch || resp.Seq != removal.Seq {
+		t.Fatalf("K4 replay of commit = epoch %d seq %d, want the 201's epoch %d seq %d", resp.Epoch, resp.Seq, removal.Epoch, removal.Seq)
 	}
 }
 

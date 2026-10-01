@@ -20,8 +20,16 @@ revoke-all and the read-only old-room behavior are exercised at the end.
 
 Scope, stated plainly: MLS state and every encrypt/decrypt/commit/join run in the
 browser workers; the /v2 transport (fetch, cursors, retry decisions) is this Python
-harness. Device ids in POSTs are harness-declared (the relay is unauthenticated by
-design; policy enforcement rejects unknown or revoked ids). Only synthetic bytes.
+harness. Only synthetic bytes.
+
+Caller identity (#177 review C1): the relay runs in -access-mode required. This
+harness stands in for Cloudflare Access with one ES256 key published as a JWKS
+file; every request carries Cf-Access-Jwt-Assertion minted for the SUBJECT of the
+device it acts as (sub = the device's policy `subject`, "person-<actor>"). The
+relay binds the claimed device id to that subject: no token is 401, a token for
+another person, an unknown device or a revoked device is one 403
+device_subject_mismatch — on GET as well, so the revoked-device checks below are
+identity checks, not the old POST-only policy deny.
 
 Fault injections (client <-> relay):
   a  stale-epoch application -> 409 -> apply the missed commit -> re-encrypt -> 201
@@ -35,17 +43,20 @@ Fault injections (client <-> relay):
      pending commit (clear_pending) and catches up; the winner first reads what the
      relay ordered before its commit, then merges (deferred merge)
   h  revoke a-2 plainly: it is E2-enrolled, so its approval evidence was written
-     once at enrollment and a signed -input revoke is REFUSED; both POST kinds of
-     the revoked device are 403 device_not_allowed; the MLS removal moves the
-     others to a new epoch; the revoked device reads the feed (GET stays open)
-     but cannot decrypt it
+     once at enrollment and a signed -input revoke is REFUSED; every request of
+     the revoked device (both POST kinds and GET) is 403 device_subject_mismatch
+     at the identity binding; the MLS removal moves the others to a new epoch and
+     the revoked device cannot decrypt it
   i  total device loss: E4 revoke-all locks a-1; a replacement device only gets
-     in through E1, finds the old room read-only (commit 403
-     commit_sender_not_member, history undecryptable) and creates a new room
-     instead. E3 the other way round: actor c exists for exactly this — c-1 is
-     E1-enrolled with no evidence yet, c-2 joins through E2, and then c-1 IS
-     revoked with evidence signed by c-2; approved_by is written exactly once,
-     at revoke time
+     in through E1 (unknown before that: 403 device_subject_mismatch), finds the
+     old room read-only (commit 403 commit_sender_not_member, history
+     undecryptable) and creates a new room instead. E3 the other way round:
+     actor c exists for exactly this — c-1 is E1-enrolled with no evidence yet,
+     c-2 joins through E2, and then c-1 IS revoked with evidence signed by c-2;
+     approved_by is written exactly once, at revoke time
+  j  caller identity: no token 401; a token of another person acting as a-1 403
+     device_subject_mismatch; /close by a non-member 403 not_a_member, by a
+     member 200 and the room answers 410 afterwards
 """
 import argparse
 import base64
@@ -63,6 +74,9 @@ import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 from playwright.sync_api import sync_playwright
 
 ROOM = 'family'
@@ -87,12 +101,44 @@ def sealed(ciphertext, room=ROOM):
     return list(len(part).to_bytes(4, 'little') + part + bytes(ciphertext))
 
 
+def b64url(data):
+    return base64.urlsafe_b64encode(bytes(data)).rstrip(b'=').decode()
+
+
+class Access:
+    """Stand-in for Cloudflare Access: one ES256 key, the JWKS file the relay is
+    pointed at (-access-jwks), and per-subject JWT minting with the claims the
+    relay verifies (iss, aud, sub, exp/nbf). The private key never leaves this
+    process; the relay only ever sees the public JWKS."""
+
+    ISSUER = 'https://family-smoke.cloudflareaccess.com'
+    AUDIENCE = 'native-mls-v2-relay-smoke'
+    KID = 'smoke-es256'
+
+    def __init__(self, work_dir):
+        self.key = ec.generate_private_key(ec.SECP256R1())
+        numbers = self.key.public_key().public_numbers()
+        jwks = {'keys': [{'kty': 'EC', 'crv': 'P-256', 'kid': self.KID, 'alg': 'ES256', 'use': 'sig',
+                          'x': b64url(numbers.x.to_bytes(32, 'big')), 'y': b64url(numbers.y.to_bytes(32, 'big'))}]}
+        self.jwks_path = work_dir / 'access-jwks.json'
+        self.jwks_path.write_text(json.dumps(jwks))
+        self.jwks_path.chmod(0o600)
+
+    def token(self, subject, ttl=600):
+        now = int(time.time())
+        header = {'alg': 'ES256', 'typ': 'JWT', 'kid': self.KID}
+        claims = {'iss': self.ISSUER, 'aud': [self.AUDIENCE], 'sub': subject, 'iat': now, 'nbf': now, 'exp': now + ttl}
+        signing_input = b64url(json.dumps(header).encode()) + '.' + b64url(json.dumps(claims).encode())
+        r, s = decode_dss_signature(self.key.sign(signing_input.encode(), ec.ECDSA(hashes.SHA256())))
+        return signing_input + '.' + b64url(r.to_bytes(32, 'big') + s.to_bytes(32, 'big'))
+
+
 class Relay:
     """The v2 relay binary on a loopback port; restartable over one data dir."""
 
-    def __init__(self, binary, data_dir, log_dir, room_bytes_cap, device_state):
+    def __init__(self, binary, data_dir, log_dir, room_bytes_cap, device_state, access):
         self.binary, self.data_dir, self.log_dir = binary, data_dir, log_dir
-        self.room_bytes_cap, self.device_state = room_bytes_cap, device_state
+        self.room_bytes_cap, self.device_state, self.access = room_bytes_cap, device_state, access
         self.proc = None
         self.starts = 0
 
@@ -101,7 +147,9 @@ class Relay:
             probe.bind(('127.0.0.1', 0))
             self.port = probe.getsockname()[1]
         argv = [str(self.binary), '-addr', f'127.0.0.1:{self.port}', '-data-dir', str(self.data_dir),
-                '-room-bytes-cap', str(self.room_bytes_cap), '-device-state', str(self.device_state)]
+                '-room-bytes-cap', str(self.room_bytes_cap), '-device-state', str(self.device_state),
+                '-access-mode', 'required', '-access-issuer', Access.ISSUER,
+                '-access-audience', Access.AUDIENCE, '-access-jwks', str(self.access.jwks_path)]
         if app_event_ttl is not None:
             argv += ['-app-event-ttl-seconds', str(app_event_ttl)]
         self.starts += 1
@@ -139,10 +187,15 @@ class Relay:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
 
-    def http(self, method, path, body=None):
+    def http(self, method, path, body=None, subject=None):
+        """One request; subject selects whose CF Access assertion travels with it
+        (None = no token, which every contract route must answer with 401)."""
         data = None if body is None else json.dumps(body).encode()
+        headers = {'Content-Type': 'application/json'} if data else {}
+        if subject is not None:
+            headers['Cf-Access-Jwt-Assertion'] = self.access.token(subject)
         req = urllib.request.Request(f'http://127.0.0.1:{self.port}{path}', data=data, method=method,
-                                     headers={'Content-Type': 'application/json'} if data else {})
+                                     headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 return resp.status, json.loads(resp.read() or b'{}')
@@ -214,8 +267,9 @@ def main():
         assets[route] = path.read_bytes()
     receipt = {'synthetic_only': True, 'durable_state': False, 'checks': {},
                'transport': 'python harness HTTP to the v2 relay; MLS state and operations in browser workers',
-               'relay_auth': 'device policy v4 via -device-state: POSTs require an active policy device; '
-                             'commits must replicate the post-commit member list',
+               'relay_auth': 'CF Access stand-in: ES256 JWT per request (Cf-Access-Jwt-Assertion), sub bound to the '
+                             'device policy subject of the claimed device; device policy v4 via -device-state: '
+                             'active devices only, commits must replicate the post-commit member list',
                'room_bytes_cap': args.room_bytes_cap}
 
     class Handler(BaseHTTPRequestHandler):
@@ -250,7 +304,8 @@ def main():
     view = policy.run(['-init'])
     assert view['revision'] == 1 and view['devices'] == [], view
     policy.revision = 1
-    relay = Relay(args.relay_binary.resolve(), relay_dir / 'data', evidence, args.room_bytes_cap, policy_state)
+    access = Access(evidence)
+    relay = Relay(args.relay_binary.resolve(), relay_dir / 'data', evidence, args.room_bytes_cap, policy_state, access)
     try:
         relay.start()  # default app-event TTL (30 days): no time-based pruning before phase d
         with sync_playwright() as playwright:
@@ -262,9 +317,15 @@ def main():
             def member_wire(devices):
                 return [{'device': d, 'actor': d.split('-')[0]} for d in sorted(devices)]
 
+            def subject_of(dev):
+                """The policy `subject` every device of an actor is enrolled with — the
+                CF Access sub of that person; the JWT for a device carries exactly it."""
+                return f"person-{dev.split('-')[0]}"
+
             class Device:
                 def __init__(self, dev):
                     self.dev = dev
+                    self.subject = subject_of(dev)
                     self.context = browser.new_context()
                     self.page = self.context.new_page()
                     self.page.goto('http://' + expected_host)
@@ -306,7 +367,7 @@ def main():
                         body['targets'] = targets
                     if members is not None:
                         body['members'] = members
-                    return relay.http('POST', f'/v2/rooms/{room}/events', body)
+                    return relay.http('POST', f'/v2/rooms/{room}/events', body, subject=self.subject)
 
                 def post_ok(self, kind, data, label, targets=None, members=None, room=ROOM):
                     status, body = self.post(kind, data, self.client_id(label), targets=targets,
@@ -316,7 +377,8 @@ def main():
                     return body
 
                 def raw_events(self, after=0, room=ROOM):
-                    status, body = relay.http('GET', f'/v2/rooms/{room}/events?device={self.dev}&after={after}')
+                    status, body = relay.http('GET', f'/v2/rooms/{room}/events?device={self.dev}&after={after}',
+                                              subject=self.subject)
                     assert status == 200, (self.dev, status, body)
                     return body
 
@@ -366,7 +428,8 @@ def main():
                 def publish_key_package(self, room=ROOM):
                     package = self.call('key_package')
                     status, body = relay.http('POST', f'/v2/rooms/{room}/keypackages',
-                                              {'device': self.dev, 'packages': [{'ref': 'kp-1', 'bytes': b64(package)}]})
+                                              {'device': self.dev, 'packages': [{'ref': 'kp-1', 'bytes': b64(package)}]},
+                                              subject=self.subject)
                     assert status == 201, (self.dev, status, body)
 
                 def commit_ok(self, commit, label, devices, room=ROOM):
@@ -384,7 +447,8 @@ def main():
 
                 def add(self, target, room=ROOM):
                     """Consume target's KeyPackage, commit the add, send the targeted Welcome."""
-                    status, kp = relay.http('GET', f'/v2/rooms/{room}/keypackages?device={target.dev}&consumer={self.dev}')
+                    status, kp = relay.http('GET', f'/v2/rooms/{room}/keypackages?device={target.dev}&consumer={self.dev}',
+                                            subject=self.subject)  # the consumer is the bound identity
                     assert status == 200, (target.dev, status, kp)
                     framed = bytes(self.call('invite_with_commit', list(base64.b64decode(kp['bytes']))))
                     size = int.from_bytes(framed[:4], 'little')
@@ -468,6 +532,26 @@ def main():
             a2.sync()
             assert a2.joined and a2.epoch == b1.epoch == a1.epoch == 2
             receipt['checks']['n_member_group_via_commit_and_targeted_welcome'] = True
+
+            # --- j (part 1): caller identity. No token is 401 on every contract
+            # --- route; person-b's token acting as a-1 is one 403 that does not say why.
+            for method, path, body in [('GET', f'/v2/rooms/{ROOM}/events?device=a-1', None),
+                                       ('POST', f'/v2/rooms/{ROOM}/events', {'device': 'a-1', 'client_id': 'a1-no-token',
+                                                                              'kind': 'application', 'epoch': a1.epoch,
+                                                                              'bytes': b64(b'x')}),
+                                       ('GET', f'/v2/rooms/{ROOM}/keypackages?device=b-1&consumer=a-1', None),
+                                       ('POST', f'/v2/rooms/{ROOM}/close?device=a-1', None)]:
+                status, body = relay.http(method, path, body)
+                assert status == 401 and body == {'error': 'unauthorized'}, (method, path, status, body)
+            status, body = relay.http('GET', f'/v2/rooms/{ROOM}/events?device=a-1', subject='person-b')
+            assert status == 403 and body == {'error': 'device_subject_mismatch'}, (status, body)
+            status, body = relay.http('POST', f'/v2/rooms/{ROOM}/events',
+                                      {'device': 'a-1', 'client_id': 'a1-foreign-subject', 'kind': 'application',
+                                       'epoch': a1.epoch, 'bytes': b64(b'never stored')}, subject='person-b')
+            assert status == 403 and body == {'error': 'device_subject_mismatch'}, (status, body)
+            assert all(ev['client_id'] != 'a1-foreign-subject' for ev in a1.raw_events()['events']), 'denied POST must not land'
+            receipt['checks']['j_no_token_401_every_route'] = True
+            receipt['checks']['j_foreign_subject_403_device_subject_mismatch'] = True
 
             # --- a: stale-epoch application -> 409 -> apply commit -> re-encrypt -> 201.
             stale_plain = list('epoch-2 draft 재암호화'.encode())
@@ -572,6 +656,11 @@ def main():
             expect(b1, 'before kill', 'after restart')  # unread by b-1 -> must have survived
             receipt['checks']['d_sigkill_restart_cursor_resume_offline_unread_kept'] = True
 
+            # Reads prune too now (H2): once every known reader has passed a stale
+            # event, the read that moved the minimum cursor reclaims it, so `before`
+            # may already be shorter than the two messages above. The invariant is
+            # that after the trigger exactly one application event remains and it
+            # is newer than everything that was there before.
             for device in [a2, b1]:
                 device.sync()
             a1.sync()
@@ -580,7 +669,7 @@ def main():
             time.sleep(2.2)
             a1.post_ok('application', a1.call('encrypt', bound(a1.dev, list(b'prune trigger'))), 'prune-trigger')
             after = [ev['seq'] for ev in a1.raw_events()['events'] if ev['kind'] == 'application']
-            assert len(after) == 1 and after[0] > max(before), (before, after)
+            assert len(after) == 1 and all(seq < after[0] for seq in before), (before, after)
             expect(a2, 'prune trigger')
             expect(b1, 'prune trigger')
             receipt['checks']['d_pruning_advances_once_every_known_reader_read'] = True
@@ -588,9 +677,10 @@ def main():
 
             # --- h: revoke a-2 plainly. It is E2-enrolled: its approval evidence was
             # --- written once at enrollment, so a signed -input revoke is refused
-            # --- (the one-time-evidence gate). Both POST kinds are then cut at the
-            # --- policy gate; the MLS removal moves the survivors to a new epoch;
-            # --- the revoked device still READS the feed but cannot decrypt new epochs.
+            # --- (the one-time-evidence gate). Every request of a-2 is then cut at
+            # --- the identity binding (its subject is still person-a, the device is
+            # --- no longer active): both POST kinds AND GET are 403; the MLS removal
+            # --- moves the survivors to a new epoch a-2 cannot decrypt.
             ev = a1.call('sign_approval', {'action': 'revoke-device', 'device_id': 'a-2', 'actor': 'a',
                                            'subject': 'person-a', 'signing_key': a2.key_hex,
                                            'acceptance': 'trusted-device-fingerprint',
@@ -606,28 +696,26 @@ def main():
             by_id = {d['device_id']: d for d in view['devices']}
             assert by_id['a-2']['status'] == 'revoked' and by_id['a-2']['approved_by']['device_id'] == 'a-1', view
             status, body = a2.post('application', a2.call('encrypt', bound(a2.dev, list(b'still here?'))), a2.client_id('revoked'))
-            assert status == 403 and body['error'] == 'device_not_allowed', (status, body)
+            assert status == 403 and body == {'error': 'device_subject_mismatch'}, (status, body)
             status, body = relay.http('POST', f'/v2/rooms/{ROOM}/keypackages',
-                                      {'device': 'a-2', 'packages': [{'ref': 'kp-x', 'bytes': b64(a2.call('key_package'))}]})
-            assert status == 403 and body['error'] == 'device_not_allowed', (status, body)
-            receipt['checks']['h_revoked_device_post_403_both_kinds'] = True
+                                      {'device': 'a-2', 'packages': [{'ref': 'kp-x', 'bytes': b64(a2.call('key_package'))}]},
+                                      subject=a2.subject)
+            assert status == 403 and body == {'error': 'device_subject_mismatch'}, (status, body)
+            status, body = relay.http('GET', f'/v2/rooms/{ROOM}/events?device=a-2&after={a2.cursor}', subject=a2.subject)
+            assert status == 403 and body == {'error': 'device_subject_mismatch'}, (status, body)
+            receipt['checks']['h_revoked_device_403_post_both_kinds_and_get'] = True
 
             removal = a1.call('remove_pending', list(bytes.fromhex(a2.key_hex)))
             rosters[ROOM].remove('a-2')  # outer list = post-commit roster (§3.3)
             a1.commit_ok(removal, 'remove-a2', rosters[ROOM])
             a1.post_ok('application', a1.call('encrypt', bound(a1.dev, list(b'after revoke'))), 'post-revoke')
+            after_revoke_feed = a1.raw_events(a1.cursor)  # a-1's own new-epoch message, read through a-1's identity
             expect(b1, 'after revoke')  # b-1 merges the removal commit, then reads the new-epoch message
             assert a1.epoch == b1.epoch and a1.epoch > 4
-            # a-2 applies its own removal from the open feed, then cannot decrypt the
-            # message sent at the epoch it is no longer part of.
-            feed = a2.raw_events(a2.cursor)
-            for event in feed['events']:
-                a2.cursor = max(a2.cursor, event['seq'])
-                if event['kind'] == 'commit':
-                    a2.call('commit', list(base64.b64decode(event['bytes'])))
-            [after_revoke] = [event for event in feed['events'] if event['kind'] == 'application']
+            # a-2 can no longer read the feed at all, so it never sees its removal; the
+            # message of the epoch it is no longer part of is undecryptable to it.
+            [after_revoke] = [event for event in after_revoke_feed['events'] if event['kind'] == 'application']
             a2.call('decrypt', sealed(base64.b64decode(after_revoke['bytes'])), reject=True)
-            assert a2.raw_events(a2.cursor)['epoch'] == a1.epoch  # GET stays open by design
             receipt['checks']['h_revoked_device_cannot_read_new_epoch'] = True
 
             # --- i: total device loss. E4 locks every a: device; the replacement only
@@ -637,13 +725,13 @@ def main():
             status, body = a1.post('application', a1.call('encrypt',
                                    bound(a1.dev, list(b'lost everything'))),
                                    a1.client_id('lost-all'))
-            assert status == 403 and body['error'] == 'device_not_allowed', (status, body)
+            assert status == 403 and body == {'error': 'device_subject_mismatch'}, (status, body)
             receipt['checks']['i_revoke_all_locks_every_lost_device'] = True
 
             a3 = Device('a-3')
-            status, body = a3.post('application', list(b'unknown device'),  # synthetic: cut at the policy gate, pre-MLS
+            status, body = a3.post('application', list(b'unknown device'),  # synthetic: cut at the identity binding, pre-MLS
                                    a3.client_id('pre-enroll'))
-            assert status == 403 and body['error'] == 'device_not_allowed', (status, body)
+            assert status == 403 and body == {'error': 'device_subject_mismatch'}, (status, body)
             receipt['checks']['i_unknown_device_post_403'] = True
             view = policy.mutate(['-enroll-first', '-input', str(policy.evidence_file(
                 {'device_id': 'a-3', 'actor': 'a', 'subject': 'person-a', 'signing_key': a3.key_hex}))],
@@ -685,7 +773,7 @@ def main():
             status, body = relay.http('POST', f'/v2/rooms/{ROOM}/events',
                                       {'device': 'a-3', 'client_id': 'a3-family-commit', 'kind': 'commit',
                                        'epoch': b1.epoch, 'bytes': b64(b'synthetic-not-an-mls-commit'),
-                                       'members': [{'device': 'a-3', 'actor': 'a'}]})
+                                       'members': [{'device': 'a-3', 'actor': 'a'}]}, subject=a3.subject)
             assert status == 403 and body['error'] == 'commit_sender_not_member', (status, body)
             # The replacement holds no group state for the old room, so its history is
             # undecryptable to it. Checked on a throwaway worker: the facade retires a
@@ -710,6 +798,20 @@ def main():
             assert b1n.sync(ROOM2) == [b'new room after total loss']
             receipt['checks']['i_new_room_after_total_loss'] = True
             receipt['final_policy_revision'] = policy.revision
+
+            # --- j (part 2): /close is a member-only deletion path. c-2 is active and
+            # --- authenticated but not in family-2 -> 403; an unknown room -> 404; the
+            # --- member a-3 closes it -> 200 and every route answers 410 afterwards.
+            status, body = relay.http('POST', f'/v2/rooms/{ROOM2}/close?device=c-2', subject=c2.subject)
+            assert status == 403 and body == {'error': 'not_a_member'}, (status, body)
+            status, body = relay.http('POST', '/v2/rooms/no-such-room/close?device=a-3', subject=a3.subject)
+            assert status == 404 and body['error'] == 'no_such_room', (status, body)
+            assert b1n.raw_events(b1n.cursor, ROOM2)['epoch'] == b1n.epoch  # still open after the refused close
+            status, body = relay.http('POST', f'/v2/rooms/{ROOM2}/close?device=a-3', subject=a3.subject)
+            assert status == 200 and body == {'closed': True}, (status, body)
+            status, body = relay.http('GET', f'/v2/rooms/{ROOM2}/events?device=b-1', subject=b1n.subject)
+            assert status == 410 and body['error'] == 'room_closed', (status, body)
+            receipt['checks']['j_close_member_only_then_410'] = True
 
             receipt['wire_bytes'] = {'add_commit': add_commit_size, 'welcome': welcome_size,
                                      'stale_app': len(stale), 'reencrypted_app': len(fresh)}

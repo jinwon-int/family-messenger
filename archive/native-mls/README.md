@@ -24,9 +24,16 @@ enrollment·closure), `-tags synthetic_*` UI 번들 12종. 약 8,100줄 Go + 12,
 ## v2 (#177 §3.4, M1)
 
 `archive/native-mls/server/`에 **별도 Go 모듈·별도 SQLite 파일**로 새로 만든다: 라우트 4개
-(`keypackages` POST/GET, `events` POST/GET), 테이블 3개(`mls_rooms`·`mls_events`·`mls_keypackages`),
-서버 측 MLS 상태기계 없음, 멤버 누구나 commit, Welcome 타깃 필터링, 바이트 기준 보존/프루닝,
-`BEGIN IMMEDIATE` 안의 CAS.
+(`keypackages` POST/GET, `events` POST/GET) + `close`, 테이블 5개(`mls_rooms`·`mls_events`·
+`mls_keypackages`·`mls_cursors`·`mls_members`), 서버 측 MLS 상태기계 없음, 멤버 누구나 commit,
+Welcome 타깃 필터링, 바이트 기준 보존/프루닝, `BEGIN IMMEDIATE`(`_txlock=immediate`) 안의 CAS.
+
+호출자 인증은 기본 **켜짐**(`-access-mode required`): 모든 계약 라우트가 CF Access JWT
+(`Cf-Access-Jwt-Assertion`, fallback `Authorization: Bearer`)를 요구하고, 요청이 행동하는 device의
+정책 `subject`에 `sub`를 묶는다(401 / 403 `device_subject_mismatch`). 기동 플래그
+`-access-issuer`·`-access-audience`·`-access-jwks`(파일 또는 https URL)·`-device-state`가 전부
+필요하고, `-access-mode disabled`는 로컬 개발 전용이다. 계약 전문은
+[`server/DEVICES-V4.md`](server/DEVICES-V4.md)(인증·멤버십·커서 유예·서버 안전성 섹션).
 
 ## tests/
 
@@ -36,3 +43,4 @@ enrollment·closure), `-tags synthetic_*` UI 번들 12종. 약 8,100줄 Go + 12,
 | `native_mls_persistence_smoke.py` | `durable-worker.js` IDB 단일 tx·결함 주입·손상 거부 | 없음 |
 | `native_trusted_state_smoke.py` | `trusted-state-worker.js` 핀 + 서명 디렉터리 | 라이브 `family-dev`/`family-policy` |
 | `native_device_browser_smoke.py` | `trust-worker.js` 첫 기기 디렉터리 게이트 | 라이브 `family-dev`/`family-policy` |
+| `native_v2_relay_smoke.py` | v2 릴레이 종단(등록 기기, 결함 주입 a–j, CF Access 대역 JWT) | `native-mls-relay`/`native-devices` (`cryptography`로 ES256 토큰 민팅) |

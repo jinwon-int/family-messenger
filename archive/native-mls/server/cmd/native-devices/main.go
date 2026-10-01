@@ -243,6 +243,9 @@ func enrollFirstDevice(devices []devicepolicy.DeviceV4, input string) ([]devicep
 	if e := readStrictInput(input, &c); e != nil {
 		return nil, e
 	}
+	if e := requireSubject(c.Subject); e != nil {
+		return nil, e
+	}
 	fp, e := fingerprintOf(c.SigningKey)
 	if e != nil {
 		return nil, e
@@ -262,6 +265,18 @@ func enrollFirstDevice(devices []devicepolicy.DeviceV4, input string) ([]devicep
 	}), nil
 }
 
+// requireSubject names the relay's identity binding in the error: the v4
+// chain validator already rejects an empty subject structurally, but an
+// operator enrolling a device should learn what the field is for. The value
+// is the CF Access `sub` of the person (or bot) owning the device; every
+// relay request made as this device must carry a JWT with exactly that sub.
+func requireSubject(subject string) error {
+	if !devicepolicy.IsIdentifier(subject, 128) {
+		return errors.New("subject is required ([A-Za-z0-9_-]{1,128}): the CF Access `sub` the relay binds this device's requests to (DEVICES-V4.md)")
+	}
+	return nil
+}
+
 // addApprovedDevice builds the E2 transition: a trusted-acceptance device whose
 // approved_by evidence is verified against the active same-actor set and bound
 // to the revision this commit creates.
@@ -275,6 +290,9 @@ func addApprovedDevice(devices []devicepolicy.DeviceV4, input string, expected u
 	}
 	if c.BaseRevision != expected {
 		return nil, fmt.Errorf("candidate base_revision %d does not bind the current revision %d; re-sign against the current state", c.BaseRevision, expected)
+	}
+	if e := requireSubject(c.Subject); e != nil {
+		return nil, e
 	}
 	fp, e := fingerprintOf(c.SigningKey)
 	if e != nil {

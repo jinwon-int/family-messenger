@@ -2,13 +2,15 @@
 // closure, one SQLite file owned by the native track. The operational
 // server/ schema 12 is untouched: this module never imports it and uses its
 // own database file. CAS reads, count checks and inserts share one
-// BEGIN IMMEDIATE transaction (B2/B3).
+// transaction that starts as BEGIN IMMEDIATE (the DSN carries
+// _txlock=immediate, so db.Begin() takes the write lock up front — B2/B3).
 package main
 
 import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,11 +21,15 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// sqliteURI mirrors server/internal/chat/sqlite.go sqliteURI() so the native
-// track gets the same durability posture without importing the live module.
+// sqliteURI mirrors server/internal/chat/sqlite.go sqliteURI() for the
+// durability posture (DELETE journal, synchronous FULL, foreign keys,
+// secure_delete, 5 s busy_timeout) and adds _txlock=immediate so every
+// transaction is BEGIN IMMEDIATE: the write lock is taken at Begin, not at
+// the first write, which is what the CAS-read-then-insert discipline needs
+// (M6). The native track never imports the live module.
 func sqliteURI(path string) string {
 	return "file:" + filepath.ToSlash(path) +
-		"?_journal_mode=DELETE&_synchronous=FULL&_foreign_keys=on&_busy_timeout=5000&_secure_delete=on"
+		"?_journal_mode=DELETE&_synchronous=FULL&_foreign_keys=on&_busy_timeout=5000&_secure_delete=on&_txlock=immediate"
 }
 
 const schema = `
@@ -32,6 +38,7 @@ CREATE TABLE IF NOT EXISTS mls_rooms (
 	group_id   TEXT NOT NULL,
 	epoch      INTEGER NOT NULL DEFAULT 0,
 	revision   INTEGER NOT NULL DEFAULT 0,
+	last_seq   INTEGER NOT NULL DEFAULT 0,
 	created_at INTEGER NOT NULL,
 	closed_at  INTEGER
 );
@@ -59,9 +66,11 @@ CREATE TABLE IF NOT EXISTS mls_keypackages (
 	PRIMARY KEY (room, device, ref)
 );
 CREATE TABLE IF NOT EXISTS mls_cursors (
-	room   TEXT NOT NULL REFERENCES mls_rooms(room),
-	device TEXT NOT NULL,
-	seq    INTEGER NOT NULL,
+	room        TEXT NOT NULL REFERENCES mls_rooms(room),
+	device      TEXT NOT NULL,
+	seq         INTEGER NOT NULL,
+	removed_at  INTEGER,
+	removed_seq INTEGER,
 	PRIMARY KEY (room, device)
 );
 CREATE TABLE IF NOT EXISTS mls_members (
@@ -81,14 +90,79 @@ func openStore(dataDir string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	// One writer connection: BEGIN IMMEDIATE plus busy_timeout then never
-	// races itself.
+	// One connection: with _txlock=immediate every Begin takes the write
+	// lock, and busy_timeout covers an external reader; the relay mutex on
+	// top means the process never races itself.
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, err
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return db, nil
+}
+
+// migrate adds columns to tables created before they existed (CREATE TABLE
+// IF NOT EXISTS leaves an old table untouched): the H3a removal-grace
+// columns on mls_cursors and the durable per-room seq counter on mls_rooms.
+// last_seq is backfilled from the surviving events; it must never go
+// backwards, which MAX(seq) over a pruned table cannot promise.
+func migrate(db *sql.DB) error {
+	for _, c := range []struct{ table, column, decl string }{
+		{"mls_cursors", "removed_at", "INTEGER"},
+		{"mls_cursors", "removed_seq", "INTEGER"},
+		{"mls_rooms", "last_seq", "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		added, err := ensureColumn(db, c.table, c.column, c.decl)
+		if err != nil {
+			return err
+		}
+		if added && c.column == "last_seq" {
+			if _, err := db.Exec(`UPDATE mls_rooms SET last_seq =
+				(SELECT COALESCE(MAX(seq), 0) FROM mls_events e WHERE e.room = mls_rooms.room)`); err != nil {
+				return fmt.Errorf("backfill mls_rooms.last_seq: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// ensureColumn adds column to table unless PRAGMA table_info already lists
+// it; reports whether it was added.
+func ensureColumn(db *sql.DB, table, column, decl string) (bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return false, err
+	}
+	have := false
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			rows.Close()
+			return false, err
+		}
+		if name == column {
+			have = true
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	if have {
+		return false, nil
+	}
+	if _, err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + decl); err != nil {
+		return false, fmt.Errorf("migrate %s.%s: %w", table, column, err)
+	}
+	return true, nil
 }
 
 var errClosed = errors.New("room closed")
@@ -123,6 +197,7 @@ type roomRow struct {
 	groupID  string
 	epoch    int64
 	revision int64
+	lastSeq  int64
 	closed   bool
 }
 
@@ -142,8 +217,8 @@ func ensureRoom(tx *sql.Tx, room, groupID string, now int64) (roomRow, error) {
 func readRoom(q interface{ QueryRow(string, ...any) *sql.Row }, room string) (roomRow, error) {
 	row := roomRow{}
 	var closed sql.NullInt64
-	err := q.QueryRow(`SELECT group_id, epoch, revision, closed_at FROM mls_rooms WHERE room = ?`, room).
-		Scan(&row.groupID, &row.epoch, &row.revision, &closed)
+	err := q.QueryRow(`SELECT group_id, epoch, revision, last_seq, closed_at FROM mls_rooms WHERE room = ?`, room).
+		Scan(&row.groupID, &row.epoch, &row.revision, &row.lastSeq, &closed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return roomRow{}, err
 	}
@@ -155,13 +230,35 @@ func readRoom(q interface{ QueryRow(string, ...any) *sql.Row }, room string) (ro
 }
 
 // closeRoom tombstones a room (B1): all four routes then answer 410 until an
-// operator deletes the file. Expired key packages are swept in the same write.
-func closeRoom(db *sql.DB, room string, now int64) error {
+// operator deletes the file. Expired key packages are swept in the same
+// write. With membership enforcement on, only a tracked member may close
+// (errNotMember); an unknown room is errNoRoom.
+func closeRoom(db *sql.DB, room, device string, enforce bool, now int64) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if _, err := readRoom(tx, room); errors.Is(err, sql.ErrNoRows) {
+		return errNoRoom
+	} else if err != nil {
+		return err
+	}
+	if enforce {
+		tracked, err := readMembers(tx, room)
+		if err != nil {
+			return err
+		}
+		member := false
+		for _, m := range tracked {
+			if m.Device == device {
+				member = true
+			}
+		}
+		if !member {
+			return errNotMember
+		}
+	}
 	if _, err := tx.Exec(`UPDATE mls_rooms SET closed_at = ? WHERE room = ? AND closed_at IS NULL`, now, room); err != nil {
 		return err
 	}
@@ -173,16 +270,17 @@ func closeRoom(db *sql.DB, room string, now int64) error {
 
 // closeRoomDB serializes the §3.4 deletion path (B1) with every other
 // writer: the relay mutex is held so a closure cannot interleave with a
-// CAS/count+insert transaction, then closeRoom does the SQLite work.
-func (s *relay) closeRoomDB(room string, now int64) error {
+// CAS/count+insert transaction, then closeRoom does the SQLite work. The
+// membership gate is on exactly when the device-policy store is wired.
+func (s *relay) closeRoomDB(room, device string, now int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return closeRoom(s.db, room, now)
+	return closeRoom(s.db, room, device, s.devices != nil, now)
 }
 
 // storeEvent appends one event under CAS discipline. Body validation happened
 // in the handler; everything below (room read, CAS, idempotency, seq
-// allocation, byte cap, insert, pruning) is one BEGIN IMMEDIATE transaction.
+// allocation, pruning, byte cap, insert) is one BEGIN IMMEDIATE transaction.
 func (s *relay) storeEvent(room string, ev eventInput) (storedEvent, error) {
 	now := time.Now().Unix()
 	s.mu.Lock()
@@ -211,13 +309,18 @@ func (s *relay) storeEvent(room string, ev eventInput) (storedEvent, error) {
 	// K4 before CAS: a byte-equal replay of a stored event is the 200 duplicate
 	// even if a commit has since moved the epoch (lost response + concurrent
 	// commit); different bytes under a taken client_id are reuse regardless.
+	// A replayed commit answers the epoch it produced, as the 201 did (L1).
 	var prevSeq int64
 	var prevEpoch int64
+	var prevKind string
 	var prevBytes []byte
-	err = tx.QueryRow(`SELECT seq, epoch, bytes FROM mls_events WHERE room = ? AND device = ? AND client_id = ?`,
-		room, ev.device, ev.clientID).Scan(&prevSeq, &prevEpoch, &prevBytes)
+	err = tx.QueryRow(`SELECT seq, epoch, kind, bytes FROM mls_events WHERE room = ? AND device = ? AND client_id = ?`,
+		room, ev.device, ev.clientID).Scan(&prevSeq, &prevEpoch, &prevKind, &prevBytes)
 	if err == nil {
 		if string(prevBytes) == string(ev.bytes) {
+			if prevKind == "commit" {
+				prevEpoch++
+			}
 			return storedEvent{seq: prevSeq, epoch: prevEpoch, revision: row.revision, duplicate: true}, nil
 		}
 		return storedEvent{}, clientIDReuse{Device: ev.device, ClientID: ev.clientID}
@@ -233,31 +336,19 @@ func (s *relay) storeEvent(room string, ev eventInput) (storedEvent, error) {
 	if ev.kind == "welcome" && len(ev.targets) == 0 {
 		return storedEvent{}, errWelcomeTargets
 	}
-	// B5: cap the room by event bytes, not by count.
-	var used sql.NullInt64
-	if err := tx.QueryRow(`SELECT SUM(LENGTH(bytes)) FROM mls_events WHERE room = ?`, room).Scan(&used); err != nil {
-		return storedEvent{}, err
-	}
-	if s.policy.RoomBytesCap > 0 && used.Int64+int64(len(ev.bytes)) > s.policy.RoomBytesCap {
-		return storedEvent{}, roomBytesCap{used.Int64, s.policy.RoomBytesCap}
-	}
-	var seq int64
-	if err := tx.QueryRow(`SELECT COALESCE(MAX(seq), 0) + 1 FROM mls_events WHERE room = ?`, room).Scan(&seq); err != nil {
-		return storedEvent{}, err
-	}
-	var targets sql.NullString
-	if len(ev.targets) > 0 {
-		targets = sql.NullString{String: encodeTargets(ev.targets), Valid: true}
-	}
-	if _, err := tx.Exec(`INSERT INTO mls_events (room, seq, device, client_id, kind, epoch, targets, bytes, sha256, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		room, seq, ev.device, ev.clientID, ev.kind, ev.epoch, targets, ev.bytes, sha256Hex(ev.bytes), now); err != nil {
-		return storedEvent{}, err
+	// seq comes from the room's durable counter, not MAX(seq) over the
+	// events: pruning (also on GET now) may empty the table and the order
+	// must never restart.
+	seq := row.lastSeq + 1
+	newEpoch, newRevision := row.epoch, row.revision+1
+	if ev.kind == "commit" {
+		newEpoch = row.epoch + 1
 	}
 	// Every device that posts, and every Welcome target, becomes a known
 	// reader of the room: its durable cursor gates application-event pruning
 	// until it reads (poster from 0, a Welcome target from just before its
-	// Welcome — it cannot decrypt anything earlier).
+	// Welcome — it cannot decrypt anything earlier). Registered before the
+	// prune below so a first-time poster is already a gate.
 	if err := registerCursor(tx, room, ev.device, 0); err != nil {
 		return storedEvent{}, err
 	}
@@ -268,21 +359,39 @@ func (s *relay) storeEvent(room string, ev eventInput) (storedEvent, error) {
 			}
 		}
 	}
+	// H2: reclaim retention-expired bytes BEFORE measuring the room against
+	// its cap, so a room full of stale application events does not refuse
+	// the commit that would let it move on. The new row's epoch is strictly
+	// above the commit/welcome retention window, so pruning at newEpoch
+	// before the insert is equivalent to pruning after it.
+	if err := s.prune(tx, room, newEpoch, now, active); err != nil {
+		return storedEvent{}, err
+	}
+	// B5: cap the room by event bytes, not by count.
+	var used sql.NullInt64
+	if err := tx.QueryRow(`SELECT SUM(LENGTH(bytes)) FROM mls_events WHERE room = ?`, room).Scan(&used); err != nil {
+		return storedEvent{}, err
+	}
+	if s.policy.RoomBytesCap > 0 && used.Int64+int64(len(ev.bytes)) > s.policy.RoomBytesCap {
+		return storedEvent{}, roomBytesCap{used.Int64, s.policy.RoomBytesCap}
+	}
+	var targets sql.NullString
+	if len(ev.targets) > 0 {
+		targets = sql.NullString{String: encodeTargets(ev.targets), Valid: true}
+	}
+	if _, err := tx.Exec(`INSERT INTO mls_events (room, seq, device, client_id, kind, epoch, targets, bytes, sha256, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		room, seq, ev.device, ev.clientID, ev.kind, ev.epoch, targets, ev.bytes, sha256Hex(ev.bytes), now); err != nil {
+		return storedEvent{}, err
+	}
 	// M3b: apply the membership diff in the same transaction as the commit
 	// insert, so a crash cannot leave membership and the log disagree.
 	if active != nil && ev.kind == "commit" {
-		if err := applyMembership(tx, room, tracked, ev, seq); err != nil {
+		if err := applyMembership(tx, room, tracked, ev, seq, now); err != nil {
 			return storedEvent{}, err
 		}
 	}
-	newEpoch, newRevision := row.epoch, row.revision+1
-	if ev.kind == "commit" {
-		newEpoch = row.epoch + 1
-	}
-	if _, err := tx.Exec(`UPDATE mls_rooms SET epoch = ?, revision = ? WHERE room = ?`, newEpoch, newRevision, room); err != nil {
-		return storedEvent{}, err
-	}
-	if err := s.prune(tx, room, newEpoch, now, active); err != nil {
+	if _, err := tx.Exec(`UPDATE mls_rooms SET epoch = ?, revision = ?, last_seq = ? WHERE room = ?`, newEpoch, newRevision, seq, room); err != nil {
 		return storedEvent{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -315,9 +424,10 @@ func (s *relay) enforceDevicePolicy() (map[string]devicepolicy.DeviceV4, error) 
 // authorizeEvent is the §3.3 membership gate, run inside the store
 // transaction. Every poster must be policy-active; a commit's sender must be
 // a tracked member, and its replicated member list may only seed the first
-// membership (every seeded device active) or add active devices of actors
-// already on the room roster and drop tracked devices. Returns the active set
-// and the pre-commit tracked membership (nil tracked = bootstrap commit).
+// membership (every seeded device active, the sender among them — H3b) or
+// add active devices of actors already on the room roster and drop tracked
+// devices. Returns the active set and the pre-commit tracked membership (nil
+// tracked = bootstrap commit).
 func (s *relay) authorizeEvent(tx *sql.Tx, room string, ev eventInput) (map[string]devicepolicy.DeviceV4, []memberRow, error) {
 	active, err := s.enforceDevicePolicy()
 	if err != nil {
@@ -338,11 +448,20 @@ func (s *relay) authorizeEvent(tx *sql.Tx, room string, ev eventInput) (map[stri
 	}
 	if len(tracked) == 0 {
 		// Bootstrap: the room's first commit carries the founding member
-		// list; every founding device must be policy-active.
+		// list; every founding device must be policy-active and the sender
+		// must found itself in (the handler already rejects the structural
+		// case; this is the store-level line).
+		senderListed := false
 		for _, m := range ev.members {
 			if _, ok := active[m.Device]; !ok {
 				return nil, nil, commitMemberNotActive{Device: m.Device}
 			}
+			if m.Device == ev.device {
+				senderListed = true
+			}
+		}
+		if !senderListed {
+			return nil, nil, commitSenderNotMember{Device: ev.device}
 		}
 		return active, nil, nil
 	}
@@ -398,10 +517,14 @@ func readMembers(tx *sql.Tx, room string) ([]memberRow, error) {
 
 // applyMembership applies the commit's replicated member list on top of the
 // tracked membership, inside the caller's transaction. An empty tracked set
-// is the bootstrap seed; afterwards the diff adds new devices and removes
-// tracked devices the list no longer contains, deleting a removed device's
-// reader cursor so it cannot block application-event pruning.
-func applyMembership(tx *sql.Tx, room string, tracked []memberRow, ev eventInput, seq int64) error {
+// is the bootstrap seed; afterwards the diff adds new devices (reviving a
+// previously removed cursor as a plain reader) and removes tracked devices
+// the list no longer contains. A removed device's reader cursor is not
+// deleted: it is marked removed_at/removed_seq and keeps gating
+// application-event pruning until the device reads its own removal or the
+// grace elapses (H3a), so a member that is removed while offline can still
+// fetch what led up to it.
+func applyMembership(tx *sql.Tx, room string, tracked []memberRow, ev eventInput, seq int64, now int64) error {
 	if len(tracked) == 0 {
 		for _, m := range ev.members {
 			if _, err := tx.Exec(`INSERT OR IGNORE INTO mls_members (room, device, actor, added_seq) VALUES (?, ?, ?, ?)`,
@@ -423,6 +546,10 @@ func applyMembership(tx *sql.Tx, room string, tracked []memberRow, ev eventInput
 			room, m.Device, m.Actor, seq); err != nil {
 			return err
 		}
+		if _, err := tx.Exec(`UPDATE mls_cursors SET removed_at = NULL, removed_seq = NULL WHERE room = ? AND device = ?`,
+			room, m.Device); err != nil {
+			return err
+		}
 	}
 	postedList := make(map[string]bool, len(ev.members))
 	for _, m := range ev.members {
@@ -435,115 +562,204 @@ func applyMembership(tx *sql.Tx, room string, tracked []memberRow, ev eventInput
 		if _, err := tx.Exec(`DELETE FROM mls_members WHERE room = ? AND device = ?`, room, m.Device); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`DELETE FROM mls_cursors WHERE room = ? AND device = ?`, room, m.Device); err != nil {
+		if _, err := tx.Exec(`UPDATE mls_cursors SET removed_at = ?, removed_seq = ? WHERE room = ? AND device = ? AND removed_at IS NULL`,
+			now, seq, room, m.Device); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// readEvents returns the per-room total order after seq, filtering welcome
-// events targeted at other devices (B4: filter, never 403). The requesting
-// device's cursor is recorded durably (mls_cursors) for application-event pruning.
-func (s *relay) readEvents(room, device string, after int64) ([]storedRow, roomRow, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	row, err := readRoom(s.db, room)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, roomRow{}, errNoRoom
-	}
-	if err != nil {
-		return nil, roomRow{}, err
-	}
-	if row.closed {
-		return nil, roomRow{}, errClosed
-	}
-	rows, err := s.db.Query(`SELECT seq, device, client_id, kind, epoch, targets, bytes, sha256, created_at
-		FROM mls_events WHERE room = ? AND seq > ? ORDER BY seq`, room, after)
-	if err != nil {
-		return nil, roomRow{}, err
-	}
-	defer rows.Close()
-	out := []storedRow{}
-	maxSeq := after
-	for rows.Next() {
-		var r storedRow
-		var targets sql.NullString
-		if err := rows.Scan(&r.Seq, &r.Device, &r.ClientID, &r.Kind, &r.Epoch, &targets, &r.Bytes, &r.Sha256, &r.CreatedAt); err != nil {
-			return nil, roomRow{}, err
-		}
-		if r.Kind == "welcome" && !targetedAt(targets.String, device) {
-			continue
-		}
-		if r.Seq > maxSeq {
-			maxSeq = r.Seq
-		}
-		out = append(out, r)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, roomRow{}, err
-	}
-	rows.Close()
-	// Durable cursor bookkeeping for pruning: only ever moves forward.
-	if _, err := s.db.Exec(`INSERT INTO mls_cursors (room, device, seq) VALUES (?, ?, ?)
-		ON CONFLICT (room, device) DO UPDATE SET seq = MAX(seq, excluded.seq)`, room, device, maxSeq); err != nil {
-		return nil, roomRow{}, err
-	}
-	return out, row, nil
-}
-
-// postKeyPackages stores key packages with a shared TTL and a per-device live
-// cap, sweeping expired rows in the same transaction.
-func (s *relay) postKeyPackages(room, device string, pkgs []keyPackageInput) (int, error) {
+// readEvents returns one page (limit rows scanned in seq order after `after`)
+// of the per-room total order, filtering welcome events targeted at other
+// devices (B4: filter, never 403). nextAfter is the highest seq scanned. The
+// requesting device's cursor is recorded durably (mls_cursors) for
+// application-event pruning, and when that cursor advances the room is
+// pruned in the same transaction (H2) — reads are what unlock retention.
+// With membership tracking on, a non-member of a seeded room never gains a
+// new cursor (a removed member's existing one still advances so it can ack
+// its removal); it must not become a pruning gate by merely reading.
+func (s *relay) readEvents(room, device string, after int64, limit int) ([]storedRow, roomRow, int64, error) {
 	now := time.Now().Unix()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx, err := s.db.Begin()
 	if err != nil {
-		return 0, err
+		return nil, roomRow{}, 0, err
+	}
+	defer tx.Rollback()
+	row, err := readRoom(tx, room)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, roomRow{}, 0, errNoRoom
+	}
+	if err != nil {
+		return nil, roomRow{}, 0, err
+	}
+	if row.closed {
+		return nil, roomRow{}, 0, errClosed
+	}
+	rows, err := tx.Query(`SELECT seq, device, client_id, kind, epoch, targets, bytes, sha256, created_at
+		FROM mls_events WHERE room = ? AND seq > ? ORDER BY seq LIMIT ?`, room, after, limit)
+	if err != nil {
+		return nil, roomRow{}, 0, err
+	}
+	out := []storedRow{}
+	nextAfter := after
+	for rows.Next() {
+		var r storedRow
+		var targets sql.NullString
+		if err := rows.Scan(&r.Seq, &r.Device, &r.ClientID, &r.Kind, &r.Epoch, &targets, &r.Bytes, &r.Sha256, &r.CreatedAt); err != nil {
+			rows.Close()
+			return nil, roomRow{}, 0, err
+		}
+		if r.Seq > nextAfter {
+			nextAfter = r.Seq
+		}
+		if r.Kind == "welcome" && !targetedAt(targets.String, device) {
+			continue
+		}
+		out = append(out, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, roomRow{}, 0, err
+	}
+	advanced, err := advanceCursor(tx, s.devices != nil, room, device, nextAfter)
+	if err != nil {
+		return nil, roomRow{}, 0, err
+	}
+	if advanced {
+		// A chain that cannot be read must not close GET (deny is write-side);
+		// the prune simply waits for the next write.
+		active, err := s.enforceDevicePolicy()
+		if err != nil {
+			log.Printf("get events room=%s: prune skipped: %v", room, err)
+		} else if err := s.prune(tx, room, row.epoch, now, active); err != nil {
+			return nil, roomRow{}, 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, roomRow{}, 0, err
+	}
+	return out, row, nextAfter, nil
+}
+
+// advanceCursor moves the reader's durable cursor forward (never back) and
+// reports whether it moved. New cursors are only created for legitimate
+// readers: with membership tracking on and a seeded room, that is a tracked
+// member.
+func advanceCursor(tx *sql.Tx, membership bool, room, device string, seq int64) (bool, error) {
+	var prev int64
+	err := tx.QueryRow(`SELECT seq FROM mls_cursors WHERE room = ? AND device = ?`, room, device).Scan(&prev)
+	switch {
+	case err == nil:
+		if seq <= prev {
+			return false, nil
+		}
+		_, err := tx.Exec(`UPDATE mls_cursors SET seq = ? WHERE room = ? AND device = ?`, seq, room, device)
+		return err == nil, err
+	case errors.Is(err, sql.ErrNoRows):
+	default:
+		return false, err
+	}
+	if membership {
+		tracked, err := readMembers(tx, room)
+		if err != nil {
+			return false, err
+		}
+		if len(tracked) > 0 {
+			member := false
+			for _, m := range tracked {
+				if m.Device == device {
+					member = true
+				}
+			}
+			if !member {
+				return false, nil
+			}
+		}
+	}
+	_, err = tx.Exec(`INSERT INTO mls_cursors (room, device, seq) VALUES (?, ?, ?)`, room, device, seq)
+	return err == nil, err
+}
+
+// keyPackagesResult is postKeyPackages' outcome in store terms.
+type keyPackagesResult = keyPackagesResponse
+
+// postKeyPackages stores key packages with a shared TTL and a per-device live
+// cap, sweeping expired rows in the same transaction. A (room, device, ref)
+// that already holds byte-identical bytes is accepted idempotently and not
+// counted against the cap; different bytes under a stored ref are a conflict
+// (M5), so a lost response can be retried but a ref can never be repointed.
+func (s *relay) postKeyPackages(room, device string, pkgs []keyPackageInput) (keyPackagesResult, error) {
+	now := time.Now().Unix()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return keyPackagesResult{}, err
 	}
 	defer tx.Rollback()
 	// M3b: policy-active gate before any room state is touched, so a denied
 	// device cannot even materialize a room row. A nil active set (no
 	// -device-state) means enforcement is off: every device may post.
 	if active, err := s.enforceDevicePolicy(); err != nil {
-		return 0, err
+		return keyPackagesResult{}, err
 	} else if active != nil {
 		if _, ok := active[device]; !ok {
-			return 0, deviceNotAllowed{Device: device}
+			return keyPackagesResult{}, deviceNotAllowed{Device: device}
 		}
 	}
 	if _, err := ensureRoom(tx, room, "", now); err != nil {
-		return 0, err
+		return keyPackagesResult{}, err
 	}
 	row, err := readRoom(tx, room)
 	if err != nil {
-		return 0, err
+		return keyPackagesResult{}, err
 	}
 	if row.closed {
-		return 0, errClosed
+		return keyPackagesResult{}, errClosed
 	}
 	if _, err := tx.Exec(`DELETE FROM mls_keypackages WHERE expires_at <= ?`, now); err != nil {
-		return 0, err
+		return keyPackagesResult{}, err
+	}
+	var fresh []keyPackageInput
+	res := keyPackagesResult{}
+	for _, pkg := range pkgs {
+		var existing []byte
+		err := tx.QueryRow(`SELECT bytes FROM mls_keypackages WHERE room = ? AND device = ? AND ref = ?`,
+			room, device, pkg.Ref).Scan(&existing)
+		switch {
+		case err == nil:
+			if string(existing) != string(pkg.Bytes) {
+				return keyPackagesResult{}, keyPackageRefConflict{Ref: pkg.Ref}
+			}
+			res.Duplicates++
+		case errors.Is(err, sql.ErrNoRows):
+			fresh = append(fresh, pkg)
+		default:
+			return keyPackagesResult{}, err
+		}
 	}
 	var live int
 	if err := tx.QueryRow(`SELECT COUNT(*) FROM mls_keypackages WHERE room = ? AND device = ? AND consumed_by IS NULL AND expires_at > ?`,
 		room, device, now).Scan(&live); err != nil {
-		return 0, err
+		return keyPackagesResult{}, err
 	}
-	if live+len(pkgs) > s.policy.KeyPackagesMaxPerDevice {
-		return 0, keyPackageLimit{live, s.policy.KeyPackagesMaxPerDevice}
+	if live+len(fresh) > s.policy.KeyPackagesMaxPerDevice {
+		return keyPackagesResult{}, keyPackageLimit{live, s.policy.KeyPackagesMaxPerDevice}
 	}
-	for _, pkg := range pkgs {
+	for _, pkg := range fresh {
 		if _, err := tx.Exec(`INSERT INTO mls_keypackages (room, device, ref, bytes, expires_at) VALUES (?, ?, ?, ?, ?)`,
 			room, device, pkg.Ref, pkg.Bytes, now+s.policy.KeyPackageTTLSeconds); err != nil {
-			return 0, err
+			return keyPackagesResult{}, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, err
+		return keyPackagesResult{}, err
 	}
-	return len(pkgs), nil
+	res.Stored = len(fresh)
+	return res, nil
 }
 
 // consumeKeyPackage atomically marks one live package as consumed by the
@@ -595,7 +811,9 @@ func (s *relay) consumeKeyPackage(room, device, consumer string) (storedKeyPacka
 // yet — including one offline across a relay restart — blocks deletion. With
 // enforcement on (active != nil), cursors of devices that have left the
 // device policy are dropped first: a revoked device never reads again and
-// must not hold the room's pruning hostage.
+// must not hold the room's pruning hostage. Cursors of members removed by
+// commit are dropped once the device has read its removal (seq >=
+// removed_seq) or the removal grace elapsed (H3a).
 func (s *relay) prune(tx *sql.Tx, room string, epoch int64, now int64, active map[string]devicepolicy.DeviceV4) error {
 	if _, err := tx.Exec(`DELETE FROM mls_keypackages WHERE room = ? AND expires_at <= ?`, room, now); err != nil {
 		return err
@@ -604,6 +822,10 @@ func (s *relay) prune(tx *sql.Tx, room string, epoch int64, now int64, active ma
 		if err := dropStaleCursors(tx, room, active); err != nil {
 			return err
 		}
+	}
+	if _, err := tx.Exec(`DELETE FROM mls_cursors WHERE room = ? AND removed_at IS NOT NULL
+		AND (seq >= removed_seq OR removed_at <= ?)`, room, now-s.policy.RemovedCursorGraceSeconds); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM mls_events WHERE room = ? AND kind IN ('commit','welcome') AND epoch <= ?`,
 		room, epoch-s.policy.CommitWelcomeKeepEpochs); err != nil {
@@ -698,5 +920,6 @@ func targetedAt(encoded, device string) bool {
 func encodeTargets(targets []string) string { return strings.Join(targets, ",") }
 
 var errNoRoom = fmt.Errorf("no such room")
+var errNotMember = fmt.Errorf("device is not a tracked member of the room")
 var errNoKeyPackage = fmt.Errorf("no live key package")
 var errWelcomeTargets = fmt.Errorf("welcome requires targets")
