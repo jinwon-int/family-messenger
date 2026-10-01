@@ -165,10 +165,35 @@ fn aad_binding_rejects_wrong_room_and_rolls_back() {
     assert_eq!(session_entries(&bob.session), before, "AAD rejection restores the store");
     assert_eq!(plain(&bob.step("decrypt", &dec(ROOM, &ciphertext))), b"secret", "session survives an AAD rejection");
     // The plaintext bound applies to the framed payload, not the whole input.
-    assert!(alice.session.apply("encrypt", &enc(ROOM, "alice", &[0; 16385])).is_err());
+    assert!(alice.session.apply("encrypt", &enc(ROOM, "alice", &[0; MAX_ATTACHMENT + 1])).is_err());
     let step = alice.session.apply("encrypt", &enc(ROOM, "alice", &[0; 16384])).unwrap();
     persist(&mut alice.mirror, &step.changes());
     alice.session.commit().unwrap();
+}
+
+/// M5 (#177 §4): an attachment at the full 256 KiB bound rides as one MLS
+/// application message. Measures the exact wire cost the relay sees — the
+/// number the PR body and the bot smoke receipt quote — and proves the decrypt
+/// side's `MAX_WIRE` still accepts the ciphertext.
+#[test]
+fn attachment_256kib_rounds_trip() {
+    let (mut alice, mut bob) = pair();
+    let mut attachment = vec![0u8; MAX_ATTACHMENT];
+    let mut state = 0x5eed_u32;
+    for byte in &mut attachment {
+        state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+        *byte = (state >> 24) as u8;
+    }
+    let ciphertext = alice.step("encrypt", &enc(ROOM, "alice", &attachment));
+    println!(
+        "attachment measurement: plaintext {} B, ciphertext {} B (+{} B MLS overhead), MAX_WIRE {MAX_WIRE}",
+        attachment.len(),
+        ciphertext.len(),
+        ciphertext.len() - attachment.len(),
+    );
+    assert!(ciphertext.len() > MAX_ATTACHMENT, "sanity: framing adds bytes");
+    assert!(ciphertext.len() <= MAX_WIRE, "ciphertext must fit the wire bound");
+    assert_eq!(plain(&bob.step("decrypt", &dec(ROOM, &ciphertext))), attachment);
 }
 
 /// alice creates, invites bob through the v2 relay flow (pending commit → merge).

@@ -1,14 +1,15 @@
 //! Native MLS bot (M5, #177 §7 Q3 답 1): a Rust process that speaks MLS through
 //! the browser facade and the v2 relay like any other leaf.
 //!
-//! This commit is the risk-resolution slice: the facade links natively (see
-//! `tests/native_facade_link.rs`), and this binary already talks `/v2` with the
-//! relay's exact wire shapes (`health`/`publish`/`consume`). Room-session
-//! behavior (join on welcome, echo replies, attachment frames) lands next.
+//! `health`/`publish`/`consume` prove the /v2 wire shapes (M5 step 1);
+//! `session <room> <device> [<watch-room> --watch]` runs the room loop —
+//! publish a key package, join on the Welcome, apply commits, and echo every
+//! application message back (see `session.rs`).
 
 mod api;
 mod b64;
 mod http;
+mod session;
 
 use family_mls_browser_experiment::Device;
 use std::process::ExitCode;
@@ -19,10 +20,27 @@ fn main() -> ExitCode {
         [base, cmd] if cmd == "health" => cmd_health(base),
         [base, cmd, room, device] if cmd == "publish" => cmd_publish(base, room, device),
         [base, cmd, room, device, consumer] if cmd == "consume" => cmd_consume(base, room, device, consumer),
+        [base, cmd, room, device] if cmd == "session" => {
+            session::run(session::Options {
+                base: base.to_string(),
+                room: room.to_string(),
+                device: device.to_string(),
+                watch_room: None,
+            })
+        }
+        [base, cmd, room, device, watch_room, extra] if cmd == "session" && extra == "--watch" => {
+            session::run(session::Options {
+                base: base.to_string(),
+                room: room.to_string(),
+                device: device.to_string(),
+                watch_room: Some(watch_room.to_string()),
+            })
+        }
         _ => {
             eprintln!("usage: native-mls-bot <base-url> health");
             eprintln!("       native-mls-bot <base-url> publish <room> <device>");
             eprintln!("       native-mls-bot <base-url> consume <room> <device> <consumer>");
+            eprintln!("       native-mls-bot <base-url> session <room> <device> [<watch-room> --watch]");
             return ExitCode::FAILURE;
         }
     };

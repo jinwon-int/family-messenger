@@ -7,7 +7,17 @@ use tls_codec::{Deserialize as TlsDeserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 const SUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
-const MAX_WIRE: usize = 65536;
+/// Longest wire input/output (review M4-era bound). M5 (#177 §4): raised from
+/// 64 KiB so the ciphertext of a full-size attachment crosses it in one MLS
+/// application message — measured: 262144-byte plaintext = 262350-byte
+/// ciphertext (see `attachment_256kib_rounds_trip`), so 256 KiB + 4 KiB of MLS
+/// framing headroom. The relay's per-room 64 MiB cap stays the real bound.
+/// Measured (`attachment_256kib_rounds_trip`): 262144-byte plaintext →
+/// 262350-byte ciphertext.
+const MAX_WIRE: usize = 262144 + 4096;
+/// Longest encrypt plaintext (M5): an attachment up to 256 KiB rides as the
+/// MLS application payload directly — no chunking layer.
+pub const MAX_ATTACHMENT: usize = 262144;
 /// Longest identity label (`valid_identity`); also the bound every length-prefixed
 /// identity field is checked against *before* any offset arithmetic (review M3:
 /// `4 + len` must not wrap on wasm32, where `usize` is 32 bits).
@@ -303,7 +313,7 @@ impl Device {
     fn encrypt_inner(&mut self, bytes: &[u8]) -> Result<Vec<u8>, Rejected> {
         let (room, rest) = split_identity(bytes)?;
         let (client_id, plaintext) = split_identity(rest)?;
-        bounded(plaintext, 16384)?;
+        bounded(plaintext, MAX_ATTACHMENT)?;
         let group = self.group.as_mut().ok_or_else(|| rejected(()))?;
         // Ephemeral in OpenMLS: `create_message` clears the AAD again on
         // success, and any failure retires the device — it never leaks into a

@@ -166,8 +166,8 @@ def main():
             call(bob, 'decrypt', sealed(valid), name='different', reject=True)
             call(alice, 'decrypt', sealed(other), name='wrong', reject=True)
             receipt['checks']['wrong_group_both_directions'] = True
-            for name, method, value in [('largeplain', 'encrypt', bound('bob', [0] * 16385)),
-                                        ('largewire', 'decrypt', sealed([0] * 65537)),
+            for name, method, value in [('largeplain', 'encrypt', bound('bob', [0] * 262145)),
+                                        ('largewire', 'decrypt', sealed([0] * 266241)),
                                         ('malformed', 'decrypt', sealed([1, 2, 3]))]:
                 pair(name)
                 call(bob, method, value, name=name, reject=True)

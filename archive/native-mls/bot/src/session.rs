@@ -1,0 +1,332 @@
+//! M5 step 2 (#177 §7): the room session. `session <room> <device>
+//! [<watch-room>]` publishes one key package, then long-polls the relay like
+//! any other leaf:
+//!
+//! ```text
+//! GET events?after=cursor → welcome (join) → commit (apply) → application
+//!   (decrypt + echo-reply) → own events skipped
+//! ```
+//!
+//! Contract notes carried over from the smoke references:
+//! - Attribution (review H1): the bot has no pin map, so it encrypts with
+//!   `client_id == device identity` and its `decrypt` rejects any sender whose
+//!   AAD client_id is not the sender's own roster identity. The relay's
+//!   per-device `client_id` POST field is a separate dedup key (`<device>-echo-n`).
+//! - The room's first commit seeds its actor roster, so a bot actor must be in
+//!   the creation commit — the harness invites it together with the other
+//!   founding member; the bot itself never commits.
+//! - A 409 (`cas_mismatch`) means the room moved under us: resynchronize on
+//!   the next poll, then replay the dropped echo once at the fresh epoch.
+//! - Events before our Welcome are not ours to read; a Welcome delivered by
+//!   the relay is always targeted at us (server-side filter), so a second one
+//!   is a contract violation.
+
+use crate::api::{self, BotError, Client, EventPost, StoredRow};
+use family_mls_browser_experiment::Device;
+use std::io::Write;
+use std::time::{Duration, Instant};
+
+/// Backstop so a stuck session can never hang CI: the harness normally
+/// SIGTERMs the bot long before this.
+const DEFAULT_MAX_SECS: u64 = 300;
+const POLL: Duration = Duration::from_millis(200);
+/// One status heartbeat per second of polling keeps the harness (and CI logs)
+/// informed without flooding stdout.
+const STATUS_EVERY: u32 = 5;
+
+pub struct Options {
+    pub base: String,
+    pub room: String,
+    pub device: String,
+    pub watch_room: Option<String>,
+}
+
+struct RoomState {
+    room: String,
+    cursor: i64,
+    epoch: i64,
+    joined: bool,
+    /// Application messages decrypted and echoed back.
+    echoes: u64,
+    /// Set on 409: the next poll resynchronizes, then replays this plaintext.
+    retry: Option<Vec<u8>>,
+}
+
+pub fn run(opts: Options) -> Result<(), BotError> {
+    let max_secs = std::env::var("NATIVE_MLS_BOT_MAX_SECS")
+        .ok()
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(DEFAULT_MAX_SECS);
+    let deadline = Instant::now() + Duration::from_secs(max_secs);
+    let client = Client::new(&opts.base);
+
+    let mut device = Device::new(&opts.device)
+        .map_err(|_| BotError::Local("device new: identity shape rejected"))?;
+    let key_package = device
+        .key_package()
+        .map_err(|_| BotError::Local("key package generation"))?;
+    let public_key = device
+        .public_key()
+        .map_err(|_| BotError::Local("public key"))?;
+    // First line, before any relay write: the harness enrolls the bot actor
+    // with this public key (the policy chain gates every POST).
+    emit(&serde_json::json!({
+        "event": "identity",
+        "device": opts.device,
+        "room": opts.room,
+        "watch_room": opts.watch_room,
+        "public_key": hex(&public_key),
+    }));
+    let key_ref = api::ref_hex(&key_package);
+    let stored = 'publish: loop {
+        match client.post_key_packages(&opts.room, &opts.device, &[(&key_ref, key_package.clone())]) {
+            Ok(stored) => break 'publish stored,
+            // With -device-state on, every POST needs an active policy device:
+            // the harness enrolls us from the `identity` line below, so the
+            // first attempts may legitimately land before that. Retry.
+            Err(BotError::Api { status: 403, code }) if code == "device_not_allowed" => {
+                std::thread::sleep(POLL);
+                if Instant::now() >= deadline {
+                    return Err(BotError::Local("session deadline exceeded waiting for enrollment"));
+                }
+            }
+            Err(err) => return Err(err),
+        }
+    };
+    if stored != 1 {
+        return Err(BotError::Local("relay stored an unexpected key package count"));
+    }
+    emit(&serde_json::json!({
+        "event": "ready",
+        "device": opts.device,
+        "room": opts.room,
+        "watch_room": opts.watch_room,
+        // Ed25519 public key hex: the harness enrolls the bot actor with it.
+        "public_key": hex(&public_key),
+        "key_ref": key_ref,
+        "max_secs": max_secs,
+    }));
+
+    let mut rooms = vec![RoomState { room: opts.room.clone(), cursor: 0, epoch: 0, joined: false, echoes: 0, retry: None }];
+    if let Some(watch) = &opts.watch_room {
+        // The negative control: a room the bot is never invited to. It must
+        // stay unjoined and silent there for the whole session.
+        rooms.push(RoomState { room: watch.clone(), cursor: 0, epoch: 0, joined: false, echoes: 0, retry: None });
+    }
+
+    let mut rounds = 0u32;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(BotError::Local("session deadline exceeded"));
+        }
+        for state in &mut rooms {
+            poll_room(&client, &mut device, &opts.device, state)?;
+        }
+        rounds += 1;
+        if rounds % STATUS_EVERY == 0 {
+            status(&rooms);
+        }
+        std::thread::sleep(POLL);
+    }
+}
+
+fn poll_room(client: &Client, device: &mut Device, own: &str, state: &mut RoomState) -> Result<(), BotError> {
+    let body = match client.get_events(&state.room, own, state.cursor) {
+        Ok(body) => body,
+        // The watch room may not exist yet (its founding commit has not been
+        // posted) — that is not an error, just nothing to see.
+        Err(BotError::Api { status: 404, code }) if code == "no_such_room" => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    state.epoch = body.epoch;
+    for ev in &body.events {
+        state.cursor = state.cursor.max(ev.seq);
+        if ev.device == own {
+            // Own echo. MLS never processes its own messages; when this bot
+            // ever POSTs a commit, its echo is where merge_pending belongs.
+            continue;
+        }
+        match ev.kind.as_str() {
+            "welcome" if !state.joined => {
+                device.join(&ev.bytes).map_err(|_| BotError::Local("join welcome"))?;
+                state.joined = true;
+                emit(&serde_json::json!({
+                    "event": "joined", "room": state.room, "epoch": ev.epoch, "seq": ev.seq,
+                }));
+            }
+            // The relay filters welcomes to their targets only: any welcome
+            // that reaches us here would mean we already joined once.
+            "welcome" => return Err(BotError::Local("unexpected second welcome")),
+            "commit" if state.joined => {
+                device.apply_commit(&ev.bytes).map_err(|_| BotError::Local("apply commit"))?;
+            }
+            "application" if state.joined => echo(client, device, own, state, ev)?,
+            // Everything before our Welcome (commits that formed the group,
+            // other members' applications) is not ours to read.
+            _ => {}
+        }
+    }
+    if let (true, Some(plaintext)) = (state.joined, state.retry.take()) {
+        publish_echo(client, device, own, state, &plaintext)
+            .map_err(|err| report_dropped(state, &plaintext, err))?;
+    }
+    Ok(())
+}
+
+/// Decrypt one application event and reply with the identical plaintext.
+fn echo(client: &Client, device: &mut Device, own: &str, state: &mut RoomState, ev: &StoredRow) -> Result<(), BotError> {
+    let plaintext = match decrypt_frame(device, &state.room, &ev.bytes) {
+        Ok((sender, plaintext)) => {
+            emit(&serde_json::json!({
+                "event": "application", "room": state.room, "seq": ev.seq,
+                "from": String::from_utf8_lossy(&sender), "bytes": plaintext.len(),
+            }));
+            plaintext
+        }
+        Err(_) => {
+            // Undecryptable (wrong epoch, pre-join leftover): report and move
+            // on — a single failure must not take the session down.
+            emit(&serde_json::json!({
+                "event": "undecryptable", "room": state.room, "seq": ev.seq, "bytes": ev.bytes.len(),
+            }));
+            return Ok(());
+        }
+    };
+    match publish_echo(client, device, own, state, &plaintext) {
+        Ok(()) => Ok(()),
+        // Room moved under us (a commit we have not seen): resynchronize on the
+        // next poll and replay once at the fresh epoch.
+        Err(err @ BotError::Api { status: 409, .. }) => {
+            state.retry = Some(plaintext);
+            emit(&serde_json::json!({
+                "event": "echo_conflict", "room": state.room, "seq": ev.seq,
+                "error": err.to_string(),
+            }));
+            Ok(())
+        }
+        Err(err) => Err(report_dropped(state, &plaintext, err)),
+    }
+}
+
+fn publish_echo(client: &Client, device: &mut Device, own: &str, state: &mut RoomState, plaintext: &[u8]) -> Result<(), BotError> {
+    let framed = encrypt_frame(device, &state.room, own, plaintext)
+        .map_err(|_| BotError::Local("encrypt echo"))?;
+    // Relay-level dedup key, distinct per reply; the MLS AAD client_id inside
+    // `framed` is the device identity (review H1), as the receivers require.
+    let client_id = format!("{own}-echo-{}", state.echoes + 1);
+    let post = EventPost {
+        device: own,
+        client_id: &client_id,
+        kind: "application",
+        epoch: state.epoch,
+        revision: None,
+        group_id: &state.room,
+        targets: Vec::new(),
+        members: Vec::new(),
+        bytes: framed,
+    };
+    let resp = client.post_event(&state.room, &post)?;
+    state.echoes += 1;
+    emit(&serde_json::json!({
+        "event": "echo", "room": state.room, "bytes": plaintext.len(),
+        "seq": resp.seq, "epoch": resp.epoch, "client_id": client_id,
+    }));
+    Ok(())
+}
+
+fn report_dropped(state: &RoomState, plaintext: &[u8], err: BotError) -> BotError {
+    emit(&serde_json::json!({
+        "event": "echo_dropped", "room": state.room, "bytes": plaintext.len(), "error": err.to_string(),
+    }));
+    err
+}
+
+// ---- framing (§3.6 u32 LE identity prefixes; DECRYPT_FORMAT 2) ----
+
+fn push_identity(out: &mut Vec<u8>, part: &[u8]) {
+    out.extend_from_slice(&(part.len() as u32).to_le_bytes());
+    out.extend_from_slice(part);
+}
+
+fn read_identity(bytes: &[u8], at: &mut usize) -> Option<Vec<u8>> {
+    let end = *at + 4;
+    if bytes.len() < end { return None; }
+    let len = u32::from_le_bytes(bytes[*at..end].try_into().ok()?) as usize;
+    *at = end + len;
+    if bytes.len() < *at { return None; }
+    Some(bytes[end..*at].to_vec())
+}
+
+/// encrypt input: `u32 LE room_len ‖ room ‖ u32 LE client_len ‖ client ‖ plaintext`.
+fn encrypt_frame(device: &mut Device, room: &str, client_id: &str, plaintext: &[u8]) -> Result<Vec<u8>, ()> {
+    let mut input = Vec::with_capacity(8 + room.len() + client_id.len() + plaintext.len());
+    push_identity(&mut input, room.as_bytes());
+    push_identity(&mut input, client_id.as_bytes());
+    input.extend_from_slice(plaintext);
+    device.encrypt(&input).map_err(drop)
+}
+
+/// decrypt input: `u32 LE room_len ‖ room ‖ ciphertext`.
+fn decrypt_frame(device: &mut Device, room: &str, ciphertext: &[u8]) -> Result<(Vec<u8>, Vec<u8>), ()> {
+    let mut input = Vec::with_capacity(4 + room.len() + ciphertext.len());
+    push_identity(&mut input, room.as_bytes());
+    input.extend_from_slice(ciphertext);
+    let out = device.decrypt(&input).map_err(drop)?;
+    // DECRYPT_FORMAT 2: `u32 LE device_len ‖ device ‖ u32 LE client_id_len ‖
+    // client_id ‖ plaintext`; the facade already enforced client_id == device.
+    let mut at = 0;
+    let sender = read_identity(&out, &mut at).ok_or(())?;
+    let _client = read_identity(&out, &mut at).ok_or(())?;
+    Ok((sender, out[at..].to_vec()))
+}
+
+// ---- output ----
+
+fn emit(value: &serde_json::Value) {
+    let mut out = std::io::stdout().lock();
+    let _ = serde_json::to_writer(&mut out, value);
+    let _ = out.write_all(b"\n");
+    let _ = out.flush();
+}
+
+fn status(rooms: &[RoomState]) {
+    let rooms: Vec<_> = rooms
+        .iter()
+        .map(|state| {
+            serde_json::json!({
+                "room": state.room, "joined": state.joined, "echoes": state.echoes,
+                "cursor": state.cursor, "epoch": state.epoch,
+            })
+        })
+        .collect();
+    emit(&serde_json::json!({ "event": "status", "rooms": rooms }));
+}
+
+fn hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes { out.push_str(&format!("{byte:02x}")); }
+    out
+}
+
+/// Keep `b64` linked: the wire module owns it; this module reads none of its
+/// output today. (The relay's base64-string bytes arrive decoded via serde.)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Framing helpers must round-trip the §3.6 shapes the facade parses.
+    #[test]
+    fn identity_frames_round_trip() {
+        let mut input = Vec::new();
+        push_identity(&mut input, b"family");
+        push_identity(&mut input, b"bot-1");
+        input.extend_from_slice(b"payload");
+        let mut at = 0;
+        assert_eq!(read_identity(&input, &mut at).unwrap(), b"family");
+        assert_eq!(read_identity(&input, &mut at).unwrap(), b"bot-1");
+        assert_eq!(&input[at..], b"payload");
+        // Truncated lengths are rejected, not panics.
+        assert_eq!(read_identity(&input[..6], &mut 0), None);
+        assert_eq!(read_identity(&input[..9], &mut 0), None);
+    }
+}

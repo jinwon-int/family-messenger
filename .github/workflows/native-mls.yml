@@ -180,6 +180,18 @@ jobs:
       - name: v2 relay client — enrolled devices, fault injection a–i
         if: steps.scope.outputs.run == 'true'
         run: python archive/native-mls/tests/native_v2_relay_smoke.py --bundle artifacts/mls-pkg --relay-binary artifacts/native-mls-relay --devices-binary artifacts/native-devices
+      # M5: the native bot as a third leaf. Built here (not only in native-mls-bot)
+      # because the smoke needs the wasm bundle + relay + devices this job already
+      # has; the shared target dir keeps it incremental after the unit-test step.
+      - name: Native MLS bot binary for the bot smoke
+        if: steps.scope.outputs.run == 'true'
+        working-directory: archive/native-mls/bot
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/archive/experiments/openmls-browser/target
+        run: cargo build --locked
+      - name: v2 relay + native bot — 3-leaf room session, 256 KiB attachment, uninvited-room control
+        if: steps.scope.outputs.run == 'true'
+        run: python archive/native-mls/tests/native_mls_bot_smoke.py --bundle artifacts/mls-pkg --relay-binary artifacts/native-mls-relay --devices-binary artifacts/native-devices --bot-binary archive/experiments/openmls-browser/target/debug/native-mls-bot
       - name: Preserve evidence
         if: always() && steps.scope.outputs.run == 'true'
         uses: actions/upload-artifact@v4

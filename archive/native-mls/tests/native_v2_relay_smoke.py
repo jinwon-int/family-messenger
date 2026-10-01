@@ -81,7 +81,7 @@ from playwright.sync_api import sync_playwright
 
 ROOM = 'family'
 ROOM2 = 'family-2'  # the replacement room after total device loss (phase i)
-BIG_PLAINTEXT = 12000  # < the facade's 16 KiB plaintext bound
+BIG_PLAINTEXT = 12000  # well under the facade's 256 KiB plaintext bound (M5)
 CSP = ("default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; "
        "connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
 
