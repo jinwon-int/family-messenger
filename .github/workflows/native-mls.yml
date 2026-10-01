@@ -1,9 +1,10 @@
 name: Native MLS track
-# Native E2EE parallel track (#177). Budget: exactly 1 job, 25 minutes. Never re-enable
-# the old 16-job mls-experiment fan-out.
-# Required check on main: the job must REPORT on every pull_request and merge_group, so
-# there is no workflow-level paths filter. The scope step below decides whether the
-# heavy steps run; with no native-track change the job finishes green in seconds.
+# Native E2EE parallel track (#177). Budgets: browser track 1 job / 25 minutes;
+# native bot (M5) 1 job / 15 minutes. Never re-enable the old 16-job
+# mls-experiment fan-out.
+# Required check on main: each job must REPORT on every pull_request and merge_group, so
+# there is no workflow-level paths filter. The scope steps below decide whether the
+# heavy steps run; with no native-track change the jobs finish green in seconds.
 on:
   workflow_dispatch:
   pull_request:
@@ -181,3 +182,53 @@ jobs:
           path: |
             archive/artifacts/native-*/verification.json
             artifacts/mls-pkg/bundle-sha256.txt
+
+  # M5 (#177 §7 Q3 답 1): the native MLS bot. A separate job so the browser
+  # track keeps its single-job budget and wasm/npm caches untouched; hard cap
+  # 15 minutes (M5 acceptance). The bot links the facade as a path dependency,
+  # so facade changes gate this job too.
+  native-mls-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scope — bot crate or facade dependency touched?
+        id: bot-scope
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          MG_BASE: ${{ github.event.merge_group.base_sha }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            pull_request) base="$PR_BASE" ;;
+            merge_group) base="$MG_BASE" ;;
+            *) echo "run=true" >> "$GITHUB_OUTPUT"; echo "event=$EVENT → full run"; exit 0 ;;
+          esac
+          [ -n "$base" ] || { echo "::error::no base sha for $EVENT"; exit 1; }
+          git fetch --no-tags --depth=1 origin "$base"
+          changed="$(git diff --name-only "$base" HEAD)"
+          printf 'changed files:\n%s\n' "$changed"
+          if grep -qE '^(archive/native-mls/bot/|archive/experiments/openmls-browser/|\.github/workflows/native-mls\.yml$)' <<<"$changed"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; echo "bot crate or facade touched → run"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"; echo "no bot-relevant change → skip heavy steps"
+          fi
+      - name: Pinned Rust toolchain
+        if: steps.bot-scope.outputs.run == 'true'
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustc "+$RUST_TOOLCHAIN" --version
+      - name: Cargo cache
+        if: steps.bot-scope.outputs.run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            archive/native-mls/bot/target
+          key: native-mls-bot-cargo-${{ runner.os }}-${{ hashFiles('archive/native-mls/bot/Cargo.lock') }}
+      - name: Bot unit tests (cargo test, host)
+        if: steps.bot-scope.outputs.run == 'true'
+        working-directory: archive/native-mls/bot
+        run: cargo test --locked -- --nocapture

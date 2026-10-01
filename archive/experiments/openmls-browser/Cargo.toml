@@ -5,7 +5,9 @@ edition = "2021"
 publish = false
 
 [lib]
-crate-type = ["cdylib"]
+# cdylib for the wasm bundle (build.sh); rlib so the native MLS bot
+# (M5, archive/native-mls/bot) links the same MLS core as a plain dependency.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 openmls = { version = "=0.9.0", default-features = false, features = ["js"] }
