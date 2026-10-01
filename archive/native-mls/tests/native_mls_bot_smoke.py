@@ -3,8 +3,14 @@
 
 Go v2 relay + two real browser contexts (a-1, b-1) + one bot process
 (bot-1) in one MLS room, with the device policy chain ON (roster enforced on
-every commit) but caller auth OFF (-access-mode disabled: the bot has no CF
-Access identity yet — tracked as a separate ops task).
+every commit). A first relay runs -access-mode disabled (no caller auth, the
+pre-C1 local-dev posture). A second relay then runs -access-mode required
+(review C1): every contract route must carry a CF Access JWT whose sub equals
+the acting device's policy subject. Its test issuer is a local ES256 key
+published as a JWKS file (the same shape server_auth_test.go mints); the
+harness acts for a browser device with Bearer tokens (the relay's fallback
+header) while the bot reads a token file (--access-jwt-file) that the harness
+rotates underneath it.
 
 Proven here:
   b. bot publishes a key package; the browser creator consumes it and adds the
@@ -23,6 +29,16 @@ Proven here:
      invited to ('family-private'). It must never receive a Welcome, never
      join, never decrypt, and never POST there — the relay shows zero
      bot-authored events in that room.
+  f. caller auth required (second relay): no token and garbage tokens are a
+     bare 401, a valid token for a foreign subject is an opaque
+     403 device_subject_mismatch, /v2/health stays open, and the bot works
+     from a token file end to end: it publishes before its device is enrolled
+     (the pre-enrollment 403 must be retried, not fatal), joins from the
+     targeted Welcome, echoes; when the file rotates to an expired assertion
+     (the relay allows 60 s leeway, so the smoke mints one born expired) the
+     bot announces auth_wait once and keeps polling, and it recovers without
+     a restart the moment the file carries a fresh token — the file is
+     re-read per request.
 
 Transport is the harness (python HTTP to the relay); MLS state lives in the
 browser workers and in the bot process — same split as the v2 relay smoke.
@@ -48,10 +64,18 @@ import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 from playwright.sync_api import sync_playwright
 
 ROOM = 'family'
 PRIVATE = 'family-private'  # the room the bot must never enter
+AUTH_ROOM = 'ops-auth'      # the required-mode relay's room (fresh topology)
+# The test CF Access team + application AUD tag (relay flags -access-issuer /
+# -access-audience; the minted claims must match both).
+ISSUER = 'https://bot-smoke.cloudflareaccess.com'
+AUDIENCE = 'native-mls-v2-relay-bot-smoke'
 ATTACHMENT_BYTES = 262144  # the M5 acceptance bound: one 256 KiB attachment
 CSP = ("default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; "
        "connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
@@ -77,11 +101,14 @@ def b64(data):
 
 
 class Relay:
-    """The v2 relay binary on a loopback port (policy on, caller auth off)."""
+    """The v2 relay binary on a loopback port. Default posture: policy on,
+    caller auth off. With required_jwks the relay runs -access-mode required
+    and binds every contract route to a CF Access subject instead."""
 
-    def __init__(self, binary, data_dir, log_dir, device_state):
+    def __init__(self, binary, data_dir, log_dir, device_state, required_jwks=None, log_name='relay.log'):
         self.binary, self.data_dir, self.log_dir = binary, data_dir, log_dir
         self.device_state = device_state
+        self.required_jwks, self.log_name = required_jwks, log_name
         self.proc = None
 
     def start(self):
@@ -89,14 +116,22 @@ class Relay:
             probe.bind(('127.0.0.1', 0))
             self.port = probe.getsockname()[1]
         argv = [str(self.binary), '-addr', f'127.0.0.1:{self.port}', '-data-dir', str(self.data_dir),
-                '-device-state', str(self.device_state), '-access-mode', 'disabled']
-        log = open(self.log_dir / 'relay.log', 'wb')
+                '-device-state', str(self.device_state)]
+        if self.required_jwks is None:
+            argv += ['-access-mode', 'disabled']
+        else:
+            argv += ['-access-mode', 'required', '-access-issuer', ISSUER,
+                     '-access-audience', AUDIENCE, '-access-jwks', str(self.required_jwks)]
+        log = open(self.log_dir / self.log_name, 'wb')
         self.proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             if self.proc.poll() is not None:
-                raise RuntimeError(f'relay exited early: {(self.log_dir / "relay.log").read_text(errors="replace")[-800:]}')
+                raise RuntimeError(
+                    f'relay exited early: {(self.log_dir / self.log_name).read_text(errors="replace")[-800:]}')
             try:
+                # The health route is unauthenticated even with -access-mode
+                # required, so this probe doubles as that contract check.
                 if self.http('GET', '/v2/health')[0] == 200:
                     return
             except OSError:
@@ -112,14 +147,19 @@ class Relay:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
 
-    def http(self, method, path, body=None):
+    def http(self, method, path, body=None, headers=None):
         data = None if body is None else json.dumps(body).encode()
         req = urllib.request.Request(f'http://127.0.0.1:{self.port}{path}', data=data, method=method,
                                      headers={'Content-Type': 'application/json'} if data else {})
+        if headers:
+            for name, value in headers.items():
+                req.add_header(name, value)
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
+                self.last_headers = dict(resp.headers.items())
                 return resp.status, json.loads(resp.read() or b'{}')
         except urllib.error.HTTPError as err:
+            self.last_headers = dict(err.headers.items())
             return err.code, json.loads(err.read() or b'{}')
 
 
@@ -153,11 +193,49 @@ def secrets_hex():
     return os.urandom(6).hex()
 
 
+class TestIssuer:
+    """A stand-in CF Access team: one ES256 key published as a JWKS file and
+    short-lived tokens per subject — the same mint shape as
+    server_auth_test.go (JOSE raw r||s signature over SHA256 of the signing
+    input; aud is the list form CF Access uses)."""
+
+    def __init__(self):
+        self.key = ec.generate_private_key(ec.SECP256R1())
+        self.kid = 'smoke-es256'
+
+    @staticmethod
+    def _b64url(raw):
+        return base64.urlsafe_b64encode(raw).rstrip(b'=').decode()
+
+    def jwks(self):
+        nums = self.key.public_key().public_numbers()
+        jwk = {'kty': 'EC', 'crv': 'P-256', 'kid': self.kid, 'alg': 'ES256', 'use': 'sig',
+               'x': self._b64url(nums.x.to_bytes(32, 'big')),
+               'y': self._b64url(nums.y.to_bytes(32, 'big'))}
+        return json.dumps({'keys': [jwk]})
+
+    def mint(self, sub, lifetime=600):
+        now = int(time.time())
+        header = {'alg': 'ES256', 'typ': 'JWT', 'kid': self.kid}
+        claims = {'iss': ISSUER, 'aud': [AUDIENCE], 'sub': sub, 'iat': now, 'nbf': now, 'exp': now + lifetime}
+        signing_input = (self._b64url(json.dumps(header).encode()) + '.' +
+                         self._b64url(json.dumps(claims).encode())).encode()
+        der = self.key.sign(signing_input, ec.ECDSA(hashes.SHA256()))
+        r, s = decode_dss_signature(der)
+        return signing_input.decode() + '.' + self._b64url(r.to_bytes(32, 'big') + s.to_bytes(32, 'big'))
+
+
 class Bot:
     """The bot process; its stdout is a JSON-line protocol (session.rs)."""
 
-    def __init__(self, binary, relay, room, device, watch_room):
-        argv = [str(binary), f'http://127.0.0.1:{relay.port}', 'session', room, device, watch_room, '--watch']
+    def __init__(self, binary, relay, room, device, watch_room=None, jwt_file=None):
+        argv = [str(binary), f'http://127.0.0.1:{relay.port}', 'session', room, device]
+        if watch_room:
+            argv += [watch_room, '--watch']
+        if jwt_file:
+            # Flag position is free (main.rs extracts it anywhere): the token
+            # file is re-read per request, so the harness can rotate it.
+            argv += ['--access-jwt-file', str(jwt_file)]
         self.proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.lines = []
         self.lock = threading.Condition()
@@ -245,8 +323,10 @@ def main():
         assets[route] = path.read_bytes()
     receipt = {'synthetic_only': True, 'durable_state': False,
                'transport': 'python harness HTTP to the v2 relay; MLS state in browser workers and the bot process',
-               'relay_auth': 'device policy ON (-device-state): commits replicate the post-commit member list; '
-                             'caller auth OFF (-access-mode disabled): the bot has no CF Access identity yet',
+               'relay_auth': 'two relays, same policy posture (device policy ON): relay one -access-mode disabled '
+                             '(local dev), relay two -access-mode required (review C1) with a test ES256 issuer '
+                             '(JWKS file) — the harness acts for a browser device via Authorization: Bearer and '
+                             'the bot carries Cf-Access-Jwt-Assertion from --access-jwt-file, re-read per request',
                'checks': {}, 'attachment': {}}
 
     class Handler(BaseHTTPRequestHandler):
@@ -294,8 +374,9 @@ def main():
                 """A real chromium context doing MLS in its worker; per-room
                 cursor/epoch/joined like a real multi-room client."""
 
-                def __init__(self, dev):
+                def __init__(self, dev, relay):
                     self.dev = dev
+                    self.relay = relay  # each browser talks to its own relay instance
                     self.context = browser.new_context()
                     self.page = self.context.new_page()
                     self.page.goto('http://' + expected_host)
@@ -307,6 +388,10 @@ def main():
                     self.epoch = {}
                     self.joined = {}
                     self.serial = 0
+                    # Caller auth for -access-mode required relays: when set,
+                    # every harness request acts with these headers (the relay
+                    # accepts the assertion on Authorization: Bearer too).
+                    self.auth_headers = None
                     self.call('init', dev)
                     self.key_hex = bytes(self.call('public_key')).hex()
 
@@ -321,8 +406,9 @@ def main():
 
                 def publish_key_package(self, room=ROOM):
                     package = self.call('key_package')
-                    status, body = relay.http('POST', f'/v2/rooms/{room}/keypackages',
-                                              {'device': self.dev, 'packages': [{'ref': 'kp-1', 'bytes': b64(package)}]})
+                    status, body = self.relay.http('POST', f'/v2/rooms/{room}/keypackages',
+                                                   {'device': self.dev, 'packages': [{'ref': 'kp-1', 'bytes': b64(package)}]},
+                                                   headers=self.auth_headers)
                     assert status == 201, (self.dev, status, body)
 
                 def post(self, kind, data, client_id, room, targets=None, members=None):
@@ -332,7 +418,7 @@ def main():
                         body['targets'] = targets
                     if members is not None:
                         body['members'] = members
-                    return relay.http('POST', f'/v2/rooms/{room}/events', body)
+                    return self.relay.http('POST', f'/v2/rooms/{room}/events', body, headers=self.auth_headers)
 
                 def post_ok(self, kind, data, label, room, targets=None, members=None):
                     status, body = self.post(kind, data, self.client_id(label), room, targets, members)
@@ -343,8 +429,8 @@ def main():
                 def sync(self, room=ROOM):
                     """Apply the room's new events in total order; return the
                     application plaintexts decrypted along the way."""
-                    status, body = relay.http('GET', f'/v2/rooms/{room}/events?device={self.dev}'
-                                              f'&after={self.cursor.get(room, 0)}')
+                    status, body = self.relay.http('GET', f'/v2/rooms/{room}/events?device={self.dev}'
+                                                   f'&after={self.cursor.get(room, 0)}', headers=self.auth_headers)
                     assert status == 200, (self.dev, room, status, body)
                     plain = []
                     for ev in body['events']:
@@ -374,7 +460,8 @@ def main():
                 def add(self, target, room, roster):
                     """Consume target's key package, commit the add, send the
                     targeted Welcome (the v2 relay invite flow)."""
-                    status, kp = relay.http('GET', f'/v2/rooms/{room}/keypackages?device={target.dev}&consumer={self.dev}')
+                    status, kp = self.relay.http('GET', f'/v2/rooms/{room}/keypackages?device={target.dev}&consumer={self.dev}',
+                                                 headers=self.auth_headers)
                     assert status == 200, (target.dev, status, kp)
                     framed = bytes(self.call('invite_with_commit', list(base64.b64decode(kp['bytes']))))
                     size = int.from_bytes(framed[:4], 'little')
@@ -386,7 +473,7 @@ def main():
                     self.post_ok('welcome', list(welcome), f'welcome-{target.dev}', room, targets=[target.dev])
                     return plain
 
-            a1, b1 = Browser('a-1'), Browser('b-1')
+            a1, b1 = Browser('a-1', relay), Browser('b-1', relay)
 
             # --- enrollment: one device per actor, owner CLI alone (no UI
             # --- approvals needed for first devices; the bot joins the same way).
@@ -475,7 +562,7 @@ def main():
             # --- Fresh browsers: one facade Device belongs to exactly one MLS
             # --- group, so a-1/b-1 cannot enter a second room (the same reason
             # --- the relay smoke uses fresh devices for its second room).
-            c1, d1 = Browser('c-1'), Browser('d-1')
+            c1, d1 = Browser('c-1', relay), Browser('d-1', relay)
             for dev_obj, actor in [(c1, 'c'), (d1, 'd')]:
                 policy.mutate(['-enroll-first', '-input', str(policy.evidence_file(
                     {'device_id': dev_obj.dev, 'actor': actor, 'subject': f'person-{actor}',
@@ -502,6 +589,126 @@ def main():
             bot.stop()
             receipt['bot_events'] = len(lines)
             receipt['checks']['bot_session_clean_exit'] = True
+
+            # --- f. caller auth required (review C1) on a second relay with a
+            # --- fresh topology (e-1 + bot-2, own policy chain and data dir):
+            # --- a facade Device belongs to exactly one MLS group, so the
+            # --- section-e devices cannot enter another room. The test issuer
+            # --- is one ES256 key behind a JWKS file (60 s leeway on the relay
+            # --- side makes naturally-short token lifetimes impractical to
+            # --- await, so rotation is exercised with a born-expired token).
+            issuer = TestIssuer()
+            jwks_path = evidence / 'auth-jwks.json'
+            jwks_path.write_text(issuer.jwks())
+            token_file = evidence / 'bot-2-access.jwt'
+            policy_auth_state = evidence / 'device-policy-auth'
+            policy_auth_state.mkdir(mode=0o700)
+            policy_auth = Policy(args.devices_binary.resolve(), policy_auth_state, evidence)
+            view = policy_auth.run(['-init'])
+            assert view['revision'] == 1 and view['devices'] == [], view
+            policy_auth.revision = 1
+            relay_auth = Relay(args.relay_binary.resolve(), evidence / 'relay-data-auth', evidence,
+                               policy_auth_state, required_jwks=jwks_path, log_name='relay-auth.log')
+            bot_auth = None
+            try:
+                relay_auth.start()
+
+                # --- no token and a garbage token are a bare 401 carrying
+                # --- WWW-Authenticate; the health probe above already proved
+                # --- /v2/health stays open.
+                status, body = relay_auth.http('POST', f'/v2/rooms/{AUTH_ROOM}/keypackages',
+                                               {'device': 'e-1', 'packages': []})
+                assert status == 401 and body['error'] == 'unauthorized', (status, body)
+                www = {k.lower(): v for k, v in relay_auth.last_headers.items()}.get('www-authenticate', '')
+                assert www.startswith('Bearer '), relay_auth.last_headers
+                status, body = relay_auth.http('POST', f'/v2/rooms/{AUTH_ROOM}/keypackages',
+                                               {'device': 'e-1', 'packages': []},
+                                               headers={'Cf-Access-Jwt-Assertion': 'not-a-jwt'})
+                assert status == 401 and body['error'] == 'unauthorized', (status, body)
+
+                e1 = Browser('e-1', relay_auth)
+                e1.auth_headers = {'Authorization': f'Bearer {issuer.mint("person-e")}'}
+                policy_auth.mutate(['-enroll-first', '-input', str(policy_auth.evidence_file(
+                    {'device_id': 'e-1', 'actor': 'e', 'subject': 'person-e',
+                     'signing_key': e1.key_hex}))], policy_auth.revision)
+                # A valid token whose sub is not the device's policy subject is
+                # the same opaque 403 as an unknown device (reason not shown).
+                status, body = relay_auth.http(
+                    'POST', f'/v2/rooms/{AUTH_ROOM}/keypackages',
+                    {'device': 'e-1', 'packages': [{'ref': 'probe', 'bytes': b64(b'junk')}]},
+                    headers={'Authorization': f'Bearer {issuer.mint("person-evil")}'})
+                assert status == 403 and body['error'] == 'device_subject_mismatch', (status, body)
+                receipt['checks']['required_mode_bare_401_and_opaque_403'] = True
+
+                # --- the bot reads its assertion from a file: it publishes
+                # --- before its device is enrolled, so under required mode its
+                # --- first attempts land as the opaque 403 and must be retried
+                # --- (not fatal) until the identity-line enrollment below.
+                token_file.write_text(issuer.mint('person-bot', lifetime=600))
+                bot_auth = Bot(args.bot_binary, relay_auth, AUTH_ROOM, 'bot-2', jwt_file=token_file)
+                identity2 = bot_auth.wait_for(lambda line: line.get('event') == 'identity')
+                assert identity2['room'] == AUTH_ROOM and identity2['watch_room'] is None, identity2
+                policy_auth.mutate(['-enroll-first', '-input', str(policy_auth.evidence_file(
+                    {'device_id': 'bot-2', 'actor': 'bot', 'subject': 'person-bot',
+                     'signing_key': identity2['public_key']}))], policy_auth.revision)
+                ready2 = bot_auth.wait_for(lambda line: line.get('event') == 'ready')
+                assert ready2['key_ref'], ready2
+                receipt['checks']['bot_publishes_from_token_file_before_enrollment'] = True
+
+                # --- the exact invite flow of the main room, now under caller
+                # --- auth: e-1 consumes bot-2's package, commits the add (the
+                # --- actor roster seeds with 'bot'), sends the targeted
+                # --- Welcome, and the bot joins and echoes.
+                e1.call('create')
+                e1.joined[AUTH_ROOM] = True
+                status, kp_bot2 = relay_auth.http(
+                    'GET', f'/v2/rooms/{AUTH_ROOM}/keypackages?device=bot-2&consumer=e-1',
+                    headers=e1.auth_headers)
+                assert status == 200 and kp_bot2['bytes'], (status, kp_bot2)
+                framed = bytes(e1.call('invite_with_commit', list(base64.b64decode(kp_bot2['bytes']))))
+                size = int.from_bytes(framed[:4], 'little')
+                commit, welcome = framed[4:4 + size], framed[4 + size:]
+                e1.joined[AUTH_ROOM] = 'pending'
+                e1.post_ok('commit', list(commit), 'add-bot2', AUTH_ROOM, members=member_wire(['e-1', 'bot-2']))
+                e1.sync(AUTH_ROOM)
+                assert e1.joined[AUTH_ROOM] is True, 'own commit echo not reached'
+                e1.post_ok('welcome', list(welcome), 'welcome-bot2', AUTH_ROOM, targets=['bot-2'])
+                joined2 = bot_auth.wait_for(lambda line: line.get('event') == 'joined' and line.get('room') == AUTH_ROOM)
+                assert joined2['epoch'] == 1, joined2
+                text_e = 'auth echo'.encode()
+                e1.post_ok('application', e1.call('encrypt', bound(e1.dev, list(text_e), room=AUTH_ROOM)),
+                           e1.client_id('t1'), AUTH_ROOM)
+                bot_auth.wait_for(lambda line: line.get('event') == 'echo' and line.get('bytes') == len(text_e))
+                seen_e1 = e1.sync(AUTH_ROOM)
+                assert seen_e1 == [text_e], seen_e1
+                receipt['checks']['token_file_bot_joins_and_echoes_under_required_mode'] = True
+
+                # --- rotation: the file flips to a born-expired assertion, the
+                # --- bot's next request must 401 (it is really re-reading the
+                # --- file, not caching) — announced once as auth_wait, then it
+                # --- keeps polling instead of dying. A fresh token in the same
+                # --- file recovers the session without a restart.
+                token_file.write_text(issuer.mint('person-bot', lifetime=-70))
+                bot_auth.wait_for(lambda line: line.get('event') == 'auth_wait', timeout=20)
+                token_file.write_text(issuer.mint('person-bot', lifetime=600))
+                text_e2 = 'recovered'.encode()
+                e1.post_ok('application', e1.call('encrypt', bound(e1.dev, list(text_e2), room=AUTH_ROOM)),
+                           e1.client_id('t2'), AUTH_ROOM)
+                bot_auth.wait_for(lambda line: line.get('event') == 'echo' and line.get('bytes') == len(text_e2),
+                                  timeout=30)
+                lines2 = bot_auth.assert_clean()
+                auth_waits = [line for line in lines2 if line.get('event') == 'auth_wait']
+                assert len(auth_waits) == 1, auth_waits
+                receipt['checks']['expired_token_auth_wait_then_file_rotation_recovery'] = True
+                receipt['auth'] = {'issuer': ISSUER, 'audience': AUDIENCE, 'kid': issuer.kid,
+                                   'jwks': jwks_path.name, 'bot_token': '--access-jwt-file (re-read per request)'}
+                bot_auth.stop()
+                receipt['bot_auth_events'] = len(lines2)
+                receipt['checks']['bot_auth_session_clean_exit'] = True
+            finally:
+                if bot_auth is not None and bot_auth.proc.poll() is None:
+                    bot_auth.stop()
+                relay_auth.stop()
     finally:
         relay.stop()
         server.shutdown()

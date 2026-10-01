@@ -39,6 +39,9 @@ pub struct Options {
     pub room: String,
     pub device: String,
     pub watch_room: Option<String>,
+    /// Caller auth for `-access-mode required` relays: every request carries
+    /// the CF Access assertion from this source (see `api::Access`).
+    pub access: api::Access,
 }
 
 struct RoomState {
@@ -58,7 +61,7 @@ pub fn run(opts: Options) -> Result<(), BotError> {
         .and_then(|raw| raw.parse().ok())
         .unwrap_or(DEFAULT_MAX_SECS);
     let deadline = Instant::now() + Duration::from_secs(max_secs);
-    let client = Client::new(&opts.base);
+    let client = Client::with_access(&opts.base, opts.access.clone());
 
     let mut device = Device::new(&opts.device)
         .map_err(|_| BotError::Local("device new: identity shape rejected"))?;
@@ -77,17 +80,41 @@ pub fn run(opts: Options) -> Result<(), BotError> {
         "watch_room": opts.watch_room,
         "public_key": hex(&public_key),
     }));
+    let mut auth_wait_announced = false;
     let key_ref = api::ref_hex(&key_package);
     let stored = 'publish: loop {
         match client.post_key_packages(&opts.room, &opts.device, &[(&key_ref, key_package.clone())]) {
             Ok(stored) => break 'publish stored,
             // With -device-state on, every POST needs an active policy device:
             // the harness enrolls us from the `identity` line below, so the
-            // first attempts may legitimately land before that. Retry.
-            Err(BotError::Api { status: 403, code }) if code == "device_not_allowed" => {
+            // first attempts may legitimately land before that. Retry. With
+            // -access-mode required the identity line answers an *unknown*
+            // device with the same opaque 403 device_subject_mismatch (the
+            // relay refuses to reveal which of unknown/wrong-subject it was),
+            // so pre-enrollment attempts surface under that code too.
+            Err(BotError::Api { status: 403, code })
+                if code == "device_not_allowed" || code == "device_subject_mismatch" =>
+            {
                 std::thread::sleep(POLL);
                 if Instant::now() >= deadline {
                     return Err(BotError::Local("session deadline exceeded waiting for enrollment"));
+                }
+            }
+            // With -access-mode required, a short-lived assertion can lapse
+            // while we wait for enrollment: wait for the token file to be
+            // rotated instead of dying.
+            Err(BotError::Api { status: 401, .. } | BotError::Status { status: 401 }) => {
+                if !auth_wait_announced {
+                    auth_wait_announced = true;
+                    emit(&serde_json::json!({
+                        "event": "auth_wait",
+                        "room": opts.room,
+                        "device": opts.device,
+                    }));
+                }
+                std::thread::sleep(POLL);
+                if Instant::now() >= deadline {
+                    return Err(BotError::Local("session deadline exceeded waiting for an access token"));
                 }
             }
             Err(err) => return Err(err),
@@ -115,12 +142,31 @@ pub fn run(opts: Options) -> Result<(), BotError> {
     }
 
     let mut rounds = 0u32;
+    let mut auth_wait_announced = false;
     loop {
         if Instant::now() >= deadline {
             return Err(BotError::Local("session deadline exceeded"));
         }
         for state in &mut rooms {
-            poll_room(&client, &mut device, &opts.device, state)?;
+            match poll_room(&client, &mut device, &opts.device, state) {
+                Ok(()) => {}
+                // 401 = the assertion expired or was rejected. The token file
+                // may already carry a rotated token (or will soon): keep
+                // polling until the deadline instead of dying, and say why
+                // once so the harness can tell an auth wait from a hang.
+                Err(err @ (BotError::Api { status: 401, .. } | BotError::Status { status: 401 })) => {
+                    if !auth_wait_announced {
+                        auth_wait_announced = true;
+                        emit(&serde_json::json!({
+                            "event": "auth_wait",
+                            "room": state.room,
+                            "device": opts.device,
+                        }));
+                    }
+                    let _ = err;
+                }
+                Err(err) => return Err(err),
+            }
         }
         rounds += 1;
         if rounds % STATUS_EVERY == 0 {
