@@ -97,9 +97,8 @@ jobs:
         run: archive/experiments/openmls-browser/build.sh artifacts/mls-pkg
       # Reproducibility gate (#177 M2 / L5): drop only the facade crate's artefacts (deps stay
       # in the shared target dir, so this costs one crate compile + wasm-bindgen + esbuild),
-      # rebuild into a second directory and require a byte-identical hash manifest.
-      # TODO(#177): commit bundle-sha256.txt once the fleet build host matches CI; until then
-      # the comparison against a committed manifest below is skipped when the file is absent.
+      # rebuild into a second directory and require a byte-identical hash manifest, which must
+      # also match the committed reference manifest (archive/experiments/openmls-browser/).
       - name: Bundle reproducibility — second build must hash identically
         if: steps.scope.outputs.run == 'true'
         run: |
@@ -111,12 +110,10 @@ jobs:
             echo "::error::WASM bundle is not reproducible: second build produced different hashes"; exit 1
           fi
           echo "reproducible bundle manifest:"; cat artifacts/mls-pkg/bundle-sha256.txt
-          committed=archive/experiments/openmls-browser/bundle-sha256.txt
-          if [ -f "$committed" ]; then
-            (cd artifacts/mls-pkg && sha256sum -c --strict "$GITHUB_WORKSPACE/$committed")
-          else
-            echo "no committed $committed yet (TODO #177) — manifest printed and uploaded only"
-          fi
+          # Committed reference manifest: the fresh build must be byte-identical to
+          # it (fail-closed — a missing or drifted manifest fails this step).
+          (cd artifacts/mls-pkg && sha256sum -c --strict \
+            "$GITHUB_WORKSPACE/archive/experiments/openmls-browser/bundle-sha256.txt")
       # Host-target unit tests: storage v2 dirty set / rollback / 1,000-message
       # growth / format-1 migration (#177 M2), plus the trust checks.
       - name: Facade unit tests (cargo test, host)

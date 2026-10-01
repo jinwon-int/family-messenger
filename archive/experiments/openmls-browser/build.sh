@@ -27,6 +27,13 @@ rustc_version="$(rustc "+$toolchain" --version | awk '{print $2}')"
 expect rustc "$rustc_version" "1.91.1"
 bindgen_version="$("$bindgen" --version | awk '{print $2}')"
 expect wasm-bindgen "$bindgen_version" "0.2.126"
+# Pin the generator binary, not just its --version string: a cargo-installed
+# wasm-bindgen 0.2.126 emits different wasm bytes than the pinned musl release
+# (the reproducibility drift root cause, #177). Hash of the binary inside the
+# sha256-pinned release tarball (toolchain-evidence.json → WASM_BINDGEN_SHA256).
+bindgen_sha256="$(sha256sum "$bindgen" | cut -d' ' -f1)"
+expect wasm-bindgen-binary "sha256:$bindgen_sha256" \
+  "sha256:d8d94635b40d1d8a93562fc7ced6093488252600dba39ce1dbab410b89157d8b"
 esbuild="$here/node_modules/.bin/esbuild"
 [ -x "$esbuild" ] || { echo "build.sh: run 'npm ci --ignore-scripts' in $here first" >&2; exit 2; }
 expect esbuild "$("$esbuild" --version)" "0.27.2"
@@ -85,8 +92,9 @@ for f in family_mls_browser_experiment.js family_mls_browser_experiment_bg.wasm 
 done
 # Hash manifest of the served runtime assets, sorted by name so it is diff-stable and
 # `sha256sum -c`-compatible. CI rebuilds into a second directory and requires this file
-# to be identical (reproducibility gate, .github/workflows/native-mls.yml).
-# TODO(#177): commit bundle-sha256.txt once the fleet build host matches CI.
+# to be byte-identical to the committed reference manifest
+# (archive/experiments/openmls-browser/bundle-sha256.txt, enforced by the
+# reproducibility gate in .github/workflows/native-mls.yml).
 (cd "$out" && LC_ALL=C sha256sum ./*.wasm ./*.js | sed 's#  \./#  #' | LC_ALL=C sort -k2 > bundle-sha256.txt)
 echo "manifest: $out/bundle-sha256.txt"
 cat "$out/bundle-sha256.txt"
