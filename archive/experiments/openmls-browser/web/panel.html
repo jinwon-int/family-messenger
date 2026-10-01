@@ -1,0 +1,50 @@
+<!doctype html><html lang="ko"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>합성 실기기 세션 — #177 M4 수동 리허설</title>
+<!-- 합성 전용 수동 패널. 스모크가 프로그램으로 구동하는 동일한 durable 워커를
+     사람 손으로 구동한다. 실험 UI(index.html·main.js)는 변경하지 않는다.
+     CSP가 style-src를 막으므로 스타일 없이 의미 HTML만 사용한다. -->
+<script type="module" src="./main.js"></script>
+<script type="module" src="./panel.js"></script>
+<p><strong>합성 전용 세션입니다.</strong> 폐기 가능한 합성 키만 다룬다. 실제 계정·사람 키·운영 호스트와 무관하다(#177 결정 E).</p>
+<ol>
+<li>각 기기에서 <em>기기 등록</em>을 먼저 누른다(브라우저 종류·UA 기록).</li>
+<li>기기 A: 워커 시작 → 그룹 생성 → 기기 B의 키 패키지로 초대(Welcome 게시).</li>
+<li>기기 B: 워커 시작 → 교환판에서 Welcome 가져와 참여. <strong>두 화면의 지문을 눈으로 대조</strong>한다.</li>
+<li>양방향 암호화·해독 왕복 → 백그라운드 복귀 → (선택) 저장소 축출 후 재참여.</li>
+</ol>
+<h2>1. 기기 등록</h2>
+<p><label>브라우저 <select id="kind"><option value="">선택…</option>
+<option value="firefox">Firefox</option><option value="safari-ios">Safari(iOS)</option>
+<option value="android-chrome">Android Chrome</option></select></label>
+<button id="register" type="button">이 기기 등록</button></p>
+<p id="reg-out"></p>
+<h2>2. 워커 시작 · 이어하기</h2>
+<p><label>신원 <input id="identity" value="owner" autocomplete="off"></label>
+<label>데이터베이스 <input id="database" value="family-mls-synthetic-real-1" autocomplete="off"></label></p>
+<p><label>암호(32자 이상) <input id="passphrase" type="password" autocomplete="off"></label>
+<button id="start" type="button">워커 시작</button></p>
+<pre id="state">아직 시작하지 않았다.</pre>
+<h2>3. 교환판 (세션 내 합성 전달)</h2>
+<p><button id="board-refresh" type="button">교환판 새로고침</button>
+<button id="fetch-item" type="button">선택 항목 가져오기</button></p>
+<div id="board-list"></div>
+<pre id="slots">슬롯: 패키지=없음 welcome=없음 암호문=없음</pre>
+<h2>4. 그룹</h2>
+<p><button id="create" type="button" disabled>그룹 생성</button>
+<button id="keypackage" type="button" disabled>키 패키지 → 게시</button>
+<button id="invite" type="button" disabled>가져온 패키지로 초대 → Welcome 게시</button>
+<button id="join" type="button" disabled>가져온 Welcome으로 참여</button></p>
+<h2>5. 메시지</h2>
+<p><label>평문 <input id="msg" value="실기기 합성 인사" autocomplete="off"></label>
+<button id="encrypt" type="button" disabled>암호화 → 게시</button>
+<button id="decrypt" type="button" disabled>가져온 암호문 해독</button></p>
+<pre id="mail">해독 결과가 여기 표시된다.</pre>
+<h2>6. 관찰 기록</h2>
+<p><label>백그라운드 이탈 시간(초) <input id="bg-seconds" type="number" min="0" value="30"></label>
+<label>복귀 후 해독 성공 <input id="bg-ok" type="checkbox"></label></p>
+<p><label>메모 <textarea id="notes" rows="3"></textarea></label></p>
+<p><button id="observe" type="button">관찰 전송</button>
+<button id="evict" type="button" disabled>저장소 삭제(축출 재연습)</button></p>
+<p id="observe-out"></p>
+<pre id="log"></pre>
