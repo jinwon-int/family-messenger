@@ -125,11 +125,15 @@ custom messaging cryptography, or serializing the nonpublic MlsGroup layout.
   authenticated tombstones, so retrying an acknowledged encrypt (e.g. after a lost
   ack reply) is rejected instead of encrypting again; ids must never be reused at
   all (use random ids). A full ledger rejects new operations until acknowledged;
-  exact retries of retained items remain available.
-- **Smoke** (`native_mls_persistence_smoke.py`, 20 checks): the original 14 on the v2
+  exact retries of retained items remain available. A `decrypt` the facade rejects at
+  the head of the inbox is retained as a `rejected: true` item that advances the
+  cursor (H2 tombstone, *Review batch 2* below).
+- **Smoke** (`native_mls_persistence_smoke.py`, 22 checks): the original 14 on the v2
   layout plus wrong passphrase, corrupted/swapped/weakened/relabelled custody capsule,
   capsule replaced under a live worker, legacy v1 database, stale-tab rebuild (exactly one
-  rebuild after another tab wrote, none for same-tab operations) and ack/tombstones.
+  rebuild after another tab wrote, none for same-tab operations), ack/tombstones, and
+  the H2 poison-message tombstone (cursor advance, re-sequenced original decrypted
+  exactly once, replay after restart, stripped `rejected` flag denied at load).
   Load verification is exercised by rolling one entry back after an encrypt (value
   only → entry tag; value+tag → set digest); a WebCrypto reseal is the positive
   control that makes the forged-actor case test the credential check. Mutation-
@@ -159,7 +163,9 @@ discards the entire candidate and leaves the committed provider unchanged.
 
 For application receive operations, a synthetic receive sequence is committed
 with crypto state and the cached plaintext result. It must advance the cursor by
-one; a duplicate operation returns its previous result without advancing it.
+one; a duplicate operation returns its previous result without advancing it. Since
+H2 a facade-rejected receive at the head also advances the cursor by one, as a
+tombstone without a result (*Review batch 2* below).
 This sequence is a test inbox cursor, **not yet the native SSE/control-event
 cursor**. Welcome/Commit ordering and native delivery CAS are later integration.
 
@@ -169,8 +175,10 @@ a timed-out or unacknowledged operation requires worker/browser restart and
 reconciliation against durable state. It does not reconstruct a snapshot from
 partial state or keep using a failed candidate. In particular, a damaged Welcome
 or application ciphertext no longer consumes **committed** KeyPackage/ratchet
-material. The original unchanged input can subsequently succeed once; duplicate
-ciphertext under a new ID is still rejected by OpenMLS after a committed receive.
+material. The original unchanged input can subsequently succeed once — in the
+Session workers at the **next** sequence, since the damaged attempt consumed one as
+a tombstone (H2); duplicate ciphertext under a new ID is still rejected by OpenMLS
+after a committed receive (and, at the head of the inbox, tombstoned too).
 
 ## Review batch 2 — client consistency (#177)
 
@@ -214,21 +222,74 @@ ciphertext under a new ID is still rejected by OpenMLS after a committed receive
   removes + staged adds); this is the list to replicate into the outer v2 relay
   commit JSON before POSTing it. See the *relay-contract* note below.
 
-### Known follow-up — poison-message cursor wedge (H2, NOT yet fixed)
+### Poison-message cursor wedge (H2) — ledger tombstones
 
-A durable-worker `decrypt` that the facade rejects at `sequence == cursor + 1`
-still returns a generic failure and does **not** advance the receive cursor, so a
-permanently-undecryptable message at the head of the inbox wedges every later
-receive. The intended fix is an authenticated ledger tombstone
-`{id, method:'decrypt', sequence, rejected:true}` written on that rejection (Rust
-state rolled back, cursor advanced past the message), with `durable-worker.js`
-returning `{rejected:true, sequence}` and a same-id resubmission replaying the
-tombstone. It is deferred here because it changes the ledger/`ok:false` contract
-and the cursor/sequence chain in ways that cascade through
-`native_mls_persistence_smoke.py` and `native_trusted_state_smoke.py` (notably the
-damaged→original "exactly once" retry pattern, which the advance deliberately
-drops), and those browser smokes cannot be executed in this toolchain. It should
-land together with the smoke sequence-chain rewrite under CI.
+Before this fix a `decrypt` the facade rejected at `sequence == cursor + 1` returned
+a generic failure and left the receive cursor where it was, so one permanently
+undecryptable message at the head of the inbox wedged every later receive. Now
+(`web/session-store.js`, `classifyDecryptFailure`) such a rejection is persisted as
+an **authenticated ledger tombstone** and the cursor moves past it. JS-only; the
+facade is unchanged (it already rolls a rejected operation back, `session.rs`
+`finish`).
+
+- **What becomes a tombstone — all of:** (1) the request is a `decrypt` at the head
+  of the inbox (`sequence === cursor + 1`) that passed the structural checks (valid
+  unused id, shape, ledger capacity) — those still throw before the facade runs;
+  (2) the device already has a group — before the Welcome nothing is decryptable and
+  the same message may succeed after `join`, so that failure is the device's state,
+  not the message's; (3) the facade (`Session.apply` / `apply_trusted`) threw its own
+  string rejection, and it is about the message: `'state limit'` (the message
+  decrypted but the result could not be reopened — capacity) and `'device retired'`
+  are excluded, and a wasm trap / JS `Error` is not a facade verdict; (4) after the
+  facade's rollback the resident session still reports the durable `epoch`, `group_id`
+  and entry count, so what is skipped was tried against the committed state.
+  Qualifying rejections: damaged or replayed ciphertext, wrong room/group/epoch/sender
+  AAD, an attribution (`client_id`) mismatch, an empty or oversize wire message — all
+  permanent for this device at this cursor. In the trusted lane the pin/directory
+  checks run before the store is reached and still retire the worker; the in-facade
+  pair check cannot newly fail at decrypt time once the pinned pair has joined
+  (membership is invariant there — `remove`/`commit` are not allowed), and with no
+  group rule (2) applies.
+- **What does not:** a wrong sequence, a malformed request, an id reuse with
+  different bytes, an acknowledged id, a full ledger, HMAC/seal/meta/custody failures,
+  a transaction abort, and every non-`decrypt` rejection fail exactly as before
+  (`ok:false`, constant error string). After **any** facade rejection the resident
+  session is dropped and rebuilt from the verified durable entries in the next
+  transaction (one full deserialization per rejection): a rollback that could not
+  reload the group retires the `Session` silently, and a retired session must never
+  stay resident.
+- **Ledger item:** `{id, method:'decrypt', input, output: empty, sequence, epoch,
+  rejected: true}`. `input` is kept so a same-id resubmission is matched
+  byte-for-byte; there is never an output. `rejected` is optional in the item shape
+  and, when present, exactly `true` on a `decrypt` with empty output; absent means
+  false, so meta written before H2 validates and verifies unchanged (no meta version
+  bump, no migration). The tagged encoding (`ledgerItemBytes`) appends a trailing `1`
+  **only** for tombstones, so adding or removing the flag changes the bytes under the
+  meta tag while every pre-H2 item encodes as before. A tombstone counts against the
+  256-item cap, is listed in `status.operations`, and is pruned by `ack` like any item
+  (after which the id is an acked tombstone and rejected as before).
+- **Cursor semantics:** the tombstone's `sequence` becomes the cursor in the same
+  transaction (`abort-before-write` / `abort-after-write` / `lost-response` faults
+  apply as to any write). The caller must send the next message with the **next**
+  sequence; resubmitting the original ciphertext at the consumed sequence is a
+  stale-sequence failure. A same-id resubmission with the same bytes returns the
+  tombstone (`replay: true`), including after a restart; the same id with different
+  bytes is still rejected ("never reuse ids").
+- **Worker contract:** `durable-worker.js` / `trusted-state-worker.js` return the
+  tombstone inside the normal `ok: true` envelope as `{rejected: true, sequence,
+  cursor, revision, replay, …}` with no `output`/`sender`/`client`; it is a persisted
+  verdict, not a worker failure, and the trusted worker is **not** retired by it.
+  `panel.js` logs "거부된 메시지를 건너뜀 (seq N)" instead of an error.
+- **Tamper detection:** the smoke clones the receiver's database, strips `rejected`
+  from a tombstone and re-seals the meta under its old tag (what a holder of the
+  custody key could do to an untagged field); the load fails closed and the clone is
+  retained. A reseal that re-tags with the flag encoded as above is the positive
+  control (it reopens and replays the verdict), so the denial is the tag.
+- **Tests:** `web/session-store.test.mjs` (`node --test`, CI step "Session store unit
+  tests") covers the decision helper, the item shape and the tagged encoding without
+  wasm or IndexedDB; the two browser smokes exercise the tombstone, re-sequencing,
+  replay after restart and the tamper case end to end (the sequence chains there
+  were rewritten: each tombstone consumes a sequence).
 
 ## Retry, concurrency and limits
 

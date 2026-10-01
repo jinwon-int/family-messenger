@@ -15,6 +15,11 @@
 // an older format). Inside, `meta` binds the entry count, a set digest (SHA-256
 // over (index, tag) sorted by index), the ledger (outbox) and acknowledged-id
 // tombstones, and carries its own HMAC tag (labelled with the worker kind).
+// A ledger item may carry `rejected: true` (H2 poison-message tombstone, see
+// classifyDecryptFailure): a decrypt the facade rejected at the head of the inbox,
+// kept with its input and no output so the cursor can move past it. Absent means
+// false — legacy meta verifies unchanged (the tagged encoding only grows for
+// tombstones), so there is no format bump and no migration.
 // Store `entries` holds one record per Session store entry: key [room, index]
 // with index = entry_index(auth key, room, entry key), value {e, t} where e seals
 // u32 LE key_len ‖ entry key ‖ value (additional data: domain, room, index) and
@@ -96,6 +101,46 @@ export function unframe(bytes) {
   return changes;
 }
 
+// H2 poison-message tombstone rule (#177 review batch 2). A rejected `decrypt`
+// becomes an authenticated ledger tombstone — cursor advanced past it, no plaintext —
+// only when every one of these holds; otherwise the operation fails exactly as before:
+//  1. it is a `decrypt` at the head of the inbox (`sequence === cursor + 1`; the
+//     structural checks on id/shape/ledger capacity ran before the facade was called);
+//  2. the device already has a group (`hasGroup`): before the Welcome nothing is
+//     decryptable and the message may still succeed after `join`, so that failure
+//     is the device's state, not the message's;
+//  3. the facade (`Session.apply`/`apply_trusted`) threw its own string rejection —
+//     a wasm trap or a JS Error is not a facade verdict — and that rejection is
+//     about the message, not the device: 'state limit' (the message decrypted but
+//     the result could not be reopened — capacity) and 'device retired' are not;
+//  4. after the facade's rollback the resident session still matches the durable
+//     meta (`consistent`: epoch, group id, entry count), so what is skipped was
+//     tried against the committed state.
+// Facade rejections that qualify include a damaged or replayed ciphertext, a wrong
+// room/epoch/sender AAD, an attribution (client id) mismatch and an empty or
+// oversize wire message: all are permanent for this device at this cursor.
+export const NOT_POISON = new Set(['state limit', 'device retired']);
+export function classifyDecryptFailure({method, sequence, cursor, hasGroup, error, consistent}) {
+  if (method !== 'decrypt' || !Number.isSafeInteger(sequence) || !Number.isSafeInteger(cursor) ||
+      sequence !== cursor + 1 || hasGroup !== true || consistent !== true) return 'fail';
+  if (typeof error !== 'string' || NOT_POISON.has(error)) return 'fail';
+  return 'tombstone';
+}
+// Ledger item shape: `rejected` is optional and, when present, exactly `true` on a
+// `decrypt` with empty output. Returns the item's validity (pure; see validMeta).
+const ITEM_KEYS = ['id', 'method', 'input', 'output', 'sequence', 'epoch'];
+export function validLedgerItemShape(item) {
+  if (!exact(item, ITEM_KEYS) && !exact(item, [...ITEM_KEYS, 'rejected'])) return false;
+  if ('rejected' in item && (item.rejected !== true || item.method !== 'decrypt' ||
+      !(item.output instanceof Uint8Array) || item.output.length !== 0)) return false;
+  return true;
+}
+// Tagged encoding of one ledger item: tombstones append a trailing 1, so a flag
+// added to, or removed from, an item changes the bytes the meta tag covers while
+// every pre-H2 item encodes exactly as before.
+export const ledgerItemBytes = x =>
+  [x.id, x.method, x.sequence, x.epoch, hex(x.input), hex(x.output), ...(x.rejected === true ? [1] : [])];
+
 const META_VERSION = 4;
 const utf8 = s => new TextEncoder().encode(s);
 // Meta fields as JSON; byte arrays as {"$b": hex}. Decoding accepts exactly that shape.
@@ -147,7 +192,7 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
   function metaBytes(meta) {
     return new TextEncoder().encode(JSON.stringify(['family-mls-meta-v4/' + kind, meta.version, meta.identity, meta.room,
       hex(meta.public_key), hex(meta.group_id), meta.format, meta.revision, meta.cursor, meta.epoch, hex(meta.set),
-      meta.count, meta.ledger.map(x => [x.id, x.method, x.sequence, x.epoch, hex(x.input), hex(x.output)]), meta.acked,
+      meta.count, meta.ledger.map(ledgerItemBytes), meta.acked,
       extra.bytes(meta)]));
   }
   function validMeta(meta, verifyTag = true) {
@@ -163,7 +208,7 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
     let size = 0;
     const ids = new Set();
     for (const item of meta.ledger) {
-      if (!exact(item, ['id', 'method', 'input', 'output', 'sequence', 'epoch']) ||
+      if (!validLedgerItemShape(item) ||
           !validId(item.id) || ids.has(item.id) || meta.acked.includes(item.id) || !allowed.has(item.method) ||
           typeof item.epoch !== 'string' || item.epoch.length > 20 ||
           !(item.input instanceof Uint8Array) || item.input.length > 65536 ||
@@ -365,6 +410,9 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
         },
         // Immutable operation id: exact replay from the ledger, or one new
         // session operation `apply(bytes)` -> Step, persisted with its ledger item.
+        // A facade-rejected decrypt at the head of the inbox is persisted as a
+        // tombstone instead (classifyDecryptFailure) and resolves {rejected: true,
+        // sequence} — the caller must send the next message with sequence + 1.
         operation(meta, argument, apply) {
           if (!exact(argument, ['id', 'method', 'bytes', 'sequence', 'fault']) ||
               !validId(argument.id) || meta.acked.includes(argument.id) || !allowed.has(argument.method) ||
@@ -375,13 +423,39 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
           if (prior) {
             if (prior.method !== argument.method || prior.sequence !== argument.sequence || !equal(prior.input, bytes) ||
                 (prior.method === 'encrypt' && prior.epoch !== meta.epoch)) fail();
+            // A tombstone replays as the same verdict (idempotent); it never gains an output.
+            if (prior.rejected === true) return {rejected: true, sequence: prior.sequence, revision: meta.revision, cursor: meta.cursor, replay: true, changed: 0};
             return {output: Array.from(prior.output), revision: meta.revision, cursor: meta.cursor, replay: true, changed: 0};
           }
           if (meta.ledger.length >= MAX_LEDGER || meta.revision >= Number.MAX_SAFE_INTEGER) fail();
           if (argument.method === 'decrypt' ? argument.sequence !== meta.cursor + 1 : argument.sequence !== 0) fail();
           // Synchronous WASM call inside the active IDB transaction callback. A
           // rejection has already been rolled back inside the session.
-          const result = apply(bytes);
+          let result;
+          try { result = apply(bytes); } catch (error) {
+            // The facade rolled back (session.rs `finish`); the session is not in
+            // flight. Verify it really is at the durable state again, then decide
+            // whether this is a poison message (tombstone) or a plain failure. Either
+            // way the resident session is dropped: a rollback that could not reload
+            // the group retires the Session silently, and a retired Session must
+            // never stay resident (the next transaction rebuilds it from verified
+            // durable entries — one full deserialization per rejection).
+            const consistent = session !== null && session.current_epoch() === meta.epoch &&
+              equal(session.group_id(), meta.group_id) && session.entry_count() === meta.count;
+            const verdict = classifyDecryptFailure({method: argument.method, sequence: argument.sequence, cursor: meta.cursor,
+              hasGroup: meta.group_id.length > 0, error, consistent});
+            if (verdict !== 'tombstone') { dropSession(); throw error; }
+            meta.ledger.push({id: argument.id, method: 'decrypt', input: bytes, output: new Uint8Array(0), sequence: argument.sequence,
+              epoch: meta.epoch, rejected: true});
+            meta.cursor = argument.sequence;
+            if (fault === 'abort-before-write') { dropSession(); abort(); return undefined; }
+            // persist() derives the set digest from the resident tags: drop only after it.
+            const written = persist(meta, []);
+            dropSession();
+            if (fault === 'abort-after-write') { abort(); return undefined; }
+            return {rejected: true, sequence: argument.sequence, revision: meta.revision, cursor: meta.cursor, replay: false,
+              changed: 0, bytes_written: 0, meta_bytes: written.meta};
+          }
           inflight = true;
           const output = result.output(), changes = unframe(result.changes());
           meta.epoch = result.epoch();
