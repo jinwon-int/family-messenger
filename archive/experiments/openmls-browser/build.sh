@@ -43,7 +43,22 @@ rustup "+$toolchain" target list --installed | grep -qx wasm32-unknown-unknown \
   || { echo "build.sh: wasm32-unknown-unknown target missing for $toolchain" >&2; exit 2; }
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$here/target}"
-export RUSTFLAGS='--cfg getrandom_backend="wasm_js"'
+# Reproducibility (#177 M2 / L5): strip build-host paths (panic locations, debuginfo)
+# from the artefact so the same source + pins hash identically on CI and on the fleet
+# build host. rustc gives precedence to LATER --remap-path-prefix entries, so the
+# mappings go from least to most specific: $HOME, then CARGO_HOME (registry sources),
+# then the repo root. Appended to any user RUSTFLAGS, never overwriting them.
+repo_root="$(cd "$here/../../.." && pwd)"
+remap=''
+for pair in "${HOME:-}=/home" "${CARGO_HOME:-${HOME:-}/.cargo}=/cargo" "$repo_root=/repo"; do
+  src="${pair%%=*}"
+  case "$src" in
+    ''|/|/.cargo) continue ;;
+    *[[:space:]]*) echo "build.sh: warning: '$src' contains whitespace; not remapped (hashes will differ from CI)" >&2; continue ;;
+  esac
+  remap="$remap --remap-path-prefix=$pair"
+done
+export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }--cfg getrandom_backend=\"wasm_js\"$remap"
 cargo "+$toolchain" build --locked --release --target wasm32-unknown-unknown \
   --manifest-path "$here/Cargo.toml"
 
@@ -68,3 +83,10 @@ done
 for f in family_mls_browser_experiment.js family_mls_browser_experiment_bg.wasm custody.js; do
   printf '%s  %s  %s bytes\n' "$(sha256sum "$out/$f" | cut -d' ' -f1)" "$f" "$(stat -c %s "$out/$f")"
 done
+# Hash manifest of the served runtime assets, sorted by name so it is diff-stable and
+# `sha256sum -c`-compatible. CI rebuilds into a second directory and requires this file
+# to be identical (reproducibility gate, .github/workflows/native-mls.yml).
+# TODO(#177): commit bundle-sha256.txt once the fleet build host matches CI.
+(cd "$out" && LC_ALL=C sha256sum ./*.wasm ./*.js | sed 's#  \./#  #' | LC_ALL=C sort -k2 > bundle-sha256.txt)
+echo "manifest: $out/bundle-sha256.txt"
+cat "$out/bundle-sha256.txt"
