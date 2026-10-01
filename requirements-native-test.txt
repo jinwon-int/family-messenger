@@ -1,2 +1,5 @@
 # Browser verification only; not a messenger runtime dependency.
 playwright==1.62.0
+# native_v2_relay_smoke.py mints the CF Access stand-in JWTs (ES256) the v2
+# relay requires (#177 review C1); stdlib has no ECDSA signer.
+cryptography==50.0.2

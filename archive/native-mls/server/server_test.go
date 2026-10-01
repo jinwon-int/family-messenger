@@ -269,13 +269,12 @@ func TestPostEventRoomBytesCapReturns413(t *testing.T) {
 	}
 }
 
-// TestPostEventOversizedBodyReturns413 pins the transport guard: a body above
-// RoomBytesCap+1MiB never reaches the store and answers 413 body_too_large.
+// TestPostEventOversizedBodyReturns413 pins the transport guard (M4): a body
+// above 1 MiB never reaches the store and answers 413 body_too_large.
 func TestPostEventOversizedBodyReturns413(t *testing.T) {
-	pol := testPolicy() // RoomBytesCap 1MiB -> read limit 2MiB
-	_, srv := newTestRelay(t, pol)
+	_, srv := newTestRelay(t, testPolicy())
 
-	oversized := bytes.Repeat([]byte("a"), int(pol.RoomBytesCap+(1<<20)+1))
+	oversized := bytes.Repeat([]byte("a"), maxBodyBytes+1)
 	st, raw := doJSON(t, srv, "POST", "/v2/rooms/r/events", oversized)
 	if st != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized body: status=%d body=%s", st, raw)

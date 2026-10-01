@@ -125,6 +125,10 @@ func TestCLIEndToEnd(t *testing.T) {
 	if v.Revision != 1 {
 		t.Fatalf("init revision = %d", v.Revision)
 	}
+	// A candidate without a subject is refused by name: the relay binds every
+	// request to it (C1), so an operator must not be able to enroll without one.
+	write = cliCandidate(t, cand, "nosub.json", enrollCandidate{DeviceID: "dev-a1", Actor: "alice", SigningKey: ka.hexKey})
+	mustFail("subject is required", "-enroll-first", "-input", write, "-expected-revision", "1")
 	// E1: alice's first device, out of band.
 	write = cliCandidate(t, cand, "a1.json", enrollCandidate{DeviceID: "dev-a1", Actor: "alice", Subject: "person-alice", SigningKey: ka.hexKey})
 	v = capture("-enroll-first", "-input", write, "-expected-revision", "1")

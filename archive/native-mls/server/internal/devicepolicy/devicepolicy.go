@@ -243,6 +243,11 @@ func parseDevicePolicyRecord(data []byte) (PolicyRecord4, error) {
 	return rec, nil
 }
 
+// IsIdentifier reports whether s is a policy identifier: [A-Za-z0-9_-]{1,max}.
+// The relay applies the same rule to device ids, Welcome targets and
+// replicated member entries so no other spelling ever reaches the store.
+func IsIdentifier(s string, max int) bool { return identifier(s, max) }
+
 func identifier(s string, max int) bool {
 	if len(s) < 1 || len(s) > max {
 		return false
