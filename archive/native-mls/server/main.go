@@ -14,6 +14,7 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/jinwon-int/family-messenger/archive/native-mls/server/internal/devicepolicy"
@@ -32,11 +33,17 @@ func main() {
 	keyPackageTTL := flag.Int64("key-package-ttl-seconds", 0, "override key package TTL (seconds)")
 	keepEpochs := flag.Int64("commit-welcome-keep-epochs", 0, "override commit/welcome epoch retention")
 	appEventTTL := flag.Int64("app-event-ttl-seconds", 0, "override application event TTL (seconds)")
+	resetRoomName := flag.String("reset-room", "", "OFFLINE operator recovery (review H3: squatted or mistaken room bootstrap): delete every relay row of this room from -data-dir and exit. Refuses while a relay holds the data dir; dry run unless -yes")
+	resetYes := flag.Bool("yes", false, "with -reset-room: actually delete (default prints what would be deleted)")
 	removedGrace := flag.Int64("removed-cursor-grace-seconds", 0, "override how long a member removed by commit keeps gating pruning before it reads its removal")
 	flag.Parse()
 
 	if *dataDir == "" {
 		log.Fatal("-data-dir is required")
+	}
+	if *resetRoomName != "" {
+		// Offline tool: no listener, no access configuration needed.
+		os.Exit(runResetRoom(os.Stdout, *dataDir, *resetRoomName, *resetYes))
 	}
 
 	// C1: fail closed on the authentication configuration before touching

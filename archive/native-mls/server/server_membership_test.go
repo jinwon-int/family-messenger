@@ -431,7 +431,7 @@ func TestPruneSkipsRevokedDeviceCursor(t *testing.T) {
 		t.Fatalf("a2 app: status=%d body=%s", code, raw)
 	}
 	for _, d := range []string{"a1", "b1"} {
-		if code, raw := doJSON(t, srv, "GET", "/v2/rooms/r/events?device="+d, nil); code != http.StatusOK {
+		if code, raw := getAck(t, srv, "r", d); code != http.StatusOK {
 			t.Fatalf("%s get: status=%d body=%s", d, code, raw)
 		}
 	}

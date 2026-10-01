@@ -140,9 +140,19 @@ v2 smoke는 required 모드로 돈다(ES256 키를 만들어 JWKS 파일로 넘�
   commit까지 읽어 ack하거나(`seq ≥ removed_seq`) (b) 유예
   `-removed-cursor-grace-seconds`(기본 7일)가 지날 때까지 프루닝 MIN에 계속 들어간다 —
   오프라인 중에 제거된 기기도 거기까지의 이벤트는 받을 수 있다. 추적 멤버가 아닌
-  active 기기의 GET은 새 커서를 **만들지 않는다**(읽기만으로 프루닝 게이트가 되지
-  않음; 제거된 기기의 기존 커서는 ack를 위해 전진만 한다). 재추가되면 커서가 일반
-  reader로 되살아난다.
+  active 기기는 읽을 수는 있지만 **ack하면 403 `not_a_member`**이고 커서를 만들지
+  않는다(프루닝 게이트가 되지 않음; 제거된 기기의 기존 커서는 유예 동안 ack로 전진만
+  한다). 재추가되면 커서가 일반 reader로 되살아난다.
+- **커서 = ack (M2, 후속 5)**: `GET /v2/rooms/{r}/events?device=&after=&limit=`는
+  **커서를 움직이지 않는다** — `after`는 순수 읽기 오프셋이라, 응답이 유실돼도 같은
+  `after`로 다시 받을 수 있다. 커서(application 이벤트 프루닝 게이트)는 같은 GET의
+  **`?ack=<seq>`**로만 전진한다: 기기가 seq까지 **영속 처리했음**을 선언하면
+  `cursor = max(현재, ack)`. `ack > last_seq`는 400 `bad_ack`, 음수·비숫자도 400
+  `bad_ack`, 멤버십 추적 중 방에서 커서도 없고 추적 멤버도 아닌 기기는 403
+  `not_a_member`(판정 순서: 멤버십 → 범위, 외부인에게 last_seq 오라클 없음). 응답의
+  `cursor`는 요청 후의 ack 값(없으면 0). 프루닝 MIN은 ack 커서 기준이라 **읽고 ack하지
+  않은 기기는 계속 보존을 막는다**. 클라이언트 규칙: 이벤트를 처리·영속한 뒤 그
+  seq로 ack(브라우저 세션 저장소는 메시지마다 영속하므로 durable cursor = ack 값).
 - **프루닝**: 정책을 떠난(revoke/소멸) device의 커서는 프루닝 계산에서 먼저 삭제된다.
   tombstone 기기가 application 이벤트를 영구 점유하지 않는다.
 
@@ -152,8 +162,8 @@ v2 smoke는 required 모드로 돈다(ES256 키를 만들어 JWKS 파일로 넘�
   (1 MiB `[[[[…` 본문도 재귀 폭주 없이 400).
 - **H2 캡 전 프루닝**: events POST는 같은 트랜잭션에서 **프루닝 → 바이트 캡 측정 →
   insert** 순서다. stale application 이벤트로 가득 찬 방이 commit을 413으로 막지 않는다.
-  events GET도 요청 기기의 커서가 전진하면 같은 트랜잭션에서 프루닝한다(읽기가
-  보존 해제를 끌어낸다). seq는 `mls_rooms.last_seq` 카운터에서 나온다 —
+  events GET도 `?ack=`로 요청 기기의 커서가 전진하면 같은 트랜잭션에서 프루닝한다
+  (ack가 보존 해제를 끌어낸다; 읽기만으로는 아님 — M2). seq는 `mls_rooms.last_seq` 카운터에서 나온다 —
   `MAX(seq)`는 프루닝으로 비워진 테이블에서 되감길 수 있으므로 쓰지 않는다
   (구 파일은 열 때 열을 추가하고 backfill).
 - **M4 한도**: POST 본문 ≤ 1 MiB(413 `body_too_large`; 방 캡은 총량에 별도 적용),
@@ -210,3 +220,19 @@ BEGIN IMMEDIATE 트랜잭션으로 기록된다(B2/B3 규율 유지). v2 릴레�
   새 방. 남는 것은 지문 비교 UI의 **실제 대역외 비교 수행** — 사람.
 - 64 revision 소진 후 컴팩션, E5 restore-history, 파일·봇(M5).
 - 브라우저/실기기 동작 — 이 유닛은 순수 서버 측 Go다.
+
+## 운영자 복구: 방 초기화 (`-reset-room`, 리뷰 H3)
+
+방 이름은 인증된 기기 사이에서 **선착순**이다(창립 commit이 로스터를 정함). 프로토콜(라우트·방 id
+규칙)은 바꾸지 않고, 이름 선점·창립 실수는 오프라인 운영자 도구로 복구한다.
+
+- 창립 commit은 info 로그로 남는다: `room <r> founded: sender=<device> actor=<actor> seq=<n> members=<device(actor),…>` — 선점 감사.
+- 릴레이는 데이터 디렉터리에 **배타 잠금**(`native-mls-v2.lock`, flock)을 수명 동안 잡는다. 같은 디렉터리로
+  두 번째 릴레이나 아래 도구를 열면 `data dir is locked by another process`로 거부된다.
+- 절차: 릴레이 정지 → `<v2 릴레이 바이너리(archive/native-mls/server 빌드)> -data-dir <dir> -reset-room <room>`(dry run: 테이블별 삭제 예정 행 수 출력,
+  종료 코드 2) → 확인 후 `-yes`를 붙여 재실행(한 트랜잭션으로 `mls_events`·`mls_keypackages`·`mls_members`·
+  `mls_cursors`·`mls_rooms`의 그 방 행만 삭제, 종료 코드 0) → 릴레이 재기동. DB 파일이 없으면 만들지 않고 거부.
+- 효과: 그 방의 순서·epoch·멤버·커서를 릴레이가 완전히 잊는다 → 클라이언트는 **새 MLS 그룹**으로 다시 창립해야
+  한다(옛 방 기록은 클라이언트 쪽 읽기전용 보관). 접근 플래그(`-access-*`)는 필요 없다(리스너를 열지 않음).
+- DB 변경이므로 운영 노드에서는 **사전 백업 + 오너 승인** 후 실행한다.
+

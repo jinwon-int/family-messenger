@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -126,6 +127,27 @@ func decodeEventResponse(t *testing.T, raw []byte) eventResponse {
 		t.Fatalf("response is not an eventResponse: %v (%s)", err, raw)
 	}
 	return resp
+}
+
+// getAck reads room as device and then acknowledges everything that read
+// scanned (M2: a read alone never moves the durable cursor — only ?ack=
+// does). It returns the read's own status and body, so call sites that used
+// to rely on "read advances the cursor" keep their assertions.
+func getAck(t *testing.T, srv *httptest.Server, room, device string) (int, []byte) {
+	t.Helper()
+	st, raw := doJSON(t, srv, "GET", "/v2/rooms/"+room+"/events?device="+device, nil)
+	if st != http.StatusOK {
+		return st, raw
+	}
+	got := decodeEventsResponse(t, raw)
+	if got.NextAfter > 0 {
+		path := "/v2/rooms/" + room + "/events?device=" + device +
+			"&after=" + strconv.FormatInt(got.NextAfter, 10) + "&ack=" + strconv.FormatInt(got.NextAfter, 10)
+		if st2, raw2 := doJSON(t, srv, "GET", path, nil); st2 != http.StatusOK {
+			t.Fatalf("ack %s@%d: status=%d body=%s", device, got.NextAfter, st2, raw2)
+		}
+	}
+	return st, raw
 }
 
 func decodeEventsResponse(t *testing.T, raw []byte) eventsResponse {
@@ -437,7 +459,7 @@ func TestPruneAfterRestartWaitsForEveryKnownDevice(t *testing.T) {
 	_, srvB, _ := newTestRelayAt(t, pol, dir)
 	getAll := func(device string) eventsResponse {
 		t.Helper()
-		st, raw := doJSON(t, srvB, "GET", "/v2/rooms/r/events?device="+device, nil)
+		st, raw := getAck(t, srvB, "r", device)
 		if st != http.StatusOK {
 			t.Fatalf("get %s: status=%d body=%s", device, st, raw)
 		}
@@ -534,7 +556,7 @@ func TestPruneWaitsForWelcomeTargetToRead(t *testing.T) {
 	}
 	get := func(device string) eventsResponse {
 		t.Helper()
-		st, raw := doJSON(t, srv, "GET", "/v2/rooms/r/events?device="+device, nil)
+		st, raw := getAck(t, srv, "r", device)
 		if st != http.StatusOK {
 			t.Fatalf("get %s: status=%d body=%s", device, st, raw)
 		}

@@ -36,7 +36,8 @@ Fault injections (client <-> relay):
   b  lost POST response -> byte-equal retry after another commit -> 200 duplicate (K4)
   c  same client_id with different bytes -> 409 client_id_reuse, sender keeps going
   d  relay SIGKILL -> restart on the same data dir -> cursors resume; an offline
-     device's unread events survive pruning; pruning advances once all have read
+     device's unread events survive pruning; pruning advances once all have ACKED
+     (?ack=, M2) — a read without ack never unlocks pruning
   e  targeted Welcome is only ever delivered to its targets (B4 filter, never 403)
   f  room byte cap 413 -> the sender device is not retired and the room stays live
   g  commit race: two members commit at the same epoch; the loser gets 409, drops its
@@ -382,6 +383,21 @@ def main():
                     assert status == 200, (self.dev, status, body)
                     return body
 
+                def ack(self, room=ROOM, tolerate_removed=False):
+                    """M2: tell the relay everything up to self.cursor is durably processed.
+
+                    Reads never move the relay-side cursor; only this ack does, and only
+                    acks unlock application-event pruning. A removed member whose cursor
+                    the relay already dropped gets 403 not_a_member (tolerated on request)."""
+                    if self.cursor == 0:
+                        return None
+                    status, body = relay.http('GET', f'/v2/rooms/{room}/events?device={self.dev}'
+                                              f'&after={self.cursor}&ack={self.cursor}', subject=self.subject)
+                    if tolerate_removed and status == 403 and body == {'error': 'not_a_member'}:
+                        return None
+                    assert status == 200 and body['cursor'] == self.cursor, (self.dev, status, body)
+                    return body
+
                 def members(self, room=ROOM):
                     """The facade roster, parsed from the framed members() output."""
                     framed = bytes(self.call('members'))
@@ -423,6 +439,8 @@ def main():
                         else:
                             plain.append(bytes(self.call('decrypt', sealed(data, room=room))))
                     self.epoch = body['epoch']
+                    if self.joined:
+                        self.ack(room)  # processed (worker state is durable) -> acknowledge (M2)
                     return plain
 
                 def publish_key_package(self, room=ROOM):
@@ -613,6 +631,7 @@ def main():
             receipt['checks']['c_client_id_reuse_409_sender_not_retired_gap_tolerated'] = True
             removed_view = b2.raw_events(b2.cursor)
             b2.cursor = max([b2.cursor] + [ev['seq'] for ev in removed_view['events']])
+            b2.ack(tolerate_removed=True)  # acking past its removal releases b-2's pruning gate
             [after_removal] = [ev for ev in removed_view['events'] if ev['kind'] == 'application']
             b2.call('decrypt', sealed(base64.b64decode(after_removal['bytes'])), reject=True)
             receipt['checks']['removed_device_cannot_read_next_epoch'] = True
@@ -652,12 +671,13 @@ def main():
             expect(a2, 'before kill')
             a1.sync()
             b2.cursor = max([b2.cursor] + [ev['seq'] for ev in b2.raw_events(b2.cursor)['events']])
+            b2.ack(tolerate_removed=True)
             a1.post_ok('application', a1.call('encrypt', bound(a1.dev, list(b'after restart'))), 'after-restart')  # prunes
             expect(b1, 'before kill', 'after restart')  # unread by b-1 -> must have survived
             receipt['checks']['d_sigkill_restart_cursor_resume_offline_unread_kept'] = True
 
-            # Reads prune too now (H2): once every known reader has passed a stale
-            # event, the read that moved the minimum cursor reclaims it, so `before`
+            # Acks prune too (H2 + M2): once every known reader has ACKED a stale
+            # event, the ack that moved the minimum cursor reclaims it, so `before`
             # may already be shorter than the two messages above. The invariant is
             # that after the trigger exactly one application event remains and it
             # is newer than everything that was there before.
@@ -674,6 +694,27 @@ def main():
             expect(b1, 'prune trigger')
             receipt['checks']['d_pruning_advances_once_every_known_reader_read'] = True
             receipt['pruned_application_events'] = len(before)
+
+            # M2: a read that is never acked must not unlock pruning; the "lost"
+            # response stays re-readable from the same offset until the ack.
+            a1.post_ok('application', a1.call('encrypt', bound(a1.dev, list(b'unacked probe'))), 'unacked-probe')
+            unacked_view = b1.raw_events(b1.cursor)  # b-1 reads but neither decrypts nor acks
+            [probe] = [ev['seq'] for ev in unacked_view['events'] if ev['kind'] == 'application']
+            expect(a2, 'unacked probe')
+            a1.sync()
+            time.sleep(2.2)
+            a1.post_ok('application', a1.call('encrypt', bound(a1.dev, list(b'probe trigger'))), 'probe-trigger')
+            assert probe in [ev['seq'] for ev in b1.raw_events(b1.cursor)['events']], 'unacked event was pruned'
+            expect(b1, 'unacked probe', 'probe trigger')  # decrypts both, then acks
+            expect(a2, 'probe trigger')
+            a1.sync()
+            time.sleep(2.2)
+            a1.post_ok('application', a1.call('encrypt', bound(a1.dev, list(b'probe trigger 2'))), 'probe-trigger-2')
+            assert probe not in [ev['seq'] for ev in a1.raw_events()['events']], 'acked stale event survived'
+            expect(a2, 'probe trigger 2')
+            expect(b1, 'probe trigger 2')
+            a1.sync()
+            receipt['checks']['d_unacked_read_does_not_unlock_pruning'] = True
 
             # --- h: revoke a-2 plainly. It is E2-enrolled: its approval evidence was
             # --- written once at enrollment, so a signed -input revoke is refused
