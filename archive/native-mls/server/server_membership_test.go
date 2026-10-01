@@ -313,10 +313,15 @@ func TestCommitMembershipLifecycle(t *testing.T) {
 		t.Fatalf("b1 cursor missing before removal: %d", n)
 	}
 
-	// a2 is policy-active but not a tracked member: app passes, commit 403.
+	// a2 is policy-active but not a tracked member: app and commit are both
+	// 403 (review 2 G-H1: a non-member must not post into a seeded room — it
+	// would become a pruning gate that never acks) and no cursor appears.
 	if code, raw := doJSON(t, srv, "POST", "/v2/rooms/r/events",
-		postEventBody(t, "a2", "c6", "application", 1, nil, nil, []byte("from-a2"))); code != http.StatusCreated {
+		postEventBody(t, "a2", "c6", "application", 1, nil, nil, []byte("from-a2"))); code != http.StatusForbidden || errField(t, raw) != "not_a_member" {
 		t.Fatalf("a2 app pre-membership: status=%d body=%s", code, raw)
+	}
+	if n := tableCount(t, r, `SELECT COUNT(*) FROM mls_cursors WHERE room = 'r' AND device = 'a2'`); n != 0 {
+		t.Fatalf("non-member a2 gained a cursor by posting: %d", n)
 	}
 	if code, raw := doJSON(t, srv, "POST", "/v2/rooms/r/events",
 		postCommitBody(t, "a2", "c7", 1, nil, membersOf([2]string{"a1", "alice"}, [2]string{"a2", "alice"}, [2]string{"b1", "bob"}), []byte("a2-commit"))); code != http.StatusForbidden || errField(t, raw) != "commit_sender_not_member" {
@@ -365,11 +370,11 @@ func TestCommitMembershipLifecycle(t *testing.T) {
 		t.Fatalf("b1 cursor not marked removed at seq %d: %d rows", removal.Seq, n)
 	}
 
-	// b1 is still policy-active, so application posts stay possible — the
-	// membership gate is commit-only — but its commit is now 403. (Epoch is
-	// 4 after the removal commit.)
+	// b1 is still policy-active but no longer a member: application posts
+	// are 403 not_a_member too (G-H1), and so is its commit. (Epoch is 4
+	// after the removal commit.)
 	if code, raw := doJSON(t, srv, "POST", "/v2/rooms/r/events",
-		postEventBody(t, "b1", "d4", "application", 4, nil, nil, []byte("b1-app-after-removal"))); code != http.StatusCreated {
+		postEventBody(t, "b1", "d4", "application", 4, nil, nil, []byte("b1-app-after-removal"))); code != http.StatusForbidden || errField(t, raw) != "not_a_member" {
 		t.Fatalf("b1 app after removal: status=%d body=%s", code, raw)
 	}
 	if code, raw := doJSON(t, srv, "POST", "/v2/rooms/r/events",

@@ -69,6 +69,10 @@ type accessVerifier struct {
 	mu          sync.Mutex
 	keys        map[string]crypto.PublicKey
 	lastRefresh time.Time
+	// lastAttempt is when a reload was last *started*, successful or not
+	// (review 2 G-M5): a broken JWKS source must not be hit once per
+	// unknown-kid request, and the fetch itself runs outside mu.
+	lastAttempt time.Time
 }
 
 // newAccessVerifier loads the JWKS once (fail-closed: an unreadable or empty
@@ -132,19 +136,34 @@ func (v *accessVerifier) load() ([]byte, error) {
 }
 
 // refreshLocked replaces the key cache from the source; the old cache stays
-// in place when the reload fails. Caller holds mu.
+// in place when the reload fails. Caller holds mu (constructor only — the
+// request path uses key(), which fetches outside the lock).
 func (v *accessVerifier) refreshLocked() error {
-	raw, err := v.load()
-	if err != nil {
-		return err
-	}
-	keys, err := parseJWKS(raw)
+	keys, err := v.fetchKeys()
 	if err != nil {
 		return err
 	}
 	v.keys = keys
 	v.lastRefresh = v.now()
 	return nil
+}
+
+// fetchKeys loads and parses the source without touching the cache. An empty
+// result is an error: a JWKS that lost every usable key must not replace a
+// working cache with "nothing verifies" (review 2 L1).
+func (v *accessVerifier) fetchKeys() (map[string]crypto.PublicKey, error) {
+	raw, err := v.load()
+	if err != nil {
+		return nil, err
+	}
+	keys, err := parseJWKS(raw)
+	if err != nil {
+		return nil, err
+	}
+	if len(keys) == 0 {
+		return nil, errors.New("jwks holds no usable ES256/RS256 key with a kid")
+	}
+	return keys, nil
 }
 
 // jwkWire is the lenient JWKS member shape: issuers add fields freely, so
@@ -222,17 +241,32 @@ func parseJWKS(raw []byte) (map[string]crypto.PublicKey, error) {
 // jwksRefreshMinGap when the kid is unknown (rotation without a restart).
 func (v *accessVerifier) key(kid string) (crypto.PublicKey, error) {
 	v.mu.Lock()
-	defer v.mu.Unlock()
 	if k, ok := v.keys[kid]; ok {
+		v.mu.Unlock()
 		return k, nil
 	}
-	if v.now().Sub(v.lastRefresh) >= jwksRefreshMinGap {
-		if err := v.refreshLocked(); err != nil {
-			return nil, unauthorizedf("unknown kid and jwks refresh failed: %v", err)
-		}
-		if k, ok := v.keys[kid]; ok {
-			return k, nil
-		}
+	now := v.now()
+	// The gap is measured from the last attempt, not the last success: a
+	// source that is down must not be re-fetched for every unknown kid (the
+	// kid is attacker-chosen — it comes before signature verification).
+	if now.Sub(v.lastRefresh) < jwksRefreshMinGap || now.Sub(v.lastAttempt) < jwksRefreshMinGap {
+		v.mu.Unlock()
+		return nil, unauthorizedf("unknown kid")
+	}
+	v.lastAttempt = now
+	v.mu.Unlock()
+	// Network/file I/O outside the lock: concurrent requests for known kids
+	// keep verifying while this one reloads (at most one reload per gap).
+	keys, err := v.fetchKeys()
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if err != nil {
+		return nil, unauthorizedf("unknown kid and jwks refresh failed: %v", err)
+	}
+	v.keys = keys
+	v.lastRefresh = v.now()
+	if k, ok := v.keys[kid]; ok {
+		return k, nil
 	}
 	return nil, unauthorizedf("unknown kid")
 }

@@ -39,6 +39,13 @@ const (
 	maxEventsLimit     = 2000
 	// maxIdentifierLen matches devicepolicy's identifier rule (L8).
 	maxIdentifierLen = 64
+	// Review 2 G-H4: the per-room byte cap counts event bytes only, so every
+	// other stored column of an event is bounded by shape — client_id is an
+	// identifier, group_id an identifier-charset string of at most
+	// maxGroupIDLen, and the Welcome target / member lists are short.
+	maxGroupIDLen = 256
+	maxTargets    = 32
+	maxMembers    = 64
 )
 
 // policy carries the §3.4 retention defaults. Tests override the fields
@@ -207,6 +214,14 @@ func (e deviceNotAllowed) Error() string {
 	return fmt.Sprintf("device %q is not active in the native device policy", e.Device)
 }
 
+// commitActorMismatch: a replicated member entry names an actor other than
+// the device's actor in the device policy (403, review 2 G-H3).
+type commitActorMismatch struct{ Device, Posted, Policy string }
+
+func (e commitActorMismatch) Error() string {
+	return fmt.Sprintf("member %q is replicated as actor %q but the device policy binds it to %q", e.Device, e.Posted, e.Policy)
+}
+
 // policyUnavailable: the device policy chain failed fail-closed verification
 // (500). No write proceeds while the chain is unreadable.
 type policyUnavailable struct{ Err error }
@@ -359,6 +374,25 @@ func validIdentifier(s string) bool {
 	return devicepolicy.IsIdentifier(s, maxIdentifierLen)
 }
 
+// validGroupID accepts the optional group_id: identifier charset, up to
+// maxGroupIDLen (an MLS group id is at most 128 bytes, hex-encoded 256).
+func validGroupID(s string) bool {
+	return s == "" || devicepolicy.IsIdentifier(s, maxGroupIDLen)
+}
+
+// roomParam reads the {room} path value and rejects anything that is not an
+// identifier (review 2 G-M2): the mux hands over the decoded path segment, so
+// without this a room name could carry newlines into the founding-commit log
+// line or Unicode look-alikes into the first-come room namespace.
+func (s *relay) roomParam(w http.ResponseWriter, req *http.Request) (string, bool) {
+	room := req.PathValue("room")
+	if !validIdentifier(room) {
+		s.fail(w, http.StatusBadRequest, apiError{Error: "bad_identifier", Detail: "room"})
+		return "", false
+	}
+	return room, true
+}
+
 // ---- HTTP plumbing ----
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -487,7 +521,10 @@ func (s *relay) routes() *http.ServeMux {
 // replays of a ref are idempotent (200), different bytes under a stored ref
 // are 409 (M5).
 func (s *relay) handlePostKeyPackages(w http.ResponseWriter, req *http.Request) {
-	room := req.PathValue("room")
+	room, ok := s.roomParam(w, req)
+	if !ok {
+		return
+	}
 	c, ok := s.authenticate(w, req)
 	if !ok {
 		return
@@ -557,7 +594,10 @@ func (s *relay) handlePostKeyPackages(w http.ResponseWriter, req *http.Request) 
 // the requesting (adding) device; concurrent consumers get distinct packages.
 // ?consumer= is the caller (bound to the JWT subject), ?device= the target.
 func (s *relay) handleConsumeKeyPackage(w http.ResponseWriter, req *http.Request) {
-	room := req.PathValue("room")
+	room, ok := s.roomParam(w, req)
+	if !ok {
+		return
+	}
 	c, ok := s.authenticate(w, req)
 	if !ok {
 		return
@@ -585,6 +625,15 @@ func (s *relay) handleConsumeKeyPackage(w http.ResponseWriter, req *http.Request
 		s.fail(w, http.StatusNotFound, apiError{Error: "no_live_key_package"})
 	case errors.Is(err, errClosed):
 		s.fail(w, http.StatusGone, apiError{Error: "room_closed"})
+	case errors.As(err, new(policyUnavailable)):
+		log.Printf("consume keypackage room=%s: %v", room, err)
+		s.fail(w, http.StatusInternalServerError, apiError{Error: "device_policy_unavailable", Detail: "device policy chain unreadable; writes fail closed"})
+	case errors.As(err, new(deviceNotAllowed)):
+		var na deviceNotAllowed
+		errors.As(err, &na)
+		s.fail(w, http.StatusForbidden, apiError{Error: "device_not_allowed", Detail: na.Error()})
+	case errors.Is(err, errNotMember):
+		s.fail(w, http.StatusForbidden, apiError{Error: "not_a_member"})
 	default:
 		log.Printf("consume keypackage room=%s device=%s: %v", room, device, err)
 		s.fail(w, http.StatusInternalServerError, apiError{Error: "internal"})
@@ -594,7 +643,10 @@ func (s *relay) handleConsumeKeyPackage(w http.ResponseWriter, req *http.Request
 // handlePostEvent appends one event under CAS discipline. 200 marks a byte
 // equal replay (K4), 409 carries the current epoch/revision (§3.4).
 func (s *relay) handlePostEvent(w http.ResponseWriter, req *http.Request) {
-	room := req.PathValue("room")
+	room, ok := s.roomParam(w, req)
+	if !ok {
+		return
+	}
 	c, ok := s.authenticate(w, req)
 	if !ok {
 		return
@@ -620,6 +672,25 @@ func (s *relay) handlePostEvent(w http.ResponseWriter, req *http.Request) {
 	}
 	if !validIdentifier(post.Device) {
 		s.fail(w, http.StatusBadRequest, apiError{Error: "bad_identifier", Detail: "device"})
+		return
+	}
+	// G-H4: every stored column outside `bytes` is shape-bounded so the
+	// per-room byte cap (which counts `bytes` only) cannot be sidestepped
+	// through a 1 MiB client_id or group_id or a ten-thousand-entry list.
+	if !validIdentifier(post.ClientID) {
+		s.fail(w, http.StatusBadRequest, apiError{Error: "bad_identifier", Detail: "client_id"})
+		return
+	}
+	if !validGroupID(post.GroupID) {
+		s.fail(w, http.StatusBadRequest, apiError{Error: "bad_identifier", Detail: "group_id"})
+		return
+	}
+	if len(post.Targets) > maxTargets {
+		s.fail(w, http.StatusBadRequest, apiError{Error: "too_many_targets", Detail: fmt.Sprintf("at most %d welcome targets", maxTargets)})
+		return
+	}
+	if len(post.Members) > maxMembers {
+		s.fail(w, http.StatusBadRequest, apiError{Error: "too_many_members", Detail: fmt.Sprintf("at most %d replicated members", maxMembers)})
 		return
 	}
 	for i, t := range post.Targets {
@@ -722,6 +793,14 @@ func (s *relay) handlePostEvent(w http.ResponseWriter, req *http.Request) {
 		var ra commitActorNotInRoster
 		errors.As(err, &ra)
 		s.fail(w, http.StatusForbidden, apiError{Error: "commit_actor_not_in_roster", Detail: ra.Error()})
+	case errors.As(err, new(commitActorMismatch)):
+		var am commitActorMismatch
+		errors.As(err, &am)
+		s.fail(w, http.StatusForbidden, apiError{Error: "commit_actor_mismatch", Detail: am.Error()})
+	case errors.Is(err, errNotMember):
+		// G-H1: application/welcome from an active device that is not a
+		// tracked member of a seeded room.
+		s.fail(w, http.StatusForbidden, apiError{Error: "not_a_member"})
 	case errors.Is(err, errWelcomeTargets):
 		s.fail(w, http.StatusBadRequest, apiError{Error: "welcome_targets_required"})
 	default:
@@ -735,7 +814,10 @@ func (s *relay) handlePostEvent(w http.ResponseWriter, req *http.Request) {
 // welcome events not targeted at the requesting device (B4: filter, never
 // 403). device is required because filtering is per device.
 func (s *relay) handleGetEvents(w http.ResponseWriter, req *http.Request) {
-	room := req.PathValue("room")
+	room, ok := s.roomParam(w, req)
+	if !ok {
+		return
+	}
 	c, ok := s.authenticate(w, req)
 	if !ok {
 		return
@@ -809,7 +891,10 @@ func (s *relay) handleGetEvents(w http.ResponseWriter, req *http.Request) {
 // member of the room when membership enforcement is on (403 not_a_member);
 // an unknown room is 404. Closing an already closed room is idempotent.
 func (s *relay) handleCloseRoom(w http.ResponseWriter, req *http.Request) {
-	room := req.PathValue("room")
+	room, ok := s.roomParam(w, req)
+	if !ok {
+		return
+	}
 	c, ok := s.authenticate(w, req)
 	if !ok {
 		return
@@ -835,6 +920,13 @@ func (s *relay) handleCloseRoom(w http.ResponseWriter, req *http.Request) {
 	case errors.Is(err, errNotMember):
 		log.Printf("close room=%s device=%s: not a tracked member", room, device)
 		s.fail(w, http.StatusForbidden, apiError{Error: "not_a_member"})
+	case errors.As(err, new(policyUnavailable)):
+		log.Printf("close room=%s: %v", room, err)
+		s.fail(w, http.StatusInternalServerError, apiError{Error: "device_policy_unavailable", Detail: "device policy chain unreadable; writes fail closed"})
+	case errors.As(err, new(deviceNotAllowed)):
+		var na deviceNotAllowed
+		errors.As(err, &na)
+		s.fail(w, http.StatusForbidden, apiError{Error: "device_not_allowed", Detail: na.Error()})
 	default:
 		log.Printf("close room=%s device=%s: %v", room, device, err)
 		s.fail(w, http.StatusInternalServerError, apiError{Error: "internal"})
