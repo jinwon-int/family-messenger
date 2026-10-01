@@ -11,7 +11,8 @@ Tuwunel은 `PusherKind::Http`만 구현하고 벤더 연동 코드가 없으므�
 |---|---|
 | `sygnal.pins.json` | 이미지 digest·버전·라이선스 고정값. sygnal은 단일 바이너리도 PyPI 배포도 없어(2026-09-21 확인) 공식 경로가 컨테이너뿐이다. 이미지는 `poetry.lock`에서 내보낸 해시 포함 requirements로 빌드되므로 digest 고정이 곧 의존성 고정이다 |
 | `sygnal.yaml.example` | webpush 앱 설정. 네이티브 apns 블록은 주석으로 예비 — 한 인스턴스가 둘 다 처리한다 |
-| `sygnal.service` | 강화 systemd 유닛(전용 사용자, digest 고정 실행, 루프백 바인드, read-only 컨테이너) |
+| `sygnal.service` | 강화 systemd 유닛(전용 사용자, digest 고정 실행, 루프백 바인드, read-only 컨테이너) — podman |
+| `sygnal-docker.service` | 같은 유닛의 docker 호스트용 변형(격리 플래그 동일, 런타임 CLI만 다름). 호스트에 podman이 없을 때 **둘 중 하나만** 설치 |
 | `gen-vapid-key.sh` | VAPID 키쌍 생성(이미지의 `vapid` CLI 사용). 개인키는 저장소 밖에만 쓰고 기존 키를 덮어쓰지 않는다 |
 | `cloudflare-ingress.example.json` | `POST /_matrix/push/v1/notify` 하나만 노출하는 터널 ingress |
 

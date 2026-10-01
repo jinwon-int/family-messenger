@@ -12,14 +12,18 @@ RUNBOOK = ROOT / "docs" / "SYGNAL-DEPLOY.md"
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
-def _unit_text() -> str:
-    return (PKG / "sygnal.service").read_text(encoding="utf-8")
+# podman 유닛(기본)과 docker 호스트용 변형. 둘은 같은 격리 수준·같은 digest를 유지해야 한다.
+UNITS = ("sygnal.service", "sygnal-docker.service")
 
 
-def _unit_directives() -> str:
+def _unit_text(name: str = "sygnal.service") -> str:
+    return (PKG / name).read_text(encoding="utf-8")
+
+
+def _unit_directives(name: str = "sygnal.service") -> str:
     """주석을 걷어낸 실제 지시자만. 주석 속 설명 문구를 잘못 잡지 않기 위해서다."""
     lines = []
-    for line in _unit_text().splitlines():
+    for line in _unit_text(name).splitlines():
         stripped = line.strip()
         if stripped and not stripped.startswith("#"):
             lines.append(line)
@@ -51,54 +55,99 @@ class SygnalPinsTest(unittest.TestCase):
 
 
 class SygnalUnitTest(unittest.TestCase):
+    """podman 유닛과 docker 변형에 공통으로 요구하는 성질. 둘 다 통과해야 한다."""
+
     def setUp(self):
-        self.unit = _unit_directives()
+        self.units = {name: _unit_directives(name) for name in UNITS}
         self.pins = json.loads((PKG / "sygnal.pins.json").read_text(encoding="utf-8"))
+
+    def _image(self, name: str) -> str:
+        match = re.search(r"^Environment=SYGNAL_IMAGE=(\S+)$", self.units[name], re.MULTILINE)
+        self.assertIsNotNone(match, f"{name}: 유닛에 SYGNAL_IMAGE 가 없다")
+        return match.group(1)
 
     def test_unit_image_matches_pins(self):
         """유닛의 SYGNAL_IMAGE digest는 핀과 반드시 같아야 한다.
 
         이 동기화가 깨지면 핀을 올려도 옛 이미지가 계속 돈다. 런북·주석에서 여러 번
-        당부하지만 사람이 지키는 규칙이라 여기서 기계로 검사한다.
+        당부하지만 사람이 지키는 규칙이라 여기서 기계로 검사한다. docker 변형도 같은
+        digest를 가리켜야 한다 — 두 유닛이 서로 다른 버전을 돌리면 안 된다.
         """
-        match = re.search(r"^Environment=SYGNAL_IMAGE=(\S+)$", self.unit, re.MULTILINE)
-        self.assertIsNotNone(match, "유닛에 SYGNAL_IMAGE 가 없다")
-        image = match.group(1)
-        self.assertTrue(image.startswith("docker.io/matrixdotorg/sygnal@"), image)
-        digest = image.split("@", 1)[1]
-        self.assertEqual(
-            digest,
-            self.pins["image"]["platform_digests"]["linux/amd64"],
-            "sygnal.service 의 SYGNAL_IMAGE 가 sygnal.pins.json 과 다르다 — 함께 갱신한다",
-        )
+        for name in UNITS:
+            with self.subTest(unit=name):
+                image = self._image(name)
+                self.assertTrue(image.startswith("docker.io/matrixdotorg/sygnal@"), image)
+                digest = image.split("@", 1)[1]
+                self.assertEqual(
+                    digest,
+                    self.pins["image"]["platform_digests"]["linux/amd64"],
+                    f"{name} 의 SYGNAL_IMAGE 가 sygnal.pins.json 과 다르다 — 함께 갱신한다",
+                )
 
     def test_image_is_pinned_by_digest_not_tag(self):
-        match = re.search(r"^Environment=SYGNAL_IMAGE=(\S+)$", self.unit, re.MULTILINE)
-        image = match.group(1)
-        self.assertIn("@sha256:", image, "태그로 고정하면 이미지가 이동할 수 있다")
-        self.assertNotRegex(image.split("@", 1)[0], r":v?\d", "리포지토리 부분에 태그가 남아 있다")
+        for name in UNITS:
+            with self.subTest(unit=name):
+                image = self._image(name)
+                self.assertIn("@sha256:", image, "태그로 고정하면 이미지가 이동할 수 있다")
+                self.assertNotRegex(image.split("@", 1)[0], r":v?\d", "리포지토리 부분에 태그가 남아 있다")
 
     def test_container_drops_privileges(self):
-        for flag in ("--user ${SYGNAL_UID}", "--cap-drop=ALL", "--read-only", "--security-opt=no-new-privileges"):
-            self.assertIn(flag, self.unit, f"컨테이너 권한 축소 플래그 누락: {flag}")
+        for name in UNITS:
+            with self.subTest(unit=name):
+                for flag in ("--user ${SYGNAL_UID}", "--cap-drop=ALL", "--read-only",
+                             "--security-opt=no-new-privileges"):
+                    self.assertIn(flag, self.units[name], f"{name}: 컨테이너 권한 축소 플래그 누락: {flag}")
 
     def test_uid_placeholder_is_empty_so_deployment_must_fill_it(self):
         """SYGNAL_UID는 빈 값으로 배포된다 — 호스트마다 다르므로 런북에서 채운다."""
-        self.assertRegex(self.unit, r"(?m)^Environment=SYGNAL_UID=$")
+        for name in UNITS:
+            with self.subTest(unit=name):
+                self.assertRegex(self.units[name], r"(?m)^Environment=SYGNAL_UID=$")
         self.assertIn("SYGNAL_UID", RUNBOOK.read_text(encoding="utf-8"))
 
     def test_binds_loopback_only(self):
-        self.assertIn("--publish 127.0.0.1:5000:5000", self.unit)
-        # host netns를 공유하면 게이트웨이가 홈서버 등 다른 루프백 서비스에 도달한다.
-        self.assertNotIn("--network=host", self.unit)
+        for name in UNITS:
+            with self.subTest(unit=name):
+                self.assertIn("--publish 127.0.0.1:5000:5000", self.units[name])
+                # host netns를 공유하면 게이트웨이가 홈서버 등 다른 루프백 서비스에 도달한다.
+                self.assertNotIn("--network=host", self.units[name])
 
     def test_start_is_fail_closed_on_missing_image(self):
-        self.assertIn("ExecStartPre=/usr/bin/podman image exists", self.unit)
-        # '-' 접두사가 붙으면 실패를 무시해 fail-closed가 깨진다.
-        self.assertNotIn("ExecStartPre=-", self.unit)
+        """이미지 확인 ExecStartPre는 '-' 접두사 없이 — 실패를 무시하면 fail-closed가 깨진다."""
+        self.assertIn("ExecStartPre=/usr/bin/podman image exists", self.units["sygnal.service"])
+        self.assertNotIn("ExecStartPre=-", self.units["sygnal.service"])
+        docker = self.units["sygnal-docker.service"]
+        self.assertRegex(docker, r"(?m)^ExecStartPre=/usr/bin/docker image inspect .*\$\{SYGNAL_IMAGE\}$")
+        # docker 변형의 '-' 접두 ExecStartPre는 잔존 컨테이너 제거(rm -f)에만 허용한다.
+        for line in re.findall(r"(?m)^ExecStartPre=-(.*)$", docker):
+            self.assertRegex(line, r"^/usr/bin/docker rm -f sygnal$", f"허용되지 않은 실패-무시 ExecStartPre: {line}")
 
     def test_config_mounted_read_only_from_outside_home(self):
-        self.assertIn("--volume /etc/sygnal:/sygnal:ro", self.unit)
+        for name in UNITS:
+            with self.subTest(unit=name):
+                self.assertIn("--volume /etc/sygnal:/sygnal:ro", self.units[name])
+
+    def test_runtime_commands_do_not_mix(self):
+        """podman 유닛은 podman만, docker 유닛은 docker만 부른다(한 호스트에 하나만 설치)."""
+        self.assertNotIn("/usr/bin/docker", self.units["sygnal.service"])
+        self.assertNotIn("/usr/bin/podman", self.units["sygnal-docker.service"])
+        self.assertNotIn("--replace", self.units["sygnal-docker.service"], "docker run 에는 --replace 가 없다")
+
+    def test_docker_variant_depends_on_daemon(self):
+        docker = self.units["sygnal-docker.service"]
+        self.assertRegex(docker, r"(?m)^Requires=docker\.service$")
+        self.assertRegex(docker, r"(?m)^After=.*\bdocker\.service\b")
+
+    def test_both_units_run_the_same_container_flags(self):
+        """런타임 CLI 이름을 지우면 두 유닛의 `run` 플래그 집합이 같아야 한다(--replace·로그 드라이버 제외)."""
+        def run_flags(text: str) -> set[str]:
+            pattern = r"ExecStart=/usr/bin/(?:podman|docker) run \\\n(.*?)\n\s*\$\{SYGNAL_IMAGE\}"
+            match = re.search(pattern, text, re.DOTALL)
+            self.assertIsNotNone(match)
+            flags = {line.strip().rstrip("\\").strip() for line in match.group(1).splitlines()}
+            return {f for f in flags if f and f not in ("--replace", "--log-driver=none")}
+
+        self.assertEqual(run_flags(self.units["sygnal.service"]), run_flags(self.units["sygnal-docker.service"]))
 
 
 class SygnalConfigExampleTest(unittest.TestCase):
@@ -219,7 +268,8 @@ class SygnalSecretHygieneTest(unittest.TestCase):
     """공개 저장소다 — 실제 도메인·이메일·키·터널 ID가 들어가면 안 된다."""
 
     FILES = ("README.md", "sygnal.pins.json", "sygnal.yaml.example",
-             "sygnal.service", "gen-vapid-key.sh", "cloudflare-ingress.example.json")
+             "sygnal.service", "sygnal-docker.service", "gen-vapid-key.sh",
+             "cloudflare-ingress.example.json")
 
     def test_no_real_hosts_or_secrets(self):
         forbidden = re.compile(

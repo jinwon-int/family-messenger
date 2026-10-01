@@ -1,0 +1,93 @@
+# Sygnal 푸시 게이트웨이 systemd 유닛 — docker 호스트용 변형
+# (예시; /etc/systemd/system/sygnal.service 로 복사 후 조정)
+#
+# sygnal.service(podman)와 **같은 격리 수준**을 docker CLI로 옮긴 것이다. 호스트에
+# podman이 없고 docker만 있을 때 쓴다(2026-10-01 육손 실측: docker 26.1, podman 없음).
+# 두 유닛 중 하나만 설치한다 — 둘 다 /etc/systemd/system/sygnal.service 이름으로 들어간다.
+#
+# podman 유닛과의 차이(의도된 것):
+#   - `--replace`가 docker에 없다 → ExecStartPre에서 같은 이름의 잔존 컨테이너를 지운다.
+#   - `podman image exists` → `docker image inspect`(실패 시 비-0 종료 → fail-closed 동일).
+#   - `podman stop --ignore` → `docker stop`. 없을 때 실패하므로 ExecStop에 `-`를 붙인다
+#     (정지 실패를 무시하는 것이지 기동 실패를 무시하는 게 아니다).
+#   - docker 데몬에 의존한다 → Requires/After=docker.service.
+#   - `--rm`·전경 실행이라 컨테이너 stdout/stderr가 유닛 journal로 간다(`journalctl -u sygnal`).
+#     `--log-driver=none`으로 docker 쪽 json 로그 중복 저장을 끈다.
+#
+# 격리 모델은 podman 유닛과 동일하다: 유닛은 root, 권한 축소는 컨테이너 경계에서
+# (--user 비권한 UID, --cap-drop=ALL, --read-only, no-new-privileges, 루프백 publish).
+#
+# 준비 (자세한 절차는 docs/SYGNAL-DEPLOY.md §1·§3·§4, docker 차이는 §2a):
+#   groupadd --system sygnal && useradd --system --gid sygnal \
+#       --home-dir /nonexistent --shell /usr/sbin/nologin sygnal
+#   install -d -o root -g sygnal -m 0750 /etc/sygnal
+#   docker image pull docker.io/matrixdotorg/sygnal@sha256:<linux/amd64 digest>
+
+[Unit]
+Description=Sygnal push gateway (family messenger, docker)
+Documentation=https://github.com/element-hq/sygnal
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=exec
+
+# --- 이미지 digest -----------------------------------------------------------
+# sygnal.pins.json의 image.platform_digests["linux/amd64"]와 반드시 일치해야 한다.
+# tests/test_sygnal_deploy_package.py가 podman 유닛과 함께 이 동기화를 검사한다.
+Environment=SYGNAL_IMAGE=docker.io/matrixdotorg/sygnal@sha256:656ee00cb0e44e0cdf9311458228b07084cfcf11d9de9ecddb705c21dac29dde
+
+# 컨테이너 안에서 sygnal이 실행될 UID:GID. 호스트의 sygnal 사용자와 맞춘다.
+# 이미지에 USER 지시자가 없어 기본이 root이므로 반드시 내려준다. 비우면 안 된다.
+#   id -u sygnal / id -g sygnal 로 확인해 아래를 조정한다.
+Environment=SYGNAL_UID=
+
+# 기동 전 이미지가 로컬에 있는지 확인하고 없으면 시작을 실패시킨다(자동 pull 금지 —
+# 네트워크 장애 시 조용히 옛 이미지로 떨어질 여지를 만들지 않는다). docker는 저장소가
+# 데몬 하나뿐이라 podman의 "pull 사용자" 함정은 없지만, pull은 여전히 root로 한다.
+ExecStartPre=/usr/bin/docker image inspect --format {{.Id}} ${SYGNAL_IMAGE}
+# docker에는 --replace가 없다. 앞선 실행이 비정상 종료해 이름이 남아 있으면 지운다.
+ExecStartPre=-/usr/bin/docker rm -f sygnal
+
+ExecStart=/usr/bin/docker run \
+    --rm \
+    --name sygnal \
+    --user ${SYGNAL_UID} \
+    --read-only \
+    --cap-drop=ALL \
+    --security-opt=no-new-privileges \
+    --publish 127.0.0.1:5000:5000 \
+    --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+    --volume /etc/sygnal:/sygnal:ro \
+    --env SYGNAL_CONF=/sygnal/sygnal.yaml \
+    --log-driver=none \
+    ${SYGNAL_IMAGE}
+
+ExecStop=-/usr/bin/docker stop --time 20 sygnal
+
+# --publish 로 호스트 루프백에만 노출한다. --network=host 를 쓰지 않는 이유:
+# host netns를 공유하면 게이트웨이가 홈서버(127.0.0.1:8008) 등 다른 루프백
+# 서비스에 전부 도달할 수 있다. 외부 노출은 Cloudflare 터널 ingress가 단독 결정한다.
+#
+# ⚠ Type=exec 는 execve 성공을 "기동"으로 본다. sygnal이 실제로 준비됐는지는
+#   보지 않으므로, 배포 후 반드시 /health 를 직접 확인한다(런북 §7.1).
+
+TimeoutStartSec=120
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+
+# --- 유닛 수준 격리 ----------------------------------------------------------
+# docker CLI는 소켓으로 데몬에 위임할 뿐이라 유닛 하드닝을 더 조여도 되지만,
+# podman 유닛과 같은 집합으로 둔다 — 실질 격리는 ExecStart의 컨테이너 플래그가 담당한다.
+ProtectHome=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
