@@ -119,6 +119,20 @@ v2 smoke는 required 모드로 돈다(ES256 키를 만들어 JWKS 파일로 넘�
   device든 revoked든 **403 `device_not_allowed`**. 이 검사만으로는 GET을 막지 않는다
   (`disabled` 모드의 거부는 POST-only — 과거 로그는 읽히되 MLS 에포크가 해독 불가로
   만든다). required 모드에서는 위 아이덴티티 바인딩이 먼저 걸려 GET도 403이다.
+- **application·welcome은 추적 멤버만**(리뷰 2차 G-H1, #231): 멤버십이 시드된 방에서
+  추적 멤버가 아닌 active 기기(외부인, commit으로 제거된 기기)의 application/welcome
+  POST는 **403 `not_a_member`**이고 아무것도 저장하지 않으며 커서를 만들지 않는다
+  (판정은 K4·CAS보다 먼저 — 외부인에게 epoch 오라클 없음). 이전에는 통과시키고 게시자
+  커서(0)를 만들어, 영원히 ack하지 않는 프루닝 게이트가 생겼다. 창립 commit 전에는
+  구 동작(active면 게시 가능)이고, **창립 commit은 창립 목록에 없는 기기의 커서를
+  삭제**한다 — 창립 전 게시자가 비멤버로 남아 게이트가 되지 않도록. `-device-state`
+  없는 릴레이는 그대로다.
+- **keypackage 소비·`/close`도 트랜잭션 안 재검사**(G-M3): `GET /keypackages`의
+  `?consumer=`와 `/close`의 `?device=`는 핸들러 바인딩 뒤 **트랜잭션 안에서** 다시
+  정책 active(403 `device_not_allowed`·500 `device_policy_unavailable`)여야 하고,
+  멤버십이 시드된 방에서는 추적 멤버(403 `not_a_member`)여야 한다. 이전에는 아무
+  active 기기나 모든 방의 타인 KeyPackage(기기당 4개)를 소진시켜 초대를 막을 수 있었다.
+  창립 전 방은 창립자가 초대 대상의 KeyPackage를 가져와야 하므로 active면 소비 가능.
 - **commit 외부 멤버 목록**: 릴레이는 MLS commit을 해석하지 않으므로, 클라이언트가
   post-commit 멤버 목록(`members: [{device, actor}...]`)을 outer JSON에 복제해 보낸다
   (§3.3). 강제 on 시 commit에 필수이고 sender가 목록에 있어야 하며 중복 device 금지 —
@@ -134,6 +148,11 @@ v2 smoke는 required 모드로 돈다(ES256 키를 만들어 JWKS 파일로 넘�
   추가되는 device는 정책상 active(403 `commit_member_not_active`)이며 그 actor가 방
   로스터에 있어야 한다(403 `commit_actor_not_in_roster`) — 새 기기는 기존 actor에,
   새 actor는 방 생성 클라이언트 쪽으로.
+- **복제 actor = 정책 actor**(G-H3): 부트스트랩이든 추가든, 새로 좌석을 받는 모든
+  `members[]` 항목의 `actor`는 그 device의 정책 `actor`와 같아야 한다 — 아니면 **403
+  `commit_actor_mismatch`**. 이전에는 클라이언트가 적은 actor만 로스터와 대조해서,
+  멤버가 다른 사람의 기기를 로스터 actor 이름으로 끼워 넣을 수 있었고 창립 로그·
+  `mls_members`가 거짓이 됐다.
 - **제거된 멤버의 커서 유예(H3a)**: commit으로 제거된 device의 멤버 행은 같은
   트랜잭션에서 지워지지만 읽기 커서(`mls_cursors`)는 **지우지 않고** `removed_at`·
   `removed_seq`(제거 commit의 seq)로 표시한다. 그 커서는 (a) 그 기기가 자기 제거
@@ -163,7 +182,10 @@ v2 smoke는 required 모드로 돈다(ES256 키를 만들어 JWKS 파일로 넘�
 - **H2 캡 전 프루닝**: events POST는 같은 트랜잭션에서 **프루닝 → 바이트 캡 측정 →
   insert** 순서다. stale application 이벤트로 가득 찬 방이 commit을 413으로 막지 않는다.
   events GET도 `?ack=`로 요청 기기의 커서가 전진하면 같은 트랜잭션에서 프루닝한다
-  (ack가 보존 해제를 끌어낸다; 읽기만으로는 아님 — M2). seq는 `mls_rooms.last_seq` 카운터에서 나온다 —
+  (ack가 보존 해제를 끌어낸다; 읽기만으로는 아님 — M2). **commit은 캡에서 면제**(리뷰
+  2차 G-H2): ack하지 않는 reader가 방을 캡에 묶어 두면 그 reader를 내보내는 commit마저
+  413이라 `-reset-room`밖에 남지 않았다. commit은 epoch를 올리므로 epoch 보존 창이
+  개수를 묶고, welcome·application은 그대로 캡을 받는다. seq는 `mls_rooms.last_seq` 카운터에서 나온다 —
   `MAX(seq)`는 프루닝으로 비워진 테이블에서 되감길 수 있으므로 쓰지 않는다
   (구 파일은 열 때 열을 추가하고 backfill).
 - **M4 한도**: POST 본문 ≤ 1 MiB(413 `body_too_large`; 방 캡은 총량에 별도 적용),
@@ -178,9 +200,20 @@ v2 smoke는 required 모드로 돈다(ES256 키를 만들어 JWKS 파일로 넘�
   BEGIN IMMEDIATE다(이전 주석은 그렇다고 했지만 deferred였다); `busy_timeout 5000` 유지.
 - **L1 K4 재생 epoch**: commit의 바이트 동일 재시도(200 duplicate)는 201이 돌려준
   **post-commit epoch**를 돌려준다(저장된 epoch+1로 계산).
-- **L8 식별자**: `device`, `targets[]`, `members[].device/actor`, `?device=`, `?consumer=`
-  전부 정책과 같은 `[A-Za-z0-9_-]{1,64}`(`devicepolicy.IsIdentifier`). 위반은 400
-  `bad_identifier`(필드명만, 값은 본문에 싣지 않음).
+- **L8 식별자**: `device`, `targets[]`, `members[].device/actor`, `?device=`, `?consumer=`,
+  그리고 **경로의 `{room}`과 `client_id`**(리뷰 2차 G-M2·G-H4) 전부 정책과 같은
+  `[A-Za-z0-9_-]{1,64}`(`devicepolicy.IsIdentifier`). 위반은 400 `bad_identifier`(필드명만,
+  값은 본문에 싣지 않음). mux가 디코딩한 경로 세그먼트를 그대로 넘기므로 방 이름
+  검사 없이는 개행이 창립 로그 줄에, 유니코드 동형 문자가 선착순 방 이름 공간에 들어갔다.
+- **열 형태 상한**(G-H4): 방 캡은 `bytes`만 세므로 그 밖의 저장 열은 형태로 묶는다 —
+  `group_id`는 identifier 문자집합 ≤256(MLS group id 128바이트 hex), `targets` ≤32개,
+  `members` ≤64개(400 `too_many_targets`/`too_many_members`). 이전에는 `client_id`·
+  `group_id`가 비어 있지만 않으면 돼서 1 MiB 본문 한도 안에서 캡을 우회해 디스크를
+  채울 수 있었다.
+- **JWKS 재적재**(G-M5·L1): 모르는 `kid`의 재적재는 **마지막 시도 시각 기준**으로 분당
+  1회(실패해도 센다 — kid는 서명 검증 전 값이라 공격자가 고른다), fetch는 verifier 락
+  밖에서 돌아 아는 kid의 검증을 막지 않으며, 사용 가능한 키가 0개인 응답은 캐시를
+  교체하지 않는다.
 
 멤버십은 `mls_members(room, device, actor, added_seq)`에 커밋 insert와 같은
 BEGIN IMMEDIATE 트랜잭션으로 기록된다(B2/B3 규율 유지). v2 릴레이 smoke
@@ -220,6 +253,10 @@ BEGIN IMMEDIATE 트랜잭션으로 기록된다(B2/B3 규율 유지). v2 릴레�
   새 방. 남는 것은 지문 비교 UI의 **실제 대역외 비교 수행** — 사람.
 - 64 revision 소진 후 컴팩션, E5 restore-history, 파일·봇(M5).
 - 브라우저/실기기 동작 — 이 유닛은 순수 서버 측 Go다.
+- 쿠키 기반 CF Access 세션에서의 교차 사이트 요청(G-M8): `GET /events?ack=`·`GET
+  /keypackages`는 상태를 바꾸는 GET이고 `/close`는 본문 없는 POST다. 호출자 인증은
+  헤더 토큰(`Cf-Access-Jwt-Assertion`/`Bearer`) 전제이며, 브라우저 쿠키 세션으로
+  릴레이를 직접 노출하는 배치는 이 계약 밖이다.
 
 ## 운영자 복구: 방 초기화 (`-reset-room`, 리뷰 H3)
 
