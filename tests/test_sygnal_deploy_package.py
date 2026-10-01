@@ -94,7 +94,8 @@ class SygnalUnitTest(unittest.TestCase):
     def test_container_drops_privileges(self):
         for name in UNITS:
             with self.subTest(unit=name):
-                for flag in ("--user ${SYGNAL_UID}", "--cap-drop=ALL", "--read-only", "--security-opt=no-new-privileges"):
+                for flag in ("--user ${SYGNAL_UID}", "--cap-drop=ALL", "--read-only",
+                             "--security-opt=no-new-privileges"):
                     self.assertIn(flag, self.units[name], f"{name}: 컨테이너 권한 축소 플래그 누락: {flag}")
 
     def test_uid_placeholder_is_empty_so_deployment_must_fill_it(self):
@@ -140,7 +141,8 @@ class SygnalUnitTest(unittest.TestCase):
     def test_both_units_run_the_same_container_flags(self):
         """런타임 CLI 이름을 지우면 두 유닛의 `run` 플래그 집합이 같아야 한다(--replace·로그 드라이버 제외)."""
         def run_flags(text: str) -> set[str]:
-            match = re.search(r"ExecStart=/usr/bin/(?:podman|docker) run \\\n(.*?)\n\s*\$\{SYGNAL_IMAGE\}", text, re.DOTALL)
+            pattern = r"ExecStart=/usr/bin/(?:podman|docker) run \\\n(.*?)\n\s*\$\{SYGNAL_IMAGE\}"
+            match = re.search(pattern, text, re.DOTALL)
             self.assertIsNotNone(match)
             flags = {line.strip().rstrip("\\").strip() for line in match.group(1).splitlines()}
             return {f for f in flags if f and f not in ("--replace", "--log-driver=none")}
