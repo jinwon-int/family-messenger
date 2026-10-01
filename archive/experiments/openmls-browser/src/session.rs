@@ -119,7 +119,9 @@ impl Session {
             "invite_with_commit" => device.invite_with_commit_inner(input)?,
             "join" => { device.join_inner(input)?; vec![] },
             "encrypt" => device.encrypt_inner(input)?,
+            // Output is `frame_decrypt` (DECRYPT_FORMAT 2): sender, client, plaintext.
             "decrypt" => device.decrypt_inner(input)?,
+            "delete_key_package" => { device.delete_key_package_inner(input)?; vec![] },
             "remove" => device.remove_member_inner(input, true)?,
             "remove_pending" => device.remove_member_inner(input, false)?,
             "commit" => { device.apply_commit_inner(input)?; vec![] },
@@ -136,6 +138,7 @@ impl Session {
     fn restore_committed(&mut self) -> Result<(), Rejected> {
         self.store().rollback();
         self.in_flight = false;
+        self.device.staged = None;
         if self.store().len() == 0 {
             // Aborted `create`: nothing durable exists; the session is unusable.
             self.device.retired = true;
@@ -217,7 +220,8 @@ impl Session {
             "invite" => device.invite_trusted_inner(input, peer, key)?,
             "join" => { device.join_trusted_inner(input, peer, key)?; vec![] },
             "encrypt" => device.encrypt_inner(input)?,
-            "decrypt" => device.decrypt_inner(input)?,
+            // H1: the pinned peer actor is the only client id the pair may carry.
+            "decrypt" => device.decrypt_with(input, Some(peer))?,
             "decrypt_peer" => device.decrypt_peer_inner(input, peer, key)?,
             _ => return Err(rejected(())),
         };
@@ -297,6 +301,8 @@ impl Session {
     }
     pub fn migrated(&self) -> bool { self.migrated }
     pub fn format_version() -> u32 { migrate::FORMAT_CURRENT }
+    pub fn decrypt_format() -> u32 { DECRYPT_FORMAT }
+    pub fn key_packages_outstanding(&self) -> u32 { self.device.outstanding_key_packages() as u32 }
     pub fn full_serializations(&self) -> u32 { self.full_serializations }
     pub fn entry_count(&self) -> u32 { self.store().len() as u32 }
     pub fn store_bytes(&self) -> u32 { self.store().byte_size() as u32 }

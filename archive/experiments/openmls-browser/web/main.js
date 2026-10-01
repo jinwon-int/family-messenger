@@ -5,7 +5,9 @@ window.spawn = (name, durable = false) => new Promise((resolve, reject) => {
   if (workers.has(name)) throw new Error('duplicate worker');
   const worker = new Worker(durable ? './durable-worker.js' : './worker.js', {type: 'module'});
   workers.set(name, worker);
-  const timer = setTimeout(() => { worker.terminate(); workers.delete(name); reject(new Error('boot deadline')); }, 10000);
+  // M1: only forget this worker if it is still the mapped one — a replacement
+  // spawned under the same name after a slow boot must not be dropped.
+  const timer = setTimeout(() => { worker.terminate(); if (workers.get(name) === worker) workers.delete(name); reject(new Error('boot deadline')); }, 10000);
   worker.addEventListener('message', function boot({data}) {
     if (data.boot) { clearTimeout(timer); worker.removeEventListener('message', boot); resolve(); }
   });
@@ -19,7 +21,9 @@ window.call = (name, method, argument) => new Promise((resolve, reject) => {
   // 3 s on one desktop core, several times that on a slow phone. Never lower the KDF;
   // give that call its own deadline instead.
   const timer = setTimeout(() => {
-    worker.terminate(); workers.delete(name); cleanup(); reject(new Error('worker deadline'));
+    // M1: terminate the timed-out worker, but only remove it from the map if it
+    // is still the current one, so a replacement under the same name survives.
+    worker.terminate(); if (workers.get(name) === worker) workers.delete(name); cleanup(); reject(new Error('worker deadline'));
   }, method === 'init' ? 60000 : 10000);
   const onmessage = ({data}) => {
     if (data.id !== id) return;

@@ -1,4 +1,13 @@
 import init, { Device, policy_fingerprint } from './pkg/family_mls_browser_experiment.js';
+// H1: the facade frames decrypt output as u32 LE len ‖ sender ‖ u32 LE len ‖
+// client ‖ plaintext (Device.decrypt_format() === 2). This passthrough worker
+// returns the plaintext; the authenticated sender/client are in the frame.
+const decryptPlaintext = framed => {
+  const view = new DataView(framed.buffer, framed.byteOffset, framed.byteLength);
+  let at = 0;
+  for (let i = 0; i < 2; i++) { const n = view.getUint32(at, true); at += 4 + n; }
+  return framed.slice(at);
+};
 const started = performance.now();
 const wasm = await init();
 const initMs = performance.now() - started;
@@ -20,10 +29,13 @@ self.onmessage = ({data: {id, method, argument}}) => {
         case 'invite_with_commit': result = device.invite_with_commit(new Uint8Array(argument)); break;
         case 'join': result = device.join(new Uint8Array(argument)); break;
         case 'encrypt': result = device.encrypt(new Uint8Array(argument)); break;
-        case 'decrypt': result = device.decrypt(new Uint8Array(argument)); break;
+        case 'decrypt': result = decryptPlaintext(device.decrypt(new Uint8Array(argument))); break;
         case 'public_key': result = device.public_key(); break;
         case 'fingerprint': result = device.fingerprint(); break;
         case 'members': result = device.members(); break;
+        // M2: roster after a pending commit merges — the list to replicate into the
+        // outer v2 relay commit JSON before POSTing (members() is still the old epoch).
+        case 'members_after_pending': result = device.members_after_pending(); break;
         case 'policy_fingerprint': result = policy_fingerprint(argument); break;
         case 'sign_approval':
           if (!argument || typeof argument !== 'object') throw new Error('bad argument');

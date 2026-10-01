@@ -81,6 +81,20 @@ fn dec(room: &str, wire: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Inverse of `frame_decrypt` (DECRYPT_FORMAT 2): (sender_device, client_id, plaintext).
+fn attributed(out: &[u8]) -> (String, String, Vec<u8>) {
+    let mut rest = out;
+    let mut field = || {
+        let len = u32::from_le_bytes(rest[..4].try_into().unwrap()) as usize;
+        let value = String::from_utf8(rest[4..4 + len].to_vec()).unwrap();
+        rest = &rest[4 + len..];
+        value
+    };
+    let (sender, client) = (field(), field());
+    (sender, client, rest.to_vec())
+}
+fn plain(out: &[u8]) -> Vec<u8> { attributed(out).2 }
+
 /// A pre-M4 caller (no binding header) or any tampered header must be refused
 /// before MLS state is touched.
 #[test]
@@ -140,18 +154,19 @@ fn aad_parse_rejects_malformed_frames() {
 #[test]
 fn aad_binding_rejects_wrong_room_and_rolls_back() {
     let (mut alice, mut bob) = pair();
-    let ciphertext = alice.step("encrypt", &enc(ROOM, "person-a", b"hello"));
-    assert_eq!(bob.step("decrypt", &dec(ROOM, &ciphertext)), b"hello");
+    // The client id a sender declares must be its own roster identity (H1).
+    let ciphertext = alice.step("encrypt", &enc(ROOM, "alice", b"hello"));
+    assert_eq!(plain(&bob.step("decrypt", &dec(ROOM, &ciphertext))), b"hello");
     // A second message, declared in the wrong room context: the AAD gate fires
     // only after MLS authentication has consumed the ratchet secret.
-    let ciphertext = alice.step("encrypt", &enc(ROOM, "person-a", b"secret"));
+    let ciphertext = alice.step("encrypt", &enc(ROOM, "alice", b"secret"));
     let before = session_entries(&bob.session);
     assert!(bob.session.apply("decrypt", &dec("elsewhere", &ciphertext)).is_err());
     assert_eq!(session_entries(&bob.session), before, "AAD rejection restores the store");
-    assert_eq!(bob.step("decrypt", &dec(ROOM, &ciphertext)), b"secret", "session survives an AAD rejection");
+    assert_eq!(plain(&bob.step("decrypt", &dec(ROOM, &ciphertext))), b"secret", "session survives an AAD rejection");
     // The plaintext bound applies to the framed payload, not the whole input.
-    assert!(alice.session.apply("encrypt", &enc(ROOM, "person-a", &[0; 16385])).is_err());
-    let step = alice.session.apply("encrypt", &enc(ROOM, "person-a", &[0; 16384])).unwrap();
+    assert!(alice.session.apply("encrypt", &enc(ROOM, "alice", &[0; 16385])).is_err());
+    let step = alice.session.apply("encrypt", &enc(ROOM, "alice", &[0; 16384])).unwrap();
     persist(&mut alice.mirror, &step.changes());
     alice.session.commit().unwrap();
 }
@@ -175,9 +190,9 @@ fn dirty_set_reproduces_store_and_reopens() {
     let (mut alice, mut bob) = pair();
     for i in 0..20u8 {
         let ciphertext = alice.step("encrypt", &enc(ROOM, "alice", &[i; 10]));
-        assert_eq!(bob.step("decrypt", &dec(ROOM, &ciphertext)), vec![i; 10]);
+        assert_eq!(plain(&bob.step("decrypt", &dec(ROOM, &ciphertext))), vec![i; 10]);
         let reply = bob.step("encrypt", &enc(ROOM, "bob", &[i, i]));
-        assert_eq!(alice.step("decrypt", &dec(ROOM, &reply)), vec![i, i]);
+        assert_eq!(plain(&alice.step("decrypt", &dec(ROOM, &reply))), vec![i, i]);
     }
     assert_eq!(alice.session.full_serializations(), 0, "no full serialization per operation");
     assert_eq!(bob.session.full_serializations(), 0);
@@ -187,10 +202,10 @@ fn dirty_set_reproduces_store_and_reopens() {
     assert_eq!(reopened.full_serializations(), 1, "open is the one full (de)serialization");
     let ciphertext = alice.step("encrypt", &enc(ROOM, "alice", b"after reopen"));
     let step = reopened.apply("decrypt", &dec(ROOM, &ciphertext)).expect("reopened decrypts");
-    assert_eq!(step.output(), b"after reopen");
+    assert_eq!(attributed(&step.output()), ("alice".into(), "alice".into(), b"after reopen".to_vec()));
     reopened.commit().unwrap();
     let back = reopened.apply("encrypt", &enc(ROOM, "bob", b"reply")).expect("reopened encrypts");
-    assert_eq!(alice.step("decrypt", &dec(ROOM, &back.output())), b"reply");
+    assert_eq!(plain(&alice.step("decrypt", &dec(ROOM, &back.output()))), b"reply");
 }
 
 #[test]
@@ -206,7 +221,7 @@ fn rejected_and_aborted_operations_roll_back() {
     assert!(bob.session.apply("decrypt", &dec(ROOM, &forged)).is_err());
     assert!(bob.session.pending_changes() == session::frame(&[]), "rejection leaves nothing in flight");
     assert_eq!(session_entries(&bob.session), before, "rejection restores the store");
-    assert_eq!(bob.step("decrypt", &dec(ROOM, &ciphertext)), b"one", "session survives a rejection");
+    assert_eq!(plain(&bob.step("decrypt", &dec(ROOM, &ciphertext))), b"one", "session survives a rejection");
 
     // Replay: the ratchet key was consumed and committed; the replay is rejected.
     let before = session_entries(&bob.session);
@@ -220,7 +235,7 @@ fn rejected_and_aborted_operations_roll_back() {
     assert!(bob.session.apply("decrypt", &dec(ROOM, &second)).is_err(), "no apply while changes are in flight");
     bob.session.abort().expect("abort");
     bob.assert_durable();
-    assert_eq!(bob.step("decrypt", &dec(ROOM, &second)), b"two");
+    assert_eq!(plain(&bob.step("decrypt", &dec(ROOM, &second))), b"two");
 
     // Unknown methods and malformed input are rejected without state change.
     let before = session_entries(&bob.session);
@@ -297,14 +312,14 @@ fn format1_snapshot_migrates_and_keeps_talking() {
     let mut alice = staging::load_for_test(&v1, "alice").expect("format-1 snapshot migrates");
     assert_eq!(alice.group.as_ref().unwrap().epoch().as_u64(), 12);
     let ciphertext = bob.encrypt_inner(&enc(ROOM, "bob", b"to migrated alice")).unwrap();
-    assert_eq!(alice.decrypt_inner(&dec(ROOM, &ciphertext)).unwrap(), b"to migrated alice");
+    assert_eq!(plain(&alice.decrypt_inner(&dec(ROOM, &ciphertext)).unwrap()), b"to migrated alice");
     // bob commits: alice needs her epoch-12 encryption key pair (the migrated key).
     let bundle = bob.group.as_mut().unwrap()
         .self_update(&bob.provider, &bob.signer, LeafNodeParameters::default()).unwrap();
     bob.group.as_mut().unwrap().merge_pending_commit(&bob.provider).unwrap();
     alice.apply_commit_inner(&bundle.commit().tls_serialize_detached().unwrap()).expect("migrated alice applies commit");
     let reply = alice.encrypt_inner(&enc(ROOM, "alice", b"from migrated alice")).unwrap();
-    assert_eq!(bob.decrypt_inner(&dec(ROOM, &reply)).unwrap(), b"from migrated alice");
+    assert_eq!(plain(&bob.decrypt_inner(&dec(ROOM, &reply)).unwrap()), b"from migrated alice");
 
     // Session path: a migrated open must be rewritten (export) before use.
     let framed_v1: Vec<_> = entries.iter().map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
@@ -403,10 +418,13 @@ fn format1_with_pending_commit_migrates() {
     alice.commit().unwrap();
     bob.apply_commit_inner(&bundle.commit().tls_serialize_detached().unwrap()).unwrap();
     let step = alice.apply("encrypt", &enc(ROOM, "alice", b"after migrated merge")).unwrap();
-    assert_eq!(bob.decrypt_inner(&dec(ROOM, &step.output())).unwrap(), b"after migrated merge");
+    assert_eq!(plain(&bob.decrypt_inner(&dec(ROOM, &step.output())).unwrap()), b"after migrated merge");
 }
 
-/// Review F2: a session must never make durable a state `open` would refuse.
+/// Review F2 / M4: a session must never make durable a state `open` would
+/// refuse. Unused KeyPackages were the one way to walk into that bound (one
+/// entry each); the M4 cap now stops them long before it, with a pure
+/// rejection the session survives, and the last durable state still reopens.
 #[test]
 fn session_refuses_states_open_could_not_load() {
     let mut session = Session::create("alice").unwrap();
@@ -418,13 +436,197 @@ fn session_refuses_states_open_could_not_load() {
             Err(error) => { rejected_at = Some((i, error)); break; }
         }
     }
-    let (_, error) = rejected_at.expect("unused key packages must hit the entry bound");
-    assert_eq!(error, Rejected("state limit"));
+    let (at, error) = rejected_at.expect("unused key packages must hit a bound");
+    assert_eq!((at, error), (MAX_KEY_PACKAGES, Rejected("key package limit")));
+    assert_eq!(session.key_packages_outstanding() as usize, MAX_KEY_PACKAGES);
     assert!(session.entry_count() as usize <= staging::MAX_ENTRIES);
     let public_key = session.public_key();
     let exported = session.export().unwrap();
     Session::open("alice", &public_key, &[], Session::format_version(), &exported)
         .expect("the last durable state reopens");
+}
+
+/// Review M4: the cap is recoverable — deleting a published package (the relay
+/// reported it consumed or expired) frees a slot; joining prunes every unused
+/// one; foreign, unknown or already-deleted packages are refused without
+/// touching state, in both the Session and the memory-only Device.
+#[test]
+fn key_package_cap_recovers_by_delete_and_join() {
+    let mut alice = Peer::new("alice");
+    let mut bob = Peer::new("bob");
+    let packages: Vec<Vec<u8>> = (0..MAX_KEY_PACKAGES).map(|_| bob.step("key_package", &[])).collect();
+    assert_eq!(bob.session.apply("key_package", &[]).err(), Some(Rejected("key package limit")));
+    bob.assert_durable();
+    // Not bob's package, and a package bob never minted: pure rejections.
+    let foreign = alice.step("key_package", &[]);
+    assert!(bob.session.apply("delete_key_package", &foreign).is_err());
+    assert!(bob.session.apply("delete_key_package", &[1, 2, 3]).is_err());
+    bob.assert_durable();
+    bob.step("delete_key_package", &packages[0]);
+    assert_eq!(bob.session.key_packages_outstanding() as usize, MAX_KEY_PACKAGES - 1);
+    assert!(bob.session.apply("delete_key_package", &packages[0]).is_err(), "already deleted");
+    bob.step("key_package", &[]);
+    assert_eq!(bob.session.apply("key_package", &[]).err(), Some(Rejected("key package limit")));
+    // Joining consumes one package (OpenMLS) and prunes the rest (facade).
+    alice.step("create", &[]);
+    let framed = alice.step("invite_with_commit", &packages[3]);
+    alice.step("merge_pending", &[]);
+    let commit_len = u32::from_le_bytes(framed[..4].try_into().unwrap()) as usize;
+    // `step` asserts the mirror (deletes applied from `changes`) equals the store,
+    // so the pruned entries provably left the durable set too.
+    bob.step("join", &framed[4 + commit_len..]);
+    assert_eq!(bob.session.key_packages_outstanding(), 0, "join prunes every unused package");
+    let ciphertext = alice.step("encrypt", &enc(ROOM, "alice", b"after prune"));
+    assert_eq!(plain(&bob.step("decrypt", &dec(ROOM, &ciphertext))), b"after prune");
+    // Memory-only Device: the same cap, and the bookkeeping never retires it.
+    let mut carol = Device::new("carol").unwrap();
+    let minted: Vec<Vec<u8>> = (0..MAX_KEY_PACKAGES).map(|_| carol.key_package().unwrap()).collect();
+    assert_eq!(carol.key_package(), Err(Rejected("key package limit")));
+    assert!(carol.delete_key_package(&foreign).is_err());
+    carol.delete_key_package(&minted[1]).unwrap();
+    assert_eq!(carol.key_packages_outstanding() as usize, MAX_KEY_PACKAGES - 1);
+    carol.key_package().expect("slot freed; device not retired by the pure rejections");
+}
+
+/// Review M3: a length field that would make `4 + len` wrap on a 32-bit
+/// `usize` (or index past the end on the host) is rejected before any
+/// arithmetic; exactly `MAX_IDENTITY` still parses.
+#[test]
+fn split_identity_rejects_overflowing_lengths() {
+    for len in [u32::MAX - 1, 0xFFFF_FFFC, u32::MAX, 65, 0] {
+        let mut input = len.to_le_bytes().to_vec();
+        input.extend_from_slice(b"family-payload");
+        assert_eq!(split_identity(&input).err(), Some(rejected(())), "len {len:#x}");
+    }
+    let mut input = 64u32.to_le_bytes().to_vec();
+    input.extend_from_slice(&[b'a'; 64]);
+    input.extend_from_slice(b"rest");
+    assert_eq!(split_identity(&input).unwrap(), ("a".repeat(64).as_str(), b"rest".as_slice()));
+    assert!(split_identity(&[3, 0, 0, 0, b'a', b'b']).is_err(), "declared length past the end");
+}
+
+/// Review H1: three members; the AAD `client_id` a sender declares must be the
+/// roster identity of its MLS-authenticated leaf. c signing as "a" is rejected
+/// and rolled back on both receivers; honest output carries (sender, client).
+#[test]
+fn decrypt_binds_client_id_to_the_authenticated_sender() {
+    let mut a = Peer::new("a");
+    let mut b = Peer::new("b");
+    let mut c = Peer::new("c");
+    a.step("create", &[]);
+    let packages = [b.step("key_package", &[]), c.step("key_package", &[])].concat();
+    let framed = a.step("invite_with_commit", &packages);
+    a.step("merge_pending", &[]);
+    let commit_len = u32::from_le_bytes(framed[..4].try_into().unwrap()) as usize;
+    b.step("join", &framed[4 + commit_len..]);
+    c.step("join", &framed[4 + commit_len..]);
+
+    let forged = c.step("encrypt", &enc(ROOM, "a", b"as if from a"));
+    for receiver in [&mut a, &mut b] {
+        let before = session_entries(&receiver.session);
+        assert_eq!(receiver.session.apply("decrypt", &dec(ROOM, &forged)).err(), Some(Rejected("sender attribution rejected")));
+        assert_eq!(session_entries(&receiver.session), before, "attribution rejection restores the store");
+    }
+    let honest = c.step("encrypt", &enc(ROOM, "c", b"really from c"));
+    for receiver in [&mut a, &mut b] {
+        assert_eq!(attributed(&receiver.step("decrypt", &dec(ROOM, &honest))),
+            ("c".into(), "c".into(), b"really from c".to_vec()));
+    }
+    // Memory-only Device lane: the same rejection (and that device retires, as documented).
+    let mut d = Device::new("d").unwrap();
+    let mut e = Device::new("e").unwrap();
+    d.create().unwrap();
+    let welcome = d.invite(&e.key_package().unwrap()).unwrap();
+    e.join(&welcome).unwrap();
+    let forged = e.encrypt(&enc(ROOM, "d", b"x")).unwrap();
+    assert_eq!(d.decrypt(&dec(ROOM, &forged)), Err(Rejected("sender attribution rejected")));
+    assert_eq!(Device::decrypt_format(), 2);
+}
+
+/// Parse `frame_members` output from a cursor (used for the two-frame stage report).
+fn take_roster(rest: &mut &[u8]) -> Vec<(String, Vec<u8>)> {
+    let count = u32::from_le_bytes(rest[..4].try_into().unwrap()) as usize;
+    *rest = &rest[4..];
+    let mut out = Vec::new();
+    for _ in 0..count {
+        let len = u32::from_le_bytes(rest[..4].try_into().unwrap()) as usize;
+        let identity = String::from_utf8(rest[4..4 + len].to_vec()).unwrap();
+        let key = rest[4 + len..4 + len + 32].to_vec();
+        *rest = &rest[4 + len + 32..];
+        out.push((identity, key));
+    }
+    out
+}
+
+/// Review M2: while a commit is pending, `members()` is the old epoch and
+/// `members_after_pending()` is the roster the relay must enforce.
+#[test]
+fn members_after_pending_tracks_staged_adds_and_removes() {
+    let mut a1 = Device::new("a:1").unwrap();
+    let mut a2 = Device::new("a:2").unwrap();
+    let (key1, key2) = (a1.public_key().unwrap(), a2.public_key().unwrap());
+    a1.create().unwrap();
+    assert_eq!(a1.members_after_pending().unwrap(), a1.members().unwrap(), "no pending commit: identical");
+    let framed = a1.invite_with_commit(&a2.key_package().unwrap()).unwrap();
+    assert_eq!(roster(&a1.members().unwrap()), vec![("a:1".into(), key1.clone())], "old epoch until merge");
+    assert_eq!(roster(&a1.members_after_pending().unwrap()),
+        vec![("a:1".into(), key1.clone()), ("a:2".into(), key2.clone())], "pending add is visible");
+    a1.merge_pending().unwrap();
+    assert_eq!(a1.members_after_pending().unwrap(), a1.members().unwrap());
+    let commit_len = u32::from_le_bytes(framed[..4].try_into().unwrap()) as usize;
+    a2.join(&framed[4 + commit_len..]).unwrap();
+    a1.remove_member_pending(&key2).unwrap();
+    assert_eq!(roster(&a1.members_after_pending().unwrap()), vec![("a:1".into(), key1.clone())], "pending remove is applied");
+    assert_eq!(roster(&a1.members().unwrap()).len(), 2);
+    a1.clear_pending().unwrap();
+    assert_eq!(roster(&a1.members_after_pending().unwrap()).len(), 2, "discarded commit: back to the live roster");
+}
+
+/// Review M1: an incoming commit can be staged, inspected (adds/removes with
+/// identity + signing key) and only then merged or discarded; the roster does
+/// not move until the merge, and the pure preconditions do not retire the device.
+#[test]
+fn stage_commit_reports_roster_changes_before_merge() {
+    let mut a1 = Device::new("a:1").unwrap();
+    let mut a2 = Device::new("a:2").unwrap();
+    let mut a3 = Device::new("a:3").unwrap();
+    let key3 = a3.public_key().unwrap();
+    a1.create().unwrap();
+    let package = a2.key_package().unwrap();
+    a2.join(&a1.invite(&package).unwrap()).unwrap();
+    assert_eq!(a2.merge_staged(), Err(Rejected("nothing staged")));
+    assert_eq!(a2.discard_staged(), Err(Rejected("nothing staged")));
+
+    let framed = a1.invite_with_commit(&a3.key_package().unwrap()).unwrap();
+    a1.merge_pending().unwrap();
+    let commit_len = u32::from_le_bytes(framed[..4].try_into().unwrap()) as usize;
+    let (commit, welcome) = (&framed[4..4 + commit_len], &framed[4 + commit_len..]);
+    let report = a2.stage_commit(commit).unwrap();
+    let mut rest = report.as_slice();
+    let (adds, removes) = (take_roster(&mut rest), take_roster(&mut rest));
+    assert!(rest.is_empty());
+    assert_eq!((adds, removes), (vec![("a:3".to_string(), key3.clone())], vec![]));
+    assert_eq!(roster(&a2.members().unwrap()).len(), 2, "not merged yet");
+    assert_eq!(a2.stage_commit(commit), Err(Rejected("commit already staged")));
+    assert_eq!(a2.apply_commit(commit), Err(Rejected("commit already staged")));
+    a2.merge_staged().unwrap();
+    assert_eq!(roster(&a2.members().unwrap()).len(), 3);
+    a3.join(welcome).unwrap();
+    let ciphertext = a3.encrypt(&enc(ROOM, "a:3", b"after staged merge")).unwrap();
+    assert_eq!(attributed(&a2.decrypt(&dec(ROOM, &ciphertext)).unwrap()),
+        ("a:3".into(), "a:3".into(), b"after staged merge".to_vec()));
+
+    // A removal is reported with the removed member's identity and key; discarding
+    // it leaves the device usable at its current epoch (a policy refusal).
+    let commit = a1.remove_member_pending(&key3).unwrap();
+    a1.merge_pending().unwrap();
+    let report = a2.stage_commit(&commit).unwrap();
+    let mut rest = report.as_slice();
+    let (adds, removes) = (take_roster(&mut rest), take_roster(&mut rest));
+    assert_eq!((adds, removes), (vec![], vec![("a:3".to_string(), key3)]));
+    a2.discard_staged().unwrap();
+    assert_eq!(roster(&a2.members().unwrap()).len(), 3, "discarded: roster untouched");
+    assert!(a2.members_after_pending().is_ok(), "device still usable");
 }
 
 /// Review F3: the format rewrite is two-phase; an export that was never made
@@ -483,7 +685,8 @@ fn trusted_session_enforces_pins_and_rolls_back() {
     let before = session_entries(&bob.session);
     assert!(bob.session.apply_trusted("decrypt_peer", &dec(ROOM, &ciphertext), "alice", &bob_key).is_err());
     assert_eq!(session_entries(&bob.session), before, "sender-key mismatch rolls back (ratchet not consumed)");
-    assert_eq!(trusted(&mut bob, "decrypt_peer", &dec(ROOM, &ciphertext), "alice", &alice_key).unwrap(), b"pinned hello");
+    assert_eq!(attributed(&trusted(&mut bob, "decrypt_peer", &dec(ROOM, &ciphertext), "alice", &alice_key).unwrap()),
+        ("alice".into(), "alice".into(), b"pinned hello".to_vec()), "framed attribution in the trusted lane too");
 }
 
 // ---- policy v4 approval evidence (#177 M3c, DEVICES-V4.md) ----

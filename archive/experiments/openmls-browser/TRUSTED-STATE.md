@@ -49,6 +49,15 @@ peer (exactly the pair for encrypt/decrypt), and invite/join accept only the pin
 credential and signing key. A rejection is rolled back inside the session; the
 worker still retires itself on any failure, as before.
 
+Since #177 review batch 2 (H1), `decrypt`/`decrypt_peer` in this lane also bind the
+AAD `client_id` to the **pinned peer actor**: the sender's self-declared client
+label must equal the pinned peer, or the message is rejected and rolled back. The
+output is framed as `u32 LE len ‖ sender_device ‖ u32 LE len ‖ client_id ‖
+plaintext` (`Session.decrypt_format()` === 2); `trusted-state-worker.js` unframes,
+returns the plaintext as `output` and surfaces `sender`/`client`. See
+PERSISTENCE.md for the shared decrypt framing, the KeyPackage cap and the
+`stage_commit`/`members_after_pending` helpers.
+
 ## Admission, staging and retry
 
 The shared `trust-directory.js` validates signed native responses with the expected

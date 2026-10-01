@@ -3,7 +3,7 @@
 // rest (M2b-3b) — see ./session-store.js and PERSISTENCE.md.
 // Storage layout, authentication and tab reload: ./session-store.js (see PERSISTENCE.md).
 import init, * as api from './pkg/family_mls_browser_experiment.js';
-import {createStore, exact, fail, bindEncrypt, bindDecrypt} from './session-store.js';
+import {createStore, exact, fail, bindEncrypt, bindDecrypt, unframeDecrypt} from './session-store.js';
 import {createVault, unlockVault, validPassphrase, sealRecord, openRecord} from './pkg/custody.js';
 const wasm = await init();
 const allowed = new Set(['key_package', 'create', 'invite', 'join', 'encrypt', 'decrypt', 'remove', 'commit']);
@@ -13,24 +13,35 @@ const noExtra = {keys: [], initial: () => ({}), bytes: () => null, valid: () => 
 function status(ctx, meta) {
   return {revision: meta.revision, cursor: meta.cursor, operations: meta.ledger.map(x => x.id),
     public_key: Array.from(meta.public_key), entries: meta.count,
-    full_serializations: ctx.session.full_serializations(), reloads: ctx.reloads};
+    full_serializations: ctx.session.full_serializations(), reloads: ctx.reloads, fresh: false};
+}
+// H1: expose the authenticated sender/client of a decrypt and hand the caller the
+// plaintext as `output` (the external contract); the frame is stored in the ledger.
+function decrypted(result) {
+  if (!result || !result.output) return result;
+  const {sender, client, plaintext} = unframeDecrypt(result.output);
+  return {...result, output: Array.from(plaintext), sender, client};
 }
 function handle(operation, argument) {
   return store.transaction((ctx, meta) => {
     if (meta === null) {
       // Only the pending-initialization marker written at database creation permits key creation.
       if (operation !== 'initialize') fail();
-      const fresh = ctx.create();
-      return {revision: fresh.revision, cursor: fresh.cursor};
+      const key = ctx.create();
+      // H3: tell the caller a key was just generated, so a panel can detect a
+      // storage wipe (fresh key under a database it has used before) and warn
+      // instead of silently becoming a new device.
+      return {revision: key.revision, cursor: key.cursor, fresh: true};
     }
     if (operation === 'initialize' || operation === 'status') return status(ctx, meta);
     if (operation === 'ack') return ctx.ack(meta, argument);
     if (operation !== 'operation') fail();
     // §3.6: the room and client come from this worker's own init, never from
     // the per-operation request, so a caller cannot re-room a ciphertext.
-    return ctx.operation(meta, argument, bytes => ctx.session.apply(argument.method,
+    const result = ctx.operation(meta, argument, bytes => ctx.session.apply(argument.method,
       argument.method === 'encrypt' ? bindEncrypt(room, identity, bytes) :
       argument.method === 'decrypt' ? bindDecrypt(room, bytes) : bytes));
+    return argument.method === 'decrypt' ? decrypted(result) : result;
   });
 }
 // Custody runs outside any IndexedDB transaction (scrypt is asynchronous): a new
@@ -45,9 +56,15 @@ async function unlock(opened, passphrase) {
 // A timed-out caller must close the worker and reopen the DB, then reconcile its
 // exact immutable operation ID.
 let queue = Promise.resolve();
-self.onmessage = ({data: {id, method, argument}}) => {
+self.onmessage = ({data}) => {
   queue = queue.then(async () => {
+    let id;
     try {
+      // Validate the message envelope like trusted-state-worker.js (low item).
+      if (!exact(data, ['id', 'method', 'argument']) || !Number.isSafeInteger(data.id) || data.id < 1 ||
+          typeof data.method !== 'string') fail();
+      id = data.id;
+      const {method, argument} = data;
       let result;
       if (method === 'init') {
         if (store || !exact(argument, ['identity', 'database', 'room', 'passphrase']) ||

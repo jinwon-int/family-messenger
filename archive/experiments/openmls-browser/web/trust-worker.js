@@ -4,6 +4,14 @@ import init, {Device, staged_checksum} from './pkg/family_mls_browser_experiment
 import {exact, fail as reject, hex, unhex, name, validPin, readDirectory, matchDirectory} from './trust-directory.js';
 const wasm = await init();
 let device, actor, room, pins, retired = false;
+// H1: decrypt output is framed (u32 LE len ‖ sender ‖ u32 LE len ‖ client ‖
+// plaintext, Device.decrypt_format() === 2); return the authenticated plaintext.
+const decryptPlaintext = framed => {
+  const view = new DataView(framed.buffer, framed.byteOffset, framed.byteLength);
+  let at = 0;
+  for (let i = 0; i < 2; i++) { const n = view.getUint32(at, true); at += 4 + n; }
+  return framed.slice(at);
+};
 const bytes = b => {if(!Array.isArray(b)||!b.length||b.length>65536||!b.every(x=>Number.isInteger(x)&&x>=0&&x<=255)) reject();return new Uint8Array(b);};
 async function admission(){matchDirectory(pins,await readDirectory(actor,room));}
 let queue=Promise.resolve();
@@ -32,7 +40,7 @@ self.onmessage=({data})=>{
        case 'invite':result=device.invite_trusted(bytes(argument),peer.actor,key);break;
        case 'join':result=device.join_trusted(bytes(argument),peer.actor,key);break;
        case 'encrypt':result=device.encrypt(bytes(argument));break;
-       case 'decrypt':result=device.decrypt(bytes(argument));break;
+       case 'decrypt':result=decryptPlaintext(device.decrypt(bytes(argument)));break;
        default:reject();
       }
     }
