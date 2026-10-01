@@ -79,8 +79,12 @@ function handle(operation, argument, directory) {
   });
 }
 // H1: surface the authenticated sender/client; return plaintext as `output`.
+// H2: a poison-message tombstone ({rejected: true, sequence, …}, no output) passes
+// through inside the `ok: true` envelope and does not retire this worker: the
+// store already verified the session is back at the durable state. Trust/pin
+// failures still throw before the store is reached and retire the worker as before.
 function decrypted(result) {
-  if (!result || !result.output) return result;
+  if (!result || result.rejected === true || !result.output) return result;
   const {sender, client, plaintext} = unframeDecrypt(result.output);
   return {...result, output: Array.from(plaintext), sender, client};
 }

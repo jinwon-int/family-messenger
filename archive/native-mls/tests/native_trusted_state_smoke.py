@@ -120,7 +120,7 @@ def main():
     assert assets['/session-store.js'].count(old)==1
     assets['/session-store.js']=assets['/session-store.js'].replace(old,b"'abort-after-write', 'lost-response', 'crash-before-complete'")
     old=b"if (fault === 'abort-after-write') { abort(); return undefined; }"
-    assert assets['/session-store.js'].count(old)==1
+    assert assets['/session-store.js'].count(old)==2  # tombstone write + normal ledger write (#177 H2)
     assets['/session-store.js']=assets['/session-store.js'].replace(old,b"if (fault === 'crash-before-complete') {self.postMessage({test_crash_boundary:true});while(true){}}\n          "+old)
     old=b"    if (data.id !== id) return;"
     assert assets['/main.js'].count(old)==1
@@ -278,7 +278,7 @@ def main():
                   (_,v)=>v&&typeof v==='object'&&!Array.isArray(v)&&'$b' in v?fromHex(v.$b):v);
                 if(kind.includes('pins'))meta.pins[1].device_id='corrupted';
                 if(kind.includes('order'))meta.pins.reverse();  // non-canonical order: only the load-time pin check sees it
-                const body=utf8(JSON.stringify(['family-mls-meta-v4/trusted',meta.version,meta.identity,meta.room,hex(meta.public_key),hex(meta.group_id),meta.format,meta.revision,meta.cursor,meta.epoch,hex(meta.set),meta.count,meta.ledger.map(x=>[x.id,x.method,x.sequence,x.epoch,hex(x.input),hex(x.output)]),meta.acked,meta.pins]));
+                const body=utf8(JSON.stringify(['family-mls-meta-v4/trusted',meta.version,meta.identity,meta.room,hex(meta.public_key),hex(meta.group_id),meta.format,meta.revision,meta.cursor,meta.epoch,hex(meta.set),meta.count,meta.ledger.map(x=>[x.id,x.method,x.sequence,x.epoch,hex(x.input),hex(x.output),...(x.rejected===true?[1]:[])]),meta.acked,meta.pins]));  // H2: tombstones append 1
                 const domain=utf8('family-mls-v2/meta\\u0000');
                 const message=new Uint8Array(domain.length+4+body.length);message.set(domain);new DataView(message.buffer).setUint32(domain.length,body.length,true);message.set(body,domain.length+4);
                 const k=await crypto.subtle.importKey('raw',keys.auth,{name:'HMAC',hash:'SHA-256'},false,['sign']);
@@ -334,12 +334,21 @@ def main():
             assert rpc(a,'status')['group_id']==rpc(b,'status')['group_id']
             message=list(b'synthetic durable trusted text')
             cipher=op(a,'send','encrypt',message)['output'];before=digest(b,databases[1])
-            bad=cipher.copy();bad[-1]^=1;op(b,'receive','decrypt',bad,1,reject=True)
-            assert digest(b,databases[1])==before;reopen(b,1)
-            op(b,'receive','decrypt',cipher,1,'abort-before-write',True)
-            assert digest(b,databases[1])==before;reopen(b,1)
-            assert op(b,'receive','decrypt',cipher,1)['output']==message
-            proof['checks']['trusted_group_tamper_and_abort_preserve_complete_state']=True
+            # H2 (#177): a damaged ciphertext at the head is a facade rejection → authenticated ledger
+            # tombstone, cursor 1, no output — and the trusted worker is NOT retired (ok: true, rejected: true).
+            # An aborted tombstone write leaves the state untouched like any other aborted operation.
+            bad=cipher.copy();bad[-1]^=1
+            op(b,'receive','decrypt',bad,1,'abort-before-write',True);assert digest(b,databases[1])==before;reopen(b,1)
+            poison=op(b,'receive','decrypt',bad,1)
+            assert poison['rejected'] is True and poison['sequence']==1 and poison['cursor']==1 and 'output' not in poison
+            assert rpc(b,'status')['cursor']==1  # same worker, still live after the poison message
+            tombstoned=digest(b,databases[1]);assert tombstoned!=before
+            assert op(b,'receive','decrypt',bad,1)['replay'] is True and digest(b,databases[1])==tombstoned
+            # The original must be re-sequenced past the tombstone (2); an abort still preserves the state.
+            op(b,'receive-ok','decrypt',cipher,2,'abort-before-write',True)
+            assert digest(b,databases[1])==tombstoned;reopen(b,1)
+            assert op(b,'receive-ok','decrypt',cipher,2)['output']==message
+            proof['checks']['trusted_group_tamper_tombstones_and_abort_preserve_complete_state']=True
             # At rest (#177 M2b-3b): no message plaintext (bob's ledger caches it), store label,
             # actor/device label, pin or public key in either trusted database.
             dump=a.evaluate(DUMP,databases[0])+b.evaluate(DUMP,databases[1])
@@ -359,11 +368,14 @@ def main():
             recovered=op(a,'lost','encrypt',list(b'lost trusted response'));assert recovered['replay']
             assert op(a,'lost','encrypt',list(b'lost trusted response'))['output']==recovered['output']
             assert digest(a,databases[0])==before
-            assert op(b,'receive2','decrypt',recovered['output'],2)['output']==list(b'lost trusted response')
+            assert op(b,'receive2','decrypt',recovered['output'],3)['output']==list(b'lost trusted response')
             proof['checks']['browser_crash_retains_pins_keys_and_exact_ciphertext_retry']=True
             crash(1);b=page(1);restored=init(b,1)
-            assert restored['pins']==pins and restored['public_key']==initial[1]['public_key'] and restored['cursor']==2
-            op(b,'replayed','decrypt',recovered['output'],3,reject=True);reopen(b,1)
+            assert restored['pins']==pins and restored['public_key']==initial[1]['public_key'] and restored['cursor']==3
+            # A replayed ciphertext at the head after the restart is a tombstone (cursor 4); the worker stays
+            # live, and the pre-restart tombstone replays its verdict from the reopened ledger.
+            replayed=op(b,'replayed','decrypt',recovered['output'],4);assert replayed['rejected'] is True and replayed['cursor']==4
+            assert op(b,'receive','decrypt',bad,1)['replay'] is True and rpc(b,'status')['cursor']==4
             proof['checks']['receiver_browser_restart_retains_trust_and_replay_state']=True
             observer=page(0);init(observer,0)
             hold_next[0]=True;arg=op_arg('network-race','encrypt',list(b'network await race'))
@@ -372,7 +384,7 @@ def main():
             raced=op(observer,'network-race','encrypt',list(b'network await race'))
             release.set();late=a.evaluate('window.pending')
             assert late['ok'] and late['result']['replay'] and not raced['replay'] and late['result']['output']==raced['output'], {'late_ok':late['ok'],'late_replay':late.get('result',{}).get('replay'),'raced_replay':raced['replay']}
-            assert op(b,'receive3','decrypt',raced['output'],3)['output']==list(b'network await race')
+            assert op(b,'receive3','decrypt',raced['output'],5)['output']==list(b'network await race')
             proof['checks']['network_wait_holds_no_idb_lock_and_transaction_rechecks_latest_state']=True
             before=digest(a,databases[0]);pending=op_arg('inflight','encrypt',list(b'trusted in flight'),fault='crash-before-complete')
             a.evaluate('arg=>{window.pending=call("device","operation",arg).catch(()=>null)}',pending)
@@ -380,7 +392,7 @@ def main():
             crash(0);a=page(0);assert init(a,0)['pins']==pins
             assert digest(a,databases[0])==before
             retry=op(a,'inflight','encrypt',list(b'trusted in flight'));assert not retry['replay']
-            assert op(b,'receive4','decrypt',retry['output'],4)['output']==list(b'trusted in flight')
+            assert op(b,'receive4','decrypt',retry['output'],6)['output']==list(b'trusted in flight')
             proof['checks']['inflight_browser_crash_retains_atomic_trust_crypto_and_outbox']=True
             malformed=page(0);init(malformed,0);before=digest(a,databases[0])
             malformed.evaluate('window.testWorkers.at(-1).postMessage(null)');rpc(malformed,'status',reject=True)
