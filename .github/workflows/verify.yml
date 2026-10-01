@@ -29,7 +29,8 @@ jobs:
         run: mypy scripts --ignore-missing-imports
   verify:
     # Loopback Tuwunel integration (#104). The retired Synapse/Element/Postgres
-    # compose stack lives in archive/synapse-stack/ and is no longer started.
+    # compose stack lives on the frozen branch archive-frozen-20260917
+    # (archive/synapse-stack/) and is no longer started.
     # Every runtime artifact stays under the gitignored .runtime/; the runner is
     # disposable, so nothing is pushed to a live host and no evidence is uploaded.
     runs-on: ubuntu-latest

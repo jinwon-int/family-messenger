@@ -3,7 +3,9 @@
 이 문서는 [결정 D](DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md)의 1단계에서 도입하는
 Tuwunel 홈서버의 배포·계정·백업·복원 절차를 다룬다. 근거는 2026-09-13 격리 평가
 ([증거 기록](evidence/homeserver-eval-20260913.md))이며, 수치는 그 실측에서 온 것이다.
-현재 레포에서 `compose.yaml`(Synapse/Element/Postgres)은 `archive/synapse-stack/`으로 퇴역했다(#104).
+`compose.yaml`(Synapse/Element/Postgres)은 #104로 퇴역해 보존 브랜치
+[`archive-frozen-20260917`](https://github.com/jinwon-int/family-messenger/tree/archive-frozen-20260917/archive/synapse-stack)의
+`archive/synapse-stack/`에만 있다(main에서는 제외).
 운영 호스트는 별도 1단계 배포 작업 전까지 여전히 기존 구성으로 서비스할 수 있으며, 이 문서는
 그 전환의 운영 기준이다. 이 문서의 대상은 Tuwunel이고,
 예시 값은 전부 `example.com` 같은 자리표시자다.
