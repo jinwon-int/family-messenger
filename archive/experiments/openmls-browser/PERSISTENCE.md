@@ -172,6 +172,64 @@ or application ciphertext no longer consumes **committed** KeyPackage/ratchet
 material. The original unchanged input can subsequently succeed once; duplicate
 ciphertext under a new ID is still rejected by OpenMLS after a committed receive.
 
+## Review batch 2 — client consistency (#177)
+
+- **Decrypt attribution (H1).** The facade's `decrypt` output is now framed as
+  `u32 LE len ‖ sender_device ‖ u32 LE len ‖ client_id ‖ plaintext`
+  (`Session.decrypt_format()` / `Device.decrypt_format()` === **2**). Before the
+  plaintext is returned the facade binds the AAD `client_id` (the label the
+  *sender* declared) to an actor the receiver verifies independently: the pinned
+  peer actor in the trusted lane, otherwise the roster identity (`members()`) of
+  the MLS-authenticated sender leaf. A mismatch is a rejection with rollback, so
+  a group member cannot sign a message as another actor. The JS workers
+  (`worker.js`, `trust-worker.js`, `durable-worker.js`, `trusted-state-worker.js`)
+  unframe and still return the plaintext as `output` — the durable/trusted
+  workers additionally surface `sender`/`client`, and `panel.js` shows 보낸이.
+  The frame is what the durable ledger stores (sealed, as before).
+- **KeyPackage exhaustion (M4).** A device holds at most **8** outstanding
+  (unconsumed) KeyPackages; `key_package` beyond that is `Rejected("key package
+  limit")` (a pure rejection — the device/session stays usable) *before* the
+  512-entry `open` bound could be hit. `delete_key_package(bytes)` drops one
+  published package's private material (e.g. one the relay reported consumed or
+  expired), and `join`/welcome processing prunes every still-unused package.
+  `Session` exposes `key_packages_outstanding()`.
+- **Silent identity regeneration (H3).** `init` now returns `fresh: true` when a
+  key was generated. `panel.js` keeps a per-database `localStorage` marker after
+  the first successful init; if a later init comes back `fresh` while the marker
+  is present (storage wiped from under a known database) it blocks the normal
+  flow, shows the rejoin guidance ("저장소가 비워져 새 기기로 시작합니다 — 상대
+  기기에서 다시 초대받아야 하며 이전 메시지는 읽을 수 없습니다") and requires an
+  explicit "새 기기로 시작" click that clears the marker. Intentional eviction
+  clears the marker so the expected fresh start is not flagged.
+- **Two-step commit application (M1).** `stage_commit(bytes)` authenticates an
+  incoming commit and returns `frame_members(adds) ‖ frame_members(removes)`
+  (identity + 32-byte signing key per entry) **without merging**; the caller then
+  `merge_staged()` (apply) or `discard_staged()` (policy refusal — the device
+  stays at its current epoch). Only one commit may be staged at a time; the
+  single-step `apply_commit`/`commit` is unchanged. Staged state is memory-only
+  and dropped on any rollback.
+- **Stale roster during a pending commit (M2).** `members()` stays at the old
+  epoch until `merge_pending`. `members_after_pending()` returns the roster the
+  group will have once the pending commit merges (current members − staged
+  removes + staged adds); this is the list to replicate into the outer v2 relay
+  commit JSON before POSTing it. See the *relay-contract* note below.
+
+### Known follow-up — poison-message cursor wedge (H2, NOT yet fixed)
+
+A durable-worker `decrypt` that the facade rejects at `sequence == cursor + 1`
+still returns a generic failure and does **not** advance the receive cursor, so a
+permanently-undecryptable message at the head of the inbox wedges every later
+receive. The intended fix is an authenticated ledger tombstone
+`{id, method:'decrypt', sequence, rejected:true}` written on that rejection (Rust
+state rolled back, cursor advanced past the message), with `durable-worker.js`
+returning `{rejected:true, sequence}` and a same-id resubmission replaying the
+tombstone. It is deferred here because it changes the ledger/`ok:false` contract
+and the cursor/sequence chain in ways that cascade through
+`native_mls_persistence_smoke.py` and `native_trusted_state_smoke.py` (notably the
+damaged→original "exactly once" retry pattern, which the advance deliberately
+drops), and those browser smokes cannot be executed in this toolchain. It should
+land together with the smoke sequence-chain rewrite under CI.
+
 ## Retry, concurrency and limits
 
 An immutable ID is scoped to one synthetic device database. Reuse requires exact

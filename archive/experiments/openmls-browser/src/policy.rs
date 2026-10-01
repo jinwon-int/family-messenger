@@ -151,6 +151,34 @@ fn frame_evidence(prepared: &Prepared, signature: &[u8]) -> Vec<u8> {
     out
 }
 
+/// `(identity, signing key)` pairs, sorted by identity.
+pub(crate) type Roster = Vec<(Vec<u8>, Vec<u8>)>;
+
+/// Sorted `(identity, signing key)` pairs from group members.
+pub(crate) fn roster_from_members(members: impl Iterator<Item = Member>) -> Result<Roster, Rejected> {
+    let mut roster = Vec::new();
+    for member in members {
+        if member.signature_key.len() != KEY_BYTES { return Err(rejected(())); }
+        let basic = BasicCredential::try_from(member.credential.clone()).map_err(|_| rejected(()))?;
+        roster.push((basic.identity().to_vec(), member.signature_key));
+    }
+    roster.sort();
+    Ok(roster)
+}
+
+/// Sorted `(identity, signing key)` pairs from leaf nodes (staged Add proposals).
+pub(crate) fn roster_from_leaves(leaves: impl Iterator<Item = LeafNode>) -> Result<Roster, Rejected> {
+    let mut roster = Vec::new();
+    for leaf in leaves {
+        let key = leaf.signature_key().as_slice().to_vec();
+        if key.len() != KEY_BYTES { return Err(rejected(())); }
+        let basic = BasicCredential::try_from(leaf.credential().clone()).map_err(|_| rejected(()))?;
+        roster.push((basic.identity().to_vec(), key));
+    }
+    roster.sort();
+    Ok(roster)
+}
+
 /// Wire framing for `members`: `u32 LE count`, then per member
 /// `u32 LE identity_len ‖ identity ‖ 32-byte signing key`, sorted by identity.
 pub(crate) fn frame_members(roster: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
@@ -176,13 +204,23 @@ impl Device {
     /// The post-commit roster of the current group (read-only, no ratchet material).
     pub(crate) fn members_inner(&self) -> Result<Vec<u8>, Rejected> {
         let group = self.group.as_ref().ok_or_else(|| rejected(()))?;
-        let mut roster: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-        for member in group.members() {
-            if member.signature_key.len() != KEY_BYTES { return Err(rejected(())); }
-            let basic = BasicCredential::try_from(member.credential.clone()).map_err(|_| rejected(()))?;
-            roster.push((basic.identity().to_vec(), member.signature_key));
-        }
+        Ok(frame_members(&roster_from_members(group.members())?))
+    }
+
+    /// Review M2: the roster the group will have once the *pending* commit
+    /// (`invite_with_commit` / `remove_member_pending`) is merged — current
+    /// members minus its removes plus its adds. `members()` stays at the old
+    /// epoch until `merge_pending`, so the outer v2 relay member list must be
+    /// built from this one. Without a pending commit it equals `members()`.
+    pub(crate) fn members_after_pending_inner(&self) -> Result<Vec<u8>, Rejected> {
+        let group = self.group.as_ref().ok_or_else(|| rejected(()))?;
+        let Some(pending) = group.pending_commit() else { return self.members_inner(); };
+        let removed: Vec<LeafNodeIndex> = pending.remove_proposals().map(|p| p.remove_proposal().removed()).collect();
+        let mut roster = roster_from_members(group.members().filter(|m| !removed.contains(&m.index)))?;
+        roster.extend(roster_from_leaves(pending.add_proposals()
+            .map(|p| p.add_proposal().key_package().leaf_node().clone()))?);
         roster.sort();
+        roster.dedup();
         Ok(frame_members(&roster))
     }
 
@@ -212,6 +250,13 @@ impl Device {
     pub fn members(&self) -> Result<Vec<u8>, Rejected> {
         if self.retired { return Err(rejected(())); }
         self.members_inner()
+    }
+
+    /// Roster after the pending commit merges (M2); the list to replicate into
+    /// the outer commit JSON *before* POSTing it. Same framing as `members`.
+    pub fn members_after_pending(&self) -> Result<Vec<u8>, Rejected> {
+        if self.retired { return Err(rejected(())); }
+        self.members_after_pending_inner()
     }
 
     /// Build and sign one approval payload. `action` is `approve-device` (E2,

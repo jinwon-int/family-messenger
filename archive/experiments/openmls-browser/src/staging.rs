@@ -80,7 +80,7 @@ pub(crate) fn restore(identity: &str, public_key: &[u8], group_id: Option<Vec<u8
             }
         }
     }
-    Ok(Device { provider, signer, credential, group, retired: false })
+    Ok(Device { provider, signer, credential, group, staged: None, retired: false })
 }
 
 /// Accidental-corruption checksum only, not authentication or rollback protection.

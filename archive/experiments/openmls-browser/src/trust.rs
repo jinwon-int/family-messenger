@@ -54,19 +54,20 @@ impl Device {
 }
 
 impl Device {
-    // Return plaintext only after checking the actual MLS-authenticated sender,
-    // credential and leaf signing key, plus the §3.6 AAD binding. Inner
-    // application labels are not proof.
+    // Return the framed plaintext (`frame_decrypt`, DECRYPT_FORMAT 2) only after
+    // checking the actual MLS-authenticated sender, credential and leaf signing
+    // key, plus the §3.6 AAD binding with the pinned actor as the only admissible
+    // client id (H1). Inner application labels are not proof.
     pub(crate) fn decrypt_peer_inner(&mut self, bytes: &[u8], actor: &str, key: &[u8]) -> Result<Vec<u8>, Rejected> {
         let expected = expected(actor,key)?;
         let (room, ciphertext) = split_identity(bytes)?;
         bounded(ciphertext, MAX_WIRE)?;
-        let (plaintext, sender) = self.decrypt_checked_inner(room, ciphertext)?;
+        let (plaintext, sender) = self.decrypt_checked_inner(room, ciphertext, Some(actor))?;
         // The pin binds the same identity the AAD was required to carry.
         if sender.device != expected.credential.serialized_content()
             || sender.credential != expected.credential || sender.signature_key != key {
             return Err(rejected(()));
         }
-        Ok(plaintext)
+        Ok(frame_decrypt(&sender.device, &sender.client_id, &plaintext))
     }
 }

@@ -158,6 +158,20 @@ impl Store {
         self.values.write().unwrap().journal.clear();
     }
 
+    /// Live entries whose storage key starts with `label` (every version).
+    pub(crate) fn count_with_label(&self, label: &[u8]) -> usize {
+        self.values.read().unwrap().map.keys().filter(|k| k.starts_with(label)).count()
+    }
+
+    /// Delete every live entry under `label` (journaled like any write, so a
+    /// rollback restores them). Returns the number removed.
+    pub(crate) fn remove_with_label(&self, label: &[u8]) -> usize {
+        let mut values = self.values.write().unwrap();
+        let keys: Vec<Vec<u8>> = values.map.keys().filter(|k| k.starts_with(label)).cloned().collect();
+        for key in &keys { values.remove(key); }
+        keys.len()
+    }
+
     /// Restore every pre-image recorded since the last commit/rollback.
     pub fn rollback(&self) {
         let mut values = self.values.write().unwrap();
@@ -268,8 +282,9 @@ impl Store {
         storage_key.extend_from_slice(&u16::to_be_bytes(VERSION));
 
 
+        // Persisted data: a decode failure is an error, never a panic (review L).
         let value: Vec<Vec<u8>> = match values.get(&storage_key) {
-            Some(list_bytes) => serde_json::from_slice(list_bytes).unwrap(),
+            Some(list_bytes) => serde_json::from_slice(list_bytes)?,
             None => vec![],
         };
 
@@ -321,7 +336,7 @@ impl std::fmt::Display for MemoryStorageError {
 
 impl std::error::Error for MemoryStorageError {}
 
-const KEY_PACKAGE_LABEL: &[u8] = b"KeyPackage";
+pub(crate) const KEY_PACKAGE_LABEL: &[u8] = b"KeyPackage";
 const PSK_LABEL: &[u8] = b"Psk";
 const ENCRYPTION_KEY_PAIR_LABEL: &[u8] = b"EncryptionKeyPair";
 const SIGNATURE_KEY_PAIR_LABEL: &[u8] = b"SignatureKeyPair";
@@ -490,7 +505,9 @@ impl StorageProvider<CURRENT_VERSION> for Store {
                 let key = (group_id, &proposal_ref);
                 let key = serde_json::to_vec(&key)?;
 
-                let proposal = self.read(QUEUED_PROPOSAL_LABEL, &key)?.unwrap();
+                // A listed ref without its proposal is corrupt persisted data.
+                let proposal = self.read(QUEUED_PROPOSAL_LABEL, &key)?
+                    .ok_or(MemoryStorageError::SerializationError)?;
                 Ok((proposal_ref, proposal))
             })
             .collect::<Result<Vec<_>, _>>()
@@ -509,7 +526,7 @@ impl StorageProvider<CURRENT_VERSION> for Store {
         let Some(value) = values.get(&key) else {
             return Ok(None);
         };
-        let value = serde_json::from_slice(value).unwrap();
+        let value = serde_json::from_slice(value)?;
 
         Ok(value)
     }
@@ -527,7 +544,7 @@ impl StorageProvider<CURRENT_VERSION> for Store {
         let Some(value) = values.get(&key) else {
             return Ok(None);
         };
-        let value = serde_json::from_slice(value).unwrap();
+        let value = serde_json::from_slice(value)?;
 
         Ok(value)
     }
@@ -545,7 +562,7 @@ impl StorageProvider<CURRENT_VERSION> for Store {
         let Some(value) = values.get(&key) else {
             return Ok(None);
         };
-        let value = serde_json::from_slice(value).unwrap();
+        let value = serde_json::from_slice(value)?;
 
         Ok(value)
     }
@@ -563,7 +580,7 @@ impl StorageProvider<CURRENT_VERSION> for Store {
         let Some(value) = values.get(&key) else {
             return Ok(None);
         };
-        let value = serde_json::from_slice(value).unwrap();
+        let value = serde_json::from_slice(value)?;
 
         Ok(value)
     }
@@ -583,7 +600,7 @@ impl StorageProvider<CURRENT_VERSION> for Store {
         let Some(value) = values.get(&key) else {
             return Ok(None);
         };
-        let value = serde_json::from_slice(value).unwrap();
+        let value = serde_json::from_slice(value)?;
 
         Ok(value)
     }
@@ -903,7 +920,7 @@ impl StorageProvider<CURRENT_VERSION> for Store {
 
 
         if let Some(value) = value {
-            return Ok(serde_json::from_slice(value).unwrap());
+            return Ok(serde_json::from_slice(value)?);
         }
 
         Ok(vec![])
@@ -1088,7 +1105,7 @@ impl StorageProvider<CURRENT_VERSION> for Store {
         let Some(value) = values.get(&key) else {
             return Ok(None);
         };
-        let value = serde_json::from_slice(value).unwrap();
+        let value = serde_json::from_slice(value)?;
 
         Ok(value)
     }

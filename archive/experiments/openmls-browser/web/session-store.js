@@ -50,6 +50,27 @@ export const bindEncrypt = (room, client, payload) =>
   lenPrefixed([utf8(room), utf8(client)], payload);
 export const bindDecrypt = (room, payload) => lenPrefixed([utf8(room)], payload);
 
+// H1 attribution: the Rust facade's `decrypt` output is framed as
+// u32 LE len ‖ sender_device ‖ u32 LE len ‖ client_id ‖ plaintext
+// (Session.decrypt_format() === 2). Both labels were authenticated by the facade
+// (sender by MLS, client bound to it), so a caller may surface them directly.
+// Returns {sender, client, plaintext (Uint8Array)}; throws on a malformed frame.
+export function unframeDecrypt(output) {
+  const bytes = output instanceof Uint8Array ? output : new Uint8Array(output);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let at = 0;
+  const field = () => {
+    if (at + 4 > bytes.length) fail();
+    const n = view.getUint32(at, true); at += 4;
+    if (at + n > bytes.length) fail();
+    const slice = bytes.slice(at, at + n); at += n;
+    return slice;
+  };
+  const decoder = new TextDecoder('utf-8', {fatal: true});
+  const sender = decoder.decode(field()), client = decoder.decode(field());
+  return {sender, client, plaintext: bytes.slice(at)};
+}
+
 // Session framing (src/session.rs): u32 LE count, then per entry
 // u32 LE key_len ‖ key ‖ u32 LE value_len ‖ value (value_len 0xFFFFFFFF = delete).
 export function frame(entries) {

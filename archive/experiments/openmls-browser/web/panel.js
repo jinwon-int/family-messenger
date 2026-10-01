@@ -93,6 +93,19 @@ $('register').addEventListener('click', () => busy($('register'), async () => {
   log('기기 등록:', detail.kind);
 }));
 
+const markerKey = database => 'fresh-marker:' + database;
+// H3: a database we have initialized before coming back `fresh` means its storage
+// was wiped — a new device, not a resume. This completes a started session.
+function activate(identity, database, status) {
+  localStorage.setItem(markerKey(database), '1');
+  localStorage.setItem('real-device-session', JSON.stringify({identity, database}));
+  started = true;
+  const fingerprint = group4(sha256(new Uint8Array(status.public_key)));
+  $('state').textContent = `신원 ${identity} · 지문 ${fingerprint}\nrevision ${status.revision} · cursor ${status.cursor} · ledger ${status.entries}건 · reloads ${status.reloads}`;
+  for (const id of ['create', 'keypackage', 'invite', 'join', 'encrypt', 'decrypt', 'evict']) $(id).disabled = false;
+  log(`워커 시작: ${identity} @ ${database} (cursor ${cursor})`);
+}
+
 $('start').addEventListener('click', () => busy($('start'), async () => {
   const identity = $('identity').value.trim(), database = $('database').value.trim();
   const passphrase = $('passphrase').value;
@@ -102,15 +115,32 @@ $('start').addEventListener('click', () => busy($('start'), async () => {
   window.stopWorker?.('device');
   await window.spawn('device', true);
   const init = await callWorker('init', {identity, database, room: 'family', passphrase});
+  $('passphrase').value = '';  // 저수준: init 후 암호 입력란을 비운다
   cursor = init.cursor;
   const status = await callWorker('status');
-  localStorage.setItem('real-device-session', JSON.stringify({identity, database}));
-  started = true;
-  const fingerprint = group4(sha256(new Uint8Array(status.public_key)));
-  $('state').textContent = `신원 ${identity} · 지문 ${fingerprint}\nrevision ${status.revision} · cursor ${status.cursor} · ledger ${status.entries}건 · reloads ${status.reloads}`;
-  for (const id of ['create', 'keypackage', 'invite', 'join', 'encrypt', 'decrypt', 'evict']) $(id).disabled = false;
-  log(`워커 시작: ${identity} @ ${database} (cursor ${cursor})`);
+  if (init.fresh && localStorage.getItem(markerKey(database))) {
+    // Storage was wiped from under a known database: block the normal flow and
+    // require an explicit acknowledgment that re-invitation is needed.
+    window.__pendingFresh = {identity, database, status};
+    $('confirm-fresh').hidden = false;
+    $('state').textContent = '저장소가 비워져 새 기기로 시작합니다 — 상대 기기에서 다시 초대받아야 하며 이전 메시지는 읽을 수 없습니다.';
+    log('경고: 저장소가 비워져 새 기기로 재시작됨 — 재초대 필요(“새 기기로 시작”을 눌러 확인)');
+    try { await api('observations', {kind: $('kind').value || 'unknown', fresh_restart: true,
+      notes: '저장소가 비워진 뒤 새 기기(새 지문)로 재시작 — 재초대 필요'}); } catch (_) { /* 관찰 기록 실패는 무시 */ }
+    return;
+  }
+  activate(identity, database, status);
 }));
+
+$('confirm-fresh').addEventListener('click', () => {
+  const pending = window.__pendingFresh;
+  if (!pending) return;
+  window.__pendingFresh = null;
+  $('confirm-fresh').hidden = true;
+  localStorage.removeItem(markerKey(pending.database));  // 명시적 확인: 표식을 지우고 활성화
+  activate(pending.identity, pending.database, pending.status);
+  log('새 기기로 시작을 확인함(재초대 필요)');
+});
 
 $('board-refresh').addEventListener('click', () => busy($('board-refresh'), async () => {
   const entries = await api('board');
@@ -169,7 +199,8 @@ $('decrypt').addEventListener('click', () => busy($('decrypt'), async () => {
   if (!slots.cipher) throw new Error('먼저 교환판에서 암호문을 가져온다');
   const out = await op('decrypt', slots.cipher, cursor + 1);
   slots.cipher = null; renderSlots();
-  $('mail').textContent = `해독: ${decoder.decode(new Uint8Array(out.output))}`
+  // H1: the worker returns the MLS-authenticated sender alongside the plaintext.
+  $('mail').textContent = `보낸이 ${out.sender ?? '?'} · 해독: ${decoder.decode(new Uint8Array(out.output))}`
     + (out.replay ? ' (재생 응답)' : '') + `\n(cursor ${out.cursor}, revision ${out.revision})`;
   log(`해독 성공 cursor=${out.cursor}`);
 }));
@@ -191,6 +222,9 @@ $('evict').addEventListener('click', () => busy($('evict'), async () => {
     request.onblocked = () => reject(new Error('deleteDatabase 차단됨 — 다른 탭을 닫는다'));
   });
   started = false;
+  // Intentional eviction: clear the H3 marker so the next (expected) fresh start
+  // is not flagged as a surprise wipe.
+  localStorage.removeItem(markerKey(database));
   for (const id of ['create', 'keypackage', 'invite', 'join', 'encrypt', 'decrypt', 'evict']) $(id).disabled = true;
   $('state').textContent = '저장소 삭제 완료. 같은 신원·데이터베이스·암호로 다시 시작하면 새 지문(새 기기)이 된다 — 상대의 재초대 필요.';
   log('저장소 삭제 완료(축출 재연습): 재시작 후 재초대 필요');
