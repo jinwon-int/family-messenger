@@ -122,7 +122,7 @@ jobs:
       - name: Facade unit tests (cargo test, host)
         if: steps.scope.outputs.run == 'true'
         working-directory: archive/experiments/openmls-browser
-        run: cargo test --locked -- --nocapture
+        run: cargo "+$RUST_TOOLCHAIN" test --locked -- --nocapture
       - uses: actions/setup-go@v5
         if: steps.scope.outputs.run == 'true'
         with:
@@ -188,7 +188,7 @@ jobs:
         working-directory: archive/native-mls/bot
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/archive/experiments/openmls-browser/target
-        run: cargo build --locked
+        run: cargo "+$RUST_TOOLCHAIN" build --locked
       - name: v2 relay + native bot — 3-leaf room session, 256 KiB attachment, uninvited-room control
         if: steps.scope.outputs.run == 'true'
         run: python archive/native-mls/tests/native_mls_bot_smoke.py --bundle artifacts/mls-pkg --relay-binary artifacts/native-mls-relay --devices-binary artifacts/native-devices --bot-binary archive/experiments/openmls-browser/target/debug/native-mls-bot
@@ -249,4 +249,4 @@ jobs:
       - name: Bot unit tests (cargo test, host)
         if: steps.bot-scope.outputs.run == 'true'
         working-directory: archive/native-mls/bot
-        run: cargo test --locked -- --nocapture
+        run: cargo "+$RUST_TOOLCHAIN" test --locked -- --nocapture

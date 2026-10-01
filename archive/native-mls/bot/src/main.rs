@@ -68,7 +68,8 @@ fn main() -> ExitCode {
             eprintln!("re-read per request so an external refresher can rotate short-lived tokens");
             eprintln!("persistent identity (--state-file <path>, any position): the bot resumes its MLS");
             eprintln!("identity, room cursor and joined state across restarts; the file is rewritten");
-            eprintln!("atomically whenever the group state moves");
+            eprintln!("atomically whenever the group state moves (and before every echo leaves the process)");
+            eprintln!("NATIVE_MLS_BOT_MAX_SECS=<secs> bounds the session (default 300; 0 = no deadline)");
             return ExitCode::FAILURE;
         }
     };
