@@ -8,9 +8,10 @@
 홈서버는 단일 바이너리 Tuwunel이며 바이너리 확보·설정·systemd 설치 절차는
 [Tuwunel 배포 런북](TUWUNEL-DEPLOY.md)을 따릅니다. 설정은 `deploy/tuwunel/tuwunel.toml.example`
 형태로 두고, 리스너는 루프백(address)에만 바인딩합니다. 외부 노출은 터널/리버스 프록시가 담당합니다.
-이전 Synapse/Element/Postgres 구성(`compose.yaml`, `scripts/init.py`)은 `archive/synapse-stack/`에
-보관됐으며 새 설치에 사용하지 않습니다. 운영 호스트가 아직 기존 구성으로 서비스 중이라면
-호스트 전환은 별도 운영 작업(1단계 배포)으로 수행합니다.
+이전 Synapse/Element/Postgres 구성(`compose.yaml`, `scripts/init.py`)은 보존 브랜치
+[`archive-frozen-20260917`](https://github.com/jinwon-int/family-messenger/tree/archive-frozen-20260917/archive/synapse-stack)의
+`archive/synapse-stack/`에 보관됐으며(main에는 없음) 새 설치에 사용하지 않습니다. 운영 호스트가
+아직 기존 구성으로 서비스 중이라면 호스트 전환은 별도 운영 작업(1단계 배포)으로 수행합니다.
 
 계정 발급은 `scripts/admin.py`로 끝냅니다. 스크립트는 `.runtime/tuwunel/tuwunel.toml`과
 `.runtime/tuwunel/admin_token`(0600)을 읽고, 토큰 값은 어디에도 기록하지 않습니다.
@@ -74,7 +75,7 @@ Tuwunel 내장 온라인 백업과 restic을 짝으로 씁니다. `scripts/tuwun
 **백업 중 업그레이드·설정/비밀번호 변경·미디어 삭제를 하지 않습니다.** 잠금, 여유 공간 사전 검사,
 성공 기록(`tuwunel-<시각>-<접미>.json`)과 명령 행 예시는 [Tuwunel 운영](TUWUNEL-OPERATIONS.md)을 따릅니다.
 이전 PostgreSQL 덤프 방식(`scripts/backup.py`, `deploy/family-messenger-backup.{service,timer}`)은
-`archive/synapse-stack/`에 보관됐습니다.
+같은 보존 브랜치(`archive-frozen-20260917`)에 보관됐습니다.
 
 ### 복구
 

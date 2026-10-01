@@ -135,7 +135,7 @@ python3 scripts/fleet_matrix_state.py unblock --config /private/config.json \
 `python3 -m unittest discover -s tests -v`는 SDK/계정 없이 상태·제어·worker 종료를 검사한다.
 루프백 Tuwunel을 기동한 뒤 `python tests/tuwunel_smoke.py --credentials <0600 계정 파일>`은
 실제 Matrix E2EE(megolm) 암호화 왕복을 검사한다(#104; verify.yml 루프백 통합이 같은 흐름).
-Synapse 시대 드라이버 `matrix_frontend_smoke.py`는 `archive/synapse-stack/tests/`에 보존됐다. `--real-worker`는 명시적으로
+Synapse 시대 드라이버 `matrix_frontend_smoke.py`는 보존 브랜치 `archive-frozen-20260917`의 `archive/synapse-stack/tests/`에 보존됐다. `--real-worker`는 명시적으로
 허용된 CCC 노드에서 실제 read-only Codex 연결을 검사한다. 결과는 private `artifacts/`에 저장된다.
 실제 사용자 장치나 운영 가족방을 시험 도구에 입력하지 않는다.
 
