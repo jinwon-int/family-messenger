@@ -188,18 +188,40 @@ def main():
             proof['per_operation'] = {'encrypt_changed_entries': sent['changed'], 'encrypt_bytes_written': sent['bytes_written'],
                                       'encrypt_meta_bytes': sent['meta_bytes'],
                                       'store_entries': rpc(alice, 'status')['entries']}
+            # H2 poison-message tombstone (#177): a damaged ciphertext at the head of the inbox is
+            # rejected by the facade, persisted as an authenticated ledger tombstone (input kept,
+            # no output) and the cursor moves past it, so it cannot wedge later receives. It is a
+            # verdict, not a worker failure (ok: true, rejected: true); the caller re-sequences.
             before = state_digest(bob, databases['bob'])
             damaged = cipher.copy(); damaged[-1] ^= 1
-            op(bob, 'receive1', 'decrypt', damaged, sequence=1, reject=True)
-            assert state_digest(bob, databases['bob']) == before
-            op(bob, 'receive1', 'decrypt', cipher, sequence=1, fault='abort-after-write', reject=True)
-            assert state_digest(bob, databases['bob']) == before
-            received = op(bob, 'receive1', 'decrypt', cipher, sequence=1)
-            assert received['output'] == text and received['cursor'] == 1
-            again = op(bob, 'receive1', 'decrypt', cipher, sequence=1)
+            op(bob, 'receive1', 'decrypt', damaged, sequence=1, fault='abort-before-write', reject=True)
+            assert state_digest(bob, databases['bob']) == before  # a tombstone write is atomic like any other
+            poison = op(bob, 'receive1', 'decrypt', damaged, sequence=1)
+            assert poison['rejected'] is True and poison['sequence'] == 1 and poison['cursor'] == 1 and poison['replay'] is False
+            assert 'output' not in poison and 'sender' not in poison
+            # (state_digest sees only the sealed meta record: cursor/revision come from status.)
+            tombstoned = state_digest(bob, databases['bob'])
+            assert tombstoned != before and rpc(bob, 'status')['cursor'] == 1
+            # Resubmitting the tombstoned id with the same bytes replays the verdict without a write;
+            # the same id with different bytes (the original) is still an id reuse and rejected.
+            replayed = op(bob, 'receive1', 'decrypt', damaged, sequence=1)
+            assert replayed['rejected'] is True and replayed['replay'] is True and replayed['sequence'] == 1
+            assert state_digest(bob, databases['bob']) == tombstoned
+            op(bob, 'receive1', 'decrypt', cipher, sequence=1, reject=True)
+            # The original is now behind the head: it must be re-sequenced (2), then decrypts exactly once.
+            op(bob, 'receive1b', 'decrypt', cipher, sequence=1, reject=True)
+            assert state_digest(bob, databases['bob']) == tombstoned
+            op(bob, 'receive1b', 'decrypt', cipher, sequence=2, fault='abort-after-write', reject=True)
+            assert state_digest(bob, databases['bob']) == tombstoned
+            received = op(bob, 'receive1b', 'decrypt', cipher, sequence=2)
+            assert received['output'] == text and received['cursor'] == 2
+            again = op(bob, 'receive1b', 'decrypt', cipher, sequence=2)
             assert again['replay'] and again['revision'] == received['revision']
-            op(bob, 'new-id-replay', 'decrypt', cipher, sequence=2, reject=True)
-            proof['checks']['tamper_abort_and_original_exactly_once'] = True
+            # The same ciphertext under a new id is a replay OpenMLS rejects: permanently undecryptable
+            # at this cursor, so it too becomes a tombstone — no second plaintext is ever produced.
+            replay_new = op(bob, 'new-id-replay', 'decrypt', cipher, sequence=3)
+            assert replay_new['rejected'] is True and replay_new['cursor'] == 3 and 'output' not in replay_new
+            proof['checks']['poison_message_tombstone_advances_cursor_and_original_decrypts_once'] = True
             # At rest (#177 M2b-3b): neither database holds a plaintext message (bob's ledger
             # caches the decrypted text), a store label, an actor label or a public key.
             dump = alice.evaluate(DUMP, databases['alice']) + bob.evaluate(DUMP, databases['bob'])
@@ -223,7 +245,7 @@ def main():
             observer = page(contexts[0]); init(observer, 'alice')
             recovered = op(alice, 'lost', 'encrypt', list(b'lost response'))
             assert recovered['replay']
-            assert op(bob, 'receive2', 'decrypt', recovered['output'], sequence=2)['output'] == list(b'lost response')
+            assert op(bob, 'receive2', 'decrypt', recovered['output'], sequence=4)['output'] == list(b'lost response')
             op(alice, 'lost', 'encrypt', list(b'changed request'), reject=True)
             proof['checks']['lost_reply_browser_crash_exact_ciphertext_retry'] = True
 
@@ -234,7 +256,7 @@ def main():
             assert all(x['ok'] for x in outcomes)
             assert sorted(x['result']['replay'] for x in outcomes) == [False, True]
             assert outcomes[0]['result']['output'] == outcomes[1]['result']['output']
-            assert op(bob, 'receive3', 'decrypt', outcomes[0]['result']['output'], sequence=3)['output'] == list(b'two tabs')
+            assert op(bob, 'receive3', 'decrypt', outcomes[0]['result']['output'], sequence=5)['output'] == list(b'two tabs')
             proof['checks']['concurrent_tabs_single_encryption'] = True
             # Each tab keeps a resident session: a tab must continue from the other
             # tab's committed state (reload on a newer revision), never from its own
@@ -245,19 +267,25 @@ def main():
             second = op(observer, 'tab-two', 'encrypt', list(b'from tab two'))['output']
             third = op(alice, 'tab-one-again', 'encrypt', list(b'tab one again'))['output']
             assert rpc(alice, 'status')['reloads'] == reloads + 1, 'exactly one rebuild after the other tab wrote'
-            assert op(bob, 'receive-tab1', 'decrypt', first, sequence=4)['output'] == list(b'from tab one')
-            assert op(bob, 'receive-tab2', 'decrypt', second, sequence=5)['output'] == list(b'from tab two')
-            assert op(bob, 'receive-tab1b', 'decrypt', third, sequence=6)['output'] == list(b'tab one again')
+            assert op(bob, 'receive-tab1', 'decrypt', first, sequence=6)['output'] == list(b'from tab one')
+            assert op(bob, 'receive-tab2', 'decrypt', second, sequence=7)['output'] == list(b'from tab two')
+            assert op(bob, 'receive-tab1b', 'decrypt', third, sequence=8)['output'] == list(b'tab one again')
             proof['checks']['stale_tab_session_reloads_once_before_new_operation'] = True
 
             # Receiver restart preserves replay state, cursor, and future decryption.
             crash_restart(1, bob)
             bob = page(contexts[1]); init(bob, 'bob')
-            assert rpc(bob, 'status')['cursor'] == 6
-            op(bob, 'replayed-after-restart', 'decrypt', outcomes[0]['result']['output'], sequence=7, reject=True)
+            assert rpc(bob, 'status')['cursor'] == 8
+            # A replayed ciphertext after the restart is still a poison message at the head: tombstone,
+            # cursor 9. The pre-restart tombstone (receive1) replays its verdict from the reopened ledger.
+            restart_replay = op(bob, 'replayed-after-restart', 'decrypt', outcomes[0]['result']['output'], sequence=9)
+            assert restart_replay['rejected'] is True and restart_replay['cursor'] == 9 and 'output' not in restart_replay
+            survived = op(bob, 'receive1', 'decrypt', damaged, sequence=1)
+            assert survived['rejected'] is True and survived['replay'] is True
             future = op(alice, 'future', 'encrypt', list(b'after restart'))['output']
-            assert op(bob, 'receive4', 'decrypt', future, sequence=7)['output'] == list(b'after restart')
+            assert op(bob, 'receive4', 'decrypt', future, sequence=10)['output'] == list(b'after restart')
             proof['checks']['receiver_browser_crash_and_future_message'] = True
+            proof['checks']['tombstone_replays_after_receiver_restart'] = True
 
             # Kill after the write is issued, while the callback blocks commit.
             before_crash = state_digest(alice, databases['alice'])
@@ -269,14 +297,15 @@ def main():
             assert state_digest(alice, databases['alice']) == before_crash
             retry = op(alice, 'inflight', 'encrypt', list(b'in flight crash'))
             assert retry['replay'] is False
-            assert op(bob, 'receive5', 'decrypt', retry['output'], sequence=8)['output'] == list(b'in flight crash')
+            assert op(bob, 'receive5', 'decrypt', retry['output'], sequence=11)['output'] == list(b'in flight crash')
             proof['checks']['inflight_transaction_browser_crash_preserves_complete_committed_state'] = True
 
             wrong = page(contexts[0]); init(wrong, 'bob', databases['alice'], reject=True)
             rpc(wrong, 'status', reject=True)
             proof['checks']['wrong_actor_cannot_reopen_state'] = True
             # Clone a database, optionally mutating it (runs in the page; no key material leaves it).
-            CLONE = '''async ([source, target, kind, passphrase]) => {
+            # `identity` selects whose sealed meta is opened (additional data binds it): alice by default.
+            CLONE = '''async ([source, target, kind, passphrase, identity = 'alice']) => {
               const src = await new Promise((r,j)=>{const q=indexedDB.open(source);q.onsuccess=()=>r(q.result);q.onerror=j;});
               const read = (store, what) => new Promise((r,j)=>{const q=src.transaction(store).objectStore(store)[what]();q.onsuccess=()=>r(q.result);q.onerror=j;});
               const metaKeys = await read('meta','getAllKeys'), metas = await read('meta','getAll');
@@ -291,17 +320,23 @@ def main():
               // (session-store.js construction, reproduced here), change it, re-tag and re-seal.
               const metaAd = identity => utf8(`family-mls-meta-v4/durable\\u0000${identity}\\u0000main`);
               const keysOf = () => custody.unlockVault(metas[custodyAt].capsule, metas[custodyAt].vault, passphrase);
-              const openMeta = keys => JSON.parse(new TextDecoder().decode(custody.openRecord(keys.enc, metaAd('alice'), metas[stateAt].sealed)),
+              const openMeta = keys => JSON.parse(new TextDecoder().decode(custody.openRecord(keys.enc, metaAd(identity), metas[stateAt].sealed)),
                 (_, v) => v && typeof v === 'object' && !Array.isArray(v) && '$b' in v ? fromHex(v.$b) : v);
-              const resealMeta = async (keys, meta) => {
-                const body = utf8(JSON.stringify(['family-mls-meta-v4/durable', meta.version, meta.identity, meta.room,
-                  hex(meta.public_key), hex(meta.group_id), meta.format, meta.revision, meta.cursor, meta.epoch, hex(meta.set),
-                  meta.count, meta.ledger.map(x => [x.id, x.method, x.sequence, x.epoch, hex(x.input), hex(x.output)]), meta.acked, null]));  // null: no extra meta
-                const domain = utf8('family-mls-v2/meta\\u0000');
-                const message = new Uint8Array(domain.length + 4 + body.length);
-                message.set(domain); new DataView(message.buffer).setUint32(domain.length, body.length, true); message.set(body, domain.length + 4);
-                const k = await crypto.subtle.importKey('raw', keys.auth, {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
-                meta.tag = new Uint8Array(await crypto.subtle.sign('HMAC', k, message));
+              // retag=false re-seals the edited meta under its *old* tag (AEAD only): what a holder of
+              // the custody key could do to a field that is not covered by the meta tag.
+              const resealMeta = async (keys, meta, retag = true) => {
+                if (retag) {
+                  // H2: a tombstone item appends a trailing 1 (session-store.js ledgerItemBytes).
+                  const body = utf8(JSON.stringify(['family-mls-meta-v4/durable', meta.version, meta.identity, meta.room,
+                    hex(meta.public_key), hex(meta.group_id), meta.format, meta.revision, meta.cursor, meta.epoch, hex(meta.set),
+                    meta.count, meta.ledger.map(x => [x.id, x.method, x.sequence, x.epoch, hex(x.input), hex(x.output), ...(x.rejected === true ? [1] : [])]),
+                    meta.acked, null]));  // null: no extra meta
+                  const domain = utf8('family-mls-v2/meta\\u0000');
+                  const message = new Uint8Array(domain.length + 4 + body.length);
+                  message.set(domain); new DataView(message.buffer).setUint32(domain.length, body.length, true); message.set(body, domain.length + 4);
+                  const k = await crypto.subtle.importKey('raw', keys.auth, {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
+                  meta.tag = new Uint8Array(await crypto.subtle.sign('HMAC', k, message));
+                }
                 const plain = utf8(JSON.stringify(meta, (_, v) => v instanceof Uint8Array ? {$b: hex(v)} : v));
                 metas[stateAt] = {version: 4, sealed: custody.sealRecord(keys.enc, metaAd(meta.identity), plain)};
               };
@@ -309,6 +344,15 @@ def main():
                 const keys = await keysOf(), meta = openMeta(keys);
                 if (kind === 'actor') meta.identity = 'bob';
                 await resealMeta(keys, meta);
+              }
+              else if (kind === 'tombstone-flag') {
+                // H2: strip `rejected` from a tombstone and re-seal without re-tagging. The flag is
+                // under the meta tag, so the load must fail closed (the item is otherwise well-formed).
+                const keys = await keysOf(), meta = openMeta(keys);
+                const tombstone = meta.ledger.find(x => x.rejected === true);
+                if (!tombstone) throw new Error('no tombstone to tamper');
+                delete tombstone.rejected;
+                await resealMeta(keys, meta, false);
               }
               else if (kind === 'meta-flip') metas[stateAt].sealed[metas[stateAt].sealed.length - 1] ^= 1;
               else if (kind === 'tag') entries[0].t[0] ^= 1;
@@ -370,6 +414,25 @@ def main():
                 corrupt.close()
             proof['checks']['corrupt_sealed_meta_entry_tag_missing_or_rolled_back_entry_retained_denied'] = True
             proof['checks']['corrupt_weak_relabelled_or_swapped_custody_capsule_retained_denied'] = True
+            # H2 tombstone tamper evidence on bob's database (the receiver holds the tombstones).
+            # Positive control first: an independent reseal + re-tag that encodes the `rejected` flag
+            # exactly as session-store.js does reopens with the same cursor and replays the verdict,
+            # so the denial below is the meta tag, not an encoding mismatch.
+            bob_cursor = rpc(bob, 'status')['cursor']
+            resealed_bob = prefix + '-bob-resealed'
+            bob.evaluate(CLONE, [databases['bob'], resealed_bob, 'reseal', passphrases['bob'], 'bob'])
+            control = page(contexts[1]); init(control, 'bob', resealed_bob)
+            assert rpc(control, 'status')['cursor'] == bob_cursor
+            assert op(control, 'receive1', 'decrypt', damaged, sequence=1)['rejected'] is True
+            control.close()
+            flagged = prefix + '-bob-tombstone-flag'
+            bob.evaluate(CLONE, [databases['bob'], flagged, 'tombstone-flag', passphrases['bob'], 'bob'])
+            before = bob.evaluate(DUMP, flagged)
+            tampered = page(contexts[1]); init(tampered, 'bob', flagged, reject=True)
+            rpc(tampered, 'status', reject=True)
+            assert before == bob.evaluate(DUMP, flagged)
+            tampered.close()
+            proof['checks']['tombstone_rejected_flag_under_meta_tag_tamper_retained_denied'] = True
             # A worker that already unlocked must notice its capsule being replaced underneath it.
             live_db = prefix + '-live-swap'
             alice.evaluate(CLONE, [databases['alice'], live_db, '', passphrases['alice']])

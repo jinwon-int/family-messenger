@@ -199,6 +199,13 @@ $('decrypt').addEventListener('click', () => busy($('decrypt'), async () => {
   if (!slots.cipher) throw new Error('먼저 교환판에서 암호문을 가져온다');
   const out = await op('decrypt', slots.cipher, cursor + 1);
   slots.cipher = null; renderSlots();
+  if (out.rejected === true) {
+    // H2: the facade rejected this message at the head of the inbox; the worker
+    // persisted a tombstone and moved the cursor past it. Not an error of the panel.
+    $('mail').textContent = `거부된 메시지를 건너뜀 (seq ${out.sequence})\n(cursor ${out.cursor}, revision ${out.revision})`;
+    log(`거부된 메시지를 건너뜀 (seq ${out.sequence})`);
+    return;
+  }
   // H1: the worker returns the MLS-authenticated sender alongside the plaintext.
   $('mail').textContent = `보낸이 ${out.sender ?? '?'} · 해독: ${decoder.decode(new Uint8Array(out.output))}`
     + (out.replay ? ' (재생 응답)' : '') + `\n(cursor ${out.cursor}, revision ${out.revision})`;

@@ -85,6 +85,12 @@ jobs:
         if: steps.scope.outputs.run == 'true'
         working-directory: archive/experiments/openmls-browser
         run: npm ci --ignore-scripts --no-audit --no-fund
+      # H2 poison-message tombstone rule (#177): pure-function tests of session-store.js
+      # (decision helper, ledger item shape, tagged encoding) — no wasm, no IndexedDB, seconds.
+      - name: Session store unit tests (node --test)
+        if: steps.scope.outputs.run == 'true'
+        working-directory: archive/experiments/openmls-browser
+        run: node --test web/session-store.test.mjs
       - name: Build WASM bundle
         if: steps.scope.outputs.run == 'true'
         run: archive/experiments/openmls-browser/build.sh artifacts/mls-pkg

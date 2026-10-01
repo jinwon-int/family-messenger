@@ -17,8 +17,11 @@ function status(ctx, meta) {
 }
 // H1: expose the authenticated sender/client of a decrypt and hand the caller the
 // plaintext as `output` (the external contract); the frame is stored in the ledger.
+// H2: a poison-message tombstone ({rejected: true, sequence, cursor, …}, no output)
+// is returned as-is inside the normal `ok: true` envelope — it is a verdict the
+// store persisted, not a failure of this worker.
 function decrypted(result) {
-  if (!result || !result.output) return result;
+  if (!result || result.rejected === true || !result.output) return result;
   const {sender, client, plaintext} = unframeDecrypt(result.output);
   return {...result, output: Array.from(plaintext), sender, client};
 }
