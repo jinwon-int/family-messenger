@@ -26,6 +26,11 @@ const MAX_IDENTITY: usize = 64;
 /// costs one store entry; without a cap a device that keeps publishing would
 /// walk into the 512-entry `open` bound ("state limit") and lose the session.
 pub(crate) const MAX_KEY_PACKAGES: usize = 8;
+/// Review 2 J-HB (#231): keep the message secrets of a few past epochs so an
+/// application message the relay ordered before a commit — or that a device
+/// reads only after merging its own commit — still decrypts instead of being
+/// tombstoned as poison. Bounded: three epochs of secret-tree state.
+pub(crate) const PAST_EPOCHS: usize = 3;
 /// `decrypt` output format (review H1): `u32 LE len ‖ sender_device ‖ u32 LE len ‖
 /// client_id ‖ plaintext`. Bumped whenever the framing changes; JS callers assert it.
 pub const DECRYPT_FORMAT: u32 = 2;
@@ -142,7 +147,12 @@ pub(crate) struct AuthenticatedSender {
     pub device: Vec<u8>,
     pub client_id: Vec<u8>,
     pub credential: Credential,
-    pub signature_key: Vec<u8>,
+    /// The sender's leaf signing key as of the current tree; `None` for a
+    /// past-epoch message whose leaf a later commit removed (OpenMLS verified
+    /// it against that epoch's leaves, but does not expose the key) — pinned
+    /// lanes refuse such a message, the roster lane attributes it by the
+    /// authenticated credential.
+    pub signature_key: Option<Vec<u8>>,
 }
 
 /// Crypto from `openmls_rust_crypto`, storage from this crate's v2 [`store::Store`]
@@ -268,7 +278,7 @@ impl Device {
     fn create_inner(&mut self) -> Result<(), Rejected> {
         if self.group.is_some() { return Err(Rejected("group already exists")); }
         let config = MlsGroupCreateConfig::builder().ciphersuite(SUITE)
-            .use_ratchet_tree_extension(true).build();
+            .use_ratchet_tree_extension(true).max_past_epochs(PAST_EPOCHS).build();
         self.group = Some(MlsGroup::new(&self.provider, &self.signer, &config, self.credential.clone()).map_err(rejected)?);
         Ok(())
     }
@@ -323,7 +333,8 @@ impl Device {
         // Joiners must also carry the ratchet tree in the Welcomes THEY later create:
         // the default join config turns the extension off, so a Welcome from any
         // member other than the creator could not be joined (tree = None here).
-        let config = MlsGroupJoinConfig::builder().use_ratchet_tree_extension(true).build();
+        let config = MlsGroupJoinConfig::builder().use_ratchet_tree_extension(true)
+            .max_past_epochs(PAST_EPOCHS).build();
         let staged = StagedWelcome::new_from_welcome(&self.provider,
             &config, welcome, None).map_err(rejected)?;
         self.group = Some(staged.into_group(&self.provider).map_err(rejected)?);
@@ -366,12 +377,20 @@ impl Device {
         let processed = group.process_message(&self.provider, message).map_err(rejected)?;
         let parsed = parse_aad(processed.aad()).ok_or_else(|| rejected(()))?;
         let (sender_device, credential, signature_key) = match processed.sender() {
-            Sender::Member(index) => {
-                let member = group.members().find(|m| m.index == *index).ok_or_else(|| rejected(()))?;
+            Sender::Member(index) => match group.members().find(|m| m.index == *index) {
                 // Every device in this facade carries a BasicCredential whose
                 // serialized content is exactly the identity string.
-                (member.credential.serialized_content().to_vec(), member.credential, member.signature_key)
-            }
+                Some(member) =>
+                    (member.credential.serialized_content().to_vec(), member.credential, Some(member.signature_key)),
+                // Review 2 J-HB (#231): a message from a past epoch (within
+                // PAST_EPOCHS) whose sender a later commit removed — sent
+                // legitimately while it was a member. OpenMLS authenticated it
+                // against that epoch's leaves; `credential()` is that sender.
+                None => {
+                    let credential = processed.credential().clone();
+                    (credential.serialized_content().to_vec(), credential, None)
+                }
+            },
             _ => return Err(rejected(())),
         };
         let epoch = processed.epoch().as_u64();
@@ -539,8 +558,22 @@ impl Device {
     pub fn decrypt(&mut self, bytes: &[u8]) -> Result<Vec<u8>, Rejected> { self.run(|s| s.decrypt_inner(bytes)) }
     pub fn remove_member(&mut self, key: &[u8]) -> Result<Vec<u8>, Rejected> { self.run(|s| s.remove_member_inner(key, true)) }
     pub fn remove_member_pending(&mut self, key: &[u8]) -> Result<Vec<u8>, Rejected> { self.run(|s| s.remove_member_inner(key, false)) }
-    pub fn merge_pending(&mut self) -> Result<(), Rejected> { self.run(|s| s.merge_pending_inner()) }
-    pub fn clear_pending(&mut self) -> Result<(), Rejected> { self.run(|s| s.clear_pending_inner()) }
+    /// "Nothing pending" is a pure precondition (review 2 J-MA): merging a
+    /// foreign commit clears an own pending commit (OpenMLS), so a caller that
+    /// catches up first and then clears/merges must get a rejection, not a
+    /// retired device.
+    pub fn merge_pending(&mut self) -> Result<(), Rejected> {
+        if !self.retired && !self.has_pending() { return Err(Rejected("nothing pending")); }
+        self.run(|s| s.merge_pending_inner())
+    }
+    pub fn clear_pending(&mut self) -> Result<(), Rejected> {
+        if !self.retired && !self.has_pending() { return Err(Rejected("nothing pending")); }
+        self.run(|s| s.clear_pending_inner())
+    }
+    /// Whether an own commit is pending (the relay flow's two-phase state).
+    pub fn has_pending(&self) -> bool {
+        self.group.as_ref().is_some_and(|g| g.pending_commit().is_some())
+    }
     pub fn apply_commit(&mut self, bytes: &[u8]) -> Result<(), Rejected> {
         if !self.retired && self.staged.is_some() { return Err(Rejected("commit already staged")); }
         self.run(|s| s.apply_commit_inner(bytes))

@@ -1,4 +1,6 @@
 // Public-data validation only. Accepted pins must come from an independent ceremony.
+// Pin order is a code-unit sort (review 2 L-1): localeCompare depends on the UA locale
+// and the sorted pins are compared byte-for-byte against the stored meta.
 import {staged_checksum} from './pkg/family_mls_browser_experiment.js';
 export const exact=(o,keys)=>o&&Object.getPrototypeOf(o)===Object.prototype&&Object.keys(o).sort().join(',')===keys.sort().join(',');
 export const fail=()=>{throw new Error('rejected');};
@@ -12,7 +14,7 @@ export function validPin(p){
 export function normalizePins(p){
  if(!Array.isArray(p)||p.length!==2)fail();for(const x of p)validPin(x);
  for(const field of ['device_id','actor','signing_key'])if(new Set(p.map(x=>x[field])).size!==2)fail();
- return p.map(x=>({device_id:x.device_id,actor:x.actor,signing_key:x.signing_key,fingerprint:x.fingerprint,device_revision:x.device_revision})).sort((a,b)=>a.actor.localeCompare(b.actor));
+ return p.map(x=>({device_id:x.device_id,actor:x.actor,signing_key:x.signing_key,fingerprint:x.fingerprint,device_revision:x.device_revision})).sort((a,b)=>a.actor<b.actor?-1:a.actor>b.actor?1:0);
 }
 export async function readDirectory(actor,room){
  if(!name(actor)||!name(room))fail();

@@ -1,7 +1,7 @@
 # Durable synthetic trusted clients
 
-This joins the staged provider/outbox from PR28 with the signed native directory
-and independent first-device pins from PR29. It is an isolated runnable
+This joins the staged provider/outbox from PR28 with the server-authenticated native
+directory and independent first-device pins from PR29. It is an isolated runnable
 **synthetic client-state adapter**. The native server authenticates directory
 reads; the test coordinator still relays the small MLS exchange. Native ordered
 control/ciphertext delivery and production human enrollment are not implemented.
@@ -60,8 +60,14 @@ PERSISTENCE.md for the shared decrypt framing, the KeyPackage cap and the
 
 ## Admission, staging and retry
 
-The shared `trust-directory.js` validates signed native responses with the expected
-actor and exact room, bounded body/time, no redirects, and explicit `cache:no-store`.
+The shared `trust-directory.js` validates native directory responses by **shape** — the
+expected actor echo header and exact room, bounded body/time, no redirects, and explicit
+`cache:no-store`. The *server* authenticates the reader (signed account session); the
+client does **not** verify a signature over the directory body and the directory carries
+no revision, so a same-origin attacker who controls that path could replay an older
+"active" view (review 2 J-MD, #231 — follow-up: pinned directory signing key + monotonic
+revision in the authenticated meta). Trust still comes from the independently accepted
+pins: the directory can at most delay a revocation, never admit an unpinned key.
 The explicit fetch cache policy also avoids observed browser request coalescing:
 a held directory request otherwise caused another tab to wait until that response
 was released. An actual two-tab held-response proof now permits the other tab to
