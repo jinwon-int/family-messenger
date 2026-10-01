@@ -10,7 +10,7 @@ use crate::http::{self, HttpError};
 
 /// serde adapter for the relay's base64-string byte fields.
 mod wire_bytes {
-    use super::{b64, Deserialize, Deserializer, Serialize, Serializer};
+    use super::{b64, Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S: Serializer>(value: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&b64::encode(value))
@@ -34,6 +34,10 @@ pub enum BotError {
     /// response failed its body contract). The facade's `Rejected` carries a
     /// static reason with no `Display`, so call sites label the step.
     Local(&'static str),
+    /// The caller-auth token source has nothing usable right now (file
+    /// missing, unreadable or blank mid-rotation). Treated like a 401 by the
+    /// session loop: wait for the refresher, do not die (review 2 B-M3).
+    AccessUnavailable(&'static str),
 }
 
 impl std::fmt::Display for BotError {
@@ -44,6 +48,7 @@ impl std::fmt::Display for BotError {
             BotError::Api { status, code } => write!(f, "relay error {status}: {code}"),
             BotError::Status { status } => write!(f, "relay status {status}"),
             BotError::Local(what) => write!(f, "local error: {what}"),
+            BotError::AccessUnavailable(what) => write!(f, "access token unavailable: {what}"),
         }
     }
 }
@@ -57,6 +62,14 @@ impl From<serde_json::Error> for BotError {
 }
 
 pub type Result<T> = std::result::Result<T, BotError>;
+
+/// The relay's structured error code, when the error carries one.
+pub fn error_code(err: &BotError) -> Option<&str> {
+    match err {
+        BotError::Api { code, .. } => Some(code.as_str()),
+        _ => None,
+    }
+}
 
 // ---- wire types (server.go json tags) ----
 
@@ -105,7 +118,10 @@ pub struct EventPost<'a> {
     pub bytes: Vec<u8>,
 }
 
+/// Wire mirror of the relay's event response; `revision` is carried for
+/// parity with the Go struct even though the bot only acts on seq/epoch.
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 pub struct EventResponse {
     pub seq: i64,
     pub epoch: i64,
@@ -113,7 +129,10 @@ pub struct EventResponse {
     pub duplicate: bool,
 }
 
+/// Wire mirror of one stored event; `sha256`/`created_at` are decoded for
+/// parity and surfaced in logs only.
 #[derive(Deserialize, Clone, Debug)]
+#[allow(dead_code)]
 pub struct StoredRow {
     pub seq: i64,
     pub device: String,
@@ -126,7 +145,9 @@ pub struct StoredRow {
     pub created_at: i64,
 }
 
+/// Wire mirror of one events page; `revision` rides along for parity.
 #[derive(Deserialize, Clone, Debug)]
+#[allow(dead_code)]
 pub struct EventsResponse {
     pub epoch: i64,
     pub revision: i64,
@@ -175,10 +196,10 @@ impl Access {
             }
             Access::File(path) => {
                 let raw = std::fs::read_to_string(path)
-                    .map_err(|_| BotError::Local("access token file unreadable"))?;
+                    .map_err(|_| BotError::AccessUnavailable("access token file unreadable"))?;
                 let token = raw.trim();
                 if token.is_empty() {
-                    Err(BotError::Local("access token file is empty"))
+                    Err(BotError::AccessUnavailable("access token file is empty"))
                 } else {
                     Ok(Some(token.to_string()))
                 }
@@ -257,20 +278,17 @@ impl Client {
         Ok(event)
     }
 
-    pub fn get_events(&self, room: &str, device: &str, after: i64) -> Result<EventsResponse> {
-        let resp = self.send(
-            "GET",
-            &format!("/v2/rooms/{room}/events?device={device}&after={after}"),
-            None,
-        )?;
+    /// One page after `after`; `ack` (review 2 B-H4) tells the relay the
+    /// device has durably processed everything up to that seq — the only
+    /// thing that moves its pruning cursor (DEVICES-V4.md "커서 = ack").
+    pub fn get_events(&self, room: &str, device: &str, after: i64, ack: Option<i64>) -> Result<EventsResponse> {
+        let mut path = format!("/v2/rooms/{room}/events?device={device}&after={after}");
+        if let Some(ack) = ack {
+            path.push_str(&format!("&ack={ack}"));
+        }
+        let resp = self.send("GET", &path, None)?;
         let events: EventsResponse = serde_json::from_slice(self.checked(resp)?.as_slice())?;
         Ok(events)
-    }
-
-    pub fn close_room(&self, room: &str) -> Result<bool> {
-        let resp = self.send("POST", &format!("/v2/rooms/{room}/close"), None)?;
-        let body: serde_json::Value = self.decode(resp)?;
-        Ok(body["closed"] == serde_json::Value::Bool(true))
     }
 
     fn checked(&self, resp: http::Response) -> Result<Vec<u8>> {
@@ -317,7 +335,7 @@ mod tests {
         let path = dir.join("token");
         let access = Access::File(path.clone());
 
-        assert!(matches!(access.token(), Err(BotError::Local("access token file unreadable"))));
+        assert!(matches!(access.token(), Err(BotError::AccessUnavailable("access token file unreadable"))));
 
         std::fs::write(&path, "tok-1\n").expect("write");
         assert_eq!(access.token().expect("token").as_deref(), Some("tok-1"));
@@ -328,7 +346,7 @@ mod tests {
 
         // Whitespace-only fails closed.
         std::fs::write(&path, "  \n").expect("blank");
-        assert!(matches!(access.token(), Err(BotError::Local("access token file is empty"))));
+        assert!(matches!(access.token(), Err(BotError::AccessUnavailable("access token file is empty"))));
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -281,12 +281,15 @@ class Bot:
                     return entry
         raise AssertionError(f'no bot status for {room}; got {self.lines}')
 
-    def assert_clean(self):
-        """No contract violations over the whole session."""
+    def assert_clean(self, allow=()):
+        """No contract violations over the whole session (`allow` names the
+        events a step deliberately provoked, e.g. the poison step's
+        `undecryptable`)."""
         with self.lock:
             lines = list(self.lines)
         bad = [line for line in lines if line.get('event') in
-               ('bad_line', 'echo_dropped', 'undecryptable', 'echo_conflict')]
+               ('bad_line', 'echo_dropped', 'undecryptable', 'echo_conflict', 'rejected',
+                'echo_client_id_reuse', 'ack_refused') and line.get('event') not in allow]
         assert not bad, bad
         return lines
 
@@ -707,6 +710,45 @@ def main():
                 assert len(auth_waits) == 1, auth_waits
                 receipt['checks']['expired_token_auth_wait_then_file_rotation_recovery'] = True
 
+                # --- ack (review 2 B-H4): the bot acknowledges what it has
+                # --- persisted, so the relay's pruning cursor for bot-2 moves
+                # --- (before #231 the bot never acked and pinned the room).
+                bot_headers = {'Authorization': f'Bearer {issuer.mint("person-bot")}'}
+                deadline = time.monotonic() + 5
+                while True:
+                    status, view = relay_auth.http('GET', f'/v2/rooms/{AUTH_ROOM}/events?device=bot-2&after=0',
+                                                   headers=bot_headers)
+                    assert status == 200, (status, view)
+                    if view['cursor'] > 0:
+                        break
+                    assert time.monotonic() < deadline, f'bot never acked: cursor stayed 0: {view}'
+                    time.sleep(0.2)
+                receipt['checks']['bot_acks_persisted_cursor'] = {'cursor': view['cursor']}
+
+                # --- poison (review 2 B-H1/B-H3): a garbage application from a
+                # --- member and a stray Welcome targeted at the already-joined
+                # --- bot are reported and skipped — the bot keeps its identity
+                # --- (no facade retirement, no dead state on disk) and echoes
+                # --- the next real message. Before #231 one undecryptable event
+                # --- retired the device for good and a second Welcome was fatal.
+                e1.post_ok('application', list(os.urandom(96)), e1.client_id('poison-app'), AUTH_ROOM)
+                bot_auth.wait_for(lambda line: line.get('event') == 'undecryptable', timeout=20)
+                e1.post_ok('welcome', list(os.urandom(64)), e1.client_id('stray-welcome'), AUTH_ROOM,
+                           targets=['bot-2'])
+                bot_auth.wait_for(lambda line: line.get('event') == 'welcome_ignored', timeout=20)
+                text_e3 = 'after poison'.encode()
+                e1.post_ok('application', e1.call('encrypt', bound(e1.dev, list(text_e3), room=AUTH_ROOM)),
+                           e1.client_id('t2b'), AUTH_ROOM)
+                bot_auth.wait_for(lambda line: line.get('event') == 'echo' and line.get('bytes') == len(text_e3),
+                                  timeout=30)
+                seen_e3 = e1.sync(AUTH_ROOM)
+                assert seen_e3 == [text_e2, text_e3], seen_e3
+                lines2 = bot_auth.assert_clean(allow={'undecryptable'})
+                assert sum(line.get('event') == 'undecryptable' for line in lines2) == 1, lines2
+                assert sum(line.get('event') == 'welcome_ignored' for line in lines2) == 1, lines2
+                assert not any(line.get('event') == 'joined' and line['seq'] > joined2['seq'] for line in lines2)
+                receipt['checks']['poison_application_and_stray_welcome_reported_not_fatal'] = True
+
                 # --- g. persistent identity restart: the whole session above
                 # --- ran with --state-file (fresh identity snapshotted before
                 # --- its first POST; join, commits and every echo flushed per
@@ -716,7 +758,7 @@ def main():
                 # --- cursor (no replay, no second Welcome) and keep echoing
                 # --- on the ratchet it never re-derived — no re-invite, no
                 # --- re-enrollment.
-                bot_auth.assert_clean()
+                bot_auth.assert_clean(allow={'undecryptable'})
                 time.sleep(1)  # let the last dirty round reach the state file
                 bot_auth.stop()
                 bot_auth = Bot(args.bot_binary, relay_auth, AUTH_ROOM, 'bot-2',
@@ -726,11 +768,11 @@ def main():
                 assert identity3['public_key'] == identity2['public_key'], identity3
                 ready3 = bot_auth.wait_for(lambda line: line.get('event') == 'ready')
                 assert ready3['public_key'] == identity2['public_key'], ready3
-                # Drain what e-1 has not read yet (the recovered text and its
-                # pre-restart echo), then traffic that only exists after the
-                # restart: the resumed bot must decrypt and echo it.
+                # Nothing is pending for e-1 (every echo was drained above);
+                # then traffic that only exists after the restart: the resumed
+                # bot must decrypt and echo it.
                 drained = e1.sync(AUTH_ROOM)
-                assert drained == [text_e2], drained
+                assert drained == [], drained
                 text_g = 'after restart'.encode()
                 e1.post_ok('application', e1.call('encrypt', bound(e1.dev, list(text_g), room=AUTH_ROOM)),
                            e1.client_id('t3'), AUTH_ROOM)

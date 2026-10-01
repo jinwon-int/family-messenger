@@ -3,8 +3,8 @@
 //! any other leaf:
 //!
 //! ```text
-//! GET events?after=cursor → welcome (join) → commit (apply) → application
-//!   (decrypt + echo-reply) → own events skipped
+//! GET events?after=cursor&ack=acked → welcome (join) → commit (apply) →
+//!   application (decrypt + echo-reply) → own events skipped
 //! ```
 //!
 //! Contract notes carried over from the smoke references:
@@ -15,19 +15,40 @@
 //! - The room's first commit seeds its actor roster, so a bot actor must be in
 //!   the creation commit — the harness invites it together with the other
 //!   founding member; the bot itself never commits.
-//! - A 409 (`cas_mismatch`) means the room moved under us: resynchronize on
-//!   the next poll, then replay the dropped echo once at the fresh epoch.
-//! - Events before our Welcome are not ours to read; a Welcome delivered by
-//!   the relay is always targeted at us (server-side filter), so a second one
-//!   is a contract violation.
+//! - A 409 `cas_mismatch` means the room moved under us: resynchronize on the
+//!   next poll, then replay the dropped echo once at the fresh epoch. A 409
+//!   `client_id_reuse` means an earlier incarnation already delivered that
+//!   echo number: count it and move on (review 2 B-H2).
+//! - Events before our Welcome are not ours to read. A Welcome delivered by the
+//!   relay is always targeted at us (server-side filter); one that arrives
+//!   after we joined, or in the watch room, is ignored — never joined, never
+//!   fatal (B-H3).
+//!
+//! Review 2 (#231) hardening of the session loop:
+//! - **Rollback guard (B-H1/B-H3)**: the facade retires a `Device` on any
+//!   failed MLS operation ("never reuse uncertain state"). The bot therefore
+//!   snapshots the device before every join/commit/decrypt and restores the
+//!   snapshot when the operation is rejected, so one undecryptable or poison
+//!   event is reported and skipped instead of silently killing the identity
+//!   (and, with `--state-file`, persisting the dead state).
+//! - **Persist before bytes leave (B-H2)**: an echo's ciphertext advances the
+//!   sender ratchet; the new state and the echo counter reach the state file
+//!   *before* the POST. A crash between persist and POST loses one echo; the
+//!   old order (POST, then persist at the end of the round) could reuse a
+//!   sender generation after a restart.
+//! - **Ack (B-H4)**: once joined, every poll acknowledges the cursor that is
+//!   on disk (or processed, without a state file) so the relay can prune.
 
 use crate::api::{self, BotError, Client, EventPost, StoredRow};
 use family_mls_browser_experiment::Device;
+use std::collections::VecDeque;
 use std::io::Write;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// Backstop so a stuck session can never hang CI: the harness normally
-/// SIGTERMs the bot long before this.
+/// SIGTERMs the bot long before this. `NATIVE_MLS_BOT_MAX_SECS=0` disables
+/// the deadline for a long-lived deployment (review 2 B-M9).
 const DEFAULT_MAX_SECS: u64 = 300;
 const POLL: Duration = Duration::from_millis(200);
 /// One status heartbeat per second of polling keeps the harness (and CI logs)
@@ -73,7 +94,7 @@ const STATE_VERSION: u32 = 1;
 /// starting a fresh identity would strand the enrollment and the group
 /// membership behind it.
 fn load_state(
-    path: Option<&std::path::Path>, room: &str, device: &str,
+    path: Option<&Path>, room: &str, device: &str,
 ) -> Result<Option<(Device, i64, i64, bool, u64)>, BotError> {
     let Some(path) = path else { return Ok(None) };
     let raw = match std::fs::read(path) {
@@ -92,10 +113,12 @@ fn load_state(
     Ok(Some((dev, env.cursor, env.epoch, env.joined, env.echoes)))
 }
 
-/// Atomic write (tmp + rename, 0600): a torn state file must never be the one
-/// a restart reads.
+/// Atomic, durable write: the temp file is created 0600 from the start (no
+/// umask window on the signing key — review 2 B-M1), fsynced, renamed over
+/// the target, and the directory entry is fsynced so a power loss cannot
+/// leave a zero-length state file for the restart to refuse.
 fn persist_state(
-    path: &std::path::Path, room: &str, device: &str, dev: &mut Device,
+    path: &Path, room: &str, device: &str, dev: &mut Device,
     cursor: i64, epoch: i64, joined: bool, echoes: u64,
 ) -> Result<(), BotError> {
     let bytes = dev.export_state(device).map_err(|_| BotError::Local("state export rejected"))?;
@@ -111,13 +134,25 @@ fn persist_state(
     };
     let raw = serde_json::to_vec(&env).map_err(|_| BotError::Local("state envelope json"))?;
     let tmp = path.with_extension("state.tmp");
-    std::fs::write(&tmp, &raw).map_err(|_| BotError::Local("state file write"))?;
+    let _ = std::fs::remove_file(&tmp);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
+    let mut file = options.open(&tmp).map_err(|_| BotError::Local("state file create"))?;
+    file.write_all(&raw).map_err(|_| BotError::Local("state file write"))?;
+    file.sync_all().map_err(|_| BotError::Local("state file fsync"))?;
+    drop(file);
     std::fs::rename(&tmp, path).map_err(|_| BotError::Local("state file rename"))?;
+    if let Some(dir) = path.parent() {
+        let dir = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
+        if let Ok(handle) = std::fs::File::open(dir) {
+            let _ = handle.sync_all();
+        }
+    }
     Ok(())
 }
 
@@ -126,13 +161,65 @@ struct RoomState {
     cursor: i64,
     epoch: i64,
     joined: bool,
+    /// Only the main room is ever joined; the watch room (negative control)
+    /// ignores Welcomes (B-H3).
+    joinable: bool,
     /// Application messages decrypted and echoed back.
     echoes: u64,
-    /// Set on 409: the next poll resynchronizes, then replays this plaintext.
-    retry: Option<Vec<u8>>,
+    /// Set on 409 cas_mismatch: the next poll resynchronizes, then replays
+    /// these plaintexts in order (review 2 L2: more than one slot).
+    retry: VecDeque<Vec<u8>>,
     /// MLS state moved since the last state-file snapshot (join, commit,
     /// echo encrypt): the poll loop flushes it before the next round.
     dirty: bool,
+    /// Cursor the relay may prune up to: what is on disk (with a state file)
+    /// or processed (without one). Sent as `?ack=` once joined (B-H4).
+    acked: i64,
+    /// Last ack value the relay accepted; equal acks are not resent.
+    ack_sent: i64,
+    /// The relay refused our ack (removed from the room, or the room was
+    /// reset): stop acking, keep reading.
+    ack_disabled: bool,
+}
+
+/// Session-wide handles the per-event helpers need.
+struct Ctx<'a> {
+    client: &'a Client,
+    own: &'a str,
+    room: &'a str,
+    state_file: Option<&'a Path>,
+}
+
+/// Flush the room's MLS state to disk (main room only — the watch room never
+/// holds group state) and mark the cursor acknowledgeable.
+fn flush(ctx: &Ctx, device: &mut Device, state: &mut RoomState) -> Result<(), BotError> {
+    if let Some(path) = ctx.state_file {
+        if state.room == ctx.room {
+            persist_state(path, ctx.room, ctx.own, device, state.cursor, state.epoch, state.joined, state.echoes)?;
+        }
+    }
+    state.dirty = false;
+    state.acked = state.cursor;
+    Ok(())
+}
+
+/// Run one MLS operation with rollback (review 2 B-H1/B-H3): the facade
+/// retires the device on any rejected operation, so the pre-operation
+/// snapshot is restored on failure and the caller reports and skips the
+/// event. A snapshot that cannot be restored is a hard stop — the device is
+/// already retired and nothing short of a re-enrollment helps.
+fn guarded<T>(
+    device: &mut Device, own: &str, op: impl FnOnce(&mut Device) -> Result<T, ()>,
+) -> Result<Result<T, ()>, BotError> {
+    let snapshot = device.export_state(own).map_err(|_| BotError::Local("state snapshot before operation"))?;
+    match op(device) {
+        Ok(value) => Ok(Ok(value)),
+        Err(()) => {
+            *device = Device::import_state(own, &snapshot)
+                .map_err(|_| BotError::Local("state rollback after rejected operation"))?;
+            Ok(Err(()))
+        }
+    }
 }
 
 pub fn run(opts: Options) -> Result<(), BotError> {
@@ -140,7 +227,16 @@ pub fn run(opts: Options) -> Result<(), BotError> {
         .ok()
         .and_then(|raw| raw.parse().ok())
         .unwrap_or(DEFAULT_MAX_SECS);
-    let deadline = Instant::now() + Duration::from_secs(max_secs);
+    let deadline = if max_secs == 0 {
+        None
+    } else {
+        Some(
+            Instant::now()
+                .checked_add(Duration::from_secs(max_secs))
+                .ok_or(BotError::Local("NATIVE_MLS_BOT_MAX_SECS out of range"))?,
+        )
+    };
+    let expired = |deadline: Option<Instant>| deadline.is_some_and(|d| Instant::now() >= d);
     let client = Client::with_access(&opts.base, opts.access.clone());
 
     let mut restored_main: Option<(i64, i64, bool, u64)> = None;
@@ -152,9 +248,26 @@ pub fn run(opts: Options) -> Result<(), BotError> {
         None => Device::new(&opts.device)
             .map_err(|_| BotError::Local("device new: identity shape rejected"))?,
     };
-    let key_package = device
-        .key_package()
-        .map_err(|_| BotError::Local("key package generation"))?;
+    let restored = restored_main.is_some();
+    let restored_joined = restored_main.is_some_and(|(_, _, joined, _)| joined);
+    // A resumed device that already sits in the group needs no key package:
+    // minting one per restart would hit the facade's outstanding cap (8) and
+    // the relay's live cap (4) after a handful of restarts (review 2 B-M2).
+    let key_package = if restored_joined {
+        None
+    } else {
+        match device.key_package() {
+            Ok(kp) => Some(kp),
+            Err(_) if restored => {
+                emit(&serde_json::json!({
+                    "event": "key_package_skipped", "device": opts.device, "room": opts.room,
+                    "reason": "outstanding key packages at the facade cap; the relay's live package stays",
+                }));
+                None
+            }
+            Err(_) => return Err(BotError::Local("key package generation")),
+        }
+    };
     let public_key = device
         .public_key()
         .map_err(|_| BotError::Local("public key"))?;
@@ -168,58 +281,71 @@ pub fn run(opts: Options) -> Result<(), BotError> {
         "room": opts.room,
         "watch_room": opts.watch_room,
         "public_key": hex(&public_key),
-        "restored": restored_main.is_some(),
+        "restored": restored,
     }));
-    // Persist the fresh identity before its first key package leaves the
-    // process: a crash between publish and the first snapshot must not leave
-    // a relay package whose private material no device holds. A resumed
-    // device keeps its on-disk state instead — rewriting zeroes here would
-    // regress the cursor/join the restart is meant to resume.
-    if let (Some(path), None) = (opts.state_file.as_deref(), restored_main) {
-        persist_state(path, &opts.room, &opts.device, &mut device, 0, 0, false, 0)?;
+    // Persist before the key package's private material has a public
+    // counterpart on the relay: a crash between publish and the first
+    // snapshot must not leave a relay package no device can use. A fresh
+    // device writes zeroes; a resumed-but-unjoined device that minted a new
+    // package keeps its cursor/epoch and gains the package.
+    if let (Some(path), Some(_)) = (opts.state_file.as_deref(), &key_package) {
+        let (c, e, j, x) = restored_main.unwrap_or((0, 0, false, 0));
+        persist_state(path, &opts.room, &opts.device, &mut device, c, e, j, x)?;
     }
     let mut auth_wait_announced = false;
-    let key_ref = api::ref_hex(&key_package);
-    let stored = 'publish: loop {
-        match client.post_key_packages(&opts.room, &opts.device, &[(&key_ref, key_package.clone())]) {
-            Ok(stored) => break 'publish stored,
-            // With -device-state on, every POST needs an active policy device:
-            // the harness enrolls us from the `identity` line below, so the
-            // first attempts may legitimately land before that. Retry. With
-            // -access-mode required the identity line answers an *unknown*
-            // device with the same opaque 403 device_subject_mismatch (the
-            // relay refuses to reveal which of unknown/wrong-subject it was),
-            // so pre-enrollment attempts surface under that code too.
-            Err(BotError::Api { status: 403, code })
-                if code == "device_not_allowed" || code == "device_subject_mismatch" =>
-            {
-                std::thread::sleep(POLL);
-                if Instant::now() >= deadline {
-                    return Err(BotError::Local("session deadline exceeded waiting for enrollment"));
+    let key_ref = key_package.as_ref().map(|kp| api::ref_hex(kp));
+    if let (Some(kp), Some(key_ref)) = (&key_package, &key_ref) {
+        let stored = 'publish: loop {
+            match client.post_key_packages(&opts.room, &opts.device, &[(key_ref, kp.clone())]) {
+                Ok(stored) => break 'publish stored,
+                // With -device-state on, every POST needs an active policy device:
+                // the harness enrolls us from the `identity` line above, so the
+                // first attempts may legitimately land before that. Retry. With
+                // -access-mode required the identity line answers an *unknown*
+                // device with the same opaque 403 device_subject_mismatch (the
+                // relay refuses to reveal which of unknown/wrong-subject it was),
+                // so pre-enrollment attempts surface under that code too.
+                Err(BotError::Api { status: 403, code })
+                    if code == "device_not_allowed" || code == "device_subject_mismatch" =>
+                {
+                    std::thread::sleep(POLL);
+                    if expired(deadline) {
+                        return Err(BotError::Local("session deadline exceeded waiting for enrollment"));
+                    }
                 }
-            }
-            // With -access-mode required, a short-lived assertion can lapse
-            // while we wait for enrollment: wait for the token file to be
-            // rotated instead of dying.
-            Err(BotError::Api { status: 401, .. } | BotError::Status { status: 401 }) => {
-                if !auth_wait_announced {
-                    auth_wait_announced = true;
+                // A resumed device whose earlier package is still live on the
+                // relay may run into the per-device live cap: that package
+                // serves the invite, so this is not a failure.
+                Err(BotError::Api { status: 409, code }) if restored && code == "key_package_limit" => {
                     emit(&serde_json::json!({
-                        "event": "auth_wait",
-                        "room": opts.room,
-                        "device": opts.device,
+                        "event": "key_package_skipped", "device": opts.device, "room": opts.room,
+                        "reason": "relay live cap reached; an earlier package of this device is still live",
                     }));
+                    break 'publish 1;
                 }
-                std::thread::sleep(POLL);
-                if Instant::now() >= deadline {
-                    return Err(BotError::Local("session deadline exceeded waiting for an access token"));
+                // With -access-mode required, a short-lived assertion can lapse
+                // while we wait for enrollment: wait for the token file to be
+                // rotated (or to appear — review 2 B-M3) instead of dying.
+                Err(BotError::Api { status: 401, .. } | BotError::Status { status: 401 } | BotError::AccessUnavailable(_)) => {
+                    if !auth_wait_announced {
+                        auth_wait_announced = true;
+                        emit(&serde_json::json!({
+                            "event": "auth_wait",
+                            "room": opts.room,
+                            "device": opts.device,
+                        }));
+                    }
+                    std::thread::sleep(POLL);
+                    if expired(deadline) {
+                        return Err(BotError::Local("session deadline exceeded waiting for an access token"));
+                    }
                 }
+                Err(err) => return Err(err),
             }
-            Err(err) => return Err(err),
+        };
+        if stored != 1 {
+            return Err(BotError::Local("relay stored an unexpected key package count"));
         }
-    };
-    if stored != 1 {
-        return Err(BotError::Local("relay stored an unexpected key package count"));
     }
     emit(&serde_json::json!({
         "event": "ready",
@@ -228,36 +354,42 @@ pub fn run(opts: Options) -> Result<(), BotError> {
         "watch_room": opts.watch_room,
         // Ed25519 public key hex: the harness enrolls the bot actor with it.
         "public_key": hex(&public_key),
+        // null when a resumed, already-joined device published nothing.
         "key_ref": key_ref,
         "max_secs": max_secs,
+        "restored": restored,
     }));
 
     let (c0, e0, j0, x0) = restored_main.unwrap_or((0, 0, false, 0));
     let mut rooms = vec![RoomState {
-        room: opts.room.clone(), cursor: c0, epoch: e0, joined: j0, echoes: x0, retry: None, dirty: false,
+        room: opts.room.clone(), cursor: c0, epoch: e0, joined: j0, joinable: true, echoes: x0,
+        retry: VecDeque::new(), dirty: false, acked: c0, ack_sent: 0, ack_disabled: false,
     }];
     if let Some(watch) = &opts.watch_room {
         // The negative control: a room the bot is never invited to. It must
         // stay unjoined and silent there for the whole session.
         rooms.push(RoomState {
-            room: watch.clone(), cursor: 0, epoch: 0, joined: false, echoes: 0, retry: None, dirty: false,
+            room: watch.clone(), cursor: 0, epoch: 0, joined: false, joinable: false, echoes: 0,
+            retry: VecDeque::new(), dirty: false, acked: 0, ack_sent: 0, ack_disabled: true,
         });
     }
+    let ctx = Ctx { client: &client, own: &opts.device, room: &opts.room, state_file: opts.state_file.as_deref() };
 
     let mut rounds = 0u32;
     let mut auth_wait_announced = false;
     loop {
-        if Instant::now() >= deadline {
+        if expired(deadline) {
             return Err(BotError::Local("session deadline exceeded"));
         }
         for state in &mut rooms {
-            match poll_room(&client, &mut device, &opts.device, state) {
+            match poll_room(&ctx, &mut device, state) {
                 Ok(()) => {}
-                // 401 = the assertion expired or was rejected. The token file
-                // may already carry a rotated token (or will soon): keep
-                // polling until the deadline instead of dying, and say why
-                // once so the harness can tell an auth wait from a hang.
-                Err(err @ (BotError::Api { status: 401, .. } | BotError::Status { status: 401 })) => {
+                // 401 = the assertion expired or was rejected, or the token
+                // file is momentarily empty/unreadable mid-rotation (B-M3).
+                // The file may already carry a rotated token (or will soon):
+                // keep polling until the deadline instead of dying, and say
+                // why once so the harness can tell an auth wait from a hang.
+                Err(BotError::Api { status: 401, .. } | BotError::Status { status: 401 } | BotError::AccessUnavailable(_)) => {
                     if !auth_wait_announced {
                         auth_wait_announced = true;
                         emit(&serde_json::json!({
@@ -266,20 +398,17 @@ pub fn run(opts: Options) -> Result<(), BotError> {
                             "device": opts.device,
                         }));
                     }
-                    let _ = err;
                 }
                 Err(err) => return Err(err),
             }
-        }
-        // MLS state that moved this round goes to disk before the next poll:
-        // a restart must resume from exactly this cursor or it cannot decrypt
-        // (the group ratchets on). A persist failure takes the session down —
-        // running on unpersisted state would fork the identity silently.
-        if let Some(path) = opts.state_file.as_deref() {
-            if rooms[0].dirty {
-                persist_state(path, &opts.room, &opts.device, &mut device,
-                              rooms[0].cursor, rooms[0].epoch, rooms[0].joined, rooms[0].echoes)?;
-                rooms[0].dirty = false;
+            // MLS state that moved this round goes to disk before the next
+            // poll: a restart must resume from exactly this cursor or it
+            // cannot decrypt (the group ratchets on). A persist failure takes
+            // the session down — running on unpersisted state would fork the
+            // identity silently. (Echo encrypts are flushed inside
+            // publish_echo, before their ciphertext leaves the process.)
+            if state.dirty {
+                flush(&ctx, &mut device, state)?;
             }
         }
         rounds += 1;
@@ -290,94 +419,154 @@ pub fn run(opts: Options) -> Result<(), BotError> {
     }
 }
 
-fn poll_room(client: &Client, device: &mut Device, own: &str, state: &mut RoomState) -> Result<(), BotError> {
-    let body = match client.get_events(&state.room, own, state.cursor) {
+fn poll_room(ctx: &Ctx, device: &mut Device, state: &mut RoomState) -> Result<(), BotError> {
+    // Ack what is durably processed (B-H4). Only a joined member may ack
+    // (the relay answers 403 not_a_member otherwise), and an ack the relay
+    // refuses — bad_ack after a room reset, not_a_member after a removal —
+    // disables acking rather than the session.
+    let ack = (state.joined && !state.ack_disabled && state.acked > state.ack_sent).then_some(state.acked);
+    let body = match ctx.client.get_events(&state.room, ctx.own, state.cursor, ack) {
         Ok(body) => body,
         // The watch room may not exist yet (its founding commit has not been
         // posted) — that is not an error, just nothing to see.
         Err(BotError::Api { status: 404, code }) if code == "no_such_room" => return Ok(()),
+        Err(BotError::Api { status, code })
+            if ack.is_some() && ((status == 400 && code == "bad_ack") || (status == 403 && code == "not_a_member")) =>
+        {
+            state.ack_disabled = true;
+            emit(&serde_json::json!({
+                "event": "ack_refused", "room": state.room, "ack": ack, "status": status, "error": code,
+            }));
+            return Ok(());
+        }
         Err(err) => return Err(err),
     };
+    if let Some(acked) = ack {
+        state.ack_sent = acked;
+    }
     state.epoch = body.epoch;
     for ev in &body.events {
         state.cursor = state.cursor.max(ev.seq);
-        if ev.device == own {
+        if ev.device == ctx.own {
             // Own echo. MLS never processes its own messages; when this bot
             // ever POSTs a commit, its echo is where merge_pending belongs.
             continue;
         }
         match ev.kind.as_str() {
-            "welcome" if !state.joined => {
-                device.join(&ev.bytes).map_err(|_| BotError::Local("join welcome"))?;
-                state.joined = true;
+            "welcome" if state.joinable && !state.joined => {
+                match guarded(device, ctx.own, |d| d.join(&ev.bytes).map_err(drop))? {
+                    Ok(()) => {
+                        state.joined = true;
+                        state.dirty = true;
+                        emit(&serde_json::json!({
+                            "event": "joined", "room": state.room, "epoch": ev.epoch, "seq": ev.seq,
+                        }));
+                    }
+                    Err(()) => rejected(state, ev, "welcome"),
+                }
+            }
+            // The relay filters welcomes to their targets, so one that reaches
+            // a joined device (a re-invite) or the watch room is reported and
+            // ignored — it is not ours to act on and must not be fatal.
+            "welcome" => {
                 state.dirty = true;
                 emit(&serde_json::json!({
-                    "event": "joined", "room": state.room, "epoch": ev.epoch, "seq": ev.seq,
+                    "event": "welcome_ignored", "room": state.room, "seq": ev.seq, "joined": state.joined,
                 }));
             }
-            // The relay filters welcomes to their targets only: any welcome
-            // that reaches us here would mean we already joined once.
-            "welcome" => return Err(BotError::Local("unexpected second welcome")),
             "commit" if state.joined => {
-                device.apply_commit(&ev.bytes).map_err(|_| BotError::Local("apply commit"))?;
-                state.dirty = true;
+                match guarded(device, ctx.own, |d| d.apply_commit(&ev.bytes).map_err(drop))? {
+                    Ok(()) => state.dirty = true,
+                    Err(()) => rejected(state, ev, "commit"),
+                }
             }
-            "application" if state.joined => echo(client, device, own, state, ev)?,
+            "application" if state.joined => echo(ctx, device, state, ev)?,
             // Everything before our Welcome (commits that formed the group,
             // other members' applications) is not ours to read.
             _ => {}
         }
     }
-    if let (true, Some(plaintext)) = (state.joined, state.retry.take()) {
-        publish_echo(client, device, own, state, &plaintext)
-            .map_err(|err| report_dropped(state, &plaintext, err))?;
+    if state.joined {
+        while let Some(plaintext) = state.retry.pop_front() {
+            if let Err(err) = publish_echo(ctx, device, state, &plaintext) {
+                return Err(report_dropped(state, &plaintext, err));
+            }
+        }
     }
     Ok(())
 }
 
+/// A poison event (undecryptable Welcome/commit): the device was rolled back,
+/// the cursor moves past it and the state file records that.
+fn rejected(state: &mut RoomState, ev: &StoredRow, kind: &str) {
+    state.dirty = true;
+    emit(&serde_json::json!({
+        "event": "rejected", "room": state.room, "seq": ev.seq, "kind": kind, "bytes": ev.bytes.len(),
+    }));
+}
+
 /// Decrypt one application event and reply with the identical plaintext.
-fn echo(client: &Client, device: &mut Device, own: &str, state: &mut RoomState, ev: &StoredRow) -> Result<(), BotError> {
-    let plaintext = match decrypt_frame(device, &state.room, &ev.bytes) {
+fn echo(ctx: &Ctx, device: &mut Device, state: &mut RoomState, ev: &StoredRow) -> Result<(), BotError> {
+    let plaintext = match guarded(device, ctx.own, |d| decrypt_frame(d, &state.room, &ev.bytes))? {
         Ok((sender, plaintext)) => {
+            // Decrypting consumed receive keys: that state belongs on disk.
+            state.dirty = true;
             emit(&serde_json::json!({
                 "event": "application", "room": state.room, "seq": ev.seq,
                 "from": String::from_utf8_lossy(&sender), "bytes": plaintext.len(),
+                "client_id": ev.client_id,
             }));
             plaintext
         }
-        Err(_) => {
-            // Undecryptable (wrong epoch, pre-join leftover): report and move
-            // on — a single failure must not take the session down.
+        Err(()) => {
+            // Undecryptable (forged, wrong epoch, pre-join leftover): the
+            // device was rolled back to its pre-decrypt state; report and
+            // move on — a single failure must not take the session down.
+            state.dirty = true;
             emit(&serde_json::json!({
                 "event": "undecryptable", "room": state.room, "seq": ev.seq, "bytes": ev.bytes.len(),
             }));
             return Ok(());
         }
     };
-    match publish_echo(client, device, own, state, &plaintext) {
+    // Another bot's echo (relay client_id `<device>-echo-<n>`) is read but not
+    // echoed back: two bots in one room would otherwise ping-pong until the
+    // room cap (review 2 B-M5).
+    if is_echo_client_id(&ev.client_id) {
+        emit(&serde_json::json!({
+            "event": "echo_skipped", "room": state.room, "seq": ev.seq, "client_id": ev.client_id,
+        }));
+        return Ok(());
+    }
+    match publish_echo(ctx, device, state, &plaintext) {
         Ok(()) => Ok(()),
-        // Room moved under us (a commit we have not seen): resynchronize on the
-        // next poll and replay once at the fresh epoch.
-        Err(err @ BotError::Api { status: 409, .. }) => {
-            state.retry = Some(plaintext);
-            emit(&serde_json::json!({
-                "event": "echo_conflict", "room": state.room, "seq": ev.seq,
-                "error": err.to_string(),
-            }));
-            Ok(())
-        }
         Err(err) => Err(report_dropped(state, &plaintext, err)),
     }
 }
 
-fn publish_echo(client: &Client, device: &mut Device, own: &str, state: &mut RoomState, plaintext: &[u8]) -> Result<(), BotError> {
-    let framed = encrypt_frame(device, &state.room, own, plaintext)
+/// `<something>-echo-<digits>`: the dedup key shape every bot echo carries.
+fn is_echo_client_id(client_id: &str) -> bool {
+    match client_id.rsplit_once("-echo-") {
+        Some((prefix, digits)) => !prefix.is_empty() && !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()),
+        None => false,
+    }
+}
+
+fn publish_echo(ctx: &Ctx, device: &mut Device, state: &mut RoomState, plaintext: &[u8]) -> Result<(), BotError> {
+    let framed = encrypt_frame(device, &state.room, ctx.own, plaintext)
         .map_err(|_| BotError::Local("encrypt echo"))?;
     // Relay-level dedup key, distinct per reply; the MLS AAD client_id inside
     // `framed` is the device identity (review H1), as the receivers require.
-    let client_id = format!("{own}-echo-{}", state.echoes + 1);
+    state.echoes += 1;
+    state.dirty = true;
+    let client_id = format!("{}-echo-{}", ctx.own, state.echoes);
+    // The encryption advanced this device's own sender ratchet and the
+    // counter reserved a dedup key: both reach disk before the ciphertext
+    // leaves the process (review 2 B-H2 — a restart must never re-derive a
+    // sender generation that was already sent).
+    flush(ctx, device, state)?;
     let post = EventPost {
-        device: own,
+        device: ctx.own,
         client_id: &client_id,
         kind: "application",
         epoch: state.epoch,
@@ -387,16 +576,36 @@ fn publish_echo(client: &Client, device: &mut Device, own: &str, state: &mut Roo
         members: Vec::new(),
         bytes: framed,
     };
-    let resp = client.post_event(&state.room, &post)?;
-    state.echoes += 1;
-    // The echo's encryption advanced this device's own sender ratchet: the
-    // new MLS state belongs on disk before the next poll.
-    state.dirty = true;
-    emit(&serde_json::json!({
-        "event": "echo", "room": state.room, "bytes": plaintext.len(),
-        "seq": resp.seq, "epoch": resp.epoch, "client_id": client_id,
-    }));
-    Ok(())
+    match ctx.client.post_event(&state.room, &post) {
+        Ok(resp) => {
+            emit(&serde_json::json!({
+                "event": "echo", "room": state.room, "bytes": plaintext.len(),
+                "seq": resp.seq, "epoch": resp.epoch, "client_id": client_id, "duplicate": resp.duplicate,
+            }));
+            Ok(())
+        }
+        // Room moved under us (a commit we have not seen): resynchronize on the
+        // next poll and replay once at the fresh epoch.
+        Err(err @ BotError::Api { status: 409, .. }) if api::error_code(&err) == Some("cas_mismatch") => {
+            state.retry.push_back(plaintext.to_vec());
+            emit(&serde_json::json!({
+                "event": "echo_conflict", "room": state.room, "client_id": client_id,
+                "error": err.to_string(),
+            }));
+            Ok(())
+        }
+        // An earlier incarnation of this identity already delivered this echo
+        // number (state file restored from a backup, for instance): the relay
+        // has the message, the counter is now past it — move on.
+        Err(err @ BotError::Api { status: 409, .. }) if api::error_code(&err) == Some("client_id_reuse") => {
+            emit(&serde_json::json!({
+                "event": "echo_client_id_reuse", "room": state.room, "client_id": client_id,
+                "error": err.to_string(),
+            }));
+            Ok(())
+        }
+        Err(err) => Err(err),
+    }
 }
 
 fn report_dropped(state: &RoomState, plaintext: &[u8], err: BotError) -> BotError {
@@ -414,10 +623,10 @@ fn push_identity(out: &mut Vec<u8>, part: &[u8]) {
 }
 
 fn read_identity(bytes: &[u8], at: &mut usize) -> Option<Vec<u8>> {
-    let end = *at + 4;
+    let end = at.checked_add(4)?;
     if bytes.len() < end { return None; }
     let len = u32::from_le_bytes(bytes[*at..end].try_into().ok()?) as usize;
-    *at = end + len;
+    *at = end.checked_add(len)?;
     if bytes.len() < *at { return None; }
     Some(bytes[end..*at].to_vec())
 }
@@ -460,7 +669,7 @@ fn status(rooms: &[RoomState]) {
         .map(|state| {
             serde_json::json!({
                 "room": state.room, "joined": state.joined, "echoes": state.echoes,
-                "cursor": state.cursor, "epoch": state.epoch,
+                "cursor": state.cursor, "epoch": state.epoch, "acked": state.ack_sent,
             })
         })
         .collect();
@@ -593,5 +802,42 @@ mod tests {
         let tmp = path.with_extension("state.tmp");
         assert!(!tmp.exists());
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Rollback guard (review 2 B-H1): a rejected operation must leave the
+    /// device usable, not retired.
+    #[test]
+    fn guarded_rolls_back_a_rejected_operation() {
+        let mut dev = Device::new("bot-1").unwrap_or_else(|_| panic!("device new"));
+        // No group yet: decrypting garbage is rejected and would retire the
+        // device without the guard.
+        let outcome = guarded(&mut dev, "bot-1", |d| d.decrypt(b"garbage").map_err(drop).map(drop))
+            .unwrap_or_else(|e| panic!("guard: {e}"));
+        assert!(outcome.is_err(), "garbage must be rejected");
+        // Still alive: a key package can be minted afterwards.
+        assert!(dev.key_package().is_ok(), "device must not be retired after a guarded rejection");
+    }
+
+    /// Echo dedup keys of other bots are recognised so two bots never
+    /// ping-pong (B-M5); ordinary client ids are not.
+    #[test]
+    fn echo_client_ids_are_recognised() {
+        assert!(is_echo_client_id("bot-1-echo-3"));
+        assert!(is_echo_client_id("x-echo-10"));
+        assert!(!is_echo_client_id("a-1-7-text"));
+        assert!(!is_echo_client_id("-echo-1"));
+        assert!(!is_echo_client_id("bot-echo-"));
+        assert!(!is_echo_client_id("bot-echo-x1"));
+    }
+
+    /// Identity frames reject length overflow instead of panicking (L1-style
+    /// arithmetic on untrusted lengths).
+    #[test]
+    fn read_identity_rejects_overflowing_length() {
+        let mut input = Vec::new();
+        input.extend_from_slice(&u32::MAX.to_le_bytes());
+        input.extend_from_slice(b"xx");
+        assert_eq!(read_identity(&input, &mut 0), None);
+        assert_eq!(read_identity(&input, &mut usize::MAX), None);
     }
 }
