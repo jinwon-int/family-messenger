@@ -120,7 +120,7 @@ def main():
     assert assets['/session-store.js'].count(old)==1
     assets['/session-store.js']=assets['/session-store.js'].replace(old,b"'abort-after-write', 'lost-response', 'crash-before-complete'")
     old=b"if (fault === 'abort-after-write') { abort(); return undefined; }"
-    assert assets['/session-store.js'].count(old)==1
+    assert assets['/session-store.js'].count(old)==2  # tombstone write + normal ledger write (#177 H2)
     assets['/session-store.js']=assets['/session-store.js'].replace(old,b"if (fault === 'crash-before-complete') {self.postMessage({test_crash_boundary:true});while(true){}}\n          "+old)
     old=b"    if (data.id !== id) return;"
     assert assets['/main.js'].count(old)==1

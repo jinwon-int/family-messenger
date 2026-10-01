@@ -36,15 +36,18 @@ def main():
     original_hashes = {name: hashlib.sha256(raw).hexdigest() for name, raw in assets.items()}
     # Instrument only bytes served by this private test. Tracked runtime has no
     # spin/kill command. Hold the callback after put so IDB cannot commit yet.
+    # (old, new, expected occurrences). The abort-after-write hook exists twice since the
+    # H2 tombstone path (#177): once on the tombstone write, once on the normal ledger write.
+    # Both get the crash boundary so a crash-before-complete fault covers either path.
     patches = {
         '/session-store.js': [
-            (b"'abort-after-write', 'lost-response'", b"'abort-after-write', 'lost-response', 'crash-before-complete'"),
-            (b"if (fault === 'abort-after-write') { abort(); return undefined; }", b"if (fault === 'crash-before-complete') { self.postMessage({test_crash_boundary:true}); while(true) {} }\n          if (fault === 'abort-after-write') { abort(); return undefined; }")],
-        '/main.js': [(b'    if (data.id !== id) return;', b'    if (data.test_crash_boundary) window.test_crash_boundary=true;\n    if (data.id !== id) return;')],
+            (b"'abort-after-write', 'lost-response'", b"'abort-after-write', 'lost-response', 'crash-before-complete'", 1),
+            (b"if (fault === 'abort-after-write') { abort(); return undefined; }", b"if (fault === 'crash-before-complete') { self.postMessage({test_crash_boundary:true}); while(true) {} }\n          if (fault === 'abort-after-write') { abort(); return undefined; }", 2)],
+        '/main.js': [(b'    if (data.id !== id) return;', b'    if (data.test_crash_boundary) window.test_crash_boundary=true;\n    if (data.id !== id) return;', 1)],
     }
     for name, replacements in patches.items():
-        for old, new in replacements:
-            assert assets[name].count(old) == 1, 'test instrumentation boundary changed'
+        for old, new, expected in replacements:
+            assert assets[name].count(old) == expected, 'test instrumentation boundary changed'
             assets[name] = assets[name].replace(old, new)
     proof = {'synthetic_only': True, 'keys_at_rest': 'sealed (secretstream) under a synthetic passphrase capsule; HMAC-indexed keys (#177 M2b-3b)',
              'storage': 'v2: resident Session, one IDB record per changed store entry + sealed authenticated meta (#177 M2b)',
