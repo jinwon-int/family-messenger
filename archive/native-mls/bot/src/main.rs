@@ -29,6 +29,11 @@ fn main() -> ExitCode {
             },
         },
     };
+    // Persistent identity (M5 후속): `--state-file <path>` (any position).
+    let (state_file, args) = match extract_flag(&args, "--state-file") {
+        Some(path) => (Some(std::path::PathBuf::from(path)), strip_flag(&args, "--state-file")),
+        None => (None, args),
+    };
     let result = match args.as_slice() {
         [base, cmd] if cmd == "health" => cmd_health(base, &access),
         [base, cmd, room, device] if cmd == "publish" => cmd_publish(base, room, device, &access),
@@ -40,6 +45,7 @@ fn main() -> ExitCode {
                 device: device.to_string(),
                 watch_room: None,
                 access: access.clone(),
+                state_file: state_file.clone(),
             })
         }
         [base, cmd, room, device, watch_room, extra] if cmd == "session" && extra == "--watch" => {
@@ -49,6 +55,7 @@ fn main() -> ExitCode {
                 device: device.to_string(),
                 watch_room: Some(watch_room.to_string()),
                 access: access.clone(),
+                state_file: state_file.clone(),
             })
         }
         _ => {
@@ -59,6 +66,9 @@ fn main() -> ExitCode {
             eprintln!("caller auth (--access-jwt-file <path>, any position; env NATIVE_MLS_BOT_ACCESS_JWT_FILE");
             eprintln!("or NATIVE_MLS_BOT_ACCESS_JWT): every request carries the CF Access assertion; the file is");
             eprintln!("re-read per request so an external refresher can rotate short-lived tokens");
+            eprintln!("persistent identity (--state-file <path>, any position): the bot resumes its MLS");
+            eprintln!("identity, room cursor and joined state across restarts; the file is rewritten");
+            eprintln!("atomically whenever the group state moves");
             return ExitCode::FAILURE;
         }
     };

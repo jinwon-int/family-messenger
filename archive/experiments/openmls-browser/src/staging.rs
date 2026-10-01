@@ -1,17 +1,17 @@
 //! Full provider/group staging. Secret snapshots stay inside the synthetic worker.
 use super::*;
-#[cfg(test)]
 use serde::{Deserialize, Serialize as SerdeSerialize};
 
 pub(crate) const MAX_STATE: usize = 1024 * 1024;
 pub(crate) const MAX_ENTRIES: usize = 512;
 
-/// Format-1-era JSON snapshot. Only the migration and trust tests still build one: the
-/// wasm snapshot API (`staged_*`) was removed with `native-worker.js` (#177 M2b-3c).
-#[cfg(test)]
+/// Versioned state snapshot: the whole provider store plus the identity /
+/// public-key / group binding. The wasm worker surface has no snapshot API
+/// (removed in #177 M2b-3c); this is the native host's (`Device::export_state`)
+/// persistence format, bounded and identity-bound.
 #[derive(SerdeSerialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Snapshot {
+pub(crate) struct Snapshot {
     version: u32,
     identity: String,
     public_key: Vec<u8>,
@@ -19,8 +19,7 @@ struct Snapshot {
     entries: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
-#[cfg(test)]
-fn save(device: &Device, identity: &str) -> Result<Vec<u8>, Rejected> {
+pub(crate) fn save(device: &Device, identity: &str) -> Result<Vec<u8>, Rejected> {
     let entries = device.provider.storage().entries();
     if entries.len() > MAX_ENTRIES { return Err(rejected(())); }
     let state = Snapshot {
@@ -32,8 +31,7 @@ fn save(device: &Device, identity: &str) -> Result<Vec<u8>, Rejected> {
     Ok(bytes)
 }
 
-#[cfg(test)]
-fn load(bytes: &[u8], identity: &str) -> Result<Device, Rejected> {
+pub(crate) fn load(bytes: &[u8], identity: &str) -> Result<Device, Rejected> {
     bounded(bytes, MAX_STATE)?;
     let state: Snapshot = serde_json::from_slice(bytes).map_err(rejected)?;
     if state.identity != identity { return Err(rejected(())); }
