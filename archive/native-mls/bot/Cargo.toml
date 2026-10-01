@@ -1,0 +1,17 @@
+[package]
+name = "native-mls-bot"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# M5 (#177 §7 Q3 답 1): Rust native MLS bot. Links the browser facade
+# (archive/experiments/openmls-browser) natively — its wasm-bindgen surface is
+# annotations only; the MLS core and the v2 record store are pure Rust, so the
+# same crate serves browser and bot (one suite, one AAD path, one set of caps).
+
+[dependencies]
+family-mls-browser-experiment = { path = "../../experiments/openmls-browser" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+# Key-package refs are caller-chosen opaque strings; the bot pins sha256 hex.
+sha2 = "=0.10.9"
