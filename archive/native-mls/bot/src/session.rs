@@ -42,6 +42,83 @@ pub struct Options {
     /// Caller auth for `-access-mode required` relays: every request carries
     /// the CF Access assertion from this source (see `api::Access`).
     pub access: api::Access,
+    /// Persistent identity state file (`--state-file`): when present the bot
+    /// resumes its MLS identity and room cursor across restarts instead of
+    /// becoming a new device every run.
+    pub state_file: Option<std::path::PathBuf>,
+}
+
+/// On-disk envelope around the facade's `export_state` snapshot (M5 후속):
+/// the bot binds the snapshot to its room and device and tracks the relay
+/// cursor/epoch so a restart resumes exactly where it stopped.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StateEnvelope {
+    version: u32,
+    room: String,
+    device: String,
+    cursor: i64,
+    epoch: i64,
+    joined: bool,
+    /// Application echoes sent so far: the relay dedups POSTs by
+    /// `<device>-echo-<n>`, so a restart must not restart that counter.
+    echoes: u64,
+    /// `Device::export_state` JSON (identity-bound inside).
+    state: serde_json::Value,
+}
+
+const STATE_VERSION: u32 = 1;
+
+/// Read the state file, if configured. Missing → fresh device. A file that
+/// exists but fails to load fails the session (fail-closed): silently
+/// starting a fresh identity would strand the enrollment and the group
+/// membership behind it.
+fn load_state(
+    path: Option<&std::path::Path>, room: &str, device: &str,
+) -> Result<Option<(Device, i64, i64, bool, u64)>, BotError> {
+    let Some(path) = path else { return Ok(None) };
+    let raw = match std::fs::read(path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(BotError::Local("state file unreadable")),
+    };
+    let env: StateEnvelope =
+        serde_json::from_slice(&raw).map_err(|_| BotError::Local("state file corrupt"))?;
+    if env.version != STATE_VERSION || env.room != room || env.device != device {
+        return Err(BotError::Local("state file is for another version/room/device"));
+    }
+    let state = serde_json::to_vec(&env.state).map_err(|_| BotError::Local("state file corrupt"))?;
+    let dev = Device::import_state(device, &state)
+        .map_err(|_| BotError::Local("state import rejected"))?;
+    Ok(Some((dev, env.cursor, env.epoch, env.joined, env.echoes)))
+}
+
+/// Atomic write (tmp + rename, 0600): a torn state file must never be the one
+/// a restart reads.
+fn persist_state(
+    path: &std::path::Path, room: &str, device: &str, dev: &mut Device,
+    cursor: i64, epoch: i64, joined: bool, echoes: u64,
+) -> Result<(), BotError> {
+    let bytes = dev.export_state(device).map_err(|_| BotError::Local("state export rejected"))?;
+    let env = StateEnvelope {
+        version: STATE_VERSION,
+        room: room.to_string(),
+        device: device.to_string(),
+        cursor,
+        epoch,
+        joined,
+        echoes,
+        state: serde_json::from_slice(&bytes).map_err(|_| BotError::Local("state export json"))?,
+    };
+    let raw = serde_json::to_vec(&env).map_err(|_| BotError::Local("state envelope json"))?;
+    let tmp = path.with_extension("state.tmp");
+    std::fs::write(&tmp, &raw).map_err(|_| BotError::Local("state file write"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
+    std::fs::rename(&tmp, path).map_err(|_| BotError::Local("state file rename"))?;
+    Ok(())
 }
 
 struct RoomState {
@@ -53,6 +130,9 @@ struct RoomState {
     echoes: u64,
     /// Set on 409: the next poll resynchronizes, then replays this plaintext.
     retry: Option<Vec<u8>>,
+    /// MLS state moved since the last state-file snapshot (join, commit,
+    /// echo encrypt): the poll loop flushes it before the next round.
+    dirty: bool,
 }
 
 pub fn run(opts: Options) -> Result<(), BotError> {
@@ -63,8 +143,15 @@ pub fn run(opts: Options) -> Result<(), BotError> {
     let deadline = Instant::now() + Duration::from_secs(max_secs);
     let client = Client::with_access(&opts.base, opts.access.clone());
 
-    let mut device = Device::new(&opts.device)
-        .map_err(|_| BotError::Local("device new: identity shape rejected"))?;
+    let mut restored_main: Option<(i64, i64, bool, u64)> = None;
+    let mut device = match load_state(opts.state_file.as_deref(), &opts.room, &opts.device)? {
+        Some((dev, cursor, epoch, joined, echoes)) => {
+            restored_main = Some((cursor, epoch, joined, echoes));
+            dev
+        }
+        None => Device::new(&opts.device)
+            .map_err(|_| BotError::Local("device new: identity shape rejected"))?,
+    };
     let key_package = device
         .key_package()
         .map_err(|_| BotError::Local("key package generation"))?;
@@ -72,14 +159,25 @@ pub fn run(opts: Options) -> Result<(), BotError> {
         .public_key()
         .map_err(|_| BotError::Local("public key"))?;
     // First line, before any relay write: the harness enrolls the bot actor
-    // with this public key (the policy chain gates every POST).
+    // with this public key (the policy chain gates every POST). A resumed
+    // device announces the same key it enrolled with, so no re-enrollment
+    // happens — `restored` says which one this is.
     emit(&serde_json::json!({
         "event": "identity",
         "device": opts.device,
         "room": opts.room,
         "watch_room": opts.watch_room,
         "public_key": hex(&public_key),
+        "restored": restored_main.is_some(),
     }));
+    // Persist the fresh identity before its first key package leaves the
+    // process: a crash between publish and the first snapshot must not leave
+    // a relay package whose private material no device holds. A resumed
+    // device keeps its on-disk state instead — rewriting zeroes here would
+    // regress the cursor/join the restart is meant to resume.
+    if let (Some(path), None) = (opts.state_file.as_deref(), restored_main) {
+        persist_state(path, &opts.room, &opts.device, &mut device, 0, 0, false, 0)?;
+    }
     let mut auth_wait_announced = false;
     let key_ref = api::ref_hex(&key_package);
     let stored = 'publish: loop {
@@ -134,11 +232,16 @@ pub fn run(opts: Options) -> Result<(), BotError> {
         "max_secs": max_secs,
     }));
 
-    let mut rooms = vec![RoomState { room: opts.room.clone(), cursor: 0, epoch: 0, joined: false, echoes: 0, retry: None }];
+    let (c0, e0, j0, x0) = restored_main.unwrap_or((0, 0, false, 0));
+    let mut rooms = vec![RoomState {
+        room: opts.room.clone(), cursor: c0, epoch: e0, joined: j0, echoes: x0, retry: None, dirty: false,
+    }];
     if let Some(watch) = &opts.watch_room {
         // The negative control: a room the bot is never invited to. It must
         // stay unjoined and silent there for the whole session.
-        rooms.push(RoomState { room: watch.clone(), cursor: 0, epoch: 0, joined: false, echoes: 0, retry: None });
+        rooms.push(RoomState {
+            room: watch.clone(), cursor: 0, epoch: 0, joined: false, echoes: 0, retry: None, dirty: false,
+        });
     }
 
     let mut rounds = 0u32;
@@ -166,6 +269,17 @@ pub fn run(opts: Options) -> Result<(), BotError> {
                     let _ = err;
                 }
                 Err(err) => return Err(err),
+            }
+        }
+        // MLS state that moved this round goes to disk before the next poll:
+        // a restart must resume from exactly this cursor or it cannot decrypt
+        // (the group ratchets on). A persist failure takes the session down —
+        // running on unpersisted state would fork the identity silently.
+        if let Some(path) = opts.state_file.as_deref() {
+            if rooms[0].dirty {
+                persist_state(path, &opts.room, &opts.device, &mut device,
+                              rooms[0].cursor, rooms[0].epoch, rooms[0].joined, rooms[0].echoes)?;
+                rooms[0].dirty = false;
             }
         }
         rounds += 1;
@@ -196,6 +310,7 @@ fn poll_room(client: &Client, device: &mut Device, own: &str, state: &mut RoomSt
             "welcome" if !state.joined => {
                 device.join(&ev.bytes).map_err(|_| BotError::Local("join welcome"))?;
                 state.joined = true;
+                state.dirty = true;
                 emit(&serde_json::json!({
                     "event": "joined", "room": state.room, "epoch": ev.epoch, "seq": ev.seq,
                 }));
@@ -205,6 +320,7 @@ fn poll_room(client: &Client, device: &mut Device, own: &str, state: &mut RoomSt
             "welcome" => return Err(BotError::Local("unexpected second welcome")),
             "commit" if state.joined => {
                 device.apply_commit(&ev.bytes).map_err(|_| BotError::Local("apply commit"))?;
+                state.dirty = true;
             }
             "application" if state.joined => echo(client, device, own, state, ev)?,
             // Everything before our Welcome (commits that formed the group,
@@ -273,6 +389,9 @@ fn publish_echo(client: &Client, device: &mut Device, own: &str, state: &mut Roo
     };
     let resp = client.post_event(&state.room, &post)?;
     state.echoes += 1;
+    // The echo's encryption advanced this device's own sender ratchet: the
+    // new MLS state belongs on disk before the next poll.
+    state.dirty = true;
     emit(&serde_json::json!({
         "event": "echo", "room": state.room, "bytes": plaintext.len(),
         "seq": resp.seq, "epoch": resp.epoch, "client_id": client_id,
@@ -374,5 +493,105 @@ mod tests {
         // Truncated lengths are rejected, not panics.
         assert_eq!(read_identity(&input[..6], &mut 0), None);
         assert_eq!(read_identity(&input[..9], &mut 0), None);
+    }
+
+    /// Scratch state file path, unique per test in this process.
+    fn state_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "bot-session-test-{}-{}.state", std::process::id(), tag,
+        ))
+    }
+
+    /// persist → load must restore the same identity and the exact
+    /// cursor/epoch/joined triple the envelope was written with.
+    #[test]
+    fn state_envelope_round_trips() {
+        let path = state_path("roundtrip");
+        let mut dev = Device::new("bot-1").unwrap_or_else(|_| panic!("device new"));
+        let key_before = match dev.public_key() { Ok(key) => key, Err(_) => panic!("public key") };
+        persist_state(&path, "family", "bot-1", &mut dev, 5, 3, true, 7).unwrap();
+        let (mut restored, cursor, epoch, joined, echoes) =
+            match load_state(Some(&path), "family", "bot-1") {
+                Ok(Some(tuple)) => tuple,
+                _ => panic!("state file must restore"),
+            };
+        // The echo counter rides along: the relay dedups by `<device>-echo-n`.
+        assert_eq!((cursor, epoch, joined, echoes), (5, 3, true, 7));
+        // Same identity: the public key that enrolled the bot survives.
+        let key_after = match restored.public_key() { Ok(key) => key, Err(_) => panic!("public key") };
+        assert_eq!(key_after, key_before);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The envelope is bound to one room and one device: anything else must
+    /// fail closed, never silently start a fresh device.
+    #[test]
+    fn state_rejects_foreign_room_device_and_version() {
+        let path = state_path("binding");
+        let mut dev = Device::new("bot-1").unwrap_or_else(|_| panic!("device new"));
+        persist_state(&path, "family", "bot-1", &mut dev, 1, 1, false, 0).unwrap();
+        for (room, device) in [("other", "bot-1"), ("family", "bot-2")] {
+            assert!(
+                matches!(
+                    load_state(Some(&path), room, device),
+                    Err(BotError::Local("state file is for another version/room/device")),
+                ),
+                "state for {room}/{device} must be rejected",
+            );
+        }
+        // Wrong envelope version: a downgrade/upgrade on disk is a hard stop.
+        let mut env: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        env["version"] = serde_json::json!(999);
+        std::fs::write(&path, serde_json::to_vec(&env).unwrap()).unwrap();
+        assert!(
+            matches!(
+                load_state(Some(&path), "family", "bot-1"),
+                Err(BotError::Local("state file is for another version/room/device")),
+            ),
+            "wrong envelope version must be rejected",
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Missing file → fresh device; corrupt file → session error, not a
+    /// fresh start (fail-closed).
+    #[test]
+    fn state_missing_is_fresh_and_corrupt_fails() {
+        let missing = state_path("missing");
+        assert!(matches!(load_state(Some(&missing), "family", "bot-1"), Ok(None)));
+        let path = state_path("corrupt");
+        std::fs::write(&path, b"{not json").unwrap();
+        assert!(
+            matches!(
+                load_state(Some(&path), "family", "bot-1"),
+                Err(BotError::Local("state file corrupt")),
+            ),
+            "corrupt state must fail closed",
+        );
+        // Even valid JSON with the wrong shape (e.g. a truncated envelope)
+        // must fail, not panic.
+        std::fs::write(&path, br#"{"version":1}"#).unwrap();
+        assert!(
+            load_state(Some(&path), "family", "bot-1").is_err(),
+            "truncated envelope must fail, not panic",
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The snapshot is atomic (tmp + rename): a completed persist leaves the
+    /// real file 0600 and no torn `.tmp` behind.
+    #[cfg(unix)]
+    #[test]
+    fn persist_is_atomic_and_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = state_path("atomic");
+        let mut dev = Device::new("bot-1").unwrap_or_else(|_| panic!("device new"));
+        persist_state(&path, "family", "bot-1", &mut dev, 2, 1, false, 0).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let tmp = path.with_extension("state.tmp");
+        assert!(!tmp.exists());
+        let _ = std::fs::remove_file(&path);
     }
 }

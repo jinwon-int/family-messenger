@@ -228,7 +228,7 @@ class TestIssuer:
 class Bot:
     """The bot process; its stdout is a JSON-line protocol (session.rs)."""
 
-    def __init__(self, binary, relay, room, device, watch_room=None, jwt_file=None):
+    def __init__(self, binary, relay, room, device, watch_room=None, jwt_file=None, state_file=None):
         argv = [str(binary), f'http://127.0.0.1:{relay.port}', 'session', room, device]
         if watch_room:
             argv += [watch_room, '--watch']
@@ -236,6 +236,10 @@ class Bot:
             # Flag position is free (main.rs extracts it anywhere): the token
             # file is re-read per request, so the harness can rotate it.
             argv += ['--access-jwt-file', str(jwt_file)]
+        if state_file:
+            # Persistent identity (M5 후속): the bot resumes its MLS state,
+            # cursor and echo counter from this file across restarts.
+            argv += ['--state-file', str(state_file)]
         self.proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.lines = []
         self.lock = threading.Condition()
@@ -645,7 +649,9 @@ def main():
                 # --- first attempts land as the opaque 403 and must be retried
                 # --- (not fatal) until the identity-line enrollment below.
                 token_file.write_text(issuer.mint('person-bot', lifetime=600))
-                bot_auth = Bot(args.bot_binary, relay_auth, AUTH_ROOM, 'bot-2', jwt_file=token_file)
+                state_file = evidence / 'bot-2-state.json'
+                bot_auth = Bot(args.bot_binary, relay_auth, AUTH_ROOM, 'bot-2', jwt_file=token_file,
+                               state_file=state_file)
                 identity2 = bot_auth.wait_for(lambda line: line.get('event') == 'identity')
                 assert identity2['room'] == AUTH_ROOM and identity2['watch_room'] is None, identity2
                 policy_auth.mutate(['-enroll-first', '-input', str(policy_auth.evidence_file(
@@ -700,9 +706,51 @@ def main():
                 auth_waits = [line for line in lines2 if line.get('event') == 'auth_wait']
                 assert len(auth_waits) == 1, auth_waits
                 receipt['checks']['expired_token_auth_wait_then_file_rotation_recovery'] = True
-                receipt['auth'] = {'issuer': ISSUER, 'audience': AUDIENCE, 'kid': issuer.kid,
-                                   'jwks': jwks_path.name, 'bot_token': '--access-jwt-file (re-read per request)'}
+
+                # --- g. persistent identity restart: the whole session above
+                # --- ran with --state-file (fresh identity snapshotted before
+                # --- its first POST; join, commits and every echo flushed per
+                # --- poll round). Stop the bot and start it again on the same
+                # --- file: it must come back as the SAME identity (same
+                # --- public key → the enrollment still matches), at the SAME
+                # --- cursor (no replay, no second Welcome) and keep echoing
+                # --- on the ratchet it never re-derived — no re-invite, no
+                # --- re-enrollment.
+                bot_auth.assert_clean()
+                time.sleep(1)  # let the last dirty round reach the state file
                 bot_auth.stop()
+                bot_auth = Bot(args.bot_binary, relay_auth, AUTH_ROOM, 'bot-2',
+                               jwt_file=token_file, state_file=state_file)
+                identity3 = bot_auth.wait_for(lambda line: line.get('event') == 'identity')
+                assert identity3['restored'] is True, identity3
+                assert identity3['public_key'] == identity2['public_key'], identity3
+                ready3 = bot_auth.wait_for(lambda line: line.get('event') == 'ready')
+                assert ready3['public_key'] == identity2['public_key'], ready3
+                # Drain what e-1 has not read yet (the recovered text and its
+                # pre-restart echo), then traffic that only exists after the
+                # restart: the resumed bot must decrypt and echo it.
+                drained = e1.sync(AUTH_ROOM)
+                assert drained == [text_e2], drained
+                text_g = 'after restart'.encode()
+                e1.post_ok('application', e1.call('encrypt', bound(e1.dev, list(text_g), room=AUTH_ROOM)),
+                           e1.client_id('t3'), AUTH_ROOM)
+                bot_auth.wait_for(lambda line: line.get('event') == 'echo' and line.get('bytes') == len(text_g),
+                                  timeout=30)
+                seen_g = e1.sync(AUTH_ROOM)
+                assert seen_g == [text_g], seen_g
+                lines3 = bot_auth.assert_clean()
+                # Resumed, not re-joined: no Welcome processing on restart.
+                assert not any(line.get('event') == 'joined' for line in lines3), lines3
+                receipt['checks']['restarted_bot_resumes_identity_cursor_and_echo'] = True
+                receipt['state'] = {'file': state_file.name, 'restored_identity': True,
+                                    'reinvite_needed': False}
+                bot_auth.stop()
+                receipt['bot_resume_events'] = len(lines3)
+                receipt['checks']['bot_resume_session_clean_exit'] = True
+
+                receipt['auth'] = {'issuer': ISSUER, 'audience': AUDIENCE, 'kid': issuer.kid,
+                                   'jwks': jwks_path.name, 'bot_token': '--access-jwt-file (re-read per request)',
+                                   'bot_state_file': state_file.name}
                 receipt['bot_auth_events'] = len(lines2)
                 receipt['checks']['bot_auth_session_clean_exit'] = True
             finally:

@@ -202,6 +202,28 @@ impl Device {
 
 }
 
+/// Host-only state persistence (the native MLS bot's persistent identity).
+/// Deliberately NOT on the `#[wasm_bindgen]` surface: the worker snapshot API
+/// was removed in #177 M2b-3c and the browser keeps holding its secrets inside
+/// the worker. A native host that already holds the keys in process may move
+/// them to a state file, so export/import live on a plain Rust `impl` the JS
+/// bridge cannot see.
+impl Device {
+    /// Bounded JSON snapshot of the whole provider store plus the identity /
+    /// public-key / group binding. The `identity` is baked into the bytes and
+    /// re-checked on import, so a state file cannot be replayed as another
+    /// device.
+    pub fn export_state(&self, identity: &str) -> Result<Vec<u8>, Rejected> {
+        staging::save(self, identity)
+    }
+
+    /// Rebuild a device from `export_state` bytes; a foreign `identity`, an
+    /// oversized or corrupt snapshot is rejected.
+    pub fn import_state(identity: &str, bytes: &[u8]) -> Result<Device, Rejected> {
+        staging::load(bytes, identity)
+    }
+}
+
 impl Device {
     /// Outstanding KeyPackages this device still holds private material for.
     fn outstanding_key_packages(&self) -> usize {
