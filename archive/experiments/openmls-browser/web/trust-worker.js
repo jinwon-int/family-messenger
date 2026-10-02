@@ -12,7 +12,7 @@ const decryptPlaintext = framed => {
   for (let i = 0; i < 2; i++) { const n = view.getUint32(at, true); at += 4 + n; }
   return framed.slice(at);
 };
-const bytes = b => {if(!Array.isArray(b)||!b.length||b.length>65536||!b.every(x=>Number.isInteger(x)&&x>=0&&x<=255)) reject();return new Uint8Array(b);};
+const bytes = b => {if(!Array.isArray(b)||!b.length||b.length>266240||!b.every(x=>Number.isInteger(x)&&x>=0&&x<=255)) reject();return new Uint8Array(b);};
 async function admission(){matchDirectory(pins,await readDirectory(actor,room));}
 let queue=Promise.resolve();
 self.onmessage=({data})=>{

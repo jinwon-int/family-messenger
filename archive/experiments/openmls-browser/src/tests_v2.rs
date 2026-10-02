@@ -1172,3 +1172,36 @@ fn stage_commit_while_own_pending_destroys_it_and_reports_the_winner() {
     assert_eq!(roster(&a2.members().unwrap()).len(), 3);
     let _ = losing;
 }
+
+/// Review 2 L (#231), batch (f): `clear_proposal_queue` — inherited verbatim
+/// from upstream `openmls_memory_storage` 0.6.0 — removed QueuedProposal
+/// entries under the raw tuple key while `queue_proposal` writes them under
+/// the labelled/versioned key, so every queued proposal was orphaned in the
+/// store once the queue was cleared (a leak that also kept retired ratchet
+/// material around). On the facade's own [`store::Store`]: a self-update
+/// proposal is queued (1 entry), committing it by reference and merging
+/// clears the queue (0 entries, 0 refs).
+#[test]
+fn clear_proposal_queue_removes_queued_proposals() {
+    let provider = Provider::default();
+    let signer = SignatureKeyPair::new(SUITE.signature_algorithm()).unwrap();
+    signer.store(provider.storage()).unwrap();
+    let credential = CredentialWithKey {
+        credential: BasicCredential::new(b"alice".to_vec()).into(),
+        signature_key: signer.public().into(),
+    };
+    let config = MlsGroupCreateConfig::builder().ciphersuite(SUITE)
+        .use_ratchet_tree_extension(true).build();
+    let mut alice = MlsGroup::new(&provider, &signer, &config, credential).unwrap();
+    let queued = || provider.storage().count_with_label(b"QueuedProposal");
+    let refs = || provider.storage().count_with_label(b"ProposalQueueRefs");
+    assert_eq!((queued(), refs()), (0, 0));
+
+    let (_proposal, _ref) = alice.propose_self_update(&provider, &signer, LeafNodeParameters::default()).unwrap();
+    assert_eq!((queued(), refs()), (1, 1), "the own proposal is queued under the labelled key");
+
+    let (_commit, _, _) = alice.commit_to_pending_proposals(&provider, &signer).unwrap();
+    alice.merge_pending_commit(&provider).unwrap();
+    assert_eq!(queued(), 0, "clear_proposal_queue must remove the QueuedProposal entry (was orphaned before change 4)");
+    assert_eq!(refs(), 0, "and the refs list");
+}

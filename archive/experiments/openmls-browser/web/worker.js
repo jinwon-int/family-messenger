@@ -24,6 +24,7 @@ self.onmessage = ({data: {id, method, argument}}) => {
       if (!device) throw new Error('not initialized');
       switch (method) {
         case 'key_package': result = device.key_package(); break;
+        case 'delete_key_package': device.delete_key_package(new Uint8Array(argument)); result = null; break;
         case 'create': result = device.create(); break;
         case 'invite': result = device.invite(new Uint8Array(argument)); break;
         case 'invite_with_commit': result = device.invite_with_commit(new Uint8Array(argument)); break;

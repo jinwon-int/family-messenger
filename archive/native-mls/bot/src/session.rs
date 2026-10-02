@@ -167,8 +167,13 @@ struct RoomState {
     /// Application messages decrypted and echoed back.
     echoes: u64,
     /// Set on 409 cas_mismatch: the next poll resynchronizes, then replays
-    /// these plaintexts in order (review 2 L2: more than one slot).
-    retry: VecDeque<Vec<u8>>,
+    /// these plaintexts in order (review 2 L2: more than one slot). Each
+    /// entry carries its attempt count: a replay is tried once per poll —
+    /// the GET that applies the winning commit refreshes the epoch between
+    /// attempts — and dropped (`echo_dropped`, non-fatal) after
+    /// MAX_ECHO_ATTEMPTS, so a room that keeps moving cannot livelock the
+    /// session (batch f: the drain used to loop inside one poll).
+    retry: VecDeque<(Vec<u8>, u32)>,
     /// MLS state moved since the last state-file snapshot (join, commit,
     /// echo encrypt): the poll loop flushes it before the next round.
     dirty: bool,
@@ -487,14 +492,27 @@ fn poll_room(ctx: &Ctx, device: &mut Device, state: &mut RoomState) -> Result<()
         }
     }
     if state.joined {
-        while let Some(plaintext) = state.retry.pop_front() {
-            if let Err(err) = publish_echo(ctx, device, state, &plaintext) {
+        // Replay only what was queued before this poll: an entry the relay
+        // refuses again goes back on the queue for the *next* poll (whose
+        // GET applies the commit that moved the epoch), never for this one.
+        let due = std::mem::take(&mut state.retry);
+        for (plaintext, attempts) in due {
+            if attempts >= MAX_ECHO_ATTEMPTS {
+                let err = BotError::Local("echo replay attempts exhausted");
+                report_dropped(state, &plaintext, err);
+                continue;
+            }
+            if let Err(err) = publish_echo(ctx, device, state, &plaintext, attempts) {
                 return Err(report_dropped(state, &plaintext, err));
             }
         }
     }
     Ok(())
 }
+
+/// How many polls one echo may be replayed across after cas_mismatch before
+/// it is dropped as `echo_dropped` (non-fatal).
+const MAX_ECHO_ATTEMPTS: u32 = 8;
 
 /// A poison event (undecryptable Welcome/commit): the device was rolled back,
 /// the cursor moves past it and the state file records that.
@@ -538,7 +556,7 @@ fn echo(ctx: &Ctx, device: &mut Device, state: &mut RoomState, ev: &StoredRow) -
         }));
         return Ok(());
     }
-    match publish_echo(ctx, device, state, &plaintext) {
+    match publish_echo(ctx, device, state, &plaintext, 0) {
         Ok(()) => Ok(()),
         Err(err) => Err(report_dropped(state, &plaintext, err)),
     }
@@ -552,7 +570,7 @@ fn is_echo_client_id(client_id: &str) -> bool {
     }
 }
 
-fn publish_echo(ctx: &Ctx, device: &mut Device, state: &mut RoomState, plaintext: &[u8]) -> Result<(), BotError> {
+fn publish_echo(ctx: &Ctx, device: &mut Device, state: &mut RoomState, plaintext: &[u8], attempts: u32) -> Result<(), BotError> {
     let framed = encrypt_frame(device, &state.room, ctx.own, plaintext)
         .map_err(|_| BotError::Local("encrypt echo"))?;
     // Relay-level dedup key, distinct per reply; the MLS AAD client_id inside
@@ -587,10 +605,10 @@ fn publish_echo(ctx: &Ctx, device: &mut Device, state: &mut RoomState, plaintext
         // Room moved under us (a commit we have not seen): resynchronize on the
         // next poll and replay once at the fresh epoch.
         Err(err @ BotError::Api { status: 409, .. }) if api::error_code(&err) == Some("cas_mismatch") => {
-            state.retry.push_back(plaintext.to_vec());
+            state.retry.push_back((plaintext.to_vec(), attempts + 1));
             emit(&serde_json::json!({
                 "event": "echo_conflict", "room": state.room, "client_id": client_id,
-                "error": err.to_string(),
+                "attempt": attempts + 1, "error": err.to_string(),
             }));
             Ok(())
         }

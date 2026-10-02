@@ -220,6 +220,44 @@ v2 smoke는 required 모드로 돈다(ES256 키를 만들어 JWKS 파일로 넘�
   밖에서 돌아 아는 kid의 검증을 막지 않으며, 사용 가능한 키가 0개인 응답은 캐시를
   교체하지 않는다.
 
+### 리뷰 2차 Low 묶음 (#231 배치 f)
+
+- **JWKS 리다이렉트**: https URL 소스의 fetch는 리다이렉트를 최대 3회 따르고 **https가
+  아닌 hop은 요청 전에 거부**한다(키 집합을 평문으로 요청하지 않음). 거부된 재적재는
+  캐시를 바꾸지 않는다.
+- **JWT 수명 상한**: `exp`는 `now + 24h(+leeway)`를, `iat`가 있으면 `now + leeway`와
+  `exp − iat ≤ 24h`를 넘을 수 없다(401 `lifetime too long` / `issued in the future`,
+  사유는 로그에만). 24h는 CF Access 기본 세션 길이 — 더 긴 세션은
+  `-access-max-lifetime-seconds`로 명시적으로 넓힌다(기본값이 조용히 받아주지 않는다).
+- **commit/welcome 보존**: `-commit-welcome-keep-epochs`(기본 8) 밖의 commit/welcome은
+  application과 같은 게이트 — **모든 known reader의 ack 커서가 지난 것만** — 로 지운다.
+  오프라인 멤버가 돌아와서 자기 epoch부터 따라잡을 수 있게 하기 위해서다.
+  `-commit-welcome-hard-max-epochs`(기본 256)는 커서와 무관한 백스톱: 그만큼 뒤처진
+  reader는 어차피 새 Welcome이 필요하다(commit은 캡 면제라 백스톱 없이는 ack 안 하는
+  reader가 영구 점유). GET 응답의 **`first_seq`**(방에 남은 최소 seq, 비면 0)로
+  reader는 `after < first_seq − 1`이면 자기가 못 본 역사가 지워졌음을 안다 —
+  연속인 척하지 말고 재참여해야 한다.
+- **미시드 방 ack**: 커서 행이 없는 기기는 **로스터에 앉은 멤버일 때만** ack로 커서를
+  만든다. 미시드 방(창립 commit 전·로스터 없음)의 정당한 reader(게시자·Welcome 대상)는
+  이미 `registerCursor` 행을 가지므로, 그 밖의 기기의 ack는 멤버십 추적 중 시드된
+  방이면 403 `not_a_member`, 아니면 **무시되고 `cursor: 0`**(행 없음, 프루닝 게이트
+  아님). 새로 만든 커서가 0이면 전진으로 치지 않아 프루닝을 돌리지 않는다.
+- **GET 페이지 바이트 예산**: 한 페이지의 `bytes` 합은 8 MiB를 넘지 않는다(`limit`
+  2000 × 64 MiB 방 = base64 ~86 MiB가 60 s write timeout 안에 나가던 문제). 예산을
+  넘길 행 **앞에서** 끊고 `next_after`는 끊기 전 마지막 스캔 행이라 다음 요청이 정확히
+  거기서 이어진다(빠짐·중복 없음). 첫 행은 항상 돌려준다.
+- **`-reset-room` 드라이런은 읽기 전용**: 도구는 `openStore`(CREATE TABLE/ALTER TABLE)를
+  거치지 않고 파일을 **있는 그대로** 연다 — 드라이런은 `mode=ro`, `-yes`도 스키마
+  초기화 없이 쓰기 연결만. M3 이전 파일에 없는 테이블은 0으로 센다. 드라이런 뒤
+  파일 sha256이 같다(테스트).
+- **`-access-mode disabled`는 loopback 전용**: `-addr`가 127.0.0.0/8·`::1`·`localhost`가
+  아니면(``""``·`0.0.0.0`·`::`·LAN 주소) 기동을 거부한다. 인증 없는 릴레이가 네트워크에
+  노출될 조합은 로컬 개발이 아니다.
+- 테스트 공백 메움: JWKS 소스가 멈춘 동안 모르는 kid N건 동시 요청 → fetch 1회,
+  아는 kid 검증은 막히지 않음, 500 뒤 전부 401, 간격 안 재fetch 없음(`-race`); ack 안
+  하는 reader가 방을 캡에 묶음 → 제거 commit 수용 → 유예 뒤 커서 삭제·프루닝 → 게시
+  재개·제거된 기기는 403(복구 전 과정).
+
 멤버십은 `mls_members(room, device, actor, added_seq)`에 커밋 insert와 같은
 BEGIN IMMEDIATE 트랜잭션으로 기록된다(B2/B3 규율 유지). v2 릴레이 smoke
 (`native_v2_relay_smoke.py`)은 M3c에서 `-device-state` 강제 모드로 전환됐다 —

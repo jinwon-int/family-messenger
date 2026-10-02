@@ -33,11 +33,22 @@ const (
 	// accessLeeway absorbs clock skew between Cloudflare and the relay host
 	// on exp/nbf.
 	accessLeeway = 60 * time.Second
+	// accessMaxLifetime (review 2 L: no iat / lifetime bound) caps how far
+	// exp may lie ahead of now and of iat: a token minted by a compromised or
+	// misconfigured issuer must not stay valid for years. 24 h is the
+	// Cloudflare Access default session length; a longer configured session
+	// needs -access-max-lifetime-seconds and fails loudly ("lifetime too
+	// long") rather than silently accepting the longer token.
+	accessMaxLifetime = 24 * time.Hour
 	// jwksRefreshMinGap bounds how often an unknown kid may trigger a reload
 	// of the JWKS source (key rotation without restart, no refresh storms).
 	jwksRefreshMinGap = time.Minute
 	jwksMaxBytes      = 1 << 20
-	minRSABits        = 2048
+	// jwksMaxRedirects bounds a JWKS fetch's redirect chain; every hop must
+	// stay https (review 2 L: a redirect to http:// would hand the key set to
+	// the network).
+	jwksMaxRedirects = 3
+	minRSABits       = 2048
 )
 
 // errUnauthorized wraps every verification failure; handlers answer a bare
@@ -65,6 +76,9 @@ type accessVerifier struct {
 	source   string
 	client   *http.Client
 	now      func() time.Time
+	// maxLifetime bounds exp-now and exp-iat (accessMaxLifetime unless
+	// overridden by the operator).
+	maxLifetime time.Duration
 
 	mu          sync.Mutex
 	keys        map[string]crypto.PublicKey
@@ -86,11 +100,12 @@ func newAccessVerifier(issuer, audience, source string) (*accessVerifier, error)
 		return nil, errors.New("access jwks URL must be https:// (or a local file path)")
 	}
 	v := &accessVerifier{
-		issuer:   issuer,
-		audience: audience,
-		source:   source,
-		client:   &http.Client{Timeout: 10 * time.Second},
-		now:      time.Now,
+		issuer:      issuer,
+		audience:    audience,
+		source:      source,
+		client:      &http.Client{Timeout: 10 * time.Second, CheckRedirect: jwksCheckRedirect},
+		now:         time.Now,
+		maxLifetime: accessMaxLifetime,
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -104,6 +119,19 @@ func newAccessVerifier(issuer, audience, source string) (*accessVerifier, error)
 }
 
 func (v *accessVerifier) isURL() bool { return strings.HasPrefix(v.source, "https://") }
+
+// jwksCheckRedirect is the JWKS client's redirect policy: at most
+// jwksMaxRedirects hops and never off https. A plain-http hop is refused
+// before the request is sent, so the key set is never requested in clear.
+func jwksCheckRedirect(req *http.Request, via []*http.Request) error {
+	if req.URL.Scheme != "https" {
+		return fmt.Errorf("jwks redirect to %s refused: only https", req.URL.Scheme)
+	}
+	if len(via) >= jwksMaxRedirects {
+		return fmt.Errorf("jwks redirect chain longer than %d", jwksMaxRedirects)
+	}
+	return nil
+}
 
 // load fetches the raw JWKS document from the configured source.
 func (v *accessVerifier) load() ([]byte, error) {
@@ -336,6 +364,7 @@ func (v *accessVerifier) verify(token string) (accessClaims, error) {
 		Aud        json.RawMessage `json:"aud"`
 		Exp        *float64        `json:"exp"`
 		Nbf        *float64        `json:"nbf"`
+		Iat        *float64        `json:"iat"`
 	}
 	if err := json.Unmarshal(payloadRaw, &payload); err != nil {
 		return accessClaims{}, unauthorizedf("malformed payload")
@@ -368,6 +397,21 @@ func (v *accessVerifier) verify(token string) (accessClaims, error) {
 	claims.ExpiresAt = int64(*payload.Exp)
 	if !now.Before(time.Unix(claims.ExpiresAt, 0).Add(accessLeeway)) {
 		return accessClaims{}, unauthorizedf("expired")
+	}
+	// Lifetime bound: exp may not lie further ahead than maxLifetime (plus
+	// leeway) from now, nor from iat when iat is present; a future iat is a
+	// forgery or a broken clock, either way not a token to act on.
+	if time.Unix(claims.ExpiresAt, 0).After(now.Add(v.maxLifetime + accessLeeway)) {
+		return accessClaims{}, unauthorizedf("lifetime too long")
+	}
+	if payload.Iat != nil {
+		iat := time.Unix(int64(*payload.Iat), 0)
+		if iat.After(now.Add(accessLeeway)) {
+			return accessClaims{}, unauthorizedf("issued in the future")
+		}
+		if time.Unix(claims.ExpiresAt, 0).After(iat.Add(v.maxLifetime)) {
+			return accessClaims{}, unauthorizedf("lifetime too long")
+		}
 	}
 	if payload.Nbf != nil {
 		claims.NotBefore = int64(*payload.Nbf)

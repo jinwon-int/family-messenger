@@ -55,7 +55,11 @@ type policy struct {
 	KeyPackagesMaxPerDevice int
 	KeyPackageTTLSeconds    int64
 	CommitWelcomeKeepEpochs int64
-	AppEventTTLSeconds      int64
+	// CommitWelcomeHardMaxEpochs: commits/welcomes older than this many
+	// epochs go regardless of reader cursors (backstop; 0 = none). Inside
+	// it, but outside CommitWelcomeKeepEpochs, they wait for every cursor.
+	CommitWelcomeHardMaxEpochs int64
+	AppEventTTLSeconds         int64
 	// RemovedCursorGraceSeconds: how long a member removed by commit keeps
 	// gating application-event pruning with its cursor unless it reads its
 	// own removal first (H3a).
@@ -75,14 +79,15 @@ type policy struct {
 func defaultPolicy() policy {
 	const day = 24 * 60 * 60
 	return policy{
-		RoomBytesCap:              64 << 20, // 64 MiB per room (B5)
-		KeyPackagesMaxPerDevice:   4,
-		KeyPackageTTLSeconds:      7 * day,
-		CommitWelcomeKeepEpochs:   8,
-		AppEventTTLSeconds:        30 * day,
-		RemovedCursorGraceSeconds: 7 * day,
-		RoomsMaxPerDevice:         16,
-		DeviceBytesCap:            256 << 20, // 256 MiB per device across rooms (G-M4)
+		RoomBytesCap:               64 << 20, // 64 MiB per room (B5)
+		KeyPackagesMaxPerDevice:    4,
+		KeyPackageTTLSeconds:       7 * day,
+		CommitWelcomeKeepEpochs:    8,
+		CommitWelcomeHardMaxEpochs: 256,
+		AppEventTTLSeconds:         30 * day,
+		RemovedCursorGraceSeconds:  7 * day,
+		RoomsMaxPerDevice:          16,
+		DeviceBytesCap:             256 << 20, // 256 MiB per device across rooms (G-M4)
 	}
 }
 
@@ -155,6 +160,10 @@ type eventsResponse struct {
 	// Cursor is the device's durable acknowledged position after this
 	// request (M2): reads never move it; only ?ack= does.
 	Cursor int64 `json:"cursor"`
+	// FirstSeq is the lowest seq the room still holds (0 when empty). When
+	// the request's after is below first_seq-1 the relay pruned events the
+	// reader never saw: it has a history gap and needs a fresh Welcome.
+	FirstSeq int64 `json:"first_seq"`
 }
 
 // keyPackageInput is one posted KeyPackage: an opaque caller-chosen ref as
@@ -910,7 +919,7 @@ func (s *relay) handleGetEvents(w http.ResponseWriter, req *http.Request) {
 	var bad badAck
 	switch {
 	case err == nil:
-		writeJSON(w, http.StatusOK, eventsResponse{Epoch: page.room.epoch, Revision: page.room.revision, Events: page.rows, NextAfter: page.nextAfter, Cursor: page.cursor})
+		writeJSON(w, http.StatusOK, eventsResponse{Epoch: page.room.epoch, Revision: page.room.revision, Events: page.rows, NextAfter: page.nextAfter, Cursor: page.cursor, FirstSeq: page.firstSeq})
 	case errors.As(err, &bad):
 		s.fail(w, http.StatusBadRequest, apiError{Error: "bad_ack", Detail: bad.Error()})
 	case errors.Is(err, errNotMember):

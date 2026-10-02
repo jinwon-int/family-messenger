@@ -55,6 +55,15 @@ pub fn request(
     extra_headers: &[(&str, &str)],
 ) -> Result<Response, HttpError> {
     let (host, port) = split_base(base)?;
+    // Request-line guard (review 2 L: URL not encoded): the path goes on the
+    // wire verbatim, so a space, CR/LF or control byte in it would split the
+    // request line or smuggle a header. Identifiers are validated upstream
+    // (api::is_identifier); this is the last line before the socket.
+    if !path_qs.starts_with('/')
+        || path_qs.bytes().any(|b| b <= b' ' || b == 0x7f)
+    {
+        return Err(HttpError::BadUrl);
+    }
     // Header injection guard: CR/LF in a value would smuggle a second header
     // (or request) — validate before any socket is opened.
     let mut headers_block = String::new();
@@ -218,5 +227,28 @@ mod tests {
         // surface as an io error instead of the injection rejection.
         let err = request("http://127.0.0.1:1", "GET", "/v2/health", None, &[("X-Bad", "v\r\nX: 1")]);
         assert!(matches!(err, Err(HttpError::BadUrl)));
+    }
+
+    /// A path with whitespace or control bytes never reaches the socket
+    /// (review 2 L: request-line injection via an unencoded identifier).
+    #[test]
+    fn request_line_injection_is_rejected() {
+        for bad in ["/v2/x\r\nY: 1", "/v2/rooms/a b/events", "/v2/rooms/a\tb", "v2/no-leading-slash", "/v2/\u{7f}"] {
+            let err = request("http://127.0.0.1:1", "GET", bad, None, &[]);
+            assert!(matches!(err, Err(HttpError::BadUrl)), "{bad:?} was not refused");
+        }
+    }
+
+    /// Chunked decoding (review 2 L1 regression): absurd sizes fail without
+    /// overflow, truncation fails, a well-formed body decodes.
+    #[test]
+    fn decode_chunked_bounds() {
+        assert_eq!(decode_chunked(b"3\r\nabc\r\n0\r\n\r\n").expect("well-formed"), b"abc");
+        assert_eq!(decode_chunked(b"3;ext=1\r\nabc\r\n0\r\n\r\n").expect("extension"), b"abc");
+        assert!(matches!(decode_chunked(b"ffffffffffffffff\r\nab"), Err(HttpError::BadResponse(_))));
+        assert!(matches!(decode_chunked(b"1ffffffffffffffff\r\nab"), Err(HttpError::BadResponse(_))));
+        assert!(matches!(decode_chunked(b"5\r\nab"), Err(HttpError::BadResponse("truncated chunk"))));
+        assert!(matches!(decode_chunked(b"zz\r\nab\r\n"), Err(HttpError::BadResponse("bad chunk size"))));
+        assert!(matches!(decode_chunked(b"3abc"), Err(HttpError::BadResponse("unterminated chunk size"))));
     }
 }

@@ -12,7 +12,9 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -38,10 +40,15 @@ func main() {
 	resetRoomName := flag.String("reset-room", "", "OFFLINE operator recovery (review H3: squatted or mistaken room bootstrap): delete every relay row of this room from -data-dir and exit. Refuses while a relay holds the data dir; dry run unless -yes")
 	resetYes := flag.Bool("yes", false, "with -reset-room: actually delete (default prints what would be deleted)")
 	removedGrace := flag.Int64("removed-cursor-grace-seconds", 0, "override how long a member removed by commit keeps gating pruning before it reads its removal")
+	hardMaxEpochs := flag.Int64("commit-welcome-hard-max-epochs", 0, "override the unconditional commit/welcome retention backstop (epochs); inside it but past -commit-welcome-keep-epochs they wait for every reader cursor")
+	accessMaxLifetimeSeconds := flag.Int64("access-max-lifetime-seconds", 0, "override the maximum accepted JWT lifetime (exp-now and exp-iat; default 24h = CF Access default session)")
 	flag.Parse()
 
 	if *dataDir == "" {
 		log.Fatal("-data-dir is required")
+	}
+	if err := validateListen(*accessMode, *addr); err != nil {
+		log.Fatal(err)
 	}
 	if *resetRoomName != "" {
 		// Offline tool: no listener, no access configuration needed.
@@ -62,6 +69,9 @@ func main() {
 		v, err := newAccessVerifier(*accessIssuer, *accessAudience, *accessJWKS)
 		if err != nil {
 			log.Fatalf("access verifier: %v", err)
+		}
+		if *accessMaxLifetimeSeconds > 0 {
+			v.maxLifetime = time.Duration(*accessMaxLifetimeSeconds) * time.Second
 		}
 		access = v
 	case accessModeDisabled:
@@ -119,6 +129,9 @@ func main() {
 	if *removedGrace > 0 {
 		pol.RemovedCursorGraceSeconds = *removedGrace
 	}
+	if *hardMaxEpochs > 0 {
+		pol.CommitWelcomeHardMaxEpochs = *hardMaxEpochs
+	}
 
 	relay := &relay{db: db, policy: pol, devices: devices, access: access}
 	srv := &http.Server{
@@ -134,4 +147,27 @@ func main() {
 	}
 	log.Printf("native-mls v2 relay listening on %s (data-dir %s)", *addr, *dataDir)
 	log.Fatal(srv.ListenAndServe())
+}
+
+// validateListen refuses the one combination that is never local dev
+// (review 2 L): -access-mode disabled — no caller authentication at all —
+// on a listener that is not loopback. "" / 0.0.0.0 / :: / a LAN address all
+// expose every device to the network; only 127.0.0.0/8, ::1 and
+// "localhost" pass.
+func validateListen(accessMode, addr string) error {
+	if accessMode != accessModeDisabled {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("-addr %q: %v", addr, err)
+	}
+	if host == "localhost" {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("-access-mode disabled is local development only: -addr must be a loopback address, got %q", addr)
+	}
+	return nil
 }

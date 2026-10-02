@@ -310,26 +310,42 @@ class Bot:
         return lines
 
     def stop(self):
-        if self.proc.poll() is None:
+        """SIGTERM a bot that is still running and require it to die of that
+        signal (review 2 L: a bot that had already exited — or needed the
+        SIGKILL fallback — must fail the step, not pass as a clean exit)."""
+        was_running = self.proc.poll() is None
+        forced = False
+        if was_running:
             self.proc.send_signal(signal.SIGTERM)
             try:
                 self.proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
+                forced = True
                 self.proc.kill()
                 self.proc.wait(timeout=10)
         stderr = self.proc.stderr.read().decode(errors='replace')
         assert 'panic' not in stderr, stderr[-800:]
-        return self.proc.returncode
+        rc = self.proc.returncode
+        assert was_running, f'bot had already exited with {rc} before stop(); stderr: {stderr[-800:]}'
+        assert not forced, f'bot ignored SIGTERM for 10s and needed SIGKILL (exit {rc})'
+        # No SIGTERM handler is installed: the kernel reports the signal.
+        assert rc == -signal.SIGTERM, f'bot exit {rc}, expected death by SIGTERM; stderr: {stderr[-800:]}'
+        return rc
 
     def kill(self):
         """SIGKILL now (review 2 CI-M8): no graceful round, no drain — the
-        crash-window scenario. Consumes the pipes like stop()."""
-        if self.proc.poll() is None:
+        crash-window scenario. Consumes the pipes like stop() and, like it,
+        requires the bot to have been alive to kill."""
+        was_running = self.proc.poll() is None
+        if was_running:
             self.proc.kill()
             self.proc.wait(timeout=10)
         stderr = self.proc.stderr.read().decode(errors='replace')
         assert 'panic' not in stderr, stderr[-800:]
-        return self.proc.returncode
+        rc = self.proc.returncode
+        assert was_running, f'bot had already exited with {rc} before kill(); stderr: {stderr[-800:]}'
+        assert rc == -signal.SIGKILL, f'bot exit {rc}, expected death by SIGKILL'
+        return rc
 
 
 def main():
@@ -606,14 +622,25 @@ def main():
             c1.add(d1, PRIVATE, ['c-1', 'd-1'])
             c1.post_ok('application', c1.call('encrypt', bound(c1.dev, list(b'private hello'), room=PRIVATE)),
                        c1.client_id('p1'), PRIVATE)
-            deadline = time.monotonic() + 3
-            while time.monotonic() < deadline:
-                time.sleep(0.3)
             private_view = relay.http('GET', f'/v2/rooms/{PRIVATE}/events?device=c-1&after=0')
             assert private_view[0] == 200 and private_view[1]['events'], private_view
+            last_private = max(ev['seq'] for ev in private_view[1]['events'])
+            # Tripwire (review 2 L: the control used to pass vacuously): the
+            # bot must prove it READ the private room up to the message —
+            # a stale pre-creation status, a misspelled watch room or a
+            # swallowed 404 all leave the cursor behind and fail here.
+            bot.wait_for(lambda line: line.get('event') == 'status' and any(
+                r['room'] == PRIVATE and r['cursor'] >= last_private for r in line['rooms']), timeout=30)
             assert all(ev['device'] != 'bot-1' for ev in private_view[1]['events']), 'bot must never POST to the private room'
             watch = bot.latest_status(PRIVATE)
             assert watch['joined'] is False and watch['echoes'] == 0, watch
+            with bot.lock:
+                private_lines = [line for line in bot.lines if line.get('room') == PRIVATE
+                                 and line.get('event') in ('joined', 'application', 'echo', 'welcome_ignored',
+                                                           'undecryptable', 'rejected', 'echo_conflict')]
+            assert not private_lines, private_lines
+            # Positive control: a real member decrypts what the bot could only watch.
+            assert d1.sync(PRIVATE) == [b'private hello']
             main_room = bot.latest_status(ROOM)
             assert main_room['joined'] is True and main_room['echoes'] == 3, main_room
             receipt['checks']['uninvited_room_no_join_no_decrypt_no_posts'] = True
