@@ -33,13 +33,6 @@ python3 archive/native-mls/tests/real_device_kit.py serve --bundle artifacts/mls
 - 서버는 합성 전용이며 상태를 메모리에만 둔다. Ctrl-C로 종료하면 세션 스켈레톤
   (기기 등록·요청 기록·관찰)이 `archive/artifacts/real-device-*/session-skeleton.json`(0600)으로
   저장된다. **이 파일이 검증의 기준점이다** — 수정하지 말고 증거와 함께 보관한다.
-- **세션 서버를 `nohup`으로 띄우지 말 것**(2026-10-03 세션 1 유실, #243): `nohup`은 SIGINT를 무시해
-  Ctrl-C 종료 시 스켈레톤이 저장되지 않는다. 포그라운드로 두거나 `setsid`로 띄우고 **SIGINT**로 끝낸다.
-  긴 세션은 끝나기 전에 `/s/<토큰>/evidence.json`(같은 생성기가 만드는 라이브 내보내기)을 받아 두면
-  유실에 대비할 수 있다.
-- **킷 서버는 번들 자산을 시작 시 메모리에 적재한다**: `main.js`/`panel.html`을 고친 뒤에는 서버를
-  **재시작해야** 반영되며, 재시작하면 세션 토큰이 바뀌고 교환판이 초기화된다. 패치는 세션을 시작하기
-  **전에** 끝낸다.
 - 기기 등록 시 서버는 클라이언트가 보낸 `ua`와 별도로 요청 헤더에서 직접 읽은 `request_ua`,
   `request_sec_ch_ua` · `request_sec_ch_ua_platform` · `request_sec_ch_ua_mobile`(없으면 `null`)을
   기록한다. 검증기는 클라이언트 자기신고가 아니라 이 **서버 관측값**을 기준으로 삼는다.
@@ -78,9 +71,6 @@ python3 archive/native-mls/tests/real_device_kit.py serve --bundle artifacts/mls
    이 경우 관찰 메모에 "reload 후 이어하기"로 남긴다.)
 6. **관찰 전송**: 이탈 시간·복귀 후 해독 성공 여부·메모를 넣고 `관찰 전송`. 증거 JSON의
    `background_return.away_seconds`는 **여기 넣은 초와 같은 값**이어야 한다(검증기가 대조).
-   **세션마다 저장소를 지우고 시작한다**: 이전 세션의 데이터베이스로 이어하기한 상태에서 `그룹 생성`을
-   누르면 `operation 거부`가 난다(기기 1 = 그룹 1 규칙, 2026-10-03 관측). 같은 데이터베이스 이름을
-   다시 쓰려면 먼저 `저장소 삭제`로 비운다.
 7. **저장소 축출 재연습(권장)**: 한 기기에서 `저장소 삭제(축출 재연습)` → 같은
    신원·데이터베이스·암호로 다시 시작 → **새 지문** 확인 → 반대 기기가 새 패키지로 재초대 →
    참여 → 메시지 왕복. iOS의 7일 미사용 축출도 같은 결과(상태 소멸·재등록 필요)로 문서화한다.
@@ -199,9 +189,9 @@ ssh <relay-node> 'sha256sum /opt/native-relay/bin/native-mls-relay; strings /opt
 
 | 날짜(KST) | 번들 매니페스트 | 바이트 재해시 | 릴레이 sha256(12) · 툴체인 | 수행 |
 |---|---|---|---|---|
-| 2026-10-03 00:5x | IDENTICAL (wasm `13e94dfa…`, js `d9a05287…`, custody `b94b2180…`) | 3/3 일치 | `0cd567cabcc0` · go1.27.1 (#249 `d54ee66` 빌드, gwakga) | yukson |
+| 2026-10-03 00:5x | IDENTICAL (wasm `13e94dfa…`, js `d9a05287…`, custody `b94b2180…`) | 3/3 일치 | `0cd567cabcc0` · go1.27.1 — **재현 미충족**: `go version -m` `vcs.revision=ae7557e9`(#248 시점) + `vcs.modified=true`(작업트리 빌드). 깨끗한 `d54ee66` 빌드(`CGO_ENABLED=1 go build -trimpath`, gwakga, `vcs.modified=false`) sha `76d0aac7bff9be58…`가 서빙 노드 `/root/native-relay-staging/`에 대기 — 교체는 오너 결정 | yukson |
 
-재현 빌드(`go build -trimpath` 해시 일치)는 같은 Go 버전이 핀된 노드에서만 의미가 있다 —
+릴레이 바이너리의 **재현 여부는 `go version -m <binary>`의 `vcs.revision`·`vcs.modified`로 판정**한다(sha 일치만으로 "= 커밋 빌드"라고 쓰지 말 것 — 2026-10-03 오판). 재현 빌드(`go build -trimpath` 해시 일치)는 같은 Go 버전이 핀된 노드에서만 의미가 있다 —
 수행 시 이 표에 "재현 ✓/✗ + 빌드 노드 + 커밋"을 추가한다. 번들의 재현 빌드는 rustc 1.91.1 +
 `wasm32` 툴체인(gwakga)에서 수행한다.
 
