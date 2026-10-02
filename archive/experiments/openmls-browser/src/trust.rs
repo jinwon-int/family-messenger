@@ -64,8 +64,10 @@ impl Device {
         bounded(ciphertext, MAX_WIRE)?;
         let (plaintext, sender) = self.decrypt_checked_inner(room, ciphertext, Some(actor))?;
         // The pin binds the same identity the AAD was required to carry.
+        // A past-epoch message from a leaf no longer in the tree carries no
+        // signing key to compare against the pin: refused in this lane.
         if sender.device != expected.credential.serialized_content()
-            || sender.credential != expected.credential || sender.signature_key != key {
+            || sender.credential != expected.credential || sender.signature_key.as_deref() != Some(key) {
             return Err(rejected(()));
         }
         Ok(frame_decrypt(&sender.device, &sender.client_id, &plaintext))

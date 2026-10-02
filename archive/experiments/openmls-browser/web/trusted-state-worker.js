@@ -102,7 +102,7 @@ self.onmessage = ({data}) => {
       let result;
       if (method === 'init') {
         if (store || !exact(argument, ['identity', 'room', 'database', 'passphrase']) ||
-            typeof argument.identity !== 'string' || !/^[a-zA-Z0-9_.:-]{1,64}$/.test(argument.identity) ||
+            typeof argument.identity !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(argument.identity) ||
             typeof argument.room !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(argument.room)) fail();
         const passphrase = validPassphrase(argument.passphrase);
         identity = argument.identity; room = argument.room;

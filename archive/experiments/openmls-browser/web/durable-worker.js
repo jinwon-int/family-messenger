@@ -6,7 +6,9 @@ import init, * as api from './pkg/family_mls_browser_experiment.js';
 import {createStore, exact, fail, bindEncrypt, bindDecrypt, unframeDecrypt} from './session-store.js';
 import {createVault, unlockVault, validPassphrase, sealRecord, openRecord} from './pkg/custody.js';
 const wasm = await init();
-const allowed = new Set(['key_package', 'create', 'invite', 'join', 'encrypt', 'decrypt', 'remove', 'commit']);
+// `delete_key_package` (review 2 L-3): the M4 outstanding-package cap had no
+// recovery path in this lane except a join.
+const allowed = new Set(['key_package', 'delete_key_package', 'create', 'invite', 'join', 'encrypt', 'decrypt', 'remove', 'commit']);
 let store, identity, room;
 const noExtra = {keys: [], initial: () => ({}), bytes: () => null, valid: () => {}};
 

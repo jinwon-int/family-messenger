@@ -4,7 +4,14 @@ const token = (location.pathname.match(/\/s\/([0-9a-f]{8})\//) || [])[1];
 const $ = id => document.getElementById(id);
 const utf8 = new TextEncoder();
 const decoder = new TextDecoder();
-const b64 = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes)));
+// Chunked (review 2 L-5): spreading a 256 KiB attachment into fromCharCode
+// exceeds the argument limit of some engines (Safari/JSC) and throws RangeError.
+const b64 = bytes => {
+  const view = new Uint8Array(bytes);
+  let binary = '';
+  for (let at = 0; at < view.length; at += 8192) binary += String.fromCharCode.apply(null, view.subarray(at, at + 8192));
+  return btoa(binary);
+};
 const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const genId = () => Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12);
 const log = (...parts) => { $('log').textContent += parts.join(' ') + '\n'; };

@@ -11,7 +11,9 @@ window.spawn = (name, durable = false) => new Promise((resolve, reject) => {
   worker.addEventListener('message', function boot({data}) {
     if (data.boot) { clearTimeout(timer); worker.removeEventListener('message', boot); resolve(); }
   });
-  worker.addEventListener('error', () => { clearTimeout(timer); reject(new Error('boot failure')); }, {once: true});
+  // Review 2 L-12: a worker that failed to boot must not keep its name, or every
+  // later spawn under that name is refused as a duplicate.
+  worker.addEventListener('error', () => { clearTimeout(timer); worker.terminate(); if (workers.get(name) === worker) workers.delete(name); reject(new Error('boot failure')); }, {once: true});
 });
 window.call = (name, method, argument) => new Promise((resolve, reject) => {
   const worker = workers.get(name);

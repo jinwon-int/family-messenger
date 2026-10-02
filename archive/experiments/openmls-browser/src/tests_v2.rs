@@ -835,3 +835,125 @@ fn policy_fingerprint_is_sha256_of_key_bytes() {
     assert!(policy::policy_fingerprint(&"AB".repeat(32)).is_err(), "lowercase hex only");
 }
 
+/// Review 2 J-MA (#231): merging a foreign commit clears an own pending commit
+/// (OpenMLS), so the loser of a commit race that catches up first and then
+/// clears must see a plain rejection and keep its device — not retire it.
+#[test]
+fn foreign_commit_while_pending_then_clear_pending_does_not_retire() {
+    let mut a1 = Device::new("a:1").unwrap();
+    let mut a2 = Device::new("a:2").unwrap();
+    let mut a3 = Device::new("a:3").unwrap();
+    let mut a4 = Device::new("a:4").unwrap();
+    a1.create().unwrap();
+    let framed = a1.invite_with_commit(&a2.key_package().unwrap()).unwrap();
+    a1.merge_pending().unwrap();
+    let n = u32::from_le_bytes(framed[..4].try_into().unwrap()) as usize;
+    a2.join(&framed[4 + n..]).unwrap();
+
+    // a1 and a2 race: both commit an add at the same epoch; the relay orders a2 first.
+    let losing = a1.invite_with_commit(&a3.key_package().unwrap()).unwrap();
+    assert!(a1.has_pending());
+    let winning = a2.invite_with_commit(&a4.key_package().unwrap()).unwrap();
+    a2.merge_pending().unwrap();
+    let wn = u32::from_le_bytes(winning[..4].try_into().unwrap()) as usize;
+    // Catch up first (documented order: process everything the relay placed
+    // before the 409), which clears the pending commit inside OpenMLS…
+    a1.apply_commit(&winning[4..4 + wn]).unwrap();
+    assert!(!a1.has_pending(), "a foreign merge clears the own pending commit");
+    // …then the 409 handler clears: before #231 this retired the device.
+    assert_eq!(a1.clear_pending(), Err(Rejected("nothing pending")));
+    assert_eq!(a1.merge_pending(), Err(Rejected("nothing pending")));
+    assert_eq!(roster(&a1.members().unwrap()).len(), 3, "a1 is at the winner's epoch");
+    // Still usable: the retry of the lost add goes through.
+    let retry = a1.invite_with_commit(&a3.key_package().unwrap()).unwrap();
+    a1.merge_pending().unwrap();
+    let rn = u32::from_le_bytes(retry[..4].try_into().unwrap()) as usize;
+    a2.apply_commit(&retry[4..4 + rn]).unwrap();
+    let _ = losing;
+    assert_eq!(roster(&a2.members().unwrap()).len(), 4);
+}
+
+/// Review 2 J-HB (#231): an application message from the previous epoch — the
+/// relay ordered it before a commit, or the reader merged its own commit before
+/// reading it — decrypts within the bounded past-epoch window instead of being
+/// rejected (and, in the durable lane, tombstoned as poison).
+#[test]
+fn past_epoch_application_messages_decrypt_within_window() {
+    let mut a1 = Device::new("a:1").unwrap();
+    let mut a2 = Device::new("a:2").unwrap();
+    let mut a3 = Device::new("a:3").unwrap();
+    a1.create().unwrap();
+    let mut packages = a2.key_package().unwrap();
+    packages.extend(a3.key_package().unwrap());
+    let framed = a1.invite_with_commit(&packages).unwrap();
+    a1.merge_pending().unwrap();
+    let n = u32::from_le_bytes(framed[..4].try_into().unwrap()) as usize;
+    a2.join(&framed[4 + n..]).unwrap();
+    a3.join(&framed[4 + n..]).unwrap();
+
+    // a3 sends at epoch 1; a1 commits (remove a2) and merges BEFORE reading it.
+    let old = a3.encrypt(&enc(ROOM, "a:3", b"sent before the commit")).unwrap();
+    let key2 = a2.public_key().unwrap();
+    let commit = a1.remove_member(&key2).unwrap();
+    assert_eq!(plain(&a1.decrypt(&dec(ROOM, &old)).unwrap()), b"sent before the commit");
+    // a3 applies the commit and can still read a message a1 sent at the old
+    // epoch that arrives late (a1 encrypted before merging, i.e. at epoch 1).
+    let late = {
+        // a2 (about to be removed) sends at epoch 1 too.
+        a2.encrypt(&enc(ROOM, "a:2", b"late from a2")).unwrap()
+    };
+    a3.apply_commit(&commit).unwrap();
+    assert_eq!(plain(&a3.decrypt(&dec(ROOM, &late)).unwrap()), b"late from a2");
+    // Beyond the window (PAST_EPOCHS commits later) the old secrets are gone:
+    // a message that old is rejected, and the device rolls back/retires as
+    // before rather than silently decrypting with stale keys.
+    let mut extra = Vec::new();
+    for i in 0..PAST_EPOCHS {
+        let mut d = Device::new(&format!("x:{i}")).unwrap();
+        let f = a1.invite_with_commit(&d.key_package().unwrap()).unwrap();
+        a1.merge_pending().unwrap();
+        let m = u32::from_le_bytes(f[..4].try_into().unwrap()) as usize;
+        a3.apply_commit(&f[4..4 + m]).unwrap();
+        d.join(&f[4 + m..]).unwrap();
+        extra.push(d);
+    }
+    let ancient = a2.encrypt(&enc(ROOM, "a:2", b"too old")).unwrap();
+    assert!(a3.decrypt(&dec(ROOM, &ancient)).is_err(), "messages older than the window stay rejected");
+}
+
+/// Review 2 J-HA (#231): the staged two-phase commit is reachable from the
+/// memory worker; staging then discarding a commit keeps the device usable
+/// and the next incoming commit can still be staged.
+#[test]
+fn stage_then_discard_keeps_device_usable_for_the_next_commit() {
+    let mut a1 = Device::new("a:1").unwrap();
+    let mut a2 = Device::new("a:2").unwrap();
+    let mut a3 = Device::new("a:3").unwrap();
+    a1.create().unwrap();
+    let package2 = a2.key_package().unwrap();
+    a2.join(&a1.invite(&package2).unwrap()).unwrap();
+    let first = a1.invite_with_commit(&a3.key_package().unwrap()).unwrap();
+    a1.merge_pending().unwrap();
+    let n = u32::from_le_bytes(first[..4].try_into().unwrap()) as usize;
+    a2.stage_commit(&first[4..4 + n]).unwrap();
+    a2.discard_staged().unwrap();
+    assert_eq!(roster(&a2.members().unwrap()).len(), 2, "discarded: epoch unchanged");
+    // The discarded epoch cannot be re-staged (handshake secrets consumed)…
+    assert!(a2.stage_commit(&first[4..4 + n]).is_err());
+    // …so a2 is a fresh device for the policy refusal case: the usual path is
+    // to be re-added. A different device that staged and merged keeps going.
+    let mut b1 = Device::new("b:1").unwrap();
+    let second = a1.invite_with_commit(&b1.key_package().unwrap()).unwrap();
+    a1.merge_pending().unwrap();
+    let m = u32::from_le_bytes(second[..4].try_into().unwrap()) as usize;
+    a3.join(&first[4 + n..]).unwrap();
+    let report = a3.stage_commit(&second[4..4 + m]).unwrap();
+    let mut rest = report.as_slice();
+    let (adds, removes) = (take_roster(&mut rest), take_roster(&mut rest));
+    assert_eq!(adds.len(), 1);
+    assert!(removes.is_empty());
+    a3.merge_staged().unwrap();
+    b1.join(&second[4 + m..]).unwrap();
+    let wire = b1.encrypt(&enc(ROOM, "b:1", b"after merge")).unwrap();
+    assert_eq!(plain(&a3.decrypt(&dec(ROOM, &wire)).unwrap()), b"after merge");
+}
