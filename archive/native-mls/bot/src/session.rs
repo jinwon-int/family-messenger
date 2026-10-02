@@ -45,6 +45,7 @@ use std::collections::VecDeque;
 use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, Instant};
+use zeroize::Zeroize;
 
 /// Backstop so a stuck session can never hang CI: the harness normally
 /// SIGTERMs the bot long before this. `NATIVE_MLS_BOT_MAX_SECS=0` disables
@@ -97,7 +98,7 @@ fn load_state(
     path: Option<&Path>, room: &str, device: &str,
 ) -> Result<Option<(Device, i64, i64, bool, u64)>, BotError> {
     let Some(path) = path else { return Ok(None) };
-    let raw = match std::fs::read(path) {
+    let mut raw = match std::fs::read(path) {
         Ok(raw) => raw,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(BotError::Local("state file unreadable")),
@@ -107,9 +108,14 @@ fn load_state(
     if env.version != STATE_VERSION || env.room != room || env.device != device {
         return Err(BotError::Local("state file is for another version/room/device"));
     }
-    let state = serde_json::to_vec(&env.state).map_err(|_| BotError::Local("state file corrupt"))?;
-    let dev = Device::import_state(device, &state)
-        .map_err(|_| BotError::Local("state import rejected"))?;
+    let mut state = serde_json::to_vec(&env.state).map_err(|_| BotError::Local("state file corrupt"))?;
+    let imported = Device::import_state(device, &state);
+    // Batch g: the file bytes and the re-serialized snapshot carried the whole
+    // store; wipe both now that the Device owns the only live copy. (The
+    // serde_json::Value inside `env` cannot be wiped — a known limit.)
+    raw.zeroize();
+    state.zeroize();
+    let dev = imported.map_err(|_| BotError::Local("state import rejected"))?;
     Ok(Some((dev, env.cursor, env.epoch, env.joined, env.echoes)))
 }
 
@@ -121,7 +127,7 @@ fn persist_state(
     path: &Path, room: &str, device: &str, dev: &mut Device,
     cursor: i64, epoch: i64, joined: bool, echoes: u64,
 ) -> Result<(), BotError> {
-    let bytes = dev.export_state(device).map_err(|_| BotError::Local("state export rejected"))?;
+    let mut bytes = dev.export_state(device).map_err(|_| BotError::Local("state export rejected"))?;
     let env = StateEnvelope {
         version: STATE_VERSION,
         room: room.to_string(),
@@ -132,7 +138,16 @@ fn persist_state(
         echoes,
         state: serde_json::from_slice(&bytes).map_err(|_| BotError::Local("state export json"))?,
     };
-    let raw = serde_json::to_vec(&env).map_err(|_| BotError::Local("state envelope json"))?;
+    let mut raw = serde_json::to_vec(&env).map_err(|_| BotError::Local("state envelope json"))?;
+    bytes.zeroize();
+    let written = write_state_file(path, &raw);
+    raw.zeroize();
+    written
+}
+
+/// The atomic write itself (split out so `persist_state` can wipe its buffers
+/// on every exit path).
+fn write_state_file(path: &Path, raw: &[u8]) -> Result<(), BotError> {
     let tmp = path.with_extension("state.tmp");
     let _ = std::fs::remove_file(&tmp);
     let mut options = std::fs::OpenOptions::new();
@@ -143,7 +158,7 @@ fn persist_state(
         options.mode(0o600);
     }
     let mut file = options.open(&tmp).map_err(|_| BotError::Local("state file create"))?;
-    file.write_all(&raw).map_err(|_| BotError::Local("state file write"))?;
+    file.write_all(raw).map_err(|_| BotError::Local("state file write"))?;
     file.sync_all().map_err(|_| BotError::Local("state file fsync"))?;
     drop(file);
     std::fs::rename(&tmp, path).map_err(|_| BotError::Local("state file rename"))?;
@@ -216,15 +231,15 @@ fn flush(ctx: &Ctx, device: &mut Device, state: &mut RoomState) -> Result<(), Bo
 fn guarded<T>(
     device: &mut Device, own: &str, op: impl FnOnce(&mut Device) -> Result<T, ()>,
 ) -> Result<Result<T, ()>, BotError> {
-    let snapshot = device.export_state(own).map_err(|_| BotError::Local("state snapshot before operation"))?;
-    match op(device) {
+    let mut snapshot = device.export_state(own).map_err(|_| BotError::Local("state snapshot before operation"))?;
+    let outcome = match op(device) {
         Ok(value) => Ok(Ok(value)),
-        Err(()) => {
-            *device = Device::import_state(own, &snapshot)
-                .map_err(|_| BotError::Local("state rollback after rejected operation"))?;
-            Ok(Err(()))
-        }
-    }
+        Err(()) => Device::import_state(own, &snapshot)
+            .map(|restored| { *device = restored; Ok(Err(())) })
+            .unwrap_or(Err(BotError::Local("state rollback after rejected operation"))),
+    };
+    snapshot.zeroize(); // batch g: the pre-operation store copy is not kept around
+    outcome
 }
 
 pub fn run(opts: Options) -> Result<(), BotError> {

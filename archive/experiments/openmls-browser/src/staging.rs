@@ -19,6 +19,15 @@ pub(crate) struct Snapshot {
     entries: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
+/// A snapshot's entries are the whole store (secrets): wiped on drop whether
+/// it was serialized (`save`) or parsed and moved out (`load`).
+impl Drop for Snapshot {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        for (key, value) in self.entries.iter_mut() { key.zeroize(); value.zeroize(); }
+    }
+}
+
 pub(crate) fn save(device: &Device, identity: &str) -> Result<Vec<u8>, Rejected> {
     let entries = device.provider.storage().entries();
     if entries.len() > MAX_ENTRIES { return Err(rejected(())); }
@@ -33,9 +42,10 @@ pub(crate) fn save(device: &Device, identity: &str) -> Result<Vec<u8>, Rejected>
 
 pub(crate) fn load(bytes: &[u8], identity: &str) -> Result<Device, Rejected> {
     bounded(bytes, MAX_STATE)?;
-    let state: Snapshot = serde_json::from_slice(bytes).map_err(rejected)?;
+    let mut state: Snapshot = serde_json::from_slice(bytes).map_err(rejected)?;
     if state.identity != identity { return Err(rejected(())); }
-    restore(identity, &state.public_key, state.group_id, state.version, state.entries)
+    let (group_id, entries) = (state.group_id.take(), std::mem::take(&mut state.entries));
+    restore(identity, &state.public_key, group_id, state.version, entries)
 }
 
 #[cfg(test)]

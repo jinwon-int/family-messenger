@@ -291,6 +291,34 @@ facade is unchanged (it already rolls a rejected operation back, `session.rs`
   replay after restart and the tamper case end to end (the sequence chains there
   were rewritten: each tombstone consumes a sequence).
 
+## Secret wiping (#231 batch g)
+
+What is wiped (`zeroize` 1.9.0, direct dependency): every store value and
+journaled pre-image when the `Journaled` map is dropped (a freed `Session`, a
+retired `Device`, a dropped snapshot provider); the previous value on every
+`insert`/`remove`; the journal on `Store::commit`; the undone values on
+`Store::rollback`; a `Step`'s `output`/`changes` on drop (`free()` from JS); a
+`Snapshot`'s entries after `export_state`/`import_state`; and, in the bot, the
+state-file bytes after write/read and the pre-operation snapshot of `guarded`.
+The JS workers wipe the framed entries after `Session.open` and the parsed
+`changes` after persisting (`wipeAll`/`wipeChanges`, batch f).
+
+What is **not** wiped and is not claimed: `String`s (identity, passphrase —
+JavaScript strings are immutable, Rust `String` keys are not secrets); the
+`serde_json::Value` inside the bot's state envelope; copies the allocator,
+WASM linear-memory growth or the JS engine make; OpenMLS/RustCrypto internals
+beyond what their own crates zeroize; the signer key held by
+`openmls_basic_credential` (its own type). Wiping is best-effort hygiene for
+the buffers this crate owns, not a memory-safety guarantee against a
+same-process attacker.
+
+Durable-lane races are now covered on `Session.apply` (not only the memory
+`Device`): a foreign commit while an own commit is pending, a pending commit
+surviving `open` from the mirror and merging afterwards, three committers at
+one epoch retrying in relay order, a winner evicting a loser mid-pending
+(the evicted device can neither read nor send the new epoch), and
+`discard_staged` leaving the own pending commit intact (`tests_v2.rs`).
+
 ## Retry, concurrency and limits
 
 An immutable ID is scoped to one synthetic device database. Reuse requires exact

@@ -1205,3 +1205,230 @@ fn clear_proposal_queue_removes_queued_proposals() {
     assert_eq!(queued(), 0, "clear_proposal_queue must remove the QueuedProposal entry (was orphaned before change 4)");
     assert_eq!(refs(), 0, "and the refs list");
 }
+
+// ---- Batch g (#231 후속): the durable lane (`Session.apply` + journal +
+// reopen) under the same races the memory lane proved in batches c/e, plus
+// three committers at one epoch and a winner that evicts a loser mid-pending.
+
+/// alice, bob, carol in one group through the durable lane; every step is
+/// mirrored and verified like the IDB worker would.
+fn trio() -> (Peer, Peer, Peer) {
+    let (mut alice, mut bob) = pair();
+    let mut carol = Peer::new("carol");
+    let package = carol.step("key_package", &[]);
+    let framed = alice.step("invite_with_commit", &package);
+    alice.step("merge_pending", &[]);
+    let n = u32::from_le_bytes(framed[..4].try_into().unwrap()) as usize;
+    bob.step("commit", &framed[4..4 + n]);
+    carol.step("join", &framed[4 + n..]);
+    (alice, bob, carol)
+}
+
+fn split_framed(framed: &[u8]) -> (&[u8], &[u8]) {
+    let n = u32::from_le_bytes(framed[..4].try_into().unwrap()) as usize;
+    (&framed[4..4 + n], &framed[4 + n..])
+}
+
+#[test]
+fn durable_lane_foreign_commit_while_own_pending_then_reopen() {
+    let (mut alice, mut bob, mut carol) = trio();
+    let mut dave = Peer::new("dave");
+    let carol_key = carol.session.public_key();
+
+    // alice's removal of carol is pending (durable: the pending commit is in
+    // the mirror) when bob's add of dave wins the relay order.
+    alice.step("remove_pending", &carol_key);
+    assert!(alice.session.has_pending_commit());
+    let winning = bob.step("invite_with_commit", &dave.step("key_package", &[]));
+    bob.step("merge_pending", &[]);
+    let (wcommit, wwelcome) = split_framed(&winning);
+
+    // Catch up through the durable lane: the foreign merge consumed the own
+    // pending commit, the journal recorded it, the mirror matches.
+    alice.step("commit", wcommit);
+    assert!(!alice.session.has_pending_commit(), "a foreign merge clears the own pending commit");
+    // The 409 handler's clear is a pure rejection — nothing in flight, store
+    // unchanged, session still usable (review 2 J-MA on the durable lane).
+    let before = session_entries(&alice.session);
+    assert!(alice.session.apply("clear_pending", &[]).is_err());
+    assert_eq!(session_entries(&alice.session), before, "a rejected clear_pending changes nothing");
+    assert!(alice.session.pending_changes() == session::frame(&[]));
+    carol.step("commit", wcommit);
+    dave.step("join", wwelcome);
+
+    // Reopened from nothing but the mirror, alice is at the winner's epoch
+    // with no pending commit, and talks to the new member.
+    let mut reopened = alice.reopen("alice");
+    assert!(!reopened.has_pending_commit());
+    assert_eq!(reopened.current_epoch(), bob.session.current_epoch());
+    let wire = dave.step("encrypt", &enc(ROOM, "dave", b"hello from dave"));
+    let step = reopened.apply("decrypt", &dec(ROOM, &wire)).expect("reopened decrypts at the new epoch");
+    assert_eq!(plain(&step.output()), b"hello from dave");
+    reopened.commit().unwrap();
+
+    // The lost removal retries cleanly at the new epoch.
+    let retry = reopened.apply("remove_pending", &carol_key).expect("retry");
+    reopened.commit().unwrap();
+    reopened.apply("merge_pending", &[]).expect("merge").epoch();
+    reopened.commit().unwrap();
+    let rcommit = retry.output(); // remove_pending yields the bare commit (no Welcome)
+    bob.step("commit", &rcommit);
+    dave.step("commit", &rcommit);
+    let wire = bob.step("encrypt", &enc(ROOM, "bob", b"after the retry"));
+    assert_eq!(plain(&reopened.apply("decrypt", &dec(ROOM, &wire)).unwrap().output()), b"after the retry");
+}
+
+#[test]
+fn durable_lane_pending_commit_survives_reopen_and_merges() {
+    let (mut alice, mut bob, mut carol) = trio();
+    let carol_key = carol.session.public_key();
+    let commit = alice.step("remove_pending", &carol_key); // bare commit
+    assert!(alice.session.has_pending_commit());
+
+    // The pending commit is part of the durable state: a session reopened
+    // from the mirror still has it, and can merge it after the relay 201.
+    let mut reopened = alice.reopen("alice");
+    assert!(reopened.has_pending_commit(), "pending commit must be durable, not in-memory only");
+    reopened.apply("merge_pending", &[]).expect("merge after reopen");
+    reopened.commit().unwrap();
+    assert!(!reopened.has_pending_commit());
+    bob.step("commit", &commit);
+    let wire = reopened.apply("encrypt", &enc(ROOM, "alice", b"two of us")).unwrap();
+    reopened.commit().unwrap();
+    assert_eq!(plain(&bob.step("decrypt", &dec(ROOM, &wire.output()))), b"two of us");
+    // carol was removed: her next decrypt of the new epoch is rejected and
+    // rolled back, not a retired session.
+    let before = session_entries(&carol.session);
+    assert!(carol.session.apply("decrypt", &dec(ROOM, &wire.output())).is_err());
+    assert_eq!(session_entries(&carol.session), before);
+}
+
+#[test]
+fn three_committers_race_at_one_epoch_losers_retry_in_relay_order() {
+    let mut a1 = Device::new("a:1").unwrap();
+    let mut a2 = Device::new("a:2").unwrap();
+    let mut a3 = Device::new("a:3").unwrap();
+    let mut j1 = Device::new("j:1").unwrap();
+    let mut j2 = Device::new("j:2").unwrap();
+    let mut j3 = Device::new("j:3").unwrap();
+    a1.create().unwrap();
+    let mut commits = Vec::new();
+    for joiner in [&mut a2, &mut a3] {
+        let framed = a1.invite_with_commit(&joiner.key_package().unwrap()).unwrap();
+        a1.merge_pending().unwrap();
+        let (c, w) = split_framed(&framed);
+        joiner.join(w).unwrap();
+        commits.push(c.to_vec());
+    }
+    a2.apply_commit(&commits[1]).unwrap();
+
+    // Three commits at the same epoch, each adding a different joiner. The
+    // relay orders a3, then a1's retry, then a2's retry.
+    let c1 = a1.invite_with_commit(&j1.key_package().unwrap()).unwrap();
+    let c2 = a2.invite_with_commit(&j2.key_package().unwrap()).unwrap();
+    let c3 = a3.invite_with_commit(&j3.key_package().unwrap()).unwrap();
+    assert!(a1.has_pending() && a2.has_pending() && a3.has_pending());
+    a3.merge_pending().unwrap();
+    let (w3commit, w3welcome) = split_framed(&c3);
+    j3.join(w3welcome).unwrap();
+    // Both losers catch up (their pending commits are consumed by the merge).
+    a1.apply_commit(w3commit).unwrap();
+    a2.apply_commit(w3commit).unwrap();
+    assert!(!a1.has_pending() && !a2.has_pending());
+    let _ = (c1, c2);
+    // a1 retries first: a2, a3, j3 apply it.
+    let r1 = a1.invite_with_commit(&j1.key_package().unwrap()).unwrap();
+    a1.merge_pending().unwrap();
+    let (r1commit, r1welcome) = split_framed(&r1);
+    for d in [&mut a2, &mut a3, &mut j3] { d.apply_commit(r1commit).unwrap(); }
+    j1.join(r1welcome).unwrap();
+    // a2 retries last.
+    let r2 = a2.invite_with_commit(&j2.key_package().unwrap()).unwrap();
+    a2.merge_pending().unwrap();
+    let (r2commit, r2welcome) = split_framed(&r2);
+    for d in [&mut a1, &mut a3, &mut j1, &mut j3] { d.apply_commit(r2commit).unwrap(); }
+    j2.join(r2welcome).unwrap();
+    for d in [&a1, &a2, &a3, &j1, &j2, &j3] {
+        assert_eq!(roster(&d.members().unwrap()).len(), 6, "everyone sees the same 6-member roster");
+    }
+    let wire = j2.encrypt(&enc(ROOM, "j:2", b"last joiner speaks")).unwrap();
+    for d in [&mut a1, &mut a2, &mut a3, &mut j1, &mut j3] {
+        assert_eq!(plain(&d.decrypt(&dec(ROOM, &wire)).unwrap()), b"last joiner speaks");
+    }
+}
+
+#[test]
+fn winner_evicts_loser_while_loser_has_own_pending() {
+    let mut a1 = Device::new("a:1").unwrap();
+    let mut a2 = Device::new("a:2").unwrap();
+    let mut a3 = Device::new("a:3").unwrap();
+    let mut j1 = Device::new("j:1").unwrap();
+    a1.create().unwrap();
+    let mut last = Vec::new();
+    for joiner in [&mut a2, &mut a3] {
+        let framed = a1.invite_with_commit(&joiner.key_package().unwrap()).unwrap();
+        a1.merge_pending().unwrap();
+        let (c, w) = split_framed(&framed);
+        joiner.join(w).unwrap();
+        last = c.to_vec();
+    }
+    a2.apply_commit(&last).unwrap();
+    let key2 = a2.public_key().unwrap();
+
+    // a2 has an add pending; a1's commit that removes a2 wins the order.
+    let _lost = a2.invite_with_commit(&j1.key_package().unwrap()).unwrap();
+    assert!(a2.has_pending());
+    let eviction = a1.remove_member(&key2).unwrap();
+    a3.apply_commit(&eviction).unwrap();
+    assert_eq!(roster(&a3.members().unwrap()).len(), 2);
+
+    // The evicted loser processes its own removal: the commit is accepted (it
+    // is a valid commit from the previous epoch), the own pending commit is
+    // gone, and from here on the device is out of the group — encrypting is
+    // refused and the device is retired fail-closed, never a silent sender.
+    let applied = a2.apply_commit(&eviction);
+    assert!(!a2.has_pending(), "own pending commit does not survive an eviction commit");
+    let wire = a1.encrypt(&enc(ROOM, "a:1", b"after eviction")).unwrap();
+    assert!(a2.decrypt(&dec(ROOM, &wire)).is_err(), "an evicted device cannot read the new epoch");
+    assert!(a2.encrypt(&enc(ROOM, "a:2", b"ghost")).is_err(), "an evicted device cannot send");
+    assert_eq!(plain(&a3.decrypt(&dec(ROOM, &wire)).unwrap()), b"after eviction");
+    let _ = applied;
+}
+
+#[test]
+fn discard_staged_keeps_the_own_pending_commit() {
+    let mut a1 = Device::new("a:1").unwrap();
+    let mut a2 = Device::new("a:2").unwrap();
+    let mut a3 = Device::new("a:3").unwrap();
+    let mut a4 = Device::new("a:4").unwrap();
+    a1.create().unwrap();
+    let mut last = Vec::new();
+    for joiner in [&mut a2, &mut a3] {
+        let framed = a1.invite_with_commit(&joiner.key_package().unwrap()).unwrap();
+        a1.merge_pending().unwrap();
+        let (c, w) = split_framed(&framed);
+        joiner.join(w).unwrap();
+        last = c.to_vec();
+    }
+    a2.apply_commit(&last).unwrap();
+    let key3 = a3.public_key().unwrap();
+
+    let own = a1.remove_member_pending(&key3).unwrap(); // bare commit
+    let foreign = a2.invite_with_commit(&a4.key_package().unwrap()).unwrap();
+    let (fcommit, _) = split_framed(&foreign);
+    a1.stage_commit(fcommit).unwrap();
+    // Policy said no (e.g. the add is not in the device directory): discard
+    // the staged foreign commit. The own pending commit must still be there
+    // and still mergeable once the relay accepts it instead.
+    a1.discard_staged().unwrap();
+    assert!(a1.has_pending(), "discarding a staged foreign commit must not touch the own pending commit");
+    a1.merge_pending().unwrap();
+    let ocommit = own.as_slice();
+    a3.apply_commit(ocommit).unwrap();
+    assert_eq!(roster(&a1.members().unwrap()).len(), 2);
+    // a2's discarded add never happened for a1: a2 must clear and retry at
+    // a1's epoch (relay CAS refuses the stale commit in the real flow).
+    a2.clear_pending().unwrap();
+    a2.apply_commit(ocommit).unwrap();
+    assert_eq!(roster(&a2.members().unwrap()).len(), 2);
+}

@@ -76,6 +76,17 @@ pub(crate) fn unframe(bytes: &[u8], allow_deletes: bool) -> Option<Vec<(Vec<u8>,
 /// Result of one operation; `changes` are in flight until `commit`/`abort`.
 #[wasm_bindgen]
 pub struct Step { output: Vec<u8>, changes: Vec<u8>, epoch: String }
+/// `changes` carries store values (secrets) and `output` plaintext or a
+/// Welcome: both are wiped when the JS side `free()`s the step or the host
+/// drops it (batch g). The clones handed out by `output()`/`changes()` are
+/// the caller's to wipe (session-store.js `wipeAll`).
+impl Drop for Step {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.output.zeroize();
+        self.changes.zeroize();
+    }
+}
 #[wasm_bindgen]
 impl Step {
     pub fn output(&self) -> Vec<u8> { self.output.clone() }

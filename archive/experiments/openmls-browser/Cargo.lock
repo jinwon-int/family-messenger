@@ -550,6 +550,7 @@ dependencies = [
  "tls_codec",
  "wasm-bindgen",
  "wasm-bindgen-test",
+ "zeroize",
 ]
 
 [[package]]
