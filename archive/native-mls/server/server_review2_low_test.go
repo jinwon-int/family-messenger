@@ -169,7 +169,7 @@ func TestAccessVerifierLifetimeBounds(t *testing.T) {
 		"exp far future":   func(c map[string]any) { c["exp"] = now + 10*365*24*3600 },
 		"exp past max":     func(c map[string]any) { c["exp"] = now + int64((accessMaxLifetime + 2*accessLeeway).Seconds()) },
 		"iat in future":    func(c map[string]any) { c["iat"] = now + 3600 },
-		"iat-exp too long": func(c map[string]any) { c["iat"] = now - 20*3600; c["exp"] = now + 5*3600 },
+		"iat-exp too long": func(c map[string]any) { c["iat"] = now - 400*3600; c["exp"] = now + 400*3600 },
 	}
 	for name, mutate := range bad {
 		if _, err := v.verify(iss.mint("s", mutate)); !errors.Is(err, errUnauthorized) {
@@ -177,10 +177,11 @@ func TestAccessVerifierLifetimeBounds(t *testing.T) {
 		}
 	}
 	for name, mutate := range map[string]func(map[string]any){
-		"exp 23h ahead": func(c map[string]any) { c["exp"] = now + 23*3600 },
-		"no iat":        func(c map[string]any) { delete(c, "iat"); c["exp"] = now + 23*3600 },
-		"iat 30s ahead": func(c map[string]any) { c["iat"] = now + 30 },
-		"iat 23h ago":   func(c map[string]any) { c["iat"] = now - 23*3600; c["exp"] = now + 600 },
+		"exp 23h ahead":  func(c map[string]any) { c["exp"] = now + 23*3600 },
+		"exp 730h ahead": func(c map[string]any) { c["exp"] = now + 730*3600 }, // the account's real session length
+		"no iat":         func(c map[string]any) { delete(c, "iat"); c["exp"] = now + 23*3600 },
+		"iat 30s ahead":  func(c map[string]any) { c["iat"] = now + 30 },
+		"iat 23h ago":    func(c map[string]any) { c["iat"] = now - 23*3600; c["exp"] = now + 600 },
 		"exp = iat + max": func(c map[string]any) {
 			c["iat"] = now - 3600
 			c["exp"] = now - 3600 + int64(accessMaxLifetime.Seconds())
@@ -190,10 +191,13 @@ func TestAccessVerifierLifetimeBounds(t *testing.T) {
 			t.Fatalf("%s must verify: %v", name, err)
 		}
 	}
-	// The operator override widens the bound.
-	v.maxLifetime = 48 * time.Hour
-	if _, err := v.verify(iss.mint("s", func(c map[string]any) { c["exp"] = now + 47*3600 })); err != nil {
-		t.Fatalf("47h with a 48h override: %v", err)
+	// The operator override tightens the bound.
+	v.maxLifetime = 24 * time.Hour
+	if _, err := v.verify(iss.mint("s", func(c map[string]any) { c["exp"] = now + 47*3600 })); !errors.Is(err, errUnauthorized) {
+		t.Fatalf("47h with a 24h override: err=%v, want unauthorized", err)
+	}
+	if _, err := v.verify(iss.mint("s", func(c map[string]any) { c["exp"] = now + 23*3600 })); err != nil {
+		t.Fatalf("23h with a 24h override: %v", err)
 	}
 }
 

@@ -41,7 +41,7 @@ func main() {
 	resetYes := flag.Bool("yes", false, "with -reset-room: actually delete (default prints what would be deleted)")
 	removedGrace := flag.Int64("removed-cursor-grace-seconds", 0, "override how long a member removed by commit keeps gating pruning before it reads its removal")
 	hardMaxEpochs := flag.Int64("commit-welcome-hard-max-epochs", 0, "override the unconditional commit/welcome retention backstop (epochs); inside it but past -commit-welcome-keep-epochs they wait for every reader cursor")
-	accessMaxLifetimeSeconds := flag.Int64("access-max-lifetime-seconds", 0, "override the maximum accepted JWT lifetime (exp-now and exp-iat; default 24h = CF Access default session)")
+	accessMaxLifetimeSeconds := flag.Int64("access-max-lifetime-seconds", 0, "override (tighten) the maximum accepted JWT lifetime in seconds (exp-now and exp-iat; default 31 days = the longest CF Access session; the account's apps use 730h)")
 	flag.Parse()
 
 	if *dataDir == "" {
