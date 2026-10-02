@@ -12,7 +12,7 @@ concurrency:
 jobs:
   native:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -55,9 +55,23 @@ jobs:
           path: ~/.cache/ms-playwright
           key: ms-playwright-${{ runner.os }}-${{ hashFiles('requirements-native-test.txt') }}
       - name: Install browser test tools
+        # 2026-10-03 merge-queue run of #250: `playwright install --with-deps`
+        # stalled for 7m44s inside apt-get (fonts from the Azure Ubuntu mirror)
+        # and tripped the 10-minute job timeout (#243). Bound each attempt and
+        # retry instead of letting one stalled mirror fail the gate.
+        timeout-minutes: 8
         run: |
-          python -m pip install -r requirements-native-test.txt
-          python -m playwright install --with-deps chromium
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if timeout 150 python -m pip install -r requirements-native-test.txt \
+               && timeout 150 python -m playwright install --with-deps chromium; then
+              exit 0
+            fi
+            echo "::warning::browser test tool install attempt ${attempt} failed or stalled; retrying"
+            sleep 10
+          done
+          echo "::error::browser test tool install failed after 3 attempts"
+          exit 1
       - name: Two real browser clients
         run: python tests/native_browser_smoke.py --binary artifacts/family-dev
       - name: Two browser media and playback proof
