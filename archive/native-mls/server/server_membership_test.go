@@ -52,6 +52,14 @@ func newEnforcedRelay(t *testing.T, pol policy) (*relay, *httptest.Server, *devi
 // cryptographic approval evidence stays a CLI-layer concern.
 func enrollDevice(t *testing.T, st *devicepolicy.DevicePolicyStore, first map[string]string, id, actor string) {
 	t.Helper()
+	enrollDeviceAs(t, st, first, id, actor, "subject-"+actor)
+}
+
+// enrollDeviceAs is enrollDevice with an explicit caller subject: the G-M6
+// tests bind a bot device to its service-token identity (the CF Access
+// `common_name`, the Client-Id with its dot).
+func enrollDeviceAs(t *testing.T, st *devicepolicy.DevicePolicyStore, first map[string]string, id, actor, subject string) {
+	t.Helper()
 	info, wire, err := st.Read()
 	if err != nil {
 		t.Fatalf("read policy chain: %v", err)
@@ -61,7 +69,7 @@ func enrollDevice(t *testing.T, st *devicepolicy.DevicePolicyStore, first map[st
 	dev := devicepolicy.DeviceV4{
 		ID:          id,
 		Actor:       actor,
-		Subject:     "subject-" + actor,
+		Subject:     subject,
 		SigningKey:  hex.EncodeToString(key[:]),
 		Fingerprint: hex.EncodeToString(sum[:]),
 		Status:      devicepolicy.StatusActive,

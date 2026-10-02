@@ -820,3 +820,42 @@ func TestLockedWaitDoesNotHoldMutex(t *testing.T) {
 		t.Fatalf("read after the lock freed: %v", e)
 	}
 }
+
+// IsSubject is deliberately wider than the identifier charset — it must carry
+// the CF Access `sub` and the service-token `common_name` (`<id>.access`,
+// email-shaped subs) — but the review-2 hygiene classes stay out. Pinned here
+// so the chain validator's widening can never silently become a free-form
+// string field.
+func TestIsSubjectCharset(t *testing.T) {
+	good := []string{
+		"subject-alice",           // the classic sub shape
+		"97f3e1c2ab5548f0.access", // service-token common_name (the Client-Id)
+		"family-bot@chat.example", // an email-shaped sub
+		"a",                       // a single character
+		strings.Repeat("x", 128),  // at the cap
+	}
+	for _, s := range good {
+		if !IsSubject(s, 128) {
+			t.Errorf("IsSubject(%q) = false, want true", s)
+		}
+	}
+	bad := []string{
+		"",                       // empty
+		strings.Repeat("x", 129), // over the cap
+		"subject alice",          // whitespace
+		"subject\talice",         // tab
+		"subject\nalice",         // newline
+		"sub=alice",              // '=' — a log-injection metacharacter
+		"sub/alice",              // a path metacharacter
+		"sub:alice",              // ':' — header-shaped
+		"サブジェクト",                 // non-ASCII
+	}
+	for _, s := range bad {
+		if IsSubject(s, 128) {
+			t.Errorf("IsSubject(%q) = true, want false", s)
+		}
+	}
+	if IsSubject("subject-alice", 12) {
+		t.Error("IsSubject must honor the caller's cap")
+	}
+}
