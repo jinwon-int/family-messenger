@@ -24,6 +24,14 @@ const hex = bytes => Array.from(bytes, b => b.toString(16).padStart(2, '0')).joi
 const genId = () => Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
 const log = (...parts) => { $('log').textContent += new Date().toLocaleTimeString() + ' ' + parts.join(' ') + '\n'; };
 const fail = error => { log('실패:', String(error)); alert(String(error)); };
+// Fixed-width clock for the status line (toLocaleTimeString is locale-shaped).
+const clock = (seconds = false) => {
+  const d = new Date(), two = n => String(n).padStart(2, '0');
+  return `${two(d.getHours())}:${two(d.getMinutes())}` + (seconds ? `:${two(d.getSeconds())}` : '');
+};
+// What a human should do when fetch itself fails (relay down, Access cookie gone,
+// tunnel dropped) — shown instead of the raw TypeError (#251 A-1).
+const NET_FAIL = '연결 실패 — 페이지를 새로고침하고(필요하면 Cloudflare Access 로그인) 같은 암호로 워커 시작 후 다시 시도';
 // Actor of a device id: the part before the first '-' (owner-pc → owner, bot-1 → bot).
 // The relay checks members[].actor against the policy chain, so device ids in a
 // pilot follow this rule; a wrong actor is a 400 commit_actor_mismatch, never a merge.
@@ -70,9 +78,17 @@ const membersWire = devices => devices.slice().sort().map(device => ({device, ac
 
 // ---- relay ----
 async function api(method, path, body) {
-  const response = await fetch(path, {method, credentials: 'same-origin',
-    headers: body === undefined ? {} : {'Content-Type': 'application/json'},
-    body: body === undefined ? undefined : JSON.stringify(body)});
+  let response;
+  try {
+    response = await fetch(path, {method, credentials: 'same-origin',
+      headers: body === undefined ? {} : {'Content-Type': 'application/json'},
+      body: body === undefined ? undefined : JSON.stringify(body)});
+  } catch (error) {   // network stage: "Failed to fetch" / "Load failed" — no HTTP status
+    setOffline(true);
+    const wrapped = new Error(NET_FAIL); wrapped.network = true; wrapped.cause = error;
+    throw wrapped;
+  }
+  setOffline(false);
   let json = null;
   try { json = await response.json(); } catch (_) { json = null; }
   if (response.status === 401) throw new Error('401 — Cloudflare Access 로그인이 필요하다(페이지를 새로고침해 로그인)');
@@ -94,8 +110,12 @@ async function sync({quiet = false} = {}) {
   S.busy = true;
   try {
     const {status, body} = await api('GET', roomPath(`events?device=${encodeURIComponent(S.dev)}&after=${S.relaySeq}`));
-    if (status === 404 && body && body.error === 'no_such_room') { if (!quiet) log('방이 아직 없다 — 첫 기기가 "방 만들기"를 하고 초대해야 한다.'); return; }
-    if (status === 403) { setState(`릴레이가 이 기기를 받지 않는다(${describe(status, body)}) — 운영자 등록 대기`); return; }
+    if (status === 404 && body && body.error === 'no_such_room') { markSynced(); if (!quiet) log('방이 아직 없다 — 첫 기기가 "방 만들기"를 하고 초대해야 한다.'); return; }
+    if (status === 403) {   // not on the policy chain yet: tell the human the next step (#251 A-3)
+      setState(`릴레이가 이 기기를 받지 않는다(${describe(status, body)}) — 운영자 등록 대기\n→ 아래 '운영자 등록 정보'를 펼쳐 JSON을 운영자에게 전달`);
+      $('enroll-details').open = true;
+      return;
+    }
     if (status !== 200) { if (!quiet) log('동기화 실패:', describe(status, body)); return; }
     if (body.first_seq > S.relaySeq + 1 && S.relaySeq > 0) log(`경고: 릴레이가 seq ${S.relaySeq + 1}~${body.first_seq - 1}를 이미 지웠다 — 재참여가 필요할 수 있다`);
     for (const ev of body.events) {
@@ -144,8 +164,8 @@ async function sync({quiet = false} = {}) {
       const ack = await api('GET', roomPath(`events?device=${encodeURIComponent(S.dev)}&after=${S.relaySeq}&ack=${S.relaySeq}`));
       if (ack.status !== 200 && !quiet) log('ack 실패:', describe(ack.status, ack.body));
     }
-    save(); renderRoster();
-  } catch (error) { if (!quiet) log('동기화 오류:', error.message); }
+    save(); renderRoster(); markSynced();
+  } catch (error) { if (!quiet) log('동기화 오류:', error.message); return error; }   // quiet polling: status line only
   finally { S.busy = false; }
 }
 function showMessage(sender, client, text, seq, replay) {
@@ -158,7 +178,23 @@ function renderRoster() {
   $('roster').textContent = `멤버: ${S.roster.length ? S.roster.join(', ') : '—'} · epoch ${S.epoch} · 릴레이 seq ${S.relaySeq}` +
     (S.pending ? ' · 내 commit 대기 중' : '') + (S.joined ? '' : ' · (아직 참여 전)');
 }
-function setState(text) { $('state').textContent = text; }
+// Status line = the last setState() text + derived lines: last successful sync
+// (동기화 HH:MM:SS, #251 A-4) and, while fetch itself fails, 연결 끊김 (HH:MM) — the
+// latter is written by api() on every failed attempt and cleared on the next success,
+// so the quiet poll never alerts or logs (#251 A-1).
+const status = {base: $('state').textContent, syncedAt: null, offlineAt: null};
+function renderState() {
+  const lines = [status.base];
+  if (status.syncedAt) lines.push(`동기화 ${status.syncedAt}`);
+  if (status.offlineAt) lines.push(`연결 끊김 (${status.offlineAt})`);
+  $('state').textContent = lines.join('\n');
+}
+function setState(text) { status.base = text; renderState(); }
+function markSynced() { status.syncedAt = clock(true); renderState(); }
+function setOffline(down) {
+  if (!down && status.offlineAt === null) return;
+  status.offlineAt = down ? clock() : null; renderState();
+}
 function enable(on) {
   for (const id of ['create', 'keypackage', 'invite', 'sync', 'send', 'evict', 'offer']) $(id).disabled = !on;
 }
@@ -190,6 +226,7 @@ $('start').addEventListener('click', async () => {
     if (passphrase.length < 32 || passphrase.length > 128) throw new Error('암호는 32–128자');
     $('start').disabled = true;
     if (S.timer) clearInterval(S.timer);
+    status.syncedAt = status.offlineAt = null;
     window.stopWorker?.('device');
     S.dev = dev; S.room = room; S.db = db; load();
     await window.spawn('device', true);
@@ -261,10 +298,12 @@ guard('send', async () => {
   const text = $('msg').value;
   if (!text) return;
   if (!S.joined) throw new Error('아직 방에 참여하지 않았다');
-  await sync({quiet: true});
+  const problem = await sync({quiet: true});
+  if (problem && problem.network) throw problem;   // relay unreachable: say so before spending a ratchet step
   for (let attempt = 0; attempt < 2; attempt++) {
     const out = await op('encrypt', utf8.encode(text));
     const r = await postEvent('application', new Uint8Array(out.output));
+    // #msg is cleared only here (201); every failure path below keeps the text for a retry (#251 A-2).
     if (r.status === 201) { showMessage(S.dev, S.dev, text, r.body.seq, false); $('msg').value = ''; S.epoch = r.body.epoch; save(); return; }
     if (r.status === 409 && r.body && r.body.error === 'cas_mismatch' && attempt === 0) { log('epoch가 바뀌어 다시 암호화'); await sync(); continue; }
     throw new Error(`전송 실패: ${describe(r.status, r.body)}`);
