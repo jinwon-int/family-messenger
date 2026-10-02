@@ -15,3 +15,6 @@ serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 # Key-package refs are caller-chosen opaque strings; the bot pins sha256 hex.
 sha2 = "=0.10.9"
+# Batch g: wipe state-file snapshots (export_state JSON = the whole store) once
+# written, loaded or rolled back. Transitive already; direct for the calls.
+zeroize = "=1.9.0"

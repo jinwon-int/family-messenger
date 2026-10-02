@@ -26,6 +26,7 @@
 use openmls_traits::storage::*;
 use serde::Serialize;
 use std::{collections::HashMap, sync::RwLock};
+use zeroize::Zeroize;
 
 /// CBOR stand-in for the upstream `serde_json` calls (see module docs, change 1).
 mod serde_json {
@@ -85,14 +86,25 @@ impl Journaled {
         self.map.get(key)
     }
 
-    fn insert(&mut self, key: Vec<u8>, value: Vec<u8>) -> Option<Vec<u8>> {
+    /// Replace a value; the previous value (ratchet secrets, signer key,
+    /// epoch keys) is wiped, not returned (batch g: secrets not zeroed).
+    fn insert(&mut self, key: Vec<u8>, value: Vec<u8>) {
         self.touch(&key);
-        self.map.insert(key, value)
+        if let Some(mut old) = self.map.insert(key, value) { old.zeroize(); }
     }
 
-    fn remove(&mut self, key: &[u8]) -> Option<Vec<u8>> {
+    fn remove(&mut self, key: &[u8]) {
         self.touch(key);
-        self.map.remove(key)
+        if let Some(mut old) = self.map.remove(key) { old.zeroize(); }
+    }
+}
+
+/// Every live value and every journaled pre-image is wiped when the map goes
+/// away (a retired device, a freed Session, a dropped snapshot provider).
+impl Drop for Journaled {
+    fn drop(&mut self) {
+        for value in self.map.values_mut() { value.zeroize(); }
+        for value in self.journal.values_mut().flatten() { value.zeroize(); }
     }
 }
 
@@ -156,9 +168,13 @@ impl Store {
         changes
     }
 
-    /// Accept the current state as the new baseline (empties the journal).
+    /// Accept the current state as the new baseline (empties the journal; the
+    /// pre-images it held are wiped, not just dropped).
     pub fn commit(&self) {
-        self.values.write().unwrap().journal.clear();
+        let mut values = self.values.write().unwrap();
+        for (_, before) in values.journal.drain() {
+            if let Some(mut before) = before { before.zeroize(); }
+        }
     }
 
     /// Live entries whose storage key starts with `label` (every version).
@@ -180,10 +196,13 @@ impl Store {
         let mut values = self.values.write().unwrap();
         let journal = std::mem::take(&mut values.journal);
         for (key, before) in journal {
-            match before {
+            // The value being undone is secret material of the rejected
+            // operation (a consumed ratchet key, a staged epoch): wipe it.
+            let undone = match before {
                 Some(value) => values.map.insert(key, value),
                 None => values.map.remove(&key),
             };
+            if let Some(mut undone) = undone { undone.zeroize(); }
         }
     }
 }

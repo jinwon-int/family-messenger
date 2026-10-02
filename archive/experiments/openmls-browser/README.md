@@ -85,7 +85,7 @@ KeyPackage consumption or post-restart Welcome replay protection**.
 
 Cargo.lock pins **202 external packages across all targets**, not the earlier
 upstream 485-package workspace. Target-filtered cargo metadata resolves **163
-external packages: 12 direct, 151 transitive**, including build/procedural-macro
+external packages: 13 direct, 150 transitive** (zeroize 1.9.0 became direct in #231 batch g — it was already in the graph), including build/procedural-macro
 requirements. This is a dependency graph, not an assertion that all their code is
 reachable in the optimized WASM. Direct imports are OpenMLS 0.9.0, RustCrypto
 provider 0.6.0, BasicCredential 0.6.0, openmls_traits 0.6.0 (the storage trait
