@@ -26,6 +26,13 @@ sha2 = "=0.10.9"
 # RustCrypto's older rand_core also requires the browser entropy backend.
 getrandom = { version = "=0.2.17", features = ["js"] }
 
+[dev-dependencies]
+# wasm32 gate (#231 batch e): the facade's own tests also run on
+# wasm32-unknown-unknown (CI native-mls job) via the pinned release tarball's
+# wasm-bindgen-test-runner in node. 0.3.76 is the release paired with the
+# bundle's wasm-bindgen 0.2.126 (test-shared =0.2.126, same protocol).
+wasm-bindgen-test = "=0.3.76"
+
 [profile.release]
 opt-level = "s"
 lto = true
