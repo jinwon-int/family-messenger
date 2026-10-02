@@ -190,6 +190,11 @@ jobs:
       - name: v2 relay client — enrolled devices, fault injection a–i
         if: steps.scope.outputs.run == 'true'
         run: python archive/native-mls/tests/native_v2_relay_smoke.py --bundle artifacts/mls-pkg --relay-binary artifacts/native-mls-relay --devices-binary artifacts/native-devices
+      # #243 2-a: the human client (web/relay-app.html) served by the relay itself
+      # (-static-dir), driven from two browser contexts with zero Python-side relay calls.
+      - name: Human relay client — served by the relay, invite/join/messages/ack from the page
+        if: steps.scope.outputs.run == 'true'
+        run: python archive/native-mls/tests/native_relay_app_smoke.py --bundle artifacts/mls-pkg --relay-binary artifacts/native-mls-relay
       # M5: the native bot as a third leaf. Built here (not only in native-mls-bot)
       # because the smoke needs the wasm bundle + relay + devices this job already
       # has; the shared target dir keeps it incremental after the unit-test step.

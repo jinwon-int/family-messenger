@@ -1432,3 +1432,25 @@ fn discard_staged_keeps_the_own_pending_commit() {
     a2.apply_commit(ocommit).unwrap();
     assert_eq!(roster(&a2.members().unwrap()).len(), 2);
 }
+
+/// #243 2-a: the durable lane exposes roster/fingerprint/approval views and the
+/// E2 approval signature with the durable identity's own key.
+#[test]
+fn durable_lane_roster_fingerprint_and_sign_approval() {
+    let (mut alice, mut bob) = pair();
+    let roster_frame = alice.step("members", &[]);
+    assert_eq!(roster(&roster_frame).len(), 2);
+    let fp = String::from_utf8(alice.step("fingerprint", &[])).unwrap();
+    assert_eq!(fp.len(), 64);
+    let key_hex: String = alice.session.public_key().iter().map(|b| format!("{b:02x}")).collect();
+    let pf = String::from_utf8(alice.step("policy_fingerprint", key_hex.as_bytes())).unwrap();
+    assert_eq!(pf, fp, "policy_fingerprint(own key) == fingerprint");
+    // The approval over bob's key is signed by alice's durable identity.
+    let bob_hex: String = bob.session.public_key().iter().map(|b| format!("{b:02x}")).collect();
+    let args = format!(r#"{{"action":"approve-device","device_id":"bob","actor":"bob","subject":"person-bob","signing_key":"{bob_hex}","acceptance":"trusted-device-fingerprint","base_revision":3}}"#);
+    let framed = alice.step("sign_approval", args.as_bytes());
+    let n = u32::from_le_bytes(framed[..4].try_into().unwrap()) as usize;
+    assert!(n > 0 && framed.len() == 4 + n + 64, "canonical payload + 64-byte signature");
+    assert!(alice.session.apply("sign_approval", br#"{"action":"approve-device"}"#).is_err(), "malformed args rejected, device usable");
+    let _ = bob.step("members", &[]);
+}

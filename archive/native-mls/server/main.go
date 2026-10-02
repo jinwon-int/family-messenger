@@ -41,6 +41,7 @@ func main() {
 	resetYes := flag.Bool("yes", false, "with -reset-room: actually delete (default prints what would be deleted)")
 	removedGrace := flag.Int64("removed-cursor-grace-seconds", 0, "override how long a member removed by commit keeps gating pruning before it reads its removal")
 	hardMaxEpochs := flag.Int64("commit-welcome-hard-max-epochs", 0, "override the unconditional commit/welcome retention backstop (epochs); inside it but past -commit-welcome-keep-epochs they wait for every reader cursor")
+	staticDir := flag.String("static-dir", "", "serve the human acceptance client (web/relay-app.html + pkg/ bundle) under /app/ from this directory; assets are unauthenticated, /v2/* stays behind the JWT (#243)")
 	accessMaxLifetimeSeconds := flag.Int64("access-max-lifetime-seconds", 0, "override (tighten) the maximum accepted JWT lifetime in seconds (exp-now and exp-iat; default 31 days = the longest CF Access session; the account's apps use 730h)")
 	flag.Parse()
 
@@ -134,6 +135,14 @@ func main() {
 	}
 
 	relay := &relay{db: db, policy: pol, devices: devices, access: access}
+	if *staticDir != "" {
+		root, err := openStaticRoot(*staticDir)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer root.Close()
+		relay.staticRoot = root
+	}
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           relay.routes(),

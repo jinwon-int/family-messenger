@@ -20,6 +20,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -104,6 +105,8 @@ type relay struct {
 	policy  policy
 	devices *devicepolicy.DevicePolicyStore
 	access  *accessVerifier
+	// staticRoot serves the human client under /app/ (#243 2-a); nil = off.
+	staticRoot *os.Root
 }
 
 // ---- wire types ----
@@ -549,6 +552,12 @@ func (s *relay) routes() *http.ServeMux {
 	mux.HandleFunc("GET /v2/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
+	if s.staticRoot != nil {
+		mux.Handle(staticPrefix, staticHandler(s.staticRoot))
+		mux.HandleFunc("GET /app", func(w http.ResponseWriter, req *http.Request) {
+			http.Redirect(w, req, staticPrefix, http.StatusMovedPermanently)
+		})
+	}
 	return mux
 }
 

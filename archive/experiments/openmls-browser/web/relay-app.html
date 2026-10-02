@@ -1,0 +1,57 @@
+<!doctype html><html lang="ko"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>독자 E2EE 인수검사 클라이언트 (#243)</title>
+<!-- Human client for the v2 relay (#243 2-a). Served by the relay itself under
+     /app/ so every /v2/* fetch is same-origin: the Cloudflare Access cookie rides
+     along and the edge injects Cf-Access-Jwt-Assertion. Crypto runs in the same
+     durable worker the smokes drive (IndexedDB, passphrase custody); this page only
+     moves bytes between the worker and the relay and renders what the worker returns. -->
+<style>
+  body { font: 15px/1.45 -apple-system, system-ui, sans-serif; margin: 0 auto; max-width: 720px; padding: 12px; color: #222; }
+  h2 { font-size: 1.05em; margin: 18px 0 6px; border-bottom: 1px solid #ddd; padding-bottom: 3px; }
+  label { display: inline-block; margin: 2px 8px 2px 0; }
+  input, select, textarea { font: inherit; padding: 5px 7px; border: 1px solid #bbb; border-radius: 5px; max-width: 100%; }
+  button { font: inherit; padding: 7px 12px; margin: 3px 4px 3px 0; border: 1px solid #888; border-radius: 6px; background: #f6f6f6; }
+  button:disabled { opacity: .45; }
+  pre { background: #f3f3f3; padding: 8px; border-radius: 6px; white-space: pre-wrap; word-break: break-all; font-size: 13px; }
+  #messages div { padding: 4px 6px; border-bottom: 1px solid #eee; }
+  #messages .me { color: #1a4; }
+  .muted { color: #666; font-size: .9em; }
+  details summary { cursor: pointer; }
+</style>
+<script type="module" src="./main.js"></script>
+<script type="module" src="./relay-app.js"></script>
+<p><strong>사람 사용 인수검사(#243) 클라이언트.</strong> 암호화는 이 브라우저의 워커에서, 전달은 이 릴레이(<code id="origin"></code>)로. 로그인은 Cloudflare Access가, 기기 승인은 운영자 CLI가 맡는다.</p>
+
+<h2>1. 기기</h2>
+<p><label>방 <input id="room" value="family-acc" size="12" autocomplete="off"></label>
+<label>기기 ID <input id="device" placeholder="owner-pc" size="12" autocomplete="off"></label>
+<label>DB <input id="database" value="family-mls-synthetic-acc-1" size="26" autocomplete="off"></label></p>
+<p><label>암호(32자 이상, 다시 입력하므로 보관) <input id="passphrase" type="password" size="28" autocomplete="off"></label>
+<button id="start" type="button">워커 시작 · 이어하기</button>
+<button id="confirm-fresh" type="button" hidden>새 기기로 시작</button></p>
+<pre id="state">아직 시작하지 않았다.</pre>
+<details><summary>운영자 등록 정보 (이 기기를 정책 체인에 올릴 때 전달)</summary><pre id="enroll-info">워커 시작 뒤 표시된다.</pre></details>
+
+<h2>2. 방</h2>
+<p><button id="create" type="button" disabled>방 만들기(첫 기기)</button>
+<button id="keypackage" type="button" disabled>키 패키지 게시(초대받기)</button>
+<label>초대할 기기 <input id="target" placeholder="bot-1" size="12" autocomplete="off"></label>
+<button id="invite" type="button" disabled>초대</button>
+<button id="sync" type="button" disabled>동기화</button></p>
+<pre id="roster">멤버: —</pre>
+
+<h2>3. 메시지</h2>
+<p><input id="msg" placeholder="메시지" size="40" autocomplete="off"> <button id="send" type="button" disabled>보내기</button></p>
+<div id="messages"></div>
+
+<h2>4. 두 번째 기기 승인 (신뢰 기기 화면)</h2>
+<p class="muted">새 기기의 "운영자 등록 정보"를 붙여 넣고, 두 화면의 지문이 같은지 눈으로 비교한 뒤 승인한다. 결과(서명 증거)는 운영자에게 전달한다.</p>
+<p><textarea id="candidate" rows="3" cols="60" placeholder='{"device_id":"owner-iphone","actor":"owner","subject":"...","signing_key":"<64hex>","base_revision":2}'></textarea></p>
+<p><button id="offer" type="button" disabled>지문 보기</button> <code id="candidate-fingerprint"></code>
+<button id="approve" type="button" disabled>이 지문이 맞습니다</button> <button id="deny" type="button" disabled>거부</button></p>
+<pre id="evidence"></pre>
+
+<h2>5. 기타</h2>
+<p><button id="evict" type="button" disabled>저장소 삭제(축출 재연습)</button> <button id="clear-log" type="button">로그 지우기</button></p>
+<pre id="log"></pre>
