@@ -3383,12 +3383,12 @@
      "decrypted_after_return": true
     },
     "storage_eviction": {
-     "tested": false,
-     "rejoined": false
+     "tested": true,
+     "rejoined": true
     },
     "rejoin_guidance": "저장소가 축출되면 이 기기의 MLS 상태와 지문이 소멸한다. 같은 신원·데이터베이스·암호로 다시 시작하면 새 지문의 새 기기가 되므로, 상대 기기에서 새 키 패키지로 다시 초대받아 재참여해야 하며 축출 이전의 과거 메시지는 읽을 수 없다."
    },
-   "notes": "오너 iPhone 15 Pro iOS 18.7 Safari, 손으로 수행. 봇 지문을 오너에게 전달해 대조. 홈 이탈 30s 복귀 후 봇 답장 해독, 관찰 전송. 축출 재연습은 수행하지 않음(tested:false)."
+   "notes": "오너 iPhone 15 Pro iOS 18.7 Safari, 손으로 수행. 봇 지문을 오너에게 전달해 대조. 홈 이탈 30s 복귀 후 봇 답장 해독, 관찰 전송. 축출 재연습은 2026-10-02 23:32~23:45 KST 별도 세션(native-v2-safari-eviction-20261002.md, 스켈레톤 sha256 9ec374bf…)에서 수행: 저장소 삭제 → 같은 신원·DB·암호로 재시작 → 새 키 패키지 게시 → 파트너 재초대 → 참여 → \"재참여\" 메시지 왕복."
   },
   {
    "kind": "android-chrome",
@@ -3413,6 +3413,6 @@
    "notes": "공융 SM-G781N Chrome 149, adb CDP. 지문 5e68 829e…. 홈 이탈 34s(KEYCODE_HOME) 복귀 후 해독, 축출 후 새 지문·재초대·재참여 성공. http라 Client Hints 없음."
   }
  ],
- "attestation": "2026-10-02 KST. 수행: gwakga(곽가, ccc-node 에이전트, 원격 자동화) + Seo Jin On(오너, iPhone 직접). Firefox: 공명(gongmyoung, x86_64 베어메탈 Ubuntu 24.04)의 Firefox 153(Playwright 배포 빌드)을 Xvfb 디스플레이에서 headless 모드가 아닌 창 모드로 실행했고 패널 조작은 Playwright 자동화로 했다. Android Chrome: 공융(SM-G781N Galaxy S20 FE, Android 13) 물리 기기의 Chrome 149를 adb 무선 디버깅의 DevTools 프로토콜로 원격 조작했고 홈 이탈·복귀는 adb 키 이벤트로 했다. Safari(iOS): 오너의 iPhone 15 Pro(iOS 18.7) Safari에서 오너가 손으로 수행했다. 세 등록 모두 UA 변조·에뮬레이터·headless 모드를 쓰지 않았다. Firefox와 Android는 사람 손이 아닌 원격 자동화 조작이었음을 명시한다.",
+ "attestation": "2026-10-02 KST. 수행: gwakga(곽가, ccc-node 에이전트, 원격 자동화) + Seo Jin On(오너, iPhone 직접). Firefox: 공명(gongmyoung, x86_64 베어메탈 Ubuntu 24.04)의 Firefox 153(Playwright 배포 빌드)을 Xvfb 디스플레이에서 headless 모드가 아닌 창 모드로 실행했고 패널 조작은 Playwright 자동화로 했다. Android Chrome: 공융(SM-G781N Galaxy S20 FE, Android 13) 물리 기기의 Chrome 149를 adb 무선 디버깅의 DevTools 프로토콜로 원격 조작했고 홈 이탈·복귀는 adb 키 이벤트로 했다. Safari(iOS): 오너의 iPhone 15 Pro(iOS 18.7) Safari에서 오너가 손으로 수행했다. 세 등록 모두 UA 변조·에뮬레이터·headless 모드를 쓰지 않았다. Firefox와 Android는 사람 손이 아닌 원격 자동화 조작이었음을 명시한다. [추기 2026-10-02 23:5x KST] Safari 축출 재참여는 별도 세션에서 오너가 iPhone으로 직접 수행했고(파트너 = 공명 headless Chromium 자동화), 그 세션의 서버 관측본은 native-v2-safari-eviction-20261002-skeleton.json이다.",
  "notes": "세션 서버: 공명 100.93.90.63:8765(Tailscale), 번들 = main dedeaf7을 노숙에서 핀 툴체인(rustc 1.91.1·wasm-bindgen 0.2.126·esbuild 0.27.2)으로 빌드한 bundle-sha256.txt 일치본(wasm 03fb77d7…, js 32259cee…, custody b94b2180…). Firefox↔Android 쌍(driver, 양방향 왕복·백그라운드 복귀·양쪽 축출 재참여) 후 Firefox 봇(partner-ff-ios, 자동 초대·자동 답장)↔Safari 쌍. 리허설 세션(포트 8766)은 별도 스켈레톤이며 증거가 아니다. CI 산출물 바이트 대조는 CI 로그에 번들 해시가 없어 미수행."
 }
