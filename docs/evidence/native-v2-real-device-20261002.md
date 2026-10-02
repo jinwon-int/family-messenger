@@ -16,6 +16,6 @@ python3 archive/native-mls/tests/real_device_kit.py validate \
 |---|---|---|---|
 | Firefox 153 | 공명(x86_64 베어메탈) Xvfb 창 모드, Playwright 자동화 | 탭 전환 30s → 해독 ✓ | ✓ 새 지문·재초대·재참여 |
 | Android Chrome 149 | 공융 SM-G781N(Android 13) 물리 기기, adb DevTools 원격 조작 | 홈 이탈 34s → 해독 ✓ | ✓ |
-| Safari iOS 18.7 | 오너 iPhone 15 Pro, 손으로 수행 | 홈 이탈 30s → 해독 ✓ | 미수행(`tested:false`) |
+| Safari iOS 18.7 | 오너 iPhone 15 Pro, 손으로 수행 | 홈 이탈 30s → 해독 ✓ | ✓ 2026-10-02 23:32~23:45 KST 별도 세션 — [native-v2-safari-eviction-20261002.md](native-v2-safari-eviction-20261002.md) |
 
 진술(attestation)은 증거 JSON 본문에 있다. REAL-DEVICE.md §5대로 검증기는 실기기 여부를 증명하지 않으며, **Firefox·Android는 사람 손이 아닌 원격 자동화 조작**이었음을 진술에 그대로 적었다. UA 변조·에뮬레이터·headless 모드는 쓰지 않았다.
