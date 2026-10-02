@@ -12,6 +12,9 @@
 //!    original value of every key touched since the last [`Store::commit`],
 //!    so a caller persists only what changed (no full snapshot per operation) and
 //!    can [`Store::rollback`] a rejected operation in place.
+//! 4. `clear_proposal_queue` removes QueuedProposal entries under the same
+//!    labelled/versioned key `queue_proposal` wrote them to (upstream removed
+//!    the raw tuple key, orphaning every queued proposal — review 2 L).
 //! 3. [`LABELS`]/[`LIST_LABELS`] and two label constants are `pub(crate)` for the
 //!    format-1 migration hook (`crate::migrate`). The two `entry()` helpers (`append`, `remove_item`) use `get` + `insert`,
 //!    `thiserror` / `log` / `test-utils` code is removed, `MemoryStorage` is renamed
@@ -951,9 +954,12 @@ impl StorageProvider<CURRENT_VERSION> for Store {
             self.read_list(PROPOSAL_QUEUE_REFS_LABEL, &serde_json::to_vec(group_id)?)?;
         let mut values = self.values.write().unwrap();
         for proposal_ref in proposal_refs {
-            // Delete all proposals.
+            // Delete all proposals. Change 4 (review 2 L, inherited from
+            // upstream 0.6.0): `queue_proposal` stores under the labelled,
+            // versioned key, so the raw tuple key removed nothing and every
+            // QueuedProposal entry was orphaned once the queue was cleared.
             let key = serde_json::to_vec(&(group_id, proposal_ref))?;
-            values.remove(&key);
+            values.remove(&build_key_from_vec::<CURRENT_VERSION>(QUEUED_PROPOSAL_LABEL, key));
         }
 
         // Delete the proposal refs from the store.

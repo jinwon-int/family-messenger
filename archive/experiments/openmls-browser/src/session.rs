@@ -216,6 +216,7 @@ impl Session {
         let device = &mut self.device;
         let output = match method {
             "key_package" if input.is_empty() => device.key_package_inner()?,
+            "delete_key_package" => { device.delete_key_package_inner(input)?; vec![] },
             "create" if input.is_empty() => { device.create_inner()?; vec![] },
             "invite" => device.invite_trusted_inner(input, peer, key)?,
             "join" => { device.join_trusted_inner(input, peer, key)?; vec![] },

@@ -25,6 +25,13 @@
 // u32 LE key_len ‖ entry key ‖ value (additional data: domain, room, index) and
 // t = entry_tag(auth key, room, index, e).
 export const MAX_BINARY = 2 * 1024 * 1024, MAX_LEDGER = 256, ACKED = 256, TAG = 32;
+// MAX_WIRE mirrors the Rust facade (lib.rs: 256 KiB attachment + 4 KiB MLS
+// framing). Review 2 L: the ledger kept a 64 KiB cap after the facade was
+// raised for M5 attachments, so a full-size attachment at the head of the
+// inbox threw in input() before classifyDecryptFailure and pinned the durable
+// cursor for good. One operation's input+output now fit; MAX_BINARY (2 MiB)
+// still bounds how many un-acked attachments a ledger may hold (~3).
+export const MAX_WIRE = 262144 + 4096;
 export const FAULTS = ['', 'abort-before-write', 'abort-after-write', 'lost-response'];
 export const fail = () => { throw new Error('rejected'); };
 export const exact = (value, keys) => value && Object.getPrototypeOf(value) === Object.prototype &&
@@ -34,7 +41,12 @@ export const hex = bytes => Array.from(bytes, b => b.toString(16).padStart(2, '0
 export const fromHex = s => new Uint8Array((s.match(/../g) ?? []).map(x => parseInt(x, 16)));
 export const validId = id => typeof id === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(id);
 const bytesOf = value => value instanceof Uint8Array ? value : value instanceof ArrayBuffer ? new Uint8Array(value) : fail();
-export function input(value, max = 65536) {
+// Review 2 L (secrets not zeroed): best-effort wiping of buffers that carried
+// store values (ratchet secrets, signer key) once the Session or IDB has them.
+// JS cannot zero strings or GC copies, so this covers the Uint8Arrays we own.
+export const wipeAll = (...buffers) => { for (const b of buffers) if (b instanceof Uint8Array) b.fill(0); };
+export const wipeChanges = changes => { for (const [k, v] of changes) wipeAll(k, v); };
+export function input(value, max = MAX_WIRE) {
   if (!Array.isArray(value) || value.length > max || !value.every(v => Number.isInteger(v) && v >= 0 && v <= 255)) fail();
   return new Uint8Array(value);
 }
@@ -211,8 +223,8 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
       if (!validLedgerItemShape(item) ||
           !validId(item.id) || ids.has(item.id) || meta.acked.includes(item.id) || !allowed.has(item.method) ||
           typeof item.epoch !== 'string' || item.epoch.length > 20 ||
-          !(item.input instanceof Uint8Array) || item.input.length > 65536 ||
-          !(item.output instanceof Uint8Array) || item.output.length > 65536 ||
+          !(item.input instanceof Uint8Array) || item.input.length > MAX_WIRE ||
+          !(item.output instanceof Uint8Array) || item.output.length > MAX_WIRE ||
           !Number.isSafeInteger(item.sequence) || item.sequence < 0 || item.sequence > meta.cursor ||
           (item.method === 'decrypt') !== (item.sequence > 0)) fail();
       ids.add(item.id); size += item.input.length + item.output.length;
@@ -370,7 +382,10 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
             });
             if (loaded.size !== meta.count || !equal(setDigest(loaded), meta.set)) fail();
             dropSession();
-            const opened = Session.open(identity, meta.public_key, meta.group_id, meta.format, frame(entries));
+            const framedEntries = frame(entries);
+            let opened;
+            try { opened = Session.open(identity, meta.public_key, meta.group_id, meta.format, framedEntries); }
+            finally { wipeAll(framedEntries, ...entries.map(([, v]) => v)); }  // store values live on only inside the Session
             if (opened.migrated() || opened.current_epoch() !== meta.epoch || !equal(opened.public_key(), meta.public_key) ||
                 !equal(opened.group_id(), meta.group_id)) { opened.free(); fail(); }
             try { extra.valid(meta, opened); } catch (error) { opened.free(); throw error; }
@@ -392,7 +407,8 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
           const fresh = {version: META_VERSION, identity, room, public_key: session.public_key(), group_id: new Uint8Array(0),
             format: Session.format_version(), revision: 0, cursor: 0, epoch: 'none', set: new Uint8Array(TAG),
             count: 0, ledger: [], acked: [], tag: new Uint8Array(TAG), ...extra.initial(), ...fields};
-          persist(fresh, unframe(session.pending_changes()));
+          const pending = session.pending_changes();
+          try { persist(fresh, unframe(pending)); } finally { wipeAll(pending); }
           metaStore.add(custody, 'custody');  // add: fails if a custody record appeared meanwhile
           return fresh;
         },
@@ -457,7 +473,8 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
               changed: 0, bytes_written: 0, meta_bytes: written.meta};
           }
           inflight = true;
-          const output = result.output(), changes = unframe(result.changes());
+          const output = result.output(), rawChanges = result.changes(), changes = unframe(rawChanges);
+          wipeAll(rawChanges);  // the parsed entries are wiped after persist (below)
           meta.epoch = result.epoch();
           result.free();
           const group = session.group_id();
@@ -465,8 +482,9 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
           meta.group_id = group;
           meta.ledger.push({id: argument.id, method: argument.method, input: bytes, output, sequence: argument.sequence, epoch: meta.epoch});
           if (argument.method === 'decrypt') meta.cursor = argument.sequence;
-          if (fault === 'abort-before-write') { abort(); return undefined; }
-          const written = persist(meta, changes);
+          if (fault === 'abort-before-write') { wipeChanges(changes); abort(); return undefined; }
+          let written;
+          try { written = persist(meta, changes); } finally { wipeChanges(changes); }
           if (fault === 'abort-after-write') { abort(); return undefined; }
           return {output: Array.from(output), revision: meta.revision, cursor: meta.cursor, replay: false,
             changed: changes.length, bytes_written: written.entries, meta_bytes: written.meta};

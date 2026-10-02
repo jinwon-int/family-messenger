@@ -9,7 +9,7 @@ import {createStore, exact, fail, hex, fromHex, bindEncrypt, bindDecrypt, unfram
 import {createVault, unlockVault, validPassphrase, sealRecord, openRecord} from './pkg/custody.js';
 import {normalizePins, readDirectory, matchDirectory} from './trust-directory.js';
 const wasm = await init();
-const allowed = new Set(['key_package', 'create', 'invite', 'join', 'encrypt', 'decrypt']);
+const allowed = new Set(['key_package', 'delete_key_package', 'create', 'invite', 'join', 'encrypt', 'decrypt']);
 let store, identity, room, retired = false;
 
 // Pins are an authenticated meta field. Checked whenever the session is rebuilt

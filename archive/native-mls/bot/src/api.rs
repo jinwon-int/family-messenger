@@ -57,6 +57,22 @@ impl From<HttpError> for BotError {
     fn from(e: HttpError) -> Self { BotError::Http(e) }
 }
 
+/// The relay's identifier rule (`server.go` validIdentifier / roomParam):
+/// `[A-Za-z0-9_-]{1,64}`. Room, device, consumer and watch-room names are
+/// checked against it once at the CLI boundary, so nothing that would need
+/// percent-encoding — or that could split a request line — is ever
+/// interpolated into a path (review 2 L: URL not encoded).
+pub fn is_identifier(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// `is_identifier` as a `BotError::Local` for CLI arguments.
+pub fn require_identifier(what: &'static str, s: &str) -> Result<()> {
+    if is_identifier(s) { Ok(()) } else { Err(BotError::Local(what)) }
+}
+
 impl From<serde_json::Error> for BotError {
     fn from(e: serde_json::Error) -> Self { BotError::Json(e) }
 }
@@ -318,6 +334,21 @@ pub fn ref_hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(64);
     for b in digest { out.push_str(&format!("{b:02x}")); }
     out
+}
+
+#[cfg(test)]
+mod identifier_tests {
+    use super::is_identifier;
+
+    #[test]
+    fn identifier_rule_matches_the_relay() {
+        for ok in ["family-private", "bot-1", "a", "A_Z-09", &"x".repeat(64)] {
+            assert!(is_identifier(ok), "{ok:?}");
+        }
+        for bad in ["", "a b", "a/b", "a?x", "a&b=1", "a\r\n", "한글", ".", &"x".repeat(65)] {
+            assert!(!is_identifier(bad), "{bad:?}");
+        }
+    }
 }
 
 #[cfg(test)]

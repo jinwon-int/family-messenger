@@ -135,11 +135,36 @@ func openStore(dataDir string) (*store, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, err
 	}
+	st, err := openStoreRaw(dataDir, false)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := st.Exec(schema); err != nil {
+		st.Close()
+		return nil, err
+	}
+	if err := migrate(st.DB); err != nil {
+		st.Close()
+		return nil, err
+	}
+	return st, nil
+}
+
+// openStoreRaw takes the data-dir lock and opens the database exactly as it
+// is on disk: no schema creation, no migration. readOnly opens with
+// mode=ro so even a bug cannot write (review 2 L: the -reset-room dry run
+// used to run CREATE TABLE/ALTER TABLE through openStore). The directory
+// must already exist.
+func openStoreRaw(dataDir string, readOnly bool) (*store, error) {
 	lock, err := lockDataDir(dataDir)
 	if err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite3", sqliteURI(filepath.Join(dataDir, storeFile)))
+	uri := sqliteURI(filepath.Join(dataDir, storeFile))
+	if readOnly {
+		uri += "&mode=ro"
+	}
+	db, err := sql.Open("sqlite3", uri)
 	if err != nil {
 		lock.Close()
 		return nil, err
@@ -149,14 +174,6 @@ func openStore(dataDir string) (*store, error) {
 	// lock, and busy_timeout covers an external reader; the relay mutex on
 	// top means the process never races itself.
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema); err != nil {
-		st.Close()
-		return nil, err
-	}
-	if err := migrate(db); err != nil {
-		st.Close()
-		return nil, err
-	}
 	return st, nil
 }
 
@@ -743,7 +760,17 @@ type eventsPage struct {
 	room      roomRow
 	nextAfter int64
 	cursor    int64
+	// firstSeq is the lowest seq the room still holds (0 when empty): a
+	// reader whose `after` lies below firstSeq-1 has a pruned gap and must
+	// not pretend the page is contiguous history.
+	firstSeq int64
 }
+
+// maxPageBytes bounds the event bytes one GET page carries (review 2 L: with
+// limit=2000 and a 64 MiB room a page could reach ~86 MiB of base64 inside
+// the 60 s write timeout). A page stops before the row that would exceed it;
+// the first row is always returned so one oversized event still pages.
+const maxPageBytes = 8 << 20
 
 // readEvents returns one page (limit rows scanned in seq order after `after`)
 // of the per-room total order, filtering welcome events targeted at other
@@ -779,12 +806,17 @@ func (s *relay) readEvents(room, device string, after int64, limit int, ack *int
 	if row.closed {
 		return eventsPage{}, errClosed
 	}
+	var firstSeq sql.NullInt64
+	if err := tx.QueryRow(`SELECT MIN(seq) FROM mls_events WHERE room = ?`, room).Scan(&firstSeq); err != nil {
+		return eventsPage{}, err
+	}
 	rows, err := tx.Query(`SELECT seq, device, client_id, kind, epoch, targets, bytes, sha256, created_at
 		FROM mls_events WHERE room = ? AND seq > ? ORDER BY seq LIMIT ?`, room, after, limit)
 	if err != nil {
 		return eventsPage{}, err
 	}
-	page := eventsPage{rows: []storedRow{}, room: row, nextAfter: after}
+	page := eventsPage{rows: []storedRow{}, room: row, nextAfter: after, firstSeq: firstSeq.Int64}
+	var pageBytes int64
 	for rows.Next() {
 		var r storedRow
 		var targets sql.NullString
@@ -792,12 +824,20 @@ func (s *relay) readEvents(room, device string, after int64, limit int, ack *int
 			rows.Close()
 			return eventsPage{}, err
 		}
+		visible := !(r.Kind == "welcome" && !targetedAt(targets.String, device))
+		// Byte budget: a visible row that would push the page over the
+		// budget ends the page *before* it — nextAfter stays at the previous
+		// row so the next request starts exactly here, no gap, no repeat.
+		if visible && len(page.rows) > 0 && pageBytes+int64(len(r.Bytes)) > maxPageBytes {
+			break
+		}
 		if r.Seq > page.nextAfter {
 			page.nextAfter = r.Seq
 		}
-		if r.Kind == "welcome" && !targetedAt(targets.String, device) {
+		if !visible {
 			continue
 		}
+		pageBytes += int64(len(r.Bytes))
 		page.rows = append(page.rows, r)
 	}
 	rows.Close()
@@ -865,21 +905,33 @@ func ackCursor(tx *sql.Tx, membership bool, room, device string, ack, lastSeq in
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, false, err
 	}
-	if !exists && membership {
+	if !exists {
+		// Review 2 L (unseeded-room ack): a device without a cursor row only
+		// becomes a reader here when the room's roster seats it. Every
+		// legitimate reader of an unseeded room (poster, Welcome target)
+		// already holds a row from registerCursor, so an unknown device
+		// acking before the founding commit — or against an empty roster —
+		// must not create the cursor that would gate pruning forever. With
+		// membership tracking on, an outsider of a seeded room is refused
+		// (403); otherwise the ack is ignored and the cursor reported as 0.
 		tracked, err := readMembers(tx, room)
 		if err != nil {
 			return 0, false, err
 		}
-		if len(tracked) > 0 {
-			member := false
-			for _, m := range tracked {
-				if m.Device == device {
-					member = true
-				}
+		member := false
+		for _, m := range tracked {
+			if m.Device == device {
+				member = true
 			}
-			if !member {
+		}
+		if !member {
+			if membership && len(tracked) > 0 {
 				return 0, false, errNotMember
 			}
+			if ack > lastSeq {
+				return 0, false, badAck{Ack: ack, LastSeq: lastSeq}
+			}
+			return 0, false, nil
 		}
 	}
 	if ack > lastSeq {
@@ -893,7 +945,8 @@ func ackCursor(tx *sql.Tx, membership bool, room, device string, ack, lastSeq in
 		return ack, err == nil, err
 	}
 	_, err = tx.Exec(`INSERT INTO mls_cursors (room, device, seq) VALUES (?, ?, ?)`, room, device, ack)
-	return ack, err == nil, err
+	// A fresh row at 0 is a floor, not progress: it must not trigger a prune.
+	return ack, err == nil && ack > 0, err
 }
 
 // keyPackagesResult is postKeyPackages' outcome in store terms.
@@ -1059,9 +1112,28 @@ func (s *relay) prune(tx *sql.Tx, room string, epoch int64, now int64, active ma
 		AND (seq >= removed_seq OR removed_at <= ?)`, room, now-s.policy.RemovedCursorGraceSeconds); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM mls_events WHERE room = ? AND kind IN ('commit','welcome') AND epoch <= ?`,
-		room, epoch-s.policy.CommitWelcomeKeepEpochs); err != nil {
+	// Commit/Welcome retention (review 2 L: an offline member whose last read
+	// lies more than CommitWelcomeKeepEpochs behind lost the commits it needs
+	// to catch up). Outside the keep window a commit/welcome goes only once
+	// every known reader's cursor passed it — the same gate as application
+	// events — with CommitWelcomeHardMaxEpochs as the unconditional backstop
+	// so a reader that never acks cannot pin commits (exempt from the byte
+	// cap, G-H2) forever: such a reader needs a new Welcome anyway.
+	var minCursor sql.NullInt64
+	if err := tx.QueryRow(`SELECT MIN(seq) FROM mls_cursors WHERE room = ?`, room).Scan(&minCursor); err != nil {
 		return err
+	}
+	if minCursor.Valid {
+		if _, err := tx.Exec(`DELETE FROM mls_events WHERE room = ? AND kind IN ('commit','welcome') AND epoch <= ? AND seq <= ?`,
+			room, epoch-s.policy.CommitWelcomeKeepEpochs, minCursor.Int64); err != nil {
+			return err
+		}
+	}
+	if s.policy.CommitWelcomeHardMaxEpochs > 0 {
+		if _, err := tx.Exec(`DELETE FROM mls_events WHERE room = ? AND kind IN ('commit','welcome') AND epoch <= ?`,
+			room, epoch-s.policy.CommitWelcomeHardMaxEpochs); err != nil {
+			return err
+		}
 	}
 	rows, err := tx.Query(`SELECT seq FROM mls_events WHERE room = ? AND kind = 'application' AND created_at < ?`,
 		room, now-s.policy.AppEventTTLSeconds)
@@ -1083,10 +1155,6 @@ func (s *relay) prune(tx *sql.Tx, room string, epoch int64, now int64, active ma
 	}
 	if len(stale) == 0 {
 		return nil
-	}
-	var minCursor sql.NullInt64
-	if err := tx.QueryRow(`SELECT MIN(seq) FROM mls_cursors WHERE room = ?`, room).Scan(&minCursor); err != nil {
-		return err
 	}
 	if !minCursor.Valid {
 		return nil // no known reader: keep everything

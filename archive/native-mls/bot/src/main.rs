@@ -34,6 +34,12 @@ fn main() -> ExitCode {
         Some(path) => (Some(std::path::PathBuf::from(path)), strip_flag(&args, "--state-file")),
         None => (None, args),
     };
+    // Review 2 L: every room/device/consumer argument must already be a relay
+    // identifier — nothing that needs encoding is ever interpolated into a path.
+    if let Err(e) = validate_identifiers(&args) {
+        eprintln!("native-mls-bot: {e}");
+        return ExitCode::FAILURE;
+    }
     let result = match args.as_slice() {
         [base, cmd] if cmd == "health" => cmd_health(base, &access),
         [base, cmd, room, device] if cmd == "publish" => cmd_publish(base, room, device, &access),
@@ -80,6 +86,38 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The positional identifiers of each subcommand (`publish <room> <device>`,
+/// `consume <room> <device> <consumer>`, `session <room> <device> [<watch>]`)
+/// must match the relay's `[A-Za-z0-9_-]{1,64}` rule.
+fn validate_identifiers(args: &[String]) -> Result<(), api::BotError> {
+    let names: &[(&'static str, usize)] = match args.get(1).map(String::as_str) {
+        Some("publish") => &[
+            ("room must match [A-Za-z0-9_-]{1,64}", 2),
+            ("device must match [A-Za-z0-9_-]{1,64}", 3),
+        ],
+        Some("consume") => &[
+            ("room must match [A-Za-z0-9_-]{1,64}", 2),
+            ("device must match [A-Za-z0-9_-]{1,64}", 3),
+            ("consumer must match [A-Za-z0-9_-]{1,64}", 4),
+        ],
+        Some("session") => &[
+            ("room must match [A-Za-z0-9_-]{1,64}", 2),
+            ("device must match [A-Za-z0-9_-]{1,64}", 3),
+            ("watch-room must match [A-Za-z0-9_-]{1,64}", 4),
+        ],
+        _ => &[],
+    };
+    for (what, at) in names {
+        if let Some(value) = args.get(*at) {
+            if value == "--watch" {
+                continue;
+            }
+            api::require_identifier(what, value)?;
+        }
+    }
+    Ok(())
 }
 
 /// Pull `--access-jwt-file <path>` (or `--access-jwt-file=<path>`) out of the

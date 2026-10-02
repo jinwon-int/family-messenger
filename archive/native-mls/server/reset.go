@@ -37,7 +37,12 @@ func resetRoom(dataDir, room string, confirm bool) (roomCounts, error) {
 	if _, err := os.Stat(filepath.Join(dataDir, storeFile)); err != nil {
 		return roomCounts{}, fmt.Errorf("no relay database in %s: %w", dataDir, err)
 	}
-	st, err := openStore(dataDir)
+	// Review 2 L: the tool opens the file as it is — never through
+	// openStore, whose CREATE TABLE / ALTER TABLE would turn a dry run into
+	// a schema migration. The dry run is a read-only connection; the
+	// confirmed run is read-write but still without schema init. Tables a
+	// pre-M3 file never had count as zero.
+	st, err := openStoreRaw(dataDir, !confirm)
 	if err != nil {
 		return roomCounts{}, err
 	}
@@ -52,7 +57,16 @@ func resetRoom(dataDir, room string, confirm bool) (roomCounts, error) {
 		"mls_rooms": &c.Rooms, "mls_events": &c.Events, "mls_keypackages": &c.KeyPackages,
 		"mls_members": &c.Members, "mls_cursors": &c.Cursors,
 	}
+	present := map[string]bool{}
 	for _, table := range resetTables {
+		var n int64
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&n); err != nil {
+			return roomCounts{}, fmt.Errorf("inspect %s: %w", table, err)
+		}
+		if n == 0 {
+			continue
+		}
+		present[table] = true
 		if err := tx.QueryRow(`SELECT COUNT(*) FROM `+table+` WHERE room = ?`, room).Scan(dst[table]); err != nil {
 			return roomCounts{}, fmt.Errorf("count %s: %w", table, err)
 		}
@@ -61,6 +75,9 @@ func resetRoom(dataDir, room string, confirm bool) (roomCounts, error) {
 		return c, nil
 	}
 	for _, table := range resetTables {
+		if !present[table] {
+			continue
+		}
 		if _, err := tx.Exec(`DELETE FROM `+table+` WHERE room = ?`, room); err != nil {
 			return roomCounts{}, fmt.Errorf("delete %s: %w", table, err)
 		}

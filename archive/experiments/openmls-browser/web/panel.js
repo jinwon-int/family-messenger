@@ -72,10 +72,23 @@ async function callWorker(method, argument) {
   if (!value.ok) throw new Error(`${method} 거부`);
   return value.result;
 }
-async function op(method, bytes = [], sequence = 0) {
-  const result = await callWorker('operation', {id: genId(), method, bytes: Array.from(bytes), sequence, fault: ''});
+// Review 2 L (panel never acks): every operation lands in the worker ledger
+// and stays there until acked, so the panel used to stall after MAX_LEDGER
+// (256) operations or 2 MiB of attachment bytes. The panel talks to the
+// kit board, not the relay, so the ack that matters is the ledger's: it is
+// sent as soon as the operation's result has been used (the kit records the
+// POST / the decrypt is displayed) — the caller passes `ack: false` to keep
+// an operation and ack it itself later.
+async function op(method, bytes = [], sequence = 0, {ack = true} = {}) {
+  const id = genId();
+  const result = await callWorker('operation', {id, method, bytes: Array.from(bytes), sequence, fault: ''});
   cursor = result.cursor;
+  result.id = id;
+  if (ack) await ackOp(id);
   return result;
+}
+async function ackOp(id) {
+  try { await callWorker('ack', {ids: [id]}); } catch (error) { log('ack 실패:', id, error.message); }
 }
 async function api(path, body) {
   const response = await fetch(path, body === undefined ? undefined
@@ -131,7 +144,7 @@ async function activate(identity, database, status) {
   localStorage.setItem('real-device-session', JSON.stringify({identity, database}));
   started = true;
   const fingerprint = group4(sha256(new Uint8Array(status.public_key)));
-  $('state').textContent = `신원 ${identity} · 지문 ${fingerprint}\nrevision ${status.revision} · cursor ${status.cursor} · ledger ${status.entries}건 · reloads ${status.reloads}`;
+  $('state').textContent = `신원 ${identity} · 지문 ${fingerprint}\nrevision ${status.revision} · cursor ${status.cursor} · 미ack ${(status.operations || []).length}건 · 저장항목 ${status.entries}건 · reloads ${status.reloads}`;
   for (const id of ['create', 'keypackage', 'invite', 'join', 'encrypt', 'decrypt', 'evict']) $(id).disabled = false;
   log(`워커 시작: ${identity} @ ${database} (cursor ${cursor})`);
 }
