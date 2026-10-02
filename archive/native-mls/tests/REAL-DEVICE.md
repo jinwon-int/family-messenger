@@ -167,3 +167,31 @@ python3 archive/native-mls/tests/real_device_kit.py selftest --bundle artifacts/
 - 교환판은 세션 내 합성 전달일 뿐이며 릴레이 계약(§3.4)과 무관하다.
 - headless 실행(selftest 포함)은 실기기 증거로 인정되지 않는다(#177 §4). 검증기 통과는 "스켈레톤과
   일치"이지 "실기기 확인"이 아니다(§5).
+
+## 6. 릴리스 무결성 재검증 (2-d, 실 릴레이) — 운영자가 아무 노드에서 수행
+
+서빙 중인 정적 번들과 릴레이 바이너리가 **커밋된 산출물**과 같은지 확인한다. 읽기 전용이며
+Access JWT 없이 tailnet 주소로 수행한다(서서 `18921`은 ufw로 tailnet만 허용).
+
+```bash
+RELAY=http://<relay-tailnet-ip>:18921        # 서서 tailnet 주소
+# 1) 서빙 매니페스트 == 커밋 매니페스트 (archive/experiments/openmls-browser/bundle-sha256.txt)
+curl -s "$RELAY/app/pkg/bundle-sha256.txt" | sort > /tmp/served.txt
+sort archive/experiments/openmls-browser/bundle-sha256.txt > /tmp/committed.txt
+diff /tmp/served.txt /tmp/committed.txt && echo "manifest IDENTICAL"
+# 2) 서빙 바이트를 다시 해시해 매니페스트와 대조 (매니페스트가 텍스트만 맞는 경우를 배제)
+for f in custody.js family_mls_browser_experiment.js family_mls_browser_experiment_bg.wasm; do
+  printf '%s ' "$f"; curl -s "$RELAY/app/pkg/$f" | sha256sum | cut -c1-64
+done | sort -k2 | diff - <(awk '{print $2" "$1}' /tmp/committed.txt | sort) && echo "bytes MATCH"
+# 3) 릴레이 바이너리: 서빙 노드에서 sha256 + 빌드 툴체인 기록 (재현 빌드는 핀 툴체인 노드에서)
+ssh <relay-node> 'sha256sum /opt/native-relay/bin/native-mls-relay; strings /opt/native-relay/bin/native-mls-relay | grep -oE "go1\.[0-9.]+" | head -1'
+```
+
+| 날짜(KST) | 번들 매니페스트 | 바이트 재해시 | 릴레이 sha256(12) · 툴체인 | 수행 |
+|---|---|---|---|---|
+| 2026-10-03 00:5x | IDENTICAL (wasm `13e94dfa…`, js `d9a05287…`, custody `b94b2180…`) | 3/3 일치 | `0cd567cabcc0` · go1.27.1 — **재현 미충족**: `go version -m` `vcs.revision=ae7557e9`(#248 시점) + `vcs.modified=true`(작업트리 빌드). 깨끗한 `d54ee66` 빌드(`CGO_ENABLED=1 go build -trimpath`, gwakga, `vcs.modified=false`) sha `76d0aac7bff9be58…`가 서빙 노드 `/root/native-relay-staging/`에 대기 — 교체는 오너 결정 | yukson |
+
+릴레이 바이너리의 **재현 여부는 `go version -m <binary>`의 `vcs.revision`·`vcs.modified`로 판정**한다(sha 일치만으로 "= 커밋 빌드"라고 쓰지 말 것 — 2026-10-03 오판). 재현 빌드(`go build -trimpath` 해시 일치)는 같은 Go 버전이 핀된 노드에서만 의미가 있다 —
+수행 시 이 표에 "재현 ✓/✗ + 빌드 노드 + 커밋"을 추가한다. 번들의 재현 빌드는 rustc 1.91.1 +
+`wasm32` 툴체인(gwakga)에서 수행한다.
+
