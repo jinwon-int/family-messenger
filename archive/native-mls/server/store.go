@@ -286,7 +286,7 @@ func readRoom(q interface{ QueryRow(string, ...any) *sql.Row }, room string) (ro
 // operator deletes the file. Expired key packages are swept in the same
 // write. With membership enforcement on, only a tracked member may close
 // (errNotMember); an unknown room is errNoRoom.
-func closeRoom(db *sql.DB, room, device string, enforce bool, now int64) error {
+func closeRoom(db *sql.DB, room, device string, active map[string]devicepolicy.DeviceV4, enforce bool, now int64) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -298,17 +298,16 @@ func closeRoom(db *sql.DB, room, device string, enforce bool, now int64) error {
 		return err
 	}
 	if enforce {
+		// G-M3: the closer must still be policy-active at write time (the
+		// handler's bind ran before the transaction) and a tracked member.
+		if _, ok := active[device]; !ok {
+			return deviceNotAllowed{Device: device}
+		}
 		tracked, err := readMembers(tx, room)
 		if err != nil {
 			return err
 		}
-		member := false
-		for _, m := range tracked {
-			if m.Device == device {
-				member = true
-			}
-		}
-		if !member {
+		if !memberOf(tracked, device) {
 			return errNotMember
 		}
 	}
@@ -328,7 +327,11 @@ func closeRoom(db *sql.DB, room, device string, enforce bool, now int64) error {
 func (s *relay) closeRoomDB(room, device string, now int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return closeRoom(s.db.DB, room, device, s.devices != nil, now)
+	active, err := s.enforceDevicePolicy()
+	if err != nil {
+		return err
+	}
+	return closeRoom(s.db.DB, room, device, active, active != nil, now)
 }
 
 // storeEvent appends one event under CAS discipline. Body validation happened
@@ -420,13 +423,19 @@ func (s *relay) storeEvent(room string, ev eventInput) (storedEvent, error) {
 	if err := s.prune(tx, room, newEpoch, now, active); err != nil {
 		return storedEvent{}, err
 	}
-	// B5: cap the room by event bytes, not by count.
-	var used sql.NullInt64
-	if err := tx.QueryRow(`SELECT SUM(LENGTH(bytes)) FROM mls_events WHERE room = ?`, room).Scan(&used); err != nil {
-		return storedEvent{}, err
-	}
-	if s.policy.RoomBytesCap > 0 && used.Int64+int64(len(ev.bytes)) > s.policy.RoomBytesCap {
-		return storedEvent{}, roomBytesCap{used.Int64, s.policy.RoomBytesCap}
+	// B5: cap the room by event bytes, not by count. Commits are exempt
+	// (review 2 G-H2): a room pinned at the cap by readers that never ack
+	// could otherwise not even accept the commit that removes them, leaving
+	// -reset-room as the only way out. Commits stay bounded without the cap —
+	// each one advances the epoch and the epoch retention window prunes them.
+	if ev.kind != "commit" {
+		var used sql.NullInt64
+		if err := tx.QueryRow(`SELECT SUM(LENGTH(bytes)) FROM mls_events WHERE room = ?`, room).Scan(&used); err != nil {
+			return storedEvent{}, err
+		}
+		if s.policy.RoomBytesCap > 0 && used.Int64+int64(len(ev.bytes)) > s.policy.RoomBytesCap {
+			return storedEvent{}, roomBytesCap{used.Int64, s.policy.RoomBytesCap}
+		}
 	}
 	var targets sql.NullString
 	if len(ev.targets) > 0 {
@@ -511,22 +520,36 @@ func (s *relay) authorizeEvent(tx *sql.Tx, room string, ev eventInput) (map[stri
 	if _, ok := active[ev.device]; !ok {
 		return nil, nil, deviceNotAllowed{Device: ev.device}
 	}
-	if ev.kind != "commit" {
-		return active, nil, nil
-	}
 	tracked, err := readMembers(tx, room)
 	if err != nil {
 		return nil, nil, err
 	}
+	if ev.kind != "commit" {
+		// Review 2 G-H1: once a room has a seeded membership, application and
+		// welcome events may only come from tracked members. An active
+		// outsider (or a member already removed) used to be accepted here and
+		// — because every poster becomes a known reader — turned into a
+		// permanent pruning gate that never acks (DEVICES-V4.md promises the
+		// opposite). Before the founding commit the legacy behaviour stays.
+		if len(tracked) > 0 && !memberOf(tracked, ev.device) {
+			return nil, nil, errNotMember
+		}
+		return active, nil, nil
+	}
 	if len(tracked) == 0 {
 		// Bootstrap: the room's first commit carries the founding member
-		// list; every founding device must be policy-active and the sender
-		// must found itself in (the handler already rejects the structural
-		// case; this is the store-level line).
+		// list; every founding device must be policy-active, carry its
+		// policy actor (G-H3) and the sender must found itself in (the
+		// handler already rejects the structural case; this is the
+		// store-level line).
 		senderListed := false
 		for _, m := range ev.members {
-			if _, ok := active[m.Device]; !ok {
+			d, ok := active[m.Device]
+			if !ok {
 				return nil, nil, commitMemberNotActive{Device: m.Device}
+			}
+			if d.Actor != m.Actor {
+				return nil, nil, commitActorMismatch{Device: m.Device, Posted: m.Actor, Policy: d.Actor}
 			}
 			if m.Device == ev.device {
 				senderListed = true
@@ -554,14 +577,31 @@ func (s *relay) authorizeEvent(tx *sql.Tx, room string, ev eventInput) (map[stri
 		if byDevice[m.Device] {
 			continue
 		}
-		if _, ok := active[m.Device]; !ok {
+		d, ok := active[m.Device]
+		if !ok {
 			return nil, nil, commitMemberNotActive{Device: m.Device}
+		}
+		// G-H3: the replicated actor must be the device's policy actor —
+		// otherwise a member could smuggle another actor's device onto the
+		// roster under a roster actor's name and the founding log would lie.
+		if d.Actor != m.Actor {
+			return nil, nil, commitActorMismatch{Device: m.Device, Posted: m.Actor, Policy: d.Actor}
 		}
 		if !roster[m.Actor] {
 			return nil, nil, commitActorNotInRoster{Actor: m.Actor}
 		}
 	}
 	return active, tracked, nil
+}
+
+// memberOf reports whether device is in the tracked membership.
+func memberOf(tracked []memberRow, device string) bool {
+	for _, m := range tracked {
+		if m.Device == device {
+			return true
+		}
+	}
+	return false
 }
 
 // memberRow is one tracked room membership entry.
@@ -598,11 +638,22 @@ func readMembers(tx *sql.Tx, room string) ([]memberRow, error) {
 // fetch what led up to it.
 func applyMembership(tx *sql.Tx, room string, tracked []memberRow, ev eventInput, seq int64, now int64) error {
 	if len(tracked) == 0 {
+		seated := make([]any, 0, len(ev.members)+1)
 		for _, m := range ev.members {
 			if _, err := tx.Exec(`INSERT OR IGNORE INTO mls_members (room, device, actor, added_seq) VALUES (?, ?, ?, ?)`,
 				room, m.Device, m.Actor, seq); err != nil {
 				return err
 			}
+			seated = append(seated, m.Device)
+		}
+		// G-H1: before the founding commit any active device could post and
+		// so hold a reader cursor; from here on only members read, so the
+		// cursors of devices the founding list does not seat are dropped —
+		// otherwise an active non-member would gate pruning forever.
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(seated)), ",")
+		args := append([]any{room}, seated...)
+		if _, err := tx.Exec(`DELETE FROM mls_cursors WHERE room = ? AND device NOT IN (`+placeholders+`)`, args...); err != nil {
+			return err
 		}
 		return nil
 	}
@@ -902,6 +953,25 @@ func (s *relay) consumeKeyPackage(room, device, consumer string) (storedKeyPacka
 	}
 	if row.closed {
 		return storedKeyPackage{}, errClosed
+	}
+	// Review 2 G-M3: consuming is a write (the package is spent) and gets the
+	// same in-transaction gate as every other write — the consumer must be
+	// policy-active and, once the room has a membership, a tracked member.
+	// Otherwise any active device could drain every member's packages in
+	// every room and block invitations.
+	if active, err := s.enforceDevicePolicy(); err != nil {
+		return storedKeyPackage{}, err
+	} else if active != nil {
+		if _, ok := active[consumer]; !ok {
+			return storedKeyPackage{}, deviceNotAllowed{Device: consumer}
+		}
+		tracked, err := readMembers(tx, room)
+		if err != nil {
+			return storedKeyPackage{}, err
+		}
+		if len(tracked) > 0 && !memberOf(tracked, consumer) {
+			return storedKeyPackage{}, errNotMember
+		}
 	}
 	pkg := storedKeyPackage{}
 	err = tx.QueryRow(`SELECT ref, bytes, expires_at FROM mls_keypackages
