@@ -568,7 +568,7 @@ fn decrypt_binds_client_id_to_the_authenticated_sender() {
     assert_eq!(Device::decrypt_format(), 2);
 }
 
-/// Parse `frame_members` output from a cursor (used for the two-frame stage report).
+/// Parse `frame_members` output from a cursor (used for the stage-report sections).
 fn take_roster(rest: &mut &[u8]) -> Vec<(String, Vec<u8>)> {
     let count = u32::from_le_bytes(rest[..4].try_into().unwrap()) as usize;
     *rest = &rest[4..];
@@ -581,6 +581,17 @@ fn take_roster(rest: &mut &[u8]) -> Vec<(String, Vec<u8>)> {
         out.push((identity, key));
     }
     out
+}
+
+/// Parsed `stage_commit` report (`STAGE_REPORT_FORMAT` 2): the four
+/// `frame_members` sections — adds, removes, update proposals, committer path.
+type StageReport = (Vec<(String, Vec<u8>)>, Vec<(String, Vec<u8>)>, Vec<(String, Vec<u8>)>, Vec<(String, Vec<u8>)>);
+
+fn stage_report(report: &[u8]) -> StageReport {
+    let mut rest = report;
+    let [adds, removes, updates, path] = std::array::from_fn(|_| take_roster(&mut rest));
+    assert!(rest.is_empty(), "trailing bytes after the four stage-report sections");
+    (adds, removes, updates, path)
 }
 
 /// Review M2: while a commit is pending, `members()` is the old epoch and
@@ -610,11 +621,16 @@ fn members_after_pending_tracks_staged_adds_and_removes() {
 /// Review M1: an incoming commit can be staged, inspected (adds/removes with
 /// identity + signing key) and only then merged or discarded; the roster does
 /// not move until the merge, and the pure preconditions do not retire the device.
+/// J-MB (#231): the report also carries update proposals and the committer's
+/// path leaf — the updates section is empty for an add-only commit, while the
+/// committer's path leaf rides every member commit (OpenMLS 0.9), keeping the
+/// same signing key across an add or remove.
 #[test]
 fn stage_commit_reports_roster_changes_before_merge() {
     let mut a1 = Device::new("a:1").unwrap();
     let mut a2 = Device::new("a:2").unwrap();
     let mut a3 = Device::new("a:3").unwrap();
+    let key1 = a1.public_key().unwrap();
     let key3 = a3.public_key().unwrap();
     a1.create().unwrap();
     let package = a2.key_package().unwrap();
@@ -626,11 +642,11 @@ fn stage_commit_reports_roster_changes_before_merge() {
     a1.merge_pending().unwrap();
     let commit_len = u32::from_le_bytes(framed[..4].try_into().unwrap()) as usize;
     let (commit, welcome) = (&framed[4..4 + commit_len], &framed[4 + commit_len..]);
-    let report = a2.stage_commit(commit).unwrap();
-    let mut rest = report.as_slice();
-    let (adds, removes) = (take_roster(&mut rest), take_roster(&mut rest));
-    assert!(rest.is_empty());
+    let (adds, removes, updates, path) = stage_report(&a2.stage_commit(commit).unwrap());
     assert_eq!((adds, removes), (vec![("a:3".to_string(), key3.clone())], vec![]));
+    assert_eq!(updates, vec![], "no update proposals in an add-only commit");
+    assert_eq!(path, vec![("a:1".to_string(), key1.clone())],
+        "the committer's path leaf rides every member commit (OpenMLS 0.9)");
     assert_eq!(roster(&a2.members().unwrap()).len(), 2, "not merged yet");
     assert_eq!(a2.stage_commit(commit), Err(Rejected("commit already staged")));
     assert_eq!(a2.apply_commit(commit), Err(Rejected("commit already staged")));
@@ -641,14 +657,16 @@ fn stage_commit_reports_roster_changes_before_merge() {
     assert_eq!(attributed(&a2.decrypt(&dec(ROOM, &ciphertext)).unwrap()),
         ("a:3".into(), "a:3".into(), b"after staged merge".to_vec()));
 
-    // A removal is reported with the removed member's identity and key; discarding
-    // it leaves the device usable at its current epoch (a policy refusal).
+    // A removal is reported with the removed member's identity and key; the
+    // committer's path leaf is reported too (identity unchanged, same key —
+    // no new signer — but a consumer still sees the leaf replacement).
+    // Discarding it leaves the device usable at its current epoch (a policy
+    // refusal).
     let commit = a1.remove_member_pending(&key3).unwrap();
     a1.merge_pending().unwrap();
-    let report = a2.stage_commit(&commit).unwrap();
-    let mut rest = report.as_slice();
-    let (adds, removes) = (take_roster(&mut rest), take_roster(&mut rest));
-    assert_eq!((adds, removes), (vec![], vec![("a:3".to_string(), key3)]));
+    let (adds, removes, updates, path) = stage_report(&a2.stage_commit(&commit).unwrap());
+    assert_eq!((adds, removes, updates), (vec![], vec![("a:3".to_string(), key3)], vec![]));
+    assert_eq!(path, vec![("a:1".to_string(), key1)], "remove commits always carry the committer's path");
     a2.discard_staged().unwrap();
     assert_eq!(roster(&a2.members().unwrap()).len(), 3, "discarded: roster untouched");
     assert!(a2.members_after_pending().is_ok(), "device still usable");
@@ -948,12 +966,209 @@ fn stage_then_discard_keeps_device_usable_for_the_next_commit() {
     let m = u32::from_le_bytes(second[..4].try_into().unwrap()) as usize;
     a3.join(&first[4 + n..]).unwrap();
     let report = a3.stage_commit(&second[4..4 + m]).unwrap();
-    let mut rest = report.as_slice();
-    let (adds, removes) = (take_roster(&mut rest), take_roster(&mut rest));
+    let (adds, removes, updates, path) = stage_report(&report);
     assert_eq!(adds.len(), 1);
-    assert!(removes.is_empty());
+    assert_eq!((removes, updates), (vec![], vec![]), "no roster delta beyond the add");
+    assert_eq!(path.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), vec!["a:1"],
+        "exactly the committer's path leaf");
     a3.merge_staged().unwrap();
     b1.join(&second[4 + m..]).unwrap();
     let wire = b1.encrypt(&enc(ROOM, "b:1", b"after merge")).unwrap();
     assert_eq!(plain(&a3.decrypt(&dec(ROOM, &wire)).unwrap()), b"after merge");
+}
+
+/// Review 2 J-MB (#231): a commit can carry an identity→key change that
+/// adds/removes cannot express — the committer's own path leaf, here with a
+/// NEW signing key. The stage report surfaces it in section 4; the roster
+/// moves only at the merge, matches the report afterwards, and the rotated
+/// member talks under its new key while a member that has not applied the
+/// commit is rejected until it catches up. Update proposals are different:
+/// public builders commit them by REFERENCE and this relay lane carries no
+/// standalone proposals, so section 3 is defence in depth — a commit that
+/// references a proposal the device never saw is refused (`MissingProposal`),
+/// and like every MLS-level rejection that refusal retires the device.
+#[test]
+fn stage_report_covers_the_committer_path_and_refuses_unseen_proposals() {
+    use openmls_rust_crypto::OpenMlsRustCrypto;
+    let provider = OpenMlsRustCrypto::default();
+    let signer = SignatureKeyPair::new(SUITE.signature_algorithm()).unwrap();
+    signer.store(provider.storage()).unwrap();
+    let alice_credential = CredentialWithKey {
+        credential: BasicCredential::new(b"alice".to_vec()).into(),
+        signature_key: signer.public().into(),
+    };
+    let config = MlsGroupCreateConfig::builder().ciphersuite(SUITE)
+        .use_ratchet_tree_extension(true).build();
+    let mut alice = MlsGroup::new(&provider, &signer, &config, alice_credential).unwrap();
+
+    // Raw bob and facade carol join.
+    let bob_provider = OpenMlsRustCrypto::default();
+    let bob_signer = SignatureKeyPair::new(SUITE.signature_algorithm()).unwrap();
+    bob_signer.store(bob_provider.storage()).unwrap();
+    let bob_package = KeyPackage::builder().build(SUITE, &bob_provider, &bob_signer, CredentialWithKey {
+        credential: BasicCredential::new(b"bob".to_vec()).into(),
+        signature_key: bob_signer.public().into(),
+    }).unwrap().key_package().clone();
+    let mut carol = Device::new("carol").unwrap();
+    let carol_package = KeyPackageIn::tls_deserialize_exact_bytes(&carol.key_package().unwrap()).unwrap()
+        .validate(provider.crypto(), ProtocolVersion::Mls10).unwrap();
+    let (_, welcome, _) = alice.add_members(&provider, &signer, &[bob_package, carol_package]).unwrap();
+    alice.merge_pending_commit(&provider).unwrap();
+    let welcome_bytes = welcome.tls_serialize_detached().unwrap();
+    let join_config = MlsGroupJoinConfig::builder().use_ratchet_tree_extension(true).build();
+    let MlsMessageBodyIn::Welcome(welcome_message) =
+        MlsMessageIn::tls_deserialize_exact_bytes(&welcome_bytes).unwrap().extract() else { unreachable!() };
+    let mut bob = StagedWelcome::new_from_welcome(&bob_provider, &join_config, welcome_message, None).unwrap()
+        .into_group(&bob_provider).unwrap();
+    carol.join(&welcome_bytes).unwrap();
+
+    // alice rotates her SIGNING key in a plain self-update: no add, no remove,
+    // no update proposal — the change rides solely in the committer's path.
+    let alice_new_signer = SignatureKeyPair::new(SUITE.signature_algorithm()).unwrap();
+    alice_new_signer.store(provider.storage()).unwrap();
+    let bundle = alice.self_update_with_new_signer(&provider, &signer, NewSignerBundle {
+        signer: &alice_new_signer,
+        credential_with_key: CredentialWithKey {
+            credential: BasicCredential::new(b"alice".to_vec()).into(),
+            signature_key: alice_new_signer.public().into(),
+        },
+    }, LeafNodeParameters::default()).unwrap();
+    alice.merge_pending_commit(&provider).unwrap();
+    let commit_bytes = bundle.commit().tls_serialize_detached().unwrap();
+
+    // carol stages BEFORE merging: sections 1–3 empty, section 4 is the
+    // committer's authoritative post-commit identity→key pair — the new key.
+    let (adds, removes, updates, path) = stage_report(&carol.stage_commit(&commit_bytes).unwrap());
+    assert_eq!((adds, removes, updates), (vec![], vec![], vec![]));
+    assert_eq!(path, vec![("alice".to_string(), alice_new_signer.public().to_vec())],
+        "the path section reports the committer's rotated signing key");
+    assert_eq!(
+        roster(&carol.members().unwrap()).iter().find(|(id, _)| id == "alice").unwrap().1,
+        signer.public().to_vec(), "pre-merge roster still shows the old key");
+    carol.merge_staged().unwrap();
+    assert_eq!(
+        roster(&carol.members().unwrap()).iter().find(|(id, _)| id == "alice").unwrap().1,
+        alice_new_signer.public().to_vec(), "merged roster matches the reported path");
+
+    // The rotated member talks under its new key end-to-end (raw sender →
+    // facade receiver, AAD binding as §3.6 requires) — the facade accepts
+    // traffic signed with exactly the key the report pinned.
+    alice.set_aad(aad_bytes(ROOM.as_bytes(), alice.group_id().as_slice(), b"alice", b"alice", alice.epoch().as_u64()));
+    let wire = alice.create_message(&provider, &alice_new_signer, b"under the new key").unwrap()
+        .tls_serialize_detached().unwrap();
+    assert_eq!(attributed(&carol.decrypt_inner(&dec(ROOM, &wire)).unwrap()),
+        ("alice".into(), "alice".into(), b"under the new key".to_vec()));
+
+    // bob has not applied the commit: alice's new-epoch message is rejected
+    // until bob catches up, after which the same message reads.
+    let parse_wire = || MlsMessageIn::tls_deserialize_exact_bytes(&wire).unwrap()
+        .try_into_protocol_message().unwrap();
+    assert!(bob.process_message(&bob_provider, parse_wire()).is_err(),
+        "a member behind the commit cannot read the new epoch");
+    let parse_commit = || MlsMessageIn::tls_deserialize_exact_bytes(&commit_bytes).unwrap()
+        .try_into_protocol_message().unwrap();
+    let processed = bob.process_message(&bob_provider, parse_commit()).unwrap();
+    let ProcessedMessageContent::StagedCommitMessage(staged) = processed.into_content() else { unreachable!() };
+    bob.merge_staged_commit(&bob_provider, *staged).unwrap();
+    let caught_up = bob.process_message(&bob_provider, parse_wire()).unwrap();
+    let ProcessedMessageContent::ApplicationMessage(message) = caught_up.into_content() else { unreachable!() };
+    assert_eq!(message.into_bytes(), b"under the new key");
+
+    // Section 3 (update proposals) is defence in depth: public builders commit
+    // proposals by REFERENCE and this lane carries no standalone proposals, so
+    // the lane can only ever see a commit that references a proposal it never
+    // stored. bob proposes a leaf update; alice — which did store the proposal
+    // — commits it by reference; carol never saw the proposal and the stage is
+    // REFUSED, retiring the device like every MLS-level rejection (no
+    // uncertain state survives, there is no recovery).
+    let bob_new_signer = SignatureKeyPair::new(SUITE.signature_algorithm()).unwrap();
+    bob_new_signer.store(bob_provider.storage()).unwrap();
+    let (proposal, _) = bob.propose_self_update_with_new_signer(&bob_provider, &bob_signer,
+        NewSignerBundle {
+            signer: &bob_new_signer,
+            credential_with_key: CredentialWithKey {
+                credential: BasicCredential::new(b"bob".to_vec()).into(),
+                signature_key: bob_new_signer.public().into(),
+            },
+        },
+        LeafNodeParameters::default()).unwrap();
+    let processed = alice.process_message(&provider,
+        MlsMessageIn::from(proposal).try_into_protocol_message().unwrap()).unwrap();
+    let ProcessedMessageContent::ProposalMessage(proposal) = processed.into_content() else { unreachable!() };
+    alice.store_pending_proposal(provider.storage(), *proposal).unwrap();
+    let (commit, _, _) = alice.commit_to_pending_proposals(&provider, &alice_new_signer).unwrap();
+    alice.merge_pending_commit(&provider).unwrap();
+    let referenced = commit.tls_serialize_detached().unwrap();
+    assert_eq!(carol.stage_commit(&referenced), Err(Rejected("MLS operation rejected")),
+        "a commit referencing a proposal this lane never carried is refused");
+    assert_eq!(carol.stage_commit(&referenced), Err(Rejected("device retired")),
+        "the refusal is fail-closed: the device is retired, nothing pending survives");
+}
+
+/// Review 2 J-MB (#231), batch (e): three members, two commits racing at the
+/// same epoch, and the loser catching up through the STAGED two-phase path.
+/// Staging a foreign commit while an own commit is pending is allowed (the
+/// staged slot and the pending commit are separate); merging the staged
+/// foreign commit silently consumed the own pending commit exactly like
+/// `apply_commit` (review 2 J-MA) — a pure rejection afterwards, never a
+/// retired device — and the lost operation retries at the new epoch.
+#[test]
+fn stage_commit_while_own_pending_destroys_it_and_reports_the_winner() {
+    let mut a1 = Device::new("a:1").unwrap();
+    let mut a2 = Device::new("a:2").unwrap();
+    let mut a3 = Device::new("a:3").unwrap();
+    let mut a4 = Device::new("a:4").unwrap();
+    let key3 = a3.public_key().unwrap();
+    a1.create().unwrap();
+    let mut last_commit = Vec::new();
+    for joiner in [&mut a2, &mut a3] {
+        let framed = a1.invite_with_commit(&joiner.key_package().unwrap()).unwrap();
+        a1.merge_pending().unwrap();
+        let n = u32::from_le_bytes(framed[..4].try_into().unwrap()) as usize;
+        joiner.join(&framed[4 + n..]).unwrap();
+        last_commit = framed[..4 + n].to_vec();
+    }
+    // a2 catches up with a3's add so both racers start from the same epoch.
+    a2.apply_commit(&last_commit[4..]).unwrap();
+    assert_eq!(roster(&a2.members().unwrap()).len(), 3);
+
+    // Same epoch, two competing commits: a1 removes a3, a2 invites a4. The
+    // relay orders a2's commit first.
+    let losing = a1.remove_member_pending(&key3).unwrap();
+    assert!(a1.has_pending());
+    let winning = a2.invite_with_commit(&a4.key_package().unwrap()).unwrap();
+    a2.merge_pending().unwrap();
+    let wn = u32::from_le_bytes(winning[..4].try_into().unwrap()) as usize;
+    let (wcommit, wwelcome) = (&winning[4..4 + wn], &winning[4 + wn..]);
+
+    // The loser stages the winner's commit while its own is still pending:
+    // the report is exactly the winner's add plus the committer's path leaf
+    // (OpenMLS 0.9 rides it on every member commit) — no updates or removes.
+    let (adds, removes, updates, path) = stage_report(&a1.stage_commit(wcommit).unwrap());
+    assert_eq!(adds, vec![("a:4".into(), a4.public_key().unwrap())]);
+    assert_eq!((removes, updates), (vec![], vec![]));
+    assert_eq!(path, vec![("a:2".into(), a2.public_key().unwrap())],
+        "the committer's path leaf rides every member commit (OpenMLS 0.9)");
+
+    // Merging the staged foreign commit consumed the own pending commit
+    // (OpenMLS): a1 is at the winner's epoch, a4 added, a3 kept.
+    a1.merge_staged().unwrap();
+    assert!(!a1.has_pending(), "a foreign merge clears the own pending commit");
+    assert_eq!(a1.clear_pending(), Err(Rejected("nothing pending")));
+    assert_eq!(a1.merge_pending(), Err(Rejected("nothing pending")));
+    assert_eq!(roster(&a1.members().unwrap()).len(), 4);
+    // a3 catches up via apply (staging it would hit its "already staged" slot
+    // only if it had one — it does not) and hears a4 at the new epoch.
+    a3.apply_commit(wcommit).unwrap();
+    a4.join(wwelcome).unwrap();
+    let wire = a4.encrypt(&enc(ROOM, "a:4", b"hello from a4")).unwrap();
+    assert_eq!(plain(&a3.decrypt(&dec(ROOM, &wire)).unwrap()), b"hello from a4");
+
+    // The lost removal retries cleanly at the winner's epoch.
+    let retry = a1.remove_member_pending(&key3).unwrap();
+    a1.merge_pending().unwrap();
+    a2.apply_commit(&retry).unwrap();
+    assert_eq!(roster(&a1.members().unwrap()).len(), 3);
+    assert_eq!(roster(&a2.members().unwrap()).len(), 3);
+    let _ = losing;
 }

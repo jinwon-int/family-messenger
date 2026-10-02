@@ -34,6 +34,12 @@ pub(crate) const PAST_EPOCHS: usize = 3;
 /// `decrypt` output format (review H1): `u32 LE len ‖ sender_device ‖ u32 LE len ‖
 /// client_id ‖ plaintext`. Bumped whenever the framing changes; JS callers assert it.
 pub const DECRYPT_FORMAT: u32 = 2;
+/// `stage_commit` report format (review 2 J-MB, #231): four concatenated
+/// [`policy::frame_members`] sections — adds ‖ removes ‖ update proposals ‖
+/// committer path leaf, each a sorted `(identity, signing key)` list. Bumped
+/// whenever the framing changes; JS callers assert it
+/// (`Device.stage_report_format`).
+pub const STAGE_REPORT_FORMAT: u32 = 2;
 /// Every facade error. It is converted to a `JsValue` only at the wasm-bindgen
 /// boundary, so host-target unit tests can exercise rejection paths (creating a
 /// `JsValue` outside wasm panics).
@@ -452,13 +458,31 @@ impl Device {
         group.merge_staged_commit(&self.provider, commit).map_err(rejected)
     }
 
-    /// Review M1, step one of two: authenticate and stage an incoming commit
-    /// and report what it does to the roster — `frame_members(adds) ‖
-    /// frame_members(removes)` (identity + signing key each) — without merging.
-    /// The caller checks the adds/removes against its policy (pins, directory,
-    /// relay member list) and then `merge_staged` or `discard_staged`. Only one
-    /// commit can be staged at a time; a second `stage_commit`/`commit` is
-    /// rejected until it is resolved.
+    /// Review M1 (step one of two) + review 2 J-MB (#231): authenticate and
+    /// stage an incoming commit and report every identity→signing-key change it
+    /// carries — not merging. Wire form (`STAGE_REPORT_FORMAT` 2), four
+    /// `frame_members` sections appended in this order:
+    /// 1. adds — the commit's add proposals (identity, key package key);
+    /// 2. removes — the members it removes (identity, key as of this epoch);
+    /// 3. update proposals — each committed member leaf replacement as
+    ///    (identity, NEW key); a member can only update its own leaf, but the
+    ///    *committer* may carry another member's proposal in its commit, so a
+    ///    key-pinning caller must see it;
+    /// 4. committer path — 0 or 1 entries: the committer's own new leaf
+    ///    (`update_path_leaf_node`). OpenMLS 0.9 emits a path for every member
+    ///    commit this facade sees (add, remove and self-update alike), so the
+    ///    path section is the committer's authoritative post-commit
+    ///    identity→key pair — the one identity change sections 1–2 cannot
+    ///    express (J-MB: the committer can rotate its signing key without any
+    ///    add/remove/update proposal). Section 3 covers the same change for a
+    ///    *member* leaf: OpenMLS's public builders commit proposals by
+    ///    reference, and this relay lane carries no standalone proposals, so a
+    ///    commit referencing an unseen update proposal is refused below
+    ///    (`MissingProposal`) — the update section is defence in depth for
+    ///    committers that inline proposals.
+    /// A caller derives the post-merge roster by applying 1–4 in order (the
+    /// path overrides an update proposal naming the committer's own leaf);
+    /// several updates for one identity are a policy matter, reported as-is.
     fn stage_commit_inner(&mut self, bytes: &[u8]) -> Result<Vec<u8>, Rejected> {
         if self.staged.is_some() { return Err(Rejected("commit already staged")); }
         let commit = self.process_commit(bytes)?;
@@ -467,8 +491,13 @@ impl Device {
             .map(|p| p.add_proposal().key_package().leaf_node().clone()))?;
         let removed: Vec<LeafNodeIndex> = commit.remove_proposals().map(|p| p.remove_proposal().removed()).collect();
         let removes = policy::roster_from_members(group.members().filter(|m| removed.contains(&m.index)))?;
+        let updates = policy::roster_from_leaves(commit.update_proposals()
+            .map(|p| p.update_proposal().leaf_node().clone()))?;
+        let path = policy::roster_from_leaves(commit.update_path_leaf_node().cloned().into_iter())?;
         let mut out = policy::frame_members(&adds);
         out.extend_from_slice(&policy::frame_members(&removes));
+        out.extend_from_slice(&policy::frame_members(&updates));
+        out.extend_from_slice(&policy::frame_members(&path));
         self.staged = Some(commit);
         Ok(out)
     }
@@ -536,6 +565,9 @@ impl Device {
     }
     pub fn key_packages_outstanding(&self) -> u32 { self.outstanding_key_packages() as u32 }
     pub fn decrypt_format() -> u32 { DECRYPT_FORMAT }
+    /// The `stage_commit` report wire format JS callers parse
+    /// (`STAGE_REPORT_FORMAT`).
+    pub fn stage_report_format() -> u32 { STAGE_REPORT_FORMAT }
     /// The "already staged" / "nothing staged" preconditions are pure: they
     /// touch no ratchet state, so they reject without retiring the device.
     pub fn stage_commit(&mut self, bytes: &[u8]) -> Result<Vec<u8>, Rejected> {
@@ -586,7 +618,15 @@ mod record;
 mod session;
 mod staging;
 mod store;
-#[cfg(test)]
+/// Host-target suites (64-bit `usize`): storage v2, policy evidence, the full
+/// relay-flow harness. The wasm32 gate runs `tests_wasm32` instead — the same
+/// vectors plus the 32-bit-specific guards, on the shipped target.
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests_v2;
+/// Real-target tests (wasm32-unknown-unknown, CI `native-mls` job via the
+/// pinned release's wasm-bindgen-test-runner in node): the 32-bit `usize`
+/// length guards (review M3) and the stage-report wire format (J-MB).
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests_wasm32;
 
 mod trust;

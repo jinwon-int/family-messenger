@@ -49,10 +49,11 @@ self.onmessage = ({data: {id, method, argument}}) => {
         case 'merge_pending': device.merge_pending(); result = null; break;
         case 'clear_pending': device.clear_pending(); result = null; break;
         case 'has_pending': result = device.has_pending(); break;
-        // Review 2 J-HA (#231): the two-phase incoming commit — stage (report
-        // adds/removes as frame_members ‖ frame_members), then merge or discard
-        // after the caller's policy check — was on the facade but reachable
-        // from no worker; `commit` merges unchecked.
+        // Review 2 J-HA (#231): the two-phase incoming commit — stage (report:
+        // adds/removes/update-proposals/committer path as four frame_members
+        // sections, stage_report_format() === 2), then merge or discard after
+        // the caller's policy check — was on the facade but reachable from no
+        // worker; `commit` merges unchecked.
         case 'stage_commit': result = device.stage_commit(new Uint8Array(argument)); break;
         case 'merge_staged': device.merge_staged(); result = null; break;
         case 'discard_staged': device.discard_staged(); result = null; break;
