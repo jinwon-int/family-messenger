@@ -29,6 +29,8 @@ func main() {
 	accessAudience := flag.String("access-audience", "", "expected JWT aud (the CF Access application AUD tag)")
 	accessJWKS := flag.String("access-jwks", "", "JWKS source: a local file path or an https URL (CF Access: <issuer>/cdn-cgi/access/certs)")
 	roomBytesCap := flag.Int64("room-bytes-cap", 0, "override per-room event byte cap (bytes)")
+	roomsMax := flag.Int("rooms-max-per-device", 0, "override how many rooms one device may create")
+	deviceBytesCap := flag.Int64("device-bytes-cap", 0, "override per-device event byte cap across rooms (bytes)")
 	keyPackagesMax := flag.Int("key-packages-max", 0, "override live key packages per device")
 	keyPackageTTL := flag.Int64("key-package-ttl-seconds", 0, "override key package TTL (seconds)")
 	keepEpochs := flag.Int64("commit-welcome-keep-epochs", 0, "override commit/welcome epoch retention")
@@ -95,6 +97,12 @@ func main() {
 	pol := defaultPolicy()
 	if *roomBytesCap > 0 {
 		pol.RoomBytesCap = *roomBytesCap
+	}
+	if *roomsMax > 0 {
+		pol.RoomsMaxPerDevice = *roomsMax
+	}
+	if *deviceBytesCap > 0 {
+		pol.DeviceBytesCap = *deviceBytesCap
 	}
 	if *keyPackagesMax > 0 {
 		pol.KeyPackagesMaxPerDevice = *keyPackagesMax

@@ -4,9 +4,10 @@
 // repaired (G-H2), a replicated member's actor must match the device policy
 // (G-H3), every stored column outside `bytes` is shape-bounded (G-H4), the
 // {room} path value is an identifier (G-M2), consuming a key package needs
-// membership and policy activity inside the transaction (G-M3), and the JWKS
+// membership and policy activity inside the transaction (G-M3), the JWKS
 // reload is throttled from the last attempt with the fetch outside the lock
-// and an empty key set never replacing a working cache (G-M5/L1).
+// and an empty key set never replacing a working cache (G-M5/L1), and one
+// device's rooms and stored bytes are capped across the fleet (G-M4).
 package main
 
 import (
@@ -328,5 +329,77 @@ func TestJWKSReloadIsThrottledFromLastAttemptAndFetchedOutsideLock(t *testing.T)
 	}
 	if _, err := v.verify(token2); err != nil {
 		t.Fatalf("empty JWKS reload dropped the rotated key: %v", err)
+	}
+}
+
+// G-M4: lazy room creation is capped per founding device — the creator is
+// recorded at the insert and an over-cap founder is refused with 413
+// room_creation_cap, leaving no room row behind.
+func TestRoomCreationCapPerDevice(t *testing.T) {
+	pol := testPolicy()
+	pol.RoomsMaxPerDevice = 2
+	r, srv := newTestRelay(t, pol)
+	for _, room := range []string{"r1", "r2"} {
+		if code, raw := doJSON(t, srv, "POST", "/v2/rooms/"+room+"/events",
+			postEventBody(t, "a1", "found-"+room, "application", 0, nil, nil, []byte("found"))); code != http.StatusCreated {
+			t.Fatalf("found %s: status=%d body=%s", room, code, raw)
+		}
+	}
+	if code, raw := doJSON(t, srv, "POST", "/v2/rooms/r3/events",
+		postEventBody(t, "a1", "found-r3", "application", 0, nil, nil, []byte("no"))); code != http.StatusRequestEntityTooLarge || errField(t, raw) != "room_creation_cap" {
+		t.Fatalf("third room: status=%d body=%s", code, raw)
+	}
+	if n := tableCount(t, r, `SELECT COUNT(*) FROM mls_rooms WHERE room = 'r3'`); n != 0 {
+		t.Fatalf("refused founding left a room row behind: %d", n)
+	}
+	// Key-package posts create rooms too: same cap, same error.
+	kp, _ := json.Marshal(keyPackagePost{Device: "a1", Packages: []keyPackageInput{{Ref: "k1", Bytes: []byte("pkg")}}})
+	if code, raw := doJSON(t, srv, "POST", "/v2/rooms/r3/keypackages", kp); code != http.StatusRequestEntityTooLarge || errField(t, raw) != "room_creation_cap" {
+		t.Fatalf("keypackage founding: status=%d body=%s", code, raw)
+	}
+	// A different device still founds its own rooms, and posting into an
+	// existing room never counts as a creation.
+	if code, raw := doJSON(t, srv, "POST", "/v2/rooms/r3/events",
+		postEventBody(t, "b1", "b-found", "application", 0, nil, nil, []byte("b"))); code != http.StatusCreated {
+		t.Fatalf("other device founding: status=%d body=%s", code, raw)
+	}
+	if code, _ := doJSON(t, srv, "POST", "/v2/rooms/r1/events",
+		postEventBody(t, "a1", "again", "application", 0, nil, nil, []byte("again"))); code != http.StatusCreated {
+		t.Fatalf("posting into a founded room must not hit the creation cap")
+	}
+}
+
+// G-M4: the byte bound is per device across rooms — a second room cannot
+// evade it, commits stay exempt (B5's pinned-room reason), other devices are
+// unaffected, and a byte-equal replay still answers the 200 duplicate.
+func TestDeviceBytesCapAcrossRooms(t *testing.T) {
+	pol := testPolicy()
+	pol.DeviceBytesCap = 1 << 10 // 1 KiB
+	_, srv := newTestRelay(t, pol)
+	seed := bytes.Repeat([]byte("a"), 900)
+	if code, raw := doJSON(t, srv, "POST", "/v2/rooms/r1/events",
+		postEventBody(t, "a1", "d1", "application", 0, nil, nil, seed)); code != http.StatusCreated {
+		t.Fatalf("seed: status=%d body=%s", code, raw)
+	}
+	if code, raw := doJSON(t, srv, "POST", "/v2/rooms/r2/events",
+		postEventBody(t, "a1", "d2", "application", 0, nil, nil, bytes.Repeat([]byte("b"), 200))); code != http.StatusRequestEntityTooLarge || errField(t, raw) != "device_bytes_cap" {
+		t.Fatalf("cross-room post over device cap: status=%d body=%s", code, raw)
+	}
+	// Commits are exempt for the same reason as the room cap: the commit
+	// that evicts a pinned device must always fit.
+	if code, raw := doJSON(t, srv, "POST", "/v2/rooms/r1/events",
+		postEventBody(t, "a1", "d3", "commit", 0, nil, nil, bytes.Repeat([]byte("c"), 900))); code != http.StatusCreated {
+		t.Fatalf("commit over device cap must be exempt: status=%d body=%s", code, raw)
+	}
+	// Another device has its own budget.
+	if code, _ := doJSON(t, srv, "POST", "/v2/rooms/r2/events",
+		postEventBody(t, "b1", "e1", "application", 0, nil, nil, bytes.Repeat([]byte("d"), 200))); code != http.StatusCreated {
+		t.Fatalf("other device must have its own budget")
+	}
+	// The stored event replays as the 200 duplicate regardless of the cap
+	// (the K4 replay runs before any cap arithmetic).
+	if code, _ := doJSON(t, srv, "POST", "/v2/rooms/r1/events",
+		postEventBody(t, "a1", "d1", "application", 0, nil, nil, seed)); code != http.StatusOK {
+		t.Fatalf("byte-equal replay: status=%d, want 200 duplicate", code)
 	}
 }

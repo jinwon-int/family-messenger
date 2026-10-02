@@ -245,6 +245,10 @@ class Bot:
         self.lock = threading.Condition()
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
+        # Highest echo seq this instance has already waited for: wait_for
+        # rescans the whole line history, so a same-length predecessor would
+        # match instantly and race the sync that follows the wait (CI-M8).
+        self.echo_seq = 0
 
     def _read(self):
         for raw in self.proc.stdout:
@@ -271,6 +275,18 @@ class Bot:
                 if remaining <= 0:
                     raise AssertionError(f'bot line timeout; got {self.lines}')
                 self.lock.wait(remaining)
+
+    def wait_echo(self, size, timeout=60):
+        """Wait for the NEXT echo of `size` bytes — strictly newer than every
+        echo this instance already waited for. Plain `wait_for` would also
+        match an equal-length earlier echo ('after second commit' and
+        'after poison commit' are both 19 bytes), returning before the relay
+        has the new echo at all."""
+        line = self.wait_for(lambda line: line.get('event') == 'echo'
+                             and line.get('bytes') == size
+                             and line.get('seq', 0) > self.echo_seq, timeout=timeout)
+        self.echo_seq = max(self.echo_seq, line['seq'])
+        return line
 
     def latest_status(self, room):
         with self.lock:
@@ -301,6 +317,16 @@ class Bot:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
                 self.proc.wait(timeout=10)
+        stderr = self.proc.stderr.read().decode(errors='replace')
+        assert 'panic' not in stderr, stderr[-800:]
+        return self.proc.returncode
+
+    def kill(self):
+        """SIGKILL now (review 2 CI-M8): no graceful round, no drain — the
+        crash-window scenario. Consumes the pipes like stop()."""
+        if self.proc.poll() is None:
+            self.proc.kill()
+            self.proc.wait(timeout=10)
         stderr = self.proc.stderr.read().decode(errors='replace')
         assert 'panic' not in stderr, stderr[-800:]
         return self.proc.returncode
@@ -533,8 +559,8 @@ def main():
             text_a, text_b = '안녕 봇'.encode(), 'ping from b1'.encode()
             a1.post_ok('application', a1.call('encrypt', bound(a1.dev, list(text_a))), a1.client_id('t1'), ROOM)
             b1.post_ok('application', b1.call('encrypt', bound(b1.dev, list(text_b))), b1.client_id('t2'), ROOM)
-            bot.wait_for(lambda line: line.get('event') == 'echo' and line.get('bytes') == len(text_a))
-            bot.wait_for(lambda line: line.get('event') == 'echo' and line.get('bytes') == len(text_b))
+            bot.wait_echo(len(text_a))
+            bot.wait_echo(len(text_b))
             seen_b1 = b1.sync()
             assert seen_b1 == [text_a, text_a, text_b], seen_b1  # a-1's text, its echo, own echo
             seen_a1 = a1.sync()
@@ -551,7 +577,7 @@ def main():
                                          'kind': 'application', 'epoch': b1.epoch[ROOM], 'bytes': b64(ciphertext)})
             assert status == 201, (status, posted)
             bot.wait_for(lambda line: line.get('event') == 'application' and line.get('bytes') == ATTACHMENT_BYTES)
-            bot.wait_for(lambda line: line.get('event') == 'echo' and line.get('bytes') == ATTACHMENT_BYTES)
+            bot.wait_echo(ATTACHMENT_BYTES)
             echo_seen = a1.sync()
             assert echo_seen[-1] == bytes(attachment), 'a-1 must read the bot-echoed attachment byte-exact'
             assert a1.sync() == [], 'no duplicate delivery'
@@ -687,7 +713,7 @@ def main():
                 text_e = 'auth echo'.encode()
                 e1.post_ok('application', e1.call('encrypt', bound(e1.dev, list(text_e), room=AUTH_ROOM)),
                            e1.client_id('t1'), AUTH_ROOM)
-                bot_auth.wait_for(lambda line: line.get('event') == 'echo' and line.get('bytes') == len(text_e))
+                bot_auth.wait_echo(len(text_e))
                 seen_e1 = e1.sync(AUTH_ROOM)
                 assert seen_e1 == [text_e], seen_e1
                 receipt['checks']['token_file_bot_joins_and_echoes_under_required_mode'] = True
@@ -703,8 +729,7 @@ def main():
                 text_e2 = 'recovered'.encode()
                 e1.post_ok('application', e1.call('encrypt', bound(e1.dev, list(text_e2), room=AUTH_ROOM)),
                            e1.client_id('t2'), AUTH_ROOM)
-                bot_auth.wait_for(lambda line: line.get('event') == 'echo' and line.get('bytes') == len(text_e2),
-                                  timeout=30)
+                bot_auth.wait_echo(len(text_e2), timeout=30)
                 lines2 = bot_auth.assert_clean()
                 auth_waits = [line for line in lines2 if line.get('event') == 'auth_wait']
                 assert len(auth_waits) == 1, auth_waits
@@ -739,8 +764,7 @@ def main():
                 text_e3 = 'after poison'.encode()
                 e1.post_ok('application', e1.call('encrypt', bound(e1.dev, list(text_e3), room=AUTH_ROOM)),
                            e1.client_id('t2b'), AUTH_ROOM)
-                bot_auth.wait_for(lambda line: line.get('event') == 'echo' and line.get('bytes') == len(text_e3),
-                                  timeout=30)
+                bot_auth.wait_echo(len(text_e3), timeout=30)
                 seen_e3 = e1.sync(AUTH_ROOM)
                 assert seen_e3 == [text_e2, text_e3], seen_e3
                 lines2 = bot_auth.assert_clean(allow={'undecryptable'})
@@ -748,6 +772,60 @@ def main():
                 assert sum(line.get('event') == 'welcome_ignored' for line in lines2) == 1, lines2
                 assert not any(line.get('event') == 'joined' and line['seq'] > joined2['seq'] for line in lines2)
                 receipt['checks']['poison_application_and_stray_welcome_reported_not_fatal'] = True
+
+                # --- h. commit after the bot joined (review 2 CI-M8): e-1
+                # --- invites a third device in a second commit. The room's
+                # --- actor roster seeds from the first commit ('e', 'bot'), so
+                # --- a brand-new actor in the members list would be refused at
+                # --- POST (tracked rooms gain actors only by seeding or
+                # --- policy, not by declaration): the added device is e-2, a
+                # --- second device of the EXISTING actor, enrolled through the
+                # --- E2 gate — e-1 signs approve-device evidence (the same
+                # --- canonical bytes the trusted-device screen produces) and
+                # --- the owner CLI verifies it before the add. The bot is a
+                # --- member now, so it must APPLY the epoch advance (no
+                # --- rejected/undecryptable, no retirement) and keep echoing
+                # --- through the ratchet move; the new member decrypts from
+                # --- its Welcome onward.
+                e2 = Browser('e-2', relay_auth)
+                e2.auth_headers = {'Authorization': f'Bearer {issuer.mint("person-e")}'}
+                ev = e1.call('sign_approval',
+                             {'action': 'approve-device', 'device_id': 'e-2', 'actor': 'e',
+                              'subject': 'person-e', 'signing_key': e2.key_hex,
+                              'acceptance': 'trusted-device-fingerprint',
+                              'base_revision': policy_auth.revision})
+                canonical_len = int.from_bytes(ev[:4], 'little')
+                policy_auth.mutate(['-add-device', '-input', str(policy_auth.evidence_file(
+                    {'device_id': 'e-2', 'actor': 'e', 'subject': 'person-e',
+                     'signing_key': e2.key_hex, 'base_revision': policy_auth.revision,
+                     'signature': bytes(ev[4 + canonical_len:]).hex()}))], policy_auth.revision)
+                e2.publish_key_package(AUTH_ROOM)
+                e1.add(e2, AUTH_ROOM, ['e-1', 'bot-2', 'e-2'])
+                text_h = 'after second commit'.encode()
+                e1.post_ok('application', e1.call('encrypt', bound(e1.dev, list(text_h), room=AUTH_ROOM)),
+                           e1.client_id('t4'), AUTH_ROOM)
+                bot_auth.wait_echo(len(text_h), timeout=30)
+                assert e1.sync(AUTH_ROOM) == [text_h], 'e-1 sees the bot echo through the ratchet move'
+                assert e2.sync(AUTH_ROOM) == [text_h, text_h], 'new member decrypts the message and the bot echo'
+                bot_auth.assert_clean(allow={'undecryptable'})
+                receipt['checks']['commit_after_join_followed'] = True
+
+                # --- i. poison commit (review 2 CI-M8, B-H1): a member's
+                # --- garbage commit is refused by the facade, rolled back,
+                # --- reported once and skipped — the bot keeps its ratchet
+                # --- and echoes the next application.
+                e1.post_ok('commit', list(os.urandom(128)), e1.client_id('poison-commit'), AUTH_ROOM,
+                           members=member_wire(['e-1', 'bot-2', 'e-2']))
+                bot_auth.wait_for(lambda line: line.get('event') == 'rejected' and line.get('kind') == 'commit',
+                                  timeout=20)
+                text_i = 'after poison commit'.encode()
+                e1.post_ok('application', e1.call('encrypt', bound(e1.dev, list(text_i), room=AUTH_ROOM)),
+                           e1.client_id('t5'), AUTH_ROOM)
+                bot_auth.wait_echo(len(text_i), timeout=30)
+                assert e1.sync(AUTH_ROOM) == [text_i], 'e-1 sees the bot echo after the refused commit'
+                lines_i = bot_auth.assert_clean(allow={'undecryptable', 'rejected'})
+                assert sum(line.get('event') == 'rejected' for line in lines_i) == 1, lines_i
+                receipt['checks']['poison_commit_reported_not_fatal'] = True
 
                 # --- g. persistent identity restart: the whole session above
                 # --- ran with --state-file (fresh identity snapshotted before
@@ -758,8 +836,14 @@ def main():
                 # --- cursor (no replay, no second Welcome) and keep echoing
                 # --- on the ratchet it never re-derived — no re-invite, no
                 # --- re-enrollment.
-                bot_auth.assert_clean(allow={'undecryptable'})
-                time.sleep(1)  # let the last dirty round reach the state file
+                # (the session-wide scan still sees i's provoked `rejected`)
+                bot_auth.assert_clean(allow={'undecryptable', 'rejected'})
+                # (CI-M8) No sleep here: the bot persists an echo's state
+                # BEFORE the POST leaves (B-H2) and flushes a dirty round at
+                # round end, so the observed echo above already implies the
+                # state file is current. The restored-identity assertion
+                # below is the tripwire for that ordering; the old
+                # time.sleep(1) only hid a persist race.
                 bot_auth.stop()
                 bot_auth = Bot(args.bot_binary, relay_auth, AUTH_ROOM, 'bot-2',
                                jwt_file=token_file, state_file=state_file)
@@ -776,8 +860,7 @@ def main():
                 text_g = 'after restart'.encode()
                 e1.post_ok('application', e1.call('encrypt', bound(e1.dev, list(text_g), room=AUTH_ROOM)),
                            e1.client_id('t3'), AUTH_ROOM)
-                bot_auth.wait_for(lambda line: line.get('event') == 'echo' and line.get('bytes') == len(text_g),
-                                  timeout=30)
+                bot_auth.wait_echo(len(text_g), timeout=30)
                 seen_g = e1.sync(AUTH_ROOM)
                 assert seen_g == [text_g], seen_g
                 lines3 = bot_auth.assert_clean()
@@ -789,6 +872,37 @@ def main():
                 bot_auth.stop()
                 receipt['bot_resume_events'] = len(lines3)
                 receipt['checks']['bot_resume_session_clean_exit'] = True
+
+                # --- j. POST-then-SIGKILL (review 2 CI-M8): resume, echo,
+                # --- kill -9 the instant an echo is on the wire, resume
+                # --- again. The state file was flushed before the POST
+                # --- (B-H2), so the second resume must come back as the same
+                # --- identity, never re-derive a sent echo (no
+                # --- client_id_reuse) and answer the next message.
+                bot_auth = Bot(args.bot_binary, relay_auth, AUTH_ROOM, 'bot-2', jwt_file=token_file,
+                               state_file=state_file)
+                identity4 = bot_auth.wait_for(lambda line: line.get('event') == 'identity')
+                assert identity4['restored'] is True and identity4['public_key'] == identity2['public_key'], identity4
+                bot_auth.wait_for(lambda line: line.get('event') == 'ready')
+                text_j = 'before sigkill'.encode()
+                e1.post_ok('application', e1.call('encrypt', bound(e1.dev, list(text_j), room=AUTH_ROOM)),
+                           e1.client_id('t6'), AUTH_ROOM)
+                bot_auth.wait_echo(len(text_j), timeout=30)
+                bot_auth.kill()
+                bot_auth = Bot(args.bot_binary, relay_auth, AUTH_ROOM, 'bot-2', jwt_file=token_file,
+                               state_file=state_file)
+                identity5 = bot_auth.wait_for(lambda line: line.get('event') == 'identity')
+                assert identity5['restored'] is True and identity5['public_key'] == identity2['public_key'], identity5
+                bot_auth.wait_for(lambda line: line.get('event') == 'ready')
+                text_j2 = 'after sigkill'.encode()
+                e1.post_ok('application', e1.call('encrypt', bound(e1.dev, list(text_j2), room=AUTH_ROOM)),
+                           e1.client_id('t7'), AUTH_ROOM)
+                bot_auth.wait_echo(len(text_j2), timeout=30)
+                seen_j = e1.sync(AUTH_ROOM)
+                assert seen_j == [text_j, text_j2], seen_j
+                lines_j = bot_auth.assert_clean()
+                receipt['checks']['post_then_sigkill_resume_without_reuse'] = True
+                receipt['bot_sigkill_events'] = len(lines_j)
 
                 receipt['auth'] = {'issuer': ISSUER, 'audience': AUDIENCE, 'kid': issuer.kid,
                                    'jwks': jwks_path.name, 'bot_token': '--access-jwt-file (re-read per request)',
