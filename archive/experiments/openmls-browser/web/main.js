@@ -20,13 +20,15 @@ window.call = (name, method, argument) => new Promise((resolve, reject) => {
   if (!worker) return reject(new Error('missing worker'));
   const id = ++serial;
   // `init` of a durable worker runs one custody scrypt (logN 18, #177 M2b-3): about
-  // 3 s on one desktop core, several times that on a slow phone. Never lower the KDF;
-  // give that call its own deadline instead.
+  // 3 s on one desktop core, several times that on a slow phone — an iPhone 15 Pro
+  // Safari measured ~55 s on first start and blew the old 60 s deadline on the
+  // resume (#243 2-c, 2026-10-02 real-device session). Never lower the KDF; give
+  // that call its own, generous deadline instead (3 min).
   const timer = setTimeout(() => {
     // M1: terminate the timed-out worker, but only remove it from the map if it
     // is still the current one, so a replacement under the same name survives.
     worker.terminate(); if (workers.get(name) === worker) workers.delete(name); cleanup(); reject(new Error('worker deadline'));
-  }, method === 'init' ? 60000 : 10000);
+  }, method === 'init' ? 180000 : 10000);
   const onmessage = ({data}) => {
     if (data.id !== id) return;
     cleanup(); resolve(data);
