@@ -225,10 +225,12 @@ v2 smoke는 required 모드로 돈다(ES256 키를 만들어 JWKS 파일로 넘�
 - **JWKS 리다이렉트**: https URL 소스의 fetch는 리다이렉트를 최대 3회 따르고 **https가
   아닌 hop은 요청 전에 거부**한다(키 집합을 평문으로 요청하지 않음). 거부된 재적재는
   캐시를 바꾸지 않는다.
-- **JWT 수명 상한**: `exp`는 `now + 24h(+leeway)`를, `iat`가 있으면 `now + leeway`와
-  `exp − iat ≤ 24h`를 넘을 수 없다(401 `lifetime too long` / `issued in the future`,
-  사유는 로그에만). 24h는 CF Access 기본 세션 길이 — 더 긴 세션은
-  `-access-max-lifetime-seconds`로 명시적으로 넓힌다(기본값이 조용히 받아주지 않는다).
+- **JWT 수명 상한**: `exp`는 `now + 31일(+leeway)`를, `iat`가 있으면 `now + leeway`와
+  `exp − iat ≤ 31일`를 넘을 수 없다(401 `lifetime too long` / `issued in the future`,
+  사유는 로그에만). 31일은 CF Access가 발급할 수 있는 가장 긴 세션 — 이 계정의 앱은
+  전부 730h 세션(2026-10-02 실측, #243 G-M6)이라 24h 기본값이면 실토큰이 전부 401이었다.
+  `-access-max-lifetime-seconds`는 **조이는** 용도(기본값보다 넓힐 수 없는 것은 아니지만
+  제품 상한을 넘길 이유가 없다).
 - **commit/welcome 보존**: `-commit-welcome-keep-epochs`(기본 8) 밖의 commit/welcome은
   application과 같은 게이트 — **모든 known reader의 ack 커서가 지난 것만** — 로 지운다.
   오프라인 멤버가 돌아와서 자기 epoch부터 따라잡을 수 있게 하기 위해서다.

@@ -35,11 +35,13 @@ const (
 	accessLeeway = 60 * time.Second
 	// accessMaxLifetime (review 2 L: no iat / lifetime bound) caps how far
 	// exp may lie ahead of now and of iat: a token minted by a compromised or
-	// misconfigured issuer must not stay valid for years. 24 h is the
-	// Cloudflare Access default session length; a longer configured session
-	// needs -access-max-lifetime-seconds and fails loudly ("lifetime too
-	// long") rather than silently accepting the longer token.
-	accessMaxLifetime = 24 * time.Hour
+	// misconfigured issuer must not stay valid for years. 31 days is the
+	// longest session Cloudflare Access can be configured to issue (the
+	// family account's apps use 730 h, measured 2026-10-02 — #243 G-M6), so
+	// every token the real issuer can mint passes while anything beyond the
+	// product's own ceiling is refused. Operators tighten it with
+	// -access-max-lifetime-seconds; the relay never silently widens it.
+	accessMaxLifetime = 31 * 24 * time.Hour
 	// jwksRefreshMinGap bounds how often an unknown kid may trigger a reload
 	// of the JWKS source (key rotation without restart, no refresh storms).
 	jwksRefreshMinGap = time.Minute
