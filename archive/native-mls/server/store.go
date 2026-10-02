@@ -87,7 +87,8 @@ CREATE TABLE IF NOT EXISTS mls_rooms (
 	revision   INTEGER NOT NULL DEFAULT 0,
 	last_seq   INTEGER NOT NULL DEFAULT 0,
 	created_at INTEGER NOT NULL,
-	closed_at  INTEGER
+	closed_at  INTEGER,
+	creator    TEXT
 );
 CREATE TABLE IF NOT EXISTS mls_events (
 	room       TEXT NOT NULL REFERENCES mls_rooms(room),
@@ -127,6 +128,7 @@ CREATE TABLE IF NOT EXISTS mls_members (
 	added_seq INTEGER NOT NULL,
 	PRIMARY KEY (room, device)
 );
+CREATE INDEX IF NOT EXISTS mls_events_device ON mls_events(device);
 `
 
 func openStore(dataDir string) (*store, error) {
@@ -168,6 +170,10 @@ func migrate(db *sql.DB) error {
 		{"mls_cursors", "removed_at", "INTEGER"},
 		{"mls_cursors", "removed_seq", "INTEGER"},
 		{"mls_rooms", "last_seq", "INTEGER NOT NULL DEFAULT 0"},
+		// G-M4: rooms founded before the column existed keep creator NULL —
+		// they count for nobody, which only ever lets an old device exceed
+		// the new cap, never blocks a new room.
+		{"mls_rooms", "creator", "TEXT"},
 	} {
 		added, err := ensureColumn(db, c.table, c.column, c.decl)
 		if err != nil {
@@ -254,17 +260,38 @@ type roomRow struct {
 	closed   bool
 }
 
-// ensureRoom lazily creates the room row inside the caller's transaction.
-func ensureRoom(tx *sql.Tx, room, groupID string, now int64) (roomRow, error) {
+// ensureRoom lazily creates the room row inside the caller's transaction,
+// recording the founding device (G-M4: the room-creation cap is counted per
+// creator). created reports whether THIS call founded the room; the cap is
+// checked immediately after the insert so the over-cap row only ever lives
+// inside the caller's transaction — the error rolls it back.
+func (s *relay) ensureRoom(tx *sql.Tx, room, groupID, device string, now int64) (roomRow, bool, error) {
 	if groupID == "" {
 		groupID = room
 	}
-	_, err := tx.Exec(`INSERT INTO mls_rooms (room, group_id, epoch, revision, created_at)
-		VALUES (?, ?, 0, 0, ?) ON CONFLICT (room) DO NOTHING`, room, groupID, now)
+	res, err := tx.Exec(`INSERT INTO mls_rooms (room, group_id, epoch, revision, created_at, creator)
+		VALUES (?, ?, 0, 0, ?, ?) ON CONFLICT (room) DO NOTHING`, room, groupID, now, device)
 	if err != nil {
-		return roomRow{}, err
+		return roomRow{}, false, err
 	}
-	return readRoom(tx, room)
+	created, err := res.RowsAffected()
+	if err != nil {
+		return roomRow{}, false, err
+	}
+	if created > 0 && s.policy.RoomsMaxPerDevice > 0 {
+		var founded int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM mls_rooms WHERE creator = ?`, device).Scan(&founded); err != nil {
+			return roomRow{}, false, err
+		}
+		if founded > s.policy.RoomsMaxPerDevice {
+			return roomRow{}, false, roomCreationCap{Used: int64(founded), Cap: int64(s.policy.RoomsMaxPerDevice)}
+		}
+	}
+	row, err := readRoom(tx, room)
+	if err != nil {
+		return roomRow{}, false, err
+	}
+	return row, created > 0, nil
 }
 
 func readRoom(q interface{ QueryRow(string, ...any) *sql.Row }, room string) (roomRow, error) {
@@ -347,20 +374,24 @@ func (s *relay) storeEvent(room string, ev eventInput) (storedEvent, error) {
 	}
 	defer tx.Rollback()
 
-	row, err := ensureRoom(tx, room, ev.groupID, now)
+	// M3b: authorization runs before the K4 replay and the CAS reads on
+	// purpose — a revoked or non-member sender gets 403 without learning the
+	// current epoch/revision from a 409, while an allowed sender's byte-equal
+	// retry below still replays as the 200 duplicate. G-M4 moves it ahead of
+	// the lazy room creation too: a denied device must not even materialize
+	// a room row (the keypackage path's gate already worked this way), and
+	// under enforcement a non-member's 403 no longer reveals whether the
+	// room exists. With enforcement off the order is unobservable.
+	active, tracked, err := s.authorizeEvent(tx, room, ev)
+	if err != nil {
+		return storedEvent{}, err
+	}
+	row, _, err := s.ensureRoom(tx, room, ev.groupID, ev.device, now)
 	if err != nil {
 		return storedEvent{}, err
 	}
 	if row.closed {
 		return storedEvent{}, errClosed
-	}
-	// M3b: authorization runs before the K4 replay and the CAS reads on
-	// purpose — a revoked or non-member sender gets 403 without learning the
-	// current epoch/revision from a 409, while an allowed sender's byte-equal
-	// retry below still replays as the 200 duplicate.
-	active, tracked, err := s.authorizeEvent(tx, room, ev)
-	if err != nil {
-		return storedEvent{}, err
 	}
 	// K4 before CAS: a byte-equal replay of a stored event is the 200 duplicate
 	// even if a commit has since moved the epoch (lost response + concurrent
@@ -435,6 +466,17 @@ func (s *relay) storeEvent(room string, ev eventInput) (storedEvent, error) {
 		}
 		if s.policy.RoomBytesCap > 0 && used.Int64+int64(len(ev.bytes)) > s.policy.RoomBytesCap {
 			return storedEvent{}, roomBytesCap{used.Int64, s.policy.RoomBytesCap}
+		}
+		// G-M4: the fleet bound for the sender — its stored event bytes
+		// across every room (closed rooms included: the bytes are still on
+		// disk), so spreading many small rooms cannot outrun the per-room
+		// cap. The mls_events(device) index keeps this off the full table.
+		var usedDevice sql.NullInt64
+		if err := tx.QueryRow(`SELECT SUM(LENGTH(bytes)) FROM mls_events WHERE device = ?`, ev.device).Scan(&usedDevice); err != nil {
+			return storedEvent{}, err
+		}
+		if s.policy.DeviceBytesCap > 0 && usedDevice.Int64+int64(len(ev.bytes)) > s.policy.DeviceBytesCap {
+			return storedEvent{}, deviceBytesCap{usedDevice.Int64, s.policy.DeviceBytesCap}
 		}
 	}
 	var targets sql.NullString
@@ -881,7 +923,7 @@ func (s *relay) postKeyPackages(room, device string, pkgs []keyPackageInput) (ke
 			return keyPackagesResult{}, deviceNotAllowed{Device: device}
 		}
 	}
-	if _, err := ensureRoom(tx, room, "", now); err != nil {
+	if _, _, err := s.ensureRoom(tx, room, "", device, now); err != nil {
 		return keyPackagesResult{}, err
 	}
 	row, err := readRoom(tx, room)

@@ -101,10 +101,33 @@ $('register').addEventListener('click', () => busy($('register'), async () => {
 }));
 
 const markerKey = database => 'fresh-marker:' + database;
+const markerURL = database => '/__fresh-marker/' + encodeURIComponent(database);
+// J-MC: the localStorage marker alone dies with ITP's script-storage deletion
+// (7 days without interaction) or a purge scoped to it — and then a wiped
+// database comes back as a silent new identity. Mirror the marker into the
+// Cache API, a separate storage partition, and treat EITHER as evidence the
+// database was used before. Every cache call is guarded: an insecure origin
+// (LAN http) exposes no caches and the panel degrades to the old
+// localStorage-only behaviour.
+async function hadMarker(database) {
+  if (localStorage.getItem(markerKey(database))) return true;
+  try {
+    const c = await caches.open('fresh-markers');
+    return (await c.match(markerURL(database))) !== undefined;
+  } catch (_) { return false; }
+}
+async function setMarkers(database) {
+  localStorage.setItem(markerKey(database), '1');
+  try { const c = await caches.open('fresh-markers'); await c.put(markerURL(database), new Response('1')); } catch (_) {}
+}
+async function clearMarkers(database) {
+  localStorage.removeItem(markerKey(database));
+  try { const c = await caches.open('fresh-markers'); await c.delete(markerURL(database)); } catch (_) {}
+}
 // H3: a database we have initialized before coming back `fresh` means its storage
 // was wiped — a new device, not a resume. This completes a started session.
-function activate(identity, database, status) {
-  localStorage.setItem(markerKey(database), '1');
+async function activate(identity, database, status) {
+  await setMarkers(database);
   localStorage.setItem('real-device-session', JSON.stringify({identity, database}));
   started = true;
   const fingerprint = group4(sha256(new Uint8Array(status.public_key)));
@@ -125,7 +148,7 @@ $('start').addEventListener('click', () => busy($('start'), async () => {
   $('passphrase').value = '';  // 저수준: init 후 암호 입력란을 비운다
   cursor = init.cursor;
   const status = await callWorker('status');
-  if (init.fresh && localStorage.getItem(markerKey(database))) {
+  if (init.fresh && await hadMarker(database)) {
     // Storage was wiped from under a known database: block the normal flow and
     // require an explicit acknowledgment that re-invitation is needed.
     window.__pendingFresh = {identity, database, status};
@@ -136,18 +159,18 @@ $('start').addEventListener('click', () => busy($('start'), async () => {
       notes: '저장소가 비워진 뒤 새 기기(새 지문)로 재시작 — 재초대 필요'}); } catch (_) { /* 관찰 기록 실패는 무시 */ }
     return;
   }
-  activate(identity, database, status);
+  await activate(identity, database, status);
 }));
 
-$('confirm-fresh').addEventListener('click', () => {
+$('confirm-fresh').addEventListener('click', () => busy($('confirm-fresh'), async () => {
   const pending = window.__pendingFresh;
   if (!pending) return;
   window.__pendingFresh = null;
   $('confirm-fresh').hidden = true;
-  localStorage.removeItem(markerKey(pending.database));  // 명시적 확인: 표식을 지우고 활성화
-  activate(pending.identity, pending.database, pending.status);
+  await clearMarkers(pending.database);  // 명시적 확인: 표식을 지우고 활성화
+  await activate(pending.identity, pending.database, pending.status);
   log('새 기기로 시작을 확인함(재초대 필요)');
-});
+}));
 
 $('board-refresh').addEventListener('click', () => busy($('board-refresh'), async () => {
   const entries = await api('board');
@@ -238,7 +261,7 @@ $('evict').addEventListener('click', () => busy($('evict'), async () => {
   started = false;
   // Intentional eviction: clear the H3 marker so the next (expected) fresh start
   // is not flagged as a surprise wipe.
-  localStorage.removeItem(markerKey(database));
+  await clearMarkers(database);
   for (const id of ['create', 'keypackage', 'invite', 'join', 'encrypt', 'decrypt', 'evict']) $(id).disabled = true;
   $('state').textContent = '저장소 삭제 완료. 같은 신원·데이터베이스·암호로 다시 시작하면 새 지문(새 기기)이 된다 — 상대의 재초대 필요.';
   log('저장소 삭제 완료(축출 재연습): 재시작 후 재초대 필요');

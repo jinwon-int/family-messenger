@@ -13,7 +13,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func testDir(t *testing.T) string {
@@ -598,7 +600,9 @@ func TestCorruptedChainFailClosed(t *testing.T) {
 	if _, _, e := s.Read(); e == nil {
 		t.Fatal("symlinked revision accepted")
 	}
-	// A leftover pending file means an uncertain write: fail closed.
+	// A leftover pending file is a staging artifact of an interrupted
+	// write, not chain corruption (G-M7): the committed chain reads as-is
+	// and the file is retained for inspection.
 	if e := os.Remove(filepath.Join(s.dir, "policy-000003.json")); e != nil {
 		t.Fatal(e)
 	}
@@ -608,14 +612,23 @@ func TestCorruptedChainFailClosed(t *testing.T) {
 	if e := os.WriteFile(filepath.Join(s.dir, "pending-abcd"), []byte("{}"), 0600); e != nil {
 		t.Fatal(e)
 	}
-	if _, _, e := s.Read(); e == nil {
-		t.Fatal("chain read with leftover pending file accepted")
+	if info := mustReadCurrent(t, s); info != 2 {
+		t.Fatalf("current revision = %d with leftover pending file, want 2", info)
+	}
+	if _, e := os.Lstat(filepath.Join(s.dir, "pending-abcd")); e != nil {
+		t.Fatal("read must retain the pending file for inspection:", e)
+	}
+	// The next commit must still land: the pending name cannot collide with
+	// a revision name, and the tolerated staging file does not block writes.
+	ky := newKey(t)
+	if _, e := s.Commit(2, set(a1, ky.device("dev-y", "yuri", "person-yuri", AcceptanceOutOfBand, StatusActive, 1, nil))); e != nil {
+		t.Fatal("commit with leftover pending file refused:", e)
 	}
 	if e := os.Remove(filepath.Join(s.dir, "pending-abcd")); e != nil {
 		t.Fatal(e)
 	}
-	if info := mustReadCurrent(t, s); info != 2 {
-		t.Fatalf("current revision = %d, want 2", info)
+	if info := mustReadCurrent(t, s); info != 3 {
+		t.Fatalf("current revision = %d, want 3", info)
 	}
 }
 
@@ -727,5 +740,83 @@ func TestOpenStoreKernelGuards(t *testing.T) {
 	}
 	if _, e := OpenDevicePolicyStore(loose); e == nil {
 		t.Fatal("loose store directory accepted")
+	}
+}
+
+// G-M7 separation, pinned by test: a leftover pending- file is staging
+// debris on top of a committed chain (reads ignore it), while a chain that
+// never got its first revision (interrupted genesis write) still fails
+// closed, and a flood of staging files is corruption, not patience.
+func TestLeftoverPendingVersusUnchainedDirectory(t *testing.T) {
+	// Established chain + one leftover pending file: read succeeds.
+	s, _, _ := baseWithAlice(t)
+	if e := os.WriteFile(filepath.Join(s.dir, "pending-deadbeef"), []byte("{}"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	if info := mustReadCurrent(t, s); info != 2 {
+		t.Fatalf("current revision = %d with leftover pending file, want 2", info)
+	}
+	// Never-initialized directory: an interrupted very first write leaves
+	// pending debris but no committed revision — still fail closed (the
+	// read refuses the revision-0 chain).
+	empty := mustOpen(t, testDir(t))
+	if e := os.WriteFile(filepath.Join(empty.dir, "pending-deadbeef"), []byte("{}"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	if _, _, e := empty.Read(); e == nil {
+		t.Fatal("unchained directory with pending file accepted")
+	}
+	// More than MaxPendingPolicyFiles staging files is the corruption signal.
+	flooded := testDir(t)
+	for i := 0; i <= MaxPendingPolicyFiles; i++ {
+		name := filepath.Join(flooded, fmt.Sprintf("pending-%02d", i))
+		if e := os.WriteFile(name, []byte("{}"), 0600); e != nil {
+			t.Fatal(e)
+		}
+	}
+	fs, e := OpenDevicePolicyStore(flooded)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, _, e := fs.Read(); e == nil {
+		t.Fatal("pending flood accepted")
+	}
+}
+
+// G-M7: the ≤2s flock wait must not pin the in-process mutex — a manager
+// holding the lock delays reads, but must not serialize every other caller
+// of the store behind the waiter.
+func TestLockedWaitDoesNotHoldMutex(t *testing.T) {
+	s, _, _ := baseWithAlice(t)
+	lock, e := os.OpenFile(filepath.Join(s.dir, "lock"), os.O_RDWR, 0600)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer lock.Close()
+	if e := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); e != nil {
+		t.Fatal(e)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, _, e := s.Read()
+		done <- e
+	}()
+	// Give the reader time to enter locked() and start polling for the
+	// flock (10ms poll): with the mutex held across the wait (the old
+	// behaviour) this TryLock cannot succeed for the whole 2s window.
+	time.Sleep(100 * time.Millisecond)
+	acquired := false
+	if s.mu.TryLock() {
+		acquired = true
+		s.mu.Unlock()
+	}
+	if !acquired {
+		t.Fatal("s.mu held across the flock wait")
+	}
+	if e := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); e != nil {
+		t.Fatal(e)
+	}
+	if e := <-done; e != nil {
+		t.Fatalf("read after the lock freed: %v", e)
 	}
 }

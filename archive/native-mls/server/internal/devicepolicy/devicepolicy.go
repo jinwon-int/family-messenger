@@ -44,6 +44,10 @@ const (
 	MaxDevicePolicyRevisions = 64
 	MaxDevicesTotal          = 32
 	MaxActivePerActor        = 4
+	// MaxPendingPolicyFiles bounds the leftover staging files (interrupted
+	// writeDevicePolicyRevision writes) a read tolerates before the
+	// directory itself counts as corrupt (G-M7).
+	MaxPendingPolicyFiles = 16
 
 	AcceptanceOutOfBand = "out-of-band-fingerprint"    // E1 enroll-first (owner CLI, out-of-band ceremony)
 	AcceptanceTrusted   = "trusted-device-fingerprint" // E2 add-device (same-actor active trusted device)
@@ -561,8 +565,13 @@ func ReadCandidate(path string) ([]byte, error) {
 }
 
 func (s *DevicePolicyStore) locked(fn func(*os.File) error) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// G-M7: acquire the cross-process flock WITHOUT holding the in-process
+	// mutex — a manager commit that keeps the lock for a moment must not
+	// serialize every other caller of this store behind one ≤2s poll loop;
+	// the waiters poll concurrently and proceed together when it frees. The
+	// mutex stays exactly where it matters: fn runs exclusive in-process,
+	// and its caller releases the flock only after the mutex (the defers run
+	// in reverse), so a flock holder never waits on the mutex.
 	d, e := devicePrivateDir(s.dir)
 	if e != nil {
 		return e
@@ -592,6 +601,8 @@ func (s *DevicePolicyStore) locked(fn func(*os.File) error) error {
 		time.Sleep(10 * time.Millisecond)
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return fn(d)
 }
 
@@ -607,19 +618,40 @@ func devicePolicyRecords(d *os.File) (DevicePolicyInfo, PolicyWire4, error) {
 			info.Revision = observed
 		}
 	}()
-	entries, e := d.ReadDir(MaxDevicePolicyRevisions + 2)
+	entries, e := d.ReadDir(MaxDevicePolicyRevisions + MaxPendingPolicyFiles + 2)
 	if e != nil && e != io.EOF {
 		return info, current, ErrDevicePolicyState
 	}
-	if len(entries) > MaxDevicePolicyRevisions+1 {
+	if len(entries) > MaxDevicePolicyRevisions+MaxPendingPolicyFiles+1 {
 		return info, current, ErrDevicePolicyState
 	}
 	names := []string{}
+	pending := 0
 	for _, ent := range entries {
+		// "lock" is the flock anchor. A "pending-<hex>" file is a staging
+		// artifact of an interrupted writeDevicePolicyRevision (crash between
+		// its creation and the renameat into the chain): it is not a chain
+		// link, so a leftover one must not fail the replay (G-M7 — it used to
+		// turn every required-mode read, GET included, into a 500). The
+		// committed revisions alone decide the state; the pending file is
+		// retained for inspection, never retried automatically. An
+		// established chain with revision 0 (interrupted very first write)
+		// still fails closed below, and a flood of staging files stays a
+		// fail-closed anomaly.
 		if ent.Name() == "lock" {
 			continue
 		}
+		if strings.HasPrefix(ent.Name(), "pending-") {
+			pending++
+			if pending > MaxPendingPolicyFiles {
+				return info, current, ErrDevicePolicyState
+			}
+			continue
+		}
 		names = append(names, ent.Name())
+	}
+	if len(names) > MaxDevicePolicyRevisions+1 {
+		return info, current, ErrDevicePolicyState
 	}
 	sort.Strings(names)
 	for _, name := range names {

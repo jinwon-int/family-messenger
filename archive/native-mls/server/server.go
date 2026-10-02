@@ -60,6 +60,16 @@ type policy struct {
 	// gating application-event pruning with its cursor unless it reads its
 	// own removal first (H3a).
 	RemovedCursorGraceSeconds int64
+	// G-M4: lazy room creation (ensureRoom on any first POST to a name) and
+	// the per-room byte cap alone let one device farm rooms and spread bytes
+	// across them. RoomsMaxPerDevice bounds how many rooms one device may
+	// found (the creator is recorded at creation); DeviceBytesCap bounds the
+	// event bytes it stores across every room. Commits stay exempt from the
+	// byte bound for the same reason as B5: a room pinned by a device must
+	// still accept the commit that removes it, and each commit advances the
+	// epoch whose retention window prunes it.
+	RoomsMaxPerDevice int
+	DeviceBytesCap    int64
 }
 
 func defaultPolicy() policy {
@@ -71,6 +81,8 @@ func defaultPolicy() policy {
 		CommitWelcomeKeepEpochs:   8,
 		AppEventTTLSeconds:        30 * day,
 		RemovedCursorGraceSeconds: 7 * day,
+		RoomsMaxPerDevice:         16,
+		DeviceBytesCap:            256 << 20, // 256 MiB per device across rooms (G-M4)
 	}
 }
 
@@ -188,6 +200,23 @@ type roomBytesCap struct{ Used, Cap int64 }
 
 func (e roomBytesCap) Error() string {
 	return fmt.Sprintf("room byte cap exceeded: used=%d cap=%d", e.Used, e.Cap)
+}
+
+// roomCreationCap and deviceBytesCap are the G-M4 fleet bounds on top of the
+// per-room B5 cap: one device may found at most RoomsMaxPerDevice rooms and
+// store at most DeviceBytesCap event bytes across all of them. Same 413
+// family as roomBytesCap — the refusal is about the payload already stored
+// for this device, not about this request's body.
+type roomCreationCap struct{ Used, Cap int64 }
+
+func (e roomCreationCap) Error() string {
+	return fmt.Sprintf("device room creation cap exceeded: founded=%d cap=%d", e.Used, e.Cap)
+}
+
+type deviceBytesCap struct{ Used, Cap int64 }
+
+func (e deviceBytesCap) Error() string {
+	return fmt.Sprintf("device byte cap exceeded: used=%d cap=%d", e.Used, e.Cap)
 }
 
 type keyPackageLimit struct{ Live, Max int }
@@ -572,6 +601,10 @@ func (s *relay) handlePostKeyPackages(w http.ResponseWriter, req *http.Request) 
 	case errors.As(err, new(policyUnavailable)):
 		log.Printf("post keypackages room=%s: %v", room, err)
 		s.fail(w, http.StatusInternalServerError, apiError{Error: "device_policy_unavailable", Detail: "device policy chain unreadable; writes fail closed"})
+	case errors.As(err, new(roomCreationCap)):
+		var cap roomCreationCap
+		errors.As(err, &cap)
+		s.fail(w, http.StatusRequestEntityTooLarge, apiError{Error: "room_creation_cap", Used: cap.Used, Cap: cap.Cap})
 	case errors.As(err, new(deviceNotAllowed)):
 		var na deviceNotAllowed
 		errors.As(err, &na)
@@ -774,6 +807,14 @@ func (s *relay) handlePostEvent(w http.ResponseWriter, req *http.Request) {
 		var cap roomBytesCap
 		errors.As(err, &cap)
 		s.fail(w, http.StatusRequestEntityTooLarge, apiError{Error: "room_bytes_cap", Used: cap.Used, Cap: cap.Cap})
+	case errors.As(err, new(roomCreationCap)):
+		var cap roomCreationCap
+		errors.As(err, &cap)
+		s.fail(w, http.StatusRequestEntityTooLarge, apiError{Error: "room_creation_cap", Used: cap.Used, Cap: cap.Cap})
+	case errors.As(err, new(deviceBytesCap)):
+		var cap deviceBytesCap
+		errors.As(err, &cap)
+		s.fail(w, http.StatusRequestEntityTooLarge, apiError{Error: "device_bytes_cap", Used: cap.Used, Cap: cap.Cap})
 	case errors.As(err, new(policyUnavailable)):
 		log.Printf("post event room=%s: %v", room, err)
 		s.fail(w, http.StatusInternalServerError, apiError{Error: "device_policy_unavailable", Detail: "device policy chain unreadable; writes fail closed"})
