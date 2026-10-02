@@ -330,11 +330,12 @@ func (v *accessVerifier) verify(token string) (accessClaims, error) {
 		return accessClaims{}, unauthorizedf("malformed payload")
 	}
 	var payload struct {
-		Iss string          `json:"iss"`
-		Sub string          `json:"sub"`
-		Aud json.RawMessage `json:"aud"`
-		Exp *float64        `json:"exp"`
-		Nbf *float64        `json:"nbf"`
+		Iss        string          `json:"iss"`
+		Sub        string          `json:"sub"`
+		CommonName string          `json:"common_name"`
+		Aud        json.RawMessage `json:"aud"`
+		Exp        *float64        `json:"exp"`
+		Nbf        *float64        `json:"nbf"`
 	}
 	if err := json.Unmarshal(payloadRaw, &payload); err != nil {
 		return accessClaims{}, unauthorizedf("malformed payload")
@@ -373,6 +374,16 @@ func (v *accessVerifier) verify(token string) (accessClaims, error) {
 		if now.Add(accessLeeway).Before(time.Unix(claims.NotBefore, 0)) {
 			return accessClaims{}, unauthorizedf("not yet valid")
 		}
+	}
+	// Review 2 G-M6: CF Access service tokens (the machine lane —
+	// CF-Access-Client-Id/Secret headers) mint JWTs with an empty `sub` and
+	// the identity in `common_name` (the Client-Id). Fall back to it so the
+	// bot lane is not 401 on every request, and still refuse when neither
+	// claim carries an identity. The signature, issuer, audience and time
+	// checks above are unchanged: `common_name` is trusted exactly because
+	// this token already verified against the Access JWKS.
+	if claims.Subject == "" {
+		claims.Subject = payload.CommonName
 	}
 	if claims.Subject == "" {
 		return accessClaims{}, unauthorizedf("empty sub")

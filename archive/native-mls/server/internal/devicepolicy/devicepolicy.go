@@ -252,6 +252,23 @@ func parseDevicePolicyRecord(data []byte) (PolicyRecord4, error) {
 // replicated member entries so no other spelling ever reaches the store.
 func IsIdentifier(s string, max int) bool { return identifier(s, max) }
 
+// IsSubject reports whether s is a valid caller-subject binding: the CF Access
+// identity a device's requests must carry (DEVICES-V4 "subject"). Deliberately
+// wider than IsIdentifier — a subject is only ever compared, never used as a
+// name — it accepts the service-token `common_name` form (the Client-Id,
+// `<id>.access`, carries a dot) and email-shaped `sub` values (`@`). The
+// review-2 hygiene classes stay out: whitespace, `=`, control characters and
+// other metacharacters are refused, and the length cap holds.
+func IsSubject(s string, max int) bool {
+	if len(s) < 1 || len(s) > max {
+		return false
+	}
+	return strings.IndexFunc(s, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
+			r == '-' || r == '_' || r == '.' || r == '@')
+	}) < 0
+}
+
 func identifier(s string, max int) bool {
 	if len(s) < 1 || len(s) > max {
 		return false
@@ -285,7 +302,7 @@ func validateDeviceSet(devices []DeviceV4) error {
 		if d.Fingerprint != hex.EncodeToString(sum[:]) {
 			return fmt.Errorf("device %q fingerprint does not match its key: %w", d.ID, ErrDevicePolicyConfig)
 		}
-		if !identifier(d.ID, 64) || !identifier(d.Actor, 64) || !identifier(d.Subject, 128) {
+		if !identifier(d.ID, 64) || !identifier(d.Actor, 64) || !IsSubject(d.Subject, 128) {
 			return fmt.Errorf("device %q has an invalid identifier: %w", d.ID, ErrDevicePolicyConfig)
 		}
 		if ids[d.ID] || keys[d.SigningKey] {

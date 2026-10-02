@@ -32,7 +32,7 @@ v1 `devices` 배열과의 차이는 #177 §3.1의 그것 하나: **actor당 기�
 |---|---|
 | `device_id` | 식별자, 전역 유일, 재사용 금지(tombstone 영구) |
 | `actor` | 사람 또는 봇 식별자 |
-| `subject` | **필수.** CF Access `sub`(`[A-Za-z0-9_-]{1,128}`). 릴레이가 이 기기로 행동하는 모든 요청의 JWT `sub`를 여기에 묶는다(아래 "릴레이 호출자 인증"). `-enroll-first`/`-add-device` 후보 JSON에 없으면 CLI가 이름을 대고 거부한다 |
+| `subject` | **필수.** CF Access 호출자 아이덴티티(`[A-Za-z0-9_.@-]{1,128}` — `devicepolicy.IsSubject`; 사람 `sub`와 서비스 토큰 `common_name`(Client-Id, `<id>.access` 형태)을 모두 담을 문자셋). 릴레이가 이 기기로 행동하는 모든 요청의 클레임 아이덴티티를 여기에 묶는다(아래 "릴레이 호출자 인증"). `-enroll-first`/`-add-device` 후보 JSON에 없으면 CLI가 이름을 대고 거부한다 |
 | `signing_key` | Ed25519 공개 키 32바이트 lowercase hex |
 | `fingerprint` | sha256(signing_key 원본 바이트) — 사람이 대역외로 비교하는 값 |
 | `status` | `active`(\|`device_revision`=1) 또는 `revoked`(=2). 되돌리기 없음 |
@@ -89,12 +89,17 @@ v2 smoke는 required 모드로 돈다(ES256 키를 만들어 JWKS 파일로 넘�
 - **검증**(표준 라이브러리 `crypto/ecdsa`·`crypto/rsa`만): 헤더 `alg`는 ES256 또는
   RS256이어야 하고 `kid`로 JWKS 키를 고른다(키 종류와 alg 불일치 거부; P-256·RSA ≥2048만
   적재). `iss` 정확 일치, `aud`(문자열 또는 배열)가 설정값 포함, `exp` 필수·`nbf` 선택을
-  **60초 leeway**로, `sub` 비어 있지 않음. JWKS는 메모리에 캐시하고 모르는 `kid`가 오면
+  **60초 leeway**로. 클레임 아이덴티티는 `sub`가 기본이고, 서비스 토큰(기계 레인 —
+  `CF-Access-Client-Id/Secret`)은 `sub`가 비어 있고 `common_name`(Client-Id)에
+  아이덴티티를 실으므로 그 값으로 폴백한다(G-M6); 둘 다 비어 있으면 그대로 401. 서명·
+  `iss`·`aud`·시간 검사는 폴백과 무관하게 먼저 통과해야 한다 — `common_name`은 이미
+  JWKS 검증을 지난 토큰 안에서만 신뢰한다. JWKS는 메모리에 캐시하고 모르는 `kid`가 오면
   **분당 최대 1회** 소스를 다시 읽는다(회전 대응; 재적재 실패 시 기존 키 유지).
 - **아이덴티티 바인딩**: 요청이 행동한다고 주장하는 device(`events` POST의 `device`,
   `events` GET의 `?device=`, `keypackages` POST의 `device`, `keypackages` GET의
   `?consumer=` — `?device=`는 대상이지 호출자가 아니다 —, `/close`의 `?device=`)가
-  정책상 **active이고 `subject == claims.sub`**여야 한다. 모르는 device·revoked·타인의
+  정책상 **active이고 `subject ==` 클레임 아이덴티티(`sub`, 서비스 토큰은 폴백된
+  `common_name`)**여야 한다. 모르는 device·revoked·타인의
   subject 전부 같은 **403 `{"error":"device_subject_mismatch"}`** — 어느 검사가 실패했는지
   드러내지 않는다(로그에는 device id와 이유만). 체인을 못 읽으면 500
   `device_policy_unavailable`. 트랜잭션 안의 M3b 정책 검사는 그대로 두 번째 선이다.

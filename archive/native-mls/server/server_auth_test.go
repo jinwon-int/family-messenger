@@ -187,6 +187,43 @@ func TestAccessVerifierClaims(t *testing.T) {
 	}
 }
 
+// G-M6: CF Access service tokens (the machine lane — CF-Access-Client-Id/
+// Secret headers) mint JWTs with an empty `sub` and the identity in
+// `common_name` (the Client-Id). The verifier falls back to it and refuses
+// only when neither claim carries an identity; every other check is unchanged.
+func TestAccessVerifierServiceTokenShape(t *testing.T) {
+	iss := newTestIssuer(t)
+	v := iss.verifier()
+	service := "97f3e1c2ab5548f0.access"
+
+	claims, err := v.verify(iss.mint("", func(c map[string]any) { c["common_name"] = service }))
+	if err != nil || claims.Subject != service {
+		t.Fatalf("service-token shape: claims=%+v err=%v", claims, err)
+	}
+	// The fallback must not depend on CF's optional `token_type` claim.
+	claims, err = v.verify(iss.mint("", func(c map[string]any) { c["common_name"] = service; c["token_type"] = "service" }))
+	if err != nil || claims.Subject != service {
+		t.Fatalf("service-token shape with token_type: claims=%+v err=%v", claims, err)
+	}
+	// A user token keeps its `sub`; `common_name` never overrides it.
+	claims, err = v.verify(iss.mint("subject-alice", func(c map[string]any) { c["common_name"] = service }))
+	if err != nil || claims.Subject != "subject-alice" {
+		t.Fatalf("sub wins over common_name: claims=%+v err=%v", claims, err)
+	}
+	// Neither identity: still refused, same as before G-M6.
+	if _, err := v.verify(iss.mint("", nil)); !errors.Is(err, errUnauthorized) {
+		t.Fatalf("empty sub without common_name: err=%v", err)
+	}
+	// The fallback rides on a verified token only: `common_name` cannot rescue
+	// a token that fails any other check.
+	if _, err := v.verify(iss.mint("", func(c map[string]any) { c["common_name"] = service; c["aud"] = []string{"someone-else"} })); !errors.Is(err, errUnauthorized) {
+		t.Fatalf("common_name cannot rescue a wrong-aud token: err=%v", err)
+	}
+	if _, err := v.verify(iss.mint("", func(c map[string]any) { c["common_name"] = service; c["exp"] = time.Now().Unix() - 3600 })); !errors.Is(err, errUnauthorized) {
+		t.Fatalf("common_name cannot rescue an expired token: err=%v", err)
+	}
+}
+
 func TestAccessVerifierRS256(t *testing.T) {
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -437,6 +474,75 @@ func TestAuthRequiredOnEveryContractRoute(t *testing.T) {
 		t.Fatalf("get as a1: status=%d body=%s", code, raw)
 	} else if got := decodeEventsResponse(t, raw); len(got.Events) != 2 {
 		t.Fatalf("denied requests wrote events: %+v", got.Events)
+	}
+}
+
+// G-M6 e2e: a bot device enrolled against its service-token identity — the
+// CF Access `common_name` (the Client-Id, carrying a dot) — drives the
+// contract routes with an empty-`sub` token, while any other identity stays
+// locked out exactly as in TestAuthRequiredOnEveryContractRoute. The machine
+// lane changes only which claim names the caller; every binding rule holds.
+func TestServiceTokenSubjectBinding(t *testing.T) {
+	_, srv, st, first, iss := newAuthedRelay(t, testPolicy())
+	service := "97f3e1c2ab5548f0.access"
+	enrollDeviceAs(t, st, first, "m1", "botsvc", service)
+	enrollDevice(t, st, first, "a1", "alice")
+	bot := iss.mint("", func(c map[string]any) { c["common_name"] = service })
+	alice := iss.mint("subject-alice", nil)
+	nameless := iss.mint("", nil)
+
+	boot := postCommitBody(t, "m1", "c1", 0, nil, membersOf([2]string{"m1", "botsvc"}, [2]string{"a1", "alice"}), []byte("bootstrap"))
+	kp, _ := json.Marshal(keyPackagePost{Device: "m1", Packages: []keyPackageInput{{Ref: "k1", Bytes: []byte("pkg")}}})
+
+	// The machine lane works end to end: bootstrap, keypackages, reads.
+	if code, raw := doAuth(t, srv, "POST", "/v2/rooms/r/events", boot, bot); code != http.StatusCreated {
+		t.Fatalf("bootstrap as m1 (service token): status=%d body=%s", code, raw)
+	}
+	if code, raw := doAuth(t, srv, "POST", "/v2/rooms/r/keypackages", kp, bot); code != http.StatusCreated {
+		t.Fatalf("keypackages as m1: status=%d body=%s", code, raw)
+	}
+	if code, raw := doAuth(t, srv, "GET", "/v2/rooms/r/events?device=m1", nil, bot); code != http.StatusOK {
+		t.Fatalf("get as m1: status=%d body=%s", code, raw)
+	}
+	if code, raw := doAuth(t, srv, "GET", "/v2/rooms/r/keypackages?device=m1&consumer=a1", nil, alice); code != http.StatusOK {
+		t.Fatalf("a1 consuming m1's package: status=%d body=%s", code, raw)
+	}
+	// Consume binds the consumer, not the target: a1 posts its own package,
+	// then the bot consumes it as m1.
+	kpA1, _ := json.Marshal(keyPackagePost{Device: "a1", Packages: []keyPackageInput{{Ref: "k2", Bytes: []byte("pkg2")}}})
+	if code, raw := doAuth(t, srv, "POST", "/v2/rooms/r/keypackages", kpA1, alice); code != http.StatusCreated {
+		t.Fatalf("keypackages as a1: status=%d body=%s", code, raw)
+	}
+	if code, raw := doAuth(t, srv, "GET", "/v2/rooms/r/keypackages?device=a1&consumer=m1", nil, bot); code != http.StatusOK {
+		t.Fatalf("m1 consuming a1's packages: status=%d body=%s", code, raw)
+	}
+
+	// The binding is exact and one-sided: the bot's token must not act as
+	// alice's device, alice's token must not act as the bot's device — the
+	// same 403 (and the same silence about which check failed) either way.
+	mismatch := []struct {
+		name, method, path string
+		body               []byte
+		token              string
+	}{
+		{"post as a1 with bot", "POST", "/v2/rooms/r/events", postEventBody(t, "a1", "x1", "application", 1, nil, nil, []byte("x")), bot},
+		{"get as a1 with bot", "GET", "/v2/rooms/r/events?device=a1", nil, bot},
+		{"post as m1 with alice", "POST", "/v2/rooms/r/events", postEventBody(t, "m1", "x2", "application", 1, nil, nil, []byte("x")), alice},
+		{"get as m1 with alice", "GET", "/v2/rooms/r/events?device=m1", nil, alice},
+	}
+	for _, m := range mismatch {
+		code, raw := doAuth(t, srv, m.method, m.path, m.body, m.token)
+		if code != http.StatusForbidden || errField(t, raw) != "device_subject_mismatch" {
+			t.Fatalf("%s: status=%d body=%s", m.name, code, raw)
+		}
+		if e := decodeAPIError(t, raw); e.Detail != "" {
+			t.Fatalf("%s: 403 body must not say which check failed: %s", m.name, raw)
+		}
+	}
+
+	// An empty sub without common_name still 401s: no identity, no access.
+	if code, raw := doAuth(t, srv, "POST", "/v2/rooms/r/events", postEventBody(t, "m1", "x3", "application", 1, nil, nil, []byte("x")), nameless); code != http.StatusUnauthorized {
+		t.Fatalf("empty sub without common_name: status=%d body=%s", code, raw)
 	}
 }
 

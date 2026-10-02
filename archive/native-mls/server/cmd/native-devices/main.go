@@ -268,11 +268,13 @@ func enrollFirstDevice(devices []devicepolicy.DeviceV4, input string) ([]devicep
 // requireSubject names the relay's identity binding in the error: the v4
 // chain validator already rejects an empty subject structurally, but an
 // operator enrolling a device should learn what the field is for. The value
-// is the CF Access `sub` of the person (or bot) owning the device; every
-// relay request made as this device must carry a JWT with exactly that sub.
+// is the CF Access identity owning the device — the user's `sub`, or for a
+// bot the service-token `common_name` (the Client-Id); every relay request
+// made as this device must carry a JWT with exactly that identity (G-M6:
+// service tokens carry an empty `sub`).
 func requireSubject(subject string) error {
-	if !devicepolicy.IsIdentifier(subject, 128) {
-		return errors.New("subject is required ([A-Za-z0-9_-]{1,128}): the CF Access `sub` the relay binds this device's requests to (DEVICES-V4.md)")
+	if !devicepolicy.IsSubject(subject, 128) {
+		return errors.New("subject is required ([A-Za-z0-9_.@-]{1,128}): the CF Access `sub` (or a bot's service-token `common_name`) the relay binds this device's requests to (DEVICES-V4.md)")
 	}
 	return nil
 }
