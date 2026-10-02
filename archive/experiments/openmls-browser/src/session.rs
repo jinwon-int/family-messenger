@@ -138,6 +138,27 @@ impl Session {
             "commit" => { device.apply_commit_inner(input)?; vec![] },
             "merge_pending" if input.is_empty() => { device.merge_pending_inner()?; vec![] },
             "clear_pending" if input.is_empty() => { device.clear_pending_inner()?; vec![] },
+            // #243 2-a human relay client on the durable lane: read-only roster /
+            // fingerprint views and the E2 approval signature, previously reachable
+            // only from the memory worker. None of these touch the store (zero
+            // changes in the Step); sign_approval signs with the durable identity's
+            // own key — the one the policy chain enrolled.
+            "members" if input.is_empty() => device.members_inner()?,
+            "members_after_pending" if input.is_empty() => device.members_after_pending_inner()?,
+            "fingerprint" if input.is_empty() => device.fingerprint()?.into_bytes(),
+            "policy_fingerprint" => {
+                let hex = std::str::from_utf8(input).map_err(rejected)?;
+                crate::policy::policy_fingerprint(hex)?.into_bytes()
+            }
+            "sign_approval" => {
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Args { action: String, device_id: String, actor: String, subject: String,
+                              signing_key: String, acceptance: String, base_revision: u64 }
+                let a: Args = serde_json::from_slice(input).map_err(rejected)?;
+                device.sign_approval(&a.action, &a.device_id, &a.actor, &a.subject,
+                                     &a.signing_key, &a.acceptance, a.base_revision)?
+            }
             _ => return Err(rejected(())),
         };
         if output.len() > MAX_WIRE { return Err(rejected(())); }

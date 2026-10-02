@@ -8,7 +8,13 @@ import {createVault, unlockVault, validPassphrase, sealRecord, openRecord} from 
 const wasm = await init();
 // `delete_key_package` (review 2 L-3): the M4 outstanding-package cap had no
 // recovery path in this lane except a join.
-const allowed = new Set(['key_package', 'delete_key_package', 'create', 'invite', 'join', 'encrypt', 'decrypt', 'remove', 'commit']);
+// #243 2-a human relay client (web/relay-app.js): the deferred-merge commit
+// flow (invite_with_commit → own echo → merge_pending; clear_pending on a 409),
+// pending removal, and the read-only roster/fingerprint/approval views that
+// used to exist only on the memory worker.
+const allowed = new Set(['key_package', 'delete_key_package', 'create', 'invite', 'invite_with_commit', 'join',
+  'encrypt', 'decrypt', 'remove', 'remove_pending', 'commit', 'merge_pending', 'clear_pending',
+  'members', 'members_after_pending', 'fingerprint', 'policy_fingerprint', 'sign_approval']);
 let store, identity, room;
 const noExtra = {keys: [], initial: () => ({}), bytes: () => null, valid: () => {}};
 
