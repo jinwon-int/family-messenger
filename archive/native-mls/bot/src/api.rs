@@ -161,13 +161,26 @@ pub struct StoredRow {
     pub created_at: i64,
 }
 
+/// One tracked member as the relay reports it (#261 GET events `members`).
+#[derive(Deserialize, Clone, Debug)]
+#[allow(dead_code)]
+pub struct MemberOwned {
+    pub device: String,
+    pub actor: String,
+}
+
 /// Wire mirror of one events page; `revision` rides along for parity.
+/// `members` is the relay's tracked (outer) roster as of the same
+/// transaction (#261); absent on relays older than that — then the bot
+/// only runs its inner checks (`policy::check_commit` with `outer = None`).
 #[derive(Deserialize, Clone, Debug)]
 #[allow(dead_code)]
 pub struct EventsResponse {
     pub epoch: i64,
     pub revision: i64,
     pub events: Vec<StoredRow>,
+    #[serde(default)]
+    pub members: Option<Vec<MemberOwned>>,
 }
 
 #[derive(Deserialize)]

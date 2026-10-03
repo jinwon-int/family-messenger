@@ -87,6 +87,25 @@ test('roster deltas must be consistent with what this device knows', () => {
   }
 });
 
+// The same vectors drive the bot's Rust check (archive/native-mls/bot/src/policy.rs, #263):
+// both lanes must refuse and accept exactly the same commits.
+test('shared vectors agree with the bot (tests/fixtures/commit-policy-vectors.json)', async () => {
+  const {readFile} = await import('node:fs/promises');
+  const url = new URL('../../../native-mls/tests/fixtures/commit-policy-vectors.json', import.meta.url);
+  const doc = JSON.parse(await readFile(url, 'utf8'));
+  assert.ok(doc.vectors.length >= 10, 'fixture lost its vectors');
+  const unhex = h => Uint8Array.from(h.match(/../g), b => parseInt(b, 16));
+  for (const v of doc.vectors) {
+    const section = list => (list || []).map(([id, k]) => [id, unhex(k)]);
+    const r = parseStageReport(report({adds: section(v.report.adds), removes: section(v.report.removes),
+      updates: section(v.report.updates), path: section(v.report.path)}));
+    const verdict = checkCommit({report: r, roster: v.roster, committer: v.committer, outer: v.outer ?? null});
+    assert.equal(verdict.ok, v.expect.ok, `${v.name}: ok (${verdict.reason ?? ''} ${verdict.detail ?? ''})`);
+    if (v.expect.ok) assert.deepEqual(verdict.expected, v.expect.expected, `${v.name}: expected roster`);
+    else assert.equal(verdict.reason, v.expect.reason, `${v.name}: reason`);
+  }
+});
+
 test('the relay roster must equal the MLS roster after the commit (outer == inner)', () => {
   const r = parseStageReport(report({adds: [['owner-pc2', key(2)]], path: [['owner-pc', key(7)]]}));
   // The relay says a different device joined: refuse.

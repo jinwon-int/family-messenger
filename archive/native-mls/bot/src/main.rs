@@ -9,6 +9,7 @@
 mod api;
 mod b64;
 mod http;
+mod policy;
 mod session;
 
 use family_mls_browser_experiment::Device;

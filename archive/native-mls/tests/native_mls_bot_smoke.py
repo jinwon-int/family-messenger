@@ -305,7 +305,7 @@ class Bot:
             lines = list(self.lines)
         bad = [line for line in lines if line.get('event') in
                ('bad_line', 'echo_dropped', 'undecryptable', 'echo_conflict', 'rejected',
-                'echo_client_id_reuse', 'ack_refused') and line.get('event') not in allow]
+                'echo_client_id_reuse', 'ack_refused', 'commit_refused', 'halted') and line.get('event') not in allow]
         assert not bad, bad
         return lines
 
