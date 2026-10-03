@@ -98,6 +98,12 @@ impl Step {
 pub struct Session {
     device: Device,
     in_flight: bool,
+    /// A foreign commit is staged (#261): `stage_commit` consumed the
+    /// handshake step (those store changes are in flight) and only
+    /// `merge_staged` / `discard_staged` may follow — never `commit`, so a
+    /// bare stage is never durable. A reopen or `abort` drops it; the device
+    /// then stages the same relay event again from its pre-stage state.
+    staging: bool,
     /// Group id at the last durable state (`None`: no group yet).
     baseline_group: Option<GroupId>,
     /// Loaded from an older format: the caller must replace every persisted
@@ -136,6 +142,17 @@ impl Session {
             "remove" => device.remove_member_inner(input, true)?,
             "remove_pending" => device.remove_member_inner(input, false)?,
             "commit" => { device.apply_commit_inner(input)?; vec![] },
+            // #261 two-step commit application on the durable lane (PERSISTENCE.md
+            // M1): `stage_commit` authenticates a foreign commit and reports its
+            // roster delta (STAGE_REPORT_FORMAT) without merging; the caller
+            // compares that with the relay's outer roster, then `merge_staged`
+            // (apply) or `discard_staged` (policy refusal, epoch unchanged). The
+            // staged commit is memory-only: `abort` and `open` drop it, and a
+            // reopened session stages the same relay event again from its
+            // durable pre-stage state.
+            "stage_commit" => device.stage_commit_inner(input)?,
+            "merge_staged" if input.is_empty() => { device.merge_staged_inner()?; vec![] },
+            "discard_staged" if input.is_empty() => { device.discard_staged_inner()?; vec![] },
             "merge_pending" if input.is_empty() => { device.merge_pending_inner()?; vec![] },
             "clear_pending" if input.is_empty() => { device.clear_pending_inner()?; vec![] },
             // #243 2-a human relay client on the durable lane: read-only roster /
@@ -170,6 +187,7 @@ impl Session {
     fn restore_committed(&mut self) -> Result<(), Rejected> {
         self.store().rollback();
         self.in_flight = false;
+        self.staging = false;
         self.device.staged = None;
         if self.store().len() == 0 {
             // Aborted `create`: nothing durable exists; the session is unusable.
@@ -197,7 +215,7 @@ impl Session {
     pub fn create(identity: &str) -> Result<Session, Rejected> {
         let provider = Provider::default();
         provider.storage().enable_journal();
-        Ok(Session { device: Device::with_provider(identity, provider)?, in_flight: true, baseline_group: None,
+        Ok(Session { device: Device::with_provider(identity, provider)?, in_flight: true, staging: false, baseline_group: None,
             migrated: false, full_serializations: 0 })
     }
 
@@ -212,16 +230,31 @@ impl Session {
         let device = staging::restore(identity, public_key, group_id, version, entries)?;
         device.provider.storage().enable_journal();
         let baseline_group = device.group.as_ref().map(|g| g.group_id().clone());
-        Ok(Session { device, in_flight: false, baseline_group, migrated: version != migrate::FORMAT_CURRENT,
+        Ok(Session { device, in_flight: false, staging: false, baseline_group, migrated: version != migrate::FORMAT_CURRENT,
             full_serializations: 1 })
     }
 
     /// Run one facade operation. On success the changes are in flight; on
     /// rejection the state is rolled back and the session stays usable.
     pub fn apply(&mut self, method: &str, input: &[u8]) -> Result<Step, Rejected> {
-        if self.in_flight || self.migrated || self.device.retired { return Err(rejected(())); }
+        // #261: while a commit is staged the only continuations are merge and
+        // discard; everything else (another stage included) is a pure
+        // precondition rejection that leaves the stage in place.
+        let continues_stage = self.staging && matches!(method, "merge_staged" | "discard_staged");
+        if (self.in_flight && !continues_stage) || self.migrated || self.device.retired { return Err(rejected(())); }
+        if continues_stage && method == "discard_staged" {
+            // Policy refusal: roll back to the durable baseline — the consumed
+            // handshake step included, so the device is exactly where it was
+            // before the stage and can stage the same relay event again. The
+            // empty step keeps the worker protocol uniform (persist, commit).
+            self.restore_committed()?;
+            self.in_flight = true;
+            return Ok(Step { output: vec![], changes: frame(&[]), epoch: self.epoch() });
+        }
         let result = self.dispatch(method, input);
-        self.finish(result)
+        let step = self.finish(result)?;
+        self.staging = method == "stage_commit";
+        Ok(step)
     }
 
     /// Same contract as `apply`, restricted to a pinned pair (formerly the snapshot
@@ -292,7 +325,8 @@ impl Session {
 
     /// The in-flight changes are durable: they become the new baseline.
     pub fn commit(&mut self) -> Result<(), Rejected> {
-        if !self.in_flight || self.device.retired { return Err(rejected(())); }
+        // A bare stage must never become durable (#261): merge or discard first.
+        if !self.in_flight || self.staging || self.device.retired { return Err(rejected(())); }
         self.store().commit();
         self.in_flight = false;
         self.migrated = false;

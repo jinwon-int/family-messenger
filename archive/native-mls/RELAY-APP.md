@@ -39,7 +39,18 @@ Python에서 하던 릴레이 호출을 브라우저로 옮긴 것이다. 합성
    (members = `members_after_pending`, actor = ID 접두) → 201이면 pending → 다음 동기화에서 **내 echo를
    만나야 `merge_pending`** → 그제야 **타깃 Welcome POST**. 409 `cas_mismatch`면 `clear_pending` 후 동기화·재시도.
 3. **동기화**(4초 폴링 + 버튼): `GET /events?after=` → 내 commit echo(merge) / Welcome(참여 전) →
-   `join` / commit → `commit` 적용 / application → `decrypt`(워커가 방 바인딩) → 표시(발신 기기·client).
+   `join` / 타인 commit → **`stage_commit` → 검사 → `merge_staged`**(#261, 아래) / application →
+   `decrypt`(워커가 방 바인딩) → 표시(발신 기기·client).
+   타인 commit 검사(`web/commit-policy.js`, 순수 함수 — `node --test web/commit-policy.test.mjs`): stage
+   보고서(adds ‖ removes ‖ update 제안 ‖ 커미터 path)에서 ① 커미터 path leaf가 정확히 1개이고 그 신원이
+   릴레이 행의 `device`(JWT에 묶인 게시자)와 같다 ② 커미터가 현재 멤버다 ③ removes ⊆ 현재 멤버, adds ∩
+   현재 멤버 = ∅, 중복·겹침 없음, update 제안 0 ④ 그 commit이 응답의 최신 epoch(`ev.epoch + 1 == epoch`)
+   이면 `현재 멤버 − removes + adds` == 릴레이 `members`(같은 트랜잭션의 추적 로스터, outer == inner).
+   통과 → `merge_staged`(stage+merge가 한 번의 durable step). 위반 → `discard_staged`(epoch 그대로) +
+   **⛔ 정지**: 상태줄·메시지 영역·로그에 이유, 폴링 중단·보내기 비활성, localStorage에 남아 새로고침
+   뒤에도 유지 — 운영자가 재초대/재등록하거나 커미터·릴레이를 조사한다. 무음으로 넘어가지 않는다.
+   stage는 **transient**다(워커 ledger·IDB에 아무것도 남기지 않음): 탭 전환·재시작으로 워커 세션이
+   재구성되면 stage가 사라지므로 merge 실패 시 같은 seq를 한 번 다시 가져와 재시도한다.
    참여 뒤에는 처리한 seq까지 `?ack=`(읽기는 커서를 안 움직인다, M2). `first_seq`가 내 커서보다 앞서면
    잘린 역사 경고.
 4. **둘째 기기 승인(E2)**: 신뢰 기기 화면에 새 기기의 등록 정보 JSON(+ `subject`, `base_revision`)을 붙여
@@ -49,7 +60,10 @@ Python에서 하던 릴레이 호출을 브라우저로 옮긴 것이다. 합성
 
 durable 워커 허용 메서드에 이번에 더해진 것: `invite_with_commit` `merge_pending` `clear_pending`
 `remove_pending` `members` `members_after_pending` `fingerprint` `policy_fingerprint` `sign_approval`
-(파사드 `Session.dispatch`에 읽기 전용/서명 arm 추가; store 변경 0).
+(파사드 `Session.dispatch`에 읽기 전용/서명 arm 추가; store 변경 0). #261로 더해진 것: `stage_commit`
+`merge_staged` `discard_staged` — durable lane에서 stage는 handshake 래칫 소비를 in-flight로 들고 있고
+`commit()`을 거부한다(맨 stage는 영속 불가); `merge_staged`가 stage+merge를 한 step으로 영속하고,
+`discard_staged`는 durable 기준선으로 롤백해 같은 릴레이 이벤트를 다시 stage할 수 있다(PERSISTENCE.md M1).
 
 ## 검증
 
@@ -64,8 +78,10 @@ durable 워커 허용 메서드에 이번에 더해진 것: `invite_with_commit`
 
 ## 증명하지 않는 것
 
-- 들어오는 commit의 정책 검사(stage_commit/merge_staged)는 이 페이지에 없다 — `commit`으로 바로 머지한다.
-  멤버십 정책은 릴레이가 commit 수락 전에 강제하므로(M3b) 파일럿 범위(오너+봇)에서는 서버 정책이 경계다.
+- 들어오는 commit의 검사(§흐름 3, #261)는 **릴레이와 커미터가 함께 속이는 경우**(outer == inner를 둘 다
+  위조)를 잡지 못한다 — 그것은 정책 체인(E2 승인·M3b 강제)의 몫이다. 또 검사는 신원(기기 ID) 수준이다:
+  같은 ID로 서명 키가 바뀌는 커미터 path 회전은 보고만 되고(섹션 4) 키 핀 비교는 하지 않는다.
+  봇(`bot/src/session.rs`)은 아직 `apply_commit` 단일 단계다(후속).
 - 제거(remove_pending)·방 닫기 UI 없음(운영자 CLI/릴레이 도구). 첨부 UI 없음(텍스트만).
 - **메시지 이력 없음**: 페이지는 `relaySeq`(마지막 읽은 릴레이 seq)만 저장하고 복호화된 본문은 어디에도
   보관하지 않는다. 새로고침·탭 회수 뒤 이어하기하면 `events?after=relaySeq`만 가져오므로 이전 대화는 다시
