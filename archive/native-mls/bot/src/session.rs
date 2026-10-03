@@ -40,6 +40,7 @@
 //!   on disk (or processed, without a state file) so the relay can prune.
 
 use crate::api::{self, BotError, Client, EventPost, StoredRow};
+use crate::policy;
 use family_mls_browser_experiment::Device;
 use std::collections::VecDeque;
 use std::io::Write;
@@ -200,6 +201,19 @@ struct RoomState {
     /// The relay refused our ack (removed from the room, or the room was
     /// reset): stop acking, keep reading.
     ack_disabled: bool,
+    /// A foreign commit failed the policy check (#263): it was discarded, the
+    /// device stays at its epoch and reads nothing further from this room.
+    /// Durable through the refusal marker next to the state file, so a
+    /// restart stays halted until the operator clears it (and re-adds the
+    /// device — the discarded epoch cannot be re-staged on this lane).
+    halted: bool,
+}
+
+/// Where the refusal marker lives: next to the state file.
+fn refused_marker_path(state_file: &Path) -> std::path::PathBuf {
+    let mut name = state_file.as_os_str().to_os_string();
+    name.push(".refused");
+    std::path::PathBuf::from(name)
 }
 
 /// Session-wide handles the per-event helpers need.
@@ -381,9 +395,19 @@ pub fn run(opts: Options) -> Result<(), BotError> {
     }));
 
     let (c0, e0, j0, x0) = restored_main.unwrap_or((0, 0, false, 0));
+    // #263: a refusal marker from an earlier run keeps the room halted — the
+    // operator clears it deliberately (with a re-add), never a restart.
+    let halted0 = opts.state_file.as_deref().map(refused_marker_path).filter(|p| p.exists());
+    if let Some(marker) = &halted0 {
+        emit(&serde_json::json!({
+            "event": "halted", "room": opts.room, "device": opts.device,
+            "marker": marker.display().to_string(),
+        }));
+    }
     let mut rooms = vec![RoomState {
         room: opts.room.clone(), cursor: c0, epoch: e0, joined: j0, joinable: true, echoes: x0,
         retry: VecDeque::new(), dirty: false, acked: c0, ack_sent: 0, ack_disabled: false,
+        halted: halted0.is_some(),
     }];
     if let Some(watch) = &opts.watch_room {
         // The negative control: a room the bot is never invited to. It must
@@ -391,6 +415,7 @@ pub fn run(opts: Options) -> Result<(), BotError> {
         rooms.push(RoomState {
             room: watch.clone(), cursor: 0, epoch: 0, joined: false, joinable: false, echoes: 0,
             retry: VecDeque::new(), dirty: false, acked: 0, ack_sent: 0, ack_disabled: true,
+            halted: false,
         });
     }
     let ctx = Ctx { client: &client, own: &opts.device, room: &opts.room, state_file: opts.state_file.as_deref() };
@@ -440,6 +465,11 @@ pub fn run(opts: Options) -> Result<(), BotError> {
 }
 
 fn poll_room(ctx: &Ctx, device: &mut Device, state: &mut RoomState) -> Result<(), BotError> {
+    // #263: a halted room is neither read nor acked — the device must not
+    // move past the refused commit, and its cursor must keep gating pruning.
+    if state.halted {
+        return Ok(());
+    }
     // Ack what is durably processed (B-H4). Only a joined member may ack
     // (the relay answers 403 not_a_member otherwise), and an ack the relay
     // refuses — bad_ack after a room reset, not_a_member after a removal —
@@ -494,10 +524,51 @@ fn poll_room(ctx: &Ctx, device: &mut Device, state: &mut RoomState) -> Result<()
                     "event": "welcome_ignored", "room": state.room, "seq": ev.seq, "joined": state.joined,
                 }));
             }
+            // #263 two-step application (the human client's #261 rule, in
+            // Rust): stage (authenticate + roster delta report), check the
+            // delta against this device's roster and — when this commit is
+            // the page's latest epoch — against the relay's enforced roster,
+            // then merge. A facade rejection (poison commit) is rolled back and
+            // reported as before; a policy refusal discards and halts the room.
             "commit" if state.joined => {
-                match guarded(device, ctx.own, |d| d.apply_commit(&ev.bytes).map_err(drop))? {
-                    Ok(()) => state.dirty = true,
+                match guarded(device, ctx.own, |d| d.stage_commit(&ev.bytes).map_err(drop))? {
                     Err(()) => rejected(state, ev, "commit"),
+                    Ok(report) => {
+                        let outer: Option<Vec<String>> = (ev.epoch + 1 == body.epoch)
+                            .then(|| body.members.as_ref().map(|m| m.iter().map(|x| x.device.clone()).collect()))
+                            .flatten();
+                        let verdict = match (policy::parse_stage_report(&report),
+                                             device.members().ok().and_then(|f| policy::parse_roster(&f))) {
+                            (None, _) => Err(policy::Refusal { reason: "report_format", detail: format!("{} bytes", report.len()) }),
+                            (_, None) => Err(policy::Refusal { reason: "roster_unavailable", detail: String::new() }),
+                            (Some(parsed), Some(roster)) => {
+                                let ids: Vec<String> = roster.into_iter().map(|m| m.id).collect();
+                                policy::check_commit(&parsed, &ids, &ev.device, outer.as_deref()).map(|expected| (parsed, expected))
+                            }
+                        };
+                        match verdict {
+                            Ok((parsed, expected)) => {
+                                match guarded(device, ctx.own, |d| d.merge_staged().map_err(drop))? {
+                                    Ok(()) => {
+                                        state.dirty = true;
+                                        emit(&serde_json::json!({
+                                            "event": "commit_applied", "room": state.room, "seq": ev.seq,
+                                            "committer": ev.device, "epoch": ev.epoch + 1,
+                                            "adds": parsed.adds.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+                                            "removes": parsed.removes.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+                                            "members": expected, "outer_checked": outer.is_some(),
+                                        }));
+                                    }
+                                    Err(()) => rejected(state, ev, "commit"),
+                                }
+                            }
+                            Err(refusal) => {
+                                // Pure: drops the staged commit, keeps the epoch.
+                                let _ = device.discard_staged();
+                                refuse(ctx, state, ev, refusal)?;
+                            }
+                        }
+                    }
                 }
             }
             "application" if state.joined => echo(ctx, device, state, ev)?,
@@ -536,6 +607,29 @@ fn rejected(state: &mut RoomState, ev: &StoredRow, kind: &str) {
     emit(&serde_json::json!({
         "event": "rejected", "room": state.room, "seq": ev.seq, "kind": kind, "bytes": ev.bytes.len(),
     }));
+}
+
+/// A commit this device refuses to merge (#263): loud, durable, and final for
+/// this room. The marker next to the state file keeps a restart halted; the
+/// operator clears it and re-adds the device (the discarded epoch cannot be
+/// re-staged — the handshake step was consumed). Without a state file the
+/// halt lives for this process only.
+fn refuse(ctx: &Ctx, state: &mut RoomState, ev: &StoredRow, refusal: policy::Refusal) -> Result<(), BotError> {
+    state.halted = true;
+    state.dirty = true;
+    emit(&serde_json::json!({
+        "event": "commit_refused", "room": state.room, "seq": ev.seq, "committer": ev.device,
+        "epoch": ev.epoch, "reason": refusal.reason, "detail": refusal.detail,
+    }));
+    if let (Some(path), true) = (ctx.state_file, state.room == ctx.room) {
+        let marker = serde_json::json!({
+            "room": state.room, "device": ctx.own, "seq": ev.seq, "committer": ev.device,
+            "epoch": ev.epoch, "reason": refusal.reason, "detail": refusal.detail,
+        });
+        let raw = serde_json::to_vec_pretty(&marker).map_err(|_| BotError::Local("refusal marker json"))?;
+        write_state_file(&refused_marker_path(path), &raw)?;
+    }
+    Ok(())
 }
 
 /// Decrypt one application event and reply with the identical plaintext.
@@ -703,6 +797,7 @@ fn status(rooms: &[RoomState]) {
             serde_json::json!({
                 "room": state.room, "joined": state.joined, "echoes": state.echoes,
                 "cursor": state.cursor, "epoch": state.epoch, "acked": state.ack_sent,
+                "halted": state.halted,
             })
         })
         .collect();

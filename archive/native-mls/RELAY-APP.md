@@ -81,7 +81,9 @@ durable 워커 허용 메서드에 이번에 더해진 것: `invite_with_commit`
 - 들어오는 commit의 검사(§흐름 3, #261)는 **릴레이와 커미터가 함께 속이는 경우**(outer == inner를 둘 다
   위조)를 잡지 못한다 — 그것은 정책 체인(E2 승인·M3b 강제)의 몫이다. 또 검사는 신원(기기 ID) 수준이다:
   같은 ID로 서명 키가 바뀌는 커미터 path 회전은 보고만 되고(섹션 4) 키 핀 비교는 하지 않는다.
-  봇(`bot/src/session.rs`)은 아직 `apply_commit` 단일 단계다(후속).
+  봇(`bot/src/session.rs`)도 같은 규칙으로 stage→검사→merge 한다(#263, `bot/src/policy.rs`; 위반 시
+  `commit_refused` + 상태 파일 옆 `.refused` 마커로 재시작 뒤에도 정지). 두 구현은
+  `tests/fixtures/commit-policy-vectors.json`을 함께 돌린다.
 - 제거(remove_pending)·방 닫기 UI 없음(운영자 CLI/릴레이 도구). 첨부 UI 없음(텍스트만).
 - **메시지 이력 없음**: 페이지는 `relaySeq`(마지막 읽은 릴레이 seq)만 저장하고 복호화된 본문은 어디에도
   보관하지 않는다. 새로고침·탭 회수 뒤 이어하기하면 `events?after=relaySeq`만 가져오므로 이전 대화는 다시
