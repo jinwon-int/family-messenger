@@ -26,5 +26,34 @@ joined true`. 오너 채팅 진술 "통과"(01:5x KST). 릴레이 저널에 오�
 
 ## 증명하지 않는 것
 
-- 사람 세션 만료·재로그인 UX(730h), 서비스 토큰 회전 중 `auth_wait`, E2 승인(다음 주 PC).
+- 사람 세션 만료·재로그인 UX(730h), E2 승인(PC 등록 뒤). 서비스 토큰 회전 중 `auth_wait`는 아래 추가 절에서 실측.
 - 봇이 받은 평문의 내용(봇 로그는 길이만) — echo가 돌아왔다는 사실은 iPhone 화면(오너 진술)과 봇 `echo` 이벤트로만.
+
+## 추가 — 봇 서비스 토큰 회전 중 `auth_wait` → 복귀, 재시작 없음 (2026-10-03 20:21 KST)
+
+봇 바이너리 `cdddcfc3…`(main `6ba941cb`), 운영자 yukson, 오너 지시 "아이폰 등록한 걸로 계속 진행"(PC 등록은 뒤로).
+회전 경로는 실제 운영 경로 그대로다: 토큰 파일 `/var/lib/native-relay-bot/bot/jwt`(0600, 값 비기록)를 비우고 →
+`native-relay-jwt-refresh.service`(12h 타이머가 부르는 같은 유닛)로 새 JWT를 쓴다.
+
+| 시각 | 동작 | 관측 |
+|---|---|---|
+| 20:21:52 | 토큰 파일 비움(0 B) | 2초 안에 `{"event":"auth_wait","room":"family-acc","device":"bot-gongmyoung"}` |
+| 20:21:54 | `systemctl start native-relay-jwt-refresh.service` | 파일 864 B·0600·`native-relay-bot` 소유로 재생성 |
+| 20:22~ | — | MainPID **1653637 그대로**, NRestarts 0, status `acked 19 cursor 20 echoes 9 epoch 1 halted:false` 유지 |
+| 20:23 | 공명에서 릴레이 응답 상태줄만 8초 캡처(tailnet 평문 HTTP, 요청 헤더는 출력하지 않음) | `HTTP/1.1 200` **20건**, 그 외 0 |
+
+릴레이는 요청 단위 로그를 남기지 않으므로(저널은 인증 바인딩 실패·시작·방 생성뿐), 복귀 증거는 봇 쪽 응답 코드 캡처로 대신했다.
+
+**발견**: 봇은 `auth_wait`를 프로세스 수명 동안 **한 번만** 알린다(`auth_wait_announced`가 다시 꺼지지 않음). 복귀 이벤트도 없다.
+그래서 같은 프로세스에서 두 번째 토큰 공백이 생기면 로그에 남지 않고, status 줄만으로는 인증 대기와 정상 폴링을 구분할 수 없다.
+→ 후속 개선 후보: 복귀 시 `auth_ok` 이벤트를 내고 플래그를 다시 끄기.
+
+재현(운영자, 공명):
+
+```sh
+J=/var/lib/native-relay-bot/bot/jwt; T0=$(date '+%F %T'); : > "$J"
+journalctl -u native-relay-bot --since "$T0" -o cat | grep auth_wait
+systemctl start native-relay-jwt-refresh.service
+systemctl show native-relay-bot -p MainPID -p NRestarts
+timeout 8 tcpdump -l -i any -A -s 256 'tcp src port 18921 and src host <relay tailnet ip>' | grep -aoE 'HTTP/1\.[01] [0-9]{3}' | sort | uniq -c
+```
