@@ -125,7 +125,8 @@ def main():
                     self.page.fill('#room', ROOM)
                     self.page.fill('#device', dev)
                     self.page.fill('#database', f'family-mls-synthetic-app-{dev}')
-                    self.page.fill('#passphrase', secrets.token_urlsafe(24))
+                    self.passphrase = secrets.token_urlsafe(24)  # kept for the correct-resume check
+                    self.page.fill('#passphrase', self.passphrase)
                     self.page.click('#start')
                     self.page.wait_for_function("() => document.getElementById('state').textContent.includes('지문')", timeout=180000)
 
@@ -253,6 +254,18 @@ def run_flow(Dev, receipt, base, relay):
             n = b.loglen(); b.page.click('#start')
             b.wait_log('실패', n, 180000)
             receipt['checks']['wrong_passphrase_rejected'] = True
+
+            # Correct passphrase: the worker resumes (same fingerprint, joined) and the page says up
+            # front that earlier rows are not redrawn (#258) — it stores relaySeq, never plaintext.
+            b.page.fill('#passphrase', b.passphrase)
+            b.page.click('#start')
+            b.page.wait_for_function("() => document.getElementById('state').textContent.includes('지문')", timeout=180000)
+            b.page.wait_for_function(
+                "() => !!document.querySelector('#messages div[data-placeholder=\"history\"]')", timeout=30000)
+            msgs_b = b.messages()
+            assert not any('hello from pc' in m or 'sent after the outage' in m for m in msgs_b), msgs_b
+            assert any('다시 표시되지 않는다' in m for m in msgs_b), msgs_b
+            receipt['checks']['resume_shows_history_notice_not_old_rows'] = True
 
 
 if __name__ == '__main__':
