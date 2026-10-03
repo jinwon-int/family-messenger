@@ -57,7 +57,7 @@ durable 워커 허용 메서드에 이번에 더해진 것: `invite_with_commit`
   이 페이지만으로(파이썬 측 릴레이 호출 0) 생성 → 키 패키지 → 초대(commit 201 → echo merge → Welcome) →
   참여 → 양방향 메시지(발신자 표시) → 릴레이 커서 ack → **릴레이 중단**(상태줄 `연결 끊김`, `보내기`가
   "연결 실패" 알림 + 입력 보존) → 같은 포트·데이터 디렉터리로 재시작 → 같은 입력 재전송 성공 → 재시작 시
-  틀린 암호 거부. 릴레이는 `-access-mode disabled`(loopback, 정책 체인 없음). 수신증
+  틀린 암호 거부 → 맞는 암호로 이어하기(지문 복원, 이전 행 없이 "다시 표시되지 않는다" 자리표시만, #258). 릴레이는 `-access-mode disabled`(loopback, 정책 체인 없음). 수신증
   `archive/artifacts/native-relay-app-*/`.
 - Go: `TestStaticClientServing`(헤더·점 파일·traversal·메서드·`/v2` 불변), `TestStaticRootRequiresIndex`.
 - 파사드: `durable_lane_roster_fingerprint_and_sign_approval`.
@@ -67,6 +67,10 @@ durable 워커 허용 메서드에 이번에 더해진 것: `invite_with_commit`
 - 들어오는 commit의 정책 검사(stage_commit/merge_staged)는 이 페이지에 없다 — `commit`으로 바로 머지한다.
   멤버십 정책은 릴레이가 commit 수락 전에 강제하므로(M3b) 파일럿 범위(오너+봇)에서는 서버 정책이 경계다.
 - 제거(remove_pending)·방 닫기 UI 없음(운영자 CLI/릴레이 도구). 첨부 UI 없음(텍스트만).
+- **메시지 이력 없음**: 페이지는 `relaySeq`(마지막 읽은 릴레이 seq)만 저장하고 복호화된 본문은 어디에도
+  보관하지 않는다. 새로고침·탭 회수 뒤 이어하기하면 `events?after=relaySeq`만 가져오므로 이전 대화는 다시
+  그려지지 않는다 — 이어하기 직후 메시지 영역에 자리표시와 로그 한 줄로 알린다(#258, 오너 결정: 파일럿 중
+  안내만; 로컬 이력 보존은 평문 보존 범위를 정한 뒤 별도).
 - Access 쿠키 만료(730h) 뒤의 재로그인 UX: 401이면 "새로고침해 로그인" 안내만. Access 로그인 페이지로의
   리다이렉트가 CORS/opaque로 끝나 fetch 자체가 실패하는 경우도 같은 "연결 실패" 안내로 합쳐진다 —
   원인(릴레이 다운 vs 쿠키 만료)은 구분하지 않는다.

@@ -213,6 +213,16 @@ async function activate(statusInfo) {
   if (S.joined) { try { S.roster = parseMembers((await op('members')).output); } catch (_) { /* no group yet */ } }
   renderRoster();
   log(`워커 시작: ${S.dev} @ ${S.db} (relay seq ${S.relaySeq}, joined=${S.joined}, pending=${S.pending})`);
+  // Resume shows only what arrives after the saved cursor: the relay keeps ciphertext behind
+  // the cursor only until every reader acks it and this page never stores plaintext, so
+  // earlier rows are gone by design (#258). Say so where the owner looks for them.
+  if (S.joined && S.relaySeq > 0) {
+    const note = document.createElement('div');
+    note.className = 'muted'; note.dataset.placeholder = 'history';
+    note.textContent = `[… relay seq ${S.relaySeq}까지의 이전 대화는 다시 표시되지 않는다 — 릴레이도 이 화면도 평문을 보관하지 않는다. 새로 도착하는 메시지만 아래에 쌓인다]`;
+    $('messages').append(note);
+    log(`이어하기: 이전 대화(relay seq ≤ ${S.relaySeq})는 다시 표시되지 않는다 — 새 메시지만 표시`);
+  }
   await sync({quiet: true});
   S.timer = setInterval(() => sync({quiet: true}), 4000);
 }
