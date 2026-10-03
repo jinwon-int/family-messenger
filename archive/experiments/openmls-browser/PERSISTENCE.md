@@ -216,6 +216,15 @@ after a committed receive (and, at the head of the inbox, tombstoned too).
   stays at its current epoch). Only one commit may be staged at a time; the
   single-step `apply_commit`/`commit` is unchanged. Staged state is memory-only
   and dropped on any rollback.
+  **Durable lane (#261):** `Session.apply("stage_commit")` consumes the
+  handshake step (OpenMLS persists the message secrets), so those changes are
+  in flight — but the session refuses `commit()` while staging: a bare stage
+  is never durable. Only `merge_staged` (one durable step carrying stage +
+  merge) or `discard_staged` (rollback to the durable baseline, handshake step
+  restored, epoch unchanged) may follow; any other `apply` is a pure
+  precondition rejection that leaves the stage in place. The worker treats
+  `stage_commit` as transient (no ledger item, no IDB write, no `commit`), so a
+  reopened session holds no stage and stages the same relay event again.
 - **Stale roster during a pending commit (M2).** `members()` stays at the old
   epoch until `merge_pending`. `members_after_pending()` returns the roster the
   group will have once the pending commit merges (current members − staged

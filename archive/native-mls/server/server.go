@@ -167,6 +167,12 @@ type eventsResponse struct {
 	// the request's after is below first_seq-1 the relay pruned events the
 	// reader never saw: it has a history gap and needs a fresh Welcome.
 	FirstSeq int64 `json:"first_seq"`
+	// Members is the tracked (outer) roster as of this response, read in the
+	// same transaction as the events (#261). A client that staged the last
+	// commit of the page compares `inner roster − removes + adds` with it
+	// before merging; an older staged commit only gets the inner checks.
+	// Empty until a bootstrap commit seeded the room.
+	Members []memberWire `json:"members"`
 }
 
 // keyPackageInput is one posted KeyPackage: an opaque caller-chosen ref as
@@ -928,7 +934,11 @@ func (s *relay) handleGetEvents(w http.ResponseWriter, req *http.Request) {
 	var bad badAck
 	switch {
 	case err == nil:
-		writeJSON(w, http.StatusOK, eventsResponse{Epoch: page.room.epoch, Revision: page.room.revision, Events: page.rows, NextAfter: page.nextAfter, Cursor: page.cursor, FirstSeq: page.firstSeq})
+		members := make([]memberWire, 0, len(page.members))
+		for _, m := range page.members {
+			members = append(members, memberWire{Device: m.Device, Actor: m.Actor})
+		}
+		writeJSON(w, http.StatusOK, eventsResponse{Epoch: page.room.epoch, Revision: page.room.revision, Events: page.rows, NextAfter: page.nextAfter, Cursor: page.cursor, FirstSeq: page.firstSeq, Members: members})
 	case errors.As(err, &bad):
 		s.fail(w, http.StatusBadRequest, apiError{Error: "bad_ack", Detail: bad.Error()})
 	case errors.Is(err, errNotMember):

@@ -8,6 +8,7 @@
 //   cursor; an explicit ?ack= after everything up to seq is durably processed.
 // Trust comes from the facade (AAD binding, pinned keys) and the relay (policy
 // chain, JWT ↔ device subject); this page is plumbing and display only.
+import {parseStageReport, checkCommit} from './commit-policy.js';
 const $ = id => document.getElementById(id);
 const utf8 = new TextEncoder(), decoder = new TextDecoder();
 const ID = /^[A-Za-z0-9_-]{1,64}$/;        // relay identifier (device, room, client_id)
@@ -38,11 +39,14 @@ const NET_FAIL = '연결 실패 — 페이지를 새로고침하고(필요하면
 const actorOf = device => device.split('-')[0];
 
 const S = {dev: null, room: null, db: null, started: false, joined: false, pending: false,
-  expectedRoster: null, pendingWelcome: null, relaySeq: 0, epoch: 0, wcursor: 0, roster: [], timer: null, busy: false};
+  expectedRoster: null, pendingWelcome: null, relaySeq: 0, epoch: 0, wcursor: 0, roster: [], timer: null, busy: false,
+  // #261: a refused commit halts this device (durable: the halt survives a reload, the
+  // operator decides); retriedSeq remembers one merge retry per relay seq.
+  halted: null, retriedSeq: 0};
 const stateKey = () => `relay-app:${S.room}:${S.dev}`;
 function save() {
   localStorage.setItem(stateKey(), JSON.stringify({joined: S.joined, pending: S.pending, expectedRoster: S.expectedRoster,
-    pendingWelcome: S.pendingWelcome, relaySeq: S.relaySeq, epoch: S.epoch, roster: S.roster}));
+    pendingWelcome: S.pendingWelcome, relaySeq: S.relaySeq, epoch: S.epoch, roster: S.roster, halted: S.halted}));
 }
 function load() {
   try { const v = JSON.parse(localStorage.getItem(stateKey()) || 'null'); if (v) Object.assign(S, v); } catch (_) { /* ignore */ }
@@ -58,7 +62,8 @@ async function op(method, bytes = [], sequence = 0) {
   const id = genId();
   const result = await callWorker('operation', {id, method, bytes: Array.from(bytes), sequence, fault: ''});
   S.wcursor = result.cursor;
-  try { await callWorker('ack', {ids: [id]}); } catch (error) { log('ledger ack 실패:', error.message); }
+  // A transient operation (stage_commit, #261) has no ledger item to ack.
+  if (!result.transient) { try { await callWorker('ack', {ids: [id]}); } catch (error) { log('ledger ack 실패:', error.message); } }
   return result;
 }
 // Framed member list (u32 count, then u32 len ‖ identity ‖ 32-byte key).
@@ -119,6 +124,7 @@ async function sync({quiet = false} = {}) {
     if (status !== 200) { if (!quiet) log('동기화 실패:', describe(status, body)); return; }
     if (body.first_seq > S.relaySeq + 1 && S.relaySeq > 0) log(`경고: 릴레이가 seq ${S.relaySeq + 1}~${body.first_seq - 1}를 이미 지웠다 — 재참여가 필요할 수 있다`);
     for (const ev of body.events) {
+      const seqBefore = S.relaySeq;
       S.relaySeq = Math.max(S.relaySeq, ev.seq);
       if (ev.device === S.dev) {
         if (ev.kind === 'commit' && S.pending) {
@@ -146,11 +152,35 @@ async function sync({quiet = false} = {}) {
       }
       if (ev.kind === 'welcome') { log(`무시: 이미 참여한 기기에 온 Welcome(seq ${ev.seq})`); continue; }
       if (ev.kind === 'commit') {
-        try {
-          await op('commit', data);
-          S.roster = parseMembers((await op('members')).output); renderRoster();
-          log(`commit 적용(seq ${ev.seq}, ${ev.device}) — 멤버 ${S.roster.join(', ')}`);
-        } catch (error) { log(`commit 거부(seq ${ev.seq}, ${ev.device}): ${error.message} — 이 기기는 방에서 빠졌을 수 있다`); }
+        // #261 two-step application: stage (authenticate + roster delta report),
+        // check the delta against this device's roster and — when this commit is
+        // the page's latest epoch — against the relay's enforced roster, then
+        // merge; a refusal discards (epoch unchanged) and halts this device.
+        let report;
+        try { report = parseStageReport((await op('stage_commit', data)).output); }
+        catch (error) { log(`commit 거부(seq ${ev.seq}, ${ev.device}): ${error.message} — 이 기기는 방에서 빠졌을 수 있다`); continue; }
+        const outer = ev.epoch + 1 === body.epoch && Array.isArray(body.members) ? body.members.map(m => m.device) : null;
+        const verdict = checkCommit({report, roster: S.roster, committer: ev.device, outer});
+        if (!verdict.ok) {
+          try { await op('discard_staged'); } catch (error) { log(`discard 실패: ${error.message}`); }
+          halt(ev.seq, ev.device, verdict);
+          break;
+        }
+        try { await op('merge_staged'); } catch (error) {
+          // Most likely the resident worker session was rebuilt between stage and
+          // merge (another tab wrote, or the worker restarted): the stage is gone.
+          // Fetch this seq again once; a second failure is reported as a refusal.
+          if (S.retriedSeq !== ev.seq) {
+            S.retriedSeq = ev.seq; S.relaySeq = seqBefore;
+            log(`commit 적용 실패(seq ${ev.seq}): ${error.message} — 다시 가져와 1회 재시도`);
+            break;
+          }
+          log(`commit 거부(seq ${ev.seq}, ${ev.device}): ${error.message} — 이 기기는 방에서 빠졌을 수 있다`);
+          continue;
+        }
+        S.roster = parseMembers((await op('members')).output); renderRoster();
+        log(`commit 검증·적용(seq ${ev.seq}, ${ev.device}) — +${report.adds.map(m => m.id).join(',') || '없음'} −${report.removes.map(m => m.id).join(',') || '없음'}` +
+          `${outer ? ' · 릴레이 로스터 일치' : ' · (이전 epoch: 내부 검사만)'} — 멤버 ${S.roster.join(', ')}`);
         continue;
       }
       // The durable worker binds the room itself (bindDecrypt from its own init), so
@@ -190,6 +220,27 @@ function renderState() {
   $('state').textContent = lines.join('\n');
 }
 function setState(text) { status.base = text; renderState(); }
+// #261: a commit this device refuses to merge. Loud, durable, and final for this
+// device: polling stops, sending is disabled, the reason stays on screen across
+// reloads. The operator decides (re-add this device, or treat the committer /
+// relay as compromised) — silently continuing would hide a roster change.
+function halt(seq, committer, verdict) {
+  S.halted = {seq, committer, reason: verdict.reason, detail: verdict.detail ?? '', at: clock()};
+  save();
+  if (S.timer) { clearInterval(S.timer); S.timer = null; }
+  showHalt();
+}
+function showHalt() {
+  const h = S.halted; if (!h) return;
+  enable(false);
+  setState(`⛔ commit 거부 — seq ${h.seq}, ${h.committer}: ${h.reason}${h.detail ? ` (${h.detail})` : ''} (${h.at})\n` +
+    '이 기기는 그 commit을 적용하지 않았고 더 읽지 않는다. 운영자에게 알리고 재초대/재등록을 기다린다.');
+  const row = document.createElement('div');
+  row.className = 'muted'; row.dataset.placeholder = 'halt';
+  row.textContent = `[⛔ seq ${h.seq}] ${h.committer}의 commit을 거부했다 — ${h.reason}`;
+  $('messages').append(row);
+  log(`⛔ commit 거부(seq ${h.seq}, ${h.committer}): ${h.reason}${h.detail ? ` — ${h.detail}` : ''}`);
+}
 function markSynced() { status.syncedAt = clock(true); renderState(); }
 function setOffline(down) {
   if (!down && status.offlineAt === null) return;
@@ -223,6 +274,7 @@ async function activate(statusInfo) {
     $('messages').append(note);
     log(`이어하기: 이전 대화(relay seq ≤ ${S.relaySeq})는 다시 표시되지 않는다 — 새 메시지만 표시`);
   }
+  if (S.halted) { showHalt(); return; }  // #261: a refused commit is final for this device
   await sync({quiet: true});
   S.timer = setInterval(() => sync({quiet: true}), 4000);
 }
@@ -250,7 +302,7 @@ $('start').addEventListener('click', async () => {
       setState('저장소가 비워져 새 기기로 시작한다 — 운영자 재등록과 상대 기기의 재초대가 필요하며 이전 메시지는 읽을 수 없다. "새 기기로 시작"으로 확인.');
       return;
     }
-    if (init.fresh) { S.joined = false; S.pending = false; S.relaySeq = 0; S.roster = []; S.expectedRoster = null; S.pendingWelcome = null; }
+    if (init.fresh) { S.joined = false; S.pending = false; S.relaySeq = 0; S.roster = []; S.expectedRoster = null; S.pendingWelcome = null; S.halted = null; }
     await activate(statusInfo);
   } catch (error) { fail(error); } finally { $('start').disabled = false; }
 });
@@ -258,7 +310,7 @@ $('confirm-fresh').addEventListener('click', async () => {
   const statusInfo = window.__pendingFresh; if (!statusInfo) return;
   window.__pendingFresh = null; $('confirm-fresh').hidden = true;
   localStorage.removeItem(stateKey());
-  Object.assign(S, {joined: false, pending: false, relaySeq: 0, roster: [], expectedRoster: null, pendingWelcome: null});
+  Object.assign(S, {joined: false, pending: false, relaySeq: 0, roster: [], expectedRoster: null, pendingWelcome: null, halted: null});
   try { await activate(statusInfo); } catch (error) { fail(error); }
 });
 

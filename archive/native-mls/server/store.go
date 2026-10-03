@@ -764,6 +764,11 @@ type eventsPage struct {
 	// reader whose `after` lies below firstSeq-1 has a pruned gap and must
 	// not pretend the page is contiguous history.
 	firstSeq int64
+	// members is the tracked roster at the end of this page's transaction
+	// (#261): the outer membership the relay enforces, read in the same
+	// transaction as the rows so a client can check a commit's inner roster
+	// delta against it. Empty for a room that has no seeded membership yet.
+	members []memberRow
 }
 
 // maxPageBytes bounds the event bytes one GET page carries (review 2 L: with
@@ -842,6 +847,9 @@ func (s *relay) readEvents(room, device string, after int64, limit int, ack *int
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
+		return eventsPage{}, err
+	}
+	if page.members, err = readMembers(tx, room); err != nil {
 		return eventsPage{}, err
 	}
 	if ack == nil {

@@ -189,6 +189,11 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
   // Resident state, valid only while `known` equals the durable meta revision.
   // tags: hex(entry key) -> {k, t}. reloads: full rebuilds of the resident session.
   let session = null, known = -1, tags = new Map(), reloads = 0;
+  // #261: a foreign commit is staged in the resident session (its handshake
+  // step consumed, changes in flight) and only merge_staged / discard_staged
+  // may follow. A stage is transient: no ledger item, nothing persisted, and a
+  // dropped session simply loses it — the client stages the relay event again.
+  let staging = false;
 
   // SHA-256 over entries sorted by key (hex order = byte order), each
   // u32 LE key_len ‖ key ‖ tag. Not linear (unlike an XOR of tags), so a mix of
@@ -233,7 +238,7 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
     if (verifyTag && !meta_verify(key, metaBytes(meta), meta.tag)) fail();
   }
   function seal(meta) { meta.tag = new Uint8Array(TAG); validMeta(meta, false); meta.tag = meta_tag(key, metaBytes(meta)); }
-  function dropSession() { if (session) { try { session.free(); } catch (_) {} } session = null; known = -1; tags = new Map(); }
+  function dropSession() { if (session) { try { session.free(); } catch (_) {} } session = null; known = -1; tags = new Map(); staging = false; }
 
   function open(name) {
     if (typeof name !== 'string' || !namePattern.test(name)) fail();
@@ -445,10 +450,17 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
           }
           if (meta.ledger.length >= MAX_LEDGER || meta.revision >= Number.MAX_SAFE_INTEGER) fail();
           if (argument.method === 'decrypt' ? argument.sequence !== meta.cursor + 1 : argument.sequence !== 0) fail();
+          // #261: while a commit is staged only its continuations are accepted,
+          // and they are accepted only while one is staged (the facade enforces
+          // the same; this keeps the ledger free of half-applied stages).
+          const stagesCommit = argument.method === 'stage_commit';
+          const continuesStage = argument.method === 'merge_staged' || argument.method === 'discard_staged';
+          if (staging ? !continuesStage : continuesStage) fail();
           // Synchronous WASM call inside the active IDB transaction callback. A
           // rejection has already been rolled back inside the session.
           let result;
           try { result = apply(bytes); } catch (error) {
+            staging = false;  // the facade rolled back to the durable baseline (stage dropped)
             // The facade rolled back (session.rs `finish`); the session is not in
             // flight. Verify it really is at the durable state again, then decide
             // whether this is a poison message (tombstone) or a plain failure. Either
@@ -472,6 +484,17 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
             return {rejected: true, sequence: argument.sequence, revision: meta.revision, cursor: meta.cursor, replay: false,
               changed: 0, bytes_written: 0, meta_bytes: written.meta};
           }
+          if (stagesCommit) {
+            // Transient: the report goes back to the caller, the session stays in
+            // flight with the stage, this transaction persists nothing and does
+            // not commit the session (inflight stays false), no ledger item — so
+            // the caller must not ack this id.
+            const output = result.output();
+            result.free();
+            staging = true;
+            return {output: Array.from(output), revision: meta.revision, cursor: meta.cursor, replay: false, changed: 0, transient: true};
+          }
+          staging = false;
           inflight = true;
           const output = result.output(), rawChanges = result.changes(), changes = unframe(rawChanges);
           wipeAll(rawChanges);  // the parsed entries are wiped after persist (below)

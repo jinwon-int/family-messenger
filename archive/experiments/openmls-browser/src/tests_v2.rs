@@ -1229,6 +1229,128 @@ fn split_framed(framed: &[u8]) -> (&[u8], &[u8]) {
     (&framed[4..4 + n], &framed[4 + n..])
 }
 
+/// #261 S1: the durable lane stages a foreign commit and reports its roster
+/// delta (format 2) without merging. Staging consumes the handshake step, so
+/// its store changes are in flight — but a bare stage can never be committed:
+/// only `merge_staged` (one durable step carrying stage + merge) or
+/// `discard_staged` may follow. The roster moves only at the merge, the
+/// mirror reproduces the live store, and the merged member talks at the new
+/// epoch — live and after a reopen.
+#[test]
+fn durable_lane_stage_commit_reports_then_merges() {
+    let (mut alice, mut bob, mut carol) = trio();
+    let mut dave = Peer::new("dave");
+    let framed = bob.step("invite_with_commit", &dave.step("key_package", &[]));
+    bob.step("merge_pending", &[]);
+    let (wcommit, wwelcome) = split_framed(&framed);
+
+    let staged = alice.session.apply("stage_commit", wcommit).expect("stage on the durable lane");
+    assert_ne!(staged.changes(), session::frame(&[]), "staging consumes the handshake step: changes are in flight");
+    let (adds, removes, updates, path) = stage_report(&staged.output());
+    assert_eq!(adds.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), vec!["dave"]);
+    assert_eq!((removes.len(), updates.len()), (0, 0));
+    assert_eq!(path.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), vec!["bob"], "committer path leaf");
+    assert!(alice.session.commit().is_err(), "a bare stage is never durable");
+    assert!(alice.session.apply("members", &[]).is_err(), "only merge/discard may follow a stage");
+    assert!(alice.session.apply("stage_commit", wcommit).is_err(), "one staged commit at a time; the stage stays");
+
+    // merge_staged is the durable step: its changes cover stage + merge, the
+    // mirror equals the live store (Peer::step asserts it).
+    alice.step("merge_staged", &[]);
+    assert_eq!(roster(&alice.step("members", &[])).len(), 4);
+    assert_eq!(alice.session.current_epoch(), bob.session.current_epoch());
+    carol.step("commit", wcommit);
+    dave.step("join", wwelcome);
+    let wire = dave.step("encrypt", &enc(ROOM, "dave", b"hello after merge"));
+    assert_eq!(plain(&alice.step("decrypt", &dec(ROOM, &wire))), b"hello after merge");
+    let mut reopened = alice.reopen("alice");
+    assert_eq!(reopened.current_epoch(), bob.session.current_epoch());
+    let wire = dave.step("encrypt", &enc(ROOM, "dave", b"after reopen"));
+    assert_eq!(plain(&reopened.apply("decrypt", &dec(ROOM, &wire)).unwrap().output()), b"after reopen");
+    // Nothing staged any more: merge/discard are pure rejections.
+    let before = session_entries(&alice.session);
+    assert!(alice.session.apply("merge_staged", &[]).is_err());
+    assert!(alice.session.apply("discard_staged", &[]).is_err());
+    assert_eq!(session_entries(&alice.session), before);
+}
+
+/// #261 S1: a policy refusal (`discard_staged`) rolls the stage back to the
+/// durable baseline — the consumed handshake step included — so the epoch
+/// is unchanged and the very same relay event can be staged again (the
+/// relay keeps it until acked). A reload between stage and merge behaves the
+/// same way: the reopened session holds no staged commit and stages the
+/// event again from its durable pre-stage state.
+#[test]
+fn durable_lane_discard_staged_keeps_epoch_and_reopen_restages() {
+    let (mut alice, mut bob, mut carol) = trio();
+    let mut dave = Peer::new("dave");
+    let framed = bob.step("invite_with_commit", &dave.step("key_package", &[]));
+    bob.step("merge_pending", &[]);
+    let (wcommit, wwelcome) = split_framed(&framed);
+    dave.step("join", wwelcome);
+
+    let before = session_entries(&alice.session);
+    let epoch_before = alice.session.current_epoch();
+    alice.session.apply("stage_commit", wcommit).expect("stage");
+    let refusal = alice.session.apply("discard_staged", &[]).expect("discard");
+    assert_eq!(refusal.changes(), session::frame(&[]), "a refusal persists nothing");
+    alice.session.commit().unwrap();
+    assert_eq!(session_entries(&alice.session), before, "store back at the durable baseline");
+    assert_eq!(alice.session.current_epoch(), epoch_before, "discard keeps the epoch");
+    assert_eq!(roster(&alice.step("members", &[])).len(), 3);
+    assert!(alice.session.apply("discard_staged", &[]).is_err(), "nothing staged after a discard");
+    // Re-staging the same event works because the refusal restored the handshake step.
+    let staged = alice.session.apply("stage_commit", wcommit).expect("re-stage after discard");
+    let (adds, ..) = stage_report(&staged.output());
+    assert_eq!(adds.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), vec!["dave"]);
+    alice.step("merge_staged", &[]);
+    assert_eq!(alice.session.current_epoch(), bob.session.current_epoch());
+
+    // Reload between stage and merge: carol stages bob's next commit, then the
+    // page "crashes" (reopen from the mirror, no abort). Nothing is staged in
+    // the reopened session; the same event stages and merges there.
+    carol.step("commit", wcommit);
+    let mut erin = Peer::new("erin");
+    let framed = bob.step("invite_with_commit", &erin.step("key_package", &[]));
+    bob.step("merge_pending", &[]);
+    let (ecommit, ewelcome) = split_framed(&framed);
+    carol.session.apply("stage_commit", ecommit).expect("stage before the crash");
+    let mut reopened = carol.reopen("carol");
+    assert!(reopened.apply("merge_staged", &[]).is_err(), "staged state is memory-only");
+    reopened.apply("stage_commit", ecommit).expect("re-stage after reload");
+    reopened.apply("merge_staged", &[]).expect("merge after reload");
+    reopened.commit().unwrap();
+    assert_eq!(reopened.current_epoch(), bob.session.current_epoch());
+    erin.step("join", ewelcome);
+    let wire = erin.step("encrypt", &enc(ROOM, "erin", b"after the reload"));
+    assert_eq!(plain(&reopened.apply("decrypt", &dec(ROOM, &wire)).unwrap().output()), b"after the reload");
+}
+
+/// #261 S1: a forged or stale commit is rejected at `stage_commit` and rolled
+/// back like every other durable-lane rejection — store unchanged, nothing in
+/// flight, session usable. merge/discard without a stage are pure rejections.
+#[test]
+fn durable_lane_stage_commit_rejections_roll_back() {
+    let (mut alice, mut bob, _carol) = trio();
+    let before = session_entries(&alice.session);
+    assert!(alice.session.apply("stage_commit", b"not a commit").is_err());
+    assert_eq!(session_entries(&alice.session), before);
+    assert_eq!(alice.session.pending_changes(), session::frame(&[]));
+    assert!(alice.session.commit().is_err(), "nothing in flight after the rollback");
+    assert!(alice.session.apply("merge_staged", &[]).is_err());
+    assert!(alice.session.apply("discard_staged", &[]).is_err());
+    assert_eq!(session_entries(&alice.session), before);
+
+    // The session is fully usable afterwards: a real commit stages and merges.
+    let mut dave = Peer::new("dave");
+    let framed = bob.step("invite_with_commit", &dave.step("key_package", &[]));
+    bob.step("merge_pending", &[]);
+    let (wcommit, _) = split_framed(&framed);
+    alice.session.apply("stage_commit", wcommit).expect("stage");
+    alice.step("merge_staged", &[]);
+    assert_eq!(alice.session.current_epoch(), bob.session.current_epoch());
+}
+
 #[test]
 fn durable_lane_foreign_commit_while_own_pending_then_reopen() {
     let (mut alice, mut bob, mut carol) = trio();
