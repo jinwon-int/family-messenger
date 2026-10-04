@@ -181,6 +181,11 @@ pub struct EventsResponse {
     pub events: Vec<StoredRow>,
     #[serde(default)]
     pub members: Option<Vec<MemberOwned>>,
+    /// Lowest seq the room still holds (#242; 0 = empty room, or a relay that
+    /// predates the field). A joined reader whose `after` lies below
+    /// `first_seq - 1` lost history to pruning (#268).
+    #[serde(default)]
+    pub first_seq: i64,
 }
 
 #[derive(Deserialize)]

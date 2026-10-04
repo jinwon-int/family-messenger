@@ -84,6 +84,15 @@ durable 워커 허용 메서드에 이번에 더해진 것: `invite_with_commit`
   봇(`bot/src/session.rs`)도 같은 규칙으로 stage→검사→merge 한다(#263, `bot/src/policy.rs`; 위반 시
   `commit_refused` + 상태 파일 옆 `.refused` 마커로 재시작 뒤에도 정지). 두 구현은
   `tests/fixtures/commit-policy-vectors.json`을 함께 돌린다.
+- **이력 gap(#268)**: 릴레이 GET의 `first_seq`(#242)가 참여한 봇의 커서+1보다 크면, 봇이 읽지 못한 seq가
+  이미 지워진 것이다. 이는 커서가 프루닝 게이트에서 빠졌거나(revoke·제거 grace) commit이 hard max epoch 창을
+  넘긴 경우다. 봇은 그 페이지를 **처리하지 않고** `history_gap` 이벤트(after·first_seq·missing_from/to)를 낸다.
+  그다음 같은 `.refused` 마커(`reason: "history_gap"`)로 방을 정지한다. 재시작해도 `halted`(reason 포함) 상태로
+  남고, 운영자가 마커를 지우고 기기를 다시 추가해야(새 Welcome) 복구된다. 지운 이력을 조용히 건너뛰거나 다음
+  epoch 복호화 실패를 반복하지 않는다. 한계: `first_seq`는 가장 오래된 보존 seq만 알려 준다. 그래서 그 위의
+  중간 구멍(hard max로 commit만 지워진 경우)은 이 신호로 잡히지 않고, 그때는 `rejected`/`undecryptable`로
+  드러난다. 기본 보존 정책(앱 30일 ∧ MIN 커서, commit keep 8 / hard 256 epoch)에서는 커서가 기록된 오프라인
+  봇에게 이 경로가 열리지 않는다.
 - 제거(remove_pending)·방 닫기 UI 없음(운영자 CLI/릴레이 도구). 첨부 UI 없음(텍스트만).
 - **메시지 이력 없음**: 페이지는 `relaySeq`(마지막 읽은 릴레이 seq)만 저장하고 복호화된 본문은 어디에도
   보관하지 않는다. 새로고침·탭 회수 뒤 이어하기하면 `events?after=relaySeq`만 가져오므로 이전 대화는 다시

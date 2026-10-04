@@ -399,9 +399,16 @@ pub fn run(opts: Options) -> Result<(), BotError> {
     // operator clears it deliberately (with a re-add), never a restart.
     let halted0 = opts.state_file.as_deref().map(refused_marker_path).filter(|p| p.exists());
     if let Some(marker) = &halted0 {
+        // The marker's reason (a policy refusal code or `history_gap`, #268)
+        // tells the operator which recovery applies; an unreadable marker
+        // still halts.
+        let reason = std::fs::read(marker)
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<serde_json::Value>(&raw).ok())
+            .and_then(|m| m.get("reason").cloned());
         emit(&serde_json::json!({
             "event": "halted", "room": opts.room, "device": opts.device,
-            "marker": marker.display().to_string(),
+            "marker": marker.display().to_string(), "reason": reason,
         }));
     }
     let mut rooms = vec![RoomState {
@@ -493,6 +500,15 @@ fn poll_room(ctx: &Ctx, device: &mut Device, state: &mut RoomState) -> Result<()
     };
     if let Some(acked) = ack {
         state.ack_sent = acked;
+    }
+    // #268: the relay pruned seqs this joined device never read (its cursor
+    // left the pruning gate — revoke, removal grace — or a commit outlived the
+    // hard-max epoch window). Processing the page would skip the lost commits
+    // and fail every later decrypt, or drop messages silently; instead the
+    // room halts before anything in the page moves the cursor, so the signal
+    // survives a restart and the operator re-adds the device (new Welcome).
+    if let Some((from, to)) = history_gap(state.joined, state.cursor, body.first_seq) {
+        return gap(ctx, state, body.first_seq, body.epoch, from, to);
     }
     state.epoch = body.epoch;
     for ev in &body.events {
@@ -621,12 +637,41 @@ fn refuse(ctx: &Ctx, state: &mut RoomState, ev: &StoredRow, refusal: policy::Ref
         "event": "commit_refused", "room": state.room, "seq": ev.seq, "committer": ev.device,
         "epoch": ev.epoch, "reason": refusal.reason, "detail": refusal.detail,
     }));
+    write_halt_marker(ctx, state, &serde_json::json!({
+        "room": state.room, "device": ctx.own, "seq": ev.seq, "committer": ev.device,
+        "epoch": ev.epoch, "reason": refusal.reason, "detail": refusal.detail,
+    }))
+}
+
+/// `Some((first missing seq, last missing seq))` when a joined device's
+/// cursor lies below the relay's oldest retained seq minus one (#268). An
+/// unjoined device has no history to lose — events before its Welcome are
+/// not its to read — and `first_seq == 0` is an empty room or an older relay.
+fn history_gap(joined: bool, cursor: i64, first_seq: i64) -> Option<(i64, i64)> {
+    (joined && first_seq > 0 && first_seq > cursor.saturating_add(1)).then(|| (cursor + 1, first_seq - 1))
+}
+
+/// A pruned history gap (#268): loud, durable and final for this room, like
+/// a refused commit — the same marker keeps a restart halted until the
+/// operator clears it and re-adds the device. The cursor stays where it was:
+/// nothing of the page was processed.
+fn gap(ctx: &Ctx, state: &mut RoomState, first_seq: i64, relay_epoch: i64, from: i64, to: i64) -> Result<(), BotError> {
+    state.halted = true;
+    emit(&serde_json::json!({
+        "event": "history_gap", "room": state.room, "after": state.cursor, "first_seq": first_seq,
+        "missing_from": from, "missing_to": to, "epoch": state.epoch, "relay_epoch": relay_epoch,
+    }));
+    write_halt_marker(ctx, state, &serde_json::json!({
+        "room": state.room, "device": ctx.own, "reason": "history_gap", "after": state.cursor,
+        "first_seq": first_seq, "epoch": state.epoch, "relay_epoch": relay_epoch,
+    }))
+}
+
+/// Main room only, and only with a state file: without one the halt lives
+/// for this process.
+fn write_halt_marker(ctx: &Ctx, state: &RoomState, marker: &serde_json::Value) -> Result<(), BotError> {
     if let (Some(path), true) = (ctx.state_file, state.room == ctx.room) {
-        let marker = serde_json::json!({
-            "room": state.room, "device": ctx.own, "seq": ev.seq, "committer": ev.device,
-            "epoch": ev.epoch, "reason": refusal.reason, "detail": refusal.detail,
-        });
-        let raw = serde_json::to_vec_pretty(&marker).map_err(|_| BotError::Local("refusal marker json"))?;
+        let raw = serde_json::to_vec_pretty(marker).map_err(|_| BotError::Local("halt marker json"))?;
         write_state_file(&refused_marker_path(path), &raw)?;
     }
     Ok(())
@@ -956,6 +1001,101 @@ mod tests {
         assert!(!is_echo_client_id("-echo-1"));
         assert!(!is_echo_client_id("bot-echo-"));
         assert!(!is_echo_client_id("bot-echo-x1"));
+    }
+
+    /// #268: only a joined device below `first_seq - 1` has lost history.
+    #[test]
+    fn history_gap_rule() {
+        assert_eq!(history_gap(true, 4, 10), Some((5, 9)));
+        assert_eq!(history_gap(true, 4, 6), Some((5, 5)));
+        // Contiguous: the next seq is the oldest one held.
+        assert_eq!(history_gap(true, 4, 5), None);
+        assert_eq!(history_gap(true, 4, 1), None);
+        // Empty room or a relay without the field.
+        assert_eq!(history_gap(true, 4, 0), None);
+        // Not joined: pre-Welcome history was never ours.
+        assert_eq!(history_gap(false, 0, 10), None);
+        assert_eq!(history_gap(true, i64::MAX, 10), None);
+    }
+
+    /// Canned relay: answers each accepted connection with the next body
+    /// (HTTP 200) and records the request lines, then stops listening.
+    fn canned_relay(bodies: Vec<String>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write as _};
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().expect("addr").port());
+        let handle = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for body in bodies {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = stream.read(&mut buf).expect("read request");
+                    assert!(n > 0, "eof before header terminator");
+                    raw.extend_from_slice(&buf[..n]);
+                }
+                let text = String::from_utf8_lossy(&raw).to_string();
+                seen.push(text.lines().next().unwrap_or_default().to_string());
+                let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+                stream.write_all(resp.as_bytes()).expect("write response");
+            }
+            seen
+        });
+        (base, handle)
+    }
+
+    fn joined_room(room: &str, cursor: i64) -> RoomState {
+        RoomState {
+            room: room.into(), cursor, epoch: 2, joined: true, joinable: true, echoes: 3,
+            retry: VecDeque::new(), dirty: false, acked: cursor, ack_sent: cursor, ack_disabled: false,
+            halted: false,
+        }
+    }
+
+    /// #268 end to end through `poll_room`: a page whose `first_seq` lies past
+    /// the cursor halts the room before any event moves the cursor, writes the
+    /// durable marker with reason `history_gap`, and the next poll never
+    /// touches the relay. A contiguous page (`first_seq == cursor + 1`) does
+    /// not halt.
+    #[test]
+    fn poll_room_halts_on_history_gap() {
+        let event = r#"{"seq":12,"device":"owner","client_id":"owner-1","kind":"application","epoch":5,"bytes":"Z2FyYmFnZQ==","sha256":"00","created_at":1}"#;
+        let gap_page = format!(r#"{{"epoch":5,"revision":1,"events":[{event}],"first_seq":10}}"#);
+        let ok_page = r#"{"epoch":2,"revision":1,"events":[],"first_seq":5}"#.to_string();
+        let (base, server) = canned_relay(vec![ok_page, gap_page]);
+        let client = Client::with_access(&base, api::Access::None);
+        let path = state_path("gap");
+        let marker = refused_marker_path(&path);
+        let _ = std::fs::remove_file(&marker);
+        let ctx = Ctx { client: &client, own: "bot-1", room: "family", state_file: Some(&path) };
+        let mut dev = Device::new("bot-1").unwrap_or_else(|_| panic!("device new"));
+
+        // Contiguous history: no halt.
+        let mut contiguous = joined_room("family", 4);
+        poll_room(&ctx, &mut dev, &mut contiguous).unwrap_or_else(|e| panic!("contiguous poll: {e}"));
+        assert!(!contiguous.halted, "first_seq == cursor + 1 is contiguous");
+        assert!(!marker.exists());
+
+        // Pruned gap 5..=9: halt, cursor untouched, marker durable.
+        let mut state = joined_room("family", 4);
+        poll_room(&ctx, &mut dev, &mut state).unwrap_or_else(|e| panic!("gap poll: {e}"));
+        assert!(state.halted, "a pruned gap must halt the room");
+        assert_eq!(state.cursor, 4, "no event of the gap page may move the cursor");
+        assert_eq!(state.epoch, 2, "the device epoch stays where it was");
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&marker).expect("marker written")).expect("marker json");
+        assert_eq!(written["reason"], "history_gap");
+        assert_eq!(written["after"], 4);
+        assert_eq!(written["first_seq"], 10);
+
+        // Halted: the next poll is a no-op (the canned relay has stopped
+        // listening, so any request would fail).
+        let seen = server.join().expect("server thread");
+        poll_room(&ctx, &mut dev, &mut state).unwrap_or_else(|e| panic!("halted poll: {e}"));
+        assert_eq!(seen.len(), 2);
+        assert!(seen.iter().all(|line| line.starts_with("GET /v2/rooms/family/events?device=bot-1&after=4")), "{seen:?}");
+        let _ = std::fs::remove_file(&marker);
     }
 
     /// Identity frames reject length overflow instead of panicking (L1-style
