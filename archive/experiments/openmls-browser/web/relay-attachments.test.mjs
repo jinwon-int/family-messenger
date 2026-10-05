@@ -105,7 +105,7 @@ test('foreign-device or malformed outboxes are never sent', () => {
 });
 
 
-test('already-open tabs cannot replace an uncertain delivery or replay an acknowledged outbox', async () => {
+test('another tab cannot acknowledge the wrong selected file or re-encrypt a stale retry', async () => {
   const f = fixture(); let lost = true;
   f.options.post = async payload => {
     f.posts.push(structuredClone(payload));
@@ -113,12 +113,19 @@ test('already-open tabs cannot replace an uncertain delivery or replay an acknow
     return {status: 200, body: {seq: 7, duplicate: true}};
   };
   const a = attachmentOutbox(f.options), b = attachmentOutbox(f.options);
-  await assert.rejects(a.send(file([1]), 3), /lost response/);
-  await b.send(null, 9);
+  const originalFile = file([1]);
+  await assert.rejects(a.send(originalFile, 3), /lost response/);
+  await assert.rejects(b.send(file([2]), 9), /다른 탭/);
+  assert.equal(f.posts.length, 1, 'a different file selection is not reported as successful');
+  const reloaded = attachmentOutbox(f.options);
+  await reloaded.send(null, 9);
   assert.deepEqual(f.posts[0], f.posts[1]);
   assert.equal(f.encrypted(), 1);
-  await assert.rejects(a.send(null, 9), /256 KiB/);
+  // The real UI preserves and passes the original File on retries.
+  await assert.rejects(a.send(originalFile, 9), /상태가 변경/);
+  await assert.rejects(a.send(null, 9), /상태가 변경/);
   assert.equal(f.posts.length, 2, 'stale RAM does not resurrect an acknowledged delivery');
+  assert.equal(f.encrypted(), 1, 'the preserved File is not encrypted a second time');
 });
 
 test('concurrent tabs acquire one shared lock before encrypting or posting', async () => {

@@ -38,10 +38,18 @@ export function attachmentOutbox({storage, key, device, encrypt, post, newId = (
         // Read AFTER acquiring the cross-tab lock. A stale instance must not
         // replace an uncertain delivery or delete another tab's newer outbox.
         const current = readPending();
-        if (pending && !persisted && current && current.client_id !== pending.client_id) {
-          throw new Error('다른 탭에 보류 중인 첨부가 있다. 먼저 그 첨부를 재시도한다.');
+        if (current && !pending) {
+          // This tab selected a NEW file. Retrying another tab's file would
+          // report success for the wrong selection and make the UI discard it.
+          throw new Error('다른 탭에 보류 중인 첨부가 있다. 새 파일을 보관하고 페이지를 다시 연다.');
         }
-        if (current || persisted) { pending = current; persisted = current !== null; }
+        if (pending && (persisted && !current || current && JSON.stringify(current) !== JSON.stringify(pending))) {
+          // A retry's identity is fixed even if another tab already removed its
+          // record. The UI still holds the original file: never encrypt it as
+          // a new delivery merely because the shared pending record is gone.
+          throw new Error('다른 탭에서 첨부 상태가 변경됐다. 페이지를 다시 열어 전송 결과를 확인한다.');
+        }
+        if (current) { pending = current; persisted = true; }
         if (!pending) {
           if (!file || !Number.isSafeInteger(file.size) || file.size < 0 || file.size > MAX_ATTACHMENT) {
             throw new Error('첨부파일은 256 KiB(262,144바이트) 이하여야 한다.');

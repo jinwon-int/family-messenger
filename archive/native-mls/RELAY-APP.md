@@ -126,5 +126,7 @@ POST 전에 DB/방/기기별 outbox에 **암호문·전송 ID·epoch·크기만*
 
 Attachment sends require the browser Web Locks API. Tabs sharing an outbox key
 acquire an exclusive lock before re-reading, encrypting, posting or removing its
-record. An already open tab therefore retries the persisted ciphertext rather
-than replacing an uncertain delivery. Browsers without Web Locks refuse sending.
+record. An already open tab never replaces an uncertain delivery. If another tab
+changes or confirms its pending record, a stale retry stops and asks the user to
+reopen the page; a newly selected file is not silently replaced by the other tab's
+file. Browsers without Web Locks refuse sending.
