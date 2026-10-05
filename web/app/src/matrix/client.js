@@ -154,10 +154,10 @@ export class ClientAdapter {
     return `familychat::${safe(this.myUserId)}::${safe(device)}`;
   }
 
-  /** Begin syncing. @param {(state: string) => void} [onSyncState] */
+  /** Begin syncing. @param {(state: string, data?: object) => void} [onSyncState] */
   start(onSyncState) {
     if (onSyncState) {
-      this.client.on('sync', (state) => onSyncState(state));
+      this.client.on('sync', (state, _previous, data) => onSyncState(state, data));
     }
     this.client.startClient({ initialSyncLimit: 20 });
   }

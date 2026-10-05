@@ -61,6 +61,9 @@ guardian·heartbeat·종료 확인과 `remote_worker: true`를 함께 사용한�
 
 ## 수신, 복구, 실행 경계
 
+재로그인이나 기기 교체로 pin 검사에서 멈춘 경우
+[기기 재핀 수동 복구 절차](MATRIX-DEVICE-REPIN.md)를 따른다.
+
 - `/sync` 원문을 private SQLite에 먼저 저장한다(최대 4MiB). 이후 SDK의 암호화 상태를
   갱신하고, 각 요청/거절/제어 처리를 기록한 뒤 sync token과 pending 제거를 함께 커밋한다.
   SDK 처리 직후 죽어도 같은 원문을 재처리한다. 이미 수락/거절한 event ID는 다시 실행하지 않는다.

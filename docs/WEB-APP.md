@@ -39,8 +39,12 @@
 
 보안 경계(이 슬라이스에서 지킬 것):
 
-- 접속 토큰은 `sessionStorage`에만 둔다. 창을 닫으면 다시 로그인한다. 토큰이 영속 저장소에
-  들어가는 경로는 없고, 단위 시험이 이 규칙을 검증한다.
+- 접속 토큰은 기본적으로 `sessionStorage`에 둔다. 로그인 화면에서 기본 꺼짐인 **이 기기에서
+  로그인 유지**를 직접 선택하면 서버·계정·기기 ID와 묶은 토큰을 `localStorage`에도 저장한다(#219).
+  앱 종료 후 같은 기기로 복원하며 비밀번호·복구 키는 저장하지 않는다. 공용 기기에서는 선택하지 않는다.
+  로그아웃·선택하지 않은 새 로그인은 영속 토큰을 지운다. 서버/계정/기기가 다른 기록은 복원하지 않는다.
+  기기 잠금에 의존하는 선택이며 XSS나 기기의 저장소를 읽을 수 있는 사람에 대한 보호 수단은 아니다.
+  실제 iOS PWA 강제 종료·재실행 검증은 실기기 인수검사로 남는다.
 - 기기 ID는 `localStorage`에 남기고, 같은 계정이 같은 브라우저에서 다시 로그인하면 `device_id`를
   재사용한다(기기 이름 "패밀리챗 웹") — 단 **그 기기의 암호화 저장소가 이 브라우저에 실제로 남아 있을 때만**
   (`familychat.cryptoDeviceId` 마커 = 저장소 초기화 성공 시 기록). 저장소가 없는데 ID만 재사용하면 옛 ID에 새 키가
@@ -68,7 +72,7 @@ web/app/
 │   ├── verification.js   # 기기 검증 상태기계 + 이모지 한국어 라벨
 │   ├── recovery.js       # 복구 키 생성·입력 확인 (base58)
 │   ├── messages.js       # msgtype 분류·용량 표시·첨부 본문
-│   ├── session.js        # 토큰 휘발성 저장 경계
+│   ├── session.js        # 기본 휘발성·명시적 로그인 유지 저장 경계
 │   ├── ui.js             # 화면 렌더링(로직 없음)
 │   ├── main.js           # 연결·화면 전환
 │   └── matrix/client.js  # matrix-js-sdk 어댑터(지연 로딩)
@@ -109,6 +113,7 @@ wasm은 glue가 고정 경로로 찾아 해시 파일명을 붙일 수 없고, �
 | 시험 | 내용 |
 |---|---|
 | `npm run test:dom` (`tests/dom/*.test.mjs`, happy-dom 20.14.5 고정) | 로그인·셸(목록/대화/보관함)·시트 5종을 실제 DOM으로 그려 "null" 글자·초안 유실·작성창 교체(IME) 같은 화면 결함을 잡는다. 의존성이 필요해 설치 후 실행(CI는 `npm ci` 뒤) |
+| `python tests/browser_smoke.py` (build 후, pinned Playwright Chromium) | 실제 번들을 서버의 CSP 아래에서 실행하고 로그인 화면·기본 꺼짐인 로그인 유지 옵션을 검증한다. JS 실행 오류가 없어야 통과하며 `.runtime/web-browser-smoke/`의 스크린샷·수신증을 CI 아티팩트로 남긴다. 실계정 로그인이나 모바일 인수검사를 대신하지 않는다. |
 | `npm test` (`node --test tests/`) | strings·방 분류·참여자 분리·검증 상태기계·복구 키·메시지 본문·세션 경계·SDK 어댑터 계약(가짜 주입) |
 | `tests/transport_smoke.mjs` | 고정 버전 matrix-js-sdk 로딩, `initRustCrypto`·`login`·`uploadContent`·WASM 패키지 존재 |
 | `npm run build` | 브라우저 번들 성공(WASM 자산 포함) |
@@ -142,3 +147,11 @@ wasm은 glue가 고정 경로로 찾아 해시 파일명을 붙일 수 없고, �
 - [개발 순서 1단계](ROADMAP.md) — 게이트: 가족 2명 + AI 1, 실제 대화 100건(E2EE, 두 기기).
 - [결정 D](DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md) — 왜 Matrix 스택 + 직접 만드는 화면인가.
 - [홈서버 평가](evidence/homeserver-eval-20260913.md) — 미디어 한도(100 MiB)·비인증 다운로드 403 등 이 화면이 따르는 서버 실측.
+
+
+Remembered and tab-local credentials are bound to the homeserver, user and device.
+An old unbound tab token requires one new login after this update. A permanent
+`M_UNKNOWN_TOKEN` sync response removes the credential and returns to login;
+transient network failures retain it. Logging out with an already revoked token
+also clears local login state. Cross-tab identifier changes cannot reuse a token
+for a different server or account.

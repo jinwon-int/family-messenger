@@ -1,10 +1,9 @@
 // Session persistence boundary.
 //
-// Long-lived credentials: the Matrix access token is the family's room
-// key custodian on this device, so it is kept in sessionStorage only —
-// closing the PWA drops it and a re-login is required. Homeserver URL,
-// user ID and device ID are harmless identifiers and persist in
-// localStorage so the login form can prefill.
+// Tokens stay in sessionStorage by default. An explicit login-form opt-in
+// saves a server/user/device-bound credential in localStorage for PWA resume.
+// Passwords and recovery keys are never persisted here. A shared device must
+// leave the option off, or log out to revoke and remove its credentials.
 //
 // Storage seams are objects with getItem/setItem/removeItem, so tests
 // inject Maps and production injects localStorage/sessionStorage.
@@ -24,6 +23,17 @@ export const PERSIST_KEYS = Object.freeze({
 export const VOLATILE_KEYS = Object.freeze({
   accessToken: 'familychat.accessToken',
 });
+export const VOLATILE_IDENTITY_KEY = 'familychat.sessionIdentity.v1';
+export const REMEMBERED_SESSION_KEY = 'familychat.rememberedSession.v1';
+const identityFields = ['homeserverUrl', 'userId', 'deviceId'];
+const nonempty = value => typeof value === 'string' && value.length > 0;
+
+/** Remove credentials while retaining login identifiers and the crypto marker. */
+export function clearCredentials({persistent, volatile} = {}) {
+  persistent?.removeItem?.(REMEMBERED_SESSION_KEY);
+  volatile?.removeItem?.(VOLATILE_KEYS.accessToken);
+  volatile?.removeItem?.(VOLATILE_IDENTITY_KEY);
+}
 
 /** @returns {{persistent: object, volatile: object}} known fields only. */
 export function splitSession(session = {}) {
@@ -39,15 +49,28 @@ export function splitSession(session = {}) {
 }
 
 /**
- * Persist a session. Defensive: an access token passed inside `session`
- * never reaches the persistent store even if the caller misroutes it.
+ * Persist a session. The third argument, not a field in `session`, must
+ * explicitly opt in to credential persistence. Marker-only updates preserve
+ * the login choice; a new login without opt-in removes any remembered token.
  * @param {object} session
  * @param {Storage-like} persistent e.g. localStorage
  * @param {Storage-like} volatile e.g. sessionStorage
  */
-export function saveSession(session, { persistent, volatile }) {
+export function saveSession(session, { persistent, volatile }, {remember = false} = {}) {
   const { persistent: p, volatile: v } = splitSession(session);
+  const identityChanged = identityFields.some(key => key in p && persistent.getItem(PERSIST_KEYS[key]) !== p[key]);
+  if (v.accessToken || identityChanged) clearCredentials({persistent, volatile});
+  if (identityChanged) persistent.removeItem(PERSIST_KEYS.cryptoDeviceId);
   for (const [key, value] of Object.entries(p)) persistent.setItem(PERSIST_KEYS[key], value);
+  if (v.accessToken && remember === true) {
+    if (!identityFields.every(key => nonempty(p[key]))) throw new Error('Incomplete remembered session');
+    const credential = Object.fromEntries(identityFields.map(key => [key, p[key]]));
+    persistent.setItem(REMEMBERED_SESSION_KEY, JSON.stringify({...credential, accessToken: v.accessToken}));
+  }
+  if (v.accessToken) {
+    if (!identityFields.every(key => nonempty(p[key]))) throw new Error('Incomplete session');
+    volatile.setItem(VOLATILE_IDENTITY_KEY, JSON.stringify(Object.fromEntries(identityFields.map(key => [key, p[key]]))));
+  }
   for (const [key, value] of Object.entries(v)) volatile.setItem(VOLATILE_KEYS[key], value);
 }
 
@@ -59,14 +82,27 @@ export function readSession({ persistent, volatile } = {}) {
     if (typeof value === 'string' && value.length > 0) session[key] = value;
   }
   const token = volatile?.getItem?.(VOLATILE_KEYS.accessToken);
-  if (typeof token === 'string' && token.length > 0) session.accessToken = token;
+  if (nonempty(token)) {
+    // localStorage is shared by tabs; sessionStorage is not. Never combine a
+    // token from one tab with identifiers changed by another tab's login.
+    try {
+      const binding = JSON.parse(volatile?.getItem?.(VOLATILE_IDENTITY_KEY) ?? 'null');
+      if (binding && identityFields.every(key => nonempty(binding[key]) && binding[key] === session[key])) session.accessToken = token;
+    } catch (_) { /* an unbound legacy token requires a new login */ }
+  } else {
+    try {
+      const saved = JSON.parse(persistent?.getItem?.(REMEMBERED_SESSION_KEY) ?? 'null');
+      if (saved && identityFields.every(key => nonempty(saved[key]) && saved[key] === session[key])
+          && nonempty(saved.accessToken)) session.accessToken = saved.accessToken;
+    } catch (_) { /* malformed or unavailable optional persistence never restores a token */ }
+  }
   return session;
 }
 
 /** Remove every trace of the session from both stores. */
 export function clearSession({ persistent, volatile } = {}) {
+  clearCredentials({persistent, volatile});
   for (const storageKey of Object.values(PERSIST_KEYS)) persistent?.removeItem?.(storageKey);
-  volatile?.removeItem?.(VOLATILE_KEYS.accessToken);
 }
 
 /** True when a usable (logged-in) session is present. */
@@ -93,4 +129,9 @@ export function readPushPreference({ persistent } = {}) {
 export function savePushPreference(value, { persistent } = {}) {
   if (value !== 'on' && value !== 'off') return;
   persistent?.setItem?.(PUSH_PREFERENCE_KEY, value);
+}
+
+/** Matrix permanent credential rejection, distinct from a transient outage. */
+export function isExpiredSession(error) {
+  return (error?.errcode ?? error?.data?.errcode) === 'M_UNKNOWN_TOKEN';
 }

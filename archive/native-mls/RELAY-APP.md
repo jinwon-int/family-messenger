@@ -67,6 +67,25 @@ durable 워커 허용 메서드에 이번에 더해진 것: `invite_with_commit`
 
 ## 검증
 
+### 첨부 (#256)
+
+파일 선택 후 **첨부 보내기**로 0~262,144바이트를 단일 MLS application 메시지에 담는다.
+원본 바이트를 그대로 암호화해 256 KiB 상한을 전부 쓴다. 파일명·MIME 메타데이터나 별도 봉투를
+추가하지 않는다. 수신 화면에서는 생성된 `attachment-<seq>.bin` 이름으로 다운로드한다.
+`client_id`의 `file-v1-` 접두는 릴레이가 보는 **표시 힌트**이며 MLS 인증 정보가 아니다.
+발신자 표시는 복호화 결과의 인증된 발신자를 사용한다. 다운로드는 항상 `application/octet-stream`이고
+파일 본문을 HTML로 삽입하거나 미리보기로 실행하지 않는다.
+
+POST 전에 DB/방/기기별 outbox에 **암호문·전송 ID·epoch·크기만** 저장한다. 응답이 끊기면 입력을
+보존하고 **같은 첨부 다시 보내기**로 동일 바이트·동일 client_id를 재전송한다. 페이지 재시작 후에도
+같은 DB/기기로 이어하기하면 재시도할 수 있다. 릴레이의 200 duplicate를 성공으로 처리한다.
+명시적 epoch CAS 거부는 릴레이가 저장하지 않았다는 증거이므로 outbox를 지우고 동기화 후 다시 보낸다.
+불확실한 실패에서 새 ID를 발급하거나 재암호화하지 않는다. 평문 첨부는 화면이 열린 동안에만 남고
+이전 대화와 마찬가지로 새로고침 후 복원하지 않는다. 원래 파일명·미리보기·청킹은 지원하지 않는다.
+
+순수 outbox 시험은 `node --test web/relay-attachments.test.mjs`, 브라우저 합성 스모크는 아래 명령이다.
+합성 왕복은 오너 두 기기의 실사용 증거를 대체하지 않는다. 그 인수검사는 #256에서 계속 추적한다.
+
 - `archive/native-mls/tests/native_relay_app_smoke.py --bundle … --relay-binary …`: 두 Chromium 컨텍스트가
   이 페이지만으로(파이썬 측 릴레이 호출 0) 생성 → 키 패키지 → 초대(commit 201 → echo merge → Welcome) →
   참여 → 양방향 메시지(발신자 표시) → 릴레이 커서 ack → **릴레이 중단**(상태줄 `연결 끊김`, `보내기`가
@@ -93,7 +112,7 @@ durable 워커 허용 메서드에 이번에 더해진 것: `invite_with_commit`
   중간 구멍(hard max로 commit만 지워진 경우)은 이 신호로 잡히지 않고, 그때는 `rejected`/`undecryptable`로
   드러난다. 기본 보존 정책(앱 30일 ∧ MIN 커서, commit keep 8 / hard 256 epoch)에서는 커서가 기록된 오프라인
   봇에게 이 경로가 열리지 않는다.
-- 제거(remove_pending)·방 닫기 UI 없음(운영자 CLI/릴레이 도구). 첨부 UI 없음(텍스트만).
+- 제거(remove_pending)·방 닫기 UI 없음(운영자 CLI/릴레이 도구). 첨부는 위의 256 KiB 단일 메시지만 지원.
 - **메시지 이력 없음**: 페이지는 `relaySeq`(마지막 읽은 릴레이 seq)만 저장하고 복호화된 본문은 어디에도
   보관하지 않는다. 새로고침·탭 회수 뒤 이어하기하면 `events?after=relaySeq`만 가져오므로 이전 대화는 다시
   그려지지 않는다 — 이어하기 직후 메시지 영역에 자리표시와 로그 한 줄로 알린다(#258, 오너 결정: 파일럿 중
@@ -103,3 +122,11 @@ durable 워커 허용 메서드에 이번에 더해진 것: `invite_with_commit`
   원인(릴레이 다운 vs 쿠키 만료)은 구분하지 않는다.
 - 403 → 등록 → 수락 전환은 스모크에 없다(릴레이가 `-access-mode disabled`라 403 경로가 안 나온다);
   문구·details 자동 펼침은 코드 검토와 실기기 세션으로 확인한다.
+
+
+Attachment sends require the browser Web Locks API. Tabs sharing an outbox key
+acquire an exclusive lock before re-reading, encrypting, posting or removing its
+record. An already open tab never replaces an uncertain delivery. If another tab
+changes or confirms its pending record, a stale retry stops and asks the user to
+reopen the page; a newly selected file is not silently replaced by the other tab's
+file. Browsers without Web Locks refuse sending.

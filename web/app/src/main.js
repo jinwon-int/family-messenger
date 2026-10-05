@@ -450,7 +450,13 @@ async function connect(creds, { fresh = false } = {}) {
   });
   // 내 다른 기기(휴대폰 앱 등)가 이 기기 검증을 요청하면 수락 시트를 연다.
   state.client.onVerificationRequest((request) => openIncomingVerification(request));
-  state.client.start((syncState) => {
+  const connectedClient = state.client;
+  state.client.start((syncState, data) => {
+    if (state.client !== connectedClient) return;
+    if (session.isExpiredSession(data?.error)) {
+      expireSession(connectedClient);
+      return;
+    }
     const wasLive = state.syncState === 'live';
     const live = syncState === 'PREPARED' || syncState === 'SYNCING';
     state.syncState = live ? 'live'
@@ -1147,11 +1153,21 @@ async function logout() {
     await removePushForLogout(client);
     await client.logout();
   } catch (error) {
-    console.error('logout failed', error);
-    ui.setStatus(root, strings.account.logoutFailed, 'error');
-    return;
+    if (!session.isExpiredSession(error)) {
+      console.error('logout failed', error);
+      ui.setStatus(root, strings.account.logoutFailed, 'error');
+      return;
+    }
   }
   session.clearSession(stores);
+  resetLocalSession();
+  renderLogin();
+}
+
+function resetLocalSession() {
+  cancelScheduledRender();
+  if (listTicker) clearInterval(listTicker);
+  listTicker = null;
   removeSyncRecovery?.();
   clearHydratedDecryptions();
   photoPreviews.clear();
@@ -1175,7 +1191,14 @@ async function logout() {
   readReceiptTimer = null;
   readReceipts.reset();
   state.typing = createTypingState();
-  renderLogin();
+}
+
+function expireSession(client) {
+  if (state.client !== client) return;
+  session.clearCredentials(stores);
+  client.stop();
+  resetLocalSession();
+  renderLogin(strings.login.expired);
 }
 
 function openRecovery() {
@@ -1194,6 +1217,7 @@ async function start() {
   if (session.hasLiveSession(stored)) {
     connect(stored).catch((error) => {
       console.error(error);
+      if (session.isExpiredSession(error)) session.clearCredentials(stores);
       renderLogin();
     });
     return;
@@ -1209,13 +1233,13 @@ function renderLogin(previousError) {
       homeserverUrl: stored?.homeserverUrl || state.config.homeserverUrl || '',
       user: localpart,
     },
-    onSubmit: async ({ homeserverUrl, user, password }) => {
+    onSubmit: async ({ homeserverUrl, user, password, remember }) => {
       try {
         ui.setStatus(root, strings.login.submitting);
         // 같은 계정이 같은 브라우저에서 다시 로그인하고, 그 기기의 암호화 저장소가 이 브라우저에 남아 있을 때만
         // 기존 기기 ID를 재사용한다. 저장소가 없는데 ID만 재사용하면 옛 ID에 새 키가 올라가 다른 기기의
         // 검증이 키 불일치로 취소된다(2026-09-18). 다른 계정이거나 저장소가 없으면 새 기기.
-        const sameUser = Boolean(stored?.deviceId) && (user === localpart || user === stored?.userId)
+        const sameUser = homeserverUrl === stored?.homeserverUrl && Boolean(stored?.deviceId) && (user === localpart || user === stored?.userId)
           && stored.cryptoDeviceId === stored.deviceId;
         const creds = await loginWithPassword({
           homeserverUrl,
@@ -1230,7 +1254,7 @@ function renderLogin(previousError) {
           accessToken: creds.access_token,
           deviceId: creds.device_id,
         };
-        session.saveSession(fresh, stores);
+        session.saveSession(fresh, stores, {remember});
         await connect(fresh, { fresh: true });
       } catch (error) {
         console.error(error);

@@ -91,7 +91,7 @@ jobs:
       - name: Session store unit tests (node --test)
         if: steps.scope.outputs.run == 'true'
         working-directory: archive/experiments/openmls-browser
-        run: node --test web/session-store.test.mjs web/commit-policy.test.mjs
+        run: node --test web/session-store.test.mjs web/commit-policy.test.mjs web/relay-attachments.test.mjs
       - name: Build WASM bundle
         if: steps.scope.outputs.run == 'true'
         run: archive/experiments/openmls-browser/build.sh artifacts/mls-pkg

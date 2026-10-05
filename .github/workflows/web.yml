@@ -33,6 +33,15 @@ jobs:
         run: node tests/transport_smoke.mjs
       - name: Bundle app
         run: npm run build
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned browser test tools
+        run: |
+          python -m pip install -r ../../requirements-native-test.txt
+          python -m playwright install --with-deps chromium
+      - name: Chromium login render and screenshot
+        run: python tests/browser_smoke.py
       - name: Serve dist and probe app shell
         run: |
           set -euo pipefail
@@ -70,4 +79,11 @@ jobs:
         with:
           name: web-app-dist-${{ github.event_name }}
           path: web/app/dist
+          if-no-files-found: ignore
+      - name: Preserve browser render evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-browser-${{ github.event_name }}
+          path: .runtime/web-browser-smoke
           if-no-files-found: ignore

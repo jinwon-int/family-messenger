@@ -887,3 +887,14 @@ test('onOwnReceipt: 내 영수증이 담긴 Room.receipt만 방 id로 알리고 
   adapter.client.emit('Room.receipt', receipt(CREDS.userId), { roomId: '!after:example.com' });
   assert.deepEqual(seen, ['!mine:example.com', '!private:example.com']);
 });
+
+
+test('sync authentication errors reach the app with the SDK error object', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({homeserverUrl: 'https://matrix.example.test', userId: '@a:example.test', deviceId: 'D', accessToken: 'synthetic', sdkLoader: async () => sdk});
+  const events = [];
+  adapter.start((state, data) => events.push({state, data}));
+  const error = {errcode: 'M_UNKNOWN_TOKEN'};
+  sdk.clients[0].emit('sync', 'ERROR', 'SYNCING', {error});
+  assert.deepEqual(events, [{state: 'ERROR', data: {error}}]);
+});

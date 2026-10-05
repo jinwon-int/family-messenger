@@ -2,6 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   PERSIST_KEYS,
+  VOLATILE_IDENTITY_KEY,
+  isExpiredSession,
+  REMEMBERED_SESSION_KEY,
+  clearCredentials,
   VOLATILE_KEYS,
   clearSession,
   hasLiveSession,
@@ -109,4 +113,92 @@ test('알림 선호: 저장소가 없어도 터지지 않는다', () => {
   assert.equal(readPushPreference({}), null);
   assert.doesNotThrow(() => savePushPreference('off'));
   assert.doesNotThrow(() => savePushPreference('off', {}));
+});
+
+const login = {homeserverUrl: 'https://matrix.example.test', userId: '@a:example.test', deviceId: 'DEVICE', accessToken: 'synthetic-token'};
+test('explicit opt-in restores the same account and device after PWA session storage disappears', () => {
+  const stores = {persistent: memoryStorage(), volatile: memoryStorage()};
+  saveSession({...login, password: 'never-save', recoveryKey: 'never-save'}, stores, {remember: true});
+  saveSession({cryptoDeviceId: login.deviceId}, stores);
+  const restored = readSession({...stores, volatile: memoryStorage()});
+  assert.deepEqual(restored, {...login, cryptoDeviceId: login.deviceId});
+  const saved = stores.persistent.getItem(REMEMBERED_SESSION_KEY);
+  assert.equal(saved.includes('never-save'), false);
+});
+
+test('remember must be an explicit boolean option; a session field cannot silently opt in', () => {
+  const stores = {persistent: memoryStorage(), volatile: memoryStorage()};
+  saveSession({...login, remember: true}, stores);
+  assert.equal(stores.persistent.getItem(REMEMBERED_SESSION_KEY), null);
+  saveSession(login, stores, {remember: 'true'});
+  assert.equal(stores.persistent.getItem(REMEMBERED_SESSION_KEY), null);
+});
+
+test('account changes and unchecked login discard the former remembered credential', () => {
+  const stores = {persistent: memoryStorage(), volatile: memoryStorage()};
+  saveSession(login, stores, {remember: true});
+  saveSession({...login, userId: '@b:example.test', accessToken: 'second-token'}, stores);
+  assert.equal(stores.persistent.getItem(REMEMBERED_SESSION_KEY), null);
+  assert.equal(readSession(stores).accessToken, 'second-token');
+  assert.equal(readSession({...stores, volatile: memoryStorage()}).accessToken, undefined);
+});
+
+test('remembered credentials cannot be combined with a different server, user or device', () => {
+  for (const key of ['homeserverUrl', 'userId', 'deviceId']) {
+    const stores = {persistent: memoryStorage(), volatile: memoryStorage()};
+    saveSession(login, stores, {remember: true});
+    stores.persistent.setItem(PERSIST_KEYS[key], 'other');
+    assert.equal(readSession({...stores, volatile: memoryStorage()}).accessToken, undefined);
+  }
+});
+
+test('logout clears both token stores; an invalid token clear preserves the crypto marker', () => {
+  const stores = {persistent: memoryStorage(), volatile: memoryStorage()};
+  saveSession(login, stores, {remember: true}); saveSession({cryptoDeviceId: 'DEVICE'}, stores);
+  clearCredentials(stores);
+  assert.equal(readSession(stores).accessToken, undefined);
+  assert.equal(readSession(stores).cryptoDeviceId, 'DEVICE');
+  saveSession(login, stores, {remember: true}); clearSession(stores);
+  assert.deepEqual(readSession(stores), {});
+  assert.equal(stores.persistent.getItem(REMEMBERED_SESSION_KEY), null);
+});
+
+test('broken persistence never pairs an old volatile token with new identifiers', () => {
+  const stores = {persistent: memoryStorage(), volatile: memoryStorage()};
+  saveSession(login, stores, {remember: true});
+  const original = stores.persistent.setItem;
+  stores.persistent.setItem = (key, value) => {
+    if (key === PERSIST_KEYS.deviceId) throw new Error('quota');
+    original(key, value);
+  };
+  assert.throws(() => saveSession({...login, userId: '@b:example.test', accessToken: 'new-token'}, stores, {remember: true}), /quota/);
+  assert.equal(readSession(stores).accessToken, undefined);
+});
+
+
+test('a second tab changing shared identifiers cannot pair the first tab token with another identity', () => {
+  for (const key of ['homeserverUrl', 'userId', 'deviceId']) {
+    const persistent = memoryStorage(), first = memoryStorage(), second = memoryStorage();
+    saveSession(login, {persistent, volatile: first});
+    saveSession({...login, [key]: 'different', accessToken: 'other-token'}, {persistent, volatile: second}, {remember: true});
+    assert.equal(readSession({persistent, volatile: first}).accessToken, undefined);
+    assert.equal(readSession({persistent, volatile: second}).accessToken, 'other-token');
+  }
+});
+
+test('unbound legacy tokens require login and logout removes the volatile identity binding', () => {
+  const stores = {persistent: memoryStorage(), volatile: memoryStorage()};
+  saveSession(login, stores);
+  stores.volatile.removeItem(VOLATILE_IDENTITY_KEY);
+  assert.equal(readSession(stores).accessToken, undefined);
+  saveSession(login, stores);
+  clearCredentials(stores);
+  assert.equal(stores.volatile.getItem(VOLATILE_IDENTITY_KEY), null);
+});
+
+test('only a permanent Matrix token rejection clears a session', () => {
+  assert.equal(isExpiredSession({errcode: 'M_UNKNOWN_TOKEN'}), true);
+  assert.equal(isExpiredSession({data: {errcode: 'M_UNKNOWN_TOKEN'}}), true);
+  assert.equal(isExpiredSession({httpStatus: 503}), false);
+  assert.equal(isExpiredSession(new Error('network unavailable')), false);
 });
