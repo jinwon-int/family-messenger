@@ -627,7 +627,12 @@ function installRoomListKeyboardNav() {
 
 function installKeyboardShortcuts() {
   document.addEventListener('keydown', (event) => {
-    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+    if (event.defaultPrevented) return;
+    // 편집할 수 없는 대화 내용(스크롤 모드)에는 지킬 조합 글자가 없다 — 캐럿 모드에서 한글을 쳐서
+    // 풀린 뒤 브라우저에 조합이 남아도 Esc·Enter가 먹혀야 한다(#284 후속). 그 밖은 조합 키를 뺏지 않는다.
+    const composing = event.isComposing || event.keyCode === 229;
+    const plainTimeline = event.target?.classList?.contains('timeline') && !event.target.isContentEditable;
+    if (composing && !(plainTimeline && (event.key === 'Escape' || event.key === 'Enter'))) return;
     if (!state.currentRoomId) return;
     if (root.querySelector('dialog[open]')) return;
     // 작성창 Esc·End → 대화 내용으로 포커스, 대화 내용에서 ↑/↓ → 스크롤(채팅 내용 확인용).

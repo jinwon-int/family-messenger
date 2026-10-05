@@ -100,7 +100,7 @@ def caret_mode_check(browser, app):
     }""")
     cdp = page.context.new_cdp_session(page)
     cdp.send('Input.imeSetComposition', {'text': 'ㅎ', 'selectionStart': 1, 'selectionEnd': 1})
-    cdp.send('Input.imeSetComposition', {'text': '하', 'selectionStart': 1, 'selectionEnd': 1})
+    page.evaluate('() => new Promise((resolve) => setTimeout(resolve, 20))')  # 조합 정리는 다음 태스크
     assert page.inner_html('.timeline') == before, 'IME composition must not land in the timeline'
     assert page.evaluate("() => window.caret.isCaretMode(document.querySelector('.timeline'))") is False
     assert page.evaluate("() => document.activeElement === document.querySelector('.timeline')"), 'focus stays on timeline'
