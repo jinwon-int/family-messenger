@@ -804,7 +804,11 @@ async function loadEarlier(roomId, limit = EARLIER_PAGE) {
   let added = 0;
   try {
     added = await state.client.loadEarlier(roomId, limit);
-    entry.hasMore = added > 0 && state.client.canLoadEarlier(roomId);
+    // The server's back-pagination token is the only "beginning" signal. A page
+    // can add nothing to the live timeline (duplicates, events filed elsewhere)
+    // while older history still exists; the SDK clears the token on an empty
+    // page, so trusting it cannot loop (#279).
+    entry.hasMore = state.client.canLoadEarlier(roomId);
   } catch (error) {
     console.error('load earlier failed', error);
   } finally {

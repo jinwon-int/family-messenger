@@ -129,20 +129,28 @@ test('reload hydrates one latest heartbeat at its update position; late old edit
   assert.match(a.bubbles()[1], /Working — 2s/);
 });
 
-test('an initial sync containing only edits recovers the original with SDK context', async (t) => {
+test('an initial sync containing only edits recovers the original as a standalone event', async (t) => {
   const a = await app(t);
   let requests = 0;
-  a.client.getEventContext = async (_roomId, id) => {
+  a.client.getEventContext = async () => { throw new Error('must not build a side timeline (#279)'); };
+  a.client.fetchRoomEvent = async (_roomId, id) => {
     requests++;
     assert.equal(id, '$outside');
-    return { event: { event_id: id, room_id: roomId, type: 'm.room.message', sender: bot,
-      origin_server_ts: 100, content: content('⏳ Working — 1s') }, events_before: [], events_after: [], state: [] };
+    return { event_id: id, room_id: roomId, type: 'm.room.message', sender: bot,
+      origin_server_ts: 100, content: content('⏳ Working — 1s') };
   };
   await a.edit('$latest', '$outside', 900, '⏳ Working — 9s');
-  for (let i = 0; i < 10 && a.bubbles().length === 0; i++) await flush();
+  for (let i = 0; i < 10 && !/Working — 9s/.test(a.bubbles()[0] ?? ''); i++) await flush();
   assert.equal(requests, 1);
   assert.equal(a.bubbles().length, 1);
   assert.match(a.bubbles()[0], /Working — 9s/);
+  assert.equal(a.room.getUnfilteredTimelineSet().getTimelines().length, 1, 'no side timeline in the room timeline set');
+  // Later heartbeat edits update the recovered original without another fetch.
+  await a.edit('$later', '$outside', 950, '⏳ Working — 12s');
+  for (let i = 0; i < 10 && !/Working — 12s/.test(a.bubbles()[0] ?? ''); i++) await flush();
+  assert.equal(requests, 1);
+  assert.equal(a.bubbles().length, 1);
+  assert.match(a.bubbles()[0], /Working — 12s/);
 });
 
 test('late encrypted edits collapse into the original; an older decrypt cannot overwrite the latest', async (t) => {
@@ -202,17 +210,14 @@ test('redact then repost keeps one progress bubble and the same timeline element
   assert.doesNotMatch(a.bubbles().join('\n'), /Waiting for progress/);
 });
 
-test('context-recovered ordinary edits return to their original chronological position', async (t) => {
+test('recovered ordinary edits return to their original chronological position', async (t) => {
   const a = await app(t);
   await a.send('$old', 50, content('먼저 온 대화'));
   await a.send('$newer', 300, content('나중 대화'));
-  a.client.getEventContext = async () => ({
-    event: { event_id: '$missing', room_id: roomId, type: 'm.room.message', sender: bot,
-      origin_server_ts: 100, content: content('원래 답변') },
-    events_before: [], events_after: [], state: [],
-  });
+  a.client.fetchRoomEvent = async () => ({ event_id: '$missing', room_id: roomId, type: 'm.room.message', sender: bot,
+    origin_server_ts: 100, content: content('원래 답변') });
   await a.edit('$edit-missing', '$missing', 400, '수정된 중간 답변');
-  for (let i = 0; i < 10 && a.bubbles().length < 3; i++) await flush();
+  for (let i = 0; i < 10 && !/수정된 중간 답변/.test(a.bubbles()[1] ?? ''); i++) await flush();
   assert.equal(a.bubbles().length, 3);
   assert.match(a.bubbles()[0], /먼저 온 대화/);
   assert.match(a.bubbles()[1], /수정된 중간 답변/);
