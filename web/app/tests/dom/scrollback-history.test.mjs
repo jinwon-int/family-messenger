@@ -1,9 +1,10 @@
 // #279: heartbeat/progress edits must not make back-pagination stop before the real start.
 // Real pinned SDK (Room, timeline set, scrollback, event mapper); only HTTP is synthetic.
+// Lives under tests/dom/ because it needs the installed SDK (npm test runs before npm ci).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { ClientAdapter } from '../src/matrix/client.js';
+import { ClientAdapter } from '../../src/matrix/client.js';
 
 const sdk = createRequire(import.meta.url)('matrix-js-sdk');
 // FetchHttpApi request logs drown the test output.
