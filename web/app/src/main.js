@@ -450,7 +450,13 @@ async function connect(creds, { fresh = false } = {}) {
   });
   // 내 다른 기기(휴대폰 앱 등)가 이 기기 검증을 요청하면 수락 시트를 연다.
   state.client.onVerificationRequest((request) => openIncomingVerification(request));
-  state.client.start((syncState) => {
+  const connectedClient = state.client;
+  state.client.start((syncState, data) => {
+    if (state.client !== connectedClient) return;
+    if (session.isExpiredSession(data?.error)) {
+      expireSession(connectedClient);
+      return;
+    }
     const wasLive = state.syncState === 'live';
     const live = syncState === 'PREPARED' || syncState === 'SYNCING';
     state.syncState = live ? 'live'
@@ -1147,11 +1153,21 @@ async function logout() {
     await removePushForLogout(client);
     await client.logout();
   } catch (error) {
-    console.error('logout failed', error);
-    ui.setStatus(root, strings.account.logoutFailed, 'error');
-    return;
+    if (!session.isExpiredSession(error)) {
+      console.error('logout failed', error);
+      ui.setStatus(root, strings.account.logoutFailed, 'error');
+      return;
+    }
   }
   session.clearSession(stores);
+  resetLocalSession();
+  renderLogin();
+}
+
+function resetLocalSession() {
+  cancelScheduledRender();
+  if (listTicker) clearInterval(listTicker);
+  listTicker = null;
   removeSyncRecovery?.();
   clearHydratedDecryptions();
   photoPreviews.clear();
@@ -1175,7 +1191,14 @@ async function logout() {
   readReceiptTimer = null;
   readReceipts.reset();
   state.typing = createTypingState();
-  renderLogin();
+}
+
+function expireSession(client) {
+  if (state.client !== client) return;
+  session.clearCredentials(stores);
+  client.stop();
+  resetLocalSession();
+  renderLogin(strings.login.expired);
 }
 
 function openRecovery() {
@@ -1194,7 +1217,7 @@ async function start() {
   if (session.hasLiveSession(stored)) {
     connect(stored).catch((error) => {
       console.error(error);
-      if (error?.errcode === 'M_UNKNOWN_TOKEN' || error?.data?.errcode === 'M_UNKNOWN_TOKEN') session.clearCredentials(stores);
+      if (session.isExpiredSession(error)) session.clearCredentials(stores);
       renderLogin();
     });
     return;

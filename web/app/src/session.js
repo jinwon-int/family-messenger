@@ -23,6 +23,7 @@ export const PERSIST_KEYS = Object.freeze({
 export const VOLATILE_KEYS = Object.freeze({
   accessToken: 'familychat.accessToken',
 });
+export const VOLATILE_IDENTITY_KEY = 'familychat.sessionIdentity.v1';
 export const REMEMBERED_SESSION_KEY = 'familychat.rememberedSession.v1';
 const identityFields = ['homeserverUrl', 'userId', 'deviceId'];
 const nonempty = value => typeof value === 'string' && value.length > 0;
@@ -31,6 +32,7 @@ const nonempty = value => typeof value === 'string' && value.length > 0;
 export function clearCredentials({persistent, volatile} = {}) {
   persistent?.removeItem?.(REMEMBERED_SESSION_KEY);
   volatile?.removeItem?.(VOLATILE_KEYS.accessToken);
+  volatile?.removeItem?.(VOLATILE_IDENTITY_KEY);
 }
 
 /** @returns {{persistent: object, volatile: object}} known fields only. */
@@ -65,6 +67,10 @@ export function saveSession(session, { persistent, volatile }, {remember = false
     const credential = Object.fromEntries(identityFields.map(key => [key, p[key]]));
     persistent.setItem(REMEMBERED_SESSION_KEY, JSON.stringify({...credential, accessToken: v.accessToken}));
   }
+  if (v.accessToken) {
+    if (!identityFields.every(key => nonempty(p[key]))) throw new Error('Incomplete session');
+    volatile.setItem(VOLATILE_IDENTITY_KEY, JSON.stringify(Object.fromEntries(identityFields.map(key => [key, p[key]]))));
+  }
   for (const [key, value] of Object.entries(v)) volatile.setItem(VOLATILE_KEYS[key], value);
 }
 
@@ -76,8 +82,14 @@ export function readSession({ persistent, volatile } = {}) {
     if (typeof value === 'string' && value.length > 0) session[key] = value;
   }
   const token = volatile?.getItem?.(VOLATILE_KEYS.accessToken);
-  if (typeof token === 'string' && token.length > 0) session.accessToken = token;
-  else {
+  if (nonempty(token)) {
+    // localStorage is shared by tabs; sessionStorage is not. Never combine a
+    // token from one tab with identifiers changed by another tab's login.
+    try {
+      const binding = JSON.parse(volatile?.getItem?.(VOLATILE_IDENTITY_KEY) ?? 'null');
+      if (binding && identityFields.every(key => nonempty(binding[key]) && binding[key] === session[key])) session.accessToken = token;
+    } catch (_) { /* an unbound legacy token requires a new login */ }
+  } else {
     try {
       const saved = JSON.parse(persistent?.getItem?.(REMEMBERED_SESSION_KEY) ?? 'null');
       if (saved && identityFields.every(key => nonempty(saved[key]) && saved[key] === session[key])
@@ -117,4 +129,9 @@ export function readPushPreference({ persistent } = {}) {
 export function savePushPreference(value, { persistent } = {}) {
   if (value !== 'on' && value !== 'off') return;
   persistent?.setItem?.(PUSH_PREFERENCE_KEY, value);
+}
+
+/** Matrix permanent credential rejection, distinct from a transient outage. */
+export function isExpiredSession(error) {
+  return (error?.errcode ?? error?.data?.errcode) === 'M_UNKNOWN_TOKEN';
 }

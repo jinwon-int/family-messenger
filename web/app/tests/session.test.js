@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   PERSIST_KEYS,
+  VOLATILE_IDENTITY_KEY,
+  isExpiredSession,
   REMEMBERED_SESSION_KEY,
   clearCredentials,
   VOLATILE_KEYS,
@@ -171,4 +173,32 @@ test('broken persistence never pairs an old volatile token with new identifiers'
   };
   assert.throws(() => saveSession({...login, userId: '@b:example.test', accessToken: 'new-token'}, stores, {remember: true}), /quota/);
   assert.equal(readSession(stores).accessToken, undefined);
+});
+
+
+test('a second tab changing shared identifiers cannot pair the first tab token with another identity', () => {
+  for (const key of ['homeserverUrl', 'userId', 'deviceId']) {
+    const persistent = memoryStorage(), first = memoryStorage(), second = memoryStorage();
+    saveSession(login, {persistent, volatile: first});
+    saveSession({...login, [key]: 'different', accessToken: 'other-token'}, {persistent, volatile: second}, {remember: true});
+    assert.equal(readSession({persistent, volatile: first}).accessToken, undefined);
+    assert.equal(readSession({persistent, volatile: second}).accessToken, 'other-token');
+  }
+});
+
+test('unbound legacy tokens require login and logout removes the volatile identity binding', () => {
+  const stores = {persistent: memoryStorage(), volatile: memoryStorage()};
+  saveSession(login, stores);
+  stores.volatile.removeItem(VOLATILE_IDENTITY_KEY);
+  assert.equal(readSession(stores).accessToken, undefined);
+  saveSession(login, stores);
+  clearCredentials(stores);
+  assert.equal(stores.volatile.getItem(VOLATILE_IDENTITY_KEY), null);
+});
+
+test('only a permanent Matrix token rejection clears a session', () => {
+  assert.equal(isExpiredSession({errcode: 'M_UNKNOWN_TOKEN'}), true);
+  assert.equal(isExpiredSession({data: {errcode: 'M_UNKNOWN_TOKEN'}}), true);
+  assert.equal(isExpiredSession({httpStatus: 503}), false);
+  assert.equal(isExpiredSession(new Error('network unavailable')), false);
 });

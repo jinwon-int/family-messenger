@@ -4,12 +4,20 @@ import {attachmentOutbox, MAX_ATTACHMENT, isAttachment} from './relay-attachment
 
 const uuid = '12345678-1234-1234-1234-123456789abc';
 const file = bytes => ({size: bytes.length, arrayBuffer: async () => Uint8Array.from(bytes).buffer});
+function sharedLocks() {
+  const held = new Set();
+  return {async request(key, _options, fn) {
+    if (held.has(key)) return fn(null);
+    held.add(key);
+    try { return await fn({name: key}); } finally { held.delete(key); }
+  }};
+}
 function fixture() {
   const records = new Map(), posts = [];
   let encrypted = 0;
   const storage = {getItem: key => records.get(key) ?? null,
     setItem: (key, value) => records.set(key, value), removeItem: key => records.delete(key)};
-  const options = {storage, key: 'synthetic-device', device: 'owner-test', newId: () => uuid,
+  const options = {storage, locks: sharedLocks(), key: 'synthetic-device', device: 'owner-test', newId: () => uuid,
     encrypt: async bytes => { encrypted++; return bytes.map(b => b ^ 0xff); },
     post: async payload => { posts.push(structuredClone(payload)); return {status: 201, body: {seq: 7, epoch: 3}}; }};
   return {options, records, posts, encrypted: () => encrypted};
@@ -94,4 +102,40 @@ test('foreign-device or malformed outboxes are never sent', () => {
   assert.throws(() => attachmentOutbox(f.options), /손상/);
   assert.equal(isAttachment(`file-v1-${uuid}`), true);
   assert.equal(isAttachment(`file-v1-${uuid}<script>`), false);
+});
+
+
+test('already-open tabs cannot replace an uncertain delivery or replay an acknowledged outbox', async () => {
+  const f = fixture(); let lost = true;
+  f.options.post = async payload => {
+    f.posts.push(structuredClone(payload));
+    if (lost) { lost = false; throw new Error('lost response'); }
+    return {status: 200, body: {seq: 7, duplicate: true}};
+  };
+  const a = attachmentOutbox(f.options), b = attachmentOutbox(f.options);
+  await assert.rejects(a.send(file([1]), 3), /lost response/);
+  await b.send(null, 9);
+  assert.deepEqual(f.posts[0], f.posts[1]);
+  assert.equal(f.encrypted(), 1);
+  await assert.rejects(a.send(null, 9), /256 KiB/);
+  assert.equal(f.posts.length, 2, 'stale RAM does not resurrect an acknowledged delivery');
+});
+
+test('concurrent tabs acquire one shared lock before encrypting or posting', async () => {
+  const f = fixture(); let release, started;
+  const ready = new Promise(resolve => { started = resolve; });
+  f.options.encrypt = async () => { started(); return new Promise(resolve => { release = resolve; }); };
+  const a = attachmentOutbox(f.options), b = attachmentOutbox(f.options);
+  const sending = a.send(file([1]), 0);
+  await ready;
+  await assert.rejects(b.send(file([2]), 0), /다른 탭/);
+  assert.equal(f.posts.length, 0);
+  release([7]); await sending;
+  assert.equal(f.posts.length, 1);
+});
+
+test('browsers without a cross-tab lock cannot send', async () => {
+  const f = fixture(); f.options.locks = null;
+  await assert.rejects(attachmentOutbox(f.options).send(file([1]), 0), /지원하지/);
+  assert.equal(f.encrypted(), 0); assert.equal(f.posts.length, 0);
 });

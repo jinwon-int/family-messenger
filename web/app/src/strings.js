@@ -16,6 +16,7 @@ export const strings = {
     passwordPlaceholder: '비밀번호',
     submit: '로그인',
     submitting: '접속 중…',
+    expired: '로그인이 만료되었습니다. 다시 로그인하세요.',
     error: '로그인에 실패했습니다. 주소와 계정을 다시 확인하세요.',
     encryptedNote: '대화는 종단간 암호화됩니다. 로그인 유지를 선택하지 않으면 접속 정보는 이 창을 닫을 때 지워집니다.',
     remember: '이 기기에서 로그인 유지',

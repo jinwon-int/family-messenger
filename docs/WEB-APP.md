@@ -147,3 +147,11 @@ wasm은 glue가 고정 경로로 찾아 해시 파일명을 붙일 수 없고, �
 - [개발 순서 1단계](ROADMAP.md) — 게이트: 가족 2명 + AI 1, 실제 대화 100건(E2EE, 두 기기).
 - [결정 D](DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md) — 왜 Matrix 스택 + 직접 만드는 화면인가.
 - [홈서버 평가](evidence/homeserver-eval-20260913.md) — 미디어 한도(100 MiB)·비인증 다운로드 403 등 이 화면이 따르는 서버 실측.
+
+
+Remembered and tab-local credentials are bound to the homeserver, user and device.
+An old unbound tab token requires one new login after this update. A permanent
+`M_UNKNOWN_TOKEN` sync response removes the credential and returns to login;
+transient network failures retain it. Logging out with an already revoked token
+also clears local login state. Cross-tab identifier changes cannot reuse a token
+for a different server or account.

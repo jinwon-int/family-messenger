@@ -16,7 +16,7 @@ and, since #177 M2b-2, the shared storage v2 layout of `session-store.js` (Index
 version 2: one authenticated `meta` record + one record per Session store entry; see
 PERSISTENCE.md). Older (version-1) experiment databases are retained and denied, not
 opened, rewritten or migrated. A new database atomically creates a known initialization
-marker. Initialization first requires a successful signed room-directory read;
+marker. Initialization first requires a successful server-authenticated room-directory read;
 only an actor with no registered device can generate initial keys from that marker.
 An existing registration plus missing local keys is denied, not silently replaced.
 An unexpected/missing record, old/unknown schema or corrupt state is retained and

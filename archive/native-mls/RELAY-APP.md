@@ -122,3 +122,9 @@ POST 전에 DB/방/기기별 outbox에 **암호문·전송 ID·epoch·크기만*
   원인(릴레이 다운 vs 쿠키 만료)은 구분하지 않는다.
 - 403 → 등록 → 수락 전환은 스모크에 없다(릴레이가 `-access-mode disabled`라 403 경로가 안 나온다);
   문구·details 자동 펼침은 코드 검토와 실기기 세션으로 확인한다.
+
+
+Attachment sends require the browser Web Locks API. Tabs sharing an outbox key
+acquire an exclusive lock before re-reading, encrypting, posting or removing its
+record. An already open tab therefore retries the persisted ciphertext rather
+than replacing an uncertain delivery. Browsers without Web Locks refuse sending.

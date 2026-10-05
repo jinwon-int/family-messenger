@@ -28,7 +28,7 @@
 | 구성 | 상태와 사용 범위 |
 |---|---|
 | AI 참여 서비스 (`server/`) | Go·SQLite 기반. 인증(`internal/access`)·정책 스토어·저장·이벤트를 유지하고 역할을 "채팅 서버"에서 "신원·기억·승인·에이전트 레지스트리"로 바꿉니다. 현재는 루프백·합성 데이터 시험판입니다. 실제 가족 대화를 넣거나 인터넷에 노출하지 마세요. |
-| 네이티브 MLS 전송·successor 세레모니·실험 (보존 브랜치 [`archive-frozen-20260917`](https://github.com/jinwon-int/family-messenger/tree/archive-frozen-20260917/archive)의 `archive/native-mls/`, `archive/experiments/`) | **병행 개발 재개(결정 E).** 코드는 2026-09-17 main에서 분리된 채이며, 이 상태만으로 빌드·CI·운영에 넣지 않습니다. 해동은 별도 PR. 위협 모델·기기 정책은 인수검사 기준. |
+| 네이티브 MLS 전송·successor 세레모니·실험 (`archive/native-mls/`, `archive/experiments/`) | **병행 개발 재개(결정 E).** main에서 개발하며 `native-mls` CI로 검증합니다. 과거 스냅샷은 [`archive-frozen-20260917`](https://github.com/jinwon-int/family-messenger/tree/archive-frozen-20260917/archive)에 보존합니다. 사람 사용 인수검사와 운영 컷오버는 별도이며, 위협 모델·기기 정책이 인수검사 기준입니다. |
 | Matrix 홈서버 (`deploy/tuwunel/`) | 단일 바이너리 홈서버 Tuwunel(고정 핀) 배포 패키지. 이전 Synapse/Element/Postgres 구성은 보존 브랜치 [`archive-frozen-20260917`](https://github.com/jinwon-int/family-messenger/tree/archive-frozen-20260917/archive/synapse-stack)의 `archive/synapse-stack/`에 보관됐으며(main에서는 제외), 운영 호스트 전환은 별도 운영 작업(1단계 배포)입니다. |
 | 에이전트 연결 (`scripts/fleet_*.py`) | 운영자↔봇 1:1 개인방 계약(권한·작업·승인·취소·재연결)이 검증됐습니다. 가족방·mention 모드는 1단계 작업입니다. |
 
