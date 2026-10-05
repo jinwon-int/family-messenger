@@ -16,6 +16,7 @@ import { applyTypingEvent, createTypingSender, createTypingState, pruneTyping, t
 import { DEFAULT_CONFIG, loadConfig } from './config.js';
 import { disablePush, enablePush, hasMatchingPusher, isIosDevice, pushAvailability, readSubscription } from './push.js';
 import { renderHold, selectionInRenderedArea } from './render-guard.js';
+import { enterCaretMode, exitCaretMode, isCaretMode } from './timeline-caret.js';
 import { createReadReceiptSender, isRoomUnread } from './read-receipts.js';
 import * as ui from './ui.js';
 
@@ -592,6 +593,8 @@ function installRoomListKeyboardNav() {
     // 순서 편집 중에는 Page Up/Down으로 방을 열지 않는다(행을 눌러도 안 열리는 것과 같게).
     if (state.orderEditing) return;
     const target = event.target;
+    // 대화 내용 캐럿 모드(#284): Page Up/Down은 캐럿 이동·Shift 선택이다 — 방을 넘기지 않는다.
+    if (isCaretMode(target)) return;
     const composerFocused = Boolean(target && (target.isContentEditable === true || EDITABLE_TAGS.has(target.tagName)));
     const action = listPageNavAction({
       key: event.key,
@@ -628,12 +631,16 @@ function installKeyboardShortcuts() {
     if (!state.currentRoomId) return;
     if (root.querySelector('dialog[open]')) return;
     // 작성창 Esc·End → 대화 내용으로 포커스, 대화 내용에서 ↑/↓ → 스크롤(채팅 내용 확인용).
+    // 대화 내용에서 Esc → 캐럿 모드(#284): Shift+방향키로 글자 선택, Esc → 스크롤 모드, Enter → 작성창.
     const list = root.querySelector('.room-screen .timeline');
     const input = root.querySelector('.composer textarea[name=body]');
+    const onTimeline = Boolean(list) && event.target === list;
+    const caretMode = onTimeline && isCaretMode(list);
     const readAction = timelineKeyAction({
       key: event.key,
       inComposer: Boolean(input) && event.target === input,
-      onTimeline: Boolean(list) && event.target === list,
+      onTimeline,
+      caretMode,
       shiftKey: event.shiftKey,
       ctrlKey: event.ctrlKey,
       altKey: event.altKey,
@@ -642,9 +649,18 @@ function installKeyboardShortcuts() {
     if (readAction && list) {
       event.preventDefault();
       if (readAction === 'focus-timeline') list.focus({ preventScroll: true });
-      else list.scrollBy({ top: readAction === 'scroll-up' ? -TIMELINE_ARROW_STEP_PX : TIMELINE_ARROW_STEP_PX });
+      else if (readAction === 'enter-caret') enterCaretMode(list);
+      else if (readAction === 'exit-caret') {
+        exitCaretMode(list);
+        if (document.activeElement !== list) list.focus({ preventScroll: true });
+      } else if (readAction === 'focus-composer') {
+        exitCaretMode(list);
+        input?.focus();
+      } else list.scrollBy({ top: readAction === 'scroll-up' ? -TIMELINE_ARROW_STEP_PX : TIMELINE_ARROW_STEP_PX });
       return;
     }
+    // 캐럿 모드의 나머지 키(방향키·Home/End·Shift 조합)는 브라우저 기본 — Home(목록) 등으로 넘기지 않는다.
+    if (caretMode) return;
     const action = viewKeyAction({ key: event.key, target: event.target });
     if (!action) return;
     if (action === 'back') {

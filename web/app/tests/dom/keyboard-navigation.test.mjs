@@ -270,3 +270,91 @@ test('작성창 Esc는 대화 내용으로 포커스를 옮기고, ↑/↓로 �
   key('Home');
   assert.equal(document.querySelector('main.shell').dataset.view, 'list', '대화 내용에서 Home은 목록');
 });
+
+function latestMessage(body) {
+  return {
+    getType: () => 'm.room.message',
+    getRoomId: () => '!a:example.test',
+    getId: () => '$caret',
+    getSender: () => '@other:example.test',
+    getContent: () => ({ body, msgtype: 'm.text' }),
+    getTs: () => Date.now(),
+    sender: { name: '상대' },
+  };
+}
+
+test('대화 내용에서 Esc 한 번 더 = 캐럿 모드: 기존 단축키를 뺏지 않고, 편집은 막고, Esc·Enter로 빠진다 (#284)', async (t) => {
+  const { window, document, key } = await app(t, { liveEvents: { '!a:example.test': [latestMessage('복사할 대화 내용')] } });
+  key('PageDown'); key('Enter');
+  const input = document.activeElement;
+  assert.equal(input.tagName, 'TEXTAREA');
+  input.value = '쓰던 글';
+  const list = document.querySelector('.room-screen .timeline');
+  const scrolls = [];
+  list.scrollBy = (options) => scrolls.push(options.top);
+  key('End');
+  assert.ok(document.activeElement === list, 'End는 대화 내용(스크롤 모드)');
+  assert.equal(list.hasAttribute('contenteditable'), false, '스크롤 모드는 편집 가능 상태가 아니다');
+
+  assert.equal(key('Escape').defaultPrevented, true);
+  assert.equal(list.getAttribute('contenteditable'), 'true', 'Esc 한 번 더 = 캐럿 모드');
+  assert.equal(list.getAttribute('inputmode'), 'none', '가상 키보드를 띄우지 않는다');
+  assert.equal(list.getAttribute('spellcheck'), 'false');
+  assert.equal(list.dataset.caret, 'on');
+  assert.ok(document.activeElement === list);
+  const selection = document.getSelection();
+  assert.equal(selection.anchorNode?.nodeValue, '복사할 대화 내용', '보이는 마지막 말풍선 본문 시작에 캐럿');
+  assert.equal(selection.anchorOffset, 0);
+
+  for (const [value, options] of [['ArrowUp'], ['ArrowDown'], ['ArrowLeft', { shiftKey: true }], ['Home'], ['End', { shiftKey: true }], ['PageDown'], ['PageUp', { shiftKey: true }]]) {
+    assert.equal(key(value, options).defaultPrevented, false, `${value}는 브라우저 기본(캐럿 이동·선택)`);
+  }
+  assert.deepEqual(scrolls, [], '캐럿 모드 ↑/↓는 60px 스크롤로 가로채지 않는다');
+  assert.equal(document.querySelector('main.shell').dataset.view, 'room', 'Home이 목록으로 가지 않는다');
+  assert.equal(document.querySelector('.room-screen')?.dataset.roomId, '!a:example.test', 'Page Up/Down이 방을 넘기지 않는다');
+  assert.ok(document.activeElement === list);
+
+  const before = list.innerHTML;
+  for (const type of ['beforeinput', 'paste', 'cut', 'drop', 'dragover']) {
+    const event = new window.Event(type, { bubbles: true, cancelable: true });
+    list.querySelector('.body').dispatchEvent(event);
+    assert.equal(event.defaultPrevented, true, `${type}는 막는다(읽기 전용)`);
+  }
+  assert.equal(list.innerHTML, before);
+
+  assert.equal(key('Escape').defaultPrevented, true);
+  assert.equal(list.hasAttribute('contenteditable'), false, 'Esc는 스크롤 모드로 복귀');
+  assert.equal(list.hasAttribute('inputmode'), false);
+  assert.equal(list.dataset.caret, undefined);
+  assert.ok(document.activeElement === list, '포커스는 대화 내용에 남는다');
+  key('ArrowUp');
+  assert.deepEqual(scrolls, [-60], '스크롤 모드 ↑는 다시 스크롤');
+  const blocked = new window.Event('paste', { bubbles: true, cancelable: true });
+  list.dispatchEvent(blocked);
+  assert.equal(blocked.defaultPrevented, false, '캐럿 모드를 끄면 막던 리스너도 걷힌다');
+
+  key('Escape');
+  assert.equal(list.dataset.caret, 'on');
+  key('Enter');
+  assert.ok(document.activeElement === input, '캐럿 모드 Enter는 작성창');
+  assert.equal(list.hasAttribute('contenteditable'), false, '작성창으로 가면 캐럿 모드 해제');
+  assert.equal(input.value, '쓰던 글', '초안은 그대로');
+});
+
+test('캐럿 모드는 포커스가 대화 내용을 벗어나거나 IME 조합이 시작되면 풀린다 (#284)', async (t) => {
+  const { window, document, key } = await app(t, { liveEvents: { '!a:example.test': [latestMessage('본문')] } });
+  key('PageDown'); key('Enter');
+  const input = document.activeElement;
+  const list = document.querySelector('.room-screen .timeline');
+  key('End'); key('Escape');
+  assert.equal(list.dataset.caret, 'on');
+  input.focus();
+  assert.equal(list.hasAttribute('contenteditable'), false, '다른 곳으로 포커스가 가면 해제');
+
+  key('Escape'); key('Escape');
+  assert.ok(document.activeElement === list);
+  assert.equal(list.dataset.caret, 'on');
+  list.dispatchEvent(new window.Event('compositionstart', { bubbles: true }));
+  assert.equal(list.hasAttribute('contenteditable'), false, 'IME 조합은 취소가 안 되므로 시작 즉시 해제');
+  assert.ok(document.activeElement === list, '스크롤 모드로 남는다');
+});

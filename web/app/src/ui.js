@@ -11,6 +11,7 @@ import { relativeTime } from './rooms.js';
 import { humanFileSize } from './messages.js';
 import { richMessageFragment } from './rich-text.js';
 import { shortHandle } from './participants.js';
+import { isCaretMode } from './timeline-caret.js';
 
 // 같은 방 재렌더에서 DOM을 갈아끼우지 않기 위한 렌더 서명(#194). 서명이 같으면 이미 붙어 있는
 // 노드를 그대로 둔다 — 교체하면 크롬이 드래그·선택한 글자를 버리고, 호버가 한 프레임 꺼지고,
@@ -517,7 +518,8 @@ function updateTimeline(oldWrap, fresh, { count }) {
   const list = oldWrap.querySelector('.timeline');
   const freshList = fresh.querySelector('.timeline');
   const badge = oldWrap.querySelector('.new-messages');
-  const near = isNearBottom(list);
+  // 캐럿 모드(#284)에서는 맨 아래에 있어도 새 메시지로 끌어내리지 않는다 — 선택하던 자리를 지킨다.
+  const near = isNearBottom(list) && !isCaretMode(list);
   const top = list.scrollTop;
   const height = list.scrollHeight;
   const anchor = near ? null : firstVisibleBubble(list);
@@ -588,6 +590,7 @@ function buildRoom({ room, timeline, onSend, onAttach, photoPreviews = null, onO
   const list = el(
     'ul',
     // tabindex -1: 탭 순서는 그대로, 작성창 Esc·End가 여기로 포커스를 옮겨 ↑/↓ 스크롤한다(main.js).
+    // 여기서 Esc를 한 번 더 누르면 캐럿 모드(#284, timeline-caret.js) — 글자 선택용 읽기 전용 contenteditable.
     { class: 'timeline', 'aria-live': 'polite', tabindex: '-1', 'aria-label': strings.chat.timelineLabel },
     earlierRow,
     timeline.length === 0 && !loadingEarlier ? signed(el('li', { class: 'empty' }, strings.chat.empty), 'empty') : timeline.map((entry) => bubble(entry, photoPreviews, onOpenAttachment)),
