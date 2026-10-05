@@ -7,6 +7,9 @@ options:
   deploymentTarget:
     iOS: "16.0"
   createIntermediateGroups: true
+packages:
+  FamilyMLSCore:
+    path: FamilyMLSCore
 settings:
   base:
     SWIFT_VERSION: "5.10"
@@ -25,6 +28,7 @@ targets:
     dependencies:
       - framework: ../ios-ffi/out/FamilyMLS.xcframework
         embed: false
+      - package: FamilyMLSCore
     info:
       path: FamilyMLSSpike/Info.plist
       properties:
