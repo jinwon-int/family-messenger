@@ -106,6 +106,7 @@ fn rejected_operation_rolls_back_to_the_snapshot() {
     assert_eq!(ok(owner.fingerprint(), "fp after rollback"), fp, "identity survives a rejected op");
     let kp = ok(call(&owner, "key_package", &[]), "device still usable after rollback");
     assert!(!kp.is_empty());
-    let unknown = call(&owner, "members", &[]).expect_err("session-level methods are not exposed in the spike");
+    // 기기 지문은 dispatch 가 아니라 `fingerprint()` — dispatch 목록 밖 이름은 Invalid(호스트 전제 위반).
+    let unknown = call(&owner, "fingerprint", &[]).expect_err("fingerprint is not a dispatch method");
     assert!(matches!(unknown, MlsError::Invalid { .. }));
 }

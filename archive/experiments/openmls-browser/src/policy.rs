@@ -275,6 +275,46 @@ impl Device {
     }
 }
 
+/// The durable-lane wire contract for the read-only roster / fingerprint views and
+/// the approval signature (#243 2-a): exactly the bytes `web/durable-worker.js`
+/// sends and receives. `Session::dispatch` and native hosts (ios-ffi, #275) both
+/// call this, so the browser, bot and iOS cannot drift apart.
+///
+/// - `members`, `members_after_pending`, `fingerprint`: empty input only.
+///   Output is `frame_members` / UTF-8 lowercase hex.
+/// - `policy_fingerprint`: input = UTF-8 64-char lowercase hex signing key,
+///   output = UTF-8 lowercase hex sha256.
+/// - `sign_approval`: input = UTF-8 JSON `{action, device_id, actor, subject,
+///   signing_key, acceptance, base_revision}` (unknown fields refused), output =
+///   `frame_evidence`.
+///
+/// `None` means `method` is not one of these; non-empty input to an
+/// empty-input method is a rejection, the same as the durable lane's fallthrough.
+pub fn policy_wire(device: &mut Device, method: &str, input: &[u8]) -> Option<Result<Vec<u8>, Rejected>> {
+    Some(match method {
+        "members" | "members_after_pending" | "fingerprint" if !input.is_empty() => Err(rejected(())),
+        "members" => device.members_inner(),
+        "members_after_pending" => device.members_after_pending_inner(),
+        "fingerprint" => device.fingerprint().map(String::into_bytes),
+        "policy_fingerprint" => std::str::from_utf8(input)
+            .map_err(rejected)
+            .and_then(policy_fingerprint)
+            .map(String::into_bytes),
+        "sign_approval" => {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Args { action: String, device_id: String, actor: String, subject: String,
+                          signing_key: String, acceptance: String, base_revision: u64 }
+            match serde_json::from_slice::<Args>(input) {
+                Ok(a) => device.sign_approval(&a.action, &a.device_id, &a.actor, &a.subject,
+                                              &a.signing_key, &a.acceptance, a.base_revision),
+                Err(e) => Err(rejected(e)),
+            }
+        }
+        _ => return None,
+    })
+}
+
 /// sha256(signing key bytes) as lowercase hex, from a candidate's public key —
 /// the value a human compares out-of-band (new-device screen ↔ trusted-device
 /// screen ↔ CLI `-enroll-first` output). Same digest the payload pins.
