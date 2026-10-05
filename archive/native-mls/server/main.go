@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jinwon-int/family-messenger/archive/native-mls/server/internal/devicepolicy"
@@ -42,6 +43,11 @@ func main() {
 	removedGrace := flag.Int64("removed-cursor-grace-seconds", 0, "override how long a member removed by commit keeps gating pruning before it reads its removal")
 	hardMaxEpochs := flag.Int64("commit-welcome-hard-max-epochs", 0, "override the unconditional commit/welcome retention backstop (epochs); inside it but past -commit-welcome-keep-epochs they wait for every reader cursor")
 	staticDir := flag.String("static-dir", "", "serve the human acceptance client (web/relay-app.html + pkg/ bundle) under /app/ from this directory; assets are unauthenticated, /v2/* stays behind the JWT (#243)")
+	apnsKey := flag.String("apns-key", "", "Apple .p8 key file (outside the repository, mode 0600) for APNs token auth; enables push alerts after new application/welcome events (#275). Without it, push registrations are stored but nothing is sent")
+	apnsTeamID := flag.String("apns-team-id", "", "Apple Developer Team ID (10 chars), the provider-token issuer; required with -apns-key")
+	apnsKeyID := flag.String("apns-key-id", "", "APNs auth key ID (10 chars), the provider-token kid; required with -apns-key")
+	apnsHost := flag.String("apns-host", apnsDefaultHost, "APNs endpoint (https://api.sandbox.push.apple.com for development builds)")
+	apnsTopics := flag.String("apns-topics", "", "comma-separated allowed registration topics (app bundle ids); empty = any well-formed topic")
 	accessMaxLifetimeSeconds := flag.Int64("access-max-lifetime-seconds", 0, "override (tighten) the maximum accepted JWT lifetime in seconds (exp-now and exp-iat; default 31 days = the longest CF Access session; the account's apps use 730h)")
 	flag.Parse()
 
@@ -135,6 +141,30 @@ func main() {
 	}
 
 	relay := &relay{db: db, policy: pol, devices: devices, access: access}
+	if *apnsTopics != "" {
+		relay.pushTopics = map[string]bool{}
+		for _, t := range strings.Split(*apnsTopics, ",") {
+			if t = strings.TrimSpace(t); !validTopic(t) {
+				log.Fatalf("-apns-topics: bad topic %q", t)
+			} else {
+				relay.pushTopics[t] = true
+			}
+		}
+	}
+	if *apnsKey != "" {
+		key, err := loadAPNsKey(*apnsKey)
+		if err != nil {
+			log.Fatal(err)
+		}
+		sender, err := newAPNsSender(*apnsHost, *apnsTeamID, *apnsKeyID, key, nil)
+		if err != nil {
+			log.Fatal(err)
+		}
+		relay.push = sender
+		log.Printf("apns push on (host %s)", *apnsHost)
+	} else if *apnsTeamID != "" || *apnsKeyID != "" {
+		log.Fatal("-apns-team-id/-apns-key-id given without -apns-key")
+	}
 	if *staticDir != "" {
 		root, err := openStaticRoot(*staticDir)
 		if err != nil {

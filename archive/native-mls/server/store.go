@@ -129,6 +129,12 @@ CREATE TABLE IF NOT EXISTS mls_members (
 	PRIMARY KEY (room, device)
 );
 CREATE INDEX IF NOT EXISTS mls_events_device ON mls_events(device);
+CREATE TABLE IF NOT EXISTS push_devices (
+	device     TEXT PRIMARY KEY,
+	token      BLOB NOT NULL,
+	topic      TEXT NOT NULL,
+	updated_at INTEGER NOT NULL
+);
 `
 
 func openStore(dataDir string) (*store, error) {
