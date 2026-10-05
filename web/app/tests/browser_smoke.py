@@ -90,6 +90,25 @@ def caret_mode_check(browser, app):
     assert page.evaluate("() => window.caret.isCaretMode(document.querySelector('.timeline'))")
     page.evaluate("() => window.caret.exitCaretMode(document.querySelector('.timeline'))")
     assert page.evaluate("() => document.querySelector('.timeline').isContentEditable") is False
+    # 한글 IME로 치면 캐럿 모드가 풀리고, 조합이 대화 내용에 남지 않으며, 다음 Esc/Enter가 조합 중으로
+    # 먹히지 않아야 한다(실기기 PC 크롬: 해제 뒤 Esc·Enter가 안 먹던 회귀). CDP로 IME 조합을 흉내 낸다.
+    page.evaluate("""() => {
+      const list = document.querySelector('.timeline');
+      window.keys = [];
+      list.addEventListener('keydown', (e) => window.keys.push([e.key, e.isComposing, e.keyCode]));
+      window.caret.enterCaretMode(list);
+    }""")
+    cdp = page.context.new_cdp_session(page)
+    cdp.send('Input.imeSetComposition', {'text': 'ㅎ', 'selectionStart': 1, 'selectionEnd': 1})
+    cdp.send('Input.imeSetComposition', {'text': '하', 'selectionStart': 1, 'selectionEnd': 1})
+    assert page.inner_html('.timeline') == before, 'IME composition must not land in the timeline'
+    assert page.evaluate("() => window.caret.isCaretMode(document.querySelector('.timeline'))") is False
+    assert page.evaluate("() => document.activeElement === document.querySelector('.timeline')"), 'focus stays on timeline'
+    page.keyboard.press('Escape')
+    page.keyboard.press('Enter')
+    keys = page.evaluate('() => window.keys')
+    assert keys[-2:] == [['Escape', False, 27], ['Enter', False, 13]], f'keys after IME exit must not be composing: {keys}'
+    assert page.inner_html('.timeline') == before
     assert not errors, errors
     page.close()
 
