@@ -95,7 +95,7 @@ test('Page Up/Down: 2분할은 미리보기, 단일 pane 목록은 포커스 이
 test('작성창 Esc는 대화 내용으로 포커스를 옮긴다', () => {
   assert.equal(timelineKeyAction({ key: 'Escape', inComposer: true }), 'focus-timeline');
   assert.equal(timelineKeyAction({ key: 'Escape', inComposer: false }), null, '작성창 밖 Esc는 뺏지 않는다');
-  assert.equal(timelineKeyAction({ key: 'Escape', onTimeline: true }), null);
+  assert.equal(timelineKeyAction({ key: 'Escape', onTimeline: true }), 'enter-caret', '대화 내용 Esc는 캐럿 모드(#284)');
 });
 
 test('작성창 End도 Esc처럼 대화 내용으로 포커스를 옮긴다(수정키 없을 때만)', () => {
@@ -115,4 +115,17 @@ test('대화 내용에 포커스가 있을 때만 ↑/↓가 스크롤이다', (
   assert.equal(timelineKeyAction({ key: 'ArrowDown' }), null);
   assert.equal(timelineKeyAction({ key: 'Enter', onTimeline: true }), null, 'Enter는 기존 작성창 이동 규칙');
   assert.equal(timelineKeyAction(), null);
+});
+
+test('캐럿 모드(#284): Esc=스크롤 모드 복귀, Enter=작성창, 나머지는 브라우저 기본', () => {
+  const caret = { onTimeline: true, caretMode: true };
+  assert.equal(timelineKeyAction({ key: 'Escape', ...caret }), 'exit-caret');
+  assert.equal(timelineKeyAction({ key: 'Enter', ...caret }), 'focus-composer');
+  assert.equal(timelineKeyAction({ key: 'Enter', ...caret, shiftKey: true }), null, '수정키 Enter는 뺏지 않는다(편집은 beforeinput에서 막힘)');
+  for (const key of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown']) {
+    assert.equal(timelineKeyAction({ key, ...caret }), null, `${key}는 캐럿 이동`);
+    assert.equal(timelineKeyAction({ key, ...caret, shiftKey: true }), null, `Shift+${key}는 선택`);
+  }
+  assert.equal(timelineKeyAction({ key: 'ArrowUp', onTimeline: true, caretMode: false }), 'scroll-up', '캐럿 모드 밖 ↑는 그대로 스크롤');
+  assert.equal(timelineKeyAction({ key: 'Escape', inComposer: true, caretMode: true }), 'focus-timeline', 'caretMode는 대화 내용 포커스일 때만 의미');
 });

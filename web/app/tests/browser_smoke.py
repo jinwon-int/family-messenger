@@ -59,6 +59,41 @@ def expired_session_check(browser, base, *, logout=False):
     context.close()
 
 
+CARET_FIXTURE = """<!doctype html><meta charset="utf-8">
+<style>.timeline { height: 200px; overflow-y: auto; }</style>
+<ul class="timeline" tabindex="-1">
+  <li class="bubble"><div class="body">첫 메시지</div></li>
+  <li class="bubble"><div class="body">hello world</div></li>
+</ul>"""
+
+
+def caret_mode_check(browser, app):
+    """#284: 실제 Chromium에서 캐럿 모드가 선택은 되고 편집은 막히는지 (happy-dom은 캐럿·선택 이동이 없다)."""
+    page = browser.new_page()
+    errors = []
+    page.on('pageerror', lambda error: errors.append(str(error)))
+    page.set_content(CARET_FIXTURE)
+    source = (app / 'src' / 'timeline-caret.js').read_text(encoding='utf-8')
+    page.add_script_tag(type='module', content=source + '\nwindow.caret = { enterCaretMode, exitCaretMode, isCaretMode };')
+    page.wait_for_function('() => Boolean(window.caret)')
+    page.evaluate("() => { const list = document.querySelector('.timeline'); list.focus(); window.caret.enterCaretMode(list); }")
+    before = page.inner_html('.timeline')
+    assert page.evaluate('() => document.getSelection().anchorNode.nodeValue') == 'hello world', 'caret at last bubble body'
+    for _ in range(5):
+        page.keyboard.press('Shift+ArrowRight')
+    assert page.evaluate('() => document.getSelection().toString()') == 'hello', 'Shift+ArrowRight selects text'
+    page.keyboard.type('xyz')
+    for combo in ('Backspace', 'Delete', 'Enter', 'Control+x', 'Control+b', 'Control+z'):
+        page.keyboard.press(combo)
+    page.keyboard.insert_text('붙여넣기')
+    assert page.inner_html('.timeline') == before, 'caret mode must not edit the timeline'
+    assert page.evaluate("() => window.caret.isCaretMode(document.querySelector('.timeline'))")
+    page.evaluate("() => window.caret.exitCaretMode(document.querySelector('.timeline'))")
+    assert page.evaluate("() => document.querySelector('.timeline').isContentEditable") is False
+    assert not errors, errors
+    page.close()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', type=Path, default=Path('../../.runtime/web-browser-smoke'))
@@ -107,6 +142,8 @@ def main():
                 expired_session_check(browser, base, logout=True)
                 evidence.update(expired_token_returns_to_login=True, transient_error_retains_token=True,
                                 expired_logout_clears_token=True)
+                caret_mode_check(browser, app)
+                evidence.update(caret_mode_selects_read_only=True)
                 (args.output / 'verification.json').write_text(json.dumps(evidence, indent=2) + '\n')
                 browser.close()
                 print(json.dumps(evidence))
