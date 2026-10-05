@@ -107,6 +107,13 @@ type relay struct {
 	access  *accessVerifier
 	// staticRoot serves the human client under /app/ (#243 2-a); nil = off.
 	staticRoot *os.Root
+	// push sends APNs alerts after new events (#275 ②); nil = -apns-key not
+	// given, registrations are still stored. pushTopics, when non-empty, is
+	// the allowed set of registration topics (bundle ids). pushWG tracks the
+	// in-flight notify goroutines (tests wait on it).
+	push       *apnsSender
+	pushTopics map[string]bool
+	pushWG     sync.WaitGroup
 }
 
 // ---- wire types ----
@@ -555,6 +562,9 @@ func (s *relay) routes() *http.ServeMux {
 	mux.HandleFunc("POST /v2/rooms/{room}/events", s.handlePostEvent)
 	mux.HandleFunc("GET /v2/rooms/{room}/events", s.handleGetEvents)
 	mux.HandleFunc("POST /v2/rooms/{room}/close", s.handleCloseRoom)
+	mux.HandleFunc("GET /v2/rooms", s.handleListRooms)
+	mux.HandleFunc("POST /v2/push/devices", s.handleRegisterPush)
+	mux.HandleFunc("DELETE /v2/push/devices", s.handleUnregisterPush)
 	mux.HandleFunc("GET /v2/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
@@ -817,6 +827,11 @@ func (s *relay) handlePostEvent(w http.ResponseWriter, req *http.Request) {
 			status = http.StatusOK
 		}
 		writeJSON(w, status, eventResponse{Seq: stored.seq, Epoch: stored.epoch, Revision: stored.revision, Duplicate: stored.duplicate})
+		if !stored.duplicate {
+			// After the commit and outside s.mu: a byte-equal replay already
+			// notified once, so only a fresh row pushes (#275 ②).
+			s.notifyEvent(room, ev.device, ev.kind, stored.seq)
+		}
 	case errors.Is(err, errClosed):
 		s.fail(w, http.StatusGone, apiError{Error: "room_closed"})
 	case errors.As(err, new(casMismatch)):

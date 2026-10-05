@@ -97,7 +97,9 @@ v2 smoke는 required 모드로 돈다(ES256 키를 만들어 JWKS 파일로 넘�
   **분당 최대 1회** 소스를 다시 읽는다(회전 대응; 재적재 실패 시 기존 키 유지).
 - **아이덴티티 바인딩**: 요청이 행동한다고 주장하는 device(`events` POST의 `device`,
   `events` GET의 `?device=`, `keypackages` POST의 `device`, `keypackages` GET의
-  `?consumer=` — `?device=`는 대상이지 호출자가 아니다 —, `/close`의 `?device=`)가
+  `?consumer=` — `?device=`는 대상이지 호출자가 아니다 —, `/close`의 `?device=`,
+  `GET /v2/rooms`의 `?device=`, `POST /v2/push/devices`의 `device`,
+  `DELETE /v2/push/devices`의 `?device=` — #275)가
   정책상 **active이고 `subject ==` 클레임 아이덴티티(`sub`, 서비스 토큰은 폴백된
   `common_name`)**여야 한다. 모르는 device·revoked·타인의
   subject 전부 같은 **403 `{"error":"device_subject_mismatch"}`** — 어느 검사가 실패했는지
@@ -283,6 +285,31 @@ BEGIN IMMEDIATE 트랜잭션으로 기록된다(B2/B3 규율 유지). v2 릴레�
   revision을 그대로 반환한다(K4) — 체인이 더 진행됐으면 충돌이다.
 - 동시 커밋에서 정확히 하나가 이긴다(`-race` 테스트).
 
+### iOS 확장: 방 목록·푸시 (#275 L2 ②, CONTRACTS §2.3)
+
+- **방 목록**(`GET /v2/rooms?device=`): 기기가 tracked member이거나, 커서(게시·Welcome
+  타깃·ack)나 keypackage를 가진 방만, 필드 6개(`room, epoch, revision, member,
+  keypackages_outstanding, closed`)만 돌려준다 — 이벤트·명단·group id·creator 없음. `member`는
+  M3b가 켜진 방에서는 tracked member, 꺼진 방(tracked 명단 없음)에서는 commit으로 제거되지
+  않은 커서. 닫힌 방은 `closed:true`로 남긴다. 최대 500개.
+- **등록**(`POST /v2/push/devices`): 엄격 JSON, `apns_token`은 표준 base64(1~100바이트),
+  `topic`은 번들 ID 문자집합(`[A-Za-z0-9.-]`, 빈 라벨 없음, ≤155). `-apns-topics`가 있으면 그
+  목록만 허용(400 `topic_not_allowed`). 같은 device의 재등록은 덮어쓰기(토큰 회전), 204 멱등.
+  `DELETE`는 행이 없어도 204.
+- **전송**: 새(중복 아님) application·welcome 이벤트가 커밋된 뒤, `s.mu`·트랜잭션 **밖**의
+  goroutine에서 보낸다(POST 응답을 막지 않음). 대상 = 등록된 기기 중 발신 기기를 뺀, 그 방의
+  tracked member이거나 제거되지 않은 커서를 가진 기기 중 커서 < 새 seq. commit은 보내지 않는다
+  (alert 푸시는 알림을 반드시 띄우는데 명단 변경은 새 메시지가 아니다). 페이로드는
+  `{"aps":{"mutable-content":1,"alert":{"loc-key":"NEW_MESSAGE"},"thread-id":"<room>"},"room":"<room>","seq":N}`
+  — 평문·암호문·발신자 없음.
+- **APNs 인증**: `.p8`(PKCS#8 P-256, 리포 밖, 0600 아니면 기동 거부) → ES256 provider 토큰
+  (`kid`=key id, `iss`=team id), 50분 캐시(Apple: 1시간 만료·20분 미만 재발급 스로틀), 403
+  `ExpiredProviderToken`/`InvalidProviderToken`이면 다음 전송에서 재발급. 표준 라이브러리만
+  (HTTP/2 `ForceAttemptHTTP2`, 리다이렉트 비추종, 10초 타임아웃, 응답 4 KiB 상한).
+- **실패**: 로그만(`apns room= seq= device= status= reason=`, 토큰 값은 로그에 없음). 410
+  `Unregistered`·400 `BadDeviceToken`/`DeviceTokenNotForTopic`이면 그 토큰이 **아직 현재 값일
+  때만** 행을 지운다(사이에 들어온 회전을 지우지 않음). 재시도 없음.
+
 ## 증명하지 않는 것
 
 - 릴레이가 revoke 이후 그 device의 요청을 거부하는 것 — **M3b + C1에서 증명**(위
@@ -298,6 +325,10 @@ BEGIN IMMEDIATE 트랜잭션으로 기록된다(B2/B3 규율 유지). v2 릴레�
   새 방. 남는 것은 지문 비교 UI의 **실제 대역외 비교 수행** — 사람.
 - 64 revision 소진 후 컴팩션, E5 restore-history, 파일·봇(M5).
 - 브라우저/실기기 동작 — 이 유닛은 순수 서버 측 Go다.
+- 실제 APNs 전송(Apple 엔드포인트·실 `.p8`·실 기기 토큰) — Go 테스트는 HTTP/2 TLS 가짜
+  서버로 경로·헤더·ES256 서명·페이로드 바이트·410 정리를 검사한다. 실 전송은 파이널라이저
+  D 단계(#275 수용 기준). 푸시 대상 선정은 커서가 뒤처진 기기 전체이며, 기기가 이미 다른
+  경로로 읽었는지(커서 미반영)는 알 수 없다 — 알림 중복은 NSE가 seq로 거른다.
 - 쿠키 기반 CF Access 세션에서의 교차 사이트 요청(G-M8): `GET /events?ack=`·`GET
   /keypackages`는 상태를 바꾸는 GET이고 `/close`는 본문 없는 POST다. 호출자 인증은
   헤더 토큰(`Cf-Access-Jwt-Assertion`/`Bearer`) 전제이며, 브라우저 쿠키 세션으로

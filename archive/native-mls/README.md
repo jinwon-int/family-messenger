@@ -26,6 +26,9 @@ enrollment·closure), `-tags synthetic_*` UI 번들 12종. 약 8,100줄 Go + 12,
 `archive/native-mls/server/`에 **별도 Go 모듈·별도 SQLite 파일**로 새로 만든다: 라우트 4개
 (`keypackages` POST/GET, `events` POST/GET) + `close`, 테이블 5개(`mls_rooms`·`mls_events`·
 `mls_keypackages`·`mls_cursors`·`mls_members`), 서버 측 MLS 상태기계 없음, 멤버 누구나 commit,
+iOS 확장(#275, CONTRACTS §2.3): `GET /v2/rooms?device=`(기기의 방 목록, 공개 필드만),
+`POST`/`DELETE /v2/push/devices` + 테이블 `push_devices`, 새 application/welcome 이벤트 뒤
+APNs 알림(`-apns-key`·`-apns-team-id`·`-apns-key-id`, 선택 `-apns-host`·`-apns-topics`),
 Welcome 타깃 필터링, 바이트 기준 보존/프루닝, `BEGIN IMMEDIATE`(`_txlock=immediate`) 안의 CAS.
 
 호출자 인증은 기본 **켜짐**(`-access-mode required`): 모든 계약 라우트가 CF Access JWT
