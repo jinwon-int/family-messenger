@@ -159,22 +159,13 @@ impl Session {
             // fingerprint views and the E2 approval signature, previously reachable
             // only from the memory worker. None of these touch the store (zero
             // changes in the Step); sign_approval signs with the durable identity's
-            // own key — the one the policy chain enrolled.
-            "members" if input.is_empty() => device.members_inner()?,
-            "members_after_pending" if input.is_empty() => device.members_after_pending_inner()?,
-            "fingerprint" if input.is_empty() => device.fingerprint()?.into_bytes(),
-            "policy_fingerprint" => {
-                let hex = std::str::from_utf8(input).map_err(rejected)?;
-                crate::policy::policy_fingerprint(hex)?.into_bytes()
-            }
-            "sign_approval" => {
-                #[derive(serde::Deserialize)]
-                #[serde(deny_unknown_fields)]
-                struct Args { action: String, device_id: String, actor: String, subject: String,
-                              signing_key: String, acceptance: String, base_revision: u64 }
-                let a: Args = serde_json::from_slice(input).map_err(rejected)?;
-                device.sign_approval(&a.action, &a.device_id, &a.actor, &a.subject,
-                                     &a.signing_key, &a.acceptance, a.base_revision)?
+            // own key — the one the policy chain enrolled. The byte contract lives in
+            // `policy::policy_wire`, shared with the native hosts (ios-ffi, #275).
+            "members" | "members_after_pending" | "fingerprint" | "policy_fingerprint" | "sign_approval" => {
+                match crate::policy::policy_wire(device, method, input) {
+                    Some(result) => result?,
+                    None => return Err(rejected(())),
+                }
             }
             _ => return Err(rejected(())),
         };

@@ -48,12 +48,13 @@ pub struct MlsDevice {
 }
 
 /// `dispatch` 가 받는 메서드 이름 — durable-worker `allowed` 중 `Device` 수준의 것.
-/// `members`·`fingerprint(정책)`·`policy_fingerprint`·`sign_approval` 은 파사드의 비공개 `Session`(durable lane)에
-/// 있어 이 스파이크에서는 노출하지 않는다(README "증명하지 않은 것").
+/// 마지막 네 개(`members`·`members_after_pending`·`policy_fingerprint`·`sign_approval`, #275 L2)는
+/// 파사드 `policy_wire` 를 거친다 — durable lane `Session::dispatch` 가 쓰는 바로 그 함수라 입출력 바이트가
+/// `web/durable-worker.js` 와 같다(CONTRACTS §1). 기기 지문은 dispatch 가 아니라 `fingerprint()` 로 노출한다.
 pub const METHODS: &[&str] = &[
     "key_package", "delete_key_package", "create", "invite", "invite_with_commit", "join", "encrypt", "decrypt",
     "remove", "remove_pending", "commit", "merge_pending", "clear_pending", "stage_commit", "merge_staged",
-    "discard_staged",
+    "discard_staged", "members", "members_after_pending", "policy_fingerprint", "sign_approval",
 ];
 
 #[uniffi::export]
@@ -151,6 +152,13 @@ fn run(device: &mut Device, method: &str, input: &[u8]) -> Result<Vec<u8>, MlsEr
         "stage_commit" => device.stage_commit(input).map_err(rejected),
         "merge_staged" => unit(device.merge_staged()),
         "discard_staged" => unit(device.discard_staged()),
+        // 입력 규칙(빈 입력·UTF-8 hex·deny_unknown_fields JSON)과 출력 프레이밍은 파사드가 소유한다.
+        "members" | "members_after_pending" | "policy_fingerprint" | "sign_approval" => {
+            match family_mls_browser_experiment::policy_wire(device, method, input) {
+                Some(result) => result.map_err(rejected),
+                None => Err(MlsError::Invalid { reason: format!("unknown method {method}") }),
+            }
+        }
         other => Err(MlsError::Invalid { reason: format!("unknown method {other}") }),
     }
 }
