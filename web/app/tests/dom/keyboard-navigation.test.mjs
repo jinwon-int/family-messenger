@@ -354,7 +354,31 @@ test('캐럿 모드는 포커스가 대화 내용을 벗어나거나 IME 조합�
   key('Escape'); key('Escape');
   assert.ok(document.activeElement === list);
   assert.equal(list.dataset.caret, 'on');
+  const blur = list.blur.bind(list);
+  let blurred = 0;
+  list.blur = () => { blurred++; blur(); };
   list.dispatchEvent(new window.Event('compositionstart', { bubbles: true }));
   assert.equal(list.hasAttribute('contenteditable'), false, 'IME 조합은 취소가 안 되므로 시작 즉시 해제');
+  assert.equal(blurred, 0, '크롬은 핸들러 뒤에 조합을 만든다 — 빼는 것은 다음 태스크');
+  await new Promise((resolve) => window.setTimeout(resolve, 10));
+  assert.equal(blurred, 1, '포커스를 한 번 빼서 브라우저가 조합을 끝내게 한다(남은 조합이 Esc·Enter를 먹는 회귀)');
   assert.ok(document.activeElement === list, '스크롤 모드로 남는다');
+  assert.equal(key('Escape').defaultPrevented, true, '해제 뒤 Esc가 다시 듣는다');
+  assert.equal(list.dataset.caret, 'on');
+  key('Enter');
+  assert.ok(document.activeElement === input, '해제 뒤 Enter도 작성창');
+
+  // 브라우저에 조합이 남아 keydown이 isComposing으로 와도, 편집할 수 없는 대화 내용에서는 Esc·Enter가 듣는다.
+  key('Escape');
+  assert.ok(document.activeElement === list);
+  assert.equal(key('Escape', { isComposing: true }).defaultPrevented, true, '조합 중 표시가 남은 Esc도 캐럿 모드로');
+  assert.equal(list.dataset.caret, 'on');
+  assert.equal(key('Escape', { isComposing: true }).defaultPrevented, false, '캐럿 모드(편집 가능)에서는 조합 키를 뺏지 않는다');
+  assert.equal(list.dataset.caret, 'on');
+  key('Escape');
+  assert.equal(list.dataset.caret, undefined);
+  key('Enter', { isComposing: true });
+  assert.ok(document.activeElement === input, '조합 중 표시가 남은 Enter도 작성창');
+  assert.equal(key('Escape', { isComposing: true }).defaultPrevented, false, '작성창의 조합 Esc는 그대로(조합 취소)');
+  assert.ok(document.activeElement === input);
 });
