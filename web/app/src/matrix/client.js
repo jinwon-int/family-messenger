@@ -513,23 +513,37 @@ export class ClientAdapter {
     let active = true;
     const subscriptions = new Map();
     const pendingTargets = new Set();
-    // A fresh sync may contain only heartbeat edits: the original can be older
-    // than initialSyncLimit. Ask the SDK for its context rather than displaying
-    // an unvalidated edit as a new message. Fetch once per target in flight.
+    const recoveredTargets = new Set();
+    // A fresh sync (or a scrollback page) may contain heartbeat edits whose
+    // original is older than what is loaded. Fetch the original on its own
+    // rather than displaying an unvalidated edit as a new message.
+    //
+    // Do NOT use getEventTimeline here: it adds a separate one-event timeline
+    // to the room's timeline set. When back-pagination of the live timeline
+    // later reaches that event, the SDK joins the timelines and files the rest
+    // of the page into the side timeline, so the live timeline stops growing
+    // and the room falsely reaches "대화의 처음" (#279). A standalone event
+    // stays out of every timeline; scrollback adds it normally when it gets
+    // there. The SDK relations container still applies the latest edit to it
+    // (and to later edits, re-emitted as Event.replaced by the event mapper).
     const recoverTarget = (event) => {
       const relation = event?.getRelation?.();
       if (relation?.rel_type !== 'm.replace' || !relation.event_id || event.isRedacted?.()) return;
       const room = this.client.getRoom?.(event.getRoomId?.());
       if (!room || room.findEventById?.(relation.event_id)) return;
-      const set = room.getUnfilteredTimelineSet?.();
       const key = `${room.roomId}/${relation.event_id}`;
-      if (!set || !this.client.getEventTimeline || pendingTargets.has(key) || pendingTargets.size >= 16) return;
+      if (recoveredTargets.has(key)) return;
+      if (typeof this.client.fetchRoomEvent !== 'function' || pendingTargets.has(key) || pendingTargets.size >= 16) return;
       pendingTargets.add(key);
-      Promise.resolve().then(() => active ? this.client.getEventTimeline(set, relation.event_id) : null)
-        .then((timeline) => {
-          if (!active) return;
-          const target = timeline?.getEvents?.().find((item) => item.getId?.() === relation.event_id);
-          if (target) listener(target, room, true, false, { chronological: true });
+      Promise.resolve().then(() => active ? this.client.fetchRoomEvent(room.roomId, relation.event_id) : null)
+        .then((raw) => {
+          if (!active || !raw || raw.event_id !== relation.event_id) return;
+          if (room.findEventById?.(relation.event_id)) return; // scrollback got there first
+          const target = this.client.getEventMapper()(raw);
+          if (recoveredTargets.size >= 512) recoveredTargets.delete(recoveredTargets.values().next().value);
+          recoveredTargets.add(key);
+          room.relations?.aggregateParentEvent?.(target);
+          listener(target, room, true, false, { chronological: true });
         })
         .catch(() => { /* History may be unavailable; a later edit/scrollback can retry. */ })
         .finally(() => pendingTargets.delete(key));
