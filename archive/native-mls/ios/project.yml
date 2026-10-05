@@ -1,7 +1,7 @@
-# XcodeGen — `xcodegen generate` 로 FamilyMLSSpike.xcodeproj 생성(생성물 커밋 금지).
-# 스파이크 A(#271 §12-A): ../ios-ffi/build-xcframework.sh 산출물을 링크한 빈 SwiftUI 앱 + 시뮬레이터 XCTest 에서
-# Rust 파사드 2기기 E2EE 왕복. 서명 없음·운영 서버 없음·네트워크 없음.
-name: FamilyMLSSpike
+# XcodeGen — `xcodegen generate` 로 FamilyChat.xcodeproj 생성(생성물 커밋 금지).
+# 패밀리챗 iOS(독자 E2EE, #271): ../ios-ffi/build-xcframework.sh 산출물 + FamilyMLSCore 계약 패키지를 링크한 SwiftUI 앱.
+# 서명 없음(CI). 파이널라이저 소유(CONTRACTS.md §0).
+name: FamilyChat
 options:
   bundleIdPrefix: com.example.familychat
   deploymentTarget:
@@ -17,11 +17,11 @@ settings:
     CODE_SIGN_IDENTITY: ""
     DEVELOPMENT_TEAM: ""
 targets:
-  FamilyMLSSpike:
+  FamilyChat:
     type: application
     platform: iOS
     sources:
-      - path: FamilyMLSSpike
+      - path: FamilyChat
       # uniffi 가 생성한 Swift 바인딩(빌드 산출물, 커밋하지 않음)
       - path: ../ios-ffi/out/swift/FamilyMLS.swift
         group: Generated
@@ -30,33 +30,33 @@ targets:
         embed: false
       - package: FamilyMLSCore
     info:
-      path: FamilyMLSSpike/Info.plist
+      path: FamilyChat/Info.plist
       properties:
-        CFBundleDisplayName: 패밀리챗 MLS 스파이크
+        CFBundleDisplayName: 패밀리챗
         CFBundleDevelopmentRegion: ko
         UILaunchScreen: {}
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.familychat.mlsspike
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.familychat.ios
         TARGETED_DEVICE_FAMILY: "1"
         # 정적 라이브러리 + 헤더 모듈맵: 모듈 검색 경로를 xcframework 헤더로
         OTHER_LDFLAGS: ["-lc++"]
-  FamilyMLSSpikeTests:
+  FamilyChatTests:
     type: bundle.unit-test
     platform: iOS
     sources:
-      - path: FamilyMLSSpikeTests
+      - path: FamilyChatTests
     dependencies:
-      - target: FamilyMLSSpike
+      - target: FamilyChat
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.familychat.mlsspike.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.familychat.ios.tests
 schemes:
-  FamilyMLSSpike:
+  FamilyChat:
     build:
       targets:
-        FamilyMLSSpike: all
-        FamilyMLSSpikeTests: [test]
+        FamilyChat: all
+        FamilyChatTests: [test]
     test:
       config: Debug
-      targets: [FamilyMLSSpikeTests]
+      targets: [FamilyChatTests]

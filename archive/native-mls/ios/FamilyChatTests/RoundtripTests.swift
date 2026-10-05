@@ -1,6 +1,6 @@
 // 시뮬레이터에서 Rust 파사드를 실제로 실행하는 게이트: ios-ffi tests/host_roundtrip.rs 와 같은 시나리오·같은 프레이밍.
 import XCTest
-@testable import FamilyMLSSpike
+@testable import FamilyChat
 
 final class RoundtripTests: XCTestCase {
     // encrypt: u32le len ‖ room ‖ u32le len ‖ client_id ‖ plaintext
