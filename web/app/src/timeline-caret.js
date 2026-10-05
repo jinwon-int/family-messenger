@@ -37,7 +37,14 @@ export function enterCaretMode(list) {
   const listeners = [
     ...BLOCKED_EVENTS.map((type) => [type, (event) => event.preventDefault()]),
     // IME 조합 입력은 취소가 안 된다 — 글자가 대화 DOM에 들어가기 전에 편집 가능 상태를 푼다.
-    ['compositionstart', () => exitCaretMode(list)],
+    // 편집 가능 상태만 풀면 크롬이 조합을 끝내지 않고 붙잡아, 다음 Esc·Enter가 조합 중(keyCode 229)
+    // 으로 먹혀 아무 키도 안 듣는다(PC 크롬 실기기, 한/영=한글). 포커스를 한 번 빼면 브라우저가 조합을
+    // 강제로 끝내고 IME를 초기화한다 — 그 뒤 대화 내용(스크롤 모드)으로 포커스를 되돌린다.
+    ['compositionstart', () => {
+      exitCaretMode(list);
+      list.blur();
+      list.focus({ preventScroll: true });
+    }],
     ['focusout', (event) => {
       const next = event.relatedTarget;
       if (next && list.contains(next)) return;
