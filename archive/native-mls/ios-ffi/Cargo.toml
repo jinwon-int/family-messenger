@@ -1,0 +1,35 @@
+[package]
+name = "family-mls-ios-ffi"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "iOS 호스트용 얇은 FFI 층 (#271 §3, 스파이크 A): 브라우저 파사드의 Device 를 uniffi 로 Swift 에 노출. MLS 로직 추가 0줄."
+
+# 세 번째 호스트(#271 §0): 브라우저(wasm-bindgen)·봇(plain rlib)과 같은 크레이트를 링크한다.
+# wasm-bindgen 어노테이션은 비-wasm 타겟에서 무해하다(봇 tests/native_facade_link.rs 가 증명).
+[lib]
+crate-type = ["staticlib", "cdylib", "rlib"]
+# staticlib → iOS xcframework, cdylib → 빌드 호스트에서 uniffi-bindgen --library 메타데이터 추출, rlib → host 테스트.
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["cli"]
+
+[features]
+default = []
+cli = ["uniffi/cli"]
+
+[dependencies]
+family-mls-browser-experiment = { path = "../../experiments/openmls-browser" }
+# 새 직접 의존 1개 (#177 원칙 5: 결정 기록·정확 핀·고지 — README "의존성" 절). MPL-2.0, rust-version 미선언(1.91.1 에서 빌드).
+uniffi = { version = "=0.32.2" }
+# 지문 = sha256(서명 공개키 원본 바이트) — DEVICES-V4. 파사드 그래프에 이미 있는 핀과 동일.
+sha2 = "=0.10.9"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

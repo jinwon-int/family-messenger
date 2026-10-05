@@ -1,0 +1,100 @@
+name: Native MLS track — iOS host
+# 독자 E2EE 트랙의 세 번째 호스트(iOS) 스파이크 (#271 §11·§12-A). 예산: host 게이트 1 job ≤15분, macOS 빌드 1 job ≤25분.
+# 결정 E 규칙 2(예산 명시). main 필수 체크가 아니므로 워크플로 수준 paths 필터를 쓴다. 운영 서버·실계정 무관.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "archive/native-mls/ios-ffi/**"
+      - "archive/native-mls/ios/**"
+      - ".github/workflows/native-mls-ios.yml"
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+env:
+  RUST_TOOLCHAIN: 1.91.1
+jobs:
+  ios-ffi-host:
+    name: ios-ffi host gate (cargo test + iOS target check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: archive/native-mls/ios-ffi
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pinned Rust toolchain + iOS std target
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target aarch64-apple-ios
+          rustc "+$RUST_TOOLCHAIN" --version
+      - name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            archive/native-mls/ios-ffi/target
+          key: native-mls-ios-ffi-${{ runner.os }}-${{ hashFiles('archive/native-mls/ios-ffi/Cargo.lock') }}
+      - name: Host roundtrip through the FFI object (cargo test)
+        run: cargo "+$RUST_TOOLCHAIN" test --locked -- --nocapture
+      - name: Type-check for aarch64-apple-ios (no linker needed)
+        run: cargo "+$RUST_TOOLCHAIN" check --locked --lib --target aarch64-apple-ios
+
+  ios-build:
+    name: xcframework + Swift bindings + simulator XCTest
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain versions
+        run: |
+          xcodebuild -version
+          sw_vers
+      - name: Pinned Rust toolchain + iOS targets
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target aarch64-apple-ios,aarch64-apple-ios-sim
+          rustc "+$RUST_TOOLCHAIN" --version
+      - name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            archive/native-mls/ios-ffi/target
+          key: native-mls-ios-build-${{ runner.os }}-${{ hashFiles('archive/native-mls/ios-ffi/Cargo.lock') }}
+      - name: Build xcframework + Swift bindings — timed
+        working-directory: archive/native-mls/ios-ffi
+        run: |
+          start=$(date +%s)
+          ./build-xcframework.sh
+          echo "xcframework_build_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+          cat out/build-report.txt | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Install XcodeGen and generate the spike project
+        working-directory: archive/native-mls/ios
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Pick a simulator
+        id: sim
+        run: |
+          name=$(xcrun simctl list devices available -j | python3 -c 'import json,sys
+          d=json.load(sys.stdin)["devices"]
+          names=[dev["name"] for rt,devs in d.items() if "iOS" in rt for dev in devs if dev["name"].startswith("iPhone")]
+          print(sorted(names)[-1] if names else "")')
+          test -n "$name"
+          echo "name=$name" | tee -a "$GITHUB_OUTPUT"
+      - name: Simulator XCTest — Rust facade 2-device E2EE roundtrip
+        working-directory: archive/native-mls/ios
+        run: |
+          start=$(date +%s)
+          xcodebuild -project FamilyMLSSpike.xcodeproj -scheme FamilyMLSSpike -configuration Debug \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO test | tail -n 60
+          echo "simulator_test_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: App size
+        working-directory: archive/native-mls/ios
+        run: |
+          app=$(find build/Build/Products -name 'FamilyMLSSpike.app' -maxdepth 3 | head -1)
+          { echo "app: $app"; du -sh "$app"; } | tee -a "$GITHUB_STEP_SUMMARY"

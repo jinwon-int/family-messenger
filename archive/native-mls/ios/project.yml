@@ -1,0 +1,58 @@
+# XcodeGen — `xcodegen generate` 로 FamilyMLSSpike.xcodeproj 생성(생성물 커밋 금지).
+# 스파이크 A(#271 §12-A): ../ios-ffi/build-xcframework.sh 산출물을 링크한 빈 SwiftUI 앱 + 시뮬레이터 XCTest 에서
+# Rust 파사드 2기기 E2EE 왕복. 서명 없음·운영 서버 없음·네트워크 없음.
+name: FamilyMLSSpike
+options:
+  bundleIdPrefix: com.example.familychat
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    CODE_SIGNING_ALLOWED: "NO"
+    CODE_SIGN_IDENTITY: ""
+    DEVELOPMENT_TEAM: ""
+targets:
+  FamilyMLSSpike:
+    type: application
+    platform: iOS
+    sources:
+      - path: FamilyMLSSpike
+      # uniffi 가 생성한 Swift 바인딩(빌드 산출물, 커밋하지 않음)
+      - path: ../ios-ffi/out/swift/FamilyMLS.swift
+        group: Generated
+    dependencies:
+      - framework: ../ios-ffi/out/FamilyMLS.xcframework
+        embed: false
+    info:
+      path: FamilyMLSSpike/Info.plist
+      properties:
+        CFBundleDisplayName: 패밀리챗 MLS 스파이크
+        CFBundleDevelopmentRegion: ko
+        UILaunchScreen: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.familychat.mlsspike
+        TARGETED_DEVICE_FAMILY: "1"
+        # 정적 라이브러리 + 헤더 모듈맵: 모듈 검색 경로를 xcframework 헤더로
+        OTHER_LDFLAGS: ["-lc++"]
+  FamilyMLSSpikeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: FamilyMLSSpikeTests
+    dependencies:
+      - target: FamilyMLSSpike
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.familychat.mlsspike.tests
+schemes:
+  FamilyMLSSpike:
+    build:
+      targets:
+        FamilyMLSSpike: all
+        FamilyMLSSpikeTests: [test]
+    test:
+      config: Debug
+      targets: [FamilyMLSSpikeTests]
