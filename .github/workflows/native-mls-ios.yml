@@ -99,16 +99,16 @@ jobs:
           print(sorted(names)[-1] if names else "")')
           test -n "$name"
           echo "name=$name" | tee -a "$GITHUB_OUTPUT"
-      - name: Simulator XCTest — Rust facade 2-device E2EE roundtrip
+      - name: Simulator XCTest — app state machine + Rust facade 2-device E2EE roundtrip
         working-directory: archive/native-mls/ios
         run: |
           start=$(date +%s)
-          xcodebuild -project FamilyMLSSpike.xcodeproj -scheme FamilyMLSSpike -configuration Debug \
+          xcodebuild -project FamilyChat.xcodeproj -scheme FamilyChat -configuration Debug \
             -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
             -derivedDataPath build CODE_SIGNING_ALLOWED=NO test | tail -n 60
           echo "simulator_test_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: App size
         working-directory: archive/native-mls/ios
         run: |
-          app=$(find build/Build/Products -name 'FamilyMLSSpike.app' -maxdepth 3 | head -1)
+          app=$(find build/Build/Products -name 'FamilyChat.app' -maxdepth 3 | head -1)
           { echo "app: $app"; du -sh "$app"; } | tee -a "$GITHUB_STEP_SUMMARY"

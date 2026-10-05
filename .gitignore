@@ -24,6 +24,6 @@ archive/native-mls/bot/target/
 # native E2EE iOS host spike (#271): cargo build dir, xcframework/bindings output, generated Xcode project
 archive/native-mls/ios-ffi/target/
 archive/native-mls/ios-ffi/out/
-archive/native-mls/ios/FamilyMLSSpike.xcodeproj/
+archive/native-mls/ios/FamilyChat.xcodeproj/
 archive/native-mls/ios/build/
 archive/native-mls/ios/FamilyMLSCore/.build/

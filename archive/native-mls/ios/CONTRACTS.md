@@ -12,7 +12,7 @@
 | **L1 Swift 저장** | §12-B | `ios/FamilyMLSCore/Sources/FamilyMLSCore/Store/File*`, `ios/FamilyMLSCore/Tests/FamilyMLSCoreTests/File*` (새 파일만; `StateStore.swift`·`InMemory*`·`MessageRecord.swift` 수정 금지) | `StateStoreContract.run` 통과 + 결함 주입(§3.5) · Linux `swift test` + macOS job | 1 |
 | **L2 백엔드** | 파사드 `Session` 공개 API + 릴레이 확장 ①② | `archive/experiments/openmls-browser/src/**`, `archive/native-mls/ios-ffi/**`, `archive/native-mls/server/**`, `archive/native-mls/tests/**`(Go/Python 스모크) | 파사드 host/wasm 테스트 · ios-ffi host 테스트 · Go 테스트 · `native-mls.yml`/`native-mls-ios.yml` | 2 (L1 과 독립, 순서는 리뷰 편의) |
 | **L3 Swift 프로토콜** | §12-C 네트워크·동기화·commit 정책 | `ios/FamilyMLSCore/Sources/FamilyMLSCore/{Relay/URLSession*,Sync/**,Policy/**}`, `ios/FamilyMLSCore/Tests/FamilyMLSCoreTests/{Relay*,Sync*,Policy*}` (새 파일만; `RelayTypes.swift`·`RelayTransport.swift` 수정 금지) | Linux `swift test`(가짜 엔진·InMemory 스토어·가짜 전송) + 격리 릴레이 스모크(§2.4) | 3 |
-| **파이널라이저**(1인) | 통합 + §12-D 푸시/NSE + §12-E 화면 | `ios/FamilyMLSSpike/**` → 제품 앱 트리, `ios/project.yml`, `.github/workflows/**`, 이 문서 | macOS job 전체 | L1→L2→L3 뒤 |
+| **파이널라이저**(1인) | 통합 + §12-D 푸시/NSE + §12-E 화면 | `ios/FamilyChat/**`(앱 타깃: 상태기계·화면·FFI 어댑터), `ios/project.yml`, `.github/workflows/**`, 이 문서 | macOS job 전체 | L1→L2→L3 뒤 |
 
 - 공통 금지: 운영 서버·실계정·실제 도메인/호스트명(CONTRIBUTING). 비밀값은 Keychain/서버 root-only, 코드·로그·픽스처에 없음.
 - 세 레인 모두 **이슈 claim 규칙**(DOC-3508)을 따르고, PR 본문에 "삭제/추가 줄 수·CI 분"을 적는다(#177 관례).
