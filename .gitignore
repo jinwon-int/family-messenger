@@ -21,3 +21,8 @@ archive/experiments/openmls-browser/node_modules/
 archive/native-mls/server/server
 # native MLS bot (M5): local cargo build dir
 archive/native-mls/bot/target/
+# native E2EE iOS host spike (#271): cargo build dir, xcframework/bindings output, generated Xcode project
+archive/native-mls/ios-ffi/target/
+archive/native-mls/ios-ffi/out/
+archive/native-mls/ios/FamilyMLSSpike.xcodeproj/
+archive/native-mls/ios/build/
