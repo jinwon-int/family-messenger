@@ -66,6 +66,22 @@ test('로그인 화면: 기본값이 있으면 홈서버 칸이 접히고 아이
   assert.equal(plain.querySelector('details.advanced'), null);
 });
 
+test('로그인 유지는 기본 꺼짐이며 체크한 제출에만 전달된다', () => {
+  const app = root(), submitted = [];
+  const original = globalThis.FormData;
+  globalThis.FormData = window.FormData;
+  try {
+    ui.renderLogin(app, {onSubmit: value => submitted.push(value)});
+    const checkbox = app.querySelector('input[name="remember"]');
+    assert.equal(checkbox.checked, false);
+    assert.match(app.querySelector('#remember-help').textContent, /개인 기기/);
+    app.querySelector('form').dispatchEvent(new window.Event('submit', {cancelable: true}));
+    checkbox.checked = true;
+    app.querySelector('form').dispatchEvent(new window.Event('submit', {cancelable: true}));
+    assert.deepEqual(submitted.map(value => value.remember), [false, true]);
+  } finally { globalThis.FormData = original; }
+});
+
 test('셸: 목록·대화·보관함이 그려지고 내 메시지는 data-me, 복호화 실패는 자리표시', () => {
   const app = root();
   ui.renderShell(app, { list: listProps(), room: roomProps(), box: boxProps() });

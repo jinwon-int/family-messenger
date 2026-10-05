@@ -70,7 +70,7 @@ function timeLabel(ts) {
 }
 
 /**
- * Login screen. Calls onSubmit({homeserverUrl, user, password}).
+ * Login screen. Calls onSubmit({homeserverUrl, user, password, remember}).
  * defaults.homeserverUrl (deploy config / last login) pre-fills the server and
  * folds the field under an "advanced" disclosure; defaults.user pre-fills the id.
  */
@@ -89,6 +89,7 @@ export function renderLogin(root, { onSubmit, defaults = {} }) {
           homeserverUrl: String(data.get('homeserverUrl') ?? '').trim(),
           user: String(data.get('user') ?? '').trim(),
           password: String(data.get('password') ?? ''),
+          remember: data.get('remember') === 'on',
         });
       },
     },
@@ -97,6 +98,10 @@ export function renderLogin(root, { onSubmit, defaults = {} }) {
       : homeserverField,
     field(strings.login.userLabel, { name: 'user', required: true, autocomplete: 'username', placeholder: strings.login.userPlaceholder, autocapitalize: 'none', spellcheck: 'false', value: userDefault || null }),
     field(strings.login.passwordLabel, { name: 'password', type: 'password', required: true, autocomplete: 'current-password', placeholder: strings.login.passwordPlaceholder }),
+    el('label', {class: 'consent-row'},
+      el('input', {type: 'checkbox', name: 'remember', value: 'on', 'aria-describedby': 'remember-help'}),
+      strings.login.remember),
+    el('p', {id: 'remember-help', class: 'hint'}, strings.login.rememberHint),
     el('button', { type: 'submit', class: 'primary block' }, strings.login.submit),
   );
   const card = el(

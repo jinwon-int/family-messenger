@@ -15,6 +15,7 @@ on the same port and data dir.
 Synthetic only (disposable keys, loopback). Receipt: archive/artifacts/native-relay-app-*/verification.json
 """
 import argparse
+import hashlib
 import json
 import os
 import secrets
@@ -244,6 +245,45 @@ def run_flow(Dev, receipt, base, relay):
             assert a.page.input_value('#msg') == '', a.page.input_value('#msg')
             assert not any('연결 실패' in d for d in a.dialogs[dialogs_before + 1:]), a.dialogs
             receipt['checks']['network_failure_notice_input_kept_retry_after_relay_restart'] = True
+
+            # #256: the relay stores a maximum-size attachment but the sender
+            # loses the response. Reload its real page/worker, retry from the
+            # ciphertext outbox and require the identical POST + 200 duplicate.
+            attachment = bytes(i % 251 for i in range(262144))
+            sent = []
+            def lose_first_attachment_response(route):
+                request = route.request
+                payload = request.post_data_json if request.method == 'POST' else None
+                if payload and payload.get('client_id', '').startswith('file-v1-'):
+                    sent.append(payload)
+                    if len(sent) == 1:
+                        response = route.fetch()
+                        assert response.status == 201
+                        route.abort('failed')
+                        return
+                route.continue_()
+            a.page.route('**/events', lose_first_attachment_response)
+            a.page.set_input_files('#attachment', {'name': 'synthetic.bin',
+                                                  'mimeType': 'application/octet-stream', 'buffer': attachment})
+            a.click('#send-attachment', '연결 실패', timeout=60000)
+            assert a.page.input_value('#attachment').endswith('synthetic.bin')
+            b.page.wait_for_selector('[data-attachment-seq] button', timeout=60000)
+            with b.page.expect_download() as downloaded:
+                b.page.locator('[data-attachment-seq] button').click()
+            assert hashlib.sha256(Path(downloaded.value.path()).read_bytes()).digest() == hashlib.sha256(attachment).digest()
+            a.page.reload()
+            a.page.wait_for_function('() => window.ready === true', timeout=30000)
+            a.page.fill('#passphrase', a.passphrase)
+            a.page.click('#start')
+            a.wait_state(has=['지문'], timeout=180000)
+            a.page.wait_for_function("() => document.getElementById('send-attachment').textContent.includes('다시 보내기')")
+            a.click('#send-attachment', '중복 없이 확인', timeout=60000)
+            assert len(sent) == 2 and sent[0] == sent[1], 'retry must preserve ciphertext, client_id and epoch'
+            assert b.page.locator('[data-attachment-seq]').count() == 1
+            assert a.page.input_value('#attachment') == ''
+            a.page.unroute('**/events', lose_first_attachment_response)
+            receipt['checks']['attachment_256kib_download_sha256_matches'] = True
+            receipt['checks']['attachment_lost_response_reload_exact_retry_without_duplicate'] = True
 
             # Resume: reload the phone page, start again with the same DB/passphrase → state survives.
             pw = secrets.token_urlsafe(24)

@@ -9,6 +9,7 @@
 // Trust comes from the facade (AAD binding, pinned keys) and the relay (policy
 // chain, JWT ↔ device subject); this page is plumbing and display only.
 import {parseStageReport, checkCommit} from './commit-policy.js';
+import {attachmentOutbox, isAttachment} from './relay-attachments.js';
 const $ = id => document.getElementById(id);
 const utf8 = new TextEncoder(), decoder = new TextDecoder();
 const ID = /^[A-Za-z0-9_-]{1,64}$/;        // relay identifier (device, room, client_id)
@@ -42,7 +43,8 @@ const S = {dev: null, room: null, db: null, started: false, joined: false, pendi
   expectedRoster: null, pendingWelcome: null, relaySeq: 0, epoch: 0, wcursor: 0, roster: [], timer: null, busy: false,
   // #261: a refused commit halts this device (durable: the halt survives a reload, the
   // operator decides); retriedSeq remembers one merge retry per relay seq.
-  halted: null, retriedSeq: 0};
+  halted: null, retriedSeq: 0, transferring: false};
+let attachments = null;
 const stateKey = () => `relay-app:${S.room}:${S.dev}`;
 function save() {
   localStorage.setItem(stateKey(), JSON.stringify({joined: S.joined, pending: S.pending, expectedRoster: S.expectedRoster,
@@ -111,7 +113,7 @@ async function postEvent(kind, bytes, {targets, members, epoch} = {}) {
 
 // ---- sync (the smoke's Device.sync, in the browser) ----
 async function sync({quiet = false} = {}) {
-  if (!S.started || S.busy) return;
+  if (!S.started || S.busy || S.transferring || S.halted) return;
   S.busy = true;
   try {
     const {status, body} = await api('GET', roomPath(`events?device=${encodeURIComponent(S.dev)}&after=${S.relaySeq}`));
@@ -187,7 +189,8 @@ async function sync({quiet = false} = {}) {
       // the ciphertext goes in raw — `sealed()` is the memory-lane framing only.
       const out = await op('decrypt', data, S.wcursor + 1);
       if (out.rejected === true) { log(`해독 거부 → 건너뜀(seq ${ev.seq}, ${ev.device})`); continue; }
-      showMessage(out.sender ?? ev.device, out.client, decoder.decode(new Uint8Array(out.output)), ev.seq, out.replay);
+      if (isAttachment(ev.client_id)) showAttachment(out.sender ?? ev.device, new Uint8Array(out.output), ev.seq);
+      else showMessage(out.sender ?? ev.device, out.client, decoder.decode(new Uint8Array(out.output)), ev.seq, out.replay);
     }
     S.epoch = body.epoch;
     if (S.joined && S.relaySeq > 0 && body.cursor < S.relaySeq) {
@@ -203,6 +206,28 @@ function showMessage(sender, client, text, seq, replay) {
   if (sender === S.dev) row.className = 'me';
   row.textContent = `[${seq}] ${sender}${client && client !== sender ? ` (${client})` : ''}: ${text}${replay ? ' (재생)' : ''}`;
   $('messages').append(row);
+}
+function showAttachment(sender, bytes, seq) {
+  if (document.querySelector(`[data-attachment-seq="${seq}"]`)) return;
+  const row = document.createElement('div');
+  row.dataset.attachmentSeq = seq;
+  row.textContent = `[${seq}] ${sender}: 첨부파일 (${bytes.length.toLocaleString()}바이트) `;
+  const download = document.createElement('button');
+  download.type = 'button'; download.textContent = '다운로드';
+  download.addEventListener('click', () => {
+    const url = URL.createObjectURL(new Blob([bytes], {type: 'application/octet-stream'}));
+    const link = document.createElement('a');
+    link.href = url; link.download = `attachment-${seq}.bin`;
+    document.body.append(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  });
+  row.append(download); $('messages').append(row);
+}
+function renderAttachment() {
+  $('send-attachment').textContent = attachments?.pending ? '같은 첨부 다시 보내기' : '첨부 보내기';
+  $('attachment').disabled = !S.started || S.halted !== null || !!attachments?.pending || S.transferring;
+  $('attachment-status').textContent = attachments?.pending
+    ? '전송 결과를 확인하지 못했다. 같은 첨부 다시 보내기를 누르면 중복 없이 확인한다.' : '';
 }
 function renderRoster() {
   $('roster').textContent = `멤버: ${S.roster.length ? S.roster.join(', ') : '—'} · epoch ${S.epoch} · 릴레이 seq ${S.relaySeq}` +
@@ -247,7 +272,8 @@ function setOffline(down) {
   status.offlineAt = down ? clock() : null; renderState();
 }
 function enable(on) {
-  for (const id of ['create', 'keypackage', 'invite', 'sync', 'send', 'evict', 'offer']) $(id).disabled = !on;
+  for (const id of ['create', 'keypackage', 'invite', 'sync', 'send', 'evict', 'offer', 'send-attachment']) $(id).disabled = !on;
+  renderAttachment();
 }
 
 // ---- start / resume ----
@@ -255,6 +281,9 @@ const markerKey = db => 'fresh-marker:' + db;
 async function activate(statusInfo) {
   localStorage.setItem(markerKey(S.db), '1');
   localStorage.setItem('relay-app:last', JSON.stringify({room: S.room, dev: S.dev, db: S.db}));
+  attachments = attachmentOutbox({storage: localStorage, key: `relay-attachment:${S.db}:${S.room}:${S.dev}`,
+    device: S.dev, encrypt: async bytes => (await op('encrypt', bytes)).output,
+    post: payload => api('POST', roomPath('events'), payload)});
   S.started = true; enable(true);
   const fp = decoder.decode(new Uint8Array((await op('fingerprint')).output));
   const key = hex(statusInfo.public_key);
@@ -279,6 +308,7 @@ async function activate(statusInfo) {
   S.timer = setInterval(() => sync({quiet: true}), 4000);
 }
 $('start').addEventListener('click', async () => {
+  if (S.transferring) return;
   const dev = $('device').value.trim(), room = $('room').value.trim(), db = $('database').value.trim();
   const passphrase = $('passphrase').value;
   try {
@@ -316,8 +346,9 @@ $('confirm-fresh').addEventListener('click', async () => {
 
 // ---- room ----
 const guard = (id, run) => $(id).addEventListener('click', async () => {
+  if (S.transferring || S.halted) return;
   $(id).disabled = true;
-  try { await run(); } catch (error) { fail(error); } finally { $(id).disabled = !S.started; }
+  try { await run(); } catch (error) { fail(error); } finally { $(id).disabled = !S.started || S.halted !== null; }
 });
 guard('create', async () => {
   if (S.joined) throw new Error('이 기기는 이미 방(그룹)에 있다');
@@ -371,6 +402,19 @@ guard('send', async () => {
     throw new Error(`전송 실패: ${describe(r.status, r.body)}`);
   }
 });
+guard('send-attachment', async () => {
+  if (!S.joined || S.pending) throw new Error('방에 참여하고 대기 중인 변경을 동기화한 뒤 보낸다.');
+  if (S.busy) throw new Error('동기화 중이다. 잠시 뒤 다시 보낸다.');
+  const file = $('attachment').files[0];
+  S.transferring = true; enable(false); $('start').disabled = true;
+  try {
+    const result = await attachments.send(file, S.epoch);
+    log(`첨부 전송 확인(seq ${result.seq}, ${result.size}바이트${result.duplicate ? ', 중복 없이 확인' : ''})`);
+    $('attachment').value = '';
+  } finally {
+    S.transferring = false; enable(S.started && !S.halted); $('start').disabled = false; renderAttachment();
+  }
+});
 
 // ---- E2 approval (trusted-device screen) ----
 let candidate = null;
@@ -385,6 +429,7 @@ guard('offer', async () => {
 });
 $('deny').addEventListener('click', () => { candidate = null; $('candidate-fingerprint').textContent = ''; $('approve').disabled = $('deny').disabled = true; log('거부 — 서명하지 않음'); });
 $('approve').addEventListener('click', async () => {
+  if (S.transferring || S.halted) return;
   $('approve').disabled = $('deny').disabled = true;
   try {
     const args = {action: 'approve-device', device_id: candidate.device_id, actor: candidate.actor, subject: candidate.subject,

@@ -44,6 +44,9 @@
 <h2>3. 메시지</h2>
 <p class="muted">이어하기 뒤에는 새로 도착한 메시지만 표시된다 — 이전 대화는 다시 그려지지 않는다(릴레이도 이 화면도 평문을 보관하지 않음).</p>
 <p><input id="msg" placeholder="메시지" size="40" autocomplete="off"> <button id="send" type="button" disabled>보내기</button></p>
+<p><label>첨부파일 (최대 256 KiB) <input id="attachment" type="file" disabled></label>
+<button id="send-attachment" type="button" disabled>첨부 보내기</button></p>
+<p id="attachment-status" role="status" class="muted"></p>
 <div id="messages"></div>
 
 <h2>4. 두 번째 기기 승인 (신뢰 기기 화면)</h2>
