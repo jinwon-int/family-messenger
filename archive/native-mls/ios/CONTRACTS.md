@@ -80,4 +80,5 @@ DDL v1 동결(`schema_version`). `messages(room, seq)` PK, `rooms.halted_reason`
 
 ## 6. 기록된 결정
 - 2026-10-05 오너: 3레인 병렬(1번). §14-2 릴레이 확장 허용. 인증 기본 A(쿠키), 파일럿 B 폴백 허용. Bundle ID 미정(설정값).
-- 파이널라이저 = bangtong(오너가 바꿀 수 있음). L1·L3 Swift 담당, L2 = gwakga 제안(#177 작성·핀 툴체인 보유).
+- 파이널라이저 = bangtong(오너가 바꿀 수 있음).
+- 2026-10-05 오너 배정: **L1 = soonwook(순욱) · L2 = gwakga(곽가) · L3 = nosuk(노숙)**. 레인 이슈 #274 / #275 / #276. L2 는 제안이 그대로 채택된 것이며 고정은 아니다(Linux 로컬 컴파일이 가능한 유일한 레인).
