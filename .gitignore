@@ -26,3 +26,4 @@ archive/native-mls/ios-ffi/target/
 archive/native-mls/ios-ffi/out/
 archive/native-mls/ios/FamilyMLSSpike.xcodeproj/
 archive/native-mls/ios/build/
+archive/native-mls/ios/FamilyMLSCore/.build/
