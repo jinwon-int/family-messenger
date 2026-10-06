@@ -3,6 +3,7 @@
 // every text is inserted as a text node (no HTML injection).
 
 import { strings } from './strings.js';
+import { collapsedKey } from './last-sent.js';
 import { emojiLabel, transition } from './verification.js';
 import { createRecoveryFlow } from './recovery.js';
 import { composerKeyAction } from './keyboard.js';
@@ -574,7 +575,7 @@ function snapshotRoomPane(root) {
  * at the bottom; new message while scrolled up → keep the position and show
  * a floating "새 메시지" badge that jumps down on click.
  */
-function buildRoom({ room, timeline, onSend, onAttach, photoPreviews = null, onOpenAttachment = null, onTyping = null, onBack, notice, onToggleBox = null, hasMore = false, loadingEarlier = false, onLoadEarlier = null, onReachBottom = null, typing = '' }, snap) {
+function buildRoom({ room, timeline, onSend, onAttach, photoPreviews = null, onOpenAttachment = null, onTyping = null, onBack, notice, onToggleBox = null, hasMore = false, loadingEarlier = false, onLoadEarlier = null, onReachBottom = null, typing = '', lastSent = null }, snap) {
   // 맨 위 행: 이전 대화 불러오기 버튼 / 불러오는 중 / 대화의 처음.
   const earlierMode = loadingEarlier ? 'loading' : hasMore && onLoadEarlier ? 'button' : timeline.length > 0 ? 'start' : 'none';
   const earlierRow = signed(el(
@@ -726,9 +727,10 @@ function buildRoom({ room, timeline, onSend, onAttach, photoPreviews = null, onO
     onToggleBox ? el('button', { type: 'button', class: 'icon ghost box-toggle', 'aria-label': strings.box.toggle, onclick: onToggleBox }, '📎') : null,
   ), JSON.stringify([room.displayName, typing || '', room.kind, room.memberCount, Boolean(onToggleBox)]));
   const noticeNode = notice ? signed(el('p', { class: 'status error', role: 'alert' }, notice), notice) : null;
+  const lastSentNode = lastSentBar(lastSent, room.roomId ?? '', list);
   const timelineWrap = el('div', { class: 'timeline-wrap' }, list, badge);
   const composerWrap = el('div', { class: 'composer-wrap' }, attachBar, composer);
-  const pane = el('section', { class: 'room-screen', 'data-room-id': room.roomId ?? '' }, header, noticeNode, timelineWrap, composerWrap);
+  const pane = el('section', { class: 'room-screen', 'data-room-id': room.roomId ?? '' }, header, noticeNode, lastSentNode, timelineWrap, composerWrap);
   const sameRoom = snap.roomId != null && snap.roomId === (room.roomId ?? '');
   /** keepComposer: the existing composer stays in the DOM (incremental update) — don't touch draft/focus. */
   const mount = ({ keepComposer = false } = {}) => {
@@ -755,7 +757,86 @@ function buildRoom({ room, timeline, onSend, onAttach, photoPreviews = null, onO
       if (timeline.length > snap.count) badge.hidden = false;
     }
   };
-  return { pane, mount, parts: { header, notice: noticeNode, timelineWrap, composerWrap } };
+  return { pane, mount, parts: { header, notice: noticeNode, lastSent: lastSentNode, timelineWrap, composerWrap } };
+}
+
+// ---- 대화창 상단 "내 마지막 말" 바(#300) ----
+// 헤더 아래·타임라인 위의 보통 flex 자식이라 좌표 계산이 필요 없다. 같은 방 재렌더에서는 서명이
+// 같으면 붙어 있는 노드를 그대로 둔다(#194). 누르면 그 말풍선으로 스크롤하고 잠깐 밝힌다 — 불러온
+// 범위 밖(이전 페이지)이면 안내만 한다. 접기는 방별 localStorage에 남는다.
+const FLASH_MS = 1600;
+function readCollapsed(roomId) {
+  try { return globalThis.localStorage?.getItem(collapsedKey(roomId)) === '1'; } catch (_) { return false; }
+}
+function writeCollapsed(roomId, collapsed) {
+  try {
+    if (collapsed) globalThis.localStorage?.setItem(collapsedKey(roomId), '1');
+    else globalThis.localStorage?.removeItem(collapsedKey(roomId));
+  } catch (_) { /* 저장소가 막혀 있어도 접기는 이번 화면에서만 동작한다 */ }
+}
+/** 타임라인에서 그 말풍선을 찾아 보이게 하고 잠깐 밝힌다. 없으면 false(불러온 범위 밖). */
+export function jumpToBubble(list, eventId) {
+  if (!list || typeof eventId !== 'string') return false;
+  const bubble = list.querySelector(`li.bubble[data-event-id="${CSS.escape(eventId)}"]`);
+  if (!bubble) return false;
+  // 캐럿 모드·관성과 무관하게 즉시 이동한다. 맨 위 근처로 가면 이전 페이지 자동 로드가 따라올 수 있다.
+  list.scrollTop = Math.max(0, (bubble.offsetTop - list.offsetTop) - 8);
+  bubble.classList.remove('flash');
+  // 같은 말풍선을 연달아 누르면 애니메이션을 다시 시작한다.
+  void bubble.offsetWidth;
+  bubble.classList.add('flash');
+  setTimeout(() => bubble.classList.remove('flash'), FLASH_MS);
+  return true;
+}
+function lastSentBar(lastSent, roomId, list) {
+  if (!lastSent) return null;
+  const collapsed = readCollapsed(roomId);
+  const t = strings.chat.lastSent;
+  const signature = JSON.stringify([lastSent.eventId ?? null, lastSent.text, Boolean(lastSent.pending), lastSent.replies ?? 0, collapsed, roomId]);
+  const hint = el('span', { class: 'hint', role: 'status', hidden: true }, t.notLoaded);
+  const chips = [
+    lastSent.pending ? el('span', { class: 'chip pending' }, t.pending) : null,
+    !lastSent.pending ? el('span', { class: 'chip' }, t.replies(lastSent.replies ?? 0)) : null,
+    lastSent.ts ? el('span', { class: 'chip time' }, timeLabel(lastSent.ts)) : null,
+  ];
+  const bar = el('div', { class: 'last-sent', role: 'region', 'aria-label': t.region, 'data-collapsed': collapsed ? 'true' : 'false', 'data-event-id': lastSent.eventId ?? null });
+  const jump = el(
+    'button',
+    {
+      type: 'button',
+      class: 'jump',
+      title: t.jump,
+      onclick: () => {
+        const found = jumpToBubble(list, lastSent.eventId);
+        hint.hidden = found;
+      },
+    },
+    el('span', { class: 'kicker' }, t.label, chips),
+    el('span', { class: 'preview' }, lastSent.text),
+    hint,
+  );
+  const toggle = el(
+    'button',
+    {
+      type: 'button',
+      class: 'toggle',
+      'aria-label': collapsed ? t.expand : t.collapse,
+      'aria-expanded': collapsed ? 'false' : 'true',
+      onclick: () => {
+        const next = bar.dataset.collapsed !== 'true';
+        writeCollapsed(roomId, next);
+        bar.dataset.collapsed = next ? 'true' : 'false';
+        toggle.setAttribute('aria-label', next ? t.expand : t.collapse);
+        toggle.setAttribute('aria-expanded', next ? 'false' : 'true');
+        toggle.textContent = next ? '▾' : '▴';
+        // 서명도 바꿔 다음 재렌더가 같은 상태를 유지하게 한다.
+        renderedSignature.set(bar, JSON.stringify([lastSent.eventId ?? null, lastSent.text, Boolean(lastSent.pending), lastSent.replies ?? 0, next, roomId]));
+      },
+    },
+    collapsed ? '▾' : '▴',
+  );
+  setChildren(bar, jump, toggle);
+  return signed(bar, signature);
 }
 
 function fileRow(file, onOpen) {
@@ -892,6 +973,12 @@ export function renderShell(root, { list, room, box = null }) {
     if (signatureOf(oldNotice) !== signatureOf(built.parts.notice ?? undefined)) {
       oldNotice?.remove();
       if (built.parts.notice) existingScreen.insertBefore(built.parts.notice, oldWrap);
+    }
+    // "내 마지막 말" 바(#300): 내용·접기 상태가 바뀔 때만 교체, 없어지면 떼고, 생기면 타임라인 위에 끼운다.
+    const oldLastSent = existingScreen.querySelector(':scope > .last-sent');
+    if (signatureOf(oldLastSent) !== signatureOf(built.parts.lastSent ?? undefined)) {
+      oldLastSent?.remove();
+      if (built.parts.lastSent) existingScreen.insertBefore(built.parts.lastSent, oldWrap);
     }
     if (oldWrap?.querySelector('.timeline')) updateTimeline(oldWrap, built.parts.timelineWrap, { count: snap.count });
     else {

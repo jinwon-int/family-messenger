@@ -485,6 +485,60 @@ main.shell[data-view="room"] .pane-list { display: none; }
   z-index: 1;
 }
 .new-messages[hidden] { display: none; }
+/* 대화창 상단 "내 마지막 말" 바(#300): 헤더 아래·타임라인 위의 보통 flex 자식 — fixed/sticky·spacer 없이
+ * 항상 보인다. 왼쪽 띠는 내 말풍선 색. 접으면 라벨 한 줄만 남는다. */
+.last-sent {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-1);
+  margin: var(--space-2) 0 0;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--bubble-me);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+.last-sent .jump {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: inherit;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+.last-sent .jump:hover { background: color-mix(in srgb, var(--bubble-me) 8%, transparent); }
+.last-sent .kicker { display: flex; gap: var(--space-2); align-items: baseline; font-size: var(--text-xs); color: var(--text-3); font-weight: 700; }
+.last-sent .kicker .chip { font-weight: 600; color: var(--text-2); }
+.last-sent .kicker .chip.pending { color: var(--brand); }
+.last-sent .preview {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+  font-size: var(--text-s);
+}
+.last-sent .hint { font-size: var(--text-xs); color: var(--danger); }
+.last-sent .toggle { flex: none; min-width: 36px; align-self: stretch; border: 0; background: none; color: var(--text-3); cursor: pointer; font-size: var(--text-s); }
+.last-sent[data-collapsed="true"] { margin-top: var(--space-1); }
+.last-sent[data-collapsed="true"] .jump { padding: var(--space-1) var(--space-3); }
+.last-sent[data-collapsed="true"] .preview, .last-sent[data-collapsed="true"] .hint { display: none; }
+/* 바에서 이동한 말풍선을 잠깐 밝힌다. */
+.bubble.flash .body { animation: bubble-flash 1.6s ease-out; }
+@keyframes bubble-flash {
+  0% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--focus) 70%, transparent); }
+  100% { box-shadow: var(--shadow-1); }
+}
+@media (prefers-reduced-motion: reduce) { .bubble.flash .body { animation: none; outline: 3px solid var(--focus); } }
 .bubble {
   max-width: min(78%, 560px);
   align-self: flex-start;
