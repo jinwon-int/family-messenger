@@ -507,6 +507,7 @@ main.shell[data-view="room"] .pane-list { display: none; }
   min-width: 0;
   display: flex;
   flex-direction: column;
+  align-items: flex-start; /* <button>은 자식을 가운데로 모은다 — 라벨 줄을 왼쪽에 붙인다 */
   gap: 3px;
   padding: var(--space-2) var(--space-3) var(--space-3);
   text-align: left;
@@ -532,6 +533,7 @@ main.shell[data-view="room"] .pane-list { display: none; }
 .last-sent .kicker .chip.pending { color: var(--on-brand); background: var(--brand); border-color: var(--brand); }
 .last-sent .kicker .chip.time { font-weight: 600; color: var(--text-3); background: transparent; border-color: transparent; padding-left: 0; }
 .last-sent .preview {
+  align-self: stretch;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
