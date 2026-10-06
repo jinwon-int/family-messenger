@@ -331,6 +331,30 @@ def run_flow(Dev, receipt, base, relay):
             a.page.wait_for_function("() => document.getElementById('messages').textContent.includes('after removal')", timeout=30000)
             receipt['checks']['member_removed_epoch_advanced_removed_device_halts_durably'] = True
 
+            # #296: the page state (joined/roster/cursor) is lost while the worker still
+            # holds the group. Resume must recover membership from the worker and read on
+            # from the relay's acked cursor — not sit at "(아직 참여 전)" waiting for a Welcome.
+            a.page.evaluate("() => window.stopWorker('device')")
+            a.page.evaluate("() => { for (const k of Object.keys(localStorage)) if (k.startsWith('relay-app:family-acc:owner-pc')) localStorage.removeItem(k); }")
+            a.page.reload()
+            a.page.wait_for_function('() => window.ready === true', timeout=30000)
+            a.page.fill('#passphrase', a.passphrase)
+            n = a.loglen(); a.page.click('#start')
+            a.wait_log('참여 상태 복구', n, 180000)
+            a.wait_log('joined=true', n, 30000)
+            assert 'owner-pc' in a.roster() and '아직 참여 전' not in a.roster(), a.roster()
+            a.page.fill('#msg', 'after state loss')
+            a.page.click('#send')
+            a.page.wait_for_function("() => document.getElementById('messages').textContent.includes('after state loss')", timeout=30000)
+            receipt['checks']['page_state_loss_recovers_membership_from_worker_and_relay_cursor'] = True
+
+            # #290: after eviction the next start must use a new device id — the page pre-fills one.
+            a.page.evaluate("() => { window.confirm = () => true; }")   # Dev.on_dialog dismisses; accept the evict confirm instead
+            n = a.loglen(); a.page.click('#evict')
+            a.wait_log('다음 시작은 새 기기 ID(owner-pc-2)', n, 30000)
+            assert a.page.input_value('#device') == 'owner-pc-2', a.page.input_value('#device')
+            receipt['checks']['evict_prefills_next_device_id'] = True
+
 
 if __name__ == '__main__':
     sys.exit(main())

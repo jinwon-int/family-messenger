@@ -45,13 +45,23 @@ const S = {dev: null, room: null, db: null, started: false, joined: false, pendi
   // operator decides); retriedSeq remembers one merge retry per relay seq.
   halted: null, retriedSeq: 0, transferring: false};
 let attachments = null;
-const stateKey = () => `relay-app:${S.room}:${S.dev}`;
+// Page state is per worker identity = room + device + DB (#296): the same device id
+// opened on another DB is another identity, and must neither read nor wipe this one.
+const stateKey = () => `relay-app:${S.room}:${S.dev}:${S.db}`;
+const legacyStateKey = () => `relay-app:${S.room}:${S.dev}`;   // pre-#296 key, migrated once
 function save() {
   localStorage.setItem(stateKey(), JSON.stringify({joined: S.joined, pending: S.pending, expectedRoster: S.expectedRoster,
     pendingWelcome: S.pendingWelcome, relaySeq: S.relaySeq, epoch: S.epoch, roster: S.roster, halted: S.halted}));
 }
 function load() {
-  try { const v = JSON.parse(localStorage.getItem(stateKey()) || 'null'); if (v) Object.assign(S, v); } catch (_) { /* ignore */ }
+  try {
+    let raw = localStorage.getItem(stateKey());
+    if (raw === null) {
+      raw = localStorage.getItem(legacyStateKey());
+      if (raw !== null) { localStorage.setItem(stateKey(), raw); localStorage.removeItem(legacyStateKey()); }
+    }
+    const v = JSON.parse(raw || 'null'); if (v) Object.assign(S, v);
+  } catch (_) { /* ignore */ }
 }
 
 // ---- worker ----
@@ -325,7 +335,23 @@ async function activate(statusInfo) {
   setState(`기기 ${S.dev} · 방 ${S.room}\n지문 ${fp.replace(/(.{4})/g, '$1 ').trim()}\nrevision ${statusInfo.revision} · 저장항목 ${statusInfo.entries}건`);
   $('enroll-info').textContent = JSON.stringify({device_id: S.dev, actor: actorOf(S.dev), subject: '<운영자가 CF Access sub로 채움>',
     signing_key: key, fingerprint: fp}, null, 1);
-  if (S.joined) { try { S.roster = parseMembers((await op('members')).output); } catch (_) { /* no group yet */ } }
+  let members = null;
+  try { members = parseMembers((await op('members')).output); } catch (_) { /* no group yet */ }
+  if (S.joined && members) S.roster = members;
+  if (!S.joined && !S.halted && members && members.includes(S.dev)) {
+    // #296: the worker still holds the group but the page state was lost (key wiped
+    // by another tab, storage cleared). Trust the worker: we are a member. Resume
+    // reading from the relay's acked cursor for this device — never from 0, which
+    // would re-stage every old commit and refuse every old ciphertext.
+    const probe = await api('GET', roomPath(`events?device=${encodeURIComponent(S.dev)}&after=0&limit=1`));
+    if (probe.status === 200 && Number.isSafeInteger(probe.body?.cursor)) {
+      S.joined = true; S.roster = members; S.pending = false; S.expectedRoster = null; S.pendingWelcome = null;
+      S.relaySeq = Math.max(S.relaySeq, probe.body.cursor); S.epoch = probe.body.epoch ?? S.epoch; save();
+      log(`참여 상태 복구 — 워커가 그룹을 보유(멤버 ${members.join(', ')}), 릴레이 커서 ${S.relaySeq}부터 이어 읽는다`);
+    } else {
+      log(`참여 상태를 복구하지 못했다(릴레이 ${describe(probe.status, probe.body)}) — 동기화 뒤 다시 시작`);
+    }
+  }
   renderRoster();
   log(`워커 시작: ${S.dev} @ ${S.db} (relay seq ${S.relaySeq}, joined=${S.joined}, pending=${S.pending})`);
   // Resume shows only what arrives after the saved cursor: the relay keeps ciphertext behind
@@ -364,7 +390,8 @@ $('start').addEventListener('click', async () => {
     if (init.fresh && localStorage.getItem(markerKey(db))) {
       window.__pendingFresh = statusInfo;
       $('confirm-fresh').hidden = false;
-      setState('저장소가 비워져 새 기기로 시작한다 — 운영자 재등록과 상대 기기의 재초대가 필요하며 이전 메시지는 읽을 수 없다. "새 기기로 시작"으로 확인.');
+      setState(`저장소가 비워져 새 기기(새 지문)로 시작한다 — 정책 체인은 같은 기기 ID를 다시 받지 않으므로 기기 ID를 새 이름(예 ${nextDeviceId(dev)})으로 바꾸는 것을 권장한다. ` +
+        '운영자가 옛 ID를 revoke하고 새 ID를 등록(E2)한 뒤 상대 기기가 재초대해야 하며 이전 메시지는 읽을 수 없다. "새 기기로 시작"으로 확인.');
       return;
     }
     if (init.fresh) { S.joined = false; S.pending = false; S.relaySeq = 0; S.roster = []; S.expectedRoster = null; S.pendingWelcome = null; S.halted = null; }
@@ -517,9 +544,19 @@ guard('evict', async () => {
   });
   localStorage.removeItem(markerKey(S.db)); localStorage.removeItem(stateKey());
   S.started = false; enable(false);
-  setState('저장소 삭제 완료. 같은 기기 ID로 다시 시작하면 새 지문(새 기기) — 운영자 재등록(revoke + 재등록)과 상대의 재초대 필요.');
-  log('저장소 삭제(축출 재연습)');
+  // #290: the policy chain never reuses a device id, so the next start must be a new id.
+  const next = nextDeviceId(S.dev);
+  $('device').value = next;
+  setState(`저장소 삭제 완료. 다시 시작하면 새 지문(새 기기)이므로 기기 ID를 새 이름으로 바꿔야 한다 — ${next}로 채워 두었다. ` +
+    '운영자가 옛 ID를 revoke하고 새 ID를 등록(E2)한 뒤 상대 기기가 재초대한다.');
+  log(`저장소 삭제(축출 재연습) — 다음 시작은 새 기기 ID(${next})로`);
 });
+// owner-pc → owner-pc-2 → owner-pc-3 … (stays inside the relay identifier grammar).
+function nextDeviceId(dev) {
+  const m = /^(.*)-(\d+)$/.exec(dev);
+  const next = m ? `${m[1]}-${Number(m[2]) + 1}` : `${dev}-2`;
+  return next.length <= 64 ? next : next.slice(0, 64);
+}
 $('clear-log').addEventListener('click', () => { $('log').textContent = ''; });
 $('origin').textContent = location.host;
 try {
