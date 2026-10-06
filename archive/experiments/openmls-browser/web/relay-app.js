@@ -79,6 +79,19 @@ function parseMembers(framed) {
   }
   return out;
 }
+// Same framing, keeping the 32-byte signature key per identity: `remove_pending`
+// addresses a member by that key (#289), never by the display identity alone.
+function parseMemberKeys(framed) {
+  const bytes = new Uint8Array(framed), view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const count = view.getUint32(0, true);
+  let at = 4; const out = new Map();
+  for (let i = 0; i < count; i++) {
+    const n = view.getUint32(at, true); at += 4;
+    const id = decoder.decode(bytes.subarray(at, at + n)); at += n;
+    out.set(id, bytes.slice(at, at + 32)); at += 32;
+  }
+  return out;
+}
 const membersWire = devices => devices.slice().sort().map(device => ({device, actor: actorOf(device)}));
 // §3.6 binding (room ‖ client for encrypt, room for decrypt) is added by the durable
 // worker from its own init — this page hands it raw plaintext / raw ciphertext.
@@ -161,7 +174,13 @@ async function sync({quiet = false} = {}) {
         let report;
         try { report = parseStageReport((await op('stage_commit', data)).output); }
         catch (error) { log(`commit 거부(seq ${ev.seq}, ${ev.device}): ${error.message} — 이 기기는 방에서 빠졌을 수 있다`); continue; }
-        const outer = ev.epoch + 1 === body.epoch && Array.isArray(body.members) ? body.members.map(m => m.device) : null;
+        // #289: a commit that removes this very device is the last thing the relay
+        // shows it — the response carries no roster for a reader that is no longer a
+        // tracked member (outer would read [] against an inner roster that still
+        // lists the others). Inner checks (committer path/membership, removes ⊆
+        // roster) still apply; the outer comparison is skipped for that one commit.
+        const removesMe = report.removes.some(m => m.id === S.dev);
+        const outer = !removesMe && ev.epoch + 1 === body.epoch && Array.isArray(body.members) ? body.members.map(m => m.device) : null;
         const verdict = checkCommit({report, roster: S.roster, committer: ev.device, outer});
         if (!verdict.ok) {
           try { await op('discard_staged'); } catch (error) { log(`discard 실패: ${error.message}`); }
@@ -179,6 +198,13 @@ async function sync({quiet = false} = {}) {
           }
           log(`commit 거부(seq ${ev.seq}, ${ev.device}): ${error.message} — 이 기기는 방에서 빠졌을 수 있다`);
           continue;
+        }
+        if (removesMe) {
+          // #289: a verified commit removed this very device. The merged group is
+          // inactive from here on — nothing after this seq can be read, so stop
+          // like a refusal does (durable, loud), but say what actually happened.
+          halt(ev.seq, ev.device, {reason: 'removed_from_room', detail: '이 기기가 방에서 제거되었다'});
+          break;
         }
         S.roster = parseMembers((await op('members')).output); renderRoster();
         log(`commit 검증·적용(seq ${ev.seq}, ${ev.device}) — +${report.adds.map(m => m.id).join(',') || '없음'} −${report.removes.map(m => m.id).join(',') || '없음'}` +
@@ -258,10 +284,19 @@ function halt(seq, committer, verdict) {
 function showHalt() {
   const h = S.halted; if (!h) return;
   enable(false);
-  setState(`⛔ commit 거부 — seq ${h.seq}, ${h.committer}: ${h.reason}${h.detail ? ` (${h.detail})` : ''} (${h.at})\n` +
-    '이 기기는 그 commit을 적용하지 않았고 더 읽지 않는다. 운영자에게 알리고 재초대/재등록을 기다린다.');
+  $('evict').disabled = false;   // the only way forward for this identity is a fresh one
   const row = document.createElement('div');
   row.className = 'muted'; row.dataset.placeholder = 'halt';
+  if (h.reason === 'removed_from_room') {   // #289: applied, not refused — this device is out
+    setState(`이 기기는 방에서 제거되었다 — seq ${h.seq}, ${h.committer}의 commit (${h.at})\n` +
+      '더 읽지 않는다. 다시 들어오려면 저장소 삭제 → 새 기기 ID로 시작 → 운영자 등록 → 신뢰 기기의 재초대.');
+    row.textContent = `[seq ${h.seq}] ${h.committer}이(가) 이 기기를 방에서 제거했다`;
+    $('messages').append(row);
+    log(`방에서 제거됨(seq ${h.seq}, ${h.committer}) — 이 기기는 더 읽지 않는다`);
+    return;
+  }
+  setState(`⛔ commit 거부 — seq ${h.seq}, ${h.committer}: ${h.reason}${h.detail ? ` (${h.detail})` : ''} (${h.at})\n` +
+    '이 기기는 그 commit을 적용하지 않았고 더 읽지 않는다. 운영자에게 알리고 재초대/재등록을 기다린다.');
   row.textContent = `[⛔ seq ${h.seq}] ${h.committer}의 commit을 거부했다 — ${h.reason}`;
   $('messages').append(row);
   log(`⛔ commit 거부(seq ${h.seq}, ${h.committer}): ${h.reason}${h.detail ? ` — ${h.detail}` : ''}`);
@@ -272,7 +307,7 @@ function setOffline(down) {
   status.offlineAt = down ? clock() : null; renderState();
 }
 function enable(on) {
-  for (const id of ['create', 'keypackage', 'invite', 'sync', 'send', 'evict', 'offer', 'send-attachment']) $(id).disabled = !on;
+  for (const id of ['create', 'keypackage', 'invite', 'remove', 'sync', 'send', 'evict', 'offer', 'send-attachment']) $(id).disabled = !on;
   renderAttachment();
 }
 
@@ -384,6 +419,31 @@ guard('invite', async () => {
   if (r.status !== 201) { await op('clear_pending'); throw new Error(`commit 거절: ${describe(r.status, r.body)}`); }
   S.pending = true; S.expectedRoster = expected; S.pendingWelcome = {target, welcome: b64(welcome)}; save();
   log(`${target} 추가 commit 게시(seq ${r.body.seq}) — 반영되면 Welcome을 보낸다`);
+  await sync();
+});
+// #289: a trusted device removes a member (normally one the operator already revoked
+// on the policy chain — the chain never removes MLS leaves by itself). Same shape as
+// invite: bare Remove commit → outer roster from members_after_pending → own echo merges.
+guard('remove', async () => {
+  const target = $('remove-target').value.trim();
+  if (!ID.test(target)) throw new Error('제거할 기기 ID');
+  if (target === S.dev) throw new Error('자기 자신은 제거할 수 없다 — 이 기기를 빼려면 다른 신뢰 기기에서 제거하거나 저장소를 삭제한다');
+  if (!S.joined) throw new Error('먼저 방에 들어가 있어야 한다');
+  if (S.pending) throw new Error('내 commit이 아직 반영되지 않았다 — 동기화 뒤 다시');
+  await sync();
+  const key = parseMemberKeys((await op('members')).output).get(target);
+  if (!key) throw new Error(`${target}는 현재 멤버가 아니다 (멤버: ${S.roster.join(', ') || '—'})`);
+  const commit = new Uint8Array((await op('remove_pending', key)).output);   // bare commit, no Welcome
+  const expected = parseMembers((await op('members_after_pending')).output);
+  const r = await postEvent('commit', commit, {members: membersWire(expected)});
+  if (r.status === 409) {
+    await op('clear_pending');
+    log(`commit 거절(${describe(r.status, r.body)}) — 방이 먼저 바뀌었다. 동기화 뒤 다시 제거한다.`);
+    await sync(); return;
+  }
+  if (r.status !== 201) { await op('clear_pending'); throw new Error(`commit 거절: ${describe(r.status, r.body)}`); }
+  S.pending = true; S.expectedRoster = expected; S.pendingWelcome = null; save();
+  log(`${target} 제거 commit 게시(seq ${r.body.seq}) — 반영되면 epoch 전진`);
   await sync();
 });
 guard('sync', () => sync());

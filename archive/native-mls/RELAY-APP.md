@@ -57,6 +57,13 @@ Python에서 하던 릴레이 호출을 브라우저로 옮긴 것이다. 합성
    넣고 `지문 보기`(`policy_fingerprint`) → 두 화면 지문을 사람이 비교 → `이 지문이 맞습니다` →
    `sign_approval`(durable 신원의 키로 서명) → 증거 JSON(signature 포함)을 운영자에게 → `-add-device -input`.
 5. **저장소 삭제**: 축출 재연습. 재시작하면 새 기기(새 지문) → 운영자 재등록 + 상대 재초대.
+6. **멤버 제거(#289)**: 운영자의 `-revoke`는 정책 체인만 바꾸고 MLS leaf는 남는다. 신뢰 기기가 `제거할 기기` ID로
+   `멤버 제거` → `remove_pending`(그 멤버의 서명 키로 지정, 맨 commit) → commit POST(members =
+   `members_after_pending`) → 내 echo에서 `merge_pending` → epoch 전진. 제거된 기기가 아직 살아 있으면 그
+   commit을 stage→검사→merge한 뒤 "이 기기는 방에서 제거되었다"로 **정지**(⛔ 거부와 같은 durable 정지, 문구만
+   다름; `저장소 삭제`만 활성). 나를 제거하는 그 commit만은 outer 로스터 비교를 생략한다(릴레이가 비멤버에게
+   로스터를 보여 주지 않거나, 멤버십 추적이 꺼진 스모크에서는 늘 `[]`). 운영 모드(`-device-state`, 멤버십 강제)의
+   릴레이는 제거된 기기의 application/ack를 403 `not_a_member`로 거부한다(Go 테스트로 증명; 스모크 범위 밖).
 
 durable 워커 허용 메서드에 이번에 더해진 것: `invite_with_commit` `merge_pending` `clear_pending`
 `remove_pending` `members` `members_after_pending` `fingerprint` `policy_fingerprint` `sign_approval`

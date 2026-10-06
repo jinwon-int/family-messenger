@@ -307,6 +307,30 @@ def run_flow(Dev, receipt, base, relay):
             assert any('다시 표시되지 않는다' in m for m in msgs_b), msgs_b
             receipt['checks']['resume_shows_history_notice_not_old_rows'] = True
 
+            # #289: the trusted device removes a member. Bare Remove commit → own echo
+            # merges (epoch advances, roster shrinks); the removed device verifies the
+            # commit (inner checks — this relay runs without -device-state, so it tracks
+            # no membership and its outer roster is always []), applies it and halts as
+            # "removed" (evict stays enabled). The relay-side 403 not_a_member for a
+            # removed member needs membership enforcement on and is covered by the Go
+            # tests (server_hardening_test.go), not by this unauthenticated smoke.
+            a.page.fill('#remove-target', 'owner-phone')
+            a.click('#remove', '내 commit 반영', timeout=90000)
+            assert 'owner-phone' not in a.roster() and 'owner-pc' in a.roster(), a.roster()
+            b.wait_log('방에서 제거됨', 0, 90000)   # the 4 s poll may land first; don't race it with a click
+            assert '제거되었다' in b.state(), b.state()
+            assert b.page.is_disabled('#send') and not b.page.is_disabled('#evict')
+            b.page.reload()
+            b.page.wait_for_function('() => window.ready === true', timeout=30000)
+            b.page.fill('#passphrase', b.passphrase)
+            b.page.click('#start')
+            b.wait_state(has=['제거되었다'], timeout=180000)   # durable across resume, like a refusal
+            assert b.page.is_disabled('#send') and not b.page.is_disabled('#evict')
+            a.page.fill('#msg', 'after removal')
+            a.page.click('#send')
+            a.page.wait_for_function("() => document.getElementById('messages').textContent.includes('after removal')", timeout=30000)
+            receipt['checks']['member_removed_epoch_advanced_removed_device_halts_durably'] = True
+
 
 if __name__ == '__main__':
     sys.exit(main())
