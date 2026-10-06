@@ -174,7 +174,13 @@ async function sync({quiet = false} = {}) {
         let report;
         try { report = parseStageReport((await op('stage_commit', data)).output); }
         catch (error) { log(`commit 거부(seq ${ev.seq}, ${ev.device}): ${error.message} — 이 기기는 방에서 빠졌을 수 있다`); continue; }
-        const outer = ev.epoch + 1 === body.epoch && Array.isArray(body.members) ? body.members.map(m => m.device) : null;
+        // #289: a commit that removes this very device is the last thing the relay
+        // shows it — the response carries no roster for a reader that is no longer a
+        // tracked member (outer would read [] against an inner roster that still
+        // lists the others). Inner checks (committer path/membership, removes ⊆
+        // roster) still apply; the outer comparison is skipped for that one commit.
+        const removesMe = report.removes.some(m => m.id === S.dev);
+        const outer = !removesMe && ev.epoch + 1 === body.epoch && Array.isArray(body.members) ? body.members.map(m => m.device) : null;
         const verdict = checkCommit({report, roster: S.roster, committer: ev.device, outer});
         if (!verdict.ok) {
           try { await op('discard_staged'); } catch (error) { log(`discard 실패: ${error.message}`); }
@@ -193,7 +199,7 @@ async function sync({quiet = false} = {}) {
           log(`commit 거부(seq ${ev.seq}, ${ev.device}): ${error.message} — 이 기기는 방에서 빠졌을 수 있다`);
           continue;
         }
-        if (report.removes.some(m => m.id === S.dev)) {
+        if (removesMe) {
           // #289: a verified commit removed this very device. The merged group is
           // inactive from here on — nothing after this seq can be read, so stop
           // like a refusal does (durable, loud), but say what actually happened.
