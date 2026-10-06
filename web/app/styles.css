@@ -495,11 +495,13 @@ main.shell[data-view="room"] .pane-list { display: none; }
   align-items: stretch;
   gap: 0;
   margin: var(--space-2) 0 var(--space-1);
-  border: 1px solid color-mix(in srgb, var(--brand) 35%, var(--line));
-  border-left: 5px solid var(--brand);
+  border: 1px solid color-mix(in srgb, var(--brand) 55%, var(--line));
+  border-left: 6px solid var(--brand);
   border-radius: var(--radius);
-  background: var(--brand-soft);
-  box-shadow: var(--shadow-1);
+  /* 폰(2x)에선 --brand-soft도 보이지만 PC 크롬(1x·넓은 화면)에선 배경과 거의 같아 보였다(2026-10-06 오너) —
+   * 브랜드를 더 섞고 브랜드 톤 그림자로 띄운다. */
+  background: linear-gradient(90deg, color-mix(in srgb, var(--brand) 20%, var(--surface)), color-mix(in srgb, var(--brand) 12%, var(--surface)));
+  box-shadow: 0 2px 12px color-mix(in srgb, var(--brand) 22%, transparent), var(--shadow-1);
   overflow: hidden;
 }
 .last-sent .jump {
@@ -517,7 +519,7 @@ main.shell[data-view="room"] .pane-list { display: none; }
   cursor: pointer;
   font: inherit;
 }
-.last-sent .jump:hover, .last-sent .jump:focus-visible { background: color-mix(in srgb, var(--brand) 12%, var(--brand-soft)); }
+.last-sent .jump:hover, .last-sent .jump:focus-visible { background: color-mix(in srgb, var(--brand) 14%, transparent); }
 .last-sent .jump:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
 .last-sent .kicker { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-2); align-items: center; font-size: var(--text-xs); color: var(--brand-strong); font-weight: 800; letter-spacing: 0.01em; }
 .last-sent .kicker::before { content: '❝'; font-size: 1rem; line-height: 1; color: var(--brand); }
@@ -551,19 +553,29 @@ main.shell[data-view="room"] .pane-list { display: none; }
   align-self: stretch;
   border: 0;
   border-left: 1px solid color-mix(in srgb, var(--brand) 25%, var(--line));
-  background: color-mix(in srgb, var(--brand) 6%, var(--brand-soft));
+  background: color-mix(in srgb, var(--brand) 10%, transparent);
   color: var(--brand-strong);
   cursor: pointer;
   font-size: var(--text-m);
 }
-.last-sent .toggle:hover { background: color-mix(in srgb, var(--brand) 16%, var(--brand-soft)); }
+.last-sent .toggle:hover { background: color-mix(in srgb, var(--brand) 22%, transparent); }
 .last-sent[data-collapsed="true"] { margin: var(--space-1) 0 0; border-left-width: 4px; }
 .last-sent[data-collapsed="true"] .jump { padding: var(--space-1) var(--space-3); gap: 0; }
 .last-sent[data-collapsed="true"] .preview, .last-sent[data-collapsed="true"] .hint { display: none; }
 @media (prefers-color-scheme: dark) {
+  .last-sent { background: linear-gradient(90deg, color-mix(in srgb, var(--brand) 34%, var(--surface)), color-mix(in srgb, var(--brand) 22%, var(--surface))); box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35); }
   .last-sent .kicker { color: var(--focus); }
   .last-sent .kicker::before { color: var(--focus); }
   .last-sent .toggle { color: var(--focus); }
+}
+/* 넓은 화면(PC): 밀도가 낮아 작게 보인다 — 글자·여백을 한 단계 키운다. */
+@media (min-width: 900px) {
+  .last-sent { margin-top: var(--space-3); border-left-width: 8px; }
+  .last-sent .jump { padding: var(--space-3) var(--space-4); gap: 4px; }
+  .last-sent .kicker { font-size: var(--text-s); }
+  .last-sent .kicker::before { font-size: 1.15rem; }
+  .last-sent .preview { font-size: 1.05rem; }
+  .last-sent .toggle { min-width: 48px; font-size: var(--text-l); }
 }
 /* 바에서 이동한 말풍선을 잠깐 밝힌다. */
 .bubble.flash .body { animation: bubble-flash 1.6s ease-out; }
