@@ -25,7 +25,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -310,8 +309,11 @@ def run_flow(Dev, receipt, base, relay):
 
             # #289: the trusted device removes a member. Bare Remove commit → own echo
             # merges (epoch advances, roster shrinks); the removed device verifies the
-            # commit (outer == inner), applies it and halts as "removed" (evict stays
-            # enabled); the relay then refuses that device's application as not_a_member.
+            # commit (inner checks — this relay runs without -device-state, so it tracks
+            # no membership and its outer roster is always []), applies it and halts as
+            # "removed" (evict stays enabled). The relay-side 403 not_a_member for a
+            # removed member needs membership enforcement on and is covered by the Go
+            # tests (server_hardening_test.go), not by this unauthenticated smoke.
             a.page.fill('#remove-target', 'owner-phone')
             a.click('#remove', '내 commit 반영', timeout=90000)
             assert 'owner-phone' not in a.roster() and 'owner-pc' in a.roster(), a.roster()
@@ -323,19 +325,11 @@ def run_flow(Dev, receipt, base, relay):
             b.page.fill('#passphrase', b.passphrase)
             b.page.click('#start')
             b.wait_state(has=['제거되었다'], timeout=180000)   # durable across resume, like a refusal
-            body = json.dumps({'device': 'owner-phone', 'client_id': 'owner-phone-after-removal', 'kind': 'application',
-                               'epoch': 0, 'bytes': 'AAAA'}).encode()
-            req = urllib.request.Request(base + f'/v2/rooms/{ROOM}/events', data=body, method='POST',
-                                         headers={'Content-Type': 'application/json'})
-            try:
-                with urllib.request.urlopen(req, timeout=5):
-                    raise AssertionError('removed member must not post')
-            except urllib.error.HTTPError as e:
-                assert e.code == 403 and json.load(e)['error'] == 'not_a_member', (e.code, e.read())
+            assert b.page.is_disabled('#send') and not b.page.is_disabled('#evict')
             a.page.fill('#msg', 'after removal')
             a.page.click('#send')
             a.page.wait_for_function("() => document.getElementById('messages').textContent.includes('after removal')", timeout=30000)
-            receipt['checks']['member_removed_epoch_advanced_removed_device_halts_relay_not_a_member'] = True
+            receipt['checks']['member_removed_epoch_advanced_removed_device_halts_durably'] = True
 
 
 if __name__ == '__main__':
