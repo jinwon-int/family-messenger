@@ -489,22 +489,25 @@ main.shell[data-view="room"] .pane-list { display: none; }
  * 항상 보인다. 오너 결정(2026-10-06): 연한 카드는 PC에서 배경과 겹쳐 보여 **어두운 브랜드 채움 + 흰 글씨**로.
  * 내 말풍선(--bubble-me)과 같은 계열이라 "내가 한 말"이 한눈에 읽힌다. 접으면 라벨·칩 한 줄만 남는다. */
 .last-sent {
+  /* 딥 슬레이트(오너 2026-10-06 "너무 진함 → 눈에 띄되 세련되게"): 채도 낮은 남색 먹색 카드 + 흰 본문 +
+   * 연보라(--focus) 라벨·띠. 흰 말풍선·파란 내 말풍선 어느 쪽과도 겹치지 않는다. */
   --ls-fg: #ffffff;
-  --ls-fg-2: rgba(255, 255, 255, 0.82);
-  --ls-fg-3: rgba(255, 255, 255, 0.66);
-  --ls-chip: rgba(255, 255, 255, 0.18);
-  --ls-chip-line: rgba(255, 255, 255, 0.35);
+  --ls-fg-2: rgba(255, 255, 255, 0.78);
+  --ls-fg-3: rgba(255, 255, 255, 0.60);
+  --ls-accent: var(--focus);
+  --ls-chip: rgba(255, 255, 255, 0.14);
+  --ls-chip-line: rgba(255, 255, 255, 0.26);
   flex: none;
   display: flex;
   align-items: stretch;
   gap: 0;
   margin: var(--space-2) 0 var(--space-1);
-  border: 1px solid var(--brand-strong);
-  border-left: 6px solid var(--focus);
+  border: 1px solid #39436a;
+  border-left: 4px solid var(--ls-accent);
   border-radius: var(--radius);
-  background: linear-gradient(100deg, var(--brand-strong), var(--brand));
+  background: linear-gradient(135deg, #2a3350, #1f2740);
   color: var(--ls-fg);
-  box-shadow: 0 4px 16px color-mix(in srgb, var(--brand-strong) 35%, transparent), var(--shadow-1);
+  box-shadow: 0 6px 20px rgba(22, 32, 58, 0.18), var(--shadow-1);
   overflow: hidden;
 }
 .last-sent .jump {
@@ -524,8 +527,8 @@ main.shell[data-view="room"] .pane-list { display: none; }
 }
 .last-sent .jump:hover, .last-sent .jump:focus-visible { background: rgba(255, 255, 255, 0.10); }
 .last-sent .jump:focus-visible { outline: 3px solid var(--ls-fg); outline-offset: -3px; }
-.last-sent .kicker { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-2); align-items: center; font-size: var(--text-xs); color: var(--ls-fg-2); font-weight: 800; letter-spacing: 0.02em; }
-.last-sent .kicker::before { content: '❝'; font-size: 1rem; line-height: 1; color: var(--ls-fg); }
+.last-sent .kicker { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-2); align-items: center; font-size: var(--text-xs); color: var(--ls-accent); font-weight: 800; letter-spacing: 0.02em; }
+.last-sent .kicker::before { content: '❝'; font-size: 1rem; line-height: 1; color: var(--ls-accent); }
 .last-sent .kicker .chip {
   font-weight: 700;
   color: var(--ls-fg);
@@ -535,7 +538,7 @@ main.shell[data-view="room"] .pane-list { display: none; }
   padding: 1px var(--space-2);
   line-height: 1.5;
 }
-.last-sent .kicker .chip.pending { color: var(--brand-strong); background: var(--ls-fg); border-color: var(--ls-fg); }
+.last-sent .kicker .chip.pending { color: #0d1330; background: var(--ls-accent); border-color: var(--ls-accent); }
 .last-sent .kicker .chip.time { font-weight: 600; color: var(--ls-fg-3); background: transparent; border-color: transparent; padding-left: 0; }
 .last-sent .preview {
   align-self: stretch;
@@ -555,19 +558,19 @@ main.shell[data-view="room"] .pane-list { display: none; }
   min-width: 40px;
   align-self: stretch;
   border: 0;
-  border-left: 1px solid rgba(255, 255, 255, 0.25);
-  background: rgba(0, 0, 0, 0.12);
-  color: var(--ls-fg);
+  border-left: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: #c7d2ff;
   cursor: pointer;
   font-size: var(--text-m);
 }
-.last-sent .toggle:hover { background: rgba(255, 255, 255, 0.14); }
+.last-sent .toggle:hover { background: rgba(255, 255, 255, 0.12); }
 .last-sent[data-collapsed="true"] { margin: var(--space-1) 0 0; border-left-width: 4px; }
 .last-sent[data-collapsed="true"] .jump { padding: var(--space-1) var(--space-3); gap: 0; }
 .last-sent[data-collapsed="true"] .preview, .last-sent[data-collapsed="true"] .hint { display: none; }
 @media (prefers-color-scheme: dark) {
-  /* 다크 카드(#171d2c) 위에서는 한 톤 더 깊은 남색으로 떠 보이게 하고 띠는 밝은 포커스색. */
-  .last-sent { background: linear-gradient(100deg, #223a8f, var(--brand)); border-color: #2d4bb0; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45); }
+  /* 다크 배경(#0f1420)·카드(#171d2c) 위에서는 한 톤 밝은 슬레이트로 떠 보이게 한다. */
+  .last-sent { background: linear-gradient(135deg, #2f3a5e, #262f4d); border-color: #46538a; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45); }
 }
 /* 넓은 화면(PC): 밀도가 낮아 작게 보인다 — 글자·여백을 한 단계 키운다. */
 @media (min-width: 900px) {
