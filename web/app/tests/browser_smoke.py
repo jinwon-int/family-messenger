@@ -113,6 +113,33 @@ def caret_mode_check(browser, app):
     page.close()
 
 
+def shell_overflow_check(browser, app):
+    """PC 크롬(1365x911, 일반 스크롤바)에서 목록 아래쪽 안 읽은 방의 스크린리더 라벨이 문서를 늘려
+    배경 휠에 앱 전체가 위로 밀리던 회귀. 실제 앱과 같은 셸·목록 구조에 styles.css를 입혀 잰다."""
+    rows = ''.join(
+        f'<button class="room-item{" unread" if i >= 9 else ""}"><span class="texts"><span class="room-head">'
+        f'<span class="room-title"><span class="room-name">방 {i}</span>'
+        f'{"<span class=unread-badge>N</span><span class=visually-hidden>새 메시지</span>" if i >= 9 else ""}'
+        f'</span></span><span class="preview">미리보기</span></span></button>'
+        for i in range(12))
+    html = ('<!doctype html><html lang="ko"><head><meta charset="utf-8"><style>'
+            + (app / 'styles.css').read_text(encoding='utf-8')
+            + '</style></head><body><div id="app"><main class="shell" data-view="room">'
+            f'<aside class="pane pane-list rooms-screen"><header class="appbar"><h1>대화</h1></header>{rows}</aside>'
+            '<section class="pane pane-room"><section class="room-screen"><header class="appbar"><h2>방</h2></header>'
+            '<div class="timeline-wrap"><ul class="timeline"><li class="bubble">안녕</li></ul></div></section></section>'
+            '</main></div></body></html>')
+    page = browser.new_page(viewport={'width': 1365, 'height': 911})
+    page.set_content(html)
+    size = page.evaluate('() => [document.scrollingElement.scrollHeight, document.scrollingElement.clientHeight]')
+    assert size[0] == size[1], f'document must not overflow the viewport: {size}'
+    page.mouse.move(900, 20)
+    page.mouse.wheel(0, 800)
+    page.wait_for_timeout(300)
+    assert page.evaluate('() => scrollY') == 0, 'background wheel must not scroll the whole app'
+    page.close()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', type=Path, default=Path('../../.runtime/web-browser-smoke'))
@@ -163,6 +190,8 @@ def main():
                                 expired_logout_clears_token=True)
                 caret_mode_check(browser, app)
                 evidence.update(caret_mode_selects_read_only=True)
+                shell_overflow_check(browser, app)
+                evidence.update(shell_does_not_overflow_document=True)
                 (args.output / 'verification.json').write_text(json.dumps(evidence, indent=2) + '\n')
                 browser.close()
                 print(json.dumps(evidence))

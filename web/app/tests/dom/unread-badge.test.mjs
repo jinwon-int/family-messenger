@@ -122,3 +122,18 @@ test('styles.css: 배지는 전용 색 토큰(라이트·다크 공용)의 원�
   assert.match(rule('.room-item.unread .room-name'), /font-weight:\s*800/);
   assert.match(rule('.visually-hidden'), /clip/);
 });
+
+test('styles.css: 스크린리더 "새 메시지" 라벨(절대 위치)은 방 행·셸 안에 갇혀 문서를 늘리지 않는다', () => {
+  // 기준 상자가 없으면 목록 아래쪽 안 읽은 방의 라벨이 문서 높이를 늘려, PC 크롬에서 배경 휠에
+  // 앱 전체가 위로 밀려 올라갔다(실측 doc 1129/911, scrollY 218). 실제 Chromium 검사는 browser_smoke.
+  const css = readFileSync(new URL('../../styles.css', import.meta.url), 'utf-8');
+  const rule = (selector) => {
+    const match = css.match(new RegExp(`(^|\\n)${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`));
+    assert.ok(match, `${selector} 규칙이 있다`);
+    return match[2];
+  };
+  assert.match(rule('.visually-hidden'), /position:\s*absolute/);
+  assert.match(rule('.room-item'), /position:\s*relative/);
+  assert.match(rule('main.shell'), /position:\s*relative/);
+  assert.match(rule('main.shell'), /overflow:\s*hidden/);
+});
