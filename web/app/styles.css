@@ -486,22 +486,25 @@ main.shell[data-view="room"] .pane-list { display: none; }
 }
 .new-messages[hidden] { display: none; }
 /* 대화창 상단 "내 마지막 말" 바(#300): 헤더 아래·타임라인 위의 보통 flex 자식 — fixed/sticky·spacer 없이
- * 항상 보인다. 배경·말풍선이 모두 흰색 계열이라(2026-10-06 실기기: 색이 겹쳐 안 보임) 브랜드 연한 톤
- * 카드로 띄운다: 왼쪽 브랜드 띠 + 브랜드색 라벨 + 진한 본문 + 흰 알약 칩. 다크 모드는 --brand-soft가
- * 남색 카드가 되어 같은 규칙으로 대비가 난다. 접으면 라벨·칩 한 줄만 남는다. */
+ * 항상 보인다. 오너 결정(2026-10-06): 연한 카드는 PC에서 배경과 겹쳐 보여 **어두운 브랜드 채움 + 흰 글씨**로.
+ * 내 말풍선(--bubble-me)과 같은 계열이라 "내가 한 말"이 한눈에 읽힌다. 접으면 라벨·칩 한 줄만 남는다. */
 .last-sent {
+  --ls-fg: #ffffff;
+  --ls-fg-2: rgba(255, 255, 255, 0.82);
+  --ls-fg-3: rgba(255, 255, 255, 0.66);
+  --ls-chip: rgba(255, 255, 255, 0.18);
+  --ls-chip-line: rgba(255, 255, 255, 0.35);
   flex: none;
   display: flex;
   align-items: stretch;
   gap: 0;
   margin: var(--space-2) 0 var(--space-1);
-  border: 1px solid color-mix(in srgb, var(--brand) 55%, var(--line));
-  border-left: 6px solid var(--brand);
+  border: 1px solid var(--brand-strong);
+  border-left: 6px solid var(--focus);
   border-radius: var(--radius);
-  /* 폰(2x)에선 --brand-soft도 보이지만 PC 크롬(1x·넓은 화면)에선 배경과 거의 같아 보였다(2026-10-06 오너) —
-   * 브랜드를 더 섞고 브랜드 톤 그림자로 띄운다. */
-  background: linear-gradient(90deg, color-mix(in srgb, var(--brand) 20%, var(--surface)), color-mix(in srgb, var(--brand) 12%, var(--surface)));
-  box-shadow: 0 2px 12px color-mix(in srgb, var(--brand) 22%, transparent), var(--shadow-1);
+  background: linear-gradient(100deg, var(--brand-strong), var(--brand));
+  color: var(--ls-fg);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--brand-strong) 35%, transparent), var(--shadow-1);
   overflow: hidden;
 }
 .last-sent .jump {
@@ -515,25 +518,25 @@ main.shell[data-view="room"] .pane-list { display: none; }
   text-align: left;
   background: none;
   border: 0;
-  color: var(--text);
+  color: var(--ls-fg);
   cursor: pointer;
   font: inherit;
 }
-.last-sent .jump:hover, .last-sent .jump:focus-visible { background: color-mix(in srgb, var(--brand) 14%, transparent); }
-.last-sent .jump:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
-.last-sent .kicker { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-2); align-items: center; font-size: var(--text-xs); color: var(--brand-strong); font-weight: 800; letter-spacing: 0.01em; }
-.last-sent .kicker::before { content: '❝'; font-size: 1rem; line-height: 1; color: var(--brand); }
+.last-sent .jump:hover, .last-sent .jump:focus-visible { background: rgba(255, 255, 255, 0.10); }
+.last-sent .jump:focus-visible { outline: 3px solid var(--ls-fg); outline-offset: -3px; }
+.last-sent .kicker { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-2); align-items: center; font-size: var(--text-xs); color: var(--ls-fg-2); font-weight: 800; letter-spacing: 0.02em; }
+.last-sent .kicker::before { content: '❝'; font-size: 1rem; line-height: 1; color: var(--ls-fg); }
 .last-sent .kicker .chip {
   font-weight: 700;
-  color: var(--text-2);
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
+  color: var(--ls-fg);
+  background: var(--ls-chip);
+  border: 1px solid var(--ls-chip-line);
   border-radius: 999px;
   padding: 1px var(--space-2);
   line-height: 1.5;
 }
-.last-sent .kicker .chip.pending { color: var(--on-brand); background: var(--brand); border-color: var(--brand); }
-.last-sent .kicker .chip.time { font-weight: 600; color: var(--text-3); background: transparent; border-color: transparent; padding-left: 0; }
+.last-sent .kicker .chip.pending { color: var(--brand-strong); background: var(--ls-fg); border-color: var(--ls-fg); }
+.last-sent .kicker .chip.time { font-weight: 600; color: var(--ls-fg-3); background: transparent; border-color: transparent; padding-left: 0; }
 .last-sent .preview {
   align-self: stretch;
   display: -webkit-box;
@@ -544,29 +547,27 @@ main.shell[data-view="room"] .pane-list { display: none; }
   line-height: 1.45;
   font-size: var(--text-m);
   font-weight: 600;
-  color: var(--text);
+  color: var(--ls-fg);
 }
-.last-sent .hint { font-size: var(--text-xs); font-weight: 600; color: var(--danger); }
+.last-sent .hint { font-size: var(--text-xs); font-weight: 700; color: #ffd7cf; }
 .last-sent .toggle {
   flex: none;
   min-width: 40px;
   align-self: stretch;
   border: 0;
-  border-left: 1px solid color-mix(in srgb, var(--brand) 25%, var(--line));
-  background: color-mix(in srgb, var(--brand) 10%, transparent);
-  color: var(--brand-strong);
+  border-left: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(0, 0, 0, 0.12);
+  color: var(--ls-fg);
   cursor: pointer;
   font-size: var(--text-m);
 }
-.last-sent .toggle:hover { background: color-mix(in srgb, var(--brand) 22%, transparent); }
+.last-sent .toggle:hover { background: rgba(255, 255, 255, 0.14); }
 .last-sent[data-collapsed="true"] { margin: var(--space-1) 0 0; border-left-width: 4px; }
 .last-sent[data-collapsed="true"] .jump { padding: var(--space-1) var(--space-3); gap: 0; }
 .last-sent[data-collapsed="true"] .preview, .last-sent[data-collapsed="true"] .hint { display: none; }
 @media (prefers-color-scheme: dark) {
-  .last-sent { background: linear-gradient(90deg, color-mix(in srgb, var(--brand) 34%, var(--surface)), color-mix(in srgb, var(--brand) 22%, var(--surface))); box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35); }
-  .last-sent .kicker { color: var(--focus); }
-  .last-sent .kicker::before { color: var(--focus); }
-  .last-sent .toggle { color: var(--focus); }
+  /* 다크 카드(#171d2c) 위에서는 한 톤 더 깊은 남색으로 떠 보이게 하고 띠는 밝은 포커스색. */
+  .last-sent { background: linear-gradient(100deg, #223a8f, var(--brand)); border-color: #2d4bb0; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45); }
 }
 /* 넓은 화면(PC): 밀도가 낮아 작게 보인다 — 글자·여백을 한 단계 키운다. */
 @media (min-width: 900px) {
