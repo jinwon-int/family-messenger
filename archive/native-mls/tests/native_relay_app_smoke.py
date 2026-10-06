@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -306,6 +307,35 @@ def run_flow(Dev, receipt, base, relay):
             assert not any('hello from pc' in m or 'sent after the outage' in m for m in msgs_b), msgs_b
             assert any('다시 표시되지 않는다' in m for m in msgs_b), msgs_b
             receipt['checks']['resume_shows_history_notice_not_old_rows'] = True
+
+            # #289: the trusted device removes a member. Bare Remove commit → own echo
+            # merges (epoch advances, roster shrinks); the removed device verifies the
+            # commit (outer == inner), applies it and halts as "removed" (evict stays
+            # enabled); the relay then refuses that device's application as not_a_member.
+            a.page.fill('#remove-target', 'owner-phone')
+            a.click('#remove', '내 commit 반영', timeout=90000)
+            assert 'owner-phone' not in a.roster() and 'owner-pc' in a.roster(), a.roster()
+            b.wait_log('방에서 제거됨', 0, 90000)   # the 4 s poll may land first; don't race it with a click
+            assert '제거되었다' in b.state(), b.state()
+            assert b.page.is_disabled('#send') and not b.page.is_disabled('#evict')
+            b.page.reload()
+            b.page.wait_for_function('() => window.ready === true', timeout=30000)
+            b.page.fill('#passphrase', b.passphrase)
+            b.page.click('#start')
+            b.wait_state(has=['제거되었다'], timeout=180000)   # durable across resume, like a refusal
+            body = json.dumps({'device': 'owner-phone', 'client_id': 'owner-phone-after-removal', 'kind': 'application',
+                               'epoch': 0, 'bytes': 'AAAA'}).encode()
+            req = urllib.request.Request(base + f'/v2/rooms/{ROOM}/events', data=body, method='POST',
+                                         headers={'Content-Type': 'application/json'})
+            try:
+                with urllib.request.urlopen(req, timeout=5):
+                    raise AssertionError('removed member must not post')
+            except urllib.error.HTTPError as e:
+                assert e.code == 403 and json.load(e)['error'] == 'not_a_member', (e.code, e.read())
+            a.page.fill('#msg', 'after removal')
+            a.page.click('#send')
+            a.page.wait_for_function("() => document.getElementById('messages').textContent.includes('after removal')", timeout=30000)
+            receipt['checks']['member_removed_epoch_advanced_removed_device_halts_relay_not_a_member'] = True
 
 
 if __name__ == '__main__':
