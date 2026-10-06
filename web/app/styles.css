@@ -300,6 +300,10 @@ details.advanced[open] summary { margin-bottom: var(--space-2); }
 .section-title { font-size: var(--text-s); font-weight: 700; color: var(--text-2); text-transform: none; letter-spacing: 0.02em; padding: var(--space-1) var(--space-1) 0; }
 ul.rooms { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
 .room-item {
+  /* 스크린리더용 "새 메시지" 라벨(.visually-hidden, position:absolute)의 기준 상자. 기준이 없으면 라벨이
+   * 화면 전체를 기준으로 자리를 잡아 목록 스크롤(overflow)에 갇히지 않고, 아래쪽에 안 읽은 방이 있을 때
+   * 문서 높이를 늘려 배경 휠에 앱 전체가 위로 밀려 올라갔다(PC 크롬 실측 doc 1129/911, scrollY 218). */
+  position: relative;
   width: 100%;
   min-height: 72px;
   display: flex;
@@ -410,6 +414,8 @@ main.shell {
   height: 100dvh;
   flex-direction: column;
   overflow: hidden;
+  /* 셸 안의 절대 위치 요소가 셸 밖(문서)으로 새지 않게 기준 상자가 된다 — 문서는 늘 화면 높이 그대로. */
+  position: relative;
 }
 .pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .pane-list {
