@@ -18,6 +18,7 @@ import { disablePush, enablePush, hasMatchingPusher, isIosDevice, pushAvailabili
 import { renderHold, selectionInRenderedArea } from './render-guard.js';
 import { enterCaretMode, exitCaretMode, isCaretMode } from './timeline-caret.js';
 import { createReadReceiptSender, isRoomUnread } from './read-receipts.js';
+import { lastSentSummary } from './last-sent.js';
 import * as ui from './ui.js';
 
 const root = document.getElementById('app');
@@ -201,6 +202,8 @@ function renderCurrent() {
           onOpenAttachment: openAttachment,
           onTyping: (hasText) => handleComposerTyping(state.currentRoomId, hasText),
           typing: typingIndicator(typingNames(state.typing, current.summary.roomId, { myUserId: state.myUserId }), strings.chat.typing),
+          // 대화창 상단 "내 마지막 말" 바(#300) — 화면 복사본에서 매 렌더 계산(삭제·수정·로컬 에코 확정 반영).
+          lastSent: lastSentSummary(current.timeline, { labels: PREVIEW_LABELS() }),
         }
       : null,
     box: {

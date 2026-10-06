@@ -86,6 +86,17 @@ export const strings = {
     loadEarlier: '이전 대화 불러오기',
     historyStart: '대화의 처음입니다',
     typing: '입력중..',
+    // 대화창 상단 "내 마지막 말" 바(#300) — 내가 마지막으로 보낸 메시지와 그 뒤 답장 수.
+    lastSent: {
+      label: '내 마지막 말',
+      region: '내 마지막 말 — 누르면 그 메시지로 이동',
+      jump: '이 메시지로 이동',
+      pending: '전송 중…',
+      replies: (n) => (n > 0 ? `답장 ${n}` : '아직 답 없음'),
+      collapse: '내 마지막 말 접기',
+      expand: '내 마지막 말 펼치기',
+      notLoaded: '불러온 대화 밖입니다 — 이전 대화를 불러오면 찾을 수 있습니다',
+    },
   },
   participants: {
     aiBadge: 'AI',
