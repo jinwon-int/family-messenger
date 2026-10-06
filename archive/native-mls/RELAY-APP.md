@@ -56,7 +56,10 @@ Python에서 하던 릴레이 호출을 브라우저로 옮긴 것이다. 합성
 4. **둘째 기기 승인(E2)**: 신뢰 기기 화면에 새 기기의 등록 정보 JSON(+ `subject`, `base_revision`)을 붙여
    넣고 `지문 보기`(`policy_fingerprint`) → 두 화면 지문을 사람이 비교 → `이 지문이 맞습니다` →
    `sign_approval`(durable 신원의 키로 서명) → 증거 JSON(signature 포함)을 운영자에게 → `-add-device -input`.
-5. **저장소 삭제**: 축출 재연습. 재시작하면 새 기기(새 지문) → 운영자 재등록 + 상대 재초대.
+5. **저장소 삭제**: 축출 재연습. 재시작하면 새 기기(새 지문)이고 정책 체인은 같은 ID를 다시 받지 않으므로 **기기 ID를
+   새 이름으로**(화면이 `owner-pc` → `owner-pc-2`처럼 채워 둔다, #290) → 운영자가 옛 ID revoke + 새 ID 등록(E2) → 상대 재초대.
+   화면 상태는 `relay-app:<room>:<device>:<db>`에 저장되며(#296; 옛 `room:device` 키는 1회 이전), 이어하기 때 워커가 그룹을
+   들고 있는데 상태가 없으면 릴레이의 ack 커서부터 참여 상태를 복구한다("참여 상태 복구" 로그).
 6. **멤버 제거(#289)**: 운영자의 `-revoke`는 정책 체인만 바꾸고 MLS leaf는 남는다. 신뢰 기기가 `제거할 기기` ID로
    `멤버 제거` → `remove_pending`(그 멤버의 서명 키로 지정, 맨 commit) → commit POST(members =
    `members_after_pending`) → 내 echo에서 `merge_pending` → epoch 전진. 제거된 기기가 아직 살아 있으면 그
