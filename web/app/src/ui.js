@@ -765,7 +765,7 @@ function buildRoom({ room, timeline, onSend, onAttach, photoPreviews = null, onO
 // 같으면 붙어 있는 노드를 그대로 둔다(#194). 누르면 그 말풍선으로 스크롤하고 잠깐 밝힌다 — 불러온
 // 범위 밖(이전 페이지)이면 안내만 한다. 접기는 방별 localStorage에 남는다.
 // 기본은 접힘(오너 2026-10-07): 키가 없으면 접힘, 펼친 방만 '0'으로 기억한다. 예전에 '1'(접힘)로
-// 저장된 방은 그대로 접힘이다.
+// 저장된 방은 그대로 접힘이다. 접힘에서 바를 누르면 이동 대신 펼치고, 접기는 오른쪽 화살표로만 한다.
 const FLASH_MS = 1600;
 function readCollapsed(roomId) {
   try { return globalThis.localStorage?.getItem(collapsedKey(roomId)) !== '0'; } catch (_) { return true; }
@@ -809,13 +809,30 @@ function lastSentBar(lastSent, roomId, list, earlierSent = []) {
     lastSent.ts ? el('span', { class: 'chip time' }, timeLabel(lastSent.ts)) : null,
   ];
   const bar = el('div', { class: 'last-sent', role: 'region', 'aria-label': t.region, 'data-collapsed': collapsed ? 'true' : 'false', 'data-event-id': lastSent.eventId ?? null });
+  // 접힘에서 바를 누르면 펼치기만 한다(오른쪽 작은 화살표를 겨누지 않아도 되게, 오너 2026-10-07).
+  // 펼친 뒤 바를 누르면 그 말풍선으로 이동하고, 접기는 화살표로만 한다.
+  let toggle = null;
+  const setCollapsed = (next) => {
+    writeCollapsed(roomId, next);
+    bar.dataset.collapsed = next ? 'true' : 'false';
+    toggle.setAttribute('aria-label', next ? t.expand : t.collapse);
+    toggle.setAttribute('aria-expanded', next ? 'false' : 'true');
+    toggle.textContent = next ? '▾' : '▴';
+    jump.title = next ? t.expand : t.jump;
+    // 서명도 바꿔 다음 재렌더가 같은 상태를 유지하게 한다.
+    renderedSignature.set(bar, barSignature(next));
+  };
   const jump = el(
     'button',
     {
       type: 'button',
       class: 'jump',
-      title: t.jump,
+      title: collapsed ? t.expand : t.jump,
       onclick: () => {
+        if (bar.dataset.collapsed === 'true') {
+          setCollapsed(false);
+          return;
+        }
         const found = jumpToBubble(list, lastSent.eventId);
         hint.hidden = found;
       },
@@ -854,23 +871,14 @@ function lastSentBar(lastSent, roomId, list, earlierSent = []) {
       )
     : null;
   const main = el('div', { class: 'main' }, jump, earlierList);
-  const toggle = el(
+  toggle = el(
     'button',
     {
       type: 'button',
       class: 'toggle',
       'aria-label': collapsed ? t.expand : t.collapse,
       'aria-expanded': collapsed ? 'false' : 'true',
-      onclick: () => {
-        const next = bar.dataset.collapsed !== 'true';
-        writeCollapsed(roomId, next);
-        bar.dataset.collapsed = next ? 'true' : 'false';
-        toggle.setAttribute('aria-label', next ? t.expand : t.collapse);
-        toggle.setAttribute('aria-expanded', next ? 'false' : 'true');
-        toggle.textContent = next ? '▾' : '▴';
-        // 서명도 바꿔 다음 재렌더가 같은 상태를 유지하게 한다.
-        renderedSignature.set(bar, barSignature(next));
-      },
+      onclick: () => setCollapsed(bar.dataset.collapsed !== 'true'),
     },
     collapsed ? '▾' : '▴',
   );
