@@ -97,6 +97,21 @@ test('styles.css: 휴대폰 가로모드 미디어 쿼리가 목록|대화 2열�
   assert.match(block, /\.pane-list \{[^}]*flex: 0 0 280px/);
 });
 
+// 아이폰 standalone(홈 화면 추가)에서 작성창 아래 공백(2026-10-07 오너): 안전 영역(34px)에 여백을 더하면
+// 작성창이 베젤에서 46px 떠 보인다. 안전 영역 안으로 8px 들어가되(홈 인디케이터 위 간격 유지) 안전 영역이
+// 없는 곳에서는 바닥 여백이 0이 되지 않게 max()로 하한을 둔다. 세로(기본)·가로(640~899) 두 규칙 모두.
+test('styles.css: .composer-wrap 아래 여백은 안전 영역에 더하지 않고 max(하한, safe-area − 8px)다', () => {
+  const css = readFileSync(join(import.meta.dirname, '..', 'styles.css'), 'utf-8');
+  const base = /\n\.composer-wrap \{[^}]*\}/.exec(css)?.[0] ?? '';
+  assert.ok(base, '.composer-wrap 기본 규칙이 있어야 한다');
+  assert.match(base, /padding: var\(--space-2\) 0 max\(var\(--space-2\), calc\(env\(safe-area-inset-bottom\) - var\(--space-2\)\)\)/);
+  const landscape = /@media \(orientation: landscape\) and \(min-width: 640px\) and \(max-width: 899px\) \{[\s\S]*?\n\}/.exec(css)?.[0] ?? '';
+  assert.match(landscape, /\.composer-wrap \{[^}]*padding-bottom: max\(var\(--space-1\), calc\(env\(safe-area-inset-bottom\) - var\(--space-2\)\)\)/);
+  for (const rule of [...css.matchAll(/\.composer-wrap \{[^}]*\}/g)].map((m) => m[0])) {
+    assert.doesNotMatch(rule, /\+ env\(safe-area-inset-bottom\)/, '안전 영역에 여백을 더하면 작성창이 베젤에서 떠 보인다');
+  }
+});
+
 // 2분할 미리보기(Page Up/Down)가 CSS가 실제로 두 pane을 보여주는 구간에서만 켜지게 한다.
 test('keyboard.js 2분할 쿼리는 styles.css 미디어 쿼리와 같다', () => {
   const kb = readFileSync(join(SRC, 'keyboard.js'), 'utf-8');
