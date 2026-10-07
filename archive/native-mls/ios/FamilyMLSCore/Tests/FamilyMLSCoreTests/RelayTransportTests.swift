@@ -161,7 +161,7 @@ final class RelayTransportTests: XCTestCase {
         }
     }
 
-    // MARK: - 확장 ① 방 목록(#282 서버 구현) · ② 푸시(§12-D 전까지 404 refused)
+    // MARK: - 확장 ① 방 목록(#282 서버 구현) · ② 푸시 등록(#275 서버 구현, §12-D)
 
     func testListRoomsRequestAndDecode() throws {
         let request = try transport(.bearer("t")).listRoomsRequest(device: "me-pc")
@@ -173,14 +173,44 @@ final class RelayTransportTests: XCTestCase {
         XCTAssertEqual(listing.rooms, [RoomListing(room: "family", epoch: 3, revision: 5, member: true, keypackagesOutstanding: 0, closed: false)])
     }
 
-    func testPushRoutesRefuseNotFound404UntilNSE() async {
-        let t = transport(.bearer("t"))
-        await XCTAssertThrowsErrorAsync(try await t.registerPush(PushRegistration(device: "me-pc", apnsToken: Data([9]), topic: "com.example.app"))) { error in
-            XCTAssertEqual(error as? RelayError, .refused(code: "not_found", status: 404))
-        }
-        await XCTAssertThrowsErrorAsync(try await t.unregisterPush(device: "me-pc")) { error in
-            XCTAssertEqual(error as? RelayError, .refused(code: "not_found", status: 404))
-        }
+    /// server push.go handleRegisterPush: POST /v2/push/devices, JSON {device, apns_token(std base64), topic} — strictJSON 이라 다른 키 없음.
+    func testRegisterPushRequestMatchesServerWire() throws {
+        let token = Data((0..<32).map { UInt8($0) })
+        let request = try transport(.bearer("t")).registerPushRequest(
+            PushRegistration(device: "owner-iphone-0a0b0c", apnsToken: token, topic: "com.example.familychat.ios"))
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.absoluteString, "https://relay.example.com/v2/push/devices")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Cf-Access-Jwt-Assertion"), "t")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(request.httpBody)) as? [String: Any])
+        XCTAssertEqual(Set(json.keys), ["device", "apns_token", "topic"])
+        XCTAssertEqual(json["device"] as? String, "owner-iphone-0a0b0c")
+        XCTAssertEqual(json["apns_token"] as? String, token.base64EncodedString(), "표준 base64(서버 encoding/json []byte)")
+        XCTAssertEqual(json["topic"] as? String, "com.example.familychat.ios")
+    }
+
+    func testRegisterPushRequestUsesAccessCookieBehindEdge() throws {
+        let request = try transport(.accessCookie("jwt")).registerPushRequest(
+            PushRegistration(device: "me-pc", apnsToken: Data([1]), topic: "com.example.app"))
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"), "CF_Authorization=jwt")
+    }
+
+    /// server push.go handleUnregisterPush: DELETE /v2/push/devices?device= (바디 없음).
+    func testUnregisterPushRequestMatchesServerWire() throws {
+        let request = try transport(.bearer("t")).unregisterPushRequest(device: "owner-iphone-0a0b0c")
+        XCTAssertEqual(request.httpMethod, "DELETE")
+        XCTAssertEqual(request.url?.absoluteString, "https://relay.example.com/v2/push/devices?device=owner-iphone-0a0b0c")
+        XCTAssertNil(request.httpBody)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Cf-Access-Jwt-Assertion"), "t")
+    }
+
+    /// 등록 라우트의 서버 거부는 다른 라우트와 같은 매핑(재로그인·등록 대기·설정 오류를 호출자가 가른다).
+    func testPushRefusalsMapLikeOtherRoutes() {
+        XCTAssertEqual(URLSessionRelayTransport.relayFailure(status: 401, data: Data()), .unauthorized)
+        XCTAssertEqual(URLSessionRelayTransport.relayFailure(status: 403, data: body(#"{"error":"device_subject_mismatch"}"#)),
+                       .refused(code: "device_subject_mismatch", status: 403))
+        XCTAssertEqual(URLSessionRelayTransport.relayFailure(status: 400, data: body(#"{"error":"topic_not_allowed"}"#)),
+                       .refused(code: "topic_not_allowed", status: 400))
     }
 }
 
