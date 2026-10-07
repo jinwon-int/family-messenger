@@ -38,6 +38,8 @@ final class AppModel: ObservableObject {
         var expectedDecryptFormat: () -> UInt32
         /// 자격증명 → 릴레이 전송. nil = 릴레이 주소가 설정되지 않음.
         var makeTransport: (RelayCredential) -> RelayTransport?
+        /// 푸시 등록(§12-D, 결정 D6). 기본 = topic 없음(등록 안 함) — live() 가 Info.plist 로 채운다.
+        var push = PushRegistrar.Dependencies(topic: nil)
         var syncConfiguration = RoomSyncEngine.Configuration()
         /// 저장소를 열지 못했다(App Group·Keychain 등) — bootstrap 이 곧바로 fatal 로 간다.
         var startupFailure: String?
@@ -53,6 +55,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var registration: EnrollmentRequest?
     /// 메시지가 새로 저장될 때마다 오른다 — 방 화면이 다시 읽는 신호.
     @Published private(set) var messagesRevision = 0
+    /// 설정 화면의 알림 상태(D6).
+    @Published private(set) var pushStatus: PushRegistrar.Status = .off
     /// 마지막 refresh 의 outbox 재전송 결과(정확 바이트 재시도 관찰용 — 화면·테스트).
     private(set) var lastFlush: [RoomID: [SendOutcome]] = [:]
 
@@ -66,8 +70,12 @@ final class AppModel: ObservableObject {
     /// (바이트는 outbox 에 남아 같은 바이트로 나간다) 내 화면에만 안 보인다 — 상대는 정상 수신.
     private var unconfirmed: [String: (room: RoomID, text: String)] = [:]
     private let serial = SerialAsyncQueue()
+    let push: PushRegistrar
 
-    init(dependencies: Dependencies) { self.deps = dependencies }
+    init(dependencies: Dependencies) {
+        self.deps = dependencies
+        self.push = PushRegistrar(dependencies.push)
+    }
 
     // MARK: - 수명주기
 
@@ -108,15 +116,25 @@ final class AppModel: ObservableObject {
         self.credential = credential
         self.transport = transport
         syncEngines = [:]   // 새 전송으로 다시 만든다(커서·정지 사유는 저장소에 있다)
+        push.loggedIn()
         lastError = nil
         if phase == .needsLogin { phase = .needsEnrollment }
     }
 
-    func logout() {
+    /// 자격증명만 지운다. 푸시 등록은 릴레이에서 지운다(DELETE, 최선) — 다음 로그인의 등록과 섞이지 않게 같은 `serial` 에 줄 세운다.
+    @discardableResult
+    func logout() -> Task<Void, Never> {
+        let device = deviceId
+        let previous = transport
         credential = nil
         transport = nil
         syncEngines = [:]
         phase = .needsLogin
+        pushStatus = .off
+        return Task {
+            try? await self.serial.run { await self.push.unregister(device: device, transport: previous) }
+            self.pushStatus = self.push.status
+        }
     }
 
     func halt(reason: String, room: RoomID? = nil) {
@@ -172,15 +190,55 @@ final class AppModel: ObservableObject {
                 phase = .needsEnrollment
             } else {
                 phase = haltedReasonFromRooms().map { .halted($0) } ?? .ready
+                try await syncPushLocked(transport)
             }
             lastError = nil
         } catch RelayError.unauthorized {
-            credential = nil; self.transport = nil; syncEngines = [:]
-            phase = .needsLogin
-            lastError = Strings.sessionExpired
+            expireSession()
         } catch {
             lastError = "\(error)"
         }
+    }
+
+    // MARK: - 푸시 (§12-D)
+
+    /// `didRegisterForRemoteNotificationsWithDeviceToken` — 등록된 기기면 곧바로 릴레이에 올린다(아니면 ready 때).
+    func pushTokenReceived(_ token: Data) async {
+        push.tokenReceived(token)
+        try? await serial.run {
+            guard let transport = self.transport, self.isEnrolledPhase else { return }
+            do { try await self.syncPushLocked(transport) } catch RelayError.unauthorized { self.expireSession() }
+        }
+        pushStatus = push.status
+    }
+
+    func pushTokenFailed(_ reason: String) {
+        push.tokenFailed(reason)
+        pushStatus = push.status
+    }
+
+    /// 앱이 전면일 때 온 푸시(D7): 시스템 알림은 억제했고 여기서 바로 동기화해 화면에 보인다.
+    /// NSE 가 먼저 복호화했으면 동기화로는 새 행이 안 생기므로(커서가 이미 지났다) 화면 갱신 신호를 직접 올린다.
+    func receivedWhileActive() async {
+        await refresh()
+        refreshRooms()
+        messagesRevision += 1
+    }
+
+    private var isEnrolledPhase: Bool {
+        switch phase { case .ready, .halted: return true; default: return false }
+    }
+
+    private func syncPushLocked(_ transport: RelayTransport) async throws {
+        push.activate()
+        try await push.syncIfNeeded(device: deviceId, transport: transport)
+        pushStatus = push.status
+    }
+
+    private func expireSession() {
+        credential = nil; transport = nil; syncEngines = [:]
+        phase = .needsLogin
+        lastError = Strings.sessionExpired
     }
 
     // MARK: - 방 참여·만들기·초대 (화면은 §12-E — 여기서는 동작만)
