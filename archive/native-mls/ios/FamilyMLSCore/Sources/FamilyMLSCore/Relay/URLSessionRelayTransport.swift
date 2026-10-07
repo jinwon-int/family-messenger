@@ -146,10 +146,16 @@ public final class URLSessionRelayTransport: RelayTransport {
         _ = try await perform(request)
     }
 
-    // MARK: - 확장 ①② (L2 서버 미구현 — 프로토콜 계약대로 무조건 404 refused)
+    // MARK: - 확장 ① (L2 #282 서버 구현) · ② 푸시는 §12-D 전까지 404 refused
 
     public func listRooms(device: DeviceID) async throws -> RoomsResponse {
-        throw RelayError.refused(code: "not_found", status: 404)
+        // server rooms.go handleListRooms: JWT subject 의 기기만(타 기기·미등록 403 device_subject_mismatch).
+        // 확장 ① 이 없는 옛 릴레이는 404 → `.refused(code:"http_404"…)` 로 그대로 던진다(호출자가 "아는 방만" 으로 폴백).
+        return try decode(RoomsResponse.self, await perform(try listRoomsRequest(device: device)))
+    }
+
+    func listRoomsRequest(device: DeviceID) throws -> URLRequest {
+        try makeRequest(method: "GET", path: "/v2/rooms", query: [URLQueryItem(name: "device", value: device)])
     }
 
     public func registerPush(_ registration: PushRegistration) async throws {

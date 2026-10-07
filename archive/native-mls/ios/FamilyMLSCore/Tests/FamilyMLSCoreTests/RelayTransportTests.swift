@@ -161,13 +161,20 @@ final class RelayTransportTests: XCTestCase {
         }
     }
 
-    // MARK: - 확장 ①② (L2 미구현 — 프로토콜 계약대로 404 refused)
+    // MARK: - 확장 ① 방 목록(#282 서버 구현) · ② 푸시(§12-D 전까지 404 refused)
 
-    func testExtensionRoutesRefuseNotFound404() async {
+    func testListRoomsRequestAndDecode() throws {
+        let request = try transport(.bearer("t")).listRoomsRequest(device: "me-pc")
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(request.url?.absoluteString, "https://relay.example.com/v2/rooms?device=me-pc")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Cf-Access-Jwt-Assertion"), "t")
+        let listing = try transport(.bearer("t")).decode(RoomsResponse.self, body(
+            #"{"rooms":[{"room":"family","epoch":3,"revision":5,"member":true,"keypackages_outstanding":0,"closed":false}]}"#))
+        XCTAssertEqual(listing.rooms, [RoomListing(room: "family", epoch: 3, revision: 5, member: true, keypackagesOutstanding: 0, closed: false)])
+    }
+
+    func testPushRoutesRefuseNotFound404UntilNSE() async {
         let t = transport(.bearer("t"))
-        await XCTAssertThrowsErrorAsync(try await t.listRooms(device: "me-pc")) { error in
-            XCTAssertEqual(error as? RelayError, .refused(code: "not_found", status: 404))
-        }
         await XCTAssertThrowsErrorAsync(try await t.registerPush(PushRegistration(device: "me-pc", apnsToken: Data([9]), topic: "com.example.app"))) { error in
             XCTAssertEqual(error as? RelayError, .refused(code: "not_found", status: 404))
         }
