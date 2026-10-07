@@ -395,10 +395,10 @@ public final class RoomSyncEngine {
     public func send(plaintext: Data) async throws -> SendOutcome {
         if let haltedReason { throw SyncError.halted(haltedReason) }
         try await syncAll()
-        if registrationPending != nil { throw SyncError.registrationPending }   // ratchet 을 쓰기 전에
         var retried = false
         while true {
             if let haltedReason { throw SyncError.halted(haltedReason) }
+            if registrationPending != nil { throw SyncError.registrationPending }   // 409 뒤 재동기화에서 403 이 났을 수도
             let entry = try encryptAndEnqueue(plaintext)
             do {
                 return try await post(entry)
