@@ -345,7 +345,8 @@ public final class RoomSyncEngine {
             dirty = true   // 수신 ratchet 전진 — 저장해야 한다
             let decrypted = try Framing.parseDecrypted(output)
             if decrypted.senderDevice == ev.device {
-                record = MessageRecord(room: room, seq: ev.seq, senderDevice: decrypted.senderDevice, clientId: decrypted.clientId,
+                // clientId = 릴레이 행의 dedup 키(AAD client_id 는 항상 발신 기기 ID 라 구분 정보가 없다).
+                record = MessageRecord(room: room, seq: ev.seq, senderDevice: decrypted.senderDevice, clientId: ev.clientId,
                                        kind: .text, body: String(decoding: decrypted.plaintext, as: UTF8.self),
                                        attachment: nil, receivedAt: Date(), decryptedBy: .app)
             } else {
@@ -448,7 +449,9 @@ public final class RoomSyncEngine {
         let clientId = makeClientId()
         let bytes = try transaction { engine, dirty -> Data in
             guard try isJoined(engine) else { throw SyncError.notJoined }
-            let ciphertext = try engine.dispatch(.encrypt, Framing.encryptInput(room: room, clientId: clientId, plaintext: plaintext))
+            // AAD client_id 는 **기기 ID**(파사드 리뷰 H1: 수신측 decrypt 가 인증된 발신 기기와 같지 않으면 거부, 봇 session.rs 와 같음).
+            // `clientId` 는 릴레이 행의 dedup 키(outbox·POST)로만 쓴다 — 둘을 섞으면 실 엔진에서 모든 수신이 거부된다.
+            let ciphertext = try engine.dispatch(.encrypt, Framing.encryptInput(room: room, clientId: identity, plaintext: plaintext))
             dirty = true   // 송신 ratchet 전진 — 바이트가 나가기 전에 저장(봇 B-H2)
             return ciphertext
         }
