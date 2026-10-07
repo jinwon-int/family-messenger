@@ -7,6 +7,9 @@ enum Strings {
     static let fatalTitle = "앱을 시작할 수 없습니다"
     static let decryptFormatMismatch = "암호화 모듈 버전이 맞지 않습니다(decrypt format). 앱을 업데이트해 주세요."
     static let identityRoom = "_identity"
+    static let relayNotConfigured = "릴레이 주소가 설정되지 않았습니다(빌드 설정 FC_RELAY_URL)."
+    static let sessionExpired = "로그인 세션이 만료되었습니다. 다시 로그인해 주세요."
+    static func storageUnavailable(_ detail: String) -> String { "기기 저장소를 열 수 없습니다: \(detail)" }
 
     // 로그인
     static let loginTitle = "가족 로그인"
@@ -19,7 +22,7 @@ enum Strings {
     static let enrollBody = "아래 지문과 등록 정보를 가족 운영자에게 전달하면 운영자가 기기를 체인에 올립니다. 다른 기기가 이미 있으면 그 기기에서 '신뢰 기기' 화면으로 지문을 비교해 승인합니다."
     static let fingerprintLabel = "이 기기의 지문"
     static let shareRegistration = "등록 정보 공유"
-    static let enrolledButton = "등록이 끝났어요"
+    static let enrolledButton = "등록 확인"
     static let waitingOperator = "운영자 등록 대기 중 (403 device_subject_mismatch)"
 
     // 방
@@ -29,6 +32,8 @@ enum Strings {
     static let sendButton = "보내기"
     static let undecryptable = "🔒 복호화하지 못한 메시지"
     static func sendRejected(_ reason: String) -> String { "보내지 못했습니다(\(reason)). 동기화 뒤 다시 시도해 주세요." }
+    static let sendQueued = "릴레이에 닿지 않아 보관했습니다. 연결되면 같은 내용 그대로 다시 보냅니다."
+    static let notJoined = "아직 이 대화방에 참여하지 않았습니다. 초대를 기다려 주세요."
 
     // 정지
     static let haltedTitle = "⛔ 이 기기의 대화가 정지되었습니다"

@@ -20,25 +20,11 @@ struct EnrollView: View {
                         ShareLink(item: registrationJSON) { Label(Strings.shareRegistration, systemImage: "square.and.arrow.up") }
                     }
                     Text(Strings.waitingOperator).font(.footnote).foregroundStyle(.secondary)
-                    Button(Strings.enrolledButton) { model.markEnrolled() }
+                    Button(Strings.enrolledButton) { Task { await model.refresh() } }
                 }
             }
             .navigationTitle(Strings.enrollTitle)
-            .task { registrationJSON = model.registrationJSON() }
+            .onAppear { registrationJSON = model.registrationJSON() }
         }
-    }
-}
-
-extension AppModel {
-    /// 등록 JSON(운영자 CLI 입력). subject 는 로그인 자격증명에서 — 뼈대에서는 자리표시자.
-    func registrationJSON() -> String {
-        guard let key = try? engineForUI()?.publicKey() else { return "" }
-        let reg = DeviceIdentity.Registration(
-            deviceId: deviceId,
-            actor: String(deviceId.split(separator: "-", maxSplits: 1).first ?? ""),
-            subject: "<cf-access-subject>",
-            signingKey: DeviceIdentity.hex(key),
-            fingerprint: fingerprint)
-        return reg.json()
     }
 }

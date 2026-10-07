@@ -1,6 +1,6 @@
 // 패밀리챗 iOS(독자 E2EE) — 앱 진입점. 파이널라이저 소유(CONTRACTS.md §0). 화면 정보구조는 #271 §9.
-// 이 단계(뼈대)는 네트워크·영속 없이 Core 의 InMemory 스토어 + 실제 FFI 엔진으로 상태 전이와 화면만 잇는다.
-// L1(파일 스토어)·L3(릴레이 동기화)이 머지되면 `AppModel` 의 의존성만 바꾼다.
+// 의존성은 `Dependencies.live()`(L1 파일 저장소 + L3 릴레이 동기화 + ios-ffi 엔진, LiveDependencies.swift).
+// 화면이 떠 있는 동안 4초 포그라운드 폴링(CONTRACTS §2.2), 백그라운드 wake 는 푸시(§12-D).
 import SwiftUI
 import FamilyMLSCore
 
@@ -12,7 +12,10 @@ struct FamilyChatApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(model)
-                .task { await model.bootstrap() }
+                .task {
+                    await model.bootstrap()
+                    await model.runForeground()
+                }
         }
     }
 }

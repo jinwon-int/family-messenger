@@ -24,7 +24,7 @@ struct RoomListView: View {
         .toolbar {
             NavigationLink { SettingsView() } label: { Image(systemName: "gearshape") }
         }
-        .refreshable { model.refreshRooms() }
+        .refreshable { await model.refresh() }
         .onAppear { model.refreshRooms() }
     }
 }
