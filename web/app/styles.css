@@ -724,10 +724,11 @@ main.shell[data-view="room"] .pane-list { display: none; }
 .composer-wrap {
   flex: none;
   background: var(--bg);
-  /* 아래 여백은 안전 영역에 더하지 않고 안전 영역 안으로 조금 들어간다 — 홈 화면 추가(standalone) 아이폰에서
-   * 34px + 12px 공백이 생겨 작성창이 베젤에서 떠 보였다(오너 2026-10-07). 홈 인디케이터(아래 ~13px) 위에
-   * 8px 간격만 남기고, 안전 영역이 없는 브라우저 탭·PC에서는 8px 바닥 여백을 유지한다. */
-  padding: var(--space-2) 0 max(var(--space-2), calc(env(safe-area-inset-bottom) - var(--space-2)));
+  /* 아래 여백은 안전 영역에 더하지 않고 안전 영역 안으로 들어간다 — 홈 화면 추가(standalone) 아이폰에서
+   * 34px + 12px 공백이 생겨 작성창이 베젤에서 떠 보였다(오너 2026-10-07, #311: −8px). 그 뒤 "조금 더 내려와도
+   * 된다"(오너 2026-10-07)라 16px 들어간다: 34px 안전 영역에서 18px — 홈 인디케이터(아래 ~13px) 바로 위.
+   * 안전 영역이 없는 브라우저 탭·PC에서는 8px 바닥 여백을 유지한다. */
+  padding: var(--space-2) 0 max(var(--space-2), calc(env(safe-area-inset-bottom) - var(--space-4)));
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -843,7 +844,7 @@ dialog.sheet .column { margin-top: var(--space-2); }
   .appbar { min-height: 44px; padding: var(--space-1) 0; }
   .appbar h1 { font-size: var(--text-l); }
   .appbar .subtitle { display: none; }
-  .composer-wrap { padding-top: var(--space-1); padding-bottom: max(var(--space-1), calc(env(safe-area-inset-bottom) - var(--space-2))); }
+  .composer-wrap { padding-top: var(--space-1); padding-bottom: max(var(--space-1), calc(env(safe-area-inset-bottom) - var(--space-4))); }
   .bubble { max-width: min(80%, 520px); }
   .card.invites { padding: var(--space-3); }
 }
