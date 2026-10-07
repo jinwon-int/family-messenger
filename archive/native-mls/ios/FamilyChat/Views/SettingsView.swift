@@ -1,4 +1,4 @@
-// §9-5 설정: 지문·기기 ID·알림(자리)·로그아웃(MLS 상태는 유지).
+// §9-5 설정: 지문·기기 ID·알림 상태(§12-D)·로그아웃(MLS 상태는 유지, 푸시 등록은 해제).
 import SwiftUI
 import FamilyMLSCore
 
@@ -14,13 +14,23 @@ struct SettingsView: View {
                 LabeledContent(Strings.deviceIdLabel) { Text(model.deviceId).font(.footnote) }
             }
             Section(footer: Text(Strings.notificationsHint)) {
-                Toggle(Strings.notifications, isOn: .constant(false)).disabled(true)
+                LabeledContent(Strings.notifications) { Text(Self.describe(model.pushStatus)).font(.footnote) }
             }
             Section(footer: Text(Strings.logoutHint)) {
                 Button(Strings.logout, role: .destructive) { model.logout() }
             }
         }
         .navigationTitle(Strings.settingsTitle)
+    }
+
+    static func describe(_ status: PushRegistrar.Status) -> String {
+        switch status {
+        case .off: return Strings.pushOff
+        case .unavailable(let reason): return reason
+        case .waitingForToken: return Strings.pushWaiting
+        case .registered: return Strings.pushRegistered
+        case .failed(let reason): return Strings.pushFailed(reason)
+        }
     }
 }
 

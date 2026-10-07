@@ -5,6 +5,7 @@
 //    봉인 = CryptoKit ChaChaPoly + Keychain 32B 키 `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`)
 //  - 메시지·outbox·커서: L1 `FileSQLiteStore`(`<base>/messages.db`, 한 DB)
 //  - 릴레이: L3 `URLSessionRelayTransport`(주소 = Info.plist `FamilyChatRelayURL`, 빌드 설정 `FC_RELAY_URL`)
+//  - 푸시 등록: `PushRegistrar`(topic = Info.plist `FamilyChatPushTopic`, 빌드 설정 `FC_PUSH_TOPIC` = 기본 Bundle ID)
 //
 // `<base>` = Info.plist `FamilyChatAppGroup`(빌드 설정 `FC_APP_GROUP`)의 App Group 컨테이너. NSE(§12-D)가 같은 상태를
 // 열려면 App Group 이 필요하다. 설정이 비었거나 컨테이너를 못 얻으면(무서명 시뮬레이터·CI) 앱 전용 Application Support 로
@@ -22,14 +23,14 @@ extension AppModel.Dependencies {
         /// nil = 플랫폼 기본 봉인(ChaChaPoly + Keychain). 테스트는 정적 키 봉인을 준다.
         var sealer: FileStateSealing?
         var identityProvider: () -> DeviceID = { DeviceIdentity.stableDeviceId(actor: "owner") }
+        /// APNs topic(= Bundle ID). nil = 푸시 등록 안 함(테스트 기본).
+        var pushTopic: String?
 
         static func fromBundle(_ bundle: Bundle = .main) -> Self {
-            func value(_ key: String) -> String? {
-                guard let raw = bundle.object(forInfoDictionaryKey: key) as? String else { return nil }
-                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                return trimmed.isEmpty ? nil : trimmed
-            }
-            return Self(relayURL: value("FamilyChatRelayURL").flatMap(URL.init(string:)), appGroup: value("FamilyChatAppGroup"))
+            var config = Self(relayURL: bundle.familyChatValue("FamilyChatRelayURL").flatMap(URL.init(string:)),
+                              appGroup: bundle.familyChatValue("FamilyChatAppGroup"))
+            config.pushTopic = bundle.familyChatValue("FamilyChatPushTopic")
+            return config
         }
     }
 
@@ -51,7 +52,8 @@ extension AppModel.Dependencies {
                 cursors: database,
                 identityProvider: config.identityProvider,
                 expectedDecryptFormat: { FfiEngineFactory.reportedDecryptFormat() },
-                makeTransport: makeTransport)
+                makeTransport: makeTransport,
+                push: config.pushTopic.map { PushRegistrar.Dependencies.live(topic: $0) } ?? PushRegistrar.Dependencies(topic: nil))
         } catch {
             // 화면이 사유를 보여 줄 수 있게 메모리 스토어로 모델만 세운다(아무것도 저장하지 않는다).
             return Self(
@@ -75,5 +77,14 @@ extension AppModel.Dependencies {
         }
         let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         return support.appendingPathComponent("FamilyChat", isDirectory: true)
+    }
+}
+
+extension Bundle {
+    /// Info.plist 의 빌드 설정 주입 값(빈 문자열 = 미설정).
+    func familyChatValue(_ key: String) -> String? {
+        guard let raw = object(forInfoDictionaryKey: key) as? String else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

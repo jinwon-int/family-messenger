@@ -38,12 +38,23 @@ targets:
         # 실제 호스트명·App Group 은 리포에 두지 않는다(CONTRIBUTING) — 빌드 설정으로 주입. 비면 앱이 안내한다.
         FamilyChatRelayURL: $(FC_RELAY_URL)
         FamilyChatAppGroup: $(FC_APP_GROUP)
+        # APNs topic(= 이 앱의 Bundle ID, §12-D). 릴레이 -apns-topics 허용목록과 같아야 한다.
+        FamilyChatPushTopic: $(FC_PUSH_TOPIC)
+    # 서명 빌드용 자리(오너가 Team·프로비저닝을 붙일 때). 무서명 CI(CODE_SIGNING_ALLOWED=NO)에서는 적용되지 않는다.
+    # aps-environment 는 개발 빌드 = development(릴레이 -apns-host 샌드박스), TestFlight·배포 = production.
+    entitlements:
+      path: FamilyChat/FamilyChat.entitlements
+      properties:
+        aps-environment: $(FC_APS_ENVIRONMENT)
+        com.apple.security.application-groups: [$(FC_APP_GROUP)]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.familychat.ios
         TARGETED_DEVICE_FAMILY: "1"
         FC_RELAY_URL: ""
         FC_APP_GROUP: ""
+        FC_PUSH_TOPIC: $(PRODUCT_BUNDLE_IDENTIFIER)
+        FC_APS_ENVIRONMENT: development
         # 정적 라이브러리 + 헤더 모듈맵: 모듈 검색 경로를 xcframework 헤더로
         OTHER_LDFLAGS: ["-lc++"]
   FamilyChatTests:

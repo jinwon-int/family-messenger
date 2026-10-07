@@ -25,5 +25,8 @@ archive/native-mls/bot/target/
 archive/native-mls/ios-ffi/target/
 archive/native-mls/ios-ffi/out/
 archive/native-mls/ios/FamilyChat.xcodeproj/
+# XcodeGen 이 project.yml 로 만드는 Info.plist·entitlements(앱·NSE) — 원본은 project.yml
+archive/native-mls/ios/FamilyChat*/Info.plist
+archive/native-mls/ios/FamilyChat*/*.entitlements
 archive/native-mls/ios/build/
 archive/native-mls/ios/FamilyMLSCore/.build/

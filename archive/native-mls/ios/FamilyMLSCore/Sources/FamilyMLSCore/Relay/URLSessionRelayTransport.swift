@@ -146,7 +146,7 @@ public final class URLSessionRelayTransport: RelayTransport {
         _ = try await perform(request)
     }
 
-    // MARK: - 확장 ① (L2 #282 서버 구현) · ② 푸시는 §12-D 전까지 404 refused
+    // MARK: - 확장 ① 방 목록 · ② 푸시 등록 (L2 #282·#275 서버 구현)
 
     public func listRooms(device: DeviceID) async throws -> RoomsResponse {
         // server rooms.go handleListRooms: JWT subject 의 기기만(타 기기·미등록 403 device_subject_mismatch).
@@ -159,10 +159,22 @@ public final class URLSessionRelayTransport: RelayTransport {
     }
 
     public func registerPush(_ registration: PushRegistration) async throws {
-        throw RelayError.refused(code: "not_found", status: 404)
+        // server push.go handleRegisterPush: 204, 같은 기기는 upsert(토큰 교체) — 같은 값 재전송도 204(멱등).
+        // 400 bad_apns_token / bad_topic / topic_not_allowed, 403 device_subject_mismatch(JWT subject ↔ device).
+        _ = try await perform(try registerPushRequest(registration))
     }
 
     public func unregisterPush(device: DeviceID) async throws {
-        throw RelayError.refused(code: "not_found", status: 404)
+        // server push.go handleUnregisterPush: 204(등록이 없어도) — 로그아웃 경로.
+        _ = try await perform(try unregisterPushRequest(device: device))
+    }
+
+    func registerPushRequest(_ registration: PushRegistration) throws -> URLRequest {
+        // apns_token 은 JSONEncoder 기본(표준 base64) — 서버 encoding/json []byte 와 같다.
+        try makeRequest(method: "POST", path: "/v2/push/devices", body: try JSONEncoder().encode(registration))
+    }
+
+    func unregisterPushRequest(device: DeviceID) throws -> URLRequest {
+        try makeRequest(method: "DELETE", path: "/v2/push/devices", query: [URLQueryItem(name: "device", value: device)])
     }
 }

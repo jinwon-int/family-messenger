@@ -43,7 +43,14 @@ enum Strings {
     static let settingsTitle = "설정"
     static let deviceIdLabel = "기기 ID"
     static let notifications = "알림"
-    static let notificationsHint = "푸시는 릴레이 확장(#275)과 알림 확장(NSE) 뒤에 켜집니다."
+    static let notificationsHint = "새 메시지 알림은 이 기기가 등록된 뒤 켜집니다. 알림에는 릴레이가 내용을 싣지 않고, 기기가 받아서 직접 복호화합니다."
+    static let pushOff = "꺼짐"
+    static let pushWaiting = "알림 토큰 대기 중"
+    static let pushRegistered = "켜짐"
+    static let pushNoTopic = "이 빌드에는 푸시 설정(FC_PUSH_TOPIC)이 없습니다"
+    static let pushDenied = "알림 권한이 꺼져 있습니다(설정 앱에서 켤 수 있습니다)"
+    static let pushNetwork = "릴레이에 닿지 않음"
+    static func pushFailed(_ reason: String) -> String { "등록 실패: \(reason) — 잠시 뒤 다시 시도합니다" }
     static let logout = "로그아웃"
     static let logoutHint = "세션만 지웁니다. 이 기기의 암호화 상태는 유지되어 다시 로그인하면 같은 기기로 이어집니다."
 }

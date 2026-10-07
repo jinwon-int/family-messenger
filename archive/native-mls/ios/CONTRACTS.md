@@ -51,7 +51,7 @@
 
 ### 2.3 확장 ①② (L2 서버)
 - `GET /v2/rooms?device=` → `RoomsResponse{rooms[RoomListing{room, epoch, revision, member, keypackages_outstanding, closed}]}` — JWT subject 의 기기만. 공개 정보만.
-- `POST /v2/push/devices` `PushRegistration{device, apns_token(base64), topic}` → 204, 멱등. `DELETE /v2/push/devices?device=` → 204. events insert 트랜잭션 **밖**에서 APNs HTTP/2(p8) 전송, 페이로드 `{"aps":{"mutable-content":1,"alert":{"loc-key":"NEW_MESSAGE"},"thread-id":"<room>"},"room":"<room>","seq":N}`. 토큰·p8 은 리포 밖. Go 테이블 `push_devices(device PK, token, topic, updated_at)`.
+- `POST /v2/push/devices` `PushRegistration{device, apns_token(base64), topic}` → 204, 멱등(같은 기기 upsert = 토큰 교체). `DELETE /v2/push/devices?device=` → 204(등록이 없어도). 둘 다 JWT subject ↔ device 바인딩(미등록 403 `device_subject_mismatch`), topic 거부 400 `bad_topic`/`topic_not_allowed`. events insert 트랜잭션 **밖**에서 APNs HTTP/2(p8) 전송, 페이로드 `{"aps":{"mutable-content":1,"alert":{"loc-key":"NEW_MESSAGE"},"thread-id":"<room>"},"room":"<room>","seq":N}`. 토큰·p8 은 리포 밖. Go 테이블 `push_devices(device PK, token, topic, updated_at)`.
 - 오너 결정 §14-2 = **허용**(2026-10-05, 3레인 선택에 포함). Bundle ID 는 미정 → `topic` 은 설정값.
 
 ### 2.4 L3 수용
@@ -87,4 +87,5 @@ DDL v1 동결(`schema_version`). `messages(room, seq)` PK, `rooms.halted_reason`
 - 2026-10-05 오너: 3레인 병렬(1번). §14-2 릴레이 확장 허용. 인증 기본 A(쿠키), 파일럿 B 폴백 허용. Bundle ID 미정(설정값).
 - 파이널라이저 = bangtong(오너가 바꿀 수 있음). → **2026-10-07 오너 재배정: 파이널라이저 = seoseo(서서)**("다른 노드에서 하자 서서로 하자"). 작업 노트 `NOTES-FINALIZER.md`.
 - 2026-10-07 파이널라이저: §2.1 close 200·`room_closed` 410·쿠키는 엣지 경유 전용으로 정정(서버 기준, #282 기록). 서버 무변경.
+- 2026-10-07 파이널라이저(§12-D, 오너 승인): `URLSessionRelayTransport.registerPush`/`unregisterPush` 를 §2.3 와이어 그대로 구현(서버 `push.go` 대조, 404 고정 제거). 프로토콜·타입 무변경. 토큰 재등록 정책·NSE 정합 규칙은 `NOTES-FINALIZER.md` D4~D8.
 - 2026-10-05 오너 배정: **L1 = soonwook(순욱) · L2 = gwakga(곽가) · L3 = nosuk(노숙)**. 레인 이슈 #274 / #275 / #276. L2 는 제안이 그대로 채택된 것이며 고정은 아니다(Linux 로컬 컴파일이 가능한 유일한 레인).
