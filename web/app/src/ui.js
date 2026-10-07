@@ -89,7 +89,8 @@ export function renderLogin(root, { onSubmit, defaults = {} }) {
         const data = new FormData(form);
         onSubmit({
           homeserverUrl: String(data.get('homeserverUrl') ?? '').trim(),
-          user: String(data.get('user') ?? '').trim(),
+          // Matrix 아이디는 소문자다. 키보드가 첫 글자를 대문자로 바꿔도 같은 계정으로 로그인되게 한다(비밀번호는 그대로).
+          user: String(data.get('user') ?? '').trim().toLowerCase(),
           password: String(data.get('password') ?? ''),
           remember: data.get('remember') === 'on',
         });
@@ -98,7 +99,7 @@ export function renderLogin(root, { onSubmit, defaults = {} }) {
     homeserverDefault
       ? el('details', { class: 'advanced' }, el('summary', {}, strings.login.homeserverAdvanced), homeserverField)
       : homeserverField,
-    field(strings.login.userLabel, { name: 'user', required: true, autocomplete: 'username', placeholder: strings.login.userPlaceholder, autocapitalize: 'none', spellcheck: 'false', value: userDefault || null }),
+    field(strings.login.userLabel, { name: 'user', required: true, autocomplete: 'username', placeholder: strings.login.userPlaceholder, autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false', value: userDefault || null }),
     field(strings.login.passwordLabel, { name: 'password', type: 'password', required: true, autocomplete: 'current-password', placeholder: strings.login.passwordPlaceholder }),
     el('label', {class: 'consent-row'},
       el('input', {type: 'checkbox', name: 'remember', value: 'on', 'aria-describedby': 'remember-help'}),

@@ -82,6 +82,25 @@ test('로그인 유지는 기본 꺼짐이며 체크한 제출에만 전달된�
   } finally { globalThis.FormData = original; }
 });
 
+test('로그인 아이디는 소문자로 제출되고 키보드 자동 대문자·자동 수정이 꺼져 있다(비밀번호는 그대로)', () => {
+  const app = root(), submitted = [];
+  const original = globalThis.FormData;
+  globalThis.FormData = window.FormData;
+  try {
+    ui.renderLogin(app, {onSubmit: value => submitted.push(value)});
+    const user = app.querySelector('input[name=user]');
+    assert.equal(user.getAttribute('autocapitalize'), 'none');
+    assert.equal(user.getAttribute('autocorrect'), 'off');
+    user.value = '  Minseo ';
+    app.querySelector('input[name=password]').value = 'PassWord!';
+    app.querySelector('form').dispatchEvent(new window.Event('submit', {cancelable: true}));
+    user.value = '@MinSeo:Matrix.Example.Test';
+    app.querySelector('form').dispatchEvent(new window.Event('submit', {cancelable: true}));
+    assert.deepEqual(submitted.map(v => v.user), ['minseo', '@minseo:matrix.example.test']);
+    assert.deepEqual(submitted.map(v => v.password), ['PassWord!', 'PassWord!']);
+  } finally { globalThis.FormData = original; }
+});
+
 test('셸: 목록·대화·보관함이 그려지고 내 메시지는 data-me, 복호화 실패는 자리표시', () => {
   const app = root();
   ui.renderShell(app, { list: listProps(), room: roomProps(), box: boxProps() });
