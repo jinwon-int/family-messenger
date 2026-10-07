@@ -20,6 +20,7 @@ import { enterCaretMode, exitCaretMode, isCaretMode } from './timeline-caret.js'
 import { createReadReceiptSender, isRoomUnread } from './read-receipts.js';
 import { recentSentSummaries, indexSummaries, mergeSentSummaries, dayStart, collapsedKey } from './last-sent.js';
 import * as ui from './ui.js';
+import { installViewportFit } from './viewport.js';
 
 const root = document.getElementById('app');
 
@@ -1345,6 +1346,8 @@ function openRecovery() {
 }
 
 async function start() {
+  // 화면 키보드가 열리면 셸을 보이는 영역 높이에 맞춘다(iOS: 작성창과 키보드 사이 여백 제거, viewport.js).
+  installViewportFit();
   // 설정(기본 홈서버 주소·파일보관함)은 같은 오리진의 작은 파일이라 로그인 화면 전에 기다린다.
   state.config = await loadConfig();
   const stored = session.readSession(stores);

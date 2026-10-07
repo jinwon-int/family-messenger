@@ -74,7 +74,8 @@ test('styles.css: main.shell은 flex:none + 고정 높이, .timeline은 min-heig
   const css = readFileSync(join(import.meta.dirname, '..', 'styles.css'), 'utf-8');
   const shell = /main\.shell \{[^}]*\}/.exec(css)?.[0] ?? '';
   assert.match(shell, /flex:\s*none/);
-  assert.match(shell, /height:\s*100dvh/);
+  // 고정 높이는 100dvh — 키보드가 열린 동안만 viewport.js가 --shell-height로 줄인다(2026-10-07).
+  assert.match(shell, /height:\s*var\(--shell-height, 100dvh\)/);
   const timeline = /\n\.timeline \{[^}]*\}/.exec(css)?.[0] ?? '';
   assert.match(timeline, /min-height:\s*0/);
   assert.match(timeline, /overflow-y:\s*auto/);
@@ -240,4 +241,20 @@ test('알림 재개·상태 판정 배선: 끄기 선호를 존중하고, pusher
   assert.equal(rawReady, 1, `navigator.serviceWorker.ready 직접 참조가 ${rawReady}곳 — serviceWorkerReady() 안 한 곳만 허용`);
   const helper = block('async function serviceWorkerReady()', '\n}\n');
   assert.ok(helper.includes('navigator.serviceWorker.ready') && helper.includes('Promise.race('), 'serviceWorkerReady()가 상한 없이 ready를 기다린다');
+});
+
+// 화면 키보드(iOS)가 열리면 viewport.js가 --shell-height(visualViewport 높이)와 html[data-keyboard="open"]을 둔다
+// (오너 2026-10-07: 키보드와 작성창 사이 큰 여백). 셸·body·#app 높이는 그 변수를 쓰고 평소엔 100dvh로 돌아가며,
+// 키보드가 열린 동안 작성창 아래 안전 영역 여백은 빠진다. 규칙 순서(가로 규칙보다 뒤)와 특이성으로 이긴다.
+test('styles.css: 셸 높이는 var(--shell-height, 100dvh)이고 키보드 열림 중 작성창 아래 여백은 안전 영역 없이 4px다', () => {
+  const css = readFileSync(join(import.meta.dirname, '..', 'styles.css'), 'utf-8');
+  assert.match(css, /main\.shell \{[^}]*height: var\(--shell-height, 100dvh\)/);
+  assert.match(css, /\nbody \{[^}]*min-height: var\(--shell-height, 100dvh\)/);
+  assert.match(css, /#app \{ min-height: var\(--shell-height, 100dvh\)/);
+  assert.doesNotMatch(css, /height: 100dvh;/, '100dvh 고정이 남아 있으면 키보드가 열려도 셸이 줄지 않는다');
+  const rule = /html\[data-keyboard="open"\] \.composer-wrap \{ padding-bottom: var\(--space-1\); \}/;
+  assert.match(css, rule);
+  const main = readFileSync(join(SRC, 'main.js'), 'utf-8');
+  assert.match(main, /import \{ installViewportFit \} from '\.\/viewport\.js'/);
+  assert.match(main, /installViewportFit\(\);/);
 });

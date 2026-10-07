@@ -104,10 +104,10 @@ body {
   font-family: system-ui, -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", "Segoe UI", Roboto, sans-serif;
   font-size: var(--text-m);
   line-height: 1.55;
-  min-height: 100dvh;
+  min-height: var(--shell-height, 100dvh);
   -webkit-font-smoothing: antialiased;
 }
-#app { min-height: 100dvh; display: flex; flex-direction: column; }
+#app { min-height: var(--shell-height, 100dvh); display: flex; flex-direction: column; }
 main {
   flex: 1;
   width: 100%;
@@ -411,7 +411,9 @@ main.shell {
   max-width: none;
   padding: 0;
   gap: 0;
-  height: 100dvh;
+  /* 키보드가 열리면 viewport.js가 --shell-height(visualViewport 높이)를 준다 — iOS는 100dvh를 줄이지
+   * 않아 작성창이 키보드 뒤에 남고 그 위에 큰 여백이 생겼다(오너 2026-10-07). 평소에는 100dvh. */
+  height: var(--shell-height, 100dvh);
   flex-direction: column;
   overflow: hidden;
   /* 셸 안의 절대 위치 요소가 셸 밖(문서)으로 새지 않게 기준 상자가 된다 — 문서는 늘 화면 높이 그대로. */
@@ -739,6 +741,9 @@ main.shell[data-view="room"] .pane-list { display: none; }
   gap: var(--space-2);
   border-top: 1px solid var(--line);
 }
+/* 화면 키보드가 열린 동안(viewport.js가 html[data-keyboard="open"]): 키보드가 홈 인디케이터를 덮으므로
+ * 안전 영역 여백 없이 작성창을 키보드 바로 위에 붙인다(오너 2026-10-07). 가로 규칙보다 뒤·높은 특이성. */
+html[data-keyboard="open"] .composer-wrap { padding-bottom: var(--space-1); }
 .attach-bar { display: flex; gap: var(--space-2); flex-wrap: wrap; }
 .attach-bar[hidden] { display: none; }
 .attach-bar button { min-height: 40px; font-size: var(--text-s); }
