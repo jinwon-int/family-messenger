@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import {
   ClientAdapter,
   PlaintextRefusedError,
@@ -9,6 +10,8 @@ import {
   loginWithPassword,
   waitForVerifier,
 } from '../src/matrix/client.js';
+import { attachmentContent } from '../src/messages.js';
+import { attachmentFromContent } from '../src/attachments.js';
 
 /** Fake SDK VerificationRequest: phase + 'change' emitter + startVerification. */
 function fakeRequest({ phase = VERIFICATION_PHASE.Ready, verifier = null, startVerification } = {}) {
@@ -282,16 +285,97 @@ test('평문임이 확인되는 방으로의 전송은 거부된다', async () =
   assert.equal(adapter.client.sent.length, 1);
 });
 
-test('업로드는 mxc URL을 돌려주고 첨부 본문을 보낸다', async () => {
+// 의존성 없는 스펙 AES-256-CTR(v2) 구현: CI의 단위 테스트는 npm ci 전에 돈다.
+// 실제 matrix-encrypt-attachment 왕복은 tests/dom/e2ee-attachments.test.mjs(설치 뒤)가 본다.
+const b64 = (buf) => Buffer.from(buf).toString('base64').replace(/=+$/, '');
+const b64url = (buf) => b64(buf).replace(/\+/g, '-').replace(/\//g, '_');
+async function specEncrypt(plaintext) {
+  const key = randomBytes(32);
+  const iv = Buffer.concat([randomBytes(8), Buffer.alloc(8)]);
+  const cipher = createCipheriv('aes-256-ctr', key, iv);
+  const data = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  return {
+    data,
+    info: {
+      v: 'v2',
+      key: { kty: 'oct', key_ops: ['encrypt', 'decrypt'], alg: 'A256CTR', k: b64url(key), ext: true },
+      iv: b64(iv),
+      hashes: { sha256: b64(createHash('sha256').update(data).digest()) },
+    },
+  };
+}
+async function specDecrypt(ciphertext, info) {
+  const bytes = Buffer.from(new Uint8Array(ciphertext));
+  assert.equal(b64(createHash('sha256').update(bytes).digest()), info.hashes.sha256, 'sha256 mismatch');
+  const decipher = createDecipheriv('aes-256-ctr', Buffer.from(info.key.k, 'base64url'), Buffer.from(info.iv, 'base64'));
+  return Buffer.concat([decipher.update(bytes), decipher.final()]);
+}
+
+test('업로드는 암호문만 octet-stream·파일명 없이 올리고 스펙 EncryptedFile을 돌려준다 (#308)', async () => {
   const sdk = fakeSdk();
   const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
   adapter.client.encrypted.add('!family:example.com');
-  const data = new Uint8Array([1, 2, 3]);
-  const upload = await adapter.uploadMedia({ name: 'photo.jpg', type: 'image/jpeg' }, data);
-  assert.equal(upload.content_uri, 'mxc://example.com/up1');
-  await adapter.sendAttachment('!family:example.com', { msgtype: 'm.image', url: 'mxc://example.com/up1' });
-  assert.equal(adapter.client.uploads[0].opts.name, 'photo.jpg');
+  const plaintext = new TextEncoder().encode('{"macro":"가족 매크로","n":42}');
+  const { file } = await adapter.uploadMedia({ name: 'macro.json', type: 'application/json' }, plaintext.slice().buffer, { encrypt: specEncrypt });
+  const uploaded = adapter.client.uploads[0];
+  assert.equal(uploaded.opts.type, 'application/octet-stream');
+  assert.notEqual(uploaded.opts.name, 'macro.json');
+  assert.equal(uploaded.opts.includeFilename, false);
+  const uploadedBytes = new Uint8Array(uploaded.data);
+  assert.equal(uploadedBytes.byteLength, plaintext.byteLength);
+  assert.notDeepEqual(Array.from(uploadedBytes), Array.from(plaintext));
+
+  assert.equal(file.url, 'mxc://example.com/up1');
+  assert.equal(file.v, 'v2');
+  assert.deepEqual(file.key, { kty: 'oct', alg: 'A256CTR', ext: true, k: file.key.k, key_ops: ['encrypt', 'decrypt'] });
+  assert.match(file.key.k, /^[A-Za-z0-9_-]{43}$/); // 256-bit, unpadded base64url
+  assert.match(file.iv, /^[A-Za-z0-9+/]+$/);
+  assert.match(file.hashes.sha256, /^[A-Za-z0-9+/]{43}$/);
+  assert.deepEqual(Array.from(await specDecrypt(uploadedBytes, file)), Array.from(plaintext));
+
+  await adapter.sendAttachment('!family:example.com', { msgtype: 'm.file', body: 'macro.json', file, info: { mimetype: 'application/json', size: plaintext.byteLength } });
   assert.equal(adapter.client.sent[0].type, 'm.room.message');
+  assert.equal('url' in adapter.client.sent[0].content, false);
+  assert.equal(adapter.client.sent[0].content.file.url, 'mxc://example.com/up1');
+});
+
+test('업로드 → 첨부 본문 → 웹 수신 경로(attachmentFromContent·fetchAttachment)가 원본을 그대로 돌려준다 (#308)', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  adapter.client.getHomeserverUrl = () => 'https://matrix.example.com';
+  adapter.client.getAccessToken = () => 'syt-token';
+  const plaintext = new Uint8Array(4096).map((_, i) => (i * 31) % 256);
+  const { file } = await adapter.uploadMedia({ name: 'p.png', type: 'image/png' }, plaintext, { encrypt: specEncrypt });
+  const content = attachmentContent({ name: 'p.png', type: 'image/png', size: plaintext.byteLength }, file, { width: 64, height: 64 });
+  assert.equal('url' in content, false);
+  const record = attachmentFromContent(content);
+  assert.equal(record.kind, 'photo');
+  assert.equal(record.url, 'mxc://example.com/up1');
+  assert.equal(record.mimetype, 'image/png');
+  assert.equal(record.size, 4096);
+  assert.ok(record.encrypted);
+  const stored = adapter.client.uploads[0].data;
+  const fetchFn = async () => ({ ok: true, arrayBuffer: async () => new Uint8Array(stored).buffer });
+  const blob = await adapter.fetchAttachment(record, { fetchFn, decrypt: specDecrypt });
+  assert.equal(blob.type, 'image/png');
+  assert.deepEqual(Array.from(new Uint8Array(await blob.arrayBuffer())), Array.from(plaintext));
+});
+
+test('uploadMedia: 주입된 encrypt 결과만 업로드한다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  const cipher = new Uint8Array([7, 7, 7]);
+  const encrypt = async (data) => {
+    assert.ok(data instanceof Uint8Array);
+    return {
+      data: cipher,
+      info: { v: 'v2', key: { kty: 'oct', alg: 'A256CTR', k: 'a2V5', ext: true, key_ops: ['encrypt', 'decrypt'] }, iv: 'aXY=', hashes: { sha256: 'aGFzaA==' } },
+    };
+  };
+  const { file } = await adapter.uploadMedia({ name: 'x.txt' }, new Uint8Array([1, 2, 3]), { encrypt });
+  assert.equal(adapter.client.uploads[0].data, cipher);
+  assert.equal(file.iv, 'aXY');
+  assert.equal(file.hashes.sha256, 'aGFzaA');
 });
 
 test('타임라인 구독은 해제 함수를 돌려준다', async () => {

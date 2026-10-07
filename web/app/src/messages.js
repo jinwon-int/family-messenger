@@ -1,9 +1,10 @@
 // Message content mapping and attachment metadata.
 //
 // Stage 1 supports text plus the three attachment families the roadmap
-// names: photos, videos and generic files. Attachments go through the
-// homeserver media repository first (the SDK yields an mxc:// URL); this
-// module only shapes the resulting m.room.message content.
+// names: photos, videos and generic files. Attachments are AES-CTR
+// encrypted and the ciphertext goes through the homeserver media repository
+// first (the SDK yields an mxc:// URL); this module only shapes the resulting
+// m.room.message content (spec EncryptedFile in `content.file`).
 
 export const MSGTYPE_BY_KIND = Object.freeze({
   text: 'm.text',
@@ -83,17 +84,68 @@ export function validateAttachment(file) {
   return { ok: true };
 }
 
+const MXC_URL_RE = /^mxc:\/\/[^/]+\/[^/?#]+$/;
+const BASE64_RE = /^[A-Za-z0-9+/]+$/;
+const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
+
+/** Unpadded base64 (spec "unpadded Base64"); accepts padded input too. */
+function unpaddedBase64(value) {
+  return typeof value === 'string' ? value.replace(/=+$/, '') : '';
+}
+
+/** JWK `k` is unpadded base64url; map any standard-alphabet input across. */
+function unpaddedBase64Url(value) {
+  return typeof value === 'string' ? value.replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_') : '';
+}
+
+/**
+ * Shape the spec EncryptedFile (Matrix E2E attachments, v2) for an uploaded
+ * ciphertext from matrix-encrypt-attachment's `encryptAttachment().info`.
+ * Normalises the base64 encodings receivers validate (k unpadded base64url,
+ * iv / sha256 unpadded base64) and refuses anything not spec-shaped so a
+ * malformed attachment never leaves the client.
+ * @param {string} mxcUrl mxc:// URL of the uploaded ciphertext
+ * @param {{v: 'v2', key: object, iv: string, hashes: {sha256: string}}} info
+ * @returns {{url: string, key: {kty: 'oct', alg: 'A256CTR', ext: true, k: string, key_ops: string[]},
+ *            iv: string, hashes: {sha256: string}, v: 'v2'}}
+ */
+export function encryptedFileFor(mxcUrl, info) {
+  if (typeof mxcUrl !== 'string' || !MXC_URL_RE.test(mxcUrl)) {
+    throw new TypeError('encryptedFileFor: mxc:// URL required');
+  }
+  const key = info?.key;
+  const k = unpaddedBase64Url(key?.k);
+  const iv = unpaddedBase64(info?.iv);
+  const sha256 = unpaddedBase64(info?.hashes?.sha256);
+  if (!key || key.kty !== 'oct' || key.alg !== 'A256CTR' || !BASE64URL_RE.test(k)
+    || !BASE64_RE.test(iv) || !BASE64_RE.test(sha256) || info.v !== 'v2') {
+    throw new TypeError('encryptedFileFor: spec EncryptedFile (A256CTR, v2) required');
+  }
+  return {
+    url: mxcUrl,
+    key: { kty: 'oct', alg: 'A256CTR', ext: true, k, key_ops: ['encrypt', 'decrypt'] },
+    iv,
+    hashes: { sha256 },
+    v: 'v2',
+  };
+}
+
 /**
  * Build the encrypted-room message content for an uploaded attachment.
- * @param {{name: string, type?: string, size: number}} file
- * @param {string} mxcUrl mxc:// URL returned by the media repository
+ * Matrix E2E attachments: the bytes are AES-CTR encrypted before upload and
+ * the content carries `file` (EncryptedFile) — never a top-level `url`, which
+ * spec clients and the bridge treat as a plaintext attachment (#308).
+ * @param {{name: string, type?: string, size: number}} file original (plaintext) file
+ * @param {{url: string, key: object, iv: string, hashes: object, v: string}} encryptedFile
+ *   EncryptedFile from encryptedFileFor / ClientAdapter.uploadMedia
  * @param {{width?: number, height?: number, durationSec?: number}} [meta]
- * @returns {{msgtype: string, body: string, url: string, info: object}}
+ * @returns {{msgtype: string, body: string, file: object, info: object}}
  */
-export function attachmentContent(file, mxcUrl, meta = {}) {
-  if (typeof mxcUrl !== 'string' || !mxcUrl.startsWith('mxc://')) {
-    throw new TypeError('attachmentContent: mxc:// URL required');
+export function attachmentContent(file, encryptedFile, meta = {}) {
+  if (!encryptedFile || typeof encryptedFile !== 'object') {
+    throw new TypeError('attachmentContent: EncryptedFile required');
   }
+  const encrypted = encryptedFileFor(encryptedFile.url, encryptedFile);
   const mimetype = typeof file.type === 'string' && file.type.length > 0 ? file.type : 'application/octet-stream';
   const msgtype = mimetype.startsWith('image/')
     ? MSGTYPE_BY_KIND.photo
@@ -104,7 +156,7 @@ export function attachmentContent(file, mxcUrl, meta = {}) {
   if (Number.isFinite(meta.width)) info.w = meta.width;
   if (Number.isFinite(meta.height)) info.h = meta.height;
   if (Number.isFinite(meta.durationSec)) info.duration = Math.round(meta.durationSec);
-  return { msgtype, body: file.name, url: mxcUrl, info };
+  return { msgtype, body: file.name, file: encrypted, info };
 }
 
 /**
