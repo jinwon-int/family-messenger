@@ -165,7 +165,7 @@ test('펼치면 이전 내 말이 최대 2개 더 보이고(합계 3), 누르면
   assert.deepEqual(rows.map((b) => b.dataset.eventId), ['$m2', '$m1']);
   assert.match(rows[0].querySelector('.chip').textContent, /아직 답 없음/, '둘째 말 뒤 다음 내 말 전까지 답장 0');
   assert.match(rows[1].querySelector('.chip').textContent, /답장 1/, '첫 말 뒤 다음 내 말 전까지 답장 1');
-  assert.equal(q(app, '.last-sent .earlier').getAttribute('aria-label'), '이전 내 말 — 누르면 그 메시지로 이동');
+  assert.equal(q(app, '.last-sent .earlier').getAttribute('aria-label'), '오늘 내 말 — 누르면 그 메시지로 이동');
   assert.equal(app.querySelectorAll('.last-sent button button').length, 0, '버튼 안에 버튼을 두지 않는다');
   // 누르면 그 말풍선으로 스크롤하고 밝힌다(큰 버튼과 같은 jumpToBubble 경로).
   const list = q(app, '.timeline');
@@ -185,6 +185,87 @@ test('펼치면 이전 내 말이 최대 2개 더 보이고(합계 3), 누르면
   const css = await readFile(new URL('../../styles.css', import.meta.url), 'utf-8');
   assert.match(css, /\.last-sent\[data-collapsed="true"\] \.earlier \{ display: none; \}/);
   assert.match(css, /\.last-sent \.earlier-jump \.text \{[^}]*text-overflow: ellipsis/);
+});
+
+// 오늘 내 말 인덱스(오너 2026-10-07): 펼칠 때 main.js에 요청하고, 서버 인덱스에서만 온 항목(답장 수 모름)은 칩 없이,
+// 불러오는 중에는 안내 줄을 보인다. 범위 밖 항목은 onLocate로 찾아 본 뒤 이동한다.
+test('펼치면 onExpandLastSent를 부르고(이미 펼쳐진 채 그려도), 접힌 채로는 부르지 않는다', () => {
+  const app = root();
+  let calls = 0;
+  const withHook = (p) => ({ ...p, room: { ...p.room, onExpandLastSent: () => { calls += 1; } } });
+  ui.renderShell(app, withHook(props()));
+  assert.equal(calls, 0, '접힌 바는 서버에 묻지 않는다');
+  q(app, '.last-sent .jump').click(); // 접힘에서 바를 누르면 펼침
+  assert.equal(calls, 1, '펼치는 순간 한 번');
+  const app2 = root(); // localStorage도 비운다
+  globalThis.localStorage.setItem('familychat:lastSent:collapsed:!a:x', '0'); // 펼침이 기억된 방
+  ui.renderShell(app2, withHook(props())); // 펼쳐진 채 그리면 또 부른다(main.js가 방·날짜별 중복을 거른다)
+  assert.equal(calls, 2);
+});
+
+test('서버 인덱스 항목은 답장 칩 없이 시간만, 불러오는 중이면 안내 줄, 목록은 스크롤 영역이다', async () => {
+  const app = root();
+  globalThis.localStorage.setItem('familychat:lastSent:collapsed:!a:x', '0');
+  const earlierSent = [
+    { eventId: '$t2', text: '점심 먹었어', ts: now - 3_600_000, pending: false, replies: null },
+    { eventId: '$t1', text: '좋은 아침', ts: now - 7_200_000, pending: false, replies: 2 },
+  ];
+  const p = props({ earlierSent });
+  p.room.sentLoading = true;
+  ui.renderShell(app, p);
+  const rows = [...app.querySelectorAll('.last-sent .earlier li .earlier-jump')];
+  assert.deepEqual(rows.map((b) => b.dataset.eventId), ['$t2', '$t1']);
+  assert.equal(rows[0].querySelectorAll('.chip:not(.time)').length, 0, '답장 수를 모르면 칩을 그리지 않는다');
+  assert.equal(rows[0].querySelectorAll('.chip.time').length, 1);
+  assert.match(rows[1].querySelector('.chip').textContent, /답장 2/);
+  assert.match(q(app, '.last-sent .earlier .loading').textContent, /오늘 내 말 불러오는 중/);
+  const bar1 = q(app, '.last-sent');
+  p.room.sentLoading = false;
+  ui.renderShell(app, p);
+  assert.notEqual(q(app, '.last-sent'), bar1, '불러오기가 끝나면 바를 다시 그린다');
+  assert.equal(q(app, '.last-sent .earlier .loading'), null);
+  const { readFile } = await import('node:fs/promises');
+  const css = await readFile(new URL('../../styles.css', import.meta.url), 'utf-8');
+  assert.match(css, /\.last-sent \.earlier \{[^}]*max-height:[^}]*overflow-y: auto/s, '오늘 것이 많아도 바가 대화창을 밀어내지 않게 스크롤');
+});
+
+test('범위 밖 항목을 누르면 onLocate로 찾은 뒤 이동하고, 못 찾으면 안내한다', async () => {
+  const app = root();
+  globalThis.localStorage.setItem('familychat:lastSent:collapsed:!a:x', '0');
+  const earlierSent = [{ eventId: '$old', text: '아침에 한 말', ts: now - 7_200_000, pending: false, replies: null }];
+  const located = [];
+  let answer = true;
+  const p = props({ earlierSent });
+  p.room.onLocate = async (eventId) => {
+    located.push(eventId);
+    if (!answer) return false;
+    // main.js가 이전 페이지를 당겨 그린 것처럼 말풍선을 끼워 넣는다.
+    const list = q(app, '.timeline');
+    const li = document.createElement('li');
+    li.className = 'bubble';
+    li.dataset.eventId = '$old';
+    Object.defineProperty(li, 'offsetTop', { value: 300, configurable: true });
+    list.prepend(li);
+    return true;
+  };
+  ui.renderShell(app, p);
+  const list = q(app, '.timeline');
+  Object.defineProperty(list, 'offsetTop', { value: 100, configurable: true });
+  list.scrollTop = 999;
+  const row = q(app, '.last-sent .earlier-jump[data-event-id="$old"]');
+  row.click();
+  assert.deepEqual(located, ['$old'], '불러온 범위 밖이면 찾기를 요청한다');
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(list.scrollTop, 192, '찾은 뒤 그 말풍선으로 스크롤');
+  assert.equal(q(app, '.last-sent .hint').hidden, true);
+  // 못 찾으면 안내만.
+  answer = false;
+  q(app, 'li.bubble[data-event-id="$old"]').remove();
+  row.click();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(located.length, 2);
+  assert.equal(q(app, '.last-sent .hint').hidden, false);
+  assert.match(q(app, '.last-sent .hint').textContent, /불러온 대화 밖/);
 });
 
 test('이전 내 말 목록이 바뀌면 바를 다시 그리고, 같으면 유지한다', () => {
