@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   MAX_ATTACHMENT_BYTES,
   attachmentContent,
+  encryptedFileFor,
   humanFileSize,
   messageKind,
   formattedMessageBody,
@@ -57,27 +58,72 @@ test('첨부 용량 상한: 90 MiB 이하만 허용', () => {
   assert.equal(validateAttachment(null).ok, false);
 });
 
-test('첨부 본문은 mxc URL과 미디어 정보를 담는다', () => {
+// matrix-encrypt-attachment encryptAttachment().info 모양 (v2, JWK key).
+const ENC_INFO = Object.freeze({
+  v: 'v2',
+  key: { kty: 'oct', key_ops: ['encrypt', 'decrypt'], alg: 'A256CTR', k: 'cdNX1xyqJHSqQlnHBd3UiZoFnnNu2fShdz0Sktib9bc', ext: true },
+  iv: 'ESxCtTBVnW0AAAAAAAAAAA',
+  hashes: { sha256: 'lnPbSbulORk6+IQOnLhu1wGcAZGNDxXKLtMY+QJpcVE' },
+});
+const encFile = (url = 'mxc://example.com/abc123') => encryptedFileFor(url, ENC_INFO);
+
+test('첨부 본문은 url 없이 스펙 EncryptedFile(content.file)과 원본 미디어 정보를 담는다 (#308)', () => {
   const content = attachmentContent(
     { name: '가족사진.jpg', type: 'image/jpeg', size: 2048 },
-    'mxc://example.com/abc123',
+    encFile(),
     { width: 1200, height: 900 },
   );
   assert.equal(content.msgtype, 'm.image');
   assert.equal(content.body, '가족사진.jpg');
-  assert.equal(content.url, 'mxc://example.com/abc123');
+  assert.equal('url' in content, false);
+  assert.deepEqual(content.file, {
+    url: 'mxc://example.com/abc123',
+    key: { kty: 'oct', alg: 'A256CTR', ext: true, k: ENC_INFO.key.k, key_ops: ['encrypt', 'decrypt'] },
+    iv: ENC_INFO.iv,
+    hashes: { sha256: ENC_INFO.hashes.sha256 },
+    v: 'v2',
+  });
   assert.deepEqual(content.info, { mimetype: 'image/jpeg', size: 2048, w: 1200, h: 900 });
 });
 
 test('영상은 duration을, 알 수 없는 형식은 m.file로 보낸다', () => {
-  const video = attachmentContent({ name: 'clip.mp4', type: 'video/mp4', size: 10 }, 'mxc://example.com/v', { durationSec: 12.4 });
+  const video = attachmentContent({ name: 'clip.mp4', type: 'video/mp4', size: 10 }, encFile('mxc://example.com/v'), { durationSec: 12.4 });
   assert.equal(video.msgtype, 'm.video');
   assert.equal(video.info.duration, 12);
-  const other = attachmentContent({ name: 'data.bin', type: '', size: 1 }, 'mxc://example.com/f');
+  assert.equal(video.file.url, 'mxc://example.com/v');
+  const other = attachmentContent({ name: 'data.bin', type: '', size: 1 }, encFile('mxc://example.com/f'));
   assert.equal(other.msgtype, 'm.file');
   assert.equal(other.info.mimetype, 'application/octet-stream');
-  assert.throws(() => attachmentContent({ name: 'x', size: 1 }, 'https://example.com/not-mxc'));
-  assert.throws(() => attachmentContent({ name: 'x', size: 1 }, ''));
+  assert.equal('url' in other, false);
+});
+
+test('attachmentContent: 평문 mxc 문자열·키 없는 file·잘못된 URL은 거부한다 (#308)', () => {
+  assert.throws(() => attachmentContent({ name: 'x', size: 1 }, 'mxc://example.com/plain'), /EncryptedFile/);
+  assert.throws(() => attachmentContent({ name: 'x', size: 1 }, ''), /EncryptedFile/);
+  assert.throws(() => attachmentContent({ name: 'x', size: 1 }, { url: 'mxc://example.com/f' }), /EncryptedFile/);
+  assert.throws(() => attachmentContent({ name: 'x', size: 1 }, { ...encFile(), url: 'https://example.com/not-mxc' }), /mxc/);
+});
+
+test('encryptedFileFor: 패딩·표준 알파벳을 수신측 검증 형식으로 정규화하고 비스펙 키는 거부한다 (#308)', () => {
+  const padded = encryptedFileFor('mxc://example.com/p', {
+    v: 'v2',
+    key: { kty: 'oct', alg: 'A256CTR', k: 'ab+/cd==', ext: true, key_ops: ['encrypt', 'decrypt'] },
+    iv: 'ESxCtTBVnW0AAAAAAAAAAA==',
+    hashes: { sha256: 'lnPbSbulORk6+IQOnLhu1wGcAZGNDxXKLtMY+QJpcVE=' },
+  });
+  assert.equal(padded.key.k, 'ab-_cd');
+  assert.equal(padded.iv, 'ESxCtTBVnW0AAAAAAAAAAA');
+  assert.equal(padded.hashes.sha256, 'lnPbSbulORk6+IQOnLhu1wGcAZGNDxXKLtMY+QJpcVE');
+  assert.match(padded.key.k, /^[A-Za-z0-9_-]+$/);
+  assert.match(padded.iv, /^[A-Za-z0-9+/]+$/);
+  assert.equal(padded.v, 'v2');
+  assert.throws(() => encryptedFileFor('mxc://example.com/p', { ...ENC_INFO, key: { ...ENC_INFO.key, alg: 'A128CTR' } }), /A256CTR/);
+  assert.throws(() => encryptedFileFor('mxc://example.com/p', { ...ENC_INFO, key: { ...ENC_INFO.key, kty: 'RSA' } }), /A256CTR/);
+  assert.throws(() => encryptedFileFor('mxc://example.com/p', { ...ENC_INFO, v: 'v1' }), /v2/);
+  assert.throws(() => encryptedFileFor('mxc://example.com/p', { ...ENC_INFO, v: undefined }), /v2/);
+  assert.throws(() => encryptedFileFor('mxc://example.com/p', { ...ENC_INFO, iv: '' }), /EncryptedFile/);
+  assert.throws(() => encryptedFileFor('mxc://example.com/p', { ...ENC_INFO, hashes: {} }), /EncryptedFile/);
+  assert.throws(() => encryptedFileFor('mxc://example.com', ENC_INFO), /mxc/);
 });
 
 test('mergeTimelineEntry: 같은 event id는 치환하고, id 없는 항목은 항상 덧붙인다 (#125)', () => {

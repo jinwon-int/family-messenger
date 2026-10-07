@@ -998,11 +998,11 @@ async function sendAttachment(file) {
   }
   try {
     const data = await file.arrayBuffer();
-    const upload = await state.client.uploadMedia(file, data);
-    const mxcUrl = typeof upload === 'string' ? upload : upload.content_uri;
+    // E2EE 첨부(#308): 암호문만 업로드하고 content.file(EncryptedFile)로 보낸다.
+    const { file: encryptedFile } = await state.client.uploadMedia(file, data);
     await state.client.sendAttachment(
       state.currentRoomId,
-      attachmentContent({ name: file.name, type: file.type, size: file.size }, mxcUrl),
+      attachmentContent({ name: file.name, type: file.type, size: file.size }, encryptedFile),
     );
   } catch (error) {
     entry.notice = error instanceof PlaintextRefusedError ? strings.errors.plaintextRefused : strings.chat.sendFailed;

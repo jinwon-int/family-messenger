@@ -10,6 +10,7 @@
 import { classifyRoom, roomDisplayName } from '../rooms.js';
 import { splitParticipants } from '../participants.js';
 import { mediaDownloadPath } from '../attachments.js';
+import { encryptedFileFor } from '../messages.js';
 import { ROOM_ORDER_EVENT, parseRoomOrder } from '../room-order.js';
 
 /** @returns {Promise<object>} the matrix-js-sdk module */
@@ -305,22 +306,32 @@ export class ClientAdapter {
     return () => this.client.removeListener('RoomMember.typing', listener);
   }
 
-  /** Send an attachment whose mxc URL is already uploaded. */
+  /** Send an attachment whose encrypted bytes are already uploaded (content.file). */
   async sendAttachment(roomId, content) {
     if (!this.isRoomEncrypted(roomId)) throw new PlaintextRefusedError(roomId);
     return this.client.sendEvent(roomId, 'm.room.message', content);
   }
 
   /**
-   * Upload a file and return its mxc URL.
-   * @param {File|{name: string, type?: string}} file
-   * @param {ArrayBuffer|Uint8Array} data
+   * Encrypt a file for an end-to-end encrypted room (Matrix E2E attachments,
+   * AES-CTR v2), upload only the ciphertext and return the EncryptedFile to
+   * put in `content.file` (#308). The upload is opaque: octet-stream, no
+   * original filename. `encrypt` is injectable for tests.
+   * @param {File|{name: string, type?: string}} _file original file (name/type stay in the event, not the upload)
+   * @param {ArrayBuffer|Uint8Array} data plaintext bytes
+   * @returns {Promise<{file: {url: string, key: object, iv: string, hashes: {sha256: string}, v: 'v2'}}>}
    */
-  uploadMedia(file, data) {
-    return this.client.uploadContent(data, {
-      name: file.name,
-      type: file.type ?? 'application/octet-stream',
+  async uploadMedia(_file, data, { encrypt } = {}) {
+    const encryptFn = encrypt ?? (await import('matrix-encrypt-attachment')).encryptAttachment;
+    const plaintext = data instanceof Uint8Array ? data : new Uint8Array(data);
+    const { data: ciphertext, info } = await encryptFn(plaintext);
+    const upload = await this.client.uploadContent(ciphertext, {
+      name: 'encrypted',
+      type: 'application/octet-stream',
+      includeFilename: false,
     });
+    const mxcUrl = typeof upload === 'string' ? upload : upload?.content_uri;
+    return { file: encryptedFileFor(mxcUrl, info) };
   }
 
   /** This session's device id. */
