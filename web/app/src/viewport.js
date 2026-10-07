@@ -9,6 +9,8 @@
 
 /** 키보드가 열렸다고 볼 최소 높이 차(px). 주소창·툴바 변화(수십 px)는 키보드가 아니다. */
 export const KEYBOARD_MIN_PX = 120;
+/** 작성창 포커스 뒤 다시 맞추는 시점(ms) — iOS 키보드 애니메이션(~250ms)과 그 뒤 Safari 스크롤 보정을 덮는다. */
+export const SETTLE_DELAYS_MS = Object.freeze([0, 150, 350, 600]);
 
 /**
  * 창 높이와 보이는 영역 높이로 키보드 상태를 판정한다.
@@ -27,7 +29,7 @@ export function keyboardState({ innerHeight, viewportHeight, threshold = KEYBOAR
  * @param {{win?: Window, doc?: Document, threshold?: number}} [options]
  * @returns {() => void}
  */
-export function installViewportFit({ win = globalThis.window, doc = globalThis.document, threshold = KEYBOARD_MIN_PX } = {}) {
+export function installViewportFit({ win = globalThis.window, doc = globalThis.document, threshold = KEYBOARD_MIN_PX, settleDelays = SETTLE_DELAYS_MS } = {}) {
   const viewport = win?.visualViewport;
   const root = doc?.documentElement;
   if (!viewport || !root || typeof viewport.addEventListener !== 'function') return () => {};
@@ -45,12 +47,26 @@ export function installViewportFit({ win = globalThis.window, doc = globalThis.d
     }
     lastOpen = open;
   };
+  // 키보드 애니메이션은 수백 ms — Safari의 문서 밀기가 마지막 resize 뒤에 올 수 있어 포커스 뒤 몇 번 더 맞춘다.
+  const timers = new Set();
+  const settle = () => {
+    for (const ms of settleDelays) {
+      const id = setTimeout(() => { timers.delete(id); apply(); }, ms);
+      timers.add(id);
+    }
+  };
   viewport.addEventListener('resize', apply);
   viewport.addEventListener('scroll', apply);
+  win.addEventListener?.('scroll', apply);
+  doc.addEventListener?.('focusin', settle);
   apply();
   return () => {
     viewport.removeEventListener('resize', apply);
     viewport.removeEventListener('scroll', apply);
+    win.removeEventListener?.('scroll', apply);
+    doc.removeEventListener?.('focusin', settle);
+    for (const id of timers) clearTimeout(id);
+    timers.clear();
     root.style.removeProperty('--shell-height');
     delete root.dataset.keyboard;
   };
