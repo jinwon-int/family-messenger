@@ -26,8 +26,11 @@ public final class URLSessionRelayTransport: RelayTransport {
     // MARK: - 요청 빌드 (순수 함수 — 테스트 대상)
 
     /// server.go 식별자 규칙 `[A-Za-z0-9_-]{1,64}` — URL 에 안전하지만, 방어적으로 percent-encoding 한다.
+    /// RFC 3986 unreserved 만 통과(`.urlPathAllowed` 는 `/`·`&` 를 남겨 경로 세그먼트를 깰 수 있다).
+    static let pathSegmentAllowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+
     static func pathComponent(_ id: String) -> String {
-        id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        id.addingPercentEncoding(withAllowedCharacters: pathSegmentAllowed) ?? id
     }
 
     static func authHeaders(for credential: RelayCredential) -> [String: String] {
@@ -43,8 +46,11 @@ public final class URLSessionRelayTransport: RelayTransport {
 
     func makeRequest(method: String, path: String, query: [URLQueryItem] = [], body: Data? = nil) throws -> URLRequest {
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
-        components?.path = components?.path.hasSuffix("/") == true
-            ? components!.path + path : (components?.path ?? "") + path
+        // `path` 는 pathComponent 로 이미 인코딩돼 있으므로 percentEncodedPath 로 넣는다(`.path` 대입은 `%` 를 다시 인코딩한다).
+        // 기준 경로는 로컬로 복사(같은 식에서 components 를 읽고 쓰면 Swift 6 exclusivity 오류), 끝 `/` 는 하나로 합친다.
+        var basePath = components?.percentEncodedPath ?? ""
+        if basePath.hasSuffix("/") { basePath.removeLast() }
+        components?.percentEncodedPath = basePath + path
         if !query.isEmpty { components?.queryItems = query }
         guard let url = components?.url else {
             throw RelayError.network("bad relay url: \(baseURL) \(path)")
