@@ -12,6 +12,12 @@
 //        - application → decrypt → MessageStore.insert (거부 = `undecryptable` 행, 엔진은 연산 전 스냅샷으로 복원됨)
 //   ③ 커밋된 뒤에만 RoomRecord(epoch·revision·정지 사유) 갱신 → CursorStore.setCursor → 다음 GET 의 ?ack=
 //
+// 두 프로세스(App ∥ NSE, #271 §4·§8 — 같은 App Group 의 flock)가 같은 방을 처리할 때(파이널라이저 결정 D4):
+//   네트워크는 락 밖이라 둘이 같은 커서로 같은 페이지를 받을 수 있고, 커서는 상태 커밋·unlock **뒤**에 쓰인다.
+//   그래서 트랜잭션 안에서 (a) 영속 커서를 다시 읽어 그 이하는 건너뛰고 (b) `MessageStore` 에 이미 있는 seq 의 application 은
+//   **복호화하지 않는다**(행은 상태 저장과 같은 락 안에서 기록되므로 "다른 쪽이 처리했다" 의 증거) (c) 커서는 단조(max)로만 움직인다.
+//   남는 창(상대가 상태를 커밋한 뒤 커서를 쓰기 전 죽음)의 타인 commit 재처리는 엔진이 에폭 불일치로 거부·복원한다(무해).
+//
 // 송신(`send`): 동기화 → 트랜잭션 { encrypt → save } → OutboxStore.enqueue(정확 바이트) → POST(밖).
 //   409 cas_mismatch → 옛 항목 reconciled → clear_pending(대기 commit 이 있으면) → 동기화 → **새 client_id 로 재암호화** 1회.
 //   네트워크 실패 → 항목은 pending 으로 남고 `flushOutbox` 가 **같은 바이트**로 재시도(201 또는 200 duplicate).
@@ -81,6 +87,8 @@ public final class RoomSyncEngine {
         public var outboxKeep: Int = 256
         /// `syncAll` 한 번에 따라가는 최대 페이지 수.
         public var maxPages: Int = 20
+        /// 복호화한 프로세스 표시(`MessageRecord.decryptedBy`). NSE 는 `.nse`.
+        public var decryptedBy: MessageRecord.DecryptedBy = .app
         public init() {}
     }
 
@@ -201,12 +209,15 @@ public final class RoomSyncEngine {
         registrationPending = nil   // 릴레이가 받았다 = 등록됨
 
         var outcome = try transaction { engine, dirty in
-            try apply(page: page, cursor: cursor, engine: engine, dirty: &dirty)
+            // D4(a): 락을 잡은 지금의 영속 커서 — GET 사이에 다른 프로세스가 처리·영속한 seq 는 다시 보지 않는다.
+            try apply(page: page, cursor: max(cursor, try cursors.cursor(room: room)), engine: engine, dirty: &dirty)
         }
-        // ③ 상태가 저장된 뒤에만: 방 기록 → 정지 사유 → 커서.
+        // ③ 상태가 저장된 뒤에만: 방 기록 → 정지 사유 → 커서(D4(c): 단조 — 다른 프로세스가 더 멀리 갔으면 되돌리지 않는다).
         epoch = max(epoch, page.epoch); revision = max(revision, page.revision)
         try persistRoom(halted: outcome.halted)
-        if outcome.cursor > cursor { try cursors.setCursor(room: room, seq: outcome.cursor) }
+        let persisted = try cursors.cursor(room: room)
+        if outcome.cursor > persisted { try cursors.setCursor(room: room, seq: outcome.cursor) }
+        outcome.cursor = max(outcome.cursor, persisted)
         joined = outcome.joined
         outcome.fetched = page.events.count
         outcome.hasMore = outcome.halted == nil && page.events.count >= configuration.pageLimit
@@ -297,6 +308,9 @@ public final class RoomSyncEngine {
                     return pass
                 }
             case .application where joinedNow:
+                if try isStored(ev.seq) {
+                    break   // D4(b): 다른 프로세스가 이미 복호화·기록했다 — MLS 는 같은 메시지를 다시 풀 수 없다(재시도 = 거부)
+                }
                 if try storeApplication(ev, engine: engine, dirty: &dirty) { pass.inserted.append(ev.seq) }
                 else { pass.rejected.append(ev.seq) }
             default:
@@ -335,6 +349,10 @@ public final class RoomSyncEngine {
         }
     }
 
+    private func isStored(_ seq: Int64) throws -> Bool {
+        try messages.messages(room: room, after: seq - 1, limit: 1).first?.seq == seq
+    }
+
     /// application 1건: decrypt → MessageStore. 이미 저장된 seq 면(저장 실패 뒤 재처리) 다시 넣지 않는다.
     /// 반환 = 해독 성공 여부. 해독 불가도 화면에 보이도록 `undecryptable` 행을 남긴다.
     private func storeApplication(_ ev: StoredEvent, engine: MlsEngine, dirty: inout Bool) throws -> Bool {
@@ -348,7 +366,7 @@ public final class RoomSyncEngine {
                 // clientId = 릴레이 행의 dedup 키(AAD client_id 는 항상 발신 기기 ID 라 구분 정보가 없다).
                 record = MessageRecord(room: room, seq: ev.seq, senderDevice: decrypted.senderDevice, clientId: ev.clientId,
                                        kind: .text, body: String(decoding: decrypted.plaintext, as: UTF8.self),
-                                       attachment: nil, receivedAt: Date(), decryptedBy: .app)
+                                       attachment: nil, receivedAt: Date(), decryptedBy: configuration.decryptedBy)
             } else {
                 // 릴레이 row 의 기기와 MLS 발신자가 다르다 — 내용을 보이지 않는다.
                 ok = false
@@ -361,7 +379,7 @@ public final class RoomSyncEngine {
             ok = false
             record = undecryptable(ev, reason: "decrypt_format")
         }
-        if try messages.messages(room: room, after: ev.seq - 1, limit: 1).first?.seq != ev.seq {
+        if try !isStored(ev.seq) {
             try messages.insert(record)
         }
         return ok
@@ -369,7 +387,7 @@ public final class RoomSyncEngine {
 
     private func undecryptable(_ ev: StoredEvent, reason: String) -> MessageRecord {
         MessageRecord(room: room, seq: ev.seq, senderDevice: ev.device, clientId: ev.clientId, kind: .undecryptable,
-                      body: reason, attachment: nil, receivedAt: Date(), decryptedBy: .app)
+                      body: reason, attachment: nil, receivedAt: Date(), decryptedBy: configuration.decryptedBy)
     }
 
     private func persistRoom(halted: String?) throws {
