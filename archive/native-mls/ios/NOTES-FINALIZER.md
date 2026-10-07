@@ -48,11 +48,29 @@
 
 1. [x] NOTES(이 파일) — ① 브랜치 첫 커밋 `5845842`
 2. [x] ① CONTRACTS §2.1 3건 + §6 파이널라이저 재배정 기록 → PR #320 (`e4d7391`)
-3. [~] ② 통합(`finalizer/integration-271`): SeededEngineFactory · Dependencies.live(File*/Keychain/URLSession) · AppModel 방 동기화 · 초대/키패키지 · listRooms 구현 · 테스트 → PR
+3. [x] ② 통합(`finalizer/integration-271`, PR #321): SeededEngineFactory · Dependencies.live(File*/Keychain/URLSession) · AppModel 방 동기화 · 초대/키패키지 · listRooms 구현 · 테스트 → PR
    - Linux: Core `Executed 97 tests, with 0 failures`(리포 전체 마운트 필수 — 픽스처 탐색이 리포 루트 기준).
    - Linux 하네스(/tmp/fc-typecheck: Combine·CryptoKit·App Group·FFI 스텁)로 앱 비UI 소스 컴파일 + AppModelTests `Executed 12 tests, with 0 failures`.
    - 발견: L3 는 내 echo 를 건너뛰어 **내 메시지가 MessageStore 에 안 들어감** → AppModel 이 서버 seq 확인 시 평문 기록(`recordOwn`).
-4. [ ] ③ 스모크: 감독자 스크립트 · RelaySmokeTests · 워크플로 → PR, 결과로 #276 Closes 여부 판단
+   - **결함 발견·수정 `d221057`**: L3 가 릴레이 dedup client_id 를 암호화 AAD 에도 넣어 실 엔진에서 모든 수신이
+     `sender attribution rejected`(파사드 H1). AAD client_id = 기기 ID 로 수정, Core 99/99.
+   - macOS CI 1차(run 37593437387): 앱 컴파일·AppModelTests 통과, 시나리오 ③ 실패(위 결함 — Linux 하네스와 동일),
+     Keychain 테스트 skip(`-34018`, 무서명 시뮬레이터) → 무서명 빌드의 live() 는 봉인 키 실패로 fatal.
+4. [~] ③ 스모크(`finalizer/relay-smoke-276`, PR #322): 감독자 스크립트 · RelaySmokeTests · 워크플로.
+   - macOS 1차(run 37595162269) 실패: **Go 릴레이가 darwin 에서 빌드 불가**(`internal/devicepolicy` 의 `syscall.Openat`/`Renameat`).
+     서버 수정은 범위 밖(L2·보안 코드) → 스모크를 Linux 잡 `relay-smoke-linux`(`scripts/linux-smoke.sh`)로 옮김.
+     macOS 잡은 실 엔진 + live 저장소 + 메모리 릴레이 시나리오(IntegrationTests)만.
+   - Linux 로컬(실 Rust 엔진 = ios-ffi host .a + uniffi Swift 바인딩, 실 Go 릴레이 -access-mode disabled, `--network none`
+     감독자 컨테이너에 Swift 컨테이너 합류): `[relay-smoke] PASS ①~⑤`, `Executed 17 tests, with 0 failures`, 릴레이 기동 2회.
+
+## Linux 실 엔진 하네스 재현법 (리포 밖 /tmp, 재사용)
+
+- Rust: `docker run --rm -e RUSTUP_TOOLCHAIN=1.91.1 -e CARGO_PROFILE_RELEASE_STRIP=false -e CARGO_TARGET_DIR=/x/target ... rust:1.91.1`
+  → `cargo build --release --lib` + `uniffi-bindgen generate --library .../libfamily_mls_ios_ffi.so --language swift`
+  (strip=true 면 .so 에 uniffi 메타데이터가 없어 생성 실패). 링크는 `.a` 만 둔 디렉터리로(.so 우선 선택 방지).
+- Go 릴레이: `golang:1.27.1-bookworm`(python 컨테이너 glibc 와 호환) `go build`.
+- 감독자: `python:3.12-slim-bookworm --network none`; Swift: `swift:6.0-noble --network container:<감독자>`.
+- 하네스 /tmp/fc-e2e/run.sh: 앱 비UI 소스+테스트 복사, Combine·CryptoKit·App Group 스텁, ChaChaPolySealer → nil(Linux Passthrough).
 
 ## 통합 메모 (②)
 

@@ -1,5 +1,5 @@
 name: Native MLS track — iOS host
-# 독자 E2EE 트랙의 세 번째 호스트(iOS) 스파이크 (#271 §11·§12-A). 예산: host 게이트 1 job ≤15분, macOS 빌드 1 job ≤25분.
+# 독자 E2EE 트랙의 세 번째 호스트(iOS) 스파이크 (#271 §11·§12-A). 예산: host 게이트 1 job ≤15분, 격리 릴레이 스모크(Linux) ≤20분, macOS 빌드 1 job ≤25분.
 # 결정 E 규칙 2(예산 명시). main 필수 체크가 아니므로 워크플로 수준 paths 필터를 쓴다. 운영 서버·실계정 무관.
 on:
   workflow_dispatch:
@@ -7,6 +7,8 @@ on:
     paths:
       - "archive/native-mls/ios-ffi/**"
       - "archive/native-mls/ios/**"
+      # 격리 릴레이 스모크(#276)가 이 릴레이를 빌드해 쓴다
+      - "archive/native-mls/server/**"
       - ".github/workflows/native-mls-ios.yml"
 permissions:
   contents: read
@@ -61,6 +63,85 @@ jobs:
       - name: Type-check for aarch64-apple-ios (no linker needed)
         run: cargo "+$RUST_TOOLCHAIN" check --locked --lib --target aarch64-apple-ios
 
+  relay-smoke-linux:
+    # 격리 릴레이 스모크(#276 §2.4): 실 ios-ffi 파사드(Linux 호스트 정적 라이브러리 + uniffi Swift 바인딩) + 실 HTTP
+    # (Core URLSessionRelayTransport) + 실 Go 릴레이(-access-mode disabled · 127.0.0.1 빈 포트 · mktemp -d).
+    # 릴레이는 Linux 전용(devicepolicy 의 Openat/Renameat)이고 macOS 러너엔 Docker 가 없어 Linux 에서 돈다 — scripts/linux-smoke.sh.
+    name: Isolated relay smoke (ios-ffi on Linux host + Go relay + HTTP)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.0"
+      - name: Pinned Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustc "+$RUST_TOOLCHAIN" --version
+      - name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            archive/native-mls/ios-ffi/target
+          key: native-mls-ios-ffi-linux-smoke-${{ runner.os }}-${{ hashFiles('archive/native-mls/ios-ffi/Cargo.lock') }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: archive/native-mls/server/go.mod
+          cache-dependency-path: archive/native-mls/server/go.sum
+      - name: Build ios-ffi for the Linux host + Swift bindings — timed
+        working-directory: archive/native-mls/ios-ffi
+        run: |
+          start=$(date +%s)
+          # 한 번의 dev 빌드로 lib(.a/.so) 와 uniffi-bindgen 을 같은 feature 로 만든다(dev 는 strip 없음 → .so 에 uniffi 메타데이터).
+          cargo "+$RUST_TOOLCHAIN" build --locked --features cli
+          target/debug/uniffi-bindgen generate --library target/debug/libfamily_mls_ios_ffi.so --language swift --out-dir "$RUNNER_TEMP/ffi-swift"
+          mkdir -p "$RUNNER_TEMP/ffi-lib" && cp target/debug/libfamily_mls_ios_ffi.a "$RUNNER_TEMP/ffi-lib/"
+          echo "ffi_build_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Build the v2 relay and start the smoke supervisor
+        run: |
+          ( cd archive/native-mls/server && go build -o "$RUNNER_TEMP/native-mls-relay" . )
+          smoke_dir=$(mktemp -d)
+          python3 archive/native-mls/ios/scripts/relay_smoke_supervisor.py \
+            --relay-bin "$RUNNER_TEMP/native-mls-relay" --data-dir "$smoke_dir" \
+            --ready-file "$smoke_dir/ready.json" > "$smoke_dir/supervisor.log" 2>&1 &
+          for _ in $(seq 100); do [ -f "$smoke_dir/ready.json" ] && break; sleep 0.2; done
+          test -f "$smoke_dir/ready.json" || { cat "$smoke_dir/supervisor.log"; exit 1; }
+          cat "$smoke_dir/ready.json"
+          relay_url=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["relay_url"])' "$smoke_dir/ready.json")
+          control_url=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["control_url"])' "$smoke_dir/ready.json")
+          curl -fsS "$relay_url/v2/health"
+          { echo "SMOKE_DIR=$smoke_dir"; echo "FC_SMOKE_RELAY_URL=$relay_url"; echo "FC_SMOKE_CONTROL_URL=$control_url"; } >> "$GITHUB_ENV"
+      - name: Smoke — two devices over the real relay (TwoDeviceScenario)
+        env:
+          FFI_LIB_DIR: ${{ runner.temp }}/ffi-lib
+          FFI_SWIFT_DIR: ${{ runner.temp }}/ffi-swift
+        run: |
+          start=$(date +%s)
+          archive/native-mls/ios/scripts/linux-smoke.sh 2>&1 | tee "$RUNNER_TEMP/linux-smoke.log" | tail -n 60
+          echo "smoke_test_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Per-scenario results
+        if: always()
+        run: |
+          log="$RUNNER_TEMP/linux-smoke.log"
+          test -f "$log" || exit 0
+          grep -E '\[relay-smoke\]|\[scenario\]|Test Case .*(RelaySmoke|LinuxScenario).*(passed|failed|skipped)|Executed [0-9]+ tests' "$log" \
+            | tee -a "$GITHUB_STEP_SUMMARY" || true
+          # 릴레이 주소를 받고도 스모크가 건너뛰었다면(=검증 안 됨) 실패로 본다
+          if grep -q 'RelaySmokeTests.testIsolatedRelaySmoke.*skipped' "$log"; then echo "relay smoke was skipped"; exit 1; fi
+          grep -q '\[relay-smoke\] PASS ⑤' "$log"
+      - name: Stop the smoke relay and keep its logs
+        if: always()
+        run: |
+          [ -n "${FC_SMOKE_CONTROL_URL:-}" ] && curl -fsS -X POST "$FC_SMOKE_CONTROL_URL/shutdown" || true
+          if [ -n "${SMOKE_DIR:-}" ]; then
+            echo "--- relay starts: $(grep -c 'listening on' "$SMOKE_DIR/relay.log" || true)"
+            echo "--- relay.log"; tail -n 60 "$SMOKE_DIR/relay.log" || true
+            rm -rf "$SMOKE_DIR"
+          fi
+
   ios-build:
     name: xcframework + Swift bindings + simulator XCTest
     runs-on: macos-latest
@@ -110,8 +191,15 @@ jobs:
           start=$(date +%s)
           xcodebuild -project FamilyChat.xcodeproj -scheme FamilyChat -configuration Debug \
             -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
-            -derivedDataPath build CODE_SIGNING_ALLOWED=NO test | tail -n 60
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO test 2>&1 | tee "$RUNNER_TEMP/xcodebuild-test.log" | tail -n 60
           echo "simulator_test_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Integration scenario lines (real engine · live stores · in-memory relay)
+        if: always()
+        run: |
+          log="$RUNNER_TEMP/xcodebuild-test.log"
+          test -f "$log" || exit 0
+          grep -E '\[scenario\]|Test Case .*(Integration|RelaySmoke).*(passed|failed|skipped)|Executed [0-9]+ tests|\*\* TEST (SUCCEEDED|FAILED) \*\*' "$log" \
+            | tee -a "$GITHUB_STEP_SUMMARY" || true
       - name: App size
         working-directory: archive/native-mls/ios
         run: |
