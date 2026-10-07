@@ -10,6 +10,10 @@
 // 토큰은 비밀이 아니지만 화면·로그에 내지 않는다(기기 추적 식별자).
 import Foundation
 import FamilyMLSCore
+#if canImport(UIKit)
+import UIKit
+import UserNotifications
+#endif
 
 /// 릴레이가 마지막으로 받아 준 등록.
 struct PushRegistrationRecord: Codable, Equatable {
@@ -161,5 +165,25 @@ final class PushRegistrar {
         if case RelayError.refused(let code, let status) = error { return "\(code) (\(status))" }
         if case RelayError.network = error { return Strings.pushNetwork }
         return "\(error)"
+    }
+}
+
+extension PushRegistrar.Dependencies {
+    /// 운영: 알림 권한(alert·sound·badge)을 묻고 허용이면 APNs 토큰을 요청한다. 토큰은 AppDelegate 콜백으로 온다.
+    /// (UIKit 이 없는 Linux 스모크에서는 요청하지 않는다 — 등록 정책 자체는 플랫폼 무관.)
+    static func live(topic: String) -> Self {
+        var deps = Self(topic: topic)
+        deps.records = UserDefaultsPushRecordStore()
+        #if canImport(UIKit)
+        deps.requestToken = { onDenied in
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+                Task { @MainActor in
+                    if granted { UIApplication.shared.registerForRemoteNotifications() }
+                    else { onDenied(Strings.pushDenied) }
+                }
+            }
+        }
+        #endif
+        return deps
     }
 }

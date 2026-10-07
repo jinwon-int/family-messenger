@@ -59,20 +59,3 @@ final class NotificationCenterDelegate: NSObject, UNUserNotificationCenterDelega
         }
     }
 }
-
-extension PushRegistrar.Dependencies {
-    /// 운영: 알림 권한(alert·sound·badge)을 묻고 허용이면 APNs 토큰을 요청한다. 토큰은 AppDelegate 콜백으로 온다.
-    static func live(topic: String?) -> Self {
-        var deps = Self(topic: topic)
-        deps.records = UserDefaultsPushRecordStore()
-        deps.requestToken = { onDenied in
-            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
-                Task { @MainActor in
-                    if granted { UIApplication.shared.registerForRemoteNotifications() }
-                    else { onDenied(Strings.pushDenied) }
-                }
-            }
-        }
-        return deps
-    }
-}
