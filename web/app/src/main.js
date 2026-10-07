@@ -8,7 +8,7 @@ import { extractMentions } from './mentions.js';
 import { describeInvite } from './invites.js';
 import { lastMessagePreview, listSignature } from './rooms.js';
 import { moveRoom, orderRooms } from './room-order.js';
-import { viewKeyAction, listPageMove, isSplitLayout, listPageNavAction, timelineKeyAction, TIMELINE_ARROW_STEP_PX } from './keyboard.js';
+import { viewKeyAction, listPageMove, isSplitLayout, listPageNavAction, timelineKeyAction, listRevealDelta, TIMELINE_ARROW_STEP_PX } from './keyboard.js';
 import { splitParticipants, shortHandle } from './participants.js';
 import { attachmentFromContent, collectAttachments, fileboxRefreshUrl } from './attachments.js';
 import { PhotoPreviews } from './photo-previews.js';
@@ -559,6 +559,21 @@ function listRoomButtons() {
   return Array.from(root.querySelectorAll('.pane-list button.room-item'));
 }
 
+/**
+ * Page Up/Down으로 옮겨간 방 행이 목록(.pane-list) 스크롤 영역 밖이면 그 행이 보이도록 목록만 스크롤한다.
+ * 보이는 행이면 아무것도 하지 않는다(2분할에서 방을 열면 작성창에 커서가 가므로 포커스 스크롤이 없다 —
+ * 목록은 선택 표시만 바뀌고 가려진 채 남던 문제). 재렌더 뒤 호출하므로 roomId로 행을 다시 찾는다.
+ */
+function revealRoomInList(roomId) {
+  const button = listRoomButtons().find((candidate) => candidate.dataset.roomId === roomId);
+  const pane = button?.closest('.pane-list');
+  if (!button || !pane || typeof button.getBoundingClientRect !== 'function' || typeof pane.getBoundingClientRect !== 'function') return;
+  const item = button.getBoundingClientRect();
+  const view = pane.getBoundingClientRect();
+  const delta = listRevealDelta({ itemTop: item.top, itemBottom: item.bottom, viewTop: view.top, viewBottom: view.bottom });
+  if (delta !== 0) pane.scrollTop += delta;
+}
+
 function currentListIndex(buttons) {
   const focused = buttons.indexOf(document.activeElement);
   if (focused >= 0) return focused;
@@ -621,10 +636,14 @@ function installRoomListKeyboardNav() {
     state.listFocusRoomId = nextRoomId;
     if (action === 'preview') {
       // 2분할: 오른쪽에 바로 열고 작성창에 커서. 작성창에서 다시 Page Up/Down이면 다음 방으로.
-      openRoom(buttons[next].dataset.roomId);
+      // 커서가 작성창에 있으니 목록은 저절로 스크롤되지 않는다 — 옮겨간 행이 가려져 있을 때만 목록을 따라 내린다.
+      openRoom(nextRoomId);
+      revealRoomInList(nextRoomId);
       return;
     }
-    buttons[next].focus();
+    // 단일 pane 목록: 포커스만 옮기되 스크롤은 같은 규칙(보이면 그대로, 가려졌을 때만 가장자리에 맞춤)으로 한다.
+    buttons[next].focus({ preventScroll: true });
+    revealRoomInList(nextRoomId);
   });
 }
 
