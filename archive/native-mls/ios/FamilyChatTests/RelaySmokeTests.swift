@@ -7,6 +7,9 @@
 // xcodebuild 는 `TEST_RUNNER_` 접두 환경변수를 접두 없이 테스트 프로세스에 넘긴다. 둘 다 없으면 건너뛴다(일반 PR·로컬).
 // 시나리오는 IntegrationTests 와 같은 `TwoDeviceScenario`(초대→참여→양방향→릴레이 중단/재시작→정확 바이트 200→commit 위반 정지).
 import XCTest
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import FamilyMLSCore
 @testable import FamilyChat
 
