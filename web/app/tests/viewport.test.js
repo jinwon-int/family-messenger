@@ -14,16 +14,43 @@ test('keyboardState: 창 높이와 보이는 영역 차가 임계 이상이면 �
   assert.deepEqual(keyboardState(), { open: false, height: null });
 });
 
+const listenable = (obj) => {
+  const em = new EventEmitter();
+  return Object.assign(obj, { addEventListener: em.on.bind(em), removeEventListener: em.off.bind(em), emit: em.emit.bind(em) });
+};
 function fakeEnv({ innerHeight = 844, viewportHeight = 844, offsetTop = 0 } = {}) {
-  const viewport = Object.assign(new EventEmitter(), { height: viewportHeight, offsetTop });
-  viewport.addEventListener = viewport.on;
-  viewport.removeEventListener = viewport.off;
+  const viewport = listenable({ height: viewportHeight, offsetTop });
   const scrolls = [];
-  const win = { innerHeight, scrollY: 0, visualViewport: viewport, scrollTo: (x, y) => scrolls.push([x, y]) };
+  const win = listenable({ innerHeight, scrollY: 0, visualViewport: viewport, scrollTo: (x, y) => { scrolls.push([x, y]); win.scrollY = 0; } });
   const vars = new Map();
   const root = { dataset: {}, style: { setProperty: (k, v) => vars.set(k, v), removeProperty: (k) => vars.delete(k) } };
-  return { win, doc: { documentElement: root }, viewport, root, vars, scrolls };
+  const doc = listenable({ documentElement: root });
+  return { win, doc, viewport, root, vars, scrolls };
 }
+
+test('installViewportFit: 작성창 포커스 뒤 지연 재보정 — 마지막 resize 뒤에 Safari가 문서를 밀어도 되돌린다; 해제하면 타이머도 멈춘다', async () => {
+  const env = fakeEnv();
+  const dispose = installViewportFit({ win: env.win, doc: env.doc, settleDelays: [5, 20] });
+  env.viewport.height = 508;
+  env.viewport.emit('resize'); // 열림, 아직 밀리지 않음
+  assert.deepEqual(env.scrolls, []);
+  env.doc.emit('focusin');
+  env.win.scrollY = 336; // resize 뒤에 Safari가 문서를 밀었다
+  await new Promise((r) => setTimeout(r, 12));
+  assert.deepEqual(env.scrolls, [[0, 0]], '첫 지연 보정이 되돌린다');
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(env.scrolls, [[0, 0]], '이미 0이면 다시 스크롤하지 않는다');
+  // window scroll 이벤트로도 되돌린다.
+  env.win.scrollY = 100;
+  env.win.emit('scroll');
+  assert.deepEqual(env.scrolls, [[0, 0], [0, 0]]);
+  // 해제 뒤 예약된 타이머는 실행되지 않는다.
+  env.doc.emit('focusin');
+  dispose();
+  env.win.scrollY = 50;
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(env.scrolls.length, 2);
+});
 
 test('installViewportFit: 키보드가 열리면 --shell-height와 data-keyboard를 두고 밀린 문서를 맨 위로, 닫히면 걷는다', () => {
   const env = fakeEnv();
