@@ -47,7 +47,9 @@ test('바는 헤더 아래·타임라인 위에 내 마지막 말·답장 수·�
   assert.match(q(app, '.last-sent .kicker').textContent, /내 마지막 말/);
   assert.match(q(app, '.last-sent .chip').textContent, /답장 1/);
   assert.equal(bar.getAttribute('role'), 'region');
-  assert.equal(q(app, '.last-sent .toggle').getAttribute('aria-expanded'), 'true');
+  // 기본은 접힘(오너 2026-10-07): 처음 들어온 방은 라벨·칩 한 줄만.
+  assert.equal(bar.dataset.collapsed, 'true');
+  assert.equal(q(app, '.last-sent .toggle').getAttribute('aria-expanded'), 'false');
 });
 
 test('같은 데이터로 다시 그리면 바 노드가 유지되고, 내 말이 바뀌면 교체된다', () => {
@@ -100,24 +102,43 @@ test('누르면 그 말풍선으로 스크롤하고 잠깐 밝힌다; 불러온 
   assert.match(q(app, '.last-sent .hint').textContent, /불러온 대화 밖/);
 });
 
-test('접기는 방별로 기억되고 재렌더·재마운트 뒤에도 유지된다', () => {
+test('기본은 접힘; 펼침은 방별로 기억되고 재렌더·재마운트 뒤에도 유지된다', () => {
   const app = root();
   ui.renderShell(app, props());
+  assert.equal(q(app, '.last-sent').dataset.collapsed, 'true', '기본이 접힘이 아니다');
   const toggle = q(app, '.last-sent .toggle');
   toggle.click();
-  assert.equal(q(app, '.last-sent').dataset.collapsed, 'true');
-  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
-  assert.equal(globalThis.localStorage.getItem('familychat:lastSent:collapsed:!a:x'), '1');
+  assert.equal(q(app, '.last-sent').dataset.collapsed, 'false');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  assert.equal(globalThis.localStorage.getItem('familychat:lastSent:collapsed:!a:x'), '0');
   ui.renderShell(app, props());
-  assert.equal(q(app, '.last-sent').dataset.collapsed, 'true', '같은 방 재렌더가 접기를 풀었다');
-  // 방 화면을 새로 만들어도(목록으로 갔다 돌아옴) 접힌 채다.
+  assert.equal(q(app, '.last-sent').dataset.collapsed, 'false', '같은 방 재렌더가 펼침을 접었다');
+  // 방 화면을 새로 만들어도(목록으로 갔다 돌아옴) 펼친 채다.
   document.body.innerHTML = '<div id="app"></div>';
   const app2 = document.getElementById('app');
   ui.renderShell(app2, props());
-  assert.equal(q(app2, '.last-sent').dataset.collapsed, 'true');
-  q(app2, '.last-sent .toggle').click();
   assert.equal(q(app2, '.last-sent').dataset.collapsed, 'false');
+  q(app2, '.last-sent .toggle').click();
+  assert.equal(q(app2, '.last-sent').dataset.collapsed, 'true');
   assert.equal(globalThis.localStorage.getItem('familychat:lastSent:collapsed:!a:x'), null);
+});
+
+test('예전에 접힘(\'1\')으로 저장된 방은 그대로 접힘, 저장소가 막혀도 접힘', () => {
+  const app = root();
+  globalThis.localStorage.setItem('familychat:lastSent:collapsed:!a:x', '1');
+  ui.renderShell(app, props());
+  assert.equal(q(app, '.last-sent').dataset.collapsed, 'true');
+  const app2 = root();
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, get() { throw new Error('blocked'); } });
+  try {
+    ui.renderShell(app2, props());
+    assert.equal(q(app2, '.last-sent').dataset.collapsed, 'true');
+    q(app2, '.last-sent .toggle').click();
+    assert.equal(q(app2, '.last-sent').dataset.collapsed, 'false', '저장소가 막혀도 이번 화면에서는 펼쳐져야 한다');
+  } finally {
+    Object.defineProperty(globalThis, 'localStorage', original);
+  }
 });
 
 test('내 말이 없으면 바를 그리지 않고, 생기면 타임라인 위에 끼우고, 없어지면 뗀다', () => {
