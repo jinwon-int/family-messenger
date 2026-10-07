@@ -53,4 +53,10 @@ enum Strings {
     static func pushFailed(_ reason: String) -> String { "등록 실패: \(reason) — 잠시 뒤 다시 시도합니다" }
     static let logout = "로그아웃"
     static let logoutHint = "세션만 지웁니다. 이 기기의 암호화 상태는 유지되어 다시 로그인하면 같은 기기로 이어집니다."
+
+    // 알림 확장(NSE, §12-D) — 대체 문구는 앱 번들 `ko.lproj/Localizable.strings` 의 `NEW_MESSAGE` 와 같아야 한다
+    // (NSE 가 죽거나 시간을 넘기면 iOS 가 원래 alert 의 loc-key 를 그 파일로 푼다).
+    static let pushFallbackBody = "새 메시지가 도착했습니다"
+    static let pushPhoto = "「사진」"
+    static let pushFile = "「파일」"
 }

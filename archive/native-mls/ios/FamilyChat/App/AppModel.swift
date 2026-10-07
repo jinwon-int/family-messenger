@@ -43,12 +43,20 @@ final class AppModel: ObservableObject {
         var syncConfiguration = RoomSyncEngine.Configuration()
         /// 저장소를 열지 못했다(App Group·Keychain 등) — bootstrap 이 곧바로 fatal 로 간다.
         var startupFailure: String?
+        /// 릴레이 자격증명 영속(Keychain, NSE 와 공유 — 결정 D8). 기본 = 메모리(테스트).
+        var credentials: CredentialStoring = InMemoryCredentialStore()
     }
 
     @Published private(set) var phase: Phase = .starting
     @Published private(set) var deviceId: DeviceID = ""
     @Published private(set) var fingerprint: String = ""
-    @Published private(set) var credential: RelayCredential?
+    /// 바뀔 때마다 저장소에 반영한다(로그인 = 저장, 로그아웃·401 = 삭제) — NSE 가 같은 세션으로 릴레이를 읽는다.
+    @Published private(set) var credential: RelayCredential? {
+        didSet {
+            guard credential != oldValue else { return }
+            if let credential { try? deps.credentials.save(credential) } else { deps.credentials.delete() }
+        }
+    }
     @Published private(set) var rooms: [RoomRecord] = []
     @Published private(set) var lastError: String?
     /// 등록 대기 화면이 보여 줄 JSON 의 원본(운영자 CLI 입력).
@@ -69,6 +77,8 @@ final class AppModel: ObservableObject {
     /// 내 메시지는 서버가 seq 를 준 순간 여기서 MessageStore 에 쓴다. 앱이 그 전에 끝나면 평문은 사라지고
     /// (바이트는 outbox 에 남아 같은 바이트로 나간다) 내 화면에만 안 보인다 — 상대는 정상 수신.
     private var unconfirmed: [String: (room: RoomID, text: String)] = [:]
+    /// 방별 마지막으로 본 영속 커서 — NSE 가 사이에 처리했는지 감지(전면 복귀 시 화면 갱신).
+    private var seenCursors: [RoomID: Int64] = [:]
     private let serial = SerialAsyncQueue()
     let push: PushRegistrar
 
@@ -103,6 +113,8 @@ final class AppModel: ObservableObject {
             fingerprint = try engine.fingerprint()
             registration = try EnrollmentRequest(engine: engine, subject: "")
             rooms = try deps.messageStore.rooms()
+            // 지난 실행의 세션(Keychain)으로 이어 간다 — 만료됐으면 첫 동기화의 401 이 로그인 화면으로 보낸다.
+            if credential == nil, let saved = deps.credentials.load() { login(saved) }
             phase = credential == nil ? .needsLogin : .needsEnrollment
         } catch {
             phase = .fatal("\(error)")
@@ -177,7 +189,12 @@ final class AppModel: ObservableObject {
             for record in try deps.messageStore.rooms() {
                 let sync = try syncEngine(record.room)
                 let passes = try await sync.syncAll()
-                if passes.contains(where: { !$0.inserted.isEmpty || !$0.rejected.isEmpty }) { messagesRevision += 1 }
+                // 커서가 움직였으면(이 프로세스든 NSE 든 새로 처리·기록했다) 화면이 다시 읽는다.
+                let cursor = try deps.cursors.cursor(room: record.room)
+                if passes.contains(where: { !$0.inserted.isEmpty || !$0.rejected.isEmpty }) || seenCursors[record.room] != cursor {
+                    messagesRevision += 1
+                }
+                seenCursors[record.room] = cursor
                 if sync.registrationPending != nil { pending = true; continue }
                 if sync.haltedReason == nil {
                     let outcomes = try await sync.flushOutbox()

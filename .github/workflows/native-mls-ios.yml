@@ -193,12 +193,12 @@ jobs:
             -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
             -derivedDataPath build CODE_SIGNING_ALLOWED=NO test 2>&1 | tee "$RUNNER_TEMP/xcodebuild-test.log" | tail -n 60
           echo "simulator_test_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Integration scenario lines (real engine · live stores · in-memory relay)
+      - name: Integration scenario lines (real engine · live stores · in-memory relay · NSE §12-D)
         if: always()
         run: |
           log="$RUNNER_TEMP/xcodebuild-test.log"
           test -f "$log" || exit 0
-          grep -E '\[scenario\]|Test Case .*(Integration|RelaySmoke).*(passed|failed|skipped)|Executed [0-9]+ tests|\*\* TEST (SUCCEEDED|FAILED) \*\*' "$log" \
+          grep -E '\[scenario\]|\[xproc\]|\[nse\]|Test Case .*(Integration|RelaySmoke|CrossProcess|NotificationProcessor|PushRegistration).*(passed|failed|skipped)|Executed [0-9]+ tests|\*\* TEST (SUCCEEDED|FAILED) \*\*' "$log" \
             | tee -a "$GITHUB_STEP_SUMMARY" || true
       - name: App size
         working-directory: archive/native-mls/ios

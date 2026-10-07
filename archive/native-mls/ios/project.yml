@@ -29,6 +29,8 @@ targets:
       - framework: ../ios-ffi/out/FamilyMLS.xcframework
         embed: false
       - package: FamilyMLSCore
+      # 알림 확장(§12-D) — 앱 번들 PlugIns/ 에 들어간다
+      - target: FamilyChatNSE
     info:
       path: FamilyChat/Info.plist
       properties:
@@ -56,6 +58,51 @@ targets:
         FC_PUSH_TOPIC: $(PRODUCT_BUNDLE_IDENTIFIER)
         FC_APS_ENVIRONMENT: development
         # 정적 라이브러리 + 헤더 모듈맵: 모듈 검색 경로를 xcframework 헤더로
+        OTHER_LDFLAGS: ["-lc++"]
+  # 알림 확장(NSE, §12-D · #271 §8): 앱과 같은 App Group 의 MLS 상태·messages.db 를 같은 flock 규칙으로 열어
+  # 푸시(room·seq)를 복호화해 알림을 바꾼다. 처리 코드는 앱 소스를 그대로 공유한다(아래 개별 파일 — UIKit 의존 없음).
+  # Bundle ID 는 앱 ID 의 하위(…ios.nse), App Group·릴레이 주소는 앱과 **같은 값**을 빌드 설정으로 준다(xcodebuild 인자·xcconfig).
+  FamilyChatNSE:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: FamilyChatNSE
+      - path: FamilyChat/Push/NotificationProcessor.swift
+      - path: FamilyChat/Sync/SharedStorage.swift
+      - path: FamilyChat/Sync/SeededEngineFactory.swift
+      - path: FamilyChat/Engine/FfiEngine.swift
+      - path: FamilyChat/Engine/DeviceIdentity.swift
+      - path: FamilyChat/App/Strings.swift
+      - path: ../ios-ffi/out/swift/FamilyMLS.swift
+        group: Generated
+    dependencies:
+      - framework: ../ios-ffi/out/FamilyMLS.xcframework
+        embed: false
+      - package: FamilyMLSCore
+    info:
+      path: FamilyChatNSE/Info.plist
+      properties:
+        CFBundleDisplayName: 패밀리챗 알림
+        CFBundleDevelopmentRegion: ko
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+        FamilyChatRelayURL: $(FC_RELAY_URL)
+        FamilyChatAppGroup: $(FC_APP_GROUP)
+        # 봇 actor(쉼표 구분) — 알림 제목에 🤖
+        FamilyChatAgentActors: $(FC_AGENT_ACTORS)
+    # 서명 빌드용 자리 — 무서명 CI 에는 적용되지 않는다.
+    entitlements:
+      path: FamilyChatNSE/FamilyChatNSE.entitlements
+      properties:
+        com.apple.security.application-groups: [$(FC_APP_GROUP)]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.familychat.ios.nse
+        TARGETED_DEVICE_FAMILY: "1"
+        FC_RELAY_URL: ""
+        FC_APP_GROUP: ""
+        FC_AGENT_ACTORS: ""
         OTHER_LDFLAGS: ["-lc++"]
   FamilyChatTests:
     type: bundle.unit-test

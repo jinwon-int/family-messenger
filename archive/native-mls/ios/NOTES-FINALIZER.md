@@ -43,6 +43,11 @@
   대안(방마다 새 키) 기각: 체인에 기기당 키 1개라 두 번째 방부터 지문 불일치.
 - D3 스모크 = macOS CI 잡에서 Go 릴레이(`-access-mode disabled`, 임시 포트, `mktemp -d`) + 작은 Python 감독자(stop/start 제어 포트) +
   시뮬레이터 XCTest(`TEST_RUNNER_` 환경변수로 URL 전달, 없으면 XCTSkip).
+- **§12-D NSE(PR B `finalizer/nse-271`, session `seoseo-push-d-20261007`)** — 전체 계획·결정 D4~D8 은 PR A(`finalizer/push-registration-271`)의
+  이 파일 끝 "§12-D" 절. B 의 요점: D4 Core `RoomSyncEngine` 교차 프로세스 정합(트랜잭션 안 커서 재확인·저장된 seq 복호화 생략·커서 단조,
+  `decryptedBy`) · D8 공유 저장(봉인 키·자격증명 Keychain 접근 그룹 = App Group, 기기 ID = App Group defaults) · `NotificationProcessor`
+  (App 과 같은 `RoomSyncEngine`, 실패는 전부 "새 메시지가 도착했습니다") · NSE 타깃 `FamilyChatNSE` · 앱 번들 `NEW_MESSAGE` 현지화.
+  플랫폼 무관 공유 코드는 `FamilyChat/Push/`·`FamilyChat/Sync/`(linux-smoke 가 복사), UIKit/UserNotifications 는 `FamilyChatNSE/` 에만.
 
 ## 진행
 

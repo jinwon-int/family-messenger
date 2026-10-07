@@ -19,32 +19,38 @@ final class ScenarioDevice {
     let directory: URL
     let lossy: LossyTransport
     let sealKey: SymmetricKey
+    /// 엔진 팩토리 감싸기(복호화 계수 등, §12-D 교차 프로세스 테스트). nil = 그대로.
+    let wrapFactory: ((MlsEngineFactory) -> MlsEngineFactory)?
     private(set) var deps: AppModel.Dependencies
     private(set) var model: AppModel
 
-    init(id: DeviceID, base: RelayTransport, root: URL) {
+    init(id: DeviceID, base: RelayTransport, root: URL, wrapFactory: ((MlsEngineFactory) -> MlsEngineFactory)? = nil) {
         self.id = id
         self.directory = root.appendingPathComponent(id, isDirectory: true)
         self.lossy = LossyTransport(base: base)
         self.sealKey = SymmetricKey(size: .bits256)
-        let made = Self.make(id: id, directory: directory, lossy: lossy, sealKey: sealKey)
+        self.wrapFactory = wrapFactory
+        let made = Self.make(id: id, directory: directory, lossy: lossy, sealKey: sealKey, wrapFactory: wrapFactory)
         self.deps = made.deps
         self.model = made.model
     }
 
-    private static func make(id: DeviceID, directory: URL, lossy: LossyTransport, sealKey: SymmetricKey) -> (deps: AppModel.Dependencies, model: AppModel) {
+    private static func make(id: DeviceID, directory: URL, lossy: LossyTransport, sealKey: SymmetricKey,
+                             wrapFactory: ((MlsEngineFactory) -> MlsEngineFactory)?) -> (deps: AppModel.Dependencies, model: AppModel) {
         var config = AppModel.Dependencies.LiveConfiguration()
         config.baseDirectory = directory
         config.sealer = ChaChaPolySealer(key: sealKey)   // Keychain 대신 정적 키(무서명 시뮬레이터) — 봉인 경로는 같다
+        config.credentials = InMemoryCredentialStore()     // 기기마다 따로(시뮬레이터 Keychain 을 테스트끼리 공유하지 않게)
         config.identityProvider = { id }
         var deps = AppModel.Dependencies.live(config)
         deps.makeTransport = { _ in lossy }
+        if let wrapFactory { deps.engineFactory = wrapFactory(deps.engineFactory) }
         return (deps: deps, model: AppModel(dependencies: deps))
     }
 
     /// 앱 재시작: 같은 디렉터리·같은 봉인 키로 저장소와 모델을 새로 연다.
     func relaunch() {
-        let made = Self.make(id: id, directory: directory, lossy: lossy, sealKey: sealKey)
+        let made = Self.make(id: id, directory: directory, lossy: lossy, sealKey: sealKey, wrapFactory: wrapFactory)
         deps = made.deps
         model = made.model
     }

@@ -75,31 +75,21 @@ import Security
 
 /// Keychain 32B 봉인 키. 첫 사용에 `SecRandomCopyBytes` 로 생성 후 GenericPassword 로 저장,
 /// 이후 읽기만 한다. 두 스토어 인스턴스(App·NSE)가 같은 키를 공유하는 경로다.
+/// App 과 NSE 는 앱 ID 가 달라 기본 접근 그룹이 다르다 — 공유하려면 `accessGroup`(App Group ID 또는 keychain-access-groups 항목)을
+/// 준다(파이널라이저 §12-D 결정 D8). nil = 기본 그룹(이 프로세스 전용).
 public final class KeychainSealKeySource: FileSealKeySource {
     private let service: String
     private let account: String
+    private let accessGroup: String?
 
-    public init(service: String = "fm.mls.state-seal", account: String = "seal-v1") {
+    public init(service: String = "fm.mls.state-seal", account: String = "seal-v1", accessGroup: String? = nil) {
         self.service = service
         self.account = account
+        self.accessGroup = accessGroup
     }
 
     public func key32() throws -> Data {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecAttrSynchronizable as String: false,
-        ]
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecSuccess, let data = item as? Data, data.count == 32 {
-            return data
-        }
-        guard status == errSecItemNotFound else {
-            throw StateStoreError.sealing("keychain read failed (status \(status))")
-        }
+        if let existing = try read() { return existing }
 
         var key = Data(count: 32)
         let rc = key.withUnsafeMutableBytes { buffer -> Int32 in
@@ -117,11 +107,34 @@ public final class KeychainSealKeySource: FileSealKeySource {
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
             kSecAttrSynchronizable as String: false,
         ]
-        let addStatus = SecItemAdd(add as CFDictionary, nil)
+        var withGroup = add
+        if let accessGroup { withGroup[kSecAttrAccessGroup as String] = accessGroup }
+        let addStatus = SecItemAdd(withGroup as CFDictionary, nil)
+        if addStatus == errSecDuplicateItem, let raced = try read() {
+            return raced   // 다른 프로세스(App·NSE)가 같은 순간 먼저 만들었다 — 그 키를 쓴다
+        }
         guard addStatus == errSecSuccess else {
             throw StateStoreError.sealing("keychain add failed (status \(addStatus))")
         }
         return key
+    }
+
+    private func read() throws -> Data? {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecAttrSynchronizable as String: false,
+        ]
+        if let accessGroup { query[kSecAttrAccessGroup as String] = accessGroup }
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecSuccess, let data = item as? Data, data.count == 32 { return data }
+        guard status == errSecItemNotFound else {
+            throw StateStoreError.sealing("keychain read failed (status \(status))")
+        }
+        return nil
     }
 }
 #endif

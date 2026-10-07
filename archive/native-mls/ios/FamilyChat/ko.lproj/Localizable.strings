@@ -1,0 +1,3 @@
+/* 패밀리챗 — 시스템이 푸는 알림 키(§12-D). 릴레이 APNs 페이로드는 alert.loc-key = NEW_MESSAGE 만 싣는다(평문·발신자 없음).
+   NSE 가 내용을 바꾸지 못한 경우(시간·메모리 초과로 종료) iOS 가 이 문구를 보인다 — Strings.pushFallbackBody 와 같아야 한다. */
+"NEW_MESSAGE" = "새 메시지가 도착했습니다";
