@@ -982,3 +982,57 @@ test('sync authentication errors reach the app with the SDK error object', async
   sdk.clients[0].emit('sync', 'ERROR', 'SYNCING', {error});
   assert.deepEqual(events, [{state: 'ERROR', data: {error}}]);
 });
+
+// "내 마지막 말" 바의 오늘 내 말 인덱스(오너 2026-10-07): sender 필터 /messages 로 내 것만 받고, 타임라인에는 넣지 않는다.
+test('fetchSentSince: sender·type 필터로 뒤로 읽고, sinceTs 이전이 나오면 멈추며, 수정 봉투·삭제·남의 것은 거른다', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  const me = CREDS.userId;
+  const raw = (id, ts, extra = {}) => ({ event_id: id, sender: me, type: 'm.room.message', origin_server_ts: ts, content: { msgtype: 'm.text', body: id }, ...extra });
+  const pages = [
+    { chunk: [raw('$5', 500), raw('$4', 400, { sender: '@mom:example.com' }), raw('$edit', 350, { content: { 'm.relates_to': { rel_type: 'm.replace', event_id: '$5' } } }), raw('$3', 300, { redacted: true })], end: 't2' },
+    { chunk: [raw('$2', 200), raw('$old', 50), raw('$older', 10)], end: 't3' },
+    { chunk: [raw('$never', 5)], end: null },
+  ];
+  const requests = [];
+  const decrypted = [];
+  adapter.client.createMessagesRequest = async (roomId, from, limit, dir, filter) => {
+    requests.push({ roomId, from, limit, dir, filter: filter.getRoomTimelineFilterComponent().toJSON() });
+    return pages[requests.length - 1];
+  };
+  adapter.client.getEventMapper = () => (ev) => ({
+    getId: () => ev.event_id, getTs: () => ev.origin_server_ts, getSender: () => ev.sender, getType: () => ev.type,
+    isRedacted: () => ev.redacted === true, getRelation: () => ev.content?.['m.relates_to'] ?? null,
+  });
+  adapter.client.decryptEventIfNeeded = async (ev) => { decrypted.push(ev.getId()); };
+  const events = await adapter.fetchSentSince('!r:example.com', { sinceTs: 100, limit: 4, maxPages: 3 });
+  assert.deepEqual(events.map((e) => e.getId()), ['$5', '$2'], '내 것·sinceTs 이후·원본만');
+  assert.equal(requests.length, 2, '경계를 만난 페이지에서 멈춘다(세 번째 페이지는 요청하지 않는다)');
+  assert.deepEqual(requests[0], { roomId: '!r:example.com', from: null, limit: 4, dir: 'b', filter: { senders: [me], types: ['m.room.message', 'm.room.encrypted'] } });
+  assert.equal(requests[1].from, 't2', '다음 페이지는 end 토큰부터');
+  assert.deepEqual(decrypted, ['$5', '$edit', '$3', '$2'], '내 것은 복호화를 시도한다(거르기는 그 뒤)');
+});
+
+test('fetchSentSince: maxPages 상한, 빈 페이지·토큰 없음에서 멈춤, 첫 페이지 실패는 throw, 미지원이면 []', async () => {
+  const sdk = fakeSdk();
+  const adapter = await createFamilyClient({ ...CREDS, sdkLoader: async () => sdk });
+  const me = CREDS.userId;
+  const raw = (id, ts) => ({ event_id: id, sender: me, type: 'm.room.message', origin_server_ts: ts, content: { msgtype: 'm.text', body: id } });
+  adapter.client.getEventMapper = () => (ev) => ({ getId: () => ev.event_id, getTs: () => ev.origin_server_ts, getSender: () => ev.sender, isRedacted: () => false, getRelation: () => null });
+  let calls = 0;
+  adapter.client.createMessagesRequest = async () => { calls += 1; return { chunk: [raw(`$${calls}`, 1000)], end: `t${calls}` }; };
+  assert.deepEqual((await adapter.fetchSentSince('!r:example.com', { sinceTs: 0, maxPages: 2 })).map((e) => e.getId()), ['$1', '$2']);
+  assert.equal(calls, 2, 'maxPages에서 멈춘다');
+  calls = 0;
+  adapter.client.createMessagesRequest = async () => { calls += 1; return calls === 1 ? { chunk: [raw('$1', 1000)], end: null } : { chunk: [], end: 'x' }; };
+  assert.equal((await adapter.fetchSentSince('!r:example.com', { sinceTs: 0 })).length, 1);
+  assert.equal(calls, 1, 'end 토큰이 없으면 멈춘다');
+  calls = 0;
+  adapter.client.createMessagesRequest = async () => { calls += 1; if (calls === 1) return { chunk: [raw('$1', 1000)], end: 't' }; throw new Error('network'); };
+  assert.equal((await adapter.fetchSentSince('!r:example.com', { sinceTs: 0 })).length, 1, '둘째 페이지 실패는 받은 만큼만');
+  adapter.client.createMessagesRequest = async () => { throw new Error('network'); };
+  await assert.rejects(adapter.fetchSentSince('!r:example.com', { sinceTs: 0 }), /network/);
+  delete adapter.client.createMessagesRequest;
+  assert.deepEqual(await adapter.fetchSentSince('!r:example.com', { sinceTs: 0 }), []);
+  assert.deepEqual(await adapter.fetchSentSince('!r:example.com', { sinceTs: NaN }), []);
+});

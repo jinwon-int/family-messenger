@@ -35,9 +35,11 @@ async function app(t, initial = [], { failReceipts = false } = {}) {
   const warnings = [];
   window.console.warn = (...args) => warnings.push(args.map(String).join(' '));
   const client = sdk.createClient({ baseUrl: 'https://matrix.example.test', userId: me, accessToken: 'synthetic', timelineSupport: true });
-  // 영수증 POST만 기록한다(로컬 에코 영수증은 SDK가 그대로 남긴다).
+  // 영수증 POST만 기록한다(로컬 에코 영수증은 SDK가 그대로 남긴다). 다른 요청("내 마지막 말" 바의
+  // sender 필터 /messages 등)은 빈 응답으로 흘려보낸다.
   const receipts = [];
   client.http.authedRequest = async (method, path) => {
+    if (!path.includes('/receipt/')) return { chunk: [], end: null };
     receipts.push(decodeURIComponent(path));
     if (failReceipts) throw new Error('synthetic network failure');
     return {};

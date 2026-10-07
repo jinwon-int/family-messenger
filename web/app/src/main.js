@@ -18,7 +18,7 @@ import { disablePush, enablePush, hasMatchingPusher, isIosDevice, pushAvailabili
 import { renderHold, selectionInRenderedArea } from './render-guard.js';
 import { enterCaretMode, exitCaretMode, isCaretMode } from './timeline-caret.js';
 import { createReadReceiptSender, isRoomUnread } from './read-receipts.js';
-import { recentSentSummaries } from './last-sent.js';
+import { recentSentSummaries, indexSummaries, mergeSentSummaries, dayStart, collapsedKey } from './last-sent.js';
 import * as ui from './ui.js';
 
 const root = document.getElementById('app');
@@ -203,8 +203,11 @@ function renderCurrent() {
           onTyping: (hasText) => handleComposerTyping(state.currentRoomId, hasText),
           typing: typingIndicator(typingNames(state.typing, current.summary.roomId, { myUserId: state.myUserId }), strings.chat.typing),
           // 대화창 상단 "내 마지막 말" 바(#300) — 화면 복사본에서 매 렌더 계산(삭제·수정·로컬 에코 확정 반영).
-          // 펼치면 그 아래에 이전 내 말 2개까지(합계 3개, 오너 2026-10-07) — 누르면 그 말풍선으로 이동.
-          ...lastSentProps(current.timeline),
+          // 펼치면 그 아래에 오늘 내 말 전부(타임라인 + 서버 sender 필터 인덱스, 오너 2026-10-07) — 누르면 그 말풍선으로 이동.
+          ...lastSentProps(current),
+          sentLoading: current.sentIndex?.loading === true,
+          onExpandLastSent: () => ensureSentIndex(state.currentRoomId),
+          onLocate: (eventId) => locateEvent(state.currentRoomId, eventId),
         }
       : null,
     box: {
@@ -894,11 +897,85 @@ function openRooms() {
   if (returning) restoreRoomListFocus({ force: true });
 }
 
-/** 바에 넘길 내 최근 말: 가장 최근 1개는 바 본문, 그 이전 최대 2개는 펼침 목록. */
-const RECENT_SENT_LIMIT = 3;
-function lastSentProps(timeline) {
-  const recent = recentSentSummaries(timeline, { labels: PREVIEW_LABELS(), limit: RECENT_SENT_LIMIT });
-  return { lastSent: recent[0] ?? null, earlierSent: recent.slice(1) };
+// --- "내 마지막 말" 바: 오늘 내 말 인덱스(오너 2026-10-07) ---
+// 바가 보는 범위가 화면에 불러온 타임라인(초기 sync 20개 + 한 페이지)뿐이라 아침에 한 말이 안 보였다.
+// 서버에 sender 필터 /messages 로 "내 메시지만" 한 번 받아(남의 메시지는 전송되지 않음) 방별 메모리에
+// 둔다 — 저장소에는 쓰지 않는다(E2EE 평문). 펼칠 때만 가져오고, 불러온 범위에 내 말이 없어 바가
+// 아예 안 뜨는 방만 열 때 한 번 가져온다. 날짜가 바뀌면 다시 받는다.
+const SENT_INDEX_LIMIT = 50; // 펼친 목록 최대 항목 수 = 서버 요청 limit
+const SENT_INDEX_MAX_PAGES = 3; // 오늘 내 말이 150개를 넘으면 그 뒤는 포기한다
+const LOCATE_MAX_PAGES = 8; // 범위 밖 내 말을 찾으러 당기는 이전 페이지 상한(×30개)
+const SENT_INDEX_RETRY_MS = 60_000; // 서버 요청이 실패한 방은 이 시간 뒤에야 다시 묻는다(오프라인에서 방마다 반복 요청 방지)
+
+/** 바에 넘길 내 말: 가장 최근 1개는 바 본문, 오늘 나머지는 펼침 목록(타임라인 + 인덱스 병합). */
+function lastSentProps(entry) {
+  const labels = PREVIEW_LABELS();
+  const fromTimeline = recentSentSummaries(entry?.timeline, { labels, limit: SENT_INDEX_LIMIT + 1 });
+  const index = entry?.sentIndex;
+  const since = dayStart();
+  const fromIndex = index && index.day === since ? indexSummaries(index.items, { labels, limit: SENT_INDEX_LIMIT }) : [];
+  return mergeSentSummaries(fromTimeline, fromIndex, { sinceTs: since, limit: SENT_INDEX_LIMIT });
+}
+
+/** 오늘 내 말 인덱스를 방·날짜별로 한 번만 가져온다. 이미 있거나 받는 중이면 아무것도 하지 않는다. */
+async function ensureSentIndex(roomId) {
+  const entry = roomId ? state.rooms.get(roomId) : null;
+  if (!entry || typeof state.client?.fetchSentSince !== 'function') return;
+  const since = dayStart();
+  if (entry.sentIndex && entry.sentIndex.day !== since) entry.sentIndex = null; // 날짜가 바뀌었다
+  const previous = entry.sentIndex;
+  if (previous?.loading) return;
+  if (previous?.done && !(previous.failedAt && Date.now() - previous.failedAt >= SENT_INDEX_RETRY_MS)) return;
+  entry.sentIndex = { day: since, items: previous?.items ?? [], loading: true, done: false, failedAt: null };
+  if (roomId === state.currentRoomId) scheduleRender();
+  let items = previous?.items ?? [];
+  let failedAt = null;
+  try {
+    const events = await state.client.fetchSentSince(roomId, { sinceTs: since, limit: SENT_INDEX_LIMIT, maxPages: SENT_INDEX_MAX_PAGES });
+    items = events.map((event) => timelineEntry(event, entry.summary));
+  } catch (error) {
+    failedAt = Date.now();
+    console.warn('sent index unavailable', error?.message ?? error);
+  }
+  // 받는 사이 날짜가 바뀌었으면 버린다 — 다음 펼침이 다시 받는다.
+  if (entry.sentIndex?.day === since) entry.sentIndex = { day: since, items, loading: false, done: true, failedAt };
+  if (roomId === state.currentRoomId) scheduleRender();
+}
+
+/** 방을 열 때: 불러온 범위에 내 말이 없으면(바가 안 뜸) 또는 바가 펼쳐져 있으면 인덱스를 미리 가져온다. */
+function primeSentIndex(roomId) {
+  const entry = state.rooms.get(roomId);
+  if (!entry) return;
+  let expanded = false;
+  try { expanded = globalThis.localStorage?.getItem(collapsedKey(roomId)) === '0'; } catch (_) { expanded = false; }
+  const hasMine = recentSentSummaries(entry.timeline, { labels: PREVIEW_LABELS(), limit: 1 }).length > 0;
+  if (expanded || !hasMine) ensureSentIndex(roomId);
+}
+
+/**
+ * 범위 밖 내 말로 이동하기 위해 이전 페이지를 한도 안에서 당긴다. 찾으면 그려 둔 뒤 true.
+ * 사용자가 누를 때만 타임라인이 커진다.
+ */
+async function locateEvent(roomId, eventId) {
+  const entry = roomId ? state.rooms.get(roomId) : null;
+  if (!entry || typeof eventId !== 'string') return false;
+  const has = () => entry.timeline.some((item) => item.eventId === eventId);
+  let waits = 0;
+  for (let page = 0; page < LOCATE_MAX_PAGES && !has(); page++) {
+    if (entry.hasMore === false || state.currentRoomId !== roomId) break;
+    if (entry.loadingEarlier) {
+      // 자동 로드(방 열기·맨 위 스크롤)가 이미 받는 중이면 페이지 예산을 쓰지 않고 잠깐 기다린다(최대 3초).
+      if (waits++ >= 20) break;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      page--;
+      continue;
+    }
+    const added = await loadEarlier(roomId);
+    if (added === 0 && entry.hasMore === false) break;
+  }
+  if (!has()) return false;
+  if (state.currentRoomId === roomId) { cancelScheduledRender(); renderCurrent(); }
+  return true;
 }
 
 function openRoom(roomId) {
@@ -916,6 +993,8 @@ function openRoom(roomId) {
   renderCurrent();
   // 방을 열었는데 보이는 메시지가 적으면 이전 페이지를 한 번 자동으로 채운다.
   if (entry && entry.timeline.length < OPEN_MIN_MESSAGES && entry.hasMore !== false) loadEarlier(roomId);
+  // "내 마지막 말" 바: 내 말이 범위에 없거나 바가 펼쳐져 있던 방은 오늘 내 말 인덱스를 미리 받는다.
+  primeSentIndex(roomId);
   const input = root.querySelector('.composer textarea[name=body]');
   if (input && entry?.draft != null) {
     input.value = entry.draft;

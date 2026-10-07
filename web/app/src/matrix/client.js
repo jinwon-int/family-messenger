@@ -488,6 +488,53 @@ export class ClientAdapter {
   }
 
   /**
+   * 내가 보낸 메시지만 서버에서 골라 받는다("내 마지막 말" 바의 오늘 목록, 오너 2026-10-07).
+   * `/messages?dir=b` 에 sender·type 필터를 붙여 남의 메시지는 전송조차 되지 않게 한다(Tuwunel은
+   * RoomEventFilter의 senders/types를 서버에서 적용한다). 받은 이벤트는 SDK 타임라인에 넣지 않고
+   * 복호화만 시도해 돌려준다 — 화면 타임라인·DOM은 커지지 않는다.
+   * `sinceTs`보다 오래된 이벤트가 나오면 그 페이지에서 멈추고, 페이지 수는 `maxPages`로 막는다.
+   * @param {string} roomId
+   * @param {{sinceTs: number, limit?: number, maxPages?: number}} options
+   * @returns {Promise<Array<object>>} 최신순 SDK 이벤트(내 것·sinceTs 이후만). 실패·미지원이면 [].
+   */
+  async fetchSentSince(roomId, { sinceTs, limit = 50, maxPages = 3 } = {}) {
+    const client = this.client;
+    if (typeof roomId !== 'string' || !Number.isFinite(sinceTs) || typeof client?.createMessagesRequest !== 'function') return [];
+    const me = this.myUserId;
+    // createMessagesRequest는 Filter 인스턴스의 timeline 컴포넌트만 JSON으로 쓴다 — 같은 모양만 맞춘다.
+    const timelineFilter = {
+      getRoomTimelineFilterComponent: () => ({ toJSON: () => ({ senders: [me], types: ['m.room.message', 'm.room.encrypted'] }) }),
+    };
+    const mapper = typeof client.getEventMapper === 'function' ? client.getEventMapper() : (raw) => raw;
+    const out = [];
+    let token = null;
+    for (let page = 0; page < Math.max(1, maxPages); page++) {
+      let res;
+      try {
+        res = await client.createMessagesRequest(roomId, token, limit, 'b', timelineFilter);
+      } catch (error) {
+        if (page === 0) throw error; // 아무것도 못 받았다 — 호출자가 잠시 뒤 다시 시도한다
+        break; // 일부는 받았다 — 그만큼만 돌려준다
+      }
+      const chunk = Array.isArray(res?.chunk) ? res.chunk : [];
+      let reachedBoundary = false;
+      for (const raw of chunk) {
+        const event = mapper(raw);
+        const ts = event?.getTs?.() ?? raw?.origin_server_ts ?? 0;
+        if (ts < sinceTs) { reachedBoundary = true; break; }
+        if (event?.getSender?.() !== me) continue; // 서버가 필터를 무시해도 내 것만 남긴다.
+        try { await client.decryptEventIfNeeded?.(event); } catch (_) { /* 복호화 실패는 엔트리에서 표시된다 */ }
+        if (event?.isRedacted?.()) continue;
+        if (event?.getRelation?.()?.rel_type === 'm.replace') continue; // 수정 봉투는 원본이 아니다
+        out.push(event);
+      }
+      token = res?.end ?? null;
+      if (reachedBoundary || chunk.length === 0 || !token) break;
+    }
+    return out;
+  }
+
+  /**
    * Download an attachment through the authenticated media endpoint and
    * decrypt it when it was sent end-to-end encrypted. Returns a Blob typed
    * with the attachment mimetype. `fetchFn`/`decrypt` are injectable for tests.
