@@ -46,7 +46,7 @@
 
 ## 진행
 
-1. [ ] NOTES(이 파일) — ① 브랜치 첫 커밋
-2. [ ] ① CONTRACTS §2.1 3건 + §6 파이널라이저 재배정 기록 → PR
+1. [x] NOTES(이 파일) — ① 브랜치 첫 커밋 `5845842`
+2. [x] ① CONTRACTS §2.1 3건 + §6 파이널라이저 재배정 기록 → PR
 3. [ ] ② 통합: SeededEngineFactory · Dependencies.live(File*/Keychain/URLSession) · AppModel 방 동기화 · 초대/키패키지 · listRooms 구현 · 테스트 → PR
 4. [ ] ③ 스모크: 감독자 스크립트 · RelaySmokeTests · 워크플로 → PR, 결과로 #276 Closes 여부 판단

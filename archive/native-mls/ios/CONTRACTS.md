@@ -30,12 +30,17 @@
 ### 2.1 와이어(동결, server.go 2026-10-05 main)
 | 호출 | 요청 | 응답 | 오류 |
 |---|---|---|---|
-| `POST /v2/rooms/{r}/keypackages` | `KeyPackagePost{device, packages[{ref=sha256hex, bytes}]}` | `KeyPackagesResponse{stored, duplicates}` | 401/403 |
-| `GET /v2/rooms/{r}/keypackages?…` | 소비하는 기기·상대 기기 (쿼리명은 L3 가 server.go `handleConsumeKeyPackage` 로 확정해 `URLSessionRelayTransport` 에 고정) | `StoredKeyPackage{ref, bytes, expires_at}` 또는 404 | |
-| `POST /v2/rooms/{r}/events` | `EventPost{device, client_id, kind, epoch, revision?, group_id?, targets?, members?, bytes}` | 201 `EventPostResponse{seq, epoch, revision, duplicate:false}` · 200 `duplicate:true`(정확 바이트 재전송) | 409 `{"error":"cas_mismatch",epoch,revision}` → `RelayError.cas` · 403 `not_a_member`/`device_subject_mismatch`/`room_closed` → `.refused` |
-| `GET /v2/rooms/{r}/events?device=&after=&limit=&ack=` | | `EventsPage{epoch, revision, events[StoredEvent], next_after, cursor?, first_seq?, members?}` | |
-| `POST /v2/rooms/{r}/close` | | 204 | |
-| 인증 | `RelayCredential.accessCookie` → `Cookie: CF_Authorization=…` / `.bearer` → `Cf-Access-Jwt-Assertion` | 401 → `.unauthorized` | |
+| `POST /v2/rooms/{r}/keypackages` | `KeyPackagePost{device, packages[{ref=sha256hex, bytes}]}` | `KeyPackagesResponse{stored, duplicates}` | 401/403 · 410 `room_closed` |
+| `GET /v2/rooms/{r}/keypackages?device=<패키지 소유 기기>&consumer=<소비하는 나>` | (L3 가 server.go `handleConsumeKeyPackage` 로 확정, `consumer` 가 JWT subject 에 묶임) | `StoredKeyPackage{ref, bytes, expires_at}` | 404 `no_live_key_package` → `nil` · 410 `room_closed` |
+| `POST /v2/rooms/{r}/events` | `EventPost{device, client_id, kind, epoch, revision?, group_id?, targets?, members?, bytes}` | 201 `EventPostResponse{seq, epoch, revision, duplicate:false}` · 200 `duplicate:true`(정확 바이트 재전송) | 409 `{"error":"cas_mismatch",epoch,revision}` → `RelayError.cas` · 403 `not_a_member`/`device_subject_mismatch` → `.refused` · **410 `room_closed`** → `.refused(code:"room_closed", status:410)` |
+| `GET /v2/rooms/{r}/events?device=&after=&limit=&ack=` | | `EventsPage{epoch, revision, events[StoredEvent], next_after, cursor?, first_seq?, members?}` | 404 `no_such_room` · 410 `room_closed` |
+| `POST /v2/rooms/{r}/close?device=` | | **200 `{"closed":true}`**(이미 닫힌 방도 200, 멱등) | 404 `no_such_room` · 403 `not_a_member`(멤버십 강제 시) · 이후 모든 계약 라우트 410 `room_closed` |
+| 인증 | `RelayCredential.accessCookie` → `Cookie: CF_Authorization=…` (**CF 엣지 경유 전용** — 엣지가 쿠키를 검증해 `Cf-Access-Jwt-Assertion` 을 주입한다) / `.bearer` → `Cf-Access-Jwt-Assertion` 직접 | 401 → `.unauthorized` | 릴레이(origin)는 **헤더만** 읽는다(`auth.go bearerToken`: `Cf-Access-Jwt-Assertion` → `Authorization: Bearer`). 엣지 없는 직결(로컬·격리 스모크)에서 쿠키는 무시된다 → `.bearer` 를 쓴다 |
+
+> **2026-10-07 정정(파이널라이저, #282 기록 3건)**: 위 표의 close·`room_closed`·쿠키 행은 동결 당시 문서가 서버와 달랐다.
+> 서버(`server.go handleCloseRoom`·`fail(410)`, `auth.go bearerToken`)와 Python 스모크(`tests/native_v2_relay_smoke.py` j: close 200 → 410)가
+> 기준이고 서버는 바꾸지 않는다 — 멱등 close 200·410 Gone 은 의도된 동작이고, origin 이 쿠키를 직접 읽게 하면 브라우저 자동 첨부로 CSRF 면이 생긴다.
+> iOS 구현 영향 없음: `URLSessionRelayTransport.closeRoom` 은 2xx 를 성공으로, `RoomSyncEngine` 은 상태코드가 아니라 코드 `room_closed` 로 판정한다.
 
 ### 2.2 클라이언트 규칙(L3 가 구현, 테스트로 고정)
 - 수신 처리 순서(relay-app §3 = 봇): 내 commit echo → `merge_pending`; Welcome(참여 전) → `join`; 타인 commit → `stage_commit` → **commit 정책 검사 ①~④**(`web/commit-policy.js` 를 Swift 로 포팅, 픽스처 공유) → `merge_staged` / 위반 `discard_staged` + ⛔ 정지(`RoomRecord.haltedReason`); application → `decrypt` → `MessageStore.insert`.
@@ -80,5 +85,6 @@ DDL v1 동결(`schema_version`). `messages(room, seq)` PK, `rooms.halted_reason`
 
 ## 6. 기록된 결정
 - 2026-10-05 오너: 3레인 병렬(1번). §14-2 릴레이 확장 허용. 인증 기본 A(쿠키), 파일럿 B 폴백 허용. Bundle ID 미정(설정값).
-- 파이널라이저 = bangtong(오너가 바꿀 수 있음).
+- 파이널라이저 = bangtong(오너가 바꿀 수 있음). → **2026-10-07 오너 재배정: 파이널라이저 = seoseo(서서)**("다른 노드에서 하자 서서로 하자"). 작업 노트 `NOTES-FINALIZER.md`.
+- 2026-10-07 파이널라이저: §2.1 close 200·`room_closed` 410·쿠키는 엣지 경유 전용으로 정정(서버 기준, #282 기록). 서버 무변경.
 - 2026-10-05 오너 배정: **L1 = soonwook(순욱) · L2 = gwakga(곽가) · L3 = nosuk(노숙)**. 레인 이슈 #274 / #275 / #276. L2 는 제안이 그대로 채택된 것이며 고정은 아니다(Linux 로컬 컴파일이 가능한 유일한 레인).
