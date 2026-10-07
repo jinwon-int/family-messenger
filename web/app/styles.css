@@ -569,6 +569,27 @@ main.shell[data-view="room"] .pane-list { display: none; }
 .last-sent[data-collapsed="true"] .jump { padding: var(--space-1) var(--space-3); gap: 0; }
 /* 기본이 접힘(오너 2026-10-07)이라, 접힌 채 눌러 범위 밖일 때의 안내(.hint, 평소 [hidden])는 숨기지 않는다. */
 .last-sent[data-collapsed="true"] .preview { display: none; }
+/* 접힘: "❝ 내 마지막 말 · <내 말 한 줄…> · 답장 N · 시간" — 라벨·칩은 그대로, 가운데 내 말만 줄어들며 말줄임. */
+.last-sent .kicker .label { flex: none; }
+.last-sent .kicker .inline-preview { display: none; }
+.last-sent[data-collapsed="true"] .kicker { flex-wrap: nowrap; align-self: stretch; min-width: 0; }
+.last-sent[data-collapsed="true"] .kicker .chip { flex: none; white-space: nowrap; }
+.last-sent[data-collapsed="true"] .kicker .inline-preview {
+  display: block;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--text-s);
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--ls-fg);
+}
+/* 휴대폰 폭에서는 시간 칩이 한 줄을 다 먹어 짧은 말도 잘린다 — 접힘에서만 시간을 빼고 "라벨·내 말·답장"만 둔다(펼치면 보인다). */
+@media (max-width: 899px) {
+  .last-sent[data-collapsed="true"] .kicker .chip.time { display: none; }
+}
 @media (prefers-color-scheme: dark) {
   /* 다크 배경(#0f1420)·카드(#171d2c) 위에서는 한 톤 밝은 슬레이트로 떠 보이게 한다. */
   .last-sent { background: linear-gradient(135deg, #2f3a5e, #262f4d); border-color: #46538a; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45); }

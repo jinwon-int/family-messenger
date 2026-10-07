@@ -123,6 +123,30 @@ test('기본은 접힘; 펼침은 방별로 기억되고 재렌더·재마운트
   assert.equal(globalThis.localStorage.getItem('familychat:lastSent:collapsed:!a:x'), null);
 });
 
+test('라벨 줄은 "내 마지막 말 → 내 말 한 줄 → 답장/시간" 순서다(접힘에서 보이는 한 줄)', () => {
+  const app = root();
+  ui.renderShell(app, props());
+  const kids = [...q(app, '.last-sent .kicker').children].map((n) => n.className);
+  assert.deepEqual(kids.slice(0, 3), ['label', 'inline-preview', 'chip']);
+  assert.equal(q(app, '.last-sent .kicker .inline-preview').textContent, '7시에 가요');
+  assert.equal(q(app, '.last-sent .kicker .label').textContent, '내 마지막 말');
+});
+
+test('styles.css: 접힘에서만 한 줄 미리보기를 말줄임으로 보이고, 펼침에서는 숨긴다', async () => {
+  const { readFileSync } = await import('node:fs');
+  const css = readFileSync(new URL('../../styles.css', import.meta.url), 'utf-8');
+  assert.match(css, /\.last-sent \.kicker \.inline-preview \{ display: none; \}/);
+  const rule = /\.last-sent\[data-collapsed="true"\] \.kicker \.inline-preview \{([^}]*)\}/.exec(css)?.[1] ?? '';
+  assert.match(rule, /display: block/);
+  assert.match(rule, /white-space: nowrap/);
+  assert.match(rule, /text-overflow: ellipsis/);
+  assert.match(rule, /min-width: 0/);
+  assert.match(css, /\.last-sent\[data-collapsed="true"\] \.kicker \{[^}]*flex-wrap: nowrap/);
+  // 휴대폰 폭 접힘에서는 시간 칩을 빼 "라벨·내 말·답장"만 둔다.
+  const narrow = /@media \(max-width: 899px\) \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? '';
+  assert.match(narrow, /\.last-sent\[data-collapsed="true"\] \.kicker \.chip\.time \{ display: none; \}/);
+});
+
 test('예전에 접힘(\'1\')으로 저장된 방은 그대로 접힘, 저장소가 막혀도 접힘', () => {
   const app = root();
   globalThis.localStorage.setItem('familychat:lastSent:collapsed:!a:x', '1');
