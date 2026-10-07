@@ -813,7 +813,8 @@ function lastSentBar(lastSent, roomId, list) {
         hint.hidden = found;
       },
     },
-    el('span', { class: 'kicker' }, t.label, chips),
+    // 접힘일 때는 라벨과 칩 사이에 내 말을 한 줄(말줄임)로 보여 준다(오너 2026-10-07). 펼침에서는 CSS로 숨기고 아래 .preview가 보인다.
+    el('span', { class: 'kicker' }, el('span', { class: 'label' }, t.label), el('span', { class: 'inline-preview' }, lastSent.text), chips),
     el('span', { class: 'preview' }, lastSent.text),
     hint,
   );
