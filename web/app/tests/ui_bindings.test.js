@@ -252,7 +252,7 @@ test('styles.css: 셸 높이는 var(--shell-height, 100dvh)이고 키보드 열�
   assert.match(css, /\nbody \{[^}]*min-height: var\(--shell-height, 100dvh\)/);
   assert.match(css, /#app \{ min-height: var\(--shell-height, 100dvh\)/);
   assert.doesNotMatch(css, /height: 100dvh;/, '100dvh 고정이 남아 있으면 키보드가 열려도 셸이 줄지 않는다');
-  const rule = /html\[data-keyboard="open"\] \.composer-wrap \{ padding-bottom: 0; \}/;
+  const rule = /html\[data-keyboard\] \.composer-wrap \{ padding-bottom: 0; \}/; // "open"(화면 키보드)·"bar"(외부 키보드 보조 바) 모두
   assert.match(css, rule);
   const main = readFileSync(join(SRC, 'main.js'), 'utf-8');
   assert.match(main, /import \{ installViewportFit \} from '\.\/viewport\.js'/);

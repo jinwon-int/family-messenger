@@ -741,9 +741,10 @@ main.shell[data-view="room"] .pane-list { display: none; }
   gap: var(--space-2);
   border-top: 1px solid var(--line);
 }
-/* 화면 키보드가 열린 동안(viewport.js가 html[data-keyboard="open"]): 키보드가 홈 인디케이터를 덮으므로
- * 안전 영역 여백 없이 작성창을 키보드 바로 위에 붙인다(오너 2026-10-07). 가로 규칙보다 뒤·높은 특이성. */
-html[data-keyboard="open"] .composer-wrap { padding-bottom: 0; }
+/* 화면 키보드가 열린 동안(viewport.js가 html[data-keyboard="open"]) 또는 외부 키보드의 입력 보조 바가 보이는
+ * 동안(html[data-keyboard="bar"]): 키보드·바가 홈 인디케이터를 덮으므로 안전 영역 여백 없이 작성창을 그 바로
+ * 위에 붙인다(오너 2026-10-07). 가로 규칙보다 뒤·높은 특이성. */
+html[data-keyboard] .composer-wrap { padding-bottom: 0; }
 .attach-bar { display: flex; gap: var(--space-2); flex-wrap: wrap; }
 .attach-bar[hidden] { display: none; }
 .attach-bar button { min-height: 40px; font-size: var(--text-s); }
