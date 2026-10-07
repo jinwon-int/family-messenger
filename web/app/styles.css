@@ -555,7 +555,8 @@ main.shell[data-view="room"] .pane-list { display: none; }
   color: var(--ls-fg);
 }
 .last-sent .hint { font-size: var(--text-xs); font-weight: 700; color: #ffd7cf; }
-/* 펼친 바 아래 "이전 내 말" 목록(최대 2개, 오너 2026-10-07): 한 줄 말줄임 + 답장/시간 칩, 누르면 그 말풍선로 이동. */
+/* 펼친 바 아래 "오늘 내 말" 목록(오너 2026-10-07): 한 줄 말줄임 + 답장/시간 칩, 누르면 그 말풍선로 이동.
+   오늘 것은 전부 들어오므로 4줄 높이 안에서 스크롤한다 — 바가 대화창을 밀어내지 않게. */
 .last-sent .earlier {
   list-style: none;
   margin: 0;
@@ -564,7 +565,11 @@ main.shell[data-view="room"] .pane-list { display: none; }
   flex-direction: column;
   gap: 2px;
   border-top: 1px solid rgba(255, 255, 255, 0.12);
+  max-height: 9.6em;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
+.last-sent .earlier .loading { padding: 6px 0; font-size: var(--text-xs); font-weight: 700; color: var(--ls-fg-3); }
 .last-sent .earlier-jump {
   width: 100%;
   display: flex;
