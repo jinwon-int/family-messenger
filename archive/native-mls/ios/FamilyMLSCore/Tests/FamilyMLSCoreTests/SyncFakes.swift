@@ -303,6 +303,7 @@ final class SyncHarness {
     let relay = FakeRelay()
     var clientSeq = 0
     var configuration = RoomSyncEngine.Configuration()
+    var subject = "cf-sub-me"
     private(set) var sync: RoomSyncEngine!
 
     init(me: DeviceID = "me-iphone-aaaaaa") throws {
@@ -314,6 +315,7 @@ final class SyncHarness {
     func makeEngine() throws -> RoomSyncEngine {
         try RoomSyncEngine(room: room, identity: me, engineFactory: factory, stateStore: store, outbox: outbox,
                            cursors: cursors, messages: messages, transport: relay, configuration: configuration,
+                           enrollmentSubject: subject,
                            makeClientId: { [unowned self] in self.clientSeq += 1; return "\(self.me)-c\(self.clientSeq)" })
     }
 

@@ -15,6 +15,10 @@
 // 송신(`send`): 동기화 → 트랜잭션 { encrypt → save } → OutboxStore.enqueue(정확 바이트) → POST(밖).
 //   409 cas_mismatch → 옛 항목 reconciled → clear_pending(대기 commit 이 있으면) → 동기화 → **새 client_id 로 재암호화** 1회.
 //   네트워크 실패 → 항목은 pending 으로 남고 `flushOutbox` 가 **같은 바이트**로 재시도(201 또는 200 duplicate).
+//
+// 등록 대기: 403 `device_subject_mismatch`(정책 체인에 아직 없는 기기) → ⛔ 정지가 아니라 `registrationPending`
+//   (등록 JSON = `EnrollmentRequest`). 영속하지 않고 다음 폴링마다 다시 묻는다 — 운영자가 등록하면 그 GET 이 성공해 풀린다.
+//   송신 중이면 outbox 항목은 pending 으로 남아 등록 뒤 같은 바이트로 나간다.
 import Foundation
 
 /// ⛔ 정지 사유 문자열. commit 정책 거부는 `CommitRefusalReason.rawValue` 를 그대로 쓴다(웹·봇과 같은 토큰).
@@ -36,6 +40,8 @@ public enum SyncError: Error, Equatable {
     case notJoined
     /// 409 → 동기화 → 재암호화 뒤에도 다시 409.
     case casRetryExhausted
+    /// 릴레이가 이 기기를 아직 받지 않는다(403 device_subject_mismatch) — 운영자 등록 대기.
+    case registrationPending
 }
 
 /// `syncOnce` 1회의 결과(화면·로그·테스트용).
@@ -49,6 +55,8 @@ public struct SyncPass: Equatable {
     public var rejected: [Int64] = []
     public var joined: Bool = false
     public var halted: String?
+    /// 403 device_subject_mismatch — 운영자 등록 대기(`RoomSyncEngine.registrationPending`).
+    public var registrationPending: Bool = false
     /// 같은 페이지 크기만큼 받았다 — 더 있을 수 있다.
     public var hasMore: Bool = false
 }
@@ -87,6 +95,7 @@ public final class RoomSyncEngine {
     private let messages: MessageStore
     private let transport: RelayTransport
     private let makeClientId: () -> String
+    private let enrollmentSubject: String
 
     /// 마지막으로 저장(또는 로드)한 엔진과 그 generation. 다른 작성자(NSE)가 사이에 쓰면 generation 이 달라져 다시 import 한다.
     private var cached: (generation: UInt64, engine: MlsEngine)?
@@ -97,12 +106,16 @@ public final class RoomSyncEngine {
     public private(set) var revision: Int64 = 0
     public private(set) var joined = false
     public private(set) var haltedReason: String?
+    /// nil 이 아니면 "운영자 등록 대기" 화면에 이 JSON 을 보여 준다(`EnrollmentRequest.json()`).
+    public private(set) var registrationPending: EnrollmentRequest?
 
     public init(room: RoomID, identity: DeviceID, engineFactory: MlsEngineFactory, stateStore: MlsStateStore,
                 outbox: OutboxStore, cursors: CursorStore, messages: MessageStore, transport: RelayTransport,
                 configuration: Configuration = Configuration(),
+                enrollmentSubject: String = "",
                 makeClientId: (() -> String)? = nil) throws {
         self.room = room; self.identity = identity; self.configuration = configuration
+        self.enrollmentSubject = enrollmentSubject
         self.engineFactory = engineFactory; self.stateStore = stateStore
         self.outbox = outbox; self.cursors = cursors; self.messages = messages; self.transport = transport
         self.makeClientId = makeClientId ?? { "\(identity)-\(UUID().uuidString.prefix(8).lowercased())" }
@@ -120,15 +133,17 @@ public final class RoomSyncEngine {
         do {
             return try stateStore.withExclusive(room: room, timeout: configuration.lockTimeout) { tx in
                 let engine: MlsEngine
+                var dirty = false
                 if let cached, cached.generation == tx.generation {
                     engine = cached.engine
                 } else if let bytes = try tx.load() {
                     engine = try engineFactory.importState(identity: identity, bytes: bytes)
                 } else {
-                    // 상태 없음: 새 기기. 키 패키지 발행(상태 시드)은 호출자 몫 — 시드가 없으면 Welcome join 은 엔진이 거부한다.
+                    // 상태 없음: 새 기기. 첫 트랜잭션에서 바로 저장한다 — 안 그러면 매번 새 서명키가 생긴다(등록 JSON 이 흔들림).
+                    // 키 패키지 발행(상태 시드)은 호출자 몫 — 시드가 없으면 Welcome join 은 엔진이 거부한다.
                     engine = try engineFactory.create(identity: identity)
+                    dirty = true
                 }
-                var dirty = false
                 let result = try body(engine, &dirty)
                 if dirty {
                     try tx.save(try engine.exportState())
@@ -183,6 +198,7 @@ public final class RoomSyncEngine {
             return try handleReadRefusal(code: code, status: status, ack: ack, cursor: cursor)
         }
         if let ack { ackSent = ack }
+        registrationPending = nil   // 릴레이가 받았다 = 등록됨
 
         var outcome = try transaction { engine, dirty in
             try apply(page: page, cursor: cursor, engine: engine, dirty: &dirty)
@@ -205,11 +221,27 @@ public final class RoomSyncEngine {
             ackDisabled = true
             return SyncPass(cursor: cursor, joined: joined)
         }
+        if status == 403 && code == RelayErrorCode.deviceSubjectMismatch.rawValue {
+            try markRegistrationPending()
+            return SyncPass(cursor: cursor, joined: joined, registrationPending: true)
+        }
         if code == RelayErrorCode.roomClosed.rawValue {
             try persistRoom(halted: SyncHaltReason.roomClosed)
             return SyncPass(cursor: cursor, joined: joined, halted: SyncHaltReason.roomClosed)
         }
         throw RelayError.refused(code: code, status: status)
+    }
+
+    /// 등록 JSON 을 엔진의 공개 정보로 만든다(트랜잭션 안: 새 기기면 이때 상태가 저장된다).
+    private func markRegistrationPending() throws {
+        registrationPending = try transaction { engine, _ in try EnrollmentRequest(engine: engine, subject: enrollmentSubject) }
+    }
+
+    private static func isRegistrationRefusal(_ error: Error) -> Bool {
+        if case RelayError.refused(let code, let status) = error {
+            return status == 403 && code == RelayErrorCode.deviceSubjectMismatch.rawValue
+        }
+        return false
     }
 
     private enum CommitVerdict { case applied, rejected, refused(String), removed }
@@ -363,6 +395,7 @@ public final class RoomSyncEngine {
     public func send(plaintext: Data) async throws -> SendOutcome {
         if let haltedReason { throw SyncError.halted(haltedReason) }
         try await syncAll()
+        if registrationPending != nil { throw SyncError.registrationPending }   // ratchet 을 쓰기 전에
         var retried = false
         while true {
             if let haltedReason { throw SyncError.halted(haltedReason) }
@@ -380,6 +413,10 @@ public final class RoomSyncEngine {
                 try await syncAll()
             } catch RelayError.network {
                 return .queued(clientId: entry.clientId)
+            } catch where Self.isRegistrationRefusal(error) {
+                // 바이트는 유효하다 — pending 으로 두고 등록 뒤 flushOutbox 가 같은 바이트로 보낸다.
+                try markRegistrationPending()
+                throw SyncError.registrationPending
             }
         }
     }
@@ -396,6 +433,10 @@ public final class RoomSyncEngine {
                 try outbox.mark(room: room, clientId: entry.clientId, status: .reconciled)
                 outcomes.append(.reconciled(clientId: entry.clientId))
             } catch RelayError.network {
+                outcomes.append(.queued(clientId: entry.clientId))
+                break
+            } catch where Self.isRegistrationRefusal(error) {
+                try markRegistrationPending()
                 outcomes.append(.queued(clientId: entry.clientId))
                 break
             }
@@ -436,7 +477,8 @@ public final class RoomSyncEngine {
         while !Task.isCancelled {
             do {
                 try await syncAll()
-                if haltedReason == nil { try await flushOutbox() }
+                // 등록 대기 중에는 outbox 를 건드리지 않는다(같은 403 만 받는다) — 폴링은 계속해 등록되면 풀린다.
+                if haltedReason == nil && registrationPending == nil { try await flushOutbox() }
             } catch {
                 onError(error)
             }
