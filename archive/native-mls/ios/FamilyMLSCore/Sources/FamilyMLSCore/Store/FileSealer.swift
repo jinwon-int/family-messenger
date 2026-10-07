@@ -39,7 +39,7 @@ public final class ChaChaPolySealer: FileStateSealing {
     }
 
     public func seal(_ plaintext: Data) throws -> Data {
-        ChaChaPoly.seal(plaintext, using: key).combined
+        try ChaChaPoly.seal(plaintext, using: key).combined
     }
 
     public func open(_ sealed: Data) throws -> Data {
