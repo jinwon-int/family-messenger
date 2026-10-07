@@ -1,10 +1,13 @@
 // 격리 릴레이 스모크 (#276 §2.4 두 번째 수용 기준) — 실 MLS 엔진(ios-ffi) + 실 HTTP(URLSessionRelayTransport)
 // + 실 Go 릴레이(`-access-mode disabled`, loopback 임시 포트, 임시 데이터 디렉터리).
 //
-// 릴레이와 감독자(`scripts/relay_smoke_supervisor.py`)는 CI 스텝(macOS) 또는 로컬 컨테이너가 띄우고 주소를 환경변수로 준다:
+// 실행 위치: native-mls-ios.yml `relay-smoke-linux`(scripts/linux-smoke.sh — 같은 ios-ffi 파사드를 Linux 호스트로 빌드).
+// Go 릴레이가 Linux 전용(devicepolicy 의 Openat/Renameat)이고 macOS 러너엔 Docker 가 없어 시뮬레이터에서는 돌지 않는다
+// (시뮬레이터는 같은 시나리오를 메모리 릴레이로 — IntegrationTests). 릴레이와 감독자(`scripts/relay_smoke_supervisor.py`)
+// 주소는 환경변수로 받는다:
 //   FC_SMOKE_RELAY_URL    예 http://127.0.0.1:53781
 //   FC_SMOKE_CONTROL_URL  감독자 제어(POST /stop · /start)
-// xcodebuild 는 `TEST_RUNNER_` 접두 환경변수를 접두 없이 테스트 프로세스에 넘긴다. 둘 다 없으면 건너뛴다(일반 PR·로컬).
+// 둘 다 없으면 건너뛴다(시뮬레이터·일반 로컬). xcodebuild 로 돌릴 때는 `TEST_RUNNER_` 접두로 넘긴다.
 // 시나리오는 IntegrationTests 와 같은 `TwoDeviceScenario`(초대→참여→양방향→릴레이 중단/재시작→정확 바이트 200→commit 위반 정지).
 import XCTest
 #if canImport(FoundationNetworking)
@@ -37,7 +40,7 @@ final class RelaySmokeTests: XCTestCase {
         let env = ProcessInfo.processInfo.environment
         guard let relayRaw = env["FC_SMOKE_RELAY_URL"], let relayURL = URL(string: relayRaw),
               let controlRaw = env["FC_SMOKE_CONTROL_URL"], let controlURL = URL(string: controlRaw) else {
-            throw XCTSkip("FC_SMOKE_RELAY_URL / FC_SMOKE_CONTROL_URL not set — isolated relay smoke runs only in the CI smoke step")
+            throw XCTSkip("FC_SMOKE_RELAY_URL / FC_SMOKE_CONTROL_URL not set — isolated relay smoke runs in the relay-smoke-linux CI job")
         }
         // 격리 릴레이는 엣지가 없으므로 쿠키가 아니라 assertion 헤더(.bearer)로 직결한다(CONTRACTS §2.1). disabled 모드라 값은 검증되지 않는다.
         let transport = URLSessionRelayTransport(baseURL: relayURL, credential: .bearer("smoke"), requestTimeout: 10)

@@ -56,7 +56,10 @@
      `sender attribution rejected`(파사드 H1). AAD client_id = 기기 ID 로 수정, Core 99/99.
    - macOS CI 1차(run 37593437387): 앱 컴파일·AppModelTests 통과, 시나리오 ③ 실패(위 결함 — Linux 하네스와 동일),
      Keychain 테스트 skip(`-34018`, 무서명 시뮬레이터) → 무서명 빌드의 live() 는 봉인 키 실패로 fatal.
-4. [~] ③ 스모크(`finalizer/relay-smoke-276`): 감독자 스크립트 · RelaySmokeTests · 워크플로.
+4. [~] ③ 스모크(`finalizer/relay-smoke-276`, PR #322): 감독자 스크립트 · RelaySmokeTests · 워크플로.
+   - macOS 1차(run 37595162269) 실패: **Go 릴레이가 darwin 에서 빌드 불가**(`internal/devicepolicy` 의 `syscall.Openat`/`Renameat`).
+     서버 수정은 범위 밖(L2·보안 코드) → 스모크를 Linux 잡 `relay-smoke-linux`(`scripts/linux-smoke.sh`)로 옮김.
+     macOS 잡은 실 엔진 + live 저장소 + 메모리 릴레이 시나리오(IntegrationTests)만.
    - Linux 로컬(실 Rust 엔진 = ios-ffi host .a + uniffi Swift 바인딩, 실 Go 릴레이 -access-mode disabled, `--network none`
      감독자 컨테이너에 Swift 컨테이너 합류): `[relay-smoke] PASS ①~⑤`, `Executed 17 tests, with 0 failures`, 릴레이 기동 2회.
 
