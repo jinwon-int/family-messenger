@@ -2,16 +2,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { keyboardState, installViewportFit, KEYBOARD_MIN_PX } from '../src/viewport.js';
+import { keyboardState, installViewportFit, KEYBOARD_MIN_PX, BAR_MIN_PX } from '../src/viewport.js';
 
-test('keyboardState: 창 높이와 보이는 영역 차가 임계 이상이면 열림, 아니면 닫힘; 잘못된 입력은 판정 불가', () => {
-  assert.deepEqual(keyboardState({ innerHeight: 844, viewportHeight: 844 }), { open: false, height: 844 });
-  assert.deepEqual(keyboardState({ innerHeight: 844, viewportHeight: 800 }), { open: false, height: 800 }, '주소창·툴바 변화(44px)는 키보드가 아니다');
-  assert.deepEqual(keyboardState({ innerHeight: 844, viewportHeight: 508.4 }), { open: true, height: 508 }, '336px 줄면 키보드');
+test('keyboardState: 창 높이와 보이는 영역 차가 임계 이상이면 열림, 바 높이쯤이면 bar, 더 작으면 없음; 잘못된 입력은 판정 불가', () => {
+  assert.deepEqual(keyboardState({ innerHeight: 844, viewportHeight: 844 }), { open: false, mode: null, height: 844 });
+  assert.deepEqual(keyboardState({ innerHeight: 844, viewportHeight: 830 }), { open: false, mode: null, height: 830 }, '14px 흔들림은 무시');
+  assert.deepEqual(keyboardState({ innerHeight: 844, viewportHeight: 800 }), { open: false, mode: 'bar', height: 800 }, '44px 감소 = 외부 키보드의 입력 보조 바(화면 키보드는 아님)');
+  assert.deepEqual(keyboardState({ innerHeight: 844, viewportHeight: 508.4 }), { open: true, mode: 'keyboard', height: 508 }, '336px 줄면 키보드');
   assert.equal(keyboardState({ innerHeight: 844, viewportHeight: 844 - KEYBOARD_MIN_PX }).open, true, '임계와 같으면 열림');
-  assert.deepEqual(keyboardState({ innerHeight: 844, viewportHeight: 0 }), { open: false, height: null });
-  assert.deepEqual(keyboardState({ innerHeight: NaN, viewportHeight: 500 }), { open: false, height: null });
-  assert.deepEqual(keyboardState(), { open: false, height: null });
+  assert.equal(keyboardState({ innerHeight: 844, viewportHeight: 844 - BAR_MIN_PX }).mode, 'bar', '바 임계와 같으면 bar');
+  assert.equal(keyboardState({ innerHeight: 844, viewportHeight: 844 - KEYBOARD_MIN_PX + 1 }).mode, 'bar', '키보드 임계 직전까지는 bar');
+  assert.deepEqual(keyboardState({ innerHeight: 844, viewportHeight: 0 }), { open: false, mode: null, height: null });
+  assert.deepEqual(keyboardState({ innerHeight: NaN, viewportHeight: 500 }), { open: false, mode: null, height: null });
+  assert.deepEqual(keyboardState(), { open: false, mode: null, height: null });
 });
 
 const listenable = (obj) => {
@@ -73,15 +76,44 @@ test('installViewportFit: 키보드가 열리면 --shell-height와 data-keyboard
   env.viewport.emit('resize');
   assert.equal(env.vars.has('--shell-height'), false);
   assert.equal(env.root.dataset.keyboard, undefined);
-  // 주소창 변화(작은 차)는 열림이 아니다.
-  env.viewport.height = 800;
+  // 아주 작은 차(14px)는 아무것도 하지 않는다.
+  env.viewport.height = 830;
   env.viewport.emit('resize');
   assert.equal(env.root.dataset.keyboard, undefined);
+  assert.equal(env.vars.has('--shell-height'), false);
   // 해제하면 더 반응하지 않는다.
   dispose();
   env.viewport.height = 508;
   env.viewport.emit('resize');
   assert.equal(env.vars.has('--shell-height'), false);
+});
+
+test('installViewportFit: 외부(블루투스) 키보드 — 입력 보조 바만큼(수십 px) 줄면 data-keyboard="bar"로 셸을 그 높이에 맞추고, 사라지면 걷는다', () => {
+  const env = fakeEnv();
+  const dispose = installViewportFit({ win: env.win, doc: env.doc });
+  // 작성창 포커스: 화면 키보드는 없고 iOS 입력 보조 바(↑↓·완료)만 아래에 그려져 보이는 영역이 58px 줄었다.
+  env.viewport.height = 786;
+  env.viewport.offsetTop = 58;
+  env.viewport.emit('resize');
+  assert.equal(env.vars.get('--shell-height'), '786px', '바 높이만큼 셸을 줄여 작성창이 바 위에 오게 한다');
+  assert.equal(env.root.dataset.keyboard, 'bar', '화면 키보드 열림("open")과 구분한다');
+  assert.deepEqual(env.scrolls, [[0, 0]], '밀린 문서는 되돌린다');
+  // 바 상태에서 화면 키보드가 열리면(외부 키보드 분리) open으로 바뀐다.
+  env.viewport.height = 508;
+  env.viewport.offsetTop = 0;
+  env.viewport.emit('resize');
+  assert.equal(env.root.dataset.keyboard, 'open');
+  assert.equal(env.vars.get('--shell-height'), '508px');
+  // 다시 바만 남으면 bar.
+  env.viewport.height = 786;
+  env.viewport.emit('resize');
+  assert.equal(env.root.dataset.keyboard, 'bar');
+  // 포커스를 잃어 바가 사라지면 걷는다.
+  env.viewport.height = 844;
+  env.viewport.emit('resize');
+  assert.equal(env.vars.has('--shell-height'), false);
+  assert.equal(env.root.dataset.keyboard, undefined);
+  dispose();
 });
 
 test('installViewportFit: visualViewport가 없으면 아무것도 하지 않는 해제 함수', () => {
