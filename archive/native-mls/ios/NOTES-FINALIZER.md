@@ -47,6 +47,19 @@
 ## 진행
 
 1. [x] NOTES(이 파일) — ① 브랜치 첫 커밋 `5845842`
-2. [x] ① CONTRACTS §2.1 3건 + §6 파이널라이저 재배정 기록 → PR
-3. [ ] ② 통합: SeededEngineFactory · Dependencies.live(File*/Keychain/URLSession) · AppModel 방 동기화 · 초대/키패키지 · listRooms 구현 · 테스트 → PR
+2. [x] ① CONTRACTS §2.1 3건 + §6 파이널라이저 재배정 기록 → PR #320 (`e4d7391`)
+3. [~] ② 통합(`finalizer/integration-271`): SeededEngineFactory · Dependencies.live(File*/Keychain/URLSession) · AppModel 방 동기화 · 초대/키패키지 · listRooms 구현 · 테스트 → PR
+   - Linux: Core `Executed 97 tests, with 0 failures`(리포 전체 마운트 필수 — 픽스처 탐색이 리포 루트 기준).
+   - Linux 하네스(/tmp/fc-typecheck: Combine·CryptoKit·App Group·FFI 스텁)로 앱 비UI 소스 컴파일 + AppModelTests `Executed 12 tests, with 0 failures`.
+   - 발견: L3 는 내 echo 를 건너뛰어 **내 메시지가 MessageStore 에 안 들어감** → AppModel 이 서버 seq 확인 시 평문 기록(`recordOwn`).
 4. [ ] ③ 스모크: 감독자 스크립트 · RelaySmokeTests · 워크플로 → PR, 결과로 #276 Closes 여부 판단
+
+## 통합 메모 (②)
+
+- 새 파일: `FamilyChat/Sync/{SeededEngineFactory,RoomMembership}.swift`, `FamilyChat/App/LiveDependencies.swift`,
+  `FamilyChatTests/{IntegrationTests,Support/{InMemoryRelay,LossyTransport,TwoDeviceScenario}}.swift`.
+- AppModel: 방별 `RoomSyncEngine` 캐시 + `SerialAsyncQueue`(단일 호출자), 등록 판정 = `GET /v2/rooms` 403 device_subject_mismatch,
+  401 → needsLogin, 404(확장 ① 없음) → 아는 방만. `markEnrolled` 제거(등록 확인 버튼 = refresh).
+- live(): base = App Group(`FC_APP_GROUP`) → 없으면 Application Support/FamilyChat. 릴레이 URL = `FC_RELAY_URL`(Info.plist `FamilyChatRelayURL`). 실패 시 `startupFailure` → fatal.
+- 앱 측 방 만들기/참여/초대 **화면은 없음**(§12-E) — API 만(`createRoom`·`requestJoin`·`invite`).
+- 무서명 시뮬레이터 Keychain 은 테스트(`testKeychainSealKeyIsStableAcrossReads`)로 확인, -34018 이면 XCTSkip 으로 기록.

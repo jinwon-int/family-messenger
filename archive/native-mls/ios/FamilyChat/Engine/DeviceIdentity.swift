@@ -19,21 +19,7 @@ enum DeviceIdentity {
         return "\(actor)-iphone-\(hex)"
     }
 
-    /// 등록 정보(운영자 CLI `-enroll-first`/`-add-device` 입력과 같은 키). `subject` 는 CF Access `sub` — 로그인 후 채워진다.
-    struct Registration: Codable, Equatable {
-        var deviceId: String
-        var actor: String
-        var subject: String
-        var signingKey: String   // lowercase hex
-        var fingerprint: String  // sha256(signing key) hex
-        enum CodingKeys: String, CodingKey { case actor, subject, fingerprint; case deviceId = "device_id", signingKey = "signing_key" }
-
-        func json() -> String {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            return (try? encoder.encode(self)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-        }
-    }
+    // 등록 정보(운영자 CLI `-enroll-first`/`-add-device` 입력)는 Core `EnrollmentRequest` 하나로 만든다(AppModel.registration).
 
     static func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
 }

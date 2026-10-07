@@ -35,10 +35,15 @@ targets:
         CFBundleDisplayName: 패밀리챗
         CFBundleDevelopmentRegion: ko
         UILaunchScreen: {}
+        # 실제 호스트명·App Group 은 리포에 두지 않는다(CONTRIBUTING) — 빌드 설정으로 주입. 비면 앱이 안내한다.
+        FamilyChatRelayURL: $(FC_RELAY_URL)
+        FamilyChatAppGroup: $(FC_APP_GROUP)
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.familychat.ios
         TARGETED_DEVICE_FAMILY: "1"
+        FC_RELAY_URL: ""
+        FC_APP_GROUP: ""
         # 정적 라이브러리 + 헤더 모듈맵: 모듈 검색 경로를 xcframework 헤더로
         OTHER_LDFLAGS: ["-lc++"]
   FamilyChatTests:

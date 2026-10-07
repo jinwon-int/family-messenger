@@ -139,6 +139,12 @@ final class FakeMlsEngine: MlsEngine {
             state.receiveGeneration += 1
             var framed = ciphertext.dropFirst(Self.ciphertextMagic.count)
             framed = framed.dropLast()   // 송신 generation 바이트 제거
+            // 파사드 Device.decrypt 와 같은 귀속 검사(리뷰 H1, openmls-browser lib.rs decrypt_checked_inner):
+            // AAD client_id 는 MLS 로 인증된 발신 기기 ID 와 정확히 같아야 한다. 릴레이 client_id(dedup 키)와는 별개.
+            var at = 0
+            let sender = try Framing.readString(Data(framed), &at)
+            let aadClient = try Framing.readString(Data(framed), &at)
+            guard aadClient == sender else { throw EngineError.rejected("sender attribution rejected") }
             return Data(framed)
         default:
             throw EngineError.invalid("fake engine: \(method.rawValue) not modelled")

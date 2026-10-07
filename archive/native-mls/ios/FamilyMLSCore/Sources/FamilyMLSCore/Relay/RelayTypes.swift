@@ -80,7 +80,7 @@ public struct KeyPackagePost: Codable, Equatable {
 
 public struct KeyPackagesResponse: Codable, Equatable { public var stored: Int; public var duplicates: Int }
 
-/// GET /v2/rooms/{room}/keypackages?device=<소비하는 기기>&target=<상대 기기> — 원자 소비 (정확한 쿼리명은 L3 가 server.go 로 확인·고정)
+/// GET /v2/rooms/{room}/keypackages?device=<패키지 소유 기기>&consumer=<소비하는 나> — 원자 소비(server.go handleConsumeKeyPackage, CONTRACTS §2.1)
 public struct StoredKeyPackage: Codable, Equatable {
     public var ref: String
     public var bytes: Data

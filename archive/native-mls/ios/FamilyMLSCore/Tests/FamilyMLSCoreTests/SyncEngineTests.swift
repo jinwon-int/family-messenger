@@ -39,7 +39,7 @@ final class SyncEngineTests: XCTestCase {
 
     func testWelcomeJoinsThenDecryptsAndSkipsPreWelcomeEvents() async throws {
         let h = try invitedHarness()
-        let appSeq = h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: "\(alice)-1", text: "안녕"))
+        let appSeq = h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: alice, text: "안녕"))
 
         let pass = try await h.sync.syncOnce()
 
@@ -114,10 +114,10 @@ final class SyncEngineTests: XCTestCase {
 
     func testPolicyRefusalDiscardsStagedAndHaltsDurably() async throws {
         let h = try joinedHarness()
-        let appBefore = h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: "a1", text: "전"))
+        let appBefore = h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: alice, text: "전"))
         // 릴레이 row 는 alice 인데 MLS path leaf 는 carol → committer_mismatch
         h.relay.inject(device: alice, kind: .commit, bytes: FakeCommit(committer: alice, adds: [carol], path: [carol]).bytes)
-        h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: "a2", text: "후"))
+        h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: alice, text: "후"))
 
         let pass = try await h.sync.syncOnce()
 
@@ -186,8 +186,8 @@ final class SyncEngineTests: XCTestCase {
     func testUndecryptableApplicationIsRecordedAndSkipped() async throws {
         let h = try joinedHarness()
         let bad = h.relay.inject(device: alice, kind: .application, bytes: Data("garbage".utf8))
-        let good = h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: "a1", text: "ok"))
-        let spoof = h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: carol, clientId: "c1", text: "가짜"))
+        let good = h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: alice, text: "ok"))
+        let spoof = h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: carol, clientId: carol, text: "가짜"))
         let pass = try await h.sync.syncOnce()
         XCTAssertEqual(pass.rejected, [bad, spoof])
         XCTAssertEqual(pass.inserted, [good])
@@ -200,7 +200,7 @@ final class SyncEngineTests: XCTestCase {
 
     func testCursorAckedOnNextGetOnlyAfterPersistAndNotResent() async throws {
         let h = try invitedHarness()
-        let seq3 = h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: "a1", text: "1"))
+        let seq3 = h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: alice, text: "1"))
         try await h.sync.syncOnce()
         try await h.sync.syncOnce()
         try await h.sync.syncOnce()
@@ -210,7 +210,7 @@ final class SyncEngineTests: XCTestCase {
 
     func testCursorNotAdvancedWhenStateSaveFails() async throws {
         let h = try joinedHarness()
-        h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: "a1", text: "x"))
+        h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: alice, text: "x"))
         // 다른 프로세스가 잠금을 쥔 상태 → lockTimeout: 아무것도 영속되지 않았으니 커서도 그대로.
         h.configuration.lockTimeout = 0.05
         let sync = try h.restart()
@@ -233,7 +233,7 @@ final class SyncEngineTests: XCTestCase {
     func testAckRefusalDisablesAckButKeepsSyncing() async throws {
         let h = try invitedHarness()
         try await h.sync.syncOnce()
-        h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: "a1", text: "1"))
+        h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: alice, text: "1"))
         h.relay.getErrors = [.refused(code: "bad_ack", status: 400)]
         let refused = try await h.sync.syncOnce()
         XCTAssertNil(refused.halted)
@@ -262,7 +262,7 @@ final class SyncEngineTests: XCTestCase {
         let h = try joinedHarness()
         h.configuration.pageLimit = 2
         let sync = try h.restart()
-        for i in 1...5 { h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: "a\(i)", text: "\(i)")) }
+        for i in 1...5 { h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: alice, text: "\(i)")) }
         let passes = try await sync.syncAll()
         XCTAssertEqual(passes.map(\.fetched), [2, 2, 1])
         XCTAssertEqual(h.messages.records.map(\.body), ["1", "2", "3", "4", "5"])
@@ -274,7 +274,7 @@ final class SyncEngineTests: XCTestCase {
     func testHistoryGapHaltsBeforeProcessingAnything() async throws {
         let h = try joinedHarness()
         try h.cursors.setCursor(room: h.room, seq: 3)
-        for i in 1...6 { h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: "a\(i)", text: "\(i)")) }
+        for i in 1...6 { h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: alice, text: "\(i)")) }
         h.relay.firstSeq = 6   // 4·5 는 지워졌다
         let pass = try await h.sync.syncOnce()
         XCTAssertEqual(pass.halted, SyncHaltReason.historyGap)
@@ -395,7 +395,7 @@ final class SyncEngineTests: XCTestCase {
 
     func testNoRelayCallHappensInsideATransaction() async throws {
         let h = try invitedHarness()
-        h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: "a1", text: "1"))
+        h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: alice, text: "1"))
         try await h.sync.syncAll()
         _ = try await h.sync.send(text: "a")
         var raced = false
@@ -449,5 +449,28 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(sleeps, [4, 4], "4초 주기")
         XCTAssertEqual(h.sync.haltedReason, CommitRefusalReason.committerPath.rawValue)
         XCTAssertTrue(try h.outbox.pending(room: h.room).isEmpty, "첫 주기에 outbox 를 비웠다")
+    }
+}
+
+// 실 엔진 결합에서 드러난 결함(파이널라이저 통합, #271): AAD client_id 와 릴레이 client_id 는 다른 값이다.
+extension SyncEngineTests {
+    func testSendFramesDeviceIdAsAADClientIdAndUniqueRelayClientId() async throws {
+        let h = try joinedHarness()
+        let outcome = try await h.sync.send(text: "hello")
+        guard case .sent(let relayClientId, _, false) = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertNotEqual(relayClientId, h.me, "릴레이 dedup 키는 기기 ID 와 달라야 한다(메시지마다 고유)")
+        // 가짜 암호문 = magic ‖ (sender ‖ AAD client_id ‖ plaintext) ‖ generation
+        let framed = h.relay.posts[0].bytes.dropFirst(FakeMlsEngine.ciphertextMagic.count)
+        var at = 0
+        XCTAssertEqual(try Framing.readString(Data(framed), &at), h.me)
+        XCTAssertEqual(try Framing.readString(Data(framed), &at), h.me, "AAD client_id = 기기 ID(파사드 H1)")
+    }
+
+    func testForeignAADClientIdIsUndecryptable() async throws {
+        let h = try joinedHarness()
+        let seq = h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: "\(alice)-relay-1", text: "x"))
+        let pass = try await h.sync.syncOnce()
+        XCTAssertEqual(pass.rejected, [seq])
+        XCTAssertEqual(try h.messages.messages(room: h.room, after: 0, limit: 10).first?.body, "sender attribution rejected")
     }
 }

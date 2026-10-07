@@ -25,8 +25,12 @@ struct RoomView: View {
                 TextField(Strings.composerPlaceholder, text: $draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                 Button(Strings.sendButton) {
-                    model.send(room: room, text: draft)
+                    let text = draft
                     draft = ""
+                    Task {
+                        // 암호화 전에 실패하면(동기화 실패·정지 등) 입력을 되돌린다 — 평문은 이 화면만 들고 있다.
+                        if await model.send(room: room, text: text) == nil, draft.isEmpty { draft = text }
+                    }
                 }
                 .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !isReady)
             }
@@ -34,6 +38,7 @@ struct RoomView: View {
         }
         .navigationTitle(room)
         .onAppear { messages = model.messages(room: room) }
+        .onChange(of: model.messagesRevision) { _ in messages = model.messages(room: room) }
     }
 
     private var isReady: Bool {
