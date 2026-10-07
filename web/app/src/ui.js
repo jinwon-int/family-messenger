@@ -575,7 +575,7 @@ function snapshotRoomPane(root) {
  * at the bottom; new message while scrolled up → keep the position and show
  * a floating "새 메시지" badge that jumps down on click.
  */
-function buildRoom({ room, timeline, onSend, onAttach, photoPreviews = null, onOpenAttachment = null, onTyping = null, onBack, notice, onToggleBox = null, hasMore = false, loadingEarlier = false, onLoadEarlier = null, onReachBottom = null, typing = '', lastSent = null, earlierSent = [] }, snap) {
+function buildRoom({ room, timeline, onSend, onAttach, photoPreviews = null, onOpenAttachment = null, onTyping = null, onBack, notice, onToggleBox = null, hasMore = false, loadingEarlier = false, onLoadEarlier = null, onReachBottom = null, typing = '', lastSent = null, earlierSent = [], sentLoading = false, onExpandLastSent = null, onLocate = null }, snap) {
   // 맨 위 행: 이전 대화 불러오기 버튼 / 불러오는 중 / 대화의 처음.
   const earlierMode = loadingEarlier ? 'loading' : hasMore && onLoadEarlier ? 'button' : timeline.length > 0 ? 'start' : 'none';
   const earlierRow = signed(el(
@@ -727,7 +727,7 @@ function buildRoom({ room, timeline, onSend, onAttach, photoPreviews = null, onO
     onToggleBox ? el('button', { type: 'button', class: 'icon ghost box-toggle', 'aria-label': strings.box.toggle, onclick: onToggleBox }, '📎') : null,
   ), JSON.stringify([room.displayName, typing || '', room.kind, room.memberCount, Boolean(onToggleBox)]));
   const noticeNode = notice ? signed(el('p', { class: 'status error', role: 'alert' }, notice), notice) : null;
-  const lastSentNode = lastSentBar(lastSent, room.roomId ?? '', list, earlierSent);
+  const lastSentNode = lastSentBar(lastSent, room.roomId ?? '', list, earlierSent, { loading: sentLoading, onExpand: onExpandLastSent, onLocate });
   const timelineWrap = el('div', { class: 'timeline-wrap' }, list, badge);
   const composerWrap = el('div', { class: 'composer-wrap' }, attachBar, composer);
   const pane = el('section', { class: 'room-screen', 'data-room-id': room.roomId ?? '' }, header, noticeNode, lastSentNode, timelineWrap, composerWrap);
@@ -790,19 +790,39 @@ export function jumpToBubble(list, eventId) {
   setTimeout(() => bubble.classList.remove('flash'), FLASH_MS);
   return true;
 }
-function lastSentBar(lastSent, roomId, list, earlierSent = []) {
+function lastSentBar(lastSent, roomId, list, earlierSent = [], { loading = false, onExpand = null, onLocate = null } = {}) {
   if (!lastSent) return null;
   const collapsed = readCollapsed(roomId);
   const t = strings.chat.lastSent;
   const earlier = Array.isArray(earlierSent) ? earlierSent.filter((item) => item && typeof item.text === 'string') : [];
-  // 서명에 이전 내 말도 넣는다 — 목록이 바뀌면(새 내 말·삭제·에코 확정) 바를 다시 그린다.
+  // 서명에 오늘 내 말 목록·불러오는 중 여부도 넣는다 — 바뀌면(새 내 말·삭제·에코 확정·인덱스 도착) 바를 다시 그린다.
   const barSignature = (isCollapsed) => JSON.stringify([
     lastSent.eventId ?? null, lastSent.text, Boolean(lastSent.pending), lastSent.replies ?? 0,
-    earlier.map((item) => [item.eventId ?? null, item.text, Boolean(item.pending), item.replies ?? 0]),
-    isCollapsed, roomId,
+    earlier.map((item) => [item.eventId ?? null, item.text, Boolean(item.pending), item.replies ?? null]),
+    isCollapsed, Boolean(loading), roomId,
   ]);
   const signature = barSignature(collapsed);
   const hint = el('span', { class: 'hint', role: 'status', hidden: true }, t.notLoaded);
+  // 펼쳐져 있으면 오늘 내 말 인덱스를 요청한다(main.js가 방·날짜별로 한 번만 가져온다 — 반복 호출은 공짜).
+  if (!collapsed) onExpand?.();
+  // 그 말풍선으로 이동. 불러온 범위 밖이면 onLocate(main.js: 이전 페이지를 한도 안에서 당김)로 찾아 본 뒤 이동하고,
+  // 그래도 없으면 안내만 한다. 타임라인 노드는 재렌더로 바뀔 수 있어 매번 바에서 다시 찾는다.
+  const liveList = () => bar.closest('.room-screen')?.querySelector('.timeline') ?? list;
+  let locating = false;
+  const goTo = async (eventId) => {
+    if (jumpToBubble(liveList(), eventId)) { hint.hidden = true; return; }
+    if (typeof onLocate === 'function' && typeof eventId === 'string' && !locating) {
+      locating = true;
+      hint.textContent = t.locating;
+      hint.hidden = false;
+      let found = false;
+      try { found = await onLocate(eventId) === true; } catch (_) { found = false; }
+      locating = false;
+      if (found && jumpToBubble(liveList(), eventId)) { hint.hidden = true; hint.textContent = t.notLoaded; return; }
+    }
+    hint.textContent = t.notLoaded;
+    hint.hidden = false;
+  };
   const chips = [
     lastSent.pending ? el('span', { class: 'chip pending' }, t.pending) : null,
     !lastSent.pending ? el('span', { class: 'chip' }, t.replies(lastSent.replies ?? 0)) : null,
@@ -821,6 +841,8 @@ function lastSentBar(lastSent, roomId, list, earlierSent = []) {
     jump.title = next ? t.expand : t.jump;
     // 서명도 바꿔 다음 재렌더가 같은 상태를 유지하게 한다.
     renderedSignature.set(bar, barSignature(next));
+    // 펼치는 순간 오늘 내 말 인덱스를 가져온다(지연 로드 — 접힌 바는 서버에 묻지 않는다).
+    if (!next) onExpand?.();
   };
   const jump = el(
     'button',
@@ -833,8 +855,7 @@ function lastSentBar(lastSent, roomId, list, earlierSent = []) {
           setCollapsed(false);
           return;
         }
-        const found = jumpToBubble(list, lastSent.eventId);
-        hint.hidden = found;
+        goTo(lastSent.eventId);
       },
     },
     // 접힘일 때는 라벨과 칩 사이에 내 말을 한 줄(말줄임)로 보여 준다(오너 2026-10-07). 펼침에서는 CSS로 숨기고 아래 .preview가 보인다.
@@ -842,9 +863,10 @@ function lastSentBar(lastSent, roomId, list, earlierSent = []) {
     el('span', { class: 'preview' }, lastSent.text),
     hint,
   );
-  // 펼침에서만 보이는 "이전 내 말" 목록(최대 2개, 오너 2026-10-07). 각 줄은 버튼 — 누르면 그 말풍선로 이동.
+  // 펼침에서만 보이는 "오늘 내 말" 목록(오너 2026-10-07): 타임라인의 내 말 + 서버 인덱스(오늘 것)를 합친 것.
+  // 각 줄은 버튼 — 누르면 그 말풍선로 이동(범위 밖이면 찾아서). 서버 인덱스에서만 온 항목은 답장 수를 모른다(null) → 칩 생략.
   // <button> 안에 <button>을 넣을 수 없으므로 큰 이동 버튼과 나란한 형제로 두고 .main 이 세로로 묶는다.
-  const earlierList = earlier.length
+  const earlierList = earlier.length || loading
     ? el(
         'ul',
         { class: 'earlier', 'aria-label': t.earlierRegion },
@@ -858,16 +880,16 @@ function lastSentBar(lastSent, roomId, list, earlierSent = []) {
               class: 'earlier-jump',
               title: t.jump,
               'data-event-id': item.eventId ?? null,
-              onclick: () => {
-                const found = jumpToBubble(list, item.eventId);
-                hint.hidden = found;
-              },
+              onclick: () => { goTo(item.eventId); },
             },
             el('span', { class: 'text' }, item.text),
-            item.pending ? el('span', { class: 'chip pending' }, t.pending) : el('span', { class: 'chip' }, t.replies(item.replies ?? 0)),
+            item.pending
+              ? el('span', { class: 'chip pending' }, t.pending)
+              : Number.isInteger(item.replies) ? el('span', { class: 'chip' }, t.replies(item.replies)) : null,
             item.ts ? el('span', { class: 'chip time' }, timeLabel(item.ts)) : null,
           ),
         )),
+        loading ? el('li', { class: 'loading', role: 'status' }, t.loadingToday) : null,
       )
     : null;
   const main = el('div', { class: 'main' }, jump, earlierList);
