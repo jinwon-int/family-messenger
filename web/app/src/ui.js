@@ -764,14 +764,16 @@ function buildRoom({ room, timeline, onSend, onAttach, photoPreviews = null, onO
 // 헤더 아래·타임라인 위의 보통 flex 자식이라 좌표 계산이 필요 없다. 같은 방 재렌더에서는 서명이
 // 같으면 붙어 있는 노드를 그대로 둔다(#194). 누르면 그 말풍선으로 스크롤하고 잠깐 밝힌다 — 불러온
 // 범위 밖(이전 페이지)이면 안내만 한다. 접기는 방별 localStorage에 남는다.
+// 기본은 접힘(오너 2026-10-07): 키가 없으면 접힘, 펼친 방만 '0'으로 기억한다. 예전에 '1'(접힘)로
+// 저장된 방은 그대로 접힘이다.
 const FLASH_MS = 1600;
 function readCollapsed(roomId) {
-  try { return globalThis.localStorage?.getItem(collapsedKey(roomId)) === '1'; } catch (_) { return false; }
+  try { return globalThis.localStorage?.getItem(collapsedKey(roomId)) !== '0'; } catch (_) { return true; }
 }
 function writeCollapsed(roomId, collapsed) {
   try {
-    if (collapsed) globalThis.localStorage?.setItem(collapsedKey(roomId), '1');
-    else globalThis.localStorage?.removeItem(collapsedKey(roomId));
+    if (collapsed) globalThis.localStorage?.removeItem(collapsedKey(roomId));
+    else globalThis.localStorage?.setItem(collapsedKey(roomId), '0');
   } catch (_) { /* 저장소가 막혀 있어도 접기는 이번 화면에서만 동작한다 */ }
 }
 /** 타임라인에서 그 말풍선을 찾아 보이게 하고 잠깐 밝힌다. 없으면 false(불러온 범위 밖). */

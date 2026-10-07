@@ -567,7 +567,8 @@ main.shell[data-view="room"] .pane-list { display: none; }
 .last-sent .toggle:hover { background: rgba(255, 255, 255, 0.12); }
 .last-sent[data-collapsed="true"] { margin: var(--space-1) 0 0; border-left-width: 4px; }
 .last-sent[data-collapsed="true"] .jump { padding: var(--space-1) var(--space-3); gap: 0; }
-.last-sent[data-collapsed="true"] .preview, .last-sent[data-collapsed="true"] .hint { display: none; }
+/* 기본이 접힘(오너 2026-10-07)이라, 접힌 채 눌러 범위 밖일 때의 안내(.hint, 평소 [hidden])는 숨기지 않는다. */
+.last-sent[data-collapsed="true"] .preview { display: none; }
 @media (prefers-color-scheme: dark) {
   /* 다크 배경(#0f1420)·카드(#171d2c) 위에서는 한 톤 밝은 슬레이트로 떠 보이게 한다. */
   .last-sent { background: linear-gradient(135deg, #2f3a5e, #262f4d); border-color: #46538a; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45); }
