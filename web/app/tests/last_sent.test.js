@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { lastSentEntry, lastSentSummary, collapsedKey } from '../src/last-sent.js';
+import { lastSentEntry, lastSentSummary, recentSentSummaries, collapsedKey } from '../src/last-sent.js';
 
 const labels = { photo: '사진', video: '영상', file: '파일', undecryptable: '열 수 없는 메시지' };
 const me = (eventId, body, extra = {}) => ({ eventId, isMe: true, kind: 'text', body, ts: 1000, ...extra });
@@ -50,6 +50,40 @@ test('수정·삭제는 화면 복사본을 그대로 따른다 — 마지막 �
   const after = before.filter((e) => e.eventId !== '$3');
   assert.equal(lastSentSummary(after, { labels }).eventId, '$1');
   assert.equal(lastSentSummary(after, { labels }).replies, 1);
+});
+
+test('최근 내 말 목록: 최신순 최대 limit개, 답장 수는 다음 내 말 전까지, [0]은 lastSentSummary와 같다', () => {
+  const timeline = [
+    me('$1', '첫 말'), other('$2', '답1'), other('$3', '답2'),
+    me('$4', '둘째 말'),
+    me('$5', '셋째 말'), other('$6', '답3'),
+    me('$7', '넷째 말', { ts: 2000 }), other('$8', '답4'), other('$9', '답5'), other('$10', '답6'),
+  ];
+  const recent = recentSentSummaries(timeline, { labels });
+  assert.deepEqual(recent.map((r) => [r.eventId, r.text, r.replies, r.ts]), [
+    ['$7', '넷째 말', 3, 2000],
+    ['$5', '셋째 말', 1, 1000],
+    ['$4', '둘째 말', 0, 1000],
+  ], '최신순 3개, 첫 말은 한도 밖');
+  assert.deepEqual(recent[0], lastSentSummary(timeline, { labels }));
+  assert.deepEqual(recentSentSummaries(timeline, { labels, limit: 1 }).map((r) => r.eventId), ['$7']);
+  assert.deepEqual(recentSentSummaries(timeline, { labels, limit: 10 }).map((r) => r.eventId), ['$7', '$5', '$4', '$1']);
+  assert.equal(recentSentSummaries(timeline, { labels, limit: 10 })[3].replies, 2, '첫 말의 답장은 둘째 말 전까지 2개');
+});
+
+test('최근 내 말 목록: 전송 중 에코·held·notice·빈 미리보기 처리, 내 말이 없거나 limit이 이상하면 []', () => {
+  const timeline = [
+    other('$1', '시작'),
+    me('$2', '지운 말', { held: true }), // 내 말로 안 친다 — 경계도 아니다
+    me('$3', '보이는 말'), other('$4', '답'),
+    me('$5', '', { kind: 'notice' }), // 조용한 종류 — 무시
+    me('~local', '보내는 중'),
+  ];
+  const recent = recentSentSummaries(timeline, { labels });
+  assert.deepEqual(recent.map((r) => [r.eventId, r.pending, r.replies]), [['~local', true, 0], ['$3', false, 1]]);
+  assert.deepEqual(recentSentSummaries([other('$1', '남의 말')], { labels }), []);
+  assert.deepEqual(recentSentSummaries(null, { labels }), []);
+  assert.deepEqual(recentSentSummaries(timeline, { labels, limit: 0 }), []);
 });
 
 test('접기 상태 키는 방별', () => {

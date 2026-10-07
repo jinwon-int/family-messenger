@@ -575,7 +575,7 @@ function snapshotRoomPane(root) {
  * at the bottom; new message while scrolled up → keep the position and show
  * a floating "새 메시지" badge that jumps down on click.
  */
-function buildRoom({ room, timeline, onSend, onAttach, photoPreviews = null, onOpenAttachment = null, onTyping = null, onBack, notice, onToggleBox = null, hasMore = false, loadingEarlier = false, onLoadEarlier = null, onReachBottom = null, typing = '', lastSent = null }, snap) {
+function buildRoom({ room, timeline, onSend, onAttach, photoPreviews = null, onOpenAttachment = null, onTyping = null, onBack, notice, onToggleBox = null, hasMore = false, loadingEarlier = false, onLoadEarlier = null, onReachBottom = null, typing = '', lastSent = null, earlierSent = [] }, snap) {
   // 맨 위 행: 이전 대화 불러오기 버튼 / 불러오는 중 / 대화의 처음.
   const earlierMode = loadingEarlier ? 'loading' : hasMore && onLoadEarlier ? 'button' : timeline.length > 0 ? 'start' : 'none';
   const earlierRow = signed(el(
@@ -727,7 +727,7 @@ function buildRoom({ room, timeline, onSend, onAttach, photoPreviews = null, onO
     onToggleBox ? el('button', { type: 'button', class: 'icon ghost box-toggle', 'aria-label': strings.box.toggle, onclick: onToggleBox }, '📎') : null,
   ), JSON.stringify([room.displayName, typing || '', room.kind, room.memberCount, Boolean(onToggleBox)]));
   const noticeNode = notice ? signed(el('p', { class: 'status error', role: 'alert' }, notice), notice) : null;
-  const lastSentNode = lastSentBar(lastSent, room.roomId ?? '', list);
+  const lastSentNode = lastSentBar(lastSent, room.roomId ?? '', list, earlierSent);
   const timelineWrap = el('div', { class: 'timeline-wrap' }, list, badge);
   const composerWrap = el('div', { class: 'composer-wrap' }, attachBar, composer);
   const pane = el('section', { class: 'room-screen', 'data-room-id': room.roomId ?? '' }, header, noticeNode, lastSentNode, timelineWrap, composerWrap);
@@ -790,11 +790,18 @@ export function jumpToBubble(list, eventId) {
   setTimeout(() => bubble.classList.remove('flash'), FLASH_MS);
   return true;
 }
-function lastSentBar(lastSent, roomId, list) {
+function lastSentBar(lastSent, roomId, list, earlierSent = []) {
   if (!lastSent) return null;
   const collapsed = readCollapsed(roomId);
   const t = strings.chat.lastSent;
-  const signature = JSON.stringify([lastSent.eventId ?? null, lastSent.text, Boolean(lastSent.pending), lastSent.replies ?? 0, collapsed, roomId]);
+  const earlier = Array.isArray(earlierSent) ? earlierSent.filter((item) => item && typeof item.text === 'string') : [];
+  // 서명에 이전 내 말도 넣는다 — 목록이 바뀌면(새 내 말·삭제·에코 확정) 바를 다시 그린다.
+  const barSignature = (isCollapsed) => JSON.stringify([
+    lastSent.eventId ?? null, lastSent.text, Boolean(lastSent.pending), lastSent.replies ?? 0,
+    earlier.map((item) => [item.eventId ?? null, item.text, Boolean(item.pending), item.replies ?? 0]),
+    isCollapsed, roomId,
+  ]);
+  const signature = barSignature(collapsed);
   const hint = el('span', { class: 'hint', role: 'status', hidden: true }, t.notLoaded);
   const chips = [
     lastSent.pending ? el('span', { class: 'chip pending' }, t.pending) : null,
@@ -818,6 +825,35 @@ function lastSentBar(lastSent, roomId, list) {
     el('span', { class: 'preview' }, lastSent.text),
     hint,
   );
+  // 펼침에서만 보이는 "이전 내 말" 목록(최대 2개, 오너 2026-10-07). 각 줄은 버튼 — 누르면 그 말풍선로 이동.
+  // <button> 안에 <button>을 넣을 수 없으므로 큰 이동 버튼과 나란한 형제로 두고 .main 이 세로로 묶는다.
+  const earlierList = earlier.length
+    ? el(
+        'ul',
+        { class: 'earlier', 'aria-label': t.earlierRegion },
+        ...earlier.map((item) => el(
+          'li',
+          {},
+          el(
+            'button',
+            {
+              type: 'button',
+              class: 'earlier-jump',
+              title: t.jump,
+              'data-event-id': item.eventId ?? null,
+              onclick: () => {
+                const found = jumpToBubble(list, item.eventId);
+                hint.hidden = found;
+              },
+            },
+            el('span', { class: 'text' }, item.text),
+            item.pending ? el('span', { class: 'chip pending' }, t.pending) : el('span', { class: 'chip' }, t.replies(item.replies ?? 0)),
+            item.ts ? el('span', { class: 'chip time' }, timeLabel(item.ts)) : null,
+          ),
+        )),
+      )
+    : null;
+  const main = el('div', { class: 'main' }, jump, earlierList);
   const toggle = el(
     'button',
     {
@@ -833,12 +869,12 @@ function lastSentBar(lastSent, roomId, list) {
         toggle.setAttribute('aria-expanded', next ? 'false' : 'true');
         toggle.textContent = next ? '▾' : '▴';
         // 서명도 바꿔 다음 재렌더가 같은 상태를 유지하게 한다.
-        renderedSignature.set(bar, JSON.stringify([lastSent.eventId ?? null, lastSent.text, Boolean(lastSent.pending), lastSent.replies ?? 0, next, roomId]));
+        renderedSignature.set(bar, barSignature(next));
       },
     },
     collapsed ? '▾' : '▴',
   );
-  setChildren(bar, jump, toggle);
+  setChildren(bar, main, toggle);
   return signed(bar, signature);
 }
 

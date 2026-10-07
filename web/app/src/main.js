@@ -18,7 +18,7 @@ import { disablePush, enablePush, hasMatchingPusher, isIosDevice, pushAvailabili
 import { renderHold, selectionInRenderedArea } from './render-guard.js';
 import { enterCaretMode, exitCaretMode, isCaretMode } from './timeline-caret.js';
 import { createReadReceiptSender, isRoomUnread } from './read-receipts.js';
-import { lastSentSummary } from './last-sent.js';
+import { recentSentSummaries } from './last-sent.js';
 import * as ui from './ui.js';
 
 const root = document.getElementById('app');
@@ -203,7 +203,8 @@ function renderCurrent() {
           onTyping: (hasText) => handleComposerTyping(state.currentRoomId, hasText),
           typing: typingIndicator(typingNames(state.typing, current.summary.roomId, { myUserId: state.myUserId }), strings.chat.typing),
           // 대화창 상단 "내 마지막 말" 바(#300) — 화면 복사본에서 매 렌더 계산(삭제·수정·로컬 에코 확정 반영).
-          lastSent: lastSentSummary(current.timeline, { labels: PREVIEW_LABELS() }),
+          // 펼치면 그 아래에 이전 내 말 2개까지(합계 3개, 오너 2026-10-07) — 누르면 그 말풍선으로 이동.
+          ...lastSentProps(current.timeline),
         }
       : null,
     box: {
@@ -891,6 +892,13 @@ function openRooms() {
   state.box.open = false;
   refreshSummaries();
   if (returning) restoreRoomListFocus({ force: true });
+}
+
+/** 바에 넘길 내 최근 말: 가장 최근 1개는 바 본문, 그 이전 최대 2개는 펼침 목록. */
+const RECENT_SENT_LIMIT = 3;
+function lastSentProps(timeline) {
+  const recent = recentSentSummaries(timeline, { labels: PREVIEW_LABELS(), limit: RECENT_SENT_LIMIT });
+  return { lastSent: recent[0] ?? null, earlierSent: recent.slice(1) };
 }
 
 function openRoom(roomId) {
