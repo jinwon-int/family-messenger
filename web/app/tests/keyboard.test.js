@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { composerKeyAction, viewKeyAction, listPageMove, isSplitLayout, listPageNavAction, timelineKeyAction } from '../src/keyboard.js';
+import { composerKeyAction, viewKeyAction, listPageMove, isSplitLayout, listPageNavAction, timelineKeyAction, listRevealDelta } from '../src/keyboard.js';
 
 test('작성창 Enter는 전송이다', () => {
   assert.equal(composerKeyAction({ key: 'Enter', shiftKey: false, isComposing: false }), 'send');
@@ -115,6 +115,20 @@ test('대화 내용에 포커스가 있을 때만 ↑/↓가 스크롤이다', (
   assert.equal(timelineKeyAction({ key: 'ArrowDown' }), null);
   assert.equal(timelineKeyAction({ key: 'Enter', onTimeline: true }), null, 'Enter는 기존 작성창 이동 규칙');
   assert.equal(timelineKeyAction(), null);
+});
+
+test('listRevealDelta: 보이는 행은 0, 아래로 가려지면 양수(아래 가장자리), 위로 가려지면 음수(위 가장자리)', () => {
+  const view = { viewTop: 100, viewBottom: 500 };
+  assert.equal(listRevealDelta({ itemTop: 120, itemBottom: 180, ...view }), 0, '완전히 보이는 행은 스크롤하지 않는다');
+  assert.equal(listRevealDelta({ itemTop: 100, itemBottom: 500, ...view }), 0, '가장자리에 딱 맞아도 보이는 것');
+  assert.equal(listRevealDelta({ itemTop: 480, itemBottom: 540, ...view }), 40, '아래로 일부 가려지면 가려진 만큼 내린다');
+  assert.equal(listRevealDelta({ itemTop: 900, itemBottom: 960, ...view }), 460, '화면 밖 아래 행은 아래 가장자리에 맞춘다');
+  assert.equal(listRevealDelta({ itemTop: 60, itemBottom: 120, ...view }), -40, '위로 일부 가려지면 가려진 만큼 올린다');
+  assert.equal(listRevealDelta({ itemTop: -300, itemBottom: -240, ...view }), -400, '화면 밖 위 행은 위 가장자리에 맞춘다');
+  assert.equal(listRevealDelta({ itemTop: 400, itemBottom: 1000, ...view }), 300, '행이 영역보다 크면 위 가장자리를 우선한다');
+  assert.equal(listRevealDelta({ itemTop: 50, itemBottom: 1000, ...view }), -50, '위아래 모두 벗어나도 위 가장자리 우선');
+  assert.equal(listRevealDelta({ itemTop: NaN, itemBottom: 10, ...view }), 0, '좌표가 없으면(레이아웃 전) 건드리지 않는다');
+  assert.equal(listRevealDelta(), 0);
 });
 
 test('캐럿 모드(#284): Esc=스크롤 모드 복귀, Enter=작성창, 나머지는 브라우저 기본', () => {

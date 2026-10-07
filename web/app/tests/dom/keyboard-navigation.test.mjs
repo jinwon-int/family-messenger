@@ -161,6 +161,40 @@ test('2분할에서 Page Up/Down은 오른쪽 대화를 열고 바로 작성창�
   assert.equal(document.activeElement.value, '작성 중인 초안', '방 전환은 초안을 버리지 않는다');
 });
 
+test('2분할 Page Down으로 옮겨간 방이 목록 밖에 있으면 목록만 그 행까지 스크롤하고, 보이는 행이면 스크롤을 건드리지 않는다', async (t) => {
+  const { window, document, key, buttons } = await app(t, { split: true });
+  const pane = document.querySelector('.pane-list');
+  // happy-dom은 레이아웃이 없어 좌표가 0이다 — 목록 영역 0~300px, 행 높이 60px·간격 100px의 기하를 흉내낸다.
+  // 행 버튼은 선택 표시(aria-current)가 바뀔 때마다 다시 그려지므로 요소에 직접 붙이지 않고 prototype에서 계산한다.
+  let paneBottom = 300;
+  const proto = window.Element.prototype;
+  const original = proto.getBoundingClientRect;
+  proto.getBoundingClientRect = function geometry() {
+    if (this.classList?.contains('pane-list')) return { top: 0, bottom: paneBottom, left: 0, right: 320, width: 320, height: paneBottom };
+    if (this.classList?.contains('room-item')) {
+      const top = buttons().indexOf(this) * 100 - pane.scrollTop;
+      return { top, bottom: top + 60, left: 0, right: 320, width: 320, height: 60 };
+    }
+    return original.call(this);
+  };
+  t.after(() => { proto.getBoundingClientRect = original; });
+  pane.scrollTop = 0;
+  key('PageDown'); // a(0~60): 보임
+  assert.equal(pane.scrollTop, 0, '보이는 행으로 옮기면 스크롤하지 않는다');
+  key('PageDown'); // b(100~160): 보임
+  assert.equal(pane.scrollTop, 0);
+  // c는 200~260으로 아직 보이지만, 목록 영역을 220px로 줄이면 아래가 가려진다.
+  paneBottom = 220;
+  key('PageDown'); // c(200~260) vs 220 → 40px 가려짐
+  assert.equal(document.querySelector('.room-screen')?.dataset.roomId, '!c:example.test');
+  assert.equal(pane.scrollTop, 40, '가려진 만큼만 내려 행의 아래 가장자리를 맞춘다');
+  assert.ok(document.activeElement === document.querySelector('.composer textarea'), '스크롤해도 커서는 작성창에 남는다');
+  key('PageUp'); // b(100~160) — scrollTop 40 기준 60~120: 보임
+  assert.equal(pane.scrollTop, 40, '보이는 행으로 되돌아가면 스크롤 유지');
+  key('PageUp'); // a(0~60) → 40 기준 -40~20: 위로 40px 가려짐
+  assert.equal(pane.scrollTop, 0, '위로 가려진 행은 위 가장자리에 맞춘다');
+});
+
 test('휴대폰 세로(단일 pane) 방 화면에서 Page Up/Down은 목록 순서대로 대화 상대를 바꾼다', async (t) => {
   const { window, document, buttons, key, reorder } = await app(t);
   const screen = () => document.querySelector('.room-screen')?.dataset.roomId;

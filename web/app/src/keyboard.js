@@ -29,6 +29,21 @@ export function listPageMove({ key, count, currentIndex = -1 } = {}) {
   return Math.min(count - 1, Math.max(0, from + delta));
 }
 
+/**
+ * Page Up/Down으로 옮겨간 방 행이 목록 스크롤 영역 밖에 있을 때만 필요한 스크롤량(px)을 돌려준다.
+ * 보이는 행이면 0 — 화면이 튀지 않게 건드리지 않는다. 아래로 벗어나면 양수(아래 가장자리에 맞춤),
+ * 위로 벗어나면 음수(위 가장자리에 맞춤). 행이 영역보다 크면 위 가장자리를 우선한다.
+ * 좌표는 getBoundingClientRect 기준(행·스크롤 컨테이너 모두 뷰포트 좌표)이라 같은 기준끼리 비교한다.
+ * @param {{itemTop?: number, itemBottom?: number, viewTop?: number, viewBottom?: number}} rects
+ * @returns {number} container.scrollTop에 더할 값 — 보였거나 좌표가 없으면 0
+ */
+export function listRevealDelta({ itemTop, itemBottom, viewTop, viewBottom } = {}) {
+  if (![itemTop, itemBottom, viewTop, viewBottom].every(Number.isFinite)) return 0;
+  if (itemTop < viewTop) return itemTop - viewTop;
+  if (itemBottom > viewBottom) return Math.min(itemBottom - viewBottom, itemTop - viewTop);
+  return 0;
+}
+
 // styles.css와 같은 미디어 쿼리 — 900px부터 2열, 휴대폰 가로(640~899)도 목록|대화.
 const SPLIT_WIDE = '(min-width: 900px)';
 const SPLIT_LANDSCAPE = '(orientation: landscape) and (min-width: 640px) and (max-width: 899px)';
