@@ -93,9 +93,45 @@ test('로컬 에코가 서버 id로 확정되면 바의 eventId도 따라가고 
   assert.match(q(app, '.last-sent .chip').textContent, /아직 답 없음/);
 });
 
-test('누르면 그 말풍선으로 스크롤하고 잠깐 밝힌다; 불러온 범위 밖이면 안내만', () => {
+test('접힘에서 바를 누르면 이동 대신 펼치고(기억됨), 펼친 바를 다시 눌러도 접히지 않는다; 접기는 화살표로만', () => {
   const app = root();
   ui.renderShell(app, props());
+  const list = q(app, '.timeline');
+  const bubble = q(app, 'li.bubble[data-event-id="$e2"]');
+  Object.defineProperty(bubble, 'offsetTop', { value: 300, configurable: true });
+  Object.defineProperty(list, 'offsetTop', { value: 100, configurable: true });
+  list.scrollTop = 999;
+  const bar = q(app, '.last-sent');
+  const jump = q(app, '.last-sent .jump');
+  const toggle = q(app, '.last-sent .toggle');
+  assert.equal(bar.dataset.collapsed, 'true');
+  assert.equal(jump.title, '내 마지막 말 펼치기');
+  jump.click();
+  assert.equal(bar.dataset.collapsed, 'false', '접힘에서 바를 누르면 펼쳐야 한다');
+  assert.equal(list.scrollTop, 999, '펼치기 탭은 스크롤하지 않는다');
+  assert.ok(!bubble.classList.contains('flash'), '펼치기 탭은 말풍선을 밝히지 않는다');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  assert.equal(toggle.textContent, '▴');
+  assert.equal(jump.title, '이 메시지로 이동');
+  // 재렌더 후에도 펼침 유지(서명·localStorage).
+  ui.renderShell(app, props());
+  same(q(app, '.last-sent'), bar, '펼친 뒤 같은 데이터 재렌더에서 바가 교체됐다');
+  assert.equal(q(app, '.last-sent').dataset.collapsed, 'false');
+  // 펼친 상태에서 바를 누르면 이동만 하고 접히지 않는다.
+  jump.click();
+  assert.equal(bar.dataset.collapsed, 'false', '펼친 바를 눌러도 접히면 안 된다');
+  assert.equal(list.scrollTop, 192);
+  // 접기는 화살표로.
+  toggle.click();
+  assert.equal(bar.dataset.collapsed, 'true');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  assert.equal(jump.title, '내 마지막 말 펼치기');
+});
+
+test('펼친 바를 누르면 그 말풍선으로 스크롤하고 잠깐 밝힌다; 불러온 범위 밖이면 안내만', () => {
+  const app = root();
+  ui.renderShell(app, props());
+  q(app, '.last-sent .toggle').click();
   const list = q(app, '.timeline');
   const bubble = q(app, 'li.bubble[data-event-id="$e2"]');
   // happy-dom은 레이아웃이 없다 — offsetTop을 흉내 낸다.
