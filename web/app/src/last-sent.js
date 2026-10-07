@@ -26,8 +26,44 @@ export function lastSentEntry(timeline) {
   return null;
 }
 
+function summarize(entry, preview, replies) {
+  const eventId = typeof entry.eventId === 'string' ? entry.eventId : null;
+  return {
+    eventId,
+    text: preview.text,
+    ts: Number.isFinite(entry.ts) ? entry.ts : null,
+    // 서버가 id를 주기 전('~…')에는 전송 중 — 확정되면 같은 자리의 엔트리가 '$…'로 바뀐다(main.js).
+    pending: eventId == null || eventId.startsWith('~'),
+    replies,
+  };
+}
+
 /**
- * 바에 그릴 요약. 없으면 null.
+ * 내가 보낸 최근 메시지 요약을 최신순으로 최대 `limit`개(펼친 바의 "이전 내 말" 목록, 오너 2026-10-07).
+ * 각 항목의 답장 수는 그 말 뒤부터 **다음 내 말 전까지** 남이 쓴 메시지 수다 — 가장 최근 항목은
+ * 끝까지 세므로 lastSentSummary와 같다. 미리보기가 비는 내 말(빈 알림 등)은 목록에도 경계에도 넣지 않는다.
+ * @param {Array<object>|null|undefined} timeline
+ * @param {{labels: {photo: string, video: string, file: string, undecryptable: string}, limit?: number}} options
+ * @returns {Array<{eventId: string|null, text: string, ts: number|null, pending: boolean, replies: number}>}
+ */
+export function recentSentSummaries(timeline, { labels, limit = 3 } = {}) {
+  if (!Array.isArray(timeline) || !Number.isInteger(limit) || limit <= 0) return [];
+  const out = [];
+  let replies = 0;
+  for (let i = timeline.length - 1; i >= 0 && out.length < limit; i--) {
+    const entry = timeline[i];
+    if (!isSpoken(entry)) continue;
+    if (!entry.isMe) { replies += 1; continue; }
+    const preview = lastMessagePreview(entry, labels);
+    if (!preview) continue;
+    out.push(summarize(entry, preview, replies));
+    replies = 0;
+  }
+  return out;
+}
+
+/**
+ * 바에 그릴 요약(가장 최근 내 말). 없으면 null.
  * @param {Array<object>|null|undefined} timeline
  * @param {{labels: {photo: string, video: string, file: string, undecryptable: string}}} options
  * @returns {{eventId: string|null, text: string, ts: number|null, pending: boolean, replies: number}|null}
@@ -42,15 +78,7 @@ export function lastSentSummary(timeline, { labels }) {
     const entry = timeline[i];
     if (isSpoken(entry) && !entry.isMe) replies += 1;
   }
-  const eventId = typeof found.entry.eventId === 'string' ? found.entry.eventId : null;
-  return {
-    eventId,
-    text: preview.text,
-    ts: Number.isFinite(found.entry.ts) ? found.entry.ts : null,
-    // 서버가 id를 주기 전('~…')에는 전송 중 — 확정되면 같은 자리의 엔트리가 '$…'로 바뀐다(main.js).
-    pending: eventId == null || eventId.startsWith('~'),
-    replies,
-  };
+  return summarize(found.entry, preview, replies);
 }
 
 /** 접기 상태를 방별로 기억하는 저장소 키. */

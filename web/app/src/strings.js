@@ -95,6 +95,7 @@ export const strings = {
       replies: (n) => (n > 0 ? `답장 ${n}` : '아직 답 없음'),
       collapse: '내 마지막 말 접기',
       expand: '내 마지막 말 펼치기',
+      earlierRegion: '이전 내 말 — 누르면 그 메시지로 이동',
       notLoaded: '불러온 대화 밖입니다 — 이전 대화를 불러오면 찾을 수 있습니다',
     },
   },

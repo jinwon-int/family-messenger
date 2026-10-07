@@ -11,7 +11,7 @@ globalThis.document = window.document;
 if (!globalThis.CSS) globalThis.CSS = window.CSS;
 
 const ui = await import('../../src/ui.js');
-const { lastSentSummary } = await import('../../src/last-sent.js');
+const { lastSentSummary, recentSentSummaries } = await import('../../src/last-sent.js');
 
 const same = (a, b, message) => assert.ok(a != null && a === b, message);
 const root = () => {
@@ -29,11 +29,25 @@ const timelineA = () => [
 ];
 const previews = () => ({ get: () => ({ status: 'ready', src: 'blob:one' }), fail() {}, retry() {} });
 const box = () => ({ open: false, tab: 'attachments', attachments: [], filebox: null, onToggle() {}, onTab() {}, onRefresh() {}, onOpen() {} });
-const props = ({ timeline = timelineA(), lastSent = lastSentSummary(timeline, { labels }) } = {}) => ({
+const props = ({ timeline = timelineA(), lastSent = lastSentSummary(timeline, { labels }), earlierSent = [] } = {}) => ({
   list: { summaries: rooms(), syncState: 'live', onSelect() {}, onOpenVerification() {}, onOpenRecovery() {}, onOpenMenu() {} },
-  room: { room: rooms()[0], timeline, lastSent, onSend() {}, onAttach() {}, onBack() {}, hasMore: false, photoPreviews: previews(), typing: '' },
+  room: { room: rooms()[0], timeline, lastSent, earlierSent, onSend() {}, onAttach() {}, onBack() {}, hasMore: false, photoPreviews: previews(), typing: '' },
   box: box(),
 });
+// 내 말이 셋인 대화 — 펼친 바에 이전 내 말 2개가 더 보여야 한다(오너 2026-10-07).
+const timelineB = () => [
+  { eventId: '$m1', name: '나', isMe: true, kind: 'text', body: '오늘 몇 시에 모여요?', ts: now - 90_000 },
+  { eventId: '$o1', name: '아빠', isMe: false, kind: 'text', body: '7시', ts: now - 80_000 },
+  { eventId: '$m2', name: '나', isMe: true, kind: 'text', body: '네 알겠어요', ts: now - 70_000 },
+  { eventId: '$m3', name: '나', isMe: true, kind: 'text', body: '케이크 사갈게요', ts: now - 60_000 },
+  { eventId: '$o2', name: '엄마', isMe: false, kind: 'text', body: '고마워', ts: now - 50_000 },
+  { eventId: '$o3', name: '아빠', isMe: false, kind: 'text', body: '초도 부탁', ts: now - 40_000 },
+];
+const propsB = () => {
+  const timeline = timelineB();
+  const recent = recentSentSummaries(timeline, { labels, limit: 3 });
+  return props({ timeline, lastSent: recent[0], earlierSent: recent.slice(1) });
+};
 const q = (app, s) => app.querySelector(s);
 
 test('바는 헤더 아래·타임라인 위에 내 마지막 말·답장 수·시간을 보여 준다', () => {
@@ -100,6 +114,55 @@ test('누르면 그 말풍선으로 스크롤하고 잠깐 밝힌다; 불러온 
   assert.equal(list.scrollTop, 777, '없는 말풍선으로는 스크롤하지 않는다');
   assert.equal(q(app, '.last-sent .hint').hidden, false);
   assert.match(q(app, '.last-sent .hint').textContent, /불러온 대화 밖/);
+});
+
+test('펼치면 이전 내 말이 최대 2개 더 보이고(합계 3), 누르면 그 말풍선으로 스크롤한다; 접힘에서는 CSS로 숨긴다', async () => {
+  const app = root();
+  globalThis.localStorage.setItem('familychat:lastSent:collapsed:!a:x', '0'); // 펼침 상태로 시작
+  ui.renderShell(app, propsB());
+  const bar = q(app, '.last-sent');
+  assert.equal(bar.dataset.collapsed, 'false');
+  assert.match(q(app, '.last-sent .preview').textContent, /케이크 사갈게요/, '바 본문은 가장 최근 내 말');
+  const rows = [...app.querySelectorAll('.last-sent .earlier li .earlier-jump')];
+  assert.equal(rows.length, 2, '이전 내 말은 2개(최신 1개 + 2개 = 3개)');
+  assert.deepEqual(rows.map((b) => b.querySelector('.text').textContent), ['네 알겠어요', '오늘 몇 시에 모여요?'], '최신순');
+  assert.deepEqual(rows.map((b) => b.dataset.eventId), ['$m2', '$m1']);
+  assert.match(rows[0].querySelector('.chip').textContent, /아직 답 없음/, '둘째 말 뒤 다음 내 말 전까지 답장 0');
+  assert.match(rows[1].querySelector('.chip').textContent, /답장 1/, '첫 말 뒤 다음 내 말 전까지 답장 1');
+  assert.equal(q(app, '.last-sent .earlier').getAttribute('aria-label'), '이전 내 말 — 누르면 그 메시지로 이동');
+  assert.equal(app.querySelectorAll('.last-sent button button').length, 0, '버튼 안에 버튼을 두지 않는다');
+  // 누르면 그 말풍선으로 스크롤하고 밝힌다(큰 버튼과 같은 jumpToBubble 경로).
+  const list = q(app, '.timeline');
+  const bubble = q(app, 'li.bubble[data-event-id="$m1"]');
+  Object.defineProperty(bubble, 'offsetTop', { value: 500, configurable: true });
+  Object.defineProperty(list, 'offsetTop', { value: 100, configurable: true });
+  list.scrollTop = 999;
+  rows[1].click();
+  assert.equal(list.scrollTop, 392, '말풍선 위치(500-100-8)로 스크롤해야 한다');
+  assert.ok(bubble.classList.contains('flash'));
+  assert.equal(q(app, '.last-sent .hint').hidden, true);
+  // 내 말이 하나뿐이면 목록 자체가 없다.
+  ui.renderShell(root(), props());
+  assert.equal(document.querySelector('.last-sent .earlier'), null);
+  // 접힘에서는 목록을 CSS로 숨긴다(DOM에는 남아 펼치면 바로 보인다).
+  const { readFile } = await import('node:fs/promises');
+  const css = await readFile(new URL('../../styles.css', import.meta.url), 'utf-8');
+  assert.match(css, /\.last-sent\[data-collapsed="true"\] \.earlier \{ display: none; \}/);
+  assert.match(css, /\.last-sent \.earlier-jump \.text \{[^}]*text-overflow: ellipsis/);
+});
+
+test('이전 내 말 목록이 바뀌면 바를 다시 그리고, 같으면 유지한다', () => {
+  const app = root();
+  ui.renderShell(app, propsB());
+  const bar1 = q(app, '.last-sent');
+  ui.renderShell(app, propsB());
+  same(q(app, '.last-sent'), bar1, '같은 데이터면 바 노드 유지');
+  // 둘째 말이 삭제돼 목록이 바뀌면 교체된다.
+  const timeline = timelineB().filter((e) => e.eventId !== '$m2');
+  const recent = recentSentSummaries(timeline, { labels, limit: 3 });
+  ui.renderShell(app, props({ timeline, lastSent: recent[0], earlierSent: recent.slice(1) }));
+  assert.notEqual(q(app, '.last-sent'), bar1, '목록이 바뀌면 바를 다시 그린다');
+  assert.deepEqual([...app.querySelectorAll('.last-sent .earlier-jump')].map((b) => b.dataset.eventId), ['$m1']);
 });
 
 test('기본은 접힘; 펼침은 방별로 기억되고 재렌더·재마운트 뒤에도 유지된다', () => {
