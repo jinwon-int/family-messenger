@@ -7,6 +7,8 @@ on:
     paths:
       - "archive/native-mls/ios-ffi/**"
       - "archive/native-mls/ios/**"
+      # 격리 릴레이 스모크(#276)가 이 릴레이를 빌드해 쓴다
+      - "archive/native-mls/server/**"
       - ".github/workflows/native-mls-ios.yml"
 permissions:
   contents: read
@@ -95,6 +97,30 @@ jobs:
         run: |
           brew install xcodegen
           xcodegen generate
+      # --- 격리 릴레이 스모크(#276 §2.4): Go 릴레이 -access-mode disabled · loopback 빈 포트 · mktemp -d 데이터.
+      # 운영 서버·실계정 무관. 감독자가 시뮬레이터 XCTest 의 요청으로 릴레이를 중단/재시작한다(같은 데이터 디렉터리).
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: archive/native-mls/server/go.mod
+          cache-dependency-path: archive/native-mls/server/go.sum
+      - name: Build the v2 relay and start the smoke supervisor
+        run: |
+          start=$(date +%s)
+          ( cd archive/native-mls/server && go build -o "$RUNNER_TEMP/native-mls-relay" . )
+          smoke_dir=$(mktemp -d)
+          python3 archive/native-mls/ios/scripts/relay_smoke_supervisor.py \
+            --relay-bin "$RUNNER_TEMP/native-mls-relay" --data-dir "$smoke_dir" \
+            --ready-file "$smoke_dir/ready.json" > "$smoke_dir/supervisor.log" 2>&1 &
+          for _ in $(seq 100); do [ -f "$smoke_dir/ready.json" ] && break; sleep 0.2; done
+          test -f "$smoke_dir/ready.json" || { cat "$smoke_dir/supervisor.log"; exit 1; }
+          cat "$smoke_dir/ready.json"
+          relay_url=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["relay_url"])' "$smoke_dir/ready.json")
+          control_url=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["control_url"])' "$smoke_dir/ready.json")
+          curl -fsS "$relay_url/v2/health"
+          # xcodebuild 는 TEST_RUNNER_ 접두를 떼고 테스트 프로세스에 넘긴다
+          { echo "SMOKE_DIR=$smoke_dir"; echo "SMOKE_CONTROL_URL=$control_url"
+            echo "TEST_RUNNER_FC_SMOKE_RELAY_URL=$relay_url"; echo "TEST_RUNNER_FC_SMOKE_CONTROL_URL=$control_url"; } >> "$GITHUB_ENV"
+          echo "relay_build_and_start_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Pick a simulator
         id: sim
         run: |
@@ -110,8 +136,26 @@ jobs:
           start=$(date +%s)
           xcodebuild -project FamilyChat.xcodeproj -scheme FamilyChat -configuration Debug \
             -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
-            -derivedDataPath build CODE_SIGNING_ALLOWED=NO test | tail -n 60
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO test 2>&1 | tee "$RUNNER_TEMP/xcodebuild-test.log" | tail -n 60
           echo "simulator_test_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Isolated relay smoke — per-scenario results
+        if: always()
+        run: |
+          log="$RUNNER_TEMP/xcodebuild-test.log"
+          test -f "$log" || exit 0
+          grep -E '\[relay-smoke\]|\[scenario\]|Test Case .*(RelaySmoke|Integration).*(passed|failed|skipped)|Executed [0-9]+ tests|\*\* TEST (SUCCEEDED|FAILED) \*\*' "$log" \
+            | tee -a "$GITHUB_STEP_SUMMARY" || true
+          # 스모크가 환경변수를 받고도 건너뛰었다면(=검증 안 됨) 실패로 본다
+          if grep -q 'RelaySmokeTests.testIsolatedRelaySmoke.*skipped' "$log"; then echo "relay smoke was skipped"; exit 1; fi
+      - name: Stop the smoke relay and keep its logs
+        if: always()
+        run: |
+          [ -n "${SMOKE_CONTROL_URL:-}" ] && curl -fsS -X POST "$SMOKE_CONTROL_URL/shutdown" || true
+          if [ -n "${SMOKE_DIR:-}" ]; then
+            echo "--- supervisor.log"; tail -n 40 "$SMOKE_DIR/supervisor.log" || true
+            echo "--- relay.log"; tail -n 80 "$SMOKE_DIR/relay.log" || true
+            rm -rf "$SMOKE_DIR"
+          fi
       - name: App size
         working-directory: archive/native-mls/ios
         run: |
