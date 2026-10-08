@@ -12,7 +12,7 @@ import { viewKeyAction, listPageMove, isSplitLayout, listPageNavAction, timeline
 import { splitParticipants, shortHandle } from './participants.js';
 import { attachmentFromContent, collectAttachments, fileboxRefreshUrl } from './attachments.js';
 import { PhotoPreviews } from './photo-previews.js';
-import { applyTypingEvent, createTypingSender, createTypingState, pruneTyping, typingIndicator, typingNames } from './typing.js';
+import { applyTypingEvent, composingFocus, createTypingSender, createTypingState, pruneTyping, stopOnBlur, typingIndicator, typingNames } from './typing.js';
 import { DEFAULT_CONFIG, loadConfig } from './config.js';
 import { disablePush, enablePush, hasMatchingPusher, isIosDevice, pushAvailability, readSubscription } from './push.js';
 import { renderHold, selectionInRenderedArea } from './render-guard.js';
@@ -1034,7 +1034,8 @@ function flushReadReceipt() {
       roomId,
       timeline: state.rooms.get(roomId)?.timeline ?? [],
       visible: document.visibilityState !== 'hidden',
-      focused: typeof document.hasFocus === 'function' ? document.hasFocus() : true,
+      // 홈 화면 앱의 hasFocus()는 믿을 수 없다 — 보이는 중이면 보고 있는 것으로 본다(typing.js composingFocus와 같은 이유).
+      focused: isStandaloneApp() ? document.visibilityState !== 'hidden' : documentFocused(),
       atBottom: ui.timelineShowsLatest(root),
       hasRead: (eventId) => hasReadEvent(roomId, eventId),
     });
@@ -1053,10 +1054,17 @@ window.addEventListener('focus', requestReadReceipt);
 // 규칙·상수는 typing.js createTypingSender에 있다: 글이 있고 창이 포커스·표시 중이면 키 입력이 없어도
 // 만료 전에 재알림(keep-alive)하고, 전송·비움·방 전환·blur·hidden·3분 상한이면 즉시 끈다.
 // 실패는 조용히 기록만 한다(표시 기능일 뿐이다).
+// 홈 화면 앱(standalone)인가 — iOS Safari는 navigator.standalone, 그 밖은 display-mode. 여기서는 포커스 판정에 쓴다:
+// standalone의 document.hasFocus()는 믿을 수 없어 작성창이 activeElement면 쓰는 중으로 본다(typing.js composingFocus).
+const isStandaloneApp = () => navigator.standalone === true || window.matchMedia?.('(display-mode: standalone)').matches === true;
+const composerActive = () => Boolean(document.activeElement?.closest?.('.composer'));
+const documentFocused = () => (typeof document.hasFocus === 'function' ? document.hasFocus() : true);
+const windowFocused = () => composingFocus({ standalone: isStandaloneApp(), hasFocus: documentFocused(), composerActive: composerActive() });
+
 const typingSender = createTypingSender({
   send: (roomId, isTyping, timeoutMs) => state.client?.sendTyping(roomId, isTyping, timeoutMs),
   onError: (error) => console.warn('typing send failed', error),
-  isFocused: () => (typeof document.hasFocus === 'function' ? document.hasFocus() : true),
+  isFocused: windowFocused,
   isVisible: () => document.visibilityState !== 'hidden',
 });
 
@@ -1073,7 +1081,10 @@ function handleComposerTyping(roomId, hasText) {
 }
 
 // 창이 포커스를 잃거나 탭이 숨겨지면 더 쓰고 있다고 볼 수 없다 — 즉시 끈다(되찾으면 다음 키 입력에 다시 켠다).
-window.addEventListener('blur', () => typingSender.focusChanged(false));
+// 홈 화면 앱에서 작성창이 그대로 activeElement인 blur(화면 키보드·시스템 UI)는 떠난 것이 아니다(typing.js stopOnBlur).
+window.addEventListener('blur', () => {
+  if (stopOnBlur({ standalone: isStandaloneApp(), composerActive: composerActive() })) typingSender.focusChanged(false);
+});
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') typingSender.visibilityChanged(false);
 });

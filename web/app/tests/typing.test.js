@@ -7,14 +7,59 @@ import {
   TYPING_REFRESH_MS,
   TYPING_TIMEOUT_MS,
   applyTypingEvent,
+  composingFocus,
   createTypingSender,
   createTypingState,
   pruneTyping,
+  stopOnBlur,
   typingIndicator,
   typingNames,
 } from '../src/typing.js';
 
 const T0 = 1_000_000;
+
+// 홈 화면 앱(standalone)에서 document.hasFocus()가 false를 돌려줘 "입력중.."이 20초 keep-alive에서 꺼지던 문제
+// (오너 2026-10-08: 아이폰 홈 화면 앱에서만 잘 안 뜸). standalone은 작성창이 activeElement면 쓰는 중.
+test('composingFocus: standalone은 작성창 활성이면 hasFocus가 false여도 포커스로 보고, 브라우저는 hasFocus만 본다', () => {
+  assert.equal(composingFocus({ standalone: true, hasFocus: false, composerActive: true }), true);
+  assert.equal(composingFocus({ standalone: true, hasFocus: true, composerActive: false }), true);
+  assert.equal(composingFocus({ standalone: true, hasFocus: false, composerActive: false }), false);
+  assert.equal(composingFocus({ standalone: false, hasFocus: false, composerActive: true }), false, '브라우저 탭은 창을 떠나면 끈다(2026-09-30)');
+  assert.equal(composingFocus({ standalone: false, hasFocus: true, composerActive: false }), true);
+});
+
+test('stopOnBlur: standalone에서 작성창이 그대로 활성인 blur는 끄지 않고, 그 외는 끈다', () => {
+  assert.equal(stopOnBlur({ standalone: true, composerActive: true }), false);
+  assert.equal(stopOnBlur({ standalone: true, composerActive: false }), true);
+  assert.equal(stopOnBlur({ standalone: false, composerActive: true }), true);
+  assert.equal(stopOnBlur({ standalone: false, composerActive: false }), true);
+});
+
+test('createTypingSender: standalone 판정(composingFocus)을 isFocused로 주면 hasFocus=false여도 keep-alive가 이어진다', () => {
+  const sent = [];
+  const timers = new Map();
+  let id = 0;
+  let now = T0;
+  const sender = createTypingSender({
+    send: (room, typing) => { sent.push([typing, now - T0]); },
+    isFocused: () => composingFocus({ standalone: true, hasFocus: false, composerActive: true }),
+    isVisible: () => true,
+    now: () => now,
+    setTimer: (fn, ms) => { const key = ++id; timers.set(key, { fn, at: now + ms }); return key; },
+    clearTimer: (key) => timers.delete(key),
+  });
+  const fire = (until) => {
+    for (const [key, timer] of [...timers].sort((a, b) => a[1].at - b[1].at)) {
+      if (timer.at > until) break;
+      timers.delete(key); now = timer.at; timer.fn();
+    }
+    now = until;
+  };
+  sender.activity('!r:x', true);
+  fire(T0 + TYPING_REFRESH_MS + 1_000); // keep-alive 1회 경과
+  fire(T0 + 2 * TYPING_REFRESH_MS + 1_000); // 2회 경과
+  assert.deepEqual(sent.map(([typing]) => typing), [true, true, true], 'hasFocus=false여도 standalone 작성 중이면 끄지 않고 재알림한다');
+});
 
 test('applyTypingEvent: 추가→변화 있음, 반복 알림→변화 없음, 해제→변화 있음', () => {
   const state = createTypingState();
