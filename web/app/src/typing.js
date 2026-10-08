@@ -97,6 +97,33 @@ export function typingNames(typingByRoom, roomId, { myUserId = null, now = Date.
 }
 
 /**
+ * "창이 포커스 중"의 판정(보내기 keep-alive·유휴 점검과 읽음 확인이 같이 쓴다).
+ *
+ * 홈 화면 앱(standalone)에서는 `document.hasFocus()`를 믿을 수 없다 — 작성창에 커서를 두고 쓰는
+ * 중에도 false를 돌려주는 경우가 있어, 첫 키 입력 뒤 20초 keep-alive에서 "쓰고 있지 않다"로
+ * 판정해 typing=false를 보내고 15초만 멈춰도 꺼졌다(아이폰 홈 화면 앱에서만 "입력중.."이 깜빡이거나
+ * 금방 사라짐 — Safari 탭·PC 크롬은 정상, 오너 2026-10-08). standalone에서는 다른 창에 포커스를
+ * 뺏길 일이 없으므로 **작성창이 activeElement면 쓰는 중**으로 본다(앱 전환은 visibilitychange가 끈다).
+ * 브라우저 탭·PC에서는 기존대로 hasFocus만 본다(창을 떠나면 끄는 2026-09-30 결정 유지).
+ * @param {{standalone: boolean, hasFocus: boolean, composerActive: boolean}} input
+ * @returns {boolean}
+ */
+export function composingFocus({ standalone, hasFocus, composerActive }) {
+  if (standalone) return Boolean(composerActive) || Boolean(hasFocus);
+  return hasFocus !== false;
+}
+
+/**
+ * window blur가 왔을 때 즉시 끌지. standalone에서 작성창이 여전히 activeElement면(화면 키보드·시스템 UI가
+ * 만드는 blur) 끄지 않는다 — 실제로 떠나면 visibilitychange(hidden)가 끈다.
+ * @param {{standalone: boolean, composerActive: boolean}} input
+ * @returns {boolean}
+ */
+export function stopOnBlur({ standalone, composerActive }) {
+  return !(standalone && composerActive);
+}
+
+/**
  * Header label for a room's typing state ('' = hide the indicator). The copy
  * is a single static phrase (오너 지정 "입력중.."); the string table is the one place for copy.
  * @param {string[]} names
