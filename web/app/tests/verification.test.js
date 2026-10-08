@@ -67,3 +67,51 @@ test('한국어 라벨표는 실제 문자와 대응한다', () => {
     assert.equal(emojiLabel([glyph, 'english']), label);
   }
 });
+
+// #331 — 시트가 떠 있을 때 들어온 검증 요청을 버리지 않는다.
+import { IncomingAction, classifyIncoming, createIncomingHolder, isRequestPending } from '../src/verification.js';
+
+const dialogWith = (...classes) => ({ classList: { contains: (name) => classes.includes(name) } });
+
+test('들어온 검증 요청: 시트 없음 → 바로 열고, 메뉴 시트 → 닫고 열고, 다른 시트 → 보관', () => {
+  assert.equal(classifyIncoming(null), IncomingAction.open);
+  assert.equal(classifyIncoming(undefined), IncomingAction.open);
+  assert.equal(classifyIncoming(dialogWith('sheet', 'menu')), IncomingAction.closeMenu);
+  assert.equal(classifyIncoming(dialogWith('sheet')), IncomingAction.hold);
+  assert.equal(classifyIncoming({}), IncomingAction.hold); // classList 없는 노드도 보관 쪽으로
+});
+
+test('보관한 요청은 시트가 닫힐 때 꺼내 열고, 그 사이 만료·취소된 요청은 버린다', () => {
+  const holder = createIncomingHolder();
+  assert.equal(holder.has(), false);
+  assert.equal(holder.take(), null);
+
+  const live = { pending: true, phase: 2 };
+  holder.hold(live);
+  assert.equal(holder.has(), true);
+  assert.equal(holder.take(), live);
+  assert.equal(holder.has(), false, 'take 는 한 번만 꺼낸다');
+
+  const cancelled = { pending: false, phase: 5 };
+  holder.hold(cancelled);
+  assert.equal(holder.take(), null, '취소된 요청은 열지 않는다');
+
+  const first = { pending: true, phase: 2, id: 1 };
+  const second = { pending: true, phase: 2, id: 2 };
+  holder.hold(first);
+  holder.hold(second);
+  assert.equal(holder.take(), second, '나중 요청이 먼저 것을 덮는다');
+
+  holder.hold(live);
+  holder.clear();
+  assert.equal(holder.take(), null);
+});
+
+test('isRequestPending: pending=false 또는 Cancelled(5)/Done(6) 는 끝난 요청, 정보가 없으면 살아 있다고 본다', () => {
+  assert.equal(isRequestPending(null), false);
+  assert.equal(isRequestPending({ pending: false }), false);
+  assert.equal(isRequestPending({ phase: 5 }), false);
+  assert.equal(isRequestPending({ phase: 6 }), false);
+  assert.equal(isRequestPending({ pending: true, phase: 3 }), true);
+  assert.equal(isRequestPending({}), true);
+});

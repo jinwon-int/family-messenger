@@ -20,6 +20,7 @@ import { enterCaretMode, exitCaretMode, isCaretMode } from './timeline-caret.js'
 import { createReadReceiptSender, isRoomUnread } from './read-receipts.js';
 import { recentSentSummaries, indexSummaries, mergeSentSummaries, dayStart, collapsedKey } from './last-sent.js';
 import * as ui from './ui.js';
+import { IncomingAction, classifyIncoming, createIncomingHolder } from './verification.js';
 import { installViewportFit } from './viewport.js';
 
 const root = document.getElementById('app');
@@ -1138,8 +1139,27 @@ function openVerification() {
   });
 }
 
+// 시트가 떠 있는 동안 들어온 검증 요청을 보관한다 (#331 — 버리지 않는다).
+const heldIncomingVerification = createIncomingHolder();
+
 function openIncomingVerification(request) {
-  if (root.querySelector('dialog[open]')) return; // 시트가 이미 떠 있으면 겹치지 않는다
+  const openDialog = root.querySelector('dialog[open]');
+  const action = classifyIncoming(openDialog);
+  if (action === IncomingAction.hold) {
+    // 기기 목록·복구·진행 중인 검증 시트가 떠 있으면 겹치지 않고, 그 시트가 닫힐 때 연다.
+    // 요청이 그 사이 만료·취소되면 take() 가 null 을 돌려줘 아무것도 열지 않는다.
+    heldIncomingVerification.hold(request);
+    openDialog.addEventListener(
+      'close',
+      () => {
+        const next = heldIncomingVerification.take();
+        if (next) openIncomingVerification(next);
+      },
+      { once: true },
+    );
+    return;
+  }
+  if (action === IncomingAction.closeMenu) openDialog.close(); // 메뉴는 잃을 상태가 없다 — 닫고 바로 연다
   const close = ui.openVerificationSheet(root, {
     incoming: true,
     driver: (callbacks) => state.client.acceptEmojiVerification(request, callbacks),
