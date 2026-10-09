@@ -12,7 +12,7 @@ concurrency:
 jobs:
   native:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -73,7 +73,14 @@ jobs:
           echo "::error::browser test tool install failed after 3 attempts"
           exit 1
       - name: Two real browser clients
-        run: python tests/native_browser_smoke.py --binary artifacts/family-dev
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 20); do
+            echo "::group::repeat $i/20"
+            python tests/native_browser_smoke.py --binary artifacts/family-dev
+            echo "::endgroup::"
+            echo "repeat $i/20 PASS"
+          done
       - name: Two browser media and playback proof
         run: python tests/native_media_browser_smoke.py --binary artifacts/family-dev
       - name: Signed identity browser handoff proof
