@@ -96,6 +96,10 @@ def main():
 
             # Kill the real server. Hold Bob's new stream requests while a message
             # arrives after restart, then verify resumption from his applied seq.
+            # Bob must have applied his own echo (seq 2) before the kill, or the
+            # client correctly resumes from after=1 and the after=2 check flakes
+            # (#323). data-cursor is written only after an event is applied.
+            expect(b.locator("#messages")).to_have_attribute("data-cursor", "2")
             b.route("**/events?*", lambda route: route.abort())
             process.kill()
             process.wait(timeout=5)
