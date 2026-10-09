@@ -246,14 +246,17 @@ test('알림 재개·상태 판정 배선: 끄기 선호를 존중하고, pusher
 // 화면 키보드(iOS)가 열리면 viewport.js가 --shell-height(visualViewport 높이)와 html[data-keyboard="open"]을 둔다
 // (오너 2026-10-07: 키보드와 작성창 사이 큰 여백). 셸·body·#app 높이는 그 변수를 쓰고 평소엔 100dvh로 돌아가며,
 // 키보드가 열린 동안 작성창 아래 안전 영역 여백은 빠진다. 규칙 순서(가로 규칙보다 뒤)와 특이성으로 이긴다.
-test('styles.css: 셸 높이는 var(--shell-height, 100dvh)이고 키보드 열림 중 작성창 아래 여백은 안전 영역 없이 0이다', () => {
+// 외부 키보드의 입력 보조 바("bar")는 반대로 안전 영역만큼 더 올린다 — iOS가 바 높이를 덜 보고해 바가 작성창을
+// 덮었다(오너 2026-10-09, #327 뒤).
+test('styles.css: 셸 높이는 var(--shell-height, 100dvh)이고 키보드 열림 중 작성창 아래 여백은 0, 외부 키보드 보조 바 중에는 안전 영역만큼 올린다', () => {
   const css = readFileSync(join(import.meta.dirname, '..', 'styles.css'), 'utf-8');
   assert.match(css, /main\.shell \{[^}]*height: var\(--shell-height, 100dvh\)/);
   assert.match(css, /\nbody \{[^}]*min-height: var\(--shell-height, 100dvh\)/);
   assert.match(css, /#app \{ min-height: var\(--shell-height, 100dvh\)/);
   assert.doesNotMatch(css, /height: 100dvh;/, '100dvh 고정이 남아 있으면 키보드가 열려도 셸이 줄지 않는다');
-  const rule = /html\[data-keyboard\] \.composer-wrap \{ padding-bottom: 0; \}/; // "open"(화면 키보드)·"bar"(외부 키보드 보조 바) 모두
-  assert.match(css, rule);
+  assert.match(css, /html\[data-keyboard="open"\] \.composer-wrap \{ padding-bottom: 0; \}/, '화면 키보드: 바로 위에 붙인다');
+  assert.match(css, /html\[data-keyboard="bar"\] \.composer-wrap \{ padding-bottom: max\(var\(--space-2\), env\(safe-area-inset-bottom\)\); \}/, '보조 바: 안전 영역만큼 올린다');
+  assert.doesNotMatch(css, /html\[data-keyboard\] \.composer-wrap/, '모드 공통 규칙이 남으면 bar 규칙을 덮는다');
   const main = readFileSync(join(SRC, 'main.js'), 'utf-8');
   assert.match(main, /import \{ installViewportFit \} from '\.\/viewport\.js'/);
   assert.match(main, /installViewportFit\(\);/);
