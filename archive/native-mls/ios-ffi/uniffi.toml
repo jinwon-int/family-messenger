@@ -2,3 +2,9 @@
 module_name = "FamilyMLS"
 ffi_module_name = "FamilyMLSFFI"
 generate_module_map = true
+
+# Android 호스트(#338 스파이크 A): 같은 cdylib 에서 Kotlin 바인딩. 패키지명은 Java 식별자 규칙상 하이픈 불가 —
+# iOS 번들 `com.seoyoon-family.familychat` 과 다름을 #338 G2 에 명시.
+[bindings.kotlin]
+package_name = "com.seoyoon_family.familychat.mls"
+cdylib_name = "family_mls_ios_ffi"
