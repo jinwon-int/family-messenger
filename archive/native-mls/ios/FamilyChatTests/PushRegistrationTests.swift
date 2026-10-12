@@ -35,7 +35,7 @@ final class TestClock {
 @MainActor
 final class PushRegistrationTests: XCTestCase {
     private let device = "owner-iphone-abc123"
-    private let topic = "com.example.familychat.ios"
+    private let topic = "com.seoyoon-family.familychat"
     private let token = Data((0..<32).map { UInt8($0) })
 
     private var relay: RecordingPushRelay!
@@ -69,7 +69,7 @@ final class PushRegistrationTests: XCTestCase {
         return AppModel(dependencies: deps)
     }
 
-    private func readyModel(topic: String? = "com.example.familychat.ios") async -> AppModel {
+    private func readyModel(topic: String? = "com.seoyoon-family.familychat") async -> AppModel {
         let model = makeModel(topic: topic)
         await model.bootstrap()
         model.login(.bearer("jwt"))

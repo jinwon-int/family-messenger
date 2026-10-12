@@ -43,10 +43,10 @@ final class RelayTypesTests: XCTestCase {
         let rooms = try JSONDecoder().decode(RoomsResponse.self, from: Data(#"{"rooms":[{"room":"family","epoch":1,"revision":2,"member":true,"keypackages_outstanding":0,"closed":false}]}"#.utf8))
         XCTAssertEqual(rooms.rooms.first?.room, "family")
         XCTAssertEqual(rooms.rooms.first?.member, true)
-        let reg = try JSONEncoder().encode(PushRegistration(device: "owner-iphone", apnsToken: Data([1]), topic: "com.example.familychat.ios"))
+        let reg = try JSONEncoder().encode(PushRegistration(device: "owner-iphone", apnsToken: Data([1]), topic: "com.seoyoon-family.familychat"))
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: reg) as? [String: Any])
         XCTAssertEqual(object["apns_token"] as? String, "AQ==")
-        XCTAssertEqual(object["topic"] as? String, "com.example.familychat.ios")
+        XCTAssertEqual(object["topic"] as? String, "com.seoyoon-family.familychat")
     }
 
     func testEngineMethodWireNames() {
