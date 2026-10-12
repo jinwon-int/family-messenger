@@ -3,7 +3,7 @@
 # 서명 없음(CI). 파이널라이저 소유(CONTRACTS.md §0).
 name: FamilyChat
 options:
-  bundleIdPrefix: com.example.familychat
+  bundleIdPrefix: com.seoyoon-family
   deploymentTarget:
     iOS: "16.0"
   createIntermediateGroups: true
@@ -51,7 +51,7 @@ targets:
         com.apple.security.application-groups: [$(FC_APP_GROUP)]
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.familychat.ios
+        PRODUCT_BUNDLE_IDENTIFIER: com.seoyoon-family.familychat
         TARGETED_DEVICE_FAMILY: "1"
         FC_RELAY_URL: ""
         FC_APP_GROUP: ""
@@ -98,7 +98,7 @@ targets:
         com.apple.security.application-groups: [$(FC_APP_GROUP)]
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.familychat.ios.nse
+        PRODUCT_BUNDLE_IDENTIFIER: com.seoyoon-family.familychat.nse
         TARGETED_DEVICE_FAMILY: "1"
         FC_RELAY_URL: ""
         FC_APP_GROUP: ""
@@ -113,7 +113,7 @@ targets:
       - target: FamilyChat
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.familychat.ios.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.seoyoon-family.familychat.tests
 schemes:
   FamilyChat:
     build:

@@ -136,7 +136,7 @@ func TestRoomsAndPushAreBoundToTheCallersSubject(t *testing.T) {
 		t.Fatalf("own rooms: %d %s", code, raw)
 	}
 	tok := []byte{1, 2, 3, 4}
-	if code, raw := doAuth(t, srv, "POST", "/v2/push/devices", pushBody("alice-phone", tok, "com.example.familychat.ios"), alice); code != http.StatusNoContent {
+	if code, raw := doAuth(t, srv, "POST", "/v2/push/devices", pushBody("alice-phone", tok, "com.seoyoon-family.familychat"), alice); code != http.StatusNoContent {
 		t.Fatalf("own push register: %d %s", code, raw)
 	}
 	for _, c := range []struct {
@@ -144,7 +144,7 @@ func TestRoomsAndPushAreBoundToTheCallersSubject(t *testing.T) {
 		body         []byte
 	}{
 		{"GET", "/v2/rooms?device=bob-phone", nil},
-		{"POST", "/v2/push/devices", pushBody("bob-phone", tok, "com.example.familychat.ios")},
+		{"POST", "/v2/push/devices", pushBody("bob-phone", tok, "com.seoyoon-family.familychat")},
 		{"DELETE", "/v2/push/devices?device=bob-phone", nil},
 		{"GET", "/v2/rooms?device=ghost-phone", nil}, // unknown device: same answer as foreign
 	} {
@@ -173,7 +173,7 @@ func TestPushRegistrationIsIdempotentAndRotates(t *testing.T) {
 		}
 		return b
 	}
-	const topic = "com.example.familychat.ios"
+	const topic = "com.seoyoon-family.familychat"
 	for i := 0; i < 2; i++ {
 		if st, raw := doJSON(t, srv, "POST", "/v2/push/devices", pushBody("a1", []byte{0xaa, 0xbb}, topic)); st != http.StatusNoContent {
 			t.Fatalf("register #%d: %d %s", i, st, raw)
@@ -321,7 +321,7 @@ func TestAPNsAlertsBehindMembersOutsideTheTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.push = sender
-	const topic = "com.example.familychat.ios"
+	const topic = "com.seoyoon-family.familychat"
 	tokens := map[string][]byte{"a1": {0xa1, 0x01}, "b1": {0xb1, 0x01}, "c1": {0xc1, 0x01}, "d1": {0xd1, 0x01}}
 	for dev, tok := range tokens {
 		if st, raw := doJSON(t, srv, "POST", "/v2/push/devices", pushBody(dev, tok, topic)); st != http.StatusNoContent {
