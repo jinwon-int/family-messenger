@@ -26,7 +26,11 @@ cargo "+$toolchain" ndk --platform "$platform" -t arm64-v8a -t armeabi-v7a -t x8
 # 2) Kotlin 바인딩 — 빌드 호스트 dev cdylib 에서 생성(라이브러리 모드). release 는 strip=true 라 uniffi 메타데이터가
 #    없어 Linux 에서 bindgen 이 실패한다(native-mls-ios.yml relay-smoke 와 같은 이유로 dev 빌드를 쓴다).
 cargo "+$toolchain" build --locked --features cli
-host_lib="$(ls target/debug/libfamily_mls_ios_ffi.so target/debug/libfamily_mls_ios_ffi.dylib 2>/dev/null | head -1)"
+host_lib=""
+for cand in target/debug/libfamily_mls_ios_ffi.so target/debug/libfamily_mls_ios_ffi.dylib; do
+  [ -f "$cand" ] && { host_lib="$cand"; break; }
+done
+[ -n "$host_lib" ] || { echo "host cdylib not found under target/debug" >&2; exit 66; }
 target/debug/uniffi-bindgen generate --library "$host_lib" --language kotlin --out-dir "$out/kotlin"
 
 # 3) 무결성 목록 + 크기 보고 (#243 2-d 릴리스 무결성 규칙 승계)
