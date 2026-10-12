@@ -1,0 +1,76 @@
+name: Native MLS track — Android host
+# 독자 E2EE 트랙의 네 번째 호스트(Android) 스파이크 A (#338 §4). 예산: ubuntu 1 job ≤20분(결정 E 규칙 2).
+# main 필수 체크가 아니므로 워크플로 수준 paths 필터. 운영 서버·실계정·비밀값 무관. macOS 불필요.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "archive/native-mls/ios-ffi/**"
+      - ".github/workflows/native-mls-android.yml"
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+env:
+  RUST_TOOLCHAIN: 1.91.1
+  CARGO_NDK_VERSION: 4.1.2
+  SO_TOTAL_BYTES_MAX: 15728640   # 15 MiB — #338 §4 A 수용 기준
+defaults:
+  run:
+    shell: bash
+jobs:
+  android-ffi:
+    name: 3 ABI .so + Kotlin bindings (cargo-ndk, Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: archive/native-mls/ios-ffi
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pinned Rust toolchain + Android std targets
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal \
+            --target aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+          rustc "+$RUST_TOOLCHAIN" --version
+      - name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-ndk
+            archive/native-mls/ios-ffi/target
+          key: native-mls-android-ffi-${{ runner.os }}-ndk${{ env.CARGO_NDK_VERSION }}-${{ hashFiles('archive/native-mls/ios-ffi/Cargo.lock') }}
+      - name: cargo-ndk (pinned)
+        run: |
+          if ! cargo ndk --version 2>/dev/null | grep -q "$CARGO_NDK_VERSION"; then
+            cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
+          fi
+          cargo ndk --version
+      - name: NDK on the runner
+        run: |
+          echo "ANDROID_NDK_LATEST_HOME=$ANDROID_NDK_LATEST_HOME"
+          test -d "$ANDROID_NDK_LATEST_HOME"
+          cat "$ANDROID_NDK_LATEST_HOME/source.properties" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Build 3 ABI .so + Kotlin bindings — timed
+        run: |
+          start=$(date +%s)
+          ./build-android.sh
+          echo "android_build_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+          cat out/android/build-report.txt | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Acceptance — 3/3 ABI present, total .so ≤ 15 MiB, Kotlin bindings generated
+        run: |
+          for abi in arm64-v8a armeabi-v7a x86_64; do test -s "out/android/jniLibs/$abi/libfamily_mls_ios_ffi.so"; done
+          total=$(sed -n 's/^total .so bytes: //p' out/android/build-report.txt)
+          test "$total" -le "$SO_TOTAL_BYTES_MAX" || { echo "total .so $total > $SO_TOTAL_BYTES_MAX"; exit 1; }
+          test "$(find out/android/kotlin -name '*.kt' | wc -l)" -ge 1
+          grep -q 'package com.seoyoon_family.familychat.mls' "$(find out/android/kotlin -name '*.kt' | head -1)"
+      - name: Upload spike artifacts (jniLibs · Kotlin · sha256 · report)
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-mls-android-ffi-${{ github.sha }}
+          path: archive/native-mls/ios-ffi/out/android
+          retention-days: 7
+          if-no-files-found: error

@@ -47,3 +47,20 @@ CI: `.github/workflows/native-mls-ios.yml` (ubuntu host 게이트 ≤15분 · ma
 - iOS 기기에서의 **실행**(시뮬레이터 단위시험까지만 CI). upstream OpenMLS 는 iOS 를 "built, not tested in CI" 로 표기한다.
 - 프로세스 간 단일 작성자·원자 영속·NSE 예산 — #271 §12-B/D.
 - 릴레이 통신·CF Access·푸시 — #271 §12-C/D.
+
+## Android 호스트 (#338 스파이크 A — 네 번째 호스트)
+
+같은 크레이트·같은 uniffi 핀으로 **Kotlin** 바인딩과 Android ABI 3개(`arm64-v8a`·`armeabi-v7a`·`x86_64`) `.so` 를 만든다.
+MLS 로직 추가 0줄, iOS 산출물·CI 는 그대로다. 크레이트 이름(`family-mls-ios-ffi`)은 스파이크 통과 뒤 `mobile-ffi` 로 개명할지 결정한다(#338 §2).
+
+```bash
+# Linux — rustup Android 타겟 3개 + cargo-ndk(=4.1.2) + ANDROID_NDK_HOME
+rustup target add --toolchain 1.91.1 aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+cargo install cargo-ndk --version 4.1.2 --locked
+./build-android.sh            # → out/android/jniLibs/<abi>/*.so, out/android/kotlin/**/*.kt, jnilibs-sha256.txt, build-report.txt
+```
+
+- Kotlin 패키지 `com.seoyoon_family.familychat.mls`(`uniffi.toml`) — Java 식별자 규칙상 하이픈 불가라 iOS 번들 ID 와 다르다.
+- 바인딩은 **dev 호스트 cdylib** 에서 생성한다(release 는 `strip = true` 라 Linux 에서 uniffi 메타데이터가 없다).
+- CI: `.github/workflows/native-mls-android.yml` — ubuntu 1 job ≤20분(결정 E 규칙 2). 수용 기준(#338 §4 A): 3 ABI 빌드 3/3, `.so` 합계 ≤ 15 MB. JVM/에뮬레이터 왕복은 다음 슬라이스.
+- Kotlin 런타임 의존 `net.java.dev.jna:jna`(Apache-2.0)는 앱 Gradle 쪽 의존이며, #177 원칙 5 에 따라 앱 프로젝트 생성 시 `dependencies.json`·고지에 추가한다.
