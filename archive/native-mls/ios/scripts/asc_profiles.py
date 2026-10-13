@@ -28,7 +28,9 @@ def main():
     for spec in a.bundles:
         bid, _, name = spec.partition("="); name = name or f"hande appstore {bid}"
         if bid not in bundle_ids: sys.exit(f"bundle id not registered: {bid}")
-        existing = [p for p in req("GET", f"/profiles?limit=200&filter[profileType]=IOS_APP_STORE&filter[name]={requests.utils.quote(name)}")["data"]]
+        # filter[name] 은 부분 일치(…hande 조회에 …hande.nse 도 걸림, run 38351864615) → 이름 정확 일치만 취한다.
+        existing = [p for p in req("GET", f"/profiles?limit=200&filter[profileType]=IOS_APP_STORE&filter[name]={requests.utils.quote(name)}")["data"]
+                    if p["attributes"]["name"] == name]
         prof = None
         for p in existing:
             cids = [c["id"] for c in req("GET", f"/profiles/{p['id']}/certificates")["data"]]
