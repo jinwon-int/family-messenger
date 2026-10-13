@@ -66,7 +66,7 @@ jobs:
           total=$(sed -n 's/^total .so bytes: //p' out/android/build-report.txt)
           test "$total" -le "$SO_TOTAL_BYTES_MAX" || { echo "total .so $total > $SO_TOTAL_BYTES_MAX"; exit 1; }
           test "$(find out/android/kotlin -name '*.kt' | wc -l)" -ge 1
-          grep -q 'package com.seoyoon_family.familychat.mls' "$(find out/android/kotlin -name '*.kt' | head -1)"
+          grep -q 'package com.seoyoon_family.hande.mls' "$(find out/android/kotlin -name '*.kt' | head -1)"
       - name: Upload spike artifacts (jniLibs · Kotlin · sha256 · report)
         uses: actions/upload-artifact@v4
         with:

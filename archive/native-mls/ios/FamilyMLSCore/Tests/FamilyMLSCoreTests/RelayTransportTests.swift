@@ -177,7 +177,7 @@ final class RelayTransportTests: XCTestCase {
     func testRegisterPushRequestMatchesServerWire() throws {
         let token = Data((0..<32).map { UInt8($0) })
         let request = try transport(.bearer("t")).registerPushRequest(
-            PushRegistration(device: "owner-iphone-0a0b0c", apnsToken: token, topic: "com.seoyoon-family.familychat"))
+            PushRegistration(device: "owner-iphone-0a0b0c", apnsToken: token, topic: "com.seoyoon-family.hande"))
         XCTAssertEqual(request.httpMethod, "POST")
         XCTAssertEqual(request.url?.absoluteString, "https://relay.example.com/v2/push/devices")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Cf-Access-Jwt-Assertion"), "t")
@@ -186,7 +186,7 @@ final class RelayTransportTests: XCTestCase {
         XCTAssertEqual(Set(json.keys), ["device", "apns_token", "topic"])
         XCTAssertEqual(json["device"] as? String, "owner-iphone-0a0b0c")
         XCTAssertEqual(json["apns_token"] as? String, token.base64EncodedString(), "표준 base64(서버 encoding/json []byte)")
-        XCTAssertEqual(json["topic"] as? String, "com.seoyoon-family.familychat")
+        XCTAssertEqual(json["topic"] as? String, "com.seoyoon-family.hande")
     }
 
     func testRegisterPushRequestUsesAccessCookieBehindEdge() throws {

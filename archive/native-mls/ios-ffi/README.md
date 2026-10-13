@@ -60,7 +60,7 @@ cargo install cargo-ndk --version 4.1.2 --locked
 ./build-android.sh            # → out/android/jniLibs/<abi>/*.so, out/android/kotlin/**/*.kt, jnilibs-sha256.txt, build-report.txt
 ```
 
-- Kotlin 패키지 `com.seoyoon_family.familychat.mls`(`uniffi.toml`) — Java 식별자 규칙상 하이픈 불가라 iOS 번들 ID 와 다르다.
+- Kotlin 패키지 `com.seoyoon_family.hande.mls`(`uniffi.toml`) — Java 식별자 규칙상 하이픈 불가라 iOS 번들 ID 와 다르다.
 - 바인딩은 **dev 호스트 cdylib** 에서 생성한다(release 는 `strip = true` 라 Linux 에서 uniffi 메타데이터가 없다).
 - CI: `.github/workflows/native-mls-android.yml` — ubuntu 1 job ≤20분(결정 E 규칙 2). 수용 기준(#338 §4 A): 3 ABI 빌드 3/3, `.so` 합계 ≤ 15 MB. JVM/에뮬레이터 왕복은 다음 슬라이스.
 - Kotlin 런타임 의존 `net.java.dev.jna:jna`(Apache-2.0)는 앱 Gradle 쪽 의존이며, #177 원칙 5 에 따라 앱 프로젝트 생성 시 `dependencies.json`·고지에 추가한다.
