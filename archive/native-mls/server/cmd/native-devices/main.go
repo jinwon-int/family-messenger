@@ -26,6 +26,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/jinwon-int/family-messenger/archive/native-mls/server/internal/devicepolicy"
 )
@@ -44,6 +45,14 @@ type addDeviceCandidate struct {
 	SigningKey   string `json:"signing_key"`
 	BaseRevision uint64 `json:"base_revision"`
 	Signature    string `json:"signature"`
+	// Optional cross-checks carried by relay-app's trusted-device evidence
+	// (openmls-browser/web/relay-app.js `approve`): the fingerprint the approver
+	// compared by eye, and the approver's own device id. They are never trusted
+	// as inputs — the CLI recomputes both and refuses on mismatch — but accepting
+	// them lets the evidence JSON be pasted as-is (2026-10-13: the operator had
+	// to hand-strip both fields before `-add-device` would decode it).
+	Fingerprint string `json:"fingerprint,omitempty"`
+	ApprovedBy  string `json:"approved_by,omitempty"`
 }
 
 type revokeEvidence struct {
@@ -300,6 +309,9 @@ func addApprovedDevice(devices []devicepolicy.DeviceV4, input string, expected u
 	if e != nil {
 		return nil, e
 	}
+	if c.Fingerprint != "" && !strings.EqualFold(c.Fingerprint, fp) {
+		return nil, fmt.Errorf("candidate fingerprint %q does not match sha256(signing_key) %q; the approver compared a different key", c.Fingerprint, fp)
+	}
 	if _, ok := findById(devices, c.DeviceID); ok {
 		return nil, fmt.Errorf("device id %q already exists; ids are never reused", c.DeviceID)
 	}
@@ -316,6 +328,9 @@ func addApprovedDevice(devices []devicepolicy.DeviceV4, input string, expected u
 	approver, e := findApprover(devices, payload, c.Signature, expected)
 	if e != nil {
 		return nil, e
+	}
+	if c.ApprovedBy != "" && c.ApprovedBy != approver {
+		return nil, fmt.Errorf("candidate approved_by %q does not match the device whose key verifies the signature (%q)", c.ApprovedBy, approver)
 	}
 	return append(cloneDevices(devices), devicepolicy.DeviceV4{
 		ID:          c.DeviceID,
