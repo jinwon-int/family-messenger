@@ -2,7 +2,7 @@
 import Foundation
 
 enum Strings {
-    static let appName = "패밀리챗"
+    static let appName = "한데"
     static let starting = "준비 중…"
     static let fatalTitle = "앱을 시작할 수 없습니다"
     static let decryptFormatMismatch = "암호화 모듈 버전이 맞지 않습니다(decrypt format). 앱을 업데이트해 주세요."

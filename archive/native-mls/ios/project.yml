@@ -1,5 +1,5 @@
 # XcodeGen — `xcodegen generate` 로 FamilyChat.xcodeproj 생성(생성물 커밋 금지).
-# 패밀리챗 iOS(독자 E2EE, #271): ../ios-ffi/build-xcframework.sh 산출물 + FamilyMLSCore 계약 패키지를 링크한 SwiftUI 앱.
+# 한데(앱 이름, 2026-10-13 오너 확정; 코드명 FamilyChat) iOS(독자 E2EE, #271): ../ios-ffi/build-xcframework.sh 산출물 + FamilyMLSCore 계약 패키지를 링크한 SwiftUI 앱.
 # 서명 없음(CI). 파이널라이저 소유(CONTRACTS.md §0).
 name: FamilyChat
 options:
@@ -34,7 +34,7 @@ targets:
     info:
       path: FamilyChat/Info.plist
       properties:
-        CFBundleDisplayName: 패밀리챗
+        CFBundleDisplayName: 한데
         CFBundleDevelopmentRegion: ko
         UILaunchScreen: {}
         # 실제 호스트명·App Group 은 리포에 두지 않는다(CONTRIBUTING) — 빌드 설정으로 주입. 비면 앱이 안내한다.
@@ -51,7 +51,7 @@ targets:
         com.apple.security.application-groups: [$(FC_APP_GROUP)]
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.seoyoon-family.familychat
+        PRODUCT_BUNDLE_IDENTIFIER: com.seoyoon-family.hande
         TARGETED_DEVICE_FAMILY: "1"
         FC_RELAY_URL: ""
         FC_APP_GROUP: ""
@@ -82,7 +82,7 @@ targets:
     info:
       path: FamilyChatNSE/Info.plist
       properties:
-        CFBundleDisplayName: 패밀리챗 알림
+        CFBundleDisplayName: 한데 알림
         CFBundleDevelopmentRegion: ko
         NSExtension:
           NSExtensionPointIdentifier: com.apple.usernotifications.service
@@ -98,7 +98,7 @@ targets:
         com.apple.security.application-groups: [$(FC_APP_GROUP)]
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.seoyoon-family.familychat.nse
+        PRODUCT_BUNDLE_IDENTIFIER: com.seoyoon-family.hande.nse
         TARGETED_DEVICE_FAMILY: "1"
         FC_RELAY_URL: ""
         FC_APP_GROUP: ""
@@ -113,7 +113,7 @@ targets:
       - target: FamilyChat
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.seoyoon-family.familychat.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.seoyoon-family.hande.tests
 schemes:
   FamilyChat:
     build:

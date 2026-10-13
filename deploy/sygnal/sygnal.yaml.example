@@ -89,9 +89,9 @@ apps:
   #
   # ⚠ p8 키 파일은 저장소에 넣지 않는다. 볼륨에만 두고 권한은 런북을 따른다.
   #
-  # com.seoyoon-family.familychat:
+  # com.seoyoon-family.hande:
   #   type: apns
   #   keyfile: /sygnal/apns_auth_key.p8
   #   key_id: <apns-key-id>
   #   team_id: <apple-team-id>
-  #   topic: com.seoyoon-family.familychat     # 앱 번들 ID
+  #   topic: com.seoyoon-family.hande     # 앱 번들 ID
