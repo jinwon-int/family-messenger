@@ -127,10 +127,21 @@ final class AppModel: ObservableObject {
         }
         self.credential = credential
         self.transport = transport
-        syncEngines = [:]   // 새 전송으로 다시 만든다(커서·정지 사유는 저장소에 있다)
+        syncEngines = [:]   // 새 전송으로 다시 만든다(커서·정지 사유는 저장소에 있다). 등록 subject 도 새 자격증명으로 다시 읽는다.
+        refreshRegistrationSubject()
         push.loggedIn()
         lastError = nil
         if phase == .needsLogin { phase = .needsEnrollment }
+    }
+
+    /// 등록 JSON 의 `subject` = 자격증명 JWT 의 `sub`(DEVICES-V4 §필드 필수, relay-app `enroll-info` 와 같은 규칙).
+    /// 서비스 토큰처럼 `sub` 가 없으면 비워 두고 운영자가 채운다. 릴레이는 등록 subject ≠ 실제 `sub` 면 403 으로 거부하므로
+    /// 여기서 읽은 값이 권한을 만들지는 않는다.
+    private func refreshRegistrationSubject() {
+        guard let engine else { return }
+        let subject = credential?.accessSubject ?? ""
+        guard registration?.subject != subject, let updated = try? EnrollmentRequest(engine: engine, subject: subject) else { return }
+        registration = updated
     }
 
     /// 자격증명만 지운다. 푸시 등록은 릴레이에서 지운다(DELETE, 최선) — 다음 로그인의 등록과 섞이지 않게 같은 `serial` 에 줄 세운다.
@@ -258,7 +269,13 @@ final class AppModel: ObservableObject {
         lastError = Strings.sessionExpired
     }
 
-    // MARK: - 방 참여·만들기·초대 (화면은 §12-E — 여기서는 동작만)
+    // MARK: - 방 참여·만들기·초대 (참여 요청 화면 = JoinRequestView; 만들기·초대 화면은 §12-E 후속)
+
+    /// 참여 요청 버튼을 보일지: 등록이 끝나 `ready` 이고 전송이 있을 때만(정지·등록 대기 중에는 게시해도 초대받을 수 없다).
+    var canRequestJoin: Bool {
+        if case .ready = phase { return transport != nil }
+        return false
+    }
 
     /// 이 방에 키 패키지를 게시한다(상대가 초대할 수 있게). 방 목록에 바로 나타난다.
     func requestJoin(room: RoomID) async throws {
@@ -331,7 +348,7 @@ final class AppModel: ObservableObject {
         rooms = (try? deps.messageStore.rooms()) ?? []
     }
 
-    /// 등록 JSON(운영자 CLI 입력). subject 는 CF Access `sub` — 앱이 모르면 비워 두고 운영자가 채운다.
+    /// 등록 JSON(운영자 CLI 입력). subject 는 로그인한 자격증명 JWT 의 `sub`(`refreshRegistrationSubject`) — 없으면 빈값, 운영자가 채운다.
     func registrationJSON() -> String {
         (try? registration?.json()) ?? ""
     }

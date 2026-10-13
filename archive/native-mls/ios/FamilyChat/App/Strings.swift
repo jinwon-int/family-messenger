@@ -27,13 +27,24 @@ enum Strings {
 
     // 방
     static let roomsTitle = "대화"
-    static let noRooms = "아직 대화방이 없습니다. 운영자가 초대하면 여기 나타납니다."
+    static let noRooms = "아직 대화방이 없습니다. 오른쪽 위 + 로 참여를 요청하고, 운영자가 초대하면 여기 나타납니다."
     static let composerPlaceholder = "메시지"
     static let sendButton = "보내기"
     static let undecryptable = "🔒 복호화하지 못한 메시지"
     static func sendRejected(_ reason: String) -> String { "보내지 못했습니다(\(reason)). 동기화 뒤 다시 시도해 주세요." }
     static let sendQueued = "릴레이에 닿지 않아 보관했습니다. 연결되면 같은 내용 그대로 다시 보냅니다."
     static let notJoined = "아직 이 대화방에 참여하지 않았습니다. 초대를 기다려 주세요."
+
+    // 참여 요청(JoinRequestView, §12-E 최소 화면)
+    static let joinTitle = "대화방 참여 요청"
+    static let joinField = "대화방 ID"
+    /// 가족 공용방 ID(공개 식별자, relay-app·#243 과 동일). 미리 채워 두되 바꿀 수 있다.
+    static let joinDefaultRoom = "family-acc"
+    static let joinButton = "참여 요청"
+    static let joinHint = "이 기기의 키 패키지(공개 정보)를 대화방에 게시합니다. 운영자가 다른 기기의 '초대'로 받아들이면 대화가 시작됩니다. 메시지나 비밀키는 보내지 않습니다."
+    static let joinRequested = "참여를 요청했습니다. 운영자의 초대를 기다려 주세요."
+    static func joinFailed(_ reason: String) -> String { "참여 요청에 실패했습니다: \(reason)" }
+    static let close = "닫기"
 
     // 정지
     static let haltedTitle = "⛔ 이 기기의 대화가 정지되었습니다"

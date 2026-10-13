@@ -153,6 +153,43 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(room?.state, seed, "a new room state is the identity slot, not a fresh identity")
     }
 
+    /// `header.payload.sig` 꼴의 가짜 CF Access JWT(서명 없음 — 앱은 검증하지 않고 `sub` 만 읽는다).
+    static func accessJWT(sub: String) -> String {
+        func b64url(_ s: String) -> String {
+            Data(s.utf8).base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+        }
+        return b64url("{\"alg\":\"RS256\"}") + "." + b64url("{\"sub\":\"\(sub)\",\"email\":\"o@example.com\"}") + ".c2ln"
+    }
+
+    func testLoginFillsEnrollmentSubjectFromAccessJWT() async {
+        let (model, _) = makeModel()
+        await model.bootstrap()
+        XCTAssertEqual(model.registration?.subject, "", "before login the app does not know the subject")
+        model.login(.accessCookie(Self.accessJWT(sub: "cf-sub-7c1f")))
+        XCTAssertEqual(model.registration?.subject, "cf-sub-7c1f")
+        XCTAssertTrue(model.registrationJSON().contains("\"subject\" : \"cf-sub-7c1f\""), model.registrationJSON())
+        XCTAssertEqual(model.fingerprint, model.registration?.fingerprint, "only the subject changes; the key material does not")
+        model.login(.bearer(Self.accessJWT(sub: "")))
+        XCTAssertEqual(model.registration?.subject, "", "a service token (empty sub) leaves the subject for the operator")
+    }
+
+    func testRequestJoinPublishesKeyPackageAndListsRoom() async throws {
+        let relay = InMemoryRelay()
+        let (model, _) = makeModel(transport: relay)
+        await model.bootstrap(); model.login(.bearer("t"))
+        XCTAssertFalse(model.canRequestJoin, "no join request while enrollment is still unconfirmed")
+        await model.refresh()
+        XCTAssertEqual(model.phase, .ready)
+        XCTAssertTrue(model.canRequestJoin)
+        try await model.requestJoin(room: "family")
+        XCTAssertEqual(model.rooms.map(\.room), ["family"], "the requested room shows up at once")
+        let listing = try await relay.listRooms(device: model.deviceId)
+        XCTAssertEqual(listing.rooms.map(\.room), ["family"])
+        XCTAssertEqual(listing.rooms.first?.keypackagesOutstanding, 1, "exactly one key package was published")
+        XCTAssertEqual(listing.rooms.first?.member, false, "publishing is not joining — the inviter's commit does that")
+    }
+
     func testLogoutKeepsIdentity() async {
         let (model, _) = makeModel()
         await model.bootstrap(); model.login(.bearer("t"))
