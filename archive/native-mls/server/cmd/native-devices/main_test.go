@@ -141,8 +141,18 @@ func TestCLIEndToEnd(t *testing.T) {
 	// E2 self-signed is refused: no active same-actor device verifies it.
 	write = cliCandidate(t, cand, "self.json", addDeviceCandidate{DeviceID: "dev-a2", Actor: "alice", Subject: "person-alice", SigningKey: kb.hexKey, BaseRevision: 2, Signature: signFor(t, kb, devicepolicy.ApprovalPayloadWire{Action: devicepolicy.ApprovalActionAdd, DeviceID: "dev-a2", Actor: "alice", Subject: "person-alice", SigningKey: kb.hexKey, Fingerprint: kb.fp, Acceptance: devicepolicy.AcceptanceTrusted, BaseRevision: 2})})
 	mustFail("no active", "-add-device", "-input", write, "-expected-revision", "2")
-	// E2 properly approved by dev-a1.
-	write = cliCandidate(t, cand, "a2.json", addDeviceCandidate{DeviceID: "dev-a2", Actor: "alice", Subject: "person-alice", SigningKey: kb.hexKey, BaseRevision: 2, Signature: signFor(t, ka, devicepolicy.ApprovalPayloadWire{Action: devicepolicy.ApprovalActionAdd, DeviceID: "dev-a2", Actor: "alice", Subject: "person-alice", SigningKey: kb.hexKey, Fingerprint: kb.fp, Acceptance: devicepolicy.AcceptanceTrusted, BaseRevision: 2})})
+	// relay-app evidence carries `fingerprint` and `approved_by` next to the
+	// signature. They are cross-checks, not inputs: a fingerprint that is not
+	// sha256(signing_key), or an approved_by that is not the device whose key
+	// verifies the signature, is refused before anything is written.
+	a2sig := signFor(t, ka, devicepolicy.ApprovalPayloadWire{Action: devicepolicy.ApprovalActionAdd, DeviceID: "dev-a2", Actor: "alice", Subject: "person-alice", SigningKey: kb.hexKey, Fingerprint: kb.fp, Acceptance: devicepolicy.AcceptanceTrusted, BaseRevision: 2})
+	write = cliCandidate(t, cand, "badfp.json", addDeviceCandidate{DeviceID: "dev-a2", Actor: "alice", Subject: "person-alice", SigningKey: kb.hexKey, BaseRevision: 2, Signature: a2sig, Fingerprint: ka.fp, ApprovedBy: "dev-a1"})
+	mustFail("fingerprint", "-add-device", "-input", write, "-expected-revision", "2")
+	write = cliCandidate(t, cand, "badby.json", addDeviceCandidate{DeviceID: "dev-a2", Actor: "alice", Subject: "person-alice", SigningKey: kb.hexKey, BaseRevision: 2, Signature: a2sig, Fingerprint: kb.fp, ApprovedBy: "dev-a2"})
+	mustFail("approved_by", "-add-device", "-input", write, "-expected-revision", "2")
+	// E2 properly approved by dev-a1 — pasted exactly as relay-app prints it
+	// (fingerprint + approved_by included, uppercase hex tolerated for the fingerprint).
+	write = cliCandidate(t, cand, "a2.json", addDeviceCandidate{DeviceID: "dev-a2", Actor: "alice", Subject: "person-alice", SigningKey: kb.hexKey, BaseRevision: 2, Signature: a2sig, Fingerprint: strings.ToUpper(kb.fp), ApprovedBy: "dev-a1"})
 	v = capture("-add-device", "-input", write, "-expected-revision", "2")
 	if v.Revision != 3 {
 		t.Fatalf("E2 revision = %d", v.Revision)
