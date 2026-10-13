@@ -53,6 +53,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.seoyoon-family.hande
         TARGETED_DEVICE_FAMILY: "1"
+        # 앱 아이콘: Assets.xcassets/AppIcon(단일 1024 PNG, Xcode 가 크기 생성). App Store Connect 업로드 필수(run 38354223649 'Missing required icon file').
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # 릴리스 수동 서명 자리(native-mls-ios-release.yml 이 xcodebuild 인자로 채움). 비면 무서명 CI 와 동일.
         PROVISIONING_PROFILE_SPECIFIER: $(FC_PROFILE_APP)
         FC_PROFILE_APP: ""
