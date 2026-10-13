@@ -43,6 +43,10 @@ targets:
         CFBundleDevelopmentRegion: ko
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # 수출 규정(암호화) 답변을 빌드에 싣는다 — 없으면 ASC 가 빌드마다 MISSING_EXPORT_COMPLIANCE 로 TestFlight 배포를 멈추고
+        # 사람이 답해야 한다(build 9, 2026-10-13: API 로 usesNonExemptEncryption=false 설정 후 배포). 값은 build 1·9 에 오너가 준 답과 같다:
+        # 앱의 E2EE(MLS)는 표준 암호화(App Store 면제 범주)만 쓰고 독자 암호 알고리즘은 없다.
+        ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         # 실제 호스트명·App Group 은 리포에 두지 않는다(CONTRIBUTING) — 빌드 설정으로 주입. 비면 앱이 안내한다.
         FamilyChatRelayURL: $(FC_RELAY_URL)
