@@ -1,6 +1,7 @@
 name: Native MLS track — iOS TestFlight release
 # 한데(코드명 FamilyChat) 서명 빌드 → App Store Connect(TestFlight) 업로드 (#271 §11 F단계). 수동 실행만.
 # 서명: App Store Connect API 키로 xcodebuild 클라우드 서명(-allowProvisioningUpdates) — 러너에 인증서/프로필 없음, 맥 불필요.
+# 자동 서명에서는 CODE_SIGN_IDENTITY 를 강제하지 않는다(archive 는 Development 로, App Store 재서명은 exportArchive 가 수행). 첫 실행(run 38344316589) 실패 원인.
 # 비밀·환경값은 전부 GitHub environment `testflight`(required reviewer = 오너)에서 온다. 리포에는 호스트명·팀 ID·키가 없다.
 # 예산: macOS 1 job ≤40분(결정 E 규칙 2). TestFlight 빌드는 APNs production 환경(aps-environment=production)이다 — 릴레이의 -apns-host(sandbox) 전환은 운영 쪽 별도 승인.
 on:
@@ -85,7 +86,7 @@ jobs:
             -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/Hande.xcarchive" \
             -allowProvisioningUpdates -allowProvisioningDeviceRegistration \
             -authenticationKeyPath "$ASC_KEY_PATH" -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
-            CODE_SIGNING_ALLOWED=YES CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_IDENTITY="Apple Distribution" \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             FC_APS_ENVIRONMENT=production FC_RELAY_URL="$FC_RELAY_URL" FC_APP_GROUP="$FC_APP_GROUP" FC_AGENT_ACTORS="$FC_AGENT_ACTORS" \
             MARKETING_VERSION="$MARKETING_VERSION" CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
             archive 2>&1 | tee "$RUNNER_TEMP/archive.log" | grep -E 'error:|warning: .*(sign|provision)|\*\* ARCHIVE' || true
