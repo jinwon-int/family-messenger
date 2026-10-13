@@ -84,7 +84,8 @@
 - AppModel: 방별 `RoomSyncEngine` 캐시 + `SerialAsyncQueue`(단일 호출자), 등록 판정 = `GET /v2/rooms` 403 device_subject_mismatch,
   401 → needsLogin, 404(확장 ① 없음) → 아는 방만. `markEnrolled` 제거(등록 확인 버튼 = refresh).
 - live(): base = App Group(`FC_APP_GROUP`) → 없으면 Application Support/FamilyChat. 릴레이 URL = `FC_RELAY_URL`(Info.plist `FamilyChatRelayURL`). 실패 시 `startupFailure` → fatal.
-- 앱 측 방 만들기/참여/초대 **화면은 없음**(§12-E) — API 만(`createRoom`·`requestJoin`·`invite`).
+- 앱 측 방 만들기/초대 **화면은 없음**(§12-E) — API 만(`createRoom`·`invite`). 참여 요청(키 패키지 게시)은 `JoinRequestView`(대화 목록 +, 2026-10-13 파일럿 블로커 해소: build 7 은 게시 경로가 없어 relay-app `초대`가 소비할 패키지가 없었다).
+- 등록 JSON 의 `subject` 는 로그인 자격증명 JWT 의 `sub` 로 채운다(`AccessJWT`, 검증 아님). 서비스 토큰(`sub` 빈값)은 그대로 비워 운영자가 채운다 — build 7 의 공란 버그(#271 코멘트 2026-10-13 16:0x) 수정.
 - 무서명 시뮬레이터 Keychain 은 테스트(`testKeychainSealKeyIsStableAcrossReads`)로 확인, -34018 이면 XCTSkip 으로 기록.
 
 ## §12-D 푸시 — 앱 쪽 (session `seoseo-push-d-20261007`, 오너 승인 2026-10-07 "3. 승인")
