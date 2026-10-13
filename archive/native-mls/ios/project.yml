@@ -16,6 +16,11 @@ settings:
     CODE_SIGNING_ALLOWED: "NO"
     CODE_SIGN_IDENTITY: ""
     DEVELOPMENT_TEAM: ""
+    # 버전은 빌드 설정이 단일 출처: 릴리스 워크플로가 xcodebuild 인자로 MARKETING_VERSION(입력)·CURRENT_PROJECT_VERSION(run_number)을 준다.
+    # 두 타깃의 Info.plist 가 아래 두 값을 $(…) 로 참조해야 한다 — xcodegen 은 info.properties 에 키가 없으면 CFBundleVersion "1" 을
+    # 리터럴로 써서 인자가 무시된다(run 38372256608: 'bundle version must be higher than the previously uploaded version: 1').
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
 targets:
   FamilyChat:
     type: application
@@ -36,6 +41,8 @@ targets:
       properties:
         CFBundleDisplayName: 한데
         CFBundleDevelopmentRegion: ko
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         # 실제 호스트명·App Group 은 리포에 두지 않는다(CONTRIBUTING) — 빌드 설정으로 주입. 비면 앱이 안내한다.
         FamilyChatRelayURL: $(FC_RELAY_URL)
@@ -89,6 +96,9 @@ targets:
       properties:
         CFBundleDisplayName: 한데 알림
         CFBundleDevelopmentRegion: ko
+        # 확장의 버전은 앱과 같아야 한다(ASC 검증) — 같은 빌드 설정을 참조.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.usernotifications.service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
