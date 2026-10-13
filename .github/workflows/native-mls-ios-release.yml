@@ -1,7 +1,7 @@
 name: Native MLS track — iOS TestFlight release
 # 한데(코드명 FamilyChat) 서명 빌드 → App Store Connect(TestFlight) 업로드 (#271 §11 F단계). 수동 실행만.
-# 서명: App Store Connect API 키로 xcodebuild 클라우드 서명(-allowProvisioningUpdates) — 러너에 인증서/프로필 없음, 맥 불필요.
-# 자동 서명에서는 CODE_SIGN_IDENTITY 를 강제하지 않는다(archive 는 Development 로, App Store 재서명은 exportArchive 가 수행). 첫 실행(run 38344316589) 실패 원인.
+# 서명(수동, 기기 등록 불필요): 팀의 Apple Distribution 인증서(.p12, environment secret) + App Store 프로비저닝 프로필(ASC API 로 실행 시 생성/조회 — scripts/asc_profiles.py).
+# 자동(클라우드) 서명은 archive 단계에 Development 프로필 → 등록 기기 1대 이상을 요구해(run 38345777567) 포기했다. 맥 불필요.
 # 비밀·환경값은 전부 GitHub environment `testflight`(required reviewer = 오너)에서 온다. 리포에는 호스트명·팀 ID·키가 없다.
 # 예산: macOS 1 job ≤40분(결정 E 규칙 2). TestFlight 빌드는 APNs production 환경(aps-environment=production)이다 — 릴레이의 -apns-host(sandbox) 전환은 운영 쪽 별도 승인.
 on:
@@ -69,30 +69,66 @@ jobs:
           printf '%s' "$ASC_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
           chmod 600 "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
           echo "ASC_KEY_PATH=$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8" >> "$GITHUB_ENV"
-      - name: Archive — automatic cloud signing (Team ${{ vars.APPLE_TEAM_ID }})
-        working-directory: archive/native-mls/ios
+      - name: App Store provisioning profiles via ASC API (no device registration)
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          IOS_DIST_CERT_SERIAL: ${{ vars.IOS_DIST_CERT_SERIAL }}
+        working-directory: archive/native-mls/ios
+        run: |
+          test -n "$IOS_DIST_CERT_SERIAL"
+          python3 -m pip install --quiet --user pyjwt cryptography requests
+          mkdir -p "$RUNNER_TEMP/profiles" "$HOME/Library/MobileDevice/Provisioning Profiles"
+          python3 scripts/asc_profiles.py --key-path "$ASC_KEY_PATH" --key-id "$ASC_KEY_ID" --issuer-id "$ASC_ISSUER_ID" \
+            --cert-serial "$IOS_DIST_CERT_SERIAL" --out "$RUNNER_TEMP/profiles" \
+            com.seoyoon-family.hande com.seoyoon-family.hande.nse | tee "$RUNNER_TEMP/profiles.tsv"
+          while IFS=$'\t' read -r bid name uuid; do
+            cp "$RUNNER_TEMP/profiles/$bid.mobileprovision" "$HOME/Library/MobileDevice/Provisioning Profiles/$uuid.mobileprovision"
+            case "$bid" in
+              com.seoyoon-family.hande) echo "FC_PROFILE_APP=$name" >> "$GITHUB_ENV" ;;
+              com.seoyoon-family.hande.nse) echo "FC_PROFILE_NSE=$name" >> "$GITHUB_ENV" ;;
+            esac
+          done < "$RUNNER_TEMP/profiles.tsv"
+          cut -f1,2 "$RUNNER_TEMP/profiles.tsv" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Import the distribution certificate into a temporary keychain
+        env:
+          IOS_DIST_P12_B64: ${{ secrets.IOS_DIST_P12_B64 }}
+          IOS_DIST_P12_PASSWORD: ${{ secrets.IOS_DIST_P12_PASSWORD }}
+        run: |
+          test -n "$IOS_DIST_P12_B64" && test -n "$IOS_DIST_P12_PASSWORD"
+          kc="$RUNNER_TEMP/signing.keychain-db"; kcpw="$(openssl rand -hex 24)"
+          printf '%s' "$IOS_DIST_P12_B64" | base64 --decode > "$RUNNER_TEMP/dist.p12"
+          security create-keychain -p "$kcpw" "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p "$kcpw" "$kc"
+          security import "$RUNNER_TEMP/dist.p12" -k "$kc" -P "$IOS_DIST_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/productbuild
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kcpw" "$kc" >/dev/null
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/dist.p12"
+          echo "SIGNING_KEYCHAIN=$kc" >> "$GITHUB_ENV"
+          security find-identity -v -p codesigning "$kc" | sed -E 's/[0-9A-F]{40}/<sha1>/' | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Archive — manual signing (Apple Distribution, Team ${{ vars.APPLE_TEAM_ID }})
+        working-directory: archive/native-mls/ios
+        env:
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
           FC_RELAY_URL: ${{ vars.FC_RELAY_URL }}
           FC_APP_GROUP: ${{ vars.FC_APP_GROUP }}
           FC_AGENT_ACTORS: ${{ vars.FC_AGENT_ACTORS }}
           MARKETING_VERSION: ${{ inputs.marketing_version }}
         run: |
-          test -n "$APPLE_TEAM_ID" && test -n "$FC_RELAY_URL" && test -n "$FC_APP_GROUP"
+          test -n "$APPLE_TEAM_ID" && test -n "$FC_RELAY_URL" && test -n "$FC_APP_GROUP" && test -n "$FC_PROFILE_APP" && test -n "$FC_PROFILE_NSE"
           start=$(date +%s)
           xcodebuild -project FamilyChat.xcodeproj -scheme FamilyChat -configuration Release \
             -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/Hande.xcarchive" \
-            -allowProvisioningUpdates -allowProvisioningDeviceRegistration \
-            -authenticationKeyPath "$ASC_KEY_PATH" -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
-            CODE_SIGNING_ALLOWED=YES CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            OTHER_CODE_SIGN_FLAGS="--keychain $SIGNING_KEYCHAIN" \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_IDENTITY="Apple Distribution" \
+            FC_PROFILE_APP="$FC_PROFILE_APP" FC_PROFILE_NSE="$FC_PROFILE_NSE" \
             FC_APS_ENVIRONMENT=production FC_RELAY_URL="$FC_RELAY_URL" FC_APP_GROUP="$FC_APP_GROUP" FC_AGENT_ACTORS="$FC_AGENT_ACTORS" \
             MARKETING_VERSION="$MARKETING_VERSION" CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
-            archive 2>&1 | tee "$RUNNER_TEMP/archive.log" | grep -E 'error:|warning: .*(sign|provision)|\*\* ARCHIVE' || true
+            archive 2>&1 | tee "$RUNNER_TEMP/archive.log" | grep -E 'error:|warning: .*(sign|provision|entitle)|\*\* ARCHIVE' || true
           grep -q '\*\* ARCHIVE SUCCEEDED \*\*' "$RUNNER_TEMP/archive.log"
           echo "archive_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Export options
+      - name: Export options (manual signing)
         env:
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
           UPLOAD: ${{ inputs.upload }}
@@ -104,8 +140,13 @@ jobs:
           <plist version="1.0"><dict>
             <key>method</key><string>app-store-connect</string>
             <key>destination</key><string>$dest</string>
-            <key>signingStyle</key><string>automatic</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>signingCertificate</key><string>Apple Distribution</string>
             <key>teamID</key><string>$APPLE_TEAM_ID</string>
+            <key>provisioningProfiles</key><dict>
+              <key>com.seoyoon-family.hande</key><string>$FC_PROFILE_APP</string>
+              <key>com.seoyoon-family.hande.nse</key><string>$FC_PROFILE_NSE</string>
+            </dict>
             <key>uploadSymbols</key><true/>
             <key>manageAppVersionAndBuildNumber</key><false/>
           </dict></plist>
@@ -118,8 +159,9 @@ jobs:
         run: |
           start=$(date +%s)
           xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/Hande.xcarchive" -exportPath "$RUNNER_TEMP/export" \
-            -exportOptionsPlist "$RUNNER_TEMP/exportOptions.plist" -allowProvisioningUpdates \
+            -exportOptionsPlist "$RUNNER_TEMP/exportOptions.plist" \
             -authenticationKeyPath "$ASC_KEY_PATH" -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            OTHER_CODE_SIGN_FLAGS="--keychain $SIGNING_KEYCHAIN" \
             2>&1 | tee "$RUNNER_TEMP/export.log" | grep -E 'error:|Upload|EXPORT' || true
           grep -q '\*\* EXPORT SUCCEEDED \*\*' "$RUNNER_TEMP/export.log"
           echo "export_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
@@ -135,7 +177,9 @@ jobs:
       - name: Signing/upload log tail (redacted — no key material is ever printed)
         if: failure()
         run: |
-          for f in archive export; do [ -f "$RUNNER_TEMP/$f.log" ] && { echo "== $f.log"; grep -vE 'authenticationKey|AuthKey_' "$RUNNER_TEMP/$f.log" | tail -n 80; }; done
-      - name: Remove the API key from the runner
+          for f in archive export; do [ -f "$RUNNER_TEMP/$f.log" ] && { echo "== $f.log"; grep -vE 'authenticationKey|AuthKey_|keychain|P12|p12' "$RUNNER_TEMP/$f.log" | tail -n 80; }; done
+      - name: Remove the API key, profiles and signing keychain from the runner
         if: always()
-        run: rm -rf "$RUNNER_TEMP/asc"
+        run: |
+          rm -rf "$RUNNER_TEMP/asc" "$RUNNER_TEMP/profiles" "$RUNNER_TEMP/dist.p12"
+          [ -n "${SIGNING_KEYCHAIN:-}" ] && security delete-keychain "$SIGNING_KEYCHAIN" || true
