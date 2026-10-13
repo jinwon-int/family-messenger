@@ -77,9 +77,10 @@ jobs:
         working-directory: archive/native-mls/ios
         run: |
           test -n "$IOS_DIST_CERT_SERIAL"
-          python3 -m pip install --quiet --user pyjwt cryptography requests
+          # 러너 Python 은 PEP 668(externally-managed) — venv 에 설치 (run 38349374687 실패 원인)
+          python3 -m venv "$RUNNER_TEMP/asc-venv" && "$RUNNER_TEMP/asc-venv/bin/pip" install --quiet pyjwt cryptography requests
           mkdir -p "$RUNNER_TEMP/profiles" "$HOME/Library/MobileDevice/Provisioning Profiles"
-          python3 scripts/asc_profiles.py --key-path "$ASC_KEY_PATH" --key-id "$ASC_KEY_ID" --issuer-id "$ASC_ISSUER_ID" \
+          "$RUNNER_TEMP/asc-venv/bin/python" scripts/asc_profiles.py --key-path "$ASC_KEY_PATH" --key-id "$ASC_KEY_ID" --issuer-id "$ASC_ISSUER_ID" \
             --cert-serial "$IOS_DIST_CERT_SERIAL" --out "$RUNNER_TEMP/profiles" \
             com.seoyoon-family.hande com.seoyoon-family.hande.nse | tee "$RUNNER_TEMP/profiles.tsv"
           while IFS=$'\t' read -r bid name uuid; do
@@ -177,9 +178,13 @@ jobs:
       - name: Signing/upload log tail (redacted — no key material is ever printed)
         if: failure()
         run: |
-          for f in archive export; do [ -f "$RUNNER_TEMP/$f.log" ] && { echo "== $f.log"; grep -vE 'authenticationKey|AuthKey_|keychain|P12|p12' "$RUNNER_TEMP/$f.log" | tail -n 80; }; done
+          for f in archive export; do
+            [ -f "$RUNNER_TEMP/$f.log" ] || continue
+            echo "== $f.log"; grep -vE 'authenticationKey|AuthKey_|keychain|P12|p12' "$RUNNER_TEMP/$f.log" | tail -n 80 || true
+          done
+          true
       - name: Remove the API key, profiles and signing keychain from the runner
         if: always()
         run: |
-          rm -rf "$RUNNER_TEMP/asc" "$RUNNER_TEMP/profiles" "$RUNNER_TEMP/dist.p12"
+          rm -rf "$RUNNER_TEMP/asc" "$RUNNER_TEMP/asc-venv" "$RUNNER_TEMP/profiles" "$RUNNER_TEMP/dist.p12"
           [ -n "${SIGNING_KEYCHAIN:-}" ] && security delete-keychain "$SIGNING_KEYCHAIN" || true
