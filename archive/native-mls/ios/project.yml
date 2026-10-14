@@ -55,6 +55,11 @@ targets:
         FamilyChatPushTopic: $(FC_PUSH_TOPIC)
         # 참여 요청 화면이 미리 채우는 대화방 ID(공개 식별자). 비면 앱 기본 "family-acc".
         FamilyChatDefaultRoom: $(FC_DEFAULT_ROOM)
+        # 로그인 콜백 고정 스킴(§12-C A): 릴레이 `GET /v2/app-login` 이 `hande://auth#jwt=…&state=…` 로 돌려준다.
+        # server/applogin.go `appLoginCallback` · App/AppLogin.swift `callbackScheme` 과 같아야 한다.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.seoyoon-family.hande.auth
+            CFBundleURLSchemes: [hande]
     # 서명 빌드용 자리(오너가 Team·프로비저닝을 붙일 때). 무서명 CI(CODE_SIGNING_ALLOWED=NO)에서는 적용되지 않는다.
     # aps-environment 는 개발 빌드 = development(릴레이 -apns-host 샌드박스), TestFlight·배포 = production.
     entitlements:

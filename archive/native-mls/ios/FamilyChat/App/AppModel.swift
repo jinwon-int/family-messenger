@@ -40,6 +40,8 @@ final class AppModel: ObservableObject {
         var expectedDecryptFormat: () -> UInt32
         /// 자격증명 → 릴레이 전송. nil = 릴레이 주소가 설정되지 않음.
         var makeTransport: (RelayCredential) -> RelayTransport?
+        /// 로그인 시트(§12-C A, AppLogin.swift)가 여는 릴레이 기본 주소. nil = 미설정(그때는 makeTransport 도 nil 을 준다).
+        var relayURL: URL? = nil
         /// 푸시 등록(§12-D, 결정 D6). 기본 = topic 없음(등록 안 함) — live() 가 Info.plist 로 채운다.
         var push = PushRegistrar.Dependencies(topic: nil)
         var syncConfiguration = RoomSyncEngine.Configuration()
@@ -54,6 +56,8 @@ final class AppModel: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .starting
+    /// 로그인 시트가 여는 릴레이 주소(빌드 설정 FC_RELAY_URL). nil 이면 로그인 화면이 버튼 대신 안내를 보인다.
+    var relayURL: URL? { deps.relayURL }
     @Published private(set) var deviceId: DeviceID = ""
     @Published private(set) var fingerprint: String = ""
     /// 바뀔 때마다 저장소에 반영한다(로그인 = 저장, 로그아웃·401 = 삭제) — NSE 가 같은 세션으로 릴레이를 읽는다.

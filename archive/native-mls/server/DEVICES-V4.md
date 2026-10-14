@@ -113,6 +113,15 @@ v2 smoke는 required 모드로 돈다(ES256 키를 만들어 JWKS 파일로 넘�
   모르는 방은 **404 `no_such_room`**, 이미 닫힌 방을 멤버가 다시 닫으면 200(멱등).
   멤버가 하나도 시드되지 않은 방은 아무도 닫지 못한다(부트스트랩 전 방 이름 선점 DoS를
   막는 쪽을 택함; 파일 삭제는 운영자 몫). `disabled` 모드에서는 `?device=`만 요구한다.
+- **앱 로그인 핸드오프**(#271 §12-C A, `applogin.go`): `GET /v2/app-login?state=<16..128 base64url>`.
+  iOS 앱이 시스템 브라우저 시트(`ASWebAuthenticationSession`)로 이 주소를 열면 엣지가 평소대로
+  Access 로그인을 처리하고 토큰을 주입한다; 릴레이는 위와 **같은 검증**을 통과한 토큰을 **고정**
+  콜백 `hande://auth#jwt=<token>&state=<state>` 로 **302**(본문 없음, `Cache-Control: no-store`)
+  한다. 리다이렉트 대상은 상수라 open redirect 가 될 수 없고, `state`는 앱이 만든 난수를 그대로
+  돌려줘 앱이 자기 요청의 응답인지 확인한다(검사 순서: state 형식 400 → 토큰 401). 토큰은 fragment
+  로만 간다(서버·리퍼러 로그에 남지 않음). 돌려준 토큰은 앱이 `CF_Authorization` 쿠키로 보내는
+  바로 그 세션이다 — 새 권한을 만들지 않는다. **`required` 모드에서만 등록**되며 `disabled` 에서는
+  404 다(돌려줄 엣지 토큰이 없다). 플래그·테이블 없음. 테스트 `applogin_test.go`.
 
 ## 릴레이 멤버십 강제 (M3b)
 
