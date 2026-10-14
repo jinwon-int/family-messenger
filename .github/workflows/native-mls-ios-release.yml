@@ -114,7 +114,8 @@ jobs:
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
           FC_RELAY_URL: ${{ vars.FC_RELAY_URL }}
           FC_APP_GROUP: ${{ vars.FC_APP_GROUP }}
-          FC_AGENT_ACTORS: ${{ vars.FC_AGENT_ACTORS }}
+          # 비어 있으면 project.yml 기본값(bot)을 빈 문자열로 덮어 NSE 🤖 표시가 꺼진다(10-14 파일럿 확인) — 기본값을 둔다.
+          FC_AGENT_ACTORS: ${{ vars.FC_AGENT_ACTORS || 'bot' }}
           MARKETING_VERSION: ${{ inputs.marketing_version }}
         run: |
           test -n "$APPLE_TEAM_ID" && test -n "$FC_RELAY_URL" && test -n "$FC_APP_GROUP" && test -n "$FC_PROFILE_APP" && test -n "$FC_PROFILE_NSE"

@@ -29,6 +29,8 @@ struct RootView: View {
             switch model.phase {
             case .starting:
                 ProgressView(Strings.starting)
+            case .needsActor:
+                ActorSetupView()
             case .needsLogin:
                 LoginView()
             case .needsEnrollment:

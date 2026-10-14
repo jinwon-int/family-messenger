@@ -1,4 +1,4 @@
-// §9-4 방 화면: `MessageStore` 타임라인 + 작성창. 내 메시지 오른쪽, 상대 왼쪽에 보낸 기기·actor. 봇 배지는 L3 의 actor 판정 뒤.
+// §9-4 방 화면: `MessageStore` 타임라인 + 작성창 + 초대(§12-E). 내 메시지 오른쪽, 상대 왼쪽에 보낸 기기·actor. 봇 배지는 L3 의 actor 판정 뒤.
 import SwiftUI
 import FamilyMLSCore
 
@@ -7,6 +7,7 @@ struct RoomView: View {
     let room: RoomID
     @State private var draft = ""
     @State private var messages: [MessageRecord] = []
+    @State private var showInvite = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -37,6 +38,14 @@ struct RoomView: View {
             .padding()
         }
         .navigationTitle(room)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { showInvite = true } label: { Image(systemName: "person.badge.plus") }
+                    .accessibilityLabel(Strings.inviteTitle)
+                    .disabled(!model.canRequestJoin)
+            }
+        }
+        .sheet(isPresented: $showInvite) { InviteView(room: room).environmentObject(model) }
         .onAppear { messages = model.messages(room: room) }
         .onChange(of: model.messagesRevision) { _ in messages = model.messages(room: room) }
     }

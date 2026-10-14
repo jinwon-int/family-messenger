@@ -12,6 +12,15 @@ enum DeviceIdentity {
         return fresh
     }
 
+    /// 저장된 기기 ID 가 있으면 actor 와 무관하게 그대로(설치당 하나 — actor 를 바꾼다고 새 기기를 만들지 않는다),
+    /// 없으면 `actor` 로 새로 만든다. 앱(live)은 이것을 쓴다.
+    static func existingOrNew(actor: String, defaults: UserDefaults = .standard) -> String {
+        if let existing = defaults.string(forKey: defaultsKey), !existing.isEmpty { return existing }
+        let fresh = generate(actor: actor)
+        defaults.set(fresh, forKey: defaultsKey)
+        return fresh
+    }
+
     static func generate(actor: String) -> String {
         var bytes = [UInt8](repeating: 0, count: 3)
         for i in bytes.indices { bytes[i] = UInt8.random(in: 0...255) }
@@ -22,4 +31,50 @@ enum DeviceIdentity {
     // 등록 정보(운영자 CLI `-enroll-first`/`-add-device` 입력)는 Core `EnrollmentRequest` 하나로 만든다(AppModel.registration).
 
     static func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
+}
+
+// MARK: - 사용자 이름(actor) — 가족 투입(#271 §5)
+
+/// actor 규칙: 소문자로 시작하는 영문 소문자·숫자 2~16자. `-` 는 기기 ID 의 구분자라 금지(relay-app `actorOf`, DEVICES-V4).
+enum ActorName {
+    static func isValid(_ name: String) -> Bool {
+        guard (2...16).contains(name.count), let first = name.unicodeScalars.first,
+              ("a"..."z").contains(first) else { return false }
+        return name.unicodeScalars.allSatisfy { ("a"..."z").contains($0) || ("0"..."9").contains($0) }
+    }
+
+    /// 기기 ID 의 첫 `-` 앞(= actor). 형식이 맞지 않으면 nil.
+    static func of(deviceId: String) -> String? {
+        guard let head = deviceId.split(separator: "-", maxSplits: 1).first.map(String.init),
+              deviceId.contains("-"), isValid(head) else { return nil }
+        return head
+    }
+}
+
+/// 이 기기 사용자 이름 저장소. `actor == nil` = 첫 실행이라 아직 고르지 않음.
+protocol ActorStoring: AnyObject {
+    var actor: String? { get }
+    func save(_ actor: String)
+}
+
+final class InMemoryActorStore: ActorStoring {
+    private(set) var actor: String?
+    init(_ actor: String?) { self.actor = actor }
+    func save(_ actor: String) { self.actor = actor }
+}
+
+/// 앱(live): 기기 ID 와 같은 defaults(App Group). 저장된 actor 가 없어도 기존 기기 ID 가 있으면 거기서 actor 를 읽는다 —
+/// 이 PR 이전 설치(오너 `owner-iphone-…`)는 이름 선택 화면을 보지 않고 그대로 이어 간다.
+final class DefaultsActorStore: ActorStoring {
+    static let key = "familychat.actor"
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults) { self.defaults = defaults }
+
+    var actor: String? {
+        if let saved = defaults.string(forKey: Self.key), ActorName.isValid(saved) { return saved }
+        return defaults.string(forKey: DeviceIdentity.defaultsKey).flatMap(ActorName.of(deviceId:))
+    }
+
+    func save(_ actor: String) { defaults.set(actor, forKey: Self.key) }
 }
