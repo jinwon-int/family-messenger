@@ -18,9 +18,13 @@ enum Strings {
     static let actorButton = "확인"
     static let actorInvalid = "이름 형식이 맞지 않습니다 — 소문자로 시작하는 영문 소문자·숫자 2~16자(하이픈·공백 불가)."
 
-    // 로그인
+    // 로그인(§12-C A, LoginView · AppLogin.swift)
     static let loginTitle = "가족 로그인"
-    static let loginHint = "Cloudflare Access 로그인 뒤 발급되는 세션으로 릴레이에 연결합니다. (뼈대: 세션 값을 직접 붙여넣기)"
+    static let loginGoogle = "Google 계정으로 로그인"
+    static let loginHint = "가족 운영자가 허용한 Google 계정으로 로그인합니다. 로그인 창은 iPhone 의 Safari 가 열고, 비밀번호는 앱에 전달되지 않습니다. 로그인이 끝나면 이 앱으로 자동으로 돌아옵니다."
+    static func loginFailed(_ reason: String) -> String { "로그인하지 못했습니다: \(reason)" }
+    static let loginManualTitle = "직접 입력(운영자용)"
+    static let loginManualHint = "PC 브라우저의 세션 값(CF_Authorization)을 붙여넣는 운영자용 방법입니다. 가족은 위의 로그인 버튼을 쓰세요."
     static let loginField = "세션 값"
     static let loginButton = "연결"
 

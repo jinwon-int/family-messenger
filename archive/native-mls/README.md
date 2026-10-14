@@ -37,6 +37,9 @@ Welcome 타깃 필터링, 바이트 기준 보존/프루닝, `BEGIN IMMEDIATE`(`
 `-access-issuer`·`-access-audience`·`-access-jwks`(파일 또는 https URL)·`-device-state`가 전부
 필요하고, `-access-mode disabled`는 로컬 개발 전용이다. 계약 전문은
 [`server/DEVICES-V4.md`](server/DEVICES-V4.md)(인증·멤버십·커서 유예·서버 안전성 섹션).
+인증이 켜져 있을 때만 데이터가 아닌 보조 라우트 하나가 더 있다: `GET /v2/app-login?state=`(#271 §12-C A,
+`server/applogin.go`) — 엣지가 주입한 JWT 를 검증한 뒤 iOS 앱의 고정 스킴 `hande://auth#jwt=…&state=…` 로
+302 한다(앱 로그인 시트용, 플래그·테이블 없음).
 
 ## tests/
 

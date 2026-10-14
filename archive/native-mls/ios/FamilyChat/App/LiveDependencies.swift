@@ -67,6 +67,7 @@ extension AppModel.Dependencies {
                 identityProvider: config.identityProvider,
                 expectedDecryptFormat: { FfiEngineFactory.reportedDecryptFormat() },
                 makeTransport: makeTransport,
+                relayURL: config.relayURL,
                 push: config.pushTopic.map { PushRegistrar.Dependencies.live(topic: $0) } ?? PushRegistrar.Dependencies(topic: nil),
                 credentials: config.credentials ?? SharedStorage.credentialStore(appGroup: config.appGroup),
                 actorStore: config.actorStore,
@@ -82,6 +83,7 @@ extension AppModel.Dependencies {
                 identityProvider: config.identityProvider,
                 expectedDecryptFormat: { FfiEngineFactory.reportedDecryptFormat() },
                 makeTransport: makeTransport,
+                relayURL: config.relayURL,
                 startupFailure: Strings.storageUnavailable("\(error)"))
         }
     }
