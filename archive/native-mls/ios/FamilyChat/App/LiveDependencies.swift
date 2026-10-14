@@ -28,12 +28,21 @@ extension AppModel.Dependencies {
         var identityProvider: () -> DeviceID = { DeviceIdentity.stableDeviceId(actor: "owner") }
         /// APNs topic(= Bundle ID). nil = 푸시 등록 안 함(테스트 기본).
         var pushTopic: String?
+        /// 사용자 이름(actor) 저장소. 기본 = 이미 "owner" 로 고름(테스트).
+        var actorStore: ActorStoring = InMemoryActorStore("owner")
+        /// 참여 요청 기본 대화방(Info.plist `FamilyChatDefaultRoom`, 비면 "family-acc").
+        var defaultRoom: RoomID = "family-acc"
 
         static func fromBundle(_ bundle: Bundle = .main) -> Self {
             let group = bundle.familyChatValue("FamilyChatAppGroup")
             var config = Self(relayURL: bundle.familyChatValue("FamilyChatRelayURL").flatMap(URL.init(string:)), appGroup: group)
             config.pushTopic = bundle.familyChatValue("FamilyChatPushTopic")
-            config.identityProvider = { DeviceIdentity.stableDeviceId(actor: "owner", defaults: SharedStorage.defaults(appGroup: group)) }
+            let defaults = SharedStorage.defaults(appGroup: group)
+            let actors = DefaultsActorStore(defaults: defaults)
+            config.actorStore = actors
+            // 기기 ID 는 bootstrap 이 actor 를 확인한 뒤에만 부른다(AppModel). 기존 ID 가 있으면 그대로.
+            config.identityProvider = { DeviceIdentity.existingOrNew(actor: actors.actor ?? "owner", defaults: defaults) }
+            if let room = bundle.familyChatValue("FamilyChatDefaultRoom") { config.defaultRoom = room }
             return config
         }
     }
@@ -59,7 +68,9 @@ extension AppModel.Dependencies {
                 expectedDecryptFormat: { FfiEngineFactory.reportedDecryptFormat() },
                 makeTransport: makeTransport,
                 push: config.pushTopic.map { PushRegistrar.Dependencies.live(topic: $0) } ?? PushRegistrar.Dependencies(topic: nil),
-                credentials: config.credentials ?? SharedStorage.credentialStore(appGroup: config.appGroup))
+                credentials: config.credentials ?? SharedStorage.credentialStore(appGroup: config.appGroup),
+                actorStore: config.actorStore,
+                defaultRoom: config.defaultRoom)
         } catch {
             // 화면이 사유를 보여 줄 수 있게 메모리 스토어로 모델만 세운다(아무것도 저장하지 않는다).
             return Self(

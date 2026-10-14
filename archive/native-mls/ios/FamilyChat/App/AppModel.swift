@@ -21,6 +21,8 @@ import FamilyMLSCore
 final class AppModel: ObservableObject {
     enum Phase: Equatable {
         case starting
+        /// 첫 실행: 이 기기 사용자 이름(actor)을 고르기 전. 기기 ID `<actor>-iphone-<hex>` 가 여기서 정해진다(가족 투입).
+        case needsActor
         case needsLogin
         case needsEnrollment
         case ready
@@ -45,6 +47,10 @@ final class AppModel: ObservableObject {
         var startupFailure: String?
         /// 릴레이 자격증명 영속(Keychain, NSE 와 공유 — 결정 D8). 기본 = 메모리(테스트).
         var credentials: CredentialStoring = InMemoryCredentialStore()
+        /// 이 기기 사용자 이름(actor). nil = 첫 실행이라 아직 고르지 않음 → `.needsActor`. 기본 = 이미 고름("owner", 테스트).
+        var actorStore: ActorStoring = InMemoryActorStore("owner")
+        /// 참여 요청 화면이 미리 채우는 대화방 ID(빌드 설정 `FC_DEFAULT_ROOM` → Info.plist `FamilyChatDefaultRoom`).
+        var defaultRoom: RoomID = "family-acc"
     }
 
     @Published private(set) var phase: Phase = .starting
@@ -95,6 +101,8 @@ final class AppModel: ObservableObject {
         guard deps.expectedDecryptFormat() == Framing.decryptFormat else {
             phase = .fatal(Strings.decryptFormatMismatch); return
         }
+        // 기기 ID 를 만들기 전에 actor 가 정해져 있어야 한다(기존 설치는 저장된 ID 에서 actor 를 읽으므로 이 화면을 보지 않는다).
+        guard deps.actorStore.actor != nil else { phase = .needsActor; return }
         do {
             let id = deps.identityProvider()
             // identity 슬롯: 있으면 복원, 없으면 새 신원을 만들어 즉시 저장(서명키가 흔들리지 않게).
@@ -119,6 +127,19 @@ final class AppModel: ObservableObject {
         } catch {
             phase = .fatal("\(error)")
         }
+    }
+
+    /// 첫 실행의 사용자 이름 선택. 형식이 틀리면 false(화면이 안내), 맞으면 저장 후 시작을 이어 간다. 한 설치에서 한 번뿐이다.
+    @discardableResult
+    func chooseActor(_ raw: String) async -> Bool {
+        guard phase == .needsActor else { return false }
+        let actor = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard ActorName.isValid(actor) else { lastError = Strings.actorInvalid; return false }
+        deps.actorStore.save(actor)
+        lastError = nil
+        phase = .starting
+        await bootstrap()
+        return true
     }
 
     func login(_ credential: RelayCredential) {
@@ -182,7 +203,7 @@ final class AppModel: ObservableObject {
 
     private func refreshLocked() async {
         guard let transport, engine != nil else { return }
-        switch phase { case .starting, .needsLogin, .fatal: return; default: break }
+        switch phase { case .starting, .needsActor, .needsLogin, .fatal: return; default: break }
         do {
             do {
                 let listing = try await transport.listRooms(device: deviceId)
@@ -269,13 +290,16 @@ final class AppModel: ObservableObject {
         lastError = Strings.sessionExpired
     }
 
-    // MARK: - 방 참여·만들기·초대 (참여 요청 화면 = JoinRequestView; 만들기·초대 화면은 §12-E 후속)
+    // MARK: - 방 참여·만들기·초대 (§12-E: JoinRequestView · CreateRoomView · InviteView)
 
-    /// 참여 요청 버튼을 보일지: 등록이 끝나 `ready` 이고 전송이 있을 때만(정지·등록 대기 중에는 게시해도 초대받을 수 없다).
+    /// 참여 요청·방 만들기·초대 버튼을 보일지: 등록이 끝나 `ready` 이고 전송이 있을 때만(정지·등록 대기 중에는 무의미하다).
     var canRequestJoin: Bool {
         if case .ready = phase { return transport != nil }
         return false
     }
+
+    /// 참여 요청 화면이 미리 채우는 대화방 ID.
+    var defaultRoom: RoomID { deps.defaultRoom }
 
     /// 이 방에 키 패키지를 게시한다(상대가 초대할 수 있게). 방 목록에 바로 나타난다.
     func requestJoin(room: RoomID) async throws {

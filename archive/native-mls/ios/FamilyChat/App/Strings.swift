@@ -11,6 +11,13 @@ enum Strings {
     static let sessionExpired = "로그인 세션이 만료되었습니다. 다시 로그인해 주세요."
     static func storageUnavailable(_ detail: String) -> String { "기기 저장소를 열 수 없습니다: \(detail)" }
 
+    // 사용자 이름(actor) — 첫 실행 1회
+    static let actorTitle = "이 기기 사용자"
+    static let actorField = "이름(영문 소문자)"
+    static let actorHint = "가족 운영자가 정해 준 영문 이름을 입력하세요(예: mom, dad, jiyu). 소문자로 시작하는 영문 소문자·숫자 2~16자. 이 기기의 ID가 이 이름으로 만들어지며, 한 번 정하면 바꿀 수 없습니다(바꾸려면 앱을 지우고 새 기기로 다시 등록)."
+    static let actorButton = "확인"
+    static let actorInvalid = "이름 형식이 맞지 않습니다 — 소문자로 시작하는 영문 소문자·숫자 2~16자(하이픈·공백 불가)."
+
     // 로그인
     static let loginTitle = "가족 로그인"
     static let loginHint = "Cloudflare Access 로그인 뒤 발급되는 세션으로 릴레이에 연결합니다. (뼈대: 세션 값을 직접 붙여넣기)"
@@ -35,16 +42,31 @@ enum Strings {
     static let sendQueued = "릴레이에 닿지 않아 보관했습니다. 연결되면 같은 내용 그대로 다시 보냅니다."
     static let notJoined = "아직 이 대화방에 참여하지 않았습니다. 초대를 기다려 주세요."
 
-    // 참여 요청(JoinRequestView, §12-E 최소 화면)
+    // 참여 요청(JoinRequestView, §12-E) — 기본 대화방 ID 는 빌드 설정 FC_DEFAULT_ROOM(AppModel.defaultRoom)
     static let joinTitle = "대화방 참여 요청"
     static let joinField = "대화방 ID"
-    /// 가족 공용방 ID(공개 식별자, relay-app·#243 과 동일). 미리 채워 두되 바꿀 수 있다.
-    static let joinDefaultRoom = "family-acc"
     static let joinButton = "참여 요청"
     static let joinHint = "이 기기의 키 패키지(공개 정보)를 대화방에 게시합니다. 운영자가 다른 기기의 '초대'로 받아들이면 대화가 시작됩니다. 메시지나 비밀키는 보내지 않습니다."
     static let joinRequested = "참여를 요청했습니다. 운영자의 초대를 기다려 주세요."
     static func joinFailed(_ reason: String) -> String { "참여 요청에 실패했습니다: \(reason)" }
     static let close = "닫기"
+    static let roomActions = "대화방"
+
+    // 방 만들기(CreateRoomView, §12-E)
+    static let createTitle = "대화방 만들기"
+    static let createHint = "이 기기에서 새 대화방을 만듭니다(영문 소문자·숫자·하이픈, 최대 48자). 릴레이에는 첫 초대 때 생깁니다 — 만든 뒤 방에 들어가 '초대'로 다른 기기를 들이세요."
+    static let createButton = "만들기"
+    static let createDone = "대화방을 만들었습니다. 방에 들어가 '초대'로 다른 기기를 들이세요."
+    static let roomIdInvalid = "대화방 ID 형식이 맞지 않습니다 — 영문 소문자·숫자로 시작, 소문자·숫자·하이픈 최대 48자."
+
+    // 초대(InviteView, §12-E)
+    static let inviteTitle = "기기 초대"
+    static let inviteField = "초대할 기기 ID"
+    static let inviteHint = "상대 기기의 '설정 → 기기 ID'(예: mom-iphone-1a2b3c)를 입력하세요. 상대가 먼저 이 대화방에 '참여 요청'을 해 두어야 합니다. 초대하면 이 방의 암호화 키가 바뀌고(새 epoch) 상대가 대화에 들어옵니다."
+    static let inviteButton = "초대"
+    static func inviteDone(_ device: String) -> String { "\(device) 기기를 초대했습니다. 상대 앱에서 목록을 새로고침하면 대화가 열립니다." }
+    static let inviteSelf = "자기 자신은 초대할 수 없습니다."
+    static let deviceIdInvalid = "기기 ID 형식이 맞지 않습니다(영문·숫자·하이픈·밑줄, 최대 64자)."
 
     // 정지
     static let haltedTitle = "⛔ 이 기기의 대화가 정지되었습니다"
