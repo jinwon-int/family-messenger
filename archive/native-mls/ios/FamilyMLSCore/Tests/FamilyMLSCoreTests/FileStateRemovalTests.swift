@@ -47,21 +47,21 @@ final class FileStateRemovalTests: XCTestCase {
         let remover = try makeStore(dir)
         try writer.withExclusive(room: "family", timeout: 1) { try $0.save(Data("g1".utf8)) }
 
-        let holding = expectation(description: "holder inside transaction")
-        let release = expectation(description: "release holder")
+        let holding = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
         let thread = Thread {
             try? writer.withExclusive(room: "family", timeout: 1) { _ in
-                holding.fulfill()
-                self.wait(for: [release], timeout: 5)
+                holding.signal()
+                _ = release.wait(timeout: .now() + 5)
             }
         }
         thread.start()
-        wait(for: [holding], timeout: 5)
+        XCTAssertEqual(holding.wait(timeout: .now() + 5), .success)
         XCTAssertThrowsError(try remover.removeState(room: "family", timeout: 0.2)) { error in
             XCTAssertEqual(error as? StateStoreError, .lockTimeout("family"), "removal does not bypass the single-writer lock")
         }
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("family.state").path), "nothing was deleted under a held lock")
-        release.fulfill()
+        release.signal()
         while !thread.isFinished { Thread.sleep(forTimeInterval: 0.01) }
         try remover.removeState(room: "family", timeout: 1)
         XCTAssertEqual(try remover.generation(room: "family"), 0)
