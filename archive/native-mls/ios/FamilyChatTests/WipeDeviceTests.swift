@@ -39,6 +39,8 @@ final class WipeDeviceTests: XCTestCase {
 
     func testWipeDeviceDiscardsEverythingAndBecomesANewDevice() async throws {
         let f = Fixture()
+        // 방 상태를 미리 심는다 — 가짜 릴레이는 이벤트가 없는 방에 404 를 주므로 동기화만으로는 방 상태 파일이 생기지 않는다.
+        try f.state.withExclusive(room: "family", timeout: 1) { try $0.save(Data("old-group".utf8)) }
         let model = f.makeModel()
         await model.bootstrap(); model.login(.bearer("jwt")); await model.refresh()
         XCTAssertEqual(model.phase, .ready)
