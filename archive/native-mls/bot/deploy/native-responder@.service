@@ -1,0 +1,31 @@
+# #354 A3 — 응답기 인스턴스(연결당 1개). AI 자격(Codex 로그인·ccc-node 하네스)을 가진 사용자로 돈다.
+# 봇은 소켓만 본다 — 자격 파일은 어느 쪽으로도 복사하지 않는다.
+# 경로·사용자(<RESPONDER_USER>, <CCC_NODE>)는 노드 런북이 채운다(공명: gongmyoung / /home/gongmyoung/ccc-node). 값은 Wiki 에만.
+[Unit]
+Description=native-relay-bot agent responder (#354, per connection)
+CollectMode=inactive-or-failed
+
+[Service]
+User=<RESPONDER_USER>
+Group=<RESPONDER_USER>
+WorkingDirectory=/home/<RESPONDER_USER>
+Environment=PYTHONPATH=<CCC_NODE>/.github/pythonpath:<CCC_NODE>
+# fleet_worker.py 는 Codex 바인딩(docs/FLEET-WORKER.md). 승인 정책 on-request = 도구 실행 전 방에 승인 요청(④-B).
+# --approval-timeout 600: 오너가 방에서 답할 시간(초과 = 거절). --turn-timeout 1100 < 봇 워치독 1200.
+ExecStart=/usr/bin/python3 <FAMILY_MESSENGER>/scripts/fleet_worker.py \
+  --workdir /home/<RESPONDER_USER> \
+  --codex-cli /home/<RESPONDER_USER>/.claude/hooks/ccc-codex \
+  --memory-materializer /home/<RESPONDER_USER>/.claude/hooks/ccc_codex_memory.py \
+  --working-state off \
+  --approval-policy on-request --sandbox workspaceWrite \
+  --approval-timeout 600 --turn-timeout 1100
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+# 하드닝(봇 유닛과 같은 결)
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/home/<RESPONDER_USER>
+ProtectHome=tmpfs
+BindPaths=/home/<RESPONDER_USER>
