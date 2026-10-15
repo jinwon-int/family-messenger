@@ -16,6 +16,8 @@ import os
 from pathlib import Path
 import re
 import secrets
+import socket
+import stat
 import sys
 
 from fleet_core import MAX_REPLY_BYTES, MAX_TEXT_BYTES, bounded_text
@@ -366,22 +368,19 @@ async def main(args):
     protocol = asyncio.StreamReaderProtocol(reader)
     await asyncio.get_running_loop().connect_read_pipe(lambda: protocol, sys.stdin.buffer)
     loop = asyncio.get_running_loop()
-    output_transport, output_protocol = await loop.connect_write_pipe(
-        lambda: asyncio.streams.FlowControlMixin(loop=loop), sys.stdout.buffer)
-    writer = asyncio.StreamWriter(output_transport, output_protocol, None, loop)
+    write, abort, close_output = await build_output(loop, sys.stdout.buffer.fileno())
     output_lock = asyncio.Lock()
     async def emit(message):
         payload = (json.dumps(message, ensure_ascii=True) + '\n').encode()
         if len(payload) > 524_288:
             raise ValueError('output frame too large')
-        # Cancellable pipe backpressure; no blocking thread survives shutdown.
+        # Cancellable backpressure; no blocking thread survives shutdown.
         try:
             async with asyncio.timeout(5):
                 async with output_lock:
-                    writer.write(payload)
-                    await writer.drain()
+                    await write(payload)
         except BaseException:
-            output_transport.abort()
+            abort()
             raise
     runtime = RuntimeClass(**runtime_options)
     def request(session_id):
@@ -391,7 +390,33 @@ async def main(args):
     try:
         await serve(worker, reader)
     finally:
-        output_transport.close()
+        close_output()
+
+
+async def build_output(loop, fd):
+    """Output sink for ``fd``: ``(write(payload), abort(), close())``.
+
+    A pipe keeps the asyncio write-pipe transport. A **socket** (systemd socket
+    activation, ``StandardOutput=socket`` — stdin and stdout are the same
+    connection) must not: ``_UnixWritePipeTransport`` watches its fd for
+    readability as the "peer closed" signal, which on a socket is tripped by
+    every inbound frame, so the sink closed itself on the first late turn and
+    the next emit raised ``Connection lost`` (#354 A4, requests #107/#109).
+    Sockets are written with ``loop.sock_sendall`` on a dup'ed non-blocking fd.
+    """
+    if stat.S_ISSOCK(os.fstat(fd).st_mode):
+        sock = socket.socket(fileno=os.dup(fd))
+        sock.setblocking(False)
+        async def write(payload):
+            await loop.sock_sendall(sock, payload)
+        return write, sock.close, sock.close
+    transport, protocol = await loop.connect_write_pipe(
+        lambda: asyncio.streams.FlowControlMixin(loop=loop), os.fdopen(os.dup(fd), 'wb', buffering=0))
+    writer = asyncio.StreamWriter(transport, protocol, None, loop)
+    async def write(payload):
+        writer.write(payload)
+        await writer.drain()
+    return write, transport.abort, transport.close
 
 
 if __name__ == '__main__':
