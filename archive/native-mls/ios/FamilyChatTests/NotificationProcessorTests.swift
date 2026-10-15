@@ -198,9 +198,8 @@ final class NotificationProcessorTests: XCTestCase {
     func testLargeAttachmentIsDeferredToTheAppWithAFallbackNotification() async throws {
         let big = PageTransport.application(seq: 7, from: "alice-pc", bytes: Data(repeating: 1, count: (1 << 20) + 1))
         let env = environment(transport: PageTransport(events: [big]))
-        let processor = NotificationProcessor(env)
-        let result = await processor.handle(userInfo: ["room": room, "seq": 7])
-        XCTAssertEqual(result, .fallback("deferred_large_attachment"))
+        let result = await NotificationProcessor(env).process(push(7))
+        assertFallback(result, "deferred_large_attachment")
         XCTAssertEqual(try env.cursors.cursor(room: room), 0, "nothing past the big event is acked by the NSE")
         XCTAssertEqual(try env.messages.messages(room: room, after: 0, limit: 10), [], "not decrypted here")
     }
