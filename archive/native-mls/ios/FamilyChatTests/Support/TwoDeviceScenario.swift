@@ -67,7 +67,7 @@ final class ScenarioDevice {
     }
 
     func texts(_ room: RoomID) -> [String] {
-        model.messages(room: room).filter { $0.kind == .text }.map(\.body)
+        model.messages(room: room).map(\.record).filter { $0.kind == .text }.map(\.body)
     }
 }
 
