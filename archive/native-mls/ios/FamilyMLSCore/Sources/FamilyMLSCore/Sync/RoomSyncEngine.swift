@@ -67,6 +67,8 @@ public struct SyncPass: Equatable {
     public var registrationPending: Bool = false
     /// 같은 페이지 크기만큼 받았다 — 더 있을 수 있다.
     public var hasMore: Bool = false
+    /// `Configuration.maxApplicationBytes` 를 넘는 application 이벤트에서 멈췄다(커서는 그 앞). 제한 없는 호출자(앱)가 처리한다.
+    public var deferredSeq: Int64? = nil
 }
 
 public enum SendOutcome: Equatable {
@@ -91,6 +93,9 @@ public final class RoomSyncEngine {
         public var maxPages: Int = 20
         /// 복호화한 프로세스 표시(`MessageRecord.decryptedBy`). NSE 는 `.nse`.
         public var decryptedBy: MessageRecord.DecryptedBy = .app
+        /// 이 크기(암호문 바이트)를 넘는 application 이벤트는 처리하지 않고 **그 앞에서 페이지를 끝낸다**(`SyncPass.deferredSeq`,
+        /// 커서는 그 앞에 머문다). NSE(24 MB 예산)가 5 MiB 첨부(#364)를 피하고 앱에 넘기는 장치. nil = 제한 없음(앱).
+        public var maxApplicationBytes: Int? = nil
         public init() {}
     }
 
@@ -189,7 +194,7 @@ public final class RoomSyncEngine {
         for _ in 0..<max(configuration.maxPages, 1) {
             let pass = try await syncOnce()
             passes.append(pass)
-            if pass.halted != nil || !pass.hasMore { break }
+            if pass.halted != nil || pass.deferredSeq != nil || !pass.hasMore { break }
         }
         return passes
     }
@@ -222,7 +227,7 @@ public final class RoomSyncEngine {
         outcome.cursor = max(outcome.cursor, persisted)
         joined = outcome.joined
         outcome.fetched = page.events.count
-        outcome.hasMore = outcome.halted == nil && page.events.count >= configuration.pageLimit
+        outcome.hasMore = outcome.halted == nil && outcome.deferredSeq == nil && page.events.count >= configuration.pageLimit
         return outcome
     }
 
@@ -309,6 +314,11 @@ public final class RoomSyncEngine {
                     pass.joined = false
                     return pass
                 }
+            case .application where joinedNow && configuration.maxApplicationBytes.map({ ev.bytes.count > $0 }) == true:
+                // 큰 첨부(#364): 이 프로세스의 예산을 넘는다 — 커서를 여기 앞에 두고 페이지를 끝낸다. 제한 없는 앱이 이어서 처리한다.
+                pass.deferredSeq = ev.seq
+                pass.joined = joinedNow
+                return pass
             case .application where joinedNow:
                 if try isStored(ev.seq) {
                     break   // D4(b): 다른 프로세스가 이미 복호화·기록했다 — MLS 는 같은 메시지를 다시 풀 수 없다(재시도 = 거부)

@@ -18,14 +18,14 @@ enum AttachmentPreparer {
     #if canImport(UIKit)
     /// 사진: 한도 안의 JPEG/PNG/GIF/WebP 는 그대로(웹·NSE 가 읽는 형식). HEIC 나 한도 초과는 JPEG 로 다시 인코드하고,
     /// 그래도 크면 긴 변을 0.75 배씩 줄인다. 반환 nil = 디코드 실패 또는 줄여도 한도 초과.
-    static func preparePhoto(_ data: Data) -> Data? {
+    static func preparePhoto(_ data: Data, limit: Int = AttachmentPreparer.limit) -> Data? {
         let mime = AttachmentFormat.sniffMime(data)
         if data.count <= limit, ["image/jpeg", "image/png", "image/gif", "image/webp"].contains(mime) { return data }
         guard let image = UIImage(data: data) else { return nil }
-        return shrink(image)
+        return shrink(image, limit: limit)
     }
 
-    static func shrink(_ original: UIImage) -> Data? {
+    static func shrink(_ original: UIImage, limit: Int = AttachmentPreparer.limit) -> Data? {
         var image = original
         while true {
             for q in qualities {
@@ -49,8 +49,8 @@ enum AttachmentPreparer {
 
 /// 받은 첨부를 공유 시트에 넘길 임시 파일(앱 전용 tmp, 보호 등급 기본). 이름은 웹과 같은 규칙 `attachment-<seq>.<ext>`.
 enum AttachmentExport {
-    static func temporaryURL(for record: MessageRecord) -> URL? {
-        guard let bytes = record.attachment else { return nil }
+    static func temporaryURL(for record: MessageRecord, bytes override: Data? = nil) -> URL? {
+        guard let bytes = override ?? record.attachment else { return nil }
         let name = "attachment-\(record.seq).\(AttachmentFormat.fileExtension(mime: record.body))"
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("hande-share", isDirectory: true).appendingPathComponent(name)
         do {

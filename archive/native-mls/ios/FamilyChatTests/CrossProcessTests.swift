@@ -75,7 +75,7 @@ extension ScenarioDevice {
             agentActors: agentActors)
     }
 
-    func records(_ room: RoomID) -> [MessageRecord] { model.messages(room: room) }
+    func records(_ room: RoomID) -> [MessageRecord] { model.messages(room: room).map(\.record) }
 }
 
 struct SendFailed: Error {}

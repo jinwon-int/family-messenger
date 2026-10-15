@@ -69,6 +69,8 @@ final class NotificationProcessor {
         configuration.pageLimit = 100
         configuration.maxPages = 5
         configuration.decryptedBy = .nse
+        // #364: 5 MiB 첨부는 NSE 24 MB 예산(암호문+base64+평문 사본)을 위협한다 — 1 MiB 를 넘는 application 은 앱에 넘긴다(대체 알림).
+        configuration.maxApplicationBytes = 1 << 20
         return configuration
     }
 
@@ -115,6 +117,7 @@ final class NotificationProcessor {
         let passes = try await sync.syncAll()
         if let halted = passes.last?.halted ?? sync.haltedReason { return .fallback("halted: \(halted)") }
         if passes.last?.registrationPending == true { return .fallback("registration_pending") }
+        if let deferred = passes.last?.deferredSeq, deferred <= payload.seq { return .fallback("deferred_large_attachment") }
 
         guard let record = try env.messages.messages(room: payload.room, after: payload.seq - 1, limit: 1).first,
               record.seq == payload.seq else {

@@ -18,7 +18,7 @@ import SQLite3
 import CryptoKit
 #endif
 
-public final class FileSQLiteStore: MessageStore, OutboxStore, CursorStore {
+public final class FileSQLiteStore: MessageStore, OutboxStore, CursorStore, AttachmentLoading {
     public let path: String
     private let db: SQLiteBridge.DB
     private let lock = NSLock()
@@ -118,6 +118,41 @@ public final class FileSQLiteStore: MessageStore, OutboxStore, CursorStore {
             ))
         }
         return out
+    }
+
+    // MARK: - AttachmentLoading (#364)
+
+    /// 행 머리만: `length(attachment)` 로 크기만 읽고 BLOB 은 가져오지 않는다.
+    public func messageHeads(room: RoomID, after seq: Int64, limit: Int) throws -> [MessageHead] {
+        lock.lock(); defer { lock.unlock() }
+        let stmt = try db.prepare("""
+        SELECT room, seq, sender_device, client_id, kind, body, COALESCE(length(attachment), 0), received_at, decrypted_by
+        FROM messages WHERE room = ? AND seq > ? ORDER BY seq ASC LIMIT ?
+        """)
+        defer { stmt.finalize() }
+        stmt.bindText(room, at: 1)
+        stmt.bind(seq, at: 2)
+        stmt.bind(Int64(limit), at: 3)
+        var out: [MessageHead] = []
+        while try stmt.step() {
+            let record = MessageRecord(
+                room: stmt.columnText(0), seq: stmt.columnInt64(1), senderDevice: stmt.columnText(2), clientId: stmt.columnText(3),
+                kind: MessageRecord.Kind(rawValue: stmt.columnText(4)) ?? .system, body: stmt.columnText(5), attachment: nil,
+                receivedAt: Date(timeIntervalSince1970: stmt.columnDouble(7)),
+                decryptedBy: MessageRecord.DecryptedBy(rawValue: stmt.columnText(8)) ?? .app)
+            out.append(MessageHead(record: record, attachmentBytes: Int(stmt.columnInt64(6))))
+        }
+        return out
+    }
+
+    public func attachment(room: RoomID, seq: Int64) throws -> Data? {
+        lock.lock(); defer { lock.unlock() }
+        let stmt = try db.prepare("SELECT attachment FROM messages WHERE room = ? AND seq = ?")
+        defer { stmt.finalize() }
+        stmt.bindText(room, at: 1)
+        stmt.bind(seq, at: 2)
+        guard try stmt.step() else { return nil }
+        return stmt.columnBlobOpt(0)
     }
 
     public func upsertRoom(_ room: RoomRecord) throws {

@@ -11,5 +11,6 @@ extension Strings {
     static let attachmentImage = "사진"
     static func attachmentFile(_ bytes: Int, _ mime: String) -> String { "📎 파일 · \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)) · \(mime)" }
     static let attachmentSave = "저장·공유"
-    static let attachHint = "첨부는 256 KiB 까지입니다. 사진은 자동으로 줄여서 보냅니다. 파일 이름은 보내지 않습니다(받는 쪽에는 종류와 크기만 보입니다)."
+    static func attachmentLoading(_ bytes: Int) -> String { "📎 불러오는 중 · \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))" }
+    static let attachHint = "첨부는 5 MiB 까지입니다. 사진은 자동으로 줄여서 보냅니다. 파일 이름은 보내지 않습니다(받는 쪽에는 종류와 크기만 보입니다)."
 }

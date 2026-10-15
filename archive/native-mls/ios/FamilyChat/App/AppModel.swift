@@ -482,8 +482,30 @@ final class AppModel: ObservableObject {
     /// 화면이 엔진의 공개 정보(공개키)만 읽는 좁은 창. 키 자체는 노출하지 않는다.
     func engineForUI() -> MlsEngine? { engine }
 
-    func messages(room: RoomID) -> [MessageRecord] {
-        (try? deps.messageStore.messages(room: room, after: 0, limit: 500)) ?? []
+    /// 타임라인 1행: 첨부 본체는 빼고(`record.attachment == nil`) 크기만. 본체는 `attachment(room:seq:)` 로 화면이 보일 때 읽는다(#364).
+    struct TimelineItem: Equatable, Identifiable {
+        let record: MessageRecord
+        let attachmentBytes: Int
+        var id: Int64 { record.seq }
+    }
+
+    func messages(room: RoomID) -> [TimelineItem] {
+        if let loading = deps.messageStore as? AttachmentLoading,
+           let heads = try? loading.messageHeads(room: room, after: 0, limit: 500) {
+            return heads.map { TimelineItem(record: $0.record, attachmentBytes: $0.attachmentBytes) }
+        }
+        // 지연 로딩을 모르는 저장소: 종전처럼 BLOB 포함으로 읽고 크기만 떼어 둔다.
+        return ((try? deps.messageStore.messages(room: room, after: 0, limit: 500)) ?? []).map { r in
+            TimelineItem(record: MessageRecord(room: r.room, seq: r.seq, senderDevice: r.senderDevice, clientId: r.clientId, kind: r.kind,
+                                               body: r.body, attachment: nil, receivedAt: r.receivedAt, decryptedBy: r.decryptedBy),
+                         attachmentBytes: r.attachment?.count ?? 0)
+        }
+    }
+
+    /// 첨부 본체(≤ `AttachmentFormat.maxBytes`). 말풍선이 보일 때 한 번 읽는다.
+    func attachment(room: RoomID, seq: Int64) -> Data? {
+        if let loading = deps.messageStore as? AttachmentLoading { return try? loading.attachment(room: room, seq: seq) }
+        return (try? deps.messageStore.messages(room: room, after: seq - 1, limit: 1))?.first { $0.seq == seq }?.attachment
     }
 
     func refreshRooms() {

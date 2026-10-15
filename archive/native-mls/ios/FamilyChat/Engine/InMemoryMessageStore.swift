@@ -2,7 +2,7 @@
 import Foundation
 import FamilyMLSCore
 
-final class InMemoryMessageStore: MessageStore {
+final class InMemoryMessageStore: MessageStore, AttachmentLoading {
     private var records: [RoomID: [MessageRecord]] = [:]
     private var roomRecords: [RoomID: RoomRecord] = [:]
     private let lock = NSLock()
@@ -40,6 +40,19 @@ final class InMemoryMessageStore: MessageStore {
         guard var r = roomRecords[room] else { return }
         r.haltedReason = reason
         roomRecords[room] = r
+    }
+
+    func messageHeads(room: RoomID, after seq: Int64, limit: Int) throws -> [MessageHead] {
+        try messages(room: room, after: seq, limit: limit).map { r in
+            MessageHead(record: MessageRecord(room: r.room, seq: r.seq, senderDevice: r.senderDevice, clientId: r.clientId, kind: r.kind,
+                                              body: r.body, attachment: nil, receivedAt: r.receivedAt, decryptedBy: r.decryptedBy),
+                        attachmentBytes: r.attachment?.count ?? 0)
+        }
+    }
+
+    func attachment(room: RoomID, seq: Int64) throws -> Data? {
+        lock.lock(); defer { lock.unlock() }
+        return records[room]?.first { $0.seq == seq }?.attachment
     }
 
     /// "이 기기 지우기" 대역(`FileSQLiteStore.wipe` 상당).
