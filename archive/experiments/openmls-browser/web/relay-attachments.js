@@ -1,7 +1,9 @@
 // Raw file bytes occupy one MLS application message: no envelope reduces the
-// facade's 262144-byte limit. The outer client_id is a display hint only, never
+// facade's MAX_ATTACHMENT limit (5 MiB, #364). The outer client_id is a display hint only, never
 // authentication; downloads have a generated name and an inert MIME type.
-export const MAX_ATTACHMENT = 262144;
+export const MAX_ATTACHMENT = 5 * 1024 * 1024;   // #364 (owner decision B): mirrors lib.rs MAX_ATTACHMENT
+// base64 of the largest ciphertext (MAX_ATTACHMENT + 4 KiB MLS slack, session-store MAX_WIRE).
+export const MAX_WIRE_BASE64 = Math.ceil((MAX_ATTACHMENT + 4096) / 3) * 4;
 export const isAttachment = id => /^file-v1-[a-f0-9-]{36}$/.test(id ?? '');
 
 function base64(bytes) {
@@ -18,7 +20,7 @@ export function attachmentOutbox({storage, key, device, encrypt, post, newId = (
     const pending = JSON.parse(saved);
     if (!pending || pending.device !== device || !isAttachment(pending.client_id) || pending.kind !== 'application'
         || !Number.isSafeInteger(pending.epoch) || pending.epoch < 0
-        || typeof pending.bytes !== 'string' || pending.bytes.length > 360448
+        || typeof pending.bytes !== 'string' || pending.bytes.length > MAX_WIRE_BASE64
         || !Number.isSafeInteger(pending.size) || pending.size < 0 || pending.size > MAX_ATTACHMENT) {
       throw new Error('보류 중인 첨부 정보가 손상됐다. 전송을 중단한다.');
     }
@@ -52,7 +54,7 @@ export function attachmentOutbox({storage, key, device, encrypt, post, newId = (
         if (current) { pending = current; persisted = true; }
         if (!pending) {
           if (!file || !Number.isSafeInteger(file.size) || file.size < 0 || file.size > MAX_ATTACHMENT) {
-            throw new Error('첨부파일은 256 KiB(262,144바이트) 이하여야 한다.');
+            throw new Error('첨부파일은 5 MiB(5,242,880바이트) 이하여야 한다.');
           }
           const bytes = new Uint8Array(await file.arrayBuffer());
           if (bytes.length !== file.size) throw new Error('첨부파일 크기가 바뀌었다. 다시 선택한다.');

@@ -166,8 +166,10 @@ def main():
             call(bob, 'decrypt', sealed(valid), name='different', reject=True)
             call(alice, 'decrypt', sealed(other), name='wrong', reject=True)
             receipt['checks']['wrong_group_both_directions'] = True
-            for name, method, value in [('largeplain', 'encrypt', bound('bob', [0] * 262145)),
-                                        ('largewire', 'decrypt', sealed([0] * 266241)),
+            # #364: 파사드 MAX_ATTACHMENT = 5 MiB, MAX_WIRE = MAX_ATTACHMENT + 4 KiB — 한 바이트 넘으면 거부.
+            max_attachment = 5 * 1024 * 1024
+            for name, method, value in [('largeplain', 'encrypt', bound('bob', [0] * (max_attachment + 1))),
+                                        ('largewire', 'decrypt', sealed([0] * (max_attachment + 4096 + 1))),
                                         ('malformed', 'decrypt', sealed([1, 2, 3]))]:
                 pair(name)
                 call(bob, method, value, name=name, reject=True)

@@ -31,7 +31,9 @@ import (
 const (
 	// maxBodyBytes bounds every POST body (M4): one event or one key-package
 	// batch; the per-room cap applies to totals separately.
-	maxBodyBytes = 1 << 20
+	// #364: a 5 MiB attachment is ~5.004 MiB of ciphertext → ~6.7 MiB of
+	// base64 inside the JSON envelope; 8 MiB leaves room for the other fields.
+	maxBodyBytes = 8 << 20
 	// maxJSONDepth caps nesting in request bodies (H1): the strict-JSON walk
 	// is recursive and must not be driven by a `[[[[…` body.
 	maxJSONDepth = 32
@@ -80,7 +82,7 @@ type policy struct {
 func defaultPolicy() policy {
 	const day = 24 * 60 * 60
 	return policy{
-		RoomBytesCap:               64 << 20, // 64 MiB per room (B5)
+		RoomBytesCap:               1 << 30, // 1 GiB per room (B5; raised from 64 MiB with the 5 MiB attachment bound, #364)
 		KeyPackagesMaxPerDevice:    4,
 		KeyPackageTTLSeconds:       7 * day,
 		CommitWelcomeKeepEpochs:    8,
@@ -88,7 +90,7 @@ func defaultPolicy() policy {
 		AppEventTTLSeconds:         30 * day,
 		RemovedCursorGraceSeconds:  7 * day,
 		RoomsMaxPerDevice:          16,
-		DeviceBytesCap:             256 << 20, // 256 MiB per device across rooms (G-M4)
+		DeviceBytesCap:             4 << 30, // 4 GiB per device across rooms (G-M4; raised with #364)
 	}
 }
 

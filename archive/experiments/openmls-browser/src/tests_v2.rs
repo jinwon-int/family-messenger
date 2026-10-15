@@ -171,12 +171,12 @@ fn aad_binding_rejects_wrong_room_and_rolls_back() {
     alice.session.commit().unwrap();
 }
 
-/// M5 (#177 §4): an attachment at the full 256 KiB bound rides as one MLS
+/// M5 (#177 §4) · #364: an attachment at the full `MAX_ATTACHMENT` bound (5 MiB) rides as one MLS
 /// application message. Measures the exact wire cost the relay sees — the
 /// number the PR body and the bot smoke receipt quote — and proves the decrypt
 /// side's `MAX_WIRE` still accepts the ciphertext.
 #[test]
-fn attachment_256kib_rounds_trip() {
+fn attachment_max_bound_rounds_trip() {
     let (mut alice, mut bob) = pair();
     let mut attachment = vec![0u8; MAX_ATTACHMENT];
     let mut state = 0x5eed_u32;

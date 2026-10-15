@@ -25,13 +25,13 @@
 // u32 LE key_len ‖ entry key ‖ value (additional data: domain, room, index) and
 // t = entry_tag(auth key, room, index, e).
 export const MAX_BINARY = 2 * 1024 * 1024, MAX_LEDGER = 256, ACKED = 256, TAG = 32;
-// MAX_WIRE mirrors the Rust facade (lib.rs: 256 KiB attachment + 4 KiB MLS
+// MAX_WIRE mirrors the Rust facade (lib.rs: 5 MiB attachment (#364) + 4 KiB MLS
 // framing). Review 2 L: the ledger kept a 64 KiB cap after the facade was
 // raised for M5 attachments, so a full-size attachment at the head of the
 // inbox threw in input() before classifyDecryptFailure and pinned the durable
 // cursor for good. One operation's input+output now fit; MAX_BINARY (2 MiB)
 // still bounds how many un-acked attachments a ledger may hold (~3).
-export const MAX_WIRE = 262144 + 4096;
+export const MAX_WIRE = 5 * 1024 * 1024 + 4096;   // #364: 5 MiB attachment + 4 KiB MLS slack (lib.rs MAX_WIRE)
 export const FAULTS = ['', 'abort-before-write', 'abort-after-write', 'lost-response'];
 export const fail = () => { throw new Error('rejected'); };
 export const exact = (value, keys) => value && Object.getPrototypeOf(value) === Object.prototype &&
