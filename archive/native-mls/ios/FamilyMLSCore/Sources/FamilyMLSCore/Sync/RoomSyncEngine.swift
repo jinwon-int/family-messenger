@@ -48,6 +48,8 @@ public enum SyncError: Error, Equatable {
     case casRetryExhausted
     /// 릴레이가 이 기기를 아직 받지 않는다(403 device_subject_mismatch) — 운영자 등록 대기.
     case registrationPending
+    /// 첨부가 `AttachmentFormat.maxBytes` 를 넘는다(암호화 전 거부 — ratchet 을 쓰지 않는다).
+    case attachmentTooLarge(Int)
 }
 
 /// `syncOnce` 1회의 결과(화면·로그·테스트용).
@@ -364,9 +366,16 @@ public final class RoomSyncEngine {
             let decrypted = try Framing.parseDecrypted(output)
             if decrypted.senderDevice == ev.device {
                 // clientId = 릴레이 행의 dedup 키(AAD client_id 는 항상 발신 기기 ID 라 구분 정보가 없다).
-                record = MessageRecord(room: room, seq: ev.seq, senderDevice: decrypted.senderDevice, clientId: ev.clientId,
-                                       kind: .text, body: String(decoding: decrypted.plaintext, as: UTF8.self),
-                                       attachment: nil, receivedAt: Date(), decryptedBy: configuration.decryptedBy)
+                // 첨부 판정은 relay-app 과 같다: 바깥 client_id 가 `file-v1-<uuid>` 면 바이트를 첨부로, 아니면 UTF-8 텍스트로(AttachmentFormat).
+                if AttachmentFormat.isAttachment(clientId: ev.clientId) {
+                    record = MessageRecord(room: room, seq: ev.seq, senderDevice: decrypted.senderDevice, clientId: ev.clientId,
+                                           kind: .attachment, body: AttachmentFormat.sniffMime(decrypted.plaintext),
+                                           attachment: decrypted.plaintext, receivedAt: Date(), decryptedBy: configuration.decryptedBy)
+                } else {
+                    record = MessageRecord(room: room, seq: ev.seq, senderDevice: decrypted.senderDevice, clientId: ev.clientId,
+                                           kind: .text, body: String(decoding: decrypted.plaintext, as: UTF8.self),
+                                           attachment: nil, receivedAt: Date(), decryptedBy: configuration.decryptedBy)
+                }
             } else {
                 // 릴레이 row 의 기기와 MLS 발신자가 다르다 — 내용을 보이지 않는다.
                 ok = false
@@ -408,17 +417,24 @@ public final class RoomSyncEngine {
         try await send(plaintext: Data(text.utf8))
     }
 
+    /// 첨부(원본 바이트 그대로, ≤256 KiB): 릴레이 client_id 만 `file-v1-<uuid>` 로 바꾼다(AttachmentFormat). 409 재암호화도 새 `file-v1-` ID.
+    public func send(attachment: Data) async throws -> SendOutcome {
+        guard attachment.count <= AttachmentFormat.maxBytes else { throw SyncError.attachmentTooLarge(attachment.count) }
+        return try await send(plaintext: attachment, clientId: { AttachmentFormat.newClientId() })
+    }
+
     /// 동기화 → encrypt → outbox(정확 바이트) → POST. 409 면 새 client_id 로 1회 재암호화.
     /// 먼저 동기화하는 것은 relay-app `send` 와 같다: 새 epoch·commit 을 적용한 뒤 암호화해야 409 가 드물고,
     /// 릴레이에 닿지 않으면 ratchet 을 쓰기 전에 실패한다(평문은 호출자가 들고 있다).
-    public func send(plaintext: Data) async throws -> SendOutcome {
+    /// `clientId` = 릴레이 dedup 키 생성기(기본 = 생성자의 `makeClientId`; 첨부는 `file-v1-` 접두). 시도마다 새로 부른다.
+    public func send(plaintext: Data, clientId: (() -> String)? = nil) async throws -> SendOutcome {
         if let haltedReason { throw SyncError.halted(haltedReason) }
         try await syncAll()
         var retried = false
         while true {
             if let haltedReason { throw SyncError.halted(haltedReason) }
             if registrationPending != nil { throw SyncError.registrationPending }   // 409 뒤 재동기화에서 403 이 났을 수도
-            let entry = try encryptAndEnqueue(plaintext)
+            let entry = try encryptAndEnqueue(plaintext, clientId: (clientId ?? makeClientId)())
             do {
                 return try await post(entry)
             } catch RelayError.cas {
@@ -463,8 +479,7 @@ public final class RoomSyncEngine {
         return outcomes
     }
 
-    private func encryptAndEnqueue(_ plaintext: Data) throws -> OutboxEntry {
-        let clientId = makeClientId()
+    private func encryptAndEnqueue(_ plaintext: Data, clientId: String) throws -> OutboxEntry {
         let bytes = try transaction { engine, dirty -> Data in
             guard try isJoined(engine) else { throw SyncError.notJoined }
             // AAD client_id 는 **기기 ID**(파사드 리뷰 H1: 수신측 decrypt 가 인증된 발신 기기와 같지 않으면 거부, 봇 session.rs 와 같음).

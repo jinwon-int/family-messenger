@@ -1,5 +1,7 @@
-// §9-4 방 화면: `MessageStore` 타임라인 + 작성창 + 초대(§12-E). 내 메시지 오른쪽, 상대 왼쪽에 보낸 기기·actor. 봇 배지는 L3 의 actor 판정 뒤.
+// §9-4 방 화면: `MessageStore` 타임라인 + 작성창 + 첨부(사진·파일 ≤256 KiB) + 초대(§12-E). 내 메시지 오른쪽, 상대 왼쪽에 보낸 기기·actor. 봇 배지는 L3 의 actor 판정 뒤.
 import SwiftUI
+import PhotosUI
+import UniformTypeIdentifiers
 import FamilyMLSCore
 
 struct RoomView: View {
@@ -8,6 +10,9 @@ struct RoomView: View {
     @State private var draft = ""
     @State private var messages: [MessageRecord] = []
     @State private var showInvite = false
+    @State private var pickedPhoto: PhotosPickerItem?
+    @State private var showFileImporter = false
+    @State private var attachBusy = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -27,7 +32,16 @@ struct RoomView: View {
             if let error = model.lastError {
                 Text(error).font(.footnote).foregroundStyle(.red).padding(.horizontal)
             }
+            if attachBusy {
+                Text(Strings.attachPreparing).font(.footnote).foregroundStyle(.secondary).padding(.horizontal)
+            }
             HStack {
+                Menu {
+                    PhotosPicker(selection: $pickedPhoto, matching: .images) { Label(Strings.attachPhoto, systemImage: "photo") }
+                    Button { showFileImporter = true } label: { Label(Strings.attachFile, systemImage: "doc") }
+                } label: { Image(systemName: "paperclip") }
+                    .accessibilityLabel(Strings.attachMenu)
+                    .disabled(!isReady || attachBusy)
                 TextField(Strings.composerPlaceholder, text: $draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                 Button(Strings.sendButton) {
@@ -51,6 +65,14 @@ struct RoomView: View {
             }
         }
         .sheet(isPresented: $showInvite) { InviteView(room: room).environmentObject(model) }
+        .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.data]) { result in
+            Task { await sendFile(result) }
+        }
+        .onChange(of: pickedPhoto) { item in
+            guard let item else { return }
+            pickedPhoto = nil
+            Task { await sendPhoto(item) }
+        }
         .onAppear { messages = model.messages(room: room) }
         .onChange(of: model.messagesRevision) { _ in messages = model.messages(room: room) }
     }
@@ -63,6 +85,25 @@ struct RoomView: View {
     /// 이 방의 정지 사유(다른 방의 정지는 여기 보이지 않는다 — 전역 배너가 알린다).
     private var haltedReason: String? {
         model.rooms.first { $0.room == room }?.haltedReason
+    }
+
+    private func sendPhoto(_ item: PhotosPickerItem) async {
+        attachBusy = true
+        defer { attachBusy = false }
+        guard let raw = try? await item.loadTransferable(type: Data.self) else { model.noteError(Strings.attachPhotoUnreadable); return }
+        guard let prepared = AttachmentPreparer.preparePhoto(raw) else { model.noteError(Strings.attachmentTooLarge(raw.count)); return }
+        await model.sendAttachment(room: room, data: prepared)
+    }
+
+    private func sendFile(_ result: Result<URL, Error>) async {
+        attachBusy = true
+        defer { attachBusy = false }
+        guard case .success(let url) = result else { return }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let raw = try? Data(contentsOf: url) else { model.noteError(Strings.attachFileUnreadable); return }
+        guard let prepared = AttachmentPreparer.prepareFile(raw) else { model.noteError(Strings.attachmentTooLarge(raw.count)); return }
+        await model.sendAttachment(room: room, data: prepared)
     }
 }
 
@@ -77,13 +118,47 @@ struct MessageRow: View {
                 if !mine {
                     Text("\(message.senderActor) · \(message.senderDevice)").font(.caption).foregroundStyle(.secondary)
                 }
-                Text(message.kind == .undecryptable ? Strings.undecryptable : message.body)
+                content
                     .padding(10)
                     .background(mine ? Color.accentColor.opacity(0.9) : Color(.secondarySystemBackground))
                     .foregroundStyle(mine ? Color.white : Color.primary)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
             }
             if !mine { Spacer(minLength: 40) }
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        switch message.kind {
+        case .attachment:
+            AttachmentBubble(message: message)
+        case .undecryptable:
+            Text(Strings.undecryptable)
+        default:
+            Text(message.body)
+        }
+    }
+}
+
+/// 첨부 말풍선: 이미지는 미리보기(긴 변 ≤220pt), 그 밖은 종류·크기. 둘 다 저장·공유(ShareLink → 임시 파일).
+struct AttachmentBubble: View {
+    let message: MessageRecord
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let data = message.attachment, AttachmentFormat.isImage(mime: message.body), let image = UIImage(data: data) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: 220, maxHeight: 220)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .accessibilityLabel(Strings.attachmentImage)
+            } else {
+                Text(Strings.attachmentFile(message.attachment?.count ?? 0, message.body)).font(.footnote)
+            }
+            if let url = AttachmentExport.temporaryURL(for: message) {
+                ShareLink(item: url) { Label(Strings.attachmentSave, systemImage: "square.and.arrow.up") }.font(.caption)
+            }
         }
     }
 }

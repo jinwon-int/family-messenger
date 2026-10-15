@@ -45,6 +45,10 @@ enum Strings {
     static func sendRejected(_ reason: String) -> String { "보내지 못했습니다(\(reason)). 동기화 뒤 다시 시도해 주세요." }
     static let sendQueued = "릴레이에 닿지 않아 보관했습니다. 연결되면 같은 내용 그대로 다시 보냅니다."
     static let notJoined = "아직 이 대화방에 참여하지 않았습니다. 초대를 기다려 주세요."
+    /// 첨부 한도(AttachmentFormat.maxBytes) 초과 — AppModel 이 쓰므로 여기(NSE 공유 파일)에 둔다.
+    static func attachmentTooLarge(_ bytes: Int) -> String {
+        "첨부는 256 KiB(262,144바이트) 이하여야 합니다(지금 \(bytes.formatted())바이트). 사진은 자동으로 줄이지만 파일은 줄일 수 없습니다."
+    }
 
     // 참여 요청(JoinRequestView, §12-E) — 기본 대화방 ID 는 빌드 설정 FC_DEFAULT_ROOM(AppModel.defaultRoom)
     static let joinTitle = "대화방 참여 요청"

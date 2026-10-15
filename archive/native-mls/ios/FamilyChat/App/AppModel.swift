@@ -94,7 +94,15 @@ final class AppModel: ObservableObject {
     /// 아직 서버 확인(seq)을 못 받은 내 메시지의 평문(clientId → 본문). MLS 는 자기 메시지를 복호화하지 못하므로
     /// 내 메시지는 서버가 seq 를 준 순간 여기서 MessageStore 에 쓴다. 앱이 그 전에 끝나면 평문은 사라지고
     /// (바이트는 outbox 에 남아 같은 바이트로 나간다) 내 화면에만 안 보인다 — 상대는 정상 수신.
-    private var unconfirmed: [String: (room: RoomID, text: String)] = [:]
+    private var unconfirmed: [String: PendingOwn] = [:]
+
+    /// 서버 확인 전 내 메시지(텍스트 또는 첨부 바이트 + 추정 MIME).
+    struct PendingOwn {
+        let room: RoomID
+        let kind: MessageRecord.Kind
+        let body: String
+        let attachment: Data?
+    }
     /// 방별 마지막으로 본 영속 커서 — NSE 가 사이에 처리했는지 감지(전면 복귀 시 화면 갱신).
     private var seenCursors: [RoomID: Int64] = [:]
     private let serial = SerialAsyncQueue()
@@ -421,21 +429,37 @@ final class AppModel: ObservableObject {
     /// 동기화 → encrypt → outbox(정확 바이트) → POST. 409 는 엔진이 1회 재암호화, 네트워크 실패는 pending 으로 남는다.
     @discardableResult
     func send(room: RoomID, text: String) async -> SendOutcome? {
+        await sendOwn(room: room, pending: PendingOwn(room: room, kind: .text, body: text, attachment: nil)) {
+            try await $0.send(text: text)
+        }
+    }
+
+    /// 첨부(≤256 KiB, 원본 바이트 그대로 — AttachmentFormat). 한도 초과는 암호화 전에 `lastError` 로 거절한다.
+    @discardableResult
+    func sendAttachment(room: RoomID, data: Data) async -> SendOutcome? {
+        guard data.count <= AttachmentFormat.maxBytes else { lastError = Strings.attachmentTooLarge(data.count); return nil }
+        let pending = PendingOwn(room: room, kind: .attachment, body: AttachmentFormat.sniffMime(data), attachment: data)
+        return await sendOwn(room: room, pending: pending) { try await $0.send(attachment: data) }
+    }
+
+    private func sendOwn(room: RoomID, pending: PendingOwn, _ operation: @escaping (RoomSyncEngine) async throws -> SendOutcome) async -> SendOutcome? {
         guard case .ready = phase else { return nil }
         do {
-            let outcome = try await serial.run { try await self.syncEngine(room).send(text: text) }
+            let outcome = try await serial.run { try await operation(try self.syncEngine(room)) }
             switch outcome {
             case .sent(let clientId, let seq, _):
-                unconfirmed[clientId] = (room, text)
+                unconfirmed[clientId] = pending
                 try recordOwn(clientId: clientId, seq: seq)
                 lastError = nil
             case .queued(let clientId):
-                unconfirmed[clientId] = (room, text)
+                unconfirmed[clientId] = pending
                 lastError = Strings.sendQueued
             case .reconciled:
                 lastError = nil
             }
             return outcome
+        } catch SyncError.attachmentTooLarge(let size) {
+            lastError = Strings.attachmentTooLarge(size)
         } catch SyncError.halted(let reason) {
             halt(reason: reason, room: room)
         } catch SyncError.registrationPending {
@@ -451,6 +475,9 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: - 화면용 읽기
+
+    /// 화면 쪽 오류(첨부 읽기 실패 등)를 같은 자리(`lastError`)에 보인다.
+    func noteError(_ message: String) { lastError = message }
 
     /// 화면이 엔진의 공개 정보(공개키)만 읽는 좁은 창. 키 자체는 노출하지 않는다.
     func engineForUI() -> MlsEngine? { engine }
@@ -505,7 +532,8 @@ final class AppModel: ObservableObject {
         guard let pending = unconfirmed.removeValue(forKey: clientId) else { return }
         if try deps.messageStore.messages(room: pending.room, after: seq - 1, limit: 1).first?.seq != seq {
             try deps.messageStore.insert(MessageRecord(room: pending.room, seq: seq, senderDevice: deviceId, clientId: clientId,
-                                                       kind: .text, body: pending.text, attachment: nil, receivedAt: Date(), decryptedBy: .app))
+                                                       kind: pending.kind, body: pending.body, attachment: pending.attachment,
+                                                       receivedAt: Date(), decryptedBy: .app))
         }
         messagesRevision += 1
     }
