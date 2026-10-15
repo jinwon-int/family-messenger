@@ -41,6 +41,7 @@
 
 use crate::api::{self, BotError, Client, EventPost, StoredRow};
 use crate::policy;
+use crate::responder::{self, Inbound, Outbound, Responder};
 use family_mls_browser_experiment::Device;
 use std::collections::VecDeque;
 use std::io::Write;
@@ -69,6 +70,9 @@ pub struct Options {
     /// resumes its MLS identity and room cursor across restarts instead of
     /// becoming a new device every run.
     pub state_file: Option<std::path::PathBuf>,
+    /// Agent mode (#354 A1): when set, application messages are offered to the
+    /// stdio worker instead of being echoed. `None` = the original echo bot.
+    pub responder: Option<responder::Config>,
 }
 
 /// On-disk envelope around the facade's `export_state` snapshot (M5 후속):
@@ -393,6 +397,20 @@ pub fn run(opts: Options) -> Result<(), BotError> {
         "max_secs": max_secs,
         "restored": restored,
     }));
+    // Agent mode: spawn the worker now (after `ready`, before the first poll).
+    // A spawn failure is fatal — running as a silent echo-less bot would hide it.
+    let mut agent: Option<Responder> = match &opts.responder {
+        Some(config) => {
+            let responder = Responder::spawn(config.clone(), opts.state_file.as_deref())?;
+            emit(&serde_json::json!({
+                "event": "agent_started", "room": opts.room, "device": opts.device,
+                "owner_actor": config.owner_actor, "queue_max": config.queue_max,
+                "turn_secs": config.turn_secs, "reply_max_bytes": config.reply_max_bytes,
+            }));
+            Some(responder)
+        }
+        None => None,
+    };
 
     let (c0, e0, j0, x0) = restored_main.unwrap_or((0, 0, false, 0));
     // #263: a refusal marker from an earlier run keeps the room halted — the
@@ -434,7 +452,7 @@ pub fn run(opts: Options) -> Result<(), BotError> {
             return Err(BotError::Local("session deadline exceeded"));
         }
         for state in &mut rooms {
-            match poll_room(&ctx, &mut device, state) {
+            match poll_room(&ctx, &mut device, state, &mut agent) {
                 Ok(()) => {}
                 // 401 = the assertion expired or was rejected, or the token
                 // file is momentarily empty/unreadable mid-rotation (B-M3).
@@ -463,6 +481,35 @@ pub fn run(opts: Options) -> Result<(), BotError> {
                 flush(&ctx, &mut device, state)?;
             }
         }
+        // Agent mode: worker output → room (encrypted and posted like an echo).
+        // Only the main room (rooms[0]) ever carries agent text; the watch room
+        // stays silent (B-H3). A dead worker ends the session: the service
+        // manager restarts both halves together rather than leaving a bot that
+        // reads everything and answers nothing.
+        if let Some(responder) = agent.as_mut() {
+            for item in responder.pump()? {
+                let main = &mut rooms[0];
+                match &item {
+                    Outbound::WorkerGone { reason } => {
+                        emit(&serde_json::json!({ "event": "agent_worker_gone", "room": main.room, "reason": reason }));
+                        return Err(BotError::Local("responder worker gone"));
+                    }
+                    _ => {
+                        let text = agent_text(&item);
+                        emit(&serde_json::json!({
+                            "event": "agent_outbound", "room": main.room, "kind": agent_kind(&item), "bytes": text.len(),
+                        }));
+                        if !main.joined || main.halted {
+                            emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": main.room, "reason": "not_joined_or_halted" }));
+                            continue;
+                        }
+                        if let Err(err) = publish_echo(&ctx, &mut device, main, text.as_bytes(), 0) {
+                            return Err(report_dropped(main, text.as_bytes(), err));
+                        }
+                    }
+                }
+            }
+        }
         rounds += 1;
         if rounds % STATUS_EVERY == 0 {
             status(&rooms);
@@ -471,7 +518,32 @@ pub fn run(opts: Options) -> Result<(), BotError> {
     }
 }
 
-fn poll_room(ctx: &Ctx, device: &mut Device, state: &mut RoomState) -> Result<(), BotError> {
+/// Room text for one worker item (Korean, plain — the family reads this).
+fn agent_text(item: &Outbound) -> String {
+    match item {
+        Outbound::Reply { text, .. } => text.clone(),
+        Outbound::ApprovalRequest { text, .. } => text.clone(),
+        Outbound::ApprovalResolved { n, allowed } => {
+            if *allowed { format!("승인 #{n}: 허용했습니다.") } else { format!("승인 #{n}: 거절했습니다.") }
+        }
+        Outbound::Uncertain { seq, reason } => {
+            format!("⚠️ 요청(#{seq})을 끝까지 확인하지 못했습니다({reason}). 다시 말씀해 주세요 — 같은 요청을 자동으로 다시 실행하지는 않습니다.")
+        }
+        Outbound::WorkerGone { reason } => format!("⚠️ 응답기가 멈췄습니다({reason})."),
+    }
+}
+
+fn agent_kind(item: &Outbound) -> &'static str {
+    match item {
+        Outbound::Reply { .. } => "reply",
+        Outbound::ApprovalRequest { .. } => "approval_request",
+        Outbound::ApprovalResolved { .. } => "approval_resolved",
+        Outbound::Uncertain { .. } => "uncertain",
+        Outbound::WorkerGone { .. } => "worker_gone",
+    }
+}
+
+fn poll_room(ctx: &Ctx, device: &mut Device, state: &mut RoomState, agent: &mut Option<Responder>) -> Result<(), BotError> {
     // #263: a halted room is neither read nor acked — the device must not
     // move past the refused commit, and its cursor must keep gating pruning.
     if state.halted {
@@ -587,7 +659,7 @@ fn poll_room(ctx: &Ctx, device: &mut Device, state: &mut RoomState) -> Result<()
                     }
                 }
             }
-            "application" if state.joined => echo(ctx, device, state, ev)?,
+            "application" if state.joined => echo(ctx, device, state, ev, agent)?,
             // Everything before our Welcome (commits that formed the group,
             // other members' applications) is not ours to read.
             _ => {}
@@ -678,8 +750,8 @@ fn write_halt_marker(ctx: &Ctx, state: &RoomState, marker: &serde_json::Value) -
 }
 
 /// Decrypt one application event and reply with the identical plaintext.
-fn echo(ctx: &Ctx, device: &mut Device, state: &mut RoomState, ev: &StoredRow) -> Result<(), BotError> {
-    let plaintext = match guarded(device, ctx.own, |d| decrypt_frame(d, &state.room, &ev.bytes))? {
+fn echo(ctx: &Ctx, device: &mut Device, state: &mut RoomState, ev: &StoredRow, agent: &mut Option<Responder>) -> Result<(), BotError> {
+    let (sender, plaintext) = match guarded(device, ctx.own, |d| decrypt_frame(d, &state.room, &ev.bytes))? {
         Ok((sender, plaintext)) => {
             // Decrypting consumed receive keys: that state belongs on disk.
             state.dirty = true;
@@ -688,7 +760,7 @@ fn echo(ctx: &Ctx, device: &mut Device, state: &mut RoomState, ev: &StoredRow) -
                 "from": String::from_utf8_lossy(&sender), "bytes": plaintext.len(),
                 "client_id": ev.client_id,
             }));
-            plaintext
+            (sender, plaintext)
         }
         Err(()) => {
             // Undecryptable (forged, wrong epoch, pre-join leftover): the
@@ -710,10 +782,58 @@ fn echo(ctx: &Ctx, device: &mut Device, state: &mut RoomState, ev: &StoredRow) -
         }));
         return Ok(());
     }
+    // Agent mode (#354): the main room's messages go to the worker; the watch
+    // room (never joined) cannot reach here. Nothing is echoed in this mode.
+    if let Some(responder) = agent.as_mut() {
+        if state.room == ctx.room {
+            return route_to_agent(state, ev, &sender, &plaintext, responder);
+        }
+    }
     match publish_echo(ctx, device, state, &plaintext, 0) {
         Ok(()) => Ok(()),
         Err(err) => Err(report_dropped(state, &plaintext, err)),
     }
+}
+
+/// Agent mode: decide whether one decrypted message becomes a turn, an
+/// approval reply, or nothing (②-B all messages; ③-B all non-bot actors;
+/// ④-B owner-only approval replies). Pure routing — no MLS here.
+fn route_to_agent(state: &mut RoomState, ev: &StoredRow, sender: &[u8], plaintext: &[u8], agent: &mut Responder) -> Result<(), BotError> {
+    let sender_device = String::from_utf8_lossy(sender).into_owned();
+    let skipped = |reason: &str| {
+        emit(&serde_json::json!({
+            "event": "agent_skipped", "room": state.room, "seq": ev.seq, "from": sender_device, "reason": reason,
+        }));
+    };
+    if responder::is_bot_actor(&sender_device) {
+        skipped("bot_actor");
+        return Ok(());
+    }
+    if responder::is_attachment_client_id(&ev.client_id) {
+        skipped("attachment");
+        return Ok(());
+    }
+    let text = match std::str::from_utf8(plaintext) {
+        Ok(text) if !text.trim().is_empty() => text.to_string(),
+        _ => {
+            skipped("non_utf8_or_empty");
+            return Ok(());
+        }
+    };
+    if responder::actor_of(&sender_device) == agent.owner_actor() {
+        if let Some((n, allow)) = responder::parse_approval_reply(&text) {
+            let known = agent.resolve(n, allow).is_some();
+            emit(&serde_json::json!({
+                "event": "agent_approval_reply", "room": state.room, "seq": ev.seq, "n": n, "allow": allow, "known": known,
+            }));
+            return Ok(());
+        }
+    }
+    let offer = agent.offer(Inbound { seq: ev.seq, sender_device: sender_device.clone(), text })?;
+    emit(&serde_json::json!({
+        "event": "agent_offer", "room": state.room, "seq": ev.seq, "from": sender_device, "outcome": format!("{offer:?}"),
+    }));
+    Ok(())
 }
 
 /// `<something>-echo-<digits>`: the dedup key shape every bot echo carries.
@@ -1003,6 +1123,42 @@ mod tests {
         assert!(!is_echo_client_id("bot-echo-x1"));
     }
 
+    /// Agent mode routing (#354): bot actors and attachments never become
+    /// turns, the owner's approval reply is routed (not a turn), and a plain
+    /// family message comes back as the worker's reply.
+    #[test]
+    fn route_to_agent_filters_and_answers() {
+        const ECHO_WORKER: &str = r#"
+import json, sys
+for line in sys.stdin:
+    cmd = json.loads(line)
+    if cmd["type"] == "turn":
+        print(json.dumps({"type": "result", "turn_id": cmd["turn_id"], "status": "complete", "session_id": "s", "text": "답:" + cmd["prompt"]}), flush=True)
+"#;
+        let config = responder::Config::new(vec!["python3".into(), "-c".into(), ECHO_WORKER.into()], "owner".into());
+        let mut agent = Responder::spawn(config, None).unwrap_or_else(|e| panic!("spawn: {e}"));
+        let mut state = joined_room("family", 4);
+        let row = |seq: i64, device: &str, client_id: &str| StoredRow {
+            seq, device: device.into(), client_id: client_id.into(), kind: "application".into(), epoch: 2,
+            bytes: Vec::new(), sha256: String::new(), created_at: 0,
+        };
+        // 1. bot actor → skipped. 2. attachment → skipped. 3. owner approval reply → routed, unknown number.
+        route_to_agent(&mut state, &row(5, "bot-other", "bot-other-echo-1x"), b"bot-other", b"hi", &mut agent).unwrap();
+        route_to_agent(&mut state, &row(6, "owner-pc", "file-v1-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2"), b"owner-pc", b"\xff\xd8", &mut agent).unwrap();
+        route_to_agent(&mut state, &row(7, "owner-pc", "owner-pc-c7"), b"owner-pc", "승인 1".as_bytes(), &mut agent).unwrap();
+        route_to_agent(&mut state, &row(8, "mom-iphone-1", "mom-iphone-1-c8"), b"mom-iphone-1", "저녁 뭐 먹지".as_bytes(), &mut agent).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut got = Vec::new();
+        while got.is_empty() && Instant::now() < deadline {
+            got.extend(agent.pump().unwrap_or_else(|e| panic!("pump: {e}")));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(got, vec![Outbound::Reply { seq: 8, text: "답:저녁 뭐 먹지".into() }], "only the family message became a turn");
+        assert_eq!(agent_text(&Outbound::ApprovalResolved { n: 2, allowed: true }), "승인 #2: 허용했습니다.");
+        assert!(agent_text(&Outbound::Uncertain { seq: 9, reason: "watchdog".into() }).contains("#9"));
+        assert_eq!(agent_kind(&Outbound::Reply { seq: 1, text: String::new() }), "reply");
+    }
+
     /// #268: only a joined device below `first_seq - 1` has lost history.
     #[test]
     fn history_gap_rule() {
@@ -1073,13 +1229,13 @@ mod tests {
 
         // Contiguous history: no halt.
         let mut contiguous = joined_room("family", 4);
-        poll_room(&ctx, &mut dev, &mut contiguous).unwrap_or_else(|e| panic!("contiguous poll: {e}"));
+        poll_room(&ctx, &mut dev, &mut contiguous, &mut None).unwrap_or_else(|e| panic!("contiguous poll: {e}"));
         assert!(!contiguous.halted, "first_seq == cursor + 1 is contiguous");
         assert!(!marker.exists());
 
         // Pruned gap 5..=9: halt, cursor untouched, marker durable.
         let mut state = joined_room("family", 4);
-        poll_room(&ctx, &mut dev, &mut state).unwrap_or_else(|e| panic!("gap poll: {e}"));
+        poll_room(&ctx, &mut dev, &mut state, &mut None).unwrap_or_else(|e| panic!("gap poll: {e}"));
         assert!(state.halted, "a pruned gap must halt the room");
         assert_eq!(state.cursor, 4, "no event of the gap page may move the cursor");
         assert_eq!(state.epoch, 2, "the device epoch stays where it was");
@@ -1092,7 +1248,7 @@ mod tests {
         // Halted: the next poll is a no-op (the canned relay has stopped
         // listening, so any request would fail).
         let seen = server.join().expect("server thread");
-        poll_room(&ctx, &mut dev, &mut state).unwrap_or_else(|e| panic!("halted poll: {e}"));
+        poll_room(&ctx, &mut dev, &mut state, &mut None).unwrap_or_else(|e| panic!("halted poll: {e}"));
         assert_eq!(seen.len(), 2);
         assert!(seen.iter().all(|line| line.starts_with("GET /v2/rooms/family/events?device=bot-1&after=4")), "{seen:?}");
         let _ = std::fs::remove_file(&marker);
