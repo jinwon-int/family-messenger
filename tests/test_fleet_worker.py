@@ -353,6 +353,24 @@ class HarnessOptionsTests(unittest.TestCase):
                     harness_options(self.args(**bad),env)
 
 
+    def test_claude_provider_builds_bare_runtime_and_permission_mode(self):
+        env={'CCC_WORKING_STATE_DIR':'/x','HOME':'/h'}
+        runtime,request=harness_options(self.args(provider='claude',codex_cli=None,claude_permission_mode='default',
+                                                  model='claude-opus-5-5',effort='high'),env)
+        self.assertEqual(runtime,{},'ClaudeRuntime is constructed bare: no CLI path, no materializer')
+        self.assertEqual(request,{'working_directory':'/tmp','approval_policy':'default',
+                                  'model':'claude-opus-5-5','effort':'high'})
+        self.assertNotIn('sandbox_policy',request,'the Claude adapter refuses sandbox policies')
+        for bad in (dict(provider='claude',codex_cli=None,memory_materializer='/x/m.py'),
+                    dict(provider='claude',codex_cli=None,sandbox='workspaceWrite'),
+                    dict(provider='claude',codex_cli=None,approval_policy='on-request'),
+                    dict(provider='claude',codex_cli=None,claude_permission_mode='bypassPermissions'),
+                    dict(provider='claude',codex_cli=None,model='claude opus'),
+                    dict(provider='gemini'),dict(codex_cli=None)):
+            with self.subTest(bad=bad),self.assertRaises(ValueError):
+                harness_options(self.args(**bad),env)
+
+
 class PipeTests(unittest.TestCase):
     def test_unread_stdout_does_not_pin_process_after_timeout_and_eof(self):
         fixture=Path(__file__).parent/'fixtures/worker_backpressure.py'

@@ -27,6 +27,10 @@ SANDBOX_POLICIES = {
     'dangerFullAccess': {'type': 'dangerFullAccess'},
 }
 APPROVAL_POLICIES = ('never', 'on-request', 'on-failure', 'untrusted')
+PROVIDERS = ('codex', 'claude')
+# Claude SDK permission modes the ccc-node ClaudeRuntime accepts (claude_runtime_options._PERMISSION_MODES).
+# `default` asks the per-turn approval handler (this port's approve/deny round trip) before each tool use.
+CLAUDE_PERMISSION_MODES = ('default', 'acceptEdits', 'plan', 'dontAsk', 'auto')
 ROOM_KINDS = ('direct', 'family')
 NAME_RE = re.compile(r'[A-Za-z0-9._-]{1,64}')
 SENDER_RE = re.compile(r'@[a-zA-Z0-9._=-]{1,200}:[a-zA-Z0-9.:-]{1,64}')
@@ -46,7 +50,34 @@ def harness_options(args, environment):
     Defaults reproduce the stage-1 pilot binding exactly (read-only sandbox,
     approval=never, working-state archive off, no memory materializer), so a
     parent that passes only ``--workdir``/``--codex-cli`` sees no behaviour change.
+
+    ``--provider claude`` (#354 A4) binds the same port to ccc-node's
+    ``ClaudeRuntime`` instead: no CLI path, no sandbox policy (the Claude
+    adapter refuses one), permissions come from ``--claude-permission-mode``
+    and every SDK permission request reaches this port's approve/deny round trip.
+    Codex-only flags are refused rather than silently ignored.
     """
+    provider = getattr(args, 'provider', 'codex') or 'codex'
+    if provider not in PROVIDERS:
+        raise ValueError('unknown provider')
+    if provider == 'claude':
+        if getattr(args, 'memory_materializer', None) is not None:
+            raise ValueError('memory materializer is a Codex binding; Claude reads the harness from the workdir')
+        if getattr(args, 'sandbox', 'readOnly') != 'readOnly' or getattr(args, 'approval_policy', 'never') != 'never':
+            raise ValueError('--sandbox/--approval-policy are Codex flags; use --claude-permission-mode')
+        mode = getattr(args, 'claude_permission_mode', 'default') or 'default'
+        if mode not in CLAUDE_PERMISSION_MODES:
+            raise ValueError('unknown Claude permission mode')
+        request = {'working_directory': str(Path(args.workdir).resolve()), 'approval_policy': mode}
+        for key in ('model', 'effort'):
+            value = getattr(args, key, None)
+            if value is not None:
+                if not NAME_RE.fullmatch(value):
+                    raise ValueError('invalid ' + key)
+                request[key] = value
+        return {}, request
+    if not getattr(args, 'codex_cli', None):
+        raise ValueError('--codex-cli is required for the codex provider')
     runtime = {'cli_path': args.codex_cli}
     if getattr(args, 'working_state', 'off') == 'inherit':
         # The service unit's CCC_* environment (not the message) configures working state.
@@ -314,13 +345,21 @@ async def main(args):
     # The formal interface seam (telegram_bot.contracts, ccc-node #1756) is
     # preferred; checkouts predating it keep working through the back-compatible
     # shim module, so mixed-fleet rollouts never break the node-local port.
+    provider = getattr(args, 'provider', 'codex') or 'codex'
     try:
         from telegram_bot.contracts.agent_runtime import ApprovalDecision, SessionRequest
         from telegram_bot.contracts.codex_runtime import CodexRuntime
     except ImportError:
         from telegram_bot.core.agent_runtime import ApprovalDecision, SessionRequest
         from telegram_bot.core.codex_runtime import CodexRuntime
-    if not Path(args.workdir).is_dir() or not Path(args.codex_cli).is_file():
+    if provider == 'claude':
+        # The Claude adapter lives in the core package (no contracts twin yet, #354 A4).
+        from telegram_bot.core.claude_runtime import ClaudeRuntime as RuntimeClass
+    else:
+        RuntimeClass = CodexRuntime
+    if not Path(args.workdir).is_dir():
+        raise ValueError('worker paths unavailable')
+    if provider == 'codex' and (not args.codex_cli or not Path(args.codex_cli).is_file()):
         raise ValueError('worker paths unavailable')
     runtime_options, request_options = harness_options(args, os.environ)
     reader = asyncio.StreamReader(limit=65_537)
@@ -344,7 +383,7 @@ async def main(args):
         except BaseException:
             output_transport.abort()
             raise
-    runtime = CodexRuntime(**runtime_options)
+    runtime = RuntimeClass(**runtime_options)
     def request(session_id):
         return SessionRequest(session_id=session_id, **request_options)
     worker = Worker(runtime, emit, request, ApprovalDecision.ALLOW, ApprovalDecision.DENY,
@@ -359,7 +398,13 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--workdir', required=True,
                         help='Codex working directory; the node harness root (AGENTS.md, memory) when bound')
-    parser.add_argument('--codex-cli', required=True)
+    parser.add_argument('--provider', choices=PROVIDERS, default='codex',
+                        help='ccc-node runtime binding: codex (CodexRuntime, needs --codex-cli) '
+                             'or claude (ClaudeRuntime, #354 A4)')
+    parser.add_argument('--codex-cli', default=None, help='required for --provider codex')
+    parser.add_argument('--claude-permission-mode', choices=CLAUDE_PERMISSION_MODES, default='default',
+                        help="claude only: SDK permission mode; 'default' routes every tool permission "
+                             'to approve/deny')
     parser.add_argument('--turn-timeout', type=float, default=900)
     parser.add_argument('--approval-timeout', type=float, default=120,
                         help='seconds a room may take to answer /approve before the request is denied')
