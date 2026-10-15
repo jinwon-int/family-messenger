@@ -45,7 +45,7 @@ use crate::responder::{self, Inbound, Outbound, Responder};
 use family_mls_browser_experiment::Device;
 use std::collections::VecDeque;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use zeroize::Zeroize;
 
@@ -73,6 +73,38 @@ pub struct Options {
     /// Agent mode (#354 A1): when set, application messages are offered to the
     /// stdio worker instead of being echoed. `None` = the original echo bot.
     pub responder: Option<responder::Config>,
+}
+
+/// What this device does with a room's application messages (#372 P2).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode {
+    /// Legacy single-room bot without a responder: reply with the plaintext.
+    Echo,
+    /// Offer every message to the responder worker (#354 ②-B).
+    Agent,
+    /// Decrypt (the ratchet must advance) and log, answer nothing — the
+    /// steward's default for rooms it founds (#372 D3).
+    Silent,
+    /// Negative control: never joined, never answered (B-H3).
+    Watch,
+}
+
+impl Mode {
+    pub fn parse(s: &str) -> Option<Mode> {
+        match s.trim() { "agent" => Some(Mode::Agent), "silent" => Some(Mode::Silent), _ => None }
+    }
+    fn name(self) -> &'static str {
+        match self { Mode::Echo => "echo", Mode::Agent => "agent", Mode::Silent => "silent", Mode::Watch => "watch" }
+    }
+}
+
+/// A commit this device POSTed and has not yet seen echoed back (#372 P2):
+/// the own echo is where `merge_pending` happens; an invite then sends its
+/// Welcome to `targets` at the new epoch.
+struct PendingCommit {
+    seq: i64,
+    welcome: Option<Vec<u8>>,
+    targets: Vec<String>,
 }
 
 /// On-disk envelope around the facade's `export_state` snapshot (M5 후속):
@@ -211,6 +243,14 @@ struct RoomState {
     /// restart stays halted until the operator clears it (and re-adds the
     /// device — the discarded epoch cannot be re-staged on this lane).
     halted: bool,
+    /// This room's MLS device (#372 P2: one `Device` = one group, so a
+    /// multi-room bot holds one per room, all sharing the identity's signer).
+    device: Device,
+    /// Where this room's state is persisted; `None` = memory only (the watch
+    /// room, or a bot run without `--state-file`).
+    state_path: Option<PathBuf>,
+    mode: Mode,
+    pending: Option<PendingCommit>,
 }
 
 /// Where the refusal marker lives: next to the state file.
@@ -224,17 +264,13 @@ fn refused_marker_path(state_file: &Path) -> std::path::PathBuf {
 struct Ctx<'a> {
     client: &'a Client,
     own: &'a str,
-    room: &'a str,
-    state_file: Option<&'a Path>,
 }
 
-/// Flush the room's MLS state to disk (main room only — the watch room never
-/// holds group state) and mark the cursor acknowledgeable.
-fn flush(ctx: &Ctx, device: &mut Device, state: &mut RoomState) -> Result<(), BotError> {
-    if let Some(path) = ctx.state_file {
-        if state.room == ctx.room {
-            persist_state(path, ctx.room, ctx.own, device, state.cursor, state.epoch, state.joined, state.echoes)?;
-        }
+/// Flush the room's MLS state to disk (rooms with a state path — the watch
+/// room never holds group state) and mark the cursor acknowledgeable.
+fn flush(ctx: &Ctx, state: &mut RoomState) -> Result<(), BotError> {
+    if let Some(path) = state.state_path.clone() {
+        persist_state(&path, &state.room, ctx.own, &mut state.device, state.cursor, state.epoch, state.joined, state.echoes)?;
     }
     state.dirty = false;
     state.acked = state.cursor;
@@ -433,6 +469,8 @@ pub fn run(opts: Options) -> Result<(), BotError> {
         room: opts.room.clone(), cursor: c0, epoch: e0, joined: j0, joinable: true, echoes: x0,
         retry: VecDeque::new(), dirty: false, acked: c0, ack_sent: 0, ack_disabled: false,
         halted: halted0.is_some(),
+        device, state_path: opts.state_file.clone(),
+        mode: if agent.is_some() { Mode::Agent } else { Mode::Echo }, pending: None,
     }];
     if let Some(watch) = &opts.watch_room {
         // The negative control: a room the bot is never invited to. It must
@@ -441,9 +479,22 @@ pub fn run(opts: Options) -> Result<(), BotError> {
             room: watch.clone(), cursor: 0, epoch: 0, joined: false, joinable: false, echoes: 0,
             retry: VecDeque::new(), dirty: false, acked: 0, ack_sent: 0, ack_disabled: true,
             halted: false,
+            device: Device::new(&opts.device).map_err(|_| BotError::Local("device new: identity shape rejected"))?,
+            state_path: None, mode: Mode::Watch, pending: None,
         });
     }
-    let ctx = Ctx { client: &client, own: &opts.device, room: &opts.room, state_file: opts.state_file.as_deref() };
+    let ctx = Ctx { client: &client, own: &opts.device };
+    run_loop(&ctx, &mut rooms, &mut agent, deadline, None)
+}
+
+/// The polling loop shared by the single-room session and the steward
+/// (#372 P2): poll every room, flush what moved, serve the command queue
+/// (steward only), route the responder's output to the agent room.
+fn run_loop(
+    ctx: &Ctx, rooms: &mut Vec<RoomState>, agent: &mut Option<Responder>, deadline: Option<Instant>,
+    steward: Option<&Steward>,
+) -> Result<(), BotError> {
+    let expired = |deadline: Option<Instant>| deadline.is_some_and(|d| Instant::now() >= d);
 
     let mut rounds = 0u32;
     let mut auth_wait_announced = false;
@@ -451,8 +502,8 @@ pub fn run(opts: Options) -> Result<(), BotError> {
         if expired(deadline) {
             return Err(BotError::Local("session deadline exceeded"));
         }
-        for state in &mut rooms {
-            match poll_room(&ctx, &mut device, state, &mut agent) {
+        for state in rooms.iter_mut() {
+            match poll_room(ctx, state, agent) {
                 Ok(()) => {}
                 // 401 = the assertion expired or was rejected, or the token
                 // file is momentarily empty/unreadable mid-rotation (B-M3).
@@ -465,7 +516,7 @@ pub fn run(opts: Options) -> Result<(), BotError> {
                         emit(&serde_json::json!({
                             "event": "auth_wait",
                             "room": state.room,
-                            "device": opts.device,
+                            "device": ctx.own,
                         }));
                     }
                 }
@@ -478,17 +529,25 @@ pub fn run(opts: Options) -> Result<(), BotError> {
             // identity silently. (Echo encrypts are flushed inside
             // publish_echo, before their ciphertext leaves the process.)
             if state.dirty {
-                flush(&ctx, &mut device, state)?;
+                flush(ctx, state)?;
             }
         }
-        // Agent mode: worker output → room (encrypted and posted like an echo).
-        // Only the main room (rooms[0]) ever carries agent text; the watch room
-        // stays silent (B-H3). A dead worker ends the session: the service
-        // manager restarts both halves together rather than leaving a bot that
-        // reads everything and answers nothing.
+        // Steward (#372 P2): one queued operator command per round.
+        if let Some(steward) = steward {
+            steward.serve_one(ctx, rooms)?;
+        }
+        // Agent mode: worker output → the agent room (encrypted and posted like
+        // an echo). Only one room carries agent text (legacy: rooms[0]; steward:
+        // the room in `agent` mode); the others stay silent (B-H3). A dead
+        // worker ends the session: the service manager restarts both halves
+        // together rather than leaving a bot that reads everything and answers
+        // nothing.
         if let Some(responder) = agent.as_mut() {
             for item in responder.pump()? {
-                let main = &mut rooms[0];
+                let Some(main) = rooms.iter_mut().find(|r| r.mode == Mode::Agent) else {
+                    emit(&serde_json::json!({ "event": "agent_outbound_dropped", "reason": "no_agent_room" }));
+                    continue;
+                };
                 match &item {
                     Outbound::WorkerGone { reason } => {
                         emit(&serde_json::json!({ "event": "agent_worker_gone", "room": main.room, "reason": reason }));
@@ -503,7 +562,7 @@ pub fn run(opts: Options) -> Result<(), BotError> {
                             emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": main.room, "reason": "not_joined_or_halted" }));
                             continue;
                         }
-                        if let Err(err) = publish_echo(&ctx, &mut device, main, text.as_bytes(), 0) {
+                        if let Err(err) = publish_echo(ctx, main, text.as_bytes(), 0) {
                             return Err(report_dropped(main, text.as_bytes(), err));
                         }
                     }
@@ -512,7 +571,7 @@ pub fn run(opts: Options) -> Result<(), BotError> {
         }
         rounds += 1;
         if rounds % STATUS_EVERY == 0 {
-            status(&rooms);
+            status(rooms);
         }
         std::thread::sleep(POLL);
     }
@@ -543,7 +602,7 @@ fn agent_kind(item: &Outbound) -> &'static str {
     }
 }
 
-fn poll_room(ctx: &Ctx, device: &mut Device, state: &mut RoomState, agent: &mut Option<Responder>) -> Result<(), BotError> {
+fn poll_room(ctx: &Ctx, state: &mut RoomState, agent: &mut Option<Responder>) -> Result<(), BotError> {
     // #263: a halted room is neither read nor acked — the device must not
     // move past the refused commit, and its cursor must keep gating pruning.
     if state.halted {
@@ -586,13 +645,19 @@ fn poll_room(ctx: &Ctx, device: &mut Device, state: &mut RoomState, agent: &mut 
     for ev in &body.events {
         state.cursor = state.cursor.max(ev.seq);
         if ev.device == ctx.own {
-            // Own echo. MLS never processes its own messages; when this bot
-            // ever POSTs a commit, its echo is where merge_pending belongs.
+            // Own echo. MLS never processes its own messages; a commit this
+            // device POSTed (#372 P2 invite/remove) merges here, and an invite
+            // then sends its Welcome at the new epoch.
+            if ev.kind == "commit" {
+                if let Some(pending) = state.pending.take() {
+                    own_commit_echo(ctx, state, ev, pending)?;
+                }
+            }
             continue;
         }
         match ev.kind.as_str() {
             "welcome" if state.joinable && !state.joined => {
-                match guarded(device, ctx.own, |d| d.join(&ev.bytes).map_err(drop))? {
+                match guarded(&mut state.device, ctx.own, |d| d.join(&ev.bytes).map_err(drop))? {
                     Ok(()) => {
                         state.joined = true;
                         state.dirty = true;
@@ -619,14 +684,14 @@ fn poll_room(ctx: &Ctx, device: &mut Device, state: &mut RoomState, agent: &mut 
             // then merge. A facade rejection (poison commit) is rolled back and
             // reported as before; a policy refusal discards and halts the room.
             "commit" if state.joined => {
-                match guarded(device, ctx.own, |d| d.stage_commit(&ev.bytes).map_err(drop))? {
+                match guarded(&mut state.device, ctx.own, |d| d.stage_commit(&ev.bytes).map_err(drop))? {
                     Err(()) => rejected(state, ev, "commit"),
                     Ok(report) => {
                         let outer: Option<Vec<String>> = (ev.epoch + 1 == body.epoch)
                             .then(|| body.members.as_ref().map(|m| m.iter().map(|x| x.device.clone()).collect()))
                             .flatten();
                         let verdict = match (policy::parse_stage_report(&report),
-                                             device.members().ok().and_then(|f| policy::parse_roster(&f))) {
+                                             state.device.members().ok().and_then(|f| policy::parse_roster(&f))) {
                             (None, _) => Err(policy::Refusal { reason: "report_format", detail: format!("{} bytes", report.len()) }),
                             (_, None) => Err(policy::Refusal { reason: "roster_unavailable", detail: String::new() }),
                             (Some(parsed), Some(roster)) => {
@@ -636,7 +701,7 @@ fn poll_room(ctx: &Ctx, device: &mut Device, state: &mut RoomState, agent: &mut 
                         };
                         match verdict {
                             Ok((parsed, expected)) => {
-                                match guarded(device, ctx.own, |d| d.merge_staged().map_err(drop))? {
+                                match guarded(&mut state.device, ctx.own, |d| d.merge_staged().map_err(drop))? {
                                     Ok(()) => {
                                         state.dirty = true;
                                         emit(&serde_json::json!({
@@ -652,14 +717,14 @@ fn poll_room(ctx: &Ctx, device: &mut Device, state: &mut RoomState, agent: &mut 
                             }
                             Err(refusal) => {
                                 // Pure: drops the staged commit, keeps the epoch.
-                                let _ = device.discard_staged();
+                                let _ = state.device.discard_staged();
                                 refuse(ctx, state, ev, refusal)?;
                             }
                         }
                     }
                 }
             }
-            "application" if state.joined => echo(ctx, device, state, ev, agent)?,
+            "application" if state.joined => echo(ctx, state, ev, agent)?,
             // Everything before our Welcome (commits that formed the group,
             // other members' applications) is not ours to read.
             _ => {}
@@ -676,7 +741,7 @@ fn poll_room(ctx: &Ctx, device: &mut Device, state: &mut RoomState, agent: &mut 
                 report_dropped(state, &plaintext, err);
                 continue;
             }
-            if let Err(err) = publish_echo(ctx, device, state, &plaintext, attempts) {
+            if let Err(err) = publish_echo(ctx, state, &plaintext, attempts) {
                 return Err(report_dropped(state, &plaintext, err));
             }
         }
@@ -739,10 +804,9 @@ fn gap(ctx: &Ctx, state: &mut RoomState, first_seq: i64, relay_epoch: i64, from:
     }))
 }
 
-/// Main room only, and only with a state file: without one the halt lives
-/// for this process.
-fn write_halt_marker(ctx: &Ctx, state: &RoomState, marker: &serde_json::Value) -> Result<(), BotError> {
-    if let (Some(path), true) = (ctx.state_file, state.room == ctx.room) {
+/// Only rooms with a state path: without one the halt lives for this process.
+fn write_halt_marker(_ctx: &Ctx, state: &RoomState, marker: &serde_json::Value) -> Result<(), BotError> {
+    if let Some(path) = &state.state_path {
         let raw = serde_json::to_vec_pretty(marker).map_err(|_| BotError::Local("halt marker json"))?;
         write_state_file(&refused_marker_path(path), &raw)?;
     }
@@ -750,8 +814,9 @@ fn write_halt_marker(ctx: &Ctx, state: &RoomState, marker: &serde_json::Value) -
 }
 
 /// Decrypt one application event and reply with the identical plaintext.
-fn echo(ctx: &Ctx, device: &mut Device, state: &mut RoomState, ev: &StoredRow, agent: &mut Option<Responder>) -> Result<(), BotError> {
-    let (sender, plaintext) = match guarded(device, ctx.own, |d| decrypt_frame(d, &state.room, &ev.bytes))? {
+fn echo(ctx: &Ctx, state: &mut RoomState, ev: &StoredRow, agent: &mut Option<Responder>) -> Result<(), BotError> {
+    let room = state.room.clone();
+    let (sender, plaintext) = match guarded(&mut state.device, ctx.own, |d| decrypt_frame(d, &room, &ev.bytes))? {
         Ok((sender, plaintext)) => {
             // Decrypting consumed receive keys: that state belongs on disk.
             state.dirty = true;
@@ -782,16 +847,22 @@ fn echo(ctx: &Ctx, device: &mut Device, state: &mut RoomState, ev: &StoredRow, a
         }));
         return Ok(());
     }
-    // Agent mode (#354): the main room's messages go to the worker; the watch
+    // Agent mode (#354): the agent room's messages go to the worker; the watch
     // room (never joined) cannot reach here. Nothing is echoed in this mode.
-    if let Some(responder) = agent.as_mut() {
-        if state.room == ctx.room {
-            return route_to_agent(state, ev, &sender, &plaintext, responder);
-        }
-    }
-    match publish_echo(ctx, device, state, &plaintext, 0) {
-        Ok(()) => Ok(()),
-        Err(err) => Err(report_dropped(state, &plaintext, err)),
+    // A silent room (#372 D3) decrypts — the ratchet must advance — and stops.
+    match state.mode {
+        Mode::Agent => match agent.as_mut() {
+            Some(responder) => route_to_agent(state, ev, &sender, &plaintext, responder),
+            None => {
+                emit(&serde_json::json!({ "event": "agent_skipped", "room": state.room, "seq": ev.seq, "reason": "no_responder" }));
+                Ok(())
+            }
+        },
+        Mode::Silent | Mode::Watch => Ok(()),
+        Mode::Echo => match publish_echo(ctx, state, &plaintext, 0) {
+            Ok(()) => Ok(()),
+            Err(err) => Err(report_dropped(state, &plaintext, err)),
+        },
     }
 }
 
@@ -844,8 +915,9 @@ fn is_echo_client_id(client_id: &str) -> bool {
     }
 }
 
-fn publish_echo(ctx: &Ctx, device: &mut Device, state: &mut RoomState, plaintext: &[u8], attempts: u32) -> Result<(), BotError> {
-    let framed = encrypt_frame(device, &state.room, ctx.own, plaintext)
+fn publish_echo(ctx: &Ctx, state: &mut RoomState, plaintext: &[u8], attempts: u32) -> Result<(), BotError> {
+    let room = state.room.clone();
+    let framed = encrypt_frame(&mut state.device, &room, ctx.own, plaintext)
         .map_err(|_| BotError::Local("encrypt echo"))?;
     // Relay-level dedup key, distinct per reply; the MLS AAD client_id inside
     // `framed` is the device identity (review H1), as the receivers require.
@@ -856,7 +928,7 @@ fn publish_echo(ctx: &Ctx, device: &mut Device, state: &mut RoomState, plaintext
     // counter reserved a dedup key: both reach disk before the ciphertext
     // leaves the process (review 2 B-H2 — a restart must never re-derive a
     // sender generation that was already sent).
-    flush(ctx, device, state)?;
+    flush(ctx, state)?;
     let post = EventPost {
         device: ctx.own,
         client_id: &client_id,
@@ -905,6 +977,393 @@ fn report_dropped(state: &RoomState, plaintext: &[u8], err: BotError) -> BotErro
         "event": "echo_dropped", "room": state.room, "bytes": plaintext.len(), "error": err.to_string(),
     }));
     err
+}
+
+
+// ---- #372 P2: own commits, identity file, steward (multi-room + command queue) ----
+
+/// The relay echoed a commit this device POSTed: merge it, move the epoch,
+/// and (for an invite) send the Welcome to its targets at the new epoch.
+fn own_commit_echo(ctx: &Ctx, state: &mut RoomState, ev: &StoredRow, pending: PendingCommit) -> Result<(), BotError> {
+    if ev.seq != pending.seq {
+        // Not the commit we are waiting for (a duplicate-detected replay or an
+        // older own commit): keep waiting.
+        state.pending = Some(pending);
+        return Ok(());
+    }
+    match guarded(&mut state.device, ctx.own, |d| d.merge_pending().map_err(drop))? {
+        Ok(()) => {}
+        Err(()) => {
+            emit(&serde_json::json!({ "event": "own_commit_merge_rejected", "room": state.room, "seq": ev.seq }));
+            return Ok(());
+        }
+    }
+    state.epoch = ev.epoch + 1;
+    state.dirty = true;
+    emit(&serde_json::json!({ "event": "own_commit_merged", "room": state.room, "seq": ev.seq, "epoch": state.epoch }));
+    // The merged group state must be on disk before any Welcome derived from
+    // it reaches a peer (same rule as echo encrypts).
+    flush(ctx, state)?;
+    if let Some(welcome) = pending.welcome {
+        let client_id = format!("{}-welcome-{}", ctx.own, ev.seq);
+        let post = EventPost {
+            device: ctx.own, client_id: &client_id, kind: "welcome", epoch: state.epoch, revision: None,
+            group_id: &state.room, targets: pending.targets.clone(), members: Vec::new(), bytes: welcome,
+        };
+        match ctx.client.post_event(&state.room, &post) {
+            Ok(resp) => emit(&serde_json::json!({
+                "event": "welcome_sent", "room": state.room, "seq": resp.seq, "targets": pending.targets, "epoch": state.epoch,
+            })),
+            Err(err) => emit(&serde_json::json!({
+                "event": "welcome_failed", "room": state.room, "targets": pending.targets, "error": err.to_string(),
+            })),
+        }
+    }
+    Ok(())
+}
+
+/// On-disk envelope around `Device::export_identity` (signer only, no group).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct IdentityEnvelope {
+    version: u32,
+    device: String,
+    identity: serde_json::Value,
+}
+const IDENTITY_VERSION: u32 = 1;
+
+fn write_identity(path: &Path, device: &str, dev: &Device) -> Result<(), BotError> {
+    let mut bytes = dev.export_identity(device).map_err(|_| BotError::Local("identity export rejected"))?;
+    let env = IdentityEnvelope {
+        version: IDENTITY_VERSION, device: device.to_string(),
+        identity: serde_json::from_slice(&bytes).map_err(|_| BotError::Local("identity export json"))?,
+    };
+    let mut raw = serde_json::to_vec(&env).map_err(|_| BotError::Local("identity envelope json"))?;
+    bytes.zeroize();
+    let written = write_state_file(path, &raw);
+    raw.zeroize();
+    written
+}
+
+/// A fresh, group-less device from the identity file (fail-closed like `load_state`).
+fn load_identity(path: &Path, device: &str) -> Result<Device, BotError> {
+    let mut raw = std::fs::read(path).map_err(|_| BotError::Local("identity file unreadable"))?;
+    let env: IdentityEnvelope = serde_json::from_slice(&raw).map_err(|_| BotError::Local("identity file corrupt"))?;
+    if env.version != IDENTITY_VERSION || env.device != device {
+        return Err(BotError::Local("identity file is for another version/device"));
+    }
+    let mut bytes = serde_json::to_vec(&env.identity).map_err(|_| BotError::Local("identity file corrupt"))?;
+    let dev = Device::new_with_identity(device, &bytes);
+    raw.zeroize();
+    bytes.zeroize();
+    dev.map_err(|_| BotError::Local("identity import rejected"))
+}
+
+/// One-shot migration (#372 P1→P2): split the signer out of an existing
+/// single-room `--state-file` into `--identity-file`. The room state file is
+/// left untouched (it still resumes that room); the identity file lets the
+/// same device found or join further rooms.
+pub fn extract_identity(state_file: &Path, room: &str, device: &str, identity_file: &Path) -> Result<(), BotError> {
+    let (mut dev, cursor, epoch, joined, _) = load_state(Some(state_file), room, device)?
+        .ok_or(BotError::Local("state file not found"))?;
+    if identity_file.exists() {
+        return Err(BotError::Local("identity file already exists; refusing to overwrite"));
+    }
+    write_identity(identity_file, device, &dev)?;
+    // Prove the split: the identity file yields the same signer, without a group.
+    let mut check = load_identity(identity_file, device)?;
+    let (a, b) = (dev.public_key().map_err(|_| BotError::Local("public key"))?, check.public_key().map_err(|_| BotError::Local("public key"))?);
+    if a != b {
+        return Err(BotError::Local("identity file does not reproduce the signer"));
+    }
+    emit(&serde_json::json!({
+        "event": "identity_extracted", "device": device, "room": room, "public_key": hex(&a),
+        "identity_file": identity_file.display().to_string(), "cursor": cursor, "epoch": epoch, "joined": joined,
+    }));
+    Ok(())
+}
+
+/// Steward mode (#372 P2): one identity, N rooms under `rooms_dir`
+/// (`<room>.state`, optional `<room>.mode`), commands via `cmd/`.
+pub struct StewardOptions {
+    pub base: String,
+    pub device: String,
+    pub access: api::Access,
+    pub identity_file: PathBuf,
+    pub rooms_dir: PathBuf,
+    pub responder: Option<responder::Config>,
+}
+
+pub struct Steward {
+    device: String,
+    rooms_dir: PathBuf,
+    identity_file: PathBuf,
+}
+
+fn room_state_path(dir: &Path, room: &str) -> PathBuf { dir.join(format!("{room}.state")) }
+fn room_mode_path(dir: &Path, room: &str) -> PathBuf { dir.join(format!("{room}.mode")) }
+
+fn read_mode(dir: &Path, room: &str) -> Mode {
+    std::fs::read_to_string(room_mode_path(dir, room)).ok().and_then(|s| Mode::parse(&s)).unwrap_or(Mode::Silent)
+}
+
+/// Rooms known on disk: every `<room>.state` whose stem is a relay identifier.
+fn rooms_on_disk(dir: &Path) -> Result<Vec<String>, BotError> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|_| BotError::Local("rooms dir unreadable"))? {
+        let entry = entry.map_err(|_| BotError::Local("rooms dir unreadable"))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if let Some(room) = name.strip_suffix(".state") {
+            if api::is_identifier(room) { out.push(room.to_string()); }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+fn load_room(dir: &Path, room: &str, device: &str) -> Result<RoomState, BotError> {
+    let path = room_state_path(dir, room);
+    let (dev, cursor, epoch, joined, echoes) = load_state(Some(&path), room, device)?
+        .ok_or(BotError::Local("room state file vanished"))?;
+    let halted = refused_marker_path(&path).exists();
+    Ok(RoomState {
+        room: room.to_string(), cursor, epoch, joined, joinable: true, echoes,
+        retry: VecDeque::new(), dirty: false, acked: cursor, ack_sent: 0, ack_disabled: false, halted,
+        device: dev, state_path: Some(path), mode: read_mode(dir, room), pending: None,
+    })
+}
+
+pub fn run_steward(opts: StewardOptions) -> Result<(), BotError> {
+    let max_secs = std::env::var("NATIVE_MLS_BOT_MAX_SECS").ok().and_then(|raw| raw.parse().ok()).unwrap_or(DEFAULT_MAX_SECS);
+    let deadline = if max_secs == 0 { None } else {
+        Some(Instant::now().checked_add(Duration::from_secs(max_secs)).ok_or(BotError::Local("NATIVE_MLS_BOT_MAX_SECS out of range"))?)
+    };
+    let client = Client::with_access(&opts.base, opts.access.clone());
+    let ctx = Ctx { client: &client, own: &opts.device };
+    std::fs::create_dir_all(opts.rooms_dir.join("cmd")).map_err(|_| BotError::Local("rooms dir create"))?;
+    std::fs::create_dir_all(opts.rooms_dir.join("out")).map_err(|_| BotError::Local("rooms dir create"))?;
+    // The identity must load before anything else: a steward that cannot
+    // reproduce its signer must not touch any room.
+    let mut probe = load_identity(&opts.identity_file, &opts.device)?;
+    let public_key = probe.public_key().map_err(|_| BotError::Local("public key"))?;
+    drop(probe);
+    let mut rooms = Vec::new();
+    for room in rooms_on_disk(&opts.rooms_dir)? {
+        rooms.push(load_room(&opts.rooms_dir, &room, &opts.device)?);
+    }
+    let agent_rooms = rooms.iter().filter(|r| r.mode == Mode::Agent).count();
+    if agent_rooms > 1 {
+        return Err(BotError::Local("more than one room in agent mode; the responder serves exactly one"));
+    }
+    emit(&serde_json::json!({
+        "event": "steward_ready", "device": opts.device, "public_key": hex(&public_key),
+        "rooms": rooms.iter().map(|r| serde_json::json!({"room": r.room, "joined": r.joined, "mode": r.mode.name(), "halted": r.halted})).collect::<Vec<_>>(),
+        "max_secs": max_secs,
+    }));
+    let mut agent: Option<Responder> = match &opts.responder {
+        Some(config) => {
+            let responder = Responder::spawn(config.clone(), Some(&opts.rooms_dir.join("responder.state")))?;
+            emit(&serde_json::json!({
+                "event": "agent_started", "device": opts.device, "owner_actor": config.owner_actor,
+                "agent_room": rooms.iter().find(|r| r.mode == Mode::Agent).map(|r| r.room.clone()),
+            }));
+            Some(responder)
+        }
+        None => None,
+    };
+    let steward = Steward { device: opts.device.clone(), rooms_dir: opts.rooms_dir.clone(), identity_file: opts.identity_file.clone() };
+    run_loop(&ctx, &mut rooms, &mut agent, deadline, Some(&steward))
+}
+
+/// One operator command (written by the CLI into `cmd/<id>.json`).
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
+pub struct Command {
+    pub op: String,
+    pub room: String,
+    #[serde(default)]
+    pub arg: String,
+}
+
+impl Steward {
+    /// Serve the oldest queued command, if any; its outcome lands in
+    /// `out/<id>.json` and the request file is removed.
+    fn serve_one(&self, ctx: &Ctx, rooms: &mut Vec<RoomState>) -> Result<(), BotError> {
+        let cmd_dir = self.rooms_dir.join("cmd");
+        let mut names: Vec<String> = match std::fs::read_dir(&cmd_dir) {
+            Ok(entries) => entries.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.ends_with(".json")).collect(),
+            Err(_) => return Ok(()),
+        };
+        if names.is_empty() { return Ok(()); }
+        names.sort();
+        let name = names.remove(0);
+        let path = cmd_dir.join(&name);
+        let outcome = match std::fs::read(&path).ok().and_then(|raw| serde_json::from_slice::<Command>(&raw).ok()) {
+            None => serde_json::json!({ "ok": false, "error": "bad_command" }),
+            Some(cmd) => match self.execute(ctx, rooms, &cmd) {
+                Ok(value) => { let mut v = value; v["ok"] = serde_json::Value::Bool(true); v }
+                Err(err) => serde_json::json!({ "ok": false, "error": err.to_string(), "op": cmd.op, "room": cmd.room }),
+            },
+        };
+        emit(&serde_json::json!({ "event": "steward_command", "id": name, "outcome": outcome }));
+        let raw = serde_json::to_vec(&outcome).map_err(|_| BotError::Local("outcome json"))?;
+        write_state_file(&self.rooms_dir.join("out").join(&name), &raw)?;
+        let _ = std::fs::remove_file(&path);
+        Ok(())
+    }
+
+    fn execute(&self, ctx: &Ctx, rooms: &mut Vec<RoomState>, cmd: &Command) -> Result<serde_json::Value, BotError> {
+        api::require_identifier("room must match [A-Za-z0-9_-]{1,64}", &cmd.room)?;
+        let idx = rooms.iter().position(|r| r.room == cmd.room);
+        match cmd.op.as_str() {
+            // Found a group locally; the relay room appears with the first commit (invite).
+            "create" => {
+                if idx.is_some() { return Err(BotError::Local("room already known to this steward")); }
+                let mut dev = load_identity(&self.identity_file, &self.device)?;
+                dev.create().map_err(|_| BotError::Local("group create rejected"))?;
+                let path = room_state_path(&self.rooms_dir, &cmd.room);
+                let mode = Mode::parse(&cmd.arg).unwrap_or(Mode::Silent);
+                if mode == Mode::Agent && rooms.iter().any(|r| r.mode == Mode::Agent) {
+                    return Err(BotError::Local("another room is already in agent mode"));
+                }
+                persist_state(&path, &cmd.room, &self.device, &mut dev, 0, 0, true, 0)?;
+                std::fs::write(room_mode_path(&self.rooms_dir, &cmd.room), mode.name()).map_err(|_| BotError::Local("mode file write"))?;
+                rooms.push(RoomState {
+                    room: cmd.room.clone(), cursor: 0, epoch: 0, joined: true, joinable: true, echoes: 0,
+                    retry: VecDeque::new(), dirty: false, acked: 0, ack_sent: 0, ack_disabled: false, halted: false,
+                    device: dev, state_path: Some(path), mode, pending: None,
+                });
+                Ok(serde_json::json!({ "op": "create", "room": cmd.room, "mode": mode.name(), "epoch": 0 }))
+            }
+            // Publish a key package so a member can invite this device; joins on the Welcome.
+            "join" => {
+                if idx.is_some() { return Err(BotError::Local("room already known to this steward")); }
+                let mut dev = load_identity(&self.identity_file, &self.device)?;
+                let kp = dev.key_package().map_err(|_| BotError::Local("key package generation"))?;
+                let key_ref = api::ref_hex(&kp);
+                let path = room_state_path(&self.rooms_dir, &cmd.room);
+                persist_state(&path, &cmd.room, &self.device, &mut dev, 0, 0, false, 0)?;
+                let stored = ctx.client.post_key_packages(&cmd.room, &self.device, &[(key_ref.as_str(), kp)])?;
+                std::fs::write(room_mode_path(&self.rooms_dir, &cmd.room), Mode::Silent.name()).map_err(|_| BotError::Local("mode file write"))?;
+                rooms.push(RoomState {
+                    room: cmd.room.clone(), cursor: 0, epoch: 0, joined: false, joinable: true, echoes: 0,
+                    retry: VecDeque::new(), dirty: false, acked: 0, ack_sent: 0, ack_disabled: false, halted: false,
+                    device: dev, state_path: Some(path), mode: Mode::Silent, pending: None,
+                });
+                Ok(serde_json::json!({ "op": "join", "room": cmd.room, "key_ref": key_ref, "stored": stored }))
+            }
+            "invite" | "remove" => {
+                let state = idx.map(|i| &mut rooms[i]).ok_or(BotError::Local("unknown room; create or join it first"))?;
+                api::require_identifier("target must match [A-Za-z0-9_-]{1,64}", &cmd.arg)?;
+                if !state.joined { return Err(BotError::Local("not a member of this room yet")); }
+                if state.halted { return Err(BotError::Local("room is halted")); }
+                if state.pending.is_some() { return Err(BotError::Local("an own commit is still pending; try again after it echoes")); }
+                let own = ctx.own.to_string();
+                let (commit, welcome) = if cmd.op == "invite" {
+                    let pkg = ctx.client.consume_key_package(&cmd.room, &cmd.arg, &own)?
+                        .ok_or(BotError::Local("target has no live key package in this room (it must request to join first)"))?;
+                    if api::ref_hex(&pkg.bytes) != pkg.key_ref {
+                        return Err(BotError::Local("consumed key package bytes do not match its sha256 ref"));
+                    }
+                    let framed = match guarded(&mut state.device, &own, |d| d.invite_with_commit(&pkg.bytes).map_err(drop))? {
+                        Ok(f) => f, Err(()) => return Err(BotError::Local("invite rejected by the facade")),
+                    };
+                    if framed.len() < 4 { return Err(BotError::Local("invite frame too short")); }
+                    let n = u32::from_le_bytes(framed[0..4].try_into().map_err(|_| BotError::Local("invite frame"))?) as usize;
+                    if framed.len() < 4 + n { return Err(BotError::Local("invite frame length")); }
+                    (framed[4..4 + n].to_vec(), Some(framed[4 + n..].to_vec()))
+                } else {
+                    let roster = state.device.members().ok().and_then(|f| policy::parse_roster(&f))
+                        .ok_or(BotError::Local("roster unavailable"))?;
+                    let key = roster.iter().find(|m| m.id == cmd.arg).map(|m| m.key.clone())
+                        .ok_or(BotError::Local("target is not a member of this room"))?;
+                    let commit = match guarded(&mut state.device, &own, |d| d.remove_member_pending(&key).map_err(drop))? {
+                        Ok(c) => c, Err(()) => return Err(BotError::Local("remove rejected by the facade")),
+                    };
+                    (commit, None)
+                };
+                let expected = state.device.members_after_pending().ok().and_then(|f| policy::parse_roster(&f))
+                    .ok_or(BotError::Local("post-commit roster unavailable"))?;
+                let members: Vec<api::MemberWire> = expected.iter()
+                    .map(|m| api::MemberWire { device: &m.id, actor: responder::actor_of(&m.id) }).collect();
+                let client_id = format!("{}-{}-{}", own, cmd.op, now_millis());
+                let post = EventPost {
+                    device: &own, client_id: &client_id, kind: "commit", epoch: state.epoch, revision: None,
+                    group_id: &cmd.room, targets: Vec::new(), members, bytes: commit,
+                };
+                match ctx.client.post_event(&cmd.room, &post) {
+                    Ok(resp) => {
+                        state.pending = Some(PendingCommit { seq: resp.seq, welcome, targets: vec![cmd.arg.clone()] });
+                        Ok(serde_json::json!({
+                            "op": cmd.op, "room": cmd.room, "target": cmd.arg, "seq": resp.seq, "epoch": resp.epoch,
+                            "members": expected.iter().map(|m| m.id.clone()).collect::<Vec<_>>(),
+                            "note": "pending until the relay echoes the commit; the Welcome follows",
+                        }))
+                    }
+                    Err(err) => {
+                        let _ = state.device.clear_pending();
+                        Err(err)
+                    }
+                }
+            }
+            "members" => {
+                let state = idx.map(|i| &rooms[i]).ok_or(BotError::Local("unknown room"))?;
+                let roster = state.device.members().ok().and_then(|f| policy::parse_roster(&f)).unwrap_or_default();
+                Ok(serde_json::json!({
+                    "op": "members", "room": cmd.room, "joined": state.joined, "epoch": state.epoch, "cursor": state.cursor,
+                    "mode": state.mode.name(), "halted": state.halted, "pending": state.pending.is_some(),
+                    "members": roster.iter().map(|m| serde_json::json!({"device": m.id, "key": hex(&m.key)})).collect::<Vec<_>>(),
+                }))
+            }
+            "mode" => {
+                let mode = Mode::parse(&cmd.arg).ok_or(BotError::Local("mode must be agent or silent"))?;
+                let i = idx.ok_or(BotError::Local("unknown room"))?;
+                if mode == Mode::Agent && rooms.iter().enumerate().any(|(j, r)| j != i && r.mode == Mode::Agent) {
+                    return Err(BotError::Local("another room is already in agent mode"));
+                }
+                std::fs::write(room_mode_path(&self.rooms_dir, &cmd.room), mode.name()).map_err(|_| BotError::Local("mode file write"))?;
+                rooms[i].mode = mode;
+                Ok(serde_json::json!({ "op": "mode", "room": cmd.room, "mode": mode.name() }))
+            }
+            "status" => Ok(serde_json::json!({
+                "op": "status", "device": self.device,
+                "rooms": rooms.iter().map(|r| serde_json::json!({
+                    "room": r.room, "joined": r.joined, "mode": r.mode.name(), "epoch": r.epoch, "cursor": r.cursor,
+                    "halted": r.halted, "pending": r.pending.is_some(),
+                })).collect::<Vec<_>>(),
+            })),
+            _ => Err(BotError::Local("unknown op (create|join|invite|remove|members|mode|status)")),
+        }
+    }
+}
+
+fn now_millis() -> u128 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+}
+
+/// CLI side of the queue: write `cmd/<id>.json`, wait for `out/<id>.json`.
+pub fn request(rooms_dir: &Path, cmd: &Command, wait: Duration) -> Result<serde_json::Value, BotError> {
+    let cmd_dir = rooms_dir.join("cmd");
+    let out_dir = rooms_dir.join("out");
+    if !cmd_dir.is_dir() || !out_dir.is_dir() {
+        return Err(BotError::Local("rooms dir has no cmd/out queue — is the steward running with this --rooms-dir?"));
+    }
+    let id = format!("{}-{}.json", now_millis(), std::process::id());
+    let raw = serde_json::to_vec(cmd).map_err(|_| BotError::Local("command json"))?;
+    write_state_file(&cmd_dir.join(&id), &raw)?;
+    let deadline = Instant::now() + wait;
+    let out = out_dir.join(&id);
+    loop {
+        if let Ok(raw) = std::fs::read(&out) {
+            let value: serde_json::Value = serde_json::from_slice(&raw).map_err(|_| BotError::Local("outcome json"))?;
+            let _ = std::fs::remove_file(&out);
+            return Ok(value);
+        }
+        if Instant::now() >= deadline {
+            let _ = std::fs::remove_file(cmd_dir.join(&id));
+            return Err(BotError::Local("timed out waiting for the steward (is it running?)"));
+        }
+        std::thread::sleep(POLL);
+    }
 }
 
 // ---- framing (§3.6 u32 LE identity prefixes; DECRYPT_FORMAT 2) ----
@@ -962,7 +1421,7 @@ fn status(rooms: &[RoomState]) {
             serde_json::json!({
                 "room": state.room, "joined": state.joined, "echoes": state.echoes,
                 "cursor": state.cursor, "epoch": state.epoch, "acked": state.ack_sent,
-                "halted": state.halted,
+                "halted": state.halted, "mode": state.mode.name(), "pending": state.pending.is_some(),
             })
         })
         .collect();
@@ -1191,6 +1650,15 @@ for line in sys.stdin:
                     assert!(n > 0, "eof before header terminator");
                     raw.extend_from_slice(&buf[..n]);
                 }
+                // Drain the body (Content-Length) so a POST is not reset mid-send.
+                let header_end = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+                let head = String::from_utf8_lossy(&raw[..header_end]).to_string();
+                let length: usize = head.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0))).unwrap_or(0);
+                while raw.len() < header_end + length {
+                    let n = stream.read(&mut buf).expect("read body");
+                    assert!(n > 0, "eof before body end");
+                    raw.extend_from_slice(&buf[..n]);
+                }
                 let text = String::from_utf8_lossy(&raw).to_string();
                 seen.push(text.lines().next().unwrap_or_default().to_string());
                 let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len());
@@ -1202,10 +1670,15 @@ for line in sys.stdin:
     }
 
     fn joined_room(room: &str, cursor: i64) -> RoomState {
+        joined_room_at(room, cursor, None)
+    }
+    fn joined_room_at(room: &str, cursor: i64, state_path: Option<PathBuf>) -> RoomState {
         RoomState {
             room: room.into(), cursor, epoch: 2, joined: true, joinable: true, echoes: 3,
             retry: VecDeque::new(), dirty: false, acked: cursor, ack_sent: cursor, ack_disabled: false,
             halted: false,
+            device: Device::new("bot-1").unwrap_or_else(|_| panic!("device new")),
+            state_path, mode: Mode::Echo, pending: None,
         }
     }
 
@@ -1224,18 +1697,17 @@ for line in sys.stdin:
         let path = state_path("gap");
         let marker = refused_marker_path(&path);
         let _ = std::fs::remove_file(&marker);
-        let ctx = Ctx { client: &client, own: "bot-1", room: "family", state_file: Some(&path) };
-        let mut dev = Device::new("bot-1").unwrap_or_else(|_| panic!("device new"));
+        let ctx = Ctx { client: &client, own: "bot-1" };
 
         // Contiguous history: no halt.
-        let mut contiguous = joined_room("family", 4);
-        poll_room(&ctx, &mut dev, &mut contiguous, &mut None).unwrap_or_else(|e| panic!("contiguous poll: {e}"));
+        let mut contiguous = joined_room_at("family", 4, Some(path.clone()));
+        poll_room(&ctx, &mut contiguous, &mut None).unwrap_or_else(|e| panic!("contiguous poll: {e}"));
         assert!(!contiguous.halted, "first_seq == cursor + 1 is contiguous");
         assert!(!marker.exists());
 
         // Pruned gap 5..=9: halt, cursor untouched, marker durable.
-        let mut state = joined_room("family", 4);
-        poll_room(&ctx, &mut dev, &mut state, &mut None).unwrap_or_else(|e| panic!("gap poll: {e}"));
+        let mut state = joined_room_at("family", 4, Some(path.clone()));
+        poll_room(&ctx, &mut state, &mut None).unwrap_or_else(|e| panic!("gap poll: {e}"));
         assert!(state.halted, "a pruned gap must halt the room");
         assert_eq!(state.cursor, 4, "no event of the gap page may move the cursor");
         assert_eq!(state.epoch, 2, "the device epoch stays where it was");
@@ -1248,10 +1720,161 @@ for line in sys.stdin:
         // Halted: the next poll is a no-op (the canned relay has stopped
         // listening, so any request would fail).
         let seen = server.join().expect("server thread");
-        poll_room(&ctx, &mut dev, &mut state, &mut None).unwrap_or_else(|e| panic!("halted poll: {e}"));
+        poll_room(&ctx, &mut state, &mut None).unwrap_or_else(|e| panic!("halted poll: {e}"));
         assert_eq!(seen.len(), 2);
         assert!(seen.iter().all(|line| line.starts_with("GET /v2/rooms/family/events?device=bot-1&after=4")), "{seen:?}");
         let _ = std::fs::remove_file(&marker);
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("native-mls-bot-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("cmd")).expect("mkdir cmd");
+        std::fs::create_dir_all(dir.join("out")).expect("mkdir out");
+        dir
+    }
+
+    /// #372 P1→P2: the signer leaves a single-room state file as an identity
+    /// file; the identity reproduces the key without the group; overwrite and a
+    /// foreign device are refused.
+    #[test]
+    fn identity_file_splits_a_room_state_and_refuses_overwrite() {
+        let dir = temp_dir("identity");
+        let state = dir.join("family.state");
+        let identity = dir.join("identity.json");
+        let mut dev = Device::new("bot-1").unwrap_or_else(|_| panic!("device new"));
+        dev.create().expect("create");
+        let key = dev.public_key().expect("public key");
+        persist_state(&state, "family", "bot-1", &mut dev, 3, 1, true, 0).expect("persist");
+        extract_identity(&state, "family", "bot-1", &identity).expect("extract");
+        let mut again = load_identity(&identity, "bot-1").expect("load identity");
+        assert_eq!(again.public_key().expect("key"), key);
+        again.create().expect("the identity carries no group, so a new one can be founded");
+        assert!(extract_identity(&state, "family", "bot-1", &identity).is_err(), "no overwrite");
+        assert!(load_identity(&identity, "bot-2").is_err(), "foreign device refused");
+        // The room state still resumes as before.
+        let (resumed, cursor, epoch, joined, _) = load_state(Some(&state), "family", "bot-1").expect("load").expect("present");
+        assert_eq!((cursor, epoch, joined), (3, 1, true));
+        drop(resumed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #372 P2 end to end without a relay beyond canned replies: the steward
+    /// founds `family`, invites a real peer device from its published key
+    /// package (consume → commit POST with the post-commit roster), merges on
+    /// its own commit echo and sends the Welcome; the peer joins and decrypts.
+    /// Then the roster shows both, mode changes are exclusive, and remove
+    /// posts a bare commit.
+    #[test]
+    fn steward_founds_a_room_invites_a_peer_and_removes_it() {
+        let dir = temp_dir("steward");
+        let identity = dir.join("identity.json");
+        write_identity(&identity, "bot-1", &Device::new("bot-1").unwrap_or_else(|_| panic!("device new"))).expect("identity");
+        let mut peer = Device::new("owner-pc").unwrap_or_else(|_| panic!("peer"));
+        let kp = peer.key_package().expect("peer key package");
+        let kp_body = serde_json::json!({"ref": api::ref_hex(&kp), "bytes": crate::b64::encode(&kp), "expires_at": 0}).to_string();
+        let (base, server) = canned_relay(vec![
+            kp_body,
+            r#"{"seq":1,"epoch":0,"revision":1,"duplicate":false}"#.into(),   // invite commit
+            r#"{"seq":2,"epoch":1,"revision":2,"duplicate":false}"#.into(),   // welcome
+            r#"{"seq":3,"epoch":1,"revision":3,"duplicate":false}"#.into(),   // remove commit
+        ]);
+        let client = Client::with_access(&base, api::Access::None);
+        let ctx = Ctx { client: &client, own: "bot-1" };
+        let steward = Steward { device: "bot-1".into(), rooms_dir: dir.clone(), identity_file: identity.clone() };
+        let mut rooms = Vec::new();
+
+        let out = steward.execute(&ctx, &mut rooms, &Command { op: "create".into(), room: "family".into(), arg: String::new() }).expect("create");
+        assert_eq!(out["mode"], "silent", "D3: silent by default");
+        assert!(rooms[0].joined && rooms[0].mode == Mode::Silent && dir.join("family.state").exists());
+        assert_eq!(std::fs::read_to_string(dir.join("family.mode")).expect("mode file"), "silent");
+        assert!(steward.execute(&ctx, &mut rooms, &Command { op: "create".into(), room: "family".into(), arg: String::new() }).is_err(), "no double create");
+
+        let out = steward.execute(&ctx, &mut rooms, &Command { op: "invite".into(), room: "family".into(), arg: "owner-pc".into() }).expect("invite");
+        assert_eq!(out["seq"], 1);
+        let members: Vec<String> = out["members"].as_array().expect("members").iter().map(|v| v.as_str().unwrap().to_string()).collect();
+        assert_eq!(members, vec!["bot-1".to_string(), "owner-pc".to_string()]);
+        assert!(rooms[0].pending.is_some());
+        assert!(steward.execute(&ctx, &mut rooms, &Command { op: "invite".into(), room: "family".into(), arg: "owner-pc".into() }).is_err(), "one pending commit at a time");
+
+        // The relay echoes our commit at seq 1: merge, epoch 0 → 1, Welcome goes out to the target.
+        let echo = StoredRow { seq: 1, device: "bot-1".into(), client_id: "bot-1-invite-0".into(), kind: "commit".into(), epoch: 0,
+            bytes: Vec::new(), sha256: String::new(), created_at: 0 };
+        let pending = rooms[0].pending.take().expect("pending");
+        let welcome = pending.welcome.clone().expect("invite carries a welcome");
+        own_commit_echo(&ctx, &mut rooms[0], &echo, pending).expect("own commit echo");
+        assert_eq!(rooms[0].epoch, 1);
+        assert!(rooms[0].pending.is_none());
+
+        peer.join(&welcome).expect("peer joins from the welcome");
+        let ct = encrypt_frame(&mut rooms[0].device, "family", "bot-1", b"hello family").expect("encrypt");
+        let (sender, plaintext) = decrypt_frame(&mut peer, "family", &ct).expect("peer decrypts");
+        assert_eq!((sender.as_slice(), plaintext.as_slice()), (&b"bot-1"[..], &b"hello family"[..]));
+
+        let out = steward.execute(&ctx, &mut rooms, &Command { op: "members".into(), room: "family".into(), arg: String::new() }).expect("members");
+        let ids: Vec<&str> = out["members"].as_array().expect("list").iter().map(|m| m["device"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["bot-1", "owner-pc"]);
+
+        // Mode: one agent room at a time.
+        steward.execute(&ctx, &mut rooms, &Command { op: "mode".into(), room: "family".into(), arg: "agent".into() }).expect("mode agent");
+        assert_eq!(rooms[0].mode, Mode::Agent);
+        assert!(steward.execute(&ctx, &mut rooms, &Command { op: "create".into(), room: "two".into(), arg: "agent".into() }).is_err(), "second agent room refused");
+        steward.execute(&ctx, &mut rooms, &Command { op: "mode".into(), room: "family".into(), arg: "silent".into() }).expect("mode silent");
+        assert!(steward.execute(&ctx, &mut rooms, &Command { op: "mode".into(), room: "family".into(), arg: "loud".into() }).is_err());
+
+        // Remove: bare commit, pending until echoed.
+        let out = steward.execute(&ctx, &mut rooms, &Command { op: "remove".into(), room: "family".into(), arg: "owner-pc".into() }).expect("remove");
+        assert_eq!(out["seq"], 3);
+        assert_eq!(out["members"].as_array().expect("members").len(), 1);
+        assert!(rooms[0].pending.as_ref().is_some_and(|p| p.welcome.is_none()));
+        assert!(steward.execute(&ctx, &mut rooms, &Command { op: "remove".into(), room: "family".into(), arg: "nobody".into() }).is_err());
+
+        let seen = server.join().expect("server thread");
+        assert_eq!(seen.len(), 4, "{seen:?}");
+        assert!(seen[0].starts_with("GET /v2/rooms/family/keypackages?device=owner-pc&consumer=bot-1"), "{}", seen[0]);
+        assert!(seen[1].starts_with("POST /v2/rooms/family/events"), "{}", seen[1]);
+        assert!(seen[2].starts_with("POST /v2/rooms/family/events"), "{}", seen[2]);
+        assert!(seen[3].starts_with("POST /v2/rooms/family/events"), "{}", seen[3]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The file queue: `request` writes `cmd/<id>.json`, `serve_one` answers in
+    /// `out/<id>.json` and removes the request; a malformed request is answered
+    /// with `bad_command`; a missing queue fails fast.
+    #[test]
+    fn command_queue_round_trips_and_rejects_garbage() {
+        let dir = temp_dir("queue");
+        let identity = dir.join("identity.json");
+        write_identity(&identity, "bot-1", &Device::new("bot-1").unwrap_or_else(|_| panic!("device new"))).expect("identity");
+        let steward = Steward { device: "bot-1".into(), rooms_dir: dir.clone(), identity_file: identity };
+        let (base, _server) = canned_relay(Vec::new());
+        let client = Client::with_access(&base, api::Access::None);
+        let ctx = Ctx { client: &client, own: "bot-1" };
+        let mut rooms = Vec::new();
+
+        std::fs::write(dir.join("cmd").join("0-garbage.json"), b"{not json").expect("write");
+        steward.serve_one(&ctx, &mut rooms).expect("serve garbage");
+        let answered: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("out").join("0-garbage.json")).expect("out")).expect("json");
+        assert_eq!(answered["ok"], false);
+        assert_eq!(answered["error"], "bad_command");
+        assert!(!dir.join("cmd").join("0-garbage.json").exists());
+        std::fs::remove_file(dir.join("out").join("0-garbage.json")).expect("consume the garbage outcome");
+
+        let requester = {
+            let dir = dir.clone();
+            std::thread::spawn(move || request(&dir, &Command { op: "status".into(), room: "family".into(), arg: String::new() }, Duration::from_secs(5)))
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && !requester.is_finished() {
+            steward.serve_one(&ctx, &mut rooms).expect("serve");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let outcome = requester.join().expect("thread").expect("status outcome");
+        assert_eq!(outcome["ok"], true);
+        assert_eq!(outcome["rooms"].as_array().expect("rooms").len(), 0);
+        assert!(std::fs::read_dir(dir.join("out")).expect("out dir").next().is_none(), "the requester removes its outcome");
+        assert!(request(&dir.join("nope"), &Command { op: "status".into(), room: "family".into(), arg: String::new() }, Duration::from_millis(10)).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Identity frames reject length overflow instead of panicking (L1-style
