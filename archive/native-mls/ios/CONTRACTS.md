@@ -76,6 +76,12 @@ abort-before-write · abort-after-tmp-before-rename · abort-after-rename-before
 ### 3.4 호출자 규칙
 트랜잭션 안: `load` → 엔진 연산 → `save`. 밖: 네트워크·UI. 연산이 `.rejected` 면 `save` 하지 않고 throw(디스크 불변).
 
+### 3.5 선택 계약 — 방 상태 삭제 `RoomStateRemoving` (2026-10-15 추가, `Store/StateRemoval.swift`)
+`MlsStateStore` 는 그대로(동결). ⛔ 정지 해제(#271 §9-4 "정지 이유" 의 다음 행동)는 **이 기기의 방 상태를 버리고 재초대를 기다리는 것**뿐이라
+`removeState(room:timeout:)` 를 별도 프로토콜로 두고 `FileStateStore` 만 채택한다(`stateStore as? RoomStateRemoving` 로 선택 적합).
+규칙: 방 flock 안에서 `<room>.state(.tmp)`·`<room>.gen(.tmp)` 삭제 → 디렉터리 fsync, `.lock` 앵커는 유지, 멱등, 그 뒤 `generation == 0`·`load() == nil`.
+`_identity` 슬롯은 호출자(AppModel)가 거부한다. 거부된 commit 을 받아들이는 경로는 어디에도 없다.
+
 ## 4. 메시지 보관 — `MessageStore` / `MessageSchema.ddl` (`Store/MessageRecord.swift`)
 DDL v1 동결(`schema_version`). `messages(room, seq)` PK, `rooms.halted_reason`, `outbox(room, client_id)` PK + `sha256`, `cursors`. L1 이 SQLite(`sqlite3` C API, 의존 0)로 구현하고 `MessageStore`·`OutboxStore`·`CursorStore` 를 **한 DB** 에 둔다(Data Protection 동일).
 
