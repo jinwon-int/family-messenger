@@ -27,6 +27,12 @@ final class RemovableInMemoryStateStore: MlsStateStore, RoomStateRemoving {
         stores[room] = nil
         removed.append(room)
     }
+
+    func removeAllState(timeout: TimeInterval) throws {
+        lock.lock(); defer { lock.unlock() }
+        removed.append(contentsOf: stores.keys.sorted())
+        stores = [:]
+    }
 }
 
 @MainActor

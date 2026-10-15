@@ -4,6 +4,9 @@ import FamilyMLSCore
 
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
+    @State private var confirmWipe = false
+    @State private var wipeBusy = false
+    @State private var wipeMessage: String?
 
     var body: some View {
         Form {
@@ -19,8 +22,29 @@ struct SettingsView: View {
             Section(footer: Text(Strings.logoutHint)) {
                 Button(Strings.logout, role: .destructive) { model.logout() }
             }
+            Section(footer: Text(wipeMessage ?? Strings.wipeHint)) {
+                Button(Strings.wipeTitle, role: .destructive) { confirmWipe = true }
+                    .disabled(wipeBusy)
+            }
         }
         .navigationTitle(Strings.settingsTitle)
+        .confirmationDialog(Strings.wipeTitle, isPresented: $confirmWipe, titleVisibility: .visible) {
+            Button(Strings.wipeConfirmButton, role: .destructive) { Task { await wipe() } }
+            Button(Strings.close, role: .cancel) {}
+        } message: {
+            Text(Strings.wipeWarning)
+        }
+    }
+
+    private func wipe() async {
+        wipeBusy = true
+        defer { wipeBusy = false }
+        do {
+            try await model.wipeDevice()
+            wipeMessage = Strings.wipeDone
+        } catch {
+            wipeMessage = Strings.wipeFailed("\(error)")
+        }
     }
 
     static func describe(_ status: PushRegistrar.Status) -> String {

@@ -41,4 +41,10 @@ final class InMemoryMessageStore: MessageStore {
         r.haltedReason = reason
         roomRecords[room] = r
     }
+
+    /// "이 기기 지우기" 대역(`FileSQLiteStore.wipe` 상당).
+    func wipe() {
+        lock.lock(); defer { lock.unlock() }
+        records = [:]; roomRecords = [:]
+    }
 }

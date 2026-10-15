@@ -58,6 +58,10 @@ extension AppModel.Dependencies {
             let sealer = try config.sealer ?? SharedStorage.sealer(appGroup: config.appGroup)
             let stateStore = try FileStateStore(directory: base.appendingPathComponent("mls", isDirectory: true), sealer: sealer)
             let database = try FileSQLiteStore(directory: base)
+            // "이 기기 지우기": MLS 상태(identity 포함, 방마다 flock) → DB 행 → 기기 ID(suite·standard). 봉인 키는 유지(AppModel.wipeDevice).
+            var wipe = AppModel.DeviceWipe()
+            wipe.storage = { try stateStore.removeAllState(timeout: 5); try database.wipe() }
+            wipe.identity = { SharedStorage.wipeIdentity(appGroup: config.appGroup) }
             return Self(
                 engineFactory: FfiEngineFactory(),
                 stateStore: stateStore,
@@ -71,7 +75,8 @@ extension AppModel.Dependencies {
                 push: config.pushTopic.map { PushRegistrar.Dependencies.live(topic: $0) } ?? PushRegistrar.Dependencies(topic: nil),
                 credentials: config.credentials ?? SharedStorage.credentialStore(appGroup: config.appGroup),
                 actorStore: config.actorStore,
-                defaultRoom: config.defaultRoom)
+                defaultRoom: config.defaultRoom,
+                wipe: wipe)
         } catch {
             // 화면이 사유를 보여 줄 수 있게 메모리 스토어로 모델만 세운다(아무것도 저장하지 않는다).
             return Self(

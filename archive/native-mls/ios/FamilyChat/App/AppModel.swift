@@ -53,6 +53,14 @@ final class AppModel: ObservableObject {
         var actorStore: ActorStoring = InMemoryActorStore("owner")
         /// 참여 요청 화면이 미리 채우는 대화방 ID(빌드 설정 `FC_DEFAULT_ROOM` → Info.plist `FamilyChatDefaultRoom`).
         var defaultRoom: RoomID = "family-acc"
+        /// "이 기기 지우기"(§9-5) 훅. 기본 = 아무것도 지우지 않음(테스트는 주입, live() 는 파일·DB·기기 ID 로 채운다).
+        var wipe = DeviceWipe()
+    }
+
+    /// 저장소 밖의 삭제 작업(§9-5). `storage` = MLS 상태 전부(identity 슬롯 포함) + messages.db 행, `identity` = 저장된 기기 ID.
+    struct DeviceWipe {
+        var storage: () throws -> Void = {}
+        var identity: () -> Void = {}
     }
 
     @Published private(set) var phase: Phase = .starting
@@ -188,6 +196,33 @@ final class AppModel: ObservableObject {
     func halt(reason: String, room: RoomID? = nil) {
         if let room { try? deps.messageStore.setHalted(room: room, reason: reason) }
         phase = .halted(reason)
+    }
+
+    /// "이 기기 지우기"(§9-5): 로그아웃과 달리 **MLS 상태(서명키 포함)·대화 기록·기기 ID 를 모두 지우고 새 기기가 된다.**
+    /// 순서(모두 `serial` 안, 동기화와 겹치지 않게): ① 푸시 등록 해제(DELETE 최선) → ② 사용자 이름(actor)을 명시 저장(기기 ID 에서
+    /// 파생하던 설치도 이름을 잃지 않게) → ③ 세션·메모리 상태 폐기 → ④ 저장소 삭제(`wipe.storage`: MLS 상태 전부 + DB 행)
+    /// → ⑤ 기기 ID 삭제(`wipe.identity`) → ⑥ `bootstrap` 다시(새 ID·새 서명키·새 지문 → `needsLogin`).
+    /// 릴레이 쪽(정책 체인의 옛 기기·방 멤버십)은 지우지 않는다 — 운영자가 `-revoke` 하고 새 기기를 등록한다. 봉인 키(Keychain)는
+    /// 유지한다: 이 프로세스의 저장소 인스턴스가 키를 들고 있어 바꾸면 NSE 와 어긋난다(키는 파일 보호용이지 대화 비밀이 아니다).
+    func wipeDevice() async throws {
+        switch phase { case .starting, .fatal: return; default: break }
+        let device = deviceId
+        let previous = transport
+        try await serial.run {
+            await self.push.unregister(device: device, transport: previous)
+            self.pushStatus = self.push.status
+            if let actor = self.deps.actorStore.actor { self.deps.actorStore.save(actor) }
+            self.credential = nil
+            self.transport = nil
+            self.syncEngines = [:]; self.unconfirmed = [:]; self.seenCursors = [:]; self.lastFlush = [:]
+            self.engine = nil; self.identitySeed = nil; self.registration = nil; self.rooms = []
+            try self.deps.wipe.storage()
+            self.deps.wipe.identity()
+            self.deviceId = ""; self.fingerprint = ""
+            self.lastError = nil
+            self.phase = .starting
+            await self.bootstrap()
+        }
     }
 
     // MARK: - ⛔ 정지 해제 (§9-4 "정지 이유" + 다음 행동)
