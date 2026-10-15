@@ -242,7 +242,7 @@ jobs:
           git fetch --no-tags --depth=1 origin "$base"
           changed="$(git diff --name-only "$base" HEAD)"
           printf 'changed files:\n%s\n' "$changed"
-          if grep -qE '^(archive/native-mls/bot/|archive/experiments/openmls-browser/|\.github/workflows/native-mls\.yml$)' <<<"$changed"; then
+          if grep -qE '^(archive/native-mls/bot/|archive/native-mls/host-core/|archive/experiments/openmls-browser/|\.github/workflows/native-mls\.yml$)' <<<"$changed"; then
             echo "run=true" >> "$GITHUB_OUTPUT"; echo "bot crate or facade touched → run"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"; echo "no bot-relevant change → skip heavy steps"
@@ -260,7 +260,14 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             archive/native-mls/bot/target
-          key: native-mls-bot-cargo-${{ runner.os }}-${{ hashFiles('archive/native-mls/bot/Cargo.lock') }}
+            archive/native-mls/host-core/target
+          key: native-mls-bot-cargo-${{ runner.os }}-${{ hashFiles('archive/native-mls/bot/Cargo.lock', 'archive/native-mls/host-core/Cargo.lock') }}
+      # #366: relay client · HTTP · base64 · commit policy moved to the shared host crate;
+      # the bot's `cargo test` does not run a path dependency's own tests, so run them here.
+      - name: Shared host crate unit tests (cargo test, host)
+        if: steps.bot-scope.outputs.run == 'true'
+        working-directory: archive/native-mls/host-core
+        run: cargo "+$RUST_TOOLCHAIN" test --locked -- --nocapture
       - name: Bot unit tests (cargo test, host)
         if: steps.bot-scope.outputs.run == 'true'
         working-directory: archive/native-mls/bot
