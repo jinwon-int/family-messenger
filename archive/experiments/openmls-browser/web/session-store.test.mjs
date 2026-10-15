@@ -3,7 +3,7 @@
 // item shape and the tagged meta encoding. Run: node --test web/session-store.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {classifyDecryptFailure, NOT_POISON, validLedgerItemShape, ledgerItemBytes, createStore, hex} from './session-store.js';
+import {classifyDecryptFailure, NOT_POISON, validLedgerItemShape, ledgerItemBytes, createStore, hex, MAX_WIRE, MAX_BINARY} from './session-store.js';
 
 const head = {method: 'decrypt', sequence: 4, cursor: 3, hasGroup: true, error: 'MLS operation rejected', consistent: true};
 
@@ -69,4 +69,15 @@ test('createStore.metaBytes covers the rejected flag (tamper-evident under the m
   const expected = new TextEncoder().encode(JSON.stringify(['family-mls-meta-v4/durable', 4, 'alice', 'main', '00'.repeat(32), '07',
     2, 5, 1, '3', '00'.repeat(32), 3, [['a1', 'decrypt', 1, '3', '0102', '09']], [], null]));
   assert.equal(hex(store.metaBytes(meta([legacy]))), hex(expected));
+});
+
+test('ledger bound holds one full-size attachment operation (input + output), #364 follow-up', () => {
+  // 2026-10-15: MAX_BINARY stayed at 2 MiB after MAX_WIRE went to 5 MiB, so a
+  // 1.27 MB photo (ciphertext in, plaintext frame out ≈ 2.55 MB) failed validMeta
+  // in persist() and relay-app acked past it. §3.6 binding adds 4 + room (≤ 64)
+  // bytes to the input; the decrypt frame adds two length-prefixed labels (≤ 64
+  // each) to the output.
+  const binding = 4 + 64, frame = 2 * (4 + 64);
+  assert.ok(MAX_BINARY >= (MAX_WIRE + binding) + (MAX_WIRE + frame), `MAX_BINARY ${MAX_BINARY} < one max operation`);
+  assert.ok(MAX_BINARY < 4 * MAX_WIRE, 'bound still limits how many un-acked attachments a ledger may hold');
 });
