@@ -21,6 +21,14 @@ enum DeviceIdentity {
         return fresh
     }
 
+    /// "이 기기 지우기"(§9-5): 저장된 기기 ID 를 지운다 — 다음 `existingOrNew` 가 새 ID 를 만든다. 옛 ID 는 릴레이에서 재사용 금지
+    /// (tombstone, DEVICES-V4)라 되살리면 안 되므로 App Group suite 와 **앱 전용 standard 양쪽**을 지운다(SharedStorage 가 standard 의
+    /// 옛 값을 suite 로 1회 옮기는 경로가 있어, standard 를 남기면 지운 ID 가 되살아난다).
+    static func reset(defaults: UserDefaults) {
+        defaults.removeObject(forKey: defaultsKey)
+        if defaults !== UserDefaults.standard { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+    }
+
     static func generate(actor: String) -> String {
         var bytes = [UInt8](repeating: 0, count: 3)
         for i in bytes.indices { bytes[i] = UInt8.random(in: 0...255) }

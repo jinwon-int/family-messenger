@@ -263,6 +263,20 @@ public final class FileSQLiteStore: MessageStore, OutboxStore, CursorStore {
         try stepOnce(stmt, context: "cursors.setCursor")
     }
 
+    // MARK: - "이 기기 지우기" (§9-5)
+
+    /// 네 테이블의 행을 전부 지운다(스키마·`schema_version` 은 유지). 연결은 열린 채다 — 앱이 같은 인스턴스로 계속 쓴다
+    /// (파일 unlink 는 열린 핸들이 옛 inode 에 계속 쓰므로 쓰지 않는다). 한 트랜잭션이라 NSE 가 사이에 끼어들어도 반쪽이 남지 않는다.
+    public func wipe() throws {
+        lock.lock(); defer { lock.unlock() }
+        do {
+            try db.exec("BEGIN IMMEDIATE; DELETE FROM messages; DELETE FROM rooms; DELETE FROM outbox; DELETE FROM cursors; COMMIT;")
+        } catch {
+            try? db.exec("ROLLBACK;")   // 중간 실패: 열린 트랜잭션을 남기지 않는다(없으면 no-op 오류, 무시)
+            throw error
+        }
+    }
+
     // MARK: - 내부
 
     /// 테스트 전용(@testable): 파라미터 없는 SQL 첫 행 첫 열(Int64). 스키마·열 검증용.

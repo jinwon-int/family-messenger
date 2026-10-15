@@ -41,6 +41,11 @@ enum SharedStorage {
     static func existingDeviceId(appGroup: String?) -> DeviceID? {
         defaults(appGroup: appGroup).string(forKey: DeviceIdentity.defaultsKey)
     }
+
+    /// "이 기기 지우기": 기기 ID 를 suite·standard 양쪽에서 지운다. actor 는 지우지 않는다(같은 사용자의 새 기기).
+    static func wipeIdentity(appGroup: String?) {
+        DeviceIdentity.reset(defaults: defaults(appGroup: appGroup))
+    }
 }
 
 // MARK: - 릴레이 자격증명 (CF Access 세션)
