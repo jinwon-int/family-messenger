@@ -238,6 +238,23 @@ impl Device {
     pub fn import_state(identity: &str, bytes: &[u8]) -> Result<Device, Rejected> {
         staging::load(bytes, identity)
     }
+
+    /// Identity-only snapshot (#372 P1): the signer and credential, no group.
+    /// Lets a host keep one device identity (one signing key, one policy-chain
+    /// enrollment) across several rooms: `new_with_identity` per room, then
+    /// `create`/`join` there, with the room's own `export_state` for resume.
+    /// Works on a device that already holds a group (the group is left out),
+    /// so an existing single-room state file can be split into identity + room.
+    pub fn export_identity(&self, identity: &str) -> Result<Vec<u8>, Rejected> {
+        staging::save_identity(self, identity)
+    }
+
+    /// A fresh, group-less device sharing the signer of `export_identity` bytes.
+    /// A full `export_state` snapshot (group inside), a foreign `identity`, an
+    /// oversized or corrupt snapshot is rejected.
+    pub fn new_with_identity(identity: &str, bytes: &[u8]) -> Result<Device, Rejected> {
+        staging::load_identity(bytes, identity)
+    }
 }
 
 impl Device {
