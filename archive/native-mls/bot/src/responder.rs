@@ -31,6 +31,7 @@
 use crate::api::BotError;
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -50,10 +51,22 @@ pub const DEFAULT_TURN_SECS: u64 = 1200;
 /// is 16 KiB; the header the worker prepends needs a little room).
 const PROMPT_MAX_BYTES: usize = 15 * 1024;
 
+/// How the bot reaches the worker. Both carry the same JSON-lines port.
+#[derive(Clone, Debug)]
+pub enum Transport {
+    /// Spawn the worker as a child (`[python3, fleet_worker.py, --workdir, …]`, no shell).
+    /// The worker then runs as the bot's own user — fine for a dev box, not for a
+    /// hardened deployment where the Codex login belongs to another account.
+    Argv(Vec<String>),
+    /// Connect to a unix socket the service manager owns (systemd `Accept=yes` +
+    /// `StandardInput=socket`): the worker runs as the account that holds the
+    /// AI credentials, the bot only ever sees the socket (0600, bot user).
+    Unix(PathBuf),
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// Child process argv (`[python3, fleet_worker.py, --workdir, …]`). No shell.
-    pub argv: Vec<String>,
+    pub transport: Transport,
     /// Actor whose text replies resolve approvals (`owner`).
     pub owner_actor: String,
     pub reply_max_bytes: usize,
@@ -62,9 +75,9 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn new(argv: Vec<String>, owner_actor: String) -> Self {
+    pub fn new(transport: Transport, owner_actor: String) -> Self {
         Config {
-            argv,
+            transport,
             owner_actor,
             reply_max_bytes: DEFAULT_REPLY_MAX_BYTES,
             queue_max: DEFAULT_QUEUE_MAX,
@@ -128,7 +141,8 @@ const INBOX_VERSION: u32 = 1;
 
 pub struct Responder {
     config: Config,
-    child: Child,
+    /// Spawned worker (`Transport::Argv`); `None` over a socket.
+    child: Option<Child>,
     to_child: Sender<Cmd>,
     from_child: Receiver<Result<serde_json::Value, String>>,
     inbox_path: Option<PathBuf>,
@@ -146,16 +160,26 @@ impl Responder {
     /// Spawn the worker. `state_file` (the bot's `--state-file`) locates the
     /// inbox next to it; without one the duplicate guard is memory-only.
     pub fn spawn(config: Config, state_file: Option<&Path>) -> Result<Self, BotError> {
-        let (program, args) = config.argv.split_first().ok_or(BotError::Local("responder argv empty"))?;
-        let mut child = Command::new(program)
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|_| BotError::Local("responder spawn failed"))?;
-        let mut stdin = child.stdin.take().ok_or(BotError::Local("responder stdin"))?;
-        let stdout = child.stdout.take().ok_or(BotError::Local("responder stdout"))?;
+        let (child, mut stdin, stdout): (Option<Child>, Box<dyn Write + Send>, Box<dyn std::io::Read + Send>) = match &config.transport {
+            Transport::Argv(argv) => {
+                let (program, args) = argv.split_first().ok_or(BotError::Local("responder argv empty"))?;
+                let mut child = Command::new(program)
+                    .args(args)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::inherit())
+                    .spawn()
+                    .map_err(|_| BotError::Local("responder spawn failed"))?;
+                let stdin = child.stdin.take().ok_or(BotError::Local("responder stdin"))?;
+                let stdout = child.stdout.take().ok_or(BotError::Local("responder stdout"))?;
+                (Some(child), Box::new(stdin), Box::new(stdout))
+            }
+            Transport::Unix(path) => {
+                let stream = UnixStream::connect(path).map_err(|_| BotError::Local("responder socket connect failed"))?;
+                let reader = stream.try_clone().map_err(|_| BotError::Local("responder socket clone"))?;
+                (None, Box::new(stream), Box::new(reader))
+            }
+        };
         let (to_child, cmd_rx) = mpsc::channel::<Cmd>();
         std::thread::spawn(move || {
             for cmd in cmd_rx {
@@ -431,8 +455,10 @@ impl Responder {
 impl Drop for Responder {
     fn drop(&mut self) {
         let _ = self.to_child.send(Cmd::Close);
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
@@ -575,7 +601,7 @@ for line in sys.stdin:
 "#;
 
     fn fake(config_tweak: impl FnOnce(&mut Config), state: Option<&Path>) -> Responder {
-        let mut config = Config::new(vec!["python3".into(), "-c".into(), FAKE_WORKER.into()], "owner".into());
+        let mut config = Config::new(Transport::Argv(vec!["python3".into(), "-c".into(), FAKE_WORKER.into()]), "owner".into());
         config_tweak(&mut config);
         Responder::spawn(config, state).unwrap_or_else(|e| panic!("spawn: {e}"))
     }
@@ -674,6 +700,42 @@ for line in sys.stdin:
         let inbox: Inbox = serde_json::from_slice(&std::fs::read(inbox_path(&state)).unwrap()).unwrap();
         assert!(inbox.active.is_none(), "cleared, never re-run");
         assert!(r.pump().unwrap().is_empty(), "reported once");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `Transport::Unix`: the same port over a socket a service manager would
+    /// own. A python listener plays systemd `Accept=yes` + `StandardInput=socket`.
+    #[test]
+    fn unix_socket_transport_round_trips() {
+        let dir = std::env::temp_dir().join(format!("bot-responder-sock-{}-{}", std::process::id(), now_secs()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("responder.sock");
+        let server = format!(r#"
+import json, socket, os
+s = socket.socket(socket.AF_UNIX); s.bind({sock:?}); s.listen(1)
+print("listening", flush=True)
+c, _ = s.accept()
+f = c.makefile("rwb")
+for line in f:
+    cmd = json.loads(line)
+    if cmd["type"] == "turn":
+        f.write((json.dumps({{"type": "result", "turn_id": cmd["turn_id"], "status": "complete", "session_id": "s", "text": "sock:" + cmd["prompt"]}}) + "\n").encode()); f.flush()
+"#, sock = sock.to_string_lossy());
+        let mut listener = Command::new("python3").arg("-c").arg(&server).stdout(Stdio::piped()).spawn().unwrap();
+        {
+            let mut line = String::new();
+            BufReader::new(listener.stdout.take().unwrap()).read_line(&mut line).unwrap();
+            assert_eq!(line.trim(), "listening");
+        }
+        let config = Config::new(Transport::Unix(sock.clone()), "owner".into());
+        let mut r = Responder::spawn(config, None).unwrap_or_else(|e| panic!("connect: {e}"));
+        assert!(r.child.is_none());
+        r.offer(inbound(3, "owner-pc", "ping")).unwrap();
+        let got = pump_until(&mut r, 1);
+        assert_eq!(got, vec![Outbound::Reply { seq: 3, text: "sock:ping".into() }]);
+        drop(r);
+        let _ = listener.kill();
+        let _ = listener.wait();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1,0 +1,18 @@
+# #354 A3 — 응답기 소켓(systemd socket activation). 봇(`native-relay-bot` 사용자)만 접속할 수 있다.
+# 연결마다 `native-responder@.service` 가 fleet_worker.py 를 띄우고 stdin/stdout 을 이 소켓에 묶는다(Accept=yes).
+# 설치: /etc/systemd/system/native-responder.socket → systemctl enable --now native-responder.socket (승인 항목)
+[Unit]
+Description=native-relay-bot agent responder socket (#354)
+
+[Socket]
+ListenStream=/run/native-responder/responder.sock
+Accept=yes
+SocketUser=native-relay-bot
+SocketGroup=native-relay-bot
+SocketMode=0600
+DirectoryMode=0750
+# 한 번에 봇 1개만 — 두 번째 연결은 거부(봇이 재시작하면 옛 연결은 EOF 로 닫힌다).
+MaxConnections=1
+
+[Install]
+WantedBy=sockets.target

@@ -1135,7 +1135,7 @@ for line in sys.stdin:
     if cmd["type"] == "turn":
         print(json.dumps({"type": "result", "turn_id": cmd["turn_id"], "status": "complete", "session_id": "s", "text": "답:" + cmd["prompt"]}), flush=True)
 "#;
-        let config = responder::Config::new(vec!["python3".into(), "-c".into(), ECHO_WORKER.into()], "owner".into());
+        let config = responder::Config::new(responder::Transport::Argv(vec!["python3".into(), "-c".into(), ECHO_WORKER.into()]), "owner".into());
         let mut agent = Responder::spawn(config, None).unwrap_or_else(|e| panic!("spawn: {e}"));
         let mut state = joined_room("family", 4);
         let row = |seq: i64, device: &str, client_id: &str| StoredRow {

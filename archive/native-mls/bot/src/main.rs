@@ -44,21 +44,36 @@ fn main() -> ExitCode {
         Some(json) => (Some(json), strip_flag(&args, "--responder-argv-json")),
         None => (std::env::var("NATIVE_MLS_BOT_RESPONDER_ARGV_JSON").ok().filter(|v| !v.trim().is_empty()), args),
     };
+    // `--responder-unix <socket>` (env NATIVE_MLS_BOT_RESPONDER_UNIX): connect to a
+    // service-manager-owned socket instead of spawning (the worker then runs as
+    // the account holding the AI credentials — see AGENT.md). Mutually exclusive.
+    let (responder_unix, args) = match extract_flag(&args, "--responder-unix") {
+        Some(path) => (Some(path), strip_flag(&args, "--responder-unix")),
+        None => (std::env::var("NATIVE_MLS_BOT_RESPONDER_UNIX").ok().filter(|v| !v.trim().is_empty()), args),
+    };
     let (owner_actor, args) = match extract_flag(&args, "--owner-actor") {
         Some(actor) => (actor, strip_flag(&args, "--owner-actor")),
         None => (std::env::var("NATIVE_MLS_BOT_OWNER_ACTOR").ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| "owner".to_string()), args),
     };
-    let responder = match responder_json {
-        None => None,
-        Some(json) => match serde_json::from_str::<Vec<String>>(&json) {
-            Ok(argv) if !argv.is_empty() && api::require_identifier("owner actor must match [A-Za-z0-9_-]{1,64}", &owner_actor).is_ok() => {
-                Some(responder::Config::new(argv, owner_actor))
-            }
+    let owner_ok = api::require_identifier("owner actor must match [A-Za-z0-9_-]{1,64}", &owner_actor).is_ok();
+    let responder = match (responder_json, responder_unix) {
+        (None, None) => None,
+        (Some(_), Some(_)) => {
+            eprintln!("native-mls-bot: give either --responder-argv-json or --responder-unix, not both");
+            return ExitCode::FAILURE;
+        }
+        (Some(json), None) => match serde_json::from_str::<Vec<String>>(&json) {
+            Ok(argv) if !argv.is_empty() && owner_ok => Some(responder::Config::new(responder::Transport::Argv(argv), owner_actor)),
             _ => {
                 eprintln!("native-mls-bot: --responder-argv-json must be a non-empty JSON string array and --owner-actor an identifier");
                 return ExitCode::FAILURE;
             }
         },
+        (None, Some(path)) if owner_ok => Some(responder::Config::new(responder::Transport::Unix(std::path::PathBuf::from(path)), owner_actor)),
+        (None, Some(_)) => {
+            eprintln!("native-mls-bot: --owner-actor must be an identifier");
+            return ExitCode::FAILURE;
+        }
     };
     // Review 2 L: every room/device/consumer argument must already be a relay
     // identifier — nothing that needs encoding is ever interpolated into a path.
@@ -104,7 +119,8 @@ fn main() -> ExitCode {
             eprintln!("identity, room cursor and joined state across restarts; the file is rewritten");
             eprintln!("atomically whenever the group state moves (and before every echo leaves the process)");
             eprintln!("NATIVE_MLS_BOT_MAX_SECS=<secs> bounds the session (default 300; 0 = no deadline)");
-            eprintln!("agent mode (--responder-argv-json <json array> or env NATIVE_MLS_BOT_RESPONDER_ARGV_JSON): every");
+            eprintln!("agent mode (--responder-argv-json <json array> | --responder-unix <socket>; env NATIVE_MLS_BOT_RESPONDER_ARGV_JSON |");
+            eprintln!("NATIVE_MLS_BOT_RESPONDER_UNIX): every");
             eprintln!("application message becomes one turn of the stdio worker (docs/FLEET-WORKER.md) instead of an echo;");
             eprintln!("--owner-actor <actor> (env NATIVE_MLS_BOT_OWNER_ACTOR, default owner) answers approvals with 승인 n / 거절 n");
             return ExitCode::FAILURE;

@@ -12,7 +12,12 @@ native-mls-bot <base-url> session <room> <device> \
   --owner-actor owner
 ```
 
-- `--responder-argv-json`(또는 env `NATIVE_MLS_BOT_RESPONDER_ARGV_JSON`): 응답기 프로세스 argv(JSON 문자열 배열, 셸 없음). 프로토콜은 `docs/FLEET-WORKER.md`(`scripts/fleet_worker.py`) 그대로다.
+- `--responder-argv-json`(또는 env `NATIVE_MLS_BOT_RESPONDER_ARGV_JSON`): 응답기 프로세스 argv(JSON 문자열 배열, 셸 없음). 프로토콜은 `docs/FLEET-WORKER.md`(`scripts/fleet_worker.py`) 그대로다. **개발·시험용** — 워커가 봇 사용자로 돈다.
+- `--responder-unix <socket>`(또는 env `NATIVE_MLS_BOT_RESPONDER_UNIX`): 서비스 매니저가 가진 유닉스 소켓에 접속한다. **운영용** — 봇(`native-relay-bot`)과 AI 자격을 가진 사용자(공명: `gongmyoung`, Codex 로그인·ccc-node 하네스)가 다를 때 자격 파일을 한 바이트도 옮기지 않는다. `deploy/`:
+  - `native-responder.socket` — `/run/native-responder/responder.sock`, 0600 봇 사용자, `Accept=yes`, `MaxConnections=1`
+  - `native-responder@.service` — 연결마다 `fleet_worker.py` 를 자격 사용자로 띄우고 `StandardInput/Output=socket`
+  - `native-relay-bot.service.d-30-agent.conf` — 기존 봇 유닛 drop-in(env 2개 + `Requires=native-responder.socket`). ExecStart 불변, 되돌리기 = 파일 삭제
+  둘은 배타적이다(둘 다 주면 시작 거부).
 - `--owner-actor`(env `NATIVE_MLS_BOT_OWNER_ACTOR`, 기본 `owner`): 승인 답장을 낼 수 있는 actor(기기 ID 의 첫 `-` 앞).
 - 응답기가 죽으면 세션도 끝난다(exit 1) — 서비스 매니저가 봇·응답기를 함께 다시 띄운다(`Restart=on-failure`).
 
