@@ -190,6 +190,58 @@ final class AppModel: ObservableObject {
         phase = .halted(reason)
     }
 
+    // MARK: - ⛔ 정지 해제 (§9-4 "정지 이유" + 다음 행동)
+
+    enum RejoinOutcome: Equatable {
+        /// 상태를 지우고 키 패키지까지 올렸다 — 재초대를 기다린다.
+        case prepared
+        /// 상태는 지웠지만 참여 요청(키 패키지 게시)은 실패했다(연결 없음·세션 만료) — `+ 참여 요청` 으로 다시 올릴 수 있다.
+        case preparedWithoutPublish(String)
+    }
+
+    enum RejoinError: Error, Equatable {
+        /// 이 저장소는 방 상태 삭제를 지원하지 않는다(`RoomStateRemoving` 미채택).
+        case unsupported
+        case notHalted
+    }
+
+    /// 정지된 방 목록(화면용). `rooms` 와 같은 순서.
+    var haltedRooms: [RoomRecord] { rooms.filter { $0.haltedReason != nil } }
+
+    /// 정지 해제 = 이 기기의 **방 상태를 버리고** 재초대를 기다린다(relay-app·봇과 같은 길: RELAY-APP.md §정지). 거부된 commit 을
+    /// 받아들이는 경로는 없다. 순서(모두 `serial` 안):
+    ///   ① 방 동기화 객체 폐기 → ② MLS 방 상태 삭제(방 flock 안, `RoomStateRemoving`) → ③ 커서 0·epoch/revision 0·정지 사유 nil
+    ///   → ④ 그 방의 pending outbox 는 reconciled(옛 epoch 바이트는 영영 못 들어간다) → ⑤ 가능하면 키 패키지 게시(= 참여 요청).
+    /// 메시지 행(`messages`)은 지우지 않는다 — 지난 대화는 화면에 남고, 재참여 뒤 새 seq 만 이어진다.
+    func prepareRejoin(room: RoomID) async throws -> RejoinOutcome {
+        guard room != Strings.identityRoom else { throw RejoinError.unsupported }
+        guard let remover = deps.stateStore as? RoomStateRemoving else { throw RejoinError.unsupported }
+        guard (try deps.messageStore.rooms().first { $0.room == room })?.haltedReason != nil else { throw RejoinError.notHalted }
+        return try await serial.run {
+            self.syncEngines[room] = nil
+            self.seenCursors[room] = nil
+            try remover.removeState(room: room, timeout: self.deps.syncConfiguration.lockTimeout)
+            for entry in try self.deps.outbox.pending(room: room) {
+                try self.deps.outbox.mark(room: room, clientId: entry.clientId, status: .reconciled)
+            }
+            try self.deps.cursors.setCursor(room: room, seq: 0)
+            var record = try self.deps.messageStore.rooms().first { $0.room == room }
+                ?? RoomRecord(room: room, epoch: 0, revision: 0, haltedReason: nil, displayOrder: 0)
+            record.epoch = 0; record.revision = 0; record.haltedReason = nil
+            try self.deps.messageStore.upsertRoom(record)
+            try self.deps.messageStore.setHalted(room: room, reason: nil)
+            self.rooms = try self.deps.messageStore.rooms()
+            if case .halted = self.phase { self.phase = self.haltedReasonFromRooms().map { .halted($0) } ?? .ready }
+            do {
+                guard self.transport != nil else { throw RelayError.unauthorized }
+                try await self.membership(room).publishKeyPackage()
+                return .prepared
+            } catch {
+                return .preparedWithoutPublish("\(error)")
+            }
+        }
+    }
+
     /// 포그라운드 폴링(CONTRACTS §2.2: 4초). 화면의 `.task` 가 소유하고 취소하면 끝난다.
     func runForeground() async {
         while !Task.isCancelled {

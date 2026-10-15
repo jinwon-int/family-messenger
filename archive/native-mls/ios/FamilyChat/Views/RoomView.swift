@@ -19,6 +19,11 @@ struct RoomView: View {
                 }
                 .padding()
             }
+            if let halted = haltedReason {
+                HaltedRoomCard(room: room, reason: halted)
+                    .padding()
+                    .background(Color.red.opacity(0.15))
+            }
             if let error = model.lastError {
                 Text(error).font(.footnote).foregroundStyle(.red).padding(.horizontal)
             }
@@ -53,6 +58,11 @@ struct RoomView: View {
     private var isReady: Bool {
         if case .ready = model.phase { return true }
         return false
+    }
+
+    /// 이 방의 정지 사유(다른 방의 정지는 여기 보이지 않는다 — 전역 배너가 알린다).
+    private var haltedReason: String? {
+        model.rooms.first { $0.room == room }?.haltedReason
     }
 }
 

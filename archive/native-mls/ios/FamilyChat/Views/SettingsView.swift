@@ -34,15 +34,19 @@ struct SettingsView: View {
     }
 }
 
+/// 전역 배너(RootView 오버레이): 사유 한 줄 + "자세히" → 정지된 방 목록(HaltedRoomsView: 안내·보고·다시 참여 준비).
 struct HaltedBanner: View {
     let reason: String
+    @State private var showDetails = false
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(Strings.haltedTitle).font(.headline)
             Text(Strings.haltedBody(reason)).font(.footnote)
+            Button(Strings.haltedDetails) { showDetails = true }.font(.footnote.bold())
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.red.opacity(0.15))
+        .sheet(isPresented: $showDetails) { HaltedRoomsView() }
     }
 }
