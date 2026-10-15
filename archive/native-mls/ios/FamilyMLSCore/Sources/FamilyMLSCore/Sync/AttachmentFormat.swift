@@ -8,8 +8,8 @@
 import Foundation
 
 public enum AttachmentFormat {
-    /// 파사드 `MAX_ATTACHMENT`(openmls-browser lib.rs)·웹 `MAX_ATTACHMENT` 과 동일.
-    public static let maxBytes = 262_144
+    /// 파사드 `MAX_ATTACHMENT`(openmls-browser lib.rs)·웹 `MAX_ATTACHMENT` 과 동일 — #364 결정 B: 5 MiB(2026-10-15 이전 256 KiB).
+    public static let maxBytes = 5 * 1024 * 1024
     public static let clientIdPrefix = "file-v1-"
     public static let fallbackMime = "application/octet-stream"
 

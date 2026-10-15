@@ -50,8 +50,8 @@ final class AttachmentTests: XCTestCase {
         let (model, _) = await readyModel()
         guard case .sent(let clientId, _, _)? = await model.send(room: "family", text: "hi") else { return XCTFail("\(String(describing: model.lastError))") }
         XCTAssertFalse(AttachmentFormat.isAttachment(clientId: clientId))
-        XCTAssertEqual(model.messages(room: "family").first?.kind, .text)
-        XCTAssertEqual(model.messages(room: "family").first?.body, "hi")
+        XCTAssertEqual(model.messages(room: "family").first?.record.kind, .text)
+        XCTAssertEqual(model.messages(room: "family").first?.record.body, "hi")
     }
 
     static let jpegHead = Data([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00])
@@ -64,11 +64,14 @@ final class AttachmentTests: XCTestCase {
         XCTAssertTrue(AttachmentFormat.isAttachment(clientId: clientId))
         XCTAssertNil(model.lastError)
         let mine = model.messages(room: "family")
-        XCTAssertEqual(mine.map(\.seq), [seq])
-        XCTAssertEqual(mine.first?.kind, .attachment)
-        XCTAssertEqual(mine.first?.body, "image/jpeg")
-        XCTAssertEqual(mine.first?.attachment, bytes)
-        XCTAssertEqual(mine.first?.senderDevice, "mom-iphone-a1b2c3")
+        XCTAssertEqual(mine.map(\.id), [seq])
+        XCTAssertEqual(mine.first?.record.kind, .attachment)
+        XCTAssertEqual(mine.first?.record.body, "image/jpeg")
+        XCTAssertNil(mine.first?.record.attachment, "the timeline carries heads only (#364 lazy loading)")
+        XCTAssertEqual(mine.first?.attachmentBytes, bytes.count)
+        XCTAssertEqual(model.attachment(room: "family", seq: seq), bytes, "the body is read on demand")
+        XCTAssertNil(model.attachment(room: "family", seq: seq + 99))
+        XCTAssertEqual(mine.first?.record.senderDevice, "mom-iphone-a1b2c3")
         let page = try await relay.getEvents(room: "family", device: "mom-iphone-a1b2c3", after: 0, limit: 10, ack: nil)
         XCTAssertEqual(page.events.map(\.clientId), [clientId], "the relay row carries the file-v1 id")
     }
@@ -97,10 +100,12 @@ final class AttachmentTests: XCTestCase {
     }
 
     func testPreparePhotoShrinksALargeImageUnderTheLimitAsJPEG() throws {
+        // 한도를 작게 주입해(5 MiB 를 넘는 픽스처는 CI 에서 너무 무겁다) 축소 루프 자체를 검증한다.
+        let limit = 200 * 1024
         let raw = try XCTUnwrap(bigImage(side: 2400).pngData())
-        XCTAssertGreaterThan(raw.count, AttachmentFormat.maxBytes, "fixture must exceed the limit")
-        let prepared = try XCTUnwrap(AttachmentPreparer.preparePhoto(raw))
-        XCTAssertLessThanOrEqual(prepared.count, AttachmentFormat.maxBytes)
+        XCTAssertGreaterThan(raw.count, limit, "fixture must exceed the limit")
+        let prepared = try XCTUnwrap(AttachmentPreparer.preparePhoto(raw, limit: limit))
+        XCTAssertLessThanOrEqual(prepared.count, limit)
         XCTAssertEqual(AttachmentFormat.sniffMime(prepared), "image/jpeg")
         XCTAssertNotNil(UIImage(data: prepared))
     }
@@ -111,7 +116,7 @@ final class AttachmentTests: XCTestCase {
     }
 
     func testPreparePhotoRejectsGarbage() {
-        XCTAssertNil(AttachmentPreparer.preparePhoto(Data(repeating: 0x42, count: AttachmentFormat.maxBytes + 10)))
+        XCTAssertNil(AttachmentPreparer.preparePhoto(Data(repeating: 0x42, count: 1024), limit: 100), "not an image and over the limit")
     }
 
     func testPrepareFileOnlyChecksTheLimit() {

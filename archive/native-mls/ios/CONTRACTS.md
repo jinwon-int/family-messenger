@@ -84,6 +84,11 @@ abort-before-write · abort-after-tmp-before-rename · abort-after-rename-before
 `removeAllState(timeout:)` 는 "이 기기 지우기"(§9-5) 전용 — 디스크의 모든 방(`_identity` 포함)을 방마다 잠금을 잡고 지운다. 잠금 실패는 거기서 throw(부분 삭제, 재호출 멱등).
 같은 용도의 `FileSQLiteStore.wipe()` 는 네 테이블의 행만 지우고 연결·스키마는 유지한다(열린 핸들이 있어 파일 unlink 는 쓰지 않는다).
 
+### 4.1 선택 계약 — 첨부 지연 로딩 `AttachmentLoading` (2026-10-15 추가, `Store/AttachmentLoading.swift`, #364)
+`MessageStore` 는 그대로. 첨부 상한이 5 MiB 가 되면서 타임라인 500행을 BLOB 포함으로 읽을 수 없어, `messageHeads(room:after:limit:)`(BLOB 없이 `attachmentBytes` 만)
++ `attachment(room:seq:)`(본체 한 건)를 별도 프로토콜로 두고 `FileSQLiteStore` 가 채택한다(`messageStore as? AttachmentLoading`). 미채택이면 종전 읽기.
+`RoomSyncEngine.Configuration.maxApplicationBytes`(기본 nil) 는 프로세스 예산 보호: 넘는 application 이벤트 **앞에서** 페이지를 끝내고(`SyncPass.deferredSeq`, 커서 불변) 제한 없는 호출자(앱)가 처리한다. NSE 기본 1 MiB.
+
 ## 4. 메시지 보관 — `MessageStore` / `MessageSchema.ddl` (`Store/MessageRecord.swift`)
 DDL v1 동결(`schema_version`). `messages(room, seq)` PK, `rooms.halted_reason`, `outbox(room, client_id)` PK + `sha256`, `cursors`. L1 이 SQLite(`sqlite3` C API, 의존 0)로 구현하고 `MessageStore`·`OutboxStore`·`CursorStore` 를 **한 DB** 에 둔다(Data Protection 동일).
 

@@ -98,6 +98,40 @@ final class SyncAttachmentTests: XCTestCase {
         XCTAssertFalse(AttachmentFormat.isAttachment(clientId: clientId))
     }
 
+    // MARK: NSE 보호 — 큰 application 은 커서 앞에서 멈춘다(#364)
+
+    func testApplicationOverTheProcessCapIsDeferredAndLeftForAnUncappedCaller() async throws {
+        let h = try joinedHarness()
+        let small = h.relay.inject(device: alice, kind: .application, bytes: ciphertext(from: alice, bytes: Data("hi".utf8)))
+        let bigBytes = ciphertext(from: alice, bytes: Data(repeating: 0xAA, count: 4_000))
+        let big = h.relay.inject(device: alice, kind: .application, bytes: bigBytes, clientId: AttachmentFormat.newClientId())
+        let after = h.relay.inject(device: alice, kind: .application, bytes: ciphertext(from: alice, bytes: Data("later".utf8)))
+
+        h.configuration.maxApplicationBytes = 1_000     // NSE 와 같은 캡
+        let capped = try h.restart()
+        let passes = try await capped.syncAll()
+        XCTAssertEqual(passes.count, 1, "syncAll stops at the deferral")
+        XCTAssertEqual(passes[0].deferredSeq, big)
+        XCTAssertEqual(passes[0].inserted, [small], "everything before the big event is processed")
+        XCTAssertEqual(passes[0].cursor, small, "the cursor stays right before the deferred event")
+        XCTAssertFalse(passes[0].hasMore)
+        XCTAssertEqual(try h.cursors.cursor(room: h.room), small)
+        XCTAssertEqual(try h.messages.messages(room: h.room, after: 0, limit: 10).map(\.seq), [small])
+        // 같은 캡으로 다시 돌려도 같은 자리에서 멈춘다(무한 루프·중복 없음).
+        let again = try await capped.syncOnce()
+        XCTAssertEqual(again.deferredSeq, big)
+        XCTAssertEqual(again.inserted, [])
+
+        h.configuration.maxApplicationBytes = nil       // 앱: 제한 없음 → 이어서 처리
+        let app = try h.restart()
+        let rest = try await app.syncAll()
+        XCTAssertEqual(rest.flatMap(\.inserted), [big, after])
+        XCTAssertEqual(try h.cursors.cursor(room: h.room), after)
+        let stored = try h.messages.messages(room: h.room, after: 0, limit: 10)
+        XCTAssertEqual(stored.map(\.seq), [small, big, after])
+        XCTAssertEqual(stored[1].kind, .attachment)
+    }
+
     // MARK: 수신
 
     func testIncomingFileV1EventIsStoredAsAttachmentWithSniffedMime() async throws {

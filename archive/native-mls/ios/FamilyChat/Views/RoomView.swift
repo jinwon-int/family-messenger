@@ -8,7 +8,7 @@ struct RoomView: View {
     @EnvironmentObject private var model: AppModel
     let room: RoomID
     @State private var draft = ""
-    @State private var messages: [MessageRecord] = []
+    @State private var messages: [AppModel.TimelineItem] = []
     @State private var showInvite = false
     @State private var pickedPhoto: PhotosPickerItem?
     @State private var showFileImporter = false
@@ -18,8 +18,8 @@ struct RoomView: View {
         VStack(spacing: 0) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(messages, id: \.seq) { message in
-                        MessageRow(message: message, mine: message.senderDevice == model.deviceId)
+                    ForEach(messages) { item in
+                        MessageRow(item: item, mine: item.record.senderDevice == model.deviceId)
                     }
                 }
                 .padding()
@@ -108,8 +108,9 @@ struct RoomView: View {
 }
 
 struct MessageRow: View {
-    let message: MessageRecord
+    let item: AppModel.TimelineItem
     let mine: Bool
+    private var message: MessageRecord { item.record }
 
     var body: some View {
         HStack {
@@ -131,7 +132,7 @@ struct MessageRow: View {
     @ViewBuilder private var content: some View {
         switch message.kind {
         case .attachment:
-            AttachmentBubble(message: message)
+            AttachmentBubble(item: item)
         case .undecryptable:
             Text(Strings.undecryptable)
         default:
@@ -140,25 +141,34 @@ struct MessageRow: View {
     }
 }
 
-/// 첨부 말풍선: 이미지는 미리보기(긴 변 ≤220pt), 그 밖은 종류·크기. 둘 다 저장·공유(ShareLink → 임시 파일).
+/// 첨부 말풍선: 본체는 보일 때 한 번 읽는다(#364 지연 로딩). 이미지는 미리보기(긴 변 ≤220pt), 그 밖은 종류·크기. 둘 다 저장·공유(ShareLink → 임시 파일).
 struct AttachmentBubble: View {
-    let message: MessageRecord
+    @EnvironmentObject private var model: AppModel
+    let item: AppModel.TimelineItem
+    @State private var data: Data?
+
+    private var message: MessageRecord { item.record }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let data = message.attachment, AttachmentFormat.isImage(mime: message.body), let image = UIImage(data: data) {
+            if let data, AttachmentFormat.isImage(mime: message.body), let image = UIImage(data: data) {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
                     .frame(maxWidth: 220, maxHeight: 220)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .accessibilityLabel(Strings.attachmentImage)
+            } else if data == nil {
+                Text(Strings.attachmentLoading(item.attachmentBytes)).font(.footnote)
             } else {
-                Text(Strings.attachmentFile(message.attachment?.count ?? 0, message.body)).font(.footnote)
+                Text(Strings.attachmentFile(item.attachmentBytes, message.body)).font(.footnote)
             }
-            if let url = AttachmentExport.temporaryURL(for: message) {
+            if let data, let url = AttachmentExport.temporaryURL(for: message, bytes: data) {
                 ShareLink(item: url) { Label(Strings.attachmentSave, systemImage: "square.and.arrow.up") }.font(.caption)
             }
+        }
+        .task(id: message.seq) {
+            if data == nil { data = model.attachment(room: message.room, seq: message.seq) }
         }
     }
 }

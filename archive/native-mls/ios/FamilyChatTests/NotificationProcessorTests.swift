@@ -194,6 +194,17 @@ final class NotificationProcessorTests: XCTestCase {
         XCTAssertTrue(results[0])
     }
 
+    /// #364: NSE 캡(1 MiB)을 넘는 application 은 복호화하지 않고 대체 알림 — 커서는 그 앞에 머물러 앱이 처리한다.
+    func testLargeAttachmentIsDeferredToTheAppWithAFallbackNotification() async throws {
+        let big = PageTransport.application(seq: 7, from: "alice-pc", bytes: Data(repeating: 1, count: (1 << 20) + 1))
+        let env = environment(transport: PageTransport(events: [big]))
+        let processor = NotificationProcessor(env)
+        let result = await processor.handle(userInfo: ["room": room, "seq": 7])
+        XCTAssertEqual(result, .fallback("deferred_large_attachment"))
+        XCTAssertEqual(try env.cursors.cursor(room: room), 0, "nothing past the big event is acked by the NSE")
+        XCTAssertEqual(try env.messages.messages(room: room, after: 0, limit: 10), [], "not decrypted here")
+    }
+
     /// 저장된 행 → 알림 문구: 제목 = actor(봇 🤖), 본문 = 텍스트/「사진」/「파일」, 해독 불가 = 대체.
     func testContentMapping() {
         var env = environment()

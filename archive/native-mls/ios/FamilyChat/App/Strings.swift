@@ -47,7 +47,7 @@ enum Strings {
     static let notJoined = "아직 이 대화방에 참여하지 않았습니다. 초대를 기다려 주세요."
     /// 첨부 한도(AttachmentFormat.maxBytes) 초과 — AppModel 이 쓰므로 여기(NSE 공유 파일)에 둔다.
     static func attachmentTooLarge(_ bytes: Int) -> String {
-        "첨부는 256 KiB(262,144바이트) 이하여야 합니다(지금 \(bytes.formatted())바이트). 사진은 자동으로 줄이지만 파일은 줄일 수 없습니다."
+        "첨부는 5 MiB(5,242,880바이트) 이하여야 합니다(지금 \(bytes.formatted())바이트). 사진은 자동으로 줄이지만 파일은 줄일 수 없습니다."
     }
 
     // 참여 요청(JoinRequestView, §12-E) — 기본 대화방 ID 는 빌드 설정 FC_DEFAULT_ROOM(AppModel.defaultRoom)
