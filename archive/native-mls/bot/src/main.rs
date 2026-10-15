@@ -36,6 +36,16 @@ fn main() -> ExitCode {
         Some(path) => (Some(std::path::PathBuf::from(path)), strip_flag(&args, "--state-file")),
         None => (None, args),
     };
+    // Steward (#372 P2): `--identity-file <path>` (signer only) + `--rooms-dir <dir>`
+    // (one `<room>.state` per room, `cmd/`+`out/` command queue).
+    let (identity_file, args) = match extract_flag(&args, "--identity-file") {
+        Some(path) => (Some(std::path::PathBuf::from(path)), strip_flag(&args, "--identity-file")),
+        None => (std::env::var("NATIVE_MLS_BOT_IDENTITY_FILE").ok().filter(|v| !v.trim().is_empty()).map(std::path::PathBuf::from), args),
+    };
+    let (rooms_dir, args) = match extract_flag(&args, "--rooms-dir") {
+        Some(path) => (Some(std::path::PathBuf::from(path)), strip_flag(&args, "--rooms-dir")),
+        None => (std::env::var("NATIVE_MLS_BOT_ROOMS_DIR").ok().filter(|v| !v.trim().is_empty()).map(std::path::PathBuf::from), args),
+    };
     // Agent mode (#354 A1): `--responder-argv-json '["python3","…/fleet_worker.py",…]'`
     // (or env NATIVE_MLS_BOT_RESPONDER_ARGV_JSON) replaces the echo with a
     // ccc-node turn per message; `--owner-actor` (env NATIVE_MLS_BOT_OWNER_ACTOR,
@@ -83,6 +93,34 @@ fn main() -> ExitCode {
     }
     let result = match args.as_slice() {
         [base, cmd] if cmd == "health" => cmd_health(base, &access),
+        // #372 P2 — steward: one identity, many rooms, operator commands via the queue.
+        [base, cmd, device] if cmd == "steward" => match (identity_file.clone(), rooms_dir.clone()) {
+            (Some(identity_file), Some(rooms_dir)) => api::require_identifier("device must match [A-Za-z0-9_-]{1,64}", device)
+                .and_then(|()| session::run_steward(session::StewardOptions {
+                    base: base.to_string(), device: device.to_string(), access: access.clone(),
+                    identity_file, rooms_dir, responder: responder.clone(),
+                })),
+            _ => Err(api::BotError::Local("steward needs --identity-file and --rooms-dir")),
+        },
+        // One-shot migration: split the signer out of a single-room state file.
+        [cmd, room, device] if cmd == "extract-identity" => match (state_file.clone(), identity_file.clone()) {
+            (Some(state_file), Some(identity_file)) => api::require_identifier("room must match [A-Za-z0-9_-]{1,64}", room)
+                .and_then(|()| api::require_identifier("device must match [A-Za-z0-9_-]{1,64}", device))
+                .and_then(|()| session::extract_identity(&state_file, room, device, &identity_file)),
+            _ => Err(api::BotError::Local("extract-identity needs --state-file and --identity-file")),
+        },
+        // Operator commands against a running steward (same --rooms-dir).
+        [cmd, op, room, rest @ ..] if cmd == "room" && rest.len() <= 1 => match rooms_dir.clone() {
+            Some(rooms_dir) => {
+                let arg = rest.first().cloned().unwrap_or_default();
+                let command = session::Command { op: op.to_string(), room: room.to_string(), arg };
+                session::request(&rooms_dir, &command, std::time::Duration::from_secs(90)).and_then(|outcome| {
+                    println!("{outcome}");
+                    if outcome.get("ok").and_then(|v| v.as_bool()) == Some(true) { Ok(()) } else { Err(api::BotError::Local("command failed")) }
+                })
+            }
+            None => Err(api::BotError::Local("room commands need --rooms-dir")),
+        },
         [base, cmd, room, device] if cmd == "publish" => cmd_publish(base, room, device, &access),
         [base, cmd, room, device, consumer] if cmd == "consume" => cmd_consume(base, room, device, consumer, &access),
         [base, cmd, room, device] if cmd == "session" => {
@@ -109,6 +147,9 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!("usage: native-mls-bot <base-url> health");
+            eprintln!("       native-mls-bot <base-url> steward <device> --identity-file <path> --rooms-dir <dir>   (#372 P2)");
+            eprintln!("       native-mls-bot extract-identity <room> <device> --state-file <path> --identity-file <path>");
+            eprintln!("       native-mls-bot room <create|join|invite|remove|members|mode|status> <room> [<device>|agent|silent] --rooms-dir <dir>");
             eprintln!("       native-mls-bot <base-url> publish <room> <device>");
             eprintln!("       native-mls-bot <base-url> consume <room> <device> <consumer>");
             eprintln!("       native-mls-bot <base-url> session <room> <device> [<watch-room> --watch]");
