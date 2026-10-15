@@ -81,6 +81,8 @@ abort-before-write · abort-after-tmp-before-rename · abort-after-rename-before
 `removeState(room:timeout:)` 를 별도 프로토콜로 두고 `FileStateStore` 만 채택한다(`stateStore as? RoomStateRemoving` 로 선택 적합).
 규칙: 방 flock 안에서 `<room>.state(.tmp)`·`<room>.gen(.tmp)` 삭제 → 디렉터리 fsync, `.lock` 앵커는 유지, 멱등, 그 뒤 `generation == 0`·`load() == nil`.
 `_identity` 슬롯은 호출자(AppModel)가 거부한다. 거부된 commit 을 받아들이는 경로는 어디에도 없다.
+`removeAllState(timeout:)` 는 "이 기기 지우기"(§9-5) 전용 — 디스크의 모든 방(`_identity` 포함)을 방마다 잠금을 잡고 지운다. 잠금 실패는 거기서 throw(부분 삭제, 재호출 멱등).
+같은 용도의 `FileSQLiteStore.wipe()` 는 네 테이블의 행만 지우고 연결·스키마는 유지한다(열린 핸들이 있어 파일 unlink 는 쓰지 않는다).
 
 ## 4. 메시지 보관 — `MessageStore` / `MessageSchema.ddl` (`Store/MessageRecord.swift`)
 DDL v1 동결(`schema_version`). `messages(room, seq)` PK, `rooms.halted_reason`, `outbox(room, client_id)` PK + `sha256`, `cursors`. L1 이 SQLite(`sqlite3` C API, 의존 0)로 구현하고 `MessageStore`·`OutboxStore`·`CursorStore` 를 **한 DB** 에 둔다(Data Protection 동일).

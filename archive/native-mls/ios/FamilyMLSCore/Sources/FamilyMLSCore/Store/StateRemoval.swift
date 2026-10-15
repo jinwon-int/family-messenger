@@ -12,6 +12,9 @@ public protocol RoomStateRemoving: AnyObject {
     /// 한 방의 MLS 상태(state·generation 미러)를 지운다. 잠금은 구현이 잡는다. 상태가 없어도 성공(멱등).
     /// `generation(room:)` 은 그 뒤 0 이다 — 다음 트랜잭션의 `load()` 는 nil 을 돌려주고 시드(identity)에서 다시 시작한다.
     func removeState(room: RoomID, timeout: TimeInterval) throws
+    /// 이 저장소의 **모든** 방 상태(`_identity` 슬롯 포함)를 지운다 — "이 기기 지우기"(§9-5). 방마다 잠금을 잡고 지운다.
+    /// 하나라도 잠금을 못 얻으면 거기서 throw 하고 나머지는 그대로 둔다(부분 삭제 = 호출자가 다시 부른다, 멱등).
+    func removeAllState(timeout: TimeInterval) throws
 }
 
 extension FileStateStore: RoomStateRemoving {
@@ -27,5 +30,22 @@ extension FileStateStore: RoomStateRemoving {
         }
         _ = try FileSys.fsyncDirectory(path: directory.path)
         // `.lock` 앵커는 남긴다(0바이트, 비밀 없음) — 다른 프로세스가 같은 inode 를 잡고 기다리는 중일 수 있다.
+    }
+
+    public func removeAllState(timeout: TimeInterval) throws {
+        for room in try roomsOnDisk() { try removeState(room: room, timeout: timeout) }
+    }
+
+    /// 디렉터리의 `<room>.state|.gen|.state.tmp|.gen.tmp` 에서 방 이름을 모은다(`.lock` 만 남은 방은 지울 것이 없다).
+    func roomsOnDisk() throws -> [RoomID] {
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        var rooms = Set<RoomID>()
+        for file in names {
+            for suffix in [".state.tmp", ".gen.tmp", ".state", ".gen"] where file.hasSuffix(suffix) {
+                rooms.insert(String(file.dropLast(suffix.count)))
+                break
+            }
+        }
+        return rooms.sorted()
     }
 }
