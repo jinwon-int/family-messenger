@@ -371,6 +371,48 @@ class HarnessOptionsTests(unittest.TestCase):
                 harness_options(self.args(**bad),env)
 
 
+class SocketOutputTests(unittest.IsolatedAsyncioTestCase):
+    """systemd socket activation: stdin and stdout are one socket (#354 A4, #107/#109)."""
+
+    async def test_socket_stdout_survives_a_late_inbound_frame(self):
+        import os
+        import socket
+        from fleet_worker import build_output
+        peer,ours=socket.socketpair()
+        try:
+            loop=asyncio.get_running_loop()
+            # Mirror main(): the read side is an asyncio pipe reader on the SAME socket fd.
+            reader=asyncio.StreamReader(limit=65_537)
+            protocol=asyncio.StreamReaderProtocol(reader)
+            await loop.connect_read_pipe(lambda:protocol,os.fdopen(os.dup(ours.fileno()),'rb',buffering=0))
+            write,abort,close=await build_output(loop,ours.fileno())
+            await asyncio.sleep(.05)                     # sink registered before any traffic
+            peer.sendall(b'{"type":"turn","turn_id":"late"}\n')   # the late frame that tripped the pipe sink
+            self.assertEqual(await reader.readline(),b'{"type":"turn","turn_id":"late"}\n')
+            await write(b'{"type":"session"}\n')       # used to raise ConnectionResetError('Connection lost')
+            await write(b'{"type":"result"}\n')
+            peer.settimeout(2)
+            self.assertEqual(peer.recv(64),b'{"type":"session"}\n{"type":"result"}\n')
+            close()
+        finally:
+            peer.close();ours.close()
+
+    async def test_pipe_stdout_keeps_the_pipe_transport(self):
+        import os
+        from fleet_worker import build_output
+        r,w=os.pipe()
+        try:
+            loop=asyncio.get_running_loop()
+            write,abort,close=await build_output(loop,w)
+            await write(b'ok\n')
+            close();await asyncio.sleep(.05)
+            self.assertEqual(os.read(r,16),b'ok\n')
+        finally:
+            os.close(r)
+            try:os.close(w)
+            except OSError:pass
+
+
 class PipeTests(unittest.TestCase):
     def test_unread_stdout_does_not_pin_process_after_timeout_and_eof(self):
         fixture=Path(__file__).parent/'fixtures/worker_backpressure.py'

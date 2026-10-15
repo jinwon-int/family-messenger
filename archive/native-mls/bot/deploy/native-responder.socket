@@ -11,8 +11,8 @@ SocketUser=native-relay-bot
 SocketGroup=native-relay-bot
 SocketMode=0600
 DirectoryMode=0755
-# 한 번에 봇 1개만 — 두 번째 연결은 거부(봇이 재시작하면 옛 연결은 EOF 로 닫힌다).
-MaxConnections=1
+# 봇 재시작 중에는 옛 연결이 아직 닫히지 않아 새 연결과 잠시 겹친다(실측: 1 이면 "Too many incoming connections" 로 새 봇이 거부됨 → exit 1 → 10초 뒤 복구). 2 로 겹침을 허용한다.
+MaxConnections=2
 
 [Install]
 WantedBy=sockets.target
