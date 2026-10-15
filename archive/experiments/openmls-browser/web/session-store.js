@@ -24,14 +24,23 @@
 // with index = entry_index(auth key, room, entry key), value {e, t} where e seals
 // u32 LE key_len ‖ entry key ‖ value (additional data: domain, room, index) and
 // t = entry_tag(auth key, room, index, e).
-export const MAX_BINARY = 2 * 1024 * 1024, MAX_LEDGER = 256, ACKED = 256, TAG = 32;
+export const MAX_LEDGER = 256, ACKED = 256, TAG = 32;
 // MAX_WIRE mirrors the Rust facade (lib.rs: 5 MiB attachment (#364) + 4 KiB MLS
 // framing). Review 2 L: the ledger kept a 64 KiB cap after the facade was
 // raised for M5 attachments, so a full-size attachment at the head of the
 // inbox threw in input() before classifyDecryptFailure and pinned the durable
-// cursor for good. One operation's input+output now fit; MAX_BINARY (2 MiB)
-// still bounds how many un-acked attachments a ledger may hold (~3).
+// cursor for good.
 export const MAX_WIRE = 5 * 1024 * 1024 + 4096;   // #364: 5 MiB attachment + 4 KiB MLS slack (lib.rs MAX_WIRE)
+// MAX_BINARY bounds the un-acked ledger: Σ(input + output) over its items. One
+// decrypt/encrypt of a full-size attachment carries both the ciphertext and the
+// plaintext frame (≈ 2 × MAX_WIRE), so the bound must hold at least one such
+// operation. It was left at 2 MiB when MAX_WIRE went to 5 MiB (#364): a 1.27 MB
+// photo (seq 127, 2026-10-15) then failed validMeta in persist() — the worker
+// answered "operation rejected", relay-app's quiet poll acked past it, and the
+// message was silently lost. Callers ack each operation right after it, so the
+// ledger normally holds one item; the 1 MiB slack covers the §3.6 binding and
+// decrypt-format framing around it.
+export const MAX_BINARY = 2 * MAX_WIRE + 1024 * 1024;   // ≈ 11 MiB: one full-size attachment operation + slack
 export const FAULTS = ['', 'abort-before-write', 'abort-after-write', 'lost-response'];
 export const fail = () => { throw new Error('rejected'); };
 export const exact = (value, keys) => value && Object.getPrototypeOf(value) === Object.prototype &&

@@ -223,7 +223,19 @@ async function sync({quiet = false} = {}) {
       }
       // The durable worker binds the room itself (bindDecrypt from its own init), so
       // the ciphertext goes in raw — `sealed()` is the memory-lane framing only.
-      const out = await op('decrypt', data, S.wcursor + 1);
+      let out;
+      try { out = await op('decrypt', data, S.wcursor + 1); }
+      catch (error) {
+        // A worker refusal ("operation 거부": ledger capacity, store/session
+        // inconsistency, timeout) is not a facade verdict on the message — the
+        // durable store rolled back, so the ciphertext is still readable later.
+        // Keep relaySeq at the last applied event: the quiet poll must not ack
+        // past this seq (2026-10-15 seq 127: a 1.27 MB photo was acked away
+        // unseen). Say so once per seq, even on a quiet poll, and retry next sync.
+        S.relaySeq = seqBefore;
+        if (S.failedSeq !== ev.seq) { S.failedSeq = ev.seq; log(`해독 실패(seq ${ev.seq}, ${ev.device}): ${error.message} — 건너뛰지 않고 다음 동기화에서 다시 시도`); }
+        break;
+      }
       if (out.rejected === true) { log(`해독 거부 → 건너뜀(seq ${ev.seq}, ${ev.device})`); continue; }
       if (isAttachment(ev.client_id)) showAttachment(out.sender ?? ev.device, new Uint8Array(out.output), ev.seq);
       else showMessage(out.sender ?? ev.device, out.client, decoder.decode(new Uint8Array(out.output)), ev.seq, out.replay);
