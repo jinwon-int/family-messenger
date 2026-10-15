@@ -9,15 +9,15 @@ use wasm_bindgen::prelude::*;
 const SUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 /// Longest wire input/output (review M4-era bound). M5 (#177 §4): raised from
 /// 64 KiB so the ciphertext of a full-size attachment crosses it in one MLS
-/// application message — measured: 262144-byte plaintext = 262350-byte
-/// ciphertext (see `attachment_256kib_rounds_trip`), so 256 KiB + 4 KiB of MLS
-/// framing headroom. The relay's per-room 64 MiB cap stays the real bound.
-/// Measured (`attachment_256kib_rounds_trip`): 262144-byte plaintext →
-/// 262350-byte ciphertext.
-const MAX_WIRE: usize = 262144 + 4096;
-/// Longest encrypt plaintext (M5): an attachment up to 256 KiB rides as the
-/// MLS application payload directly — no chunking layer.
-pub const MAX_ATTACHMENT: usize = 262144;
+/// application message — the MLS overhead is a constant few hundred bytes
+/// (measured 206 B at 256 KiB, re-measured by `attachment_max_bound_rounds_trip`
+/// at the current bound), so `MAX_ATTACHMENT + 4 KiB` of framing headroom
+/// covers it. The relay's per-room / per-device byte caps stay the real bound.
+const MAX_WIRE: usize = MAX_ATTACHMENT + 4096;
+/// Longest encrypt plaintext (M5): an attachment rides as the MLS application
+/// payload directly — no chunking layer. #364 (owner decision B, 2026-10-15):
+/// 5 MiB per attachment (was 256 KiB).
+pub const MAX_ATTACHMENT: usize = 5 * 1024 * 1024;
 /// Longest identity label (`valid_identity`); also the bound every length-prefixed
 /// identity field is checked against *before* any offset arithmetic (review M3:
 /// `4 + len` must not wrap on wasm32, where `usize` is 32 bits).

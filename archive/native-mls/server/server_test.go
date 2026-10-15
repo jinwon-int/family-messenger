@@ -292,7 +292,7 @@ func TestPostEventRoomBytesCapReturns413(t *testing.T) {
 }
 
 // TestPostEventOversizedBodyReturns413 pins the transport guard (M4): a body
-// above 1 MiB never reaches the store and answers 413 body_too_large.
+// above maxBodyBytes (8 MiB, #364) never reaches the store and answers 413 body_too_large.
 func TestPostEventOversizedBodyReturns413(t *testing.T) {
 	_, srv := newTestRelay(t, testPolicy())
 

@@ -35,7 +35,7 @@ test('a full 256 KiB file fits in one raw application payload', async () => {
 
 test('oversize or changed files never consume an encryption step or POST', async () => {
   const f = fixture(), box = attachmentOutbox(f.options);
-  await assert.rejects(box.send({size: MAX_ATTACHMENT + 1}, 0), /256 KiB/);
+  await assert.rejects(box.send({size: MAX_ATTACHMENT + 1}, 0), /5 MiB/);
   await assert.rejects(box.send({size: 1, arrayBuffer: async () => new ArrayBuffer(2)}, 0), /크기/);
   assert.equal(f.encrypted(), 0); assert.equal(f.posts.length, 0);
 });
