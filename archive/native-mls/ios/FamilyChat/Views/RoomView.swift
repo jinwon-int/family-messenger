@@ -11,6 +11,7 @@ struct RoomView: View {
     @State private var messages: [MessageRecord] = []
     @State private var showInvite = false
     @State private var pickedPhoto: PhotosPickerItem?
+    @State private var showPhotoPicker = false
     @State private var showFileImporter = false
     @State private var attachBusy = false
 
@@ -36,8 +37,10 @@ struct RoomView: View {
                 Text(Strings.attachPreparing).font(.footnote).foregroundStyle(.secondary).padding(.horizontal)
             }
             HStack {
+                // `PhotosPicker` 를 Menu 항목으로 두면 iOS 가 선택 창을 띄우지 않는다(build 13 실기기: 파일은 뜨고 사진은 안 뜸).
+                // 메뉴는 플래그만 올리고, 선택 창은 뷰에 붙인 `.photosPicker(isPresented:)` 수정자가 띄운다.
                 Menu {
-                    PhotosPicker(selection: $pickedPhoto, matching: .images) { Label(Strings.attachPhoto, systemImage: "photo") }
+                    Button { showPhotoPicker = true } label: { Label(Strings.attachPhoto, systemImage: "photo") }
                     Button { showFileImporter = true } label: { Label(Strings.attachFile, systemImage: "doc") }
                 } label: { Image(systemName: "paperclip") }
                     .accessibilityLabel(Strings.attachMenu)
@@ -65,6 +68,7 @@ struct RoomView: View {
             }
         }
         .sheet(isPresented: $showInvite) { InviteView(room: room).environmentObject(model) }
+        .photosPicker(isPresented: $showPhotoPicker, selection: $pickedPhoto, matching: .images)
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.data]) { result in
             Task { await sendFile(result) }
         }
