@@ -48,6 +48,41 @@ pub(crate) fn load(bytes: &[u8], identity: &str) -> Result<Device, Rejected> {
     restore(identity, &state.public_key, group_id, state.version, entries)
 }
 
+/// Identity-only snapshot (#372 P1): the same `Snapshot` format with
+/// `group_id: None` and a store that holds nothing but the signer. A host that
+/// wants one device (one signing key, one policy-chain enrollment) in several
+/// rooms keeps this file once and derives a group-less `Device` per room from
+/// it (`load_identity`); the per-room `save` snapshots stay as they are.
+pub(crate) fn save_identity(device: &Device, identity: &str) -> Result<Vec<u8>, Rejected> {
+    if !valid_identity(identity) || device.credential.credential != BasicCredential::new(identity.as_bytes().to_vec()).into() {
+        return Err(rejected(()));
+    }
+    let provider = Provider::default();
+    device.signer.store(provider.storage()).map_err(rejected)?;
+    let entries = provider.storage().entries();
+    let state = Snapshot {
+        version: migrate::FORMAT_CURRENT, identity: identity.into(), public_key: device.signer.public().into(),
+        group_id: None, entries,
+    };
+    let bytes = serde_json::to_vec(&state).map_err(rejected)?;
+    bounded(&bytes, MAX_STATE)?;
+    Ok(bytes)
+}
+
+/// Rebuild a group-less device from `save_identity` bytes. A full `save`
+/// snapshot (one that carries a group) is refused: the caller asked for an
+/// identity, and silently importing a room's state would alias two rooms onto
+/// one group.
+pub(crate) fn load_identity(bytes: &[u8], identity: &str) -> Result<Device, Rejected> {
+    bounded(bytes, MAX_STATE)?;
+    let mut state: Snapshot = serde_json::from_slice(bytes).map_err(rejected)?;
+    if state.identity != identity || state.group_id.is_some() { return Err(rejected(())); }
+    let entries = std::mem::take(&mut state.entries);
+    let device = restore(identity, &state.public_key, None, state.version, entries)?;
+    if device.group.is_some() { return Err(rejected(())); }
+    Ok(device)
+}
+
 #[cfg(test)]
 pub(crate) fn load_for_test(bytes: &[u8], identity: &str) -> Result<Device, Rejected> { load(bytes, identity) }
 

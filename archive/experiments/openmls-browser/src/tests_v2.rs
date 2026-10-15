@@ -1576,3 +1576,51 @@ fn durable_lane_roster_fingerprint_and_sign_approval() {
     assert!(alice.session.apply("sign_approval", br#"{"action":"approve-device"}"#).is_err(), "malformed args rejected, device usable");
     let _ = bob.step("members", &[]);
 }
+
+/// #372 P1: one enrollment (signing key) → one group-less `Device` per room.
+/// The identity snapshot never carries a group; a full state snapshot is not
+/// accepted as an identity; a foreign identity is refused.
+#[test]
+fn identity_snapshot_shares_one_signer_across_rooms() {
+    let mut a = Device::new("bot-a").unwrap();
+    let identity = a.export_identity("bot-a").unwrap();
+    assert!(a.export_identity("bot-b").is_err(), "credential is bound to the identity");
+    assert!(Device::new_with_identity("bot-b", &identity).is_err(), "foreign identity refused");
+
+    let mut room1 = Device::new_with_identity("bot-a", &identity).unwrap();
+    let mut room2 = Device::new_with_identity("bot-a", &identity).unwrap();
+    assert!(room1.group.is_none() && room2.group.is_none());
+    assert_eq!(room1.public_key(), a.public_key());
+    assert_eq!(room2.public_key(), a.public_key());
+
+    // Each derived device founds its own group and invites its own peer.
+    let mut b = Device::new("b").unwrap();
+    let mut c = Device::new("c").unwrap();
+    room1.create().unwrap();
+    let kp = b.key_package().unwrap();
+    b.join(&room1.invite(&kp).unwrap()).unwrap();
+    room2.create().unwrap();
+    let kp = c.key_package().unwrap();
+    c.join(&room2.invite(&kp).unwrap()).unwrap();
+    assert_ne!(room1.group.as_ref().unwrap().group_id(), room2.group.as_ref().unwrap().group_id());
+    for peer in [&b, &c] {
+        let seen: Vec<Vec<u8>> = peer.group.as_ref().unwrap().members().map(|m| m.signature_key).collect();
+        assert!(seen.contains(&a.public_key().unwrap()), "peers see the shared signer in the roster");
+    }
+    let ct = room1.encrypt_inner(&enc("r1", "bot-a", b"hi b")).unwrap();
+    assert_eq!(plain(&b.decrypt_inner(&dec("r1", &ct)).unwrap()), b"hi b");
+    let ct = c.encrypt_inner(&enc("r2", "c", b"hi a")).unwrap();
+    assert_eq!(plain(&room2.decrypt_inner(&dec("r2", &ct)).unwrap()), b"hi a");
+
+    // A device that already holds a group still exports a group-less identity
+    // (how an existing single-room state file is split into identity + room).
+    let again = room1.export_identity("bot-a").unwrap();
+    let mut room3 = Device::new_with_identity("bot-a", &again).unwrap();
+    assert!(room3.group.is_none());
+    assert_eq!(room3.public_key(), a.public_key());
+    // The room's own state snapshot is not an identity.
+    assert!(Device::new_with_identity("bot-a", &room1.export_state("bot-a").unwrap()).is_err());
+    // …but it still round-trips as before (resume path unchanged).
+    let resumed = Device::import_state("bot-a", &room1.export_state("bot-a").unwrap()).unwrap();
+    assert_eq!(resumed.group.as_ref().unwrap().group_id(), room1.group.as_ref().unwrap().group_id());
+}
