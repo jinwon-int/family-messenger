@@ -138,10 +138,20 @@ func TestCommitActorMustMatchDevicePolicy(t *testing.T) {
 	if n := tableCount(t, r, `SELECT COUNT(*) FROM mls_members WHERE room = 'r' AND device = 'c1'`); n != 0 {
 		t.Fatalf("smuggled c1 became a member: %d", n)
 	}
-	// The honest shape is still the roster verdict.
+	// The honest shape from the founding actor is admitted (#372: a founding
+	// actor may add a device of an actor not yet on the roster) ...
 	honest := postCommitBody(t, "a1", "c4", 1, nil, membersOf([2]string{"a1", "alice"}, [2]string{"c1", "carol"}), []byte("honest-c1"))
-	if code, raw := doJSON(t, srv, "POST", "/v2/rooms/r/events", honest); code != http.StatusForbidden || errField(t, raw) != "commit_actor_not_in_roster" {
-		t.Fatalf("honest add off roster: status=%d body=%s", code, raw)
+	if code, raw := doJSON(t, srv, "POST", "/v2/rooms/r/events", honest); code != http.StatusCreated {
+		t.Fatalf("honest add by founder: status=%d body=%s", code, raw)
+	}
+	// ... while the same honest shape from carol — tracked now, but not a
+	// founding actor — is still the roster verdict.
+	honestNonFounder := postCommitBody(t, "c1", "c5", 2, nil, membersOf([2]string{"a1", "alice"}, [2]string{"c1", "carol"}, [2]string{"b1", "bob"}), []byte("honest-b1"))
+	if code, raw := doJSON(t, srv, "POST", "/v2/rooms/r/events", honestNonFounder); code != http.StatusForbidden || errField(t, raw) != "commit_actor_not_in_roster" {
+		t.Fatalf("honest add off roster by non-founder: status=%d body=%s", code, raw)
+	}
+	if n := tableCount(t, r, `SELECT COUNT(*) FROM mls_members WHERE room = 'r' AND device = 'b1'`); n != 0 {
+		t.Fatalf("non-founder's add seated b1: %d", n)
 	}
 }
 

@@ -346,13 +346,11 @@ func TestCommitMembershipLifecycle(t *testing.T) {
 		t.Fatalf("a2 commit post-membership: status=%d body=%s", code, raw)
 	}
 
-	// Adding a device of an actor off the roster is rejected even though the
-	// device is policy-active; same for an unknown device. (Epoch is 3: c9
-	// was itself a commit.)
-	addC1 := postCommitBody(t, "a1", "d1", 3, nil, membersOf([2]string{"a1", "alice"}, [2]string{"a2", "alice"}, [2]string{"b1", "bob"}, [2]string{"c1", "carol"}), []byte("add-c1"))
-	if code, raw := doJSON(t, srv, "POST", "/v2/rooms/r/events", addC1); code != http.StatusForbidden || errField(t, raw) != "commit_actor_not_in_roster" {
-		t.Fatalf("add c1: status=%d body=%s", code, raw)
-	}
+	// Adding an unknown device is rejected even under a roster actor's name.
+	// (Epoch is 3: c9 was itself a commit.) The off-roster actor verdict —
+	// and its #372 founding-actor exception — is pinned in
+	// server_founding_actors_test.go: every member here is a founding actor,
+	// so a1 adding carol's c1 would now be admitted.
 	addGhost := postCommitBody(t, "a1", "d2", 3, nil, membersOf([2]string{"a1", "alice"}, [2]string{"a2", "alice"}, [2]string{"b1", "bob"}, [2]string{"ghost", "bob"}), []byte("add-ghost"))
 	if code, raw := doJSON(t, srv, "POST", "/v2/rooms/r/events", addGhost); code != http.StatusForbidden || errField(t, raw) != "commit_member_not_active" {
 		t.Fatalf("add ghost: status=%d body=%s", code, raw)
