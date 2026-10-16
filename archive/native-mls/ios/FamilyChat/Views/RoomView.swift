@@ -17,13 +17,26 @@ struct RoomView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(messages) { item in
-                        MessageRow(item: item, mine: item.record.senderDevice == model.deviceId)
+            // #385: 타임라인은 seq 오름차순(오래된 것이 위)이라 기본 ScrollView 는 최상단에서 열린다.
+            // 진입 시 최신 메시지(최하단)로 바로 가고, 새 메시지가 붙으면 따라 내려간다.
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(messages) { item in
+                            MessageRow(item: item, mine: item.record.senderDevice == model.deviceId)
+                                .id(item.id)
+                        }
                     }
+                    .padding()
                 }
-                .padding()
+                .onAppear {
+                    messages = model.messages(room: room)
+                    scrollToLatest(proxy, animated: false)
+                }
+                .onChange(of: model.messagesRevision) { _ in
+                    messages = model.messages(room: room)
+                    scrollToLatest(proxy, animated: true)
+                }
             }
             if let halted = haltedReason {
                 HaltedRoomCard(room: room, reason: halted)
@@ -77,8 +90,19 @@ struct RoomView: View {
             pickedPhoto = nil
             Task { await sendPhoto(item) }
         }
-        .onAppear { messages = model.messages(room: room) }
-        .onChange(of: model.messagesRevision) { _ in messages = model.messages(room: room) }
+    }
+
+    /// 마지막 메시지(seq 최대)로 스크롤한다. `messages` 를 바꾼 직후라 LazyVStack 이 아직 그 행을 배치하지 않았을 수 있으므로
+    /// 한 런루프 뒤에 부른다 — 같은 틱에 부르면 앵커가 없어 조용히 무시된다(iOS 16 대상이라 `defaultScrollAnchor` 는 못 쓴다).
+    private func scrollToLatest(_ proxy: ScrollViewProxy, animated: Bool) {
+        guard let last = messages.last?.id else { return }
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .bottom) }
+            } else {
+                proxy.scrollTo(last, anchor: .bottom)
+            }
+        }
     }
 
     private var isReady: Bool {
