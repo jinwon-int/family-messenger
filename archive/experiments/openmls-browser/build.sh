@@ -19,6 +19,10 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 out="${1:-$here/pkg}"
 toolchain="${RUSTUP_TOOLCHAIN:-1.91.1}"
 bindgen="${MLS_WASM_BINDGEN:?set MLS_WASM_BINDGEN to the pinned wasm-bindgen 0.2.126 binary}"
+# HOME drives the --remap-path-prefix table below. Under `systemd-run` (no User=) HOME is
+# unset, the remap is silently skipped and the wasm hashes differ from CI (observed 2026-10-16:
+# 6f261194… instead of the committed 2a13a4bb…). Fail closed instead of producing a drifted bundle.
+: "${HOME:?build.sh: HOME must be set (it anchors --remap-path-prefix; e.g. systemd-run --setenv HOME=/root)}"
 
 expect() { # expect <label> <actual> <required>
   if [ "$2" != "$3" ]; then echo "build.sh: $1 is '$2', required '$3'" >&2; exit 2; fi
