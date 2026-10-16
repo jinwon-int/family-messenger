@@ -457,6 +457,12 @@ INSERT INTO mls_cursors VALUES ('r', 'a1', 7);`
 	if err := db.QueryRow(`SELECT removed_at FROM mls_cursors WHERE room = 'r' AND device = 'a1'`).Scan(&removed); err != nil || removed.Valid {
 		t.Fatalf("removed_at after migration = %v err=%v", removed, err)
 	}
+	// #372: founding_actors is added and left NULL for a pre-existing room
+	// (the founding set is derived from mls_members on first use).
+	var founders sql.NullString
+	if err := db.QueryRow(`SELECT founding_actors FROM mls_rooms WHERE room = 'r'`).Scan(&founders); err != nil || founders.Valid {
+		t.Fatalf("founding_actors after migration = %v err=%v, want NULL", founders, err)
+	}
 	// Reopening is idempotent. The data-dir lock (H3 -reset-room safety)
 	// admits one holder at a time, so a second open while the first is live
 	// must fail closed; after closing it reopens cleanly.

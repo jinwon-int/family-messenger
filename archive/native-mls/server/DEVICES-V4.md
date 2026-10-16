@@ -161,9 +161,16 @@ v2 smoke는 required 모드로 돈다(ES256 키를 만들어 JWKS 파일로 넘�
   `commit_sender_not_listed` + 저장소 403 `commit_sender_not_member`의 이중선 — H3b).
   commit 본문 자체는 클라이언트가 검증한다(릴레이는 MLS를 해석하지 않는다, by design).
 - **이후 commit**: sender는 추적 멤버여야 하고(403 `commit_sender_not_member`),
-  추가되는 device는 정책상 active(403 `commit_member_not_active`)이며 그 actor가 방
-  로스터에 있어야 한다(403 `commit_actor_not_in_roster`) — 새 기기는 기존 actor에,
-  새 actor는 방 생성 클라이언트 쪽으로.
+  추가되는 device는 정책상 active(403 `commit_member_not_active`)여야 한다. 그 actor가
+  방 로스터에 있으면 어느 추적 멤버든 추가할 수 있다(새 기기는 기존 actor에). 로스터에
+  **없는 새 actor**의 기기는 **창립 actor**(창립 commit 멤버 목록의 actor; sender
+  device의 정책 actor 기준)가 보낸 commit에서만 추가된다 — 나중에 들어온 actor는 추적
+  멤버여도 새 actor 추가 권한이 없다(403 `commit_actor_not_in_roster`) (#372: 두
+  클라이언트 모두 창립 commit에 기기 두 개를 넣지 못해 3-actor 방이 불가능했던 문제).
+  창립 actor 집합은 창립 commit 트랜잭션에서 `mls_rooms.founding_actors`(정렬·중복
+  제거된 JSON 배열)에 기록되고, 열이 생기기 전에 창립된 방(NULL)은 `mls_members`에서
+  `added_seq`가 최솟값인 행들의 actor로 유도해 첫 사용 시 채운다(commit 이벤트는
+  프루닝되므로 이벤트 로그에서 유도하지 않는다).
 - **복제 actor = 정책 actor**(G-H3): 부트스트랩이든 추가든, 새로 좌석을 받는 모든
   `members[]` 항목의 `actor`는 그 device의 정책 `actor`와 같아야 한다 — 아니면 **403
   `commit_actor_mismatch`**. 이전에는 클라이언트가 적은 actor만 로스터와 대조해서,

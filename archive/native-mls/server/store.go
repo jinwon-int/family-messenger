@@ -8,11 +8,13 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -88,7 +90,8 @@ CREATE TABLE IF NOT EXISTS mls_rooms (
 	last_seq   INTEGER NOT NULL DEFAULT 0,
 	created_at INTEGER NOT NULL,
 	closed_at  INTEGER,
-	creator    TEXT
+	creator    TEXT,
+	founding_actors TEXT
 );
 CREATE TABLE IF NOT EXISTS mls_events (
 	room       TEXT NOT NULL REFERENCES mls_rooms(room),
@@ -207,6 +210,11 @@ func migrate(db *sql.DB) error {
 		// they count for nobody, which only ever lets an old device exceed
 		// the new cap, never blocks a new room.
 		{"mls_rooms", "creator", "TEXT"},
+		// #372: JSON array of the founding commit's actors, written in the
+		// founding transaction. Rooms founded before the column existed keep
+		// NULL and derive the set from the earliest mls_members rows on first
+		// use (foundingActors) — the founding commit event itself is pruned.
+		{"mls_rooms", "founding_actors", "TEXT"},
 	} {
 		added, err := ensureColumn(db, c.table, c.column, c.decl)
 		if err != nil {
@@ -581,9 +589,10 @@ func (s *relay) enforceDevicePolicy() (map[string]devicepolicy.DeviceV4, error) 
 // transaction. Every poster must be policy-active; a commit's sender must be
 // a tracked member, and its replicated member list may only seed the first
 // membership (every seeded device active, the sender among them — H3b) or
-// add active devices of actors already on the room roster and drop tracked
-// devices. Returns the active set and the pre-commit tracked membership (nil
-// tracked = bootstrap commit).
+// add active devices of actors already on the room roster — or, when the
+// sender's policy actor is one of the room's founding actors (#372), of an
+// actor not yet on the roster — and drop tracked devices. Returns the active
+// set and the pre-commit tracked membership (nil tracked = bootstrap commit).
 func (s *relay) authorizeEvent(tx *sql.Tx, room string, ev eventInput) (map[string]devicepolicy.DeviceV4, []memberRow, error) {
 	active, err := s.enforceDevicePolicy()
 	if err != nil {
@@ -648,6 +657,9 @@ func (s *relay) authorizeEvent(tx *sql.Tx, room string, ev eventInput) (map[stri
 	if !senderTracked {
 		return nil, nil, commitSenderNotMember{Device: ev.device}
 	}
+	// founders is loaded lazily: only a commit that adds an off-roster actor
+	// needs it (#372).
+	var founders map[string]bool
 	for _, m := range ev.members {
 		if byDevice[m.Device] {
 			continue
@@ -662,11 +674,101 @@ func (s *relay) authorizeEvent(tx *sql.Tx, room string, ev eventInput) (map[stri
 		if d.Actor != m.Actor {
 			return nil, nil, commitActorMismatch{Device: m.Device, Posted: m.Actor, Policy: d.Actor}
 		}
-		if !roster[m.Actor] {
+		if roster[m.Actor] {
+			continue
+		}
+		// #372 founding-actor admission: a device of an actor not yet on the
+		// roster may be added only by a sender whose policy actor was in the
+		// founding commit's member list. Actors admitted later are roster
+		// actors, not founding actors — they gain no admission privilege.
+		if founders == nil {
+			founders, err = foundingActors(tx, room)
+			if err != nil {
+				return nil, nil, err
+			}
+		}
+		if !founders[active[ev.device].Actor] {
 			return nil, nil, commitActorNotInRoster{Actor: m.Actor}
 		}
 	}
 	return active, tracked, nil
+}
+
+// encodeFoundingActors renders the founding commit's member list as the
+// mls_rooms.founding_actors value: a JSON array of unique, sorted actors.
+func encodeFoundingActors(members []memberWire) (string, error) {
+	seen := map[string]bool{}
+	actors := make([]string, 0, len(members))
+	for _, m := range members {
+		if seen[m.Actor] {
+			continue
+		}
+		seen[m.Actor] = true
+		actors = append(actors, m.Actor)
+	}
+	sort.Strings(actors)
+	raw, err := json.Marshal(actors)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+// foundingActors returns the room's founding-actor set (#372), inside the
+// caller's transaction. Normally it is the founding_actors column written by
+// the founding commit. A room founded before the column existed has NULL: the
+// set is then derived from mls_members — the distinct actors of the rows
+// sharing the lowest added_seq, i.e. the seats the founding commit created
+// (mls_events cannot serve here: commits are pruned by epoch retention; the
+// member rows survive until a removal commit) — and backfilled into the
+// column so the derivation runs once. Only called for a room with a seeded
+// membership, so the row exists.
+func foundingActors(tx *sql.Tx, room string) (map[string]bool, error) {
+	var stored sql.NullString
+	if err := tx.QueryRow(`SELECT founding_actors FROM mls_rooms WHERE room = ?`, room).Scan(&stored); err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	if stored.Valid {
+		var actors []string
+		if err := json.Unmarshal([]byte(stored.String), &actors); err != nil {
+			return nil, fmt.Errorf("room %s founding_actors: %w", room, err)
+		}
+		for _, a := range actors {
+			out[a] = true
+		}
+		return out, nil
+	}
+	rows, err := tx.Query(`SELECT DISTINCT actor FROM mls_members WHERE room = ?
+		AND added_seq = (SELECT MIN(added_seq) FROM mls_members WHERE room = ?) ORDER BY actor`, room, room)
+	if err != nil {
+		return nil, err
+	}
+	derived := []memberWire{}
+	for rows.Next() {
+		var actor string
+		if err := rows.Scan(&actor); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out[actor] = true
+		derived = append(derived, memberWire{Actor: actor})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(derived) == 0 {
+		return out, nil
+	}
+	encoded, err := encodeFoundingActors(derived)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(`UPDATE mls_rooms SET founding_actors = ? WHERE room = ? AND founding_actors IS NULL`, encoded, room); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // memberOf reports whether device is in the tracked membership.
@@ -728,6 +830,15 @@ func applyMembership(tx *sql.Tx, room string, tracked []memberRow, ev eventInput
 		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(seated)), ",")
 		args := append([]any{room}, seated...)
 		if _, err := tx.Exec(`DELETE FROM mls_cursors WHERE room = ? AND device NOT IN (`+placeholders+`)`, args...); err != nil {
+			return err
+		}
+		// #372: the founding commit fixes the room's founding-actor set in
+		// the same transaction as the seats it creates.
+		founders, err := encodeFoundingActors(ev.members)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE mls_rooms SET founding_actors = ? WHERE room = ?`, founders, room); err != nil {
 			return err
 		}
 		return nil
