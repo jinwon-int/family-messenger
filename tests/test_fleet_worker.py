@@ -489,3 +489,148 @@ class InterfaceSeamTests(unittest.TestCase):
         core = importlib.import_module('telegram_bot.core.agent_runtime')
         for name in ('ApprovalDecision', 'SessionRequest'):
             self.assertIs(getattr(core, name), getattr(contracts, name))
+
+
+class StewardToolTests(unittest.IsolatedAsyncioTestCase):
+    """#372 P4: steward room tools ride the port as `tool` / `tool-result` frames."""
+
+    async def setup_worker(self, mode='hang', **kwargs):
+        output=[]
+        async def emit(item): output.append(item)
+        runtime=FakeRuntime(mode)
+        worker=Worker(runtime,emit,lambda sid: {'session_id':sid},'allow','deny',**kwargs)
+        self.addAsyncCleanup(worker.close)
+        return worker,runtime,output
+
+    async def wait_for(self, output, kind):
+        async with asyncio.timeout(2):
+            while not any(x['type']==kind for x in output):
+                await asyncio.sleep(.001)
+        return next(x for x in output if x['type']==kind)
+
+    @staticmethod
+    def outcome(result):
+        return json.loads(result['content'][0]['text'])
+
+    async def start_turn(self, w, out):
+        await w.handle({'type':'turn','turn_id':'one','prompt':'family 방에 정인 넣어줘'})
+        await self.wait_for(out,'session')
+
+    async def test_tool_frame_round_trip_and_result_reaches_the_model(self):
+        w,r,out=await self.setup_worker()
+        await self.start_turn(w,out)
+        call=asyncio.create_task(w._tool('room_invite',{'room':'family','device':'jungin-iphone-1b89e3'}))
+        frame=await self.wait_for(out,'tool')
+        self.assertEqual(frame['turn_id'],'one')
+        self.assertEqual(frame['name'],'room_invite')
+        self.assertEqual(frame['arguments'],{'room':'family','device':'jungin-iphone-1b89e3'})
+        self.assertRegex(frame['tool_id'],r'^[A-Za-z0-9_-]{1,128}$')
+        await w.handle({'type':'tool-result','turn_id':'one','tool_id':frame['tool_id'],'ok':True,
+                        'result':{'op':'invite','room':'family','pending':True,'seq':3}})
+        self.assertTrue(out[-1]['accepted'])
+        result=await call
+        self.assertNotIn('is_error',result)
+        self.assertEqual(self.outcome(result),{'ok':True,'result':{'op':'invite','room':'family','pending':True,'seq':3}})
+        self.assertEqual(w.tool_pending,{})
+
+    async def test_parent_refusal_is_an_error_result_not_an_exception(self):
+        w,r,out=await self.setup_worker()
+        await self.start_turn(w,out)
+        call=asyncio.create_task(w._tool('room_remove',{'room':'family','device':'owner-pc'}))
+        frame=await self.wait_for(out,'tool')
+        await w.handle({'type':'tool-result','turn_id':'one','tool_id':frame['tool_id'],
+                        'ok':False,'error':'owner_only'})
+        result=await call
+        self.assertTrue(result['is_error'])
+        self.assertEqual(self.outcome(result),{'ok':False,'error':'owner_only'})
+        # A malformed refusal still fails closed with a generic code.
+        call=asyncio.create_task(w._tool('room_status',{}))
+        frame=await self._second_tool_frame(out)
+        await w.handle({'type':'tool-result','turn_id':'one','tool_id':frame['tool_id'],'ok':'yes','error':''})
+        self.assertEqual(self.outcome(await call),{'ok':False,'error':'steward_error'})
+
+    async def _second_tool_frame(self, out):
+        async with asyncio.timeout(2):
+            while sum(1 for x in out if x['type']=='tool')<2:
+                await asyncio.sleep(.001)
+        return [x for x in out if x['type']=='tool'][1]
+
+    async def test_one_tool_at_a_time_and_unmatched_results_are_ignored(self):
+        w,r,out=await self.setup_worker()
+        await self.start_turn(w,out)
+        first=asyncio.create_task(w._tool('room_members',{'room':'family'}))
+        frame=await self.wait_for(out,'tool')
+        self.assertEqual(self.outcome(await w._tool('room_status',{})),{'ok':False,'error':'busy'})
+        for turn,tool_id in [('two',frame['tool_id']),('one','not-a-nonce')]:
+            await w.handle({'type':'tool-result','turn_id':turn,'tool_id':tool_id,'ok':True,'result':{}})
+            self.assertFalse(out[-1]['accepted'])
+            self.assertFalse(first.done())
+        await w.handle({'type':'tool-result','turn_id':'one','tool_id':frame['tool_id'],
+                        'ok':True,'result':{'members':[]}})
+        self.assertTrue(self.outcome(await first)['ok'])
+        await w.handle({'type':'tool-result','turn_id':'one','tool_id':frame['tool_id'],'ok':True,'result':{}})
+        self.assertFalse(out[-1]['accepted'])
+
+    async def test_arguments_are_validated_before_any_frame_leaves(self):
+        w,r,out=await self.setup_worker()
+        await self.start_turn(w,out)
+        bad=[('room_invite',{'room':'family'}),                       # missing device
+             ('room_invite',{'room':'family','device':'x y'}),         # bad value
+             ('room_invite',{'room':'family','device':'a','extra':'b'}),
+             ('room_status',{'room':'family'}),                        # no arguments allowed
+             ('room_mode',{'room':'family','mode':'a'*65}),
+             ('room_members','family'),                                # not a mapping
+             ('room_members',{'room':7})]
+        for name,arguments in bad:
+            with self.subTest(name=name,arguments=arguments):
+                self.assertEqual(self.outcome(await w._tool(name,arguments)),{'ok':False,'error':'bad_arguments'})
+        self.assertEqual(self.outcome(await w._tool('room_nuke',{'room':'family'})),{'ok':False,'error':'unknown_tool'})
+        self.assertFalse(any(x['type']=='tool' for x in out))
+
+    async def test_no_active_turn_timeout_and_cancel_fail_closed(self):
+        w,r,out=await self.setup_worker(tool_timeout=.02)
+        self.assertEqual(self.outcome(await w._tool('room_status',{})),{'ok':False,'error':'no_active_turn'})
+        await self.start_turn(w,out)
+        self.assertEqual(self.outcome(await w._tool('room_status',{})),{'ok':False,'error':'steward_timeout'})
+        self.assertEqual(w.tool_pending,{})
+        w2,r2,out2=await self.setup_worker(tool_timeout=120)
+        await self.start_turn(w2,out2)
+        call=asyncio.create_task(w2._tool('room_create',{'room':'family','mode':'silent'}))
+        await self.wait_for(out2,'tool')
+        await w2.handle({'type':'cancel','turn_id':'one'})
+        self.assertEqual(self.outcome(await call),{'ok':False,'error':'cancelled'})
+        self.assertEqual((await self.wait_for(out2,'result'))['status'],'uncertain')
+
+    def test_steward_tools_need_the_claude_provider(self):
+        with self.assertRaises(ValueError):
+            harness_options(N(provider='codex',codex_cli='/bin/true',workdir='/tmp',steward_tools=True),{})
+        _,request=harness_options(N(provider='claude',workdir='/tmp',steward_tools=True,
+                                    memory_materializer=None,sandbox='readOnly',approval_policy='never',
+                                    claude_permission_mode='default',model=None,effort=None),{})
+        self.assertNotIn('mcp_servers',request)  # main() adds the server after the worker exists
+
+    def test_session_request_probe_fails_closed_on_old_ccc_node(self):
+        from dataclasses import dataclass
+        from fleet_worker import session_request_supports
+        @dataclass
+        class Old: working_directory: str
+        @dataclass
+        class New: working_directory: str; mcp_servers: object=None
+        self.assertFalse(session_request_supports(Old,'mcp_servers'))
+        self.assertTrue(session_request_supports(New,'mcp_servers'))
+        self.assertFalse(session_request_supports(object,'mcp_servers'))
+
+    async def test_sdk_server_exposes_every_steward_tool(self):
+        try:
+            import claude_agent_sdk  # noqa: F401
+        except ImportError:
+            self.skipTest('claude_agent_sdk not installed')
+        from fleet_worker import STEWARD_TOOLS, build_steward_server
+        w,r,out=await self.setup_worker()
+        server=build_steward_server(w)
+        self.assertEqual(server['type'],'sdk')
+        self.assertEqual(server['name'],'steward')
+        instance=server['instance']
+        names=sorted(t.name for t in instance._tools.values()) if hasattr(instance,'_tools') else None
+        if names is not None:
+            self.assertEqual(names,sorted(STEWARD_TOOLS))

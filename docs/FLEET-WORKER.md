@@ -55,13 +55,39 @@ task로 실행되므로 승인/취소 입력이 작업 뒤에 막히지 않는�
 - `{"type":"approve","turn_id":"job-1","approval_id":"worker-generated-nonce"}`
 - `{"type":"deny","turn_id":"job-1","approval_id":"worker-generated-nonce"}`
 - `{"type":"cancel","turn_id":"job-1"}`
+- `{"type":"tool-result","turn_id":"job-1","tool_id":"worker-generated-nonce","ok":true,"result":{...}}` /
+  `{"type":"tool-result","turn_id":"job-1","tool_id":"…","ok":false,"error":"owner_only"}` — 아래 `tool`
+  프레임의 답. `turn_id`·`tool_id`가 대기 중인 호출과 맞아야 하고(아니면 `control.accepted=false`),
+  `ok`가 `true`가 아니면 거절로 본다(`error` 문자열이 없으면 `steward_error`).
+
+### 도구 프레임 — `--steward-tools` (#372 P4, `--provider claude` 전용)
+
+worker는 in-process SDK MCP 서버 `steward`로 방 운영 도구 `room_create / room_join /
+room_invite / room_remove / room_members / room_mode / room_status`를 모델에 노출한다
+(모델이 보는 이름은 `mcp__steward__room_invite` 꼴). 모델이 도구를 부르면 worker는 **실행하지
+않고** 부모에게 묻는다:
+
+- 출력 `{"type":"tool","turn_id":"job-1","tool_id":"worker-generated-nonce","name":"room_invite","arguments":{"room":"family","device":"jungin-iphone-1b89e3"}}`
+  — 인수는 `[A-Za-z0-9_-]{1,64}` 문자열만, 도구별 필수/선택 인수 밖의 키는 보내지 않고
+  `bad_arguments`로 모델에 돌려준다(`room_status`는 인수 없음). 한 turn에 도구 호출은 한 번에
+  하나(겹치면 `busy`), 활성 turn이 없으면 `no_active_turn`.
+- 부모(native-mls 봇)가 **발신 actor가 owner인지** 검사하고 steward 명령을 실행한 뒤
+  `tool-result`로 답한다. `--tool-timeout`(기본 90초) 안에 답이 없으면 `steward_timeout`.
+  취소(`cancel`)는 대기 중인 도구 호출을 `cancelled`로 닫는다.
+- 결과는 MCP 텍스트(JSON 한 줄)로 모델에 돌아간다. `ok=false`면 `is_error`.
+
+권한은 바뀌지 않는다: `--claude-permission-mode default`면 도구 호출마다 SDK `can_use_tool`
+→ 이 포트의 `approval` 왕복(방의 `⚠️ 승인 필요 #n`)이 먼저 일어나므로 오너가 명령마다 확인한다.
+`--steward-tools`는 ccc-node `SessionRequest.mcp_servers`(ccc-node #2340)가 있어야 하며, 없으면
+시작 시 `ValueError`로 멈춘다(조용히 도구 없이 뜨지 않는다).
 
 부모는 Matrix 발신자·방 허용 목록을 먼저 검사한다. 승인도 요청을 받은 동일한
 계정/방/발신자에게만 라우팅한다. 이 프로토콜 자체는 네트워크 인증 수단이 아니다.
 프로세스 재시작 뒤의 오래된 승인과 작업 ID만 맞는 승인은 수락하지 않는다.
 승인 인수가 너무 크면 잘라서 보여주지 않고 거절한다. 미응답 승인은 기본 120초 후 거절한다.
 
-출력은 `session`, `approval`, `approval-resolved`, `control`, `rejected`, `result` 이벤트다.
+출력은 `session`, `approval`, `approval-resolved`, `control`, `rejected`, `result`, 그리고
+`--steward-tools`일 때 `tool` 이벤트다.
 JSON escaping으로 출력 프레임은 입력보다 클 수 있으므로 부모는 최대 512KiB까지
 읽되 상한 초과를 오류로 처리한다. stdout에는 요청에 대한 응답/승인 인수가 포함될 수 있으므로
 일반 로그로 복사하지 않는다. 연결부는 암호화된 원래 방에 전달한다.

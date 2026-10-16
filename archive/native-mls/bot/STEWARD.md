@@ -32,6 +32,26 @@ native-mls-bot room status  <room>                  --rooms-dir <dir>   # room �
 `room …` 은 결과 JSON 한 줄을 stdout 에 쓰고 `ok` 가 아니면 exit 1. 세션이 없으면 90초 뒤
 "timed out waiting for the steward" 로 실패한다(큐 파일은 지운다).
 
+## 응답기에서 방 명령 (P4)
+
+응답기(ccc-node 워커)도 같은 명령을 부를 수 있다 — 파일 큐가 아니라 응답기 포트의 `tool` /
+`tool-result` 프레임으로(`AGENT.md` "도구(P4)"). 봇이 **owner actor 가 시작한 turn** 에서만 받고,
+인수를 `[A-Za-z0-9_-]{1,64}` 로 검사한 뒤 위 CLI 와 같은 `Steward::execute` 로 실행한다. 대응:
+
+| tool | 명령 |
+|---|---|
+| `room_create{room, mode?}` | `room create <room> [agent\|silent]`(기본 silent) |
+| `room_join{room}` | `room join <room>` |
+| `room_invite{room, device}` | `room invite <room> <device>` |
+| `room_remove{room, device}` | `room remove <room> <device>` |
+| `room_members{room}` | `room members <room>` |
+| `room_mode{room, mode}` | `room mode <room> agent\|silent` |
+| `room_status{}` | `room status`(room 자리는 `-`) |
+
+결과 JSON 은 `out/<id>.json` 과 같은 모양(`ok` 포함). `steward` 모드가 아니면 `steward_only`, 오너가
+아니면 `owner_only`, 인수 불량은 `bad_arguments` 로 거절되고 방에는 아무것도 게시되지 않는다.
+이벤트 로그: `agent_tool{name, op, room, arg, ok}`.
+
 ## 초대 흐름 (relay-app 의 `invite` 와 같은 규약)
 
 1. 피초대 기기가 그 방에 key package 를 올린다 — iOS 「참여 요청」(방 이름 입력), relay-app 「키 패키지 게시」, 봇 `room join`.

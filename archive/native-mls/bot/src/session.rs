@@ -544,6 +544,26 @@ fn run_loop(
         // nothing.
         if let Some(responder) = agent.as_mut() {
             for item in responder.pump()? {
+                // P4: a tool call runs through the steward and answers on the
+                // port; it never reaches the room. Owner-only was enforced by
+                // the responder before it emitted the item.
+                if let Outbound::ToolCall { tool_id, name, op, room, arg } = &item {
+                    let outcome = match steward {
+                        None => Err("steward_only".to_string()),
+                        Some(steward) => {
+                            let cmd = Command { op: op.clone(), room: room.clone(), arg: arg.clone() };
+                            match steward.execute(ctx, rooms, &cmd) {
+                                Ok(mut value) => { value["ok"] = serde_json::Value::Bool(true); Ok(value) }
+                                Err(err) => Err(err.to_string()),
+                            }
+                        }
+                    };
+                    emit(&serde_json::json!({
+                        "event": "agent_tool", "name": name, "op": op, "room": room, "arg": arg, "ok": outcome.is_ok(),
+                    }));
+                    responder.tool_result(tool_id, outcome);
+                    continue;
+                }
                 let Some(main) = rooms.iter_mut().find(|r| r.mode == Mode::Agent) else {
                     emit(&serde_json::json!({ "event": "agent_outbound_dropped", "reason": "no_agent_room" }));
                     continue;
@@ -552,6 +572,10 @@ fn run_loop(
                     Outbound::WorkerGone { reason } => {
                         emit(&serde_json::json!({ "event": "agent_worker_gone", "room": main.room, "reason": reason }));
                         return Err(BotError::Local("responder worker gone"));
+                    }
+                    Outbound::ToolCall { .. } => {
+                        // Handled above; never text for the room.
+                        emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": main.room, "reason": "tool_call" }));
                     }
                     _ => {
                         let text = agent_text(&item);
@@ -589,6 +613,8 @@ fn agent_text(item: &Outbound) -> String {
             format!("⚠️ 요청(#{seq})을 끝까지 확인하지 못했습니다({reason}). 다시 말씀해 주세요 — 같은 요청을 자동으로 다시 실행하지는 않습니다.")
         }
         Outbound::WorkerGone { reason } => format!("⚠️ 응답기가 멈췄습니다({reason})."),
+        // Never posted (P4): the poll loop answers it on the port.
+        Outbound::ToolCall { .. } => String::new(),
     }
 }
 
@@ -599,6 +625,7 @@ fn agent_kind(item: &Outbound) -> &'static str {
         Outbound::ApprovalResolved { .. } => "approval_resolved",
         Outbound::Uncertain { .. } => "uncertain",
         Outbound::WorkerGone { .. } => "worker_gone",
+        Outbound::ToolCall { .. } => "tool_call",
     }
 }
 
@@ -1616,6 +1643,10 @@ for line in sys.stdin:
         assert_eq!(agent_text(&Outbound::ApprovalResolved { n: 2, allowed: true }), "승인 #2: 허용했습니다.");
         assert!(agent_text(&Outbound::Uncertain { seq: 9, reason: "watchdog".into() }).contains("#9"));
         assert_eq!(agent_kind(&Outbound::Reply { seq: 1, text: String::new() }), "reply");
+        // P4: a tool call is never room text.
+        let call = Outbound::ToolCall { tool_id: "n1".into(), name: "room_status".into(), op: "status".into(), room: "-".into(), arg: String::new() };
+        assert_eq!(agent_kind(&call), "tool_call");
+        assert_eq!(agent_text(&call), "");
     }
 
     /// #268: only a joined device below `first_seq - 1` has lost history.
@@ -1835,6 +1866,75 @@ for line in sys.stdin:
         assert!(seen[1].starts_with("POST /v2/rooms/family/events"), "{}", seen[1]);
         assert!(seen[2].starts_with("POST /v2/rooms/family/events"), "{}", seen[2]);
         assert!(seen[3].starts_with("POST /v2/rooms/family/events"), "{}", seen[3]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #372 P4: a worker `tool` frame runs through `run_loop` → `Steward::execute`
+    /// and the `tool-result` reaches the worker (recorded to a file). Without a
+    /// steward (legacy single-room session) the answer is `steward_only`.
+    #[test]
+    fn run_loop_executes_tool_calls_through_the_steward() {
+        const TOOL_WORKER: &str = r#"
+import json, os, sys
+out = sys.argv[1]
+for line in sys.stdin:
+    cmd = json.loads(line)
+    if cmd["type"] == "turn":
+        name, room = cmd["prompt"].split(" ")
+        args = {} if name == "room_status" else {"room": room}
+        print(json.dumps({"type": "tool", "turn_id": cmd["turn_id"], "tool_id": "n1", "name": name, "arguments": args}), flush=True)
+    elif cmd["type"] == "tool-result":
+        with open(out + ".tmp", "w") as f:
+            json.dump(cmd, f)
+        os.replace(out + ".tmp", out)
+        print(json.dumps({"type": "result", "turn_id": cmd["turn_id"], "status": "complete", "session_id": "s", "text": "done"}), flush=True)
+"#;
+        let dir = temp_dir("p4-tool");
+        let identity = dir.join("identity.json");
+        write_identity(&identity, "bot-1", &Device::new("bot-1").unwrap_or_else(|_| panic!("device new"))).expect("identity");
+        let steward = Steward { device: "bot-1".into(), rooms_dir: dir.clone(), identity_file: identity };
+        let (base, _server) = canned_relay(Vec::new());
+        let client = Client::with_access(&base, api::Access::None);
+        let ctx = Ctx { client: &client, own: "bot-1" };
+        let spawn = |record: &Path| {
+            let argv = vec!["python3".into(), "-c".into(), TOOL_WORKER.into(), record.to_string_lossy().into_owned()];
+            Responder::spawn(responder::Config::new(responder::Transport::Argv(argv), "owner".into()), None).unwrap_or_else(|e| panic!("spawn: {e}"))
+        };
+        let read_record = |record: &Path| -> serde_json::Value {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !record.exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            serde_json::from_slice(&std::fs::read(record).expect("worker recorded the tool-result")).expect("record json")
+        };
+
+        // Steward present: the owner's turn asks room_create p4 → executed.
+        let record = dir.join("tool-result-1.json");
+        let mut agent = Some(spawn(&record));
+        agent.as_mut().unwrap().offer(Inbound { seq: 1, sender_device: "owner-pc".into(), text: "room_create p4".into() }).expect("offer");
+        let mut rooms = Vec::new();
+        // The loop ends on the deadline — or earlier, once it polls the new room
+        // against the canned relay (which answers nothing); either way the tool
+        // ran in the round before.
+        run_loop(&ctx, &mut rooms, &mut agent, Some(Instant::now() + Duration::from_millis(1500)), Some(&steward)).expect_err("the loop ends with an error");
+        let frame = read_record(&record);
+        assert_eq!((frame["type"].as_str(), frame["tool_id"].as_str(), frame["turn_id"].as_str(), frame["ok"].as_bool()), (Some("tool-result"), Some("n1"), Some("t-1"), Some(true)));
+        assert_eq!((frame["result"]["op"].as_str(), frame["result"]["room"].as_str(), frame["result"]["mode"].as_str(), frame["result"]["ok"].as_bool()), (Some("create"), Some("p4"), Some("silent"), Some(true)));
+        assert!(rooms.iter().any(|r| r.room == "p4" && r.joined && r.mode == Mode::Silent), "the room exists in the loop's state");
+        assert!(dir.join("p4.state").exists() && std::fs::read_to_string(dir.join("p4.mode")).expect("mode").trim() == "silent");
+        drop(agent);
+
+        // No steward (legacy session): refused on the port, nothing executed.
+        let record = dir.join("tool-result-2.json");
+        let mut agent = Some(spawn(&record));
+        agent.as_mut().unwrap().offer(Inbound { seq: 2, sender_device: "owner-pc".into(), text: "room_create p5".into() }).expect("offer");
+        let mut rooms = Vec::new();
+        let err = run_loop(&ctx, &mut rooms, &mut agent, Some(Instant::now() + Duration::from_millis(1500)), None).expect_err("deadline ends the loop");
+        assert!(err.to_string().contains("deadline"), "{err}");
+        let frame = read_record(&record);
+        assert_eq!((frame["ok"].as_bool(), frame["error"].as_str(), frame["turn_id"].as_str()), (Some(false), Some("steward_only"), Some("t-2")));
+        assert!(rooms.is_empty() && !dir.join("p5.state").exists());
+        drop(agent);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

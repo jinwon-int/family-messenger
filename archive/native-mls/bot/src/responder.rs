@@ -27,6 +27,12 @@
 //! the active turn is written to `<state>.inbox.json` before the child sees it.
 //! A restart that finds an active turn posts one "could not confirm" notice and
 //! clears it — the message is never replayed into a second turn.
+//!
+//! Tools (#372 P4): the worker may ask the bot to run one steward room command
+//! per turn (`tool` frame → `Outbound::ToolCall` → `Steward::execute` in the
+//! poll loop → `tool_result()` → `tool-result` frame). Owner-only: the turn's
+//! sender actor must be `owner_actor`; everything else is answered
+//! `ok=false` on the port and never reaches the room.
 
 use crate::api::BotError;
 use std::collections::{HashMap, VecDeque};
@@ -102,7 +108,15 @@ pub enum Outbound {
     Uncertain { seq: i64, reason: String },
     /// The child is gone; the session should stop offering turns.
     WorkerGone { reason: String },
+    /// P4: the worker asked for steward room command `op room arg` (already
+    /// validated and owner-checked). Never posted to the room — the poll loop
+    /// runs it and answers with `tool_result()`.
+    ToolCall { tool_id: String, name: String, op: String, room: String, arg: String },
 }
+
+/// `room_status` takes no room; `Steward::execute` still shape-checks the
+/// field, so a placeholder identifier rides along.
+const STATUS_ROOM_PLACEHOLDER: &str = "-";
 
 /// One decrypted application message the poll loop offers.
 #[derive(Debug, Clone)]
@@ -129,6 +143,10 @@ struct ActiveTurn {
     seq: i64,
     turn_id: String,
     started_at: u64,
+    /// P4 owner check for tool calls. Absent in inboxes written before P4
+    /// (those only ever feed the restart notice, never a tool call).
+    #[serde(default)]
+    sender_device: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -154,6 +172,8 @@ pub struct Responder {
     gone: bool,
     /// Notices queued for the room (uncertain turn found at startup, etc.).
     startup_notices: Vec<Outbound>,
+    /// P4: `tool_id` of the one tool call the poll loop still owes an answer.
+    pending_tool: Option<String>,
 }
 
 impl Responder {
@@ -222,6 +242,7 @@ impl Responder {
             next_approval: 0,
             gone: false,
             startup_notices: Vec::new(),
+            pending_tool: None,
         };
         // A turn left active by an earlier run was never confirmed: say so
         // once, clear it, never re-run it.
@@ -297,7 +318,9 @@ impl Responder {
 
     fn start(&mut self, inbound: Inbound) -> Result<(), BotError> {
         let turn_id = format!("t-{}", inbound.seq);
-        let active = ActiveTurn { seq: inbound.seq, turn_id: turn_id.clone(), started_at: now_secs() };
+        let active = ActiveTurn {
+            seq: inbound.seq, turn_id: turn_id.clone(), started_at: now_secs(), sender_device: inbound.sender_device.clone(),
+        };
         // Durable before the child sees it (FLEET-WORKER: the parent inbox is
         // the duplicate guard, not the port).
         self.write_inbox(Some(&active))?;
@@ -343,13 +366,37 @@ impl Responder {
                 self.approvals.insert(n, (active.turn_id.clone(), approval_id));
                 let description = value.get("description").and_then(|v| v.as_str()).unwrap_or("");
                 let action = value.get("action").and_then(|v| v.as_str()).unwrap_or("");
-                let summary = if description.is_empty() { action } else { description };
-                let text = format!(
-                    "⚠️ 승인 필요 #{n}: {}\n답장: 「승인 {n}」 또는 「거절 {n}」 ({} 만)",
-                    bounded(summary, 2048),
-                    self.config.owner_actor
-                );
+                // P4: a steward room tool shows its name and arguments (the
+                // worker's free-text description could say anything).
+                let summary = match action.strip_prefix("mcp__steward__") {
+                    Some(tool) if tool.starts_with("room_") => steward_tool_summary(tool, value.get("arguments")),
+                    _ => bounded(if description.is_empty() { action } else { description }, 2048),
+                };
+                let text = format!("⚠️ 승인 필요 #{n}: {summary}\n답장: 「승인 {n}」 또는 「거절 {n}」 ({} 만)", self.config.owner_actor);
                 out.push(Outbound::ApprovalRequest { n, seq, text });
+            }
+            "tool" => {
+                // P4: a room command request. Addressed to this turn only.
+                let tool_id = value.get("tool_id").and_then(|v| v.as_str()).unwrap_or("");
+                if turn_id.is_empty() || !is_tool_id(tool_id) {
+                    return Ok(());
+                }
+                let turn_id = active.turn_id.clone();
+                let name = value.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let Some((op, room, arg)) = tool_command(name, value.get("arguments")) else {
+                    self.send_tool_result(&turn_id, tool_id, Err("bad_arguments".to_string()));
+                    return Ok(());
+                };
+                if actor_of(&active.sender_device) != self.config.owner_actor {
+                    self.send_tool_result(&turn_id, tool_id, Err("owner_only".to_string()));
+                    return Ok(());
+                }
+                if self.pending_tool.is_some() {
+                    self.send_tool_result(&turn_id, tool_id, Err("busy".to_string()));
+                    return Ok(());
+                }
+                self.pending_tool = Some(tool_id.to_string());
+                out.push(Outbound::ToolCall { tool_id: tool_id.to_string(), name: name.to_string(), op, room, arg });
             }
             "approval-resolved" => {
                 let approval_id = value.get("approval_id").and_then(|v| v.as_str()).unwrap_or("");
@@ -391,9 +438,30 @@ impl Responder {
         Ok(())
     }
 
+    /// P4: answer the pending `Outbound::ToolCall` of the active turn. Any other
+    /// `tool_id` (late answer after the turn ended, unknown id) is dropped.
+    pub fn tool_result(&mut self, tool_id: &str, outcome: Result<serde_json::Value, String>) {
+        let Some((active, _)) = &self.active else { return };
+        if self.pending_tool.as_deref() != Some(tool_id) {
+            return;
+        }
+        let turn_id = active.turn_id.clone();
+        self.pending_tool = None;
+        self.send_tool_result(&turn_id, tool_id, outcome);
+    }
+
+    fn send_tool_result(&self, turn_id: &str, tool_id: &str, outcome: Result<serde_json::Value, String>) {
+        let line = match outcome {
+            Ok(result) => serde_json::json!({ "type": "tool-result", "turn_id": turn_id, "tool_id": tool_id, "ok": true, "result": result }),
+            Err(error) => serde_json::json!({ "type": "tool-result", "turn_id": turn_id, "tool_id": tool_id, "ok": false, "error": error }),
+        };
+        let _ = self.to_child.send(Cmd::Line(line.to_string()));
+    }
+
     fn finish_active(&mut self) -> Result<(), BotError> {
         self.active = None;
         self.approvals.clear();
+        self.pending_tool = None;
         self.write_inbox(None)
     }
 
@@ -405,6 +473,7 @@ impl Responder {
         if let Some((turn, _)) = self.active.take() {
             out.push(Outbound::Uncertain { seq: turn.seq, reason: "worker_gone".to_string() });
             self.approvals.clear();
+            self.pending_tool = None;
             self.write_inbox(None)?;
         }
         for dropped in self.queue.drain(..) {
@@ -509,6 +578,72 @@ pub fn parse_approval_reply(text: &str) -> Option<(u64, bool)> {
     digits.parse().ok().map(|n| (n, allow))
 }
 
+/// P4 `tool_id`: `[A-Za-z0-9_-]{1,128}` (a worker nonce; echoed back verbatim).
+fn is_tool_id(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 128 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// P4: map a worker `tool` frame (`name`, `arguments`) to a steward command
+/// `(op, room, arg)`. `None` = bad name, missing/extra key, or a value outside
+/// `[A-Za-z0-9_-]{1,64}` (the relay identifier rule every field must meet).
+/// A missing `arguments` counts as `{}`; anything but an object is rejected.
+pub fn tool_command(name: &str, arguments: Option<&serde_json::Value>) -> Option<(String, String, String)> {
+    let args: HashMap<&str, &str> = match arguments {
+        None | Some(serde_json::Value::Null) => HashMap::new(),
+        Some(serde_json::Value::Object(map)) => map
+            .iter()
+            .map(|(k, v)| v.as_str().filter(|s| crate::api::is_identifier(s)).map(|s| (k.as_str(), s)))
+            .collect::<Option<_>>()?,
+        Some(_) => return None,
+    };
+    let (op, keys): (&str, &[&str]) = match name {
+        "room_create" => ("create", &["room", "mode"]),
+        "room_join" => ("join", &["room"]),
+        "room_invite" => ("invite", &["room", "device"]),
+        "room_remove" => ("remove", &["room", "device"]),
+        "room_members" => ("members", &["room"]),
+        "room_mode" => ("mode", &["room", "mode"]),
+        "room_status" => ("status", &[]),
+        _ => return None,
+    };
+    if args.keys().any(|k| !keys.contains(k)) {
+        return None;
+    }
+    let room = match op {
+        "status" => STATUS_ROOM_PLACEHOLDER,
+        _ => args.get("room").copied()?,
+    };
+    let arg = match op {
+        "invite" | "remove" => args.get("device").copied()?,
+        "mode" => args.get("mode").copied().filter(|m| matches!(*m, "agent" | "silent"))?,
+        "create" => match args.get("mode").copied() {
+            None => "silent",
+            Some(mode @ ("agent" | "silent")) => mode,
+            Some(_) => return None,
+        },
+        _ => "",
+    };
+    Some((op.to_string(), room.to_string(), arg.to_string()))
+}
+
+/// Approval line for a steward room tool: `방 명령 room_invite · room=family · device=…`
+/// (keys sorted, each value cut at 64 bytes, at most 8 pairs).
+fn steward_tool_summary(tool: &str, arguments: Option<&serde_json::Value>) -> String {
+    let mut text = format!("방 명령 {}", bounded(tool, 64));
+    if let Some(serde_json::Value::Object(map)) = arguments {
+        let mut keys: Vec<&String> = map.keys().collect();
+        keys.sort();
+        for key in keys.into_iter().take(8) {
+            let value = match &map[key] {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            text.push_str(&format!(" · {}={}", bounded(key, 32), bounded(&value, 64)));
+        }
+    }
+    text
+}
+
 /// Cut on a char boundary at `max` bytes.
 fn bounded(text: &str, max: usize) -> String {
     if text.len() <= max {
@@ -579,7 +714,11 @@ mod tests {
     }
 
     /// A tiny stand-in worker speaking the FLEET-WORKER port: one approval,
-    /// then a result that echoes the decision.
+    /// then a result that echoes the decision. P4 modes: a prompt `tool <json>`
+    /// emits one `tool` frame (`tool_id` n1) built from the JSON (`tool2`: two
+    /// frames, n1 and n2); the first `tool-result` it reads ends the turn with
+    /// the frame echoed (sorted keys) in the result text. `askroom` asks a
+    /// `mcp__steward__room_invite` approval carrying arguments.
     const FAKE_WORKER: &str = r#"
 import json, sys
 for line in sys.stdin:
@@ -590,10 +729,25 @@ for line in sys.stdin:
         if cmd["prompt"].startswith("fail"):
             print(json.dumps({"type": "result", "turn_id": tid, "status": "uncertain", "reason": "runtime-error"}), flush=True)
             continue
+        if cmd["prompt"].startswith("askroom"):
+            print(json.dumps({"type": "approval", "turn_id": tid, "approval_id": "ap-2", "action": "mcp__steward__room_invite",
+                              "description": "free text the worker made up",
+                              "arguments": {"device": "jungin-iphone-1b89e3", "room": "family"}}), flush=True)
+            continue
         if cmd["prompt"].startswith("ask"):
             print(json.dumps({"type": "approval", "turn_id": tid, "approval_id": "ap-1", "action": "bash", "description": "rm -rf /tmp/x"}), flush=True)
             continue
+        if cmd["prompt"].startswith("tool"):
+            word, spec = cmd["prompt"].split(" ", 1)
+            spec = json.loads(spec)
+            for i in range(2 if word == "tool2" else 1):
+                frame = {"type": "tool", "turn_id": tid, "tool_id": "n%d" % (i + 1)}
+                frame.update(spec)
+                print(json.dumps(frame), flush=True)
+            continue
         print(json.dumps({"type": "result", "turn_id": tid, "status": "complete", "session_id": "s1", "text": "echo:" + cmd["prompt"] + "|" + cmd["sender"]}), flush=True)
+    elif cmd["type"] == "tool-result":
+        print(json.dumps({"type": "result", "turn_id": cmd["turn_id"], "status": "complete", "session_id": "s1", "text": "tool:" + json.dumps(cmd, sort_keys=True)}), flush=True)
     elif cmd["type"] in ("approve", "deny"):
         allowed = cmd["type"] == "approve"
         print(json.dumps({"type": "approval-resolved", "turn_id": cmd["turn_id"], "approval_id": cmd["approval_id"], "allowed": allowed}), flush=True)
@@ -737,6 +891,156 @@ for line in f:
         let _ = listener.kill();
         let _ = listener.wait();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- P4 tools ----
+
+    fn tool_prompt(name: &str, arguments: serde_json::Value) -> String {
+        format!("tool {}", serde_json::json!({ "name": name, "arguments": arguments }))
+    }
+
+    /// The `tool-result` frame the fake worker echoed back in its result text.
+    fn echoed_tool_result(item: &Outbound) -> serde_json::Value {
+        match item {
+            Outbound::Reply { text, .. } => {
+                let raw = text.strip_prefix("tool:").unwrap_or_else(|| panic!("not a tool echo: {text}"));
+                serde_json::from_str(raw).unwrap()
+            }
+            other => panic!("expected the worker's result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_command_mapping_and_validation() {
+        assert_eq!(
+            tool_command("room_invite", Some(&serde_json::json!({"room": "family", "device": "jungin-iphone-1b89e3"}))),
+            Some(("invite".into(), "family".into(), "jungin-iphone-1b89e3".into()))
+        );
+        assert_eq!(
+            tool_command("room_remove", Some(&serde_json::json!({"room": "family", "device": "x-1"}))),
+            Some(("remove".into(), "family".into(), "x-1".into()))
+        );
+        assert_eq!(tool_command("room_join", Some(&serde_json::json!({"room": "r2"}))), Some(("join".into(), "r2".into(), String::new())));
+        assert_eq!(tool_command("room_members", Some(&serde_json::json!({"room": "r2"}))), Some(("members".into(), "r2".into(), String::new())));
+        assert_eq!(tool_command("room_mode", Some(&serde_json::json!({"room": "r2", "mode": "agent"}))), Some(("mode".into(), "r2".into(), "agent".into())));
+        assert_eq!(tool_command("room_create", Some(&serde_json::json!({"room": "r3"}))), Some(("create".into(), "r3".into(), "silent".into())), "mode defaults to silent");
+        assert_eq!(tool_command("room_create", Some(&serde_json::json!({"room": "r3", "mode": "agent"}))), Some(("create".into(), "r3".into(), "agent".into())));
+        assert_eq!(tool_command("room_status", Some(&serde_json::json!({}))), Some(("status".into(), "-".into(), String::new())));
+        assert_eq!(tool_command("room_status", None), Some(("status".into(), "-".into(), String::new())), "missing arguments = {{}}");
+        // Rejections.
+        assert_eq!(tool_command("room_invite", Some(&serde_json::json!({"room": "family"}))), None, "device required");
+        assert_eq!(tool_command("room_invite", Some(&serde_json::json!({"room": "family", "device": "a b"}))), None, "identifier shape");
+        assert_eq!(tool_command("room_invite", Some(&serde_json::json!({"room": "family", "device": 7}))), None, "strings only");
+        assert_eq!(tool_command("room_mode", Some(&serde_json::json!({"room": "r", "mode": "loud"}))), None);
+        assert_eq!(tool_command("room_create", Some(&serde_json::json!({"room": "r", "mode": "loud"}))), None);
+        assert_eq!(tool_command("room_status", Some(&serde_json::json!({"room": "r"}))), None, "no extra keys");
+        assert_eq!(tool_command("room_join", Some(&serde_json::json!(["r"]))), None, "arguments must be an object");
+        assert_eq!(tool_command("room_destroy", Some(&serde_json::json!({"room": "r"}))), None);
+        assert_eq!(tool_command("", None), None);
+        assert!(is_tool_id("n1") && is_tool_id(&"a".repeat(128)));
+        assert!(!is_tool_id("") && !is_tool_id(&"a".repeat(129)) && !is_tool_id("n 1") && !is_tool_id("n/1"));
+    }
+
+    #[test]
+    fn tool_call_from_owner_runs_and_result_reaches_the_worker() {
+        let mut r = fake(|_| {}, None);
+        r.offer(inbound(20, "owner-pc", &tool_prompt("room_invite", serde_json::json!({"room": "family", "device": "jungin-iphone-1b89e3"})))).unwrap();
+        let got = pump_until(&mut r, 1);
+        assert_eq!(
+            got[0],
+            Outbound::ToolCall { tool_id: "n1".into(), name: "room_invite".into(), op: "invite".into(), room: "family".into(), arg: "jungin-iphone-1b89e3".into() }
+        );
+        assert_eq!(r.pending_tool.as_deref(), Some("n1"));
+        // A wrong id is dropped: the worker would have ended the turn on it.
+        r.tool_result("zzz", Err("nope".into()));
+        assert_eq!(r.pending_tool.as_deref(), Some("n1"));
+        r.tool_result("n1", Ok(serde_json::json!({ "op": "invite", "room": "family", "seq": 9, "ok": true })));
+        assert!(r.pending_tool.is_none());
+        let got = pump_until(&mut r, 1);
+        let frame = echoed_tool_result(&got[0]);
+        assert_eq!(frame["type"], "tool-result");
+        assert_eq!(frame["turn_id"], "t-20");
+        assert_eq!(frame["tool_id"], "n1");
+        assert_eq!(frame["ok"], true);
+        assert_eq!(frame["result"]["seq"], 9);
+        assert_eq!(frame["result"]["ok"], true);
+        assert!(frame.get("error").is_none());
+        assert!(r.active.is_none());
+        // A second turn is independent: the error path formats `error`.
+        r.offer(inbound(21, "owner-pc", &tool_prompt("room_status", serde_json::json!({})))).unwrap();
+        let got = pump_until(&mut r, 1);
+        assert!(matches!(&got[0], Outbound::ToolCall { op, room, arg, .. } if op == "status" && room == "-" && arg.is_empty()), "{got:?}");
+        r.tool_result("n1", Err("steward_only".into()));
+        let frame = echoed_tool_result(&pump_until(&mut r, 1)[0]);
+        assert_eq!((frame["ok"].as_bool(), frame["error"].as_str(), frame["turn_id"].as_str()), (Some(false), Some("steward_only"), Some("t-21")));
+    }
+
+    #[test]
+    fn tool_call_from_non_owner_is_refused_without_executing() {
+        let mut r = fake(|_| {}, None);
+        r.offer(inbound(30, "mom-iphone-1", &tool_prompt("room_invite", serde_json::json!({"room": "family", "device": "jungin-iphone-1b89e3"})))).unwrap();
+        let got = pump_until(&mut r, 1);
+        assert!(!got.iter().any(|o| matches!(o, Outbound::ToolCall { .. })), "{got:?}");
+        let frame = echoed_tool_result(&got[0]);
+        assert_eq!((frame["ok"].as_bool(), frame["error"].as_str(), frame["tool_id"].as_str()), (Some(false), Some("owner_only"), Some("n1")));
+        assert!(r.pending_tool.is_none());
+    }
+
+    #[test]
+    fn tool_call_with_bad_arguments_is_refused() {
+        let mut r = fake(|_| {}, None);
+        r.offer(inbound(31, "owner-pc", &tool_prompt("room_invite", serde_json::json!({"room": "family"})))).unwrap();
+        let got = pump_until(&mut r, 1);
+        assert!(!got.iter().any(|o| matches!(o, Outbound::ToolCall { .. })), "{got:?}");
+        let frame = echoed_tool_result(&got[0]);
+        assert_eq!((frame["ok"].as_bool(), frame["error"].as_str()), (Some(false), Some("bad_arguments")));
+        // Unknown tool name, same answer — even from the owner.
+        r.offer(inbound(32, "owner-pc", &tool_prompt("room_destroy", serde_json::json!({"room": "family"})))).unwrap();
+        let frame = echoed_tool_result(&pump_until(&mut r, 1)[0]);
+        assert_eq!(frame["error"], "bad_arguments");
+    }
+
+    #[test]
+    fn second_tool_call_while_one_is_pending_is_busy() {
+        let mut r = fake(|_| {}, None);
+        r.offer(inbound(33, "owner-pc", &format!("tool2 {}", serde_json::json!({ "name": "room_members", "arguments": {"room": "family"} })))).unwrap();
+        // n1 becomes the call; n2 is answered `busy` at once, which ends the fake worker's turn.
+        let got = pump_until(&mut r, 2);
+        assert!(matches!(&got[0], Outbound::ToolCall { tool_id, op, .. } if tool_id == "n1" && op == "members"), "{got:?}");
+        let frame = echoed_tool_result(&got[1]);
+        assert_eq!((frame["tool_id"].as_str(), frame["error"].as_str()), (Some("n2"), Some("busy")));
+        assert!(r.pending_tool.is_none(), "the turn ended; the late n1 answer is dropped");
+        assert!(r.active.is_none());
+    }
+
+    #[test]
+    fn steward_tool_approval_shows_name_and_arguments() {
+        let mut r = fake(|_| {}, None);
+        r.offer(inbound(40, "owner-pc", "askroom please")).unwrap();
+        let got = pump_until(&mut r, 1);
+        match &got[0] {
+            Outbound::ApprovalRequest { n, seq, text } => {
+                assert_eq!((*n, *seq), (1, 40));
+                assert_eq!(
+                    text,
+                    "⚠️ 승인 필요 #1: 방 명령 room_invite · device=jungin-iphone-1b89e3 · room=family\n답장: 「승인 1」 또는 「거절 1」 (owner 만)"
+                );
+                assert!(!text.contains("free text"), "the worker's description is not shown for steward tools");
+            }
+            other => panic!("expected approval request, got {other:?}"),
+        }
+        // Pure rendering: non-steward actions are unchanged; values are bounded.
+        assert_eq!(steward_tool_summary("room_status", None), "방 명령 room_status");
+        assert_eq!(steward_tool_summary("room_mode", Some(&serde_json::json!({"mode": "agent", "room": "r", "n": 3}))), "방 명령 room_mode · mode=agent · n=3 · room=r");
+        let long = steward_tool_summary("room_join", Some(&serde_json::json!({"room": "x".repeat(200)})));
+        assert!(long.len() < 120, "{long}");
+    }
+
+    #[test]
+    fn inbox_without_sender_device_still_loads() {
+        let inbox: Inbox = serde_json::from_str(r#"{"version":1,"active":{"seq":4,"turn_id":"t-4","started_at":1}}"#).unwrap();
+        let active = inbox.active.unwrap();
+        assert_eq!((active.seq, active.turn_id.as_str(), active.sender_device.as_str()), (4, "t-4", ""));
     }
 
     #[test]
