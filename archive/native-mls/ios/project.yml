@@ -53,7 +53,8 @@ targets:
         FamilyChatAppGroup: $(FC_APP_GROUP)
         # APNs topic(= 이 앱의 Bundle ID, §12-D). 릴레이 -apns-topics 허용목록과 같아야 한다.
         FamilyChatPushTopic: $(FC_PUSH_TOPIC)
-        # 참여 요청 화면이 미리 채우는 대화방 ID(공개 식별자). 비면 앱 기본 "family-acc".
+        # 참여 요청 화면이 미리 채우는 대화방 ID(공개 식별자). 비면 앱 기본 "family"(사람 가족 방).
+        # 오너·봇 에이전트 방(`family-acc`)을 기본으로 두면 가족 기기가 엉뚱한 방에 key package 를 게시한다(#383).
         FamilyChatDefaultRoom: $(FC_DEFAULT_ROOM)
         # 로그인 콜백 고정 스킴(§12-C A): 릴레이 `GET /v2/app-login` 이 `hande://auth#jwt=…&state=…` 로 돌려준다.
         # server/applogin.go `appLoginCallback` · App/AppLogin.swift `callbackScheme` 과 같아야 한다.
@@ -79,7 +80,7 @@ targets:
         FC_RELAY_URL: ""
         FC_APP_GROUP: ""
         FC_PUSH_TOPIC: $(PRODUCT_BUNDLE_IDENTIFIER)
-        FC_DEFAULT_ROOM: family-acc
+        FC_DEFAULT_ROOM: family
         FC_APS_ENVIRONMENT: development
         # 정적 라이브러리 + 헤더 모듈맵: 모듈 검색 경로를 xcframework 헤더로
         OTHER_LDFLAGS: ["-lc++"]

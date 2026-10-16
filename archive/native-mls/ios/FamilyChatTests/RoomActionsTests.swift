@@ -52,8 +52,8 @@ final class RoomActionsTests: XCTestCase {
     }
 
     func testDefaultRoomComesFromDependencies() async {
-        XCTAssertEqual(AppModel(dependencies: deps(actor: "owner", identity: { "owner-iphone-1" })).defaultRoom, "family-acc")
-        XCTAssertEqual(AppModel(dependencies: deps(actor: "owner", identity: { "owner-iphone-1" }, defaultRoom: "family")).defaultRoom, "family")
+        XCTAssertEqual(AppModel(dependencies: deps(actor: "owner", identity: { "owner-iphone-1" })).defaultRoom, "family")
+        XCTAssertEqual(AppModel(dependencies: deps(actor: "owner", identity: { "owner-iphone-1" }, defaultRoom: "family-acc")).defaultRoom, "family-acc")
     }
 
     func testCreateRoomListsTheRoomAtOnce() async throws {

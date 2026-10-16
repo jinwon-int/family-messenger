@@ -54,7 +54,7 @@ enum Strings {
     static let joinTitle = "대화방 참여 요청"
     static let joinField = "대화방 ID"
     static let joinButton = "참여 요청"
-    static let joinHint = "이 기기의 키 패키지(공개 정보)를 대화방에 게시합니다. 운영자가 다른 기기의 '초대'로 받아들이면 대화가 시작됩니다. 메시지나 비밀키는 보내지 않습니다."
+    static let joinHint = "운영자가 알려준 대화방 ID를 그대로 입력하세요(가족 대화방은 보통 family). 이 기기의 키 패키지(공개 정보)를 그 대화방에 게시합니다. 운영자가 다른 기기의 '초대'로 받아들이면 대화가 시작됩니다. 메시지나 비밀키는 보내지 않습니다."
     static let joinRequested = "참여를 요청했습니다. 운영자의 초대를 기다려 주세요."
     static func joinFailed(_ reason: String) -> String { "참여 요청에 실패했습니다: \(reason)" }
     static let close = "닫기"
