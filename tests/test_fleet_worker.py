@@ -620,6 +620,16 @@ class StewardToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(session_request_supports(New,'mcp_servers'))
         self.assertFalse(session_request_supports(object,'mcp_servers'))
 
+    def test_read_only_allow_list_never_includes_write_tools(self):
+        from fleet_worker import STEWARD_READ_ONLY, STEWARD_TOOLS, steward_allowed_tools
+        self.assertEqual(set(STEWARD_READ_ONLY),{'room_status','room_members'})
+        self.assertTrue(set(STEWARD_READ_ONLY)<=set(STEWARD_TOOLS))
+        allowed=steward_allowed_tools()
+        self.assertEqual(sorted(allowed),['mcp__steward__room_members','mcp__steward__room_status'])
+        for name in ('room_create','room_join','room_invite','room_remove','room_mode'):
+            self.assertNotIn('mcp__steward__'+name,allowed)
+        self.assertEqual(steward_allowed_tools(approve_all=True),[])
+
     async def test_sdk_server_exposes_every_steward_tool(self):
         try:
             import claude_agent_sdk  # noqa: F401
