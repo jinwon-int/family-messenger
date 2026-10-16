@@ -50,7 +50,8 @@ STEWARD_TOOLS = {
                     '새 E2EE 대화방을 만든다(봇이 방장). mode 는 agent|silent(기본 silent: 봇이 답하지 않음). '
                     '릴레이에는 첫 초대 때 생긴다. 오너(owner actor)가 보낸 메시지의 turn 에서만 실행된다.'),
     'room_join': (('room',), (),
-                  '다른 기기가 만든 방에 참여 요청(key package 게시). 그 방의 멤버가 봇을 초대해야 들어간다. 오너 turn 전용.'),
+                  '다른 기기가 만든 방에 참여 요청(key package 게시). 그 방의 멤버가 봇을 초대해야 들어간다. '
+                  '오너 turn 전용.'),
     'room_invite': (('room', 'device'), (),
                     '기기를 방에 초대한다. 상대 기기가 먼저 그 방에 「참여 요청」(key package)을 해 두어야 한다. '
                     'device 는 기기 ID(예: jungin-iphone-1b89e3). 오너 turn 전용.'),

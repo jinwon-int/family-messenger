@@ -538,7 +538,8 @@ class StewardToolTests(unittest.IsolatedAsyncioTestCase):
         await self.start_turn(w,out)
         call=asyncio.create_task(w._tool('room_remove',{'room':'family','device':'owner-pc'}))
         frame=await self.wait_for(out,'tool')
-        await w.handle({'type':'tool-result','turn_id':'one','tool_id':frame['tool_id'],'ok':False,'error':'owner_only'})
+        await w.handle({'type':'tool-result','turn_id':'one','tool_id':frame['tool_id'],
+                        'ok':False,'error':'owner_only'})
         result=await call
         self.assertTrue(result['is_error'])
         self.assertEqual(self.outcome(result),{'ok':False,'error':'owner_only'})
@@ -564,7 +565,8 @@ class StewardToolTests(unittest.IsolatedAsyncioTestCase):
             await w.handle({'type':'tool-result','turn_id':turn,'tool_id':tool_id,'ok':True,'result':{}})
             self.assertFalse(out[-1]['accepted'])
             self.assertFalse(first.done())
-        await w.handle({'type':'tool-result','turn_id':'one','tool_id':frame['tool_id'],'ok':True,'result':{'members':[]}})
+        await w.handle({'type':'tool-result','turn_id':'one','tool_id':frame['tool_id'],
+                        'ok':True,'result':{'members':[]}})
         self.assertTrue(self.outcome(await first)['ok'])
         await w.handle({'type':'tool-result','turn_id':'one','tool_id':frame['tool_id'],'ok':True,'result':{}})
         self.assertFalse(out[-1]['accepted'])
@@ -628,6 +630,7 @@ class StewardToolTests(unittest.IsolatedAsyncioTestCase):
         server=build_steward_server(w)
         self.assertEqual(server['type'],'sdk')
         self.assertEqual(server['name'],'steward')
-        names=sorted(t.name for t in server['instance']._tools.values()) if hasattr(server['instance'],'_tools') else None
+        instance=server['instance']
+        names=sorted(t.name for t in instance._tools.values()) if hasattr(instance,'_tools') else None
         if names is not None:
             self.assertEqual(names,sorted(STEWARD_TOOLS))
