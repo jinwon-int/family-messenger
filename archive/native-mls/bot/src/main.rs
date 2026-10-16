@@ -6,10 +6,17 @@
 //! publish a key package, join on the Welcome, apply commits, and echo every
 //! application message back (see `session.rs`).
 
-mod api;
-mod b64;
-mod http;
-mod policy;
+/// Relay client, HTTP, base64 and commit policy live in the shared host crate (#366) so the
+/// Android app runs the same code; the bot keeps its historical name for the error type.
+mod api {
+    pub use native_mls_host::api::RelayError as BotError;
+    pub use native_mls_host::api::*;
+}
+use native_mls_host::policy;
+/// `session.rs` tests (#380 P5 lobby fixtures) reach base64 as `crate::b64`; keep that path
+/// without pulling an unused import into the release build.
+#[cfg(test)]
+use native_mls_host::b64;
 mod responder;
 mod session;
 

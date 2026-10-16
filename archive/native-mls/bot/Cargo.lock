@@ -1178,10 +1178,20 @@ name = "native-mls-bot"
 version = "0.1.0"
 dependencies = [
  "family-mls-browser-experiment",
+ "native-mls-host",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "zeroize",
+]
+
+[[package]]
+name = "native-mls-host"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]

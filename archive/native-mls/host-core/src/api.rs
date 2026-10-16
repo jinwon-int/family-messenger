@@ -23,7 +23,7 @@ mod wire_bytes {
 }
 
 #[derive(Debug)]
-pub enum BotError {
+pub enum RelayError {
     Http(HttpError),
     Json(serde_json::Error),
     /// Relay answered with its structured error envelope.
@@ -43,22 +43,22 @@ pub enum BotError {
     AccessUnavailable(&'static str),
 }
 
-impl std::fmt::Display for BotError {
+impl std::fmt::Display for RelayError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BotError::Http(e) => write!(f, "{e}"),
-            BotError::Json(e) => write!(f, "json: {e}"),
-            BotError::Api { status, code } => write!(f, "relay error {status}: {code}"),
-            BotError::Status { status } => write!(f, "relay status {status}"),
-            BotError::Local(what) => write!(f, "local error: {what}"),
-            BotError::Detail(what) => write!(f, "local error: {what}"),
-            BotError::AccessUnavailable(what) => write!(f, "access token unavailable: {what}"),
+            RelayError::Http(e) => write!(f, "{e}"),
+            RelayError::Json(e) => write!(f, "json: {e}"),
+            RelayError::Api { status, code } => write!(f, "relay error {status}: {code}"),
+            RelayError::Status { status } => write!(f, "relay status {status}"),
+            RelayError::Local(what) => write!(f, "local error: {what}"),
+            RelayError::Detail(what) => write!(f, "local error: {what}"),
+            RelayError::AccessUnavailable(what) => write!(f, "access token unavailable: {what}"),
         }
     }
 }
 
-impl From<HttpError> for BotError {
-    fn from(e: HttpError) -> Self { BotError::Http(e) }
+impl From<HttpError> for RelayError {
+    fn from(e: HttpError) -> Self { RelayError::Http(e) }
 }
 
 /// The relay's identifier rule (`server.go` validIdentifier / roomParam):
@@ -72,21 +72,21 @@ pub fn is_identifier(s: &str) -> bool {
         && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// `is_identifier` as a `BotError::Local` for CLI arguments.
+/// `is_identifier` as a `RelayError::Local` for CLI arguments.
 pub fn require_identifier(what: &'static str, s: &str) -> Result<()> {
-    if is_identifier(s) { Ok(()) } else { Err(BotError::Local(what)) }
+    if is_identifier(s) { Ok(()) } else { Err(RelayError::Local(what)) }
 }
 
-impl From<serde_json::Error> for BotError {
-    fn from(e: serde_json::Error) -> Self { BotError::Json(e) }
+impl From<serde_json::Error> for RelayError {
+    fn from(e: serde_json::Error) -> Self { RelayError::Json(e) }
 }
 
-pub type Result<T> = std::result::Result<T, BotError>;
+pub type Result<T> = std::result::Result<T, RelayError>;
 
 /// The relay's structured error code, when the error carries one.
-pub fn error_code(err: &BotError) -> Option<&str> {
+pub fn error_code(err: &RelayError) -> Option<&str> {
     match err {
-        BotError::Api { code, .. } => Some(code.as_str()),
+        RelayError::Api { code, .. } => Some(code.as_str()),
         _ => None,
     }
 }
@@ -227,17 +227,17 @@ impl Access {
             Access::Static(raw) => {
                 let token = raw.trim();
                 if token.is_empty() {
-                    Err(BotError::Local("access token (env) is empty"))
+                    Err(RelayError::Local("access token (env) is empty"))
                 } else {
                     Ok(Some(token.to_string()))
                 }
             }
             Access::File(path) => {
                 let raw = std::fs::read_to_string(path)
-                    .map_err(|_| BotError::AccessUnavailable("access token file unreadable"))?;
+                    .map_err(|_| RelayError::AccessUnavailable("access token file unreadable"))?;
                 let token = raw.trim();
                 if token.is_empty() {
-                    Err(BotError::AccessUnavailable("access token file is empty"))
+                    Err(RelayError::AccessUnavailable("access token file is empty"))
                 } else {
                     Ok(Some(token.to_string()))
                 }
@@ -312,7 +312,7 @@ impl Client {
             {
                 return Ok(None);
             }
-            return Err(BotError::Api { status: 404, code: body["error"].as_str().unwrap_or("?").into() });
+            return Err(RelayError::Api { status: 404, code: body["error"].as_str().unwrap_or("?").into() });
         }
         let pkg: StoredKeyPackage = serde_json::from_slice(self.checked(resp)?.as_slice())?;
         Ok(Some(pkg))
@@ -353,10 +353,10 @@ impl Client {
         Ok(serde_json::from_slice(&body)?)
     }
 
-    fn envelope(&self, status: u16, body: Vec<u8>) -> BotError {
+    fn envelope(&self, status: u16, body: Vec<u8>) -> RelayError {
         match serde_json::from_slice::<ApiErrorBody>(&body) {
-            Ok(parsed) => BotError::Api { status, code: parsed.error },
-            Err(_) => BotError::Status { status },
+            Ok(parsed) => RelayError::Api { status, code: parsed.error },
+            Err(_) => RelayError::Status { status },
         }
     }
 }
@@ -419,7 +419,7 @@ mod tests {
         let path = dir.join("token");
         let access = Access::File(path.clone());
 
-        assert!(matches!(access.token(), Err(BotError::AccessUnavailable("access token file unreadable"))));
+        assert!(matches!(access.token(), Err(RelayError::AccessUnavailable("access token file unreadable"))));
 
         std::fs::write(&path, "tok-1\n").expect("write");
         assert_eq!(access.token().expect("token").as_deref(), Some("tok-1"));
@@ -430,7 +430,7 @@ mod tests {
 
         // Whitespace-only fails closed.
         std::fs::write(&path, "  \n").expect("blank");
-        assert!(matches!(access.token(), Err(BotError::AccessUnavailable("access token file is empty"))));
+        assert!(matches!(access.token(), Err(RelayError::AccessUnavailable("access token file is empty"))));
 
         std::fs::remove_dir_all(&dir).ok();
     }
