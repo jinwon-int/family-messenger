@@ -76,10 +76,17 @@ room_invite / room_remove / room_members / room_mode / room_status`를 모델에
   취소(`cancel`)는 대기 중인 도구 호출을 `cancelled`로 닫는다.
 - 결과는 MCP 텍스트(JSON 한 줄)로 모델에 돌아간다. `ok=false`면 `is_error`.
 
-권한은 바뀌지 않는다: `--claude-permission-mode default`면 도구 호출마다 SDK `can_use_tool`
-→ 이 포트의 `approval` 왕복(방의 `⚠️ 승인 필요 #n`)이 먼저 일어나므로 오너가 명령마다 확인한다.
-`--steward-tools`는 ccc-node `SessionRequest.mcp_servers`(ccc-node #2340)가 있어야 하며, 없으면
-시작 시 `ValueError`로 멈춘다(조용히 도구 없이 뜨지 않는다).
+권한: `--claude-permission-mode default`면 **변경 도구**(`room_create / room_join / room_invite /
+room_remove / room_mode`) 호출마다 SDK `can_use_tool` → 이 포트의 `approval` 왕복(방의
+`⚠️ 승인 필요 #n`)이 먼저 일어나므로 오너가 명령마다 확인한다. **읽기 전용 도구**
+`room_status`·`room_members`는 부수 효과가 없어 기본으로 승인 없이 실행된다(#378): worker가
+`SessionRequest.mcp_allowed_tools=["mcp__steward__room_status","mcp__steward__room_members"]`를
+넘기고 ccc-node가 이를 SDK allow-list에 넣는다(ccc-node는 호출자 자신의 서버 도구만 받으므로
+`Bash`나 다른 번들 도구는 이 경로로 열 수 없다). 봇의 owner-only 검사는 승인 유무와 무관하게
+모든 호출에 적용된다. 전부 승인받게 하려면 `--steward-tools-approve-all`.
+`--steward-tools`는 ccc-node `SessionRequest.mcp_servers`(ccc-node #2340)가, 읽기 전용 승인 생략은
+`mcp_allowed_tools`(ccc-node #2345)가 있어야 하며, 없으면 시작 시 `ValueError`로 멈춘다(조용히 다른
+동작으로 뜨지 않는다).
 
 부모는 Matrix 발신자·방 허용 목록을 먼저 검사한다. 승인도 요청을 받은 동일한
 계정/방/발신자에게만 라우팅한다. 이 프로토콜 자체는 네트워크 인증 수단이 아니다.

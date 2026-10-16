@@ -58,13 +58,25 @@ STEWARD_TOOLS = {
     'room_remove': (('room', 'device'), (),
                     '기기를 방에서 제거한다(되돌릴 수 없음 — 다시 초대해야 한다). 오너 turn 전용.'),
     'room_members': (('room',), (),
-                     '방의 멤버 기기와 epoch·cursor 를 본다. 오너 turn 전용.'),
+                     '방의 멤버 기기와 epoch·cursor 를 본다(읽기 전용). 오너 turn 전용.'),
     'room_mode': (('room', 'mode'), (),
                   '방 모드를 바꾼다: agent(봇이 답함, 한 방만) | silent(듣기만). 오너 turn 전용.'),
     'room_status': ((), (),
-                    '봇이 아는 모든 방의 상태(joined·epoch·cursor·mode·pending)를 본다. 오너 turn 전용.'),
+                    '봇이 아는 모든 방의 상태(joined·epoch·cursor·mode·pending)를 본다(읽기 전용). 오너 turn 전용.'),
 }
 TOOL_ARG_SCHEMA = {'room': str, 'device': str, 'mode': str}
+# Read-only steward tools (#378): no MLS/relay side effect, so they may run without the
+# per-call room approval. Everything else (create/join/invite/remove/mode) keeps asking.
+# The parent bot still enforces owner-only on every call regardless of this list.
+STEWARD_READ_ONLY = ('room_status', 'room_members')
+
+
+def steward_allowed_tools(approve_all=False):
+    """SDK allow-list names (``mcp__steward__<tool>``) for the approval-free read-only tools."""
+    if approve_all:
+        return []
+    names = [name for name in STEWARD_READ_ONLY if name in STEWARD_TOOLS]
+    return ['mcp__%s__%s' % (STEWARD_SERVER, name) for name in names]
 
 
 def plain(value):
@@ -532,6 +544,15 @@ async def main(args):
         if not session_request_supports(SessionRequest, 'mcp_servers'):
             raise ValueError('ccc-node SessionRequest has no mcp_servers; update ccc-node before --steward-tools')
         request_options['mcp_servers'] = {STEWARD_SERVER: build_steward_server(worker)}
+        allowed = steward_allowed_tools(getattr(args, 'steward_tools_approve_all', False))
+        if allowed:
+            # Same fail-closed rule for the allow-list field (ccc-node #2345): an
+            # operator who expects approval-free status/members must not get a
+            # silent fallback to "every call asks" (or, worse, the reverse).
+            if not session_request_supports(SessionRequest, 'mcp_allowed_tools'):
+                raise ValueError('ccc-node SessionRequest has no mcp_allowed_tools; update ccc-node or pass '
+                                 '--steward-tools-approve-all')
+            request_options['mcp_allowed_tools'] = allowed
     try:
         await serve(worker, reader)
     finally:
@@ -584,6 +605,9 @@ if __name__ == '__main__':
                              'forwarded to the parent as a `tool` frame and gated by its owner check')
     parser.add_argument('--tool-timeout', type=float, default=90,
                         help='seconds to wait for the parent\'s tool-result before a tool call fails')
+    parser.add_argument('--steward-tools-approve-all', action='store_true',
+                        help='with --steward-tools: also ask the room before read-only tools (room_status/'
+                             'room_members); default lets those two run without approval (#378)')
     parser.add_argument('--memory-materializer', default=None,
                         help='ccc-node Codex memory materializer script (same as CCC_CODEX_MEMORY_MATERIALIZER_PATH)')
     parser.add_argument('--approval-policy', choices=APPROVAL_POLICIES, default='never')
