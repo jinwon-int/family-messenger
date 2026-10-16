@@ -39,9 +39,31 @@ native-mls-bot <base-url> session <room> <device> \
 
 응답기 출력(stdout JSON)에는 승인 인수·답변 본문이 들어 있다 — 봇 stdout(이벤트 로그)에는 길이·종류만 남긴다(`agent_outbound`), 본문은 방에만 간다.
 
+## 도구(P4, #372)
+
+응답기(`scripts/fleet_worker.py`)가 turn 도중 봇에게 **steward 방 명령**을 부탁하는 길. 같은 JSON-lines 포트 위에 프레임 두 개가 늘었다. 방 명령은 `steward` 모드(`STEWARD.md`)에서만 실제로 실행된다 — 단일 방 `session` 모드에서는 `steward_only` 로 거절.
+
+```
+워커 → 봇 (stdout)  {"type":"tool","turn_id":"t-12","tool_id":"<nonce>","name":"room_invite","arguments":{"room":"family","device":"jungin-iphone-1b89e3"}}
+봇 → 워커 (stdin)   {"type":"tool-result","turn_id":"t-12","tool_id":"<nonce>","ok":true,"result":{…Steward::execute 의 JSON, "ok":true…}}
+                    {"type":"tool-result","turn_id":"t-12","tool_id":"<nonce>","ok":false,"error":"<이유>"}
+```
+
+| 규칙 | 구현 |
+|---|---|
+| 활성 turn 에만 | `turn_id` 가 활성 turn 과 다르거나(비어 있어도) turn 이 없으면 무시. `tool_id` 는 `[A-Za-z0-9_-]{1,128}`(아니면 무시) |
+| 인수 검증 | `name` ∈ `room_create{room, mode?=silent}` · `room_join{room}` · `room_invite{room, device}` · `room_remove{room, device}` · `room_members{room}` · `room_mode{room, mode}` · `room_status{}`. 값은 모두 문자열 `[A-Za-z0-9_-]{1,64}`, `mode` 는 `agent|silent`, 모르는 키·빠진 키는 거절 → `error:"bad_arguments"`(즉시, 방에는 안 나감) |
+| **owner 만** | turn 을 시작한 메시지의 발신 기기 actor(첫 `-` 앞)가 `--owner-actor` 와 다르면 `error:"owner_only"`(즉시, 실행 없음). 가족이 "정인 넣어줘"라고 해도 봇이 방을 건드리지 않는다 — 오너가 직접 말해야 한다 |
+| 한 번에 하나 | turn 당 미응답 tool 1개. 그 사이 둘째 `tool` 은 `error:"busy"` |
+| 실행 | 폴 루프가 `Steward::execute` 로 실행(명령 큐 `cmd/`·`out/` 와 같은 코드, 파일은 안 거침). 실행 오류는 `ok:false, error:<execute 의 메시지>`. turn 이 끝나면(result/rejected/워치독) 미응답 tool 은 버려진다 |
+| 승인 문구 | 워커 쪽 승인 `action` 이 `mcp__steward__room_*` 이면 방에는 description 대신 **이름과 인수**를 보인다: `⚠️ 승인 필요 #n: 방 명령 room_invite · device=jungin-iphone-1b89e3 · room=family`(키 정렬, 값 64바이트 제한). 다른 action 은 기존 그대로 |
+| inbox | `<state>.inbox.json` 의 활성 turn 에 `sender_device` 가 추가됐다(owner 판정용). 없는 옛 파일도 그대로 읽힌다(version 1 유지) |
+
+이름 → steward 명령: `room_create→create <room> [mode]` · `room_join→join <room>` · `room_invite→invite <room> <device>` · `room_remove→remove <room> <device>` · `room_members→members <room>` · `room_mode→mode <room> <mode>` · `room_status→status`(room 자리는 `-`).
+
 ## 이벤트 (stdout JSON lines)
 
-`agent_started` · `agent_offer{seq, from, outcome}` · `agent_skipped{seq, reason}` · `agent_approval_reply{n, allow, known}` · `agent_outbound{kind, bytes}` · `agent_outbound_dropped{reason}` · `agent_worker_gone{reason}`
+`agent_started` · `agent_offer{seq, from, outcome}` · `agent_skipped{seq, reason}` · `agent_approval_reply{n, allow, known}` · `agent_outbound{kind, bytes}` · `agent_outbound_dropped{reason}` · `agent_worker_gone{reason}` · `agent_tool{name, op, room, arg, ok}`(P4: 실행 요약만 — 기기·방 식별자, 본문 없음)
 
 ## 바꾸지 않은 것
 

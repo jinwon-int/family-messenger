@@ -36,6 +36,34 @@ CLAUDE_PERMISSION_MODES = ('default', 'acceptEdits', 'plan', 'dontAsk', 'auto')
 ROOM_KINDS = ('direct', 'family')
 NAME_RE = re.compile(r'[A-Za-z0-9._-]{1,64}')
 SENDER_RE = re.compile(r'@[a-zA-Z0-9._=-]{1,200}:[a-zA-Z0-9.:-]{1,64}')
+# Steward room tools (#372 P4). The model calls `mcp__steward__<name>`; this port
+# forwards one `tool` frame to the parent (the native-mls bot), which checks that
+# the active turn's sender is the owner actor and runs the room command itself.
+# Every call still passes the SDK permission mode (`default` → approve/deny round
+# trip in the room), so the owner confirms each command before it runs.
+TOOL_ARG_RE = re.compile(r'[A-Za-z0-9_-]{1,64}')
+TOOL_ID_RE = re.compile(r'[A-Za-z0-9_-]{1,128}')
+STEWARD_SERVER = 'steward'
+STEWARD_TOOLS = {
+    # name: (required arguments, optional arguments, model-facing description)
+    'room_create': (('room',), ('mode',),
+                    '새 E2EE 대화방을 만든다(봇이 방장). mode 는 agent|silent(기본 silent: 봇이 답하지 않음). '
+                    '릴레이에는 첫 초대 때 생긴다. 오너(owner actor)가 보낸 메시지의 turn 에서만 실행된다.'),
+    'room_join': (('room',), (),
+                  '다른 기기가 만든 방에 참여 요청(key package 게시). 그 방의 멤버가 봇을 초대해야 들어간다. 오너 turn 전용.'),
+    'room_invite': (('room', 'device'), (),
+                    '기기를 방에 초대한다. 상대 기기가 먼저 그 방에 「참여 요청」(key package)을 해 두어야 한다. '
+                    'device 는 기기 ID(예: jungin-iphone-1b89e3). 오너 turn 전용.'),
+    'room_remove': (('room', 'device'), (),
+                    '기기를 방에서 제거한다(되돌릴 수 없음 — 다시 초대해야 한다). 오너 turn 전용.'),
+    'room_members': (('room',), (),
+                     '방의 멤버 기기와 epoch·cursor 를 본다. 오너 turn 전용.'),
+    'room_mode': (('room', 'mode'), (),
+                  '방 모드를 바꾼다: agent(봇이 답함, 한 방만) | silent(듣기만). 오너 turn 전용.'),
+    'room_status': ((), (),
+                    '봇이 아는 모든 방의 상태(joined·epoch·cursor·mode·pending)를 본다. 오너 turn 전용.'),
+}
+TOOL_ARG_SCHEMA = {'room': str, 'device': str, 'mode': str}
 
 
 def plain(value):
@@ -62,6 +90,8 @@ def harness_options(args, environment):
     provider = getattr(args, 'provider', 'codex') or 'codex'
     if provider not in PROVIDERS:
         raise ValueError('unknown provider')
+    if provider != 'claude' and getattr(args, 'steward_tools', False):
+        raise ValueError('--steward-tools needs --provider claude (SDK MCP tools)')
     if provider == 'claude':
         if getattr(args, 'memory_materializer', None) is not None:
             raise ValueError('memory materializer is a Codex binding; Claude reads the harness from the workdir')
@@ -124,15 +154,18 @@ def compose_prompt(body, sender=None, room_kind=None):
 
 class Worker:
     def __init__(self, runtime, emit, request_factory, allow, deny, *,
-                 turn_timeout=900, approval_timeout=120):
-        for value in (turn_timeout, approval_timeout):
+                 turn_timeout=900, approval_timeout=120, tool_timeout=90):
+        for value in (turn_timeout, approval_timeout, tool_timeout):
             if not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
                 raise ValueError('timeouts must be finite and positive')
         self.runtime, self.emit, self.request_factory = runtime, emit, request_factory
         self.allow, self.deny = allow, deny
         self.turn_timeout, self.approval_timeout = turn_timeout, approval_timeout
+        self.tool_timeout = tool_timeout
         self.task = self.session = self.turn_id = None
         self.pending = {}
+        # tool_id -> future resolved by the parent's `tool-result` frame (#372 P4).
+        self.tool_pending = {}
         self.closed = False
         self.stopping = False
         self.failed = asyncio.Event()
@@ -181,6 +214,20 @@ class Worker:
             if matched:
                 future.set_result(self.allow if kind == 'approve' else self.deny)
             await self.emit({'type': 'control', 'turn_id': turn_id, 'accepted': matched})
+        elif kind == 'tool-result':
+            tool_id = command.get('tool_id')
+            future = self.tool_pending.get(tool_id) if isinstance(tool_id, str) else None
+            matched = turn_id == self.turn_id and future is not None and not future.done()
+            if matched:
+                ok = command.get('ok') is True
+                outcome = {'ok': ok}
+                if ok:
+                    outcome['result'] = plain(command.get('result'))
+                else:
+                    error = command.get('error')
+                    outcome['error'] = error if isinstance(error, str) and error else 'steward_error'
+                future.set_result(outcome)
+            await self.emit({'type': 'control', 'turn_id': turn_id, 'accepted': matched})
         elif kind == 'cancel':
             matched = (turn_id == self.turn_id and self.task is not None
                        and not self.task.done() and not self.stopping)
@@ -189,6 +236,9 @@ class Worker:
                 for future in self.pending.values():
                     if not future.done():
                         future.set_result(self.deny)
+                for future in self.tool_pending.values():
+                    if not future.done():
+                        future.set_result({'ok': False, 'error': 'cancelled'})
                 self.task.cancel()
             await self.emit({'type': 'control', 'turn_id': turn_id, 'accepted': matched})
         else:
@@ -226,6 +276,47 @@ class Worker:
             return decision
         finally:
             self.pending.pop(approval_id, None)
+
+    async def _tool(self, name, arguments):
+        """Run one steward room tool through the parent (#372 P4).
+
+        Returns an MCP tool result (``content`` text = outcome JSON; ``is_error``
+        when the parent refused or did not answer). Validation is strict and
+        happens here so the parent only ever sees well-formed frames; the
+        parent still re-checks everything and enforces owner-only.
+        """
+        spec = STEWARD_TOOLS.get(name)
+        if spec is None:
+            return _tool_result({'ok': False, 'error': 'unknown_tool'})
+        required, optional, _ = spec
+        if not isinstance(arguments, Mapping):
+            return _tool_result({'ok': False, 'error': 'bad_arguments'})
+        clean = {}
+        for key, value in arguments.items():
+            if key not in required and key not in optional:
+                return _tool_result({'ok': False, 'error': 'bad_arguments'})
+            if not isinstance(value, str) or not TOOL_ARG_RE.fullmatch(value):
+                return _tool_result({'ok': False, 'error': 'bad_arguments'})
+            clean[key] = value
+        if any(key not in clean for key in required):
+            return _tool_result({'ok': False, 'error': 'bad_arguments'})
+        if self.turn_id is None or self.stopping:
+            return _tool_result({'ok': False, 'error': 'no_active_turn'})
+        if self.tool_pending:
+            return _tool_result({'ok': False, 'error': 'busy'})
+        tool_id = secrets.token_urlsafe(24)
+        future = asyncio.get_running_loop().create_future()
+        self.tool_pending[tool_id] = future
+        try:
+            await self.emit({'type': 'tool', 'turn_id': self.turn_id, 'tool_id': tool_id,
+                             'name': name, 'arguments': clean})
+            try:
+                outcome = await asyncio.wait_for(future, self.tool_timeout)
+            except TimeoutError:
+                outcome = {'ok': False, 'error': 'steward_timeout'}
+        finally:
+            self.tool_pending.pop(tool_id, None)
+        return _tool_result(outcome)
 
     async def _interrupt(self):
         if self.session is not None:
@@ -314,6 +405,51 @@ class Worker:
         await asyncio.wait_for(self.runtime.close(), 10)
 
 
+def _tool_result(outcome):
+    """MCP tool result for one steward outcome; the model reads the JSON text."""
+    text = json.dumps(outcome, ensure_ascii=False, sort_keys=True)
+    if len(text.encode('utf-8')) > MAX_TEXT_BYTES:
+        outcome = {'ok': False, 'error': 'result_too_large'}
+        text = json.dumps(outcome, ensure_ascii=False, sort_keys=True)
+    result = {'content': [{'type': 'text', 'text': text}]}
+    if not outcome.get('ok'):
+        result['is_error'] = True
+    return result
+
+
+def steward_tool_schema(name):
+    """JSON-schema-ish dict for the SDK ``tool`` decorator: declared arguments only."""
+    required, optional, _ = STEWARD_TOOLS[name]
+    return {key: TOOL_ARG_SCHEMA[key] for key in required + optional}
+
+
+def build_steward_server(worker):
+    """In-process SDK MCP server exposing the steward room tools (#372 P4).
+
+    Imported lazily: the Claude Agent SDK is only present where ``--provider
+    claude`` runs. Each tool forwards to ``worker._tool``; nothing here touches
+    MLS state or the relay — the parent bot does, after its owner check.
+    """
+    from claude_agent_sdk import create_sdk_mcp_server, tool
+    tools = []
+    for name, (required, optional, description) in STEWARD_TOOLS.items():
+        def make(tool_name):
+            async def handler(arguments):
+                return await worker._tool(tool_name, arguments)
+            return handler
+        tools.append(tool(name, description, steward_tool_schema(name))(make(name)))
+    return create_sdk_mcp_server(name=STEWARD_SERVER, version='1.0.0', tools=tools)
+
+
+def session_request_supports(cls, field):
+    """Whether this ccc-node checkout's SessionRequest carries ``field`` (fail-closed probe)."""
+    import dataclasses
+    try:
+        return any(f.name == field for f in dataclasses.fields(cls))
+    except TypeError:
+        return False
+
+
 async def serve(worker, reader):
     failure = asyncio.create_task(worker.failed.wait())
     reading = None
@@ -386,7 +522,15 @@ async def main(args):
     def request(session_id):
         return SessionRequest(session_id=session_id, **request_options)
     worker = Worker(runtime, emit, request, ApprovalDecision.ALLOW, ApprovalDecision.DENY,
-                    turn_timeout=args.turn_timeout, approval_timeout=getattr(args, 'approval_timeout', 120))
+                    turn_timeout=args.turn_timeout, approval_timeout=getattr(args, 'approval_timeout', 120),
+                    tool_timeout=getattr(args, 'tool_timeout', 90))
+    if getattr(args, 'steward_tools', False):
+        # Fail closed on a ccc-node that predates SessionRequest.mcp_servers
+        # (ccc-node #2340): a silently dropped server would leave the model
+        # without the tools while the operator believes they are on.
+        if not session_request_supports(SessionRequest, 'mcp_servers'):
+            raise ValueError('ccc-node SessionRequest has no mcp_servers; update ccc-node before --steward-tools')
+        request_options['mcp_servers'] = {STEWARD_SERVER: build_steward_server(worker)}
     try:
         await serve(worker, reader)
     finally:
@@ -433,6 +577,12 @@ if __name__ == '__main__':
     parser.add_argument('--turn-timeout', type=float, default=900)
     parser.add_argument('--approval-timeout', type=float, default=120,
                         help='seconds a room may take to answer /approve before the request is denied')
+    parser.add_argument('--steward-tools', action='store_true',
+                        help='claude only (#372 P4): expose the steward room tools (room_create/join/invite/'
+                             'remove/members/mode/status) as an in-process SDK MCP server; each call is '
+                             'forwarded to the parent as a `tool` frame and gated by its owner check')
+    parser.add_argument('--tool-timeout', type=float, default=90,
+                        help='seconds to wait for the parent\'s tool-result before a tool call fails')
     parser.add_argument('--memory-materializer', default=None,
                         help='ccc-node Codex memory materializer script (same as CCC_CODEX_MEMORY_MATERIALIZER_PATH)')
     parser.add_argument('--approval-policy', choices=APPROVAL_POLICIES, default='never')
