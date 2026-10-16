@@ -36,6 +36,8 @@ func main() {
 	deviceBytesCap := flag.Int64("device-bytes-cap", 0, "override per-device event byte cap across rooms (bytes)")
 	keyPackagesMax := flag.Int("key-packages-max", 0, "override live key packages per device")
 	keyPackageTTL := flag.Int64("key-package-ttl-seconds", 0, "override key package TTL (seconds)")
+	lobbyKeyPackagesMax := flag.Int("lobby-key-packages-max", 0, "override live lobby (room-independent) key packages per device (#380)")
+	lobbyKeyPackageTTL := flag.Int64("lobby-key-package-ttl-seconds", 0, "override lobby key package TTL (seconds)")
 	keepEpochs := flag.Int64("commit-welcome-keep-epochs", 0, "override commit/welcome epoch retention")
 	appEventTTL := flag.Int64("app-event-ttl-seconds", 0, "override application event TTL (seconds)")
 	resetRoomName := flag.String("reset-room", "", "OFFLINE operator recovery (review H3: squatted or mistaken room bootstrap): delete every relay row of this room from -data-dir and exit. Refuses while a relay holds the data dir; dry run unless -yes")
@@ -126,6 +128,12 @@ func main() {
 	}
 	if *keyPackageTTL > 0 {
 		pol.KeyPackageTTLSeconds = *keyPackageTTL
+	}
+	if *lobbyKeyPackagesMax > 0 {
+		pol.LobbyKeyPackagesMaxPerDevice = *lobbyKeyPackagesMax
+	}
+	if *lobbyKeyPackageTTL > 0 {
+		pol.LobbyKeyPackageTTLSeconds = *lobbyKeyPackageTTL
 	}
 	if *keepEpochs > 0 {
 		pol.CommitWelcomeKeepEpochs = *keepEpochs

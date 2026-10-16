@@ -210,7 +210,7 @@ v2 smoke는 required 모드로 돈다(ES256 키를 만들어 JWKS 파일로 넘�
   페이지와 응답 `next_after`(스캔한 최고 seq — 필터된 Welcome 포함 — 를 다음 `?after=`로)를
   갖는다.
 - **M5 keypackage 멱등성**: 같은 `(room, device, ref)`에 바이트 동일 재게시는 200
-  `{"stored":0,"duplicates":n}`(라이브 상한에 안 셈), 다른 바이트는 409
+  `{"stored":0,"duplicates":n,"live":k}`(라이브 상한에 안 셈; `live`는 쓰기 뒤 미소비 개수, #380), 다른 바이트는 409
   `key_package_ref_conflict`. 소비된 ref도 정체성을 유지한다.
 - **M6 SQLite**: DSN에 `_txlock=immediate`를 더해 모든 `db.Begin()`이 실제로
   BEGIN IMMEDIATE다(이전 주석은 그렇다고 했지만 deferred였다); `busy_timeout 5000` 유지.

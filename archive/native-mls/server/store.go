@@ -129,6 +129,16 @@ CREATE TABLE IF NOT EXISTS mls_members (
 	PRIMARY KEY (room, device)
 );
 CREATE INDEX IF NOT EXISTS mls_events_device ON mls_events(device);
+CREATE TABLE IF NOT EXISTS mls_lobby_keypackages (
+	device        TEXT NOT NULL,
+	ref           TEXT NOT NULL,
+	bytes         BLOB NOT NULL,
+	consumed_by   TEXT,
+	consumed_room TEXT,
+	created_at    INTEGER NOT NULL,
+	expires_at    INTEGER NOT NULL,
+	PRIMARY KEY (device, ref)
+);
 CREATE TABLE IF NOT EXISTS push_devices (
 	device     TEXT PRIMARY KEY,
 	token      BLOB NOT NULL,
@@ -1039,6 +1049,7 @@ func (s *relay) postKeyPackages(room, device string, pkgs []keyPackageInput) (ke
 		return keyPackagesResult{}, err
 	}
 	res.Stored = len(fresh)
+	res.Live = live + len(fresh)
 	return res, nil
 }
 
@@ -1115,6 +1126,12 @@ func (s *relay) consumeKeyPackage(room, device, consumer string) (storedKeyPacka
 // removed_seq) or the removal grace elapsed (H3a).
 func (s *relay) prune(tx *sql.Tx, room string, epoch int64, now int64, active map[string]devicepolicy.DeviceV4) error {
 	if _, err := tx.Exec(`DELETE FROM mls_keypackages WHERE room = ? AND expires_at <= ?`, room, now); err != nil {
+		return err
+	}
+	// #380: lobby packages are room-independent; sweeping them here as well
+	// keeps the table bounded even for a device that never touches the lobby
+	// routes again (consumed rows stay until expiry as an audit trail).
+	if err := sweepLobbyKeyPackages(tx, now); err != nil {
 		return err
 	}
 	if active != nil {

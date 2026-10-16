@@ -558,9 +558,14 @@ fn run_loop(
                             }
                         }
                     };
-                    emit(&serde_json::json!({
+                    let mut event = serde_json::json!({
                         "event": "agent_tool", "name": name, "op": op, "room": room, "arg": arg, "ok": outcome.is_ok(),
-                    }));
+                    });
+                    // #380 P5: which pool the invite's key package came from (room | lobby).
+                    if let Some(source) = outcome.as_ref().ok().and_then(|v| v.get("key_source")) {
+                        event["key_source"] = source.clone();
+                    }
+                    emit(&event);
                     responder.tool_result(tool_id, outcome);
                     continue;
                 }
@@ -1285,9 +1290,20 @@ impl Steward {
                 if state.halted { return Err(BotError::Local("room is halted")); }
                 if state.pending.is_some() { return Err(BotError::Local("an own commit is still pending; try again after it echoes")); }
                 let own = ctx.own.to_string();
+                let mut key_source = serde_json::Value::Null;
                 let (commit, welcome) = if cmd.op == "invite" {
-                    let pkg = ctx.client.consume_key_package(&cmd.room, &cmd.arg, &own)?
-                        .ok_or(BotError::Local("target has no live key package in this room (it must request to join first)"))?;
+                    // #380 P5: a room-scoped package first (bots `room join`,
+                    // iOS 「참여 요청」); otherwise the device's room-independent
+                    // lobby package the app tops up on launch.
+                    let pkg = match ctx.client.consume_key_package(&cmd.room, &cmd.arg, &own)? {
+                        Some(pkg) => { key_source = "room".into(); pkg }
+                        None => match ctx.client.consume_lobby_key_package(&cmd.room, &cmd.arg, &own)? {
+                            Some(pkg) => { key_source = "lobby".into(); pkg }
+                            None => return Err(BotError::Detail(format!(
+                                "no key package for {} in room {} or in the lobby (앱을 한 번 열어 로비 키를 보충하세요)", cmd.arg, cmd.room
+                            ))),
+                        },
+                    };
                     if api::ref_hex(&pkg.bytes) != pkg.key_ref {
                         return Err(BotError::Local("consumed key package bytes do not match its sha256 ref"));
                     }
@@ -1320,11 +1336,13 @@ impl Steward {
                 match ctx.client.post_event(&cmd.room, &post) {
                     Ok(resp) => {
                         state.pending = Some(PendingCommit { seq: resp.seq, welcome, targets: vec![cmd.arg.clone()] });
-                        Ok(serde_json::json!({
+                        let mut out = serde_json::json!({
                             "op": cmd.op, "room": cmd.room, "target": cmd.arg, "seq": resp.seq, "epoch": resp.epoch,
                             "members": expected.iter().map(|m| m.id.clone()).collect::<Vec<_>>(),
                             "note": "pending until the relay echoes the commit; the Welcome follows",
-                        }))
+                        });
+                        if !key_source.is_null() { out["key_source"] = key_source; }
+                        Ok(out)
                     }
                     Err(err) => {
                         let _ = state.device.clear_pending();
@@ -1667,12 +1685,17 @@ for line in sys.stdin:
     /// Canned relay: answers each accepted connection with the next body
     /// (HTTP 200) and records the request lines, then stops listening.
     fn canned_relay(bodies: Vec<String>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        canned_relay_with_status(bodies.into_iter().map(|b| (200, b)).collect())
+    }
+
+    /// `canned_relay` with an explicit status per reply (404 for "no key package").
+    fn canned_relay_with_status(replies: Vec<(u16, String)>) -> (String, std::thread::JoinHandle<Vec<String>>) {
         use std::io::{Read, Write as _};
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
         let base = format!("http://127.0.0.1:{}", listener.local_addr().expect("addr").port());
         let handle = std::thread::spawn(move || {
             let mut seen = Vec::new();
-            for body in bodies {
+            for (status, body) in replies {
                 let (mut stream, _) = listener.accept().expect("accept");
                 let mut raw = Vec::new();
                 let mut buf = [0u8; 1024];
@@ -1692,7 +1715,8 @@ for line in sys.stdin:
                 }
                 let text = String::from_utf8_lossy(&raw).to_string();
                 seen.push(text.lines().next().unwrap_or_default().to_string());
-                let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+                let reason = if status == 200 { "OK" } else { "Not Found" };
+                let resp = format!("HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\n\r\n{body}", body.len());
                 stream.write_all(resp.as_bytes()).expect("write response");
             }
             seen
@@ -1823,6 +1847,7 @@ for line in sys.stdin:
 
         let out = steward.execute(&ctx, &mut rooms, &Command { op: "invite".into(), room: "family".into(), arg: "owner-pc".into() }).expect("invite");
         assert_eq!(out["seq"], 1);
+        assert_eq!(out["key_source"], "room", "#380 P5: a room-scoped package wins; the lobby is never asked (see request count below)");
         let members: Vec<String> = out["members"].as_array().expect("members").iter().map(|v| v.as_str().unwrap().to_string()).collect();
         assert_eq!(members, vec!["bot-1".to_string(), "owner-pc".to_string()]);
         assert!(rooms[0].pending.is_some());
@@ -1866,6 +1891,58 @@ for line in sys.stdin:
         assert!(seen[1].starts_with("POST /v2/rooms/family/events"), "{}", seen[1]);
         assert!(seen[2].starts_with("POST /v2/rooms/family/events"), "{}", seen[2]);
         assert!(seen[3].starts_with("POST /v2/rooms/family/events"), "{}", seen[3]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #380 P5: a device without a room-scoped package is invited from its
+    /// lobby package (room consume 404 → lobby consume → commit POST,
+    /// `key_source: lobby`); when the lobby is empty too the error names
+    /// both pools and nothing is posted.
+    #[test]
+    fn steward_invite_falls_back_to_the_lobby_key_package() {
+        let dir = temp_dir("steward-lobby");
+        let identity = dir.join("identity.json");
+        write_identity(&identity, "bot-1", &Device::new("bot-1").unwrap_or_else(|_| panic!("device new"))).expect("identity");
+        let mut peer = Device::new("owner-pc").unwrap_or_else(|_| panic!("peer"));
+        let kp = peer.key_package().expect("peer key package");
+        let kp_body = serde_json::json!({"ref": api::ref_hex(&kp), "bytes": crate::b64::encode(&kp), "expires_at": 0}).to_string();
+        let none = r#"{"error":"no_live_key_package"}"#.to_string();
+        let (base, server) = canned_relay_with_status(vec![
+            (404, none.clone()),                                                    // family: room consume — nothing
+            (200, kp_body),                                                         // family: lobby consume
+            (200, r#"{"seq":1,"epoch":0,"revision":1,"duplicate":false}"#.into()),  // family: invite commit
+            (404, none.clone()),                                                    // two: room consume — nothing
+            (404, none),                                                            // two: lobby consume — nothing
+        ]);
+        let client = Client::with_access(&base, api::Access::None);
+        let ctx = Ctx { client: &client, own: "bot-1" };
+        let steward = Steward { device: "bot-1".into(), rooms_dir: dir.clone(), identity_file: identity.clone() };
+        let mut rooms = Vec::new();
+
+        steward.execute(&ctx, &mut rooms, &Command { op: "create".into(), room: "family".into(), arg: String::new() }).expect("create family");
+        let out = steward.execute(&ctx, &mut rooms, &Command { op: "invite".into(), room: "family".into(), arg: "owner-pc".into() }).expect("invite via lobby");
+        assert_eq!(out["key_source"], "lobby");
+        assert_eq!(out["seq"], 1);
+        assert_eq!(out["target"], "owner-pc");
+        let members: Vec<String> = out["members"].as_array().expect("members").iter().map(|v| v.as_str().unwrap().to_string()).collect();
+        assert_eq!(members, vec!["bot-1".to_string(), "owner-pc".to_string()]);
+        assert!(rooms[0].pending.as_ref().is_some_and(|p| p.welcome.is_some() && p.targets == vec!["owner-pc".to_string()]));
+
+        // Both pools empty: the error names the lobby, no commit is posted, no pending.
+        steward.execute(&ctx, &mut rooms, &Command { op: "create".into(), room: "two".into(), arg: String::new() }).expect("create two");
+        let err = steward.execute(&ctx, &mut rooms, &Command { op: "invite".into(), room: "two".into(), arg: "owner-pc".into() }).expect_err("no package anywhere");
+        let text = err.to_string();
+        assert!(text.contains("no key package for owner-pc in room two or in the lobby"), "{text}");
+        assert!(text.contains("로비 키"), "{text}");
+        assert!(rooms[1].pending.is_none());
+
+        let seen = server.join().expect("server thread");
+        assert_eq!(seen.len(), 5, "{seen:?}");
+        assert_eq!(seen[0], "GET /v2/rooms/family/keypackages?device=owner-pc&consumer=bot-1 HTTP/1.1");
+        assert_eq!(seen[1], "GET /v2/lobby/keypackages?device=owner-pc&consumer=bot-1&room=family HTTP/1.1");
+        assert!(seen[2].starts_with("POST /v2/rooms/family/events"), "{}", seen[2]);
+        assert_eq!(seen[3], "GET /v2/rooms/two/keypackages?device=owner-pc&consumer=bot-1 HTTP/1.1");
+        assert_eq!(seen[4], "GET /v2/lobby/keypackages?device=owner-pc&consumer=bot-1&room=two HTTP/1.1");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
