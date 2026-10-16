@@ -52,7 +52,8 @@ final class AppModel: ObservableObject {
         /// 이 기기 사용자 이름(actor). nil = 첫 실행이라 아직 고르지 않음 → `.needsActor`. 기본 = 이미 고름("owner", 테스트).
         var actorStore: ActorStoring = InMemoryActorStore("owner")
         /// 참여 요청 화면이 미리 채우는 대화방 ID(빌드 설정 `FC_DEFAULT_ROOM` → Info.plist `FamilyChatDefaultRoom`).
-        var defaultRoom: RoomID = "family-acc"
+        /// 기본은 사람 가족 방 `family` — 에이전트 방 `family-acc` 를 기본으로 두면 가족 기기가 거기에 게시한다(#383).
+        var defaultRoom: RoomID = "family"
         /// "이 기기 지우기"(§9-5) 훅. 기본 = 아무것도 지우지 않음(테스트는 주입, live() 는 파일·DB·기기 ID 로 채운다).
         var wipe = DeviceWipe()
     }

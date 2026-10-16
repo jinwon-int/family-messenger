@@ -84,7 +84,7 @@
 - AppModel: 방별 `RoomSyncEngine` 캐시 + `SerialAsyncQueue`(단일 호출자), 등록 판정 = `GET /v2/rooms` 403 device_subject_mismatch,
   401 → needsLogin, 404(확장 ① 없음) → 아는 방만. `markEnrolled` 제거(등록 확인 버튼 = refresh).
 - live(): base = App Group(`FC_APP_GROUP`) → 없으면 Application Support/FamilyChat. 릴레이 URL = `FC_RELAY_URL`(Info.plist `FamilyChatRelayURL`). 실패 시 `startupFailure` → fatal.
-- §12-E 화면(2026-10-14): 대화 목록 `+` 메뉴 = 참여 요청(`JoinRequestView`, 기본 방 = 빌드 설정 `FC_DEFAULT_ROOM`) · 방 만들기(`CreateRoomView`) / 방 화면 툴바 = 초대(`InviteView`, 대상 기기 ID 입력 → `invite`). 실패는 `Strings.membershipFailure`(앱 전용 파일 — `Strings.swift`는 NSE에도 컴파일되므로 `MembershipError`를 거기 두면 NSE 빌드가 깨진다).
+- §12-E 화면(2026-10-14): 대화 목록 `+` 메뉴 = 참여 요청(`JoinRequestView`, 기본 방 = 빌드 설정 `FC_DEFAULT_ROOM`, 기본 `family` — #383 전엔 `family-acc`라 가족 기기가 에이전트 방에 게시했다) · 방 만들기(`CreateRoomView`) / 방 화면 툴바 = 초대(`InviteView`, 대상 기기 ID 입력 → `invite`). 실패는 `Strings.membershipFailure`(앱 전용 파일 — `Strings.swift`는 NSE에도 컴파일되므로 `MembershipError`를 거기 두면 NSE 빌드가 깨진다).
 - 사용자 이름(actor, 가족 투입 선행): 첫 실행 `.needsActor` → `ActorSetupView` → `DefaultsActorStore`(App Group defaults `familychat.actor`) → 기기 ID `<actor>-iphone-<hex>`(`DeviceIdentity.existingOrNew` — 저장된 ID가 있으면 actor와 무관하게 유지). 이전 설치는 ID에서 actor를 읽어 화면을 건너뛴다. 이전 코드는 actor를 `"owner"`로 고정해 가족 기기가 모두 오너 기기로 등록될 뻔했다. 참여 요청(키 패키지 게시)은 `JoinRequestView`(대화 목록 +, 2026-10-13 파일럿 블로커 해소: build 7 은 게시 경로가 없어 relay-app `초대`가 소비할 패키지가 없었다).
 - 등록 JSON 의 `subject` 는 로그인 자격증명 JWT 의 `sub` 로 채운다(`AccessJWT`, 검증 아님). 서비스 토큰(`sub` 빈값)은 그대로 비워 운영자가 채운다 — build 7 의 공란 버그(#271 코멘트 2026-10-13 16:0x) 수정.
 - 무서명 시뮬레이터 Keychain 은 테스트(`testKeychainSealKeyIsStableAcrossReads`)로 확인, -34018 이면 XCTSkip 으로 기록.

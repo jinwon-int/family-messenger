@@ -30,8 +30,8 @@ extension AppModel.Dependencies {
         var pushTopic: String?
         /// 사용자 이름(actor) 저장소. 기본 = 이미 "owner" 로 고름(테스트).
         var actorStore: ActorStoring = InMemoryActorStore("owner")
-        /// 참여 요청 기본 대화방(Info.plist `FamilyChatDefaultRoom`, 비면 "family-acc").
-        var defaultRoom: RoomID = "family-acc"
+        /// 참여 요청 기본 대화방(Info.plist `FamilyChatDefaultRoom`, 비면 "family" — 사람 가족 방, #383).
+        var defaultRoom: RoomID = "family"
 
         static func fromBundle(_ bundle: Bundle = .main) -> Self {
             let group = bundle.familyChatValue("FamilyChatAppGroup")
