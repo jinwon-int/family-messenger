@@ -77,6 +77,12 @@ type policy struct {
 	// epoch whose retention window prunes it.
 	RoomsMaxPerDevice int
 	DeviceBytesCap    int64
+	// Lobby key packages (#380 P5-1, lobby.go): room-independent packages a
+	// device publishes once so a steward can invite it into a room that does
+	// not exist yet. Larger pool and longer TTL than the per-room ones because
+	// nothing replenishes them while the device is offline.
+	LobbyKeyPackagesMaxPerDevice int
+	LobbyKeyPackageTTLSeconds    int64
 }
 
 func defaultPolicy() policy {
@@ -89,8 +95,12 @@ func defaultPolicy() policy {
 		CommitWelcomeHardMaxEpochs: 256,
 		AppEventTTLSeconds:         30 * day,
 		RemovedCursorGraceSeconds:  7 * day,
-		RoomsMaxPerDevice:          16,
-		DeviceBytesCap:             4 << 30, // 4 GiB per device across rooms (G-M4; raised with #364)
+		// #380 D3: raised from 16 so a steward bot founding one room per
+		// invitation is not capped out by the family's room count.
+		RoomsMaxPerDevice:            32,
+		DeviceBytesCap:               4 << 30, // 4 GiB per device across rooms (G-M4; raised with #364)
+		LobbyKeyPackagesMaxPerDevice: 8,       // #380 D2
+		LobbyKeyPackageTTLSeconds:    30 * day,
 	}
 }
 
@@ -198,9 +208,13 @@ type keyPackagePost struct {
 
 // keyPackagesResponse: Stored counts newly inserted packages, Duplicates the
 // byte-identical (room, device, ref) replays that were accepted idempotently.
+// Live is the device's live (unconsumed, unexpired) count after the write —
+// in the room pool for the room route, in the lobby for the lobby route
+// (#380: the app shows "로비 키 N개" and decides when to replenish).
 type keyPackagesResponse struct {
 	Stored     int `json:"stored"`
 	Duplicates int `json:"duplicates"`
+	Live       int `json:"live"`
 }
 
 type storedKeyPackage struct {
@@ -565,6 +579,11 @@ func (s *relay) routes() *http.ServeMux {
 	mux.HandleFunc("GET /v2/rooms/{room}/events", s.handleGetEvents)
 	mux.HandleFunc("POST /v2/rooms/{room}/close", s.handleCloseRoom)
 	mux.HandleFunc("GET /v2/rooms", s.handleListRooms)
+	// Lobby key packages and pending-Welcome discovery (#380 P5-1, lobby.go).
+	mux.HandleFunc("POST /v2/lobby/keypackages", s.handlePostLobbyKeyPackages)
+	mux.HandleFunc("GET /v2/lobby/keypackages", s.handleConsumeLobbyKeyPackage)
+	mux.HandleFunc("GET /v2/lobby/status", s.handleLobbyStatus)
+	mux.HandleFunc("GET /v2/lobby/welcomes", s.handleLobbyWelcomes)
 	mux.HandleFunc("POST /v2/push/devices", s.handleRegisterPush)
 	mux.HandleFunc("DELETE /v2/push/devices", s.handleUnregisterPush)
 	mux.HandleFunc("GET /v2/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -600,32 +619,9 @@ func (s *relay) handlePostKeyPackages(w http.ResponseWriter, req *http.Request) 
 	if !ok {
 		return
 	}
-	body, ok := s.readBody(w, req)
+	post, ok := s.readKeyPackagePost(w, req)
 	if !ok {
 		return
-	}
-	var post keyPackagePost
-	if err := strictJSON(body, &post); err != nil {
-		s.failJSON(w, err)
-		return
-	}
-	if post.Device == "" {
-		s.fail(w, http.StatusBadRequest, apiError{Error: "device_required"})
-		return
-	}
-	if !validIdentifier(post.Device) {
-		s.fail(w, http.StatusBadRequest, apiError{Error: "bad_identifier", Detail: "device"})
-		return
-	}
-	if len(post.Packages) == 0 {
-		s.fail(w, http.StatusBadRequest, apiError{Error: "packages_required"})
-		return
-	}
-	for i, pkg := range post.Packages {
-		if pkg.Ref == "" || len(pkg.Bytes) == 0 {
-			s.fail(w, http.StatusBadRequest, apiError{Error: "bad_package", Detail: fmt.Sprintf("packages[%d] needs non-empty ref and bytes", i)})
-			return
-		}
 	}
 	if !s.bindDevice(w, c, post.Device) {
 		return
@@ -663,6 +659,40 @@ func (s *relay) handlePostKeyPackages(w http.ResponseWriter, req *http.Request) 
 		log.Printf("post keypackages room=%s: %v", room, err)
 		s.fail(w, http.StatusInternalServerError, apiError{Error: "internal"})
 	}
+}
+
+// readKeyPackagePost reads and validates one key-package batch body (shared
+// by the room and lobby publish routes): strict JSON, identifier device,
+// at least one package, every package with a non-empty ref and bytes.
+func (s *relay) readKeyPackagePost(w http.ResponseWriter, req *http.Request) (keyPackagePost, bool) {
+	body, ok := s.readBody(w, req)
+	if !ok {
+		return keyPackagePost{}, false
+	}
+	var post keyPackagePost
+	if err := strictJSON(body, &post); err != nil {
+		s.failJSON(w, err)
+		return keyPackagePost{}, false
+	}
+	if post.Device == "" {
+		s.fail(w, http.StatusBadRequest, apiError{Error: "device_required"})
+		return keyPackagePost{}, false
+	}
+	if !validIdentifier(post.Device) {
+		s.fail(w, http.StatusBadRequest, apiError{Error: "bad_identifier", Detail: "device"})
+		return keyPackagePost{}, false
+	}
+	if len(post.Packages) == 0 {
+		s.fail(w, http.StatusBadRequest, apiError{Error: "packages_required"})
+		return keyPackagePost{}, false
+	}
+	for i, pkg := range post.Packages {
+		if pkg.Ref == "" || len(pkg.Bytes) == 0 {
+			s.fail(w, http.StatusBadRequest, apiError{Error: "bad_package", Detail: fmt.Sprintf("packages[%d] needs non-empty ref and bytes", i)})
+			return keyPackagePost{}, false
+		}
+	}
+	return post, true
 }
 
 // handleConsumeKeyPackage atomically marks one live package as consumed by

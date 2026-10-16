@@ -22,7 +22,7 @@ native-mls-bot extract-identity <room> <device> --state-file <기존 state> --id
 native-mls-bot <base-url> steward <device> --identity-file <path> --rooms-dir <dir> [--responder-unix …] [--access-jwt-file …]
 native-mls-bot room create  <room> [agent|silent]   --rooms-dir <dir>   # 로컬 그룹 생성(릴레이 방은 첫 초대 commit 이 만든다)
 native-mls-bot room join    <room>                  --rooms-dir <dir>   # key package 게시 → 멤버가 초대하면 Welcome 으로 참여
-native-mls-bot room invite  <room> <device>         --rooms-dir <dir>   # 상대가 그 방에 올린 key package 소비 → Add commit → echo 뒤 Welcome
+native-mls-bot room invite  <room> <device>         --rooms-dir <dir>   # 상대의 key package 소비(방 → 없으면 로비, #380 P5) → Add commit → echo 뒤 Welcome
 native-mls-bot room remove  <room> <device>         --rooms-dir <dir>   # Remove commit(bare)
 native-mls-bot room members <room>                  --rooms-dir <dir>
 native-mls-bot room mode    <room> agent|silent     --rooms-dir <dir>
@@ -42,7 +42,7 @@ native-mls-bot room status  <room>                  --rooms-dir <dir>   # room �
 |---|---|
 | `room_create{room, mode?}` | `room create <room> [agent\|silent]`(기본 silent) |
 | `room_join{room}` | `room join <room>` |
-| `room_invite{room, device}` | `room invite <room> <device>` |
+| `room_invite{room, device}` | `room invite <room> <device>`(방 key package → 없으면 로비, #380 P5) |
 | `room_remove{room, device}` | `room remove <room> <device>` |
 | `room_members{room}` | `room members <room>` |
 | `room_mode{room, mode}` | `room mode <room> agent\|silent` |
@@ -54,10 +54,14 @@ native-mls-bot room status  <room>                  --rooms-dir <dir>   # room �
 
 ## 초대 흐름 (relay-app 의 `invite` 와 같은 규약)
 
-1. 피초대 기기가 그 방에 key package 를 올린다 — iOS 「참여 요청」(방 이름 입력), relay-app 「키 패키지 게시」, 봇 `room join`.
-2. `room invite <room> <device>`: `GET keypackages?device=…&consumer=<봇>` → `invite_with_commit` → 외부
-   JSON 에 `members`(merge 뒤 로스터, actor 는 device 접두) 를 실어 **commit POST**(CAS = 현재 epoch).
-   결과는 `pending`(seq). 409 면 `clear_pending` 뒤 오류.
+1. 피초대 기기가 key package 를 올린다 — 그 방에(iOS 「참여 요청」(방 이름 입력), relay-app 「키 패키지 게시」, 봇 `room join`)
+   **또는** 방과 무관한 **로비**에(앱이 실행될 때 자동 보충, #380 P5 — 사람 기기는 방 이름을 몰라도 초대받을 수 있다).
+2. `room invite <room> <device>`: 먼저 `GET /v2/rooms/<room>/keypackages?device=…&consumer=<봇>`, 없으면(404)
+   `GET /v2/lobby/keypackages?device=…&consumer=<봇>&room=<room>` 로 **로비 fallback**(릴레이는 방이 아직 없거나
+   봇이 멤버일 때만 허용) → `invite_with_commit` → 외부 JSON 에 `members`(merge 뒤 로스터, actor 는 device 접두) 를 실어
+   **commit POST**(CAS = 현재 epoch). 결과는 `pending`(seq) + `key_source: "room" | "lobby"`. 409 면 `clear_pending` 뒤 오류.
+   둘 다 없으면 게시 없이 오류: `no key package for <device> in room <room> or in the lobby (앱을 한 번 열어 로비 키를 보충하세요)`.
+   `room join`(봇 자신의 참여)은 그대로 방 범위 key package 만 올린다 — 로비는 사람 기기용.
 3. 세션이 자기 commit echo 를 읽으면 `merge_pending` → epoch+1 → 상태 저장 → **Welcome POST**(targets=[device]).
    이벤트 로그: `own_commit_merged`, `welcome_sent`.
 4. 피초대 기기가 Welcome 으로 참여한다.
@@ -66,7 +70,7 @@ native-mls-bot room status  <room>                  --rooms-dir <dir>   # room �
 
 ## 제약·주의
 
-- 릴레이는 기기당 방 생성 16개(`RoomsMaxPerDevice`). 새 actor 는 기존 방에 commit 할 수 없다 — 사람 기기는 **초대로만** 들어간다.
+- 릴레이는 기기당 방 생성 32개(`RoomsMaxPerDevice`, #380 D3로 16→32). 새 actor 는 기존 방에 commit 할 수 없다 — 사람 기기는 **초대로만** 들어간다.
 - `agent` 방은 한 번에 하나. 응답기는 그 방의 메시지만 받고, 답도 그 방에만 쓴다.
 - 단일 방 모드(`session <room> <device> --state-file …`)는 그대로 있다. 공명 전환은 `extract-identity` 1회 뒤
   `steward` 로 ExecStart 을 바꾸는 drop-in(`deploy/native-relay-bot.service.d-40-steward.conf`)으로 한다(승인 항목).

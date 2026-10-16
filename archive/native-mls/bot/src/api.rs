@@ -34,6 +34,9 @@ pub enum BotError {
     /// response failed its body contract). The facade's `Rejected` carries a
     /// static reason with no `Display`, so call sites label the step.
     Local(&'static str),
+    /// `Local` with an owned message, for the few operator-facing errors that
+    /// must name the device/room (#380 P5 invite: no key package anywhere).
+    Detail(String),
     /// The caller-auth token source has nothing usable right now (file
     /// missing, unreadable or blank mid-rotation). Treated like a 401 by the
     /// session loop: wait for the refresher, do not die (review 2 B-M3).
@@ -48,6 +51,7 @@ impl std::fmt::Display for BotError {
             BotError::Api { status, code } => write!(f, "relay error {status}: {code}"),
             BotError::Status { status } => write!(f, "relay status {status}"),
             BotError::Local(what) => write!(f, "local error: {what}"),
+            BotError::Detail(what) => write!(f, "local error: {what}"),
             BotError::AccessUnavailable(what) => write!(f, "access token unavailable: {what}"),
         }
     }
@@ -284,11 +288,23 @@ impl Client {
     /// Consume one live key package of `device` (the server hands each package
     /// out once per consumer — that is what keeps invites single-use).
     pub fn consume_key_package(&self, room: &str, device: &str, consumer: &str) -> Result<Option<StoredKeyPackage>> {
-        let resp = self.send(
-            "GET",
-            &format!("/v2/rooms/{room}/keypackages?device={device}&consumer={consumer}"),
-            None,
-        )?;
+        let resp = self.send("GET", &room_consume_path(room, device, consumer), None)?;
+        self.consumed(resp)
+    }
+
+    /// Consume one live **lobby** key package of `device` — the relay's
+    /// room-independent pool human apps top up (#380 P5). `room` names the
+    /// room the package is consumed for (the relay checks the consumer is a
+    /// tracked member, or that the room does not exist yet). `None` when the
+    /// device has nothing live in the lobby.
+    pub fn consume_lobby_key_package(&self, room: &str, device: &str, consumer: &str) -> Result<Option<StoredKeyPackage>> {
+        let resp = self.send("GET", &lobby_consume_path(room, device, consumer), None)?;
+        self.consumed(resp)
+    }
+
+    /// Shared tail of both consumes: 404 `no_live_key_package` / `no_such_room`
+    /// is "nothing to hand out" (`None`); any other status is the envelope.
+    fn consumed(&self, resp: http::Response) -> Result<Option<StoredKeyPackage>> {
         if resp.status == 404 {
             let body: serde_json::Value = serde_json::from_slice(&resp.body)?;
             if body["error"] == serde_json::Value::String("no_live_key_package".into())
@@ -345,6 +361,17 @@ impl Client {
     }
 }
 
+/// Room-scoped consume route (`GET /v2/rooms/<room>/keypackages`).
+fn room_consume_path(room: &str, device: &str, consumer: &str) -> String {
+    format!("/v2/rooms/{room}/keypackages?device={device}&consumer={consumer}")
+}
+
+/// Lobby consume route (`GET /v2/lobby/keypackages`, #380 P5); `room` is the
+/// room the package is consumed for.
+fn lobby_consume_path(room: &str, device: &str, consumer: &str) -> String {
+    format!("/v2/lobby/keypackages?device={device}&consumer={consumer}&room={room}")
+}
+
 /// sha256-hex ref for a key package (caller-chosen opaque per the relay).
 pub fn ref_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
@@ -356,7 +383,15 @@ pub fn ref_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod identifier_tests {
-    use super::is_identifier;
+    use super::{is_identifier, lobby_consume_path, room_consume_path};
+
+    /// #380 P5: the lobby consume carries the room as a query parameter
+    /// (the pool is room-independent); the room consume keeps its path form.
+    #[test]
+    fn consume_paths_match_the_relay_contract() {
+        assert_eq!(room_consume_path("family", "owner-pc", "bot-1"), "/v2/rooms/family/keypackages?device=owner-pc&consumer=bot-1");
+        assert_eq!(lobby_consume_path("family", "owner-pc", "bot-1"), "/v2/lobby/keypackages?device=owner-pc&consumer=bot-1&room=family");
+    }
 
     #[test]
     fn identifier_rule_matches_the_relay() {

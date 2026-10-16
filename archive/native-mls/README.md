@@ -41,6 +41,31 @@ Welcome 타깃 필터링, 바이트 기준 보존/프루닝, `BEGIN IMMEDIATE`(`
 `server/applogin.go`) — 엣지가 주입한 JWT 를 검증한 뒤 iOS 앱의 고정 스킴 `hande://auth#jwt=…&state=…` 로
 302 한다(앱 로그인 시트용, 플래그·테이블 없음).
 
+### 로비 key package (P5, #380)
+
+방별 `mls_keypackages`는 기기가 먼저 그 방에 패키지를 올려야 초대가 가능해, 스튜어드 봇이 **아직 없는 방**으로
+사람 기기를 초대할 수 없었다. 방과 무관한 로비 풀(테이블 `mls_lobby_keypackages`, `server/lobby.go`)과
+초대받은 방을 기기가 스스로 찾는 목록을 추가한다. 라우트 4개(모두 JWT 인증 + 행동 device를 `sub`에 묶음,
+본문 한도·엄격 JSON·식별자 규칙은 방 라우트와 동일):
+
+- `POST /v2/lobby/keypackages` — 본문 `{"device","packages":[{"ref","bytes"}]}` (방 라우트와 같은 모양).
+  기기당 라이브 **8개**, TTL **30일**(`LobbyKeyPackagesMaxPerDevice`/`LobbyKeyPackageTTLSeconds`,
+  플래그 `-lobby-key-packages-max`·`-lobby-key-package-ttl-seconds`). 바이트 동일 재시도는 200(`duplicates`),
+  같은 ref 다른 바이트 409 `key_package_ref_conflict`, 초과 409 `key_package_limit {live,max}`.
+  응답 `{"stored","duplicates","live"}` — `live`는 쓰기 뒤 라이브 수(방 라우트 응답에도 같이 붙는다).
+- `GET /v2/lobby/keypackages?device=<대상>&consumer=<호출자>&room=<방>` — 대상 기기의 가장 오래된 라이브
+  패키지 하나를 원자적으로 소비(`consumed_by`·`consumed_room` 기록, 만료까지 행 보존). **방 규칙:** 방이 없으면
+  허용(호출자가 첫 commit으로 방을 세운다; 여기서 방 행을 만들지 않음), 멤버가 추적되는 방이면 호출자가 멤버여야
+  함(403 `not_a_member`), 닫힌 방 410 `room_closed`, 남은 패키지 없음 404 `no_live_key_package`.
+  응답은 방 소비와 같은 `{"ref","bytes","expires_at"}`.
+- `GET /v2/lobby/status?device=` — `{"device","live","max","ttl_seconds"}` (만료 행 정리 뒤). 앱의 보충 판단용.
+- `GET /v2/lobby/welcomes?device=` — 이 기기를 `targets`로 하는 `welcome` 이벤트 중 기기의 커서가 아직 지나지
+  않은 것(커서 없음 또는 `cursor.seq < seq`)이 있는 **열린** 방 목록
+  `{"welcomes":[{"room","seq","epoch","created_at"}]}`(오래된 순, 최대 100). 읽기 전용 — 커서는 기존
+  `GET /v2/rooms/{room}/events?device=…&ack=`로만 움직이고, Welcome 본문도 그 라우트로 받는다.
+
+같은 결정으로 기기당 방 생성 상한 `RoomsMaxPerDevice`는 16 → **32**.
+
 ## tests/
 
 | 파일 | 대상 | 서버 필요 |
