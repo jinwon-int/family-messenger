@@ -233,6 +233,120 @@ class TransitionAlertTest(unittest.TestCase):
         self.assertEqual(json.loads(self.state.read_text())['status'], 'unhealthy')
 
 
+class PushSpoolTest(unittest.TestCase):
+    """#395: owner records in the ccc push spool — independent of the admin token (#368)."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        root = Path(self.dir.name)
+        self.state = root / 'state.json'
+        self.spool = root / 'spool'
+        self.spool.mkdir(mode=0o700)
+        self.base = ['--url', 'u', '--state-file', str(self.state),
+                     '--push-spool', str(self.spool), '--push-node', 'yukson']
+
+    def run_at(self, now, unhealthy_names=('url u',), argv=None):
+        args = hc.parse_args(argv or self.base)
+        return hc.notify(args, list(unhealthy_names), bool(unhealthy_names), now)
+
+    def records(self):
+        return [json.loads(p.read_text()) for p in sorted(self.spool.glob('*.json'))]
+
+    def test_first_run_records_baseline_only(self):
+        self.assertEqual(self.run_at(NOW), {'push': 'recorded'})
+        self.assertEqual(self.records(), [])
+
+    def test_transition_spools_an_owner_record(self):
+        self.run_at(NOW, ())
+        self.assertEqual(self.run_at(NOW + 60), {'push': 'spooled'})
+        [rec] = self.records()
+        self.assertEqual(rec['event'], 'FamilyMessengerHealth')
+        self.assertEqual((rec['node'], rec['recipient'], rec['status']), ('yukson', 'owner', 'unhealthy'))
+        self.assertIn('UNHEALTHY', rec['text'])
+        self.assertIn('url u', rec['text'])
+        self.assertTrue(rec['dedup'].endswith(':transition'))
+        [path] = list(self.spool.glob('*.json'))
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(list(self.spool.glob('.*')), [], 'no temp file left behind')
+        # Recovery is a transition too.
+        self.assertEqual(self.run_at(NOW + 120, ()), {'push': 'spooled'})
+        self.assertIn('recovered', self.records()[-1]['text'])
+
+    def test_reminder_every_remind_hours_while_unhealthy(self):
+        self.run_at(NOW, ())
+        self.run_at(NOW + 60)                                        # transition, pushed_at = NOW+60
+        self.assertEqual(self.run_at(NOW + 60 + 5 * 3600), {'push': 'unchanged'}, 'before 6h: quiet')
+        self.assertEqual(self.run_at(NOW + 60 + 6 * 3600), {'push': 'reminded'})
+        recs = self.records()
+        self.assertEqual(len(recs), 2)
+        self.assertIn('unhealthy for 6h', recs[-1]['text'])
+        self.assertNotEqual(recs[0]['dedup'], recs[1]['dedup'])
+        self.assertEqual(self.run_at(NOW + 60 + 7 * 3600), {'push': 'unchanged'}, 'next one is 6h after the reminder')
+        self.assertEqual(self.run_at(NOW + 60 + 12 * 3600), {'push': 'reminded'})
+
+    def test_healthy_never_reminds(self):
+        self.run_at(NOW, ())
+        self.assertEqual(self.run_at(NOW + 30 * 3600, ()), {'push': 'unchanged'})
+        self.assertEqual(self.records(), [])
+
+    def test_failed_push_is_retried_on_the_next_run(self):
+        self.run_at(NOW, ())
+        self.spool.rmdir()
+        out = self.run_at(NOW + 60)
+        self.assertEqual(out, {'push': 'failed: ValueError'})
+        self.assertEqual(json.loads(self.state.read_text())['status'], 'unhealthy', 'the status is still recorded')
+        self.spool.mkdir(mode=0o700)
+        self.assertEqual(self.run_at(NOW + 3600), {'push': 'spooled'}, 'retried without waiting for the reminder')
+        self.assertEqual(len(self.records()), 1)
+
+    def test_failed_admin_notice_is_retried_and_push_is_independent(self):
+        argv = self.base + ['--alert-admin', '--config', 'x.toml', '--admin-token-file', 't']
+        self.run_at(NOW, (), argv)
+        class Dead:
+            def __init__(self, *a):
+                raise RuntimeError('M_UNKNOWN_TOKEN')
+        with fake_admin(Dead):
+            out = self.run_at(NOW + 60, argv=argv)
+        self.assertEqual(out, {'alert': 'failed', 'push': 'spooled'},
+                         '#368: the push path does not need the admin token')
+        sent = []
+        class Room:
+            def __init__(self, *a):
+                pass
+            def notice(self, text):
+                sent.append(text)
+        with fake_admin(Room):
+            out = self.run_at(NOW + 3600, argv=argv)
+        self.assertEqual(out, {'alert': 'retried', 'push': 'unchanged'})
+        self.assertIn('UNHEALTHY', sent[0])
+        with fake_admin(Room):
+            self.assertEqual(self.run_at(NOW + 7200, argv=argv)['alert'], 'unchanged', 'retried once, then quiet')
+
+    def test_untrusted_spool_is_refused(self):
+        self.run_at(NOW, ())
+        link = Path(self.dir.name) / 'link'
+        link.symlink_to(self.spool)
+        argv = ['--url', 'u', '--state-file', str(self.state), '--push-spool', str(link)]
+        self.assertEqual(self.run_at(NOW + 60, argv=argv), {'push': 'failed: ValueError'})
+        self.assertEqual(self.records(), [])
+
+    def test_argparse_guards(self):
+        for bad in (['--url', 'u', '--push-spool', str(self.spool)],
+                    self.base + ['--remind-hours', '0']):
+            with self.assertRaises(SystemExit) as cm, contextlib.redirect_stderr(StringIO()):
+                hc.parse_args(bad)
+            self.assertEqual(cm.exception.code, 2)
+
+    def test_main_reports_push_outcome(self):
+        hc.notify(hc.parse_args(self.base), [], False, NOW)
+        out = StringIO()
+        with contextlib.redirect_stdout(out):
+            code = hc.main(self.base, fetch_fn=fake_fetch({'u': 500}), unit_fn=fake_units({}), clock=lambda: NOW + 60)
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(out.getvalue())['push'], 'spooled')
+
+
 class MainTest(unittest.TestCase):
     def test_exit_codes_and_json_shape(self):
         argv = ['--url', 'http://127.0.0.1:1/versions', '--require-active', 'x.service']
