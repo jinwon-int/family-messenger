@@ -183,6 +183,13 @@ public struct PendingWelcome: Codable, Equatable, Hashable {
         self.room = room; self.seq = seq; self.epoch = epoch; self.createdAt = createdAt
     }
 }
+/// DELETE /v2/lobby/keypackages 응답(#389, lobby.go `lobbyDeleteResponse`).
+public struct LobbyDeleteResponse: Codable, Equatable {
+    public var device: DeviceID
+    public var deleted: Int
+    public init(device: DeviceID, deleted: Int) { self.device = device; self.deleted = deleted }
+}
+
 public struct LobbyWelcomes: Codable, Equatable {
     public var welcomes: [PendingWelcome]
     public init(welcomes: [PendingWelcome]) { self.welcomes = welcomes }

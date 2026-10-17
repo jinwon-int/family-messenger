@@ -62,6 +62,8 @@ final class RelayTypesTests: XCTestCase {
         XCTAssertEqual(withLive, KeyPackagesResponse(stored: 2, duplicates: 0, live: 5))
         let legacy = try JSONDecoder().decode(KeyPackagesResponse.self, from: Data(#"{"stored":1,"duplicates":0}"#.utf8))
         XCTAssertNil(legacy.live, "a relay from before #381 omits live")
+        let deleted = try JSONDecoder().decode(LobbyDeleteResponse.self, from: Data(#"{"device":"owner-iphone-1","deleted":2}"#.utf8))
+        XCTAssertEqual(deleted, LobbyDeleteResponse(device: "owner-iphone-1", deleted: 2), "#389 lobby.go lobbyDeleteResponse")
         XCTAssertEqual(RelayErrorCode(rawValue: "device_not_allowed"), .deviceNotAllowed)
         XCTAssertEqual(RelayErrorCode(rawValue: "key_package_limit"), .keyPackageLimit)
         XCTAssertEqual(RelayErrorCode(rawValue: "no_live_key_package"), .noLiveKeyPackage)

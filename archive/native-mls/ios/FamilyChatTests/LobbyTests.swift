@@ -118,6 +118,32 @@ final class LobbyTests: XCTestCase {
         XCTAssertEqual(try freshCursors.cursor(room: "ops-yukson"), relay.inner.welcomeSeq(room: "ops-yukson"), "cursor advanced past the Welcome by the sync")
     }
 
+    /// #389: 「이 기기 지우기」는 옛 신원의 로비 키를 먼저 거둔다. 로비가 없는 릴레이(404)·꺼진 릴레이여도 리셋은 끝난다.
+    func testWipeDeviceWithdrawsTheLobbyKeysFirst() async throws {
+        let relay = CountingRelay()
+        let (model, _, _) = makeModel(actor: "owner", relay: relay)
+        await model.bootstrap(); model.login(.bearer("t")); await model.refresh()
+        let device = model.deviceId
+        XCTAssertEqual(relay.inner.lobbyLiveCount(device), 8)
+        try await model.wipeDevice()
+        XCTAssertEqual(relay.inner.lobbyLiveCount(device), 0, "the old identity's lobby keys are gone")
+        XCTAssertEqual(model.phase, .needsLogin, "the reset finished")
+
+        let refusing = RefusingLobbyRelay()
+        let (other, _, _) = makeModel(actor: "owner", relay: refusing)
+        await other.bootstrap(); other.login(.bearer("t")); await other.refresh()
+        try await other.wipeDevice()
+        XCTAssertEqual(other.phase, .needsLogin, "a relay without the lobby (404) does not block the reset")
+
+        let down = CountingRelay()
+        let (third, _, _) = makeModel(actor: "owner", relay: down)
+        await third.bootstrap(); third.login(.bearer("t")); await third.refresh()
+        try await down.inner.stop()
+        try await third.wipeDevice()
+        XCTAssertEqual(third.phase, .needsLogin, "an unreachable relay does not block the reset")
+        XCTAssertEqual(down.inner.lobbyLiveCount("owner-iphone-abc123"), 8, "nothing was withdrawn — TTL cleans up")
+    }
+
     /// 오너 actor(A): 같은 Welcome 을 묻지 않고 받아들인다(방 상태 교체 + 방 목록). 실패한 seq 는 다시 시도하지 않는다.
     func testOwnerDeviceAdoptsAutomaticallyAndDoesNotRetryTheSameWelcome() async throws {
         let relay = CountingRelay()
@@ -172,4 +198,5 @@ final class RefusingLobbyRelay: InMemoryRelayWrapper {
     override func postLobbyKeyPackages(_ post: KeyPackagePost) async throws -> KeyPackagesResponse { lobbyCalls += 1; throw RelayError.refused(code: "not_found", status: 404) }
     override func lobbyStatus(device: DeviceID) async throws -> LobbyStatus { lobbyCalls += 1; throw RelayError.refused(code: "not_found", status: 404) }
     override func lobbyWelcomes(device: DeviceID) async throws -> [PendingWelcome] { lobbyCalls += 1; throw RelayError.refused(code: "not_found", status: 404) }
+    override func deleteLobbyKeyPackages(device: DeviceID) async throws -> Int { lobbyCalls += 1; throw RelayError.refused(code: "not_found", status: 404) }
 }

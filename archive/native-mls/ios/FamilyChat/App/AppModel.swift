@@ -244,6 +244,9 @@ final class AppModel: ObservableObject {
         let device = deviceId
         let previous = transport
         try await serial.run {
+            // #389: 옛 서명키로 만든 로비 키를 먼저 거둔다 — 남겨 두면 초대한 쪽은 "초대됨"인데 새 신원은 그 Welcome 을 열 수 없다(TTL 30일).
+            // 최선 노력: 오프라인·세션 만료·로비 없는 릴레이(404)여도 리셋은 계속한다(남은 키는 TTL 로 사라진다).
+            if let previous, !device.isEmpty { _ = try? await previous.deleteLobbyKeyPackages(device: device) }
             await self.push.unregister(device: device, transport: previous)
             self.pushStatus = self.push.status
             if let actor = self.deps.actorStore.actor { self.deps.actorStore.save(actor) }
