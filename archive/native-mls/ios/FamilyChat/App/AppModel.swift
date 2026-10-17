@@ -313,6 +313,54 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - 「목록에서 지우기」(#389)
+
+    enum ForgetError: Error, Equatable {
+        /// 저장소가 방 상태(`RoomStateRemoving`)나 방 기록(`RoomForgetting`) 삭제를 지원하지 않는다.
+        case unsupported
+        /// 내보내졌거나 닫힌 방만 지운다 — 다른 정지는 '다시 참여 준비'로 돌아갈 수 있다.
+        case notForgettable
+    }
+
+    /// 목록에서 지울 수 있는 정지 사유: 이 기기가 그 방에 스스로 돌아갈 길이 없다(내보내짐·닫힘).
+    nonisolated static func canForget(reason: String?) -> Bool {
+        reason == SyncHaltReason.removedFromRoom || reason == SyncHaltReason.roomClosed
+    }
+
+    /// 대화 목록에 보일 방. 가족 기기(D1 B)가 아직 수락하지 않은 로비 초대 방은 「새 대화방 초대」 칸에만 둔다 —
+    /// 봇의 commit 이 이 기기를 로스터에 넣는 순간 `GET /v2/rooms` 가 그 방을 돌려주므로(#388 리스크) 기록은 이미 있다.
+    var listedRooms: [RoomRecord] {
+        let invited = Set(pendingInvites.map(\.room))
+        return rooms.filter { !invited.contains($0.room) }
+    }
+
+    /// 내보내졌거나 닫힌 방을 이 기기에서 잊는다(모두 `serial` 안): 동기화 객체 폐기 → MLS 방 상태 삭제 → pending outbox reconciled
+    /// → 커서 0 → 방 행·메시지 행 삭제. 릴레이는 건드리지 않는다 — 내보내진 기기는 목록에 `member=false`, 닫힌 방은 `closed=true` 로
+    /// 나와 `refreshLocked` 가 다시 만들지 않는다. 다시 초대받으면(새 Welcome) 방은 처음부터 다시 생긴다.
+    func forgetRoom(room: RoomID) async throws {
+        guard room != Strings.identityRoom, room != LobbyKeyring.slot else { throw ForgetError.notForgettable }
+        guard let remover = deps.stateStore as? RoomStateRemoving,
+              let forgetting = deps.messageStore as? RoomForgetting else { throw ForgetError.unsupported }
+        guard Self.canForget(reason: try deps.messageStore.rooms().first { $0.room == room }?.haltedReason) else {
+            throw ForgetError.notForgettable
+        }
+        try await serial.run {
+            self.syncEngines[room] = nil
+            self.seenCursors[room] = nil
+            self.lastFlush[room] = nil
+            self.unconfirmed = self.unconfirmed.filter { $0.value.room != room }
+            try remover.removeState(room: room, timeout: self.deps.syncConfiguration.lockTimeout)
+            for entry in try self.deps.outbox.pending(room: room) {
+                try self.deps.outbox.mark(room: room, clientId: entry.clientId, status: .reconciled)
+            }
+            try self.deps.cursors.setCursor(room: room, seq: 0)
+            try forgetting.forgetRoom(room)
+            self.rooms = try self.deps.messageStore.rooms()
+            if case .halted = self.phase { self.phase = self.haltedReasonFromRooms().map { .halted($0) } ?? .ready }
+            self.messagesRevision += 1
+        }
+    }
+
     /// 포그라운드 폴링(CONTRACTS §2.2: 4초). 화면의 `.task` 가 소유하고 취소하면 끝난다.
     func runForeground() async {
         while !Task.isCancelled {

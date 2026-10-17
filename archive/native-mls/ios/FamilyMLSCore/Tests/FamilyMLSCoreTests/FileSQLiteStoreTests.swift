@@ -186,4 +186,27 @@ final class FileSQLiteStoreTests: XCTestCase {
         XCTAssertEqual(loaded[0].body, "")
         XCTAssertEqual(loaded[0].attachment, Data())
     }
+
+    // MARK: 「목록에서 지우기」(#389)
+
+    func testForgetRoomDeletesOnlyThatRoomsRowsAndIsIdempotent() throws {
+        let dir = try makeTempDir()
+        let store = try makeStore(dir)
+        try store.upsertRoom(RoomRecord(room: "gone", epoch: 2, revision: 3, haltedReason: "removed_from_room", displayOrder: 0))
+        try store.upsertRoom(RoomRecord(room: "kept", epoch: 1, revision: 1, haltedReason: nil, displayOrder: 1))
+        try store.insert(record("gone", 1)); try store.insert(record("gone", 2))
+        try store.insert(record("kept", 1))
+
+        let forgetting: RoomForgetting = store
+        try forgetting.forgetRoom("gone")
+        XCTAssertEqual(try store.rooms().map(\.room), ["kept"])
+        XCTAssertTrue(try store.messages(room: "gone", after: 0, limit: 10).isEmpty)
+        XCTAssertEqual(try store.messages(room: "kept", after: 0, limit: 10).map(\.seq), [1])
+        try forgetting.forgetRoom("gone")   // 멱등
+        try forgetting.forgetRoom("never-seen")
+        XCTAssertEqual(try store.rooms().map(\.room), ["kept"])
+
+        // 같은 파일을 다시 열어도 지운 방은 없다(커밋됨).
+        XCTAssertEqual(try FileSQLiteStore(directory: dir).rooms().map(\.room), ["kept"])
+    }
 }

@@ -1,5 +1,6 @@
 // ⛔ 정지 안내·해제(§9-4 상태줄 "정지 이유"): 정지된 방마다 무엇이 일어났는지, 다음에 할 일, 운영자 보고 공유, "다시 참여 준비".
 // 정지 사유를 사용자가 지우는 버튼은 없다 — 해제는 `AppModel.prepareRejoin`(상태 폐기 + 재초대 대기) 하나다.
+// 내보내졌거나 닫힌 방은 「목록에서 지우기」(`AppModel.forgetRoom`, #389)로 이 기기에서 방 자체를 잊을 수 있다.
 import SwiftUI
 import FamilyMLSCore
 
@@ -30,7 +31,10 @@ struct HaltedRoomCard: View {
     @EnvironmentObject private var model: AppModel
     let room: RoomID
     let reason: String
+    /// 「목록에서 지우기」 뒤에 부른다(방 화면은 닫힌다). 정지 목록은 목록에서 빠지는 것으로 충분하다.
+    var onForgotten: (() -> Void)? = nil
     @State private var confirmRejoin = false
+    @State private var confirmForget = false
     @State private var busy = false
     @State private var message: String?
 
@@ -54,12 +58,34 @@ struct HaltedRoomCard: View {
                 }
             }
             .font(.footnote)
+            if AppModel.canForget(reason: reason) {
+                Button(Strings.forgetRoomTitle, role: .destructive) { confirmForget = true }
+                    .font(.footnote)
+                    .disabled(busy)
+            }
+        }
+        .confirmationDialog(Strings.forgetRoomTitle, isPresented: $confirmForget, titleVisibility: .visible) {
+            Button(Strings.forgetRoomTitle, role: .destructive) { Task { await forget() } }
+            Button(Strings.close, role: .cancel) {}
+        } message: {
+            Text(Strings.forgetRoomConfirm)
         }
         .confirmationDialog(Strings.rejoinPrepareTitle, isPresented: $confirmRejoin, titleVisibility: .visible) {
             Button(Strings.rejoinPrepareTitle, role: .destructive) { Task { await prepare() } }
             Button(Strings.close, role: .cancel) {}
         } message: {
             Text(Strings.rejoinPrepareConfirm)
+        }
+    }
+
+    private func forget() async {
+        busy = true
+        defer { busy = false }
+        do {
+            try await model.forgetRoom(room: room)
+            onForgotten?()
+        } catch {
+            message = Strings.forgetRoomFailed("\(error)")
         }
     }
 

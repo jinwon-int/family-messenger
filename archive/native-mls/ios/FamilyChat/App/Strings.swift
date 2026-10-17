@@ -78,7 +78,6 @@ enum Strings {
 
     // 정지
     static let haltedTitle = "⛔ 이 기기의 대화가 정지되었습니다"
-    static func haltedBody(_ reason: String) -> String { "사유: \(reason). 운영자가 재초대하거나 원인을 조사할 때까지 보내기와 동기화를 멈춥니다. 무슨 일인지와 다음 행동은 '자세히'에서 봅니다." }
 
     // 설정
     static let settingsTitle = "설정"

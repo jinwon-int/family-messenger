@@ -49,3 +49,15 @@ extension FileStateStore: RoomStateRemoving {
         return rooms.sorted()
     }
 }
+
+/// 「목록에서 지우기」(#389) — 내보내졌거나(`removed_from_room`) 닫힌(`room_closed`) 방을 이 기기에서 잊는다.
+/// `MessageStore`(동결)에는 삭제 연산이 없으므로 `RoomStateRemoving` 처럼 선택 적합이다: 앱은 `messageStore as? RoomForgetting` 으로 묻는다.
+/// 지우는 것은 그 방의 `rooms` 행과 `messages` 행뿐이다(커서·outbox·MLS 상태는 각자의 저장소 계약으로 앱이 정리한다).
+/// 릴레이는 건드리지 않는다 — 내보내진 기기는 `GET /v2/rooms` 에 `member=false` 로, 닫힌 방은 `closed=true` 로 나와 다시 생기지 않는다.
+public protocol RoomForgetting: AnyObject {
+    /// 한 방의 방 행·메시지 행을 한 번에 지운다. 없으면 성공(멱등).
+    func forgetRoom(_ room: RoomID) throws
+}
+
+extension FileSQLiteStore: RoomForgetting {}
+

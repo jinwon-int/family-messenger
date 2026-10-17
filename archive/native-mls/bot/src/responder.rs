@@ -601,6 +601,7 @@ pub fn tool_command(name: &str, arguments: Option<&serde_json::Value>) -> Option
         "room_join" => ("join", &["room"]),
         "room_invite" => ("invite", &["room", "device"]),
         "room_remove" => ("remove", &["room", "device"]),
+        "room_close" => ("close", &["room"]),
         "room_members" => ("members", &["room"]),
         "room_mode" => ("mode", &["room", "mode"]),
         "room_status" => ("status", &[]),
@@ -922,6 +923,8 @@ for line in f:
         );
         assert_eq!(tool_command("room_join", Some(&serde_json::json!({"room": "r2"}))), Some(("join".into(), "r2".into(), String::new())));
         assert_eq!(tool_command("room_members", Some(&serde_json::json!({"room": "r2"}))), Some(("members".into(), "r2".into(), String::new())));
+        assert_eq!(tool_command("room_close", Some(&serde_json::json!({"room": "r2"}))), Some(("close".into(), "r2".into(), String::new())));
+        assert_eq!(tool_command("room_close", Some(&serde_json::json!({"room": "r2", "device": "x"}))), None, "close takes the room only");
         assert_eq!(tool_command("room_mode", Some(&serde_json::json!({"room": "r2", "mode": "agent"}))), Some(("mode".into(), "r2".into(), "agent".into())));
         assert_eq!(tool_command("room_create", Some(&serde_json::json!({"room": "r3"}))), Some(("create".into(), "r3".into(), "silent".into())), "mode defaults to silent");
         assert_eq!(tool_command("room_create", Some(&serde_json::json!({"room": "r3", "mode": "agent"}))), Some(("create".into(), "r3".into(), "agent".into())));

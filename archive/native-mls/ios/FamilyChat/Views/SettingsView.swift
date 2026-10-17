@@ -68,7 +68,7 @@ struct HaltedBanner: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(Strings.haltedTitle).font(.headline)
-            Text(Strings.haltedBody(reason)).font(.footnote)
+            Text(Strings.haltBannerBody(reason)).font(.footnote)
             Button(Strings.haltedDetails) { showDetails = true }.font(.footnote.bold())
         }
         .padding()

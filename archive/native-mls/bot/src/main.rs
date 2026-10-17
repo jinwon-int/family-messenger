@@ -156,7 +156,7 @@ fn main() -> ExitCode {
             eprintln!("usage: native-mls-bot <base-url> health");
             eprintln!("       native-mls-bot <base-url> steward <device> --identity-file <path> --rooms-dir <dir>   (#372 P2)");
             eprintln!("       native-mls-bot extract-identity <room> <device> --state-file <path> --identity-file <path>");
-            eprintln!("       native-mls-bot room <create|join|invite|remove|members|mode|status> <room> [<device>|agent|silent] --rooms-dir <dir>");
+            eprintln!("       native-mls-bot room <create|join|invite|remove|close|members|mode|status> <room> [<device>|agent|silent] --rooms-dir <dir>");
             eprintln!("       native-mls-bot <base-url> publish <room> <device>");
             eprintln!("       native-mls-bot <base-url> consume <room> <device> <consumer>");
             eprintln!("       native-mls-bot <base-url> session <room> <device> [<watch-room> --watch]");

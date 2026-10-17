@@ -109,6 +109,58 @@ final class HaltRecoveryTests: XCTestCase {
         XCTAssertEqual(model.rooms.first?.haltedReason, SyncHaltReason.historyGap, "nothing changed")
     }
 
+    // MARK: 「목록에서 지우기」(#389)
+
+    private static let removed = RoomRecord(room: "family", epoch: 7, revision: 3, haltedReason: SyncHaltReason.removedFromRoom, displayOrder: 0)
+
+    func testForgetRoomDropsARemovedRoomAndARefreshDoesNotBringItBack() async throws {
+        let state = RemovableInMemoryStateStore()
+        try state.withExclusive(room: "family", timeout: 1) { try $0.save(Data("old-group".utf8)) }
+        let relay = InMemoryRelay()   // 내보내진 기기: 목록에 방이 없다(실 릴레이는 member=false)
+        let (model, outbox, cursors) = makeModel(stateStore: state, rooms: [Self.removed], transport: relay)
+        try cursors.setCursor(room: "family", seq: 42)
+        try outbox.enqueue(OutboxEntry(room: "family", clientId: "mom-iphone-a1b2c3-stale", kind: "application", epoch: 7,
+                                       bytes: Data("ct".utf8), status: .pending, createdAt: Date()))
+        await model.bootstrap(); model.login(.bearer("t")); await model.refresh()
+        XCTAssertEqual(model.phase, .halted(SyncHaltReason.removedFromRoom))
+        let fingerprint = model.fingerprint
+
+        try await model.forgetRoom(room: "family")
+        XCTAssertTrue(model.rooms.isEmpty, "the removed room is forgotten")
+        XCTAssertEqual(state.removed, ["family"])
+        XCTAssertEqual(try cursors.cursor(room: "family"), 0)
+        XCTAssertTrue(try outbox.pending(room: "family").isEmpty, "bytes for a room we left are never retried")
+        XCTAssertEqual(model.phase, .ready, "no halted room is left")
+        XCTAssertEqual(model.fingerprint, fingerprint, "the identity slot (signing key) is untouched")
+
+        await model.refresh()
+        XCTAssertTrue(model.rooms.isEmpty, "a refresh does not recreate it")
+    }
+
+    func testForgetRoomAlsoTakesAClosedRoomButRefusesOtherHalts() async throws {
+        let closed = RoomRecord(room: "old", epoch: 2, revision: 2, haltedReason: SyncHaltReason.roomClosed, displayOrder: 0)
+        let (model, _, _) = makeModel(stateStore: RemovableInMemoryStateStore(), rooms: [closed, Self.halted])
+        await model.bootstrap()
+        do { try await model.forgetRoom(room: "family"); XCTFail("history_gap can rejoin — not forgettable") }
+        catch { XCTAssertEqual(error as? AppModel.ForgetError, .notForgettable) }
+        do { try await model.forgetRoom(room: Strings.identityRoom); XCTFail("identity slot") }
+        catch { XCTAssertEqual(error as? AppModel.ForgetError, .notForgettable) }
+        try await model.forgetRoom(room: "old")
+        XCTAssertEqual(model.rooms.map(\.room), ["family"])
+        XCTAssertTrue(AppModel.canForget(reason: SyncHaltReason.removedFromRoom))
+        XCTAssertTrue(AppModel.canForget(reason: SyncHaltReason.roomClosed))
+        XCTAssertFalse(AppModel.canForget(reason: SyncHaltReason.historyGap))
+        XCTAssertFalse(AppModel.canForget(reason: nil))
+    }
+
+    func testForgetRoomIsUnsupportedWhenTheStoreCannotRemoveState() async {
+        let (model, _, _) = makeModel(stateStore: InMemoryStateStore(), rooms: [Self.removed])
+        await model.bootstrap()
+        do { try await model.forgetRoom(room: "family"); XCTFail() }
+        catch { XCTAssertEqual(error as? AppModel.ForgetError, .unsupported) }
+        XCTAssertEqual(model.rooms.map(\.room), ["family"], "nothing changed")
+    }
+
     // MARK: 문구
 
     func testHaltGuidanceCoversEveryKnownReason() {
@@ -122,6 +174,14 @@ final class HaltRecoveryTests: XCTestCase {
             XCTAssertFalse(g.what.contains("알 수 없는"), "refusal tokens are recognised: \(reason.rawValue)")
         }
         XCTAssertTrue(Strings.haltGuidance("something_new").what.contains("something_new"))
+    }
+
+    /// #389: 배너 본문은 사유 토큰을 그대로 보이지 않는다(오너 실기기 「사유: removed_from_room」). 토큰은 보고·「사유 코드」 줄에만.
+    func testHaltBannerBodyExplainsInsteadOfShowingTheToken() {
+        let body = Strings.haltBannerBody(SyncHaltReason.removedFromRoom)
+        XCTAssertFalse(body.contains(SyncHaltReason.removedFromRoom), body)
+        XCTAssertTrue(body.contains(Strings.haltGuidance(SyncHaltReason.removedFromRoom).what))
+        XCTAssertTrue(Strings.haltReport(room: "r", device: "d", reason: SyncHaltReason.removedFromRoom).contains("사유: removed_from_room"))
     }
 
     func testHaltReportCarriesRoomDeviceAndReasonOnly() {

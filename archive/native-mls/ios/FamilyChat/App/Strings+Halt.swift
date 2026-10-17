@@ -25,6 +25,13 @@ extension Strings {
     static let haltedRoomsTitle = "정지된 대화방"
     static let haltedDetails = "자세히"
     static let haltedReasonLabel = "사유 코드"
+    /// 전역 배너 본문(#389): 사유 토큰 대신 쉬운 설명 — 토큰은 '자세히'의 「사유 코드」 줄과 운영자 보고에만 남는다.
+    static func haltBannerBody(_ reason: String) -> String {
+        "\(haltGuidance(reason).what) 이 대화방의 보내기와 동기화는 멈춰 있습니다. 다음에 할 일은 '자세히'에서 봅니다."
+    }
+    static let forgetRoomTitle = "목록에서 지우기"
+    static let forgetRoomConfirm = "이 대화방을 이 기기에서 지웁니다. 이 기기에 저장된 메시지도 함께 사라집니다. 다른 기기와 릴레이에는 영향이 없고, 다시 초대받으면 새로 시작합니다. 계속할까요?"
+    static func forgetRoomFailed(_ reason: String) -> String { "지우지 못했습니다: \(reason)" }
     static let haltedUnsupportedRecovery = "이 빌드의 저장소는 다시 참여 준비를 지원하지 않습니다. 설정에서 '이 기기 지우기'를 쓰세요."
 
     static func haltGuidance(_ reason: String) -> HaltGuidance {

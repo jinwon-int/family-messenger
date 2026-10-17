@@ -6,6 +6,7 @@ import FamilyMLSCore
 
 struct RoomView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
     let room: RoomID
     @State private var draft = ""
     @State private var messages: [AppModel.TimelineItem] = []
@@ -39,7 +40,7 @@ struct RoomView: View {
                 }
             }
             if let halted = haltedReason {
-                HaltedRoomCard(room: room, reason: halted)
+                HaltedRoomCard(room: room, reason: halted, onForgotten: { dismiss() })
                     .padding()
                     .background(Color.red.opacity(0.15))
             }

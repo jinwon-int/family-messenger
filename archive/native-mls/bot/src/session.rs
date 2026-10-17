@@ -1369,6 +1369,38 @@ impl Steward {
                 rooms[i].mode = mode;
                 Ok(serde_json::json!({ "op": "mode", "room": cmd.room, "mode": mode.name() }))
             }
+            // #389: tombstone the relay room (every member then reads 410 →
+            // `room_closed`) and forget it here (state, mode, refusal marker).
+            // The agent room and a room with an own commit in flight are
+            // refused. A room this steward never joined, or one it was removed
+            // from (403 `not_a_member`), is only forgotten locally; a room the
+            // relay never saw (founded, never invited: 404) likewise.
+            "close" => {
+                let i = idx.ok_or(BotError::Local("unknown room"))?;
+                if rooms[i].mode == Mode::Agent { return Err(BotError::Local("room is in agent mode; switch it to silent first")); }
+                if rooms[i].pending.is_some() { return Err(BotError::Local("an own commit is still pending; try again after it echoes")); }
+                let relay = if !rooms[i].joined {
+                    "not_member"
+                } else {
+                    match ctx.client.close_room(&cmd.room, ctx.own) {
+                        Ok(true) => "closed",
+                        Ok(false) => "absent",
+                        Err(api::RelayError::Api { status: 403, code }) if code == "not_a_member" => "not_member",
+                        Err(err) => return Err(err),
+                    }
+                };
+                let state_path = room_state_path(&self.rooms_dir, &cmd.room);
+                for path in [refused_marker_path(&state_path), room_mode_path(&self.rooms_dir, &cmd.room),
+                             state_path.with_extension("state.tmp"), state_path] {
+                    match std::fs::remove_file(&path) {
+                        Ok(()) => {}
+                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(_) => return Err(BotError::Local("room file remove")),
+                    }
+                }
+                rooms.remove(i);
+                Ok(serde_json::json!({ "op": "close", "room": cmd.room, "relay": relay }))
+            }
             "status" => Ok(serde_json::json!({
                 "op": "status", "device": self.device,
                 "rooms": rooms.iter().map(|r| serde_json::json!({
@@ -1376,7 +1408,7 @@ impl Steward {
                     "halted": r.halted, "pending": r.pending.is_some(),
                 })).collect::<Vec<_>>(),
             })),
-            _ => Err(BotError::Local("unknown op (create|join|invite|remove|members|mode|status)")),
+            _ => Err(BotError::Local("unknown op (create|join|invite|remove|close|members|mode|status)")),
         }
     }
 }
@@ -1943,6 +1975,61 @@ for line in sys.stdin:
         assert!(seen[2].starts_with("POST /v2/rooms/family/events"), "{}", seen[2]);
         assert_eq!(seen[3], "GET /v2/rooms/two/keypackages?device=owner-pc&consumer=bot-1 HTTP/1.1");
         assert_eq!(seen[4], "GET /v2/lobby/keypackages?device=owner-pc&consumer=bot-1&room=two HTTP/1.1");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #389: `close` tombstones the relay room and forgets it locally (state,
+    /// mode, refusal marker, in-memory entry). The agent room is refused
+    /// without touching the relay; a room the relay never saw (404
+    /// `no_such_room`) and one this steward was removed from (403
+    /// `not_a_member`) are forgotten locally only; an unknown room is an error.
+    #[test]
+    fn steward_close_tombstones_the_relay_room_and_forgets_it() {
+        let dir = temp_dir("steward-close");
+        let identity = dir.join("identity.json");
+        write_identity(&identity, "bot-1", &Device::new("bot-1").unwrap_or_else(|_| panic!("device new"))).expect("identity");
+        let (base, server) = canned_relay_with_status(vec![
+            (200, r#"{"closed":true}"#.into()),                 // family: closed
+            (404, r#"{"error":"no_such_room"}"#.into()),        // two: founded, never invited
+            (403, r#"{"error":"not_a_member"}"#.into()),        // three: removed from it
+        ]);
+        let client = Client::with_access(&base, api::Access::None);
+        let ctx = Ctx { client: &client, own: "bot-1" };
+        let steward = Steward { device: "bot-1".into(), rooms_dir: dir.clone(), identity_file: identity.clone() };
+        let mut rooms = Vec::new();
+        for room in ["family", "two", "three"] {
+            steward.execute(&ctx, &mut rooms, &Command { op: "create".into(), room: room.into(), arg: String::new() }).expect("create");
+        }
+        // A stale refusal marker goes with the room.
+        std::fs::write(refused_marker_path(&dir.join("family.state")), b"{}").expect("marker");
+
+        let out = steward.execute(&ctx, &mut rooms, &Command { op: "close".into(), room: "family".into(), arg: String::new() }).expect("close family");
+        assert_eq!((out["op"].as_str(), out["relay"].as_str()), (Some("close"), Some("closed")));
+        for file in ["family.state", "family.mode", "family.state.refused"] {
+            assert!(!dir.join(file).exists(), "{file} must be gone");
+        }
+        assert_eq!(rooms.iter().map(|r| r.room.as_str()).collect::<Vec<_>>(), vec!["two", "three"]);
+        assert!(rooms_on_disk(&dir).expect("scan").iter().all(|r| r != "family"), "a restart must not resurrect it");
+
+        // The agent room is refused before any request.
+        steward.execute(&ctx, &mut rooms, &Command { op: "mode".into(), room: "two".into(), arg: "agent".into() }).expect("mode agent");
+        assert!(steward.execute(&ctx, &mut rooms, &Command { op: "close".into(), room: "two".into(), arg: String::new() }).is_err());
+        assert!(dir.join("two.state").exists());
+        steward.execute(&ctx, &mut rooms, &Command { op: "mode".into(), room: "two".into(), arg: "silent".into() }).expect("mode silent");
+
+        let out = steward.execute(&ctx, &mut rooms, &Command { op: "close".into(), room: "two".into(), arg: String::new() }).expect("close two");
+        assert_eq!(out["relay"], "absent");
+        let out = steward.execute(&ctx, &mut rooms, &Command { op: "close".into(), room: "three".into(), arg: String::new() }).expect("close three");
+        assert_eq!(out["relay"], "not_member");
+        assert!(rooms.is_empty());
+        assert!(steward.execute(&ctx, &mut rooms, &Command { op: "close".into(), room: "family".into(), arg: String::new() }).is_err(), "unknown room");
+
+        let seen = server.join().expect("server thread");
+        assert_eq!(seen, vec![
+            "POST /v2/rooms/family/close?device=bot-1 HTTP/1.1".to_string(),
+            "POST /v2/rooms/two/close?device=bot-1 HTTP/1.1".to_string(),
+            "POST /v2/rooms/three/close?device=bot-1 HTTP/1.1".to_string(),
+        ]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
