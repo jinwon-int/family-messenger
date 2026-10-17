@@ -5,6 +5,7 @@
 import init, * as api from './pkg/family_mls_browser_experiment.js';
 import {createStore, exact, fail, bindEncrypt, bindDecrypt, unframeDecrypt} from './session-store.js';
 import {createVault, unlockVault, validPassphrase, sealRecord, openRecord} from './pkg/custody.js';
+import {openHistory} from './history-store.js';
 const wasm = await init();
 // `delete_key_package` (review 2 L-3): the M4 outstanding-package cap had no
 // recovery path in this lane except a join.
@@ -18,6 +19,9 @@ const allowed = new Set(['key_package', 'delete_key_package', 'create', 'invite'
   // #261 two-step commit application: stage (transient report) → merge or discard.
   'stage_commit', 'merge_staged', 'discard_staged']);
 let store, identity, room;
+// #370: relay-app's sealed message history (./history-store.js), or null when its
+// database cannot be opened — the MLS store and the relay flow never depend on it.
+let history = null;
 const noExtra = {keys: [], initial: () => ({}), bytes: () => null, valid: () => {}};
 
 function status(ctx, meta) {
@@ -92,9 +96,24 @@ self.onmessage = ({data}) => {
           await unlock(opened, passphrase);
           store = opened;
           result = await handle('initialize');
+          try {
+            history = await openHistory(argument.database, {identity, room,
+              seal: (ad, bytes) => opened.sealAux(ad, bytes), open: (ad, sealed) => opened.openAux(ad, sealed)});
+          } catch (_) { history = null; }
+          result = {...result, history: history !== null};
         } catch (error) {
           // Includes losing a fresh-database race to another tab: close and forget the key.
           opened.close(); store = undefined; throw error;
+        }
+      } else if (method === 'history_put' || method === 'history_list' || method === 'history_get') {
+        if (!store || !history) fail();
+        if (method === 'history_put') result = await history.put(argument);
+        else if (method === 'history_list') {
+          if (!exact(argument, ['limit'])) fail();
+          result = await history.list(argument.limit);
+        } else {
+          if (!exact(argument, ['seq'])) fail();
+          result = {bytes: Array.from(await history.get(argument.seq))};
         }
       } else {
         if (!store || !['status', 'ack', 'operation'].includes(method)) fail();
