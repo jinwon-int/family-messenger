@@ -10,6 +10,8 @@ struct RoomView: View {
     let room: RoomID
     @State private var draft = ""
     @State private var messages: [AppModel.TimelineItem] = []
+    /// #398: 최하단을 따라가는 중인가 — 방 진입·새 메시지 때 켜지고, 사용자가 끌어 올리면 꺼진다.
+    @State private var followLatest = true
     @State private var showInvite = false
     @State private var pickedPhoto: PhotosPickerItem?
     @State private var showPhotoPicker = false
@@ -24,18 +26,23 @@ struct RoomView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
                         ForEach(messages) { item in
-                            MessageRow(item: item, mine: item.record.senderDevice == model.deviceId)
+                            MessageRow(item: item, mine: item.record.senderDevice == model.deviceId,
+                                       onAttachmentLoaded: { attachmentLoaded(item.id, proxy) })
                                 .id(item.id)
                         }
                     }
                     .padding()
                 }
+                // 손가락으로 끌면(위로 읽으러 감) 늦은 이미지 로딩이 화면을 끌어내리지 않게 한다.
+                .simultaneousGesture(DragGesture(minimumDistance: 10).onChanged { _ in followLatest = false })
                 .onAppear {
                     messages = model.messages(room: room)
+                    followLatest = true
                     scrollToLatest(proxy, animated: false)
                 }
                 .onChange(of: model.messagesRevision) { _ in
                     messages = model.messages(room: room)
+                    followLatest = true
                     scrollToLatest(proxy, animated: true)
                 }
             }
@@ -93,6 +100,12 @@ struct RoomView: View {
         }
     }
 
+    /// #398: 첨부 본체가 읽혀 행이 커졌다 — 끝 쪽 행이고 따라가는 중이면 최하단을 다시 맞춘다.
+    private func attachmentLoaded(_ id: Int64, _ proxy: ScrollViewProxy) {
+        guard ScrollFollow.shouldRescroll(loaded: id, ids: messages.map(\.id), following: followLatest) else { return }
+        scrollToLatest(proxy, animated: false)
+    }
+
     /// 마지막 메시지(seq 최대)로 스크롤한다. `messages` 를 바꾼 직후라 LazyVStack 이 아직 그 행을 배치하지 않았을 수 있으므로
     /// 한 런루프 뒤에 부른다 — 같은 틱에 부르면 앵커가 없어 조용히 무시된다(iOS 16 대상이라 `defaultScrollAnchor` 는 못 쓴다).
     private func scrollToLatest(_ proxy: ScrollViewProxy, animated: Bool) {
@@ -139,6 +152,8 @@ struct RoomView: View {
 struct MessageRow: View {
     let item: AppModel.TimelineItem
     let mine: Bool
+    /// #398: 첨부 본체를 읽어 행 높이가 바뀐 뒤 한 번.
+    var onAttachmentLoaded: () -> Void = {}
     private var message: MessageRecord { item.record }
 
     var body: some View {
@@ -161,7 +176,7 @@ struct MessageRow: View {
     @ViewBuilder private var content: some View {
         switch message.kind {
         case .attachment:
-            AttachmentBubble(item: item)
+            AttachmentBubble(item: item, onLoaded: onAttachmentLoaded)
         case .undecryptable:
             Text(Strings.undecryptable)
         default:
@@ -174,6 +189,7 @@ struct MessageRow: View {
 struct AttachmentBubble: View {
     @EnvironmentObject private var model: AppModel
     let item: AppModel.TimelineItem
+    var onLoaded: () -> Void = {}
     @State private var data: Data?
 
     private var message: MessageRecord { item.record }
@@ -197,7 +213,9 @@ struct AttachmentBubble: View {
             }
         }
         .task(id: message.seq) {
-            if data == nil { data = model.attachment(room: message.room, seq: message.seq) }
+            guard data == nil else { return }
+            data = model.attachment(room: message.room, seq: message.seq)
+            if data != nil { onLoaded() }
         }
     }
 }
