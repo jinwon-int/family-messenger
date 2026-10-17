@@ -94,7 +94,8 @@ final class LobbyKeyringTests: XCTestCase {
     func testAdoptRoomLetsSyncJoinALobbyWelcome() async throws {
         let h = try SyncHarness(me: me)
         try await keyring(h).replenish(target: 8)
-        let consumed = try XCTUnwrap(try await h.relay.consumeLobbyKeyPackage(device: bot, target: me, room: h.room))
+        let consumedOrNil = try await h.relay.consumeLobbyKeyPackage(device: bot, target: me, room: h.room)
+        let consumed = try XCTUnwrap(consumedOrNil)
         h.relay.inject(device: bot, kind: .commit, bytes: FakeCommit(committer: bot, adds: [me]).bytes)
         let welcomeSeq = h.relay.inject(device: bot, kind: .welcome, bytes: FakeWelcome(members: [bot, me], keyPackage: consumed.bytes).bytes)
         h.relay.members = [bot, me]

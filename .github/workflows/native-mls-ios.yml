@@ -131,7 +131,10 @@ jobs:
             | tee -a "$GITHUB_STEP_SUMMARY" || true
           # 릴레이 주소를 받고도 스모크가 건너뛰었다면(=검증 안 됨) 실패로 본다
           if grep -q 'RelaySmokeTests.testIsolatedRelaySmoke.*skipped' "$log"; then echo "relay smoke was skipped"; exit 1; fi
-          grep -q '\[relay-smoke\] PASS ⑤' "$log"
+          # ⑥(#380 로비 탭 없는 참여)까지 — 메모리 릴레이(LinuxScenario)·실 릴레이 둘 다. 시나리오 안의 XCTAssert 실패는 Linux 에서
+          # 테스트 결과에 집계되지 않을 수 있어(guard+log 가 1차 판정) PASS 줄을 요구한다.
+          grep -q '\[relay-smoke\] PASS ⑥' "$log"
+          grep -q '\[scenario\] PASS ⑥' "$log"
       - name: Stop the smoke relay and keep its logs
         if: always()
         run: |

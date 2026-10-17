@@ -83,7 +83,11 @@ final class RoomMembership {
 
     /// 상대의 key package 1개를 소비한다: 방별 풀 먼저, 없으면 로비(#380 — 봇 `room invite` 와 같은 순서). 로비가 없는 릴레이(404)는 nil.
     private func consumeKeyPackage(target: DeviceID) async throws -> StoredKeyPackage? {
-        if let perRoom = try await transport.consumeKeyPackage(room: room, device: identity, target: target) { return perRoom }
+        do {
+            if let perRoom = try await transport.consumeKeyPackage(room: room, device: identity, target: target) { return perRoom }
+        } catch RelayError.refused(let code, let status) where status == 404 && code == "no_such_room" {
+            // 릴레이에 아직 없는 방(첫 commit 전): 방별 풀도 없다 — 로비로.
+        }
         do {
             return try await transport.consumeLobbyKeyPackage(device: identity, target: target, room: room)
         } catch RelayError.refused(_, let status) where status == 404 {

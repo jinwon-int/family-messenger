@@ -198,7 +198,10 @@ struct TwoDeviceScenario {
         await dad.model.refresh()
         XCTAssertEqual(dad.texts(lobbyRoom), ["로비로 들어온 앨리스", "탭 없이 들어왔어"], "⑥ dad decrypts alice's reply")
         XCTAssertEqual(alice.model.lobbyLive, 8, "⑥ the consumed lobby key was replenished after the join (\(alice.model.lastError ?? "-"))")
-        guard alice.texts(lobbyRoom) == ["로비로 들어온 앨리스"], dad.texts(lobbyRoom).count == 2 else { log("FAIL ⑥"); return }
+        // alice 의 답장은 서버 seq 를 받은 순간 자기 화면에도 기록된다(recordOwn) → 양쪽 모두 2건.
+        guard alice.texts(lobbyRoom) == ["로비로 들어온 앨리스", "탭 없이 들어왔어"], dad.texts(lobbyRoom).count == 2, alice.model.lobbyLive == 8 else {
+            log("FAIL ⑥ alice=\(alice.texts(lobbyRoom)) dad=\(dad.texts(lobbyRoom)) lobbyLive=\(String(describing: alice.model.lobbyLive)) err=\(alice.model.lastError ?? "-")"); return
+        }
         log("PASS ⑥ lobby key → invite without a join request → tapless join + E2EE both ways + replenish (room \(lobbyRoom))")
     }
 }
