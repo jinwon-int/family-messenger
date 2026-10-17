@@ -15,6 +15,7 @@ Python에서 하던 릴레이 호출을 브라우저로 옮긴 것이다. 합성
 ```text
 <static-dir>/
   relay-app.html  relay-app.js  main.js  durable-worker.js  session-store.js   ← web/ 원본 그대로
+  history-store.js(#370, durable-worker 가 import)  relay-attachments.js  commit-policy.js(relay-app 이 import)
   pkg/family_mls_browser_experiment.js  pkg/family_mls_browser_experiment_bg.wasm  pkg/custody.js
                                                                                   ← build.sh 번들(bundle-sha256.txt 일치본)
 ```
