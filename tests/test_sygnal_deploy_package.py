@@ -149,6 +149,23 @@ class SygnalUnitTest(unittest.TestCase):
 
         self.assertEqual(run_flags(self.units["sygnal.service"]), run_flags(self.units["sygnal-docker.service"]))
 
+    def test_healthcheck_uses_python_not_curl(self):
+        """이미지 내장 HEALTHCHECK 는 이미지에 없는 curl 을 불러 늘 unhealthy 였다(#395 ③).
+        유닛이 python 프로브로 덮어써야 한다. 값에 `\\`·`$`·`%` 가 없으므로 systemd 와 shlex 의
+        따옴표 해석이 같다."""
+        import shlex
+        for name in UNITS:
+            with self.subTest(unit=name):
+                match = re.search(r"(?m)^\s*--health-cmd (.*?) \\$", self.units[name])
+                self.assertIsNotNone(match, f"{name}: --health-cmd 누락")
+                raw = match.group(1)
+                self.assertFalse(set(raw) & set("\\$%"), "systemd 특수 문자가 들어가면 해석이 달라진다")
+                (cmd,) = shlex.split(raw)
+                argv = shlex.split(cmd)
+                self.assertEqual(argv[:2], ["python", "-c"])
+                self.assertEqual(argv[-1], "http://localhost:5000/health")
+                self.assertNotIn("curl", cmd)
+
 
 class SygnalConfigExampleTest(unittest.TestCase):
     def setUp(self):
