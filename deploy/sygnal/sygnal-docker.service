@@ -61,10 +61,16 @@ ExecStart=/usr/bin/docker run \
     --tmpfs /tmp:rw,noexec,nosuid,size=16m \
     --volume /etc/sygnal:/sygnal:ro \
     --env SYGNAL_CONF=/sygnal/sygnal.yaml \
+    --health-cmd 'python -c "import sys,urllib.request as u; u.urlopen(sys.argv[1],timeout=4)" http://localhost:5000/health' \
     --log-driver=none \
     ${SYGNAL_IMAGE}
 
 ExecStop=-/usr/bin/docker stop --time 20 sygnal
+
+# --health-cmd: 이미지 내장 HEALTHCHECK 는 `curl` 을 부르지만 이미지에 curl 이 없어
+#   서비스가 정상이어도 컨테이너가 계속 `unhealthy` 였다(#395 ③, 2026-10-18 육손 실측:
+#   `/bin/sh: 1: curl: not found`, 호스트 /health 200). 이미지에 있는 python 으로 같은
+#   /health 를 본다 — 2xx 면 0, 연결 실패·4xx/5xx 면 1. 주기·시간 제한은 이미지 값(15s/5s)을 쓴다.
 
 # --publish 로 호스트 루프백에만 노출한다. --network=host 를 쓰지 않는 이유:
 # host netns를 공유하면 게이트웨이가 홈서버(127.0.0.1:8008) 등 다른 루프백

@@ -157,6 +157,7 @@ systemctl status sygnal --no-pager
 
 - [ ] `systemctl is-active sygnal` = active
 - [ ] 로컬 헬스: `curl -fsS http://127.0.0.1:5000/health`
+- [ ] 컨테이너 헬스체크(기동 25초 뒤): `docker inspect sygnal --format '{{.State.Health.Status}}'`(podman 은 `podman healthcheck run sygnal`) = `healthy`. 이미지 내장 체크는 이미지에 없는 `curl` 을 불러 늘 `unhealthy` 였으므로 유닛의 `--health-cmd`(python 프로브)가 덮어쓴다(#395 ③). `unhealthy` 인데 위 로컬 헬스가 200 이면 유닛에 `--health-cmd` 가 빠졌는지 먼저 본다
 - [ ] 기동 로그에 `PushkinSetupException` 없음 (VAPID 키 경로·이메일 미설정이면 여기서 죽는다)
 - [ ] 로그에 webpush 앱이 로드된 기록이 있음
 - [ ] 외부에서 `/health`가 **404** (노출하지 않았으므로)
