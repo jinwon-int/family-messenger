@@ -5,16 +5,24 @@ Probe set for a systemd timer: homeserver client API URLs, required systemd unit
 freshness of the newest COMPLETE paired-backup record written by tuwunel_backup.py,
 and (bot node) freshness of the fleet_matrix sync loop's meta.health mark. One line
 of JSON goes to stdout; exit 0 healthy, 1 unhealthy. With --alert-admin a notice is
-sent to the homeserver's admin room ONLY on a healthy<->unhealthy transition, tracked
-in a 0600 state file, so an hourly timer does not spam the room. A failed notice is
-recorded, never raised. Secrets and message content never reach the output; the HTTP
-function, unit runner, sqlite opener and clock are injectable for tests.
+sent to the homeserver's admin room on a healthy<->unhealthy transition, tracked in a
+0600 state file, so an hourly timer does not spam the room. A failed notice is
+recorded (never raised) and retried on the next run.
+
+#395: with --push-spool the same transitions — and a reminder every --remind-hours
+while the plane stays unhealthy — are also written as owner records into the node's
+ccc push spool, which the node's Matrix bridge delivers. That path does not depend on
+the homeserver admin token: in #368 the token was revoked, which stopped both the
+backups and the admin-room notice, and nobody heard about it for 7 days.
+Secrets and message content never reach the output; the HTTP function, unit runner,
+sqlite opener and clock are injectable for tests.
 """
 import argparse
 import datetime
 import json
 import os
 from pathlib import Path
+import socket
 import sqlite3
 import stat
 import sys
@@ -95,35 +103,115 @@ def bot_health_age(db_path, now):
     return now - updated
 
 
-def transition_alert(args, failed_names, unhealthy, now):
-    """Send an admin-room notice on a status change; 'sent'/'failed'/'unchanged'/'recorded'.
+def read_state(path):
+    """The previous state dict, or {} (no file, a symlink, unreadable or not an object)."""
+    if not path.is_file() or path.is_symlink():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
-    The first run only records the baseline: a fresh install must not alert-storm
-    the admin room with a status it has never seen.
+
+def status_text(unhealthy, failed_names, since, now):
+    if not unhealthy:
+        return 'family messenger health: recovered — all checks pass'
+    text = 'family messenger health: UNHEALTHY — ' + ', '.join(failed_names)
+    if now - since >= 3600:
+        text += ' (unhealthy for %.0fh)' % ((now - since) / 3600)
+    return text
+
+
+def admin_notice(args, text):
+    loaded = load_tuwunel_config(args.config)
+    room = AdminRoom(loaded['base'], loaded['server_name'], load_admin_token(args.admin_token_file))
+    room.notice(text[:MAX_DETAIL])
+
+
+def push_notice(args, status, since, text, now, reminder):
+    """#395: one owner record in the ccc push spool (the node's Matrix bridge delivers it).
+
+    Written as a dot-tmp file and renamed, so the bridge (glob ``*.json``) never reads
+    half a record. ``dedup`` distinguishes the transition from each reminder.
+    """
+    spool = Path(args.push_spool)
+    if spool.is_symlink() or not spool.is_dir():
+        raise ValueError('untrusted push spool directory')
+    ts = datetime.datetime.fromtimestamp(now, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    kind = 'reminder' if reminder else status
+    record = {'version': 1, 'event': 'FamilyMessengerHealth', 'node': args.push_node, 'recipient': 'owner',
+              'ts': ts, 'status': status, 'text': text[:MAX_DETAIL],
+              'dedup': 'family-messenger-health:%s:%d:%s' % (status, int(since), int(now) if reminder else 'transition')}
+    name = '%s-family-messenger-health-%s-%d.json' % (ts.replace(':', '-'), kind, int(now))
+    tmp = spool / ('.' + name + '.tmp')
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as out:
+        json.dump(record, out)
+        out.flush()
+        os.fsync(out.fileno())
+    os.rename(tmp, spool / name)
+    return name
+
+
+def notify(args, failed_names, unhealthy, now):
+    """Status-change notices and #395 reminders; one 0600 state file for both channels.
+
+    Returns ``{'alert': …}`` for --alert-admin ('recorded' | 'sent' | 'retried' |
+    'failed' | 'unchanged') and ``{'push': …}`` for --push-spool ('recorded' |
+    'spooled' | 'reminded' | 'failed: <Error>' | 'unchanged'). The first run only
+    records the baseline: a fresh install must not alert-storm with a status it has
+    never seen. A failed channel is retried on the next run; while unhealthy, the push
+    channel repeats every --remind-hours (the admin room stays transition-only).
     """
     path = Path(args.state_file)
-    previous = None
-    if path.is_file() and not path.is_symlink():
-        try:
-            previous = json.loads(path.read_text(encoding='utf-8')).get('status')
-        except (OSError, ValueError):
-            previous = None
+    prev = read_state(path)
+    previous = prev.get('status')
     status = 'unhealthy' if unhealthy else 'healthy'
-    if previous == status:
-        return 'unchanged'
-    text = None
-    if previous is not None:
-        text = ('family messenger health: ' + ('UNHEALTHY — ' + ', '.join(failed_names)
-                if unhealthy else 'recovered — all checks pass'))
-        try:
-            loaded = load_tuwunel_config(args.config)
-            room = AdminRoom(loaded['base'], loaded['server_name'], load_admin_token(args.admin_token_file))
-            room.notice(text[:MAX_DETAIL])
-        except (OSError, ValueError, KeyError, RuntimeError):
-            write_state(path, status, now)
-            return 'failed'
-    write_state(path, status, now)
-    return 'sent' if text else 'recorded'
+    first, changed = previous is None, previous != status
+    since = now if changed else float(prev.get('since', prev.get('updated', now)))
+    state = {'status': status, 'updated': now, 'since': since,
+             'admin_pending': bool(prev.get('admin_pending')) and not changed,
+             'push_pending': bool(prev.get('push_pending')) and not changed,
+             'pushed_at': None if changed else prev.get('pushed_at')}
+    text = status_text(unhealthy, failed_names, since, now)
+    out = {}
+    if args.alert_admin:
+        if first:
+            out['alert'] = 'recorded'
+        elif changed or state['admin_pending']:
+            try:
+                admin_notice(args, text)
+                out['alert'] = 'sent' if changed else 'retried'
+                state['admin_pending'] = False
+            except (OSError, ValueError, KeyError, RuntimeError):
+                out['alert'] = 'failed'
+                state['admin_pending'] = True
+        else:
+            out['alert'] = 'unchanged'
+    if args.push_spool:
+        last = state['pushed_at'] if state['pushed_at'] is not None else since
+        reminder = (not first and not changed and not state['push_pending'] and unhealthy
+                    and now - last >= args.remind_hours * 3600)
+        if first:
+            out['push'] = 'recorded'
+        elif changed or state['push_pending'] or reminder:
+            try:
+                push_notice(args, status, since, text, now, reminder=reminder)
+                out['push'] = 'reminded' if reminder else 'spooled'
+                state['pushed_at'], state['push_pending'] = now, False
+            except (OSError, ValueError) as e:
+                out['push'] = 'failed: ' + type(e).__name__
+                state['push_pending'] = True
+        else:
+            out['push'] = 'unchanged'
+    write_state(path, state, now)
+    return out
+
+
+def transition_alert(args, failed_names, unhealthy, now):
+    """The admin-room outcome of ``notify`` (kept for callers of the pre-#395 API)."""
+    return notify(args, failed_names, unhealthy, now).get('alert', 'unchanged')
 
 
 def write_state(path, status, now):
@@ -135,7 +223,7 @@ def write_state(path, status, now):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'w') as out:
         os.fchmod(out.fileno(), 0o600)
-        json.dump({'status': status, 'updated': now}, out)
+        json.dump(status if isinstance(status, dict) else {'status': status, 'updated': now}, out)
 
 
 def run_checks(args, now, fetch_fn, unit_fn):
@@ -183,12 +271,22 @@ def parse_args(argv):
     p.add_argument('--alert-admin', action='store_true', help='notify the admin room on status transitions')
     p.add_argument('--config', metavar='FILE', help='homeserver toml for --alert-admin')
     p.add_argument('--admin-token-file', metavar='FILE', help='admin token file for --alert-admin')
-    p.add_argument('--state-file', metavar='FILE', help='0600 transition state file for --alert-admin')
+    p.add_argument('--state-file', metavar='FILE', help='0600 transition state file for --alert-admin/--push-spool')
+    p.add_argument('--push-spool', metavar='DIR',
+                   help='#395: ccc push spool directory (the node Matrix bridge delivers owner records from it)')
+    p.add_argument('--push-node', default=socket.gethostname().split('.')[0], metavar='NAME',
+                   help='node label shown in the push notice (default: short hostname)')
+    p.add_argument('--remind-hours', type=float, default=6.0, metavar='H',
+                   help='repeat the push notice every H hours while unhealthy (default 6)')
     args = p.parse_args(argv)
     if not (args.url or args.require_active or args.backup_state or args.bot_state):
         p.error('at least one of --url, --require-active, --backup-state, --bot-state is required')
     if args.alert_admin and not (args.config and args.admin_token_file and args.state_file):
         p.error('--alert-admin requires --config, --admin-token-file and --state-file')
+    if args.push_spool and not args.state_file:
+        p.error('--push-spool requires --state-file')
+    if args.remind_hours <= 0:
+        p.error('--remind-hours must be positive')
     return args
 
 
@@ -198,12 +296,12 @@ def main(argv=None, fetch_fn=fetch, unit_fn=run_unit, clock=time.time):
     checks = run_checks(args, now, fetch_fn, unit_fn)
     unhealthy = any(not c['ok'] for c in checks)
     result = {'status': 'unhealthy' if unhealthy else 'healthy', 'updated': now, 'checks': checks}
-    if args.alert_admin:
+    if args.alert_admin or args.push_spool:
         failed_names = [c['name'] for c in checks if not c['ok']]
         try:
-            result['alert'] = transition_alert(args, failed_names, unhealthy, now)
+            result.update(notify(args, failed_names, unhealthy, now))
         except (OSError, ValueError) as e:
-            result['alert'] = 'failed: ' + type(e).__name__
+            result['alert' if args.alert_admin else 'push'] = 'failed: ' + type(e).__name__
     print(json.dumps(result))
     return 1 if unhealthy else 0
 
