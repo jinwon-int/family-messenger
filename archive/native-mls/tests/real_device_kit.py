@@ -44,7 +44,7 @@ CSP = ("default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'se
 KINDS = ('firefox', 'safari-ios', 'android-chrome')
 WEB = Path(__file__).resolve().parents[2] / 'experiments' / 'openmls-browser' / 'web'
 ARCHIVE = Path(__file__).resolve().parents[2]
-ASSETS = ('/panel.html', '/panel.js', '/main.js', '/durable-worker.js', '/session-store.js',
+ASSETS = ('/panel.html', '/panel.js', '/main.js', '/durable-worker.js', '/session-store.js', '/history-store.js',  # #370
           '/pkg/family_mls_browser_experiment.js', '/pkg/family_mls_browser_experiment_bg.wasm',
           '/pkg/custody.js')
 TOKEN = re.compile(r'^/s/([0-9a-f]{32})(/|$)')

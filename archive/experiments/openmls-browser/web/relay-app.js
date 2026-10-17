@@ -70,15 +70,41 @@ async function callWorker(method, argument) {
   if (!value.ok) throw new Error(`${method} 거부`);
   return value.result;
 }
-async function op(method, bytes = [], sequence = 0) {
+async function op(method, bytes = [], sequence = 0, {deferAck = false} = {}) {
   const id = genId();
   const result = await callWorker('operation', {id, method, bytes: Array.from(bytes), sequence, fault: ''});
   S.wcursor = result.cursor;
-  // A transient operation (stage_commit, #261) has no ledger item to ack.
-  if (!result.transient) { try { await callWorker('ack', {ids: [id]}); } catch (error) { log('ledger ack 실패:', error.message); } }
+  // A transient operation (stage_commit, #261) has no ledger item to ack. A decrypt
+  // (#370) acks only after its row is in the local history: until then the sealed
+  // ledger still holds the plaintext.
+  const ack = async () => { try { await callWorker('ack', {ids: [id]}); } catch (error) { log('ledger ack 실패:', error.message); } };
+  if (!result.transient) { if (deferAck) result.ack = ack; else await ack(); }
+  result.ack ??= async () => {};
   return result;
 }
 // Framed member list (u32 count, then u32 len ‖ identity ‖ 32-byte key).
+// #370: sealed local message history (durable-worker history_*, ./history-store.js).
+// Off when the worker could not open its history database — the relay flow is the same.
+let historyOn = false, historyWarned = false;
+async function remember(row) {
+  if (!historyOn) return;
+  try { await callWorker('history_put', row); }
+  catch (error) {
+    if (!historyWarned) { historyWarned = true; log('대화 보관 실패 — 이 메시지는 새로고침 뒤 다시 보이지 않는다:', error.message); }
+  }
+}
+async function restoreHistory() {
+  if (!historyOn) return 0;
+  let rows;
+  try { rows = await callWorker('history_list', {limit: 500}); }
+  catch (error) { log('보관된 대화를 읽지 못했다:', error.message); return 0; }
+  for (const r of rows) {
+    if (r.kind === 'attachment') showAttachment(r.sender, r.size, r.seq, async () => new Uint8Array((await callWorker('history_get', {seq: r.seq})).bytes));
+    else showMessage(r.sender, r.client, r.text, r.seq, false);
+  }
+  return rows.length;
+}
+
 function parseMembers(framed) {
   const bytes = new Uint8Array(framed), view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const count = view.getUint32(0, true);
@@ -224,7 +250,7 @@ async function sync({quiet = false} = {}) {
       // The durable worker binds the room itself (bindDecrypt from its own init), so
       // the ciphertext goes in raw — `sealed()` is the memory-lane framing only.
       let out;
-      try { out = await op('decrypt', data, S.wcursor + 1); }
+      try { out = await op('decrypt', data, S.wcursor + 1, {deferAck: true}); }
       catch (error) {
         // A worker refusal ("operation 거부": ledger capacity, store/session
         // inconsistency, timeout) is not a facade verdict on the message — the
@@ -236,9 +262,18 @@ async function sync({quiet = false} = {}) {
         if (S.failedSeq !== ev.seq) { S.failedSeq = ev.seq; log(`해독 실패(seq ${ev.seq}, ${ev.device}): ${error.message} — 건너뛰지 않고 다음 동기화에서 다시 시도`); }
         break;
       }
-      if (out.rejected === true) { log(`해독 거부 → 건너뜀(seq ${ev.seq}, ${ev.device})`); continue; }
-      if (isAttachment(ev.client_id)) showAttachment(out.sender ?? ev.device, new Uint8Array(out.output), ev.seq);
-      else showMessage(out.sender ?? ev.device, out.client, decoder.decode(new Uint8Array(out.output)), ev.seq, out.replay);
+      if (out.rejected === true) { await out.ack(); log(`해독 거부 → 건너뜀(seq ${ev.seq}, ${ev.device})`); continue; }
+      const sender = out.sender ?? ev.device, client = out.client ?? '';
+      if (isAttachment(ev.client_id)) {
+        const bytes = new Uint8Array(out.output);
+        showAttachment(sender, bytes.length, ev.seq, async () => bytes);
+        await remember({seq: ev.seq, sender, client, kind: 'attachment', text: '', bytes: Array.from(bytes)});
+      } else {
+        const text = decoder.decode(new Uint8Array(out.output));
+        showMessage(sender, out.client, text, ev.seq, out.replay);
+        await remember({seq: ev.seq, sender, client, kind: 'text', text, bytes: []});
+      }
+      await out.ack();
     }
     S.epoch = body.epoch;
     if (S.joined && S.relaySeq > 0 && body.cursor < S.relaySeq) {
@@ -250,19 +285,25 @@ async function sync({quiet = false} = {}) {
   finally { S.busy = false; }
 }
 function showMessage(sender, client, text, seq, replay) {
+  if (document.querySelector(`#messages [data-seq="${seq}"]`)) return;   // #370: a restored row is not drawn twice
   const row = document.createElement('div');
+  row.dataset.seq = seq;
   if (sender === S.dev) row.className = 'me';
   row.textContent = `[${seq}] ${sender}${client && client !== sender ? ` (${client})` : ''}: ${text}${replay ? ' (재생)' : ''}`;
   $('messages').append(row);
 }
-function showAttachment(sender, bytes, seq) {
+// `load()` yields the bytes on click: in memory for a fresh decrypt, from the sealed
+// history (history_get) for a restored row, so the timeline lists without opening files.
+function showAttachment(sender, size, seq, load) {
   if (document.querySelector(`[data-attachment-seq="${seq}"]`)) return;
   const row = document.createElement('div');
   row.dataset.attachmentSeq = seq;
-  row.textContent = `[${seq}] ${sender}: 첨부파일 (${bytes.length.toLocaleString()}바이트) `;
+  row.textContent = `[${seq}] ${sender}: 첨부파일 (${size.toLocaleString()}바이트) `;
   const download = document.createElement('button');
   download.type = 'button'; download.textContent = '다운로드';
-  download.addEventListener('click', () => {
+  download.addEventListener('click', async () => {
+    let bytes;
+    try { bytes = await load(); } catch (error) { log(`첨부를 읽지 못했다(seq ${seq}):`, error.message); return; }
     const url = URL.createObjectURL(new Blob([bytes], {type: 'application/octet-stream'}));
     const link = document.createElement('a');
     link.href = url; link.download = `attachment-${seq}.bin`;
@@ -366,15 +407,18 @@ async function activate(statusInfo) {
   }
   renderRoster();
   log(`워커 시작: ${S.dev} @ ${S.db} (relay seq ${S.relaySeq}, joined=${S.joined}, pending=${S.pending})`);
-  // Resume shows only what arrives after the saved cursor: the relay keeps ciphertext behind
-  // the cursor only until every reader acks it and this page never stores plaintext, so
-  // earlier rows are gone by design (#258). Say so where the owner looks for them.
+  // Resume: the relay keeps ciphertext behind the cursor only until every reader acks
+  // it, and MLS cannot decrypt a message twice, so earlier rows come back only from this
+  // browser's sealed history (#370; before it, by design, nowhere — #258). Say which.
   if (S.joined && S.relaySeq > 0) {
     const note = document.createElement('div');
     note.className = 'muted'; note.dataset.placeholder = 'history';
-    note.textContent = `[… relay seq ${S.relaySeq}까지의 이전 대화는 다시 표시되지 않는다 — 릴레이도 이 화면도 평문을 보관하지 않는다. 새로 도착하는 메시지만 아래에 쌓인다]`;
     $('messages').append(note);
-    log(`이어하기: 이전 대화(relay seq ≤ ${S.relaySeq})는 다시 표시되지 않는다 — 새 메시지만 표시`);
+    const restored = await restoreHistory();
+    note.textContent = restored > 0
+      ? `[이 브라우저에 봉인 보관된 최근 ${restored}건(relay seq ${S.relaySeq}까지) — 릴레이는 평문을 보관하지 않는다. 이 기기에서만 보이고 「저장소 삭제」로 함께 지워진다]`
+      : `[… relay seq ${S.relaySeq}까지의 이전 대화는 다시 표시되지 않는다 — 이 브라우저에 보관된 기록이 없다(보관은 #370 이후 받은 메시지부터). 새로 도착하는 메시지만 아래에 쌓인다]`;
+    log(restored > 0 ? `이어하기: 보관된 대화 ${restored}건 복원(relay seq ≤ ${S.relaySeq})` : `이어하기: 이전 대화(relay seq ≤ ${S.relaySeq})는 보관 기록이 없어 다시 표시되지 않는다`);
   }
   if (S.halted) { showHalt(); return; }  // #261: a refused commit is final for this device
   await sync({quiet: true});
@@ -397,6 +441,7 @@ $('start').addEventListener('click', async () => {
     await window.spawn('device', true);
     setState('워커 시작 중 — 암호 키 유도에 모바일에서는 1~3분 걸릴 수 있다. 화면을 켜 두고 기다린다.');
     const init = await callWorker('init', {identity: dev, database: db, room, passphrase});
+    historyOn = init.history === true; historyWarned = false;
     $('passphrase').value = '';
     const statusInfo = await callWorker('status');
     if (init.fresh && localStorage.getItem(markerKey(db))) {
@@ -496,7 +541,11 @@ guard('send', async () => {
     const out = await op('encrypt', utf8.encode(text));
     const r = await postEvent('application', new Uint8Array(out.output));
     // #msg is cleared only here (201); every failure path below keeps the text for a retry (#251 A-2).
-    if (r.status === 201) { showMessage(S.dev, S.dev, text, r.body.seq, false); $('msg').value = ''; S.epoch = r.body.epoch; save(); return; }
+    if (r.status === 201) {
+      showMessage(S.dev, S.dev, text, r.body.seq, false); $('msg').value = ''; S.epoch = r.body.epoch; save();
+      await remember({seq: r.body.seq, sender: S.dev, client: S.dev, kind: 'text', text, bytes: []});   // MLS cannot decrypt our own messages
+      return;
+    }
     if (r.status === 409 && r.body && r.body.error === 'cas_mismatch' && attempt === 0) { log('epoch가 바뀌어 다시 암호화'); await sync(); continue; }
     throw new Error(`전송 실패: ${describe(r.status, r.body)}`);
   }
@@ -548,12 +597,15 @@ guard('evict', async () => {
   if (!confirm(`${S.db} 의 IndexedDB를 삭제한다(축출 재연습). 계속?`)) return;
   if (S.timer) clearInterval(S.timer);
   window.stopWorker('device');
-  await new Promise((resolve, reject) => {
-    const request = indexedDB.deleteDatabase(S.db);
-    request.onsuccess = resolve;
-    request.onerror = () => reject(new Error('deleteDatabase 실패'));
-    request.onblocked = () => reject(new Error('deleteDatabase 차단됨 — 다른 탭을 닫는다'));
-  });
+  // #370: the sealed history goes with the identity it was sealed for.
+  for (const name of [S.db, `${S.db}-history`]) {
+    await new Promise((resolve, reject) => {
+      const request = indexedDB.deleteDatabase(name);
+      request.onsuccess = resolve;
+      request.onerror = () => reject(new Error('deleteDatabase 실패'));
+      request.onblocked = () => reject(new Error('deleteDatabase 차단됨 — 다른 탭을 닫는다'));
+    });
+  }
   localStorage.removeItem(markerKey(S.db)); localStorage.removeItem(stateKey());
   S.started = false; enable(false);
   // #290: the policy chain never reuses a device id, so the next start must be a new id.

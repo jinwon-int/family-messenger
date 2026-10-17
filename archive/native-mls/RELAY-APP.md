@@ -15,6 +15,7 @@ Python에서 하던 릴레이 호출을 브라우저로 옮긴 것이다. 합성
 ```text
 <static-dir>/
   relay-app.html  relay-app.js  main.js  durable-worker.js  session-store.js   ← web/ 원본 그대로
+  history-store.js(#370, durable-worker 가 import)  relay-attachments.js  commit-policy.js(relay-app 이 import)
   pkg/family_mls_browser_experiment.js  pkg/family_mls_browser_experiment_bg.wasm  pkg/custody.js
                                                                                   ← build.sh 번들(bundle-sha256.txt 일치본)
 ```
@@ -90,8 +91,8 @@ POST 전에 DB/방/기기별 outbox에 **암호문·전송 ID·epoch·크기만*
 보존하고 **같은 첨부 다시 보내기**로 동일 바이트·동일 client_id를 재전송한다. 페이지 재시작 후에도
 같은 DB/기기로 이어하기하면 재시도할 수 있다. 릴레이의 200 duplicate를 성공으로 처리한다.
 명시적 epoch CAS 거부는 릴레이가 저장하지 않았다는 증거이므로 outbox를 지우고 동기화 후 다시 보낸다.
-불확실한 실패에서 새 ID를 발급하거나 재암호화하지 않는다. 평문 첨부는 화면이 열린 동안에만 남고
-이전 대화와 마찬가지로 새로고침 후 복원하지 않는다. 원래 파일명·미리보기·청킹은 지원하지 않는다.
+불확실한 실패에서 새 ID를 발급하거나 재암호화하지 않는다. 받은 첨부는 아래 「로컬 이력」으로 봉인 보관돼
+새로고침 뒤에도 다운로드할 수 있다(보낸 첨부는 화면에 그리지 않는다). 원래 파일명·미리보기·청킹은 지원하지 않는다.
 
 순수 outbox 시험은 `node --test web/relay-attachments.test.mjs`, 브라우저 합성 스모크는 아래 명령이다.
 합성 왕복은 오너 두 기기의 실사용 증거를 대체하지 않는다. 그 인수검사는 #256에서 계속 추적한다.
@@ -123,10 +124,14 @@ POST 전에 DB/방/기기별 outbox에 **암호문·전송 ID·epoch·크기만*
   드러난다. 기본 보존 정책(앱 30일 ∧ MIN 커서, commit keep 8 / hard 256 epoch)에서는 커서가 기록된 오프라인
   봇에게 이 경로가 열리지 않는다.
 - 제거(remove_pending)·방 닫기 UI 없음(운영자 CLI/릴레이 도구). 첨부는 위의 5 MiB 단일 메시지만 지원(#364).
-- **메시지 이력 없음**: 페이지는 `relaySeq`(마지막 읽은 릴레이 seq)만 저장하고 복호화된 본문은 어디에도
-  보관하지 않는다. 새로고침·탭 회수 뒤 이어하기하면 `events?after=relaySeq`만 가져오므로 이전 대화는 다시
-  그려지지 않는다 — 이어하기 직후 메시지 영역에 자리표시와 로그 한 줄로 알린다(#258, 오너 결정: 파일럿 중
-  안내만; 로컬 이력 보존은 평문 보존 범위를 정한 뒤 별도).
+- **로컬 이력(#370, B안)**: 받은 메시지·첨부와 보낸 텍스트를 이 브라우저의 별도 IndexedDB
+  `<DB>-history`(스토어 `rows`·`blobs`, 키 = relay seq)에 **봉인 보관**한다 — MLS 저장소와 같은 custody 키,
+  AD `family-mls-aux-history-v1/<row|blob>\0기기\0방\0seq`(다른 seq·방·기기로 옮기면 열리지 않음). MLS 저장소의
+  스키마(v2, `meta`+`entries`)는 그대로다. 순서: 복호화 → 화면 → `history_put` 완료 → ledger ack(그 사이에 죽으면
+  그 1건만 기록에서 빠진다 — MLS 는 같은 메시지를 두 번 풀 수 없다). 이어하기 때 최근 500행을 먼저 그리고(첨부는
+  다운로드를 누를 때 `history_get`) 자리표시에 보관 건수를 알린다. 상한 2,000행·200 MiB(오래된 seq부터 삭제).
+  「저장소 삭제」는 history DB 도 지운다. 릴레이는 여전히 평문을 보관하지 않고, 다른 기기는 과거를 볼 수 없다(MLS).
+  history DB 를 열지 못하면(보관 꺼짐) 동기화는 그대로이고 이어하기 안내는 #258 문구다.
 - Access 쿠키 만료(730h) 뒤의 재로그인 UX: 401이면 "새로고침해 로그인" 안내만. Access 로그인 페이지로의
   리다이렉트가 CORS/opaque로 끝나 fetch 자체가 실패하는 경우도 같은 "연결 실패" 안내로 합쳐진다 —
   원인(릴레이 다운 vs 쿠키 만료)은 구분하지 않는다.

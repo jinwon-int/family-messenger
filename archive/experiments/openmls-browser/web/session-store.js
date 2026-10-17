@@ -554,5 +554,24 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
     });
   }
 
-  return {open, close, readCustody, unlock, transaction, metaBytes};
+  // #370: seal/open records kept outside this store (relay-app's message history,
+  // ./history-store.js) with the same custody encryption subkey; the key never
+  // leaves. The additional data must carry the `family-mls-aux-` domain, so an aux
+  // record can never be presented as a meta (`family-mls-meta-`) or entry
+  // (`family-mls-entry-`) record of this store, nor the other way round.
+  const AUX_DOMAIN = utf8('family-mls-aux-');
+  function auxAd(ad) {
+    if (!(ad instanceof Uint8Array) || ad.length <= AUX_DOMAIN.length || ad.length > 512 ||
+        !equal(Array.from(ad.subarray(0, AUX_DOMAIN.length)), Array.from(AUX_DOMAIN))) fail();
+    return ad;
+  }
+  function sealAux(ad, plaintext) {
+    if (!enc || !(plaintext instanceof Uint8Array)) fail();
+    return sealRecord(enc, auxAd(ad), plaintext);
+  }
+  function openAux(ad, sealed) {
+    if (!enc || !(sealed instanceof Uint8Array)) fail();
+    return openRecord(enc, auxAd(ad), sealed);
+  }
+  return {open, close, readCustody, unlock, transaction, metaBytes, sealAux, openAux};
 }

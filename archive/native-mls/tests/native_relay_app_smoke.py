@@ -295,17 +295,42 @@ def run_flow(Dev, receipt, base, relay):
             b.wait_log('실패', n, 180000)
             receipt['checks']['wrong_passphrase_rejected'] = True
 
-            # Correct passphrase: the worker resumes (same fingerprint, joined) and the page says up
-            # front that earlier rows are not redrawn (#258) — it stores relaySeq, never plaintext.
+            # Correct passphrase: the worker resumes (same fingerprint, joined). #370: earlier
+            # rows come back from the browser's sealed history — received text, own text and
+            # the attachment (bytes from the history, not the relay) — and the notice says so.
             b.page.fill('#passphrase', b.passphrase)
             b.page.click('#start')
             b.page.wait_for_function("() => document.getElementById('state').textContent.includes('지문')", timeout=180000)
             b.page.wait_for_function(
-                "() => !!document.querySelector('#messages div[data-placeholder=\"history\"]')", timeout=30000)
+                "() => (document.querySelector('#messages div[data-placeholder=\"history\"]')?.textContent || '').includes('봉인 보관')",
+                timeout=30000)
             msgs_b = b.messages()
-            assert not any('hello from pc' in m or 'sent after the outage' in m for m in msgs_b), msgs_b
-            assert any('다시 표시되지 않는다' in m for m in msgs_b), msgs_b
-            receipt['checks']['resume_shows_history_notice_not_old_rows'] = True
+            assert any('owner-pc' in m and 'hello from pc' in m for m in msgs_b), msgs_b
+            assert any('owner-pc' in m and 'sent after the outage' in m for m in msgs_b), msgs_b
+            assert any('owner-phone' in m and 'hi from phone' in m for m in msgs_b), msgs_b   # own message, stored on send
+            for needle in ('hello from pc', 'hi from phone', 'sent after the outage'):
+                assert sum(needle in m for m in msgs_b) == 1, (needle, msgs_b)   # no duplicate rows
+            assert b.page.locator('[data-attachment-seq]').count() == 1
+            with b.page.expect_download() as downloaded:
+                b.page.locator('[data-attachment-seq] button').click()
+            assert hashlib.sha256(Path(downloaded.value.path()).read_bytes()).digest() == hashlib.sha256(attachment).digest()
+            receipt['checks']['resume_restores_sealed_history_text_own_and_attachment'] = True
+
+            # At rest the history is sealed: no message text and no run of the attachment's
+            # bytes appears in the raw IndexedDB records.
+            raw = b.page.evaluate("""async () => {
+                const db = await new Promise((ok, no) => { const r = indexedDB.open('family-mls-synthetic-app-owner-phone-history');
+                    r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); });
+                const all = async name => new Promise(ok => { const q = db.transaction(name).objectStore(name).getAll(); q.onsuccess = () => ok(q.result); });
+                const rows = await all('rows'), blobs = await all('blobs'); db.close();
+                return {rows: rows.map(v => Array.from(v.sealed)), blobs: blobs.map(v => Array.from(v.sealed)), stores: [...db.objectStoreNames]};
+            }""")
+            assert sorted(raw['stores']) == ['blobs', 'rows'], raw['stores']
+            assert len(raw['rows']) >= 4 and len(raw['blobs']) == 1, (len(raw['rows']), len(raw['blobs']))
+            records = [bytes(r) for r in raw['rows'] + raw['blobs']]
+            for needle in (b'hello from pc', b'hi from phone', b'owner-pc', bytes(range(64))):
+                assert not any(needle in r for r in records), needle
+            receipt['checks']['history_records_sealed_at_rest'] = True
 
             # #289: the trusted device removes a member. Bare Remove commit → own echo
             # merges (epoch advances, roster shrinks); the removed device verifies the
@@ -354,6 +379,9 @@ def run_flow(Dev, receipt, base, relay):
             a.wait_log('다음 시작은 새 기기 ID(owner-pc-2)', n, 30000)
             assert a.page.input_value('#device') == 'owner-pc-2', a.page.input_value('#device')
             receipt['checks']['evict_prefills_next_device_id'] = True
+            names = a.page.evaluate("async () => (await indexedDB.databases()).map(d => d.name)")
+            assert 'family-mls-synthetic-app-owner-pc' not in names and 'family-mls-synthetic-app-owner-pc-history' not in names, names
+            receipt['checks']['evict_deletes_sealed_history'] = True
 
 
 if __name__ == '__main__':

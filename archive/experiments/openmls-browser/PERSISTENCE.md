@@ -85,6 +85,14 @@ custom messaging cryptography, or serializing the nonpublic MlsGroup layout.
   deleted or overwritten may persist in the browser's storage files and stay
   decryptable by anyone who later learns the passphrase. Padding sizes is a possible
   follow-up; none of this is claimed hidden.
+- **relay-app message history (#370)**: a separate database `<name>-history` (version 1,
+  stores `rows` + `blobs`, key = relay seq) next to the durable store, written only by
+  relay-app through the durable worker (`history_put/list/get`, `web/history-store.js`).
+  Records are sealed with the same custody encryption subkey via `sealAux`/`openAux`,
+  whose additional data must start with `family-mls-aux-` — so a history record can never
+  pass as a `meta`/`entry` record of the store, nor move to another seq, room or device.
+  Visible at rest there: the seq keys, each record's size (a row's `blob` field is the
+  sealed blob length) and the row count. The store schema above is unchanged.
   An operation writes only the entries the session changed — an encrypt writes one
   entry (≈1.1 KB) instead of the whole snapshot — plus the `meta` record, which
   carries the ledger and is rewritten on every operation (reported as `meta_bytes`;
