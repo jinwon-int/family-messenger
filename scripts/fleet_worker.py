@@ -57,6 +57,10 @@ STEWARD_TOOLS = {
                     'device 는 기기 ID(예: jungin-iphone-1b89e3). 오너 turn 전용.'),
     'room_remove': (('room', 'device'), (),
                     '기기를 방에서 제거한다(되돌릴 수 없음 — 다시 초대해야 한다). 오너 turn 전용.'),
+    'room_close': (('room',), (),
+                   '방을 닫는다(되돌릴 수 없음 — 릴레이가 방을 닫아 모든 멤버에게 「닫힘」이 되고 다시 열 수 없다. '
+                   '다시 쓰려면 새 방을 만들어 초대한다). 봇이 답하는 agent 모드 방은 닫지 않는다(먼저 silent). '
+                   '오너 turn 전용.'),
     'room_members': (('room',), (),
                      '방의 멤버 기기와 epoch·cursor 를 본다(읽기 전용). 오너 turn 전용.'),
     'room_mode': (('room', 'mode'), (),
