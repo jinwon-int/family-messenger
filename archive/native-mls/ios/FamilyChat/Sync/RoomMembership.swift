@@ -3,7 +3,8 @@
 //
 //   참여 요청: 트랜잭션 { key_package → save } → POST keypackages(ref = sha256 hex)
 //   방 만들기: 트랜잭션 { create → save } (릴레이 방은 첫 commit 이 만든다)
-//   초대:      동기화 → KP 소비(?device=<대상>&consumer=<나>) → 트랜잭션 { invite_with_commit → members_after_pending → save }
+//   초대:      동기화 → KP 소비(방별 ?device=<대상>&consumer=<나> → 없으면 로비 /v2/lobby/keypackages, 봇과 같은 순서 #380)
+//              → 트랜잭션 { invite_with_commit → members_after_pending → save }
 //              → commit POST(members = 커밋 뒤 roster, CAS = 현재 epoch) → 동기화(내 echo 에서 merge_pending)
 //              → Welcome POST(targets=[대상]). commit POST 가 실패하면 clear_pending 으로 되돌린다.
 //
@@ -14,7 +15,7 @@ import Foundation
 import FamilyMLSCore
 
 enum MembershipError: Error, Equatable {
-    /// 대상 기기가 이 방에 게시한 키 패키지가 없다(아직 '참여 요청' 전이거나 이미 소비됨).
+    /// 대상 기기가 이 방에 게시한 키 패키지도, 로비 키도 없다(아직 '참여 요청'·앱 실행 전이거나 모두 소비됨).
     case noKeyPackage(DeviceID)
     /// 이미 그룹이 있는 방 상태에 `create` 를 하려 했다.
     case alreadyInGroup
@@ -80,10 +81,20 @@ final class RoomMembership {
         }
     }
 
+    /// 상대의 key package 1개를 소비한다: 방별 풀 먼저, 없으면 로비(#380 — 봇 `room invite` 와 같은 순서). 로비가 없는 릴레이(404)는 nil.
+    private func consumeKeyPackage(target: DeviceID) async throws -> StoredKeyPackage? {
+        if let perRoom = try await transport.consumeKeyPackage(room: room, device: identity, target: target) { return perRoom }
+        do {
+            return try await transport.consumeLobbyKeyPackage(device: identity, target: target, room: room)
+        } catch RelayError.refused(_, let status) where status == 404 {
+            return nil
+        }
+    }
+
     /// `target` 기기를 초대한다. 성공하면 commit·Welcome 이 릴레이에 있고 내 그룹은 새 epoch 다.
     func invite(target: DeviceID, sync: RoomSyncEngine) async throws {
         try await sync.syncAll()
-        guard let package = try await transport.consumeKeyPackage(room: room, device: identity, target: target) else {
+        guard let package = try await consumeKeyPackage(target: target) else {
             throw MembershipError.noKeyPackage(target)
         }
         let (commit, welcome, roster) = try transaction { engine -> (Data, Data, [String]) in

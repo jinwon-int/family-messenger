@@ -8,6 +8,7 @@ import FamilyMLSCore
 @main
 struct FamilyChatApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -16,6 +17,10 @@ struct FamilyChatApp: App {
                 .task {
                     await appDelegate.model.bootstrap()
                     await appDelegate.model.runForeground()
+                }
+                // 전면 복귀(#380 로비 보충 시점) — 첫 활성화는 bootstrap 뒤 첫 바퀴가 맡는다(lobbyCheckDue 초기값 true).
+                .onChange(of: scenePhase) { phase in
+                    if phase == .active { Task { await appDelegate.model.foregrounded() } }
                 }
         }
     }

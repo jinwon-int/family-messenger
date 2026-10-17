@@ -70,7 +70,7 @@ enum Strings {
     // 초대(InviteView, §12-E)
     static let inviteTitle = "기기 초대"
     static let inviteField = "초대할 기기 ID"
-    static let inviteHint = "상대 기기의 '설정 → 기기 ID'(예: mom-iphone-1a2b3c)를 입력하세요. 상대가 먼저 이 대화방에 '참여 요청'을 해 두어야 합니다. 초대하면 이 방의 암호화 키가 바뀌고(새 epoch) 상대가 대화에 들어옵니다."
+    static let inviteHint = "상대 기기의 '설정 → 기기 ID'(예: mom-iphone-1a2b3c)를 입력하세요. 상대가 먼저 이 대화방에 '참여 요청'을 해 두었거나, 상대 앱이 로비 키를 올려 두었어야 합니다(앱을 한 번 열면 됩니다). 초대하면 이 방의 암호화 키가 바뀌고(새 epoch) 상대가 대화에 들어옵니다."
     static let inviteButton = "초대"
     static func inviteDone(_ device: String) -> String { "\(device) 기기를 초대했습니다. 상대 앱에서 목록을 새로고침하면 대화가 열립니다." }
     static let inviteSelf = "자기 자신은 초대할 수 없습니다."
@@ -94,6 +94,17 @@ enum Strings {
     static func pushFailed(_ reason: String) -> String { "등록 실패: \(reason) — 잠시 뒤 다시 시도합니다" }
     static let logout = "로그아웃"
     static let logoutHint = "세션만 지웁니다. 이 기기의 암호화 상태는 유지되어 다시 로그인하면 같은 기기로 이어집니다."
+
+    // 로비 키(#380 P5-3) — AppModel 이 쓰므로 여기(NSE 공유 파일)에 둔다
+    static let lobbyKeysLabel = "로비 키"
+    static func lobbyKeys(_ live: Int?) -> String { live.map { "\($0)개" } ?? "확인 전" }
+    static let lobbyHint = "로비 키는 이 기기의 공개 키 패키지입니다. 운영자가 steward 봇에게 지시하면 이 키로 탭 없이 새 대화방에 초대됩니다(오너 기기는 자동 가입, 가족 기기는 수락 1탭). 앱을 열 때마다 모자란 만큼 채웁니다."
+    static func lobbyJoined(_ room: String) -> String { "새 대화방 「\(room)」에 들어왔습니다." }
+    static let inviteSectionTitle = "새 대화방 초대"
+    static func inviteBody(_ room: String) -> String { "운영자가 「\(room)」 대화방에 이 기기를 초대했습니다. 수락하면 대화에 들어갑니다." }
+    static let acceptInvite = "수락"
+    static let ignoreInvite = "무시"
+    static func inviteAcceptFailed(_ reason: String) -> String { "초대를 받아들이지 못했습니다: \(reason)" }
 
     // 알림 확장(NSE, §12-D) — 대체 문구는 앱 번들 `ko.lproj/Localizable.strings` 의 `NEW_MESSAGE` 와 같아야 한다
     // (NSE 가 죽거나 시간을 넘기면 iOS 가 원래 alert 의 loc-key 를 그 파일로 푼다).

@@ -19,6 +19,9 @@ struct SettingsView: View {
             Section(footer: Text(Strings.notificationsHint)) {
                 LabeledContent(Strings.notifications) { Text(Self.describe(model.pushStatus)).font(.footnote) }
             }
+            Section(footer: Text(Strings.lobbyHint)) {
+                LabeledContent(Strings.lobbyKeysLabel) { Text(Strings.lobbyKeys(model.lobbyLive)).font(.footnote) }
+            }
             Section(footer: Text(Strings.logoutHint)) {
                 Button(Strings.logout, role: .destructive) { model.logout() }
             }

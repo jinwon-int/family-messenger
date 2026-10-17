@@ -204,6 +204,57 @@ final class RelayTransportTests: XCTestCase {
         XCTAssertEqual(request.value(forHTTPHeaderField: "Cf-Access-Jwt-Assertion"), "t")
     }
 
+    // MARK: - 로비(server/lobby.go, #380 P5-1) — 4 라우트의 URL·쿼리·바디
+
+    func testLobbyRequestsMatchServerRoutes() throws {
+        let t = transport(.bearer("t"))
+        let post = try t.postLobbyKeyPackagesRequest(KeyPackagePost(device: "owner-iphone-1", packages: [KeyPackageInput(ref: "abcd", bytes: Data([1, 2]))]))
+        XCTAssertEqual(post.httpMethod, "POST")
+        XCTAssertEqual(post.url?.absoluteString, "https://relay.example.com/v2/lobby/keypackages")
+        XCTAssertEqual(post.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(post.httpBody)) as? [String: Any])
+        XCTAssertEqual(Set(json.keys), ["device", "packages"], "방별 게시와 같은 바디(readKeyPackagePost) — room 은 없다")
+        XCTAssertEqual(((json["packages"] as? [[String: Any]])?.first?["ref"]) as? String, "abcd")
+
+        let consume = try t.consumeLobbyKeyPackageRequest(device: "me-pc", target: "mom-iphone-1", room: "ops-yukson")
+        XCTAssertEqual(consume.httpMethod, "GET")
+        XCTAssertEqual(consume.url?.absoluteString,
+                       "https://relay.example.com/v2/lobby/keypackages?device=mom-iphone-1&consumer=me-pc&room=ops-yukson",
+                       "device=상대(패키지 소유자) · consumer=나 · room=쓸 방")
+        XCTAssertEqual(try t.lobbyStatusRequest(device: "me-pc").url?.absoluteString, "https://relay.example.com/v2/lobby/status?device=me-pc")
+        XCTAssertEqual(try t.lobbyWelcomesRequest(device: "me-pc").url?.absoluteString, "https://relay.example.com/v2/lobby/welcomes?device=me-pc")
+        XCTAssertEqual(try t.lobbyWelcomesRequest(device: "me-pc").httpMethod, "GET")
+    }
+
+    func testLobbyRefusalsMapLikeOtherRoutes() {
+        XCTAssertEqual(URLSessionRelayTransport.relayFailure(status: 403, data: body(#"{"error":"device_not_allowed","detail":"x"}"#)),
+                       .refused(code: "device_not_allowed", status: 403))
+        XCTAssertEqual(URLSessionRelayTransport.relayFailure(status: 409, data: body(#"{"error":"key_package_limit","live":8,"max":8}"#)),
+                       .refused(code: "key_package_limit", status: 409))
+        XCTAssertEqual(URLSessionRelayTransport.relayFailure(status: 404, data: body(#"{"error":"no_live_key_package"}"#)),
+                       .refused(code: "no_live_key_package", status: 404))
+    }
+
+    /// 로비 라우트를 구현하지 않은 전송(옛 테스트 대역·옛 릴레이)은 프로토콜 기본 구현이 404 를 던진다 — 호출자가 "로비 없음" 으로 건너뛴다.
+    func testTransportWithoutLobbyDefaultsTo404() async {
+        final class Legacy: RelayTransport {
+            func postKeyPackages(room: RoomID, _ post: KeyPackagePost) async throws -> KeyPackagesResponse { KeyPackagesResponse(stored: 0, duplicates: 0) }
+            func consumeKeyPackage(room: RoomID, device: DeviceID, target: DeviceID) async throws -> StoredKeyPackage? { nil }
+            func postEvent(room: RoomID, _ post: EventPost) async throws -> EventPostResponse { throw RelayError.network("n/a") }
+            func getEvents(room: RoomID, device: DeviceID, after: Int64, limit: Int, ack: Int64?) async throws -> EventsPage { throw RelayError.network("n/a") }
+            func closeRoom(room: RoomID, device: DeviceID) async throws {}
+            func listRooms(device: DeviceID) async throws -> RoomsResponse { RoomsResponse(rooms: []) }
+            func registerPush(_ registration: PushRegistration) async throws {}
+            func unregisterPush(device: DeviceID) async throws {}
+        }
+        let legacy = Legacy()
+        await XCTAssertThrowsErrorAsync(try await legacy.lobbyStatus(device: "me")) { XCTAssertEqual($0 as? RelayError, .refused(code: "not_found", status: 404)) }
+        await XCTAssertThrowsErrorAsync(try await legacy.lobbyWelcomes(device: "me")) { XCTAssertEqual($0 as? RelayError, .refused(code: "not_found", status: 404)) }
+        await XCTAssertThrowsErrorAsync(try await legacy.consumeLobbyKeyPackage(device: "me", target: "you", room: "r")) {
+            XCTAssertEqual($0 as? RelayError, .refused(code: "not_found", status: 404))
+        }
+    }
+
     /// 등록 라우트의 서버 거부는 다른 라우트와 같은 매핑(재로그인·등록 대기·설정 오류를 호출자가 가른다).
     func testPushRefusalsMapLikeOtherRoutes() {
         XCTAssertEqual(URLSessionRelayTransport.relayFailure(status: 401, data: Data()), .unauthorized)

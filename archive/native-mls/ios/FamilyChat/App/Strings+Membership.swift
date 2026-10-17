@@ -8,7 +8,7 @@ extension Strings {
     static func membershipFailure(_ error: Error) -> String {
         switch error {
         case MembershipError.noKeyPackage(let device):
-            return "\(device) 기기가 아직 이 대화방에 '참여 요청'을 하지 않았습니다(또는 요청이 이미 쓰였습니다). 그 기기에서 + → 참여 요청 후 다시 초대하세요."
+            return "\(device) 기기의 키가 없습니다 — 이 대화방에 '참여 요청'을 하지 않았고 로비 키도 없습니다(또는 모두 쓰였습니다). 그 기기에서 앱을 한 번 열거나(로비 키 보충) + → 참여 요청 후 다시 초대하세요."
         case MembershipError.alreadyInGroup:
             return "이 기기에 이미 있는 대화방입니다."
         case MembershipError.notInGroup:

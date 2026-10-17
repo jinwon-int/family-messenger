@@ -44,6 +44,12 @@ class InMemoryRelayWrapper: RelayTransport {
     func listRooms(device: DeviceID) async throws -> RoomsResponse { try await inner.listRooms(device: device) }
     func registerPush(_ registration: PushRegistration) async throws { try await inner.registerPush(registration) }
     func unregisterPush(device: DeviceID) async throws { try await inner.unregisterPush(device: device) }
+    func postLobbyKeyPackages(_ post: KeyPackagePost) async throws -> KeyPackagesResponse { try await inner.postLobbyKeyPackages(post) }
+    func consumeLobbyKeyPackage(device: DeviceID, target: DeviceID, room: RoomID) async throws -> StoredKeyPackage? {
+        try await inner.consumeLobbyKeyPackage(device: device, target: target, room: room)
+    }
+    func lobbyStatus(device: DeviceID) async throws -> LobbyStatus { try await inner.lobbyStatus(device: device) }
+    func lobbyWelcomes(device: DeviceID) async throws -> [PendingWelcome] { try await inner.lobbyWelcomes(device: device) }
 }
 
 @MainActor
