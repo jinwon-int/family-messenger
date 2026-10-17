@@ -82,6 +82,7 @@ native-mls-bot room status  <room>                  --rooms-dir <dir>   # room �
 
 ## 제약·주의
 
+- 릴레이 재시작·일시 장애(#392): 방 페이지 읽기가 연결 거부·reset·응답 잘림·502/503/504 로 실패하고 그 방이 아직 움직이지 않았으면 세션을 끝내지 않고 기다린다(0.5초부터 두 배, 최대 30초). 이벤트 `relay_unreachable{attempt, wait_ms, error}` → 복구 시 `relay_reachable{after_attempts}`. 페이지 처리 도중(Welcome·echo POST)의 실패는 지금처럼 세션을 끝내 디스크 커서에서 다시 시작한다.
 - 릴레이는 기기당 방 생성 32개(`RoomsMaxPerDevice`, #380 D3로 16→32). 새 actor 는 기존 방에 commit 할 수 없다 — 사람 기기는 **초대로만** 들어간다.
 - `agent` 방은 한 번에 하나. 응답기는 그 방의 메시지만 받고, 답도 그 방에만 쓴다.
 - 단일 방 모드(`session <room> <device> --state-file …`)는 그대로 있다. 공명 전환은 `extract-identity` 1회 뒤

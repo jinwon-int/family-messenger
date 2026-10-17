@@ -57,6 +57,27 @@ const POLL: Duration = Duration::from_millis(200);
 /// One status heartbeat per second of polling keeps the harness (and CI logs)
 /// informed without flooding stdout.
 const STATUS_EVERY: u32 = 5;
+/// #392: first wait after the relay could not be reached; doubles per
+/// consecutive unreachable round up to `RELAY_BACKOFF_MAX`.
+const RELAY_BACKOFF_FIRST: Duration = Duration::from_millis(500);
+const RELAY_BACKOFF_MAX: Duration = Duration::from_secs(30);
+
+/// #392: a relay that is restarting or briefly unreachable — connection
+/// refused/reset/timeout, a response cut off mid-read, or a gateway's 502/503/504
+/// — is worth waiting out. Everything else (the error envelope, policy
+/// refusals, a malformed base URL, local MLS errors) is not.
+fn is_transient(err: &BotError) -> bool {
+    match err {
+        BotError::Http(native_mls_host::http::HttpError::Io(_) | native_mls_host::http::HttpError::BadResponse(_)) => true,
+        BotError::Status { status } | BotError::Api { status, .. } => matches!(status, 502..=504),
+        _ => false,
+    }
+}
+
+/// Wait before the `attempt`-th retry (1-based): 0.5 s, 1 s, 2 s … capped at 30 s.
+fn relay_backoff(attempt: u32) -> Duration {
+    RELAY_BACKOFF_FIRST.saturating_mul(1u32 << attempt.saturating_sub(1).min(16)).min(RELAY_BACKOFF_MAX)
+}
 
 pub struct Options {
     pub base: String,
@@ -498,11 +519,15 @@ fn run_loop(
 
     let mut rounds = 0u32;
     let mut auth_wait_announced = false;
+    // #392: consecutive rounds that could not reach the relay.
+    let mut unreachable = 0u32;
     loop {
         if expired(deadline) {
             return Err(BotError::Local("session deadline exceeded"));
         }
+        let mut round_unreachable: Option<String> = None;
         for state in rooms.iter_mut() {
+            let before = (state.cursor, state.epoch, state.dirty);
             match poll_room(ctx, state, agent) {
                 Ok(()) => {}
                 // 401 = the assertion expired or was rejected, or the token
@@ -520,6 +545,16 @@ fn run_loop(
                         }));
                     }
                 }
+                // #392: the relay is restarting or briefly unreachable, and
+                // nothing of this room moved (the page read itself failed).
+                // Waiting it out keeps the session — and an agent turn in
+                // flight — alive. A failure after the room moved (a Welcome
+                // or echo POST mid-page) still ends the session: the restart
+                // resumes from the persisted cursor and replays that step.
+                Err(err) if is_transient(&err) && (state.cursor, state.epoch, state.dirty) == before => {
+                    round_unreachable = Some(err.to_string());
+                    break;
+                }
                 Err(err) => return Err(err),
             }
             // MLS state that moved this round goes to disk before the next
@@ -531,6 +566,23 @@ fn run_loop(
             if state.dirty {
                 flush(ctx, state)?;
             }
+        }
+        if let Some(error) = round_unreachable {
+            unreachable += 1;
+            let mut wait = relay_backoff(unreachable);
+            if let Some(d) = deadline {
+                wait = wait.min(d.saturating_duration_since(Instant::now()));
+            }
+            emit(&serde_json::json!({
+                "event": "relay_unreachable", "device": ctx.own, "attempt": unreachable,
+                "wait_ms": wait.as_millis() as u64, "error": error,
+            }));
+            std::thread::sleep(wait);
+            continue;
+        }
+        if unreachable > 0 {
+            emit(&serde_json::json!({ "event": "relay_reachable", "device": ctx.own, "after_attempts": unreachable }));
+            unreachable = 0;
         }
         // Steward (#372 P2): one queued operator command per round.
         if let Some(steward) = steward {
@@ -1811,6 +1863,46 @@ for line in sys.stdin:
         assert_eq!(seen.len(), 2);
         assert!(seen.iter().all(|line| line.starts_with("GET /v2/rooms/family/events?device=bot-1&after=4")), "{seen:?}");
         let _ = std::fs::remove_file(&marker);
+    }
+
+    /// #392: transport-level failures are transient, contract errors are not;
+    /// the backoff doubles from 0.5 s and stops at 30 s.
+    #[test]
+    fn transient_relay_errors_and_backoff() {
+        use native_mls_host::http::HttpError;
+        let reset = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
+        assert!(is_transient(&BotError::Http(HttpError::Io(reset))));
+        assert!(is_transient(&BotError::Http(HttpError::BadResponse("eof"))));
+        assert!(is_transient(&BotError::Status { status: 503 }));
+        assert!(is_transient(&BotError::Api { status: 502, code: "bad_gateway".into() }));
+        assert!(!is_transient(&BotError::Http(HttpError::BadUrl)), "a bad base URL never heals");
+        assert!(!is_transient(&BotError::Api { status: 500, code: "internal".into() }));
+        assert!(!is_transient(&BotError::Api { status: 403, code: "device_not_allowed".into() }));
+        assert!(!is_transient(&BotError::Local("state export rejected")));
+        let waits: Vec<u64> = (1..=8).map(|n| relay_backoff(n).as_millis() as u64).collect();
+        assert_eq!(waits, vec![500, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000]);
+        assert_eq!(relay_backoff(u32::MAX), RELAY_BACKOFF_MAX);
+    }
+
+    /// #392 through `run_loop`: a 503 while the relay restarts, then a normal
+    /// page, then connection refused (the canned relay stops listening) — the
+    /// loop survives all of it and ends only on its deadline.
+    #[test]
+    fn run_loop_waits_out_an_unreachable_relay() {
+        let page = r#"{"epoch":2,"revision":1,"events":[],"first_seq":5}"#.to_string();
+        let (base, server) = canned_relay_with_status(vec![(503, "unavailable".into()), (200, page)]);
+        let client = Client::with_access(&base, api::Access::None);
+        let ctx = Ctx { client: &client, own: "bot-1" };
+        let mut rooms = vec![joined_room("family", 4)];
+        let started = Instant::now();
+        let err = run_loop(&ctx, &mut rooms, &mut None, Some(Instant::now() + Duration::from_millis(2500)), None)
+            .expect_err("only the deadline ends the loop");
+        assert!(err.to_string().contains("deadline"), "a transient relay error must not end the session: {err}");
+        assert!(started.elapsed() >= Duration::from_millis(2400), "the loop ran until the deadline");
+        let seen = server.join().expect("server thread");
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert!(seen.iter().all(|l| l.starts_with("GET /v2/rooms/family/events?device=bot-1&after=4")), "{seen:?}");
+        assert_eq!(rooms[0].cursor, 4, "nothing moved");
     }
 
     fn temp_dir(tag: &str) -> PathBuf {
