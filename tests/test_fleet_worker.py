@@ -533,6 +533,19 @@ class StewardToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.outcome(result),{'ok':True,'result':{'op':'invite','room':'family','pending':True,'seq':3}})
         self.assertEqual(w.tool_pending,{})
 
+    async def test_room_close_is_forwarded_with_the_room_only(self):
+        # The bot's `tool_command` maps room_close → `close <room>` (#389/#390); the
+        # worker only forwards it — owner-only and the agent-room refusal stay in the bot.
+        w,r,out=await self.setup_worker()
+        await self.start_turn(w,out)
+        call=asyncio.create_task(w._tool('room_close',{'room':'lobby-test'}))
+        frame=await self.wait_for(out,'tool')
+        self.assertEqual((frame['name'],frame['arguments']),('room_close',{'room':'lobby-test'}))
+        await w.handle({'type':'tool-result','turn_id':'one','tool_id':frame['tool_id'],'ok':True,
+                        'result':{'op':'close','room':'lobby-test','relay':'closed'}})
+        self.assertEqual(self.outcome(await call),
+                         {'ok':True,'result':{'op':'close','room':'lobby-test','relay':'closed'}})
+
     async def test_parent_refusal_is_an_error_result_not_an_exception(self):
         w,r,out=await self.setup_worker()
         await self.start_turn(w,out)
@@ -580,7 +593,9 @@ class StewardToolTests(unittest.IsolatedAsyncioTestCase):
              ('room_status',{'room':'family'}),                        # no arguments allowed
              ('room_mode',{'room':'family','mode':'a'*65}),
              ('room_members','family'),                                # not a mapping
-             ('room_members',{'room':7})]
+             ('room_members',{'room':7}),
+             ('room_close',{}),                                        # missing room
+             ('room_close',{'room':'family','device':'owner-pc'})]     # close takes the room only
         for name,arguments in bad:
             with self.subTest(name=name,arguments=arguments):
                 self.assertEqual(self.outcome(await w._tool(name,arguments)),{'ok':False,'error':'bad_arguments'})
@@ -626,7 +641,7 @@ class StewardToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(set(STEWARD_READ_ONLY)<=set(STEWARD_TOOLS))
         allowed=steward_allowed_tools()
         self.assertEqual(sorted(allowed),['mcp__steward__room_members','mcp__steward__room_status'])
-        for name in ('room_create','room_join','room_invite','room_remove','room_mode'):
+        for name in ('room_create','room_join','room_invite','room_remove','room_close','room_mode'):
             self.assertNotIn('mcp__steward__'+name,allowed)
         self.assertEqual(steward_allowed_tools(approve_all=True),[])
 

@@ -63,7 +63,7 @@ task로 실행되므로 승인/취소 입력이 작업 뒤에 막히지 않는�
 ### 도구 프레임 — `--steward-tools` (#372 P4, `--provider claude` 전용)
 
 worker는 in-process SDK MCP 서버 `steward`로 방 운영 도구 `room_create / room_join /
-room_invite / room_remove / room_members / room_mode / room_status`를 모델에 노출한다
+room_invite / room_remove / room_close / room_members / room_mode / room_status`를 모델에 노출한다
 (모델이 보는 이름은 `mcp__steward__room_invite` 꼴). 모델이 도구를 부르면 worker는 **실행하지
 않고** 부모에게 묻는다:
 
@@ -77,7 +77,7 @@ room_invite / room_remove / room_members / room_mode / room_status`를 모델에
 - 결과는 MCP 텍스트(JSON 한 줄)로 모델에 돌아간다. `ok=false`면 `is_error`.
 
 권한: `--claude-permission-mode default`면 **변경 도구**(`room_create / room_join / room_invite /
-room_remove / room_mode`) 호출마다 SDK `can_use_tool` → 이 포트의 `approval` 왕복(방의
+room_remove / room_close / room_mode`) 호출마다 SDK `can_use_tool` → 이 포트의 `approval` 왕복(방의
 `⚠️ 승인 필요 #n`)이 먼저 일어나므로 오너가 명령마다 확인한다. **읽기 전용 도구**
 `room_status`·`room_members`는 부수 효과가 없어 기본으로 승인 없이 실행된다(#378): worker가
 `SessionRequest.mcp_allowed_tools=["mcp__steward__room_status","mcp__steward__room_members"]`를

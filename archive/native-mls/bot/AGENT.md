@@ -52,7 +52,7 @@ native-mls-bot <base-url> session <room> <device> \
 | 규칙 | 구현 |
 |---|---|
 | 활성 turn 에만 | `turn_id` 가 활성 turn 과 다르거나(비어 있어도) turn 이 없으면 무시. `tool_id` 는 `[A-Za-z0-9_-]{1,128}`(아니면 무시) |
-| 인수 검증 | `name` ∈ `room_create{room, mode?=silent}` · `room_join{room}` · `room_invite{room, device}` · `room_remove{room, device}` · `room_members{room}` · `room_mode{room, mode}` · `room_status{}`. 값은 모두 문자열 `[A-Za-z0-9_-]{1,64}`, `mode` 는 `agent|silent`, 모르는 키·빠진 키는 거절 → `error:"bad_arguments"`(즉시, 방에는 안 나감) |
+| 인수 검증 | `name` ∈ `room_create{room, mode?=silent}` · `room_join{room}` · `room_invite{room, device}` · `room_remove{room, device}` · `room_close{room}` · `room_members{room}` · `room_mode{room, mode}` · `room_status{}`. 값은 모두 문자열 `[A-Za-z0-9_-]{1,64}`, `mode` 는 `agent|silent`, 모르는 키·빠진 키는 거절 → `error:"bad_arguments"`(즉시, 방에는 안 나감) |
 | **owner 만** | turn 을 시작한 메시지의 발신 기기 actor(첫 `-` 앞)가 `--owner-actor` 와 다르면 `error:"owner_only"`(즉시, 실행 없음). 가족이 "정인 넣어줘"라고 해도 봇이 방을 건드리지 않는다 — 오너가 직접 말해야 한다 |
 | 한 번에 하나 | turn 당 미응답 tool 1개. 그 사이 둘째 `tool` 은 `error:"busy"` |
 | 실행 | 폴 루프가 `Steward::execute` 로 실행(명령 큐 `cmd/`·`out/` 와 같은 코드, 파일은 안 거침). 실행 오류는 `ok:false, error:<execute 의 메시지>`. turn 이 끝나면(result/rejected/워치독) 미응답 tool 은 버려진다 |
@@ -61,7 +61,7 @@ native-mls-bot <base-url> session <room> <device> \
 | 승인 없는 도구 | 워커가 `room_status`·`room_members`(읽기 전용)를 ccc-node `mcp_allowed_tools`에 넣어 방 승인 없이 실행된다(#378; `--steward-tools-approve-all`이면 전부 승인). 봇의 owner-only·busy 검사는 그대로 모든 호출에 적용된다 |
 | inbox | `<state>.inbox.json` 의 활성 turn 에 `sender_device` 가 추가됐다(owner 판정용). 없는 옛 파일도 그대로 읽힌다(version 1 유지) |
 
-이름 → steward 명령: `room_create→create <room> [mode]` · `room_join→join <room>` · `room_invite→invite <room> <device>` · `room_remove→remove <room> <device>` · `room_members→members <room>` · `room_mode→mode <room> <mode>` · `room_status→status`(room 자리는 `-`).
+이름 → steward 명령: `room_create→create <room> [mode]` · `room_join→join <room>` · `room_invite→invite <room> <device>` · `room_remove→remove <room> <device>` · `room_close→close <room>`(#389 — agent 모드 방·pending commit 은 거절) · `room_members→members <room>` · `room_mode→mode <room> <mode>` · `room_status→status`(room 자리는 `-`).
 
 ## 이벤트 (stdout JSON lines)
 
