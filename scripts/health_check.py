@@ -142,7 +142,8 @@ def push_notice(args, status, since, text, now, reminder):
     kind = 'reminder' if reminder else status
     record = {'version': 1, 'event': 'FamilyMessengerHealth', 'node': args.push_node, 'recipient': 'owner',
               'ts': ts, 'status': status, 'text': text[:MAX_DETAIL],
-              'dedup': 'family-messenger-health:%s:%d:%s' % (status, int(since), int(now) if reminder else 'transition')}
+              'dedup': 'family-messenger-health:%s:%d:%s' % (
+                  status, int(since), int(now) if reminder else 'transition')}
     name = '%s-family-messenger-health-%s-%d.json' % (ts.replace(':', '-'), kind, int(now))
     tmp = spool / ('.' + name + '.tmp')
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)

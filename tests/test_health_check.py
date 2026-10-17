@@ -243,7 +243,8 @@ class PushSpoolTest(unittest.TestCase):
         self.state = root / 'state.json'
         self.spool = root / 'spool'
         self.spool.mkdir(mode=0o700)
-        self.base = ['--url', 'u', '--state-file', str(self.state), '--push-spool', str(self.spool), '--push-node', 'yukson']
+        self.base = ['--url', 'u', '--state-file', str(self.state),
+                     '--push-spool', str(self.spool), '--push-node', 'yukson']
 
     def run_at(self, now, unhealthy_names=('url u',), argv=None):
         args = hc.parse_args(argv or self.base)
@@ -307,7 +308,8 @@ class PushSpoolTest(unittest.TestCase):
                 raise RuntimeError('M_UNKNOWN_TOKEN')
         with fake_admin(Dead):
             out = self.run_at(NOW + 60, argv=argv)
-        self.assertEqual(out, {'alert': 'failed', 'push': 'spooled'}, '#368: the push path does not need the admin token')
+        self.assertEqual(out, {'alert': 'failed', 'push': 'spooled'},
+                         '#368: the push path does not need the admin token')
         sent = []
         class Room:
             def __init__(self, *a):
