@@ -174,6 +174,15 @@ final class InMemoryRelay: RelayTransport, RelayControl {
         }
     }
 
+    func deleteLobbyKeyPackages(device: DeviceID) async throws -> Int {
+        try checkUp()
+        return lock.withLock {
+            let n = lobby[device]?.count ?? 0
+            lobby[device] = nil
+            return n
+        }
+    }
+
     func lobbyWelcomes(device: DeviceID) async throws -> [PendingWelcome] {
         try checkUp()
         return try lock.withLock {

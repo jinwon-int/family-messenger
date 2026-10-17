@@ -44,4 +44,5 @@ final class LossyTransport: RelayTransport {
     }
     func lobbyStatus(device: DeviceID) async throws -> LobbyStatus { try await base.lobbyStatus(device: device) }
     func lobbyWelcomes(device: DeviceID) async throws -> [PendingWelcome] { try await base.lobbyWelcomes(device: device) }
+    func deleteLobbyKeyPackages(device: DeviceID) async throws -> Int { try await base.deleteLobbyKeyPackages(device: device) }
 }

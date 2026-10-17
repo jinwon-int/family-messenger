@@ -5,7 +5,7 @@
 // room that does not exist yet (no room row created, consumed_room recorded),
 // member-only consume for a seeded room, 410 on a closed room, one-shot
 // draining to 404, the policy gate (403 device_not_allowed) and the JWT
-// subject binding (403 device_subject_mismatch) on all four routes; and the
+// subject binding (403 device_subject_mismatch) on all five routes; and the
 // welcomes listing: whole-identifier target match, closed rooms excluded,
 // disappearing once the device acks past the Welcome.
 package main
@@ -308,6 +308,7 @@ func TestLobbyRoutesBindTheCaller(t *testing.T) {
 		{"consume", "GET", "/v2/lobby/keypackages?device=b1&consumer=a1&room=r", nil},
 		{"status", "GET", "/v2/lobby/status?device=a1", nil},
 		{"welcomes", "GET", "/v2/lobby/welcomes?device=a1", nil},
+		{"delete", "DELETE", "/v2/lobby/keypackages?device=a1", nil},
 	}
 	for _, rt := range routes {
 		code, raw := doJSON(t, srv, rt.method, rt.path, rt.body)
@@ -331,6 +332,7 @@ func TestLobbyRoutesBindTheCaller(t *testing.T) {
 		{"consume", "GET", "/v2/lobby/keypackages?device=b1&consumer=ghost&room=r", nil},
 		{"status", "GET", "/v2/lobby/status?device=ghost", nil},
 		{"welcomes", "GET", "/v2/lobby/welcomes?device=ghost", nil},
+		{"delete", "DELETE", "/v2/lobby/keypackages?device=ghost", nil},
 	}
 	for _, rt := range ghost {
 		code, raw := doAuth(t, srv, rt.method, rt.path, rt.body, alice)
@@ -428,5 +430,59 @@ func TestLobbyWelcomesListing(t *testing.T) {
 	// y1 is untouched by x1's ack.
 	if code, raw := doJSON(t, srv, "GET", "/v2/lobby/welcomes?device=y1", nil); code != http.StatusOK || len(decodeWelcomes(t, raw)) != 1 {
 		t.Fatalf("welcomes y1 after x1's ack: status=%d body=%s", code, raw)
+	}
+}
+
+// TestLobbyDeleteWithdrawsUnconsumedPackages (#389): DELETE removes only the
+// caller's unconsumed rows (consumed ones keep consumed_room for the Welcome
+// bookkeeping), another device's pool is untouched, a repeat is 200 deleted=0,
+// ?device= is required and validated, and the pool can be refilled afterwards.
+func TestLobbyDeleteWithdrawsUnconsumedPackages(t *testing.T) {
+	r, srv := newTestRelay(t, testPolicy())
+	if code, raw := doJSON(t, srv, "POST", "/v2/lobby/keypackages", lobbyPublishBody(t, "a1", "k1", "k2", "k3")); code != http.StatusCreated {
+		t.Fatalf("publish a1: status=%d body=%s", code, raw)
+	}
+	if code, raw := doJSON(t, srv, "POST", "/v2/lobby/keypackages", lobbyPublishBody(t, "b1", "m1")); code != http.StatusCreated {
+		t.Fatalf("publish b1: status=%d body=%s", code, raw)
+	}
+	if code, raw := doJSON(t, srv, "GET", "/v2/lobby/keypackages?device=a1&consumer=b1&room=fresh", nil); code != http.StatusOK {
+		t.Fatalf("consume one of a1: status=%d body=%s", code, raw)
+	}
+
+	code, raw := doJSON(t, srv, "DELETE", "/v2/lobby/keypackages?device=a1", nil)
+	if code != http.StatusOK {
+		t.Fatalf("delete: status=%d body=%s", code, raw)
+	}
+	var got lobbyDeleteResponse
+	if err := json.Unmarshal(raw, &got); err != nil || got.Device != "a1" || got.Deleted != 2 {
+		t.Fatalf("delete response = %+v (%v), want device=a1 deleted=2", got, err)
+	}
+	if n := tableCount(t, r, `SELECT COUNT(*) FROM mls_lobby_keypackages WHERE device = 'a1' AND consumed_by IS NULL`); n != 0 {
+		t.Fatalf("unconsumed a1 rows left: %d", n)
+	}
+	if n := tableCount(t, r, `SELECT COUNT(*) FROM mls_lobby_keypackages WHERE device = 'a1' AND consumed_room = 'fresh'`); n != 1 {
+		t.Fatalf("the consumed row must stay for the Welcome bookkeeping: %d", n)
+	}
+	if code, raw := doJSON(t, srv, "GET", "/v2/lobby/status?device=b1", nil); code != http.StatusOK || decodeLobbyStatus(t, raw).Live != 1 {
+		t.Fatalf("b1's pool must be untouched: status=%d body=%s", code, raw)
+	}
+	if code, raw := doJSON(t, srv, "GET", "/v2/lobby/keypackages?device=a1&consumer=b1&room=other", nil); code != http.StatusNotFound || errField(t, raw) != "no_live_key_package" {
+		t.Fatalf("nothing left to consume: status=%d body=%s", code, raw)
+	}
+
+	// Idempotent; the device can publish again afterwards.
+	code, raw = doJSON(t, srv, "DELETE", "/v2/lobby/keypackages?device=a1", nil)
+	if err := json.Unmarshal(raw, &got); code != http.StatusOK || err != nil || got.Deleted != 0 {
+		t.Fatalf("repeat delete: status=%d body=%s", code, raw)
+	}
+	if code, raw := doJSON(t, srv, "POST", "/v2/lobby/keypackages", lobbyPublishBody(t, "a1", "k9")); code != http.StatusCreated || decodeKeyPackages(t, raw).Live != 1 {
+		t.Fatalf("republish after delete: status=%d body=%s", code, raw)
+	}
+
+	if code, raw := doJSON(t, srv, "DELETE", "/v2/lobby/keypackages", nil); code != http.StatusBadRequest || errField(t, raw) != "device_required" {
+		t.Fatalf("missing device: status=%d body=%s", code, raw)
+	}
+	if code, raw := doJSON(t, srv, "DELETE", "/v2/lobby/keypackages?device=bad%20id", nil); code != http.StatusBadRequest || errField(t, raw) != "bad_identifier" {
+		t.Fatalf("bad device: status=%d body=%s", code, raw)
 	}
 }

@@ -48,6 +48,13 @@ type pendingWelcome struct {
 	CreatedAt int64  `json:"created_at"`
 }
 
+// lobbyDeleteResponse is DELETE /v2/lobby/keypackages: how many unconsumed
+// lobby packages of the device were withdrawn (#389).
+type lobbyDeleteResponse struct {
+	Device  string `json:"device"`
+	Deleted int64  `json:"deleted"`
+}
+
 type welcomesResponse struct {
 	Welcomes []pendingWelcome `json:"welcomes"`
 }
@@ -146,6 +153,27 @@ func (s *relay) handleConsumeLobbyKeyPackage(w http.ResponseWriter, req *http.Re
 		log.Printf("consume lobby keypackage room=%s device=%s: %v", room, device, err)
 		s.fail(w, http.StatusInternalServerError, apiError{Error: "internal"})
 	}
+}
+
+// handleDeleteLobbyKeyPackages withdraws every unconsumed lobby package of
+// ?device= (bound to the JWT subject) — the app calls it before 「이 기기
+// 지우기」 discards the signing key, so no inviter spends a package whose
+// Welcome nobody can open (#389). Consumed rows stay until they expire: they
+// carry consumed_room, the bookkeeping a pending Welcome is matched by. No
+// policy gate — a device may always retract its own packages. Idempotent:
+// nothing left is 200 with deleted=0.
+func (s *relay) handleDeleteLobbyKeyPackages(w http.ResponseWriter, req *http.Request) {
+	c, device, ok := s.lobbyDeviceParam(w, req)
+	if !ok || !s.bindDevice(w, c, device) {
+		return
+	}
+	deleted, err := s.deleteLobbyKeyPackages(device)
+	if err != nil {
+		log.Printf("delete lobby keypackages device=%s: %v", device, err)
+		s.fail(w, http.StatusInternalServerError, apiError{Error: "internal"})
+		return
+	}
+	writeJSON(w, http.StatusOK, lobbyDeleteResponse{Device: device, Deleted: deleted})
 }
 
 // handleLobbyStatus reports the device's live lobby count and the policy
@@ -363,6 +391,31 @@ func (s *relay) lobbyLive(device string) (int, error) {
 		return 0, err
 	}
 	return live, tx.Commit()
+}
+
+// deleteLobbyKeyPackages removes the device's unconsumed lobby rows (live or
+// expired) and sweeps expired ones, in one transaction under the mutex.
+func (s *relay) deleteLobbyKeyPackages(device string) (int64, error) {
+	now := time.Now().Unix()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`DELETE FROM mls_lobby_keypackages WHERE device = ? AND consumed_by IS NULL`, device)
+	if err != nil {
+		return 0, err
+	}
+	deleted, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if err := sweepLobbyKeyPackages(tx, now); err != nil {
+		return 0, err
+	}
+	return deleted, tx.Commit()
 }
 
 // pendingWelcomes lists, oldest first, the open rooms whose log holds a

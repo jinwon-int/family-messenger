@@ -31,6 +31,8 @@ public protocol RelayTransport: AnyObject {
     func lobbyStatus(device: DeviceID) async throws -> LobbyStatus
     /// GET /v2/lobby/welcomes?device=
     func lobbyWelcomes(device: DeviceID) async throws -> [PendingWelcome]
+    /// DELETE /v2/lobby/keypackages?device= — 이 기기의 미소비 로비 키를 거둔다(#389, 「이 기기 지우기」 직전). 지운 개수.
+    func deleteLobbyKeyPackages(device: DeviceID) async throws -> Int
 }
 
 public extension RelayTransport {
@@ -44,6 +46,9 @@ public extension RelayTransport {
         throw RelayError.refused(code: "not_found", status: 404)
     }
     func lobbyWelcomes(device: DeviceID) async throws -> [PendingWelcome] {
+        throw RelayError.refused(code: "not_found", status: 404)
+    }
+    func deleteLobbyKeyPackages(device: DeviceID) async throws -> Int {
         throw RelayError.refused(code: "not_found", status: 404)
     }
 }

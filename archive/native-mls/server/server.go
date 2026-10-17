@@ -582,6 +582,7 @@ func (s *relay) routes() *http.ServeMux {
 	// Lobby key packages and pending-Welcome discovery (#380 P5-1, lobby.go).
 	mux.HandleFunc("POST /v2/lobby/keypackages", s.handlePostLobbyKeyPackages)
 	mux.HandleFunc("GET /v2/lobby/keypackages", s.handleConsumeLobbyKeyPackage)
+	mux.HandleFunc("DELETE /v2/lobby/keypackages", s.handleDeleteLobbyKeyPackages)
 	mux.HandleFunc("GET /v2/lobby/status", s.handleLobbyStatus)
 	mux.HandleFunc("GET /v2/lobby/welcomes", s.handleLobbyWelcomes)
 	mux.HandleFunc("POST /v2/push/devices", s.handleRegisterPush)

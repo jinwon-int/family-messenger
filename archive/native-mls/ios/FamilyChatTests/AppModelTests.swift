@@ -50,6 +50,7 @@ class InMemoryRelayWrapper: RelayTransport {
     }
     func lobbyStatus(device: DeviceID) async throws -> LobbyStatus { try await inner.lobbyStatus(device: device) }
     func lobbyWelcomes(device: DeviceID) async throws -> [PendingWelcome] { try await inner.lobbyWelcomes(device: device) }
+    func deleteLobbyKeyPackages(device: DeviceID) async throws -> Int { try await inner.deleteLobbyKeyPackages(device: device) }
 }
 
 @MainActor

@@ -204,6 +204,15 @@ public final class URLSessionRelayTransport: RelayTransport {
         try decode(LobbyWelcomes.self, await perform(try lobbyWelcomesRequest(device: device))).welcomes
     }
 
+    public func deleteLobbyKeyPackages(device: DeviceID) async throws -> Int {
+        // lobby.go handleDeleteLobbyKeyPackages(#389): 미소비 로비 키만 삭제(소비된 행은 Welcome 추적용으로 남는다), 멱등(200 deleted=0).
+        try decode(LobbyDeleteResponse.self, await perform(try deleteLobbyKeyPackagesRequest(device: device))).deleted
+    }
+
+    func deleteLobbyKeyPackagesRequest(device: DeviceID) throws -> URLRequest {
+        try makeRequest(method: "DELETE", path: "/v2/lobby/keypackages", query: [URLQueryItem(name: "device", value: device)])
+    }
+
     func postLobbyKeyPackagesRequest(_ post: KeyPackagePost) throws -> URLRequest {
         try makeRequest(method: "POST", path: "/v2/lobby/keypackages", body: try JSONEncoder().encode(post))
     }

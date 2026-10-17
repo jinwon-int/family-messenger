@@ -224,6 +224,10 @@ final class RelayTransportTests: XCTestCase {
         XCTAssertEqual(try t.lobbyStatusRequest(device: "me-pc").url?.absoluteString, "https://relay.example.com/v2/lobby/status?device=me-pc")
         XCTAssertEqual(try t.lobbyWelcomesRequest(device: "me-pc").url?.absoluteString, "https://relay.example.com/v2/lobby/welcomes?device=me-pc")
         XCTAssertEqual(try t.lobbyWelcomesRequest(device: "me-pc").httpMethod, "GET")
+        let delete = try t.deleteLobbyKeyPackagesRequest(device: "me-pc")
+        XCTAssertEqual(delete.httpMethod, "DELETE", "#389")
+        XCTAssertEqual(delete.url?.absoluteString, "https://relay.example.com/v2/lobby/keypackages?device=me-pc")
+        XCTAssertNil(delete.httpBody)
     }
 
     func testLobbyRefusalsMapLikeOtherRoutes() {
@@ -253,6 +257,7 @@ final class RelayTransportTests: XCTestCase {
         await XCTAssertThrowsErrorAsync(try await legacy.consumeLobbyKeyPackage(device: "me", target: "you", room: "r")) {
             XCTAssertEqual($0 as? RelayError, .refused(code: "not_found", status: 404))
         }
+        await XCTAssertThrowsErrorAsync(try await legacy.deleteLobbyKeyPackages(device: "me")) { XCTAssertEqual($0 as? RelayError, .refused(code: "not_found", status: 404)) }
     }
 
     /// 등록 라우트의 서버 거부는 다른 라우트와 같은 매핑(재로그인·등록 대기·설정 오류를 호출자가 가른다).
