@@ -25,10 +25,10 @@ struct RoomListView: View {
                     }
                 }
             }
-            if model.rooms.isEmpty {
+            if model.listedRooms.isEmpty && model.pendingInvites.isEmpty {
                 Text(Strings.noRooms).foregroundStyle(.secondary)
             }
-            ForEach(model.rooms, id: \.room) { room in
+            ForEach(model.listedRooms, id: \.room) { room in
                 NavigationLink(value: room.room) {
                     HStack {
                         Text(room.room)

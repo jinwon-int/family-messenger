@@ -2,7 +2,7 @@
 import Foundation
 import FamilyMLSCore
 
-final class InMemoryMessageStore: MessageStore, AttachmentLoading {
+final class InMemoryMessageStore: MessageStore, AttachmentLoading, RoomForgetting {
     private var records: [RoomID: [MessageRecord]] = [:]
     private var roomRecords: [RoomID: RoomRecord] = [:]
     private let lock = NSLock()
@@ -53,6 +53,12 @@ final class InMemoryMessageStore: MessageStore, AttachmentLoading {
     func attachment(room: RoomID, seq: Int64) throws -> Data? {
         lock.lock(); defer { lock.unlock() }
         return records[room]?.first { $0.seq == seq }?.attachment
+    }
+
+    /// 「목록에서 지우기」(#389) 대역(`FileSQLiteStore.forgetRoom` 상당).
+    func forgetRoom(_ room: RoomID) throws {
+        lock.lock(); defer { lock.unlock() }
+        records[room] = nil; roomRecords[room] = nil
     }
 
     /// "이 기기 지우기" 대역(`FileSQLiteStore.wipe` 상당).

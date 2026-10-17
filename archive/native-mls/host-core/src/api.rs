@@ -318,6 +318,25 @@ impl Client {
         Ok(Some(pkg))
     }
 
+    /// `POST /v2/rooms/<room>/close?device=` (§3.4 B1): tombstone the room —
+    /// every member then reads 410 `room_closed`. `Ok(true)` = closed (also
+    /// when it already was: the relay answers idempotently), `Ok(false)` =
+    /// the relay has no such room (a room founded locally whose first invite
+    /// never went out). Anything else — 403 `not_a_member` included — is the
+    /// envelope.
+    pub fn close_room(&self, room: &str, device: &str) -> Result<bool> {
+        let resp = self.send("POST", &format!("/v2/rooms/{room}/close?device={device}"), None)?;
+        if resp.status == 404 {
+            let body: serde_json::Value = serde_json::from_slice(&resp.body)?;
+            if body["error"] == serde_json::Value::String("no_such_room".into()) {
+                return Ok(false);
+            }
+            return Err(RelayError::Api { status: 404, code: body["error"].as_str().unwrap_or("?").into() });
+        }
+        self.checked(resp)?;
+        Ok(true)
+    }
+
     pub fn post_event(&self, room: &str, post: &EventPost) -> Result<EventResponse> {
         let resp = self.send(
             "POST",

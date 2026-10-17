@@ -312,6 +312,26 @@ public final class FileSQLiteStore: MessageStore, OutboxStore, CursorStore, Atta
         }
     }
 
+    // MARK: - 「목록에서 지우기」(#389, `RoomForgetting`)
+
+    /// 그 방의 `messages`·`rooms` 행을 한 트랜잭션으로 지운다(NSE 가 사이에 끼어들어도 반쪽이 남지 않는다). 없으면 no-op.
+    public func forgetRoom(_ room: RoomID) throws {
+        lock.lock(); defer { lock.unlock() }
+        do {
+            try db.exec("BEGIN IMMEDIATE;")
+            for sql in ["DELETE FROM messages WHERE room = ?", "DELETE FROM rooms WHERE room = ?"] {
+                let stmt = try db.prepare(sql)
+                defer { stmt.finalize() }
+                stmt.bindText(room, at: 1)
+                try stepOnce(stmt, context: "rooms.forget")
+            }
+            try db.exec("COMMIT;")
+        } catch {
+            try? db.exec("ROLLBACK;")
+            throw error
+        }
+    }
+
     // MARK: - 내부
 
     /// 테스트 전용(@testable): 파라미터 없는 SQL 첫 행 첫 열(Int64). 스키마·열 검증용.

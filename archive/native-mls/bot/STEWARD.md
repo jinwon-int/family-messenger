@@ -24,6 +24,7 @@ native-mls-bot room create  <room> [agent|silent]   --rooms-dir <dir>   # 로컬
 native-mls-bot room join    <room>                  --rooms-dir <dir>   # key package 게시 → 멤버가 초대하면 Welcome 으로 참여
 native-mls-bot room invite  <room> <device>         --rooms-dir <dir>   # 상대의 key package 소비(방 → 없으면 로비, #380 P5) → Add commit → echo 뒤 Welcome
 native-mls-bot room remove  <room> <device>         --rooms-dir <dir>   # Remove commit(bare)
+native-mls-bot room close   <room>                  --rooms-dir <dir>   # 릴레이 방 닫기(410 room_closed) + 이 봇에서 방 잊기(#389)
 native-mls-bot room members <room>                  --rooms-dir <dir>
 native-mls-bot room mode    <room> agent|silent     --rooms-dir <dir>
 native-mls-bot room status  <room>                  --rooms-dir <dir>   # room 인자는 형식상 필요(아무 식별자)
@@ -44,6 +45,7 @@ native-mls-bot room status  <room>                  --rooms-dir <dir>   # room �
 | `room_join{room}` | `room join <room>` |
 | `room_invite{room, device}` | `room invite <room> <device>`(방 key package → 없으면 로비, #380 P5) |
 | `room_remove{room, device}` | `room remove <room> <device>` |
+| `room_close{room}` | `room close <room>`(#389) |
 | `room_members{room}` | `room members <room>` |
 | `room_mode{room, mode}` | `room mode <room> agent\|silent` |
 | `room_status{}` | `room status`(room 자리는 `-`) |
@@ -67,6 +69,16 @@ native-mls-bot room status  <room>                  --rooms-dir <dir>   # room �
 4. 피초대 기기가 Welcome 으로 참여한다.
 
 제거도 같다(Welcome 없음). pending 이 남아 있는 동안 같은 방의 invite/remove 는 거부된다.
+
+## 방 닫기 (#389)
+
+`room close <room>` = `POST /v2/rooms/<room>/close?device=<봇>` → 릴레이가 방을 tombstone 하고 이후 모든 경로가 410 `room_closed` 를
+돌려준다(앱은 「운영자가 이 대화방을 닫았습니다」로 정지하고 「목록에서 지우기」를 보인다). 그다음 봇이 그 방을 잊는다 —
+`<room>.state`·`<room>.mode`·`<room>.state.refused`·`.state.tmp` 삭제 + 세션 메모리에서 제거(재시작해도 되살아나지 않는다).
+- 거부: `agent` 모드 방(먼저 `room mode <room> silent`), 자기 commit 이 pending 인 방, 모르는 방.
+- 결과 `relay`: `closed`(200, 이미 닫힌 방도 멱등) · `absent`(404 `no_such_room` — 만들기만 하고 초대한 적 없는 방) ·
+  `not_member`(403 `not_a_member` — 이 봇이 내보내진 방, 또는 아직 참여 전 방은 요청 없이) → 셋 다 로컬에서는 잊는다.
+- 되돌릴 수 없다: 닫힌 방은 다시 열리지 않는다(새 방을 만들어 초대). 응답기 도구 `room_close` 도 owner-only·승인 대상이다.
 
 ## 제약·주의
 
