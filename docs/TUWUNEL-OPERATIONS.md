@@ -172,6 +172,13 @@ systemctl enable --now family-messenger-backup.timer family-messenger-health.tim
 systemctl start family-messenger-backup.service   # 첫 수동 실행으로 기록을 확인한다
 ```
 
+- **토큰 신원(#395 ①, 2026-10-18)**: 백업·헬스·복원 드릴은 사람 계정과 분리된 전용 운영 계정
+  `@ops-admin`(관리자, `#admins` 멤버)의 기기 `OPSADMIN` 토큰을 `/etc/family-messenger/tuwunel-admin-token`
+  (0600 root)에서 읽는다 — 오너가 「다른 모든 세션 로그아웃」을 해도 끊기지 않는다(#368 재발 방지).
+  비밀번호는 같은 디렉터리 `ops-admin.password`(0600). 게이트 진행만 가족방 **멤버** 토큰이 필요해
+  (`/messages` 는 비멤버에게 403) 오너 기기 토큰을 `gate-member-token`(0600)으로 따로 쓴다. 값은 어디에도
+  기록하지 않는다. 계정 재발급: `admin.py create <이름> --admin` → 로그인으로 기기 토큰 발급 → `whoami` ·
+  관리방 명령 1회 확인 → 파일 교체(이전 파일 보존) → 헬스 1회 실행.
 - 유닛이 환경 파일을 요구하므로(`EnvironmentFile=`) 설치 전에 restic 환경을 준비한다. 파일이
   없으면 유닛이 시작하지 않는다(의도된 fail-loud).
 - 봇 노드는 `deploy/family-matrix-health.service.example`+`.timer.example`로

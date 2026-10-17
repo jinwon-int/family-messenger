@@ -152,6 +152,10 @@ class OperationsTimersTest(unittest.TestCase):
         self.assertIn("scripts/gate_progress.py", unit)
         self.assertIn("EnvironmentFile=/etc/family-messenger/gate.env", unit)
         self.assertIn("StateDirectoryMode=0700", unit)
+        # #395 ①: room-member token, separate from the ops-admin token backup/health use.
+        self.assertIn("--admin-token-file /etc/family-messenger/gate-member-token", unit)
+        for name in ("family-messenger-backup.service", "family-messenger-health.service"):
+            self.assertIn("/etc/family-messenger/tuwunel-admin-token", (PKG / name).read_text(encoding="utf-8"), name)
         timer = (PKG / "family-messenger-gate-progress.timer").read_text(encoding="utf-8")
         self.assertIn("OnCalendar=*-*-* 09:00:00 Asia/Seoul", timer)
 
