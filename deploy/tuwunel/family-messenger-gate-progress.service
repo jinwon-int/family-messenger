@@ -1,5 +1,9 @@
 # 매일 1회 가족방 대화 진행(1단계 게이트 신호)을 기록한다. 방 ID는 호스트별 값이라
 # 환경 파일(/etc/family-messenger/gate.env: GATE_ROOM_ID=...)로 공급한다(코드에 박지 않음).
+# 토큰(#395 ①): 가족방 /messages 는 **그 방 멤버** 토큰만 읽는다. 백업·헬스가 쓰는 전용 운영 계정
+# (@ops-admin, /etc/family-messenger/tuwunel-admin-token)은 가족방 멤버가 아니라 403 이므로, 이 유닛만
+# 가족방 멤버(오너) 기기 토큰을 별도 파일 /etc/family-messenger/gate-member-token(0600 root)으로 쓴다.
+# 그 기기가 로그아웃되면 이 기록만 멈추고 백업·헬스는 영향이 없다.
 [Unit]
 Description=Family messenger gate progress record (family room conversation counts)
 After=network-online.target tuwunel.service
@@ -8,7 +12,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/family-messenger/gate.env
-ExecStart=/usr/bin/python3 /opt/family-messenger-tuwunel/scripts/gate_progress.py --config /etc/tuwunel/tuwunel.toml --admin-token-file /etc/family-messenger/tuwunel-admin-token --state /var/lib/family-messenger-gate
+ExecStart=/usr/bin/python3 /opt/family-messenger-tuwunel/scripts/gate_progress.py --config /etc/tuwunel/tuwunel.toml --admin-token-file /etc/family-messenger/gate-member-token --state /var/lib/family-messenger-gate
 TimeoutStartSec=10min
 UMask=0077
 NoNewPrivileges=true
