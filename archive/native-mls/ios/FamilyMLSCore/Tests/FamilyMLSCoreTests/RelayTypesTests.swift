@@ -49,6 +49,24 @@ final class RelayTypesTests: XCTestCase {
         XCTAssertEqual(object["topic"] as? String, "com.seoyoon-family.hande")
     }
 
+    /// 로비(server/lobby.go, #380 P5-1): status · welcomes · 게시 응답의 `live`(옛 릴레이에는 없다 → nil).
+    func testLobbyTypesDecodeServerShape() throws {
+        let status = try JSONDecoder().decode(LobbyStatus.self, from: Data(#"{"device":"owner-iphone-1","live":3,"max":8,"ttl_seconds":2592000}"#.utf8))
+        XCTAssertEqual(status, LobbyStatus(device: "owner-iphone-1", live: 3, max: 8, ttlSeconds: 2_592_000))
+        let welcomes = try JSONDecoder().decode(LobbyWelcomes.self, from: Data(
+            #"{"welcomes":[{"room":"ops-yukson","seq":2,"epoch":1,"created_at":1700000000}]}"#.utf8))
+        XCTAssertEqual(welcomes.welcomes, [PendingWelcome(room: "ops-yukson", seq: 2, epoch: 1, createdAt: 1_700_000_000)])
+        let empty = try JSONDecoder().decode(LobbyWelcomes.self, from: Data(#"{"welcomes":[]}"#.utf8))
+        XCTAssertEqual(empty.welcomes, [])
+        let withLive = try JSONDecoder().decode(KeyPackagesResponse.self, from: Data(#"{"stored":2,"duplicates":0,"live":5}"#.utf8))
+        XCTAssertEqual(withLive, KeyPackagesResponse(stored: 2, duplicates: 0, live: 5))
+        let legacy = try JSONDecoder().decode(KeyPackagesResponse.self, from: Data(#"{"stored":1,"duplicates":0}"#.utf8))
+        XCTAssertNil(legacy.live, "a relay from before #381 omits live")
+        XCTAssertEqual(RelayErrorCode(rawValue: "device_not_allowed"), .deviceNotAllowed)
+        XCTAssertEqual(RelayErrorCode(rawValue: "key_package_limit"), .keyPackageLimit)
+        XCTAssertEqual(RelayErrorCode(rawValue: "no_live_key_package"), .noLiveKeyPackage)
+    }
+
     func testEngineMethodWireNames() {
         XCTAssertEqual(EngineMethod.keyPackage.rawValue, "key_package")
         XCTAssertEqual(EngineMethod.inviteWithCommit.rawValue, "invite_with_commit")

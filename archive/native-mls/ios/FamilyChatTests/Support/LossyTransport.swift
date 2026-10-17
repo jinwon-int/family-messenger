@@ -37,4 +37,11 @@ final class LossyTransport: RelayTransport {
     func listRooms(device: DeviceID) async throws -> RoomsResponse { try await base.listRooms(device: device) }
     func registerPush(_ registration: PushRegistration) async throws { try await base.registerPush(registration) }
     func unregisterPush(device: DeviceID) async throws { try await base.unregisterPush(device: device) }
+    // 로비(#380) — 프로토콜 기본 구현(404)이 아니라 바탕 전송으로 넘긴다(시나리오 ⑥).
+    func postLobbyKeyPackages(_ post: KeyPackagePost) async throws -> KeyPackagesResponse { try await base.postLobbyKeyPackages(post) }
+    func consumeLobbyKeyPackage(device: DeviceID, target: DeviceID, room: RoomID) async throws -> StoredKeyPackage? {
+        try await base.consumeLobbyKeyPackage(device: device, target: target, room: room)
+    }
+    func lobbyStatus(device: DeviceID) async throws -> LobbyStatus { try await base.lobbyStatus(device: device) }
+    func lobbyWelcomes(device: DeviceID) async throws -> [PendingWelcome] { try await base.lobbyWelcomes(device: device) }
 }

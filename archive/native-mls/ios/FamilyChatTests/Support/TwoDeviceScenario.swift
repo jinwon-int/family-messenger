@@ -7,6 +7,8 @@
 //      재시작 → 같은 바이트 재전송 = 200 duplicate(원래 seq) → alice 는 정확히 한 번 받는다
 //   ⑤ commit 정책 위반: alice 의 상태 사본으로 만든 유효한 commit 을 다른 기기(mallory)가 게시 →
 //      bob 이 stage → 정책 ①(committer_mismatch) → discard + ⛔ 정지, 재시작 뒤에도 유지
+//   ⑥ 로비(#380 P5-3): alice(owner) 의 로비 키가 첫 바퀴에 올라가 있다 → bob 이 **새 방**을 만들고 alice 를 초대(방별 키 없음 →
+//      로비 소비) → alice 는 탭 없이(「참여 요청」 없이) 방이 나타나고 join·복호화 → 쓰인 키만큼 로비가 다시 채워진다
 // 각 단계는 실패 시 어느 단계인지 메시지에 남긴다(스모크 로그에서 시나리오별 통과/실패를 읽기 위해).
 import CryptoKit
 import XCTest
@@ -48,11 +50,13 @@ final class ScenarioDevice {
         return (deps: deps, model: AppModel(dependencies: deps))
     }
 
-    /// 앱 재시작: 같은 디렉터리·같은 봉인 키로 저장소와 모델을 새로 연다.
-    func relaunch() {
+    /// 앱 재시작: 같은 디렉터리·같은 봉인 키로 저장소와 모델을 새로 연다. `configure` 로 의존성을 바꿀 수 있다(시나리오 ⑥ 자동 가입 actor).
+    func relaunch(configure: ((inout AppModel.Dependencies) -> Void)? = nil) {
         let made = Self.make(id: id, directory: directory, lossy: lossy, sealKey: sealKey, wrapFactory: wrapFactory)
-        deps = made.deps
-        model = made.model
+        var deps = made.deps
+        configure?(&deps)
+        self.deps = deps
+        model = configure == nil ? made.model : AppModel(dependencies: deps)
     }
 
     /// 방 상태 파일의 서명키 지문(D2 검증용) — 상태를 열어 공개 정보만 읽는다.
@@ -163,5 +167,41 @@ struct TwoDeviceScenario {
         XCTAssertEqual(bob.model.fingerprint, bobFP, "⑤ relaunch keeps the same identity")
         XCTAssertTrue(bob.texts(room).contains("안녕 밥"), "⑤ decrypted history survives relaunch")
         log("PASS ⑤ forged committer → committer_mismatch ⛔ halt (persists across relaunch)")
+
+        // ⑥ 로비: alice 의 로비 키는 ① 의 첫 바퀴에 올라갔다. alice 는 actor `alice`(자동 가입 대상이 아님) → 자동 가입 actor 에
+        //    alice 를 넣은 모델로 다시 연다(가족 B 경로는 LobbyTests). 초대하는 쪽은 새 기기 dad(bob 은 ⑤에서 정지돼 보낼 수 없다).
+        let lobbyRoom = "\(room)-lobby"
+        alice.relaunch { deps in deps.autoJoinActors = ["owner", "alice"] }
+        await alice.model.bootstrap()
+        alice.model.login(.bearer("smoke"))
+        await alice.model.refresh()
+        XCTAssertEqual(alice.model.phase, .ready, "⑥ alice ready (\(alice.model.lastError ?? "-"))")
+        XCTAssertEqual(alice.model.lobbyLive, 8, "⑥ the lobby is at the target after login (\(alice.model.lastError ?? "-"))")
+        guard alice.model.lobbyLive == 8 else { log("FAIL ⑥ lobby replenish"); return }
+        let dad = ScenarioDevice(id: "dad-iphone-d1d1d1", base: relay, root: root)
+        await dad.model.bootstrap()
+        dad.model.login(.bearer("smoke"))
+        await dad.model.refresh()
+        XCTAssertEqual(dad.model.phase, .ready, "⑥ dad ready (\(dad.model.lastError ?? "-"))")
+        try await dad.model.createRoom(room: lobbyRoom)
+        try await dad.model.invite(room: lobbyRoom, target: alice.id)   // alice 는 이 방에 '참여 요청' 한 적이 없다 → 로비 소비
+        await alice.model.refresh()
+        XCTAssertTrue(alice.model.rooms.contains { $0.room == lobbyRoom }, "⑥ the room appears on alice without any tap: \(alice.model.rooms.map(\.room)) (\(alice.model.lastError ?? "-"))")
+        XCTAssertEqual(alice.model.notice, Strings.lobbyJoined(lobbyRoom), "⑥ auto-join notice (\(alice.model.lastError ?? "-"))")
+        XCTAssertEqual(try alice.roomFingerprint(lobbyRoom), alice.model.fingerprint, "⑥ D2 still holds: the adopted room state carries the identity signing key")
+        let hello = await dad.model.send(room: lobbyRoom, text: "로비로 들어온 앨리스")
+        guard case .sent? = hello else { XCTFail("⑥ dad send: \(String(describing: hello)) \(dad.model.lastError ?? "-")"); log("FAIL ⑥ send"); return }
+        await alice.model.refresh()
+        XCTAssertEqual(alice.texts(lobbyRoom), ["로비로 들어온 앨리스"], "⑥ alice decrypts in the lobby-joined room")
+        let reply = await alice.model.send(room: lobbyRoom, text: "탭 없이 들어왔어")
+        guard case .sent? = reply else { XCTFail("⑥ alice send: \(String(describing: reply)) \(alice.model.lastError ?? "-")"); log("FAIL ⑥ reply"); return }
+        await dad.model.refresh()
+        XCTAssertEqual(dad.texts(lobbyRoom), ["로비로 들어온 앨리스", "탭 없이 들어왔어"], "⑥ dad decrypts alice's reply")
+        XCTAssertEqual(alice.model.lobbyLive, 8, "⑥ the consumed lobby key was replenished after the join (\(alice.model.lastError ?? "-"))")
+        // alice 의 답장은 서버 seq 를 받은 순간 자기 화면에도 기록된다(recordOwn) → 양쪽 모두 2건.
+        guard alice.texts(lobbyRoom) == ["로비로 들어온 앨리스", "탭 없이 들어왔어"], dad.texts(lobbyRoom).count == 2, alice.model.lobbyLive == 8 else {
+            log("FAIL ⑥ alice=\(alice.texts(lobbyRoom)) dad=\(dad.texts(lobbyRoom)) lobbyLive=\(String(describing: alice.model.lobbyLive)) err=\(alice.model.lastError ?? "-")"); return
+        }
+        log("PASS ⑥ lobby key → invite without a join request → tapless join + E2EE both ways + replenish (room \(lobbyRoom))")
     }
 }

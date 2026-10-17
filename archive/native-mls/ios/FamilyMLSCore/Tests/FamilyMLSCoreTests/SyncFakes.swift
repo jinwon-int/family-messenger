@@ -40,10 +40,11 @@ struct FakeCommit: Codable {
     var bytes: Data { try! JSONEncoder().encode(self) }
 }
 
-/// Welcome 바이트(JSON): 참여 뒤 그룹 멤버.
+/// Welcome 바이트(JSON): 참여 뒤 그룹 멤버. `keyPackage` 가 있으면 그 key package 의 비밀을 든 엔진만 join 할 수 있다(파사드와 같은 제약 — #380 로비).
 struct FakeWelcome: Codable {
     var members: [String]
     var poison = false
+    var keyPackage: Data? = nil
     var bytes: Data { try! JSONEncoder().encode(self) }
 }
 
@@ -56,6 +57,8 @@ struct FakeEngineState: Codable, Equatable {
     var staged: [String]?         // stage_commit 결과(merge_staged 대상)
     var sendGeneration = 0
     var receiveGeneration = 0
+    /// 이 상태가 비밀을 든 미사용 key package(파사드 `MAX_KEY_PACKAGES` 8, join 이 모두 지운다). nil = 없음.
+    var keyPackages: [Data]? = nil
 
     static func joined(_ members: [String], epoch: Int64 = 1, pending: [String]? = nil) -> FakeEngineState {
         FakeEngineState(members: members, epoch: epoch, pending: pending)
@@ -91,8 +94,21 @@ final class FakeMlsEngine: MlsEngine {
             guard state.members == nil else { throw EngineError.rejected("already_joined") }
             guard let welcome = try? JSONDecoder().decode(FakeWelcome.self, from: input), !welcome.poison,
                   welcome.members.contains(identity) else { throw EngineError.rejected("bad_welcome") }
+            if let required = welcome.keyPackage, state.keyPackages?.contains(required) != true {
+                throw EngineError.rejected("no_key_package")   // 파사드: 비밀이 없는 Welcome 은 열 수 없다
+            }
             state.members = welcome.members.sorted()
             state.epoch += 1
+            state.keyPackages = nil   // 파사드 prune_key_packages: 참여 뒤 남은 key package 는 모두 버린다
+            return Data()
+        case .keyPackage:
+            guard (state.keyPackages?.count ?? 0) < 8 else { throw EngineError.rejected("key package limit") }
+            let package = Data("kp:\(identity):\(UUID().uuidString.prefix(8))".utf8)
+            state.keyPackages = (state.keyPackages ?? []) + [package]
+            return package
+        case .deleteKeyPackage:
+            guard let index = state.keyPackages?.firstIndex(of: input) else { throw EngineError.rejected("unknown key package") }
+            state.keyPackages?.remove(at: index)
             return Data()
         case .stageCommit:
             guard state.members != nil, state.staged == nil else { throw EngineError.rejected("no_group") }
@@ -269,6 +285,52 @@ final class FakeRelay: RelayTransport {
     func listRooms(device: DeviceID) async throws -> RoomsResponse { check("listRooms"); return RoomsResponse(rooms: []) }
     func registerPush(_ registration: PushRegistration) async throws { check("registerPush") }
     func unregisterPush(device: DeviceID) async throws { check("unregisterPush") }
+
+    // MARK: 로비(server/lobby.go 의미: 기기당 live 상한, 가장 오래된 것부터 소비, 소비 시 room 기록)
+
+    /// false = 로비가 없는 옛 릴레이(404).
+    var lobbyEnabled = true
+    var lobbyMax = 8
+    var lobbyLive: [DeviceID: [KeyPackageInput]] = [:]
+    var lobbyConsumed: [(device: DeviceID, consumer: DeviceID, room: RoomID, ref: String)] = []
+    var lobbyPosts: [KeyPackagePost] = []
+    var lobbyPostErrors: [RelayError] = []
+    /// GET /v2/lobby/welcomes 응답(테스트가 둔다).
+    var pendingWelcomes: [PendingWelcome] = []
+    var lobbyStatusCalls = 0
+
+    private func lobbyGate() throws { if !lobbyEnabled { throw RelayError.refused(code: "not_found", status: 404) } }
+
+    func postLobbyKeyPackages(_ post: KeyPackagePost) async throws -> KeyPackagesResponse {
+        check("postLobbyKeyPackages"); try lobbyGate()
+        lobbyPosts.append(post)
+        if !lobbyPostErrors.isEmpty { throw lobbyPostErrors.removeFirst() }
+        let live = lobbyLive[post.device] ?? []
+        let fresh = post.packages.filter { p in !live.contains { $0.ref == p.ref } }
+        guard live.count + fresh.count <= lobbyMax else { throw RelayError.refused(code: "key_package_limit", status: 409) }
+        lobbyLive[post.device] = live + fresh
+        return KeyPackagesResponse(stored: fresh.count, duplicates: post.packages.count - fresh.count, live: live.count + fresh.count)
+    }
+
+    func consumeLobbyKeyPackage(device: DeviceID, target: DeviceID, room: RoomID) async throws -> StoredKeyPackage? {
+        check("consumeLobbyKeyPackage"); try lobbyGate()
+        guard var live = lobbyLive[target], !live.isEmpty else { return nil }
+        let oldest = live.removeFirst()
+        lobbyLive[target] = live
+        lobbyConsumed.append((target, device, room, oldest.ref))
+        return StoredKeyPackage(ref: oldest.ref, bytes: oldest.bytes, expiresAt: 4_000_000_000)
+    }
+
+    func lobbyStatus(device: DeviceID) async throws -> LobbyStatus {
+        check("lobbyStatus"); try lobbyGate()
+        lobbyStatusCalls += 1
+        return LobbyStatus(device: device, live: lobbyLive[device]?.count ?? 0, max: lobbyMax, ttlSeconds: 30 * 86_400)
+    }
+
+    func lobbyWelcomes(device: DeviceID) async throws -> [PendingWelcome] {
+        check("lobbyWelcomes"); try lobbyGate()
+        return pendingWelcomes
+    }
 }
 
 // MARK: - MessageStore

@@ -78,7 +78,13 @@ public struct KeyPackagePost: Codable, Equatable {
     public init(device: DeviceID, packages: [KeyPackageInput]) { self.device = device; self.packages = packages }
 }
 
-public struct KeyPackagesResponse: Codable, Equatable { public var stored: Int; public var duplicates: Int }
+/// 응답 `{stored, duplicates, live}` — `live`(게시 뒤 이 기기의 미소비 수)는 #381 릴레이부터 실린다(옛 릴레이는 없음 → nil).
+public struct KeyPackagesResponse: Codable, Equatable {
+    public var stored: Int
+    public var duplicates: Int
+    public var live: Int?
+    public init(stored: Int, duplicates: Int, live: Int? = nil) { self.stored = stored; self.duplicates = duplicates; self.live = live }
+}
 
 /// GET /v2/rooms/{room}/keypackages?device=<패키지 소유 기기>&consumer=<소비하는 나> — 원자 소비(server.go handleConsumeKeyPackage, CONTRACTS §2.1)
 public struct StoredKeyPackage: Codable, Equatable {
@@ -103,6 +109,12 @@ public enum RelayErrorCode: String {
     case roomClosed = "room_closed"
     case duplicateMember = "duplicate_member"
     case invalidToken = "invalid_token"
+    // 로비(server/lobby.go, #380 P5-1)
+    /// 정책 체인이 켜진 릴레이에서 아직 등록되지 않은 기기의 로비 게시·소비 — 등록 대기와 같이 다룬다.
+    case deviceNotAllowed = "device_not_allowed"
+    /// 기기당 미소비 상한(기본 8) 초과 — 서버에 이미 충분히 있다.
+    case keyPackageLimit = "key_package_limit"
+    case noLiveKeyPackage = "no_live_key_package"
 }
 
 public enum RelayError: Error, Equatable {
@@ -143,4 +155,35 @@ public struct PushRegistration: Codable, Equatable {
 public struct PushPayload: Codable, Equatable {
     public var room: RoomID
     public var seq: Int64
+}
+
+// MARK: - 로비 key package (#380 P5-1, server/lobby.go — 필드 이름 글자 그대로)
+
+/// GET /v2/lobby/status?device= — 이 기기의 미소비 로비 키 수와 정책 상한·만료(앱의 보충 판단).
+public struct LobbyStatus: Codable, Equatable {
+    public var device: DeviceID
+    public var live: Int
+    public var max: Int
+    public var ttlSeconds: Int64
+    enum CodingKeys: String, CodingKey { case device, live, max; case ttlSeconds = "ttl_seconds" }
+    public init(device: DeviceID, live: Int, max: Int, ttlSeconds: Int64) {
+        self.device = device; self.live = live; self.max = max; self.ttlSeconds = ttlSeconds
+    }
+}
+
+/// GET /v2/lobby/welcomes?device= 의 한 행: 이 기기를 대상으로 한 Welcome 이 있고 이 기기의 영속 커서가 아직 지나지 않은 열린 방.
+/// 본문은 그 방의 `GET /events` 로 읽는다(여기에는 포인터만).
+public struct PendingWelcome: Codable, Equatable, Hashable {
+    public var room: RoomID
+    public var seq: Int64
+    public var epoch: Int64
+    public var createdAt: Int64
+    enum CodingKeys: String, CodingKey { case room, seq, epoch; case createdAt = "created_at" }
+    public init(room: RoomID, seq: Int64, epoch: Int64, createdAt: Int64) {
+        self.room = room; self.seq = seq; self.epoch = epoch; self.createdAt = createdAt
+    }
+}
+public struct LobbyWelcomes: Codable, Equatable {
+    public var welcomes: [PendingWelcome]
+    public init(welcomes: [PendingWelcome]) { self.welcomes = welcomes }
 }

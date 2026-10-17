@@ -177,4 +177,47 @@ public final class URLSessionRelayTransport: RelayTransport {
     func unregisterPushRequest(device: DeviceID) throws -> URLRequest {
         try makeRequest(method: "DELETE", path: "/v2/push/devices", query: [URLQueryItem(name: "device", value: device)])
     }
+
+    // MARK: - 로비 key package (#380 P5-1, server/lobby.go)
+
+    public func postLobbyKeyPackages(_ post: KeyPackagePost) async throws -> KeyPackagesResponse {
+        // lobby.go handlePostLobbyKeyPackages: 바디·규칙은 방별 게시와 같다(readKeyPackagePost). 201 stored / 200 전부 duplicate.
+        // 403 device_not_allowed(미등록, 정책 체인 켜짐) · 409 key_package_limit {live,max} · 409 key_package_ref_conflict.
+        return try decode(KeyPackagesResponse.self, await perform(try postLobbyKeyPackagesRequest(post)))
+    }
+
+    public func consumeLobbyKeyPackage(device: DeviceID, target: DeviceID, room: RoomID) async throws -> StoredKeyPackage? {
+        // lobby.go handleConsumeLobbyKeyPackage: `device`=패키지 소유자(상대), `consumer`=나(JWT subject 바인딩), `room`=쓸 방
+        // (아직 없어도 됨 — 첫 commit 이 만든다; 멤버십이 추적되는 방이면 멤버만, 닫힌 방 410).
+        do {
+            return try decode(StoredKeyPackage.self, await perform(try consumeLobbyKeyPackageRequest(device: device, target: target, room: room)))
+        } catch let RelayError.refused(code, status) where status == 404 && code == RelayErrorCode.noLiveKeyPackage.rawValue {
+            return nil
+        }
+    }
+
+    public func lobbyStatus(device: DeviceID) async throws -> LobbyStatus {
+        try decode(LobbyStatus.self, await perform(try lobbyStatusRequest(device: device)))
+    }
+
+    public func lobbyWelcomes(device: DeviceID) async throws -> [PendingWelcome] {
+        try decode(LobbyWelcomes.self, await perform(try lobbyWelcomesRequest(device: device))).welcomes
+    }
+
+    func postLobbyKeyPackagesRequest(_ post: KeyPackagePost) throws -> URLRequest {
+        try makeRequest(method: "POST", path: "/v2/lobby/keypackages", body: try JSONEncoder().encode(post))
+    }
+
+    func consumeLobbyKeyPackageRequest(device: DeviceID, target: DeviceID, room: RoomID) throws -> URLRequest {
+        try makeRequest(method: "GET", path: "/v2/lobby/keypackages", query: [
+            URLQueryItem(name: "device", value: target), URLQueryItem(name: "consumer", value: device), URLQueryItem(name: "room", value: room)])
+    }
+
+    func lobbyStatusRequest(device: DeviceID) throws -> URLRequest {
+        try makeRequest(method: "GET", path: "/v2/lobby/status", query: [URLQueryItem(name: "device", value: device)])
+    }
+
+    func lobbyWelcomesRequest(device: DeviceID) throws -> URLRequest {
+        try makeRequest(method: "GET", path: "/v2/lobby/welcomes", query: [URLQueryItem(name: "device", value: device)])
+    }
 }

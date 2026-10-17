@@ -14,6 +14,13 @@
 // 릴레이 연산(동기화·송신·초대)은 `serial` 하나로 줄 세운다: `RoomSyncEngine` 은 방마다 단일 호출자를 전제한다.
 // 등록 판정은 확장 ① `GET /v2/rooms`(403 device_subject_mismatch = 등록 대기, 401 = 재로그인)와 방 동기화의
 // `registrationPending` 둘 다로 한다. 확장 ① 이 없는 릴레이(404)면 아는 방만 동기화한다.
+//
+// 로비 key package(#380 P5-3, `LobbyKeyring`): `_lobby` 슬롯에 방 무관 key package 를 두고 릴레이 로비에 게시해 두면
+// steward 봇이 어느 방에서든 소비해 초대한다(사람 기기 탭 0). 한 바퀴(`refreshLocked`)의 순서:
+//   방 목록 → 아는 방 동기화(방별 key package 로 만든 Welcome 은 여기서 join) → `GET /v2/lobby/welcomes` 로 **아직 참여하지
+//   않은** 방을 찾아 (오너 actor = 결정 D1 A) 방 상태를 `_lobby` 로 바꾸고 커서를 Welcome 앞으로 되감아 바로 동기화(join) /
+//   (가족 actor = B) `pendingInvites` 에 두고 1탭 수락을 기다린다 → 로그인·전면 복귀·참여 뒤에는 로비 보충(`replenish`).
+// 로비가 없는 릴레이(404)는 조용히 건너뛴다. 로비 오류는 메시지 동기화를 막지 않는다(`lastError` 에만).
 import Foundation
 import FamilyMLSCore
 
@@ -56,6 +63,10 @@ final class AppModel: ObservableObject {
         var defaultRoom: RoomID = "family"
         /// "이 기기 지우기"(§9-5) 훅. 기본 = 아무것도 지우지 않음(테스트는 주입, live() 는 파일·DB·기기 ID 로 채운다).
         var wipe = DeviceWipe()
+        /// 로비 key package 목표 수(#380, 오너 결정 D2 = 릴레이 상한 8 과 같게). 0 = 로비를 쓰지 않는다.
+        var lobbyTarget = 8
+        /// 로비 Welcome 을 묻지 않고 자동 가입하는 actor(오너 결정 D1 A). 그 밖의 actor 는 1탭 수락(B).
+        var autoJoinActors: Set<String> = ["owner"]
     }
 
     /// 저장소 밖의 삭제 작업(§9-5). `storage` = MLS 상태 전부(identity 슬롯 포함) + messages.db 행, `identity` = 저장된 기기 ID.
@@ -86,6 +97,20 @@ final class AppModel: ObservableObject {
     @Published private(set) var pushStatus: PushRegistrar.Status = .off
     /// 마지막 refresh 의 outbox 재전송 결과(정확 바이트 재시도 관찰용 — 화면·테스트).
     private(set) var lastFlush: [RoomID: [SendOutcome]] = [:]
+    /// 가족 기기(D1 B)의 수락 대기 초대 — 로비 Welcome 이 있는, 아직 참여하지 않은 방(오래된 순).
+    @Published private(set) var pendingInvites: [PendingWelcome] = []
+    /// 로비 초대로 새 방에 들어왔을 때의 한 줄 안내(화면이 `clearNotice` 로 지운다).
+    @Published private(set) var notice: String?
+    /// 설정 화면: 릴레이에 있는 이 기기의 미소비 로비 키 수. nil = 아직 모름(로그인 전·로비 없는 릴레이).
+    @Published private(set) var lobbyLive: Int?
+    /// 다음 바퀴에 로비 보충을 할지 — 로그인·전면 복귀·새 방 참여 뒤 true(4초 폴링마다 status 를 묻지 않는다).
+    private var lobbyCheckDue = true
+    /// 릴레이가 로비 라우트를 모른다(404) — 이 세션에서는 다시 묻지 않는다.
+    private var lobbyUnsupported = false
+    /// 같은 Welcome(방 → seq)을 두 번 받아들이지 않는다(상태를 바꿔도 join 하지 못한 경우 — 로비 키로 만든 Welcome 이 아니다).
+    private var adoptFailed: [RoomID: Int64] = [:]
+    /// 「무시」한 초대 — 이 세션에서만. Welcome 은 릴레이에 남으므로 다음 실행에 다시 보인다.
+    private var dismissedInvites: Set<RoomID> = []
 
     private let deps: Dependencies
     private(set) var engine: MlsEngine?
@@ -170,6 +195,7 @@ final class AppModel: ObservableObject {
         self.credential = credential
         self.transport = transport
         syncEngines = [:]   // 새 전송으로 다시 만든다(커서·정지 사유는 저장소에 있다). 등록 subject 도 새 자격증명으로 다시 읽는다.
+        lobbyCheckDue = true; lobbyUnsupported = false; adoptFailed = [:]
         refreshRegistrationSubject()
         push.loggedIn()
         lastError = nil
@@ -224,6 +250,7 @@ final class AppModel: ObservableObject {
             self.credential = nil
             self.transport = nil
             self.syncEngines = [:]; self.unconfirmed = [:]; self.seenCursors = [:]; self.lastFlush = [:]
+            self.pendingInvites = []; self.notice = nil; self.lobbyLive = nil; self.adoptFailed = [:]; self.dismissedInvites = []
             self.engine = nil; self.identitySeed = nil; self.registration = nil; self.rooms = []
             try self.deps.wipe.storage()
             self.deps.wipe.identity()
@@ -258,7 +285,7 @@ final class AppModel: ObservableObject {
     ///   → ④ 그 방의 pending outbox 는 reconciled(옛 epoch 바이트는 영영 못 들어간다) → ⑤ 가능하면 키 패키지 게시(= 참여 요청).
     /// 메시지 행(`messages`)은 지우지 않는다 — 지난 대화는 화면에 남고, 재참여 뒤 새 seq 만 이어진다.
     func prepareRejoin(room: RoomID) async throws -> RejoinOutcome {
-        guard room != Strings.identityRoom else { throw RejoinError.unsupported }
+        guard room != Strings.identityRoom, room != LobbyKeyring.slot else { throw RejoinError.unsupported }
         guard let remover = deps.stateStore as? RoomStateRemoving else { throw RejoinError.unsupported }
         guard (try deps.messageStore.rooms().first { $0.room == room })?.haltedReason != nil else { throw RejoinError.notHalted }
         return try await serial.run {
@@ -337,17 +364,139 @@ final class AppModel: ObservableObject {
             rooms = try deps.messageStore.rooms()
             if pending {
                 phase = .needsEnrollment
+                lastError = nil
             } else {
                 phase = haltedReasonFromRooms().map { .halted($0) } ?? .ready
                 try await syncPushLocked(transport)
+                lastError = nil
+                // 로비(#380): 아직 참여하지 않은 방의 Welcome → (A) 바로 참여 / (B) 수락 대기, 그 뒤 보충. 실패는 lastError 에만.
+                try await discoverLobbyWelcomesLocked(transport)
+                if lobbyCheckDue { try await replenishLobbyLocked() }
+                rooms = try deps.messageStore.rooms()
+                phase = haltedReasonFromRooms().map { .halted($0) } ?? .ready
             }
-            lastError = nil
         } catch RelayError.unauthorized {
             expireSession()
         } catch {
             lastError = "\(error)"
         }
     }
+
+    // MARK: - 로비 key package (#380 P5-3)
+
+    /// 이 기기 actor 가 자동 가입 대상인가(오너 결정 D1 A). 기기 ID 의 actor 가 우선, 없으면 저장된 actor.
+    var autoJoinsLobbyInvites: Bool {
+        guard let actor = ActorName.of(deviceId: deviceId) ?? deps.actorStore.actor else { return false }
+        return deps.autoJoinActors.contains(actor)
+    }
+
+    private func lobbyKeyring() -> LobbyKeyring? {
+        guard let transport, deps.lobbyTarget > 0, !lobbyUnsupported else { return nil }
+        return LobbyKeyring(identity: deviceId, engineFactory: roomEngineFactory, stateStore: deps.stateStore, transport: transport,
+                            lockTimeout: deps.syncConfiguration.lockTimeout, makeRef: RoomMembership.sha256Hex)
+    }
+
+    /// `GET /v2/lobby/welcomes` — 이 기기를 대상으로 한 Welcome 이 있고 아직 ack 하지 않은 방. 방 동기화 **뒤**에 부른다:
+    /// 방별 key package 로 만든 Welcome 은 그 방 상태가 열 수 있어 보통의 동기화가 이미 join 했다. 그래도 참여하지 않은 방만
+    /// 로비 상태로 바꾼다(`adoptLobbyWelcomeLocked`). 404 = 로비 없는 릴레이(건너뜀), 403 device_not_allowed = 등록 전(다음에).
+    private func discoverLobbyWelcomesLocked(_ transport: RelayTransport) async throws {
+        guard let keyring = lobbyKeyring() else { return }
+        let welcomes: [PendingWelcome]
+        do {
+            welcomes = try await transport.lobbyWelcomes(device: deviceId)
+        } catch RelayError.refused(_, let status) where status == 404 {
+            lobbyUnsupported = true; return
+        } catch RelayError.refused(let code, _) where code == RelayErrorCode.deviceNotAllowed.rawValue {
+            return
+        } catch RelayError.unauthorized {
+            throw RelayError.unauthorized
+        } catch {
+            lastError = "\(error)"; return
+        }
+        var invites: [PendingWelcome] = []
+        for welcome in welcomes where adoptFailed[welcome.room] != welcome.seq {
+            if (try? keyring.isMember(room: welcome.room)) == true { continue }   // 참여 끝 — 다음 ack 가 목록에서 지운다
+            if autoJoinsLobbyInvites {
+                await adoptLobbyWelcomeLocked(welcome, keyring: keyring)
+            } else if !dismissedInvites.contains(welcome.room), !invites.contains(where: { $0.room == welcome.room }) {
+                invites.append(welcome)
+            }
+        }
+        pendingInvites = invites
+    }
+
+    /// 방 상태 = `_lobby` 슬롯 상태 → 커서를 Welcome 앞으로 → 그 방만 바로 동기화(join). 참여하면 안내하고 보충을 예약한다.
+    /// join 하지 못하면(로비 키로 만든 Welcome 이 아님·poison) 같은 seq 는 다시 시도하지 않는다.
+    private func adoptLobbyWelcomeLocked(_ welcome: PendingWelcome, keyring: LobbyKeyring) async {
+        do {
+            guard try keyring.adoptRoom(welcome.room) else { adoptFailed[welcome.room] = welcome.seq; return }
+            syncEngines[welcome.room] = nil
+            seenCursors[welcome.room] = nil
+            if try deps.cursors.cursor(room: welcome.room) >= welcome.seq {
+                try deps.cursors.setCursor(room: welcome.room, seq: welcome.seq - 1)
+            }
+            try ensureRoomRecord(welcome.room)
+            let sync = try syncEngine(welcome.room)
+            try await sync.syncAll()
+            seenCursors[welcome.room] = try deps.cursors.cursor(room: welcome.room)
+            messagesRevision += 1
+            if sync.joined {
+                notice = Strings.lobbyJoined(welcome.room)
+                lobbyCheckDue = true   // key package 하나가 쓰였다 — 보충
+            } else {
+                adoptFailed[welcome.room] = welcome.seq
+            }
+        } catch RelayError.unauthorized {
+            expireSession()
+        } catch {
+            adoptFailed[welcome.room] = welcome.seq
+            lastError = "\(error)"
+        }
+    }
+
+    /// `_lobby` 보충(`LobbyKeyring.replenish`). 404 = 로비 없음(이 세션에서 다시 묻지 않음), 403 device_not_allowed = 등록 전(다음에).
+    private func replenishLobbyLocked() async throws {
+        guard let keyring = lobbyKeyring() else { return }
+        do {
+            let report = try await keyring.replenish(target: deps.lobbyTarget)
+            lobbyLive = report.live
+            lobbyCheckDue = false
+        } catch RelayError.refused(_, let status) where status == 404 {
+            lobbyUnsupported = true
+        } catch RelayError.refused(let code, _) where code == RelayErrorCode.deviceNotAllowed.rawValue {
+            // 정책 체인에 아직 없는 기기 — 등록되면 다음 바퀴가 올린다.
+        } catch RelayError.unauthorized {
+            throw RelayError.unauthorized
+        } catch {
+            lastError = "\(error)"
+        }
+    }
+
+    /// 앱이 전면으로 돌아왔다(scenePhase active) — 다음 바퀴에 로비 보충을 다시 본다.
+    func foregrounded() async {
+        lobbyCheckDue = true
+        await refresh()
+    }
+
+    /// 가족 기기(B)의 「수락」: 그 방의 Welcome 을 로비 상태로 받아들여 참여한다. 실패 사유는 throw.
+    func acceptInvite(room: RoomID) async throws {
+        try await serial.run {
+            guard let welcome = self.pendingInvites.first(where: { $0.room == room }) else { return }
+            guard let keyring = self.lobbyKeyring() else { throw RelayError.unauthorized }
+            await self.adoptLobbyWelcomeLocked(welcome, keyring: keyring)
+            self.pendingInvites.removeAll { $0.room == room }
+            self.rooms = try self.deps.messageStore.rooms()
+            if let failed = self.adoptFailed[room], failed == welcome.seq { throw SyncError.notJoined }
+        }
+    }
+
+    /// 「무시」: 이 세션에서는 보이지 않는다. Welcome 은 릴레이에 남아(커서 미이동) 다음 실행에 다시 묻는다.
+    func dismissInvite(room: RoomID) {
+        dismissedInvites.insert(room)
+        pendingInvites.removeAll { $0.room == room }
+    }
+
+    func clearNotice() { notice = nil }
 
     // MARK: - 푸시 (§12-D)
 
