@@ -1,0 +1,165 @@
+import XCTest
+@testable import FamilyMLSCore
+
+final class AgentMarkdownTests: XCTestCase {
+    func testBotStatusReplyBecomesParagraphHeadingTableAndList() {
+        let body = """
+        방 상태를 확인했는데, **`test-rs`라는 방이 없습니다.**
+
+        **확인한 내용** (`room_status`)
+        | 방 | 모드 | joined |
+        |---|---|:---:|
+        | `family` | silent | ✅ |
+        | `family-acc` | agent | ✅ |
+
+        - 봇이 알고 있는 방은 이 두 개뿐입니다.
+        - `family-acc`를 말씀하신 것일 수도 있지만
+          짐작으로 바꾸지는 않았습니다.
+
+        1. **`family-acc`를 silent로 바꾸기** — 권장
+        2. 그대로 두기
+        """
+        let blocks = AgentMarkdown.parse(body)
+        XCTAssertEqual(blocks.count, 5)
+        XCTAssertEqual(blocks[0], .paragraph("방 상태를 확인했는데, **`test-rs`라는 방이 없습니다.**"))
+        XCTAssertEqual(blocks[1], .paragraph("**확인한 내용** (`room_status`)"))
+        XCTAssertEqual(blocks[2], .table(header: ["방", "모드", "joined"],
+                                         rows: [["`family`", "silent", "✅"], ["`family-acc`", "agent", "✅"]]))
+        guard case .list(let bullets) = blocks[3] else { return XCTFail("\(blocks[3])") }
+        XCTAssertEqual(bullets.count, 2)
+        XCTAssertNil(bullets[0].marker)
+        XCTAssertEqual(bullets[1].text, "`family-acc`를 말씀하신 것일 수도 있지만\n짐작으로 바꾸지는 않았습니다.")
+        guard case .list(let numbered) = blocks[4] else { return XCTFail("\(blocks[4])") }
+        XCTAssertEqual(numbered.map(\.marker), ["1.", "2."])
+    }
+
+    func testTableWithoutTheParagraphBreakStillSplits() {
+        let blocks = AgentMarkdown.parse("요약\n| a | b |\n|---|---|\n| 1 | 2 |\n끝")
+        XCTAssertEqual(blocks, [.paragraph("요약"), .table(header: ["a", "b"], rows: [["1", "2"]]), .paragraph("끝")])
+    }
+
+    func testRaggedAndOversizedTablesAreNormalized() {
+        let long = (0..<70).map { "| r\($0) |" }.joined(separator: "\n")
+        let blocks = AgentMarkdown.parse("| a | b |\n|---|---|\n| only |\n| x | y | z |\n" + long)
+        guard case .table(let header, let rows) = blocks[0] else { return XCTFail() }
+        XCTAssertEqual(header, ["a", "b"])
+        XCTAssertEqual(rows[0], ["only", ""])
+        XCTAssertEqual(rows[1], ["x", "y"])
+        XCTAssertEqual(rows.count, AgentMarkdown.maxRows + 1)
+        XCTAssertEqual(rows.last, ["…", ""])
+    }
+
+    func testCodeHeadingQuoteRule() {
+        let blocks = AgentMarkdown.parse("# 제목\n## 소제목\n```sh\nls -la\n| not | a table |\n```\n> 인용\n> 둘째 줄\n---\n#해시태그")
+        XCTAssertEqual(blocks, [
+            .heading(level: 1, text: "제목"), .heading(level: 2, text: "소제목"),
+            .code("ls -la\n| not | a table |"), .quote("인용\n둘째 줄"), .rule, .paragraph("#해시태그"),
+        ])
+    }
+
+    func testUnclosedFenceAndPlainTextAreSafe() {
+        XCTAssertEqual(AgentMarkdown.parse("```\nopen"), [.code("open")])
+        XCTAssertEqual(AgentMarkdown.parse("그냥 한 줄"), [.paragraph("그냥 한 줄")])
+        XCTAssertEqual(AgentMarkdown.parse(""), [])
+        XCTAssertEqual(AgentMarkdown.parse("a | b 는 표가 아니다"), [.paragraph("a | b 는 표가 아니다")])
+        XCTAssertEqual(AgentMarkdown.parse("**굵게**만"), [.paragraph("**굵게**만")])
+    }
+}
+
+final class AgentConversationTests: XCTestCase {
+    let roster = AgentRoster(setting: " bot , ")
+    let me: DeviceID = "owner-iphone-27a879"
+    let bot: DeviceID = "bot-gongmyoung"
+    let t0 = Date(timeIntervalSince1970: 1_000_000)
+
+    func rec(_ seq: Int64, _ device: DeviceID, _ body: String, kind: MessageRecord.Kind = .text, at offset: TimeInterval = 0) -> MessageRecord {
+        MessageRecord(room: "family-acc", seq: seq, senderDevice: device, clientId: "c\(seq)", kind: kind, body: body,
+                      attachment: nil, receivedAt: t0.addingTimeInterval(offset), decryptedBy: .app)
+    }
+
+    func testRosterAndNames() {
+        XCTAssertEqual(roster.actors, ["bot"])
+        XCTAssertTrue(roster.isAgent(rec(1, bot, "hi")))
+        XCTAssertFalse(roster.isAgent(rec(1, me, "hi")))
+        let names = ["gongmyoung": "공명", "owner": "나"]
+        XCTAssertEqual(AgentRoster.displayName(device: bot, names: names), "공명")
+        XCTAssertEqual(AgentRoster.displayName(device: "bot-newnode", names: names), "newnode")
+        XCTAssertEqual(AgentRoster.displayName(device: me, names: names), "나")
+        XCTAssertEqual(AgentRoster.displayName(device: "jungin-iphone-1b89e3", names: names), "jungin")
+    }
+
+    func testApprovalParsersMatchTheBotsWording() {
+        let req = AgentApproval.request(in: "⚠️ 승인 필요 #12: 방 명령 room_create · mode=silent · room=test-rs\n답장: 「승인 12」 또는 「거절 12」 (owner 만)")
+        XCTAssertEqual(req, AgentApproval.Request(number: 12, summary: "방 명령 room_create · mode=silent · room=test-rs"))
+        XCTAssertNil(AgentApproval.request(in: "승인 필요한 일은 없습니다"))
+        XCTAssertEqual(AgentApproval.resolution(in: "승인 #1: 허용했습니다.")?.allowed, true)
+        XCTAssertEqual(AgentApproval.resolution(in: "승인 #3: 거절했습니다.")?.number, 3)
+        XCTAssertNil(AgentApproval.resolution(in: "승인 #x: 허용했습니다."))
+        XCTAssertEqual(AgentApproval.reply(in: " 승인 1 ")?.allowed, true)
+        XCTAssertEqual(AgentApproval.reply(in: "거절 #2")?.number, 2)
+        XCTAssertEqual(AgentApproval.reply(in: "approve 4")?.allowed, true)
+        XCTAssertNil(AgentApproval.reply(in: "승인 해줘"))
+    }
+
+    func testApprovalLifecycle() {
+        let records = [
+            rec(1, me, "test-rs 만들어줘"),
+            rec(2, bot, "⚠️ 승인 필요 #1: 방 명령 room_create\n답장: …"),
+            rec(3, bot, "⚠️ 승인 필요 #2: 방 명령 room_invite\n답장: …"),
+            rec(4, me, "승인 1"),
+            rec(5, bot, "승인 #1: 허용했습니다."),
+            rec(6, me, "거절 2"),
+        ]
+        var states = AgentApproval.states(records, roster: roster)
+        XCTAssertEqual(states[2], .allowed)
+        XCTAssertEqual(states[3], .answered(allowed: false))
+        states = AgentApproval.states(records + [rec(7, bot, "승인 #2: 거절했습니다.")], roster: roster)
+        XCTAssertEqual(states[3], .denied)
+    }
+
+    func testTurnEndOrReusedNumberClosesOpenRequests() {
+        let open = [rec(1, bot, "⚠️ 승인 필요 #1: a")]
+        XCTAssertEqual(AgentApproval.states(open, roster: roster)[1], .open)
+        let restarted = open + [rec(2, bot, "⚠️ 요청(#9)을 끝까지 확인하지 못했습니다(restart). 다시 말씀해 주세요")]
+        XCTAssertEqual(AgentApproval.states(restarted, roster: roster)[1], .closed)
+        let reused = open + [rec(2, bot, "⚠️ 승인 필요 #1: b")]
+        let states = AgentApproval.states(reused, roster: roster)
+        XCTAssertEqual(states[1], .closed)
+        XCTAssertEqual(states[2], .open)
+        // 에이전트가 아닌 기기가 같은 글을 써도 요청이 아니다.
+        XCTAssertNil(AgentApproval.states([rec(1, me, "⚠️ 승인 필요 #1: 가짜")], roster: roster)[1])
+    }
+
+    func testLastSentSkipsApprovalRepliesAndCountsReplies() {
+        let records = [
+            rec(1, me, "방 상태 알려줘"),
+            rec(2, bot, "두 개입니다"),
+            rec(3, me, "test-rs 만들어줘"),
+            rec(4, bot, "⚠️ 승인 필요 #1: x"),
+            rec(5, me, "승인 1"),
+            rec(6, bot, "승인 #1: 허용했습니다."),
+            rec(7, "owner-pc", "사진", kind: .attachment),
+            rec(8, bot, "없음", kind: .undecryptable),
+        ]
+        let last = LastSent.find(records, myDevice: me)
+        XCTAssertEqual(last?.record.seq, 3)
+        XCTAssertEqual(last?.repliesAfter, 3, "bot request, bot resolution, PC photo — my own approval reply and undecryptable rows don't count")
+        XCTAssertNil(LastSent.find([rec(1, bot, "hi")], myDevice: me))
+        XCTAssertNil(LastSent.find(records, myDevice: ""))
+    }
+
+    func testThinkingOnlyAfterMyTextInAnAgentRoomWithinTheWindow() {
+        let base = [rec(1, me, "안녕"), rec(2, bot, "안녕하세요")]
+        XCTAssertNil(AgentThinking.agent(base, roster: roster, myDevice: me, now: t0))
+        let asked = base + [rec(3, me, "방 상태 알려줘", at: 10)]
+        XCTAssertEqual(AgentThinking.agent(asked, roster: roster, myDevice: me, now: t0.addingTimeInterval(20)), bot)
+        XCTAssertNil(AgentThinking.agent(asked, roster: roster, myDevice: me, now: t0.addingTimeInterval(10 + AgentThinking.window)))
+        // 승인 답장 뒤에도 에이전트는 이어서 일한다.
+        let approved = base + [rec(3, bot, "⚠️ 승인 필요 #1: x"), rec(4, me, "승인 1", at: 5)]
+        XCTAssertEqual(AgentThinking.agent(approved, roster: roster, myDevice: me, now: t0.addingTimeInterval(6)), bot)
+        // 사람만 있는 방, 첨부, 다른 사람이 마지막.
+        XCTAssertNil(AgentThinking.agent([rec(1, "jungin-iphone-1", "hi"), rec(2, me, "응")], roster: roster, myDevice: me, now: t0))
+        XCTAssertNil(AgentThinking.agent(base + [rec(3, me, "photo", kind: .attachment)], roster: roster, myDevice: me, now: t0))
+        XCTAssertNil(AgentThinking.agent(base + [rec(3, "owner-pc", "pc")], roster: roster, myDevice: me, now: t0))
+    }
+}

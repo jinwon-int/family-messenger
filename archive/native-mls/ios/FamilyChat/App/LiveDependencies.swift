@@ -32,6 +32,8 @@ extension AppModel.Dependencies {
         var actorStore: ActorStoring = InMemoryActorStore("owner")
         /// 참여 요청 기본 대화방(Info.plist `FamilyChatDefaultRoom`, 비면 "family" — 사람 가족 방, #383).
         var defaultRoom: RoomID = "family"
+        /// 에이전트 actor(#405 — Info.plist `FamilyChatAgentActors` ← 빌드 설정 `FC_AGENT_ACTORS`, NSE 와 같은 값).
+        var agentRoster = AgentRoster(actors: ["bot"])
 
         static func fromBundle(_ bundle: Bundle = .main) -> Self {
             let group = bundle.familyChatValue("FamilyChatAppGroup")
@@ -43,6 +45,7 @@ extension AppModel.Dependencies {
             // 기기 ID 는 bootstrap 이 actor 를 확인한 뒤에만 부른다(AppModel). 기존 ID 가 있으면 그대로.
             config.identityProvider = { DeviceIdentity.existingOrNew(actor: actors.actor ?? "owner", defaults: defaults) }
             if let room = bundle.familyChatValue("FamilyChatDefaultRoom") { config.defaultRoom = room }
+            if let agents = bundle.familyChatValue("FamilyChatAgentActors") { config.agentRoster = AgentRoster(setting: agents) }
             return config
         }
     }
@@ -76,7 +79,8 @@ extension AppModel.Dependencies {
                 credentials: config.credentials ?? SharedStorage.credentialStore(appGroup: config.appGroup),
                 actorStore: config.actorStore,
                 defaultRoom: config.defaultRoom,
-                wipe: wipe)
+                wipe: wipe,
+                agentRoster: config.agentRoster)
         } catch {
             // 화면이 사유를 보여 줄 수 있게 메모리 스토어로 모델만 세운다(아무것도 저장하지 않는다).
             return Self(
