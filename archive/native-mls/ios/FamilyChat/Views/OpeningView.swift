@@ -18,12 +18,8 @@ struct OpeningView: View {
                 }
                 VStack(spacing: 0) {
                     Spacer().frame(height: geo.size.height * 0.30)
-                    Text("HANDE")
-                        .font(.custom("Futura-Medium", size: 42))
-                        .kerning(14)
+                    HandeWordmark(size: 42)
                         .padding(.leading, 14)   // 마지막 글자 뒤 자간만큼 왼쪽을 채워 가운데를 맞춘다
-                        .foregroundStyle(OpeningArt.wordmark)
-                        .shadow(color: Hande.ember.opacity(0.35), radius: 18)
                     Text(Strings.openingKorean)
                         .font(.footnote.weight(.medium))
                         .kerning(8)
