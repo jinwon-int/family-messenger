@@ -148,11 +148,15 @@ impl Args {
             if !value.is_finite() || value <= 0.0 {
                 return Err("timeouts must be finite and positive".into());
             }
-            out.push(Duration::from_secs_f64(value));
+            // Python accepts any finite value; cap so `Instant + d` cannot overflow.
+            out.push(Duration::from_secs_f64(value.min(MAX_TIMEOUT_SECS)));
         }
         Ok((out[0], out[1], out[2]))
     }
 }
+
+/// Ten years: longer timeouts behave the same and stay addable to `Instant`.
+const MAX_TIMEOUT_SECS: f64 = 315_360_000.0;
 
 pub const USAGE: &str = "usage: native-responder --adapter-argv-json '[\"python\",\"…/ccc_adapter.py\"]' --workdir DIR \
 [--provider codex|claude] [--codex-cli PATH] [--claude-permission-mode MODE] [--turn-timeout S] \
@@ -458,5 +462,6 @@ mod tests {
             assert!(Args { tool_timeout: t, ..claude() }.timeouts().is_err());
         }
         assert!(claude().timeouts().is_ok());
+        assert!(Args { turn_timeout: 1e20, ..claude() }.timeouts().is_ok(), "huge but finite is accepted, capped");
     }
 }

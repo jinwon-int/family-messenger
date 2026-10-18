@@ -2,8 +2,9 @@
 //!
 //! Speaks the node-local JSON-lines port of `docs/FLEET-WORKER.md` on
 //! stdin/stdout (a pipe from `fleet_matrix.py`, or the systemd `Accept=yes`
-//! socket the native-mls bot connects to) — byte-for-byte the frames
-//! `scripts/fleet_worker.py` speaks, so neither parent changes. Turn
+//! socket the native-mls bot connects to) — the same frames, fields and
+//! reasons `scripts/fleet_worker.py` speaks (JSON spacing/escaping may
+//! differ; both parents parse JSON), so neither parent changes. Turn
 //! serialization, timeouts, approval nonces, steward tool validation and the
 //! uncertain/retire rule live here (`machine.rs`).
 //!
@@ -22,7 +23,9 @@ mod wire;
 use machine::{Limits, Machine, Out};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::fs::File;
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+use std::os::fd::AsFd;
 use std::process::{Child, ChildStdin, Command, ExitCode, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
@@ -62,7 +65,10 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let environment: BTreeMap<String, String> = std::env::vars().collect();
+    // Only `--working-state inherit` uses it; skip (never panic on) non-UTF-8 entries.
+    let environment: BTreeMap<String, String> = std::env::vars_os()
+        .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+        .collect();
     let configure = match harness::configure_frame(&args, &environment) {
         Ok(frame) => frame,
         Err(e) => {
@@ -191,8 +197,18 @@ fn stop_child(child: &mut Child, stdin: Option<ChildStdin>) {
 /// One line at a time, at most `limit` bytes (newline included); `Err` on overflow.
 fn read_capped_line(reader: &mut impl BufRead, limit: usize) -> std::io::Result<Option<Result<Vec<u8>, ()>>> {
     let mut line = Vec::new();
-    let n = reader.by_ref().take(limit as u64 + 1).read_until(b'\n', &mut line)?;
-    if n == 0 {
+    loop {
+        // A socket handed over non-blocking (or a signal) must not end the port:
+        // bytes read so far stay in `line`, so just read on.
+        let room = (limit as u64 + 1).saturating_sub(line.len() as u64);
+        match reader.by_ref().take(room).read_until(b'\n', &mut line) {
+            Ok(_) => break,
+            Err(e) if e.kind() == ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(10)),
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    if line.is_empty() {
         return Ok(None);
     }
     if line.len() > limit {
@@ -222,8 +238,12 @@ fn spawn_adapter_reader(out: impl Read + Send + 'static, tx: Sender<Event>) {
 
 fn spawn_parent_reader(tx: Sender<Event>) {
     std::thread::spawn(move || {
-        let stdin = std::io::stdin();
-        let mut reader = stdin.lock();
+        // Unbuffered fd 0 (pipe, or the Accept=yes socket shared with fd 1).
+        let Ok(fd) = std::io::stdin().as_fd().try_clone_to_owned() else {
+            let _ = tx.send(Event::ParentBad);
+            return;
+        };
+        let mut reader = BufReader::new(File::from(fd));
         loop {
             let event = match read_capped_line(&mut reader, wire::MAX_INPUT_FRAME) {
                 Ok(Some(Ok(line))) => Event::Parent(line),
@@ -260,14 +280,29 @@ fn spawn_parent_writer() -> ParentWriter {
     let (frames, rx) = mpsc::channel::<Vec<u8>>();
     let (ack_tx, acks) = mpsc::channel::<bool>();
     std::thread::spawn(move || {
-        let stdout = std::io::stdout();
+        // Unbuffered fd 1: one frame is written whole or the port is dead.
+        let Ok(fd) = std::io::stdout().as_fd().try_clone_to_owned() else { return };
+        let mut out = File::from(fd);
         for line in rx {
-            let mut out = stdout.lock();
-            let ok = out.write_all(&line).and_then(|_| out.flush()).is_ok();
+            let ok = write_all_retry(&mut out, &line).is_ok();
             if ack_tx.send(ok).is_err() || !ok {
                 return;
             }
         }
     });
     ParentWriter { frames, acks }
+}
+
+/// `write_all` that waits out `EAGAIN` (a non-blocking socket) and `EINTR`.
+fn write_all_retry(out: &mut impl Write, mut buf: &[u8]) -> std::io::Result<()> {
+    while !buf.is_empty() {
+        match out.write(buf) {
+            Ok(0) => return Err(ErrorKind::WriteZero.into()),
+            Ok(n) => buf = &buf[n..],
+            Err(e) if e.kind() == ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(5)),
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }

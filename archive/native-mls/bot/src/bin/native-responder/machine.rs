@@ -279,6 +279,9 @@ impl Machine {
     }
 
     fn finish(&mut self, runtime_closed: bool) {
+        if !runtime_closed {
+            self.exit_code = 1;
+        }
         if let Phase::Stopping { turn_id, reason, .. } = std::mem::replace(&mut self.phase, Phase::Done) {
             self.parent(json!({"type": "result", "turn_id": turn_id, "status": "uncertain",
                                "reason": reason, "runtime_closed": runtime_closed}));
@@ -343,7 +346,14 @@ impl Machine {
                 // Late turn events from the execution being torn down.
                 _ => {}
             },
-            Phase::Closing { .. } if kind == "closed" => self.phase = Phase::Done,
+            Phase::Closing { .. } if kind == "closed" => {
+                // fleet_worker re-raised a failed runtime.close(): exit 1, and
+                // fleet_matrix only confirms a `complete` result on exit 0.
+                if frame.get("ok") != Some(&Value::Bool(true)) {
+                    self.exit_code = 1;
+                }
+                self.phase = Phase::Done;
+            }
             _ => {}
         }
     }
@@ -453,7 +463,10 @@ impl Machine {
                     self.adapter(json!({"type": "close"}));
                 }
             }
-            Phase::Closing { deadline } if now >= *deadline => self.phase = Phase::Done,
+            Phase::Closing { deadline } if now >= *deadline => {
+                self.exit_code = 1;
+                self.phase = Phase::Done;
+            }
             _ => {}
         }
     }
@@ -488,10 +501,10 @@ fn tool_result_frame(request_id: &Value, outcome: &Value) -> Value {
     json!({"type": "tool-result", "request_id": request_id, "result": result})
 }
 
-/// Size of `value` as compact `json.dumps(ensure_ascii=True)` would write it.
+/// Size of `value` as `json.dumps(value, ensure_ascii=True)` writes it
+/// (`, ` / `: ` separators; non-ASCII as `\uXXXX`, astral as a surrogate pair).
 fn ascii_json_len(value: &Value) -> usize {
-    serde_json::to_string(value)
-        .unwrap_or_default()
+    py_dumps(value)
         .chars()
         .map(|c| if c.is_ascii() { 1 } else if (c as u32) > 0xFFFF { 12 } else { 6 })
         .sum()
@@ -836,6 +849,30 @@ mod tests {
             assert!(r.m.done().is_some(), "{mode}");
             assert_eq!(r.adapter.iter().filter(|v| v["type"] == "turn").count(), 1);
         }
+    }
+
+    #[test]
+    fn a_failed_or_silent_close_at_shutdown_exits_1() {
+        // idle EOF, adapter says closed ok=false
+        let mut r = Rig::new();
+        r.m.parent_eof(r.now);
+        r.drain();
+        r.feed(json!({"type": "closed", "ok": false}));
+        assert_eq!(r.m.done(), Some(1));
+        // idle EOF, adapter never answers
+        let mut r = Rig::new();
+        r.m.parent_eof(r.now);
+        r.drain();
+        r.advance(CLOSE_GRACE);
+        assert_eq!(r.m.done(), Some(1));
+        // EOF during a turn whose runtime does not close
+        let mut r = Rig::new();
+        r.turn("one");
+        r.m.parent_eof(r.now);
+        r.drain();
+        r.settle(false);
+        assert_eq!(r.last()["runtime_closed"], false);
+        assert_eq!(r.m.done(), Some(1));
     }
 
     #[test]

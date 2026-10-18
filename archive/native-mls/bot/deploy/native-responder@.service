@@ -25,6 +25,7 @@ Environment=PYTHONPATH=<CCC_NODE>/.github/pythonpath:<CCC_NODE>
 # ── Rust 응답기(#396): 같은 플래그를 native-responder 가 받는다. 정책(턴·타임아웃·승인·도구 검증)은 Rust,
 #    ccc-node 호출만 ccc_adapter.py(자식, stdio 파이프 — 소켓은 Rust 만 본다). 봇 쪽 프로토콜 동일 → 봇 무변경.
 #    되돌리기 = 아래 fleet_worker.py ExecStart 로 복원(다음 연결부터 적용).
+#    <RESPONDER_DIR> 는 /home 밖(예: /opt/native-responder)에 둔다 — ProtectHome=tmpfs 가 /home 을 가린다.
 # ExecStart=<RESPONDER_DIR>/native-responder \
 #   --adapter-argv-json '["<CCC_NODE>/bridge/venv/bin/python","<RESPONDER_DIR>/ccc_adapter.py"]' \
 #   --provider claude --workdir /home/<RESPONDER_USER> --model claude-opus-5-5 --effort high \

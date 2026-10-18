@@ -276,8 +276,22 @@ class NativeResponderTests(unittest.TestCase):
         self.assertEqual(lines, [{'type': 'rejected', 'turn_id': 'x', 'reason': 'invalid-turn'}])
         self.assertEqual(proc.returncode, 1)
 
-    def test_socket_stdio_like_systemd_accept(self):
+    def test_failed_runtime_close_at_eof_exits_1(self):
+        # fleet_matrix confirms a `complete` result only on exit 0 (fleet_matrix.py returncode check).
+        port, proc = self.spawn(env=self.env(FAKE_CLOSE_FAILS='1'))
+        port.send({'type': 'turn', 'turn_id': 'c1', 'prompt': 'hello'})
+        port.read()
+        self.assertEqual(port.read()['status'], 'complete')
+        proc.stdin.close()
+        self.assertEqual(proc.wait(20), 1)
+
+    def test_nonblocking_socket_stdio(self):
+        self.test_socket_stdio_like_systemd_accept(nonblocking=True)
+
+    def test_socket_stdio_like_systemd_accept(self, nonblocking=False):
         parent, child = socket.socketpair()
+        if nonblocking:
+            child.setblocking(False)  # O_NONBLOCK on the shared description: reads/writes may EAGAIN
         self.addCleanup(parent.close)
         proc = subprocess.Popen(self.argv(), stdin=child.fileno(), stdout=child.fileno(),
                                 stderr=subprocess.PIPE, env=self.env())

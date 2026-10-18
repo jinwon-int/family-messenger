@@ -107,6 +107,8 @@ class Adapter:
             self.tools.pop(request_id, None)
 
     async def _turn(self, prompt, session_id):
+        # A previous turn's session must never receive this turn's interrupt.
+        self.session = None
         try:
             self.session = await self.runtime.start_or_resume(self.request_factory(session_id))
             await self.emit({'type': 'session', 'session_id': self.session.session_id})

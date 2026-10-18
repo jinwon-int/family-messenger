@@ -101,10 +101,19 @@ fn hex4(input: &[u8], at: usize) -> Option<u32> {
     u32::from_str_radix(text, 16).ok()
 }
 
+/// Python `str.isspace()`: Unicode White_Space plus the separators U+001C..U+001F.
+fn py_space(c: char) -> bool {
+    c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
+}
+
+fn blank(text: &str) -> bool {
+    text.chars().all(py_space)
+}
+
 /// fleet_core `bounded_text`: a non-blank string without NUL, at most `limit` UTF-8 bytes.
 pub fn bounded_text(value: &Value, limit: usize) -> Option<&str> {
     let text = value.as_str()?;
-    if text.trim().is_empty() || text.contains('\0') || text.len() > limit {
+    if blank(text) || text.contains('\0') || text.len() > limit {
         return None;
     }
     Some(text)
@@ -112,7 +121,7 @@ pub fn bounded_text(value: &Value, limit: usize) -> Option<&str> {
 
 /// Same rule on an owned answer.
 pub fn bounded_str(text: &str, limit: usize) -> bool {
-    !text.trim().is_empty() && !text.contains('\0') && text.len() <= limit
+    !blank(text) && !text.contains('\0') && text.len() <= limit
 }
 
 /// Turn ids: ASCII letters, digits, `-` and `_`, 1..=128 characters.
@@ -178,9 +187,10 @@ fn write_py(value: &Value, out: &mut String) {
     }
 }
 
-/// A fresh 24-byte nonce as 48 hex characters (fits the bot's `[A-Za-z0-9_-]{1,128}`).
+/// A fresh 128-bit nonce as 32 hex characters — the length of fleet_worker's
+/// `token_urlsafe(24)`; fits the bot's `[A-Za-z0-9_-]{1,128}` and fleet_matrix's `{20,64}`.
 pub fn nonce() -> String {
-    let mut bytes = [0u8; 24];
+    let mut bytes = [0u8; 16];
     std::fs::File::open("/dev/urandom")
         .and_then(|mut f| f.read_exact(&mut bytes))
         .expect("/dev/urandom readable");
@@ -210,7 +220,7 @@ mod tests {
     #[test]
     fn validators_match_fleet_worker() {
         assert!(bounded_text(&json!("x"), 1).is_some());
-        for bad in [json!(""), json!("  "), json!("a\u{0}"), json!(7), json!(null), json!("xx")] {
+        for bad in [json!(""), json!("  "), json!("\u{1c}\u{1f}"), json!("a\u{0}"), json!(7), json!(null), json!("xx")] {
             assert!(bounded_text(&bad, 1).is_none(), "{bad}");
         }
         assert!(is_turn_id("job-1_A") && !is_turn_id("../bad") && !is_turn_id("") && !is_turn_id(&"a".repeat(129)));
@@ -232,7 +242,7 @@ mod tests {
     #[test]
     fn nonces_are_unique_hex() {
         let (a, b) = (nonce(), nonce());
-        assert_eq!(a.len(), 48);
+        assert_eq!(a.len(), 32);
         assert!(a.bytes().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b);
     }
