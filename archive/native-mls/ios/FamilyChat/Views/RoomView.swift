@@ -6,6 +6,12 @@ import FamilyMLSCore
 
 struct RoomView: View {
     @EnvironmentObject private var model: AppModel
+    /// #405 P3: 방 전환·목록 복귀(단축키) · 이 기기 읽음 표시.
+    @EnvironmentObject private var navigator: Navigator
+    @EnvironmentObject private var prefs: LocalPrefs
+    @FocusState private var composerFocused: Bool
+    /// iOS 16 `onChange` 는 새 값만 준다 — 줄바꿈 하나가 막 들어왔는지 보려고 직전 글을 쥔다.
+    @State private var previousDraft = ""
     @Environment(\.dismiss) private var dismiss
     let room: RoomID
     @State private var draft = ""
@@ -81,6 +87,26 @@ struct RoomView: View {
             if attachBusy {
                 Text(Strings.attachPreparing).font(.footnote).foregroundStyle(.secondary).padding(.horizontal)
             }
+            // #405 P3: 에이전트가 있는 방이면 자주 쓰는 말 칩 — 누르면 작성창에 채운다(바로 보내지 않는다).
+            if glance.hasAgent && isReady {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(Strings.quickSay, id: \.self) { phrase in
+                            Button { draft = phrase; composerFocused = true } label: {
+                                Text(phrase.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: ":")))
+                                    .font(.caption)
+                                    .padding(.horizontal, 10).padding(.vertical, 6)
+                                    .background(Capsule().fill(Hande.agent.opacity(0.12)))
+                                    .overlay(Capsule().stroke(Hande.agent.opacity(0.3), lineWidth: 1))
+                                    .foregroundStyle(Hande.agent)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                }
+                .padding(.top, 4)
+            }
             HStack(spacing: 10) {
                 // `PhotosPicker` 를 Menu 항목으로 두면 iOS 가 선택 창을 띄우지 않는다(build 13 실기기: 파일은 뜨고 사진은 안 뜸).
                 // 메뉴는 플래그만 올리고, 선택 창은 뷰에 붙인 `.photosPicker(isPresented:)` 수정자가 띄운다.
@@ -93,17 +119,24 @@ struct RoomView: View {
                 // #405 P2: 불가 자리 — 둥근 입력칸 + 불빛 원형 전송 버튼.
                 TextField(placeholder, text: $draft, axis: .vertical)
                     .lineLimit(1...6)
+                    .focused($composerFocused)
+                    // #405 P3: 하드웨어 키보드 Enter = 전송, Shift+Enter = 줄바꿈(웹 keyboard.js). 화면 키보드는 줄바꿈 그대로.
+                    .onChange(of: draft) { new in
+                        let old = previousDraft
+                        previousDraft = new
+                        switch ComposerKeys.decide(old: old, new: new, hardwareKeyboard: HardwareKeyboard.isConnected,
+                                                   shift: HardwareKeyboard.isShiftPressed) {
+                        case .keep: break
+                        case .revert(let text): draft = text
+                        case .send(let text): sendText(text)
+                        }
+                    }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 9)
                     .background(RoundedRectangle(cornerRadius: 20).fill(Hande.surface))
                     .overlay(RoundedRectangle(cornerRadius: 20).stroke(Hande.ember.opacity(0.28), lineWidth: 1))
                 Button {
-                    let text = draft
-                    draft = ""
-                    Task {
-                        // 암호화 전에 실패하면(동기화 실패·정지 등) 입력을 되돌린다 — 평문은 이 화면만 들고 있다.
-                        if await model.send(room: room, text: text) == nil, draft.isEmpty { draft = text }
-                    }
+                    sendText(draft)
                 } label: {
                     Image(systemName: "arrow.up").font(.body.weight(.bold)).foregroundStyle(Hande.onEmber)
                         .frame(width: 36, height: 36)
@@ -117,6 +150,7 @@ struct RoomView: View {
             .background(LinearGradient(colors: [Hande.glow.opacity(0.0), Hande.glow.opacity(0.85)], startPoint: .top, endPoint: .bottom))
         }
         .background(CampfireBackground())
+        .background(keyboardShortcuts)
         .navigationTitle(room)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -155,6 +189,8 @@ struct RoomView: View {
 
     private func reload() {
         messages = model.messages(room: room)
+        // #405 P3: 이 방을 보고 있다 = 마지막 글까지 읽음(이 기기에만).
+        if let last = messages.last { prefs.markRead(room, seq: last.id) }
         approvalStates = AgentApproval.states(messages.map(\.record), roster: model.agentRoster)
     }
 
@@ -182,6 +218,36 @@ struct RoomView: View {
                 proxy.scrollTo(last, anchor: .bottom)
             }
         }
+    }
+
+    /// 작성창 글을 보낸다. 암호화 전에 실패하면(동기화 실패·정지 등) 입력을 되돌린다 — 평문은 이 화면만 들고 있다.
+    private func sendText(_ text: String) {
+        guard isReady, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        previousDraft = ""
+        draft = ""
+        Task {
+            if await model.send(room: room, text: text) == nil, draft.isEmpty { draft = text }
+        }
+    }
+
+    /// #405 P3 하드웨어 키보드 단축키(웹 keyboard.js 차용, iPad 에서 ⌘ 를 누르고 있으면 목록이 보인다):
+    /// ⌘↩ 보내기 · Esc 작성창 닫기(대화 읽기) · PageUp/PageDown 이전·다음 대화방 · Home 대화 목록.
+    private var keyboardShortcuts: some View {
+        ZStack {
+            Button(Strings.sendButton) { sendText(draft) }.keyboardShortcut(.return, modifiers: .command)
+            Button(Strings.shortcutReadTimeline) { composerFocused = false }.keyboardShortcut(.escape, modifiers: [])
+            Button(Strings.shortcutPreviousRoom) { switchRoom(-1) }.keyboardShortcut(.pageUp, modifiers: [])
+            Button(Strings.shortcutNextRoom) { switchRoom(1) }.keyboardShortcut(.pageDown, modifiers: [])
+            Button(Strings.shortcutRoomList) { navigator.backToList() }.keyboardShortcut(.home, modifiers: [])
+        }
+        .opacity(0)
+        .frame(width: 0, height: 0)
+        .accessibilityHidden(true)
+    }
+
+    private func switchRoom(_ step: Int) {
+        let ids = RoomOrder.apply(model.listedRooms, saved: prefs.roomOrder).map(\.room)
+        if let next = RoomOrder.neighbor(of: room, in: ids, step: step) { navigator.open(next) }
     }
 
     private var canSend: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && isReady }

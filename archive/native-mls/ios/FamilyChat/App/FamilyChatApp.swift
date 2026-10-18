@@ -28,6 +28,8 @@ struct FamilyChatApp: App {
 
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
+    /// #405 P3: 방 전환(PageUp/PageDown)·목록 복귀(Home)를 위해 이동 경로를 쥔다.
+    @StateObject private var navigator = Navigator()
 
     var body: some View {
         Group {
@@ -41,7 +43,9 @@ struct RootView: View {
             case .needsEnrollment:
                 EnrollView()
             case .ready, .halted:
-                NavigationStack { RoomListView() }
+                NavigationStack(path: $navigator.path) { RoomListView() }
+                    .environmentObject(navigator)
+                    .environmentObject(LocalPrefs.shared)
             case .fatal(let reason):
                 FatalView(reason: reason)
             }

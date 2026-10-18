@@ -198,3 +198,49 @@ final class RoomGlanceTests: XCTestCase {
         XCTAssertNil(DeviceLabel.kind("owner"))
     }
 }
+
+final class ConversationKeysTests: XCTestCase {
+    func testEnterSendsShiftEnterAndSoftKeyboardKeepTheNewline() {
+        XCTAssertEqual(ComposerKeys.decide(old: "안녕", new: "안녕\n", hardwareKeyboard: true, shift: false), .send("안녕"))
+        XCTAssertEqual(ComposerKeys.decide(old: "안녕", new: "안녕\n", hardwareKeyboard: true, shift: true), .keep)
+        XCTAssertEqual(ComposerKeys.decide(old: "안녕", new: "안녕\n", hardwareKeyboard: false, shift: false), .keep)
+        // 가운데에서 Enter 도 전송(웹과 같음) — 보내는 글은 줄바꿈이 들어가기 전 글.
+        XCTAssertEqual(ComposerKeys.decide(old: "ab", new: "a\nb", hardwareKeyboard: true, shift: false), .send("ab"))
+        XCTAssertEqual(ComposerKeys.decide(old: "", new: "\n", hardwareKeyboard: true, shift: false), .revert(""))
+        XCTAssertEqual(ComposerKeys.decide(old: "  ", new: "  \n", hardwareKeyboard: true, shift: false), .revert("  "))
+        // 줄바꿈이 아닌 입력, 붙여넣기(여러 글자), 지우기는 그대로.
+        XCTAssertEqual(ComposerKeys.decide(old: "ab", new: "abc", hardwareKeyboard: true, shift: false), .keep)
+        XCTAssertEqual(ComposerKeys.decide(old: "ab", new: "ab\n\n", hardwareKeyboard: true, shift: false), .keep)
+        XCTAssertEqual(ComposerKeys.decide(old: "ab", new: "a", hardwareKeyboard: true, shift: false), .keep)
+    }
+
+    func room(_ id: RoomID, _ order: Int) -> RoomRecord {
+        RoomRecord(room: id, epoch: 0, revision: 0, haltedReason: nil, displayOrder: order)
+    }
+
+    func testRoomOrderOverlayAndMoves() {
+        let rooms = [room("family", 0), room("family-acc", 1), room("test", 2)]
+        XCTAssertEqual(RoomOrder.apply(rooms, saved: []).map(\.room), ["family", "family-acc", "test"])
+        XCTAssertEqual(RoomOrder.apply(rooms, saved: ["family-acc", "gone", "family-acc"]).map(\.room), ["family-acc", "family", "test"])
+        let ids = ["a", "b", "c", "d"]
+        XCTAssertEqual(RoomOrder.move(ids, from: [3], to: 0), ["d", "a", "b", "c"])
+        XCTAssertEqual(RoomOrder.move(ids, from: [0], to: 4), ["b", "c", "d", "a"])
+        XCTAssertEqual(RoomOrder.move(ids, from: [0], to: 2), ["b", "a", "c", "d"])
+        XCTAssertEqual(RoomOrder.move(ids, from: [1, 2], to: 0), ["b", "c", "a", "d"])
+        XCTAssertEqual(RoomOrder.neighbor(of: "b", in: ids, step: 1), "c")
+        XCTAssertEqual(RoomOrder.neighbor(of: "a", in: ids, step: -1), nil)
+        XCTAssertEqual(RoomOrder.neighbor(of: "zz", in: ids, step: 1), "a")
+    }
+
+    func testUnreadIsLocalAndIgnoresMyOwnMessages() {
+        func rec(_ seq: Int64, _ device: DeviceID) -> MessageRecord {
+            MessageRecord(room: "r", seq: seq, senderDevice: device, clientId: "c", kind: .text, body: "x",
+                          attachment: nil, receivedAt: Date(timeIntervalSince1970: 0), decryptedBy: .app)
+        }
+        XCTAssertTrue(Unread.isUnread(last: rec(5, "bot-g"), myDevice: "owner-i", readSeq: 4))
+        XCTAssertTrue(Unread.isUnread(last: rec(5, "bot-g"), myDevice: "owner-i", readSeq: nil))
+        XCTAssertFalse(Unread.isUnread(last: rec(5, "bot-g"), myDevice: "owner-i", readSeq: 5))
+        XCTAssertFalse(Unread.isUnread(last: rec(6, "owner-i"), myDevice: "owner-i", readSeq: 1))
+        XCTAssertFalse(Unread.isUnread(last: nil, myDevice: "owner-i", readSeq: nil))
+    }
+}
