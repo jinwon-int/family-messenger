@@ -16,6 +16,8 @@ public struct MessageRecord: Equatable {
     public let body: String
     /// attachment 본체(≤256 KiB) — 별도 파일로 둘지 blob 으로 둘지는 L1 결정(계약은 "같은 Data Protection" 만).
     public let attachment: Data?
+    /// 메시지 시각(#405): 동기화로 받은 글 = 릴레이 기록 시각(`created_at`), 내가 보낸 글 = 보낸 순간. 화면 시간 표시의 기준.
+    /// (이름은 처음 뜻을 남겨 둔다 — 그 전에 저장된 행은 복호화한 순간이다.)
     public let receivedAt: Date
     public let decryptedBy: DecryptedBy
     public init(room: RoomID, seq: Int64, senderDevice: DeviceID, clientId: String, kind: Kind, body: String, attachment: Data?, receivedAt: Date, decryptedBy: DecryptedBy) {

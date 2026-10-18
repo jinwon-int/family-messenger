@@ -25,6 +25,8 @@ struct RoomView: View {
     @State private var attachBusy = false
     /// #405 P1: 승인 요청 seq → 상태(허락/거절 버튼을 보일지).
     @State private var approvalStates: [Int64: AgentApproval.State] = [:]
+    /// #405 시간 표시: 행별 시간 보임 여부 · 날짜 구분선.
+    @State private var stamps: [Int64: TimelineStamps.Stamp] = [:]
     private static let thinkingRowID: Int64 = -1
 
     var body: some View {
@@ -44,7 +46,11 @@ struct RoomView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
                         ForEach(messages) { item in
+                            if let day = stamps[item.id]?.dayStart {
+                                DayDivider(text: Strings.dayLabel(day))
+                            }
                             MessageRow(item: item, mine: item.record.senderDevice == model.deviceId,
+                                       time: stamps[item.id]?.showTime == true ? item.record.receivedAt : nil,
                                        roster: model.agentRoster, approval: approvalStates[item.id], canAnswer: isReady,
                                        decide: { number, allow in answerApproval(number, allow: allow) },
                                        onAttachmentLoaded: { attachmentLoaded(item.id, proxy) })
@@ -192,6 +198,7 @@ struct RoomView: View {
         // #405 P3: 이 방을 보고 있다 = 마지막 글까지 읽음(이 기기에만).
         if let last = messages.last { prefs.markRead(room, seq: last.id) }
         approvalStates = AgentApproval.states(messages.map(\.record), roster: model.agentRoster)
+        stamps = TimelineStamps.compute(messages.map(\.record), calendar: .current)
     }
 
     /// #405 P1: 승인 카드 버튼 = 봇이 알아듣는 「승인 n」/「거절 n」 글을 대신 보낸다.
@@ -285,6 +292,8 @@ struct RoomView: View {
 struct MessageRow: View {
     let item: AppModel.TimelineItem
     let mine: Bool
+    /// #405 시간 표시: 묶음의 마지막 행만 시각을 받는다(nil = 숨김).
+    var time: Date? = nil
     /// #405 P1: 에이전트 글이면 카드·승인 카드로 그린다.
     var roster = AgentRoster(actors: [])
     var approval: AgentApproval.State? = nil
@@ -305,7 +314,7 @@ struct MessageRow: View {
     @ViewBuilder private var agentRow: some View {
         let name = AgentRoster.displayName(device: message.senderDevice, names: Strings.agentNames)
         if let request = AgentApproval.request(in: message.body) {
-            ApprovalCard(name: name, request: request, state: approval ?? .closed, enabled: canAnswer) { allow in
+            ApprovalCard(name: name, request: request, state: approval ?? .closed, enabled: canAnswer, time: time) { allow in
                 decide(request.number, allow)
             }
         } else if AgentApproval.resolution(in: message.body) != nil {
@@ -313,16 +322,23 @@ struct MessageRow: View {
             HStack(spacing: 6) {
                 Circle().fill(AgentPalette.accent).frame(width: 6, height: 6)
                 Text(message.body).font(.caption).foregroundStyle(.secondary)
+                if let time { Text("· \(Strings.messageTime(time))").font(.caption2).foregroundStyle(.secondary) }
             }
             .frame(maxWidth: .infinity, alignment: .center)
         } else {
-            AgentMessageCard(name: name, text: message.body)
+            AgentMessageCard(name: name, text: message.body, time: time)
+        }
+    }
+
+    @ViewBuilder private var timeLabel: some View {
+        if let time {
+            Text(Strings.messageTime(time)).font(.caption2).foregroundStyle(Hande.inkDim).fixedSize()
         }
     }
 
     private var bubbleRow: some View {
-        HStack {
-            if mine { Spacer(minLength: 40) }
+        HStack(alignment: .bottom, spacing: 6) {
+            if mine { Spacer(minLength: 40); timeLabel }
             VStack(alignment: mine ? .trailing : .leading, spacing: 2) {
                 if !mine {
                     // #405 P2: 기기 ID 대신 이름 · 기기 종류(오너 · PC).
@@ -336,7 +352,7 @@ struct MessageRow: View {
                     .foregroundStyle(mine ? Hande.onEmber : Hande.ink)
                     .clipShape(BubbleShape(mine: mine))
             }
-            if !mine { Spacer(minLength: 40) }
+            if !mine { timeLabel; Spacer(minLength: 40) }
         }
     }
 
@@ -406,5 +422,19 @@ struct BubbleShape: Shape {
         p.addArc(center: CGPoint(x: rect.minX + tl, y: rect.minY + tl), radius: tl, startAngle: .degrees(180), endAngle: .degrees(270), clockwise: false)
         p.closeSubpath()
         return p
+    }
+}
+
+/// #405 시간 표시: 날짜가 바뀌는 자리의 구분선(오늘 · 어제 · 10월 18일 토요일).
+struct DayDivider: View {
+    let text: String
+    var body: some View {
+        HStack(spacing: 10) {
+            Rectangle().fill(Hande.stroke).frame(height: 1)
+            Text(text).font(.caption2.weight(.semibold)).foregroundStyle(Hande.inkDim).fixedSize()
+            Rectangle().fill(Hande.stroke).frame(height: 1)
+        }
+        .padding(.vertical, 6)
+        .accessibilityAddTraits(.isHeader)
     }
 }

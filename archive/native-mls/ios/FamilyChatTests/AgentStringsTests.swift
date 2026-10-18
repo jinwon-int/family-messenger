@@ -26,6 +26,18 @@ final class AgentStringsTests: XCTestCase {
                        "공명: 결과 방 | 모드 | 두 개입니다 room_status")
     }
 
+    func testMessageTimeAndDayLabels() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Seoul")!
+        let now = Date(timeIntervalSince1970: 1_792_306_680)  // 2026-10-18 15:58 KST(토)
+        XCTAssertEqual(Strings.dayLabel(now, now: now, calendar: calendar), "오늘")
+        XCTAssertEqual(Strings.dayLabel(now.addingTimeInterval(-86_400), now: now, calendar: calendar), "어제")
+        XCTAssertTrue(Strings.dayLabel(now.addingTimeInterval(-3 * 86_400), now: now, calendar: calendar).hasSuffix("요일"))
+        XCTAssertTrue(Strings.dayLabel(now.addingTimeInterval(-400 * 86_400), now: now, calendar: calendar).contains("년"))
+        let time = Strings.messageTime(now)
+        XCTAssertTrue(time.hasPrefix("오전") || time.hasPrefix("오후"), time)
+    }
+
     func testKnownAgentName() {
         XCTAssertEqual(Strings.agentNames["gongmyoung"], "공명")
     }

@@ -16,12 +16,17 @@ enum AgentPalette {
 /// 에이전트 이름 머리줄: ● 공명 · 에이전트
 struct AgentHeader: View {
     let name: String
+    var time: Date? = nil
     var body: some View {
         HStack(spacing: 6) {
             Circle().fill(AgentPalette.accent).frame(width: 8, height: 8)
                 .shadow(color: AgentPalette.accent.opacity(0.8), radius: 3)
             Text(name).font(.caption.weight(.semibold))
             Text("· \(Strings.agentBadge)").font(.caption).foregroundStyle(.secondary)
+            if let time {
+                Spacer(minLength: 6)
+                Text(Strings.messageTime(time)).font(.caption2).foregroundStyle(.secondary)
+            }
         }
         .accessibilityElement(children: .combine)
     }
@@ -31,10 +36,11 @@ struct AgentHeader: View {
 struct AgentMessageCard: View {
     let name: String
     let text: String
+    var time: Date? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            AgentHeader(name: name)
+            AgentHeader(name: name, time: time)
             MarkdownBlocksView(blocks: AgentMarkdown.parse(text))
         }
         .padding(12)
@@ -141,6 +147,7 @@ struct ApprovalCard: View {
     let request: AgentApproval.Request
     let state: AgentApproval.State
     let enabled: Bool
+    var time: Date? = nil
     let decide: (Bool) -> Void
 
     var body: some View {
@@ -149,7 +156,8 @@ struct ApprovalCard: View {
                 Text("🔥")
                 Text(Strings.approvalTitle(name)).font(.subheadline.weight(.semibold))
                 Spacer()
-                Text("#\(request.number)").font(.caption).foregroundStyle(.secondary)
+                Text(time.map { "#\(request.number) · \(Strings.messageTime($0))" } ?? "#\(request.number)")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             if !request.summary.isEmpty {
                 Text(request.summary).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)

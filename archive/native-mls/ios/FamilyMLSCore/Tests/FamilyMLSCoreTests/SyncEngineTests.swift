@@ -59,6 +59,20 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(try h.cursors.cursor(room: h.room), appSeq)
     }
 
+    /// #405 시간 표시: 메시지 시각은 릴레이 기록 시각(created_at) — 늦게 동기화해도 보낸 때로 보인다. 0 이면 지금.
+    func testMessageTimeIsTheRelaysCreatedAt() async throws {
+        let h = try invitedHarness()
+        let sent: Int64 = 1_792_306_680
+        h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: alice, text: "예전 글"), createdAt: sent)
+        let before = Date()
+        h.relay.inject(device: alice, kind: .application, bytes: h.ciphertext(from: alice, clientId: alice, text: "시각 없음"))
+        _ = try await h.sync.syncOnce()
+        let stored = try h.messages.messages(room: h.room, after: 0, limit: 10)
+        XCTAssertEqual(stored.map(\.body), ["예전 글", "시각 없음"])
+        XCTAssertEqual(stored[0].receivedAt, Date(timeIntervalSince1970: TimeInterval(sent)))
+        XCTAssertGreaterThanOrEqual(stored[1].receivedAt.timeIntervalSince1970, before.timeIntervalSince1970 - 1)
+    }
+
     func testWelcomeAfterJoinIsIgnored() async throws {
         let h = try joinedHarness()
         h.relay.inject(device: alice, kind: .welcome, bytes: FakeWelcome(members: [alice, h.me]).bytes)

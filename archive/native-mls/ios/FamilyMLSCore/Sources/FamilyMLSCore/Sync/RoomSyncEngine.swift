@@ -370,6 +370,9 @@ public final class RoomSyncEngine {
     private func storeApplication(_ ev: StoredEvent, engine: MlsEngine, dirty: inout Bool) throws -> Bool {
         var record: MessageRecord
         var ok = true
+        // #405 시간 표시: 메시지 시각 = 릴레이가 기록한 시각(`created_at`, Unix 초). 복호화한 순간(Date())을 쓰면
+        // 앱을 오래 닫아 뒀다가 열었을 때 밀린 메시지가 모두 연 시각으로 찍힌다. 값이 없으면(0) 지금.
+        let sentAt = Self.sentAt(ev)
         do {
             let output = try engine.dispatch(.decrypt, Framing.decryptInput(room: room, ciphertext: ev.bytes))
             dirty = true   // 수신 ratchet 전진 — 저장해야 한다
@@ -380,11 +383,11 @@ public final class RoomSyncEngine {
                 if AttachmentFormat.isAttachment(clientId: ev.clientId) {
                     record = MessageRecord(room: room, seq: ev.seq, senderDevice: decrypted.senderDevice, clientId: ev.clientId,
                                            kind: .attachment, body: AttachmentFormat.sniffMime(decrypted.plaintext),
-                                           attachment: decrypted.plaintext, receivedAt: Date(), decryptedBy: configuration.decryptedBy)
+                                           attachment: decrypted.plaintext, receivedAt: sentAt, decryptedBy: configuration.decryptedBy)
                 } else {
                     record = MessageRecord(room: room, seq: ev.seq, senderDevice: decrypted.senderDevice, clientId: ev.clientId,
                                            kind: .text, body: String(decoding: decrypted.plaintext, as: UTF8.self),
-                                           attachment: nil, receivedAt: Date(), decryptedBy: configuration.decryptedBy)
+                                           attachment: nil, receivedAt: sentAt, decryptedBy: configuration.decryptedBy)
                 }
             } else {
                 // 릴레이 row 의 기기와 MLS 발신자가 다르다 — 내용을 보이지 않는다.
@@ -406,7 +409,12 @@ public final class RoomSyncEngine {
 
     private func undecryptable(_ ev: StoredEvent, reason: String) -> MessageRecord {
         MessageRecord(room: room, seq: ev.seq, senderDevice: ev.device, clientId: ev.clientId, kind: .undecryptable,
-                      body: reason, attachment: nil, receivedAt: Date(), decryptedBy: configuration.decryptedBy)
+                      body: reason, attachment: nil, receivedAt: Self.sentAt(ev), decryptedBy: configuration.decryptedBy)
+    }
+
+    /// 릴레이 기록 시각(`created_at`, Unix 초) — 없으면(0) 지금.
+    static func sentAt(_ ev: StoredEvent) -> Date {
+        ev.createdAt > 0 ? Date(timeIntervalSince1970: TimeInterval(ev.createdAt)) : Date()
     }
 
     private func persistRoom(halted: String?) throws {
