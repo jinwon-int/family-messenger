@@ -65,9 +65,19 @@ Python에서 하던 릴레이 호출을 브라우저로 옮긴 것이다. 합성
    `멤버 제거` → `remove_pending`(그 멤버의 서명 키로 지정, 맨 commit) → commit POST(members =
    `members_after_pending`) → 내 echo에서 `merge_pending` → epoch 전진. 제거된 기기가 아직 살아 있으면 그
    commit을 stage→검사→merge한 뒤 "이 기기는 방에서 제거되었다"로 **정지**(⛔ 거부와 같은 durable 정지, 문구만
-   다름; `저장소 삭제`만 활성). 나를 제거하는 그 commit만은 outer 로스터 비교를 생략한다(릴레이가 비멤버에게
-   로스터를 보여 주지 않거나, 멤버십 추적이 꺼진 스모크에서는 늘 `[]`). 운영 모드(`-device-state`, 멤버십 강제)의
-   릴레이는 제거된 기기의 application/ack를 403 `not_a_member`로 거부한다(Go 테스트로 증명; 스모크 범위 밖).
+   다름; `저장소 삭제`만 활성). 나를 제거하는 commit도 **outer 로스터와 비교한다**(#295): 릴레이는 GET 응답마다
+   추적 로스터를 싣는다(`store.go` `readMembers` → `members`, 독자가 멤버인지와 무관). 비교를 생략하는 경우는
+   릴레이가 멤버십을 아예 추적하지 않아 `members`가 `[]`일 때뿐이다 — `-device-state` 없이 뜬 스모크 릴레이
+   (`enforceDevicePolicy`가 nil → `active == nil` → 추적 안 함). #294 는 이것을 "비멤버에게 로스터를 안 보여 준다"로
+   잘못 진단해 운영 릴레이에서도 생략했었다(판정 `commit-policy.js` `outerForCommit`, `node --test`). 운영 모드
+   (`-device-state`, 멤버십 강제)의 릴레이는 제거된 기기의 application/ack를 403 `not_a_member`로 거부한다(Go 테스트로
+   증명; 스모크 범위 밖).
+   **제거 권한(#295 F3)**: 추적 멤버이면서 정책상 active인 기기는 누구나(봇 포함) 살아 있는 다른 active 기기도
+   제거할 수 있다 — 대상이 revoked인지 확인하는 장치는 클라이언트·릴레이 어디에도 없다. 운영 절차("운영자 revoke 뒤
+   신뢰 기기에서 제거")가 유일한 제한이다.
+   **결과 불명 게시(#295 F4)**: 초대·제거 commit POST가 예외로 끝나면(네트워크 끊김·응답 유실) commit을 "결과 불명
+   pending"으로 남긴다(저장됨). 다음 동기화에서 내 echo가 오면 `merge_pending`, 다른 commit이 먼저면 그 병합이 내
+   pending을 소모하므로 상태만 정리, 방 epoch가 그대로면 릴레이에 없던 것이라 `clear_pending`(`resolveUncertainPending`).
 
 durable 워커 허용 메서드에 이번에 더해진 것: `invite_with_commit` `merge_pending` `clear_pending`
 `remove_pending` `members` `members_after_pending` `fingerprint` `policy_fingerprint` `sign_approval`

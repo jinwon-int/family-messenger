@@ -347,10 +347,11 @@ public final class RoomSyncEngine {
         guard let frame = try? engine.dispatch(.members, Data()), let roster = CommitPolicy.parseRosterFrame(frame) else {
             return refuse(SyncHaltReason.rosterUnavailable)
         }
-        // outer(릴레이가 추적하는 roster)는 이 commit 이 페이지의 최신 epoch 일 때만 비교한다.
-        // 이 기기를 제거하는 commit 이면 응답에 roster 가 없으므로(#289) 내부 검사만.
+        // outer(릴레이가 추적하는 roster)는 이 commit 이 페이지의 최신 epoch 일 때 비교한다 — 이 기기를 제거하는
+        // commit 도(#295 F1: 릴레이는 모든 독자에게 roster 를 준다). 멤버십을 추적하지 않는 릴레이(members 빔)만 예외.
         let removesMe = report.removes.contains { $0.id == identity }
-        let outer: [String]? = (!removesMe && ev.epoch + 1 == page.epoch) ? page.members?.map(\.device) : nil
+        let outer = CommitPolicy.outerForCommit(report: report, identity: identity, eventEpoch: ev.epoch,
+                                                pageEpoch: page.epoch, members: page.members)
         switch CommitPolicy.checkCommit(report: report, roster: roster.map(\.id), committer: ev.device, outer: outer) {
         case .failure(let refusal):
             return refuse(refusal.reason.rawValue)

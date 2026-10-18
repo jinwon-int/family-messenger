@@ -179,4 +179,16 @@ public enum CommitPolicy {
         }
         return .success(expected)
     }
+
+    /// #295 F1 — 스테이지한 commit 을 비교할 outer(릴레이 추적) roster. web `commit-policy.js` `outerForCommit` 과 같다.
+    /// 릴레이는 GET 응답마다 추적 roster 를 싣는다(독자가 멤버인지와 무관 — store.go readMembers). 비교를 생략하는 때는
+    /// 이 commit 이 페이지의 최신 epoch 가 아닐 때(내부 검사만), 그리고 **나를 제거하는 commit 인데 릴레이가 멤버십을
+    /// 추적하지 않아 members 가 비었을 때**뿐이다. #289 이식본은 나를 제거하는 commit 이면 운영 릴레이에서도 생략했다.
+    public static func outerForCommit(report: StageReport, identity: String, eventEpoch: Int64, pageEpoch: Int64,
+                                      members: [MemberWire]?) -> [String]? {
+        guard eventEpoch + 1 == pageEpoch, let members else { return nil }
+        let removesMe = report.removes.contains { $0.id == identity }
+        if removesMe && members.isEmpty { return nil }
+        return members.map(\.device)
+    }
 }
