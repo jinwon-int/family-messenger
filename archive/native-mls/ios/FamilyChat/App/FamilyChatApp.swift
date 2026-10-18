@@ -30,12 +30,17 @@ struct RootView: View {
     @EnvironmentObject private var model: AppModel
     /// #405 P3: 방 전환(PageUp/PageDown)·목록 복귀(Home)를 위해 이동 경로를 쥔다.
     @StateObject private var navigator = Navigator()
+    /// #414: 첫 동기화가 오래 걸려도(오프라인 등) 오프닝에 갇히지 않게 — 이 시간이 지나면 실제 상태를 보인다.
+    @State private var openingExpired = false
+    private static let openingLimitNanoseconds: UInt64 = 8_000_000_000
 
     var body: some View {
         Group {
             switch model.phase {
             case .starting:
-                ProgressView(Strings.starting)
+                OpeningView()
+            case .needsEnrollment where !model.settled && !openingExpired:
+                OpeningView()
             case .needsActor:
                 ActorSetupView()
             case .needsLogin:
@@ -52,6 +57,11 @@ struct RootView: View {
         }
         .overlay(alignment: .top) {
             if case .halted(let reason) = model.phase { HaltedBanner(reason: reason) }
+        }
+        .animation(.easeOut(duration: 0.35), value: model.settled)
+        .task {
+            try? await Task.sleep(nanoseconds: Self.openingLimitNanoseconds)
+            openingExpired = true
         }
         // #405 P2: 밤 테마 고정(오너 결정) + 불빛 강조색.
         .preferredColorScheme(.dark)
