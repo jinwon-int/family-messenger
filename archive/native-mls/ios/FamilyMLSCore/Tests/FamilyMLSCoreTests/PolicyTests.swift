@@ -248,3 +248,24 @@ final class PolicyTests: XCTestCase {
                        "rawValues must be unique")
     }
 }
+
+/// #295 F1: 나를 제거하는 commit 도 릴레이가 멤버십을 추적하면 outer 와 비교한다(web commit-policy.js 와 같은 규칙).
+final class OuterForCommitTests: XCTestCase {
+    func report(removes: [String]) -> StageReport {
+        StageReport(adds: [], removes: removes.map { PolicyMember(id: $0, key: Array(repeating: 0, count: 32)) },
+                    updates: [], path: [PolicyMember(id: "owner-pc", key: Array(repeating: 1, count: 32))])
+    }
+    let wire = { (ids: [String]) in ids.map { MemberWire(device: $0, actor: String($0.split(separator: "-").first ?? "")) } }
+
+    func testRemovingMeIsComparedWhenTheRelayTracksMembers() {
+        XCTAssertEqual(CommitPolicy.outerForCommit(report: report(removes: ["me-1"]), identity: "me-1", eventEpoch: 4, pageEpoch: 5,
+                                                   members: wire(["owner-pc", "bot-a"])), ["owner-pc", "bot-a"])
+    }
+
+    func testSkippedOnlyForUntrackedRelayOrOlderCommit() {
+        XCTAssertNil(CommitPolicy.outerForCommit(report: report(removes: ["me-1"]), identity: "me-1", eventEpoch: 4, pageEpoch: 5, members: []))
+        XCTAssertEqual(CommitPolicy.outerForCommit(report: report(removes: ["x-1"]), identity: "me-1", eventEpoch: 4, pageEpoch: 5, members: []), [])
+        XCTAssertNil(CommitPolicy.outerForCommit(report: report(removes: []), identity: "me-1", eventEpoch: 3, pageEpoch: 5, members: wire(["a-1"])))
+        XCTAssertNil(CommitPolicy.outerForCommit(report: report(removes: []), identity: "me-1", eventEpoch: 4, pageEpoch: 5, members: nil))
+    }
+}

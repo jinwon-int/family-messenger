@@ -119,3 +119,33 @@ test('the relay roster must equal the MLS roster after the commit (outer == inne
   v = checkCommit({report: r, roster: ROSTER, committer: 'owner-pc', outer: ['owner-pc2', 'owner-pc2', 'owner-pc', 'owner-iphone', 'bot-gongmyoung']});
   assert.equal(v.ok, true);
 });
+
+// #295 F1/F4 ---------------------------------------------------------------
+import {outerForCommit, resolveUncertainPending} from './commit-policy.js';
+
+const rep = removes => ({adds: [], removes: removes.map(id => ({id})), updates: [], path: [{id: 'owner-pc'}]});
+const wire = ids => ids.map(device => ({device, actor: device.split('-')[0]}));
+
+test('#295 F1: a commit removing me is still compared when the relay tracks members', () => {
+  const outer = outerForCommit({report: rep(['me-1']), self: 'me-1', eventEpoch: 4, roomEpoch: 5, members: wire(['owner-pc', 'bot-a'])});
+  assert.deepEqual(outer, ['owner-pc', 'bot-a']);
+  // …and a mismatch then refuses (halts) instead of merging silently
+  const verdict = checkCommit({report: {...rep(['me-1']), path: [{id: 'owner-pc'}]}, roster: ['owner-pc', 'me-1', 'bot-a'],
+    committer: 'owner-pc', outer: ['owner-pc', 'bot-a', 'intruder-x']});
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.reason, 'outer_inner_mismatch');
+});
+
+test('#295 F1: skipped only on a relay that tracks nobody, or for an older staged commit', () => {
+  assert.equal(outerForCommit({report: rep(['me-1']), self: 'me-1', eventEpoch: 4, roomEpoch: 5, members: []}), null);
+  assert.deepEqual(outerForCommit({report: rep(['x-1']), self: 'me-1', eventEpoch: 4, roomEpoch: 5, members: []}), []);
+  assert.equal(outerForCommit({report: rep([]), self: 'me-1', eventEpoch: 3, roomEpoch: 5, members: wire(['a-1'])}), null);
+  assert.equal(outerForCommit({report: rep([]), self: 'me-1', eventEpoch: 4, roomEpoch: 5, members: undefined}), null);
+});
+
+test('#295 F4: an uncertain POST is dropped only when the room epoch did not move', () => {
+  assert.equal(resolveUncertainPending({pendingEpoch: 7, roomEpoch: 7}), 'drop');
+  assert.equal(resolveUncertainPending({pendingEpoch: 7, roomEpoch: 8}), 'wait');
+  assert.equal(resolveUncertainPending({pendingEpoch: null, roomEpoch: 7}), 'none');
+  assert.equal(resolveUncertainPending({pendingEpoch: undefined, roomEpoch: 7}), 'none');
+});

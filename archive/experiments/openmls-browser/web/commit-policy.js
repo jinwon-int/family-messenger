@@ -87,3 +87,29 @@ export function checkCommit({report, roster, committer, outer = null}) {
   }
   return {ok: true, expected};
 }
+
+// #295 F1: which outer (relay) roster a staged commit is compared against.
+// The relay returns its tracked roster on every GET (store.go readMembers →
+// eventsResponse.members, #261), also to a reader the commit just removed. It is
+// empty only when the relay does not track membership at all (no device policy,
+// e.g. the isolated smoke relay). So the outer comparison is skipped only for an
+// older staged commit (not the page's latest epoch — inner checks only) or for a
+// commit that removes this device on a relay that tracks nobody. Before #295 any
+// commit removing this device skipped it, on the production relay too.
+export function outerForCommit({report, self, eventEpoch, roomEpoch, members}) {
+  if (eventEpoch + 1 !== roomEpoch || !Array.isArray(members)) return null;
+  const removesMe = report.removes.some(m => m.id === self);
+  if (removesMe && members.length === 0) return null;
+  return members.map(m => m.device);
+}
+
+// #295 F4: an invite/remove POST whose outcome is unknown (the request threw —
+// network gone, response lost) leaves the commit pending in the worker. After the
+// next complete read the room epoch tells: still the epoch the commit was built
+// on → the relay never took it ('drop': clear_pending, try again); advanced →
+// either our own echo (merge_pending on the echo) or a foreign commit that won
+// (merging it consumes our pending) — 'wait' for the events to say which.
+export function resolveUncertainPending({pendingEpoch, roomEpoch}) {
+  if (!Number.isInteger(pendingEpoch)) return 'none';
+  return roomEpoch === pendingEpoch ? 'drop' : 'wait';
+}

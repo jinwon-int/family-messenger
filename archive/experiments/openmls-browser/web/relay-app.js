@@ -8,7 +8,7 @@
 //   cursor; an explicit ?ack= after everything up to seq is durably processed.
 // Trust comes from the facade (AAD binding, pinned keys) and the relay (policy
 // chain, JWT ↔ device subject); this page is plumbing and display only.
-import {parseStageReport, checkCommit} from './commit-policy.js';
+import {parseStageReport, checkCommit, outerForCommit, resolveUncertainPending} from './commit-policy.js';
 import {attachmentOutbox, isAttachment} from './relay-attachments.js';
 const $ = id => document.getElementById(id);
 const utf8 = new TextEncoder(), decoder = new TextDecoder();
@@ -40,6 +40,8 @@ const NET_FAIL = '연결 실패 — 페이지를 새로고침하고(필요하면
 const actorOf = device => device.split('-')[0];
 
 const S = {dev: null, room: null, db: null, started: false, joined: false, pending: false,
+  // #295 F4: epoch an invite/remove commit was built on when its POST outcome is unknown (else null).
+  pendingUncertain: null,
   expectedRoster: null, pendingWelcome: null, relaySeq: 0, epoch: 0, wcursor: 0, roster: [], timer: null, busy: false,
   // #261: a refused commit halts this device (durable: the halt survives a reload, the
   // operator decides); retriedSeq remembers one merge retry per relay seq.
@@ -51,7 +53,8 @@ const stateKey = () => `relay-app:${S.room}:${S.dev}:${S.db}`;
 const legacyStateKey = () => `relay-app:${S.room}:${S.dev}`;   // pre-#296 key, migrated once
 function save() {
   localStorage.setItem(stateKey(), JSON.stringify({joined: S.joined, pending: S.pending, expectedRoster: S.expectedRoster,
-    pendingWelcome: S.pendingWelcome, relaySeq: S.relaySeq, epoch: S.epoch, roster: S.roster, halted: S.halted}));
+    pendingWelcome: S.pendingWelcome, pendingUncertain: S.pendingUncertain ?? null,
+    relaySeq: S.relaySeq, epoch: S.epoch, roster: S.roster, halted: S.halted}));
 }
 function load() {
   try {
@@ -160,6 +163,23 @@ async function postEvent(kind, bytes, {targets, members, epoch} = {}) {
   return api('POST', roomPath('events'), payload);
 }
 
+// #295 F4: POST an invite/remove commit. A thrown request (network gone, answer
+// lost) has an unknown outcome — the relay may hold the commit or not. Keep it
+// pending (marked uncertain, durable) instead of leaving a stray pending commit in
+// the worker: the own echo merges it, a foreign commit winning consumes it, and a
+// read that finds the room still at this epoch drops it (sync, resolveUncertainPending).
+async function postUncertain(commit, expected, pendingWelcome) {
+  try {
+    return await postEvent('commit', commit, {members: membersWire(expected)});
+  } catch (error) {
+    S.pending = true; S.pendingUncertain = S.epoch; S.expectedRoster = expected; S.pendingWelcome = pendingWelcome; save();
+    renderRoster();
+    log(`commit 게시 결과를 확인하지 못했다(${error.message}) — 다음 동기화가 반영 여부를 판정한다`);
+    await sync({quiet: true});
+    return null;
+  }
+}
+
 // ---- sync (the smoke's Device.sync, in the browser) ----
 async function sync({quiet = false} = {}) {
   if (!S.started || S.busy || S.transferring || S.halted) return;
@@ -180,7 +200,7 @@ async function sync({quiet = false} = {}) {
       if (ev.device === S.dev) {
         if (ev.kind === 'commit' && S.pending) {
           await op('merge_pending');
-          S.pending = false;
+          S.pending = false; S.pendingUncertain = null;
           S.roster = S.expectedRoster || S.roster; S.expectedRoster = null;
           S.epoch = ev.epoch + 1; renderRoster();
           log(`내 commit 반영(seq ${ev.seq}) — epoch 전진`);
@@ -210,13 +230,13 @@ async function sync({quiet = false} = {}) {
         let report;
         try { report = parseStageReport((await op('stage_commit', data)).output); }
         catch (error) { log(`commit 거부(seq ${ev.seq}, ${ev.device}): ${error.message} — 이 기기는 방에서 빠졌을 수 있다`); continue; }
-        // #289: a commit that removes this very device is the last thing the relay
-        // shows it — the response carries no roster for a reader that is no longer a
-        // tracked member (outer would read [] against an inner roster that still
-        // lists the others). Inner checks (committer path/membership, removes ⊆
-        // roster) still apply; the outer comparison is skipped for that one commit.
+        // #289/#295: a commit that removes this very device is still compared with
+        // the relay roster — the relay returns its tracked roster to every reader
+        // (store.go readMembers → eventsResponse.members). The roster is empty only
+        // when the relay tracks no membership at all (no device policy: the isolated
+        // smoke relay); then, and for an older staged commit, inner checks only.
         const removesMe = report.removes.some(m => m.id === S.dev);
-        const outer = !removesMe && ev.epoch + 1 === body.epoch && Array.isArray(body.members) ? body.members.map(m => m.device) : null;
+        const outer = outerForCommit({report, self: S.dev, eventEpoch: ev.epoch, roomEpoch: body.epoch, members: body.members});
         const verdict = checkCommit({report, roster: S.roster, committer: ev.device, outer});
         if (!verdict.ok) {
           try { await op('discard_staged'); } catch (error) { log(`discard 실패: ${error.message}`); }
@@ -241,6 +261,13 @@ async function sync({quiet = false} = {}) {
           // like a refusal does (durable, loud), but say what actually happened.
           halt(ev.seq, ev.device, {reason: 'removed_from_room', detail: '이 기기가 방에서 제거되었다'});
           break;
+        }
+        if (S.pending) {
+          // #295 F4: a foreign commit won the epoch our (uncertain) commit was built
+          // on. Merging it consumed our pending commit (OpenMLS, #239) — ours never
+          // landed. Forget it here so the next invite/remove is not blocked.
+          S.pending = false; S.pendingUncertain = null; S.expectedRoster = null; S.pendingWelcome = null;
+          log(`내 commit은 반영되지 않았다(seq ${ev.seq} ${ev.device}의 commit이 먼저) — 필요하면 다시 시도`);
         }
         S.roster = parseMembers((await op('members')).output); renderRoster();
         log(`commit 검증·적용(seq ${ev.seq}, ${ev.device}) — +${report.adds.map(m => m.id).join(',') || '없음'} −${report.removes.map(m => m.id).join(',') || '없음'}` +
@@ -276,6 +303,13 @@ async function sync({quiet = false} = {}) {
       await out.ack();
     }
     S.epoch = body.epoch;
+    if (S.pending && resolveUncertainPending({pendingEpoch: S.pendingUncertain, roomEpoch: body.epoch}) === 'drop') {
+      // #295 F4: the POST whose answer we lost never reached the relay (the room is
+      // still at the epoch the commit was built on) — drop the pending commit.
+      await op('clear_pending');
+      S.pending = false; S.pendingUncertain = null; S.expectedRoster = null; S.pendingWelcome = null;
+      log('게시 결과를 몰랐던 내 commit은 릴레이에 없다 — 버렸다. 다시 시도하면 된다.');
+    }
     if (S.joined && S.relaySeq > 0 && body.cursor < S.relaySeq) {
       const ack = await api('GET', roomPath(`events?device=${encodeURIComponent(S.dev)}&after=${S.relaySeq}&ack=${S.relaySeq}`));
       if (ack.status !== 200 && !quiet) log('ack 실패:', describe(ack.status, ack.body));
@@ -459,7 +493,7 @@ $('confirm-fresh').addEventListener('click', async () => {
   const statusInfo = window.__pendingFresh; if (!statusInfo) return;
   window.__pendingFresh = null; $('confirm-fresh').hidden = true;
   localStorage.removeItem(stateKey());
-  Object.assign(S, {joined: false, pending: false, relaySeq: 0, roster: [], expectedRoster: null, pendingWelcome: null, halted: null});
+  Object.assign(S, {joined: false, pending: false, pendingUncertain: null, relaySeq: 0, roster: [], expectedRoster: null, pendingWelcome: null, halted: null});
   try { await activate(statusInfo); } catch (error) { fail(error); }
 });
 
@@ -494,7 +528,8 @@ guard('invite', async () => {
   const n = new DataView(framed.buffer, framed.byteOffset, framed.byteLength).getUint32(0, true);
   const commit = framed.subarray(4, 4 + n), welcome = framed.subarray(4 + n);
   const expected = parseMembers((await op('members_after_pending')).output);
-  const r = await postEvent('commit', commit, {members: membersWire(expected)});
+  const r = await postUncertain(commit, expected, {target, welcome: b64(welcome)});
+  if (!r) return;
   if (r.status === 409) {
     await op('clear_pending');
     log(`commit 거절(${describe(r.status, r.body)}) — 방이 먼저 바뀌었다. 동기화 뒤 다시 초대한다.`);
@@ -519,7 +554,8 @@ guard('remove', async () => {
   if (!key) throw new Error(`${target}는 현재 멤버가 아니다 (멤버: ${S.roster.join(', ') || '—'})`);
   const commit = new Uint8Array((await op('remove_pending', key)).output);   // bare commit, no Welcome
   const expected = parseMembers((await op('members_after_pending')).output);
-  const r = await postEvent('commit', commit, {members: membersWire(expected)});
+  const r = await postUncertain(commit, expected, null);
+  if (!r) return;
   if (r.status === 409) {
     await op('clear_pending');
     log(`commit 거절(${describe(r.status, r.body)}) — 방이 먼저 바뀌었다. 동기화 뒤 다시 제거한다.`);
