@@ -518,6 +518,21 @@ type caller struct {
 // authenticate verifies the CF Access assertion before any body is read. A
 // missing or invalid token is a bare 401; the reason goes to the log only.
 func (s *relay) authenticate(w http.ResponseWriter, req *http.Request) (caller, bool) {
+	// G-M8 (#231 2차 리뷰): the edge (CF Access) turns the browser's session cookie
+	// into the assertion header, so a page on another site could make the owner's
+	// browser call a state-changing route — GET …/events?ack= moves the ack cursor
+	// (the relay may then prune events this device never read), GET …/keypackages
+	// consumes packages, POST …/close closes a room. Browsers label such requests
+	// `Sec-Fetch-Site: cross-site`; the iOS/Android apps and the bot send no
+	// Sec-Fetch-* header and relay-app is same-origin. Refuse cross-site before
+	// anything else. The app-login redirect is the one route reached by a
+	// cross-site navigation by design (the edge's login page sends the browser
+	// back here) and only hands the caller's own token to the app scheme.
+	if req.Header.Get("Sec-Fetch-Site") == "cross-site" && req.URL.Path != appLoginPath {
+		log.Printf("auth %s %s: cross-site request refused", req.Method, req.URL.Path)
+		s.fail(w, http.StatusForbidden, apiError{Error: "cross_site"})
+		return caller{}, false
+	}
 	if s.access == nil {
 		return caller{}, true
 	}

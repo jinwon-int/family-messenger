@@ -45,6 +45,11 @@ func TestAppLoginHandoff(t *testing.T) {
 	if resp.StatusCode != http.StatusFound {
 		t.Fatalf("valid: %d %q", resp.StatusCode, body)
 	}
+	// G-M8: the edge's login page sends the browser back here cross-site — the
+	// one contract route that must stay reachable with Sec-Fetch-Site: cross-site.
+	if cross, body := do("GET", appLoginPath+"?state="+state, map[string]string{"Cf-Access-Jwt-Assertion": token, "Sec-Fetch-Site": "cross-site"}); cross.StatusCode != http.StatusFound {
+		t.Fatalf("cross-site app-login: %d %q", cross.StatusCode, body)
+	}
 	loc := resp.Header.Get("Location")
 	if want := appLoginCallback + "#jwt=" + token + "&state=" + state; loc != want {
 		t.Fatalf("location\n got %s\nwant %s", loc, want)
