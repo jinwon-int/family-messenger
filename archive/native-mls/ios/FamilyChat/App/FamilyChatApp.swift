@@ -49,6 +49,9 @@ struct RootView: View {
         .overlay(alignment: .top) {
             if case .halted(let reason) = model.phase { HaltedBanner(reason: reason) }
         }
+        // #405 P2: 밤 테마 고정(오너 결정) + 불빛 강조색.
+        .preferredColorScheme(.dark)
+        .tint(Hande.ember)
     }
 }
 

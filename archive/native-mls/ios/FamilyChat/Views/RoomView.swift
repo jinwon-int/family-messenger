@@ -81,31 +81,52 @@ struct RoomView: View {
             if attachBusy {
                 Text(Strings.attachPreparing).font(.footnote).foregroundStyle(.secondary).padding(.horizontal)
             }
-            HStack {
+            HStack(spacing: 10) {
                 // `PhotosPicker` 를 Menu 항목으로 두면 iOS 가 선택 창을 띄우지 않는다(build 13 실기기: 파일은 뜨고 사진은 안 뜸).
                 // 메뉴는 플래그만 올리고, 선택 창은 뷰에 붙인 `.photosPicker(isPresented:)` 수정자가 띄운다.
                 Menu {
                     Button { showPhotoPicker = true } label: { Label(Strings.attachPhoto, systemImage: "photo") }
                     Button { showFileImporter = true } label: { Label(Strings.attachFile, systemImage: "doc") }
-                } label: { Image(systemName: "paperclip") }
+                } label: { Image(systemName: "plus").font(.title3.weight(.semibold)).foregroundStyle(Hande.ember) }
                     .accessibilityLabel(Strings.attachMenu)
                     .disabled(!isReady || attachBusy)
-                TextField(Strings.composerPlaceholder, text: $draft, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
-                Button(Strings.sendButton) {
+                // #405 P2: 불가 자리 — 둥근 입력칸 + 불빛 원형 전송 버튼.
+                TextField(placeholder, text: $draft, axis: .vertical)
+                    .lineLimit(1...6)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .background(RoundedRectangle(cornerRadius: 20).fill(Hande.surface))
+                    .overlay(RoundedRectangle(cornerRadius: 20).stroke(Hande.ember.opacity(0.28), lineWidth: 1))
+                Button {
                     let text = draft
                     draft = ""
                     Task {
                         // 암호화 전에 실패하면(동기화 실패·정지 등) 입력을 되돌린다 — 평문은 이 화면만 들고 있다.
                         if await model.send(room: room, text: text) == nil, draft.isEmpty { draft = text }
                     }
+                } label: {
+                    Image(systemName: "arrow.up").font(.body.weight(.bold)).foregroundStyle(Hande.onEmber)
+                        .frame(width: 36, height: 36)
+                        .background(Circle().fill(canSend ? Hande.ember : Hande.ember.opacity(0.35)))
                 }
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !isReady)
+                .accessibilityLabel(Strings.sendButton)
+                .disabled(!canSend)
             }
-            .padding()
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(LinearGradient(colors: [Hande.glow.opacity(0.0), Hande.glow.opacity(0.85)], startPoint: .top, endPoint: .bottom))
         }
+        .background(CampfireBackground())
         .navigationTitle(room)
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // #405 P2: 제목 아래 불가에 둘러앉은 자리(사람 크림색 · 에이전트 파란색).
+            ToolbarItem(placement: .principal) {
+                VStack(spacing: 3) {
+                    Text(room).font(.headline).foregroundStyle(Hande.ink)
+                    SeatDots(people: glance.people.count, agents: glance.agents.count, size: 6)
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button { showInvite = true } label: { Image(systemName: "person.badge.plus") }
                     .accessibilityLabel(Strings.inviteTitle)
@@ -122,6 +143,14 @@ struct RoomView: View {
             pickedPhoto = nil
             Task { await sendPhoto(item) }
         }
+    }
+
+    /// #405 P2: 이 방의 자리 요약(제목 아래 점 · 작성창 안내).
+    private var glance: RoomGlance { RoomGlance.make(messages.map(\.record), roster: model.agentRoster) }
+
+    private var placeholder: String {
+        guard let agent = glance.agents.last else { return Strings.composerPlaceholder }
+        return Strings.composerPlaceholderAgent(AgentRoster.displayName(device: agent, names: Strings.agentNames))
     }
 
     private func reload() {
@@ -154,6 +183,8 @@ struct RoomView: View {
             }
         }
     }
+
+    private var canSend: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && isReady }
 
     private var isReady: Bool {
         if case .ready = model.phase { return true }
@@ -228,13 +259,16 @@ struct MessageRow: View {
             if mine { Spacer(minLength: 40) }
             VStack(alignment: mine ? .trailing : .leading, spacing: 2) {
                 if !mine {
-                    Text("\(message.senderActor) · \(message.senderDevice)").font(.caption).foregroundStyle(.secondary)
+                    // #405 P2: 기기 ID 대신 이름 · 기기 종류(오너 · PC).
+                    Text(Strings.senderLabel(device: message.senderDevice)).font(.caption).foregroundStyle(Hande.inkDim)
+                        .padding(.leading, 4)
                 }
                 content
-                    .padding(10)
-                    .background(mine ? Color.accentColor.opacity(0.9) : Color(.secondarySystemBackground))
-                    .foregroundStyle(mine ? Color.white : Color.primary)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 9)
+                    .background(mine ? AnyShapeStyle(Hande.emberDeep) : AnyShapeStyle(Hande.surface))
+                    .foregroundStyle(mine ? Hande.onEmber : Hande.ink)
+                    .clipShape(BubbleShape(mine: mine))
             }
             if !mine { Spacer(minLength: 40) }
         }
@@ -284,5 +318,27 @@ struct AttachmentBubble: View {
             data = model.attachment(room: message.room, seq: message.seq)
             if data != nil { onLoaded() }
         }
+    }
+}
+
+/// #405 P2: 말풍선 — 말한 쪽 아래 모서리만 덜 둥글다(꼬리 자리).
+struct BubbleShape: Shape {
+    let mine: Bool
+    /// iOS 16 대상이라 `UnevenRoundedRectangle`(17+) 대신 직접 그린다.
+    func path(in rect: CGRect) -> Path {
+        let big = min(18, rect.height / 2, rect.width / 2), small = min(5, big)
+        let tl = big, tr = big, bl = mine ? big : small, br = mine ? small : big
+        var p = Path()
+        p.move(to: CGPoint(x: rect.minX + tl, y: rect.minY))
+        p.addLine(to: CGPoint(x: rect.maxX - tr, y: rect.minY))
+        p.addArc(center: CGPoint(x: rect.maxX - tr, y: rect.minY + tr), radius: tr, startAngle: .degrees(-90), endAngle: .degrees(0), clockwise: false)
+        p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - br))
+        p.addArc(center: CGPoint(x: rect.maxX - br, y: rect.maxY - br), radius: br, startAngle: .degrees(0), endAngle: .degrees(90), clockwise: false)
+        p.addLine(to: CGPoint(x: rect.minX + bl, y: rect.maxY))
+        p.addArc(center: CGPoint(x: rect.minX + bl, y: rect.maxY - bl), radius: bl, startAngle: .degrees(90), endAngle: .degrees(180), clockwise: false)
+        p.addLine(to: CGPoint(x: rect.minX, y: rect.minY + tl))
+        p.addArc(center: CGPoint(x: rect.minX + tl, y: rect.minY + tl), radius: tl, startAngle: .degrees(180), endAngle: .degrees(270), clockwise: false)
+        p.closeSubpath()
+        return p
     }
 }

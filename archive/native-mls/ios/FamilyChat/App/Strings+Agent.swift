@@ -1,4 +1,5 @@
 // 에이전트 대화 문구(#405 P1). 화면 전용 — Linux 스모크 복사 목록에 넣지 않는다.
+import FamilyMLSCore
 extension Strings {
     /// 에이전트 노드 이름(봇 기기 `bot-<node>` 의 <node>) → 보여 줄 이름. 없으면 <node> 그대로.
     static let agentNames: [String: String] = [
@@ -22,4 +23,49 @@ extension Strings {
     static func approvalReply(_ number: Int, allow: Bool) -> String { allow ? "승인 \(number)" : "거절 \(number)" }
     static let lastSentLabel = "내 마지막 말"
     static func lastSentReplies(_ count: Int) -> String { count == 0 ? "아직 답 없음" : "답 \(count)개" }
+}
+
+// #405 P2 모닥불 테마 문구.
+extension Strings {
+    static let campfireSubtitle = "오늘 밤, 불가에 모인 자리"
+    static let campfireEmpty = "아직 피운 모닥불이 없습니다"
+    static let roomClosedPreview = "불이 꺼진 자리"
+    static let roomNoMessages = "아직 아무도 말하지 않았어요"
+    /// 사람 actor → 보여 줄 이름. 없으면 actor 그대로.
+    static let peopleNames: [String: String] = [
+        "owner": "오너",
+        "jungin": "정인",
+    ]
+    /// 기기 종류(기기 ID 둘째 마디) → 표시. 없으면 표시하지 않는다.
+    static let deviceKinds: [String: String] = [
+        "iphone": "아이폰", "ipad": "아이패드", "pc": "PC", "web": "웹", "android": "안드로이드", "mac": "맥",
+    ]
+    static func composerPlaceholderAgent(_ name: String) -> String { "\(name)에게 말 걸기…" }
+    /// 다른 사람 말풍선 위 이름줄: 오너 · PC
+    static func senderLabel(device: String) -> String {
+        let name = AgentRosterNames.person(device)
+        guard let kind = DeviceKindName.of(device) else { return name }
+        return "\(name) · \(kind)"
+    }
+    /// 목록 미리보기 한 줄: 줄바꿈·마크다운 기호(**, `, 줄 앞 #·>·|)는 걷어 낸다.
+    static func previewLine(name: String, body: String) -> String {
+        let lines = body.split(separator: "\n").map { line -> String in
+            var s = line.trimmingCharacters(in: .whitespaces)
+            while let c = s.first, "#>|".contains(c) { s = String(s.dropFirst()).trimmingCharacters(in: .whitespaces) }
+            return s
+        }.filter { !$0.isEmpty }
+        let flat = lines.joined(separator: " ").replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "`", with: "")
+        return "\(name): \(flat)"
+    }
+}
+
+/// 이름 찾기(Core AgentRoster.displayName + 위 표).
+enum AgentRosterNames {
+    static func person(_ device: String) -> String {
+        AgentRoster.displayName(device: device, names: Strings.peopleNames.merging(Strings.agentNames) { a, _ in a })
+    }
+}
+
+enum DeviceKindName {
+    static func of(_ device: String) -> String? { DeviceLabel.kind(device).flatMap { Strings.deviceKinds[$0] } }
 }
