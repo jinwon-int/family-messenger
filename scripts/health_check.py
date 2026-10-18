@@ -30,6 +30,7 @@ import time
 import urllib.error
 import urllib.request
 
+from push_spool import write_spool_record
 from tuwunel_admin_room import AdminRoom
 from tuwunel_config import load_admin_token, load_tuwunel_config
 
@@ -132,27 +133,19 @@ def admin_notice(args, text):
 def push_notice(args, status, since, text, now, reminder):
     """#395: one owner record in the ccc push spool (the node's Matrix bridge delivers it).
 
-    Written as a dot-tmp file and renamed, so the bridge (glob ``*.json``) never reads
-    half a record. ``dedup`` distinguishes the transition from each reminder.
+    Written atomically by push_spool.write_spool_record (dot-tmp + rename), so the
+    bridge (glob ``*.json``) never reads half a record. ``dedup`` distinguishes the
+    transition from each reminder.
     """
     spool = Path(args.push_spool)
-    if spool.is_symlink() or not spool.is_dir():
-        raise ValueError('untrusted push spool directory')
-    ts = datetime.datetime.fromtimestamp(now, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    ts =datetime.datetime.fromtimestamp(now, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     kind = 'reminder' if reminder else status
     record = {'version': 1, 'event': 'FamilyMessengerHealth', 'node': args.push_node, 'recipient': 'owner',
               'ts': ts, 'status': status, 'text': text[:MAX_DETAIL],
               'dedup': 'family-messenger-health:%s:%d:%s' % (
                   status, int(since), int(now) if reminder else 'transition')}
     name = '%s-family-messenger-health-%s-%d.json' % (ts.replace(':', '-'), kind, int(now))
-    tmp = spool / ('.' + name + '.tmp')
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, 'w') as out:
-        json.dump(record, out)
-        out.flush()
-        os.fsync(out.fileno())
-    os.rename(tmp, spool / name)
-    return name
+    return write_spool_record(spool, name, record)
 
 
 def notify(args, failed_names, unhealthy, now):

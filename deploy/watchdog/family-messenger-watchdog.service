@@ -1,0 +1,21 @@
+# 오프호스트 홈서버 워치독(#412 A). 홈서버 **밖**의 노드(Telegram 폴백 브리지가 있는 노드)에서 1분마다
+# 외부 client API(Cloudflare 경유)와 사설망(Tailscale) TCP 도달성을 따로 재서 up / edge / host_down 을
+# 판정하고, 3회 연속 확정 시 노드 ccc push spool 에 health-alert 레코드를 쓴다(브리지가 전달).
+# 홈서버·Matrix 가 모두 죽어도 알림 경로가 살아 있어야 하므로 홈서버 노드에는 설치하지 않는다.
+# 호스트별 값(사설 주소·노드명)은 환경 파일 /etc/family-messenger/watchdog.env 로 공급한다(코드에 박지 않음).
+# 설치·활성화는 노드 변경이므로 별도 승인 후 README 절차로 진행한다.
+[Unit]
+Description=Family messenger off-host homeserver watchdog (external + private probes)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/family-messenger/watchdog.env
+ExecStart=/usr/bin/python3 /opt/family-messenger-tuwunel/scripts/homeserver_watchdog.py --once --json --host ${WATCHDOG_HOST} --push-spool /root/.claude/state/telegram-spool --push-node ${WATCHDOG_NODE} --state /var/lib/family-messenger-watchdog/state.json $WATCHDOG_EXTRA_ARGS
+TimeoutStartSec=1min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+StateDirectory=family-messenger-watchdog
+StateDirectoryMode=0700

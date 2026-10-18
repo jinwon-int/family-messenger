@@ -1,0 +1,15 @@
+# 1분 주기. 3회 연속 확정이므로 다운 감지 지연은 ≤3분(수용 기준). 놓친 실행을 몰아서 돌릴 이유가
+# 없어 Persistent=false, 기본 AccuracySec(1분)이 1분 주기를 흐트러뜨리지 않도록 10초로 조인다.
+[Unit]
+Description=Family messenger off-host homeserver watchdog (every minute)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+RandomizedDelaySec=10
+Persistent=false
+Unit=family-messenger-watchdog.service
+
+[Install]
+WantedBy=timers.target
