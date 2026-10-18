@@ -18,6 +18,7 @@ native-mls-bot <base-url> session <room> <device> \
   - `native-responder@.service` — 연결마다 `fleet_worker.py` 를 자격 사용자로 띄우고 `StandardInput/Output=socket`
   - `native-relay-bot.service.d-30-agent.conf` — 기존 봇 유닛 drop-in(env 2개 + `Requires=native-responder.socket`). ExecStart 불변, 되돌리기 = 파일 삭제
   둘은 배타적이다(둘 다 주면 시작 거부).
+- **Rust 응답기(#396)**: 같은 포트를 `native-responder`(이 크레이트의 두 번째 bin, `src/bin/native-responder/`)가 말한다. 턴 직렬화·타임아웃·승인 nonce·도구 인수 검증·uncertain 퇴역은 Rust, ccc-node 런타임 호출만 `scripts/ccc_adapter.py`(자식 프로세스, stdio 파이프). 봇 쪽 프레임은 `fleet_worker.py` 와 같아 **봇 바이너리·봇 유닛은 바뀌지 않는다**. 응답기 유닛 ExecStart 만 `native-responder --adapter-argv-json '["<venv python>","<dir>/ccc_adapter.py"]' <fleet_worker 와 같은 플래그>` 로 바꾼다(예: `deploy/native-responder@.service`). 되돌리기 = ExecStart 를 `fleet_worker.py` 로 복원(소켓 활성화라 다음 연결부터). 빌드: `cargo build --release --locked --bin native-responder`.
 - 응답기 바인딩: `fleet_worker.py --provider codex`(기본, CodexRuntime) 또는 **`--provider claude`**(ccc-node `ClaudeRuntime`, `--model claude-opus-5-5 --effort high --claude-permission-mode default`; 브리지 venv 파이썬 필요). 공명 운영은 Claude(2026-10-15 오너 결정 — ChatGPT 계정 Codex 가 `*-sol` 모델을 거부함).
 - `--owner-actor`(env `NATIVE_MLS_BOT_OWNER_ACTOR`, 기본 `owner`): 승인 답장을 낼 수 있는 actor(기기 ID 의 첫 `-` 앞).
 - 응답기가 죽으면 세션도 끝난다(exit 1) — 서비스 매니저가 봇·응답기를 함께 다시 띄운다(`Restart=on-failure`).

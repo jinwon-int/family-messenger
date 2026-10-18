@@ -113,6 +113,37 @@ provider 이벤트 iterator를 먼저 취소하지 않고 shield된 실행부에
 이를 실행 효과의 exactly-once 보장으로 해석하지 않는다. 앞 단계 inbox의 running/uncertain
 기록이 실행 재처리 방지의 기준이다. 서로 다른 대화의 session_id를 전달하지 않는 것은 부모의 책임이다.
 
+## Rust 응답기 `native-responder` (#396)
+
+위 포트를 Python `fleet_worker.py` 대신 **Rust 바이너리** `native-responder`
+(`archive/native-mls/bot/src/bin/native-responder/`)가 말할 수 있다. 부모 쪽 프레임·검증·오류 코드는
+이 문서 그대로이므로 봇(`--responder-unix`/`--responder-argv-json`)과 `fleet_matrix.py`(`worker_argv`)는
+바뀌지 않는다. 플래그도 같고, `--adapter-argv-json`(또는 env `NATIVE_RESPONDER_ADAPTER_ARGV_JSON`) 하나가 늘었다.
+
+| 맡는 쪽 | 내용 |
+| --- | --- |
+| Rust `native-responder` | 프레임 상한·검증(작업 ID·발신자·방 종류·본문), 한 번에 한 작업(`busy`), 발신자 머리글, 작업/승인/도구 타임아웃, 승인·도구 nonce와 작업 일치 검사, 과대 승인 거절, steward 도구 인수 검증과 읽기 전용 allow-list(#378), `uncertain` 뒤 퇴역, 출력 5초 정체 중단, 하네스 플래그 검증(`harness_options`와 같은 결과) |
+| Python `scripts/ccc_adapter.py` | ccc-node 런타임 import(정식 시임 → core 폴백), `start_or_resume`/`send_turn` 이벤트 중계, SDK 승인 콜백과 in-process steward MCP 핸들러를 Rust에 되묻기, `interrupt`(5초)·`close`(10초), 구 ccc-node fail-closed 검사(`mcp_servers`·`mcp_allowed_tools`) |
+
+어댑터는 정책이 없다 — 받는 `configure` 프레임(런타임·세션 인수, 도구 표·설명·allow-list)을 그대로 쓴다.
+`fleet_worker.py`는 롤백 경로로 남아 있다(공명 실기기 검증 뒤 별도 PR에서 정리).
+
+### 어댑터 프로토콜 (Rust ↔ `ccc_adapter.py`, stdio 파이프, JSON 한 줄)
+
+- Rust → 어댑터: `configure{protocol:1, provider, runtime_options, request_options, steward}` (처음 한 번) ·
+  `turn{prompt, session_id}` · `approval-decision{request_id, allow}` · `tool-result{request_id, result}`(MCP 결과 dict) ·
+  `interrupt` · `close`
+- 어댑터 → Rust: `ready{protocol}` 또는 `fatal{reason}` · `session{session_id}` · `text{text}` · `completion{stop_reason}` ·
+  `error` · `turn-end{session_id}` · `turn-failed` · `approval-request{request_id, action, description, arguments}` ·
+  `tool-call{request_id, name, arguments}` · `interrupted{ok}` · `closed{ok}`
+
+런타임 오류 문구는 어댑터 밖으로 나가지 않는다(`error`·`turn-failed`에 본문 없음, stderr는 journal).
+`ready`가 120초 안에 오지 않거나 `fatal`이면 Rust는 프레임 하나 받지 않고 exit 1로 끝난다(구 ccc-node + `--steward-tools`가 이 경우).
+불확실 종료 순서는 Python과 같다: 대기 승인 거절·도구 `cancelled` → `interrupt` → `close` → `result uncertain`(`runtime_closed`=close 성공 여부, 11초 무응답 = false) → exit 1.
+
+검증: `cargo test --bin native-responder`(상태 기계·하네스·와이어 36건), `tests/test_ccc_adapter.py`(어댑터 단위),
+`tests/test_native_responder.py`(실제 바이너리 + 실제 어댑터 + 가짜 ccc-node, 파이프·socketpair stdio — CI `native-mls-bot` job).
+
 ## 검증 범위와 다음 단계
 
 단위 검사: 동시 입력·busy, nonce/작업 ID 일치, 승인 재사용 거절, 명시적 거절/만료,
