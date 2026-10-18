@@ -163,3 +163,38 @@ final class AgentConversationTests: XCTestCase {
         XCTAssertNil(AgentThinking.agent(base + [rec(3, "owner-pc", "pc")], roster: roster, myDevice: me, now: t0))
     }
 }
+
+final class RoomGlanceTests: XCTestCase {
+    let roster = AgentRoster(actors: ["bot"])
+
+    func rec(_ seq: Int64, _ device: DeviceID, _ body: String, kind: MessageRecord.Kind = .text) -> MessageRecord {
+        MessageRecord(room: "family", seq: seq, senderDevice: device, clientId: "c\(seq)", kind: kind, body: body,
+                      attachment: nil, receivedAt: Date(timeIntervalSince1970: 0), decryptedBy: .app)
+    }
+
+    func testSeatsAndPreview() {
+        let glance = RoomGlance.make([
+            rec(1, "owner-iphone-1", "안녕"),
+            rec(2, "bot-gongmyoung", "안녕하세요"),
+            rec(3, "jungin-iphone-2", "저녁 뭐 먹어?"),
+            rec(4, "owner-pc", "사진", kind: .attachment),
+            rec(5, "x-1", "열 수 없음", kind: .undecryptable),
+        ], roster: roster)
+        XCTAssertEqual(glance.people, ["owner", "jungin"], "same actor on two devices is one seat")
+        XCTAssertEqual(glance.agents, ["bot-gongmyoung"])
+        XCTAssertTrue(glance.hasAgent)
+        XCTAssertEqual(glance.last?.seq, 4, "undecryptable rows are not previewed")
+    }
+
+    func testEmptyRoom() {
+        let glance = RoomGlance.make([], roster: roster)
+        XCTAssertNil(glance.last)
+        XCTAssertFalse(glance.hasAgent)
+    }
+
+    func testDeviceKind() {
+        XCTAssertEqual(DeviceLabel.kind("owner-iphone-27a879"), "iphone")
+        XCTAssertEqual(DeviceLabel.kind("owner-PC"), "pc")
+        XCTAssertNil(DeviceLabel.kind("owner"))
+    }
+}

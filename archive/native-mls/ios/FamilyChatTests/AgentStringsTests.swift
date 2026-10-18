@@ -14,6 +14,18 @@ final class AgentStringsTests: XCTestCase {
         XCTAssertEqual(Strings.subjectParticle("newnode"), "이(가)")
     }
 
+    func testSenderLabelUsesNamesAndDeviceKind() {
+        XCTAssertEqual(Strings.senderLabel(device: "owner-pc"), "오너 · PC")
+        XCTAssertEqual(Strings.senderLabel(device: "jungin-iphone-1b89e3"), "정인 · 아이폰")
+        XCTAssertEqual(Strings.senderLabel(device: "dad"), "dad")
+        XCTAssertEqual(Strings.senderLabel(device: "bot-gongmyoung"), "공명")
+    }
+
+    func testPreviewLineDropsMarkdownNoise() {
+        XCTAssertEqual(Strings.previewLine(name: "공명", body: "## 결과\n| 방 | 모드 |\n**두 개**입니다 `room_status`"),
+                       "공명: 결과 방 | 모드 | 두 개입니다 room_status")
+    }
+
     func testKnownAgentName() {
         XCTAssertEqual(Strings.agentNames["gongmyoung"], "공명")
     }
