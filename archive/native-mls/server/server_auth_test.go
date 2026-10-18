@@ -609,3 +609,35 @@ func TestCloseRoomLegacyModeStillNamesTheCaller(t *testing.T) {
 		t.Fatalf("get after legacy close: status=%d", code)
 	}
 }
+
+// G-M8 (#231): a browser request labelled cross-site never reaches a contract
+// route, even with a valid assertion (the edge would have derived it from the
+// owner's cookie). Same-origin/same-site/none and header-less callers (apps,
+// bot) are unaffected; the app-login redirect stays reachable cross-site.
+func TestCrossSiteBrowserRequestsAreRefused(t *testing.T) {
+	_, srv, st, first, iss := newAuthedRelay(t, testPolicy())
+	enrollDevice(t, st, first, "a1", "alice")
+	alice := iss.mint("subject-alice", nil)
+	path := "/v2/rooms/r/events?device=a1&after=0&ack=0"
+
+	for _, site := range []string{"cross-site"} {
+		status, body := doHeaders(t, srv, "GET", path, nil, map[string]string{"Cf-Access-Jwt-Assertion": alice, "Sec-Fetch-Site": site})
+		if status != http.StatusForbidden || !strings.Contains(string(body), "cross_site") {
+			t.Fatalf("Sec-Fetch-Site %s: got %d %s, want 403 cross_site", site, status, body)
+		}
+		status, _ = doHeaders(t, srv, "POST", "/v2/rooms/r/close?device=a1", nil, map[string]string{"Cf-Access-Jwt-Assertion": alice, "Sec-Fetch-Site": site})
+		if status != http.StatusForbidden {
+			t.Fatalf("cross-site close: got %d, want 403", status)
+		}
+	}
+	for _, site := range []string{"", "same-origin", "same-site", "none"} {
+		headers := map[string]string{"Cf-Access-Jwt-Assertion": alice}
+		if site != "" {
+			headers["Sec-Fetch-Site"] = site
+		}
+		status, body := doHeaders(t, srv, "GET", path, nil, headers)
+		if status == http.StatusForbidden && strings.Contains(string(body), "cross_site") {
+			t.Fatalf("Sec-Fetch-Site %q was refused as cross-site: %s", site, body)
+		}
+	}
+}
