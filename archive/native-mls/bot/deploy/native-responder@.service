@@ -22,6 +22,14 @@ Environment=PYTHONPATH=<CCC_NODE>/.github/pythonpath:<CCC_NODE>
 #    봇에 가고 봇이 발신 actor=owner 를 검사해 실행한다. ccc-node 에 SessionRequest.mcp_servers(ccc-node #2340)가 있어야 시작된다(없으면 fail-closed).
 #    permission-mode default 라 변경 도구 호출마다 방 승인(⚠️ 승인 필요 #n)이 먼저 뜬다. 읽기 전용 room_status/room_members 는 승인 없이 실행(#378,
 #    ccc-node >= mcp_allowed_tools 필요); 전부 승인받으려면 --steward-tools-approve-all.
+# ── Rust 응답기(#396): 같은 플래그를 native-responder 가 받는다. 정책(턴·타임아웃·승인·도구 검증)은 Rust,
+#    ccc-node 호출만 ccc_adapter.py(자식, stdio 파이프 — 소켓은 Rust 만 본다). 봇 쪽 프로토콜 동일 → 봇 무변경.
+#    되돌리기 = 아래 fleet_worker.py ExecStart 로 복원(다음 연결부터 적용).
+#    <RESPONDER_DIR> 는 /home 밖(예: /opt/native-responder)에 둔다 — ProtectHome=tmpfs 가 /home 을 가린다.
+# ExecStart=<RESPONDER_DIR>/native-responder \
+#   --adapter-argv-json '["<CCC_NODE>/bridge/venv/bin/python","<RESPONDER_DIR>/ccc_adapter.py"]' \
+#   --provider claude --workdir /home/<RESPONDER_USER> --model claude-opus-5-5 --effort high \
+#   --claude-permission-mode default --approval-timeout 600 --turn-timeout 1100 --steward-tools --tool-timeout 90
 # ── Codex 바인딩(기본):
 ExecStart=/usr/bin/python3 <FAMILY_MESSENGER>/scripts/fleet_worker.py \
   --workdir /home/<RESPONDER_USER> \

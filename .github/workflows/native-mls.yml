@@ -242,7 +242,7 @@ jobs:
           git fetch --no-tags --depth=1 origin "$base"
           changed="$(git diff --name-only "$base" HEAD)"
           printf 'changed files:\n%s\n' "$changed"
-          if grep -qE '^(archive/native-mls/bot/|archive/native-mls/host-core/|archive/experiments/openmls-browser/|\.github/workflows/native-mls\.yml$)' <<<"$changed"; then
+          if grep -qE '^(archive/native-mls/bot/|archive/native-mls/host-core/|archive/experiments/openmls-browser/|scripts/ccc_adapter\.py$|tests/test_native_responder\.py$|\.github/workflows/native-mls\.yml$)' <<<"$changed"; then
             echo "run=true" >> "$GITHUB_OUTPUT"; echo "bot crate or facade touched → run"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"; echo "no bot-relevant change → skip heavy steps"
@@ -272,3 +272,13 @@ jobs:
         if: steps.bot-scope.outputs.run == 'true'
         working-directory: archive/native-mls/bot
         run: cargo "+$RUST_TOOLCHAIN" test --locked -- --nocapture
+      # #396: the Rust responder (`native-responder` bin) on the real Python adapter
+      # (scripts/ccc_adapter.py) against a throwaway fake ccc-node — pipe and
+      # socketpair stdio, approvals, steward tools, cancel/timeout, old-ccc-node fail-closed.
+      - name: native-responder end to end (real binary + ccc_adapter.py + fake ccc-node)
+        if: steps.bot-scope.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          (cd archive/native-mls/bot && cargo "+$RUST_TOOLCHAIN" build --locked --bin native-responder)
+          NATIVE_RESPONDER_BIN="$PWD/archive/native-mls/bot/target/debug/native-responder" \
+            python3 -m unittest tests.test_native_responder -v
