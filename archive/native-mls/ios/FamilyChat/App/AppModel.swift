@@ -67,6 +67,8 @@ final class AppModel: ObservableObject {
         var lobbyTarget = 8
         /// 로비 Welcome 을 묻지 않고 자동 가입하는 actor(오너 결정 D1 A). 그 밖의 actor 는 1탭 수락(B).
         var autoJoinActors: Set<String> = ["owner"]
+        /// 누가 에이전트인가(#405 P1 — 에이전트 카드·승인 버튼·생각 중). 빌드 설정 `FC_AGENT_ACTORS` 가 정본.
+        var agentRoster = AgentRoster(actors: ["bot"])
     }
 
     /// 저장소 밖의 삭제 작업(§9-5). `storage` = MLS 상태 전부(identity 슬롯 포함) + messages.db 행, `identity` = 저장된 기기 ID.
@@ -600,6 +602,7 @@ final class AppModel: ObservableObject {
 
     /// 참여 요청 화면이 미리 채우는 대화방 ID.
     var defaultRoom: RoomID { deps.defaultRoom }
+    var agentRoster: AgentRoster { deps.agentRoster }
 
     /// 이 방에 키 패키지를 게시한다(상대가 초대할 수 있게). 방 목록에 바로 나타난다.
     func requestJoin(room: RoomID) async throws {

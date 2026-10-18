@@ -17,34 +17,58 @@ struct RoomView: View {
     @State private var showPhotoPicker = false
     @State private var showFileImporter = false
     @State private var attachBusy = false
+    /// #405 P1: 승인 요청 seq → 상태(허락/거절 버튼을 보일지).
+    @State private var approvalStates: [Int64: AgentApproval.State] = [:]
+    private static let thinkingRowID: Int64 = -1
 
     var body: some View {
         VStack(spacing: 0) {
             // #385: 타임라인은 seq 오름차순(오래된 것이 위)이라 기본 ScrollView 는 최상단에서 열린다.
             // 진입 시 최신 메시지(최하단)로 바로 가고, 새 메시지가 붙으면 따라 내려간다.
             ScrollViewReader { proxy in
+              VStack(spacing: 0) {
+                // #405 P1: "내 마지막 말" 바(웹 last-sent.js) — 에이전트에게 무엇을 시켰는지, 답이 몇 개 왔는지.
+                if let last = LastSent.find(messages.map(\.record), myDevice: model.deviceId) {
+                    LastSentBar(lastSent: last) {
+                        followLatest = false
+                        withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last.record.seq, anchor: .center) }
+                    }
+                    Divider()
+                }
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
                         ForEach(messages) { item in
                             MessageRow(item: item, mine: item.record.senderDevice == model.deviceId,
+                                       roster: model.agentRoster, approval: approvalStates[item.id], canAnswer: isReady,
+                                       decide: { number, allow in answerApproval(number, allow: allow) },
                                        onAttachmentLoaded: { attachmentLoaded(item.id, proxy) })
                                 .id(item.id)
                         }
+                        // #405 P1: 내 글 뒤 에이전트 답이 아직 없으면 "생각하는 중"(앱 추정, 20분 상한 — 15초마다 다시 본다).
+                        TimelineView(.periodic(from: .now, by: 15)) { context in
+                            if let agent = AgentThinking.agent(messages.map(\.record), roster: model.agentRoster,
+                                                               myDevice: model.deviceId, now: context.date) {
+                                ThinkingRow(name: AgentRoster.displayName(device: agent, names: Strings.agentNames))
+                                    .padding(.top, 2)
+                            }
+                        }
+                        .id(Self.thinkingRowID)
                     }
                     .padding()
                 }
                 // 손가락으로 끌면(위로 읽으러 감) 늦은 이미지 로딩이 화면을 끌어내리지 않게 한다.
                 .simultaneousGesture(DragGesture(minimumDistance: 10).onChanged { _ in followLatest = false })
                 .onAppear {
-                    messages = model.messages(room: room)
+                    reload()
                     followLatest = true
                     scrollToLatest(proxy, animated: false)
                 }
                 .onChange(of: model.messagesRevision) { _ in
-                    messages = model.messages(room: room)
+                    reload()
                     followLatest = true
                     scrollToLatest(proxy, animated: true)
                 }
+              }
             }
             if let halted = haltedReason {
                 HaltedRoomCard(room: room, reason: halted, onForgotten: { dismiss() })
@@ -100,6 +124,16 @@ struct RoomView: View {
         }
     }
 
+    private func reload() {
+        messages = model.messages(room: room)
+        approvalStates = AgentApproval.states(messages.map(\.record), roster: model.agentRoster)
+    }
+
+    /// #405 P1: 승인 카드 버튼 = 봇이 알아듣는 「승인 n」/「거절 n」 글을 대신 보낸다.
+    private func answerApproval(_ number: Int, allow: Bool) {
+        Task { _ = await model.send(room: room, text: Strings.approvalReply(number, allow: allow)) }
+    }
+
     /// #398: 첨부 본체가 읽혀 행이 커졌다 — 끝 쪽 행이고 따라가는 중이면 최하단을 다시 맞춘다.
     private func attachmentLoaded(_ id: Int64, _ proxy: ScrollViewProxy) {
         guard ScrollFollow.shouldRescroll(loaded: id, ids: messages.map(\.id), following: followLatest) else { return }
@@ -109,7 +143,9 @@ struct RoomView: View {
     /// 마지막 메시지(seq 최대)로 스크롤한다. `messages` 를 바꾼 직후라 LazyVStack 이 아직 그 행을 배치하지 않았을 수 있으므로
     /// 한 런루프 뒤에 부른다 — 같은 틱에 부르면 앵커가 없어 조용히 무시된다(iOS 16 대상이라 `defaultScrollAnchor` 는 못 쓴다).
     private func scrollToLatest(_ proxy: ScrollViewProxy, animated: Bool) {
-        guard let last = messages.last?.id else { return }
+        // #405 P1: 맨 끝은 "생각하는 중" 자리(TimelineView, 비어 있으면 높이 0) — 그 줄까지 보이게 거기로 간다.
+        guard !messages.isEmpty else { return }
+        let last = Self.thinkingRowID
         DispatchQueue.main.async {
             if animated {
                 withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .bottom) }
@@ -152,11 +188,42 @@ struct RoomView: View {
 struct MessageRow: View {
     let item: AppModel.TimelineItem
     let mine: Bool
+    /// #405 P1: 에이전트 글이면 카드·승인 카드로 그린다.
+    var roster = AgentRoster(actors: [])
+    var approval: AgentApproval.State? = nil
+    var canAnswer = true
+    var decide: (Int, Bool) -> Void = { _, _ in }
     /// #398: 첨부 본체를 읽어 행 높이가 바뀐 뒤 한 번.
     var onAttachmentLoaded: () -> Void = {}
     private var message: MessageRecord { item.record }
 
     var body: some View {
+        if !mine, message.kind == .text, roster.isAgent(message) {
+            agentRow
+        } else {
+            bubbleRow
+        }
+    }
+
+    @ViewBuilder private var agentRow: some View {
+        let name = AgentRoster.displayName(device: message.senderDevice, names: Strings.agentNames)
+        if let request = AgentApproval.request(in: message.body) {
+            ApprovalCard(name: name, request: request, state: approval ?? .closed, enabled: canAnswer) { allow in
+                decide(request.number, allow)
+            }
+        } else if AgentApproval.resolution(in: message.body) != nil {
+            // 처리 결과(「승인 #1: 허용했습니다.」)는 카드 대신 한 줄 — 위 승인 카드가 이미 결과를 보여 준다.
+            HStack(spacing: 6) {
+                Circle().fill(AgentPalette.accent).frame(width: 6, height: 6)
+                Text(message.body).font(.caption).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+        } else {
+            AgentMessageCard(name: name, text: message.body)
+        }
+    }
+
+    private var bubbleRow: some View {
         HStack {
             if mine { Spacer(minLength: 40) }
             VStack(alignment: mine ? .trailing : .leading, spacing: 2) {
