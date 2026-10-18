@@ -4,6 +4,8 @@ import FamilyMLSCore
 
 struct RoomListView: View {
     @EnvironmentObject private var model: AppModel
+    /// #405 P3: 이 기기의 방 순서·읽음 표시.
+    @EnvironmentObject private var prefs: LocalPrefs
     @State private var showJoinRequest = false
     @State private var showCreateRoom = false
     /// #405 P2: 방별 카드 요약(마지막 글·둘러앉은 자리). 목록 진입·새 메시지 때 다시 만든다.
@@ -39,14 +41,18 @@ struct RoomListView: View {
                 }
                 .listRowBackground(Color.clear)
             }
-            ForEach(model.listedRooms, id: \.room) { room in
+            ForEach(orderedRooms, id: \.room) { room in
+                let glance = glances[room.room] ?? RoomGlance.make([], roster: model.agentRoster)
                 NavigationLink(value: room.room) {
-                    CampfireCard(room: room, glance: glances[room.room] ?? RoomGlance.make([], roster: model.agentRoster))
+                    CampfireCard(room: room, glance: glance,
+                                 unread: Unread.isUnread(last: glance.last, myDevice: model.deviceId, readSeq: prefs.readSeq[room.room]))
                 }
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
             }
+            // #405 P3: 「편집」에서 끌어 순서를 바꾼다(웹 room-order.js — 최근 활동순으로 움직이지 않음, 이 기기에만 저장).
+            .onMove { from, to in prefs.setOrder(RoomOrder.move(orderedRooms.map(\.room), from: from, to: to)) }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
@@ -56,6 +62,9 @@ struct RoomListView: View {
         .onChange(of: model.messagesRevision) { _ in reloadGlances() }
         .navigationDestination(for: RoomID.self) { RoomView(room: $0) }
         .toolbar {
+            if orderedRooms.count > 1 {
+                ToolbarItem(placement: .navigationBarLeading) { EditButton() }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button { showJoinRequest = true } label: { Label(Strings.joinTitle, systemImage: "person.badge.key") }
@@ -76,6 +85,9 @@ struct RoomListView: View {
 }
 
 extension RoomListView {
+    /// 저장된 순서를 먼저, 새 방은 기본 순서로 뒤에.
+    fileprivate var orderedRooms: [RoomRecord] { RoomOrder.apply(model.listedRooms, saved: prefs.roomOrder) }
+
     fileprivate func reloadGlances() {
         var next: [RoomID: RoomGlance] = [:]
         for room in model.listedRooms {
@@ -89,6 +101,8 @@ extension RoomListView {
 struct CampfireCard: View {
     let room: RoomRecord
     let glance: RoomGlance
+    /// #405 P3: 이 기기에서 아직 안 본 남의 글이 있다(불씨 점 + 굵은 미리보기).
+    var unread = false
 
     private var out: Bool { room.haltedReason != nil }
     private var bright: Bool { glance.hasAgent && !out }
@@ -110,12 +124,17 @@ struct CampfireCard: View {
                             .foregroundStyle(Hande.agent)
                     }
                 }
-                Text(preview).font(.footnote).foregroundStyle(Hande.inkDim).lineLimit(1)
+                Text(preview).font(unread ? .footnote.weight(.semibold) : .footnote)
+                    .foregroundStyle(unread ? Hande.ink : Hande.inkDim).lineLimit(1)
                 if !out && (!glance.people.isEmpty || glance.hasAgent) {
                     SeatDots(people: glance.people.count, agents: glance.agents.count, size: 7)
                 }
             }
             Spacer(minLength: 0)
+            if unread && !out {
+                Circle().fill(Hande.ember).frame(width: 10, height: 10).shadow(color: Hande.ember.opacity(0.9), radius: 4)
+                    .accessibilityLabel(Strings.unreadLabel)
+            }
         }
         .padding(12)
         .background(
