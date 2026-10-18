@@ -242,10 +242,10 @@ final class FakeRelay: RelayTransport {
 
     /// 다른 기기가 올린 이벤트. commit 은 epoch 을 올리고, 이벤트 epoch 은 올리기 전 값(server.go 와 같음).
     @discardableResult
-    func inject(device: DeviceID, kind: EventKind, bytes: Data, clientId: String? = nil) -> Int64 {
+    func inject(device: DeviceID, kind: EventKind, bytes: Data, clientId: String? = nil, createdAt: Int64 = 0) -> Int64 {
         let seq = (rows.last?.seq ?? 0) + 1
         rows.append(StoredEvent(seq: seq, device: device, clientId: clientId ?? "\(device)-\(seq)", kind: kind, epoch: epoch,
-                                bytes: bytes, sha256: "", createdAt: 0))
+                                bytes: bytes, sha256: "", createdAt: createdAt))
         if kind == .commit { epoch += 1; revision += 1 }
         return seq
     }

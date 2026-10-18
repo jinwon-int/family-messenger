@@ -244,3 +244,42 @@ final class ConversationKeysTests: XCTestCase {
         XCTAssertFalse(Unread.isUnread(last: nil, myDevice: "owner-i", readSeq: nil))
     }
 }
+
+final class TimelineStampsTests: XCTestCase {
+    var calendar: Calendar = {
+        var c = Calendar(identifier: .gregorian)
+        c.timeZone = TimeZone(identifier: "Asia/Seoul")!
+        return c
+    }()
+
+    /// 2026-10-18 15:58:00 KST = 1792306680
+    let base: TimeInterval = 1_792_306_680
+
+    func rec(_ seq: Int64, _ device: DeviceID, at offset: TimeInterval) -> MessageRecord {
+        MessageRecord(room: "r", seq: seq, senderDevice: device, clientId: "c", kind: .text, body: "x",
+                      attachment: nil, receivedAt: Date(timeIntervalSince1970: base + offset), decryptedBy: .app)
+    }
+
+    func testTimeOnLastOfSameSenderSameMinuteRun() {
+        let stamps = TimelineStamps.compute([
+            rec(1, "me", at: 0), rec(2, "me", at: 20), rec(3, "bot", at: 30), rec(4, "bot", at: 70), rec(5, "me", at: 75),
+        ], calendar: calendar)
+        XCTAssertEqual(stamps[1]?.showTime, false, "me, me in the same minute → only the second shows")
+        XCTAssertEqual(stamps[2]?.showTime, true)
+        XCTAssertEqual(stamps[3]?.showTime, true, "15:58:30 and 15:59:10 are different minutes")
+        XCTAssertEqual(stamps[4]?.showTime, true)
+        XCTAssertEqual(stamps[5]?.showTime, true, "the last row always shows")
+    }
+
+    func testDayDividerOnFirstRowAndWhenTheDateChanges() {
+        let stamps = TimelineStamps.compute([
+            rec(1, "me", at: 0), rec(2, "me", at: 60),
+            rec(3, "me", at: 8 * 3600 + 3 * 60),   // 다음날 00:01 KST
+        ], calendar: calendar)
+        XCTAssertNotNil(stamps[1]?.dayStart)
+        XCTAssertNil(stamps[2]?.dayStart)
+        XCTAssertEqual(stamps[3]?.dayStart, calendar.startOfDay(for: Date(timeIntervalSince1970: base + 8 * 3600 + 3 * 60)))
+        XCTAssertNotEqual(stamps[1]?.dayStart, stamps[3]?.dayStart)
+        XCTAssertTrue(TimelineStamps.compute([], calendar: calendar).isEmpty)
+    }
+}

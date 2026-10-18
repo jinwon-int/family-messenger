@@ -1,4 +1,5 @@
 // 에이전트 대화 문구(#405 P1). 화면 전용 — Linux 스모크 복사 목록에 넣지 않는다.
+import Foundation
 import FamilyMLSCore
 extension Strings {
     /// 에이전트 노드 이름(봇 기기 `bot-<node>` 의 <node>) → 보여 줄 이름. 없으면 <node> 그대로.
@@ -79,4 +80,37 @@ extension Strings {
     static let shortcutPreviousRoom = "이전 대화방"
     static let shortcutNextRoom = "다음 대화방"
     static let shortcutRoomList = "대화 목록"
+}
+
+// #405 메시지 시간 표시.
+extension Strings {
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "ko_KR")
+        f.dateFormat = "a h:mm"
+        return f
+    }()
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "ko_KR")
+        f.dateFormat = "M월 d일 EEEE"
+        return f
+    }()
+    private static let dayYearFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "ko_KR")
+        f.dateFormat = "yyyy년 M월 d일 EEEE"
+        return f
+    }()
+
+    /// 말풍선 옆 시간: 오후 3:58
+    static func messageTime(_ date: Date) -> String { timeFormatter.string(from: date) }
+
+    /// 날짜 구분선: 오늘 · 어제 · 10월 18일 토요일 · (다른 해) 2025년 10월 18일 토요일
+    static func dayLabel(_ date: Date, now: Date = Date(), calendar: Calendar = .current) -> String {
+        if calendar.isDate(date, inSameDayAs: now) { return "오늘" }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(date, inSameDayAs: yesterday) { return "어제" }
+        let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: now)
+        return (sameYear ? dayFormatter : dayYearFormatter).string(from: date)
+    }
 }
