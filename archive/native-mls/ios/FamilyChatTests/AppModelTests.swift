@@ -116,7 +116,9 @@ final class AppModelTests: XCTestCase {
     func testRefreshWithNoRoomsIsReady() async {
         let (model, _) = makeModel()
         await model.bootstrap(); model.login(.bearer("t"))
+        XCTAssertFalse(model.settled, "#412: before the first refresh the screen shows the opening, not enrollment")
         await model.refresh()
+        XCTAssertTrue(model.settled)
         XCTAssertEqual(model.phase, .ready)
         XCTAssertNil(model.lastError)
     }
@@ -126,6 +128,7 @@ final class AppModelTests: XCTestCase {
         await model.bootstrap(); model.login(.bearer("t"))
         await model.refresh()
         XCTAssertEqual(model.phase, .needsEnrollment)
+        XCTAssertTrue(model.settled, "#412: a real 'not enrolled' answer is shown, not hidden behind the opening")
         XCTAssertFalse(model.registrationJSON().isEmpty)
     }
 

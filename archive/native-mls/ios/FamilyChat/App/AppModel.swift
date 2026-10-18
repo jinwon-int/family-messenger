@@ -78,6 +78,9 @@ final class AppModel: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .starting
+    /// #412: 첫 동기화 한 바퀴가 끝났는가. 시작 직후의 `.needsEnrollment` 는 "등록 확인 중" 자리라
+    /// (저장된 세션으로 이어 갈 때 bootstrap 이 먼저 둔다) 화면은 그동안 오프닝을 보이고, 이 값이 서면 실제 상태를 보인다.
+    @Published private(set) var settled = false
     /// 로그인 시트가 여는 릴레이 주소(빌드 설정 FC_RELAY_URL). nil 이면 로그인 화면이 버튼 대신 안내를 보인다.
     var relayURL: URL? { deps.relayURL }
     @Published private(set) var deviceId: DeviceID = ""
@@ -384,6 +387,7 @@ final class AppModel: ObservableObject {
     private func refreshLocked() async {
         guard let transport, engine != nil else { return }
         switch phase { case .starting, .needsActor, .needsLogin, .fatal: return; default: break }
+        defer { settled = true }
         do {
             do {
                 let listing = try await transport.listRooms(device: deviceId)
