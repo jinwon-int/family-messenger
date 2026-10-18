@@ -56,15 +56,26 @@ struct SeatDots: View {
     }
 }
 
-/// HANDE 워드마크(오프닝·대화 목록 머리 공용): iOS 내장 Futura-Medium, 글자 크기의 1/3 자간, 따뜻한 빛 번짐.
+/// hande 워드마크(오프닝·대화 목록 머리 공용): Questrial 윤곽(HandeWordmarkArt) · 크림색 · 은은한 불빛 번짐.
+/// `size` 는 글자 크기(1em)와 같다 — 높이는 어센더까지 약 0.71em.
 struct HandeWordmark: View {
     var size: CGFloat = 32
     var body: some View {
-        Text(Strings.wordmark)
-            .font(.custom("Futura-Medium", size: size))
-            .kerning(size / 3)
-            .foregroundStyle(OpeningArt.wordmark)
-            .shadow(color: Hande.ember.opacity(0.3), radius: size / 2.5)
+        let scale = size / 1000
+        HandeWordmarkShape()
+            .fill(OpeningArt.wordmark)
+            .frame(width: HandeWordmarkArt.width * scale, height: HandeWordmarkArt.height * scale)
+            .shadow(color: Hande.ember.opacity(0.18), radius: size / 3)
+            .accessibilityElement()
             .accessibilityLabel(Strings.appName)
+    }
+}
+
+/// HandeWordmarkArt 윤곽을 주어진 칸에 비율 그대로 맞춘다.
+struct HandeWordmarkShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let scale = min(rect.width / HandeWordmarkArt.width, rect.height / HandeWordmarkArt.height)
+        return OpeningArt.path(HandeWordmarkArt.d)
+            .applying(CGAffineTransform(scaleX: scale, y: scale).translatedBy(x: rect.minX / scale, y: rect.minY / scale))
     }
 }

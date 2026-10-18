@@ -13,7 +13,7 @@ struct RoomListView: View {
 
     var body: some View {
         List {
-            // 오너 요청: 목록 머리 = 오프닝과 같은 HANDE 워드마크 + 「오늘 밤, 모닥불에 한데 모여」(내비게이션 큰 제목 대신).
+            // 오너 요청: 목록 머리 = 오프닝과 같은 hande 워드마크 + 「오늘 밤, 모닥불에 한데 모여」(내비게이션 큰 제목 대신).
             Section {
                 VStack(alignment: .leading, spacing: 6) {
                     HandeWordmark(size: 32)
@@ -64,7 +64,7 @@ struct RoomListView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(CampfireBackground())
-        // 바 제목은 비우고(머리글이 제목 역할), 대화방의 뒤로 가기에는 HANDE 가 보이게 한다.
+        // 바 제목은 비우고(머리글이 제목 역할), 대화방의 뒤로 가기에는 hande 가 보이게 한다.
         .navigationTitle(Strings.wordmark)
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: reloadGlances)
