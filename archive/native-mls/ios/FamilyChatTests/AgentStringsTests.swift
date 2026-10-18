@@ -1,4 +1,5 @@
 import XCTest
+import FamilyMLSCore
 @testable import FamilyChat
 
 /// #405 P1: 승인 버튼이 보내는 글은 봇이 알아듣는 형식이어야 하고(native-mls-bot `parse_approval_reply`), 이름 조사는 받침을 따른다.
@@ -39,8 +40,27 @@ final class AgentStringsTests: XCTestCase {
     }
 
     func testListHeaderWordmarkAndTagline() {
-        XCTAssertEqual(Strings.wordmark, "HANDE")
+        XCTAssertEqual(Strings.wordmark, "hande")
         XCTAssertEqual(Strings.campfireSubtitle, "오늘 밤, 모닥불에 한데 모여")
+    }
+
+    /// 워드마크 윤곽: 파서가 끝까지 읽고(h1·a2·n1·d2·e2 = 닫힌 윤곽 8개), 모든 점이 선언한 칸 안에 있다.
+    func testWordmarkArtParsesWithinItsBox() throws {
+        let commands = try XCTUnwrap(SVGPathData.parse(HandeWordmarkArt.d))
+        XCTAssertEqual(commands.filter { $0 == .close }.count, 8)
+        var points: [SVGPathData.Point] = []
+        for command in commands {
+            switch command {
+            case .move(let a), .line(let a): points.append(a)
+            case .cubic(let c1, let c2, let e): points += [c1, c2, e]
+            case .quad(let q, let e): points += [q, e]
+            case .close: break
+            }
+        }
+        XCTAssertFalse(points.isEmpty)
+        for p in points {
+            XCTAssertTrue((0...HandeWordmarkArt.width).contains(p.x) && (0...HandeWordmarkArt.height).contains(p.y), "\(p)")
+        }
     }
 
     func testKnownAgentName() {
