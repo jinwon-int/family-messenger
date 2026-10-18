@@ -1,4 +1,4 @@
-// 오프닝 일러스트(#412)용 최소 SVG path data 파서 — 순수 Swift(Linux `swift test`).
+// 오프닝 일러스트(#414)용 최소 SVG path data 파서 — 순수 Swift(Linux `swift test`).
 // 시안(/root/hande-ui/make_opening_v5.py)과 앱이 같은 path 문자열을 쓰게 해 그림이 어긋나지 않게 한다.
 // 지원: M/m L/l H/h V/v C/c Q/q Z/z, 같은 명령의 매개변수 반복(암묵적 반복). 호(A)·S/T 는 쓰지 않는다.
 import Foundation

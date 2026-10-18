@@ -1,7 +1,7 @@
 import XCTest
 @testable import FamilyMLSCore
 
-/// #412 오프닝 일러스트: 시안 path 문자열이 앱에서 같은 좌표로 해석되는가.
+/// #414 오프닝 일러스트: 시안 path 문자열이 앱에서 같은 좌표로 해석되는가.
 final class SVGPathDataTests: XCTestCase {
     typealias P = SVGPathData.Point
 

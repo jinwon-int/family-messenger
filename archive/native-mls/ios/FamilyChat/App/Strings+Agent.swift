@@ -115,7 +115,7 @@ extension Strings {
     }
 }
 
-// #412 오프닝 화면.
+// #414 오프닝 화면.
 extension Strings {
     static let openingKorean = "한데"
     static let openingTagline = "모닥불가에 한데 모여 이야기를 나눠요"

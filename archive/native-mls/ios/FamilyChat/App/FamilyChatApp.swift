@@ -30,7 +30,7 @@ struct RootView: View {
     @EnvironmentObject private var model: AppModel
     /// #405 P3: 방 전환(PageUp/PageDown)·목록 복귀(Home)를 위해 이동 경로를 쥔다.
     @StateObject private var navigator = Navigator()
-    /// #412: 첫 동기화가 오래 걸려도(오프라인 등) 오프닝에 갇히지 않게 — 이 시간이 지나면 실제 상태를 보인다.
+    /// #414: 첫 동기화가 오래 걸려도(오프라인 등) 오프닝에 갇히지 않게 — 이 시간이 지나면 실제 상태를 보인다.
     @State private var openingExpired = false
     private static let openingLimitNanoseconds: UInt64 = 8_000_000_000
 
