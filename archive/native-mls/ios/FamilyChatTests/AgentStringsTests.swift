@@ -38,6 +38,11 @@ final class AgentStringsTests: XCTestCase {
         XCTAssertTrue(time.hasPrefix("오전") || time.hasPrefix("오후"), time)
     }
 
+    func testListHeaderWordmarkAndTagline() {
+        XCTAssertEqual(Strings.wordmark, "HANDE")
+        XCTAssertEqual(Strings.campfireSubtitle, "오늘 밤, 모닥불에 한데 모여")
+    }
+
     func testKnownAgentName() {
         XCTAssertEqual(Strings.agentNames["gongmyoung"], "공명")
     }

@@ -13,6 +13,18 @@ struct RoomListView: View {
 
     var body: some View {
         List {
+            // 오너 요청: 목록 머리 = 오프닝과 같은 HANDE 워드마크 + 「오늘 밤, 모닥불에 한데 모여」(내비게이션 큰 제목 대신).
+            Section {
+                VStack(alignment: .leading, spacing: 6) {
+                    HandeWordmark(size: 32)
+                    Text(Strings.campfireSubtitle).font(.footnote).foregroundStyle(Hande.inkDim)
+                }
+                .padding(.top, 4)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isHeader)
+            }
             if let notice = model.notice {
                 Section {
                     HStack {
@@ -28,11 +40,6 @@ struct RoomListView: View {
                         LobbyInviteRow(room: invite.room)
                     }
                 }
-            }
-            Section {
-                Text(Strings.campfireSubtitle).font(.footnote).foregroundStyle(Hande.inkDim)
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
             }
             if model.listedRooms.isEmpty && model.pendingInvites.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
@@ -57,11 +64,14 @@ struct RoomListView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(CampfireBackground())
-        .navigationTitle(Strings.appName)
+        // 바 제목은 비우고(머리글이 제목 역할), 대화방의 뒤로 가기에는 HANDE 가 보이게 한다.
+        .navigationTitle(Strings.wordmark)
+        .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: reloadGlances)
         .onChange(of: model.messagesRevision) { _ in reloadGlances() }
         .navigationDestination(for: RoomID.self) { RoomView(room: $0) }
         .toolbar {
+            ToolbarItem(placement: .principal) { Color.clear.frame(width: 1, height: 1).accessibilityHidden(true) }
             if orderedRooms.count > 1 {
                 ToolbarItem(placement: .navigationBarLeading) { EditButton() }
             }

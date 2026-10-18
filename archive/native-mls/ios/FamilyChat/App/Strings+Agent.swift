@@ -28,7 +28,9 @@ extension Strings {
 
 // #405 P2 모닥불 테마 문구.
 extension Strings {
-    static let campfireSubtitle = "오늘 밤, 불가에 모인 자리"
+    static let campfireSubtitle = "오늘 밤, 모닥불에 한데 모여"
+    /// 영문 워드마크(오프닝·목록 머리). 대문자 그대로 넓은 자간으로 쓴다.
+    static let wordmark = "HANDE"
     static let campfireEmpty = "아직 피운 모닥불이 없습니다"
     static let roomClosedPreview = "불이 꺼진 자리"
     static let roomNoMessages = "아직 아무도 말하지 않았어요"

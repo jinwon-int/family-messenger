@@ -55,3 +55,16 @@ struct SeatDots: View {
         .accessibilityHidden(true)
     }
 }
+
+/// HANDE 워드마크(오프닝·대화 목록 머리 공용): iOS 내장 Futura-Medium, 글자 크기의 1/3 자간, 따뜻한 빛 번짐.
+struct HandeWordmark: View {
+    var size: CGFloat = 32
+    var body: some View {
+        Text(Strings.wordmark)
+            .font(.custom("Futura-Medium", size: size))
+            .kerning(size / 3)
+            .foregroundStyle(OpeningArt.wordmark)
+            .shadow(color: Hande.ember.opacity(0.3), radius: size / 2.5)
+            .accessibilityLabel(Strings.appName)
+    }
+}
