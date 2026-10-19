@@ -15,7 +15,7 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
 ```text
 <hande-dir>/
   index.html styles.css strings.js ui.js app.js main.js          ← 화면·상태기계 (이 디렉터리)
-  room.js relay.js identity.js worker-bridge.js                  ← 방 세션(relay-app.js sync 이식)·릴레이·신원
+  room.js device.js relay.js identity.js worker-bridge.js        ← 방 세션(relay-app.js sync 이식)·기기(신원·로비·방 목록)·릴레이·신원
   durable-worker.js session-store.js history-store.js            ← openmls-browser/web 원본 그대로(build.sh 가 복사)
   commit-policy.js relay-attachments.js
   pkg/family_mls_browser_experiment.js *_bg.wasm custody.js      ← build.sh 번들(bundle-sha256.txt 일치본)
@@ -42,8 +42,13 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
 4. **정지**(`.halted`, #261/#289): 거부·제거는 durable 하고 새로고침 뒤에도 남는다. 다음 행동은 「이 기기 지우기」
    → 새 기기 ID(#290) → 운영자 등록 → 재초대뿐이다.
 
-**1차 범위는 방 1개**(기본 가족방). 파사드 `export_identity` 가 브라우저 표면에 없어(#177 M2b-3c) durable 워커는
-DB 1개 = 방 1개 = 서명키 1개다. 신원 공유(iOS 의 `_identity` 슬롯)는 #431 4단계.
+**다중 방(#431 4단계)**: 워커의 multi 모드(`device.js`, openmls-browser PERSISTENCE.md "다중 스토어")로 신원 스토어
+(`-identity`, 서명키) 하나에서 방 스토어를 파생한다 — iOS `_identity`/`_lobby` 슬롯과 같다. 방 목록 = 릴레이 `GET /v2/rooms`
+의 멤버 방 ∪ 여기서 만든/참여 요청한 방 ∪ 로비 Welcome 으로 열린 방. **로비 키**(#380): 등록 뒤 8초 틱마다 `GET /v2/lobby/status`
+로 부족분을 `-lobby` 스토어에서 만들어 `POST /v2/lobby/keypackages`(소비분은 FIFO 로 로컬 비밀 삭제). `GET /v2/lobby/welcomes` 에
+미참여 방이 있으면 — 오너 actor 는 자동 참여(방 스토어 = 로비 사본 → 커서를 Welcome 앞으로 → join), 가족 기기는 목록 위
+초대 카드(수락 1탭 / 무시). 「초대」는 방별 키 패키지 → 없으면 상대의 로비 키를 그 방으로 소비한다(iOS RoomMembership 과 동일).
+1차(방 1개) 설치는 첫 실행에서 기본 방 DB 의 서명키가 신원 스토어로 **이전**되므로 재등록이 필요 없다.
 
 ## 검증
 
@@ -52,10 +57,11 @@ DB 1개 = 방 1개 = 서명키 1개다. 신원 공유(iOS 의 `_identity` 슬롯
   문구·검증 헬퍼.
 - 브라우저: `archive/native-mls/tests/native_hande_web_smoke.py --bundle <mls-pkg> --relay-binary <relay>` —
   격리 릴레이(`-access-mode disabled`, `-hande-host`)가 이 디렉터리를 서빙하고 두 Chromium 컨텍스트가 **화면만
-  으로** 이름 선택 → 방 만들기 → 참여 요청 → 초대 → 참여 → 양방향 메시지 → 새로고침 뒤 보관 이력 복원을 거친다.
+  으로** 이름 선택 → 방 만들기 → 참여 요청 → 초대 → 참여 → 양방향 메시지 → 새로고침 뒤 보관 이력 복원, 이어서 둘째 방을
+  **로비 키로** 초대(가족 기기: 초대 카드 수락 / 오너 기기: 자동 참여)하고 두 방이 서로 섞이지 않음을 거친다.
 - Go: `hande_test.go`(호스트 라우팅·가둠·헤더), `me_test.go`.
 
 ## 증명하지 않는 것
 
-실제 CF Access 엣지 경유(합성 릴레이는 JWT 없음) · 푸시 알림(webpush 게이트웨이 없음) · 다중 방 · 모바일 브라우저 ·
+실제 CF Access 엣지 경유(합성 릴레이는 JWT 없음) · 푸시 알림(webpush 게이트웨이 없음) · 기기 간 이력 이전 · 모바일 브라우저 ·
 오너 두 기기의 실사용(인수검사 #243 계열은 사람이 한다).

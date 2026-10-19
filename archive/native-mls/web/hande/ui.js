@@ -204,10 +204,21 @@ function syncText(sync) {
   return strings.sync.never;
 }
 
-function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu, onOpenJoin, onOpenCreate, sync = null, notice = null, deviceLabel = '' }) {
+/** 로비 초대 카드(#431 4단계): 운영자/봇이 로비 키로 보낸 새 대화방 Welcome — 수락 1탭 또는 무시. */
+function inviteCard(invite) {
+  return el('li', { class: 'invite-item', 'data-testid': 'lobby-invite', 'data-room-id': invite.room },
+    el('p', { class: 'invite-head' }, el('span', { class: 'fire', 'aria-hidden': 'true' }, '🔥'), el('strong', {}, invite.room)),
+    el('p', { class: 'hint' }, strings.lobby.inviteBody(invite.room)),
+    invite.message ? el('p', { class: 'feedback', role: 'alert' }, invite.message) : null,
+    el('div', { class: 'actions' },
+      el('button', { type: 'button', class: 'primary', 'data-testid': 'invite-accept', disabled: invite.busy ? 'disabled' : null, onclick: () => invite.onAccept?.() }, strings.lobby.accept),
+      el('button', { type: 'button', class: 'ghost', 'data-testid': 'invite-ignore', disabled: invite.busy ? 'disabled' : null, onclick: () => invite.onIgnore?.() }, strings.lobby.ignore)));
+}
+
+function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu, onOpenJoin, onOpenCreate, sync = null, notice = null, deviceLabel = '', invites = [] }) {
   const syncLabel = syncText(sync);
   const syncTone = sync?.reconnecting ? 'warn' : sync?.offlineSince ? 'danger' : 'ok';
-  const frame = JSON.stringify([syncLabel, syncTone, notice ? [notice.text, notice.tone] : null, rooms.length > 0, deviceLabel]);
+  const frame = JSON.stringify([syncLabel, syncTone, notice ? [notice.text, notice.tone] : null, rooms.length > 0, deviceLabel, invites.map((i) => [i.room, i.message ?? null, Boolean(i.busy)])]);
   const body = rooms.length === 0
     ? el('div', { class: 'empty campfire-empty' }, el('span', { class: 'big-fire', 'aria-hidden': 'true' }, '🪵'), el('p', { class: 'empty-title' }, strings.rooms.empty), el('p', { class: 'hint' }, strings.rooms.noRooms))
     : el('ul', { class: 'rooms', 'aria-label': strings.rooms.listLabel }, rooms.map((room) => roomListItem(room, onSelect, room.roomId === currentRoomId)));
@@ -222,6 +233,9 @@ function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu,
     notice ? el('div', { class: `status ${notice.tone || 'info'} notice`, role: notice.tone === 'danger' ? 'alert' : 'status' },
       el('span', {}, notice.text),
       notice.onClose ? el('button', { type: 'button', class: 'ghost small', 'aria-label': strings.close, onclick: notice.onClose }, '✕') : null) : null,
+    invites.length > 0 ? el('section', { class: 'card invites', 'aria-label': strings.lobby.inviteSectionTitle },
+      el('h2', { class: 'section-title' }, strings.lobby.inviteSectionTitle),
+      el('ul', { class: 'invite-list' }, invites.map(inviteCard))) : null,
     body,
     el('p', { class: 'device-line meta' }, el('span', { class: 'label' }, strings.rooms.deviceLabel, ' '), el('span', { class: 'mono', 'data-testid': 'device-label' }, deviceLabel))), frame);
 }

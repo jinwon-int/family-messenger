@@ -150,6 +150,20 @@ def main():
                     self.page.wait_for_function("t => (document.querySelector('[data-testid=\"status\"]')?.textContent || '').includes(t)",
                                                 arg=text, timeout=timeout)
 
+                def wait_room(self, room, members, timeout=90000):
+                    self.page.wait_for_function("([r, n]) => { const el = document.querySelector(`[data-testid=\"room-item\"][data-room-id=\"${r}\"]`);"
+                                                " return !!el && el.dataset.state === 'joined' && Number(el.dataset.members || 0) >= n; }",
+                                                arg=[room, members], timeout=timeout)
+
+                def open_room_id(self, room):
+                    self.page.click(f'[data-testid="room-item"][data-room-id="{room}"]')
+                    self.page.wait_for_function("r => document.querySelector('.room-screen')?.dataset.roomId === r || document.querySelector(`[data-testid=\"room-item\"][data-room-id=\"${r}\"][aria-current=\"true\"]`) !== null",
+                                                arg=room, timeout=20000)
+                    self.page.wait_for_selector('[data-testid="timeline"]', timeout=20000)
+
+                def has_invite_card(self, room):
+                    return self.page.query_selector(f'[data-testid="lobby-invite"][data-room-id="{room}"]') is not None
+
                 def wait_members(self, n, timeout=90000):
                     self.page.wait_for_function("n => document.querySelectorAll('[data-testid=\"room-item\"][data-state=\"joined\"]').length >= 1 && "
                                                 "Number(document.querySelector('[data-testid=\"room-item\"]')?.dataset.members || 0) >= n",
@@ -176,7 +190,7 @@ def main():
                     except Exception as e:  # noqa: BLE001
                         print(f'--- {d.actor}: unavailable ({e})', file=sys.stderr)
             try:
-                run_flow(Dev, receipt, args.screenshot)
+                run_flow(Dev, receipt, args.screenshot, relay.base)
             except Exception:
                 dump()
                 raise
@@ -195,7 +209,21 @@ def main():
             shutil.rmtree(work, ignore_errors=True)
 
 
-def run_flow(Dev, receipt, screenshot=None):
+def lobby_live(relay_base, device):
+    with urllib.request.urlopen(f'{relay_base}/v2/lobby/status?device={device}', timeout=5) as r:
+        return json.load(r).get('live', 0)
+
+
+def wait_lobby_keys(relay_base, device, timeout_s=60):
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if lobby_live(relay_base, device) >= 1:
+            return True
+        time.sleep(1)
+    return False
+
+
+def run_flow(Dev, receipt, screenshot=None, relay_base=None):
     owner, mom = Dev('owner'), Dev('mom')
     owner_id, mom_id = owner.device_id(), mom.device_id()
     assert owner_id.startswith('owner-web-') and mom_id.startswith('mom-web-'), (owner_id, mom_id)
@@ -243,6 +271,66 @@ def run_flow(Dev, receipt, screenshot=None):
     mom.wait_bubble('잘 받았어요 🔥')
     assert mom.device_id() == mom_id, (mom.device_id(), mom_id)
     receipt['checks']['reload_restores_sealed_history_same_device'] = True
+
+    # ---- stage 4: a second room through the LOBBY (#380) — owner creates fam2 and invites mom,
+    # who never requested fam2: the invite consumes mom's lobby key; mom (family actor) gets an
+    # invite card and accepts with one click; the room is a lobby clone that joins the Welcome.
+    assert wait_lobby_keys(relay_base, mom_id), 'mom published lobby keys after enrollment'
+    assert wait_lobby_keys(relay_base, owner_id), 'owner published lobby keys'
+    receipt['checks']['lobby_keys_replenished_after_enrollment'] = True
+    owner.page.click('[data-testid="open-create"]')
+    owner.page.fill('[data-testid="create-room"]', 'fam2')
+    owner.page.click('[data-testid="create-submit"]')
+    owner.wait_room('fam2', 1)
+    owner.open_room_id('fam2')
+    owner.page.click('[data-testid="open-invite"]')
+    owner.page.fill('[data-testid="invite-device"]', mom_id)
+    owner.page.click('[data-testid="invite-submit"]')
+    owner.wait_room('fam2', 2)
+    receipt['checks']['invite_falls_back_to_lobby_key_package'] = True
+    mom.page.wait_for_selector('[data-testid="lobby-invite"][data-room-id="fam2"]', timeout=60000)
+    assert not mom.has_invite_card('family'), 'no card for a joined room'
+    mom.page.click('[data-testid="lobby-invite"][data-room-id="fam2"] [data-testid="invite-accept"]')
+    mom.wait_room('fam2', 2)
+    receipt['checks']['family_device_accepts_lobby_invite_card_and_joins'] = True
+    mom.open_room_id('fam2')
+    owner.send('fam2에서 안녕')
+    mom.wait_bubble('fam2에서 안녕')
+    mom.send('fam2 잘 돼요')
+    owner.wait_bubble('fam2 잘 돼요')
+    receipt['checks']['messages_both_ways_in_lobby_room'] = True
+
+    # ---- owner actor auto-joins: mom creates fam3 and invites owner via the lobby — no card, joined on the next tick
+    mom.page.click('[data-testid="open-create"]')
+    mom.page.fill('[data-testid="create-room"]', 'fam3')
+    mom.page.click('[data-testid="create-submit"]')
+    mom.wait_room('fam3', 1)
+    mom.open_room_id('fam3')
+    mom.page.click('[data-testid="open-invite"]')
+    mom.page.fill('[data-testid="invite-device"]', owner_id)
+    mom.page.click('[data-testid="invite-submit"]')
+    mom.wait_room('fam3', 2)
+    owner.wait_room('fam3', 2)
+    assert not owner.has_invite_card('fam3'), 'owner joins automatically, no card'
+    receipt['checks']['owner_actor_auto_joins_lobby_welcome'] = True
+    owner.open_room_id('fam3')
+    mom.send('fam3 자동 참여 확인')
+    owner.wait_bubble('fam3 자동 참여 확인')
+    receipt['checks']['messages_in_auto_joined_room'] = True
+
+    # ---- rooms stay apart: the first room's timeline has none of the other rooms' lines
+    owner.open_room_id(ROOM)
+    bubbles = owner.bubbles()
+    assert any('안녕, 한데 웹에서 보냄' in b for b in bubbles), bubbles
+    assert not any('fam2' in b or 'fam3' in b for b in bubbles), bubbles
+    receipt['checks']['rooms_isolated'] = True
+
+    # ---- reload: identity + rooms reopen with one custody KDF; all three rooms still joined
+    mom.reload()
+    for room, n in ((ROOM, 2), ('fam2', 2), ('fam3', 2)):
+        mom.wait_room(room, n, timeout=120000)
+    assert mom.device_id() == mom_id
+    receipt['checks']['reload_reopens_identity_and_all_rooms'] = True
 
 
 if __name__ == '__main__':

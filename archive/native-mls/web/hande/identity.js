@@ -58,6 +58,10 @@ export function createIdentityStore({storage = globalThis.localStorage, random =
   return {read, choose, rotate, mint, passphrase, forgetPassphrase, clear};
 }
 
+/** Identity store database (worker multi mode, #431 stage 4): the signer only; every room store is derived from it. */
+export const IDENTITY_DATABASE = 'family-mls-synthetic-hande--identity';
+export const LOBBY_DATABASE = 'family-mls-synthetic-hande--lobby';
+export const IDENTITY_ROOM = '-identity', LOBBY_ROOM = '-lobby';
 /** Durable store database name for a room (worker pattern `family-mls-synthetic-[a-z0-9-]{1,64}`). */
 export function databaseFor(room) {
   if (!ROOM.test(room)) throw new Error('room rejected');

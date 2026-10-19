@@ -327,6 +327,23 @@ export const strings = {
   menu: {
     title: '설정',
     open: '설정',
+    settings: '설정',
+    invite: '기기 초대 · 멤버',
+    approve: '신뢰 기기 승인',
+    sync: '지금 동기화',
+    wipe: '이 기기 지우기',
+  },
+  // 로비 초대(#380 P5-3, iOS와 동일): 운영자/봇이 로비 키로 보낸 새 대화방 Welcome.
+  lobby: {
+    inviteSectionTitle: '새 대화방 초대',
+    inviteBody: (room) => `운영자가 「${room}」 대화방에 이 기기를 초대했습니다. 수락하면 대화에 들어갑니다.`,
+    accept: '수락',
+    ignore: '무시',
+    acceptFailed: (reason) => `초대를 받아들이지 못했습니다: ${reason}`,
+    joined: (room) => `새 대화방 「${room}」에 들어왔습니다.`,
+    keysLabel: '로비 키',
+    keys: (live) => (live === null || live === undefined ? '확인 전' : `${live}개`),
+    hint: '로비 키는 이 기기의 공개 키 패키지입니다. 운영자가 steward 봇에게 지시하면 이 키로 새 대화방에 초대됩니다(오너 기기는 자동 가입, 가족 기기는 수락 1탭). 앱을 열 때마다 모자란 만큼 채웁니다.',
   },
 
   errors: {
@@ -346,7 +363,7 @@ export const strings = {
     alreadyInRoom: '이 기기는 이미 대화방(그룹)에 있습니다.',
     created: '대화방을 만들었습니다. 「초대」로 다른 기기를 들이세요.',
     keyPackagePublished: '참여를 요청했습니다. 운영자의 초대를 기다려 주세요.',
-    noKeyPackage: (device) => `${device} 기기의 키 패키지가 없습니다 — 상대가 먼저 「참여 요청」을 해야 합니다.`,
+    noKeyPackage: (device) => `${device} 기기의 키 패키지가 없습니다 — 상대가 먼저 「참여 요청」을 했거나 로비 키를 올려 두었어야 합니다(앱을 한 번 열면 됩니다).`,
     inviteDone: (device) => `${device} 기기를 초대했습니다. 반영되면 Welcome을 보냅니다.`,
     removeDone: (device) => `${device} 기기 제거를 게시했습니다.`,
     notMember: (device, members) => `${device} 기기는 현재 멤버가 아닙니다 (멤버: ${members || '—'})`,
