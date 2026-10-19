@@ -1,8 +1,13 @@
 // Page ↔ durable worker bridge (openmls-browser web/main.js, as a module instead of
-// window globals). One named worker per MLS store; `init` gets its own generous
-// deadline because the custody scrypt (logN 18) takes seconds on a desktop core and
-// far longer on a phone (#243 2-c) — never lower the KDF to fit a timeout.
-export function createWorkerBridge({workerUrl = './durable-worker.js', bootDeadline = 10000, callDeadline = 10000, initDeadline = 180000} = {}) {
+// window globals). One worker; the messages that run the custody scrypt (logN 18 —
+// seconds on a desktop core, far longer on a phone, #243 2-c) get their own generous
+// deadline instead of a lower KDF: `init` (single store), and in multi-store mode
+// `init_multi` (identity store, plus a second KDF when a stage-2 database is migrated),
+// `open_room` (a sibling database sealed under another capsule) and `reset_room`
+// (IndexedDB deletion can block on another tab). 2026-10-19: the owner's PC hit the
+// 10 s default on `init_multi` and saw the fatal screen (#431).
+export const KDF_METHODS = new Set(['init', 'init_multi', 'open_room', 'reset_room']);
+export function createWorkerBridge({workerUrl = './durable-worker.js', bootDeadline = 30000, callDeadline = 10000, initDeadline = 180000} = {}) {
   const workers = new Map();
   let serial = 0;
   function spawn(name) {
@@ -27,7 +32,7 @@ export function createWorkerBridge({workerUrl = './durable-worker.js', bootDeadl
       const timer = setTimeout(() => {
         worker.terminate(); if (workers.get(name) === worker) workers.delete(name);
         cleanup(); reject(new Error('worker deadline'));
-      }, method === 'init' ? initDeadline : callDeadline);
+      }, KDF_METHODS.has(method) ? initDeadline : callDeadline);
       const onmessage = ({data}) => { if (data.id !== id) return; cleanup(); resolve(data); };
       const onerror = () => { cleanup(); reject(new Error('worker failure')); };
       function cleanup() { clearTimeout(timer); worker.removeEventListener('message', onmessage); worker.removeEventListener('error', onerror); }
