@@ -8,26 +8,37 @@ plan step), C = c1 (restore with ``--bump-seq``), A = no APNs on the standby.
 
 Order of operations, each recorded in the state file:
 
-1. probe   — peer relay over the tailnet AND the public edge through
-             Cloudflare Access (service token). Only ``relay-down`` (both
-             fail) allows a cutover; ``edge-only`` / ``peer-unreachable`` /
-             ``healthy`` stop here (exit 10). ``--skip-probe`` is for drills.
-2. plan    — newest inbox snapshot, its manifest summary, the confirm token.
-             Without a matching ``--confirm`` nothing is changed (exit 11).
-3. peer snapshot / peer stop (optional, best effort — planned moves only).
-4. restore — ``native_relay_restore.py`` into the live directories with
-             ``--bump-seq`` (relay unit must be inactive here).
-5. fence   — set the TXT fence record to this host and wait until a public
-             resolver returns it (the relay's ExecStartPre reads the same).
-6. start   — ``systemctl start`` the relay, wait for local ``/v2/health``.
-7. dns     — point every relay hostname's CNAME at this host's tunnel.
-8. edge    — wait for the edge probe to answer 200 through the new path.
-9. hooks   — client re-pointing commands (bots, bridges); failures are
-             recorded, not fatal.
+1. probe    — peer relay over the tailnet AND the public edge through
+              Cloudflare Access (service token, redirects are NOT followed:
+              an Access login page is not a healthy relay). Only
+              ``relay-down`` (both fail) allows a cutover; ``edge-only`` /
+              ``peer-unreachable`` / ``healthy`` stop here (exit 10).
+              ``--skip-probe`` is for drills into throwaway directories.
+2. plan     — newest inbox snapshot (with its sidecar), manifest summary, and
+              the confirm token = sha256 of the WHOLE plan (archive, host,
+              hostnames, tunnel target, fence record, bump). Without a
+              matching ``--confirm`` nothing is changed (exit 11).
+3. peer snapshot / peer stop (optional). A peer snapshot that lands a NEWER
+   archive than the confirmed one stops the run (exit 11, new token) unless
+   ``--accept-replan``. A peer stop that does not succeed is fatal unless
+   ``--peer-unreachable-ok`` — a peer we could not stop may still be serving.
+4. restore  — ``native_relay_restore.py`` into the live directories with
+              ``--bump-seq`` (relay unit must be inactive here).
+5. fence    — set the TXT fence record to this host and wait until a public
+              resolver returns it on N consecutive reads (resolver PoPs keep
+              the old answer for its TTL — pre-create the record with TTL 60).
+6. re-probe — peer and edge again; if either answers 200 now, STOP. A peer
+              that came back while we restored would be a second writer.
+7. start    — ``systemctl start`` the relay, wait for local ``/v2/health``.
+8. dns      — point every relay hostname's CNAME at this host's tunnel.
+9. edge     — wait for the edge probe to answer 200 through the new path.
+10. hooks   — client re-pointing commands (bots, bridges); failures are
+              recorded, exit 3.
 
 The script stops at the first failing step and leaves what it did in place —
 there is no automatic undo for a half cutover; the record says exactly where
-it stopped. Tokens are read from files and never printed.
+it stopped. Tokens are read from files and never printed; hook output is
+redacted for token-like strings before it is recorded.
 """
 import argparse
 import datetime
@@ -35,6 +46,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
@@ -52,11 +64,31 @@ import native_relay_restore as restore_module  # noqa: E402
 CF_API = 'https://api.cloudflare.com/client/v4'
 EXIT_NOT_DOWN = 10
 EXIT_UNCONFIRMED = 11
+EXIT_HOOKS = 3
 EXIT_FAILED = 1
+REDACT_HEADER = re.compile(r'(?i)(authorization\s*[:=]\s*)[^"\'\n]+')
+REDACT_VALUE = re.compile(r'(?i)(bearer\s+|token\s*[=:]\s*|secret\s*[=:]\s*)\S+')
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
 
 
 def utcnow():
     return datetime.datetime.now(datetime.timezone.utc)
+
+
+def describe(exc):
+    return type(exc).__name__ + ': ' + str(exc)[:400]
+
+
+def redact(text):
+    text = REDACT_HEADER.sub(lambda m: m.group(1) + '<redacted>', text or '')
+    return REDACT_VALUE.sub(lambda m: m.group(1) + '<redacted>', text)
 
 
 def read_kv_file(path):
@@ -72,9 +104,10 @@ def read_kv_file(path):
 
 
 def http_status(url, headers=None, timeout=5, opener=None):
+    """HTTP status without following redirects (3xx is returned as-is); None on transport failure."""
     request = urllib.request.Request(url, headers=headers or {})
     try:
-        with (opener or urllib.request.urlopen)(request, timeout=timeout) as response:
+        with (opener or OPENER.open)(request, timeout=timeout) as response:
             return response.status
     except urllib.error.HTTPError as exc:
         return exc.code
@@ -91,6 +124,9 @@ def edge_headers(token_file):
 
 
 def classify(peer_ok, edge_ok):
+    """edge_ok None = not probed → never 'relay-down' (an unknown edge is not a dead edge)."""
+    if edge_ok is None:
+        return 'edge-unknown'
     if not peer_ok and not edge_ok:
         return 'relay-down'
     if peer_ok and not edge_ok:
@@ -100,18 +136,19 @@ def classify(peer_ok, edge_ok):
     return 'healthy'
 
 
-def probe(args, status=http_status, sleep=time.sleep):
+def probe(args, status=http_status, sleep=time.sleep, tries=None):
     """tries × (peer, edge); a path counts as OK if ANY try answered 200."""
+    tries = tries or args.probe_tries
     headers = edge_headers(args.edge_token_file)
     samples = []
-    for attempt in range(args.probe_tries):
+    for attempt in range(tries):
         peer = status(args.peer_health, timeout=args.probe_timeout)
         edge = status(args.edge_health, headers=headers, timeout=args.probe_timeout) if args.edge_health else None
         samples.append({'peer': peer, 'edge': edge})
-        if attempt + 1 < args.probe_tries:
+        if attempt + 1 < tries:
             sleep(args.probe_interval)
     peer_ok = any(s['peer'] == 200 for s in samples)
-    edge_ok = any(s['edge'] == 200 for s in samples)
+    edge_ok = any(s['edge'] == 200 for s in samples) if args.edge_health else None
     return {'classification': classify(peer_ok, edge_ok), 'samples': samples}
 
 
@@ -125,47 +162,62 @@ def cf_request(token, method, path, body=None, opener=None):
     except urllib.error.HTTPError as exc:
         raise RuntimeError('cloudflare api ' + method + ' ' + path + ' -> ' + str(exc.code)) from None
     except (urllib.error.URLError, OSError, ValueError) as exc:
-        raise RuntimeError('cloudflare api ' + method + ' ' + path + ' failed: ' + str(exc)) from None
-    if not payload.get('success'):
-        raise RuntimeError('cloudflare api ' + method + ' ' + path + ' not successful: '
-                           + json.dumps(payload.get('errors'))[:300])
+        raise RuntimeError('cloudflare api ' + method + ' ' + path + ' failed: ' + type(exc).__name__) from None
+    if not isinstance(payload, dict) or not payload.get('success'):
+        errors = payload.get('errors') if isinstance(payload, dict) else None
+        raise RuntimeError('cloudflare api ' + method + ' ' + path + ' not successful: ' + json.dumps(errors)[:300])
     return payload.get('result')
 
 
 def dns_find(token, zone, name, rtype, opener=None):
     path = '/zones/' + zone + '/dns_records?type=' + rtype + '&name=' + name
     result = cf_request(token, 'GET', path, opener=opener)
-    return result[0] if result else None
+    if isinstance(result, list) and result and isinstance(result[0], dict) and 'id' in result[0]:
+        return result[0]
+    return None
 
 
 def dns_upsert(token, zone, name, rtype, content, proxied, ttl=60, opener=None):
-    """Create or update one record; returns (action, record id)."""
+    """Create or update one record; returns (action, record id). TXT content is compared unquoted."""
     body = {'type': rtype, 'name': name, 'content': content, 'ttl': ttl, 'proxied': proxied}
     existing = dns_find(token, zone, name, rtype, opener=opener)
     if existing:
-        if existing.get('content') == content and bool(existing.get('proxied')) == proxied:
+        same = str(existing.get('content', '')).strip('"') == content and bool(existing.get('proxied')) == proxied
+        if same and existing.get('ttl') == ttl:
             return 'unchanged', existing['id']
         cf_request(token, 'PUT', '/zones/' + zone + '/dns_records/' + existing['id'], body, opener=opener)
         return 'updated', existing['id']
     created = cf_request(token, 'POST', '/zones/' + zone + '/dns_records', body, opener=opener)
+    if not isinstance(created, dict) or 'id' not in created:
+        raise RuntimeError('cloudflare api create returned no record id')
     return 'created', created['id']
 
 
 def latest_archive(inbox):
-    archives = sorted(Path(inbox).glob('relay-*.tar.gz'))
+    """Newest archive that already has its .sha256 sidecar (rsync lands the archive first)."""
+    archives = sorted(p for p in Path(inbox).glob('relay-*.tar.gz') if p.with_suffix('.gz.sha256').is_file())
     if not archives:
-        raise RuntimeError('no snapshot archive in ' + str(inbox))
+        raise RuntimeError('no complete snapshot archive (with .sha256) in ' + str(inbox))
     return archives[-1]
 
 
-def confirm_token(to, archive, digest):
-    return hashlib.sha256((to + '|' + Path(archive).name + '|' + digest).encode()).hexdigest()[:12]
+def confirm_token(planned):
+    """Bound to everything the cutover will do, not just the archive."""
+    material = {k: planned[k] for k in ('to', 'archive', 'archive_sha256', 'hostnames', 'tunnel_target',
+                                        'fence_record', 'bump_seq')}
+    return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()[:16]
 
 
 def run_cmd(command, timeout, runner=None):
-    proc = (runner or subprocess.run)(shlex.split(command), capture_output=True, text=True, timeout=timeout,
-                                      check=False)
-    return {'command': command, 'exit': proc.returncode, 'stderr': (proc.stderr or '')[-300:]}
+    """Never raises: timeouts and missing binaries come back as exit None with an error string."""
+    try:
+        proc = (runner or subprocess.run)(shlex.split(command), capture_output=True, text=True, timeout=timeout,
+                                          check=False)
+    except subprocess.TimeoutExpired:
+        return {'command': redact(command), 'exit': None, 'error': 'timeout after ' + str(timeout) + 's'}
+    except (OSError, ValueError) as exc:
+        return {'command': redact(command), 'exit': None, 'error': describe(exc)}
+    return {'command': redact(command), 'exit': proc.returncode, 'stderr': redact((proc.stderr or '')[-300:])}
 
 
 def wait_until(predicate, timeout, interval, sleep=time.sleep, clock=time.monotonic):
@@ -182,11 +234,11 @@ def wait_until(predicate, timeout, interval, sleep=time.sleep, clock=time.monoto
 def plan(args):
     archive = latest_archive(args.inbox)
     summary = restore_module.restore(restore_module.parse(['--archive', str(archive), '--summary-only']))
-    token = confirm_token(args.to, archive, summary['archive_sha256'])
-    return {'archive': str(archive), 'archive_sha256': summary['archive_sha256'], 'manifest': summary['manifest'],
-            'confirm': token, 'bump_seq': args.bump_seq, 'hostnames': args.hostname,
-            'tunnel_target': args.tunnel_target,
-            'fence_record': args.fence_record, 'to': args.to}
+    planned = {'to': args.to, 'archive': str(archive), 'archive_sha256': summary['archive_sha256'],
+               'manifest': summary['manifest'], 'bump_seq': args.bump_seq, 'hostnames': sorted(args.hostname),
+               'tunnel_target': args.tunnel_target, 'fence_record': args.fence_record}
+    planned['confirm'] = confirm_token(planned)
+    return planned
 
 
 def restore_args(args, archive):
@@ -219,14 +271,17 @@ def cutover(args, io=None):
             record['steps'].append({'step': name, 'ok': True, 'detail': detail})
             return detail
         except Exception as exc:  # noqa: BLE001 — every failure is recorded, then re-raised to stop
-            record['steps'].append({'step': name, 'ok': False, 'error': str(exc)[:500]})
+            record['steps'].append({'step': name, 'ok': False, 'error': describe(exc)})
             raise
+
+    def probe_now(tries):
+        return probe(args, status=status, sleep=sleep, tries=tries)
 
     try:
         if args.skip_probe:
             record['probe'] = {'classification': 'skipped'}
         else:
-            record['probe'] = step('probe', lambda: probe(args, status=status, sleep=sleep))
+            record['probe'] = step('probe', lambda: probe_now(args.probe_tries))
             if record['probe']['classification'] != 'relay-down':
                 record['status'] = 'not-down:' + record['probe']['classification']
                 return record
@@ -241,10 +296,23 @@ def cutover(args, io=None):
 
         if args.peer_snapshot_cmd:
             step('peer_snapshot', lambda: run_cmd(args.peer_snapshot_cmd, 300, runner))
-            planned = step('replan', lambda: plan(args))
-            record['plan'] = planned
+            replanned = step('replan', lambda: plan(args))
+            if replanned['archive'] != planned['archive']:
+                record['replan'] = replanned
+                if not args.accept_replan:
+                    record['status'] = 'replan-unconfirmed'
+                    return record
+                planned = replanned
+                record['plan'] = planned
         if args.peer_stop_cmd:
-            step('peer_stop', lambda: run_cmd(args.peer_stop_cmd, 120, runner))
+            def do_peer_stop():
+                result = run_cmd(args.peer_stop_cmd, 120, runner)
+                if result['exit'] != 0 and not args.peer_unreachable_ok:
+                    raise RuntimeError('peer stop did not succeed (' + str(result.get('error') or result.get('stderr'))
+                                       + '); a peer we could not stop may still be serving — '
+                                       're-run with --peer-unreachable-ok only if the peer host is known dead')
+                return result
+            step('peer_stop', do_peer_stop)
 
         def do_restore():
             result = restore_module.restore(restore_args(args, planned['archive']), runner=runner)
@@ -261,18 +329,31 @@ def cutover(args, io=None):
         def do_fence():
             action, _ = dns_upsert(dns_token, args.cf_zone_id, args.fence_record, 'TXT', args.to, False,
                                    opener=opener)
-            seen = wait_until(lambda: fence_check(args.to, args.fence_record)[0] == 0 or None,
-                              args.fence_wait, 5, sleep=sleep, clock=clock)
+            streak = {'n': 0}
+
+            def settled():
+                streak['n'] = streak['n'] + 1 if fence_check(args.to, args.fence_record)[0] == 0 else 0
+                return streak['n'] >= args.fence_settle or None
+            seen = wait_until(settled, args.fence_wait, 5, sleep=sleep, clock=clock)
             if not seen:
-                raise RuntimeError('fence record did not resolve to ' + args.to + ' within '
-                                   + str(args.fence_wait) + 's')
-            return {'action': action}
+                raise RuntimeError('fence record did not resolve to ' + args.to + ' on ' + str(args.fence_settle)
+                                   + ' consecutive reads within ' + str(args.fence_wait) + 's')
+            return {'action': action, 'consecutive_reads': args.fence_settle}
         step('fence', do_fence)
+
+        if not args.skip_probe:
+            def do_reprobe():
+                result = probe_now(1)
+                if any(s['peer'] == 200 or s['edge'] == 200 for s in result['samples']):
+                    raise RuntimeError('peer or edge answered 200 after the fence moved — a second writer '
+                                       'would start; stop the peer relay and re-run from the fence step')
+                return result
+            step('reprobe', do_reprobe)
 
         def do_start():
             result = run_cmd('systemctl start ' + args.unit, 60, runner)
-            if result['exit']:
-                raise RuntimeError('systemctl start failed: ' + result['stderr'])
+            if result['exit'] != 0:
+                raise RuntimeError('systemctl start failed: ' + str(result.get('error') or result.get('stderr')))
             ok = wait_until(lambda: status(args.local_health, timeout=3) == 200 or None, args.start_wait, 1,
                             sleep=sleep, clock=clock)
             if not ok:
@@ -282,7 +363,7 @@ def cutover(args, io=None):
 
         def do_dns():
             changes = {}
-            for host in args.hostname:
+            for host in planned['hostnames']:
                 action, _ = dns_upsert(dns_token, args.cf_zone_id, host, 'CNAME', args.tunnel_target, True,
                                        opener=opener)
                 changes[host] = action
@@ -304,12 +385,12 @@ def cutover(args, io=None):
         for command in args.client_hook:
             result = run_cmd(command, 120, runner)
             record['steps'].append({'step': 'client_hook', 'ok': result['exit'] == 0, 'detail': result})
-            hook_failures += 1 if result['exit'] else 0
+            hook_failures += 0 if result['exit'] == 0 else 1
         record['status'] = 'complete' if not hook_failures else 'complete-with-hook-failures'
         return record
     except Exception as exc:  # noqa: BLE001
         record['status'] = 'failed'
-        record['error'] = str(exc)[:500]
+        record['error'] = describe(exc)
         return record
     finally:
         record['finished_at'] = utcnow().isoformat(timespec='seconds')
@@ -320,24 +401,25 @@ def cutover(args, io=None):
 def write_record(state_dir, record):
     state = Path(state_dir)
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
-    name = 'cutover-' + record['started_at'].replace(':', '').replace('+00:00', 'Z') + '.json'
-    path = state / name
+    stamp = record['started_at'].replace('+00:00', 'Z').replace(':', '')
+    path = state / ('cutover-' + stamp + '.json')
     path.write_text(json.dumps(record, indent=2, sort_keys=True) + '\n')
     os.chmod(path, 0o600)
     return path
 
 
 def parse(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+                                     fromfile_prefix_chars='@')
     parser.add_argument('--to', required=True, help='this host name as written in the fence record')
     parser.add_argument('--fence-record', required=True)
     parser.add_argument('--peer-health', required=True, help='peer relay /v2/health over the tailnet')
-    parser.add_argument('--edge-health', help='public relay /v2/health through Cloudflare Access')
+    parser.add_argument('--edge-health', help='public relay /v2/health through Cloudflare Access (required to probe)')
     parser.add_argument('--edge-token-file', help='CF_ACCESS_CLIENT_ID/SECRET file for --edge-health (never printed)')
     parser.add_argument('--probe-tries', type=int, default=3)
     parser.add_argument('--probe-interval', type=float, default=60.0)
     parser.add_argument('--probe-timeout', type=float, default=5.0)
-    parser.add_argument('--skip-probe', action='store_true', help='drills: do not require relay-down')
+    parser.add_argument('--skip-probe', action='store_true', help='drills: do not require relay-down (no re-probe)')
     parser.add_argument('--inbox', required=True, help='received snapshots directory')
     parser.add_argument('--target-data-dir', required=True)
     parser.add_argument('--target-policy-dir', required=True)
@@ -353,10 +435,17 @@ def parse(argv=None):
     parser.add_argument('--cf-dns-token-file', help='file with CF_DNS_TOKEN=… (DNS edit scope only)')
     parser.add_argument('--hostname', action='append', default=[], help='relay hostname to re-point (repeatable)')
     parser.add_argument('--tunnel-target', help='<tunnel-id>.cfargotunnel.com of THIS host')
-    parser.add_argument('--fence-wait', type=float, default=120.0)
+    parser.add_argument('--fence-wait', type=float, default=300.0,
+                        help='resolver TTL window (pre-create the TXT with TTL 60)')
+    parser.add_argument('--fence-settle', type=int, default=3, help='consecutive matching fence reads required')
     parser.add_argument('--edge-wait', type=float, default=180.0)
-    parser.add_argument('--peer-snapshot-cmd', help='best-effort: make the peer take one last snapshot first')
-    parser.add_argument('--peer-stop-cmd', help='best-effort: stop the peer relay first (planned moves)')
+    parser.add_argument('--peer-snapshot-cmd', help='make the peer take one last snapshot first (planned moves)')
+    parser.add_argument('--accept-replan', action='store_true',
+                        help='proceed when the peer snapshot lands a newer archive')
+    parser.add_argument('--peer-stop-cmd',
+                        help='stop the peer relay first; failure is fatal unless --peer-unreachable-ok')
+    parser.add_argument('--peer-unreachable-ok', action='store_true',
+                        help='the peer HOST is known dead (not just unreachable)')
     parser.add_argument('--client-hook', action='append', default=[], help='re-point bots/bridges (repeatable)')
     parser.add_argument('--state', help='record directory (default: <inbox>/../state)')
     parser.add_argument('--dry-run', action='store_true', help='probe + plan only, change nothing')
@@ -365,6 +454,11 @@ def parse(argv=None):
     args = parser.parse_args(argv)
     if not args.state:
         args.state = str(Path(args.inbox).parent / 'state')
+    if args.probe_tries < 1:
+        parser.error('--probe-tries must be >= 1')
+    if not args.skip_probe and not args.edge_health:
+        parser.error('--edge-health is required to probe (tailnet-only evidence cannot prove the relay is down); '
+                     'use --skip-probe only for drills')
     if not (args.dry_run or args.probe_only):
         for name in ('cf_zone_id', 'cf_dns_token_file', 'tunnel_target'):
             if not getattr(args, name):
@@ -385,11 +479,14 @@ def main(argv=None):
     status = record['status']
     if status.startswith('not-down'):
         return EXIT_NOT_DOWN
-    if status == 'unconfirmed':
-        print('\nre-run with --confirm ' + record['plan']['confirm'] + ' to execute the cutover above', file=sys.stderr)
+    if status in ('unconfirmed', 'replan-unconfirmed'):
+        token = (record.get('replan') or record['plan'])['confirm']
+        print('\nre-run with --confirm ' + token + ' to execute the plan above', file=sys.stderr)
         return EXIT_UNCONFIRMED
     if status in ('dry-run', 'complete'):
         return 0
+    if status == 'complete-with-hook-failures':
+        return EXIT_HOOKS
     return EXIT_FAILED
 
 

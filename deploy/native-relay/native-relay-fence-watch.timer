@@ -1,0 +1,11 @@
+[Unit]
+Description=native-relay fence watch every minute (#440)
+
+[Timer]
+OnCalendar=*:*:00
+AccuracySec=5s
+Persistent=false
+Unit=native-relay-fence-watch.service
+
+[Install]
+WantedBy=timers.target

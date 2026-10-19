@@ -1,7 +1,7 @@
 # #440 — 5분 주기(오너 결정 D1, 2026-10-19; 0단계는 15분). RPO(복구 시점 목표) = 이 주기.
 # 실측(서서 10-19): 33 MB 복사·전송 1회에 CPU 3.3 s — 12회/시간이면 무리 없다. 변경은 이 타이머의 드롭인으로.
 [Unit]
-Description=Periodic native-relay off-host snapshot (#440 stage 0)
+Description=Periodic native-relay off-host snapshot (#440)
 
 [Timer]
 OnCalendar=*:0/5

@@ -295,18 +295,25 @@ def parse(argv=None):
     return args
 
 
-def fenced_out(args):
-    """True when a fence is configured and names another host (standby must not push stale copies).
+def fence_state(args):
+    """0 = active here (snapshot), 1 = another host is active (skip quietly), 2 = unreadable (skip loudly).
 
-    A lookup failure also counts as fenced out: an unproven host neither serves nor snapshots.
+    An unproven host neither serves nor snapshots, but the active host losing snapshots during a DoH
+    outage must be visible: 2 is reported as a failure so the timer/watchdog sees the RPO eroding.
     """
     if not args.fence:
-        return False
+        return 0
     from native_relay_fence import check
     code, message = check(args.fence, args.fence_record)
     if code:
         print('snapshot skipped — ' + message, file=sys.stderr)
-    return bool(code)
+        state = Path(args.state)
+        state.mkdir(parents=True, exist_ok=True)
+        skipped = state / 'skipped-latest.json'
+        skipped.write_text(json.dumps({'at': utcnow().isoformat(timespec='seconds'), 'fence_exit': code,
+                                       'message': message}) + '\n')
+        os.chmod(skipped, 0o600)
+    return code
 
 
 def main(argv=None):
@@ -314,8 +321,9 @@ def main(argv=None):
     if args.prune_only:
         print(json.dumps({'pruned': prune(args.dest, args.keep_hours, args.keep_days)}))
         return 0
-    if fenced_out(args):
-        return 0
+    fenced = fence_state(args)
+    if fenced:
+        return 0 if fenced == 1 else 1
     Path(args.state).mkdir(parents=True, exist_ok=True)
     with open(Path(args.state) / '.lock', 'w') as lock:
         try:

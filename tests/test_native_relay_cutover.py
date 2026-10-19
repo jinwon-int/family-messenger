@@ -124,7 +124,7 @@ class CutoverTests(unittest.TestCase):
 
     def down_status(self):
         return Status({'http://100.64.0.1:18921/v2/health': [None],
-                       'https://relay.example.test/v2/health': [502, 502, 502, 200],
+                       'https://relay.example.test/v2/health': [502, 502, 502, 502, 200],
                        'http://127.0.0.1:18921/v2/health': [None, 200]})
 
     def test_classification_matrix(self):
@@ -132,6 +132,7 @@ class CutoverTests(unittest.TestCase):
         self.assertEqual(cut.classify(True, False), 'edge-only')
         self.assertEqual(cut.classify(False, True), 'peer-unreachable')
         self.assertEqual(cut.classify(True, True), 'healthy')
+        self.assertEqual(cut.classify(False, None), 'edge-unknown', 'H2: an unprobed edge never means relay-down')
 
     def test_probe_uses_service_token_and_any_200_counts(self):
         args = cut.parse(self.argv('--probe-tries', '3'))
@@ -156,7 +157,7 @@ class CutoverTests(unittest.TestCase):
         cf = FakeCloudflare(); runner = Runner()
         record = cut.cutover(cut.parse(self.argv()), self.io(self.down_status(), cf, runner))
         self.assertEqual(record['status'], 'unconfirmed')
-        self.assertEqual(len(record['plan']['confirm']), 12)
+        self.assertEqual(len(record['plan']['confirm']), 16)
         self.assertEqual(record['plan']['manifest']['policy_revision'], 19)
         self.assertEqual(cf.calls, [])
         self.assertFalse((self.target / 'data').exists())
@@ -184,7 +185,8 @@ class CutoverTests(unittest.TestCase):
         record = cut.cutover(cut.parse(argv), self.io(self.down_status(), cf, runner))
         self.assertEqual(record['status'], 'complete', record)
         self.assertEqual([s['step'] for s in record['steps']],
-                         ['probe', 'plan', 'peer_stop', 'restore', 'fence', 'start', 'dns', 'edge', 'client_hook'])
+                         ['probe', 'plan', 'peer_stop', 'restore', 'fence', 'reprobe', 'start', 'dns', 'edge',
+                          'client_hook'])
         # fence TXT is rewritten BEFORE the relay starts and BEFORE the CNAMEs move
         methods = [(m, p.split('?')[0]) for m, p, _ in cf.calls]
         txt_put = methods.index(('PUT', '/zones/zone123/dns_records/t1'))
@@ -198,7 +200,7 @@ class CutoverTests(unittest.TestCase):
         self.assertEqual(cf.records[('CNAME', 'relay.example.test')]['content'], TUNNEL)
         self.assertEqual(cf.records[('CNAME', 'hande.example.test')]['content'], TUNNEL)
         self.assertTrue(cf.records[('CNAME', 'hande.example.test')]['proxied'])
-        self.assertEqual(record['steps'][6]['detail'],
+        self.assertEqual(record['steps'][7]['detail'],
                          {'relay.example.test': 'updated', 'hande.example.test': 'created'})
         self.assertIn('ssh gongmyoung systemctl restart native-relay-bot', runner.commands)
         db = sqlite3.connect(str(self.target / 'data' / snap.DB_NAME))
@@ -213,7 +215,7 @@ class CutoverTests(unittest.TestCase):
     def test_relay_not_healthy_stops_before_dns(self):
         cf = FakeCloudflare(); runner = Runner()
         status = Status({'http://100.64.0.1:18921/v2/health': [None], 'https://relay.example.test/v2/health': [502],
-                         'http://127.0.0.1:18921/v2/health': [None]})
+                         'http://127.0.0.1:18921/v2/health': [None]})  # peer stays dead through the re-probe
         plan = cut.cutover(cut.parse(self.argv()), self.io(status, cf, runner))['plan']
         record = cut.cutover(cut.parse(self.argv('--confirm', plan['confirm'], '--start-wait', '3')),
                              self.io(status, cf, runner))
@@ -232,12 +234,126 @@ class CutoverTests(unittest.TestCase):
         self.assertEqual(record['status'], 'complete-with-hook-failures')
         self.assertEqual(cf.records[('CNAME', 'relay.example.test')]['content'], TUNNEL)
 
+    # --- regression tests from the adversarial review (2026-10-19) ---
+
+    def test_H1_peer_back_after_fence_stops_before_start(self):
+        cf = FakeCloudflare(); runner = Runner()
+        status = Status({'http://100.64.0.1:18921/v2/health': [None, None, None, 200],
+                         'https://relay.example.test/v2/health': [502]})
+        plan = cut.cutover(cut.parse(self.argv()), self.io(self.down_status(), cf, runner))['plan']
+        record = cut.cutover(cut.parse(self.argv('--confirm', plan['confirm'])), self.io(status, cf, runner))
+        self.assertEqual(record['status'], 'failed')
+        self.assertEqual(record['steps'][-1]['step'], 'reprobe')
+        self.assertNotIn('systemctl start native-relay', runner.commands, 'a second writer must not start')
+        self.assertNotIn(('CNAME', 'relay.example.test'), cf.records)
+
+    def test_H1_peer_stop_failure_is_fatal_unless_host_known_dead(self):
+        cf = FakeCloudflare(); runner = Runner(fail={'ssh seoseo systemctl stop native-relay'})
+        plan = cut.cutover(cut.parse(self.argv()), self.io(self.down_status(), cf, runner))['plan']
+        record = cut.cutover(cut.parse(self.argv('--confirm', plan['confirm'], '--peer-stop-cmd',
+                                                 'ssh seoseo systemctl stop native-relay')),
+                             self.io(self.down_status(), cf, runner))
+        self.assertEqual(record['status'], 'failed')
+        self.assertEqual(record['steps'][-1]['step'], 'peer_stop')
+        self.assertFalse((self.target / 'data').exists(), 'nothing restored after a failed peer stop')
+        record = cut.cutover(cut.parse(self.argv('--confirm', plan['confirm'], '--peer-stop-cmd',
+                                                 'ssh seoseo systemctl stop native-relay', '--peer-unreachable-ok')),
+                             self.io(self.down_status(), cf, Runner(fail={'ssh seoseo systemctl stop native-relay'})))
+        self.assertEqual(record['status'], 'complete')
+
+    def test_H2_edge_health_is_required_to_probe(self):
+        base = [a for a in self.argv() if a not in ('--edge-health', 'https://relay.example.test/v2/health')]
+        with self.assertRaises(SystemExit):
+            cut.parse(base)
+        self.assertTrue(cut.parse(base + ['--skip-probe']).skip_probe)
+
+    def test_M1_run_cmd_never_raises(self):
+        def timeout_runner(command, **kwargs):
+            raise cut.subprocess.TimeoutExpired(command, kwargs.get('timeout'))
+        result = cut.run_cmd('ssh seoseo systemctl start native-relay-snapshot.service', 1, timeout_runner)
+        self.assertIsNone(result['exit']); self.assertIn('timeout', result['error'])
+        result = cut.run_cmd('/no/such/binary --x', 1, lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError('nope')))
+        self.assertIsNone(result['exit']); self.assertIn('FileNotFoundError', result['error'])
+
+    def test_M2_confirm_token_binds_tunnel_hostnames_bump_and_replan_stops(self):
+        cf = FakeCloudflare(); runner = Runner()
+        plan = cut.cutover(cut.parse(self.argv()), self.io(self.down_status(), cf, runner))['plan']
+        for variant in (self.argv('--tunnel-target', 'WRONG.cfargotunnel.com'), self.argv('--bump-seq', '0'),
+                        self.argv('--hostname', 'extra.example.test')):
+            other = cut.cutover(cut.parse(variant), self.io(self.down_status(), cf, runner))['plan']
+            self.assertNotEqual(other['confirm'], plan['confirm'])
+        # peer snapshot lands a newer archive → stop with a new token; nothing restored
+        newer = self.inbox / 'relay-29991231T235959Z.tar.gz'
+
+        def peer_snapshot(command, **kwargs):
+            runner.commands.append(' '.join(command))
+            if 'snapshot' in command[-1]:
+                newer.write_bytes(self.archive.read_bytes())
+                (self.inbox / (newer.name + '.sha256')).write_text(
+                    snap.sha256_file(newer) + '  ' + newer.name + '\n')
+            return mock.Mock(returncode=0, stdout='', stderr='')
+        record = cut.cutover(cut.parse(self.argv('--confirm', plan['confirm'], '--peer-snapshot-cmd',
+                                                 'ssh seoseo systemctl start native-relay-snapshot.service')),
+                             self.io(self.down_status(), cf, peer_snapshot))
+        self.assertEqual(record['status'], 'replan-unconfirmed')
+        self.assertEqual(Path(record['replan']['archive']).name, newer.name)
+        self.assertNotEqual(record['replan']['confirm'], plan['confirm'])
+        self.assertFalse((self.target / 'data').exists())
+
+    def test_M3_redirects_are_not_health(self):
+        class Redirecting:
+            def open(self, request, timeout=None):
+                raise cut.urllib.error.HTTPError(request.full_url, 302, 'Found', {}, None)
+        self.assertEqual(cut.http_status('https://relay.example.test/v2/health', opener=Redirecting().open), 302)
+        self.assertIsInstance(cut.OPENER.handlers[0], cut.urllib.request.BaseHandler)
+        self.assertTrue(any(isinstance(h, cut.NoRedirect) for h in cut.OPENER.handlers))
+
+    def test_M4_probe_tries_below_one_is_rejected(self):
+        with self.assertRaises(SystemExit):
+            cut.parse(self.argv('--probe-tries', '0'))
+
+    def test_M5_fence_requires_consecutive_reads(self):
+        cf = FakeCloudflare(); runner = Runner()
+        plan = cut.cutover(cut.parse(self.argv()), self.io(self.down_status(), cf, runner))['plan']
+        io = self.io(self.down_status(), cf, runner)
+        flaps = iter([0, 1, 0, 0, 0, 0, 0, 0])
+        io['fence_check'] = lambda expect, record: (next(flaps, 0), '')
+        record = cut.cutover(cut.parse(self.argv('--confirm', plan['confirm'], '--fence-settle', '3')), io)
+        self.assertEqual(record['status'], 'complete')
+        fence_step = next(s for s in record['steps'] if s['step'] == 'fence')
+        self.assertEqual(fence_step['detail']['consecutive_reads'], 3)
+        self.assertEqual(cut.parse(self.argv()).fence_wait, 300.0)
+
+    def test_M7_newest_archive_without_sidecar_is_ignored(self):
+        orphan = self.inbox / 'relay-29991231T235959Z.tar.gz'
+        orphan.write_bytes(b'partial')
+        self.assertEqual(cut.latest_archive(self.inbox), self.archive)
+
+    def test_L2_record_filename_has_Z_suffix(self):
+        path = cut.write_record(self.root / 'state', {'started_at': '2026-10-19T12:34:56+00:00'})
+        self.assertEqual(path.name, 'cutover-2026-10-19T123456Z.json')
+
+    def test_L7_quoted_txt_content_counts_as_unchanged(self):
+        cf = FakeCloudflare({('TXT', 'f.example.test'): {'id': 't1', 'type': 'TXT', 'name': 'f.example.test',
+                                                         'content': '"soonwook"', 'proxied': False, 'ttl': 60}})
+        action, _ = cf.records and cut.dns_upsert('dns-token-value', ZONE, 'f.example.test', 'TXT', 'soonwook', False,
+                                                  opener=cf)
+        self.assertEqual(action, 'unchanged')
+
+    def test_L8_hook_output_is_redacted(self):
+        self.assertEqual(cut.redact('curl -H "Authorization: Bearer abc.def" x'),
+                         'curl -H "Authorization: <redacted>" x')
+        self.assertEqual(cut.redact('ssh host cmd --token=abc123'), 'ssh host cmd --token=<redacted>')
+
+    def test_L5_hook_failure_exit_code(self):
+        self.assertEqual(cut.EXIT_HOOKS, 3)
+
     def test_real_cutover_requires_dns_arguments(self):
         with self.assertRaises(SystemExit):
             cut.parse(['--to', 'x', '--fence-record', 'r', '--peer-health', 'u', '--inbox', str(self.inbox),
                        '--target-data-dir', 'a', '--target-policy-dir', 'b'])
         args = cut.parse(['--to', 'x', '--fence-record', 'r', '--peer-health', 'u', '--inbox', str(self.inbox),
-                          '--target-data-dir', 'a', '--target-policy-dir', 'b', '--dry-run'])
+                          '--target-data-dir', 'a', '--target-policy-dir', 'b', '--dry-run', '--skip-probe'])
         self.assertTrue(args.dry_run)
 
 
