@@ -9,12 +9,15 @@
 //! - [`is_transient`] / [`relay_backoff`]: the #392 relay-retry rules.
 //! - [`poll`] (#366 slice 2b): one round of a room's sync state machine over a
 //!   [`RoomHost`] — ack, GET, gap, then each event in order.
+//! - [`send_application`] (#366 slice 2c): encrypt → reserve the dedup key →
+//!   persist → POST over a [`SendHost`], with the 409 outcomes a host replays
+//!   or skips.
 //!
 //! The crate still does not link the MLS facade: a host adapts its group
 //! object to [`MlsGroup`]. Transport, logging, halt markers, state files and
 //! what to do with a decrypted message stay with the host — these functions
 //! only decide and sequence.
-use crate::api::{EventsResponse, RelayError, StoredRow};
+use crate::api::{self, EventPost, EventResponse, EventsResponse, RelayError, StoredRow};
 use crate::http::HttpError;
 use crate::policy::{self, Refusal, StageReport};
 use std::time::Duration;
@@ -41,6 +44,10 @@ pub trait MlsGroup {
     /// Decrypt one application event: `(sender identity, plaintext)`. The
     /// host's adapter owns the facade framing (room id, AAD client_id).
     fn decrypt(&mut self, ciphertext: &[u8]) -> Result<(Vec<u8>, Vec<u8>), ()>;
+    /// Encrypt one application message at the current epoch (advances this
+    /// device's sender ratchet). The adapter owns the framing and the AAD
+    /// client_id (the bot binds its device identity — review H1).
+    fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, ()>;
 }
 
 /// Run one MLS operation with rollback (review 2 B-H1/B-H3): the facade
@@ -180,12 +187,16 @@ pub enum Halt<'a> {
     Gap { first_seq: i64, relay_epoch: i64, from: i64, to: i64 },
 }
 
-/// A host of one room for [`poll`].
-pub trait RoomHost {
+/// One room's sync position and group, as [`poll`] and [`send_application`] reach them.
+pub trait RoomAccess {
     type Group<'g>: MlsGroup where Self: 'g;
     fn sync(&mut self) -> &mut RoomSync;
     /// The room's group, borrowed for one operation.
     fn group(&mut self) -> Self::Group<'_>;
+}
+
+/// A host of one room for [`poll`].
+pub trait RoomHost: RoomAccess {
     /// GET the next events page (`after` = cursor, `ack` when due).
     fn fetch(&mut self, room: &str, after: i64, ack: Option<i64>) -> Result<EventsResponse, RelayError>;
     fn report(&mut self, event: SyncEvent<'_>);
@@ -306,6 +317,70 @@ pub fn poll<H: RoomHost>(host: &mut H, own: &str) -> Result<(), RelayError> {
     Ok(())
 }
 
+/// A host of one room for [`send_application`].
+pub trait SendHost: RoomAccess {
+    /// Reserve the relay's per-device dedup key for this send. Called after the
+    /// encryption succeeded, before [`SendHost::persist`] — a restart must
+    /// not hand out the same key twice (the bot: `<device>-echo-<n>`).
+    fn reserve_client_id(&mut self) -> String;
+    /// Make the group state (the advanced sender ratchet) and the reserved key
+    /// durable. Runs before the ciphertext leaves the process (review 2 B-H2:
+    /// a restart must never re-derive a sender generation that was sent).
+    fn persist(&mut self) -> Result<(), RelayError>;
+    fn post(&mut self, room: &str, post: &EventPost<'_>) -> Result<EventResponse, RelayError>;
+}
+
+/// What became of one [`send_application`].
+#[derive(Debug)]
+pub enum SendOutcome {
+    /// The relay stored it (or recognised a duplicate POST: `response.duplicate`).
+    Sent { client_id: String, response: EventResponse },
+    /// 409 `cas_mismatch`: the room moved under us (a commit we have not seen).
+    /// The host resynchronizes and replays the plaintext at the fresh epoch.
+    Conflict { client_id: String, error: RelayError },
+    /// 409 `client_id_reuse`: an earlier incarnation already delivered this
+    /// key (state restored from a backup, for instance) — the relay has the
+    /// message, the counter is now past it; move on.
+    AlreadyDelivered { client_id: String, error: RelayError },
+}
+
+/// Send one application message to the room (bot `publish_echo` order):
+/// encrypt at the current epoch → reserve the dedup key → mark dirty and
+/// persist → POST with the room's epoch. Any other relay error is the
+/// caller's; a failed encryption reserves nothing and persists nothing.
+pub fn send_application<H: SendHost>(host: &mut H, own: &str, plaintext: &[u8]) -> Result<SendOutcome, RelayError> {
+    // The bot's log name for this failure predates the move; kept for parity.
+    let framed = host.group().encrypt(plaintext).map_err(|_| RelayError::Local("encrypt echo"))?;
+    let client_id = host.reserve_client_id();
+    host.sync().dirty = true;
+    host.persist()?;
+    let (room, epoch) = {
+        let sync = host.sync();
+        (sync.room.clone(), sync.epoch)
+    };
+    let post = EventPost {
+        device: own,
+        client_id: &client_id,
+        kind: "application",
+        epoch,
+        revision: None,
+        group_id: &room,
+        targets: Vec::new(),
+        members: Vec::new(),
+        bytes: framed,
+    };
+    match host.post(&room, &post) {
+        Ok(response) => Ok(SendOutcome::Sent { client_id, response }),
+        Err(error @ RelayError::Api { status: 409, .. }) if api::error_code(&error) == Some("cas_mismatch") => {
+            Ok(SendOutcome::Conflict { client_id, error })
+        }
+        Err(error @ RelayError::Api { status: 409, .. }) if api::error_code(&error) == Some("client_id_reuse") => {
+            Ok(SendOutcome::AlreadyDelivered { client_id, error })
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// #392: first wait after the relay could not be reached; doubles per
 /// consecutive unreachable round up to `RELAY_BACKOFF_MAX`.
 pub const RELAY_BACKOFF_FIRST: Duration = Duration::from_millis(500);
@@ -343,6 +418,7 @@ mod tests {
         reject_stage: bool,
         reject_merge: bool,
         reject_restore: bool,
+        reject_encrypt: bool,
         staged: bool,
         merged: u32,
         discarded: u32,
@@ -400,6 +476,10 @@ mod tests {
             if welcome == b"poison" { self.retired = true; return Err(()) }
             Ok(())
         }
+        fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, ()> {
+            if self.reject_encrypt { return Err(()) }
+            Ok([b"ct:".as_slice(), plaintext].concat())
+        }
         /// `ok:<text>` decrypts to `(b"peer", text)`; anything else is rejected.
         fn decrypt(&mut self, ciphertext: &[u8]) -> Result<(Vec<u8>, Vec<u8>), ()> {
             match ciphertext.strip_prefix(b"ok:") {
@@ -420,6 +500,7 @@ mod tests {
         fn members(&self) -> Result<Vec<u8>, ()> { (**self).members() }
         fn join(&mut self, welcome: &[u8]) -> Result<(), ()> { (**self).join(welcome) }
         fn decrypt(&mut self, ciphertext: &[u8]) -> Result<(Vec<u8>, Vec<u8>), ()> { (**self).decrypt(ciphertext) }
+        fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, ()> { (**self).encrypt(plaintext) }
     }
 
     /// A host that serves scripted pages and records every callback.
@@ -446,10 +527,13 @@ mod tests {
         }
     }
 
-    impl RoomHost for ScriptHost {
+    impl RoomAccess for ScriptHost {
         type Group<'g> = &'g mut FakeGroup;
         fn sync(&mut self) -> &mut RoomSync { &mut self.sync }
         fn group(&mut self) -> &mut FakeGroup { &mut self.group }
+    }
+
+    impl RoomHost for ScriptHost {
         fn fetch(&mut self, room: &str, after: i64, ack: Option<i64>) -> Result<EventsResponse, RelayError> {
             assert_eq!(room, "family");
             self.fetched.push((after, ack));
@@ -674,6 +758,85 @@ mod tests {
         assert_eq!(host.log, ["rejected 1 welcome"]);
         assert!(!host.sync.joined && !host.group.retired);
         assert_eq!(host.after_pages, 0, "not joined: no queued sends to replay");
+    }
+
+    /// A sender that records the order of reserve / persist / post.
+    struct ScriptSender {
+        sync: RoomSync,
+        group: FakeGroup,
+        steps: Vec<String>,
+        counter: u64,
+        reply: Option<Result<EventResponse, RelayError>>,
+        posted: Vec<(String, String, i64, Vec<u8>)>,
+    }
+
+    impl ScriptSender {
+        fn new(reply: Result<EventResponse, RelayError>) -> ScriptSender {
+            ScriptSender {
+                sync: RoomSync { room: "family".into(), epoch: 4, joined: true, ..RoomSync::default() },
+                group: FakeGroup::default(), steps: Vec::new(), counter: 6, reply: Some(reply), posted: Vec::new(),
+            }
+        }
+    }
+
+    impl RoomAccess for ScriptSender {
+        type Group<'g> = &'g mut FakeGroup;
+        fn sync(&mut self) -> &mut RoomSync { &mut self.sync }
+        fn group(&mut self) -> &mut FakeGroup { &mut self.group }
+    }
+
+    impl SendHost for ScriptSender {
+        fn reserve_client_id(&mut self) -> String {
+            self.counter += 1;
+            self.steps.push(format!("reserve {}", self.counter));
+            format!("bot-echo-{}", self.counter)
+        }
+        fn persist(&mut self) -> Result<(), RelayError> {
+            assert!(self.sync.dirty, "the send marked the state dirty before persisting");
+            self.steps.push("persist".into());
+            self.sync.dirty = false;
+            Ok(())
+        }
+        fn post(&mut self, room: &str, post: &EventPost<'_>) -> Result<EventResponse, RelayError> {
+            self.steps.push("post".into());
+            self.posted.push((room.into(), post.client_id.into(), post.epoch, post.bytes.clone()));
+            assert_eq!((post.device, post.kind, post.group_id), ("bot", "application", "family"));
+            self.reply.take().expect("one scripted reply")
+        }
+    }
+
+    #[test]
+    fn send_persists_before_the_ciphertext_leaves() {
+        let mut host = ScriptSender::new(Ok(EventResponse { seq: 12, epoch: 4, revision: 0, duplicate: false }));
+        match send_application(&mut host, "bot", b"hi").expect("sent") {
+            SendOutcome::Sent { client_id, response } => assert_eq!((client_id.as_str(), response.seq), ("bot-echo-7", 12)),
+            other => panic!("expected Sent, got {other:?}"),
+        }
+        assert_eq!(host.steps, ["reserve 7", "persist", "post"], "B-H2 order");
+        assert_eq!(host.posted, [("family".to_string(), "bot-echo-7".to_string(), 4, b"ct:hi".to_vec())]);
+    }
+
+    #[test]
+    fn send_reports_the_two_409s_and_passes_other_errors() {
+        let conflict = RelayError::Api { status: 409, code: "cas_mismatch".into() };
+        let mut host = ScriptSender::new(Err(conflict));
+        assert!(matches!(send_application(&mut host, "bot", b"hi").expect("conflict is an outcome"),
+                         SendOutcome::Conflict { ref client_id, .. } if client_id == "bot-echo-7"));
+        let reuse = RelayError::Api { status: 409, code: "client_id_reuse".into() };
+        let mut host = ScriptSender::new(Err(reuse));
+        assert!(matches!(send_application(&mut host, "bot", b"hi").expect("reuse is an outcome"), SendOutcome::AlreadyDelivered { .. }));
+        let mut host = ScriptSender::new(Err(RelayError::Api { status: 403, code: "not_a_member".into() }));
+        assert!(matches!(send_application(&mut host, "bot", b"hi"), Err(RelayError::Api { status: 403, .. })));
+        assert_eq!(host.steps, ["reserve 7", "persist", "post"], "persisted even when the POST fails");
+    }
+
+    #[test]
+    fn send_reserves_nothing_when_encryption_fails() {
+        let mut host = ScriptSender::new(Ok(EventResponse { seq: 1, epoch: 4, revision: 0, duplicate: false }));
+        host.group.reject_encrypt = true;
+        assert!(matches!(send_application(&mut host, "bot", b"hi"), Err(RelayError::Local("encrypt echo"))));
+        assert!(host.steps.is_empty() && host.posted.is_empty());
+        assert_eq!(host.counter, 6);
     }
 
     #[test]
