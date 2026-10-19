@@ -8,6 +8,7 @@
 
 ## 먼저 볼 것
 
+- [DECISION-2026-10-19-AGENT-CHAT-TO-HANDE.md](DECISION-2026-10-19-AGENT-CHAT-TO-HANDE.md) — 에이전트 채팅(오너↔플릿 노드)을 Matrix에서 「한데」로 옮기는 단계형 컷오버: 설계 한도 5개(H1~H5)·잃는 기능·0~4단계 게이트·오너 확정 항목. 가족 Matrix는 범위 밖 — **초안(오너 확정 전)**
 - [DECISION-2026-09-21-MATRIX-PLUS-NATIVE-E2EE.md](DECISION-2026-09-21-MATRIX-PLUS-NATIVE-E2EE.md) — 결정 E: Matrix는 운영 전달층으로 유지, 독자 E2EE는 병행 개발. 해동·CI·컷오버는 이 문서의 범위 밖 — **현행**
 - [DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md](DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md) — 결정 D: 운영 전달·암호화는 Matrix 스택(단일 바이너리 홈서버 + `matrix-sdk-crypto`), 화면·AI 층은 직접. 대안 비교·대가·홈서버 평가 결과(Tuwunel 1.9.1 확정)·코드 처분표. 개발 동결 문장은 결정 E가 대체 — **현행**(운영 전달층)
 - [이슈 #92](https://github.com/jinwon-int/family-messenger/issues/92) — 로드맵 진행 추적과 결정에 이른 대화 기록. 문서와 어긋나면 #92가 우선 — **현행**
