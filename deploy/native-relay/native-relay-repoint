@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# native-relay-repoint — family-messenger #440 ⑤: 이 노드의 native-mls 봇을 다른 한데 릴레이로 재지정한다(전환 스크립트 --client-hook).
+# 사용: native-relay-repoint <http://tailnet-host:port> [--force]   |   native-relay-repoint --check
+#  - URL은 tailnet 평문 http만(봇은 tailnet 안에서 http를 쓴다). 쓰기 전에 <url>/v2/health 200 을 확인한다(미기동 릴레이로 돌리지 않는다).
+#  - 같은 URL이면 아무것도 하지 않는다(--force 는 재시작 강제: 설치 검증용).
+#  - env 파일(/etc/native-relay/relay.env)을 백업 후 갱신 → native-relay-bot 재시작 → 새 PID 로그에서 steward_ready 확인(relay_unreachable 이면 실패).
+#  - 비밀값은 다루지 않는다(URL·경로만). 한데 브리지(ccc-hande-bridge)는 릴레이 주소를 갖지 않으므로 건드리지 않는다.
+set -euo pipefail
+ENV_FILE=/etc/native-relay/relay.env
+UNIT=native-relay-bot.service
+current() { sed -nE 's/^NATIVE_RELAY_URL=//p' "$ENV_FILE" 2>/dev/null | tail -1; }
+pid() { systemctl show -p MainPID --value "$UNIT"; }
+[ $# -ge 1 ] || { echo "usage: $0 <http://tailnet-host:port> [--force] | --check" >&2; exit 64; }
+if [ "$1" = --check ]; then
+  printf 'current=%s unit=%s pid=%s\n' "$(current)" "$(systemctl is-active "$UNIT" || true)" "$(pid)"; exit 0
+fi
+URL=$1; FORCE=0; [ "${2:-}" = --force ] && FORCE=1
+[[ "$URL" =~ ^http://[0-9A-Za-z.-]+(:[0-9]+)?$ ]] || { echo "refused: relay URL must be a plain http tailnet URL (got: $URL)" >&2; exit 65; }
+[ "$(id -u)" = 0 ] || { echo "run as root (sudo)" >&2; exit 77; }
+CUR=$(current)
+if [ "$CUR" = "$URL" ] && [ "$FORCE" = 0 ]; then echo "unchanged: $URL"; exit 0; fi
+code=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$URL/v2/health" || true)
+[ "$code" = 200 ] || { echo "refused: $URL/v2/health -> ${code:-none} (relay not serving)" >&2; exit 69; }
+TS=$(date -u +%Y%m%dT%H%M%SZ)
+install -d -m 0755 /etc/native-relay
+[ -f "$ENV_FILE" ] && cp -a "$ENV_FILE" "$ENV_FILE.bak-$TS"
+umask 022
+printf '# written by native-relay-repoint %s (prev: %s)\nNATIVE_RELAY_URL=%s\n' "$TS" "${CUR:-none}" "$URL" > "$ENV_FILE.tmp"
+mv -f "$ENV_FILE.tmp" "$ENV_FILE"
+OLD_PID=$(pid)
+systemctl restart "$UNIT"
+for _ in $(seq 1 30); do
+  NEW_PID=$(pid)
+  if [ "$NEW_PID" != 0 ] && [ "$NEW_PID" != "$OLD_PID" ]; then
+    log=$(journalctl -u "$UNIT" --no-pager -o cat "_PID=$NEW_PID" 2>/dev/null || true)
+    if grep -q '"event":"relay_unreachable"' <<<"$log"; then
+      echo "FAILED: bot (pid $NEW_PID) reports relay_unreachable for $URL — env updated, relay not reachable" >&2; exit 1
+    fi
+    if grep -q '"event":"steward_ready"' <<<"$log"; then
+      echo "repointed: ${CUR:-none} -> $URL (pid $OLD_PID -> $NEW_PID, steward_ready)"; exit 0
+    fi
+  fi
+  sleep 1
+done
+echo "restarted but steward_ready not seen within 30s: state=$(systemctl is-active "$UNIT" || true) pid=$(pid)" >&2; exit 1
