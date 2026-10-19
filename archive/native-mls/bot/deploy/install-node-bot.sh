@@ -14,10 +14,18 @@
 #      from the node's service token env file (--token-env, 0600, never printed)
 #   4. native-relay-bot.service (steward <node>-bot, identity/rooms/jwt files,
 #      hardening as the gongmyoung lane) + drop-in 30-agent.conf (responder socket)
-#   5. daemon-reload, one jwt-refresh run, enable timer + bot, then writes the
-#      enrollment candidate JSON the relay operator needs
+#   5. daemon-reload, one jwt-refresh run, identity bootstrap, enable timer + bot,
+#      then writes the enrollment candidate JSON the relay operator needs
 #      ({actor, device_id, signing_key, subject}) to
 #      /var/lib/native-relay-bot/bot/enrollment.json (0600) — NOT to stdout.
+#
+# Identity bootstrap: steward mode only *loads* an identity file (it refuses to
+# start without one — `identity file unreadable`, observed on the first three
+# pilot nodes 2026-10-19). A fresh signer is created the way `session` mode
+# creates one: a short bounded `session <node> <node>-bot --state-file …` run
+# (NATIVE_MLS_BOT_MAX_SECS=8) writes the state file before its first relay POST,
+# then `extract-identity` splits the signer out into identity.json and the state
+# file is destroyed. Idempotent: an existing identity.json is kept.
 #
 # The bot starts before it is enrolled: every POST answers 403 and it retries,
 # which is the documented first-boot state. After `native-devices -enroll-first`
@@ -163,13 +171,34 @@ if [ "$DRY_RUN" = 1 ]; then say "dry-run: not reloading/starting"; exit 0; fi
 systemctl daemon-reload
 "$BIN_DIR/jwt-refresh.sh"
 systemctl enable --now native-relay-jwt-refresh.timer >/dev/null
+# identity bootstrap (see header): session run → state file → extract-identity
+IDENTITY="$STATE_DIR/bot/identity.json"
+if [ -s "$IDENTITY" ]; then
+  say "identity: keeping existing $IDENTITY"
+else
+  systemctl stop native-relay-bot.service 2>/dev/null || true
+  boot_state="$STATE_DIR/bot/bootstrap-state.json" boot_log="$STATE_DIR/bot/bootstrap.log"
+  rm -f "$boot_state" "$boot_log"
+  # Exits non-zero on its deadline (403 until enrolled) — expected; the state file
+  # is flushed before the first POST, which is all this step needs.
+  runuser -u "$BOT_USER" -- env NATIVE_MLS_BOT_MAX_SECS=8 "$BIN_DIR/native-mls-bot" "$RELAY_URL" session "$NODE" "$DEVICE" \
+    --state-file "$boot_state" --access-jwt-file "$STATE_DIR/bot/jwt" >"$boot_log" 2>&1 || true
+  grep -q '"event":"identity"' "$boot_log" && [ -s "$boot_state" ] \
+    || { sed -n '1,3p' "$boot_log" | cut -c1-200 >&2; rm -f "$boot_state" "$boot_log"; die "identity bootstrap: session run produced no identity/state (relay URL or jwt?)"; }
+  runuser -u "$BOT_USER" -- "$BIN_DIR/native-mls-bot" extract-identity "$NODE" "$DEVICE" --state-file "$boot_state" --identity-file "$IDENTITY" >/dev/null \
+    || { rm -f "$boot_state" "$boot_log"; die "identity bootstrap: extract-identity failed"; }
+  chmod 600 "$IDENTITY"
+  shred -u "$boot_state" 2>/dev/null || rm -f "$boot_state"; rm -f "$boot_log"
+  say "identity: created $IDENTITY (0600, signer only)"
+fi
 systemctl enable --now native-relay-bot.service >/dev/null
+# steward mode announces itself with `steward_ready` (public_key, rooms); wait for this start's line
 for _ in $(seq 1 30); do
-  key="$(journalctl -u native-relay-bot --no-pager -o cat 2>/dev/null | grep '"event":"identity"' | tail -1 | sed -E 's/.*"public_key":"([0-9a-f]{64})".*/\1/')"
+  key="$(journalctl -u native-relay-bot --since '-2min' --no-pager -o cat 2>/dev/null | grep '"event":"steward_ready"' | tail -1 | sed -E 's/.*"public_key":"([0-9a-f]{64})".*/\1/')"
   [ -n "$key" ] && [[ "$key" =~ ^[0-9a-f]{64}$ ]] && break
   sleep 1
 done
-[ -n "${key:-}" ] && [[ "$key" =~ ^[0-9a-f]{64}$ ]] || die "bot started but no identity event in its journal yet — check: journalctl -u native-relay-bot"
+[ -n "${key:-}" ] && [[ "$key" =~ ^[0-9a-f]{64}$ ]] || die "bot started but no steward_ready event in its journal yet — check: journalctl -u native-relay-bot"
 subject="$(cat "$STATE_DIR/bot/common_name")"
 write_file "$STATE_DIR/bot/enrollment.json" 0600 <<EOF
 {"actor": "$NODE", "device_id": "$DEVICE", "signing_key": "$key", "subject": "$subject"}
