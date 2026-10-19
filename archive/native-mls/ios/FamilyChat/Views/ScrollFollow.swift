@@ -12,4 +12,11 @@ enum ScrollFollow {
         guard following, let index = ids.lastIndex(of: loaded) else { return false }
         return index >= ids.count - tailRows
     }
+
+    /// 화면 키보드가 올라오면(또는 작성창이 여러 줄로 커지면) 메시지 칸이 아래에서 줄어든다. 스크롤 위치는 위 기준으로 남아
+    /// 최신 메시지가 키보드 뒤로 숨는다 — 칸이 줄었고 최하단을 따라가는 중이면 다시 최하단으로 간다(오너 요청, build 28).
+    /// 처음 재는 높이(`old == 0`)와 0.5pt 미만의 흔들림은 무시한다. 칸이 커질 때(키보드 내림)는 스크롤이 알아서 맞춘다.
+    static func shouldRescrollOnResize(old: Double, new: Double, following: Bool) -> Bool {
+        following && old > 0 && new < old - 0.5
+    }
 }

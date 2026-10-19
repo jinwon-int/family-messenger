@@ -18,6 +18,8 @@ struct RoomView: View {
     @State private var messages: [AppModel.TimelineItem] = []
     /// #398: 최하단을 따라가는 중인가 — 방 진입·새 메시지 때 켜지고, 사용자가 끌어 올리면 꺼진다.
     @State private var followLatest = true
+    /// 메시지 칸의 마지막 높이(키보드·작성창 높이 변화 감지용, `ScrollFollow.shouldRescrollOnResize`).
+    @State private var viewportHeight: Double = 0
     @State private var showInvite = false
     @State private var pickedPhoto: PhotosPickerItem?
     @State private var showPhotoPicker = false
@@ -70,6 +72,23 @@ struct RoomView: View {
                 }
                 // 손가락으로 끌면(위로 읽으러 감) 늦은 이미지 로딩이 화면을 끌어내리지 않게 한다.
                 .simultaneousGesture(DragGesture(minimumDistance: 10).onChanged { _ in followLatest = false })
+                // 키보드가 올라오거나 작성창이 커져 칸이 줄면 최신 메시지를 키보드 바로 위로 다시 맞춘다.
+                .background(GeometryReader { geo in
+                    Color.clear.preference(key: ViewportHeightKey.self, value: Double(geo.size.height))
+                })
+                .onPreferenceChange(ViewportHeightKey.self) { height in
+                    let old = viewportHeight
+                    viewportHeight = height
+                    if ScrollFollow.shouldRescrollOnResize(old: old, new: height, following: followLatest) {
+                        scrollToLatest(proxy, animated: true)
+                    }
+                }
+                // 쓰려고 작성창을 누르면 = 최신 대화에 답하는 중: 따라가기를 다시 켜고 최하단으로 간다(하드웨어 키보드는 칸이 안 줄어 여기서만 맞춘다).
+                .onChange(of: composerFocused) { focused in
+                    guard focused else { return }
+                    followLatest = true
+                    scrollToLatest(proxy, animated: true)
+                }
                 .onAppear {
                     reload()
                     followLatest = true
@@ -437,4 +456,10 @@ struct DayDivider: View {
         .padding(.vertical, 6)
         .accessibilityAddTraits(.isHeader)
     }
+}
+
+/// 메시지 칸(ScrollView 바깥 틀)의 높이를 RoomView 로 올린다.
+struct ViewportHeightKey: PreferenceKey {
+    static var defaultValue: Double = 0
+    static func reduce(value: inout Double, nextValue: () -> Double) { value = nextValue() }
 }
