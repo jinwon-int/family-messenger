@@ -349,6 +349,60 @@ impl Session {
         Ok(frame(&entries))
     }
 
+    /// Identity-only entries (#431 stage 4; the durable-lane twin of
+    /// `Device::export_identity`, #372 P1): the signer and nothing else — no
+    /// group, no key packages — framed like `export`. A second store opened from
+    /// them (`open` with an empty group id) shares this device's signing key, so
+    /// one policy-chain enrollment covers several rooms. Worker-internal: the
+    /// bytes never cross the page boundary (PERSISTENCE.md "다중 스토어"). The
+    /// credential must be the one `identity` names, like `save_identity`.
+    pub fn export_identity(&self, identity: &str) -> Result<Vec<u8>, Rejected> {
+        if self.in_flight || self.device.retired || !valid_identity(identity)
+            || self.device.credential.credential != BasicCredential::new(identity.as_bytes().to_vec()).into() {
+            return Err(rejected(()));
+        }
+        let provider = Provider::default();
+        self.device.signer.store(provider.storage()).map_err(rejected)?;
+        let entries: Vec<_> = provider.storage().entries().into_iter().map(|(k, v)| (k, Some(v))).collect();
+        // Identity-bound blob: `u32 LE len ‖ identity ‖ frame(entries)`, so a
+        // store cannot be opened under another identity string with this key
+        // (`open` alone checks the credential only once a group exists).
+        let mut out = (identity.len() as u32).to_le_bytes().to_vec();
+        out.extend_from_slice(identity.as_bytes());
+        out.extend(frame(&entries));
+        Ok(out)
+    }
+
+    /// Open a fresh, group-less store from `export_identity` bytes: the embedded
+    /// identity must equal `identity`, the signer must match `public_key`, and
+    /// the entries must hold nothing but the signer (no group, no key packages).
+    /// Its initial entries are in flight like `create`: persist, then `commit`.
+    pub fn open_identity(identity: &str, public_key: &[u8], version: u32, bytes: &[u8]) -> Result<Session, Rejected> {
+        bounded(bytes, OPEN_LIMIT)?;
+        if bytes.len() < 4 { return Err(rejected(())); }
+        let len = u32::from_le_bytes(bytes[..4].try_into().map_err(rejected)?) as usize;
+        if len == 0 || len > MAX_IDENTITY || bytes.len() < 4 + len || &bytes[4..4 + len] != identity.as_bytes() {
+            return Err(rejected(()));
+        }
+        let entries = unframe(&bytes[4 + len..], false).ok_or_else(|| rejected(()))?
+            .into_iter().map(|(k, v)| (k, v.expect("no deletions"))).collect::<Vec<_>>();
+        let count = entries.len();
+        let loaded = staging::restore(identity, public_key, None, version, entries)?;
+        if loaded.group.is_some() || loaded.outstanding_key_packages() != 0 { return Err(rejected(())); }
+        // Re-stage the signer as in-flight changes (exactly what `create` journals) so the
+        // caller persists them the same way; a blob carrying anything beyond the signer
+        // is refused by the entry count.
+        let provider = Provider::default();
+        provider.storage().enable_journal();
+        loaded.signer.store(provider.storage()).map_err(rejected)?;
+        if provider.storage().len() != count { return Err(rejected(())); }
+        // The signer is re-read from the fresh provider (SignatureKeyPair is not Clone).
+        let signer = SignatureKeyPair::read(provider.storage(), public_key, SUITE.signature_algorithm())
+            .ok_or_else(|| rejected(()))?;
+        let device = Device { provider, signer, credential: loaded.credential.clone(), group: None, staged: None, retired: false };
+        Ok(Session { device, in_flight: true, staging: false, baseline_group: None, migrated: false, full_serializations: 1 })
+    }
+
     pub fn current_epoch(&self) -> String { self.epoch() }
     pub fn public_key(&self) -> Vec<u8> { self.device.signer.public().to_vec() }
     pub fn group_id(&self) -> Vec<u8> {

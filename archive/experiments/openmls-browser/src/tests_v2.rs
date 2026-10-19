@@ -1624,3 +1624,54 @@ fn identity_snapshot_shares_one_signer_across_rooms() {
     let resumed = Device::import_state("bot-a", &room1.export_state("bot-a").unwrap()).unwrap();
     assert_eq!(resumed.group.as_ref().unwrap().group_id(), room1.group.as_ref().unwrap().group_id());
 }
+
+/// #431 stage 4: the durable lane's identity-only export. A store opened from
+/// those bytes shares the signer (one policy-chain enrollment, several rooms),
+/// holds no group and no key packages, the blob is bound to the identity string,
+/// and a room's full `export` is not an identity (it carries the group).
+#[test]
+fn durable_lane_export_identity_shares_signer_across_stores() {
+    let mut a = Peer::new("owner-web-1");
+    assert!(a.session.export_identity("owner-web-2").is_err(), "credential is bound to the identity");
+    // Mint a lobby-style key package and found a group: the identity export must leave both out.
+    let _kp = a.step("key_package", &[]);
+    a.step("create", &[]);
+    assert_eq!(a.session.key_packages_outstanding(), 1);
+    let identity = a.session.export_identity("owner-web-1").expect("identity export");
+    let pk = a.session.public_key();
+    let fmt = Session::format_version();
+    assert!(Session::open_identity("owner-web-2", &pk, fmt, &identity).is_err(), "foreign identity refused");
+    assert!(Session::open_identity("owner-web-1", &Peer::new("x-1").session.public_key(), fmt, &identity).is_err(), "foreign key refused");
+    assert!(Session::open_identity("owner-web-1", &pk, fmt, &a.session.export().unwrap()).is_err(), "a full room export is not an identity");
+    let mut room2 = Session::open_identity("owner-web-1", &pk, fmt, &identity).expect("open a second store from the identity");
+    assert_eq!(room2.public_key(), pk);
+    assert!(room2.group_id().is_empty());
+    assert_eq!(room2.key_packages_outstanding(), 0);
+    // In flight like `create`: the caller persists the pending changes, then commits.
+    let mut mirror2 = Mirror::new();
+    persist(&mut mirror2, &room2.pending_changes());
+    room2.commit().expect("commit identity store");
+    assert_eq!(room2.entry_count() as usize, mirror2.len());
+    // The second store founds its own group with the same signer; a peer sees that key in its roster.
+    let step = room2.apply("create", &[]).expect("create in room 2");
+    persist(&mut mirror2, &step.changes()); drop(step); room2.commit().unwrap();
+    assert_ne!(room2.group_id(), a.session.group_id());
+    let mut b = Peer::new("mom-web-1");
+    let kp = b.step("key_package", &[]);
+    let welcome = { let s = room2.apply("invite", &kp).expect("invite"); let out = s.output(); persist(&mut mirror2, &s.changes()); drop(s); room2.commit().unwrap(); out };
+    b.step("join", &welcome);
+    let seen: Vec<Vec<u8>> = b.session_store_entries().iter().map(|(k, _)| k.clone()).collect();
+    assert!(!seen.is_empty());
+    let ct = { let s = room2.apply("encrypt", &enc("r2", "owner-web-1", b"hi from room 2")).unwrap(); let out = s.output(); persist(&mut mirror2, &s.changes()); drop(s); room2.commit().unwrap(); out };
+    assert_eq!(plain(&b.step("decrypt", &dec("r2", &ct))), b"hi from room 2");
+    // Room 2 reopens from its own persisted entries (the clone is a normal store from here on).
+    let reopened = Session::open("owner-web-1", &pk, &room2.group_id(), fmt, &framed(&mirror2)).expect("reopen room 2");
+    assert_eq!(reopened.group_id(), room2.group_id());
+    // In flight → refused; a committed session with a group still exports a group-less identity.
+    let pending = a.session.apply("key_package", &[]).unwrap();
+    assert!(a.session.export_identity("owner-web-1").is_err(), "no export while changes are in flight");
+    persist(&mut a.mirror, &pending.changes()); drop(pending); a.session.commit().unwrap();
+    let again = a.session.export_identity("owner-web-1").unwrap();
+    let room3 = Session::open_identity("owner-web-1", &pk, fmt, &again).unwrap();
+    assert!(room3.group_id().is_empty() && room3.key_packages_outstanding() == 0);
+}

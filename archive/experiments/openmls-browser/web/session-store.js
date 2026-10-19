@@ -338,6 +338,9 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
       tx.onabort = () => {
         // The session holds uncommitted changes: return it to the durable state.
         if (inflight) { try { session.abort(); } catch (_) { dropSession(); } }
+        // A clone (#431) opened a resident session from entries this transaction
+        // failed to persist: nothing durable backs it, so it must not stay resident.
+        else if (next) dropSession();
         reject(new Error('transaction rejected'));
       };
       tx.oncomplete = () => {
@@ -424,6 +427,46 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
           const pending = session.pending_changes();
           try { persist(fresh, unframe(pending)); } finally { wipeAll(pending); }
           metaStore.add(custody, 'custody');  // add: fails if a custody record appeared meanwhile
+          return fresh;
+        },
+        // #431 stage 4 (multi-store worker, PERSISTENCE.md "다중 스토어"): clone sources
+        // and sinks. The bytes stay inside the worker — a page never sees them.
+        // Identity-only export of the resident session (signer only, identity-bound blob).
+        exportIdentity() {
+          if (!session || inflight || session.migrated()) fail();
+          return session.export_identity(identity);
+        },
+        // Full export (every entry, framed) + the signer's public key: a lobby clone source.
+        exportEntries() {
+          if (!session || inflight || session.migrated()) fail();
+          return {public_key: session.public_key(), entries: session.export()};
+        },
+        // A new store sharing the signer of `blob` (Session.open_identity): group-less,
+        // no key packages. In flight like create(): persisted here, committed on complete.
+        createIdentity(publicKey, blob, fields = {}) {
+          dropSession();
+          session = Session.open_identity(identity, publicKey, Session.format_version(), blob); inflight = true;
+          const fresh = {version: META_VERSION, identity, room, public_key: session.public_key(), group_id: new Uint8Array(0),
+            format: Session.format_version(), revision: 0, cursor: 0, epoch: 'none', set: new Uint8Array(TAG),
+            count: 0, ledger: [], acked: [], tag: new Uint8Array(TAG), ...extra.initial(), ...fields};
+          const pending = session.pending_changes();
+          try { persist(fresh, unframe(pending)); } finally { wipeAll(pending); }
+          metaStore.add(custody, 'custody');
+          return fresh;
+        },
+        // A new store from another store's full entries (lobby → room): the resident
+        // session is opened from them (not in flight), the same entries are persisted.
+        createClone(publicKey, framedEntries, fields = {}) {
+          dropSession();
+          const opened = Session.open(identity, publicKey, new Uint8Array(0), Session.format_version(), framedEntries);
+          if (opened.migrated() || !equal(opened.public_key(), publicKey) || opened.group_id().length !== 0) { opened.free(); fail(); }
+          session = opened;
+          const fresh = {version: META_VERSION, identity, room, public_key: session.public_key(), group_id: new Uint8Array(0),
+            format: Session.format_version(), revision: 0, cursor: 0, epoch: session.current_epoch(), set: new Uint8Array(TAG),
+            count: 0, ledger: [], acked: [], tag: new Uint8Array(TAG), ...extra.initial(), ...fields};
+          const entries = unframe(framedEntries);
+          try { persist(fresh, entries); } finally { wipeChanges(entries); }
+          metaStore.add(custody, 'custody');
           return fresh;
         },
         // Delivered/processed items leave the ledger (§3.5 pruning). Unknown ids
@@ -573,5 +616,9 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
     if (!enc || !(sealed instanceof Uint8Array)) fail();
     return openRecord(enc, auxAd(ad), sealed);
   }
-  return {open, close, readCustody, unlock, transaction, metaBytes, sealAux, openAux};
+  // #431: the unlocked record keys + custody record, so a worker can open sibling
+  // stores (rooms of the same identity) without re-running the custody KDF. Copies:
+  // close() wipes this store's own arrays. Never leaves the worker.
+  function sharedKeys() { if (!key || !enc || !custody) fail(); return {auth: key.slice(), enc: enc.slice(), custody: {version: 1, vault: custody.vault, capsule: custody.capsule}}; }
+  return {open, close, readCustody, unlock, transaction, metaBytes, sealAux, openAux, sharedKeys};
 }
