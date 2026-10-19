@@ -20,6 +20,8 @@ struct RoomView: View {
     @State private var followLatest = true
     /// 메시지 칸의 마지막 높이(키보드·작성창 높이 변화 감지용, `ScrollFollow.shouldRescrollOnResize`).
     @State private var viewportHeight: Double = 0
+    /// 목록 내용의 마지막 높이(진입 직후 실제 배치·이미지 로딩으로 커지면 다시 최하단, `ScrollFollow.shouldRescrollOnContentGrowth`).
+    @State private var contentHeight: Double = 0
     @State private var showInvite = false
     @State private var pickedPhoto: PhotosPickerItem?
     @State private var showPhotoPicker = false
@@ -69,6 +71,17 @@ struct RoomView: View {
                         .id(Self.thinkingRowID)
                     }
                     .padding()
+                    // 내용이 커지면(lazy 행의 실제 배치·이미지 로딩·구분선) 따라가는 중일 때 최하단을 다시 맞춘다 — 진입 시 2~3번째 최신 글에서 멈추던 결함.
+                    .background(GeometryReader { geo in
+                        Color.clear.preference(key: ContentHeightKey.self, value: Double(geo.size.height))
+                    })
+                }
+                .onPreferenceChange(ContentHeightKey.self) { height in
+                    let old = contentHeight
+                    contentHeight = height
+                    if ScrollFollow.shouldRescrollOnContentGrowth(old: old, new: height, following: followLatest) {
+                        scrollToLatest(proxy, animated: false)
+                    }
                 }
                 // 손가락으로 끌면(위로 읽으러 감) 늦은 이미지 로딩이 화면을 끌어내리지 않게 한다.
                 .simultaneousGesture(DragGesture(minimumDistance: 10).onChanged { _ in followLatest = false })
@@ -400,6 +413,8 @@ struct AttachmentBubble: View {
     let item: AppModel.TimelineItem
     var onLoaded: () -> Void = {}
     @State private var data: Data?
+    /// 사진 탭 → 전체 화면 보기(오너 요청 build 30).
+    @State private var showViewer = false
 
     private var message: MessageRecord { item.record }
 
@@ -411,7 +426,13 @@ struct AttachmentBubble: View {
                     .scaledToFit()
                     .frame(maxWidth: 220, maxHeight: 220)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .contentShape(RoundedRectangle(cornerRadius: 8))
+                    .onTapGesture { showViewer = true }
                     .accessibilityLabel(Strings.attachmentImage)
+                    .accessibilityAddTraits(.isButton)
+                    .fullScreenCover(isPresented: $showViewer) {
+                        ImageViewer(image: image, shareURL: AttachmentExport.temporaryURL(for: message, bytes: data))
+                    }
             } else if data == nil {
                 Text(Strings.attachmentLoading(item.attachmentBytes)).font(.footnote)
             } else {
@@ -426,6 +447,51 @@ struct AttachmentBubble: View {
             data = model.attachment(room: message.room, seq: message.seq)
             if data != nil { onLoaded() }
         }
+    }
+}
+
+/// 전체 화면 사진 보기: 검은 바탕 · 핀치 확대(1~4배) · 두 번 탭으로 2배/원래 크기 · 닫기 · 저장·공유.
+struct ImageViewer: View {
+    let image: UIImage
+    let shareURL: URL?
+    @Environment(\.dismiss) private var dismiss
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.ignoresSafeArea()
+            ScrollView([.horizontal, .vertical], showsIndicators: false) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: UIScreen.main.bounds.width * scale, height: UIScreen.main.bounds.height * scale)
+            }
+            .ignoresSafeArea()
+            .gesture(
+                MagnificationGesture()
+                    .onChanged { value in scale = min(max(lastScale * value, 1), 4) }
+                    .onEnded { _ in lastScale = scale }
+            )
+            .onTapGesture(count: 2) {
+                withAnimation(.easeOut(duration: 0.2)) { scale = scale > 1 ? 1 : 2 }
+                lastScale = scale
+            }
+            HStack(spacing: 14) {
+                if let shareURL {
+                    ShareLink(item: shareURL) { Image(systemName: "square.and.arrow.up") }
+                        .accessibilityLabel(Strings.attachmentSave)
+                }
+                Button { dismiss() } label: { Image(systemName: "xmark") }
+                    .accessibilityLabel(Strings.attachmentViewerClose)
+            }
+            .font(.title3.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(14)
+            .background(Circle().fill(.clear))
+        }
+        .accessibilityHint(Strings.attachmentViewerHint)
+        .preferredColorScheme(.dark)
     }
 }
 
@@ -467,6 +533,12 @@ struct DayDivider: View {
 
 /// 메시지 칸(ScrollView 바깥 틀)의 높이를 RoomView 로 올린다.
 struct ViewportHeightKey: PreferenceKey {
+    static var defaultValue: Double = 0
+    static func reduce(value: inout Double, nextValue: () -> Double) { value = nextValue() }
+}
+
+/// 목록 내용(LazyVStack)의 높이를 RoomView 로 올린다.
+struct ContentHeightKey: PreferenceKey {
     static var defaultValue: Double = 0
     static func reduce(value: inout Double, nextValue: () -> Double) { value = nextValue() }
 }

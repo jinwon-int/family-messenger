@@ -20,6 +20,15 @@ final class ScrollFollowTests: XCTestCase {
         XCTAssertFalse(ScrollFollow.shouldRescroll(loaded: 1, ids: [], following: true))
     }
 
+    /// 방 진입 직후 lazy 행이 실제 높이로 바뀌거나 이미지가 늦게 커지면 최하단을 다시 맞춘다(build 30: 2~3번째 최신 글에서 멈춤).
+    func testContentGrowthRescrollsWhileFollowing() {
+        XCTAssertTrue(ScrollFollow.shouldRescrollOnContentGrowth(old: 0, new: 1800, following: true), "first layout")
+        XCTAssertTrue(ScrollFollow.shouldRescrollOnContentGrowth(old: 1800, new: 2020, following: true), "an image loaded above the tail")
+        XCTAssertFalse(ScrollFollow.shouldRescrollOnContentGrowth(old: 1800, new: 2020, following: false), "reading older messages")
+        XCTAssertFalse(ScrollFollow.shouldRescrollOnContentGrowth(old: 2020, new: 1800, following: true), "content shrank (rows recycled)")
+        XCTAssertFalse(ScrollFollow.shouldRescrollOnContentGrowth(old: 1800, new: 1800.2, following: true), "sub-point jitter")
+    }
+
     /// 키보드가 올라와 메시지 칸이 줄면 최신 메시지를 키보드 바로 위로 다시 맞춘다.
     func testShrinkingViewportRescrollsWhileFollowing() {
         XCTAssertTrue(ScrollFollow.shouldRescrollOnResize(old: 620, new: 330, following: true), "keyboard up")

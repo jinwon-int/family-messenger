@@ -19,4 +19,11 @@ enum ScrollFollow {
     static func shouldRescrollOnResize(old: Double, new: Double, following: Bool) -> Bool {
         following && old > 0 && new < old - 0.5
     }
+
+    /// 목록 **내용**이 커졌다(방 진입 직후 lazy 행이 추정 높이에서 실제 높이로 · 이미지 로딩 · 날짜 구분선) — 따라가는 중이면
+    /// 최하단을 다시 맞춘다. 진입 시 `scrollTo` 는 아직 배치되지 않은 행의 추정 높이로 움직여 2~3번째 최신 글에서 멈추던
+    /// 결함(오너 보고 build 30)의 수정. 처음 재는 값(`old == 0`)도 포함한다 — 첫 배치 뒤에도 한 번 더 맞춘다.
+    static func shouldRescrollOnContentGrowth(old: Double, new: Double, following: Bool) -> Bool {
+        following && new > old + 0.5
+    }
 }
