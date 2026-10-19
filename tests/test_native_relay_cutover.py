@@ -354,6 +354,18 @@ class CutoverTests(unittest.TestCase):
         self.assertIsInstance(cut.OPENER.handlers[0], cut.urllib.request.BaseHandler)
         self.assertTrue(any(isinstance(h, cut.NoRedirect) for h in cut.OPENER.handlers))
 
+    def test_probe_sends_a_non_python_user_agent(self):
+        seen = {}
+
+        def opener(request, timeout=None):
+            seen['ua'] = request.get_header('User-agent')
+            seen['id'] = request.get_header('Cf-access-client-id')
+            raise cut.urllib.error.HTTPError(request.full_url, 200, 'OK', {}, None)
+        cut.http_status('https://relay.example.test/v2/health', headers={'CF-Access-Client-Id': 'id'}, opener=opener)
+        self.assertEqual(seen['ua'], cut.USER_AGENT)
+        self.assertFalse(seen['ua'].lower().startswith('python-urllib'), 'Cloudflare answers 403 to the default UA')
+        self.assertEqual(seen['id'], 'id', 'caller headers are preserved')
+
     def test_M4_probe_tries_below_one_is_rejected(self):
         with self.assertRaises(SystemExit):
             cut.parse(self.argv('--probe-tries', '0'))
