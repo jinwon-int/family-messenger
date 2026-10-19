@@ -239,6 +239,9 @@ def record(state_dir, payload):
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
     os.chmod(tmp, 0o600)
     tmp.rename(latest)
+    skipped = state_dir / 'skipped-latest.json'
+    if skipped.exists():
+        skipped.unlink()
     return path
 
 

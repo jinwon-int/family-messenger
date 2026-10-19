@@ -275,30 +275,76 @@ class CutoverTests(unittest.TestCase):
         result = cut.run_cmd('/no/such/binary --x', 1, lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError('nope')))
         self.assertIsNone(result['exit']); self.assertIn('FileNotFoundError', result['error'])
 
-    def test_M2_confirm_token_binds_tunnel_hostnames_bump_and_replan_stops(self):
+    def test_M2_confirm_token_binds_tunnel_hostnames_bump(self):
         cf = FakeCloudflare(); runner = Runner()
         plan = cut.cutover(cut.parse(self.argv()), self.io(self.down_status(), cf, runner))['plan']
         for variant in (self.argv('--tunnel-target', 'WRONG.cfargotunnel.com'), self.argv('--bump-seq', '0'),
                         self.argv('--hostname', 'extra.example.test')):
             other = cut.cutover(cut.parse(variant), self.io(self.down_status(), cf, runner))['plan']
             self.assertNotEqual(other['confirm'], plan['confirm'])
-        # peer snapshot lands a newer archive → stop with a new token; nothing restored
-        newer = self.inbox / 'relay-29991231T235959Z.tar.gz'
 
-        def peer_snapshot(command, **kwargs):
-            runner.commands.append(' '.join(command))
+    def test_N3_peer_snapshot_runs_in_the_plan_run_only(self):
+        cf = FakeCloudflare()
+        newer = self.inbox / 'relay-29991231T235959Z.tar.gz'
+        snapshots = []
+
+        def runner(command, **kwargs):
             if 'snapshot' in command[-1]:
+                snapshots.append(1)
                 newer.write_bytes(self.archive.read_bytes())
                 (self.inbox / (newer.name + '.sha256')).write_text(
                     snap.sha256_file(newer) + '  ' + newer.name + '\n')
             return mock.Mock(returncode=0, stdout='', stderr='')
-        record = cut.cutover(cut.parse(self.argv('--confirm', plan['confirm'], '--peer-snapshot-cmd',
-                                                 'ssh seoseo systemctl start native-relay-snapshot.service')),
-                             self.io(self.down_status(), cf, peer_snapshot))
-        self.assertEqual(record['status'], 'replan-unconfirmed')
-        self.assertEqual(Path(record['replan']['archive']).name, newer.name)
-        self.assertNotEqual(record['replan']['confirm'], plan['confirm'])
-        self.assertFalse((self.target / 'data').exists())
+        argv = self.argv('--peer-snapshot-cmd', 'ssh seoseo systemctl start native-relay-snapshot.service')
+        first = cut.cutover(cut.parse(argv), self.io(self.down_status(), cf, runner))
+        self.assertEqual(first['status'], 'unconfirmed')
+        self.assertEqual([s['step'] for s in first['steps']][:2], ['probe', 'peer_snapshot'])
+        self.assertEqual(Path(first['plan']['archive']).name, newer.name, 'the token names the fresh archive')
+        self.assertEqual(len(snapshots), 1)
+        second = cut.cutover(cut.parse(argv + ['--confirm', first['plan']['confirm']]),
+                             self.io(self.down_status(), cf, runner))
+        self.assertEqual(second['status'], 'complete', second)
+        self.assertEqual(len(snapshots), 1, 'the confirm run never takes another snapshot')
+        self.assertNotIn('peer_snapshot', [s['step'] for s in second['steps']])
+        self.assertEqual(Path(second['plan']['archive']).name, newer.name, 'the confirmed archive is restored')
+
+    def test_N1_example_argfile_parses_with_comments_blank_lines_and_crlf(self):
+        example = Path(__file__).parents[1] / 'deploy' / 'native-relay' / 'cutover.args.example'
+        args = cut.parse(['@' + str(example)])
+        self.assertEqual(args.to, 'soonwook')
+        self.assertEqual(args.hostname, ['relay.example.test', 'hande.example.test'])
+        self.assertEqual(args.peer_stop_cmd,
+                         'ssh -o BatchMode=yes -o ConnectTimeout=10 seoseo systemctl stop native-relay')
+        crlf = self.root / 'args.txt'
+        crlf.write_bytes(b'# comment\r\n\r\n--to\r\nsoonwook \r\n--fence-record\r\nr\r\n--peer-health\r\nu\r\n'
+                         b'--inbox\r\n' + str(self.inbox).encode() + b'\r\n--target-data-dir\r\na\r\n'
+                         b'--target-policy-dir\r\nb\r\n--dry-run\r\n--skip-probe\r\n')
+        self.assertEqual(cut.parse(['@' + str(crlf)]).to, 'soonwook')
+
+    def test_N5_start_exit_nonzero_is_tolerated_when_health_comes_up(self):
+        cf = FakeCloudflare(); runner = Runner(fail={'systemctl start native-relay'})
+        plan = cut.cutover(cut.parse(self.argv()), self.io(self.down_status(), cf, runner))['plan']
+        record = cut.cutover(cut.parse(self.argv('--confirm', plan['confirm'])),
+                             self.io(self.down_status(), cf, runner))
+        self.assertEqual(record['status'], 'complete')
+        start = next(s for s in record['steps'] if s['step'] == 'start')
+        self.assertEqual(start['detail'], {'health': 200, 'start_exit': 1})
+        self.assertEqual(cut.parse(self.argv()).start_wait, 120.0)
+
+    def test_N6_redaction_patterns(self):
+        cases = {
+            'x --token abc': 'x --token <redacted>',
+            'x --access-token=abc': 'x --access-token=<redacted>',
+            'curl https://user:pw@host/p': 'curl https://<redacted>@host/p',
+            'X-Auth-Key: abc def': 'X-Auth-Key: <redacted>',
+            'api_key=abc': 'api_key=<redacted>',
+            'password=abc': 'password=<redacted>',
+            'CF_API_KEY=abc': 'CF_API_KEY=<redacted>',
+        }
+        for raw, expect in cases.items():
+            self.assertEqual(cut.redact(raw), expect, raw)
+        self.assertEqual(cut.redact('ssh host /usr/local/sbin/repoint http://100.64.0.2:18921'),
+                         'ssh host /usr/local/sbin/repoint http://100.64.0.2:18921', 'plain hooks are untouched')
 
     def test_M3_redirects_are_not_health(self):
         class Redirecting:

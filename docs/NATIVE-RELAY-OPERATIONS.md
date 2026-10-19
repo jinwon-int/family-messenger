@@ -102,7 +102,8 @@ c1은 그 경우도 조용한 실패가 아니라 정지로 만든다.
   DoH(기본 `cloudflare-dns.com`)로 읽어 로컬 리졸버 캐시를 우회한다. 다른 이름이거나(exit 1) 못 읽으면(exit 2) **기동 거부**
   (fail-closed, `Restart=on-failure`/30 s). DNS 장애 시 릴레이를 못 올리는 것은 의도된 선택이며 워치독(#426)으로 드러난다.
 - **정지 측** `native-relay-fence-watch.timer`(1분): 같은 스크립트에 `--stop-unit native-relay`. TXT가 **다른 호스트를 적극적으로
-  가리킬 때만**(exit 1) 이 호스트의 릴레이를 stop한다 — 전환 뒤 옛 호스트가 재부팅해 살아나거나 TXT가 바뀐 뒤에도 돌고 있던
+  가리킬 때만**(exit 1), 그것도 **연속 3회**(`--stop-after`, 리졸버 TTL 60 s를 넘기는 값) 확인된 뒤에 이 호스트의 릴레이를 stop한다
+  (전환 직후 공개 리졸버가 옛 값을 한 번 돌려줘도 새 활성 호스트를 멈추지 않는다; 연속 횟수는 `/var/lib/native-relay/fence-watch.json`) — 전환 뒤 옛 호스트가 재부팅해 살아나거나 TXT가 바뀐 뒤에도 돌고 있던
   릴레이가 지는 쪽. 못 읽는 경우(exit 2)는 멈추지 않는다(DoH 장애가 활성 호스트를 내리면 안 된다). **시작 측 drop-in만으로는
   펜스가 완성되지 않는다**(이미 돌고 있는 프로세스는 ExecStartPre를 다시 거치지 않는다).
 - 빈 이름·빈 TXT는 거부한다(`FENCE_SELF` 미설정이 빈 레코드와 "일치"하는 일을 막는다). TXT 레코드는 **TTL 60으로 미리 만든다** —
@@ -125,12 +126,12 @@ python3 scripts/native_relay_cutover.py @/etc/native-relay/cutover.args --confir
 |---|---|---|
 | probe | peer `/v2/health`(tailnet) **그리고** 엣지 `/v2/health`(CF Access 서비스 토큰, **리다이렉트 불인정** — Access 로그인 페이지는 200이 아니다) 각 3회×60 s. `--edge-health` 없이는 판정 자체를 거부 | 둘 다 실패(`relay-down`)일 때만 진행. `edge-only`·`peer-unreachable`·`healthy`·`edge-unknown`은 exit 10, 무변경 |
 | plan | inbox 최신 아카이브(사이드카 있는 것만)·manifest 요약·**확인 토큰** = sha256(호스트·아카이브·sha·호스트명·터널·펜스 레코드·bump)[:16] | `--confirm` 불일치 → exit 11, 무변경 |
-| peer_snapshot | (선택) 살아 있는 peer에 마지막 스냅샷 1회. **더 새 아카이브가 오면 멈추고 새 토큰을 낸다**(`--accept-replan`으로 생략 가능) | replan-unconfirmed → exit 11 |
+| peer_snapshot | (선택) **계획 실행(토큰 없는 1차)에서만** 살아 있는 peer에 마지막 스냅샷 1회 → 그 결과가 계획·토큰에 들어간다. 확인 실행은 새 스냅샷을 찍지 않는다(토큰이 가리키는 아카이브 = 운영자가 본 아카이브) | — |
 | peer_stop | (선택) peer 릴레이 정지. **실패는 치명** — 못 멈춘 peer는 아직 서빙 중일 수 있다. peer 호스트가 죽은 게 확실할 때만 `--peer-unreachable-ok` | exit≠0 |
 | restore | `native_relay_restore.py --bump-seq N --owner native-relay`(유닛 active면 거부) | 건수 불일치 |
 | fence | TXT → 자기 이름, DoH로 **연속 3회** 확인될 때까지 대기(≤300 s, 리졸버 TTL 창) | 미확인 |
 | reprobe | peer·엣지 1회 재확인 — 복원하는 사이 peer가 살아났으면 **여기서 멈춘다**(두 번째 작성자 방지) | 어느 쪽이든 200 |
-| start | `systemctl start native-relay` + 로컬 health 200(≤30 s) | 미기동 — **DNS는 아직 옛 호스트** |
+| start | `systemctl start native-relay` + 로컬 health 200(≤120 s — 유닛의 ExecStartPre가 옛 값을 한 번 읽어 실패해도 `Restart=on-failure` 30 s 재시도를 기다린다) | 미기동 — **DNS는 아직 옛 호스트** |
 | dns | 호스트명별 CNAME → 자기 터널(`proxied`) | API 실패 |
 | edge | 엣지 프로브 200(≤180 s) | — |
 | client_hook | 봇·브리지 재지정 명령(반복 가능) | 실패는 기록 + exit 3(`complete-with-hook-failures`); 전환 자체는 끝난 상태 |
@@ -140,8 +141,12 @@ python3 scripts/native_relay_cutover.py @/etc/native-relay/cutover.args --confir
 - 봇·브리지는 릴레이 주소를 유닛에 고정하고 있으므로(공명 `native-relay-bot` ExecStart의 tailnet IP) 재지정 훅이
   필요하다(오너 결정 D4). #420 ⑥에서 `RELAY_URL`을 한 곳에서 읽게 한다.
 - `--dry-run`은 판정·계획까지만, `--probe-only`는 판정만(워치독·cron에서 쓴다).
-- 기록·stdout에는 토큰 값이 없다. 훅 명령과 stderr는 `token=`/`secret=`/`Authorization` 패턴을 가린 뒤 기록하지만, 훅에
-  비밀값을 인자로 넣지 않는 것이 원칙이다(훅은 경로·호스트명만 받게 만든다).
+- 기록·stdout에는 토큰 값이 없다. 훅 명령과 stderr는 `Authorization`/`Bearer`/`token=`/`key=`/`secret=`/`password=`/`--token X`/
+  URL userinfo 패턴을 **최선 노력으로** 가린 뒤 기록한다 — 완전하지 않으므로 훅에 비밀값을 인자로 넣지 않는 것이 원칙이다(경로·호스트명만).
+- **남는 split-brain 창**: 옛 호스트가 재부팅해 자기 ExecStartPre가 옛 TXT 값(리졸버 캐시)을 읽으면 기동할 수 있고, 다음 정지 측
+  확인(연속 3분)에서 진다 — 최대 약 TTL + 3분. TXT를 TTL 60으로 미리 만들어 두는 이유다. 전환 스크립트의 재프로브는 1회 샘플이라
+  `activating` 중인 peer를 못 볼 수 있다; 정지 측 타이머가 그 창을 닫는다.
+- 스냅샷 유닛의 `state/skipped-latest.json`은 다음 성공 스냅샷이 지운다 — 워치독은 이 파일의 존재만으로 "펜스에 막힘"을 판정해도 된다.
 
 ### 전환 뒤 가족·봇 복구 (오너 결정 D3)
 1. 전 기기가 `history_gap` 정지 — 안내문대로 "다시 참여 준비".

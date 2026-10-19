@@ -18,9 +18,9 @@ Order of operations, each recorded in the state file:
               the confirm token = sha256 of the WHOLE plan (archive, host,
               hostnames, tunnel target, fence record, bump). Without a
               matching ``--confirm`` nothing is changed (exit 11).
-3. peer snapshot / peer stop (optional). A peer snapshot that lands a NEWER
-   archive than the confirmed one stops the run (exit 11, new token) unless
-   ``--accept-replan``. A peer stop that does not succeed is fatal unless
+3. peer snapshot (optional, PLAN run only — the confirm run never takes a
+   new snapshot, so the token always names an archive the operator saw) /
+   peer stop (optional). A peer stop that does not succeed is fatal unless
    ``--peer-unreachable-ok`` — a peer we could not stop may still be serving.
 4. restore  — ``native_relay_restore.py`` into the live directories with
               ``--bump-seq`` (relay unit must be inactive here).
@@ -29,7 +29,10 @@ Order of operations, each recorded in the state file:
               the old answer for its TTL — pre-create the record with TTL 60).
 6. re-probe — peer and edge again; if either answers 200 now, STOP. A peer
               that came back while we restored would be a second writer.
-7. start    — ``systemctl start`` the relay, wait for local ``/v2/health``.
+7. start    — ``systemctl start`` the relay, wait for local ``/v2/health``
+              (judged by health within ``--start-wait``, not by one exit code:
+              the unit's own ExecStartPre may read a stale answer once and
+              ``Restart=on-failure`` retries).
 8. dns      — point every relay hostname's CNAME at this host's tunnel.
 9. edge     — wait for the edge probe to answer 200 through the new path.
 10. hooks   — client re-pointing commands (bots, bridges); failures are
@@ -66,8 +69,11 @@ EXIT_NOT_DOWN = 10
 EXIT_UNCONFIRMED = 11
 EXIT_HOOKS = 3
 EXIT_FAILED = 1
-REDACT_HEADER = re.compile(r'(?i)(authorization\s*[:=]\s*)[^"\'\n]+')
-REDACT_VALUE = re.compile(r'(?i)(bearer\s+|token\s*[=:]\s*|secret\s*[=:]\s*)\S+')
+REDACT_HEADER = re.compile(r'(?i)((?:authorization|x-auth-key|x-api-key)\s*[:=]\s*)[^"\'\n]+')
+REDACT_VALUE = re.compile(r'(?i)(bearer\s+|(?:--?[\w-]*(?:token|key|secret|pass|pwd)[\w-]*|'
+                          r'[\w-]*(?:token|key|secret|password|passwd|pass|pwd))\s*[=:]?\s+?|'
+                          r'[\w-]*(?:token|key|secret|password|passwd|pass|pwd)[\w-]*\s*[=:]\s*)\S+')
+REDACT_USERINFO = re.compile(r'(://)[^/\s:@]+:[^/\s@]+@')
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -87,7 +93,12 @@ def describe(exc):
 
 
 def redact(text):
+    """Best-effort: headers, bearer/token/key/secret/password assignments and flags, URL userinfo.
+
+    Hooks must not carry secrets in arguments at all (paths and host names only); this only limits the damage.
+    """
     text = REDACT_HEADER.sub(lambda m: m.group(1) + '<redacted>', text or '')
+    text = REDACT_USERINFO.sub(lambda m: m.group(1) + '<redacted>@', text)
     return REDACT_VALUE.sub(lambda m: m.group(1) + '<redacted>', text)
 
 
@@ -285,6 +296,10 @@ def cutover(args, io=None):
             if record['probe']['classification'] != 'relay-down':
                 record['status'] = 'not-down:' + record['probe']['classification']
                 return record
+        if args.peer_snapshot_cmd and not args.confirm and not args.dry_run:
+            # Plan run only: the archive the operator confirms is the one that will be restored. The confirm run
+            # never takes another snapshot, so a token can never point at an archive nobody looked at.
+            step('peer_snapshot', lambda: run_cmd(args.peer_snapshot_cmd, 300, runner))
         planned = step('plan', lambda: plan(args))
         record['plan'] = planned
         if args.dry_run:
@@ -294,16 +309,6 @@ def cutover(args, io=None):
             record['status'] = 'unconfirmed'
             return record
 
-        if args.peer_snapshot_cmd:
-            step('peer_snapshot', lambda: run_cmd(args.peer_snapshot_cmd, 300, runner))
-            replanned = step('replan', lambda: plan(args))
-            if replanned['archive'] != planned['archive']:
-                record['replan'] = replanned
-                if not args.accept_replan:
-                    record['status'] = 'replan-unconfirmed'
-                    return record
-                planned = replanned
-                record['plan'] = planned
         if args.peer_stop_cmd:
             def do_peer_stop():
                 result = run_cmd(args.peer_stop_cmd, 120, runner)
@@ -351,14 +356,16 @@ def cutover(args, io=None):
             step('reprobe', do_reprobe)
 
         def do_start():
+            # A non-zero exit here is usually the unit's own ExecStartPre fence reading a stale answer;
+            # Restart=on-failure retries in 30 s, so judge by local health within --start-wait, not by one exit code.
             result = run_cmd('systemctl start ' + args.unit, 60, runner)
-            if result['exit'] != 0:
-                raise RuntimeError('systemctl start failed: ' + str(result.get('error') or result.get('stderr')))
-            ok = wait_until(lambda: status(args.local_health, timeout=3) == 200 or None, args.start_wait, 1,
+            ok = wait_until(lambda: status(args.local_health, timeout=3) == 200 or None, args.start_wait, 2,
                             sleep=sleep, clock=clock)
             if not ok:
-                raise RuntimeError('local /v2/health not 200 within ' + str(args.start_wait) + 's')
-            return {'health': 200}
+                raise RuntimeError('local /v2/health not 200 within ' + str(args.start_wait)
+                                   + 's (systemctl start exit ' + str(result['exit']) + ': '
+                                   + str(result.get('error') or result.get('stderr')) + ')')
+            return {'health': 200, 'start_exit': result['exit']}
         step('start', do_start)
 
         def do_dns():
@@ -408,9 +415,19 @@ def write_record(state_dir, record):
     return path
 
 
+class ArgFileParser(argparse.ArgumentParser):
+    """@file: one argument per line; blank lines and '#' comments ignored; surrounding whitespace/CRLF stripped."""
+
+    def convert_arg_line_to_args(self, arg_line):
+        line = arg_line.strip()
+        if not line or line.startswith('#'):
+            return []
+        return [line]
+
+
 def parse(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
-                                     fromfile_prefix_chars='@')
+    parser = ArgFileParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+                           fromfile_prefix_chars='@')
     parser.add_argument('--to', required=True, help='this host name as written in the fence record')
     parser.add_argument('--fence-record', required=True)
     parser.add_argument('--peer-health', required=True, help='peer relay /v2/health over the tailnet')
@@ -430,7 +447,8 @@ def parse(argv=None):
     parser.add_argument('--unit', default='native-relay')
     parser.add_argument('--skip-unit-check', action='store_true', help='drills into throwaway directories only')
     parser.add_argument('--local-health', default='http://127.0.0.1:18921/v2/health')
-    parser.add_argument('--start-wait', type=float, default=30.0)
+    parser.add_argument('--start-wait', type=float, default=120.0,
+                        help='local health deadline; covers one Restart=on-failure cycle of the unit')
     parser.add_argument('--cf-zone-id')
     parser.add_argument('--cf-dns-token-file', help='file with CF_DNS_TOKEN=… (DNS edit scope only)')
     parser.add_argument('--hostname', action='append', default=[], help='relay hostname to re-point (repeatable)')
@@ -439,9 +457,8 @@ def parse(argv=None):
                         help='resolver TTL window (pre-create the TXT with TTL 60)')
     parser.add_argument('--fence-settle', type=int, default=3, help='consecutive matching fence reads required')
     parser.add_argument('--edge-wait', type=float, default=180.0)
-    parser.add_argument('--peer-snapshot-cmd', help='make the peer take one last snapshot first (planned moves)')
-    parser.add_argument('--accept-replan', action='store_true',
-                        help='proceed when the peer snapshot lands a newer archive')
+    parser.add_argument('--peer-snapshot-cmd',
+                        help='PLAN run only: make the peer take one last snapshot before the plan is printed')
     parser.add_argument('--peer-stop-cmd',
                         help='stop the peer relay first; failure is fatal unless --peer-unreachable-ok')
     parser.add_argument('--peer-unreachable-ok', action='store_true',
@@ -479,9 +496,8 @@ def main(argv=None):
     status = record['status']
     if status.startswith('not-down'):
         return EXIT_NOT_DOWN
-    if status in ('unconfirmed', 'replan-unconfirmed'):
-        token = (record.get('replan') or record['plan'])['confirm']
-        print('\nre-run with --confirm ' + token + ' to execute the plan above', file=sys.stderr)
+    if status == 'unconfirmed':
+        print('\nre-run with --confirm ' + record['plan']['confirm'] + ' to execute the plan above', file=sys.stderr)
         return EXIT_UNCONFIRMED
     if status in ('dry-run', 'complete'):
         return 0

@@ -1,6 +1,7 @@
 # /etc/native-relay/cutover.args — 전환 스크립트 인자 파일(대기 호스트, root 0600). 한 줄에 인자 하나(값은 다음 줄).
 # 사용: python3 /opt/family-messenger-tuwunel/scripts/native_relay_cutover.py @/etc/native-relay/cutover.args [--confirm <token>]
-# 셸이 다시 파싱하지 않으므로 공백이 든 명령(--peer-stop-cmd 등)도 그대로 쓴다. 비밀은 "파일 경로"만.
+# 셸이 다시 파싱하지 않으므로 공백이 든 명령(--peer-stop-cmd 등)도 그대로 쓴다. 빈 줄·'#' 줄은 무시. 비밀은 "파일 경로"만.
+# --peer-snapshot-cmd 는 계획(토큰 없는) 실행에서만 돈다 — 확인 실행은 새 스냅샷을 찍지 않는다.
 --to
 soonwook
 --fence-record
