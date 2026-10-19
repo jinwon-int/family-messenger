@@ -19,12 +19,16 @@ const frameMembers = members => {
 const memStorage = () => { const m = new Map(); return {getItem: k => m.has(k) ? m.get(k) : null, setItem: (k, v) => m.set(k, String(v)), removeItem: k => m.delete(k), map: m}; };
 
 function fakeWorker({fresh = true, group = null, decrypt = () => ({sender: 'owner-pc', client: 'owner-pc'})} = {}) {
-  const w = {group, calls: [], history: [], spawned: false, pendingGroup: null, acked: []};
+  const w = {group, calls: [], history: [], spawned: true, pendingGroup: null, acked: [], opened: [], reset: []};
   const bridge = {
     has: () => w.spawned, spawn: async () => { w.spawned = true; }, stop: () => { w.spawned = false; },
-    async call(_name, method, argument) {
+    async call(name, method, argument) {
+      assert.equal(name, 'device');
       w.calls.push([method, argument?.method ?? null]);
-      if (method === 'init') return {ok: true, result: {revision: 0, cursor: 0, fresh, history: true}};
+      if (['open_room', 'operation', 'ack', 'status', 'history_put', 'history_list', 'history_get', 'reset_room', 'close_room'].includes(method)) assert.equal(argument.room, 'family', `${method} carries the room`);
+      if (method === 'open_room') { w.opened.push(argument); return {ok: true, result: {revision: 0, cursor: 0, fresh, history: true, public_key: Array.from(new Uint8Array(32).fill(7))}}; }
+      if (method === 'reset_room') { w.reset.push(argument.database); w.group = null; return {ok: true, result: {}}; }
+      if (method === 'close_room') return {ok: true, result: {}};
       if (method === 'status') return {ok: true, result: {revision: 1, cursor: 0, public_key: new Uint8Array(32).fill(7), entries: 1}};
       if (method === 'ack') { w.acked.push(...argument.ids); return {ok: true, result: {}}; }
       if (method === 'history_put') { w.history.push(argument); return {ok: true, result: {seq: argument.seq}}; }
@@ -68,20 +72,21 @@ function session({worker, relay, pol, storage = memStorage(), device = 'owner-we
     setInterval: () => 1, clearInterval: () => {}});
   return {s, events, storage};
 }
-const PASS = 'p'.repeat(40);
 
 test('fresh device: relay 403 → waiting; registration JSON carries key + fingerprint', async () => {
   const {bridge} = fakeWorker();
   const relay = fakeRelay(() => ({status: 403, body: {error: 'device_subject_mismatch'}}));
   const {s} = session({worker: bridge, relay});
-  const opened = await s.open(PASS);
-  assert.deepEqual(opened, {fresh: true, wiped: false});
+  const opened = await s.open();
+  assert.deepEqual(opened, {fresh: true});
   await s.activate();
   assert.equal(s.state.waiting403, true);
   assert.equal(s.state.joined, false);
   const reg = s.registration('sub-123');
   assert.equal(reg.device_id, 'owner-web-aaaaaa'); assert.equal(reg.actor, 'owner'); assert.equal(reg.subject, 'sub-123');
-  assert.equal(reg.signing_key, '07'.repeat(32)); assert.equal(reg.fingerprint, 'f'.repeat(64));
+  assert.equal(reg.signing_key, '07'.repeat(32));
+  const {createHash} = await import('node:crypto');
+  assert.equal(reg.fingerprint, createHash('sha256').update(Buffer.alloc(32, 7)).digest('hex'));
 });
 
 test('Welcome joins, application decrypts to a message with ts, history row + relay ack', async () => {
@@ -95,7 +100,7 @@ test('Welcome joins, application decrypts to a message with ts, history row + re
     return {status: 200, body: {epoch: 1, revision: 1, events, cursor: 0, first_seq: 1, members: []}};
   });
   const {s, events: ev} = session({worker: bridge, relay});
-  await s.open(PASS); await s.activate();
+  await s.open(); await s.activate();
   assert.equal(s.state.joined, true);
   assert.deepEqual(s.state.roster, ['bot-1', 'owner-pc', 'owner-web-aaaaaa']);
   const msg = ev.messages.find(x => x.kind === 'text');
@@ -106,20 +111,26 @@ test('Welcome joins, application decrypts to a message with ts, history row + re
   assert.equal(s.state.waiting403, false);
 });
 
-test('send: 201 stores own row; 409 cas_mismatch re-encrypts once', async () => {
-  const {bridge, w} = fakeWorker({group: ['owner-pc', 'owner-web-aaaaaa']});
-  let posts = 0;
-  const relay = fakeRelay((m, path) => {
-    if (m === 'GET') return {status: 200, body: {epoch: 3, events: [], cursor: 5, members: []}};
-    posts++;
-    return posts === 1 ? {status: 409, body: {error: 'cas_mismatch', epoch: 3}} : {status: 201, body: {seq: 6, epoch: 3}};
-  });
+test('open with replace drops a group-less store and startSeq rewinds the cursor before the Welcome', async () => {
+  const {bridge, w} = fakeWorker({fresh: true});
+  const relay = fakeRelay(() => ({status: 200, body: {epoch: 1, events: [], cursor: 0, members: []}}));
   const storage = memStorage();
-  storage.setItem('hande:room:family:owner-web-aaaaaa:family-mls-synthetic-hande-family', JSON.stringify({joined: true, relaySeq: 5, epoch: 2, roster: ['owner-pc', 'owner-web-aaaaaa']}));
-  storage.setItem('hande:fresh-marker:family-mls-synthetic-hande-family', '1');
-  const {s, events: ev} = session({worker: bridge, relay, storage});
-  const opened = await s.open(PASS);   // fresh=true in the fake worker: a wiped store is reported, not silently a new device
-  assert.equal(opened.wiped, true);
+  storage.setItem('hande:room:family:owner-web-aaaaaa:family-mls-synthetic-hande-family', JSON.stringify({joined: false, relaySeq: 40, epoch: 0, roster: []}));
+  const {s} = session({worker: bridge, relay, storage});
+  const opened = await s.open({from: 'lobby', replace: true, startSeq: 41});
+  assert.equal(opened.fresh, true);
+  assert.deepEqual(w.reset, ['family-mls-synthetic-hande-family'], 'reset_room before the lobby clone');
+  assert.equal(w.opened.at(-1).from, 'lobby');
+  assert.equal(s.state.relaySeq, 0, 'fresh store: state reset');
+  // A store that already holds a group is never replaced.
+  const {bridge: b2, w: w2} = fakeWorker({fresh: false, group: ['owner-web-aaaaaa']});
+  const st2 = memStorage();
+  st2.setItem('hande:room:family:owner-web-aaaaaa:family-mls-synthetic-hande-family', JSON.stringify({joined: true, relaySeq: 50, epoch: 2, roster: ['owner-web-aaaaaa']}));
+  const {s: s2} = session({worker: b2, relay, storage: st2});
+  await s2.open({from: 'lobby', replace: true, startSeq: 45});
+  assert.deepEqual(w2.reset, [], 'joined store kept');
+  assert.equal(s2.state.relaySeq, 44, 'cursor rewound to read the Welcome again');
+  assert.equal(s2.state.joined, false);
 });
 
 test('send on a resumed store: own echo row, CAS retry, draft kept on failure', async () => {
@@ -135,7 +146,7 @@ test('send on a resumed store: own echo row, CAS retry, draft kept on failure', 
   const storage = memStorage();
   storage.setItem('hande:room:family:owner-web-aaaaaa:family-mls-synthetic-hande-family', JSON.stringify({joined: true, relaySeq: 5, epoch: 2, roster: ['owner-pc', 'owner-web-aaaaaa']}));
   const {s, events: ev} = session({worker: bridge, relay, storage});
-  await s.open(PASS); await s.activate();
+  await s.open(); await s.activate();
   const seq = await s.send('hello');
   assert.equal(seq, 6);
   assert.equal(w.calls.filter(c => c[1] === 'encrypt').length, 2, 'one re-encrypt after cas_mismatch');
@@ -158,7 +169,7 @@ test('invite: key package → commit 201 pending → own echo merges → targete
   const storage = memStorage();
   storage.setItem('hande:room:family:owner-web-aaaaaa:family-mls-synthetic-hande-family', JSON.stringify({joined: true, relaySeq: 9, epoch: 0, roster: ['owner-web-aaaaaa']}));
   const {s} = session({worker: bridge, relay, storage});
-  await s.open(PASS); await s.activate();
+  await s.open(); await s.activate();
   await s.invite('mom-web-bbbbbb');
   assert.equal(phase, 2, 'Welcome posted after the echo');
   assert.equal(s.state.pending, false);
@@ -175,7 +186,7 @@ test('foreign commit refused by policy → discard + durable halt; removal → h
     const storage = memStorage();
     storage.setItem('hande:room:family:owner-web-aaaaaa:family-mls-synthetic-hande-family', JSON.stringify({joined: true, relaySeq: 11, epoch: 1, roster: ['bot-1', 'owner-web-aaaaaa']}));
     const {s, events: ev} = session({worker: bridge, relay, storage, pol: policy({verdict, report})});
-    await s.open(PASS); await s.activate();
+    await s.open(); await s.activate();
     assert.ok(s.state.halted, 'halted');
     assert.equal(s.state.halted.removed, removed);
     assert.equal(s.state.halted.seq, 12);
@@ -191,7 +202,7 @@ test('#296 resume: page state lost but the worker holds the group → join state
   const {bridge} = fakeWorker({fresh: false, group: ['owner-pc', 'owner-web-aaaaaa']});
   const relay = fakeRelay((m, path) => path.includes('limit=1') ? {status: 200, body: {epoch: 4, events: [], cursor: 40, members: []}} : {status: 200, body: {epoch: 4, events: [], cursor: 40, members: []}});
   const {s, events: ev} = session({worker: bridge, relay});
-  await s.open(PASS); await s.activate();
+  await s.open(); await s.activate();
   assert.equal(s.state.joined, true); assert.equal(s.state.relaySeq, 40); assert.equal(s.state.epoch, 4);
   assert.ok(ev.messages.some(m => m.kind === 'system' && m.key === 'history'));
 });

@@ -522,3 +522,10 @@ ul.members { list-style: none; margin: 0; padding: 0; display: flex; flex-direct
   :root { --list-width: 380px; }
   .room-screen { padding: 0 var(--space-8); }
 }
+
+/* ---------- 로비 초대 카드 (#431 4단계) ---------- */
+.invites { margin: 0 var(--space-3) var(--space-3); padding: var(--space-3); border: 1px solid color-mix(in srgb, var(--brand) 40%, var(--line)); border-radius: var(--radius); background: var(--surface-2); display: flex; flex-direction: column; gap: var(--space-2); }
+.invite-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-3); }
+.invite-item { display: flex; flex-direction: column; gap: var(--space-1); }
+.invite-item .invite-head { display: flex; align-items: center; gap: var(--space-2); }
+.invite-item .actions { margin-top: var(--space-1); }
