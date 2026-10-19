@@ -1,0 +1,1 @@
+../../../experiments/openmls-browser/web/durable-worker.js

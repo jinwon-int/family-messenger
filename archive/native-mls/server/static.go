@@ -38,6 +38,9 @@ var staticTypes = map[string]string{
 	".png":  "image/png",
 	".svg":  "image/svg+xml",
 	".ico":  "image/x-icon",
+	// hande web app (#431): PWA manifest and bundled fonts.
+	".webmanifest": "application/manifest+json",
+	".woff2":       "font/woff2",
 }
 
 // staticHandler serves files below root under /app/. The path is confined to

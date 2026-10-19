@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+"""hande web smoke (#431 stage 2): the relay serves archive/native-mls/web/hande at the
+root of its own host (-hande-host / -hande-dir) and two Chromium contexts drive the
+product screens only — zero Python-side relay calls:
+
+  name chosen on first run (actor → device id) → owner creates the room → mom
+  requests to join (key package) → owner invites mom from the invite sheet → mom
+  joins from the Welcome → messages both ways (sender labels) → owner's relay
+  cursor acked → mom reloads the page and the sealed history (#370) comes back.
+
+Access mode is disabled (loopback, no JWT), membership enforcement off; the hande
+host is a Host header the page never sees. Synthetic only (disposable keys).
+
+  python3 archive/native-mls/tests/native_hande_web_smoke.py \\
+      --bundle artifacts/mls-pkg --relay-binary artifacts/native-mls-relay
+
+Receipt: archive/artifacts/native-hande-web-*/verification.json
+"""
+import argparse
+import json
+import secrets
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+from pathlib import Path
+
+from playwright.sync_api import sync_playwright
+
+HERE = Path(__file__).resolve().parent
+ARCHIVE = HERE.parents[1]
+HANDE = ARCHIVE / 'native-mls' / 'web' / 'hande'
+HOST = 'hande.localhost'   # *.localhost is loopback and a secure context in Chromium (crypto.subtle, Web Locks)
+ROOM = 'family'               # DEFAULT_ROOM of app.js (no config.json)
+
+
+def free_port():
+    with socket.socket() as s:
+        s.bind(('127.0.0.1', 0))
+        return s.getsockname()[1]
+
+
+class Relay:
+    def __init__(self, binary, port, data, hande_dir, log):
+        self.argv = [str(binary.resolve()), '-addr', f'127.0.0.1:{port}', '-data-dir', str(data),
+                     '-access-mode', 'disabled', '-hande-host', HOST, '-hande-dir', str(hande_dir)]
+        self.port = port
+        self.base = f'http://127.0.0.1:{port}'
+        self.log = log
+        self.proc = None
+
+    def start(self):
+        self.proc = subprocess.Popen(self.argv, stdout=open(self.log, 'ab'), stderr=subprocess.STDOUT)
+        for _ in range(100):
+            try:
+                with urllib.request.urlopen(self.base + '/v2/health', timeout=2) as r:
+                    if r.status == 200:
+                        return
+            except OSError:
+                time.sleep(0.1)
+        raise RuntimeError('relay did not start: ' + self.log.read_text()[-800:])
+
+    def stop(self):
+        if self.proc is None:
+            return
+        self.proc.terminate()
+        try:
+            self.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait(timeout=5)
+        self.proc = None
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--bundle', required=True, type=Path)
+    ap.add_argument('--relay-binary', required=True, type=Path)
+    ap.add_argument('--keep', action='store_true')
+    ap.add_argument('--screenshot', type=Path, help='save owner/mom room screenshots (PNG) under this directory')
+    args = ap.parse_args()
+
+    work = Path(tempfile.mkdtemp(prefix='hande-web-'))
+    hande_dir = work / 'hande'
+    subprocess.run([str(HANDE / 'build.sh'), str(args.bundle), str(hande_dir)], check=True, stdout=subprocess.DEVNULL)
+    port = free_port()
+    data = work / 'data'
+    data.mkdir(mode=0o700)
+    relay = Relay(args.relay_binary, port, data, hande_dir, work / 'relay.log')
+    receipt = {'synthetic_only': True, 'real_device_evidence': False, 'checks': {}, 'room': ROOM}
+    out_dir = ARCHIVE / 'artifacts' / f'native-hande-web-{secrets.token_hex(4)}'
+    try:
+        relay.start()
+        # Host routing: the hande host gets index.html at "/", any other host gets the API 404.
+        req = urllib.request.Request(relay.base + '/', headers={'Host': HOST})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            html = r.read().decode()
+            assert '<title>한데' in html, html[:200]
+            assert "'wasm-unsafe-eval'" in r.headers.get('Content-Security-Policy', ''), r.headers
+            assert r.headers.get('Cache-Control') == 'no-store', r.headers
+        try:
+            urllib.request.urlopen(relay.base + '/', timeout=5)
+            raise AssertionError('relay host must not serve the hande index')
+        except urllib.error.HTTPError as e:
+            assert e.code == 404, e.code
+        receipt['checks']['hande_root_served_by_host'] = True
+
+        pages = []
+        with sync_playwright() as p:
+            # The page's origin is http://hande.localhost:<port> — loopback by name, so the
+            # same-origin /v2 fetches carry the hande Host and the context is secure.
+            base = f'http://{HOST}:{port}'
+            browser = p.chromium.launch()
+            receipt['browser'] = browser.version
+
+            class Dev:
+                def __init__(self, actor):
+                    self.actor = actor
+                    self.ctx = browser.new_context(viewport={'width': 1280, 'height': 900})
+                    self.page = self.ctx.new_page()
+                    self.console = []
+                    self.page.on('console', lambda m: self.console.append(m.text))
+                    pages.append(self)
+                    self.page.goto(base + '/', timeout=20000)
+                    self.page.fill('[data-testid="actor-input"]', actor)
+                    self.page.click('[data-testid="actor-submit"]')
+                    self.wait_shell()
+
+                def wait_shell(self, timeout=180000):
+                    self.page.wait_for_selector('[data-testid="room-list"]', timeout=timeout)
+
+                def reload(self):
+                    self.page.reload(timeout=20000)
+                    self.wait_shell()
+
+                def device_id(self):
+                    return self.page.text_content('[data-testid="device-label"]').strip()
+
+                def open_room(self):
+                    self.page.click('[data-testid="room-item"]')
+                    self.page.wait_for_selector('[data-testid="timeline"]', timeout=20000)
+
+                def status(self):
+                    return self.page.text_content('[data-testid="status"]') or ''
+
+                def wait_status(self, text, timeout=60000):
+                    self.page.wait_for_function("t => (document.querySelector('[data-testid=\"status\"]')?.textContent || '').includes(t)",
+                                                arg=text, timeout=timeout)
+
+                def wait_members(self, n, timeout=90000):
+                    self.page.wait_for_function("n => document.querySelectorAll('[data-testid=\"room-item\"][data-state=\"joined\"]').length >= 1 && "
+                                                "Number(document.querySelector('[data-testid=\"room-item\"]')?.dataset.members || 0) >= n",
+                                                arg=n, timeout=timeout)
+
+                def bubbles(self):
+                    return self.page.eval_on_selector_all('[data-testid="bubble"]', 'els => els.map(e => e.textContent)')
+
+                def wait_bubble(self, text, timeout=60000):
+                    self.page.wait_for_function("t => [...document.querySelectorAll('[data-testid=\"bubble\"]')].some(e => e.textContent.includes(t))",
+                                                arg=text, timeout=timeout)
+
+                def send(self, text):
+                    self.page.fill('[data-testid="composer"]', text)
+                    self.page.press('[data-testid="composer"]', 'Enter')
+                    self.wait_bubble(text)
+
+            def dump():
+                for d in pages:
+                    try:
+                        print(f'--- {d.actor} console:\n' + '\n'.join(d.console[-40:]), file=sys.stderr)
+                        print(f'--- {d.actor} status: ' + d.status()[:300], file=sys.stderr)
+                        print(f'--- {d.actor} body: ' + (d.page.text_content('body') or '')[:600], file=sys.stderr)
+                    except Exception as e:  # noqa: BLE001
+                        print(f'--- {d.actor}: unavailable ({e})', file=sys.stderr)
+            try:
+                run_flow(Dev, receipt, args.screenshot)
+            except Exception:
+                dump()
+                raise
+            browser.close()
+        receipt['relay_log_tail'] = (work / 'relay.log').read_text()[-1200:]
+        out_dir.mkdir(parents=True, mode=0o700)
+        (out_dir / 'verification.json').write_text(json.dumps(receipt, ensure_ascii=False, indent=1))
+        print(json.dumps(receipt['checks'], ensure_ascii=False))
+        print(out_dir / 'verification.json')
+    except Exception:
+        print('--- relay log:\n' + (work / 'relay.log').read_text()[-1500:], file=sys.stderr)
+        raise
+    finally:
+        relay.stop()
+        if not args.keep:
+            shutil.rmtree(work, ignore_errors=True)
+
+
+def run_flow(Dev, receipt, screenshot=None):
+    owner, mom = Dev('owner'), Dev('mom')
+    owner_id, mom_id = owner.device_id(), mom.device_id()
+    assert owner_id.startswith('owner-web-') and mom_id.startswith('mom-web-'), (owner_id, mom_id)
+    receipt['checks']['first_run_names_make_device_ids'] = True
+
+    # owner: + → 방 만들기 (same room id as the default) → the room item becomes joined
+    owner.page.click('[data-testid="open-create"]')
+    owner.page.fill('[data-testid="create-room"]', ROOM)
+    owner.page.click('[data-testid="create-submit"]')
+    owner.wait_members(1)
+    receipt['checks']['owner_created_room'] = True
+
+    # mom: + → 참여 요청 (publishes a key package to the room)
+    mom.page.click('[data-testid="open-join"]')
+    mom.page.fill('[data-testid="join-room"]', ROOM)
+    mom.page.click('[data-testid="join-submit"]')
+    mom.wait_status('참여를 요청했습니다')
+    receipt['checks']['mom_requested_join'] = True
+
+    # owner: room → 초대 sheet → mom's device id → commit 201 → own echo → Welcome
+    owner.open_room()
+    owner.page.click('[data-testid="open-invite"]')
+    owner.page.fill('[data-testid="invite-device"]', mom_id)
+    owner.page.click('[data-testid="invite-submit"]')
+    owner.wait_members(2)
+    mom.wait_members(2)
+    receipt['checks']['invite_commit_echo_welcome_join'] = True
+
+    # messages both ways, sender labels, Korean text
+    mom.open_room()
+    owner.send('안녕, 한데 웹에서 보냄')
+    mom.wait_bubble('안녕, 한데 웹에서 보냄')
+    mom.send('잘 받았어요 🔥')
+    owner.wait_bubble('잘 받았어요 🔥')
+    receipt['checks']['messages_both_ways'] = True
+    if screenshot:
+        screenshot.mkdir(parents=True, exist_ok=True)
+        owner.page.screenshot(path=str(screenshot / 'owner-room.png'))
+        mom.page.screenshot(path=str(screenshot / 'mom-room.png'))
+
+    # reload: sealed history (#370) restores both rows for mom without re-reading the relay
+    mom.reload()
+    mom.open_room()
+    mom.wait_bubble('안녕, 한데 웹에서 보냄', timeout=120000)
+    mom.wait_bubble('잘 받았어요 🔥')
+    assert mom.device_id() == mom_id, (mom.device_id(), mom_id)
+    receipt['checks']['reload_restores_sealed_history_same_device'] = True
+
+
+if __name__ == '__main__':
+    main()
