@@ -1,0 +1,25 @@
+# 대기 호스트의 native-relay.service (#440 1단계) — 활성 호스트 유닛과 같은 플래그에서 APNs 만 뺀다(오너 결정 A).
+# 평시 disabled/stopped. 전환 스크립트가 복원 → 펜스 TXT 변경 → start 순으로 올린다.
+# 실제 플래그 값(issuer/aud/jwks)은 /etc/native-relay/relay.env — 스냅샷 env/ 에서 복원된 파일.
+[Unit]
+Description=family-messenger native-mls v2 relay (standby host, no APNs) — loopback 18921, CF Access required
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=native-relay
+Group=native-relay
+EnvironmentFile=/etc/native-relay/relay.env
+ExecStart=/opt/native-relay/bin/native-mls-relay -addr 0.0.0.0:18921 \
+  -static-dir /opt/native-relay/static -hande-host hande.example.test -hande-dir /opt/native-relay/hande \
+  -data-dir /var/lib/native-relay/data -device-state /var/lib/native-relay/policy \
+  -access-mode required -access-issuer ${NATIVE_RELAY_ISSUER} -access-audience ${NATIVE_RELAY_AUD} -access-jwks ${NATIVE_RELAY_JWKS}
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/native-relay
+
+[Install]
+WantedBy=multi-user.target

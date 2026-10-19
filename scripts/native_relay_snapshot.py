@@ -283,7 +283,11 @@ def parse(argv=None):
     parser.add_argument('--keep-hours', type=int, default=48)
     parser.add_argument('--keep-days', type=int, default=30)
     parser.add_argument('--prune-only', action='store_true', help='apply retention to --dest and exit')
+    parser.add_argument('--fence', help='this host name; snapshot only when the fence TXT names it (#440 stage 1)')
+    parser.add_argument('--fence-record', help='fence TXT FQDN (required with --fence)')
     args = parser.parse_args(argv)
+    if bool(args.fence) != bool(args.fence_record):
+        parser.error('--fence and --fence-record go together')
     if not args.state:
         args.state = str(Path(args.dest).parent / 'state')
     if not args.prune_only and not (args.data_dir and args.policy_dir):
@@ -291,10 +295,26 @@ def parse(argv=None):
     return args
 
 
+def fenced_out(args):
+    """True when a fence is configured and names another host (standby must not push stale copies).
+
+    A lookup failure also counts as fenced out: an unproven host neither serves nor snapshots.
+    """
+    if not args.fence:
+        return False
+    from native_relay_fence import check
+    code, message = check(args.fence, args.fence_record)
+    if code:
+        print('snapshot skipped — ' + message, file=sys.stderr)
+    return bool(code)
+
+
 def main(argv=None):
     args = parse(argv)
     if args.prune_only:
         print(json.dumps({'pruned': prune(args.dest, args.keep_hours, args.keep_days)}))
+        return 0
+    if fenced_out(args):
         return 0
     Path(args.state).mkdir(parents=True, exist_ok=True)
     with open(Path(args.state) / '.lock', 'w') as lock:

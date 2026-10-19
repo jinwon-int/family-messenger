@@ -16,7 +16,7 @@ ExecStart=/usr/bin/python3 /opt/family-messenger-tuwunel/scripts/native_relay_sn
   --dropin-dir ${RELAY_DROPIN_DIR} --env-file ${RELAY_ENV_FILE} \
   --dest ${SNAPSHOT_DEST} --state ${SNAPSHOT_STATE} \
   --ssh-key ${SNAPSHOT_SSH_KEY} --keep-hours ${SNAPSHOT_KEEP_HOURS} --keep-days ${SNAPSHOT_KEEP_DAYS} \
-  $SNAPSHOT_PUSH_ARGS
+  $SNAPSHOT_PUSH_ARGS $SNAPSHOT_FENCE_ARGS
 TimeoutStartSec=20min
 UMask=0077
 Nice=10
