@@ -43,7 +43,7 @@ use crate::api::{self, BotError, Client, EventPost, StoredRow};
 use crate::policy;
 // #366 2a: the host-neutral room rules live in host-core; the bot keeps logging,
 // halt markers and its state file.
-use native_mls_host::room::{self, is_transient, relay_backoff, Halt, RoomSync, SyncEvent};
+use native_mls_host::room::{self, is_transient, relay_backoff, Halt, RoomSync, SendOutcome, SyncEvent};
 #[cfg(test)]
 use native_mls_host::room::history_gap;
 #[cfg(test)]
@@ -301,6 +301,11 @@ impl room::MlsGroup for Bound<'_> {
     fn join(&mut self, welcome: &[u8]) -> Result<(), ()> { self.dev.join(welcome).map_err(drop) }
     fn decrypt(&mut self, ciphertext: &[u8]) -> Result<(Vec<u8>, Vec<u8>), ()> {
         decrypt_frame(self.dev, self.room.ok_or(())?, ciphertext)
+    }
+    /// AAD client_id = the device identity (review H1); the relay's dedup key
+    /// (`<device>-echo-<n>`) is a separate POST field.
+    fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, ()> {
+        encrypt_frame(self.dev, self.room.ok_or(())?, self.own, plaintext)
     }
 }
 
@@ -690,16 +695,19 @@ struct BotRoom<'s, 'c> {
     agent: &'s mut Option<Responder>,
 }
 
-impl room::RoomHost for BotRoom<'_, '_> {
+impl room::RoomAccess for BotRoom<'_, '_> {
     type Group<'g> = Bound<'g> where Self: 'g;
-
     fn sync(&mut self) -> &mut RoomSync { &mut self.state.sync }
+    fn group(&mut self) -> Bound<'_> { bound(self.ctx, self.state) }
+}
 
-    fn group(&mut self) -> Bound<'_> {
-        let state = &mut *self.state;
-        Bound { dev: &mut state.device, own: self.ctx.own, room: Some(&state.sync.room) }
-    }
+/// The room's `Device` lent to host-core for one operation, framing bound to the room.
+fn bound<'a>(ctx: &'a Ctx, state: &'a mut RoomState) -> Bound<'a> {
+    let state = &mut *state;
+    Bound { dev: &mut state.device, own: ctx.own, room: Some(&state.sync.room) }
+}
 
+impl room::RoomHost for BotRoom<'_, '_> {
     fn fetch(&mut self, room: &str, after: i64, ack: Option<i64>) -> Result<api::EventsResponse, BotError> {
         self.ctx.client.get_events(room, self.ctx.own, after, ack)
     }
@@ -913,61 +921,56 @@ fn is_echo_client_id(client_id: &str) -> bool {
     }
 }
 
+/// One room of this bot as a `room::SendHost` (#366 2c): the dedup key is
+/// `<device>-echo-<n>` from the persisted counter, `persist` is the state-file
+/// flush, `post` is the relay client.
+struct BotSender<'s, 'c> {
+    ctx: &'s Ctx<'c>,
+    state: &'s mut RoomState,
+}
+
+impl room::RoomAccess for BotSender<'_, '_> {
+    type Group<'g> = Bound<'g> where Self: 'g;
+    fn sync(&mut self) -> &mut RoomSync { &mut self.state.sync }
+    fn group(&mut self) -> Bound<'_> { bound(self.ctx, self.state) }
+}
+
+impl room::SendHost for BotSender<'_, '_> {
+    fn reserve_client_id(&mut self) -> String {
+        self.state.echoes += 1;
+        format!("{}-echo-{}", self.ctx.own, self.state.echoes)
+    }
+    fn persist(&mut self) -> Result<(), BotError> { flush(self.ctx, self.state) }
+    fn post(&mut self, room: &str, post: &EventPost<'_>) -> Result<api::EventResponse, BotError> {
+        self.ctx.client.post_event(room, post)
+    }
+}
+
+/// Encrypt and POST one reply (host-core `room::send_application`, #366 2c):
+/// the ratchet step and the echo counter reach disk before the ciphertext
+/// leaves (review 2 B-H2). A 409 cas_mismatch queues the plaintext for the
+/// next poll (replayed once at the fresh epoch); a 409 client_id_reuse means an
+/// earlier incarnation already delivered it.
 fn publish_echo(ctx: &Ctx, state: &mut RoomState, plaintext: &[u8], attempts: u32) -> Result<(), BotError> {
-    let room = state.room.clone();
-    let framed = encrypt_frame(&mut state.device, &room, ctx.own, plaintext)
-        .map_err(|_| BotError::Local("encrypt echo"))?;
-    // Relay-level dedup key, distinct per reply; the MLS AAD client_id inside
-    // `framed` is the device identity (review H1), as the receivers require.
-    state.echoes += 1;
-    state.dirty = true;
-    let client_id = format!("{}-echo-{}", ctx.own, state.echoes);
-    // The encryption advanced this device's own sender ratchet and the
-    // counter reserved a dedup key: both reach disk before the ciphertext
-    // leaves the process (review 2 B-H2 — a restart must never re-derive a
-    // sender generation that was already sent).
-    flush(ctx, state)?;
-    let post = EventPost {
-        device: ctx.own,
-        client_id: &client_id,
-        kind: "application",
-        epoch: state.epoch,
-        revision: None,
-        group_id: &state.room,
-        targets: Vec::new(),
-        members: Vec::new(),
-        bytes: framed,
-    };
-    match ctx.client.post_event(&state.room, &post) {
-        Ok(resp) => {
-            emit(&serde_json::json!({
-                "event": "echo", "room": state.room, "bytes": plaintext.len(),
-                "seq": resp.seq, "epoch": resp.epoch, "client_id": client_id, "duplicate": resp.duplicate,
-            }));
-            Ok(())
-        }
-        // Room moved under us (a commit we have not seen): resynchronize on the
-        // next poll and replay once at the fresh epoch.
-        Err(err @ BotError::Api { status: 409, .. }) if api::error_code(&err) == Some("cas_mismatch") => {
+    let outcome = room::send_application(&mut BotSender { ctx, state }, ctx.own, plaintext)?;
+    match outcome {
+        SendOutcome::Sent { client_id, response } => emit(&serde_json::json!({
+            "event": "echo", "room": state.room, "bytes": plaintext.len(),
+            "seq": response.seq, "epoch": response.epoch, "client_id": client_id, "duplicate": response.duplicate,
+        })),
+        SendOutcome::Conflict { client_id, error } => {
             state.retry.push_back((plaintext.to_vec(), attempts + 1));
             emit(&serde_json::json!({
                 "event": "echo_conflict", "room": state.room, "client_id": client_id,
-                "attempt": attempts + 1, "error": err.to_string(),
+                "attempt": attempts + 1, "error": error.to_string(),
             }));
-            Ok(())
         }
-        // An earlier incarnation of this identity already delivered this echo
-        // number (state file restored from a backup, for instance): the relay
-        // has the message, the counter is now past it — move on.
-        Err(err @ BotError::Api { status: 409, .. }) if api::error_code(&err) == Some("client_id_reuse") => {
-            emit(&serde_json::json!({
-                "event": "echo_client_id_reuse", "room": state.room, "client_id": client_id,
-                "error": err.to_string(),
-            }));
-            Ok(())
-        }
-        Err(err) => Err(err),
+        SendOutcome::AlreadyDelivered { client_id, error } => emit(&serde_json::json!({
+            "event": "echo_client_id_reuse", "room": state.room, "client_id": client_id,
+            "error": error.to_string(),
+        })),
     }
+    Ok(())
 }
 
 fn report_dropped(state: &RoomState, plaintext: &[u8], err: BotError) -> BotError {
@@ -1734,6 +1737,37 @@ for line in sys.stdin:
     /// durable marker with reason `history_gap`, and the next poll never
     /// touches the relay. A contiguous page (`first_seq == cursor + 1`) does
     /// not halt.
+    /// #366 2c: the send path through host-core keeps the bot's 409 handling —
+    /// cas_mismatch queues the plaintext for the next poll (attempt 1), a reused
+    /// dedup key is skipped, and the echo counter is persisted before each POST.
+    #[test]
+    fn publish_echo_queues_a_conflict_and_skips_a_reused_key() {
+        let (base, server) = canned_relay_with_status(vec![
+            (409, r#"{"error":"cas_mismatch"}"#.to_string()),
+            (409, r#"{"error":"client_id_reuse"}"#.to_string()),
+            (200, r#"{"seq":21,"epoch":2,"revision":1,"duplicate":false}"#.to_string()),
+        ]);
+        let client = Client::with_access(&base, api::Access::None);
+        let ctx = Ctx { client: &client, own: "bot-1" };
+        let path = state_path("send-2c");
+        let mut state = joined_room_at("family", 4, Some(path.clone()));
+        state.device.create().expect("a one-member group to encrypt in");
+        publish_echo(&ctx, &mut state, b"hello", 0).unwrap_or_else(|e| panic!("conflict: {e}"));
+        assert_eq!(state.retry.len(), 1, "cas_mismatch queues the plaintext");
+        assert_eq!(state.retry[0], (b"hello".to_vec(), 1));
+        publish_echo(&ctx, &mut state, b"again", 0).unwrap_or_else(|e| panic!("reuse: {e}"));
+        assert_eq!(state.retry.len(), 1, "client_id_reuse is not replayed");
+        publish_echo(&ctx, &mut state, b"third", 0).unwrap_or_else(|e| panic!("sent: {e}"));
+        assert_eq!(state.echoes, 6, "three dedup keys reserved after 3 earlier echoes");
+        assert!(!state.dirty, "persisted before each POST");
+        let on_disk: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).expect("state file")).expect("json");
+        assert_eq!(on_disk["echoes"], 6);
+        let seen = server.join().expect("relay");
+        assert_eq!(seen.len(), 3);
+        assert!(seen.iter().all(|line| line.starts_with("POST /v2/rooms/family/events")), "{seen:?}");
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn poll_room_halts_on_history_gap() {
         let event = r#"{"seq":12,"device":"owner","client_id":"owner-1","kind":"application","epoch":5,"bytes":"Z2FyYmFnZQ==","sha256":"00","created_at":1}"#;
