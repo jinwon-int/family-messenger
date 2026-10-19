@@ -6,6 +6,8 @@ on:
   pull_request:
     paths:
       - "archive/native-mls/ios-ffi/**"
+      - "archive/native-mls/host-core/**"
+      - "archive/native-mls/android/**"
       - ".github/workflows/native-mls-android.yml"
 permissions:
   contents: read
@@ -16,6 +18,11 @@ env:
   RUST_TOOLCHAIN: 1.91.1
   CARGO_NDK_VERSION: 4.1.2
   SO_TOTAL_BYTES_MAX: 15728640   # 15 MiB — #338 §4 A 수용 기준
+  # #366 3b JVM 왕복: Kotlin 컴파일러·JNA 는 정확 핀 + sha256(새 외부 의존 — Android 바인딩 런타임이 JNA 를 요구, #177 원칙 5).
+  KOTLIN_VERSION: 2.1.20
+  KOTLIN_SHA256: a118197b0de55ffab2bc8d5cd03a5e39033cfb53383d6931bc761dec0784891a
+  JNA_VERSION: 5.17.0
+  JNA_SHA256: b3a9408e7c51e08ef0e3bfcc08f443f6ec0f6191ba8cd7c18d53d2b22e5bdbc0
 defaults:
   run:
     shell: bash
@@ -67,6 +74,38 @@ jobs:
           test "$total" -le "$SO_TOTAL_BYTES_MAX" || { echo "total .so $total > $SO_TOTAL_BYTES_MAX"; exit 1; }
           test "$(find out/android/kotlin -name '*.kt' | wc -l)" -ge 1
           grep -q 'package com.seoyoon_family.hande.mls' "$(find out/android/kotlin -name '*.kt' | head -1)"
+      # ---- #366 3b: JVM(Linux) 왕복 — Kotlin 바인딩 + 호스트 어댑터 + in-memory 릴레이로 MlsRoom 두 기기 시나리오 ----
+      - name: JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Kotlin compiler + JNA (pinned, sha256) — cached
+        id: jvm-tools
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/jvm
+          key: jvm-tools-kotlin${{ env.KOTLIN_VERSION }}-jna${{ env.JNA_VERSION }}
+      - name: Kotlin compiler + JNA — download if not cached
+        if: steps.jvm-tools.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/jvm" && cd "$RUNNER_TEMP/jvm"
+          curl -fsSL -o kotlin.zip "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip"
+          echo "${KOTLIN_SHA256}  kotlin.zip" | sha256sum -c -
+          unzip -q kotlin.zip && rm kotlin.zip
+          curl -fsSL -o jna.jar "https://repo1.maven.org/maven2/net/java/dev/jna/jna/${JNA_VERSION}/jna-${JNA_VERSION}.jar"
+          echo "${JNA_SHA256}  jna.jar" | sha256sum -c -
+      - name: JVM roundtrip — two MlsRoom devices over an in-memory relay (Linux host cdylib) — timed
+        env:
+          KOTLINC: ${{ runner.temp }}/jvm/kotlinc/bin/kotlinc
+          JNA_JAR: ${{ runner.temp }}/jvm/jna.jar
+          BINDINGS_DIR: out/android/kotlin
+          FFI_LIB_DIR: target/debug
+        run: |
+          start=$(date +%s)
+          ../android/scripts/jvm-roundtrip.sh 2>&1 | tee "$RUNNER_TEMP/jvm-roundtrip.log" | tail -n 30
+          echo "jvm_roundtrip_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -q '^ROUNDTRIP PASS' "$RUNNER_TEMP/jvm-roundtrip.log"
       - name: Upload spike artifacts (jniLibs · Kotlin · sha256 · report)
         uses: actions/upload-artifact@v4
         with:
