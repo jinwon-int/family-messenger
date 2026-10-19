@@ -138,8 +138,11 @@ python3 scripts/native_relay_cutover.py @/etc/native-relay/cutover.args --confir
 
 - 실패한 단계에서 멈추고 **되돌리지 않는다**. 기록 JSON(`state/cutover-<시각>.json`)에 어디까지 됐는지 남으므로
   운영자가 이어서 처리한다(예: fence는 바뀌었는데 start 실패 → 원인 수정 후 `systemctl start`, 그다음 dns부터 수동).
-- 봇·브리지는 릴레이 주소를 유닛에 고정하고 있으므로(공명 `native-relay-bot` ExecStart의 tailnet IP) 재지정 훅이
-  필요하다(오너 결정 D4). #420 ⑥에서 `RELAY_URL`을 한 곳에서 읽게 한다.
+- 봇은 릴레이 주소를 `/etc/native-relay/relay.env`(`NATIVE_RELAY_URL`, 비밀 없음) 한 곳에서 읽고(공명 `native-relay-bot`
+  유닛·drop-in의 `ExecStart=… ${NATIVE_RELAY_URL} …`, 1단계 ⑤), 재지정 훅은 `deploy/native-relay/native-relay-repoint`
+  (`ssh gongmyoung sudo /usr/local/sbin/native-relay-repoint <새 릴레이 http URL>`)가 맡는다(오너 결정 D4). 한데 브리지
+  (`ccc-hande-bridge`)는 릴레이 주소를 갖지 않고 봇과 Unix 소켓으로만 통신하므로 재지정 대상이 아니다. JWT 갱신
+  (`jwt-refresh.sh`)은 공개 호스트명(`relay.<도메인>`)을 쓰므로 dns 단계를 따라간다.
 - `--dry-run`은 판정·계획까지만, `--probe-only`는 판정만(워치독·cron에서 쓴다).
 - 기록·stdout에는 토큰 값이 없다. 훅 명령과 stderr는 `Authorization`/`Bearer`/`token=`/`key=`/`secret=`/`password=`/`--token X`/
   URL userinfo 패턴을 **최선 노력으로** 가린 뒤 기록한다 — 완전하지 않으므로 훅에 비밀값을 인자로 넣지 않는 것이 원칙이다(경로·호스트명만).
