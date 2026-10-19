@@ -97,6 +97,8 @@ final class AppModel: ObservableObject {
     /// 릴레이에 닿지 않는 중(네트워크 끊김·게이트웨이 502~504) — 방 화면 제목 아래 「연결 중입니다…」(오너 요청, build 29).
     /// 원문 오류(NSURLErrorDomain …)는 화면에 띄우지 않는다. 동기화·송신이 한 번 성공하면 내려간다.
     @Published private(set) var reconnecting = false
+    /// 배너를 눌러 열어 달라는 방(`NotificationCenterDelegate`). `RootView` 가 방 목록이 준비되면 열고 지운다.
+    @Published private(set) var requestedRoom: RoomID?
     /// 등록 대기 화면이 보여 줄 JSON 의 원본(운영자 CLI 입력).
     @Published private(set) var registration: EnrollmentRequest?
     /// 메시지가 새로 저장될 때마다 오른다 — 방 화면이 다시 읽는 신호.
@@ -593,6 +595,10 @@ final class AppModel: ObservableObject {
         refreshRooms()
         messagesRevision += 1
     }
+
+    /// 배너 탭: 그 알림의 방을 열어 달라고 적어 둔다(열기는 화면 — `NotificationRoute`).
+    func requestOpen(room: RoomID) { requestedRoom = room }
+    func consumeRequestedRoom() { requestedRoom = nil }
 
     private var isEnrolledPhase: Bool {
         switch phase { case .ready, .halted: return true; default: return false }

@@ -2,7 +2,8 @@
 // `UNUserNotificationCenterDelegate` 로만 받는다. 모델은 이 객체가 소유하고 `FamilyChatApp` 이 화면에 건넨다.
 //
 // 결정 D7: 앱이 전면(active)일 때 온 알림은 시스템 배너를 억제하고(표시 옵션 []) 곧바로 동기화해 인앱으로 보인다.
-// 백그라운드·비활성이면 NSE 가 바꾼 알림을 그대로 보인다. 알림을 누르면 동기화만 한다(방 이동은 §12-E 화면).
+// 백그라운드·비활성이면 NSE 가 바꾼 알림을 그대로 보인다. 알림을 누르면 그 방을 열어 달라고 적고(`requestOpen`) 동기화한다 —
+// 실제 이동은 `RootView` 가 방 목록이 준비됐을 때(`NotificationRoute`).
 import UIKit
 import UserNotifications
 import FamilyMLSCore
@@ -53,7 +54,9 @@ final class NotificationCenterDelegate: NSObject, UNUserNotificationCenterDelega
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         let model = self.model
+        let room = NotificationPayload.room(in: response.notification.request.content.userInfo)
         Task { @MainActor in
+            if let room { model.requestOpen(room: room) }
             await model.receivedWhileActive()
             completionHandler()
         }

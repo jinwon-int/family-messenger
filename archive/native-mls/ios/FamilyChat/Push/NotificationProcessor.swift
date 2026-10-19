@@ -45,6 +45,22 @@ struct NotificationPayload: Equatable {
         self.room = room
         self.seq = seq
     }
+
+    /// 배너를 눌렀을 때 열 방 — `seq` 가 없어도(오래된 서버·수동 알림) 방 이름만 있으면 이동한다.
+    static func room(in userInfo: [AnyHashable: Any]) -> RoomID? {
+        guard let room = userInfo["room"] as? String, !room.isEmpty else { return nil }
+        return room
+    }
+}
+
+/// 배너 탭 → 방 이동 규칙(오너 보고 build 30: family 방 알림을 눌렀는데 마지막에 열려 있던 family-acc 가 보임 —
+/// 이동 코드가 없었다). 순수 판정: 알림의 방이 **이 기기가 아는 방**이고 화면이 방 목록을 보일 수 있을 때만 그 방을 연다.
+/// 아직 로그인·동기화 전이면 nil — 요청은 남겨 두고 준비되면 다시 묻는다.
+enum NotificationRoute {
+    static func target(requested: RoomID?, knownRooms: [RoomID], ready: Bool) -> RoomID? {
+        guard ready, let requested, knownRooms.contains(requested) else { return nil }
+        return requested
+    }
 }
 
 final class NotificationProcessor {
