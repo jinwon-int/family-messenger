@@ -332,6 +332,16 @@ def run_flow(Dev, receipt, screenshot=None, relay_base=None):
     assert mom.device_id() == mom_id
     receipt['checks']['reload_reopens_identity_and_all_rooms'] = True
 
+    # ---- self-heal (2026-10-19 field failure): the page's device id drifted from the identity
+    # store (a rotate while the stores stayed) → init_multi refused → the app drops the
+    # identity/lobby stores, restores the previous id and comes back with every room intact.
+    mom.page.evaluate("() => { const v = JSON.parse(localStorage.getItem('hande:identity')); v.previous = v.device; v.device = v.actor + '-web-ffffff'; localStorage.setItem('hande:identity', JSON.stringify(v)); }")
+    mom.reload()
+    for room, n in ((ROOM, 2), ('fam2', 2), ('fam3', 2)):
+        mom.wait_room(room, n, timeout=120000)
+    assert mom.device_id() == mom_id, (mom.device_id(), mom_id)
+    receipt['checks']['identity_store_mismatch_self_heals_to_previous_id'] = True
+
 
 if __name__ == '__main__':
     main()

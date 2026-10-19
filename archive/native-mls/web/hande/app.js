@@ -9,7 +9,7 @@ import * as ui from './ui.js';
 import {strings, displayName, isAgentDevice} from './strings.js';
 import {createWorkerBridge} from './worker-bridge.js';
 import {createRelay} from './relay.js';
-import {createIdentityStore, databaseFor, ROOM, IDENTITY_DATABASE} from './identity.js';
+import {createIdentityStore, databaseFor, ROOM, IDENTITY_DATABASE, LOBBY_DATABASE} from './identity.js';
 import {createRoomSession, nextDeviceId, clock} from './room.js';
 import {createDevice, LOBBY_TARGET} from './device.js';
 
@@ -187,19 +187,47 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       await startDevice(id);
     } catch (error) { app.error = strings.actor?.invalid ?? error.message; render(); }
   }
+  const dbExists = async name => { try { return (await indexedDB.databases()).some(d => d.name === name); } catch (_) { return false; } };
+  const deleteDb = name => new Promise(resolve => { const r = indexedDB.deleteDatabase(name); r.onsuccess = r.onerror = r.onblocked = () => resolve(); });
+  /** Identity + lobby stores only (never a room store): recreatable from the legacy room database or afresh. */
+  async function wipeIdentityStores() {
+    for (const name of [IDENTITY_DATABASE, `${IDENTITY_DATABASE}-history`, LOBBY_DATABASE, `${LOBBY_DATABASE}-history`]) await deleteDb(name);
+    storage.removeItem(markerKey());
+    for (const k of Object.keys(storage)) if (k.startsWith('hande:lobby:')) storage.removeItem(k);
+  }
   async function startDevice(id) {
     app.actor = id.actor; app.device = id.device;
     app.phase = 'starting'; app.message = strings.app.deriving; render();
     relay.me().then(subject => { app.subject = subject; render(); }).catch(() => {});
     try {
-      let dev = createDevice({device: app.device, worker, relay, storage, on: {log: logLine}});
       // Stage-2 install: the default room's single-store database holds the signer → migrate it.
       const legacy = {database: databaseFor(app.defaultRoom), room: app.defaultRoom};
-      let opened = await dev.start({passphrase: identity.passphrase(), identityDatabase: IDENTITY_DATABASE, legacy});
-      if (opened.fresh && !opened.migrated && (storage.getItem(markerKey()) !== null || storage.getItem(`hande:fresh-marker:${legacy.database}`) !== null)) {
-        // The stores are new but this browser used this id before (#290): the chain never
-        // re-accepts the old id with a new fingerprint — start as a new device id.
+      const legacyExists = await dbExists(legacy.database);
+      let dev = createDevice({device: app.device, worker, relay, storage, on: {log: logLine}});
+      let opened;
+      try {
+        opened = await dev.start({passphrase: identity.passphrase(), identityDatabase: IDENTITY_DATABASE, legacy});
+      } catch (error) {
+        // Self-heal (2026-10-19 field failure, #431): the identity store was created under
+        // another device id (an earlier run rotated the id while the stores stayed) →
+        // `init_multi` is refused. The identity/lobby stores hold nothing a room needs
+        // (the enrolled signer lives in the legacy room store or is re-derived), so drop
+        // them, go back to the previous id when one is recorded, and start once more.
+        if (!/^init_multi 거부/.test(error.message)) throw error;
+        logLine(`신원 스토어 복구: ${error.message} — 신원·로비 스토어를 지우고 다시 시작`);
         dev.stop();
+        await wipeIdentityStores();
+        const prev = identity.restorePrevious();
+        if (prev) { app.actor = prev.actor; app.device = prev.device; logLine(`기기 ID 복원: ${prev.restoredFrom} → ${prev.device}`); }
+        dev = createDevice({device: app.device, worker, relay, storage, on: {log: logLine}});
+        opened = await dev.start({passphrase: identity.passphrase(), identityDatabase: IDENTITY_DATABASE, legacy});
+      }
+      if (opened.fresh && !opened.migrated && !legacyExists && (storage.getItem(markerKey()) !== null || storage.getItem(`hande:fresh-marker:${legacy.database}`) !== null)) {
+        // The stores are new but this browser used this id before (#290): the chain never
+        // re-accepts the old id with a new fingerprint — start as a new device id. Only
+        // when no legacy store exists: with one, a fresh unmigrated identity is a bug, not a wipe.
+        dev.stop();
+        await wipeIdentityStores();
         const rotated = identity.rotate();
         status(strings.room.freshStore(rotated.device), 'warn');
         app.actor = rotated.actor; app.device = rotated.device;
@@ -207,6 +235,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
         dev = createDevice({device: app.device, worker, relay, storage, on: {log: logLine}});
         opened = await dev.start({passphrase: identity.passphrase(), identityDatabase: IDENTITY_DATABASE});
       }
+      if (opened.fresh && !opened.migrated && legacyExists) throw new Error(`신원 이전 실패: ${legacy.database}가 있는데 이전되지 않았습니다`);
       storage.setItem(markerKey(), '1');
       app.dev = dev;
       if (opened.migrated) logLine(`신원 이전: ${legacy.database} → ${IDENTITY_DATABASE}`);
@@ -378,8 +407,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       try { await relay.api('DELETE', `/v2/lobby/keypackages?device=${encodeURIComponent(app.device)}`); } catch (_) { /* best effort */ }
       for (const R of app.rooms.values()) { try { await R.session.wipe(); } catch (_) {} }
       app.dev.stop();
-      const names = [IDENTITY_DATABASE, `${IDENTITY_DATABASE}-history`, 'family-mls-synthetic-hande--lobby', 'family-mls-synthetic-hande--lobby-history'];
-      for (const dbName of names) await new Promise(resolve => { const r = indexedDB.deleteDatabase(dbName); r.onsuccess = r.onerror = r.onblocked = () => resolve(); });
+      await wipeIdentityStores();
       for (const k of Object.keys(storage)) if (k.startsWith('hande:') && k !== 'hande:identity') storage.removeItem(k);
       identity.rotate(); identity.forgetPassphrase();
       status(strings.room.wipeDone(next), 'warn');

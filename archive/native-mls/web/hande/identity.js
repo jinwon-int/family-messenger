@@ -44,6 +44,14 @@ export function createIdentityStore({storage = globalThis.localStorage, random =
     storage.setItem(KEY, JSON.stringify(v));
     return v;
   }
+  /** Undo a rotate(): go back to the previous device id (the one the policy chain and the room stores know). */
+  function restorePrevious() {
+    const existing = read();
+    if (!existing || typeof existing.previous !== 'string' || !DEVICE.test(existing.previous) || actorOf(existing.previous) !== existing.actor) return null;
+    const v = {actor: existing.actor, device: existing.previous, createdAt: Date.now(), restoredFrom: existing.device};
+    storage.setItem(KEY, JSON.stringify(v));
+    return v;
+  }
   function passphrase() {
     let p = storage.getItem(PASS_KEY);
     if (typeof p === 'string' && p.length >= 32 && p.length <= 128) return p;
@@ -55,7 +63,7 @@ export function createIdentityStore({storage = globalThis.localStorage, random =
   }
   function forgetPassphrase() { storage.removeItem(PASS_KEY); }
   function clear() { storage.removeItem(KEY); storage.removeItem(PASS_KEY); }
-  return {read, choose, rotate, mint, passphrase, forgetPassphrase, clear};
+  return {read, choose, rotate, restorePrevious, mint, passphrase, forgetPassphrase, clear};
 }
 
 /** Identity store database (worker multi mode, #431 stage 4): the signer only; every room store is derived from it. */

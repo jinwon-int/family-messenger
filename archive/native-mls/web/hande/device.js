@@ -24,7 +24,7 @@ export function createDevice({device, worker, relay, storage, on = {}}) {
     const argument = {identity: device, passphrase, identity_database: identityDatabase};
     if (legacy) argument.legacy = legacy;
     const r = await worker.call(WORKER, 'init_multi', argument);
-    if (!r.ok) throw new Error('init_multi 거부');
+    if (!r.ok) { const e = new Error(`init_multi 거부${r.stage ? `: ${r.stage}` : ''}`); e.stage = r.stage ?? null; throw e; }
     D.started = true; D.fresh = r.result.fresh === true; D.migrated = r.result.migrated === true;
     D.publicKey = hex(Uint8Array.from(r.result.public_key));
     D.fingerprint = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', Uint8Array.from(r.result.public_key))));
