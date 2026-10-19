@@ -1,0 +1,13 @@
+# #440 0단계 — 15분 주기. RPO(복구 시점 목표) = 이 주기. 더 촘촘히 할수록 전환 때 잃는 메시지가 줄지만
+# 30 MB 복사·전송이 15분마다 일어난다(2026-10-19 실측 크기). 변경은 환경 파일이 아니라 이 타이머 드롭인으로.
+[Unit]
+Description=Periodic native-relay off-host snapshot (#440 stage 0)
+
+[Timer]
+OnCalendar=*:0/15
+RandomizedDelaySec=60
+Persistent=true
+Unit=native-relay-snapshot.service
+
+[Install]
+WantedBy=timers.target

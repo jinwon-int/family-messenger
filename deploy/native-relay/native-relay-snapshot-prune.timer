@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily prune of received native-relay snapshots (#440 stage 0)
+
+[Timer]
+OnCalendar=*-*-* 05:10:00 Asia/Seoul
+RandomizedDelaySec=10min
+Persistent=true
+Unit=native-relay-snapshot-prune.service
+
+[Install]
+WantedBy=timers.target
