@@ -94,6 +94,9 @@ final class AppModel: ObservableObject {
     }
     @Published private(set) var rooms: [RoomRecord] = []
     @Published private(set) var lastError: String?
+    /// 릴레이에 닿지 않는 중(네트워크 끊김·게이트웨이 502~504) — 방 화면 제목 아래 「연결 중입니다…」(오너 요청, build 29).
+    /// 원문 오류(NSURLErrorDomain …)는 화면에 띄우지 않는다. 동기화·송신이 한 번 성공하면 내려간다.
+    @Published private(set) var reconnecting = false
     /// 등록 대기 화면이 보여 줄 JSON 의 원본(운영자 CLI 입력).
     @Published private(set) var registration: EnrollmentRequest?
     /// 메시지가 새로 저장될 때마다 오른다 — 방 화면이 다시 읽는 신호.
@@ -419,6 +422,7 @@ final class AppModel: ObservableObject {
                 }
             }
             rooms = try deps.messageStore.rooms()
+            reconnecting = false
             if pending {
                 phase = .needsEnrollment
                 lastError = nil
@@ -435,7 +439,17 @@ final class AppModel: ObservableObject {
         } catch RelayError.unauthorized {
             expireSession()
         } catch {
-            lastError = "\(error)"
+            noteFailure(error)
+        }
+    }
+
+    /// 동기화·송신·로비에서 잡힌 오류 하나를 화면 상태로 옮긴다(`ConnectionIssue`): 취소는 무시, 닿지 않음은
+    /// 「연결 중입니다…」, 그 밖의 오류만 `lastError`.
+    private func noteFailure(_ error: Error) {
+        switch ConnectionIssue.classify(error, taskCancelled: Task.isCancelled) {
+        case .cancelled: return
+        case .unreachable: reconnecting = true
+        case .other: lastError = "\(error)"
         }
     }
 
@@ -468,7 +482,7 @@ final class AppModel: ObservableObject {
         } catch RelayError.unauthorized {
             throw RelayError.unauthorized
         } catch {
-            lastError = "\(error)"; return
+            noteFailure(error); return
         }
         var invites: [PendingWelcome] = []
         for welcome in welcomes where adoptFailed[welcome.room] != welcome.seq {
@@ -507,7 +521,7 @@ final class AppModel: ObservableObject {
             expireSession()
         } catch {
             adoptFailed[welcome.room] = welcome.seq
-            lastError = "\(error)"
+            noteFailure(error)
         }
     }
 
@@ -525,7 +539,7 @@ final class AppModel: ObservableObject {
         } catch RelayError.unauthorized {
             throw RelayError.unauthorized
         } catch {
-            lastError = "\(error)"
+            noteFailure(error)
         }
     }
 
@@ -659,11 +673,15 @@ final class AppModel: ObservableObject {
                 unconfirmed[clientId] = pending
                 try recordOwn(clientId: clientId, seq: seq)
                 lastError = nil
+                reconnecting = false
             case .queued(let clientId):
+                // 릴레이에 닿지 않아 outbox 에 보관 — 연결되면 같은 바이트로 다시 보낸다.
                 unconfirmed[clientId] = pending
                 lastError = Strings.sendQueued
+                reconnecting = true
             case .reconciled:
                 lastError = nil
+                reconnecting = false
             }
             return outcome
         } catch SyncError.attachmentTooLarge(let size) {
@@ -677,7 +695,7 @@ final class AppModel: ObservableObject {
         } catch EngineError.rejected(let reason) {
             lastError = Strings.sendRejected(reason)
         } catch {
-            lastError = "\(error)"
+            noteFailure(error)
         }
         return nil
     }
@@ -786,5 +804,29 @@ final class SerialAsyncQueue {
         }
         tail = Task { _ = try? await task.value }
         return try await task.value
+    }
+}
+
+/// 오류 하나가 화면에 무엇이 되는가(오너 요청, build 29 스크린샷: `NSURLErrorDomain Code=-999 "취소됨"` 원문이 대화를 가림).
+/// - `.cancelled`: 화면 `.task` 취소·백그라운드 전환으로 끊긴 요청(URLError -999 / CancellationError) — 장애가 아니다, 표시 안 함.
+/// - `.unreachable`: 릴레이에 닿지 않음(네트워크 오류 · 게이트웨이 502~504) — 「연결 중입니다…」, 다음 바퀴가 다시 시도.
+/// - `.other`: 그 밖(설정 오류 · 응답 해석 실패 · 거부 등) — `lastError` 로 보인다.
+enum ConnectionIssue: Equatable {
+    case cancelled, unreachable, other
+
+    static func classify(_ error: Error, taskCancelled: Bool) -> ConnectionIssue {
+        if taskCancelled || error is CancellationError { return .cancelled }
+        if let urlError = error as? URLError { return urlError.code == .cancelled ? .cancelled : .unreachable }
+        switch error as? RelayError {
+        case .network(let detail)?:
+            // URLSessionRelayTransport 는 URLError 를 문자열로 감싼다(`RelayError.network("\(error)")`).
+            if detail.contains("NSURLErrorDomain Code=-999") { return .cancelled }
+            if detail.hasPrefix("bad relay url") { return .other }
+            return .unreachable
+        case .refused(_, let status)? where (502...504).contains(status):
+            return .unreachable
+        default:
+            return .other
+        }
     }
 }

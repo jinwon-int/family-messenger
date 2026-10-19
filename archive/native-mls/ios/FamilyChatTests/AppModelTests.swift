@@ -113,6 +113,38 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.phase, .halted("commit_refused"), "halt survives restart via MessageStore")
     }
 
+    /// 오너 요청(build 29): 릴레이에 닿지 않으면 원문 오류 대신 「연결 중입니다…」, 다시 닿으면 사라진다.
+    func testUnreachableRelayShowsConnectingNotRawError() async throws {
+        let relay = InMemoryRelay()
+        let (model, _) = makeModel(transport: relay)
+        await model.bootstrap(); model.login(.bearer("t"))
+        await model.refresh()
+        XCTAssertEqual(model.phase, .ready)
+        XCTAssertFalse(model.reconnecting)
+        try await relay.stop()
+        await model.refresh()
+        XCTAssertTrue(model.reconnecting)
+        XCTAssertNil(model.lastError, "no raw network error on screen")
+        try await relay.start()
+        await model.refresh()
+        XCTAssertFalse(model.reconnecting, "one successful round clears it")
+        XCTAssertNil(model.lastError)
+    }
+
+    func testConnectionIssueClassification() async {
+        let cancelled = RelayError.network(#"Error Domain=NSURLErrorDomain Code=-999 "취소됨" UserInfo={…}"#)
+        XCTAssertEqual(ConnectionIssue.classify(cancelled, taskCancelled: false), .cancelled, "build 29 screenshot")
+        XCTAssertEqual(ConnectionIssue.classify(CancellationError(), taskCancelled: false), .cancelled)
+        XCTAssertEqual(ConnectionIssue.classify(URLError(.cancelled), taskCancelled: false), .cancelled)
+        XCTAssertEqual(ConnectionIssue.classify(RelayError.network("relay down"), taskCancelled: true), .cancelled, "the screen task was cancelled")
+        XCTAssertEqual(ConnectionIssue.classify(URLError(.notConnectedToInternet), taskCancelled: false), .unreachable)
+        XCTAssertEqual(ConnectionIssue.classify(RelayError.network("Error Domain=NSURLErrorDomain Code=-1005"), taskCancelled: false), .unreachable)
+        XCTAssertEqual(ConnectionIssue.classify(RelayError.refused(code: "bad_gateway", status: 502), taskCancelled: false), .unreachable)
+        XCTAssertEqual(ConnectionIssue.classify(RelayError.network("bad relay url: x /v2"), taskCancelled: false), .other)
+        XCTAssertEqual(ConnectionIssue.classify(RelayError.refused(code: "not_a_member", status: 403), taskCancelled: false), .other)
+        XCTAssertEqual(ConnectionIssue.classify(RelayError.decoding("x"), taskCancelled: false), .other)
+    }
+
     func testRefreshWithNoRoomsIsReady() async {
         let (model, _) = makeModel()
         await model.bootstrap(); model.login(.bearer("t"))
