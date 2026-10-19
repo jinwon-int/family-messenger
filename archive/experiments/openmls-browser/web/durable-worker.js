@@ -146,18 +146,25 @@ async function initMulti(argument) {
   const opened = openStore(IDENTITY_ROOM, argument.identity_database);
   await opened.open(argument.identity_database);
   let migrated = false, result;
+  // Coarse failure stage for the page's fatal screen / self-heal (#431): never a secret.
+  let stage = 'identity_unlock';
   try {
     const fresh = await unlockShared(opened);
+    stage = 'identity_initialize';
     if (fresh && legacy !== null && await databaseExists(legacy.database)) {
       // Migration: the signer of a single-store database becomes the identity store.
       // The legacy store's custody record is adopted so that database (and every
       // later sibling) shares one capsule — one KDF per start from now on.
+      stage = 'legacy_open';
       const old = openStore(legacy.room, legacy.database);
       await old.open(legacy.database);
       let blob = null, publicKey = null;
       try {
+        stage = 'legacy_unlock';
         if (await unlockShared(old)) fail();   // a fresh legacy database is not a legacy
+        stage = 'legacy_export';
         ({blob, publicKey} = await old.transaction((ctx, meta) => { if (meta === null) fail(); return {blob: ctx.exportIdentity(), publicKey: meta.public_key}; }));
+        stage = 'identity_create';
         opened.close();
         const adopted = openStore(IDENTITY_ROOM, argument.identity_database);
         await adopted.open(argument.identity_database);
@@ -175,7 +182,7 @@ async function initMulti(argument) {
     }
   } catch (error) {
     opened.close(); for (const st of stores.values()) st.store.close(); stores.clear(); shared = null; passphrase = null; identity = null;
-    throw error;
+    throw Object.assign(error instanceof Error ? error : new Error('rejected'), {stage});
   }
   mode = 'multi';
   const st = stores.get(IDENTITY_ROOM);
@@ -333,8 +340,10 @@ self.onmessage = ({data}) => {
         result = await handle(method, argument);
       }
       self.postMessage({id, ok: true, result, memory_bytes: wasm.memory.buffer.byteLength});
-    } catch (_) {
-      self.postMessage({id, ok: false, error: 'operation rejected', memory_bytes: wasm.memory.buffer.byteLength});
+    } catch (error) {
+      const reply = {id, ok: false, error: 'operation rejected', memory_bytes: wasm.memory.buffer.byteLength};
+      if (data?.method === 'init_multi' && typeof error?.stage === 'string') reply.stage = error.stage;
+      self.postMessage(reply);
     }
   });
 };
