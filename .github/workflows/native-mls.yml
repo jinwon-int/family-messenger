@@ -185,6 +185,11 @@ jobs:
       - name: Staged IndexedDB persistence
         if: steps.scope.outputs.run == 'true'
         run: python archive/native-mls/tests/native_mls_persistence_smoke.py --bundle artifacts/mls-pkg
+      # #431 stage 4: multi-store worker — one identity, several room stores (lobby clone join,
+      # single-store interop, resume with one KDF, legacy single-store migration).
+      - name: Multi-store durable worker (identity + lobby + rooms)
+        if: steps.scope.outputs.run == 'true'
+        run: python archive/native-mls/tests/native_mls_multistore_smoke.py --bundle artifacts/mls-pkg
       - name: First-device directory trust gate
         if: steps.scope.outputs.run == 'true'
         run: python archive/native-mls/tests/native_device_browser_smoke.py --bundle artifacts/mls-pkg --binary artifacts/family-dev --policy-binary artifacts/family-policy

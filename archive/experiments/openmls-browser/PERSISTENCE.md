@@ -308,6 +308,34 @@ facade is unchanged (it already rolls a rejected operation back, `session.rs`
   replay after restart and the tamper case end to end (the sequence chains there
   were rewritten: each tombstone consumes a sequence).
 
+## 다중 스토어 — 한 신원, 여러 방 (#431 4단계, `web/durable-worker.js` multi mode)
+
+iOS 는 `_identity` 슬롯(서명키만) 하나에서 방마다 상태를 파생한다(#372 P1 `Device::export_identity`). 브라우저의
+durable 레인은 DB 1개 = Session 1개 = 그룹 1개였고, 스냅샷 API 는 페이지가 비밀을 꺼낼 수 있어 M2b-3c 에서 지웠다.
+이 절의 설계는 그 불변식을 지킨다: **복제 바이트는 워커 안에서 만들어져 워커 안에서 소비되고 postMessage 를 건너지 않는다.**
+
+- 파사드: `Session::export_identity(identity)` — 서명키 엔트리만, `u32 LE len ‖ identity ‖ frame(entries)` 로 **신원 문자열에
+  묶인** blob(`open` 은 그룹이 없으면 자격증명을 검사하지 않으므로 바인딩이 필요했다). 짝 `Session::open_identity(identity,
+  public_key, version, bytes)` 는 신원·서명키 일치, 그룹 없음, key package 0, 엔트리 수 == 서명키 엔트리 수를 검사하고 `create`
+  처럼 **in flight** 로 연다(워커가 persist → commit). 전체 복제는 기존 `export()`(모든 엔트리) + `open(identity, pk, 빈 group_id,
+  …)` 로 한다. 호스트 테스트 `durable_lane_export_identity_shares_signer_across_stores`.
+- 스토어(`session-store.js` ctx): `exportIdentity()`·`exportEntries()`(원본), `createIdentity(pk, blob)`·`createClone(pk, entries)`(사본,
+  같은 트랜잭션 안에서 persist + custody 레코드 추가), `sharedKeys()`(잠금 해제된 레코드 키·custody 레코드 사본 — 형제 스토어가
+  KDF 없이 연다). 복제 트랜잭션이 abort 되면 상주 세션을 버린다(durable 근거가 없다).
+- 워커 메시지(둘 중 하나의 모드로만 산다): `init`(단일, 변경 없음 — relay-app) / `init_multi {identity, passphrase,
+  identity_database, legacy?}` → `-identity` 스토어; `open_room {room, database, from: identity|lobby}` → 새 DB 면 워커 안에서
+  복제(identity = 그룹 없음·KP 0, lobby = 서명키 + 미사용 로비 KP 비밀 → 로비 KP 로 만든 Welcome 을 join 할 수 있다), 있는 DB 면
+  그냥 연다(멱등); `close_room`·`reset_room`(DB + history 삭제 — 그룹 없는 방 스토어를 로비 사본으로 바꿀 때); `status/ack/operation/
+  history_*` 는 `room` 을 싣는다. `-identity`·`-lobby` 는 릴레이 방 이름(`[a-z0-9]` 로 시작)과 충돌하지 않는다.
+- custody: 신원 스토어를 한 번 열 때만 scrypt 를 돌리고, 새 형제 DB 는 신원의 capsule 을 그대로 받으며(같은 레코드 키; AAD 에
+  room 이 있어 레코드를 다른 DB 로 옮겨도 열리지 않는다), 다른 capsule 의 DB(레거시 단일 스토어)만 암호로 다시 연다.
+- 이전(migration): `init_multi` 의 `legacy {database, room}` — 신원 DB 가 새것이고 레거시 DB 가 있으면 레거시를 열어
+  `exportIdentity` → 신원 스토어를 그 blob 으로 만들고 **레거시의 custody 레코드를 신원이 물려받는다**(이후 한 KDF). 레거시 DB 는
+  그 방의 스토어로 계속 쓴다(`open_room` 에 그 DB 이름). 한데 웹 1차 기기(`<actor>-web-…`, 방 1개)가 이 경로로 올라온다.
+- 증명하는 것/않는 것: 브라우저 스모크 `archive/native-mls/tests/native_mls_multistore_smoke.py` — 신원·로비·방 스토어의 공개키
+  동일, 로비 KP 로 초대받은 방을 로비 사본으로 join, 다른 방 불변, 단일 모드 워커와 상호운용, 재시작 후 KDF 1회, 레거시 이전.
+  정책 체인·릴레이는 바꾸지 않는다(기기당 서명키 1개라는 규칙을 브라우저가 비로소 지킨다).
+
 ## Secret wiping (#231 batch g)
 
 What is wiped (`zeroize` 1.9.0, direct dependency): every store value and
