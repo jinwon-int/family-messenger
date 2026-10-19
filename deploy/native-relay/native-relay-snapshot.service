@@ -1,0 +1,28 @@
+# #440 0단계 — native-relay 오프호스트 스냅샷(릴레이 호스트에 설치).
+# 릴레이를 멈추지 않는다: SQLite 온라인 백업 API로 복사한다(store.go 의 _journal_mode=DELETE 와 호환).
+# 경로·푸시 대상·ssh 키는 환경 파일이 정한다(코드에 박지 않는다). APNs .p8 은 절대 포함하지 않는다(#440-A).
+# 릴레이 데이터 디렉터리(0700, native-relay 소유)와 drop-in/env(root)를 모두 읽어야 하므로 root 로 돈다.
+[Unit]
+Description=family-messenger native-relay off-host snapshot (#440 stage 0)
+After=network-online.target native-relay.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/native-relay/snapshot.env
+ExecStart=/usr/bin/python3 /opt/family-messenger-tuwunel/scripts/native_relay_snapshot.py \
+  --data-dir ${RELAY_DATA_DIR} --policy-dir ${RELAY_POLICY_DIR} \
+  --static-dir ${RELAY_STATIC_DIR} --hande-dir ${RELAY_HANDE_DIR} \
+  --dropin-dir ${RELAY_DROPIN_DIR} --env-file ${RELAY_ENV_FILE} \
+  --dest ${SNAPSHOT_DEST} --state ${SNAPSHOT_STATE} \
+  --ssh-key ${SNAPSHOT_SSH_KEY} --keep-hours ${SNAPSHOT_KEEP_HOURS} --keep-days ${SNAPSHOT_KEEP_DAYS} \
+  $SNAPSHOT_PUSH_ARGS
+TimeoutStartSec=20min
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/native-relay-snapshots

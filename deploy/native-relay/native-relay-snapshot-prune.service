@@ -1,0 +1,13 @@
+# #440 0단계 — 수신 호스트(대기·오프사이트) 쪽 보존 정리. 보낸 쪽과 같은 규칙(48시간 전량 + 하루 1개 30일).
+# 삭제는 이 스크립트가 만든 이름(relay-*.tar.gz + .sha256)만 건드린다.
+[Unit]
+Description=Prune received native-relay snapshots (#440 stage 0, receiving host)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/family-messenger-tuwunel/scripts/native_relay_snapshot.py \
+  --prune-only --dest /var/lib/native-relay-snapshots/inbox --keep-hours 48 --keep-days 30
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/native-relay-snapshots
