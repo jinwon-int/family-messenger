@@ -9,7 +9,9 @@
 | 파일 | 역할 |
 |---|---|
 | `src/lib.rs` | `MlsDevice` 객체(uniffi): `new / import_state / export_state / public_key / fingerprint / dispatch(method, bytes)`. **MLS 로직 0줄** — 와이어 프레이밍·AAD·commit 검사·record 코덱은 전부 파사드 |
+| `src/room.rs` | **`MlsRoom` 객체**(#366 3a, Android 먼저): 방 하나의 동기화(`poll`)·송신(`send`)·초대 게시(`post_commit`/`post_welcome`)·`dispatch`. 상태기계·릴레이 와이어는 host-core `room`/`api` — **봇과 같은 코드**. 호스트는 `HttpTransport`(바이트 전송)·`RoomObserver`(영속·이벤트·메시지·정지) 두 trait 만 구현한다(아래 절) |
 | `tests/host_roundtrip.rs` | 봇 `tests/native_facade_link.rs` 의 두 시나리오를 FFI 객체로 반복 + 거부 시 스냅샷 롤백 검사 (host, `cargo test`) |
+| `tests/room_host.rs` | `MlsRoom` 게이트: Rust 로 구현한 in-memory 릴레이(`HttpTransport`)·관찰자 위에서 두 기기 왕복 · 자기 commit merge → 상대 적용 · 409 cas_mismatch 재시도 · `import` 이어 받기 · 전송 실패 = transient · history gap 정지 |
 | `build-xcframework.sh` | macOS: iOS 기기·시뮬레이터 staticlib → `FamilyMLS.xcframework` + Swift 바인딩 + sha256 목록 |
 | `uniffi.toml` | Swift 모듈명 `FamilyMLS` / FFI 모듈 `FamilyMLSFFI` |
 | `src/bin/uniffi-bindgen.rs` | 바인딩 생성기(같은 uniffi 핀) — `--features cli` |
@@ -36,8 +38,24 @@ CI: `.github/workflows/native-mls-ios.yml` (ubuntu host 게이트 ≤15분 · ma
 | `family-mls-browser-experiment` | path | 레포 | 파사드(세 호스트 공용) |
 | `uniffi` | `=0.32.2` | MPL-2.0 (미수정 사용) | Rust↔Swift 바인딩 생성. 대안 = 수동 `extern "C"` + Swift 래퍼(의존 0, 바이트 버퍼·오류 전달을 손으로). 스파이크 결과(크기·빌드 시간)로 택한다 — #271 §3 |
 | `sha2` | `=0.10.9` | MIT/Apache-2.0 | 지문 = sha256(공개키) (DEVICES-V4). 파사드 그래프에 이미 있는 핀 |
+| `native-mls-host` | path | 레포 | 방 동기화·송신 상태기계와 릴레이 와이어(#366) — 봇·Android 공용. 새 외부 의존 없음(serde·serde_json·sha2 핀 동일) |
+| `zeroize` | `=1.9.0` | MIT/Apache-2.0 | 연산 전 스냅샷(키 재료) 지우기. 파사드·봇 그래프에 이미 있는 핀 |
+| `serde_json` (dev) | `=1.0.151` | MIT/Apache-2.0 | `tests/room_host.rs` 의 in-memory 릴레이 와이어 JSON. 그래프에 이미 있는 핀 |
 
 전체 전이 라이선스 고지(`THIRD-PARTY-NOTICES.txt`)·`dependencies.json` 은 **스파이크 통과 뒤** 파사드와 같은 형식으로 생성한다(여기서는 `Cargo.lock` 만 커밋).
+
+## `MlsRoom` — 모바일 호스트의 방 (#366 3a)
+
+호스트(Kotlin)가 구현하는 두 trait(`#[uniffi::export(foreign)]`):
+
+| trait | 메서드 | 호스트가 하는 일 |
+|---|---|---|
+| `HttpTransport` | `send(method, url, headers, body) → HttpResponse{status, body}` | OkHttp 로 바이트만 옮긴다(TLS 는 여기). **연결 실패만** `Err`(→ transient) — HTTP 오류 상태는 보통의 응답. 경로·쿼리·JSON·오류 봉투·CF Access 헤더는 Rust |
+| `RoomObserver` | `persist(state, sync)` · `event(RoomEvent)` · `application(seq, sender, client_id, plaintext)` · `halted(reason, detail, sync)` | 원자 영속(tmp→fsync→rename, Keystore 봉인) — **돌아오기 전에는 바이트가 나가지 않는다**(review 2 B-H2) · 로그 · 메시지 저장/표시 · 정지 마커 |
+
+`MlsRoom`: `new(identity, room, base_url, transport, observer)` / `import(…, state, sync, …)` · `poll()`(봇 `poll_room` 순서: ack → GET → gap → welcome/commit/application; 끝에 dirty 면 persist) · `send(plaintext) → Sent | Queued(409 cas_mismatch, 다음 poll 뒤 재시도 ≤8) | AlreadyDelivered` · `post_commit` / `post_welcome`(초대: `dispatch("invite_with_commit")` → `post_commit` → `poll` 이 `OwnCommitMerged` → `post_welcome`) · `export_state` · `sync_state` · `dispatch`(성공 시 바로 persist) · `set_access_token`. 오류는 `RoomError{Relay{transient}, Mls, Host}` — 기존 `MlsError` 는 그대로.
+
+프레이밍은 봇과 바이트 동일(AAD client_id = 기기 identity). 릴레이 dedup client_id 는 iOS 와 같은 모양 `<identity>-<8 hex>`(카운터 영속). Kotlin 어댑터·JVM 왕복·`HOST-CONTRACT.md` 는 3b.
 
 ## 증명하지 않는 것
 

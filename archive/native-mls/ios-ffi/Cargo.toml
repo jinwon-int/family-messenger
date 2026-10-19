@@ -26,6 +26,14 @@ family-mls-browser-experiment = { path = "../../experiments/openmls-browser" }
 uniffi = { version = "=0.32.2" }
 # 지문 = sha256(서명 공개키 원본 바이트) — DEVICES-V4. 파사드 그래프에 이미 있는 핀과 동일.
 sha2 = "=0.10.9"
+# #366 3a: 방 동기화·송신 상태기계(`room::poll`/`send_application`)·릴레이 와이어 — 봇과 같은 코드.
+native-mls-host = { path = "../host-core" }
+# 연산 전 스냅샷(키 재료)을 쓰고 나면 지운다 — 봇·파사드와 같은 핀.
+zeroize = "=1.9.0"
+
+[dev-dependencies]
+# tests/room_host.rs 의 in-memory 릴레이(와이어 JSON) — 파사드 그래프에 이미 있는 핀.
+serde_json = "=1.0.151"
 
 [profile.release]
 opt-level = "s"

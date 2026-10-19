@@ -13,6 +13,10 @@ use std::sync::Mutex;
 
 use family_mls_browser_experiment::{Device, DECRYPT_FORMAT};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroize;
+
+mod room;
+pub use room::*;
 
 uniffi::setup_scaffolding!();
 
@@ -33,7 +37,7 @@ impl std::fmt::Display for MlsError {
     }
 }
 
-fn rejected(e: family_mls_browser_experiment::Rejected) -> MlsError {
+pub(crate) fn rejected(e: family_mls_browser_experiment::Rejected) -> MlsError {
     // `Rejected(&'static str)` 의 필드는 비공개 — Debug 표현("Rejected(\"...\")")에서 사유만 추린다.
     let text = format!("{e:?}");
     let reason = text.trim_start_matches("Rejected(\"").trim_end_matches("\")").to_owned();
@@ -103,26 +107,29 @@ impl MlsDevice {
 
     /// 워커·봇과 같은 단일 진입점. 실패 시 기기 객체는 연산 전 스냅샷으로 되돌아간다.
     pub fn dispatch(&self, method: String, input: Vec<u8>) -> Result<Vec<u8>, MlsError> {
-        if !METHODS.contains(&method.as_str()) {
-            return Err(MlsError::Invalid { reason: format!("unknown method {method}") });
-        }
-        let mut guard = self.inner.lock().map_err(|_| MlsError::Invalid { reason: "device lock poisoned".into() })?;
-        let mut device = guard.take().ok_or_else(|| MlsError::Invalid { reason: "device missing".into() })?;
-        let snapshot = device.export_state(&self.identity).map_err(rejected);
-        let result = run(&mut device, &method, &input);
-        match result {
-            Ok(output) => {
-                *guard = Some(device);
-                Ok(output)
-            }
-            Err(err) => {
-                // 봇 session.rs 와 같은 롤백: 거부된 연산의 변이(퇴역 포함)를 버리고 스냅샷으로 복원.
-                let restored = snapshot.and_then(|bytes| Device::import_state(&self.identity, &bytes).map_err(rejected));
-                *guard = Some(restored.unwrap_or(device));
-                Err(err)
+        self.with(|d| dispatch_guarded(d, &self.identity, &method, &input))
+    }
+}
+
+/// `dispatch` 본체(`MlsDevice`·`MlsRoom` 공용, #366 3a): 연산 전 `export_state` 스냅샷 → 실행 → 거부되면
+/// 봇 session.rs 와 같은 롤백(거부된 연산의 변이·퇴역을 버리고 스냅샷으로 복원). 스냅샷은 쓰고 나면 지운다.
+pub(crate) fn dispatch_guarded(device: &mut Device, identity: &str, method: &str, input: &[u8]) -> Result<Vec<u8>, MlsError> {
+    if !METHODS.contains(&method) {
+        return Err(MlsError::Invalid { reason: format!("unknown method {method}") });
+    }
+    let mut snapshot = device.export_state(identity).map_err(rejected);
+    let result = run(device, method, input);
+    if result.is_err() {
+        if let Ok(bytes) = &snapshot {
+            if let Ok(restored) = Device::import_state(identity, bytes) {
+                *device = restored;
             }
         }
     }
+    if let Ok(bytes) = &mut snapshot {
+        bytes.zeroize();
+    }
+    result
 }
 
 impl MlsDevice {

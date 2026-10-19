@@ -197,9 +197,35 @@ pub struct ApiErrorBody {
     pub error: String,
 }
 
+/// How requests reach the relay (#366 3a). The bot uses [`TcpTransport`]
+/// (plain HTTP/1.1 over the tailnet); a mobile host plugs in its platform
+/// client (TLS stays there — no TLS dependency in this crate). Paths, query
+/// strings, JSON bodies and the error envelope are built and read here,
+/// whatever the transport.
+pub trait Transport: Send + Sync {
+    /// `extra_headers` are already resolved (the CF Access assertion when
+    /// configured). Return `Err` only when no HTTP response was obtained —
+    /// a response with an error status is a normal `Response`.
+    fn send(
+        &self, base: &str, method: &str, path_qs: &str, body: Option<&[u8]>, extra_headers: &[(&str, &str)],
+    ) -> Result<http::Response>;
+}
+
+/// The crate's own HTTP/1.1 client ([`http::request`]).
+pub struct TcpTransport;
+
+impl Transport for TcpTransport {
+    fn send(
+        &self, base: &str, method: &str, path_qs: &str, body: Option<&[u8]>, extra_headers: &[(&str, &str)],
+    ) -> Result<http::Response> {
+        Ok(http::request(base, method, path_qs, body, extra_headers)?)
+    }
+}
+
 pub struct Client {
     base: String,
     access: Access,
+    transport: Box<dyn Transport>,
 }
 
 /// Caller authentication source (relay `-access-mode required`, review C1).
@@ -248,7 +274,18 @@ impl Access {
 
 impl Client {
     pub fn with_access(base: &str, access: Access) -> Client {
-        Client { base: base.trim_end_matches('/').to_string(), access }
+        Client::with_transport(base, access, Box::new(TcpTransport))
+    }
+
+    /// Same client over a host-provided transport (#366 3a: Android OkHttp).
+    pub fn with_transport(base: &str, access: Access, transport: Box<dyn Transport>) -> Client {
+        Client { base: base.trim_end_matches('/').to_string(), access, transport }
+    }
+
+    /// Replace the caller-auth source (a mobile host rotates its CF Access
+    /// token without rebuilding the client).
+    pub fn set_access(&mut self, access: Access) {
+        self.access = access;
     }
 
     /// Every contract route carries the CF Access assertion when caller auth
@@ -259,7 +296,7 @@ impl Client {
             headers.push(("Cf-Access-Jwt-Assertion", token));
         }
         let refs: Vec<(&str, &str)> = headers.iter().map(|(name, value)| (*name, value.as_str())).collect();
-        Ok(http::request(&self.base, method, path_qs, body, &refs)?)
+        self.transport.send(&self.base, method, path_qs, body, &refs)
     }
 
     pub fn health(&self) -> Result<bool> {
