@@ -1,0 +1,46 @@
+# /etc/native-relay/cutover.args — 전환 스크립트 인자 파일(대기 호스트, root 0600). 한 줄에 인자 하나(값은 다음 줄).
+# 사용: python3 /opt/family-messenger-tuwunel/scripts/native_relay_cutover.py @/etc/native-relay/cutover.args [--confirm <token>]
+# 셸이 다시 파싱하지 않으므로 공백이 든 명령(--peer-stop-cmd 등)도 그대로 쓴다. 빈 줄·'#' 줄은 무시. 비밀은 "파일 경로"만.
+# --peer-snapshot-cmd 는 계획(토큰 없는) 실행에서만 돈다 — 확인 실행은 새 스냅샷을 찍지 않는다.
+--to
+soonwook
+--fence-record
+_native-relay-active.example.test
+--peer-health
+http://100.64.0.1:18921/v2/health
+--edge-health
+https://relay.example.test/v2/health
+--edge-token-file
+/etc/native-relay/edge-probe.env
+--inbox
+/var/lib/native-relay-snapshots/inbox
+--target-data-dir
+/var/lib/native-relay/data
+--target-policy-dir
+/var/lib/native-relay/policy
+--target-static-dir
+/opt/native-relay/static
+--target-hande-dir
+/opt/native-relay/hande
+--bump-seq
+1000
+--owner
+native-relay
+--cf-zone-id
+<zone-id>
+--cf-dns-token-file
+/etc/native-relay/cf-dns-token.env
+--hostname
+relay.example.test
+--hostname
+hande.example.test
+--tunnel-target
+<tunnel-id>.cfargotunnel.com
+--peer-snapshot-cmd
+ssh -o BatchMode=yes -o ConnectTimeout=10 seoseo systemctl start native-relay-snapshot.service
+--peer-stop-cmd
+ssh -o BatchMode=yes -o ConnectTimeout=10 seoseo systemctl stop native-relay
+--client-hook
+ssh -o BatchMode=yes gongmyoung sudo /usr/local/sbin/native-relay-repoint http://100.64.0.2:18921
+--state
+/var/lib/native-relay-snapshots/state

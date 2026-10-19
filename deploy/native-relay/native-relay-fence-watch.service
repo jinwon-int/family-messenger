@@ -1,0 +1,13 @@
+# #440 1단계 — 펜스의 "정지 측". 1분마다 TXT 를 읽어 다른 호스트가 활성으로 적혀 있으면(exit 1) 이 호스트의
+# 릴레이를 멈춘다 — 전환 뒤 옛 호스트가 재부팅해 살아나거나, TXT 가 바뀐 뒤에도 돌고 있던 릴레이가 지는 쪽.
+# 못 읽는 경우(exit 2)는 멈추지 않는다: DoH 장애가 활성 호스트를 내려서는 안 된다. 시작 측은 30-fence.conf.
+# 전환 직후 공개 리졸버가 옛 값을 TTL 동안 돌려줄 수 있으므로 연속 3회(--stop-after, 기본) 확인 뒤에만 멈춘다.
+# 유닛은 stop 자체가 실패했을 때만 failed 가 된다(대기 호스트의 평상시 = exit 0).
+[Unit]
+Description=native-relay fence watch — stop this relay when the TXT names another host (#440)
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/native-relay/fence.env
+ExecStart=/usr/bin/python3 /opt/family-messenger-tuwunel/scripts/native_relay_fence.py --expect ${FENCE_SELF} --record ${FENCE_RECORD} --stop-unit native-relay --streak-file /var/lib/native-relay/fence-watch.json
+ReadWritePaths=/var/lib/native-relay

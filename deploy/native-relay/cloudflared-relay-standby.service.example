@@ -1,0 +1,19 @@
+# 대기 호스트 전용 Cloudflare 터널 (#440 1단계). 활성 호스트 터널의 토큰 복제본은 금지 — CF 가 복제본에 분산시켜
+# 두 릴레이가 동시에 쓰기를 받는다. 별도 터널을 만들고 ingress 에 relay./hande. → http://127.0.0.1:18921 을 미리 넣는다.
+# DNS CNAME 이 이 터널을 가리키기 전에는 트래픽이 오지 않으므로 평시 켜 둔다. 토큰은 systemd credential 로만 읽는다.
+[Unit]
+Description=Cloudflare tunnel for the standby native-relay (#440)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+LoadCredential=token:/etc/cloudflared/relay-standby.token
+ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate --metrics 127.0.0.1:20262 --loglevel warn run --token-file %d/token
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

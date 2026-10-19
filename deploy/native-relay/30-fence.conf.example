@@ -1,0 +1,10 @@
+# /etc/systemd/system/native-relay.service.d/30-fence.conf — 양쪽 호스트(활성·대기) 모두 설치 (#440 1단계) — 시작 측 펜스
+# 릴레이는 SQLite 단일 작성자 + MLS epoch/seq 단조 — 두 대가 동시에 서빙하면 상태가 갈라진다.
+# 기동 전에 공개 DNS TXT 펜스(_native-relay-active.<도메인>)가 이 호스트를 가리키는지 DoH로 확인한다.
+# 못 읽거나(2) 다른 호스트면(1) 기동 거부(fail-closed). FENCE_SELF/FENCE_RECORD 는 /etc/native-relay/fence.env.
+# 이미 돌고 있는 릴레이를 멈추는 "정지 측"은 native-relay-fence-watch.timer 가 맡는다(둘 다 설치해야 펜스가 완성된다).
+[Service]
+EnvironmentFile=/etc/native-relay/fence.env
+ExecStartPre=/usr/bin/python3 /opt/family-messenger-tuwunel/scripts/native_relay_fence.py --expect ${FENCE_SELF} --record ${FENCE_RECORD}
+Restart=on-failure
+RestartSec=30s

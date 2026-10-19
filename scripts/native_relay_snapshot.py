@@ -239,6 +239,9 @@ def record(state_dir, payload):
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
     os.chmod(tmp, 0o600)
     tmp.rename(latest)
+    skipped = state_dir / 'skipped-latest.json'
+    if skipped.exists():
+        skipped.unlink()
     return path
 
 
@@ -283,7 +286,11 @@ def parse(argv=None):
     parser.add_argument('--keep-hours', type=int, default=48)
     parser.add_argument('--keep-days', type=int, default=30)
     parser.add_argument('--prune-only', action='store_true', help='apply retention to --dest and exit')
+    parser.add_argument('--fence', help='this host name; snapshot only when the fence TXT names it (#440 stage 1)')
+    parser.add_argument('--fence-record', help='fence TXT FQDN (required with --fence)')
     args = parser.parse_args(argv)
+    if bool(args.fence) != bool(args.fence_record):
+        parser.error('--fence and --fence-record go together')
     if not args.state:
         args.state = str(Path(args.dest).parent / 'state')
     if not args.prune_only and not (args.data_dir and args.policy_dir):
@@ -291,11 +298,35 @@ def parse(argv=None):
     return args
 
 
+def fence_state(args):
+    """0 = active here (snapshot), 1 = another host is active (skip quietly), 2 = unreadable (skip loudly).
+
+    An unproven host neither serves nor snapshots, but the active host losing snapshots during a DoH
+    outage must be visible: 2 is reported as a failure so the timer/watchdog sees the RPO eroding.
+    """
+    if not args.fence:
+        return 0
+    from native_relay_fence import check
+    code, message = check(args.fence, args.fence_record)
+    if code:
+        print('snapshot skipped — ' + message, file=sys.stderr)
+        state = Path(args.state)
+        state.mkdir(parents=True, exist_ok=True)
+        skipped = state / 'skipped-latest.json'
+        skipped.write_text(json.dumps({'at': utcnow().isoformat(timespec='seconds'), 'fence_exit': code,
+                                       'message': message}) + '\n')
+        os.chmod(skipped, 0o600)
+    return code
+
+
 def main(argv=None):
     args = parse(argv)
     if args.prune_only:
         print(json.dumps({'pruned': prune(args.dest, args.keep_hours, args.keep_days)}))
         return 0
+    fenced = fence_state(args)
+    if fenced:
+        return 0 if fenced == 1 else 1
     Path(args.state).mkdir(parents=True, exist_ok=True)
     with open(Path(args.state) / '.lock', 'w') as lock:
         try:
