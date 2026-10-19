@@ -35,6 +35,10 @@ struct RoomView: View {
     /// 최하단 표지(높이 1pt, 항상 있음) — 진입·새 메시지·내용 증가 때의 스크롤 목표. 「생각하는 중」 줄은 에이전트가 바로 답하는 방
     /// (family-acc)에서는 높이 0이라 그 줄을 목표로 삼으면 끝까지 가지 않았다(오너 보고 build 31: family 는 되고 family-acc 는 2~3번째).
     private static let bottomSentinelID: Int64 = -2
+    /// 꼬리(lazy 아님)에 두는 마지막 행 수. LazyVStack 은 화면 밖 행을 만들지 않아, 긴 마지막 글 아래의 바닥 표지가 생성되지 않으면
+    /// 측정 보정이 돌지 않고 `scrollTo` 는 추정 위치(≈ 마지막 글의 시작)에 멈춘다(오너 보고 build 33: family-acc 마지막 글 첫 부분이 맨 아래).
+    /// 꼬리는 항상 실제 높이로 존재하므로 표지 측정과 `scrollTo` 가 정확하다.
+    private static let tailRows = 3
 
     var body: some View {
         VStack(spacing: 0) {
@@ -51,19 +55,13 @@ struct RoomView: View {
                     Divider()
                 }
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(messages) { item in
-                            if let day = stamps[item.id]?.dayStart {
-                                DayDivider(text: Strings.dayLabel(day))
-                            }
-                            MessageRow(item: item, mine: item.record.senderDevice == model.deviceId,
-                                       time: stamps[item.id]?.showTime == true ? item.record.receivedAt : nil,
-                                       roster: model.agentRoster, approval: approvalStates[item.id], canAnswer: isReady,
-                                       decide: { number, allow in answerApproval(number, allow: allow) },
-                                       onAttachmentLoaded: { attachmentLoaded(item.id, proxy) },
-                                       retry: { Task { await model.retry(outgoingId: item.id, room: room) } })
-                                .id(item.id)
+                    VStack(alignment: .leading, spacing: 8) {
+                        // 오래된 글은 lazy(화면에 보일 때 만든다).
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(messages.dropLast(Self.tailRows)) { item in row(item, proxy) }
                         }
+                        // 꼬리는 lazy 가 아니다: 마지막 몇 행·「생각하는 중」·바닥 표지가 항상 실제 높이로 존재해야 `scrollTo` 와 표지 측정이 정확하다.
+                        ForEach(messages.suffix(Self.tailRows)) { item in row(item, proxy) }
                         // #405 P1: 내 글 뒤 에이전트 답이 아직 없으면 "생각하는 중"(앱 추정, 20분 상한 — 15초마다 다시 본다).
                         TimelineView(.periodic(from: .now, by: 15)) { context in
                             if let agent = AgentThinking.agent(messages.map(\.record), roster: model.agentRoster,
@@ -74,14 +72,13 @@ struct RoomView: View {
                         }
                         .id(Self.thinkingRowID)
                         Color.clear.frame(height: 1).id(Self.bottomSentinelID)
-                            // 표지의 **실제** 위치(스크롤 뷰 좌표). LazyVStack 의 scrollTo 는 추정 높이로 움직여 긴 마지막 글의
-                            // 아래가 잘릴 수 있다(오너 보고 build 32) — 배치가 끝난 뒤 표지가 화면 아래에 남아 있으면 한 번 더 맞춘다.
+                            // 표지의 **실제** 위치(스크롤 뷰 좌표) — 배치가 끝난 뒤 표지가 화면 아래에 남아 있으면 한 번 더 맞춘다.
                             .background(GeometryReader { geo in
                                 Color.clear.preference(key: SentinelBottomKey.self, value: Double(geo.frame(in: .named("timeline")).maxY))
                             })
                     }
                     .padding()
-                    // 내용이 커지면(lazy 행의 실제 배치·이미지 로딩·구분선) 따라가는 중일 때 최하단을 다시 맞춘다 — 진입 시 2~3번째 최신 글에서 멈추던 결함.
+                    // 내용이 커지면(lazy 행의 실제 배치·이미지 로딩·구분선) 따라가는 중일 때 최하단을 다시 맞춘다.
                     .background(GeometryReader { geo in
                         Color.clear.preference(key: ContentHeightKey.self, value: Double(geo.size.height))
                     })
@@ -238,6 +235,20 @@ struct RoomView: View {
             pickedPhoto = nil
             Task { await sendPhoto(item) }
         }
+    }
+
+    /// 타임라인 한 행(날짜 구분선 + 말풍선). lazy 본문과 꼬리가 같은 행을 쓴다.
+    @ViewBuilder private func row(_ item: AppModel.TimelineItem, _ proxy: ScrollViewProxy) -> some View {
+        if let day = stamps[item.id]?.dayStart {
+            DayDivider(text: Strings.dayLabel(day))
+        }
+        MessageRow(item: item, mine: item.record.senderDevice == model.deviceId,
+                   time: stamps[item.id]?.showTime == true ? item.record.receivedAt : nil,
+                   roster: model.agentRoster, approval: approvalStates[item.id], canAnswer: isReady,
+                   decide: { number, allow in answerApproval(number, allow: allow) },
+                   onAttachmentLoaded: { attachmentLoaded(item.id, proxy) },
+                   retry: { Task { await model.retry(outgoingId: item.id, room: room) } })
+            .id(item.id)
     }
 
     /// #405 P2: 이 방의 자리 요약(제목 아래 점 · 작성창 안내).
