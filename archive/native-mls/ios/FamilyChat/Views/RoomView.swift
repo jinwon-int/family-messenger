@@ -107,7 +107,8 @@ struct RoomView: View {
                     .background(Color.red.opacity(0.15))
             }
             if let error = model.lastError {
-                Text(error).font(.footnote).foregroundStyle(.red).padding(.horizontal)
+                // 긴 오류가 대화를 가리지 않게 두 줄까지만(연결 끊김은 여기 오지 않고 제목 아래 「연결 중입니다…」).
+                Text(error).font(.footnote).foregroundStyle(.red).lineLimit(2).padding(.horizontal)
             }
             if attachBusy {
                 Text(Strings.attachPreparing).font(.footnote).foregroundStyle(.secondary).padding(.horizontal)
@@ -184,7 +185,13 @@ struct RoomView: View {
                 VStack(spacing: 3) {
                     Text(room).font(.headline).foregroundStyle(Hande.ink)
                     SeatDots(people: glance.people.count, agents: glance.agents.count, size: 6)
+                    // 릴레이에 닿지 않는 동안만(원문 오류 대신). 동기화가 한 번 성공하면 사라진다.
+                    if model.reconnecting {
+                        Text(Strings.connecting).font(.caption2).foregroundStyle(Hande.inkDim)
+                            .transition(.opacity)
+                    }
                 }
+                .animation(.easeOut(duration: 0.2), value: model.reconnecting)
             }
             ToolbarItem(placement: .primaryAction) {
                 Button { showInvite = true } label: { Image(systemName: "person.badge.plus") }

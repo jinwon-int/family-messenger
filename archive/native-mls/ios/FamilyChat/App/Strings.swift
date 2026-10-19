@@ -43,6 +43,8 @@ enum Strings {
     static let sendButton = "보내기"
     static let undecryptable = "🔒 복호화하지 못한 메시지"
     static func sendRejected(_ reason: String) -> String { "보내지 못했습니다(\(reason)). 동기화 뒤 다시 시도해 주세요." }
+    /// 방 화면 제목 아래: 릴레이에 닿지 않는 동안(`AppModel.reconnecting`).
+    static let connecting = "연결 중입니다…"
     static let sendQueued = "릴레이에 닿지 않아 보관했습니다. 연결되면 같은 내용 그대로 다시 보냅니다."
     static let notJoined = "아직 이 대화방에 참여하지 않았습니다. 초대를 기다려 주세요."
     /// 첨부 한도(AttachmentFormat.maxBytes) 초과 — AppModel 이 쓰므로 여기(NSE 공유 파일)에 둔다.
