@@ -19,4 +19,14 @@ final class ScrollFollowTests: XCTestCase {
         XCTAssertTrue(ScrollFollow.shouldRescroll(loaded: 1, ids: [1], following: true))
         XCTAssertFalse(ScrollFollow.shouldRescroll(loaded: 1, ids: [], following: true))
     }
+
+    /// 키보드가 올라와 메시지 칸이 줄면 최신 메시지를 키보드 바로 위로 다시 맞춘다.
+    func testShrinkingViewportRescrollsWhileFollowing() {
+        XCTAssertTrue(ScrollFollow.shouldRescrollOnResize(old: 620, new: 330, following: true), "keyboard up")
+        XCTAssertTrue(ScrollFollow.shouldRescrollOnResize(old: 330, new: 300, following: true), "composer grew a line")
+        XCTAssertFalse(ScrollFollow.shouldRescrollOnResize(old: 620, new: 330, following: false), "reading older messages")
+        XCTAssertFalse(ScrollFollow.shouldRescrollOnResize(old: 330, new: 620, following: true), "keyboard down")
+        XCTAssertFalse(ScrollFollow.shouldRescrollOnResize(old: 0, new: 620, following: true), "first layout")
+        XCTAssertFalse(ScrollFollow.shouldRescrollOnResize(old: 620, new: 619.8, following: true), "sub-point jitter")
+    }
 }
