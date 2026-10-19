@@ -59,6 +59,10 @@ struct RootView: View {
             if case .halted(let reason) = model.phase { HaltedBanner(reason: reason) }
         }
         .animation(.easeOut(duration: 0.35), value: model.settled)
+        // 배너 탭(§12-D): 알림의 방이 아는 방이고 목록을 보일 수 있으면 그 방으로. 로그인·첫 동기화 전이면 준비된 뒤에.
+        .onChange(of: model.requestedRoom) { _ in openRequestedRoom() }
+        .onChange(of: model.rooms) { _ in openRequestedRoom() }
+        .onChange(of: model.phase) { _ in openRequestedRoom() }
         .task {
             try? await Task.sleep(nanoseconds: Self.openingLimitNanoseconds)
             openingExpired = true
@@ -66,6 +70,19 @@ struct RootView: View {
         // #405 P2: 밤 테마 고정(오너 결정) + 불빛 강조색.
         .preferredColorScheme(.dark)
         .tint(Hande.ember)
+    }
+}
+
+extension RootView {
+    private var canShowRooms: Bool {
+        switch model.phase { case .ready, .halted: return true; default: return false }
+    }
+
+    private func openRequestedRoom() {
+        guard let room = NotificationRoute.target(requested: model.requestedRoom, knownRooms: model.rooms.map(\.room), ready: canShowRooms)
+        else { return }
+        model.consumeRequestedRoom()
+        navigator.open(room)
     }
 }
 

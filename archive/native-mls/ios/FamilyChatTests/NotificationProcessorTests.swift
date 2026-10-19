@@ -102,6 +102,18 @@ final class NotificationProcessorTests: XCTestCase {
         XCTAssertEqual(NotificationPayload(userInfo: ["room": "family", "seq": 42]), NotificationPayload(userInfo: ["room": "family", "seq": NSNumber(value: 42)]))
         XCTAssertEqual(NotificationPayload(userInfo: ["room": "family", "seq": Int64(9)])?.seq, 9)
         XCTAssertNil(NotificationPayload(userInfo: [:]))
+    }
+
+    /// 배너 탭은 **그 알림의 방**만 연다(build 30: family 알림 → family-acc 로 가던 결함). 모르는 방·준비 전이면 열지 않는다.
+    func testBannerTapOpensTheNotifiedRoomOnly() {
+        XCTAssertEqual(NotificationPayload.room(in: ["room": "family", "seq": 42]), "family")
+        XCTAssertEqual(NotificationPayload.room(in: ["room": "family"]), "family", "seq is not needed to route")
+        XCTAssertNil(NotificationPayload.room(in: ["room": ""]))
+        let known = ["family-acc", "family"]
+        XCTAssertEqual(NotificationRoute.target(requested: "family", knownRooms: known, ready: true), "family")
+        XCTAssertNil(NotificationRoute.target(requested: "family", knownRooms: known, ready: false), "wait for the room list")
+        XCTAssertNil(NotificationRoute.target(requested: "other", knownRooms: known, ready: true), "never a room this device does not know")
+        XCTAssertNil(NotificationRoute.target(requested: nil, knownRooms: known, ready: true))
         XCTAssertNil(NotificationPayload(userInfo: ["room": "family"]))
         XCTAssertNil(NotificationPayload(userInfo: ["room": "", "seq": 1]))
         XCTAssertNil(NotificationPayload(userInfo: ["room": "family", "seq": "1"]))
