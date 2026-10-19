@@ -8,9 +8,13 @@
 //! - [`b64`]: standard-alphabet base64 for the relay's byte fields.
 //! - [`policy`]: client-side commit policy (#263), run against
 //!   `archive/native-mls/tests/fixtures/commit-policy-vectors.json` like `web/commit-policy.js`.
+//! - [`room`]: how a room's events are applied (#366 slice 2a) — rollback guard, two-step
+//!   commit application, pruned-history gap, relay retry rules.
 //!
-//! This crate does not link the MLS facade: hosts pass it framed bytes and reports.
+//! This crate does not link the MLS facade: hosts pass it framed bytes and reports, and adapt
+//! their group object to [`room::MlsGroup`].
 pub mod api;
 pub mod b64;
 pub mod http;
 pub mod policy;
+pub mod room;
