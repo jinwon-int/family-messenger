@@ -470,13 +470,15 @@ struct ImageViewer: View {
                     .resizable()
                     .scaledToFit()
                     .frame(width: UIScreen.main.bounds.width * scale, height: UIScreen.main.bounds.height * scale)
+                    // 핀치는 사진 자체에 **동시 인식**으로 — ScrollView 에 `.gesture` 로 두면 스크롤이 두 손가락 동작을 먼저 가져가
+                    // 확대·축소가 전달되지 않았다(오너 보고 build 31: 두 번 탭만 됨).
+                    .simultaneousGesture(
+                        MagnificationGesture()
+                            .onChanged { value in scale = min(max(lastScale * value, 1), 4) }
+                            .onEnded { _ in lastScale = scale }
+                    )
             }
             .ignoresSafeArea()
-            .gesture(
-                MagnificationGesture()
-                    .onChanged { value in scale = min(max(lastScale * value, 1), 4) }
-                    .onEnded { _ in lastScale = scale }
-            )
             .onTapGesture(count: 2) {
                 withAnimation(.easeOut(duration: 0.2)) { scale = scale > 1 ? 1 : 2 }
                 lastScale = scale
