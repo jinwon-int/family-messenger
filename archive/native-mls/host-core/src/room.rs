@@ -7,10 +7,13 @@
 //!   when the commit is the page's latest epoch), then merge or discard.
 //! - [`history_gap`]: the #268 pruned-history rule.
 //! - [`is_transient`] / [`relay_backoff`]: the #392 relay-retry rules.
+//! - [`poll`] (#366 slice 2b): one round of a room's sync state machine over a
+//!   [`RoomHost`] — ack, GET, gap, then each event in order.
 //!
 //! The crate still does not link the MLS facade: a host adapts its group
-//! object to [`MlsGroup`]. Logging, halt markers and state files stay with the
-//! host — these functions only decide.
+//! object to [`MlsGroup`]. Transport, logging, halt markers, state files and
+//! what to do with a decrypted message stay with the host — these functions
+//! only decide and sequence.
 use crate::api::{EventsResponse, RelayError, StoredRow};
 use crate::http::HttpError;
 use crate::policy::{self, Refusal, StageReport};
@@ -33,6 +36,11 @@ pub trait MlsGroup {
     fn discard_staged(&mut self);
     /// The framed current roster (`policy::parse_roster` input).
     fn members(&self) -> Result<Vec<u8>, ()>;
+    /// Join from a Welcome.
+    fn join(&mut self, welcome: &[u8]) -> Result<(), ()>;
+    /// Decrypt one application event: `(sender identity, plaintext)`. The
+    /// host's adapter owns the facade framing (room id, AAD client_id).
+    fn decrypt(&mut self, ciphertext: &[u8]) -> Result<(Vec<u8>, Vec<u8>), ()>;
 }
 
 /// Run one MLS operation with rollback (review 2 B-H1/B-H3): the facade
@@ -117,6 +125,185 @@ pub fn apply_commit<G: MlsGroup>(
 /// not its to read — and `first_seq == 0` is an empty room or an older relay.
 pub fn history_gap(joined: bool, cursor: i64, first_seq: i64) -> Option<(i64, i64)> {
     (joined && first_seq > 0 && first_seq > cursor.saturating_add(1)).then(|| (cursor + 1, first_seq - 1))
+}
+
+/// One room's sync position (#366 2b) — what [`poll`] reads and moves. The
+/// group itself, persistence and per-host extras (echo counters, retry
+/// queues, modes) stay with the host.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RoomSync {
+    pub room: String,
+    /// Highest seq seen (processed or skipped).
+    pub cursor: i64,
+    /// The relay's room epoch as of the last page.
+    pub epoch: i64,
+    pub joined: bool,
+    /// Whether a Welcome may be joined (a watch room — negative control —
+    /// never joins, B-H3).
+    pub joinable: bool,
+    /// Group state moved since the host last persisted it.
+    pub dirty: bool,
+    /// Cursor the relay may prune up to (what the host has durably processed);
+    /// sent as `?ack=` once joined (B-H4).
+    pub acked: i64,
+    /// Last ack the relay accepted; equal acks are not resent.
+    pub ack_sent: i64,
+    /// The relay refused an ack (removal, room reset): stop acking, keep reading.
+    pub ack_disabled: bool,
+    /// Refused commit or pruned history: neither read nor acked any more.
+    pub halted: bool,
+}
+
+/// What [`poll`] tells the host to log (the bot prints these as JSON lines).
+#[derive(Debug)]
+pub enum SyncEvent<'a> {
+    /// A refused ack disabled acking (400 bad_ack / 403 not_a_member).
+    AckRefused { ack: i64, status: u16, code: &'a str },
+    Joined { epoch: i64, seq: i64 },
+    /// A Welcome that is not ours to act on (already joined, or a watch room).
+    WelcomeIgnored { seq: i64, joined: bool },
+    /// A poison Welcome/commit the facade rejected; the group was rolled back.
+    Rejected { seq: i64, kind: &'a str, bytes: usize },
+    CommitApplied { ev: &'a StoredRow, report: &'a StageReport, members: &'a [String], outer_checked: bool },
+    Application { ev: &'a StoredRow, sender: &'a [u8], bytes: usize },
+    Undecryptable { seq: i64, bytes: usize },
+}
+
+/// Why [`poll`] halted the room. `RoomSync::halted` is already set; the host
+/// reports it and makes it durable (the bot writes a marker file).
+#[derive(Debug)]
+pub enum Halt<'a> {
+    /// The policy refused a foreign commit (#263); its staged state was discarded.
+    Refused { ev: &'a StoredRow, refusal: Refusal },
+    /// The relay pruned seqs `from..=to` this joined device never read (#268).
+    /// Nothing of the page was processed: cursor and epoch are unchanged.
+    Gap { first_seq: i64, relay_epoch: i64, from: i64, to: i64 },
+}
+
+/// A host of one room for [`poll`].
+pub trait RoomHost {
+    type Group<'g>: MlsGroup where Self: 'g;
+    fn sync(&mut self) -> &mut RoomSync;
+    /// The room's group, borrowed for one operation.
+    fn group(&mut self) -> Self::Group<'_>;
+    /// GET the next events page (`after` = cursor, `ack` when due).
+    fn fetch(&mut self, room: &str, after: i64, ack: Option<i64>) -> Result<EventsResponse, RelayError>;
+    fn report(&mut self, event: SyncEvent<'_>);
+    fn halt(&mut self, halt: Halt<'_>) -> Result<(), RelayError>;
+    /// A decrypted application message from another device, in page order.
+    fn application(&mut self, ev: &StoredRow, sender: Vec<u8>, plaintext: Vec<u8>) -> Result<(), RelayError>;
+    /// An event this device posted (MLS never processes its own messages; a
+    /// pending own commit merges here).
+    fn own_event(&mut self, ev: &StoredRow) -> Result<(), RelayError>;
+    /// The page was processed and the room is joined (replay queued sends).
+    fn after_page(&mut self) -> Result<(), RelayError>;
+}
+
+/// One sync round for one room (relay-app `sync()` · bot `poll_room` order):
+///
+/// ```text
+/// halted → nothing · ack what is durable (joined only) → GET events
+///   404 no_such_room → nothing · 400 bad_ack / 403 not_a_member on an ack → stop acking
+/// → pruned-history gap → halt (before anything moves)
+/// → epoch = page epoch → per event: cursor = max(cursor, seq)
+///   own → host · welcome → join (joinable, not joined) or ignore
+///   commit (joined) → apply_commit · application (joined) → decrypt → host
+/// → joined → host.after_page
+/// ```
+///
+/// Events before our Welcome are not ours to read and are skipped.
+pub fn poll<H: RoomHost>(host: &mut H, own: &str) -> Result<(), RelayError> {
+    let sync = host.sync();
+    if sync.halted {
+        return Ok(());
+    }
+    let ack = (sync.joined && !sync.ack_disabled && sync.acked > sync.ack_sent).then_some(sync.acked);
+    let (room, after) = (sync.room.clone(), sync.cursor);
+    let page = match host.fetch(&room, after, ack) {
+        Ok(page) => page,
+        // A room that does not exist yet (its founding commit is not posted):
+        // nothing to see.
+        Err(RelayError::Api { status: 404, code }) if code == "no_such_room" => return Ok(()),
+        Err(RelayError::Api { status, code })
+            if ack.is_some() && ((status == 400 && code == "bad_ack") || (status == 403 && code == "not_a_member")) =>
+        {
+            host.sync().ack_disabled = true;
+            host.report(SyncEvent::AckRefused { ack: ack.unwrap_or_default(), status, code: &code });
+            return Ok(());
+        }
+        Err(err) => return Err(err),
+    };
+    if let Some(acked) = ack {
+        host.sync().ack_sent = acked;
+    }
+    let sync = host.sync();
+    if let Some((from, to)) = history_gap(sync.joined, sync.cursor, page.first_seq) {
+        sync.halted = true;
+        return host.halt(Halt::Gap { first_seq: page.first_seq, relay_epoch: page.epoch, from, to });
+    }
+    sync.epoch = page.epoch;
+    for ev in &page.events {
+        let sync = host.sync();
+        sync.cursor = sync.cursor.max(ev.seq);
+        if ev.device == own {
+            host.own_event(ev)?;
+            continue;
+        }
+        let (joinable, joined) = (sync.joinable, sync.joined);
+        match ev.kind.as_str() {
+            "welcome" if joinable && !joined => {
+                let outcome = guarded(&mut host.group(), |g| g.join(&ev.bytes))?;
+                let sync = host.sync();
+                sync.dirty = true;
+                match outcome {
+                    Ok(()) => {
+                        sync.joined = true;
+                        host.report(SyncEvent::Joined { epoch: ev.epoch, seq: ev.seq });
+                    }
+                    Err(()) => host.report(SyncEvent::Rejected { seq: ev.seq, kind: "welcome", bytes: ev.bytes.len() }),
+                }
+            }
+            "welcome" => {
+                host.sync().dirty = true;
+                host.report(SyncEvent::WelcomeIgnored { seq: ev.seq, joined });
+            }
+            "commit" if joined => {
+                let outcome = apply_commit(&mut host.group(), ev, &page)?;
+                let sync = host.sync();
+                sync.dirty = true;
+                match outcome {
+                    CommitOutcome::Rejected => host.report(SyncEvent::Rejected { seq: ev.seq, kind: "commit", bytes: ev.bytes.len() }),
+                    CommitOutcome::Applied { report, members, outer_checked } => {
+                        host.report(SyncEvent::CommitApplied { ev, report: &report, members: &members, outer_checked });
+                    }
+                    CommitOutcome::Refused(refusal) => {
+                        sync.halted = true;
+                        host.halt(Halt::Refused { ev, refusal })?;
+                    }
+                }
+            }
+            "application" if joined => {
+                let outcome = guarded(&mut host.group(), |g| g.decrypt(&ev.bytes))?;
+                // Decrypting consumed receive keys (or rolled back a poison
+                // event): either way that state belongs on disk.
+                host.sync().dirty = true;
+                match outcome {
+                    Ok((sender, plaintext)) => {
+                        host.report(SyncEvent::Application { ev, sender: &sender, bytes: plaintext.len() });
+                        host.application(ev, sender, plaintext)?;
+                    }
+                    Err(()) => host.report(SyncEvent::Undecryptable { seq: ev.seq, bytes: ev.bytes.len() }),
+                }
+            }
+            // Everything before our Welcome (commits that formed the group,
+            // other members' applications) is not ours to read.
+            _ => {}
+        }
+    }
+    if host.sync().joined {
+        host.after_page()?;
+    }
+    Ok(())
 }
 
 /// #392: first wait after the relay could not be reached; doubles per
@@ -209,6 +396,101 @@ mod tests {
             let ids: Vec<&str> = self.roster.iter().map(String::as_str).collect();
             Ok(roster_bytes(&ids))
         }
+        fn join(&mut self, welcome: &[u8]) -> Result<(), ()> {
+            if welcome == b"poison" { self.retired = true; return Err(()) }
+            Ok(())
+        }
+        /// `ok:<text>` decrypts to `(b"peer", text)`; anything else is rejected.
+        fn decrypt(&mut self, ciphertext: &[u8]) -> Result<(Vec<u8>, Vec<u8>), ()> {
+            match ciphertext.strip_prefix(b"ok:") {
+                Some(text) => Ok((b"peer".to_vec(), text.to_vec())),
+                None => { self.retired = true; Err(()) }
+            }
+        }
+    }
+
+    /// Test-only: a borrowed group is a group (what `RoomHost::group` lends).
+    impl<T: MlsGroup> MlsGroup for &mut T {
+        type Snapshot = T::Snapshot;
+        fn snapshot(&self) -> Result<T::Snapshot, ()> { (**self).snapshot() }
+        fn restore(&mut self, snapshot: &T::Snapshot) -> Result<(), ()> { (**self).restore(snapshot) }
+        fn stage_commit(&mut self, commit: &[u8]) -> Result<Vec<u8>, ()> { (**self).stage_commit(commit) }
+        fn merge_staged(&mut self) -> Result<(), ()> { (**self).merge_staged() }
+        fn discard_staged(&mut self) { (**self).discard_staged() }
+        fn members(&self) -> Result<Vec<u8>, ()> { (**self).members() }
+        fn join(&mut self, welcome: &[u8]) -> Result<(), ()> { (**self).join(welcome) }
+        fn decrypt(&mut self, ciphertext: &[u8]) -> Result<(Vec<u8>, Vec<u8>), ()> { (**self).decrypt(ciphertext) }
+    }
+
+    /// A host that serves scripted pages and records every callback.
+    struct ScriptHost {
+        sync: RoomSync,
+        group: FakeGroup,
+        pages: std::collections::VecDeque<Result<EventsResponse, RelayError>>,
+        fetched: Vec<(i64, Option<i64>)>,
+        log: Vec<String>,
+        halts: Vec<String>,
+        apps: Vec<(i64, String, String)>,
+        own: Vec<i64>,
+        after_pages: u32,
+    }
+
+    impl ScriptHost {
+        fn new(joined: bool, cursor: i64, pages: Vec<Result<EventsResponse, RelayError>>) -> ScriptHost {
+            ScriptHost {
+                sync: RoomSync { room: "family".into(), cursor, epoch: 1, joined, joinable: true, ..RoomSync::default() },
+                group: group(&["owner", "bot"], report(&["phone"], &[], &["owner"])),
+                pages: pages.into(), fetched: Vec::new(), log: Vec::new(), halts: Vec::new(),
+                apps: Vec::new(), own: Vec::new(), after_pages: 0,
+            }
+        }
+    }
+
+    impl RoomHost for ScriptHost {
+        type Group<'g> = &'g mut FakeGroup;
+        fn sync(&mut self) -> &mut RoomSync { &mut self.sync }
+        fn group(&mut self) -> &mut FakeGroup { &mut self.group }
+        fn fetch(&mut self, room: &str, after: i64, ack: Option<i64>) -> Result<EventsResponse, RelayError> {
+            assert_eq!(room, "family");
+            self.fetched.push((after, ack));
+            self.pages.pop_front().expect("a scripted page")
+        }
+        fn report(&mut self, event: SyncEvent<'_>) {
+            self.log.push(match event {
+                SyncEvent::AckRefused { ack, status, code } => format!("ack_refused {ack} {status} {code}"),
+                SyncEvent::Joined { epoch, seq } => format!("joined {seq}@{epoch}"),
+                SyncEvent::WelcomeIgnored { seq, joined } => format!("welcome_ignored {seq} {joined}"),
+                SyncEvent::Rejected { seq, kind, .. } => format!("rejected {seq} {kind}"),
+                SyncEvent::CommitApplied { ev, members, outer_checked, .. } => format!("commit_applied {} {} {outer_checked}", ev.seq, members.join(",")),
+                SyncEvent::Application { ev, sender, bytes } => format!("application {} {} {bytes}", ev.seq, String::from_utf8_lossy(sender)),
+                SyncEvent::Undecryptable { seq, .. } => format!("undecryptable {seq}"),
+            });
+        }
+        fn halt(&mut self, halt: Halt<'_>) -> Result<(), RelayError> {
+            assert!(self.sync.halted, "halted is set before the host is told");
+            self.halts.push(match halt {
+                Halt::Refused { ev, refusal } => format!("refused {} {}", ev.seq, refusal.reason),
+                Halt::Gap { first_seq, from, to, .. } => format!("gap {first_seq} {from}..{to}"),
+            });
+            Ok(())
+        }
+        fn application(&mut self, ev: &StoredRow, sender: Vec<u8>, plaintext: Vec<u8>) -> Result<(), RelayError> {
+            self.apps.push((ev.seq, String::from_utf8_lossy(&sender).into(), String::from_utf8_lossy(&plaintext).into()));
+            Ok(())
+        }
+        fn own_event(&mut self, ev: &StoredRow) -> Result<(), RelayError> { self.own.push(ev.seq); Ok(()) }
+        fn after_page(&mut self) -> Result<(), RelayError> { self.after_pages += 1; Ok(()) }
+    }
+
+    fn row(seq: i64, device: &str, kind: &str, epoch: i64, bytes: &[u8]) -> StoredRow {
+        StoredRow {
+            seq, device: device.into(), client_id: format!("c{seq}"), kind: kind.into(), epoch,
+            bytes: bytes.to_vec(), sha256: String::new(), created_at: 0,
+        }
+    }
+
+    fn events(epoch: i64, first_seq: i64, rows: Vec<StoredRow>) -> Result<EventsResponse, RelayError> {
+        Ok(EventsResponse { epoch, revision: 0, events: rows, members: None, first_seq })
     }
 
     fn commit_row(device: &str, epoch: i64) -> StoredRow {
@@ -305,6 +587,93 @@ mod tests {
         assert!(matches!(apply_commit(&mut g, &commit_row("owner", 2), &page(3, None)).expect("ok"), CommitOutcome::Rejected));
         assert!(!g.retired);
         assert_eq!(g.merged, 0);
+    }
+
+    #[test]
+    fn poll_joins_then_reads_in_page_order() {
+        let mut host = ScriptHost::new(false, 0, vec![events(2, 1, vec![
+            row(1, "owner", "commit", 0, b"founding"),       // before our Welcome: skipped
+            row(2, "owner", "application", 1, b"ok:early"),  // before our Welcome: skipped
+            row(3, "owner", "welcome", 1, b"w"),
+            row(4, "owner", "application", 2, b"ok:hello"),
+            row(5, "bot", "application", 2, b"mine"),        // own echo
+            row(6, "owner", "welcome", 2, b"w2"),            // re-invite after join: ignored
+            row(7, "owner", "application", 2, b"forged"),
+        ])]);
+        poll(&mut host, "bot").expect("poll");
+        assert_eq!(host.fetched, [(0, None)], "an unjoined device never acks");
+        assert_eq!(host.log, ["joined 3@1", "application 4 peer 5", "welcome_ignored 6 true", "undecryptable 7"]);
+        assert_eq!(host.apps, [(4, "peer".to_string(), "hello".to_string())]);
+        assert_eq!(host.own, [5]);
+        assert_eq!((host.sync.cursor, host.sync.epoch, host.sync.joined, host.sync.dirty), (7, 2, true, true));
+        assert!(!host.group.retired, "the forged event was rolled back");
+        assert_eq!(host.after_pages, 1);
+    }
+
+    #[test]
+    fn poll_acks_only_new_durable_progress() {
+        let mut host = ScriptHost::new(true, 10, vec![events(2, 1, vec![]), events(2, 1, vec![])]);
+        host.sync.acked = 10;
+        host.sync.ack_sent = 4;
+        poll(&mut host, "bot").expect("first");
+        poll(&mut host, "bot").expect("second");
+        assert_eq!(host.fetched, [(10, Some(10)), (10, None)], "an accepted ack is not resent");
+        assert_eq!(host.sync.ack_sent, 10);
+    }
+
+    #[test]
+    fn poll_stops_acking_when_the_relay_refuses() {
+        let mut host = ScriptHost::new(true, 10, vec![Err(RelayError::Api { status: 403, code: "not_a_member".into() })]);
+        host.sync.acked = 10;
+        poll(&mut host, "bot").expect("refused ack is not fatal");
+        assert!(host.sync.ack_disabled);
+        assert_eq!(host.log, ["ack_refused 10 403 not_a_member"]);
+        assert_eq!(host.after_pages, 0);
+        // Without an ack the same error is the caller's.
+        let mut plain = ScriptHost::new(true, 10, vec![Err(RelayError::Api { status: 403, code: "not_a_member".into() })]);
+        assert!(poll(&mut plain, "bot").is_err());
+    }
+
+    #[test]
+    fn poll_treats_a_missing_room_as_empty() {
+        let mut host = ScriptHost::new(false, 0, vec![Err(RelayError::Api { status: 404, code: "no_such_room".into() })]);
+        poll(&mut host, "bot").expect("not yet founded");
+        assert!(host.log.is_empty() && host.halts.is_empty());
+        assert_eq!(host.after_pages, 0);
+    }
+
+    #[test]
+    fn poll_halts_on_a_history_gap_before_moving() {
+        let mut host = ScriptHost::new(true, 4, vec![events(9, 10, vec![row(10, "owner", "application", 9, b"ok:late")])]);
+        poll(&mut host, "bot").expect("gap is reported, not an error");
+        assert_eq!(host.halts, ["gap 10 5..9"]);
+        assert_eq!((host.sync.cursor, host.sync.epoch, host.sync.halted), (4, 1, true), "nothing of the page moved");
+        assert!(host.apps.is_empty());
+        poll(&mut host, "bot").expect("halted");
+        assert_eq!(host.fetched.len(), 1, "a halted room is never fetched again");
+    }
+
+    #[test]
+    fn poll_halts_on_a_refused_commit_and_applies_an_allowed_one() {
+        let mut host = ScriptHost::new(true, 0, vec![events(3, 1, vec![row(1, "owner", "commit", 2, b"add phone")])]);
+        poll(&mut host, "bot").expect("applied");
+        assert_eq!(host.log, ["commit_applied 1 bot,owner,phone false"]);
+        assert_eq!(host.group.merged, 1);
+        // The bot is not the MLS committer the report names: refused and halted.
+        let mut host = ScriptHost::new(true, 0, vec![events(3, 1, vec![row(1, "bot2", "commit", 2, b"forged")])]);
+        poll(&mut host, "bot").expect("refusal is reported, not an error");
+        assert_eq!(host.halts, ["refused 1 committer_mismatch"]);
+        assert!(host.sync.halted && host.sync.dirty);
+        assert_eq!(host.group.discarded, 1);
+    }
+
+    #[test]
+    fn poll_rejects_a_poison_welcome_without_joining() {
+        let mut host = ScriptHost::new(false, 0, vec![events(1, 1, vec![row(1, "owner", "welcome", 1, b"poison")])]);
+        poll(&mut host, "bot").expect("poll");
+        assert_eq!(host.log, ["rejected 1 welcome"]);
+        assert!(!host.sync.joined && !host.group.retired);
+        assert_eq!(host.after_pages, 0, "not joined: no queued sends to replay");
     }
 
     #[test]
