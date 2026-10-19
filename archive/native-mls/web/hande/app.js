@@ -52,7 +52,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   const readKnown = () => { try { const v = JSON.parse(storage.getItem(knownKey()) || '[]'); return Array.isArray(v) ? v.filter(r => ROOM.test(r)) : []; } catch (_) { return []; } };
   const writeKnown = () => storage.setItem(knownKey(), JSON.stringify([...app.rooms.keys()]));
   const markerKey = () => `hande:fresh-marker:${IDENTITY_DATABASE}`;
-  const logLine = line => { app.logs.push(`${clock(true)} ${line}`); if (app.logs.length > 500) app.logs.shift(); console.debug('[hande]', line); };
+  // console.info, not debug: DevTools hides debug by default and a field report then shows nothing (2026-10-19).
+  const logLine = line => { app.logs.push(`${clock(true)} ${line}`); if (app.logs.length > 500) app.logs.shift(); console.info('[hande]', line); };
 
   // ---- rendering (coalesced); the phase is re-derived right before each paint ----
   let scheduled = false;
@@ -83,7 +84,12 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   }
   function paint() {
     const D = app.dev?.state;
-    if (app.phase === 'fatal') { ui.renderFatal(root, {title: strings.app.fatalTitle, detail: app.fatal, onRetry: () => location.reload(), onWipe: D ? confirmWipe : null}); return; }
+    if (app.phase === 'fatal') {
+      // The last log lines ride along so a screenshot is a complete field report (no DevTools).
+      const tail = app.logs.slice(-6).join('\n');
+      ui.renderFatal(root, {title: strings.app.fatalTitle, detail: app.fatal + (tail ? `\n\n최근 기록:\n${tail}` : '') + `\n기기 ${app.device ?? '?'}`, onRetry: () => location.reload(), onWipe: D ? confirmWipe : null});
+      return;
+    }
     if (app.phase === 'needsActor') { ui.renderActorSetup(root, {onSubmit: chooseActor, error: app.error, busy: false}); return; }
     if (app.phase === 'starting' || !D) { ui.renderStarting(root, {message: app.message}); return; }
     if (app.phase === 'enroll') {
@@ -203,6 +209,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       // Stage-2 install: the default room's single-store database holds the signer → migrate it.
       const legacy = {database: databaseFor(app.defaultRoom), room: app.defaultRoom};
       const legacyExists = await dbExists(legacy.database);
+      logLine(`시작: 기기 ${app.device}, 레거시 DB ${legacy.database} ${legacyExists ? '있음' : '없음'}, 신원 DB 마커 ${storage.getItem(markerKey()) !== null ? '있음' : '없음'}`);
       let dev = createDevice({device: app.device, worker, relay, storage, on: {log: logLine}});
       let opened;
       try {
