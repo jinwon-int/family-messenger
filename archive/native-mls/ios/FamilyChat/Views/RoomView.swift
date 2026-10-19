@@ -57,7 +57,8 @@ struct RoomView: View {
                                        time: stamps[item.id]?.showTime == true ? item.record.receivedAt : nil,
                                        roster: model.agentRoster, approval: approvalStates[item.id], canAnswer: isReady,
                                        decide: { number, allow in answerApproval(number, allow: allow) },
-                                       onAttachmentLoaded: { attachmentLoaded(item.id, proxy) })
+                                       onAttachmentLoaded: { attachmentLoaded(item.id, proxy) },
+                                       retry: { Task { await model.retry(outgoingId: item.id, room: room) } })
                                 .id(item.id)
                         }
                         // #405 P1: 내 글 뒤 에이전트 답이 아직 없으면 "생각하는 중"(앱 추정, 20분 상한 — 15초마다 다시 본다).
@@ -234,8 +235,8 @@ struct RoomView: View {
 
     private func reload() {
         messages = model.messages(room: room)
-        // #405 P3: 이 방을 보고 있다 = 마지막 글까지 읽음(이 기기에만).
-        if let last = messages.last { prefs.markRead(room, seq: last.id) }
+        // #405 P3: 이 방을 보고 있다 = 마지막 글까지 읽음(이 기기에만). 보내는 글(음수 seq)은 읽음 표시에 넣지 않는다.
+        if let last = messages.last(where: { $0.outgoing == nil }) { prefs.markRead(room, seq: last.id) }
         approvalStates = AgentApproval.states(messages.map(\.record), roster: model.agentRoster)
         stamps = TimelineStamps.compute(messages.map(\.record), calendar: .current)
     }
@@ -271,9 +272,8 @@ struct RoomView: View {
         guard isReady, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         previousDraft = ""
         draft = ""
-        Task {
-            if await model.send(room: room, text: text) == nil, draft.isEmpty { draft = text }
-        }
+        // 글은 누르는 즉시 목록에 오른다(`AppModel.outgoing`); 실패하면 말풍선 아래 「전송 안 됨 · 다시 보내기」 — 작성창에 되돌리지 않는다.
+        Task { _ = await model.send(room: room, text: text) }
     }
 
     /// #405 P3 하드웨어 키보드 단축키(웹 keyboard.js 차용, iPad 에서 ⌘ 를 누르고 있으면 목록이 보인다):
@@ -340,6 +340,8 @@ struct MessageRow: View {
     var decide: (Int, Bool) -> Void = { _, _ in }
     /// #398: 첨부 본체를 읽어 행 높이가 바뀐 뒤 한 번.
     var onAttachmentLoaded: () -> Void = {}
+    /// 보내는 글이 실패했을 때 「다시 보내기」.
+    var retry: () -> Void = {}
     private var message: MessageRecord { item.record }
 
     var body: some View {
@@ -369,6 +371,25 @@ struct MessageRow: View {
         }
     }
 
+    /// 보내는 글의 상태(말풍선 아래): 보내는 중 · 연결되면 보냅니다 · 전송 안 됨 + 다시 보내기.
+    @ViewBuilder private var outgoingStatus: some View {
+        switch item.outgoing {
+        case .sending?:
+            Text(Strings.outgoingSending).font(.caption2).foregroundStyle(Hande.inkDim)
+        case .queued?:
+            Label(Strings.outgoingQueued, systemImage: "clock").font(.caption2).foregroundStyle(Hande.inkDim)
+        case .failed(let reason)?:
+            HStack(spacing: 6) {
+                Label(Strings.outgoingFailed, systemImage: "exclamationmark.circle").foregroundStyle(.red)
+                Button(Strings.outgoingRetry, action: retry).buttonStyle(.borderless).foregroundStyle(Hande.ember)
+            }
+            .font(.caption2)
+            .accessibilityHint(reason)
+        case nil:
+            EmptyView()
+        }
+    }
+
     @ViewBuilder private var timeLabel: some View {
         if let time {
             Text(Strings.messageTime(time)).font(.caption2).foregroundStyle(Hande.inkDim).fixedSize()
@@ -390,6 +411,8 @@ struct MessageRow: View {
                     .background(mine ? AnyShapeStyle(Hande.emberDeep) : AnyShapeStyle(Hande.surface))
                     .foregroundStyle(mine ? Hande.onEmber : Hande.ink)
                     .clipShape(BubbleShape(mine: mine))
+                    .opacity(item.outgoing == nil ? 1 : 0.75)
+                outgoingStatus
             }
             if !mine { timeLabel; Spacer(minLength: 40) }
         }
@@ -397,6 +420,9 @@ struct MessageRow: View {
 
     @ViewBuilder private var content: some View {
         switch message.kind {
+        case .attachment where item.outgoing != nil:
+            // 아직 저장소에 없는 첨부(보내는 중): 본체 대신 종류·크기만.
+            Text(Strings.outgoingAttachment).font(.footnote)
         case .attachment:
             AttachmentBubble(item: item, onLoaded: onAttachmentLoaded)
         case .undecryptable:

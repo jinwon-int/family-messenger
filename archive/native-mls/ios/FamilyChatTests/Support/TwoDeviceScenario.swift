@@ -131,7 +131,7 @@ struct TwoDeviceScenario {
         XCTAssertNotNil(pendingBytes, "④ entry stays pending with its exact bytes")
         try await control.stop()
         await bob.model.refresh()
-        XCTAssertNotNil(bob.model.lastError, "④ refresh while the relay is down reports a network error")
+        XCTAssertTrue(bob.model.reconnecting, "④ refresh while the relay is down shows 「연결 중입니다…」 (no raw error banner, #429)")
         XCTAssertEqual(try bob.deps.outbox.pending(room: room).first { $0.clientId == clientId }?.bytes, pendingBytes, "④ still pending, same bytes")
         try await control.start()
         await bob.model.refresh()
