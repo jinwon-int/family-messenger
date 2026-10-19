@@ -32,6 +32,9 @@ struct RoomView: View {
     /// #405 시간 표시: 행별 시간 보임 여부 · 날짜 구분선.
     @State private var stamps: [Int64: TimelineStamps.Stamp] = [:]
     private static let thinkingRowID: Int64 = -1
+    /// 최하단 표지(높이 1pt, 항상 있음) — 진입·새 메시지·내용 증가 때의 스크롤 목표. 「생각하는 중」 줄은 에이전트가 바로 답하는 방
+    /// (family-acc)에서는 높이 0이라 그 줄을 목표로 삼으면 끝까지 가지 않았다(오너 보고 build 31: family 는 되고 family-acc 는 2~3번째).
+    private static let bottomSentinelID: Int64 = -2
 
     var body: some View {
         VStack(spacing: 0) {
@@ -70,6 +73,7 @@ struct RoomView: View {
                             }
                         }
                         .id(Self.thinkingRowID)
+                        Color.clear.frame(height: 1).id(Self.bottomSentinelID)
                     }
                     .padding()
                     // 내용이 커지면(lazy 행의 실제 배치·이미지 로딩·구분선) 따라가는 중일 때 최하단을 다시 맞춘다 — 진입 시 2~3번째 최신 글에서 멈추던 결함.
@@ -255,9 +259,9 @@ struct RoomView: View {
     /// 마지막 메시지(seq 최대)로 스크롤한다. `messages` 를 바꾼 직후라 LazyVStack 이 아직 그 행을 배치하지 않았을 수 있으므로
     /// 한 런루프 뒤에 부른다 — 같은 틱에 부르면 앵커가 없어 조용히 무시된다(iOS 16 대상이라 `defaultScrollAnchor` 는 못 쓴다).
     private func scrollToLatest(_ proxy: ScrollViewProxy, animated: Bool) {
-        // #405 P1: 맨 끝은 "생각하는 중" 자리(TimelineView, 비어 있으면 높이 0) — 그 줄까지 보이게 거기로 간다.
+        // 목표는 높이 1pt 의 최하단 표지(「생각하는 중」 줄이 있으면 그 아래) — 높이 0 인 뷰는 scrollTo 가 끝까지 가지 않는다.
         guard !messages.isEmpty else { return }
-        let last = Self.thinkingRowID
+        let last = Self.bottomSentinelID
         DispatchQueue.main.async {
             if animated {
                 withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .bottom) }
@@ -492,13 +496,15 @@ struct ImageViewer: View {
                     .resizable()
                     .scaledToFit()
                     .frame(width: UIScreen.main.bounds.width * scale, height: UIScreen.main.bounds.height * scale)
+                    // 핀치는 사진 자체에 **동시 인식**으로 — ScrollView 에 `.gesture` 로 두면 스크롤이 두 손가락 동작을 먼저 가져가
+                    // 확대·축소가 전달되지 않았다(오너 보고 build 31: 두 번 탭만 됨).
+                    .simultaneousGesture(
+                        MagnificationGesture()
+                            .onChanged { value in scale = min(max(lastScale * value, 1), 4) }
+                            .onEnded { _ in lastScale = scale }
+                    )
             }
             .ignoresSafeArea()
-            .gesture(
-                MagnificationGesture()
-                    .onChanged { value in scale = min(max(lastScale * value, 1), 4) }
-                    .onEnded { _ in lastScale = scale }
-            )
             .onTapGesture(count: 2) {
                 withAnimation(.easeOut(duration: 0.2)) { scale = scale > 1 ? 1 : 2 }
                 lastScale = scale
