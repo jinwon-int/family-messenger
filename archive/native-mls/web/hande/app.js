@@ -219,7 +219,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       app.tick = setInterval(() => refresh().catch(() => {}), TICK_MS);
       render();
     } catch (error) {
-      fatal(/worker|boot|init_multi/.test(error.message) ? strings.app.workerUnavailable : strings.app.storageUnavailable(error.message));
+      fatal((/worker|boot|init_multi/.test(error.message) ? strings.app.workerUnavailable : strings.app.storageUnavailable(error.message)) + ` [${error.message}]`);
     }
   }
   /**
