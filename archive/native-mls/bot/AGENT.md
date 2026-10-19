@@ -23,6 +23,10 @@ native-mls-bot <base-url> session <room> <device> \
 - `--owner-actor`(env `NATIVE_MLS_BOT_OWNER_ACTOR`, 기본 `owner`): 승인 답장을 낼 수 있는 actor(기기 ID 의 첫 `-` 앞).
 - 응답기가 죽으면 세션도 끝난다(exit 1) — 서비스 매니저가 봇·응답기를 함께 다시 띄운다(`Restart=on-failure`).
 
+## 노드에 설치하기 (플릿 롤아웃, #420 ⑥ / ccc-node #2380)
+
+노드마다 **봇 기기 1개 + 방 1개**: `deploy/install-node-bot.sh --node <node> --relay-url http://<릴레이 tailnet>:18921 --relay-public-url https://<릴레이 호스트> --binary <native-mls-bot 빌드> --token-env /root/.config/native-relay/bot-service-token.env` (root). 사용자·디렉터리·바이너리·JWT 갱신 타이머·steward 유닛(`<node>-bot`, actor = `<node>`)·응답기 drop-in(`/run/ccc-hande/responder.sock`, ccc-node 브리지가 서빙)을 만들고, 등록 후보 JSON을 `/var/lib/native-relay-bot/bot/enrollment.json`(0600)에 쓴다 — 릴레이 운영자가 `native-devices -enroll-first`에 넣는다(승인). 등록 전 봇은 403을 받으며 재시도한다(정상). 응답기(ccc-node `CCC_CHANNEL=hande`)는 ccc-node `scripts/install-hande-bridge.sh`가 세운다. 되돌리기: `systemctl disable --now native-relay-bot native-relay-jwt-refresh.timer`.
+
 ## 동작 규칙 (오너 결정 2026-10-15, #354)
 
 | 규칙 | 구현 |
