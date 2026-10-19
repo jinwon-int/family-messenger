@@ -3,7 +3,7 @@ name = "native-mls-host"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Host-neutral pieces of the native-mls v2 client: relay wire types and client, minimal HTTP/1.1, base64, commit policy (#366)."
+description = "Host-neutral pieces of the native-mls v2 client: relay wire types and client, minimal HTTP/1.1, base64, commit policy, room rules (#366)."
 
 # #366: split out of native-mls-bot so the bot and the Android app (#338, uniffi Kotlin)
 # share one implementation. iOS keeps its Swift core (#271 frozen contract).

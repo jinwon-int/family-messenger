@@ -41,6 +41,11 @@
 
 use crate::api::{self, BotError, Client, EventPost, StoredRow};
 use crate::policy;
+// #366 2a: the host-neutral room rules live in host-core; the bot keeps logging,
+// halt markers and its state file.
+use native_mls_host::room::{self, history_gap, is_transient, relay_backoff, CommitOutcome};
+#[cfg(test)]
+use native_mls_host::room::RELAY_BACKOFF_MAX;
 use crate::responder::{self, Inbound, Outbound, Responder};
 use family_mls_browser_experiment::Device;
 use std::collections::VecDeque;
@@ -57,28 +62,6 @@ const POLL: Duration = Duration::from_millis(200);
 /// One status heartbeat per second of polling keeps the harness (and CI logs)
 /// informed without flooding stdout.
 const STATUS_EVERY: u32 = 5;
-/// #392: first wait after the relay could not be reached; doubles per
-/// consecutive unreachable round up to `RELAY_BACKOFF_MAX`.
-const RELAY_BACKOFF_FIRST: Duration = Duration::from_millis(500);
-const RELAY_BACKOFF_MAX: Duration = Duration::from_secs(30);
-
-/// #392: a relay that is restarting or briefly unreachable — connection
-/// refused/reset/timeout, a response cut off mid-read, or a gateway's 502/503/504
-/// — is worth waiting out. Everything else (the error envelope, policy
-/// refusals, a malformed base URL, local MLS errors) is not.
-fn is_transient(err: &BotError) -> bool {
-    match err {
-        BotError::Http(native_mls_host::http::HttpError::Io(_) | native_mls_host::http::HttpError::BadResponse(_)) => true,
-        BotError::Status { status } | BotError::Api { status, .. } => matches!(status, 502..=504),
-        _ => false,
-    }
-}
-
-/// Wait before the `attempt`-th retry (1-based): 0.5 s, 1 s, 2 s … capped at 30 s.
-fn relay_backoff(attempt: u32) -> Duration {
-    RELAY_BACKOFF_FIRST.saturating_mul(1u32 << attempt.saturating_sub(1).min(16)).min(RELAY_BACKOFF_MAX)
-}
-
 pub struct Options {
     pub base: String,
     pub room: String,
@@ -298,23 +281,36 @@ fn flush(ctx: &Ctx, state: &mut RoomState) -> Result<(), BotError> {
     Ok(())
 }
 
-/// Run one MLS operation with rollback (review 2 B-H1/B-H3): the facade
-/// retires the device on any rejected operation, so the pre-operation
-/// snapshot is restored on failure and the caller reports and skips the
-/// event. A snapshot that cannot be restored is a hard stop — the device is
-/// already retired and nothing short of a re-enrollment helps.
+/// The facade `Device` seen through host-core's [`room::MlsGroup`] (#366 2a).
+/// Borrowed per call, so `RoomState` keeps holding a plain `Device`; `own` is
+/// the identity its state export/import is bound to.
+struct Bound<'a> {
+    dev: &'a mut Device,
+    own: &'a str,
+}
+
+impl room::MlsGroup for Bound<'_> {
+    /// batch g: the pre-operation store copy is wiped when the guard drops it.
+    type Snapshot = zeroize::Zeroizing<Vec<u8>>;
+    fn snapshot(&self) -> Result<Self::Snapshot, ()> {
+        self.dev.export_state(self.own).map(zeroize::Zeroizing::new).map_err(drop)
+    }
+    fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), ()> {
+        *self.dev = Device::import_state(self.own, snapshot).map_err(drop)?;
+        Ok(())
+    }
+    fn stage_commit(&mut self, commit: &[u8]) -> Result<Vec<u8>, ()> { self.dev.stage_commit(commit).map_err(drop) }
+    fn merge_staged(&mut self) -> Result<(), ()> { self.dev.merge_staged().map_err(drop) }
+    fn discard_staged(&mut self) { let _ = self.dev.discard_staged(); }
+    fn members(&self) -> Result<Vec<u8>, ()> { self.dev.members().map_err(drop) }
+}
+
+/// Run one MLS operation with rollback (review 2 B-H1/B-H3) — host-core's
+/// [`room::guarded`] over the bot's `Device`.
 fn guarded<T>(
     device: &mut Device, own: &str, op: impl FnOnce(&mut Device) -> Result<T, ()>,
 ) -> Result<Result<T, ()>, BotError> {
-    let mut snapshot = device.export_state(own).map_err(|_| BotError::Local("state snapshot before operation"))?;
-    let outcome = match op(device) {
-        Ok(value) => Ok(Ok(value)),
-        Err(()) => Device::import_state(own, &snapshot)
-            .map(|restored| { *device = restored; Ok(Err(())) })
-            .unwrap_or(Err(BotError::Local("state rollback after rejected operation"))),
-    };
-    snapshot.zeroize(); // batch g: the pre-operation store copy is not kept around
-    outcome
+    room::guarded(&mut Bound { dev: device, own }, |b| op(b.dev))
 }
 
 pub fn run(opts: Options) -> Result<(), BotError> {
@@ -761,51 +757,24 @@ fn poll_room(ctx: &Ctx, state: &mut RoomState, agent: &mut Option<Responder>) ->
                     "event": "welcome_ignored", "room": state.room, "seq": ev.seq, "joined": state.joined,
                 }));
             }
-            // #263 two-step application (the human client's #261 rule, in
-            // Rust): stage (authenticate + roster delta report), check the
-            // delta against this device's roster and — when this commit is
-            // the page's latest epoch — against the relay's enforced roster,
-            // then merge. A facade rejection (poison commit) is rolled back and
-            // reported as before; a policy refusal discards and halts the room.
+            // #263 two-step application (stage → policy → merge/discard) is
+            // host-core's `room::apply_commit` (#366 2a): a facade rejection
+            // (poison commit) is rolled back and reported; a policy refusal
+            // discards the staged commit and halts the room.
             "commit" if state.joined => {
-                match guarded(&mut state.device, ctx.own, |d| d.stage_commit(&ev.bytes).map_err(drop))? {
-                    Err(()) => rejected(state, ev, "commit"),
-                    Ok(report) => {
-                        let outer: Option<Vec<String>> = (ev.epoch + 1 == body.epoch)
-                            .then(|| body.members.as_ref().map(|m| m.iter().map(|x| x.device.clone()).collect()))
-                            .flatten();
-                        let verdict = match (policy::parse_stage_report(&report),
-                                             state.device.members().ok().and_then(|f| policy::parse_roster(&f))) {
-                            (None, _) => Err(policy::Refusal { reason: "report_format", detail: format!("{} bytes", report.len()) }),
-                            (_, None) => Err(policy::Refusal { reason: "roster_unavailable", detail: String::new() }),
-                            (Some(parsed), Some(roster)) => {
-                                let ids: Vec<String> = roster.into_iter().map(|m| m.id).collect();
-                                policy::check_commit(&parsed, &ids, &ev.device, outer.as_deref()).map(|expected| (parsed, expected))
-                            }
-                        };
-                        match verdict {
-                            Ok((parsed, expected)) => {
-                                match guarded(&mut state.device, ctx.own, |d| d.merge_staged().map_err(drop))? {
-                                    Ok(()) => {
-                                        state.dirty = true;
-                                        emit(&serde_json::json!({
-                                            "event": "commit_applied", "room": state.room, "seq": ev.seq,
-                                            "committer": ev.device, "epoch": ev.epoch + 1,
-                                            "adds": parsed.adds.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
-                                            "removes": parsed.removes.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
-                                            "members": expected, "outer_checked": outer.is_some(),
-                                        }));
-                                    }
-                                    Err(()) => rejected(state, ev, "commit"),
-                                }
-                            }
-                            Err(refusal) => {
-                                // Pure: drops the staged commit, keeps the epoch.
-                                let _ = state.device.discard_staged();
-                                refuse(ctx, state, ev, refusal)?;
-                            }
-                        }
+                match room::apply_commit(&mut Bound { dev: &mut state.device, own: ctx.own }, ev, &body)? {
+                    CommitOutcome::Rejected => rejected(state, ev, "commit"),
+                    CommitOutcome::Applied { report, members, outer_checked } => {
+                        state.dirty = true;
+                        emit(&serde_json::json!({
+                            "event": "commit_applied", "room": state.room, "seq": ev.seq,
+                            "committer": ev.device, "epoch": ev.epoch + 1,
+                            "adds": report.adds.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+                            "removes": report.removes.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+                            "members": members, "outer_checked": outer_checked,
+                        }));
                     }
+                    CommitOutcome::Refused(refusal) => refuse(ctx, state, ev, refusal)?,
                 }
             }
             "application" if state.joined => echo(ctx, state, ev, agent)?,
@@ -862,14 +831,6 @@ fn refuse(ctx: &Ctx, state: &mut RoomState, ev: &StoredRow, refusal: policy::Ref
         "room": state.room, "device": ctx.own, "seq": ev.seq, "committer": ev.device,
         "epoch": ev.epoch, "reason": refusal.reason, "detail": refusal.detail,
     }))
-}
-
-/// `Some((first missing seq, last missing seq))` when a joined device's
-/// cursor lies below the relay's oldest retained seq minus one (#268). An
-/// unjoined device has no history to lose — events before its Welcome are
-/// not its to read — and `first_seq == 0` is an empty room or an older relay.
-fn history_gap(joined: bool, cursor: i64, first_seq: i64) -> Option<(i64, i64)> {
-    (joined && first_seq > 0 && first_seq > cursor.saturating_add(1)).then(|| (cursor + 1, first_seq - 1))
 }
 
 /// A pruned history gap (#268): loud, durable and final for this room, like
