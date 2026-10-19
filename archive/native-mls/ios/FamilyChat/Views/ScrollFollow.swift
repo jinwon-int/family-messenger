@@ -26,4 +26,11 @@ enum ScrollFollow {
     static func shouldRescrollOnContentGrowth(old: Double, new: Double, following: Bool) -> Bool {
         following && new > old + 0.5
     }
+
+    /// 배치가 끝난 뒤 **실측**: 바닥 표지의 아래 끝(`sentinelBottom`, 스크롤 뷰 좌표)이 화면 높이보다 아래면 아직 맨 아래가 아니다 —
+    /// 따라가는 중이면 한 번 더 맞춘다. LazyVStack 의 `scrollTo` 는 아직 배치되지 않은 행의 추정 높이로 움직이므로 긴 마지막 글은
+    /// 위만 보일 수 있다(오너 보고 build 32). 표지가 화면 안(또는 위)이면 맞춘 것이다.
+    static func needsBottomCorrection(sentinelBottom: Double, viewportHeight: Double, following: Bool) -> Bool {
+        following && viewportHeight > 0 && sentinelBottom > viewportHeight + 0.5
+    }
 }

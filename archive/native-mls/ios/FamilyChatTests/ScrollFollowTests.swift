@@ -29,6 +29,15 @@ final class ScrollFollowTests: XCTestCase {
         XCTAssertFalse(ScrollFollow.shouldRescrollOnContentGrowth(old: 1800, new: 1800.2, following: true), "sub-point jitter")
     }
 
+    /// 실측 보정: 배치 뒤 바닥 표지가 화면 아래에 남아 있으면(긴 마지막 글의 위만 보임) 한 번 더 맞춘다.
+    func testMeasuredBottomCorrection() {
+        XCTAssertTrue(ScrollFollow.needsBottomCorrection(sentinelBottom: 900, viewportHeight: 620, following: true), "sentinel below the viewport")
+        XCTAssertFalse(ScrollFollow.needsBottomCorrection(sentinelBottom: 619.8, viewportHeight: 620, following: true), "at the bottom")
+        XCTAssertFalse(ScrollFollow.needsBottomCorrection(sentinelBottom: 300, viewportHeight: 620, following: true), "short timeline, nothing below")
+        XCTAssertFalse(ScrollFollow.needsBottomCorrection(sentinelBottom: 900, viewportHeight: 620, following: false), "reading older messages")
+        XCTAssertFalse(ScrollFollow.needsBottomCorrection(sentinelBottom: 900, viewportHeight: 0, following: true), "viewport not measured yet")
+    }
+
     /// 키보드가 올라와 메시지 칸이 줄면 최신 메시지를 키보드 바로 위로 다시 맞춘다.
     func testShrinkingViewportRescrollsWhileFollowing() {
         XCTAssertTrue(ScrollFollow.shouldRescrollOnResize(old: 620, new: 330, following: true), "keyboard up")

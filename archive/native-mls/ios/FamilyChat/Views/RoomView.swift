@@ -74,6 +74,11 @@ struct RoomView: View {
                         }
                         .id(Self.thinkingRowID)
                         Color.clear.frame(height: 1).id(Self.bottomSentinelID)
+                            // 표지의 **실제** 위치(스크롤 뷰 좌표). LazyVStack 의 scrollTo 는 추정 높이로 움직여 긴 마지막 글의
+                            // 아래가 잘릴 수 있다(오너 보고 build 32) — 배치가 끝난 뒤 표지가 화면 아래에 남아 있으면 한 번 더 맞춘다.
+                            .background(GeometryReader { geo in
+                                Color.clear.preference(key: SentinelBottomKey.self, value: Double(geo.frame(in: .named("timeline")).maxY))
+                            })
                     }
                     .padding()
                     // 내용이 커지면(lazy 행의 실제 배치·이미지 로딩·구분선) 따라가는 중일 때 최하단을 다시 맞춘다 — 진입 시 2~3번째 최신 글에서 멈추던 결함.
@@ -81,10 +86,16 @@ struct RoomView: View {
                         Color.clear.preference(key: ContentHeightKey.self, value: Double(geo.size.height))
                     })
                 }
+                .coordinateSpace(name: "timeline")
                 .onPreferenceChange(ContentHeightKey.self) { height in
                     let old = contentHeight
                     contentHeight = height
                     if ScrollFollow.shouldRescrollOnContentGrowth(old: old, new: height, following: followLatest) {
+                        scrollToLatest(proxy, animated: false)
+                    }
+                }
+                .onPreferenceChange(SentinelBottomKey.self) { bottom in
+                    if ScrollFollow.needsBottomCorrection(sentinelBottom: bottom, viewportHeight: viewportHeight, following: followLatest) {
                         scrollToLatest(proxy, animated: false)
                     }
                 }
@@ -480,35 +491,17 @@ struct AttachmentBubble: View {
     }
 }
 
-/// 전체 화면 사진 보기: 검은 바탕 · 핀치 확대(1~4배) · 두 번 탭으로 2배/원래 크기 · 닫기 · 저장·공유.
+/// 전체 화면 사진 보기: 검은 바탕 · UIKit 줌(핀치 위치 기준 1~4배, 두 번 탭은 탭 위치로 2.5배/원래, `ZoomableImageView`) · 닫기 · 저장·공유.
 struct ImageViewer: View {
     let image: UIImage
     let shareURL: URL?
     @Environment(\.dismiss) private var dismiss
-    @State private var scale: CGFloat = 1
-    @State private var lastScale: CGFloat = 1
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
             Color.black.ignoresSafeArea()
-            ScrollView([.horizontal, .vertical], showsIndicators: false) {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: UIScreen.main.bounds.width * scale, height: UIScreen.main.bounds.height * scale)
-                    // 핀치는 사진 자체에 **동시 인식**으로 — ScrollView 에 `.gesture` 로 두면 스크롤이 두 손가락 동작을 먼저 가져가
-                    // 확대·축소가 전달되지 않았다(오너 보고 build 31: 두 번 탭만 됨).
-                    .simultaneousGesture(
-                        MagnificationGesture()
-                            .onChanged { value in scale = min(max(lastScale * value, 1), 4) }
-                            .onEnded { _ in lastScale = scale }
-                    )
-            }
-            .ignoresSafeArea()
-            .onTapGesture(count: 2) {
-                withAnimation(.easeOut(duration: 0.2)) { scale = scale > 1 ? 1 : 2 }
-                lastScale = scale
-            }
+            ZoomableImageView(image: image)
+                .ignoresSafeArea()
             HStack(spacing: 14) {
                 if let shareURL {
                     ShareLink(item: shareURL) { Image(systemName: "square.and.arrow.up") }
@@ -571,6 +564,12 @@ struct ViewportHeightKey: PreferenceKey {
 
 /// 목록 내용(LazyVStack)의 높이를 RoomView 로 올린다.
 struct ContentHeightKey: PreferenceKey {
+    static var defaultValue: Double = 0
+    static func reduce(value: inout Double, nextValue: () -> Double) { value = nextValue() }
+}
+
+/// 바닥 표지의 아래 끝 y(스크롤 뷰 "timeline" 좌표) — 화면 높이보다 크면 아직 맨 아래가 아니다.
+struct SentinelBottomKey: PreferenceKey {
     static var defaultValue: Double = 0
     static func reduce(value: inout Double, nextValue: () -> Double) { value = nextValue() }
 }
