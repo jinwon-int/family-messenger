@@ -92,6 +92,10 @@ jobs:
         if: steps.scope.outputs.run == 'true'
         working-directory: archive/experiments/openmls-browser
         run: node --test web/session-store.test.mjs web/commit-policy.test.mjs web/relay-attachments.test.mjs web/history-store.test.mjs
+      # #431: hande web (PC) — room session against a fake worker + scripted relay, copy helpers. No wasm, no DOM.
+      - name: hande web unit tests (node --test)
+        if: steps.scope.outputs.run == 'true'
+        run: node --test archive/native-mls/web/hande/tests/*.test.mjs
       - name: Build WASM bundle
         if: steps.scope.outputs.run == 'true'
         run: archive/experiments/openmls-browser/build.sh artifacts/mls-pkg
@@ -195,6 +199,12 @@ jobs:
       - name: Human relay client — served by the relay, invite/join/messages/ack from the page
         if: steps.scope.outputs.run == 'true'
         run: python archive/native-mls/tests/native_relay_app_smoke.py --bundle artifacts/mls-pkg --relay-binary artifacts/native-mls-relay
+      # #431: hande web served at the root of its own host (-hande-host/-hande-dir), two
+      # browser contexts drive the product screens only: name → create → join request →
+      # invite → join → messages both ways → reload restores the sealed history.
+      - name: hande web — served by the relay on its own host, screens only
+        if: steps.scope.outputs.run == 'true'
+        run: python archive/native-mls/tests/native_hande_web_smoke.py --bundle artifacts/mls-pkg --relay-binary artifacts/native-mls-relay
       # M5: the native bot as a third leaf. Built here (not only in native-mls-bot)
       # because the smoke needs the wasm bundle + relay + devices this job already
       # has; the shared target dir keeps it incremental after the unit-test step.

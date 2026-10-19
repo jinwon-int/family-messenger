@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-label="한데">
+  <defs>
+    <radialGradient id="glow" cx="0.5" cy="1" r="0.75">
+      <stop offset="0" stop-color="#5a2c12"/>
+      <stop offset="0.55" stop-color="#5a2c12" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#0f1324" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="flame" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#e8833a"/>
+      <stop offset="0.7" stop-color="#f59e42"/>
+      <stop offset="1" stop-color="#ffd79a"/>
+    </linearGradient>
+  </defs>
+  <rect width="192" height="192" rx="44" fill="#0f1324"/>
+  <rect width="192" height="192" rx="44" fill="url(#glow)"/>
+  <path d="M96 44c6 18 26 28 26 54a26 26 0 0 1-52 0c0-10 4-17 9-23 1 9 5 13 10 15-2-14 2-30 7-46z" fill="url(#flame)"/>
+  <path d="M96 84c3 9 12 13 12 24a12 12 0 0 1-24 0c0-5 2-8 4-11 1 4 2 6 5 7-1-7 1-13 3-20z" fill="#ffd79a"/>
+  <path d="M60 138l72 10M132 138l-72 10" stroke="#5a2c12" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="50" cy="118" r="6" fill="#ffd79a"/>
+  <circle cx="142" cy="118" r="6" fill="#ffd79a"/>
+  <circle cx="96" cy="158" r="6" fill="#7fb4ff"/>
+</svg>

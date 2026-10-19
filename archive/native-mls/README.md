@@ -40,6 +40,12 @@ Welcome 타깃 필터링, 바이트 기준 보존/프루닝, `BEGIN IMMEDIATE`(`
 인증이 켜져 있을 때만 데이터가 아닌 보조 라우트 하나가 더 있다: `GET /v2/app-login?state=`(#271 §12-C A,
 `server/applogin.go`) — 엣지가 주입한 JWT 를 검증한 뒤 iOS 앱의 고정 스킴 `hande://auth#jwt=…&state=…` 로
 302 한다(앱 로그인 시트용, 플래그·테이블 없음).
+한데 웹(#431 1단계, `server/hande.go`·`server/me.go`): `-hande-host`·`-hande-dir`(둘 다 함께)를 주면 Host 헤더가
+그 이름(대소문자 무시, `:port` 무시)인 요청은 `/v2/*` 를 제외한 모든 경로를 `-hande-dir` 의 파일로 응답한다
+(`/` = `index.html`, 점파일·`..`·디렉터리·없는 파일 404, GET/HEAD 외 405, 기동 시 `index.html` 필수). 다른 Host 의
+동작(`/app/*` 포함)은 그대로이고 한데 호스트는 `-static-dir` 의 relay-app 파일을 내지 않는다. 인증이 켜져 있을 때만
+`GET /v2/me` 가 엣지 JWT 를 검증해 `{"subject":"…"}` 를 돌려준다(웹앱 기기 등록 JSON 의 `subject` 용, 플래그·테이블
+없음; `-access-mode disabled` 에서는 app-login 처럼 라우트가 없어 404).
 
 ### 로비 key package (P5, #380)
 

@@ -1,0 +1,20 @@
+{
+  "name": "한데",
+  "short_name": "한데",
+  "description": "오늘 밤, 모닥불에 한데 모여 — 가족 종단간 암호화 대화",
+  "lang": "ko",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0f1324",
+  "theme_color": "#0f1324",
+  "icons": [
+    {
+      "src": "./icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

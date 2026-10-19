@@ -119,6 +119,10 @@ type relay struct {
 	access  *accessVerifier
 	// staticRoot serves the human client under /app/ (#243 2-a); nil = off.
 	staticRoot *os.Root
+	// handeRoot serves the hande web app at the site root of handeHost (#431,
+	// hande.go); nil = off. handeHost is canonical (lower-case, no port).
+	handeHost string
+	handeRoot *os.Root
 	// push sends APNs alerts after new events (#275 ②); nil = -apns-key not
 	// given, registrations are still stored. pushTopics, when non-empty, is
 	// the allowed set of registration topics (bundle ids). pushWG tracks the
@@ -586,7 +590,10 @@ func (s *relay) bindDevice(w http.ResponseWriter, c caller, device string) bool 
 	return false
 }
 
-func (s *relay) routes() *http.ServeMux {
+// routes builds the API mux; with -hande-host it is wrapped by the host
+// dispatcher (hande.go), which hands every /v2/* request — on any host — to
+// the mux unchanged.
+func (s *relay) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v2/rooms/{room}/keypackages", s.handlePostKeyPackages)
 	mux.HandleFunc("GET /v2/rooms/{room}/keypackages", s.handleConsumeKeyPackage)
@@ -610,12 +617,18 @@ func (s *relay) routes() *http.ServeMux {
 	// hand back, so the route does not exist (404).
 	if s.access != nil {
 		mux.HandleFunc("GET "+appLoginPath, s.handleAppLogin)
+		// Caller identity echo for the hande web app (#431, me.go): same
+		// condition — no verifier, no subject, no route.
+		mux.HandleFunc("GET "+mePath, s.handleMe)
 	}
 	if s.staticRoot != nil {
 		mux.Handle(staticPrefix, staticHandler(s.staticRoot))
 		mux.HandleFunc("GET /app", func(w http.ResponseWriter, req *http.Request) {
 			http.Redirect(w, req, staticPrefix, http.StatusMovedPermanently)
 		})
+	}
+	if s.handeRoot != nil {
+		return &handeHandler{host: s.handeHost, root: s.handeRoot, api: mux}
 	}
 	return mux
 }
