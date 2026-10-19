@@ -82,6 +82,9 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 OPENER = urllib.request.build_opener(NoRedirect)
+# Cloudflare answers 403 to the default Python-urllib User-Agent (fleet-known, 2026-10-06 yukson); the probes
+# must identify themselves or every edge sample reads as a dead relay.
+USER_AGENT = 'native-relay-cutover/1 (+family-messenger #440)'
 
 
 def utcnow():
@@ -116,7 +119,7 @@ def read_kv_file(path):
 
 def http_status(url, headers=None, timeout=5, opener=None):
     """HTTP status without following redirects (3xx is returned as-is); None on transport failure."""
-    request = urllib.request.Request(url, headers=headers or {})
+    request = urllib.request.Request(url, headers={'User-Agent': USER_AGENT, **(headers or {})})
     try:
         with (opener or OPENER.open)(request, timeout=timeout) as response:
             return response.status
