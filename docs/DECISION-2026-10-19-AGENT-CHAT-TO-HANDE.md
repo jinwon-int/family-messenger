@@ -1,18 +1,20 @@
-# 결정 기록 — 2026-10-19: 에이전트 채팅을 Matrix에서 「한데」로 옮긴다 (초안, 단계형 컷오버)
+# 결정 기록 — 2026-10-19: 에이전트 채팅을 Matrix에서 「한데」로 옮긴다 (단계형 컷오버)
 
-**상태:** **초안 — 오너 확정 전.** 오너 방향 제시(2026-10-19 "에이전트 채팅을 Telegram → Matrix로 옮겼고, 이제 독자 개발한 한데 앱으로 옮긴다")를 받아 작성한 검토·결정 초안이다. 아래 §4 "오너 확정 항목"에 답이 적히기 전에는 어떤 운영 변경도 승인하지 않는다.
+**상태:** **오너 확정(2026-10-19 KST, Seo Jin On — §4 답 ①-A · ②-A(서서 Telegram만) · ③ Matrix 명명 동일 · ④-A · ⑤ 이슈 개설).** 방향 결정이며, 각 단계의 운영 변경(바이너리 교체·유닛·정책 enroll·비밀값·릴레이 재시작)은 건마다 별도 승인이다. 초안은 PR #419(`d8c4de66`)로 기록했고 이 판이 확정 반영이다. 2단계 전제조건 추적: [#420](https://github.com/jinwon-int/family-messenger/issues/420).
 **이어받는 문장:** [결정 E](DECISION-2026-09-21-MATRIX-PLUS-NATIVE-E2EE.md) §5 「전달층을 독자 스택으로 바꾸는 컷오버는 … 오너가 따로 고른다」· [#271 런칭 게이트 6](https://github.com/jinwon-int/family-messenger/issues/271) 「봇·에이전트 경로(fleet 봇은 Matrix 유지 여부)」· [#354](https://github.com/jinwon-int/family-messenger/issues/354) 오너 결정 1-A(에이전트 **1개** 직접 참여).
 **바꾸지 않는 것:** 결정 D·E의 "가족 채팅 운영 전달층은 Matrix" — 이 문서는 **에이전트 채팅**(오너 ↔ 플릿 노드 개인방 + 플릿 알림방)만 다룬다. 가족 Matrix(패밀리챗) 은퇴는 별도 결정이다. [VISION.md](VISION.md)·[NATIVE-E2EE.md](NATIVE-E2EE.md) 불변.
 **추적:** [#271](https://github.com/jinwon-int/family-messenger/issues/271) 게이트 6 코멘트 · [#92](https://github.com/jinwon-int/family-messenger/issues/92). 문서와 어긋나면 #92가 우선한다.
 
-## 1. 결정 (초안)
+## 1. 결정
 
 | 항목 | 내용 |
 |---|---|
 | 목표 | 오너가 플릿 노드 에이전트와 대화하는 **주 채널을 Matrix에서 한데(독자 E2EE 방 + v2 릴레이)로** 옮긴다. |
 | 방식 | **단계형 컷오버.** 한 번에 바꾸지 않고 §3의 0→4단계를 게이트마다 통과하며 옮긴다. |
-| 폴백 | Matrix 에이전트 브리지는 **최소 1~2노드에 폴백으로 유지**한다(Telegram 정리 때 서서 1곳을 남긴 것과 같은 원칙). 릴레이 장애 시 "릴레이가 죽은 사건을 릴레이로 알리는" 모순을 피하기 위해서다. |
+| 폴백 | **서서 Telegram 브리지만**(DOC-4014로 이미 남겨 둔 것). Matrix 에이전트 브리지는 폴백으로 남기지 **않고** 4단계가 끝나면 은퇴한다. 릴레이 장애 알림은 서서 Telegram으로 간다(§3 ⑦) — "릴레이가 죽은 사건을 릴레이로 알리는" 모순을 피하기 위해서다. 가족 Matrix 홈서버 운영은 이 결정의 범위 밖이라 계속된다. |
 | 전제 | §2의 설계 한도 5개와 운영 공백은 **코드로 먼저 해소**한 뒤 노드를 늘린다. 한도를 운영 수작업으로 우회하지 않는다. |
+| 명명(③) | 한데 actor·표시 이름·호출어 = **현재 Matrix 봇과 동일**: actor `<node>`(예 `soonwook`), 기기 ID `<node>-<suffix>`, 표시 이름·개인방 이름 = 한글+계정 마커(예 `순욱✴️`), 호출어 = 한글 노드 이름. 기존 `bot-gongmyoung`은 컴팩션(#421) 뒤 `gongmyoung-*`로 재등록. |
+| 봇-봇(④) | **플릿 알림방에서만** 봇 발신을 봇이 읽는다(방별 허용 목록, 기본 금지 유지, 자동 답장 없음). |
 | 이번 결정이 하지 않는 것 | 가족 Matrix 은퇴 · 릴레이 운영 노드 변경 · 비밀값 발급·이동 · 바이너리 교체 · 기존 Matrix 대화 이력 이관(기본 비이관) |
 
 ## 2. 왜 "채널 교체"가 아니라 "스택 교체"인가 — 2026-10-19 실측
@@ -49,25 +51,27 @@ Telegram→Matrix 이동은 같은 ccc-node 브리지 안에서 프론트엔드�
 
 | 단계 | 내용 | 게이트(다음 단계로 넘어가는 조건) |
 |---|---|---|
-| **0. 결정 기록**(이 문서) | 범위·폴백·롤백 조건 확정, #271 게이트 6 코멘트, ROADMAP §5 연결 | §4 오너 확정 |
+| **0. 결정 기록**(이 문서) | 범위·폴백·롤백 조건 확정, #271 게이트 6 코멘트, ROADMAP §5 연결 | **완료** — §4 오너 확정 2026-10-19 |
 | **1. 에이전트 1개 안정화**(공명, 진행 중) | [#404](https://github.com/jinwon-int/family-messenger/issues/404) 관찰 기간 완료 · 세션 연속성 실측 · 명령어 최소셋(`/new /model /stop`)을 응답기에 추가 | 7일 응답기 오류 0(`agent_offer`/`agent_outbound` 저널) + 오너 체감 OK |
-| **2. 플릿 전제조건**(코드만, PR-first) | ① H3 revision 컴팩션 ② H2 노드별 actor 분리 + 🤖 표시(`FC_AGENT_ACTORS`)·루프 규칙 갱신 ③ H1 봇 다중 agent 방 ④ H5 릴레이 long-poll(또는 wait 파라미터) ⑤ H4 봇-봇 메시지 허용 정책(명시적 허용 목록) ⑥ ccc-node 전송 추상화 + 한데 채널 등록(health/doctor/self-update/fleet-watch 인지) ⑦ 릴레이 오프호스트 워치독(#412 자매) | 각 항목 CI green + 격리 릴레이(`-access-mode disabled`, loopback) 스모크 |
-| **3. 소수 노드 파일럿** | Linux 노드 2~3개를 개인방으로 연결, Matrix 병행. 7일간 두 채널 turn 수 비교(`duration.jsonl`) | 한데 turn ≥ Matrix turn · 응답기 오류 0 · 승인 왕복 1회 이상 |
-| **4. 플릿 전환** | 나머지 노드 · 플릿 공용방/알림방 · Termux 2대. Matrix 브리지는 1~2노드 폴백 유지 | 12노드 실제 응답 + 지목 안 된 노드 침묵([ROADMAP](ROADMAP.md) 4단계 게이트 재사용) |
+| **2. 플릿 전제조건**(코드만, PR-first, 추적 [#420](https://github.com/jinwon-int/family-messenger/issues/420)) | ① H3 revision 컴팩션 [#421](https://github.com/jinwon-int/family-messenger/issues/421) ② H2 노드별 actor 명명(Matrix 동일) + 🤖 표시(`FC_AGENT_ACTORS`)·루프 규칙 [#422](https://github.com/jinwon-int/family-messenger/issues/422) ③ H1 봇 다중 agent 방 [#423](https://github.com/jinwon-int/family-messenger/issues/423) ④ H5 릴레이 long-poll [#424](https://github.com/jinwon-int/family-messenger/issues/424) ⑤ H4 봇-봇 메시지 플릿 알림방 한정 [#425](https://github.com/jinwon-int/family-messenger/issues/425) ⑥ ccc-node 전송 추상화 + 한데 채널 등록 [ccc-node #2380](https://github.com/jinwon-int/ccc-node/issues/2380) ⑦ 릴레이 오프호스트 워치독 → 서서 Telegram [#426](https://github.com/jinwon-int/family-messenger/issues/426). 순서: ①→②→③/⑤, ④·⑥·⑦ 병행 | 각 항목 CI green + 격리 릴레이(`-access-mode disabled`, loopback) 스모크 |
+| **3. 소수 노드 파일럿** | #420 전부 종료 뒤. Linux 노드 2~3개를 개인방으로 연결, Matrix 병행. 7일간 두 채널 turn 수 비교(`duration.jsonl`) | 한데 turn ≥ Matrix turn · 응답기 오류 0 · 승인 왕복 1회 이상 |
+| **4. 플릿 전환** | 나머지 노드 · 플릿 공용방/알림방 · Termux 2대. 완료 후 Matrix 에이전트 브리지 은퇴(DOC-4014 Telegram 정리와 같은 절차), 폴백 = 서서 Telegram | 12노드 실제 응답 + 지목 안 된 노드 침묵([ROADMAP](ROADMAP.md) 4단계 게이트 재사용) |
 
 각 단계의 **운영 변경**(바이너리 교체·유닛·정책 enroll·비밀값 발급·릴레이 재시작)은 단계 안에서도 건마다 승인이다. 코드·문서 PR은 자율 범위다.
 
-**롤백(모든 단계 공통):** 해당 노드의 Matrix 브리지를 다시 켠다. 한데 쪽 기기는 `-revoke`로 폐기하지 않고 봇 유닛만 정지한다(revision 소모 방지, H3).
+**롤백(모든 단계 공통):** 해당 노드의 Matrix 브리지를 다시 켠다(4단계 은퇴 뒤에는 DOC-4014 되돌리기 절차와 같은 방식으로 복귀). 한데 쪽 기기는 `-revoke`로 폐기하지 않고 봇 유닛만 정지한다(revision 소모 방지, H3).
 
-## 4. 오너 확정 항목 (번호형)
+## 4. 오너 확정 항목 — 답변 완료 (2026-10-19 KST, Seo Jin On)
 
-① **범위** — 권장 **①-A 에이전트 채팅만**(개인방 + 플릿 알림방). ①-B 가족 Matrix까지 함께 은퇴(별도 결정 문서 필요).
-② **폴백 유지 노드** — 권장 **②-A 서서 + 1노드**(Telegram 폴백과 같은 노드에 두면 두 폴백이 한 호스트에 몰림 — 다른 노드 1개 추가). ②-B 서서만.
-③ **actor 명명(H2)** — 권장 **③-A 노드별 actor**(예 `agent-<노드>`; `FC_AGENT_ACTORS`는 접두 매칭으로). ③-B `bot` actor 한도 상향(정책 불변식 변경, 가족 기기 한도와 비대칭).
-④ **봇-봇 메시지(H4)** — 권장 **④-A 플릿 알림방에서만 허용**(방 단위 허용 목록). ④-B 전면 허용(루프 위험). ④-C 금지 유지(플릿 알림은 Matrix 폴백에 남김).
-⑤ **2단계 수행 배정** — 항목 ①~⑦을 이슈로 쪼개고 노드 배정은 오너.
+| # | 질문 | 답 |
+|---|---|---|
+| ① | 범위 | **①-A 에이전트 채팅만**(개인방 + 플릿 알림방). 가족 Matrix는 별도 결정 |
+| ② | 폴백 유지 | **서서(Telegram만 유지)** — Matrix 에이전트 브리지는 폴백으로 두지 않음 |
+| ③ | actor 명명(H2) | **현재 Matrix 채팅방 이름·actor 명명과 똑같이** — §1 "명명(③)" 행 |
+| ④ | 봇-봇 메시지(H4) | **④-A 플릿 알림방에서만 허용** |
+| ⑤ | 2단계 배정 | 전제조건 ①~⑦ 이슈 개설(#420) · 노드 배정은 각 이슈의 "배정 제안"을 오너가 확정 |
 
-답 예시: "①-A ②-A ③-A ④-A ⑤ 이슈 개설 진행".
+(원래 선택지는 PR #419 판 참조.)
 
 ## 5. 확인하지 못한 것
 
