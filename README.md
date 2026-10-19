@@ -24,8 +24,8 @@
 ([결정 D](docs/DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md)).
 **2026-09-21:** Matrix는 유지하고 독자 E2EE(OpenMLS) 개발을 병행합니다
 ([결정 E](docs/DECISION-2026-09-21-MATRIX-PLUS-NATIVE-E2EE.md)). 독자 스택을 운영에 올리는 컷오버는 포함하지 않습니다.
-**2026-10-19:** 에이전트 채팅(오너↔플릿 노드)을 Matrix에서 「한데」로 옮기는 단계형 컷오버 초안을 기록했습니다
-([결정 초안](docs/DECISION-2026-10-19-AGENT-CHAT-TO-HANDE.md)). 오너 확정 전이며 가족 Matrix는 범위 밖입니다.
+**2026-10-19:** 에이전트 채팅(오너↔플릿 노드)은 Matrix에서 「한데」로 단계형 컷오버합니다
+([결정](docs/DECISION-2026-10-19-AGENT-CHAT-TO-HANDE.md), 전제조건 추적 [#420](https://github.com/jinwon-int/family-messenger/issues/420)). 가족 Matrix 전달층은 범위 밖입니다.
 
 | 구성 | 상태와 사용 범위 |
 |---|---|
