@@ -99,6 +99,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var reconnecting = false
     /// 배너를 눌러 열어 달라는 방(`NotificationCenterDelegate`). `RootView` 가 방 목록이 준비되면 열고 지운다.
     @Published private(set) var requestedRoom: RoomID?
+    /// 방별 보내는 글(오래된 순). 릴레이가 받으면(`recordOwn`) 빠지고 실제 기록이 그 자리를 잇는다.
+    @Published private(set) var outgoing: [RoomID: [OutgoingMessage]] = [:]
+    private var nextOutgoingId: Int64 = -1_000
     /// 등록 대기 화면이 보여 줄 JSON 의 원본(운영자 CLI 입력).
     @Published private(set) var registration: EnrollmentRequest?
     /// 메시지가 새로 저장될 때마다 오른다 — 방 화면이 다시 읽는 신호.
@@ -138,6 +141,28 @@ final class AppModel: ObservableObject {
         let kind: MessageRecord.Kind
         let body: String
         let attachment: Data?
+    }
+
+    /// 보내는 글의 상태(오너 요청 build 31): 누르는 즉시 목록에 올리고 결과는 말풍선 아래에 표시한다.
+    enum OutgoingState: Equatable {
+        /// 릴레이 응답 대기.
+        case sending
+        /// 릴레이에 닿지 않아 outbox 에 보관 — 연결되면 같은 바이트로 자동 재전송(`flushOutbox`).
+        case queued
+        /// 보내지 못했다(참여 전·거부·첨부 한도 등). 사용자가 「다시 보내기」로 재시도한다.
+        case failed(String)
+    }
+
+    /// 아직 릴레이가 받아 주지 않은 내 글. `id` 는 음수(실제 seq 와 겹치지 않고, 화면의 표지 id -1/-2 보다 작다).
+    struct OutgoingMessage: Equatable, Identifiable {
+        let id: Int64
+        let room: RoomID
+        let kind: MessageRecord.Kind
+        let body: String
+        let attachment: Data?
+        let createdAt: Date
+        var clientId: String?
+        var state: OutgoingState
     }
     /// 방별 마지막으로 본 영속 커서 — NSE 가 사이에 처리했는지 감지(전면 복귀 시 화면 갱신).
     private var seenCursors: [RoomID: Int64] = [:]
@@ -387,6 +412,7 @@ final class AppModel: ObservableObject {
     /// 한 바퀴: 등록 확인·방 목록(확장 ①) → 방마다 syncAll → 정지 아니면 outbox 재전송(같은 바이트).
     func refresh() async {
         try? await serial.run { await self.refreshLocked() }
+        if !reconnecting { await resendUnsent() }
     }
 
     private func refreshLocked() async {
@@ -657,8 +683,46 @@ final class AppModel: ObservableObject {
     /// 동기화 → encrypt → outbox(정확 바이트) → POST. 409 는 엔진이 1회 재암호화, 네트워크 실패는 pending 으로 남는다.
     @discardableResult
     func send(room: RoomID, text: String) async -> SendOutcome? {
-        await sendOwn(room: room, pending: PendingOwn(room: room, kind: .text, body: text, attachment: nil)) {
-            try await $0.send(text: text)
+        let pending = PendingOwn(room: room, kind: .text, body: text, attachment: nil)
+        return await sendOwn(room: room, pending: pending, outgoing: enqueueOutgoing(pending)) { try await $0.send(text: text) }
+    }
+
+    /// 보내는 글을 목록 맨 아래에 바로 올린다(결과는 `sendOwn` 이 갱신).
+    private func enqueueOutgoing(_ pending: PendingOwn) -> Int64 {
+        let id = nextOutgoingId
+        nextOutgoingId -= 1
+        outgoing[pending.room, default: []].append(OutgoingMessage(
+            id: id, room: pending.room, kind: pending.kind, body: pending.body, attachment: pending.attachment,
+            createdAt: Date(), clientId: nil, state: .sending))
+        messagesRevision += 1
+        return id
+    }
+
+    private func updateOutgoing(_ id: Int64, room: RoomID, _ change: (inout OutgoingMessage) -> Void) {
+        guard var list = outgoing[room], let index = list.firstIndex(where: { $0.id == id }) else { return }
+        change(&list[index])
+        outgoing[room] = list
+        messagesRevision += 1
+    }
+
+    private func removeOutgoing(id: Int64? = nil, clientId: String? = nil, room: RoomID) {
+        guard var list = outgoing[room] else { return }
+        let before = list.count
+        list.removeAll { ($0.id == id && id != nil) || ($0.clientId == clientId && clientId != nil) }
+        guard list.count != before else { return }
+        outgoing[room] = list.isEmpty ? nil : list
+        messagesRevision += 1
+    }
+
+    /// 「다시 보내기」: 실패한 글을 같은 내용으로 다시 보낸다(새 보내는 글로).
+    func retry(outgoingId: Int64, room: RoomID) async {
+        guard let failed = outgoing[room]?.first(where: { $0.id == outgoingId }) else { return }
+        removeOutgoing(id: outgoingId, room: room)
+        switch failed.kind {
+        case .attachment:
+            if let data = failed.attachment { _ = await sendAttachment(room: room, data: data) }
+        default:
+            _ = await send(room: room, text: failed.body)
         }
     }
 
@@ -667,43 +731,71 @@ final class AppModel: ObservableObject {
     func sendAttachment(room: RoomID, data: Data) async -> SendOutcome? {
         guard data.count <= AttachmentFormat.maxBytes else { lastError = Strings.attachmentTooLarge(data.count); return nil }
         let pending = PendingOwn(room: room, kind: .attachment, body: AttachmentFormat.sniffMime(data), attachment: data)
-        return await sendOwn(room: room, pending: pending) { try await $0.send(attachment: data) }
+        return await sendOwn(room: room, pending: pending, outgoing: enqueueOutgoing(pending)) { try await $0.send(attachment: data) }
     }
 
-    private func sendOwn(room: RoomID, pending: PendingOwn, _ operation: @escaping (RoomSyncEngine) async throws -> SendOutcome) async -> SendOutcome? {
-        guard case .ready = phase else { return nil }
+    /// 보내기 결과를 보내는 글(`outgoing`)에 반영한다: 받아 주면 빠지고 실제 기록이 잇는다 · 보관되면 「연결되면 보냅니다」 ·
+    /// 실패하면 「전송 안 됨」(사유) + 다시 보내기. 실패 사유는 말풍선에 있으므로 화면 위 `lastError` 로 겹쳐 보이지 않는다.
+    private func sendOwn(room: RoomID, pending: PendingOwn, outgoing id: Int64,
+                         _ operation: @escaping (RoomSyncEngine) async throws -> SendOutcome) async -> SendOutcome? {
+        guard case .ready = phase else {
+            updateOutgoing(id, room: room) { $0.state = .failed(Strings.notReady) }
+            return nil
+        }
         do {
             let outcome = try await serial.run { try await operation(try self.syncEngine(room)) }
             switch outcome {
             case .sent(let clientId, let seq, _):
                 unconfirmed[clientId] = pending
+                removeOutgoing(id: id, room: room)
                 try recordOwn(clientId: clientId, seq: seq)
                 lastError = nil
                 reconnecting = false
             case .queued(let clientId):
-                // 릴레이에 닿지 않아 outbox 에 보관 — 연결되면 같은 바이트로 다시 보낸다.
+                // 릴레이에 닿지 않아 outbox 에 보관 — 연결되면 같은 바이트로 다시 보낸다(`recordOwn` 이 그때 지운다).
                 unconfirmed[clientId] = pending
-                lastError = Strings.sendQueued
+                updateOutgoing(id, room: room) { $0.clientId = clientId; $0.state = .queued }
                 reconnecting = true
             case .reconciled:
+                removeOutgoing(id: id, room: room)
                 lastError = nil
                 reconnecting = false
             }
             return outcome
         } catch SyncError.attachmentTooLarge(let size) {
-            lastError = Strings.attachmentTooLarge(size)
+            updateOutgoing(id, room: room) { $0.state = .failed(Strings.attachmentTooLarge(size)) }
         } catch SyncError.halted(let reason) {
+            updateOutgoing(id, room: room) { $0.state = .failed(Strings.outgoingFailed) }
             halt(reason: reason, room: room)
         } catch SyncError.registrationPending {
+            updateOutgoing(id, room: room) { $0.state = .failed(Strings.outgoingFailed) }
             phase = .needsEnrollment
         } catch SyncError.notJoined {
-            lastError = Strings.notJoined
+            updateOutgoing(id, room: room) { $0.state = .failed(Strings.notJoined) }
         } catch EngineError.rejected(let reason) {
-            lastError = Strings.sendRejected(reason)
+            updateOutgoing(id, room: room) { $0.state = .failed(Strings.sendRejected(reason)) }
         } catch {
-            noteFailure(error)
+            // 릴레이에 닿지 않음(취소 포함): 글은 「연결되면 보냅니다」로 남기고, 연결이 돌아온 첫 동기화 뒤에 다시 보낸다
+            // (`resendUnsentLocked` — outbox 에 들어가기 전에 실패한 글이라 앱이 직접 다시 보낸다).
+            switch ConnectionIssue.classify(error, taskCancelled: Task.isCancelled) {
+            case .cancelled, .unreachable:
+                updateOutgoing(id, room: room) { $0.state = .queued }
+                reconnecting = true
+            case .other:
+                updateOutgoing(id, room: room) { $0.state = .failed("\(error)") }
+                lastError = "\(error)"
+            }
         }
         return nil
+    }
+
+    /// 연결이 돌아왔다(동기화 성공): outbox 에 못 들어가고 「연결되면 보냅니다」로 남은 글을 같은 내용으로 다시 보낸다.
+    /// outbox 에 있는 글(`clientId` 있음)은 `flushOutbox` 가 같은 바이트로 보내므로 여기서 건드리지 않는다.
+    private func resendUnsent() async {
+        let due = outgoing.values.flatMap { $0 }.filter { $0.state == .queued && $0.clientId == nil }
+        for message in due {
+            await retry(outgoingId: message.id, room: message.room)
+        }
     }
 
     // MARK: - 화면용 읽기
@@ -718,10 +810,26 @@ final class AppModel: ObservableObject {
     struct TimelineItem: Equatable, Identifiable {
         let record: MessageRecord
         let attachmentBytes: Int
+        /// 보내는 글이면 그 상태(실제 기록은 nil). seq 는 음수.
+        var outgoing: OutgoingState? = nil
         var id: Int64 { record.seq }
     }
 
+    /// 보내는 글을 타임라인 항목으로(실제 기록 뒤에 이어 붙인다).
+    private func outgoingItems(room: RoomID) -> [TimelineItem] {
+        (outgoing[room] ?? []).map { message in
+            TimelineItem(record: MessageRecord(room: room, seq: message.id, senderDevice: deviceId, clientId: message.clientId ?? "",
+                                               kind: message.kind, body: message.body, attachment: nil,
+                                               receivedAt: message.createdAt, decryptedBy: .app),
+                         attachmentBytes: message.attachment?.count ?? 0, outgoing: message.state)
+        }
+    }
+
     func messages(room: RoomID) -> [TimelineItem] {
+        storedMessages(room: room) + outgoingItems(room: room)
+    }
+
+    private func storedMessages(room: RoomID) -> [TimelineItem] {
         if let loading = deps.messageStore as? AttachmentLoading,
            let heads = try? loading.messageHeads(room: room, after: 0, limit: 500) {
             return heads.map { TimelineItem(record: $0.record, attachmentBytes: $0.attachmentBytes) }
@@ -784,6 +892,8 @@ final class AppModel: ObservableObject {
     /// 서버가 seq 를 준 내 메시지를 기록한다(이미 있으면 건너뜀 — 같은 seq 를 두 번 쓰지 않는다).
     private func recordOwn(clientId: String, seq: Int64) throws {
         guard let pending = unconfirmed.removeValue(forKey: clientId) else { return }
+        // outbox 에서 나간 글(「연결되면 보냅니다」)은 이제 실제 기록이 잇는다.
+        removeOutgoing(clientId: clientId, room: pending.room)
         if try deps.messageStore.messages(room: pending.room, after: seq - 1, limit: 1).first?.seq != seq {
             try deps.messageStore.insert(MessageRecord(room: pending.room, seq: seq, senderDevice: deviceId, clientId: clientId,
                                                        kind: pending.kind, body: pending.body, attachment: pending.attachment,

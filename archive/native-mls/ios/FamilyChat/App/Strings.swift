@@ -45,7 +45,14 @@ enum Strings {
     static func sendRejected(_ reason: String) -> String { "보내지 못했습니다(\(reason)). 동기화 뒤 다시 시도해 주세요." }
     /// 방 화면 제목 아래: 릴레이에 닿지 않는 동안(`AppModel.reconnecting`).
     static let connecting = "연결 중입니다…"
+    /// 보내는 글(오너 요청 build 31: 누르는 즉시 목록에 올리고, 상태는 말풍선 아래에).
+    static let outgoingSending = "보내는 중…"
+    static let outgoingQueued = "연결되면 보냅니다"
+    static let outgoingFailed = "전송 안 됨"
+    static let outgoingRetry = "다시 보내기"
+    static let outgoingAttachment = "사진·파일 보내는 중"
     static let sendQueued = "릴레이에 닿지 않아 보관했습니다. 연결되면 같은 내용 그대로 다시 보냅니다."
+    static let notReady = "아직 준비되지 않았습니다. 잠시 뒤 다시 보내 주세요."
     static let notJoined = "아직 이 대화방에 참여하지 않았습니다. 초대를 기다려 주세요."
     /// 첨부 한도(AttachmentFormat.maxBytes) 초과 — AppModel 이 쓰므로 여기(NSE 공유 파일)에 둔다.
     static func attachmentTooLarge(_ bytes: Int) -> String {

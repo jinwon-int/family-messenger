@@ -67,7 +67,7 @@ cp "$ios"/FamilyChat/App/{AppModel,Strings,LiveDependencies}.swift "$ios"/Family
    "$ios"/FamilyChat/Engine/{DeviceIdentity,InMemoryMessageStore,FfiEngine}.swift "$work/Sources/FamilyChat/"
 # 푸시 등록·NSE 처리(§12-D)는 플랫폼 무관 Swift(UIKit 부분은 #if canImport 로 가린다) — 디렉터리째 복사.
 cp "$ios"/FamilyChat/Push/*.swift "$work/Sources/FamilyChat/"
-cp "$ios"/FamilyChatTests/{AppModelTests,RoundtripTests,RelaySmokeTests,LobbyTests}.swift "$ios"/FamilyChatTests/Support/*.swift \
+cp "$ios"/FamilyChatTests/{AppModelTests,RoundtripTests,RelaySmokeTests,LobbyTests,OutgoingTests}.swift "$ios"/FamilyChatTests/Support/*.swift \
    "$work/Tests/FamilyChatTests/"
 sed -i 's/config.sealer = ChaChaPolySealer(key: sealKey).*/config.sealer = nil   \/\/ Linux: Core 기본(Passthrough)/' \
    "$work/Tests/FamilyChatTests/TwoDeviceScenario.swift"
