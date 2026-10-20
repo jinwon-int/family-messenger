@@ -502,7 +502,8 @@ struct AttachmentBubble: View {
     }
 }
 
-/// 전체 화면 사진 보기: 검은 바탕 · UIKit 줌(핀치 위치 기준 1~4배, 두 번 탭은 탭 위치로 2.5배/원래, `ZoomableImageView`) · 닫기 · 저장·공유.
+/// 전체 화면 사진 보기: 검은 바탕 · UIKit 줌(핀치 위치 기준 1~4배, 두 번 탭은 탭 위치로 2.5배/원래, `ZoomableImageView`) · 저장·공유.
+/// 닫기는 사진을 한 번 탭(X 버튼 없음). VoiceOver 는 「닫기」 접근성 동작.
 struct ImageViewer: View {
     let image: UIImage
     let shareURL: URL?
@@ -511,22 +512,18 @@ struct ImageViewer: View {
     var body: some View {
         ZStack(alignment: .topTrailing) {
             Color.black.ignoresSafeArea()
-            ZoomableImageView(image: image)
+            ZoomableImageView(image: image, onSingleTap: { dismiss() })
                 .ignoresSafeArea()
-            HStack(spacing: 14) {
-                if let shareURL {
-                    ShareLink(item: shareURL) { Image(systemName: "square.and.arrow.up") }
-                        .accessibilityLabel(Strings.attachmentSave)
-                }
-                Button { dismiss() } label: { Image(systemName: "xmark") }
-                    .accessibilityLabel(Strings.attachmentViewerClose)
+            if let shareURL {
+                ShareLink(item: shareURL) { Image(systemName: "square.and.arrow.up") }
+                    .accessibilityLabel(Strings.attachmentSave)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(14)
             }
-            .font(.title3.weight(.semibold))
-            .foregroundStyle(.white)
-            .padding(14)
-            .background(Circle().fill(.clear))
         }
         .accessibilityHint(Strings.attachmentViewerHint)
+        .accessibilityAction(named: Text(Strings.attachmentViewerClose)) { dismiss() }
         .preferredColorScheme(.dark)
     }
 }

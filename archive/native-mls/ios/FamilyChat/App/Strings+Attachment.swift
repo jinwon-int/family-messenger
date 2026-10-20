@@ -11,9 +11,9 @@ extension Strings {
     static let attachmentImage = "사진"
     static func attachmentFile(_ bytes: Int, _ mime: String) -> String { "📎 파일 · \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)) · \(mime)" }
     static let attachmentSave = "저장·공유"
-    /// 전체 화면 사진 보기(사진 탭).
+    /// 전체 화면 사진 보기(사진 탭). 닫기는 한 번 탭(VoiceOver 접근성 동작 이름으로도 쓴다).
     static let attachmentViewerClose = "닫기"
-    static let attachmentViewerHint = "두 손가락으로 확대 · 두 번 탭"
+    static let attachmentViewerHint = "한 번 탭하면 닫기 · 두 손가락으로 확대 · 두 번 탭"
     static func attachmentLoading(_ bytes: Int) -> String { "📎 불러오는 중 · \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))" }
     static let attachHint = "첨부는 5 MiB 까지입니다. 사진은 자동으로 줄여서 보냅니다. 파일 이름은 보내지 않습니다(받는 쪽에는 종류와 크기만 보입니다)."
 }
