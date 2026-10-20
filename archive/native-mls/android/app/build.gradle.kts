@@ -62,6 +62,9 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.kotlinx.coroutines.android)
+    // 릴레이 전송(#338 §2 RelayClient). HttpURLConnection 은 CF Access/HTTP2 엣지에서 멈춘다(실기기 공융 build fa4f286)
+    // — OkHttp 는 HTTP/2 협상·강제 타임아웃·리다이렉트 무추적을 제대로 한다.
+    implementation(libs.okhttp)
     // uniffi Kotlin 바인딩의 런타임 요구(#338 §5·android/README 의존성 표). Android 는 aar(libjnidispatch.so 포함).
     implementation("net.java.dev.jna:jna:${libs.versions.jna.get()}@aar")
 }
