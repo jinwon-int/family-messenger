@@ -74,7 +74,7 @@ class OkHttpTransport(
     /** OkHttp 단계 로그 — 끊기는 줄이 멈춘 지점. 주소·프로토콜만, 헤더·본문은 안 찍는다. */
     private class PhaseLogger(private val id: String) : EventListener() {
         private val t0 = System.nanoTime()
-        private fun at(what: String) = Log.i(TAG, "$id  +${ms(t0)}ms $what")
+        private fun at(what: String) { Log.i(TAG, "$id  +${ms(t0)}ms $what") }
         override fun callStart(call: Call) = at("callStart")
         override fun dnsStart(call: Call, domainName: String) = at("dnsStart $domainName")
         override fun dnsEnd(call: Call, domainName: String, inetAddressList: List<InetAddress>) = at("dnsEnd n=${inetAddressList.size} first=${inetAddressList.firstOrNull()?.hostAddress}")
