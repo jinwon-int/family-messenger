@@ -39,8 +39,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.seoyoon_family.hande.core.DeviceHub
@@ -60,7 +62,10 @@ fun HandeRoot(hub: DeviceHub) {
     when (val phase = ui.phase) {
         Phase.Setup -> SetupScreen(hub.settings) { hub.start(scope) }
         is Phase.WaitingEnrollment -> EnrollScreen(ui, phase.json) { hub.retryEnrollment(scope) }
-        Phase.NeedsLogin -> LoginScreen(hub.settings) { hub.reconfigure(scope) }
+        Phase.NeedsLogin -> {
+            val context = LocalContext.current
+            LoginScreen(hub.settings, ui, onGoogle = { hub.beginLogin(context) }, onSaved = { hub.reconfigure(scope) }, onNoticeShown = hub::clearNotice)
+        }
         is Phase.Fatal -> MessageScreen("앱을 시작할 수 없습니다", phase.message)
         Phase.Starting -> MessageScreen(Strings.appName, Strings.starting)
         Phase.Ready -> {
@@ -134,15 +139,23 @@ fun EnrollScreen(ui: HubUi, json: String, onRetry: () -> Unit) {
     }
 }
 
+/** 가족 로그인(B2, iOS LoginView 와 같은 구성): 「Google 계정으로 로그인」이 주 경로, 세션 값 붙여넣기는 운영자용으로 접어 둔다. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LoginScreen(settings: Settings, onSaved: () -> Unit) {
+fun LoginScreen(settings: Settings, ui: HubUi, onGoogle: () -> Unit, onSaved: () -> Unit, onNoticeShown: () -> Unit) {
     var token by rememberSaveable { mutableStateOf("") }
-    Scaffold(topBar = { TopAppBar(title = { Text(Strings.loginTitle) }) }) { pad ->
+    var manualExpanded by rememberSaveable { mutableStateOf(false) }
+    Scaffold(topBar = { TopAppBar(title = { Text(Strings.loginTitle) }) }, snackbarHost = { NoticeHost(ui.notice, onNoticeShown) }) { pad ->
         Column(Modifier.padding(pad).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(Strings.loginBody)
-            OutlinedTextField(token, { token = it }, label = { Text(Strings.tokenField) }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            Button(enabled = token.isNotBlank(), onClick = { settings.accessToken = token; onSaved() }) { Text(Strings.loginButton) }
+            Button(onClick = onGoogle, enabled = settings.relayUrl != null, modifier = Modifier.fillMaxWidth()) { Text(Strings.loginGoogle) }
+            Text(Strings.loginHint, style = MaterialTheme.typography.bodySmall)
+            HorizontalDivider()
+            TextButton(onClick = { manualExpanded = !manualExpanded }) { Text(Strings.loginManualTitle) }
+            if (manualExpanded) {
+                OutlinedTextField(token, { token = it }, label = { Text(Strings.loginField) }, singleLine = true, modifier = Modifier.fillMaxWidth(), visualTransformation = PasswordVisualTransformation())
+                Button(enabled = token.isNotBlank(), onClick = { settings.accessToken = token; token = ""; onSaved() }) { Text(Strings.loginButton) }
+                Text(Strings.loginManualHint, style = MaterialTheme.typography.bodySmall)
+            }
         }
     }
 }

@@ -13,6 +13,7 @@ import com.seoyoon_family.hande.mls.MlsRoom
 import com.seoyoon_family.hande.mls.RoomEvent
 import com.seoyoon_family.hande.mls.RoomException
 import com.seoyoon_family.hande.mls.SendResult
+import com.seoyoon_family.hande.ui.Strings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -61,6 +62,8 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     private val _ui = MutableStateFlow(HubUi(phase = if (settings.isConfigured) Phase.Starting else Phase.Setup))
     val ui: StateFlow<HubUi> = _ui
 
+    /** 정식 메시지 저장소(B2) — 프로세스에 하나. 내 글 판정은 읽을 때 actor 로(같은 사람의 다른 기기 글도 내 글). */
+    private val db = MessageDb(context) { settings.deviceId }
     private var lobby: MlsLobby? = null
     private var lobbyStore: FileLobbyStore? = null
     private val rooms = LinkedHashMap<String, Handle>()
@@ -68,18 +71,21 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     private var ticks = 0
 
     private inner class Handle(val name: String) {
-        val log = MessageLog(File(dir, "$name.messages"), sealer::seal, sealer::open)
         var halted: String? = null
         val store = FileRoomStore(
             dir, name, seal = sealer::seal, open = sealer::open,
             onEvent = { e -> if (e is RoomEvent.Joined) notice("$name 대화방에 참여했습니다") },
             onMessage = { seq, sender, clientId, plaintext ->
                 val attachment = clientId.startsWith("file-v1-")
-                log.append(MessageUi(seq, sender, if (attachment) "📎 첨부(${plaintext.size} B)" else String(plaintext, Charsets.UTF_8), mine = false, attachment = attachment))
+                db.insert(
+                    name, seq, sender, clientId, if (attachment) MessageDb.KIND_ATTACHMENT else MessageDb.KIND_TEXT,
+                    if (attachment) "📎 첨부(${plaintext.size} B)" else String(plaintext, Charsets.UTF_8), if (attachment) plaintext else null,
+                )
             },
         )
         lateinit var room: MlsRoom
-        fun ui() = RoomUi(name, runCatching { room.syncState().joined }.getOrDefault(false), halted ?: store.haltReason(), log.all())
+        init { db.upsertRoom(name) }
+        fun ui() = RoomUi(name, runCatching { room.syncState().joined }.getOrDefault(false), halted ?: store.haltReason(), db.messages(name))
     }
 
     /** 설정 화면이 저장한 뒤 또는 앱 시작 때. 같은 scope 에서 한 번만. */
@@ -111,6 +117,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         val l = slot?.let { MlsLobby.`import`(identity, it, base, transport, ls) } ?: MlsLobby(identity, base, transport, ls)
         lobby = l
         Log.i(TAG, "boot: lobby ready")
+        db.migrateLegacy(dir, sealer::open) // B1 봉인 JSONL → messages.db(한 번)
         for (f in dir.listFiles { _, n -> n.endsWith(".state") }.orEmpty()) {
             val name = f.name.removeSuffix(".state")
             val h = Handle(name)
@@ -218,7 +225,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         try {
             val r = mutex.withLock { h.room.send(text.toByteArray(Charsets.UTF_8)) }
             when (r) {
-                is SendResult.Sent -> h.log.append(MessageUi(r.seq, h.room.identity(), text, mine = true))
+                is SendResult.Sent -> db.insert(room, r.seq, h.room.identity(), r.clientId, MessageDb.KIND_TEXT, text, null)
                 is SendResult.Queued -> notice("연결되면 보냅니다")
                 is SendResult.AlreadyDelivered -> {}
             }
@@ -234,6 +241,39 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     }
 
     fun retryEnrollment(scope: CoroutineScope) = reconfigure(scope)
+
+    // ---- 가족 로그인(B2, iOS §12-C A) ----
+
+    /** 「Google 계정으로 로그인」: 새 `state` 를 만들어 두고 시스템 브라우저로 릴레이 로그인 주소를 연다. 실패는 알림 한 줄. */
+    fun beginLogin(context: Context) {
+        val relay = settings.relayUrl
+        val state = AppLogin.makeState()
+        val url = relay?.let { AppLogin.loginUrl(it, state) }
+        if (url == null) { notice(Strings.loginFailure(AppLogin.Failure.BadRelayUrl)); return }
+        settings.pendingLoginState = state
+        try {
+            LoginLauncher.open(context, url)
+        } catch (e: AppLogin.Failure) {
+            settings.pendingLoginState = null
+            notice(Strings.loginFailure(e))
+        }
+    }
+
+    /** 콜백 `hande://auth#jwt=…&state=…`: 내 `state` 인지 확인하고 세션 값으로 저장한 뒤 다시 접촉한다. 모르는 콜백은 무시(알림만). */
+    fun completeLogin(scope: CoroutineScope, callback: String) {
+        val expected = settings.pendingLoginState ?: ""
+        val jwt = try {
+            AppLogin.tokenFromCallback(callback, expected)
+        } catch (e: AppLogin.Failure) {
+            Log.w(TAG, "login callback rejected: ${e.message}")
+            notice(Strings.loginFailure(e))
+            return
+        }
+        settings.pendingLoginState = null
+        settings.accessToken = jwt
+        Log.i(TAG, "login: session accepted via app-login → probe")
+        reconfigure(scope)
+    }
 
     fun clearNotice() = _ui.update { it.copy(notice = null) }
 
