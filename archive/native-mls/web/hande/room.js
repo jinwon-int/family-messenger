@@ -368,9 +368,10 @@ export function createRoomSession({room, device, database, worker, relay, storag
     }
     log(`워커 시작: ${device} @ ${database} (relay seq ${S.relaySeq}, joined=${S.joined}, pending=${S.pending})`);
     // Resume: earlier rows come back only from this browser's sealed history (#370).
+    // 오너 결정(2026-10-20): 타임라인의 시스템 행으로는 띄우지 않고 화면 로그에만 남긴다.
     if (S.joined && S.relaySeq > 0) {
       const restored = await restoreHistory();
-      emitSystem(restored > 0 ? strings.room.historyRestored(restored, S.relaySeq) : strings.room.historyNone(S.relaySeq), 'history');
+      log(restored > 0 ? strings.room.historyRestored(restored, S.relaySeq) : strings.room.historyNone(S.relaySeq));
     }
     changed();
     if (S.halted) { emitSystem(S.halted.removed ? strings.room.haltRemoved(S.halted.seq, S.halted.committer) : strings.room.haltRefused(S.halted.seq, S.halted.committer, S.halted.reason), `halt-${S.halted.seq}`); return; }

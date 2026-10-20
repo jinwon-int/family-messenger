@@ -204,7 +204,9 @@ test('#296 resume: page state lost but the worker holds the group → join state
   const {s, events: ev} = session({worker: bridge, relay});
   await s.open(); await s.activate();
   assert.equal(s.state.joined, true); assert.equal(s.state.relaySeq, 40); assert.equal(s.state.epoch, 4);
-  assert.ok(ev.messages.some(m => m.kind === 'system' && m.key === 'history'));
+  // 봉인 보관 안내는 타임라인 시스템 행이 아니라 화면 로그에만 남는다(오너 결정 2026-10-20).
+  assert.ok(!ev.messages.some(m => m.kind === 'system' && m.key === 'history'));
+  assert.ok(ev.logs.some(l => /seq 40/.test(l) && /보관/.test(l)));
 });
 
 test('helpers', () => {
