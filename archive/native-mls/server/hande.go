@@ -16,6 +16,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"strings"
@@ -25,10 +26,48 @@ import (
 const handeIndex = "index.html"
 
 // handeCSP: same shape as staticCSP, plus blob: images / media (attachments
-// decrypted in the browser are shown through object URLs).
+// decrypted in the browser are shown through object URLs). No frame-src: with
+// default-src 'none' the page embeds nothing unless -hande-frame-src names the
+// origins (handeCSPWith).
 const handeCSP = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; " +
 	"connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src blob:; " +
 	"font-src 'self'; manifest-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+
+// handeCSPWith appends "frame-src <origins>" for the iframes the operator allows
+// on the hande host (the family filebox pane, web/hande/filebox.js). Empty =
+// handeCSP unchanged, so a relay without the flag serves exactly what it did.
+func handeCSPWith(frameSrc []string) string {
+	if len(frameSrc) == 0 {
+		return handeCSP
+	}
+	return handeCSP + "; frame-src " + strings.Join(frameSrc, " ")
+}
+
+// parseFrameSrc validates -hande-frame-src: comma-separated https origins
+// (scheme + host[:port], nothing else), lower-cased host, duplicates dropped.
+// Anything that is not a bare https origin is refused — a path or a scheme
+// like javascript: would widen the policy in ways the flag does not promise.
+func parseFrameSrc(raw string) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		u, err := url.Parse(part)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil ||
+			u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
+			return nil, fmt.Errorf("%q is not an https origin (expected https://host[:port])", part)
+		}
+		origin := "https://" + strings.ToLower(u.Host)
+		if !seen[origin] {
+			seen[origin] = true
+			out = append(out, origin)
+		}
+	}
+	return out, nil
+}
 
 // canonicalHost strips an optional :port and lower-cases the name so the
 // operator's -hande-host and the request Host compare the same way.
@@ -45,6 +84,7 @@ func canonicalHost(h string) string {
 type handeHandler struct {
 	host string
 	root *os.Root
+	csp  string // handeCSPWith(frame-src) — fixed at startup
 	api  http.Handler
 }
 
@@ -53,13 +93,13 @@ func (h *handeHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		h.api.ServeHTTP(w, req)
 		return
 	}
-	serveHandeFile(w, req, h.root)
+	serveHandeFile(w, req, h.root, h.csp)
 }
 
 // serveHandeFile mirrors staticHandler's confinement: os.Root (no traversal,
 // no symlink escape), dotfiles / dot segments / ".." / directories / missing
 // files are 404, only GET and HEAD are accepted. "/" is the index.
-func serveHandeFile(w http.ResponseWriter, req *http.Request, root *os.Root) {
+func serveHandeFile(w http.ResponseWriter, req *http.Request, root *os.Root, csp string) {
 	if req.Method != http.MethodGet && req.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -100,7 +140,7 @@ func serveHandeFile(w http.ResponseWriter, req *http.Request, root *os.Root) {
 	h.Set("Content-Type", ctype)
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Cache-Control", cache)
-	h.Set("Content-Security-Policy", handeCSP)
+	h.Set("Content-Security-Policy", csp)
 	h.Set("Referrer-Policy", "no-referrer")
 	h.Set("Cross-Origin-Opener-Policy", "same-origin")
 	http.ServeContent(w, req, clean, info.ModTime(), f)

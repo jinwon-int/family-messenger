@@ -123,6 +123,9 @@ type relay struct {
 	// hande.go); nil = off. handeHost is canonical (lower-case, no port).
 	handeHost string
 	handeRoot *os.Root
+	// handeFrameSrc: https origins allowed as iframe sources on the hande host
+	// (-hande-frame-src; the filebox pane). Empty = no frames (handeCSP as is).
+	handeFrameSrc []string
 	// push sends APNs alerts after new events (#275 ②); nil = -apns-key not
 	// given, registrations are still stored. pushTopics, when non-empty, is
 	// the allowed set of registration topics (bundle ids). pushWG tracks the
@@ -628,7 +631,7 @@ func (s *relay) routes() http.Handler {
 		})
 	}
 	if s.handeRoot != nil {
-		return &handeHandler{host: s.handeHost, root: s.handeRoot, api: mux}
+		return &handeHandler{host: s.handeHost, root: s.handeRoot, csp: handeCSPWith(s.handeFrameSrc), api: mux}
 	}
 	return mux
 }
