@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ACTOR, ROOM, DEVICE, AGENT_ACTORS, strings, allStringsFilled,
-  formatTime, formatClock, dayLabel, dayKey, groupFingerprint, displayName, isAgentDevice, actorOf,
+  formatTime, formatClock, dayLabel, dayKey, groupFingerprint, displayName, isAgentDevice, actorOf, isMine,
   humanSize, previewLine, haltGuidance,
 } from '../strings.js';
 
@@ -106,4 +106,17 @@ test('strings: 모든 문구가 채워져 있고 코디네이터 키가 있다',
   assert.equal(typeof strings.room.haltRefused(1, 'x', 'y'), 'string');
   assert.equal(strings.app.starting, '준비 중…');
   assert.equal(typeof strings.relay.unauthorized, 'string');
+});
+
+test('isMine: 같은 사람이면 다른 기기도 내 글, actor 를 모르면 기기 일치로', () => {
+  const me = {device: 'owner-web-87576b', actor: 'owner'};
+  assert.equal(isMine('owner-web-87576b', me), true);
+  assert.equal(isMine('owner-iphone-27a879', me), true);
+  assert.equal(isMine('owner-pc', me), true);
+  assert.equal(isMine('jungin-iphone-1b89e3', me), false);
+  assert.equal(isMine('soonwook-bot', me), false);
+  assert.equal(isMine('', me), false);
+  assert.equal(isMine('owner-iphone-27a879', {device: 'owner-web-87576b', actor: null}), false);
+  assert.equal(isMine('owner-web-87576b', {device: 'owner-web-87576b', actor: null}), true);
+  assert.equal(isMine('owner-web-87576b', {device: '', actor: null}), false);
 });

@@ -142,8 +142,11 @@ final class AgentConversationTests: XCTestCase {
             rec(8, bot, "없음", kind: .undecryptable),
         ]
         let last = LastSent.find(records, myDevice: me)
-        XCTAssertEqual(last?.record.seq, 3)
-        XCTAssertEqual(last?.repliesAfter, 3, "bot request, bot resolution, PC photo — my own approval reply and undecryptable rows don't count")
+        XCTAssertEqual(last?.record.seq, 7, "the photo from my PC (same actor, other device) is my last word too")
+        XCTAssertEqual(last?.repliesAfter, 0, "undecryptable rows don't count")
+        let beforePhoto = LastSent.find(Array(records.prefix(6)), myDevice: me)
+        XCTAssertEqual(beforePhoto?.record.seq, 3)
+        XCTAssertEqual(beforePhoto?.repliesAfter, 2, "bot request, bot resolution — my own approval reply doesn't count")
         XCTAssertNil(LastSent.find([rec(1, bot, "hi")], myDevice: me))
         XCTAssertNil(LastSent.find(records, myDevice: ""))
     }
@@ -160,7 +163,19 @@ final class AgentConversationTests: XCTestCase {
         // 사람만 있는 방, 첨부, 다른 사람이 마지막.
         XCTAssertNil(AgentThinking.agent([rec(1, "jungin-iphone-1", "hi"), rec(2, me, "응")], roster: roster, myDevice: me, now: t0))
         XCTAssertNil(AgentThinking.agent(base + [rec(3, me, "photo", kind: .attachment)], roster: roster, myDevice: me, now: t0))
-        XCTAssertNil(AgentThinking.agent(base + [rec(3, "owner-pc", "pc")], roster: roster, myDevice: me, now: t0))
+        XCTAssertNil(AgentThinking.agent(base + [rec(3, "jungin-iphone-1", "저녁?")], roster: roster, myDevice: me, now: t0))
+        // 같은 사람이 PC 에서 물어도 iPhone 에 "생각하는 중"이 보인다(다른 기기 = 같은 나).
+        XCTAssertEqual(AgentThinking.agent(base + [rec(3, "owner-pc", "pc")], roster: roster, myDevice: me, now: t0), bot)
+    }
+
+    func testMineFollowsTheActorAcrossDevices() {
+        XCTAssertTrue(rec(1, "owner-pc", "pc").isMine(device: me))
+        XCTAssertTrue(rec(1, me, "x").isMine(device: me))
+        XCTAssertFalse(rec(1, "jungin-iphone-1", "x").isMine(device: me))
+        XCTAssertFalse(rec(1, bot, "x").isMine(device: me))
+        XCTAssertFalse(rec(1, me, "x").isMine(device: ""))
+        XCTAssertEqual(MessageRecord.actor(of: "owner-web-87576b"), "owner")
+        XCTAssertEqual(MessageRecord.actor(of: "nodash"), "nodash")
     }
 }
 
@@ -241,6 +256,8 @@ final class ConversationKeysTests: XCTestCase {
         XCTAssertTrue(Unread.isUnread(last: rec(5, "bot-g"), myDevice: "owner-i", readSeq: nil))
         XCTAssertFalse(Unread.isUnread(last: rec(5, "bot-g"), myDevice: "owner-i", readSeq: 5))
         XCTAssertFalse(Unread.isUnread(last: rec(6, "owner-i"), myDevice: "owner-i", readSeq: 1))
+        XCTAssertFalse(Unread.isUnread(last: rec(7, "owner-pc"), myDevice: "owner-i", readSeq: 1), "my own word from another device is not unread")
+        XCTAssertTrue(Unread.isUnread(last: rec(7, "jungin-iphone-1"), myDevice: "owner-i", readSeq: 1))
         XCTAssertFalse(Unread.isUnread(last: nil, myDevice: "owner-i", readSeq: nil))
     }
 }
