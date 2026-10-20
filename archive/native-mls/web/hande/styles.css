@@ -444,6 +444,37 @@ main.shell[data-view="room"] .pane-list { display: none; }
   box-shadow: var(--shadow-1);
 }
 .bubble.agent .body { border-color: color-mix(in srgb, var(--agent) 35%, transparent); background: linear-gradient(135deg, var(--agent-soft), var(--surface)); }
+/* 에이전트 답장 마크다운(ui.js agentMarkdownBody) — 블록은 세로로 쌓고, 블록 안 줄바꿈은 글 그대로. */
+.bubble:has(.body.md) { max-width: min(88%, 760px); }
+.bubble .body.md { white-space: normal; display: flex; flex-direction: column; gap: var(--space-2); padding-top: var(--space-3); padding-bottom: var(--space-3); }
+.body.md > * { margin: 0; min-width: 0; }
+.body.md .md-p, .body.md .md-item, .body.md .md-quote, .body.md td, .body.md th { white-space: pre-wrap; overflow-wrap: anywhere; }
+.body.md .md-h { font-weight: 700; line-height: 1.35; color: var(--text); }
+.body.md .md-h1 { font-size: var(--text-l); }
+.body.md .md-h2 { font-size: 1.05rem; }
+.body.md .md-h3 { font-size: 1rem; color: var(--agent); }
+.body.md * + .md-h { margin-top: var(--space-2); }
+.body.md strong { font-weight: 700; color: var(--text); }
+.body.md del { color: var(--text-2); text-decoration: line-through; text-decoration-thickness: 1.5px; }
+.body.md :not(pre) > code { padding: 0.05em 0.35em; border-radius: 6px; background: rgba(0, 0, 0, 0.22); border: 1px solid var(--line); }
+.body.md .md-list { list-style: none; padding: 0; display: flex; flex-direction: column; gap: var(--space-1); }
+.body.md .md-list li { display: flex; gap: var(--space-2); align-items: baseline; }
+.body.md .md-list .md-marker { flex: none; min-width: 1.1em; text-align: right; color: var(--agent); font-variant-numeric: tabular-nums; }
+.body.md .md-list .md-item { flex: 1; min-width: 0; }
+.body.md .md-lvl-1 { padding-left: 1.2em; }
+.body.md .md-lvl-2 { padding-left: 2.4em; }
+.body.md .md-lvl-3 { padding-left: 3.6em; }
+.body.md .md-lvl-4 { padding-left: 4.8em; }
+.body.md .md-quote { padding: var(--space-1) var(--space-3); border-left: 3px solid color-mix(in srgb, var(--agent) 60%, transparent); color: var(--text-2); }
+.body.md .md-code { padding: var(--space-2) var(--space-3); background: rgba(0, 0, 0, 0.28); border: 1px solid var(--line); border-radius: var(--radius-s); font-size: var(--text-s); line-height: 1.5; white-space: pre; overflow-x: auto; max-height: 50vh; }
+.body.md .md-rule { width: 100%; border: 0; border-top: 1px solid var(--line-strong); }
+.body.md .md-table { overflow-x: auto; max-width: 100%; }
+.body.md table { border-collapse: collapse; font-size: var(--text-s); line-height: 1.45; }
+.body.md th, .body.md td { padding: var(--space-1) var(--space-3); border: 1px solid var(--line); text-align: left; vertical-align: top; }
+.body.md th { background: var(--agent-soft); font-weight: 700; }
+@media (prefers-color-scheme: light) {
+  .body.md :not(pre) > code, .body.md .md-code { background: rgba(0, 0, 0, 0.05); }
+}
 .bubble .foot { font-size: var(--text-xs); color: var(--text-3); padding: 0 var(--space-1); }
 .bubble[data-me="true"] { align-self: flex-end; align-items: flex-end; }
 .bubble[data-me="true"] .body { background: var(--bubble-me); color: var(--bubble-me-text); border-color: transparent; border-radius: var(--radius-l); border-bottom-right-radius: 5px; box-shadow: var(--ember-shadow); }
