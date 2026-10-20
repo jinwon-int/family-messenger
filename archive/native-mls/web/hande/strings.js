@@ -193,6 +193,14 @@ export const strings = {
     wipe: '이 기기 지우기',
   },
 
+  box: {
+    title: '파일보관함',
+    toggle: '파일보관함',
+    close: '닫기',
+    refresh: '새로고침',
+    newWindow: '새 창에서 열기',
+    loginHint: '처음이면 새 창에서 로그인한 뒤 새로고침하세요.',
+  },
   rooms: {
     title: '대화',
     empty: '아직 피운 모닥불이 없습니다',
