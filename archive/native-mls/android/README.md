@@ -46,6 +46,7 @@ Google 로그인(CF Access)·첨부 전송·알림(FCM, D)·정식 아이콘(E)�
 
 | 항목 | 핀 | 라이선스 | 왜 |
 |---|---|---|---|
+| OkHttp | `4.12.0` | Apache-2.0 | 앱 릴레이 전송(#338 §2 RelayClient). `host/JdkHttpTransport`(HttpURLConnection)는 실기기에서 CF Access/HTTP2 엣지에 멈춤(공융 build fa4f286) → OkHttp(HTTP/2·`callTimeout`·리다이렉트 무추적). okio 는 전이 의존 |
 | JNA | `5.17.0` | Apache-2.0 / LGPL-2.1 (이중) | uniffi Kotlin 바인딩의 런타임 요구(#338 §5 예고). 앱은 `jna@aar`(libjnidispatch.so 포함), JVM 테스트는 jar 직접 |
 | Kotlin 컴파일러 · KGP · Compose 컴파일러 플러그인 | `2.1.20` | Apache-2.0 | 앱 빌드·테스트 빌드 |
 | Android Gradle Plugin | `8.7.2` | Apache-2.0 | KGP 2.1.20 호환 상한(kotlinlang 호환표: AGP 7.3.1–8.7.2 · Gradle 7.6.3–8.12.1) |

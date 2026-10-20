@@ -8,7 +8,6 @@ import android.content.Context
 import android.util.Log
 import com.seoyoon_family.hande.host.FileLobbyStore
 import com.seoyoon_family.hande.host.FileRoomStore
-import com.seoyoon_family.hande.host.JdkHttpTransport
 import com.seoyoon_family.hande.mls.MlsLobby
 import com.seoyoon_family.hande.mls.MlsRoom
 import com.seoyoon_family.hande.mls.RoomEvent
@@ -57,7 +56,7 @@ data class HubUi(
 
 class DeviceHub(context: Context, val settings: Settings, private val sealer: KeystoreSealer) {
     private val dir = File(context.filesDir, "mls").apply { mkdirs() }
-    private val transport = JdkHttpTransport()
+    private val transport = OkHttpTransport()
     private val mutex = Mutex()
     private val _ui = MutableStateFlow(HubUi(phase = if (settings.isConfigured) Phase.Starting else Phase.Setup))
     val ui: StateFlow<HubUi> = _ui
