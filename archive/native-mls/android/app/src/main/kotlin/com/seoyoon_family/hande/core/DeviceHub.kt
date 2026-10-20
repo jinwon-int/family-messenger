@@ -1,5 +1,5 @@
 // 기기 허브(#338 B1): Rust 코어(`MlsLobby` · `MlsRoom`)를 묶는 Kotlin 쪽 단일 작성자. HOST-CONTRACT §1 의 호스트 몫만 한다 —
-// 호출 주기(전면 4 s poll) · 영속 어댑터(`FileLobbyStore`/`FileRoomStore` + Keystore 봉인) · 전송(`JdkHttpTransport`) · 메시지 기록 · 화면 상태.
+// 호출 주기(전면 4 s poll) · 영속 어댑터(`FileLobbyStore`/`FileRoomStore` + Keystore 봉인) · 전송(`OkHttpTransport`) · 메시지 기록 · 화면 상태.
 // 신원: 로비 상태가 곧 시드 — 방은 전부 `MlsRoom.adopt(identity, room, lobby.seedState(), …)` 로 만든다(서명키 하나, §2b).
 // 참여 흐름: `replenish(8)` 로 로비 키를 올려 두면 운영자(steward 봇)가 초대 → `welcomes()` 에 방이 뜨면 `adopt(seq - 1)` → `poll` 이 join.
 package com.seoyoon_family.hande.core
@@ -103,10 +103,14 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     private suspend fun boot() = mutex.withLock {
         val identity = settings.deviceId ?: error("no identity")
         val base = settings.relayUrl ?: error("no relay url")
+        Log.i(TAG, "boot: identity=$identity relay=${base.substringAfter("://").substringBefore('/')}")
         val ls = FileLobbyStore(File(dir, "lobby"), seal = sealer::seal, open = sealer::open)
         lobbyStore = ls
-        val l = ls.load()?.let { MlsLobby.`import`(identity, it, base, transport, ls) } ?: MlsLobby(identity, base, transport, ls)
+        val slot = ls.load()
+        Log.i(TAG, "boot: lobby slot ${if (slot == null) "absent → new" else "present(${slot.published.size} published) → import"}")
+        val l = slot?.let { MlsLobby.`import`(identity, it, base, transport, ls) } ?: MlsLobby(identity, base, transport, ls)
         lobby = l
+        Log.i(TAG, "boot: lobby ready")
         for (f in dir.listFiles { _, n -> n.endsWith(".state") }.orEmpty()) {
             val name = f.name.removeSuffix(".state")
             val h = Handle(name)
@@ -115,7 +119,9 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             rooms[name] = h
         }
         applyAccessToken()
+        Log.i(TAG, "boot: rooms=${rooms.size} token=${if (settings.accessToken == null) "none" else "set"}")
         val fp = sha256Hex(l.publicKey())
+        Log.i(TAG, "boot: fingerprint ${fp.take(12)}… → probe")
         _ui.update { it.copy(deviceId = identity, fingerprint = fp, keyCustody = sealer.describe(), rooms = rooms.values.map { r -> r.ui() }) }
         probe()
     }
@@ -129,8 +135,10 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     /** 릴레이와 첫 접촉: 로비 상태로 등록·세션 여부를 가른다(iOS `waitingOperator` 와 같은 규칙). */
     private fun probe() {
         val l = lobby ?: return
+        Log.i(TAG, "probe: lobby.status()")
         try {
             val s = l.status()
+            Log.i(TAG, "probe: ok live=${s.live} max=${s.max}")
             _ui.update { it.copy(phase = Phase.Ready, lobbyLive = s.live.toInt(), lobbyMax = s.max.toInt(), connecting = false, notice = null) }
         } catch (e: RoomException) {
             Log.w(TAG, "probe: $e")
