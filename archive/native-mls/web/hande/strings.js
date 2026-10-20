@@ -27,6 +27,13 @@ export function isAgentDevice(device) {
   return AGENT_ACTORS.has(actorOf(device));
 }
 
+/** 내 글인가 — 같은 사람(actor)이면 다른 기기에서 보낸 글도 내 글(iOS MessageRecord.isMine). actor 를 아직 모르면 기기 일치로. */
+export function isMine(sender, {device, actor}) {
+  if (!sender) return false;
+  if (actor) return actorOf(sender) === actor;
+  return Boolean(device) && sender === device;
+}
+
 /** 기기 종류(둘째 마디, 소문자). 없으면 null. */
 export function deviceKind(device) {
   const parts = String(device ?? '').split('-');

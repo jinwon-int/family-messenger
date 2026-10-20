@@ -242,7 +242,7 @@ struct RoomView: View {
         if let day = stamps[item.id]?.dayStart {
             DayDivider(text: Strings.dayLabel(day))
         }
-        MessageRow(item: item, mine: item.record.senderDevice == model.deviceId,
+        MessageRow(item: item, mine: item.record.isMine(device: model.deviceId),   // 같은 사람의 다른 기기도 내 글(오른쪽)
                    time: stamps[item.id]?.showTime == true ? item.record.receivedAt : nil,
                    roster: model.agentRoster, approval: approvalStates[item.id], canAnswer: isReady,
                    decide: { number, allow in answerApproval(number, allow: allow) },

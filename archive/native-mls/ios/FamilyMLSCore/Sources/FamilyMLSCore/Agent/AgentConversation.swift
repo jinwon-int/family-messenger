@@ -116,16 +116,17 @@ public enum AgentApproval {
 
 public struct LastSent: Equatable {
     public let record: MessageRecord
-    /// 그 뒤에 다른 기기가 보낸 메시지 수(글·첨부).
+    /// 그 뒤에 다른 사람이 보낸 메시지 수(글·첨부).
     public let repliesAfter: Int
 
-    /// 내 마지막 글/첨부. 승인 답장(「승인 1」)은 "내가 한 말"로 치지 않는다 — 에이전트에게 무엇을 시켰는지가 이 바의 목적.
+    /// 내 마지막 글/첨부 — 같은 사람의 다른 기기에서 보낸 것도 내 글(`MessageRecord.isMine`). 승인 답장(「승인 1」)은
+    /// "내가 한 말"로 치지 않는다 — 에이전트에게 무엇을 시켰는지가 이 바의 목적.
     public static func find(_ records: [MessageRecord], myDevice: DeviceID) -> LastSent? {
         guard !myDevice.isEmpty else { return nil }
         guard let index = records.lastIndex(where: { r in
-            r.senderDevice == myDevice && (r.kind == .attachment || (r.kind == .text && AgentApproval.reply(in: r.body) == nil))
+            r.isMine(device: myDevice) && (r.kind == .attachment || (r.kind == .text && AgentApproval.reply(in: r.body) == nil))
         }) else { return nil }
-        let replies = records[(index + 1)...].filter { $0.senderDevice != myDevice && ($0.kind == .text || $0.kind == .attachment) }.count
+        let replies = records[(index + 1)...].filter { !$0.isMine(device: myDevice) && ($0.kind == .text || $0.kind == .attachment) }.count
         return LastSent(record: records[index], repliesAfter: replies)
     }
 }
@@ -135,12 +136,12 @@ public enum AgentThinking {
     public static let window: TimeInterval = 20 * 60
 
     /// 생각 중으로 보이는 에이전트 기기, 아니면 nil.
-    /// 조건: 이 방에서 에이전트가 말한 적이 있고 · 마지막 메시지가 내 글(승인 답장 포함, 첨부 제외 — 봇은 첨부에 답하지 않는다)이며
+    /// 조건: 이 방에서 에이전트가 말한 적이 있고 · 마지막 메시지가 내 글(같은 사람의 다른 기기 포함 · 승인 답장 포함 · 첨부 제외 — 봇은 첨부에 답하지 않는다)이며
     /// · 그 글이 `window` 안이다. 에이전트의 마지막 글이 열린 승인 요청이면 "내 차례"라 nil.
     public static func agent(_ records: [MessageRecord], roster: AgentRoster, myDevice: DeviceID, now: Date) -> DeviceID? {
         guard !myDevice.isEmpty else { return nil }
         let visible = records.filter { $0.kind == .text || $0.kind == .attachment }
-        guard let last = visible.last, last.senderDevice == myDevice, last.kind == .text else { return nil }
+        guard let last = visible.last, last.isMine(device: myDevice), last.kind == .text else { return nil }
         guard now.timeIntervalSince(last.receivedAt) < window else { return nil }
         guard let agent = visible.last(where: { roster.isAgent($0) }) else { return nil }
         return agent.senderDevice

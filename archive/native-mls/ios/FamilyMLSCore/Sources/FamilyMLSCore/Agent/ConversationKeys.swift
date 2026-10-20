@@ -65,9 +65,9 @@ public enum RoomOrder {
 }
 
 public enum Unread {
-    /// 마지막 글이 남의 글이고, 이 기기가 본 seq 보다 뒤인가.
+    /// 마지막 글이 남의 글(같은 사람의 다른 기기는 남이 아니다)이고, 이 기기가 본 seq 보다 뒤인가.
     public static func isUnread(last: MessageRecord?, myDevice: DeviceID, readSeq: Int64?) -> Bool {
-        guard let last, last.senderDevice != myDevice else { return false }
+        guard let last, !last.isMine(device: myDevice) else { return false }
         return last.seq > (readSeq ?? 0)
     }
 }

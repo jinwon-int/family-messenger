@@ -6,7 +6,7 @@
 // (owner actors join automatically, family devices accept with one tap — iOS
 // AppModel.discoverLobbyWelcomes / acceptInvite).
 import * as ui from './ui.js';
-import {strings, displayName, isAgentDevice} from './strings.js';
+import {strings, displayName, isAgentDevice, isMine} from './strings.js';
 import {createWorkerBridge} from './worker-bridge.js';
 import {createRelay} from './relay.js';
 import {createIdentityStore, databaseFor, ROOM, IDENTITY_DATABASE, LOBBY_DATABASE} from './identity.js';
@@ -121,7 +121,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     if (R.entryKeys.has(key)) return;
     R.entryKeys.add(key);
     const entry = {key, kind: m.kind, seq: m.seq ?? null, sender: m.sender ?? '', senderName: m.sender ? displayName(m.sender) : '',
-      isMe: m.sender === app.device, isAgent: m.sender ? isAgentDevice(m.sender) : false, body: m.text ?? '', ts: m.ts ?? null,
+      isMe: isMine(m.sender, {device: app.device, actor: app.actor}), isAgent: m.sender ? isAgentDevice(m.sender) : false, body: m.text ?? '', ts: m.ts ?? null,
       size: m.size ?? 0, image: null, replay: !!m.replay, load: m.load ?? null};
     R.entries.push(entry);
     R.entries.sort((a, b) => (a.seq ?? Infinity) - (b.seq ?? Infinity) || 0);

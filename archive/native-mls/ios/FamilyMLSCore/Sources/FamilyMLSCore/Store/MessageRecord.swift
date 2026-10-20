@@ -10,6 +10,11 @@ public struct MessageRecord: Equatable {
     public let senderDevice: DeviceID
     /// 첫 `-` 앞 = actor (relay-app 규칙).
     public var senderActor: String { String(senderDevice.split(separator: "-", maxSplits: 1).first ?? Substring(senderDevice)) }
+    /// 기기 ID 의 actor(첫 `-` 앞, 없으면 ID 전체).
+    public static func actor(of device: DeviceID) -> String { String(device.split(separator: "-", maxSplits: 1).first ?? Substring(device)) }
+    /// 내 글인가 — 같은 사람(actor)이면 **다른 기기에서 보낸 글도 내 글**(오너 결정 2026-10-20: PC 에서 쓴 말이 iPhone 에서도 오른쪽).
+    /// 빈 기기 ID 는 아무것도 내 글이 아니다.
+    public func isMine(device: DeviceID) -> Bool { !device.isEmpty && senderActor == MessageRecord.actor(of: device) }
     public let clientId: String
     public let kind: Kind
     /// text: 본문 / attachment: 파일명 등 표시 메타 / undecryptable: 사유(키 없음)
