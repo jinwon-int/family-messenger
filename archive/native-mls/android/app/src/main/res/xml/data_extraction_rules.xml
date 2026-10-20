@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- API 31+ 백업·기기 이전: 전부 제외(기기 키·그룹 상태는 이 기기에서만). -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="database" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="database" path="." />
+    </device-transfer>
+</data-extraction-rules>

@@ -113,3 +113,49 @@ jobs:
           path: archive/native-mls/ios-ffi/out/android
           retention-days: 7
           if-no-files-found: error
+
+  # ---- #338 B1: Compose 앱 골격 — 러너 내장 Android SDK + Gradle 8.11.1(KGP 2.1.20 ↔ AGP 8.7.2 호환표) + JDK 17. 바인딩·.so 는 위 job 아티팩트. ----
+  android-app:
+    name: Compose app assembleDebug (Gradle 8.11.1 · JDK 17 · runner SDK)
+    needs: android-ffi
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-mls-android-ffi-${{ github.sha }}
+          path: ${{ runner.temp }}/ffi-out
+      - name: JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Gradle 8.11.1 (pinned, no wrapper jar in the repo)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+      - name: assembleDebug — timed
+        working-directory: archive/native-mls/android
+        run: |
+          start=$(date +%s)
+          test -d "$RUNNER_TEMP/ffi-out/kotlin" && test -d "$RUNNER_TEMP/ffi-out/jniLibs"
+          gradle --no-daemon --console=plain -PhandeFfiOut="$RUNNER_TEMP/ffi-out" :app:assembleDebug 2>&1 | tail -n 80
+          echo "app_build_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Acceptance — APK exists · 3 ABI .so packaged · bindings compiled in
+        working-directory: archive/native-mls/android
+        run: |
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          test -s "$apk"
+          echo "apk bytes: $(stat -c %s "$apk")" | tee -a "$GITHUB_STEP_SUMMARY"
+          n=$(unzip -l "$apk" | grep -cE 'lib/(arm64-v8a|armeabi-v7a|x86_64)/libfamily_mls_ios_ffi\.so$')
+          test "$n" -eq 3 || { echo "expected 3 ABI .so in the APK, got $n"; unzip -l "$apk" | grep '\.so$'; exit 1; }
+          unzip -l "$apk" | grep -q 'lib/arm64-v8a/libjnidispatch.so' || { echo "JNA native missing"; exit 1; }
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: hande-android-debug-${{ github.sha }}
+          path: archive/native-mls/android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 7
+          if-no-files-found: error
