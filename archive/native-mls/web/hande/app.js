@@ -12,20 +12,11 @@ import {createRelay} from './relay.js';
 import {createIdentityStore, databaseFor, ROOM, IDENTITY_DATABASE, LOBBY_DATABASE} from './identity.js';
 import {createRoomSession, nextDeviceId, clock} from './room.js';
 import {createDevice, LOBBY_TARGET} from './device.js';
+import {imageType, shouldPreview} from './attachment-view.js';
 
 const DEFAULT_ROOM = 'family';
 const AUTO_JOIN_ACTORS = new Set(['owner']);   // iOS AppModel.autoJoinActors
-const IMAGE_SNIFF_MAX = 2 * 1024 * 1024;   // decode attachments up to this size eagerly for an inline preview
 const TICK_MS = 8000;                       // device-level refresh (rooms list, lobby welcomes, replenish)
-
-function imageType(bytes) {
-  if (bytes.length < 12) return null;
-  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
-  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
-  if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) return 'image/gif';
-  if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return 'image/webp';
-  return null;
-}
 
 async function loadConfig() {
   try {
@@ -135,11 +126,11 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     R.entries.push(entry);
     R.entries.sort((a, b) => (a.seq ?? Infinity) - (b.seq ?? Infinity) || 0);
     if (!entry.isMe && (entry.kind === 'text' || entry.kind === 'attachment') && !(app.roomOpen && app.current === roomId)) R.unread = true;
-    if (entry.kind === 'attachment' && entry.load && entry.size <= IMAGE_SNIFF_MAX) {
+    if (shouldPreview(entry)) {   // attachment-view.js: up to MAX_ATTACHMENT, by content only
       entry.load().then(bytes => {
         const type = imageType(bytes);
         if (!type) return;
-        entry.image = {url: URL.createObjectURL(new Blob([bytes], {type})), alt: `${entry.senderName}의 사진`};
+        entry.image = {url: URL.createObjectURL(new Blob([bytes], {type})), type, alt: `${entry.senderName}의 사진`};
         render();
       }).catch(() => {});
     }
