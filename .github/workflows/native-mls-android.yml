@@ -23,6 +23,8 @@ env:
   KOTLIN_SHA256: a118197b0de55ffab2bc8d5cd03a5e39033cfb53383d6931bc761dec0784891a
   JNA_VERSION: 5.17.0
   JNA_SHA256: b3a9408e7c51e08ef0e3bfcc08f443f6ec0f6191ba8cd7c18d53d2b22e5bdbc0
+  # B1.4: android/app/debug.keystore 인증서 SHA-256(openssl x509 -fingerprint). 키를 바꾸면 여기도 바꾼다.
+  DEBUG_SIGNER_SHA256: 8f1b0baf7b4dc94e6833b765b299828407cc5008d539b7fb64fc7fb03bb70044
 defaults:
   run:
     shell: bash
@@ -152,6 +154,11 @@ jobs:
           n=$(unzip -l "$apk" | grep -cE 'lib/(arm64-v8a|armeabi-v7a|x86_64)/libfamily_mls_ios_ffi\.so$')
           test "$n" -eq 3 || { echo "expected 3 ABI .so in the APK, got $n"; unzip -l "$apk" | grep '\.so$'; exit 1; }
           unzip -l "$apk" | grep -q 'lib/arm64-v8a/libjnidispatch.so' || { echo "JNA native missing"; exit 1; }
+          # B1.4: 서명자 = 커밋된 app/debug.keystore(지문 고정). 러너 임시 키로 서명되면 실기기 재설치가 거부된다(2026-10-20 공융).
+          apksigner="$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)"
+          got="$("$apksigner" verify --print-certs "$apk" | grep -oE 'SHA-256 digest: [0-9a-f]+' | head -1 | awk '{print $3}')"
+          echo "signer sha256: $got" | tee -a "$GITHUB_STEP_SUMMARY"
+          test "$got" = "$DEBUG_SIGNER_SHA256" || { echo "APK signer $got != committed debug.keystore $DEBUG_SIGNER_SHA256"; exit 1; }
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:

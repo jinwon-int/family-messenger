@@ -25,7 +25,23 @@ android {
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
     }
 
+    // 디버그 서명키 고정(B1.4): AGP 기본은 러너마다 새 `~/.android/debug.keystore` 를 만들어 CI APK 서명이 매번 달라진다 →
+    // 실기기 `adb install -r` 이 INSTALL_FAILED_UPDATE_INCOMPATIBLE 로 거부(공융 2026-10-20, 재설치 3회 무효). 표준 디버그 자격
+    // (`androiddebugkey` / `android`, 공개값)의 PKCS12 를 커밋해 디버그 빌드만 서명한다. **릴리스 서명에는 절대 쓰지 않는다**(E 단계 Play App Signing).
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storeType = "PKCS12"
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             isMinifyEnabled = false
         }
