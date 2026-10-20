@@ -11,7 +11,9 @@
 | `src/lib.rs` | `MlsDevice` 객체(uniffi): `new / import_state / export_state / public_key / fingerprint / dispatch(method, bytes)`. **MLS 로직 0줄** — 와이어 프레이밍·AAD·commit 검사·record 코덱은 전부 파사드 |
 | `src/room.rs` | **`MlsRoom` 객체**(#366 3a, Android 먼저): 방 하나의 동기화(`poll`)·송신(`send`)·초대 게시(`post_commit`/`post_welcome`)·`dispatch`. 상태기계·릴레이 와이어는 host-core `room`/`api` — **봇과 같은 코드**. 호스트는 `HttpTransport`(바이트 전송)·`RoomObserver`(영속·이벤트·메시지·정지) 두 trait 만 구현한다(아래 절) |
 | `tests/host_roundtrip.rs` | 봇 `tests/native_facade_link.rs` 의 두 시나리오를 FFI 객체로 반복 + 거부 시 스냅샷 롤백 검사 (host, `cargo test`) |
-| `tests/room_host.rs` | `MlsRoom` 게이트: Rust 로 구현한 in-memory 릴레이(`HttpTransport`)·관찰자 위에서 두 기기 왕복 · 자기 commit merge → 상대 적용 · 409 cas_mismatch 재시도 · `import` 이어 받기 · 전송 실패 = transient · history gap 정지 |
+| `src/lobby.rs` | **`MlsLobby` 객체**(#366 3c, 기기 수준·방 무관): 로비 key package 보충(`replenish`, iOS `LobbyKeyring` 규칙)·`welcomes`·`withdraw` · 방 목록 `rooms` · 푸시 `register_push`/`unregister_push`. 호스트는 `LobbyObserver.persist(slot)` 하나를 구현한다. `MlsRoom::adopt`(로비 시드/Welcome 으로 방 시작)·`MlsRoom::close_room` 도 3c |
+| `tests/room_host.rs` | `MlsRoom` 게이트: in-memory 릴레이(`HttpTransport`)·관찰자(`tests/support/mod.rs`) 위에서 두 기기 왕복 · 자기 commit merge → 상대 적용 · 409 cas_mismatch 재시도 · `import` 이어 받기 · 전송 실패 = transient · history gap 정지 |
+| `tests/lobby_host.rs` | `MlsLobby` 게이트(3c): 보충·상한(릴레이 max·파사드 8)·게시 실패 롤백 · 로비 Welcome `adopt` → join · `import` · 회수 · `close_room` 410 · 푸시 등록 왕복 |
 | `build-xcframework.sh` | macOS: iOS 기기·시뮬레이터 staticlib → `FamilyMLS.xcframework` + Swift 바인딩 + sha256 목록 |
 | `uniffi.toml` | Swift 모듈명 `FamilyMLS` / FFI 모듈 `FamilyMLSFFI` |
 | `src/bin/uniffi-bindgen.rs` | 바인딩 생성기(같은 uniffi 핀) — `--features cli` |
@@ -56,6 +58,8 @@ CI: `.github/workflows/native-mls-ios.yml` (ubuntu host 게이트 ≤15분 · ma
 `MlsRoom`: `new(identity, room, base_url, transport, observer)` / `import(…, state, sync, …)` · `poll()`(봇 `poll_room` 순서: ack → GET → gap → welcome/commit/application; 끝에 dirty 면 persist) · `send(plaintext) → Sent | Queued(409 cas_mismatch, 다음 poll 뒤 재시도 ≤8) | AlreadyDelivered` · `post_commit` / `post_welcome`(초대: `dispatch("invite_with_commit")` → `post_commit` → `poll` 이 `OwnCommitMerged` → `post_welcome`) · `export_state` · `sync_state` · `dispatch`(성공 시 바로 persist) · `set_access_token`. 오류는 `RoomError{Relay{transient}, Mls, Host}` — 기존 `MlsError` 는 그대로.
 
 프레이밍은 봇과 바이트 동일(AAD client_id = 기기 identity). 릴레이 dedup client_id 는 iOS 와 같은 모양 `<identity>-<8 hex>`(카운터 영속). Kotlin 어댑터·JVM 왕복·`HOST-CONTRACT.md` 는 3b.
+
+3c(`MlsLobby` · `MlsRoom::adopt` · `MlsRoom::close_room`): 기기 수준 호출은 `../HOST-CONTRACT.md` §2b. host-core `api::Client` 에는 같은 와이어의 `post_lobby_key_packages` · `lobby_status` · `lobby_welcomes` · `delete_lobby_key_packages` · `list_rooms` · `register_push` · `unregister_push` 가 더해졌다(봇도 쓸 수 있다).
 
 ## 증명하지 않는 것
 

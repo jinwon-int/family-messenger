@@ -3,6 +3,8 @@
 // 실행: android/scripts/jvm-roundtrip.sh (KOTLINC · JNA_JAR · BINDINGS_DIR · FFI_LIB_DIR).
 package com.seoyoon_family.hande.host
 
+import com.seoyoon_family.hande.mls.MlsLobbySlot
+import com.seoyoon_family.hande.mls.MlsLobby
 import com.seoyoon_family.hande.mls.MlsRoom
 import com.seoyoon_family.hande.mls.RoomEvent
 import com.seoyoon_family.hande.mls.RoomException
@@ -128,6 +130,74 @@ private fun scenarioTransientAndGap(tmp: File) {
     check(peer.room.syncState().halted, "halt survives a restart via the persisted sync")
 }
 
+/** #366 3c — 기기 수준 객체 `MlsLobby`: 로비 key package 보충·Welcome 받아들이기(`MlsRoom.adopt`)·방 목록·방 닫기·푸시 등록. */
+private fun scenarioLobby(tmp: File) {
+    println("⑤ lobby: replenish → steward invites with a lobby package → adopt → rooms · close · push")
+    val relay = InMemoryRelay(BASE)
+    val dir = File(tmp, "s5")
+    val lobbyStore = FileLobbyStore(File(dir, "phone"))
+    var lobby = MlsLobby("owner-phone", BASE, relay, lobbyStore)
+    check(lobbyStore.load()?.published?.isEmpty() == true, "the seed is persisted before anything else")
+    val first = lobby.replenish(3u)
+    check(first.minted == 3u && first.pruned == 0u && first.live == 3u && relay.lobbyLive("owner-phone") == 3, "replenish(3) → minted 3, live 3 ($first)")
+    val persistIdx = relay.trace.indexOfFirst { it.startsWith("POST lobby owner-phone n=3") }
+    check(persistIdx > 0 && File(dir, "phone/lobby.slot").exists(), "slot file written before the lobby POST")
+    check(lobby.replenish(3u).minted == 0u, "steady state mints nothing")
+
+    // 재시작 대역: 슬롯으로 복원해도 장부·비밀이 남는다.
+    lobby.close()
+    lobby = MlsLobby.`import`("owner-phone", lobbyStore.load()!!, BASE, relay, lobbyStore)
+    check(lobby.publishedCount() == 3u, "import restores the ledger (${lobby.publishedCount()})")
+
+    // steward 가 room-b 를 만들고 로비 키로 초대한다(봇 `invite` 로비 폴백).
+    val stewardStore = FileRoomStore(File(dir, "steward"), "room-b", onMessage = { _, _, _, _ -> })
+    val steward = MlsRoom("bot-steward", "room-b", BASE, relay, stewardStore)
+    steward.dispatch("create", ByteArray(0))
+    val kp = relay.consumeLobby("owner-phone", "bot-steward", "room-b") ?: error("no lobby package")
+    val welcome = steward.dispatch("invite", kp)
+    val posted = steward.postWelcome(welcome, listOf("owner-phone"))
+    val pending = lobby.welcomes()
+    check(pending.size == 1 && pending[0].room == "room-b" && pending[0].seq == posted.seq, "welcomes lists room-b at seq ${posted.seq} ($pending)")
+
+    // adopt: 로비 상태로 방 엔진을 만들고 커서를 Welcome 앞에 둔다 → poll 이 join.
+    val texts = mutableListOf<String>()
+    val phoneStore = FileRoomStore(File(dir, "phone"), "room-b", onMessage = { _, _, _, pt -> texts += String(pt) })
+    val phone = MlsRoom.adopt("owner-phone", "room-b", lobby.seedState(), posted.seq - 1, BASE, relay, phoneStore)
+    check(phoneStore.load() != null, "adopt persists the pair before any network")
+    phone.poll()
+    check(phone.syncState().joined, "joined room-b from the lobby Welcome")
+    steward.send("welcome aboard".toByteArray())
+    phone.poll()
+    check(texts == listOf("welcome aboard"), "decrypted with the adopted ratchet ($texts)")
+    check(phone.send("thanks".toByteArray()) is SendResult.Sent, "the adopted room sends")
+    phone.poll()
+    check(lobby.welcomes().isEmpty(), "ack past the Welcome clears the pending listing")
+    val rooms = lobby.rooms()
+    check(rooms.size == 1 && rooms[0].room == "room-b" && rooms[0].member && !rooms[0].closed, "rooms lists room-b as a membership ($rooms)")
+    val after = lobby.replenish(3u)
+    check(after.pruned == 1u && after.minted == 1u, "the consumed package is pruned and replaced ($after)")
+
+    // 방 닫기: 멤버 전원 410 room_closed. 없는 방은 false.
+    check(steward.closeRoom(), "steward closes room-b")
+    val closed = try { phone.poll(); null } catch (e: RoomException) { e }
+    check(closed is RoomException.Relay && !closed.transient && closed.reason.contains("room_closed"), "closed room → Relay(room_closed) ($closed)")
+    val never = MlsRoom("owner-phone", "room-z", BASE, relay, FileRoomStore(File(dir, "phone"), "room-z", onMessage = { _, _, _, _ -> }))
+    check(!never.closeRoom(), "closing an unknown room is false, not an error")
+
+    // 푸시 등록 왕복.
+    val token = ByteArray(32) { 0xAB.toByte() }
+    lobby.registerPush(token, "com.seoyoon_family.familychat")
+    check(relay.pushRows.size == 1 && relay.pushRows[0].token.contentEquals(token) && relay.pushRows[0].topic == "com.seoyoon_family.familychat", "push token registered")
+    lobby.unregisterPush()
+    check(relay.pushRows.isEmpty(), "push token unregistered")
+
+    // 회수(#389): 서버 풀과 로컬 비밀을 함께 비운다.
+    check(lobby.withdraw() == 3uL && relay.lobbyLive("owner-phone") == 0 && lobby.publishedCount() == 0u, "withdraw empties the pool and the ledger")
+    check(lobby.replenish(8u).minted == 8u, "all local secrets were freed (8 fresh possible)")
+    val slot: MlsLobbySlot = lobbyStore.load()!!
+    check(slot.published.size == 8, "slot file follows the ledger (${slot.published.size})")
+}
+
 fun main() {
     val tmp = Files.createTempDirectory("hande-jvm-roundtrip").toFile()
     try {
@@ -135,6 +205,7 @@ fun main() {
         scenarioConflict(tmp)
         scenarioRestart(tmp)
         scenarioTransientAndGap(tmp)
+        scenarioLobby(tmp)
     } catch (e: Throwable) {
         failures += "exception: $e"
         e.printStackTrace()
@@ -142,7 +213,7 @@ fun main() {
         tmp.deleteRecursively()
     }
     if (failures.isEmpty()) {
-        println("ROUNDTRIP PASS (4 scenarios)")
+        println("ROUNDTRIP PASS (5 scenarios)")
     } else {
         println("ROUNDTRIP FAIL ${failures.size}: $failures")
         exitProcess(1)

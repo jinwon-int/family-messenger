@@ -197,6 +197,79 @@ pub struct ApiErrorBody {
     pub error: String,
 }
 
+// ---- #366 3c: device-level routes (lobby · rooms · push) — server.go/lobby.go/rooms.go/push.go json tags ----
+
+/// `POST /v2/rooms/<room>/keypackages` · `POST /v2/lobby/keypackages` response
+/// (server.go `keyPackagesResponse`): `stored` newly inserted, `duplicates`
+/// byte-identical replays accepted idempotently, `live` unconsumed after the
+/// insert.
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct KeyPackagesStored {
+    pub stored: u64,
+    #[serde(default)]
+    pub duplicates: u64,
+    #[serde(default)]
+    pub live: u64,
+}
+
+/// `GET /v2/lobby/status?device=` (lobby.go `lobbyStatusResponse`, #380 P5):
+/// the device's live lobby count against the relay policy bounds.
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct LobbyStatus {
+    pub device: String,
+    pub live: u64,
+    pub max: u64,
+    pub ttl_seconds: i64,
+}
+
+/// One room holding a Welcome the device has not read past
+/// (`GET /v2/lobby/welcomes?device=`, lobby.go `pendingWelcome`).
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PendingWelcome {
+    pub room: String,
+    pub seq: i64,
+    pub epoch: i64,
+    pub created_at: i64,
+}
+
+#[derive(Deserialize)]
+struct WelcomesResponse {
+    welcomes: Vec<PendingWelcome>,
+}
+
+#[derive(Deserialize)]
+struct LobbyDeleteResponse {
+    deleted: u64,
+}
+
+/// One room the device takes part in (`GET /v2/rooms?device=`, rooms.go
+/// `roomListing`): public fields only — no events, rosters or key material.
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct RoomListing {
+    pub room: String,
+    pub epoch: i64,
+    pub revision: i64,
+    pub member: bool,
+    pub keypackages_outstanding: u64,
+    pub closed: bool,
+}
+
+#[derive(Deserialize)]
+struct RoomsResponse {
+    rooms: Vec<RoomListing>,
+}
+
+/// `POST /v2/push/devices` body (push.go `pushRegistration`). The token field
+/// is spelled `apns_token` on today's wire whatever the platform; the FCM
+/// generalisation is a relay change (#338 G3), not a client one.
+#[derive(Serialize)]
+struct PushRegistration<'a> {
+    device: &'a str,
+    #[serde(with = "wire_bytes")]
+    apns_token: Vec<u8>,
+    topic: &'a str,
+}
+
 /// How requests reach the relay (#366 3a). The bot uses [`TcpTransport`]
 /// (plain HTTP/1.1 over the tailnet); a mobile host plugs in its platform
 /// client (TLS stays there — no TLS dependency in this crate). Paths, query
@@ -395,6 +468,67 @@ impl Client {
         let resp = self.send("GET", &path, None)?;
         let events: EventsResponse = serde_json::from_slice(self.checked(resp)?.as_slice())?;
         Ok(events)
+    }
+
+    // ---- #366 3c: device-level routes ----
+
+    /// `POST /v2/lobby/keypackages` (#380 P5-1): publish into the device's
+    /// room-independent pool, which a steward may consume for any room
+    /// ([`Client::consume_lobby_key_package`]). 409 `key_package_limit` and
+    /// 403 `device_not_allowed` come back as the envelope.
+    pub fn post_lobby_key_packages(&self, device: &str, refs: &[(&str, Vec<u8>)]) -> Result<KeyPackagesStored> {
+        let post = KeyPackagePost {
+            device,
+            packages: refs.iter().map(|(r, bytes)| KeyPackageRef { r#ref: r, bytes: bytes.clone() }).collect(),
+        };
+        let resp = self.send("POST", "/v2/lobby/keypackages", Some(serde_json::to_vec(&post)?.as_slice()))?;
+        Ok(serde_json::from_slice(self.checked(resp)?.as_slice())?)
+    }
+
+    /// `GET /v2/lobby/status?device=`: live count and policy bounds — the
+    /// replenish decision's input.
+    pub fn lobby_status(&self, device: &str) -> Result<LobbyStatus> {
+        let resp = self.send("GET", &format!("/v2/lobby/status?device={device}"), None)?;
+        Ok(serde_json::from_slice(self.checked(resp)?.as_slice())?)
+    }
+
+    /// `GET /v2/lobby/welcomes?device=`: rooms holding an unread Welcome for
+    /// the device (read-only; the Welcome itself is read through the room log).
+    pub fn lobby_welcomes(&self, device: &str) -> Result<Vec<PendingWelcome>> {
+        let resp = self.send("GET", &format!("/v2/lobby/welcomes?device={device}"), None)?;
+        let body: WelcomesResponse = serde_json::from_slice(self.checked(resp)?.as_slice())?;
+        Ok(body.welcomes)
+    }
+
+    /// `DELETE /v2/lobby/keypackages?device=` (#389): withdraw every unconsumed
+    /// lobby package of the device. Returns how many were deleted.
+    pub fn delete_lobby_key_packages(&self, device: &str) -> Result<u64> {
+        let resp = self.send("DELETE", &format!("/v2/lobby/keypackages?device={device}"), None)?;
+        let body: LobbyDeleteResponse = serde_json::from_slice(self.checked(resp)?.as_slice())?;
+        Ok(body.deleted)
+    }
+
+    /// `GET /v2/rooms?device=` (#275 L2 ①): the rooms the device takes part in.
+    pub fn list_rooms(&self, device: &str) -> Result<Vec<RoomListing>> {
+        let resp = self.send("GET", &format!("/v2/rooms?device={device}"), None)?;
+        let body: RoomsResponse = serde_json::from_slice(self.checked(resp)?.as_slice())?;
+        Ok(body.rooms)
+    }
+
+    /// `POST /v2/push/devices` → 204: register the device's push token under
+    /// `topic` (an app bundle id). Idempotent on the relay.
+    pub fn register_push(&self, device: &str, token: &[u8], topic: &str) -> Result<()> {
+        let body = PushRegistration { device, apns_token: token.to_vec(), topic };
+        let resp = self.send("POST", "/v2/push/devices", Some(serde_json::to_vec(&body)?.as_slice()))?;
+        self.checked(resp)?;
+        Ok(())
+    }
+
+    /// `DELETE /v2/push/devices?device=` → 204: drop every token of the device.
+    pub fn unregister_push(&self, device: &str) -> Result<()> {
+        let resp = self.send("DELETE", &format!("/v2/push/devices?device={device}"), None)?;
+        self.checked(resp)?;
+        Ok(())
     }
 
     fn checked(&self, resp: http::Response) -> Result<Vec<u8>> {
