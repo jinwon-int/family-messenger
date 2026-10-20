@@ -5,6 +5,7 @@
 package com.seoyoon_family.hande.core
 
 import android.content.Context
+import android.util.Log
 import com.seoyoon_family.hande.host.FileLobbyStore
 import com.seoyoon_family.hande.host.FileRoomStore
 import com.seoyoon_family.hande.host.JdkHttpTransport
@@ -85,6 +86,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     /** 설정 화면이 저장한 뒤 또는 앱 시작 때. 같은 scope 에서 한 번만. */
     fun start(scope: CoroutineScope) {
         if (loop != null || !settings.isConfigured) return
+        _ui.update { it.copy(phase = Phase.Starting) }
         loop = scope.launch(Dispatchers.IO) {
             try {
                 boot()
@@ -130,16 +132,22 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         val l = lobby ?: return
         try {
             val s = l.status()
-            _ui.update { it.copy(phase = Phase.Ready, lobbyLive = s.live.toInt(), lobbyMax = s.max.toInt(), connecting = false) }
+            _ui.update { it.copy(phase = Phase.Ready, lobbyLive = s.live.toInt(), lobbyMax = s.max.toInt(), connecting = false, notice = null) }
         } catch (e: RoomException) {
-            _ui.update { it.copy(phase = classify(e) ?: it.phase, connecting = e is RoomException.Relay && e.transient) }
+            Log.w(TAG, "probe: $e")
+            val transient = e is RoomException.Relay && e.transient
+            _ui.update { it.copy(phase = classify(e) ?: it.phase, connecting = transient, notice = if (transient || classify(e) != null) it.notice else e.message) }
         }
     }
 
+    /**
+     * 릴레이 응답 → 화면 단계. 봉투(`relay error <status>: <code>`)는 코드로, 봉투 없는 상태(`relay status <n>`)는 CF Access 엣지다:
+     * 302(로그인 리다이렉트)·401·403(허용되지 않은 신원) → 세션 값 입력. 403 `device_subject_mismatch` 는 릴레이 본체(등록 대기).
+     */
     private fun classify(e: RoomException): Phase? = when {
         e is RoomException.Relay && e.transient -> null
         e is RoomException.Relay && "device_subject_mismatch" in e.reason -> Phase.WaitingEnrollment(enrollmentJson())
-        e is RoomException.Relay && e.reason.contains("relay error 401") -> Phase.NeedsLogin
+        e is RoomException.Relay && EDGE_AUTH.containsMatchIn(e.reason) -> Phase.NeedsLogin
         else -> null
     }
 
@@ -158,7 +166,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
                 when {
                     e is RoomException.Relay && e.transient -> connecting = true
                     e is RoomException.Relay && "room_closed" in e.reason -> h.halted = "room_closed"
-                    else -> { classify(e)?.let { p -> _ui.update { it.copy(phase = p) } }; notice("${h.name}: ${e.message}") }
+                    else -> { Log.w(TAG, "poll ${h.name}: $e"); classify(e)?.let { p -> _ui.update { it.copy(phase = p) } }; notice("${h.name}: ${e.message}") }
                 }
             }
         }
@@ -239,6 +247,9 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     private fun notice(text: String) = _ui.update { it.copy(notice = text) }
 
     private companion object {
+        const val TAG = "hande.hub"
+        /** 엣지 인증 실패 모양: `relay status 301|302|303|307|308|401|403` · `relay error 401: …`. */
+        val EDGE_AUTH = Regex("relay (status (30[12378]|401|403)\\b|error 401\\b)")
         const val POLL_MS = 4_000L
         const val LOBBY_TARGET = 8
         const val REPLENISH_EVERY = 15 // ≈ 1분
