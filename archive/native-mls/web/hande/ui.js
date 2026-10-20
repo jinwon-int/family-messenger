@@ -6,6 +6,7 @@ import {
   strings, ACTOR, ROOM, DEVICE, formatTime, dayLabel, dayKey, groupFingerprint, displayName, humanSize,
 } from './strings.js';
 import {imageType, downloadSpec} from './attachment-view.js';
+import {parseBlocks, inlineSpans, hasMarkdown} from './agent-markdown.js';
 
 // ---- DOM 도우미 ----
 
@@ -315,6 +316,44 @@ async function downloadAttachment(entry, button, onOpenAttachment) {
   }
 }
 
+// ---- 에이전트 답장 마크다운(iOS #405 와 같은 블록 규칙) ----
+// agent-markdown.js 가 돌려준 문자열을 el() 로만 넣는다 — 전부 텍스트 노드, innerHTML·링크 이동·원격 이미지 없음.
+
+// 굵게·기울임·취소선 안쪽은 다시 나눈다(**`코드` 굵게**). 한 겹마다 기호 2자 이상이 줄어 깊이는 글 길이로 묶인다.
+const inlineNodes = (text) => inlineSpans(text).map((span) => {
+  if (span.style === 'text') return span.text;
+  return el(span.style, {}, span.style === 'code' ? span.text : inlineNodes(span.text));
+});
+
+function markdownBlock(block) {
+  switch (block.type) {
+    case 'heading': {
+      const level = Math.min(block.level, 3);
+      return el('p', { class: `md-h md-h${level}`, role: 'heading', 'aria-level': String(level + 2) }, inlineNodes(block.text));
+    }
+    case 'list':
+      return el('ul', { class: 'md-list' }, block.items.map((item) => el('li', { class: `md-lvl-${item.level}` },
+        el('span', { class: 'md-marker', 'aria-hidden': 'true' }, item.marker ?? '•'),
+        el('span', { class: 'md-item' }, inlineNodes(item.text)))));
+    case 'table':
+      return el('div', { class: 'md-table' }, el('table', {},
+        el('thead', {}, el('tr', {}, block.header.map((cell) => el('th', { scope: 'col' }, inlineNodes(cell))))),
+        el('tbody', {}, block.rows.map((row) => el('tr', {}, row.map((cell) => el('td', {}, inlineNodes(cell))))))));
+    case 'code':
+      return el('pre', { class: 'md-code' }, el('code', {}, block.text));
+    case 'quote':
+      return el('blockquote', { class: 'md-quote' }, inlineNodes(block.text));
+    case 'rule':
+      return el('hr', { class: 'md-rule' });
+    default:
+      return el('p', { class: 'md-p' }, inlineNodes(block.text));
+  }
+}
+
+function agentMarkdownBody(text) {
+  return el('div', { class: 'body md', 'data-testid': 'agent-markdown' }, parseBlocks(text).map(markdownBlock));
+}
+
 function bubble(entry, onOpenAttachment) {
   const time = formatTime(entry.ts);
   const signature = JSON.stringify([entry.key, entry.kind, Boolean(entry.isMe), Boolean(entry.isAgent), entry.senderName ?? null, entry.body ?? '', time, entry.size ?? null, entry.image?.url ?? null, Boolean(entry.replay), entry.seq ?? null]);
@@ -333,7 +372,8 @@ function bubble(entry, onOpenAttachment) {
             el('img', { src: entry.image.url, alt: entry.image.alt || strings.chat.image, loading: 'lazy' })),
           download)
       : el('div', { class: 'body file' }, el('span', { class: 'file-label' }, strings.chat.file(humanSize(entry.size ?? 0))), download);
-  } else body = el('div', { class: 'body' }, entry.body);
+  } else if (entry.isAgent && entry.kind === 'text' && hasMarkdown(entry.body)) body = agentMarkdownBody(entry.body);
+  else body = el('div', { class: 'body' }, entry.body);
   const foot = [entry.replay ? strings.chat.replay : null, time].filter(Boolean).join(' · ');
   return signed(el('li', { class: `bubble kind-${entry.kind}${entry.isAgent ? ' agent' : ''}`, 'data-key': entry.key, 'data-me': entry.isMe ? 'true' : 'false', 'data-testid': entry.kind === 'undecryptable' ? 'system-row' : 'bubble' },
     entry.isMe ? null : el('span', { class: 'who' }, entry.senderName || displayName(entry.sender)),

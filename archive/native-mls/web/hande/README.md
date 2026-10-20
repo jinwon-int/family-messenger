@@ -15,6 +15,7 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
 ```text
 <hande-dir>/
   index.html styles.css strings.js ui.js app.js main.js          ← 화면·상태기계 (이 디렉터리)
+  attachment-view.js agent-markdown.js                           ← 첨부 미리보기 판별 · 에이전트 답장 마크다운(iOS AgentMarkdown 블록 규칙 이식, 텍스트 노드만)
   room.js device.js relay.js identity.js worker-bridge.js        ← 방 세션(relay-app.js sync 이식)·기기(신원·로비·방 목록)·릴레이·신원
   durable-worker.js session-store.js history-store.js            ← openmls-browser/web 원본 그대로(build.sh 가 복사)
   commit-policy.js relay-attachments.js
