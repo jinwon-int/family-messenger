@@ -31,3 +31,9 @@ archive/native-mls/ios/FamilyChat*/Info.plist
 archive/native-mls/ios/FamilyChat*/*.entitlements
 archive/native-mls/ios/build/
 archive/native-mls/ios/FamilyMLSCore/.build/
+
+# Android app (archive/native-mls/android) — Gradle outputs
+archive/native-mls/android/.gradle/
+archive/native-mls/android/build/
+archive/native-mls/android/app/build/
+archive/native-mls/android/local.properties

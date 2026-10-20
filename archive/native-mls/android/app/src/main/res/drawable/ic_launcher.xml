@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 임시 런처 아이콘(B1): 둥근 사각 + 「한」. 정식 아이콘은 E 단계. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#2E5E4E"
+        android:pathData="M20,20 h68 a12,12 0 0 1 12,12 v44 a12,12 0 0 1 -12,12 h-68 a12,12 0 0 1 -12,-12 v-44 a12,12 0 0 1 12,-12 z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M34,38 h8 v12 h20 v-12 h8 v32 h-8 v-12 h-20 v12 h-8 z" />
+</vector>
