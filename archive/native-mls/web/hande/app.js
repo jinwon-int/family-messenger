@@ -13,6 +13,7 @@ import {createIdentityStore, databaseFor, ROOM, IDENTITY_DATABASE, LOBBY_DATABAS
 import {createRoomSession, nextDeviceId, clock} from './room.js';
 import {createDevice, LOBBY_TARGET} from './device.js';
 import {imageType, shouldPreview} from './attachment-view.js';
+import {fileboxConfig} from './filebox.js';
 
 const DEFAULT_ROOM = 'family';
 const AUTO_JOIN_ACTORS = new Set(['owner']);   // iOS AppModel.autoJoinActors
@@ -34,6 +35,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     rooms: new Map(),          // roomId → {session, entries, entryKeys, unread, order}
     current: null, roomOpen: false, draft: new Map(), sending: false,
     invites: [], adoptFailed: new Map(), dismissed: new Set(), lobbyDue: true,
+    filebox: null, boxOpen: false, boxRefresh: 0,   // 오른쪽 파일보관함 pane (config.json filebox)
     notice: null, logs: [], offlineAt: null, tick: null,
   };
   const identity = createIdentityStore({storage});
@@ -48,6 +50,9 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
 
   // ---- rendering (coalesced); the phase is re-derived right before each paint ----
   let scheduled = false;
+  /** 오른쪽 파일보관함 pane 열고 닫기(좁은 화면에선 목록/대화 대신 보임, 넓은 화면에선 세 번째 열). */
+  function toggleBox() { app.boxOpen = !app.boxOpen; render(); }
+
   function render() {
     if (scheduled) return;
     scheduled = true;
@@ -95,7 +100,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     const anySynced = [...app.rooms.values()].map(R => R.session.state.syncedAt).filter(Boolean).sort().at(-1) ?? app.lastCheckedAt ?? null;
     const list = {
       rooms: rows, currentRoomId: app.roomOpen ? app.current : null,
-      onSelect: openRoomScreen, onOpenMenu: openMenu, onOpenJoin: openJoin, onOpenCreate: openCreate,
+      onSelect: openRoomScreen, onOpenMenu: openMenu, onOpenJoin: openJoin, onOpenCreate: openCreate, onOpenBox: app.filebox ? toggleBox : null,
       sync: {lastSyncAt: anySynced, offlineSince: app.offlineAt, reconnecting: relay.offline},
       notice: app.notice, deviceLabel: app.device,
       invites: app.invites.filter(i => !app.dismissed.has(i.room)).map(i => ({room: i.room, busy: !!i.busy, message: i.message ?? null,
@@ -106,11 +111,15 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       const S = R.session.state;
       return {roomId: app.current, name: app.current, members: S.roster.slice(), joined: S.joined, halted: S.halted ? {...S.halted} : null,
         timeline: R.entries, draft: app.draft.get(app.current) ?? '', onSend: sendText, onAttach: sendAttachment, onOpenAttachment: e => e.load(),
-        onBack: () => { app.roomOpen = false; render(); }, onOpenInvite: openInvite, onOpenMembers: openInvite,
+        onBack: () => { app.roomOpen = false; render(); }, onOpenInvite: openInvite, onOpenMembers: openInvite, onOpenBox: app.filebox ? toggleBox : null,
         onDraft: text => { app.draft.set(app.current, text); }, notice: null, sending: app.sending || S.transferring,
         attachmentPending: R.session.attachmentPending ? {size: 0, onRetry: () => sendAttachment(null)} : null};
     })() : null;
-    ui.renderShell(root, {list, room});
+    const box = app.filebox
+      ? {filebox: {url: app.filebox.url, title: app.filebox.title, refresh: app.boxRefresh}, open: app.boxOpen,
+         onToggle: toggleBox, onRefresh: () => { app.boxRefresh += 1; render(); }}
+      : null;
+    ui.renderShell(root, {list, room, box});
   }
 
   // ---- timeline per room ----
@@ -163,6 +172,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     return R;
   }
   function openRoomScreen(roomId) {
+    app.boxOpen = false;   // 좁은 화면: 보관함 대신 대화를 보인다
     if (!app.rooms.has(roomId)) return;
     app.current = roomId; app.roomOpen = true; app.rooms.get(roomId).unread = false; render();
   }
@@ -172,6 +182,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     if (!globalThis.Worker || !globalThis.WebAssembly || !globalThis.indexedDB) { fatal(strings.app.workerUnavailable); return; }
     const config = await loadConfig();
     if (typeof config.defaultRoom === 'string' && ROOM.test(config.defaultRoom)) app.defaultRoom = config.defaultRoom;
+    app.filebox = fileboxConfig(config.filebox, {defaultTitle: strings.box.title});
     const id = identity.read();
     if (!id) { app.phase = 'needsActor'; render(); return; }
     await startDevice(id);

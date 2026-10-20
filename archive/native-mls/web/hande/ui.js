@@ -6,6 +6,7 @@ import {
   strings, ACTOR, ROOM, DEVICE, formatTime, dayLabel, dayKey, groupFingerprint, displayName, humanSize,
 } from './strings.js';
 import {imageType, downloadSpec} from './attachment-view.js';
+import {fileboxRefreshUrl} from './filebox.js';
 import {parseBlocks, inlineSpans, hasMarkdown} from './agent-markdown.js';
 
 // ---- DOM 도우미 ----
@@ -217,10 +218,10 @@ function inviteCard(invite) {
       el('button', { type: 'button', class: 'ghost', 'data-testid': 'invite-ignore', disabled: invite.busy ? 'disabled' : null, onclick: () => invite.onIgnore?.() }, strings.lobby.ignore)));
 }
 
-function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu, onOpenJoin, onOpenCreate, sync = null, notice = null, deviceLabel = '', invites = [] }) {
+function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu, onOpenJoin, onOpenCreate, onOpenBox = null, sync = null, notice = null, deviceLabel = '', invites = [] }) {
   const syncLabel = syncText(sync);
   const syncTone = sync?.reconnecting ? 'warn' : sync?.offlineSince ? 'danger' : 'ok';
-  const frame = JSON.stringify([syncLabel, syncTone, notice ? [notice.text, notice.tone] : null, rooms.length > 0, deviceLabel, invites.map((i) => [i.room, i.message ?? null, Boolean(i.busy)])]);
+  const frame = JSON.stringify([syncLabel, syncTone, notice ? [notice.text, notice.tone] : null, rooms.length > 0, deviceLabel, Boolean(onOpenBox), invites.map((i) => [i.room, i.message ?? null, Boolean(i.busy)])]);
   const body = rooms.length === 0
     ? el('div', { class: 'empty campfire-empty' }, el('span', { class: 'big-fire', 'aria-hidden': 'true' }, '🪵'), el('p', { class: 'empty-title' }, strings.rooms.empty), el('p', { class: 'hint' }, strings.rooms.noRooms))
     : el('ul', { class: 'rooms', 'aria-label': strings.rooms.listLabel }, rooms.map((room) => roomListItem(room, onSelect, room.roomId === currentRoomId)));
@@ -230,6 +231,7 @@ function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu,
       el('div', { class: 'tools', role: 'group', 'aria-label': strings.rooms.actions },
         toolButton('🔑', strings.rooms.join, 'open-join', onOpenJoin),
         toolButton('🔥', strings.rooms.create, 'open-create', onOpenCreate),
+        onOpenBox ? toolButton('🗂', strings.box.toggle, 'open-box', onOpenBox) : null,
         toolButton('⚙', strings.rooms.settings, 'open-menu', onOpenMenu))),
     el('p', { class: `sync-line ${syncTone}`, role: 'status' }, el('span', { class: 'dot', 'aria-hidden': 'true' }), syncLabel),
     notice ? el('div', { class: `status ${notice.tone || 'info'} notice`, role: notice.tone === 'danger' ? 'alert' : 'status' },
@@ -511,9 +513,10 @@ function buildRoom(room) {
       el('h2', {}, el('span', { class: 'fire', 'aria-hidden': 'true' }, room.halted ? '🪵' : '🔥'), ' ', room.name || room.roomId),
       el('span', { class: 'subtitle' }, strings.chat.members(members.length))),
     el('div', { class: 'tools' },
+      room.onOpenBox ? el('button', { type: 'button', class: 'ghost small box-toggle', 'data-testid': 'open-box', 'aria-label': strings.box.toggle, onclick: () => liveProps.get(screen)?.onOpenBox?.() }, '🗂') : null,
       el('button', { type: 'button', class: 'ghost small', onclick: () => liveProps.get(screen)?.onOpenMembers?.() }, strings.chat.membersButton),
       el('button', { type: 'button', class: 'secondary small', 'data-testid': 'open-invite', disabled: room.joined ? null : true, onclick: () => liveProps.get(screen)?.onOpenInvite?.() }, strings.chat.invite))),
-  JSON.stringify([room.name, room.roomId, members.length, Boolean(room.halted), Boolean(room.joined)]));
+  JSON.stringify([room.name, room.roomId, members.length, Boolean(room.halted), Boolean(room.joined), Boolean(room.onOpenBox)]));
   const notice = room.notice?.text ? signed(el('p', { class: `status ${room.notice.tone || 'info'}`, role: 'status', 'data-part': 'notice' }, room.notice.text), JSON.stringify(room.notice)) : null;
   const list = el('ul', { class: 'timeline', tabindex: '-1', 'aria-live': 'polite', 'aria-label': strings.chat.timelineLabel, 'data-testid': 'timeline' },
     room.timeline.length === 0 ? signed(el('li', { class: 'empty', 'data-key': 'empty' }, strings.chat.empty), 'empty') : timelineRows(room.timeline, room.onOpenAttachment));
@@ -561,7 +564,7 @@ function patchRoomScreen(screen, built, room) {
 }
 
 /** 목록 pane + 방 pane. 휴대폰은 data-view 로 하나씩, 900px 부터 나란히. room 이 null 이면 안내 자리. */
-export function renderShell(root, { list, room }) {
+export function renderShell(root, { list, room, box = null }) {
   shellRoot = root;
   const snap = snapshotRoomPane(root);
   const view = room ? 'room' : 'list';
@@ -573,11 +576,13 @@ export function renderShell(root, { list, room }) {
     updateListPane(existingShell, listPane);
     patchRoomScreen(existingScreen, buildRoom(room), room);
     existingShell.dataset.view = view;
+    updateBoxPane(existingShell, box);
     return;
   }
   if (existingShell && !room && !existingScreen) {
     updateListPane(existingShell, listPane);
     existingShell.dataset.view = view;
+    updateBoxPane(existingShell, box);
     return;
   }
   let roomPane;
@@ -592,13 +597,47 @@ export function renderShell(root, { list, room }) {
   if (existingShell) {
     updateListPane(existingShell, listPane);
     const oldRoomPane = existingShell.querySelector(':scope > .pane-room');
-    if (oldRoomPane) oldRoomPane.replaceWith(roomPane); else existingShell.append(roomPane);
+    if (oldRoomPane) oldRoomPane.replaceWith(roomPane); else existingShell.insertBefore(roomPane, existingShell.querySelector(':scope > .pane-box'));
     existingShell.dataset.view = view;
+    updateBoxPane(existingShell, box);
   } else {
     clearScreen(root);
-    root.prepend(el('main', { class: 'shell', 'data-view': view }, listPane, roomPane));
+    const shell = el('main', { class: 'shell', 'data-view': view }, listPane, roomPane);
+    root.prepend(shell);
+    updateBoxPane(shell, box);
   }
   mount?.();
+}
+
+// ---- 오른쪽 보관함 pane (파일보관함 임베드, 패밀리챗 web/app buildBox 의 파일보관함 탭) ----
+
+/**
+ * pane 본체는 iframe 이라 다시 만들면 다시 로드된다 — 주소·제목이 같으면 노드를 그대로 두고
+ * 열림 상태(`data-open`)만 바꾼다. 새로고침은 app.js 가 url 의 refresh 카운터를 올려 교체를 일으킨다.
+ */
+function buildBox({ filebox, onToggle, onRefresh }) {
+  const url = fileboxRefreshUrl(filebox.url, filebox.refresh ?? 0);
+  const signature = JSON.stringify([url, filebox.url, filebox.title]);
+  return signed(el('section', { class: 'pane pane-box', 'aria-label': filebox.title, 'data-testid': 'filebox-pane' },
+    el('header', { class: 'appbar' },
+      el('button', { type: 'button', class: 'icon ghost back', 'aria-label': strings.box.close, onclick: onToggle }, '←'),
+      el('div', { class: 'titles' }, el('h2', {}, '🗂 ', filebox.title))),
+    el('div', { class: 'filebox-tools' },
+      el('button', { type: 'button', class: 'secondary small', onclick: onRefresh }, `🔄 ${strings.box.refresh}`),
+      el('a', { class: 'button ghost small', href: filebox.url, target: '_blank', rel: 'noopener noreferrer' }, strings.box.newWindow)),
+    el('p', { class: 'hint meta' }, strings.box.loginHint),
+    el('div', { class: 'filebox-frame' },
+      el('iframe', { src: url, title: filebox.title, loading: 'lazy', referrerpolicy: 'strict-origin-when-cross-origin' }))), signature);
+}
+
+/** shell 의 보관함 pane 을 box(없으면 제거)에 맞춘다. 서명이 같으면 iframe 을 건드리지 않는다. */
+function updateBoxPane(shell, box) {
+  const old = shell.querySelector(':scope > .pane-box');
+  if (!box) { old?.remove(); delete shell.dataset.box; return; }
+  const fresh = buildBox(box);
+  if (!old) shell.append(fresh);
+  else if (signatureOf(old) !== signatureOf(fresh)) old.replaceWith(fresh);
+  shell.dataset.box = box.open ? 'open' : 'closed';
 }
 
 // ---- 사진 크게 보기 ----
