@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -89,7 +91,7 @@ fun SetupScreen(settings: Settings, onSaved: () -> Unit) {
     var token by rememberSaveable { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     Scaffold(topBar = { TopAppBar(title = { Text(Strings.setupTitle) }) }) { pad ->
-        Column(Modifier.padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.padding(pad).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedTextField(relay, { relay = it }, label = { Text(Strings.relayField) }, supportingText = { Text(Strings.relayHint) }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Text(Strings.actorTitle, style = MaterialTheme.typography.titleMedium)
             OutlinedTextField(actor, { actor = it.lowercase() }, label = { Text(Strings.actorField) }, supportingText = { Text(Strings.actorHint) }, singleLine = true, modifier = Modifier.fillMaxWidth(), enabled = settings.actor == null)
@@ -117,7 +119,7 @@ fun EnrollScreen(ui: HubUi, json: String, onRetry: () -> Unit) {
     val clipboard = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
     Scaffold(topBar = { TopAppBar(title = { Text(Strings.enrollTitle) }) }) { pad ->
-        Column(Modifier.padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.padding(pad).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(Strings.enrollBody)
             Text(Strings.fingerprintLabel, style = MaterialTheme.typography.labelLarge)
             Text(ui.fingerprint ?: "", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
@@ -137,7 +139,7 @@ fun EnrollScreen(ui: HubUi, json: String, onRetry: () -> Unit) {
 fun LoginScreen(settings: Settings, onSaved: () -> Unit) {
     var token by rememberSaveable { mutableStateOf("") }
     Scaffold(topBar = { TopAppBar(title = { Text(Strings.loginTitle) }) }) { pad ->
-        Column(Modifier.padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.padding(pad).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(Strings.loginBody)
             OutlinedTextField(token, { token = it }, label = { Text(Strings.tokenField) }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Button(enabled = token.isNotBlank(), onClick = { settings.accessToken = token; onSaved() }) { Text(Strings.loginButton) }
