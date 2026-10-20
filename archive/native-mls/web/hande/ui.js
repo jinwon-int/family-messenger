@@ -5,6 +5,7 @@
 import {
   strings, ACTOR, ROOM, DEVICE, formatTime, dayLabel, dayKey, groupFingerprint, displayName, humanSize,
 } from './strings.js';
+import {imageType, downloadSpec} from './attachment-view.js';
 
 // ---- DOM 도우미 ----
 
@@ -289,15 +290,17 @@ function firstVisibleRow(list) {
   return null;
 }
 
-/** 첨부 본체를 받아 attachment-<seq>.bin 으로 저장한다(blob 링크). */
+/** 첨부 본체를 받아 저장한다(blob 링크). 내용으로 판별된 이미지는 attachment-<seq>.jpg 등 + 그 MIME,
+ *  나머지는 attachment-<seq>.bin + 불활성 MIME(attachment-view.js downloadSpec). */
 async function downloadAttachment(entry, button, onOpenAttachment) {
   const label = button.textContent;
   button.disabled = true;
   button.textContent = strings.chat.downloading;
   try {
     const bytes = await onOpenAttachment(entry);
-    const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
-    const link = el('a', { href: url, download: `attachment-${entry.seq ?? 'x'}.bin`, hidden: true });
+    const {name, type} = downloadSpec(entry.seq, entry.image?.type ?? imageType(bytes));
+    const url = URL.createObjectURL(new Blob([bytes], { type }));
+    const link = el('a', { href: url, download: name, hidden: true });
     document.body.append(link);
     link.click();
     link.remove();
