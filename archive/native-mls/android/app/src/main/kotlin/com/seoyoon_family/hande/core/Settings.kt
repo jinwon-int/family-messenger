@@ -35,6 +35,11 @@ class Settings(context: Context, private val sealer: KeystoreSealer) {
             else prefs.edit().putString("access_token_sealed", Base64.encodeToString(sealer.seal(value.trim().toByteArray(Charsets.UTF_8)), Base64.NO_WRAP)).apply()
         }
 
+    /** 진행 중인 가족 로그인의 `state`(비밀 아님 — 공개 난수). 브라우저가 열려 있는 동안 프로세스가 죽어도 콜백을 검증할 수 있게 둔다. */
+    var pendingLoginState: String?
+        get() = prefs.getString("login_state", null)?.takeIf { it.isNotBlank() }
+        set(value) { if (value == null) prefs.edit().remove("login_state").apply() else prefs.edit().putString("login_state", value).apply() }
+
     val isConfigured: Boolean get() = relayUrl != null && actor != null
 
     companion object {

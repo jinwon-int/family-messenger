@@ -83,6 +83,10 @@ dependencies {
     implementation(libs.okhttp)
     // uniffi Kotlin 바인딩의 런타임 요구(#338 §5·android/README 의존성 표). Android 는 aar(libjnidispatch.so 포함).
     implementation("net.java.dev.jna:jna:${libs.versions.jna.get()}@aar")
+    // 가족 로그인(#338 B2): Chrome Custom Tabs — Google 은 WebView 로그인을 막는다. 콜백은 hande://auth intent-filter.
+    implementation(libs.androidx.browser)
+    // JVM 단위 테스트(AppLogin 순수 로직). kotlin-test-junit 은 Kotlin 핀과 같은 버전, JUnit 4 는 전이 의존.
+    testImplementation(libs.kotlin.test.junit)
 }
 
 tasks.register("ffiOutCheck") {

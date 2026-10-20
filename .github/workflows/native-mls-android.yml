@@ -145,6 +145,15 @@ jobs:
           test -d "$RUNNER_TEMP/ffi-out/kotlin" && test -d "$RUNNER_TEMP/ffi-out/jniLibs"
           gradle --no-daemon --console=plain -PhandeFfiOut="$RUNNER_TEMP/ffi-out" :app:assembleDebug 2>&1 | tail -n 80
           echo "app_build_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: JVM unit tests (AppLogin 순수 로직, B2) · iOS↔Android DDL v1 동기 검사
+        working-directory: archive/native-mls/android
+        run: |
+          gradle --no-daemon --console=plain -PhandeFfiOut="$RUNNER_TEMP/ffi-out" :app:testDebugUnitTest 2>&1 | tail -n 40
+          n=$(grep -ho 'tests="[0-9]*"' app/build/test-results/testDebugUnitTest/*.xml | grep -oE '[0-9]+' | paste -sd+ | bc)
+          f=$(grep -ho 'failures="[0-9]*"' app/build/test-results/testDebugUnitTest/*.xml | grep -oE '[0-9]+' | paste -sd+ | bc)
+          echo "unit tests: $n run, $f failed" | tee -a "$GITHUB_STEP_SUMMARY"
+          test "$n" -ge 10 && test "$f" -eq 0
+          scripts/check-ddl-sync.sh | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Acceptance — APK exists · 3 ABI .so packaged · bindings compiled in
         working-directory: archive/native-mls/android
         run: |
