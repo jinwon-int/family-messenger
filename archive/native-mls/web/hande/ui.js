@@ -328,7 +328,10 @@ function bubble(entry, onOpenAttachment) {
       ? el('button', { type: 'button', class: 'ghost small download', onclick: (event) => downloadAttachment(entry, event.currentTarget, onOpenAttachment) }, strings.chat.download)
       : null;
     body = entry.image
-      ? el('div', { class: 'body media' }, el('img', { src: entry.image.url, alt: entry.image.alt || strings.chat.image, loading: 'lazy' }), download)
+      ? el('div', { class: 'body media' },
+          el('button', { type: 'button', class: 'media-open', title: strings.chat.viewImage, 'aria-label': strings.chat.viewImage, onclick: () => openImageViewer(entry) },
+            el('img', { src: entry.image.url, alt: entry.image.alt || strings.chat.image, loading: 'lazy' })),
+          download)
       : el('div', { class: 'body file' }, el('span', { class: 'file-label' }, strings.chat.file(humanSize(entry.size ?? 0))), download);
   } else body = el('div', { class: 'body' }, entry.body);
   const foot = [entry.replay ? strings.chat.replay : null, time].filter(Boolean).join(' · ');
@@ -519,6 +522,7 @@ function patchRoomScreen(screen, built, room) {
 
 /** 목록 pane + 방 pane. 휴대폰은 data-view 로 하나씩, 900px 부터 나란히. room 이 null 이면 안내 자리. */
 export function renderShell(root, { list, room }) {
+  shellRoot = root;
   const snap = snapshotRoomPane(root);
   const view = room ? 'room' : 'list';
   const listPane = buildRoomList({ ...list, currentRoomId: room?.roomId ?? list.currentRoomId ?? null });
@@ -555,6 +559,25 @@ export function renderShell(root, { list, room }) {
     root.prepend(el('main', { class: 'shell', 'data-view': view }, listPane, roomPane));
   }
   mount?.();
+}
+
+// ---- 사진 크게 보기 ----
+
+/** 마지막으로 그린 shell 의 root — 뷰어 dialog 를 같은 top layer 에 붙인다(renderShell 이 갱신). */
+let shellRoot = null;
+
+/** 미리보기를 누르면 사진을 화면 가득 보여 주고, 아무 곳이나 한 번 더 누르거나 Esc 로 대화로 돌아간다. */
+function openImageViewer(entry) {
+  const root = shellRoot ?? document.body;
+  if (root.querySelector('dialog.viewer[open]')) return;
+  const dialog = el('dialog', { class: 'viewer', 'aria-label': entry.image?.alt || strings.chat.image, 'data-testid': 'image-viewer' },
+    el('img', { src: entry.image.url, alt: entry.image.alt || strings.chat.image }),
+    el('span', { class: 'viewer-hint' }, strings.chat.closeImage));
+  const finish = () => { if (dialog.isConnected) dialog.remove(); };
+  dialog.addEventListener('click', () => { if (dialog.open) dialog.close(); finish(); });   // 사진·여백 어디든 한 번
+  dialog.addEventListener('close', finish);   // Esc(cancel→close)
+  root.append(dialog);
+  dialog.showModal();
 }
 
 // ---- 시트 ----
