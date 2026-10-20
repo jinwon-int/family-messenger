@@ -48,7 +48,7 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for RoomError {
     }
 }
 
-fn relay_err(e: RelayError) -> RoomError {
+pub(crate) fn relay_err(e: RelayError) -> RoomError {
     match e {
         // host-core `room` 의 로컬 오류는 전부 MLS 쪽(스냅샷·롤백·암호화).
         RelayError::Local(what) => RoomError::Mls { reason: what.to_string() },
@@ -61,7 +61,7 @@ fn host_err(e: RoomError) -> RelayError {
     RelayError::Detail(e.to_string())
 }
 
-fn mls_err(e: MlsError) -> RoomError {
+pub(crate) fn mls_err(e: MlsError) -> RoomError {
     RoomError::Mls { reason: e.to_string() }
 }
 
@@ -156,8 +156,8 @@ pub trait RoomObserver: Send + Sync {
     fn halted(&self, reason: String, detail: String, sync: RoomSyncState) -> Result<(), RoomError>;
 }
 
-/// host-core `Client` 가 호스트 전송을 쓰게 하는 어댑터.
-struct ForeignTransport(Arc<dyn HttpTransport>);
+/// host-core `Client` 가 호스트 전송을 쓰게 하는 어댑터(`MlsRoom`·`MlsLobby` 공용).
+pub(crate) struct ForeignTransport(pub(crate) Arc<dyn HttpTransport>);
 
 impl api::Transport for ForeignTransport {
     fn send(
@@ -240,6 +240,36 @@ impl MlsRoom {
         Ok(Self::assemble(identity, device, restored, sync.sends, base_url, transport, observer))
     }
 
+    /// 다른 기기 상태로 이 방을 **시작**한다(#366 3c, iOS `LobbyKeyring.adoptRoom` 과 같은 규칙). 두 용도:
+    /// - 로비 시드(`MlsLobby::seed_state`)로 방을 새로 만들 때(`after` = 0) — 서명키가 로비·다른 방들과 같아야
+    ///   릴레이 정책 체인(기기당 키 1개)과 어긋나지 않는다(`new` 는 새 서명키를 만든다).
+    /// - 로비 key package 로 받은 Welcome(`MlsLobby::welcomes`)을 열 때 — 그 key package 의 비밀은 로비 상태에만 있으니
+    ///   그 상태로 엔진을 만들고 커서를 Welcome 앞(`after` = `seq - 1`)에 둔다. 다음 `poll` 이 join 한다.
+    ///
+    /// 그룹은 아직 없다(`dispatch("create")` 또는 Welcome `poll`). 돌아오기 전에 `persist` 를 한 번 부른다 — 상태·동기화 쌍이
+    /// 네트워크 전에 디스크에 있어야 한다(§4 불변식 3).
+    #[uniffi::constructor]
+    #[allow(clippy::too_many_arguments)]
+    pub fn adopt(
+        identity: String, room: String, state: Vec<u8>, after: i64, base_url: String,
+        transport: Arc<dyn HttpTransport>, observer: Arc<dyn RoomObserver>,
+    ) -> Result<Arc<Self>, RoomError> {
+        require_identifier("identity", &identity)?;
+        require_identifier("room", &room)?;
+        if after < 0 {
+            return Err(RoomError::Host { reason: format!("adopt: cursor {after} must not be negative") });
+        }
+        let device = Device::import_state(&identity, &state).map_err(|e| mls_err(rejected(e)))?;
+        let sync = RoomSync { room, cursor: after, acked: after, ack_sent: after, joinable: true, ..RoomSync::default() };
+        let adopted = Self::assemble(identity, device, sync, 0, base_url, transport, observer);
+        {
+            let mut inner = adopted.lock()?;
+            let mut host = Host { inner: &mut inner, identity: &adopted.identity };
+            room::SendHost::persist(&mut host).map_err(relay_err)?;
+        }
+        Ok(adopted)
+    }
+
     pub fn identity(&self) -> String {
         self.identity.clone()
     }
@@ -249,6 +279,14 @@ impl MlsRoom {
         let mut inner = self.lock()?;
         inner.client.set_access(match token { Some(t) => Access::Static(t), None => Access::None });
         Ok(())
+    }
+
+    /// `POST /v2/rooms/{room}/close`(§3.4 B1, #366 3c): 방을 닫는다 — 멤버 전원이 그 뒤 410 `room_closed` 를 읽는다.
+    /// 참 = 닫혔다(이미 닫혀 있었어도), 거짓 = 릴레이에 그 방이 없다(첫 초대가 나가지 않은 로컬 방). 403 `not_a_member` 등은
+    /// `Relay` 오류. 로컬 상태는 그대로 — 버리는 것은 호스트 몫.
+    pub fn close_room(&self) -> Result<bool, RoomError> {
+        let inner = self.lock()?;
+        inner.client.close_room(&inner.sync.room, &self.identity).map_err(relay_err)
     }
 
     /// 동기화 한 바퀴(봇 `poll_room` 과 같은 순서). 상태가 움직였으면 끝에 영속한다.

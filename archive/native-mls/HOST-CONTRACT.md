@@ -27,12 +27,30 @@
 |---|---|---|
 | `MlsRoom(identity, room, baseUrl, transport, observer)` | 새 신원·새 방(그룹 없음) | `identity` = `actor-device` 모양, `room` 은 식별자(영숫자 `_-`, ≤64) |
 | `MlsRoom.import(identity, room, state, sync, …)` | `persist` 가 받은 두 값으로 복원 | `sync.room == room` 아니면 `Host` 오류 · `halted` 는 그대로 복원(정지 유지) |
+| `MlsRoom.adopt(identity, room, state, after, …)` (3c) | **다른 상태로 방을 시작** — 로비 시드로 방을 만들 때(`after` = 0) · 로비 key package 로 받은 Welcome 을 열 때(`after` = `seq - 1`) | 그룹 없음(`dispatch("create")` 또는 Welcome `poll`) · 돌아오기 전에 `persist` 1회 · **방은 전부 `MlsLobby.seedState()` 에서 시작**해야 서명키가 하나다(`new` 는 새 키를 만든다 — 테스트 대역 전용) |
 | `poll()` | 동기화 한 바퀴(ack → GET → gap → 이벤트 순서 처리) → 상태가 움직였으면 `persist` | `Relay{transient}` 면 백오프 뒤 재호출(0.5 s → 30 s) · 정지된 방은 아무것도 안 함 |
 | `send(plaintext)` → `Sent | Queued | AlreadyDelivered` | 암호화 → dedup 키 예약 → **`persist`** → POST(epoch) | `Queued` = 409 cas_mismatch, 다음 `poll` 뒤 자동 재전송(≤8회, `Replayed`/`Dropped` 이벤트) |
 | `dispatch(method, bytes)` | `MlsDevice.dispatch` 와 같은 진입점·같은 롤백(create · key_package · invite_with_commit · remove_pending …) | 성공하면 **즉시 `persist`**(돌려받은 바이트가 릴레이로 나가기 전에 디스크에) · `create`/`join` 은 joined |
 | `postCommit(commit)` · `postWelcome(welcome, targets)` | 이 기기가 만든 commit / Welcome 게시 | 초대: `dispatch("invite_with_commit", kp)` → `u32le len‖commit‖welcome` 분리 → `postCommit` → `poll` 이 `OwnCommitMerged` 를 알리면 → `postWelcome(welcome, [대상])` |
 | `exportState()` · `syncState()` | 수동 스냅샷(디버그·백업) | 영속의 정본은 `persist` 콜백 |
 | `setAccessToken(token?)` | CF Access 토큰 교체 | 코어가 `Cf-Access-Jwt-Assertion` 헤더를 넣는다 — 전송 구현은 인증을 몰라도 된다 |
+| `closeRoom()` → `Boolean` (3c) | `POST /v2/rooms/{r}/close` — 방을 닫는다(멤버 전원 410 `room_closed`) | 참 = 닫혔다(이미 닫혀 있어도) · 거짓 = 릴레이에 그 방이 없다 · 403 `not_a_member` 는 `Relay` 오류 · 로컬 상태 버리기는 호스트 몫 |
+
+## 2b. `MlsLobby` API — 기기 수준(방 무관) 호출 (3c)
+
+한 기기에 하나. 로비 key package(#380 P5, iOS `LobbyKeyring` 과 같은 규칙) · 방 목록 · 푸시 등록. 영속은 `LobbyObserver.persist(slot)` 한 콜백(`LobbySlot{state, published}` 를 통째로 원자 저장 — `FileLobbyStore`).
+
+| 호출 | 하는 일 | 규칙 |
+|---|---|---|
+| `MlsLobby(identity, baseUrl, transport, observer)` | 새 기기 신원(서명키 생성) | 돌아오기 전에 `persist` 1회. **이 상태가 기기의 시드**: 등록 JSON `signing_key` = `publicKey()` hex, 방은 전부 `adopt(…, seedState(), 0, …)` 로 만든다 |
+| `MlsLobby.import(identity, slot, …)` | 영속된 슬롯으로 복원 | — |
+| `replenish(target)` → `LobbyReport{live, max, minted, pruned}` | 서버 `live` < `min(target, 서버 max)` 면 부족분을 만들어 게시. 먼저 장부 앞쪽(소비·만료분)의 로컬 비밀을 지운다 | 비밀은 **게시 전에** `persist`(persist-before-bytes-leave) · 게시 실패 시 새 비밀은 바로 지움 · 파사드 상한(8)에 닿으면 멈춤(오류 아님) · 옛 릴레이(로비 없음)는 404 `Relay(transient=false)` → 호스트가 건너뜀. 시점 = 시작·포그라운드·방 참여 뒤(iOS 와 같음), 기본 target 8 |
+| `welcomes()` → `[PendingWelcome{room, seq, epoch, createdAt}]` | 아직 읽지 않은 Welcome 이 있는 방들 | 모르는 방이면 `MlsRoom.adopt(identity, room, seedState(), seq - 1, …)` → `poll` 이 join · 이미 멤버인 방은 그 방의 `poll` 이 `WelcomeIgnored` |
+| `withdraw()` → 거둔 개수 | `DELETE /v2/lobby/keypackages` + 로컬 비밀 삭제(#389, 「이 기기 지우기」 직전) | — |
+| `status()` · `publishedCount()` · `slot()` · `seedState()` · `publicKey()` | 화면·등록·백업 | 영속의 정본은 `persist` |
+| `rooms()` → `[RoomListing]` | `GET /v2/rooms?device=` — 참여 방 목록(공개 필드만) | 방 목록 화면의 정본은 **로컬 상태 파일**; 이 목록은 새 방 발견·닫힘 표시용 |
+| `registerPush(token, topic)` · `unregisterPush()` | `/v2/push/devices` | `topic` = 패키지 id(`com.seoyoon_family.familychat`) · 와이어 필드는 오늘 `apns_token`(FCM 일반화 = 릴레이 #338 G3, 호출 모양은 그대로) |
+| `setAccessToken(token?)` | CF Access 토큰 교체 | `MlsRoom` 과 같다 |
 
 ## 3. 콜백
 
@@ -65,11 +83,11 @@
 | `Mls(reason)` | 파사드 거부 · 롤백 실패 · 암호화 실패 | 롤백 실패("state rollback …")는 재등록 필요. 그 밖은 로그 |
 | `Host(reason)` | 호스트 콜백이 throw · 전제 위반 | 호스트 버그 — 로그·보고 |
 
-## 6. 아직 코어에 없는 것(3c 후보 — 호스트가 임시로 하거나 보류)
-- 로비 key package 게시·보충(iOS #380 P5 상당: `_lobby` 슬롯) · 방 목록(`GET /v2/rooms`) · 푸시 등록(`/v2/push/devices` FCM 일반화 = #338 G3) · 첨부 크기 정책 · 방 닫기(`POST /v2/rooms/{r}/close`).
-- 이들은 `host-core api::Client` 에 이미 있는 것(`post_key_packages`, `consume_*`, `close_room`)부터 `MlsRoom` 에 노출한다.
+## 6. 아직 코어에 없는 것(호스트가 임시로 하거나 보류)
+- 3c 에서 코어로 들어간 것: 로비 key package 게시·보충(`MlsLobby.replenish`) · 방 목록(`rooms()`) · 푸시 등록(`registerPush`) · 방 닫기(`MlsRoom.closeRoom`) · 로비 Welcome 받아들이기(`MlsRoom.adopt`).
+- 남은 것: **첨부 크기 정책**(호스트 `application` 콜백에서 `client_id` `file-v1-…` 판정 뒤 적용) · 푸시 **와이어의 FCM 일반화**(릴레이 #338 G3 — 클라이언트 호출 모양은 그대로) · 로비 key package 의 **방 상태 사본에서의 정리**(`join` 이 남은 것을 모두 지우므로 방 쪽은 자동; 로비 쪽은 `replenish` 가 서버 `live` 기준으로 정리).
 
 ## 7. 검증
-- Rust: `ios-ffi/tests/room_host.rs`(in-memory 릴레이·관찰자, 6 시나리오).
-- JVM(Linux, CI `native-mls-android.yml`): [`android/host`](android/) — Kotlin 바인딩 + `JdkHttpTransport`/`FileRoomStore` + in-memory 릴레이로 **같은 시나리오**(두 기기 왕복 · 409 재전송 · 영속 뒤 `import` 이어 받기 · 정지). 실행 `android/scripts/jvm-roundtrip.sh`.
+- Rust: `ios-ffi/tests/room_host.rs`(3a, 6 시나리오) · `ios-ffi/tests/lobby_host.rs`(3c, 8 시나리오: 보충·상한·게시 실패 롤백·로비 Welcome adopt·import·회수·방 닫기·푸시) — 대역은 `tests/support/mod.rs`(in-memory 릴레이·관찰자).
+- JVM(Linux, CI `native-mls-android.yml`): [`android/host`](android/) — Kotlin 바인딩 + `JdkHttpTransport`/`FileRoomStore`/`FileLobbyStore` + in-memory 릴레이로 **같은 시나리오**(두 기기 왕복 · 409 재전송 · 영속 뒤 `import` 이어 받기 · 정지 · 로비 보충→adopt→방 목록→닫기→푸시→회수). 실행 `android/scripts/jvm-roundtrip.sh`.
 - 실기기·에뮬레이터(Android 앱)는 #338 B 단계.
