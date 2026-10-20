@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use family_mls_ios_ffi::{
-    HttpHeader, HttpResponse, HttpTransport, LobbyObserver, LobbySlot, MlsLobby, MlsRoom, RoomError, RoomEvent, RoomObserver,
+    HttpHeader, HttpResponse, HttpTransport, LobbyObserver, MlsLobbySlot, MlsLobby, MlsRoom, RoomError, RoomEvent, RoomObserver,
     RoomSyncState,
 };
 use native_mls_host::b64;
@@ -371,19 +371,19 @@ impl RoomObserver for Observer {
 pub struct LobbyStore {
     pub name: String,
     pub trace: Arc<Mutex<Vec<String>>>,
-    pub slots: Mutex<Vec<LobbySlot>>,
+    pub slots: Mutex<Vec<MlsLobbySlot>>,
 }
 
 impl LobbyStore {
     pub fn new(name: &str, trace: Arc<Mutex<Vec<String>>>) -> Arc<LobbyStore> {
         Arc::new(LobbyStore { name: name.into(), trace, ..LobbyStore::default() })
     }
-    pub fn last(&self) -> LobbySlot { self.slots.lock().unwrap().last().cloned().expect("lobby persisted at least once") }
+    pub fn last(&self) -> MlsLobbySlot { self.slots.lock().unwrap().last().cloned().expect("lobby persisted at least once") }
     pub fn count(&self) -> usize { self.slots.lock().unwrap().len() }
 }
 
 impl LobbyObserver for LobbyStore {
-    fn persist(&self, slot: LobbySlot) -> Result<(), RoomError> {
+    fn persist(&self, slot: MlsLobbySlot) -> Result<(), RoomError> {
         self.trace.lock().unwrap().push(format!("persist lobby {} published={}", self.name, slot.published.len()));
         self.slots.lock().unwrap().push(slot);
         Ok(())

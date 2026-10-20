@@ -2,7 +2,7 @@
 //! in-memory 릴레이(`tests/support`) 위에서 iOS `LobbyKeyring`·릴레이 lobby.go 와 같은 규칙으로 도는지.
 mod support;
 
-use family_mls_ios_ffi::{LobbySlot, MlsLobby, MlsRoom, RoomError, RoomEvent, SendResult};
+use family_mls_ios_ffi::{MlsLobbySlot, MlsLobby, MlsRoom, RoomError, RoomEvent, SendResult};
 use support::{founded_pair, ok, Harness, LobbyStore, Observer, BASE, LOBBY_MAX_DEFAULT};
 
 #[test]
@@ -136,7 +136,7 @@ fn import_restores_the_ledger_and_the_secrets() {
     let h = Harness::new();
     let (lobby, store) = h.lobby("owner-phone");
     ok(lobby.replenish(3), "publish");
-    let slot: LobbySlot = store.last();
+    let slot: MlsLobbySlot = store.last();
     drop(lobby);
 
     let again_store = LobbyStore::new("owner-phone-again", h.trace.clone());

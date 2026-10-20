@@ -22,7 +22,7 @@ use crate::{dispatch_guarded, rejected, MlsError};
 
 /// 로비 슬롯의 저장 형식(호스트가 통째로 봉인·영속; `import` 로 되돌린다).
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
-pub struct LobbySlot {
+pub struct MlsLobbySlot {
     /// 파사드 `export_state`: 서명키 시드 + 로비 key package 비밀.
     pub state: Vec<u8>,
     /// 릴레이가 받은 key package 바이트(게시 순 = 릴레이 소비 순).
@@ -31,7 +31,7 @@ pub struct LobbySlot {
 
 /// `GET /v2/lobby/status` — 서버의 미소비 수와 정책 상한.
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
-pub struct LobbyStatus {
+pub struct MlsLobbyStatus {
     pub live: u32,
     pub max: u32,
     pub ttl_seconds: i64,
@@ -39,7 +39,7 @@ pub struct LobbyStatus {
 
 /// `replenish` 한 번의 결과(화면·테스트).
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
-pub struct LobbyReport {
+pub struct MlsLobbyReport {
     /// 보충 뒤 서버의 미소비 수.
     pub live: u32,
     pub max: u32,
@@ -50,7 +50,7 @@ pub struct LobbyReport {
 
 /// 이 기기가 아직 읽지 않은 Welcome 을 들고 있는 방(`GET /v2/lobby/welcomes`). `MlsRoom::adopt(…, seq - 1, …)` 로 받아들인다.
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
-pub struct PendingWelcome {
+pub struct MlsLobbyWelcome {
     pub room: String,
     pub seq: i64,
     pub epoch: i64,
@@ -59,7 +59,7 @@ pub struct PendingWelcome {
 
 /// 이 기기가 참여하는 방 하나(`GET /v2/rooms`): 공개 필드만.
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
-pub struct RoomListing {
+pub struct MlsRoomListing {
     pub room: String,
     pub epoch: i64,
     pub revision: i64,
@@ -71,7 +71,7 @@ pub struct RoomListing {
 /// 로비 관찰자(호스트 구현): 슬롯 원자 영속. 돌아오기 전에는 key package 가 릴레이로 나가지 않는다.
 #[uniffi::export(foreign)]
 pub trait LobbyObserver: Send + Sync {
-    fn persist(&self, slot: LobbySlot) -> Result<(), RoomError>;
+    fn persist(&self, slot: MlsLobbySlot) -> Result<(), RoomError>;
 }
 
 /// 기기 하나 = 로비 파사드 `Device` 하나 + 게시 장부. 메서드는 `&self`, 내부 Mutex 로 직렬화.
@@ -112,7 +112,7 @@ impl MlsLobby {
     /// 영속된 슬롯으로 복원(`LobbyObserver::persist` 가 받은 값).
     #[uniffi::constructor]
     pub fn import(
-        identity: String, slot: LobbySlot, base_url: String, transport: Arc<dyn HttpTransport>, observer: Arc<dyn LobbyObserver>,
+        identity: String, slot: MlsLobbySlot, base_url: String, transport: Arc<dyn HttpTransport>, observer: Arc<dyn LobbyObserver>,
     ) -> Result<Arc<Self>, RoomError> {
         require_identifier("identity", &identity)?;
         let device = Device::import_state(&identity, &slot.state).map_err(|e| mls_err(rejected(e)))?;
@@ -137,7 +137,7 @@ impl MlsLobby {
     }
 
     /// 지금 슬롯의 스냅샷(디버그·백업 — 영속의 정본은 `persist` 콜백).
-    pub fn slot(&self) -> Result<LobbySlot, RoomError> {
+    pub fn slot(&self) -> Result<MlsLobbySlot, RoomError> {
         let inner = self.lock()?;
         Ok(Self::snapshot(&self.identity, &inner)?)
     }
@@ -154,15 +154,15 @@ impl MlsLobby {
     }
 
     /// `GET /v2/lobby/status?device=`. 옛 릴레이(로비 없음)는 404 를 `Relay{transient: false}` 로 돌려준다 — 호스트가 "로비 없음" 으로 건너뛴다.
-    pub fn status(&self) -> Result<LobbyStatus, RoomError> {
+    pub fn status(&self) -> Result<MlsLobbyStatus, RoomError> {
         let inner = self.lock()?;
         let status = inner.client.lobby_status(&self.identity).map_err(relay_err)?;
-        Ok(LobbyStatus { live: status.live as u32, max: status.max as u32, ttl_seconds: status.ttl_seconds })
+        Ok(MlsLobbyStatus { live: status.live as u32, max: status.max as u32, ttl_seconds: status.ttl_seconds })
     }
 
     /// 서버의 미소비 수가 `min(target, 서버 max)` 보다 적으면 그만큼 만들어 게시한다. 먼저 장부 앞쪽(소비·만료분)의 로컬 비밀을
     /// 지운다. 파사드 상한(8)에 닿으면 거기서 멈춘다(오류 아님). 앱은 시작·포그라운드·방 참여 뒤에 부른다(iOS 와 같은 시점).
-    pub fn replenish(&self, target: u32) -> Result<LobbyReport, RoomError> {
+    pub fn replenish(&self, target: u32) -> Result<MlsLobbyReport, RoomError> {
         let mut inner = self.lock()?;
         let status = inner.client.lobby_status(&self.identity).map_err(relay_err)?;
         let goal = (target as u64).min(status.max) as usize;
@@ -191,7 +191,7 @@ impl MlsLobby {
         // ③ 비밀이 먼저 디스크에(persist-before-bytes-leave).
         self.persist(&mut inner)?;
         if fresh.is_empty() {
-            return Ok(LobbyReport { live: status.live as u32, max: status.max as u32, minted: 0, pruned });
+            return Ok(MlsLobbyReport { live: status.live as u32, max: status.max as u32, minted: 0, pruned });
         }
         // ④ 게시. 실패하면 서버가 받지 않은 키의 비밀은 버린다 — 다음 보충이 다시 만든다.
         let refs: Vec<(String, Vec<u8>)> = fresh.iter().map(|kp| (api::ref_hex(kp), kp.clone())).collect();
@@ -200,7 +200,7 @@ impl MlsLobby {
             Ok(stored) => {
                 inner.published.extend(fresh.iter().cloned());
                 self.persist(&mut inner)?;
-                Ok(LobbyReport { live: stored.live as u32, max: status.max as u32, minted: fresh.len() as u32, pruned })
+                Ok(MlsLobbyReport { live: stored.live as u32, max: status.max as u32, minted: fresh.len() as u32, pruned })
             }
             Err(err) => {
                 let Inner { device, .. } = &mut *inner;
@@ -215,12 +215,12 @@ impl MlsLobby {
 
     /// `GET /v2/lobby/welcomes?device=`: 아직 읽지 않은 Welcome 이 있는 방들. 모르는 방이면 `MlsRoom::adopt(…, seed_state(), seq - 1, …)`
     /// 뒤 `poll` 이 join 한다; 이미 멤버인 방이면 그 방의 `poll` 이 알아서 넘어간다(`WelcomeIgnored`).
-    pub fn welcomes(&self) -> Result<Vec<PendingWelcome>, RoomError> {
+    pub fn welcomes(&self) -> Result<Vec<MlsLobbyWelcome>, RoomError> {
         let inner = self.lock()?;
         let list = inner.client.lobby_welcomes(&self.identity).map_err(relay_err)?;
         Ok(list
             .into_iter()
-            .map(|w| PendingWelcome { room: w.room, seq: w.seq, epoch: w.epoch, created_at: w.created_at })
+            .map(|w| MlsLobbyWelcome { room: w.room, seq: w.seq, epoch: w.epoch, created_at: w.created_at })
             .collect())
     }
 
@@ -237,12 +237,12 @@ impl MlsLobby {
     }
 
     /// `GET /v2/rooms?device=`: 이 기기가 참여하는 방 목록(공개 필드만).
-    pub fn rooms(&self) -> Result<Vec<RoomListing>, RoomError> {
+    pub fn rooms(&self) -> Result<Vec<MlsRoomListing>, RoomError> {
         let inner = self.lock()?;
         let list = inner.client.list_rooms(&self.identity).map_err(relay_err)?;
         Ok(list
             .into_iter()
-            .map(|r| RoomListing {
+            .map(|r| MlsRoomListing {
                 room: r.room, epoch: r.epoch, revision: r.revision, member: r.member,
                 keypackages_outstanding: r.keypackages_outstanding as u32, closed: r.closed,
             })
@@ -276,9 +276,9 @@ impl MlsLobby {
         self.inner.lock().map_err(|_| RoomError::Host { reason: "lobby lock poisoned".into() })
     }
 
-    fn snapshot(identity: &str, inner: &Inner) -> Result<LobbySlot, RoomError> {
+    fn snapshot(identity: &str, inner: &Inner) -> Result<MlsLobbySlot, RoomError> {
         let state = inner.device.export_state(identity).map_err(|e| mls_err(rejected(e)))?;
-        Ok(LobbySlot { state, published: inner.published.clone() })
+        Ok(MlsLobbySlot { state, published: inner.published.clone() })
     }
 
     fn persist(&self, inner: &mut Inner) -> Result<(), RoomError> {

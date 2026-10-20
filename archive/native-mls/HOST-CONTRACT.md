@@ -38,17 +38,17 @@
 
 ## 2b. `MlsLobby` API — 기기 수준(방 무관) 호출 (3c)
 
-한 기기에 하나. 로비 key package(#380 P5, iOS `LobbyKeyring` 과 같은 규칙) · 방 목록 · 푸시 등록. 영속은 `LobbyObserver.persist(slot)` 한 콜백(`LobbySlot{state, published}` 를 통째로 원자 저장 — `FileLobbyStore`).
+한 기기에 하나. 로비 key package(#380 P5, iOS `LobbyKeyring` 과 같은 규칙) · 방 목록 · 푸시 등록. 영속은 `LobbyObserver.persist(slot)` 한 콜백(`MlsLobbySlot{state, published}` 를 통째로 원자 저장 — `FileLobbyStore`).
 
 | 호출 | 하는 일 | 규칙 |
 |---|---|---|
 | `MlsLobby(identity, baseUrl, transport, observer)` | 새 기기 신원(서명키 생성) | 돌아오기 전에 `persist` 1회. **이 상태가 기기의 시드**: 등록 JSON `signing_key` = `publicKey()` hex, 방은 전부 `adopt(…, seedState(), 0, …)` 로 만든다 |
 | `MlsLobby.import(identity, slot, …)` | 영속된 슬롯으로 복원 | — |
-| `replenish(target)` → `LobbyReport{live, max, minted, pruned}` | 서버 `live` < `min(target, 서버 max)` 면 부족분을 만들어 게시. 먼저 장부 앞쪽(소비·만료분)의 로컬 비밀을 지운다 | 비밀은 **게시 전에** `persist`(persist-before-bytes-leave) · 게시 실패 시 새 비밀은 바로 지움 · 파사드 상한(8)에 닿으면 멈춤(오류 아님) · 옛 릴레이(로비 없음)는 404 `Relay(transient=false)` → 호스트가 건너뜀. 시점 = 시작·포그라운드·방 참여 뒤(iOS 와 같음), 기본 target 8 |
-| `welcomes()` → `[PendingWelcome{room, seq, epoch, createdAt}]` | 아직 읽지 않은 Welcome 이 있는 방들 | 모르는 방이면 `MlsRoom.adopt(identity, room, seedState(), seq - 1, …)` → `poll` 이 join · 이미 멤버인 방은 그 방의 `poll` 이 `WelcomeIgnored` |
+| `replenish(target)` → `MlsLobbyReport{live, max, minted, pruned}` | 서버 `live` < `min(target, 서버 max)` 면 부족분을 만들어 게시. 먼저 장부 앞쪽(소비·만료분)의 로컬 비밀을 지운다 | 비밀은 **게시 전에** `persist`(persist-before-bytes-leave) · 게시 실패 시 새 비밀은 바로 지움 · 파사드 상한(8)에 닿으면 멈춤(오류 아님) · 옛 릴레이(로비 없음)는 404 `Relay(transient=false)` → 호스트가 건너뜀. 시점 = 시작·포그라운드·방 참여 뒤(iOS 와 같음), 기본 target 8 |
+| `welcomes()` → `[MlsLobbyWelcome{room, seq, epoch, createdAt}]` | 아직 읽지 않은 Welcome 이 있는 방들 | 모르는 방이면 `MlsRoom.adopt(identity, room, seedState(), seq - 1, …)` → `poll` 이 join · 이미 멤버인 방은 그 방의 `poll` 이 `WelcomeIgnored` |
 | `withdraw()` → 거둔 개수 | `DELETE /v2/lobby/keypackages` + 로컬 비밀 삭제(#389, 「이 기기 지우기」 직전) | — |
 | `status()` · `publishedCount()` · `slot()` · `seedState()` · `publicKey()` | 화면·등록·백업 | 영속의 정본은 `persist` |
-| `rooms()` → `[RoomListing]` | `GET /v2/rooms?device=` — 참여 방 목록(공개 필드만) | 방 목록 화면의 정본은 **로컬 상태 파일**; 이 목록은 새 방 발견·닫힘 표시용 |
+| `rooms()` → `[MlsRoomListing]` | `GET /v2/rooms?device=` — 참여 방 목록(공개 필드만) | 방 목록 화면의 정본은 **로컬 상태 파일**; 이 목록은 새 방 발견·닫힘 표시용 |
 | `registerPush(token, topic)` · `unregisterPush()` | `/v2/push/devices` | `topic` = 패키지 id(`com.seoyoon_family.familychat`) · 와이어 필드는 오늘 `apns_token`(FCM 일반화 = 릴레이 #338 G3, 호출 모양은 그대로) |
 | `setAccessToken(token?)` | CF Access 토큰 교체 | `MlsRoom` 과 같다 |
 

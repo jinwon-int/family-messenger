@@ -3,7 +3,7 @@
 // 실행: android/scripts/jvm-roundtrip.sh (KOTLINC · JNA_JAR · BINDINGS_DIR · FFI_LIB_DIR).
 package com.seoyoon_family.hande.host
 
-import com.seoyoon_family.hande.mls.LobbySlot
+import com.seoyoon_family.hande.mls.MlsLobbySlot
 import com.seoyoon_family.hande.mls.MlsLobby
 import com.seoyoon_family.hande.mls.MlsRoom
 import com.seoyoon_family.hande.mls.RoomEvent
@@ -194,7 +194,7 @@ private fun scenarioLobby(tmp: File) {
     // 회수(#389): 서버 풀과 로컬 비밀을 함께 비운다.
     check(lobby.withdraw() == 3uL && relay.lobbyLive("owner-phone") == 0 && lobby.publishedCount() == 0u, "withdraw empties the pool and the ledger")
     check(lobby.replenish(8u).minted == 8u, "all local secrets were freed (8 fresh possible)")
-    val slot: LobbySlot = lobbyStore.load()!!
+    val slot: MlsLobbySlot = lobbyStore.load()!!
     check(slot.published.size == 8, "slot file follows the ledger (${slot.published.size})")
 }
 

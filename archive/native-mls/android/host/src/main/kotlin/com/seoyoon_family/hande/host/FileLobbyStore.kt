@@ -4,7 +4,7 @@
 package com.seoyoon_family.hande.host
 
 import com.seoyoon_family.hande.mls.LobbyObserver
-import com.seoyoon_family.hande.mls.LobbySlot
+import com.seoyoon_family.hande.mls.MlsLobbySlot
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -26,12 +26,12 @@ class FileLobbyStore(
     private val slotFile get() = File(dir, "lobby.slot")
 
     /** 돌아오기 전에는 key package 가 릴레이로 나가지 않는다 — 정말로 디스크에 닿아야 한다. */
-    override fun persist(slot: LobbySlot) {
+    override fun persist(slot: MlsLobbySlot) {
         writeAtomic(slotFile, seal(encode(slot)))
     }
 
     /** `MlsLobby.import` 에 넣을 슬롯. 없으면 null(새 기기 → `MlsLobby(identity, …)`). */
-    fun load(): LobbySlot? = if (slotFile.exists()) decode(open(slotFile.readBytes())) else null
+    fun load(): MlsLobbySlot? = if (slotFile.exists()) decode(open(slotFile.readBytes())) else null
 
     private fun writeAtomic(target: File, bytes: ByteArray) {
         val tmp = File(dir, target.name + ".tmp")
@@ -48,7 +48,7 @@ class FileLobbyStore(
     }
 
     companion object {
-        fun encode(slot: LobbySlot): ByteArray {
+        fun encode(slot: MlsLobbySlot): ByteArray {
             val buf = ByteArrayOutputStream()
             DataOutputStream(buf).use { out ->
                 out.writeInt(slot.published.size)
@@ -62,12 +62,12 @@ class FileLobbyStore(
             return buf.toByteArray()
         }
 
-        fun decode(bytes: ByteArray): LobbySlot {
+        fun decode(bytes: ByteArray): MlsLobbySlot {
             DataInputStream(ByteArrayInputStream(bytes)).use { input ->
                 val n = input.readInt()
                 val state = ByteArray(input.readInt()).also { input.readFully(it) }
                 val published = List(n) { ByteArray(input.readInt()).also { input.readFully(it) } }
-                return LobbySlot(state, published)
+                return MlsLobbySlot(state, published)
             }
         }
     }
