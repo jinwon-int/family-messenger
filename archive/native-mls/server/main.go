@@ -46,6 +46,7 @@ func main() {
 	hardMaxEpochs := flag.Int64("commit-welcome-hard-max-epochs", 0, "override the unconditional commit/welcome retention backstop (epochs); inside it but past -commit-welcome-keep-epochs they wait for every reader cursor")
 	staticDir := flag.String("static-dir", "", "serve the human acceptance client (web/relay-app.html + pkg/ bundle) under /app/ from this directory; assets are unauthenticated, /v2/* stays behind the JWT (#243)")
 	handeHost := flag.String("hande-host", "", "serve the hande web app at the site root for requests whose Host header is this name (e.g. hande.example.test; case-insensitive, :port ignored); /v2/* stays the API on every host. Requires -hande-dir (#431)")
+	handeFrameSrc := flag.String("hande-frame-src", "", "comma-separated https origins the hande web app may embed in an <iframe> (CSP frame-src; e.g. the family filebox for web/hande/filebox.js). Empty = no frames. Only with -hande-host")
 	handeDir := flag.String("hande-dir", "", "directory holding the built hande web app (index.html required), served only on -hande-host; assets are unauthenticated, /v2/* stays behind the JWT (#431)")
 	apnsKey := flag.String("apns-key", "", "Apple .p8 key file (outside the repository, mode 0600) for APNs token auth; enables push alerts after new application/welcome events (#275). Without it, push registrations are stored but nothing is sent")
 	apnsTeamID := flag.String("apns-team-id", "", "Apple Developer Team ID (10 chars), the provider-token issuer; required with -apns-key")
@@ -186,6 +187,9 @@ func main() {
 	if (*handeHost == "") != (*handeDir == "") {
 		log.Fatal("-hande-host and -hande-dir must be given together")
 	}
+	if *handeHost == "" && strings.TrimSpace(*handeFrameSrc) != "" {
+		log.Fatal("-hande-frame-src needs -hande-host")
+	}
 	if *handeHost != "" {
 		host := canonicalHost(*handeHost)
 		if host == "" {
@@ -198,6 +202,14 @@ func main() {
 		defer root.Close()
 		relay.handeHost = host
 		relay.handeRoot = root
+		frameSrc, err := parseFrameSrc(*handeFrameSrc)
+		if err != nil {
+			log.Fatalf("-hande-frame-src: %v", err)
+		}
+		relay.handeFrameSrc = frameSrc
+		if len(frameSrc) > 0 {
+			log.Printf("hande web app may embed iframes from %s (CSP frame-src)", strings.Join(frameSrc, " "))
+		}
 		log.Printf("hande web app served at the root of host %s from %s (unauthenticated assets; /v2/* stays behind the JWT)", host, *handeDir)
 	}
 	srv := &http.Server{

@@ -221,3 +221,74 @@ func TestCanonicalHost(t *testing.T) {
 		}
 	}
 }
+
+func TestHandeFrameSrc(t *testing.T) {
+	// parseFrameSrc: bare https origins only, lower-cased, de-duplicated, blanks ignored.
+	got, err := parseFrameSrc(" https://Files.Example.Test , https://files.example.test,, https://other.example.test:8443 ")
+	if err != nil || strings.Join(got, " ") != "https://files.example.test https://other.example.test:8443" {
+		t.Fatalf("parseFrameSrc: %v %v", got, err)
+	}
+	if got, err := parseFrameSrc(""); err != nil || len(got) != 0 {
+		t.Fatalf("empty: %v %v", got, err)
+	}
+	for _, bad := range []string{"http://files.example.test", "https://files.example.test/path", "https://files.example.test/?q=1",
+		"files.example.test", "javascript:alert(1)", "https://user@files.example.test", "https://"} {
+		if got, err := parseFrameSrc(bad); err == nil {
+			t.Fatalf("parseFrameSrc(%q) accepted: %v", bad, got)
+		}
+	}
+
+	// handeCSPWith: unchanged without origins; one frame-src directive with them.
+	if handeCSPWith(nil) != handeCSP || handeCSPWith([]string{}) != handeCSP {
+		t.Fatal("handeCSPWith(empty) must be handeCSP")
+	}
+	want := handeCSP + "; frame-src https://files.example.test https://other.example.test:8443"
+	if got := handeCSPWith([]string{"https://files.example.test", "https://other.example.test:8443"}); got != want {
+		t.Fatalf("csp: %s", got)
+	}
+
+	// Served: the hande host carries the frame-src policy on documents and assets; the relay app does not.
+	hande := t.TempDir()
+	writeTestFile(t, hande, "index.html", "<!doctype html><title>hande</title>")
+	writeTestFile(t, hande, "app.js", "export const hande = 1;")
+	relayApp := t.TempDir()
+	writeTestFile(t, relayApp, "relay-app.html", "<!doctype html><title>relay</title>")
+	r, srv := newTestRelay(t, testPolicy())
+	sroot, err := openStaticRoot(relayApp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { sroot.Close() })
+	hroot, err := openHandeRoot(hande)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { hroot.Close() })
+	r.staticRoot = sroot
+	r.handeHost = canonicalHost(testHandeHost)
+	r.handeRoot = hroot
+	r.handeFrameSrc = []string{"https://files.example.test"}
+	srv.Config.Handler = r.routes()
+	get := func(host, p string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest("GET", srv.URL+p, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = host
+		resp, err := http.DefaultTransport.RoundTrip(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+	for _, p := range []string{"/", "/app.js"} {
+		if resp := get(testHandeHost, p); resp.StatusCode != 200 || resp.Header.Get("Content-Security-Policy") != handeCSP+"; frame-src https://files.example.test" {
+			t.Fatalf("%s: %d csp=%q", p, resp.StatusCode, resp.Header.Get("Content-Security-Policy"))
+		}
+	}
+	if resp := get("relay.example.test", "/app/relay-app.html"); resp.StatusCode != 200 || strings.Contains(resp.Header.Get("Content-Security-Policy"), "frame-src") {
+		t.Fatalf("relay app: %d csp=%q", resp.StatusCode, resp.Header.Get("Content-Security-Policy"))
+	}
+}
