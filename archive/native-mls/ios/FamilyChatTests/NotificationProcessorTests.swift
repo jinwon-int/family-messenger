@@ -236,7 +236,7 @@ final class NotificationProcessorTests: XCTestCase {
         let namedProcessor = NotificationProcessor(named)
         XCTAssertEqual(namedProcessor.content(for: record("dungae-bot", .text, "답"))?.title, "🤖 등애✳️")
         XCTAssertEqual(namedProcessor.content(for: record("bot-gongmyoung", .text, "답"))?.title, "🤖 공명✴️")
-        XCTAssertEqual(namedProcessor.content(for: record("owner-iphone-27a879", .text, "응"))?.title, "jinon86")
+        XCTAssertEqual(namedProcessor.content(for: record("owner-iphone-27a879", .text, "응"))?.title, "진원")
         XCTAssertEqual(processor.content(for: record("alice-pc", .attachment, "image/jpeg"))?.body, Strings.pushPhoto)
         XCTAssertEqual(processor.content(for: record("alice-pc", .attachment, "IMG_0001.HEIC"))?.body, Strings.pushPhoto)
         XCTAssertEqual(processor.content(for: record("alice-pc", .attachment, "계약서.pdf"))?.body, Strings.pushFile)
