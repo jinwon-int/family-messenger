@@ -378,12 +378,22 @@ def run_flow(Dev, receipt, screenshot=None, relay_base=None):
     receipt['checks']['room_order_edit_persists_on_this_device'] = True
     owner.open_room_id(ROOM)
 
+    # ---- draft persistence (#480 B): a draft typed in fam3 survives the reload below
+    mom.open_room_id('fam3')
+    mom.page.fill('[data-testid="composer"]', '다 못 쓴 글')
+    mom.page.wait_for_function("() => localStorage.getItem(`hande:draft:${document.querySelector('[data-testid=\"device-label\"]').textContent.trim()}:fam3`) === '다 못 쓴 글'",
+                               timeout=10000)
+
     # ---- reload: identity + rooms reopen with one custody KDF; all three rooms still joined
     mom.reload()
     for room, n in ((ROOM, 2), ('fam2', 2), ('fam3', 2)):
         mom.wait_room(room, n, timeout=120000)
     assert mom.device_id() == mom_id
     receipt['checks']['reload_reopens_identity_and_all_rooms'] = True
+    mom.open_room_id('fam3')
+    assert mom.page.input_value('[data-testid="composer"]') == '다 못 쓴 글'
+    mom.page.fill('[data-testid="composer"]', '')
+    receipt['checks']['draft_survives_reload'] = True
 
     # ---- self-heal (2026-10-19 field failure): the page's device id drifted from the identity
     # store (a rotate while the stores stayed) → init_multi refused → the app drops the

@@ -8,6 +8,7 @@
 import * as ui from './ui.js';
 import {strings, displayName, isAgentDevice, isMine, roomLabel, previewLine, relativeTime} from './strings.js';
 import {orderRooms, moveRoom, readRoomOrder, writeRoomOrder} from './room-order.js';
+import {readDraft, writeDraft} from './drafts.js';
 import {createWorkerBridge} from './worker-bridge.js';
 import {createRelay} from './relay.js';
 import {createIdentityStore, databaseFor, ROOM, IDENTITY_DATABASE, LOBBY_DATABASE} from './identity.js';
@@ -129,7 +130,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       return {roomId: app.current, name: roomLabel(app.current), members: S.roster.slice(), joined: S.joined, halted: S.halted ? {...S.halted} : null,
         timeline: R.entries, draft: app.draft.get(app.current) ?? '', onSend: sendText, onAttach: sendAttachment, onOpenAttachment: e => e.load(),
         onBack: () => { app.roomOpen = false; render(); }, onOpenInvite: openInvite, onOpenMembers: openInvite, onOpenBox: app.filebox ? toggleBox : null,
-        onDraft: text => { app.draft.set(app.current, text); }, notice: null, sending: app.sending || S.transferring,
+        onDraft: text => { app.draft.set(app.current, text); writeDraft(storage, app.device, app.current, text); }, notice: null, sending: app.sending || S.transferring,
         attachmentPending: R.session.attachmentPending ? {size: 0, onRetry: () => sendAttachment(null)} : null};
     })() : null;
     const box = app.filebox
@@ -181,6 +182,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     const session = newSession(roomId);
     R = {session, entries: [], entryKeys: new Set(), unread: false, order: app.rooms.size};
     app.rooms.set(roomId, R); writeKnown();
+    // 새로고침 뒤에도 쓰던 글이 남는다(#480 B) — 메모리 초안이 없을 때만 저장분을 올린다.
+    if (!app.draft.has(roomId)) { const saved = readDraft(storage, app.device, roomId); if (saved) app.draft.set(roomId, saved); }
     try {
       await session.open(opts);
       await session.activate();
@@ -349,7 +352,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     const s = cur();
     if (!s || app.sending) return false;
     app.sending = true; render();
-    try { await s.send(text); app.draft.set(app.current, ''); app.rooms.get(app.current).unread = false; return true; }
+    try { await s.send(text); app.draft.set(app.current, ''); writeDraft(storage, app.device, app.current, ''); app.rooms.get(app.current).unread = false; return true; }
     catch (error) { status(error.message, 'danger'); return false; }
     finally { app.sending = false; render(); }
   }
