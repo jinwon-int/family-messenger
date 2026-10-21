@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ACTOR, ROOM, DEVICE, AGENT_ACTORS, strings, allStringsFilled,
-  formatTime, formatClock, dayLabel, dayKey, groupFingerprint, displayName, isAgentDevice, actorOf, isMine,
+  formatTime, formatClock, dayLabel, dayKey, groupFingerprint, displayName, isAgentDevice, actorOf, isMine, relativeTime,
   humanSize, previewLine, haltGuidance, roomLabel, agentNames,
 } from '../strings.js';
 
@@ -144,4 +144,17 @@ test('isMine: 같은 사람이면 다른 기기도 내 글, actor 를 모르면 
   assert.equal(isMine('owner-iphone-27a879', {device: 'owner-web-87576b', actor: null}), false);
   assert.equal(isMine('owner-web-87576b', {device: 'owner-web-87576b', actor: null}), true);
   assert.equal(isMine('owner-web-87576b', {device: '', actor: null}), false);
+});
+
+test('relativeTime: 방금 / N분 전 / N시간 전 / 어제 / M.D. — 패밀리챗 목록과 같은 라벨(#480 A)', () => {
+  const now = new Date(2026, 9, 21, 15, 0, 0).getTime();
+  assert.equal(relativeTime(now - 30_000, now), '방금');
+  assert.equal(relativeTime(now - 5 * 60_000, now), '5분 전');
+  assert.equal(relativeTime(now - 3 * 3_600_000, now), '3시간 전');
+  assert.equal(relativeTime(new Date(2026, 9, 20, 23, 0).getTime(), now), '16시간 전', '24시간 안은 시간 단위');
+  assert.equal(relativeTime(new Date(2026, 9, 20, 10, 0).getTime(), now), '어제');
+  assert.equal(relativeTime(new Date(2026, 9, 18, 9, 0).getTime(), now), '10.18.');
+  assert.equal(relativeTime(null, now), '');
+  assert.equal(relativeTime(0, now), '');
+  assert.equal(relativeTime(now + 60_000, now), '방금', '미래 시각은 방금으로');
 });

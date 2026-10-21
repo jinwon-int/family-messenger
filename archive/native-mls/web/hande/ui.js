@@ -177,23 +177,74 @@ export function setStatus(root, message, tone = 'info') {
 
 const STATE_LABEL = { pending: strings.rooms.pending, halted: strings.rooms.halted, closed: strings.rooms.closed };
 
-function roomListItem(room, onSelect, active) {
+/**
+ * @param {object} room
+ * @param {Function} onSelect
+ * @param {boolean} active
+ * @param {{index: number, count: number, onMove: (roomId: string, toIndex: number, focus?: 'up'|'down') => void}|null} order
+ *   순서 편집 중일 때만 — 행에 ▲▼가 붙고, PC 에서는 행을 끌어 옮길 수 있다(패밀리챗 roomListItem, #480 A).
+ */
+function roomListItem(room, onSelect, active, order = null) {
   const out = room.state === 'halted' || room.state === 'closed';
   const emoji = room.emoji || (out ? '🪵' : '🔥');
   const preview = room.preview || (out ? strings.rooms.closedPreview : strings.rooms.noMessages);
-  const signature = JSON.stringify([room.roomId, room.name, emoji, preview, room.time, Boolean(room.unread), room.state, Boolean(room.hasAgent), room.members ?? 0, active]);
-  const classes = ['room-item', `state-${room.state}`, room.unread && !out ? 'unread' : '', room.hasAgent && !out ? 'bright' : ''].filter(Boolean).join(' ');
-  return signed(el('li', { 'data-key': room.roomId },
-    el('button', { type: 'button', class: classes, 'data-room-id': room.roomId, 'data-testid': 'room-item', 'data-state': room.state, 'data-members': String(room.members ?? 0), 'aria-current': active ? 'true' : null, onclick: () => onSelect(room.roomId) },
-      el('span', { class: 'fire', 'aria-hidden': 'true' }, emoji),
-      el('span', { class: 'texts' },
-        el('span', { class: 'room-head' },
-          el('span', { class: 'room-name' }, room.name || room.roomId),
-          room.hasAgent && !out ? el('span', { class: 'pill agent' }, strings.rooms.agentBadge) : null,
-          STATE_LABEL[room.state] ? el('span', { class: `pill state-${room.state}` }, STATE_LABEL[room.state]) : null,
-          room.time ? el('span', { class: 'when' }, room.time) : null),
-        el('span', { class: 'preview' }, preview)),
-      room.unread && !out ? el('span', { class: 'ember-dot' }, el('span', { class: 'visually-hidden' }, strings.rooms.unreadLabel)) : null)), signature);
+  const unread = Boolean(room.unread) && !out;
+  const signature = JSON.stringify([room.roomId, room.name, emoji, preview, room.time, unread, room.state, Boolean(room.hasAgent), room.members ?? 0, active, order ? [order.index, order.count] : null]);
+  const classes = ['room-item', `state-${room.state}`, unread ? 'unread' : '', room.hasAgent && !out ? 'bright' : ''].filter(Boolean).join(' ');
+  const name = room.name || room.roomId;
+  const content = [
+    el('span', { class: 'fire', 'aria-hidden': 'true' }, emoji),
+    el('span', { class: 'texts' },
+      el('span', { class: 'room-head' },
+        // 이름과 N 배지를 한 묶음으로 둔다 — 긴 이름은 말줄임되고 배지는 이름 바로 옆에 항상 보인다.
+        el('span', { class: 'room-title' },
+          el('span', { class: 'room-name' }, name),
+          unread ? el('span', { class: 'unread-badge', title: strings.rooms.unreadLabel },
+            el('span', { 'aria-hidden': 'true' }, strings.rooms.unreadBadge),
+            el('span', { class: 'visually-hidden' }, strings.rooms.unreadLabel)) : null),
+        room.hasAgent && !out ? el('span', { class: 'pill agent' }, strings.rooms.agentBadge) : null,
+        STATE_LABEL[room.state] ? el('span', { class: `pill state-${room.state}` }, STATE_LABEL[room.state]) : null,
+        room.time ? el('span', { class: 'when' }, room.time) : null),
+      el('span', { class: 'preview' }, preview)),
+  ];
+  const rowAttrs = { class: classes, 'data-room-id': room.roomId, 'data-testid': 'room-item', 'data-state': room.state, 'data-members': String(room.members ?? 0), 'aria-current': active ? 'true' : null };
+  const dragAttrs = order ? {
+    class: 'reorderable',
+    draggable: 'true',
+    ondragstart: (event) => {
+      event.dataTransfer?.setData('text/plain', room.roomId);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+      event.currentTarget.classList.add('dragging');
+    },
+    ondragend: (event) => event.currentTarget.classList.remove('dragging'),
+    ondragover: (event) => { event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'; },
+    ondrop: (event) => {
+      event.preventDefault();
+      const dragged = event.dataTransfer?.getData('text/plain');
+      if (dragged && dragged !== room.roomId) order.onMove(dragged, order.index);
+    },
+  } : {};
+  return signed(el('li', { 'data-key': room.roomId, ...dragAttrs },
+    // 순서 편집 중에는 행이 버튼이 아니다 — 눌러도 방이 열리지 않고, 행 자체를 끌 수 있게.
+    order
+      ? el('div', rowAttrs, ...content)
+      : el('button', { type: 'button', ...rowAttrs, onclick: () => onSelect(room.roomId) }, ...content),
+    order ? el('span', { class: 'order-tools' },
+      el('button', { type: 'button', class: 'order-btn order-up', 'aria-label': strings.rooms.moveUp(name), disabled: order.index === 0 ? true : null, onclick: () => order.onMove(room.roomId, order.index - 1, 'up') }, '▲'),
+      el('button', { type: 'button', class: 'order-btn order-down', 'aria-label': strings.rooms.moveDown(name), disabled: order.index === order.count - 1 ? true : null, onclick: () => order.onMove(room.roomId, order.index + 1, 'down') }, '▼')) : null), signature);
+}
+
+/**
+ * 방을 옮긴 뒤 같은 방의 같은 방향 버튼에 포커스를 돌려준다 — 행이 다시 그려져 포커스가 body 로 떨어지지 않게,
+ * 키보드로 ▲를 연달아 누를 수 있게. 끝에 닿아 비활성이면 반대쪽으로(패밀리챗 focusRoomOrderControl).
+ */
+export function focusRoomOrderControl(root, roomId, direction) {
+  const row = [...root.querySelectorAll('ul.rooms > li')].find((li) => li.dataset.key === roomId);
+  if (!row) return;
+  const wanted = row.querySelector(`.order-${direction}`);
+  const other = row.querySelector(`.order-${direction === 'up' ? 'down' : 'up'}`);
+  const target = wanted && !wanted.disabled ? wanted : other && !other.disabled ? other : null;
+  target?.focus();
 }
 
 /** 머리 도구 버튼(아이콘 + 접근성 이름 + 툴팁). 바로 눌리게 팝오버 없이 둔다. */
@@ -218,22 +269,29 @@ function inviteCard(invite) {
       el('button', { type: 'button', class: 'ghost', 'data-testid': 'invite-ignore', disabled: invite.busy ? 'disabled' : null, onclick: () => invite.onIgnore?.() }, strings.lobby.ignore)));
 }
 
-function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu, onOpenJoin, onOpenCreate, onOpenBox = null, sync = null, notice = null, deviceLabel = '', invites = [] }) {
+function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu, onOpenJoin, onOpenCreate, onOpenBox = null, sync = null, notice = null, deviceLabel = '', invites = [], orderEditing = false, onToggleOrderEdit = null, onMoveRoom = null }) {
   const syncLabel = syncText(sync);
   const syncTone = sync?.reconnecting ? 'warn' : sync?.offlineSince ? 'danger' : 'ok';
-  const frame = JSON.stringify([syncLabel, syncTone, notice ? [notice.text, notice.tone] : null, rooms.length > 0, deviceLabel, Boolean(onOpenBox), invites.map((i) => [i.room, i.name ?? null, i.message ?? null, Boolean(i.busy)])]);
+  // 순서 편집은 방이 2개 이상이고 핸들러가 있을 때만(패밀리챗과 같음).
+  const canReorder = rooms.length > 1 && typeof onMoveRoom === 'function' && typeof onToggleOrderEdit === 'function';
+  const editing = canReorder && orderEditing;
+  const frame = JSON.stringify([syncLabel, syncTone, notice ? [notice.text, notice.tone] : null, rooms.length > 0, deviceLabel, Boolean(onOpenBox), canReorder, editing, invites.map((i) => [i.room, i.name ?? null, i.message ?? null, Boolean(i.busy)])]);
   const body = rooms.length === 0
     ? el('div', { class: 'empty campfire-empty' }, el('span', { class: 'big-fire', 'aria-hidden': 'true' }, '🪵'), el('p', { class: 'empty-title' }, strings.rooms.empty), el('p', { class: 'hint' }, strings.rooms.noRooms))
-    : el('ul', { class: 'rooms', 'aria-label': strings.rooms.listLabel }, rooms.map((room) => roomListItem(room, onSelect, room.roomId === currentRoomId)));
+    : el('ul', { class: 'rooms', 'aria-label': strings.rooms.listLabel }, rooms.map((room, index) => roomListItem(room, onSelect, room.roomId === currentRoomId,
+      editing ? { index, count: rooms.length, onMove: onMoveRoom } : null)));
   return signed(el('aside', { class: 'pane pane-list', 'aria-label': strings.rooms.title, 'data-testid': 'room-list' },
     el('header', { class: 'appbar' },
       brand('s'),
       el('div', { class: 'tools', role: 'group', 'aria-label': strings.rooms.actions },
+        canReorder ? el('button', { type: 'button', class: editing ? 'primary small order-toggle' : 'ghost small order-toggle', 'aria-pressed': editing ? 'true' : 'false', 'aria-label': editing ? strings.rooms.orderDoneLabel : strings.rooms.orderEditLabel, title: editing ? strings.rooms.orderDoneLabel : strings.rooms.orderEditLabel, 'data-testid': 'order-toggle', onclick: () => onToggleOrderEdit() },
+          editing ? strings.rooms.orderDone : [el('span', { class: 'order-icon', 'aria-hidden': 'true' }, strings.rooms.orderEditIcon), el('span', { class: 'order-label' }, strings.rooms.orderEdit)]) : null,
         toolButton('🔑', strings.rooms.join, 'open-join', onOpenJoin),
         toolButton('🔥', strings.rooms.create, 'open-create', onOpenCreate),
         onOpenBox ? toolButton('🗂', strings.box.toggle, 'open-box', onOpenBox) : null,
         toolButton('⚙', strings.rooms.settings, 'open-menu', onOpenMenu))),
     el('p', { class: `sync-line ${syncTone}`, role: 'status' }, el('span', { class: 'dot', 'aria-hidden': 'true' }), syncLabel),
+    editing ? el('p', { class: 'order-hint', role: 'status' }, strings.rooms.orderHint) : null,
     notice ? el('div', { class: `status ${notice.tone || 'info'} notice`, role: notice.tone === 'danger' ? 'alert' : 'status' },
       el('span', {}, notice.text),
       notice.onClose ? el('button', { type: 'button', class: 'ghost small', 'aria-label': strings.close, onclick: notice.onClose }, '✕') : null) : null,

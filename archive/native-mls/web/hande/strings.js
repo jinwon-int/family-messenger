@@ -88,6 +88,26 @@ export function formatTime(ms) {
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
+/**
+ * 목록 행의 거친 상대 시각: 방금 / N분 전 / N시간 전 / 어제 / M.D. — 패밀리챗 rooms.js relativeTime 이식(#480 A).
+ * 한 시간 아래는 분 단위라 8초 틱이 실제 분 경계에서만 라벨을 바꾼다.
+ * @param {number|null|undefined} ts epoch ms
+ * @param {number} now epoch ms
+ */
+export function relativeTime(ts, now, labels = strings.rooms) {
+  if (!Number.isFinite(ts) || ts <= 0) return '';
+  const diff = Math.max(0, now - ts);
+  const minute = 60_000;
+  if (diff < minute) return labels.justNow;
+  if (diff < 60 * minute) return labels.minutesAgo(Math.floor(diff / minute));
+  if (diff < 24 * 60 * minute) return labels.hoursAgo(Math.floor(diff / (60 * minute)));
+  const d = new Date(ts);
+  const n = new Date(now);
+  const startOfToday = new Date(n.getFullYear(), n.getMonth(), n.getDate()).getTime();
+  if (ts >= startOfToday - 24 * 60 * minute) return labels.yesterday;
+  return `${d.getMonth() + 1}.${d.getDate()}.`;
+}
+
 /** 동기화 상태줄 HH:MM:SS. */
 export function formatClock(ms) {
   if (!Number.isFinite(ms) || ms <= 0) return '';
@@ -227,7 +247,23 @@ export const strings = {
     noMessages: '아직 아무도 말하지 않았어요',
     selectHint: '왼쪽 목록에서 모닥불을 고르세요.',
     agentBadge: '에이전트',
-    unreadLabel: '안 읽은 글',
+    // 안 읽은 방 이름 옆 둥근 배지(패밀리챗과 같은 카카오톡식 N). 글자 N은 보조기기에서 숨기고 unreadLabel을 읽는다.
+    unreadBadge: 'N',
+    unreadLabel: '새 메시지',
+    justNow: '방금',
+    minutesAgo: (n) => `${n}분 전`,
+    hoursAgo: (n) => `${n}시간 전`,
+    yesterday: '어제',
+    photoPreview: '[사진]',
+    filePreview: '[파일]',
+    orderEditIcon: '↕',
+    orderEdit: '순서',
+    orderEditLabel: '대화 순서 편집',
+    orderDone: '완료',
+    orderDoneLabel: '대화 순서 편집 완료',
+    orderHint: '▲▼로 순서를 바꾸세요(PC는 끌어서 옮기기도 됩니다). 이 기기에만 저장됩니다.',
+    moveUp: (name) => `${name} 위로 이동`,
+    moveDown: (name) => `${name} 아래로 이동`,
     pending: '초대 대기',
     halted: '정지',
     closed: '닫힘',
