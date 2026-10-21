@@ -628,6 +628,11 @@ fn run_loop(
                         // Handled above; never text for the room.
                         emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": main.room, "reason": "tool_call" }));
                     }
+                    Outbound::Notice { room, .. } if *room != main.room => {
+                        // #474: only the agent room carries agent text (B-H3);
+                        // a notice addressed anywhere else stays unsaid.
+                        emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": main.room, "reason": "notice_not_agent_room" }));
+                    }
                     _ => {
                         let text = agent_text(&item);
                         emit(&serde_json::json!({
@@ -656,6 +661,8 @@ fn run_loop(
 fn agent_text(item: &Outbound) -> String {
     match item {
         Outbound::Reply { text, .. } => text.clone(),
+        Outbound::Interim { text, .. } => text.clone(),
+        Outbound::Notice { text, .. } => text.clone(),
         Outbound::ApprovalRequest { text, .. } => text.clone(),
         Outbound::ApprovalResolved { n, allowed } => {
             if *allowed { format!("승인 #{n}: 허용했습니다.") } else { format!("승인 #{n}: 거절했습니다.") }
@@ -672,6 +679,8 @@ fn agent_text(item: &Outbound) -> String {
 fn agent_kind(item: &Outbound) -> &'static str {
     match item {
         Outbound::Reply { .. } => "reply",
+        Outbound::Interim { .. } => "interim",
+        Outbound::Notice { .. } => "notice",
         Outbound::ApprovalRequest { .. } => "approval_request",
         Outbound::ApprovalResolved { .. } => "approval_resolved",
         Outbound::Uncertain { .. } => "uncertain",
@@ -1659,6 +1668,9 @@ for line in sys.stdin:
         assert_eq!(agent_text(&Outbound::ApprovalResolved { n: 2, allowed: true }), "승인 #2: 허용했습니다.");
         assert!(agent_text(&Outbound::Uncertain { seq: 9, reason: "watchdog".into() }).contains("#9"));
         assert_eq!(agent_kind(&Outbound::Reply { seq: 1, text: String::new() }), "reply");
+        assert_eq!(agent_kind(&Outbound::Interim { seq: 1, text: String::new() }), "interim");
+        assert_eq!(agent_text(&Outbound::Notice { room: "r".into(), text: "⏰".into() }), "⏰");
+        assert_eq!(agent_kind(&Outbound::Notice { room: "r".into(), text: String::new() }), "notice");
         // P4: a tool call is never room text.
         let call = Outbound::ToolCall { tool_id: "n1".into(), name: "room_status".into(), op: "status".into(), room: "-".into(), arg: String::new() };
         assert_eq!(agent_kind(&call), "tool_call");

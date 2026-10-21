@@ -53,6 +53,11 @@ pub const DEFAULT_QUEUE_MAX: usize = 8;
 /// Watchdog on top of the worker's own `--turn-timeout`: if the child never
 /// reports a result, the bot marks the turn uncertain itself.
 pub const DEFAULT_TURN_SECS: u64 = 1200;
+/// #474: `interim` messages one turn may post (progress lines between the
+/// owner's message and the answer). Past this the rest of the turn's interims
+/// are dropped — the final `result` still arrives — so a chatty or looping
+/// worker cannot flood the room or the relay.
+pub const DEFAULT_INTERIM_MAX: usize = 40;
 /// Largest `text` field the bot sends to the worker (fleet_core MAX_TEXT_BYTES
 /// is 16 KiB; the header the worker prepends needs a little room).
 const PROMPT_MAX_BYTES: usize = 15 * 1024;
@@ -78,6 +83,8 @@ pub struct Config {
     pub reply_max_bytes: usize,
     pub queue_max: usize,
     pub turn_secs: u64,
+    /// #474: cap on `interim` messages per turn (0 = never post interims).
+    pub interim_max: usize,
 }
 
 impl Config {
@@ -88,6 +95,7 @@ impl Config {
             reply_max_bytes: DEFAULT_REPLY_MAX_BYTES,
             queue_max: DEFAULT_QUEUE_MAX,
             turn_secs: DEFAULT_TURN_SECS,
+            interim_max: DEFAULT_INTERIM_MAX,
         }
     }
 }
@@ -98,6 +106,14 @@ impl Config {
 pub enum Outbound {
     /// The worker's answer for the turn started by relay seq `seq`.
     Reply { seq: i64, text: String },
+    /// #474: a progress line the worker produced while the turn started by
+    /// relay seq `seq` is still running (FLEET-WORKER `interim`). Posted like
+    /// a reply; the turn stays active until its `result`.
+    Interim { seq: i64, text: String },
+    /// #474: unsolicited text for room `room` (FLEET-WORKER `notice`: push
+    /// notifications, reminders, alerts the node raises outside any turn).
+    /// The poll loop posts it only when `room` is the agent room.
+    Notice { room: String, text: String },
     /// `⚠️ 승인 필요 #n` — ask the owner in the room.
     ApprovalRequest { n: u64, seq: i64, text: String },
     /// The worker closed approval `n` (owner answered, or its timeout denied).
@@ -174,6 +190,8 @@ pub struct Responder {
     startup_notices: Vec<Outbound>,
     /// P4: `tool_id` of the one tool call the poll loop still owes an answer.
     pending_tool: Option<String>,
+    /// #474: `interim` messages already posted for the active turn.
+    interim_sent: usize,
 }
 
 impl Responder {
@@ -243,6 +261,7 @@ impl Responder {
             gone: false,
             startup_notices: Vec::new(),
             pending_tool: None,
+            interim_sent: 0,
         };
         // A turn left active by an earlier run was never confirmed: say so
         // once, clear it, never re-run it.
@@ -325,6 +344,7 @@ impl Responder {
         // the duplicate guard, not the port).
         self.write_inbox(Some(&active))?;
         self.active = Some((active, Instant::now()));
+        self.interim_sent = 0;
         let line = serde_json::json!({
             "type": "turn",
             "turn_id": turn_id,
@@ -346,6 +366,16 @@ impl Responder {
 
     fn handle(&mut self, value: serde_json::Value, out: &mut Vec<Outbound>) -> Result<(), BotError> {
         let kind = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if kind == "notice" {
+            // #474: not tied to a turn (a reminder or alert the node raises on
+            // its own), so it is read before the active-turn filter below.
+            let room = value.get("room").and_then(|v| v.as_str()).unwrap_or("");
+            let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if is_room_id(room) && !text.is_empty() {
+                out.push(Outbound::Notice { room: room.to_string(), text: bounded_reply(text, self.config.reply_max_bytes) });
+            }
+            return Ok(());
+        }
         let turn_id = value.get("turn_id").and_then(|v| v.as_str()).unwrap_or("");
         let Some((active, _)) = &self.active else {
             // Output for no active turn (late events after a watchdog): ignore.
@@ -426,6 +456,15 @@ impl Responder {
                     return Ok(());
                 }
                 self.finish_active()?;
+            }
+            "interim" => {
+                // #474: a progress line for the active turn. Bounded like a
+                // reply and capped per turn; the turn stays active.
+                let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
+                if !text.is_empty() && self.interim_sent < self.config.interim_max {
+                    self.interim_sent += 1;
+                    out.push(Outbound::Interim { seq, text: bounded_reply(text, self.config.reply_max_bytes) });
+                }
             }
             "rejected" => {
                 let reason = value.get("reason").and_then(|v| v.as_str()).unwrap_or("rejected");
@@ -578,6 +617,11 @@ pub fn parse_approval_reply(text: &str) -> Option<(u64, bool)> {
     digits.parse().ok().map(|n| (n, allow))
 }
 
+/// #474 `notice` room: the relay identifier rule `[A-Za-z0-9_-]{1,64}`.
+fn is_room_id(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 /// P4 `tool_id`: `[A-Za-z0-9_-]{1,128}` (a worker nonce; echoed back verbatim).
 fn is_tool_id(s: &str) -> bool {
     !s.is_empty() && s.len() <= 128 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
@@ -719,7 +763,8 @@ mod tests {
     /// emits one `tool` frame (`tool_id` n1) built from the JSON (`tool2`: two
     /// frames, n1 and n2); the first `tool-result` it reads ends the turn with
     /// the frame echoed (sorted keys) in the result text. `askroom` asks a
-    /// `mcp__steward__room_invite` approval carrying arguments.
+    /// `mcp__steward__room_invite` approval carrying arguments. #474: `progress`
+    /// emits interims before its result; `notify` emits notices after it.
     const FAKE_WORKER: &str = r#"
 import json, sys
 for line in sys.stdin:
@@ -746,7 +791,18 @@ for line in sys.stdin:
                 frame.update(spec)
                 print(json.dumps(frame), flush=True)
             continue
+        if cmd["prompt"].startswith("progress"):
+            for i in range(3):
+                print(json.dumps({"type": "interim", "turn_id": tid, "text": "step %d" % i}), flush=True)
+            print(json.dumps({"type": "interim", "turn_id": "t-other", "text": "not this turn"}), flush=True)
+            print(json.dumps({"type": "interim", "turn_id": tid, "text": "   "}), flush=True)
         print(json.dumps({"type": "result", "turn_id": tid, "status": "complete", "session_id": "s1", "text": "echo:" + cmd["prompt"] + "|" + cmd["sender"]}), flush=True)
+        if cmd["prompt"].startswith("notify"):
+            # After the result: no turn is active when these arrive.
+            print(json.dumps({"type": "notice", "room": "soonwook", "text": "  reminder  "}), flush=True)
+            print(json.dumps({"type": "notice", "room": "bad room!", "text": "x"}), flush=True)
+            print(json.dumps({"type": "notice", "room": "soonwook", "text": " "}), flush=True)
+            print(json.dumps({"type": "notice", "text": "no room"}), flush=True)
     elif cmd["type"] == "tool-result":
         print(json.dumps({"type": "result", "turn_id": cmd["turn_id"], "status": "complete", "session_id": "s1", "text": "tool:" + json.dumps(cmd, sort_keys=True)}), flush=True)
     elif cmd["type"] in ("approve", "deny"):
@@ -784,6 +840,52 @@ for line in sys.stdin:
         assert_eq!(got[0], Outbound::Reply { seq: 10, text: "echo:hello|@owner-pc:hande".into() });
         assert_eq!(got[1], Outbound::Reply { seq: 11, text: "echo:second|@mom-iphone-1:hande".into() });
         assert!(r.active.is_none());
+    }
+
+    #[test]
+    fn interims_precede_the_reply_and_are_capped_per_turn() {
+        let mut r = fake(|_| {}, None);
+        assert_eq!(r.offer(inbound(5, "owner-pc", "progress")).unwrap(), Offer::Started);
+        let got = pump_until(&mut r, 4);
+        assert_eq!(got, vec![
+            Outbound::Interim { seq: 5, text: "step 0".into() },
+            Outbound::Interim { seq: 5, text: "step 1".into() },
+            Outbound::Interim { seq: 5, text: "step 2".into() },
+            Outbound::Reply { seq: 5, text: "echo:progress|@owner-pc:hande".into() },
+        ], "another turn's interim and a blank one are not posted");
+        assert!(r.active.is_none());
+
+        let mut r = fake(|c| c.interim_max = 2, None);
+        r.offer(inbound(6, "owner-pc", "progress")).unwrap();
+        assert_eq!(r.offer(inbound(7, "owner-pc", "progress again")).unwrap(), Offer::Queued { depth: 1 });
+        let got = pump_until(&mut r, 6);
+        assert_eq!(got, vec![
+            Outbound::Interim { seq: 6, text: "step 0".into() },
+            Outbound::Interim { seq: 6, text: "step 1".into() },
+            Outbound::Reply { seq: 6, text: "echo:progress|@owner-pc:hande".into() },
+            Outbound::Interim { seq: 7, text: "step 0".into() },
+            Outbound::Interim { seq: 7, text: "step 1".into() },
+            Outbound::Reply { seq: 7, text: "echo:progress again|@owner-pc:hande".into() },
+        ], "the cap counts per turn");
+
+        let mut r = fake(|c| c.interim_max = 0, None);
+        r.offer(inbound(8, "owner-pc", "progress")).unwrap();
+        assert_eq!(pump_until(&mut r, 1), vec![Outbound::Reply { seq: 8, text: "echo:progress|@owner-pc:hande".into() }]);
+    }
+
+    #[test]
+    fn notice_needs_no_active_turn_but_a_room_and_text() {
+        let mut r = fake(|_| {}, None);
+        r.offer(inbound(9, "owner-pc", "notify")).unwrap();
+        let mut got = pump_until(&mut r, 2);
+        std::thread::sleep(Duration::from_millis(300));
+        got.extend(r.pump().unwrap());
+        assert_eq!(got, vec![
+            Outbound::Reply { seq: 9, text: "echo:notify|@owner-pc:hande".into() },
+            Outbound::Notice { room: "soonwook".into(), text: "reminder".into() },
+        ], "a bad room, a blank text and a missing room are not posted");
+        assert!(r.active.is_none());
+        assert!(is_room_id("family-acc") && !is_room_id("") && !is_room_id(&"a".repeat(65)) && !is_room_id("방"));
     }
 
     #[test]
