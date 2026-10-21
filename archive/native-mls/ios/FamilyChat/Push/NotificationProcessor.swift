@@ -144,8 +144,11 @@ final class NotificationProcessor {
 
     /// 저장된 행 → 알림 문구. 해독 불가 행은 nil(대체 알림).
     func content(for record: MessageRecord) -> ProcessedNotification? {
+        // 제목 = Matrix 와 같은 닉네임(Strings+Names). 표에 없으면 actor 그대로.
         let actor = record.senderActor
-        let title = environment.agentActors.contains(actor) ? "🤖 \(actor)" : actor
+        let title = environment.agentActors.contains(actor)
+            ? "🤖 \(AgentRoster.displayName(device: record.senderDevice, names: Strings.agentNames))"
+            : Strings.peopleNames[actor] ?? actor
         let body: String
         switch record.kind {
         case .text, .system:

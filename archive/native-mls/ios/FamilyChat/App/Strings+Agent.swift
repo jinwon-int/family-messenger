@@ -2,10 +2,7 @@
 import Foundation
 import FamilyMLSCore
 extension Strings {
-    /// 에이전트 노드 이름(봇 기기 `bot-<node>` 의 <node>) → 보여 줄 이름. 없으면 <node> 그대로.
-    static let agentNames: [String: String] = [
-        "gongmyoung": "공명",
-    ]
+    // 에이전트·사람 닉네임 표(agentNames·peopleNames)는 Strings+Names.swift — NSE 와 공유.
     static let agentBadge = "에이전트"
     static func agentThinking(_ name: String) -> String { "\(name)\(subjectParticle(name)) 생각하는 중" }
     static func approvalTitle(_ name: String) -> String { "\(name)\(subjectParticle(name)) 허락을 구합니다" }
@@ -34,11 +31,6 @@ extension Strings {
     static let campfireEmpty = "아직 피운 모닥불이 없습니다"
     static let roomClosedPreview = "불이 꺼진 자리"
     static let roomNoMessages = "아직 아무도 말하지 않았어요"
-    /// 사람 actor → 보여 줄 이름. 없으면 actor 그대로.
-    static let peopleNames: [String: String] = [
-        "owner": "오너",
-        "jungin": "정인",
-    ]
     /// 기기 종류(기기 ID 둘째 마디) → 표시. 없으면 표시하지 않는다.
     static let deviceKinds: [String: String] = [
         "iphone": "아이폰", "ipad": "아이패드", "pc": "PC", "web": "웹", "android": "안드로이드", "mac": "맥",

@@ -102,6 +102,7 @@ targets:
       - path: FamilyChat/Engine/FfiEngine.swift
       - path: FamilyChat/Engine/DeviceIdentity.swift
       - path: FamilyChat/App/Strings.swift
+      - path: FamilyChat/App/Strings+Names.swift
       - path: ../ios-ffi/out/swift/FamilyMLS.swift
         group: Generated
     dependencies:
