@@ -33,4 +33,13 @@ enum ScrollFollow {
     static func needsBottomCorrection(sentinelBottom: Double, viewportHeight: Double, following: Bool) -> Bool {
         following && viewportHeight > 0 && sentinelBottom > viewportHeight + 0.5
     }
+
+    /// #472: 맨 위 표지가 이만큼 가까워지면 미리 과거 글을 읽는다(화면 높이의 일부 — 끝에 닿기 전에 붙여 둔다).
+    static let olderPrefetch: Double = 240
+
+    /// 위로 읽으러 올라가는 중(`following == false`)이고, 맨 위 표지의 아래 끝(`sentinelBottom`, 스크롤 뷰 좌표 — 위로 밀리면 음수)이
+    /// `olderPrefetch` 안으로 들어왔고, 이미 읽는 중이 아니며, 더 읽을 것이 있으면 true. 진입 직후(따라가는 중, 표지가 화면에 있어도)는 읽지 않는다.
+    static func shouldLoadOlder(sentinelBottom: Double, following: Bool, busy: Bool, exhausted: Bool) -> Bool {
+        !following && !busy && !exhausted && sentinelBottom > -olderPrefetch
+    }
 }
