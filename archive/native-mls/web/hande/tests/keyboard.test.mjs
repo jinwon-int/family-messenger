@@ -1,0 +1,147 @@
+// 키보드 판정 테스트 — 패밀리챗 web/app/tests/keyboard.test.js 이식(#478). node --test archive/native-mls/web/hande/tests/keyboard.test.mjs
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { composerKeyAction, viewKeyAction, listPageMove, isSplitLayout, listPageNavAction, timelineKeyAction, listRevealDelta } from '../keyboard.js';
+
+test('작성창 Enter는 전송이다', () => {
+  assert.equal(composerKeyAction({ key: 'Enter', shiftKey: false, isComposing: false }), 'send');
+});
+
+test('작성창 Shift+Enter는 줄바꿈이다', () => {
+  assert.equal(composerKeyAction({ key: 'Enter', shiftKey: true, isComposing: false }), 'newline');
+});
+
+test('한글 조합 중 Enter는 무시한다(조합 확정)', () => {
+  assert.equal(composerKeyAction({ key: 'Enter', shiftKey: false, isComposing: true }), null);
+  assert.equal(composerKeyAction({ key: 'Enter', shiftKey: true, isComposing: true }), 'newline');
+});
+
+test('작성창 다른 키는 판정 대상이 아니다', () => {
+  assert.equal(composerKeyAction({ key: 'a', shiftKey: false, isComposing: false }), null);
+  assert.equal(composerKeyAction({ key: 'Home', shiftKey: false, isComposing: false }), null);
+  assert.equal(composerKeyAction(), null);
+});
+
+test('대화형 요소 밖 Enter는 작성창으로 커서를 옮긴다', () => {
+  assert.equal(viewKeyAction({ key: 'Enter', target: { tagName: 'BODY' } }), 'focus-composer');
+  assert.equal(viewKeyAction({ key: 'Enter', target: {} }), 'focus-composer');
+  assert.equal(viewKeyAction({ key: 'Enter' }), 'focus-composer');
+});
+
+test('대화형 요소 위 Enter는 뺏지 않는다(버튼 활성화 등 원래 동작)', () => {
+  for (const tag of ['INPUT', 'TEXTAREA', 'BUTTON', 'A', 'SELECT', 'LABEL', 'SUMMARY']) {
+    assert.equal(viewKeyAction({ key: 'Enter', target: { tagName: tag } }), null);
+  }
+  assert.equal(viewKeyAction({ key: 'Enter', target: { tagName: 'DIV', isContentEditable: true } }), null);
+});
+
+test('Home은 어디서든 방 목록 뒤로가기다', () => {
+  assert.equal(viewKeyAction({ key: 'Home', target: { tagName: 'BODY' } }), 'back');
+  assert.equal(viewKeyAction({ key: 'Home', target: { tagName: 'TEXTAREA' } }), 'back');
+});
+
+test('다른 키는 뷰 판정 대상이 아니다', () => {
+  assert.equal(viewKeyAction({ key: 'a', target: { tagName: 'BODY' } }), null);
+  assert.equal(viewKeyAction({ key: 'Escape' }), null);
+  assert.equal(viewKeyAction(), null);
+});
+
+test('대화목록 Page Up/Page Down: 선택이 없으면 Page Down은 첫 항목, Page Up은 마지막 항목에서 시작한다', () => {
+  assert.equal(listPageMove({ key: 'PageDown', count: 3, currentIndex: -1 }), 0);
+  assert.equal(listPageMove({ key: 'PageUp', count: 3, currentIndex: -1 }), 2);
+});
+
+test('대화목록 Page Up/Page Down: 한 항목씩 옮기고 끝에서 멈춘다', () => {
+  assert.equal(listPageMove({ key: 'PageDown', count: 3, currentIndex: 0 }), 1);
+  assert.equal(listPageMove({ key: 'PageDown', count: 3, currentIndex: 2 }), 2, '마지막에서 Page Down은 제자리');
+  assert.equal(listPageMove({ key: 'PageUp', count: 3, currentIndex: 2 }), 1);
+  assert.equal(listPageMove({ key: 'PageUp', count: 3, currentIndex: 0 }), 0, '첫 항목에서 Page Up은 제자리');
+});
+
+test('대화목록 Page Up/Page Down: 범위를 벗난 현재 위치는 시작점 규칙으로 돌아온다', () => {
+  assert.equal(listPageMove({ key: 'PageDown', count: 2, currentIndex: 5 }), 0);
+  assert.equal(listPageMove({ key: 'PageUp', count: 2, currentIndex: 5 }), 1);
+});
+
+test('대화목록 Page Up/Page Down: 빈 목록이거나 Page Up/Page Down 키가 아니면 판정하지 않는다', () => {
+  assert.equal(listPageMove({ key: 'PageDown', count: 0 }), null);
+  assert.equal(listPageMove({ key: 'PageDown', count: -1 }), null);
+  assert.equal(listPageMove({ key: 'Enter', count: 3, currentIndex: 0 }), null);
+  assert.equal(listPageMove({ key: 'a', count: 3, currentIndex: 0 }), null);
+  assert.equal(listPageMove({ key: 'ArrowUp', count: 3, currentIndex: 1 }), null);
+  assert.equal(listPageMove({ key: 'ArrowDown', count: 3, currentIndex: 1 }), null);
+  assert.equal(listPageMove({}), null);
+});
+
+test('2분할: 900px 이상일 때만 목록|대화가 나란히다(한데 styles.css — 휴대폰 가로 분기 없음)', () => {
+  assert.equal(isSplitLayout((query) => ({ matches: query === '(min-width: 900px)' })), true);
+  assert.equal(isSplitLayout((query) => ({ matches: query.includes('orientation: landscape') })), false);
+  assert.equal(isSplitLayout(() => ({ matches: false })), false);
+  assert.equal(isSplitLayout(() => null), false);
+  assert.equal(isSplitLayout(), false);
+});
+
+test('Page Up/Down: 2분할은 미리보기, 단일 pane 목록은 포커스 이동, 단일 pane 방 화면은 방 전환이다', () => {
+  assert.equal(listPageNavAction({ key: 'PageDown', split: true, view: 'list' }), 'preview');
+  assert.equal(listPageNavAction({ key: 'PageUp', split: true, view: 'room', composerFocused: true }), 'preview');
+  assert.equal(listPageNavAction({ key: 'PageDown', split: false, view: 'list' }), 'navigate');
+  assert.equal(listPageNavAction({ key: 'PageDown', split: false, view: 'list', composerFocused: true }), null);
+  assert.equal(listPageNavAction({ key: 'PageDown', split: false, view: 'room' }), 'switch');
+  assert.equal(listPageNavAction({ key: 'PageUp', split: false, view: 'room', composerFocused: true }), 'switch');
+  assert.equal(listPageNavAction({ key: 'PageDown', split: false, view: 'box' }), null);
+  assert.equal(listPageNavAction({ key: 'PageDown', split: true, view: 'box' }), null);
+  assert.equal(listPageNavAction({ key: 'Enter', split: true, view: 'list' }), null);
+  assert.equal(listPageNavAction({}), null);
+});
+
+test('작성창 Esc는 대화 내용으로 포커스를 옮긴다', () => {
+  assert.equal(timelineKeyAction({ key: 'Escape', inComposer: true }), 'focus-timeline');
+  assert.equal(timelineKeyAction({ key: 'Escape', inComposer: false }), null, '작성창 밖 Esc는 뺏지 않는다');
+  assert.equal(timelineKeyAction({ key: 'Escape', onTimeline: true }), 'enter-caret', '대화 내용 Esc는 캐럿 모드(#284)');
+});
+
+test('작성창 End도 Esc처럼 대화 내용으로 포커스를 옮긴다(수정키 없을 때만)', () => {
+  assert.equal(timelineKeyAction({ key: 'End', inComposer: true }), 'focus-timeline');
+  assert.equal(timelineKeyAction({ key: 'End', inComposer: false }), null, '작성창 밖 End는 뺏지 않는다');
+  assert.equal(timelineKeyAction({ key: 'End', onTimeline: true }), null, '대화 내용 End는 브라우저 기본(맨 아래)');
+  for (const modifier of ['shiftKey', 'ctrlKey', 'altKey', 'metaKey']) {
+    assert.equal(timelineKeyAction({ key: 'End', inComposer: true, [modifier]: true }), null, `${modifier}+End는 편집 동작`);
+  }
+  assert.equal(timelineKeyAction({ key: 'Escape', inComposer: true, shiftKey: true }), 'focus-timeline', 'Esc 규칙은 그대로');
+});
+
+test('대화 내용에 포커스가 있을 때만 ↑/↓가 스크롤이다', () => {
+  assert.equal(timelineKeyAction({ key: 'ArrowUp', onTimeline: true }), 'scroll-up');
+  assert.equal(timelineKeyAction({ key: 'ArrowDown', onTimeline: true }), 'scroll-down');
+  assert.equal(timelineKeyAction({ key: 'ArrowUp', inComposer: true }), null, '작성창 ↑/↓는 커서 이동 그대로');
+  assert.equal(timelineKeyAction({ key: 'ArrowDown' }), null);
+  assert.equal(timelineKeyAction({ key: 'Enter', onTimeline: true }), null, 'Enter는 기존 작성창 이동 규칙');
+  assert.equal(timelineKeyAction(), null);
+});
+
+test('listRevealDelta: 보이는 행은 0, 아래로 가려지면 양수(아래 가장자리), 위로 가려지면 음수(위 가장자리)', () => {
+  const view = { viewTop: 100, viewBottom: 500 };
+  assert.equal(listRevealDelta({ itemTop: 120, itemBottom: 180, ...view }), 0, '완전히 보이는 행은 스크롤하지 않는다');
+  assert.equal(listRevealDelta({ itemTop: 100, itemBottom: 500, ...view }), 0, '가장자리에 딱 맞아도 보이는 것');
+  assert.equal(listRevealDelta({ itemTop: 480, itemBottom: 540, ...view }), 40, '아래로 일부 가려지면 가려진 만큼 내린다');
+  assert.equal(listRevealDelta({ itemTop: 900, itemBottom: 960, ...view }), 460, '화면 밖 아래 행은 아래 가장자리에 맞춘다');
+  assert.equal(listRevealDelta({ itemTop: 60, itemBottom: 120, ...view }), -40, '위로 일부 가려지면 가려진 만큼 올린다');
+  assert.equal(listRevealDelta({ itemTop: -300, itemBottom: -240, ...view }), -400, '화면 밖 위 행은 위 가장자리에 맞춘다');
+  assert.equal(listRevealDelta({ itemTop: 400, itemBottom: 1000, ...view }), 300, '행이 영역보다 크면 위 가장자리를 우선한다');
+  assert.equal(listRevealDelta({ itemTop: 50, itemBottom: 1000, ...view }), -50, '위아래 모두 벗어나도 위 가장자리 우선');
+  assert.equal(listRevealDelta({ itemTop: NaN, itemBottom: 10, ...view }), 0, '좌표가 없으면(레이아웃 전) 건드리지 않는다');
+  assert.equal(listRevealDelta(), 0);
+});
+
+test('캐럿 모드(#284): Esc=스크롤 모드 복귀, Enter=작성창, 나머지는 브라우저 기본', () => {
+  const caret = { onTimeline: true, caretMode: true };
+  assert.equal(timelineKeyAction({ key: 'Escape', ...caret }), 'exit-caret');
+  assert.equal(timelineKeyAction({ key: 'Enter', ...caret }), 'focus-composer');
+  assert.equal(timelineKeyAction({ key: 'Enter', ...caret, shiftKey: true }), null, '수정키 Enter는 뺏지 않는다(편집은 beforeinput에서 막힘)');
+  for (const key of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown']) {
+    assert.equal(timelineKeyAction({ key, ...caret }), null, `${key}는 캐럿 이동`);
+    assert.equal(timelineKeyAction({ key, ...caret, shiftKey: true }), null, `Shift+${key}는 선택`);
+  }
+  assert.equal(timelineKeyAction({ key: 'ArrowUp', onTimeline: true, caretMode: false }), 'scroll-up', '캐럿 모드 밖 ↑는 그대로 스크롤');
+  assert.equal(timelineKeyAction({ key: 'Escape', inComposer: true, caretMode: true }), 'focus-timeline', 'caretMode는 대화 내용 포커스일 때만 의미');
+});

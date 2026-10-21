@@ -437,8 +437,16 @@ function applyComposerState(form, { enabled, sending }) {
   form.querySelector('.attach').disabled = !enabled;
   const send = form.querySelector('.send');
   send.disabled = !enabled || Boolean(sending);
+  // Enter 의 requestSubmit() 은 비활성 보내기 버튼을 거치지 않으므로 submit 핸들러가 이 표식을 본다(#478).
+  if (sending) form.dataset.sending = 'true'; else delete form.dataset.sending;
   const label = sending ? strings.chat.sending : strings.chat.send;
   if (send.textContent !== label) send.textContent = label;
+}
+
+/** 작성창 높이를 내용에 맞춘다(최대 160px). */
+function autosize(textarea) {
+  textarea.style.height = 'auto';
+  textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`;
 }
 
 function buildComposer(room) {
@@ -456,8 +464,7 @@ function buildComposer(room) {
       form.requestSubmit();
     },
     oninput: (event) => {
-      textarea.style.height = 'auto';
-      textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`;
+      autosize(textarea);
       if (event.isTrusted) liveProps.get(form)?.onDraft?.(textarea.value);
     },
   });
@@ -465,13 +472,24 @@ function buildComposer(room) {
     event.preventDefault();
     const text = textarea.value;
     if (textarea.disabled || text.trim().length === 0) { textarea.focus(); return; }
+    // 보내는 중의 Enter 는 글을 그대로 둔다 — 예전에는 먼저 비운 뒤 app 의 sending 가드에 걸려 글이 사라졌다(#478).
+    if (form.dataset.sending === 'true') { textarea.focus(); return; }
     // 먼저 비우고 보낸다 — onSend 가 동기 재렌더를 일으켜도 초안이 되살아나지 않게(패밀리챗 2026-09-17).
     textarea.value = '';
     textarea.style.height = '';
     const props = liveProps.get(form);
     props?.onDraft?.('');
-    props?.onSend?.(text);
+    const result = props?.onSend?.(text);
     textarea.focus();
+    // 전송이 거절·실패(false)하면 글을 되살린다(room.js send 계약: 실패하면 호출자가 초안을 지킨다).
+    // 그 사이 더 쓴 글이 있으면 보낸 글 뒤에 이어 붙인다.
+    Promise.resolve(result).then((ok) => {
+      if (ok !== false || !textarea.isConnected) return;
+      const typed = textarea.value;
+      textarea.value = typed ? `${text}\n${typed}` : text;
+      autosize(textarea);
+      liveProps.get(form)?.onDraft?.(textarea.value);
+    }).catch(() => {});
   } },
     el('button', { type: 'button', class: 'icon ghost attach', 'aria-label': strings.chat.attach, title: strings.chat.attachHint, onclick: () => fileInput.click() }, '📎'),
     fileInput, textarea,
