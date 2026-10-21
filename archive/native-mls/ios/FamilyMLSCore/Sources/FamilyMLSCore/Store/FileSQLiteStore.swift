@@ -122,6 +122,30 @@ public final class FileSQLiteStore: MessageStore, OutboxStore, CursorStore, Atta
 
     // MARK: - AttachmentLoading (#364)
 
+    /// 최신 `limit` 건의 행 머리(#469): BLOB 없이 크기만, `ORDER BY seq DESC LIMIT` 로 끝에서 읽고 뒤집어 오름차순.
+    /// 전체 행을 읽지 않는다(`messages(room, seq)` PK 인덱스의 역방향 스캔).
+    public func messageHeadsTail(room: RoomID, limit: Int) throws -> [MessageHead] {
+        guard limit > 0 else { return [] }
+        lock.lock(); defer { lock.unlock() }
+        let stmt = try db.prepare("""
+        SELECT room, seq, sender_device, client_id, kind, body, COALESCE(length(attachment), 0), received_at, decrypted_by
+        FROM messages WHERE room = ? ORDER BY seq DESC LIMIT ?
+        """)
+        defer { stmt.finalize() }
+        stmt.bindText(room, at: 1)
+        stmt.bind(Int64(limit), at: 2)
+        var out: [MessageHead] = []
+        while try stmt.step() {
+            let record = MessageRecord(
+                room: stmt.columnText(0), seq: stmt.columnInt64(1), senderDevice: stmt.columnText(2), clientId: stmt.columnText(3),
+                kind: MessageRecord.Kind(rawValue: stmt.columnText(4)) ?? .system, body: stmt.columnText(5), attachment: nil,
+                receivedAt: Date(timeIntervalSince1970: stmt.columnDouble(7)),
+                decryptedBy: MessageRecord.DecryptedBy(rawValue: stmt.columnText(8)) ?? .app)
+            out.append(MessageHead(record: record, attachmentBytes: Int(stmt.columnInt64(6))))
+        }
+        return out.reversed()
+    }
+
     /// 행 머리만: `length(attachment)` 로 크기만 읽고 BLOB 은 가져오지 않는다.
     public func messageHeads(room: RoomID, after seq: Int64, limit: Int) throws -> [MessageHead] {
         lock.lock(); defer { lock.unlock() }
