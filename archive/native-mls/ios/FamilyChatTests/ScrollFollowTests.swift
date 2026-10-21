@@ -47,4 +47,15 @@ final class ScrollFollowTests: XCTestCase {
         XCTAssertFalse(ScrollFollow.shouldRescrollOnResize(old: 0, new: 620, following: true), "first layout")
         XCTAssertFalse(ScrollFollow.shouldRescrollOnResize(old: 620, new: 619.8, following: true), "sub-point jitter")
     }
+
+    /// #472: 위로 끝까지 올라오면 과거 글을 더 읽는다 — 따라가는 중(진입 직후, 표지가 화면에 있어도)·읽는 중·끝에 닿은 방은 읽지 않는다.
+    func testLoadOlderOnlyWhenScrolledUpNearTheTop() {
+        XCTAssertTrue(ScrollFollow.shouldLoadOlder(sentinelBottom: -100, following: false, busy: false, exhausted: false), "near the top while reading up")
+        XCTAssertTrue(ScrollFollow.shouldLoadOlder(sentinelBottom: 12, following: false, busy: false, exhausted: false), "sentinel on screen")
+        XCTAssertFalse(ScrollFollow.shouldLoadOlder(sentinelBottom: -5_000, following: false, busy: false, exhausted: false), "far above the viewport")
+        XCTAssertFalse(ScrollFollow.shouldLoadOlder(sentinelBottom: 12, following: true, busy: false, exhausted: false), "entry: following the bottom")
+        XCTAssertFalse(ScrollFollow.shouldLoadOlder(sentinelBottom: 12, following: false, busy: true, exhausted: false), "a page is already loading")
+        XCTAssertFalse(ScrollFollow.shouldLoadOlder(sentinelBottom: 12, following: false, busy: false, exhausted: true), "oldest row already shown")
+        XCTAssertFalse(ScrollFollow.shouldLoadOlder(sentinelBottom: SentinelTopKey.defaultValue, following: false, busy: false, exhausted: false), "not measured yet")
+    }
 }

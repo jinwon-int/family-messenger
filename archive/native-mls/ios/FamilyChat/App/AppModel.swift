@@ -832,19 +832,51 @@ final class AppModel: ObservableObject {
     /// 타임라인 창 = 방의 **최신** 500건(#469). 종전 `after: 0, limit: 500` 은 가장 오래된 500건이라 501번째부터
     /// — 내가 방금 보낸 글도 — 화면에 오르지 않았다(웹 `history-store.list` 와 같은 "최신 N건"으로 맞춤).
     static let timelineLimit = 500
+    /// #472: 위로 끝까지 올라오면 창을 이만큼 넓혀 과거 글을 더 읽는다(저장소 API 추가 없이 `messageHeadsTail(limit:)` 의 창만 키운다).
+    static let olderPage = 200
+    /// 방별 타임라인 창(행 수). 기본 `timelineLimit`; `loadOlder` 가 넓히고 `resetTimelineWindow` 가 되돌린다(방을 나갈 때).
+    private var timelineWindows: [RoomID: Int] = [:]
+    /// 마지막 읽기가 창보다 적게 돌아온 방 = 가장 오래된 행까지 다 올렸다 — 더 읽을 것이 없다.
+    private var timelineExhausted: Set<RoomID> = []
+
+    func timelineWindow(room: RoomID) -> Int { timelineWindows[room] ?? Self.timelineLimit }
+
+    /// 아직 위에 더 읽을 글이 있는가(마지막 `messages(room:)` 읽기 기준). 방을 한 번도 읽지 않았으면 true.
+    func canLoadOlder(room: RoomID) -> Bool { !timelineExhausted.contains(room) }
+
+    /// 창을 한 페이지 넓힌다. 다음 `messages(room:)` 가 더 오래된 행을 앞에 붙여 돌려준다. 더 읽을 것이 없으면 false(창 불변).
+    /// `messagesRevision` 은 올리지 않는다 — 그 경로는 "새 글 → 최하단" 이라 과거 읽기에서 화면이 튀면 안 된다(RoomView 가 직접 다시 읽는다).
+    @discardableResult
+    func loadOlder(room: RoomID) -> Bool {
+        guard canLoadOlder(room: room) else { return false }
+        timelineWindows[room] = timelineWindow(room: room) + Self.olderPage
+        return true
+    }
+
+    /// 방을 나가면 창을 기본으로 되돌린다(다음 진입은 다시 최신 500건, 폴링마다 큰 창을 읽지 않는다).
+    func resetTimelineWindow(room: RoomID) {
+        timelineWindows[room] = nil
+        timelineExhausted.remove(room)
+    }
 
     private func storedMessages(room: RoomID) -> [TimelineItem] {
+        let window = timelineWindow(room: room)
+        let items: [TimelineItem]
         if let loading = deps.messageStore as? AttachmentLoading,
-           let heads = try? loading.messageHeadsTail(room: room, limit: Self.timelineLimit) {
-            return heads.map { TimelineItem(record: $0.record, attachmentBytes: $0.attachmentBytes) }
+           let heads = try? loading.messageHeadsTail(room: room, limit: window) {
+            items = heads.map { TimelineItem(record: $0.record, attachmentBytes: $0.attachmentBytes) }
+        } else {
+            // 지연 로딩을 모르는 저장소(동결 `MessageStore` 만): 종전처럼 BLOB 포함으로 읽되 뒤 N 건만 올린다.
+            let all = (try? deps.messageStore.messages(room: room, after: 0, limit: Int.max)) ?? []
+            items = all.suffix(window).map { r in
+                TimelineItem(record: MessageRecord(room: r.room, seq: r.seq, senderDevice: r.senderDevice, clientId: r.clientId, kind: r.kind,
+                                                   body: r.body, attachment: nil, receivedAt: r.receivedAt, decryptedBy: r.decryptedBy),
+                             attachmentBytes: r.attachment?.count ?? 0)
+            }
         }
-        // 지연 로딩을 모르는 저장소(동결 `MessageStore` 만): 종전처럼 BLOB 포함으로 읽되 뒤 N 건만 올린다.
-        let all = (try? deps.messageStore.messages(room: room, after: 0, limit: Int.max)) ?? []
-        return all.suffix(Self.timelineLimit).map { r in
-            TimelineItem(record: MessageRecord(room: r.room, seq: r.seq, senderDevice: r.senderDevice, clientId: r.clientId, kind: r.kind,
-                                               body: r.body, attachment: nil, receivedAt: r.receivedAt, decryptedBy: r.decryptedBy),
-                         attachmentBytes: r.attachment?.count ?? 0)
-        }
+        // 창보다 적게 왔다 = 저장소의 가장 오래된 행까지 올렸다(#472).
+        if items.count < window { timelineExhausted.insert(room) } else { timelineExhausted.remove(room) }
+        return items
     }
 
     /// 첨부 본체(≤ `AttachmentFormat.maxBytes`). 말풍선이 보일 때 한 번 읽는다.

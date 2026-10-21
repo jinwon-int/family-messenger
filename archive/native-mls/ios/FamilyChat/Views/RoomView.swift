@@ -35,6 +35,10 @@ struct RoomView: View {
     /// 최하단 표지(높이 1pt, 항상 있음) — 진입·새 메시지·내용 증가 때의 스크롤 목표. 「생각하는 중」 줄은 에이전트가 바로 답하는 방
     /// (family-acc)에서는 높이 0이라 그 줄을 목표로 삼으면 끝까지 가지 않았다(오너 보고 build 31: family 는 되고 family-acc 는 2~3번째).
     private static let bottomSentinelID: Int64 = -2
+    /// #472: 맨 위 표지(높이 1pt) — 위로 끌어 올려 이 표지가 가까워지면 과거 글을 한 페이지 더 읽어 위에 붙인다.
+    private static let topSentinelID: Int64 = -3
+    /// 과거 글을 붙이는 중(한 번에 한 페이지 — 표지 측정이 연달아 와도 중복 읽기 없음).
+    @State private var olderBusy = false
     /// 꼬리(lazy 아님)에 두는 마지막 행 수. LazyVStack 은 화면 밖 행을 만들지 않아, 긴 마지막 글 아래의 바닥 표지가 생성되지 않으면
     /// 측정 보정이 돌지 않고 `scrollTo` 는 추정 위치(≈ 마지막 글의 시작)에 멈춘다(오너 보고 build 33: family-acc 마지막 글 첫 부분이 맨 아래).
     /// 꼬리는 항상 실제 높이로 존재하므로 표지 측정과 `scrollTo` 가 정확하다.
@@ -56,6 +60,12 @@ struct RoomView: View {
                 }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
+                        // #472: 맨 위 표지의 **실제** 위치 — 위로 읽으러 올라와 표지가 가까워지면 과거 글을 더 읽는다(onAppear 는 삽입 때 한 번만
+                        // 불려 쓸 수 없다; 바닥 표지와 같은 preference 실측).
+                        Color.clear.frame(height: 1).id(Self.topSentinelID)
+                            .background(GeometryReader { geo in
+                                Color.clear.preference(key: SentinelTopKey.self, value: Double(geo.frame(in: .named("timeline")).maxY))
+                            })
                         // 오래된 글은 lazy(화면에 보일 때 만든다).
                         LazyVStack(alignment: .leading, spacing: 8) {
                             ForEach(messages.dropLast(Self.tailRows)) { item in row(item, proxy) }
@@ -96,6 +106,15 @@ struct RoomView: View {
                         scrollToLatest(proxy, animated: false)
                     }
                 }
+                // #472: 위로 끝까지 올라오면(따라가기가 꺼진 뒤에만) 과거 글 한 페이지를 위에 붙인다.
+                .onPreferenceChange(SentinelTopKey.self) { top in
+                    if ScrollFollow.shouldLoadOlder(sentinelBottom: top, following: followLatest, busy: olderBusy,
+                                                    exhausted: !model.canLoadOlder(room: room)) {
+                        loadOlder(proxy)
+                    }
+                }
+                // 방을 나가면 창을 기본(최신 500건)으로 되돌린다 — 폴링마다 큰 창을 읽지 않는다.
+                .onDisappear { model.resetTimelineWindow(room: room) }
                 // 손가락으로 끌면(위로 읽으러 감) 늦은 이미지 로딩이 화면을 끌어내리지 않게 한다.
                 .simultaneousGesture(DragGesture(minimumDistance: 10).onChanged { _ in followLatest = false })
                 // 키보드가 올라오거나 작성창이 커져 칸이 줄면 최신 메시지를 키보드 바로 위로 다시 맞춘다.
@@ -270,6 +289,21 @@ struct RoomView: View {
     /// #405 P1: 승인 카드 버튼 = 봇이 알아듣는 「승인 n」/「거절 n」 글을 대신 보낸다.
     private func answerApproval(_ number: Int, allow: Bool) {
         Task { _ = await model.send(room: room, text: Strings.approvalReply(number, allow: allow)) }
+    }
+
+    /// #472: 과거 글 한 페이지를 위에 붙인다. 보던 행(종전 첫 행)을 화면 위에 그대로 두어 점프하지 않는다 — 새 행이 붙은 뒤
+    /// 한 런루프 뒤에 `scrollTo(anchor: .top)`(같은 틱에는 아직 배치되지 않아 조용히 무시된다, `scrollToLatest` 와 같은 이유).
+    /// `messagesRevision` 은 올리지 않는다(그 경로는 "새 글 → 최하단").
+    private func loadOlder(_ proxy: ScrollViewProxy) {
+        guard let anchor = messages.first?.id, model.loadOlder(room: room) else { return }
+        olderBusy = true
+        let before = messages.count
+        reload()
+        guard messages.count > before else { olderBusy = false; return }   // 더 읽은 것이 없다(저장소 끝) — 창은 닿았다고 기록됐다.
+        DispatchQueue.main.async {
+            proxy.scrollTo(anchor, anchor: .top)
+            olderBusy = false
+        }
     }
 
     /// #398: 첨부 본체가 읽혀 행이 커졌다 — 끝 쪽 행이고 따라가는 중이면 최하단을 다시 맞춘다.
@@ -579,5 +613,12 @@ struct ContentHeightKey: PreferenceKey {
 /// 바닥 표지의 아래 끝 y(스크롤 뷰 "timeline" 좌표) — 화면 높이보다 크면 아직 맨 아래가 아니다.
 struct SentinelBottomKey: PreferenceKey {
     static var defaultValue: Double = 0
+    static func reduce(value: inout Double, nextValue: () -> Double) { value = nextValue() }
+}
+
+/// #472: 맨 위 표지의 아래 끝 y(스크롤 뷰 "timeline" 좌표) — 위로 밀려 있으면 음수, `ScrollFollow.olderPrefetch` 안으로 오면 과거 글을 읽는다.
+/// 기본값은 화면 밖 먼 위(측정 전에는 읽지 않는다).
+struct SentinelTopKey: PreferenceKey {
+    static var defaultValue: Double = -100_000
     static func reduce(value: inout Double, nextValue: () -> Double) { value = nextValue() }
 }
