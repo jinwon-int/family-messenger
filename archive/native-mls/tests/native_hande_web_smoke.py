@@ -395,6 +395,10 @@ def run_flow(Dev, receipt, screenshot=None, relay_base=None):
     mom.page.fill('[data-testid="composer"]', '')
     receipt['checks']['draft_survives_reload'] = True
 
+    # ---- service worker (#480 D): registered as a module worker and active; /v2 is never intercepted
+    owner.page.wait_for_function("() => navigator.serviceWorker.getRegistration().then(r => Boolean(r && r.active))", timeout=30000)
+    receipt['checks']['service_worker_active'] = True
+
     # ---- self-heal (2026-10-19 field failure): the page's device id drifted from the identity
     # store (a rotate while the stores stayed) → init_multi refused → the app drops the
     # identity/lobby stores, restores the previous id and comes back with every room intact.
