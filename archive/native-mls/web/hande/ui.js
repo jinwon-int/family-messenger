@@ -6,6 +6,7 @@ import {
   strings, ACTOR, ROOM, DEVICE, formatTime, dayLabel, dayKey, groupFingerprint, displayName, humanSize,
 } from './strings.js';
 import {imageType, downloadSpec} from './attachment-view.js';
+import { pickTransferFile, transferHasFiles } from './composer-files.js';
 import {fileboxRefreshUrl} from './filebox.js';
 import {parseBlocks, inlineSpans, hasMarkdown} from './agent-markdown.js';
 
@@ -525,6 +526,13 @@ function buildComposer(room) {
       autosize(textarea);
       if (event.isTrusted) liveProps.get(form)?.onDraft?.(textarea.value);
     },
+    // 클립보드의 파일(스크린샷 등)은 첨부로 보낸다(#480 B). 글자만 있으면 브라우저 기본 붙여넣기.
+    onpaste: (event) => {
+      const file = pickTransferFile(event.clipboardData);
+      if (!file || textarea.disabled) return;
+      event.preventDefault();
+      liveProps.get(form)?.onAttach?.(file);
+    },
   });
   const form = el('form', { class: 'composer', onsubmit: (event) => {
     event.preventDefault();
@@ -603,7 +611,20 @@ function buildRoom(room) {
   applyComposerState(composer, { enabled: canCompose, sending: room.sending });
   const composerWrap = el('div', { class: 'composer-wrap', 'data-part': 'composer' }, composer);
   const parts = { header, notice, gate: haltBanner(room), timeline: timelineWrap, resend: resendBar(room.attachmentPending), composer: composerWrap };
-  const screen = el('section', { class: 'room-screen', 'data-room-id': room.roomId }, Object.values(parts));
+  const screen = el('section', { class: 'room-screen', 'data-room-id': room.roomId,
+    // 방 화면 어디에나 파일을 끌어다 놓으면 첨부로 보낸다(#480 B). 글자 선택을 끌 때는 표시도 켜지 않는다.
+    ondragenter: (event) => { if (transferHasFiles(event.dataTransfer)) { event.preventDefault(); screen.dataset.drop = 'over'; } },
+    ondragover: (event) => { if (transferHasFiles(event.dataTransfer)) { event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'; screen.dataset.drop = 'over'; } },
+    ondragleave: (event) => { if (!event.relatedTarget || !screen.contains(event.relatedTarget)) delete screen.dataset.drop; },
+    ondrop: (event) => {
+      delete screen.dataset.drop;
+      const file = pickTransferFile(event.dataTransfer);
+      if (!file) return;
+      event.preventDefault();
+      const current = liveProps.get(screen);
+      if (current && current.joined && !current.halted) current.onAttach?.(file);
+    },
+  }, Object.values(parts));
   liveProps.set(screen, room);
   const mount = ({ focus }) => {
     const textarea = composer.querySelector('textarea');
