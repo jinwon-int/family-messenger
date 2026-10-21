@@ -1,6 +1,6 @@
 // 이름 표(#422 · 결정 2026-10-19 ③): 에이전트·사람 닉네임과 대화방 이름 = **Matrix 와 동일**.
 // 정본은 Matrix profile displayname · m.room.name(2026-10-21 실측). 웹 `web/hande/strings.js` 의 같은 표와 함께 고친다.
-// 앱과 알림 확장(NSE)이 함께 쓴다 — UIKit 의존 없음(project.yml FamilyChatNSE sources).
+// 앱과 알림 확장(NSE)이 함께 쓴다 — UIKit 의존 없음(project.yml FamilyChatNSE sources · scripts/linux-smoke.sh 복사 목록).
 import Foundation
 
 extension Strings {
