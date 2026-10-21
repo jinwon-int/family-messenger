@@ -15,5 +15,16 @@ public struct MessageHead: Equatable {
 
 public protocol AttachmentLoading: AnyObject {
     func messageHeads(room: RoomID, after seq: Int64, limit: Int) throws -> [MessageHead]
+    /// 방의 **최신** `limit` 건의 행 머리를 seq 오름차순으로 (#469). `messageHeads(after: 0, limit:)` 는 가장 오래된
+    /// 쪽을 자르므로 타임라인에는 쓰지 않는다 — 501번째 행부터(방금 보낸 내 글도) 화면에 오르지 않았다.
+    func messageHeadsTail(room: RoomID, limit: Int) throws -> [MessageHead]
     func attachment(room: RoomID, seq: Int64) throws -> Data?
+}
+
+public extension AttachmentLoading {
+    /// 기본 구현: 전부 읽어 뒤 `limit` 건. 메모리 저장소(화면 뼈대·테스트 대역)용 — `FileSQLiteStore` 는 DESC 쿼리로 덮어쓴다.
+    func messageHeadsTail(room: RoomID, limit: Int) throws -> [MessageHead] {
+        guard limit > 0 else { return [] }
+        return Array(try messageHeads(room: room, after: 0, limit: Int.max).suffix(limit))
+    }
 }

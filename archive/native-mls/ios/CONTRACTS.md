@@ -87,6 +87,7 @@ abort-before-write · abort-after-tmp-before-rename · abort-after-rename-before
 ### 4.1 선택 계약 — 첨부 지연 로딩 `AttachmentLoading` (2026-10-15 추가, `Store/AttachmentLoading.swift`, #364)
 `MessageStore` 는 그대로. 첨부 상한이 5 MiB 가 되면서 타임라인 500행을 BLOB 포함으로 읽을 수 없어, `messageHeads(room:after:limit:)`(BLOB 없이 `attachmentBytes` 만)
 + `attachment(room:seq:)`(본체 한 건)를 별도 프로토콜로 두고 `FileSQLiteStore` 가 채택한다(`messageStore as? AttachmentLoading`). 미채택이면 종전 읽기.
+2026-10-21 추가(#469): `messageHeadsTail(room:limit:)` — 방의 **최신** `limit` 건(seq 오름차순). 타임라인은 이것을 쓴다; `messageHeads(after: 0, limit: 500)` 는 가장 오래된 500건이라 501번째 행부터 화면에 오르지 않았다. 프로토콜 확장 기본 구현(전부 읽어 꼬리) 이 있어 기존 채택자는 그대로 컴파일되고, `FileSQLiteStore` 는 `ORDER BY seq DESC LIMIT` 로 덮어쓴다.
 `RoomSyncEngine.Configuration.maxApplicationBytes`(기본 nil) 는 프로세스 예산 보호: 넘는 application 이벤트 **앞에서** 페이지를 끝내고(`SyncPass.deferredSeq`, 커서 불변) 제한 없는 호출자(앱)가 처리한다. NSE 기본 1 MiB.
 
 ## 4. 메시지 보관 — `MessageStore` / `MessageSchema.ddl` (`Store/MessageRecord.swift`)
