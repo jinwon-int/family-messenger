@@ -8,12 +8,23 @@ export const ROOM = /^[a-z0-9][a-z0-9-]{0,47}$/;
 /** 기기 ID(릴레이 validIdentifier): 영문·숫자·`-`·`_` 1~64자. */
 export const DEVICE = /^[A-Za-z0-9_-]{1,64}$/;
 
-/** 에이전트(봇) actor — 기기 ID 첫 마디. */
-export const AGENT_ACTORS = new Set(['bot']);
-/** 에이전트 노드 이름(`bot-<node>` 의 <node>) → 보여 줄 이름. */
-export const agentNames = { gongmyoung: '공명' };
-/** 사람 actor → 보여 줄 이름(iOS Strings.peopleNames). */
-export const peopleNames = { owner: '오너', jungin: '정인' };
+/**
+ * 에이전트 노드 이름 → 보여 줄 이름 = **Matrix 닉네임과 동일**(결정 2026-10-19 ③, #422 — 한글 + 계정 마커).
+ * 정본은 Matrix profile displayname(2026-10-21 실측). 바뀌면 iOS Strings.agentNames 와 함께 고친다.
+ */
+export const agentNames = {
+  bangtong: '방통✳️', daegyo: '대교✴️', dungae: '등애✳️', gongmyoung: '공명✴️', gongyung: '공융✴️', gwakga: '곽가✳️',
+  jingun: '진군✳️', nosuk: '노숙✳️', seoseo: '서서✴️', sogyo: '소교✴️', soonwook: '순욱✴️', yukson: '육손✳️',
+};
+/** 에이전트(봇) actor — 기기 ID 첫 마디. 옛 `bot-<node>` 와 새 `<node>-<suffix>`(#422) 둘 다(iOS FC_AGENT_ACTORS 와 같은 목록). */
+export const AGENT_ACTORS = new Set(['bot', ...Object.keys(agentNames)]);
+/** 사람 actor → 보여 줄 이름 = Matrix 닉네임과 동일(iOS Strings.peopleNames). */
+export const peopleNames = { owner: 'jinon86', jungin: '쩡이🍎' };
+/**
+ * 대화방 ID → 보여 줄 방 이름 = Matrix 방 이름과 동일. 노드 개인방(ID = 노드 이름)은 그 노드 닉네임.
+ * `family-acc` 는 오너 ↔ 공명 에이전트 방(Matrix 의 공명 개인방).
+ */
+export const roomNames = { family: '가족', 'family-acc': '공명✴️' };
 /** 기기 종류(기기 ID 둘째 마디) → 표시. 웹은 PC 판이므로 "PC". */
 export const deviceKinds = { iphone: '아이폰', ipad: '아이패드', pc: 'PC', web: 'PC', android: '안드로이드', mac: '맥' };
 
@@ -42,8 +53,15 @@ export function deviceKind(device) {
   return kind ? kind : null;
 }
 
+/** 대화방 ID → 보여 줄 방 이름(Matrix 방 이름과 동일). 모르는 방은 ID 그대로. */
+export function roomLabel(room) {
+  const id = String(room ?? '');
+  return roomNames[id] ?? agentNames[id] ?? id;
+}
+
 /**
- * 보여 줄 이름: 사람은 「오너 · PC」(이름 + 기기 종류), 봇은 「🤖 공명」(노드 이름). 모르는 actor 는 그대로.
+ * 보여 줄 이름: 사람은 「jinon86 · PC」(닉네임 + 기기 종류), 봇은 「🤖 등애✳️」(노드 닉네임). 모르는 actor 는 그대로.
+ * 옛 봇 기기 `bot-<node>` 는 둘째 마디, 새 봇 기기 `<node>-<suffix>` 는 actor 가 노드 이름.
  * iOS AgentRoster.displayName + Strings.senderLabel 과 같은 결.
  */
 export function displayName(device) {
@@ -52,7 +70,7 @@ export function displayName(device) {
   const actor = actorOf(text);
   if (isAgentDevice(text)) {
     const rest = text.slice(actor.length + 1);
-    const node = rest ? rest.split('-')[0] : '';
+    const node = actor === 'bot' ? (rest ? rest.split('-')[0] : '') : actor;
     return `🤖 ${node ? agentNames[node] ?? node : '봇'}`;
   }
   const name = peopleNames[actor] ?? actor;

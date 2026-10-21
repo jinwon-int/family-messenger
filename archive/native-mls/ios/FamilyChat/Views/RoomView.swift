@@ -203,13 +203,13 @@ struct RoomView: View {
         }
         .background(CampfireBackground())
         .background(keyboardShortcuts)
-        .navigationTitle(room)
+        .navigationTitle(Strings.roomLabel(room))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             // #405 P2: 제목 아래 불가에 둘러앉은 자리(사람 크림색 · 에이전트 파란색).
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 3) {
-                    Text(room).font(.headline).foregroundStyle(Hande.ink)
+                    Text(Strings.roomLabel(room)).font(.headline).foregroundStyle(Hande.ink)
                     SeatDots(people: glance.people.count, agents: glance.agents.count, size: 6)
                     // 릴레이에 닿지 않는 동안만(원문 오류 대신). 동기화가 한 번 성공하면 사라진다.
                     if model.reconnecting {

@@ -126,7 +126,7 @@ struct CampfireCard: View {
             .frame(width: 44, height: 44)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
-                    Text(room.room).font(.headline).foregroundStyle(out ? Hande.inkDim : Hande.ink)
+                    Text(Strings.roomLabel(room.room)).font(.headline).foregroundStyle(out ? Hande.inkDim : Hande.ink)
                     if glance.hasAgent && !out {
                         Text(Strings.agentBadge).font(.caption2.weight(.semibold))
                             .padding(.horizontal, 6).padding(.vertical, 2)
@@ -175,8 +175,8 @@ struct LobbyInviteRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(room).font(.headline)
-            Text(Strings.inviteBody(room)).font(.footnote).foregroundStyle(.secondary)
+            Text(Strings.roomLabel(room)).font(.headline)
+            Text(Strings.inviteBody(Strings.roomLabel(room))).font(.footnote).foregroundStyle(.secondary)
             if let message { Text(message).font(.footnote).foregroundStyle(.red) }
             HStack {
                 Button(Strings.acceptInvite) { Task { await accept() } }.buttonStyle(.borderedProminent).disabled(busy)

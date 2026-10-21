@@ -210,8 +210,8 @@ function syncText(sync) {
 /** 로비 초대 카드(#431 4단계): 운영자/봇이 로비 키로 보낸 새 대화방 Welcome — 수락 1탭 또는 무시. */
 function inviteCard(invite) {
   return el('li', { class: 'invite-item', 'data-testid': 'lobby-invite', 'data-room-id': invite.room },
-    el('p', { class: 'invite-head' }, el('span', { class: 'fire', 'aria-hidden': 'true' }, '🔥'), el('strong', {}, invite.room)),
-    el('p', { class: 'hint' }, strings.lobby.inviteBody(invite.room)),
+    el('p', { class: 'invite-head' }, el('span', { class: 'fire', 'aria-hidden': 'true' }, '🔥'), el('strong', {}, invite.name || invite.room)),
+    el('p', { class: 'hint' }, strings.lobby.inviteBody(invite.name || invite.room)),
     invite.message ? el('p', { class: 'feedback', role: 'alert' }, invite.message) : null,
     el('div', { class: 'actions' },
       el('button', { type: 'button', class: 'primary', 'data-testid': 'invite-accept', disabled: invite.busy ? 'disabled' : null, onclick: () => invite.onAccept?.() }, strings.lobby.accept),
@@ -221,7 +221,7 @@ function inviteCard(invite) {
 function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu, onOpenJoin, onOpenCreate, onOpenBox = null, sync = null, notice = null, deviceLabel = '', invites = [] }) {
   const syncLabel = syncText(sync);
   const syncTone = sync?.reconnecting ? 'warn' : sync?.offlineSince ? 'danger' : 'ok';
-  const frame = JSON.stringify([syncLabel, syncTone, notice ? [notice.text, notice.tone] : null, rooms.length > 0, deviceLabel, Boolean(onOpenBox), invites.map((i) => [i.room, i.message ?? null, Boolean(i.busy)])]);
+  const frame = JSON.stringify([syncLabel, syncTone, notice ? [notice.text, notice.tone] : null, rooms.length > 0, deviceLabel, Boolean(onOpenBox), invites.map((i) => [i.room, i.name ?? null, i.message ?? null, Boolean(i.busy)])]);
   const body = rooms.length === 0
     ? el('div', { class: 'empty campfire-empty' }, el('span', { class: 'big-fire', 'aria-hidden': 'true' }, '🪵'), el('p', { class: 'empty-title' }, strings.rooms.empty), el('p', { class: 'hint' }, strings.rooms.noRooms))
     : el('ul', { class: 'rooms', 'aria-label': strings.rooms.listLabel }, rooms.map((room) => roomListItem(room, onSelect, room.roomId === currentRoomId)));

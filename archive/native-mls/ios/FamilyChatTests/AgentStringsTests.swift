@@ -16,10 +16,11 @@ final class AgentStringsTests: XCTestCase {
     }
 
     func testSenderLabelUsesNamesAndDeviceKind() {
-        XCTAssertEqual(Strings.senderLabel(device: "owner-pc"), "오너 · PC")
-        XCTAssertEqual(Strings.senderLabel(device: "jungin-iphone-1b89e3"), "정인 · 아이폰")
+        XCTAssertEqual(Strings.senderLabel(device: "owner-pc"), "jinon86 · PC")
+        XCTAssertEqual(Strings.senderLabel(device: "jungin-iphone-1b89e3"), "쩡이🍎 · 아이폰")
         XCTAssertEqual(Strings.senderLabel(device: "dad"), "dad")
-        XCTAssertEqual(Strings.senderLabel(device: "bot-gongmyoung"), "공명")
+        XCTAssertEqual(Strings.senderLabel(device: "bot-gongmyoung"), "공명✴️")
+        XCTAssertEqual(Strings.senderLabel(device: "dungae-bot"), "등애✳️")
     }
 
     func testPreviewLineDropsMarkdownNoise() {
@@ -63,7 +64,13 @@ final class AgentStringsTests: XCTestCase {
         }
     }
 
-    func testKnownAgentName() {
-        XCTAssertEqual(Strings.agentNames["gongmyoung"], "공명")
+    /// #422 · 결정 2026-10-19 ③: 닉네임·방 이름 = Matrix 와 동일(웹 strings.test.mjs 와 같은 벡터).
+    func testNamesMatchMatrix() {
+        XCTAssertEqual(Strings.agentNames["gongmyoung"], "공명✴️")
+        XCTAssertEqual(Strings.agentNames.count, 12)
+        XCTAssertEqual(Strings.roomLabel("family"), "가족")
+        XCTAssertEqual(Strings.roomLabel("family-acc"), "공명✴️")
+        XCTAssertEqual(Strings.roomLabel("dungae"), "등애✳️")
+        XCTAssertEqual(Strings.roomLabel("test-rs2"), "test-rs2")
     }
 }

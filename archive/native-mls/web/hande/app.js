@@ -6,7 +6,7 @@
 // (owner actors join automatically, family devices accept with one tap — iOS
 // AppModel.discoverLobbyWelcomes / acceptInvite).
 import * as ui from './ui.js';
-import {strings, displayName, isAgentDevice, isMine} from './strings.js';
+import {strings, displayName, isAgentDevice, isMine, roomLabel} from './strings.js';
 import {createWorkerBridge} from './worker-bridge.js';
 import {createRelay} from './relay.js';
 import {createIdentityStore, databaseFor, ROOM, IDENTITY_DATABASE, LOBBY_DATABASE} from './identity.js';
@@ -73,7 +73,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     const R = app.rooms.get(roomId), S = R.session.state;
     const halted = S.halted ? {...S.halted} : null;
     const last = R.entries.filter(e => e.kind === 'text' || e.kind === 'attachment').at(-1);
-    return {roomId, name: roomId, emoji: halted ? '🪵' : '🔥',
+    return {roomId, name: roomLabel(roomId), emoji: halted ? '🪵' : '🔥',
       preview: last ? `${last.senderName}: ${last.kind === 'attachment' ? '사진' : last.body}` : (S.joined ? strings.rooms.noMessages : strings.room.notJoined),
       time: last?.ts ? ui.formatTime?.(last.ts) ?? '' : '', unread: R.unread && !(app.roomOpen && app.current === roomId),
       state: halted ? 'halted' : S.joined ? 'joined' : 'pending', hasAgent: S.roster.some(isAgentDevice), members: S.roster.length, order: R.order};
@@ -103,13 +103,13 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       onSelect: openRoomScreen, onOpenMenu: openMenu, onOpenJoin: openJoin, onOpenCreate: openCreate, onOpenBox: app.filebox ? toggleBox : null,
       sync: {lastSyncAt: anySynced, offlineSince: app.offlineAt, reconnecting: relay.offline},
       notice: app.notice, deviceLabel: app.device,
-      invites: app.invites.filter(i => !app.dismissed.has(i.room)).map(i => ({room: i.room, busy: !!i.busy, message: i.message ?? null,
+      invites: app.invites.filter(i => !app.dismissed.has(i.room)).map(i => ({room: i.room, name: roomLabel(i.room), busy: !!i.busy, message: i.message ?? null,
         onAccept: () => acceptInvite(i.room), onIgnore: () => { app.dismissed.add(i.room); render(); }})),
     };
     const R = app.roomOpen && app.current ? app.rooms.get(app.current) : null;
     const room = R ? (() => {
       const S = R.session.state;
-      return {roomId: app.current, name: app.current, members: S.roster.slice(), joined: S.joined, halted: S.halted ? {...S.halted} : null,
+      return {roomId: app.current, name: roomLabel(app.current), members: S.roster.slice(), joined: S.joined, halted: S.halted ? {...S.halted} : null,
         timeline: R.entries, draft: app.draft.get(app.current) ?? '', onSend: sendText, onAttach: sendAttachment, onOpenAttachment: e => e.load(),
         onBack: () => { app.roomOpen = false; render(); }, onOpenInvite: openInvite, onOpenMembers: openInvite, onOpenBox: app.filebox ? toggleBox : null,
         onDraft: text => { app.draft.set(app.current, text); }, notice: null, sending: app.sending || S.transferring,

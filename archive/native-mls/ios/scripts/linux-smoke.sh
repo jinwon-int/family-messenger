@@ -63,7 +63,7 @@ EOF
 
 # 앱 비UI 소스·테스트를 그대로 복사(뷰·SwiftUI 진입점·Keychain 테스트 제외).
 cp "$FFI_SWIFT_DIR/FamilyMLS.swift" "$work/Sources/FamilyChat/"
-cp "$ios"/FamilyChat/App/{AppModel,Strings,LiveDependencies}.swift "$ios"/FamilyChat/Sync/*.swift \
+cp "$ios"/FamilyChat/App/{AppModel,Strings,Strings+Names,LiveDependencies}.swift "$ios"/FamilyChat/Sync/*.swift \
    "$ios"/FamilyChat/Engine/{DeviceIdentity,InMemoryMessageStore,FfiEngine}.swift "$work/Sources/FamilyChat/"
 # 푸시 등록·NSE 처리(§12-D)는 플랫폼 무관 Swift(UIKit 부분은 #if canImport 로 가린다) — 디렉터리째 복사.
 cp "$ios"/FamilyChat/Push/*.swift "$work/Sources/FamilyChat/"

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   ACTOR, ROOM, DEVICE, AGENT_ACTORS, strings, allStringsFilled,
   formatTime, formatClock, dayLabel, dayKey, groupFingerprint, displayName, isAgentDevice, actorOf, isMine,
-  humanSize, previewLine, haltGuidance,
+  humanSize, previewLine, haltGuidance, roomLabel, agentNames,
 } from '../strings.js';
 
 test('ACTOR: 소문자 시작, 영문 소문자·숫자 2~16자', () => {
@@ -65,19 +65,44 @@ test('actorOf / isAgentDevice', () => {
   assert.ok(!isAgentDevice('mom-web-1a2b3c'));
 });
 
-test('displayName: 사람은 이름 · 기기 종류, 봇은 🤖 노드 이름', () => {
-  assert.equal(displayName('owner-iphone-27a879'), '오너 · 아이폰');
-  assert.equal(displayName('owner-pc'), '오너 · PC');
+test('displayName: 사람은 Matrix 닉네임 · 기기 종류, 봇은 🤖 Matrix 닉네임', () => {
+  assert.equal(displayName('owner-iphone-27a879'), 'jinon86 · 아이폰');
+  assert.equal(displayName('owner-pc'), 'jinon86 · PC');
   assert.equal(displayName('mom-web-1a2b3c'), 'mom · PC');
-  assert.equal(displayName('jungin-ipad-0f'), '정인 · 아이패드');
+  assert.equal(displayName('jungin-ipad-0f'), '쩡이🍎 · 아이패드');
   assert.equal(displayName('dad'), 'dad');
   assert.equal(displayName('mom-tablet-1'), 'mom');
-  assert.equal(displayName('bot-gongmyoung'), '🤖 공명');
-  assert.equal(displayName('bot-gongmyoung-2'), '🤖 공명');
+  // 옛 봇 기기 bot-<node>
+  assert.equal(displayName('bot-gongmyoung'), '🤖 공명✴️');
+  assert.equal(displayName('bot-gongmyoung-2'), '🤖 공명✴️');
   assert.equal(displayName('bot-luna'), '🤖 luna');
   assert.equal(displayName('bot'), '🤖 봇');
+  // 새 봇 기기 <node>-<suffix>(#422) — actor 가 노드 이름
+  assert.equal(displayName('dungae-bot'), '🤖 등애✳️');
+  assert.equal(displayName('soonwook-bot'), '🤖 순욱✴️');
+  assert.equal(displayName('gongmyoung-bot-1a2b'), '🤖 공명✴️');
   assert.equal(displayName(''), '');
   assert.equal(displayName(null), '');
+});
+
+test('AGENT_ACTORS: 옛 bot + 12노드(iOS FC_AGENT_ACTORS 와 같은 목록)', () => {
+  const nodes = 'bangtong,daegyo,dungae,gongmyoung,gongyung,gwakga,jingun,nosuk,seoseo,sogyo,soonwook,yukson'.split(',');
+  assert.deepEqual([...AGENT_ACTORS].sort(), ['bot', ...nodes].sort());
+  for (const node of nodes) {
+    assert.ok(isAgentDevice(`${node}-bot`), node);
+    assert.match(agentNames[node], /^[가-힣]+(✳️|✴️)$/, node);
+  }
+  assert.ok(!isAgentDevice('owner-web-87576b'));
+});
+
+test('roomLabel: Matrix 방 이름과 동일, 모르는 방은 ID', () => {
+  assert.equal(roomLabel('family'), '가족');
+  assert.equal(roomLabel('family-acc'), '공명✴️');
+  assert.equal(roomLabel('dungae'), '등애✳️');
+  assert.equal(roomLabel('nosuk'), '노숙✳️');
+  assert.equal(roomLabel('test-rs2'), 'test-rs2');
+  assert.equal(roomLabel(''), '');
+  assert.equal(roomLabel(undefined), '');
 });
 
 test('humanSize / previewLine', () => {
