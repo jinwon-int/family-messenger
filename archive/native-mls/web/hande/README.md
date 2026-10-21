@@ -15,6 +15,7 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
 ```text
 <hande-dir>/
   index.html styles.css strings.js ui.js app.js main.js          ← 화면·상태기계 (이 디렉터리)
+  keyboard.js shortcuts.js timeline-caret.js                     ← 키보드 판정·전역 단축키·캐럿 모드(패밀리챗 이식, #478)
   attachment-view.js agent-markdown.js                           ← 첨부 미리보기 판별 · 에이전트 답장 마크다운(iOS AgentMarkdown 블록 규칙 이식, 텍스트 노드만)
   room.js device.js relay.js identity.js worker-bridge.js        ← 방 세션(relay-app.js sync 이식)·기기(신원·로비·방 목록)·릴레이·신원
   durable-worker.js session-store.js history-store.js            ← openmls-browser/web 원본 그대로(build.sh 가 복사)
@@ -51,15 +52,32 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
 초대 카드(수락 1탭 / 무시). 「초대」는 방별 키 패키지 → 없으면 상대의 로비 키를 그 방으로 소비한다(iOS RoomMembership 과 동일).
 1차(방 1개) 설치는 첫 실행에서 기본 방 DB 의 서명키가 신원 스토어로 **이전**되므로 재등록이 필요 없다.
 
+## 키보드 (#478 — 패밀리챗 `web/app` 과 동일)
+
+판정은 `keyboard.js`(순수 함수), 전역 설치는 `shortcuts.js`(document 위임 — 목록·방 pane 이 교체돼도 유지), 캐럿 모드는 `timeline-caret.js`.
+시트(`dialog[open]`)가 떠 있거나 IME 조합 중이면 가로채지 않는다.
+
+| 키 | 어디서 | 동작 |
+|---|---|---|
+| Enter / Shift+Enter | 작성창 | 전송 / 줄바꿈(조합 확정 Enter 는 무시). 보내는 중의 Enter 는 글을 그대로 둔다. 전송이 실패하면 글을 되살린다 |
+| PageDown / PageUp | 2분할(900px~) | 목록 순서대로 다음/이전 방을 바로 열고 작성창에 커서(가려진 행만 목록 스크롤) |
+| PageDown / PageUp | 단일 pane 목록 / 방 화면 | 행 사이 포커스 이동(열지 않음) / 이전·다음 방으로 전환 |
+| Home | 방 화면 어디서나 | 목록으로(초안은 방별 보존) |
+| Esc · End | 작성창 | 대화 내용으로 포커스(End 는 수정키 없을 때만) |
+| ↑ / ↓ | 대화 내용 | 60px 스크롤 |
+| Esc | 대화 내용 | 캐럿 모드(점선 테두리) — Shift+방향키·Shift+Home/End 로 글자 선택, Ctrl+C 복사. Esc 로 복귀, Enter 로 작성창 |
+| Enter | 대화형 요소 밖 | 작성창으로 커서 |
+
 ## 검증
 
 - 순수 모듈: `node --test archive/native-mls/web/hande/tests/*.test.mjs` — 방 세션(가짜 워커·대본 릴레이: 403
   대기, Welcome 참여, 해독→보관→ack, 전송 CAS 재시도, 초대 commit→echo→Welcome, 거부·제거 정지, #296 복구),
-  문구·검증 헬퍼.
+  문구·검증 헬퍼, 키보드 판정(`keyboard.test.mjs`).
 - 브라우저: `archive/native-mls/tests/native_hande_web_smoke.py --bundle <mls-pkg> --relay-binary <relay>` —
   격리 릴레이(`-access-mode disabled`, `-hande-host`)가 이 디렉터리를 서빙하고 두 Chromium 컨텍스트가 **화면만
   으로** 이름 선택 → 방 만들기 → 참여 요청 → 초대 → 참여 → 양방향 메시지 → 새로고침 뒤 보관 이력 복원, 이어서 둘째 방을
-  **로비 키로** 초대(가족 기기: 초대 카드 수락 / 오너 기기: 자동 참여)하고 두 방이 서로 섞이지 않음을 거친다.
+  **로비 키로** 초대(가족 기기: 초대 카드 수락 / 오너 기기: 자동 참여)하고 두 방이 서로 섞이지 않음, 그리고
+  키보드(PageDown/PageUp 방 전환·Esc/Enter 포커스·Home 목록)를 거친다.
 - Go: `hande_test.go`(호스트 라우팅·가둠·헤더), `me_test.go`.
 
 ## 증명하지 않는 것

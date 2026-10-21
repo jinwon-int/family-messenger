@@ -161,6 +161,10 @@ def main():
                                                 arg=room, timeout=20000)
                     self.page.wait_for_selector('[data-testid="timeline"]', timeout=20000)
 
+                def wait_open(self, room, timeout=10000):
+                    self.page.wait_for_function("r => document.querySelector('.room-screen')?.dataset.roomId === r",
+                                                arg=room, timeout=timeout)
+
                 def has_invite_card(self, room):
                     return self.page.query_selector(f'[data-testid="lobby-invite"][data-room-id="{room}"]') is not None
 
@@ -324,6 +328,35 @@ def run_flow(Dev, receipt, screenshot=None, relay_base=None):
     assert any('안녕, 한데 웹에서 보냄' in b for b in bubbles), bubbles
     assert not any('fam2' in b or 'fam3' in b for b in bubbles), bubbles
     receipt['checks']['rooms_isolated'] = True
+
+    # ---- keyboard shortcuts (#478, 패밀리챗 동등): 1280px 은 2분할 — PageDown/PageUp 은 목록 순서대로
+    # 옆 방을 바로 열고 작성창에 커서, 작성창 Esc 는 대화 내용으로, 대화 내용 Enter 는 작성창으로, Home 은 목록으로.
+    def owner_room():
+        return owner.page.evaluate("() => document.querySelector('.room-screen')?.dataset.roomId ?? null")
+
+    def owner_focus():
+        return owner.page.evaluate(
+            "() => document.activeElement?.dataset.testid ?? document.activeElement?.tagName ?? null")
+
+    owner.page.focus('[data-testid="composer"]')
+    owner.page.keyboard.press('PageDown')
+    owner.wait_open('fam2')
+    assert owner_focus() == 'composer', owner_focus()
+    owner.page.keyboard.press('PageDown')
+    owner.wait_open('fam3')
+    owner.page.keyboard.press('PageUp')
+    owner.wait_open('fam2')
+    owner.page.keyboard.press('Escape')
+    assert owner_focus() == 'timeline', owner_focus()
+    owner.page.keyboard.press('Enter')
+    assert owner_focus() == 'composer', owner_focus()
+    owner.page.keyboard.press('Home')
+    owner.page.wait_for_function(
+        "() => document.querySelector('main.shell')?.dataset.view === 'list'"
+        " && !document.querySelector('.room-screen')", timeout=10000)
+    assert owner_room() is None
+    receipt['checks']['keyboard_pageupdown_esc_enter_home'] = True
+    owner.open_room_id(ROOM)
 
     # ---- reload: identity + rooms reopen with one custody KDF; all three rooms still joined
     mom.reload()

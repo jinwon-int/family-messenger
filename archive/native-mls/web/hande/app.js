@@ -14,6 +14,7 @@ import {createRoomSession, nextDeviceId, clock} from './room.js';
 import {createDevice, LOBBY_TARGET} from './device.js';
 import {imageType, shouldPreview} from './attachment-view.js';
 import {fileboxConfig} from './filebox.js';
+import {installShortcuts} from './shortcuts.js';
 
 const DEFAULT_ROOM = 'family';
 const AUTO_JOIN_ACTORS = new Set(['owner']);   // iOS AppModel.autoJoinActors
@@ -425,6 +426,13 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   }
 
   window.addEventListener('beforeunload', () => { for (const R of app.rooms.values()) for (const e of R.entries) if (e.image) URL.revokeObjectURL(e.image.url); });
+  // 패밀리챗과 같은 전역 단축키(#478): PageUp/Down 방 이동 · Home 목록 · 작성창 Esc/End → 대화 내용 ·
+  // 대화 내용 ↑/↓ 스크롤·Esc 캐럿 모드 · 대화형 요소 밖 Enter → 작성창. 초안은 app.draft(방별)가 지킨다.
+  installShortcuts(root, {
+    openRoom: openRoomScreen,
+    openRooms: () => { app.roomOpen = false; render(); },
+    currentRoomId: () => (app.roomOpen && app.phase === 'ready' ? app.current : null),
+  });
   boot().catch(error => fatal(error.message));
   return {get state() { return app; }};
 }
