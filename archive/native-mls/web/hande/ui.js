@@ -7,6 +7,7 @@ import {
 } from './strings.js';
 import {imageType, downloadSpec} from './attachment-view.js';
 import { pickTransferFile, transferHasFiles } from './composer-files.js';
+import { lastSentView, collapsedKey } from './last-sent.js';
 import {fileboxRefreshUrl} from './filebox.js';
 import {parseBlocks, inlineSpans, hasMarkdown} from './agent-markdown.js';
 
@@ -587,6 +588,79 @@ function resendBar(pending) {
     el('button', { type: 'button', class: 'secondary small', onclick: () => pending.onRetry?.() }, strings.chat.resend)), `resend:${size}`);
 }
 
+// ---- 대화창 상단 "내 마지막 말" 바(패밀리챗 #300 이식, #480 C) ----
+// 헤더 아래·타임라인 위의 보통 flex 자식. 같은 방 재렌더에서는 서명이 같으면 붙어 있는 노드를 그대로 둔다.
+// 기본은 접힘: 키가 없으면 접힘, 펼친 방만 '0'으로 기억한다. 접힘에서 바를 누르면 이동 대신 펼치고,
+// 접기는 오른쪽 화살표로만 한다. 펼친 뒤 바를 누르면 그 말풍선으로 스크롤하고 잠깐 밝힌다.
+const FLASH_MS = 1600;
+function readCollapsed(roomId) {
+  try { return globalThis.localStorage?.getItem(collapsedKey(roomId)) !== '0'; } catch (_) { return true; }
+}
+function writeCollapsed(roomId, collapsed) {
+  try {
+    if (collapsed) globalThis.localStorage?.removeItem(collapsedKey(roomId));
+    else globalThis.localStorage?.setItem(collapsedKey(roomId), '0');
+  } catch (_) { /* 저장소가 막혀 있어도 접기는 이번 화면에서만 동작한다 */ }
+}
+/** 타임라인에서 그 말풍선(data-key)을 찾아 보이게 하고 잠깐 밝힌다. 없으면 false. */
+export function jumpToBubble(list, key) {
+  if (!list || typeof key !== 'string') return false;
+  const bubble = list.querySelector(`li.bubble[data-key="${CSS.escape(key)}"]`);
+  if (!bubble) return false;
+  list.scrollTop = Math.max(0, (bubble.offsetTop - list.offsetTop) - 8);
+  bubble.classList.remove('flash');
+  void bubble.offsetWidth; // 같은 말풍선을 연달아 누르면 애니메이션을 다시 시작한다
+  bubble.classList.add('flash');
+  setTimeout(() => bubble.classList.remove('flash'), FLASH_MS);
+  return true;
+}
+function lastSentBar(room) {
+  const t = strings.chat.lastSent;
+  const { lastSent, earlierSent } = lastSentView(room.timeline, { labels: { photo: t.photo, file: t.file } });
+  if (!lastSent) return null;
+  const roomId = room.roomId;
+  const collapsed = readCollapsed(roomId);
+  const barSignature = (isCollapsed) => JSON.stringify([
+    lastSent.key, lastSent.text, lastSent.replies, lastSent.ts,
+    earlierSent.map((item) => [item.key, item.text, item.replies, item.ts]), isCollapsed, roomId,
+  ]);
+  const hint = el('span', { class: 'hint', role: 'status', hidden: true }, t.notLoaded);
+  const liveList = () => bar.closest('.room-screen')?.querySelector('.timeline') ?? null;
+  const goTo = (key) => { hint.hidden = jumpToBubble(liveList(), key); };
+  const chips = [
+    el('span', { class: 'chip' }, t.replies(lastSent.replies ?? 0)),
+    lastSent.ts ? el('span', { class: 'chip time' }, formatTime(lastSent.ts)) : null,
+  ];
+  const bar = el('div', { class: 'last-sent', role: 'region', 'aria-label': t.region, 'data-part': 'lastSent', 'data-testid': 'last-sent', 'data-collapsed': collapsed ? 'true' : 'false', 'data-key': lastSent.key ?? null });
+  let toggle = null;
+  const setCollapsed = (next) => {
+    writeCollapsed(roomId, next);
+    bar.dataset.collapsed = next ? 'true' : 'false';
+    toggle.setAttribute('aria-label', next ? t.expand : t.collapse);
+    toggle.setAttribute('aria-expanded', next ? 'false' : 'true');
+    toggle.textContent = next ? '▾' : '▴';
+    jump.title = next ? t.expand : t.jump;
+    renderedSignature.set(bar, barSignature(next)); // 다음 재렌더가 같은 상태를 유지하게
+  };
+  const jump = el('button', { type: 'button', class: 'jump', 'data-testid': 'last-sent-jump', title: collapsed ? t.expand : t.jump,
+    onclick: () => { if (bar.dataset.collapsed === 'true') setCollapsed(false); else goTo(lastSent.key); } },
+    el('span', { class: 'kicker' }, el('span', { class: 'label' }, t.label), el('span', { class: 'inline-preview' }, lastSent.text), chips),
+    el('span', { class: 'preview' }, lastSent.text),
+    hint);
+  const earlierList = earlierSent.length
+    ? el('ul', { class: 'earlier', 'aria-label': t.earlierRegion }, earlierSent.map((item) => el('li', {},
+      el('button', { type: 'button', class: 'earlier-jump', title: t.jump, 'data-key': item.key ?? null, onclick: () => goTo(item.key) },
+        el('span', { class: 'text' }, item.text),
+        el('span', { class: 'chip' }, t.replies(item.replies)),
+        item.ts ? el('span', { class: 'chip time' }, formatTime(item.ts)) : null))))
+    : null;
+  const main = el('div', { class: 'main' }, jump, earlierList);
+  toggle = el('button', { type: 'button', class: 'toggle', 'data-testid': 'last-sent-toggle', 'aria-label': collapsed ? t.expand : t.collapse, 'aria-expanded': collapsed ? 'false' : 'true',
+    onclick: () => setCollapsed(bar.dataset.collapsed !== 'true') }, collapsed ? '▾' : '▴');
+  setChildren(bar, main, toggle);
+  return signed(bar, barSignature(collapsed));
+}
+
 /** 방 pane. parts 는 재렌더에서 따로따로 맞춘다(patchRoomScreen). */
 function buildRoom(room) {
   const canCompose = Boolean(room.joined) && !room.halted;
@@ -610,7 +684,7 @@ function buildRoom(room) {
   const composer = buildComposer(room);
   applyComposerState(composer, { enabled: canCompose, sending: room.sending });
   const composerWrap = el('div', { class: 'composer-wrap', 'data-part': 'composer' }, composer);
-  const parts = { header, notice, gate: haltBanner(room), timeline: timelineWrap, resend: resendBar(room.attachmentPending), composer: composerWrap };
+  const parts = { header, notice, lastSent: lastSentBar(room), gate: haltBanner(room), timeline: timelineWrap, resend: resendBar(room.attachmentPending), composer: composerWrap };
   const screen = el('section', { class: 'room-screen', 'data-room-id': room.roomId,
     // 방 화면 어디에나 파일을 끌어다 놓으면 첨부로 보낸다(#480 B). 글자 선택을 끌 때는 표시도 켜지 않는다.
     ondragenter: (event) => { if (transferHasFiles(event.dataTransfer)) { event.preventDefault(); screen.dataset.drop = 'over'; } },
@@ -636,7 +710,7 @@ function buildRoom(room) {
   return { screen, parts, mount, canCompose };
 }
 
-const PART_ORDER = ['header', 'notice', 'gate', 'timeline', 'resend', 'composer'];
+const PART_ORDER = ['header', 'notice', 'lastSent', 'gate', 'timeline', 'resend', 'composer'];
 
 /** 같은 방 재렌더: 작성창은 절대 교체하지 않고(IME), 타임라인은 행만 맞추고, 나머지는 서명이 바뀐 것만 교체. */
 function patchRoomScreen(screen, built, room) {
