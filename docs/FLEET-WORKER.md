@@ -95,6 +95,22 @@ room_remove / room_close / room_mode`) 호출마다 SDK `can_use_tool` → 이 �
 
 출력은 `session`, `approval`, `approval-resolved`, `control`, `rejected`, `result`, 그리고
 `--steward-tools`일 때 `tool` 이벤트다.
+
+선택 출력 프레임(#474) — native-mls 봇은 아래 두 프레임을 방에 게시한다. 보내는 쪽은 ccc-node 한데
+전송층(`core/hande/transport.py`)이며 그쪽 설정 `interim_frames`·`notice_frames`(기본 `false`)를 켜야
+나간다. 이 기능이 없는 옛 봇은 두 프레임을 무시하므로(모르는 `type`) 켜는 순서는 **봇 교체 → 브리지 설정**이다.
+
+- `{"type":"interim","turn_id":"t-12","text":"…"}` — 진행 중인 turn의 중간 출력(진행 상황 말풍선).
+  활성 turn과 `turn_id`가 같을 때만, 공백뿐인 본문은 버린다. 답과 같은 경로·같은 크기 상한(`reply_max_bytes`,
+  8KiB)으로 agent 방에 게시하고 turn은 `result`까지 계속된다. turn당 최대 40건(`DEFAULT_INTERIM_MAX`),
+  넘는 것은 버린다(최종 `result`는 그대로 온다).
+- `{"type":"notice","room":"soonwook","text":"…"}` — turn과 무관한 노드 발신(푸시 알림·리마인더·경보).
+  활성 turn이 없어도 받는다. `room`은 릴레이 식별자 규칙 `[A-Za-z0-9_-]{1,64}`, 본문이 비면 버린다.
+  봇은 **agent 방과 이름이 같을 때만** 게시하고 다른 방은 침묵한다(B-H3, 저널 `agent_outbound_dropped`
+  `reason=notice_not_agent_room`).
+
+저널: 게시된 두 프레임은 `agent_outbound`의 `kind`가 `interim`·`notice`로 남는다. 입력 중 표시(typing)는
+이 포트에도 릴레이 프로토콜에도 휘발성 신호가 없어 아직 다루지 않는다(iOS `AgentThinking`이 추정).
 JSON escaping으로 출력 프레임은 입력보다 클 수 있으므로 부모는 최대 512KiB까지
 읽되 상한 초과를 오류로 처리한다. stdout에는 요청에 대한 응답/승인 인수가 포함될 수 있으므로
 일반 로그로 복사하지 않는다. 연결부는 암호화된 원래 방에 전달한다.
@@ -151,5 +167,5 @@ provider 이벤트 iterator를 먼저 취소하지 않고 shield된 실행부에
 EOF 정리, 중단 실패 후 새 작업 거절.
 
 계속 구현할 부분: 상시 Matrix 수신·crypto/sync 복구, 인증된 승인 UI, room membership,
-첨부 스트리밍, 중간 응답·상태 표시, 모델/메모리/사용량 정책의 기존 Telegram 경로와의
+첨부 스트리밍, 상태(입력 중) 표시(중간 응답은 #474 `interim`), 모델/메모리/사용량 정책의 기존 Telegram 경로와의
 동등성, 다른 provider와 전체 플릿 배포. 운영 서비스에는 아직 설치하지 않는다.
