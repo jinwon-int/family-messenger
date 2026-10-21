@@ -829,13 +829,18 @@ final class AppModel: ObservableObject {
         storedMessages(room: room) + outgoingItems(room: room)
     }
 
+    /// 타임라인 창 = 방의 **최신** 500건(#469). 종전 `after: 0, limit: 500` 은 가장 오래된 500건이라 501번째부터
+    /// — 내가 방금 보낸 글도 — 화면에 오르지 않았다(웹 `history-store.list` 와 같은 "최신 N건"으로 맞춤).
+    static let timelineLimit = 500
+
     private func storedMessages(room: RoomID) -> [TimelineItem] {
         if let loading = deps.messageStore as? AttachmentLoading,
-           let heads = try? loading.messageHeads(room: room, after: 0, limit: 500) {
+           let heads = try? loading.messageHeadsTail(room: room, limit: Self.timelineLimit) {
             return heads.map { TimelineItem(record: $0.record, attachmentBytes: $0.attachmentBytes) }
         }
-        // 지연 로딩을 모르는 저장소: 종전처럼 BLOB 포함으로 읽고 크기만 떼어 둔다.
-        return ((try? deps.messageStore.messages(room: room, after: 0, limit: 500)) ?? []).map { r in
+        // 지연 로딩을 모르는 저장소(동결 `MessageStore` 만): 종전처럼 BLOB 포함으로 읽되 뒤 N 건만 올린다.
+        let all = (try? deps.messageStore.messages(room: room, after: 0, limit: Int.max)) ?? []
+        return all.suffix(Self.timelineLimit).map { r in
             TimelineItem(record: MessageRecord(room: r.room, seq: r.seq, senderDevice: r.senderDevice, clientId: r.clientId, kind: r.kind,
                                                body: r.body, attachment: nil, receivedAt: r.receivedAt, decryptedBy: r.decryptedBy),
                          attachmentBytes: r.attachment?.count ?? 0)
