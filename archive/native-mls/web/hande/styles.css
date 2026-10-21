@@ -13,6 +13,8 @@
   --night: #0f1324;
   --glow: #5a2c12;
   --ember: #f59e42;
+  --unread: #d93a26;
+  --on-unread: #ffffff;
   --ember-deep: #e8833a;
   --on-ember: #1b0f06;
   --cream: #ffd79a;
@@ -382,7 +384,20 @@ ul.rooms { list-style: none; margin: 0; padding: 0; display: flex; flex-directio
 .room-item .preview { display: block; font-size: var(--text-s); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .room-item.unread .room-name { font-weight: 800; }
 .room-item.unread .preview { color: var(--text); font-weight: 600; }
+/* 이름 + N 배지 묶음: 묶음이 남는 폭을 차지하고 이름만 줄어들며 말줄임된다(배지는 항상 보인다) — 패밀리챗(#480 A). */
+.room-item .room-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
+.room-item .room-title .room-name { flex: 0 1 auto; min-width: 0; }
+.unread-badge { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: var(--unread); color: var(--on-unread); font-size: 11px; font-weight: 800; line-height: 1; letter-spacing: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
 .ember-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--ember); box-shadow: 0 0 8px var(--ember); }
+/* 순서 편집(▲▼, PC 끌기) — 패밀리챗 ui.js roomListItem 과 같은 모양. */
+ul.rooms > li.reorderable { display: flex; align-items: stretch; gap: var(--space-2); }
+ul.rooms > li.reorderable .room-item { flex: 1; min-width: 0; cursor: grab; }
+ul.rooms > li.reorderable.dragging { opacity: 0.5; }
+.order-tools { display: flex; flex-direction: column; gap: var(--space-1); flex: none; }
+.order-btn { flex: 1; min-width: var(--touch); min-height: var(--touch); padding: 0; font-size: var(--text-s); }
+.order-btn:disabled { opacity: 0.35; }
+.order-toggle { display: inline-flex; align-items: center; gap: 4px; }
+.order-hint { font-size: var(--text-s); color: var(--text-2); margin: 0; padding: 0 var(--space-3) var(--space-2); }
 .campfire-empty { display: flex; flex-direction: column; align-items: center; gap: var(--space-2); }
 .campfire-empty .empty-title { font-weight: 700; color: var(--text); font-size: var(--text-m); }
 .big-fire { font-size: 2.4rem; line-height: 1; filter: saturate(0.6); }

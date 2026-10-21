@@ -6,7 +6,8 @@
 // (owner actors join automatically, family devices accept with one tap — iOS
 // AppModel.discoverLobbyWelcomes / acceptInvite).
 import * as ui from './ui.js';
-import {strings, displayName, isAgentDevice, isMine, roomLabel} from './strings.js';
+import {strings, displayName, isAgentDevice, isMine, roomLabel, previewLine, relativeTime} from './strings.js';
+import {orderRooms, moveRoom, readRoomOrder, writeRoomOrder} from './room-order.js';
 import {createWorkerBridge} from './worker-bridge.js';
 import {createRelay} from './relay.js';
 import {createIdentityStore, databaseFor, ROOM, IDENTITY_DATABASE, LOBBY_DATABASE} from './identity.js';
@@ -37,6 +38,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     current: null, roomOpen: false, draft: new Map(), sending: false,
     invites: [], adoptFailed: new Map(), dismissed: new Set(), lobbyDue: true,
     filebox: null, boxOpen: false, boxRefresh: 0,   // 오른쪽 파일보관함 pane (config.json filebox)
+    roomOrder: [], orderEditing: false,              // 대화 목록 고정 순서(이 기기 localStorage, #480 A)
     notice: null, logs: [], offlineAt: null, tick: null,
   };
   const identity = createIdentityStore({storage});
@@ -74,11 +76,24 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     const R = app.rooms.get(roomId), S = R.session.state;
     const halted = S.halted ? {...S.halted} : null;
     const last = R.entries.filter(e => e.kind === 'text' || e.kind === 'attachment').at(-1);
+    // 미리보기: 마크다운 기호를 걷어낸 한 줄, 첨부는 [사진]/[파일](내용 판별 결과) — 패밀리챗 목록과 같은 모양(#480 A).
+    const body = last ? (last.kind === 'attachment' ? (last.image ? strings.rooms.photoPreview : strings.rooms.filePreview) : last.body) : '';
     return {roomId, name: roomLabel(roomId), emoji: halted ? '🪵' : '🔥',
-      preview: last ? `${last.senderName}: ${last.kind === 'attachment' ? '사진' : last.body}` : (S.joined ? strings.rooms.noMessages : strings.room.notJoined),
-      time: last?.ts ? ui.formatTime?.(last.ts) ?? '' : '', unread: R.unread && !(app.roomOpen && app.current === roomId),
+      preview: last ? previewLine(last.senderName, body) : (S.joined ? strings.rooms.noMessages : strings.room.notJoined),
+      time: last?.ts ? relativeTime(last.ts, Date.now()) : '', unread: R.unread && !(app.roomOpen && app.current === roomId),
       state: halted ? 'halted' : S.joined ? 'joined' : 'pending', hasAgent: S.roster.some(isAgentDevice), members: S.roster.length, order: R.order};
   }
+  /** 대화 목록에서 방 하나를 옮긴다 — 화면은 즉시, 저장은 이 기기 localStorage(패밀리챗 moveRoomInList). */
+  function moveRoomInList(roomId, toIndex, focus = null) {
+    const visibleIds = orderRooms([...app.rooms.keys()].map(roomRow), app.roomOrder).map(r => r.roomId);
+    const next = moveRoom(visibleIds, roomId, toIndex, app.roomOrder);
+    if (!next) return;
+    app.roomOrder = next;
+    writeRoomOrder(storage, app.device, next);
+    render();
+    if (focus) queueMicrotask(() => ui.focusRoomOrderControl(root, roomId, focus));
+  }
+  function toggleOrderEdit() { app.orderEditing = !app.orderEditing; render(); }
   function paint() {
     const D = app.dev?.state;
     if (app.phase === 'fatal') {
@@ -97,11 +112,12 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
         onOpenApprove: null, onWipe: confirmWipe, error: app.error});
       return;
     }
-    const rows = [...app.rooms.keys()].map(roomRow).sort((a, b) => a.order - b.order);
+    const rows = orderRooms([...app.rooms.keys()].map(roomRow), app.roomOrder);
     const anySynced = [...app.rooms.values()].map(R => R.session.state.syncedAt).filter(Boolean).sort().at(-1) ?? app.lastCheckedAt ?? null;
     const list = {
       rooms: rows, currentRoomId: app.roomOpen ? app.current : null,
       onSelect: openRoomScreen, onOpenMenu: openMenu, onOpenJoin: openJoin, onOpenCreate: openCreate, onOpenBox: app.filebox ? toggleBox : null,
+      orderEditing: app.orderEditing, onToggleOrderEdit: toggleOrderEdit, onMoveRoom: moveRoomInList,
       sync: {lastSyncAt: anySynced, offlineSince: app.offlineAt, reconnecting: relay.offline},
       notice: app.notice, deviceLabel: app.device,
       invites: app.invites.filter(i => !app.dismissed.has(i.room)).map(i => ({room: i.room, name: roomLabel(i.room), busy: !!i.busy, message: i.message ?? null,
@@ -248,6 +264,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       if (opened.fresh && !opened.migrated && legacyExists) throw new Error(`신원 이전 실패: ${legacy.database}가 있는데 이전되지 않았습니다`);
       storage.setItem(markerKey(), '1');
       app.dev = dev;
+      app.roomOrder = readRoomOrder(storage, app.device);
       if (opened.migrated) logLine(`신원 이전: ${legacy.database} → ${IDENTITY_DATABASE}`);
       app.roomOpen = false;
       // Known rooms open first (their own 4 s polling); the default room is always known.
@@ -432,6 +449,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     openRoom: openRoomScreen,
     openRooms: () => { app.roomOpen = false; render(); },
     currentRoomId: () => (app.roomOpen && app.phase === 'ready' ? app.current : null),
+    orderEditing: () => app.orderEditing,
   });
   boot().catch(error => fatal(error.message));
   return {get state() { return app; }};

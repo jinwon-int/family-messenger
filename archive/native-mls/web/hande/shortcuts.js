@@ -22,6 +22,7 @@ const EDITABLE_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
  *   openRoom: (roomId: string) => void,      // 방을 연다(작성창에 커서 — ui.renderShell mount)
  *   openRooms: () => void,                   // 방 화면 → 목록(초안은 app 이 방별로 보존)
  *   currentRoomId: () => string|null,        // 열린 방이 없으면 null
+ *   orderEditing?: () => boolean,            // 순서 편집 중이면 Page Up/Down 으로 방을 열지 않는다
  *   document?: Document, matchMedia?: (q: string) => {matches?: boolean}|null,
  * }} actions
  * @returns {() => void} 해제 함수
@@ -58,6 +59,8 @@ export function installShortcuts(root, actions) {
     if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
     const shell = root.querySelector('main.shell');
     if (!shell || sheetOpen()) return;
+    // 순서 편집 중에는 Page Up/Down 으로 방을 열지 않는다(행을 눌러도 안 열리는 것과 같게, #480 A).
+    if (actions.orderEditing?.()) return;
     const target = event.target;
     // 대화 내용 캐럿 모드: Page Up/Down 은 캐럿 이동·Shift 선택이다 — 방을 넘기지 않는다.
     if (isCaretMode(target)) return;

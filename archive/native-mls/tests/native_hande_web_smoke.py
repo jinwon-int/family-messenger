@@ -356,6 +356,26 @@ def run_flow(Dev, receipt, screenshot=None, relay_base=None):
         " && !document.querySelector('.room-screen')", timeout=10000)
     assert owner_room() is None
     receipt['checks']['keyboard_pageupdown_esc_enter_home'] = True
+
+    # ---- room order editing (#480 A): ↕ → ▲ on the second row moves it first; the order survives a reload.
+    def owner_room_ids():
+        return owner.page.eval_on_selector_all('[data-testid="room-item"]', 'els => els.map(e => e.dataset.roomId)')
+
+    before = owner_room_ids()
+    assert len(before) == 3, before
+    owner.page.click('[data-testid="order-toggle"]')
+    owner.page.wait_for_selector('ul.rooms > li.reorderable', timeout=10000)
+    owner.page.click(f'ul.rooms > li[data-key="{before[1]}"] .order-up')
+    owner.page.wait_for_function("ids => document.querySelector('[data-testid=\"room-item\"]')?.dataset.roomId === ids[1]",
+                                 arg=before, timeout=10000)
+    owner.page.click('[data-testid="order-toggle"]')
+    owner.page.wait_for_function("() => !document.querySelector('ul.rooms > li.reorderable')", timeout=10000)
+    assert owner_room_ids() == [before[1], before[0], before[2]], owner_room_ids()
+    owner.reload()
+    owner.wait_room(ROOM, 2, timeout=120000)
+    owner.page.wait_for_function("ids => document.querySelector('[data-testid=\"room-item\"]')?.dataset.roomId === ids[1]",
+                                 arg=before, timeout=20000)
+    receipt['checks']['room_order_edit_persists_on_this_device'] = True
     owner.open_room_id(ROOM)
 
     # ---- reload: identity + rooms reopen with one custody KDF; all three rooms still joined
