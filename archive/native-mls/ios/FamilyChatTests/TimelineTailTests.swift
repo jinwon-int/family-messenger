@@ -13,7 +13,7 @@ final class TimelineTailTests: XCTestCase {
         }
         let relay = InMemoryRelay()
         let deps = AppModel.Dependencies(
-            engineFactory: AnyFactory(MemberFakeFactory()), stateStore: InMemoryStateStore(), messageStore: store,
+            engineFactory: MemberFakeFactory(), stateStore: InMemoryStateStore(), messageStore: store,
             outbox: InMemoryOutboxStore(), cursors: InMemoryCursorStore(),
             identityProvider: { "mom-iphone-a1b2c3" }, expectedDecryptFormat: { 2 }, makeTransport: { _ in relay })
         let model = AppModel(dependencies: deps)
