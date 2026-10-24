@@ -22,6 +22,7 @@ native-mls-bot <base-url> session <room> <device> \
 - 응답기 바인딩: `fleet_worker.py --provider codex`(기본, CodexRuntime) 또는 **`--provider claude`**(ccc-node `ClaudeRuntime`, `--model claude-opus-5-5 --effort high --claude-permission-mode default`; 브리지 venv 파이썬 필요). 공명 운영은 Claude(2026-10-15 오너 결정 — ChatGPT 계정 Codex 가 `*-sol` 모델을 거부함).
 - `--owner-actor`(env `NATIVE_MLS_BOT_OWNER_ACTOR`, 기본 `owner`): 승인 답장을 낼 수 있는 actor(기기 ID 의 첫 `-` 앞).
 - 응답기가 죽으면 세션도 끝난다(exit 1) — 서비스 매니저가 봇·응답기를 함께 다시 띄운다(`Restart=on-failure`).
+- `--room-frames`(env `NATIVE_MLS_BOT_ROOM_FRAMES=1`, #423): steward 에서 agent 방 여러 개 — `turn` 에 `room`, 답은 요청 온 방으로. 규칙표는 `STEWARD.md` "여러 agent 방".
 
 ## 노드에 설치하기 (플릿 롤아웃, #420 ⑥ / ccc-node #2380)
 

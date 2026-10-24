@@ -10,7 +10,7 @@
 |---|---|
 | `--identity-file <path>` | `Device::export_identity` 봉투(서명키만, 그룹 없음). 0600. 한 번 만들면 바꾸지 않는다. |
 | `<dir>/<room>.state` | 방별 `StateEnvelope`(기존 `--state-file` 과 같은 형식: 커서·epoch·joined·그룹 상태). |
-| `<dir>/<room>.mode` | `agent` 또는 `silent`. 없으면 `silent`. `agent` 는 **한 방만**(응답기 1개). |
+| `<dir>/<room>.mode` | `agent`·`silent`·`alert`(#423). 없으면 `silent`. `agent` 는 기본 **한 방만**; `--room-frames` 로 띄우면 여러 방(아래). |
 | `<dir>/<room>.state.refused` | #263 정지 마커(기존과 동일). |
 | `<dir>/cmd/<id>.json` → `<dir>/out/<id>.json` | 명령 큐. CLI 가 쓰고, 세션이 하나씩 처리한 뒤 결과를 쓴다. |
 | `<dir>/responder.state` | 응답기 inbox(#354, 기존 `<state>.inbox.json` 역할). |
@@ -20,13 +20,13 @@
 ```
 native-mls-bot extract-identity <room> <device> --state-file <기존 state> --identity-file <새 identity>
 native-mls-bot <base-url> steward <device> --identity-file <path> --rooms-dir <dir> [--responder-unix …] [--access-jwt-file …]
-native-mls-bot room create  <room> [agent|silent]   --rooms-dir <dir>   # 로컬 그룹 생성(릴레이 방은 첫 초대 commit 이 만든다)
+native-mls-bot room create  <room> [agent|silent|alert] --rooms-dir <dir>   # 로컬 그룹 생성(릴레이 방은 첫 초대 commit 이 만든다)
 native-mls-bot room join    <room>                  --rooms-dir <dir>   # key package 게시 → 멤버가 초대하면 Welcome 으로 참여
 native-mls-bot room invite  <room> <device>         --rooms-dir <dir>   # 상대의 key package 소비(방 → 없으면 로비, #380 P5) → Add commit → echo 뒤 Welcome
 native-mls-bot room remove  <room> <device>         --rooms-dir <dir>   # Remove commit(bare)
 native-mls-bot room close   <room>                  --rooms-dir <dir>   # 릴레이 방 닫기(410 room_closed) + 이 봇에서 방 잊기(#389)
 native-mls-bot room members <room>                  --rooms-dir <dir>
-native-mls-bot room mode    <room> agent|silent     --rooms-dir <dir>
+native-mls-bot room mode    <room> agent|silent|alert --rooms-dir <dir>
 native-mls-bot room status  <room>                  --rooms-dir <dir>   # room 인자는 형식상 필요(아무 식별자)
 ```
 
@@ -41,13 +41,13 @@ native-mls-bot room status  <room>                  --rooms-dir <dir>   # room �
 
 | tool | 명령 |
 |---|---|
-| `room_create{room, mode?}` | `room create <room> [agent\|silent]`(기본 silent) |
+| `room_create{room, mode?}` | `room create <room> [agent\|silent\|alert]`(기본 silent) |
 | `room_join{room}` | `room join <room>` |
 | `room_invite{room, device}` | `room invite <room> <device>`(방 key package → 없으면 로비, #380 P5) |
 | `room_remove{room, device}` | `room remove <room> <device>` |
 | `room_close{room}` | `room close <room>`(#389) |
 | `room_members{room}` | `room members <room>` |
-| `room_mode{room, mode}` | `room mode <room> agent\|silent` |
+| `room_mode{room, mode}` | `room mode <room> agent\|silent\|alert` |
 | `room_status{}` | `room status`(room 자리는 `-`) |
 
 결과 JSON 은 `out/<id>.json` 과 같은 모양(`ok` 포함). `steward` 모드가 아니면 `steward_only`, 오너가
@@ -84,7 +84,26 @@ native-mls-bot room status  <room>                  --rooms-dir <dir>   # room �
 
 - 릴레이 재시작·일시 장애(#392): 방 페이지 읽기가 연결 거부·reset·응답 잘림·502/503/504 로 실패하고 그 방이 아직 움직이지 않았으면 세션을 끝내지 않고 기다린다(0.5초부터 두 배, 최대 30초). 이벤트 `relay_unreachable{attempt, wait_ms, error}` → 복구 시 `relay_reachable{after_attempts}`. 페이지 처리 도중(Welcome·echo POST)의 실패는 지금처럼 세션을 끝내 디스크 커서에서 다시 시작한다.
 - 릴레이는 기기당 방 생성 32개(`RoomsMaxPerDevice`, #380 D3로 16→32). 새 actor 는 기존 방에 commit 할 수 없다 — 사람 기기는 **초대로만** 들어간다.
-- `agent` 방은 한 번에 하나. 응답기는 그 방의 메시지만 받고, 답도 그 방에만 쓴다.
+- `agent` 방은 기본 한 번에 하나(응답기는 그 방의 메시지만 받고, 답도 그 방에만 쓴다). 여러 개는 아래 `--room-frames`.
+
+## 여러 agent 방 (#423, `--room-frames`)
+
+노드 개인방 + 플릿 알림방(+ 이후 공용방)을 봇 하나·응답기 하나로 서빙한다. `--room-frames`(또는 env
+`NATIVE_MLS_BOT_ROOM_FRAMES=1`)로 띄운 steward 만 `agent` 방을 여러 개 둘 수 있다(없이 둘 이상이면 지금처럼 기동 거부).
+
+| 항목 | 단일 방 와이어(기본) | `--room-frames` |
+|---|---|---|
+| `turn` 프레임 | `room` 없음, `turn_id = t-<seq>` | `"room": "<방>"`, `turn_id = t-<방>-<seq>`(릴레이 seq 는 방마다 따로라 충돌 방지) |
+| 답·진행·승인·uncertain | 유일한 agent 방 | **요청이 온 방**(그 방이 아직 `agent` 일 때만 — 도중에 silent 로 바꾸면 말하지 않음) |
+| `notice` 프레임 | agent 방 이름일 때만 | 그 방이 `agent` 또는 `alert` 면 게시, 아니면 버림(`agent_outbound_dropped`) |
+| 재시작 시 미확인 턴 | agent 방 | 그 턴의 방(inbox 에 `room` 기록; #423 이전 inbox 는 첫 agent 방) |
+
+- 동시 turn 은 프로세스 전체 1개, 큐(`queue_max`) 하나를 방들이 공유한다(Matrix 브리지와 같음).
+- `alert` 모드 = 플릿 알림방: `notice` 만 게시하고, 그 방 메시지는 turn 이 되지 않는다(복호화·커서만 진행). 봇끼리의 말 규칙은 #425.
+- 응답기(ccc-node hande 브리지)는 `room` 이 자기 설정 방 목록에 있어야 받는다(없으면 `rejected: room-not-allowed`) — 방을 agent 로
+  바꾸기 전에 브리지 방 목록에 먼저 넣는다. 세션은 `(actor, room)` 별로 갈린다.
+- `status` 이벤트의 `polls_per_round` = 한 라운드의 GET 수(방 수). 방을 늘리면 폴링 요청이 비례해 는다(④ #424 측정 입력).
+- 되돌리기: 추가 agent 방을 `room mode <방> silent` 로 돌린 뒤 `--room-frames` 를 뺀다.
 - 단일 방 모드(`session <room> <device> --state-file …`)는 그대로 있다. 공명 전환은 `extract-identity` 1회 뒤
   `steward` 로 ExecStart 을 바꾸는 drop-in(`deploy/native-relay-bot.service.d-40-steward.conf`)으로 한다(승인 항목).
 - 명령 큐 디렉터리는 봇 사용자 소유여야 한다. CLI 를 다른 사용자로 돌리면 `runuser -u <봇사용자> -- …` 로.

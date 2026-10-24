@@ -93,14 +93,18 @@ pub enum Mode {
     Silent,
     /// Negative control: never joined, never answered (B-H3).
     Watch,
+    /// #423: the fleet alert room — the responder's `notice` frames are
+    /// posted here, room messages never become turns (decrypted and logged
+    /// like `Silent`; bot-to-bot rules are #425's).
+    Alert,
 }
 
 impl Mode {
     pub fn parse(s: &str) -> Option<Mode> {
-        match s.trim() { "agent" => Some(Mode::Agent), "silent" => Some(Mode::Silent), _ => None }
+        match s.trim() { "agent" => Some(Mode::Agent), "silent" => Some(Mode::Silent), "alert" => Some(Mode::Alert), _ => None }
     }
     fn name(self) -> &'static str {
-        match self { Mode::Echo => "echo", Mode::Agent => "agent", Mode::Silent => "silent", Mode::Watch => "watch" }
+        match self { Mode::Echo => "echo", Mode::Agent => "agent", Mode::Silent => "silent", Mode::Watch => "watch", Mode::Alert => "alert" }
     }
 }
 
@@ -589,7 +593,8 @@ fn run_loop(
         // together rather than leaving a bot that reads everything and answers
         // nothing.
         if let Some(responder) = agent.as_mut() {
-            for item in responder.pump()? {
+            let multi = responder.room_frames();
+            for (item_room, item) in responder.pump_routed()? {
                 // P4: a tool call runs through the steward and answers on the
                 // port; it never reaches the room. Owner-only was enforced by
                 // the responder before it emitted the item.
@@ -615,8 +620,10 @@ fn run_loop(
                     responder.tool_result(tool_id, outcome);
                     continue;
                 }
-                let Some(main) = rooms.iter_mut().find(|r| r.mode == Mode::Agent) else {
-                    emit(&serde_json::json!({ "event": "agent_outbound_dropped", "reason": "no_agent_room" }));
+                // #423: the item goes to its turn's room (or a notice's own
+                // room); `""` and the single-room wire keep the one agent room.
+                let Some(main) = target_room(rooms, multi, &item_room, &item) else {
+                    emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": item_room, "reason": "no_agent_room" }));
                     continue;
                 };
                 match &item {
@@ -629,9 +636,10 @@ fn run_loop(
                         emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": main.room, "reason": "tool_call" }));
                     }
                     Outbound::Notice { room, .. } if *room != main.room => {
-                        // #474: only the agent room carries agent text (B-H3);
-                        // a notice addressed anywhere else stays unsaid.
-                        emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": main.room, "reason": "notice_not_agent_room" }));
+                        // #474: only an agent room (#423: or the alert room)
+                        // carries agent text (B-H3); a notice addressed
+                        // anywhere else stays unsaid.
+                        emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": room, "reason": "notice_not_agent_room" }));
                     }
                     _ => {
                         let text = agent_text(&item);
@@ -655,6 +663,22 @@ fn run_loop(
         }
         std::thread::sleep(POLL);
     }
+}
+
+/// #423: the room one responder item is posted to.
+///
+/// Single-room wire (`multi` off): always the one agent room — exactly the
+/// #354/#474 behaviour (a notice for another room is then dropped by the
+/// caller). With room frames: a notice goes to its own room when that room
+/// is in `agent` or `alert` mode; a turn's item goes to the turn's room while
+/// it is still in `agent` mode (switched to silent mid-turn = unsaid); an item
+/// with no room (`WorkerGone`, inbox from before #423) to the first agent room.
+fn target_room<'r>(rooms: &'r mut [RoomState], multi: bool, item_room: &str, item: &Outbound) -> Option<&'r mut RoomState> {
+    if !multi || item_room.is_empty() {
+        return rooms.iter_mut().find(|r| r.mode == Mode::Agent);
+    }
+    let notice = matches!(item, Outbound::Notice { .. });
+    rooms.iter_mut().find(|r| r.room == item_room && (r.mode == Mode::Agent || (notice && r.mode == Mode::Alert)))
 }
 
 /// Room text for one worker item (Korean, plain — the family reads this).
@@ -873,7 +897,7 @@ fn echo(ctx: &Ctx, state: &mut RoomState, ev: &StoredRow, sender: &[u8], plainte
                 Ok(())
             }
         },
-        Mode::Silent | Mode::Watch => Ok(()),
+        Mode::Silent | Mode::Watch | Mode::Alert => Ok(()),
         Mode::Echo => match publish_echo(ctx, state, plaintext, 0) {
             Ok(()) => Ok(()),
             Err(err) => Err(report_dropped(state, plaintext, err)),
@@ -915,7 +939,7 @@ fn route_to_agent(state: &mut RoomState, ev: &StoredRow, sender: &[u8], plaintex
             return Ok(());
         }
     }
-    let offer = agent.offer(Inbound { seq: ev.seq, sender_device: sender_device.clone(), text })?;
+    let offer = agent.offer(Inbound { room: state.room.clone(), seq: ev.seq, sender_device: sender_device.clone(), text })?;
     emit(&serde_json::json!({
         "event": "agent_offer", "room": state.room, "seq": ev.seq, "from": sender_device, "outcome": format!("{offer:?}"),
     }));
@@ -1107,6 +1131,9 @@ pub struct Steward {
     device: String,
     rooms_dir: PathBuf,
     identity_file: PathBuf,
+    /// #423: the responder speaks room frames, so any number of rooms may be
+    /// in `agent` mode. Off = at most one (the single-room wire).
+    multi_agent: bool,
 }
 
 fn room_state_path(dir: &Path, room: &str) -> PathBuf { dir.join(format!("{room}.state")) }
@@ -1159,9 +1186,10 @@ pub fn run_steward(opts: StewardOptions) -> Result<(), BotError> {
     for room in rooms_on_disk(&opts.rooms_dir)? {
         rooms.push(load_room(&opts.rooms_dir, &room, &opts.device)?);
     }
+    let multi_agent = opts.responder.as_ref().is_some_and(|c| c.room_frames);
     let agent_rooms = rooms.iter().filter(|r| r.mode == Mode::Agent).count();
-    if agent_rooms > 1 {
-        return Err(BotError::Local("more than one room in agent mode; the responder serves exactly one"));
+    if agent_rooms > 1 && !multi_agent {
+        return Err(BotError::Local("more than one room in agent mode; the responder serves exactly one (start with --room-frames for several)"));
     }
     emit(&serde_json::json!({
         "event": "steward_ready", "device": opts.device, "public_key": hex(&public_key),
@@ -1174,12 +1202,14 @@ pub fn run_steward(opts: StewardOptions) -> Result<(), BotError> {
             emit(&serde_json::json!({
                 "event": "agent_started", "device": opts.device, "owner_actor": config.owner_actor,
                 "agent_room": rooms.iter().find(|r| r.mode == Mode::Agent).map(|r| r.room.clone()),
+                "agent_rooms": rooms.iter().filter(|r| r.mode == Mode::Agent).map(|r| r.room.clone()).collect::<Vec<_>>(),
+                "room_frames": config.room_frames,
             }));
             Some(responder)
         }
         None => None,
     };
-    let steward = Steward { device: opts.device.clone(), rooms_dir: opts.rooms_dir.clone(), identity_file: opts.identity_file.clone() };
+    let steward = Steward { device: opts.device.clone(), rooms_dir: opts.rooms_dir.clone(), identity_file: opts.identity_file.clone(), multi_agent };
     run_loop(&ctx, &mut rooms, &mut agent, deadline, Some(&steward))
 }
 
@@ -1231,7 +1261,7 @@ impl Steward {
                 dev.create().map_err(|_| BotError::Local("group create rejected"))?;
                 let path = room_state_path(&self.rooms_dir, &cmd.room);
                 let mode = Mode::parse(&cmd.arg).unwrap_or(Mode::Silent);
-                if mode == Mode::Agent && rooms.iter().any(|r| r.mode == Mode::Agent) {
+                if mode == Mode::Agent && !self.multi_agent && rooms.iter().any(|r| r.mode == Mode::Agent) {
                     return Err(BotError::Local("another room is already in agent mode"));
                 }
                 persist_state(&path, &cmd.room, &self.device, &mut dev, 0, 0, true, 0)?;
@@ -1335,9 +1365,9 @@ impl Steward {
                 }))
             }
             "mode" => {
-                let mode = Mode::parse(&cmd.arg).ok_or(BotError::Local("mode must be agent or silent"))?;
+                let mode = Mode::parse(&cmd.arg).ok_or(BotError::Local("mode must be agent, silent or alert"))?;
                 let i = idx.ok_or(BotError::Local("unknown room"))?;
-                if mode == Mode::Agent && rooms.iter().enumerate().any(|(j, r)| j != i && r.mode == Mode::Agent) {
+                if mode == Mode::Agent && !self.multi_agent && rooms.iter().enumerate().any(|(j, r)| j != i && r.mode == Mode::Agent) {
                     return Err(BotError::Local("another room is already in agent mode"));
                 }
                 std::fs::write(room_mode_path(&self.rooms_dir, &cmd.room), mode.name()).map_err(|_| BotError::Local("mode file write"))?;
@@ -1477,7 +1507,9 @@ fn status(rooms: &[RoomState]) {
             })
         })
         .collect();
-    emit(&serde_json::json!({ "event": "status", "rooms": rooms }));
+    // #423 (④ input): one GET per room per round — the polling cost grows with
+    // the room count, so say it.
+    emit(&serde_json::json!({ "event": "status", "rooms": rooms, "polls_per_round": rooms.len() }));
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -1914,7 +1946,7 @@ for line in sys.stdin:
         ]);
         let client = Client::with_access(&base, api::Access::None);
         let ctx = Ctx { client: &client, own: "bot-1" };
-        let steward = Steward { device: "bot-1".into(), rooms_dir: dir.clone(), identity_file: identity.clone() };
+        let steward = Steward { device: "bot-1".into(), rooms_dir: dir.clone(), identity_file: identity.clone(), multi_agent: false };
         let mut rooms = Vec::new();
 
         let out = steward.execute(&ctx, &mut rooms, &Command { op: "create".into(), room: "family".into(), arg: String::new() }).expect("create");
@@ -1994,7 +2026,7 @@ for line in sys.stdin:
         ]);
         let client = Client::with_access(&base, api::Access::None);
         let ctx = Ctx { client: &client, own: "bot-1" };
-        let steward = Steward { device: "bot-1".into(), rooms_dir: dir.clone(), identity_file: identity.clone() };
+        let steward = Steward { device: "bot-1".into(), rooms_dir: dir.clone(), identity_file: identity.clone(), multi_agent: false };
         let mut rooms = Vec::new();
 
         steward.execute(&ctx, &mut rooms, &Command { op: "create".into(), room: "family".into(), arg: String::new() }).expect("create family");
@@ -2041,7 +2073,7 @@ for line in sys.stdin:
         ]);
         let client = Client::with_access(&base, api::Access::None);
         let ctx = Ctx { client: &client, own: "bot-1" };
-        let steward = Steward { device: "bot-1".into(), rooms_dir: dir.clone(), identity_file: identity.clone() };
+        let steward = Steward { device: "bot-1".into(), rooms_dir: dir.clone(), identity_file: identity.clone(), multi_agent: false };
         let mut rooms = Vec::new();
         for room in ["family", "two", "three"] {
             steward.execute(&ctx, &mut rooms, &Command { op: "create".into(), room: room.into(), arg: String::new() }).expect("create");
@@ -2102,7 +2134,7 @@ for line in sys.stdin:
         let dir = temp_dir("p4-tool");
         let identity = dir.join("identity.json");
         write_identity(&identity, "bot-1", &Device::new("bot-1").unwrap_or_else(|_| panic!("device new"))).expect("identity");
-        let steward = Steward { device: "bot-1".into(), rooms_dir: dir.clone(), identity_file: identity };
+        let steward = Steward { device: "bot-1".into(), rooms_dir: dir.clone(), identity_file: identity, multi_agent: false };
         let (base, _server) = canned_relay(Vec::new());
         let client = Client::with_access(&base, api::Access::None);
         let ctx = Ctx { client: &client, own: "bot-1" };
@@ -2121,7 +2153,7 @@ for line in sys.stdin:
         // Steward present: the owner's turn asks room_create p4 → executed.
         let record = dir.join("tool-result-1.json");
         let mut agent = Some(spawn(&record));
-        agent.as_mut().unwrap().offer(Inbound { seq: 1, sender_device: "owner-pc".into(), text: "room_create p4".into() }).expect("offer");
+        agent.as_mut().unwrap().offer(Inbound { room: "agent".into(), seq: 1, sender_device: "owner-pc".into(), text: "room_create p4".into() }).expect("offer");
         let mut rooms = Vec::new();
         // The loop ends on the deadline — or earlier, once it polls the new room
         // against the canned relay (which answers nothing); either way the tool
@@ -2137,7 +2169,7 @@ for line in sys.stdin:
         // No steward (legacy session): refused on the port, nothing executed.
         let record = dir.join("tool-result-2.json");
         let mut agent = Some(spawn(&record));
-        agent.as_mut().unwrap().offer(Inbound { seq: 2, sender_device: "owner-pc".into(), text: "room_create p5".into() }).expect("offer");
+        agent.as_mut().unwrap().offer(Inbound { room: "agent".into(), seq: 2, sender_device: "owner-pc".into(), text: "room_create p5".into() }).expect("offer");
         let mut rooms = Vec::new();
         let err = run_loop(&ctx, &mut rooms, &mut agent, Some(Instant::now() + Duration::from_millis(1500)), None).expect_err("deadline ends the loop");
         assert!(err.to_string().contains("deadline"), "{err}");
@@ -2156,7 +2188,7 @@ for line in sys.stdin:
         let dir = temp_dir("queue");
         let identity = dir.join("identity.json");
         write_identity(&identity, "bot-1", &Device::new("bot-1").unwrap_or_else(|_| panic!("device new"))).expect("identity");
-        let steward = Steward { device: "bot-1".into(), rooms_dir: dir.clone(), identity_file: identity };
+        let steward = Steward { device: "bot-1".into(), rooms_dir: dir.clone(), identity_file: identity, multi_agent: false };
         let (base, _server) = canned_relay(Vec::new());
         let client = Client::with_access(&base, api::Access::None);
         let ctx = Ctx { client: &client, own: "bot-1" };
@@ -2196,5 +2228,41 @@ for line in sys.stdin:
         input.extend_from_slice(b"xx");
         assert_eq!(read_identity(&input, &mut 0), None);
         assert_eq!(read_identity(&input, &mut usize::MAX), None);
+    }
+
+    fn room_in(room: &str, mode: Mode) -> RoomState {
+        let mut state = joined_room(room, 1);
+        state.mode = mode;
+        state
+    }
+
+    /// #423 routing table: single-room wire = the one agent room whatever the
+    /// item says; room frames = the turn's own agent room, a notice also to
+    /// an `alert` room, nothing to a silent room or an unknown one.
+    #[test]
+    fn target_room_routes_by_the_items_room() {
+        let mut rooms = vec![room_in("soonwook", Mode::Agent), room_in("fleet", Mode::Alert), room_in("family", Mode::Silent), room_in("dungae", Mode::Agent)];
+        let reply = Outbound::Reply { seq: 1, text: "x".into() };
+        let notice = |room: &str| Outbound::Notice { room: room.into(), text: "n".into() };
+        let pick = |rooms: &mut Vec<RoomState>, multi: bool, room: &str, item: &Outbound| target_room(rooms, multi, room, item).map(|r| r.room.clone());
+        // Off: always the first agent room (the caller drops a notice for another room).
+        assert_eq!(pick(&mut rooms, false, "dungae", &reply).as_deref(), Some("soonwook"));
+        assert_eq!(pick(&mut rooms, false, "fleet", &notice("fleet")).as_deref(), Some("soonwook"));
+        // On.
+        assert_eq!(pick(&mut rooms, true, "dungae", &reply).as_deref(), Some("dungae"));
+        assert_eq!(pick(&mut rooms, true, "", &reply).as_deref(), Some("soonwook"), "pre-#423 inbox / WorkerGone");
+        assert_eq!(pick(&mut rooms, true, "fleet", &reply), None, "turn items never go to the alert room");
+        assert_eq!(pick(&mut rooms, true, "fleet", &notice("fleet")).as_deref(), Some("fleet"));
+        assert_eq!(pick(&mut rooms, true, "family", &notice("family")), None, "silent room stays silent");
+        assert_eq!(pick(&mut rooms, true, "family", &reply), None, "switched to silent mid-turn = unsaid");
+        assert_eq!(pick(&mut rooms, true, "nowhere", &notice("nowhere")), None);
+    }
+
+    #[test]
+    fn alert_mode_parses_and_names() {
+        assert_eq!(Mode::parse("alert"), Some(Mode::Alert));
+        assert_eq!(Mode::Alert.name(), "alert");
+        assert_eq!(Mode::parse(" agent\n"), Some(Mode::Agent));
+        assert_eq!(Mode::parse("loud"), None);
     }
 }
