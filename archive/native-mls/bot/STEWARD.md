@@ -104,6 +104,28 @@ native-mls-bot room status  <room>                  --rooms-dir <dir>   # room �
   바꾸기 전에 브리지 방 목록에 먼저 넣는다. 세션은 `(actor, room)` 별로 갈린다.
 - `status` 이벤트의 `polls_per_round` = 한 라운드의 GET 수(방 수). 방을 늘리면 폴링 요청이 비례해 는다(④ #424 측정 입력).
 - 되돌리기: 추가 agent 방을 `room mode <방> silent` 로 돌린 뒤 `--room-frames` 를 뺀다.
+
+## 플릿 알림방의 봇끼리 메시지 (#425, 오너 확정 ④-A)
+
+봇 출력(`client_id = <기기>-echo-<n>`)은 어느 방에서든 읽지 않는 것이 기본이다(루프 방지). **`alert` 모드 방에서만**, 아래를
+모두 만족하는 봇 글이 **읽기 전용 turn** 이 된다.
+
+| 조건 | 내용 | 어기면(`peer_skipped.reason`) |
+|---|---|---|
+| 허용 목록 | 발신 actor 가 `<dir>/<방>.peers`(한 줄에 actor 하나, `#` 주석) 에 있음. 파일 없음 = 아무도 아님. 메시지마다 다시 읽음 | `not_a_peer` |
+| 머리 | 본문이 `[alert:<actor>]` 또는 `[alert:<actor>:<깊이>]` 로 시작하고 그 actor 가 발신 actor 와 같음 | `no_alert_header` · `header_actor_mismatch` |
+| 깊이 | 깊이 < 2(원래 알림만) | `depth` |
+| 속도 | 방마다 분당 6건(`peer_per_min`) | `rate` |
+
+- **읽기 전용(a)**: 그 turn 의 답·진행·승인·uncertain 은 방에 쓰지 않는다(`agent_outbound_suppressed`). 승인 요청은 묻지 않고 즉시 거절,
+  도구는 owner-only 라 거절. 응답기에는 `"peer": true` 가 붙어 간다.
+- **깊이(b)**: 알림방에 쓰는 모든 notice 앞에 봇이 **자기 actor** 로 `[alert:<actor>]` 를 붙인다(워커가 쓴 머리는 지우고 다시 씀 — 사칭 불가).
+  peer turn 이 도는 동안 나온 notice 는 `[alert:<actor>:2]` — 사람은 보지만 다른 봇은 받지 않는다. 연쇄는 한 단계에서 끝난다.
+- **속도(c)**: notice 는 방마다 분당 10건(`notice_per_min`), 넘으면 `notice_rate` 로 버린다(모든 방 공통).
+- 알림 형식: `[alert:<node>] <제목>` + 줄바꿈 뒤 본문. 발신 경로 = ccc-node push spool → 브리지 `notice` 프레임 → 봇 → 알림방.
+- 응답기(ccc-node hande 브리지)는 `sender` 가 자기 `owner`/`family_users` 에 없으면 `rejected: sender-not-allowed` 로 거절한다 — peer actor
+  를 받으려면 브리지 설정에 넣어야 한다(거절돼도 peer turn 은 방에 아무것도 쓰지 않는다).
+- 답장 허용 플래그는 없다(오너 확정: 읽기만). 생기면 깊이 상한을 그 답장에도 적용해야 한다.
 - 단일 방 모드(`session <room> <device> --state-file …`)는 그대로 있다. 공명 전환은 `extract-identity` 1회 뒤
   `steward` 로 ExecStart 을 바꾸는 drop-in(`deploy/native-relay-bot.service.d-40-steward.conf`)으로 한다(승인 항목).
 - 명령 큐 디렉터리는 봇 사용자 소유여야 한다. CLI 를 다른 사용자로 돌리면 `runuser -u <봇사용자> -- …` 로.

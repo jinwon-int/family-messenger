@@ -58,6 +58,14 @@ pub const DEFAULT_TURN_SECS: u64 = 1200;
 /// are dropped — the final `result` still arrives — so a chatty or looping
 /// worker cannot flood the room or the relay.
 pub const DEFAULT_INTERIM_MAX: usize = 40;
+/// #425: peer (bot) messages one room may turn into read-only turns per minute.
+pub const DEFAULT_PEER_PER_MIN: usize = 6;
+/// #425: notices one room may carry per minute (the rest are suppressed).
+pub const DEFAULT_NOTICE_PER_MIN: usize = 10;
+/// #425: a peer message is taken only at depth < this (1 = an original alert).
+/// A notice raised during a peer turn carries depth + 1, so the bot-to-bot
+/// chain stops after one hop.
+pub const PEER_DEPTH_MAX: u8 = 2;
 /// Largest `text` field the bot sends to the worker (fleet_core MAX_TEXT_BYTES
 /// is 16 KiB; the header the worker prepends needs a little room).
 const PROMPT_MAX_BYTES: usize = 15 * 1024;
@@ -90,6 +98,9 @@ pub struct Config {
     /// (`t-<room>-<seq>`, relay seqs are per room). Off = the single-room
     /// wire of #354 (no `room`, `t-<seq>`), which every deployed bridge speaks.
     pub room_frames: bool,
+    /// #425: rate caps per room and minute (0 = no cap).
+    pub peer_per_min: usize,
+    pub notice_per_min: usize,
 }
 
 impl Config {
@@ -102,6 +113,8 @@ impl Config {
             turn_secs: DEFAULT_TURN_SECS,
             interim_max: DEFAULT_INTERIM_MAX,
             room_frames: false,
+            peer_per_min: DEFAULT_PEER_PER_MIN,
+            notice_per_min: DEFAULT_NOTICE_PER_MIN,
         }
     }
 }
@@ -119,7 +132,12 @@ pub enum Outbound {
     /// #474: unsolicited text for room `room` (FLEET-WORKER `notice`: push
     /// notifications, reminders, alerts the node raises outside any turn).
     /// The poll loop posts it only when `room` is the agent room.
-    Notice { room: String, text: String },
+    /// #425 `depth`: 1, or the active peer turn's depth + 1 (the alert header
+    /// the poll loop writes in an `alert` room carries it).
+    Notice { room: String, text: String, depth: u8 },
+    /// #425: an item that is deliberately not posted — any output of a peer
+    /// (bot-started) turn, or a notice over the per-minute cap. Logged only.
+    Suppressed { seq: i64, kind: &'static str },
     /// `⚠️ 승인 필요 #n` — ask the owner in the room.
     ApprovalRequest { n: u64, seq: i64, text: String },
     /// The worker closed approval `n` (owner answered, or its timeout denied).
@@ -148,6 +166,9 @@ pub struct Inbound {
     pub seq: i64,
     pub sender_device: String,
     pub text: String,
+    /// #425: 0 = a person's message; d > 0 = a peer bot's alert at depth d —
+    /// a read-only turn whose output is never posted.
+    pub peer_depth: u8,
 }
 
 /// #423: one `Outbound` and the room it belongs to — the room of the turn
@@ -179,6 +200,9 @@ struct ActiveTurn {
     /// restart notice then goes to the single agent room).
     #[serde(default)]
     room: String,
+    /// #425: see `Inbound::peer_depth`.
+    #[serde(default)]
+    peer_depth: u8,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -208,6 +232,47 @@ pub struct Responder {
     pending_tool: Option<String>,
     /// #474: `interim` messages already posted for the active turn.
     interim_sent: usize,
+    /// #425: per-room minute windows for peer intake and notices.
+    peer_window: HashMap<String, VecDeque<Instant>>,
+    notice_window: HashMap<String, VecDeque<Instant>>,
+}
+
+/// #425: one turn-bound item, or its `Suppressed` stand-in for a peer turn.
+fn turn_item(peer_depth: u8, room: String, item: Outbound) -> Routed {
+    if peer_depth == 0 {
+        return (room, item);
+    }
+    let kind = match &item {
+        Outbound::Reply { .. } => "reply",
+        Outbound::Interim { .. } => "interim",
+        Outbound::ApprovalRequest { .. } => "approval_request",
+        Outbound::ApprovalResolved { .. } => "approval_resolved",
+        Outbound::Uncertain { .. } => "uncertain",
+        _ => "other",
+    };
+    let seq = match &item {
+        Outbound::Reply { seq, .. } | Outbound::Interim { seq, .. } | Outbound::ApprovalRequest { seq, .. } | Outbound::Uncertain { seq, .. } => *seq,
+        _ => 0,
+    };
+    (room, Outbound::Suppressed { seq, kind })
+}
+
+/// #425: true while fewer than `cap` events fell in the last minute (and
+/// records this one); `cap == 0` = no cap.
+fn within_rate(window: &mut HashMap<String, VecDeque<Instant>>, room: &str, cap: usize) -> bool {
+    if cap == 0 {
+        return true;
+    }
+    let now = Instant::now();
+    let entries = window.entry(room.to_string()).or_default();
+    while entries.front().is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(60)) {
+        entries.pop_front();
+    }
+    if entries.len() >= cap {
+        return false;
+    }
+    entries.push_back(now);
+    true
 }
 
 impl Responder {
@@ -278,11 +343,13 @@ impl Responder {
             startup_notices: Vec::new(),
             pending_tool: None,
             interim_sent: 0,
+            peer_window: HashMap::new(),
+            notice_window: HashMap::new(),
         };
         // A turn left active by an earlier run was never confirmed: say so
         // once, clear it, never re-run it.
         if let Some(previous) = responder.load_inbox()?.active {
-            responder.startup_notices.push((previous.room.clone(), Outbound::Uncertain { seq: previous.seq, reason: "restart".to_string() }));
+            responder.startup_notices.push(turn_item(previous.peer_depth, previous.room.clone(), Outbound::Uncertain { seq: previous.seq, reason: "restart".to_string() }));
             responder.write_inbox(None)?;
         }
         Ok(responder)
@@ -292,6 +359,11 @@ impl Responder {
 
     /// #423: several agent rooms share this responder (see `Config::room_frames`).
     pub fn room_frames(&self) -> bool { self.config.room_frames }
+
+    /// #425: admit one peer message for `room` under the per-minute cap.
+    pub fn admit_peer(&mut self, room: &str) -> bool {
+        within_rate(&mut self.peer_window, room, self.config.peer_per_min)
+    }
 
     #[cfg(test)]
     fn is_gone(&self) -> bool { self.gone }
@@ -347,8 +419,8 @@ impl Responder {
         }
         if let Some((turn, started)) = &self.active {
             if started.elapsed() > Duration::from_secs(self.config.turn_secs) {
-                let (seq, room) = (turn.seq, turn.room.clone());
-                out.push((room, Outbound::Uncertain { seq, reason: "watchdog".to_string() }));
+                let (seq, room, depth) = (turn.seq, turn.room.clone(), turn.peer_depth);
+                out.push(turn_item(depth, room, Outbound::Uncertain { seq, reason: "watchdog".to_string() }));
                 self.finish_active()?;
             }
         }
@@ -365,6 +437,7 @@ impl Responder {
         let active = ActiveTurn {
             seq: inbound.seq, turn_id: turn_id.clone(), started_at: now_secs(), sender_device: inbound.sender_device.clone(),
             room: inbound.room.clone(),
+            peer_depth: inbound.peer_depth,
         };
         // Durable before the child sees it (FLEET-WORKER: the parent inbox is
         // the duplicate guard, not the port).
@@ -387,6 +460,11 @@ impl Responder {
         if self.config.room_frames && is_room_id(&inbound.room) {
             frame["room"] = serde_json::Value::String(inbound.room.clone());
         }
+        // #425: a peer bot's alert — read-only context for the worker (its
+        // answer is never posted; the bridge may use the flag, others ignore it).
+        if inbound.peer_depth > 0 {
+            frame["peer"] = serde_json::Value::Bool(true);
+        }
         let line = frame.to_string();
         if self.to_child.send(Cmd::Line(line)).is_err() {
             self.gone = true;
@@ -403,7 +481,13 @@ impl Responder {
             let room = value.get("room").and_then(|v| v.as_str()).unwrap_or("");
             let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
             if is_room_id(room) && !text.is_empty() {
-                out.push((room.to_string(), Outbound::Notice { room: room.to_string(), text: bounded_reply(text, self.config.reply_max_bytes) }));
+                if !within_rate(&mut self.notice_window, room, self.config.notice_per_min) {
+                    out.push((room.to_string(), Outbound::Suppressed { seq: 0, kind: "notice_rate" }));
+                    return Ok(());
+                }
+                // #425: raised while a peer turn runs = one hop deeper.
+                let depth = self.active.as_ref().map_or(0, |(a, _)| a.peer_depth).saturating_add(1);
+                out.push((room.to_string(), Outbound::Notice { room: room.to_string(), text: bounded_reply(text, self.config.reply_max_bytes), depth }));
             }
             return Ok(());
         }
@@ -417,10 +501,18 @@ impl Responder {
         }
         let seq = active.seq;
         let room = active.room.clone();
+        let depth = active.peer_depth;
         match kind {
             "approval" => {
                 let approval_id = value.get("approval_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 if approval_id.is_empty() {
+                    return Ok(());
+                }
+                if depth > 0 {
+                    // #425: nobody is asked on behalf of a bot — deny at once.
+                    let line = serde_json::json!({ "type": "deny", "turn_id": active.turn_id, "approval_id": approval_id }).to_string();
+                    let _ = self.to_child.send(Cmd::Line(line));
+                    out.push(turn_item(depth, room, Outbound::ApprovalRequest { n: 0, seq, text: String::new() }));
                     return Ok(());
                 }
                 self.next_approval += 1;
@@ -435,7 +527,7 @@ impl Responder {
                     _ => bounded(if description.is_empty() { action } else { description }, 2048),
                 };
                 let text = format!("⚠️ 승인 필요 #{n}: {summary}\n답장: 「승인 {n}」 또는 「거절 {n}」 ({} 만)", self.config.owner_actor);
-                out.push((room, Outbound::ApprovalRequest { n, seq, text }));
+                out.push(turn_item(depth, room, Outbound::ApprovalRequest { n, seq, text }));
             }
             "tool" => {
                 // P4: a room command request. Addressed to this turn only.
@@ -465,7 +557,7 @@ impl Responder {
                 let allowed = value.get("allowed").and_then(|v| v.as_bool()).unwrap_or(false);
                 if let Some((n, _)) = self.approvals.iter().find(|(_, (_, id))| id == approval_id).map(|(n, v)| (*n, v.clone())) {
                     self.approvals.remove(&n);
-                    out.push((room, Outbound::ApprovalResolved { n, allowed }));
+                    out.push(turn_item(depth, room, Outbound::ApprovalResolved { n, allowed }));
                 }
             }
             "approval-denied" => {
@@ -476,11 +568,11 @@ impl Responder {
                 if status == "complete" {
                     let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
                     if !text.is_empty() {
-                        out.push((room.clone(), Outbound::Reply { seq, text: bounded_reply(&text, self.config.reply_max_bytes) }));
+                        out.push(turn_item(depth, room.clone(), Outbound::Reply { seq, text: bounded_reply(&text, self.config.reply_max_bytes) }));
                     }
                 } else {
                     let reason = value.get("reason").and_then(|v| v.as_str()).unwrap_or("uncertain").to_string();
-                    out.push((room, Outbound::Uncertain { seq, reason }));
+                    out.push(turn_item(depth, room, Outbound::Uncertain { seq, reason }));
                     // FLEET-WORKER: an uncertain outcome retires the worker; it
                     // accepts no further turns. Treat the process as gone.
                     self.finish_active()?;
@@ -495,12 +587,12 @@ impl Responder {
                 let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
                 if !text.is_empty() && self.interim_sent < self.config.interim_max {
                     self.interim_sent += 1;
-                    out.push((room, Outbound::Interim { seq, text: bounded_reply(text, self.config.reply_max_bytes) }));
+                    out.push(turn_item(depth, room, Outbound::Interim { seq, text: bounded_reply(text, self.config.reply_max_bytes) }));
                 }
             }
             "rejected" => {
                 let reason = value.get("reason").and_then(|v| v.as_str()).unwrap_or("rejected");
-                out.push((room, Outbound::Uncertain { seq, reason: format!("rejected:{reason}") }));
+                out.push(turn_item(depth, room, Outbound::Uncertain { seq, reason: format!("rejected:{reason}") }));
                 self.finish_active()?;
             }
             // `session`, `control`: informational.
@@ -542,13 +634,13 @@ impl Responder {
         }
         self.gone = true;
         if let Some((turn, _)) = self.active.take() {
-            out.push((turn.room.clone(), Outbound::Uncertain { seq: turn.seq, reason: "worker_gone".to_string() }));
+            out.push(turn_item(turn.peer_depth, turn.room.clone(), Outbound::Uncertain { seq: turn.seq, reason: "worker_gone".to_string() }));
             self.approvals.clear();
             self.pending_tool = None;
             self.write_inbox(None)?;
         }
         for dropped in self.queue.drain(..) {
-            out.push((dropped.room.clone(), Outbound::Uncertain { seq: dropped.seq, reason: "worker_gone".to_string() }));
+            out.push(turn_item(dropped.peer_depth, dropped.room.clone(), Outbound::Uncertain { seq: dropped.seq, reason: "worker_gone".to_string() }));
         }
         out.push((String::new(), Outbound::WorkerGone { reason }));
         let _ = self.to_child.send(Cmd::Close);
@@ -600,6 +692,30 @@ impl Drop for Responder {
             let _ = child.wait();
         }
     }
+}
+
+/// #425: the header the poll loop writes on every notice in an `alert` room:
+/// `[alert:<actor>]` (depth 1) or `[alert:<actor>:<depth>]`. Any header the
+/// worker wrote is replaced, so a node cannot speak for another.
+pub fn alert_text(actor: &str, depth: u8, text: &str) -> String {
+    let body = match parse_alert_header(text) {
+        Some((_, _, rest)) => rest,
+        None => text,
+    };
+    let body = body.trim_start();
+    if depth <= 1 { format!("[alert:{actor}] {body}") } else { format!("[alert:{actor}:{depth}] {body}") }
+}
+
+/// #425: `[alert:<actor>(:<depth>)?] rest` → `(actor, depth, rest)`; `None`
+/// for anything else (no header, bad actor, depth 0 or not a number).
+pub fn parse_alert_header(text: &str) -> Option<(&str, u8, &str)> {
+    let inner_and_rest = text.strip_prefix("[alert:")?;
+    let (inner, rest) = inner_and_rest.split_once(']')?;
+    let (actor, depth) = match inner.split_once(':') {
+        Some((actor, depth)) => (actor, depth.parse::<u8>().ok().filter(|d| *d >= 1)?),
+        None => (inner, 1),
+    };
+    crate::api::is_identifier(actor).then_some((actor, depth, rest))
 }
 
 /// #423: `t-<seq>` on the single-room wire; `t-<room>-<seq>` with room
@@ -830,6 +946,11 @@ for line in sys.stdin:
                 frame.update(spec)
                 print(json.dumps(frame), flush=True)
             continue
+        if cmd["prompt"].startswith("noticein"):
+            # #425: a notice raised while this turn is still active.
+            print(json.dumps({"type": "notice", "room": "fleet", "text": "mid-turn"}), flush=True)
+            print(json.dumps({"type": "result", "turn_id": tid, "status": "complete", "session_id": "s1", "text": "peer:" + str(cmd.get("peer"))}), flush=True)
+            continue
         if cmd["prompt"].startswith("showframe"):
             # #423: echo the wire fields the room routing depends on.
             shown = json.dumps({"turn_id": tid, "room": cmd.get("room")}, sort_keys=True)
@@ -872,7 +993,7 @@ for line in sys.stdin:
     }
 
     fn inbound(seq: i64, device: &str, text: &str) -> Inbound {
-        Inbound { room: "agent".into(), seq, sender_device: device.into(), text: text.into() }
+        Inbound { room: "agent".into(), seq, sender_device: device.into(), text: text.into(), peer_depth: 0 }
     }
 
     #[test]
@@ -926,7 +1047,7 @@ for line in sys.stdin:
         got.extend(r.pump().unwrap());
         assert_eq!(got, vec![
             Outbound::Reply { seq: 9, text: "echo:notify|@owner-pc:hande".into() },
-            Outbound::Notice { room: "soonwook".into(), text: "reminder".into() },
+            Outbound::Notice { room: "soonwook".into(), text: "reminder".into(), depth: 1 },
         ], "a bad room, a blank text and a missing room are not posted");
         assert!(r.active.is_none());
         assert!(is_room_id("family-acc") && !is_room_id("") && !is_room_id(&"a".repeat(65)) && !is_room_id("방"));
@@ -1213,7 +1334,7 @@ for line in f:
     }
 
     fn inbound_in(room: &str, seq: i64, text: &str) -> Inbound {
-        Inbound { room: room.into(), seq, sender_device: "owner-pc".into(), text: text.into() }
+        Inbound { room: room.into(), seq, sender_device: "owner-pc".into(), text: text.into(), peer_depth: 0 }
     }
 
     /// #423 off (default): the deployed single-room wire is unchanged — no
@@ -1266,7 +1387,7 @@ for line in f:
         r.offer(inbound_in("dungae", 2, "notify")).unwrap();
         let got = pump_routed_until(&mut r, 2);
         assert_eq!(got[0].0, "dungae");
-        assert_eq!(got[1], ("soonwook".to_string(), Outbound::Notice { room: "soonwook".into(), text: "reminder".into() }));
+        assert_eq!(got[1], ("soonwook".to_string(), Outbound::Notice { room: "soonwook".into(), text: "reminder".into(), depth: 1 }));
     }
 
     /// #423: the inbox remembers the turn's room, so the restart notice lands
@@ -1309,5 +1430,82 @@ for line in f:
         assert_eq!(tool_command("room_create", Some(&args)), Some(("create".into(), "fleet".into(), "alert".into())));
         let bad = serde_json::json!({"room": "fleet", "mode": "loud"});
         assert_eq!(tool_command("room_mode", Some(&bad)), None);
+    }
+
+    fn peer_in(room: &str, seq: i64, text: &str, depth: u8) -> Inbound {
+        Inbound { room: room.into(), seq, sender_device: "dungae-bot".into(), text: text.into(), peer_depth: depth }
+    }
+
+    /// #425 (a): a peer turn is read-only — its reply is suppressed, an
+    /// approval it asks for is denied at once (nobody is asked for a bot), and
+    /// the worker sees `peer: true`; a person's turn is untouched.
+    #[test]
+    fn peer_turns_are_read_only() {
+        let mut r = fake(|c| c.room_frames = true, None);
+        r.offer(peer_in("fleet", 3, "ask: x", 1)).unwrap();
+        let got = pump_until(&mut r, 2);
+        assert_eq!(got, vec![
+            Outbound::Suppressed { seq: 3, kind: "approval_request" },
+            Outbound::Suppressed { seq: 3, kind: "reply" },
+        ], "denied without asking, answer not posted");
+        r.offer(peer_in("fleet", 4, "noticein", 1)).unwrap();
+        r.offer(inbound_in("soonwook", 5, "noticein")).unwrap();
+        let got = pump_routed_until(&mut r, 4);
+        assert_eq!(got, vec![
+            ("fleet".to_string(), Outbound::Notice { room: "fleet".into(), text: "mid-turn".into(), depth: 2 }),
+            ("fleet".to_string(), Outbound::Suppressed { seq: 4, kind: "reply" }),
+            ("fleet".to_string(), Outbound::Notice { room: "fleet".into(), text: "mid-turn".into(), depth: 1 }),
+            ("soonwook".to_string(), Outbound::Reply { seq: 5, text: "peer:None".into() }),
+        ], "a notice raised inside a peer turn is one hop deeper");
+    }
+
+    /// #425 (a): a peer turn left active by a crash stays unsaid on restart.
+    #[test]
+    fn peer_turn_restart_notice_is_suppressed() {
+        let dir = std::env::temp_dir().join(format!("bot-responder-peer-{}-{}", std::process::id(), now_secs()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = dir.join("bot.state");
+        std::fs::write(inbox_path(&state), br#"{"version":1,"active":{"seq":6,"turn_id":"t-fleet-6","started_at":1,"room":"fleet","peer_depth":1}}"#).unwrap();
+        let mut r = fake(|c| c.room_frames = true, Some(&state));
+        assert_eq!(r.pump_routed().unwrap(), vec![("fleet".to_string(), Outbound::Suppressed { seq: 6, kind: "uncertain" })]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #425 (c): per-room minute caps for peer intake and notices.
+    #[test]
+    fn peer_and_notice_rates_are_capped_per_room() {
+        let mut r = fake(|c| { c.peer_per_min = 2; c.notice_per_min = 2; }, None);
+        assert!(r.admit_peer("fleet") && r.admit_peer("fleet"));
+        assert!(!r.admit_peer("fleet"), "third in a minute");
+        assert!(r.admit_peer("other"), "caps are per room");
+        for seq in 1..=3 {
+            r.offer(inbound_in("soonwook", seq, "notify")).unwrap();
+        }
+        let got: Vec<Outbound> = pump_until(&mut r, 6).into_iter().filter(|o| !matches!(o, Outbound::Reply { .. })).collect();
+        assert_eq!(got, vec![
+            Outbound::Notice { room: "soonwook".into(), text: "reminder".into(), depth: 1 },
+            Outbound::Notice { room: "soonwook".into(), text: "reminder".into(), depth: 1 },
+            Outbound::Suppressed { seq: 0, kind: "notice_rate" },
+        ]);
+        let mut unlimited = HashMap::new();
+        assert!((0..100).all(|_| within_rate(&mut unlimited, "x", 0)), "0 = no cap");
+    }
+
+    /// #425 (b): the alert header — written by the bot, never trusted from
+    /// the worker, depth only when > 1.
+    #[test]
+    fn alert_header_round_trip() {
+        assert_eq!(alert_text("soonwook", 1, "CI failed"), "[alert:soonwook] CI failed");
+        assert_eq!(alert_text("soonwook", 2, "CI failed"), "[alert:soonwook:2] CI failed");
+        assert_eq!(alert_text("soonwook", 1, "[alert:dungae] spoof"), "[alert:soonwook] spoof", "a worker cannot speak for another node");
+        assert_eq!(alert_text("soonwook", 0, "x"), "[alert:soonwook] x");
+        assert_eq!(parse_alert_header("[alert:dungae] CI"), Some(("dungae", 1, " CI")));
+        assert_eq!(parse_alert_header("[alert:dungae:2] CI"), Some(("dungae", 2, " CI")));
+        for bad in ["CI failed", "[alert:] x", "[alert:bad actor] x", "[alert:dungae:0] x", "[alert:dungae:x] x", "[alert:dungae x", "[ALERT:dungae] x"] {
+            assert_eq!(parse_alert_header(bad), None, "{bad}");
+        }
+        let written = alert_text("nosuk", 2, "y");
+        let (actor, depth, rest) = parse_alert_header(&written).unwrap();
+        assert_eq!((actor, depth, rest), ("nosuk", 2, " y"));
     }
 }

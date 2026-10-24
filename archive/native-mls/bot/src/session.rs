@@ -620,6 +620,11 @@ fn run_loop(
                     responder.tool_result(tool_id, outcome);
                     continue;
                 }
+                // #425: deliberately unsaid (peer turn output, notice over the cap).
+                if let Outbound::Suppressed { seq, kind } = &item {
+                    emit(&serde_json::json!({ "event": "agent_outbound_suppressed", "room": item_room, "seq": seq, "kind": kind }));
+                    continue;
+                }
                 // #423: the item goes to its turn's room (or a notice's own
                 // room); `""` and the single-room wire keep the one agent room.
                 let Some(main) = target_room(rooms, multi, &item_room, &item) else {
@@ -642,7 +647,12 @@ fn run_loop(
                         emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": room, "reason": "notice_not_agent_room" }));
                     }
                     _ => {
-                        let text = agent_text(&item);
+                        let mut text = agent_text(&item);
+                        // #425: every notice in the alert room carries this
+                        // node's own header (and the hop depth).
+                        if let (Outbound::Notice { depth, .. }, Mode::Alert) = (&item, main.mode) {
+                            text = responder::alert_text(responder::actor_of(ctx.own), *depth, &text);
+                        }
                         emit(&serde_json::json!({
                             "event": "agent_outbound", "room": main.room, "kind": agent_kind(&item), "bytes": text.len(),
                         }));
@@ -697,6 +707,8 @@ fn agent_text(item: &Outbound) -> String {
         Outbound::WorkerGone { reason } => format!("⚠️ 응답기가 멈췄습니다({reason})."),
         // Never posted (P4): the poll loop answers it on the port.
         Outbound::ToolCall { .. } => String::new(),
+        // Never posted (#425): the poll loop logs it.
+        Outbound::Suppressed { .. } => String::new(),
     }
 }
 
@@ -710,6 +722,7 @@ fn agent_kind(item: &Outbound) -> &'static str {
         Outbound::Uncertain { .. } => "uncertain",
         Outbound::WorkerGone { .. } => "worker_gone",
         Outbound::ToolCall { .. } => "tool_call",
+        Outbound::Suppressed { .. } => "suppressed",
     }
 }
 
@@ -881,6 +894,14 @@ fn echo(ctx: &Ctx, state: &mut RoomState, ev: &StoredRow, sender: &[u8], plainte
     // echoed back: two bots in one room would otherwise ping-pong until the
     // room cap (review 2 B-M5).
     if is_echo_client_id(&ev.client_id) {
+        // #425: in the fleet alert room a listed peer bot's alert becomes a
+        // read-only turn (never answered); everywhere else bot output stays
+        // unread as before.
+        if state.mode == Mode::Alert {
+            if let Some(responder) = agent.as_mut() {
+                return route_peer(state, ev, sender, plaintext, responder);
+            }
+        }
         emit(&serde_json::json!({
             "event": "echo_skipped", "room": state.room, "seq": ev.seq, "client_id": ev.client_id,
         }));
@@ -939,9 +960,66 @@ fn route_to_agent(state: &mut RoomState, ev: &StoredRow, sender: &[u8], plaintex
             return Ok(());
         }
     }
-    let offer = agent.offer(Inbound { room: state.room.clone(), seq: ev.seq, sender_device: sender_device.clone(), text })?;
+    let offer = agent.offer(Inbound { room: state.room.clone(), seq: ev.seq, sender_device: sender_device.clone(), text, peer_depth: 0 })?;
     emit(&serde_json::json!({
         "event": "agent_offer", "room": state.room, "seq": ev.seq, "from": sender_device, "outcome": format!("{offer:?}"),
+    }));
+    Ok(())
+}
+
+/// #425: `<room>.peers` next to the room state — one actor per line (`#`
+/// comments, blanks ignored). Missing file = no peers (bot output unread).
+/// Read on every peer message so an operator edit takes effect at once.
+fn room_peers(state: &RoomState) -> Vec<String> {
+    let Some(path) = state.state_path.as_ref().map(|p| p.with_extension("peers")) else { return Vec::new() };
+    std::fs::read_to_string(path)
+        .map(|raw| raw.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#') && api::is_identifier(l)).map(String::from).collect())
+        .unwrap_or_default()
+}
+
+/// #425 (owner decision ④-A): a bot message in the alert room becomes a turn
+/// only when its actor is listed in `<room>.peers`, its alert header names
+/// that same actor at depth < `PEER_DEPTH_MAX`, and the room's per-minute
+/// peer cap has room. The turn is read-only: everything it produces is
+/// `Suppressed` (no reply, approvals denied), so bots never answer bots.
+fn route_peer(state: &mut RoomState, ev: &StoredRow, sender: &[u8], plaintext: &[u8], agent: &mut Responder) -> Result<(), BotError> {
+    let sender_device = String::from_utf8_lossy(sender).into_owned();
+    let actor = responder::actor_of(&sender_device).to_string();
+    let skipped = |reason: &str| {
+        emit(&serde_json::json!({
+            "event": "peer_skipped", "room": state.room, "seq": ev.seq, "from": sender_device, "reason": reason,
+        }));
+    };
+    if !room_peers(state).iter().any(|p| *p == actor) {
+        skipped("not_a_peer");
+        return Ok(());
+    }
+    let Ok(text) = std::str::from_utf8(plaintext) else {
+        skipped("non_utf8");
+        return Ok(());
+    };
+    let depth = match responder::parse_alert_header(text) {
+        Some((claimed, depth, _)) if claimed == actor => depth,
+        Some(_) => {
+            skipped("header_actor_mismatch");
+            return Ok(());
+        }
+        None => {
+            skipped("no_alert_header");
+            return Ok(());
+        }
+    };
+    if depth >= responder::PEER_DEPTH_MAX {
+        skipped("depth");
+        return Ok(());
+    }
+    if !agent.admit_peer(&state.room) {
+        skipped("rate");
+        return Ok(());
+    }
+    let offer = agent.offer(Inbound { room: state.room.clone(), seq: ev.seq, sender_device: sender_device.clone(), text: text.to_string(), peer_depth: depth })?;
+    emit(&serde_json::json!({
+        "event": "peer_offer", "room": state.room, "seq": ev.seq, "from": sender_device, "depth": depth, "outcome": format!("{offer:?}"),
     }));
     Ok(())
 }
@@ -1701,8 +1779,8 @@ for line in sys.stdin:
         assert!(agent_text(&Outbound::Uncertain { seq: 9, reason: "watchdog".into() }).contains("#9"));
         assert_eq!(agent_kind(&Outbound::Reply { seq: 1, text: String::new() }), "reply");
         assert_eq!(agent_kind(&Outbound::Interim { seq: 1, text: String::new() }), "interim");
-        assert_eq!(agent_text(&Outbound::Notice { room: "r".into(), text: "⏰".into() }), "⏰");
-        assert_eq!(agent_kind(&Outbound::Notice { room: "r".into(), text: String::new() }), "notice");
+        assert_eq!(agent_text(&Outbound::Notice { room: "r".into(), text: "⏰".into(), depth: 1 }), "⏰");
+        assert_eq!(agent_kind(&Outbound::Notice { room: "r".into(), text: String::new(), depth: 1 }), "notice");
         // P4: a tool call is never room text.
         let call = Outbound::ToolCall { tool_id: "n1".into(), name: "room_status".into(), op: "status".into(), room: "-".into(), arg: String::new() };
         assert_eq!(agent_kind(&call), "tool_call");
@@ -2153,7 +2231,7 @@ for line in sys.stdin:
         // Steward present: the owner's turn asks room_create p4 → executed.
         let record = dir.join("tool-result-1.json");
         let mut agent = Some(spawn(&record));
-        agent.as_mut().unwrap().offer(Inbound { room: "agent".into(), seq: 1, sender_device: "owner-pc".into(), text: "room_create p4".into() }).expect("offer");
+        agent.as_mut().unwrap().offer(Inbound { room: "agent".into(), seq: 1, sender_device: "owner-pc".into(), text: "room_create p4".into(), peer_depth: 0 }).expect("offer");
         let mut rooms = Vec::new();
         // The loop ends on the deadline — or earlier, once it polls the new room
         // against the canned relay (which answers nothing); either way the tool
@@ -2169,7 +2247,7 @@ for line in sys.stdin:
         // No steward (legacy session): refused on the port, nothing executed.
         let record = dir.join("tool-result-2.json");
         let mut agent = Some(spawn(&record));
-        agent.as_mut().unwrap().offer(Inbound { room: "agent".into(), seq: 2, sender_device: "owner-pc".into(), text: "room_create p5".into() }).expect("offer");
+        agent.as_mut().unwrap().offer(Inbound { room: "agent".into(), seq: 2, sender_device: "owner-pc".into(), text: "room_create p5".into(), peer_depth: 0 }).expect("offer");
         let mut rooms = Vec::new();
         let err = run_loop(&ctx, &mut rooms, &mut agent, Some(Instant::now() + Duration::from_millis(1500)), None).expect_err("deadline ends the loop");
         assert!(err.to_string().contains("deadline"), "{err}");
@@ -2243,7 +2321,7 @@ for line in sys.stdin:
     fn target_room_routes_by_the_items_room() {
         let mut rooms = vec![room_in("soonwook", Mode::Agent), room_in("fleet", Mode::Alert), room_in("family", Mode::Silent), room_in("dungae", Mode::Agent)];
         let reply = Outbound::Reply { seq: 1, text: "x".into() };
-        let notice = |room: &str| Outbound::Notice { room: room.into(), text: "n".into() };
+        let notice = |room: &str| Outbound::Notice { room: room.into(), text: "n".into(), depth: 1 };
         let pick = |rooms: &mut Vec<RoomState>, multi: bool, room: &str, item: &Outbound| target_room(rooms, multi, room, item).map(|r| r.room.clone());
         // Off: always the first agent room (the caller drops a notice for another room).
         assert_eq!(pick(&mut rooms, false, "dungae", &reply).as_deref(), Some("soonwook"));
@@ -2264,5 +2342,58 @@ for line in sys.stdin:
         assert_eq!(Mode::Alert.name(), "alert");
         assert_eq!(Mode::parse(" agent\n"), Some(Mode::Agent));
         assert_eq!(Mode::parse("loud"), None);
+    }
+
+    /// #425 intake rules in the alert room: only a listed peer, only with its
+    /// own header, only below the depth cap, only under the rate cap; the
+    /// turn is read-only. Outside the alert room bot output stays unread.
+    #[test]
+    fn route_peer_admits_only_listed_original_alerts() {
+        const PEER_WORKER: &str = r#"
+import json, sys
+for line in sys.stdin:
+    cmd = json.loads(line)
+    if cmd["type"] == "turn":
+        print(json.dumps({"type": "result", "turn_id": cmd["turn_id"], "status": "complete", "session_id": "s", "text": "seen:" + cmd["prompt"] + "|" + str(cmd.get("peer"))}), flush=True)
+"#;
+        let mut config = responder::Config::new(responder::Transport::Argv(vec!["python3".into(), "-c".into(), PEER_WORKER.into()]), "owner".into());
+        config.room_frames = true;
+        config.peer_per_min = 2;
+        let mut agent = Responder::spawn(config, None).unwrap_or_else(|e| panic!("spawn: {e}"));
+        let dir = temp_dir("peers");
+        let mut state = joined_room_at("fleet", 4, Some(dir.join("fleet.state")));
+        state.mode = Mode::Alert;
+        let row = |seq: i64, device: &str| StoredRow {
+            seq, device: device.into(), client_id: format!("{device}-echo-{seq}"), kind: "application".into(), epoch: 2,
+            bytes: Vec::new(), sha256: String::new(), created_at: 0,
+        };
+        let mut offered = Vec::new();
+        let mut peer = |state: &mut RoomState, seq: i64, device: &str, text: &str, agent: &mut Responder| {
+            route_peer(state, &row(seq, device), device.as_bytes(), text.as_bytes(), agent).unwrap();
+            offered.push(seq);
+        };
+        // No peers file yet: nobody is a peer.
+        peer(&mut state, 5, "dungae-bot", "[alert:dungae] CI red", &mut agent);
+        std::fs::write(dir.join("fleet.peers"), "# fleet agents\ndungae\n\nnosuk\nbad actor\n").unwrap();
+        peer(&mut state, 6, "gwakga-bot", "[alert:gwakga] not listed", &mut agent);
+        peer(&mut state, 7, "dungae-bot", "[alert:nosuk] spoofed header", &mut agent);
+        peer(&mut state, 8, "dungae-bot", "no header", &mut agent);
+        peer(&mut state, 9, "dungae-bot", "[alert:dungae:2] a reaction to a reaction", &mut agent);
+        peer(&mut state, 10, "dungae-bot", "[alert:dungae] CI red", &mut agent);     // admitted
+        peer(&mut state, 11, "nosuk-bot", "[alert:nosuk] disk 91%", &mut agent);     // admitted
+        peer(&mut state, 12, "nosuk-bot", "[alert:nosuk] disk 92%", &mut agent);     // over 2/min
+        assert_eq!(offered.len(), 8);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut got = Vec::new();
+        while got.len() < 2 && Instant::now() < deadline {
+            got.extend(agent.pump_routed().unwrap_or_else(|e| panic!("pump: {e}")));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(got, vec![
+            ("fleet".to_string(), Outbound::Suppressed { seq: 10, kind: "reply" }),
+            ("fleet".to_string(), Outbound::Suppressed { seq: 11, kind: "reply" }),
+        ], "exactly the two admitted alerts became turns, and neither is answered");
+        assert_eq!(room_peers(&state), vec!["dungae".to_string(), "nosuk".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
