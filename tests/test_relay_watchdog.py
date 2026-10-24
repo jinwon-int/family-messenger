@@ -27,7 +27,7 @@ DIRECT_DOWN = {'ok': False, 'http': None, 'detail': 'direct error: URLError'}
 EDGE_UP = {'ok': True, 'http': 302, 'mode': 'edge-only', 'detail': 'edge HTTP 302 (edge-only)'}
 EDGE_530 = {'ok': False, 'http': 530, 'mode': 'edge-only', 'detail': 'edge HTTP 530 (edge-only)'}
 PROBES = {'up': (DIRECT_UP, EDGE_UP), 'edge': (DIRECT_UP, EDGE_530), 'down': (DIRECT_DOWN, EDGE_UP)}
-SECRET = 'very-secret-value-0123456789'
+CANARY = 'canary-value-0123456789abcdef'
 
 
 class FakeResponse:
@@ -95,13 +95,13 @@ class ProbeTest(unittest.TestCase):
             self.assertFalse(result['ok'], outcome)
 
     def test_authed_mode_requires_relay_health_and_sends_headers(self):
-        headers = {'CF-Access-Client-Id': 'id.access', 'CF-Access-Client-Secret': SECRET}
+        headers = {'CF-Access-Client-Id': 'id.access', 'CF-Access-Client-Secret': CANARY}
         ok_body = FakeResponse(200, b'{"ok": true}')
         result, cap = self.call(rw.probe_edge, ok_body, 'https://r.example.com/', 2.0, headers)
         self.assertTrue(result['ok'])
         self.assertEqual(result['mode'], 'authed')
-        self.assertEqual(cap['headers'].get('Cf-access-client-secret'), SECRET)
-        self.assertNotIn(SECRET, json.dumps(result))
+        self.assertEqual(cap['headers'].get('Cf-access-client-secret'), CANARY)
+        self.assertNotIn(CANARY, json.dumps(result))
         # Access still redirecting despite the token (token revoked / wrong app) is down in authed mode.
         for outcome in (http_error(302), http_error(403), http_error(530)):
             result, _ = self.call(rw.probe_edge, outcome, 'https://r.example.com', 2.0, headers)
@@ -123,9 +123,9 @@ class AccessEnvTest(unittest.TestCase):
 
     def test_reads_both_keys_and_ignores_others(self):
         p = self.write('# c\nCF_ACCESS_TOKEN_ID=x\nCF_ACCESS_CLIENT_ID="id.access"\n'
-                       'export CF_ACCESS_CLIENT_SECRET=%s\n' % SECRET)
+                       'export CF_ACCESS_CLIENT_SECRET=%s\n' % CANARY)
         self.assertEqual(rw.read_access_env(p),
-                         {'CF-Access-Client-Id': 'id.access', 'CF-Access-Client-Secret': SECRET})
+                         {'CF-Access-Client-Id': 'id.access', 'CF-Access-Client-Secret': CANARY})
 
     def test_rejects_loose_permissions_missing_keys_and_symlinks(self):
         with self.assertRaisesRegex(ValueError, 'chmod 600'):
@@ -133,22 +133,22 @@ class AccessEnvTest(unittest.TestCase):
         with self.assertRaises(ValueError) as cm:
             rw.read_access_env(self.write('CF_ACCESS_CLIENT_ID=a\nCF_ACCESS_CLIENT_SECRET=\n'))
         self.assertIn('CF_ACCESS_CLIENT_SECRET', str(cm.exception))
-        real = self.write('CF_ACCESS_CLIENT_ID=a\nCF_ACCESS_CLIENT_SECRET=%s\n' % SECRET)
+        real = self.write('CF_ACCESS_CLIENT_ID=a\nCF_ACCESS_CLIENT_SECRET=%s\n' % CANARY)
         link = real.with_name('link.env')
         link.symlink_to(real)
         with self.assertRaises(ValueError) as cm:
             rw.read_access_env(link)
-        self.assertNotIn(SECRET, str(cm.exception))
+        self.assertNotIn(CANARY, str(cm.exception))
 
     def test_main_fails_closed_on_bad_access_env_without_leaking(self):
-        p = self.write('CF_ACCESS_CLIENT_ID=a\nCF_ACCESS_CLIENT_SECRET=%s\n' % SECRET, 0o640)
+        p = self.write('CF_ACCESS_CLIENT_ID=a\nCF_ACCESS_CLIENT_SECRET=%s\n' % CANARY, 0o640)
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             code = rw.main(['--direct-url', 'http://h:1', '--edge-url', 'https://e', '--access-env', str(p),
                             '--state', str(p.with_name('s.json'))],
                            direct_fn=lambda *a: self.fail('probed'), edge_fn=lambda *a: self.fail('probed'))
         self.assertEqual(code, 1)
-        self.assertNotIn(SECRET, err.getvalue())
+        self.assertNotIn(CANARY, err.getvalue())
 
 
 class ClassifyTest(unittest.TestCase):
