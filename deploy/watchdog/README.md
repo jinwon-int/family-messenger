@@ -109,3 +109,75 @@ spool 디렉터리 `/root/.claude/state/telegram-spool` 는 그 노드의 ccc �
 - 플랜 B(netcup 점검 메일 `Wartungsarbeiten|Maintenance` → 서버 ID 를 노드명으로 치환해 오너 알림)는 같은 이슈 #412 에서
   추적하지만 **이 PR 에는 없다**.
 - 홈서버 이중화·자동 페일오버는 범위 밖(별도 이슈).
+
+---
+
+# 릴레이 워치독 (#426) — native-relay(「한데」)
+
+에이전트 채팅이 한데로 옮겨 가면 v2 릴레이(`native-relay`)가 에이전트 채팅과 가족 채팅의 **공통 SPOF**가 된다.
+릴레이가 죽은 사건을 릴레이로 알릴 수는 없다. 그래서 홈서버 워치독과 같은 틀(디바운스·상태 파일·재알림·spool)을
+`scripts/relay_watchdog.py` 가 재사용한다(`homeserver_watchdog.advance` 에 `alert_codes` 만 넘김).
+
+| 파일 | 용도 |
+|---|---|
+| `family-messenger-relay-watchdog.service` | 원샷 유닛. 직결·엣지 프로브 → 판정 → spool 알림. 상태 `/var/lib/family-messenger-watchdog/relay-state.json` |
+| `family-messenger-relay-watchdog.timer` | 1분 주기(홈서버 워치독 타이머와 같은 설정) |
+| `relay-watchdog.env.example` | `/etc/family-messenger/relay-watchdog.env` 예시 — 직결 URL·엣지 URL·노드명·spool·추가 인자 |
+
+## 프로브와 판정
+
+| 프로브 | 방법 | up 조건 |
+|---|---|---|
+| direct | `GET <직결 URL>/v2/health`(사설망, 노드 봇이 쓰는 것과 같은 경로) | `200` 이고 JSON `{"ok": true}` |
+| edge (`--access-env` 있음, **authed**) | CF Access 서비스 토큰 헤더로 `GET <엣지 URL>/v2/health`, 리다이렉트 따라가지 않음 | 터널 너머 릴레이의 `200 {"ok": true}` — 터널까지 끝까지 확인 |
+| edge (없음, **edge-only**) | 같은 요청, 토큰 없음 | `3xx`/`401`/`403`(Access 자체 응답 = 엣지 생존) 또는 `200 {"ok":true}`. `5xx`(530/502 등)·무응답은 down |
+
+> edge-only 모드의 한계: Access 가 오리진보다 먼저 답하므로 **Access 뒤에서 터널만 끊긴 경우는 잡지 못한다**.
+> 터널 단절까지 잡으려면 워치독 전용 CF Access 서비스 토큰을 발급해 `--access-env` 로 넘긴다(비밀값 — 별도 승인).
+
+| direct | edge | 판정 | 알림 코드 | 뜻 |
+|---|---|---|---|---|
+| up | up | `up` | `relay_recovered`(나쁜 상태에서 복귀 시) | 정상 |
+| up | down | `edge` | `relay_edge` | 터널/Cloudflare 만 문제 — 노드 봇은 정상, 오너 앱(웹·iOS·Android)은 끊김 |
+| down | any | `relay_down` | `relay_down` | 릴레이 프로세스 또는 그 호스트 불통 — 봇·앱 모두 끊김 |
+
+디바운스 3회 × 60s(≤3분), 6h 재알림, spool 실패 시 `pending` 재시도, 첫 `up` 무음은 홈서버 워치독과 같다.
+레코드는 `health-alert-relay_<…>-<epoch_ms>.json`, `dedup` 은 `relay-watchdog:<code>:<since>:<transition|epoch>`.
+
+## 어디에 설치하나 — 두 곳 (노드 변경, **별도 오너 승인 후**)
+
+릴레이는 서서(seoseo)에서 돈다. 알림 경로는 릴레이에 의존하지 않아야 하므로 실패 범위가 다른 두 곳에 같은 코드를 둔다.
+
+| 설치 노드 | 잡는 사건 | 알림 경로 |
+|---|---|---|
+| 서서(릴레이 호스트) | 릴레이 **프로세스**만 죽음, 터널만 끊김 | 서서 Telegram 브리지(오너 결정 ② 폴백 채널) |
+| 진군(오프호스트) | 서서 **호스트 전체** 불통(이때는 서서 Telegram 도 죽는다) | 진군 Matrix 브리지 — 홈서버는 육손이라 릴레이·서서와 독립 |
+
+두 곳 모두 `RELAY_WATCHDOG_SPOOL` 은 그 노드 ccc 브리지가 소비하는 push spool 이다.
+
+```bash
+# 1. 코드 체크아웃(/opt/family-messenger-tuwunel)에 scripts/relay_watchdog.py · homeserver_watchdog.py · push_spool.py 확인
+install -m 0600 deploy/watchdog/relay-watchdog.env.example /etc/family-messenger/relay-watchdog.env
+$EDITOR /etc/family-messenger/relay-watchdog.env      # 직결 URL·엣지 URL·노드명·spool
+# 2. 수동 1회(--push-spool 없이 판정만)
+python3 /opt/family-messenger-tuwunel/scripts/relay_watchdog.py --direct-url <직결> --edge-url <엣지> \
+  --state /tmp/relay-watchdog-test.json --json
+# 3. 유닛 설치·활성화
+install -m 0644 deploy/watchdog/family-messenger-relay-watchdog.{service,timer} /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now family-messenger-relay-watchdog.timer
+```
+
+## 수동 드릴 (#426 수용 기준 — 릴레이 정지는 승인 하에)
+
+| 드릴 | 절차 | 기대 |
+|---|---|---|
+| 릴레이 다운 | 서서 `systemctl stop native-relay.service`(승인 — 한데 전체 정지) | ≤3분 안에 서서 Telegram·진군 Matrix 에 `relay_down` |
+| 복구 | `systemctl start native-relay.service` | 3회 연속 up 뒤 `relay_recovered`(지속 시간 포함) |
+| 터널만 정지 | 서서 cloudflared 의 한데 ingress 정지(승인) | authed 모드: ≤3분 `relay_edge`. edge-only 모드: 감지 못함(위 한계) |
+| 6h 재알림 억제 | 나쁜 상태 유지 또는 상태 파일 `last_alert` 조작 드라이런 | 6h 안 두 번째 레코드 없음, 경과 후 `kind: realert` 1건 |
+
+## 범위 메모
+
+- #426 의 "봇 측 신호(`halted`/403/`history_gap` → health 파일)"는 이 PR 에 없다 — native-bot(Rust) 변경이라 후속 PR.
+- 릴레이 폴백 전환(#440 warm standby)과는 독립: 이 워치독은 지금 지정된 릴레이 주소만 본다. 전환 후에는 env 의
+  직결 URL 을 새 주 릴레이로 바꾼다(전환 런북에 포함).

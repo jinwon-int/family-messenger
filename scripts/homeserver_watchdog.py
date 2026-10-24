@@ -149,8 +149,11 @@ def _number(value, default):
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else default
 
 
-def advance(prev, candidate, now, threshold, realert_seconds):
+def advance(prev, candidate, now, threshold, realert_seconds, alert_codes=None):
     """Pure state step: (new_state_dict, alert) where alert is None or {'code', 'kind'}.
+
+    ``alert_codes`` maps each state to its alert code (default: the homeserver codes);
+    relay_watchdog.py reuses this step with its own ``relay_*`` codes.
 
     * ``transition``: the last ``threshold`` observations all equal ``candidate`` and it
       differs from the confirmed state. Into edge/host_down -> alert; back to up ->
@@ -160,6 +163,7 @@ def advance(prev, candidate, now, threshold, realert_seconds):
     * ``retry``: a previous spool write failed; resend only while the code still matches
       the confirmed state (a stale pending alert is dropped).
     """
+    codes = ALERT_CODES if alert_codes is None else alert_codes
     confirmed = prev.get('state') if prev.get('state') in STATES else None
     since = _number(prev.get('since'), now)
     raw_alerts = prev.get('last_alert') if isinstance(prev.get('last_alert'), dict) else {}
@@ -179,14 +183,14 @@ def advance(prev, candidate, now, threshold, realert_seconds):
     if transition:
         since = _number(observations[-threshold]['ts'], now)
         if candidate in BAD_STATES or confirmed is not None:
-            alert = {'code': ALERT_CODES[candidate], 'kind': 'transition'}
+            alert = {'code': codes[candidate], 'kind': 'transition'}
         confirmed = candidate
     elif confirmed in BAD_STATES:
         last = last_alert.get(confirmed)
         if last is not None and now - last >= realert_seconds:
-            alert = {'code': ALERT_CODES[confirmed], 'kind': 'realert'}
+            alert = {'code': codes[confirmed], 'kind': 'realert'}
     pending = prev.get('pending') if isinstance(prev.get('pending'), str) else None
-    if alert is None and pending and confirmed is not None and pending == ALERT_CODES[confirmed]:
+    if alert is None and pending and confirmed is not None and pending == codes[confirmed]:
         alert = {'code': pending, 'kind': 'retry'}
     if alert is not None:
         alert.update({'state': confirmed, 'since': since, 'previous_state': previous_state,

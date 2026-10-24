@@ -1,0 +1,23 @@
+# 오프호스트 릴레이(native-relay) 워치독(#426, #412 A 자매). 1분마다 사설망(Tailscale) 직결 /v2/health 와
+# 공개 엣지(Cloudflare 터널 + Access) /v2/health 를 따로 재서 up / edge / relay_down 을 판정하고, 3회 연속
+# 확정 시 노드 ccc push spool 에 health-alert 레코드를 쓴다(그 노드 브리지가 전달).
+# 릴레이가 죽은 사건을 릴레이(한데)로 알릴 수 없으므로 알림 경로는 릴레이에 의존하지 않는 브리지여야 한다:
+#   - 릴레이 호스트 자신(서서): 프로세스만 죽은 경우 → 서서 Telegram 브리지
+#   - 다른 노드(예: 진군): 릴레이 호스트 전체가 죽은 경우 → 그 노드의 Matrix 브리지(홈서버는 별도 호스트)
+# 호스트별 값(URL·노드명·spool)은 /etc/family-messenger/relay-watchdog.env 로 공급한다(코드에 박지 않음).
+# 설치·활성화는 노드 변경이므로 별도 승인 후 README 절차로 진행한다.
+[Unit]
+Description=Family messenger off-host native-relay watchdog (private + edge probes)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/family-messenger/relay-watchdog.env
+ExecStart=/usr/bin/python3 /opt/family-messenger-tuwunel/scripts/relay_watchdog.py --once --json --direct-url ${RELAY_WATCHDOG_DIRECT_URL} --edge-url ${RELAY_WATCHDOG_EDGE_URL} --push-spool ${RELAY_WATCHDOG_SPOOL} --push-node ${RELAY_WATCHDOG_NODE} --state /var/lib/family-messenger-watchdog/relay-state.json $RELAY_WATCHDOG_EXTRA_ARGS
+TimeoutStartSec=1min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+StateDirectory=family-messenger-watchdog
+StateDirectoryMode=0700
