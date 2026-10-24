@@ -23,6 +23,7 @@ native-mls-bot <base-url> session <room> <device> \
 - `--owner-actor`(env `NATIVE_MLS_BOT_OWNER_ACTOR`, 기본 `owner`): 승인 답장을 낼 수 있는 actor(기기 ID 의 첫 `-` 앞).
 - 응답기가 죽으면 세션도 끝난다(exit 1) — 서비스 매니저가 봇·응답기를 함께 다시 띄운다(`Restart=on-failure`).
 - `--room-frames`(env `NATIVE_MLS_BOT_ROOM_FRAMES=1`, #423): steward 에서 agent 방 여러 개 — `turn` 에 `room`, 답은 요청 온 방으로. 규칙표는 `STEWARD.md` "여러 agent 방".
+- 플릿 알림방(#425): `alert` 모드 방에서 `<방>.peers` 에 있는 봇의 `[alert:<actor>]` 글만 읽기 전용 turn(답 없음). 규칙은 `STEWARD.md` "플릿 알림방의 봇끼리 메시지".
 
 ## 노드에 설치하기 (플릿 롤아웃, #420 ⑥ / ccc-node #2380)
 
