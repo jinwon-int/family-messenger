@@ -104,6 +104,7 @@ native-mls-bot room status  <room>                  --rooms-dir <dir>   # room �
   바꾸기 전에 브리지 방 목록에 먼저 넣는다. 세션은 `(actor, room)` 별로 갈린다.
 - `status` 이벤트의 `polls_per_round` = 한 라운드의 GET 수(방 수). 방을 늘리면 폴링 요청이 비례해 는다(④ #424 측정 입력).
 - 되돌리기: 추가 agent 방을 `room mode <방> silent` 로 돌린 뒤 `--room-frames` 를 뺀다.
+- 실제 릴레이 검증: `tests/native_mls_bot_rooms_smoke.py`(CI native-mls) — steward 봇 2개 + 가짜 응답기로 agent 방 2개·silent 방 1개 라우팅, 재시작 뒤 커서·inbox 보존.
 
 ## 플릿 알림방의 봇끼리 메시지 (#425, 오너 확정 ④-A)
 
@@ -126,6 +127,7 @@ native-mls-bot room status  <room>                  --rooms-dir <dir>   # room �
 - 응답기(ccc-node hande 브리지)는 `sender` 가 자기 `owner`/`family_users` 에 없으면 `rejected: sender-not-allowed` 로 거절한다 — peer actor
   를 받으려면 브리지 설정에 넣어야 한다(거절돼도 peer turn 은 방에 아무것도 쓰지 않는다).
 - 답장 허용 플래그는 없다(오너 확정: 읽기만). 생기면 깊이 상한을 그 답장에도 적용해야 한다.
+- 실제 릴레이 검증: 같은 스모크가 알림방에서 봇 A 알림 → 봇 B peer turn 1/1·B 발신 0, 깊이 2 notice 는 A 가 `depth` 로 건너뜀, 알림방 밖에서는 `.peers` 가 있어도 봇 글을 읽지 않음을 확인한다.
 - 단일 방 모드(`session <room> <device> --state-file …`)는 그대로 있다. 공명 전환은 `extract-identity` 1회 뒤
   `steward` 로 ExecStart 을 바꾸는 drop-in(`deploy/native-relay-bot.service.d-40-steward.conf`)으로 한다(승인 항목).
 - 명령 큐 디렉터리는 봇 사용자 소유여야 한다. CLI 를 다른 사용자로 돌리면 `runuser -u <봇사용자> -- …` 로.
