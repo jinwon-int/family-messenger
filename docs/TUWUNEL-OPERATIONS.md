@@ -184,6 +184,10 @@ systemctl start family-messenger-backup.service   # 첫 수동 실행으로 기�
 - 봇 노드는 `deploy/family-matrix-health.service.example`+`.timer.example`로
   family-matrix 유닛 활성·홈서버 도달·봇 sync 신선도(`meta.health`)를 점검한다. 관리방 통지는
   봉인 토큰이 있는 홈서버 노드 유닛이 담당한다. 관리방 밖 경보는 홈서버 노드의 `--push-spool`(#395) 이 맡는다.
+- **호스트 자체가 꺼진 경우**(2026-10-18 하이퍼바이저 재부팅 12분 무인지)는 위 경로가 모두 같이 죽으므로,
+  홈서버 **밖** 노드의 `deploy/watchdog/`(`scripts/homeserver_watchdog.py`, #412 A)가 외부 client API 와
+  사설망 TCP 도달성을 1분마다 따로 재서 `up`/`edge`/`host_down` 을 3회 연속 확정 → 그 노드 push spool(Telegram
+  폴백)로 알린다. 설치는 별도 승인([`deploy/watchdog/README.md`](../deploy/watchdog/README.md)).
 - 헬스 점검은 읽기 전용이며 백업·스토리지 타이머와 충돌하지 않는다(백업은 자체 잠금 파일로
   동시 실행을 막는다). 실패한 백업 실행은 기록 json을 쓰지 않으므로, 신선도 검사는
   마지막 **완료** 쌍을 기준으로 한다.

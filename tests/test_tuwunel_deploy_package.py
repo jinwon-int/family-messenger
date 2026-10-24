@@ -174,7 +174,11 @@ class OperationsTimersTest(unittest.TestCase):
             "family-messenger-backup.service", "family-messenger-backup.timer",
             "family-messenger-health.service", "family-messenger-health.timer",
         )] + [ROOT / "deploy" / "family-matrix-health.service.example",
-              ROOT / "deploy" / "family-matrix-health.timer.example"]
+              ROOT / "deploy" / "family-matrix-health.timer.example",
+              # #412 A: off-host watchdog units carry host-specific values via the env file only.
+              ROOT / "deploy" / "watchdog" / "family-messenger-watchdog.service",
+              ROOT / "deploy" / "watchdog" / "family-messenger-watchdog.timer",
+              ROOT / "deploy" / "watchdog" / "watchdog.env.example"]
         for path in paths:
             text = path.read_text(encoding="utf-8")
             self.assertNotRegex(text, r"seoyoon-family\.com|racknerd|vps\d", str(path))
