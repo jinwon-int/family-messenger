@@ -85,6 +85,11 @@ pub struct Config {
     pub turn_secs: u64,
     /// #474: cap on `interim` messages per turn (0 = never post interims).
     pub interim_max: usize,
+    /// #423: several agent rooms on one responder. Each `turn` frame then
+    /// names its room (`"room"`) and its `turn_id` carries the room
+    /// (`t-<room>-<seq>`, relay seqs are per room). Off = the single-room
+    /// wire of #354 (no `room`, `t-<seq>`), which every deployed bridge speaks.
+    pub room_frames: bool,
 }
 
 impl Config {
@@ -96,6 +101,7 @@ impl Config {
             queue_max: DEFAULT_QUEUE_MAX,
             turn_secs: DEFAULT_TURN_SECS,
             interim_max: DEFAULT_INTERIM_MAX,
+            room_frames: false,
         }
     }
 }
@@ -137,10 +143,16 @@ const STATUS_ROOM_PLACEHOLDER: &str = "-";
 /// One decrypted application message the poll loop offers.
 #[derive(Debug, Clone)]
 pub struct Inbound {
+    /// #423: the room the message came from (its replies go back there).
+    pub room: String,
     pub seq: i64,
     pub sender_device: String,
     pub text: String,
 }
+
+/// #423: one `Outbound` and the room it belongs to — the room of the turn
+/// that produced it (`""` = no turn: the poll loop's single agent room).
+pub type Routed = (String, Outbound);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Offer {
@@ -163,6 +175,10 @@ struct ActiveTurn {
     /// (those only ever feed the restart notice, never a tool call).
     #[serde(default)]
     sender_device: String,
+    /// #423: the turn's room. Absent in inboxes written before #423 (the
+    /// restart notice then goes to the single agent room).
+    #[serde(default)]
+    room: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -187,7 +203,7 @@ pub struct Responder {
     next_approval: u64,
     gone: bool,
     /// Notices queued for the room (uncertain turn found at startup, etc.).
-    startup_notices: Vec<Outbound>,
+    startup_notices: Vec<Routed>,
     /// P4: `tool_id` of the one tool call the poll loop still owes an answer.
     pending_tool: Option<String>,
     /// #474: `interim` messages already posted for the active turn.
@@ -266,13 +282,16 @@ impl Responder {
         // A turn left active by an earlier run was never confirmed: say so
         // once, clear it, never re-run it.
         if let Some(previous) = responder.load_inbox()?.active {
-            responder.startup_notices.push(Outbound::Uncertain { seq: previous.seq, reason: "restart".to_string() });
+            responder.startup_notices.push((previous.room.clone(), Outbound::Uncertain { seq: previous.seq, reason: "restart".to_string() }));
             responder.write_inbox(None)?;
         }
         Ok(responder)
     }
 
     pub fn owner_actor(&self) -> &str { &self.config.owner_actor }
+
+    /// #423: several agent rooms share this responder (see `Config::room_frames`).
+    pub fn room_frames(&self) -> bool { self.config.room_frames }
 
     #[cfg(test)]
     fn is_gone(&self) -> bool { self.gone }
@@ -304,7 +323,13 @@ impl Responder {
 
     /// Drain worker output into room-bound items and start the next queued
     /// turn when the active one ends. Call once per poll round.
+    #[cfg(test)]
     pub fn pump(&mut self) -> Result<Vec<Outbound>, BotError> {
+        Ok(self.pump_routed()?.into_iter().map(|(_, item)| item).collect())
+    }
+
+    /// #423: `pump` with each item's room (see `Routed`).
+    pub fn pump_routed(&mut self) -> Result<Vec<Routed>, BotError> {
         let mut out = std::mem::take(&mut self.startup_notices);
         loop {
             match self.from_child.try_recv() {
@@ -322,8 +347,8 @@ impl Responder {
         }
         if let Some((turn, started)) = &self.active {
             if started.elapsed() > Duration::from_secs(self.config.turn_secs) {
-                let seq = turn.seq;
-                out.push(Outbound::Uncertain { seq, reason: "watchdog".to_string() });
+                let (seq, room) = (turn.seq, turn.room.clone());
+                out.push((room, Outbound::Uncertain { seq, reason: "watchdog".to_string() }));
                 self.finish_active()?;
             }
         }
@@ -336,16 +361,17 @@ impl Responder {
     }
 
     fn start(&mut self, inbound: Inbound) -> Result<(), BotError> {
-        let turn_id = format!("t-{}", inbound.seq);
+        let turn_id = turn_id_for(self.config.room_frames, &inbound.room, inbound.seq);
         let active = ActiveTurn {
             seq: inbound.seq, turn_id: turn_id.clone(), started_at: now_secs(), sender_device: inbound.sender_device.clone(),
+            room: inbound.room.clone(),
         };
         // Durable before the child sees it (FLEET-WORKER: the parent inbox is
         // the duplicate guard, not the port).
         self.write_inbox(Some(&active))?;
         self.active = Some((active, Instant::now()));
         self.interim_sent = 0;
-        let line = serde_json::json!({
+        let mut frame = serde_json::json!({
             "type": "turn",
             "turn_id": turn_id,
             "prompt": bounded(&inbound.text, PROMPT_MAX_BYTES),
@@ -355,8 +381,13 @@ impl Responder {
             // name, so the prompt header reads "보낸 사람: @<device>:hande".
             "sender": format!("@{}:hande", inbound.sender_device),
             "room_kind": "family",
-        })
-        .to_string();
+        });
+        // #423: the bridge keys its session by (actor, room) when `room` is
+        // present and falls back to its first room otherwise.
+        if self.config.room_frames && is_room_id(&inbound.room) {
+            frame["room"] = serde_json::Value::String(inbound.room.clone());
+        }
+        let line = frame.to_string();
         if self.to_child.send(Cmd::Line(line)).is_err() {
             self.gone = true;
             return Err(BotError::Local("responder stdin closed"));
@@ -364,7 +395,7 @@ impl Responder {
         Ok(())
     }
 
-    fn handle(&mut self, value: serde_json::Value, out: &mut Vec<Outbound>) -> Result<(), BotError> {
+    fn handle(&mut self, value: serde_json::Value, out: &mut Vec<Routed>) -> Result<(), BotError> {
         let kind = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if kind == "notice" {
             // #474: not tied to a turn (a reminder or alert the node raises on
@@ -372,7 +403,7 @@ impl Responder {
             let room = value.get("room").and_then(|v| v.as_str()).unwrap_or("");
             let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
             if is_room_id(room) && !text.is_empty() {
-                out.push(Outbound::Notice { room: room.to_string(), text: bounded_reply(text, self.config.reply_max_bytes) });
+                out.push((room.to_string(), Outbound::Notice { room: room.to_string(), text: bounded_reply(text, self.config.reply_max_bytes) }));
             }
             return Ok(());
         }
@@ -385,6 +416,7 @@ impl Responder {
             return Ok(());
         }
         let seq = active.seq;
+        let room = active.room.clone();
         match kind {
             "approval" => {
                 let approval_id = value.get("approval_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -403,7 +435,7 @@ impl Responder {
                     _ => bounded(if description.is_empty() { action } else { description }, 2048),
                 };
                 let text = format!("⚠️ 승인 필요 #{n}: {summary}\n답장: 「승인 {n}」 또는 「거절 {n}」 ({} 만)", self.config.owner_actor);
-                out.push(Outbound::ApprovalRequest { n, seq, text });
+                out.push((room, Outbound::ApprovalRequest { n, seq, text }));
             }
             "tool" => {
                 // P4: a room command request. Addressed to this turn only.
@@ -413,7 +445,7 @@ impl Responder {
                 }
                 let turn_id = active.turn_id.clone();
                 let name = value.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                let Some((op, room, arg)) = tool_command(name, value.get("arguments")) else {
+                let Some((op, tool_room, arg)) = tool_command(name, value.get("arguments")) else {
                     self.send_tool_result(&turn_id, tool_id, Err("bad_arguments".to_string()));
                     return Ok(());
                 };
@@ -426,14 +458,14 @@ impl Responder {
                     return Ok(());
                 }
                 self.pending_tool = Some(tool_id.to_string());
-                out.push(Outbound::ToolCall { tool_id: tool_id.to_string(), name: name.to_string(), op, room, arg });
+                out.push((active.room.clone(), Outbound::ToolCall { tool_id: tool_id.to_string(), name: name.to_string(), op, room: tool_room, arg }));
             }
             "approval-resolved" => {
                 let approval_id = value.get("approval_id").and_then(|v| v.as_str()).unwrap_or("");
                 let allowed = value.get("allowed").and_then(|v| v.as_bool()).unwrap_or(false);
                 if let Some((n, _)) = self.approvals.iter().find(|(_, (_, id))| id == approval_id).map(|(n, v)| (*n, v.clone())) {
                     self.approvals.remove(&n);
-                    out.push(Outbound::ApprovalResolved { n, allowed });
+                    out.push((room, Outbound::ApprovalResolved { n, allowed }));
                 }
             }
             "approval-denied" => {
@@ -444,11 +476,11 @@ impl Responder {
                 if status == "complete" {
                     let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
                     if !text.is_empty() {
-                        out.push(Outbound::Reply { seq, text: bounded_reply(&text, self.config.reply_max_bytes) });
+                        out.push((room.clone(), Outbound::Reply { seq, text: bounded_reply(&text, self.config.reply_max_bytes) }));
                     }
                 } else {
                     let reason = value.get("reason").and_then(|v| v.as_str()).unwrap_or("uncertain").to_string();
-                    out.push(Outbound::Uncertain { seq, reason });
+                    out.push((room, Outbound::Uncertain { seq, reason }));
                     // FLEET-WORKER: an uncertain outcome retires the worker; it
                     // accepts no further turns. Treat the process as gone.
                     self.finish_active()?;
@@ -463,12 +495,12 @@ impl Responder {
                 let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
                 if !text.is_empty() && self.interim_sent < self.config.interim_max {
                     self.interim_sent += 1;
-                    out.push(Outbound::Interim { seq, text: bounded_reply(text, self.config.reply_max_bytes) });
+                    out.push((room, Outbound::Interim { seq, text: bounded_reply(text, self.config.reply_max_bytes) }));
                 }
             }
             "rejected" => {
                 let reason = value.get("reason").and_then(|v| v.as_str()).unwrap_or("rejected");
-                out.push(Outbound::Uncertain { seq, reason: format!("rejected:{reason}") });
+                out.push((room, Outbound::Uncertain { seq, reason: format!("rejected:{reason}") }));
                 self.finish_active()?;
             }
             // `session`, `control`: informational.
@@ -504,21 +536,21 @@ impl Responder {
         self.write_inbox(None)
     }
 
-    fn fail(&mut self, reason: String, out: &mut Vec<Outbound>) -> Result<(), BotError> {
+    fn fail(&mut self, reason: String, out: &mut Vec<Routed>) -> Result<(), BotError> {
         if self.gone {
             return Ok(());
         }
         self.gone = true;
         if let Some((turn, _)) = self.active.take() {
-            out.push(Outbound::Uncertain { seq: turn.seq, reason: "worker_gone".to_string() });
+            out.push((turn.room.clone(), Outbound::Uncertain { seq: turn.seq, reason: "worker_gone".to_string() }));
             self.approvals.clear();
             self.pending_tool = None;
             self.write_inbox(None)?;
         }
         for dropped in self.queue.drain(..) {
-            out.push(Outbound::Uncertain { seq: dropped.seq, reason: "worker_gone".to_string() });
+            out.push((dropped.room.clone(), Outbound::Uncertain { seq: dropped.seq, reason: "worker_gone".to_string() }));
         }
-        out.push(Outbound::WorkerGone { reason });
+        out.push((String::new(), Outbound::WorkerGone { reason }));
         let _ = self.to_child.send(Cmd::Close);
         Ok(())
     }
@@ -568,6 +600,13 @@ impl Drop for Responder {
             let _ = child.wait();
         }
     }
+}
+
+/// #423: `t-<seq>` on the single-room wire; `t-<room>-<seq>` with room
+/// frames (relay seqs are per room, so two rooms would collide otherwise).
+/// Both stay inside the bridge's `[A-Za-z0-9_-]{1,128}` turn id rule.
+fn turn_id_for(room_frames: bool, room: &str, seq: i64) -> String {
+    if room_frames && is_room_id(room) { format!("t-{room}-{seq}") } else { format!("t-{seq}") }
 }
 
 fn inbox_path(state_file: &Path) -> PathBuf {
@@ -660,10 +699,10 @@ pub fn tool_command(name: &str, arguments: Option<&serde_json::Value>) -> Option
     };
     let arg = match op {
         "invite" | "remove" => args.get("device").copied()?,
-        "mode" => args.get("mode").copied().filter(|m| matches!(*m, "agent" | "silent"))?,
+        "mode" => args.get("mode").copied().filter(|m| matches!(*m, "agent" | "silent" | "alert"))?,
         "create" => match args.get("mode").copied() {
             None => "silent",
-            Some(mode @ ("agent" | "silent")) => mode,
+            Some(mode @ ("agent" | "silent" | "alert")) => mode,
             Some(_) => return None,
         },
         _ => "",
@@ -791,6 +830,11 @@ for line in sys.stdin:
                 frame.update(spec)
                 print(json.dumps(frame), flush=True)
             continue
+        if cmd["prompt"].startswith("showframe"):
+            # #423: echo the wire fields the room routing depends on.
+            shown = json.dumps({"turn_id": tid, "room": cmd.get("room")}, sort_keys=True)
+            print(json.dumps({"type": "result", "turn_id": tid, "status": "complete", "session_id": "s1", "text": "frame:" + shown}), flush=True)
+            continue
         if cmd["prompt"].startswith("progress"):
             for i in range(3):
                 print(json.dumps({"type": "interim", "turn_id": tid, "text": "step %d" % i}), flush=True)
@@ -828,7 +872,7 @@ for line in sys.stdin:
     }
 
     fn inbound(seq: i64, device: &str, text: &str) -> Inbound {
-        Inbound { seq, sender_device: device.into(), text: text.into() }
+        Inbound { room: "agent".into(), seq, sender_device: device.into(), text: text.into() }
     }
 
     #[test]
@@ -1156,5 +1200,114 @@ for line in f:
         let got = pump_until(&mut r, 2);
         assert!(got.iter().any(|o| *o == Outbound::Uncertain { seq: 7, reason: "watchdog".into() }), "{got:?}");
         assert!(r.active.is_none());
+    }
+
+    fn pump_routed_until(r: &mut Responder, want: usize) -> Vec<Routed> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut got = Vec::new();
+        while got.len() < want && Instant::now() < deadline {
+            got.extend(r.pump_routed().unwrap_or_else(|e| panic!("pump: {e}")));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        got
+    }
+
+    fn inbound_in(room: &str, seq: i64, text: &str) -> Inbound {
+        Inbound { room: room.into(), seq, sender_device: "owner-pc".into(), text: text.into() }
+    }
+
+    /// #423 off (default): the deployed single-room wire is unchanged — no
+    /// `room` in the turn frame, `t-<seq>` — and items still carry their room.
+    #[test]
+    fn room_frames_off_keeps_the_single_room_wire() {
+        let mut r = fake(|_| {}, None);
+        assert!(!r.room_frames());
+        r.offer(inbound_in("dungae", 3, "showframe")).unwrap();
+        let got = pump_routed_until(&mut r, 1);
+        assert_eq!(got, vec![("dungae".to_string(), Outbound::Reply { seq: 3, text: r#"frame:{"room": null, "turn_id": "t-3"}"#.into() })]);
+    }
+
+    /// #423 on: each turn names its room, turn ids cannot collide across rooms
+    /// (relay seqs are per room), and every item is routed to its turn's room
+    /// in queue order — one turn at a time for the whole process.
+    #[test]
+    fn room_frames_name_the_room_and_route_each_reply_back() {
+        let mut r = fake(|c| c.room_frames = true, None);
+        assert_eq!(r.offer(inbound_in("soonwook", 7, "showframe")).unwrap(), Offer::Started);
+        assert_eq!(r.offer(inbound_in("fleet", 7, "showframe")).unwrap(), Offer::Queued { depth: 1 });
+        assert_eq!(r.offer(inbound_in("fleet", 8, "progress")).unwrap(), Offer::Queued { depth: 2 });
+        let got = pump_routed_until(&mut r, 6);
+        assert_eq!(got, vec![
+            ("soonwook".to_string(), Outbound::Reply { seq: 7, text: r#"frame:{"room": "soonwook", "turn_id": "t-soonwook-7"}"#.into() }),
+            ("fleet".to_string(), Outbound::Reply { seq: 7, text: r#"frame:{"room": "fleet", "turn_id": "t-fleet-7"}"#.into() }),
+            ("fleet".to_string(), Outbound::Interim { seq: 8, text: "step 0".into() }),
+            ("fleet".to_string(), Outbound::Interim { seq: 8, text: "step 1".into() }),
+            ("fleet".to_string(), Outbound::Interim { seq: 8, text: "step 2".into() }),
+            ("fleet".to_string(), Outbound::Reply { seq: 8, text: "echo:progress|@owner-pc:hande".into() }),
+        ]);
+    }
+
+    /// #423: approvals and their resolution stay in the asking turn's room; a
+    /// notice keeps its own room whatever turn is active.
+    #[test]
+    fn approvals_and_notices_keep_their_rooms() {
+        let mut r = fake(|c| c.room_frames = true, None);
+        r.offer(inbound_in("soonwook", 1, "ask: x")).unwrap();
+        let got = pump_routed_until(&mut r, 1);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, "soonwook");
+        assert!(matches!(got[0].1, Outbound::ApprovalRequest { n: 1, seq: 1, .. }), "{got:?}");
+        assert_eq!(r.resolve(1, true), Some(true));
+        let got = pump_routed_until(&mut r, 2);
+        assert_eq!(got, vec![
+            ("soonwook".to_string(), Outbound::ApprovalResolved { n: 1, allowed: true }),
+            ("soonwook".to_string(), Outbound::Reply { seq: 1, text: "did:True".into() }),
+        ]);
+        r.offer(inbound_in("dungae", 2, "notify")).unwrap();
+        let got = pump_routed_until(&mut r, 2);
+        assert_eq!(got[0].0, "dungae");
+        assert_eq!(got[1], ("soonwook".to_string(), Outbound::Notice { room: "soonwook".into(), text: "reminder".into() }));
+    }
+
+    /// #423: the inbox remembers the turn's room, so the restart notice lands
+    /// where the unanswered message was; an inbox written before #423 (no
+    /// `room`) still loads and routes to `""` (the single agent room).
+    #[test]
+    fn restart_notice_goes_back_to_the_turns_room() {
+        let dir = std::env::temp_dir().join(format!("bot-responder-room-{}-{}", std::process::id(), now_secs()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = dir.join("bot.state");
+        {
+            let mut r = fake(|c| c.room_frames = true, Some(&state));
+            r.offer(inbound_in("fleet", 9, "ask: hold")).unwrap();
+            let _ = pump_until(&mut r, 1);
+        }
+        let mut r = fake(|c| c.room_frames = true, Some(&state));
+        assert_eq!(r.pump_routed().unwrap(), vec![("fleet".to_string(), Outbound::Uncertain { seq: 9, reason: "restart".into() })]);
+        drop(r);
+        std::fs::write(inbox_path(&state), br#"{"version":1,"active":{"seq":4,"turn_id":"t-4","started_at":1}}"#).unwrap();
+        let mut r = fake(|_| {}, Some(&state));
+        assert_eq!(r.pump_routed().unwrap(), vec![(String::new(), Outbound::Uncertain { seq: 4, reason: "restart".into() })]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn turn_ids_stay_inside_the_bridge_rule() {
+        assert_eq!(turn_id_for(false, "fleet", 12), "t-12");
+        assert_eq!(turn_id_for(true, "fleet", 12), "t-fleet-12");
+        assert_eq!(turn_id_for(true, "", 12), "t-12", "no room = single-room id");
+        assert_eq!(turn_id_for(true, "bad room!", 12), "t-12");
+        let long = "r".repeat(64);
+        let id = turn_id_for(true, &long, i64::MAX);
+        assert!(id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'), "{id}");
+    }
+
+    #[test]
+    fn tool_command_accepts_alert_mode() {
+        let args = serde_json::json!({"room": "fleet", "mode": "alert"});
+        assert_eq!(tool_command("room_mode", Some(&args)), Some(("mode".into(), "fleet".into(), "alert".into())));
+        assert_eq!(tool_command("room_create", Some(&args)), Some(("create".into(), "fleet".into(), "alert".into())));
+        let bad = serde_json::json!({"room": "fleet", "mode": "loud"});
+        assert_eq!(tool_command("room_mode", Some(&bad)), None);
     }
 }

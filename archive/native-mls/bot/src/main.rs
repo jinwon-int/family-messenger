@@ -72,6 +72,13 @@ fn main() -> ExitCode {
         Some(actor) => (actor, strip_flag(&args, "--owner-actor")),
         None => (std::env::var("NATIVE_MLS_BOT_OWNER_ACTOR").ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| "owner".to_string()), args),
     };
+    // #423: `--room-frames` (env NATIVE_MLS_BOT_ROOM_FRAMES=1) — several agent
+    // rooms on one responder; every turn frame names its room. Needs a bridge
+    // that accepts `room` (ccc-node hande transport); off = the single-room wire.
+    let (room_frames, args) = match args.iter().position(|a| a == "--room-frames") {
+        Some(_) => (true, args.iter().filter(|a| *a != "--room-frames").cloned().collect::<Vec<_>>()),
+        None => (std::env::var("NATIVE_MLS_BOT_ROOM_FRAMES").ok().is_some_and(|v| v.trim() == "1"), args),
+    };
     let owner_ok = api::require_identifier("owner actor must match [A-Za-z0-9_-]{1,64}", &owner_actor).is_ok();
     let responder = match (responder_json, responder_unix) {
         (None, None) => None,
@@ -92,6 +99,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let responder = responder.map(|mut config| { config.room_frames = room_frames; config });
     // Review 2 L: every room/device/consumer argument must already be a relay
     // identifier — nothing that needs encoding is ever interpolated into a path.
     if let Err(e) = validate_identifiers(&args) {
@@ -156,7 +164,7 @@ fn main() -> ExitCode {
             eprintln!("usage: native-mls-bot <base-url> health");
             eprintln!("       native-mls-bot <base-url> steward <device> --identity-file <path> --rooms-dir <dir>   (#372 P2)");
             eprintln!("       native-mls-bot extract-identity <room> <device> --state-file <path> --identity-file <path>");
-            eprintln!("       native-mls-bot room <create|join|invite|remove|close|members|mode|status> <room> [<device>|agent|silent] --rooms-dir <dir>");
+            eprintln!("       native-mls-bot room <create|join|invite|remove|close|members|mode|status> <room> [<device>|agent|silent|alert] --rooms-dir <dir>");
             eprintln!("       native-mls-bot <base-url> publish <room> <device>");
             eprintln!("       native-mls-bot <base-url> consume <room> <device> <consumer>");
             eprintln!("       native-mls-bot <base-url> session <room> <device> [<watch-room> --watch]");
@@ -171,6 +179,7 @@ fn main() -> ExitCode {
             eprintln!("NATIVE_MLS_BOT_RESPONDER_UNIX): every");
             eprintln!("application message becomes one turn of the stdio worker (docs/FLEET-WORKER.md) instead of an echo;");
             eprintln!("--owner-actor <actor> (env NATIVE_MLS_BOT_OWNER_ACTOR, default owner) answers approvals with 승인 n / 거절 n");
+            eprintln!("--room-frames (env NATIVE_MLS_BOT_ROOM_FRAMES=1, #423): several agent rooms on one responder; each turn names its room");
             return ExitCode::FAILURE;
         }
     };
