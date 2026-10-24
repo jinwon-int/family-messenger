@@ -899,6 +899,7 @@ fn echo(ctx: &Ctx, state: &mut RoomState, ev: &StoredRow, sender: &[u8], plainte
         // unread as before.
         if state.mode == Mode::Alert {
             if let Some(responder) = agent.as_mut() {
+                persist_before_turn(ctx, state)?;
                 return route_peer(state, ev, sender, plaintext, responder);
             }
         }
@@ -912,7 +913,10 @@ fn echo(ctx: &Ctx, state: &mut RoomState, ev: &StoredRow, sender: &[u8], plainte
     // A silent room (#372 D3) decrypts — the ratchet must advance — and stops.
     match state.mode {
         Mode::Agent => match agent.as_mut() {
-            Some(responder) => route_to_agent(state, ev, sender, plaintext, responder),
+            Some(responder) => {
+                persist_before_turn(ctx, state)?;
+                route_to_agent(state, ev, sender, plaintext, responder)
+            }
             None => {
                 emit(&serde_json::json!({ "event": "agent_skipped", "room": state.room, "seq": ev.seq, "reason": "no_responder" }));
                 Ok(())
@@ -924,6 +928,21 @@ fn echo(ctx: &Ctx, state: &mut RoomState, ev: &StoredRow, sender: &[u8], plainte
             Err(err) => Err(report_dropped(state, plaintext, err)),
         },
     }
+}
+
+/// A message may become a turn next (`route_to_agent` / `route_peer` write the
+/// inbox and hand it to the worker): the cursor that already covers it, and
+/// the ratchet step its decrypt took, reach disk first. Otherwise a crash
+/// between the hand-off and the round-end flush restarts from the older
+/// cursor: the inbox retires the turn as "not confirmed" and the re-read
+/// message is offered again — the turn runs twice although the room was told
+/// it would not (AGENT.md 중복 실행 금지). Same rule as the echo path
+/// (`publish_echo`, review 2 B-H2): state on disk before anything leaves.
+fn persist_before_turn(ctx: &Ctx, state: &mut RoomState) -> Result<(), BotError> {
+    if state.dirty {
+        flush(ctx, state)?;
+    }
+    Ok(())
 }
 
 /// Agent mode: decide whether one decrypted message becomes a turn, an
@@ -2342,6 +2361,50 @@ for line in sys.stdin:
         assert_eq!(Mode::Alert.name(), "alert");
         assert_eq!(Mode::parse(" agent\n"), Some(Mode::Agent));
         assert_eq!(Mode::parse("loud"), None);
+    }
+
+    /// A turn leaves the process only after the cursor covering its message is
+    /// on disk (agent room and alert-room peer turn alike). Before, the cursor
+    /// waited for the round-end flush: a SIGKILL in between restarted from the
+    /// older cursor, the inbox retired the turn as "not confirmed", and the
+    /// re-read message ran as a turn a second time (seen on a real relay by
+    /// `native_mls_bot_rooms_smoke.py` step h).
+    #[test]
+    fn turn_cursor_is_durable_before_the_worker_sees_it() {
+        // A worker that never answers: the turn stays in flight, like a crash.
+        let mut config = responder::Config::new(
+            responder::Transport::Argv(vec!["python3".into(), "-c".into(), "import sys\nfor _ in sys.stdin: pass\n".into()]),
+            "owner".into(),
+        );
+        config.room_frames = true;
+        let client = Client::with_access("http://127.0.0.1:9", api::Access::None); // never called
+        let ctx = Ctx { client: &client, own: "bot-1" };
+        let dir = temp_dir("turn-durable");
+        for (room, mode, device, client_id, text) in [
+            ("family", Mode::Agent, "owner-iphone-1", "owner-iphone-1-7", "run the report"),
+            ("fleet", Mode::Alert, "peer-bot", "peer-bot-echo-3", "[alert:peer] disk 91%"),
+        ] {
+            std::fs::write(dir.join(format!("{room}.peers")), "peer\n").expect("peers file");
+            let mut agent = Some(Responder::spawn(config.clone(), None).unwrap_or_else(|e| panic!("spawn: {e}")));
+            let path = dir.join(format!("{room}.state"));
+            let mut state = joined_room_at(room, 4, Some(path.clone()));
+            state.device.create().expect("a group to persist");
+            state.mode = mode;
+            // What room::poll did before calling the host: cursor = seq, and the
+            // decrypt dirtied the state.
+            state.sync.cursor = 5;
+            state.sync.dirty = true;
+            let row = StoredRow {
+                seq: 5, device: device.into(), client_id: client_id.into(), kind: "application".into(), epoch: 2,
+                bytes: Vec::new(), sha256: String::new(), created_at: 0,
+            };
+            echo(&ctx, &mut state, &row, device.as_bytes(), text.as_bytes(), &mut agent).unwrap_or_else(|e| panic!("{room}: {e}"));
+            let (_, cursor, ..) = load_state(Some(&path), room, "bot-1")
+                .unwrap_or_else(|e| panic!("{room}: load {e}"))
+                .unwrap_or_else(|| panic!("{room}: no state on disk when the turn left"));
+            assert_eq!(cursor, 5, "{room}: the offered message's seq is durable");
+            assert!(!state.dirty, "{room}: flushed");
+        }
     }
 
     /// #425 intake rules in the alert room: only a listed peer, only with its
