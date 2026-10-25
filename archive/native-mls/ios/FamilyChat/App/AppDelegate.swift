@@ -15,9 +15,16 @@ enum ForegroundPresentation {
     }
 }
 
+/// 프로세스에 모델은 하나 — UIKit 델리게이트와 단축어(App Intent, `Intents/SendToAgentIntent.swift`)가 같은 인스턴스를 쓴다.
+/// SwiftUI 수명주기에서 `UIApplication.shared.delegate` 는 어댑터 프록시라 Intent 가 델리게이트를 거쳐 모델에 닿을 수 없다.
+@MainActor
+enum AppModelHost {
+    static let shared = AppModel(dependencies: .live())
+}
+
 @MainActor
 final class AppDelegate: NSObject, UIApplicationDelegate {
-    let model = AppModel(dependencies: .live())
+    let model = AppModelHost.shared
     private lazy var notificationDelegate = NotificationCenterDelegate(model: model)
 
     func application(_ application: UIApplication,

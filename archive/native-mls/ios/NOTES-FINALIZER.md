@@ -137,3 +137,9 @@
 | 실 APNs 10/10 도착·≥9 본문, 서명 빌드, 실기기 App Group·Keychain 공유, 24 MB 상한 | **증명 안 함**(Apple 자격·실기기) | 오너 준비 후 §12-F |
 
 ### 진행
+
+## 단축어 「에이전트에게 보내기」(화면 위임 1단계 — 텍스트, 2026-10-26 jingun)
+- **D9 Intent = 앱 프로세스 · 같은 모델**: `SendToAgentIntent`(`FamilyChat/Intents/`)는 `openAppWhenRun = true` 로 앱을 띄워 `AppModelHost.shared`
+  (AppDelegate 와 같은 인스턴스)의 `sendFromShortcut` → 기존 `send(room:text:)` 로만 보낸다. AppIntents 확장(별도 프로세스)은 쓰지 않는다 —
+  제3의 작성자가 생기고 내 글 평문(`unconfirmed`)이 앱과 공유되지 않는다(D4). 백그라운드 송신(앱을 띄우지 않음)은 0xdead10cc·실행 시간 한도를
+  따로 검증한 뒤의 후속. 이미지(스크린샷)는 2단계(봇 첨부 전달 #354 후속 + 브리지).

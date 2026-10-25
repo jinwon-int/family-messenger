@@ -54,6 +54,11 @@ enum Strings {
     static let sendQueued = "릴레이에 닿지 않아 보관했습니다. 연결되면 같은 내용 그대로 다시 보냅니다."
     static let notReady = "아직 준비되지 않았습니다. 잠시 뒤 다시 보내 주세요."
     static let notJoined = "아직 이 대화방에 참여하지 않았습니다. 초대를 기다려 주세요."
+    /// 단축어 「에이전트에게 보내기」(SendToAgentIntent) 결과 — AppModel.sendFromShortcut 이 쓰므로 여기(Linux 스모크 복사 파일)에 둔다.
+    static let shortcutEmpty = "보낼 내용이 비어 있습니다."
+    static func shortcutUnknownRoom(_ room: String) -> String { "이 기기에는 '\(room)' 대화방이 없습니다. 한데에서 그 방에 초대받았는지 확인해 주세요." }
+    static func shortcutSent(_ room: String) -> String { "\(roomLabel(room))에게 보냈습니다. 답은 한데 대화방으로 옵니다." }
+    static func shortcutQueued(_ room: String) -> String { "\(roomLabel(room))에게 보낼 글을 보관했습니다. 연결되면 그대로 보냅니다." }
     /// 첨부 한도(AttachmentFormat.maxBytes) 초과 — AppModel 이 쓰므로 여기(NSE 공유 파일)에 둔다.
     static func attachmentTooLarge(_ bytes: Int) -> String {
         "첨부는 5 MiB(5,242,880바이트) 이하여야 합니다(지금 \(bytes.formatted())바이트). 사진은 자동으로 줄이지만 파일은 줄일 수 없습니다."
