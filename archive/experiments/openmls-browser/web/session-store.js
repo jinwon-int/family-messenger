@@ -147,6 +147,42 @@ export function classifyDecryptFailure({method, sequence, cursor, hasGroup, erro
   if (typeof error !== 'string' || NOT_POISON.has(error)) return 'fail';
   return 'tombstone';
 }
+// Rejection diagnostics (2026-10-26: the 한데 PC family room showed only "encrypt 거부"
+// and then failed to reopen; the worker reply said "operation rejected" for every
+// cause, and transaction() replaced its handler's error with "transaction rejected").
+// rejectionDetail() is what may cross postMessage about a failure: the message only
+// when it is one of the fixed strings below (fail(), store/IDB, facade `Rejected`),
+// an error name (e.g. QuotaExceededError), the IndexedDB abort name, and up to four
+// `file:line` stack frames. Never the free text of other errors — a JSON or DOM
+// message can quote store contents — and never values.
+export const REJECTION_REASONS = new Set(['rejected', 'transaction rejected', 'state unavailable', 'state blocked',
+  'unknown schema', 'unknown state', 'history unavailable', 'history transaction rejected', 'history schema',
+  'history blocked', 'deleteDatabase failed', 'deleteDatabase blocked',
+  'MLS operation rejected', 'commit already staged', 'device retired', 'group already exists', 'identity rejected',
+  'key package limit', 'nothing pending', 'nothing staged', 'record key rejected', 'sender attribution rejected',
+  'size rejected', 'state limit']);
+const ERROR_NAME = /^[A-Za-z]{1,40}$/;
+const FRAME = /([A-Za-z0-9_.-]{1,64}\.m?js):(\d{1,6})/;
+export function rejectionDetail(error, depth = 0) {
+  const message = typeof error === 'string' ? error : typeof error?.message === 'string' ? error.message : '';
+  const out = {reason: REJECTION_REASONS.has(message) ? message : 'other'};
+  if (error === null || typeof error !== 'object') return out;
+  if (typeof error.name === 'string' && error.name !== 'Error' && ERROR_NAME.test(error.name)) out.name = error.name;
+  if (typeof error.storageError === 'string' && ERROR_NAME.test(error.storageError)) out.storage = error.storageError;
+  if (typeof error.stack === 'string') {
+    const where = [];
+    // Frame lines only (V8 "    at …", Firefox/Safari "fn@url"): the message line is skipped.
+    for (const line of error.stack.split('\n')) {
+      if (!/^\s+at\s/.test(line) && !line.includes('@')) continue;
+      const m = FRAME.exec(line);
+      if (m && !where.includes(`${m[1]}:${m[2]}`)) where.push(`${m[1]}:${m[2]}`);
+      if (where.length === 4) break;
+    }
+    if (where.length) out.where = where;
+  }
+  if (depth === 0 && error.cause !== undefined && error.cause !== null) out.inner = rejectionDetail(error.cause, 1);
+  return out;
+}
 // Ledger item shape: `rejected` is optional and, when present, exactly `true` on a
 // `decrypt` with empty output. Returns the item's validity (pure; see validMeta).
 const ITEM_KEYS = ['id', 'method', 'input', 'output', 'sequence', 'epoch'];
@@ -332,8 +368,12 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
     return new Promise((resolve, reject) => {
       const tx = db.transaction(['meta', 'entries'], 'readwrite', {durability: 'strict'});
       const metaStore = tx.objectStore('meta'), entryStore = tx.objectStore('entries');
-      let response, fault, inflight = false, next = null;
+      let response, fault, inflight = false, next = null, failure = null;
       const abort = () => { try { tx.abort(); } catch (_) {} };
+      // The first error that aborted this transaction, kept only as the `cause` of the
+      // rejection below so rejectionDetail() can name where it failed (diagnostics only:
+      // the rejection, its message and every caller's handling are unchanged).
+      const abortWith = error => { if (failure === null) failure = error ?? null; abort(); };
       tx.onerror = () => {}; // onabort is the single failure result.
       tx.onabort = () => {
         // The session holds uncommitted changes: return it to the durable state.
@@ -341,7 +381,10 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
         // A clone (#431) opened a resident session from entries this transaction
         // failed to persist: nothing durable backs it, so it must not stay resident.
         else if (next) dropSession();
-        reject(new Error('transaction rejected'));
+        const rejection = new Error('transaction rejected');
+        if (failure !== null) rejection.cause = failure;
+        if (typeof tx.error?.name === 'string') rejection.storageError = tx.error.name;   // e.g. QuotaExceededError
+        reject(rejection);
       };
       tx.oncomplete = () => {
         if (inflight) session.commit();
@@ -408,7 +451,7 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
             try { extra.valid(meta, opened); } catch (error) { opened.free(); throw error; }
             session = opened; known = meta.revision; tags = loaded; reloads++;
             then();
-          } catch (_) { abort(); }
+          } catch (error) { abortWith(error); }
         };
       }
 
@@ -590,9 +633,9 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
             if (names !== 'custody,state' || !validCustody(stored.result) || stored.result.vault !== custody.vault ||
                 !equal(stored.result.capsule, custody.capsule)) fail();
             const meta = readMeta(get.result);
-            const run = () => { try { response = handler(ctx, meta); } catch (_) { abort(); } };
+            const run = () => { try { response = handler(ctx, meta); } catch (error) { abortWith(error); } };
             if (!session || known !== meta.revision) load(meta, run); else run();
-          } catch (_) { abort(); }
+          } catch (error) { abortWith(error); }
       };
     });
   }

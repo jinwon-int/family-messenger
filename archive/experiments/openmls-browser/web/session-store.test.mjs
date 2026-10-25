@@ -81,3 +81,34 @@ test('ledger bound holds one full-size attachment operation (input + output), #3
   assert.ok(MAX_BINARY >= (MAX_WIRE + binding) + (MAX_WIRE + frame), `MAX_BINARY ${MAX_BINARY} < one max operation`);
   assert.ok(MAX_BINARY < 4 * MAX_WIRE, 'bound still limits how many un-acked attachments a ledger may hold');
 });
+
+// Rejection diagnostics (2026-10-26, 한데 PC "encrypt 거부"): only fixed reasons,
+// error names and file:line frames may leave the worker — never other message text.
+test('rejectionDetail keeps fixed reasons, names and frames, and drops free text', async () => {
+  const {rejectionDetail, REJECTION_REASONS} = await import('./session-store.js');
+  assert.deepEqual(rejectionDetail('state limit'), {reason: 'state limit'});          // facade Rejected (wasm string)
+  assert.deepEqual(rejectionDetail('MLS operation rejected'), {reason: 'MLS operation rejected'});
+  assert.equal(rejectionDetail(new Error('rejected')).reason, 'rejected');               // fail()
+  assert.equal(REJECTION_REASONS.has('transaction rejected'), true);
+  // Free text (a JSON/DOM message can quote store contents) is never forwarded.
+  const leaky = new SyntaxError('Unexpected token \'s\', "secret plaintext" is not valid JSON');
+  const d = rejectionDetail(leaky);
+  assert.equal(d.reason, 'other'); assert.equal(d.name, 'SyntaxError');
+  assert.equal(JSON.stringify(d).includes('secret'), false);
+  // V8 and Firefox frames → file:line only, message line skipped, at most four, deduplicated.
+  const e = new Error('rejected');
+  e.stack = 'Error: rejected at x.js:1\n    at fail (https://h.example/session-store.js:45:44)\n' +
+    '    at validMeta (https://h.example/session-store.js:282:20)\n    at validMeta (https://h.example/session-store.js:282:20)\n' +
+    'readMeta@https://h.example/session-store.js:320:5\n    at a (b.js:1:1)\n    at c (d.js:2:2)';
+  assert.deepEqual(rejectionDetail(e).where, ['session-store.js:45', 'session-store.js:282', 'session-store.js:320', 'b.js:1']);
+  // transaction(): the handler's error rides along as `cause`, the IDB abort as storageError.
+  const tx = new Error('transaction rejected'); tx.cause = e; tx.storageError = 'QuotaExceededError';
+  const t = rejectionDetail(tx);
+  assert.equal(t.reason, 'transaction rejected'); assert.equal(t.storage, 'QuotaExceededError');
+  assert.equal(t.inner.reason, 'rejected'); assert.deepEqual(t.inner.where.slice(0, 1), ['session-store.js:45']);
+  assert.equal(rejectionDetail(Object.assign(new Error('x'), {storageError: 'bad name!'})).storage, undefined);
+  assert.deepEqual(rejectionDetail(undefined), {reason: 'other'});
+  // Nesting stops at one level.
+  const deep = new Error('rejected'); deep.cause = Object.assign(new Error('rejected'), {cause: new Error('rejected')});
+  assert.equal(rejectionDetail(deep).inner.inner, undefined);
+});
