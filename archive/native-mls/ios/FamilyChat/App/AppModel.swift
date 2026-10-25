@@ -687,6 +687,40 @@ final class AppModel: ObservableObject {
         return await sendOwn(room: room, pending: pending, outgoing: enqueueOutgoing(pending)) { try await $0.send(text: text) }
     }
 
+    /// 단축어 「에이전트에게 보내기」의 결과(화면 위임 1단계 — 텍스트).
+    enum ShortcutSendResult: Equatable {
+        /// 릴레이가 받았다(또는 이미 받은 글로 정리됨).
+        case sent
+        /// 릴레이에 닿지 않아 보관 — 연결되면 같은 바이트로 다시 보낸다.
+        case queued
+        /// 보내지 못했다(사유는 사람이 읽는 문장).
+        case failed(String)
+    }
+
+    /// 단축어(App Intent, `openAppWhenRun`)가 부르는 송신: 앱 프로세스의 **같은 모델**로만 보낸다 — 새 작성자(확장)를 만들지 않아
+    /// flock·`serial`·내 글 기록(`unconfirmed`→`recordOwn`)이 화면 송신과 똑같다. 앱이 막 떠서 아직 준비 전이면 시작과 한 바퀴
+    /// 동기화를 기다린다. 보낸 뒤 그 방을 열어 달라고 적는다(답이 그 방으로 온다).
+    func sendFromShortcut(room: RoomID, text: String) async -> ShortcutSendResult {
+        let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else { return .failed(Strings.shortcutEmpty) }
+        await bootstrap()
+        if phase != .ready { await refresh() }
+        guard case .ready = phase else { return .failed(Strings.notReady) }
+        guard rooms.contains(where: { $0.room == room }) else { return .failed(Strings.shortcutUnknownRoom(room)) }
+        let outcome = await send(room: room, text: body)
+        requestOpen(room: room)
+        switch outcome {
+        case .sent?, .reconciled?: return .sent
+        case .queued?: return .queued
+        case nil:
+            switch outgoing[room]?.last?.state {
+            case .queued?: return .queued
+            case .failed(let reason)?: return .failed(reason)
+            default: return .failed(Strings.outgoingFailed)
+            }
+        }
+    }
+
     /// 보내는 글을 목록 맨 아래에 바로 올린다(결과는 `sendOwn` 이 갱신).
     private func enqueueOutgoing(_ pending: PendingOwn) -> Int64 {
         let id = nextOutgoingId
