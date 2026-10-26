@@ -178,3 +178,9 @@ test('relativeTime: 방금 / N분 전 / N시간 전 / 어제 / M.D. — 패밀�
   assert.equal(relativeTime(0, now), '');
   assert.equal(relativeTime(now + 60_000, now), '방금', '미래 시각은 방금으로');
 });
+
+test('서비스 봇(카드 알림): 이름표·방 이름, 에이전트가 아님', () => {
+  assert.equal(displayName('card-bot'), '💳 카드 알림');
+  assert.equal(isAgentDevice('card-bot'), false);
+  assert.equal(roomLabel('family-card'), '💳 가족 카드 알림');
+});
