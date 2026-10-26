@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   ACTOR, ROOM, DEVICE, AGENT_ACTORS, strings, allStringsFilled,
   formatTime, formatClock, dayLabel, dayKey, groupFingerprint, displayName, isAgentDevice, actorOf, isMine, relativeTime,
+  participantOf, isOneToOne,
   humanSize, previewLine, haltGuidance, roomLabel, agentNames,
 } from '../strings.js';
 
@@ -65,7 +66,7 @@ test('actorOf / isAgentDevice', () => {
   assert.ok(!isAgentDevice('mom-web-1a2b3c'));
 });
 
-test('displayName: 사람은 Matrix 닉네임 · 기기 종류, 봇은 🤖 Matrix 닉네임', () => {
+test('displayName: 사람은 Matrix 닉네임 · 기기 종류, 봇은 Matrix 닉네임(🤖 접두 없음)', () => {
   assert.equal(displayName('owner-iphone-27a879'), 'jinon86 · 아이폰');
   assert.equal(displayName('owner-pc'), 'jinon86 · PC');
   assert.equal(displayName('mom-web-1a2b3c'), 'mom · PC');
@@ -73,16 +74,35 @@ test('displayName: 사람은 Matrix 닉네임 · 기기 종류, 봇은 🤖 Matr
   assert.equal(displayName('dad'), 'dad');
   assert.equal(displayName('mom-tablet-1'), 'mom');
   // 옛 봇 기기 bot-<node>
-  assert.equal(displayName('bot-gongmyoung'), '🤖 공명✴️');
-  assert.equal(displayName('bot-gongmyoung-2'), '🤖 공명✴️');
-  assert.equal(displayName('bot-luna'), '🤖 luna');
-  assert.equal(displayName('bot'), '🤖 봇');
+  assert.equal(displayName('bot-gongmyoung'), '공명✴️');
+  assert.equal(displayName('bot-gongmyoung-2'), '공명✴️');
+  assert.equal(displayName('bot-luna'), 'luna');
+  assert.equal(displayName('bot'), '봇');
   // 새 봇 기기 <node>-<suffix>(#422) — actor 가 노드 이름
-  assert.equal(displayName('dungae-bot'), '🤖 등애✳️');
-  assert.equal(displayName('soonwook-bot'), '🤖 순욱✴️');
-  assert.equal(displayName('gongmyoung-bot-1a2b'), '🤖 공명✴️');
+  assert.equal(displayName('dungae-bot'), '등애✳️');
+  assert.equal(displayName('soonwook-bot'), '순욱✴️');
+  assert.equal(displayName('gongmyoung-bot-1a2b'), '공명✴️');
   assert.equal(displayName(''), '');
   assert.equal(displayName(null), '');
+});
+
+test('participantOf / isOneToOne: 사람은 actor, 봇은 노드 단위로 세어 둘 이하면 1:1', () => {
+  assert.equal(participantOf('owner-web-aaaaaa'), 'owner');
+  assert.equal(participantOf('owner-iphone-27a879'), 'owner');
+  assert.equal(participantOf('bot-gongmyoung'), 'agent:gongmyoung');
+  assert.equal(participantOf('gongmyoung-bot-1a2b'), 'agent:gongmyoung');
+  assert.equal(participantOf('bot-luna'), 'agent:luna');
+  // 오너(PC·아이폰) ↔ 공명(옛·새 기기) = 1:1
+  assert.equal(isOneToOne(['owner-web-aaaaaa', 'owner-iphone-27a879', 'bot-gongmyoung', 'gongmyoung-bot-1a2b']), true);
+  assert.equal(isOneToOne(['owner-web-aaaaaa', 'jungin-iphone-0f']), true);
+  assert.equal(isOneToOne(['owner-web-aaaaaa']), true);
+  // 사람 셋 / 사람 둘 + 봇 / 서로 다른 옛 봇 둘 = 단체
+  assert.equal(isOneToOne(['owner-web-aaaaaa', 'jungin-iphone-0f', 'mom-web-1']), false);
+  assert.equal(isOneToOne(['owner-web-aaaaaa', 'jungin-iphone-0f', 'bot-gongmyoung']), false);
+  assert.equal(isOneToOne(['owner-web-aaaaaa', 'bot-gongmyoung', 'bot-luna']), false);
+  // roster 를 모르면 판정하지 않음(이름 유지)
+  assert.equal(isOneToOne([]), false);
+  assert.equal(isOneToOne(undefined), false);
 });
 
 test('AGENT_ACTORS: 옛 bot + 12노드(iOS FC_AGENT_ACTORS 와 같은 목록)', () => {
