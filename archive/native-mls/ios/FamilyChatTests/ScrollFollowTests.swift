@@ -107,4 +107,24 @@ final class ScrollFollowTests: XCTestCase {
         tracking.animatingUntil = Date().addingTimeInterval(10)
         XCTAssertTrue(tracking.isAnimating)
     }
+
+    /// build 41 오너 보고: 사진 한 장에 채팅 없이 배경만 — 내용이 화면보다 긴데 바닥 표지가 화면 위쪽에서 끝나면 내용 끝을 지난 것.
+    func testPastContentEndIsDetected() {
+        XCTAssertTrue(ScrollFollow.isPastContentEnd(sentinelBottom: -300, viewportHeight: 620, contentHeight: 5_000, sinceDrag: 10),
+                      "everything above the viewport: blank screen")
+        XCTAssertTrue(ScrollFollow.isPastContentEnd(sentinelBottom: 400, viewportHeight: 620, contentHeight: 5_000, sinceDrag: 10),
+                      "a large empty band below the last message")
+        XCTAssertFalse(ScrollFollow.isPastContentEnd(sentinelBottom: 604, viewportHeight: 620, contentHeight: 5_000, sinceDrag: 10),
+                       "resting at the bottom (sentinel = viewport - padding)")
+        XCTAssertFalse(ScrollFollow.isPastContentEnd(sentinelBottom: 560, viewportHeight: 620, contentHeight: 5_000, sinceDrag: 10),
+                       "a small bounce at the end")
+        XCTAssertFalse(ScrollFollow.isPastContentEnd(sentinelBottom: 300, viewportHeight: 620, contentHeight: 5_000, sinceDrag: 0.2),
+                       "finger just lifted: rubber-band, not a stuck offset")
+        XCTAssertFalse(ScrollFollow.isPastContentEnd(sentinelBottom: 300, viewportHeight: 620, contentHeight: 400, sinceDrag: 10),
+                       "short timeline: the empty space below is normal")
+        XCTAssertFalse(ScrollFollow.isPastContentEnd(sentinelBottom: .infinity, viewportHeight: 620, contentHeight: 5_000, sinceDrag: 10),
+                       "not measured yet")
+        XCTAssertFalse(ScrollFollow.isPastContentEnd(sentinelBottom: -300, viewportHeight: 0, contentHeight: 5_000, sinceDrag: 10),
+                       "viewport not measured yet")
+    }
 }
