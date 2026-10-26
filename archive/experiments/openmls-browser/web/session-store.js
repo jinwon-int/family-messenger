@@ -46,8 +46,37 @@ export const fail = () => { throw new Error('rejected'); };
 export const exact = (value, keys) => value && Object.getPrototypeOf(value) === Object.prototype &&
   Object.keys(value).sort().join(',') === keys.slice().sort().join(',');
 export const equal = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
-export const hex = bytes => Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
-export const fromHex = s => new Uint8Array((s.match(/../g) ?? []).map(x => parseInt(x, 16)));
+// Byte ↔ hex (meta at rest stores every byte array as {"$b": hex}). 2026-10-26: a ledger
+// item carrying a ~4 MB attachment made every meta read throw — decodeMeta's
+// /^([0-9a-f]{2})*$/ overflows V8's regexp backtrack stack (RangeError "Maximum call
+// stack size exceeded") from about 3 MB of bytes — and the per-byte string helpers took
+// ~2 s each at that size against the worker's 10 s call deadline. hexBytes() validates
+// and converts in one linear pass; hex()/fromHex() keep their exact results (the fast
+// paths cover Uint8Array input and even-length lowercase hex; anything else takes the
+// original expression, so odd or malformed input behaves exactly as before).
+const HEX_DIGITS = '0123456789abcdef';
+const HEX_PAIRS = (() => { const t = new Uint8Array(512); for (let i = 0; i < 256; i++) { t[2 * i] = HEX_DIGITS.charCodeAt(i >> 4); t[2 * i + 1] = HEX_DIGITS.charCodeAt(i & 15); } return t; })();
+const HEX_VALUE = (() => { const t = new Int8Array(128).fill(-1); for (let i = 0; i < 16; i++) t[HEX_DIGITS.charCodeAt(i)] = i; return t; })();
+const ASCII = new TextDecoder();
+export function hex(bytes) {
+  if (!(bytes instanceof Uint8Array)) return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+  const out = new Uint8Array(bytes.length * 2);
+  for (let i = 0, j = 0; i < bytes.length; i++, j += 2) { const b = bytes[i] * 2; out[j] = HEX_PAIRS[b]; out[j + 1] = HEX_PAIRS[b + 1]; }
+  return ASCII.decode(out);
+}
+/** Even-length lowercase hex → bytes, or null (exactly the strings /^([0-9a-f]{2})*$/ accepts). */
+export function hexBytes(s) {
+  if (typeof s !== 'string' || s.length % 2 !== 0) return null;
+  const out = new Uint8Array(s.length / 2);
+  for (let i = 0, j = 0; i < out.length; i++, j += 2) {
+    const a = s.charCodeAt(j), b = s.charCodeAt(j + 1);
+    const hi = a < 128 ? HEX_VALUE[a] : -1, lo = b < 128 ? HEX_VALUE[b] : -1;
+    if (hi < 0 || lo < 0) return null;
+    out[i] = (hi << 4) | lo;
+  }
+  return out;
+}
+export const fromHex = s => hexBytes(s) ?? new Uint8Array((s.match(/../g) ?? []).map(x => parseInt(x, 16)));
 export const validId = id => typeof id === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(id);
 const bytesOf = value => value instanceof Uint8Array ? value : value instanceof ArrayBuffer ? new Uint8Array(value) : fail();
 // Review 2 L (secrets not zeroed): best-effort wiping of buffers that carried
@@ -201,11 +230,13 @@ export const ledgerItemBytes = x =>
 const META_VERSION = 4;
 const utf8 = s => new TextEncoder().encode(s);
 // Meta fields as JSON; byte arrays as {"$b": hex}. Decoding accepts exactly that shape.
-const encodeMeta = meta => utf8(JSON.stringify(meta, (_, v) => v instanceof Uint8Array ? {$b: hex(v)} : v));
-const decodeMeta = bytes => JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(bytes), (_, v) => {
+export const encodeMeta = meta => utf8(JSON.stringify(meta, (_, v) => v instanceof Uint8Array ? {$b: hex(v)} : v));
+export const decodeMeta = bytes => JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(bytes), (_, v) => {
   if (v && typeof v === 'object' && !Array.isArray(v) && '$b' in v) {
-    if (!exact(v, ['$b']) || typeof v.$b !== 'string' || !/^([0-9a-f]{2})*$/.test(v.$b)) fail();
-    return fromHex(v.$b);
+    if (!exact(v, ['$b'])) fail();
+    const bytes = hexBytes(v.$b);   // linear: the old backtracking regex threw RangeError on ~4 MB fields
+    if (bytes === null) fail();
+    return bytes;
   }
   return v;
 });
