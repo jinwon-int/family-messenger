@@ -148,3 +148,27 @@ test('meta with a MAX_WIRE-sized ledger field round-trips (no RangeError), malfo
   }
   assert.deepEqual(decodeMeta(utf8('{"x":{"$b":""}}')).x, new Uint8Array(0));
 });
+
+// #496: an orphaned (inherited) deferAck decrypt must not block later large decrypts forever.
+test('inheritedDecryptsToEvict: only over MAX_BINARY, only inherited decrypts, oldest first, only if it makes room', async () => {
+  const {inheritedDecryptsToEvict, ledgerBytes} = await import('./session-store.js');
+  const item = (id, method, inBytes, outBytes) => ({id, method, input: new Uint8Array(inBytes), output: new Uint8Array(outBytes), sequence: 1, epoch: '6'});
+  // 2026-10-26 field case: leftover 4.2 MB photo decrypt + new 3.0 MB photo decrypt.
+  const leftover = item('old-539', 'decrypt', 4215541, 4215500), next = item('new-600', 'decrypt', 3035163, 3035100);
+  assert.ok(ledgerBytes([leftover, next]) > MAX_BINARY);
+  assert.deepEqual(inheritedDecryptsToEvict([leftover, next], new Set(['old-539'])), ['old-539']);
+  assert.ok(ledgerBytes([next]) <= MAX_BINARY);
+  // Under the bound: nothing is touched, inherited or not.
+  assert.deepEqual(inheritedDecryptsToEvict([leftover], new Set(['old-539'])), []);
+  // This worker's own items are never evicted (not inherited) → no room → nothing changes.
+  assert.deepEqual(inheritedDecryptsToEvict([leftover, next], new Set()), []);
+  assert.deepEqual(inheritedDecryptsToEvict([leftover, next], null), []);
+  // Inherited encrypts are not evicted.
+  assert.deepEqual(inheritedDecryptsToEvict([item('e', 'encrypt', 4215541, 4215600), next], new Set(['e'])), []);
+  // Oldest first, and only as many as needed.
+  const a = item('a', 'decrypt', 2_000_000, 2_000_000), b = item('b', 'decrypt', 2_000_000, 2_000_000), big = item('big', 'decrypt', 3_500_000, 3_500_000);
+  assert.deepEqual(inheritedDecryptsToEvict([a, b, big], new Set(['a', 'b'])), ['a']);   // 15 MB → 11 MB ≤ bound
+  // Evicting every inherited decrypt still cannot make room → evict nothing (operation fails as before).
+  const huge = item('huge', 'decrypt', 5_000_000, 5_000_000), small = item('s', 'decrypt', 1_000_000, 1_000_000);
+  assert.deepEqual(inheritedDecryptsToEvict([small, huge, item('h2', 'decrypt', 2_000_000, 0)], new Set(['s'])), []);
+});
