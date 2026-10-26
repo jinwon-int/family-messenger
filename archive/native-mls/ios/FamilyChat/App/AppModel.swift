@@ -104,8 +104,19 @@ final class AppModel: ObservableObject {
     private var nextOutgoingId: Int64 = -1_000
     /// 등록 대기 화면이 보여 줄 JSON 의 원본(운영자 CLI 입력).
     @Published private(set) var registration: EnrollmentRequest?
-    /// 메시지가 새로 저장될 때마다 오른다 — 방 화면이 다시 읽는 신호.
+    /// 메시지가 새로 저장될 때마다 오른다 — 방 목록이 다시 읽는 신호(어느 방이든).
     @Published private(set) var messagesRevision = 0
+    /// #497: 방별 신호 — 열린 방 화면은 **자기 방**이 바뀔 때만 다시 읽고 스크롤한다. 전역 신호를 쓰던 때는 다른 방(에이전트 방 등)의
+    /// 새 글에도 이 방이 다시 읽히고 최하단으로 끌려 내려갔다.
+    @Published private(set) var roomRevisions: [RoomID: Int] = [:]
+
+    func roomRevision(_ room: RoomID) -> Int { roomRevisions[room] ?? 0 }
+
+    /// 그 방이 바뀌었다 — 방별 신호와 전역 신호를 함께 올린다.
+    private func bumpRevision(_ room: RoomID) {
+        roomRevisions[room, default: 0] += 1
+        messagesRevision += 1
+    }
     /// 설정 화면의 알림 상태(D6).
     @Published private(set) var pushStatus: PushRegistrar.Status = .off
     /// 마지막 refresh 의 outbox 재전송 결과(정확 바이트 재시도 관찰용 — 화면·테스트).
@@ -395,7 +406,7 @@ final class AppModel: ObservableObject {
             try forgetting.forgetRoom(room)
             self.rooms = try self.deps.messageStore.rooms()
             if case .halted = self.phase { self.phase = self.haltedReasonFromRooms().map { .halted($0) } ?? .ready }
-            self.messagesRevision += 1
+            self.bumpRevision(room)
         }
     }
 
@@ -439,7 +450,7 @@ final class AppModel: ObservableObject {
                 // 커서가 움직였으면(이 프로세스든 NSE 든 새로 처리·기록했다) 화면이 다시 읽는다.
                 let cursor = try deps.cursors.cursor(room: record.room)
                 if passes.contains(where: { !$0.inserted.isEmpty || !$0.rejected.isEmpty }) || seenCursors[record.room] != cursor {
-                    messagesRevision += 1
+                    bumpRevision(record.room)
                 }
                 seenCursors[record.room] = cursor
                 if sync.registrationPending != nil { pending = true; continue }
@@ -538,7 +549,7 @@ final class AppModel: ObservableObject {
             let sync = try syncEngine(welcome.room)
             try await sync.syncAll()
             seenCursors[welcome.room] = try deps.cursors.cursor(room: welcome.room)
-            messagesRevision += 1
+            bumpRevision(welcome.room)
             if sync.joined {
                 notice = Strings.lobbyJoined(welcome.room)
                 lobbyCheckDue = true   // key package 하나가 쓰였다 — 보충
@@ -619,6 +630,8 @@ final class AppModel: ObservableObject {
     func receivedWhileActive() async {
         await refresh()
         refreshRooms()
+        // 방 목록만 다시 읽힌다(전역 신호). 열린 방은 `refreshLocked` 가 커서 변화(NSE 가 먼저 처리한 경우 포함)로 그 방 신호를 이미
+        // 올렸다 — 여기서 방 신호까지 또 올리면 사진 한 장에 방 화면이 두 번 다시 읽히고 두 번 스크롤했다(#497).
         messagesRevision += 1
     }
 
@@ -728,7 +741,7 @@ final class AppModel: ObservableObject {
         outgoing[pending.room, default: []].append(OutgoingMessage(
             id: id, room: pending.room, kind: pending.kind, body: pending.body, attachment: pending.attachment,
             createdAt: Date(), clientId: nil, state: .sending))
-        messagesRevision += 1
+        bumpRevision(pending.room)
         return id
     }
 
@@ -736,7 +749,7 @@ final class AppModel: ObservableObject {
         guard var list = outgoing[room], let index = list.firstIndex(where: { $0.id == id }) else { return }
         change(&list[index])
         outgoing[room] = list
-        messagesRevision += 1
+        bumpRevision(room)
     }
 
     private func removeOutgoing(id: Int64? = nil, clientId: String? = nil, room: RoomID) {
@@ -745,7 +758,7 @@ final class AppModel: ObservableObject {
         list.removeAll { ($0.id == id && id != nil) || ($0.clientId == clientId && clientId != nil) }
         guard list.count != before else { return }
         outgoing[room] = list.isEmpty ? nil : list
-        messagesRevision += 1
+        bumpRevision(room)
     }
 
     /// 「다시 보내기」: 실패한 글을 같은 내용으로 다시 보낸다(새 보내는 글로).
@@ -970,7 +983,7 @@ final class AppModel: ObservableObject {
                                                        kind: pending.kind, body: pending.body, attachment: pending.attachment,
                                                        receivedAt: Date(), decryptedBy: .app))
         }
-        messagesRevision += 1
+        bumpRevision(pending.room)
     }
 
     private func haltedReasonFromRooms() -> String? {

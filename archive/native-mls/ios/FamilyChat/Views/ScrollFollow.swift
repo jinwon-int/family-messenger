@@ -1,6 +1,7 @@
 // #398: 대화방이 최하단을 따라가야 하는지(순수 판정 — 뷰 밖에서 XCTest).
 // 첨부 본체는 행이 보일 때 늦게 읽혀(#364/#367) 이미지로 바뀌며 행 높이가 커진다. 그 행이 마지막 몇 행 안에 있고
 // 사용자가 위로 끌어 올리지 않았다면 다시 최하단으로 간다. 옛 사진을 보러 올라간 사람의 화면은 움직이지 않는다.
+// #497: 다시 읽은 뒤의 동작(`afterReload`)·맨 아래 복귀(`shouldRefollow`)·스크롤 명령 합치기(`ScrollTracking`).
 import Foundation
 
 enum ScrollFollow {
@@ -41,5 +42,85 @@ enum ScrollFollow {
     /// `olderPrefetch` 안으로 들어왔고, 이미 읽는 중이 아니며, 더 읽을 것이 있으면 true. 진입 직후(따라가는 중, 표지가 화면에 있어도)는 읽지 않는다.
     static func shouldLoadOlder(sentinelBottom: Double, following: Bool, busy: Bool, exhausted: Bool) -> Bool {
         !following && !busy && !exhausted && sentinelBottom > -olderPrefetch
+    }
+
+    // MARK: - 다시 읽은 뒤 어떻게 움직일지(상대 사진 뒤 위·아래 점프 반복 수정)
+
+    /// 다시 읽은 타임라인에 새로 생긴 행(종전에 없던 id) — 이 기기에서 보낸 글인가, 다른 사람(또는 내 다른 기기)의 글인가.
+    struct Arrival: Equatable {
+        var mine = false
+        var others = false
+    }
+
+    /// `before` 에 없던 행을 가른다. `fromThisDevice` = 이 기기에서 보낸 글(보내는 중 포함) — 내 다른 기기의 글은 `others`.
+    static func arrival(before: Set<Int64>, after: [(id: Int64, fromThisDevice: Bool)]) -> Arrival {
+        var result = Arrival()
+        for row in after where !before.contains(row.id) {
+            if row.fromThisDevice { result.mine = true } else { result.others = true }
+        }
+        return result
+    }
+
+    enum ReloadAction: Equatable {
+        /// 내가 보냈다 — 위로 읽던 중이어도 최하단으로(부드럽게).
+        case followAnimated
+        /// 따라가는 중에 남의 글이 왔다 — 애니메이션 없이 한 번. 애니메이션은 늦은 사진 로딩·실측 보정과 겹쳐 위아래로 흔들렸다.
+        case follow
+        /// 위로 읽는 중에 남의 글이 왔다 — 화면은 그대로, 「새 메시지」 버튼만.
+        case markNewBelow
+        /// 새 행이 없다(보내는 글 상태 변화·다시 그리기) — 스크롤 명령을 내지 않는다(높이가 커지면 내용 증가 보정이 맡는다).
+        case stay
+    }
+
+    /// 종전에는 **어느 방이든** 신호가 오면 따라가기를 다시 켜고 애니메이션으로 내렸다 — 위로 읽던 사람도 끌려 내려가고,
+    /// 사진 한 장에 스크롤 명령이 4~6개 겹쳤다.
+    static func afterReload(following: Bool, arrival: Arrival) -> ReloadAction {
+        if arrival.mine { return .followAnimated }
+        guard arrival.others else { return .stay }
+        return following ? .follow : .markNewBelow
+    }
+
+    /// 손을 뗀 뒤 이만큼 지나야 "멈춘 자리"로 본다(끄는 중에 따라가기를 다시 켜면 손가락과 싸운다).
+    static let settleDelay: TimeInterval = 0.25
+    /// 바닥 표지가 화면 아래 끝에서 이 안이면 "맨 아래에 있다".
+    static let nearBottom: Double = 24
+
+    /// 끌어서 따라가기가 꺼졌지만 맨 아래로 돌아와 멈췄다 — 다시 따라간다(맨 아래에서 살짝 끌기만 해도 새 글을 놓치지 않게).
+    static func shouldRefollow(following: Bool, sentinelBottom: Double, viewportHeight: Double, sinceDrag: TimeInterval) -> Bool {
+        !following && viewportHeight > 0 && sinceDrag >= settleDelay && sentinelBottom <= viewportHeight + nearBottom
+    }
+}
+
+/// 스크롤 중 **프레임마다** 바뀌는 값과 스크롤 명령 합치기 상태. `@State` 값으로 두면 매 프레임 방 화면 body 를 다시 계산한다
+/// (500행 map 여러 번) — 참조 상자에 두고 바꿔도 다시 그리지 않는다.
+final class ScrollTracking {
+    /// 바닥 표지의 마지막 실측(스크롤 뷰 좌표).
+    var sentinelBottom: Double = .infinity
+    /// 마지막 끌기 변화 시각.
+    var lastDrag: Date = .distantPast
+    /// 다음 런루프에 낼 스크롤 명령이 이미 있다(같은 틱의 요청은 하나로 합친다).
+    var pendingScroll = false
+    /// 합친 명령의 애니메이션 여부 — 하나라도 즉시면 즉시.
+    var pendingAnimated = false
+    /// 애니메이션 스크롤이 도는 동안(이 시각까지)은 즉시 보정을 내지 않는다 — 끝난 뒤 한 번 다시 잰다.
+    var animatingUntil: Date = .distantPast
+
+    var isAnimating: Bool { Date() < animatingUntil }
+
+    /// 같은 런루프의 스크롤 요청을 하나로: 처음 요청이면 true(호출자가 다음 틱에 실행), 이미 있으면 애니메이션 여부만 합친다.
+    func request(animated: Bool) -> Bool {
+        if pendingScroll {
+            pendingAnimated = pendingAnimated && animated
+            return false
+        }
+        pendingScroll = true
+        pendingAnimated = animated
+        return true
+    }
+
+    /// 다음 틱: 합친 명령을 꺼낸다(애니메이션 여부).
+    func take() -> Bool {
+        pendingScroll = false
+        return pendingAnimated
     }
 }

@@ -108,4 +108,48 @@ final class AttachmentTests: XCTestCase {
         XCTAssertNil(AttachmentExport.temporaryURL(for: MessageRecord(room: "family", seq: 1, senderDevice: "dad-pc", clientId: "c", kind: .text,
                                                                         body: "hi", attachment: nil, receivedAt: Date(), decryptedBy: .app)))
     }
+
+    /// #497: 방마다 하위 폴더 — 두 방의 같은 seq 가 서로의 공유 파일을 덮어쓰지 않는다(이름 규칙은 웹과 같다).
+    func testTemporaryExportSeparatesRooms() throws {
+        func record(_ room: String, _ body: String) -> MessageRecord {
+            MessageRecord(room: room, seq: 7, senderDevice: "dad-pc", clientId: AttachmentFormat.newClientId(), kind: .attachment,
+                          body: "application/pdf", attachment: Data(body.utf8), receivedAt: Date(), decryptedBy: .app)
+        }
+        let a = try XCTUnwrap(AttachmentExport.temporaryURL(for: record("family", "A")))
+        let b = try XCTUnwrap(AttachmentExport.temporaryURL(for: record("family-acc", "B")))
+        XCTAssertEqual(a.lastPathComponent, "attachment-7.pdf")
+        XCTAssertEqual(b.lastPathComponent, "attachment-7.pdf")
+        XCTAssertNotEqual(a, b)
+        XCTAssertEqual(try Data(contentsOf: a), Data("A".utf8))
+        XCTAssertEqual(try Data(contentsOf: b), Data("B".utf8))
+    }
+
+    /// #497: 말풍선 미리보기는 축소 디코드 — 긴 변이 말풍선 최대 × 배율을 넘지 않고, 가로세로 비는 지킨다.
+    func testThumbnailIsDownsampledForTheBubble() throws {
+        let size = CGSize(width: 3000, height: 2000)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let big = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.orange.setFill(); context.fill(CGRect(origin: .zero, size: size))
+        }
+        let jpeg = try XCTUnwrap(big.jpegData(compressionQuality: 0.8))
+        let thumb = try XCTUnwrap(AttachmentThumbnail.make(jpeg, scale: 3))
+        let pixels = CGSize(width: thumb.size.width * thumb.scale, height: thumb.size.height * thumb.scale)
+        XCTAssertLessThanOrEqual(max(pixels.width, pixels.height), AttachmentThumbnail.maxPoints * 3 + 1)
+        XCTAssertEqual(pixels.width / pixels.height, 1.5, accuracy: 0.02)
+        XCTAssertNil(AttachmentThumbnail.make(Data("not an image".utf8), scale: 3))
+    }
+
+    /// #497: 준비물은 방·seq 마다 한 번 — 다시 만들어진 말풍선은 캐시로 첫 프레임부터 실제 높이다.
+    func testPreviewCacheKeepsPreparedPreviewPerRoomAndSeq() async throws {
+        let cache = AttachmentPreviewCache(countLimit: 10)
+        let record = MessageRecord(room: "family", seq: 9, senderDevice: "dad-pc", clientId: AttachmentFormat.newClientId(), kind: .attachment,
+                                   body: "application/pdf", attachment: nil, receivedAt: Date(), decryptedBy: .app)
+        XCTAssertNil(cache.preview(room: "family", seq: 9))
+        let made = await cache.prepare(record: record, bytes: Data("%PDF-1.7".utf8), scale: 2)
+        XCTAssertNil(made.thumbnail, "not an image: file bubble")
+        XCTAssertNotNil(made.shareURL)
+        XCTAssertEqual(cache.preview(room: "family", seq: 9)?.shareURL, made.shareURL)
+        XCTAssertNil(cache.preview(room: "family-acc", seq: 9), "keyed by room too")
+    }
 }
