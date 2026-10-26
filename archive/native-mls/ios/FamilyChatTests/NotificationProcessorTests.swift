@@ -217,7 +217,7 @@ final class NotificationProcessorTests: XCTestCase {
         XCTAssertEqual(try env.messages.messages(room: room, after: 0, limit: 10), [], "not decrypted here")
     }
 
-    /// 저장된 행 → 알림 문구: 제목 = actor(봇 🤖), 본문 = 텍스트/「사진」/「파일」, 해독 불가 = 대체.
+    /// 저장된 행 → 알림 문구: 제목 = actor(봇은 노드 닉네임, 🤖 없음), 본문 = 텍스트/「사진」/「파일」, 해독 불가 = 대체.
     func testContentMapping() {
         var env = environment()
         env.agentActors = NotificationProcessor.agentActors(from: " claude , ,hermes")
@@ -229,13 +229,13 @@ final class NotificationProcessorTests: XCTestCase {
         }
         XCTAssertEqual(processor.content(for: record("alice-iphone-1a2b3c", .text, "저녁 먹자")),
                        ProcessedNotification(title: "alice", body: "저녁 먹자", outcome: .decrypted(seq: 5)))
-        XCTAssertEqual(processor.content(for: record("claude-bot-01", .text, "요약입니다"))?.title, "🤖 claude")
+        XCTAssertEqual(processor.content(for: record("claude-bot-01", .text, "요약입니다"))?.title, "claude")
         // 표에 있는 이름은 Matrix 닉네임으로(Strings+Names).
         var named = environment()
         named.agentActors = NotificationProcessor.agentActors(from: "bot,dungae")
         let namedProcessor = NotificationProcessor(named)
-        XCTAssertEqual(namedProcessor.content(for: record("dungae-bot", .text, "답"))?.title, "🤖 등애✳️")
-        XCTAssertEqual(namedProcessor.content(for: record("bot-gongmyoung", .text, "답"))?.title, "🤖 공명✴️")
+        XCTAssertEqual(namedProcessor.content(for: record("dungae-bot", .text, "답"))?.title, "등애✳️")
+        XCTAssertEqual(namedProcessor.content(for: record("bot-gongmyoung", .text, "답"))?.title, "공명✴️")
         XCTAssertEqual(namedProcessor.content(for: record("owner-iphone-27a879", .text, "응"))?.title, "jinon86")
         XCTAssertEqual(processor.content(for: record("alice-pc", .attachment, "image/jpeg"))?.body, Strings.pushPhoto)
         XCTAssertEqual(processor.content(for: record("alice-pc", .attachment, "IMG_0001.HEIC"))?.body, Strings.pushPhoto)

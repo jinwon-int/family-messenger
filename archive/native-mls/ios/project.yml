@@ -122,7 +122,7 @@ targets:
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
         FamilyChatRelayURL: $(FC_RELAY_URL)
         FamilyChatAppGroup: $(FC_APP_GROUP)
-        # 봇 actor(쉼표 구분) — 알림 제목에 🤖
+        # 봇 actor(쉼표 구분) — 알림 제목을 노드 닉네임으로
         FamilyChatAgentActors: $(FC_AGENT_ACTORS)
     # 서명 빌드용 자리 — 무서명 CI 에는 적용되지 않는다.
     entitlements:
@@ -137,7 +137,7 @@ targets:
         FC_PROFILE_NSE: ""
         FC_RELAY_URL: ""
         FC_APP_GROUP: ""
-        # 봇 actor 기본값(알림 제목 🤖). 릴리스 워크플로가 vars.FC_AGENT_ACTORS 로 덮어쓸 수 있다.
+        # 봇 actor 기본값(알림 제목 = 노드 닉네임). 릴리스 워크플로가 vars.FC_AGENT_ACTORS 로 덮어쓸 수 있다.
         FC_AGENT_ACTORS: bot
         OTHER_LDFLAGS: ["-lc++"]
   FamilyChatTests:

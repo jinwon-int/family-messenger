@@ -138,13 +138,13 @@ final class CrossProcessTests: XCTestCase {
         XCTAssertEqual(bob.records(room).map(\.decryptedBy), [.nse])
         XCTAssertEqual(counter.totalAttempts, 1, "App 은 같은 메시지를 다시 복호화하지 않는다")
 
-        // 봇 actor 는 🤖, App 이 먼저 처리한 seq 도 NSE 는 (복호화 없이) 같은 내용을 보인다.
+        // 봇 actor 는 노드 닉네임(🤖 접두 없음), App 이 먼저 처리한 seq 도 NSE 는 (복호화 없이) 같은 내용을 보인다.
         let second = try await send(alice, "두 번째")
         await bob.model.refresh()
         let bot = NotificationProcessor(try bob.nseEnvironment(transport: relay, engineFactory: CountingEngineFactory(base: FfiEngineFactory(), counter: counter),
                                                                agentActors: ["alice"]))
         let again = await bot.process(["room": room, "seq": second])
-        XCTAssertEqual(again, ProcessedNotification(title: "🤖 alice", body: "두 번째", outcome: .decrypted(seq: second)))
+        XCTAssertEqual(again, ProcessedNotification(title: "alice", body: "두 번째", outcome: .decrypted(seq: second)))
         XCTAssertEqual(counter.totalAttempts, 2)
         print("[nse] real-engine NSE decrypt PASS (seq \(seq)), app re-decrypts 0")
     }
