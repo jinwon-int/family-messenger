@@ -336,7 +336,13 @@ function updateListPane(shell, fresh) {
   const oldRooms = old.querySelector('ul.rooms');
   const freshRooms = fresh.querySelector('ul.rooms');
   if (signatureOf(old) !== signatureOf(fresh) || !oldRooms || !freshRooms) {
+    // The list pane is the room list's scroll container, and its signature carries the
+    // sync label (last sync time), which changes every few seconds — so a plain replace
+    // threw a scrolled-down list back to the top on every sync once the rooms overflowed
+    // (2026-10-26, many agent rooms). Keep the reader's position across the replace.
+    const top = old.scrollTop;
     old.replaceWith(fresh);
+    if (top > 0) fresh.scrollTop = top;
     return;
   }
   reconcileChildren(oldRooms, [...freshRooms.children], keyOfRow);
