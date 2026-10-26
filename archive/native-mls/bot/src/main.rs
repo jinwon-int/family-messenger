@@ -99,7 +99,20 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let responder = responder.map(|mut config| { config.room_frames = room_frames; config });
+    // Turn limits (defaults match the ccc-node Matrix frontend): env
+    // NATIVE_MLS_BOT_TURN_SECS (watchdog), NATIVE_MLS_BOT_TURN_AGE_NOTICE_MIN /
+    // NATIVE_MLS_BOT_TURN_AGE_RENOTICE_MIN (notify-only age line, 0 = off).
+    let env_u64 = |name: &str| std::env::var(name).ok().and_then(|v| v.trim().parse::<u64>().ok());
+    let turn_secs = env_u64("NATIVE_MLS_BOT_TURN_SECS").filter(|v| *v > 0);
+    let age_notice_min = env_u64("NATIVE_MLS_BOT_TURN_AGE_NOTICE_MIN");
+    let age_renotice_min = env_u64("NATIVE_MLS_BOT_TURN_AGE_RENOTICE_MIN");
+    let responder = responder.map(|mut config| {
+        config.room_frames = room_frames;
+        if let Some(v) = turn_secs { config.turn_secs = v; }
+        if let Some(v) = age_notice_min { config.turn_age_notice_secs = v.saturating_mul(60); }
+        if let Some(v) = age_renotice_min { config.turn_age_renotice_secs = v.saturating_mul(60); }
+        config
+    });
     // Review 2 L: every room/device/consumer argument must already be a relay
     // identifier — nothing that needs encoding is ever interpolated into a path.
     if let Err(e) = validate_identifiers(&args) {
