@@ -603,6 +603,9 @@ func (s *relay) routes() http.Handler {
 	mux.HandleFunc("POST /v2/rooms/{room}/events", s.handlePostEvent)
 	mux.HandleFunc("GET /v2/rooms/{room}/events", s.handleGetEvents)
 	mux.HandleFunc("POST /v2/rooms/{room}/close", s.handleCloseRoom)
+	// Room-scoped blob store for detached attachments (#499 file-v2, blobs.go).
+	mux.HandleFunc("POST /v2/rooms/{room}/blobs", s.handlePostBlob)
+	mux.HandleFunc("GET /v2/rooms/{room}/blobs/{id}", s.handleGetBlob)
 	mux.HandleFunc("GET /v2/rooms", s.handleListRooms)
 	// Lobby key packages and pending-Welcome discovery (#380 P5-1, lobby.go).
 	mux.HandleFunc("POST /v2/lobby/keypackages", s.handlePostLobbyKeyPackages)

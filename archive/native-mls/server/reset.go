@@ -10,17 +10,17 @@ import (
 
 // roomCounts is what -reset-room would delete (or deleted) for one room.
 type roomCounts struct {
-	Rooms, Events, KeyPackages, Members, Cursors int64
+	Rooms, Events, KeyPackages, Members, Cursors, Blobs int64
 }
 
 func (c roomCounts) total() int64 {
-	return c.Rooms + c.Events + c.KeyPackages + c.Members + c.Cursors
+	return c.Rooms + c.Events + c.KeyPackages + c.Members + c.Cursors + c.Blobs
 }
 
 // resetTables are every table keyed by room. mls_rooms goes last so a crash
 // mid-way (impossible inside one transaction, but cheap to keep) never
 // leaves rows without their room.
-var resetTables = []string{"mls_events", "mls_keypackages", "mls_members", "mls_cursors", "mls_rooms"}
+var resetTables = []string{"mls_events", "mls_keypackages", "mls_members", "mls_cursors", "mls_blobs", "mls_rooms"}
 
 // resetRoom is the offline operator recovery for review H3: room names are
 // first-come among authenticated devices, so a squatted name or a mistaken
@@ -55,7 +55,7 @@ func resetRoom(dataDir, room string, confirm bool) (roomCounts, error) {
 	var c roomCounts
 	dst := map[string]*int64{
 		"mls_rooms": &c.Rooms, "mls_events": &c.Events, "mls_keypackages": &c.KeyPackages,
-		"mls_members": &c.Members, "mls_cursors": &c.Cursors,
+		"mls_members": &c.Members, "mls_cursors": &c.Cursors, "mls_blobs": &c.Blobs,
 	}
 	present := map[string]bool{}
 	for _, table := range resetTables {
@@ -82,7 +82,17 @@ func resetRoom(dataDir, room string, confirm bool) (roomCounts, error) {
 			return roomCounts{}, fmt.Errorf("delete %s: %w", table, err)
 		}
 	}
-	return c, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return roomCounts{}, err
+	}
+	// #499: the room's blob files (rows went in the transaction). The relay is
+	// not running (the data-dir lock is held), so nothing races this.
+	if validIdentifier(room) {
+		if err := os.RemoveAll(filepath.Join(dataDir, blobDirName, room)); err != nil {
+			return c, fmt.Errorf("remove blob files: %w", err)
+		}
+	}
+	return c, nil
 }
 
 // runResetRoom is the -reset-room CLI: prints the plan, deletes only with
@@ -94,8 +104,8 @@ func runResetRoom(out io.Writer, dataDir, room string, confirm bool) int {
 		fmt.Fprintf(out, "reset-room %q: %v\n", room, err)
 		return 1
 	}
-	fmt.Fprintf(out, "room %q: rooms=%d events=%d key_packages=%d members=%d cursors=%d\n",
-		room, c.Rooms, c.Events, c.KeyPackages, c.Members, c.Cursors)
+	fmt.Fprintf(out, "room %q: rooms=%d events=%d key_packages=%d members=%d cursors=%d blobs=%d\n",
+		room, c.Rooms, c.Events, c.KeyPackages, c.Members, c.Cursors, c.Blobs)
 	switch {
 	case c.total() == 0:
 		fmt.Fprintln(out, "nothing to delete")
