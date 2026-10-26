@@ -57,6 +57,74 @@ final class OutgoingTests: XCTestCase {
         XCTAssertGreaterThan(after[0].id, 0)
     }
 
+    // MARK: - #497 B 송신 신뢰성
+
+    /// 504: 릴레이는 저장했는데 응답을 잃었다. 같은 바이트로 다시 보내 `200 duplicate` — 릴레이에 **한 번만** 저장되고 말풍선은 실제 기록이 잇는다.
+    /// 종전에는 거절이 엔진 밖으로 던져져 「연결되면 보냅니다」(clientId 없음)가 됐고, outbox 재전송 + 재암호화 재전송으로 두 번 저장됐다.
+    func testGatewayTimeoutAfterStoringSendsOnce() async {
+        let (model, relay) = await readyModel()
+        relay.failNextPosts([.refused(code: "gateway_timeout", status: 504)], afterStoring: true)
+        guard case .queued? = await model.send(room: "family", text: "photo") else { return XCTFail("\(String(describing: model.lastError))") }
+        XCTAssertEqual(model.messages(room: "family").last?.outgoing, .queued)
+
+        await model.refresh()
+        XCTAssertEqual(relay.applicationEvents(room: "family"), 1, "stored once: the same bytes came back as a duplicate, no re-encryption")
+        XCTAssertNil(model.outgoing["family"])
+        XCTAssertEqual(model.messages(room: "family").map(\.record.body), ["photo"], "the record replaces the bubble, no duplicate")
+    }
+
+    /// 영구 거절(413): 말풍선에 사람이 읽는 사유 · 화면 위 오류 없음 · 다음 동기화가 같은 바이트를 다시 올리거나 멈추지 않는다.
+    func testPermanentRefusalFailsTheBubbleAndDoesNotBlockSync() async {
+        let (model, relay) = await readyModel()
+        relay.failNextPosts([.refused(code: "room_bytes_cap", status: 413)])
+        let outcome = await model.send(room: "family", text: "too big")
+        XCTAssertNil(outcome)
+        guard case .failed(let reason)? = model.messages(room: "family").last?.outgoing else { return XCTFail() }
+        XCTAssertTrue(reason.contains("413"), reason)
+        XCTAssertNil(model.lastError, "the bubble carries the reason")
+
+        await model.refresh()
+        XCTAssertEqual(relay.applicationEvents(room: "family"), 0, "the closed entry is not posted again on the next poll")
+        XCTAssertNil(model.lastError, "the sync round was not aborted")
+        XCTAssertEqual(model.phase, .ready)
+    }
+
+    /// 보관됐던 글의 outbox 항목이 닫혔다(reconciled): 평문으로 한 번 새로 암호화해 보낸다 — 「연결되면 보냅니다」에 영원히 남지 않는다.
+    func testQueuedMessageWhoseEntryIsReconciledIsResentOnce() async {
+        let (model, relay) = await readyModel()
+        await sendFirstSoTheRoomIsListed(model)
+        relay.failNextPosts([.network("lost")])
+        guard case .queued? = await model.send(room: "family", text: "later") else { return XCTFail() }
+        relay.failNextPosts([.refused(code: "bad_request", status: 400)])
+
+        await model.refresh()
+        XCTAssertNil(model.outgoing["family"], "not stuck on 「연결되면 보냅니다」")
+        XCTAssertEqual(relay.applicationEvents(room: "family"), 2, "hi + later, each once")
+        XCTAssertEqual(model.messages(room: "family").map(\.record.body), ["hi", "later"])
+    }
+
+    /// 다시 보낸 것도 거절되면 「전송 안 됨」으로 끝난다(되풀이 없음).
+    func testReconciledResendThatIsRefusedAgainEndsAsFailed() async {
+        let (model, relay) = await readyModel()
+        await sendFirstSoTheRoomIsListed(model)
+        relay.failNextPosts([.network("lost")])
+        guard case .queued? = await model.send(room: "family", text: "later") else { return XCTFail() }
+        relay.failNextPosts([.refused(code: "bad_request", status: 400), .refused(code: "bad_request", status: 400)])
+
+        await model.refresh()
+        guard case .failed? = model.messages(room: "family").last?.outgoing else { return XCTFail("\(String(describing: model.outgoing))") }
+        await model.refresh()
+        guard case .failed? = model.messages(room: "family").last?.outgoing else { return XCTFail("stays failed, no loop") }
+        XCTAssertEqual(relay.applicationEvents(room: "family"), 1, "only the first hi")
+    }
+
+    /// 메모리 릴레이는 이 기기의 이벤트가 있는 방만 목록에 올린다(실 릴레이는 참여한 방) — 먼저 한 글을 보내 동기화 바퀴가
+    /// 그 방의 outbox 를 돌게 한다.
+    private func sendFirstSoTheRoomIsListed(_ model: AppModel) async {
+        guard case .sent? = await model.send(room: "family", text: "hi") else { return XCTFail("\(String(describing: model.lastError))") }
+        await model.refresh()
+    }
+
     /// #497: 보내는 글의 신호는 그 방에만 — 다른 방 화면은 다시 읽거나 스크롤하지 않는다(방 목록용 전역 신호는 그대로 오른다).
     func testSendBumpsOnlyThatRoomsRevision() async {
         let (model, _) = await readyModel()
