@@ -148,7 +148,7 @@ final class NotificationProcessor {
         let actor = record.senderActor
         let title = environment.agentActors.contains(actor)
             ? AgentRoster.displayName(device: record.senderDevice, names: Strings.agentNames)
-            : Strings.peopleNames[actor] ?? actor
+            : Strings.peopleNames[actor] ?? Strings.serviceNames[actor] ?? actor
         let body: String
         switch record.kind {
         case .text, .system:

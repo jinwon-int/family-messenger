@@ -73,4 +73,9 @@ final class AgentStringsTests: XCTestCase {
         XCTAssertEqual(Strings.roomLabel("dungae"), "등애✳️")
         XCTAssertEqual(Strings.roomLabel("test-rs2"), "test-rs2")
     }
+
+    func testServiceBotNames() {
+        XCTAssertEqual(Strings.senderLabel(device: "card-bot"), "💳 카드 알림")
+        XCTAssertEqual(Strings.roomLabel("family-card"), "💳 가족 카드 알림")
+    }
 }
