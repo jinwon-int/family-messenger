@@ -409,6 +409,45 @@ def run_flow(Dev, receipt, screenshot=None, relay_base=None):
     assert mom.device_id() == mom_id, (mom.device_id(), mom_id)
     receipt['checks']['identity_store_mismatch_self_heals_to_previous_id'] = True
 
+    # ---- room list keeps its scroll and focus across sync ticks (2026-10-26 field report, #502/#507).
+    # The sync line ("동기화 HH:MM:SS") changes on every room poll. It used to be part of the list
+    # pane's signature, so each sync swapped the whole pane — the list's scroll container: a
+    # scrolled-down list jumped back to the top (#502 carries the offset over) and focus inside the
+    # pane was dropped (#507 swaps only the sync line). A short window makes the owner's three rooms
+    # overflow in the 1280px two-pane layout, where the list header is not sticky.
+    owner.page.set_viewport_size({'width': 1280, 'height': 260})
+    owner.page.wait_for_function(
+        "() => { const p = document.querySelector('.pane-list'); return !!p && p.scrollHeight - p.clientHeight >= 60; }",
+        timeout=10000)
+    start = owner.page.evaluate("""() => {
+        const pane = document.querySelector('.pane-list');
+        // Focus first: focusing a header button scrolls the pane back up to it.
+        pane.querySelector('[data-testid="open-menu"]').focus();
+        pane.scrollTop = pane.scrollHeight;
+        window.__handeListPane = pane;
+        return {top: pane.scrollTop, sync: pane.querySelector('.sync-line')?.textContent ?? ''};
+    }""")
+    assert start['top'] >= 60, start
+    seen = start['sync']
+    for _ in range(2):   # two real sync-line changes
+        handle = owner.page.wait_for_function(
+            "prev => { const t = document.querySelector('.pane-list .sync-line')?.textContent ?? '';"
+            " return t !== prev ? t : false; }", arg=seen, timeout=60000)
+        seen = handle.json_value()
+    after = owner.page.evaluate("""() => {
+        const pane = document.querySelector('.pane-list');
+        const active = document.activeElement;
+        return {samePane: pane === window.__handeListPane, top: pane.scrollTop,
+                focus: active?.dataset?.testid ?? active?.tagName ?? null,
+                syncLines: pane.querySelectorAll('.sync-line').length};
+    }""")
+    receipt['room_list_sync_scroll'] = {'start': start, 'after': after, 'last_sync_line': seen}
+    assert after['top'] == start['top'], ('list scroll moved across sync', start, after)
+    assert after['samePane'] and after['focus'] == 'open-menu', ('list pane replaced or focus lost across sync', start, after)
+    assert after['syncLines'] == 1, after
+    receipt['checks']['room_list_keeps_scroll_and_focus_across_sync'] = True
+    owner.page.set_viewport_size({'width': 1280, 'height': 900})
+
 
 if __name__ == '__main__':
     main()
