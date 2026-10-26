@@ -28,13 +28,32 @@ export const b64 = bytes => {
 export const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 export const hex = bytes => Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
 const genId = () => Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+// A worker refusal names what refused it (durable worker `detail`, session-store.js
+// rejectionDetail: a fixed reason string, error names, file:line frames — no values).
+// Re-checked here so only that shape is ever shown; anything else is dropped.
+const REASON = /^[A-Za-z ]{1,40}$/, NAME = /^[A-Za-z]{1,40}$/, AT = /^[A-Za-z0-9_.-]{1,64}\.m?js:\d{1,6}$/;
+function rejectionPart(d) {
+  if (!d || typeof d !== 'object' || typeof d.reason !== 'string' || !REASON.test(d.reason)) return '';
+  let text = d.reason;
+  if (typeof d.name === 'string' && NAME.test(d.name)) text += `/${d.name}`;
+  if (typeof d.storage === 'string' && NAME.test(d.storage)) text += ` storage=${d.storage}`;
+  if (Array.isArray(d.where)) { const at = d.where.filter(w => typeof w === 'string' && AT.test(w)).slice(0, 4); if (at.length) text += ` @ ${at.join(' < ')}`; }
+  return text;
+}
+export function describeRejection(value) {
+  const d = value?.detail, outer = rejectionPart(d);
+  if (!outer) return '';
+  const inner = rejectionPart(d.inner);
+  return ` (${outer}${inner ? ` ⇐ ${inner}` : ''})`;
+}
+export const refused = (method, value) => new Error(`${method} 거부${describeRejection(value)}`);
 /** One facade operation on a room store (ledger item acked unless transient / deferred). */
 export async function op(worker, room, method, bytes = [], sequence = 0, {deferAck = false, onAckError = () => {}} = {}) {
   const id = genId();
   const value = await worker.call(WORKER, 'operation', {room, id, method, bytes: Array.from(bytes), sequence, fault: ''});
-  if (!value.ok) throw new Error(`${method} 거부`);
+  if (!value.ok) throw refused(method, value);
   const result = value.result;
-  const ack = async () => { try { const a = await worker.call(WORKER, 'ack', {room, ids: [id]}); if (!a.ok) onAckError(new Error('ack 거부')); } catch (error) { onAckError(error); } };
+  const ack = async () => { try { const a = await worker.call(WORKER, 'ack', {room, ids: [id]}); if (!a.ok) onAckError(refused('ack', a)); } catch (error) { onAckError(error); } };
   if (!result.transient) { if (deferAck) result.ack = ack; else await ack(); }
   result.ack ??= async () => {};
   return result;
@@ -114,7 +133,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
   // ---- worker (multi-store: every message carries this room) ----
   async function callWorker(method, argument) {
     const value = await worker.call(WORKER, method, {room, ...argument});
-    if (!value.ok) throw new Error(`${method} 거부`);
+    if (!value.ok) throw refused(method, value);
     return value.result;
   }
   async function roomOp(method, bytes = [], sequence = 0, {deferAck = false} = {}) {
@@ -333,11 +352,11 @@ export function createRoomSession({room, device, database, worker, relay, storag
     load();
     if (replace && !S.joined) {
       const r = await worker.call(WORKER, 'reset_room', {room, database});
-      if (!r.ok) throw new Error('reset_room 거부');
+      if (!r.ok) throw refused('reset_room', r);
       resetState(); storage.removeItem(stateKey());
     }
     const opened = await worker.call(WORKER, 'open_room', {room, database, from});
-    if (!opened.ok) throw new Error('open_room 거부');
+    if (!opened.ok) throw refused('open_room', opened);
     S.historyOn = opened.result.history === true; historyWarned = false;
     S.publicKey = hex(Uint8Array.from(opened.result.public_key)); S.revision = opened.result.revision;
     S.fingerprint = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', Uint8Array.from(opened.result.public_key))));
@@ -507,7 +526,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
   async function wipe() {
     stopPolling();
     const r = await worker.call(WORKER, 'reset_room', {room, database});
-    if (!r.ok) throw new Error('reset_room 거부');
+    if (!r.ok) throw refused('reset_room', r);
     storage.removeItem(stateKey());
     storage.removeItem(`hande:attachment:${database}:${room}:${device}`);
     S.started = false; resetState(); changed();

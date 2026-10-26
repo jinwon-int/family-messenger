@@ -16,7 +16,7 @@
 //            here, and the custody KDF runs once (sibling stores share the unlocked keys and
 //            the identity store's custody record).
 import init, * as api from './pkg/family_mls_browser_experiment.js';
-import {createStore, exact, fail, bindEncrypt, bindDecrypt, unframeDecrypt, wipeAll} from './session-store.js';
+import {createStore, exact, fail, bindEncrypt, bindDecrypt, unframeDecrypt, wipeAll, rejectionDetail} from './session-store.js';
 import {createVault, unlockVault, validPassphrase, sealRecord, openRecord} from './pkg/custody.js';
 import {openHistory, historyName} from './history-store.js';
 const wasm = await init();
@@ -342,6 +342,9 @@ self.onmessage = ({data}) => {
       self.postMessage({id, ok: true, result, memory_bytes: wasm.memory.buffer.byteLength});
     } catch (error) {
       const reply = {id, ok: false, error: 'operation rejected', memory_bytes: wasm.memory.buffer.byteLength};
+      // Which check refused it (fixed reason strings, error names, file:line — no values;
+      // session-store.js rejectionDetail). `error` stays the generic string for old callers.
+      try { reply.detail = rejectionDetail(error); } catch (_) { /* diagnostics must never block the reply */ }
       if (data?.method === 'init_multi' && typeof error?.stage === 'string') reply.stage = error.stage;
       self.postMessage(reply);
     }

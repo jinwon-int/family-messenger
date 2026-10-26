@@ -214,3 +214,18 @@ test('helpers', () => {
   assert.equal(nextDeviceId('owner-web-1a2b3c-2'), 'owner-web-1a2b3c-3');
   assert.deepEqual(parseMembers(frameMembers(['a-1', 'b-2'])), ['a-1', 'b-2']);
 });
+
+// 2026-10-26: a worker refusal shows which check refused it (durable worker `detail`).
+test('describeRejection / refused: worker detail is shown, malformed detail is dropped', async () => {
+  const {describeRejection, refused} = await import('../room.js');
+  assert.equal(refused('encrypt', {ok: false}).message, 'encrypt 거부');                     // old worker: unchanged
+  const detail = {reason: 'transaction rejected', storage: 'QuotaExceededError',
+    inner: {reason: 'rejected', where: ['session-store.js:282', 'session-store.js:636']}};
+  assert.equal(refused('encrypt', {ok: false, detail}).message,
+    'encrypt 거부 (transaction rejected storage=QuotaExceededError ⇐ rejected @ session-store.js:282 < session-store.js:636)');
+  assert.equal(describeRejection({detail: {reason: 'state limit', name: 'Error!'}}), ' (state limit)');
+  assert.equal(describeRejection({detail: {reason: 'x"<script>'}}), '');
+  assert.equal(describeRejection({detail: {reason: 'rejected', where: ['../../etc/passwd:1', 'a.js:1']}}), ' (rejected @ a.js:1)');
+  assert.equal(describeRejection({detail: 'rejected'}), '');
+  assert.match(refused('open_room', {ok: false, detail: {reason: 'record key rejected'}}).message, /^open_room 거부 \(record key rejected\)$/);
+});
