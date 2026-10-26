@@ -57,7 +57,7 @@ extension Strings {
 /// 이름 찾기(Core AgentRoster.displayName + 위 표).
 enum AgentRosterNames {
     static func person(_ device: String) -> String {
-        AgentRoster.displayName(device: device, names: Strings.peopleNames.merging(Strings.agentNames) { a, _ in a })
+        AgentRoster.displayName(device: device, names: Strings.peopleNames.merging(Strings.agentNames) { a, _ in a }.merging(Strings.serviceNames) { a, _ in a })
     }
 }
 
