@@ -38,6 +38,27 @@ export function isAgentDevice(device) {
   return AGENT_ACTORS.has(actorOf(device));
 }
 
+/** 봇 기기 → 노드 이름. 옛 `bot-<node>` 는 둘째 마디, 새 `<node>-<suffix>` 는 actor. 노드를 모르면 ''. */
+function agentNode(device) {
+  const text = String(device ?? '');
+  const actor = actorOf(text);
+  if (actor !== 'bot') return actor;
+  const rest = text.slice(actor.length + 1);
+  return rest ? rest.split('-')[0] : '';
+}
+
+/** 참여자 열쇠: 사람은 actor(여러 기기도 한 명), 봇은 노드(옛·새 기기 ID 도 한 명). */
+export function participantOf(device) {
+  return isAgentDevice(device) ? `agent:${agentNode(device)}` : actorOf(device);
+}
+
+/** 1:1 대화방인가 — 참여자(사람·봇 노드)가 둘 이하. roster 를 아직 모르면(빈 목록) false. */
+export function isOneToOne(roster) {
+  const devices = Array.isArray(roster) ? roster.filter(Boolean) : [];
+  if (devices.length === 0) return false;
+  return new Set(devices.map(participantOf)).size <= 2;
+}
+
 /** 내 글인가 — 같은 사람(actor)이면 다른 기기에서 보낸 글도 내 글(iOS MessageRecord.isMine). actor 를 아직 모르면 기기 일치로. */
 export function isMine(sender, {device, actor}) {
   if (!sender) return false;
@@ -60,7 +81,7 @@ export function roomLabel(room) {
 }
 
 /**
- * 보여 줄 이름: 사람은 「jinon86 · PC」(닉네임 + 기기 종류), 봇은 「🤖 등애✳️」(노드 닉네임). 모르는 actor 는 그대로.
+ * 보여 줄 이름: 사람은 「jinon86 · PC」(닉네임 + 기기 종류), 봇은 「등애✳️」(노드 닉네임, 🤖 접두 없음 — 2026-10-26 오너). 모르는 actor 는 그대로.
  * 옛 봇 기기 `bot-<node>` 는 둘째 마디, 새 봇 기기 `<node>-<suffix>` 는 actor 가 노드 이름.
  * iOS AgentRoster.displayName + Strings.senderLabel 과 같은 결.
  */
@@ -69,9 +90,8 @@ export function displayName(device) {
   if (!text) return '';
   const actor = actorOf(text);
   if (isAgentDevice(text)) {
-    const rest = text.slice(actor.length + 1);
-    const node = actor === 'bot' ? (rest ? rest.split('-')[0] : '') : actor;
-    return `🤖 ${node ? agentNames[node] ?? node : '봇'}`;
+    const node = agentNode(text);
+    return node ? agentNames[node] ?? node : '봇';
   }
   const name = peopleNames[actor] ?? actor;
   const kind = deviceKind(text);
