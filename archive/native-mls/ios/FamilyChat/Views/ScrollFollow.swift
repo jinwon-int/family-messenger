@@ -89,6 +89,27 @@ enum ScrollFollow {
     static func shouldRefollow(following: Bool, sentinelBottom: Double, viewportHeight: Double, sinceDrag: TimeInterval) -> Bool {
         !following && viewportHeight > 0 && sinceDrag >= settleDelay && sentinelBottom <= viewportHeight + nearBottom
     }
+
+    // MARK: - 내용 끝을 지나 빈 화면(오너 보고 build 41: 사진 한 장에 채팅 없이 배경만)
+
+    /// 목록 아래 여백(`.padding()` 기본값) — 맨 아래에 멈춰 있으면 바닥 표지 아래 끝 = 화면 높이 − 이 값.
+    static let bottomInset: Double = 16
+    /// 바닥 표지가 "맨 아래 자리"보다 이만큼 넘게 위에서 끝나면 빈 화면이다(끝에서 튕기는 정도는 넘지 않는다).
+    static let blankGap: Double = 80
+    /// 손을 뗀 뒤 이만큼은 튕김(rubber-band)으로 본다.
+    static let bounceGrace: TimeInterval = 0.6
+
+    /// 내용이 화면보다 긴데 바닥 표지가 화면 아래 끝보다 한참 위에서 끝났다 = 스크롤 위치가 **내용 끝을 지났다**(빈 화면).
+    /// 위 행들의 실제·추정 높이가 줄면(LazyVStack 미배치 행 추정치 변화 등) 위치는 그대로라 내용이 위로 빠져나간다. 종전 보정
+    /// (`needsBottomCorrection`)은 표지가 화면 **아래**에 남은 경우만 봤다 — build 40 까지는 중복 스크롤 명령이 우연히 되돌렸고,
+    /// #498 이 중복을 없애자 빈 화면이 남았다. 따라가기 여부와 상관없이 맞춘다(빈 화면은 머물 자리가 아니다).
+    static func isPastContentEnd(sentinelBottom: Double, viewportHeight: Double, contentHeight: Double, sinceDrag: TimeInterval) -> Bool {
+        viewportHeight > 0 && contentHeight > viewportHeight && sinceDrag >= bounceGrace
+            && sentinelBottom < viewportHeight - bottomInset - blankGap
+    }
+
+    /// 다시 읽은 뒤 늦게 오는 높이 변화(사진 준비는 백그라운드)를 놓치지 않게 다시 재는 시점(초).
+    static let verifyDelays: [TimeInterval] = [0.35, 1.0]
 }
 
 /// 스크롤 중 **프레임마다** 바뀌는 값과 스크롤 명령 합치기 상태. `@State` 값으로 두면 매 프레임 방 화면 body 를 다시 계산한다

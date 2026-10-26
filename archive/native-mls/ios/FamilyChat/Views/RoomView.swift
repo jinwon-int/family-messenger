@@ -108,6 +108,7 @@ struct RoomView: View {
                 }
                 .onPreferenceChange(SentinelBottomKey.self) { bottom in
                     tracking.sentinelBottom = bottom
+                    if recoverIfPastContentEnd(proxy) { return }
                     if !tracking.isAnimating, ScrollFollow.needsBottomCorrection(sentinelBottom: bottom, viewportHeight: viewportHeight, following: followLatest) {
                         scrollToLatest(proxy, animated: false)
                     }
@@ -194,12 +195,15 @@ struct RoomView: View {
                         followLatest = true
                         hasNewBelow = false
                         scrollToLatest(proxy, animated: true)
+                        verifyPositionSoon(proxy)
                     case .follow:
                         scrollToLatest(proxy, animated: false)
+                        verifyPositionSoon(proxy)
                     case .markNewBelow:
                         hasNewBelow = true
+                        verifyPositionSoon(proxy)
                     case .stay:
-                        break
+                        verifyPositionSoon(proxy)
                     }
                 }
               }
@@ -391,6 +395,30 @@ struct RoomView: View {
                 }
             } else {
                 proxy.scrollTo(last, anchor: .bottom)
+            }
+        }
+    }
+
+    /// 스크롤 위치가 내용 끝을 지나 빈 화면이 됐다(오너 보고 build 41) — 맨 아래로 되돌리고 따라간다. 맞췄으면 true.
+    @discardableResult
+    private func recoverIfPastContentEnd(_ proxy: ScrollViewProxy) -> Bool {
+        guard ScrollFollow.isPastContentEnd(sentinelBottom: tracking.sentinelBottom, viewportHeight: viewportHeight,
+                                            contentHeight: contentHeight, sinceDrag: Date().timeIntervalSince(tracking.lastDrag)) else { return false }
+        followLatest = true
+        hasNewBelow = false
+        scrollToLatest(proxy, animated: false)
+        return true
+    }
+
+    /// 다시 읽은 뒤 몇 번 더 잰다 — 표지 실측이 다시 오지 않아도(배치가 멈춘 채 빈 화면·최하단 미달) 위치를 바로잡는다.
+    private func verifyPositionSoon(_ proxy: ScrollViewProxy) {
+        for delay in ScrollFollow.verifyDelays {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                if recoverIfPastContentEnd(proxy) { return }
+                if !tracking.isAnimating, ScrollFollow.needsBottomCorrection(sentinelBottom: tracking.sentinelBottom, viewportHeight: viewportHeight,
+                                                                             following: followLatest) {
+                    scrollToLatest(proxy, animated: false)
+                }
             }
         }
     }
