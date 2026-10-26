@@ -221,6 +221,31 @@ export function validLedgerItemShape(item) {
       !(item.output instanceof Uint8Array) || item.output.length !== 0)) return false;
   return true;
 }
+// #496: a deferAck decrypt whose page went away (reload, worker death, a failed ack)
+// stays in the ledger with an id no page holds any more — room.js makes ids per call
+// and keeps them in memory only — so nothing ever acks it. One such attachment
+// decrypt (input + output ≈ 2 × the photo) can occupy most of MAX_BINARY, after which
+// every later large decrypt fails persist() for good (2026-10-26: a leftover 4.2 MB
+// photo blocked the next 3.0 MB one). Eviction is deliberately narrow: only when the
+// ledger would exceed MAX_BINARY, only `decrypt` items this worker found already
+// present when it first read the store ("inherited"), oldest first, only as many as
+// needed, and only when that actually makes room — otherwise nothing changes and the
+// operation fails as before. An evicted id is recorded as acked, exactly like ack().
+// Trade-off (multi-tab): an inherited item may still belong to another tab's in-flight
+// decrypt; evicting it costs that tab only its lost-response replay, and only under
+// capacity pressure, where the alternative is a permanent refusal for this store.
+export const ledgerBytes = ledger => ledger.reduce((n, x) => n + x.input.length + x.output.length, 0);
+export function inheritedDecryptsToEvict(ledger, inherited, max = MAX_BINARY) {
+  let size = ledgerBytes(ledger);
+  if (size <= max || !(inherited instanceof Set) || inherited.size === 0) return [];
+  const out = [];
+  for (const item of ledger) {   // insertion order = oldest first
+    if (size <= max) break;
+    if (item.method !== 'decrypt' || !inherited.has(item.id)) continue;
+    out.push(item.id); size -= item.input.length + item.output.length;
+  }
+  return size <= max ? out : [];
+}
 // Tagged encoding of one ledger item: tombstones append a trailing 1, so a flag
 // added to, or removed from, an item changes the bytes the meta tag covers while
 // every pre-H2 item encodes exactly as before.
@@ -265,6 +290,8 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
   // Resident state, valid only while `known` equals the durable meta revision.
   // tags: hex(entry key) -> {k, t}. reloads: full rebuilds of the resident session.
   let session = null, known = -1, tags = new Map(), reloads = 0;
+  // #496: ledger ids already present when this worker first read the store (see inheritedDecryptsToEvict).
+  let inherited = null;
   // #261: a foreign commit is staged in the resident session (its handshake
   // step consumed, changes in flight) and only merge_staged / discard_staged
   // may follow. A stage is transient: no ledger item, nothing persisted, and a
@@ -631,6 +658,11 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
           meta.group_id = group;
           meta.ledger.push({id: argument.id, method: argument.method, input: bytes, output, sequence: argument.sequence, epoch: meta.epoch});
           if (argument.method === 'decrypt') meta.cursor = argument.sequence;
+          const evict = inheritedDecryptsToEvict(meta.ledger, inherited);   // #496: only when over MAX_BINARY
+          if (evict.length) {
+            meta.ledger = meta.ledger.filter(x => !evict.includes(x.id));
+            meta.acked = meta.acked.concat(evict).slice(-ACKED);
+          }
           if (fault === 'abort-before-write') { wipeChanges(changes); abort(); return undefined; }
           let written;
           try { written = persist(meta, changes); } finally { wipeChanges(changes); }
@@ -664,6 +696,7 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
             if (names !== 'custody,state' || !validCustody(stored.result) || stored.result.vault !== custody.vault ||
                 !equal(stored.result.capsule, custody.capsule)) fail();
             const meta = readMeta(get.result);
+            if (inherited === null) inherited = new Set(meta.ledger.map(x => x.id));
             const run = () => { try { response = handler(ctx, meta); } catch (error) { abortWith(error); } };
             if (!session || known !== meta.revision) load(meta, run); else run();
           } catch (error) { abortWith(error); }
