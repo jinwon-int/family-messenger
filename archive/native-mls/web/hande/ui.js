@@ -277,7 +277,9 @@ function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu,
   // 순서 편집은 방이 2개 이상이고 핸들러가 있을 때만(패밀리챗과 같음).
   const canReorder = rooms.length > 1 && typeof onMoveRoom === 'function' && typeof onToggleOrderEdit === 'function';
   const editing = canReorder && orderEditing;
-  const frame = JSON.stringify([syncLabel, syncTone, notice ? [notice.text, notice.tone] : null, rooms.length > 0, deviceLabel, Boolean(onOpenBox), canReorder, editing, invites.map((i) => [i.room, i.name ?? null, i.message ?? null, Boolean(i.busy)])]);
+  // 서명에서 동기화 줄(syncLabel·syncTone)은 뺀다 — 마지막 동기화 시각은 몇 초마다 바뀌어, 넣으면 pane 전체가
+  // 동기화마다 교체돼 포커스·순서 편집이 끊긴다. 그 줄은 updateListPane 이 따로 갈아 끼운다.
+  const frame = JSON.stringify([notice ? [notice.text, notice.tone] : null, rooms.length > 0, deviceLabel, Boolean(onOpenBox), canReorder, editing, invites.map((i) => [i.room, i.name ?? null, i.message ?? null, Boolean(i.busy)])]);
   const body = rooms.length === 0
     ? el('div', { class: 'empty campfire-empty' }, el('span', { class: 'big-fire', 'aria-hidden': 'true' }, '🪵'), el('p', { class: 'empty-title' }, strings.rooms.empty), el('p', { class: 'hint' }, strings.rooms.noRooms))
     : el('ul', { class: 'rooms', 'aria-label': strings.rooms.listLabel }, rooms.map((room, index) => roomListItem(room, onSelect, room.roomId === currentRoomId,
@@ -333,19 +335,26 @@ const keyOfRow = (node) => node.dataset?.key ?? null;
 function updateListPane(shell, fresh) {
   const old = shell.querySelector(':scope > .pane-list');
   if (!old) { shell.prepend(fresh); return; }
-  const oldRooms = old.querySelector('ul.rooms');
-  const freshRooms = fresh.querySelector('ul.rooms');
-  if (signatureOf(old) !== signatureOf(fresh) || !oldRooms || !freshRooms) {
-    // The list pane is the room list's scroll container, and its signature carries the
-    // sync label (last sync time), which changes every few seconds — so a plain replace
-    // threw a scrolled-down list back to the top on every sync once the rooms overflowed
-    // (2026-10-26, many agent rooms). Keep the reader's position across the replace.
+  if (signatureOf(old) !== signatureOf(fresh)) {
+    // The list pane is the room list's scroll container — a plain replace would throw a
+    // scrolled-down list back to the top (2026-10-26, #502). Keep the reader's position.
     const top = old.scrollTop;
     old.replaceWith(fresh);
     if (top > 0) fresh.scrollTop = top;
     return;
   }
-  reconcileChildren(oldRooms, [...freshRooms.children], keyOfRow);
+  // Same frame: the sync line (last sync time — changes every few seconds) is left out of the
+  // signature, so swap just that <p>. A fresh node, not an in-place text edit, keeps the
+  // role="status" region from being re-announced on every sync, as the whole-pane swap did.
+  const oldLine = old.querySelector(':scope > .sync-line');
+  const freshLine = fresh.querySelector(':scope > .sync-line');
+  if (oldLine && freshLine && (oldLine.className !== freshLine.className || oldLine.textContent !== freshLine.textContent)) {
+    oldLine.replaceWith(freshLine);
+  }
+  // rooms.length > 0 is in the frame, so both panes have the list or both show the empty card.
+  const oldRooms = old.querySelector('ul.rooms');
+  const freshRooms = fresh.querySelector('ul.rooms');
+  if (oldRooms && freshRooms) reconcileChildren(oldRooms, [...freshRooms.children], keyOfRow);
 }
 
 // ---- 방 pane ----
