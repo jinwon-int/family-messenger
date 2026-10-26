@@ -17,6 +17,17 @@ final class InMemoryRelay: RelayTransport, RelayControl {
     /// 테스트 관찰: 이 방의 GET /events 횟수.
     func eventReads(room: RoomID) -> Int { lock.withLock { reads[room] ?? 0 } }
 
+    /// #497 B 결함 주입: 다음 application POST 들이 **저장 전에** 이 오류로 실패한다(502 게이트웨이·413 용량 등).
+    private var failBeforeStore: [RelayError] = []
+    /// #497 B 결함 주입: 다음 application POST 들이 **저장한 뒤** 응답을 잃는다(504 — 릴레이는 받았는데 엣지가 시간 초과).
+    private var failAfterStore: [RelayError] = []
+    func failNextPosts(_ errors: [RelayError], afterStoring: Bool = false) {
+        lock.withLock { if afterStoring { failAfterStore += errors } else { failBeforeStore += errors } }
+    }
+
+    /// 테스트 관찰: 이 방에 저장된 application 이벤트 수(같은 글이 두 번 저장됐는지).
+    func applicationEvents(room: RoomID) -> Int { lock.withLock { rooms[room]?.events.filter { $0.kind == "application" }.count ?? 0 } }
+
     /// 테스트 시드(#380): 봇이 `target` 을 더한 commit + 그 기기만을 대상으로 한 Welcome 을 방 로그에 넣는다(바이트는 가짜 — 가짜 엔진용).
     @discardableResult
     func seedWelcome(room: RoomID, target: DeviceID, bot: DeviceID = "bot-gongmyoung") -> Int64 {
@@ -71,6 +82,7 @@ final class InMemoryRelay: RelayTransport, RelayControl {
     func postEvent(room: RoomID, _ post: EventPost) async throws -> EventPostResponse {
         try checkUp()
         return try lock.withLock {
+            if post.kind == .application, !failBeforeStore.isEmpty { throw failBeforeStore.removeFirst() }
             var r = rooms[room] ?? Room()
             if r.closed { throw RelayError.refused(code: "room_closed", status: 410) }
             // K4: 같은 (device, client_id) 의 정확 바이트 재전송 = 200 duplicate(원래 seq). 바이트가 다르면 409 류 거부.
@@ -90,6 +102,7 @@ final class InMemoryRelay: RelayTransport, RelayControl {
             r.events.append(Event(seq: seq, device: post.device, clientId: post.clientId, kind: post.kind.rawValue,
                                   epoch: post.epoch, bytes: post.bytes, targets: post.targets ?? []))
             rooms[room] = r
+            if post.kind == .application, !failAfterStore.isEmpty { throw failAfterStore.removeFirst() }
             return try Self.decode(EventPostResponse.self, ["seq": seq, "epoch": r.epoch, "revision": 0, "duplicate": false])
         }
     }

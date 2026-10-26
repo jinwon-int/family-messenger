@@ -398,6 +398,71 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertTrue(try h.outbox.pending(room: h.room).isEmpty)
     }
 
+    // MARK: - #497 B 거절 분류
+
+    /// 게이트웨이 502 는 네트워크 실패와 같다 — queued(같은 client_id), 다시 보낼 때 **같은 바이트**, 재암호화 없음.
+    /// 종전에는 거절이 밖으로 던져져 앱이 재암호화해 한 번 더 보냈다(사진 이중 전송).
+    func testGatewayRefusalOnSendIsQueuedAndRetriedWithExactBytes() async throws {
+        let h = try joinedHarness()
+        h.relay.postErrors = [.refused(code: "bad_gateway", status: 502)]
+        let first = try await h.sync.send(text: "photo")
+        guard case .queued(let clientId) = first else { return XCTFail("\(first)") }
+        XCTAssertEqual(try h.outbox.pending(room: h.room).map(\.clientId), [clientId])
+
+        let outcomes = try await h.sync.flushOutbox()
+        XCTAssertEqual(outcomes, [.sent(clientId: clientId, seq: 1, duplicate: false)])
+        XCTAssertEqual(h.relay.posts.count, 2)
+        XCTAssertEqual(h.relay.posts[0].bytes, h.relay.posts[1].bytes, "정확 바이트 재시도")
+        XCTAssertEqual(h.relay.rows.count, 1)
+        XCTAssertEqual(h.factory.log.count(.encrypt), 1, "재암호화하지 않는다")
+    }
+
+    /// 429 도 다시 보낼 거절.
+    func testRateLimitOnSendIsQueued() async throws {
+        let h = try joinedHarness()
+        h.relay.postErrors = [.refused(code: "rate_limited", status: 429)]
+        guard case .queued = try await h.sync.send(text: "x") else { return XCTFail() }
+        XCTAssertEqual(try h.outbox.pending(room: h.room).count, 1)
+    }
+
+    /// 영구 거절(413 등)은 그 항목을 닫고 그대로 던진다 — 폴링마다 같은 바이트를 다시 올리지 않는다.
+    func testPermanentRefusalOnSendClosesTheEntryAndThrows() async throws {
+        let h = try joinedHarness()
+        h.relay.postErrors = [.refused(code: "room_bytes_cap", status: 413)]
+        do { _ = try await h.sync.send(text: "too big"); XCTFail("거절이 호출자에게 가야 한다") } catch {
+            guard case RelayError.refused(let code, 413)? = error as? RelayError else { return XCTFail("\(error)") }
+            XCTAssertEqual(code, "room_bytes_cap")
+        }
+        XCTAssertTrue(try h.outbox.pending(room: h.room).isEmpty, "닫혀서 flushOutbox 가 다시 올리지 않는다")
+        let flushed = try await h.sync.flushOutbox()
+        XCTAssertTrue(flushed.isEmpty)
+        XCTAssertEqual(h.relay.posts.count, 1)
+    }
+
+    /// flushOutbox: 영구 거절은 그 항목만 reconciled 로 닫고 **던지지 않고** 다음 항목을 보낸다(종전: 던져서 앱의 동기화 바퀴 전체가 멈췄다).
+    func testFlushOutboxClosesPermanentRefusalAndContinues() async throws {
+        let h = try joinedHarness()
+        h.relay.postErrors = [.network("offline"), .network("offline")]
+        guard case .queued(let first) = try await h.sync.send(text: "a"),
+              case .queued(let second) = try await h.sync.send(text: "b") else { return XCTFail() }
+        h.relay.postErrors = [.refused(code: "bad_request", status: 400)]
+        let outcomes = try await h.sync.flushOutbox()
+        XCTAssertEqual(outcomes, [.reconciled(clientId: first), .sent(clientId: second, seq: 1, duplicate: false)])
+        XCTAssertTrue(try h.outbox.pending(room: h.room).isEmpty)
+    }
+
+    /// flushOutbox: 게이트웨이 거절이면 거기서 멈추고 남은 항목은 pending 그대로(네트워크 실패와 같다).
+    func testFlushOutboxStopsOnGatewayRefusalAndKeepsPending() async throws {
+        let h = try joinedHarness()
+        h.relay.postErrors = [.network("offline"), .network("offline")]
+        guard case .queued(let first) = try await h.sync.send(text: "a"),
+              case .queued(let second) = try await h.sync.send(text: "b") else { return XCTFail() }
+        h.relay.postErrors = [.refused(code: "service_unavailable", status: 503)]
+        let outcomes = try await h.sync.flushOutbox()
+        XCTAssertEqual(outcomes, [.queued(clientId: first)])
+        XCTAssertEqual(try h.outbox.pending(room: h.room).map(\.clientId).sorted(), [first, second].sorted())
+    }
+
     // MARK: - 네트워크는 트랜잭션 밖
 
     func testRelayGuardDetectsCallsInsideTransaction() throws {

@@ -77,6 +77,7 @@ public enum SendOutcome: Equatable {
     /// 네트워크 실패 — pending 으로 남아 `flushOutbox` 가 같은 바이트로 재시도한다.
     case queued(clientId: String)
     /// 재시작 등으로 평문이 없는 pending 항목이 409 를 받았다 — 재암호화할 수 없어 reconciled 로 닫았다.
+    /// #497 B: `flushOutbox` 의 영구 거절(413 등)도 여기로 닫는다. 평문을 쥔 호출자는 다시 암호화해 보내면 된다.
     case reconciled(clientId: String)
 }
 
@@ -253,6 +254,14 @@ public final class RoomSyncEngine {
     /// 등록 JSON 을 엔진의 공개 정보로 만든다(트랜잭션 안: 새 기기면 이때 상태가 저장된다).
     private func markRegistrationPending() throws {
         registrationPending = try transaction { engine, _ in try EnrollmentRequest(engine: engine, subject: enrollmentSubject) }
+    }
+
+    /// #497 B: 다시 보내면 될 거절 — 게이트웨이(502~504: 엣지·터널이 릴레이에 못 닿음, 504 는 릴레이가 이미 저장했을 수도)와
+    /// 429(속도 제한). 같은 바이트·같은 client_id 재전송은 릴레이가 `200 duplicate` 로 받으므로 두 번 저장되지 않는다.
+    /// 종전에는 이 거절이 `send`·`flushOutbox` 밖으로 던져져, 앱이 outbox 에 이미 있는 글을 **재암호화해 한 번 더** 보냈다(사진 이중 전송).
+    static func isTransientRefusal(_ error: Error) -> Bool {
+        if case RelayError.refused(_, let status) = error { return status == 429 || (502...504).contains(status) }
+        return false
     }
 
     private static func isRegistrationRefusal(_ error: Error) -> Bool {
@@ -467,16 +476,25 @@ public final class RoomSyncEngine {
                 try await syncAll()
             } catch RelayError.network {
                 return .queued(clientId: entry.clientId)
+            } catch where Self.isTransientRefusal(error) {
+                // #497 B: 네트워크 실패와 같다 — pending 그대로, flushOutbox 가 같은 바이트로.
+                return .queued(clientId: entry.clientId)
             } catch where Self.isRegistrationRefusal(error) {
                 // 바이트는 유효하다 — pending 으로 두고 등록 뒤 flushOutbox 가 같은 바이트로 보낸다.
                 try markRegistrationPending()
                 throw SyncError.registrationPending
+            } catch RelayError.refused(let code, let status) {
+                // #497 B: 영구 거절(413 용량·400·403·410 등) — 같은 바이트는 다시 보내도 같다. 닫아서 폴링마다 다시 올리지 않게 하고
+                // 호출자에게 그대로 알린다(평문을 쥔 호출자가 「전송 안 됨」으로 보인다).
+                try outbox.mark(room: room, clientId: entry.clientId, status: .reconciled)
+                throw RelayError.refused(code: code, status: status)
             }
         }
     }
 
     /// pending outbox 항목을 **같은 바이트**로 다시 보낸다(K4). 409 는 평문이 없어 재암호화할 수 없으므로 reconciled.
-    /// 네트워크 실패면 거기서 멈추고 남은 항목은 pending 으로 둔다.
+    /// 네트워크 실패·게이트웨이 502~504·429 면 거기서 멈추고 남은 항목은 pending 으로 둔다. 그 밖의 거절(413 등)은 그 항목만
+    /// reconciled 로 닫고 계속한다(#497 B — 던지지 않는다).
     @discardableResult
     public func flushOutbox() async throws -> [SendOutcome] {
         var outcomes: [SendOutcome] = []
@@ -489,10 +507,18 @@ public final class RoomSyncEngine {
             } catch RelayError.network {
                 outcomes.append(.queued(clientId: entry.clientId))
                 break
+            } catch where Self.isTransientRefusal(error) {
+                outcomes.append(.queued(clientId: entry.clientId))
+                break
             } catch where Self.isRegistrationRefusal(error) {
                 try markRegistrationPending()
                 outcomes.append(.queued(clientId: entry.clientId))
                 break
+            } catch RelayError.refused {
+                // #497 B: 영구 거절 — 종전에는 여기서 던져져 앱의 동기화 바퀴 전체(뒤의 방들·푸시·로비)가 멈추고, 4초마다 같은 바이트를
+                // 다시 올렸다. 닫고(reconciled) 다음 항목으로 — 평문을 쥔 호출자(앱)가 다시 암호화해 보내거나 실패로 보인다.
+                try outbox.mark(room: room, clientId: entry.clientId, status: .reconciled)
+                outcomes.append(.reconciled(clientId: entry.clientId))
             }
         }
         return outcomes

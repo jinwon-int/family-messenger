@@ -458,6 +458,7 @@ final class AppModel: ObservableObject {
                     let outcomes = try await sync.flushOutbox()
                     lastFlush[record.room] = outcomes
                     for case .sent(let clientId, let seq, _) in outcomes { try recordOwn(clientId: clientId, seq: seq) }
+                    for case .reconciled(let clientId) in outcomes { reopenReconciled(clientId: clientId) }
                 }
             }
             rooms = try deps.messageStore.rooms()
@@ -821,6 +822,9 @@ final class AppModel: ObservableObject {
             updateOutgoing(id, room: room) { $0.state = .failed(Strings.notJoined) }
         } catch EngineError.rejected(let reason) {
             updateOutgoing(id, room: room) { $0.state = .failed(Strings.sendRejected(reason)) }
+        } catch RelayError.refused(let code, let status) where !ConnectionIssue.isTransient(status: status) {
+            // #497 B: 릴레이의 영구 거절(413 용량 등) — 엔진이 outbox 항목을 닫았다. 사람이 읽는 사유로 말풍선에만(날것의 오류 대신).
+            updateOutgoing(id, room: room) { $0.state = .failed(Strings.sendRejected("\(status) \(code)")) }
         } catch {
             // 릴레이에 닿지 않음(취소 포함): 글은 「연결되면 보냅니다」로 남기고, 연결이 돌아온 첫 동기화 뒤에 다시 보낸다
             // (`resendUnsentLocked` — outbox 에 들어가기 전에 실패한 글이라 앱이 직접 다시 보낸다).
@@ -834,6 +838,16 @@ final class AppModel: ObservableObject {
             }
         }
         return nil
+    }
+
+    /// #497 B: outbox 에 보관됐던 내 글이 닫혔다(reconciled — 방이 움직여 409, 또는 영구 거절). 종전에는 `.sent` 만 처리해
+    /// 말풍선이 「연결되면 보냅니다」에 영원히 남았다. 평문을 쥐고 있으면(`unconfirmed`) clientId 를 떼어 「연결되면 보냅니다」(outbox 밖)로
+    /// 되돌린다 — 이 바퀴 뒤 `resendUnsent` 가 새로 암호화해 한 번 보낸다. 그 송신이 다시 거절되면 `sendOwn` 이 「전송 안 됨」으로
+    /// 바꾸므로 되풀이되지 않는다. 평문이 없으면(재시작 뒤) 보일 말풍선도 없다.
+    private func reopenReconciled(clientId: String) {
+        guard let pending = unconfirmed.removeValue(forKey: clientId),
+              let id = outgoing[pending.room]?.first(where: { $0.clientId == clientId })?.id else { return }
+        updateOutgoing(id, room: pending.room) { $0.clientId = nil; $0.state = .queued }
     }
 
     /// 연결이 돌아왔다(동기화 성공): outbox 에 못 들어가고 「연결되면 보냅니다」로 남은 글을 같은 내용으로 다시 보낸다.
@@ -1023,10 +1037,13 @@ enum ConnectionIssue: Equatable {
             if detail.contains("NSURLErrorDomain Code=-999") { return .cancelled }
             if detail.hasPrefix("bad relay url") { return .other }
             return .unreachable
-        case .refused(_, let status)? where (502...504).contains(status):
+        case .refused(_, let status)? where isTransient(status: status):
             return .unreachable
         default:
             return .other
         }
     }
+
+    /// 다시 시도하면 될 거절(게이트웨이 502~504 · 속도 제한 429) — `RoomSyncEngine.isTransientRefusal` 과 같은 기준(#497 B).
+    static func isTransient(status: Int) -> Bool { status == 429 || (502...504).contains(status) }
 }
