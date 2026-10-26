@@ -92,19 +92,21 @@ final class OutgoingTests: XCTestCase {
     /// 보관됐던 글의 outbox 항목이 닫혔다(reconciled): 평문으로 한 번 새로 암호화해 보낸다 — 「연결되면 보냅니다」에 영원히 남지 않는다.
     func testQueuedMessageWhoseEntryIsReconciledIsResentOnce() async {
         let (model, relay) = await readyModel()
+        await sendFirstSoTheRoomIsListed(model)
         relay.failNextPosts([.network("lost")])
         guard case .queued? = await model.send(room: "family", text: "later") else { return XCTFail() }
         relay.failNextPosts([.refused(code: "bad_request", status: 400)])
 
         await model.refresh()
         XCTAssertNil(model.outgoing["family"], "not stuck on 「연결되면 보냅니다」")
-        XCTAssertEqual(relay.applicationEvents(room: "family"), 1)
-        XCTAssertEqual(model.messages(room: "family").map(\.record.body), ["later"])
+        XCTAssertEqual(relay.applicationEvents(room: "family"), 2, "hi + later, each once")
+        XCTAssertEqual(model.messages(room: "family").map(\.record.body), ["hi", "later"])
     }
 
     /// 다시 보낸 것도 거절되면 「전송 안 됨」으로 끝난다(되풀이 없음).
     func testReconciledResendThatIsRefusedAgainEndsAsFailed() async {
         let (model, relay) = await readyModel()
+        await sendFirstSoTheRoomIsListed(model)
         relay.failNextPosts([.network("lost")])
         guard case .queued? = await model.send(room: "family", text: "later") else { return XCTFail() }
         relay.failNextPosts([.refused(code: "bad_request", status: 400), .refused(code: "bad_request", status: 400)])
@@ -113,7 +115,14 @@ final class OutgoingTests: XCTestCase {
         guard case .failed? = model.messages(room: "family").last?.outgoing else { return XCTFail("\(String(describing: model.outgoing))") }
         await model.refresh()
         guard case .failed? = model.messages(room: "family").last?.outgoing else { return XCTFail("stays failed, no loop") }
-        XCTAssertEqual(relay.applicationEvents(room: "family"), 0)
+        XCTAssertEqual(relay.applicationEvents(room: "family"), 1, "only the first hi")
+    }
+
+    /// 메모리 릴레이는 이 기기의 이벤트가 있는 방만 목록에 올린다(실 릴레이는 참여한 방) — 먼저 한 글을 보내 동기화 바퀴가
+    /// 그 방의 outbox 를 돌게 한다.
+    private func sendFirstSoTheRoomIsListed(_ model: AppModel) async {
+        guard case .sent? = await model.send(room: "family", text: "hi") else { return XCTFail("\(String(describing: model.lastError))") }
+        await model.refresh()
     }
 
     /// #497: 보내는 글의 신호는 그 방에만 — 다른 방 화면은 다시 읽거나 스크롤하지 않는다(방 목록용 전역 신호는 그대로 오른다).
