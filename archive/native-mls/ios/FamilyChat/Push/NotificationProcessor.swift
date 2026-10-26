@@ -2,7 +2,7 @@
 //
 //   payload {room, seq} → 자격증명·기기 ID(공유 저장) → **App 과 같은 `RoomSyncEngine`**(같은 App Group 의 flock 단일 작성자,
 //   방 상태가 없을 때의 시드도 같은 `SeededEngineFactory`) → syncAll(commit·application 처리, messages.db 기록, 원자 영속)
-//   → 그 seq 의 행(NSE 든 App 이든 먼저 처리한 쪽이 기록)으로 알림 치환: 제목 = actor(봇이면 "🤖 actor"), 본문 = 텍스트/「사진」/「파일」.
+//   → 그 seq 의 행(NSE 든 App 이든 먼저 처리한 쪽이 기록)으로 알림 치환: 제목 = actor(봇이면 노드 닉네임, 🤖 접두 없음 — 2026-10-26 오너), 본문 = 텍스트/「사진」/「파일」.
 //
 // 절대 빈손 없음: 페이로드 이상·자격증명/기기 ID 없음·방 모름·락 대기 초과·네트워크·401·정지·해독 불가·행 없음·예외 → 전부
 // "새 메시지가 도착했습니다". 기한은 `NotificationDeadline` 이 따로 건다(시스템 30 s 보다 짧게) — 넘으면 대체 알림을 먼저 내고,
@@ -73,7 +73,7 @@ final class NotificationProcessor {
         var messages: MessageStore
         var outbox: OutboxStore
         var cursors: CursorStore
-        /// 봇 actor(빌드 설정 `FC_AGENT_ACTORS`, 쉼표 구분) — 제목에 🤖.
+        /// 봇 actor(빌드 설정 `FC_AGENT_ACTORS`, 쉼표 구분) — 제목을 노드 닉네임(Strings.agentNames)으로.
         var agentActors: Set<String> = []
         var configuration: RoomSyncEngine.Configuration = NotificationProcessor.defaultConfiguration
     }
@@ -147,7 +147,7 @@ final class NotificationProcessor {
         // 제목 = Matrix 와 같은 닉네임(Strings+Names). 표에 없으면 actor 그대로.
         let actor = record.senderActor
         let title = environment.agentActors.contains(actor)
-            ? "🤖 \(AgentRoster.displayName(device: record.senderDevice, names: Strings.agentNames))"
+            ? AgentRoster.displayName(device: record.senderDevice, names: Strings.agentNames)
             : Strings.peopleNames[actor] ?? actor
         let body: String
         switch record.kind {
