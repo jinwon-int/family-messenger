@@ -35,7 +35,7 @@ native-mls-bot <base-url> session <room> <device> \
 |---|---|
 | ②-B 모든 메시지에 반응 | 멘션 게이트 없음. 응답기가 빈 답을 주면 전송 없음 |
 | 봇끼리 루프 방지 | actor 가 `bot` 으로 시작하는 발신 무시(`agent_skipped: bot_actor`) + 기존 `*-echo-<n>` 무시 |
-| 첨부 무시 | `client_id` 가 `file-v1-<uuid>` 면 무시(`agent_skipped: attachment`) |
+| 첨부 무시 | `client_id` 가 `file-v1-<uuid>` 또는 `file-v2-<uuid>`(#499 분리 첨부 — 설명자에 파일 키가 있어 에이전트에 절대 넘기지 않음)면 무시(`agent_skipped: attachment`) |
 | ③-B 가족 허용 | `bot*` 를 뺀 모든 actor 의 메시지가 turn 이 된다. 실행 권한은 아래 승인으로만 |
 | ④-B 승인 왕복 | 응답기 `approval` → 방에 `⚠️ 승인 필요 #n: …` → **owner actor 의 답장** `승인 n` / `거절 n`(`approve n`/`deny n`) 만 유효 → 응답기 `approve`/`deny`. 미응답은 응답기 `--approval-timeout` 이 거절 |
 | 동시성 | 한 번에 1 turn, 대기열 8(초과는 `agent_offer: Dropped{queue_full}`) |
