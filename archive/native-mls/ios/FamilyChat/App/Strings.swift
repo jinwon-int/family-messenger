@@ -51,6 +51,8 @@ enum Strings {
     static let outgoingFailed = "전송 안 됨"
     static let outgoingRetry = "다시 보내기"
     static let outgoingAttachment = "사진·파일 보내는 중"
+    /// #497: 위로 읽는 동안 아래에 새 글이 왔다(누르면 최하단).
+    static let newMessagesBelow = "새 메시지"
     static let sendQueued = "릴레이에 닿지 않아 보관했습니다. 연결되면 같은 내용 그대로 다시 보냅니다."
     static let notReady = "아직 준비되지 않았습니다. 잠시 뒤 다시 보내 주세요."
     static let notJoined = "아직 이 대화방에 참여하지 않았습니다. 초대를 기다려 주세요."

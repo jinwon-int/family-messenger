@@ -57,6 +57,16 @@ final class OutgoingTests: XCTestCase {
         XCTAssertGreaterThan(after[0].id, 0)
     }
 
+    /// #497: 보내는 글의 신호는 그 방에만 — 다른 방 화면은 다시 읽거나 스크롤하지 않는다(방 목록용 전역 신호는 그대로 오른다).
+    func testSendBumpsOnlyThatRoomsRevision() async {
+        let (model, _) = await readyModel()
+        let family = model.roomRevision("family"), other = model.roomRevision("family-acc"), global = model.messagesRevision
+        _ = await model.send(room: "family", text: "hi")
+        XCTAssertGreaterThan(model.roomRevision("family"), family)
+        XCTAssertEqual(model.roomRevision("family-acc"), other)
+        XCTAssertGreaterThan(model.messagesRevision, global, "the room list still hears it")
+    }
+
     func testFailedSendShowsTheReasonAndCanBeRetried() async {
         let (model, _) = await readyModel(joined: false)
         let outcome = await model.send(room: "family", text: "too early")

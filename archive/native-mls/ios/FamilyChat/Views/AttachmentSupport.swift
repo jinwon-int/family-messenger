@@ -48,11 +48,15 @@ enum AttachmentPreparer {
 }
 
 /// 받은 첨부를 공유 시트에 넘길 임시 파일(앱 전용 tmp, 보호 등급 기본). 이름은 웹과 같은 규칙 `attachment-<seq>.<ext>`.
+/// 방마다 하위 폴더 — seq 는 방 안에서만 유일해 두 방의 같은 seq 가 서로 덮어쓰지 않게(#497). 파일 쓰기는 말풍선이 처음 준비될 때
+/// 한 번(`AttachmentPreviewCache`), body 에서 부르지 않는다.
 enum AttachmentExport {
     static func temporaryURL(for record: MessageRecord, bytes override: Data? = nil) -> URL? {
         guard let bytes = override ?? record.attachment else { return nil }
         let name = "attachment-\(record.seq).\(AttachmentFormat.fileExtension(mime: record.body))"
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("hande-share", isDirectory: true).appendingPathComponent(name)
+        let folder = record.room.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "room"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("hande-share", isDirectory: true)
+            .appendingPathComponent(folder, isDirectory: true).appendingPathComponent(name)
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try bytes.write(to: url, options: [.atomic])

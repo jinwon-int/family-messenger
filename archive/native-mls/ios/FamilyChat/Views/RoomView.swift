@@ -39,6 +39,10 @@ struct RoomView: View {
     private static let topSentinelID: Int64 = -3
     /// 과거 글을 붙이는 중(한 번에 한 페이지 — 표지 측정이 연달아 와도 중복 읽기 없음).
     @State private var olderBusy = false
+    /// #497: 위로 읽는 동안 아래에 새 글이 왔다 — 「새 메시지」 버튼(누르면 최하단).
+    @State private var hasNewBelow = false
+    /// #497: 프레임마다 바뀌는 실측·스크롤 명령 합치기(참조 상자 — 바꿔도 body 를 다시 그리지 않는다).
+    @State private var tracking = ScrollTracking()
     /// 꼬리(lazy 아님)에 두는 마지막 행 수. LazyVStack 은 화면 밖 행을 만들지 않아, 긴 마지막 글 아래의 바닥 표지가 생성되지 않으면
     /// 측정 보정이 돌지 않고 `scrollTo` 는 추정 위치(≈ 마지막 글의 시작)에 멈춘다(오너 보고 build 33: family-acc 마지막 글 첫 부분이 맨 아래).
     /// 꼬리는 항상 실제 높이로 존재하므로 표지 측정과 `scrollTo` 가 정확하다.
@@ -97,14 +101,17 @@ struct RoomView: View {
                 .onPreferenceChange(ContentHeightKey.self) { height in
                     let old = contentHeight
                     contentHeight = height
-                    if ScrollFollow.shouldRescrollOnContentGrowth(old: old, new: height, following: followLatest) {
+                    // 애니메이션 스크롤이 도는 동안은 보정을 내지 않는다 — 끝난 뒤 `scrollToLatest` 가 한 번 다시 잰다(#497: 둘이 싸워 흔들렸다).
+                    if !tracking.isAnimating, ScrollFollow.shouldRescrollOnContentGrowth(old: old, new: height, following: followLatest) {
                         scrollToLatest(proxy, animated: false)
                     }
                 }
                 .onPreferenceChange(SentinelBottomKey.self) { bottom in
-                    if ScrollFollow.needsBottomCorrection(sentinelBottom: bottom, viewportHeight: viewportHeight, following: followLatest) {
+                    tracking.sentinelBottom = bottom
+                    if !tracking.isAnimating, ScrollFollow.needsBottomCorrection(sentinelBottom: bottom, viewportHeight: viewportHeight, following: followLatest) {
                         scrollToLatest(proxy, animated: false)
                     }
+                    refollowIfSettledAtBottom()
                 }
                 // #472: 위로 끝까지 올라오면(따라가기가 꺼진 뒤에만) 과거 글 한 페이지를 위에 붙인다.
                 .onPreferenceChange(SentinelTopKey.self) { top in
@@ -114,9 +121,41 @@ struct RoomView: View {
                     }
                 }
                 // 방을 나가면 창을 기본(최신 500건)으로 되돌린다 — 폴링마다 큰 창을 읽지 않는다.
-                .onDisappear { model.resetTimelineWindow(room: room) }
+                // #497: 사진 전체 화면 보기가 떠서 불린 경우는 나간 것이 아니다(닫으면 보던 자리 그대로).
+                .onDisappear {
+                    guard !PhotoViewerPresence.active else { return }
+                    model.resetTimelineWindow(room: room)
+                }
                 // 손가락으로 끌면(위로 읽으러 감) 늦은 이미지 로딩이 화면을 끌어내리지 않게 한다.
-                .simultaneousGesture(DragGesture(minimumDistance: 10).onChanged { _ in followLatest = false })
+                // #497: 손을 떼고 맨 아래에 멈추면 다시 따라간다(`ScrollFollow.shouldRefollow`).
+                .simultaneousGesture(DragGesture(minimumDistance: 10)
+                    .onChanged { _ in
+                        tracking.lastDrag = Date()
+                        if followLatest { followLatest = false }
+                    }
+                    .onEnded { _ in
+                        tracking.lastDrag = Date()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + ScrollFollow.settleDelay + 0.1) { refollowIfSettledAtBottom() }
+                    })
+                // #497: 위로 읽는 중에 새 글이 왔다 — 화면은 그대로 두고 버튼으로 알린다.
+                .overlay(alignment: .bottom) {
+                    if hasNewBelow {
+                        Button {
+                            followLatest = true
+                            hasNewBelow = false
+                            scrollToLatest(proxy, animated: true)
+                        } label: {
+                            Label(Strings.newMessagesBelow, systemImage: "arrow.down")
+                                .font(.footnote.weight(.semibold))
+                                .padding(.horizontal, 14).padding(.vertical, 8)
+                                .background(Capsule().fill(Hande.ember))
+                                .foregroundStyle(Hande.onEmber)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.bottom, 10)
+                        .transition(.opacity)
+                    }
+                }
                 // 키보드가 올라오거나 작성창이 커져 칸이 줄면 최신 메시지를 키보드 바로 위로 다시 맞춘다.
                 .background(GeometryReader { geo in
                     Color.clear.preference(key: ViewportHeightKey.self, value: Double(geo.size.height))
@@ -132,17 +171,36 @@ struct RoomView: View {
                 .onChange(of: composerFocused) { focused in
                     guard focused else { return }
                     followLatest = true
+                    hasNewBelow = false
                     scrollToLatest(proxy, animated: true)
                 }
                 .onAppear {
+                    guard !PhotoViewerPresence.active else { return }
                     reload()
                     followLatest = true
+                    hasNewBelow = false
                     scrollToLatest(proxy, animated: false)
                 }
-                .onChange(of: model.messagesRevision) { _ in
+                // #497: 이 방의 신호만 본다. 새 행이 있을 때만 움직인다 — 내 글은 최하단(부드럽게), 남의 글은 따라가는 중이면
+                // 애니메이션 없이 한 번, 위로 읽는 중이면 「새 메시지」 버튼. 종전엔 어느 방의 신호든 따라가기를 켜고 애니메이션으로 내렸다.
+                .onChange(of: model.roomRevision(room)) { _ in
+                    let before = Set(messages.map(\.id))
                     reload()
-                    followLatest = true
-                    scrollToLatest(proxy, animated: true)
+                    let arrival = ScrollFollow.arrival(before: before, after: messages.map {
+                        (id: $0.id, fromThisDevice: $0.outgoing != nil || $0.record.senderDevice == model.deviceId)
+                    })
+                    switch ScrollFollow.afterReload(following: followLatest, arrival: arrival) {
+                    case .followAnimated:
+                        followLatest = true
+                        hasNewBelow = false
+                        scrollToLatest(proxy, animated: true)
+                    case .follow:
+                        scrollToLatest(proxy, animated: false)
+                    case .markNewBelow:
+                        hasNewBelow = true
+                    case .stay:
+                        break
+                    }
                 }
               }
             }
@@ -314,17 +372,35 @@ struct RoomView: View {
 
     /// 마지막 메시지(seq 최대)로 스크롤한다. `messages` 를 바꾼 직후라 LazyVStack 이 아직 그 행을 배치하지 않았을 수 있으므로
     /// 한 런루프 뒤에 부른다 — 같은 틱에 부르면 앵커가 없어 조용히 무시된다(iOS 16 대상이라 `defaultScrollAnchor` 는 못 쓴다).
+    /// #497: 같은 런루프의 요청(내용 증가·표지 실측·첨부 로딩·새 글)은 **하나**로 합친다 — 하나라도 즉시면 즉시. 애니메이션 스크롤 뒤에는
+    /// 그동안 미룬 보정을 한 번 다시 잰다(애니메이션 중 즉시 보정이 끼어들어 위아래로 흔들렸다).
     private func scrollToLatest(_ proxy: ScrollViewProxy, animated: Bool) {
         // 목표는 높이 1pt 의 최하단 표지(「생각하는 중」 줄이 있으면 그 아래) — 높이 0 인 뷰는 scrollTo 가 끝까지 가지 않는다.
-        guard !messages.isEmpty else { return }
+        guard !messages.isEmpty, tracking.request(animated: animated) else { return }
         let last = Self.bottomSentinelID
+        let animation: TimeInterval = 0.2
         DispatchQueue.main.async {
-            if animated {
-                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .bottom) }
+            if tracking.take() {
+                tracking.animatingUntil = Date().addingTimeInterval(animation + 0.05)
+                withAnimation(.easeOut(duration: animation)) { proxy.scrollTo(last, anchor: .bottom) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + animation + 0.1) {
+                    if ScrollFollow.needsBottomCorrection(sentinelBottom: tracking.sentinelBottom, viewportHeight: viewportHeight,
+                                                          following: followLatest) {
+                        scrollToLatest(proxy, animated: false)
+                    }
+                }
             } else {
                 proxy.scrollTo(last, anchor: .bottom)
             }
         }
+    }
+
+    /// 끌기가 끝나 맨 아래에 멈췄으면 다시 따라간다(#497).
+    private func refollowIfSettledAtBottom() {
+        guard ScrollFollow.shouldRefollow(following: followLatest, sentinelBottom: tracking.sentinelBottom, viewportHeight: viewportHeight,
+                                          sinceDrag: Date().timeIntervalSince(tracking.lastDrag)) else { return }
+        followLatest = true
+        hasNewBelow = false
     }
 
     /// 작성창 글을 보낸다. 암호화 전에 실패하면(동기화 실패·정지 등) 입력을 되돌린다 — 평문은 이 화면만 들고 있다.
@@ -494,46 +570,98 @@ struct MessageRow: View {
 }
 
 /// 첨부 말풍선: 본체는 보일 때 한 번 읽는다(#364 지연 로딩). 이미지는 미리보기(긴 변 ≤220pt), 그 밖은 종류·크기. 둘 다 저장·공유(ShareLink → 임시 파일).
+/// #497: 준비물(축소 비트맵 + 공유 파일)은 `AttachmentPreviewCache` 에 행마다 한 번 — 꼬리↔LazyVStack 경계를 넘어 뷰가 새로 만들어져도
+/// 첫 프레임부터 실제 높이다. body 는 디코드·파일 쓰기를 하지 않는다. 아직 준비 전인 사진은 고정 크기 자리로 높이 변화를 줄인다.
 struct AttachmentBubble: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.displayScale) private var displayScale
     let item: AppModel.TimelineItem
     var onLoaded: () -> Void = {}
-    @State private var data: Data?
-    /// 사진 탭 → 전체 화면 보기(오너 요청 build 30).
+    @State private var preview: AttachmentPreview?
+    /// 사진 탭 → 전체 화면 보기(오너 요청 build 30). 확대용 원본은 누를 때 디코드한다.
+    @State private var viewerImage: UIImage?
     @State private var showViewer = false
+    /// 본체를 끝내 읽지 못했다(재시도 소진) — 「불러오는 중」에 영원히 머물지 않게.
+    @State private var unreadable = false
+
+    /// 로딩 중 사진 자리(4:3 가로). 가로 사진은 높이가 그대로, 세로 사진은 +55pt 만 커진다(종전: 한 줄 → 220pt).
+    static let placeholderSize = CGSize(width: AttachmentThumbnail.maxPoints, height: AttachmentThumbnail.maxPoints * 3 / 4)
+    /// 저장소 읽기 재시도(앱·NSE 가 같은 DB 를 쓸 때 잠깐 잠길 수 있다).
+    static let readAttempts = 3
+
+    init(item: AppModel.TimelineItem, onLoaded: @escaping () -> Void = {}) {
+        self.item = item
+        self.onLoaded = onLoaded
+        _preview = State(initialValue: AttachmentPreviewCache.shared.preview(room: item.record.room, seq: item.record.seq))
+    }
 
     private var message: MessageRecord { item.record }
+    private var isImage: Bool { AttachmentFormat.isImage(mime: message.body) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let data, AttachmentFormat.isImage(mime: message.body), let image = UIImage(data: data) {
-                Image(uiImage: image)
+            if let thumbnail = preview?.thumbnail {
+                Image(uiImage: thumbnail)
                     .resizable()
                     .scaledToFit()
-                    .frame(maxWidth: 220, maxHeight: 220)
+                    .frame(maxWidth: AttachmentThumbnail.maxPoints, maxHeight: AttachmentThumbnail.maxPoints)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .contentShape(RoundedRectangle(cornerRadius: 8))
-                    .onTapGesture { showViewer = true }
+                    .onTapGesture { openViewer() }
                     .accessibilityLabel(Strings.attachmentImage)
                     .accessibilityAddTraits(.isButton)
-                    .fullScreenCover(isPresented: $showViewer) {
-                        ImageViewer(image: image, shareURL: AttachmentExport.temporaryURL(for: message, bytes: data))
-                    }
-            } else if data == nil {
+            } else if preview == nil && !unreadable && isImage {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.primary.opacity(0.06))
+                    .frame(width: Self.placeholderSize.width, height: Self.placeholderSize.height)
+                    .overlay(Text(Strings.attachmentLoading(item.attachmentBytes)).font(.footnote))
+            } else if preview == nil && !unreadable {
                 Text(Strings.attachmentLoading(item.attachmentBytes)).font(.footnote)
             } else {
                 Text(Strings.attachmentFile(item.attachmentBytes, message.body)).font(.footnote)
             }
-            if let data, let url = AttachmentExport.temporaryURL(for: message, bytes: data) {
+            if let url = preview?.shareURL {
                 ShareLink(item: url) { Label(Strings.attachmentSave, systemImage: "square.and.arrow.up") }.font(.caption)
             }
         }
+        .fullScreenCover(isPresented: $showViewer, onDismiss: {
+            // 밑의 방 화면이 다시 나타나는 콜백(onAppear)이 지난 뒤에 내린다.
+            DispatchQueue.main.async { PhotoViewerPresence.active = false }
+        }) {
+            if let viewerImage {
+                // 실제로 떴을 때만 세운다(못 뜨면 onDismiss 도 없어 영영 남는다).
+                ImageViewer(image: viewerImage, shareURL: preview?.shareURL)
+                    .onAppear { PhotoViewerPresence.active = true }
+            }
+        }
         .task(id: message.seq) {
-            guard data == nil else { return }
-            data = model.attachment(room: message.room, seq: message.seq)
-            if data != nil { onLoaded() }
+            guard preview == nil else { return }
+            for attempt in 0..<Self.readAttempts {
+                if let data = model.attachment(room: message.room, seq: message.seq) {
+                    preview = await AttachmentPreviewCache.shared.prepare(record: message, bytes: data, scale: displayScale)
+                    onLoaded()
+                    return
+                }
+                if attempt + 1 < Self.readAttempts { try? await Task.sleep(nanoseconds: 700_000_000) }
+                if Task.isCancelled { return }
+            }
+            unreadable = true
         }
     }
+
+    /// 전체 화면은 확대(최대 4배)가 있어 원본을 디코드한다 — 누를 때 한 번.
+    private func openViewer() {
+        guard let data = model.attachment(room: message.room, seq: message.seq), let image = UIImage(data: data) else { return }
+        viewerImage = image
+        showViewer = true
+    }
+}
+
+/// #497: 전체 화면 사진 보기가 떠 있다. iOS 는 fullScreenCover 를 띄우고 닫을 때 밑의 방 화면에 onDisappear/onAppear 를 부를 수 있다 —
+/// 그때 타임라인 창을 되돌리고(`resetTimelineWindow`) 최하단으로 가면 옛 사진을 보고 닫는 순간 보던 자리를 잃는다.
+@MainActor
+enum PhotoViewerPresence {
+    static var active = false
 }
 
 /// 전체 화면 사진 보기: 검은 바탕 · UIKit 줌(핀치 위치 기준 1~4배, 두 번 탭은 탭 위치로 2.5배/원래, `ZoomableImageView`) · 저장·공유.

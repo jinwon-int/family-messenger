@@ -58,4 +58,53 @@ final class ScrollFollowTests: XCTestCase {
         XCTAssertFalse(ScrollFollow.shouldLoadOlder(sentinelBottom: 12, following: false, busy: false, exhausted: true), "oldest row already shown")
         XCTAssertFalse(ScrollFollow.shouldLoadOlder(sentinelBottom: SentinelTopKey.defaultValue, following: false, busy: false, exhausted: false), "not measured yet")
     }
+
+    // MARK: #497 — 상대 사진 뒤 위·아래 점프 반복
+
+    /// 새로 생긴 행만 본다: 이 기기에서 보낸 글(보내는 중 포함)과 남의 글(내 다른 기기 포함)을 가른다.
+    func testArrivalSeparatesThisDeviceFromOthers() {
+        let before: Set<Int64> = [10, 11]
+        XCTAssertEqual(ScrollFollow.arrival(before: before, after: [(10, false), (11, false)]), .init(), "nothing new")
+        XCTAssertEqual(ScrollFollow.arrival(before: before, after: [(10, false), (11, false), (12, false)]), .init(mine: false, others: true))
+        XCTAssertEqual(ScrollFollow.arrival(before: before, after: [(10, false), (11, false), (-1_000, true)]), .init(mine: true, others: false),
+                       "my outgoing bubble")
+        XCTAssertEqual(ScrollFollow.arrival(before: [10, -1_000], after: [(10, false), (12, true)]), .init(mine: true, others: false),
+                       "outgoing replaced by its record (new seq)")
+        XCTAssertEqual(ScrollFollow.arrival(before: before, after: [(10, false)]), .init(), "a row left the window — not an arrival")
+    }
+
+    /// 내 글은 언제나 최하단(부드럽게) · 남의 글은 따라가는 중이면 즉시 한 번, 위로 읽는 중이면 버튼만 · 새 행이 없으면 아무것도.
+    func testAfterReloadDecision() {
+        XCTAssertEqual(ScrollFollow.afterReload(following: false, arrival: .init(mine: true, others: true)), .followAnimated)
+        XCTAssertEqual(ScrollFollow.afterReload(following: true, arrival: .init(mine: false, others: true)), .follow)
+        XCTAssertEqual(ScrollFollow.afterReload(following: false, arrival: .init(mine: false, others: true)), .markNewBelow,
+                       "reading older messages: a new photo does not pull the view down")
+        XCTAssertEqual(ScrollFollow.afterReload(following: true, arrival: .init()), .stay, "status change only: no scroll command")
+        XCTAssertEqual(ScrollFollow.afterReload(following: false, arrival: .init()), .stay)
+    }
+
+    /// 끌기로 따라가기가 꺼져도 손을 떼고 맨 아래에 멈추면 다시 따라간다 — 끄는 중에는 아니다.
+    func testRefollowOnlyAfterSettlingAtTheBottom() {
+        XCTAssertTrue(ScrollFollow.shouldRefollow(following: false, sentinelBottom: 604, viewportHeight: 620, sinceDrag: 1))
+        XCTAssertTrue(ScrollFollow.shouldRefollow(following: false, sentinelBottom: 640, viewportHeight: 620, sinceDrag: 1), "within nearBottom")
+        XCTAssertFalse(ScrollFollow.shouldRefollow(following: false, sentinelBottom: 604, viewportHeight: 620, sinceDrag: 0.05), "still dragging")
+        XCTAssertFalse(ScrollFollow.shouldRefollow(following: false, sentinelBottom: 900, viewportHeight: 620, sinceDrag: 1), "reading older")
+        XCTAssertFalse(ScrollFollow.shouldRefollow(following: true, sentinelBottom: 604, viewportHeight: 620, sinceDrag: 1), "already following")
+        XCTAssertFalse(ScrollFollow.shouldRefollow(following: false, sentinelBottom: 604, viewportHeight: 0, sinceDrag: 1), "not measured")
+    }
+
+    /// 같은 런루프의 스크롤 요청은 하나 — 하나라도 즉시면 즉시, 꺼낸 뒤에는 다시 받는다.
+    func testScrollRequestsCoalescePerRunLoop() {
+        let tracking = ScrollTracking()
+        XCTAssertTrue(tracking.request(animated: true), "first request schedules")
+        XCTAssertFalse(tracking.request(animated: true), "second one joins")
+        XCTAssertTrue(tracking.take(), "all animated → animated")
+        XCTAssertTrue(tracking.request(animated: true))
+        XCTAssertFalse(tracking.request(animated: false))
+        XCTAssertFalse(tracking.take(), "any immediate → immediate")
+        XCTAssertTrue(tracking.request(animated: false), "taken: a new request schedules again")
+        XCTAssertFalse(tracking.isAnimating)
+        tracking.animatingUntil = Date().addingTimeInterval(10)
+        XCTAssertTrue(tracking.isAnimating)
+    }
 }
