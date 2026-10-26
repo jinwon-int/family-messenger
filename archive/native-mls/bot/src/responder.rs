@@ -51,8 +51,19 @@ pub const DEFAULT_REPLY_MAX_BYTES: usize = 8 * 1024;
 /// (a family room does not need a deep backlog, and the relay keeps the text).
 pub const DEFAULT_QUEUE_MAX: usize = 8;
 /// Watchdog on top of the worker's own `--turn-timeout`: if the child never
-/// reports a result, the bot marks the turn uncertain itself.
-pub const DEFAULT_TURN_SECS: u64 = 1200;
+/// reports a result, the bot marks the turn uncertain itself. Matches the
+/// ccc-node Matrix frontend (owner 2026-10-26): its whole-turn cap is
+/// `CLAUDE_PROCESS_TIMEOUT=21720` s, plus 60 s so the bridge's own timeout
+/// answer lands first. Was 1200 s, which dropped the answers of long turns
+/// (CI waits, deploys) that the bridge was still working on.
+/// Env `NATIVE_MLS_BOT_TURN_SECS` overrides.
+pub const DEFAULT_TURN_SECS: u64 = 21_780;
+/// Turn-age notice (ccc-node `CCC_TURN_AGE_NOTIFY_MIN`/`_RENOTIFY_MIN`, 30/30):
+/// past this age the room gets one notify-only line, repeated every
+/// `DEFAULT_TURN_AGE_RENOTICE_SECS`. Never touches the turn. 0 = off.
+/// Env `NATIVE_MLS_BOT_TURN_AGE_NOTICE_MIN` / `NATIVE_MLS_BOT_TURN_AGE_RENOTICE_MIN`.
+pub const DEFAULT_TURN_AGE_NOTICE_SECS: u64 = 30 * 60;
+pub const DEFAULT_TURN_AGE_RENOTICE_SECS: u64 = 30 * 60;
 /// #474: `interim` messages one turn may post (progress lines between the
 /// owner's message and the answer). Past this the rest of the turn's interims
 /// are dropped — the final `result` still arrives — so a chatty or looping
@@ -91,6 +102,9 @@ pub struct Config {
     pub reply_max_bytes: usize,
     pub queue_max: usize,
     pub turn_secs: u64,
+    /// Turn-age notice threshold / repeat interval in seconds (0 = off / once).
+    pub turn_age_notice_secs: u64,
+    pub turn_age_renotice_secs: u64,
     /// #474: cap on `interim` messages per turn (0 = never post interims).
     pub interim_max: usize,
     /// #423: several agent rooms on one responder. Each `turn` frame then
@@ -111,6 +125,8 @@ impl Config {
             reply_max_bytes: DEFAULT_REPLY_MAX_BYTES,
             queue_max: DEFAULT_QUEUE_MAX,
             turn_secs: DEFAULT_TURN_SECS,
+            turn_age_notice_secs: DEFAULT_TURN_AGE_NOTICE_SECS,
+            turn_age_renotice_secs: DEFAULT_TURN_AGE_RENOTICE_SECS,
             interim_max: DEFAULT_INTERIM_MAX,
             room_frames: false,
             peer_per_min: DEFAULT_PEER_PER_MIN,
@@ -232,12 +248,19 @@ pub struct Responder {
     pending_tool: Option<String>,
     /// #474: `interim` messages already posted for the active turn.
     interim_sent: usize,
+    /// Age of the active turn at which the next turn-age notice is due.
+    age_notice_due: Option<Duration>,
     /// #425: per-room minute windows for peer intake and notices.
     peer_window: HashMap<String, VecDeque<Instant>>,
     notice_window: HashMap<String, VecDeque<Instant>>,
 }
 
 /// #425: one turn-bound item, or its `Suppressed` stand-in for a peer turn.
+/// Turn-age notice line (ccc-node `turn_age_text`, in the room's language).
+pub fn turn_age_text(seq: i64, minutes: u64) -> String {
+    format!("⏱ 요청(#{seq})을 처리한 지 {minutes}분이 지났습니다. 이 알림만으로 진행 중이라고 확정할 수는 없습니다.")
+}
+
 fn turn_item(peer_depth: u8, room: String, item: Outbound) -> Routed {
     if peer_depth == 0 {
         return (room, item);
@@ -343,6 +366,7 @@ impl Responder {
             startup_notices: Vec::new(),
             pending_tool: None,
             interim_sent: 0,
+            age_notice_due: None,
             peer_window: HashMap::new(),
             notice_window: HashMap::new(),
         };
@@ -417,6 +441,16 @@ impl Responder {
                 }
             }
         }
+        // Notify-only turn age (Matrix TurnAgeWatchdog): never ends the turn.
+        if let (Some((turn, started)), Some(due)) = (&self.active, self.age_notice_due) {
+            let elapsed = started.elapsed();
+            if elapsed >= due {
+                let text = turn_age_text(turn.seq, elapsed.as_secs() / 60);
+                out.push(turn_item(turn.peer_depth, turn.room.clone(), Outbound::Interim { seq: turn.seq, text }));
+                let renotice = self.config.turn_age_renotice_secs;
+                self.age_notice_due = (renotice > 0).then(|| elapsed + Duration::from_secs(renotice));
+            }
+        }
         if let Some((turn, started)) = &self.active {
             if started.elapsed() > Duration::from_secs(self.config.turn_secs) {
                 let (seq, room, depth) = (turn.seq, turn.room.clone(), turn.peer_depth);
@@ -444,6 +478,7 @@ impl Responder {
         self.write_inbox(Some(&active))?;
         self.active = Some((active, Instant::now()));
         self.interim_sent = 0;
+        self.age_notice_due = (self.config.turn_age_notice_secs > 0).then(|| Duration::from_secs(self.config.turn_age_notice_secs));
         let mut frame = serde_json::json!({
             "type": "turn",
             "turn_id": turn_id,
@@ -1321,6 +1356,41 @@ for line in f:
         let got = pump_until(&mut r, 2);
         assert!(got.iter().any(|o| *o == Outbound::Uncertain { seq: 7, reason: "watchdog".into() }), "{got:?}");
         assert!(r.active.is_none());
+    }
+
+    #[test]
+    fn default_turn_limits_match_matrix() {
+        let c = Config::new(Transport::Argv(vec!["true".into()]), "owner".into());
+        assert_eq!((c.turn_secs, c.turn_age_notice_secs, c.turn_age_renotice_secs), (21_780, 1800, 1800));
+    }
+
+    #[test]
+    fn turn_age_notice_is_notify_only() {
+        let mut r = fake(|c| { c.turn_age_notice_secs = 3600; c.turn_age_renotice_secs = 3600; }, None);
+        r.offer(inbound(8, "owner-pc", "ask: never answered")).unwrap();
+        // Pull the first notice forward instead of sleeping an hour.
+        r.age_notice_due = Some(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(50));
+        let is_notice = |o: &Outbound| matches!(o, Outbound::Interim { seq: 8, text } if text.starts_with("⏱ 요청(#8)"));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut got = Vec::new();
+        while !got.iter().any(is_notice) && Instant::now() < deadline {
+            got.extend(r.pump().unwrap_or_else(|e| panic!("pump: {e}")));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let notices: Vec<_> = got.iter().filter(|o| is_notice(o)).collect();
+        assert_eq!(notices.len(), 1, "{got:?}");
+        assert!(r.active.is_some(), "age notice must not end the turn");
+        // Next one is an hour away: a second pump posts nothing new.
+        let again = r.pump().unwrap();
+        assert!(!again.iter().any(|o| matches!(o, Outbound::Interim { seq: 8, .. })), "{again:?}");
+    }
+
+    #[test]
+    fn turn_age_notice_off_at_zero() {
+        let mut r = fake(|c| c.turn_age_notice_secs = 0, None);
+        r.offer(inbound(9, "owner-pc", "ask: never answered")).unwrap();
+        assert!(r.age_notice_due.is_none());
     }
 
     fn pump_routed_until(r: &mut Responder, want: usize) -> Vec<Routed> {
