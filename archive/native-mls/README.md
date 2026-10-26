@@ -74,6 +74,31 @@ Welcome 타깃 필터링, 바이트 기준 보존/프루닝, `BEGIN IMMEDIATE`(`
 
 같은 결정으로 기기당 방 생성 상한 `RoomsMaxPerDevice`는 16 → **32**.
 
+### 첨부 blob 저장소 (file-v2 1단계, #499)
+
+지금까지 첨부는 파일 원본 바이트를 MLS application 메시지 하나에 통째로 실었다(#364, ≤ 5 MiB) — 릴레이 이벤트·전
+기기 동기화·브라우저 워커 장부·iOS NSE가 모두 원본 크기를 지나갔다(#371·#495·#496). file-v2는 Matrix의
+"Sending encrypted attachments"처럼 파일을 MLS 경로 밖으로 뺀다: 보내는 기기가 파일마다 새 키로 암호화
+(AES-256-GCM, 클라이언트)해 **암호문만** 여기 올리고, MLS 메시지(`client_id = file-v2-<uuid>`, 2단계)에는 blob id·키·
+nonce·sha256만 담는다. **릴레이는 키를 보지 않는다** — blob 단독으로는 불투명한 암호문이고, 릴레이가 아는 것은 이벤트와
+같은 크기·시각·게시 기기뿐이다. 라우트 2개(`server/blobs.go`, 테이블 `mls_blobs`, 파일 `<data-dir>/blobs/<room>/<id>`):
+
+- `POST /v2/rooms/{room}/blobs?device=` — 본문 = **원시 암호문 바이트**(JSON·base64 아님). 상한 **50 MiB + 64 KiB**
+  (`maxBlobBytes`, 초과 413 `blob_too_large`; JSON 본문 한도 `maxBodyBytes`와 별개), 빈 본문 400 `empty_body`.
+  id = 받은 바이트의 소문자 hex sha256(내용 주소). 응답 `{"id","size"}` — 새로 저장 201, 같은 방에 이미 있으면 200(재시도 멱등).
+- `GET /v2/rooms/{room}/blobs/{id}?device=` — 같은 바이트(`application/octet-stream`, `Cache-Control: no-store`,
+  `nosniff`, Range 지원). id 형식 위반 400 `bad_blob_id`, 없음 404 `no_such_blob`.
+- **공통 게이트**(이벤트 라우트와 동일): JWT 인증 + `device`를 `sub`에 묶음(403 `device_subject_mismatch`, 본문을 읽기 전),
+  application 이벤트와 같은 멤버십(정책 활성 + 시드된 방이면 추적 멤버, 403 `not_a_member`/`device_not_allowed`, 트랜잭션
+  안에서 재확인). **이미 있는 방만**(404 `no_such_room`, 방 행을 만들지 않음), 닫힌 방 410 `room_closed`.
+- **상한**: blob 바이트는 이벤트 바이트와 **같은** `RoomBytesCap`(방 1 GiB)·`DeviceBytesCap`(기기 4 GiB)으로 센다
+  (413 `room_bytes_cap`/`device_bytes_cap`).
+- **보존**: `AppEventTTLSeconds`(30일)가 지나고 방의 모든 리더 커서가 업로드 시점의 방 seq(`after_seq`)를 지나면 삭제
+  (참조하는 file-v2 메시지는 업로드 뒤에만 올 수 있다), 리더가 ack하지 않아도 **2×TTL**에는 무조건 삭제. 방을 닫으면 즉시 삭제.
+  행은 쓰기 트랜잭션(prune·close)에서 지우고, 파일은 행 없는 파일·1시간 넘은 업로드 임시 파일을 지우는 스윕
+  (기동 시·10분마다·close 직후)이 지운다. `-reset-room`도 방의 blob 행·파일을 지운다(출력에 `blobs=N`).
+- 전송 시간: 두 라우트만 서버 Read/WriteTimeout 대신 10분 기한을 쓴다(휴대폰 회선의 50 MiB).
+
 ## tests/
 
 | 파일 | 대상 | 서버 필요 |

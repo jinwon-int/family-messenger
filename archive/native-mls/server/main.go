@@ -152,6 +152,8 @@ func main() {
 	}
 
 	relay := &relay{db: db, policy: pol, devices: devices, access: access}
+	// #499: blob expiry backstop + orphan/temp file sweep, now and periodically.
+	go relay.runBlobSweeper()
 	if *apnsTopics != "" {
 		relay.pushTopics = map[string]bool{}
 		for _, t := range strings.Split(*apnsTopics, ",") {

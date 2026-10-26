@@ -42,6 +42,8 @@ var errStoreLocked = errors.New("data dir is locked by another process (is the r
 type store struct {
 	*sql.DB
 	lock *os.File
+	// dir is the -data-dir; the blob store (#499, blobs.go) lives under it.
+	dir string
 }
 
 func (s *store) Close() error {
@@ -148,6 +150,16 @@ CREATE TABLE IF NOT EXISTS push_devices (
 	topic      TEXT NOT NULL,
 	updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS mls_blobs (
+	room       TEXT NOT NULL REFERENCES mls_rooms(room),
+	id         TEXT NOT NULL,
+	device     TEXT NOT NULL,
+	size       INTEGER NOT NULL,
+	after_seq  INTEGER NOT NULL,
+	created_at INTEGER NOT NULL,
+	PRIMARY KEY (room, id)
+);
+CREATE INDEX IF NOT EXISTS mls_blobs_device ON mls_blobs(device);
 `
 
 func openStore(dataDir string) (*store, error) {
@@ -163,6 +175,10 @@ func openStore(dataDir string) (*store, error) {
 		return nil, err
 	}
 	if err := migrate(st.DB); err != nil {
+		st.Close()
+		return nil, err
+	}
+	if err := prepareBlobDir(dataDir); err != nil {
 		st.Close()
 		return nil, err
 	}
@@ -188,7 +204,7 @@ func openStoreRaw(dataDir string, readOnly bool) (*store, error) {
 		lock.Close()
 		return nil, err
 	}
-	st := &store{DB: db, lock: lock}
+	st := &store{DB: db, lock: lock, dir: dataDir}
 	// One connection: with _txlock=immediate every Begin takes the write
 	// lock, and busy_timeout covers an external reader; the relay mutex on
 	// top means the process never races itself.
@@ -382,6 +398,11 @@ func closeRoom(db *sql.DB, room, device string, active map[string]devicepolicy.D
 	if _, err := tx.Exec(`UPDATE mls_rooms SET closed_at = ? WHERE room = ? AND closed_at IS NULL`, now, room); err != nil {
 		return err
 	}
+	// #499: a closed room's blobs are unreachable (410) — drop the rows now;
+	// closeRoomDB's sweep removes the files.
+	if _, err := tx.Exec(`DELETE FROM mls_blobs WHERE room = ?`, room); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`DELETE FROM mls_keypackages WHERE expires_at <= ?`, now); err != nil {
 		return err
 	}
@@ -399,7 +420,13 @@ func (s *relay) closeRoomDB(room, device string, now int64) error {
 	if err != nil {
 		return err
 	}
-	return closeRoom(s.db.DB, room, device, active, active != nil, now)
+	if err := closeRoom(s.db.DB, room, device, active, active != nil, now); err != nil {
+		return err
+	}
+	if _, err := s.sweepBlobsLocked(time.Unix(now, 0)); err != nil {
+		log.Printf("close room=%s: blob sweep: %v", room, err)
+	}
+	return nil
 }
 
 // storeEvent appends one event under CAS discipline. Body validation happened
@@ -501,23 +528,24 @@ func (s *relay) storeEvent(room string, ev eventInput) (storedEvent, error) {
 	// -reset-room as the only way out. Commits stay bounded without the cap —
 	// each one advances the epoch and the epoch retention window prunes them.
 	if ev.kind != "commit" {
-		var used sql.NullInt64
-		if err := tx.QueryRow(`SELECT SUM(LENGTH(bytes)) FROM mls_events WHERE room = ?`, room).Scan(&used); err != nil {
+		// #499: blob bytes count toward the same caps (blobs.go).
+		used, err := roomStoredBytes(tx, room)
+		if err != nil {
 			return storedEvent{}, err
 		}
-		if s.policy.RoomBytesCap > 0 && used.Int64+int64(len(ev.bytes)) > s.policy.RoomBytesCap {
-			return storedEvent{}, roomBytesCap{used.Int64, s.policy.RoomBytesCap}
+		if s.policy.RoomBytesCap > 0 && used+int64(len(ev.bytes)) > s.policy.RoomBytesCap {
+			return storedEvent{}, roomBytesCap{used, s.policy.RoomBytesCap}
 		}
 		// G-M4: the fleet bound for the sender — its stored event bytes
 		// across every room (closed rooms included: the bytes are still on
 		// disk), so spreading many small rooms cannot outrun the per-room
 		// cap. The mls_events(device) index keeps this off the full table.
-		var usedDevice sql.NullInt64
-		if err := tx.QueryRow(`SELECT SUM(LENGTH(bytes)) FROM mls_events WHERE device = ?`, ev.device).Scan(&usedDevice); err != nil {
+		usedDevice, err := deviceStoredBytes(tx, ev.device)
+		if err != nil {
 			return storedEvent{}, err
 		}
-		if s.policy.DeviceBytesCap > 0 && usedDevice.Int64+int64(len(ev.bytes)) > s.policy.DeviceBytesCap {
-			return storedEvent{}, deviceBytesCap{usedDevice.Int64, s.policy.DeviceBytesCap}
+		if s.policy.DeviceBytesCap > 0 && usedDevice+int64(len(ev.bytes)) > s.policy.DeviceBytesCap {
+			return storedEvent{}, deviceBytesCap{usedDevice, s.policy.DeviceBytesCap}
 		}
 	}
 	var targets sql.NullString
@@ -1263,6 +1291,10 @@ func (s *relay) prune(tx *sql.Tx, room string, epoch int64, now int64, active ma
 	// cap, G-H2) forever: such a reader needs a new Welcome anyway.
 	var minCursor sql.NullInt64
 	if err := tx.QueryRow(`SELECT MIN(seq) FROM mls_cursors WHERE room = ?`, room).Scan(&minCursor); err != nil {
+		return err
+	}
+	// #499: expired blob rows (files go in the next sweep, blobs.go).
+	if err := s.pruneBlobs(tx, room, now, minCursor); err != nil {
 		return err
 	}
 	if minCursor.Valid {
