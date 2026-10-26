@@ -106,3 +106,12 @@ test('safeFileName keeps the last segment and refuses control chars, dot names a
   assert.equal(safeFileName('C:\\Users\\x\\a.txt'), 'a.txt');
   for (const bad of ['', '.', '..', '.bashrc', 'a\u0000b', 'dir/', 'x'.repeat(256), null, 5]) assert.equal(safeFileName(bad), null, String(bad));
 });
+
+test('safeFileName refuses bidirectional controls (extension spoofing), descriptor stays valid', () => {
+  for (const name of ['photo‮gpj.exe', 'a‭b.png', 'x⁦y.jpg', 'x⁩.jpg', 'x‏.jpg', 'x؜.jpg']) {
+    assert.equal(safeFileName(name), null, JSON.stringify(name));
+  }
+  assert.equal(safeFileName('가족👨‍👩‍👧.jpg'), '가족👨‍👩‍👧.jpg');   // ZWJ emoji is not a bidi control
+  const d = parseDescriptor(JSON.stringify({v: 2, blob: 'a'.repeat(64), size: 1, key: 'A'.repeat(43), nonce: 'A'.repeat(16), name: 'photo‮gpj.exe'}));
+  assert.equal(d.name, 'photo‮gpj.exe');
+});

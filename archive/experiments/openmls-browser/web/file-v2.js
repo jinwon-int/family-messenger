@@ -31,6 +31,10 @@ const BLOB_ID = /^[0-9a-f]{64}$/;
 const MIME = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,63}\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,63}$/;
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+// Bidirectional controls let a sender disguise an extension in the saved name
+// ("photo\u202Egpj.exe" displays as "photoexe.jpg"); a download name containing
+// any of them is not used (the generated name is). Descriptors stay valid.
+const BIDI = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
 const utf8 = new TextEncoder();
 const fail = reason => { const e = new Error(`file-v2 descriptor rejected: ${reason}`); e.fileV2 = reason; throw e; };
 
@@ -156,7 +160,7 @@ export async function decryptFile(ciphertext, descriptor, {crypto} = {}) {
  * taken from the sender (attachment-view.js sniffs content).
  */
 export function safeFileName(name) {
-  if (typeof name !== 'string' || CONTROL.test(name)) return null;
+  if (typeof name !== 'string' || CONTROL.test(name) || BIDI.test(name)) return null;
   const base = name.split(/[\\/]/).pop().trim();
   if (!base || /^\.+$/.test(base) || base.startsWith('.') || [...base].length > 255) return null;
   return base;
