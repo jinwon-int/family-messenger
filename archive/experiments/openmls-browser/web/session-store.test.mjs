@@ -112,3 +112,39 @@ test('rejectionDetail keeps fixed reasons, names and frames, and drops free text
   const deep = new Error('rejected'); deep.cause = Object.assign(new Error('rejected'), {cause: new Error('rejected')});
   assert.equal(rejectionDetail(deep).inner.inner, undefined);
 });
+
+// 2026-10-26: a ledger item carrying a ~4 MB attachment made every meta read throw —
+// decodeMeta's /^([0-9a-f]{2})*$/ overflowed V8's regexp backtrack stack (RangeError) —
+// so the room store could no longer decrypt, encrypt, ack or even reopen.
+test('hex/fromHex fast paths return exactly what the original expressions return', async () => {
+  const {hex, fromHex, hexBytes} = await import('./session-store.js');
+  const oldHex = bytes => Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+  const oldFromHex = s => new Uint8Array((s.match(/../g) ?? []).map(x => parseInt(x, 16)));
+  const all = Uint8Array.from({length: 256}, (_, i) => i);
+  for (const bytes of [new Uint8Array(0), all, Uint8Array.from({length: 4099}, (_, i) => (i * 131 + 7) & 255)]) {
+    assert.equal(hex(bytes), oldHex(bytes));
+    assert.deepEqual(fromHex(oldHex(bytes)), oldFromHex(oldHex(bytes)));
+  }
+  assert.equal(hex([1, 255, 16]), oldHex([1, 255, 16]));                       // plain arrays: original path
+  for (const s of ['', 'abc', 'ABCD', '0g', 'zz12', 'ffée', '1 2 ']) {   // odd/upper/malformed: original semantics
+    assert.deepEqual(fromHex(s), oldFromHex(s), JSON.stringify(s));
+  }
+  assert.equal(hexBytes('ABCD'), null); assert.equal(hexBytes('abc'), null); assert.equal(hexBytes(7), null);
+  assert.deepEqual(hexBytes(''), new Uint8Array(0));
+});
+
+test('meta with a MAX_WIRE-sized ledger field round-trips (no RangeError), malformed $b still fails', async () => {
+  const {encodeMeta, decodeMeta} = await import('./session-store.js');
+  const big = Uint8Array.from({length: MAX_WIRE}, (_, i) => (i * 31 + 3) & 255);
+  // The original validator throws at this size — the failure this test pins down.
+  assert.throws(() => /^([0-9a-f]{2})*$/.test('ab'.repeat(MAX_WIRE)), RangeError);
+  const meta = decodeMeta(encodeMeta({ledger: [{input: big, output: big.subarray(0, 1024)}], tag: new Uint8Array([1, 2])}));
+  assert.equal(meta.ledger[0].input.length, MAX_WIRE);
+  assert.ok(meta.ledger[0].input.every((v, i) => v === big[i]));
+  assert.deepEqual(meta.tag, new Uint8Array([1, 2]));
+  const utf8 = s => new TextEncoder().encode(s);
+  for (const bad of ['{"x":{"$b":"abc"}}', '{"x":{"$b":"ABCD"}}', '{"x":{"$b":12}}', '{"x":{"$b":"ab","y":1}}', '{"x":{"$b":"0g"}}']) {
+    assert.throws(() => decodeMeta(utf8(bad)), /rejected/, bad);
+  }
+  assert.deepEqual(decodeMeta(utf8('{"x":{"$b":""}}')).x, new Uint8Array(0));
+});
