@@ -6,7 +6,7 @@
 // (owner actors join automatically, family devices accept with one tap — iOS
 // AppModel.discoverLobbyWelcomes / acceptInvite).
 import * as ui from './ui.js';
-import {strings, displayName, isAgentDevice, isMine, roomLabel, previewLine, relativeTime} from './strings.js';
+import {strings, displayName, isAgentDevice, isMine, isOneToOne, roomLabel, previewLine, relativeTime} from './strings.js';
 import {orderRooms, moveRoom, readRoomOrder, writeRoomOrder} from './room-order.js';
 import {readDraft, writeDraft} from './drafts.js';
 import {createWorkerBridge} from './worker-bridge.js';
@@ -80,7 +80,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     // 미리보기: 마크다운 기호를 걷어낸 한 줄, 첨부는 [사진]/[파일](내용 판별 결과) — 패밀리챗 목록과 같은 모양(#480 A).
     const body = last ? (last.kind === 'attachment' ? (last.image ? strings.rooms.photoPreview : strings.rooms.filePreview) : last.body) : '';
     return {roomId, name: roomLabel(roomId), emoji: halted ? '🪵' : '🔥',
-      preview: last ? previewLine(last.senderName, body) : (S.joined ? strings.rooms.noMessages : strings.room.notJoined),
+      // 1:1 방은 상대가 한 명뿐이라 「이름: 」 접두를 빼고 내용만(2026-10-26 오너).
+      preview: last ? previewLine(isOneToOne(S.roster) ? '' : last.senderName, body) : (S.joined ? strings.rooms.noMessages : strings.room.notJoined),
       time: last?.ts ? relativeTime(last.ts, Date.now()) : '', unread: R.unread && !(app.roomOpen && app.current === roomId),
       state: halted ? 'halted' : S.joined ? 'joined' : 'pending', hasAgent: S.roster.some(isAgentDevice), members: S.roster.length, order: R.order};
   }
