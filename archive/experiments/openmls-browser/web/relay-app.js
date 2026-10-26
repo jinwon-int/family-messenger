@@ -13,6 +13,12 @@ import {attachmentOutbox, isAttachment} from './relay-attachments.js';
 const $ = id => document.getElementById(id);
 const utf8 = new TextEncoder(), decoder = new TextDecoder();
 const ID = /^[A-Za-z0-9_-]{1,64}$/;        // relay identifier (device, room, client_id)
+// #499 file-v2 (archive/native-mls/FILE-V2.md): the plaintext is a JSON descriptor that
+// carries the file's decryption key. This legacy client does not implement file-v2, so it
+// must never show or store that text — only a one-line notice. A local pattern on purpose:
+// the /app/ deploy does not ship file-v2.js.
+const FILE_V2 = /^file-v2-[a-f0-9-]{36}$/;
+const FILE_V2_NOTICE = '📎 첨부(새 형식) — 한데 앱에서 열 수 있습니다';
 const ROOM = /^[a-z0-9-]{1,64}$/;          // worker room charset (subset of the relay's)
 const DB = /^family-mls-synthetic-[a-z0-9-]{1,64}$/;
 const b64 = bytes => {
@@ -295,6 +301,9 @@ async function sync({quiet = false} = {}) {
         const bytes = new Uint8Array(out.output);
         showAttachment(sender, bytes.length, ev.seq, async () => bytes);
         await remember({seq: ev.seq, sender, client, kind: 'attachment', text: '', bytes: Array.from(bytes)});
+      } else if (FILE_V2.test(ev.client_id)) {
+        showMessage(sender, out.client, FILE_V2_NOTICE, ev.seq, out.replay);
+        await remember({seq: ev.seq, sender, client, kind: 'text', text: FILE_V2_NOTICE, bytes: []});
       } else {
         const text = decoder.decode(new Uint8Array(out.output));
         showMessage(sender, out.client, text, ev.seq, out.replay);
