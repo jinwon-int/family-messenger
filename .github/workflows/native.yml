@@ -59,15 +59,27 @@ jobs:
         # stalled for 7m44s inside apt-get (fonts from the Azure Ubuntu mirror)
         # and tripped the 10-minute job timeout (#243). Bound each attempt and
         # retry instead of letting one stalled mirror fail the gate.
-        timeout-minutes: 8
+        # 2026-10-26 (#510): the retry itself then failed in merge queues — `--with-deps`
+        # runs `sudo apt-get`, which `timeout` (runner user) cannot kill, so a stalled first
+        # attempt kept /var/lib/dpkg/lock-frontend and attempts 2–3 failed at once
+        # ("Could not get lock … held by process N (apt-get)"). Now: apt waits for the lock,
+        # the root-side system deps run under a root `timeout`, a failed attempt clears any
+        # leftover apt/dpkg before the next one, and the step budget covers three attempts.
+        timeout-minutes: 15
         run: |
           set -euo pipefail
+          echo 'DPkg::Lock::Timeout "120";' | sudo tee /etc/apt/apt.conf.d/99-dpkg-lock-timeout >/dev/null
+          py="$(command -v python)"
           for attempt in 1 2 3; do
-            if timeout 150 python -m pip install -r requirements-native-test.txt \
-               && timeout 150 python -m playwright install --with-deps chromium; then
+            if timeout 150 "$py" -m pip install -r requirements-native-test.txt \
+               && timeout 150 "$py" -m playwright install chromium \
+               && sudo timeout --kill-after=15 180 "$py" -m playwright install-deps chromium; then
               exit 0
             fi
-            echo "::warning::browser test tool install attempt ${attempt} failed or stalled; retrying"
+            echo "::warning::browser test tool install attempt ${attempt} failed or stalled; clearing apt/dpkg and retrying"
+            sudo pkill -9 -x apt-get || true
+            sudo pkill -9 -x dpkg || true
+            sudo dpkg --configure -a || true
             sleep 10
           done
           echo "::error::browser test tool install failed after 3 attempts"
