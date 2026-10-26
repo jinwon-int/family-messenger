@@ -33,8 +33,13 @@ export function shouldPreview(entry) {
  * 저장 파일명·MIME. `type` 은 imageType() 결과(내용 판별)만 넘긴다 — 판별된 이미지는
  * `attachment-<seq>.<jpg|png|gif|webp>` + 그 MIME, 그 밖은 `attachment-<seq>.bin` + 불활성 MIME.
  */
-export function downloadSpec(seq, type) {
+export function downloadSpec(seq, type, fileName = null) {
   const ext = EXTENSION[type];
   const stem = `attachment-${Number.isSafeInteger(seq) ? seq : 'x'}`;
-  return ext ? {name: `${stem}.${ext}`, type} : {name: `${stem}.bin`, type: INERT_TYPE};
+  const spec = ext ? {name: `${stem}.${ext}`, type} : {name: `${stem}.bin`, type: INERT_TYPE};
+  // file-v2 (#499): the sender may name the file. A name already reduced by file-v2.js
+  // safeFileName() (last path segment, no control chars, not dot-led) replaces the generated
+  // one; the MIME stays the sniffed type or the inert one — never the sender's.
+  if (typeof fileName === 'string' && fileName && !/[\\/\u0000-\u001f\u007f]/.test(fileName) && !fileName.startsWith('.')) spec.name = fileName;
+  return spec;
 }

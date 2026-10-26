@@ -229,3 +229,65 @@ test('describeRejection / refused: worker detail is shown, malformed detail is d
   assert.equal(describeRejection({detail: 'rejected'}), '');
   assert.match(refused('open_room', {ok: false, detail: {reason: 'record key rejected'}}).message, /^open_room 거부 \(record key rejected\)$/);
 });
+
+// #499 file-v2: the MLS message carries only the descriptor; the blob is fetched, verified and
+// decrypted lazily; history keeps the descriptor, never the bytes; a bad descriptor is never text.
+test('file-v2 event: descriptor-only history row, lazy blob load verified + decrypted, retry after failure', async () => {
+  const {encryptFile, encodeDescriptor} = await import('../file-v2.js');
+  const photo = Uint8Array.from({length: 3000}, (_, i) => (i * 7) & 255);
+  const enc = await encryptFile(photo);
+  const desc = encodeDescriptor({blob: enc.blob, size: enc.size, key: enc.key, nonce: enc.nonce, name: '../사진.jpg'});
+  const {bridge, w} = fakeWorker({fresh: false, group: ['owner-pc', 'owner-web-aaaaaa'], decrypt: () => ({sender: 'owner-pc', client: 'owner-pc'})});
+  const events = [
+    {seq: 6, device: 'owner-pc', kind: 'application', epoch: 3, bytes: b64(Array.from(utf8.encode(desc))), client_id: 'file-v2-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2', created_at: 1700000006},
+    {seq: 7, device: 'owner-pc', kind: 'application', epoch: 3, bytes: b64(Array.from(utf8.encode('{"v":2,"blob":"zz"}'))), client_id: 'file-v2-1f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2', created_at: 1700000007},
+  ];
+  const relay = fakeRelay((m, path) => {
+    if (path.includes('ack=')) return {status: 200, body: {epoch: 3, events: [], cursor: 7, members: []}};
+    return {status: 200, body: {epoch: 3, revision: 1, events, cursor: 5, first_seq: 1, members: []}};
+  });
+  let blobCalls = 0, failNext = true;
+  relay.blob = async (room, id, device) => {
+    blobCalls++;
+    assert.deepEqual([room, id, device], ['family', enc.blob, 'owner-web-aaaaaa']);
+    if (failNext) { failNext = false; const e = new Error('blob 404 no_such_blob'); e.status = 404; throw e; }
+    return enc.ciphertext;
+  };
+  const storage = memStorage();
+  storage.setItem('hande:room:family:owner-web-aaaaaa:family-mls-synthetic-hande-family', JSON.stringify({joined: true, relaySeq: 5, epoch: 3, roster: ['owner-pc', 'owner-web-aaaaaa']}));
+  const {s, events: ev} = session({worker: bridge, relay, storage});
+  await s.open(); await s.activate();
+  const att = ev.messages.find(x => x.kind === 'attachment' && x.seq === 6);
+  assert.ok(att, 'file-v2 shows as an attachment entry');
+  assert.equal(att.size, photo.length); assert.equal(att.fileName, '사진.jpg', 'sender name reduced to a safe last segment');
+  assert.equal(blobCalls, 0, 'nothing fetched until the timeline asks');
+  await assert.rejects(() => att.load(), /no_such_blob/);
+  assert.deepEqual(await att.load(), photo, 'a failed load is retried on the next ask');
+  assert.deepEqual(await att.load(), photo); assert.equal(blobCalls, 2, 'success is cached');
+  // History: descriptor only, no bytes; the bad descriptor is neither text nor history.
+  const rows = w.history.filter(r => r.seq === 6 || r.seq === 7);
+  assert.deepEqual(rows.map(r => [r.seq, r.kind, r.bytes.length]), [[6, 'file-v2', 0]]);
+  assert.equal(rows[0].text, desc);
+  assert.ok(ev.messages.some(x => x.kind === 'undecryptable' && x.seq === 7), 'invalid descriptor → unopenable, never text');
+  assert.ok(!ev.messages.some(x => x.kind === 'text' && x.seq === 7));
+  assert.equal(s.state.relaySeq, 7, 'both acked — the MLS messages were processed');
+});
+
+test('file-v2 history restore: descriptor rows become lazy attachments again', async () => {
+  const {encryptFile, encodeDescriptor} = await import('../file-v2.js');
+  const enc = await encryptFile(new Uint8Array([1, 2, 3, 4]));
+  const desc = encodeDescriptor({blob: enc.blob, size: enc.size, key: enc.key, nonce: enc.nonce});
+  const {bridge, w} = fakeWorker({fresh: false, group: ['owner-pc', 'owner-web-aaaaaa']});
+  w.history.push({seq: 9, sender: 'owner-pc', client: '', kind: 'file-v2', text: desc, bytes: []},
+    {seq: 10, sender: 'owner-pc', client: '', kind: 'file-v2', text: '{"v":2}', bytes: []});
+  const relay = fakeRelay(() => ({status: 200, body: {epoch: 3, events: [], cursor: 10, members: []}}));
+  relay.blob = async () => enc.ciphertext;
+  const storage = memStorage();
+  storage.setItem('hande:room:family:owner-web-aaaaaa:family-mls-synthetic-hande-family', JSON.stringify({joined: true, relaySeq: 10, epoch: 3, roster: ['owner-pc', 'owner-web-aaaaaa']}));
+  const {s, events: ev} = session({worker: bridge, relay, storage});
+  await s.open(); await s.activate();
+  const att = ev.messages.find(x => x.kind === 'attachment' && x.seq === 9);
+  assert.ok(att); assert.deepEqual(await att.load(), new Uint8Array([1, 2, 3, 4]));
+  assert.ok(ev.messages.some(x => x.kind === 'undecryptable' && x.seq === 10));
+  assert.ok(!ev.messages.some(x => x.kind === 'text'));
+});

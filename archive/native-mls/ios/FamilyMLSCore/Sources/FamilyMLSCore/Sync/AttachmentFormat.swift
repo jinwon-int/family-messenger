@@ -4,6 +4,8 @@
 //   첨부인지는 릴레이 행의 바깥 `client_id` 가 `file-v1-<uuid(소문자)>` 인지로만 판단한다 — 표시 힌트일 뿐 인증 정보가 아니다.
 //   MLS AAD 의 client_id 는 여전히 기기 ID 다(파사드 H1). 웹은 정규식에 안 맞으면 바이트를 UTF-8 텍스트로 풀어 보이므로 접두사·대소문자가 정확해야 한다.
 //
+// 분리 첨부 file-v2(`file-v2-<uuid>`, 파일은 릴레이 blob 저장소·MLS 에는 설명자만, #499)는 archive/native-mls/FILE-V2.md 가 정본 — 이 파일은 v1 규칙이다.
+//
 // 수신 쪽 표시 메타(`MessageRecord.body`)는 메타데이터가 없으니 **매직 바이트로 추정한 MIME** 을 넣는다 — NSE 의 「사진」/「파일」 판정이 이 값을 읽는다.
 import Foundation
 

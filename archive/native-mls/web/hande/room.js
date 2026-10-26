@@ -13,6 +13,7 @@
 // lobby store when the room's Welcome was built from a lobby key package).
 import {parseStageReport, checkCommit, outerForCommit, resolveUncertainPending} from './commit-policy.js';
 import {attachmentOutbox, isAttachment} from './relay-attachments.js';
+import {isFileV2, parseDescriptor, decryptFile, safeFileName} from './file-v2.js';
 import {strings} from './strings.js';
 import {actorOf, DEVICE} from './identity.js';
 
@@ -157,15 +158,34 @@ export function createRoomSession({room, device, database, worker, relay, storag
     for (const r of rows) {
       const ts = Number.isSafeInteger(r.received_at) ? r.received_at : null;
       if (r.kind === 'attachment') emitAttachment(r.sender, r.size, r.seq, ts, async () => new Uint8Array((await callWorker('history_get', {seq: r.seq})).bytes));
-      else emitText(r.sender, r.client, r.text, r.seq, ts, false);
+      else if (r.kind === 'file-v2') {
+        const d = descriptorOf(r.text);
+        if (d) emitFileV2(r.sender, d, r.seq, ts);
+        else emitUndecryptable({seq: r.seq, device: r.sender, created_at: Number.isSafeInteger(ts) ? Math.floor(ts / 1000) : undefined});
+      } else emitText(r.sender, r.client, r.text, r.seq, ts, false);
     }
     return rows.length;
   }
   function emitText(sender, client, text, seq, ts, replay) {
     on.message?.({kind: 'text', seq, sender, client: client ?? '', text, ts, replay: !!replay});
   }
-  function emitAttachment(sender, size, seq, ts, loadBytes) {
-    on.message?.({kind: 'attachment', seq, sender, client: '', text: '', size, ts, load: loadBytes});
+  function emitAttachment(sender, size, seq, ts, loadBytes, fileName = null) {
+    on.message?.({kind: 'attachment', seq, sender, client: '', text: '', size, ts, load: loadBytes, fileName});
+  }
+  // ---- file-v2 (#499, FILE-V2.md): the MLS message carries only the descriptor ----
+  function descriptorOf(text) {
+    try { return parseDescriptor(text); } catch (_) { return null; }
+  }
+  /** A file-v2 attachment entry: the blob is fetched, verified and decrypted only when the
+   *  timeline asks (preview or download). A failure rejects that load and is retried on the next
+   *  ask; success is cached for this entry. */
+  function emitFileV2(sender, d, seq, ts) {
+    let pending = null;
+    const load = () => {
+      pending ??= (async () => decryptFile(await relay.blob(room, d.blob, device), d))();
+      return pending.catch(error => { pending = null; log(strings.room.fileV2Failed(seq), error.message); throw error; });
+    };
+    emitAttachment(sender, d.size, seq, ts, load, safeFileName(d.name));
   }
   function emitSystem(text, key) { on.message?.({kind: 'system', seq: null, text, key}); }
 
@@ -297,6 +317,17 @@ export function createRoomSession({room, device, database, worker, relay, storag
           const bytes = new Uint8Array(out.output);
           emitAttachment(sender, bytes.length, ev.seq, ts, async () => bytes);
           await remember({seq: ev.seq, sender, client, kind: 'attachment', text: '', bytes: Array.from(bytes)});
+        } else if (isFileV2(ev.client_id)) {
+          // Never shown as text: a descriptor that does not validate is an unopenable message.
+          let text = null, d = null;
+          try { text = decoder.decode(new Uint8Array(out.output)); d = descriptorOf(text); } catch (_) { d = null; }
+          if (d) {
+            emitFileV2(sender, d, ev.seq, ts);
+            await remember({seq: ev.seq, sender, client, kind: 'file-v2', text, bytes: []});
+          } else {
+            log(strings.room.fileV2Invalid(ev.seq, ev.device));
+            emitUndecryptable(ev);
+          }
         } else {
           const text = decoder.decode(new Uint8Array(out.output));
           emitText(sender, out.client, text, ev.seq, ts, out.replay);

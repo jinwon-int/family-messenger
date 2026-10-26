@@ -98,6 +98,7 @@ nonce·sha256만 담는다. **릴레이는 키를 보지 않는다** — blob �
   행은 쓰기 트랜잭션(prune·close)에서 지우고, 파일은 행 없는 파일·1시간 넘은 업로드 임시 파일을 지우는 스윕
   (기동 시·10분마다·close 직후)이 지운다. `-reset-room`도 방의 blob 행·파일을 지운다(출력에 `blobs=N`).
 - 전송 시간: 두 라우트만 서버 Read/WriteTimeout 대신 10분 기한을 쓴다(휴대폰 회선의 50 MiB).
+- **와이어 형식 정본**: [FILE-V2.md](FILE-V2.md) — `file-v2-<uuid>` MLS 메시지의 설명자(blob id·키·nonce·크기), AES-256-GCM, 수신·검증 규칙.
 
 ## tests/
 
