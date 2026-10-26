@@ -12,7 +12,7 @@ concurrency:
 jobs:
   web:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30   # #510: a slow apt mirror may need most of the 20-minute install budget
     defaults:
       run:
         working-directory: web/app
@@ -37,9 +37,29 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install pinned browser test tools
+        # #510: same apt stall as native.yml — `--with-deps` runs `sudo apt-get` that a
+        # stalled mirror can hold for minutes (2026-10-26 the whole job hit its timeout
+        # here and was cancelled). Wait for the dpkg lock, bound the root-side install with
+        # a root `timeout`, clear leftovers and retry.
+        timeout-minutes: 20
         run: |
-          python -m pip install -r ../../requirements-native-test.txt
-          python -m playwright install --with-deps chromium
+          set -euo pipefail
+          echo 'DPkg::Lock::Timeout "120";' | sudo tee /etc/apt/apt.conf.d/99-dpkg-lock-timeout >/dev/null
+          py="$(command -v python)"
+          for attempt in 1 2; do
+            if timeout 150 "$py" -m pip install -r ../../requirements-native-test.txt \
+               && timeout 150 "$py" -m playwright install chromium \
+               && sudo timeout --kill-after=15 540 "$py" -m playwright install-deps chromium; then
+              exit 0
+            fi
+            echo "::warning::browser test tool install attempt ${attempt} failed or stalled; clearing apt/dpkg and retrying"
+            sudo pkill -9 -x apt-get || true
+            sudo pkill -9 -x dpkg || true
+            sudo dpkg --configure -a || true
+            sleep 10
+          done
+          echo "::error::browser test tool install failed after 2 attempts"
+          exit 1
       - name: Chromium login render and screenshot
         run: python tests/browser_smoke.py
       - name: Serve dist and probe app shell
