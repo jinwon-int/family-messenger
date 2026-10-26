@@ -40,7 +40,7 @@ native-mls-bot <base-url> session <room> <device> \
 | ④-B 승인 왕복 | 응답기 `approval` → 방에 `⚠️ 승인 필요 #n: …` → **owner actor 의 답장** `승인 n` / `거절 n`(`approve n`/`deny n`) 만 유효 → 응답기 `approve`/`deny`. 미응답은 응답기 `--approval-timeout` 이 거절 |
 | 동시성 | 한 번에 1 turn, 대기열 8(초과는 `agent_offer: Dropped{queue_full}`) |
 | 중복 실행 금지 | 활성 turn 을 `<state>.inbox.json`(0600)에 **응답기에 보내기 전** 기록. 재시작 때 남아 있으면 `⚠️ 요청(#seq)을 끝까지 확인하지 못했습니다` 1건만 게시하고 지운다 — 재실행 없음 |
-| 불확실 결과 | `result.status=uncertain`·`rejected`·워치독(1200초) → 같은 안내 1건. uncertain 뒤 응답기는 퇴역(FLEET-WORKER)하므로 세션 종료 → 재시작 |
+| 불확실 결과 | `result.status=uncertain`·`rejected`·워치독(21780초 = Matrix `CLAUDE_PROCESS_TIMEOUT` 21720초 + 60초, env `NATIVE_MLS_BOT_TURN_SECS`) → 같은 안내 1건. 30분마다 「⏱ 요청(#n)을 처리한 지 N분」 알림(알림만, env `NATIVE_MLS_BOT_TURN_AGE_NOTICE_MIN`·`_RENOTICE_MIN`, 0=끔). uncertain 뒤 응답기는 퇴역(FLEET-WORKER)하므로 세션 종료 → 재시작 |
 | 답 길이 | 8 KiB 초과는 글자 경계에서 자르고 `…(길어서 줄임)` |
 | 발신자 표기 | 응답기의 `sender` 검증이 Matrix 형식이라 `@<device>:hande` 로 넘긴다 → 프롬프트 머리글 `[가족방 메시지 · 보낸 사람: @owner-iphone-27a879:hande]` |
 
