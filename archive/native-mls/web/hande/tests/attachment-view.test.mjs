@@ -49,3 +49,10 @@ test('downloadSpec: 판별된 이미지는 확장자+MIME, 그 밖은 attachment
   assert.deepEqual(downloadSpec(null, 'image/jpeg'), {name: 'attachment-x.jpg', type: 'image/jpeg'});
   assert.deepEqual(downloadSpec(undefined, null), {name: 'attachment-x.bin', type: INERT_TYPE});
 });
+
+test('downloadSpec: a safe file-v2 name replaces the generated one, MIME stays sniffed/inert (#499)', async () => {
+  const {downloadSpec, INERT_TYPE} = await import('../attachment-view.js');
+  assert.deepEqual(downloadSpec(5, 'image/png', '사진.png'), {name: '사진.png', type: 'image/png'});
+  assert.deepEqual(downloadSpec(5, null, 'report.html'), {name: 'report.html', type: INERT_TYPE}, 'sender name never sets the MIME');
+  for (const bad of [null, '', '.env', 'a/b', 'a\\b', 'x\u0001y']) assert.equal(downloadSpec(5, null, bad).name, 'attachment-5.bin', String(bad));
+});

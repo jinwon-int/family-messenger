@@ -484,6 +484,8 @@ export const strings = {
     historyGap: (from, to) => `릴레이가 seq ${from}~${to}를 이미 지웠습니다 — 재참여가 필요할 수 있습니다.`,
     resumed: (members, seq) => `참여 상태 복구 — 멤버 ${members}, 릴레이 커서 ${seq}부터 이어 읽습니다`,
     decryptFailed: (seq, device) => `해독 실패(seq ${seq}, ${device}) — 건너뛰지 않고 다음 동기화에서 다시 시도합니다`,
+    fileV2Failed: (seq) => `첨부(seq ${seq})를 열 수 없음 — 다시 누르면 다시 받습니다:`,
+    fileV2Invalid: (seq, device) => `첨부 정보가 올바르지 않아 열 수 없음(seq ${seq}, ${device})`,
     attachmentUnknown: '첨부 전송 결과를 확인하지 못했습니다. 「같은 첨부 다시 보내기」를 누르면 중복 없이 확인합니다.',
     attachmentSent: (seq, size) => `첨부를 보냈습니다(seq ${seq}, ${size.toLocaleString()}바이트)`,
     freshStore: (next) => `저장소가 비어 있어 새 기기(새 지문)로 시작합니다. 정책 체인은 같은 기기 ID를 다시 받지 않으므로 기기 ID를 ${next}로 바꿉니다. 운영자 등록과 재초대가 다시 필요합니다.`,

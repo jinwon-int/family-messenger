@@ -150,7 +150,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     R.entryKeys.add(key);
     const entry = {key, kind: m.kind, seq: m.seq ?? null, sender: m.sender ?? '', senderName: m.sender ? displayName(m.sender) : '',
       isMe: isMine(m.sender, {device: app.device, actor: app.actor}), isAgent: m.sender ? isAgentDevice(m.sender) : false, body: m.text ?? '', ts: m.ts ?? null,
-      size: m.size ?? 0, image: null, replay: !!m.replay, load: m.load ?? null};
+      size: m.size ?? 0, image: null, replay: !!m.replay, load: m.load ?? null, fileName: m.fileName ?? null};
     R.entries.push(entry);
     R.entries.sort((a, b) => (a.seq ?? Infinity) - (b.seq ?? Infinity) || 0);
     if (!entry.isMe && (entry.kind === 'text' || entry.kind === 'attachment') && !(app.roomOpen && app.current === roomId)) R.unread = true;

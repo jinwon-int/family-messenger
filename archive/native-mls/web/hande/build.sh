@@ -13,7 +13,7 @@ shared="$here/../../../experiments/openmls-browser/web"
 pkg="${1:?mls-pkg dir}"; out="${2:?out dir}"
 [ -f "$pkg/family_mls_browser_experiment.js" ] || { echo "not a bundle dir: $pkg" >&2; exit 1; }
 rm -rf "$out"; mkdir -p "$out/pkg" "$out/icons"
-for f in durable-worker.js session-store.js history-store.js commit-policy.js relay-attachments.js; do
+for f in durable-worker.js session-store.js history-store.js commit-policy.js relay-attachments.js file-v2.js; do
   install -m 0644 "$shared/$f" "$out/$f"
 done
 for f in index.html styles.css strings.js ui.js app.js main.js room.js device.js relay.js identity.js worker-bridge.js attachment-view.js agent-markdown.js filebox.js keyboard.js timeline-caret.js shortcuts.js room-order.js drafts.js composer-files.js last-sent.js sw.js sw-policy.js manifest.webmanifest; do

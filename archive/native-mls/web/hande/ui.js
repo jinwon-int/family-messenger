@@ -376,7 +376,7 @@ async function downloadAttachment(entry, button, onOpenAttachment) {
   button.textContent = strings.chat.downloading;
   try {
     const bytes = await onOpenAttachment(entry);
-    const {name, type} = downloadSpec(entry.seq, entry.image?.type ?? imageType(bytes));
+    const {name, type} = downloadSpec(entry.seq, entry.image?.type ?? imageType(bytes), entry.fileName);
     const url = URL.createObjectURL(new Blob([bytes], { type }));
     const link = el('a', { href: url, download: name, hidden: true });
     document.body.append(link);

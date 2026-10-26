@@ -65,3 +65,24 @@ test('retention removes the oldest rows first until both bounds hold', () => {
   assert.equal(MAX_ROWS, 2000);
   assert.equal(MAX_BYTES, 200 * 1024 * 1024);
 });
+
+// #499 file-v2: only the descriptor JSON is kept — never file bytes.
+test('file-v2 rows: descriptor text only, bounded, v:2 object, no bytes', async () => {
+  const {MAX_DESCRIPTOR} = await import('./history-store.js');
+  const desc = JSON.stringify({v: 2, blob: 'a'.repeat(64), size: 10, key: 'k', nonce: 'n'});
+  const row = (text, bytes = []) => ({seq: 7, sender: 'owner-iphone-1', client: '', kind: 'file-v2', text, bytes});
+  const ok = validRow(row(desc));
+  assert.deepEqual(ok.header, {seq: 7, sender: 'owner-iphone-1', client: '', kind: 'file-v2', text: desc, size: 0});
+  assert.equal(ok.blob, null);
+  for (const [label, bad] of Object.entries({
+    'bytes present': row(desc, [1, 2, 3]),
+    'not json': row('{'),
+    'array': row('[]'),
+    'v1': row(JSON.stringify({v: 1})),
+    'too large': row(JSON.stringify({v: 2, pad: 'x'.repeat(MAX_DESCRIPTOR)})),
+    'text not string': row(5),
+  })) assert.throws(() => validRow(bad), /rejected/, label);
+  // Existing kinds are unchanged.
+  assert.equal(validRow(text(1)).header.kind, 'text');
+  assert.equal(validRow(file(2, [1, 2])).header.size, 2);
+});

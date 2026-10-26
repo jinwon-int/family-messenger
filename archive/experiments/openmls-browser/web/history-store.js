@@ -20,6 +20,7 @@
 export const HISTORY_DB_VERSION = 1;
 export const MAX_ROWS = 2000, MAX_BYTES = 200 * 1024 * 1024, LIST_LIMIT = 500;
 export const MAX_TEXT = 64 * 1024, MAX_BLOB = 5 * 1024 * 1024 + 4096;
+export const MAX_DESCRIPTOR = 4096;   // file-v2 descriptor JSON (#499, FILE-V2.md)
 const ROW_KEYS = ['seq', 'sender', 'client', 'kind', 'text', 'size', 'received_at'];
 const utf8 = s => new TextEncoder().encode(s);
 const fail = () => { throw new Error('rejected'); };
@@ -45,6 +46,17 @@ export function validRow(row) {
     if (text !== '' || !Array.isArray(bytes) || bytes.length > MAX_BLOB ||
         !bytes.every(b => Number.isInteger(b) && b >= 0 && b <= 255)) fail();
     return {header: {seq, sender, client, kind, text: '', size: bytes.length}, blob: Uint8Array.from(bytes)};
+  }
+  if (kind === 'file-v2') {
+    // #499 detached attachment: only the descriptor JSON (≤ 4 KiB, a v:2 object) — never
+    // the file bytes, which stay in the relay blob store. Full validation is the page's
+    // (file-v2.js parseDescriptor); this keeps the row shape and bound strict without
+    // making this shared module import it (relay-app deploys do not ship file-v2.js).
+    if (typeof text !== 'string' || utf8(text).length > MAX_DESCRIPTOR || !Array.isArray(bytes) || bytes.length !== 0) fail();
+    let d;
+    try { d = JSON.parse(text); } catch (_) { fail(); }
+    if (!d || typeof d !== 'object' || Array.isArray(d) || d.v !== 2) fail();
+    return {header: {seq, sender, client, kind, text, size: 0}, blob: null};
   }
   fail();
 }
