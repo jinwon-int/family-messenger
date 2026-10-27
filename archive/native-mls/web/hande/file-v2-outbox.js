@@ -5,11 +5,11 @@
 // 보관하는 것은 **MLS 암호문**뿐이다 — 파일 키가 든 설명자 평문·파일 바이트·이름은 남기지 않는다(새로고침 뒤 재시도는
 // 같은 암호문을 다시 게시한다). 업로드 뒤 게시가 불확실하면 같은 바이트로만 다시 보낸다(이중 전송 없음, v1 과 같은 규칙).
 //
-// 보내기 스위치: SEND_FILE_V2(기본 꺼짐). 모든 기기의 v2 수신(웹·iOS·안드로이드·봇) 확인 뒤 오너 승인으로 켠다(#499 전환 계획 3).
+// 보내기 스위치: SEND_FILE_V2 — #499 전환 계획 3에 따라 모든 기기의 v2 수신(웹·iOS·안드로이드·봇) 확인 뒤 오너 승인으로 켰다.
 // 시험용으로 한 브라우저에서만 켜려면 localStorage `hande:file-v2-send` = "1".
 import {MAX_FILE_V2, encryptFile, encodeDescriptor} from './file-v2.js';
 
-export const SEND_FILE_V2 = false;
+export const SEND_FILE_V2 = true;   // #499 3단계 켜기(오너 승인) — 끄려면 false 로 되돌린다(보낸 v2 는 계속 열린다)
 export const SEND_OVERRIDE_KEY = 'hande:file-v2-send';
 /** 이 브라우저가 v2 로 보내는가 — 기본 스위치 또는 시험용 덮어쓰기. */
 export function sendsFileV2(storage, enabled = SEND_FILE_V2) {

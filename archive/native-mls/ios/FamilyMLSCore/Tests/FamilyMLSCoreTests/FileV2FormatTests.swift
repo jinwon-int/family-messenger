@@ -133,7 +133,7 @@ final class FileV2FormatTests: XCTestCase {
     // MARK: 송신(#499 3단계)
 
     func testSendSwitchDefaultsOffAndClientIdShape() {
-        XCTAssertFalse(FileV2Format.sendDefault, "stage 3 ships off")
+        XCTAssertTrue(FileV2Format.sendDefault, "stage 3 on (#499 owner approval)")
         let id = FileV2Format.newClientId(uuid: UUID(uuidString: "0F8FAD5B-D9CB-469F-A165-70867728950E")!)
         XCTAssertEqual(id, Self.clientId)
         XCTAssertTrue(FileV2Format.isClientId(FileV2Format.newClientId()))

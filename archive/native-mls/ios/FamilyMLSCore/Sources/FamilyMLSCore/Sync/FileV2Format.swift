@@ -86,7 +86,7 @@ public enum FileV2Format {
 
     /// 송신 스위치 기본값 — **꺼짐**. 모든 기기의 v2 수신(웹·iOS·안드로이드·봇) 확인 뒤 오너 승인으로 켠다(#499 전환 계획 3).
     /// 앱은 `AppModel.Dependencies.sendFileV2` 로 이 값을 받는다(테스트는 켜서 쓴다).
-    public static let sendDefault = false
+    public static let sendDefault = true   // #499 3단계 켜기(오너 승인) — 끄려면 false(보낸 v2 는 계속 열린다)
 
     /// 새 첨부의 릴레이 client_id(`file-v2-<uuid 소문자>`) — 표시 힌트일 뿐(§1). 409 재암호화마다 새로 만든다.
     public static func newClientId(uuid: UUID = UUID()) -> String { clientIdPrefix + uuid.uuidString.lowercased() }

@@ -42,7 +42,7 @@ base64url 정규형: RFC 4648 §5 알파벳, `=` 패딩 없음, 다시 인코딩
 - 암호문 = GCM 출력(평문 ‖ 16바이트 태그) → 암호문 길이 = `size + 16`.
 - `blob` = sha256(암호문)의 소문자 hex. 릴레이도 같은 값을 id로 돌려준다(내용 주소).
 
-## 3. 송신 (3단계에서 활성)
+## 3. 송신 (3단계 — 웹·iOS 기본 켜짐)
 
 1. 파일 바이트(1 ~ 50 MiB) → 새 키·nonce로 암호화.
 2. `POST /v2/rooms/{room}/blobs?device=<나>` 본문 = 암호문 원시 바이트 → 201(새로 저장) 또는 200(이미 있음),
@@ -77,8 +77,8 @@ base64url 정규형: RFC 4648 §5 알파벳, `=` 패딩 없음, 다시 인코딩
 - 웹(한데): `archive/experiments/openmls-browser/web/file-v2.js`(설명자·base64url·암복호화·안전한 파일명, 순수 함수),
   `archive/native-mls/web/hande/room.js`(수신·이력·지연 로드), `relay.js`(`blob()`), 이력 `history-store.js` 종류 `file-v2`.
   송신(3단계): `archive/native-mls/web/hande/file-v2-outbox.js`(업로드 → 설명자 MLS 암호화 → 보관 → 게시, 재시도는 같은 바이트만,
-  보관은 MLS 암호문뿐), `relay.js`(`postBlob()`), `room.js` `sendAttachment`. 스위치 `SEND_FILE_V2`(기본 꺼짐) — 모든 기기의 v2 수신
-  확인 뒤 오너 승인으로 켠다. 시험용 한 브라우저만: localStorage `hande:file-v2-send` = `"1"`.
+  보관은 MLS 암호문뿐), `relay.js`(`postBlob()`), `room.js` `sendAttachment`. 스위치 `SEND_FILE_V2`(기본 켜짐 — 모든 기기의 v2 수신
+  확인 뒤 오너 승인으로 켰다, 끄면 v1). 시험용 한 브라우저만: localStorage `hande:file-v2-send` = `"1"`.
 - 릴레이: `archive/native-mls/server/blobs.go`.
 - 안드로이드: `archive/native-mls/android/app/src/main/kotlin/com/seoyoon_family/hande/core/FileV2.kt`(설명자 엄격 검증·수신 분류, 테스트
   `FileV2Test.kt`). 정상 설명자 → 이력 kind `file-v2`(본문 = 「📎 첨부(n B)」 자리 표시, attachment 칸 = 설명자), 잘못된 설명자 →
@@ -94,4 +94,4 @@ base64url 정규형: RFC 4648 §5 알파벳, `=` 패딩 없음, 다시 인코딩
   파일 바이트는 이력에 저장하지 않는다(미리보기 캐시·임시 공유 파일만, v1과 같은 보호 등급). 교차 벡터: `FileV2OpenTests`(웹 `encryptFile` 산출).
   송신(3단계): `FileV2Format.seal`(CryptoKit, 새 키·nonce) → `RelayTransport.postBlob`(응답 id = sha256 확인) →
   `FileV2Format.encodeDescriptor`(정규 키 순서 — 웹 `encodeDescriptor`와 같은 바이트) → `RoomSyncEngine.send(fileV2:)`(client_id `file-v2-<uuid>`).
-  `AppModel.sendAttachment`는 `Dependencies.sendFileV2`(기본 `FileV2Format.sendDefault` = 꺼짐)일 때만 v2. 내 기록은 `.fileV2`(설명자만).
+  `AppModel.sendAttachment`는 `Dependencies.sendFileV2`(기본 `FileV2Format.sendDefault` = 켜짐)일 때 v2, 끄면 v1. 내 기록은 `.fileV2`(설명자만).

@@ -22,9 +22,13 @@ final class FileV2SendTests: XCTestCase {
         return (model, relay, messages)
     }
 
-    func testSwitchDefaultsOff() async {
-        XCTAssertFalse(FileV2Format.sendDefault, "stage 3 ships off — flip only after every device receives v2")
-        let (model, relay, _) = await readyModel(sendFileV2: FileV2Format.sendDefault)
+    func testSwitchOnByDefaultAndOffSendsV1() async {
+        XCTAssertTrue(FileV2Format.sendDefault, "stage 3 on (#499 owner approval)")
+        XCTAssertTrue(AppModel.Dependencies(engineFactory: MemberFakeFactory(), stateStore: InMemoryStateStore(), messageStore: InMemoryMessageStore(),
+                                            outbox: InMemoryOutboxStore(), cursors: InMemoryCursorStore(), identityProvider: { "x-pc" },
+                                            expectedDecryptFormat: { 2 }, makeTransport: { _ in nil }).sendFileV2, "the app follows the default")
+        // 스위치를 끄면(되돌리기) v1 로 보낸다.
+        let (model, relay, _) = await readyModel(sendFileV2: false)
         guard case .sent(let clientId, _, _)? = await model.sendAttachment(room: "family", data: Self.jpeg) else { return XCTFail() }
         XCTAssertTrue(AttachmentFormat.isAttachment(clientId: clientId), "v1 while the switch is off")
         XCTAssertEqual(relay.blobPosts, 0)

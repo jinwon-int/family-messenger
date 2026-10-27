@@ -9,10 +9,11 @@ import FamilyMLSCore
 final class AttachmentTests: XCTestCase {
     private func readyModel() async -> (AppModel, InMemoryRelay) {
         let relay = InMemoryRelay()
-        let deps = AppModel.Dependencies(
+        var deps = AppModel.Dependencies(
             engineFactory: MemberFakeFactory(), stateStore: InMemoryStateStore(), messageStore: InMemoryMessageStore(),
             outbox: InMemoryOutboxStore(), cursors: InMemoryCursorStore(),
             identityProvider: { "mom-iphone-a1b2c3" }, expectedDecryptFormat: { 2 }, makeTransport: { _ in relay })
+        deps.sendFileV2 = false   // 이 파일은 v1 첨부(file-v1-) 규칙을 고정한다 — v2 송신은 FileV2SendTests(#499 3단계 기본 켜짐)
         let model = AppModel(dependencies: deps)
         await model.bootstrap(); model.login(.bearer("t")); await model.refresh()
         XCTAssertEqual(model.phase, .ready)
