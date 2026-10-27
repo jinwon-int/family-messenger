@@ -16,7 +16,7 @@ rm -rf "$out"; mkdir -p "$out/pkg" "$out/icons"
 for f in durable-worker.js session-store.js history-store.js commit-policy.js relay-attachments.js file-v2.js; do
   install -m 0644 "$shared/$f" "$out/$f"
 done
-for f in index.html styles.css strings.js ui.js app.js main.js room.js device.js relay.js identity.js worker-bridge.js attachment-view.js agent-markdown.js filebox.js keyboard.js timeline-caret.js shortcuts.js room-order.js drafts.js composer-files.js last-sent.js file-v2-outbox.js sw.js sw-policy.js manifest.webmanifest; do
+for f in index.html styles.css strings.js ui.js app.js main.js room.js device.js relay.js identity.js worker-bridge.js attachment-view.js agent-markdown.js filebox.js keyboard.js timeline-caret.js shortcuts.js room-order.js drafts.js read-seq.js composer-files.js last-sent.js file-v2-outbox.js sw.js sw-policy.js manifest.webmanifest; do
   install -m 0644 "$here/$f" "$out/$f"
 done
 install -m 0644 "$here"/icons/* "$out/icons/"

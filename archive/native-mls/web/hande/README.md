@@ -17,6 +17,7 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
   index.html styles.css strings.js ui.js app.js main.js          ← 화면·상태기계 (이 디렉터리)
   keyboard.js shortcuts.js timeline-caret.js                     ← 키보드 판정·전역 단축키·캐럿 모드(패밀리챗 이식, #478)
   room-order.js                                                  ← 대화 목록 고정 순서(▲▼ 편집, 이 기기 localStorage — 패밀리챗 이식, #480)
+  read-seq.js                                                    ← 방별 「어디까지 봤나」·안 읽음 판정(iOS readSeq·Unread.isUnread 이식, #541)
   drafts.js composer-files.js                                    ← 방별 초안 영속화 · 붙여넣기/끌어다 놓기 첨부 파일 고르기(#480 B)
   last-sent.js                                                   ← 대화창 상단 「내 마지막 말」 바 순수 로직(패밀리챗 이식, #480 C)
   sw.js sw-policy.js                                             ← 서비스 워커(PWA 설치·오프라인 셸, 네트워크 우선 — #480 D)
@@ -81,7 +82,8 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
 - 순서: 최근 활동순으로 움직이지 않는다. 기본은 참여한 순서, 「↕ 순서」로 편집 모드(▲▼, PC 는 끌어서) → 이 기기
   localStorage `hande:room-order:<device>` 에 저장(패밀리챗은 account data 로 기기 간 동기화 — 한데에는 그 저장소가 없다).
   편집 중에는 행을 눌러도 열리지 않고 PageUp/PageDown 도 방을 열지 않는다.
-- 행: 이름 옆 **N 배지**(안 읽은 방, 보조기기에는 "새 메시지"), 상대 시각(방금/N분 전/N시간 전/어제/M.D.), 미리보기는
+- 행: 이름 옆 **N 배지**(안 읽은 방, 보조기기에는 "새 메시지" — 판정은 iOS 와 같은 readSeq: 마지막 글이 남의 글이고 이 기기가 본 seq 보다
+  뒤일 때만. 본 위치는 localStorage `hande:readSeq:<device>:<room>` 라 새로고침 뒤 보관 이력이 다시 들어와도 배지가 켜지지 않는다, #541), 상대 시각(방금/N분 전/N시간 전/어제/M.D.), 미리보기는
   마크다운 기호를 걷어낸 한 줄 — 첨부는 `[사진]`(내용 판별) / `[파일]`.
 
 ## 작성창 (#480 B)
@@ -109,7 +111,7 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
 
 - 순수 모듈: `node --test archive/native-mls/web/hande/tests/*.test.mjs` — 방 세션(가짜 워커·대본 릴레이: 403
   대기, Welcome 참여, 해독→보관→ack, 전송 CAS 재시도, 초대 commit→echo→Welcome, 거부·제거 정지, #296 복구),
-  문구·검증 헬퍼, 키보드 판정(`keyboard.test.mjs`), 목록 순서(`room-order.test.mjs`), 초안·첨부 파일 고르기(`drafts.test.mjs`·`composer-files.test.mjs`), 내 마지막 말(`last-sent.test.mjs`), 서비스 워커 정책(`sw-policy.test.mjs`).
+  문구·검증 헬퍼, 키보드 판정(`keyboard.test.mjs`), 목록 순서(`room-order.test.mjs`), 초안·첨부 파일 고르기(`drafts.test.mjs`·`composer-files.test.mjs`), 내 마지막 말(`last-sent.test.mjs`), 안 읽음 판정(`read-seq.test.mjs`), 서비스 워커 정책(`sw-policy.test.mjs`).
 - 브라우저: `archive/native-mls/tests/native_hande_web_smoke.py --bundle <mls-pkg> --relay-binary <relay>` —
   격리 릴레이(`-access-mode disabled`, `-hande-host`)가 이 디렉터리를 서빙하고 두 Chromium 컨텍스트가 **화면만
   으로** 이름 선택 → 방 만들기 → 참여 요청 → 초대 → 참여 → 양방향 메시지 → 새로고침 뒤 보관 이력 복원, 이어서 둘째 방을
