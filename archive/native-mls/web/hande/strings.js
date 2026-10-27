@@ -436,6 +436,8 @@ export const strings = {
   menu: {
     title: '설정',
     open: '설정',
+    join: '🔑 참여 요청',
+    create: '🔥 방 만들기',
     settings: '설정',
     invite: '기기 초대 · 멤버',
     approve: '신뢰 기기 승인',

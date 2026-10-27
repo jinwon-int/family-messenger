@@ -284,7 +284,7 @@ function inviteCard(invite) {
       el('button', { type: 'button', class: 'ghost', 'data-testid': 'invite-ignore', disabled: invite.busy ? 'disabled' : null, onclick: () => invite.onIgnore?.() }, strings.lobby.ignore)));
 }
 
-function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu, onOpenJoin, onOpenCreate, onOpenBox = null, sync = null, notice = null, deviceLabel = '', invites = [], orderEditing = false, onToggleOrderEdit = null, onMoveRoom = null, onOpenNotify = null }) {
+function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu, onOpenBox = null, sync = null, notice = null, deviceLabel = '', invites = [], orderEditing = false, onToggleOrderEdit = null, onMoveRoom = null, onOpenNotify = null }) {
   const syncLabel = syncText(sync);
   const syncTone = sync?.reconnecting ? 'warn' : sync?.offlineSince ? 'danger' : 'ok';
   // 순서 편집은 방이 2개 이상이고 핸들러가 있을 때만(패밀리챗과 같음).
@@ -304,8 +304,7 @@ function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu,
         canReorder ? el('button', { type: 'button', class: editing ? 'primary small order-toggle' : 'ghost small order-toggle', 'aria-pressed': editing ? 'true' : 'false', 'aria-label': editing ? strings.rooms.orderDoneLabel : strings.rooms.orderEditLabel, title: editing ? strings.rooms.orderDoneLabel : strings.rooms.orderEditLabel, 'data-testid': 'order-toggle', onclick: () => onToggleOrderEdit() },
           editing ? strings.rooms.orderDone : [el('span', { class: 'order-icon', 'aria-hidden': 'true' }, strings.rooms.orderEditIcon), el('span', { class: 'order-label' }, strings.rooms.orderEdit)]) : null,
         onOpenNotify ? bellButton(invites.length, onOpenNotify) : null,
-        toolButton('🔑', strings.rooms.join, 'open-join', onOpenJoin),
-        toolButton('🔥', strings.rooms.create, 'open-create', onOpenCreate),
+        // 참여 요청·방 만들기는 ⚙ 설정 메뉴로(오너 2026-10-27): 헤더는 🔔·🗂·⚙ 만.
         onOpenBox ? toolButton('🗂', strings.box.toggle, 'open-box', onOpenBox) : null,
         toolButton('⚙', strings.rooms.settings, 'open-menu', onOpenMenu))),
     el('p', { class: `sync-line ${syncTone}`, role: 'status' }, el('span', { class: 'dot', 'aria-hidden': 'true' }), syncLabel),
@@ -879,7 +878,7 @@ export function openMenuSheet(root, { items, onClose }) {
   const { dialog, close } = openSheet(root, { className: 'menu', labelledBy: 'menu-title', onClose });
   setChildren(dialog,
     el('h2', { id: 'menu-title' }, strings.menu.title),
-    el('div', { class: 'menu-items' }, items.map((item) => el('button', { type: 'button', class: item.tone === 'danger' ? 'danger block' : 'block', onclick: () => { close(); item.run?.(); } }, item.label))),
+    el('div', { class: 'menu-items' }, items.map((item) => el('button', { type: 'button', class: item.tone === 'danger' ? 'danger block' : 'block', 'data-testid': item.testid ?? null, onclick: () => { close(); item.run?.(); } }, item.label))),
     closeRow(close));
   return { close };
 }

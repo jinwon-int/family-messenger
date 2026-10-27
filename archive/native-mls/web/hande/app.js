@@ -399,6 +399,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   }
   function openMenu() {
     ui.openMenuSheet(root, {items: [
+      {label: strings.menu.join, run: openJoin, testid: 'menu-join'},
+      {label: strings.menu.create, run: openCreate, testid: 'menu-create'},
       {label: strings.menu.settings, run: openSettings},
       ...(cur() ? [{label: strings.menu.invite, run: openInvite}] : []),
       {label: strings.menu.approve, run: openApprove},
