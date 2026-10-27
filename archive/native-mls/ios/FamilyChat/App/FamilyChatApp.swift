@@ -15,6 +15,8 @@ struct FamilyChatApp: App {
             RootView()
                 .environmentObject(appDelegate.model)
                 .task {
+                    // #520: 첫 활성화는 scenePhase 변화가 없어 여기서 읽는다(전면 복귀는 foregrounded 가 다시 읽는다).
+                    await appDelegate.model.refreshLockScreenPreview()
                     await appDelegate.model.bootstrap()
                     await appDelegate.model.runForeground()
                 }
@@ -32,6 +34,8 @@ struct RootView: View {
     @StateObject private var navigator = Navigator()
     /// #414: 첫 동기화가 오래 걸려도(오프라인 등) 오프닝에 갇히지 않게 — 이 시간이 지나면 실제 상태를 보인다.
     @State private var openingExpired = false
+    /// #520 경고 배너를 「나중에」로 닫았다(이 실행 동안만 — 다음 실행에 설정이 그대로면 다시 보인다).
+    @State private var previewWarningDismissed = false
     private static let openingLimitNanoseconds: UInt64 = 8_000_000_000
 
     var body: some View {
@@ -56,7 +60,13 @@ struct RootView: View {
             }
         }
         .overlay(alignment: .top) {
-            if case .halted(let reason) = model.phase { HaltedBanner(reason: reason) }
+            VStack(spacing: 0) {
+                if case .halted(let reason) = model.phase { HaltedBanner(reason: reason) }
+                // #520: 미리보기 「항상」이면 잠금화면에 본문이 보인다 — 방 목록이 보이는 동안 경고(「나중에」는 이 실행에서만 닫힘).
+                if canShowRooms, model.lockScreenPreview.needsWarning, !previewWarningDismissed {
+                    LockPreviewWarningBanner { previewWarningDismissed = true }
+                }
+            }
         }
         .animation(.easeOut(duration: 0.35), value: model.settled)
         // 배너 탭(§12-D): 알림의 방이 아는 방이고 목록을 보일 수 있으면 그 방으로. 로그인·첫 동기화 전이면 준비된 뒤에.

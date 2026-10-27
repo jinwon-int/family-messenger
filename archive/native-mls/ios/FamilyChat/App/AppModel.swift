@@ -69,6 +69,8 @@ final class AppModel: ObservableObject {
         var autoJoinActors: Set<String> = ["owner"]
         /// 누가 에이전트인가(#405 P1 — 에이전트 카드·승인 버튼·생각 중). 빌드 설정 `FC_AGENT_ACTORS` 가 정본.
         var agentRoster = AgentRoster(actors: ["bot"])
+        /// #520: 이 앱의 잠금화면 미리보기 설정을 읽는다. 기본 = 모름(테스트·Linux) — live() 가 UserNotifications 로 채운다.
+        var lockScreenPreview: () async -> LockScreenPreview = { .unknown }
     }
 
     /// 저장소 밖의 삭제 작업(§9-5). `storage` = MLS 상태 전부(identity 슬롯 포함) + messages.db 행, `identity` = 저장된 기기 ID.
@@ -119,6 +121,8 @@ final class AppModel: ObservableObject {
     }
     /// 설정 화면의 알림 상태(D6).
     @Published private(set) var pushStatus: PushRegistrar.Status = .off
+    /// #520: 잠금화면 미리보기 실효값. `.always` 면 화면이 경고 배너를 보인다. 설정 화면은 측정 기록용으로 값을 보인다.
+    @Published private(set) var lockScreenPreview: LockScreenPreview = .unknown
     /// 마지막 refresh 의 outbox 재전송 결과(정확 바이트 재시도 관찰용 — 화면·테스트).
     private(set) var lastFlush: [RoomID: [SendOutcome]] = [:]
     /// 가족 기기(D1 B)의 수락 대기 초대 — 로비 Welcome 이 있는, 아직 참여하지 않은 방(오래된 순).
@@ -586,7 +590,14 @@ final class AppModel: ObservableObject {
     /// 앱이 전면으로 돌아왔다(scenePhase active) — 다음 바퀴에 로비 보충을 다시 본다.
     func foregrounded() async {
         lobbyCheckDue = true
+        // 설정 앱에서 미리보기를 바꾸고 돌아온 경우가 여기다(#520).
+        await refreshLockScreenPreview()
         await refresh()
+    }
+
+    /// #520: 미리보기 설정을 다시 읽는다 — 실행 시작·전면 복귀·알림 권한 허용(토큰 수신) 뒤.
+    func refreshLockScreenPreview() async {
+        lockScreenPreview = await deps.lockScreenPreview()
     }
 
     /// 가족 기기(B)의 「수락」: 그 방의 Welcome 을 로비 상태로 받아들여 참여한다. 실패 사유는 throw.
@@ -619,6 +630,8 @@ final class AppModel: ObservableObject {
             do { try await self.syncPushLocked(transport) } catch RelayError.unauthorized { self.expireSession() }
         }
         pushStatus = push.status
+        // 첫 권한 허용 직후에는 전면 복귀가 없으므로 여기서 읽는다(#520).
+        await refreshLockScreenPreview()
     }
 
     func pushTokenFailed(_ reason: String) {

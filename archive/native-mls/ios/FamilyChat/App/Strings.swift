@@ -99,7 +99,7 @@ enum Strings {
     static let settingsTitle = "설정"
     static let deviceIdLabel = "기기 ID"
     static let notifications = "알림"
-    static let notificationsHint = "새 메시지 알림은 이 기기가 등록된 뒤 켜집니다. 알림에는 릴레이가 내용을 싣지 않고, 기기가 받아서 직접 복호화합니다."
+    static let notificationsHint = "새 메시지 알림은 이 기기가 등록된 뒤 켜집니다. 알림에는 릴레이가 내용을 싣지 않고, 기기가 받아서 직접 복호화합니다. 잠금 상태에서는 「새 메시지」만 보이고 본문은 잠금을 푼 뒤에 보입니다(미리보기 「잠금 해제 시」 기준)."
     static let pushOff = "꺼짐"
     static let pushWaiting = "알림 토큰 대기 중"
     static let pushRegistered = "켜짐"
@@ -124,6 +124,24 @@ enum Strings {
     // 알림 확장(NSE, §12-D) — 대체 문구는 앱 번들 `ko.lproj/Localizable.strings` 의 `NEW_MESSAGE` 와 같아야 한다
     // (NSE 가 죽거나 시간을 넘기면 iOS 가 원래 alert 의 loc-key 를 그 파일로 푼다).
     static let pushFallbackBody = "새 메시지가 도착했습니다"
+    /// #520: 미리보기를 숨길 때(잠금 상태 · 설정 「잠금 해제 시」) 잠금화면에 보이는 일반 문구. 제목(보낸 사람)도 함께 숨는다.
+    static let pushHiddenPreviewPlaceholder = "새 메시지"
+
+    // 잠금화면 미리보기(#520) — 설정 화면 값·경고 배너
+    static let lockPreviewLabel = "잠금화면 미리보기"
+    static func lockPreview(_ value: LockScreenPreview) -> String {
+        switch value {
+        case .unknown: return "확인 전"
+        case .off: return "잠금화면 알림 꺼짐"
+        case .whenUnlocked: return "잠금 해제 시(본문 숨김)"
+        case .never: return "안 함(본문 숨김)"
+        case .always: return "항상 — 잠금화면에 본문이 보입니다"
+        }
+    }
+    static let lockPreviewWarningTitle = "잠금화면에 메시지 본문이 보입니다"
+    static let lockPreviewWarningBody = "설정 › 알림 › 한데 › 미리보기 보기를 「잠금 해제 시」로 바꾸면 잠금화면에는 「새 메시지」만 보입니다."
+    static let lockPreviewOpenSettings = "설정 열기"
+    static let lockPreviewLater = "나중에"
     static let pushPhoto = "「사진」"
     static let pushFile = "「파일」"
 }

@@ -30,6 +30,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = notificationDelegate
+        // #520: NSE 가 다는 카테고리 — 잠금 상태(미리보기 「잠금 해제 시」)에서는 본문·제목 대신 일반 문구. 매 실행 등록(덮어쓰기, 멱등).
+        UNUserNotificationCenter.current().setNotificationCategories([NotificationCategory.messageCategory()])
         return true
     }
 

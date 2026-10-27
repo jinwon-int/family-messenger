@@ -97,6 +97,8 @@ targets:
     sources:
       - path: FamilyChatNSE
       - path: FamilyChat/Push/NotificationProcessor.swift
+      # #520: 카테고리(잠금 상태 일반 문구)·내용 쓰기 — 앱과 같은 코드
+      - path: FamilyChat/Push/NotificationPrivacy.swift
       - path: FamilyChat/Sync/SharedStorage.swift
       - path: FamilyChat/Sync/SeededEngineFactory.swift
       - path: FamilyChat/Engine/FfiEngine.swift
