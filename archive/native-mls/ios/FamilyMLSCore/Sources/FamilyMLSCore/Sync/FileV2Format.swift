@@ -5,9 +5,10 @@
 // 메시지를 어떤 경우에도 `.text` 로 저장하지 않는다(그러면 화면·NSE 알림 본문·messages.db 에 키가 남는다): 설명자가 올바르면
 // `.fileV2`(body = mime 표시 힌트, attachment = 검증한 설명자 바이트 — 이력에는 설명자만, §4-2), 아니면 `.undecryptable`.
 // 열기(#499 ②): `RelayTransport.getBlob` 으로 받은 암호문을 `open` 이 길이 → sha256 → AES-256-GCM(AAD) → 크기 순으로 검증해 연다
-// (CryptoKit 이 있는 플랫폼만 — Linux `swift test` 에는 없다. 테스트는 FamilyChatTests/FileV2OpenTests).
+// (Apple 플랫폼의 CryptoKit 만 — Linux 에는 없거나 linux-smoke 의 대역 모듈(SHA256 흉내만, AES 없음)뿐이라 `!os(Linux)` 를 함께 본다.
+// 테스트는 FamilyChatTests/FileV2OpenTests).
 import Foundation
-#if canImport(CryptoKit)
+#if canImport(CryptoKit) && !os(Linux)
 import CryptoKit
 #endif
 
@@ -39,6 +40,7 @@ public enum FileV2Format {
     /// 거부 이유는 고정된 짧은 코드뿐(보낸 쪽 값·키 이름을 담지 않는다 — 로그·undecryptable 사유로 그대로 써도 된다).
     public struct Rejected: Error, Equatable {
         public let reason: String
+        public init(reason: String) { self.reason = reason }
     }
 
     /// 받은 blob 을 열 수 없는 이유(FILE-V2.md §4-3). 화면은 모두 「첨부를 열 수 없음(다시 시도)」 — 타임라인은 계속 동작한다.
@@ -51,9 +53,11 @@ public enum FileV2Format {
         case authentication
         /// 복호화한 평문 길이 ≠ size
         case size
+        /// 이 플랫폼에 AES-GCM(CryptoKit)이 없다 — Linux 계약 테스트·스모크 빌드 전용(앱·NSE 는 항상 CryptoKit).
+        case unsupported
     }
 
-    #if canImport(CryptoKit)
+    #if canImport(CryptoKit) && !os(Linux)
     /// 받은 암호문을 설명자로 검증해 연다. 순서는 웹 `decryptFile` 과 같다: 길이 → sha256 → GCM(AAD `hande-file-v2`) → 크기.
     public static func open(_ ciphertext: Data, _ descriptor: Descriptor) throws -> Data {
         guard ciphertext.count == descriptor.size + gcmTagBytes else { throw OpenError.length }
@@ -70,6 +74,11 @@ public enum FileV2Format {
         }
         guard plaintext.count == descriptor.size else { throw OpenError.size }
         return plaintext
+    }
+    #else
+    /// AES-GCM 이 없는 플랫폼(Linux `swift test`, linux-smoke 는 AppModel 을 대역 CryptoKit 과 함께 컴파일한다)에서도 같은 이름이 있어야 빌드된다.
+    public static func open(_ ciphertext: Data, _ descriptor: Descriptor) throws -> Data {
+        throw OpenError.unsupported
     }
     #endif
 
