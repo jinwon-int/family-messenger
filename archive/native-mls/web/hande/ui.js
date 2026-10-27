@@ -204,7 +204,7 @@ function roomListItem(room, onSelect, active, order = null) {
           unread ? el('span', { class: 'unread-badge', title: strings.rooms.unreadLabel },
             el('span', { 'aria-hidden': 'true' }, strings.rooms.unreadBadge),
             el('span', { class: 'visually-hidden' }, strings.rooms.unreadLabel)) : null),
-        room.hasAgent && !out ? el('span', { class: 'pill agent' }, strings.rooms.agentBadge) : null,
+        // 방 목록에는 「에이전트」 배지를 두지 않는다(오너 요청 2026-10-27) — 에이전트 방 강조(bright)는 그대로.
         STATE_LABEL[room.state] ? el('span', { class: `pill state-${room.state}` }, STATE_LABEL[room.state]) : null,
         room.time ? el('span', { class: 'when' }, room.time) : null),
       el('span', { class: 'preview' }, preview)),

@@ -294,7 +294,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shado
   color: var(--text-2);
   white-space: nowrap;
 }
-.pill.agent { background: var(--agent-soft); color: var(--agent); }
 .pill.you { background: var(--brand-soft); color: var(--brand); }
 .pill.state-pending { background: var(--warn-soft); color: var(--warn); }
 .pill.state-halted, .pill.state-closed { background: var(--danger-soft); color: var(--danger); }

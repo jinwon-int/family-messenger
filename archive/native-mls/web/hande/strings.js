@@ -272,7 +272,6 @@ export const strings = {
     closedPreview: '불이 꺼진 자리',
     noMessages: '아직 아무도 말하지 않았어요',
     selectHint: '왼쪽 목록에서 모닥불을 고르세요.',
-    agentBadge: '에이전트',
     // 안 읽은 방 이름 옆 둥근 배지(패밀리챗과 같은 카카오톡식 N). 글자 N은 보조기기에서 숨기고 unreadLabel을 읽는다.
     unreadBadge: 'N',
     unreadLabel: '새 메시지',
