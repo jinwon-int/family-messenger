@@ -887,7 +887,7 @@ export function openMenuSheet(root, { items, onClose }) {
 }
 
 /** 🔔 알림 시트(#521): 받은 초대 목록 — 수락/다시 시도/무시. 누르면 닫고 처리한다(결과는 목록·배지에 반영). */
-export function openNotifySheet(root, { invites = [], onClose }) {
+export function openNotifySheet(root, { invites = [], onCopyLogs = null, onClose }) {
   const { dialog, close } = openSheet(root, { className: 'notify', labelledBy: 'notify-title', onClose });
   const wrapped = invites.map((i) => ({ ...i, onAccept: () => { close(); i.onAccept?.(); }, onIgnore: () => { close(); i.onIgnore?.(); } }));
   setChildren(dialog,
@@ -896,7 +896,7 @@ export function openNotifySheet(root, { invites = [], onClose }) {
       ? el('p', { class: 'hint', 'data-testid': 'notify-empty' }, strings.notify.empty)
       : el('ul', { class: 'invite-list', 'aria-label': strings.notify.inviteNew }, wrapped.map(inviteCard)),
     el('p', { class: 'hint' }, strings.notify.hint),
-    closeRow(close));
+    closeRow(close, onCopyLogs ? el('button', { type: 'button', class: 'ghost', 'data-testid': 'notify-copy-logs', onclick: () => onCopyLogs() }, strings.notify.copyLogs) : null));
   return { close };
 }
 
