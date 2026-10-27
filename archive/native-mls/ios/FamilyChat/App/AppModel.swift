@@ -578,8 +578,15 @@ final class AppModel: ObservableObject {
             return "\(w.room): seq \(w.seq) epoch \(w.epoch) \(state)"
         }
         let stamp = ISO8601DateFormatter().string(from: now)
-        return (["hande ios diagnostics \(stamp) device=\(deviceId) actor=\(actor) phase=\(phase)", "rooms:"] + roomLines
-                + ["invites:"] + inviteLines + ["log:"] + diagnostics).joined(separator: "\n")
+        // 배열 `+` 를 한 식에 여럿 묶으면 Linux Swift 타입체커가 시간 초과한다(CI 2026-10-27) — 단계별 append 로 쓴다.
+        var lines: [String] = ["hande ios diagnostics \(stamp) device=\(deviceId) actor=\(actor) phase=\(phase)"]
+        lines.append("rooms:")
+        lines.append(contentsOf: roomLines)
+        lines.append("invites:")
+        lines.append(contentsOf: inviteLines)
+        lines.append("log:")
+        lines.append(contentsOf: diagnostics)
+        return lines.joined(separator: "\n")
     }
 
     // MARK: - 로비 key package (#380 P5-3)
