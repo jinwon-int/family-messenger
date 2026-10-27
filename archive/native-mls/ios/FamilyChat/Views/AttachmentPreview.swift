@@ -31,7 +31,17 @@ final class AttachmentPreviewCache {
 
     private let cache = NSCache<NSString, Entry>()
 
-    init(countLimit: Int = 300) { cache.countLimit = countLimit }
+    /// 사진을 키우며(긴 변 360pt) 축소 비트맵도 커졌다(3배 화면 ≈ 1080px) — 개수 상한만으로는 수백 MB 가 될 수 있어 비트맵 바이트로도 묶는다.
+    init(countLimit: Int = 300, totalCostLimit: Int = 128 * 1024 * 1024) {
+        cache.countLimit = countLimit
+        cache.totalCostLimit = totalCostLimit
+    }
+
+    /// 캐시 비용 = 축소 비트맵의 픽셀 바이트(RGBA) — 공유 파일은 디스크라 세지 않는다.
+    static func cost(of preview: AttachmentPreview) -> Int {
+        guard let cg = preview.thumbnail?.cgImage else { return 1 }
+        return max(1, cg.bytesPerRow * cg.height)
+    }
 
     private static func key(room: RoomID, seq: Int64) -> NSString { "\(room)\u{1F}\(seq)" as NSString }
 
@@ -47,7 +57,7 @@ final class AttachmentPreviewCache {
             return AttachmentPreview(thumbnail: thumbnail, shareURL: AttachmentExport.temporaryURL(for: record, bytes: bytes),
                                      mime: record.body, size: bytes.count)
         }.value
-        cache.setObject(Entry(made), forKey: Self.key(room: record.room, seq: record.seq))
+        cache.setObject(Entry(made), forKey: Self.key(room: record.room, seq: record.seq), cost: Self.cost(of: made))
         return made
     }
 }
@@ -55,8 +65,14 @@ final class AttachmentPreviewCache {
 /// 말풍선용 축소 디코드(ImageIO). 원본(최대 5 MiB, 수천만 화소)을 비트맵으로 펼치지 않고 긴 변 = 말풍선 최대 크기 × 화면 배율로만 만든다.
 /// EXIF 방향은 반영한다. 전체 화면 보기는 누를 때 원본을 따로 디코드한다(확대용).
 enum AttachmentThumbnail {
-    /// 말풍선의 이미지 최대 변(pt) — `AttachmentBubble` 의 frame 과 같다.
-    static let maxPoints: CGFloat = 220
+    /// 말풍선 안 사진의 최대 가로·세로(pt) — `AttachmentBubble` 의 frame 과 같다. 오너 요청(2026-10-27): 종전 220pt 정사각형 →
+    /// 가로 280 · 세로 360(세로 사진이 좁아지지 않게 세로를 더 준다). 좁은 화면에서는 SwiftUI 가 남은 폭에 맞춰 줄인다.
+    static let maxWidth: CGFloat = 280
+    static let maxHeight: CGFloat = 360
+    /// 축소 디코드의 긴 변(pt) = 위 둘 중 큰 값.
+    static let maxPoints: CGFloat = 360
+    /// 사진 모서리 — 말풍선 곡률(BubbleShape 18pt) − 사진 말풍선 여백(3pt).
+    static let cornerRadius: CGFloat = 15
 
     static func make(_ data: Data, scale: CGFloat, maxPoints: CGFloat = AttachmentThumbnail.maxPoints) -> UIImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
