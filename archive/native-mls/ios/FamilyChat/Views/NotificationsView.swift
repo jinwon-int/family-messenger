@@ -7,6 +7,8 @@ import FamilyMLSCore
 struct NotificationsView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
+    /// 「진단 기록 복사」 뒤 잠깐 보이는 「복사했습니다」(#535).
+    @State private var copied = false
 
     var body: some View {
         NavigationStack {
@@ -22,6 +24,22 @@ struct NotificationsView: View {
                 }
                 Section {
                     Text(Strings.notifyHint).font(.footnote).foregroundStyle(.secondary)
+                }
+                // #535: DevTools/Xcode 없이 실패 사유를 보고 — 기기·방·초대 상태 + 최근 기록을 클립보드로(비밀값 없음).
+                Section {
+                    Button {
+                        UIPasteboard.general.string = model.diagnosticsReport()
+                        copied = true
+                        Task { try? await Task.sleep(nanoseconds: 2_000_000_000); copied = false }
+                    } label: {
+                        HStack {
+                            Label(Strings.notifyCopyLogs, systemImage: "doc.on.doc")
+                            Spacer()
+                            if copied { Text(Strings.notifyCopied).font(.footnote).foregroundStyle(.secondary) }
+                        }
+                    }
+                    .accessibilityIdentifier("notify-copy-logs")
+                    Text(Strings.notifyCopyLogsHint).font(.footnote).foregroundStyle(.secondary)
                 }
             }
             .navigationTitle(Strings.notifyTitle)

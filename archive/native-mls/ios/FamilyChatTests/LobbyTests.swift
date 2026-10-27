@@ -200,6 +200,35 @@ final class LobbyTests: XCTestCase {
         XCTAssertTrue(model.pendingInvites.isEmpty, "dismissed for this session")
         XCTAssertEqual(try state.generation(room: "ops-yukson"), generation, "no automatic attempt on a dismissed invite")
     }
+
+    /// #530(웹 #531 과 동일): 제거→재초대 뒤 한 방에 옛 Welcome(seq 2)과 새 Welcome(seq 4)이 함께 오면 **seq 최대인 것만** 시도한다 —
+    /// 옛 것의 로비 키 비밀은 이미 없으므로 거기서 시도하면 실패 기록이 옛 seq 에 붙고 새 것은 묻힌다. 진단 보고서(#535)가 그 선택·실패
+    /// 사유·방/초대 상태를 담는지도 여기서 본다(가짜 엔진이라 join 은 notJoined 로 끝난다).
+    func testOnlyTheNewestWelcomePerRoomIsTriedAndTheDiagnosticsReportSaysSo() async throws {
+        let relay = CountingRelay()
+        let (model, _, cursors) = makeModel(actor: "owner", relay: relay)
+        await model.bootstrap(); model.login(.bearer("t")); await model.refresh()
+        let old = relay.inner.seedWelcome(room: "ops-yukson", target: model.deviceId)
+        let newest = relay.inner.seedWelcome(room: "ops-yukson", target: model.deviceId)
+        XCTAssertLessThan(old, newest)
+        let listed = try await relay.lobbyWelcomes(device: model.deviceId)
+        XCTAssertEqual(listed.map(\.seq), [old, newest], "the relay lists both unread Welcomes")
+
+        await model.refresh()
+        XCTAssertEqual(model.pendingInvites.map(\.seq), [newest], "only the newest Welcome of the room is an invite")
+        XCTAssertEqual(model.inviteStates["ops-yukson"], AppModel.InviteState.failed(tries: 1, reason: Strings.notJoined))
+        XCTAssertEqual(try cursors.cursor(room: "ops-yukson"), newest, "the sync read up to the newest Welcome")
+
+        let report = model.diagnosticsReport(now: Date(timeIntervalSince1970: 0))
+        XCTAssertTrue(report.hasPrefix("hande ios diagnostics 1970-01-01T00:00:00Z device=\(model.deviceId) actor=owner phase=ready"), report)
+        XCTAssertTrue(report.contains("\nops-yukson: joined=false halted=false cursor=\(newest) epoch="), report)
+        XCTAssertTrue(report.contains("\ninvites:\nops-yukson: seq \(newest) epoch 2 failed 1x (\(Strings.notJoined))"), report)
+        XCTAssertTrue(report.contains("lobby: 2 welcomes, 1 older per-room duplicates ignored"), report)
+        XCTAssertTrue(report.contains("lobby ops-yukson: adopt failed seq \(newest) try 1 — \(Strings.notJoined)"), report)
+        XCTAssertFalse(report.contains("adopt failed seq \(old)"), "the stale Welcome was never tried")
+        XCTAssertTrue(report.contains("lobby replenish: live 8 protect 0 prune=true"), report)
+        XCTAssertFalse(report.contains("Bearer"), "no credential material in the report")
+    }
 }
 
 // MARK: - 대역
