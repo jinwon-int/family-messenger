@@ -79,7 +79,7 @@ class MessageDb(context: Context, private val myDevice: () -> String?) : SQLiteO
             val out = ArrayList<MessageUi>(c.count)
             while (c.moveToNext()) {
                 val sender = c.getString(1)
-                val attachment = c.getString(2) == KIND_ATTACHMENT
+                val attachment = c.getString(2).let { it == KIND_ATTACHMENT || it == MessageSchema.KIND_FILE_V2 }
                 out += MessageUi(c.getLong(0), sender, c.getString(3), mine = MessageSchema.isMine(sender, me), attachment = attachment)
             }
             out
@@ -130,8 +130,8 @@ class MessageDb(context: Context, private val myDevice: () -> String?) : SQLiteO
 
     companion object {
         private const val TAG = "hande.db"
-        const val KIND_TEXT = "text"
-        const val KIND_ATTACHMENT = "attachment"
+        const val KIND_TEXT = MessageSchema.KIND_TEXT
+        const val KIND_ATTACHMENT = MessageSchema.KIND_ATTACHMENT
         private const val LEGACY_SUFFIX = ".messages"
         private fun now() = System.currentTimeMillis() / 1000.0
     }
