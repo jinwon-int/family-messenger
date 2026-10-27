@@ -394,6 +394,16 @@ public final class RoomSyncEngine {
                     record = MessageRecord(room: room, seq: ev.seq, senderDevice: decrypted.senderDevice, clientId: ev.clientId,
                                            kind: .attachment, body: AttachmentFormat.sniffMime(decrypted.plaintext),
                                            attachment: decrypted.plaintext, receivedAt: sentAt, decryptedBy: configuration.decryptedBy)
+                } else if FileV2Format.isFileV2Message(clientId: ev.clientId) {
+                    // file-v2(#499): 평문 = 파일 키가 든 설명자 — 어떤 경우에도 .text 로 두지 않는다(화면·NSE 알림·DB 유출).
+                    // 해독 자체는 성공했으므로 ok 는 그대로(ack 정상 진행, FILE-V2.md §4-1).
+                    if FileV2Format.isClientId(ev.clientId), let descriptor = try? FileV2Format.parseDescriptor(decrypted.plaintext) {
+                        record = MessageRecord(room: room, seq: ev.seq, senderDevice: decrypted.senderDevice, clientId: ev.clientId,
+                                               kind: .fileV2, body: descriptor.mime ?? "",
+                                               attachment: decrypted.plaintext, receivedAt: sentAt, decryptedBy: configuration.decryptedBy)
+                    } else {
+                        record = undecryptable(ev, reason: "file_v2_descriptor")
+                    }
                 } else {
                     record = MessageRecord(room: room, seq: ev.seq, senderDevice: decrypted.senderDevice, clientId: ev.clientId,
                                            kind: .text, body: String(decoding: decrypted.plaintext, as: UTF8.self),

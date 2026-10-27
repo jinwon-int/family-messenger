@@ -153,7 +153,8 @@ final class NotificationProcessor {
         switch record.kind {
         case .text, .system:
             body = record.body.isEmpty ? Strings.pushFallbackBody : record.body
-        case .attachment:
+        case .attachment, .fileV2:
+            // fileV2 의 body 는 보낸 쪽 mime 힌트(설명자 JSON·키는 attachment 칸에만) — 「사진」/「파일」 문구만 고른다.
             body = Self.isImage(record.body) ? Strings.pushPhoto : Strings.pushFile
         case .undecryptable:
             return nil

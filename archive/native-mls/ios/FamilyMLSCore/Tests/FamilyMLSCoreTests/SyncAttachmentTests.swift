@@ -168,4 +168,54 @@ final class SyncAttachmentTests: XCTestCase {
         XCTAssertEqual(stored.body, AttachmentFormat.fallbackMime)
         XCTAssertEqual(stored.attachment, Data([0x00, 0x01, 0x02]))
     }
+
+    // MARK: 수신 — file-v2(#499): 설명자(파일 키)는 어떤 경우에도 .text 로 저장되지 않는다
+
+    func testIncomingFileV2IsStoredAsDescriptorNeverText() async throws {
+        let h = try joinedHarness()
+        let descriptor = Data(FileV2FormatTests.desc(#","mime":"image/jpeg","name":"사진.jpg""#).utf8)
+        let seq = h.relay.inject(device: alice, kind: .application, bytes: ciphertext(from: alice, bytes: descriptor),
+                                 clientId: FileV2FormatTests.clientId)
+        let pass = try await h.sync.syncOnce()
+        XCTAssertEqual(pass.inserted, [seq])
+        let stored = try XCTUnwrap(h.messages.messages(room: h.room, after: 0, limit: 10).first)
+        XCTAssertEqual(stored.kind, .fileV2)
+        XCTAssertEqual(stored.body, "image/jpeg", "display hint only — never the descriptor JSON")
+        XCTAssertFalse(stored.body.contains(FileV2FormatTests.key))
+        XCTAssertEqual(stored.attachment, descriptor, "history keeps the descriptor only (FILE-V2.md §4-2)")
+        XCTAssertEqual(stored.clientId, FileV2FormatTests.clientId)
+        XCTAssertEqual(stored.senderDevice, alice)
+    }
+
+    func testIncomingFileV2WithoutMimeHasEmptyBody() async throws {
+        let h = try joinedHarness()
+        h.relay.inject(device: alice, kind: .application, bytes: ciphertext(from: alice, bytes: Data(FileV2FormatTests.minimal.utf8)),
+                       clientId: FileV2FormatTests.clientId)
+        _ = try await h.sync.syncOnce()
+        let stored = try XCTUnwrap(h.messages.messages(room: h.room, after: 0, limit: 10).first)
+        XCTAssertEqual(stored.kind, .fileV2)
+        XCTAssertEqual(stored.body, "")
+    }
+
+    func testIncomingBadFileV2IsUndecryptableAndDropsThePlaintext() async throws {
+        let h = try joinedHarness()
+        let cases: [(String, String)] = [
+            (FileV2FormatTests.clientId, FileV2FormatTests.minimal.replacingOccurrences(of: #""v":2"#, with: #""v":3"#)),
+            (FileV2FormatTests.clientId, "hello \(FileV2FormatTests.key)"),
+            ("file-v2-not-a-uuid", FileV2FormatTests.minimal),   // 접두는 맞지만 정규형이 아님 — 글로 열지 않는다
+        ]
+        var seqs: [Int64] = []
+        for (clientId, text) in cases {
+            seqs.append(h.relay.inject(device: alice, kind: .application, bytes: ciphertext(from: alice, bytes: Data(text.utf8)), clientId: clientId))
+        }
+        let pass = try await h.sync.syncOnce()
+        XCTAssertEqual(pass.inserted, seqs, "decryption succeeded — the pass still advances (ack)")
+        let stored = try h.messages.messages(room: h.room, after: 0, limit: 10)
+        XCTAssertEqual(stored.map(\.kind), [.undecryptable, .undecryptable, .undecryptable])
+        for record in stored {
+            XCTAssertEqual(record.body, "file_v2_descriptor")
+            XCTAssertNil(record.attachment)
+            XCTAssertFalse(record.body.contains(FileV2FormatTests.key))
+        }
+    }
 }

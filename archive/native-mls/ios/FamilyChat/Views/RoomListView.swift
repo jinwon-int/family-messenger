@@ -161,7 +161,7 @@ struct CampfireCard: View {
     private var preview: String {
         if out { return Strings.roomClosedPreview }
         guard let last = glance.last else { return Strings.roomNoMessages }
-        let body = last.kind == .attachment ? Strings.attachmentImage : last.body
+        let body = last.kind.isFile ? Strings.attachmentImage : last.body
         return Strings.previewLine(name: AgentRosterNames.person(last.senderDevice), body: body)
     }
 }

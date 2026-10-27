@@ -233,6 +233,6 @@ struct LastSentBar: View {
     }
 
     private var preview: String {
-        lastSent.record.kind == .attachment ? Strings.attachmentImage : lastSent.record.body.replacingOccurrences(of: "\n", with: " ")
+        lastSent.record.kind.isFile ? Strings.attachmentImage : lastSent.record.body.replacingOccurrences(of: "\n", with: " ")
     }
 }

@@ -124,9 +124,9 @@ public struct LastSent: Equatable {
     public static func find(_ records: [MessageRecord], myDevice: DeviceID) -> LastSent? {
         guard !myDevice.isEmpty else { return nil }
         guard let index = records.lastIndex(where: { r in
-            r.isMine(device: myDevice) && (r.kind == .attachment || (r.kind == .text && AgentApproval.reply(in: r.body) == nil))
+            r.isMine(device: myDevice) && (r.kind.isFile || (r.kind == .text && AgentApproval.reply(in: r.body) == nil))
         }) else { return nil }
-        let replies = records[(index + 1)...].filter { !$0.isMine(device: myDevice) && ($0.kind == .text || $0.kind == .attachment) }.count
+        let replies = records[(index + 1)...].filter { !$0.isMine(device: myDevice) && ($0.kind == .text || $0.kind.isFile) }.count
         return LastSent(record: records[index], repliesAfter: replies)
     }
 }
@@ -140,7 +140,7 @@ public enum AgentThinking {
     /// · 그 글이 `window` 안이다. 에이전트의 마지막 글이 열린 승인 요청이면 "내 차례"라 nil.
     public static func agent(_ records: [MessageRecord], roster: AgentRoster, myDevice: DeviceID, now: Date) -> DeviceID? {
         guard !myDevice.isEmpty else { return nil }
-        let visible = records.filter { $0.kind == .text || $0.kind == .attachment }
+        let visible = records.filter { $0.kind == .text || $0.kind.isFile }
         guard let last = visible.last, last.isMine(device: myDevice), last.kind == .text else { return nil }
         guard now.timeIntervalSince(last.receivedAt) < window else { return nil }
         guard let agent = visible.last(where: { roster.isAgent($0) }) else { return nil }
