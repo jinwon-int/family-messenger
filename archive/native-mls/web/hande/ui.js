@@ -10,6 +10,7 @@ import { pickTransferFile, transferHasFiles } from './composer-files.js';
 import { lastSentView, collapsedKey } from './last-sent.js';
 import {fileboxRefreshUrl} from './filebox.js';
 import {parseBlocks, inlineSpans, hasMarkdown} from './agent-markdown.js';
+import {isCaretMode} from './timeline-caret.js';
 
 // ---- DOM 도우미 ----
 
@@ -491,7 +492,8 @@ function updateTimeline(oldWrap, freshWrap) {
   const list = oldWrap.querySelector('.timeline');
   const freshList = freshWrap.querySelector('.timeline');
   const badge = oldWrap.querySelector('.new-messages');
-  const near = isNearBottom(list);
+  // 캐럿 모드(#284·#478)에서는 맨 아래에 있어도 새 메시지로 끌어내리지 않는다 — 선택하던 자리를 지킨다(패밀리챗 ui.js 와 같음, #541).
+  const near = isNearBottom(list) && !isCaretMode(list);
   const top = list.scrollTop;
   const height = list.scrollHeight;
   const anchor = near ? null : firstVisibleRow(list);

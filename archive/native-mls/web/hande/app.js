@@ -9,6 +9,7 @@ import * as ui from './ui.js';
 import {strings, displayName, isAgentDevice, isMine, isOneToOne, roomLabel, previewLine, relativeTime} from './strings.js';
 import {orderRooms, moveRoom, readRoomOrder, writeRoomOrder} from './room-order.js';
 import {readDraft, writeDraft} from './drafts.js';
+import {readReadSeq, writeReadSeq, latestSeq, isUnread} from './read-seq.js';
 import {createWorkerBridge} from './worker-bridge.js';
 import {createRelay} from './relay.js';
 import {createIdentityStore, databaseFor, ROOM, IDENTITY_DATABASE, LOBBY_DATABASE} from './identity.js';
@@ -36,7 +37,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   const app = {
     phase: 'starting', message: strings.app.starting, error: null, fatal: null,
     actor: null, device: null, subject: null, defaultRoom: DEFAULT_ROOM, dev: null,
-    rooms: new Map(),          // roomId → {session, entries, entryKeys, unread, order}
+    rooms: new Map(),          // roomId → {session, entries, entryKeys, readSeq, order}
     current: null, roomOpen: false, draft: new Map(), sending: false,
     invites: [], adoptFailed: new Map(), dismissed: new Set(), lobbyDue: true, pendingWelcomeRefs: {set: new Set(), complete: true},
     filebox: null, boxOpen: false, boxRefresh: 0,   // 오른쪽 파일보관함 pane (config.json filebox)
@@ -83,7 +84,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     return {roomId, name: roomLabel(roomId), emoji: halted ? '🪵' : '🔥',
       // 1:1 방은 상대가 한 명뿐이라 「이름: 」 접두를 빼고 내용만(2026-10-26 오너).
       preview: last ? previewLine(isOneToOne(S.roster) ? '' : last.senderName, body) : (S.joined ? strings.rooms.noMessages : strings.room.notJoined),
-      time: last?.ts ? relativeTime(last.ts, Date.now()) : '', unread: R.unread && !(app.roomOpen && app.current === roomId),
+      time: last?.ts ? relativeTime(last.ts, Date.now()) : '', unread: isUnread(R.entries, R.readSeq) && !(app.roomOpen && app.current === roomId),
       state: halted ? 'halted' : S.joined ? 'joined' : 'pending', hasAgent: S.roster.some(isAgentDevice), members: S.roster.length, order: R.order};
   }
   /** 대화 목록에서 방 하나를 옮긴다 — 화면은 즉시, 저장은 이 기기 localStorage(패밀리챗 moveRoomInList). */
@@ -153,7 +154,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       size: m.size ?? 0, image: null, replay: !!m.replay, load: m.load ?? null, fileName: m.fileName ?? null};
     R.entries.push(entry);
     R.entries.sort((a, b) => (a.seq ?? Infinity) - (b.seq ?? Infinity) || 0);
-    if (!entry.isMe && (entry.kind === 'text' || entry.kind === 'attachment') && !(app.roomOpen && app.current === roomId)) R.unread = true;
+    // 안 읽음은 readSeq 로 판정한다(#541) — 새로고침 뒤 다시 들어오는 보관 이력이 N 배지를 켜지 않게. 열린 방이면 바로 본 것.
+    if (app.roomOpen && app.current === roomId) markRoomRead(roomId);
     if (shouldPreview(entry)) {   // attachment-view.js: up to MAX_ATTACHMENT, by content only
       entry.load().then(bytes => {
         const type = imageType(bytes);
@@ -181,7 +183,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     if (R && !opts.replace) return R;
     if (R) { R.session.stop(); app.rooms.delete(roomId); }
     const session = newSession(roomId);
-    R = {session, entries: [], entryKeys: new Set(), unread: false, order: app.rooms.size};
+    R = {session, entries: [], entryKeys: new Set(), readSeq: readReadSeq(storage, app.device, roomId), order: app.rooms.size};
     app.rooms.set(roomId, R); writeKnown();
     // 새로고침 뒤에도 쓰던 글이 남는다(#480 B) — 메모리 초안이 없을 때만 저장분을 올린다.
     if (!app.draft.has(roomId)) { const saved = readDraft(storage, app.device, roomId); if (saved) app.draft.set(roomId, saved); }
@@ -195,7 +197,12 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   function openRoomScreen(roomId) {
     app.boxOpen = false;   // 좁은 화면: 보관함 대신 대화를 보인다
     if (!app.rooms.has(roomId)) return;
-    app.current = roomId; app.roomOpen = true; app.rooms.get(roomId).unread = false; render();
+    app.current = roomId; app.roomOpen = true; markRoomRead(roomId); render();
+  }
+  /** 이 방을 화면 타임라인의 마지막 seq 까지 봤다(iOS LocalPrefs.markRead — 줄어들지 않음, 이 기기 localStorage). */
+  function markRoomRead(roomId) {
+    const R = app.rooms.get(roomId);
+    if (R) R.readSeq = writeReadSeq(storage, app.device, roomId, latestSeq(R.entries), R.readSeq);
   }
 
   // ---- phases ----
@@ -274,7 +281,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       // Known rooms open first (their own 4 s polling); the default room is always known.
       const known = new Set(readKnown()); if (opened.migrated || known.size === 0) known.add(app.defaultRoom);
       for (const roomId of known) { try { await ensureRoom(roomId); } catch (error) { logLine(`방 ${roomId} 열기 실패: ${error.message}`); } }
-      if (window.matchMedia?.('(min-width: 900px)').matches && app.rooms.size) { app.current = [...app.rooms.keys()][0]; app.roomOpen = true; }
+      if (window.matchMedia?.('(min-width: 900px)').matches && app.rooms.size) { app.current = [...app.rooms.keys()][0]; app.roomOpen = true; markRoomRead(app.current); }
       await refresh();
       app.tick = setInterval(() => refresh().catch(() => {}), TICK_MS);
       render();
@@ -389,7 +396,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     const s = cur();
     if (!s || app.sending) return false;
     app.sending = true; render();
-    try { await s.send(text); app.draft.set(app.current, ''); writeDraft(storage, app.device, app.current, ''); app.rooms.get(app.current).unread = false; return true; }
+    try { await s.send(text); app.draft.set(app.current, ''); writeDraft(storage, app.device, app.current, ''); markRoomRead(app.current); return true; }
     catch (error) { status(error.message, 'danger'); return false; }
     finally { app.sending = false; render(); }
   }
