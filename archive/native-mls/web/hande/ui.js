@@ -260,18 +260,31 @@ function syncText(sync) {
   return strings.sync.never;
 }
 
+/** 🔔 알림 버튼(#521): 받은 초대 수를 배지로. */
+function bellButton(count, onOpen) {
+  const label = strings.notify.button(count);
+  return el('button', { type: 'button', class: 'icon ghost tool bell', 'aria-label': label, title: label, 'data-testid': 'open-notify', onclick: () => onOpen?.() },
+    '🔔', count > 0 ? el('span', { class: 'unread-badge bell-badge', 'aria-hidden': 'true' }, String(count > 99 ? '99+' : count)) : null);
+}
+/** 초대 처리 상태 한 줄: 수락 중 / 자동 수락 실패 n회(사유). 상태가 없으면 비운다. */
+function inviteState(invite) {
+  if (invite.busy) return el('p', { class: 'hint invite-state', role: 'status' }, strings.notify.inviteBusy);
+  if (invite.failed) return el('p', { class: 'feedback invite-state', role: 'status' }, strings.notify.inviteFailed(invite.failed.tries, invite.failed.reason));
+  return null;
+}
 /** 로비 초대 카드(#431 4단계): 운영자/봇이 로비 키로 보낸 새 대화방 Welcome — 수락 1탭 또는 무시. */
 function inviteCard(invite) {
   return el('li', { class: 'invite-item', 'data-testid': 'lobby-invite', 'data-room-id': invite.room },
     el('p', { class: 'invite-head' }, el('span', { class: 'fire', 'aria-hidden': 'true' }, '🔥'), el('strong', {}, invite.name || invite.room)),
     el('p', { class: 'hint' }, strings.lobby.inviteBody(invite.name || invite.room)),
+    inviteState(invite),
     invite.message ? el('p', { class: 'feedback', role: 'alert' }, invite.message) : null,
     el('div', { class: 'actions' },
-      el('button', { type: 'button', class: 'primary', 'data-testid': 'invite-accept', disabled: invite.busy ? 'disabled' : null, onclick: () => invite.onAccept?.() }, strings.lobby.accept),
+      el('button', { type: 'button', class: 'primary', 'data-testid': 'invite-accept', disabled: invite.busy ? 'disabled' : null, onclick: () => invite.onAccept?.() }, invite.failed ? strings.notify.retry : strings.lobby.accept),
       el('button', { type: 'button', class: 'ghost', 'data-testid': 'invite-ignore', disabled: invite.busy ? 'disabled' : null, onclick: () => invite.onIgnore?.() }, strings.lobby.ignore)));
 }
 
-function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu, onOpenJoin, onOpenCreate, onOpenBox = null, sync = null, notice = null, deviceLabel = '', invites = [], orderEditing = false, onToggleOrderEdit = null, onMoveRoom = null }) {
+function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu, onOpenJoin, onOpenCreate, onOpenBox = null, sync = null, notice = null, deviceLabel = '', invites = [], orderEditing = false, onToggleOrderEdit = null, onMoveRoom = null, onOpenNotify = null }) {
   const syncLabel = syncText(sync);
   const syncTone = sync?.reconnecting ? 'warn' : sync?.offlineSince ? 'danger' : 'ok';
   // 순서 편집은 방이 2개 이상이고 핸들러가 있을 때만(패밀리챗과 같음).
@@ -279,7 +292,7 @@ function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu,
   const editing = canReorder && orderEditing;
   // 서명에서 동기화 줄(syncLabel·syncTone)은 뺀다 — 마지막 동기화 시각은 몇 초마다 바뀌어, 넣으면 pane 전체가
   // 동기화마다 교체돼 포커스·순서 편집이 끊긴다. 그 줄은 updateListPane 이 따로 갈아 끼운다.
-  const frame = JSON.stringify([notice ? [notice.text, notice.tone] : null, rooms.length > 0, deviceLabel, Boolean(onOpenBox), canReorder, editing, invites.map((i) => [i.room, i.name ?? null, i.message ?? null, Boolean(i.busy)])]);
+  const frame = JSON.stringify([notice ? [notice.text, notice.tone] : null, rooms.length > 0, deviceLabel, Boolean(onOpenBox), canReorder, editing, invites.map((i) => [i.room, i.name ?? null, i.message ?? null, Boolean(i.busy), i.failed ? [i.failed.tries, i.failed.reason ?? null] : null]), Boolean(onOpenNotify)]);
   const body = rooms.length === 0
     ? el('div', { class: 'empty campfire-empty' }, el('span', { class: 'big-fire', 'aria-hidden': 'true' }, '🪵'), el('p', { class: 'empty-title' }, strings.rooms.empty), el('p', { class: 'hint' }, strings.rooms.noRooms))
     : el('ul', { class: 'rooms', 'aria-label': strings.rooms.listLabel }, rooms.map((room, index) => roomListItem(room, onSelect, room.roomId === currentRoomId,
@@ -290,6 +303,7 @@ function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu,
       el('div', { class: 'tools', role: 'group', 'aria-label': strings.rooms.actions },
         canReorder ? el('button', { type: 'button', class: editing ? 'primary small order-toggle' : 'ghost small order-toggle', 'aria-pressed': editing ? 'true' : 'false', 'aria-label': editing ? strings.rooms.orderDoneLabel : strings.rooms.orderEditLabel, title: editing ? strings.rooms.orderDoneLabel : strings.rooms.orderEditLabel, 'data-testid': 'order-toggle', onclick: () => onToggleOrderEdit() },
           editing ? strings.rooms.orderDone : [el('span', { class: 'order-icon', 'aria-hidden': 'true' }, strings.rooms.orderEditIcon), el('span', { class: 'order-label' }, strings.rooms.orderEdit)]) : null,
+        onOpenNotify ? bellButton(invites.length, onOpenNotify) : null,
         toolButton('🔑', strings.rooms.join, 'open-join', onOpenJoin),
         toolButton('🔥', strings.rooms.create, 'open-create', onOpenCreate),
         onOpenBox ? toolButton('🗂', strings.box.toggle, 'open-box', onOpenBox) : null,
@@ -866,6 +880,20 @@ export function openMenuSheet(root, { items, onClose }) {
   setChildren(dialog,
     el('h2', { id: 'menu-title' }, strings.menu.title),
     el('div', { class: 'menu-items' }, items.map((item) => el('button', { type: 'button', class: item.tone === 'danger' ? 'danger block' : 'block', onclick: () => { close(); item.run?.(); } }, item.label))),
+    closeRow(close));
+  return { close };
+}
+
+/** 🔔 알림 시트(#521): 받은 초대 목록 — 수락/다시 시도/무시. 누르면 닫고 처리한다(결과는 목록·배지에 반영). */
+export function openNotifySheet(root, { invites = [], onClose }) {
+  const { dialog, close } = openSheet(root, { className: 'notify', labelledBy: 'notify-title', onClose });
+  const wrapped = invites.map((i) => ({ ...i, onAccept: () => { close(); i.onAccept?.(); }, onIgnore: () => { close(); i.onIgnore?.(); } }));
+  setChildren(dialog,
+    el('h2', { id: 'notify-title' }, strings.notify.title),
+    wrapped.length === 0
+      ? el('p', { class: 'hint', 'data-testid': 'notify-empty' }, strings.notify.empty)
+      : el('ul', { class: 'invite-list', 'aria-label': strings.notify.inviteNew }, wrapped.map(inviteCard)),
+    el('p', { class: 'hint' }, strings.notify.hint),
     closeRow(close));
   return { close };
 }

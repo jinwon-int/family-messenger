@@ -453,6 +453,17 @@ export const strings = {
     keys: (live) => (live === null || live === undefined ? '확인 전' : `${live}개`),
     hint: '로비 키는 이 기기의 공개 키 패키지입니다. 운영자가 steward 봇에게 지시하면 이 키로 새 대화방에 초대됩니다(오너 기기는 자동 가입, 가족 기기는 수락 1탭). 앱을 열 때마다 모자란 만큼 채웁니다.',
   },
+  // 🔔 알림(#521): 받은 초대와 그 처리 상태 — 오너 기기의 자동 참여가 실패해도 로그가 아니라 여기 남는다.
+  notify: {
+    title: '알림',
+    button: (count) => (count > 0 ? `알림 ${count}건` : '알림'),
+    empty: '새 알림이 없습니다. 받은 초대와 수락 상태가 여기 모입니다.',
+    inviteNew: '새 대화방 초대',
+    inviteBusy: '수락하는 중…',
+    inviteFailed: (tries, reason) => `자동 수락 실패 ${tries}회${reason ? ` — ${reason}` : ''}`,
+    hint: '수락은 이 기기의 로비 키로 보낸 Welcome 을 읽어 대화방에 들어가는 일입니다. 실패해도 키는 지워지지 않으니 「다시 시도」할 수 있습니다.',
+    retry: '다시 시도',
+  },
 
   errors: {
     generic: '문제가 생겼습니다. 잠시 후 다시 시도하세요.',

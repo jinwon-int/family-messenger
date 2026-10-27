@@ -123,8 +123,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       orderEditing: app.orderEditing, onToggleOrderEdit: toggleOrderEdit, onMoveRoom: moveRoomInList,
       sync: {lastSyncAt: anySynced, offlineSince: app.offlineAt, reconnecting: relay.offline},
       notice: app.notice, deviceLabel: app.device,
-      invites: app.invites.filter(i => !app.dismissed.has(i.room)).map(i => ({room: i.room, name: roomLabel(i.room), busy: !!i.busy, message: i.message ?? null,
-        onAccept: () => acceptInvite(i.room), onIgnore: () => { app.dismissed.add(i.room); render(); }})),
+      invites: inviteRows(), onOpenNotify: openNotify,
     };
     const R = app.roomOpen && app.current ? app.rooms.get(app.current) : null;
     const room = R ? (() => {
@@ -317,19 +316,24 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     const invites = [];
     for (const w of welcomes) {
       if (!ROOM.test(w.room)) continue;
-      const failed = app.adoptFailed.get(w.room);
-      if (failed && failed.seq === w.seq && failed.tries >= ADOPT_TRIES) continue;
       const R = app.rooms.get(w.room);
       if (R && R.session.joined) continue;   // joined already — the next ack drops it from the list
-      if (AUTO_JOIN_ACTORS.has(app.actor)) await adoptWelcome(w);
-      else if (!app.dismissed.has(w.room) && !invites.some(i => i.room === w.room)) invites.push({room: w.room, seq: w.seq});
+      if (app.dismissed.has(w.room) || invites.some(i => i.room === w.room)) continue;
+      if (AUTO_JOIN_ACTORS.has(app.actor)) {
+        // Owner devices auto-join; a failure is not silent — the invite stays in the 🔔 list
+        // (and the list card) with its state, where 「다시 시도」 resets the attempt count (#521).
+        const failed = app.adoptFailed.get(w.room);
+        const exhausted = failed && failed.seq === w.seq && failed.tries >= ADOPT_TRIES;
+        if (!exhausted && await adoptWelcome(w)) continue;
+        invites.push({room: w.room, seq: w.seq, failed: {...app.adoptFailed.get(w.room)}});
+      } else invites.push({room: w.room, seq: w.seq});
     }
     // Keep busy/message state of cards still pending.
-    app.invites = invites.map(i => ({...i, ...(app.invites.find(x => x.room === i.room) ?? {})}));
+    app.invites = invites.map(i => ({...(app.invites.find(x => x.room === i.room) ?? {}), ...i}));
   }
-  function adoptFailed(w) {
+  function adoptFailed(w, reason = null) {
     const prev = app.adoptFailed.get(w.room);
-    app.adoptFailed.set(w.room, {seq: w.seq, tries: (prev && prev.seq === w.seq ? prev.tries : 0) + 1});
+    app.adoptFailed.set(w.room, {seq: w.seq, tries: (prev && prev.seq === w.seq ? prev.tries : 0) + 1, reason: reason ?? prev?.reason ?? null});
   }
   /**
    * Room state = lobby clone → cursor before the Welcome → sync that room (join). The lobby
@@ -342,21 +346,29 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       await app.dev.openLobby();
       const R = await ensureRoom(w.room, {from: 'lobby', replace: true, startSeq: w.seq});
       await R.session.sync({quiet: true});
-      if (R.session.joined) { app.adoptFailed.delete(w.room); status(strings.lobby.joined(w.room), 'ok'); app.lobbyDue = true; return true; }
-      adoptFailed(w);
+      if (R.session.joined) { app.adoptFailed.delete(w.room); app.invites = app.invites.filter(i => i.room !== w.room); status(strings.lobby.joined(w.room), 'ok'); app.lobbyDue = true; return true; }
+      adoptFailed(w, strings.room.notJoined);
       return false;
-    } catch (error) { adoptFailed(w); logLine(`로비 초대 수락 실패(${w.room}, seq ${w.seq}, ${app.adoptFailed.get(w.room).tries}/${ADOPT_TRIES}): ${error.message}`); return false; }
+    } catch (error) { adoptFailed(w, error.message); logLine(`로비 초대 수락 실패(${w.room}, seq ${w.seq}, ${app.adoptFailed.get(w.room).tries}/${ADOPT_TRIES}): ${error.message}`); return false; }
   }
+  /** 수락 / 다시 시도 (목록 카드·🔔 시트): a manual attempt always resets the per-session count. */
   async function acceptInvite(roomId) {
     const invite = app.invites.find(i => i.room === roomId);
     if (!invite || invite.busy) return;
-    invite.busy = true; invite.message = null; render();
+    app.adoptFailed.delete(roomId);
+    invite.busy = true; invite.message = null; invite.failed = null; render();
     const ok = await adoptWelcome(invite);
     invite.busy = false;
     if (ok) app.invites = app.invites.filter(i => i.room !== roomId);
-    else invite.message = strings.lobby.acceptFailed(strings.room.notJoined);
+    else { invite.failed = {...app.adoptFailed.get(roomId)}; invite.message = strings.lobby.acceptFailed(invite.failed.reason || strings.room.notJoined); }
     render();
   }
+  function inviteRows() {
+    return app.invites.filter(i => !app.dismissed.has(i.room)).map(i => ({room: i.room, name: roomLabel(i.room), busy: !!i.busy, message: i.message ?? null,
+      failed: i.failed && i.failed.tries ? {tries: i.failed.tries, reason: i.failed.reason ?? null} : null,
+      onAccept: () => acceptInvite(i.room), onIgnore: () => { app.dismissed.add(i.room); render(); }}));
+  }
+  function openNotify() { ui.openNotifySheet(root, {invites: inviteRows(), onClose: () => {}}); }
 
   // ---- actions ----
   const cur = () => app.rooms.get(app.current)?.session;
