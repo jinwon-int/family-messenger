@@ -13,7 +13,7 @@ export const SHELL_ASSETS = [
   './main.js', './app.js', './ui.js', './strings.js', './room.js', './device.js', './relay.js', './identity.js',
   './worker-bridge.js', './attachment-view.js', './agent-markdown.js', './filebox.js', './keyboard.js', './timeline-caret.js',
   './shortcuts.js', './room-order.js', './drafts.js', './composer-files.js', './last-sent.js',
-  './durable-worker.js', './session-store.js', './history-store.js', './commit-policy.js', './relay-attachments.js', './file-v2.js',
+  './durable-worker.js', './session-store.js', './history-store.js', './commit-policy.js', './relay-attachments.js', './file-v2.js', './file-v2-outbox.js',
   './pkg/family_mls_browser_experiment.js', './pkg/family_mls_browser_experiment_bg.wasm', './pkg/custody.js',
 ];
 

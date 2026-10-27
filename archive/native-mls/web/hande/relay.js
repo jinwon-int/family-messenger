@@ -60,5 +60,27 @@ export function createRelay({fetch = globalThis.fetch.bind(globalThis), onOfflin
     }
     return new Uint8Array(await response.arrayBuffer());
   }
-  return {api, roomPath, describe, me, blob, get offline() { return offline; }};
+  /**
+   * file-v2 송신(#499 3단계, FILE-V2.md §3): 암호문 원시 바이트를 POST /v2/rooms/{room}/blobs?device= 로 올린다.
+   * 201(새로 저장)·200(이미 있음 — 내용 주소라 멱등)이면 {status, body:{id,size}}. 그 밖의 상태도 throw 하지 않고
+   * 돌려준다(413 blob_too_large·room_bytes_cap·device_bytes_cap, 403 not_a_member, 410 room_closed). 네트워크 실패는 api() 와 같다.
+   */
+  async function postBlob(room, device, bytes) {
+    const path = `${roomPath(room, 'blobs')}?device=${encodeURIComponent(device)}`;
+    let response;
+    try {
+      response = await fetch(path, {method: 'POST', credentials: 'same-origin',
+        headers: {'Content-Type': 'application/octet-stream'}, body: bytes});
+    } catch (error) {
+      setOffline(true);
+      const wrapped = new Error(strings.relay.networkFailed); wrapped.network = true; wrapped.cause = error;
+      throw wrapped;
+    }
+    setOffline(false);
+    let json = null;
+    try { json = await response.json(); } catch (_) { json = null; }
+    if (response.status === 401) { const e = new Error(strings.relay.unauthorized); e.unauthorized = true; throw e; }
+    return {status: response.status, body: json};
+  }
+  return {api, roomPath, describe, me, blob, postBlob, get offline() { return offline; }};
 }
