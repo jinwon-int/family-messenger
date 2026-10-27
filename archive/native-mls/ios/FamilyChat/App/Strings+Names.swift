@@ -20,11 +20,13 @@ extension Strings {
         "family": "가족",
         "family-acc": "공명✴️",
         "family-card": "💳 가족 카드 알림",
+        "fleet-alerts": "🔔 플릿 알림",
     ]
     /// 알림 전용 서비스 봇 actor → 보여 줄 이름(사람도 에이전트도 아님 — FC_AGENT_ACTORS 에 넣지 않는다). 웹 `serviceNames` 와 같은 표.
     /// `card` = 카드 결제 알림 봇(기기 `card-bot`, 방 `family-card` — Matrix 「💳 가족 카드 알림」과 같은 알림).
     static let serviceNames: [String: String] = [
         "card": "💳 카드 알림",
+        "fleet": "🔔 플릿 알림",
     ]
     /// 보여 줄 방 이름. 모르는 방은 ID 그대로.
     static func roomLabel(_ room: String) -> String { roomNames[room] ?? agentNames[room] ?? room }
