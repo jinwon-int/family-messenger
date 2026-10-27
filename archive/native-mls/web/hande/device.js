@@ -30,6 +30,8 @@ export function createDevice({device, worker, relay, storage, on = {}}) {
     D.fingerprint = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', Uint8Array.from(r.result.public_key))));
     return {fresh: D.fresh, migrated: D.migrated};
   }
+  /** Lobby package ref = sha256 hex of its bytes (base64 string or bytes) — the relay's `ref`. */
+  const refOf = async bytes => hex(new Uint8Array(await crypto.subtle.digest('SHA-256', typeof bytes === 'string' ? unb64(bytes) : bytes)));
   async function openLobby() {
     const r = await worker.call(WORKER, 'open_room', {room: LOBBY_ROOM, database: LOBBY_DATABASE, from: 'identity'});
     if (!r.ok) throw new Error('로비 스토어를 열지 못했습니다');
@@ -60,9 +62,12 @@ export function createDevice({device, worker, relay, storage, on = {}}) {
    * `prune: false` keeps the consumed entries' secrets (and their place in the published
    * list) and only mints: a consumed package may be the one a Welcome this device has not
    * joined yet was built from — deleting its secret makes that Welcome unreadable for good
-   * (#517). The caller passes false while a lobby Welcome is still unadopted.
+   * (#517). `protect` is the precise form: the refs (sha256 hex of the package bytes, what
+   * `GET /v2/lobby/welcomes` reports as `key_package_ref`) whose secrets must stay; they keep
+   * their place at the head of the list and go on the first replenish after the Welcome is
+   * adopted. The caller passes `prune: false` only when a pending Welcome carries no ref.
    */
-  async function replenish(target = LOBBY_TARGET, {prune = true} = {}) {
+  async function replenish(target = LOBBY_TARGET, {prune = true, protect = new Set()} = {}) {
     if (D.lobby.unsupported) return null;
     const st = await relay.api('GET', `/v2/lobby/status?device=${encodeURIComponent(device)}`);
     if (st.status === 404) { D.lobby.unsupported = true; return null; }
@@ -74,10 +79,12 @@ export function createDevice({device, worker, relay, storage, on = {}}) {
     const consumed = Math.min(Math.max(0, published.length - live), published.length);
     let pruned = 0, kept = 0;
     if (prune) {
+      const remaining = [];
       for (const bytes of published.slice(0, consumed)) {
+        if (protect.size && protect.has(await refOf(bytes))) { remaining.push(bytes); kept++; continue; }
         try { await op(worker, LOBBY_ROOM, 'delete_key_package', unb64(bytes)); pruned++; } catch (_) { /* already gone */ }
       }
-      published = published.slice(consumed); writePublished(published);
+      published = remaining.concat(published.slice(consumed)); writePublished(published);
     } else kept = consumed;
     const want = Math.min(target, max) - live;
     const fresh = [];
@@ -89,7 +96,7 @@ export function createDevice({device, worker, relay, storage, on = {}}) {
     let stored = 0;
     if (fresh.length) {
       const packages = [];
-      for (const bytes of fresh) packages.push({ref: hex(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))), bytes: b64(bytes)});
+      for (const bytes of fresh) packages.push({ref: await refOf(bytes), bytes: b64(bytes)});
       const r = await relay.api('POST', '/v2/lobby/keypackages', {device, packages});
       if (r.status === 201 || r.status === 200) { stored = fresh.length; writePublished(published.concat(fresh.map(b64))); }
       else {

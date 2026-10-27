@@ -76,3 +76,24 @@ test('openLobby: 로비 스토어를 identity 사본으로 연다 — adoptWelco
   await dev.openLobby();
   assert.deepEqual(w.opened, [{room: LOBBY_ROOM, database: LOBBY_DATABASE, from: 'identity'}]);
 });
+
+test('replenish({protect}): 수락 안 된 Welcome 의 key_package_ref 에 해당하는 비밀만 남기고 나머지 소비분은 지운다 (#517 정밀 보호)', async () => {
+  const {bridge, w} = fakeWorker(); const relay = fakeRelay(0); const storage = memStorage(); const logs = [];
+  const dev = createDevice({device: 'owner-web-aaaaaa', worker: bridge, relay, storage, on: {log: l => logs.push(l)}});
+  await dev.replenish(LOBBY_TARGET);
+  const refOf = async b64s => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', Uint8Array.from(Buffer.from(b64s, 'base64'))))).map(x => x.toString(16).padStart(2, '0')).join('');
+  const second = await refOf(published(storage)[1]);   // the second-minted package: consumed, but its Welcome is still pending
+  relay.live = 5;
+  const r = await dev.replenish(LOBBY_TARGET, {protect: new Set([second])});
+  assert.deepEqual([r.minted, r.pruned, r.kept, r.live], [3, 2, 1, 8]);
+  assert.deepEqual(w.deleted.map(b => b[0]), [1, 3], '보호된 두 번째 것만 남기고 1·3번을 지운다');
+  const list = published(storage);
+  assert.equal(list.length, 9, '보호된 항목은 목록 선두에 남는다');
+  assert.equal(await refOf(list[0]), second);
+  assert.match(logs.at(-1), /남김/);
+  // Welcome adopted → no longer protected → the next replenish prunes exactly it.
+  const later = await dev.replenish(LOBBY_TARGET);
+  assert.deepEqual([later.minted, later.pruned, later.kept], [0, 1, 0]);
+  assert.deepEqual(w.deleted.map(b => b[0]), [1, 3, 2]);
+  assert.equal(published(storage).length, 8);
+});

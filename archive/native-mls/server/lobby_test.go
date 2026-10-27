@@ -13,6 +13,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -377,6 +378,14 @@ func TestLobbyWelcomesListing(t *testing.T) {
 		}
 		return decodeEventResponse(t, raw).Seq
 	}
+	// x1 published a lobby package that a1 consumed for R before founding it:
+	// the listing names that package so x1 keeps its secret until it joins.
+	if code, raw := doJSON(t, srv, "POST", "/v2/lobby/keypackages", lobbyPublishBody(t, "x1", "kx1", "kx2")); code != http.StatusCreated {
+		t.Fatalf("publish x1: status=%d body=%s", code, raw)
+	}
+	if code, raw := doJSON(t, srv, "GET", "/v2/lobby/keypackages?device=x1&consumer=a1&room=R", nil); code != http.StatusOK {
+		t.Fatalf("consume x1 for R: status=%d body=%s", code, raw)
+	}
 	seqR := found("R", "x1")
 	seqR2 := found("R2", "y1", "x_1")
 	found("R3", "x1")
@@ -392,10 +401,16 @@ func TestLobbyWelcomesListing(t *testing.T) {
 	if len(got) != 1 || got[0].Room != "R" || got[0].Seq != seqR || got[0].Epoch != 1 || got[0].CreatedAt == 0 {
 		t.Fatalf("welcomes x1 = %+v, want exactly {R, seq %d, epoch 1, created_at>0}", got, seqR)
 	}
+	if got[0].KeyPackageRef != "kx1" {
+		t.Fatalf("welcomes x1 key_package_ref = %q, want kx1 (the lobby package a1 consumed for R)", got[0].KeyPackageRef)
+	}
+	if !strings.Contains(string(raw), `"key_package_ref":"kx1"`) {
+		t.Fatalf("welcomes x1 wire = %s, want key_package_ref kx1", raw)
+	}
 	if code, raw := doJSON(t, srv, "GET", "/v2/lobby/welcomes?device=y1", nil); code != http.StatusOK {
 		t.Fatalf("welcomes y1: status=%d body=%s", code, raw)
-	} else if got := decodeWelcomes(t, raw); len(got) != 1 || got[0].Room != "R2" || got[0].Seq != seqR2 {
-		t.Fatalf("welcomes y1 = %+v, want exactly {R2, seq %d}", got, seqR2)
+	} else if got := decodeWelcomes(t, raw); len(got) != 1 || got[0].Room != "R2" || got[0].Seq != seqR2 || got[0].KeyPackageRef != "" {
+		t.Fatalf("welcomes y1 = %+v, want exactly {R2, seq %d, no key_package_ref}", got, seqR2)
 	}
 	// Whole-identifier match: substrings and LIKE-wildcard look-alikes miss.
 	for _, dev := range []string{"x", "1", "x1-", "xz1", "y"} {

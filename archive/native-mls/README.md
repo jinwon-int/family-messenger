@@ -68,7 +68,8 @@ Welcome 타깃 필터링, 바이트 기준 보존/프루닝, `BEGIN IMMEDIATE`(`
 - `DELETE /v2/lobby/keypackages?device=` — 이 기기의 **미소비** 로비 키를 모두 거둔다(소비된 행은 Welcome 추적용으로 만료까지 남음).
   `{"device","deleted"}`, 멱등(남은 게 없으면 200 `deleted=0`), 정책 게이트 없음(자기 키 회수). 앱 「이 기기 지우기」가 신원을 버리기 전에 부른다(#389).
 - `GET /v2/lobby/welcomes?device=` — 이 기기를 `targets`로 하는 `welcome` 이벤트 중 기기의 커서가 아직 지나지
-  않은 것(커서 없음 또는 `cursor.seq < seq`)이 있는 **열린** 방 목록
+  않은 것(커서 없음 또는 `cursor.seq < seq`)이 있는 **열린** 방 목록. 각 항목의 `key_package_ref` = 그 방으로 가장 최근에
+  소비된 이 기기의 로비 key package ref(방 key package 로 만든 Welcome 이면 없음) — 클라이언트는 그 비밀을 Welcome 을 받아들일 때까지 지우지 않는다(#517)
   `{"welcomes":[{"room","seq","epoch","created_at"}]}`(오래된 순, 최대 100). 읽기 전용 — 커서는 기존
   `GET /v2/rooms/{room}/events?device=…&ack=`로만 움직이고, Welcome 본문도 그 라우트로 받는다.
 

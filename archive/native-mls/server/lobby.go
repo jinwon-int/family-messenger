@@ -46,6 +46,13 @@ type pendingWelcome struct {
 	Seq       int64  `json:"seq"`
 	Epoch     int64  `json:"epoch"`
 	CreatedAt int64  `json:"created_at"`
+	// KeyPackageRef is the ref of the device's lobby key package most recently
+	// consumed for this room — the one the Welcome was built from when the
+	// inviter took a lobby package (#380). Empty when the Welcome came from a
+	// room key package. Clients keep that package's local secret until the
+	// Welcome is adopted (family-messenger #517: pruning it first made the
+	// Welcome unreadable for good).
+	KeyPackageRef string `json:"key_package_ref,omitempty"`
 }
 
 // lobbyDeleteResponse is DELETE /v2/lobby/keypackages: how many unconsumed
@@ -420,7 +427,8 @@ func (s *relay) deleteLobbyKeyPackages(device string) (int64, error) {
 
 // pendingWelcomes lists, oldest first, the open rooms whose log holds a
 // welcome event targeting device that the device's durable cursor has not
-// passed (no cursor row, or cursor.seq < event.seq). targets is stored as
+// passed (no cursor row, or cursor.seq < event.seq). Each row carries the ref of
+// the device's lobby package last consumed for that room (see pendingWelcome). targets is stored as
 // encodeTargets' comma-joined list; the match is on the whole identifier via
 // instr over ','||targets||',' (LIKE would treat '_' in an identifier as a
 // wildcard). Read-only: the cursor moves only through GET /events?ack=.
@@ -433,7 +441,10 @@ func (s *relay) pendingWelcomes(device string) ([]pendingWelcome, error) {
 	}
 	defer tx.Rollback()
 	rows, err := tx.Query(`
-SELECT e.room, e.seq, e.epoch, e.created_at
+SELECT e.room, e.seq, e.epoch, e.created_at,
+  COALESCE((SELECT k.ref FROM mls_lobby_keypackages k
+            WHERE k.device = ?1 AND k.consumed_room = e.room
+            ORDER BY k.rowid DESC LIMIT 1), '')
 FROM mls_events e
 JOIN mls_rooms r ON r.room = e.room
 LEFT JOIN mls_cursors c ON c.room = e.room AND c.device = ?1
@@ -451,7 +462,7 @@ LIMIT ?2`, device, maxListedWelcomes)
 	out := []pendingWelcome{}
 	for rows.Next() {
 		var pw pendingWelcome
-		if err := rows.Scan(&pw.Room, &pw.Seq, &pw.Epoch, &pw.CreatedAt); err != nil {
+		if err := rows.Scan(&pw.Room, &pw.Seq, &pw.Epoch, &pw.CreatedAt, &pw.KeyPackageRef); err != nil {
 			return nil, err
 		}
 		out = append(out, pw)
