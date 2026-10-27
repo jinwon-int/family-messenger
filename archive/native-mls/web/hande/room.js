@@ -248,7 +248,11 @@ export function createRoomSession({room, device, database, worker, relay, storag
         const data = unb64(ev.bytes);
         if (!S.joined) {
           if (ev.kind === 'welcome') {
-            await roomOp('join', data);
+            // A Welcome this store cannot open (built from a lobby key whose secret is gone —
+            // e.g. the invite before a remove + re-invite, #517/#530) must not end the sync:
+            // the re-invite's Welcome follows later in the same log. Skip it and read on.
+            try { await roomOp('join', data); }
+            catch (error) { log(strings.room.welcomeSkipped(ev.seq) + `: ${error.message}`); continue; }
             S.joined = true; S.roster = parseMembers((await roomOp('members')).output); changed();
             log(`참여 완료(seq ${ev.seq}) — 멤버 ${S.roster.join(', ')}`);
           }

@@ -18,7 +18,7 @@ const frameMembers = members => {
 };
 const memStorage = () => { const m = new Map(); return {getItem: k => m.has(k) ? m.get(k) : null, setItem: (k, v) => m.set(k, String(v)), removeItem: k => m.delete(k), map: m}; };
 
-function fakeWorker({fresh = true, group = null, decrypt = () => ({sender: 'owner-pc', client: 'owner-pc'})} = {}) {
+function fakeWorker({fresh = true, group = null, decrypt = () => ({sender: 'owner-pc', client: 'owner-pc'}), joinRefuses = () => false} = {}) {
   const w = {group, calls: [], history: [], spawned: true, pendingGroup: null, acked: [], opened: [], reset: []};
   const bridge = {
     has: () => w.spawned, spawn: async () => { w.spawned = true; }, stop: () => { w.spawned = false; },
@@ -42,7 +42,7 @@ function fakeWorker({fresh = true, group = null, decrypt = () => ({sender: 'owne
         case 'members': return w.group ? out(frameMembers(w.group)) : {ok: false};
         case 'members_after_pending': return out(frameMembers(w.pendingGroup ?? w.group));
         case 'create': w.group = ['owner-web-aaaaaa']; return out();
-        case 'join': w.group = ['bot-1', 'owner-pc', 'owner-web-aaaaaa']; return out();
+        case 'join': if (joinRefuses(bytes)) return {ok: false, stage: 'join', detail: 'no key package secret'}; w.group = ['bot-1', 'owner-pc', 'owner-web-aaaaaa']; return out();
         case 'encrypt': return out(bytes);
         case 'decrypt': { const d = decrypt(bytes); return {ok: true, result: {cursor: 2, output: bytes, ...d}}; }
         case 'key_package': return out([1, 2, 3]);
@@ -109,6 +109,30 @@ test('Welcome joins, application decrypts to a message with ts, history row + re
   assert.ok(relay.calls.some(c => c.path.includes('after=2&ack=2')), 'acks the processed seq');
   assert.equal(s.state.relaySeq, 2);
   assert.equal(s.state.waiting403, false);
+});
+
+test('a Welcome this store cannot open is skipped and the later (re-invite) Welcome joins (#530)', async () => {
+  // The invite before a remove + re-invite left Welcome seq 4 in the log; its lobby secret is
+  // gone. The re-invite's Welcome is seq 7. Reading from the start must not stop at seq 4.
+  const {bridge, w} = fakeWorker({joinRefuses: bytes => bytes[0] === 9});
+  const events = [
+    {seq: 1, device: 'bot-1', kind: 'commit', epoch: 0, bytes: b64([0]), created_at: 1700000000},
+    {seq: 4, device: 'bot-1', kind: 'welcome', epoch: 2, bytes: b64([9]), created_at: 1700000001},
+    {seq: 6, device: 'bot-1', kind: 'commit', epoch: 3, bytes: b64([0]), created_at: 1700000002},
+    {seq: 7, device: 'bot-1', kind: 'welcome', epoch: 4, bytes: b64([1]), created_at: 1700000003},
+  ];
+  const relay = fakeRelay((m, path) => {
+    if (path.includes('ack=')) return {status: 200, body: {epoch: 4, events: [], cursor: 7, members: []}};
+    return {status: 200, body: {epoch: 4, revision: 1, events, cursor: 3, first_seq: 1, members: []}};
+  });
+  const {s, events: ev} = session({worker: bridge, relay});
+  await s.open(); await s.activate();
+  const logs = ev.logs;
+  assert.equal(s.state.joined, true, 'joined through the later Welcome');
+  assert.equal(s.state.relaySeq, 7);
+  assert.ok(logs.some(l => l.includes('열 수 없는 Welcome(seq 4)')), 'the stale Welcome is reported, not fatal');
+  assert.ok(logs.some(l => l.includes('참여 완료(seq 7)')));
+  assert.equal(w.calls.filter(c => c[1] === 'join').length, 2, 'join attempted on both Welcomes');
 });
 
 test('open with replace drops a group-less store and startSeq rewinds the cursor before the Welcome', async () => {

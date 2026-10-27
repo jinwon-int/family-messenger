@@ -479,6 +479,7 @@ export const strings = {
     waitingOperator: '운영자 등록 대기 중 (403 device_subject_mismatch)',
     noRoomYet: '대화방이 아직 없습니다 — 첫 기기가 「방 만들기」를 하고 초대해야 합니다.',
     notJoined: '아직 이 대화방에 참여하지 않았습니다. 초대를 기다려 주세요.',
+    welcomeSkipped: (seq) => `열 수 없는 Welcome(seq ${seq}) 은 건너뛴다 — 재초대 전의 것이면 뒤에 새 Welcome 이 온다`,
     pendingCommit: '내 변경이 아직 반영되지 않았습니다 — 동기화 뒤 다시 시도해 주세요.',
     alreadyInRoom: '이 기기는 이미 대화방(그룹)에 있습니다.',
     created: '대화방을 만들었습니다. 「초대」로 다른 기기를 들이세요.',
