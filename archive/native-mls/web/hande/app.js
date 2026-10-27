@@ -20,6 +20,7 @@ import {installShortcuts} from './shortcuts.js';
 
 const DEFAULT_ROOM = 'family';
 const AUTO_JOIN_ACTORS = new Set(['owner']);   // iOS AppModel.autoJoinActors
+const ADOPT_TRIES = 2;                      // a lobby Welcome gets one retry per page session (#517)
 const TICK_MS = 8000;                       // device-level refresh (rooms list, lobby welcomes, replenish)
 
 async function loadConfig() {
@@ -303,7 +304,9 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       }
       await discoverLobbyWelcomes();
       if (app.lobbyDue) {
-        try { const report = await app.dev.replenish(LOBBY_TARGET); if (report) app.lobbyDue = false; }
+        // While a lobby Welcome is still unadopted, the consumed packages' secrets stay: one
+        // of them may be what that Welcome was built from (#517). Minting is unaffected.
+        try { const report = await app.dev.replenish(LOBBY_TARGET, {prune: app.adoptFailed.size === 0}); if (report) app.lobbyDue = false; }
         catch (error) { logLine(`로비 키 보충 실패: ${error.message}`); }
       }
     } finally { refreshing = false; render(); }
@@ -313,7 +316,9 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     try { welcomes = await app.dev.welcomes(); } catch (error) { logLine(`로비 초대 조회 실패: ${error.message}`); return; }
     const invites = [];
     for (const w of welcomes) {
-      if (!ROOM.test(w.room) || app.adoptFailed.get(w.room) === w.seq) continue;
+      if (!ROOM.test(w.room)) continue;
+      const failed = app.adoptFailed.get(w.room);
+      if (failed && failed.seq === w.seq && failed.tries >= ADOPT_TRIES) continue;
       const R = app.rooms.get(w.room);
       if (R && R.session.joined) continue;   // joined already — the next ack drops it from the list
       if (AUTO_JOIN_ACTORS.has(app.actor)) await adoptWelcome(w);
@@ -322,15 +327,25 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     // Keep busy/message state of cards still pending.
     app.invites = invites.map(i => ({...i, ...(app.invites.find(x => x.room === i.room) ?? {})}));
   }
-  /** Room state = lobby clone → cursor before the Welcome → sync that room (join). */
+  function adoptFailed(w) {
+    const prev = app.adoptFailed.get(w.room);
+    app.adoptFailed.set(w.room, {seq: w.seq, tries: (prev && prev.seq === w.seq ? prev.tries : 0) + 1});
+  }
+  /**
+   * Room state = lobby clone → cursor before the Welcome → sync that room (join). The lobby
+   * store is opened first: until #517 only `replenish` opened it, so a Welcome discovered on
+   * the first refresh of a page (every invite made while the tab was closed) was refused at
+   * `open_room(from: 'lobby')`, and the replenish that followed deleted the secret it needed.
+   */
   async function adoptWelcome(w) {
     try {
+      await app.dev.openLobby();
       const R = await ensureRoom(w.room, {from: 'lobby', replace: true, startSeq: w.seq});
       await R.session.sync({quiet: true});
-      if (R.session.joined) { status(strings.lobby.joined(w.room), 'ok'); app.lobbyDue = true; return true; }
-      app.adoptFailed.set(w.room, w.seq);
+      if (R.session.joined) { app.adoptFailed.delete(w.room); status(strings.lobby.joined(w.room), 'ok'); app.lobbyDue = true; return true; }
+      adoptFailed(w);
       return false;
-    } catch (error) { app.adoptFailed.set(w.room, w.seq); logLine(`로비 초대 수락 실패(${w.room}): ${error.message}`); return false; }
+    } catch (error) { adoptFailed(w); logLine(`로비 초대 수락 실패(${w.room}, seq ${w.seq}, ${app.adoptFailed.get(w.room).tries}/${ADOPT_TRIES}): ${error.message}`); return false; }
   }
   async function acceptInvite(roomId) {
     const invite = app.invites.find(i => i.room === roomId);

@@ -57,8 +57,12 @@ export function createDevice({device, worker, relay, storage, on = {}}) {
    * Lobby keyring replenish (iOS LobbyKeyring.replenish): the relay consumes and expires the
    * oldest first, so `published.length − live` leading entries are gone — delete their local
    * secrets, then mint and publish what is missing up to min(target, relay max).
+   * `prune: false` keeps the consumed entries' secrets (and their place in the published
+   * list) and only mints: a consumed package may be the one a Welcome this device has not
+   * joined yet was built from — deleting its secret makes that Welcome unreadable for good
+   * (#517). The caller passes false while a lobby Welcome is still unadopted.
    */
-  async function replenish(target = LOBBY_TARGET) {
+  async function replenish(target = LOBBY_TARGET, {prune = true} = {}) {
     if (D.lobby.unsupported) return null;
     const st = await relay.api('GET', `/v2/lobby/status?device=${encodeURIComponent(device)}`);
     if (st.status === 404) { D.lobby.unsupported = true; return null; }
@@ -68,11 +72,13 @@ export function createDevice({device, worker, relay, storage, on = {}}) {
     await openLobby();
     let published = readPublished();
     const consumed = Math.min(Math.max(0, published.length - live), published.length);
-    let pruned = 0;
-    for (const bytes of published.slice(0, consumed)) {
-      try { await op(worker, LOBBY_ROOM, 'delete_key_package', unb64(bytes)); pruned++; } catch (_) { /* already gone */ }
-    }
-    published = published.slice(consumed); writePublished(published);
+    let pruned = 0, kept = 0;
+    if (prune) {
+      for (const bytes of published.slice(0, consumed)) {
+        try { await op(worker, LOBBY_ROOM, 'delete_key_package', unb64(bytes)); pruned++; } catch (_) { /* already gone */ }
+      }
+      published = published.slice(consumed); writePublished(published);
+    } else kept = consumed;
     const want = Math.min(target, max) - live;
     const fresh = [];
     for (let i = 0; i < want; i++) {
@@ -93,8 +99,8 @@ export function createDevice({device, worker, relay, storage, on = {}}) {
       }
     }
     D.lobby.live = live + stored; D.lobby.max = max;
-    log(`로비 키: 서버 ${live}→${D.lobby.live}/${max}, 지움 ${pruned}, 새로 ${stored}`);
-    return {live: D.lobby.live, max, minted: stored, pruned};
+    log(`로비 키: 서버 ${live}→${D.lobby.live}/${max}, 지움 ${pruned}, 새로 ${stored}` + (kept ? `, 수락 안 된 초대가 있어 소비된 ${kept}개 비밀키는 남김` : ''));
+    return {live: D.lobby.live, max, minted: stored, pruned, kept};
   }
   // ---- identity store operations (E2 approval) ----
   const utf8 = new TextEncoder(), decoder = new TextDecoder();
