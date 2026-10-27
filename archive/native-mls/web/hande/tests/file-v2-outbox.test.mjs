@@ -30,14 +30,16 @@ function harness({uploadStatus = 201, uploadId = null, postResults = [{status: 2
 const photo = () => Uint8Array.from({length: 2000}, (_, i) => (i * 7) % 256);
 const unwrapDescriptor = plaintext => new TextDecoder().decode(plaintext);   // calls.encrypt 는 MLS 암호화 전 평문
 
-test('송신 스위치: 기본 꺼짐, 시험용 덮어쓰기, 켜진 기본값', () => {
-  assert.equal(SEND_FILE_V2, false, 'stage 3 ships off — flip only after every device receives v2');
+test('송신 스위치: 기본 켜짐(#499 3단계), 끈 경우 시험용 덮어쓰기', () => {
+  assert.equal(SEND_FILE_V2, true, 'stage 3 on (#499 owner approval) — v1 remains for pending retries and the override');
   const s = memoryStorage();
-  assert.equal(sendsFileV2(s), false);
+  assert.equal(sendsFileV2(s, false), false);
   s.setItem(SEND_OVERRIDE_KEY, '1');
-  assert.equal(sendsFileV2(s), true);
+  assert.equal(sendsFileV2(s, false), true);
+  assert.equal(sendsFileV2(memoryStorage()), true, 'default follows SEND_FILE_V2');
   assert.equal(sendsFileV2(memoryStorage(), true), true);
-  assert.equal(sendsFileV2(null), false);
+  assert.equal(sendsFileV2(null, false), false);
+  assert.equal(sendsFileV2(null), true);
 });
 
 test('정상: 업로드(id = sha256) → 설명자 MLS 암호화 → 보관 뒤 게시 → 보관 해제, 받는 쪽이 열 수 있다', async () => {
