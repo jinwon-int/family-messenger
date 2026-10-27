@@ -4,11 +4,15 @@ name: Native MLS track — iOS TestFlight release
 # 자동(클라우드) 서명은 archive 단계에 Development 프로필 → 등록 기기 1대 이상을 요구해(run 38345777567) 포기했다. 맥 불필요.
 # 비밀·환경값은 전부 GitHub environment `testflight`(required reviewer = 오너)에서 온다. 리포에는 호스트명·팀 ID·키가 없다.
 # 예산: macOS 1 job ≤40분(결정 E 규칙 2). TestFlight 빌드는 APNs production 환경(aps-environment=production)이다 — 릴레이의 -apns-host(sandbox) 전환은 운영 쪽 별도 승인.
+# 버전 규칙(#528): TestFlight 는 버전 문자열이 큰 쪽을 「최신」으로 보여 준다. 그래서 marketing_version 을 올리면(예 0.1.0 → 1.0)
+# 그 아래 계열 빌드는 「이전 빌드」로 내려간다. 올릴 때는 옛 계열 빌드를 App Store Connect 에서 만료할지 함께 정한다(만료는 되돌릴 수 없다).
+# 반대로 지금 쓰는 값보다 작은 값으로 내리면 새 빌드가 「업데이트」에 뜨지 않는다. 2026-10-27 사례: #348 이전 실행 #7 이 xcodegen 기본값 1.0 (1)을
+# 올려, 0.1.0 (45)이 최신인데도 「업데이트」가 1.0 (1)을 가리켰다 → 1.0 (1) 만료로 해소.
 on:
   workflow_dispatch:
     inputs:
       marketing_version:
-        description: "CFBundleShortVersionString (예 0.1.0)"
+        description: "CFBundleShortVersionString (예 0.1.0) — 현재 계열보다 작게 내리지 말 것. 올리면 옛 계열 빌드 만료를 함께 정할 것(#528)"
         required: true
         default: "0.1.0"
       upload:
