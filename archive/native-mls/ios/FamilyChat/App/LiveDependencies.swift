@@ -80,7 +80,8 @@ extension AppModel.Dependencies {
                 actorStore: config.actorStore,
                 defaultRoom: config.defaultRoom,
                 wipe: wipe,
-                agentRoster: config.agentRoster)
+                agentRoster: config.agentRoster,
+                lockScreenPreview: Self.liveLockScreenPreview)
         } catch {
             // 화면이 사유를 보여 줄 수 있게 메모리 스토어로 모델만 세운다(아무것도 저장하지 않는다).
             return Self(
@@ -95,6 +96,15 @@ extension AppModel.Dependencies {
                 relayURL: config.relayURL,
                 startupFailure: Strings.storageUnavailable("\(error)"))
         }
+    }
+
+    /// #520: 잠금화면 미리보기 설정 읽기. UserNotifications 가 없는 Linux 스모크에서는 모름.
+    static func liveLockScreenPreview() async -> LockScreenPreview {
+        #if canImport(UserNotifications)
+        return await LockScreenPreview.readLive()
+        #else
+        return .unknown
+        #endif
     }
 
     static func storageDirectory(_ config: LiveConfiguration) throws -> URL {

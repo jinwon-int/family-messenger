@@ -40,9 +40,9 @@ final class NotificationService: UNNotificationServiceExtension {
         contentHandler(content)
     }
 
+    /// 제목·본문 + 카테고리(#520: 잠금 상태에서는 앱이 등록한 일반 문구로 숨김) — `NotificationPrivacy.swift`.
     static func apply(_ result: ProcessedNotification, to content: UNMutableNotificationContent) {
-        content.title = result.title
-        content.body = result.body
+        NotificationContentWriter.apply(result, to: content)
     }
 }
 

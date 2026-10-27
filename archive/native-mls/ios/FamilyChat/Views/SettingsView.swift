@@ -1,5 +1,6 @@
 // §9-5 설정: 지문·기기 ID·알림 상태(§12-D)·로그아웃(MLS 상태는 유지, 푸시 등록은 해제).
 import SwiftUI
+import UIKit
 import FamilyMLSCore
 
 struct SettingsView: View {
@@ -18,7 +19,13 @@ struct SettingsView: View {
             }
             Section(footer: Text(Strings.notificationsHint)) {
                 LabeledContent(Strings.notifications) { Text(Self.describe(model.pushStatus)).font(.footnote) }
+                // #520: 측정 때 함께 기록할 값(기기 설정 의존). 「항상」이면 설정 앱으로 보낸다.
+                LabeledContent(Strings.lockPreviewLabel) { Text(Strings.lockPreview(model.lockScreenPreview)).font(.footnote) }
+                if model.lockScreenPreview.needsWarning {
+                    Button(Strings.lockPreviewOpenSettings) { LockPreviewWarningBanner.openNotificationSettings() }
+                }
             }
+            .task { await model.refreshLockScreenPreview() }
             Section(footer: Text(Strings.lobbyHint)) {
                 LabeledContent(Strings.lobbyKeysLabel) { Text(Strings.lobbyKeys(model.lobbyLive)).font(.footnote) }
             }
@@ -58,6 +65,31 @@ struct SettingsView: View {
         case .registered: return Strings.pushRegistered
         case .failed(let reason): return Strings.pushFailed(reason)
         }
+    }
+}
+
+/// #520 전역 배너(RootView 오버레이): 미리보기 「항상」 경고 + 설정 열기 / 나중에.
+struct LockPreviewWarningBanner: View {
+    let onDismiss: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(Strings.lockPreviewWarningTitle).font(.headline)
+            Text(Strings.lockPreviewWarningBody).font(.footnote)
+            HStack(spacing: 16) {
+                Button(Strings.lockPreviewOpenSettings) { Self.openNotificationSettings() }.font(.footnote.bold())
+                Button(Strings.lockPreviewLater, action: onDismiss).font(.footnote)
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.18))
+    }
+
+    /// 이 앱의 알림 설정 화면(iOS 16+). 열 수 없으면 아무것도 하지 않는다.
+    @MainActor
+    static func openNotificationSettings() {
+        guard let url = URL(string: UIApplication.openNotificationSettingsURLString) else { return }
+        UIApplication.shared.open(url)
     }
 }
 
