@@ -68,6 +68,8 @@ final class AppModel: ObservableObject {
         var wipe = DeviceWipe()
         /// 로비 key package 목표 수(#380, 오너 결정 D2 = 릴레이 상한 8 과 같게). 0 = 로비를 쓰지 않는다.
         var lobbyTarget = 8
+        /// file-v2 송신 스위치(#499 3단계) — 기본 `FileV2Format.sendDefault`(꺼짐). 켜지면 첨부를 v2(blob 업로드 + 설명자)로 보낸다.
+        var sendFileV2 = FileV2Format.sendDefault
         /// 로비 Welcome 을 묻지 않고 자동 가입하는 actor(오너 결정 D1 A). 그 밖의 actor 는 1탭 수락(B).
         var autoJoinActors: Set<String> = ["owner"]
         /// 누가 에이전트인가(#405 P1 — 에이전트 카드·승인 버튼·생각 중). 빌드 설정 `FC_AGENT_ACTORS` 가 정본.
@@ -182,7 +184,10 @@ final class AppModel: ObservableObject {
         let room: RoomID
         let kind: MessageRecord.Kind
         let body: String
+        /// 다시 보내기용 원본(v1 첨부 = 기록할 본체와 같다, file-v2 = 원본 파일 바이트).
         let attachment: Data?
+        /// 내 기록의 attachment 칸으로 남길 값이 원본과 다를 때 — file-v2 는 설명자(키 포함)만 남긴다(FILE-V2.md §4-2).
+        var stored: Data? = nil
     }
 
     /// 보내는 글의 상태(오너 요청 build 31): 누르는 즉시 목록에 올리고 결과는 말풍선 아래에 표시한다.
@@ -862,7 +867,7 @@ final class AppModel: ObservableObject {
         guard let failed = outgoing[room]?.first(where: { $0.id == outgoingId }) else { return }
         removeOutgoing(id: outgoingId, room: room)
         switch failed.kind {
-        case .attachment:
+        case .attachment, .fileV2:
             if let data = failed.attachment { _ = await sendAttachment(room: room, data: data) }
         default:
             _ = await send(room: room, text: failed.body)
@@ -872,14 +877,33 @@ final class AppModel: ObservableObject {
     /// 첨부(≤256 KiB, 원본 바이트 그대로 — AttachmentFormat). 한도 초과는 암호화 전에 `lastError` 로 거절한다.
     @discardableResult
     func sendAttachment(room: RoomID, data: Data) async -> SendOutcome? {
+        if deps.sendFileV2 { return await sendFileV2(room: room, data: data) }
         guard data.count <= AttachmentFormat.maxBytes else { lastError = Strings.attachmentTooLarge(data.count); return nil }
         let pending = PendingOwn(room: room, kind: .attachment, body: AttachmentFormat.sniffMime(data), attachment: data)
         return await sendOwn(room: room, pending: pending, outgoing: enqueueOutgoing(pending)) { try await $0.send(attachment: data) }
     }
 
+    /// file-v2 첨부(#499 3단계, 스위치가 켜졌을 때만): 엔진이 새 키로 암호화·업로드한 뒤 설명자를 MLS 로 보낸다.
+    /// 내 기록은 `.fileV2` 행(body = 내용으로 정한 MIME, attachment = 설명자) — 화면은 다른 기기와 같이 blob 을 받아 연다.
+    /// 「다시 보내기」는 원본 바이트로 처음부터(새 키·새 blob — 업로드는 멱등이라 이전 blob 은 보존 기간 뒤 정리된다).
+    private func sendFileV2(room: RoomID, data: Data) async -> SendOutcome? {
+        guard (1...FileV2Format.maxFileBytes).contains(data.count) else { lastError = Strings.attachmentTooLarge(data.count); return nil }
+        let mime = AttachmentFormat.sniffMime(data)
+        let pending = PendingOwn(room: room, kind: .fileV2, body: mime, attachment: data)
+        let descriptor = DescriptorBox()
+        return await sendOwn(room: room, pending: pending, outgoing: enqueueOutgoing(pending), stored: { descriptor.value }) { engine in
+            let sent = try await engine.send(fileV2: data, mime: mime == AttachmentFormat.fallbackMime ? nil : mime)
+            descriptor.value = sent.descriptor
+            return sent.outcome
+        }
+    }
+
+    /// `sendOwn` 의 작업이 만든 설명자를 기록 쪽으로 넘기는 상자(메인 액터 위에서만 쓴다).
+    private final class DescriptorBox { var value: Data? }
+
     /// 보내기 결과를 보내는 글(`outgoing`)에 반영한다: 받아 주면 빠지고 실제 기록이 잇는다 · 보관되면 「연결되면 보냅니다」 ·
     /// 실패하면 「전송 안 됨」(사유) + 다시 보내기. 실패 사유는 말풍선에 있으므로 화면 위 `lastError` 로 겹쳐 보이지 않는다.
-    private func sendOwn(room: RoomID, pending: PendingOwn, outgoing id: Int64,
+    private func sendOwn(room: RoomID, pending: PendingOwn, outgoing id: Int64, stored: () -> Data? = { nil },
                          _ operation: @escaping (RoomSyncEngine) async throws -> SendOutcome) async -> SendOutcome? {
         guard case .ready = phase else {
             updateOutgoing(id, room: room) { $0.state = .failed(Strings.notReady) }
@@ -887,6 +911,8 @@ final class AppModel: ObservableObject {
         }
         do {
             let outcome = try await serial.run { try await operation(try self.syncEngine(room)) }
+            var pending = pending
+            if let value = stored() { pending.stored = value }
             switch outcome {
             case .sent(let clientId, let seq, _):
                 unconfirmed[clientId] = pending
@@ -1103,9 +1129,11 @@ final class AppModel: ObservableObject {
         guard let pending = unconfirmed.removeValue(forKey: clientId) else { return }
         // outbox 에서 나간 글(「연결되면 보냅니다」)은 이제 실제 기록이 잇는다.
         removeOutgoing(clientId: clientId, room: pending.room)
+        // file-v2 는 설명자(stored)만 기록한다 — 원본 바이트를 .fileV2 행에 넣으면 설명자로 읽히지 않는다.
+        if pending.kind == .fileV2 && pending.stored == nil { bumpRevision(pending.room); return }
         if try deps.messageStore.messages(room: pending.room, after: seq - 1, limit: 1).first?.seq != seq {
             try deps.messageStore.insert(MessageRecord(room: pending.room, seq: seq, senderDevice: deviceId, clientId: clientId,
-                                                       kind: pending.kind, body: pending.body, attachment: pending.attachment,
+                                                       kind: pending.kind, body: pending.body, attachment: pending.stored ?? pending.attachment,
                                                        receivedAt: Date(), decryptedBy: .app))
         }
         bumpRevision(pending.room)

@@ -89,3 +89,6 @@ base64url 정규형: RFC 4648 §5 알파벳, `=` 패딩 없음, 다시 인코딩
   길이 → sha256 → AES-GCM(AAD) → 크기) → `AppModel.fileV2Bytes`. 말풍선(`AttachmentBubble`)은 복호화한 바이트를 **sniff 한 MIME**
   의 표시용 행으로 미리보기·공유 파일을 만들고(설명자·키는 넘기지 않음), 실패하면 「첨부를 열 수 없음 — 눌러서 다시 받기」.
   파일 바이트는 이력에 저장하지 않는다(미리보기 캐시·임시 공유 파일만, v1과 같은 보호 등급). 교차 벡터: `FileV2OpenTests`(웹 `encryptFile` 산출).
+  송신(3단계): `FileV2Format.seal`(CryptoKit, 새 키·nonce) → `RelayTransport.postBlob`(응답 id = sha256 확인) →
+  `FileV2Format.encodeDescriptor`(정규 키 순서 — 웹 `encodeDescriptor`와 같은 바이트) → `RoomSyncEngine.send(fileV2:)`(client_id `file-v2-<uuid>`).
+  `AppModel.sendAttachment`는 `Dependencies.sendFileV2`(기본 `FileV2Format.sendDefault` = 꺼짐)일 때만 v2. 내 기록은 `.fileV2`(설명자만).

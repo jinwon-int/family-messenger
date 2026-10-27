@@ -82,6 +82,71 @@ public enum FileV2Format {
     }
     #endif
 
+    // MARK: 송신(#499 3단계, FILE-V2.md §3)
+
+    /// 송신 스위치 기본값 — **꺼짐**. 모든 기기의 v2 수신(웹·iOS·안드로이드·봇) 확인 뒤 오너 승인으로 켠다(#499 전환 계획 3).
+    /// 앱은 `AppModel.Dependencies.sendFileV2` 로 이 값을 받는다(테스트는 켜서 쓴다).
+    public static let sendDefault = false
+
+    /// 새 첨부의 릴레이 client_id(`file-v2-<uuid 소문자>`) — 표시 힌트일 뿐(§1). 409 재암호화마다 새로 만든다.
+    public static func newClientId(uuid: UUID = UUID()) -> String { clientIdPrefix + uuid.uuidString.lowercased() }
+
+    /// 암호화한 파일 하나 — `ciphertext` 를 올리고 `descriptor(...)` 를 MLS 로 보낸다. key·nonce 는 비밀(`description` 에 없음).
+    public struct Sealed: CustomStringConvertible {
+        public let ciphertext: Data
+        public let blob: String
+        public let size: Int
+        public let key: Data
+        public let nonce: Data
+        public var description: String { "FileV2Format.Sealed(blob: \(blob.prefix(12))…, size: \(size))" }
+    }
+
+    /// 설명자 JSON(정규 키 순서 v·blob·size·key·nonce·mime·name·w·h). 형식이 틀린 힌트(mime·name·w·h)는 **빼고** 만든다 —
+    /// 받는 쪽은 내용으로 판단하므로 힌트는 없어도 된다. 결과는 `parseDescriptor` 로 다시 검증한다(통과 못 하면 throw).
+    public static func encodeDescriptor(blob: String, size: Int, key: Data, nonce: Data,
+                                        mime: String? = nil, name: String? = nil, width: Int? = nil, height: Int? = nil) throws -> Data {
+        func quote(_ s: String) -> String {
+            var out = "\""
+            for u in s.unicodeScalars {
+                switch u {
+                case "\"": out += "\\\""
+                case "\\": out += "\\\\"
+                case "\n": out += "\\n"
+                case "\r": out += "\\r"
+                case "\t": out += "\\t"
+                default:
+                    if u.value < 0x20 { out += String(format: "\\u%04x", u.value) } else { out.unicodeScalars.append(u) }
+                }
+            }
+            return out + "\""
+        }
+        var parts = ["\"v\":\(version)", "\"blob\":\(quote(blob))", "\"size\":\(size)",
+                     "\"key\":\(quote(base64urlEncode(key)))", "\"nonce\":\(quote(base64urlEncode(nonce)))"]
+        if let mime, mime.utf16.count <= 100, isMime(mime) { parts.append("\"mime\":\(quote(mime))") }
+        if let name, isValidName(name) { parts.append("\"name\":\(quote(name))") }
+        if let width, (1...maxDimension).contains(width) { parts.append("\"w\":\(width)") }
+        if let height, (1...maxDimension).contains(height) { parts.append("\"h\":\(height)") }
+        let data = Data(("{" + parts.joined(separator: ",") + "}").utf8)
+        _ = try parseDescriptor(data)
+        return data
+    }
+
+    #if canImport(CryptoKit) && !os(Linux)
+    /// 파일 1개 암호화(§2): 새 무작위 키(32 B)·nonce(12 B), AES-256-GCM(AAD `hande-file-v2`), 암호문 = 평문 ‖ 태그, blob = sha256(암호문).
+    public static func seal(_ plaintext: Data) throws -> Sealed {
+        guard (1...maxFileBytes).contains(plaintext.count) else { throw Rejected(reason: "size") }
+        let key = SymmetricKey(size: .bits256)
+        let nonce = AES.GCM.Nonce()
+        let box = try AES.GCM.seal(plaintext, using: key, nonce: nonce, authenticating: Data(aad.utf8))
+        let ciphertext = box.ciphertext + box.tag
+        let blob = SHA256.hash(data: ciphertext).map { String(format: "%02x", $0) }.joined()
+        return Sealed(ciphertext: ciphertext, blob: blob, size: plaintext.count,
+                      key: key.withUnsafeBytes { Data($0) }, nonce: nonce.withUnsafeBytes { Data($0) })
+    }
+    #else
+    public static func seal(_ plaintext: Data) throws -> Sealed { throw OpenError.unsupported }
+    #endif
+
     /// 바깥 client_id 가 `file-v2-` 로 시작하는가 — 이 메시지는 글로 열지 않는다(정규형이 아니어도).
     public static func isFileV2Message(clientId: String) -> Bool { clientId.hasPrefix(clientIdPrefix) }
 

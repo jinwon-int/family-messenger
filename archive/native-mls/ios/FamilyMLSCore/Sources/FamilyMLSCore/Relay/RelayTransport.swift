@@ -37,6 +37,19 @@ public protocol RelayTransport: AnyObject {
     /// GET /v2/rooms/{room}/blobs/{id}?device= — file-v2 암호문 blob(#499, server/blobs.go, FILE-V2.md §4-3). 원시 바이트.
     /// 403 `not_a_member` · 404 `no_such_blob`(보존 기간 지남) · 410 `room_closed`. 기본 구현은 `.refused(code:"not_found", status:404)`.
     func getBlob(room: RoomID, device: DeviceID, id: String) async throws -> Data
+    /// POST /v2/rooms/{room}/blobs?device= — file-v2 암호문 업로드(#499 3단계, FILE-V2.md §3-2). 내용 주소라 멱등:
+    /// 201(새로 저장)·200(이미 있음). 413 `blob_too_large`·`room_bytes_cap`·`device_bytes_cap` · 403 · 410 은 `.refused`.
+    /// 기본 구현은 `.refused(code:"not_found", status:404)`.
+    func postBlob(room: RoomID, device: DeviceID, bytes: Data) async throws -> BlobUpload
+}
+
+/// blob 업로드 응답(server/blobs.go `blobResponse`). `created` = 201(새로 저장), false = 200(이미 있음).
+public struct BlobUpload: Equatable, Decodable {
+    public let id: String
+    public let size: Int64
+    public var created: Bool = false
+    enum CodingKeys: String, CodingKey { case id, size }
+    public init(id: String, size: Int64, created: Bool) { self.id = id; self.size = size; self.created = created }
 }
 
 public extension RelayTransport {
@@ -56,6 +69,9 @@ public extension RelayTransport {
         throw RelayError.refused(code: "not_found", status: 404)
     }
     func getBlob(room: RoomID, device: DeviceID, id: String) async throws -> Data {
+        throw RelayError.refused(code: "not_found", status: 404)
+    }
+    func postBlob(room: RoomID, device: DeviceID, bytes: Data) async throws -> BlobUpload {
         throw RelayError.refused(code: "not_found", status: 404)
     }
 }

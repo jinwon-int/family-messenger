@@ -130,6 +130,37 @@ final class FileV2FormatTests: XCTestCase {
     }
     #endif
 
+    // MARK: 송신(#499 3단계)
+
+    func testSendSwitchDefaultsOffAndClientIdShape() {
+        XCTAssertFalse(FileV2Format.sendDefault, "stage 3 ships off")
+        let id = FileV2Format.newClientId(uuid: UUID(uuidString: "0F8FAD5B-D9CB-469F-A165-70867728950E")!)
+        XCTAssertEqual(id, Self.clientId)
+        XCTAssertTrue(FileV2Format.isClientId(FileV2Format.newClientId()))
+    }
+
+    func testEncodeDescriptorRoundTripsAndDropsBadHints() throws {
+        let key = Data((0..<32).map { UInt8($0) }), nonce = Data((0..<12).map { UInt8($0) })
+        let text = try FileV2Format.encodeDescriptor(blob: Self.blob, size: 2481920, key: key, nonce: nonce)
+        XCTAssertEqual(String(decoding: text, as: UTF8.self), Self.minimal, "canonical key order, same bytes as the web encoder")
+        let full = try FileV2Format.parseDescriptor(try FileV2Format.encodeDescriptor(
+            blob: Self.blob, size: 10, key: key, nonce: nonce, mime: "image/jpeg", name: "가 \"q\" \\ b.jpg", width: 4032, height: 3024))
+        XCTAssertEqual(full.mime, "image/jpeg")
+        XCTAssertEqual(full.name, "가 \"q\" \\ b.jpg")
+        XCTAssertEqual(full.width, 4032); XCTAssertEqual(full.height, 3024)
+        let dropped = try FileV2Format.parseDescriptor(try FileV2Format.encodeDescriptor(
+            blob: Self.blob, size: 10, key: key, nonce: nonce, mime: "not a mime", name: "a\u{7}b", width: 0, height: 20001))
+        XCTAssertNil(dropped.mime); XCTAssertNil(dropped.name); XCTAssertNil(dropped.width); XCTAssertNil(dropped.height)
+        XCTAssertThrowsError(try FileV2Format.encodeDescriptor(blob: "XYZ", size: 10, key: key, nonce: nonce), "a bad blob id never leaves")
+        XCTAssertThrowsError(try FileV2Format.encodeDescriptor(blob: Self.blob, size: 10, key: Data(count: 31), nonce: nonce))
+    }
+
+    #if os(Linux) || !canImport(CryptoKit)
+    func testSealIsUnsupportedWithoutCryptoKit() {
+        XCTAssertThrowsError(try FileV2Format.seal(Data([1]))) { XCTAssertEqual($0 as? FileV2Format.OpenError, .unsupported) }
+    }
+    #endif
+
     func testKindIsFile() {
         XCTAssertEqual(MessageRecord.Kind(rawValue: "file-v2"), .fileV2, "same stored word as web/Android history")
         XCTAssertTrue(MessageRecord.Kind.fileV2.isFile)

@@ -589,7 +589,7 @@ struct MessageRow: View {
 
     @ViewBuilder private var content: some View {
         switch message.kind {
-        case .attachment where item.outgoing != nil:
+        case .attachment where item.outgoing != nil, .fileV2 where item.outgoing != nil:
             // 아직 저장소에 없는 첨부(보내는 중): 본체 대신 종류·크기만.
             Text(Strings.outgoingAttachment).font(.footnote)
         case .attachment:

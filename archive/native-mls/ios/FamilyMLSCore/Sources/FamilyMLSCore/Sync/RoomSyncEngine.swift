@@ -50,6 +50,8 @@ public enum SyncError: Error, Equatable {
     case registrationPending
     /// 첨부가 `AttachmentFormat.maxBytes` 를 넘는다(암호화 전 거부 — ratchet 을 쓰지 않는다).
     case attachmentTooLarge(Int)
+    /// file-v2 blob 업로드 응답의 id 가 계산한 sha256 과 다르다(#499) — 설명자를 보내지 않는다.
+    case blobMismatch
 }
 
 /// `syncOnce` 1회의 결과(화면·로그·테스트용).
@@ -459,6 +461,22 @@ public final class RoomSyncEngine {
     public func send(attachment: Data) async throws -> SendOutcome {
         guard attachment.count <= AttachmentFormat.maxBytes else { throw SyncError.attachmentTooLarge(attachment.count) }
         return try await send(plaintext: attachment, clientId: { AttachmentFormat.newClientId() })
+    }
+
+    /// file-v2 첨부(#499 3단계, FILE-V2.md §3): 새 키로 암호화 → `POST /blobs`(멱등, 응답 id = sha256 확인) → 설명자 JSON 을
+    /// MLS 로 보낸다(client_id `file-v2-<uuid>`, 409 재암호화도 새 ID — blob 은 그대로). outbox 에는 MLS 암호문만 남는다(키는 그 안).
+    /// 업로드가 실패하면 throw — ratchet 을 쓰지 않는다. 반환 `descriptor` 는 내 기록(attachment 칸)용.
+    public func send(fileV2 file: Data, mime: String? = nil, name: String? = nil,
+                     width: Int? = nil, height: Int? = nil) async throws -> (outcome: SendOutcome, descriptor: Data) {
+        if let haltedReason { throw SyncError.halted(haltedReason) }
+        guard (1...FileV2Format.maxFileBytes).contains(file.count) else { throw SyncError.attachmentTooLarge(file.count) }
+        let sealed = try FileV2Format.seal(file)
+        let upload = try await transport.postBlob(room: room, device: identity, bytes: sealed.ciphertext)
+        guard upload.id == sealed.blob else { throw SyncError.blobMismatch }
+        let descriptor = try FileV2Format.encodeDescriptor(blob: sealed.blob, size: sealed.size, key: sealed.key, nonce: sealed.nonce,
+                                                           mime: mime, name: name, width: width, height: height)
+        let outcome = try await send(plaintext: descriptor, clientId: { FileV2Format.newClientId() })
+        return (outcome, descriptor)
     }
 
     /// 동기화 → encrypt → outbox(정확 바이트) → POST. 409 면 새 client_id 로 1회 재암호화.
