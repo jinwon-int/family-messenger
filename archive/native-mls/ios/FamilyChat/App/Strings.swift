@@ -120,6 +120,17 @@ enum Strings {
     static let acceptInvite = "수락"
     static let ignoreInvite = "무시"
     static func inviteAcceptFailed(_ reason: String) -> String { "초대를 받아들이지 못했습니다: \(reason)" }
+    // 🔔 알림(#521, 웹 `strings.notify` 와 동일) — 받은 초대와 처리 상태. 오너 기기의 자동 참여가 실패해도 로그가 아니라 여기 남는다.
+    static let notifyTitle = "알림"
+    static func notifyButton(_ count: Int) -> String { count > 0 ? "알림 \(count)건" : "알림" }
+    static let notifyEmpty = "새 알림이 없습니다. 받은 초대와 수락 상태가 여기 모입니다."
+    static let notifyHint = "수락은 이 기기의 로비 키로 보낸 Welcome 을 읽어 대화방에 들어가는 일입니다. 실패해도 키는 지워지지 않으니 「다시 시도」할 수 있습니다."
+    static let inviteAccepting = "수락하는 중…"
+    static func inviteAutoFailed(_ tries: Int, _ reason: String?) -> String {
+        let detail = reason.flatMap { $0.isEmpty ? nil : " — \($0)" } ?? ""
+        return "자동 수락 실패 \(tries)회\(detail)"
+    }
+    static let retryInvite = "다시 시도"
 
     // 알림 확장(NSE, §12-D) — 대체 문구는 앱 번들 `ko.lproj/Localizable.strings` 의 `NEW_MESSAGE` 와 같아야 한다
     // (NSE 가 죽거나 시간을 넘기면 iOS 가 원래 alert 의 loc-key 를 그 파일로 푼다).

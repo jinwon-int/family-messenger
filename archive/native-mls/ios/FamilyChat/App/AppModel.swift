@@ -21,6 +21,9 @@
 //   않은** 방을 찾아 (오너 actor = 결정 D1 A) 방 상태를 `_lobby` 로 바꾸고 커서를 Welcome 앞으로 되감아 바로 동기화(join) /
 //   (가족 actor = B) `pendingInvites` 에 두고 1탭 수락을 기다린다 → 로그인·전면 복귀·참여 뒤에는 로비 보충(`replenish`).
 // 로비가 없는 릴레이(404)는 조용히 건너뛴다. 로비 오류는 메시지 동기화를 막지 않는다(`lastError` 에만).
+// 자동 참여(A)가 실패해도 조용히 사라지지 않는다(#521, 웹 #522 와 동일): 같은 Welcome 은 세션당 `adoptTries` 번까지 다시 시도하고,
+// 그 뒤에도 `pendingInvites` 에 상태(`inviteStates`: 새 초대 / 수락하는 중 / 자동 수락 실패 n회 — 사유)와 함께 남아 🔔 알림과 초대 카드가
+// 「다시 시도」(횟수 초기화)·「무시」를 받는다. 참여하지 않은 Welcome 이 쓴 로비 키의 비밀은 보충이 지우지 않는다(`replenish(protect:)`, #518).
 import Foundation
 import FamilyMLSCore
 
@@ -125,8 +128,20 @@ final class AppModel: ObservableObject {
     @Published private(set) var lockScreenPreview: LockScreenPreview = .unknown
     /// 마지막 refresh 의 outbox 재전송 결과(정확 바이트 재시도 관찰용 — 화면·테스트).
     private(set) var lastFlush: [RoomID: [SendOutcome]] = [:]
-    /// 가족 기기(D1 B)의 수락 대기 초대 — 로비 Welcome 이 있는, 아직 참여하지 않은 방(오래된 순).
+    /// 수락 대기 초대 — 로비 Welcome 이 있는, 아직 참여하지 않은 방(오래된 순). 가족 기기(D1 B)는 모두, 오너 기기(A)는 자동 참여가
+    /// 실패한 것만 여기 남는다(#521). 상태는 `inviteStates`.
     @Published private(set) var pendingInvites: [PendingWelcome] = []
+    /// 초대 처리 상태(🔔 알림·초대 카드 공용, #521) — 웹 `inviteState` 와 같은 셋.
+    enum InviteState: Equatable {
+        /// 아직 시도하지 않았다(가족 기기의 새 초대).
+        case new
+        /// 「수락」·「다시 시도」가 진행 중.
+        case accepting
+        /// 받아들이지 못했다(자동이든 손이든) — 시도 횟수와 마지막 사유.
+        case failed(tries: Int, reason: String?)
+    }
+    /// `pendingInvites` 의 방별 상태. 목록과 함께 갱신된다(`refreshInviteStates`).
+    @Published private(set) var inviteStates: [RoomID: InviteState] = [:]
     /// 로비 초대로 새 방에 들어왔을 때의 한 줄 안내(화면이 `clearNotice` 로 지운다).
     @Published private(set) var notice: String?
     /// 설정 화면: 릴레이에 있는 이 기기의 미소비 로비 키 수. nil = 아직 모름(로그인 전·로비 없는 릴레이).
@@ -135,8 +150,20 @@ final class AppModel: ObservableObject {
     private var lobbyCheckDue = true
     /// 릴레이가 로비 라우트를 모른다(404) — 이 세션에서는 다시 묻지 않는다.
     private var lobbyUnsupported = false
-    /// 같은 Welcome(방 → seq)을 두 번 받아들이지 않는다(상태를 바꿔도 join 하지 못한 경우 — 로비 키로 만든 Welcome 이 아니다).
-    private var adoptFailed: [RoomID: Int64] = [:]
+    /// 로비 Welcome 을 받아들이지 못한 기록(방 → 마지막 실패). 같은 seq 는 세션당 `adoptTries` 번까지만 자동으로 다시 시도한다
+    /// (상태를 바꿔도 join 하지 못한 경우 — 로비 키로 만든 Welcome 이 아니거나 아직 열리지 않음). 손으로 「다시 시도」하면 횟수가 되돌아간다.
+    struct AdoptFailure: Equatable {
+        var seq: Int64
+        var tries: Int
+        var reason: String?
+    }
+    /// 같은 Welcome 의 세션당 자동 시도 상한(웹 `ADOPT_TRIES`, #517): 한 번 더 시도하고 그 뒤에는 🔔·카드에 남긴다.
+    static let adoptTries = 2
+    private var adoptFailed: [RoomID: AdoptFailure] = [:]
+    /// 「수락」·「다시 시도」가 진행 중인 방(상태 줄 「수락하는 중…」).
+    private var accepting: Set<RoomID> = []
+    /// 마지막 `lobbyWelcomes` 응답 가운데 아직 참여하지 않은 Welcome(무시한 것 포함) — 보충이 그 key package 의 비밀을 지우지 않게(#518).
+    private var unadoptedWelcomes: [PendingWelcome] = []
     /// 「무시」한 초대 — 이 세션에서만. Welcome 은 릴레이에 남으므로 다음 실행에 다시 보인다.
     private var dismissedInvites: Set<RoomID> = []
 
@@ -303,7 +330,8 @@ final class AppModel: ObservableObject {
             self.credential = nil
             self.transport = nil
             self.syncEngines = [:]; self.unconfirmed = [:]; self.seenCursors = [:]; self.lastFlush = [:]
-            self.pendingInvites = []; self.notice = nil; self.lobbyLive = nil; self.adoptFailed = [:]; self.dismissedInvites = []
+            self.pendingInvites = []; self.inviteStates = [:]; self.notice = nil; self.lobbyLive = nil
+            self.adoptFailed = [:]; self.accepting = []; self.unadoptedWelcomes = []; self.dismissedInvites = []
             self.engine = nil; self.identitySeed = nil; self.registration = nil; self.rooms = []
             try self.deps.wipe.storage()
             self.deps.wipe.identity()
@@ -529,22 +557,56 @@ final class AppModel: ObservableObject {
             noteFailure(error); return
         }
         var invites: [PendingWelcome] = []
-        for welcome in welcomes where adoptFailed[welcome.room] != welcome.seq {
+        var unadopted: [PendingWelcome] = []
+        for welcome in welcomes {
             if (try? keyring.isMember(room: welcome.room)) == true { continue }   // 참여 끝 — 다음 ack 가 목록에서 지운다
+            unadopted.append(welcome)
+            if dismissedInvites.contains(welcome.room) || invites.contains(where: { $0.room == welcome.room }) { continue }
             if autoJoinsLobbyInvites {
-                await adoptLobbyWelcomeLocked(welcome, keyring: keyring)
-            } else if !dismissedInvites.contains(welcome.room), !invites.contains(where: { $0.room == welcome.room }) {
-                invites.append(welcome)
+                // 오너 기기(A)는 묻지 않고 들어간다. 실패는 조용히 사라지지 않는다(#521): 같은 seq 는 세션당 `adoptTries` 번까지 다시
+                // 시도하고, 그 뒤에도 상태와 함께 목록에 남아 「다시 시도」가 횟수를 되돌린다(웹 #522 와 동일).
+                let failed = adoptFailed[welcome.room]
+                let exhausted = failed.map { $0.seq == welcome.seq && $0.tries >= Self.adoptTries } ?? false
+                if !exhausted {
+                    let joined = await adoptLobbyWelcomeLocked(welcome, keyring: keyring)
+                    if joined { unadopted.removeLast(); continue }
+                }
             }
+            invites.append(welcome)
         }
+        unadoptedWelcomes = unadopted
         pendingInvites = invites
+        refreshInviteStates()
     }
 
-    /// 방 상태 = `_lobby` 슬롯 상태 → 커서를 Welcome 앞으로 → 그 방만 바로 동기화(join). 참여하면 안내하고 보충을 예약한다.
-    /// join 하지 못하면(로비 키로 만든 Welcome 이 아님·poison) 같은 seq 는 다시 시도하지 않는다.
-    private func adoptLobbyWelcomeLocked(_ welcome: PendingWelcome, keyring: LobbyKeyring) async {
+    /// `pendingInvites` 의 방별 상태를 다시 센다(목록·실패 기록·진행 중이 바뀔 때마다).
+    private func refreshInviteStates() {
+        var states: [RoomID: InviteState] = [:]
+        for invite in pendingInvites {
+            if accepting.contains(invite.room) {
+                states[invite.room] = .accepting
+            } else if let failed = adoptFailed[invite.room], failed.seq == invite.seq {
+                states[invite.room] = .failed(tries: failed.tries, reason: failed.reason)
+            } else {
+                states[invite.room] = .new
+            }
+        }
+        inviteStates = states
+    }
+
+    /// 실패 기록: 같은 seq 면 횟수를 올리고, 다른 seq(새 Welcome)면 1 부터. 사유가 없으면 지난 사유를 잇는다.
+    private func noteAdoptFailure(_ welcome: PendingWelcome, reason: String?) {
+        let previous = adoptFailed[welcome.room]
+        let tries = (previous?.seq == welcome.seq ? (previous?.tries ?? 0) : 0) + 1
+        adoptFailed[welcome.room] = AdoptFailure(seq: welcome.seq, tries: tries, reason: reason ?? previous?.reason)
+    }
+
+    /// 방 상태 = `_lobby` 슬롯 상태 → 커서를 Welcome 앞으로 → 그 방만 바로 동기화(join). 참여하면 안내하고 보충을 예약한다(true).
+    /// join 하지 못하면(로비 키로 만든 Welcome 이 아님·아직 열리지 않음) 실패를 기록하고 false — 재시도 여부는 호출자가 정한다(`adoptTries`).
+    @discardableResult
+    private func adoptLobbyWelcomeLocked(_ welcome: PendingWelcome, keyring: LobbyKeyring) async -> Bool {
         do {
-            guard try keyring.adoptRoom(welcome.room) else { adoptFailed[welcome.room] = welcome.seq; return }
+            guard try keyring.adoptRoom(welcome.room) else { noteAdoptFailure(welcome, reason: Strings.notJoined); return false }
             syncEngines[welcome.room] = nil
             seenCursors[welcome.room] = nil
             if try deps.cursors.cursor(room: welcome.room) >= welcome.seq {
@@ -556,24 +618,33 @@ final class AppModel: ObservableObject {
             seenCursors[welcome.room] = try deps.cursors.cursor(room: welcome.room)
             bumpRevision(welcome.room)
             if sync.joined {
+                adoptFailed[welcome.room] = nil
                 notice = Strings.lobbyJoined(welcome.room)
                 lobbyCheckDue = true   // key package 하나가 쓰였다 — 보충
-            } else {
-                adoptFailed[welcome.room] = welcome.seq
+                return true
             }
+            noteAdoptFailure(welcome, reason: Strings.notJoined)
+            return false
         } catch RelayError.unauthorized {
             expireSession()
+            return false
         } catch {
-            adoptFailed[welcome.room] = welcome.seq
+            noteAdoptFailure(welcome, reason: "\(error)")
             noteFailure(error)
+            return false
         }
     }
 
     /// `_lobby` 보충(`LobbyKeyring.replenish`). 404 = 로비 없음(이 세션에서 다시 묻지 않음), 403 device_not_allowed = 등록 전(다음에).
+    /// #518: 아직 참여하지 않은 Welcome 이 쓴 key package 의 비밀은 지우지 않는다 — 릴레이가 준 `key_package_ref` 를 보호하고, ref 를 모르는
+    /// Welcome(옛 릴레이)이 있는데 실패한 Welcome 이 남아 있으면 이번에는 아무것도 지우지 않는다(발행은 계속, 웹과 동일).
     private func replenishLobbyLocked() async throws {
         guard let keyring = lobbyKeyring() else { return }
+        let refs = unadoptedWelcomes.compactMap { $0.keyPackageRef }.filter { !$0.isEmpty }
+        let unknown = unadoptedWelcomes.contains { ($0.keyPackageRef ?? "").isEmpty }
+        let prune = !(unknown && !adoptFailed.isEmpty)
         do {
-            let report = try await keyring.replenish(target: deps.lobbyTarget)
+            let report = try await keyring.replenish(target: deps.lobbyTarget, protect: Set(refs), prune: prune)
             lobbyLive = report.live
             lobbyCheckDue = false
         } catch RelayError.refused(_, let status) where status == 404 {
@@ -600,22 +671,33 @@ final class AppModel: ObservableObject {
         lockScreenPreview = await deps.lockScreenPreview()
     }
 
-    /// 가족 기기(B)의 「수락」: 그 방의 Welcome 을 로비 상태로 받아들여 참여한다. 실패 사유는 throw.
+    /// 「수락」·「다시 시도」(초대 카드·🔔 알림, 가족 B 와 오너 A 모두): 그 방의 Welcome 을 로비 상태로 받아들여 참여한다. 손으로 누르면
+    /// 세션당 자동 시도 횟수(`adoptTries`)를 되돌린다. 들어가면 목록에서 빠지고, 못 들어가면 상태(실패 n회 — 사유)와 함께 남는다 + throw.
     func acceptInvite(room: RoomID) async throws {
         try await serial.run {
             guard let welcome = self.pendingInvites.first(where: { $0.room == room }) else { return }
             guard let keyring = self.lobbyKeyring() else { throw RelayError.unauthorized }
-            await self.adoptLobbyWelcomeLocked(welcome, keyring: keyring)
-            self.pendingInvites.removeAll { $0.room == room }
+            self.adoptFailed[room] = nil
+            self.accepting.insert(room)
+            self.refreshInviteStates()
+            let joined = await self.adoptLobbyWelcomeLocked(welcome, keyring: keyring)
+            self.accepting.remove(room)
+            if joined {
+                self.pendingInvites.removeAll { $0.room == room }
+                self.unadoptedWelcomes.removeAll { $0.room == room }
+            }
+            self.refreshInviteStates()
             self.rooms = try self.deps.messageStore.rooms()
-            if let failed = self.adoptFailed[room], failed == welcome.seq { throw SyncError.notJoined }
+            if !joined { throw SyncError.notJoined }
         }
     }
 
-    /// 「무시」: 이 세션에서는 보이지 않는다. Welcome 은 릴레이에 남아(커서 미이동) 다음 실행에 다시 묻는다.
+    /// 「무시」: 이 세션에서는 보이지 않는다. Welcome 은 릴레이에 남아(커서 미이동) 다음 실행에 다시 묻는다 — 그 key package 의 비밀도
+    /// 그때까지 남는다(`unadoptedWelcomes` 에는 그대로).
     func dismissInvite(room: RoomID) {
         dismissedInvites.insert(room)
         pendingInvites.removeAll { $0.room == room }
+        refreshInviteStates()
     }
 
     func clearNotice() { notice = nil }
