@@ -38,7 +38,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     actor: null, device: null, subject: null, defaultRoom: DEFAULT_ROOM, dev: null,
     rooms: new Map(),          // roomId → {session, entries, entryKeys, unread, order}
     current: null, roomOpen: false, draft: new Map(), sending: false,
-    invites: [], adoptFailed: new Map(), dismissed: new Set(), lobbyDue: true,
+    invites: [], adoptFailed: new Map(), dismissed: new Set(), lobbyDue: true, pendingWelcomeRefs: {set: new Set(), complete: true},
     filebox: null, boxOpen: false, boxRefresh: 0,   // 오른쪽 파일보관함 pane (config.json filebox)
     roomOrder: [], orderEditing: false,              // 대화 목록 고정 순서(이 기기 localStorage, #480 A)
     notice: null, logs: [], offlineAt: null, tick: null,
@@ -303,9 +303,11 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       }
       await discoverLobbyWelcomes();
       if (app.lobbyDue) {
-        // While a lobby Welcome is still unadopted, the consumed packages' secrets stay: one
-        // of them may be what that Welcome was built from (#517). Minting is unaffected.
-        try { const report = await app.dev.replenish(LOBBY_TARGET, {prune: app.adoptFailed.size === 0}); if (report) app.lobbyDue = false; }
+        // While a lobby Welcome is still unadopted, the package it was built from keeps its
+        // secret (#517): precisely by `key_package_ref` when the relay reports it, otherwise
+        // (older relay) by not pruning at all while an adoption is outstanding. Minting is unaffected.
+        const refs = app.pendingWelcomeRefs;
+        try { const report = await app.dev.replenish(LOBBY_TARGET, {prune: refs.complete || app.adoptFailed.size === 0, protect: refs.set}); if (report) app.lobbyDue = false; }
         catch (error) { logLine(`로비 키 보충 실패: ${error.message}`); }
       }
     } finally { refreshing = false; render(); }
@@ -314,10 +316,12 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     let welcomes;
     try { welcomes = await app.dev.welcomes(); } catch (error) { logLine(`로비 초대 조회 실패: ${error.message}`); return; }
     const invites = [];
+    const refs = {set: new Set(), complete: true};
     for (const w of welcomes) {
       if (!ROOM.test(w.room)) continue;
       const R = app.rooms.get(w.room);
       if (R && R.session.joined) continue;   // joined already — the next ack drops it from the list
+      if (typeof w.key_package_ref === 'string' && w.key_package_ref) refs.set.add(w.key_package_ref); else refs.complete = false;
       if (app.dismissed.has(w.room) || invites.some(i => i.room === w.room)) continue;
       if (AUTO_JOIN_ACTORS.has(app.actor)) {
         // Owner devices auto-join; a failure is not silent — the invite stays in the 🔔 list
@@ -330,6 +334,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     }
     // Keep busy/message state of cards still pending.
     app.invites = invites.map(i => ({...(app.invites.find(x => x.room === i.room) ?? {}), ...i}));
+    app.pendingWelcomeRefs = refs;
   }
   function adoptFailed(w, reason = null) {
     const prev = app.adoptFailed.get(w.room);
