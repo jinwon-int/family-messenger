@@ -129,6 +129,11 @@ def main():
                     self.page.click('[data-testid="actor-submit"]')
                     self.wait_shell()
 
+                def open_menu_item(self, testid):
+                    # 참여 요청·방 만들기는 ⚙ 설정 메뉴 안에 있다(2026-10-27): 메뉴를 열고 항목을 누른다.
+                    self.page.click('[data-testid="open-menu"]')
+                    self.page.click(f'[data-testid="{testid}"]')
+
                 def wait_shell(self, timeout=180000):
                     self.page.wait_for_selector('[data-testid="room-list"]', timeout=timeout)
 
@@ -234,14 +239,14 @@ def run_flow(Dev, receipt, screenshot=None, relay_base=None):
     receipt['checks']['first_run_names_make_device_ids'] = True
 
     # owner: + → 방 만들기 (same room id as the default) → the room item becomes joined
-    owner.page.click('[data-testid="open-create"]')
+    owner.open_menu_item('menu-create')
     owner.page.fill('[data-testid="create-room"]', ROOM)
     owner.page.click('[data-testid="create-submit"]')
     owner.wait_members(1)
     receipt['checks']['owner_created_room'] = True
 
     # mom: + → 참여 요청 (publishes a key package to the room)
-    mom.page.click('[data-testid="open-join"]')
+    mom.open_menu_item('menu-join')
     mom.page.fill('[data-testid="join-room"]', ROOM)
     mom.page.click('[data-testid="join-submit"]')
     mom.wait_status('참여를 요청했습니다')
@@ -282,7 +287,7 @@ def run_flow(Dev, receipt, screenshot=None, relay_base=None):
     assert wait_lobby_keys(relay_base, mom_id), 'mom published lobby keys after enrollment'
     assert wait_lobby_keys(relay_base, owner_id), 'owner published lobby keys'
     receipt['checks']['lobby_keys_replenished_after_enrollment'] = True
-    owner.page.click('[data-testid="open-create"]')
+    owner.open_menu_item('menu-create')
     owner.page.fill('[data-testid="create-room"]', 'fam2')
     owner.page.click('[data-testid="create-submit"]')
     owner.wait_room('fam2', 1)
@@ -305,7 +310,7 @@ def run_flow(Dev, receipt, screenshot=None, relay_base=None):
     receipt['checks']['messages_both_ways_in_lobby_room'] = True
 
     # ---- owner actor auto-joins: mom creates fam3 and invites owner via the lobby — no card, joined on the next tick
-    mom.page.click('[data-testid="open-create"]')
+    mom.open_menu_item('menu-create')
     mom.page.fill('[data-testid="create-room"]', 'fam3')
     mom.page.click('[data-testid="create-submit"]')
     mom.wait_room('fam3', 1)
