@@ -76,6 +76,9 @@ base64url 정규형: RFC 4648 §5 알파벳, `=` 패딩 없음, 다시 인코딩
 
 - 웹(한데): `archive/experiments/openmls-browser/web/file-v2.js`(설명자·base64url·암복호화·안전한 파일명, 순수 함수),
   `archive/native-mls/web/hande/room.js`(수신·이력·지연 로드), `relay.js`(`blob()`), 이력 `history-store.js` 종류 `file-v2`.
+  송신(3단계): `archive/native-mls/web/hande/file-v2-outbox.js`(업로드 → 설명자 MLS 암호화 → 보관 → 게시, 재시도는 같은 바이트만,
+  보관은 MLS 암호문뿐), `relay.js`(`postBlob()`), `room.js` `sendAttachment`. 스위치 `SEND_FILE_V2`(기본 꺼짐) — 모든 기기의 v2 수신
+  확인 뒤 오너 승인으로 켠다. 시험용 한 브라우저만: localStorage `hande:file-v2-send` = `"1"`.
 - 릴레이: `archive/native-mls/server/blobs.go`.
 - 안드로이드: `archive/native-mls/android/app/src/main/kotlin/com/seoyoon_family/hande/core/FileV2.kt`(설명자 엄격 검증·수신 분류, 테스트
   `FileV2Test.kt`). 정상 설명자 → 이력 kind `file-v2`(본문 = 「📎 첨부(n B)」 자리 표시, attachment 칸 = 설명자), 잘못된 설명자 →

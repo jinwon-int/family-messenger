@@ -14,6 +14,7 @@
 import {parseStageReport, checkCommit, outerForCommit, resolveUncertainPending} from './commit-policy.js';
 import {attachmentOutbox, isAttachment} from './relay-attachments.js';
 import {isFileV2, parseDescriptor, decryptFile, safeFileName} from './file-v2.js';
+import {fileV2Outbox, sendsFileV2} from './file-v2-outbox.js';
 import {strings} from './strings.js';
 import {actorOf, DEVICE} from './identity.js';
 
@@ -114,6 +115,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
     halted: null, retriedSeq: 0, failedSeq: 0, transferring: false,
     waiting403: false, syncedAt: null, fingerprint: '', publicKey: '', revision: 0, historyOn: false};
   let attachments = null;
+  let fileV2s = null;   // file-v2 송신 보관함(#499 3단계) — SEND_FILE_V2 또는 시험용 덮어쓰기일 때만 새 파일을 보낸다
   const stateKey = () => `hande:room:${room}:${device}:${database}`;
   const log = (...parts) => on.log?.(`${clock(true)} ${parts.join(' ')}`);
   const notify = (text, tone = 'info') => on.notice?.(text, tone);
@@ -404,6 +406,10 @@ export function createRoomSession({room, device, database, worker, relay, storag
     attachments = attachmentOutbox({storage, key: `hande:attachment:${database}:${room}:${device}`,
       device, encrypt: async bytes => (await roomOp('encrypt', bytes)).output,
       post: payload => relay.api('POST', path('events'), payload)});
+    fileV2s = fileV2Outbox({storage, key: `hande:attachment-v2:${database}:${room}:${device}`,
+      device, encrypt: async bytes => (await roomOp('encrypt', bytes)).output,
+      post: payload => relay.api('POST', path('events'), payload),
+      upload: ciphertext => relay.postBlob(room, device, ciphertext)});
     S.started = true;
     let members = null;
     try { members = parseMembers((await roomOp('members')).output); } catch (_) { /* no group yet */ }
@@ -522,11 +528,21 @@ export function createRoomSession({room, device, database, worker, relay, storag
     if (S.busy) throw new Error('동기화 중입니다. 잠시 뒤 다시 보내 주세요.');
     S.transferring = true; changed();
     try {
-      const result = await attachments.send(file, S.epoch);
-      log(`첨부 전송 확인(seq ${result.seq}, ${result.size}바이트${result.duplicate ? ', 중복 없이 확인' : ''})`);
+      // 보류 중인 전송이 있으면 그 형식으로 먼저 끝낸다(재시도는 같은 바이트만). 없으면 스위치대로 v2 또는 v1.
+      const v2 = fileV2s?.pending || !attachments?.pending && sendsFileV2(storage);
+      const result = await (v2 ? fileV2s : attachments).send(file, S.epoch);
+      log(`첨부 전송 확인(${v2 ? 'file-v2, ' : ''}seq ${result.seq}, ${result.size}바이트${result.duplicate ? ', 중복 없이 확인' : ''})`);
       const bytes = file ? new Uint8Array(await file.arrayBuffer()) : null;
-      if (bytes) { emitAttachment(device, bytes.length, result.seq, Date.now(), async () => bytes); await remember({seq: result.seq, sender: device, client: device, kind: 'attachment', text: '', bytes: Array.from(bytes)}); }
-      return result;
+      if (v2) {
+        // 내 v2 첨부: 화면은 가진 바이트로 바로(다시 받지 않는다), 이력에는 설명자만(FILE-V2.md §4-2 — 파일 바이트는 보관하지 않음).
+        // 새로고침 뒤 재시도로 끝난 경우 설명자가 없다(보관함은 MLS 암호문만 둔다) — v1 과 같이 내 쪽 행을 남기지 않는다.
+        if (bytes && result.descriptor) {
+          emitAttachment(device, bytes.length, result.seq, Date.now(), async () => bytes, safeFileName(file?.name));
+          await remember({seq: result.seq, sender: device, client: result.client_id, kind: 'file-v2', text: result.descriptor, bytes: []});
+        }
+      } else if (bytes) { emitAttachment(device, bytes.length, result.seq, Date.now(), async () => bytes); await remember({seq: result.seq, sender: device, client: device, kind: 'attachment', text: '', bytes: Array.from(bytes)}); }
+      const {descriptor: _secret, ...shown} = result;   // 설명자(파일 키)는 호출자에게 돌려주지 않는다
+      return shown;
     } finally { S.transferring = false; changed(); }
   }
 
@@ -564,6 +580,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
     if (!r.ok) throw refused('reset_room', r);
     storage.removeItem(stateKey());
     storage.removeItem(`hande:attachment:${database}:${room}:${device}`);
+    storage.removeItem(`hande:attachment-v2:${database}:${room}:${device}`);
     S.started = false; resetState(); changed();
     log(`방 상태 삭제(${room}) — 재초대를 기다린다`);
   }
@@ -575,7 +592,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
   return {
     room, device, database,
     get state() { return S; },
-    get attachmentPending() { return !!attachments?.pending; },
+    get attachmentPending() { return !!attachments?.pending || !!fileV2s?.pending; },
     get joined() { return S.joined; },
     open, activate, sync, create, publishKeyPackage, invite, remove, send, sendAttachment,
     offerCandidate, approveCandidate, denyCandidate, wipe, stop, registration,
