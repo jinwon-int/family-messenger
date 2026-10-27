@@ -241,5 +241,9 @@ final class NotificationProcessorTests: XCTestCase {
         XCTAssertEqual(processor.content(for: record("alice-pc", .attachment, "IMG_0001.HEIC"))?.body, Strings.pushPhoto)
         XCTAssertEqual(processor.content(for: record("alice-pc", .attachment, "계약서.pdf"))?.body, Strings.pushFile)
         XCTAssertNil(processor.content(for: record("alice-pc", .undecryptable, "no key")))
+        // file-v2(#499): body = mime 힌트 → 「사진」/「파일」 문구만(설명자·키는 알림에 오르지 않는다)
+        XCTAssertEqual(processor.content(for: record("alice-pc", .fileV2, "image/jpeg"))?.body, Strings.pushPhoto)
+        XCTAssertEqual(processor.content(for: record("alice-pc", .fileV2, ""))?.body, Strings.pushFile)
+        XCTAssertEqual(processor.content(for: record("alice-pc", .fileV2, "application/pdf"))?.body, Strings.pushFile)
     }
 }

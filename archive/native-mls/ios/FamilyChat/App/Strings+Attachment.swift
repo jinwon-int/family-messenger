@@ -9,6 +9,8 @@ extension Strings {
     static let attachPhotoUnreadable = "사진을 읽지 못했습니다. 다른 사진을 골라 주세요."
     static let attachFileUnreadable = "파일을 읽지 못했습니다."
     static let attachmentImage = "사진"
+    /// 분리 첨부 file-v2(#499) — 이 빌드는 설명자만 보관하고 아직 열지 않는다(웹 relay-app 의 안내와 같은 뜻).
+    static let fileV2Pending = "📎 첨부(새 형식) — 다음 업데이트에서 열 수 있습니다"
     static func attachmentFile(_ bytes: Int, _ mime: String) -> String { "📎 파일 · \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)) · \(mime)" }
     static let attachmentSave = "저장·공유"
     /// 전체 화면 사진 보기(사진 탭). 닫기는 한 번 탭(VoiceOver 접근성 동작 이름으로도 쓴다).

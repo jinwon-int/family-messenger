@@ -20,7 +20,7 @@ public struct RoomGlance: Equatable {
         var people: [String] = []
         var agents: [DeviceID] = []
         var last: MessageRecord?
-        for record in records where record.kind == .text || record.kind == .attachment {
+        for record in records where record.kind == .text || record.kind.isFile {
             last = record
             if roster.isAgent(record) {
                 if !agents.contains(record.senderDevice) { agents.append(record.senderDevice) }

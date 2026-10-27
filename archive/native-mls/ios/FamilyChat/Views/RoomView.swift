@@ -589,6 +589,9 @@ struct MessageRow: View {
             Text(Strings.outgoingAttachment).font(.footnote)
         case .attachment:
             AttachmentBubble(item: item, onLoaded: onAttachmentLoaded)
+        case .fileV2:
+            // 분리 첨부(#499): attachment 칸은 설명자(키) — 글로 보이지 않는다. 열기는 후속 PR.
+            Text(Strings.fileV2Pending).font(.footnote)
         case .undecryptable:
             Text(Strings.undecryptable)
         default:

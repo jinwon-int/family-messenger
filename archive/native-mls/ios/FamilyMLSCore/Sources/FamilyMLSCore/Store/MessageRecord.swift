@@ -3,7 +3,14 @@
 import Foundation
 
 public struct MessageRecord: Equatable {
-    public enum Kind: String { case text, attachment, undecryptable, system }
+    /// `fileV2`(#499): 분리 첨부 — body = mime 표시 힌트(없으면 빈 문자열, 신뢰하지 않음), attachment = 검증한 설명자 JSON(파일 키 포함 —
+    /// 글로 보이거나 공유하지 않는다). 저장 값 `file-v2` 는 웹·안드로이드 이력과 같은 말. 모르는 값은 읽을 때 `.system`.
+    public enum Kind: String {
+        case text, attachment, undecryptable, system
+        case fileV2 = "file-v2"
+        /// 첨부(v1 본체 또는 v2 설명자)인가 — 미리보기 문구·대화 요약에서 「사진」으로 다룬다.
+        public var isFile: Bool { self == .attachment || self == .fileV2 }
+    }
     public enum DecryptedBy: String { case app, nse }
     public let room: RoomID
     public let seq: Int64
