@@ -452,6 +452,57 @@ func TestLobbyWelcomesListing(t *testing.T) {
 // caller's unconsumed rows (consumed ones keep consumed_room for the Welcome
 // bookkeeping), another device's pool is untouched, a repeat is 200 deleted=0,
 // ?device= is required and validated, and the pool can be refilled afterwards.
+// A remove + re-invite leaves the earlier Welcome in the log while the device's
+// lobby secret for it is gone (family-messenger #530): the listing names only
+// the Welcome past the device's current seat, with the package consumed for
+// that seat. A room whose commits never carried members keeps listing every
+// unread Welcome (TestLobbyWelcomesListing).
+func TestLobbyWelcomesSkipThoseBeforeTheCurrentSeat(t *testing.T) {
+	// Seats are tracked only with device policy enforcement on (applyMembership).
+	_, srv, st, _, first := newEnforcedRelay(t, testPolicy())
+	enrollDevice(t, st, first, "a1", "alice")
+	enrollDevice(t, st, first, "x1", "xena")
+	post := func(body []byte, what string) int64 {
+		t.Helper()
+		code, raw := doJSON(t, srv, "POST", "/v2/rooms/S/events", body)
+		if code != http.StatusCreated {
+			t.Fatalf("%s: status=%d body=%s", what, code, raw)
+		}
+		var resp eventResponse
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			t.Fatalf("%s: response is not an eventResponse: %v (%s)", what, err, raw)
+		}
+		return resp.Seq
+	}
+	if code, raw := doJSON(t, srv, "POST", "/v2/lobby/keypackages", lobbyPublishBody(t, "x1", "kx1", "kx2")); code != http.StatusCreated {
+		t.Fatalf("publish x1: status=%d body=%s", code, raw)
+	}
+	consume := func(what string) {
+		t.Helper()
+		if code, raw := doJSON(t, srv, "GET", "/v2/lobby/keypackages?device=x1&consumer=a1&room=S", nil); code != http.StatusOK {
+			t.Fatalf("%s: status=%d body=%s", what, code, raw)
+		}
+	}
+	consume("consume kx1 for the first seat")
+	post(postCommitBody(t, "a1", "seat1", 0, nil, membersOf([2]string{"a1", "alice"}, [2]string{"x1", "xena"}), []byte("add x1")), "seat 1 commit")
+	firstWelcome := post(postEventBody(t, "a1", "w1", "welcome", 1, nil, []string{"x1"}, []byte("welcome-1")), "welcome 1")
+	post(postCommitBody(t, "a1", "unseat", 1, nil, membersOf([2]string{"a1", "alice"}), []byte("remove x1")), "remove commit")
+	consume("consume kx2 for the second seat")
+	seat2 := post(postCommitBody(t, "a1", "seat2", 2, nil, membersOf([2]string{"a1", "alice"}, [2]string{"x1", "xena"}), []byte("re-add x1")), "seat 2 commit")
+	second := post(postEventBody(t, "a1", "w2", "welcome", 3, nil, []string{"x1"}, []byte("welcome-2")), "welcome 2")
+	if !(firstWelcome < seat2 && seat2 < second) {
+		t.Fatalf("sequence: first welcome %d, re-seat %d, second welcome %d", firstWelcome, seat2, second)
+	}
+	code, raw := doJSON(t, srv, "GET", "/v2/lobby/welcomes?device=x1", nil)
+	if code != http.StatusOK {
+		t.Fatalf("welcomes x1: status=%d body=%s", code, raw)
+	}
+	got := decodeWelcomes(t, raw)
+	if len(got) != 1 || got[0].Room != "S" || got[0].Seq != second || got[0].KeyPackageRef != "kx2" {
+		t.Fatalf("welcomes x1 = %+v, want exactly {S, seq %d, key_package_ref kx2}: the Welcome before the re-seat is not listed", got, second)
+	}
+}
+
 func TestLobbyDeleteWithdrawsUnconsumedPackages(t *testing.T) {
 	r, srv := newTestRelay(t, testPolicy())
 	if code, raw := doJSON(t, srv, "POST", "/v2/lobby/keypackages", lobbyPublishBody(t, "a1", "k1", "k2", "k3")); code != http.StatusCreated {

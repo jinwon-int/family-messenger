@@ -428,7 +428,12 @@ func (s *relay) deleteLobbyKeyPackages(device string) (int64, error) {
 // pendingWelcomes lists, oldest first, the open rooms whose log holds a
 // welcome event targeting device that the device's durable cursor has not
 // passed (no cursor row, or cursor.seq < event.seq). Each row carries the ref of
-// the device's lobby package last consumed for that room (see pendingWelcome). targets is stored as
+// the device's lobby package last consumed for that room (see pendingWelcome).
+// A Welcome from before the device's current seat (a remove + re-invite
+// leaves the earlier Welcome in the log, and its lobby secret is gone on the
+// device) is not listed: only Welcomes past mls_members.added_seq count; a
+// room with no tracked seat for the device (legacy, no members on commits)
+// lists every unread Welcome as before (family-messenger #530). targets is stored as
 // encodeTargets' comma-joined list; the match is on the whole identifier via
 // instr over ','||targets||',' (LIKE would treat '_' in an identifier as a
 // wildcard). Read-only: the cursor moves only through GET /events?ack=.
@@ -453,6 +458,7 @@ WHERE e.kind = 'welcome'
   AND instr(',' || e.targets || ',', ',' || ?1 || ',') > 0
   AND r.closed_at IS NULL
   AND (c.seq IS NULL OR c.seq < e.seq)
+  AND e.seq > COALESCE((SELECT m.added_seq FROM mls_members m WHERE m.room = e.room AND m.device = ?1), -1)
 ORDER BY e.created_at, e.room, e.seq
 LIMIT ?2`, device, maxListedWelcomes)
 	if err != nil {
