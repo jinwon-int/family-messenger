@@ -549,8 +549,11 @@ main.shell[data-view="room"] .pane-list { display: none; }
 .bubble[data-me="true"] .body { background: var(--bubble-me); color: var(--bubble-me-text); border-color: transparent; border-radius: var(--radius-l); border-bottom-right-radius: 5px; box-shadow: var(--ember-shadow); }
 .bubble.kind-undecryptable .body { color: var(--text-2); font-style: italic; border-style: dashed; background: transparent; }
 .bubble .body.media, .bubble .body.file { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-2); }
-.bubble .body.media img { display: block; max-width: min(320px, 60vw); max-height: 320px; border-radius: var(--radius-s); object-fit: contain; }
-.bubble .body.media .media-open { display: block; padding: 0; margin: 0; border: 0; background: none; cursor: zoom-in; border-radius: var(--radius-s); }
+/* 사진 말풍선: 베젤 최소화(3px)·사진 확대 — 오너 요청 2026-10-27, iOS #533 과 같은 모양(사진이 말풍선을 거의 채운다).
+   모서리 15px = 말풍선 곡률 18px − 3px. 사진에는 「내려받기」 버튼이 없다(크게 보기에서 저장). */
+.bubble .body.media { --media-inset: 3px; padding: var(--media-inset); }
+.bubble .body.media img { display: block; max-width: min(400px, 72vw); max-height: 440px; border-radius: calc(var(--radius-l) - var(--media-inset)); object-fit: contain; }
+.bubble .body.media .media-open { display: block; padding: 0; margin: 0; border: 0; background: none; cursor: zoom-in; border-radius: calc(var(--radius-l) - var(--media-inset)); }
 .bubble .body.media .media-open:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 
 /* 사진 크게 보기 — 화면 가득, 아무 곳이나 누르면 닫힘 */
