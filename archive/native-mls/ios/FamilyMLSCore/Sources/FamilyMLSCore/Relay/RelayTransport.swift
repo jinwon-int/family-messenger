@@ -33,6 +33,10 @@ public protocol RelayTransport: AnyObject {
     func lobbyWelcomes(device: DeviceID) async throws -> [PendingWelcome]
     /// DELETE /v2/lobby/keypackages?device= — 이 기기의 미소비 로비 키를 거둔다(#389, 「이 기기 지우기」 직전). 지운 개수.
     func deleteLobbyKeyPackages(device: DeviceID) async throws -> Int
+
+    /// GET /v2/rooms/{room}/blobs/{id}?device= — file-v2 암호문 blob(#499, server/blobs.go, FILE-V2.md §4-3). 원시 바이트.
+    /// 403 `not_a_member` · 404 `no_such_blob`(보존 기간 지남) · 410 `room_closed`. 기본 구현은 `.refused(code:"not_found", status:404)`.
+    func getBlob(room: RoomID, device: DeviceID, id: String) async throws -> Data
 }
 
 public extension RelayTransport {
@@ -49,6 +53,9 @@ public extension RelayTransport {
         throw RelayError.refused(code: "not_found", status: 404)
     }
     func deleteLobbyKeyPackages(device: DeviceID) async throws -> Int {
+        throw RelayError.refused(code: "not_found", status: 404)
+    }
+    func getBlob(room: RoomID, device: DeviceID, id: String) async throws -> Data {
         throw RelayError.refused(code: "not_found", status: 404)
     }
 }

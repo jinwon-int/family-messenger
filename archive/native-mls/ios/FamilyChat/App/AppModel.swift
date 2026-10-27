@@ -946,6 +946,22 @@ final class AppModel: ObservableObject {
         return (try? deps.messageStore.messages(room: room, after: seq - 1, limit: 1))?.first { $0.seq == seq }?.attachment
     }
 
+    /// file-v2 설명자(#499) — `.fileV2` 행의 attachment 칸. **파일 키가 들어 있다** — 화면·공유에 쓰지 않고 `fileV2Bytes` 만 쓴다.
+    func fileV2Descriptor(room: RoomID, seq: Int64) -> FileV2Format.Descriptor? {
+        guard let data = attachment(room: room, seq: seq) else { return nil }
+        return try? FileV2Format.parseDescriptor(data)
+    }
+
+    /// file-v2 첨부를 연다: 설명자 → `GET /v2/rooms/{room}/blobs/{blob}?device=<나>` → 길이·sha256·GCM·크기 검증(FILE-V2.md §4-3).
+    /// 파일 바이트는 기기 이력에 보관하지 않는다(다시 볼 때 다시 받는다, §4-2). 실패는 던진다 — 말풍선이 「열 수 없음 — 다시 시도」.
+    func fileV2Bytes(room: RoomID, seq: Int64) async throws -> Data {
+        guard let descriptor = fileV2Descriptor(room: room, seq: seq) else { throw FileV2Format.Rejected(reason: "descriptor") }
+        guard let transport, !deviceId.isEmpty else { throw RelayError.unauthorized }
+        let ciphertext = try await transport.getBlob(room: room, device: deviceId, id: descriptor.blob)
+        // 최대 50 MiB 해시·복호화는 메인 스레드 밖에서.
+        return try await Task.detached(priority: .userInitiated) { try FileV2Format.open(ciphertext, descriptor) }.value
+    }
+
     func refreshRooms() {
         rooms = (try? deps.messageStore.rooms()) ?? []
     }

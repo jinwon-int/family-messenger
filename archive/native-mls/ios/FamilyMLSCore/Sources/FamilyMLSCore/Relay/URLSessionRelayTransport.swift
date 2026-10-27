@@ -139,6 +139,18 @@ public final class URLSessionRelayTransport: RelayTransport {
         return try decode(EventsPage.self, await perform(request))
     }
 
+    public func getBlob(room: RoomID, device: DeviceID, id: String) async throws -> Data {
+        try await perform(try getBlobRequest(room: room, device: device, id: id))
+    }
+
+    /// file-v2 blob GET(#499). 응답은 원시 암호문(application/octet-stream) — 검증(길이·sha256·GCM)은 `FileV2Format.open`.
+    func getBlobRequest(room: RoomID, device: DeviceID, id: String) throws -> URLRequest {
+        var request = try makeRequest(method: "GET", path: "/v2/rooms/\(Self.pathComponent(room))/blobs/\(Self.pathComponent(id))",
+                                      query: [URLQueryItem(name: "device", value: device)])
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
+        return request
+    }
+
     public func closeRoom(room: RoomID, device: DeviceID) async throws {
         // §3.4 삭제 경로(B1). 성공 200 {"closed":true} — 이후 모든 계약 라우트는 410 room_closed.
         let request = try makeRequest(method: "POST", path: "/v2/rooms/\(Self.pathComponent(room))/close",

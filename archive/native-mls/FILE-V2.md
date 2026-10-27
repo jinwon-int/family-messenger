@@ -84,4 +84,8 @@ base64url 정규형: RFC 4648 §5 알파벳, `=` 패딩 없음, 다시 인코딩
 - iOS: `archive/native-mls/ios/FamilyMLSCore/Sources/FamilyMLSCore/Sync/FileV2Format.swift`(설명자 엄격 검증, 테스트
   `FileV2FormatTests.swift`), 분류는 `RoomSyncEngine.storeApplication`(앱·NSE 공용). 정상 → `MessageRecord.Kind.fileV2`(저장 값
   `file-v2`, body = mime 힌트, attachment 칸 = 설명자), 잘못됨·비정규 client_id → `.undecryptable`(사유 `file_v2_descriptor`).
-  NSE 알림은 「사진」/「파일」 문구만. blob 받기·열기는 후속 PR. 웹보다 엄격한 점: 중복 키·앞머리 BOM·짝 없는 서로게이트 거부.
+  NSE 알림은 「사진」/「파일」 문구만. 웹보다 엄격한 점: 중복 키·앞머리 BOM·짝 없는 서로게이트 거부.
+  열기(#499 ②): `RelayTransport.getBlob`(`URLSessionRelayTransport`, Accept octet-stream) → `FileV2Format.open`(CryptoKit:
+  길이 → sha256 → AES-GCM(AAD) → 크기) → `AppModel.fileV2Bytes`. 말풍선(`AttachmentBubble`)은 복호화한 바이트를 **sniff 한 MIME**
+  의 표시용 행으로 미리보기·공유 파일을 만들고(설명자·키는 넘기지 않음), 실패하면 「첨부를 열 수 없음 — 눌러서 다시 받기」.
+  파일 바이트는 이력에 저장하지 않는다(미리보기 캐시·임시 공유 파일만, v1과 같은 보호 등급). 교차 벡터: `FileV2OpenTests`(웹 `encryptFile` 산출).

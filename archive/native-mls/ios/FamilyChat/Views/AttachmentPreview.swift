@@ -15,6 +15,9 @@ import ImageIO
 struct AttachmentPreview {
     let thumbnail: UIImage?
     let shareURL: URL?
+    /// 내용으로 정한 MIME(v1 = 수신 때 sniff, file-v2 = 복호화한 바이트를 sniff — 보낸 쪽 힌트가 아니다)와 실제 바이트 수.
+    var mime: String = AttachmentFormat.fallbackMime
+    var size: Int = 0
 }
 
 /// 방·seq → 준비물. `NSCache` 는 스레드 안전하고 메모리 압박 때 스스로 비운다(비워지면 말풍선이 다시 준비할 뿐).
@@ -41,7 +44,8 @@ final class AttachmentPreviewCache {
         if let cached = preview(room: record.room, seq: record.seq) { return cached }
         let made = await Task.detached(priority: .userInitiated) { () -> AttachmentPreview in
             let thumbnail = AttachmentFormat.isImage(mime: record.body) ? AttachmentThumbnail.make(bytes, scale: scale) : nil
-            return AttachmentPreview(thumbnail: thumbnail, shareURL: AttachmentExport.temporaryURL(for: record, bytes: bytes))
+            return AttachmentPreview(thumbnail: thumbnail, shareURL: AttachmentExport.temporaryURL(for: record, bytes: bytes),
+                                     mime: record.body, size: bytes.count)
         }.value
         cache.setObject(Entry(made), forKey: Self.key(room: record.room, seq: record.seq))
         return made
