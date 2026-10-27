@@ -184,3 +184,9 @@ test('서비스 봇(카드 알림): 이름표·방 이름, 에이전트가 아�
   assert.equal(isAgentDevice('card-bot'), false);
   assert.equal(roomLabel('family-card'), '💳 가족 카드 알림');
 });
+
+test('서비스 봇(플릿 알림): 이름표·방 이름, 에이전트가 아님 (#460)', () => {
+  assert.equal(displayName('fleet-bot'), '🔔 플릿 알림');
+  assert.equal(isAgentDevice('fleet-bot'), false);
+  assert.equal(roomLabel('fleet-alerts'), '🔔 플릿 알림');
+});
