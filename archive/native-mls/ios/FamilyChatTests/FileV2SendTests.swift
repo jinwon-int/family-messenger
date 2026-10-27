@@ -58,8 +58,9 @@ final class FileV2SendTests: XCTestCase {
         relay.failNextBlobPosts([RelayError.refused(code: "room_bytes_cap", status: 413)])
         let outcome = await model.sendAttachment(room: "family", data: Self.jpeg)
         XCTAssertNil(outcome)
-        let page = try await relay.getEvents(room: "family", device: "mom-iphone-a1b2c3", after: 0, limit: 10, ack: nil)
-        XCTAssertEqual(page.events.count, 0, "no descriptor without a stored blob")
+        // 빈 방은 메모리 릴레이가 404(no_such_room) — AttachmentTests 의 한도 거절 테스트와 같이 0건으로 읽는다.
+        let page = try? await relay.getEvents(room: "family", device: "mom-iphone-a1b2c3", after: 0, limit: 10, ack: nil)
+        XCTAssertEqual(page?.events.count ?? 0, 0, "no descriptor without a stored blob")
         let failed = try XCTUnwrap(model.messages(room: "family").last)
         XCTAssertEqual(failed.record.kind, .fileV2)
         guard case .failed? = failed.outgoing else { return XCTFail("\(String(describing: failed.outgoing))") }
