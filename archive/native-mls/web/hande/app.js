@@ -317,8 +317,12 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     try { welcomes = await app.dev.welcomes(); } catch (error) { logLine(`로비 초대 조회 실패: ${error.message}`); return; }
     const invites = [];
     const refs = {set: new Set(), complete: true};
-    for (const w of welcomes) {
-      if (!ROOM.test(w.room)) continue;
+    // One room can hold several unread Welcomes for this device (the invite before a remove +
+    // re-invite stays in the log until the cursor passes it). Only the newest is openable —
+    // the older ones' lobby secrets are gone — so adopt per room from the highest seq (#530).
+    const newest = new Map();
+    for (const w of welcomes) if (ROOM.test(w.room) && Number.isSafeInteger(w.seq) && (!newest.has(w.room) || newest.get(w.room).seq < w.seq)) newest.set(w.room, w);
+    for (const w of newest.values()) {
       const R = app.rooms.get(w.room);
       if (R && R.session.joined) continue;   // joined already — the next ack drops it from the list
       if (typeof w.key_package_ref === 'string' && w.key_package_ref) refs.set.add(w.key_package_ref); else refs.complete = false;
