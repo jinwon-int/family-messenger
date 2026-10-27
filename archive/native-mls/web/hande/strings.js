@@ -466,6 +466,7 @@ export const strings = {
     inviteFailed: (tries, reason) => `자동 수락 실패 ${tries}회${reason ? ` — ${reason}` : ''}`,
     hint: '수락은 이 기기의 로비 키로 보낸 Welcome 을 읽어 대화방에 들어가는 일입니다. 실패해도 키는 지워지지 않으니 「다시 시도」할 수 있습니다.',
     retry: '다시 시도',
+    copyLogs: '진단 기록 복사',
   },
 
   errors: {

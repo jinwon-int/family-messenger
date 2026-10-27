@@ -377,7 +377,14 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       failed: i.failed && i.failed.tries ? {tries: i.failed.tries, reason: i.failed.reason ?? null} : null,
       onAccept: () => acceptInvite(i.room), onIgnore: () => { app.dismissed.add(i.room); render(); }}));
   }
-  function openNotify() { ui.openNotifySheet(root, {invites: inviteRows(), onClose: () => {}}); }
+  /** 🔔 시트의 「진단 기록 복사」: 최근 기록 200줄 + 기기·방 상태 요약을 클립보드로 — DevTools 없이 원인 보고(#535). */
+  function copyDiagnostics() {
+    const rooms = [...app.rooms.entries()].map(([id, R]) => { const S = R.session.state; return `${id}: joined=${S.joined} halted=${!!S.halted} relaySeq=${S.relaySeq} epoch=${S.epoch} pending=${S.pending}`; });
+    const invites = app.invites.map(i => `${i.room}: seq ${i.seq} ${i.failed ? `failed ${i.failed.tries}x (${i.failed.reason ?? '-'})` : i.busy ? 'busy' : 'new'}`);
+    const text = [`hande web diagnostics ${clock(true)} device=${app.device} actor=${app.actor}`, 'rooms:', ...rooms, 'invites:', ...invites, 'log:', ...app.logs.slice(-200)].join('\n');
+    return copy(text);
+  }
+  function openNotify() { ui.openNotifySheet(root, {invites: inviteRows(), onCopyLogs: copyDiagnostics, onClose: () => {}}); }
 
   // ---- actions ----
   const cur = () => app.rooms.get(app.current)?.session;
