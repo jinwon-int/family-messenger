@@ -163,6 +163,35 @@ final class RelayTransportTests: XCTestCase {
 
     // MARK: - 확장 ① 방 목록(#282 서버 구현) · ② 푸시 등록(#275 서버 구현, §12-D)
 
+    /// file-v2 blob GET(#499, server/blobs.go): GET /v2/rooms/{room}/blobs/{id}?device= · 원시 바이트(Accept octet-stream) · 같은 인증 헤더.
+    func testGetBlobRequestMatchesServerWire() throws {
+        let id = String(repeating: "ab", count: 32)
+        let request = try transport(.bearer("t")).getBlobRequest(room: "family", device: "me-pc", id: id)
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(request.url?.absoluteString, "https://relay.example.com/v2/rooms/family/blobs/\(id)?device=me-pc")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Cf-Access-Jwt-Assertion"), "t")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "application/octet-stream")
+        XCTAssertNil(request.httpBody)
+        let weird = try transport(.bearer("t")).getBlobRequest(room: "fa/mily", device: "me-pc", id: "x/../y")
+        XCTAssertEqual(weird.url?.absoluteString, "https://relay.example.com/v2/rooms/fa%2Fmily/blobs/x%2F..%2Fy?device=me-pc",
+                       "ids stay one path segment each")
+    }
+
+    func testDefaultGetBlobIsNotFound() async {
+        final class Bare: RelayTransport {
+            func postKeyPackages(room: RoomID, _ post: KeyPackagePost) async throws -> KeyPackagesResponse { fatalError() }
+            func consumeKeyPackage(room: RoomID, device: DeviceID, target: DeviceID) async throws -> StoredKeyPackage? { nil }
+            func postEvent(room: RoomID, _ post: EventPost) async throws -> EventPostResponse { fatalError() }
+            func getEvents(room: RoomID, device: DeviceID, after: Int64, limit: Int, ack: Int64?) async throws -> EventsPage { fatalError() }
+            func closeRoom(room: RoomID, device: DeviceID) async throws {}
+            func listRooms(device: DeviceID) async throws -> RoomsResponse { fatalError() }
+            func registerPush(_ registration: PushRegistration) async throws {}
+            func unregisterPush(device: DeviceID) async throws {}
+        }
+        do { _ = try await Bare().getBlob(room: "family", device: "me-pc", id: "x"); XCTFail("default must throw") }
+        catch { XCTAssertEqual(error as? RelayError, .refused(code: "not_found", status: 404)) }
+    }
+
     func testListRoomsRequestAndDecode() throws {
         let request = try transport(.bearer("t")).listRoomsRequest(device: "me-pc")
         XCTAssertEqual(request.httpMethod, "GET")

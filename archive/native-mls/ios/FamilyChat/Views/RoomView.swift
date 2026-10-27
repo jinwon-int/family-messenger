@@ -590,8 +590,8 @@ struct MessageRow: View {
         case .attachment:
             AttachmentBubble(item: item, onLoaded: onAttachmentLoaded)
         case .fileV2:
-            // 분리 첨부(#499): attachment 칸은 설명자(키) — 글로 보이지 않는다. 열기는 후속 PR.
-            Text(Strings.fileV2Pending).font(.footnote)
+            // 분리 첨부(#499): attachment 칸은 설명자(키) — 말풍선이 blob 을 받아 열고, 설명자는 화면·공유에 쓰지 않는다.
+            AttachmentBubble(item: item, onLoaded: onAttachmentLoaded)
         case .undecryptable:
             Text(Strings.undecryptable)
         default:
@@ -614,6 +614,10 @@ struct AttachmentBubble: View {
     @State private var showViewer = false
     /// 본체를 끝내 읽지 못했다(재시도 소진) — 「불러오는 중」에 영원히 머물지 않게.
     @State private var unreadable = false
+    /// file-v2 「다시 시도」 — 바뀌면 `.task(id:)` 가 다시 돈다.
+    @State private var reload = 0
+    /// file-v2 설명자의 평문 크기(받기 전 「불러오는 중」 표시용).
+    @State private var v2Size: Int?
 
     /// 로딩 중 사진 자리(4:3 가로). 가로 사진은 높이가 그대로, 세로 사진은 +55pt 만 커진다(종전: 한 줄 → 220pt).
     static let placeholderSize = CGSize(width: AttachmentThumbnail.maxPoints, height: AttachmentThumbnail.maxPoints * 3 / 4)
@@ -627,7 +631,11 @@ struct AttachmentBubble: View {
     }
 
     private var message: MessageRecord { item.record }
+    /// 자리 표시 모양만 정한다(v1 = sniff 한 MIME, file-v2 = 보낸 쪽 힌트). 실제 미리보기 여부는 받은 내용으로 정한다.
     private var isImage: Bool { AttachmentFormat.isImage(mime: message.body) }
+    private var isV2: Bool { message.kind == .fileV2 }
+    /// 표시 크기: 준비물이 있으면 실제 바이트, v2 는 설명자 size, v1 은 저장된 본체 크기(v2 행의 attachmentBytes 는 설명자 길이라 쓰지 않는다).
+    private var byteCount: Int { preview?.size ?? (isV2 ? (v2Size ?? 0) : item.attachmentBytes) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -645,11 +653,15 @@ struct AttachmentBubble: View {
                 RoundedRectangle(cornerRadius: 8)
                     .fill(Color.primary.opacity(0.06))
                     .frame(width: Self.placeholderSize.width, height: Self.placeholderSize.height)
-                    .overlay(Text(Strings.attachmentLoading(item.attachmentBytes)).font(.footnote))
+                    .overlay(Text(Strings.attachmentLoading(byteCount)).font(.footnote))
             } else if preview == nil && !unreadable {
-                Text(Strings.attachmentLoading(item.attachmentBytes)).font(.footnote)
+                Text(Strings.attachmentLoading(byteCount)).font(.footnote)
+            } else if unreadable && isV2 {
+                // 받기·검증·복호화 실패(403·404·410·변조·네트워크) — 타임라인은 그대로, 눌러서 다시 받는다(FILE-V2.md §4-3).
+                Button { unreadable = false; reload += 1 } label: { Text(Strings.fileV2Failed(byteCount)).font(.footnote) }
+                    .buttonStyle(.plain)
             } else {
-                Text(Strings.attachmentFile(item.attachmentBytes, message.body)).font(.footnote)
+                Text(Strings.attachmentFile(byteCount, preview?.mime ?? message.body)).font(.footnote)
             }
             if let url = preview?.shareURL {
                 ShareLink(item: url) { Label(Strings.attachmentSave, systemImage: "square.and.arrow.up") }.font(.caption)
@@ -665,8 +677,9 @@ struct AttachmentBubble: View {
                     .onAppear { PhotoViewerPresence.active = true }
             }
         }
-        .task(id: message.seq) {
+        .task(id: "\(message.seq)#\(reload)") {
             guard preview == nil else { return }
+            if isV2 { await loadFileV2(); return }
             for attempt in 0..<Self.readAttempts {
                 if let data = model.attachment(room: message.room, seq: message.seq) {
                     preview = await AttachmentPreviewCache.shared.prepare(record: message, bytes: data, scale: displayScale)
@@ -680,9 +693,28 @@ struct AttachmentBubble: View {
         }
     }
 
-    /// 전체 화면은 확대(최대 4배)가 있어 원본을 디코드한다 — 누를 때 한 번.
+    /// file-v2(#499): 설명자 → blob 받기·검증·복호화 → **내용으로 MIME 을 정한** 표시용 행으로 준비물을 만든다.
+    /// 표시용 행에는 설명자(키)를 싣지 않는다(attachment: nil, 바이트는 따로 넘긴다). 파일 바이트는 이력에 저장하지 않는다(§4-2).
+    private func loadFileV2() async {
+        guard let descriptor = model.fileV2Descriptor(room: message.room, seq: message.seq) else { unreadable = true; return }
+        v2Size = descriptor.size
+        do {
+            let bytes = try await model.fileV2Bytes(room: message.room, seq: message.seq)
+            if Task.isCancelled { return }
+            let shown = MessageRecord(room: message.room, seq: message.seq, senderDevice: message.senderDevice, clientId: message.clientId,
+                                      kind: .attachment, body: AttachmentFormat.sniffMime(bytes), attachment: nil,
+                                      receivedAt: message.receivedAt, decryptedBy: message.decryptedBy)
+            preview = await AttachmentPreviewCache.shared.prepare(record: shown, bytes: bytes, scale: displayScale)
+            onLoaded()
+        } catch {
+            if !Task.isCancelled { unreadable = true }   // 화면 밖으로 나가 취소된 것은 실패가 아니다
+        }
+    }
+
+    /// 전체 화면은 확대(최대 4배)가 있어 원본을 디코드한다 — 누를 때 한 번. file-v2 는 준비물의 공유 파일(복호화한 원본)에서 읽는다.
     private func openViewer() {
-        guard let data = model.attachment(room: message.room, seq: message.seq), let image = UIImage(data: data) else { return }
+        let original = isV2 ? preview?.shareURL.flatMap { try? Data(contentsOf: $0) } : model.attachment(room: message.room, seq: message.seq)
+        guard let data = original, let image = UIImage(data: data) else { return }
         viewerImage = image
         showViewer = true
     }

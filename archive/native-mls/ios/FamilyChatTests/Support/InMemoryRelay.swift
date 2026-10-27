@@ -131,6 +131,21 @@ final class InMemoryRelay: RelayTransport, RelayControl {
         lock.withLock { rooms[room]?.closed = true }
     }
 
+    // file-v2 blob 저장소(#499, server/blobs.go) — 테스트가 `putBlob` 으로 넣는다. 구성원 검사는 하지 않는다(릴레이 쪽은 Go 테스트).
+    private var blobs: [String: Data] = [:]
+    private(set) var blobReads: [(room: RoomID, device: DeviceID, id: String)] = []
+    func putBlob(id: String, _ bytes: Data) { lock.withLock { blobs[id] = bytes } }
+
+    func getBlob(room: RoomID, device: DeviceID, id: String) async throws -> Data {
+        try checkUp()
+        return try lock.withLock {
+            blobReads.append((room, device, id))
+            if rooms[room]?.closed == true { throw RelayError.refused(code: "room_closed", status: 410) }
+            guard let bytes = blobs[id] else { throw RelayError.refused(code: "no_such_blob", status: 404) }
+            return bytes
+        }
+    }
+
     func listRooms(device: DeviceID) async throws -> RoomsResponse {
         try checkUp()
         return try lock.withLock {

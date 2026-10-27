@@ -120,6 +120,16 @@ final class FileV2FormatTests: XCTestCase {
         XCTAssertFalse(AttachmentFormat.isAttachment(clientId: Self.clientId))
     }
 
+    #if os(Linux) || !canImport(CryptoKit)
+    /// Linux: `open` 은 있어야 하고(앱 소스가 함께 컴파일된다 — linux-smoke), 열지 않고 `.unsupported` 를 던진다.
+    func testOpenIsUnsupportedWithoutCryptoKit() throws {
+        let d = try parse(Self.minimal)
+        XCTAssertThrowsError(try FileV2Format.open(Data(count: d.size + FileV2Format.gcmTagBytes), d)) {
+            XCTAssertEqual($0 as? FileV2Format.OpenError, .unsupported)
+        }
+    }
+    #endif
+
     func testKindIsFile() {
         XCTAssertEqual(MessageRecord.Kind(rawValue: "file-v2"), .fileV2, "same stored word as web/Android history")
         XCTAssertTrue(MessageRecord.Kind.fileV2.isFile)
