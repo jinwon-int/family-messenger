@@ -151,5 +151,27 @@ final class AttachmentTests: XCTestCase {
         XCTAssertNotNil(made.shareURL)
         XCTAssertEqual(cache.preview(room: "family", seq: 9)?.shareURL, made.shareURL)
         XCTAssertNil(cache.preview(room: "family-acc", seq: 9), "keyed by room too")
+        XCTAssertEqual(made.size, 8, "carries the real byte count")
+        XCTAssertEqual(made.mime, "application/pdf")
+        XCTAssertEqual(AttachmentPreviewCache.cost(of: made), 1, "no bitmap — minimal cost")
+    }
+
+    /// 오너 요청(2026-10-27): 사진을 크게(가로 280 · 세로 360pt), 베젤 최소화(3pt). 축소 비트맵 비용은 픽셀 바이트로 센다.
+    func testLargerPhotoBubbleAndBitmapCost() throws {
+        XCTAssertEqual(AttachmentThumbnail.maxWidth, 280)
+        XCTAssertEqual(AttachmentThumbnail.maxHeight, 360)
+        XCTAssertEqual(AttachmentThumbnail.maxPoints, max(AttachmentThumbnail.maxWidth, AttachmentThumbnail.maxHeight))
+        XCTAssertEqual(MessageRow.mediaInset, 3)
+        let size = CGSize(width: 1200, height: 1600)   // 세로 사진
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let tall = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.systemTeal.setFill(); context.fill(CGRect(origin: .zero, size: size))
+        }
+        let thumb = try XCTUnwrap(AttachmentThumbnail.make(try XCTUnwrap(tall.jpegData(compressionQuality: 0.8)), scale: 3))
+        let pixels = CGSize(width: thumb.size.width * thumb.scale, height: thumb.size.height * thumb.scale)
+        XCTAssertEqual(max(pixels.width, pixels.height), AttachmentThumbnail.maxPoints * 3, accuracy: 2, "long side = 360pt × 3")
+        let cost = AttachmentPreviewCache.cost(of: AttachmentPreview(thumbnail: thumb, shareURL: nil))
+        XCTAssertGreaterThanOrEqual(cost, Int(pixels.width * pixels.height) * 4 - 64, "RGBA bytes")
     }
 }

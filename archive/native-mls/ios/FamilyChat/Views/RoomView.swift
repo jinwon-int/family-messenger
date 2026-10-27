@@ -507,6 +507,10 @@ struct MessageRow: View {
     /// 보내는 글이 실패했을 때 「다시 보내기」.
     var retry: () -> Void = {}
     private var message: MessageRecord { item.record }
+    /// 받은(저장된) 첨부 말풍선 — 보내는 중인 첨부는 한 줄 글이라 종전 여백.
+    private var isMedia: Bool { message.kind.isFile && item.outgoing == nil }
+    /// 사진 말풍선의 테두리 두께(pt).
+    static let mediaInset: CGFloat = 3
 
     var body: some View {
         if !mine, message.kind == .text, roster.isAgent(message) {
@@ -570,8 +574,9 @@ struct MessageRow: View {
                         .padding(.leading, 4)
                 }
                 content
-                    .padding(.horizontal, 13)
-                    .padding(.vertical, 9)
+                    // 첨부(사진·파일)는 베젤을 최소화(오너 요청 2026-10-27) — 사진이 말풍선을 거의 채우고, 글 줄은 AttachmentBubble 이 자체 여백을 준다.
+                    .padding(.horizontal, isMedia ? Self.mediaInset : 13)
+                    .padding(.vertical, isMedia ? Self.mediaInset : 9)
                     .background(mine ? AnyShapeStyle(Hande.emberDeep) : AnyShapeStyle(Hande.surface))
                     .foregroundStyle(mine ? Hande.onEmber : Hande.ink)
                     .clipShape(BubbleShape(mine: mine))
@@ -620,7 +625,7 @@ struct AttachmentBubble: View {
     @State private var v2Size: Int?
 
     /// 로딩 중 사진 자리(4:3 가로). 가로 사진은 높이가 그대로, 세로 사진은 +55pt 만 커진다(종전: 한 줄 → 220pt).
-    static let placeholderSize = CGSize(width: AttachmentThumbnail.maxPoints, height: AttachmentThumbnail.maxPoints * 3 / 4)
+    static let placeholderSize = CGSize(width: AttachmentThumbnail.maxWidth, height: AttachmentThumbnail.maxWidth * 3 / 4)
     /// 저장소 읽기 재시도(앱·NSE 가 같은 DB 를 쓸 때 잠깐 잠길 수 있다).
     static let readAttempts = 3
 
@@ -638,33 +643,37 @@ struct AttachmentBubble: View {
     private var byteCount: Int { preview?.size ?? (isV2 ? (v2Size ?? 0) : item.attachmentBytes) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             if let thumbnail = preview?.thumbnail {
                 Image(uiImage: thumbnail)
                     .resizable()
                     .scaledToFit()
-                    .frame(maxWidth: AttachmentThumbnail.maxPoints, maxHeight: AttachmentThumbnail.maxPoints)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .contentShape(RoundedRectangle(cornerRadius: 8))
+                    .frame(maxWidth: AttachmentThumbnail.maxWidth, maxHeight: AttachmentThumbnail.maxHeight)
+                    .clipShape(RoundedRectangle(cornerRadius: AttachmentThumbnail.cornerRadius))
+                    .contentShape(RoundedRectangle(cornerRadius: AttachmentThumbnail.cornerRadius))
                     .onTapGesture { openViewer() }
                     .accessibilityLabel(Strings.attachmentImage)
                     .accessibilityAddTraits(.isButton)
             } else if preview == nil && !unreadable && isImage {
-                RoundedRectangle(cornerRadius: 8)
+                // 4:3 자리 — 남은 폭이 280pt 보다 좁으면 그 폭에 맞춰 줄어든다(고정 폭이면 좁은 화면에서 넘친다).
+                RoundedRectangle(cornerRadius: AttachmentThumbnail.cornerRadius)
                     .fill(Color.primary.opacity(0.06))
-                    .frame(width: Self.placeholderSize.width, height: Self.placeholderSize.height)
+                    .aspectRatio(Self.placeholderSize.width / Self.placeholderSize.height, contentMode: .fit)
+                    .frame(maxWidth: Self.placeholderSize.width)
                     .overlay(Text(Strings.attachmentLoading(byteCount)).font(.footnote))
             } else if preview == nil && !unreadable {
-                Text(Strings.attachmentLoading(byteCount)).font(.footnote)
+                Text(Strings.attachmentLoading(byteCount)).font(.footnote).modifier(AttachmentTextInset())
             } else if unreadable && isV2 {
                 // 받기·검증·복호화 실패(403·404·410·변조·네트워크) — 타임라인은 그대로, 눌러서 다시 받는다(FILE-V2.md §4-3).
                 Button { unreadable = false; reload += 1 } label: { Text(Strings.fileV2Failed(byteCount)).font(.footnote) }
                     .buttonStyle(.plain)
+                    .modifier(AttachmentTextInset())
             } else {
-                Text(Strings.attachmentFile(byteCount, preview?.mime ?? message.body)).font(.footnote)
+                Text(Strings.attachmentFile(byteCount, preview?.mime ?? message.body)).font(.footnote).modifier(AttachmentTextInset())
             }
             if let url = preview?.shareURL {
                 ShareLink(item: url) { Label(Strings.attachmentSave, systemImage: "square.and.arrow.up") }.font(.caption)
+                    .modifier(AttachmentTextInset(bottomOnly: true))
             }
         }
         .fullScreenCover(isPresented: $showViewer, onDismiss: {
@@ -717,6 +726,18 @@ struct AttachmentBubble: View {
         guard let data = original, let image = UIImage(data: data) else { return }
         viewerImage = image
         showViewer = true
+    }
+}
+
+/// 첨부 말풍선 안의 글 줄 여백 — 말풍선 테두리는 3pt 뿐이라(사진용) 글은 여기서 숨 쉴 자리를 준다.
+/// 「저장·공유」는 늘 앞 줄(사진·파일 줄) 뒤에 오고 위쪽 간격은 VStack 에 있으므로 좌우·아래만(`bottomOnly`).
+struct AttachmentTextInset: ViewModifier {
+    var bottomOnly = false
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 10)
+            .padding(.top, bottomOnly ? 0 : 6)
+            .padding(.bottom, 6)
     }
 }
 
