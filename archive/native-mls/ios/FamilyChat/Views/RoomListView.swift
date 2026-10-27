@@ -8,6 +8,8 @@ struct RoomListView: View {
     @EnvironmentObject private var prefs: LocalPrefs
     @State private var showJoinRequest = false
     @State private var showCreateRoom = false
+    /// #521: 🔔 알림 시트(받은 초대와 처리 상태).
+    @State private var showNotifications = false
     /// #405 P2: 방별 카드 요약(마지막 글·둘러앉은 자리). 목록 진입·새 메시지 때 다시 만든다.
     @State private var glances: [RoomID: RoomGlance] = [:]
 
@@ -75,6 +77,14 @@ struct RoomListView: View {
             if orderedRooms.count > 1 {
                 ToolbarItem(placement: .navigationBarLeading) { EditButton() }
             }
+            // #521: 🔔 받은 초대 수를 배지로(웹 `bellButton`). 오너 기기의 자동 참여 실패도 여기 남는다.
+            ToolbarItem(placement: .primaryAction) {
+                Button { showNotifications = true } label: {
+                    Image(systemName: model.pendingInvites.isEmpty ? "bell" : "bell.badge")
+                        .overlay(alignment: .topTrailing) { InviteCountBadge(count: model.pendingInvites.count) }
+                }
+                .accessibilityLabel(Strings.notifyButton(model.pendingInvites.count))
+            }
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button { showJoinRequest = true } label: { Label(Strings.joinTitle, systemImage: "person.badge.key") }
@@ -89,6 +99,7 @@ struct RoomListView: View {
         }
         .sheet(isPresented: $showJoinRequest) { JoinRequestView().environmentObject(model) }
         .sheet(isPresented: $showCreateRoom) { CreateRoomView().environmentObject(model) }
+        .sheet(isPresented: $showNotifications) { NotificationsView().environmentObject(model) }
         .refreshable { await model.refresh() }
         .onAppear { model.refreshRooms() }
     }
@@ -166,20 +177,29 @@ struct CampfireCard: View {
     }
 }
 
-/// 가족 기기(오너 결정 D1 B)의 로비 초대 1탭: 수락 = 방 상태를 로비 키로 받아들여 참여, 무시 = 이 세션에서 숨김(다음 실행에 다시 보임).
+/// 로비 초대 1탭(목록 카드·🔔 알림 공용): 수락 = 방 상태를 로비 키로 받아들여 참여, 무시 = 이 세션에서 숨김(다음 실행에 다시 보임).
+/// 가족 기기(오너 결정 D1 B)의 새 초대와, 오너 기기(A)의 자동 참여가 실패한 초대(#521 — 「다시 시도」가 횟수를 되돌린다)가 같은 줄을 쓴다.
 struct LobbyInviteRow: View {
     @EnvironmentObject private var model: AppModel
     let room: RoomID
     @State private var busy = false
     @State private var message: String?
 
+    private var state: AppModel.InviteState? { model.inviteStates[room] }
+    /// 실패한 초대는 「수락」 대신 「다시 시도」.
+    private var failed: Bool {
+        if case .some(.failed) = state { return true }
+        return false
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(Strings.roomLabel(room)).font(.headline)
             Text(Strings.inviteBody(Strings.roomLabel(room))).font(.footnote).foregroundStyle(.secondary)
+            InviteStateLine(state: state)
             if let message { Text(message).font(.footnote).foregroundStyle(.red) }
             HStack {
-                Button(Strings.acceptInvite) { Task { await accept() } }.buttonStyle(.borderedProminent).disabled(busy)
+                Button(failed ? Strings.retryInvite : Strings.acceptInvite) { Task { await accept() } }.buttonStyle(.borderedProminent).disabled(busy)
                 Button(Strings.ignoreInvite) { model.dismissInvite(room: room) }.buttonStyle(.bordered).disabled(busy)
                 if busy { ProgressView() }
             }
@@ -189,7 +209,49 @@ struct LobbyInviteRow: View {
 
     private func accept() async {
         busy = true
+        message = nil
         defer { busy = false }
-        do { try await model.acceptInvite(room: room) } catch { message = Strings.inviteAcceptFailed("\(error)") }
+        do {
+            try await model.acceptInvite(room: room)
+        } catch {
+            // 사유는 상태 줄(실패 n회 — 사유)에 있으면 그것을, 없으면 오류 원문을.
+            if case .some(.failed(_, let reason?)) = model.inviteStates[room], !reason.isEmpty {
+                message = Strings.inviteAcceptFailed(reason)
+            } else {
+                message = Strings.inviteAcceptFailed("\(error)")
+            }
+        }
+    }
+}
+
+/// 초대 처리 상태 한 줄(웹 `inviteState`): 수락하는 중… / 자동 수락 실패 n회 — 사유. 새 초대는 비운다.
+struct InviteStateLine: View {
+    let state: AppModel.InviteState?
+
+    var body: some View {
+        switch state {
+        case .some(.accepting):
+            Text(Strings.inviteAccepting).font(.footnote).foregroundStyle(.secondary)
+        case .some(.failed(let tries, let reason)):
+            Text(Strings.inviteAutoFailed(tries, reason)).font(.footnote).foregroundStyle(.red)
+        default:
+            EmptyView()
+        }
+    }
+}
+
+/// 🔔 배지: 받은 초대 수(목록 카드의 불씨 점과 같은 색). 0 이면 그리지 않는다.
+struct InviteCountBadge: View {
+    let count: Int
+
+    var body: some View {
+        if count > 0 {
+            Text(count > 99 ? "99+" : "\(count)")
+                .font(.caption2.weight(.bold)).foregroundStyle(Hande.onEmber)
+                .padding(.horizontal, 4).padding(.vertical, 1)
+                .background(Capsule().fill(Hande.ember))
+                .offset(x: 8, y: -6)
+                .accessibilityHidden(true)
+        }
     }
 }

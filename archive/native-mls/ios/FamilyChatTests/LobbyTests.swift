@@ -101,21 +101,26 @@ final class LobbyTests: XCTestCase {
         await model.refresh()
         XCTAssertTrue(model.pendingInvites.isEmpty, "dismissed for this session even though the Welcome is still listed")
 
-        // 수락: 방 상태가 로비 슬롯으로 바뀌고(adopt) 커서가 Welcome 앞에 서며 방이 목록에 오른다. 가짜 엔진은 roster 가 없어 join 은
-        // 확인되지 않는다(실 엔진 = TwoDeviceScenario ⑥) → notJoined 로 알린다.
+        // 수락: 방 상태가 로비 슬롯으로 바뀌고(adopt) 커서가 Welcome 앞에 선다. 가짜 엔진은 roster 가 없어 join 은 확인되지 않는다
+        // (실 엔진 = TwoDeviceScenario ⑥) → notJoined 로 알리고, 초대는 실패 상태와 함께 남아 「다시 시도」할 수 있다(#521).
         let (fresh, _, freshCursors) = makeModel(actor: "mom", relay: relay)
         await fresh.bootstrap(); fresh.login(.bearer("t")); await fresh.refresh()
         XCTAssertEqual(fresh.pendingInvites.map(\.room), ["ops-yukson"])
+        XCTAssertEqual(fresh.inviteStates["ops-yukson"], AppModel.InviteState.new)
         do {
             try await fresh.acceptInvite(room: "ops-yukson")
             XCTFail("fake engine cannot prove the join")
         } catch SyncError.notJoined {
             // expected with FakeFactory
         }
-        XCTAssertTrue(fresh.pendingInvites.isEmpty)
-        XCTAssertTrue(fresh.rooms.contains { $0.room == "ops-yukson" }, "the adopted room is listed")
-        XCTAssertTrue(fresh.listedRooms.contains { $0.room == "ops-yukson" }, "#389: listed once accepted")
+        XCTAssertEqual(fresh.pendingInvites.map(\.room), ["ops-yukson"], "#521: a failed accept keeps the invite (with its state)")
+        XCTAssertEqual(fresh.inviteStates["ops-yukson"], AppModel.InviteState.failed(tries: 1, reason: Strings.notJoined))
+        XCTAssertTrue(fresh.rooms.contains { $0.room == "ops-yukson" }, "the adopted room has a record")
+        XCTAssertFalse(fresh.listedRooms.contains { $0.room == "ops-yukson" }, "#389: still only in the invite section until joined")
         XCTAssertEqual(try freshCursors.cursor(room: "ops-yukson"), relay.inner.welcomeSeq(room: "ops-yukson"), "cursor advanced past the Welcome by the sync")
+        await fresh.refresh()
+        XCTAssertEqual(fresh.inviteStates["ops-yukson"], AppModel.InviteState.failed(tries: 1, reason: Strings.notJoined),
+                       "B: no automatic retry — the next round keeps the invite and its state")
     }
 
     /// #389: 「이 기기 지우기」는 옛 신원의 로비 키를 먼저 거둔다. 로비가 없는 릴레이(404)·꺼진 릴레이여도 리셋은 끝난다.
@@ -144,27 +149,56 @@ final class LobbyTests: XCTestCase {
         XCTAssertEqual(down.inner.lobbyLiveCount("owner-iphone-abc123"), 8, "nothing was withdrawn — TTL cleans up")
     }
 
-    /// 오너 actor(A): 같은 Welcome 을 묻지 않고 받아들인다(방 상태 교체 + 방 목록). 실패한 seq 는 다시 시도하지 않는다.
-    func testOwnerDeviceAdoptsAutomaticallyAndDoesNotRetryTheSameWelcome() async throws {
+    /// 오너 actor(A): 같은 Welcome 을 묻지 않고 받아들인다(방 상태 교체 + 방 목록). 실패한 seq 는 세션당 `adoptTries`(2) 번까지만
+    /// 자동으로 다시 시도하고, 그 뒤에는 🔔·초대 카드에 상태와 함께 남는다(#521). 「다시 시도」는 횟수를 되돌리고, 「무시」는 이 세션에서 숨긴다.
+    func testOwnerDeviceAdoptsAutomaticallyAndRetriesOnceBeforeLeavingTheInviteInTheBell() async throws {
         let relay = CountingRelay()
         let (model, state, _) = makeModel(actor: "owner", relay: relay)
         await model.bootstrap(); model.login(.bearer("t")); await model.refresh()
         XCTAssertTrue(model.autoJoinsLobbyInvites)
         relay.inner.seedWelcome(room: "ops-yukson", target: model.deviceId)
         await model.refresh()
-        XCTAssertTrue(model.pendingInvites.isEmpty, "A: no question")
         XCTAssertTrue(model.rooms.contains { $0.room == "ops-yukson" })
         let adopted = try XCTUnwrap(try state.withExclusive(room: "ops-yukson", timeout: 1) { try $0.load() })
         let slotState = try XCTUnwrap(try slot(state)?.state)
         XCTAssertTrue(adopted.starts(with: slotState), "the room state started as a copy of the _lobby slot (then the join attempt appended)")
         XCTAssertGreaterThan(slotState.count, 3, "the slot holds the minted key packages, the identity seed alone does not")
-        // 가짜 엔진은 참여를 증명하지 못하므로(join 은 '성공'하지만 roster 없음) 같은 seq 는 adoptFailed 로 남아 상태를 다시 바꾸지 않는다.
-        let generation = try state.generation(room: "ops-yukson")
+        // 가짜 엔진은 참여를 증명하지 못하므로(join 은 '성공'하지만 roster 없음) 실패로 기록되고 — 조용히 사라지지 않는다(#521).
+        XCTAssertEqual(model.pendingInvites.map(\.room), ["ops-yukson"], "A: the failed auto-join stays visible")
+        XCTAssertEqual(model.inviteStates["ops-yukson"], AppModel.InviteState.failed(tries: 1, reason: Strings.notJoined))
+        XCTAssertFalse(model.listedRooms.contains { $0.room == "ops-yukson" }, "#389: hidden from the room list until joined")
+
+        // 두 번째 바퀴 = 세션당 한 번뿐인 자동 재시도(상태를 다시 바꾼다). 세 번째부터는 건드리지 않는다.
+        var generation = try state.generation(room: "ops-yukson")
+        await model.refresh()
+        XCTAssertNotEqual(try state.generation(room: "ops-yukson"), generation, "retried once: adopted again for the same Welcome")
+        XCTAssertEqual(model.inviteStates["ops-yukson"], AppModel.InviteState.failed(tries: AppModel.adoptTries, reason: Strings.notJoined))
+        generation = try state.generation(room: "ops-yukson")
         let reads = relay.inner.eventReads(room: "ops-yukson")
         await model.refresh()
         XCTAssertEqual(relay.inner.eventReads(room: "ops-yukson"), reads + 1, "the room is synced like any other room …")
-        XCTAssertEqual(try state.generation(room: "ops-yukson"), generation, "… but not adopted again for the same Welcome")
+        XCTAssertEqual(try state.generation(room: "ops-yukson"), generation, "… but not adopted again once the tries are exhausted")
+        XCTAssertEqual(model.pendingInvites.map(\.room), ["ops-yukson"])
+        XCTAssertEqual(model.inviteStates["ops-yukson"], AppModel.InviteState.failed(tries: AppModel.adoptTries, reason: Strings.notJoined))
+
+        // 「다시 시도」(🔔·카드): 횟수를 되돌리고 한 번 더 받아들인다 — 가짜 엔진이라 다시 notJoined, 상태는 1회부터.
+        do {
+            try await model.acceptInvite(room: "ops-yukson")
+            XCTFail("fake engine cannot prove the join")
+        } catch SyncError.notJoined {
+            // expected with FakeFactory
+        }
+        XCTAssertNotEqual(try state.generation(room: "ops-yukson"), generation, "a manual retry adopts again")
+        XCTAssertEqual(model.inviteStates["ops-yukson"], AppModel.InviteState.failed(tries: 1, reason: Strings.notJoined))
+
+        // 「무시」: 이 세션에서는 자동 시도도 하지 않는다(상태 불변).
+        model.dismissInvite(room: "ops-yukson")
         XCTAssertTrue(model.pendingInvites.isEmpty)
+        XCTAssertNil(model.inviteStates["ops-yukson"])
+        generation = try state.generation(room: "ops-yukson")
+        await model.refresh()
+        XCTAssertTrue(model.pendingInvites.isEmpty, "dismissed for this session")
+        XCTAssertEqual(try state.generation(room: "ops-yukson"), generation, "no automatic attempt on a dismissed invite")
     }
 }
 

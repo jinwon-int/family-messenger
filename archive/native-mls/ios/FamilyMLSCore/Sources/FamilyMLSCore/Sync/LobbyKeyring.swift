@@ -10,7 +10,8 @@
 // 슬롯 바이트(JSON `LobbySlot`): `state` = 파사드 export_state(서명키 = `_identity` 시드 + 로비 key package 비밀),
 // `published` = 릴레이가 받은 key package 바이트(게시 순). **릴레이는 가장 오래된 것부터 소비·만료**(lobby.go `ORDER BY rowid`,
 // 균일 TTL)하므로 서버의 `live` 수만 알면 장부 앞쪽 `published.count - live` 개가 소비·만료된 것이다 — 그만큼 로컬 비밀을
-// `delete_key_package` 로 지워 로컬 상한(8)을 비우고, 부족분을 새로 만들어 게시한다(`replenish`).
+// `delete_key_package` 로 지워 로컬 상한(8)을 비우고, 부족분을 새로 만들어 게시한다(`replenish`). 단, 아직 참여하지 않은 Welcome 이 쓴
+// key package(릴레이 `key_package_ref`)는 `protect` 로 남긴다 — 지우면 그 Welcome 을 영영 열 수 없다(#518).
 //
 // 네트워크는 트랜잭션 밖(CONTRACTS §3.4). 게시에 실패한 새 key package 는 비밀을 바로 지운다 — 서버에 없는 키는 로컬 상한만 차지한다.
 import Foundation
@@ -30,7 +31,11 @@ public struct LobbyReport: Equatable {
     public var minted: Int
     /// 소비·만료된 것으로 판단해 로컬 비밀을 지운 수.
     public var pruned: Int
-    public init(live: Int, max: Int, minted: Int, pruned: Int) { self.live = live; self.max = max; self.minted = minted; self.pruned = pruned }
+    /// 소비·만료된 것으로 판단했지만 지우지 않고 장부 앞쪽에 남긴 수(`protect`·`prune: false`, #518).
+    public var kept: Int
+    public init(live: Int, max: Int, minted: Int, pruned: Int, kept: Int = 0) {
+        self.live = live; self.max = max; self.minted = minted; self.pruned = pruned; self.kept = kept
+    }
 }
 
 public final class LobbyKeyring {
@@ -57,27 +62,34 @@ public final class LobbyKeyring {
 
     /// 서버의 미소비 수가 `min(target, 서버 max)` 보다 적으면 그만큼 만들어 게시한다. 먼저 장부 앞쪽(소비·만료분)의 로컬 비밀을 지운다.
     /// 릴레이에 로비가 없으면(404) `RelayError.refused(status: 404)` 를 그대로 던진다 — 호출자가 "로비 없음" 으로 건너뛴다.
+    ///
+    /// #518: 소비된 key package 하나는 **아직 참여하지 않은 Welcome** 이 쓴 것일 수 있다 — 그 비밀을 지우면 그 Welcome 은 영영 열 수 없다.
+    /// `protect` 에 든 ref(`makeRef` 규칙 = 릴레이 `key_package_ref`)는 소비분이어도 지우지 않고 장부 **앞쪽에 그대로** 둔다(FIFO 가 유지되어
+    /// 보호가 풀린 뒤의 보충이 정확히 그것부터 지운다). `prune: false` 는 소비분 전부를 그렇게 둔다(ref 를 모르는 옛 릴레이용). 발행은 계속하되
+    /// 남긴 비밀도 로컬 상한(8)을 차지하므로 그만큼 덜 만들어질 수 있다.
     @discardableResult
-    public func replenish(target: Int) async throws -> LobbyReport {
+    public func replenish(target: Int, protect: Set<String> = [], prune: Bool = true) async throws -> LobbyReport {
         let status = try await transport.lobbyStatus(device: identity)
         let goal = max(0, min(target, status.max))
-        let (fresh, pruned): ([Data], Int) = try transaction { slot, engine in
+        let (fresh, pruned, kept): ([Data], Int, Int) = try transaction { slot, engine in
             let consumed = min(max(0, slot.published.count - status.live), slot.published.count)
             var pruned = 0
+            var kept: [Data] = []
             for bytes in slot.published.prefix(consumed) {
+                if !prune || protect.contains(makeRef(bytes)) { kept.append(bytes); continue }
                 // 이미 없는(방 사본에서만 지워졌거나 모르는) 것은 거부되지만 장부에서는 뺀다.
                 if (try? engine.dispatch(.deleteKeyPackage, bytes)) != nil { pruned += 1 }
             }
-            slot.published.removeFirst(consumed)
+            slot.published.replaceSubrange(0..<consumed, with: kept)
             var fresh: [Data] = []
             var want = goal - status.live
             while want > 0 {
                 do { fresh.append(try engine.dispatch(.keyPackage, Data())) } catch EngineError.rejected { break }   // 로컬 상한
                 want -= 1
             }
-            return (fresh, pruned)
+            return (fresh, pruned, kept.count)
         }
-        guard !fresh.isEmpty else { return LobbyReport(live: status.live, max: status.max, minted: 0, pruned: pruned) }
+        guard !fresh.isEmpty else { return LobbyReport(live: status.live, max: status.max, minted: 0, pruned: pruned, kept: kept) }
         let response: KeyPackagesResponse
         do {
             response = try await transport.postLobbyKeyPackages(KeyPackagePost(
@@ -88,7 +100,7 @@ public final class LobbyKeyring {
             throw error
         }
         try transaction { slot, _ in slot.published.append(contentsOf: fresh) }
-        return LobbyReport(live: response.live ?? (status.live + fresh.count), max: status.max, minted: fresh.count, pruned: pruned)
+        return LobbyReport(live: response.live ?? (status.live + fresh.count), max: status.max, minted: fresh.count, pruned: pruned, kept: kept)
     }
 
     /// 장부에 있는(릴레이가 받은) key package 수 — 화면용. 슬롯이 없으면 0.

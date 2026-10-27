@@ -60,6 +60,58 @@ final class LobbyKeyringTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(try slotEngine(h)?.keyPackages).contains(before[0]), "consumed private material is gone")
     }
 
+    /// #518: `protect` 에 든 ref(= 릴레이 `key_package_ref`)는 소비분이어도 비밀을 지우지 않고 장부 앞쪽에 남긴다.
+    /// 보호가 풀린 다음 보충이 정확히 그것만 지운다(FIFO 유지).
+    func testReplenishProtectsAnUnadoptedWelcomeSecretUntilTheNextReplenish() async throws {
+        let h = try SyncHarness(me: me)
+        try await keyring(h).replenish(target: 8)
+        let before = try XCTUnwrap(try loadSlot(h)).published
+        _ = try await h.relay.consumeLobbyKeyPackage(device: bot, target: me, room: "ops-a")
+        _ = try await h.relay.consumeLobbyKeyPackage(device: bot, target: me, room: "ops-b")
+        // ops-b 의 Welcome 은 아직 받아들이지 못했다 — 그 방에서 소비된 key package 를 보호한다.
+        let protectedRef = try XCTUnwrap(h.relay.lobbyConsumed.first(where: { $0.room == "ops-b" })?.ref)
+
+        let report = try await keyring(h).replenish(target: 8, protect: [protectedRef])
+        // 로컬 상한 8: 1개를 지우고 1개를 남겼으니 새로 만들 자리는 1개뿐(2개 부족해도).
+        XCTAssertEqual(report, LobbyReport(live: 7, max: 8, minted: 1, pruned: 1, kept: 1))
+        let after = try XCTUnwrap(try loadSlot(h)).published
+        XCTAssertEqual(after.count, 8)
+        XCTAssertEqual(after[0], before[1], "the protected entry stays at the front of the ledger")
+        XCTAssertEqual(Array(after[1..<7]), Array(before.dropFirst(2)), "the rest kept their order")
+        let secrets = try XCTUnwrap(try slotEngine(h)?.keyPackages)
+        XCTAssertTrue(secrets.contains(before[1]), "the protected private material is still there")
+        XCTAssertFalse(secrets.contains(before[0]), "the unprotected consumed one is gone")
+
+        // 참여가 끝나 보호가 풀리면: 다음 보충이 정확히 그 하나만 지우고 채운다.
+        let later = try await keyring(h).replenish(target: 8)
+        XCTAssertEqual(later, LobbyReport(live: 8, max: 8, minted: 1, pruned: 1, kept: 0))
+        let settled = try XCTUnwrap(try loadSlot(h)).published
+        XCTAssertEqual(settled.count, 8)
+        XCTAssertEqual(Array(settled.prefix(6)), Array(before.dropFirst(2)))
+        XCTAssertFalse(try XCTUnwrap(try slotEngine(h)?.keyPackages).contains(before[1]), "pruned once unprotected")
+    }
+
+    /// #518: `prune: false`(ref 를 모르는 옛 릴레이 + 수락 안 된 Welcome) — 소비분 비밀을 하나도 지우지 않고 발행만 한다.
+    func testReplenishWithoutPruneKeepsEveryConsumedSecret() async throws {
+        let h = try SyncHarness(me: me)
+        try await keyring(h).replenish(target: 8)
+        let before = try XCTUnwrap(try loadSlot(h)).published
+        _ = try await h.relay.consumeLobbyKeyPackage(device: bot, target: me, room: "ops-a")
+        _ = try await h.relay.consumeLobbyKeyPackage(device: bot, target: me, room: "ops-b")
+
+        let report = try await keyring(h).replenish(target: 8, prune: false)
+        // 로컬 상한 8 이 꽉 차 있어(남긴 2 포함) 새로 만들지 못한다 — 게시도 없다.
+        XCTAssertEqual(report, LobbyReport(live: 6, max: 8, minted: 0, pruned: 0, kept: 2))
+        XCTAssertEqual(h.relay.lobbyPosts.count, 1)
+        XCTAssertEqual(try XCTUnwrap(try loadSlot(h)).published, before, "the ledger is untouched")
+        XCTAssertEqual(try slotEngine(h)?.keyPackages?.count, 8, "no private material was deleted")
+
+        let later = try await keyring(h).replenish(target: 8)
+        XCTAssertEqual(later, LobbyReport(live: 8, max: 8, minted: 2, pruned: 2, kept: 0))
+        let after = try XCTUnwrap(try loadSlot(h)).published
+        XCTAssertEqual(Array(after.prefix(6)), Array(before.dropFirst(2)), "the default replenish then prunes exactly the two consumed")
+    }
+
     func testReplenishRespectsServerMax() async throws {
         let h = try SyncHarness(me: me)
         h.relay.lobbyMax = 4

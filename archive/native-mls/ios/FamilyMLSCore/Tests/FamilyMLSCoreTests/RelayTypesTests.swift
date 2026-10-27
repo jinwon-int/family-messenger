@@ -56,6 +56,10 @@ final class RelayTypesTests: XCTestCase {
         let welcomes = try JSONDecoder().decode(LobbyWelcomes.self, from: Data(
             #"{"welcomes":[{"room":"ops-yukson","seq":2,"epoch":1,"created_at":1700000000}]}"#.utf8))
         XCTAssertEqual(welcomes.welcomes, [PendingWelcome(room: "ops-yukson", seq: 2, epoch: 1, createdAt: 1_700_000_000)])
+        XCTAssertNil(welcomes.welcomes.first?.keyPackageRef, "a relay from before #518 omits key_package_ref")
+        let withRef = try JSONDecoder().decode(LobbyWelcomes.self, from: Data(
+            #"{"welcomes":[{"room":"ops-yukson","seq":2,"epoch":1,"created_at":1700000000,"key_package_ref":"ab12"}]}"#.utf8))
+        XCTAssertEqual(withRef.welcomes, [PendingWelcome(room: "ops-yukson", seq: 2, epoch: 1, createdAt: 1_700_000_000, keyPackageRef: "ab12")])
         let empty = try JSONDecoder().decode(LobbyWelcomes.self, from: Data(#"{"welcomes":[]}"#.utf8))
         XCTAssertEqual(empty.welcomes, [])
         let withLive = try JSONDecoder().decode(KeyPackagesResponse.self, from: Data(#"{"stored":2,"duplicates":0,"live":5}"#.utf8))

@@ -178,9 +178,12 @@ public struct PendingWelcome: Codable, Equatable, Hashable {
     public var seq: Int64
     public var epoch: Int64
     public var createdAt: Int64
-    enum CodingKeys: String, CodingKey { case room, seq, epoch; case createdAt = "created_at" }
-    public init(room: RoomID, seq: Int64, epoch: Int64, createdAt: Int64) {
-        self.room = room; self.seq = seq; self.epoch = epoch; self.createdAt = createdAt
+    /// 이 방에서 소비된 이 기기의 로비 key package `ref`(sha256 hex) — 아직 참여하지 않은 Welcome 의 비밀을 보충이 지우지 않게
+    /// (`LobbyKeyring.replenish(protect:)`, #518). 옛 릴레이는 싣지 않는다(nil) · 빈 문자열일 수 있다 → "모름" 으로 다룬다.
+    public var keyPackageRef: String?
+    enum CodingKeys: String, CodingKey { case room, seq, epoch; case createdAt = "created_at", keyPackageRef = "key_package_ref" }
+    public init(room: RoomID, seq: Int64, epoch: Int64, createdAt: Int64, keyPackageRef: String? = nil) {
+        self.room = room; self.seq = seq; self.epoch = epoch; self.createdAt = createdAt; self.keyPackageRef = keyPackageRef
     }
 }
 /// DELETE /v2/lobby/keypackages 응답(#389, lobby.go `lobbyDeleteResponse`).
