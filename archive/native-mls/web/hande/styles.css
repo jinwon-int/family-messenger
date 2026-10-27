@@ -345,6 +345,9 @@ button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shado
 .appbar .brand .subtitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .appbar .tool { width: 40px; min-height: 40px; font-size: 1.1rem; }
 .appbar .tool:hover { background: var(--brand-soft); }
+.appbar .tool.bell { position: relative; }
+.bell-badge { position: absolute; top: 2px; right: 2px; min-width: 18px; width: auto; padding: 0 4px; }
+dialog.sheet.notify .invite-list { margin: var(--space-2) 0; }
 .sync-line { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-xs); color: var(--text-2); padding: 0 var(--space-1); }
 .sync-line .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; }
 .sync-line.warn .dot { background: var(--warn); animation: pulse 1.4s ease-in-out infinite; }
