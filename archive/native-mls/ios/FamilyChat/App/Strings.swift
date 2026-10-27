@@ -131,6 +131,10 @@ enum Strings {
         return "자동 수락 실패 \(tries)회\(detail)"
     }
     static let retryInvite = "다시 시도"
+    // 「진단 기록 복사」(#535 iOS 판, 웹 `strings.notify.copyLogs` 와 동일) — 최근 기록·방/초대 상태를 클립보드로. 비밀값 없음.
+    static let notifyCopyLogs = "진단 기록 복사"
+    static let notifyCopyLogsHint = "기기·방·초대 상태와 최근 기록을 클립보드로 복사합니다(비밀값 없음). 수락이 안 될 때 운영자에게 붙여넣어 보내 주세요."
+    static let notifyCopied = "복사했습니다"
 
     // 알림 확장(NSE, §12-D) — 대체 문구는 앱 번들 `ko.lproj/Localizable.strings` 의 `NEW_MESSAGE` 와 같아야 한다
     // (NSE 가 죽거나 시간을 넘기면 iOS 가 원래 alert 의 loc-key 를 그 파일로 푼다).

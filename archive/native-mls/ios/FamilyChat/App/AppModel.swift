@@ -168,6 +168,11 @@ final class AppModel: ObservableObject {
     private var unadoptedWelcomes: [PendingWelcome] = []
     /// 「무시」한 초대 — 이 세션에서만. Welcome 은 릴레이에 남으므로 다음 실행에 다시 보인다.
     private var dismissedInvites: Set<RoomID> = []
+    /// 진단 기록(#535 iOS 판, 웹 `app.logs` 와 동일한 자리): 로비 Welcome 발견·수락·실패, 동기화 거부·정지, 보충 결과, 연결 오류를
+    /// 최근 `diagnosticsKeep` 줄만 메모리에 둔다. 비밀값(키·토큰·본문)은 적지 않는다 — 🔔 시트의 「진단 기록 복사」가 기기·방·초대
+    /// 상태 요약과 함께 클립보드로 내보낸다(`diagnosticsReport`). Xcode 없이 수락 실패 사유를 보고하기 위한 것.
+    static let diagnosticsKeep = 200
+    private(set) var diagnostics: [String] = []
 
     private let deps: Dependencies
     private(set) var engine: MlsEngine?
@@ -336,7 +341,7 @@ final class AppModel: ObservableObject {
             self.transport = nil
             self.syncEngines = [:]; self.unconfirmed = [:]; self.seenCursors = [:]; self.lastFlush = [:]
             self.pendingInvites = []; self.inviteStates = [:]; self.notice = nil; self.lobbyLive = nil
-            self.adoptFailed = [:]; self.accepting = []; self.unadoptedWelcomes = []; self.dismissedInvites = []
+            self.adoptFailed = [:]; self.accepting = []; self.unadoptedWelcomes = []; self.dismissedInvites = []; self.diagnostics = []
             self.engine = nil; self.identitySeed = nil; self.registration = nil; self.rooms = []
             try self.deps.wipe.storage()
             self.deps.wipe.identity()
@@ -484,6 +489,7 @@ final class AppModel: ObservableObject {
             for record in try deps.messageStore.rooms() {
                 let sync = try syncEngine(record.room)
                 let passes = try await sync.syncAll()
+                noteSyncPasses(record.room, passes)
                 // 커서가 움직였으면(이 프로세스든 NSE 든 새로 처리·기록했다) 화면이 다시 읽는다.
                 let cursor = try deps.cursors.cursor(room: record.room)
                 if passes.contains(where: { !$0.inserted.isEmpty || !$0.rejected.isEmpty }) || seenCursors[record.room] != cursor {
@@ -525,9 +531,62 @@ final class AppModel: ObservableObject {
     private func noteFailure(_ error: Error) {
         switch ConnectionIssue.classify(error, taskCancelled: Task.isCancelled) {
         case .cancelled: return
-        case .unreachable: reconnecting = true
-        case .other: lastError = "\(error)"
+        case .unreachable: reconnecting = true; record("relay unreachable")
+        case .other: lastError = "\(error)"; record("error: \(error)")
         }
+    }
+
+    // MARK: - 진단 기록 (#535 iOS 판)
+
+    /// 한 줄을 진단 기록에 더한다(UTC 시각 접두, 최근 `diagnosticsKeep` 줄 유지). 비밀값을 넣지 않는다.
+    private func record(_ line: String) {
+        diagnostics.append("\(Self.diagnosticsClock.string(from: Date())) \(line)")
+        if diagnostics.count > Self.diagnosticsKeep { diagnostics.removeFirst(diagnostics.count - Self.diagnosticsKeep) }
+    }
+
+    private static let diagnosticsClock: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+
+    /// 동기화 한 바퀴의 눈에 띄는 결과만 적는다(거부된 seq·정지·참여) — 평시의 빈 바퀴는 적지 않는다.
+    private func noteSyncPasses(_ room: RoomID, _ passes: [SyncPass]) {
+        let rejected = passes.flatMap(\.rejected)
+        if !rejected.isEmpty { record("sync \(room): rejected seq \(rejected.map { String($0) }.joined(separator: ","))") }
+        if let halted = passes.compactMap(\.halted).last { record("sync \(room): halted — \(halted)") }
+        if passes.contains(where: \.joined) { record("sync \(room): joined") }
+    }
+
+    /// 🔔 시트 「진단 기록 복사」(웹 `copyDiagnostics` 와 같은 모양): 기기·actor, 방별 `joined/halted/cursor/epoch`, 초대 상태(seq·시도·사유),
+    /// 최근 기록. 비밀값 없음 — 기기 ID·방 이름·seq·오류 문구뿐.
+    func diagnosticsReport(now: Date = Date()) -> String {
+        let actor = ActorName.of(deviceId: deviceId) ?? deps.actorStore.actor ?? "-"
+        let roomLines = rooms.map { r -> String in
+            let joined = syncEngines[r.room]?.joined ?? ((try? lobbyKeyring()?.isMember(room: r.room)) ?? false)
+            let cursor = (try? deps.cursors.cursor(room: r.room)) ?? -1
+            return "\(r.room): joined=\(joined) halted=\(r.haltedReason != nil) cursor=\(cursor) epoch=\(r.epoch)"
+        }
+        let inviteLines = pendingInvites.map { w -> String in
+            let state: String
+            switch inviteStates[w.room] {
+            case .some(.failed(let tries, let reason)): state = "failed \(tries)x (\(reason ?? "-"))"
+            case .some(.accepting): state = "busy"
+            default: state = "new"
+            }
+            return "\(w.room): seq \(w.seq) epoch \(w.epoch) \(state)"
+        }
+        let stamp = ISO8601DateFormatter().string(from: now)
+        // 배열 `+` 를 한 식에 여럿 묶으면 Linux Swift 타입체커가 시간 초과한다(CI 2026-10-27) — 단계별 append 로 쓴다.
+        var lines: [String] = ["hande ios diagnostics \(stamp) device=\(deviceId) actor=\(actor) phase=\(phase)"]
+        lines.append("rooms:")
+        lines.append(contentsOf: roomLines)
+        lines.append("invites:")
+        lines.append(contentsOf: inviteLines)
+        lines.append("log:")
+        lines.append(contentsOf: diagnostics)
+        return lines.joined(separator: "\n")
     }
 
     // MARK: - 로비 key package (#380 P5-3)
@@ -563,7 +622,14 @@ final class AppModel: ObservableObject {
         }
         var invites: [PendingWelcome] = []
         var unadopted: [PendingWelcome] = []
-        for welcome in welcomes {
+        // #530: 한 방에 아직 읽지 않은 Welcome 이 여럿일 수 있다(제거→재초대 전의 옛 것은 커서가 지나기 전까지 남는다). 열 수 있는 것은
+        // 가장 새 것뿐이라(옛 것의 로비 키 비밀은 이미 지워졌다) 방당 seq 최대 Welcome 만 시도한다(웹 #531 과 동일). 옛 Welcome 의
+        // 비밀은 보호 대상에서도 빠진다 — 보충이 지워도 잃을 것이 없다.
+        var newest: [RoomID: PendingWelcome] = [:]
+        for welcome in welcomes where (newest[welcome.room]?.seq ?? .min) < welcome.seq { newest[welcome.room] = welcome }
+        let skipped = welcomes.count - newest.count
+        if skipped > 0 { record("lobby: \(welcomes.count) welcomes, \(skipped) older per-room duplicates ignored") }
+        for welcome in newest.values.sorted(by: { ($0.createdAt, $0.room) < ($1.createdAt, $1.room) }) {
             if (try? keyring.isMember(room: welcome.room)) == true { continue }   // 참여 끝 — 다음 ack 가 목록에서 지운다
             unadopted.append(welcome)
             if dismissedInvites.contains(welcome.room) || invites.contains(where: { $0.room == welcome.room }) { continue }
@@ -604,6 +670,7 @@ final class AppModel: ObservableObject {
         let previous = adoptFailed[welcome.room]
         let tries = (previous?.seq == welcome.seq ? (previous?.tries ?? 0) : 0) + 1
         adoptFailed[welcome.room] = AdoptFailure(seq: welcome.seq, tries: tries, reason: reason ?? previous?.reason)
+        record("lobby \(welcome.room): adopt failed seq \(welcome.seq) try \(tries) — \(reason ?? previous?.reason ?? "-")")
     }
 
     /// 방 상태 = `_lobby` 슬롯 상태 → 커서를 Welcome 앞으로 → 그 방만 바로 동기화(join). 참여하면 안내하고 보충을 예약한다(true).
@@ -624,6 +691,7 @@ final class AppModel: ObservableObject {
             bumpRevision(welcome.room)
             if sync.joined {
                 adoptFailed[welcome.room] = nil
+                record("lobby \(welcome.room): joined via welcome seq \(welcome.seq) epoch \(welcome.epoch)")
                 notice = Strings.lobbyJoined(welcome.room)
                 lobbyCheckDue = true   // key package 하나가 쓰였다 — 보충
                 return true
@@ -652,6 +720,7 @@ final class AppModel: ObservableObject {
             let report = try await keyring.replenish(target: deps.lobbyTarget, protect: Set(refs), prune: prune)
             lobbyLive = report.live
             lobbyCheckDue = false
+            record("lobby replenish: live \(report.live) protect \(refs.count) prune=\(prune)")
         } catch RelayError.refused(_, let status) where status == 404 {
             lobbyUnsupported = true
         } catch RelayError.refused(let code, _) where code == RelayErrorCode.deviceNotAllowed.rawValue {
