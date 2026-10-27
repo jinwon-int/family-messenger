@@ -212,7 +212,6 @@ function inviteCard(invite, handlers) {
  *   순서 편집 중일 때만 — 행에 ▲▼가 붙고, PC에서는 행을 끌어 옮길 수 있다.
  */
 function roomListItem(room, onSelect, active = false, order = null) {
-  const agentCount = Array.isArray(room.agents) ? room.agents.length : 0;
   const last = room.lastMessage ?? null;
   const when = last
     ? relativeTime(last.ts, Date.now(), {
@@ -223,7 +222,7 @@ function roomListItem(room, onSelect, active = false, order = null) {
       })
     : '';
   const signature = JSON.stringify([
-    room.roomId, active, room.kind, room.displayName, room.typing || '', agentCount, when, room.memberCount, room.unread === true,
+    room.roomId, active, room.kind, room.displayName, room.typing || '', when, room.memberCount, room.unread === true,
     last ? [room.kind === 'family' ? last.sender ?? '' : '', last.text] : null,
     // 편집 중에는 자리(▲▼ 핸들러가 쓰는 위치)도 보이는 값이다.
     order ? [order.index, order.count] : null,
@@ -274,7 +273,7 @@ function roomListItem(room, onSelect, active = false, order = null) {
         ),
         // 이름 옆 "입력중.." — 다른 방의 입력도 보이므로 방별 typing 라벨(main.js가 계산).
         room.typing ? el('span', { class: 'typing', role: 'status' }, room.typing) : null,
-        agentCount > 0 ? el('span', { class: 'pill ai', title: strings.participants.aiTitle }, strings.participants.aiBadge) : null,
+        // 방 목록에는 AI 배지를 두지 않는다(오너 요청) — 참여자 목록·초대 카드의 배지는 그대로.
         when ? el('span', { class: 'when' }, when) : null,
       ),
       last
