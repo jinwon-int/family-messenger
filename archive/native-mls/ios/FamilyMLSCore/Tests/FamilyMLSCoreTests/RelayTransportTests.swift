@@ -177,6 +177,19 @@ final class RelayTransportTests: XCTestCase {
                        "ids stay one path segment each")
     }
 
+    /// file-v2 송신(#499 3단계): POST /v2/rooms/{room}/blobs?device= · 본문 = 원시 암호문 · Content-Type octet-stream.
+    func testPostBlobRequestMatchesServerWire() throws {
+        let bytes = Data([1, 2, 3, 0xFF])
+        let request = try transport(.bearer("t")).postBlobRequest(room: "family", device: "me-pc", bytes: bytes)
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.absoluteString, "https://relay.example.com/v2/rooms/family/blobs?device=me-pc")
+        XCTAssertEqual(request.httpBody, bytes)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/octet-stream")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Cf-Access-Jwt-Assertion"), "t")
+        let upload = try JSONDecoder().decode(BlobUpload.self, from: Data(#"{"id":"ab","size":4}"#.utf8))
+        XCTAssertEqual(upload, BlobUpload(id: "ab", size: 4, created: false))
+    }
+
     func testDefaultGetBlobIsNotFound() async {
         final class Bare: RelayTransport {
             func postKeyPackages(room: RoomID, _ post: KeyPackagePost) async throws -> KeyPackagesResponse { fatalError() }

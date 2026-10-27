@@ -3,6 +3,7 @@
 // `-access-mode disabled`·`-device-state` 없는 격리 릴레이처럼 멤버를 추적하지 않는다(`members: []`).
 // `isDown` 은 릴레이 중단(연결 실패 = RelayError.network)을 흉내 낸다. 실 릴레이 스모크는 #276(③)에서 같은 시나리오로 돈다.
 import Foundation
+import CryptoKit
 import FamilyMLSCore
 
 final class InMemoryRelay: RelayTransport, RelayControl {
@@ -135,6 +136,24 @@ final class InMemoryRelay: RelayTransport, RelayControl {
     private var blobs: [String: Data] = [:]
     private(set) var blobReads: [(room: RoomID, device: DeviceID, id: String)] = []
     func putBlob(id: String, _ bytes: Data) { lock.withLock { blobs[id] = bytes } }
+
+    /// file-v2 송신(#499 3단계): 서버와 같이 id = sha256(본문) 소문자 hex, 201 새로·200 이미 있음. `failNextBlobPosts` 로 거절을 주입한다.
+    private var blobPostErrors: [RelayError] = []
+    private(set) var blobPosts = 0
+    func failNextBlobPosts(_ errors: [RelayError]) { lock.withLock { blobPostErrors += errors } }
+
+    func postBlob(room: RoomID, device: DeviceID, bytes: Data) async throws -> BlobUpload {
+        try checkUp()
+        let id = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        return try lock.withLock {
+            blobPosts += 1
+            if !blobPostErrors.isEmpty { throw blobPostErrors.removeFirst() }
+            if rooms[room]?.closed == true { throw RelayError.refused(code: "room_closed", status: 410) }
+            let created = blobs[id] == nil
+            blobs[id] = bytes
+            return BlobUpload(id: id, size: Int64(bytes.count), created: created)
+        }
+    }
 
     func getBlob(room: RoomID, device: DeviceID, id: String) async throws -> Data {
         try checkUp()

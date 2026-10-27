@@ -151,6 +151,31 @@ public final class URLSessionRelayTransport: RelayTransport {
         return request
     }
 
+    public func postBlob(room: RoomID, device: DeviceID, bytes: Data) async throws -> BlobUpload {
+        let request = try postBlobRequest(room: room, device: device, bytes: bytes)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw RelayError.network("\(error)")
+        }
+        guard let http = response as? HTTPURLResponse else { throw RelayError.network("non-http response") }
+        guard http.statusCode == 201 || http.statusCode == 200 else { throw Self.relayFailure(status: http.statusCode, data: data) }
+        var upload = try decode(BlobUpload.self, data)
+        upload.created = http.statusCode == 201
+        return upload
+    }
+
+    /// file-v2 blob POST(#499 3단계). 본문 = 암호문 원시 바이트(Content-Type application/octet-stream), 응답 JSON {id, size}.
+    func postBlobRequest(room: RoomID, device: DeviceID, bytes: Data) throws -> URLRequest {
+        var request = try makeRequest(method: "POST", path: "/v2/rooms/\(Self.pathComponent(room))/blobs",
+                                      query: [URLQueryItem(name: "device", value: device)])
+        request.httpBody = bytes
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        return request
+    }
+
     public func closeRoom(room: RoomID, device: DeviceID) async throws {
         // §3.4 삭제 경로(B1). 성공 200 {"closed":true} — 이후 모든 계약 라우트는 410 room_closed.
         let request = try makeRequest(method: "POST", path: "/v2/rooms/\(Self.pathComponent(room))/close",

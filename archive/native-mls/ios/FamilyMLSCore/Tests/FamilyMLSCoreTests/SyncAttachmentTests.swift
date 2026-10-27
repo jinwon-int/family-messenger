@@ -169,6 +169,27 @@ final class SyncAttachmentTests: XCTestCase {
         XCTAssertEqual(stored.attachment, Data([0x00, 0x01, 0x02]))
     }
 
+    // MARK: 송신 — file-v2(#499 3단계)
+
+    #if os(Linux) || !canImport(CryptoKit)
+    /// Linux(AES 없음): 업로드·암호화(ratchet) 전에 멈춘다 — 설명자 없는 게시나 반쯤 보낸 상태가 생기지 않는다.
+    func testFileV2SendStopsBeforeUploadWithoutCryptoKit() async throws {
+        let h = try joinedHarness()
+        do { _ = try await h.sync.send(fileV2: Self.jpegHead); XCTFail("must throw") }
+        catch { XCTAssertEqual(error as? FileV2Format.OpenError, .unsupported) }
+        XCTAssertEqual(h.relay.posts.count, 0)
+        XCTAssertEqual(h.factory.log.count(.encrypt), 0)
+    }
+    #endif
+
+    func testFileV2SendRefusesOversizeBeforeAnything() async throws {
+        let h = try joinedHarness()
+        do { _ = try await h.sync.send(fileV2: Data()); XCTFail("empty") }
+        catch { XCTAssertEqual(error as? SyncError, .attachmentTooLarge(0)) }
+        XCTAssertEqual(h.relay.posts.count, 0)
+        XCTAssertEqual(h.factory.log.count(.encrypt), 0)
+    }
+
     // MARK: 수신 — file-v2(#499): 설명자(파일 키)는 어떤 경우에도 .text 로 저장되지 않는다
 
     func testIncomingFileV2IsStoredAsDescriptorNeverText() async throws {
