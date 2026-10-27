@@ -15,7 +15,7 @@
 //! Rules fixed by the owner decision on #354 (2026-10-15):
 //!   ②-B every application message is offered (no mention gate) — but never
 //!       from a `bot*` actor (loop guard, same family as `is_echo_client_id`),
-//!       never an attachment (`file-v1-<uuid>` client_id), never non-UTF-8;
+//!       never an attachment (`file-v1-<uuid>` / `file-v2-<uuid>` client_id), never non-UTF-8;
 //!   ③-B every non-bot actor may speak; execution rights are bound to the
 //!       approval reply below, not to decryption (NATIVE-E2EE: decrypt ≠ run);
 //!   ④-B approvals round-trip through the room as text: the bot posts
@@ -783,9 +783,12 @@ pub fn is_bot_actor(device: &str) -> bool {
     actor_of(device).starts_with("bot")
 }
 
-/// relay-app / iOS `AttachmentFormat`: `^file-v1-[a-f0-9-]{36}$`.
+/// relay-app / iOS `AttachmentFormat`: `^file-v1-[a-f0-9-]{36}$`, and the detached
+/// attachment of #499 (`archive/native-mls/FILE-V2.md`): `^file-v2-[a-f0-9-]{36}$`.
+/// A file-v2 plaintext is a small UTF-8 JSON descriptor that carries the file's
+/// decryption key, so it must never reach an agent as if it were a text turn.
 pub fn is_attachment_client_id(client_id: &str) -> bool {
-    match client_id.strip_prefix("file-v1-") {
+    match client_id.strip_prefix("file-v1-").or_else(|| client_id.strip_prefix("file-v2-")) {
         Some(tail) => tail.len() == 36 && tail.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase() || b == b'-'),
         None => false,
     }
@@ -924,6 +927,11 @@ mod tests {
         assert!(!is_attachment_client_id("file-v1-short"));
         assert!(!is_attachment_client_id("owner-pc-c1"));
         assert!(!is_attachment_client_id(""));
+        // #499 file-v2: the descriptor (with the file key) is never an agent turn.
+        assert!(is_attachment_client_id("file-v2-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2"));
+        assert!(!is_attachment_client_id("file-v2-0F3C2A9B-1D2E-4F5A-8B6C-7D8E9FA0B1C2"));
+        assert!(!is_attachment_client_id("file-v2-short"));
+        assert!(!is_attachment_client_id("file-v3-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2"));
     }
 
     #[test]
