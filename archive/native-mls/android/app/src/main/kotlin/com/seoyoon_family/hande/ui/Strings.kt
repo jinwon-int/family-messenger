@@ -53,6 +53,10 @@ object Strings {
     const val halted = "정지됨"
     const val keyCustody = "키 보관"
 
+    // 첨부 자리 표시(v1·v2 같은 모양 — 파일 열기는 C 단계). 설명자가 잘못된 file-v2 는 웹 `fileV2Invalid` 와 같은 뜻.
+    fun attachmentPlaceholder(bytes: Long) = "📎 첨부($bytes B)"
+    const val fileV2Invalid = "⚠ 첨부 정보가 올바르지 않아 열 수 없음"
+
     const val composerPlaceholder = "메시지"
     const val sendButton = "보내기"
     const val back = "뒤로"

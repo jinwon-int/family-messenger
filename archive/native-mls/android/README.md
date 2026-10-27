@@ -39,7 +39,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 1. **처음 설정**: 릴레이 주소 · 이름(영문 소문자, 한 번 정하면 고정 → 기기 ID `<이름>-android-<6 hex>`) · 세션 값(운영자용, 선택).
 2. **등록 대기**: 릴레이가 403 `device_subject_mismatch` 면 지문·등록 JSON(`actor`·`device_id`·`fingerprint`·`signing_key`·`subject`, iOS 와 같은 키) 을 보여 준다 → 운영자 CLI(`-enroll-first`/`-add-device`). 401·엣지 302 면 **가족 로그인**(B2: 「Google 계정으로 로그인」 → Custom Tabs → `hande://auth#jwt` 콜백; 세션 값 붙여넣기는 운영자용).
 3. **대화방 목록**: 「참여 요청」 = `MlsLobby.replenish(8)`(로비 키 게시). 운영자(steward 봇)가 초대하면 `welcomes()` 에 방이 뜨고 `MlsRoom.adopt(seq - 1)` → `poll` 이 join → 목록에 나타난다. 하단에 기기 ID · 로비 키 n/8 · 키 보관 위치(StrongBox/TEE).
-4. **대화**: 텍스트 송수신(`send` → `Sent | Queued`), 첨부는 「📎 첨부(n B)」 자리 표시(C 단계).
+4. **대화**: 텍스트 송수신(`send` → `Sent | Queued`), 첨부는 「📎 첨부(n B)」 자리 표시(C 단계). file-v2(#499) 설명자는 `FileV2.kt` 가 엄격 검증해 같은 자리 표시로 두고, 설명자(파일 키)는 글로 저장·표시하지 않는다(`FILE-V2.md` §6).
 
 첨부 전송·알림(FCM, D)·정식 아이콘(E)은 범위 밖(Google 로그인·정식 저장소는 B2 에서 들어왔다 — 아래 「B2 결정」).
 

@@ -76,11 +76,10 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             dir, name, seal = sealer::seal, open = sealer::open,
             onEvent = { e -> if (e is RoomEvent.Joined) notice("$name 대화방에 참여했습니다") },
             onMessage = { seq, sender, clientId, plaintext ->
-                val attachment = clientId.startsWith("file-v1-")
-                db.insert(
-                    name, seq, sender, clientId, if (attachment) MessageDb.KIND_ATTACHMENT else MessageDb.KIND_TEXT,
-                    if (attachment) "📎 첨부(${plaintext.size} B)" else String(plaintext, Charsets.UTF_8), if (attachment) plaintext else null,
-                )
+                // file-v2 평문은 파일 키가 든 설명자 — 글로 저장·표시하지 않는다(#499, FileV2.classify).
+                val row = FileV2.classify(clientId, plaintext)
+                if (row.kind == MessageSchema.KIND_UNDECRYPTABLE) Log.w(TAG, "$name seq $seq: file-v2 message rejected")
+                db.insert(name, seq, sender, clientId, row.kind, row.body, row.attachment)
             },
         )
         lateinit var room: MlsRoom

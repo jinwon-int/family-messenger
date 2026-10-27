@@ -44,6 +44,13 @@ object MessageSchema {
     """
     // ddl-sync-end
 
+    // `messages.kind` 값(DDL 밖 — 스키마 버전과 무관). text·attachment·undecryptable 은 iOS `MessageRecord.Kind` 와 같은 말,
+    // file-v2 는 웹 이력(`history-store.js`)과 같은 말이다(#499 — body 는 자리 표시, attachment 칸 = 설명자 바이트).
+    const val KIND_TEXT = "text"
+    const val KIND_ATTACHMENT = "attachment"
+    const val KIND_FILE_V2 = "file-v2"
+    const val KIND_UNDECRYPTABLE = "undecryptable"
+
     /** 기기 ID 의 actor(첫 `-` 앞, 없으면 ID 전체) — iOS `MessageRecord.actor(of:)`. */
     fun actor(device: String): String = device.substringBefore('-')
 
