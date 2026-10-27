@@ -456,11 +456,12 @@ function bubble(entry, onOpenAttachment) {
     const download = onOpenAttachment
       ? el('button', { type: 'button', class: 'ghost small download', onclick: (event) => downloadAttachment(entry, event.currentTarget, onOpenAttachment) }, strings.chat.download)
       : null;
+    // 사진에는 「내려받기」 버튼을 두지 않는다(오너 요청 2026-10-27) — 크게 보기에서 길게 누르기·우클릭으로 저장된다.
+    // 사진이 아닌 파일은 버튼이 유일한 받기 경로라 남긴다.
     body = entry.image
       ? el('div', { class: 'body media' },
           el('button', { type: 'button', class: 'media-open', title: strings.chat.viewImage, 'aria-label': strings.chat.viewImage, onclick: () => openImageViewer(entry) },
-            el('img', { src: entry.image.url, alt: entry.image.alt || strings.chat.image, loading: 'lazy' })),
-          download)
+            el('img', { src: entry.image.url, alt: entry.image.alt || strings.chat.image, loading: 'lazy' })))
       : el('div', { class: 'body file' }, el('span', { class: 'file-label' }, strings.chat.file(humanSize(entry.size ?? 0))), download);
   } else if (entry.isAgent && entry.kind === 'text' && hasMarkdown(entry.body)) body = agentMarkdownBody(entry.body);
   else body = el('div', { class: 'body' }, entry.body);

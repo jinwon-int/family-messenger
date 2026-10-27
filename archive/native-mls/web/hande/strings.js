@@ -338,7 +338,7 @@ export const strings = {
     invite: '초대',
     image: '사진',
     viewImage: '크게 보기',
-    closeImage: '닫기 — 아무 곳이나 누르세요',
+    closeImage: '저장: 사진을 길게 누르거나 우클릭 · 닫기: 아무 곳이나 누르세요',
     file: (size) => `📎 파일 · ${size}`,
     download: '다운로드',
     downloading: '불러오는 중…',
