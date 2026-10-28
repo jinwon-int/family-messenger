@@ -470,15 +470,15 @@ func TestAPNsSkipsStatusEvents(t *testing.T) {
 
 func TestIsStatusClientID(t *testing.T) {
 	for id, want := range map[string]bool{
-		"status-0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0": true,
-		"status-00000000-0000-0000-0000-000000000000": true,
-		"status-0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0": false, // uppercase
-		"status-0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f":  false, // 35 chars
+		"status-0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0":  true,
+		"status-00000000-0000-0000-0000-000000000000":  true,
+		"status-0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0":  false, // uppercase
+		"status-0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f":   false, // 35 chars
 		"status-0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f00": false, // 37 chars
-		"status-0f1e2d3c_4b5a_6978_8796_a5b4c3d2e1f0": false, // underscore
+		"status-0f1e2d3c_4b5a_6978_8796_a5b4c3d2e1f0":  false, // underscore
 		"file-v2-0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0": false,
 		"bot-1-echo-3": false,
-		"": false,
+		"":             false,
 	} {
 		if got := isStatusClientID(id); got != want {
 			t.Errorf("isStatusClientID(%q) = %v, want %v", id, got, want)
