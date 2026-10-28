@@ -660,6 +660,14 @@ fn run_loop(
                             emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": main.room, "reason": "not_joined_or_halted" }));
                             continue;
                         }
+                        if matches!(item, Outbound::Status { .. }) {
+                            // status-v1 (#560): `status-<uuid>` client_id, never
+                            // retried — a stale status line is worthless.
+                            if let Err(err) = publish_status(ctx, main, text.as_bytes()) {
+                                return Err(report_dropped(main, text.as_bytes(), err));
+                            }
+                            continue;
+                        }
                         if let Err(err) = publish_echo(ctx, main, text.as_bytes(), 0) {
                             return Err(report_dropped(main, text.as_bytes(), err));
                         }
@@ -696,6 +704,7 @@ fn agent_text(item: &Outbound) -> String {
     match item {
         Outbound::Reply { text, .. } => text.clone(),
         Outbound::Interim { text, .. } => text.clone(),
+        Outbound::Status { text, .. } => text.clone(),
         Outbound::Notice { text, .. } => text.clone(),
         Outbound::ApprovalRequest { text, .. } => text.clone(),
         Outbound::ApprovalResolved { n, allowed } => {
@@ -719,6 +728,7 @@ fn agent_kind(item: &Outbound) -> &'static str {
     match item {
         Outbound::Reply { .. } => "reply",
         Outbound::Interim { .. } => "interim",
+        Outbound::Status { .. } => "status",
         Outbound::Notice { .. } => "notice",
         Outbound::ApprovalRequest { .. } => "approval_request",
         Outbound::ApprovalResolved { .. } => "approval_resolved",
@@ -973,6 +983,11 @@ fn route_to_agent(state: &mut RoomState, ev: &StoredRow, sender: &[u8], plaintex
         skipped("attachment");
         return Ok(None);
     }
+    if responder::is_status_client_id(&ev.client_id) {
+        // status-v1 (#560): another agent's live status line — never a turn.
+        skipped("status");
+        return Ok(None);
+    }
     let text = match std::str::from_utf8(plaintext) {
         Ok(text) if !text.trim().is_empty() => text.to_string(),
         _ => {
@@ -1159,6 +1174,72 @@ fn report_dropped(state: &RoomState, plaintext: &[u8], err: BotError) -> BotErro
         "event": "echo_dropped", "room": state.room, "bytes": plaintext.len(), "error": err.to_string(),
     }));
     err
+}
+
+/// status-v1 (#560): the bot's room as a `room::SendHost` whose dedup key is a
+/// fresh `status-<uuid>` instead of the echo counter — the apps classify the
+/// message by that prefix (transient bubble) and the relay sends no push for
+/// it. The echo counter is untouched, so replies keep their `<device>-echo-<n>`.
+struct StatusSender<'s, 'c> {
+    ctx: &'s Ctx<'c>,
+    state: &'s mut RoomState,
+}
+
+impl room::RoomAccess for StatusSender<'_, '_> {
+    type Group<'g> = Bound<'g> where Self: 'g;
+    fn sync(&mut self) -> &mut RoomSync { &mut self.state.sync }
+    fn group(&mut self) -> Bound<'_> { bound(self.ctx, self.state) }
+}
+
+impl room::SendHost for StatusSender<'_, '_> {
+    fn reserve_client_id(&mut self) -> String { status_client_id() }
+    fn persist(&mut self) -> Result<(), BotError> { flush(self.ctx, self.state) }
+    fn post(&mut self, room: &str, post: &EventPost<'_>) -> Result<api::EventResponse, BotError> {
+        self.ctx.client.post_event(room, post)
+    }
+}
+
+/// `status-<uuid v4 shape, lowercase>` from the OS random source; on a host
+/// without `/dev/urandom` the fallback mixes the clock and a process counter
+/// (uniqueness per (room, device) is all the relay's dedup key needs).
+fn status_client_id() -> String {
+    let mut bytes = [0u8; 16];
+    let filled = std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| { use std::io::Read; f.read_exact(&mut bytes) })
+        .is_ok();
+    if !filled {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        bytes[..8].copy_from_slice(&nanos.to_le_bytes());
+        bytes[8..].copy_from_slice(&n.to_le_bytes());
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!("status-{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
+}
+
+/// Encrypt and POST one status line (status-v1, #560) — `publish_echo` with a
+/// `status-<uuid>` dedup key and **no retry**: a 409 cas_mismatch means the
+/// epoch moved under it, and by the time a retry could run the line is stale
+/// (the next heartbeat replaces it anyway). Logged, never requeued.
+fn publish_status(ctx: &Ctx, state: &mut RoomState, plaintext: &[u8]) -> Result<(), BotError> {
+    let outcome = room::send_application(&mut StatusSender { ctx, state }, ctx.own, plaintext)?;
+    match outcome {
+        SendOutcome::Sent { client_id, response } => emit(&serde_json::json!({
+            "event": "status_posted", "room": state.room, "bytes": plaintext.len(),
+            "seq": response.seq, "epoch": response.epoch, "client_id": client_id, "duplicate": response.duplicate,
+        })),
+        SendOutcome::Conflict { client_id, error } => emit(&serde_json::json!({
+            "event": "status_dropped", "room": state.room, "client_id": client_id, "reason": "cas_mismatch", "error": error.to_string(),
+        })),
+        SendOutcome::AlreadyDelivered { client_id, error } => emit(&serde_json::json!({
+            "event": "status_dropped", "room": state.room, "client_id": client_id, "reason": "client_id_reuse", "error": error.to_string(),
+        })),
+    }
+    Ok(())
 }
 
 

@@ -69,6 +69,13 @@ pub const DEFAULT_TURN_AGE_RENOTICE_SECS: u64 = 30 * 60;
 /// are dropped — the final `result` still arrives — so a chatty or looping
 /// worker cannot flood the room or the relay.
 pub const DEFAULT_INTERIM_MAX: usize = 40;
+/// status-v1 (#560, `archive/native-mls/STATUS-V1.md`): `interim` frames with
+/// `kind:"status"` — the bridge's live "⏳ Working — 10s | Bash: …" line, one
+/// every ~5 s for the length of a turn. Posted with a `status-<uuid>` relay
+/// client_id so the apps show the newest one per sender as a transient bubble
+/// (and the relay sends no push for it). Capped per turn separately from
+/// `interim_max`: 720 ≈ one hour at 5 s; past it the rest are dropped.
+pub const DEFAULT_STATUS_MAX: usize = 720;
 /// #425: peer (bot) messages one room may turn into read-only turns per minute.
 pub const DEFAULT_PEER_PER_MIN: usize = 6;
 /// #425: notices one room may carry per minute (the rest are suppressed).
@@ -107,6 +114,8 @@ pub struct Config {
     pub turn_age_renotice_secs: u64,
     /// #474: cap on `interim` messages per turn (0 = never post interims).
     pub interim_max: usize,
+    /// status-v1 (#560): cap on `kind:"status"` interims per turn (0 = never post).
+    pub status_max: usize,
     /// #423: several agent rooms on one responder. Each `turn` frame then
     /// names its room (`"room"`) and its `turn_id` carries the room
     /// (`t-<room>-<seq>`, relay seqs are per room). Off = the single-room
@@ -128,6 +137,7 @@ impl Config {
             turn_age_notice_secs: DEFAULT_TURN_AGE_NOTICE_SECS,
             turn_age_renotice_secs: DEFAULT_TURN_AGE_RENOTICE_SECS,
             interim_max: DEFAULT_INTERIM_MAX,
+            status_max: DEFAULT_STATUS_MAX,
             room_frames: false,
             peer_per_min: DEFAULT_PEER_PER_MIN,
             notice_per_min: DEFAULT_NOTICE_PER_MIN,
@@ -145,6 +155,12 @@ pub enum Outbound {
     /// relay seq `seq` is still running (FLEET-WORKER `interim`). Posted like
     /// a reply; the turn stays active until its `result`.
     Interim { seq: i64, text: String },
+    /// status-v1 (#560): the worker's live status line for the turn started
+    /// by relay seq `seq` (FLEET-WORKER `interim` with `kind:"status"`). Posted
+    /// like a reply but with a `status-<uuid>` relay client_id: the apps show
+    /// only the newest one per sender, as a transient bubble, and the relay
+    /// does not push it. The turn stays active until its `result`.
+    Status { seq: i64, text: String },
     /// #474: unsolicited text for room `room` (FLEET-WORKER `notice`: push
     /// notifications, reminders, alerts the node raises outside any turn).
     /// The poll loop posts it only when `room` is the agent room.
@@ -278,6 +294,8 @@ pub struct Responder {
     pending_tool: Option<String>,
     /// #474: `interim` messages already posted for the active turn.
     interim_sent: usize,
+    /// status-v1 (#560): `kind:"status"` interims already posted for the active turn.
+    status_sent: usize,
     /// Age of the active turn at which the next turn-age notice is due.
     age_notice_due: Option<Duration>,
     /// #425: per-room minute windows for peer intake and notices.
@@ -298,6 +316,7 @@ fn turn_item(peer_depth: u8, room: String, item: Outbound) -> Routed {
     let kind = match &item {
         Outbound::Reply { .. } => "reply",
         Outbound::Interim { .. } => "interim",
+        Outbound::Status { .. } => "status",
         Outbound::ApprovalRequest { .. } => "approval_request",
         Outbound::ApprovalResolved { .. } => "approval_resolved",
         Outbound::Uncertain { .. } => "uncertain",
@@ -305,7 +324,7 @@ fn turn_item(peer_depth: u8, room: String, item: Outbound) -> Routed {
         _ => "other",
     };
     let seq = match &item {
-        Outbound::Reply { seq, .. } | Outbound::Interim { seq, .. } | Outbound::ApprovalRequest { seq, .. } | Outbound::Uncertain { seq, .. } | Outbound::Stopped { seq } => *seq,
+        Outbound::Reply { seq, .. } | Outbound::Interim { seq, .. } | Outbound::Status { seq, .. } | Outbound::ApprovalRequest { seq, .. } | Outbound::Uncertain { seq, .. } | Outbound::Stopped { seq } => *seq,
         _ => 0,
     };
     (room, Outbound::Suppressed { seq, kind })
@@ -397,6 +416,7 @@ impl Responder {
             pending_items: Vec::new(),
             pending_tool: None,
             interim_sent: 0,
+            status_sent: 0,
             age_notice_due: None,
             peer_window: HashMap::new(),
             notice_window: HashMap::new(),
@@ -542,6 +562,7 @@ impl Responder {
         self.write_inbox(Some(&active))?;
         self.active = Some((active, Instant::now()));
         self.interim_sent = 0;
+        self.status_sent = 0;
         self.age_notice_due = (self.config.turn_age_notice_secs > 0).then(|| Duration::from_secs(self.config.turn_age_notice_secs));
         let mut frame = serde_json::json!({
             "type": "turn",
@@ -694,8 +715,18 @@ impl Responder {
             "interim" => {
                 // #474: a progress line for the active turn. Bounded like a
                 // reply and capped per turn; the turn stays active.
+                // status-v1 (#560): `kind:"status"` is the live status line —
+                // its own cap, its own client_id downstream. Any other `kind`
+                // (or none) is a plain interim, so an older bridge is unchanged.
                 let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
-                if !text.is_empty() && self.interim_sent < self.config.interim_max {
+                let status = value.get("kind").and_then(|v| v.as_str()) == Some("status");
+                if text.is_empty() {
+                } else if status {
+                    if self.status_sent < self.config.status_max {
+                        self.status_sent += 1;
+                        out.push(turn_item(depth, room, Outbound::Status { seq, text: bounded_reply(text, self.config.reply_max_bytes) }));
+                    }
+                } else if self.interim_sent < self.config.interim_max {
                     self.interim_sent += 1;
                     out.push(turn_item(depth, room, Outbound::Interim { seq, text: bounded_reply(text, self.config.reply_max_bytes) }));
                 }
@@ -865,6 +896,16 @@ pub fn is_bot_actor(device: &str) -> bool {
 pub fn is_attachment_client_id(client_id: &str) -> bool {
     match client_id.strip_prefix("file-v1-").or_else(|| client_id.strip_prefix("file-v2-")) {
         Some(tail) => tail.len() == 36 && tail.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase() || b == b'-'),
+        None => false,
+    }
+}
+
+/// status-v1 (#560, `archive/native-mls/STATUS-V1.md`): `^status-[a-f0-9-]{36}$` —
+/// an agent's live status line. Never a turn (another bot's status must not
+/// start a peer turn, the hazard `is_attachment_client_id` guards for files).
+pub fn is_status_client_id(client_id: &str) -> bool {
+    match client_id.strip_prefix("status-") {
+        Some(tail) => tail.len() == 36 && tail.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || b == b'-'),
         None => false,
     }
 }
@@ -1084,6 +1125,13 @@ for line in sys.stdin:
             shown = json.dumps({"turn_id": tid, "room": cmd.get("room")}, sort_keys=True)
             print(json.dumps({"type": "result", "turn_id": tid, "status": "complete", "session_id": "s1", "text": "frame:" + shown}), flush=True)
             continue
+        if cmd["prompt"].startswith("status"):
+            # status-v1 (#560): live status lines, an unknown kind (plain interim), a blank one, another turn's.
+            for i in range(3):
+                print(json.dumps({"type": "interim", "turn_id": tid, "kind": "status", "text": "⏳ Working — %ds | Bash: ls" % (10 * (i + 1))}), flush=True)
+            print(json.dumps({"type": "interim", "turn_id": tid, "kind": "mystery", "text": "plain"}), flush=True)
+            print(json.dumps({"type": "interim", "turn_id": tid, "kind": "status", "text": "  "}), flush=True)
+            print(json.dumps({"type": "interim", "turn_id": "t-other", "kind": "status", "text": "not this turn"}), flush=True)
         if cmd["prompt"].startswith("progress"):
             for i in range(3):
                 print(json.dumps({"type": "interim", "turn_id": tid, "text": "step %d" % i}), flush=True)
@@ -1164,6 +1212,46 @@ for line in sys.stdin:
         let mut r = fake(|c| c.interim_max = 0, None);
         r.offer(inbound(8, "owner-pc", "progress")).unwrap();
         assert_eq!(pump_until(&mut r, 1), vec![Outbound::Reply { seq: 8, text: "echo:progress|@owner-pc:hande".into() }]);
+    }
+
+    #[test]
+    fn status_interims_have_their_own_kind_and_cap() {
+        // status-v1 (#560): `kind:"status"` → Outbound::Status, capped by status_max
+        // (not interim_max); an unknown kind is a plain interim; blank / other turn dropped.
+        let mut r = fake(|_| {}, None);
+        assert_eq!(r.offer(inbound(5, "owner-pc", "status")).unwrap(), Offer::Started);
+        let got = pump_until(&mut r, 5);
+        assert_eq!(got, vec![
+            Outbound::Status { seq: 5, text: "⏳ Working — 10s | Bash: ls".into() },
+            Outbound::Status { seq: 5, text: "⏳ Working — 20s | Bash: ls".into() },
+            Outbound::Status { seq: 5, text: "⏳ Working — 30s | Bash: ls".into() },
+            Outbound::Interim { seq: 5, text: "plain".into() },
+            Outbound::Reply { seq: 5, text: "echo:status|@owner-pc:hande".into() },
+        ]);
+        // status_max caps status lines alone; interim_max is untouched by them.
+        let mut r = fake(|c| { c.status_max = 1; c.interim_max = 1; }, None);
+        r.offer(inbound(6, "owner-pc", "status")).unwrap();
+        assert_eq!(pump_until(&mut r, 3), vec![
+            Outbound::Status { seq: 6, text: "⏳ Working — 10s | Bash: ls".into() },
+            Outbound::Interim { seq: 6, text: "plain".into() },
+            Outbound::Reply { seq: 6, text: "echo:status|@owner-pc:hande".into() },
+        ]);
+        let mut r = fake(|c| c.status_max = 0, None);
+        r.offer(inbound(7, "owner-pc", "status")).unwrap();
+        assert_eq!(pump_until(&mut r, 2), vec![
+            Outbound::Interim { seq: 7, text: "plain".into() },
+            Outbound::Reply { seq: 7, text: "echo:status|@owner-pc:hande".into() },
+        ]);
+    }
+
+    #[test]
+    fn status_client_id_shape() {
+        assert!(is_status_client_id("status-0f8fad5b-d9cb-469f-a165-70867728950e"));
+        assert!(is_status_client_id("status-00000000-0000-0000-0000-000000000000"));
+        for odd in ["status-", "status-notauuid", "status-0F8FAD5B-D9CB-469F-A165-70867728950E",
+                    "status-0f8fad5b-d9cb-469f-a165-70867728950e0", "file-v2-0f8fad5b-d9cb-469f-a165-70867728950e", "bot-1-echo-3"] {
+            assert!(!is_status_client_id(odd), "{odd}");
+        }
     }
 
     #[test]

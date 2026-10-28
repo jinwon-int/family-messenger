@@ -104,6 +104,12 @@ room_remove / room_close / room_mode`) 호출마다 SDK `can_use_tool` → 이 �
   활성 turn과 `turn_id`가 같을 때만, 공백뿐인 본문은 버린다. 답과 같은 경로·같은 크기 상한(`reply_max_bytes`,
   8KiB)으로 agent 방에 게시하고 turn은 `result`까지 계속된다. turn당 최대 40건(`DEFAULT_INTERIM_MAX`),
   넘는 것은 버린다(최종 `result`는 그대로 온다).
+  - `"kind":"status"` (status-v1, family-messenger#560, `archive/native-mls/STATUS-V1.md`): 브리지의 작업 상태
+    한 줄(`⏳ Working — 10s | Bash: …`, 매트릭스가 한 말풍선을 덧쓰는 그 줄)이다. 봇은 이것을 일반 interim 과 **다른
+    경로**로 게시한다 — 릴레이 `client_id` 가 `status-<uuid>`(앱은 보낸이별 임시 말풍선 하나로 갱신, 릴레이는 푸시
+    안 함), 턴당 상한 `DEFAULT_STATUS_MAX`(720)는 `interim_max` 와 별도, 409 는 재시도하지 않는다(다음 heartbeat 가
+    대체). 모르는 `kind`(또는 없음)는 일반 interim 이다 — 옛 봇은 `kind` 를 무시하므로 켜는 순서는 **봇 교체 → 브리지
+    `status_frames`**. 저널 `agent_outbound` `kind=status`, 게시 결과 `status_posted` / `status_dropped`.
 - `{"type":"notice","room":"soonwook","text":"…"}` — turn과 무관한 노드 발신(푸시 알림·리마인더·경보).
   활성 turn이 없어도 받는다. `room`은 릴레이 식별자 규칙 `[A-Za-z0-9_-]{1,64}`, 본문이 비면 버린다.
   봇은 **agent 방과 이름이 같을 때만** 게시하고 다른 방은 침묵한다(B-H3, 저널 `agent_outbound_dropped`
