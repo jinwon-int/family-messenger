@@ -112,16 +112,41 @@ final class ScrollFollowTests: XCTestCase {
     /// 2026-10-28 오너 보고: 상대 **글** 하나에도 위·아래 반복 — 꼬리 경계는 행 id 로 고정돼 새 글·과거 글이 붙어도 행이 LazyVStack 으로
     /// 이사하지 않는다(이사 = 새 측정 → 미배치 행 추정치가 함께 흔들려 내용이 위로 밀렸다).
     func testTailBoundaryStaysOnTheSameRow() {
-        let ids = Array(Int64(1)...100)
-        XCTAssertEqual(TimelineTail.start(ids: ids, anchor: nil), 100 - TimelineTail.rows, "entry: the last `rows` rows are eager")
-        let anchor = ids[100 - TimelineTail.rows]
-        XCTAssertEqual(TimelineTail.start(ids: ids + [101, 102], anchor: anchor), 100 - TimelineTail.rows,
+        // 꼬리보다 긴 타임라인(페이징으로 창이 넓어진 뒤) — 경계가 0 이 아니어야 "같은 행에 머무는지"를 볼 수 있다.
+        let count = TimelineTail.rows + 50
+        let ids = Array(Int64(1)...Int64(count))
+        XCTAssertEqual(TimelineTail.start(ids: ids, anchor: nil), count - TimelineTail.rows, "entry: the last `rows` rows are eager")
+        let anchor = ids[count - TimelineTail.rows]
+        XCTAssertEqual(TimelineTail.start(ids: ids + [Int64(count + 1), Int64(count + 2)], anchor: anchor), count - TimelineTail.rows,
                        "new rows join the tail; nothing moves into the lazy part")
-        XCTAssertEqual(TimelineTail.start(ids: Array(Int64(-199)...100), anchor: anchor), 200 + 100 - TimelineTail.rows,
+        XCTAssertEqual(TimelineTail.start(ids: Array(Int64(-199)...Int64(count)), anchor: anchor), 200 + count - TimelineTail.rows,
                        "older rows prepended: the boundary stays on the same row")
-        XCTAssertEqual(TimelineTail.start(ids: ids, anchor: 7_777), 100 - TimelineTail.rows, "anchor gone (window reset): recomputed from the end")
+        XCTAssertEqual(TimelineTail.start(ids: ids, anchor: 7_777), count - TimelineTail.rows, "anchor gone (window reset): recomputed from the end")
         XCTAssertEqual(TimelineTail.start(ids: [1, 2, 3], anchor: nil), 0, "short timeline: everything eager")
         XCTAssertEqual(TimelineTail.start(ids: [], anchor: nil), 0)
+    }
+
+    /// #497 A6: 진입 때 보이는 기본 창(`AppModel.timelineLimit` 행)은 전부 꼬리(실제 높이) — LazyVStack 미배치 행 추정치가 없다.
+    /// lazy 부분은 #472 페이징으로 과거 글을 위에 붙인 뒤에만 생긴다.
+    func testDefaultWindowIsEntirelyEager() {
+        XCTAssertEqual(TimelineTail.rows, AppModel.timelineLimit)
+        let window = Array(Int64(1)...Int64(AppModel.timelineLimit))
+        XCTAssertEqual(TimelineTail.start(ids: window, anchor: nil), 0, "entry: no lazy rows")
+        XCTAssertEqual(TimelineTail.start(ids: window + [Int64(AppModel.timelineLimit) + 1], anchor: window[0]), 0,
+                       "a new message keeps everything eager")
+        let paged = Array(Int64(1 - AppModel.olderPage)...Int64(AppModel.timelineLimit))
+        XCTAssertEqual(TimelineTail.start(ids: paged, anchor: window[0]), AppModel.olderPage, "after paging only the older page is lazy")
+    }
+
+    /// #497 A6: 바닥 앵커가 자리를 놓쳤다(build 55: 표지 5273 에 멈춘 채 following) — 새 글 때 한 번 되돌릴 조건.
+    func testAnchorLostBottomOnlyWhenFollowingAndFarFromTheBottom() {
+        XCTAssertTrue(ScrollFollow.anchorLostBottom(following: true, sentinelBottom: 5_273, viewportHeight: 598))
+        XCTAssertFalse(ScrollFollow.anchorLostBottom(following: true, sentinelBottom: 582, viewportHeight: 598), "at the bottom (padding)")
+        XCTAssertFalse(ScrollFollow.anchorLostBottom(following: true, sentinelBottom: 598 + ScrollFollow.nearBottom, viewportHeight: 598),
+                       "within nearBottom")
+        XCTAssertFalse(ScrollFollow.anchorLostBottom(following: false, sentinelBottom: 5_273, viewportHeight: 598), "reading older: leave it")
+        XCTAssertFalse(ScrollFollow.anchorLostBottom(following: true, sentinelBottom: 5_273, viewportHeight: 0), "viewport not measured")
+        XCTAssertFalse(ScrollFollow.anchorLostBottom(following: true, sentinelBottom: .infinity, viewportHeight: 598), "sentinel not measured")
     }
 
     /// build 41 오너 보고: 사진 한 장에 채팅 없이 배경만 — 내용이 화면보다 긴데 바닥 표지가 화면 위쪽에서 끝나면 내용 끝을 지난 것.

@@ -46,6 +46,8 @@ struct RoomView: View {
     /// 꼬리(lazy 아님)가 시작하는 index · 그 첫 행의 id. LazyVStack 은 화면 밖 행을 만들지 않아, 긴 마지막 글 아래의 바닥 표지가 생성되지
     /// 않으면 측정 보정이 돌지 않고 `scrollTo` 는 추정 위치에 멈춘다(오너 보고 build 33) — 꼬리는 항상 실제 높이라 표지 측정과 `scrollTo` 가
     /// 정확하다. 경계는 **행 id 로 고정**(`TimelineTail`): 종전 "마지막 3행"은 새 글마다 행이 LazyVStack 으로 이사해 추정치가 흔들렸다.
+    /// #497 A6: 진입 때 꼬리 = 기본 창 전체(`TimelineTail.rows == AppModel.timelineLimit`)라 `tailStart` 는 0 — lazy 부분은 #472 페이징으로
+    /// 과거 글을 위에 붙인 뒤에만 생긴다(미배치 행 추정치가 진입·바닥 추종 중에는 존재하지 않는다).
     @State private var tailStart = 0
     @State private var tailAnchor: Int64?
 
@@ -196,7 +198,13 @@ struct RoomView: View {
                         verifyPositionSoon(proxy)
                     case .follow:
                         // 앵커가 있으면 바닥 거리를 유지한 채 새 행이 아래에 붙어 그대로 보인다 — 명령을 내지 않는다(겹치면 꿈틀).
-                        if !Self.anchored { scrollToLatest(proxy, animated: false) }
+                        // #497 A6: 단, 앵커가 자리를 놓친 상태(build 55: 표지 5273 에 멈춘 채 following)면 새 글 때 한 번 바닥으로 되돌린다.
+                        if !Self.anchored {
+                            scrollToLatest(proxy, animated: false)
+                        } else if ScrollFollow.anchorLostBottom(following: followLatest, sentinelBottom: tracking.sentinelBottom,
+                                                                viewportHeight: viewportHeight) {
+                            correctBottom(proxy, reason: "follow-anchor-lost")
+                        }
                         verifyPositionSoon(proxy)
                     case .markNewBelow:
                         hasNewBelow = true

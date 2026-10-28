@@ -1161,6 +1161,7 @@ final class AppModel: ObservableObject {
     /// — 내가 방금 보낸 글도 — 화면에 오르지 않았다(웹 `history-store.list` 와 같은 "최신 N건"으로 맞춤).
     /// #497 A5: 500 → 120. build 54 오너 기록: 진입 뒤 20초 동안 내용 높이가 46730→28351 로 계속 줄었다 — LazyVStack 이 미배치 460행의
     /// 추정치를 거듭 재계산한 것(그때마다 바닥 앵커가 자리를 다시 잡는다). 창을 줄이면 추정 대상이 1/5 로 준다. 과거 글은 #472 페이징.
+    /// #497 A6: `TimelineTail.rows` 가 이 값과 같다 — 기본 창은 전부 실제 높이(lazy 아님)로 그려 미배치 행 추정치가 아예 없다.
     static let timelineLimit = 120
     /// #472: 위로 끝까지 올라오면 창을 이만큼 넓혀 과거 글을 더 읽는다(저장소 API 추가 없이 `messageHeadsTail(limit:)` 의 창만 키운다).
     static let olderPage = 120
