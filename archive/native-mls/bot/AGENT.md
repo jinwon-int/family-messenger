@@ -39,6 +39,7 @@ native-mls-bot <base-url> session <room> <device> \
 | ③-B 가족 허용 | `bot*` 를 뺀 모든 actor 의 메시지가 turn 이 된다. 실행 권한은 아래 승인으로만 |
 | ④-B 승인 왕복 | 응답기 `approval` → 방에 `⚠️ 승인 필요 #n: …` → **owner actor 의 답장** `승인 n` / `거절 n`(`approve n`/`deny n`) 만 유효 → 응답기 `approve`/`deny`. 미응답은 응답기 `--approval-timeout` 이 거절 |
 | 동시성 | 한 번에 1 turn, 대기열 8(초과는 `agent_offer: Dropped{queue_full}`) |
+| `/stop` (Matrix 와 같게) | 가족방의 `/stop`(앞뒤 공백·대소문자 무시, 정확히 그 한 단어)은 turn 이 아니라 **제어**다 — 대기열에 서지 않고 지금 도는 turn 에 바로 FLEET-WORKER `cancel` 을 보낸다(`agent_stop`). 그 방의 turn 만, **turn 을 시작한 사람이나 owner 만**. 결과 `uncertain/cancelled` 은 `⏹️ 요청(#n)을 중단했습니다.` 로 게시하고 응답기는 퇴역하지 않는다(ccc-node 브리지는 사용자 취소 뒤에도 계속 서빙; 스스로 끝나는 응답기는 stdout 닫힘으로 기존처럼 `worker_gone`). 대기열의 다른 메시지는 그대로 이어서 실행. 도는 turn 이 없으면 `ℹ️ 중단할 요청이 없습니다.`, 남의 turn 이면 `ℹ️ 다른 사람의 요청은 오너만 중단할 수 있습니다.` — turn 없이 즉답 |
 | 중복 실행 금지 | 활성 turn 을 `<state>.inbox.json`(0600)에 **응답기에 보내기 전** 기록. 재시작 때 남아 있으면 `⚠️ 요청(#seq)을 끝까지 확인하지 못했습니다` 1건만 게시하고 지운다 — 재실행 없음 |
 | 불확실 결과 | `result.status=uncertain`·`rejected`·워치독(21780초 = Matrix `CLAUDE_PROCESS_TIMEOUT` 21720초 + 60초, env `NATIVE_MLS_BOT_TURN_SECS`) → 같은 안내 1건. 30분마다 「⏱ 요청(#n)을 처리한 지 N분」 알림(알림만, env `NATIVE_MLS_BOT_TURN_AGE_NOTICE_MIN`·`_RENOTICE_MIN`, 0=끔). uncertain 뒤 응답기는 퇴역(FLEET-WORKER)하므로 세션 종료 → 재시작 |
 | 답 길이 | 8 KiB 초과는 글자 경계에서 자르고 `…(길어서 줄임)` |
