@@ -22,7 +22,7 @@
 //   (가족 actor = B) `pendingInvites` 에 두고 1탭 수락을 기다린다 → 로그인·전면 복귀·참여 뒤에는 로비 보충(`replenish`).
 // 로비가 없는 릴레이(404)는 조용히 건너뛴다. 로비 오류는 메시지 동기화를 막지 않는다(`lastError` 에만).
 // 자동 참여(A)가 실패해도 조용히 사라지지 않는다(#521, 웹 #522 와 동일): 같은 Welcome 은 세션당 `adoptTries` 번까지 다시 시도하고,
-// 그 뒤에도 `pendingInvites` 에 상태(`inviteStates`: 새 초대 / 수락하는 중 / 자동 수락 실패 n회 — 사유)와 함께 남아 🔔 알림과 초대 카드가
+// 그 뒤에도 `pendingInvites` 에 상태(`inviteStates`: 새 초대 / 수락하는 중 / 자동 수락 실패 n회 — 사유)와 함께 남아 🔔 알림 시트가
 // 「다시 시도」(횟수 초기화)·「무시」를 받는다. 참여하지 않은 Welcome 이 쓴 로비 키의 비밀은 보충이 지우지 않는다(`replenish(protect:)`, #518).
 import Foundation
 import FamilyMLSCore
@@ -133,7 +133,7 @@ final class AppModel: ObservableObject {
     /// 수락 대기 초대 — 로비 Welcome 이 있는, 아직 참여하지 않은 방(오래된 순). 가족 기기(D1 B)는 모두, 오너 기기(A)는 자동 참여가
     /// 실패한 것만 여기 남는다(#521). 상태는 `inviteStates`.
     @Published private(set) var pendingInvites: [PendingWelcome] = []
-    /// 초대 처리 상태(🔔 알림·초대 카드 공용, #521) — 웹 `inviteState` 와 같은 셋.
+    /// 초대 처리 상태(🔔 알림 시트, #521) — 웹 `inviteState` 와 같은 셋.
     enum InviteState: Equatable {
         /// 아직 시도하지 않았다(가족 기기의 새 초대).
         case new
@@ -418,7 +418,7 @@ final class AppModel: ObservableObject {
         reason == SyncHaltReason.removedFromRoom || reason == SyncHaltReason.roomClosed
     }
 
-    /// 대화 목록에 보일 방. 가족 기기(D1 B)가 아직 수락하지 않은 로비 초대 방은 「새 대화방 초대」 칸에만 둔다 —
+    /// 대화 목록에 보일 방. 가족 기기(D1 B)가 아직 수락하지 않은 로비 초대 방은 🔔 알림 시트의 「새 대화방 초대」 칸에만 둔다 —
     /// 봇의 commit 이 이 기기를 로스터에 넣는 순간 `GET /v2/rooms` 가 그 방을 돌려주므로(#388 리스크) 기록은 이미 있다.
     var listedRooms: [RoomRecord] {
         let invited = Set(pendingInvites.map(\.room))
@@ -745,7 +745,7 @@ final class AppModel: ObservableObject {
         lockScreenPreview = await deps.lockScreenPreview()
     }
 
-    /// 「수락」·「다시 시도」(초대 카드·🔔 알림, 가족 B 와 오너 A 모두): 그 방의 Welcome 을 로비 상태로 받아들여 참여한다. 손으로 누르면
+    /// 「수락」·「다시 시도」(🔔 알림 시트, 가족 B 와 오너 A 모두): 그 방의 Welcome 을 로비 상태로 받아들여 참여한다. 손으로 누르면
     /// 세션당 자동 시도 횟수(`adoptTries`)를 되돌린다. 들어가면 목록에서 빠지고, 못 들어가면 상태(실패 n회 — 사유)와 함께 남는다 + throw.
     func acceptInvite(room: RoomID) async throws {
         try await serial.run {

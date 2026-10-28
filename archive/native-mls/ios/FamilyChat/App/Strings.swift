@@ -116,6 +116,8 @@ enum Strings {
     static let lobbyHint = "로비 키는 이 기기의 공개 키 패키지입니다. 운영자가 steward 봇에게 지시하면 이 키로 탭 없이 새 대화방에 초대됩니다(오너 기기는 자동 가입, 가족 기기는 수락 1탭). 앱을 열 때마다 모자란 만큼 채웁니다."
     static func lobbyJoined(_ room: String) -> String { "새 대화방 「\(room)」에 들어왔습니다." }
     static let inviteSectionTitle = "새 대화방 초대"
+    /// 방은 없고 받은 초대만 있을 때 목록 빈 화면의 안내(초대 칸은 🔔 알림 시트에만 — 오너 요청 2026-10-28).
+    static func invitesInBell(_ count: Int) -> String { "받은 초대 \(count)건이 있습니다. 오른쪽 위 🔔 알림에서 수락하거나 무시할 수 있습니다." }
     static func inviteBody(_ room: String) -> String { "운영자가 「\(room)」 대화방에 이 기기를 초대했습니다. 수락하면 대화에 들어갑니다." }
     static let acceptInvite = "수락"
     static let ignoreInvite = "무시"
