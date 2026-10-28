@@ -134,6 +134,14 @@ test('humanSize / previewLine', () => {
   assert.equal(previewLine('', 'hi'), 'hi');
 });
 
+test('chat.file: 이름이 있으면 「📎 이름 · 크기」, 없으면(file-v1) 「📎 파일 · 크기」 (#544 C)', () => {
+  assert.equal(strings.chat.file('1.2 MB'), '📎 파일 · 1.2 MB');
+  assert.equal(strings.chat.file('1.2 MB', null), '📎 파일 · 1.2 MB');
+  assert.equal(strings.chat.file('1.2 MB', ''), '📎 파일 · 1.2 MB');
+  assert.equal(strings.chat.file('12.3 KB', '가족사진.heic'), '📎 가족사진.heic · 12.3 KB');
+  for (const key of ['previewFailed', 'previewRetry', 'previewRetrying']) assert.ok(strings.chat[key].length > 0, key);
+});
+
 test('haltGuidance: 토큰별 안내, removed 우선', () => {
   assert.match(haltGuidance('history_gap').what, /지웠습니다/);
   assert.match(haltGuidance('room_closed').what, /닫았습니다/);

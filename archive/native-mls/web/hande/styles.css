@@ -563,6 +563,10 @@ dialog.viewer img { max-width: 100vw; max-height: 100vh; object-fit: contain; di
 dialog.viewer .viewer-hint { position: absolute; left: 0; right: 0; bottom: max(12px, env(safe-area-inset-bottom)); text-align: center; color: rgba(255, 255, 255, 0.75); font-size: var(--text-s); pointer-events: none; }
 .bubble .file-label { font-weight: 600; }
 .bubble .download { min-height: 32px; }
+/* 미리보기 실패 + 다시 시도(#544 B): 파일 행 아래 한 줄 — 안내는 흐리게, 버튼은 내려받기와 같은 모양. */
+.bubble .preview-retry { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.bubble .retry-preview { min-height: 32px; }
+.bubble[data-me="true"] .retry-preview { color: var(--bubble-me-text); border-color: rgba(27, 15, 6, 0.35); }
 .bubble[data-me="true"] .download { color: var(--bubble-me-text); border-color: rgba(27, 15, 6, 0.35); }
 .timeline .system { align-self: center; max-width: 92%; text-align: center; color: var(--text-2); font-size: var(--text-s); display: flex; flex-direction: column; gap: 2px; }
 .timeline .system .foot { font-size: var(--text-xs); color: var(--text-3); }
