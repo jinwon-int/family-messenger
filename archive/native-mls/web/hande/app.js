@@ -6,7 +6,7 @@
 // (owner actors join automatically, family devices accept with one tap — iOS
 // AppModel.discoverLobbyWelcomes / acceptInvite).
 import * as ui from './ui.js';
-import {strings, displayName, isAgentDevice, isMine, isOneToOne, roomLabel, previewLine, relativeTime} from './strings.js';
+import {strings, displayName, isAgentDevice, isMine, isOneToOne, roomLabel, previewLine, relativeTime, typingLabel} from './strings.js';
 import {orderRooms, moveRoom, readRoomOrder, writeRoomOrder} from './room-order.js';
 import {readDraft, writeDraft} from './drafts.js';
 import {readReadSeq, writeReadSeq, latestSeq, isUnread} from './read-seq.js';
@@ -145,7 +145,10 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
         timeline: R.entries, draft: app.draft.get(app.current) ?? '', onSend: sendText, onAttach: sendAttachment, onOpenAttachment: e => e.load(), onRetryPreview: loadPreview,
         onBack: () => { app.roomOpen = false; render(); }, onOpenInvite: openInvite, onOpenMembers: openInvite, onOpenBox: toggleBox,
         consentRequired: consentRequired(R), onOpenConsent: () => openConsentSheet(app.current),
-        onDraft: text => { app.draft.set(app.current, text); writeDraft(storage, app.device, app.current, text); }, notice: null, sending: app.sending || S.transferring,
+        // 입력 중 신호(#562): 글이 있으면 「입력 중」(3초에 한 번), 비우면 해제. 릴레이 응답은 보지 않는다.
+        onDraft: text => { app.draft.set(app.current, text); writeDraft(storage, app.device, app.current, text); R.session.typing(text.trim().length === 0); },
+        typing: typingLabel(S.typing, {device: app.device, actor: app.actor, roster: S.roster}),
+        notice: null, sending: app.sending || S.transferring,
         attachmentPending: R.session.attachmentPending ? {size: 0, onRetry: () => sendAttachment(null)} : null};
     })() : null;
     // 보관함(#544 D): 「첨부」 탭은 항상, 파일보관함 탭은 config.json 이 있을 때만. 첨부 목록은 화면 타임라인에서 매 paint 다시 센다.

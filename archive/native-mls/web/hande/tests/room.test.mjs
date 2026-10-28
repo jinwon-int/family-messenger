@@ -65,11 +65,11 @@ function fakeRelay(handler) {
 function policy({verdict = {ok: true}, report = {adds: [], removes: [], updates: [], path: []}} = {}) {
   return {parseStageReport: () => report, checkCommit: () => verdict, outerForCommit: () => null, resolveUncertainPending: () => 'keep'};
 }
-function session({worker, relay, pol, storage = memStorage(), device = 'owner-web-aaaaaa'}) {
+function session({worker, relay, pol, storage = memStorage(), device = 'owner-web-aaaaaa', now = Date.now}) {
   const events = {messages: [], logs: [], notices: [], changes: 0};
   const s = createRoomSession({room: 'family', device, database: 'family-mls-synthetic-hande-family', worker, relay, storage, policy: pol ?? policy(),
     on: {change: () => events.changes++, message: m => events.messages.push(m), log: l => events.logs.push(l), notice: (t, tone) => events.notices.push([t, tone])},
-    setInterval: () => 1, clearInterval: () => {}});
+    setInterval: () => 1, clearInterval: () => {}, now});
   return {s, events, storage};
 }
 
@@ -314,4 +314,93 @@ test('file-v2 history restore: descriptor rows become lazy attachments again', a
   assert.ok(att); assert.deepEqual(await att.load(), new Uint8Array([1, 2, 3, 4]));
   assert.ok(ev.messages.some(x => x.kind === 'undecryptable' && x.seq === 10));
   assert.ok(!ev.messages.some(x => x.kind === 'text'));
+});
+
+// ---- typing indicator (#562 PR B) ----
+const joinedStorage = () => {
+  const storage = memStorage();
+  storage.setItem('hande:room:family:owner-web-aaaaaa:family-mls-synthetic-hande-family', JSON.stringify({joined: true, relaySeq: 5, epoch: 2, roster: ['owner-pc', 'mom-web-1', 'owner-web-aaaaaa']}));
+  return storage;
+};
+
+test('typing: GET /events `typing` lands in state; a relay without the key means nobody (#562)', async () => {
+  const {bridge} = fakeWorker({fresh: false, group: ['owner-pc', 'mom-web-1', 'owner-web-aaaaaa']});
+  let typing = ['mom-web-1', 'owner-pc'];
+  const relay = fakeRelay((m, path) => {
+    const body = {epoch: 2, events: [], cursor: 5, members: []};
+    if (typing) body.typing = typing;
+    return {status: 200, body};
+  });
+  const {s} = session({worker: bridge, relay, storage: joinedStorage()});
+  await s.open(); await s.activate();
+  assert.deepEqual(s.state.typing, ['mom-web-1', 'owner-pc']);
+  typing = null;   // old relay: no key at all
+  await s.sync();
+  assert.deepEqual(s.state.typing, []);
+  typing = 'junk';   // not a list → nobody, never a crash
+  await s.sync();
+  assert.deepEqual(s.state.typing, []);
+});
+
+test('typing(): one POST per 3 s, clear posts clear:true and re-arms, errors ignored (#562)', async () => {
+  const {bridge} = fakeWorker({fresh: false, group: ['owner-pc', 'mom-web-1', 'owner-web-aaaaaa']});
+  let t = 10_000;
+  let typingStatus = 204;
+  const relay = fakeRelay((m, path) => {
+    if (path.endsWith('/typing')) return {status: typingStatus, body: typingStatus === 204 ? null : {error: 'no_such_room'}};
+    return {status: 200, body: {epoch: 2, events: [], cursor: 5, members: []}};
+  });
+  const {s} = session({worker: bridge, relay, storage: joinedStorage(), now: () => t});
+  await s.open(); await s.activate();
+  const posts = () => relay.calls.filter(c => c.method === 'POST' && c.path === '/v2/rooms/family/typing');
+  s.typing();
+  assert.equal(posts().length, 1);
+  assert.deepEqual(posts()[0].body, {device: 'owner-web-aaaaaa', clear: false});
+  t += 2999; s.typing();
+  assert.equal(posts().length, 1, 'inside the 3 s window: no second POST');
+  t += 1; s.typing();
+  assert.equal(posts().length, 2, 'after 3 s: posts again');
+  s.typing(true);
+  assert.equal(posts().length, 3);
+  assert.deepEqual(posts()[2].body, {device: 'owner-web-aaaaaa', clear: true});
+  s.typing(true);
+  assert.equal(posts().length, 3, 'nothing live to clear → no POST');
+  s.typing();
+  assert.equal(posts().length, 4, 'clear re-armed the throttle');
+  // An old relay answers 404 — the caller never sees it.
+  typingStatus = 404; t += 3000;
+  s.typing();
+  assert.equal(posts().length, 5);
+  await new Promise(r => setTimeout(r, 0));
+  // A relay that throws (network) is swallowed too.
+  relay.api = async () => { throw new Error('offline'); };
+  t += 3000;
+  assert.doesNotThrow(() => s.typing());
+  await new Promise(r => setTimeout(r, 0));
+});
+
+test('typing(): no POST before join / after halt; a sent message resets the throttle (#562)', async () => {
+  const {bridge} = fakeWorker({fresh: true});
+  const relay = fakeRelay(() => ({status: 200, body: {epoch: 0, events: [], cursor: 0, members: []}}));
+  const {s} = session({worker: bridge, relay});
+  s.typing();
+  await s.open(); await s.activate();
+  s.typing(); s.typing(true);
+  assert.equal(relay.calls.filter(c => c.method === 'POST').length, 0, 'not joined: silent');
+  // joined: typing → send → typing again posts immediately (relay cleared it when the event was stored)
+  const {bridge: b2} = fakeWorker({fresh: false, group: ['owner-pc', 'mom-web-1', 'owner-web-aaaaaa']});
+  let t = 50_000;
+  const relay2 = fakeRelay((m, path, body) => {
+    if (path.endsWith('/typing')) return {status: 204, body: null};
+    if (m === 'POST') return {status: 201, body: {seq: 6, epoch: 2}};
+    return {status: 200, body: {epoch: 2, events: [], cursor: 5, members: []}};
+  });
+  const {s: s2} = session({worker: b2, relay: relay2, storage: joinedStorage(), now: () => t});
+  await s2.open(); await s2.activate();
+  s2.typing();
+  await s2.send('hi');
+  s2.typing();
+  const typingPosts = relay2.calls.filter(c => c.path === '/v2/rooms/family/typing');
+  assert.equal(typingPosts.length, 2, 'the send reset the 3 s throttle');
+  assert.ok(relay2.calls.some(c => c.path === '/v2/rooms/family/events' && c.body?.kind === 'application'));
 });

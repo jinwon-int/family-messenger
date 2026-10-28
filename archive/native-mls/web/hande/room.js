@@ -105,9 +105,12 @@ export function nextDeviceId(dev) {
  * @param {Storage} deps.storage  localStorage (page state, attachment outbox)
  * @param {object} deps.on  callbacks: change(), message(entry), log(text), notice(text, tone), synced(), offline(bool)
  * @param {object} [deps.policy]  commit policy functions (injectable for tests)
+ * @param {() => number} [deps.now]  clock for the typing throttle (injectable for tests)
  */
-export function createRoomSession({room, device, database, worker, relay, storage, on, policy = {parseStageReport, checkCommit, outerForCommit, resolveUncertainPending}, pollMs = 4000, setInterval: setI = globalThis.setInterval, clearInterval: clearI = globalThis.clearInterval}) {
+export function createRoomSession({room, device, database, worker, relay, storage, on, policy = {parseStageReport, checkCommit, outerForCommit, resolveUncertainPending}, pollMs = 4000, setInterval: setI = globalThis.setInterval, clearInterval: clearI = globalThis.clearInterval, now = Date.now}) {
     const S = {started: false, joined: false, pending: false,
+    // #562: other devices the relay reports as typing (last GET /events `typing`, never this device). Not persisted.
+    typing: [],
     // #295 F4: epoch an invite/remove commit was built on when its POST outcome is unknown (else null).
     pendingUncertain: null,
     expectedRoster: null, pendingWelcome: null, relaySeq: 0, epoch: 0, wcursor: 0, roster: [], timer: null, busy: false,
@@ -130,7 +133,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
     try { const v = JSON.parse(storage.getItem(stateKey()) || 'null'); if (v) Object.assign(S, v); } catch (_) { /* ignore */ }
   }
   function resetState() {
-    Object.assign(S, {joined: false, pending: false, pendingUncertain: null, relaySeq: 0, roster: [], expectedRoster: null, pendingWelcome: null, halted: null, epoch: 0});
+    Object.assign(S, {joined: false, pending: false, pendingUncertain: null, relaySeq: 0, roster: [], expectedRoster: null, pendingWelcome: null, halted: null, epoch: 0, typing: []});
   }
 
   // ---- worker (multi-store: every message carries this room) ----
@@ -228,6 +231,8 @@ export function createRoomSession({room, device, database, worker, relay, storag
       }
       if (status !== 200) { if (!quiet) log('동기화 실패:', describe(status, body)); return undefined; }
       if (S.waiting403) { S.waiting403 = false; log('릴레이가 이 기기를 받아들였다(등록 완료)'); }
+      // #562: who else is typing right now (old relays send no key → nobody). Shown by the next changed().
+      S.typing = Array.isArray(body.typing) ? body.typing : [];
       if (body.first_seq > S.relaySeq + 1 && S.relaySeq > 0) notify(strings.room.historyGap(S.relaySeq + 1, body.first_seq - 1), 'warn');
       for (const ev of body.events) {
         const seqBefore = S.relaySeq;
@@ -512,6 +517,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
       const r = await postEvent('application', new Uint8Array(out.output));
       if (r.status === 201) {
         S.epoch = r.body.epoch; save();
+        typingSentAt = 0;   // #562: the relay dropped our typing signal when it stored this event — nothing to clear
         const ts = Date.now();
         emitText(device, device, text, r.body.seq, ts, false);
         await remember({seq: r.body.seq, sender: device, client: device, kind: 'text', text, bytes: []});   // MLS cannot decrypt our own messages
@@ -521,6 +527,19 @@ export function createRoomSession({room, device, database, worker, relay, storag
       throw new Error(strings.room.sendFailed(describe(r.status, r.body)));
     }
     return null;
+  }
+  // ---- typing indicator (#562) ----
+  // Fire-and-forget: POST /typing is a hint, never awaited, every answer ignored (an old relay
+  // says 404). At most one "still typing" POST per TYPING_MS (relay TTL 6 s); a clear goes out
+  // only when a signal may still be live. A sent message resets the throttle (see send()).
+  const TYPING_MS = 3000;
+  let typingSentAt = 0;
+  function typing(clear = false) {
+    if (!S.started || !S.joined || S.halted) return;
+    const at = now();
+    if (clear ? typingSentAt === 0 : at - typingSentAt < TYPING_MS) return;
+    typingSentAt = clear ? 0 : at;
+    relay.api('POST', path('typing'), {device, clear}).catch(() => {});
   }
   async function sendAttachment(file) {
     requireOpen();
@@ -594,7 +613,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
     get state() { return S; },
     get attachmentPending() { return !!attachments?.pending || !!fileV2s?.pending; },
     get joined() { return S.joined; },
-    open, activate, sync, create, publishKeyPackage, invite, remove, send, sendAttachment,
+    open, activate, sync, create, publishKeyPackage, invite, remove, send, sendAttachment, typing,
     offerCandidate, approveCandidate, denyCandidate, wipe, stop, registration,
   };
 }
