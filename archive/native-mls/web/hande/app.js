@@ -15,7 +15,8 @@ import {createRelay} from './relay.js';
 import {createIdentityStore, databaseFor, ROOM, IDENTITY_DATABASE, LOBBY_DATABASE} from './identity.js';
 import {createRoomSession, nextDeviceId, clock} from './room.js';
 import {createDevice, LOBBY_TARGET} from './device.js';
-import {imageType, shouldPreview} from './attachment-view.js';
+import {createPreviewLoader} from './preview-loader.js';
+import {installSyncRecovery} from './sync-recovery.js';
 import {fileboxConfig} from './filebox.js';
 import {installShortcuts} from './shortcuts.js';
 
@@ -130,7 +131,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     const room = R ? (() => {
       const S = R.session.state;
       return {roomId: app.current, name: roomLabel(app.current), members: S.roster.slice(), joined: S.joined, halted: S.halted ? {...S.halted} : null,
-        timeline: R.entries, draft: app.draft.get(app.current) ?? '', onSend: sendText, onAttach: sendAttachment, onOpenAttachment: e => e.load(),
+        timeline: R.entries, draft: app.draft.get(app.current) ?? '', onSend: sendText, onAttach: sendAttachment, onOpenAttachment: e => e.load(), onRetryPreview: loadPreview,
         onBack: () => { app.roomOpen = false; render(); }, onOpenInvite: openInvite, onOpenMembers: openInvite, onOpenBox: app.filebox ? toggleBox : null,
         onDraft: text => { app.draft.set(app.current, text); writeDraft(storage, app.device, app.current, text); }, notice: null, sending: app.sending || S.transferring,
         attachmentPending: R.session.attachmentPending ? {size: 0, onRetry: () => sendAttachment(null)} : null};
@@ -151,21 +152,17 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     R.entryKeys.add(key);
     const entry = {key, kind: m.kind, seq: m.seq ?? null, sender: m.sender ?? '', senderName: m.sender ? displayName(m.sender) : '',
       isMe: isMine(m.sender, {device: app.device, actor: app.actor}), isAgent: m.sender ? isAgentDevice(m.sender) : false, body: m.text ?? '', ts: m.ts ?? null,
-      size: m.size ?? 0, image: null, replay: !!m.replay, load: m.load ?? null, fileName: m.fileName ?? null};
+      size: m.size ?? 0, image: null, replay: !!m.replay, load: m.load ?? null, fileName: m.fileName ?? null,
+      previewFailed: false, previewBusy: false};
     R.entries.push(entry);
     R.entries.sort((a, b) => (a.seq ?? Infinity) - (b.seq ?? Infinity) || 0);
     // 안 읽음은 readSeq 로 판정한다(#541) — 새로고침 뒤 다시 들어오는 보관 이력이 N 배지를 켜지 않게. 열린 방이면 바로 본 것.
     if (app.roomOpen && app.current === roomId) markRoomRead(roomId);
-    if (shouldPreview(entry)) {   // attachment-view.js: up to MAX_ATTACHMENT, by content only
-      entry.load().then(bytes => {
-        const type = imageType(bytes);
-        if (!type) return;
-        entry.image = {url: URL.createObjectURL(new Blob([bytes], {type})), type, alt: `${entry.senderName}의 사진`};
-        render();
-      }).catch(() => {});
-    }
+    // 미리보기(attachment-view.js: 한도 안, 내용 판별만). 실패는 entry.previewFailed 로 남아 말풍선의 「다시 시도」가 다시 부른다(#544 B).
+    loadPreview(entry);
     render();
   }
+  const loadPreview = createPreviewLoader({createUrl: (bytes, type) => URL.createObjectURL(new Blob([bytes], {type})), onChange: render});
 
   // ---- rooms ----
   function newSession(roomId) {
@@ -318,6 +315,17 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
         catch (error) { logLine(`로비 키 보충 실패: ${error.message}`); }
       }
     } finally { refreshing = false; render(); }
+  }
+  /**
+   * 탭·온라인·bfcache 복귀 직후 한 번(#544 A): ⚙ 「지금 동기화」와 같은 경로를 조용히 — 기기 refresh 뒤 방별 sync({quiet}).
+   * refresh 의 `refreshing`·방의 `S.busy` 가드가 있어 폴링과 겹쳐도 안전하다. 시작 전·지운 뒤(dev.stop)에는 아무것도 하지 않는다.
+   */
+  async function resumeSync() {
+    if (!app.dev?.state.started) return;
+    logLine('복귀 동기화(탭·온라인·페이지 복귀)');
+    try { await refresh(); } catch (_) { /* refresh 가 자체 로그를 남긴다 */ }
+    await Promise.all([...app.rooms.values()].map(R => R.session.sync({quiet: true}).catch(() => {})));
+    render();
   }
   async function discoverLobbyWelcomes() {
     let welcomes;
@@ -507,6 +515,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     currentRoomId: () => (app.roomOpen && app.phase === 'ready' ? app.current : null),
     orderEditing: () => app.orderEditing,
   });
+  // 탭·온라인·bfcache 복귀 즉시 동기화(#544 A, 패밀리챗 installSyncRecovery): 백그라운드 탭의 늦춰진 타이머를 기다리지 않는다.
+  installSyncRecovery({document, window, resume: () => { resumeSync().catch(() => {}); }});
   boot().catch(error => fatal(error.message));
   return {get state() { return app; }};
 }

@@ -445,9 +445,20 @@ function agentMarkdownBody(text) {
   return el('div', { class: 'body md', 'data-testid': 'agent-markdown' }, parseBlocks(text).map(markdownBlock));
 }
 
-function bubble(entry, onOpenAttachment) {
+/** 미리보기 실패 행(#544 B): 안내 + 「미리보기 다시 시도」. 다시 부르는 동안은 버튼을 잠그고 문구만 바꾼다. */
+function previewRetry(entry, onRetryPreview) {
+  if (!entry.previewFailed || !onRetryPreview) return null;
+  const busy = Boolean(entry.previewBusy);
+  return el('span', { class: 'preview-retry', role: 'status' },
+    el('span', { class: 'meta' }, strings.chat.previewFailed),
+    el('button', { type: 'button', class: 'ghost small retry-preview', 'data-testid': 'retry-preview', disabled: busy ? true : null, onclick: () => onRetryPreview(entry) },
+      busy ? strings.chat.previewRetrying : strings.chat.previewRetry));
+}
+
+function bubble(entry, onOpenAttachment, onRetryPreview = null) {
   const time = formatTime(entry.ts);
-  const signature = JSON.stringify([entry.key, entry.kind, Boolean(entry.isMe), Boolean(entry.isAgent), entry.senderName ?? null, entry.body ?? '', time, entry.size ?? null, entry.image?.url ?? null, Boolean(entry.replay), entry.seq ?? null]);
+  const signature = JSON.stringify([entry.key, entry.kind, Boolean(entry.isMe), Boolean(entry.isAgent), entry.senderName ?? null, entry.body ?? '', time, entry.size ?? null, entry.image?.url ?? null, Boolean(entry.replay), entry.seq ?? null,
+    entry.fileName ?? null, Boolean(entry.previewFailed), Boolean(entry.previewFailed) && Boolean(entry.previewBusy)]);
   if (entry.kind === 'system') {
     return signed(el('li', { class: 'system', 'data-key': entry.key, 'data-testid': 'system-row' }, el('span', { class: 'body' }, entry.body), time ? el('span', { class: 'foot' }, time) : null), signature);
   }
@@ -463,7 +474,8 @@ function bubble(entry, onOpenAttachment) {
       ? el('div', { class: 'body media' },
           el('button', { type: 'button', class: 'media-open', title: strings.chat.viewImage, 'aria-label': strings.chat.viewImage, onclick: () => openImageViewer(entry) },
             el('img', { src: entry.image.url, alt: entry.image.alt || strings.chat.image, loading: 'lazy' })))
-      : el('div', { class: 'body file' }, el('span', { class: 'file-label' }, strings.chat.file(humanSize(entry.size ?? 0))), download);
+      // 파일명(#544 C): file-v2 수신분은 보낸 쪽 이름(file-v2.js safeFileName 으로 줄인 것)을, file-v1 은 와이어에 이름이 없어 「파일」.
+      : el('div', { class: 'body file' }, el('span', { class: 'file-label' }, strings.chat.file(humanSize(entry.size ?? 0), entry.fileName)), previewRetry(entry, onRetryPreview), download);
   } else if (entry.isAgent && entry.kind === 'text' && hasMarkdown(entry.body)) body = agentMarkdownBody(entry.body);
   else body = el('div', { class: 'body' }, entry.body);
   const foot = [entry.replay ? strings.chat.replay : null, time].filter(Boolean).join(' · ');
@@ -473,7 +485,7 @@ function bubble(entry, onOpenAttachment) {
     foot ? el('span', { class: 'foot' }, foot) : null), signature);
 }
 
-function timelineRows(timeline, onOpenAttachment) {
+function timelineRows(timeline, onOpenAttachment, onRetryPreview = null) {
   const rows = [];
   let day = '';
   for (const entry of timeline) {
@@ -482,7 +494,7 @@ function timelineRows(timeline, onOpenAttachment) {
       day = key;
       rows.push(signed(el('li', { class: 'day-divider', 'data-key': `day:${key}`, role: 'separator' }, el('span', {}, dayLabel(entry.ts))), key));
     }
-    rows.push(bubble(entry, onOpenAttachment));
+    rows.push(bubble(entry, onOpenAttachment, onRetryPreview));
   }
   return rows;
 }
@@ -708,7 +720,7 @@ function buildRoom(room) {
   JSON.stringify([room.name, room.roomId, members.length, Boolean(room.halted), Boolean(room.joined), Boolean(room.onOpenBox)]));
   const notice = room.notice?.text ? signed(el('p', { class: `status ${room.notice.tone || 'info'}`, role: 'status', 'data-part': 'notice' }, room.notice.text), JSON.stringify(room.notice)) : null;
   const list = el('ul', { class: 'timeline', tabindex: '-1', 'aria-live': 'polite', 'aria-label': strings.chat.timelineLabel, 'data-testid': 'timeline' },
-    room.timeline.length === 0 ? signed(el('li', { class: 'empty', 'data-key': 'empty' }, strings.chat.empty), 'empty') : timelineRows(room.timeline, room.onOpenAttachment));
+    room.timeline.length === 0 ? signed(el('li', { class: 'empty', 'data-key': 'empty' }, strings.chat.empty), 'empty') : timelineRows(room.timeline, room.onOpenAttachment, room.onRetryPreview ?? null));
   const badge = el('button', { type: 'button', class: 'new-messages', hidden: true, onclick: () => { list.scrollTop = list.scrollHeight; badge.hidden = true; } }, strings.chat.newMessages);
   list.addEventListener('scroll', () => { if (isNearBottom(list)) badge.hidden = true; });
   const timelineWrap = el('div', { class: 'timeline-wrap', 'data-part': 'timeline' }, list, badge);

@@ -20,6 +20,7 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
   read-seq.js                                                    ← 방별 「어디까지 봤나」·안 읽음 판정(iOS readSeq·Unread.isUnread 이식, #541)
   drafts.js composer-files.js                                    ← 방별 초안 영속화 · 붙여넣기/끌어다 놓기 첨부 파일 고르기(#480 B)
   last-sent.js                                                   ← 대화창 상단 「내 마지막 말」 바 순수 로직(패밀리챗 이식, #480 C)
+  sync-recovery.js preview-loader.js                             ← 탭·온라인 복귀 즉시 동기화 · 미리보기 실패 「다시 시도」(패밀리챗 이식, #544 A·B)
   sw.js sw-policy.js                                             ← 서비스 워커(PWA 설치·오프라인 셸, 네트워크 우선 — #480 D)
   attachment-view.js agent-markdown.js                           ← 첨부 미리보기 판별 · 에이전트 답장 마크다운(iOS AgentMarkdown 블록 규칙 이식, 텍스트 노드만)
   room.js device.js relay.js identity.js worker-bridge.js        ← 방 세션(relay-app.js sync 이식)·기기(신원·로비·방 목록)·릴레이·신원
@@ -99,6 +100,17 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
 접힘에서 바를 누르면 펼치고, 펼친 뒤 누르면 그 말풍선으로 스크롤해 잠깐 밝힌다. 펼치면 오늘 내 말 목록(최대 50).
 기준은 화면 타임라인(로컬 봉인 보관 ≤500건)뿐 — 패밀리챗의 서버 sender 인덱스는 한데 릴레이에 없다.
 
+## 복귀 동기화 · 첨부 행 (#544 A·B·C — 패밀리챗 `web/app` 과 동일)
+
+- **탭·온라인·bfcache 복귀 즉시 동기화(A)**: `sync-recovery.js` 가 `visibilitychange`(보이게 될 때만)·`online`·`pageshow` 에서
+  ⚙ 「지금 동기화」와 같은 경로(기기 refresh → 방별 `sync({quiet})`)를 1회 부른다(1초 디바운스 — 탭 전환은 두 이벤트가 겹친다).
+  백그라운드 탭에서 브라우저가 늦춘 4초/8초 타이머를 기다리지 않는다. `refreshing`·`S.busy` 가드로 폴링과 겹쳐도 안전.
+- **미리보기 실패 시 「미리보기 다시 시도」(B)**: `preview-loader.js` — 첨부 본체를 받지 못하면(file-v2 blob 다운로드 실패 등)
+  예전처럼 조용히 「파일」 행으로 남기지 않고 `entry.previewFailed` 로 표시해 말풍선에 안내 + 버튼을 둔다. 버튼은 같은 `load()` 를
+  다시 부른다(file-v2 는 실패한 load 의 캐시를 비워 다시 받는다). 사진이 아닌 파일(내용 판별 null)은 실패가 아니다.
+- **파일명(C)**: 파일 행은 이름이 있으면 「📎 이름 · 크기」. 이름은 **file-v2 수신분**(#499/#511, `safeFileName` 으로 줄인 것)에만 있다 —
+  file-v1(현재 기본 송신, MLS 안에 바이트 직접)은 와이어에 이름이 없어 지금처럼 「📎 파일 · 크기」.
+
 ## 서비스 워커 (#480 D)
 
 `main.js` 가 `sw.js` 를 모듈 워커로 등록한다(PC 크롬). 정책(`sw-policy.js`): **같은 origin 은 전부 네트워크 우선**, 캐시는
@@ -111,7 +123,7 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
 
 - 순수 모듈: `node --test archive/native-mls/web/hande/tests/*.test.mjs` — 방 세션(가짜 워커·대본 릴레이: 403
   대기, Welcome 참여, 해독→보관→ack, 전송 CAS 재시도, 초대 commit→echo→Welcome, 거부·제거 정지, #296 복구),
-  문구·검증 헬퍼, 키보드 판정(`keyboard.test.mjs`), 목록 순서(`room-order.test.mjs`), 초안·첨부 파일 고르기(`drafts.test.mjs`·`composer-files.test.mjs`), 내 마지막 말(`last-sent.test.mjs`), 안 읽음 판정(`read-seq.test.mjs`), 서비스 워커 정책(`sw-policy.test.mjs`).
+  문구·검증 헬퍼, 키보드 판정(`keyboard.test.mjs`), 목록 순서(`room-order.test.mjs`), 초안·첨부 파일 고르기(`drafts.test.mjs`·`composer-files.test.mjs`), 내 마지막 말(`last-sent.test.mjs`), 안 읽음 판정(`read-seq.test.mjs`), 복귀 동기화(`sync-recovery.test.mjs`), 미리보기 다시 시도(`preview-loader.test.mjs`), 서비스 워커 정책(`sw-policy.test.mjs`).
 - 브라우저: `archive/native-mls/tests/native_hande_web_smoke.py --bundle <mls-pkg> --relay-binary <relay>` —
   격리 릴레이(`-access-mode disabled`, `-hande-host`)가 이 디렉터리를 서빙하고 두 Chromium 컨텍스트가 **화면만
   으로** 이름 선택 → 방 만들기 → 참여 요청 → 초대 → 참여 → 양방향 메시지 → 새로고침 뒤 보관 이력 복원, 이어서 둘째 방을

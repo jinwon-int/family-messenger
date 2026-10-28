@@ -338,7 +338,12 @@ export const strings = {
     image: '사진',
     viewImage: '크게 보기',
     closeImage: '저장: 사진을 길게 누르거나 우클릭 · 닫기: 아무 곳이나 누르세요',
-    file: (size) => `📎 파일 · ${size}`,
+    // 파일 행(#544 C): 이름이 오면 「📎 이름 · 크기」, 없으면(file-v1 — 와이어에 이름이 없다) 「📎 파일 · 크기」.
+    file: (size, name = null) => `📎 ${name || '파일'} · ${size}`,
+    // 미리보기 실패(#544 B): 사진일 수 있는 첨부를 불러오지 못했을 때 파일 행 옆에 — 누르면 같은 load() 를 다시 부른다.
+    previewFailed: '미리보기를 불러오지 못했습니다',
+    previewRetry: '미리보기 다시 시도',
+    previewRetrying: '불러오는 중…',
     download: '다운로드',
     downloading: '불러오는 중…',
     downloadFailed: '첨부를 가져오지 못했습니다. 다시 시도하세요.',
