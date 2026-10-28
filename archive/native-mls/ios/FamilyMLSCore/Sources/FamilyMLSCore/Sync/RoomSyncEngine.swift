@@ -71,6 +71,8 @@ public struct SyncPass: Equatable {
     public var hasMore: Bool = false
     /// `Configuration.maxApplicationBytes` 를 넘는 application 이벤트에서 멈췄다(커서는 그 앞). 제한 없는 호출자(앱)가 처리한다.
     public var deferredSeq: Int64? = nil
+    /// #562: 이 페이지의 `typing` — 지금 글을 쓰는 다른 기기(릴레이가 요청 기기를 뺀다). 옛 릴레이·거부·정지 패스는 빈 배열.
+    public var typing: [DeviceID] = []
 }
 
 public enum SendOutcome: Equatable {
@@ -231,6 +233,7 @@ public final class RoomSyncEngine {
         joined = outcome.joined
         outcome.fetched = page.events.count
         outcome.hasMore = outcome.halted == nil && outcome.deferredSeq == nil && page.events.count >= configuration.pageLimit
+        outcome.typing = page.typing ?? []
         return outcome
     }
 

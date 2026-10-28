@@ -53,6 +53,7 @@
 - `GET /v2/rooms?device=` → `RoomsResponse{rooms[RoomListing{room, epoch, revision, member, keypackages_outstanding, closed}]}` — JWT subject 의 기기만. 공개 정보만.
 - `POST /v2/push/devices` `PushRegistration{device, apns_token(base64), topic}` → 204, 멱등(같은 기기 upsert = 토큰 교체). `DELETE /v2/push/devices?device=` → 204(등록이 없어도). 둘 다 JWT subject ↔ device 바인딩(미등록 403 `device_subject_mismatch`), topic 거부 400 `bad_topic`/`topic_not_allowed`. events insert 트랜잭션 **밖**에서 APNs HTTP/2(p8) 전송, 페이로드 `{"aps":{"mutable-content":1,"alert":{"loc-key":"NEW_MESSAGE"},"thread-id":"<room>"},"room":"<room>","seq":N}`. 토큰·p8 은 리포 밖. Go 테이블 `push_devices(device PK, token, topic, updated_at)`.
 - 오너 결정 §14-2 = **허용**(2026-10-05, 3레인 선택에 포함). Bundle ID 는 미정 → `topic` 은 설정값.
+- **2026-10-28 타이핑(#562, server/typing.go)**: `POST /v2/rooms/{r}/typing` `TypingPost{device, clear}` → 204(404 `no_such_room` · 410 `room_closed` · 403 `device_not_allowed`/`not_a_member` · 400; 라우트 없는 옛 릴레이는 404 `http_404` → 앱은 그 세션 동안 보내지 않는다). `GET /v2/rooms/{r}/events` 응답에 `typing?: [device]`(요청 기기 제외·미만료, TTL 6s, 정렬; 없으면 nil → `SyncPass.typing = []`). 릴레이는 그 기기의 새 application 이벤트를 저장할 때 신호를 지운다. `RelayTransport.postTyping(room:device:clear:)` 기본 구현은 404 `not_found`(옛 대역 호환). 메모리 전용 — 영속·푸시 없음.
 
 ### 2.4 L3 수용
 - 가짜 전송·가짜 엔진으로 Linux `swift test`: 정책 벡터 전부, 409 재암호화, 정확 바이트 재시도, 커서/ack, history_gap 정지.

@@ -51,18 +51,21 @@ class InMemoryRelayWrapper: RelayTransport {
     func lobbyStatus(device: DeviceID) async throws -> LobbyStatus { try await inner.lobbyStatus(device: device) }
     func lobbyWelcomes(device: DeviceID) async throws -> [PendingWelcome] { try await inner.lobbyWelcomes(device: device) }
     func deleteLobbyKeyPackages(device: DeviceID) async throws -> Int { try await inner.deleteLobbyKeyPackages(device: device) }
+    func postTyping(room: RoomID, device: DeviceID, clear: Bool) async throws { try await inner.postTyping(room: room, device: device, clear: clear) }
 }
 
 @MainActor
 final class AppModelTests: XCTestCase {
-    func makeModel(rooms: [RoomRecord] = [], format: UInt32 = 2, transport: RelayTransport? = InMemoryRelay())
+    func makeModel(rooms: [RoomRecord] = [], format: UInt32 = 2, transport: RelayTransport? = InMemoryRelay(),
+                   typingInterval: TimeInterval = 3)
         -> (AppModel, InMemoryStateStore) {
         let state = InMemoryStateStore()
-        let deps = AppModel.Dependencies(
+        var deps = AppModel.Dependencies(
             engineFactory: FakeFactory(), stateStore: state, messageStore: InMemoryMessageStore(seedRooms: rooms),
             outbox: InMemoryOutboxStore(), cursors: InMemoryCursorStore(),
             identityProvider: { "owner-iphone-abc123" }, expectedDecryptFormat: { format },
             makeTransport: { _ in transport })
+        deps.typingInterval = typingInterval
         return (AppModel(dependencies: deps), state)
     }
 
@@ -129,6 +132,144 @@ final class AppModelTests: XCTestCase {
         await model.refresh()
         XCTAssertFalse(model.reconnecting, "one successful round clears it")
         XCTAssertNil(model.lastError)
+    }
+
+    // MARK: - 타이핑 (#562)
+
+    /// 릴레이에 이 방의 로그가 있어야 GET /events 가 페이지(와 `typing`)를 준다 — 빈 방은 404 no_such_room. 다른 기기의 글 하나를
+    /// 올려 두고(참여 전이라 읽지 않는다), 방 기록은 아는 방으로 시드한다(목록에 없어도 동기화한다).
+    private func readyModel(relay: InMemoryRelay, typingInterval: TimeInterval = 3) async throws -> AppModel {
+        let known = RoomRecord(room: "family", epoch: 0, revision: 0, haltedReason: nil, displayOrder: 0)
+        let (model, _) = makeModel(rooms: [known], transport: relay, typingInterval: typingInterval)
+        await model.bootstrap(); model.login(.bearer("t"))
+        _ = try await relay.postEvent(room: "family", EventPost(device: "mom-iphone-1", clientId: "mom-iphone-1-c1", kind: .application,
+                                                                epoch: 0, bytes: Data("hi".utf8)))
+        await model.refresh()
+        XCTAssertEqual(model.phase, .ready)
+        return model
+    }
+
+    func testTypingFromRelayIsSurfacedPerRoomAndCleared() async throws {
+        let relay = InMemoryRelay()
+        let model = try await readyModel(relay: relay)
+        XCTAssertEqual(model.typing["family"], [], "a page without anyone typing yields an empty list, not nil")
+        relay.setTyping(room: "family", devices: ["mom-iphone-1", model.deviceId])
+        await model.refresh()
+        XCTAssertEqual(model.typing["family"], ["mom-iphone-1"], "the relay never echoes the reader itself")
+        relay.setTyping(room: "family", devices: [])
+        await model.refresh()
+        XCTAssertEqual(model.typing["family"], [])
+    }
+
+    func testTypingExpiresOnTheRelay() async throws {
+        let relay = InMemoryRelay()
+        let model = try await readyModel(relay: relay)
+        let start = Date()
+        relay.now = { start }
+        relay.setTyping(room: "family", devices: ["mom-iphone-1"])
+        await model.refresh()
+        XCTAssertEqual(model.typing["family"], ["mom-iphone-1"])
+        relay.now = { start.addingTimeInterval(7) }   // TTL 6s 지남
+        await model.refresh()
+        XCTAssertEqual(model.typing["family"], [])
+    }
+
+    func testNoteTypingIsThrottledPerRoomAndClearResetsTheWindow() async throws {
+        let relay = InMemoryRelay()
+        let model = try await readyModel(relay: relay)
+        model.noteTyping(room: "family")
+        model.noteTyping(room: "family")
+        await model.typingInFlight?.value
+        XCTAssertEqual(relay.typingPosts.count, 1, "interval 3s: the second change within the window does not post")
+        XCTAssertEqual(relay.typingPosts.first?.room, "family")
+        XCTAssertEqual(relay.typingPosts.first?.device, model.deviceId)
+        XCTAssertEqual(relay.typingPosts.first?.clear, false)
+        model.noteTyping(room: "family", clear: true)
+        await model.typingInFlight?.value
+        XCTAssertEqual(relay.typingPosts.count, 2)
+        XCTAssertEqual(relay.typingPosts.last?.clear, true)
+        model.noteTyping(room: "family", clear: true)
+        await model.typingInFlight?.value
+        XCTAssertEqual(relay.typingPosts.count, 2, "nothing to clear after a clear — no round trip")
+        model.noteTyping(room: "family")
+        await model.typingInFlight?.value
+        XCTAssertEqual(relay.typingPosts.count, 3, "a clear resets the window")
+    }
+
+    func testNoteTypingWithZeroIntervalPostsEveryChange() async throws {
+        let relay = InMemoryRelay()
+        let model = try await readyModel(relay: relay, typingInterval: 0)
+        model.noteTyping(room: "family")
+        await model.typingInFlight?.value
+        model.noteTyping(room: "family")
+        await model.typingInFlight?.value
+        XCTAssertEqual(relay.typingPosts.count, 2)
+    }
+
+    func testNoteTypingNeedsReadyPhaseAndReachableRelay() async throws {
+        let relay = InMemoryRelay()
+        let (model, _) = makeModel(transport: relay, typingInterval: 0)
+        await model.bootstrap(); model.login(.bearer("t"))
+        XCTAssertEqual(model.phase, .needsEnrollment)
+        model.noteTyping(room: "family")
+        await model.typingInFlight?.value
+        XCTAssertTrue(relay.typingPosts.isEmpty, "not before the first successful round")
+        await model.refresh()
+        XCTAssertEqual(model.phase, .ready)
+        try await relay.stop()
+        await model.refresh()
+        XCTAssertTrue(model.reconnecting)
+        model.noteTyping(room: "family")
+        await model.typingInFlight?.value
+        XCTAssertTrue(relay.typingPosts.isEmpty, "not while reconnecting")
+        try await relay.start()
+        await model.refresh()
+        XCTAssertFalse(model.reconnecting)
+        model.noteTyping(room: "family")
+        await model.typingInFlight?.value
+        XCTAssertEqual(relay.typingPosts.count, 1)
+    }
+
+    func testTypingIsDroppedWhenTheRelayBecomesUnreachable() async throws {
+        let relay = InMemoryRelay()
+        let model = try await readyModel(relay: relay)
+        relay.setTyping(room: "family", devices: ["mom-iphone-1"])
+        await model.refresh()
+        XCTAssertEqual(model.typing["family"], ["mom-iphone-1"])
+        try await relay.stop()
+        await model.refresh()
+        XCTAssertTrue(model.reconnecting)
+        XCTAssertTrue(model.typing.isEmpty, "a stale 「입력중…」 must not survive a lost connection")
+    }
+
+    func testTypingRouteMissingOnOldRelayStopsFurtherPosts() async throws {
+        let relay = InMemoryRelay()
+        let model = try await readyModel(relay: relay, typingInterval: 0)
+        relay.failNextTypingPosts([.refused(code: "http_404", status: 404)])
+        model.noteTyping(room: "family")
+        await model.typingInFlight?.value
+        model.noteTyping(room: "family")
+        await model.typingInFlight?.value
+        model.noteTyping(room: "family", clear: true)
+        await model.typingInFlight?.value
+        XCTAssertEqual(relay.typingPosts.count, 1, "404 on the route = old relay; off for the session")
+        // 다시 로그인하면(새 전송) 다시 묻는다.
+        model.login(.bearer("t2"))
+        await model.refresh()
+        model.noteTyping(room: "family")
+        await model.typingInFlight?.value
+        XCTAssertEqual(relay.typingPosts.count, 2)
+    }
+
+    func testTypingNoSuchRoomIsNotTreatedAsMissingRoute() async throws {
+        let relay = InMemoryRelay()
+        let model = try await readyModel(relay: relay, typingInterval: 0)
+        relay.failNextTypingPosts([.refused(code: "no_such_room", status: 404)])
+        model.noteTyping(room: "family")
+        await model.typingInFlight?.value
+        model.noteTyping(room: "family")
+        await model.typingInFlight?.value
+        XCTAssertEqual(relay.typingPosts.count, 2, "a room that is not on the relay yet does not switch typing off")
     }
 
     func testConnectionIssueClassification() async {
