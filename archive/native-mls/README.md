@@ -33,6 +33,9 @@ Welcome 타깃 필터링, 바이트 기준 보존/프루닝, `BEGIN IMMEDIATE`(`
 타이핑 표시(#562 PR A, `server/typing.go`): `POST /v2/rooms/{room}/typing` 본문 `{"device","clear"}` → 204, 결과는
 같은 방 멤버의 `GET /v2/rooms/{room}/events` 응답 `typing`(요청 기기 제외, 정렬된 device 목록)에만 실린다 —
 메모리 전용·TTL 6초·테이블·푸시 없음(한도는 `server/DEVICES-V4.md` 서버 안전성).
+status-v1(#560, `STATUS-V1.md`, `server/status.go`): 에이전트의 작업 상태 한 줄은 바깥 `client_id` 가
+`status-<uuid>` 인 application 이벤트다 — 저장·커서·보존은 다른 이벤트와 같지만 **APNs 푸시는 보내지 않는다**
+(몇 초마다 바뀌는 임시 글; 정규형 `^status-[a-f0-9-]{36}$` 만 예외, 그 밖의 `status-…` 는 일반 글).
 
 호출자 인증은 기본 **켜짐**(`-access-mode required`): 모든 계약 라우트가 CF Access JWT
 (`Cf-Access-Jwt-Assertion`, fallback `Authorization: Bearer`)를 요구하고, 요청이 행동하는 device의

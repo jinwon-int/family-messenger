@@ -172,8 +172,13 @@ ORDER BY p.device`, room, sender, seq)
 
 // notifyEvent runs after a new (non-duplicate) event committed. It never
 // blocks the POST: the caller starts it in a goroutine tracked by pushWG.
-func (s *relay) notifyEvent(room, sender, kind string, seq int64) {
+// A status-v1 event (`status-<uuid>` client_id, status.go) is stored but not
+// pushed — it is a transient progress line replaced every few seconds (#560).
+func (s *relay) notifyEvent(room, sender, kind, clientID string, seq int64) {
 	if s.push == nil || (kind != "application" && kind != "welcome") {
+		return
+	}
+	if kind == "application" && isStatusClientID(clientID) {
 		return
 	}
 	s.pushWG.Add(1)

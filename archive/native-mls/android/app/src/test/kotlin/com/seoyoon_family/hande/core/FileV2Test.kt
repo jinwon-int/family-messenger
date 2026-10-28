@@ -126,7 +126,7 @@ class FileV2Test {
 
     @Test fun classifyValidFileV2StoresDescriptorNotText() {
         val bytes = minimal.toByteArray()
-        val row = FileV2.classify(client, bytes)
+        val row = FileV2.classify(client, bytes)!!
         assertEquals(MessageSchema.KIND_FILE_V2, row.kind)
         assertEquals(Strings.attachmentPlaceholder(2481920), row.body)
         assertFalse(row.body.contains(key))
@@ -139,7 +139,7 @@ class FileV2Test {
             client to "hello $key",
             "file-v2-not-a-uuid" to minimal, // 접두는 맞지만 정규형이 아님 — 글로 열지 않는다
         )) {
-            val row = FileV2.classify(id, text.toByteArray())
+            val row = FileV2.classify(id, text.toByteArray())!!
             assertEquals(MessageSchema.KIND_UNDECRYPTABLE, row.kind, id)
             assertEquals(Strings.fileV2Invalid, row.body)
             assertNull(row.attachment)
@@ -148,13 +148,24 @@ class FileV2Test {
 
     @Test fun classifyV1AndTextUnchanged() {
         val file = byteArrayOf(1, 2, 3)
-        val v1 = FileV2.classify("file-v1-0f8fad5b-d9cb-469f-a165-70867728950e", file)
+        val v1 = FileV2.classify("file-v1-0f8fad5b-d9cb-469f-a165-70867728950e", file)!!
         assertEquals(MessageSchema.KIND_ATTACHMENT, v1.kind)
         assertEquals("📎 첨부(3 B)", v1.body)
         assertContentEquals(file, v1.attachment)
-        val text = FileV2.classify("c-123", "안녕".toByteArray())
+        val text = FileV2.classify("c-123", "안녕".toByteArray())!!
         assertEquals(MessageSchema.KIND_TEXT, text.kind)
         assertEquals("안녕", text.body)
         assertNull(text.attachment)
+    }
+
+    @Test fun classifyStatusV1IsNotStored() {
+        // status-v1(#560): 에이전트 작업 상태 한 줄은 저장 행이 되지 않는다(임시 말풍선 전용). 정규형만 — 접두사만 같은 것은 글.
+        assertNull(FileV2.classify("status-0f8fad5b-d9cb-469f-a165-70867728950e", "⏳ Working — 10s | Bash: ls".toByteArray()))
+        assertTrue(FileV2.isStatusClientId("status-00000000-0000-0000-0000-000000000000"))
+        for (odd in listOf("status-", "status-notauuid", "status-0F8FAD5B-D9CB-469F-A165-70867728950E", "status-0f8fad5b-d9cb-469f-a165-70867728950e0")) {
+            assertFalse(FileV2.isStatusClientId(odd), odd)
+            val row = FileV2.classify(odd, "x".toByteArray())!!
+            assertEquals(MessageSchema.KIND_TEXT, row.kind, odd)
+        }
     }
 }
