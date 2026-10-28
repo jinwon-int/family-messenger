@@ -986,7 +986,7 @@ fn route_to_agent(state: &mut RoomState, ev: &StoredRow, sender: &[u8], plaintex
     if responder::is_status_client_id(&ev.client_id) {
         // status-v1 (#560): another agent's live status line — never a turn.
         skipped("status");
-        return Ok(());
+        return Ok(None);
     }
     let text = match std::str::from_utf8(plaintext) {
         Ok(text) if !text.trim().is_empty() => text.to_string(),
