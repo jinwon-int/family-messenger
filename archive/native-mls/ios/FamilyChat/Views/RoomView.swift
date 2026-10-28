@@ -234,6 +234,8 @@ struct RoomView: View {
                     .focused($composerFocused)
                     // #405 P3: 하드웨어 키보드 Enter = 전송, Shift+Enter = 줄바꿈(웹 keyboard.js). 화면 키보드는 줄바꿈 그대로.
                     .onChange(of: draft) { new in
+                        // #562: 다른 기기에 「입력중…」 신호(간격 제한은 AppModel). 비면 clear.
+                        model.noteTyping(room: room, clear: new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         let old = previousDraft
                         previousDraft = new
                         switch ComposerKeys.decide(old: old, new: new, hardwareKeyboard: HardwareKeyboard.isConnected,
@@ -269,7 +271,14 @@ struct RoomView: View {
             // #405 P2: 제목 아래 불가에 둘러앉은 자리(사람 크림색 · 에이전트 파란색).
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 3) {
-                    Text(Strings.roomLabel(room)).font(.headline).foregroundStyle(Hande.ink)
+                    HStack(spacing: 6) {
+                        Text(Strings.roomLabel(room)).font(.headline).foregroundStyle(Hande.ink)
+                        // #562: 제목 옆 「입력중…」 — 릴레이에 닿지 않는 동안은 오래된 신호일 수 있어 보이지 않는다.
+                        if let label = typingLabel, !model.reconnecting {
+                            Text(label).font(.caption2).foregroundStyle(Hande.inkDim)
+                                .transition(.opacity)
+                        }
+                    }
                     SeatDots(people: glance.people.count, agents: glance.agents.count, size: 6)
                     // 릴레이에 닿지 않는 동안만(원문 오류 대신). 동기화가 한 번 성공하면 사라진다.
                     if model.reconnecting {
@@ -278,6 +287,7 @@ struct RoomView: View {
                     }
                 }
                 .animation(.easeOut(duration: 0.2), value: model.reconnecting)
+                .animation(.easeOut(duration: 0.2), value: typingLabel)
             }
             ToolbarItem(placement: .primaryAction) {
                 Button { showInvite = true } label: { Image(systemName: "person.badge.plus") }
@@ -313,6 +323,22 @@ struct RoomView: View {
 
     /// #405 P2: 이 방의 자리 요약(제목 아래 점 · 작성창 안내).
     private var glance: RoomGlance { RoomGlance.make(messages.map(\.record), roster: model.agentRoster) }
+
+    /// #562: 제목 옆 「입력중…」. 릴레이가 준 기기 가운데 내 다른 기기(같은 actor)는 빼고, 사람(이름)별로 한 번만 센다(기기가 여럿이어도).
+    /// 1:1 방(말한 사람 ≤ 2 · 에이전트 없음)은 누구인지 뻔하므로 이름 없이. 아무도 없으면 nil(표시 없음).
+    private var typingLabel: String? {
+        let devices = model.typing[room] ?? []
+        let me = MessageRecord.actor(of: model.deviceId)
+        var names: [String] = []
+        for device in devices {
+            if !model.deviceId.isEmpty, MessageRecord.actor(of: device) == me { continue }
+            let name = AgentRosterNames.person(device)
+            if !names.contains(name) { names.append(name) }
+        }
+        if names.isEmpty { return nil }
+        if glance.people.count <= 2 && glance.agents.isEmpty { return Strings.typing }
+        return Strings.typingLabel(names)
+    }
 
     private var placeholder: String {
         guard let agent = glance.agents.last else { return Strings.composerPlaceholder }

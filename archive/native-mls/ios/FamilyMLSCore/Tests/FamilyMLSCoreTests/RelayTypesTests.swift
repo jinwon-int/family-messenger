@@ -15,6 +15,24 @@ final class RelayTypesTests: XCTestCase {
         XCTAssertEqual(page.events[0].clientId, "owner-pc:12")
         XCTAssertEqual(page.events[0].bytes, Data([1, 2, 3]))
         XCTAssertEqual(page.members?.map(\.actor), ["owner", "bot"])
+        XCTAssertNil(page.typing, "a relay from before #562 omits typing")
+    }
+
+    /// #562(server/typing.go): `GET /events` 의 `typing`(다른 기기, 정렬, 절대 null 아님) · `POST /typing` 바디 `{device, clear}`.
+    func testTypingWireShape() throws {
+        let json = """
+        {"epoch":1,"revision":1,"events":[],"next_after":0,"typing":["mom-iphone-1","owner-pc"]}
+        """
+        let page = try JSONDecoder().decode(EventsPage.self, from: Data(json.utf8))
+        XCTAssertEqual(page.typing, ["mom-iphone-1", "owner-pc"])
+        let empty = try JSONDecoder().decode(EventsPage.self, from: Data(#"{"epoch":1,"revision":1,"events":[],"next_after":0,"typing":[]}"#.utf8))
+        XCTAssertEqual(empty.typing, [])
+        let encoded = try JSONEncoder().encode(TypingPost(device: "owner-iphone-1", clear: true))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(Set(object.keys), ["device", "clear"], "strictJSON — no other keys")
+        XCTAssertEqual(object["device"] as? String, "owner-iphone-1")
+        let decoded = try JSONDecoder().decode(TypingPost.self, from: encoded)
+        XCTAssertEqual(decoded, TypingPost(device: "owner-iphone-1", clear: true))
     }
 
     func testEventPostEncodesSnakeCaseAndBase64() throws {

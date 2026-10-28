@@ -76,6 +76,8 @@ final class AppModel: ObservableObject {
         var agentRoster = AgentRoster(actors: ["bot"])
         /// #520: 이 앱의 잠금화면 미리보기 설정을 읽는다. 기본 = 모름(테스트·Linux) — live() 가 UserNotifications 로 채운다.
         var lockScreenPreview: () async -> LockScreenPreview = { .unknown }
+        /// #562 타이핑 신호의 방별 최소 간격(초) — 릴레이 TTL(6s)의 절반. 0 = 글이 바뀔 때마다(테스트).
+        var typingInterval: TimeInterval = 3
     }
 
     /// 저장소 밖의 삭제 작업(§9-5). `storage` = MLS 상태 전부(identity 슬롯 포함) + messages.db 행, `identity` = 저장된 기기 ID.
@@ -104,6 +106,15 @@ final class AppModel: ObservableObject {
     /// 릴레이에 닿지 않는 중(네트워크 끊김·게이트웨이 502~504) — 방 화면 제목 아래 「연결 중입니다…」(오너 요청, build 29).
     /// 원문 오류(NSURLErrorDomain …)는 화면에 띄우지 않는다. 동기화·송신이 한 번 성공하면 내려간다.
     @Published private(set) var reconnecting = false
+    /// #562: 방별로 지금 글을 쓰는 **다른** 기기(릴레이 `GET /events` 의 `typing` — 요청 기기 제외, TTL 6s). 방 화면 제목 옆 「입력중…」.
+    /// 동기화 한 바퀴마다 그 방의 마지막 페이지 값으로 바꾸고, 릴레이에 닿지 않으면 비운다(오래된 신호를 보이지 않게).
+    @Published private(set) var typing: [RoomID: [DeviceID]] = [:]
+    /// 방별 마지막 타이핑 신호 시각(`Dependencies.typingInterval` 간격 제한). clear 를 보내면 지운다.
+    private var typingSentAt: [RoomID: Date] = [:]
+    /// 릴레이가 타이핑 라우트를 모른다(404 http_404) — 이 세션에서는 다시 보내지 않는다(`lobbyUnsupported` 와 같은 규칙).
+    private var typingUnsupported = false
+    /// 마지막 타이핑 POST(동기화 `serial` 밖, 최선 노력) — 테스트가 끝나기를 기다린다.
+    private(set) var typingInFlight: Task<Void, Never>?
     /// 배너를 눌러 열어 달라는 방(`NotificationCenterDelegate`). `RootView` 가 방 목록이 준비되면 열고 지운다.
     @Published private(set) var requestedRoom: RoomID?
     /// 방별 보내는 글(오래된 순). 릴레이가 받으면(`recordOwn`) 빠지고 실제 기록이 그 자리를 잇는다.
@@ -283,6 +294,7 @@ final class AppModel: ObservableObject {
         self.transport = transport
         syncEngines = [:]   // 새 전송으로 다시 만든다(커서·정지 사유는 저장소에 있다). 등록 subject 도 새 자격증명으로 다시 읽는다.
         lobbyCheckDue = true; lobbyUnsupported = false; adoptFailed = [:]
+        typingUnsupported = false; typingSentAt = [:]
         refreshRegistrationSubject()
         push.loggedIn()
         lastError = nil
@@ -307,6 +319,7 @@ final class AppModel: ObservableObject {
         credential = nil
         transport = nil
         syncEngines = [:]
+        typing = [:]
         phase = .needsLogin
         pushStatus = .off
         return Task {
@@ -340,6 +353,7 @@ final class AppModel: ObservableObject {
             self.credential = nil
             self.transport = nil
             self.syncEngines = [:]; self.unconfirmed = [:]; self.seenCursors = [:]; self.lastFlush = [:]
+            self.typing = [:]; self.typingSentAt = [:]
             self.pendingInvites = []; self.inviteStates = [:]; self.notice = nil; self.lobbyLive = nil
             self.adoptFailed = [:]; self.accepting = []; self.unadoptedWelcomes = []; self.dismissedInvites = []; self.diagnostics = []
             self.engine = nil; self.identitySeed = nil; self.registration = nil; self.rooms = []
@@ -490,6 +504,9 @@ final class AppModel: ObservableObject {
                 let sync = try syncEngine(record.room)
                 let passes = try await sync.syncAll()
                 noteSyncPasses(record.room, passes)
+                // #562: 이 방에서 지금 글을 쓰는 다른 기기 — 마지막 페이지 값. 같으면 화면을 다시 그리지 않는다.
+                let typingNow = passes.last?.typing ?? []
+                if typing[record.room] != typingNow { typing[record.room] = typingNow }
                 // 커서가 움직였으면(이 프로세스든 NSE 든 새로 처리·기록했다) 화면이 다시 읽는다.
                 let cursor = try deps.cursors.cursor(room: record.room)
                 if passes.contains(where: { !$0.inserted.isEmpty || !$0.rejected.isEmpty }) || seenCursors[record.room] != cursor {
@@ -531,8 +548,41 @@ final class AppModel: ObservableObject {
     private func noteFailure(_ error: Error) {
         switch ConnectionIssue.classify(error, taskCancelled: Task.isCancelled) {
         case .cancelled: return
-        case .unreachable: reconnecting = true; record("relay unreachable")
+        case .unreachable:
+            reconnecting = true
+            if !typing.isEmpty { typing = [:] }   // #562: 닿지 않는 동안 오래된 「입력중…」을 보이지 않는다
+            record("relay unreachable")
         case .other: lastError = "\(error)"; record("error: \(error)")
+        }
+    }
+
+    // MARK: - 타이핑 신호 (#562)
+
+    /// 작성창 글이 바뀔 때 방 화면이 부른다: 다른 기기에 「입력중…」 신호(`POST /v2/rooms/{room}/typing`). 최선 노력 — 동기화 `serial` 에
+    /// 줄 세우지 않고 바로 보내며, 결과는 화면에 올리지 않는다. 같은 방에는 `typingInterval` 에 한 번만(릴레이 TTL 6s 가 신호를 잇는다).
+    /// `clear`(글을 지움·보냄)는 간격과 무관하게 보내되, 이 세션에서 신호를 보낸 적이 있는 방만(지울 것이 없으면 왕복하지 않는다).
+    /// 보내지 않는 때: 전송 없음 · `ready` 아님 · 릴레이에 닿지 않는 중 · 라우트 없는 옛 릴레이(404 → `typingUnsupported`).
+    /// 404 `no_such_room`(아직 릴레이에 없는 방)은 라우트 부재가 아니라 그냥 넘긴다.
+    func noteTyping(room: RoomID, clear: Bool = false, now: Date = Date()) {
+        guard let transport, !reconnecting, !typingUnsupported else { return }
+        guard case .ready = phase else { return }
+        if clear {
+            guard typingSentAt[room] != nil else { return }
+            typingSentAt[room] = nil
+        } else {
+            if let last = typingSentAt[room], now.timeIntervalSince(last) < deps.typingInterval { return }
+            typingSentAt[room] = now
+        }
+        let device = deviceId
+        typingInFlight = Task {
+            do {
+                try await transport.postTyping(room: room, device: device, clear: clear)
+            } catch RelayError.refused(let code, let status) where status == 404 && code != "no_such_room" {
+                self.typingUnsupported = true
+                self.record("typing: relay has no typing route (404 \(code)) — off for this session")
+            } catch {
+                // 최선 노력: 닿지 않음·거부(403 not_a_member 등)는 다음 글 변화에 다시 시도한다. 동기화가 연결 상태를 따로 판정한다.
+            }
         }
     }
 
@@ -847,7 +897,7 @@ final class AppModel: ObservableObject {
     }
 
     private func expireSession() {
-        credential = nil; transport = nil; syncEngines = [:]
+        credential = nil; transport = nil; syncEngines = [:]; typing = [:]
         phase = .needsLogin
         lastError = Strings.sessionExpired
     }

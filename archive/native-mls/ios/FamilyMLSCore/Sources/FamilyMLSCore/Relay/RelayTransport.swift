@@ -41,6 +41,11 @@ public protocol RelayTransport: AnyObject {
     /// 201(새로 저장)·200(이미 있음). 413 `blob_too_large`·`room_bytes_cap`·`device_bytes_cap` · 403 · 410 은 `.refused`.
     /// 기본 구현은 `.refused(code:"not_found", status:404)`.
     func postBlob(room: RoomID, device: DeviceID, bytes: Data) async throws -> BlobUpload
+
+    /// POST /v2/rooms/{room}/typing `{device, clear}` → 204(#562, server/typing.go). 이 기기가 글을 쓰는 중(clear = 멈춤)을 다른 멤버의
+    /// 다음 `GET /events` 의 `typing` 에 싣는다. 404 `no_such_room` · 410 `room_closed` · 403 `device_not_allowed`/`not_a_member` · 400.
+    /// 기본 구현은 `.refused(code:"not_found", status:404)`(라우트 없는 옛 릴레이·옛 테스트 대역) — 호출자(AppModel)는 404 를 보면 그만둔다.
+    func postTyping(room: RoomID, device: DeviceID, clear: Bool) async throws
 }
 
 /// blob 업로드 응답(server/blobs.go `blobResponse`). `created` = 201(새로 저장), false = 200(이미 있음).
@@ -72,6 +77,9 @@ public extension RelayTransport {
         throw RelayError.refused(code: "not_found", status: 404)
     }
     func postBlob(room: RoomID, device: DeviceID, bytes: Data) async throws -> BlobUpload {
+        throw RelayError.refused(code: "not_found", status: 404)
+    }
+    func postTyping(room: RoomID, device: DeviceID, clear: Bool) async throws {
         throw RelayError.refused(code: "not_found", status: 404)
     }
 }

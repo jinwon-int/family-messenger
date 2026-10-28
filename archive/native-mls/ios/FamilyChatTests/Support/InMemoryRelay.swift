@@ -103,9 +103,55 @@ final class InMemoryRelay: RelayTransport, RelayControl {
             r.events.append(Event(seq: seq, device: post.device, clientId: post.clientId, kind: post.kind.rawValue,
                                   epoch: post.epoch, bytes: post.bytes, targets: post.targets ?? []))
             rooms[room] = r
+            // #562(server.go): 새 application 이벤트를 저장하면 그 기기의 타이핑 신호는 지운다(duplicate 는 아님).
+            if post.kind == .application { typing[room]?[post.device] = nil }
             if post.kind == .application, !failAfterStore.isEmpty { throw failAfterStore.removeFirst() }
             return try Self.decode(EventPostResponse.self, ["seq": seq, "epoch": r.epoch, "revision": 0, "duplicate": false])
         }
+    }
+
+    // MARK: 타이핑(#562, server/typing.go) — 메모리 전용: 기기별 만료 시각, 읽는 기기 제외, TTL 지난 것은 싣지 않는다.
+
+    private var typing: [RoomID: [DeviceID: Date]] = [:]
+    var typingTTL: TimeInterval = 6
+    /// 테스트가 시계를 돌릴 수 있게(만료 검사).
+    var now: () -> Date = { Date() }
+    /// 테스트 관찰: 받은 POST /typing(순서대로).
+    private(set) var typingPosts: [(room: RoomID, device: DeviceID, clear: Bool)] = []
+    private var typingErrors: [RelayError] = []
+    /// 결함 주입: 다음 POST /typing 들이 이 오류로 실패한다(라우트 없는 옛 릴레이 = 404 http_404 등).
+    func failNextTypingPosts(_ errors: [RelayError]) { lock.withLock { typingErrors += errors } }
+
+    /// 테스트 시드: 이 방에서 지금 글을 쓰는 기기들(만료는 지금 + TTL). 빈 배열 = 모두 멈춤.
+    func setTyping(room: RoomID, devices: [DeviceID]) {
+        lock.withLock {
+            var entries: [DeviceID: Date] = [:]
+            let expires = now().addingTimeInterval(typingTTL)
+            for device in devices { entries[device] = expires }
+            typing[room] = entries
+        }
+    }
+
+    func postTyping(room: RoomID, device: DeviceID, clear: Bool) async throws {
+        try checkUp()
+        try lock.withLock {
+            typingPosts.append((room, device, clear))
+            if !typingErrors.isEmpty { throw typingErrors.removeFirst() }
+            if rooms[room]?.closed == true { throw RelayError.refused(code: "room_closed", status: 410) }
+            if clear {
+                typing[room]?[device] = nil
+            } else {
+                typing[room, default: [:]][device] = now().addingTimeInterval(typingTTL)
+            }
+        }
+    }
+
+    /// 응답에 실을 `typing`: 읽는 기기 제외, 만료 제외, 정렬(절대 null 아님).
+    private func typingSnapshot(room: RoomID, exclude device: DeviceID) -> [String] {
+        let at = now()
+        var out: [String] = []
+        for (other, expires) in typing[room] ?? [:] where other != device && expires > at { out.append(other) }
+        return out.sorted()
     }
 
     func getEvents(room: RoomID, device: DeviceID, after: Int64, limit: Int, ack: Int64?) async throws -> EventsPage {
@@ -121,7 +167,8 @@ final class InMemoryRelay: RelayTransport, RelayControl {
                  "bytes": $0.bytes.base64EncodedString(), "sha256": "", "created_at": 0]
             }
             var page: [String: Any] = ["epoch": r.epoch, "revision": 0, "events": events,
-                                       "next_after": visible.last?.seq ?? after, "first_seq": 1, "members": [Any]()]
+                                       "next_after": visible.last?.seq ?? after, "first_seq": 1, "members": [Any](),
+                                       "typing": typingSnapshot(room: room, exclude: device)]
             if let cursor = r.cursors[device] { page["cursor"] = cursor }
             return try Self.decode(EventsPage.self, page)
         }
