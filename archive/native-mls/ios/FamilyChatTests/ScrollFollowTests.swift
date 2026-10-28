@@ -56,7 +56,8 @@ final class ScrollFollowTests: XCTestCase {
         XCTAssertFalse(ScrollFollow.shouldLoadOlder(sentinelBottom: 12, following: true, busy: false, exhausted: false), "entry: following the bottom")
         XCTAssertFalse(ScrollFollow.shouldLoadOlder(sentinelBottom: 12, following: false, busy: true, exhausted: false), "a page is already loading")
         XCTAssertFalse(ScrollFollow.shouldLoadOlder(sentinelBottom: 12, following: false, busy: false, exhausted: true), "oldest row already shown")
-        XCTAssertFalse(ScrollFollow.shouldLoadOlder(sentinelBottom: SentinelTopKey.defaultValue, following: false, busy: false, exhausted: false), "not measured yet")
+        // 표지가 아주 위에 있다(종전 PreferenceKey 기본값 -100_000; 지금은 `Measured` 가 처음부터 실측을 주지만 멀리 있는 표지는 같은 뜻).
+        XCTAssertFalse(ScrollFollow.shouldLoadOlder(sentinelBottom: -100_000, following: false, busy: false, exhausted: false), "far above the viewport")
     }
 
     // MARK: #497 — 상대 사진 뒤 위·아래 점프 반복
