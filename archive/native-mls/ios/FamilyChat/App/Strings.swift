@@ -76,6 +76,16 @@ enum Strings {
     static let close = "닫기"
     static let roomActions = "대화방"
 
+    // #549 대화 목록 고정 순서(웹 한데 strings.js `orderEdit`/`orderDone`/`orderHint` 와 같은 뜻 — 이 기기에만 저장)
+    static let orderEdit = "순서"
+    static let orderEditLabel = "대화 순서 편집"
+    static let orderDone = "완료"
+    static let orderDoneLabel = "대화 순서 편집 완료"
+    static let orderHint = "▲▼나 ≡ 를 끌어 순서를 바꾸세요. 목록은 최근 대화순으로 움직이지 않고 이 순서로 고정되며, 이 기기에만 저장됩니다."
+    static func orderUp(_ room: String) -> String { "\(roomLabel(room)) 위로" }
+    static func orderDown(_ room: String) -> String { "\(roomLabel(room)) 아래로" }
+    static let orderPinTop = "맨 위로 고정"
+
     // 방 만들기(CreateRoomView, §12-E)
     static let createTitle = "대화방 만들기"
     static let createHint = "이 기기에서 새 대화방을 만듭니다(영문 소문자·숫자·하이픈, 최대 48자). 릴레이에는 첫 초대 때 생깁니다 — 만든 뒤 방에 들어가 '초대'로 다른 기기를 들이세요."
