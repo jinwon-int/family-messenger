@@ -247,6 +247,30 @@ final class ConversationKeysTests: XCTestCase {
         XCTAssertEqual(RoomOrder.neighbor(of: "zz", in: ids, step: 1), "a")
     }
 
+    /// #549: ▲▼ 한 칸 이동·「맨 위로 고정」 — 끝·없는 방·0 이동은 nil(저장하지 않음).
+    func testRoomOrderStepAndMoveToTop() {
+        let ids = ["a", "b", "c", "d"]
+        XCTAssertEqual(RoomOrder.step(ids, room: "b", by: -1), ["b", "a", "c", "d"])
+        XCTAssertEqual(RoomOrder.step(ids, room: "b", by: 1), ["a", "c", "b", "d"])
+        XCTAssertNil(RoomOrder.step(ids, room: "a", by: -1))
+        XCTAssertNil(RoomOrder.step(ids, room: "d", by: 1))
+        XCTAssertNil(RoomOrder.step(ids, room: "zz", by: 1))
+        XCTAssertNil(RoomOrder.step(ids, room: "b", by: 0))
+        XCTAssertTrue(RoomOrder.canStep(ids, room: "a", by: 1))
+        XCTAssertFalse(RoomOrder.canStep(ids, room: "a", by: -1))
+        XCTAssertFalse(RoomOrder.canStep(ids, room: "d", by: 1))
+        XCTAssertEqual(RoomOrder.moveToTop(ids, room: "c"), ["c", "a", "b", "d"])
+        XCTAssertEqual(RoomOrder.moveToTop(ids, room: "d"), ["d", "a", "b", "c"])
+        XCTAssertNil(RoomOrder.moveToTop(ids, room: "a"))
+        XCTAssertNil(RoomOrder.moveToTop(ids, room: "zz"))
+        XCTAssertNil(RoomOrder.moveToTop([], room: "a"))
+        // 화면 순서에서 한 칸 옮긴 결과를 저장하면 apply 가 그대로 돌려준다(저장 순서에 없던 방도 포함되므로 유실 없음).
+        let rooms = [room("family", 0), room("family-acc", 1), room("test", 2)]
+        let visible = RoomOrder.apply(rooms, saved: []).map(\.room)
+        let saved = RoomOrder.step(visible, room: "test", by: -1)!
+        XCTAssertEqual(RoomOrder.apply(rooms, saved: saved).map(\.room), ["family", "test", "family-acc"])
+    }
+
     func testUnreadIsLocalAndIgnoresMyOwnMessages() {
         func rec(_ seq: Int64, _ device: DeviceID) -> MessageRecord {
             MessageRecord(room: "r", seq: seq, senderDevice: device, clientId: "c", kind: .text, body: "x",

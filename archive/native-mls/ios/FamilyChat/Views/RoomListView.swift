@@ -1,4 +1,4 @@
-// §9-3 대화 목록(고정 순서 displayOrder) + (+) 참여 요청·방 만들기 + 설정 진입.
+// §9-3 대화 목록(고정 순서 displayOrder → #405 P3 이 기기 저장 순서 → #549 「↕ 순서」 모드 ▲▼·맨 위로 고정) + (+) 참여 요청·방 만들기 + 설정 진입.
 import SwiftUI
 import FamilyMLSCore
 
@@ -12,6 +12,10 @@ struct RoomListView: View {
     @State private var showNotifications = false
     /// #405 P2: 방별 카드 요약(마지막 글·둘러앉은 자리). 목록 진입·새 메시지 때 다시 만든다.
     @State private var glances: [RoomID: RoomGlance] = [:]
+    /// #549: 「↕ 순서」 모드(웹 한데 `orderEditing`) — 행마다 ▲▼, ≡ 끌기, 행 탭으로 방이 열리지 않음. 시스템 `편집` 대신 이 버튼이 켠다.
+    @State private var editMode: EditMode = .inactive
+
+    private var orderEditing: Bool { editMode.isEditing }
 
     var body: some View {
         List {
@@ -46,19 +50,49 @@ struct RoomListView: View {
                 }
                 .listRowBackground(Color.clear)
             }
+            // #549: 순서 모드 안내(웹 `orderHint`) — 고정 순서는 이 기기에만 저장된다는 것을 여기서 말한다.
+            if orderEditing {
+                Section {
+                    Label(Strings.orderHint, systemImage: "arrow.up.arrow.down")
+                        .font(.footnote).foregroundStyle(Hande.inkDim)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
+            }
             ForEach(orderedRooms, id: \.room) { room in
                 let glance = glances[room.room] ?? RoomGlance.make([], roster: model.agentRoster)
-                NavigationLink(value: room.room) {
-                    CampfireCard(room: room, glance: glance,
-                                 unread: Unread.isUnread(last: glance.last, myDevice: model.deviceId, readSeq: prefs.readSeq[room.room]))
+                let card = CampfireCard(room: room, glance: glance,
+                                        unread: Unread.isUnread(last: glance.last, myDevice: model.deviceId, readSeq: prefs.readSeq[room.room]))
+                Group {
+                    if orderEditing {
+                        // 순서 모드: 방을 열지 않고 ▲▼(끝에서는 비활성) + 시스템 ≡ 끌기.
+                        HStack(spacing: 8) {
+                            card
+                            OrderStepButtons(room: room.room, ids: orderedIds) { delta in stepRoom(room.room, by: delta) }
+                        }
+                    } else {
+                        NavigationLink(value: room.room) { card }
+                            // #549: 길게 눌러 「맨 위로 고정」(저장 순서 맨 앞) · 「순서」 모드 진입.
+                            .contextMenu {
+                                if orderedIds.first != room.room {
+                                    Button { pinToTop(room.room) } label: { Label(Strings.orderPinTop, systemImage: "pin") }
+                                }
+                                if orderedIds.count > 1 {
+                                    Button { setOrderEditing(true) } label: { Label(Strings.orderEditLabel, systemImage: "arrow.up.arrow.down") }
+                                }
+                            }
+                    }
                 }
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
             }
-            // #405 P3: 「편집」에서 끌어 순서를 바꾼다(웹 room-order.js — 최근 활동순으로 움직이지 않음, 이 기기에만 저장).
-            .onMove { from, to in prefs.setOrder(RoomOrder.move(orderedRooms.map(\.room), from: from, to: to)) }
+            // #405 P3: 순서 모드에서 끌어 순서를 바꾼다(웹 room-order.js — 최근 활동순으로 움직이지 않음, 이 기기에만 저장).
+            .onMove { from, to in prefs.setOrder(RoomOrder.move(orderedIds, from: from, to: to)) }
         }
+        .environment(\.editMode, $editMode)
+        // 방이 하나뿐이 되면(나감·닫힘) 순서 모드는 뜻이 없다 — 조용히 끈다.
+        .onChange(of: orderedRooms.count) { count in if count < 2 && orderEditing { setOrderEditing(false) } }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(CampfireBackground())
@@ -70,8 +104,18 @@ struct RoomListView: View {
         .navigationDestination(for: RoomID.self) { RoomView(room: $0) }
         .toolbar {
             ToolbarItem(placement: .principal) { Color.clear.frame(width: 1, height: 1).accessibilityHidden(true) }
-            if orderedRooms.count > 1 {
-                ToolbarItem(placement: .navigationBarLeading) { EditButton() }
+            // #549: 웹 한데의 「↕ 순서」/「완료」 — 시스템 `편집` 대신 무엇을 하는 버튼인지 보이게.
+            if orderedRooms.count > 1 || orderEditing {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button { setOrderEditing(!orderEditing) } label: {
+                        if orderEditing {
+                            Text(Strings.orderDone).fontWeight(.semibold)
+                        } else {
+                            Label(Strings.orderEdit, systemImage: "arrow.up.arrow.down").labelStyle(.titleAndIcon)
+                        }
+                    }
+                    .accessibilityLabel(orderEditing ? Strings.orderDoneLabel : Strings.orderEditLabel)
+                }
             }
             // #521: 🔔 받은 초대 수를 배지로(웹 `bellButton`). 오너 기기의 자동 참여 실패도 여기 남는다.
             ToolbarItem(placement: .primaryAction) {
@@ -104,6 +148,23 @@ struct RoomListView: View {
 extension RoomListView {
     /// 저장된 순서를 먼저, 새 방은 기본 순서로 뒤에.
     fileprivate var orderedRooms: [RoomRecord] { RoomOrder.apply(model.listedRooms, saved: prefs.roomOrder) }
+    fileprivate var orderedIds: [RoomID] { orderedRooms.map(\.room) }
+
+    fileprivate func setOrderEditing(_ on: Bool) {
+        withAnimation { editMode = on ? .active : .inactive }
+    }
+
+    /// ▲(−1)/▼(+1): 화면 순서에서 한 칸 옮겨 저장 — 저장 순서에 없던 방도 화면 순서로 함께 저장되므로 유실 없음.
+    fileprivate func stepRoom(_ room: RoomID, by delta: Int) {
+        guard let next = RoomOrder.step(orderedIds, room: room, by: delta) else { return }
+        withAnimation { prefs.setOrder(next) }
+    }
+
+    /// 「맨 위로 고정」: 저장 순서 맨 앞으로.
+    fileprivate func pinToTop(_ room: RoomID) {
+        guard let next = RoomOrder.moveToTop(orderedIds, room: room) else { return }
+        withAnimation { prefs.setOrder(next) }
+    }
 
     fileprivate func reloadGlances() {
         var next: [RoomID: RoomGlance] = [:]
@@ -170,6 +231,35 @@ struct CampfireCard: View {
         guard let last = glance.last else { return Strings.roomNoMessages }
         let body = last.kind.isFile ? Strings.attachmentImage : last.body
         return Strings.previewLine(name: AgentRosterNames.person(last.senderDevice), body: body)
+    }
+}
+
+/// #549: 순서 모드의 ▲▼(웹 한데 `orderUp`/`orderDown`). 끝에서는 비활성, 눌러도 방은 열리지 않는다(`.borderless` 로 행 탭과 분리).
+struct OrderStepButtons: View {
+    let room: RoomID
+    let ids: [RoomID]
+    let onStep: (Int) -> Void
+
+    var body: some View {
+        VStack(spacing: 6) {
+            stepButton(delta: -1, symbol: "chevron.up", label: Strings.orderUp(room))
+            stepButton(delta: 1, symbol: "chevron.down", label: Strings.orderDown(room))
+        }
+        .buttonStyle(.borderless)
+    }
+
+    private func stepButton(delta: Int, symbol: String, label: String) -> some View {
+        let enabled = RoomOrder.canStep(ids, room: room, by: delta)
+        return Button { onStep(delta) } label: {
+            Image(systemName: symbol)
+                .font(.body.weight(.semibold))
+                .frame(width: 36, height: 30)
+                .background(RoundedRectangle(cornerRadius: 9).fill(Hande.surface))
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(Hande.stroke, lineWidth: 1))
+                .foregroundStyle(enabled ? Hande.ink : Hande.inkDim.opacity(0.5))
+        }
+        .disabled(!enabled)
+        .accessibilityLabel(label)
     }
 }
 

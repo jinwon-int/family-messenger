@@ -62,6 +62,30 @@ public enum RoomOrder {
         let next = index + step
         return ids.indices.contains(next) ? ids[next] : nil
     }
+
+    /// #549: 화면 목록(`ids`)에서 `room` 을 한 칸 위(-1)/아래(+1)로 옮긴 새 순서(웹 한데 ▲▼). 끝이거나 없는 방이면 nil(바꿀 것 없음).
+    public static func step(_ ids: [RoomID], room: RoomID, by delta: Int) -> [RoomID]? {
+        guard delta != 0, let from = ids.firstIndex(of: room) else { return nil }
+        let to = from + delta
+        guard ids.indices.contains(to) else { return nil }
+        var next = ids
+        next.swapAt(from, to)
+        return next
+    }
+
+    /// #549: `room` 을 맨 앞으로(「맨 위로 고정」). 이미 맨 앞이거나 없는 방이면 nil.
+    public static func moveToTop(_ ids: [RoomID], room: RoomID) -> [RoomID]? {
+        guard let from = ids.firstIndex(of: room), from > 0 else { return nil }
+        var next = ids
+        next.remove(at: from)
+        next.insert(room, at: 0)
+        return next
+    }
+
+    /// ▲(−1)/▼(+1) 버튼을 눌러도 되는가 — 끝에서는 비활성(웹 한데와 같음).
+    public static func canStep(_ ids: [RoomID], room: RoomID, by delta: Int) -> Bool {
+        step(ids, room: room, by: delta) != nil
+    }
 }
 
 public enum Unread {
