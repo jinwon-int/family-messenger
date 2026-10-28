@@ -112,6 +112,24 @@ enum ScrollFollow {
     static let verifyDelays: [TimeInterval] = [0.35, 1.0]
 }
 
+/// #497 후속(오너 보고 2026-10-28: 상대 **글** 하나에도 타임라인이 위·아래로 반복): 꼬리(lazy 아님)와 LazyVStack 의 경계.
+///
+/// 종전 경계는 "마지막 3행"이라 새 글마다 끝에서 3번째 행이 LazyVStack 으로 **이사**했다. LazyVStack 은 아직 배치하지 않은 행의
+/// 높이를 **측정된 행의 평균**으로 추정하므로(이사한 행 = 새 측정) 새 글마다 위쪽 수백 행의 추정치가 함께 바뀌어 내용이 위로 밀리고
+/// (스크롤 위치는 위 기준), `scrollTo` 가 다시 내리고, 재배치로 또 틀어졌다 — 사진이 아니어도 난다.
+/// 경계를 **행 id 로 고정**하면 새 글은 늘 꼬리(실제 높이)에 붙고 LazyVStack 의 자식·측정은 그대로라 추정치가 움직이지 않는다.
+enum TimelineTail {
+    /// 진입 때 꼬리에 두는 행 수 — 화면 한두 장 분량(그 행들의 첨부는 바로 읽는다; 어차피 곧 보인다).
+    static let rows = 40
+
+    /// 꼬리가 시작하는 index. `anchor`(종전 꼬리의 첫 행 id)가 아직 `ids` 에 있으면 그 자리(과거 글을 위에 붙여도 같은 행), 없으면
+    /// (진입·창 되돌림·보내던 글이 자리를 바꿈) 끝에서 `rows` 번째. 결과는 항상 `0...ids.count`.
+    static func start(ids: [Int64], anchor: Int64?) -> Int {
+        if let anchor, let index = ids.firstIndex(of: anchor) { return index }
+        return max(0, ids.count - rows)
+    }
+}
+
 /// 스크롤 중 **프레임마다** 바뀌는 값과 스크롤 명령 합치기 상태. `@State` 값으로 두면 매 프레임 방 화면 body 를 다시 계산한다
 /// (500행 map 여러 번) — 참조 상자에 두고 바꿔도 다시 그리지 않는다.
 final class ScrollTracking {

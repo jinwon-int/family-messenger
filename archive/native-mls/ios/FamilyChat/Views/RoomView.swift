@@ -43,10 +43,11 @@ struct RoomView: View {
     @State private var hasNewBelow = false
     /// #497: 프레임마다 바뀌는 실측·스크롤 명령 합치기(참조 상자 — 바꿔도 body 를 다시 그리지 않는다).
     @State private var tracking = ScrollTracking()
-    /// 꼬리(lazy 아님)에 두는 마지막 행 수. LazyVStack 은 화면 밖 행을 만들지 않아, 긴 마지막 글 아래의 바닥 표지가 생성되지 않으면
-    /// 측정 보정이 돌지 않고 `scrollTo` 는 추정 위치(≈ 마지막 글의 시작)에 멈춘다(오너 보고 build 33: family-acc 마지막 글 첫 부분이 맨 아래).
-    /// 꼬리는 항상 실제 높이로 존재하므로 표지 측정과 `scrollTo` 가 정확하다.
-    private static let tailRows = 3
+    /// 꼬리(lazy 아님)가 시작하는 index · 그 첫 행의 id. LazyVStack 은 화면 밖 행을 만들지 않아, 긴 마지막 글 아래의 바닥 표지가 생성되지
+    /// 않으면 측정 보정이 돌지 않고 `scrollTo` 는 추정 위치에 멈춘다(오너 보고 build 33) — 꼬리는 항상 실제 높이라 표지 측정과 `scrollTo` 가
+    /// 정확하다. 경계는 **행 id 로 고정**(`TimelineTail`): 종전 "마지막 3행"은 새 글마다 행이 LazyVStack 으로 이사해 추정치가 흔들렸다.
+    @State private var tailStart = 0
+    @State private var tailAnchor: Int64?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -72,10 +73,11 @@ struct RoomView: View {
                             })
                         // 오래된 글은 lazy(화면에 보일 때 만든다).
                         LazyVStack(alignment: .leading, spacing: 8) {
-                            ForEach(messages.dropLast(Self.tailRows)) { item in row(item, proxy) }
+                            ForEach(messages.prefix(tailStart)) { item in row(item, proxy) }
                         }
-                        // 꼬리는 lazy 가 아니다: 마지막 몇 행·「생각하는 중」·바닥 표지가 항상 실제 높이로 존재해야 `scrollTo` 와 표지 측정이 정확하다.
-                        ForEach(messages.suffix(Self.tailRows)) { item in row(item, proxy) }
+                        // 꼬리는 lazy 가 아니다: 최근 행·「생각하는 중」·바닥 표지가 항상 실제 높이로 존재해야 `scrollTo` 와 표지 측정이 정확하다.
+                        // 새 글은 늘 여기에 붙는다(경계 고정 — `TimelineTail`).
+                        ForEach(messages.dropFirst(tailStart)) { item in row(item, proxy) }
                         // #405 P1: 내 글 뒤 에이전트 답이 아직 없으면 "생각하는 중"(앱 추정, 20분 상한 — 15초마다 다시 본다).
                         TimelineView(.periodic(from: .now, by: 15)) { context in
                             if let agent = AgentThinking.agent(messages.map(\.record), roster: model.agentRoster,
@@ -110,7 +112,7 @@ struct RoomView: View {
                     tracking.sentinelBottom = bottom
                     if recoverIfPastContentEnd(proxy) { return }
                     if !tracking.isAnimating, ScrollFollow.needsBottomCorrection(sentinelBottom: bottom, viewportHeight: viewportHeight, following: followLatest) {
-                        scrollToLatest(proxy, animated: false)
+                        correctBottom(proxy, reason: "sentinel")
                     }
                     refollowIfSettledAtBottom()
                 }
@@ -190,7 +192,12 @@ struct RoomView: View {
                     let arrival = ScrollFollow.arrival(before: before, after: messages.map {
                         (id: $0.id, fromThisDevice: $0.outgoing != nil || $0.record.senderDevice == model.deviceId)
                     })
-                    switch ScrollFollow.afterReload(following: followLatest, arrival: arrival) {
+                    let action = ScrollFollow.afterReload(following: followLatest, arrival: arrival)
+                    if arrival.mine || arrival.others {
+                        model.noteScroll("\(room) new=\(arrival.mine ? "mine " : "")\(arrival.others ? "others" : "") rows=\(messages.count) tail=\(messages.count - tailStart) "
+                                         + "following=\(followLatest) sentinel=\(Self.pt(tracking.sentinelBottom)) viewport=\(Self.pt(viewportHeight)) → \(action)")
+                    }
+                    switch action {
                     case .followAnimated:
                         followLatest = true
                         hasNewBelow = false
@@ -342,6 +349,9 @@ struct RoomView: View {
 
     private func reload() {
         messages = model.messages(room: room)
+        // 꼬리 경계: 종전 첫 꼬리 행이 아직 있으면 그 자리(새 글·과거 글이 붙어도 행이 이사하지 않는다), 없으면 끝에서 `TimelineTail.rows`.
+        tailStart = TimelineTail.start(ids: messages.map(\.id), anchor: tailAnchor)
+        tailAnchor = tailStart < messages.count ? messages[tailStart].id : nil
         // #405 P3: 이 방을 보고 있다 = 마지막 글까지 읽음(이 기기에만). 보내는 글(음수 seq)은 읽음 표시에 넣지 않는다.
         if let last = messages.last(where: { $0.outgoing == nil }) { prefs.markRead(room, seq: last.id) }
         approvalStates = AgentApproval.states(messages.map(\.record), roster: model.agentRoster)
@@ -390,7 +400,7 @@ struct RoomView: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + animation + 0.1) {
                     if ScrollFollow.needsBottomCorrection(sentinelBottom: tracking.sentinelBottom, viewportHeight: viewportHeight,
                                                           following: followLatest) {
-                        scrollToLatest(proxy, animated: false)
+                        correctBottom(proxy, reason: "after-animation")
                     }
                 }
             } else {
@@ -404,11 +414,21 @@ struct RoomView: View {
     private func recoverIfPastContentEnd(_ proxy: ScrollViewProxy) -> Bool {
         guard ScrollFollow.isPastContentEnd(sentinelBottom: tracking.sentinelBottom, viewportHeight: viewportHeight,
                                             contentHeight: contentHeight, sinceDrag: Date().timeIntervalSince(tracking.lastDrag)) else { return false }
+        model.noteScroll("\(room) past-end sentinel=\(Self.pt(tracking.sentinelBottom)) viewport=\(Self.pt(viewportHeight)) content=\(Self.pt(contentHeight)) → bottom")
         followLatest = true
         hasNewBelow = false
         scrollToLatest(proxy, animated: false)
         return true
     }
+
+    /// 실측 보정(바닥 표지가 화면 아래에 남았다) — 진단 기록에 남기고 즉시 최하단.
+    private func correctBottom(_ proxy: ScrollViewProxy, reason: String) {
+        model.noteScroll("\(room) correct(\(reason)) sentinel=\(Self.pt(tracking.sentinelBottom)) viewport=\(Self.pt(viewportHeight)) → bottom")
+        scrollToLatest(proxy, animated: false)
+    }
+
+    /// 진단 기록용 pt 값(미측정 ∞ 는 그대로 표시 — `Int(.infinity)` 는 trap).
+    private static func pt(_ value: Double) -> String { value.isFinite ? String(Int(value.rounded())) : "∞" }
 
     /// 다시 읽은 뒤 몇 번 더 잰다 — 표지 실측이 다시 오지 않아도(배치가 멈춘 채 빈 화면·최하단 미달) 위치를 바로잡는다.
     private func verifyPositionSoon(_ proxy: ScrollViewProxy) {
@@ -417,7 +437,7 @@ struct RoomView: View {
                 if recoverIfPastContentEnd(proxy) { return }
                 if !tracking.isAnimating, ScrollFollow.needsBottomCorrection(sentinelBottom: tracking.sentinelBottom, viewportHeight: viewportHeight,
                                                                              following: followLatest) {
-                    scrollToLatest(proxy, animated: false)
+                    correctBottom(proxy, reason: "verify@\(delay)")
                 }
             }
         }

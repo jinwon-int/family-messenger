@@ -68,6 +68,25 @@ final class TimelineTailTests: XCTestCase {
         XCTAssertEqual(model.messages(room: "family").count, AppModel.timelineLimit, "leaving the room restores the default window")
     }
 
+    /// #497 후속: 스크롤 결정은 진단 기록에 `scroll ` 접두로 남되, 한꺼번에 튀어도 `scrollNoteWindow` 초에 `scrollNoteBudget` 줄까지만
+    /// (+ 억제 표시 1줄) — 동기화 기록을 밀어내지 않는다. 창이 지나면 다시 적는다.
+    func testScrollNotesAreRateLimited() throws {
+        let relay = InMemoryRelay()
+        let deps = AppModel.Dependencies(
+            engineFactory: MemberFakeFactory(), stateStore: InMemoryStateStore(), messageStore: InMemoryMessageStore(),
+            outbox: InMemoryOutboxStore(), cursors: InMemoryCursorStore(),
+            identityProvider: { "mom-iphone-a1b2c3" }, expectedDecryptFormat: { 2 }, makeTransport: { _ in relay })
+        let model = AppModel(dependencies: deps)
+        let t0 = Date()
+        for i in 0..<(AppModel.scrollNoteBudget + 10) { model.noteScroll("family correct #\(i)", now: t0) }
+        let burst = model.diagnostics.filter { $0.contains(" scroll ") }
+        XCTAssertEqual(burst.count, AppModel.scrollNoteBudget + 1, "budget lines + one suppression marker")
+        XCTAssertTrue(burst.last?.contains("억제") == true)
+        model.noteScroll("family past-end", now: t0.addingTimeInterval(AppModel.scrollNoteWindow + 1))
+        XCTAssertTrue(model.diagnostics.last?.hasSuffix("scroll family past-end") == true, "a new window records again")
+        XCTAssertTrue(model.diagnosticsReport().contains("scroll family past-end"), "the copied report includes scroll lines")
+    }
+
     /// 창보다 적은 방은 처음부터 끝에 닿은 것으로 본다(위로 올라가도 읽기 시도 없음).
     func testSmallRoomIsExhaustedAfterTheFirstRead() throws {
         let store = InMemoryMessageStore()
