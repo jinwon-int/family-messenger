@@ -107,6 +107,10 @@ struct RoomView: View {
                     })
                 }
                 .coordinateSpace(name: "timeline")
+                // #497 A4(오너 build 51 기록으로 확정: 손을 댄 순간 앱의 스크롤 명령 없이 화면이 위로 밀림 = LazyVStack 의 미배치 행이
+                // 실체화·재추정되며 내용 높이가 바뀌는데 스크롤 위치가 **위 기준**이라 보이는 행이 밀린다). 바닥 기준으로 바꾼다 —
+                // 내용·칸 크기가 바뀌어도 바닥과의 거리를 유지하므로 위쪽 추정치가 아무리 바뀌어도 보이는 행은 그대로. iOS 16 은 종전대로.
+                .modifier(BottomAnchoredTimeline())
                 .onPreferenceChange(ContentHeightKey.self) { height in
                     let old = contentHeight
                     contentHeight = height
@@ -205,7 +209,8 @@ struct RoomView: View {
                 .onAppear {
                     guard !PhotoViewerPresence.active else { return }
                     reload()
-                    model.noteScroll("\(room) appear rows=\(messages.count) tail=\(messages.count - tailStart) viewport=\(Self.pt(viewportHeight)) content=\(Self.pt(contentHeight))")
+                    model.noteScroll("\(room) appear rows=\(messages.count) tail=\(messages.count - tailStart) viewport=\(Self.pt(viewportHeight)) "
+                                     + "content=\(Self.pt(contentHeight)) anchor=\(BottomAnchoredTimeline.mode)")
                     followLatest = true
                     hasNewBelow = false
                     scrollToLatest(proxy, animated: false)
@@ -870,6 +875,29 @@ struct DayDivider: View {
 struct ViewportHeightKey: PreferenceKey {
     static var defaultValue: Double = 0
     static func reduce(value: inout Double, nextValue: () -> Double) { value = nextValue() }
+}
+
+/// #497 A4: 타임라인 스크롤의 기준점을 **바닥**으로. iOS 18+ 는 역할별로(처음 자리 = 바닥, 내용·칸 크기 변화 = 바닥 거리 유지),
+/// iOS 17 은 한 값으로(세 역할 모두 바닥), iOS 16 은 API 가 없어 종전(위 기준 + 보정)대로. 어느 쪽이 적용됐는지는 `mode` 로 진단 기록에 남긴다.
+/// 알려진 트레이드오프: 위로 읽는 중 새 글이 오면 그 글 높이만큼 보이는 행이 위로 밀린다(바닥 거리 유지) — 「새 메시지 ↓」 버튼은 그대로.
+struct BottomAnchoredTimeline: ViewModifier {
+    static var mode: String {
+        if #available(iOS 18, *) { return "ios18-roles" }
+        if #available(iOS 17, *) { return "ios17-single" }
+        return "ios16-top"
+    }
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18, *) {
+            content
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
+                .defaultScrollAnchor(.bottom, for: .sizeChanges)
+        } else if #available(iOS 17, *) {
+            content.defaultScrollAnchor(.bottom)
+        } else {
+            content
+        }
+    }
 }
 
 /// 목록 내용(LazyVStack)의 높이를 RoomView 로 올린다.

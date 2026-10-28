@@ -555,9 +555,13 @@ final class AppModel: ObservableObject {
     private func noteSyncPasses(_ room: RoomID, _ passes: [SyncPass]) {
         let rejected = passes.flatMap(\.rejected)
         if !rejected.isEmpty { record("sync \(room): rejected seq \(rejected.map { String($0) }.joined(separator: ","))") }
-        if let halted = passes.compactMap(\.halted).last { record("sync \(room): halted — \(halted)") }
-        if passes.contains(where: \.joined) { record("sync \(room): joined") }
+        if let halted = passes.compactMap(\.halted).last { record("sync \(room): halted — \(halted)"); joinedNoted.remove(room) }
+        // `joined` 는 패스의 **상태**라 참여 중인 방은 매 바퀴 true — 그대로 적으면 16방 × 4초마다 16줄로 200줄 기록이 1분 안에 넘쳐
+        // (build 51 오너 기록: 20초에 48줄 전부 joined) 정작 봐야 할 줄이 밀려난다. 방마다 처음 한 번(정지 뒤 복귀 포함)만 적는다.
+        if passes.contains(where: \.joined), !joinedNoted.contains(room) { record("sync \(room): joined"); joinedNoted.insert(room) }
     }
+    /// `joined` 를 이미 적은 방(프로세스 수명 동안; 정지되면 지워 복귀를 다시 적는다).
+    private var joinedNoted: Set<RoomID> = []
 
     /// #497 후속: 방 화면의 스크롤 결정(새 글 뒤 동작·실측 보정·빈 화면 복구)을 같은 기록에 남긴다 — 타임라인이 튀는 보고를 Xcode 없이
     /// 「진단 기록 복사」로 재구성하기 위한 것. 한꺼번에 튀면 줄이 쏟아지므로 `scrollNoteWindow` 초 안에 `scrollNoteBudget` 줄까지만 적고
