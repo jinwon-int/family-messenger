@@ -90,6 +90,13 @@ enum ScrollFollow {
         !following && viewportHeight > 0 && sinceDrag >= settleDelay && sentinelBottom <= viewportHeight + nearBottom
     }
 
+    /// #497 A6: 바닥 앵커(iOS 17+)가 **자리를 놓쳤다** — 따라가는 중인데 바닥 표지가 화면 아래 끝에서 `nearBottom` 보다 멀리 있다.
+    /// build 55 오너 기록: 표지 5273 에 멈춘 채 `following=true`, 남의 새 글(`.follow`)이 와도 앵커 모드라 명령을 안 내 바닥으로 안 돌아왔다.
+    /// 매 실측마다 고치면 앵커와 싸워 꿈틀거리므로(A5), **새 글이 왔을 때 한 번**만 쓴다. 표지 미측정(∞)·칸 미측정(0)이면 false.
+    static func anchorLostBottom(following: Bool, sentinelBottom: Double, viewportHeight: Double) -> Bool {
+        following && viewportHeight > 0 && sentinelBottom.isFinite && sentinelBottom > viewportHeight + nearBottom
+    }
+
     // MARK: - 내용 끝을 지나 빈 화면(오너 보고 build 41: 사진 한 장에 채팅 없이 배경만)
 
     /// 목록 아래 여백(`.padding()` 기본값) — 맨 아래에 멈춰 있으면 바닥 표지 아래 끝 = 화면 높이 − 이 값.
@@ -119,8 +126,15 @@ enum ScrollFollow {
 /// (스크롤 위치는 위 기준), `scrollTo` 가 다시 내리고, 재배치로 또 틀어졌다 — 사진이 아니어도 난다.
 /// 경계를 **행 id 로 고정**하면 새 글은 늘 꼬리(실제 높이)에 붙고 LazyVStack 의 자식·측정은 그대로라 추정치가 움직이지 않는다.
 enum TimelineTail {
-    /// 진입 때 꼬리에 두는 행 수 — 화면 한두 장 분량(그 행들의 첨부는 바로 읽는다; 어차피 곧 보인다).
-    static let rows = 40
+    /// 진입 때 꼬리에 두는 행 수 = 기본 타임라인 창 전체(`AppModel.timelineLimit`).
+    ///
+    /// #497 A6(오너 build 55 기록, dungae 방): 꼬리 40행 + lazy 79행일 때 내용 높이 추정이 15k↔91k pt(120행!)로 폭주했다 — Δ≈5690 단위
+    /// 계단으로 오르고(끌기 직후 표지 315→11675→17359 = 화면이 1만 pt 위로 튐) 몇 초에 걸쳐 기하급수적으로 줄며 돌아왔다. 또 내용 변화
+    /// 없이 표지가 598↔5265(Δ≈꼬리 41행 높이)를 같은 ms 안에 왕복하다 5273 에 멈췄다(바닥 앵커가 lazy/꼬리 경계에서 자리를 놓침).
+    /// 두 현상의 원천이 모두 LazyVStack 의 **미배치 행 추정치**라, 진입 때 보이는 창(120행)은 전부 실제 높이로 두어 추정 대상을 0 으로
+    /// 만든다. lazy 는 #472 페이징으로 위에 붙은 과거 글에만 남는다(위로 읽는 중에만 존재). 첨부 썸네일은 `AttachmentPreviewCache`
+    /// (300건·128 MiB 상한)로 유한하다.
+    static let rows = AppModel.timelineLimit
 
     /// 꼬리가 시작하는 index. `anchor`(종전 꼬리의 첫 행 id)가 아직 `ids` 에 있으면 그 자리(과거 글을 위에 붙여도 같은 행), 없으면
     /// (진입·창 되돌림·보내던 글이 자리를 바꿈) 끝에서 `rows` 번째. 결과는 항상 `0...ids.count`.
