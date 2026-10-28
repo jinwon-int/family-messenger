@@ -111,7 +111,7 @@ struct RoomView: View {
                 // 실체화·재추정되며 내용 높이가 바뀌는데 스크롤 위치가 **위 기준**이라 보이는 행이 밀린다). 바닥 기준으로 바꾼다 —
                 // 내용·칸 크기가 바뀌어도 바닥과의 거리를 유지하므로 위쪽 추정치가 아무리 바뀌어도 보이는 행은 그대로. iOS 16 은 종전대로.
                 .modifier(BottomAnchoredTimeline())
-                // 방을 나가면 창을 기본(최신 500건)으로 되돌린다 — 폴링마다 큰 창을 읽지 않는다.
+                // 방을 나가면 창을 기본(최신 `timelineLimit` 건)으로 되돌린다 — 폴링마다 큰 창을 읽지 않는다.
                 // #497: 사진 전체 화면 보기가 떠서 불린 경우는 나간 것이 아니다(닫으면 보던 자리 그대로).
                 .onDisappear {
                     guard !PhotoViewerPresence.active else { return }

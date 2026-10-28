@@ -1107,11 +1107,13 @@ final class AppModel: ObservableObject {
         storedMessages(room: room) + outgoingItems(room: room)
     }
 
-    /// 타임라인 창 = 방의 **최신** 500건(#469). 종전 `after: 0, limit: 500` 은 가장 오래된 500건이라 501번째부터
+    /// 타임라인 창 = 방의 **최신** N건(#469 는 500). 종전 `after: 0, limit: 500` 은 가장 오래된 500건이라 501번째부터
     /// — 내가 방금 보낸 글도 — 화면에 오르지 않았다(웹 `history-store.list` 와 같은 "최신 N건"으로 맞춤).
-    static let timelineLimit = 500
+    /// #497 A5: 500 → 120. build 54 오너 기록: 진입 뒤 20초 동안 내용 높이가 46730→28351 로 계속 줄었다 — LazyVStack 이 미배치 460행의
+    /// 추정치를 거듭 재계산한 것(그때마다 바닥 앵커가 자리를 다시 잡는다). 창을 줄이면 추정 대상이 1/5 로 준다. 과거 글은 #472 페이징.
+    static let timelineLimit = 120
     /// #472: 위로 끝까지 올라오면 창을 이만큼 넓혀 과거 글을 더 읽는다(저장소 API 추가 없이 `messageHeadsTail(limit:)` 의 창만 키운다).
-    static let olderPage = 200
+    static let olderPage = 120
     /// 방별 타임라인 창(행 수). 기본 `timelineLimit`; `loadOlder` 가 넓히고 `resetTimelineWindow` 가 되돌린다(방을 나갈 때).
     private var timelineWindows: [RoomID: Int] = [:]
     /// 마지막 읽기가 창보다 적게 돌아온 방 = 가장 오래된 행까지 다 올렸다 — 더 읽을 것이 없다.
