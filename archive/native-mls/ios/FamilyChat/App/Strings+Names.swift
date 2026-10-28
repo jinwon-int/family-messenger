@@ -10,9 +10,9 @@ extension Strings {
         "gongyung": "공융✴️", "gwakga": "곽가✳️", "jingun": "진군✳️", "nosuk": "노숙✳️",
         "seoseo": "서서✴️", "sogyo": "소교✴️", "soonwook": "순욱✴️", "yukson": "육손✳️",
     ]
-    /// 사람 actor → Matrix 닉네임. 없으면 actor 그대로.
+    /// 사람 actor → 보여 줄 이름. 오너(관리자)는 「진원」(오너 결정 2026-10-21, Matrix `jinon86` 대신), 그 밖은 Matrix 닉네임. 없으면 actor 그대로.
     static let peopleNames: [String: String] = [
-        "owner": "jinon86",
+        "owner": "진원",
         "jungin": "쩡이🍎",
     ]
     /// 대화방 ID → Matrix 방 이름. 노드 개인방(ID = 노드 이름)은 그 노드 닉네임. `family-acc` = 오너 ↔ 공명 에이전트 방.

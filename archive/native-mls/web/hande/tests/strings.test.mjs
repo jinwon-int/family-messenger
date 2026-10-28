@@ -67,8 +67,8 @@ test('actorOf / isAgentDevice', () => {
 });
 
 test('displayName: 사람은 Matrix 닉네임 · 기기 종류, 봇은 Matrix 닉네임(🤖 접두 없음)', () => {
-  assert.equal(displayName('owner-iphone-27a879'), 'jinon86 · 아이폰');
-  assert.equal(displayName('owner-pc'), 'jinon86 · PC');
+  assert.equal(displayName('owner-iphone-27a879'), '진원 · 아이폰');
+  assert.equal(displayName('owner-pc'), '진원 · PC');
   assert.equal(displayName('mom-web-1a2b3c'), 'mom · PC');
   assert.equal(displayName('jungin-ipad-0f'), '쩡이🍎 · 아이패드');
   assert.equal(displayName('dad'), 'dad');

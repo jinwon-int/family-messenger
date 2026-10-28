@@ -16,7 +16,7 @@ final class AgentStringsTests: XCTestCase {
     }
 
     func testSenderLabelUsesNamesAndDeviceKind() {
-        XCTAssertEqual(Strings.senderLabel(device: "owner-pc"), "jinon86 · PC")
+        XCTAssertEqual(Strings.senderLabel(device: "owner-pc"), "진원 · PC")
         XCTAssertEqual(Strings.senderLabel(device: "jungin-iphone-1b89e3"), "쩡이🍎 · 아이폰")
         XCTAssertEqual(Strings.senderLabel(device: "dad"), "dad")
         XCTAssertEqual(Strings.senderLabel(device: "bot-gongmyoung"), "공명✴️")

@@ -18,8 +18,8 @@ export const agentNames = {
 };
 /** 에이전트(봇) actor — 기기 ID 첫 마디. 옛 `bot-<node>` 와 새 `<node>-<suffix>`(#422) 둘 다(iOS FC_AGENT_ACTORS 와 같은 목록). */
 export const AGENT_ACTORS = new Set(['bot', ...Object.keys(agentNames)]);
-/** 사람 actor → 보여 줄 이름 = Matrix 닉네임과 동일(iOS Strings.peopleNames). */
-export const peopleNames = { owner: 'jinon86', jungin: '쩡이🍎' };
+/** 사람 actor → 보여 줄 이름. 오너(관리자)는 「진원」(오너 결정 2026-10-21, Matrix `jinon86` 대신), 그 밖은 Matrix 닉네임(iOS Strings.peopleNames). */
+export const peopleNames = { owner: '진원', jungin: '쩡이🍎' };
 /**
  * 대화방 ID → 보여 줄 방 이름 = Matrix 방 이름과 동일. 노드 개인방(ID = 노드 이름)은 그 노드 닉네임.
  * `family-acc` 는 오너 ↔ 공명 에이전트 방(Matrix 의 공명 개인방).
@@ -94,7 +94,7 @@ export function roomLabel(room) {
 }
 
 /**
- * 보여 줄 이름: 사람은 「jinon86 · PC」(닉네임 + 기기 종류), 봇은 「등애✳️」(노드 닉네임, 🤖 접두 없음 — 2026-10-26 오너). 모르는 actor 는 그대로.
+ * 보여 줄 이름: 사람은 「진원 · PC」(닉네임 + 기기 종류), 봇은 「등애✳️」(노드 닉네임, 🤖 접두 없음 — 2026-10-26 오너). 모르는 actor 는 그대로.
  * 옛 봇 기기 `bot-<node>` 는 둘째 마디, 새 봇 기기 `<node>-<suffix>` 는 actor 가 노드 이름.
  * iOS AgentRoster.displayName + Strings.senderLabel 과 같은 결.
  */
