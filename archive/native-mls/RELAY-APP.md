@@ -78,6 +78,11 @@ Python에서 하던 릴레이 호출을 브라우저로 옮긴 것이다. 합성
    **결과 불명 게시(#295 F4)**: 초대·제거 commit POST가 예외로 끝나면(네트워크 끊김·응답 유실) commit을 "결과 불명
    pending"으로 남긴다(저장됨). 다음 동기화에서 내 echo가 오면 `merge_pending`, 다른 commit이 먼저면 그 병합이 내
    pending을 소모하므로 상태만 정리, 방 epoch가 그대로면 릴레이에 없던 것이라 `clear_pending`(`resolveUncertainPending`).
+7. **입력 중 표시(#562, 한데 웹)**: 작성창에 글이 있으면 `POST /v2/rooms/{room}/typing` `{device, clear:false}`를
+   3초에 한 번(`room.js typing()`, 릴레이 TTL 6초), 비우면 `clear:true`. 응답은 모두 무시한다(옛 릴레이의 404 포함,
+   fire-and-forget) — 메시지가 저장되면 릴레이가 그 기기의 신호를 스스로 지우므로 전송 뒤 해제 요청은 없다. 같은
+   4초 폴링의 `GET /events`가 `typing: [기기…]`(나를 뺀 미만료 기기, 키가 없으면 `[]`)를 실어 오고, 화면은 내 다른
+   기기를 빼고 사람 단위로 묶어 방 머리글에 「{이름} 입력중…」(1:1 방은 「입력중…」)을 보인다. 별도 틱 없음, 저장 없음.
 
 durable 워커 허용 메서드에 이번에 더해진 것: `invite_with_commit` `merge_pending` `clear_pending`
 `remove_pending` `members` `members_after_pending` `fingerprint` `policy_fingerprint` `sign_approval`
