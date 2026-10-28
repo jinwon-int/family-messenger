@@ -6,7 +6,7 @@
 // (owner actors join automatically, family devices accept with one tap — iOS
 // AppModel.discoverLobbyWelcomes / acceptInvite).
 import * as ui from './ui.js';
-import {strings, displayName, isAgentDevice, isMine, isOneToOne, roomLabel, previewLine, relativeTime, typingLabel} from './strings.js';
+import {strings, displayName, isAgentDevice, isMine, isOneToOne, participantCount, roomLabel, previewLine, relativeTime, typingLabel} from './strings.js';
 import {orderRooms, moveRoom, readRoomOrder, writeRoomOrder} from './room-order.js';
 import {readDraft, writeDraft} from './drafts.js';
 import {readReadSeq, writeReadSeq, latestSeq, isUnread} from './read-seq.js';
@@ -97,7 +97,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       // 1:1 방은 상대가 한 명뿐이라 「이름: 」 접두를 빼고 내용만(2026-10-26 오너).
       preview: last ? previewLine(isOneToOne(S.roster) ? '' : last.senderName, body) : (S.joined ? strings.rooms.noMessages : strings.room.notJoined),
       time: last?.ts ? relativeTime(last.ts, Date.now()) : '', unread: isUnread(R.entries, R.readSeq) && !(app.roomOpen && app.current === roomId),
-      state: halted ? 'halted' : S.joined ? 'joined' : 'pending', hasAgent: S.roster.some(isAgentDevice), members: S.roster.length, order: R.order};
+      state: halted ? 'halted' : S.joined ? 'joined' : 'pending', hasAgent: S.roster.some(isAgentDevice), members: participantCount(S.roster), order: R.order};
   }
   /** 대화 목록에서 방 하나를 옮긴다 — 화면은 즉시, 저장은 이 기기 localStorage(패밀리챗 moveRoomInList). */
   function moveRoomInList(roomId, toIndex, focus = null) {

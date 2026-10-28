@@ -610,6 +610,10 @@ ul.members { list-style: none; margin: 0; padding: 0; display: flex; flex-direct
 .member .texts { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .member .name { font-weight: 600; display: flex; align-items: center; gap: var(--space-2); }
 .member code.meta { font-size: var(--text-xs); overflow-wrap: anywhere; }
+/* 사람 행 아래 기기 줄(2026-10-28): 종류 · ID · 「이 기기」 · 제거 — 사람 한 명 = 행 하나, 기기는 그 안에. */
+.member ul.devices { list-style: none; margin: var(--space-1) 0 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-1); }
+.member .device { display: flex; align-items: center; gap: var(--space-2); padding: 2px 0 2px var(--space-2); border-left: 2px solid var(--line); }
+.member .device .kind { font-size: var(--text-s); display: flex; align-items: center; gap: var(--space-2); }
 .confirm-body { white-space: pre-wrap; color: var(--text-2); font-size: var(--text-s); line-height: 1.6; }
 .compare { font-weight: 700; }
 

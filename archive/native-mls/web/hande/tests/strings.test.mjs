@@ -2,9 +2,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  ACTOR, ROOM, DEVICE, AGENT_ACTORS, strings, allStringsFilled,
+  ACTOR, ROOM, DEVICE, AGENT_ACTORS, strings, allStringsFilled, peopleNames,
   formatTime, formatClock, dayLabel, dayKey, groupFingerprint, displayName, isAgentDevice, isServiceDevice, actorOf, isMine, relativeTime,
-  participantOf, isOneToOne, typingNames, typingLabel,
+  participantOf, isOneToOne, participantCount, groupParticipants, typingNames, typingLabel,
   humanSize, previewLine, haltGuidance, roomLabel, agentNames,
 } from '../strings.js';
 
@@ -103,6 +103,22 @@ test('participantOf / isOneToOne: 사람은 actor, 봇은 노드 단위로 세�
   // roster 를 모르면 판정하지 않음(이름 유지)
   assert.equal(isOneToOne([]), false);
   assert.equal(isOneToOne(undefined), false);
+});
+
+test('participantCount / groupParticipants: 멤버는 사람 단위 — 같은 사람의 PC·폰은 한 명, 기기는 그 아래(2026-10-28)', () => {
+  const roster = ['owner-web-aaaaaa', 'jungin-iphone-0f', 'owner-iphone-27a879', 'bot-gongmyoung', 'gongmyoung-bot-1a2b'];
+  assert.equal(participantCount(roster), 3);
+  assert.equal(participantCount([]), 0);
+  assert.equal(participantCount(undefined), 0);
+  assert.equal(participantCount(['owner-web-aaaaaa', null, 'owner-pc']), 1);
+  assert.deepEqual(groupParticipants(roster), [
+    {key: 'owner', name: peopleNames.owner, devices: ['owner-web-aaaaaa', 'owner-iphone-27a879']},
+    {key: 'jungin', name: '쩡이🍎', devices: ['jungin-iphone-0f']},
+    {key: 'agent:gongmyoung', name: agentNames.gongmyoung, devices: ['bot-gongmyoung', 'gongmyoung-bot-1a2b']},
+  ]);
+  assert.deepEqual(groupParticipants([]), []);
+  // 모르는 actor 는 이름이 actor 그대로
+  assert.deepEqual(groupParticipants(['mom-web-1']), [{key: 'mom', name: 'mom', devices: ['mom-web-1']}]);
 });
 
 test('AGENT_ACTORS: 옛 bot + 12노드(iOS FC_AGENT_ACTORS 와 같은 목록)', () => {

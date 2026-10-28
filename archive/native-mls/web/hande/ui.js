@@ -4,6 +4,7 @@
 
 import {
   strings, ACTOR, ROOM, DEVICE, formatTime, dayLabel, dayKey, groupFingerprint, displayName, isServiceDevice, humanSize, relativeTime,
+  participantCount, participantOf, groupParticipants, deviceKind, deviceKinds,
 } from './strings.js';
 import {imageType, downloadSpec} from './attachment-view.js';
 import { pickTransferFile, transferHasFiles } from './composer-files.js';
@@ -731,12 +732,13 @@ function buildRoom(room) {
       el('h2', {}, el('span', { class: 'fire', 'aria-hidden': 'true' }, room.halted ? '🪵' : '🔥'), ' ', room.name || room.roomId),
       // 입력 중(#562): 머리글에만(목록 행에는 없음). 서명에 들어가므로 바뀔 때 머리글만 다시 그린다.
       room.typing ? el('span', { class: 'typing', role: 'status', 'aria-live': 'polite', 'data-testid': 'typing' }, room.typing) : null,
-      el('span', { class: 'subtitle' }, strings.chat.members(members.length))),
+      // 멤버 수는 사람 단위(같은 사람의 PC·폰 = 한 명, 2026-10-28 오너) — 멤버 시트의 사람 묶음과 같은 수.
+      el('span', { class: 'subtitle' }, strings.chat.members(participantCount(members)))),
     el('div', { class: 'tools' },
       room.onOpenBox ? el('button', { type: 'button', class: 'ghost small box-toggle', 'data-testid': 'open-box', 'aria-label': strings.box.toggle, onclick: () => liveProps.get(screen)?.onOpenBox?.() }, '🗂') : null,
       el('button', { type: 'button', class: 'ghost small', onclick: () => liveProps.get(screen)?.onOpenMembers?.() }, strings.chat.membersButton),
       el('button', { type: 'button', class: 'secondary small', 'data-testid': 'open-invite', disabled: room.joined ? null : true, onclick: () => liveProps.get(screen)?.onOpenInvite?.() }, strings.chat.invite))),
-  JSON.stringify([room.name, room.roomId, members.length, Boolean(room.halted), Boolean(room.joined), Boolean(room.onOpenBox), room.typing ?? '']));
+  JSON.stringify([room.name, room.roomId, participantCount(members), Boolean(room.halted), Boolean(room.joined), Boolean(room.onOpenBox), room.typing ?? '']));
   const notice = room.notice?.text ? signed(el('p', { class: `status ${room.notice.tone || 'info'}`, role: 'status', 'data-part': 'notice' }, room.notice.text), JSON.stringify(room.notice)) : null;
   const list = el('ul', { class: 'timeline', tabindex: '-1', 'aria-live': 'polite', 'aria-label': strings.chat.timelineLabel, 'data-testid': 'timeline' },
     room.timeline.length === 0 ? signed(el('li', { class: 'empty', 'data-key': 'empty' }, strings.chat.empty), 'empty') : timelineRows(room.timeline, room.onOpenAttachment, room.onRetryPreview ?? null));
@@ -1039,16 +1041,29 @@ export function openCreateSheet(root, { defaultRoom = '', onSubmit, onClose, bus
   });
 }
 
-/** 초대 + 멤버 목록(+ onRemove 가 있으면 멤버 제거 — 정책 체인에서 이미 폐기된 기기용). */
+/**
+ * 초대 + 멤버 목록(+ onRemove 가 있으면 멤버 제거 — 정책 체인에서 이미 폐기된 기기용).
+ * 멤버는 **사람 단위**로 묶어 보인다(2026-10-28 오너): 같은 사람의 PC·폰이 「두 명」으로 서지 않고, 한 사람 행 아래에
+ * 기기 줄(종류 · ID · 「이 기기」 · 제거)이 붙는다. MLS 좌석과 릴레이 명단은 그대로 기기 단위다.
+ */
 export function openInviteSheet(root, { roomId, roomName = roomId, members = [], onInvite, onRemove = null, onForget = null, onClose, busy = false, message = null, selfDevice = null }) {
-  const memberRow = (device) => el('li', { class: 'member' },
-    el('span', { class: 'texts' }, el('span', { class: 'name' }, displayName(device), device === selfDevice ? el('span', { class: 'pill you' }, strings.invite.thisDevice) : null), el('code', { class: 'meta' }, device)),
+  const selfKey = selfDevice ? participantOf(selfDevice) : null;
+  const deviceRow = (device) => el('li', { class: 'device', 'data-device': device },
+    el('span', { class: 'texts' },
+      el('span', { class: 'kind' }, deviceKinds[deviceKind(device)] ?? deviceKind(device) ?? '', device === selfDevice ? el('span', { class: 'pill you' }, strings.invite.thisDevice) : null),
+      el('code', { class: 'meta' }, device)),
     onRemove && device !== selfDevice
       ? el('button', { type: 'button', class: 'ghost small danger-text', onclick: () => openConfirmSheet(root, {
           title: strings.invite.remove, body: strings.invite.removeConfirm(device), confirmLabel: strings.invite.remove, tone: 'danger',
           onConfirm: () => onRemove(device),
         }) }, strings.invite.remove)
       : null);
+  const memberRow = (group) => el('li', { class: 'member', 'data-participant': group.key },
+    el('span', { class: 'texts' },
+      el('span', { class: 'name' }, group.name, group.key === selfKey ? el('span', { class: 'pill you' }, strings.invite.you) : null,
+        el('span', { class: 'pill' }, strings.invite.deviceCount(group.devices.length))),
+      el('ul', { class: 'devices' }, group.devices.map(deviceRow))));
+  const groups = groupParticipants(members);
   const sheet = openIdSheet(root, {
     className: 'invite', title: `${strings.invite.title} — ${roomId}`, hint: strings.invite.hint, fieldLabel: strings.invite.field, fieldName: 'device', placeholder: 'mom-iphone-1a2b3c',
     pattern: DEVICE, invalidText: strings.invite.invalid, submitLabel: strings.invite.button, busyLabel: strings.invite.busy,
@@ -1058,8 +1073,8 @@ export function openInviteSheet(root, { roomId, roomName = roomId, members = [],
     },
     onClose, busy, message, testid: { input: 'invite-device', submit: 'invite-submit' },
     after: [el('section', { class: 'members-section', 'aria-label': strings.invite.membersTitle },
-      el('h3', {}, strings.invite.membersTitle, ' ', el('span', { class: 'pill' }, String(members.length))),
-      members.length === 0 ? el('p', { class: 'hint' }, strings.invite.membersEmpty) : el('ul', { class: 'members' }, members.map(memberRow))),
+      el('h3', {}, strings.invite.membersTitle, ' ', el('span', { class: 'pill' }, String(groups.length))),
+      groups.length === 0 ? el('p', { class: 'hint' }, strings.invite.membersEmpty) : el('ul', { class: 'members' }, groups.map(memberRow))),
     // 릴레이에 없는 로컬 전용 방만(app.js 가 onForget 을 준다): 확인 시트 → 지우고 이 시트도 닫는다.
     onForget ? el('section', { class: 'members-section forget-section' },
       el('button', { type: 'button', class: 'danger block', 'data-testid': 'forget-room', onclick: () => openConfirmSheet(root, {

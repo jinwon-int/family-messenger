@@ -65,11 +65,31 @@ export function participantOf(device) {
   return isAgentDevice(device) ? `agent:${agentNode(device)}` : actorOf(device);
 }
 
+/** 참여자 수 — 기기가 아니라 사람·봇 단위(같은 사람의 PC·폰은 한 명). roster 를 모르면 0. */
+export function participantCount(roster) {
+  const devices = Array.isArray(roster) ? roster.filter(Boolean) : [];
+  return new Set(devices.map(participantOf)).size;
+}
+
+/**
+ * 멤버 명단을 사람·봇 단위로 묶는다(멤버 시트): `[{key, name, devices: [기기…]}]`, 명단 순서는 첫 기기가 나온 순서,
+ * 기기 순서는 명단 그대로. MLS 좌석은 기기마다 하나라 roster 는 기기 목록이지만, 사람에게 보이는 「멤버」는 사람이다.
+ */
+export function groupParticipants(roster) {
+  const devices = Array.isArray(roster) ? roster.filter(Boolean) : [];
+  const groups = new Map();
+  for (const device of devices) {
+    const key = participantOf(device);
+    if (!groups.has(key)) groups.set(key, {key, name: participantName(device), devices: []});
+    groups.get(key).devices.push(device);
+  }
+  return [...groups.values()];
+}
+
 /** 1:1 대화방인가 — 참여자(사람·봇 노드)가 둘 이하. roster 를 아직 모르면(빈 목록) false. */
 export function isOneToOne(roster) {
-  const devices = Array.isArray(roster) ? roster.filter(Boolean) : [];
-  if (devices.length === 0) return false;
-  return new Set(devices.map(participantOf)).size <= 2;
+  const n = participantCount(roster);
+  return n > 0 && n <= 2;
 }
 
 /** 내 글인가 — 같은 사람(actor)이면 다른 기기에서 보낸 글도 내 글(iOS MessageRecord.isMine). actor 를 아직 모르면 기기 일치로. */
@@ -446,6 +466,9 @@ export const strings = {
     invalid: '기기 ID 형식이 맞지 않습니다(영문·숫자·하이픈·밑줄, 최대 64자).',
     membersTitle: '멤버',
     membersEmpty: '아직 멤버가 없습니다.',
+    // 멤버는 사람 단위, 기기는 그 사람 아래 줄 — 같은 사람의 PC·폰이 「두 명」으로 보이지 않게(2026-10-28 오너).
+    deviceCount: (n) => `기기 ${n}대`,
+    you: '나',
     remove: '제거',
     removeConfirm: (device) => `${device} 기기를 이 대화방에서 제거합니다. 정책 체인에서 이미 폐기된 기기만 제거할 수 있습니다. 계속할까요?`,
     thisDevice: '이 기기',
