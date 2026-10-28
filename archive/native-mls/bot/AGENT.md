@@ -73,7 +73,7 @@ native-mls-bot <base-url> session <room> <device> \
 
 ## 이벤트 (stdout JSON lines)
 
-`agent_started` · `agent_offer{seq, from, outcome}` · `agent_skipped{seq, reason}` · `agent_approval_reply{n, allow, known}` · `agent_outbound{kind, bytes}`(kind: `reply`·`interim`·`notice`·`approval_request`·`approval_resolved`·`uncertain` — #474 `interim`/`notice` 는 [FLEET-WORKER](../../../docs/FLEET-WORKER.md) 선택 출력 프레임) · `agent_outbound_dropped{reason}` · `agent_worker_gone{reason}` · `agent_tool{name, op, room, arg, ok, key_source?}`(P4: 실행 요약만 — 기기·방 식별자, 본문 없음; `key_source` 는 invite 성공 때만 `room`\|`lobby`, #380 P5)
+`agent_started` · `agent_offer{seq, from, outcome}` · `agent_skipped{seq, reason}` · `agent_approval_reply{n, allow, known}` · `agent_outbound{kind, bytes}`(kind: `reply`·`interim`·`status`·`notice`·`approval_request`·`approval_resolved`·`uncertain` — #474 `interim`/`notice` 는 [FLEET-WORKER](../../../docs/FLEET-WORKER.md) 선택 출력 프레임; `status` 는 status-v1 #560 `kind:"status"` interim, `status-<uuid>` client_id 로 게시 → `status_posted{seq, client_id}` / `status_dropped{reason}`) · `agent_outbound_dropped{reason}` · `agent_worker_gone{reason}` · `agent_tool{name, op, room, arg, ok, key_source?}`(P4: 실행 요약만 — 기기·방 식별자, 본문 없음; `key_source` 는 invite 성공 때만 `room`\|`lobby`, #380 P5)
 
 ## 바꾸지 않은 것
 
