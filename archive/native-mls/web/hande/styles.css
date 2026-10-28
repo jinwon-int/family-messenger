@@ -675,3 +675,9 @@ ul.files .download { flex: none; min-height: 32px; }
 .invite-item { display: flex; flex-direction: column; gap: var(--space-1); }
 .invite-item .invite-head { display: flex; align-items: center; gap: var(--space-2); }
 .invite-item .actions { margin-top: var(--space-1); }
+
+/* ---------- AI 참여 동의(#544 E 선택지 3): 시트 + 작성창 위 게이트 ---------- */
+.sheet.consent .consent-agents { margin: 0; font-weight: 600; }
+.sheet.consent .consent-check { display: flex; align-items: flex-start; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); cursor: pointer; }
+.sheet.consent .consent-check input { width: 20px; height: 20px; margin: 2px 0 0; flex: none; accent-color: var(--brand); }
+.consent-gate { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); }
