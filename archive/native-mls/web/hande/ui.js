@@ -609,7 +609,8 @@ function buildComposer(room) {
   return form;
 }
 
-function haltBanner(room) {
+/** 작성창 위 게이트: ⛔ 정지 > 미참여 > AI 동의 대기(#544 E — 「안내 보기」로 동의 시트를 다시 연다). live() 는 최신 props. */
+function haltBanner(room, live = () => room) {
   const halted = room.halted;
   if (halted) {
     const detail = strings.halt.detail(halted.seq, halted.committer, halted.at);
@@ -621,6 +622,11 @@ function haltBanner(room) {
     JSON.stringify(['halt', halted]));
   }
   if (!room.joined) return signed(el('p', { class: 'status warn', role: 'status', 'data-part': 'gate' }, strings.chat.notJoined), 'not-joined');
+  if (room.consentRequired) {
+    return signed(el('div', { class: 'status warn consent-gate', role: 'status', 'data-part': 'gate', 'data-testid': 'consent-gate' },
+      el('span', {}, strings.consent.gateBody),
+      el('button', { type: 'button', class: 'secondary small', 'data-testid': 'consent-open', onclick: () => live()?.onOpenConsent?.() }, strings.consent.gateButton)), 'consent-required');
+  }
   return null;
 }
 
@@ -707,7 +713,8 @@ function lastSentBar(room) {
 
 /** 방 pane. parts 는 재렌더에서 따로따로 맞춘다(patchRoomScreen). */
 function buildRoom(room) {
-  const canCompose = Boolean(room.joined) && !room.halted;
+  // AI 동의 전에는 작성창을 잠근다(#544 E) — 읽기·내려받기는 그대로.
+  const canCompose = Boolean(room.joined) && !room.halted && !room.consentRequired;
   const members = Array.isArray(room.members) ? room.members : [];
   const header = signed(el('header', { class: 'appbar', 'data-part': 'header' },
     el('button', { type: 'button', class: 'icon ghost back', 'aria-label': strings.chat.back, onclick: () => liveProps.get(screen)?.onBack?.() }, '←'),
@@ -728,7 +735,7 @@ function buildRoom(room) {
   const composer = buildComposer(room);
   applyComposerState(composer, { enabled: canCompose, sending: room.sending });
   const composerWrap = el('div', { class: 'composer-wrap', 'data-part': 'composer' }, composer);
-  const parts = { header, notice, lastSent: lastSentBar(room), gate: haltBanner(room), timeline: timelineWrap, resend: resendBar(room.attachmentPending), composer: composerWrap };
+  const parts = { header, notice, lastSent: lastSentBar(room), gate: haltBanner(room, () => liveProps.get(screen)), timeline: timelineWrap, resend: resendBar(room.attachmentPending), composer: composerWrap };
   const screen = el('section', { class: 'room-screen', 'data-room-id': room.roomId,
     // 방 화면 어디에나 파일을 끌어다 놓으면 첨부로 보낸다(#480 B). 글자 선택을 끌 때는 표시도 켜지 않는다.
     ondragenter: (event) => { if (transferHasFiles(event.dataTransfer)) { event.preventDefault(); screen.dataset.drop = 'over'; } },
@@ -740,7 +747,7 @@ function buildRoom(room) {
       if (!file) return;
       event.preventDefault();
       const current = liveProps.get(screen);
-      if (current && current.joined && !current.halted) current.onAttach?.(file);
+      if (current && current.joined && !current.halted && !current.consentRequired) current.onAttach?.(file);
     },
   }, Object.values(parts));
   liveProps.set(screen, room);
@@ -1090,6 +1097,27 @@ export function openApproveSheet(root, { onOffer, onApprove, onClose }) {
   };
   render();
   textarea.focus();
+  return { close };
+}
+
+/**
+ * AI 참여 동의 시트(#544 E, 패밀리챗 초대 카드의 동의 블록과 같은 문구): 안내 + 참여자 + 체크 → 「동의하고 대화하기」.
+ * 「나중에」는 동의 없이 닫는다(작성창은 잠긴 채, 게이트의 「안내 보기」로 다시 연다).
+ */
+export function openConsentSheet(root, { roomName, agentNames = [], onConsent, onClose }) {
+  const { dialog, close } = openSheet(root, { className: 'consent', labelledBy: 'consent-title', onClose });
+  const hint = el('p', { class: 'hint', role: 'status' }, strings.consent.required);
+  const button = el('button', { type: 'button', class: 'primary', disabled: true, 'data-testid': 'consent-confirm', onclick: () => { close(); onConsent?.(); } }, strings.consent.confirm);
+  const check = el('input', { type: 'checkbox', 'data-testid': 'consent-check', onchange: (event) => { button.disabled = !event.target.checked; hint.hidden = event.target.checked; } });
+  setChildren(dialog,
+    el('h2', { id: 'consent-title' }, strings.consent.title),
+    el('p', { class: 'meta' }, roomName),
+    el('p', { class: 'confirm-body' }, strings.consent.body),
+    agentNames.length ? el('p', { class: 'consent-agents' }, strings.consent.agents(agentNames.join(', '))) : null,
+    el('label', { class: 'consent-check' }, check, el('span', {}, strings.consent.label)),
+    hint,
+    el('div', { class: 'row end gap' }, el('button', { type: 'button', class: 'ghost', 'data-testid': 'consent-later', onclick: close }, strings.consent.later), button));
+  check.focus();
   return { close };
 }
 

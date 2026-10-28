@@ -151,7 +151,8 @@ test('손상된 보관 기록·다른 기기 기록은 거부한다', () => {
 
 test('잠금 없는 브라우저·동시 전송은 거부한다', async () => {
   const {deps} = harness();
-  await assert.rejects(fileV2Outbox({...deps, locks: undefined}).send(fileOf(photo()), 1), /지원하지 않는다/);
+  // `null` 이어야 한다 — `undefined` 는 기본 매개변수(globalThis.navigator?.locks)를 적용해 Node 24(Web Locks 내장)에서는 실제 잠금이 잡혀 거부되지 않았다(#537 코멘트).
+  await assert.rejects(fileV2Outbox({...deps, locks: null}).send(fileOf(photo()), 1), /지원하지 않는다/);
   const {deps: d2} = harness();
   await assert.rejects(fileV2Outbox({...d2, locks: {request: async (_n, _o, fn) => fn(null)}}).send(fileOf(photo()), 1), /다른 탭/);
 });

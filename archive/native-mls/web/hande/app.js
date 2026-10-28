@@ -10,6 +10,7 @@ import {strings, displayName, isAgentDevice, isMine, isOneToOne, roomLabel, prev
 import {orderRooms, moveRoom, readRoomOrder, writeRoomOrder} from './room-order.js';
 import {readDraft, writeDraft} from './drafts.js';
 import {readReadSeq, writeReadSeq, latestSeq, isUnread} from './read-seq.js';
+import {readConsent, writeConsent, agentsIn, needsConsent} from './agent-consent.js';
 import {createWorkerBridge} from './worker-bridge.js';
 import {createRelay} from './relay.js';
 import {createIdentityStore, databaseFor, ROOM, IDENTITY_DATABASE, LOBBY_DATABASE} from './identity.js';
@@ -43,6 +44,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     current: null, roomOpen: false, draft: new Map(), sending: false,
     invites: [], adoptFailed: new Map(), dismissed: new Set(), lobbyDue: true, pendingWelcomeRefs: {set: new Set(), complete: true},
     filebox: null, boxOpen: false, boxTab: 'attachments', boxRefresh: 0, pendingJump: null,   // 오른쪽 보관함 pane: 첨부 탭(#544 D) + 파일보관함 iframe(config.json filebox)
+    consentPrompted: new Set(),                      // AI 참여 동의 시트를 이 페이지 세션에서 자동으로 띄운 방(#544 E)
     roomOrder: [], orderEditing: false,              // 대화 목록 고정 순서(이 기기 localStorage, #480 A)
     notice: null, logs: [], offlineAt: null, tick: null,
   };
@@ -140,6 +142,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       return {roomId: app.current, name: roomLabel(app.current), members: S.roster.slice(), joined: S.joined, halted: S.halted ? {...S.halted} : null,
         timeline: R.entries, draft: app.draft.get(app.current) ?? '', onSend: sendText, onAttach: sendAttachment, onOpenAttachment: e => e.load(), onRetryPreview: loadPreview,
         onBack: () => { app.roomOpen = false; render(); }, onOpenInvite: openInvite, onOpenMembers: openInvite, onOpenBox: toggleBox,
+        consentRequired: consentRequired(R), onOpenConsent: () => openConsentSheet(app.current),
         onDraft: text => { app.draft.set(app.current, text); writeDraft(storage, app.device, app.current, text); }, notice: null, sending: app.sending || S.transferring,
         attachmentPending: R.session.attachmentPending ? {size: 0, onRetry: () => sendAttachment(null)} : null};
     })() : null;
@@ -197,7 +200,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     if (R && !opts.replace) return R;
     if (R) { R.session.stop(); app.rooms.delete(roomId); }
     const session = newSession(roomId);
-    R = {session, entries: [], entryKeys: new Set(), readSeq: readReadSeq(storage, app.device, roomId), order: app.rooms.size};
+    R = {session, entries: [], entryKeys: new Set(), readSeq: readReadSeq(storage, app.device, roomId), order: app.rooms.size,
+      consented: readConsent(storage, app.device, roomId)};   // AI 참여 동의(#544 E) — 이 기기·이 방
     app.rooms.set(roomId, R); writeKnown();
     // 새로고침 뒤에도 쓰던 글이 남는다(#480 B) — 메모리 초안이 없을 때만 저장분을 올린다.
     if (!app.draft.has(roomId)) { const saved = readDraft(storage, app.device, roomId); if (saved) app.draft.set(roomId, saved); }
@@ -212,6 +216,26 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     app.boxOpen = false;   // 좁은 화면: 보관함 대신 대화를 보인다
     if (!app.rooms.has(roomId)) return;
     app.current = roomId; app.roomOpen = true; markRoomRead(roomId); render();
+    promptConsentOnce(roomId);
+  }
+  // ---- AI 참여 동의(#544 E 선택지 3): 명단에 에이전트가 있고 이 기기의 동의 기록이 없으면 방을 처음 열 때 시트, 동의 전 작성창 잠금 ----
+  const consentRequired = R => needsConsent({roster: R.session.state.roster, consented: R.consented});
+  /** 페이지 세션에서 방마다 한 번만 자동으로 띄운다 — 「나중에」를 눌렀으면 게이트의 「안내 보기」로만 다시 연다. */
+  function promptConsentOnce(roomId) {
+    const R = app.rooms.get(roomId);
+    if (!R || !consentRequired(R) || app.consentPrompted.has(roomId)) return;
+    app.consentPrompted.add(roomId);
+    openConsentSheet(roomId);
+  }
+  function openConsentSheet(roomId) {
+    const R = app.rooms.get(roomId);
+    if (!R) return;
+    ui.openConsentSheet(root, {roomName: roomLabel(roomId), agentNames: agentsIn(R.session.state.roster).map(displayName), onClose: () => {},
+      onConsent: () => {
+        R.consented = true;
+        if (!writeConsent(storage, app.device, roomId)) logLine(`동의 저장 실패(${roomId}) — 이번 화면에서만 유효`);
+        status(strings.consent.done, 'ok'); render();
+      }});
   }
   /** 이 방을 화면 타임라인의 마지막 seq 까지 봤다(iOS LocalPrefs.markRead — 줄어들지 않음, 이 기기 localStorage). */
   function markRoomRead(roomId) {
@@ -295,7 +319,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       // Known rooms open first (their own 4 s polling); the default room is always known.
       const known = new Set(readKnown()); if (opened.migrated || known.size === 0) known.add(app.defaultRoom);
       for (const roomId of known) { try { await ensureRoom(roomId); } catch (error) { logLine(`방 ${roomId} 열기 실패: ${error.message}`); } }
-      if (window.matchMedia?.('(min-width: 900px)').matches && app.rooms.size) { app.current = [...app.rooms.keys()][0]; app.roomOpen = true; markRoomRead(app.current); }
+      if (window.matchMedia?.('(min-width: 900px)').matches && app.rooms.size) { app.current = [...app.rooms.keys()][0]; app.roomOpen = true; markRoomRead(app.current); promptConsentOnce(app.current); }
       await refresh();
       app.tick = setInterval(() => refresh().catch(() => {}), TICK_MS);
       render();
@@ -427,6 +451,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   async function sendText(text) {
     const s = cur();
     if (!s || app.sending) return false;
+    if (consentRequired(app.rooms.get(app.current))) { status(strings.consent.blocked, 'warn'); openConsentSheet(app.current); return false; }
     app.sending = true; render();
     try { await s.send(text); app.draft.set(app.current, ''); writeDraft(storage, app.device, app.current, ''); markRoomRead(app.current); return true; }
     catch (error) { status(error.message, 'danger'); return false; }
@@ -435,6 +460,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   async function sendAttachment(file) {
     const s = cur();
     if (!s) return;
+    if (consentRequired(app.rooms.get(app.current))) { status(strings.consent.blocked, 'warn'); openConsentSheet(app.current); return; }
     try {
       const result = await s.sendAttachment(file);
       status(strings.room.attachmentSent(result.seq, result.size), 'ok');
