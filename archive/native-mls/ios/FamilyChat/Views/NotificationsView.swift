@@ -1,6 +1,7 @@
 // 🔔 알림 시트(#521, 웹 `openNotifySheet` 와 동일): 받은 로비 초대와 처리 상태(새 초대 / 수락하는 중… / 자동 수락 실패 n회 — 사유)를 모아
-// 보이고 수락·다시 시도·무시를 받는다. 오너 기기의 자동 참여가 실패해도 로그가 아니라 여기와 목록 카드에 남는다. 행은 목록 카드와 같은
-// `LobbyInviteRow` — 결과(참여·실패 상태·무시)는 `AppModel.pendingInvites`/`inviteStates` 로 돌아와 배지·카드에도 반영된다.
+// 보이고 수락·다시 시도·무시를 받는다. 오너 기기의 자동 참여가 실패해도 로그가 아니라 여기 남는다. 초대 칸은 이 시트에만 있다(오너 요청
+// 2026-10-28 — 대화 목록에는 두지 않고 🔔 배지 수로만 알린다). 행은 `LobbyInviteRow` — 결과(참여·실패 상태·무시)는
+// `AppModel.pendingInvites`/`inviteStates` 로 돌아와 배지에도 반영된다.
 import SwiftUI
 import FamilyMLSCore
 

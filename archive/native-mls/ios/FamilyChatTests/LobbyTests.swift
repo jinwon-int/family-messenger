@@ -92,7 +92,7 @@ final class LobbyTests: XCTestCase {
         // 방 목록(/v2/rooms)은 봇의 commit 이 이 기기를 넣었으므로 방을 보이지만, 상태는 로비로 바뀌지 않았다(identity 시드 그대로).
         let untouched = try state.withExclusive(room: "ops-yukson", timeout: 1) { try $0.load() }
         XCTAssertNotEqual(untouched, try slot(state)?.state, "B: the room state is not adopted before the tap")
-        // #389: 기록은 있지만(목록이 방을 돌려준다) 대화 목록에는 「새 대화방 초대」 칸에만 보인다.
+        // #389: 기록은 있지만(목록이 방을 돌려준다) 대화 목록에는 없고 🔔 알림 시트의 「새 대화방 초대」 칸에만 보인다.
         XCTAssertTrue(model.rooms.contains { $0.room == "ops-yukson" }, "the relay listing already created the record")
         XCTAssertFalse(model.listedRooms.contains { $0.room == "ops-yukson" }, "#389: hidden from the room list until accepted")
 

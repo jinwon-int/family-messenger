@@ -36,17 +36,13 @@ struct RoomListView: View {
                     }
                 }
             }
-            if !model.pendingInvites.isEmpty {
-                Section(Strings.inviteSectionTitle) {
-                    ForEach(model.pendingInvites, id: \.room) { invite in
-                        LobbyInviteRow(room: invite.room)
-                    }
-                }
-            }
-            if model.listedRooms.isEmpty && model.pendingInvites.isEmpty {
+            // 오너 요청(2026-10-28): 받은 초대(수락·다시 시도·무시)는 목록에 칸을 두지 않고 🔔 알림 시트에만 둔다 —
+            // 배지 수가 🔔 에 보이므로 목록은 대화방 카드만. 방이 하나도 없고 초대만 있으면 🔔 로 안내한다.
+            if model.listedRooms.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(Strings.campfireEmpty).font(.headline).foregroundStyle(Hande.ink)
-                    Text(Strings.noRooms).font(.footnote).foregroundStyle(Hande.inkDim)
+                    Text(model.pendingInvites.isEmpty ? Strings.noRooms : Strings.invitesInBell(model.pendingInvites.count))
+                        .font(.footnote).foregroundStyle(Hande.inkDim)
                 }
                 .listRowBackground(Color.clear)
             }
@@ -177,7 +173,7 @@ struct CampfireCard: View {
     }
 }
 
-/// 로비 초대 1탭(목록 카드·🔔 알림 공용): 수락 = 방 상태를 로비 키로 받아들여 참여, 무시 = 이 세션에서 숨김(다음 실행에 다시 보임).
+/// 로비 초대 1탭(🔔 알림 시트 전용 — 목록 칸은 오너 요청 2026-10-28 로 뺌): 수락 = 방 상태를 로비 키로 받아들여 참여, 무시 = 이 세션에서 숨김(다음 실행에 다시 보임).
 /// 가족 기기(오너 결정 D1 B)의 새 초대와, 오너 기기(A)의 자동 참여가 실패한 초대(#521 — 「다시 시도」가 횟수를 되돌린다)가 같은 줄을 쓴다.
 struct LobbyInviteRow: View {
     @EnvironmentObject private var model: AppModel
