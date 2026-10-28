@@ -920,7 +920,10 @@ fn echo(ctx: &Ctx, state: &mut RoomState, ev: &StoredRow, sender: &[u8], plainte
         Mode::Agent => match agent.as_mut() {
             Some(responder) => {
                 persist_before_turn(ctx, state)?;
-                route_to_agent(state, ev, sender, plaintext, responder)
+                if let Some(text) = route_to_agent(state, ev, sender, plaintext, responder)? {
+                    post_queue_notice(ctx, state, &text);
+                }
+                Ok(())
             }
             None => {
                 emit(&serde_json::json!({ "event": "agent_skipped", "room": state.room, "seq": ev.seq, "reason": "no_responder" }));
@@ -952,8 +955,10 @@ fn persist_before_turn(ctx: &Ctx, state: &mut RoomState) -> Result<(), BotError>
 
 /// Agent mode: decide whether one decrypted message becomes a turn, an
 /// approval reply, or nothing (②-B all messages; ③-B all non-bot actors;
-/// ④-B owner-only approval replies). Pure routing — no MLS here.
-fn route_to_agent(state: &mut RoomState, ev: &StoredRow, sender: &[u8], plaintext: &[u8], agent: &mut Responder) -> Result<(), BotError> {
+/// ④-B owner-only approval replies). Pure routing — no MLS here: the room
+/// line a queued or refused message earns (`queue_notice`) is returned for
+/// the caller to post.
+fn route_to_agent(state: &mut RoomState, ev: &StoredRow, sender: &[u8], plaintext: &[u8], agent: &mut Responder) -> Result<Option<String>, BotError> {
     let sender_device = String::from_utf8_lossy(sender).into_owned();
     let skipped = |reason: &str| {
         emit(&serde_json::json!({
@@ -962,17 +967,17 @@ fn route_to_agent(state: &mut RoomState, ev: &StoredRow, sender: &[u8], plaintex
     };
     if responder::is_bot_actor(&sender_device) {
         skipped("bot_actor");
-        return Ok(());
+        return Ok(None);
     }
     if responder::is_attachment_client_id(&ev.client_id) {
         skipped("attachment");
-        return Ok(());
+        return Ok(None);
     }
     let text = match std::str::from_utf8(plaintext) {
         Ok(text) if !text.trim().is_empty() => text.to_string(),
         _ => {
             skipped("non_utf8_or_empty");
-            return Ok(());
+            return Ok(None);
         }
     };
     if responder::actor_of(&sender_device) == agent.owner_actor() {
@@ -981,7 +986,7 @@ fn route_to_agent(state: &mut RoomState, ev: &StoredRow, sender: &[u8], plaintex
             emit(&serde_json::json!({
                 "event": "agent_approval_reply", "room": state.room, "seq": ev.seq, "n": n, "allow": allow, "known": known,
             }));
-            return Ok(());
+            return Ok(None);
         }
     }
     // `/stop` is a control, not a turn (Matrix parity): it acts on the turn
@@ -991,13 +996,45 @@ fn route_to_agent(state: &mut RoomState, ev: &StoredRow, sender: &[u8], plaintex
         emit(&serde_json::json!({
             "event": "agent_stop", "room": state.room, "seq": ev.seq, "from": sender_device, "outcome": format!("{outcome:?}"),
         }));
-        return Ok(());
+        return Ok(None);
     }
     let offer = agent.offer(Inbound { room: state.room.clone(), seq: ev.seq, sender_device: sender_device.clone(), text, peer_depth: 0 })?;
     emit(&serde_json::json!({
         "event": "agent_offer", "room": state.room, "seq": ev.seq, "from": sender_device, "outcome": format!("{offer:?}"),
     }));
-    Ok(())
+    Ok(queue_notice(&offer))
+}
+
+/// Matrix parity (ccc-node `NOTICE_QUEUED` / `NOTICE_QUEUE_FULL`, same
+/// wording): a message that arrives while a turn runs is told where it waits
+/// — the running turn counts as 1, so the first one waiting is 2 — and one
+/// the full queue refuses is told to try again. Nothing for a started turn
+/// or a retired worker (that one already gets `WorkerGone`).
+fn queue_notice(offer: &responder::Offer) -> Option<String> {
+    match offer {
+        responder::Offer::Queued { depth } => Some(format!("⏳ 이 메시지는 대기 순번 {}번에 저장되었으며 도착 순서대로 처리됩니다.", depth + 1)),
+        responder::Offer::Dropped { reason: "queue_full" } => Some("대기 중인 요청이 많습니다. 잠시 후 다시 요청해 주세요.".to_string()),
+        responder::Offer::Started | responder::Offer::Dropped { .. } => None,
+    }
+}
+
+/// Post one `queue_notice` line in the agent room the message came from.
+/// The message itself is already safe in the responder queue, so a send that
+/// fails is logged and the session goes on: a lost courtesy line must not
+/// restart the bot (which would drop the in-memory queue it describes).
+fn post_queue_notice(ctx: &Ctx, state: &mut RoomState, text: &str) {
+    emit(&serde_json::json!({
+        "event": "agent_outbound", "room": state.room, "kind": "queue_notice", "bytes": text.len(),
+    }));
+    if !state.joined || state.halted {
+        emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": state.room, "reason": "not_joined_or_halted" }));
+        return;
+    }
+    if let Err(err) = publish_echo(ctx, state, text.as_bytes(), 0) {
+        emit(&serde_json::json!({
+            "event": "agent_outbound_dropped", "room": state.room, "reason": "queue_notice_send_failed", "error": err.to_string(),
+        }));
+    }
 }
 
 /// #425: `<room>.peers` next to the room state — one actor per line (`#`
@@ -1832,6 +1869,35 @@ for line in sys.stdin:
         let call = Outbound::ToolCall { tool_id: "n1".into(), name: "room_status".into(), op: "status".into(), room: "-".into(), arg: String::new() };
         assert_eq!(agent_kind(&call), "tool_call");
         assert_eq!(agent_text(&call), "");
+    }
+
+    /// Matrix parity: while a turn runs, each later message is answered with
+    /// its place in line (running turn = 1, so the first waiting one is 2),
+    /// a message the full queue refuses is told to try again, and controls
+    /// (`/stop`, approval replies) or a started turn get no queue line.
+    #[test]
+    fn route_to_agent_tells_a_waiting_message_its_place() {
+        // A worker that never answers keeps the first turn running.
+        const HOLD_WORKER: &str = "import sys\nfor line in sys.stdin:\n    pass\n";
+        let mut config = responder::Config::new(responder::Transport::Argv(vec!["python3".into(), "-c".into(), HOLD_WORKER.into()]), "owner".into());
+        config.queue_max = 2;
+        let mut agent = Responder::spawn(config, None).unwrap_or_else(|e| panic!("spawn: {e}"));
+        let mut state = joined_room("family", 4);
+        let row = |seq: i64, device: &str| StoredRow {
+            seq, device: device.into(), client_id: format!("{device}-c{seq}"), kind: "application".into(), epoch: 2,
+            bytes: Vec::new(), sha256: String::new(), created_at: 0,
+        };
+        let mut say = |seq: i64, device: &str, text: &str| {
+            route_to_agent(&mut state, &row(seq, device), device.as_bytes(), text.as_bytes(), &mut agent).unwrap_or_else(|e| panic!("route: {e}"))
+        };
+        assert_eq!(say(5, "owner-pc", "첫 작업"), None, "a started turn gets no queue line");
+        assert_eq!(say(6, "mom-iphone-1", "두 번째").as_deref(), Some("⏳ 이 메시지는 대기 순번 2번에 저장되었으며 도착 순서대로 처리됩니다."));
+        assert_eq!(say(7, "owner-pc", "승인 1"), None, "an approval reply is not queued");
+        assert_eq!(say(8, "owner-pc", "/stop"), None, "/stop acts on the running turn, it does not wait");
+        assert_eq!(say(9, "owner-pc", "세 번째").as_deref(), Some("⏳ 이 메시지는 대기 순번 3번에 저장되었으며 도착 순서대로 처리됩니다."));
+        assert_eq!(say(10, "owner-pc", "네 번째").as_deref(), Some("대기 중인 요청이 많습니다. 잠시 후 다시 요청해 주세요."), "queue_max 2 is full");
+        assert_eq!(queue_notice(&responder::Offer::Started), None);
+        assert_eq!(queue_notice(&responder::Offer::Dropped { reason: "worker_gone" }), None, "a retired worker already says WorkerGone");
     }
 
     /// #268: only a joined device below `first_seq - 1` has lost history.
