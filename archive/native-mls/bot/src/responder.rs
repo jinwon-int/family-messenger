@@ -162,6 +162,13 @@ pub enum Outbound {
     /// (`timeout`, `cancelled`, `runtime-error`, `rejected:<why>`, `watchdog`,
     /// `restart`) — never re-run.
     Uncertain { seq: i64, reason: String },
+    /// The turn started by relay seq `seq` ended because a person sent
+    /// `/stop` (`Responder::stop` → FLEET-WORKER `cancel`). Not uncertain:
+    /// the worker keeps serving and the next queued turn starts.
+    Stopped { seq: i64 },
+    /// A `/stop` (relay seq `seq`) that stopped nothing: `idle` (no turn in
+    /// that room) or `not_allowed` (someone else's turn, sender not the owner).
+    StopIgnored { seq: i64, reason: &'static str },
     /// The child is gone; the session should stop offering turns.
     WorkerGone { reason: String },
     /// P4: the worker asked for steward room command `op room arg` (already
@@ -198,6 +205,23 @@ pub enum Offer {
     Dropped { reason: &'static str },
 }
 
+/// `Responder::stop`: what a `/stop` did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Stop {
+    /// `cancel` sent for the active turn (relay seq `seq`); its `result`
+    /// comes back as `Outbound::Stopped`.
+    Cancelling { seq: i64 },
+    /// Nothing to stop in that room, or not the sender's turn to stop.
+    Ignored { reason: &'static str },
+}
+
+/// Matrix parity (ccc-node `CONTROL_PREFIXES`): a bare `/stop` is a control,
+/// never a turn — it must act while the turn it means is still running, so
+/// it cannot wait behind it in the queue.
+pub fn is_stop_command(text: &str) -> bool {
+    text.trim().eq_ignore_ascii_case("/stop")
+}
+
 enum Cmd {
     Line(String),
     Close,
@@ -219,6 +243,11 @@ struct ActiveTurn {
     /// #425: see `Inbound::peer_depth`.
     #[serde(default)]
     peer_depth: u8,
+    /// `/stop` sent `cancel` for this turn: its `uncertain/cancelled` result
+    /// is the stop landing, not a worker failure. Memory-only in effect (a
+    /// restart reports the turn uncertain either way).
+    #[serde(default)]
+    stop_requested: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -242,8 +271,9 @@ pub struct Responder {
     approvals: HashMap<u64, (String, String)>,
     next_approval: u64,
     gone: bool,
-    /// Notices queued for the room (uncertain turn found at startup, etc.).
-    startup_notices: Vec<Routed>,
+    /// Items for the room that no worker frame produced (uncertain turn found
+    /// at startup, a `/stop` that stopped nothing); the next pump posts them.
+    pending_items: Vec<Routed>,
     /// P4: `tool_id` of the one tool call the poll loop still owes an answer.
     pending_tool: Option<String>,
     /// #474: `interim` messages already posted for the active turn.
@@ -271,10 +301,11 @@ fn turn_item(peer_depth: u8, room: String, item: Outbound) -> Routed {
         Outbound::ApprovalRequest { .. } => "approval_request",
         Outbound::ApprovalResolved { .. } => "approval_resolved",
         Outbound::Uncertain { .. } => "uncertain",
+        Outbound::Stopped { .. } => "stopped",
         _ => "other",
     };
     let seq = match &item {
-        Outbound::Reply { seq, .. } | Outbound::Interim { seq, .. } | Outbound::ApprovalRequest { seq, .. } | Outbound::Uncertain { seq, .. } => *seq,
+        Outbound::Reply { seq, .. } | Outbound::Interim { seq, .. } | Outbound::ApprovalRequest { seq, .. } | Outbound::Uncertain { seq, .. } | Outbound::Stopped { seq } => *seq,
         _ => 0,
     };
     (room, Outbound::Suppressed { seq, kind })
@@ -363,7 +394,7 @@ impl Responder {
             approvals: HashMap::new(),
             next_approval: 0,
             gone: false,
-            startup_notices: Vec::new(),
+            pending_items: Vec::new(),
             pending_tool: None,
             interim_sent: 0,
             age_notice_due: None,
@@ -373,7 +404,7 @@ impl Responder {
         // A turn left active by an earlier run was never confirmed: say so
         // once, clear it, never re-run it.
         if let Some(previous) = responder.load_inbox()?.active {
-            responder.startup_notices.push(turn_item(previous.peer_depth, previous.room.clone(), Outbound::Uncertain { seq: previous.seq, reason: "restart".to_string() }));
+            responder.pending_items.push(turn_item(previous.peer_depth, previous.room.clone(), Outbound::Uncertain { seq: previous.seq, reason: "restart".to_string() }));
             responder.write_inbox(None)?;
         }
         Ok(responder)
@@ -408,6 +439,38 @@ impl Responder {
         Ok(Offer::Started)
     }
 
+    /// `/stop` from `sender_device` in `room` (relay seq `seq`): cancel the
+    /// active turn the way Matrix `/stop` does (ccc-node `_cancel_active`) —
+    /// only the turn in the sender's room, only by the person who started it
+    /// or the owner; queued turns stay queued. A stop that stops nothing is
+    /// answered in the room on the next pump, without a turn.
+    pub fn stop(&mut self, room: &str, seq: i64, sender_device: &str) -> Stop {
+        let ignored = |reason: &'static str| Stop::Ignored { reason };
+        if self.gone {
+            return ignored("worker_gone");
+        }
+        let Some((turn, _)) = self.active.as_mut() else {
+            self.pending_items.push((room.to_string(), Outbound::StopIgnored { seq, reason: "idle" }));
+            return ignored("idle");
+        };
+        if self.config.room_frames && turn.room != room {
+            self.pending_items.push((room.to_string(), Outbound::StopIgnored { seq, reason: "idle" }));
+            return ignored("idle");
+        }
+        let actor = actor_of(sender_device);
+        if actor != self.config.owner_actor && actor != actor_of(&turn.sender_device) {
+            self.pending_items.push((room.to_string(), Outbound::StopIgnored { seq, reason: "not_allowed" }));
+            return ignored("not_allowed");
+        }
+        let active_seq = turn.seq;
+        if !turn.stop_requested {
+            turn.stop_requested = true;
+            let line = serde_json::json!({ "type": "cancel", "turn_id": turn.turn_id }).to_string();
+            let _ = self.to_child.send(Cmd::Line(line));
+        }
+        Stop::Cancelling { seq: active_seq }
+    }
+
     /// Owner's `승인 n` / `거절 n`: route to the worker. `None` = unknown number.
     pub fn resolve(&mut self, n: u64, allow: bool) -> Option<bool> {
         let (turn_id, approval_id) = self.approvals.get(&n)?.clone();
@@ -426,7 +489,7 @@ impl Responder {
 
     /// #423: `pump` with each item's room (see `Routed`).
     pub fn pump_routed(&mut self) -> Result<Vec<Routed>, BotError> {
-        let mut out = std::mem::take(&mut self.startup_notices);
+        let mut out = std::mem::take(&mut self.pending_items);
         loop {
             match self.from_child.try_recv() {
                 Ok(Ok(value)) => self.handle(value, &mut out)?,
@@ -472,6 +535,7 @@ impl Responder {
             seq: inbound.seq, turn_id: turn_id.clone(), started_at: now_secs(), sender_device: inbound.sender_device.clone(),
             room: inbound.room.clone(),
             peer_depth: inbound.peer_depth,
+            stop_requested: false,
         };
         // Durable before the child sees it (FLEET-WORKER: the parent inbox is
         // the duplicate guard, not the port).
@@ -607,6 +671,17 @@ impl Responder {
                     }
                 } else {
                     let reason = value.get("reason").and_then(|v| v.as_str()).unwrap_or("uncertain").to_string();
+                    let stop_requested = self.active.as_ref().is_some_and(|(turn, _)| turn.stop_requested);
+                    if reason == "cancelled" && stop_requested {
+                        // The landing of this bot's own `cancel` (`/stop`): the
+                        // worker is not retired — the ccc-node bridge keeps
+                        // serving after a user cancel, as Matrix does. (A
+                        // worker that does retire closes its stdout, which
+                        // `fail`s on its own.)
+                        out.push(turn_item(depth, room, Outbound::Stopped { seq }));
+                        self.finish_active()?;
+                        return Ok(());
+                    }
                     out.push(turn_item(depth, room, Outbound::Uncertain { seq, reason }));
                     // FLEET-WORKER: an uncertain outcome retires the worker; it
                     // accepts no further turns. Treat the process as gone.
@@ -973,6 +1048,16 @@ for line in sys.stdin:
         if cmd["prompt"].startswith("fail"):
             print(json.dumps({"type": "result", "turn_id": tid, "status": "uncertain", "reason": "runtime-error"}), flush=True)
             continue
+        if cmd["prompt"].startswith("hold"):
+            # Runs until the next frame: a matching `cancel` lands as the
+            # ccc-node hande bridge does (control, then uncertain/cancelled),
+            # and the worker keeps serving.
+            nxt = json.loads(next(sys.stdin))
+            accepted = nxt["type"] == "cancel" and nxt["turn_id"] == tid
+            print(json.dumps({"type": "control", "turn_id": nxt.get("turn_id", ""), "accepted": accepted}), flush=True)
+            if accepted:
+                print(json.dumps({"type": "result", "turn_id": tid, "status": "uncertain", "reason": "cancelled", "session_id": "s1"}), flush=True)
+            continue
         if cmd["prompt"].startswith("askroom"):
             print(json.dumps({"type": "approval", "turn_id": tid, "approval_id": "ap-2", "action": "mcp__steward__room_invite",
                               "description": "free text the worker made up",
@@ -1138,6 +1223,101 @@ for line in sys.stdin:
         assert!(matches!(got[2], Outbound::WorkerGone { .. }));
         assert!(r.is_gone());
         assert_eq!(r.offer(inbound(3, "owner-pc", "x")).unwrap(), Offer::Dropped { reason: "worker_gone" });
+    }
+
+    #[test]
+    fn stop_command_shape() {
+        assert!(is_stop_command("/stop"));
+        assert!(is_stop_command("  /STOP \n"));
+        assert!(!is_stop_command("/stop now"));
+        assert!(!is_stop_command("stop"));
+        assert!(!is_stop_command("/stopping"));
+        assert!(!is_stop_command(""));
+    }
+
+    /// Matrix parity: `/stop` cancels the running turn at once (it does not
+    /// wait in the queue), the stop lands as `Stopped` — not uncertain, the
+    /// worker is not retired — and the queued turn runs next.
+    #[test]
+    fn stop_cancels_the_active_turn_and_the_queue_goes_on() {
+        let mut r = fake(|_| {}, None);
+        assert_eq!(r.offer(inbound(1, "owner-pc", "hold on")).unwrap(), Offer::Started);
+        assert_eq!(r.offer(inbound(2, "mom-iphone-1", "later")).unwrap(), Offer::Queued { depth: 1 });
+        assert_eq!(r.stop("agent", 3, "owner-pc"), Stop::Cancelling { seq: 1 });
+        // A second /stop while the cancel is in flight sends no second frame.
+        assert_eq!(r.stop("agent", 4, "owner-pc"), Stop::Cancelling { seq: 1 });
+        let got = pump_until(&mut r, 2);
+        assert_eq!(got[0], Outbound::Stopped { seq: 1 });
+        assert_eq!(got[1], Outbound::Reply { seq: 2, text: "echo:later|@mom-iphone-1:hande".into() });
+        assert!(!r.is_gone());
+        assert!(r.active.is_none());
+        assert_eq!(r.offer(inbound(5, "owner-pc", "again")).unwrap(), Offer::Started);
+        assert_eq!(pump_until(&mut r, 1)[0], Outbound::Reply { seq: 5, text: "echo:again|@owner-pc:hande".into() });
+    }
+
+    /// Who may stop what: the turn's own sender or the owner; a stop with no
+    /// turn running (or in another room) is answered without a turn.
+    #[test]
+    fn stop_is_answered_when_idle_and_refused_for_someone_elses_turn() {
+        let mut r = fake(|_| {}, None);
+        assert_eq!(r.stop("agent", 5, "owner-pc"), Stop::Ignored { reason: "idle" });
+        assert_eq!(r.pump().unwrap(), vec![Outbound::StopIgnored { seq: 5, reason: "idle" }]);
+        r.offer(inbound(6, "mom-iphone-1", "hold please")).unwrap();
+        assert_eq!(r.stop("agent", 7, "dad-iphone-2"), Stop::Ignored { reason: "not_allowed" });
+        assert_eq!(r.stop("agent", 8, "mom-iphone-1"), Stop::Cancelling { seq: 6 });
+        let got = pump_until(&mut r, 2);
+        assert_eq!(got, vec![Outbound::StopIgnored { seq: 7, reason: "not_allowed" }, Outbound::Stopped { seq: 6 }]);
+        // The owner may stop a family member's turn.
+        r.offer(inbound(9, "mom-iphone-1", "hold again")).unwrap();
+        assert_eq!(r.stop("agent", 10, "owner-pc"), Stop::Cancelling { seq: 9 });
+        assert_eq!(pump_until(&mut r, 1), vec![Outbound::Stopped { seq: 9 }]);
+        assert!(!r.is_gone());
+    }
+
+    /// #423 room frames: a `/stop` in another room does not touch this room's turn.
+    #[test]
+    fn stop_in_another_room_is_idle_there() {
+        let mut r = fake(|c| c.room_frames = true, None);
+        r.offer(Inbound { room: "family".into(), seq: 1, sender_device: "owner-pc".into(), text: "hold".into(), peer_depth: 0 }).unwrap();
+        assert_eq!(r.stop("fleet", 2, "owner-pc"), Stop::Ignored { reason: "idle" });
+        assert_eq!(r.stop("family", 3, "owner-pc"), Stop::Cancelling { seq: 1 });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut got = Vec::new();
+        while got.len() < 2 && Instant::now() < deadline {
+            got.extend(r.pump_routed().unwrap_or_else(|e| panic!("pump: {e}")));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(got, vec![
+            ("fleet".to_string(), Outbound::StopIgnored { seq: 2, reason: "idle" }),
+            ("family".to_string(), Outbound::Stopped { seq: 1 }),
+        ]);
+    }
+
+    /// A worker that retires after a cancel (fleet_worker.py) still ends the
+    /// session the old way: the stop lands, then stdout closes → worker gone.
+    #[test]
+    fn stop_then_worker_exit_is_still_worker_gone() {
+        const EXITING_WORKER: &str = r#"
+import json, sys
+for line in sys.stdin:
+    cmd = json.loads(line)
+    if cmd["type"] == "turn":
+        tid = cmd["turn_id"]
+        nxt = json.loads(next(sys.stdin))
+        print(json.dumps({"type": "result", "turn_id": tid, "status": "uncertain", "reason": "cancelled"}), flush=True)
+        break
+"#;
+        let config = Config::new(Transport::Argv(vec!["python3".into(), "-c".into(), EXITING_WORKER.into()]), "owner".into());
+        let mut r = Responder::spawn(config, None).unwrap_or_else(|e| panic!("spawn: {e}"));
+        r.offer(inbound(1, "owner-pc", "x")).unwrap();
+        r.offer(inbound(2, "owner-pc", "y")).unwrap();
+        assert_eq!(r.stop("agent", 3, "owner-pc"), Stop::Cancelling { seq: 1 });
+        let got = pump_until(&mut r, 3);
+        assert_eq!(got[0], Outbound::Stopped { seq: 1 });
+        assert_eq!(got[1], Outbound::Uncertain { seq: 2, reason: "worker_gone".into() });
+        assert!(matches!(got[2], Outbound::WorkerGone { .. }));
+        assert!(r.is_gone());
+        assert_eq!(r.stop("agent", 4, "owner-pc"), Stop::Ignored { reason: "worker_gone" });
     }
 
     #[test]

@@ -704,6 +704,9 @@ fn agent_text(item: &Outbound) -> String {
         Outbound::Uncertain { seq, reason } => {
             format!("⚠️ 요청(#{seq})을 끝까지 확인하지 못했습니다({reason}). 다시 말씀해 주세요 — 같은 요청을 자동으로 다시 실행하지는 않습니다.")
         }
+        Outbound::Stopped { seq } => format!("⏹️ 요청(#{seq})을 중단했습니다."),
+        Outbound::StopIgnored { reason: "not_allowed", .. } => "ℹ️ 다른 사람의 요청은 오너만 중단할 수 있습니다.".to_string(),
+        Outbound::StopIgnored { .. } => "ℹ️ 중단할 요청이 없습니다.".to_string(),
         Outbound::WorkerGone { reason } => format!("⚠️ 응답기가 멈췄습니다({reason})."),
         // Never posted (P4): the poll loop answers it on the port.
         Outbound::ToolCall { .. } => String::new(),
@@ -720,6 +723,8 @@ fn agent_kind(item: &Outbound) -> &'static str {
         Outbound::ApprovalRequest { .. } => "approval_request",
         Outbound::ApprovalResolved { .. } => "approval_resolved",
         Outbound::Uncertain { .. } => "uncertain",
+        Outbound::Stopped { .. } => "stopped",
+        Outbound::StopIgnored { .. } => "stop_ignored",
         Outbound::WorkerGone { .. } => "worker_gone",
         Outbound::ToolCall { .. } => "tool_call",
         Outbound::Suppressed { .. } => "suppressed",
@@ -978,6 +983,15 @@ fn route_to_agent(state: &mut RoomState, ev: &StoredRow, sender: &[u8], plaintex
             }));
             return Ok(());
         }
+    }
+    // `/stop` is a control, not a turn (Matrix parity): it acts on the turn
+    // running now instead of waiting behind it in the queue.
+    if responder::is_stop_command(&text) {
+        let outcome = agent.stop(&state.room, ev.seq, &sender_device);
+        emit(&serde_json::json!({
+            "event": "agent_stop", "room": state.room, "seq": ev.seq, "from": sender_device, "outcome": format!("{outcome:?}"),
+        }));
+        return Ok(());
     }
     let offer = agent.offer(Inbound { room: state.room.clone(), seq: ev.seq, sender_device: sender_device.clone(), text, peer_depth: 0 })?;
     emit(&serde_json::json!({
@@ -1794,6 +1808,20 @@ for line in sys.stdin:
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(got, vec![Outbound::Reply { seq: 8, text: "답:저녁 뭐 먹지".into() }], "only the family message became a turn");
+        // 4. `/stop` with nothing running → answered in the room, never a turn.
+        route_to_agent(&mut state, &row(9, "mom-iphone-1", "mom-iphone-1-c9"), b"mom-iphone-1", b" /Stop ", &mut agent).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut got = Vec::new();
+        while got.is_empty() && Instant::now() < deadline {
+            got.extend(agent.pump().unwrap_or_else(|e| panic!("pump: {e}")));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(got, vec![Outbound::StopIgnored { seq: 9, reason: "idle" }]);
+        assert_eq!(agent_text(&Outbound::Stopped { seq: 9 }), "⏹️ 요청(#9)을 중단했습니다.");
+        assert_eq!(agent_text(&Outbound::StopIgnored { seq: 9, reason: "idle" }), "ℹ️ 중단할 요청이 없습니다.");
+        assert_eq!(agent_text(&Outbound::StopIgnored { seq: 9, reason: "not_allowed" }), "ℹ️ 다른 사람의 요청은 오너만 중단할 수 있습니다.");
+        assert_eq!(agent_kind(&Outbound::Stopped { seq: 1 }), "stopped");
+        assert_eq!(agent_kind(&Outbound::StopIgnored { seq: 1, reason: "idle" }), "stop_ignored");
         assert_eq!(agent_text(&Outbound::ApprovalResolved { n: 2, allowed: true }), "승인 #2: 허용했습니다.");
         assert!(agent_text(&Outbound::Uncertain { seq: 9, reason: "watchdog".into() }).contains("#9"));
         assert_eq!(agent_kind(&Outbound::Reply { seq: 1, text: String::new() }), "reply");
