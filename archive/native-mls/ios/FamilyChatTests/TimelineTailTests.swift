@@ -83,8 +83,9 @@ final class TimelineTailTests: XCTestCase {
         XCTAssertEqual(burst.count, AppModel.scrollNoteBudget + 1, "budget lines + one suppression marker")
         XCTAssertTrue(burst.last?.contains("억제") == true)
         model.noteScroll("family past-end", now: t0.addingTimeInterval(AppModel.scrollNoteWindow + 1))
-        XCTAssertTrue(model.diagnostics.last?.hasSuffix("scroll family past-end") == true, "a new window records again")
-        XCTAssertTrue(model.diagnosticsReport().contains("scroll family past-end"), "the copied report includes scroll lines")
+        XCTAssertTrue(model.diagnostics.last?.contains(" scroll +") == true && model.diagnostics.last?.hasSuffix("family past-end") == true,
+                      "a new window records again (with the ms offset)")
+        XCTAssertTrue(model.diagnosticsReport().contains("family past-end"), "the copied report includes scroll lines")
     }
 
     /// 창보다 적은 방은 처음부터 끝에 닿은 것으로 본다(위로 올라가도 읽기 시도 없음).
