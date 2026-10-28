@@ -257,10 +257,18 @@ export const strings = {
     wipe: '이 기기 지우기',
   },
 
+  // 오른쪽 보관함 pane(#544 D, 패밀리챗과 같은 탭 2개): 「첨부」(모든 방 첨부 최신순) + 파일보관함 iframe(config.json 이 있을 때만).
   box: {
-    title: '파일보관함',
-    toggle: '파일보관함',
+    title: '보관함',
+    toggle: '보관함',
     close: '닫기',
+    tabAttachments: '첨부',
+    tabFilebox: '파일보관함',
+    empty: '아직 화면에 올라온 첨부가 없습니다. 대화에서 주고받은 사진·파일이 여기 모입니다.',
+    scopeHint: '이 브라우저에 보관된 대화(방별 최근 500건)에서 보이는 첨부만 — 릴레이는 첨부 목록을 두지 않습니다.',
+    photo: '[사진]',
+    file: '[파일]',
+    open: '이 대화로 이동',
     refresh: '새로고침',
     newWindow: '새 창에서 열기',
     loginHint: '처음이면 새 창에서 로그인한 뒤 새로고침하세요.',

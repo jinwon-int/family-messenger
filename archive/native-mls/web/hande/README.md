@@ -21,6 +21,7 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
   drafts.js composer-files.js                                    ← 방별 초안 영속화 · 붙여넣기/끌어다 놓기 첨부 파일 고르기(#480 B)
   last-sent.js                                                   ← 대화창 상단 「내 마지막 말」 바 순수 로직(패밀리챗 이식, #480 C)
   sync-recovery.js preview-loader.js                             ← 탭·온라인 복귀 즉시 동기화 · 미리보기 실패 「다시 시도」(패밀리챗 이식, #544 A·B)
+  attachments.js                                                 ← 보관함 「첨부」 탭 순수 로직(모든 방 첨부 최신순, 패밀리챗 collectAttachments 이식, #544 D)
   sw.js sw-policy.js                                             ← 서비스 워커(PWA 설치·오프라인 셸, 네트워크 우선 — #480 D)
   attachment-view.js agent-markdown.js                           ← 첨부 미리보기 판별 · 에이전트 답장 마크다운(iOS AgentMarkdown 블록 규칙 이식, 텍스트 노드만)
   room.js device.js relay.js identity.js worker-bridge.js        ← 방 세션(relay-app.js sync 이식)·기기(신원·로비·방 목록)·릴레이·신원
@@ -111,6 +112,16 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
 - **파일명(C)**: 파일 행은 이름이 있으면 「📎 이름 · 크기」. 이름은 **file-v2 수신분**(#499/#511, `safeFileName` 으로 줄인 것)에만 있다 —
   file-v1(현재 기본 송신, MLS 안에 바이트 직접)은 와이어에 이름이 없어 지금처럼 「📎 파일 · 크기」.
 
+## 보관함 pane — 「첨부」 탭 + 파일보관함 (#544 D — 패밀리챗 `web/app` 과 동일)
+
+헤더 🗂 로 여는 오른쪽 pane(좁은 화면에선 목록/대화 자리, 1280px 부터 세 번째 열). 탭 2개:
+- **첨부**(항상): `attachments.js` `collectAttachments` — 모든 방의 화면 타임라인에서 첨부를 모아 최신순(시각 내림차순, 같은 시각은 seq
+  내림차순). 행 = 🖼/📎 + 이름(file-v2 파일명, 없으면 `[사진]`/`[파일]`) + 「방 · 보낸 사람 · 시각 · 크기」. 행을 누르면 그 방을 열고
+  그 말풍선으로 스크롤·강조(`jumpToEntry`, paint 뒤 `pendingJump`), 「다운로드」는 같은 `entry.load()`. **범위**: 이 브라우저에 보관된
+  대화(방별 봉인 보관 ≤500건)에서 보이는 첨부뿐 — 릴레이에 첨부 인덱스가 없다(패밀리챗의 서버 인덱스에 해당하는 것 없음).
+- **파일보관함**(config.json `filebox` 가 있을 때만): 기존 iframe(#462). 이 탭이 보일 때는 pane 서명에서 첨부 목록을 빼 새 첨부가
+  와도 iframe 을 다시 로드하지 않는다.
+
 ## 서비스 워커 (#480 D)
 
 `main.js` 가 `sw.js` 를 모듈 워커로 등록한다(PC 크롬). 정책(`sw-policy.js`): **같은 origin 은 전부 네트워크 우선**, 캐시는
@@ -123,7 +134,7 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
 
 - 순수 모듈: `node --test archive/native-mls/web/hande/tests/*.test.mjs` — 방 세션(가짜 워커·대본 릴레이: 403
   대기, Welcome 참여, 해독→보관→ack, 전송 CAS 재시도, 초대 commit→echo→Welcome, 거부·제거 정지, #296 복구),
-  문구·검증 헬퍼, 키보드 판정(`keyboard.test.mjs`), 목록 순서(`room-order.test.mjs`), 초안·첨부 파일 고르기(`drafts.test.mjs`·`composer-files.test.mjs`), 내 마지막 말(`last-sent.test.mjs`), 안 읽음 판정(`read-seq.test.mjs`), 복귀 동기화(`sync-recovery.test.mjs`), 미리보기 다시 시도(`preview-loader.test.mjs`), 서비스 워커 정책(`sw-policy.test.mjs`).
+  문구·검증 헬퍼, 키보드 판정(`keyboard.test.mjs`), 목록 순서(`room-order.test.mjs`), 초안·첨부 파일 고르기(`drafts.test.mjs`·`composer-files.test.mjs`), 내 마지막 말(`last-sent.test.mjs`), 안 읽음 판정(`read-seq.test.mjs`), 복귀 동기화(`sync-recovery.test.mjs`), 미리보기 다시 시도(`preview-loader.test.mjs`), 보관함 첨부 목록(`attachments.test.mjs`), 서비스 워커 정책(`sw-policy.test.mjs`).
 - 브라우저: `archive/native-mls/tests/native_hande_web_smoke.py --bundle <mls-pkg> --relay-binary <relay>` —
   격리 릴레이(`-access-mode disabled`, `-hande-host`)가 이 디렉터리를 서빙하고 두 Chromium 컨텍스트가 **화면만
   으로** 이름 선택 → 방 만들기 → 참여 요청 → 초대 → 참여 → 양방향 메시지 → 새로고침 뒤 보관 이력 복원, 이어서 둘째 방을

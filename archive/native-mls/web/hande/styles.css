@@ -619,11 +619,26 @@ ul.members { list-style: none; margin: 0; padding: 0; display: flex; flex-direct
   dialog.sheet { width: min(92vw, 480px); margin: auto; border-radius: var(--radius-l); padding: var(--space-6); max-height: 86vh; }
 }
 
-/* 오른쪽 파일보관함 pane(config.json filebox) — 기본은 숨김, 열면 목록/대화 대신 보임(1280px 부터는 세 번째 열) */
+/* 오른쪽 보관함 pane(「첨부」 탭 + config.json filebox 탭, #544 D) — 기본은 숨김, 열면 목록/대화 대신 보임(1280px 부터는 세 번째 열) */
 .pane-box { display: none; flex: 1; min-width: 0; flex-direction: column; gap: var(--space-3); padding: 0 var(--space-4) var(--space-4); }
 main.shell[data-box="open"] .pane-box { display: flex; }
 main.shell[data-box="open"] .pane-list, main.shell[data-box="open"] .pane-room { display: none; }
 .pane-box .appbar { position: static; }
+.box-tabs { display: flex; gap: var(--space-2); flex: none; }
+.box-tabs button { min-height: 36px; padding: 0 var(--space-3); font-size: var(--text-s); background: transparent; border: 1px solid var(--line-strong, var(--line)); color: var(--text-2); border-radius: var(--radius-s); }
+.box-tabs button[aria-selected="true"] { background: var(--brand-soft, color-mix(in srgb, var(--brand) 20%, transparent)); color: var(--brand-strong, var(--brand)); border-color: transparent; }
+.box-body { display: flex; flex-direction: column; gap: var(--space-3); min-height: 0; flex: 1; }
+.box-body.attachments { overflow-y: auto; }
+.box-body .empty { margin: var(--space-4) 0; color: var(--text-2); }
+ul.files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+ul.files > li { display: flex; align-items: center; gap: var(--space-2); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: var(--space-2); }
+ul.files .file-item { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-3); background: transparent; border: 0; padding: var(--space-1); text-align: left; color: inherit; cursor: pointer; }
+ul.files .file-item .pill { flex: none; }
+ul.files .texts { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+ul.files .file-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+ul.files .meta { font-size: var(--text-xs); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+ul.files .chevron { color: var(--text-2); }
+ul.files .download { flex: none; min-height: 32px; }
 .filebox-tools { display: flex; gap: var(--space-2); flex-wrap: wrap; flex: none; align-items: center; }
 .filebox-tools .button { display: inline-flex; align-items: center; min-height: 36px; padding: 0 var(--space-3); border-radius: var(--radius-s); font-size: var(--text-s); text-decoration: none; border: 1px solid var(--line-strong, var(--line)); color: var(--text-2); }
 .pane-box .hint { margin: 0; }

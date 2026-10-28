@@ -3,12 +3,13 @@
 // 모닥불 팔레트로 다시 입혔다. 업무 로직 없음: app.js 가 넘긴 props 를 그리고 콜백만 부른다.
 
 import {
-  strings, ACTOR, ROOM, DEVICE, formatTime, dayLabel, dayKey, groupFingerprint, displayName, humanSize,
+  strings, ACTOR, ROOM, DEVICE, formatTime, dayLabel, dayKey, groupFingerprint, displayName, humanSize, relativeTime,
 } from './strings.js';
 import {imageType, downloadSpec} from './attachment-view.js';
 import { pickTransferFile, transferHasFiles } from './composer-files.js';
 import { lastSentView, collapsedKey } from './last-sent.js';
 import {fileboxRefreshUrl} from './filebox.js';
+import {attachmentTitle} from './attachments.js';
 import {parseBlocks, inlineSpans, hasMarkdown} from './agent-markdown.js';
 import {isCaretMode} from './timeline-caret.js';
 
@@ -823,28 +824,62 @@ export function renderShell(root, { list, room, box = null }) {
   mount?.();
 }
 
-// ---- 오른쪽 보관함 pane (파일보관함 임베드, 패밀리챗 web/app buildBox 의 파일보관함 탭) ----
+// ---- 오른쪽 보관함 pane (패밀리챗 web/app buildBox 와 같은 탭 2개: 「첨부」 + 파일보관함 임베드, #544 D) ----
 
-/**
- * pane 본체는 iframe 이라 다시 만들면 다시 로드된다 — 주소·제목이 같으면 노드를 그대로 두고
- * 열림 상태(`data-open`)만 바꾼다. 새로고침은 app.js 가 url 의 refresh 카운터를 올려 교체를 일으킨다.
- */
-function buildBox({ filebox, onToggle, onRefresh }) {
-  const url = fileboxRefreshUrl(filebox.url, filebox.refresh ?? 0);
-  const signature = JSON.stringify([url, filebox.url, filebox.title]);
-  return signed(el('section', { class: 'pane pane-box', 'aria-label': filebox.title, 'data-testid': 'filebox-pane' },
-    el('header', { class: 'appbar' },
-      el('button', { type: 'button', class: 'icon ghost back', 'aria-label': strings.box.close, onclick: onToggle }, '←'),
-      el('div', { class: 'titles' }, el('h2', {}, '🗂 ', filebox.title))),
-    el('div', { class: 'filebox-tools' },
-      el('button', { type: 'button', class: 'secondary small', onclick: onRefresh }, `🔄 ${strings.box.refresh}`),
-      el('a', { class: 'button ghost small', href: filebox.url, target: '_blank', rel: 'noopener noreferrer' }, strings.box.newWindow)),
-    el('p', { class: 'hint meta' }, strings.box.loginHint),
-    el('div', { class: 'filebox-frame' },
-      el('iframe', { src: url, title: filebox.title, loading: 'lazy', referrerpolicy: 'strict-origin-when-cross-origin' }))), signature);
+/** 방 화면의 타임라인에서 그 말풍선(data-key)으로 스크롤·강조. 방 화면이 없거나 행이 없으면 false. */
+export function jumpToEntry(root, key) {
+  return jumpToBubble(root.querySelector('.room-screen .timeline'), key);
 }
 
-/** shell 의 보관함 pane 을 box(없으면 제거)에 맞춘다. 서명이 같으면 iframe 을 건드리지 않는다. */
+/** 「첨부」 행: 종류 표식 + 이름(파일명 또는 [사진]/[파일]) + 「방 · 보낸 사람 · 시각 · 크기」, 누르면 그 방·말풍선으로. 내려받기는 따로. */
+function fileRow(file, onOpen, onDownload) {
+  const title = attachmentTitle(file, { photo: strings.box.photo, file: strings.box.file });
+  const foot = [file.roomName || null, file.senderName || null, file.ts ? relativeTime(file.ts, Date.now()) : null, file.size ? humanSize(file.size) : null].filter(Boolean).join(' · ');
+  return el('li', { 'data-key': `${file.roomId}:${file.key}`, 'data-testid': 'box-file' },
+    el('button', { type: 'button', class: 'file-item', title: strings.box.open, 'data-room-id': file.roomId, onclick: () => onOpen?.(file) },
+      el('span', { class: `pill kind-${file.image ? 'photo' : 'file'}`, 'aria-hidden': 'true' }, file.image ? '🖼' : '📎'),
+      el('span', { class: 'texts' }, el('span', { class: 'file-name' }, title), el('span', { class: 'meta' }, foot)),
+      el('span', { class: 'chevron', 'aria-hidden': 'true' }, '›')),
+    onDownload ? el('button', { type: 'button', class: 'ghost small download', 'aria-label': `${strings.chat.download}: ${title}`, onclick: (event) => downloadAttachment(file.entry, event.currentTarget, onDownload) }, strings.chat.download) : null);
+}
+
+/**
+ * 보관함 pane. 파일보관함 탭 본체는 iframe 이라 다시 만들면 다시 로드된다 — 그 탭이 보일 때는 서명에서 첨부 목록을 빼
+ * 새 첨부가 와도 pane 을 유지한다(패밀리챗 #194). 새로고침은 app.js 가 url 의 refresh 카운터를 올려 교체를 일으킨다.
+ */
+function buildBox({ open, tab = 'attachments', attachments = [], filebox = null, onToggle, onTab, onRefresh, onOpen, onDownload }) {
+  const showFilebox = tab === 'filebox' && filebox;
+  const url = filebox ? fileboxRefreshUrl(filebox.url, filebox.refresh ?? 0) : null;
+  const signature = JSON.stringify([
+    showFilebox ? 'filebox' : 'attachments', filebox ? [url, filebox.url, filebox.title] : null,
+    showFilebox ? null : attachments.map((f) => [f.roomId, f.key, f.image, f.fileName, f.size, f.roomName, f.senderName, f.ts ? relativeTime(f.ts, Date.now()) : '']),
+  ]);
+  const tabs = filebox
+    ? el('div', { class: 'box-tabs', role: 'tablist' },
+        el('button', { type: 'button', role: 'tab', 'data-testid': 'box-tab-attachments', 'aria-selected': showFilebox ? 'false' : 'true', onclick: () => onTab?.('attachments') }, strings.box.tabAttachments),
+        el('button', { type: 'button', role: 'tab', 'data-testid': 'box-tab-filebox', 'aria-selected': showFilebox ? 'true' : 'false', onclick: () => onTab?.('filebox') }, filebox.title))
+    : null;
+  const body = showFilebox
+    ? el('div', { class: 'box-body filebox' },
+        el('div', { class: 'filebox-tools' },
+          el('button', { type: 'button', class: 'secondary small', onclick: onRefresh }, `🔄 ${strings.box.refresh}`),
+          el('a', { class: 'button ghost small', href: filebox.url, target: '_blank', rel: 'noopener noreferrer' }, strings.box.newWindow)),
+        el('p', { class: 'hint meta' }, strings.box.loginHint),
+        el('div', { class: 'filebox-frame' },
+          el('iframe', { src: url, title: filebox.title, loading: 'lazy', referrerpolicy: 'strict-origin-when-cross-origin' })))
+    : el('div', { class: 'box-body attachments' },
+        attachments.length === 0
+          ? el('p', { class: 'empty', 'data-testid': 'box-empty' }, strings.box.empty)
+          : el('ul', { class: 'files', 'aria-label': strings.box.tabAttachments }, attachments.map((f) => fileRow(f, onOpen, onDownload))),
+        el('p', { class: 'hint meta' }, strings.box.scopeHint));
+  return signed(el('section', { class: 'pane pane-box', 'aria-label': strings.box.title, 'data-testid': 'box-pane', 'data-tab': showFilebox ? 'filebox' : 'attachments' },
+    el('header', { class: 'appbar' },
+      el('button', { type: 'button', class: 'icon ghost back', 'aria-label': strings.box.close, onclick: onToggle }, '←'),
+      el('div', { class: 'titles' }, el('h2', {}, '🗂 ', strings.box.title))),
+    tabs, body), signature);
+}
+
+/** shell 의 보관함 pane 을 box(없으면 제거)에 맞춘다. 서명이 같으면(특히 iframe 탭) 노드를 건드리지 않는다. */
 function updateBoxPane(shell, box) {
   const old = shell.querySelector(':scope > .pane-box');
   if (!box) { old?.remove(); delete shell.dataset.box; return; }

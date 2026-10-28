@@ -18,6 +18,7 @@ import {createDevice, LOBBY_TARGET} from './device.js';
 import {createPreviewLoader} from './preview-loader.js';
 import {installSyncRecovery} from './sync-recovery.js';
 import {fileboxConfig} from './filebox.js';
+import {collectAttachments} from './attachments.js';
 import {installShortcuts} from './shortcuts.js';
 
 const DEFAULT_ROOM = 'family';
@@ -41,7 +42,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     rooms: new Map(),          // roomId → {session, entries, entryKeys, readSeq, order}
     current: null, roomOpen: false, draft: new Map(), sending: false,
     invites: [], adoptFailed: new Map(), dismissed: new Set(), lobbyDue: true, pendingWelcomeRefs: {set: new Set(), complete: true},
-    filebox: null, boxOpen: false, boxRefresh: 0,   // 오른쪽 파일보관함 pane (config.json filebox)
+    filebox: null, boxOpen: false, boxTab: 'attachments', boxRefresh: 0, pendingJump: null,   // 오른쪽 보관함 pane: 첨부 탭(#544 D) + 파일보관함 iframe(config.json filebox)
     roomOrder: [], orderEditing: false,              // 대화 목록 고정 순서(이 기기 localStorage, #480 A)
     notice: null, logs: [], offlineAt: null, tick: null,
   };
@@ -57,8 +58,14 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
 
   // ---- rendering (coalesced); the phase is re-derived right before each paint ----
   let scheduled = false;
-  /** 오른쪽 파일보관함 pane 열고 닫기(좁은 화면에선 목록/대화 대신 보임, 넓은 화면에선 세 번째 열). */
+  /** 오른쪽 보관함 pane 열고 닫기(좁은 화면에선 목록/대화 대신 보임, 넓은 화면에선 세 번째 열). */
   function toggleBox() { app.boxOpen = !app.boxOpen; render(); }
+  /** 보관함 「첨부」 행 → 그 방을 열고 그 말풍선으로 스크롤(#544 D). 이동은 paint 뒤에 한다(pendingJump). */
+  function openAttachmentFromBox(file) {
+    if (!app.rooms.has(file.roomId)) return;
+    app.pendingJump = {roomId: file.roomId, key: file.key};
+    openRoomScreen(file.roomId);
+  }
 
   function render() {
     if (scheduled) return;
@@ -121,7 +128,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     const anySynced = [...app.rooms.values()].map(R => R.session.state.syncedAt).filter(Boolean).sort().at(-1) ?? app.lastCheckedAt ?? null;
     const list = {
       rooms: rows, currentRoomId: app.roomOpen ? app.current : null,
-      onSelect: openRoomScreen, onOpenMenu: openMenu, onOpenJoin: openJoin, onOpenCreate: openCreate, onOpenBox: app.filebox ? toggleBox : null,
+      onSelect: openRoomScreen, onOpenMenu: openMenu, onOpenJoin: openJoin, onOpenCreate: openCreate, onOpenBox: toggleBox,
       orderEditing: app.orderEditing, onToggleOrderEdit: toggleOrderEdit, onMoveRoom: moveRoomInList,
       sync: {lastSyncAt: anySynced, offlineSince: app.offlineAt, reconnecting: relay.offline},
       notice: app.notice, deviceLabel: app.device,
@@ -132,15 +139,25 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       const S = R.session.state;
       return {roomId: app.current, name: roomLabel(app.current), members: S.roster.slice(), joined: S.joined, halted: S.halted ? {...S.halted} : null,
         timeline: R.entries, draft: app.draft.get(app.current) ?? '', onSend: sendText, onAttach: sendAttachment, onOpenAttachment: e => e.load(), onRetryPreview: loadPreview,
-        onBack: () => { app.roomOpen = false; render(); }, onOpenInvite: openInvite, onOpenMembers: openInvite, onOpenBox: app.filebox ? toggleBox : null,
+        onBack: () => { app.roomOpen = false; render(); }, onOpenInvite: openInvite, onOpenMembers: openInvite, onOpenBox: toggleBox,
         onDraft: text => { app.draft.set(app.current, text); writeDraft(storage, app.device, app.current, text); }, notice: null, sending: app.sending || S.transferring,
         attachmentPending: R.session.attachmentPending ? {size: 0, onRetry: () => sendAttachment(null)} : null};
     })() : null;
-    const box = app.filebox
-      ? {filebox: {url: app.filebox.url, title: app.filebox.title, refresh: app.boxRefresh}, open: app.boxOpen,
-         onToggle: toggleBox, onRefresh: () => { app.boxRefresh += 1; render(); }}
-      : null;
+    // 보관함(#544 D): 「첨부」 탭은 항상, 파일보관함 탭은 config.json 이 있을 때만. 첨부 목록은 화면 타임라인에서 매 paint 다시 센다.
+    const box = {
+      open: app.boxOpen, tab: app.filebox ? app.boxTab : 'attachments',
+      attachments: collectAttachments(app.rooms, {roomLabel}),
+      filebox: app.filebox ? {url: app.filebox.url, title: app.filebox.title, refresh: app.boxRefresh} : null,
+      onToggle: toggleBox, onTab: tab => { app.boxTab = tab === 'filebox' ? 'filebox' : 'attachments'; render(); },
+      onRefresh: () => { app.boxRefresh += 1; render(); },
+      onOpen: openAttachmentFromBox, onDownload: e => e.load(),
+    };
     ui.renderShell(root, {list, room, box});
+    // 보관함에서 고른 첨부로 이동 — 방 화면이 그려진 뒤에만(새 방이면 mount 가 맨 아래로 내린 뒤 덮어쓴다).
+    if (app.pendingJump && app.roomOpen && app.current === app.pendingJump.roomId) {
+      const {key} = app.pendingJump; app.pendingJump = null;
+      if (!ui.jumpToEntry(root, key)) status(strings.chat.lastSent.notLoaded, 'warn');
+    }
   }
 
   // ---- timeline per room ----
@@ -207,7 +224,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     if (!globalThis.Worker || !globalThis.WebAssembly || !globalThis.indexedDB) { fatal(strings.app.workerUnavailable); return; }
     const config = await loadConfig();
     if (typeof config.defaultRoom === 'string' && ROOM.test(config.defaultRoom)) app.defaultRoom = config.defaultRoom;
-    app.filebox = fileboxConfig(config.filebox, {defaultTitle: strings.box.title});
+    app.filebox = fileboxConfig(config.filebox, {defaultTitle: strings.box.tabFilebox});
     const id = identity.read();
     if (!id) { app.phase = 'needsActor'; render(); return; }
     await startDevice(id);
