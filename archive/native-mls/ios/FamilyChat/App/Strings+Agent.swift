@@ -67,8 +67,6 @@ enum DeviceKindName {
 
 // #405 P3 키보드·편의 문구.
 extension Strings {
-    /// 에이전트 방 작성창 위 칩 — 누르면 작성창에 채운다. 끝이 ": " 이면 뒤에 이어 쓰라는 뜻.
-    static let quickSay = ["방 상태 알려줘", "지금 뭐 하고 있어?", "방금 대화 요약해줘", "새 방 만들어줘: ", "초대해줘: "]
     static let unreadLabel = "안 읽은 글"
     static let shortcutReadTimeline = "대화 읽기"
     static let shortcutPreviousRoom = "이전 대화방"

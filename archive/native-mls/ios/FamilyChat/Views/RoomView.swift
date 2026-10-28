@@ -227,26 +227,6 @@ struct RoomView: View {
             if attachBusy {
                 Text(Strings.attachPreparing).font(.footnote).foregroundStyle(.secondary).padding(.horizontal)
             }
-            // #405 P3: 에이전트가 있는 방이면 자주 쓰는 말 칩 — 누르면 작성창에 채운다(바로 보내지 않는다).
-            if glance.hasAgent && isReady {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(Strings.quickSay, id: \.self) { phrase in
-                            Button { draft = phrase; composerFocused = true } label: {
-                                Text(phrase.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: ":")))
-                                    .font(.caption)
-                                    .padding(.horizontal, 10).padding(.vertical, 6)
-                                    .background(Capsule().fill(Hande.agent.opacity(0.12)))
-                                    .overlay(Capsule().stroke(Hande.agent.opacity(0.3), lineWidth: 1))
-                                    .foregroundStyle(Hande.agent)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.horizontal, 12)
-                }
-                .padding(.top, 4)
-            }
             HStack(spacing: 10) {
                 // `PhotosPicker` 를 Menu 항목으로 두면 iOS 가 선택 창을 띄우지 않는다(build 13 실기기: 파일은 뜨고 사진은 안 뜸).
                 // 메뉴는 플래그만 올리고, 선택 창은 뷰에 붙인 `.photosPicker(isPresented:)` 수정자가 띄운다.
