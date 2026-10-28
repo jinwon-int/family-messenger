@@ -11,6 +11,7 @@ import {orderRooms, moveRoom, readRoomOrder, writeRoomOrder} from './room-order.
 import {readDraft, writeDraft} from './drafts.js';
 import {readReadSeq, writeReadSeq, latestSeq, isUnread} from './read-seq.js';
 import {readConsent, writeConsent, agentsIn, needsConsent} from './agent-consent.js';
+import {isLocalOnlyRoom, forgetRoomKeys} from './local-room.js';
 import {createWorkerBridge} from './worker-bridge.js';
 import {createRelay} from './relay.js';
 import {createIdentityStore, databaseFor, ROOM, IDENTITY_DATABASE, LOBBY_DATABASE} from './identity.js';
@@ -45,6 +46,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     invites: [], adoptFailed: new Map(), dismissed: new Set(), lobbyDue: true, pendingWelcomeRefs: {set: new Set(), complete: true},
     filebox: null, boxOpen: false, boxTab: 'attachments', boxRefresh: 0, pendingJump: null,   // 오른쪽 보관함 pane: 첨부 탭(#544 D) + 파일보관함 iframe(config.json filebox)
     consentPrompted: new Set(),                      // AI 참여 동의 시트를 이 페이지 세션에서 자동으로 띄운 방(#544 E)
+    relayRooms: null,                                // 릴레이가 이 기기를 멤버라고 한 방 집합(GET /v2/rooms) — 로컬 전용 방 판정용, 받기 전엔 null
     roomOrder: [], orderEditing: false,              // 대화 목록 고정 순서(이 기기 localStorage, #480 A)
     notice: null, logs: [], offlineAt: null, tick: null,
   };
@@ -342,6 +344,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       app.lastCheckedAt = clock(true);
       if (listed === null) { render(); return; }   // 403: waiting for the operator
       if (Array.isArray(listed)) {
+        app.relayRooms = new Set(listed.filter(r => r.member && ROOM.test(r.room)).map(r => r.room));
         for (const r of listed) if (r.member && !r.closed && ROOM.test(r.room) && !app.rooms.has(r.room)) {
           try { await ensureRoom(r.room); } catch (error) { logLine(`방 ${r.room} 열기 실패: ${error.message}`); }
         }
@@ -500,9 +503,30 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   function openInvite() {
     const s = cur();
     if (!s) return;
-    ui.openInviteSheet(root, {roomId: app.current, members: s.state.roster.slice(), selfDevice: app.device, busy: false, message: null, onClose: () => {},
+    const roomId = app.current;
+    ui.openInviteSheet(root, {roomId, roomName: roomLabel(roomId), members: s.state.roster.slice(), selfDevice: app.device, busy: false, message: null, onClose: () => {},
       onInvite: async target => { await guard(() => s.invite(target)); status(strings.room.inviteDone(target), 'ok'); },
-      onRemove: async target => { await guard(() => s.remove(target)); status(strings.room.removeDone(target), 'ok'); }});
+      onRemove: async target => { await guard(() => s.remove(target)); status(strings.room.removeDone(target), 'ok'); },
+      // 릴레이에 없는 로컬 전용 방(참여 요청만·방금 만든 방)만 지울 수 있다 — 릴레이 멤버 방은 다음 refresh 에 다시 열리므로 버튼을 두지 않는다.
+      onForget: isLocalOnlyRoom(roomId, app.relayRooms) ? () => guard(() => forgetRoom(roomId)) : null});
+  }
+  /** 로컬 전용 방을 이 기기에서 지운다: 워커 스토어 reset·close → localStorage 키·알려진 목록·순서 → IndexedDB(최선 노력) → 화면. */
+  async function forgetRoom(roomId) {
+    const R = app.rooms.get(roomId);
+    if (!R || !isLocalOnlyRoom(roomId, app.relayRooms)) throw new Error(strings.forget.hint);
+    const database = databaseFor(roomId);
+    try { await R.session.wipe(); } catch (error) { logLine(`방 ${roomId} 스토어 초기화 실패(계속 진행): ${error.message}`); }
+    R.session.stop();
+    for (const e of R.entries) if (e.image) URL.revokeObjectURL(e.image.url);
+    app.rooms.delete(roomId); writeKnown();
+    app.draft.delete(roomId); app.consentPrompted.delete(roomId);
+    app.roomOrder = app.roomOrder.filter(id => id !== roomId); writeRoomOrder(storage, app.device, app.roomOrder);
+    forgetRoomKeys(storage, {device: app.device, room: roomId, database});
+    if (app.current === roomId) { app.current = null; app.roomOpen = false; }
+    render();
+    for (const name of [database, `${database}-history`]) await deleteDb(name);   // close_room 뒤라 보통 바로 지워진다; 막히면 다음 시작에 비어 있는 채로 남는다
+    logLine(`방 ${roomId} 을 이 기기에서 지움(로컬 전용)`);
+    status(strings.forget.done(roomLabel(roomId)), 'ok');
   }
   function openApprove() {
     let candidate = null;

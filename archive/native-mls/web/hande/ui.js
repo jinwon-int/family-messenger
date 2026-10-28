@@ -1029,7 +1029,7 @@ export function openCreateSheet(root, { defaultRoom = '', onSubmit, onClose, bus
 }
 
 /** 초대 + 멤버 목록(+ onRemove 가 있으면 멤버 제거 — 정책 체인에서 이미 폐기된 기기용). */
-export function openInviteSheet(root, { roomId, members = [], onInvite, onRemove = null, onClose, busy = false, message = null, selfDevice = null }) {
+export function openInviteSheet(root, { roomId, roomName = roomId, members = [], onInvite, onRemove = null, onForget = null, onClose, busy = false, message = null, selfDevice = null }) {
   const memberRow = (device) => el('li', { class: 'member' },
     el('span', { class: 'texts' }, el('span', { class: 'name' }, displayName(device), device === selfDevice ? el('span', { class: 'pill you' }, strings.invite.thisDevice) : null), el('code', { class: 'meta' }, device)),
     onRemove && device !== selfDevice
@@ -1048,7 +1048,14 @@ export function openInviteSheet(root, { roomId, members = [], onInvite, onRemove
     onClose, busy, message, testid: { input: 'invite-device', submit: 'invite-submit' },
     after: [el('section', { class: 'members-section', 'aria-label': strings.invite.membersTitle },
       el('h3', {}, strings.invite.membersTitle, ' ', el('span', { class: 'pill' }, String(members.length))),
-      members.length === 0 ? el('p', { class: 'hint' }, strings.invite.membersEmpty) : el('ul', { class: 'members' }, members.map(memberRow)))],
+      members.length === 0 ? el('p', { class: 'hint' }, strings.invite.membersEmpty) : el('ul', { class: 'members' }, members.map(memberRow))),
+    // 릴레이에 없는 로컬 전용 방만(app.js 가 onForget 을 준다): 확인 시트 → 지우고 이 시트도 닫는다.
+    onForget ? el('section', { class: 'members-section forget-section' },
+      el('button', { type: 'button', class: 'danger block', 'data-testid': 'forget-room', onclick: () => openConfirmSheet(root, {
+        title: strings.forget.title, body: strings.forget.body(roomName), confirmLabel: strings.forget.confirm, tone: 'danger',
+        onConfirm: async () => { await onForget(); sheet.close(); },
+      }) }, strings.forget.button),
+      el('p', { class: 'hint' }, strings.forget.hint)) : null],
   });
   return sheet;
 }

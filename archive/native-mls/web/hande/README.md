@@ -23,6 +23,7 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
   sync-recovery.js preview-loader.js                             ← 탭·온라인 복귀 즉시 동기화 · 미리보기 실패 「다시 시도」(패밀리챗 이식, #544 A·B)
   attachments.js                                                 ← 보관함 「첨부」 탭 순수 로직(모든 방 첨부 최신순, 패밀리챗 collectAttachments 이식, #544 D)
   agent-consent.js                                               ← AI 참여 동의 판정·기록(참여 뒤 명단 기준, 이 기기 localStorage — #544 E 선택지 3)
+  local-room.js                                                  ← 로컬 전용 방(릴레이에 없는 방) 판정 · 「이 기기에서 지우기」 키 정리
   sw.js sw-policy.js                                             ← 서비스 워커(PWA 설치·오프라인 셸, 네트워크 우선 — #480 D)
   attachment-view.js agent-markdown.js                           ← 첨부 미리보기 판별 · 에이전트 답장 마크다운(iOS AgentMarkdown 블록 규칙 이식, 텍스트 노드만)
   room.js device.js relay.js identity.js worker-bridge.js        ← 방 세션(relay-app.js sync 이식)·기기(신원·로비·방 목록)·릴레이·신원
@@ -134,6 +135,14 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
   명단에 에이전트가 **나중에** 들어와도 다음 paint 에서 같은 게이트가 선다.
 - 기록은 이 기기 localStorage `hande:agent-consent:<device>:<room>`(값 `1`) — 「이 기기 지우기」(`hande:*`)로 함께 사라진다. 서버 변경 없음.
 
+## 로컬 전용 방 「이 기기에서 지우기」 (2026-10-28 오너 요청)
+
+「방 만들기」로 만들었거나 「참여 요청」만 한 방은 **릴레이에 없다**(릴레이에는 첫 초대 때 생긴다) — 이 기기만의 방이라 다른 기기와 무관하다.
+그런 방(`GET /v2/rooms` 의 멤버 집합 `app.relayRooms` 에 없는 방, `local-room.js isLocalOnlyRoom`)을 열고 「멤버」 시트 맨 아래 **「이 기기에서 지우기」**
+→ 확인 → 워커 방 스토어 `reset_room`·`close_room` → 이 방의 localStorage 키(상태·초안·readSeq·동의·내 마지막 말·첨부 보관함, `forgetRoomKeys`)·알려진 방 목록·순서
+→ IndexedDB `family-mls-synthetic-hande-<room>`(+`-history`, 최선 노력) → 목록에서 사라진다. 릴레이가 멤버로 아는 방에는 버튼이 없다(지워도 다음 refresh 에 다시 열린다 —
+명단에서 빠지는 건 「제거」·재초대의 일). 기본 방(`family`)도 릴레이에 없으면 지울 수 있지만 알려진 목록이 비면 다음 시작에 다시 열린다.
+
 ## 서비스 워커 (#480 D)
 
 `main.js` 가 `sw.js` 를 모듈 워커로 등록한다(PC 크롬). 정책(`sw-policy.js`): **같은 origin 은 전부 네트워크 우선**, 캐시는
@@ -146,7 +155,7 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
 
 - 순수 모듈: `node --test archive/native-mls/web/hande/tests/*.test.mjs` — 방 세션(가짜 워커·대본 릴레이: 403
   대기, Welcome 참여, 해독→보관→ack, 전송 CAS 재시도, 초대 commit→echo→Welcome, 거부·제거 정지, #296 복구),
-  문구·검증 헬퍼, 키보드 판정(`keyboard.test.mjs`), 목록 순서(`room-order.test.mjs`), 초안·첨부 파일 고르기(`drafts.test.mjs`·`composer-files.test.mjs`), 내 마지막 말(`last-sent.test.mjs`), 안 읽음 판정(`read-seq.test.mjs`), 복귀 동기화(`sync-recovery.test.mjs`), 미리보기 다시 시도(`preview-loader.test.mjs`), 보관함 첨부 목록(`attachments.test.mjs`), AI 참여 동의(`agent-consent.test.mjs`), 서비스 워커 정책(`sw-policy.test.mjs`).
+  문구·검증 헬퍼, 키보드 판정(`keyboard.test.mjs`), 목록 순서(`room-order.test.mjs`), 초안·첨부 파일 고르기(`drafts.test.mjs`·`composer-files.test.mjs`), 내 마지막 말(`last-sent.test.mjs`), 안 읽음 판정(`read-seq.test.mjs`), 복귀 동기화(`sync-recovery.test.mjs`), 미리보기 다시 시도(`preview-loader.test.mjs`), 보관함 첨부 목록(`attachments.test.mjs`), AI 참여 동의(`agent-consent.test.mjs`), 로컬 전용 방 지우기(`local-room.test.mjs`), 서비스 워커 정책(`sw-policy.test.mjs`).
 - 브라우저: `archive/native-mls/tests/native_hande_web_smoke.py --bundle <mls-pkg> --relay-binary <relay>` —
   격리 릴레이(`-access-mode disabled`, `-hande-host`)가 이 디렉터리를 서빙하고 두 Chromium 컨텍스트가 **화면만
   으로** 이름 선택 → 방 만들기 → 참여 요청 → 초대 → 참여 → 양방향 메시지 → 새로고침 뒤 보관 이력 복원, 이어서 둘째 방을
