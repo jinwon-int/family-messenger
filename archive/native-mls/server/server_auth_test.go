@@ -393,6 +393,7 @@ func TestAuthRequiredOnEveryContractRoute(t *testing.T) {
 		{"post keypackages", "POST", "/v2/rooms/r/keypackages", kp},
 		{"consume keypackage", "GET", "/v2/rooms/r/keypackages?device=b1&consumer=a1", nil},
 		{"close", "POST", "/v2/rooms/r/close?device=a1", nil},
+		{"typing", "POST", "/v2/rooms/r/typing", []byte(`{"device":"a1"}`)},
 	}
 	// No token and a garbage token: bare 401, nothing stored.
 	for _, rt := range routes {
@@ -443,6 +444,7 @@ func TestAuthRequiredOnEveryContractRoute(t *testing.T) {
 		{"post keypackages as a1 with bob", "POST", "/v2/rooms/r/keypackages", kp, bob},
 		{"consume as a1 with bob", "GET", "/v2/rooms/r/keypackages?device=a1&consumer=a1", nil, bob},
 		{"close as a1 with bob", "POST", "/v2/rooms/r/close?device=a1", nil, bob},
+		{"typing as a1 with bob", "POST", "/v2/rooms/r/typing", []byte(`{"device":"a1"}`), bob},
 		{"unknown device with alice", "POST", "/v2/rooms/r/events", postEventBody(t, "ghost", "g1", "application", 1, nil, nil, []byte("x")), alice},
 		{"unknown device get with alice", "GET", "/v2/rooms/r/events?device=ghost", nil, alice},
 	}
@@ -628,6 +630,10 @@ func TestCrossSiteBrowserRequestsAreRefused(t *testing.T) {
 		status, _ = doHeaders(t, srv, "POST", "/v2/rooms/r/close?device=a1", nil, map[string]string{"Cf-Access-Jwt-Assertion": alice, "Sec-Fetch-Site": site})
 		if status != http.StatusForbidden {
 			t.Fatalf("cross-site close: got %d, want 403", status)
+		}
+		status, body = doHeaders(t, srv, "POST", "/v2/rooms/r/typing", []byte(`{"device":"a1"}`), map[string]string{"Cf-Access-Jwt-Assertion": alice, "Sec-Fetch-Site": site})
+		if status != http.StatusForbidden || !strings.Contains(string(body), "cross_site") {
+			t.Fatalf("cross-site typing: got %d %s, want 403 cross_site", status, body)
 		}
 	}
 	for _, site := range []string{"", "same-origin", "same-site", "none"} {

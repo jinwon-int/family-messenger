@@ -1252,6 +1252,49 @@ func (s *relay) consumeKeyPackage(room, device, consumer string) (storedKeyPacka
 	return pkg, nil
 }
 
+// typingGate is the write-side membership gate without a write (#562): the
+// room must exist and be open, device must be policy-active and, once the
+// room has a membership, a tracked member — the consumeKeyPackage gate on a
+// read-only transaction. It never creates the room (no ensureRoom): a typing
+// signal must not be able to found a room or pin anything on disk.
+func (s *relay) typingGate(room, device string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	row, err := readRoom(tx, room)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errNoRoom
+	}
+	if err != nil {
+		return err
+	}
+	if row.closed {
+		return errClosed
+	}
+	active, err := s.enforceDevicePolicy()
+	if err != nil {
+		return err
+	}
+	if active == nil {
+		return nil
+	}
+	if _, ok := active[device]; !ok {
+		return deviceNotAllowed{Device: device}
+	}
+	tracked, err := readMembers(tx, room)
+	if err != nil {
+		return err
+	}
+	if len(tracked) > 0 && !memberOf(tracked, device) {
+		return errNotMember
+	}
+	return nil
+}
+
 // prune enforces the §3.4 retention rules inside the caller's write
 // transaction: application events once every recorded cursor passed them and
 // the TTL elapsed, commit/welcome events outside the last N epochs, and

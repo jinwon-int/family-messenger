@@ -83,6 +83,9 @@ type policy struct {
 	// nothing replenishes them while the device is offline.
 	LobbyKeyPackagesMaxPerDevice int
 	LobbyKeyPackageTTLSeconds    int64
+	// TypingTTLSeconds: how long a POST /typing signal stays visible in GET
+	// /events responses without a refresh (#562, typing.go). Memory-only.
+	TypingTTLSeconds int64
 }
 
 func defaultPolicy() policy {
@@ -101,6 +104,7 @@ func defaultPolicy() policy {
 		DeviceBytesCap:               4 << 30, // 4 GiB per device across rooms (G-M4; raised with #364)
 		LobbyKeyPackagesMaxPerDevice: 8,       // #380 D2
 		LobbyKeyPackageTTLSeconds:    30 * day,
+		TypingTTLSeconds:             6, // #562
 	}
 }
 
@@ -133,6 +137,9 @@ type relay struct {
 	push       *apnsSender
 	pushTopics map[string]bool
 	pushWG     sync.WaitGroup
+	// typing is the memory-only typing-indicator state (#562, typing.go);
+	// own mutex, never taken under mu, lazily allocated on first set.
+	typing typingState
 }
 
 // ---- wire types ----
@@ -199,6 +206,10 @@ type eventsResponse struct {
 	// before merging; an older staged commit only gets the inner checks.
 	// Empty until a bootstrap commit seeded the room.
 	Members []memberWire `json:"members"`
+	// Typing is the sorted list of other devices whose typing signal (POST
+	// /typing, #562) has not expired, never null; `[]` for a reader that is
+	// not a tracked member of a seeded room.
+	Typing []string `json:"typing"`
 }
 
 // keyPackageInput is one posted KeyPackage: an opaque caller-chosen ref as
@@ -603,6 +614,8 @@ func (s *relay) routes() http.Handler {
 	mux.HandleFunc("POST /v2/rooms/{room}/events", s.handlePostEvent)
 	mux.HandleFunc("GET /v2/rooms/{room}/events", s.handleGetEvents)
 	mux.HandleFunc("POST /v2/rooms/{room}/close", s.handleCloseRoom)
+	// Memory-only typing indicator, surfaced in GET /events (#562, typing.go).
+	mux.HandleFunc("POST /v2/rooms/{room}/typing", s.handlePostTyping)
 	// Room-scoped blob store for detached attachments (#499 file-v2, blobs.go).
 	mux.HandleFunc("POST /v2/rooms/{room}/blobs", s.handlePostBlob)
 	mux.HandleFunc("GET /v2/rooms/{room}/blobs/{id}", s.handleGetBlob)
@@ -904,6 +917,11 @@ func (s *relay) handlePostEvent(w http.ResponseWriter, req *http.Request) {
 			// After the commit and outside s.mu: a byte-equal replay already
 			// notified once, so only a fresh row pushes (#275 ②).
 			s.notifyEvent(room, ev.device, ev.kind, stored.seq)
+			// A fresh application event is what the typing signal announced;
+			// a replay changes nothing the reader has not already seen (#562).
+			if ev.kind == "application" {
+				s.typing.clear(room, ev.device)
+			}
 		}
 	case errors.Is(err, errClosed):
 		s.fail(w, http.StatusGone, apiError{Error: "room_closed"})
@@ -1026,7 +1044,14 @@ func (s *relay) handleGetEvents(w http.ResponseWriter, req *http.Request) {
 		for _, m := range page.members {
 			members = append(members, memberWire{Device: m.Device, Actor: m.Actor})
 		}
-		writeJSON(w, http.StatusOK, eventsResponse{Epoch: page.room.epoch, Revision: page.room.revision, Events: page.rows, NextAfter: page.nextAfter, Cursor: page.cursor, FirstSeq: page.firstSeq, Members: members})
+		// Typing signals go to tracked members only (#562): history stays
+		// readable for a removed device (B4 filter, never 403) but who is
+		// composing right now is not part of the history.
+		typing := []string{}
+		if len(page.members) == 0 || memberOf(page.members, device) {
+			typing = s.typing.snapshot(room, device, time.Now().Unix())
+		}
+		writeJSON(w, http.StatusOK, eventsResponse{Epoch: page.room.epoch, Revision: page.room.revision, Events: page.rows, NextAfter: page.nextAfter, Cursor: page.cursor, FirstSeq: page.firstSeq, Members: members, Typing: typing})
 	case errors.As(err, &bad):
 		s.fail(w, http.StatusBadRequest, apiError{Error: "bad_ack", Detail: bad.Error()})
 	case errors.Is(err, errNotMember):
