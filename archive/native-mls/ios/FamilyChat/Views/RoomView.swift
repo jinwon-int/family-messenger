@@ -620,7 +620,12 @@ struct MessageRow: View {
         case .undecryptable:
             Text(Strings.undecryptable)
         default:
-            Text(message.body)
+            if Strings.serviceNames[message.senderActor] != nil {
+                // 서비스 봇(알림 전용)만: 허용 링크(https://instagram.com/…)를 누를 수 있게 — 사람·에이전트 글은 그대로.
+                Text(ServiceLinks.attributed(message.body))
+            } else {
+                Text(message.body)
+            }
         }
     }
 }

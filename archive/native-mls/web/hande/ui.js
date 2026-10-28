@@ -3,7 +3,7 @@
 // 모닥불 팔레트로 다시 입혔다. 업무 로직 없음: app.js 가 넘긴 props 를 그리고 콜백만 부른다.
 
 import {
-  strings, ACTOR, ROOM, DEVICE, formatTime, dayLabel, dayKey, groupFingerprint, displayName, humanSize, relativeTime,
+  strings, ACTOR, ROOM, DEVICE, formatTime, dayLabel, dayKey, groupFingerprint, displayName, isServiceDevice, humanSize, relativeTime,
 } from './strings.js';
 import {imageType, downloadSpec} from './attachment-view.js';
 import { pickTransferFile, transferHasFiles } from './composer-files.js';
@@ -11,6 +11,7 @@ import { lastSentView, collapsedKey } from './last-sent.js';
 import {fileboxRefreshUrl} from './filebox.js';
 import {attachmentTitle} from './attachments.js';
 import {parseBlocks, inlineSpans, hasMarkdown} from './agent-markdown.js';
+import {linkParts} from './service-links.js';
 import {isCaretMode} from './timeline-caret.js';
 
 // ---- DOM 도우미 ----
@@ -442,6 +443,13 @@ function markdownBlock(block) {
   }
 }
 
+/** 서비스 봇 말풍선: 허용 링크(https://instagram.com/…)만 <a>, 나머지는 글 그대로(service-links.js). */
+function serviceLinkNodes(text) {
+  return linkParts(text).map((part) => (typeof part === 'string'
+    ? part
+    : el('a', { href: part.href, target: '_blank', rel: 'noopener noreferrer', class: 'service-link' }, part.text)));
+}
+
 function agentMarkdownBody(text) {
   return el('div', { class: 'body md', 'data-testid': 'agent-markdown' }, parseBlocks(text).map(markdownBlock));
 }
@@ -478,6 +486,7 @@ function bubble(entry, onOpenAttachment, onRetryPreview = null) {
       // 파일명(#544 C): file-v2 수신분은 보낸 쪽 이름(file-v2.js safeFileName 으로 줄인 것)을, file-v1 은 와이어에 이름이 없어 「파일」.
       : el('div', { class: 'body file' }, el('span', { class: 'file-label' }, strings.chat.file(humanSize(entry.size ?? 0), entry.fileName)), previewRetry(entry, onRetryPreview), download);
   } else if (entry.isAgent && entry.kind === 'text' && hasMarkdown(entry.body)) body = agentMarkdownBody(entry.body);
+  else if (entry.kind === 'text' && isServiceDevice(entry.sender)) body = el('div', { class: 'body' }, serviceLinkNodes(entry.body));
   else body = el('div', { class: 'body' }, entry.body);
   const foot = [entry.replay ? strings.chat.replay : null, time].filter(Boolean).join(' · ');
   return signed(el('li', { class: `bubble kind-${entry.kind}${entry.isAgent ? ' agent' : ''}`, 'data-key': entry.key, 'data-me': entry.isMe ? 'true' : 'false', 'data-testid': entry.kind === 'undecryptable' ? 'system-row' : 'bubble' },

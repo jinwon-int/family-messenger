@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ACTOR, ROOM, DEVICE, AGENT_ACTORS, strings, allStringsFilled,
-  formatTime, formatClock, dayLabel, dayKey, groupFingerprint, displayName, isAgentDevice, actorOf, isMine, relativeTime,
+  formatTime, formatClock, dayLabel, dayKey, groupFingerprint, displayName, isAgentDevice, isServiceDevice, actorOf, isMine, relativeTime,
   participantOf, isOneToOne,
   humanSize, previewLine, haltGuidance, roomLabel, agentNames,
 } from '../strings.js';
@@ -203,4 +203,13 @@ test('서비스 봇(번개장터 알림): 이름표·방 이름, 에이전트가
   assert.equal(displayName('bunjang-bot'), '⚡ 번개장터 알림');
   assert.equal(isAgentDevice('bunjang-bot'), false);
   assert.equal(roomLabel('bunjang-alerts'), '⚡ 번개장터 알림');
+});
+
+test('서비스 봇(인스타 알림): 이름표·방 이름, 에이전트가 아님, 서비스 봇 판정', () => {
+  assert.equal(displayName('insta-bot'), '📷 인스타 알림');
+  assert.equal(isAgentDevice('insta-bot'), false);
+  assert.equal(isServiceDevice('insta-bot'), true);
+  assert.equal(isServiceDevice('card-bot'), true);
+  assert.equal(isServiceDevice('jungin-iphone-1a2b3c'), false);
+  assert.equal(roomLabel('insta-news'), '📷 인스타 새 글');
 });

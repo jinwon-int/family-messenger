@@ -81,5 +81,7 @@ final class AgentStringsTests: XCTestCase {
         XCTAssertEqual(Strings.roomLabel("fleet-alerts"), "🔔 플릿 알림")
         XCTAssertEqual(Strings.senderLabel(device: "bunjang-bot"), "⚡ 번개장터 알림")
         XCTAssertEqual(Strings.roomLabel("bunjang-alerts"), "⚡ 번개장터 알림")
+        XCTAssertEqual(Strings.senderLabel(device: "insta-bot"), "📷 인스타 알림")
+        XCTAssertEqual(Strings.roomLabel("insta-news"), "📷 인스타 새 글")
     }
 }
