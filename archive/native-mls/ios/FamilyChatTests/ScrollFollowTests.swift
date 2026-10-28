@@ -108,6 +108,21 @@ final class ScrollFollowTests: XCTestCase {
         XCTAssertTrue(tracking.isAnimating)
     }
 
+    /// 2026-10-28 오너 보고: 상대 **글** 하나에도 위·아래 반복 — 꼬리 경계는 행 id 로 고정돼 새 글·과거 글이 붙어도 행이 LazyVStack 으로
+    /// 이사하지 않는다(이사 = 새 측정 → 미배치 행 추정치가 함께 흔들려 내용이 위로 밀렸다).
+    func testTailBoundaryStaysOnTheSameRow() {
+        let ids = Array(Int64(1)...100)
+        XCTAssertEqual(TimelineTail.start(ids: ids, anchor: nil), 100 - TimelineTail.rows, "entry: the last `rows` rows are eager")
+        let anchor = ids[100 - TimelineTail.rows]
+        XCTAssertEqual(TimelineTail.start(ids: ids + [101, 102], anchor: anchor), 100 - TimelineTail.rows,
+                       "new rows join the tail; nothing moves into the lazy part")
+        XCTAssertEqual(TimelineTail.start(ids: Array(Int64(-199)...100), anchor: anchor), 200 + 100 - TimelineTail.rows,
+                       "older rows prepended: the boundary stays on the same row")
+        XCTAssertEqual(TimelineTail.start(ids: ids, anchor: 7_777), 100 - TimelineTail.rows, "anchor gone (window reset): recomputed from the end")
+        XCTAssertEqual(TimelineTail.start(ids: [1, 2, 3], anchor: nil), 0, "short timeline: everything eager")
+        XCTAssertEqual(TimelineTail.start(ids: [], anchor: nil), 0)
+    }
+
     /// build 41 오너 보고: 사진 한 장에 채팅 없이 배경만 — 내용이 화면보다 긴데 바닥 표지가 화면 위쪽에서 끝나면 내용 끝을 지난 것.
     func testPastContentEndIsDetected() {
         XCTAssertTrue(ScrollFollow.isPastContentEnd(sentinelBottom: -300, viewportHeight: 620, contentHeight: 5_000, sinceDrag: 10),
