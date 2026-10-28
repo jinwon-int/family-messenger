@@ -73,7 +73,14 @@ struct RoomView: View {
                             })
                         // 오래된 글은 lazy(화면에 보일 때 만든다).
                         LazyVStack(alignment: .leading, spacing: 8) {
-                            ForEach(messages.prefix(tailStart)) { item in row(item, proxy) }
+                            ForEach(messages.prefix(tailStart)) { item in
+                                // 2차 계측: 손을 댄 직후 lazy 행이 새로 만들어지면(=새 측정 → 추정치 변동) 그 사실을 남긴다.
+                                Group { row(item, proxy) }
+                                    .onAppear {
+                                        let sinceDrag = Date().timeIntervalSince(tracking.lastDrag)
+                                        if sinceDrag < 3 { model.noteScroll("\(room) lazy-appear \(item.id) sinceDrag=\(Int(sinceDrag * 1000))ms") }
+                                    }
+                            }
                         }
                         // 꼬리는 lazy 가 아니다: 최근 행·「생각하는 중」·바닥 표지가 항상 실제 높이로 존재해야 `scrollTo` 와 표지 측정이 정확하다.
                         // 새 글은 늘 여기에 붙는다(경계 고정 — `TimelineTail`).
@@ -103,12 +110,23 @@ struct RoomView: View {
                 .onPreferenceChange(ContentHeightKey.self) { height in
                     let old = contentHeight
                     contentHeight = height
+                    // 2차 계측: 내용 높이가 크게 바뀐 순간(lazy 행 실체화·추정치 변동·첨부 로딩) — 끌기와의 선후를 본다.
+                    if abs(height - old) >= 24 {
+                        model.noteScroll("\(room) content \(Self.pt(old))→\(Self.pt(height)) Δ\(Self.pt(height - old)) following=\(followLatest) "
+                                         + "sentinel=\(Self.pt(tracking.sentinelBottom)) sinceDrag=\(Self.ms(tracking.lastDrag))")
+                    }
                     // 애니메이션 스크롤이 도는 동안은 보정을 내지 않는다 — 끝난 뒤 `scrollToLatest` 가 한 번 다시 잰다(#497: 둘이 싸워 흔들렸다).
                     if !tracking.isAnimating, ScrollFollow.shouldRescrollOnContentGrowth(old: old, new: height, following: followLatest) {
                         scrollToLatest(proxy, animated: false)
                     }
                 }
                 .onPreferenceChange(SentinelBottomKey.self) { bottom in
+                    // 2차 계측: 바닥 표지가 한 번에 크게 움직였다(=화면이 튀었다) — 끌기·높이 변화·명령 중 무엇이 먼저였는지.
+                    let previous = tracking.sentinelBottom
+                    if previous.isFinite, abs(bottom - previous) >= 120 {
+                        model.noteScroll("\(room) sentinel-jump \(Self.pt(previous))→\(Self.pt(bottom)) Δ\(Self.pt(bottom - previous)) content=\(Self.pt(contentHeight)) "
+                                         + "viewport=\(Self.pt(viewportHeight)) following=\(followLatest) sinceDrag=\(Self.ms(tracking.lastDrag))")
+                    }
                     tracking.sentinelBottom = bottom
                     if recoverIfPastContentEnd(proxy) { return }
                     if !tracking.isAnimating, ScrollFollow.needsBottomCorrection(sentinelBottom: bottom, viewportHeight: viewportHeight, following: followLatest) {
@@ -132,11 +150,17 @@ struct RoomView: View {
                 // 손가락으로 끌면(위로 읽으러 감) 늦은 이미지 로딩이 화면을 끌어내리지 않게 한다.
                 // #497: 손을 떼고 맨 아래에 멈추면 다시 따라간다(`ScrollFollow.shouldRefollow`).
                 .simultaneousGesture(DragGesture(minimumDistance: 10)
-                    .onChanged { _ in
+                    .onChanged { value in
+                        // 2차 계측: 끌기 시작 시점의 자리(그 뒤 높이 변화·표지 이동과 비교).
+                        if Date().timeIntervalSince(tracking.lastDrag) > 0.5 {
+                            model.noteScroll("\(room) drag-start dy=\(Self.pt(value.translation.height)) sentinel=\(Self.pt(tracking.sentinelBottom)) "
+                                             + "content=\(Self.pt(contentHeight)) viewport=\(Self.pt(viewportHeight)) following=\(followLatest)")
+                        }
                         tracking.lastDrag = Date()
                         if followLatest { followLatest = false }
                     }
-                    .onEnded { _ in
+                    .onEnded { value in
+                        model.noteScroll("\(room) drag-end dy=\(Self.pt(value.translation.height)) sentinel=\(Self.pt(tracking.sentinelBottom)) content=\(Self.pt(contentHeight))")
                         tracking.lastDrag = Date()
                         DispatchQueue.main.asyncAfter(deadline: .now() + ScrollFollow.settleDelay + 0.1) { refollowIfSettledAtBottom() }
                     })
@@ -166,6 +190,7 @@ struct RoomView: View {
                 .onPreferenceChange(ViewportHeightKey.self) { height in
                     let old = viewportHeight
                     viewportHeight = height
+                    if abs(height - old) >= 24 { model.noteScroll("\(room) viewport \(Self.pt(old))→\(Self.pt(height)) following=\(followLatest)") }
                     if ScrollFollow.shouldRescrollOnResize(old: old, new: height, following: followLatest) {
                         scrollToLatest(proxy, animated: true)
                     }
@@ -180,6 +205,7 @@ struct RoomView: View {
                 .onAppear {
                     guard !PhotoViewerPresence.active else { return }
                     reload()
+                    model.noteScroll("\(room) appear rows=\(messages.count) tail=\(messages.count - tailStart) viewport=\(Self.pt(viewportHeight)) content=\(Self.pt(contentHeight))")
                     followLatest = true
                     hasNewBelow = false
                     scrollToLatest(proxy, animated: false)
@@ -394,7 +420,10 @@ struct RoomView: View {
         let last = Self.bottomSentinelID
         let animation: TimeInterval = 0.2
         DispatchQueue.main.async {
-            if tracking.take() {
+            let animated = tracking.take()
+            // 2차 계측: 실제로 낸 스크롤 명령(합친 뒤 1건) — 그 순간의 표지·내용 높이.
+            model.noteScroll("\(room) scrollTo animated=\(animated) sentinel=\(Self.pt(tracking.sentinelBottom)) content=\(Self.pt(contentHeight)) viewport=\(Self.pt(viewportHeight))")
+            if animated {
                 tracking.animatingUntil = Date().addingTimeInterval(animation + 0.05)
                 withAnimation(.easeOut(duration: animation)) { proxy.scrollTo(last, anchor: .bottom) }
                 DispatchQueue.main.asyncAfter(deadline: .now() + animation + 0.1) {
@@ -429,6 +458,8 @@ struct RoomView: View {
 
     /// 진단 기록용 pt 값(미측정 ∞ 는 그대로 표시 — `Int(.infinity)` 는 trap).
     private static func pt(_ value: Double) -> String { value.isFinite ? String(Int(value.rounded())) : "∞" }
+    /// 진단 기록용 "그 시각부터 지금까지" ms(끌기 뒤 경과 등). `distantPast` 는 "없음".
+    private static func ms(_ since: Date) -> String { since == .distantPast ? "-" : "\(Int(Date().timeIntervalSince(since) * 1000))ms" }
 
     /// 다시 읽은 뒤 몇 번 더 잰다 — 표지 실측이 다시 오지 않아도(배치가 멈춘 채 빈 화면·최하단 미달) 위치를 바로잡는다.
     private func verifyPositionSoon(_ proxy: ScrollViewProxy) {

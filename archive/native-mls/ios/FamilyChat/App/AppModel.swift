@@ -562,10 +562,12 @@ final class AppModel: ObservableObject {
     /// #497 후속: 방 화면의 스크롤 결정(새 글 뒤 동작·실측 보정·빈 화면 복구)을 같은 기록에 남긴다 — 타임라인이 튀는 보고를 Xcode 없이
     /// 「진단 기록 복사」로 재구성하기 위한 것. 한꺼번에 튀면 줄이 쏟아지므로 `scrollNoteWindow` 초 안에 `scrollNoteBudget` 줄까지만 적고
     /// 나머지는 억제 표시 한 줄로 줄인다(동기화 기록을 밀어내지 않게). 비밀값·본문은 넣지 않는다.
-    static let scrollNoteBudget = 24
+    static let scrollNoteBudget = 40
     static let scrollNoteWindow: TimeInterval = 5
     private var scrollNoteTimes: [Date] = []
     private var scrollNotesSuppressed = false
+    /// 같은 초 안의 순서를 읽을 수 있게 첫 기록 기준 ms 를 붙인다(2차 계측: 끌기 시작 → 높이 변화 → 명령의 선후가 핵심).
+    private var scrollNoteEpoch: Date?
 
     func noteScroll(_ line: String, now: Date = Date()) {
         scrollNoteTimes.removeAll { now.timeIntervalSince($0) > Self.scrollNoteWindow }
@@ -575,7 +577,9 @@ final class AppModel: ObservableObject {
         }
         scrollNotesSuppressed = false
         scrollNoteTimes.append(now)
-        record("scroll \(line)")
+        let epoch = scrollNoteEpoch ?? now
+        scrollNoteEpoch = epoch
+        record("scroll +\(Int(now.timeIntervalSince(epoch) * 1000))ms \(line)")
     }
 
     /// 🔔 시트 「진단 기록 복사」(웹 `copyDiagnostics` 와 같은 모양): 기기·actor, 방별 `joined/halted/cursor/epoch`, 초대 상태(seq·시도·사유),
