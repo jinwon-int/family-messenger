@@ -69,7 +69,7 @@ struct RoomView: View {
                         // 불려 쓸 수 없다; 바닥 표지와 같은 preference 실측).
                         Color.clear.frame(height: 1).id(Self.topSentinelID)
                             .background(GeometryReader { geo in
-                                Color.clear.preference(key: SentinelTopKey.self, value: Double(geo.frame(in: .named("timeline")).maxY))
+                                Measured(value: Double(geo.frame(in: .named("timeline")).maxY)) { topSentinelChanged($0, proxy) }
                             })
                         // 오래된 글은 lazy(화면에 보일 때 만든다).
                         LazyVStack(alignment: .leading, spacing: 8) {
@@ -97,13 +97,13 @@ struct RoomView: View {
                         Color.clear.frame(height: 1).id(Self.bottomSentinelID)
                             // 표지의 **실제** 위치(스크롤 뷰 좌표) — 배치가 끝난 뒤 표지가 화면 아래에 남아 있으면 한 번 더 맞춘다.
                             .background(GeometryReader { geo in
-                                Color.clear.preference(key: SentinelBottomKey.self, value: Double(geo.frame(in: .named("timeline")).maxY))
+                                Measured(value: Double(geo.frame(in: .named("timeline")).maxY)) { bottomSentinelChanged($0, proxy) }
                             })
                     }
                     .padding()
                     // 내용이 커지면(lazy 행의 실제 배치·이미지 로딩·구분선) 따라가는 중일 때 최하단을 다시 맞춘다.
                     .background(GeometryReader { geo in
-                        Color.clear.preference(key: ContentHeightKey.self, value: Double(geo.size.height))
+                        Measured(value: Double(geo.size.height)) { contentHeightChanged($0, proxy) }
                     })
                 }
                 .coordinateSpace(name: "timeline")
@@ -111,40 +111,6 @@ struct RoomView: View {
                 // 실체화·재추정되며 내용 높이가 바뀌는데 스크롤 위치가 **위 기준**이라 보이는 행이 밀린다). 바닥 기준으로 바꾼다 —
                 // 내용·칸 크기가 바뀌어도 바닥과의 거리를 유지하므로 위쪽 추정치가 아무리 바뀌어도 보이는 행은 그대로. iOS 16 은 종전대로.
                 .modifier(BottomAnchoredTimeline())
-                .onPreferenceChange(ContentHeightKey.self) { height in
-                    let old = contentHeight
-                    contentHeight = height
-                    // 2차 계측: 내용 높이가 크게 바뀐 순간(lazy 행 실체화·추정치 변동·첨부 로딩) — 끌기와의 선후를 본다.
-                    if abs(height - old) >= 24 {
-                        model.noteScroll("\(room) content \(Self.pt(old))→\(Self.pt(height)) Δ\(Self.pt(height - old)) following=\(followLatest) "
-                                         + "sentinel=\(Self.pt(tracking.sentinelBottom)) sinceDrag=\(Self.ms(tracking.lastDrag))")
-                    }
-                    // 애니메이션 스크롤이 도는 동안은 보정을 내지 않는다 — 끝난 뒤 `scrollToLatest` 가 한 번 다시 잰다(#497: 둘이 싸워 흔들렸다).
-                    if !tracking.isAnimating, ScrollFollow.shouldRescrollOnContentGrowth(old: old, new: height, following: followLatest) {
-                        scrollToLatest(proxy, animated: false)
-                    }
-                }
-                .onPreferenceChange(SentinelBottomKey.self) { bottom in
-                    // 2차 계측: 바닥 표지가 한 번에 크게 움직였다(=화면이 튀었다) — 끌기·높이 변화·명령 중 무엇이 먼저였는지.
-                    let previous = tracking.sentinelBottom
-                    if previous.isFinite, abs(bottom - previous) >= 120 {
-                        model.noteScroll("\(room) sentinel-jump \(Self.pt(previous))→\(Self.pt(bottom)) Δ\(Self.pt(bottom - previous)) content=\(Self.pt(contentHeight)) "
-                                         + "viewport=\(Self.pt(viewportHeight)) following=\(followLatest) sinceDrag=\(Self.ms(tracking.lastDrag))")
-                    }
-                    tracking.sentinelBottom = bottom
-                    if recoverIfPastContentEnd(proxy) { return }
-                    if !tracking.isAnimating, ScrollFollow.needsBottomCorrection(sentinelBottom: bottom, viewportHeight: viewportHeight, following: followLatest) {
-                        correctBottom(proxy, reason: "sentinel")
-                    }
-                    refollowIfSettledAtBottom()
-                }
-                // #472: 위로 끝까지 올라오면(따라가기가 꺼진 뒤에만) 과거 글 한 페이지를 위에 붙인다.
-                .onPreferenceChange(SentinelTopKey.self) { top in
-                    if ScrollFollow.shouldLoadOlder(sentinelBottom: top, following: followLatest, busy: olderBusy,
-                                                    exhausted: !model.canLoadOlder(room: room)) {
-                        loadOlder(proxy)
-                    }
-                }
                 // 방을 나가면 창을 기본(최신 500건)으로 되돌린다 — 폴링마다 큰 창을 읽지 않는다.
                 // #497: 사진 전체 화면 보기가 떠서 불린 경우는 나간 것이 아니다(닫으면 보던 자리 그대로).
                 .onDisappear {
@@ -188,17 +154,11 @@ struct RoomView: View {
                     }
                 }
                 // 키보드가 올라오거나 작성창이 커져 칸이 줄면 최신 메시지를 키보드 바로 위로 다시 맞춘다.
+                // build 51 오너 기록: 모든 scroll 줄이 `viewport=0` — PreferenceKey 경로로는 칸 높이가 한 번도 오지 않아 실측 보정 4종
+                // (`needsBottomCorrection`·`isPastContentEnd`·`shouldRefollow`·키보드)이 전부 죽어 있었다. GeometryReader 가 잰 값을 바로 보고한다.
                 .background(GeometryReader { geo in
-                    Color.clear.preference(key: ViewportHeightKey.self, value: Double(geo.size.height))
+                    Measured(value: Double(geo.size.height)) { viewportChanged($0, proxy) }
                 })
-                .onPreferenceChange(ViewportHeightKey.self) { height in
-                    let old = viewportHeight
-                    viewportHeight = height
-                    if abs(height - old) >= 24 { model.noteScroll("\(room) viewport \(Self.pt(old))→\(Self.pt(height)) following=\(followLatest)") }
-                    if ScrollFollow.shouldRescrollOnResize(old: old, new: height, following: followLatest) {
-                        scrollToLatest(proxy, animated: true)
-                    }
-                }
                 // 쓰려고 작성창을 누르면 = 최신 대화에 답하는 중: 따라가기를 다시 켜고 최하단으로 간다(하드웨어 키보드는 칸이 안 줄어 여기서만 맞춘다).
                 .onChange(of: composerFocused) { focused in
                     guard focused else { return }
@@ -453,6 +413,55 @@ struct RoomView: View {
         hasNewBelow = false
         scrollToLatest(proxy, animated: false)
         return true
+    }
+
+    // MARK: - 실측 보고(GeometryReader → 상태). 종전엔 PreferenceKey(`value = nextValue()` 축약)로 올렸는데 build 51 실기기에서
+    // 칸 높이가 한 번도 도착하지 않았다(모든 scroll 줄 `viewport=0`). 처음 한 번 + 바뀔 때마다 직접 보고한다.
+
+    private func viewportChanged(_ height: Double, _ proxy: ScrollViewProxy) {
+        let old = viewportHeight
+        viewportHeight = height
+        if abs(height - old) >= 24 { model.noteScroll("\(room) viewport \(Self.pt(old))→\(Self.pt(height)) following=\(followLatest)") }
+        if ScrollFollow.shouldRescrollOnResize(old: old, new: height, following: followLatest) {
+            scrollToLatest(proxy, animated: true)
+        }
+    }
+
+    private func contentHeightChanged(_ height: Double, _ proxy: ScrollViewProxy) {
+        let old = contentHeight
+        contentHeight = height
+        // 2차 계측: 내용 높이가 크게 바뀐 순간(lazy 행 실체화·추정치 변동·첨부 로딩) — 끌기와의 선후를 본다.
+        if abs(height - old) >= 24 {
+            model.noteScroll("\(room) content \(Self.pt(old))→\(Self.pt(height)) Δ\(Self.pt(height - old)) following=\(followLatest) "
+                             + "sentinel=\(Self.pt(tracking.sentinelBottom)) sinceDrag=\(Self.ms(tracking.lastDrag))")
+        }
+        // 애니메이션 스크롤이 도는 동안은 보정을 내지 않는다 — 끝난 뒤 `scrollToLatest` 가 한 번 다시 잰다(#497: 둘이 싸워 흔들렸다).
+        if !tracking.isAnimating, ScrollFollow.shouldRescrollOnContentGrowth(old: old, new: height, following: followLatest) {
+            scrollToLatest(proxy, animated: false)
+        }
+    }
+
+    private func bottomSentinelChanged(_ bottom: Double, _ proxy: ScrollViewProxy) {
+        // 2차 계측: 바닥 표지가 한 번에 크게 움직였다(=화면이 튀었다) — 끌기·높이 변화·명령 중 무엇이 먼저였는지.
+        let previous = tracking.sentinelBottom
+        if previous.isFinite, abs(bottom - previous) >= 120 {
+            model.noteScroll("\(room) sentinel-jump \(Self.pt(previous))→\(Self.pt(bottom)) Δ\(Self.pt(bottom - previous)) content=\(Self.pt(contentHeight)) "
+                             + "viewport=\(Self.pt(viewportHeight)) following=\(followLatest) sinceDrag=\(Self.ms(tracking.lastDrag))")
+        }
+        tracking.sentinelBottom = bottom
+        if recoverIfPastContentEnd(proxy) { return }
+        if !tracking.isAnimating, ScrollFollow.needsBottomCorrection(sentinelBottom: bottom, viewportHeight: viewportHeight, following: followLatest) {
+            correctBottom(proxy, reason: "sentinel")
+        }
+        refollowIfSettledAtBottom()
+    }
+
+    /// #472: 위로 끝까지 올라오면(따라가기가 꺼진 뒤에만) 과거 글 한 페이지를 위에 붙인다.
+    private func topSentinelChanged(_ top: Double, _ proxy: ScrollViewProxy) {
+        if ScrollFollow.shouldLoadOlder(sentinelBottom: top, following: followLatest, busy: olderBusy,
+                                        exhausted: !model.canLoadOlder(room: room)) {
+            loadOlder(proxy)
+        }
     }
 
     /// 실측 보정(바닥 표지가 화면 아래에 남았다) — 진단 기록에 남기고 즉시 최하단.
@@ -871,10 +880,16 @@ struct DayDivider: View {
     }
 }
 
-/// 메시지 칸(ScrollView 바깥 틀)의 높이를 RoomView 로 올린다.
-struct ViewportHeightKey: PreferenceKey {
-    static var defaultValue: Double = 0
-    static func reduce(value: inout Double, nextValue: () -> Double) { value = nextValue() }
+/// GeometryReader 가 잰 값을 바로 보고한다(처음 한 번 + 바뀔 때마다). PreferenceKey 축약(`value = nextValue()`)은 build 51 실기기에서
+/// 칸 높이를 한 번도 올리지 못했다(모든 scroll 줄 `viewport=0`) — 상태 보고를 축약 순서에 기대지 않는다.
+struct Measured: View {
+    let value: Double
+    let report: (Double) -> Void
+    var body: some View {
+        Color.clear
+            .onAppear { report(value) }
+            .onChange(of: value) { report($0) }
+    }
 }
 
 /// #497 A4: 타임라인 스크롤의 기준점을 **바닥**으로. iOS 18+ 는 역할별로(처음 자리 = 바닥, 내용·칸 크기 변화 = 바닥 거리 유지),
@@ -900,21 +915,4 @@ struct BottomAnchoredTimeline: ViewModifier {
     }
 }
 
-/// 목록 내용(LazyVStack)의 높이를 RoomView 로 올린다.
-struct ContentHeightKey: PreferenceKey {
-    static var defaultValue: Double = 0
-    static func reduce(value: inout Double, nextValue: () -> Double) { value = nextValue() }
-}
-
-/// 바닥 표지의 아래 끝 y(스크롤 뷰 "timeline" 좌표) — 화면 높이보다 크면 아직 맨 아래가 아니다.
-struct SentinelBottomKey: PreferenceKey {
-    static var defaultValue: Double = 0
-    static func reduce(value: inout Double, nextValue: () -> Double) { value = nextValue() }
-}
-
 /// #472: 맨 위 표지의 아래 끝 y(스크롤 뷰 "timeline" 좌표) — 위로 밀려 있으면 음수, `ScrollFollow.olderPrefetch` 안으로 오면 과거 글을 읽는다.
-/// 기본값은 화면 밖 먼 위(측정 전에는 읽지 않는다).
-struct SentinelTopKey: PreferenceKey {
-    static var defaultValue: Double = -100_000
-    static func reduce(value: inout Double, nextValue: () -> Double) { value = nextValue() }
-}
