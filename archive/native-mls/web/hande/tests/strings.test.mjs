@@ -198,3 +198,9 @@ test('서비스 봇(플릿 알림): 이름표·방 이름, 에이전트가 아�
   assert.equal(isAgentDevice('fleet-bot'), false);
   assert.equal(roomLabel('fleet-alerts'), '🔔 플릿 알림');
 });
+
+test('서비스 봇(번개장터 알림): 이름표·방 이름, 에이전트가 아님 (bunjang#11)', () => {
+  assert.equal(displayName('bunjang-bot'), '⚡ 번개장터 알림');
+  assert.equal(isAgentDevice('bunjang-bot'), false);
+  assert.equal(roomLabel('bunjang-alerts'), '⚡ 번개장터 알림');
+});
