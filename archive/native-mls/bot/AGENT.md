@@ -73,7 +73,7 @@ native-mls-bot <base-url> session <room> <device> \
 
 ## 이벤트 (stdout JSON lines)
 
-`agent_started` · `agent_offer{seq, from, outcome}` · `agent_skipped{seq, reason}` · `agent_approval_reply{n, allow, known}` · `agent_outbound{kind, bytes}`(kind: `reply`·`interim`·`notice`·`approval_request`·`approval_resolved`·`uncertain` — #474 `interim`/`notice` 는 [FLEET-WORKER](../../../docs/FLEET-WORKER.md) 선택 출력 프레임) · `agent_outbound_dropped{reason}` · `agent_worker_gone{reason}` · `agent_tool{name, op, room, arg, ok, key_source?}`(P4: 실행 요약만 — 기기·방 식별자, 본문 없음; `key_source` 는 invite 성공 때만 `room`\|`lobby`, #380 P5)
+`agent_started` · `agent_offer{seq, from, outcome}` · `agent_skipped{seq, reason}` · `agent_approval_reply{n, allow, known}` · `agent_outbound{kind, bytes}`(kind: `reply`·`interim`·`notice`·`approval_request`·`approval_resolved`·`uncertain`·`queue_notice` — #474 `interim`/`notice` 는 [FLEET-WORKER](../../../docs/FLEET-WORKER.md) 선택 출력 프레임; `queue_notice` 는 작업 중에 온 메시지에 봇이 직접 다는 대기 순번 안내(Matrix 동등, 문구 `⏳ 이 메시지는 대기 순번 N번에 저장되었으며 도착 순서대로 처리됩니다.` — 지금 도는 작업이 1번 — 와 대기열이 차면 `대기 중인 요청이 많습니다. 잠시 후 다시 요청해 주세요.`). 보내기 실패는 `agent_outbound_dropped{reason: queue_notice_send_failed}` 로만 남기고 세션은 계속한다) · `agent_outbound_dropped{reason}` · `agent_worker_gone{reason}` · `agent_tool{name, op, room, arg, ok, key_source?}`(P4: 실행 요약만 — 기기·방 식별자, 본문 없음; `key_source` 는 invite 성공 때만 `room`\|`lobby`, #380 P5)
 
 ## 바꾸지 않은 것
 
