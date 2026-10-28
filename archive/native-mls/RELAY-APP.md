@@ -83,6 +83,12 @@ Python에서 하던 릴레이 호출을 브라우저로 옮긴 것이다. 합성
    fire-and-forget) — 메시지가 저장되면 릴레이가 그 기기의 신호를 스스로 지우므로 전송 뒤 해제 요청은 없다. 같은
    4초 폴링의 `GET /events`가 `typing: [기기…]`(나를 뺀 미만료 기기, 키가 없으면 `[]`)를 실어 오고, 화면은 내 다른
    기기를 빼고 사람 단위로 묶어 방 머리글에 「{이름} 입력중…」(1:1 방은 「입력중…」)을 보인다. 별도 틱 없음, 저장 없음.
+8. **읽음 위치 공유(#571 B, 한데 웹)**: 방을 보고 있으면(열기·보는 중 새 글·전송 뒤) `POST /v2/rooms/{room}/read`
+   `{device, seq}`를 새 seq 마다 1회 보낸다(`room.js markRead()`, 릴레이가 이미 그 이상을 알면 생략). 응답은 200의
+   `read_seq`로 상태만 올리고 나머지는 무시한다(옛 릴레이 404 포함, fire-and-forget). 릴레이는 값을 **actor 단위**로
+   보관하므로 같은 4초 폴링 `GET /events`의 `read_seq`(키가 없으면 0)가 이 기기 값보다 크면 `app.js mergeRelayRead`가
+   localStorage `hande:readSeq:<device>:<room>`를 올린다 — PC 에서 읽은 방의 N 배지가 폰에서도 다음 폴링에 꺼진다.
+   MLS 좌석·커서(`mls_cursors`, 전달 ack)는 그대로 기기 단위다. iOS·Android 는 아직 로컬 readSeq 만 쓴다(후속).
 
 durable 워커 허용 메서드에 이번에 더해진 것: `invite_with_commit` `merge_pending` `clear_pending`
 `remove_pending` `members` `members_after_pending` `fingerprint` `policy_fingerprint` `sign_approval`

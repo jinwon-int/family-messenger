@@ -342,6 +342,73 @@ test('typing: GET /events `typing` lands in state; a relay without the key means
   assert.deepEqual(s.state.typing, []);
 });
 
+// ---- shared read position (#571 B) ----
+test('read_seq: GET /events `read_seq` lands in state and never shrinks; a relay without the key means 0 (#571)', async () => {
+  const {bridge} = fakeWorker({fresh: false, group: ['owner-pc', 'mom-web-1', 'owner-web-aaaaaa']});
+  let readSeq = 4;
+  const relay = fakeRelay(() => {
+    const body = {epoch: 2, events: [], cursor: 5, members: []};
+    if (readSeq !== null) body.read_seq = readSeq;
+    return {status: 200, body};
+  });
+  const {s} = session({worker: bridge, relay, storage: joinedStorage()});
+  await s.open(); await s.activate();
+  assert.equal(s.state.readSeq, 4);
+  readSeq = null;   // old relay: no key → keeps what it knew
+  await s.sync();
+  assert.equal(s.state.readSeq, 4);
+  readSeq = 2;   // lower → ignored (monotonic within the session)
+  await s.sync();
+  assert.equal(s.state.readSeq, 4);
+  readSeq = 'junk';
+  await s.sync();
+  assert.equal(s.state.readSeq, 4);
+  readSeq = 5;
+  await s.sync();
+  assert.equal(s.state.readSeq, 5);
+});
+
+test('markRead(): one POST per new seq, skipped when the relay already knows as much, 200 lifts state, errors ignored (#571)', async () => {
+  const {bridge} = fakeWorker({fresh: false, group: ['owner-pc', 'mom-web-1', 'owner-web-aaaaaa']});
+  let answer = () => ({status: 200, body: {read_seq: 3}});
+  const relay = fakeRelay((m, path) => {
+    if (path.endsWith('/read')) return answer();
+    return {status: 200, body: {epoch: 2, events: [], cursor: 5, members: [], read_seq: 1}};
+  });
+  const {s, events: ev} = session({worker: bridge, relay, storage: joinedStorage()});
+  await s.open(); await s.activate();
+  const posts = () => relay.calls.filter(c => c.method === 'POST' && c.path === '/v2/rooms/family/read');
+  const tick = () => new Promise(r => setTimeout(r, 0));
+  s.markRead(1);
+  assert.equal(posts().length, 0, 'relay already at 1 → nothing to post');
+  s.markRead(0); s.markRead(-1); s.markRead(NaN);
+  assert.equal(posts().length, 0);
+  const before = ev.changes;
+  s.markRead(3); await tick();
+  assert.equal(posts().length, 1);
+  assert.deepEqual(posts()[0].body, {device: 'owner-web-aaaaaa', seq: 3});
+  assert.equal(s.state.readSeq, 3, '200 read_seq lifts the state');
+  assert.equal(ev.changes, before + 1, 'and announces the change');
+  s.markRead(3); await tick();
+  assert.equal(posts().length, 1, 'same seq again → no second POST');
+  // Another device is already further: the answer lifts state above what we posted.
+  answer = () => ({status: 200, body: {read_seq: 9}});
+  s.markRead(4); await tick();
+  assert.equal(posts().length, 2);
+  assert.equal(s.state.readSeq, 9);
+  s.markRead(8); await tick();
+  assert.equal(posts().length, 2, 'relay knows 9 → 8 is not news');
+  // Old relay (404) and a thrown transport error: the caller never sees them.
+  answer = () => ({status: 404, body: {error: 'no_such_room'}});
+  s.markRead(10); await tick();
+  assert.equal(posts().length, 3);
+  assert.equal(s.state.readSeq, 9);
+  answer = () => { throw new Error('offline'); };
+  s.markRead(11); await tick();
+  assert.equal(posts().length, 4);
+  assert.equal(s.state.readSeq, 9);
+});
+
 test('typing(): one POST per 3 s, clear posts clear:true and re-arms, errors ignored (#562)', async () => {
   const {bridge} = fakeWorker({fresh: false, group: ['owner-pc', 'mom-web-1', 'owner-web-aaaaaa']});
   let t = 10_000;

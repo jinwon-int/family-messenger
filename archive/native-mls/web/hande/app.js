@@ -192,7 +192,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   // ---- rooms ----
   function newSession(roomId) {
     return createRoomSession({room: roomId, device: app.device, database: databaseFor(roomId), worker, relay, storage, on: {
-      change: render,
+      change: () => { mergeRelayRead(roomId); render(); },
       message: m => addEntry(roomId, m),
       log: logLine,
       notice: (text, tone) => status(text, tone),
@@ -242,10 +242,22 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
         status(strings.consent.done, 'ok'); render();
       }});
   }
-  /** 이 방을 화면 타임라인의 마지막 seq 까지 봤다(iOS LocalPrefs.markRead — 줄어들지 않음, 이 기기 localStorage). */
+  /**
+   * 이 방을 화면 타임라인의 마지막 seq 까지 봤다(iOS LocalPrefs.markRead — 줄어들지 않음, 이 기기 localStorage).
+   * 릴레이에도 알린다(#571 B, `POST /read`) — 같은 사람의 다른 기기에서 N 배지가 꺼지도록.
+   */
   function markRoomRead(roomId) {
     const R = app.rooms.get(roomId);
-    if (R) R.readSeq = writeReadSeq(storage, app.device, roomId, latestSeq(R.entries), R.readSeq);
+    if (!R) return;
+    R.readSeq = writeReadSeq(storage, app.device, roomId, latestSeq(R.entries), R.readSeq);
+    R.session.markRead(R.readSeq);
+  }
+  /** 릴레이가 아는 같은 사람(actor)의 읽음 위치(#571 B, `GET /events` read_seq)를 이 기기 값과 합친다 — 다른 기기에서 읽었으면 여기서도 배지가 꺼진다. */
+  function mergeRelayRead(roomId) {
+    const R = app.rooms.get(roomId);
+    if (!R) return;
+    const relaySeq = R.session.state.readSeq;
+    if (Number.isSafeInteger(relaySeq) && relaySeq > R.readSeq) R.readSeq = writeReadSeq(storage, app.device, roomId, relaySeq, R.readSeq);
   }
 
   // ---- phases ----

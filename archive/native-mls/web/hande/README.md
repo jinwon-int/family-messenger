@@ -87,7 +87,10 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
   localStorage `hande:room-order:<device>` 에 저장(패밀리챗은 account data 로 기기 간 동기화 — 한데에는 그 저장소가 없다).
   편집 중에는 행을 눌러도 열리지 않고 PageUp/PageDown 도 방을 열지 않는다.
 - 행: 이름 옆 **N 배지**(안 읽은 방, 보조기기에는 "새 메시지" — 판정은 iOS 와 같은 readSeq: 마지막 글이 남의 글이고 이 기기가 본 seq 보다
-  뒤일 때만. 본 위치는 localStorage `hande:readSeq:<device>:<room>` 라 새로고침 뒤 보관 이력이 다시 들어와도 배지가 켜지지 않는다, #541), 상대 시각(방금/N분 전/N시간 전/어제/M.D.), 미리보기는
+  뒤일 때만. 본 위치는 localStorage `hande:readSeq:<device>:<room>` 라 새로고침 뒤 보관 이력이 다시 들어와도 배지가 켜지지 않는다, #541.
+  **같은 사람의 다른 기기에서 읽은 것도 읽은 것**(#571 B): 방을 보면 `POST /v2/rooms/{room}/read {device, seq}` 로 릴레이에 알리고(`room.js markRead`,
+  새 seq 마다 1회, 응답 무시, 옛 릴레이 404 포함), 4초 폴링 `GET /events` 의 `read_seq`(릴레이가 actor 단위로 보관하는 최댓값)가 이 기기 값보다 크면
+  `app.js mergeRelayRead` 가 localStorage 값을 올려 배지를 끈다 — PC 에서 읽으면 폰의 N 배지도 다음 폴링에 꺼진다), 상대 시각(방금/N분 전/N시간 전/어제/M.D.), 미리보기는
   마크다운 기호를 걷어낸 한 줄 — 첨부는 `[사진]`(내용 판별) / `[파일]`.
 
 ## 작성창 (#480 B)

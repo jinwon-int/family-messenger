@@ -247,6 +247,16 @@ v2 smoke는 required 모드로 돈다(ES256 키를 만들어 JWKS 파일로 넘�
   결과는 `GET …/events` 응답 `typing`(요청 기기 제외, 정렬, 절대 null 아님)에만 실리고 시드된
   방의 비멤버 reader에게는 **항상 `[]`**다. 본문 한도·엄격 JSON·식별자 규칙은 다른 POST와 같다.
   바이트 동일 재게시(200 duplicate)는 신호를 지우지 않고, 새 application 이벤트만 지운다.
+- **읽음 위치는 actor 단위**(#571 B, `read.go`): `POST /v2/rooms/{r}/read` `{device, seq}` → 200 `{read_seq}`.
+  릴레이는 `mls_read(room, actor, seq, updated_at)`에 **(방, actor)당 한 행**을 두고 `max(현재, seq)`로만
+  올린다(줄지 않음, 재기동해도 남음) — 같은 사람의 PC가 읽으면 폰도 읽은 것이다. actor 는 요청 본문이나
+  기기 ID 접두사가 아니라 **그 기기의 `mls_members.actor`**(commit 게이트가 정책 actor 와 같음을 강제한
+  값, G-H3)에서 얻는다. 게이트는 typing 과 같다(404 `no_such_room` / 410 `room_closed` / 403
+  `device_not_allowed` / 추적 멤버가 아니면 403 `not_a_member` — 시드 전 방은 actor 를 알 수 없어 역시
+  `not_a_member`) 그리고 멤버십 판정 **뒤에** 범위 검사 400 `bad_seq`(`0..last_seq` 밖; 외부인에게
+  last_seq 오라클 없음). `GET …/events` 응답 `read_seq`에 요청 기기 actor 의 값이 실린다(추적 멤버가
+  아니거나 아직 아무 기기도 올리지 않았으면 0). seq 는 릴레이가 이미 아는 전체 순서라 E2EE 노출이 늘지
+  않는다. 푸시(APNs)는 아직 이 값을 보지 않는다(후속).
 
 ### 리뷰 2차 Low 묶음 (#231 배치 f)
 
@@ -370,7 +380,7 @@ BEGIN IMMEDIATE 트랜잭션으로 기록된다(B2/B3 규율 유지). v2 릴레�
   두 번째 릴레이나 아래 도구를 열면 `data dir is locked by another process`로 거부된다.
 - 절차: 릴레이 정지 → `<v2 릴레이 바이너리(archive/native-mls/server 빌드)> -data-dir <dir> -reset-room <room>`(dry run: 테이블별 삭제 예정 행 수 출력,
   종료 코드 2) → 확인 후 `-yes`를 붙여 재실행(한 트랜잭션으로 `mls_events`·`mls_keypackages`·`mls_members`·
-  `mls_cursors`·`mls_rooms`의 그 방 행만 삭제, 종료 코드 0) → 릴레이 재기동. DB 파일이 없으면 만들지 않고 거부.
+  `mls_cursors`·`mls_blobs`·`mls_read`·`mls_rooms`의 그 방 행만 삭제, 종료 코드 0) → 릴레이 재기동. DB 파일이 없으면 만들지 않고 거부.
 - 효과: 그 방의 순서·epoch·멤버·커서를 릴레이가 완전히 잊는다 → 클라이언트는 **새 MLS 그룹**으로 다시 창립해야
   한다(옛 방 기록은 클라이언트 쪽 읽기전용 보관). 접근 플래그(`-access-*`)는 필요 없다(리스너를 열지 않음).
 - DB 변경이므로 운영 노드에서는 **사전 백업 + 오너 승인** 후 실행한다.

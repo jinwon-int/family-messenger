@@ -210,6 +210,10 @@ type eventsResponse struct {
 	// /typing, #562) has not expired, never null; `[]` for a reader that is
 	// not a tracked member of a seeded room.
 	Typing []string `json:"typing"`
+	// ReadSeq is the caller's actor-wide read position (POST /read, #571 B):
+	// the highest seq any device of the same actor reported as shown, 0 when
+	// none or when the caller is not a tracked member of a seeded room.
+	ReadSeq int64 `json:"read_seq"`
 }
 
 // keyPackageInput is one posted KeyPackage: an opaque caller-chosen ref as
@@ -616,6 +620,8 @@ func (s *relay) routes() http.Handler {
 	mux.HandleFunc("POST /v2/rooms/{room}/close", s.handleCloseRoom)
 	// Memory-only typing indicator, surfaced in GET /events (#562, typing.go).
 	mux.HandleFunc("POST /v2/rooms/{room}/typing", s.handlePostTyping)
+	// Actor-wide read position, surfaced in GET /events `read_seq` (#571 B, read.go).
+	mux.HandleFunc("POST /v2/rooms/{room}/read", s.handlePostRead)
 	// Room-scoped blob store for detached attachments (#499 file-v2, blobs.go).
 	mux.HandleFunc("POST /v2/rooms/{room}/blobs", s.handlePostBlob)
 	mux.HandleFunc("GET /v2/rooms/{room}/blobs/{id}", s.handleGetBlob)
@@ -1051,7 +1057,7 @@ func (s *relay) handleGetEvents(w http.ResponseWriter, req *http.Request) {
 		if len(page.members) == 0 || memberOf(page.members, device) {
 			typing = s.typing.snapshot(room, device, time.Now().Unix())
 		}
-		writeJSON(w, http.StatusOK, eventsResponse{Epoch: page.room.epoch, Revision: page.room.revision, Events: page.rows, NextAfter: page.nextAfter, Cursor: page.cursor, FirstSeq: page.firstSeq, Members: members, Typing: typing})
+		writeJSON(w, http.StatusOK, eventsResponse{Epoch: page.room.epoch, Revision: page.room.revision, Events: page.rows, NextAfter: page.nextAfter, Cursor: page.cursor, FirstSeq: page.firstSeq, Members: members, Typing: typing, ReadSeq: page.readSeq})
 	case errors.As(err, &bad):
 		s.fail(w, http.StatusBadRequest, apiError{Error: "bad_ack", Detail: bad.Error()})
 	case errors.Is(err, errNotMember):

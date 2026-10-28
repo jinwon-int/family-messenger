@@ -111,6 +111,9 @@ export function createRoomSession({room, device, database, worker, relay, storag
     const S = {started: false, joined: false, pending: false,
     // #562: other devices the relay reports as typing (last GET /events `typing`, never this device). Not persisted.
     typing: [],
+    // #571 B: the relay's actor-wide read position (last GET /events `read_seq` — the highest seq any of my devices
+    // reported as shown; old relays send no key → 0). Not persisted; app.js merges it into this device's readSeq.
+    readSeq: 0,
     // #295 F4: epoch an invite/remove commit was built on when its POST outcome is unknown (else null).
     pendingUncertain: null,
     expectedRoster: null, pendingWelcome: null, relaySeq: 0, epoch: 0, wcursor: 0, roster: [], timer: null, busy: false,
@@ -133,7 +136,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
     try { const v = JSON.parse(storage.getItem(stateKey()) || 'null'); if (v) Object.assign(S, v); } catch (_) { /* ignore */ }
   }
   function resetState() {
-    Object.assign(S, {joined: false, pending: false, pendingUncertain: null, relaySeq: 0, roster: [], expectedRoster: null, pendingWelcome: null, halted: null, epoch: 0, typing: []});
+    Object.assign(S, {joined: false, pending: false, pendingUncertain: null, relaySeq: 0, roster: [], expectedRoster: null, pendingWelcome: null, halted: null, epoch: 0, typing: [], readSeq: 0});
   }
 
   // ---- worker (multi-store: every message carries this room) ----
@@ -233,6 +236,8 @@ export function createRoomSession({room, device, database, worker, relay, storag
       if (S.waiting403) { S.waiting403 = false; log('릴레이가 이 기기를 받아들였다(등록 완료)'); }
       // #562: who else is typing right now (old relays send no key → nobody). Shown by the next changed().
       S.typing = Array.isArray(body.typing) ? body.typing : [];
+      // #571 B: where the same person (any device) has read up to — only ever grows within a session.
+      if (Number.isSafeInteger(body.read_seq) && body.read_seq > S.readSeq) S.readSeq = body.read_seq;
       if (body.first_seq > S.relaySeq + 1 && S.relaySeq > 0) notify(strings.room.historyGap(S.relaySeq + 1, body.first_seq - 1), 'warn');
       for (const ev of body.events) {
         const seqBefore = S.relaySeq;
@@ -541,6 +546,20 @@ export function createRoomSession({room, device, database, worker, relay, storag
     typingSentAt = clear ? 0 : at;
     relay.api('POST', path('typing'), {device, clear}).catch(() => {});
   }
+  // ---- shared read position (#571 B) ----
+  // Fire-and-forget like typing: POST /read {device, seq} tells the relay this person has seen the room up to seq
+  // (relay keeps one value per actor, never shrinking). Posted once per new seq, skipped when the relay already
+  // knows a value at least that high. Every answer is ignored except a 200 whose read_seq lifts S.readSeq
+  // (another device got there first); an old relay says 404.
+  let readSentSeq = 0;
+  function markRead(seq) {
+    if (!S.started || !S.joined || S.halted) return;
+    if (!Number.isSafeInteger(seq) || seq <= 0 || seq <= readSentSeq || seq <= S.readSeq) return;
+    readSentSeq = seq;
+    relay.api('POST', path('read'), {device, seq}).then(r => {
+      if (r.status === 200 && Number.isSafeInteger(r.body?.read_seq) && r.body.read_seq > S.readSeq) { S.readSeq = r.body.read_seq; changed(); }
+    }).catch(() => {});
+  }
   async function sendAttachment(file) {
     requireOpen();
     if (!S.joined || S.pending) throw new Error(S.joined ? strings.room.pendingCommit : strings.room.notJoined);
@@ -613,7 +632,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
     get state() { return S; },
     get attachmentPending() { return !!attachments?.pending || !!fileV2s?.pending; },
     get joined() { return S.joined; },
-    open, activate, sync, create, publishKeyPackage, invite, remove, send, sendAttachment, typing,
+    open, activate, sync, create, publishKeyPackage, invite, remove, send, sendAttachment, typing, markRead,
     offerCandidate, approveCandidate, denyCandidate, wipe, stop, registration,
   };
 }

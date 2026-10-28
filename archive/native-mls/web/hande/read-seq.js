@@ -3,6 +3,8 @@
 // 남의 글이 아니다(entry.isMe 는 actor 기준, #459). 값은 이 기기 localStorage `hande:readSeq:<device>:<room>` 에
 // 두고 줄어들지 않는다 — 새로고침 뒤 봉인 보관 이력이 다시 들어와도 이미 본 방에 N 배지가 켜지지 않는다.
 // 「이 기기 지우기」는 `hande:*` 키를 지우므로 함께 사라진다. 저장 실패(용량·사생활 모드)는 조용히 — 메모리 값은 유지.
+// #571 B: 같은 사람(actor)의 다른 기기에서 본 위치는 릴레이가 `GET /events` read_seq 로 실어 오고(app.js mergeRelayRead →
+// writeReadSeq), 이 기기에서 본 위치는 `POST /read` 로 올린다(room.js markRead) — 어느 기기에서 읽든 N 배지가 함께 꺼진다.
 
 export const readSeqKeyFor = (device, room) => `hande:readSeq:${device}:${room}`;
 
