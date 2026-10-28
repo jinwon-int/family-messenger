@@ -681,3 +681,7 @@ ul.files .download { flex: none; min-height: 32px; }
 .sheet.consent .consent-check { display: flex; align-items: flex-start; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); cursor: pointer; }
 .sheet.consent .consent-check input { width: 20px; height: 20px; margin: 2px 0 0; flex: none; accent-color: var(--brand); }
 .consent-gate { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); }
+
+/* 서비스 봇 말풍선의 허용 링크(ui.js serviceLinkNodes · service-links.js) — 글 색 그대로, 밑줄로만 구분. */
+.bubble .body a.service-link { color: inherit; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+.bubble .body a.service-link:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; border-radius: 3px; }

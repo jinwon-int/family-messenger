@@ -12,7 +12,7 @@ export const SHELL_ASSETS = [
   './', './index.html', './styles.css', './manifest.webmanifest', './icons/icon.svg',
   './main.js', './app.js', './ui.js', './strings.js', './room.js', './device.js', './relay.js', './identity.js',
   './worker-bridge.js', './attachment-view.js', './agent-markdown.js', './filebox.js', './keyboard.js', './timeline-caret.js',
-  './shortcuts.js', './room-order.js', './drafts.js', './read-seq.js', './composer-files.js', './last-sent.js', './sync-recovery.js', './preview-loader.js', './attachments.js', './agent-consent.js', './local-room.js',
+  './shortcuts.js', './room-order.js', './drafts.js', './read-seq.js', './composer-files.js', './last-sent.js', './sync-recovery.js', './preview-loader.js', './attachments.js', './agent-consent.js', './local-room.js', './service-links.js',
   './durable-worker.js', './session-store.js', './history-store.js', './commit-policy.js', './relay-attachments.js', './file-v2.js', './file-v2-outbox.js',
   './pkg/family_mls_browser_experiment.js', './pkg/family_mls_browser_experiment_bg.wasm', './pkg/custody.js',
 ];
