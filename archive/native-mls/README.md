@@ -30,6 +30,9 @@ iOS 확장(#275, CONTRACTS §2.3): `GET /v2/rooms?device=`(기기의 방 목록,
 `POST`/`DELETE /v2/push/devices` + 테이블 `push_devices`, 새 application/welcome 이벤트 뒤
 APNs 알림(`-apns-key`·`-apns-team-id`·`-apns-key-id`, 선택 `-apns-host`·`-apns-topics`),
 Welcome 타깃 필터링, 바이트 기준 보존/프루닝, `BEGIN IMMEDIATE`(`_txlock=immediate`) 안의 CAS.
+타이핑 표시(#562 PR A, `server/typing.go`): `POST /v2/rooms/{room}/typing` 본문 `{"device","clear"}` → 204, 결과는
+같은 방 멤버의 `GET /v2/rooms/{room}/events` 응답 `typing`(요청 기기 제외, 정렬된 device 목록)에만 실린다 —
+메모리 전용·TTL 6초·테이블·푸시 없음(한도는 `server/DEVICES-V4.md` 서버 안전성).
 
 호출자 인증은 기본 **켜짐**(`-access-mode required`): 모든 계약 라우트가 CF Access JWT
 (`Cf-Access-Jwt-Assertion`, fallback `Authorization: Bearer`)를 요구하고, 요청이 행동하는 device의

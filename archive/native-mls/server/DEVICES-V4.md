@@ -237,6 +237,16 @@ v2 smoke는 required 모드로 돈다(ES256 키를 만들어 JWKS 파일로 넘�
   1회(실패해도 센다 — kid는 서명 검증 전 값이라 공격자가 고른다), fetch는 verifier 락
   밖에서 돌아 아는 kid의 검증을 막지 않으며, 사용 가능한 키가 0개인 응답은 캐시를
   교체하지 않는다.
+- **타이핑 표시 한도**(#562 PR A, `typing.go`): `POST /v2/rooms/{r}/typing`은 **메모리 전용**이다 —
+  테이블·행·푸시(APNs)·호출별 로그가 없고 재기동하면 사라진다. 신호는 `TypingTTLSeconds`
+  (기본 **6초**) 뒤 만료되고, 방당 타이핑 중인 기기는 **≤64**(`maxMembers`; 초과 기기는 조용히
+  버리고 204), 같은 기기의 갱신은 마지막 수용 뒤 **1초** 안이면 무시한다(스팸해도 초당 맵
+  쓰기 1회). 게이트는 keypackage 소비와 같다 — 방이 있어야 하고(404 `no_such_room`, 방을
+  만들지 않음), 닫히지 않았고(410 `room_closed`), 기기가 정책 active(403 `device_not_allowed`)
+  이며 시드된 방이면 추적 멤버(403 `not_a_member`); 체인 불가는 500 `device_policy_unavailable`.
+  결과는 `GET …/events` 응답 `typing`(요청 기기 제외, 정렬, 절대 null 아님)에만 실리고 시드된
+  방의 비멤버 reader에게는 **항상 `[]`**다. 본문 한도·엄격 JSON·식별자 규칙은 다른 POST와 같다.
+  바이트 동일 재게시(200 duplicate)는 신호를 지우지 않고, 새 application 이벤트만 지운다.
 
 ### 리뷰 2차 Low 묶음 (#231 배치 f)
 

@@ -20,7 +20,7 @@ import (
 func TestDepthBombReturns400NotCrash(t *testing.T) {
 	_, srv := newTestRelay(t, testPolicy())
 	bomb := bytes.Repeat([]byte("["), maxBodyBytes) // exactly the body limit, never closed
-	for _, path := range []string{"/v2/rooms/r/events", "/v2/rooms/r/keypackages"} {
+	for _, path := range []string{"/v2/rooms/r/events", "/v2/rooms/r/keypackages", "/v2/rooms/r/typing"} {
 		code, raw := doJSON(t, srv, "POST", path, bomb)
 		if code != http.StatusBadRequest || errField(t, raw) != "json_too_deep" {
 			t.Fatalf("%s depth bomb: status=%d body=%s", path, code, raw)
