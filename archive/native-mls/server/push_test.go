@@ -403,6 +403,89 @@ func TestAPNsAlertsBehindMembersOutsideTheTransaction(t *testing.T) {
 	}
 }
 
+// status-v1 (#560): an agent's live progress line is an application event with a
+// `status-<uuid>` client_id. It is stored and cursored like any message but never
+// pushed — otherwise every member's phone would be woken every five seconds for
+// a line that is replaced moments later. Only the exact shape is exempt.
+func TestAPNsSkipsStatusEvents(t *testing.T) {
+	r, srv := newTestRelay(t, testPolicy())
+	fake := newFakeAPNs(t)
+	key := testAPNsKey(t)
+	sender, err := newAPNsSender(fake.srv.URL, "TEAM123456", "KEY1234567", key, fake.srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.push = sender
+	const topic = "com.seoyoon-family.hande"
+	for dev, tok := range map[string][]byte{"a1": {0xa1, 0x01}, "b1": {0xb1, 0x01}} {
+		if st, raw := doJSON(t, srv, "POST", "/v2/push/devices", pushBody(dev, tok, topic)); st != http.StatusNoContent {
+			t.Fatalf("register %s: %d %s", dev, st, raw)
+		}
+	}
+	post := func(device, client string) int64 {
+		t.Helper()
+		st, raw := doJSON(t, srv, "POST", "/v2/rooms/r/events", postEventBody(t, device, client, "application", 0, nil, nil, []byte(client)))
+		if st != http.StatusCreated {
+			t.Fatalf("post %s: %d %s", client, st, raw)
+		}
+		r.pushWG.Wait()
+		return decodeEventResponse(t, raw).Seq
+	}
+	post("a1", "m1") // a1 founds the room
+	fake.taken()
+
+	// A status line from b1: stored (seq advances) but a1 is not woken.
+	const status1 = "status-0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+	seq := post("b1", status1)
+	if calls := fake.taken(); len(calls) != 0 {
+		t.Fatalf("status event pushed %d alert(s)", len(calls))
+	}
+	if n := tableCount(t, r, `SELECT COUNT(*) FROM mls_events WHERE room = 'r' AND client_id = '`+status1+`'`); n != 1 {
+		t.Fatalf("status event not stored (%d)", n)
+	}
+	// A second status line, then the reply: only the reply pushes, once.
+	post("b1", "status-1f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0")
+	if calls := fake.taken(); len(calls) != 0 {
+		t.Fatalf("second status event pushed %d alert(s)", len(calls))
+	}
+	replySeq := post("b1", "m2")
+	calls := fake.taken()
+	if len(calls) != 1 {
+		t.Fatalf("reply pushed %d alert(s), want 1", len(calls))
+	}
+	if want := `{"aps":{"mutable-content":1,"alert":{"loc-key":"NEW_MESSAGE"},"thread-id":"r"},"room":"r","seq":` + jsonInt(replySeq) + `}`; string(calls[0].body) != want {
+		t.Fatalf("payload = %s, want %s", calls[0].body, want)
+	}
+	if replySeq <= seq {
+		t.Fatalf("reply seq %d not after status seq %d", replySeq, seq)
+	}
+	// Only the exact shape is exempt: a bare `status-` prefix is an ordinary message.
+	for _, odd := range []string{"status-", "status-notauuid", "status-0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0", "status-0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f00"} {
+		post("b1", odd)
+		if calls := fake.taken(); len(calls) != 1 {
+			t.Fatalf("%q pushed %d alert(s), want 1 (not a status id)", odd, len(calls))
+		}
+	}
+}
+
+func TestIsStatusClientID(t *testing.T) {
+	for id, want := range map[string]bool{
+		"status-0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0": true,
+		"status-00000000-0000-0000-0000-000000000000": true,
+		"status-0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0": false, // uppercase
+		"status-0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f":  false, // 35 chars
+		"status-0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f00": false, // 37 chars
+		"status-0f1e2d3c_4b5a_6978_8796_a5b4c3d2e1f0": false, // underscore
+		"file-v2-0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0": false,
+		"bot-1-echo-3": false,
+		"": false,
+	} {
+		if got := isStatusClientID(id); got != want {
+			t.Errorf("isStatusClientID(%q) = %v, want %v", id, got, want)
+		}
+	}
+}
+
 func TestAPNsDropOnlyTheRejectedToken(t *testing.T) {
 	r, _ := newTestRelay(t, testPolicy())
 	if err := r.savePushDevice(pushRegistration{Device: "a1", APNsToken: []byte{2}, Topic: "com.example.app"}, 1); err != nil {

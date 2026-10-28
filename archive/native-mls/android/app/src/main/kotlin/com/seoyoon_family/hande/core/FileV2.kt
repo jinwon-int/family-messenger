@@ -24,6 +24,10 @@ object FileV2 {
     private val REQUIRED = setOf("v", "blob", "size", "key", "nonce")
     private val ALLOWED = REQUIRED + setOf("mime", "name", "w", "h")
     private val CLIENT_ID = Regex("^file-v2-[a-f0-9-]{36}$")
+    /** status-v1(#560, `archive/native-mls/STATUS-V1.md`): 에이전트의 작업 상태 한 줄. 저장하지 않는다(임시 말풍선 전용). */
+    const val STATUS_CLIENT_PREFIX = "status-"
+    private val STATUS_CLIENT_ID = Regex("^status-[a-f0-9-]{36}$")
+    fun isStatusClientId(clientId: String): Boolean = STATUS_CLIENT_ID.matches(clientId)
     private val BLOB_ID = Regex("^[0-9a-f]{64}$")
     private val MIME = Regex("^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,63}/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,63}$")
     private val B64URL = Regex("^[A-Za-z0-9_-]*$")
@@ -117,9 +121,12 @@ object FileV2 {
      * - `file-v2-…` → 설명자 검증 성공이면 `file-v2`(body 는 자리 표시, attachment = 검증한 설명자 바이트 — 이력에는 설명자만, §4-2),
      *   실패면 `undecryptable`(평문은 저장하지 않는다). client_id 가 `file-v2-` 로 시작하지만 정규형이 아니어도 글로 보이지 않게
      *   `undecryptable` 로 둔다(설명자에 키가 있을 수 있으므로 안전한 쪽으로 닫는다).
+     * - `status-<uuid>` → **null**(저장하지 않는다): 에이전트의 작업 상태 한 줄(status-v1, #560)은 몇 초마다 바뀌는 임시 글이라
+     *   이력·안 읽음·미리보기에 들어가면 안 된다. 정규형이 아닌 `status-…` 는 그냥 글이다(모르는 접두사 = 글, 다른 앱과 같다).
      * - 그 밖 → 글.
      */
-    fun classify(clientId: String, plaintext: ByteArray): Row {
+    fun classify(clientId: String, plaintext: ByteArray): Row? {
+        if (isStatusClientId(clientId)) return null
         if (clientId.startsWith("file-v1-")) {
             return Row(MessageSchema.KIND_ATTACHMENT, Strings.attachmentPlaceholder(plaintext.size.toLong()), plaintext)
         }

@@ -916,7 +916,7 @@ func (s *relay) handlePostEvent(w http.ResponseWriter, req *http.Request) {
 		if !stored.duplicate {
 			// After the commit and outside s.mu: a byte-equal replay already
 			// notified once, so only a fresh row pushes (#275 ②).
-			s.notifyEvent(room, ev.device, ev.kind, stored.seq)
+			s.notifyEvent(room, ev.device, ev.kind, ev.clientID, stored.seq)
 			// A fresh application event is what the typing signal announced;
 			// a replay changes nothing the reader has not already seen (#562).
 			if ev.kind == "application" {
