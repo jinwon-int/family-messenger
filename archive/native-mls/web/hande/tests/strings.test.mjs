@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   ACTOR, ROOM, DEVICE, AGENT_ACTORS, strings, allStringsFilled,
   formatTime, formatClock, dayLabel, dayKey, groupFingerprint, displayName, isAgentDevice, isServiceDevice, actorOf, isMine, relativeTime,
-  participantOf, isOneToOne,
+  participantOf, isOneToOne, typingNames, typingLabel,
   humanSize, previewLine, haltGuidance, roomLabel, agentNames,
 } from '../strings.js';
 
@@ -212,4 +212,20 @@ test('서비스 봇(인스타 알림): 이름표·방 이름, 에이전트가 �
   assert.equal(isServiceDevice('card-bot'), true);
   assert.equal(isServiceDevice('jungin-iphone-1a2b3c'), false);
   assert.equal(roomLabel('insta-news'), '📷 인스타 새 글');
+});
+
+test('typingNames / typingLabel: 내 기기 제외, 한 사람의 여러 기기는 하나, 1:1 은 이름 없이 (#562)', () => {
+  const me = {device: 'owner-web-aaaaaa', actor: 'owner', roster: ['owner-web-aaaaaa', 'owner-iphone-27a879', 'jungin-iphone-0f', 'gongmyoung-bot-1a2b']};
+  assert.deepEqual(typingNames(['owner-iphone-27a879'], me), [], '내 다른 기기는 입력중이 아님');
+  assert.deepEqual(typingNames(['jungin-iphone-0f', 'jungin-web-aa', 'owner-iphone-27a879'], me), ['쩡이🍎'], '두 기기 = 한 사람, 기기 종류 없음');
+  assert.deepEqual(typingNames(['bot-gongmyoung', 'gongmyoung-bot-1a2b', 'jungin-web-aa'], me), ['공명✴️', '쩡이🍎'], '옛·새 봇 기기 = 한 노드');
+  assert.deepEqual(typingNames(['jungin-web-aa'], {...me, roster: ['owner-web-aaaaaa', 'jungin-web-aa']}), [], '1:1 방은 이름 생략');
+  assert.deepEqual(typingNames([], me), []);
+  assert.deepEqual(typingNames(undefined, me), []);
+  assert.equal(strings.chat.typing([]), '입력중…');
+  assert.equal(strings.chat.typing(['쩡이🍎']), '쩡이🍎 입력중…');
+  assert.equal(typingLabel([], me), '', '아무도 없으면 표시 없음');
+  assert.equal(typingLabel(['owner-iphone-27a879'], me), '', '내 기기만이면 표시 없음');
+  assert.equal(typingLabel(['jungin-iphone-0f'], me), '쩡이🍎 입력중…');
+  assert.equal(typingLabel(['jungin-iphone-0f'], {...me, roster: ['owner-web-aaaaaa', 'jungin-iphone-0f']}), '입력중…', '1:1 은 문구만');
 });

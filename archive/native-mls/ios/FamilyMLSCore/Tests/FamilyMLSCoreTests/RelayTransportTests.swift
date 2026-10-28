@@ -246,6 +246,25 @@ final class RelayTransportTests: XCTestCase {
         XCTAssertEqual(request.value(forHTTPHeaderField: "Cf-Access-Jwt-Assertion"), "t")
     }
 
+    /// #562 server/typing.go handlePostTyping: POST /v2/rooms/{room}/typing, JSON {device, clear} — strictJSON 이라 다른 키 없음. 204.
+    func testPostTypingRequestMatchesServerWire() throws {
+        let request = try transport(.bearer("t")).postTypingRequest(room: "family", device: "owner-iphone-0a0b0c", clear: false)
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.absoluteString, "https://relay.example.com/v2/rooms/family/typing")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Cf-Access-Jwt-Assertion"), "t")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(request.httpBody)) as? [String: Any])
+        XCTAssertEqual(Set(json.keys), ["device", "clear"])
+        let post = try JSONDecoder().decode(TypingPost.self, from: try XCTUnwrap(request.httpBody))
+        XCTAssertEqual(post, TypingPost(device: "owner-iphone-0a0b0c", clear: false))
+
+        let clear = try transport(.accessCookie("jwt")).postTypingRequest(room: "fa/mily", device: "me-pc", clear: true)
+        XCTAssertEqual(clear.url?.absoluteString, "https://relay.example.com/v2/rooms/fa%2Fmily/typing", "room stays one path segment")
+        XCTAssertEqual(clear.value(forHTTPHeaderField: "Cookie"), "CF_Authorization=jwt")
+        let cleared = try JSONDecoder().decode(TypingPost.self, from: try XCTUnwrap(clear.httpBody))
+        XCTAssertEqual(cleared, TypingPost(device: "me-pc", clear: true))
+    }
+
     // MARK: - 로비(server/lobby.go, #380 P5-1) — 4 라우트의 URL·쿼리·바디
 
     func testLobbyRequestsMatchServerRoutes() throws {
@@ -300,6 +319,10 @@ final class RelayTransportTests: XCTestCase {
             XCTAssertEqual($0 as? RelayError, .refused(code: "not_found", status: 404))
         }
         await XCTAssertThrowsErrorAsync(try await legacy.deleteLobbyKeyPackages(device: "me")) { XCTAssertEqual($0 as? RelayError, .refused(code: "not_found", status: 404)) }
+        // #562: 타이핑 라우트도 같은 규칙 — 호출자(AppModel)는 404 를 보면 이 세션에서 그만둔다.
+        await XCTAssertThrowsErrorAsync(try await legacy.postTyping(room: "r", device: "me", clear: false)) {
+            XCTAssertEqual($0 as? RelayError, .refused(code: "not_found", status: 404))
+        }
     }
 
     /// 등록 라우트의 서버 거부는 다른 라우트와 같은 매핑(재로그인·등록 대기·설정 오류를 호출자가 가른다).

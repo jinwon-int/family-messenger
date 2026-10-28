@@ -729,12 +729,14 @@ function buildRoom(room) {
     el('button', { type: 'button', class: 'icon ghost back', 'aria-label': strings.chat.back, onclick: () => liveProps.get(screen)?.onBack?.() }, '←'),
     el('div', { class: 'titles' },
       el('h2', {}, el('span', { class: 'fire', 'aria-hidden': 'true' }, room.halted ? '🪵' : '🔥'), ' ', room.name || room.roomId),
+      // 입력 중(#562): 머리글에만(목록 행에는 없음). 서명에 들어가므로 바뀔 때 머리글만 다시 그린다.
+      room.typing ? el('span', { class: 'typing', role: 'status', 'aria-live': 'polite', 'data-testid': 'typing' }, room.typing) : null,
       el('span', { class: 'subtitle' }, strings.chat.members(members.length))),
     el('div', { class: 'tools' },
       room.onOpenBox ? el('button', { type: 'button', class: 'ghost small box-toggle', 'data-testid': 'open-box', 'aria-label': strings.box.toggle, onclick: () => liveProps.get(screen)?.onOpenBox?.() }, '🗂') : null,
       el('button', { type: 'button', class: 'ghost small', onclick: () => liveProps.get(screen)?.onOpenMembers?.() }, strings.chat.membersButton),
       el('button', { type: 'button', class: 'secondary small', 'data-testid': 'open-invite', disabled: room.joined ? null : true, onclick: () => liveProps.get(screen)?.onOpenInvite?.() }, strings.chat.invite))),
-  JSON.stringify([room.name, room.roomId, members.length, Boolean(room.halted), Boolean(room.joined), Boolean(room.onOpenBox)]));
+  JSON.stringify([room.name, room.roomId, members.length, Boolean(room.halted), Boolean(room.joined), Boolean(room.onOpenBox), room.typing ?? '']));
   const notice = room.notice?.text ? signed(el('p', { class: `status ${room.notice.tone || 'info'}`, role: 'status', 'data-part': 'notice' }, room.notice.text), JSON.stringify(room.notice)) : null;
   const list = el('ul', { class: 'timeline', tabindex: '-1', 'aria-live': 'polite', 'aria-label': strings.chat.timelineLabel, 'data-testid': 'timeline' },
     room.timeline.length === 0 ? signed(el('li', { class: 'empty', 'data-key': 'empty' }, strings.chat.empty), 'empty') : timelineRows(room.timeline, room.onOpenAttachment, room.onRetryPreview ?? null));

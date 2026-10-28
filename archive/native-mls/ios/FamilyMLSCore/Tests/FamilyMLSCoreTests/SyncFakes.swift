@@ -225,6 +225,9 @@ final class FakeRelay: RelayTransport {
     /// 페이지의 `members`(릴레이가 추적하는 outer roster). nil = 응답에 없음.
     var members: [String]?
     var firstSeq: Int64?
+    /// 페이지의 `typing`(#562, 지금 글을 쓰는 다른 기기). nil = 응답에 없음(옛 릴레이).
+    var typing: [DeviceID]?
+    var typingPosts: [(room: RoomID, device: DeviceID, clear: Bool)] = []
     var getCalls: [(after: Int64, ack: Int64?)] = []
     var posts: [EventPost] = []
     var getErrors: [RelayError] = []
@@ -272,7 +275,13 @@ final class FakeRelay: RelayTransport {
         let events = Array(rows.filter { $0.seq > after }.prefix(limit))
         return EventsPage(epoch: epoch, revision: revision, events: events, nextAfter: events.last?.seq ?? after,
                           cursor: ack, firstSeq: firstSeq ?? rows.first?.seq,
-                          members: members.map { $0.map { MemberWire(device: $0, actor: String($0.split(separator: "-").first ?? "")) } })
+                          members: members.map { $0.map { MemberWire(device: $0, actor: String($0.split(separator: "-").first ?? "")) } },
+                          typing: typing)
+    }
+
+    func postTyping(room: RoomID, device: DeviceID, clear: Bool) async throws {
+        check("postTyping")
+        typingPosts.append((room, device, clear))
     }
 
     func postKeyPackages(room: RoomID, _ post: KeyPackagePost) async throws -> KeyPackagesResponse {

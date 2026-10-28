@@ -101,15 +101,51 @@ export function roomLabel(room) {
 export function displayName(device) {
   const text = String(device ?? '');
   if (!text) return '';
-  const actor = actorOf(text);
+  const name = participantName(text);
+  if (isAgentDevice(text)) return name;
+  const kind = deviceKind(text);
+  const kindLabel = kind ? deviceKinds[kind] : null;
+  return kindLabel ? `${name} · ${kindLabel}` : name;
+}
+
+/** 참여자 이름(기기 종류 없이): 사람은 닉네임, 봇은 노드 닉네임 — 「입력중」처럼 기기가 아니라 사람을 가리킬 때. */
+export function participantName(device) {
+  const text = String(device ?? '');
+  if (!text) return '';
   if (isAgentDevice(text)) {
     const node = agentNode(text);
     return node ? agentNames[node] ?? node : '봇';
   }
-  const name = peopleNames[actor] ?? serviceNames[actor] ?? actor;
-  const kind = deviceKind(text);
-  const kindLabel = kind ? deviceKinds[kind] : null;
-  return kindLabel ? `${name} · ${kindLabel}` : name;
+  const actor = actorOf(text);
+  return peopleNames[actor] ?? serviceNames[actor] ?? actor;
+}
+
+/**
+ * 입력 중인 참여자 이름(#562): 릴레이 `typing` 기기 목록에서 내 기기(같은 actor)를 빼고 한 사람의 여러 기기를
+ * 하나로 묶는다. 1:1 방이면 이름이 군더더기라 `[]`(문구는 「입력중…」만). 아무도 없으면 `[]`.
+ * @param {string[]} devices 릴레이가 준 기기 ID 목록
+ * @param {{device: string, actor: string, roster: string[]}} me 내 기기·actor·방 로스터
+ */
+export function typingNames(devices, { device, actor, roster }) {
+  const list = Array.isArray(devices) ? devices.filter(Boolean) : [];
+  const others = list.filter((d) => !isMine(d, { device, actor }));
+  if (others.length === 0 || isOneToOne(roster)) return [];
+  const seen = new Set();
+  const names = [];
+  for (const d of others) {
+    const who = participantOf(d);
+    if (seen.has(who)) continue;
+    seen.add(who);
+    names.push(participantName(d));
+  }
+  return names;
+}
+
+/** 방 머리글의 입력 중 문구: 다른 사람이 아무도 입력 중이 아니면 ''(표시 없음). */
+export function typingLabel(devices, me) {
+  const list = Array.isArray(devices) ? devices.filter(Boolean) : [];
+  if (!list.some((d) => !isMine(d, me))) return '';
+  return strings.chat.typing(typingNames(list, me));
 }
 
 const pad2 = (n) => String(n).padStart(2, '0');
@@ -349,6 +385,8 @@ export const strings = {
     notJoined: '아직 이 대화방에 참여하지 않았습니다. 초대를 기다려 주세요.',
     members: (n) => `멤버 ${n}`,
     membersButton: '멤버',
+    // 입력 중 표시(#562): 단체방은 이름을 앞에, 1:1 방은 문구만(패밀리챗 "입력중.." 과 같은 결).
+    typing: (names) => (names.length ? `${names.join(', ')} 입력중…` : '입력중…'),
     invite: '초대',
     image: '사진',
     viewImage: '크게 보기',

@@ -73,6 +73,17 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(stored[1].receivedAt.timeIntervalSince1970, before.timeIntervalSince1970 - 1)
     }
 
+    /// #562: 페이지의 `typing`(지금 글을 쓰는 다른 기기)은 그대로 패스에 실린다. 옛 릴레이(필드 없음)는 빈 배열.
+    func testTypingFromPageIsCarriedOnThePass() async throws {
+        let h = try joinedHarness()
+        h.relay.typing = [alice, carol]
+        let pass = try await h.sync.syncOnce()
+        XCTAssertEqual(pass.typing, [alice, carol])
+        h.relay.typing = nil
+        let legacy = try await h.sync.syncOnce()
+        XCTAssertEqual(legacy.typing, [], "a relay from before #562 omits typing")
+    }
+
     func testWelcomeAfterJoinIsIgnored() async throws {
         let h = try joinedHarness()
         h.relay.inject(device: alice, kind: .welcome, bytes: FakeWelcome(members: [alice, h.me]).bytes)

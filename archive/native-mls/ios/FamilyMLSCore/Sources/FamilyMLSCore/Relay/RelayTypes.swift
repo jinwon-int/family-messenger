@@ -62,7 +62,16 @@ public struct EventsPage: Codable, Equatable {
     /// 보존된 가장 오래된 seq. `firstSeq > cursor + 1` 이면 이력 공백 → 재참여 안내(#268 과 같은 판정).
     public var firstSeq: Int64?
     public var members: [MemberWire]?
-    enum CodingKeys: String, CodingKey { case epoch, revision, events, cursor, members; case nextAfter = "next_after", firstSeq = "first_seq" }
+    /// #562(server/typing.go): 이 방에서 지금 글을 쓰는 **다른** 기기(요청 기기 제외, 정렬, 만료 TTL 6s). 옛 릴레이는 싣지 않는다(nil).
+    public var typing: [DeviceID]?
+    enum CodingKeys: String, CodingKey { case epoch, revision, events, cursor, members, typing; case nextAfter = "next_after", firstSeq = "first_seq" }
+}
+
+/// POST /v2/rooms/{room}/typing(#562, server/typing.go `typingPost`) → 204. `clear` = 입력을 멈췄다(신호 삭제).
+public struct TypingPost: Codable, Equatable {
+    public var device: DeviceID
+    public var clear: Bool
+    public init(device: DeviceID, clear: Bool) { self.device = device; self.clear = clear }
 }
 
 public struct KeyPackageInput: Codable, Equatable {

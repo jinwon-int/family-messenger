@@ -72,6 +72,12 @@ SHARED = 'shared'
 A_ROOMS = {'a-one': 'agent', 'a-two': 'agent', 'a-quiet': 'silent', ALERTS: 'alert', SHARED: 'agent'}
 B_ROOMS = {ALERTS: 'alert', SHARED: 'agent'}
 UNCERTAIN_PREFIX = '⚠️ 요청(#'
+# The line a message earns when it arrives while another turn runs (Matrix
+# parity). One responder serves every room one turn at a time, so whether a
+# near-simultaneous mention waits is a race: people keep these lines apart
+# from `seen` and the checks below pin their wording, not their presence.
+QUEUE_PREFIX = '⏳ 이 메시지는 대기 순번 '
+QUEUE_LINE_FIRST = '⏳ 이 메시지는 대기 순번 2번에 저장되었으며 도착 순서대로 처리됩니다.'
 # What a person in the alert room reads by the end: na's two alerts (re-headed
 # by na) and nb's depth-2 reaction — never nb's suppressed peer answers.
 ALERT_ROOM_FINAL = ['[alert:na] disk 91%', '[alert:na] chain check', '[alert:nb:2] reaction']
@@ -305,7 +311,8 @@ def main():
                     self.page.wait_for_function('() => window.ready === true')
                     self.page.evaluate("spawn('main')")
                     self.cursor, self.epoch, self.joined, self.serial = 0, 0, False, 0
-                    self.seen = []  # every application plaintext, in relay order
+                    self.seen = []  # every application plaintext, in relay order (queue lines aside)
+                    self.queued = []  # queue-position lines (QUEUE_PREFIX), in relay order
                     self.call('init', dev)
                     self.key_hex = bytes(self.call('public_key')).hex()
 
@@ -342,7 +349,8 @@ def main():
                         elif ev['kind'] == 'welcome':
                             raise AssertionError(f'{self.dev} got a Welcome not targeted at it: {ev}')
                         else:
-                            self.seen.append(bytes(self.call('decrypt', sealed(data, room=self.room))).decode())
+                            text = bytes(self.call('decrypt', sealed(data, room=self.room))).decode()
+                            (self.queued if text.startswith(QUEUE_PREFIX) else self.seen).append(text)
                     self.epoch = body['epoch']
 
                 def wait_seen(self, count, timeout=60):
@@ -435,6 +443,9 @@ def main():
             assert not bot_a.events('agent_offer', 'a-quiet'), bot_a.events('agent_offer', 'a-quiet')
             assert len(turns(log_a)) == 2, turns(log_a)
             assert one.seen == ['answer[a-one]: hello one'] and two.seen == ['answer[a-two]: hello two']
+            # Two mentions, one responder: at most the later one waited, and
+            # then it was told its place in line in its own room.
+            assert one.queued + two.queued in ([], [QUEUE_LINE_FIRST]), (one.queued, two.queued)
             receipt['checks']['two_agent_rooms_answer_in_own_room_silent_room_silent'] = {
                 'turn_ids': sorted(t['turn_id'] for t in got), 'polls_per_round': status['polls_per_round']}
 

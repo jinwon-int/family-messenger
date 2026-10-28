@@ -45,6 +45,13 @@ enum Strings {
     static func sendRejected(_ reason: String) -> String { "보내지 못했습니다(\(reason)). 동기화 뒤 다시 시도해 주세요." }
     /// 방 화면 제목 아래: 릴레이에 닿지 않는 동안(`AppModel.reconnecting`).
     static let connecting = "연결 중입니다…"
+    /// #562 방 화면 제목 옆: 다른 사람이 글을 쓰는 중(1:1 방 — 이름 없이). AppModel 과 같은 Linux 스모크 복사 파일에 둔다.
+    static let typing = "입력중…"
+    /// 여럿이 있는 방: 「jinon86 입력중…」 · 「쩡이🍎, jinon86 입력중…」. 이름이 없으면 `typing` 만.
+    static func typingLabel(_ names: [String]) -> String {
+        if names.isEmpty { return typing }
+        return names.joined(separator: ", ") + " " + typing
+    }
     /// 보내는 글(오너 요청 build 31: 누르는 즉시 목록에 올리고, 상태는 말풍선 아래에).
     static let outgoingSending = "보내는 중…"
     static let outgoingQueued = "연결되면 보냅니다"

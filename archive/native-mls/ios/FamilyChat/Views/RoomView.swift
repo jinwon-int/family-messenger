@@ -111,7 +111,7 @@ struct RoomView: View {
                 // 실체화·재추정되며 내용 높이가 바뀌는데 스크롤 위치가 **위 기준**이라 보이는 행이 밀린다). 바닥 기준으로 바꾼다 —
                 // 내용·칸 크기가 바뀌어도 바닥과의 거리를 유지하므로 위쪽 추정치가 아무리 바뀌어도 보이는 행은 그대로. iOS 16 은 종전대로.
                 .modifier(BottomAnchoredTimeline())
-                // 방을 나가면 창을 기본(최신 500건)으로 되돌린다 — 폴링마다 큰 창을 읽지 않는다.
+                // 방을 나가면 창을 기본(최신 `timelineLimit` 건)으로 되돌린다 — 폴링마다 큰 창을 읽지 않는다.
                 // #497: 사진 전체 화면 보기가 떠서 불린 경우는 나간 것이 아니다(닫으면 보던 자리 그대로).
                 .onDisappear {
                     guard !PhotoViewerPresence.active else { return }
@@ -195,7 +195,8 @@ struct RoomView: View {
                         scrollToLatest(proxy, animated: true)
                         verifyPositionSoon(proxy)
                     case .follow:
-                        scrollToLatest(proxy, animated: false)
+                        // 앵커가 있으면 바닥 거리를 유지한 채 새 행이 아래에 붙어 그대로 보인다 — 명령을 내지 않는다(겹치면 꿈틀).
+                        if !Self.anchored { scrollToLatest(proxy, animated: false) }
                         verifyPositionSoon(proxy)
                     case .markNewBelow:
                         hasNewBelow = true
@@ -233,6 +234,8 @@ struct RoomView: View {
                     .focused($composerFocused)
                     // #405 P3: 하드웨어 키보드 Enter = 전송, Shift+Enter = 줄바꿈(웹 keyboard.js). 화면 키보드는 줄바꿈 그대로.
                     .onChange(of: draft) { new in
+                        // #562: 다른 기기에 「입력중…」 신호(간격 제한은 AppModel). 비면 clear.
+                        model.noteTyping(room: room, clear: new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         let old = previousDraft
                         previousDraft = new
                         switch ComposerKeys.decide(old: old, new: new, hardwareKeyboard: HardwareKeyboard.isConnected,
@@ -268,7 +271,14 @@ struct RoomView: View {
             // #405 P2: 제목 아래 불가에 둘러앉은 자리(사람 크림색 · 에이전트 파란색).
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 3) {
-                    Text(Strings.roomLabel(room)).font(.headline).foregroundStyle(Hande.ink)
+                    HStack(spacing: 6) {
+                        Text(Strings.roomLabel(room)).font(.headline).foregroundStyle(Hande.ink)
+                        // #562: 제목 옆 「입력중…」 — 릴레이에 닿지 않는 동안은 오래된 신호일 수 있어 보이지 않는다.
+                        if let label = typingLabel, !model.reconnecting {
+                            Text(label).font(.caption2).foregroundStyle(Hande.inkDim)
+                                .transition(.opacity)
+                        }
+                    }
                     SeatDots(people: glance.people.count, agents: glance.agents.count, size: 6)
                     // 릴레이에 닿지 않는 동안만(원문 오류 대신). 동기화가 한 번 성공하면 사라진다.
                     if model.reconnecting {
@@ -277,6 +287,7 @@ struct RoomView: View {
                     }
                 }
                 .animation(.easeOut(duration: 0.2), value: model.reconnecting)
+                .animation(.easeOut(duration: 0.2), value: typingLabel)
             }
             ToolbarItem(placement: .primaryAction) {
                 Button { showInvite = true } label: { Image(systemName: "person.badge.plus") }
@@ -312,6 +323,22 @@ struct RoomView: View {
 
     /// #405 P2: 이 방의 자리 요약(제목 아래 점 · 작성창 안내).
     private var glance: RoomGlance { RoomGlance.make(messages.map(\.record), roster: model.agentRoster) }
+
+    /// #562: 제목 옆 「입력중…」. 릴레이가 준 기기 가운데 내 다른 기기(같은 actor)는 빼고, 사람(이름)별로 한 번만 센다(기기가 여럿이어도).
+    /// 1:1 방(말한 사람 ≤ 2 · 에이전트 없음)은 누구인지 뻔하므로 이름 없이. 아무도 없으면 nil(표시 없음).
+    private var typingLabel: String? {
+        let devices = model.typing[room] ?? []
+        let me = MessageRecord.actor(of: model.deviceId)
+        var names: [String] = []
+        for device in devices {
+            if !model.deviceId.isEmpty, MessageRecord.actor(of: device) == me { continue }
+            let name = AgentRosterNames.person(device)
+            if !names.contains(name) { names.append(name) }
+        }
+        if names.isEmpty { return nil }
+        if glance.people.count <= 2 && glance.agents.isEmpty { return Strings.typing }
+        return Strings.typingLabel(names)
+    }
 
     private var placeholder: String {
         guard let agent = glance.agents.last else { return Strings.composerPlaceholder }
@@ -351,7 +378,7 @@ struct RoomView: View {
 
     /// #398: 첨부 본체가 읽혀 행이 커졌다 — 끝 쪽 행이고 따라가는 중이면 최하단을 다시 맞춘다.
     private func attachmentLoaded(_ id: Int64, _ proxy: ScrollViewProxy) {
-        guard ScrollFollow.shouldRescroll(loaded: id, ids: messages.map(\.id), following: followLatest) else { return }
+        guard !Self.anchored, ScrollFollow.shouldRescroll(loaded: id, ids: messages.map(\.id), following: followLatest) else { return }
         scrollToLatest(proxy, animated: false)
     }
 
@@ -372,8 +399,8 @@ struct RoomView: View {
                 tracking.animatingUntil = Date().addingTimeInterval(animation + 0.05)
                 withAnimation(.easeOut(duration: animation)) { proxy.scrollTo(last, anchor: .bottom) }
                 DispatchQueue.main.asyncAfter(deadline: .now() + animation + 0.1) {
-                    if ScrollFollow.needsBottomCorrection(sentinelBottom: tracking.sentinelBottom, viewportHeight: viewportHeight,
-                                                          following: followLatest) {
+                    if !Self.anchored, ScrollFollow.needsBottomCorrection(sentinelBottom: tracking.sentinelBottom, viewportHeight: viewportHeight,
+                                                                          following: followLatest) {
                         correctBottom(proxy, reason: "after-animation")
                     }
                 }
@@ -386,7 +413,7 @@ struct RoomView: View {
     /// 스크롤 위치가 내용 끝을 지나 빈 화면이 됐다(오너 보고 build 41) — 맨 아래로 되돌리고 따라간다. 맞췄으면 true.
     @discardableResult
     private func recoverIfPastContentEnd(_ proxy: ScrollViewProxy) -> Bool {
-        guard ScrollFollow.isPastContentEnd(sentinelBottom: tracking.sentinelBottom, viewportHeight: viewportHeight,
+        guard !Self.anchored, ScrollFollow.isPastContentEnd(sentinelBottom: tracking.sentinelBottom, viewportHeight: viewportHeight,
                                             contentHeight: contentHeight, sinceDrag: Date().timeIntervalSince(tracking.lastDrag)) else { return false }
         model.noteScroll("\(room) past-end sentinel=\(Self.pt(tracking.sentinelBottom)) viewport=\(Self.pt(viewportHeight)) content=\(Self.pt(contentHeight)) → bottom")
         followLatest = true
@@ -402,7 +429,8 @@ struct RoomView: View {
         let old = viewportHeight
         viewportHeight = height
         if abs(height - old) >= 24 { model.noteScroll("\(room) viewport \(Self.pt(old))→\(Self.pt(height)) following=\(followLatest)") }
-        if ScrollFollow.shouldRescrollOnResize(old: old, new: height, following: followLatest) {
+        // 앵커가 있으면 칸이 줄어도(키보드) 바닥 거리를 유지한다 — 명령 불필요.
+        if !Self.anchored, ScrollFollow.shouldRescrollOnResize(old: old, new: height, following: followLatest) {
             scrollToLatest(proxy, animated: true)
         }
     }
@@ -416,7 +444,7 @@ struct RoomView: View {
                              + "sentinel=\(Self.pt(tracking.sentinelBottom)) sinceDrag=\(Self.ms(tracking.lastDrag))")
         }
         // 애니메이션 스크롤이 도는 동안은 보정을 내지 않는다 — 끝난 뒤 `scrollToLatest` 가 한 번 다시 잰다(#497: 둘이 싸워 흔들렸다).
-        if !tracking.isAnimating, ScrollFollow.shouldRescrollOnContentGrowth(old: old, new: height, following: followLatest) {
+        if !Self.anchored, !tracking.isAnimating, ScrollFollow.shouldRescrollOnContentGrowth(old: old, new: height, following: followLatest) {
             scrollToLatest(proxy, animated: false)
         }
     }
@@ -430,7 +458,7 @@ struct RoomView: View {
         }
         tracking.sentinelBottom = bottom
         if recoverIfPastContentEnd(proxy) { return }
-        if !tracking.isAnimating, ScrollFollow.needsBottomCorrection(sentinelBottom: bottom, viewportHeight: viewportHeight, following: followLatest) {
+        if !Self.anchored, !tracking.isAnimating, ScrollFollow.needsBottomCorrection(sentinelBottom: bottom, viewportHeight: viewportHeight, following: followLatest) {
             correctBottom(proxy, reason: "sentinel")
         }
         refollowIfSettledAtBottom()
@@ -450,6 +478,9 @@ struct RoomView: View {
         scrollToLatest(proxy, animated: false)
     }
 
+    /// 바닥 앵커가 자리를 지키는 iOS 17+ — 즉시 보정 명령을 내지 않는다(`BottomAnchoredTimeline.isAnchored`).
+    private static let anchored = BottomAnchoredTimeline.isAnchored
+
     /// 진단 기록용 pt 값(미측정 ∞ 는 그대로 표시 — `Int(.infinity)` 는 trap).
     private static func pt(_ value: Double) -> String { value.isFinite ? String(Int(value.rounded())) : "∞" }
     /// 진단 기록용 "그 시각부터 지금까지" ms(끌기 뒤 경과 등). `distantPast` 는 "없음".
@@ -457,6 +488,7 @@ struct RoomView: View {
 
     /// 다시 읽은 뒤 몇 번 더 잰다 — 표지 실측이 다시 오지 않아도(배치가 멈춘 채 빈 화면·최하단 미달) 위치를 바로잡는다.
     private func verifyPositionSoon(_ proxy: ScrollViewProxy) {
+        guard !Self.anchored else { return }   // 앵커가 자리를 지킨다 — 재측정 보정은 중복(꿈틀 원인).
         for delay in ScrollFollow.verifyDelays {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 if recoverIfPastContentEnd(proxy) { return }
@@ -880,6 +912,14 @@ struct BottomAnchoredTimeline: ViewModifier {
         if #available(iOS 18, *) { return "ios18-roles" }
         if #available(iOS 17, *) { return "ios17-single" }
         return "ios16-top"
+    }
+
+    /// 바닥 앵커가 살아 있다(iOS 17+). 이때 "최하단을 다시 맞추는" 즉시 보정(내용 증가·표지 실측·첨부 로딩·칸 축소·빈 화면 복구)은 앵커가
+    /// 이미 하는 일이라 **중복**이고, 앵커의 조정과 같은 프레임에 겹쳐 꿈틀거림이 된다(오너 build 54: "점프는 없는데 계속 꿈틀") — 끈다.
+    /// 남기는 명령은 사용자 의도가 있는 것뿐: 내 글 전송·「새 메시지 ↓」·작성창 포커스·방 진입.
+    static var isAnchored: Bool {
+        if #available(iOS 17, *) { return true }
+        return false
     }
 
     func body(content: Content) -> some View {

@@ -215,6 +215,19 @@ public final class URLSessionRelayTransport: RelayTransport {
         try makeRequest(method: "DELETE", path: "/v2/push/devices", query: [URLQueryItem(name: "device", value: device)])
     }
 
+    // MARK: - 타이핑 (#562, server/typing.go)
+
+    public func postTyping(room: RoomID, device: DeviceID, clear: Bool) async throws {
+        // typing.go handlePostTyping: 204(바디 없음). 404 no_such_room · 410 room_closed · 403 device_not_allowed/not_a_member · 400.
+        // 라우트가 없는 옛 릴레이는 404(코드 http_404) — 호출자(AppModel)가 이 세션에서는 다시 보내지 않는다.
+        _ = try await perform(try postTypingRequest(room: room, device: device, clear: clear))
+    }
+
+    func postTypingRequest(room: RoomID, device: DeviceID, clear: Bool) throws -> URLRequest {
+        try makeRequest(method: "POST", path: "/v2/rooms/\(Self.pathComponent(room))/typing",
+                        body: try JSONEncoder().encode(TypingPost(device: device, clear: clear)))
+    }
+
     // MARK: - 로비 key package (#380 P5-1, server/lobby.go)
 
     public func postLobbyKeyPackages(_ post: KeyPackagePost) async throws -> KeyPackagesResponse {
