@@ -256,7 +256,11 @@ v2 smoke는 required 모드로 돈다(ES256 키를 만들어 JWKS 파일로 넘�
   `not_a_member`) 그리고 멤버십 판정 **뒤에** 범위 검사 400 `bad_seq`(`0..last_seq` 밖; 외부인에게
   last_seq 오라클 없음). `GET …/events` 응답 `read_seq`에 요청 기기 actor 의 값이 실린다(추적 멤버가
   아니거나 아직 아무 기기도 올리지 않았으면 0). seq 는 릴레이가 이미 아는 전체 순서라 E2EE 노출이 늘지
-  않는다. 푸시(APNs)는 아직 이 값을 보지 않는다(후속).
+  않는다. 푸시(APNs)도 이 값을 본다: `application` 이벤트의 대상 선정(`pushTargets`)은 보낸 **기기**뿐
+  아니라 보낸 기기와 같은 actor 의 기기(내 PC 글이 내 폰에 울리지 않게), 그리고 그 기기 actor 의
+  `mls_read` 가 새 seq 이상인 기기를 뺀다. `welcome` 은 그대로다 — 같은 사람의 새 기기에 보내는
+  초대가 막히면 안 된다. 시드 전 방(멤버 행 없음)은 종전대로 기기 단위다. 배지 수와 이미 뜬 알림
+  제거(iOS `setBadgeCount`/`removeDeliveredNotifications`)는 후속.
 
 ### 리뷰 2차 Low 묶음 (#231 배치 f)
 
@@ -363,8 +367,9 @@ BEGIN IMMEDIATE 트랜잭션으로 기록된다(B2/B3 규율 유지). v2 릴레�
 - 브라우저/실기기 동작 — 이 유닛은 순수 서버 측 Go다.
 - 실제 APNs 전송(Apple 엔드포인트·실 `.p8`·실 기기 토큰) — Go 테스트는 HTTP/2 TLS 가짜
   서버로 경로·헤더·ES256 서명·페이로드 바이트·410 정리를 검사한다. 실 전송은 파이널라이저
-  D 단계(#275 수용 기준). 푸시 대상 선정은 커서가 뒤처진 기기 전체이며, 기기가 이미 다른
-  경로로 읽었는지(커서 미반영)는 알 수 없다 — 알림 중복은 NSE가 seq로 거른다.
+  D 단계(#275 수용 기준). 푸시 대상 선정은 커서가 뒤처진 기기 가운데 보낸 actor 가 아니고
+  actor 읽음 위치(`mls_read`)가 seq 앞인 기기다; 커서에 반영되지 않은 다른 경로의 읽음은 알 수
+  없다 — 알림 중복은 NSE가 seq로 거른다.
 - 쿠키 기반 CF Access 세션에서의 교차 사이트 요청(G-M8): `GET /events?ack=`·`GET
   /keypackages`는 상태를 바꾸는 GET이고 `/close`는 본문 없는 POST다. 호출자 인증은
   헤더 토큰(`Cf-Access-Jwt-Assertion`/`Bearer`) 전제이며, 브라우저 쿠키 세션으로

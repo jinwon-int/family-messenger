@@ -468,6 +468,96 @@ func TestAPNsSkipsStatusEvents(t *testing.T) {
 	}
 }
 
+// An application event does not wake the sender's other devices (same actor)
+// nor a device whose actor already read past it (mls_read, #571 B); a welcome
+// still reaches the same actor's device — that is how a new device of the
+// same person is invited.
+func TestAPNsSkipsSameActorAndReadDevices(t *testing.T) {
+	r, srv, st, _, first := newEnforcedRelay(t, testPolicy())
+	seedActors(t, srv, st, first) // alice a1,a2 · bob b1 in r; a2 posted seq 2
+	fake := newFakeAPNs(t)
+	key := testAPNsKey(t)
+	sender, err := newAPNsSender(fake.srv.URL, "TEAM123456", "KEY1234567", key, fake.srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.push = sender
+	const topic = "com.seoyoon-family.hande"
+	tokens := map[string][]byte{"a1": {0xa1, 0x01}, "a2": {0xa2, 0x01}, "b1": {0xb1, 0x01}}
+	for dev, tok := range tokens {
+		if st, raw := doJSON(t, srv, "POST", "/v2/push/devices", pushBody(dev, tok, topic)); st != http.StatusNoContent {
+			t.Fatalf("register %s: %d %s", dev, st, raw)
+		}
+	}
+	devicesOf := func(calls []apnsCall) map[string]bool {
+		out := map[string]bool{}
+		for _, c := range calls {
+			for dev, tok := range tokens {
+				if c.token == hex.EncodeToString(tok) {
+					out[dev] = true
+				}
+			}
+		}
+		return out
+	}
+	post := func(device, client string) int64 {
+		t.Helper()
+		st, raw := doJSON(t, srv, "POST", "/v2/rooms/r/events", postEventBody(t, device, client, "application", 1, nil, nil, []byte(client)))
+		if st != http.StatusCreated {
+			t.Fatalf("post %s: %d %s", client, st, raw)
+		}
+		r.pushWG.Wait()
+		return decodeEventResponse(t, raw).Seq
+	}
+
+	// alice writes from a1: bob is woken, alice's own phone a2 is not.
+	post("a1", "m2")
+	if got := devicesOf(fake.taken()); len(got) != 1 || !got["b1"] {
+		t.Fatalf("a1's message woke %v, want only b1", got)
+	}
+	// bob writes: both alice devices are behind and get an alert.
+	seq := post("b1", "m3")
+	if got := devicesOf(fake.taken()); len(got) != 2 || !got["a1"] || !got["a2"] {
+		t.Fatalf("b1's message woke %v, want a1 and a2", got)
+	}
+	// alice reads up to seq on a1: a later target computation for that seq
+	// skips every alice device, while bob (unread) stays.
+	if got := postRead(t, srv, "r", "a1", seq); got != seq {
+		t.Fatalf("a1 read → %d, want %d", got, seq)
+	}
+	targets, err := r.pushTargets("r", "b1", "application", seq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 0 {
+		t.Fatalf("targets after alice read seq %d = %v, want none", seq, targets)
+	}
+	targets, err = r.pushTargets("r", "a1", "application", seq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0].device != "b1" {
+		t.Fatalf("targets for a1's event at seq %d = %v, want b1 only", seq, targets)
+	}
+	// A welcome from a1 is not actor-scoped: a2 (same person) is a target.
+	targets, err = r.pushTargets("r", "a1", "welcome", seq+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, tg := range targets {
+		got[tg.device] = true
+	}
+	if len(got) != 2 || !got["a2"] || !got["b1"] {
+		t.Fatalf("welcome targets = %v, want a2 and b1", got)
+	}
+	// The next message after the read wakes alice again (read_seq < seq).
+	post("b1", "m4")
+	if got := devicesOf(fake.taken()); len(got) != 2 || !got["a1"] || !got["a2"] {
+		t.Fatalf("b1's next message woke %v, want a1 and a2", got)
+	}
+}
+
 func TestIsStatusClientID(t *testing.T) {
 	for id, want := range map[string]bool{
 		"status-0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0":  true,
