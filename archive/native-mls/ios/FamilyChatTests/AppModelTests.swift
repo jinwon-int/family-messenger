@@ -52,6 +52,7 @@ class InMemoryRelayWrapper: RelayTransport {
     func lobbyWelcomes(device: DeviceID) async throws -> [PendingWelcome] { try await inner.lobbyWelcomes(device: device) }
     func deleteLobbyKeyPackages(device: DeviceID) async throws -> Int { try await inner.deleteLobbyKeyPackages(device: device) }
     func postTyping(room: RoomID, device: DeviceID, clear: Bool) async throws { try await inner.postTyping(room: room, device: device, clear: clear) }
+    func postRead(room: RoomID, device: DeviceID, seq: Int64) async throws -> Int64 { try await inner.postRead(room: room, device: device, seq: seq) }
 }
 
 @MainActor
@@ -270,6 +271,115 @@ final class AppModelTests: XCTestCase {
         model.noteTyping(room: "family")
         await model.typingInFlight?.value
         XCTAssertEqual(relay.typingPosts.count, 2, "a room that is not on the relay yet does not switch typing off")
+    }
+
+    // MARK: - 읽음 위치 공유 (#571 B)
+
+    /// 다른 기기의 글 하나를 더 올린다(seq = 지금까지의 수 + 1) — 읽음 위치를 그만큼 올릴 수 있게.
+    private func postMomMessage(_ relay: InMemoryRelay, _ n: Int) async throws {
+        _ = try await relay.postEvent(room: "family", EventPost(device: "mom-iphone-1", clientId: "mom-iphone-1-c\(n)", kind: .application,
+                                                                epoch: 0, bytes: Data("hi\(n)".utf8)))
+    }
+
+    /// 릴레이 `GET /events` 의 `read_seq`(같은 사람의 어느 기기든 본 위치)는 방별로 오르기만 한다; 다른 사람의 값은 내 것이 아니다.
+    func testRelayReadSeqIsSurfacedPerRoomAndNeverShrinks() async throws {
+        let relay = InMemoryRelay()
+        let model = try await readyModel(relay: relay)
+        XCTAssertEqual(model.relayReadSeq["family"] ?? 0, 0, "nothing read yet")
+        relay.setRead(room: "family", device: "mom-iphone-1", seq: 1)   // 다른 사람(mom) — 이 기기(owner)의 값이 아니다
+        await model.refresh()
+        XCTAssertEqual(model.relayReadSeq["family"] ?? 0, 0, "another actor's read position is not mine")
+        relay.setRead(room: "family", device: "owner-pc", seq: 1)   // 같은 사람(owner)의 다른 기기
+        await model.refresh()
+        XCTAssertEqual(model.relayReadSeq["family"], 1)
+        model.logout()
+        XCTAssertTrue(model.relayReadSeq.isEmpty, "logout drops the relay value (prefs keep the merged max)")
+    }
+
+    func testNoteReadPostsOncePerSeqAndTakesTheRelaysHigherAnswer() async throws {
+        let relay = InMemoryRelay()
+        let model = try await readyModel(relay: relay)
+        model.noteRead(room: "family", seq: 0)
+        await model.readInFlight?.value
+        XCTAssertTrue(relay.readPosts.isEmpty, "seq 0 = nothing seen; no round trip")
+        model.noteRead(room: "family", seq: 1)
+        model.noteRead(room: "family", seq: 1)
+        await model.readInFlight?.value
+        XCTAssertEqual(relay.readPosts.count, 1, "the same seq is posted once")
+        XCTAssertEqual(relay.readPosts.first?.room, "family")
+        XCTAssertEqual(relay.readPosts.first?.device, model.deviceId)
+        XCTAssertEqual(relay.readPosts.first?.seq, 1)
+        XCTAssertEqual(model.relayReadSeq["family"], 1, "the 200 read_seq is applied")
+        // 같은 사람의 다른 기기가 더 멀리 봤다: 응답 read_seq 가 올린 값보다 크다 → 그 값. 그 이하의 seq 는 다시 보내지 않는다.
+        try await postMomMessage(relay, 2)
+        try await postMomMessage(relay, 3)
+        relay.setRead(room: "family", device: "owner-pc", seq: 3)
+        model.noteRead(room: "family", seq: 2)
+        await model.readInFlight?.value
+        XCTAssertEqual(relay.readPosts.count, 2)
+        XCTAssertEqual(relay.readPosts.last?.seq, 2)
+        XCTAssertEqual(model.relayReadSeq["family"], 3, "another device of mine got further — the relay's answer wins")
+        model.noteRead(room: "family", seq: 3)
+        await model.readInFlight?.value
+        XCTAssertEqual(relay.readPosts.count, 2, "the relay already knows 3 — no round trip")
+    }
+
+    func testNoteReadNeedsReadyPhaseAndReachableRelay() async throws {
+        let relay = InMemoryRelay()
+        let known = RoomRecord(room: "family", epoch: 0, revision: 0, haltedReason: nil, displayOrder: 0)
+        let (model, _) = makeModel(rooms: [known], transport: relay)
+        await model.bootstrap(); model.login(.bearer("t"))
+        try await postMomMessage(relay, 1)
+        XCTAssertEqual(model.phase, .needsEnrollment)
+        model.noteRead(room: "family", seq: 1)
+        await model.readInFlight?.value
+        XCTAssertTrue(relay.readPosts.isEmpty, "not before the first successful round")
+        await model.refresh()
+        XCTAssertEqual(model.phase, .ready)
+        try await relay.stop()
+        await model.refresh()
+        XCTAssertTrue(model.reconnecting)
+        model.noteRead(room: "family", seq: 1)
+        await model.readInFlight?.value
+        XCTAssertTrue(relay.readPosts.isEmpty, "not while reconnecting")
+        try await relay.start()
+        await model.refresh()
+        XCTAssertFalse(model.reconnecting)
+        model.noteRead(room: "family", seq: 1)
+        await model.readInFlight?.value
+        XCTAssertEqual(relay.readPosts.count, 1)
+    }
+
+    func testReadRouteMissingOnOldRelayStopsFurtherPosts() async throws {
+        let relay = InMemoryRelay()
+        let model = try await readyModel(relay: relay)
+        relay.failNextReadPosts([.refused(code: "http_404", status: 404)])
+        model.noteRead(room: "family", seq: 1)
+        await model.readInFlight?.value
+        try await postMomMessage(relay, 2)
+        model.noteRead(room: "family", seq: 2)
+        await model.readInFlight?.value
+        XCTAssertEqual(relay.readPosts.count, 1, "404 on the route = old relay; off for the session")
+        XCTAssertEqual(model.relayReadSeq["family"] ?? 0, 0, "a failed post applies nothing")
+        // 다시 로그인하면(새 전송) 다시 묻는다.
+        model.login(.bearer("t2"))
+        await model.refresh()
+        model.noteRead(room: "family", seq: 2)
+        await model.readInFlight?.value
+        XCTAssertEqual(relay.readPosts.count, 2)
+        XCTAssertEqual(model.relayReadSeq["family"], 2)
+    }
+
+    func testReadNoSuchRoomIsNotTreatedAsMissingRoute() async throws {
+        let relay = InMemoryRelay()
+        let model = try await readyModel(relay: relay)
+        relay.failNextReadPosts([.refused(code: "no_such_room", status: 404)])
+        model.noteRead(room: "family", seq: 1)
+        await model.readInFlight?.value
+        try await postMomMessage(relay, 2)
+        model.noteRead(room: "family", seq: 2)
+        await model.readInFlight?.value
+        XCTAssertEqual(relay.readPosts.count, 2, "a room that is not on the relay yet does not switch read sharing off")
     }
 
     func testConnectionIssueClassification() async {

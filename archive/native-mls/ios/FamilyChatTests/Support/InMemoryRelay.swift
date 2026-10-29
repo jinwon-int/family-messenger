@@ -154,6 +154,44 @@ final class InMemoryRelay: RelayTransport, RelayControl {
         return out.sorted()
     }
 
+    // MARK: 읽음 위치(#571 B, server/read.go) — (방, actor) 에 한 값, max 로만 오른다, 0..last_seq. 이 릴레이는 멤버를 추적하지 않으므로
+    // actor 는 기기 ID 접두(`MessageRecord.actor(of:)`)로 잡는다(서버는 mls_members 의 actor; 403 not_a_member 는 흉내 내지 않는다).
+
+    private var readSeqs: [RoomID: [String: Int64]] = [:]
+    /// 테스트 관찰: 받은 POST /read(순서대로).
+    private(set) var readPosts: [(room: RoomID, device: DeviceID, seq: Int64)] = []
+    private var readErrors: [RelayError] = []
+    /// 결함 주입: 다음 POST /read 들이 이 오류로 실패한다(라우트 없는 옛 릴레이 = 404 http_404 등).
+    func failNextReadPosts(_ errors: [RelayError]) { lock.withLock { readErrors += errors } }
+
+    /// 테스트 시드: 이 기기(의 사람)가 이 방을 `seq` 까지 봤다 — 같은 사람의 다른 기기가 읽은 상황.
+    func setRead(room: RoomID, device: DeviceID, seq: Int64) { lock.withLock { _ = mergeRead(room: room, device: device, seq: seq) } }
+
+    /// 잠금 안에서만. (방, actor) 값 = max(지금, seq), 결과를 돌려준다.
+    private func mergeRead(room: RoomID, device: DeviceID, seq: Int64) -> Int64 {
+        let actor = MessageRecord.actor(of: device)
+        let next = max(readSeqs[room]?[actor] ?? 0, seq)
+        readSeqs[room, default: [:]][actor] = next
+        return next
+    }
+
+    func postRead(room: RoomID, device: DeviceID, seq: Int64) async throws -> Int64 {
+        try checkUp()
+        return try lock.withLock {
+            readPosts.append((room, device, seq))
+            if !readErrors.isEmpty { throw readErrors.removeFirst() }
+            guard let r = rooms[room], !r.events.isEmpty else { throw RelayError.refused(code: "no_such_room", status: 404) }
+            if r.closed { throw RelayError.refused(code: "room_closed", status: 410) }
+            guard seq >= 0, seq <= Int64(r.events.count) else { throw RelayError.refused(code: "bad_seq", status: 400) }
+            return mergeRead(room: room, device: device, seq: seq)
+        }
+    }
+
+    /// 응답에 실을 `read_seq`: 읽는 기기와 같은 사람의 값, 없으면 0(절대 null 아님).
+    private func readSnapshot(room: RoomID, device: DeviceID) -> Int64 {
+        readSeqs[room]?[MessageRecord.actor(of: device)] ?? 0
+    }
+
     func getEvents(room: RoomID, device: DeviceID, after: Int64, limit: Int, ack: Int64?) async throws -> EventsPage {
         try checkUp()
         return try lock.withLock {
@@ -168,7 +206,8 @@ final class InMemoryRelay: RelayTransport, RelayControl {
             }
             var page: [String: Any] = ["epoch": r.epoch, "revision": 0, "events": events,
                                        "next_after": visible.last?.seq ?? after, "first_seq": 1, "members": [Any](),
-                                       "typing": typingSnapshot(room: room, exclude: device)]
+                                       "typing": typingSnapshot(room: room, exclude: device),
+                                       "read_seq": readSnapshot(room: room, device: device)]
             if let cursor = r.cursors[device] { page["cursor"] = cursor }
             return try Self.decode(EventsPage.self, page)
         }

@@ -73,6 +73,8 @@ public struct SyncPass: Equatable {
     public var deferredSeq: Int64? = nil
     /// #562: 이 페이지의 `typing` — 지금 글을 쓰는 다른 기기(릴레이가 요청 기기를 뺀다). 옛 릴레이·거부·정지 패스는 빈 배열.
     public var typing: [DeviceID] = []
+    /// #571 B: 이 페이지의 `read_seq` — 같은 사람(actor)의 어느 기기든 본 가장 큰 seq. 옛 릴레이(필드 없음)·거부·정지 패스는 0.
+    public var readSeq: Int64 = 0
 }
 
 public enum SendOutcome: Equatable {
@@ -234,6 +236,7 @@ public final class RoomSyncEngine {
         outcome.fetched = page.events.count
         outcome.hasMore = outcome.halted == nil && outcome.deferredSeq == nil && page.events.count >= configuration.pageLimit
         outcome.typing = page.typing ?? []
+        outcome.readSeq = page.readSeq ?? 0
         return outcome
     }
 

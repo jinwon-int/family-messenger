@@ -265,6 +265,28 @@ final class RelayTransportTests: XCTestCase {
         XCTAssertEqual(cleared, TypingPost(device: "me-pc", clear: true))
     }
 
+    /// #571 B server/read.go handlePostRead: POST /v2/rooms/{room}/read, JSON {device, seq} — strictJSON 이라 다른 키 없음. 200 {read_seq}.
+    func testPostReadRequestMatchesServerWire() throws {
+        let request = try transport(.bearer("t")).postReadRequest(room: "family", device: "owner-iphone-0a0b0c", seq: 42)
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.absoluteString, "https://relay.example.com/v2/rooms/family/read")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Cf-Access-Jwt-Assertion"), "t")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(request.httpBody)) as? [String: Any])
+        XCTAssertEqual(Set(json.keys), ["device", "seq"])
+        let post = try JSONDecoder().decode(ReadPost.self, from: try XCTUnwrap(request.httpBody))
+        XCTAssertEqual(post, ReadPost(device: "owner-iphone-0a0b0c", seq: 42))
+
+        let cookie = try transport(.accessCookie("jwt")).postReadRequest(room: "fa/mily", device: "me-pc", seq: 0)
+        XCTAssertEqual(cookie.url?.absoluteString, "https://relay.example.com/v2/rooms/fa%2Fmily/read", "room stays one path segment")
+        XCTAssertEqual(cookie.value(forHTTPHeaderField: "Cookie"), "CF_Authorization=jwt")
+        XCTAssertEqual(try JSONDecoder().decode(ReadPost.self, from: try XCTUnwrap(cookie.httpBody)), ReadPost(device: "me-pc", seq: 0))
+        // 응답·거부는 다른 라우트와 같은 매핑: 200 {read_seq}(올린 값보다 클 수 있다) · 400 bad_seq(0..last_seq 밖).
+        XCTAssertEqual(try JSONDecoder().decode(ReadResponse.self, from: body(#"{"read_seq":9}"#)), ReadResponse(readSeq: 9))
+        XCTAssertEqual(URLSessionRelayTransport.relayFailure(status: 400, data: body(#"{"error":"bad_seq","detail":"read seq 9 outside 0..last_seq 3"}"#)),
+                       .refused(code: "bad_seq", status: 400))
+    }
+
     // MARK: - 로비(server/lobby.go, #380 P5-1) — 4 라우트의 URL·쿼리·바디
 
     func testLobbyRequestsMatchServerRoutes() throws {
@@ -321,6 +343,10 @@ final class RelayTransportTests: XCTestCase {
         await XCTAssertThrowsErrorAsync(try await legacy.deleteLobbyKeyPackages(device: "me")) { XCTAssertEqual($0 as? RelayError, .refused(code: "not_found", status: 404)) }
         // #562: 타이핑 라우트도 같은 규칙 — 호출자(AppModel)는 404 를 보면 이 세션에서 그만둔다.
         await XCTAssertThrowsErrorAsync(try await legacy.postTyping(room: "r", device: "me", clear: false)) {
+            XCTAssertEqual($0 as? RelayError, .refused(code: "not_found", status: 404))
+        }
+        // #571 B: 읽음 라우트도 같은 규칙.
+        await XCTAssertThrowsErrorAsync(try await legacy.postRead(room: "r", device: "me", seq: 1)) {
             XCTAssertEqual($0 as? RelayError, .refused(code: "not_found", status: 404))
         }
     }

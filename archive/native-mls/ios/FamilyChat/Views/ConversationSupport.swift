@@ -36,7 +36,8 @@ enum HardwareKeyboard {
     }
 }
 
-/// 이 기기에만 두는 표시 설정(동기화하지 않는다 — 릴레이에 읽음 확인·계정 데이터가 없다).
+/// 이 기기에 두는 표시 설정. 방 순서는 이 기기에만. 읽음 위치는 #571 B 부터 릴레이가 같은 사람(actor)의 기기들 사이에서 공유한다 —
+/// 방 화면이 `markRead` 와 함께 `AppModel.noteRead`(`POST /read`)를 부르고, 릴레이 값(`AppModel.relayReadSeq`)은 `RootView` 가 여기에 합친다(줄어들지 않음).
 /// MLS 상태·메시지 DB 와 섞지 않으려고 UserDefaults 에 둔다(방 행 displayOrder 는 동기화 엔진도 고쳐 쓰므로 건드리지 않는다).
 @MainActor
 final class LocalPrefs: ObservableObject {

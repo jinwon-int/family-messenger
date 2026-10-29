@@ -115,6 +115,15 @@ final class AppModel: ObservableObject {
     private var typingUnsupported = false
     /// 마지막 타이핑 POST(동기화 `serial` 밖, 최선 노력) — 테스트가 끝나기를 기다린다.
     private(set) var typingInFlight: Task<Void, Never>?
+    /// #571 B: 방별로 릴레이가 아는 **같은 사람(actor)** 의 읽음 위치(`GET /events` 의 `read_seq` — 어느 기기든 본 가장 큰 seq).
+    /// 동기화 패스의 값과 `POST /read` 응답의 최댓값으로만 오른다(줄어들지 않는다). 안 읽음 판정은 `LocalPrefs.readSeq` 와 이 값의 max.
+    @Published private(set) var relayReadSeq: [RoomID: Int64] = [:]
+    /// 방별로 이 세션에서 `POST /read` 로 올린 마지막 seq — 같은 값을 두 번 보내지 않는다(웹 room.js `readSentSeq`).
+    private var readSentSeq: [RoomID: Int64] = [:]
+    /// 릴레이가 읽음 라우트를 모른다(404 http_404) — 이 세션에서는 다시 보내지 않는다(`typingUnsupported` 와 같은 규칙).
+    private var readUnsupported = false
+    /// 마지막 읽음 POST(동기화 `serial` 밖, 최선 노력) — 테스트가 끝나기를 기다린다.
+    private(set) var readInFlight: Task<Void, Never>?
     /// 배너를 눌러 열어 달라는 방(`NotificationCenterDelegate`). `RootView` 가 방 목록이 준비되면 열고 지운다.
     @Published private(set) var requestedRoom: RoomID?
     /// 방별 보내는 글(오래된 순). 릴레이가 받으면(`recordOwn`) 빠지고 실제 기록이 그 자리를 잇는다.
@@ -295,6 +304,7 @@ final class AppModel: ObservableObject {
         syncEngines = [:]   // 새 전송으로 다시 만든다(커서·정지 사유는 저장소에 있다). 등록 subject 도 새 자격증명으로 다시 읽는다.
         lobbyCheckDue = true; lobbyUnsupported = false; adoptFailed = [:]
         typingUnsupported = false; typingSentAt = [:]
+        readUnsupported = false; readSentSeq = [:]
         refreshRegistrationSubject()
         push.loggedIn()
         lastError = nil
@@ -319,7 +329,7 @@ final class AppModel: ObservableObject {
         credential = nil
         transport = nil
         syncEngines = [:]
-        typing = [:]
+        typing = [:]; relayReadSeq = [:]
         phase = .needsLogin
         pushStatus = .off
         return Task {
@@ -354,6 +364,7 @@ final class AppModel: ObservableObject {
             self.transport = nil
             self.syncEngines = [:]; self.unconfirmed = [:]; self.seenCursors = [:]; self.lastFlush = [:]
             self.typing = [:]; self.typingSentAt = [:]
+            self.relayReadSeq = [:]; self.readSentSeq = [:]
             self.pendingInvites = []; self.inviteStates = [:]; self.notice = nil; self.lobbyLive = nil
             self.adoptFailed = [:]; self.accepting = []; self.unadoptedWelcomes = []; self.dismissedInvites = []; self.diagnostics = []
             self.engine = nil; self.identitySeed = nil; self.registration = nil; self.rooms = []
@@ -507,6 +518,9 @@ final class AppModel: ObservableObject {
                 // #562: 이 방에서 지금 글을 쓰는 다른 기기 — 마지막 페이지 값. 같으면 화면을 다시 그리지 않는다.
                 let typingNow = passes.last?.typing ?? []
                 if typing[record.room] != typingNow { typing[record.room] = typingNow }
+                // #571 B: 같은 사람의 어느 기기든 본 위치 — 패스 값의 최댓값으로만 오른다(옛 릴레이는 0 → 그대로). 같으면 화면을 다시 그리지 않는다.
+                let readNow = passes.map(\.readSeq).max() ?? 0
+                if readNow > (relayReadSeq[record.room] ?? 0) { relayReadSeq[record.room] = readNow }
                 // 커서가 움직였으면(이 프로세스든 NSE 든 새로 처리·기록했다) 화면이 다시 읽는다.
                 let cursor = try deps.cursors.cursor(room: record.room)
                 if passes.contains(where: { !$0.inserted.isEmpty || !$0.rejected.isEmpty }) || seenCursors[record.room] != cursor {
@@ -582,6 +596,32 @@ final class AppModel: ObservableObject {
                 self.record("typing: relay has no typing route (404 \(code)) — off for this session")
             } catch {
                 // 최선 노력: 닿지 않음·거부(403 not_a_member 등)는 다음 글 변화에 다시 시도한다. 동기화가 연결 상태를 따로 판정한다.
+            }
+        }
+    }
+
+    // MARK: - 읽음 위치 공유 (#571 B)
+
+    /// 방 화면이 마지막 글까지 보여 줬을 때 부른다(`RoomView.reload` — `LocalPrefs.markRead` 와 같은 자리): 같은 사람의 다른 기기에서도
+    /// N 배지가 꺼지도록 릴레이에 알린다(`POST /v2/rooms/{room}/read`, 웹 room.js `markRead` 와 같은 규칙). 최선 노력 — 동기화 `serial` 에
+    /// 줄 세우지 않고 바로 보내며, 응답 중 200 의 `read_seq` 만 `relayReadSeq` 에 올린다(다른 기기가 더 멀리 봤으면 그 값).
+    /// 보내지 않는 때: 전송 없음 · `ready` 아님 · 릴레이에 닿지 않는 중 · 라우트 없는 옛 릴레이(404 → `readUnsupported`) ·
+    /// `seq` 가 이 세션에서 보낸 값이나 릴레이가 이미 아는 값 이하(같은 seq 는 한 번만). 404 `no_such_room` 은 라우트 부재가 아니라 그냥 넘긴다.
+    func noteRead(room: RoomID, seq: Int64) {
+        guard let transport, !reconnecting, !readUnsupported else { return }
+        guard case .ready = phase else { return }
+        guard seq > 0, seq > max(readSentSeq[room] ?? 0, relayReadSeq[room] ?? 0) else { return }
+        readSentSeq[room] = seq
+        let device = deviceId
+        readInFlight = Task {
+            do {
+                let known = try await transport.postRead(room: room, device: device, seq: seq)
+                if known > (self.relayReadSeq[room] ?? 0) { self.relayReadSeq[room] = known }
+            } catch RelayError.refused(let code, let status) where status == 404 && code != "no_such_room" {
+                self.readUnsupported = true
+                self.record("read: relay has no read route (404 \(code)) — off for this session")
+            } catch {
+                // 최선 노력: 닿지 않음·거부(403 not_a_member·400 bad_seq 등)는 다음 새 글(더 큰 seq)에 다시 시도한다.
             }
         }
     }
@@ -897,7 +937,7 @@ final class AppModel: ObservableObject {
     }
 
     private func expireSession() {
-        credential = nil; transport = nil; syncEngines = [:]; typing = [:]
+        credential = nil; transport = nil; syncEngines = [:]; typing = [:]; relayReadSeq = [:]
         phase = .needsLogin
         lastError = Strings.sessionExpired
     }

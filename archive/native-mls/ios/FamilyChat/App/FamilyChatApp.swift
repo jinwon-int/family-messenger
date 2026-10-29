@@ -73,6 +73,10 @@ struct RootView: View {
         .onChange(of: model.requestedRoom) { _ in openRequestedRoom() }
         .onChange(of: model.rooms) { _ in openRequestedRoom() }
         .onChange(of: model.phase) { _ in openRequestedRoom() }
+        // #571 B: 릴레이가 아는 같은 사람(actor)의 읽음 위치를 이 기기 값에 합쳐 둔다(웹 app.js mergeRelayRead) — `markRead` 는 줄어들지 않는다.
+        .onChange(of: model.relayReadSeq) { relay in
+            for (room, seq) in relay { LocalPrefs.shared.markRead(room, seq: seq) }
+        }
         .task {
             try? await Task.sleep(nanoseconds: Self.openingLimitNanoseconds)
             openingExpired = true

@@ -84,6 +84,17 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(legacy.typing, [], "a relay from before #562 omits typing")
     }
 
+    /// #571 B: 페이지의 `read_seq`(같은 사람의 어느 기기든 본 위치)는 그대로 패스에 실린다. 옛 릴레이(필드 없음)는 0.
+    func testReadSeqFromPageIsCarriedOnThePass() async throws {
+        let h = try joinedHarness()
+        h.relay.readSeq = 7
+        let pass = try await h.sync.syncOnce()
+        XCTAssertEqual(pass.readSeq, 7)
+        h.relay.readSeq = nil
+        let legacy = try await h.sync.syncOnce()
+        XCTAssertEqual(legacy.readSeq, 0, "a relay from before #571 omits read_seq")
+    }
+
     func testWelcomeAfterJoinIsIgnored() async throws {
         let h = try joinedHarness()
         h.relay.inject(device: alice, kind: .welcome, bytes: FakeWelcome(members: [alice, h.me]).bytes)
