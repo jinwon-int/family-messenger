@@ -92,6 +92,16 @@ Python에서 하던 릴레이 호출을 브라우저로 옮긴 것이다. 합성
    (`host-core api::Client::post_read` · `EventsResponse.read_seq` → `MlsRoom.markRead(seq)`/`readSeq()`, #571 후속);
    iOS 는 아직 로컬 readSeq 만 쓴다(후속).
 
+### 새 기기 셀프서비스 (#574) — 이 페이지에는 없고 한데 웹에 있다
+
+위 §1·§4의 "운영자 JSON 전달" 경로는 **합성 relay-app의 유일한 등록 경로**로 남는다(이 페이지는 인수검사용이라 바꾸지 않는다).
+사람이 실제로 쓰는 둘째 기기 등록은 2026-10-29부터 **한데 웹**이 운영자 없이 한다: 새 기기가 `POST /v2/devices/candidates`로
+자기 공개 기록을 올리고, 같은 사람의 registrar 기기가 「새 기기 승인」 카드에서 지문을 비교해 `sign_approval` →
+`POST /v2/devices/approvals`, 역할 이전은 「내 기기」 시트의 `sign_roles` → `POST /v2/devices/roles`
+(`web/hande/README.md` 「새 기기 셀프서비스」, 계약은 `server/DEVICES-V4.md` 「셀프서비스 라우트」). 같은 `sign_approval`
+바이트이므로 한데 웹이 서명한 증거를 운영자가 `-add-device -input`에 넣어도 된다(폴백). 첫 기기(E1)·폐기(E3/E4)는 여전히 운영자 CLI다
+(`docs/NATIVE-RELAY-OPERATIONS.md` 「기기 셀프서비스 운영」).
+
 durable 워커 허용 메서드에 이번에 더해진 것: `invite_with_commit` `merge_pending` `clear_pending`
 `remove_pending` `members` `members_after_pending` `fingerprint` `policy_fingerprint` `sign_approval`
 (파사드 `Session.dispatch`에 읽기 전용/서명 arm 추가; store 변경 0). #261로 더해진 것: `stage_commit`

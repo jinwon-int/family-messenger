@@ -69,6 +69,23 @@ record structure and permissions; it cannot prove that a person performed that
 comparison. A local policy marker is a management declaration, not cryptographic
 proof of a ceremony. No actual family ceremony has occurred in this experiment.
 
+> **2026-10-29 — [#574](https://github.com/jinwon-int/family-messenger/issues/574) narrowed the deferral above.**
+> The "designated device administrator" is now a per-person **registrar** role in the v4
+> chain (`roles:["registrar"]`, [DEVICES-V4.md](../archive/native-mls/server/DEVICES-V4.md)
+> 「등록 기기」), and the trusted-device approval (E2) plus the role hand-over (E5) reach the
+> chain through relay self-service routes (`/v2/devices/*`, 「셀프서비스 라우트」) — no
+> operator JSON hand-off. This is consistent with the paragraph above rather than a reversal
+> of it: the evidence the server verifies is a plaintext Ed25519 signature over a canonical
+> payload bound to the policy revision, independently checked by the same `devicepolicy`
+> code the owner CLI runs, **not** an encrypted MLS application message. The signature
+> remains a management declaration; it still cannot prove that a person compared the
+> fingerprints. Still operator-only: E1 (a person's first device, out-of-band ceremony),
+> E3/E4 (revocation, `-revoke` / `-revoke-all`), and restoring a registrar when a person
+> lost every one (`native-devices -set-roles <id> -roles registrar`, no evidence —
+> [NATIVE-RELAY-OPERATIONS.md](NATIVE-RELAY-OPERATIONS.md) 「기기 셀프서비스 운영」).
+> Phase 2 (#574 D3, not implemented): the owner approving **another person's first
+> device**, which would retire the E1 operator ceremony for family members.
+
 ## Immutable public transition and separation of authority
 
 Use a new versioned lifecycle policy, preserving old encodings/history and
@@ -193,6 +210,9 @@ This is not a SIGKILL/restart proof of a persistent replacement implementation.
    old-history UI. Peers must explicitly accept changed identity; a server hint
    alone cannot update pins. Automatic trusted-device approval requires a
    separately qualified verifier/management boundary; it remains deferred.
+   *(2026-10-29, #574: the boundary now exists for same-actor devices — the
+   registrar role and the relay's subject binding, see the dated note under
+   "Decision". Cross-person first-device approval, D3, is still deferred.)*
 4. Human ceremony, mobile memory/lock behavior, actual CF account gate, isolated
    server-backup restore, production actors/groups/history capacity and approved
    fleet binding remain acceptance gates before production-host cutover. Preserve existing

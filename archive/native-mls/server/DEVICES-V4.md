@@ -1,9 +1,11 @@
 # 네이티브 기기 정책 v4 — 계약 (#177 §3.1·§3.2, M3a+M3b)
 
-**상태:** 구현됨 (M3a 정책 체인·CLI, M3b 릴레이 강제). 이 문서는 `archive/native-mls/server`의
-정책 체인, 오너 CLI와 릴레이가 무엇을 보장하고 무엇을 증명하지 않는지 묶는다.
-**M3c**(지문 비교 UI, 클라이언트의 정책 등록 연동, v2 릴레이 smoke의 등록 전환)는 별도 PR이다.
-서버는 아래 다섯 연산을 위해 **라우트를 추가하지 않는다**(#177 §3.2).
+**상태:** 구현됨 (M3a 정책 체인·CLI, M3b 릴레이 강제, M3c 클라이언트 연동, #574 D1·D2 셀프서비스). 이 문서는
+`archive/native-mls/server`의 정책 체인, 오너 CLI와 릴레이가 무엇을 보장하고 무엇을 증명하지 않는지 묶는다.
+"서버는 다섯 연산을 위해 라우트를 추가하지 않는다"(#177 §3.2)는 **2026-10-29 오너 결정(#574)으로 번복**됐다:
+E2(둘째 기기 승인)·E5(registrar 역할)는 릴레이의 셀프서비스 라우트로도 들어온다(아래 「셀프서비스 라우트」 절).
+E1(첫 기기)·E3/E4(폐기)·registrar 전멸 복구는 여전히 운영자 CLI만의 몫이다. 운영 절차는
+[`docs/NATIVE-RELAY-OPERATIONS.md`](../../../docs/NATIVE-RELAY-OPERATIONS.md) 「기기 셀프서비스 운영」.
 
 ## 파일과 저장 커널
 
@@ -107,7 +109,7 @@ status, acceptance, roles}]`(호출자 subject의 기기 전부, 서명 키 없�
 비교할 값은 CLI 출력의 `fingerprint`다. `-inspect`와 모든 출력에 서명 키는 절대
 포함되지 않는다(`roles`는 보인다). 전이 빌더(`ApplyEnrollFirst`·`ApplyAddDevice`·
 `ApplySetRoles`·`SetRoles`·`Tombstone`·`FindApprover`)는 `internal/devicepolicy/apply.go`에
-있고 릴레이 셀프서비스 라우트(#574 D1, 별도 PR)와 공유한다. 옛 "E5 restore-history"는 이
+있고 릴레이 셀프서비스 라우트(#574 D1, `devices.go`)와 공유한다. 옛 "E5 restore-history"는 이
 계약 밖의 읽기전용 아카이브 기능으로, 번호가 겹치지 않게 **E6**로 부른다.
 
 ### E5 증거 (`RolesPayloadWire`)
@@ -118,7 +120,16 @@ status, acceptance, roles}]`(호출자 subject의 기기 전부, 서명 키 없�
 서명 입력 = `"family-mls-v2/set-roles\0" ‖ sha256(canonical payload)` — E2/E3와 같은 도메인
 분리, 다른 action. `roles`는 정렬·중복 없는 전체 목록(빈 배열 = 역할 없음, `null` 금지).
 증거 파일/본문 = `{device_id, actor, roles, base_revision, signature[, approved_by]}`.
-Rust 파사드(`policy_wire`)에는 `sign_roles`가 아직 없다 — 클라이언트 PR에서 같은 바이트를 만든다.
+
+Rust 파사드 `policy_wire("sign_roles")`(#574 PR 2a, #579 — `archive/experiments/openmls-browser/src/policy.rs`,
+durable lane·ios-ffi·host-core 공용)가 같은 바이트를 만든다: 입력 = UTF-8 JSON `{device_id, actor, roles, base_revision}`
+(`action`은 파사드가 고정, 모르는 필드·`roles:null`·`base_revision` 0·식별자 문자집합 위반은 거부, 중복 역할은 하나로),
+출력 = `u32le len ‖ canonical ‖ 64바이트 Ed25519 서명`(`sign_approval`과 같은 프레임; 클라이언트는 뒤 64바이트를
+lowercase hex로 `signature`에 싣는다). 교차 검증은 세 겹이다 — ① Rust 쪽이 Go `RolesMessage` 값 2개(dev-a2/alice/base 3,
+`["registrar"]`·`[]`)를 상수로 박고(`tests_v2.rs`), Go `internal/devicepolicy/roles_test.go`가 같은 두 값을 박는다;
+② 고정 벡터 `archive/native-mls/tests/fixtures/ios-ffi-roles-vector.json`(합성 키, `FM_REGEN_ROLES_VECTOR=1`로 재생성)을
+ios-ffi `policy_wire.rs`가 바이트 단위로 재생산하고 ③ Go `cmd/native-devices/roles_vector_test.go`가 그 벡터의 canonical·서명·
+프레임을 `RolesMessage`·`ApplySetRoles`·실제 `-set-roles -input` 경로로 수락한다. 어느 쪽이 바뀌어도 테스트가 깨진다.
 
 ## 승인 증거 (B6 수정)
 

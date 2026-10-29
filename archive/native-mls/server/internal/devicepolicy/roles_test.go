@@ -165,6 +165,36 @@ func TestRegistrarLifecycle(t *testing.T) {
 	}
 }
 
+// The Rust facade (archive/experiments/openmls-browser/src/tests_v2.rs,
+// roles_message_bytes_match_go_roles_message, #574 PR 2a) pins these two Go
+// message values — "family-mls-v2/set-roles\0" ‖ sha256(canonical) for
+// dev-a2 / alice / base 3 with roles ["registrar"] and []. Pinning them here
+// too means a change on EITHER side breaks a test instead of silently
+// producing evidence the other side refuses. Never regenerate one side from
+// the other; fix whichever drifted.
+const (
+	rustPinnedRolesRegistrarMessageHex = "66616d696c792d6d6c732d76322f7365742d726f6c657300cc099fb39499943ec2e0690697fbdab93ce51d7f0b32718c63206dfb3f666d02"
+	rustPinnedRolesEmptyMessageHex     = "66616d696c792d6d6c732d76322f7365742d726f6c657300e6d5fc9714d0729ce2ae1d8646cbe72ce1997e8c31faf139ce4ba3ac5d948d18"
+)
+
+func TestRolesMessagePinnedByRustFacade(t *testing.T) {
+	for _, c := range []struct {
+		roles []string
+		want  string
+	}{
+		{[]string{RoleRegistrar}, rustPinnedRolesRegistrarMessageHex},
+		{[]string{}, rustPinnedRolesEmptyMessageHex},
+	} {
+		msg, e := RolesMessage(RolesPayloadWire{Action: ApprovalActionRoles, DeviceID: "dev-a2", Actor: "alice", Roles: c.roles, BaseRevision: 3})
+		if e != nil {
+			t.Fatal(e)
+		}
+		if got := hex.EncodeToString(msg); got != c.want {
+			t.Fatalf("RolesMessage(roles=%v) = %s, Rust facade pins %s", c.roles, got, c.want)
+		}
+	}
+}
+
 func TestRolesShapeRules(t *testing.T) {
 	_, a1, ka := baseWithAlice(t)
 	// A record without roles encodes exactly as before #574 (hash stability).
