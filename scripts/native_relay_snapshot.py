@@ -283,7 +283,7 @@ def parse(argv=None):
     parser.add_argument('--state', help='success-record directory (default: <dest>/../state)')
     parser.add_argument('--push', action='append', default=[], help='rsync target user@host:/dir (repeatable)')
     parser.add_argument('--ssh-key', help='private key path for --push (value never printed)')
-    parser.add_argument('--keep-hours', type=int, default=48)
+    parser.add_argument('--keep-hours', type=int, default=6)
     parser.add_argument('--keep-days', type=int, default=30)
     parser.add_argument('--prune-only', action='store_true', help='apply retention to --dest and exit')
     parser.add_argument('--fence', help='this host name; snapshot only when the fence TXT names it (#440 stage 1)')
