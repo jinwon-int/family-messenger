@@ -63,7 +63,7 @@ CI: `.github/workflows/native-mls-ios.yml` (ubuntu host 게이트 ≤15분 · ma
 
 ## 증명하지 않는 것
 
-- 정책 메서드 4개(`members`·`members_after_pending`·`policy_fingerprint`·`sign_approval`)는 #275 L2 에서 `dispatch` 에 더했다. 바이트 규칙은 파사드 `policy_wire`(durable lane `Session::dispatch` 와 같은 함수)가 소유한다. `tests/policy_wire.rs` 는 승인 서명을 고정 벡터 `../tests/fixtures/ios-ffi-approval-vector.json`(합성 키, 테스트 전용)과 바이트 단위로 비교하고, Go `server/cmd/native-devices/approval_vector_test.go` 가 같은 벡터를 `-add-device` 로 수락하는지 검사한다. 재생성: `FM_REGEN_APPROVAL_VECTOR=1 cargo +1.91.1 test --locked --test policy_wire`.
+- 정책 메서드 5개(`members`·`members_after_pending`·`policy_fingerprint`·`sign_approval`, #275 L2, 그리고 E5 registrar 역할 서명 `sign_roles`, #574)는 `dispatch` 를 거친다. 바이트 규칙은 파사드 `policy_wire`(durable lane `Session::dispatch` 와 같은 함수)가 소유한다. `tests/policy_wire.rs` 는 승인 서명을 고정 벡터 `../tests/fixtures/ios-ffi-approval-vector.json`(합성 키, 테스트 전용)과 바이트 단위로 비교하고, Go `server/cmd/native-devices/approval_vector_test.go` 가 같은 벡터를 `-add-device` 로 수락하는지 검사한다. 재생성: `FM_REGEN_APPROVAL_VECTOR=1 cargo +1.91.1 test --locked --test policy_wire`. `sign_roles` 는 같은 방식의 벡터 `../tests/fixtures/ios-ffi-roles-vector.json`(`{device_id, actor, roles, base_revision}` 입력 → `set-roles` canonical + 서명; 재생성 `FM_REGEN_ROLES_VECTOR=1`)과 비교한다 — Go 쪽(`-set-roles`, #578)이 이 벡터를 수락하는 검사는 후속 PR 몫이다.
 - durable lane `Session` 의 HMAC record 체인·store 는 노출하지 않는다(영속은 호스트 몫, #271 §12-B).
 - 실제 iOS 앱에서 승인 화면 → CLI 까지의 사람 경로(L3·파이널라이저 범위).
 - iOS 기기에서의 **실행**(시뮬레이터 단위시험까지만 CI). upstream OpenMLS 는 iOS 를 "built, not tested in CI" 로 표기한다.

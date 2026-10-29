@@ -29,6 +29,8 @@ const wasm = await init();
 const allowed = new Set(['key_package', 'delete_key_package', 'create', 'invite', 'invite_with_commit', 'join',
   'encrypt', 'decrypt', 'remove', 'remove_pending', 'commit', 'merge_pending', 'clear_pending',
   'members', 'members_after_pending', 'fingerprint', 'policy_fingerprint', 'sign_approval',
+  // #574 E5: registrar role change (set-roles) signed by the durable identity.
+  'sign_roles',
   // #261 two-step commit application: stage (transient report) → merge or discard.
   'stage_commit', 'merge_staged', 'discard_staged']);
 const NAME = /^family-mls-synthetic-[a-z0-9-]{1,64}$/;
