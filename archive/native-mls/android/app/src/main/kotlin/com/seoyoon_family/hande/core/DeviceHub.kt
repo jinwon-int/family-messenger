@@ -35,6 +35,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
@@ -77,14 +78,18 @@ data class HubUi(
     val candidates: List<CandidateUi> = emptyList(),
     /** 「내 기기」(#574 E5): 체인의 내 기기 전부 + 역할 변경 가능 여부. 옛 릴레이(`/v2/me` 없음·기기 없음)는 null. */
     val devices: SelfService.RolesView? = null,
+    /** 서버 표시(#584): `Settings.serverName`, 없으면 릴레이 호스트. 설정 전에는 null. */
+    val server: String? = null,
 )
 
 class DeviceHub(context: Context, val settings: Settings, private val sealer: KeystoreSealer) {
     private val dir = File(context.filesDir, "mls").apply { mkdirs() }
     private val transport = OkHttpTransport()
     private val mutex = Mutex()
-    private val _ui = MutableStateFlow(HubUi(phase = if (settings.isConfigured) Phase.Starting else Phase.Setup))
+    private val _ui = MutableStateFlow(HubUi(phase = if (settings.isConfigured) Phase.Starting else Phase.Setup, server = serverLabel()))
     val ui: StateFlow<HubUi> = _ui
+    /** 앱 versionName(`min_app.android` 와 견준다, #584). 못 읽으면 "0" — 서버가 최소 버전을 적어 두면 「앱이 오래됨」으로 막힌다. */
+    private val appVersion: String = runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "0"
 
     /** 정식 메시지 저장소(B2) — 프로세스에 하나. 내 글 판정은 읽을 때 actor 로(같은 사람의 다른 기기 글도 내 글). */
     private val db = MessageDb(context) { settings.deviceId }
@@ -175,9 +180,19 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         Log.i(TAG, "boot: rooms=${rooms.size} token=${if (settings.accessToken == null) "none" else "set"}")
         val fp = sha256Hex(l.publicKey())
         Log.i(TAG, "boot: fingerprint ${fp.take(12)}… → probe")
-        _ui.update { it.copy(deviceId = identity, fingerprint = fp, keyCustody = sealer.describe(), rooms = rooms.values.map { r -> r.ui() }) }
+        _ui.update { it.copy(deviceId = identity, fingerprint = fp, keyCustody = sealer.describe(), rooms = rooms.values.map { r -> r.ui() }, server = serverLabel()) }
         probe()
     }
+
+    /** 화면에 보일 서버: `.well-known` 의 이름, 없으면 릴레이 호스트(주소 직접 입력). 설정 전이면 null. */
+    private fun serverLabel(): String? = settings.serverName ?: settings.relayUrl?.substringAfter("://")?.substringBefore('/')
+
+    /**
+     * 서버 탐색(#584 PR 3, 설정 화면의 「서버 찾기」·「확인」): 순수 로직은 `ServerDiscovery`, 전송은 `OkHttpTransport.get`(토큰 없음).
+     * 저장은 화면이 한다(`Settings.relayUrl`·`serverName`) — 허브는 그 뒤 `start` 에서 읽는다.
+     */
+    suspend fun discover(input: String): ServerDiscovery.Result =
+        withContext(Dispatchers.IO) { ServerDiscovery.discover(input, appVersion) { url -> transport.get(url) } }
 
     private fun applyAccessToken() {
         val token = settings.accessToken

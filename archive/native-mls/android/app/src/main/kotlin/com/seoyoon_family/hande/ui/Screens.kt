@@ -1,5 +1,6 @@
 // 화면 3 + 1(#338 B1 골격): 처음 설정 · 등록 대기/세션 · 대화방 목록 · 대화. 꾸밈 없이 코어 동작을 눌러 볼 수 있는 최소 UI — C 단계가 다듬는다.
 // #574 PR 4: 등록 대기의 형제 승인 모드(큰 지문·만료) · 목록 위의 「새 기기 승인」 카드 · 「내 기기」(registrar 부여/해제).
+// #584 PR 3: 처음 설정의 서버 주소는 도메인만 — 「서버 찾기」(`.well-known/hande`) 가 서버 이름·주소를 보여 준 뒤 저장, 목록 제목 아래 서버 이름.
 package com.seoyoon_family.hande.ui
 
 import androidx.compose.foundation.clickable
@@ -54,8 +55,10 @@ import com.seoyoon_family.hande.core.MessageUi
 import com.seoyoon_family.hande.core.Phase
 import com.seoyoon_family.hande.core.RoomUi
 import com.seoyoon_family.hande.core.SelfService
+import com.seoyoon_family.hande.core.ServerDiscovery
 import com.seoyoon_family.hande.core.Settings
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -69,7 +72,7 @@ fun HandeRoot(hub: DeviceHub) {
     var showDevices by rememberSaveable { mutableStateOf(false) }
 
     when (val phase = ui.phase) {
-        Phase.Setup -> SetupScreen(hub.settings) { hub.start(scope) }
+        Phase.Setup -> SetupScreen(hub.settings, hub::discover) { hub.start(scope) }
         is Phase.WaitingEnrollment -> EnrollScreen(ui, phase) { hub.retryEnrollment(scope) }
         Phase.NeedsLogin -> {
             val context = LocalContext.current
@@ -109,30 +112,68 @@ private fun MessageScreen(title: String, body: String) {
     }
 }
 
+/**
+ * 처음 설정(#584 PR 3): 서버 주소는 도메인만 적어도 된다 — 「서버 찾기」가 `.well-known/hande` 로 릴레이를 찾아 서버 이름·주소를 카드로 보여 주고,
+ * 「확인」이 그 결과(없으면 먼저 탐색해서)를 저장한다. 릴레이 주소(https://…)를 그대로 적은 옛 길은 문서가 없을 때의 폴백으로 그대로 된다.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SetupScreen(settings: Settings, onSaved: () -> Unit) {
-    var relay by rememberSaveable { mutableStateOf(settings.relayUrl ?: "") }
+fun SetupScreen(settings: Settings, onDiscover: suspend (String) -> ServerDiscovery.Result, onSaved: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var server by rememberSaveable { mutableStateOf(settings.relayUrl ?: "") }
     var actor by rememberSaveable { mutableStateOf(settings.actor ?: "") }
     var token by rememberSaveable { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    var searching by remember { mutableStateOf(false) }
+    var found by remember { mutableStateOf<ServerDiscovery.Result.Found?>(null) }
+
+    fun save(f: ServerDiscovery.Result.Found) {
+        settings.relayUrl = f.baseUrl
+        settings.serverName = f.name
+        if (settings.actor == null) settings.actor = actor.trim()
+        if (token.isNotBlank()) settings.accessToken = token
+        onSaved()
+    }
+
+    fun discover(then: ((ServerDiscovery.Result.Found) -> Unit)? = null) {
+        if (searching) return
+        searching = true; error = null; found = null
+        scope.launch {
+            val r = onDiscover(server)
+            searching = false
+            when (r) {
+                is ServerDiscovery.Result.Found -> { found = r; then?.invoke(r) }
+                ServerDiscovery.Result.BadInput -> error = Strings.serverBadInput
+                is ServerDiscovery.Result.TooOld -> error = Strings.serverTooOld(r.required, r.current)
+                is ServerDiscovery.Result.Unreachable -> error = Strings.serverUnreachable(r.baseUrl, r.detail)
+            }
+        }
+    }
+
     Scaffold(topBar = { TopAppBar(title = { Text(Strings.setupTitle) }) }) { pad ->
         Column(Modifier.padding(pad).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            OutlinedTextField(relay, { relay = it }, label = { Text(Strings.relayField) }, supportingText = { Text(Strings.relayHint) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(server, { server = it; found = null }, label = { Text(Strings.serverField) }, supportingText = { Text(Strings.serverHint) }, singleLine = true, modifier = Modifier.fillMaxWidth(), enabled = !searching)
+            TextButton(onClick = { discover() }, enabled = !searching && server.isNotBlank()) { Text(if (searching) Strings.findingServer else Strings.findServer) }
+            found?.let { f ->
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(f.name ?: Strings.serverUnnamed, style = MaterialTheme.typography.titleMedium)
+                        Text(f.baseUrl, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                        Text(if (f.wellKnown != null) Strings.serverViaWellKnown else Strings.serverDirect, style = MaterialTheme.typography.bodySmall)
+                        if (!f.healthOk) Text(Strings.serverGated, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
             Text(Strings.actorTitle, style = MaterialTheme.typography.titleMedium)
             OutlinedTextField(actor, { actor = it.lowercase() }, label = { Text(Strings.actorField) }, supportingText = { Text(Strings.actorHint) }, singleLine = true, modifier = Modifier.fillMaxWidth(), enabled = settings.actor == null)
             OutlinedTextField(token, { token = it }, label = { Text(Strings.tokenField) }, supportingText = { Text(Strings.tokenHint) }, singleLine = true, modifier = Modifier.fillMaxWidth())
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            Button(onClick = {
+            Button(enabled = !searching, onClick = {
+                val f = found
                 when {
-                    !relay.trim().startsWith("http") -> error = Strings.relayHint
                     settings.actor == null && !Settings.validActor(actor.trim()) -> error = Strings.actorInvalid
-                    else -> {
-                        settings.relayUrl = relay
-                        if (settings.actor == null) settings.actor = actor.trim()
-                        if (token.isNotBlank()) settings.accessToken = token
-                        onSaved()
-                    }
+                    f != null -> save(f) // 「서버 찾기」로 이미 확인한 서버
+                    else -> discover { save(it) } // 바로 「확인」: 탐색부터 하고 성공하면 저장
                 }
             }) { Text(Strings.save) }
         }
@@ -269,7 +310,18 @@ fun RoomListScreen(
     onApprove: (String) -> Unit, onIgnore: (String) -> Unit, onDevices: () -> Unit, onNoticeShown: () -> Unit,
 ) {
     Scaffold(
-        topBar = { TopAppBar(title = { Text(if (ui.connecting) Strings.connecting else Strings.roomsTitle) }, actions = { TextButton(onClick = onDevices) { Text(Strings.devicesButton) } }) },
+        topBar = {
+            TopAppBar(
+                // 제목 아래 서버 이름(#584): `.well-known` 의 이름, 없으면 릴레이 호스트 — 다른 운영자의 서버에 붙었을 때 어디인지 보인다.
+                title = {
+                    Column {
+                        Text(if (ui.connecting) Strings.connecting else Strings.roomsTitle)
+                        ui.server?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    }
+                },
+                actions = { TextButton(onClick = onDevices) { Text(Strings.devicesButton) } },
+            )
+        },
         snackbarHost = { NoticeHost(ui.notice, onNoticeShown) },
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {

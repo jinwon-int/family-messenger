@@ -71,6 +71,21 @@ class OkHttpTransport(
         }
     }
 
+    /**
+     * 서버 탐색(#584, `ServerDiscovery.discover` 의 `fetch`)의 단순 GET — 헤더·토큰 없음, 리다이렉트 무추적(엣지 302 는 상태 그대로),
+     * 본문은 `maxBytes` 까지만 읽는다(넘치면 빈 본문 — 문서가 아니다). 응답이 없으면 `IOException` 그대로(탐색이 다음 후보로 넘어간다).
+     */
+    fun get(url: String, maxBytes: Int = ServerDiscovery.MAX_DOC_BYTES): ServerDiscovery.Fetched {
+        val id = "#${seq.incrementAndGet()}"
+        Log.i(TAG, "$id get ${url.substringBefore('?')}")
+        val t0 = System.nanoTime()
+        client.newCall(Request.Builder().url(url).get().tag(String::class.java, id).build()).execute().use { resp ->
+            val bytes = resp.peekBody(maxBytes + 1L).bytes()
+            Log.i(TAG, "$id done ${resp.code} ${resp.protocol} ${bytes.size}B in ${ms(t0)}ms")
+            return ServerDiscovery.Fetched(resp.code, if (bytes.size > maxBytes) "" else String(bytes, Charsets.UTF_8))
+        }
+    }
+
     /** OkHttp 단계 로그 — 끊기는 줄이 멈춘 지점. 주소·프로토콜만, 헤더·본문은 안 찍는다. */
     private class PhaseLogger(private val id: String) : EventListener() {
         private val t0 = System.nanoTime()
