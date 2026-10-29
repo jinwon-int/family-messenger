@@ -2,6 +2,7 @@
 package com.seoyoon_family.hande.core
 
 import java.security.SecureRandom
+import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -75,5 +76,30 @@ class AppLoginTest {
         assertFalse(AppLogin.isJwtShaped("a..c"))
         assertFalse(AppLogin.isJwtShaped("a.b.c.d"))
         assertFalse(AppLogin.isJwtShaped("a.b.c="))
+    }
+
+    private fun jwtWith(payload: String) = "eyJhbGciOiJSUzI1NiJ9." + Base64.getUrlEncoder().withoutPadding().encodeToString(payload.toByteArray(Charsets.UTF_8)) + ".c2ln"
+
+    /** 등록 JSON 의 `subject` = JWT payload 의 `sub`(#574 PR 4 버그 수정, iOS `AccessJWT.subject(of:)` 와 같은 규칙). */
+    @Test fun subjectOfReadsTheSubClaim() {
+        assertEquals("owner", AppLogin.subjectOf(jwt)) // payload {"sub":"owner"}
+        assertEquals("owner", AppLogin.subjectOf("  $jwt\n"))
+        assertEquals("7c1f3e0a-sub", AppLogin.subjectOf(jwtWith("""{"aud":["x"],"email":"a@b","sub":"7c1f3e0a-sub","iat":1}""")))
+        assertEquals("7c1f3e0a-sub", AppLogin.subjectOf(jwtWith("""{ "sub" : "7c1f3e0a-sub" }""")))
+        assertEquals("a\"b\\c/d한", AppLogin.subjectOf(jwtWith("""{"sub":"a\"b\\c\/d한"}""")), "JSON escapes are undone")
+        // base64url 문자('-'·'_')와 패딩 없는 payload 도 읽는다.
+        assertEquals("sub", AppLogin.subjectOf(jwtWith("""{"x":"????>>>","sub":"sub"}""")))
+    }
+
+    @Test fun subjectOfIsNullWithoutAUsableSub() {
+        assertNull(AppLogin.subjectOf(null))
+        assertNull(AppLogin.subjectOf(""))
+        assertNull(AppLogin.subjectOf("not a jwt"))
+        assertNull(AppLogin.subjectOf("a.b"))
+        assertNull(AppLogin.subjectOf("a..c"))
+        assertNull(AppLogin.subjectOf("a.%%%.c"), "payload is not base64url")
+        assertNull(AppLogin.subjectOf(jwtWith("""{"sub":"","common_name":"bot"}""")), "service token: empty sub")
+        assertNull(AppLogin.subjectOf(jwtWith("""{"common_name":"bot"}""")))
+        assertNull(AppLogin.subjectOf(jwtWith("""{"sub":42}""")), "sub must be a string")
     }
 }

@@ -42,6 +42,11 @@ class Settings(context: Context, private val sealer: KeystoreSealer) {
 
     val isConfigured: Boolean get() = relayUrl != null && actor != null
 
+    /** 형제 기기 초대 대기열(#574, `SelfService.encodeSiblingQueue` 형식 — 공개 값: 기기 ID·방 이름·시각). 비면 지운다. */
+    var siblingQueue: String?
+        get() = prefs.getString("sibling_invites", null)?.takeIf { it.isNotBlank() }
+        set(value) { if (value.isNullOrBlank()) prefs.edit().remove("sibling_invites").apply() else prefs.edit().putString("sibling_invites", value).apply() }
+
     // ---- 읽음 위치(#571 후속, 웹 localStorage `hande:readSeq:<device>:<room>` 과 같은 뜻) ----
     // `messages.db` 는 iOS 와 동결 DDL 을 공유하므로 열을 더하지 않고 여기 둔다. 공개 값(seq 는 릴레이 메타데이터). 줄어들지 않는다.
 

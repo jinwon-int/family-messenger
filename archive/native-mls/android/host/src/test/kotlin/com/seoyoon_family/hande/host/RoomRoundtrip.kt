@@ -3,14 +3,19 @@
 // 실행: android/scripts/jvm-roundtrip.sh (KOTLINC · JNA_JAR · BINDINGS_DIR · FFI_LIB_DIR).
 package com.seoyoon_family.hande.host
 
+import com.seoyoon_family.hande.mls.MlsCandidateList
+import com.seoyoon_family.hande.mls.MlsCandidatePost
+import com.seoyoon_family.hande.mls.MlsInvite
 import com.seoyoon_family.hande.mls.MlsLobbySlot
 import com.seoyoon_family.hande.mls.MlsLobby
+import com.seoyoon_family.hande.mls.MlsPolicyCommit
 import com.seoyoon_family.hande.mls.MlsRoom
 import com.seoyoon_family.hande.mls.RoomEvent
 import com.seoyoon_family.hande.mls.RoomException
 import com.seoyoon_family.hande.mls.SendResult
 import java.io.File
 import java.nio.file.Files
+import java.security.MessageDigest
 import kotlin.system.exitProcess
 
 private const val BASE = "http://relay.test"
@@ -229,6 +234,92 @@ private fun scenarioReadSeq(tmp: File) {
     check(never.markRead(1) == 0L, "404 no_such_room (room not on the relay yet) is a no-op")
 }
 
+/**
+ * #574 PR 4 — 기기 셀프서비스(`ios-ffi/tests/lobby_host.rs`·`room_host.rs` 의 #574 시나리오와 같은 순서): 새 기기가 후보를 올리고 →
+ * 등록 기기가 우편함에서 보고 지문 대조·서명·승인(`MlsLobby.approve`) → 체인 반영(`/v2/me`) → 역할 부여/해제(`setRoles`) →
+ * 형제 기기 초대(`MlsRoom.invite`: 로비 키 소비 → commit → echo → Welcome `from`) → 새 기기가 adopt → 같은 방에서 읽는다 → 옛 릴레이.
+ */
+private fun scenarioSelfService(tmp: File) {
+    println("⑦ self-service: candidate → approval → roles → sibling invite (`from`) → adopt · old relay")
+    val relay = InMemoryRelay(BASE)
+    val dir = File(tmp, "s7")
+    val sha256 = { bytes: ByteArray -> MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) } }
+    val phone = MlsLobby("owner-phone", BASE, relay, FileLobbyStore(File(dir, "phone")))
+    val droid = MlsLobby("owner-android", BASE, relay, FileLobbyStore(File(dir, "droid")))
+
+    // 첫 기기가 없으면 자기 승인은 불가(E1 은 운영자 의식).
+    val first = droid.postCandidate()
+    check(first is MlsCandidatePost.Refused && first.refusal.status.toInt() == 403 && first.refusal.code == "first_device_out_of_band", "no first device → 403 first_device_out_of_band ($first)")
+    relay.enroll("owner-phone", sha256(phone.publicKey()), listOf("registrar"))
+    val me = phone.me()
+    check(me.subject == InMemoryRelay.SUBJECT && me.policyRevision == 2uL && me.devices.size == 1 && me.devices[0].roles == listOf("registrar"), "/v2/me: subject · revision 2 · my registrar record ($me)")
+
+    // 새 기기가 후보를 올린다(본문은 subject 없는 strict JSON — 대역이 검사). 같은 ID 재게시는 갱신.
+    val posted = droid.postCandidate()
+    check(posted is MlsCandidatePost.Posted && posted.policyRevision == 2uL && posted.expiresAt == InMemoryRelay.CANDIDATE_TTL_SECONDS && posted.fingerprint == sha256(droid.publicKey()), "candidate posted ($posted)")
+    droid.postCandidate()
+    // trace 는 403(첫 기기 없음) 거부 전에 남으므로 위의 첫 호출까지 3건 — 행은 하나뿐이어야 한다(CI 2026-10-29 정정).
+    check(relay.candidates.size == 1 && relay.trace.count { it == "CANDIDATE owner-android" } == 3, "re-post refreshes the single row")
+    val asCandidate = droid.listCandidates()
+    check(asCandidate is MlsCandidateList.Refused && asCandidate.refusal.status.toInt() == 403, "a device not on the chain cannot read the mailbox ($asCandidate)")
+    val listed = phone.listCandidates()
+    check(listed is MlsCandidateList.Listed && listed.policyRevision == 2uL && listed.candidates.size == 1, "the registrar lists one candidate ($listed)")
+    val c = (listed as MlsCandidateList.Listed).candidates[0]
+    check(c.deviceId == "owner-android" && c.actor == "owner" && c.fingerprint == sha256(droid.publicKey()) && c.signingKey.length == 64, "candidate row ($c)")
+
+    // 지문이 공개키와 맞지 않으면 서명하지 않는다; 낡은 revision 은 409 + 현재 revision; 그걸로 다시 서명하면 201.
+    val mismatch = try { phone.approve(c.copy(fingerprint = "00".repeat(32)), 2uL); null } catch (e: RoomException) { e }
+    check(mismatch is RoomException.Mls && mismatch.reason.contains("fingerprint mismatch"), "tampered fingerprint → Mls(fingerprint mismatch) ($mismatch)")
+    check(relay.trace.none { it.startsWith("APPROVE ") }, "nothing posted on a mismatch")
+    val stale = phone.approve(c, 1uL)
+    check(stale is MlsPolicyCommit.Refused && stale.refusal.status.toInt() == 409 && stale.refusal.code == "stale_revision" && stale.refusal.revision == 2L, "stale base_revision → 409 with the current revision ($stale)")
+    val committed = phone.approve(c, 2uL)
+    check(committed is MlsPolicyCommit.Committed && committed.revision == 3uL && committed.approvedBy == "owner-phone" && committed.deviceId == "owner-android", "approval committed ($committed)")
+    check(relay.chainDevice("owner-android")?.status == "active" && relay.candidates.isEmpty(), "the chain has the new device; the candidate row is gone")
+    check(droid.me().devices.any { it.deviceId == "owner-android" && it.status == "active" && it.roles.isEmpty() }, "the new device sees itself active on /v2/me")
+    val taken = droid.postCandidate()
+    check(taken is MlsCandidatePost.Refused && taken.refusal.status.toInt() == 409 && taken.refusal.code == "device_exists", "ids are never reused ($taken)")
+
+    // 역할(E5): registrar 만 바꿀 수 있고, roles 는 완전한 정렬 목록; 마지막 registrar 는 해제 불가.
+    val byNonRegistrar = droid.setRoles("owner-android", "owner", listOf("registrar"), 3uL)
+    check(byNonRegistrar is MlsPolicyCommit.Refused && byNonRegistrar.refusal.status.toInt() == 403 && byNonRegistrar.refusal.detail.contains("not a registrar"), "non-registrar cannot grant ($byNonRegistrar)")
+    val granted = phone.setRoles("owner-android", "owner", listOf("registrar", "registrar"), 3uL)
+    check(granted is MlsPolicyCommit.Committed && granted.roles == listOf("registrar") && granted.revision == 4uL, "grant → [registrar], revision 4 ($granted)")
+    val released = droid.setRoles("owner-android", "owner", emptyList(), 4uL)
+    check(released is MlsPolicyCommit.Committed && released.roles.isEmpty() && released.revision == 5uL, "a registrar may release itself while another remains ($released)")
+    val last = phone.setRoles("owner-phone", "owner", emptyList(), 5uL)
+    check(last is MlsPolicyCommit.Refused && last.refusal.status.toInt() == 403 && last.refusal.detail.contains("last registrar"), "the last registrar cannot release ($last)")
+
+    // 형제 기기 초대: phone 이 room-a 를 만들고(시드에서) 새 기기를 초대한다 — 로비 키가 아직 없으면 NoKeyPackage, 올린 뒤 Invited.
+    val phoneStore = FileRoomStore(File(dir, "phone"), "room-a", onMessage = { _, _, _, _ -> })
+    val phoneRoom = MlsRoom.adopt("owner-phone", "room-a", phone.seedState(), 0, BASE, relay, phoneStore)
+    phoneRoom.dispatch("create", ByteArray(0))
+    check(phoneRoom.invite("owner-android") is MlsInvite.NoKeyPackage, "no lobby key yet → NoKeyPackage (retry next tick)")
+    check(relay.trace.any { it == "CONSUME room owner-android by owner-phone for room-a" }, "room pool is asked first")
+    droid.replenish(1u)
+    val invited = phoneRoom.invite("owner-android")
+    check(invited is MlsInvite.Invited && invited.commitSeq == 1L && invited.welcomeSeq == 2L && invited.epoch == 1L, "invite: commit seq 1 · echo merged · welcome seq 2 ($invited)")
+    check(relay.trace.any { it == "CONSUME lobby owner-android by owner-phone for room-a" }, "the lobby package was consumed")
+    val pending = droid.welcomes()
+    check(pending.size == 1 && pending[0].room == "room-a" && pending[0].seq == 2L && pending[0].from == "owner-phone", "welcomes carries `from` = the inviting sibling ($pending)")
+    val texts = mutableListOf<String>()
+    val droidRoom = MlsRoom.adopt("owner-android", "room-a", droid.seedState(), pending[0].seq - 1, BASE, relay, FileRoomStore(File(dir, "droid"), "room-a", onMessage = { _, _, _, pt -> texts += String(pt) }))
+    droidRoom.poll()
+    check(droidRoom.syncState().joined, "the new device joined from the sibling's Welcome")
+    phoneRoom.send("hello sibling".toByteArray())
+    droidRoom.poll()
+    check(texts == listOf("hello sibling"), "the sibling reads the room ($texts)")
+    val bad = try { phoneRoom.invite("bad target"); null } catch (e: RoomException) { e }
+    check(bad is RoomException.Host, "identifier rule on the target ($bad)")
+
+    // 옛 릴레이(#574 이전): /v2/me 는 {subject} 만, 셀프서비스는 봉투 없는 404 → 운영자 흐름.
+    relay.noSelfService = true
+    val old = droid.me()
+    check(old.subject == InMemoryRelay.SUBJECT && old.policyRevision == null && old.devices.isEmpty(), "old relay: subject only ($old)")
+    val unsupported = droid.postCandidate()
+    check(unsupported is MlsCandidatePost.Refused && unsupported.refusal.status.toInt() == 404 && unsupported.refusal.code.isEmpty(), "old relay: bare 404 is a refusal with an empty code ($unsupported)")
+}
+
 fun main() {
     val tmp = Files.createTempDirectory("hande-jvm-roundtrip").toFile()
     try {
@@ -238,6 +329,7 @@ fun main() {
         scenarioTransientAndGap(tmp)
         scenarioLobby(tmp)
         scenarioReadSeq(tmp)
+        scenarioSelfService(tmp)
     } catch (e: Throwable) {
         failures += "exception: $e"
         e.printStackTrace()
@@ -245,7 +337,7 @@ fun main() {
         tmp.deleteRecursively()
     }
     if (failures.isEmpty()) {
-        println("ROUNDTRIP PASS (6 scenarios)")
+        println("ROUNDTRIP PASS (7 scenarios)")
     } else {
         println("ROUNDTRIP FAIL ${failures.size}: $failures")
         exitProcess(1)

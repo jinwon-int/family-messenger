@@ -86,4 +86,46 @@ object AppLogin {
 
     /** iOS `removingPercentEncoding` 상당 — `+` 는 공백으로 바꾸지 않는다(fragment 는 form 이 아니다). */
     private fun decode(s: String): String? = try { URLDecoder.decode(s.replace("+", "%2B"), "UTF-8") } catch (_: IllegalArgumentException) { null }
+
+    /**
+     * 세션 JWT 의 비어 있지 않은 `sub`(iOS `AccessJWT.subject(of:)`, PR #347 과 같은 규칙) — 등록 JSON 의 `subject`(DEVICES-V4 §필드 필수).
+     * 서명 검증은 하지 않는다(엣지·릴레이의 몫): 운영자가 CLI 에 넣는 공개 식별자일 뿐이고, 릴레이는 등록 subject ≠ 실제 `sub` 면 403 으로
+     * 거부하므로 잘못 읽어도 권한이 생기지 않는다. JWT 꼴이 아니거나(서비스 토큰) `sub` 가 비어 있으면 null — 호출자는 비워 두고 운영자가 채운다.
+     * payload 는 통째로 파싱하지 않고 첫 `"sub":"…"` 쌍만 읽는다(org.json 은 JVM 테스트에서 stub 이라 쓰지 않는다; CF Access 의 `sub` 는 최상위).
+     */
+    fun subjectOf(token: String?): String? {
+        val parts = token?.trim()?.split('.') ?: return null
+        if (parts.size != 3 || parts[1].isEmpty()) return null
+        val payload = try { String(Base64.getUrlDecoder().decode(parts[1]), Charsets.UTF_8) } catch (_: IllegalArgumentException) { return null }
+        val raw = SUB_FIELD.find(payload)?.groupValues?.get(1) ?: return null
+        return unescapeJson(raw).takeIf { it.isNotEmpty() }
+    }
+
+    private val SUB_FIELD = Regex(""""sub"\s*:\s*"((?:[^"\\]|\\.)*)"""")
+
+    /** JSON 문자열 이스케이프 해제(`\"` `\\` `\/` `\b` `\f` `\n` `\r` `\t` `\uXXXX`). 잘린 `\u` 는 그대로 둔다. */
+    private fun unescapeJson(s: String): String {
+        if ('\\' !in s) return s
+        val out = StringBuilder(s.length)
+        var i = 0
+        while (i < s.length) {
+            val c = s[i]
+            if (c != '\\' || i + 1 >= s.length) { out.append(c); i += 1; continue }
+            when (val e = s[i + 1]) {
+                '"', '\\', '/' -> { out.append(e); i += 2 }
+                'b' -> { out.append('\b'); i += 2 }
+                'f' -> { out.append('\u000C'); i += 2 }
+                'n' -> { out.append('\n'); i += 2 }
+                'r' -> { out.append('\r'); i += 2 }
+                't' -> { out.append('\t'); i += 2 }
+                'u' -> {
+                    val hex = s.substring(i + 2, minOf(i + 6, s.length))
+                    val code = if (hex.length == 4) hex.toIntOrNull(16) else null
+                    if (code == null) { out.append(c); i += 1 } else { out.append(code.toChar()); i += 6 }
+                }
+                else -> { out.append(c); i += 1 }
+            }
+        }
+        return out.toString()
+    }
 }

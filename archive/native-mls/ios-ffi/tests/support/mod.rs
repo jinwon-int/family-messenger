@@ -1,7 +1,8 @@
 //! 호스트 게이트 공용 대역(`room_host.rs` · `lobby_host.rs`): Rust 로 구현한 in-memory 릴레이(`HttpTransport`)와 관찰자.
 //! 릴레이는 와이어 JSON 만 흉내 내는 순서 매기기(MLS 검증 없음, cas 검사만) — v2 events 라우트(3a)에 3c 의 기기 수준 라우트
-//! (로비 key package · 방 목록 · 방 닫기 · 푸시 등록)를 더했다. 규칙은 server/{server,lobby,rooms,push}.go 와 같다:
-//! 로비는 가장 오래된 것부터 소비, `welcomes` 는 기기가 ack 로 지나가지 않은 Welcome 만, 닫힌 방은 410 `room_closed`.
+//! (로비 key package · 방 목록 · 방 닫기 · 푸시 등록)와 #574 의 기기 셀프서비스(`/v2/me` · 후보 우편함 · 승인 · 역할; 체인 대역은
+//! revision CAS·subject 바인딩·registrar 규칙만, Ed25519 검증은 길이만)를 더했다. 규칙은 server/{server,lobby,rooms,push,devices,me}.go
+//! 와 같다: 로비는 가장 오래된 것부터 소비, `welcomes` 는 기기가 ack 로 지나가지 않은 Welcome 만(`from` 포함), 닫힌 방은 410 `room_closed`.
 #![allow(dead_code)]
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -49,18 +50,61 @@ pub struct PushRow {
     pub topic: String,
 }
 
+/// 호출자 subject 대역(#574): 토큰이 없는 테스트라 모든 요청이 이 사람이다(me.go `c.subject`).
+pub const SUBJECT: &str = "person-owner";
+/// 후보 TTL(devices.go `candidateTTL`), 초.
+pub const CANDIDATE_TTL_SECONDS: i64 = 600;
+
+/// 정책 체인의 기기 하나(DEVICES-V4 레코드의 공개 필드).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChainDevice {
+    pub device_id: String,
+    pub actor: String,
+    pub subject: String,
+    pub fingerprint: String,
+    pub status: String,
+    pub roles: Vec<String>,
+}
+
+/// 우편함의 후보 행(devices.go `candidateView`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CandidateRow {
+    pub device_id: String,
+    pub actor: String,
+    pub subject: String,
+    pub signing_key: String,
+    pub fingerprint: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+}
+
+/// 기기 정책 체인 대역(server/devices.go · me.go · devicepolicy Verify* 의 규칙만, 서명 검증은 길이만): revision CAS ·
+/// 같은 subject 바인딩 · registrar 규칙(registrar 가 있는 actor 는 registrar 서명만, 마지막 registrar 해제 불가).
+#[derive(Default)]
+pub struct Chain {
+    pub revision: u64,
+    pub devices: Vec<ChainDevice>,
+    pub candidates: Vec<CandidateRow>,
+    /// 시계 대역(초) — 후보 TTL.
+    pub now: i64,
+}
+
 pub struct Relay {
     pub rooms: Mutex<HashMap<String, RoomRows>>,
     /// 로비 풀: 기기 → (ref, bytes) 게시 순(가장 오래된 것부터 소비).
     pub lobby: Mutex<HashMap<String, VecDeque<(String, Vec<u8>)>>>,
     pub lobby_max: Mutex<usize>,
     pub push: Mutex<Vec<PushRow>>,
+    pub chain: Mutex<Chain>,
     pub trace: Arc<Mutex<Vec<String>>>,
     pub down: AtomicBool,
     /// 참이면 로비 게시를 409 `key_package_limit` 로 거부한다(상태는 여유가 있다고 답한 뒤 — 경합 흉내).
     pub refuse_lobby_post: AtomicBool,
     /// 참이면 #571 B 이전 릴레이 흉내: `GET /events` 에 `read_seq` 가 없고 `POST /read` 는 봉투 없는 404(Go mux 기본 응답).
     pub no_read_route: AtomicBool,
+    /// 참이면 #574 이전(또는 호출자 인증·기기 저장소 없는) 릴레이 흉내: `/v2/me` 는 `{subject}` 만, 셀프서비스 라우트는 봉투 없는 404,
+    /// `welcomes` 에 `from` 없음.
+    pub no_self_service: AtomicBool,
 }
 
 impl Relay {
@@ -70,11 +114,206 @@ impl Relay {
             lobby: Mutex::new(HashMap::new()),
             lobby_max: Mutex::new(LOBBY_MAX_DEFAULT),
             push: Mutex::new(Vec::new()),
+            chain: Mutex::new(Chain { revision: 1, ..Chain::default() }),
             trace,
             down: AtomicBool::new(false),
             refuse_lobby_post: AtomicBool::new(false),
             no_read_route: AtomicBool::new(false),
+            no_self_service: AtomicBool::new(false),
         })
+    }
+    /// 운영자 CLI 대역(`-enroll-first`/`-add-device`): 호출자 subject 의 활성 기기를 체인에 올린다. revision 이 하나 오른다.
+    pub fn enroll(&self, device_id: &str, fingerprint: &str, roles: &[&str]) {
+        let mut chain = self.chain.lock().unwrap();
+        chain.devices.push(ChainDevice {
+            device_id: device_id.into(), actor: Self::actor_of(device_id), subject: SUBJECT.into(), fingerprint: fingerprint.into(),
+            status: "active".into(), roles: roles.iter().map(|r| (*r).to_string()).collect(),
+        });
+        chain.revision += 1;
+    }
+    pub fn chain_device(&self, device_id: &str) -> Option<ChainDevice> {
+        self.chain.lock().unwrap().devices.iter().find(|d| d.device_id == device_id).cloned()
+    }
+    pub fn policy_revision(&self) -> u64 {
+        self.chain.lock().unwrap().revision
+    }
+    pub fn candidates(&self) -> Vec<CandidateRow> {
+        self.chain.lock().unwrap().candidates.clone()
+    }
+    /// 시계를 앞으로(후보 TTL 검사).
+    pub fn advance_clock(&self, seconds: i64) {
+        self.chain.lock().unwrap().now += seconds;
+    }
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    }
+    fn unhex(text: &str) -> Option<Vec<u8>> {
+        if text.len() % 2 != 0 || !text.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) { return None; }
+        (0..text.len()).step_by(2).map(|i| u8::from_str_radix(&text[i..i + 2], 16).ok()).collect()
+    }
+    fn bare_404() -> Result<HttpResponse, RoomError> {
+        Ok(HttpResponse { status: 404, body: b"404 page not found\n".to_vec() })
+    }
+    fn strict(body: &[u8], keys: &[&str]) -> Result<serde_json::Map<String, serde_json::Value>, HttpResponse> {
+        let post: serde_json::Value = serde_json::from_slice(body).map_err(|_| HttpResponse { status: 400, body: br#"{"error":"bad_request"}"#.to_vec() })?;
+        let object = post.as_object().cloned().unwrap_or_default();
+        let mut got: Vec<&str> = object.keys().map(String::as_str).collect();
+        got.sort_unstable();
+        let mut want = keys.to_vec();
+        want.sort_unstable();
+        assert_eq!(got, want, "strict body: {post}");
+        Ok(object)
+    }
+
+    fn get_me(&self) -> Result<HttpResponse, RoomError> {
+        self.trace.lock().unwrap().push("ME".into());
+        if self.no_self_service.load(Ordering::SeqCst) {
+            return Self::respond(200, serde_json::json!({ "subject": SUBJECT }));
+        }
+        let chain = self.chain.lock().unwrap();
+        let devices: Vec<serde_json::Value> = chain
+            .devices
+            .iter()
+            .filter(|d| d.subject == SUBJECT)
+            .map(|d| serde_json::json!({
+                "device_id": d.device_id, "actor": d.actor, "fingerprint": d.fingerprint, "status": d.status,
+                "acceptance": "trusted-device-fingerprint", "roles": d.roles,
+            }))
+            .collect();
+        Self::respond(200, serde_json::json!({ "subject": SUBJECT, "policy_revision": chain.revision, "devices": devices }))
+    }
+
+    /// devices.go `handlePostCandidate`: 엄격 본문(subject 없음) · 지문 = sha256(공개키) · 이미 체인에 있는 ID 는 409 · 호출자에게
+    /// 활성 기기가 없으면 403 `first_device_out_of_band` · 같은 ID 재게시는 갱신.
+    fn post_candidate(&self, body: &[u8]) -> Result<HttpResponse, RoomError> {
+        if self.no_self_service.load(Ordering::SeqCst) { return Self::bare_404(); }
+        let post = match Self::strict(body, &["device_id", "actor", "signing_key", "fingerprint"]) { Ok(p) => p, Err(r) => return Ok(r) };
+        let field = |k: &str| post[k].as_str().unwrap_or_default().to_string();
+        let (device_id, actor, signing_key, fingerprint) = (field("device_id"), field("actor"), field("signing_key"), field("fingerprint"));
+        self.trace.lock().unwrap().push(format!("CANDIDATE {device_id}"));
+        let Some(key) = Self::unhex(&signing_key).filter(|k| k.len() == 32) else {
+            return Self::respond(400, serde_json::json!({ "error": "bad_candidate", "detail": "signing_key" }));
+        };
+        let computed = Self::sha256_hex(&key);
+        if !fingerprint.is_empty() && fingerprint != computed {
+            return Self::respond(400, serde_json::json!({ "error": "bad_candidate", "detail": "fingerprint does not match signing_key" }));
+        }
+        let mut chain = self.chain.lock().unwrap();
+        if chain.devices.iter().any(|d| d.device_id == device_id) {
+            return Self::respond(409, serde_json::json!({ "error": "device_exists", "detail": "ids are never reused; start again with a new device id" }));
+        }
+        if !chain.devices.iter().any(|d| d.subject == SUBJECT && d.status == "active") {
+            return Self::respond(403, serde_json::json!({ "error": "first_device_out_of_band" }));
+        }
+        let (now, revision) = (chain.now, chain.revision);
+        chain.candidates.retain(|c| c.expires_at > now && c.device_id != device_id);
+        let expires_at = now + CANDIDATE_TTL_SECONDS;
+        chain.candidates.push(CandidateRow { device_id: device_id.clone(), actor, subject: SUBJECT.into(), signing_key, fingerprint: computed.clone(), created_at: now, expires_at });
+        Self::respond(201, serde_json::json!({ "device_id": device_id, "fingerprint": computed, "policy_revision": revision, "expires_at": expires_at }))
+    }
+
+    /// `GET /v2/devices/candidates?device=`: bindDevice(활성·호출자 소유) 뒤 우편함.
+    fn list_candidates(&self, query: &str) -> Result<HttpResponse, RoomError> {
+        if self.no_self_service.load(Ordering::SeqCst) { return Self::bare_404(); }
+        let device = Self::params(query)["device"].to_string();
+        self.trace.lock().unwrap().push(format!("CANDIDATES {device}"));
+        let mut chain = self.chain.lock().unwrap();
+        if !chain.devices.iter().any(|d| d.device_id == device && d.subject == SUBJECT && d.status == "active") {
+            return Self::respond(403, serde_json::json!({ "error": "device_not_allowed" }));
+        }
+        let now = chain.now;
+        chain.candidates.retain(|c| c.expires_at > now);
+        let rows: Vec<serde_json::Value> = chain
+            .candidates
+            .iter()
+            .filter(|c| c.subject == SUBJECT)
+            .map(|c| serde_json::json!({
+                "device_id": c.device_id, "actor": c.actor, "subject": c.subject, "signing_key": c.signing_key, "fingerprint": c.fingerprint,
+                "created_at": c.created_at, "expires_at": c.expires_at,
+            }))
+            .collect();
+        Self::respond(200, serde_json::json!({ "policy_revision": chain.revision, "candidates": rows }))
+    }
+
+    /// devicepolicy.VerifyApproval/VerifyRoles 의 서명자 규칙: 활성이고, registrar 이거나 그 actor 에 활성 registrar 가 없다.
+    fn approver_allowed(chain: &Chain, approver: &str, actor: &str) -> Result<(), String> {
+        let Some(a) = chain.devices.iter().find(|d| d.device_id == approver) else { return Err(format!("approver {approver} is not on the chain")) };
+        if a.status != "active" { return Err(format!("approver {approver} is not active")); }
+        if a.actor != actor { return Err(format!("approver {approver} is another actor")); }
+        let has_registrar = chain.devices.iter().any(|d| d.actor == actor && d.status == "active" && d.roles.iter().any(|r| r == "registrar"));
+        if has_registrar && !a.roles.iter().any(|r| r == "registrar") { return Err(format!("approver {approver} is not a registrar")); }
+        Ok(())
+    }
+
+    /// `POST /v2/devices/approvals` = AddDeviceEvidence(엄격): subject 바인딩 → revision CAS → 서명자 규칙 → 체인 commit → 후보 삭제.
+    fn post_approval(&self, body: &[u8]) -> Result<HttpResponse, RoomError> {
+        if self.no_self_service.load(Ordering::SeqCst) { return Self::bare_404(); }
+        let ev = match Self::strict(body, &["device_id", "actor", "subject", "signing_key", "base_revision", "signature", "fingerprint", "approved_by"]) {
+            Ok(p) => p, Err(r) => return Ok(r),
+        };
+        let field = |k: &str| ev[k].as_str().unwrap_or_default().to_string();
+        let (device_id, actor, approver) = (field("device_id"), field("actor"), field("approved_by"));
+        self.trace.lock().unwrap().push(format!("APPROVE {device_id} by {approver}"));
+        if field("subject") != SUBJECT {
+            return Self::respond(403, serde_json::json!({ "error": "subject_mismatch" }));
+        }
+        let mut chain = self.chain.lock().unwrap();
+        let base = ev["base_revision"].as_u64().unwrap_or(0);
+        if base != chain.revision {
+            return Self::respond(409, serde_json::json!({ "error": "stale_revision", "detail": format!("base_revision {base} != {}", chain.revision), "revision": chain.revision }));
+        }
+        if field("signature").len() != 128 || Self::unhex(&field("signature")).is_none() {
+            return Self::respond(403, serde_json::json!({ "error": "approval_rejected", "detail": "signature" }));
+        }
+        let key = Self::unhex(&field("signing_key")).filter(|k| k.len() == 32);
+        if key.as_deref().map(Self::sha256_hex) != Some(field("fingerprint")) {
+            return Self::respond(400, serde_json::json!({ "error": "bad_candidate", "detail": "fingerprint" }));
+        }
+        if chain.devices.iter().any(|d| d.device_id == device_id) {
+            return Self::respond(400, serde_json::json!({ "error": "bad_candidate", "detail": "duplicate id" }));
+        }
+        if let Err(detail) = Self::approver_allowed(&chain, &approver, &actor) {
+            return Self::respond(403, serde_json::json!({ "error": "approval_rejected", "detail": detail }));
+        }
+        chain.devices.push(ChainDevice {
+            device_id: device_id.clone(), actor, subject: SUBJECT.into(), fingerprint: field("fingerprint"), status: "active".into(), roles: Vec::new(),
+        });
+        chain.revision += 1;
+        chain.candidates.retain(|c| c.device_id != device_id);
+        Self::respond(201, serde_json::json!({ "device_id": device_id, "approved_by": approver, "revision": chain.revision }))
+    }
+
+    /// `POST /v2/devices/roles` = RolesEvidence(엄격): 대상·승인자 호출자 소유 → CAS → 서명자 규칙 → 마지막 registrar 보호 → commit.
+    fn post_roles(&self, body: &[u8]) -> Result<HttpResponse, RoomError> {
+        if self.no_self_service.load(Ordering::SeqCst) { return Self::bare_404(); }
+        let ev = match Self::strict(body, &["device_id", "actor", "roles", "base_revision", "signature", "approved_by"]) { Ok(p) => p, Err(r) => return Ok(r) };
+        let field = |k: &str| ev[k].as_str().unwrap_or_default().to_string();
+        let (device_id, actor, approver) = (field("device_id"), field("actor"), field("approved_by"));
+        let roles: Vec<String> = ev["roles"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+        self.trace.lock().unwrap().push(format!("ROLES {device_id} {roles:?} by {approver}"));
+        let mut chain = self.chain.lock().unwrap();
+        let Some(target) = chain.devices.iter().position(|d| d.device_id == device_id && d.subject == SUBJECT) else {
+            return Self::respond(403, serde_json::json!({ "error": "device_subject_mismatch" }));
+        };
+        let base = ev["base_revision"].as_u64().unwrap_or(0);
+        if base != chain.revision {
+            return Self::respond(409, serde_json::json!({ "error": "stale_revision", "detail": format!("base_revision {base} != {}", chain.revision), "revision": chain.revision }));
+        }
+        if chain.devices[target].status != "active" || chain.devices[target].actor != actor {
+            return Self::respond(403, serde_json::json!({ "error": "approval_rejected", "detail": "target is not an active device of that actor" }));
+        }
+        if let Err(detail) = Self::approver_allowed(&chain, &approver, &actor) {
+            return Self::respond(403, serde_json::json!({ "error": "approval_rejected", "detail": detail }));
+        }
+        let was_registrar = chain.devices[target].roles.iter().any(|r| r == "registrar");
+        let registrars = chain.devices.iter().filter(|d| d.actor == actor && d.status == "active" && d.roles.iter().any(|r| r == "registrar")).count();
+        if was_registrar && !roles.iter().any(|r| r == "registrar") && registrars <= 1 {
+            return Self::respond(403, serde_json::json!({ "error": "approval_rejected", "detail": "last registrar of the actor cannot release the role" }));
+        }
+        chain.devices[target].roles = roles.clone();
+        chain.revision += 1;
+        Self::respond(201, serde_json::json!({ "device_id": device_id, "roles": roles, "approved_by": approver, "revision": chain.revision }))
     }
     /// 릴레이가 보관한 actor 의 읽음 위치(없으면 0).
     pub fn read_seq(&self, room: &str, actor: &str) -> i64 {
@@ -254,9 +493,17 @@ impl Relay {
     fn consume_lobby_route(&self, query: &str) -> Result<HttpResponse, RoomError> {
         let p = Self::params(query);
         match self.consume_lobby(p["device"], p["consumer"], p["room"]) {
-            Some(bytes) => Self::respond(200, serde_json::json!({ "ref": "", "bytes": b64::encode(&bytes), "expires_at": 0 })),
+            Some(bytes) => Self::respond(200, serde_json::json!({ "ref": Self::sha256_hex(&bytes), "bytes": b64::encode(&bytes), "expires_at": 0 })),
             None => Self::respond(404, serde_json::json!({ "error": "no_live_key_package" })),
         }
+    }
+
+    /// 방 풀 소비(`GET /v2/rooms/{room}/keypackages?device=&consumer=`): 대역에는 방 풀이 없다 — 늘 404 `no_live_key_package`
+    /// (→ `MlsRoom::invite` 가 로비로 넘어간다, #380).
+    fn consume_room_route(&self, room: &str, query: &str) -> Result<HttpResponse, RoomError> {
+        let p = Self::params(query);
+        self.trace.lock().unwrap().push(format!("CONSUME room {} by {} for {room}", p["device"], p["consumer"]));
+        Self::respond(404, serde_json::json!({ "error": "no_live_key_package" }))
     }
 
     fn delete_lobby(&self, query: &str) -> Result<HttpResponse, RoomError> {
@@ -290,7 +537,12 @@ impl Relay {
                     .rows
                     .iter()
                     .find(|r| r.kind == "welcome" && r.targets.iter().any(|t| *t == device) && r.seq > acked)
-                    .map(|r| serde_json::json!({ "room": name, "seq": r.seq, "epoch": r.epoch, "created_at": 0 }))
+                    .map(|r| {
+                        let mut w = serde_json::json!({ "room": name, "seq": r.seq, "epoch": r.epoch, "created_at": 0 });
+                        // #574: 보낸 기기 — 옛 릴레이 흉내에서는 없다.
+                        if !self.no_self_service.load(Ordering::SeqCst) { w["from"] = serde_json::json!(r.device); }
+                        w
+                    })
             })
             .collect();
         Self::respond(200, serde_json::json!({ "welcomes": welcomes }))
@@ -363,9 +615,18 @@ impl HttpTransport for Relay {
                 assert_eq!(method, "POST");
                 return self.post_read(room, &body);
             }
+            if let Some(room) = rest.strip_suffix("/keypackages") {
+                assert_eq!(method, "GET");
+                return self.consume_room_route(room, query);
+            }
         }
         match (method.as_str(), path) {
             ("GET", "/v2/rooms") => self.list_rooms(query),
+            ("GET", "/v2/me") => self.get_me(),
+            ("POST", "/v2/devices/candidates") => self.post_candidate(&body),
+            ("GET", "/v2/devices/candidates") => self.list_candidates(query),
+            ("POST", "/v2/devices/approvals") => self.post_approval(&body),
+            ("POST", "/v2/devices/roles") => self.post_roles(&body),
             ("POST", "/v2/lobby/keypackages") => self.post_lobby(&body),
             ("GET", "/v2/lobby/keypackages") => self.consume_lobby_route(query),
             ("DELETE", "/v2/lobby/keypackages") => self.delete_lobby(query),

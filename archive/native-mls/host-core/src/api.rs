@@ -199,9 +199,154 @@ pub struct EventsResponse {
     pub read_seq: i64,
 }
 
-#[derive(Deserialize)]
+/// The relay's error envelope (server.go `apiError`): the code, plus the
+/// optional fields the self-service routes fill (#574): `detail` says why an
+/// approval was refused, `revision` carries the current policy revision on
+/// 409 `stale_revision`.
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct ApiErrorBody {
     pub error: String,
+    #[serde(default)]
+    pub detail: String,
+    #[serde(default)]
+    pub revision: Option<i64>,
+}
+
+// ---- #574 device self-service (devices.go · me.go json tags) ----
+
+/// One chain record bound to the caller's subject (`GET /v2/me` `devices[]`,
+/// me.go `meDevice`): public fields only, never a signing key.
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct MeDevice {
+    pub device_id: String,
+    pub actor: String,
+    #[serde(default)]
+    pub fingerprint: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub acceptance: String,
+    #[serde(default)]
+    pub roles: Vec<String>,
+}
+
+/// `GET /v2/me` (me.go `meResponse`): the verified JWT subject, and — on a
+/// relay with a device store — the chain's current `policy_revision` (the
+/// `base_revision` an approver signs against) and every record of this
+/// subject. A relay that predates #574 answers `{subject}` only: then
+/// `policy_revision` is `None` and `devices` is empty.
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct MeInfo {
+    pub subject: String,
+    #[serde(default)]
+    pub policy_revision: Option<u64>,
+    #[serde(default)]
+    pub devices: Vec<MeDevice>,
+}
+
+/// `POST /v2/devices/candidates` body (devices.go `candidatePost`, strict
+/// JSON). `subject` is deliberately absent: the relay binds the row to the
+/// JWT subject, and a mismatching value would be a 403 `subject_mismatch`.
+#[derive(Serialize)]
+struct CandidatePost<'a> {
+    device_id: &'a str,
+    actor: &'a str,
+    signing_key: &'a str,
+    fingerprint: &'a str,
+}
+
+/// 201 answer of the candidate post (`candidatePosted`): `expires_at` is a
+/// unix time in seconds (10-minute TTL; re-posting the same id refreshes it).
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct CandidatePosted {
+    pub device_id: String,
+    pub fingerprint: String,
+    pub policy_revision: u64,
+    pub expires_at: i64,
+}
+
+/// One mailbox row as an approver sees it (`candidateView`).
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct CandidateView {
+    pub device_id: String,
+    pub actor: String,
+    #[serde(default)]
+    pub subject: String,
+    pub signing_key: String,
+    #[serde(default)]
+    pub fingerprint: String,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub expires_at: i64,
+}
+
+/// `GET /v2/devices/candidates?device=` (`candidatesResponse`).
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct CandidatesResponse {
+    pub policy_revision: u64,
+    #[serde(default)]
+    pub candidates: Vec<CandidateView>,
+}
+
+/// `POST /v2/devices/approvals` body = devicepolicy `AddDeviceEvidence`
+/// (the CLI `-add-device` input): the signed canonical fields plus the
+/// signature, the candidate's fingerprint and who signed.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct ApprovalEvidence {
+    pub device_id: String,
+    pub actor: String,
+    pub subject: String,
+    pub signing_key: String,
+    pub base_revision: u64,
+    pub signature: String,
+    pub fingerprint: String,
+    pub approved_by: String,
+}
+
+/// `POST /v2/devices/roles` body = devicepolicy `RolesEvidence` (E5):
+/// `roles` is the target's complete, sorted list — not a delta.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct RolesEvidence {
+    pub device_id: String,
+    pub actor: String,
+    pub roles: Vec<String>,
+    pub base_revision: u64,
+    pub signature: String,
+    pub approved_by: String,
+}
+
+/// 201 answer of approvals and roles (`approvalResponse`): the chain
+/// revision after the commit; `roles` only on the roles route.
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PolicyCommitted {
+    pub device_id: String,
+    pub approved_by: String,
+    pub revision: u64,
+    #[serde(default)]
+    pub roles: Vec<String>,
+}
+
+/// A self-service route's refusal, as a value: the client's next step is
+/// decided by the status and code (201 → wait for a sibling, 409
+/// `device_exists` → new id, 409 `stale_revision` → re-sign with `revision`,
+/// 403 `approval_rejected` → show `detail`, bare 404 → the relay has no
+/// self-service). `code`/`detail` are empty when the body was not the
+/// envelope (an old relay's `404 page not found`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refusal {
+    pub status: u16,
+    pub code: String,
+    pub detail: String,
+    pub revision: Option<i64>,
+}
+
+/// Outcome of a self-service call: the parsed 2xx body, or the relay's
+/// refusal. Only transport and JSON failures are `Err`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Answer<T> {
+    Ok(T),
+    Refused(Refusal),
 }
 
 /// `POST /v2/rooms/<room>/read` body (read.go `readPost`). The relay parses it
@@ -253,6 +398,15 @@ pub struct PendingWelcome {
     pub seq: i64,
     pub epoch: i64,
     pub created_at: i64,
+    /// The device that posted the Welcome (#574): a client auto-accepts an
+    /// invitation from an active device of its own actor (the sibling that
+    /// approved it). Empty on relays older than the field.
+    #[serde(default)]
+    pub from: String,
+    /// Ref of the device's lobby package the Welcome was built from (#380);
+    /// empty when it came from a room package or the relay predates it.
+    #[serde(default)]
+    pub key_package_ref: String,
 }
 
 #[derive(Deserialize)]
@@ -571,6 +725,63 @@ impl Client {
         Ok(())
     }
 
+    // ---- #574 device self-service (devices.go · me.go) ----
+
+    /// `GET /v2/me`: the verified caller subject; with a device store also the
+    /// policy revision and this subject's chain records. 401/403/404 and the
+    /// envelope come back as errors like every other route (a relay with
+    /// caller authentication off answers a bare 404).
+    pub fn get_me(&self) -> Result<MeInfo> {
+        let resp = self.send("GET", "/v2/me", None)?;
+        Ok(serde_json::from_slice(self.checked(resp)?.as_slice())?)
+    }
+
+    /// `POST /v2/devices/candidates` `{device_id, actor, signing_key, fingerprint}`
+    /// (strict, no `subject` — the relay takes it from the JWT): the new, not
+    /// yet enrolled device posts its public record for a sibling to approve.
+    /// 201 → `Answer::Ok`; 409 `device_exists`, 403 `first_device_out_of_band`
+    /// / `subject_mismatch`, 400 and a bare 404 (old relay) → `Refused`.
+    pub fn post_candidate(&self, device: &str, actor: &str, signing_key_hex: &str, fingerprint: &str) -> Result<Answer<CandidatePosted>> {
+        let post = CandidatePost { device_id: device, actor, signing_key: signing_key_hex, fingerprint };
+        let resp = self.send("POST", "/v2/devices/candidates", Some(serde_json::to_vec(&post)?.as_slice()))?;
+        self.answered(resp)
+    }
+
+    /// `GET /v2/devices/candidates?device=`: the mailbox of the caller's
+    /// subject, seen by one of its active devices. `policy_revision` is the
+    /// `base_revision` to sign against.
+    pub fn list_candidates(&self, device: &str) -> Result<Answer<CandidatesResponse>> {
+        let resp = self.send("GET", &format!("/v2/devices/candidates?device={device}"), None)?;
+        self.answered(resp)
+    }
+
+    /// `POST /v2/devices/approvals` (E2 evidence) → 201 the new revision; 409
+    /// `stale_revision` carries the current one in `Refusal::revision`; 403
+    /// `approval_rejected` says why in `detail`.
+    pub fn post_approval(&self, evidence: &ApprovalEvidence) -> Result<Answer<PolicyCommitted>> {
+        let resp = self.send("POST", "/v2/devices/approvals", Some(serde_json::to_vec(evidence)?.as_slice()))?;
+        self.answered(resp)
+    }
+
+    /// `POST /v2/devices/roles` (E5 evidence) → 201 `{device_id, roles, approved_by, revision}`;
+    /// 409 / 403 as for approvals.
+    pub fn post_roles(&self, evidence: &RolesEvidence) -> Result<Answer<PolicyCommitted>> {
+        let resp = self.send("POST", "/v2/devices/roles", Some(serde_json::to_vec(evidence)?.as_slice()))?;
+        self.answered(resp)
+    }
+
+    /// 2xx → parsed body; anything else → the refusal (envelope when there is
+    /// one, bare status otherwise).
+    fn answered<T: serde::de::DeserializeOwned>(&self, resp: http::Response) -> Result<Answer<T>> {
+        if (200..300).contains(&resp.status) {
+            return Ok(Answer::Ok(serde_json::from_slice(&resp.body)?));
+        }
+        Ok(Answer::Refused(match serde_json::from_slice::<ApiErrorBody>(&resp.body) {
+            Ok(body) => Refusal { status: resp.status, code: body.error, detail: body.detail, revision: body.revision },
+            Err(_) => Refusal { status: resp.status, code: String::new(), detail: String::new(), revision: None },
+        }))
+    }
+
     fn checked(&self, resp: http::Response) -> Result<Vec<u8>> {
         if resp.status < 200 || resp.status >= 300 {
             return Err(self.envelope(resp.status, resp.body));
@@ -720,6 +931,121 @@ mod tests {
         let client = Client::with_access(&format!("http://127.0.0.1:{}", addr.port()), Access::None);
         assert_eq!(client.post_read("family", "owner-pc", 7).expect("post read"), 9);
         server.join().expect("server thread");
+    }
+
+    /// One scripted exchange: assert the request line / body prefix, answer
+    /// with `status` and `body`. Returns the raw request text to the caller.
+    fn serve_once(status: u16, reason: &'static str, body: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 2048];
+            loop {
+                let n = stream.read(&mut buf).expect("read request");
+                assert!(n > 0, "eof before request end");
+                raw.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&raw);
+                if let Some((head, tail)) = text.split_once("\r\n\r\n") {
+                    let want: usize = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("Content-Length: "))
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(0);
+                    if tail.len() >= want { break; }
+                }
+            }
+            stream
+                .write_all(format!("HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes())
+                .expect("write response");
+            String::from_utf8(raw).expect("utf8")
+        });
+        (format!("http://127.0.0.1:{}", addr.port()), server)
+    }
+
+    /// #574: `/v2/me` on a relay without a device store is `{subject}` only
+    /// (no revision, no devices); with one, the records parse with their roles.
+    #[test]
+    fn me_tolerates_the_subject_only_body_of_an_old_relay() {
+        let old: MeInfo = serde_json::from_str(r#"{"subject":"person-owner"}"#).expect("old body");
+        assert_eq!(old, MeInfo { subject: "person-owner".into(), policy_revision: None, devices: Vec::new() });
+        let new: MeInfo = serde_json::from_str(
+            r#"{"subject":"person-owner","policy_revision":7,"devices":[
+                {"device_id":"owner-iphone","actor":"owner","fingerprint":"ab","status":"active","acceptance":"out-of-band-fingerprint","roles":["registrar"]},
+                {"device_id":"owner-pc","actor":"owner","fingerprint":"cd","status":"revoked","acceptance":"trusted-device-fingerprint","roles":[]}]}"#,
+        )
+        .expect("new body");
+        assert_eq!(new.policy_revision, Some(7));
+        assert_eq!(new.devices.len(), 2);
+        assert_eq!(new.devices[0].roles, vec!["registrar"]);
+        assert_eq!((new.devices[1].status.as_str(), new.devices[1].roles.len()), ("revoked", 0));
+    }
+
+    /// The candidate body is exactly the four public fields — never `subject`
+    /// (the relay binds the row to the JWT) — and 201 parses the TTL answer.
+    #[test]
+    fn post_candidate_sends_the_strict_body_without_subject() {
+        let (base, server) = serve_once(201, "Created", r#"{"device_id":"owner-android-1","fingerprint":"ff","policy_revision":3,"expires_at":1700000600}"#);
+        let client = Client::with_access(&base, Access::None);
+        let answer = client.post_candidate("owner-android-1", "owner", "aa", "ff").expect("post");
+        let request = server.join().expect("server thread");
+        assert!(request.starts_with("POST /v2/devices/candidates HTTP/1.1\r\n"), "{request}");
+        assert!(request.ends_with(r#"{"device_id":"owner-android-1","actor":"owner","signing_key":"aa","fingerprint":"ff"}"#), "{request}");
+        assert_eq!(
+            answer,
+            Answer::Ok(CandidatePosted { device_id: "owner-android-1".into(), fingerprint: "ff".into(), policy_revision: 3, expires_at: 1_700_000_600 })
+        );
+    }
+
+    /// Refusals are values: the envelope's code, `detail` and `revision` ride
+    /// along; a bare 404 (old relay) is a refusal with an empty code.
+    #[test]
+    fn self_service_refusals_carry_code_detail_and_revision() {
+        let evidence = ApprovalEvidence {
+            device_id: "owner-android-1".into(), actor: "owner".into(), subject: "person-owner".into(), signing_key: "aa".into(),
+            base_revision: 3, signature: "ee".into(), fingerprint: "ff".into(), approved_by: "owner-iphone".into(),
+        };
+        let (base, server) = serve_once(409, "Conflict", r#"{"error":"stale_revision","detail":"revision moved","revision":5}"#);
+        let answer = Client::with_access(&base, Access::None).post_approval(&evidence).expect("post");
+        let request = server.join().expect("server thread");
+        assert!(request.ends_with(
+            r#"{"device_id":"owner-android-1","actor":"owner","subject":"person-owner","signing_key":"aa","base_revision":3,"signature":"ee","fingerprint":"ff","approved_by":"owner-iphone"}"#
+        ), "{request}");
+        assert_eq!(answer, Answer::Refused(Refusal { status: 409, code: "stale_revision".into(), detail: "revision moved".into(), revision: Some(5) }));
+
+        let (base, server) = serve_once(403, "Forbidden", r#"{"error":"approval_rejected","detail":"approver is not a registrar"}"#);
+        let roles = RolesEvidence {
+            device_id: "owner-pc".into(), actor: "owner".into(), roles: vec!["registrar".into()], base_revision: 3,
+            signature: "ee".into(), approved_by: "owner-iphone".into(),
+        };
+        let answer = Client::with_access(&base, Access::None).post_roles(&roles).expect("post");
+        let request = server.join().expect("server thread");
+        assert!(request.starts_with("POST /v2/devices/roles HTTP/1.1\r\n"), "{request}");
+        assert!(request.ends_with(r#"{"device_id":"owner-pc","actor":"owner","roles":["registrar"],"base_revision":3,"signature":"ee","approved_by":"owner-iphone"}"#), "{request}");
+        let Answer::Refused(refusal) = answer else { panic!("expected a refusal: {answer:?}") };
+        assert_eq!((refusal.status, refusal.code.as_str(), refusal.detail.as_str(), refusal.revision), (403, "approval_rejected", "approver is not a registrar", None));
+
+        let (base, server) = serve_once(404, "Not Found", "404 page not found\n");
+        let answer = Client::with_access(&base, Access::None).list_candidates("owner-iphone").expect("list");
+        let request = server.join().expect("server thread");
+        assert!(request.starts_with("GET /v2/devices/candidates?device=owner-iphone HTTP/1.1\r\n"), "{request}");
+        assert_eq!(answer, Answer::Refused(Refusal { status: 404, code: String::new(), detail: String::new(), revision: None }));
+
+        let (base, server) = serve_once(201, "Created", r#"{"device_id":"owner-pc","roles":["registrar"],"approved_by":"owner-iphone","revision":4}"#);
+        let answer = Client::with_access(&base, Access::None).post_roles(&roles).expect("post");
+        server.join().expect("server thread");
+        assert_eq!(answer, Answer::Ok(PolicyCommitted { device_id: "owner-pc".into(), approved_by: "owner-iphone".into(), revision: 4, roles: vec!["registrar".into()] }));
+    }
+
+    /// Lobby Welcomes carry `from` since #574; older relays omit it (empty).
+    #[test]
+    fn pending_welcome_from_defaults_to_empty() {
+        let old: PendingWelcome = serde_json::from_str(r#"{"room":"family","seq":3,"epoch":1,"created_at":0}"#).expect("old");
+        assert_eq!((old.from.as_str(), old.key_package_ref.as_str()), ("", ""));
+        let new: PendingWelcome =
+            serde_json::from_str(r#"{"room":"family","seq":3,"epoch":1,"created_at":0,"key_package_ref":"ab","from":"owner-iphone"}"#).expect("new");
+        assert_eq!((new.from.as_str(), new.key_package_ref.as_str()), ("owner-iphone", "ab"));
     }
 
     /// A relay that predates #571 B omits `read_seq`; the page still parses

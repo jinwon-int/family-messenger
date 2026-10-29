@@ -1,12 +1,14 @@
 // 테스트 전용 in-memory 릴레이(`ios-ffi/tests/support/mod.rs` 의 Relay 와 같은 규칙): v2 events 라우트 — GET 페이지(Welcome 은 대상에게만),
 // POST(client_id dedup · epoch 불일치 409 cas_mismatch · commit 은 epoch+1) — 에 3c 의 기기 수준 라우트(로비 key package · 방 목록 · 방 닫기 ·
-// 푸시 등록)를 더했다. MLS 검증 없음, 순서 매기기만. JSON 은 코어가 만든 고정 필드만 정규식으로 읽는다(테스트 외 사용 금지).
+// 푸시 등록)와 #574 의 기기 셀프서비스(`/v2/me` · 후보 우편함 · 승인 · 역할 — 체인 대역은 revision CAS·subject 바인딩·registrar 규칙만,
+// Ed25519 검증은 길이만)를 더했다. MLS 검증 없음, 순서 매기기만. JSON 은 코어가 만든 고정 필드만 정규식으로 읽는다(테스트 외 사용 금지).
 package com.seoyoon_family.hande.host
 
 import com.seoyoon_family.hande.mls.HttpHeader
 import com.seoyoon_family.hande.mls.HttpResponse
 import com.seoyoon_family.hande.mls.HttpTransport
 import com.seoyoon_family.hande.mls.RoomException
+import java.security.MessageDigest
 import java.util.Base64
 
 class InMemoryRelay(private val base: String) : HttpTransport {
@@ -18,6 +20,10 @@ class InMemoryRelay(private val base: String) : HttpTransport {
         val reads: MutableMap<String, Long> = mutableMapOf(),
     )
     data class PushRow(val device: String, val token: ByteArray, val topic: String)
+    /** 정책 체인의 기기 하나(DEVICES-V4 레코드의 공개 필드). */
+    data class ChainDevice(val deviceId: String, val actor: String, val fingerprint: String, var status: String = "active", var roles: List<String> = emptyList())
+    /** 우편함의 후보 행(devices.go `candidateView`). */
+    data class CandidateRow(val deviceId: String, val actor: String, val signingKey: String, val fingerprint: String, val createdAt: Long, val expiresAt: Long)
 
     private val rooms = HashMap<String, RoomRows>()
     /** 로비 풀: 기기 → key package 바이트, 게시 순(가장 오래된 것부터 소비). */
@@ -28,6 +34,22 @@ class InMemoryRelay(private val base: String) : HttpTransport {
     @Volatile var down = false
     /** 참이면 #571 B 이전 릴레이 흉내: `GET /events` 에 `read_seq` 없음, `POST /read` 는 봉투 없는 404(Go mux 기본 응답). */
     @Volatile var noReadRoute = false
+    /** 참이면 #574 이전 릴레이 흉내: `/v2/me` 는 `{subject}` 만, 셀프서비스 라우트는 봉투 없는 404, `welcomes` 에 `from` 없음. */
+    @Volatile var noSelfService = false
+
+    // ---- 기기 정책 체인 대역(#574): 호출자 subject 는 늘 SUBJECT(토큰 없는 테스트) ----
+    val chain = mutableListOf<ChainDevice>()
+    val candidates = mutableListOf<CandidateRow>()
+    var policyRevision = 1L
+    /** 시계 대역(초) — 후보 TTL. */
+    var now = 0L
+
+    /** 운영자 CLI 대역(`-enroll-first`/`-add-device`): 활성 기기를 체인에 올린다. revision 이 하나 오른다. */
+    @Synchronized fun enroll(deviceId: String, fingerprint: String, roles: List<String> = emptyList()) {
+        chain += ChainDevice(deviceId, actorOf(deviceId), fingerprint, roles = roles)
+        policyRevision += 1
+    }
+    @Synchronized fun chainDevice(deviceId: String): ChainDevice? = chain.firstOrNull { it.deviceId == deviceId }
 
     @Synchronized fun bumpEpoch(room: String) { rooms.getOrPut(room) { RoomRows() }.epoch += 1 }
     @Synchronized fun readSeq(room: String, actor: String): Long = rooms[room]?.reads?.get(actor) ?: 0L
@@ -62,9 +84,15 @@ class InMemoryRelay(private val base: String) : HttpTransport {
             }
             if (rest.endsWith("/close")) { require(method == "POST"); return closeRoom(rest.removeSuffix("/close"), query) }
             if (rest.endsWith("/read")) { require(method == "POST"); return postRead(rest.removeSuffix("/read"), bytes) }
+            if (rest.endsWith("/keypackages")) { require(method == "GET"); return consumeRoomRoute(rest.removeSuffix("/keypackages"), query) }
         }
         return when (method to p) {
             "GET" to "/v2/rooms" -> listRooms(query)
+            "GET" to "/v2/me" -> getMe()
+            "POST" to "/v2/devices/candidates" -> postCandidate(bytes)
+            "GET" to "/v2/devices/candidates" -> listCandidates(query)
+            "POST" to "/v2/devices/approvals" -> postApproval(bytes)
+            "POST" to "/v2/devices/roles" -> postRoles(bytes)
             "POST" to "/v2/lobby/keypackages" -> postLobby(bytes)
             "GET" to "/v2/lobby/keypackages" -> consumeLobbyRoute(query)
             "DELETE" to "/v2/lobby/keypackages" -> deleteLobby(query)
@@ -173,7 +201,124 @@ class InMemoryRelay(private val base: String) : HttpTransport {
         val p = params(query)
         val bytes = consumeLobby(p.getValue("device"), p.getValue("consumer"), p.getValue("room"))
             ?: return respond(404, """{"error":"no_live_key_package"}""")
-        return respond(200, """{"ref":"","bytes":"${b64(bytes)}","expires_at":0}""")
+        return respond(200, """{"ref":"${sha256Hex(bytes)}","bytes":"${b64(bytes)}","expires_at":0}""")
+    }
+
+    /** 방 풀 소비(`GET /v2/rooms/{room}/keypackages`): 대역에는 방 풀이 없다 — 늘 404(→ `MlsRoom.invite` 가 로비로 넘어간다, #380). */
+    private fun consumeRoomRoute(room: String, query: String): HttpResponse {
+        val p = params(query)
+        trace += "CONSUME room ${p.getValue("device")} by ${p.getValue("consumer")} for $room"
+        return respond(404, """{"error":"no_live_key_package"}""")
+    }
+
+    // ---- #574 기기 셀프서비스(devices.go · me.go 의 규칙; 서명은 길이만 검사) ----
+
+    private fun sha256Hex(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+    private fun unhex(text: String): ByteArray? {
+        if (text.length % 2 != 0 || !text.all { it in '0'..'9' || it in 'a'..'f' }) return null
+        return text.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+    }
+    private fun bare404() = HttpResponse(404.toUShort(), "404 page not found\n".toByteArray(Charsets.UTF_8))
+    private val reAnyString = Regex(""""([a-z_]+)":"([^"]*)"""")
+    private val reBaseRevision = Regex(""""base_revision":(\d+)""")
+    private val reRoles = Regex(""""roles":\[([^\]]*)\]""")
+    private fun stringFields(json: String) = reAnyString.findAll(json).associate { it.groupValues[1] to it.groupValues[2] }
+    private fun strict(json: String, keys: Set<String>) {
+        val got = reKey.findAll(json).map { it.value.trim('"', ':') }.toSet()
+        check(got == keys) { "strict body: expected $keys, got $got ($json)" }
+    }
+    /** devicepolicy.VerifyApproval/VerifyRoles 의 서명자 규칙: 활성이고, registrar 이거나 그 actor 에 활성 registrar 가 없다. */
+    private fun approverAllowed(approver: String, actor: String): String? {
+        val a = chain.firstOrNull { it.deviceId == approver } ?: return "approver $approver is not on the chain"
+        if (a.status != "active") return "approver $approver is not active"
+        if (a.actor != actor) return "approver $approver is another actor"
+        val hasRegistrar = chain.any { it.actor == actor && it.status == "active" && "registrar" in it.roles }
+        if (hasRegistrar && "registrar" !in a.roles) return "approver $approver is not a registrar"
+        return null
+    }
+
+    private fun getMe(): HttpResponse {
+        trace += "ME"
+        if (noSelfService) return respond(200, """{"subject":"$SUBJECT"}""")
+        val devices = chain.joinToString(",") { d ->
+            """{"device_id":"${d.deviceId}","actor":"${d.actor}","fingerprint":"${d.fingerprint}","status":"${d.status}","acceptance":"trusted-device-fingerprint","roles":[${d.roles.joinToString(",") { "\"$it\"" }}]}"""
+        }
+        return respond(200, """{"subject":"$SUBJECT","policy_revision":$policyRevision,"devices":[$devices]}""")
+    }
+
+    /** devices.go `handlePostCandidate`: 엄격 본문(subject 없음) · 지문 = sha256(공개키) · 체인에 있는 ID 는 409 · 활성 기기 없으면 403 · 재게시는 갱신. */
+    private fun postCandidate(body: ByteArray): HttpResponse {
+        if (noSelfService) return bare404()
+        val json = String(body, Charsets.UTF_8)
+        strict(json, setOf("device_id", "actor", "signing_key", "fingerprint"))
+        val f = stringFields(json)
+        val deviceId = f.getValue("device_id")
+        trace += "CANDIDATE $deviceId"
+        val key = unhex(f.getValue("signing_key"))?.takeIf { it.size == 32 } ?: return respond(400, """{"error":"bad_candidate","detail":"signing_key"}""")
+        val computed = sha256Hex(key)
+        if (f.getValue("fingerprint").isNotEmpty() && f.getValue("fingerprint") != computed) return respond(400, """{"error":"bad_candidate","detail":"fingerprint does not match signing_key"}""")
+        if (chain.any { it.deviceId == deviceId }) return respond(409, """{"error":"device_exists","detail":"ids are never reused; start again with a new device id"}""")
+        if (chain.none { it.status == "active" }) return respond(403, """{"error":"first_device_out_of_band"}""")
+        candidates.removeAll { it.expiresAt <= now || it.deviceId == deviceId }
+        val expiresAt = now + CANDIDATE_TTL_SECONDS
+        candidates += CandidateRow(deviceId, f.getValue("actor"), f.getValue("signing_key"), computed, now, expiresAt)
+        return respond(201, """{"device_id":"$deviceId","fingerprint":"$computed","policy_revision":$policyRevision,"expires_at":$expiresAt}""")
+    }
+
+    /** `GET /v2/devices/candidates?device=`: bindDevice(활성·호출자 소유) 뒤 우편함. */
+    private fun listCandidates(query: String): HttpResponse {
+        if (noSelfService) return bare404()
+        val device = params(query).getValue("device")
+        trace += "CANDIDATES $device"
+        if (chain.none { it.deviceId == device && it.status == "active" }) return respond(403, """{"error":"device_not_allowed"}""")
+        candidates.removeAll { it.expiresAt <= now }
+        val rows = candidates.joinToString(",") { c ->
+            """{"device_id":"${c.deviceId}","actor":"${c.actor}","subject":"$SUBJECT","signing_key":"${c.signingKey}","fingerprint":"${c.fingerprint}","created_at":${c.createdAt},"expires_at":${c.expiresAt}}"""
+        }
+        return respond(200, """{"policy_revision":$policyRevision,"candidates":[$rows]}""")
+    }
+
+    /** `POST /v2/devices/approvals` = AddDeviceEvidence(엄격): subject 바인딩 → revision CAS → 서명자 규칙 → 체인 commit → 후보 삭제. */
+    private fun postApproval(body: ByteArray): HttpResponse {
+        if (noSelfService) return bare404()
+        val json = String(body, Charsets.UTF_8)
+        strict(json, setOf("device_id", "actor", "subject", "signing_key", "base_revision", "signature", "fingerprint", "approved_by"))
+        val f = stringFields(json)
+        val (deviceId, actor, approver) = Triple(f.getValue("device_id"), f.getValue("actor"), f.getValue("approved_by"))
+        trace += "APPROVE $deviceId by $approver"
+        if (f.getValue("subject") != SUBJECT) return respond(403, """{"error":"subject_mismatch"}""")
+        val base = reBaseRevision.find(json)?.groupValues?.get(1)?.toLong() ?: -1L
+        if (base != policyRevision) return respond(409, """{"error":"stale_revision","detail":"base_revision $base != $policyRevision","revision":$policyRevision}""")
+        if (f.getValue("signature").length != 128 || unhex(f.getValue("signature")) == null) return respond(403, """{"error":"approval_rejected","detail":"signature"}""")
+        val key = unhex(f.getValue("signing_key"))?.takeIf { it.size == 32 }
+        if (key == null || sha256Hex(key) != f.getValue("fingerprint")) return respond(400, """{"error":"bad_candidate","detail":"fingerprint"}""")
+        if (chain.any { it.deviceId == deviceId }) return respond(400, """{"error":"bad_candidate","detail":"duplicate id"}""")
+        approverAllowed(approver, actor)?.let { return respond(403, """{"error":"approval_rejected","detail":"$it"}""") }
+        chain += ChainDevice(deviceId, actor, f.getValue("fingerprint"))
+        policyRevision += 1
+        candidates.removeAll { it.deviceId == deviceId }
+        return respond(201, """{"device_id":"$deviceId","approved_by":"$approver","revision":$policyRevision}""")
+    }
+
+    /** `POST /v2/devices/roles` = RolesEvidence(엄격): 대상 호출자 소유 → CAS → 서명자 규칙 → 마지막 registrar 보호 → commit. */
+    private fun postRoles(body: ByteArray): HttpResponse {
+        if (noSelfService) return bare404()
+        val json = String(body, Charsets.UTF_8)
+        strict(json, setOf("device_id", "actor", "roles", "base_revision", "signature", "approved_by"))
+        val f = stringFields(json)
+        val (deviceId, actor, approver) = Triple(f.getValue("device_id"), f.getValue("actor"), f.getValue("approved_by"))
+        val roles = reRoles.find(json)?.groupValues?.get(1)?.split(',')?.map { it.trim().trim('"') }?.filter { it.isNotEmpty() } ?: emptyList()
+        trace += "ROLES $deviceId $roles by $approver"
+        val target = chain.firstOrNull { it.deviceId == deviceId } ?: return respond(403, """{"error":"device_subject_mismatch"}""")
+        val base = reBaseRevision.find(json)?.groupValues?.get(1)?.toLong() ?: -1L
+        if (base != policyRevision) return respond(409, """{"error":"stale_revision","detail":"base_revision $base != $policyRevision","revision":$policyRevision}""")
+        if (target.status != "active" || target.actor != actor) return respond(403, """{"error":"approval_rejected","detail":"target is not an active device of that actor"}""")
+        approverAllowed(approver, actor)?.let { return respond(403, """{"error":"approval_rejected","detail":"$it"}""") }
+        val registrars = chain.count { it.actor == actor && it.status == "active" && "registrar" in it.roles }
+        if ("registrar" in target.roles && "registrar" !in roles && registrars <= 1) return respond(403, """{"error":"approval_rejected","detail":"last registrar of the actor cannot release the role"}""")
+        target.roles = roles
+        policyRevision += 1
+        return respond(201, """{"device_id":"$deviceId","roles":[${roles.joinToString(",") { "\"$it\"" }}],"approved_by":"$approver","revision":$policyRevision}""")
     }
 
     private fun deleteLobby(query: String): HttpResponse {
@@ -197,7 +342,11 @@ class InMemoryRelay(private val base: String) : HttpTransport {
             if (state.closed) return@mapNotNull null
             val acked = state.acks[device] ?: 0
             state.rows.firstOrNull { it.kind == "welcome" && device in it.targets && it.seq > acked }
-                ?.let { """{"room":"$name","seq":${it.seq},"epoch":${it.epoch},"created_at":0}""" }
+                ?.let { w ->
+                    // #574: 보낸 기기 `from` — 옛 릴레이 흉내에서는 없다.
+                    val from = if (noSelfService) "" else ",\"from\":\"${w.device}\""
+                    """{"room":"$name","seq":${w.seq},"epoch":${w.epoch},"created_at":0$from}"""
+                }
         }
         return respond(200, """{"welcomes":[${welcomes.joinToString(",")}]}""")
     }
@@ -228,5 +377,12 @@ class InMemoryRelay(private val base: String) : HttpTransport {
         trace += "PUSH unregister $device"
         pushRows.removeAll { it.device == device }
         return noContent()
+    }
+
+    companion object {
+        /** 호출자 subject 대역(#574): 토큰이 없는 테스트라 모든 요청이 이 사람이다(me.go `c.subject`). */
+        const val SUBJECT = "person-owner"
+        /** 후보 TTL(devices.go `candidateTTL`), 초. */
+        const val CANDIDATE_TTL_SECONDS = 600L
     }
 }
