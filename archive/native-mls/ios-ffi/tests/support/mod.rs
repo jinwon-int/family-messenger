@@ -105,6 +105,11 @@ pub struct Relay {
     /// 참이면 #574 이전(또는 호출자 인증·기기 저장소 없는) 릴레이 흉내: `/v2/me` 는 `{subject}` 만, 셀프서비스 라우트는 봉투 없는 404,
     /// `welcomes` 에 `from` 없음.
     pub no_self_service: AtomicBool,
+    /// 한 번만 터지는 전송 고장(#574 후속 — 대기 Welcome 영속): 다음 `POST welcome` / 다음 `GET /events` / 다음 `POST commit` 이
+    /// 연결 끊김(transient)으로 실패하고 플래그가 꺼진다. commit 은 릴레이에 **닿지 않는다**(행 없음).
+    pub fail_next_welcome: AtomicBool,
+    pub fail_next_get: AtomicBool,
+    pub drop_next_commit: AtomicBool,
 }
 
 impl Relay {
@@ -120,7 +125,13 @@ impl Relay {
             refuse_lobby_post: AtomicBool::new(false),
             no_read_route: AtomicBool::new(false),
             no_self_service: AtomicBool::new(false),
+            fail_next_welcome: AtomicBool::new(false),
+            fail_next_get: AtomicBool::new(false),
+            drop_next_commit: AtomicBool::new(false),
         })
+    }
+    fn cut() -> Result<HttpResponse, RoomError> {
+        Err(RoomError::Host { reason: "connection reset (test)".into() })
     }
     /// 운영자 CLI 대역(`-enroll-first`/`-add-device`): 호출자 subject 의 활성 기기를 체인에 올린다. revision 이 하나 오른다.
     pub fn enroll(&self, device_id: &str, fingerprint: &str, roles: &[&str]) {
@@ -364,6 +375,10 @@ impl Relay {
         let device = params["device"];
         let after: i64 = params["after"].parse().unwrap();
         self.trace.lock().unwrap().push(format!("GET {device} after={after} ack={}", params.get("ack").copied().unwrap_or("-")));
+        if self.fail_next_get.swap(false, Ordering::SeqCst) {
+            self.trace.lock().unwrap().push(format!("CUT GET {device}"));
+            return Self::cut();
+        }
         let mut rooms = self.rooms.lock().unwrap();
         let Some(state) = rooms.get_mut(room) else {
             return Self::respond(404, serde_json::json!({ "error": "no_such_room" }));
@@ -427,6 +442,12 @@ impl Relay {
         let (device, client_id, kind) = (field("device"), field("client_id"), field("kind"));
         let epoch = post["epoch"].as_i64().unwrap_or_default();
         self.trace.lock().unwrap().push(format!("POST {kind} {client_id}"));
+        if (kind == "welcome" && self.fail_next_welcome.swap(false, Ordering::SeqCst))
+            || (kind == "commit" && self.drop_next_commit.swap(false, Ordering::SeqCst))
+        {
+            self.trace.lock().unwrap().push(format!("CUT POST {kind} {client_id}"));
+            return Self::cut();
+        }
         let mut rooms = self.rooms.lock().unwrap();
         let state = rooms.entry(room.into()).or_default();
         if state.closed {

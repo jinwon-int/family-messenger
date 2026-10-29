@@ -140,6 +140,32 @@ class SelfServiceTest {
         assertEquals(listOf(SelfService.SiblingInvite("a-b", listOf("r1"), 5L)), SelfService.decodeSiblingQueue("bad line\nx|notanumber|r\na-b|5|r1,bad room\n"))
     }
 
+    @Test fun dismissalsPersistByDeviceIdAndExpireWithTheCandidateTtl() {
+        val ttl = SelfService.CANDIDATE_TTL_SECONDS
+        val d0 = SelfService.decodeDismissals(null)
+        assertTrue(d0.isEmpty())
+        // 무시: 후보의 created_at(릴레이 초) 로 적는다; 재게시로 created_at 이 바뀌어도 ID 로 숨긴다.
+        val d1 = SelfService.dismiss(d0, "owner-android", createdAt = 1_000L, nowSec = 1_010L)
+        assertEquals(listOf(SelfService.Dismissal("owner-android", 1_000L)), d1)
+        assertTrue(SelfService.isDismissed(d1, "owner-android", nowSec = 1_010L))
+        assertTrue(SelfService.isDismissed(d1, "owner-android", nowSec = 1_000L + ttl - 1), "hidden until the row would expire")
+        assertFalse(SelfService.isDismissed(d1, "owner-android", nowSec = 1_000L + ttl), "expires with the candidate TTL")
+        assertFalse(SelfService.isDismissed(d1, "owner-tablet", nowSec = 1_010L), "another id")
+        // 같은 ID 를 다시 무시하면 항목이 하나로 갱신되고, 만료된 항목은 걷힌다.
+        val d2 = SelfService.dismiss(d1 + SelfService.Dismissal("owner-old", 1L), "owner-android", createdAt = 5_000L, nowSec = 5_000L)
+        assertEquals(listOf(SelfService.Dismissal("owner-android", 5_000L)), d2)
+        // created_at 을 모르면(0) 지금부터 TTL.
+        val d3 = SelfService.dismiss(emptyList(), "owner-pc", createdAt = 0L, nowSec = 7_000L)
+        assertEquals(listOf(SelfService.Dismissal("owner-pc", 7_000L)), d3)
+        // 저장 왕복 · 깨진 줄은 버린다.
+        val text = SelfService.encodeDismissals(d2 + d3)
+        assertEquals("owner-android|5000\nowner-pc|7000", text)
+        assertEquals(d2 + d3, SelfService.decodeDismissals(text))
+        assertEquals("", SelfService.encodeDismissals(emptyList()))
+        assertEquals(listOf(SelfService.Dismissal("a-b", 5L)), SelfService.decodeDismissals("bad line\nx|notanumber\nbad id|5\na-b|5\n"))
+        assertEquals(emptyList<SelfService.Dismissal>(), SelfService.pruneDismissals(d1, nowSec = 1_000L + ttl))
+    }
+
     @Test fun siblingQueueSplitsByTtl() {
         val q = listOf(SelfService.SiblingInvite("fresh", listOf("a"), 100_000L), SelfService.SiblingInvite("stale", listOf("b"), 0L))
         val (live, expired) = SelfService.splitSiblingQueue(q, 100_000L + SelfService.SIBLING_INVITE_TTL_MS)

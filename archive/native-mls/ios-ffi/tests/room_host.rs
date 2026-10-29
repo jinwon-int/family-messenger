@@ -295,3 +295,120 @@ fn invite_consumes_the_lobby_package_and_posts_the_welcome_after_the_echo() {
     let err = owner.invite("bad target".into()).expect_err("identifier rule");
     assert!(matches!(err, RoomError::Host { .. }), "{err}");
 }
+
+/// #574 후속 — `invite` 의 대기 Welcome 은 `RoomSyncState::pending_invite` 로 영속된다(commit 이 나가기 전에). 세 국면:
+/// (1) echo 는 merge 됐는데 Welcome POST 가 끊겼다 → 재시작한 `poll` 이 올린다(`from` = 초대한 기기, 대상은 adopt·join).
+/// (2) commit 게시 직후(응답을 영속하기 전, `commit_seq` 0) 죽었다 → 재시작한 `poll` 이 echo 를 merge 하고 올린다.
+/// (3) 영속은 됐는데 commit 이 릴레이에 닿지 않았다 → 외부 commit 이 대기 commit 을 지우면 그 Welcome 은 버린다(`WelcomeDropped`).
+#[test]
+fn pending_welcome_survives_a_restart_and_is_posted_after_the_echo() {
+    let h = Harness::new();
+    let ((owner, owner_obs), (peer, peer_obs)) = founded_pair(&h);
+    ok(peer.poll(), "peer joins");
+    assert_eq!(ok(owner.sync_state(), "sync").pending_invite, None, "nothing pending before an invite");
+
+    // (1) Welcome POST 가 끊긴다: commit 은 올라갔고(seq 2) echo 는 merge 됐다 — Welcome 만 디스크에 남는다.
+    let (tablet, _) = h.lobby("owner-tablet");
+    ok(tablet.replenish(1), "tablet publishes a lobby key");
+    h.relay.fail_next_welcome.store(true, Ordering::SeqCst);
+    let err = owner.invite("owner-tablet".into()).expect_err("the welcome post was cut");
+    assert!(matches!(err, RoomError::Relay { transient: true, .. }), "{err}");
+    assert!(owner_obs.events().iter().any(|e| *e == RoomEvent::OwnCommitMerged { seq: 2, epoch: 1 }), "{:?}", owner_obs.events());
+    assert!(h.relay.rows("room-a").iter().all(|r| r.kind != "welcome" || r.seq == 1), "no welcome for the tablet reached the relay");
+    let (state, sync) = owner_obs.last_persisted();
+    let pending = sync.pending_invite.clone().expect("the pending welcome is on disk");
+    assert_eq!((pending.commit_seq, pending.targets.as_slice(), pending.welcome.is_empty()), (2, &["owner-tablet".to_string()][..], false));
+    assert_eq!((sync.cursor, sync.epoch), (2, 1), "persisted after the merged echo");
+    // persist-before-bytes-leave: the welcome was on disk before the commit POST.
+    let trace = h.trace();
+    let persisted_with_welcome = trace.iter().position(|l| l == "persist owner-phone cursor=0 sends=2").expect("persist before the commit post");
+    let commit_post = trace.iter().position(|l| l.starts_with("POST commit owner-phone-")).expect("commit post");
+    assert!(persisted_with_welcome < commit_post, "{trace:?}");
+    drop(owner);
+
+    // 재시작: 대기 Welcome 이 있는 동안 새 초대는 `Pending`; 다음 `poll` 이 올리고 지운다.
+    let again_obs = Observer::new("owner-phone-again", h.trace.clone());
+    let again = ok(MlsRoom::import("owner-phone".into(), "room-a".into(), state, sync, BASE.into(), h.relay.clone(), again_obs.clone()), "import");
+    assert_eq!(ok(again.sync_state(), "restored sync").pending_invite, Some(pending.clone()));
+    assert_eq!(ok(again.invite("owner-tablet".into()), "invite while a welcome waits"), MlsInvite::Pending);
+    ok(again.poll(), "the restored room posts the welcome");
+    let rows = h.relay.rows("room-a");
+    let welcome = rows.iter().find(|r| r.kind == "welcome" && r.targets == ["owner-tablet".to_string()]).expect("welcome row");
+    assert_eq!((welcome.device.as_str(), welcome.seq), ("owner-phone", 3));
+    assert_eq!(ok(again.sync_state(), "sync").pending_invite, None, "cleared once posted");
+    assert_eq!(again_obs.last_persisted().1.pending_invite, None, "and cleared on disk");
+    let listed = ok(tablet.welcomes(), "welcomes");
+    assert_eq!((listed.len(), listed[0].room.as_str(), listed[0].seq, listed[0].from.as_str()), (1, "room-a", 3, "owner-phone"));
+    let tablet_obs = Observer::new("owner-tablet", h.trace.clone());
+    let tablet_room = ok(
+        MlsRoom::adopt("owner-tablet".into(), "room-a".into(), ok(tablet.seed_state(), "seed"), 2, BASE.into(), h.relay.clone(), tablet_obs.clone()),
+        "adopt",
+    );
+    ok(tablet_room.poll(), "tablet joins");
+    assert!(tablet_obs.events().iter().any(|e| matches!(e, RoomEvent::Joined { .. })), "{:?}", tablet_obs.events());
+    ok(peer.poll(), "peer applies the add");
+    assert!(peer_obs.events().iter().any(|e| matches!(e, RoomEvent::CommitApplied { adds, .. } if adds == &["owner-tablet".to_string()])), "{:?}", peer_obs.events());
+    ok(tablet_room.send(b"from the tablet".to_vec()), "tablet sends");
+    ok(again.poll(), "the restored room reads at the right epoch");
+    assert_eq!(again_obs.texts().last().map(|t| t.2.as_str()), Some("from the tablet"));
+
+    // (2) commit 게시 직후 죽는다(응답을 영속하기 전): 디스크의 `commit_seq` 는 0 — echo 를 `has_pending` 으로 알아보고 seq 를 채워 올린다.
+    let (watch, _) = h.lobby("owner-watch");
+    ok(watch.replenish(1), "watch publishes");
+    h.relay.fail_next_get.store(true, Ordering::SeqCst);
+    let err = again.invite("owner-watch".into()).expect_err("the poll after the commit post was cut");
+    assert!(matches!(err, RoomError::Relay { transient: true, .. }), "{err}");
+    let (state, sync) = again_obs.last_persisted();
+    let pending = sync.pending_invite.clone().expect("persisted before the commit post");
+    assert_eq!((pending.commit_seq, pending.targets.as_slice()), (0, &["owner-watch".to_string()][..]));
+    let commit_seq = h.relay.rows("room-a").iter().filter(|r| r.kind == "commit").map(|r| r.seq).max().expect("the commit did land");
+    drop(again);
+    let third_obs = Observer::new("owner-phone-third", h.trace.clone());
+    let third = ok(MlsRoom::import("owner-phone".into(), "room-a".into(), state, sync, BASE.into(), h.relay.clone(), third_obs.clone()), "import");
+    ok(third.poll(), "merge the echo, then post the welcome");
+    assert!(third_obs.events().iter().any(|e| *e == RoomEvent::OwnCommitMerged { seq: commit_seq, epoch: 2 }), "{:?}", third_obs.events());
+    assert!(h.relay.rows("room-a").iter().any(|r| r.kind == "welcome" && r.targets == ["owner-watch".to_string()] && r.seq > commit_seq), "welcome after the commit");
+    assert_eq!(ok(third.sync_state(), "sync").pending_invite, None);
+    assert_eq!(ok(watch.welcomes(), "welcomes")[0].from.as_str(), "owner-phone");
+
+    // (3) 유령: 대기 Welcome 은 영속됐는데 commit 이 릴레이에 닿지 않았다. 살아 있는 객체는 바로 버리지만(오류 경로), 그 persist 와 POST
+    // 사이에서 죽은 프로세스는 그 스냅샷으로 재시작한다 — echo 는 영영 없고, 외부 commit 이 대기 commit 을 지우면 Welcome 도 버린다.
+    let (band, _) = h.lobby("owner-band");
+    ok(band.replenish(1), "band publishes");
+    h.relay.drop_next_commit.store(true, Ordering::SeqCst);
+    let err = third.invite("owner-band".into()).expect_err("the commit post was cut");
+    assert!(matches!(err, RoomError::Relay { transient: true, .. }), "{err}");
+    assert_eq!(third_obs.last_persisted().1.pending_invite, None, "the live object dropped it with the pending commit");
+    let ghost_snapshot: (Vec<u8>, _) = third_obs
+        .persisted
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|(_, s)| s.pending_invite.as_ref().is_some_and(|p| p.targets == ["owner-band".to_string()]))
+        .cloned()
+        .expect("the snapshot taken before the cut commit post");
+    assert_eq!(ghost_snapshot.1.pending_invite.as_ref().map(|p| p.commit_seq), Some(0));
+    drop(third);
+    let ghost_obs = Observer::new("owner-phone-ghost", h.trace.clone());
+    let ghost = ok(MlsRoom::import("owner-phone".into(), "room-a".into(), ghost_snapshot.0, ghost_snapshot.1, BASE.into(), h.relay.clone(), ghost_obs.clone()), "import");
+    ok(ghost.poll(), "no echo will ever come");
+    assert!(ok(ghost.sync_state(), "sync").pending_invite.is_some(), "still waiting");
+    assert_eq!(ok(ghost.invite("owner-band".into()), "blocked by the pending commit"), MlsInvite::Pending);
+    // 다른 멤버가 방을 움직인다(수동 초대 경로): 유령의 대기 commit 은 같은 epoch 라 OpenMLS 가 지운다.
+    ok(peer.poll(), "peer catches up");
+    let (desk, _) = h.room("owner-desk");
+    let kp = ok(desk.dispatch("key_package".into(), Vec::new()), "desk key package");
+    let framed = ok(peer.dispatch("invite_with_commit".into(), kp), "peer invites the desk");
+    let len = u32::from_le_bytes(framed[..4].try_into().unwrap()) as usize;
+    ok(peer.post_commit(framed[4..4 + len].to_vec()), "peer posts its commit");
+    ok(ghost.poll(), "the foreign commit clears the pending one — the welcome goes with it");
+    assert!(ghost_obs.events().iter().any(|e| matches!(e, RoomEvent::CommitApplied { committer, .. } if committer == "owner-pc")), "{:?}", ghost_obs.events());
+    assert!(ghost_obs.events().iter().any(|e| *e == RoomEvent::WelcomeDropped { commit_seq: 0, targets: vec!["owner-band".into()] }), "{:?}", ghost_obs.events());
+    assert_eq!(ok(ghost.sync_state(), "sync").pending_invite, None);
+    assert_eq!(ghost_obs.last_persisted().1.pending_invite, None, "dropped on disk too");
+    assert!(h.relay.rows("room-a").iter().all(|r| r.kind != "welcome" || !r.targets.contains(&"owner-band".to_string())), "no welcome for a commit that never landed");
+    // 그 뒤의 초대는 정상(대기 commit 없음).
+    ok(band.replenish(1), "band publishes again (the ghost consumed one)");
+    assert!(matches!(ok(ghost.invite("owner-band".into()), "invite after the drop"), MlsInvite::Invited { .. }));
+}

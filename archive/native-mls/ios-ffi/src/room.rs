@@ -96,6 +96,21 @@ pub struct RoomSyncState {
     pub halted: bool,
     /// 지금까지 예약한 송신 dedup 키 수 — 재시작 뒤 같은 키를 다시 내지 않게 영속한다.
     pub sends: u64,
+    /// `invite` 가 올린 commit 의 Welcome — echo 가 merge 될 때까지(#574 후속). 재시작 뒤 `poll` 이 이어 올리거나 버린다.
+    pub pending_invite: Option<PendingInvite>,
+}
+
+/// `invite`(#574) 가 commit 과 함께 만든 Welcome 과 그 대상 — 자기 commit echo 가 merge 된 뒤에야 올릴 수 있어 그때까지 들고 있는다.
+/// `RoomSyncState` 에 실려 **영속**되므로(commit 이 나가기 전에 디스크에), Welcome 게시가 실패하거나 그 사이 프로세스가 죽어도
+/// 재시작 뒤 `poll` 이 이어 간다: echo 가 merge 되면 올리고, commit 이 merge 없이 사라졌으면(외부 commit 이 먼저 와 대기 commit 을
+/// 지웠다 · merge 거부) 버린다(`WelcomeDropped`). Welcome 바이트는 대상의 key package 로 봉인된 와이어 그대로(릴레이에 평문으로
+/// 올라가는 것)라 그룹 비밀이 아니다 — 호스트는 `sync` 와 같은 곳에 둬도 된다.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct PendingInvite {
+    /// 릴레이가 commit 에 준 seq. 0 = 게시 응답을 영속하기 전에 멈췄다(echo 는 어차피 `has_pending` 으로 알아본다).
+    pub commit_seq: i64,
+    pub targets: Vec<String>,
+    pub welcome: Vec<u8>,
 }
 
 /// `RoomObserver::event` 어휘 — 봇의 JSON 로그 이벤트와 같은 이름·필드.
@@ -121,6 +136,9 @@ pub enum RoomEvent {
     Replayed { client_id: String, seq: i64, epoch: i64 },
     /// 재시도 한도 초과 또는 전송 오류로 버렸다(호스트가 outbox 에서 다시 시도할 수 있게 바이트 수만).
     Dropped { bytes: u64, error: String },
+    /// `invite` 의 대기 Welcome 을 버렸다(#574 후속): 그 commit 이 merge 없이 사라졌다(외부 commit 이 먼저 와 대기 commit 을 지웠다 —
+    /// 릴레이에 닿지 않은 commit · merge 거부). `commit_seq` 0 = 게시 응답을 받기 전에 멈춘 commit. 호스트 대기열이 다시 초대한다.
+    WelcomeDropped { commit_seq: i64, targets: Vec<String> },
 }
 
 #[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
@@ -207,9 +225,9 @@ struct Inner {
     /// 릴레이가 아는 **같은 사람(actor)의** 읽음 위치(#571 B): `GET /events` 의 `read_seq` 와 `mark_read` 의 응답을 max 로 모은다.
     /// 영속하지 않는다 — 다음 `poll` 이 다시 실어 온다(옛 릴레이는 0). MLS 커서·ack 와 무관한 안내 신호다.
     read_seq: i64,
-    /// `invite` 가 올린 commit 의 Welcome(대상과 함께) — 자기 echo 가 merge 된 뒤(`after_page`) 올린다. 영속하지 않는다(재시작 뒤
-    /// 잃으면 호스트의 초대 대기열이 다시 시도한다).
-    pending_welcome: Option<(Vec<u8>, Vec<String>)>,
+    /// `invite` 가 올린 commit 의 Welcome(대상·commit seq 와 함께) — 자기 echo 가 merge 된 뒤(`after_page`) 올린다. `RoomSyncState`
+    /// 에 실려 영속된다(#574 후속): commit 이 나가기 전에 디스크에 있고, 올린 뒤에 지워진다.
+    pending_invite: Option<PendingInvite>,
     /// 마지막으로 올린 Welcome(`invite` 가 결과에 싣는다).
     last_welcome: Option<PostedEvent>,
     client: Client,
@@ -224,6 +242,7 @@ fn snapshot_state(inner: &Inner) -> RoomSyncState {
     RoomSyncState {
         room: s.room.clone(), cursor: s.cursor, epoch: s.epoch, joined: s.joined, joinable: s.joinable,
         acked: s.acked, ack_sent: s.ack_sent, ack_disabled: s.ack_disabled, halted: s.halted, sends: inner.sends,
+        pending_invite: inner.pending_invite.clone(),
     }
 }
 
@@ -261,7 +280,13 @@ impl MlsRoom {
             room, cursor: sync.cursor, epoch: sync.epoch, joined: sync.joined, joinable: sync.joinable, dirty: false,
             acked: sync.acked, ack_sent: sync.ack_sent, ack_disabled: sync.ack_disabled, halted: sync.halted,
         };
-        Ok(Self::assemble(identity, device, restored, sync.sends, base_url, transport, observer))
+        // 대기 Welcome(#574 후속): 모양이 온전한 것만 이어 받는다 — 빈 Welcome·대상 없음·식별자 위반은 올릴 수 없으니 버린다.
+        let pending_invite = sync
+            .pending_invite
+            .filter(|p| !p.welcome.is_empty() && !p.targets.is_empty() && p.targets.iter().all(|t| api::is_identifier(t)));
+        let room = Self::assemble(identity, device, restored, sync.sends, base_url, transport, observer);
+        room.lock()?.pending_invite = pending_invite;
+        Ok(room)
     }
 
     /// 다른 기기 상태로 이 방을 **시작**한다(#366 3c, iOS `LobbyKeyring.adoptRoom` 과 같은 규칙). 두 용도:
@@ -399,9 +424,9 @@ impl MlsRoom {
     }
 
     /// 형제 기기 초대(#574, 봇 `invite`·웹 `room.js invite` 와 같은 순서): 대상의 key package 를 방 풀 → 로비 순으로 소비 →
-    /// `invite_with_commit` → 영속 → commit 게시 → `poll`(자기 echo 를 merge) → Welcome 게시(대상에게만). 409 cas_mismatch 면
-    /// 대기 commit 을 버리고 `Raced`; 이 페이지에 echo 가 없으면 `Posted`(Welcome 은 다음 `poll` 의 `after_page` 가 올린다).
-    /// 참여 전·정지된 방은 `Host` 오류.
+    /// `invite_with_commit` → 대기 Welcome 을 `sync` 에 싣고 영속 → commit 게시 → `poll`(자기 echo 를 merge) → Welcome 게시(대상에게만).
+    /// 409 cas_mismatch 면 대기 commit 을 버리고 `Raced`; 이 페이지에 echo 가 없으면 `Posted`(Welcome 은 다음 `poll` 의 `after_page` 가
+    /// 올린다 — 재시작 뒤에도, 대기 Welcome 이 영속되므로). 참여 전·정지된 방은 `Host` 오류.
     pub fn invite(&self, target: String) -> Result<MlsInvite, RoomError> {
         require_identifier("target", &target)?;
         let mut inner = self.lock()?;
@@ -411,7 +436,7 @@ impl MlsRoom {
         if !inner.sync.joined {
             return Err(RoomError::Host { reason: "not a member of this room yet".into() });
         }
-        if inner.device.has_pending() || inner.pending_welcome.is_some() {
+        if inner.device.has_pending() || inner.pending_invite.is_some() {
             return Ok(MlsInvite::Pending);
         }
         let room = inner.sync.room.clone();
@@ -432,6 +457,10 @@ impl MlsRoom {
         let n = u32::from_le_bytes(framed[0..4].try_into().map_err(|_| bad())?) as usize;
         if framed.len() < 4 + n { return Err(bad()); }
         let (commit, welcome) = (framed[4..4 + n].to_vec(), framed[4 + n..].to_vec());
+        // 대기 Welcome 은 commit 이 나가기 **전에** 디스크에(persist-before-bytes-leave, #574 후속): 게시 뒤 어디서 죽어도 재시작한
+        // `poll` 이 echo 를 merge 하고 올린다. seq 는 게시 응답 뒤에 채운다(그 전에 죽으면 0 — echo 는 `has_pending` 으로 알아본다).
+        inner.pending_invite = Some(PendingInvite { commit_seq: 0, targets: vec![target], welcome });
+        inner.last_welcome = None;
         inner.sync.dirty = true;
         {
             let mut host = Host { inner: &mut inner, identity: &self.identity };
@@ -440,8 +469,9 @@ impl MlsRoom {
         let posted = match Self::post_kind_in(&mut inner, &self.identity, "commit", commit, Vec::new()) {
             Ok(posted) => posted,
             Err(err) => {
-                // 릴레이가 받지 않은 commit 은 버린다(봇과 같음) — 그 상태도 디스크에.
+                // 릴레이가 받지 않은 commit 은 버린다(봇과 같음) — 그 Welcome 도 함께, 그 상태도 디스크에.
                 let _ = dispatch_guarded(&mut inner.device, &self.identity, "clear_pending", &[]);
+                inner.pending_invite = None;
                 inner.sync.dirty = true;
                 let mut host = Host { inner: &mut inner, identity: &self.identity };
                 room::SendHost::persist(&mut host).map_err(relay_err)?;
@@ -451,8 +481,10 @@ impl MlsRoom {
                 };
             }
         };
-        inner.pending_welcome = Some((welcome, vec![target]));
-        inner.last_welcome = None;
+        if let Some(pending) = inner.pending_invite.as_mut() {
+            pending.commit_seq = posted.seq;
+        }
+        inner.sync.dirty = true;
         {
             let mut host = Host { inner: &mut inner, identity: &self.identity };
             room::poll(&mut host, &self.identity).map_err(relay_err)?;
@@ -492,7 +524,7 @@ impl MlsRoom {
         Arc::new(Self {
             identity,
             inner: Mutex::new(Inner {
-                device, sync, sends, retry: VecDeque::new(), read_seq: 0, pending_welcome: None, last_welcome: None, client, observer,
+                device, sync, sends, retry: VecDeque::new(), read_seq: 0, pending_invite: None, last_welcome: None, client, observer,
             }),
         })
     }
@@ -626,11 +658,18 @@ impl room::RoomHost for Host<'_> {
                 Ok(()) => {
                     self.inner.sync.epoch = ev.epoch + 1;
                     self.inner.sync.dirty = true;
+                    // 대기 Welcome 의 commit 이 이것이다(#574 후속): 게시 응답 전에 멈췄던 재시작이면 seq 를 여기서 안다.
+                    if let Some(pending) = self.inner.pending_invite.as_mut() {
+                        pending.commit_seq = ev.seq;
+                    }
                     RoomEvent::OwnCommitMerged { seq: ev.seq, epoch: ev.epoch + 1 }
                 }
                 Err(()) => {
                     // merge 가 거부된 commit 의 Welcome 은 쓸모가 없다(#574 invite) — 버린다.
-                    self.inner.pending_welcome = None;
+                    if let Some(pending) = self.inner.pending_invite.take() {
+                        self.inner.sync.dirty = true;
+                        self.inner.observer.event(RoomEvent::WelcomeDropped { commit_seq: ev.seq, targets: pending.targets });
+                    }
                     RoomEvent::OwnCommitMergeRejected { seq: ev.seq }
                 }
             };
@@ -642,17 +681,23 @@ impl room::RoomHost for Host<'_> {
     }
 
     /// 이 poll 전에 밀린 것만 다시 보낸다(봇과 같은 규칙): 또 거부되면 다음 poll 로, 한도를 넘기면 버린다.
-    /// 그 전에, `invite` 의 commit echo 가 merge 됐으면(대기 commit 없음) 그 Welcome 을 대상에게 올린다(봇 `PendingCommit` 과
-    /// 같은 순서) — 실패하면 다음 poll 이 다시 시도한다.
+    /// 그 전에, `invite` 의 대기 Welcome(#574 후속 — 영속되어 재시작 뒤에도 여기 온다)을 처리한다. 대기 commit 이 더는 없으면
+    /// 둘 중 하나다: (1) echo 가 merge 됐다(`commit_seq` 를 알고 커서가 그 뒤) → 대상에게 올린다(봇 `PendingCommit` 과 같은 순서;
+    /// 실패하면 그대로 두고 다음 poll 이 다시 — 디스크에는 아직 Welcome 이 있다). (2) merge 없이 사라졌다(릴레이에 닿지 않은 commit 을
+    /// 외부 commit 이 지웠다) → 올리면 안 되는 Welcome 이라 버린다(`WelcomeDropped`). 대기 commit 이 아직 있으면 echo 를 기다린다.
     fn after_page(&mut self) -> Result<(), RelayError> {
         let own = self.identity;
-        if self.inner.pending_welcome.is_some() && !self.inner.device.has_pending() {
-            let (welcome, targets) = self.inner.pending_welcome.take().expect("checked above");
-            match MlsRoom::post_kind_in(self.inner, own, "welcome", welcome.clone(), targets.clone()) {
-                Ok(posted) => self.inner.last_welcome = Some(posted),
-                Err(err) => {
-                    self.inner.pending_welcome = Some((welcome, targets));
-                    return Err(err);
+        if let Some(pending) = self.inner.pending_invite.clone() {
+            if !self.inner.device.has_pending() {
+                if pending.commit_seq > 0 && self.inner.sync.cursor >= pending.commit_seq {
+                    let posted = MlsRoom::post_kind_in(self.inner, own, "welcome", pending.welcome, pending.targets)?;
+                    self.inner.pending_invite = None;
+                    self.inner.sync.dirty = true;
+                    self.inner.last_welcome = Some(posted);
+                } else {
+                    self.inner.pending_invite = None;
+                    self.inner.sync.dirty = true;
+                    self.inner.observer.event(RoomEvent::WelcomeDropped { commit_seq: pending.commit_seq, targets: pending.targets });
                 }
             }
         }

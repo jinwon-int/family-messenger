@@ -99,7 +99,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     private var loop: Job? = null
     private var ticks = 0
 
-    // ---- 기기 셀프서비스 상태(#574) — 전부 메모리(대기열만 Settings) ----
+    // ---- 기기 셀프서비스 상태(#574) — 메모리(초대 대기열·「무시」한 후보는 Settings 에 영속) ----
     /** 마지막 `/v2/me`. 옛 릴레이(봉투 없는 404)면 다시 묻지 않는다(`meUnsupported`). */
     private var me: MlsMe? = null
     private var meUnsupported = false
@@ -110,7 +110,6 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     /** 우편함의 후보(내 actor, 모양 검사 통과)와 그 목록의 정책 revision(= 서명할 base_revision). */
     private var candidates: List<MlsCandidate> = emptyList()
     private var candidateRevision: ULong? = null
-    private val dismissed = HashSet<String>()
     private val busy = HashSet<String>()
     private val candidateMessages = HashMap<String, String>()
 
@@ -118,7 +117,17 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         var halted: String? = null
         val store = FileRoomStore(
             dir, name, seal = sealer::seal, open = sealer::open,
-            onEvent = { e -> if (e is RoomEvent.Joined) notice("$name 대화방에 참여했습니다") },
+            onEvent = { e ->
+                when (e) {
+                    is RoomEvent.Joined -> notice("$name 대화방에 참여했습니다")
+                    // #574 후속: 코어가 영속해 둔 대기 Welcome 을 버렸다(그 commit 이 merge 없이 사라짐) — 대상을 대기열에 되돌려 다음 틱에 다시 초대한다.
+                    is RoomEvent.WelcomeDropped -> {
+                        Log.w(TAG, "$name: pending welcome for ${e.targets} dropped (commit seq ${e.commitSeq}) → re-queued")
+                        for (t in e.targets) requeueSiblingInvite(t, name)
+                    }
+                    else -> {}
+                }
+            },
             onMessage = { seq, sender, clientId, plaintext ->
                 // file-v2 평문은 파일 키가 든 설명자 — 글로 저장·표시하지 않는다(#499, FileV2.classify).
                 // status-v1(#560): 에이전트 작업 상태 한 줄은 저장하지 않는다(임시 말풍선 — 표시는 후속).
@@ -338,7 +347,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         }
     }
 
-    /** 우편함(틱마다, 이 기기가 승인할 수 있을 때만): 내 actor 의 후보만, 이번 실행에서 무시한 것은 뺀다. */
+    /** 우편함(틱마다, 이 기기가 승인할 수 있을 때만): 내 actor 의 후보만, 「무시」한 것(`Settings.dismissedCandidates`, 후보 TTL 뒤 만료)은 뺀다. */
     private fun discoverCandidates(l: MlsLobby) {
         val identity = l.identity()
         if (selfServiceUnsupported || !SelfService.canApprove(me, identity)) { candidates = emptyList(); publishCandidates(); return }
@@ -346,7 +355,11 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         when (r) {
             is MlsCandidateList.Listed -> {
                 candidateRevision = r.policyRevision
-                val rows = SelfService.candidatesFor(r.candidates, settings.actor ?: "").filter { it.deviceId !in dismissed }
+                val nowSec = System.currentTimeMillis() / 1000L
+                val stored = SelfService.decodeDismissals(settings.dismissedCandidates)
+                val dismissals = SelfService.pruneDismissals(stored, nowSec)
+                if (dismissals.size != stored.size) settings.dismissedCandidates = SelfService.encodeDismissals(dismissals)
+                val rows = SelfService.candidatesFor(r.candidates, settings.actor ?: "").filter { !SelfService.isDismissed(dismissals, it.deviceId, nowSec) }
                 for (c in rows) if (candidates.none { it.deviceId == c.deviceId }) notice(Strings.candidateNew(c.deviceId))
                 candidates = rows
             }
@@ -411,9 +424,18 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         }
     }
 
-    /** 카드의 「무시」: 이번 실행 동안 보이지 않는다(우편함의 행은 10분 뒤 사라진다). */
+    /**
+     * 카드의 「무시」(#574 후속): 프로세스가 다시 떠도 숨긴다 — `Settings.dismissedCandidates` 에 (기기 ID, 그 후보의 `created_at`) 을 적고
+     * 후보 TTL(10분) 뒤 만료한다(`SelfService.dismiss`; 재게시로 `created_at` 이 바뀌어도 ID 로 숨긴다). 영영 숨기지는 않는다.
+     */
     fun dismissCandidate(scope: CoroutineScope, deviceId: String) = scope.launch(Dispatchers.IO) {
-        mutex.withLock { dismissed += deviceId; candidates = candidates.filter { it.deviceId != deviceId }; publishCandidates() }
+        mutex.withLock {
+            val nowSec = System.currentTimeMillis() / 1000L
+            val createdAt = candidates.firstOrNull { it.deviceId == deviceId }?.createdAt ?: 0L
+            settings.dismissedCandidates = SelfService.encodeDismissals(SelfService.dismiss(SelfService.decodeDismissals(settings.dismissedCandidates), deviceId, createdAt, nowSec))
+            candidates = candidates.filter { it.deviceId != deviceId }
+            publishCandidates()
+        }
     }
 
     /** 승인 직후: 내가 참여한(정지 아닌) 방마다 새 형제 기기를 초대하도록 대기열에 적는다 — 틱마다 `processSiblingInvites` 가 시도한다. */
@@ -423,6 +445,12 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         val queue = SelfService.enqueueSiblingInvites(SelfService.decodeSiblingQueue(settings.siblingQueue), target, list, System.currentTimeMillis())
         settings.siblingQueue = SelfService.encodeSiblingQueue(queue)
         Log.i(TAG, "sibling $target queued for ${list.joinToString(",")}")
+    }
+
+    /** `WelcomeDropped`(#574 후속) 뒤: 그 방의 초대를 대기열에 되돌린다(코어가 commit 과 Welcome 을 버렸으니 처음부터 다시 — 로비 키부터). */
+    private fun requeueSiblingInvite(target: String, room: String) {
+        val queue = SelfService.enqueueSiblingInvites(SelfService.decodeSiblingQueue(settings.siblingQueue), target, listOf(room), System.currentTimeMillis())
+        settings.siblingQueue = SelfService.encodeSiblingQueue(queue)
     }
 
     /**
@@ -449,6 +477,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
                     continue
                 }
                 when (r) {
+                    // `Posted` 의 Welcome 은 코어가 `<room>.sync` 에 영속해 두고 다음 `poll` 이 올린다(#574 후속) — 재시작해도 된다.
                     is MlsInvite.Invited, is MlsInvite.Posted -> { Log.i(TAG, "sibling ${e.target} invited into $room: $r"); notice(Strings.siblingInvited(e.target, room)) }
                     is MlsInvite.NoKeyPackage, is MlsInvite.Pending, is MlsInvite.Raced -> remaining += room
                 }
@@ -602,7 +631,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             lobbyStore = null
             me = null; meUnsupported = false; selfServiceUnsupported = false; nextPostAt = 0L
             candidates = emptyList(); candidateRevision = null
-            dismissed.clear(); busy.clear(); candidateMessages.clear()
+            busy.clear(); candidateMessages.clear()
             ticks = 0
             runCatching { db.wipe() }.onFailure { e -> Log.w(TAG, "wipe: messages.db: $e") }
             if (!dir.deleteRecursively()) Log.w(TAG, "wipe: some files under ${dir.name} could not be deleted")

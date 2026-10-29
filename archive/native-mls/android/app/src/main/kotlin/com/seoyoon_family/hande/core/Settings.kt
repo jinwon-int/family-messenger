@@ -53,6 +53,14 @@ class Settings(context: Context, private val sealer: KeystoreSealer) {
         get() = prefs.getString("sibling_invites", null)?.takeIf { it.isNotBlank() }
         set(value) { if (value.isNullOrBlank()) prefs.edit().remove("sibling_invites").apply() else prefs.edit().putString("sibling_invites", value).apply() }
 
+    /**
+     * 「무시」한 새 기기 승인 요청(#574 후속, `SelfService.encodeDismissals` 형식 — 공개 값: 후보 기기 ID·그 후보의 `created_at`).
+     * 프로세스가 다시 떠도 숨긴 채로 두고, 후보 TTL(10분)이 지나면 항목이 스스로 만료된다. 비면 지운다.
+     */
+    var dismissedCandidates: String?
+        get() = prefs.getString("dismissed_candidates", null)?.takeIf { it.isNotBlank() }
+        set(value) { if (value.isNullOrBlank()) prefs.edit().remove("dismissed_candidates").apply() else prefs.edit().putString("dismissed_candidates", value).apply() }
+
     // ---- 읽음 위치(#571 후속, 웹 localStorage `hande:readSeq:<device>:<room>` 과 같은 뜻) ----
     // `messages.db` 는 iOS 와 동결 DDL 을 공유하므로 열을 더하지 않고 여기 둔다. 공개 값(seq 는 릴레이 메타데이터). 줄어들지 않는다.
 

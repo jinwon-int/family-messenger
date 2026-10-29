@@ -41,7 +41,9 @@ object Strings {
     const val enrollSiblingTitle = "다른 기기에서 승인해 주세요"
     const val enrollSiblingBody = "이미 쓰고 있는 내 기기(PC 웹·iPhone·다른 Android)의 「새 기기 승인」에서 이 지문을 견주어 보고 승인하면 이 기기가 등록됩니다."
     fun enrollSiblingExpires(at: String) = "승인 요청은 $at 까지 유효합니다(그 전에 자동으로 다시 올립니다)."
-    const val enrollIdTaken = "이 기기 ID 는 예전에 쓰였거나 폐기되어 다시 쓸 수 없습니다. 「이 기기 지우기」로 새 ID 를 만들어 다시 시작하세요(운영자 등록 정보는 아래)."
+    const val enrollIdTaken = "이 기기 ID 는 예전에 쓰였거나 폐기되어 다시 쓸 수 없습니다. 아래 「이 기기 지우기」로 새 ID 를 만들어 다시 시작하세요(운영자 등록 정보는 아래)."
+    /** 409 `device_exists` 뒤(#574 후속): 설정 화면의 「이 기기 지우기」와 같은 동작·같은 확인 대화상자 — 지운 뒤 처음 설정, 새 기기 ID. */
+    const val wipeAndRestart = "이 기기 지우기 / 새 ID로 다시 시작"
     const val enrollOperatorOnly = "첫 기기(또는 셀프서비스가 없는 릴레이)는 운영자가 등록합니다."
     const val showOperatorInfo = "운영자 등록 정보 보기"
     const val hideOperatorInfo = "운영자 등록 정보 닫기"
