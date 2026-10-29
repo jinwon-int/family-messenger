@@ -7,12 +7,18 @@
 //!
 //! Signing input = `"family-mls-v2/<action>\0" ‖ sha256(canonical payload)`; the
 //! signer never signs arbitrary bytes. In v2 this is the ONLY policy signing surface
-//! (§3.6: E2 add-device / E3 revoke evidence; no other labels are accepted).
+//! (§3.6: E2 add-device / E3 revoke evidence, plus the E5 `set-roles` registrar
+//! evidence of #574 — `RolesPayloadWire`; no other labels are accepted).
 use super::*;
 use openmls_traits::signatures::Signer;
 
 pub(crate) const ACTION_APPROVE: &str = "approve-device";
 pub(crate) const ACTION_REVOKE: &str = "revoke-device";
+/// E5 (#574 D2): a registrar grants / releases the `registrar` role on one of the
+/// actor's devices. Mirrors `devicepolicy.ApprovalActionRoles`.
+pub(crate) const ACTION_ROLES: &str = "set-roles";
+/// The only role the v4 policy knows (`devicepolicy.RoleRegistrar`).
+pub(crate) const ROLE_REGISTRAR: &str = "registrar";
 const ACCEPTANCE_OUT_OF_BAND: &str = "out-of-band-fingerprint";
 const ACCEPTANCE_TRUSTED: &str = "trusted-device-fingerprint";
 const DOMAIN_PREFIX: &str = "family-mls-v2/";
@@ -141,6 +147,55 @@ fn prepare_approval(action: &str, device_id: &str, actor: &str, subject: &str,
     Ok(Prepared { canonical, signature_input })
 }
 
+/// Fixed field order = canonical byte encoding; mirrors `devicepolicy.RolesPayloadWire`
+/// exactly (`action, device_id, actor, roles, base_revision`), compact, no spaces.
+/// `roles` is always a JSON array (`[]` for "no roles", never `null`) — Go's
+/// `json.Marshal` of a non-nil empty slice.
+fn canonical_roles_payload(device_id: &str, actor: &str, roles: &[&str], base_revision: u64)
+                           -> Result<Vec<u8>, Rejected> {
+    canonical_safe(device_id)?;
+    canonical_safe(actor)?;
+    let mut out = Vec::with_capacity(128);
+    out.extend_from_slice(b"{\"action\":");
+    push_json_string(&mut out, ACTION_ROLES);
+    out.extend_from_slice(b",\"device_id\":");
+    push_json_string(&mut out, device_id);
+    out.extend_from_slice(b",\"actor\":");
+    push_json_string(&mut out, actor);
+    out.extend_from_slice(b",\"roles\":[");
+    for (index, role) in roles.iter().enumerate() {
+        canonical_safe(role)?;
+        if index > 0 { out.push(b','); }
+        push_json_string(&mut out, role);
+    }
+    out.extend_from_slice(b"],\"base_revision\":");
+    out.extend_from_slice(base_revision.to_string().as_bytes());
+    out.push(b'}');
+    Ok(out)
+}
+
+/// E5 preparation (pure, like `prepare_approval`): identifier charset for
+/// `device_id` / `actor`, every role must be a known one (`registrar`), the list is
+/// sorted + de-duplicated into the COMPLETE roles list the target ends up with
+/// (`devicepolicy.CanonicalRoles`), `base_revision >= 1`. Unlike approve-device,
+/// approver == target is allowed here (self-bootstrap of the first registrar,
+/// or a registrar stepping down while another remains — `VerifyRoles` decides).
+fn prepare_roles(device_id: &str, actor: &str, roles: &[String], base_revision: u64)
+                 -> Result<Prepared, Rejected> {
+    if !valid_identity(device_id) || !valid_identity(actor) { return Err(rejected(())); }
+    if base_revision < 1 { return Err(rejected(())); }
+    let mut canonical_roles: Vec<&str> = Vec::with_capacity(roles.len());
+    for role in roles {
+        if role != ROLE_REGISTRAR { return Err(rejected(())); }
+        canonical_roles.push(role.as_str());
+    }
+    canonical_roles.sort_unstable();
+    canonical_roles.dedup();
+    let canonical = canonical_roles_payload(device_id, actor, &canonical_roles, base_revision)?;
+    let signature_input = approval_message(ACTION_ROLES, &canonical)?;
+    Ok(Prepared { canonical, signature_input })
+}
+
 /// Framed evidence returned to the caller:
 /// `u32 LE canonical_len ‖ canonical ‖ 64-byte Ed25519 signature`.
 fn frame_evidence(prepared: &Prepared, signature: &[u8]) -> Vec<u8> {
@@ -231,6 +286,19 @@ impl Device {
         if signature.len() != SIGNATURE_BYTES { return Err(rejected(())); }
         Ok(frame_evidence(prepared, &signature))
     }
+
+    /// E5 (#574): build and sign one `set-roles` payload — `roles` is the complete
+    /// list the target `device_id` (of `actor`) ends up with; `[]` releases every
+    /// role. Same framing as `sign_approval` (`frame_evidence`). Reached through
+    /// `policy_wire("sign_roles")` from the durable lane and the native hosts; not
+    /// a wasm export on its own (the JS glue stays unchanged). Rejections from
+    /// malformed input leave the device usable.
+    pub fn sign_roles(&mut self, device_id: &str, actor: &str, roles: &[String], base_revision: u64)
+                      -> Result<Vec<u8>, Rejected> {
+        if self.retired { return Err(rejected(())); }
+        let prepared = prepare_roles(device_id, actor, roles, base_revision)?;
+        self.run(|s| s.sign_prepared(&prepared))
+    }
 }
 
 #[wasm_bindgen]
@@ -287,6 +355,9 @@ impl Device {
 /// - `sign_approval`: input = UTF-8 JSON `{action, device_id, actor, subject,
 ///   signing_key, acceptance, base_revision}` (unknown fields refused), output =
 ///   `frame_evidence`.
+/// - `sign_roles` (E5, #574): input = UTF-8 JSON `{device_id, actor, roles,
+///   base_revision}` (`roles` = JSON string array, unknown fields refused), output =
+///   `frame_evidence` over the canonical `set-roles` payload.
 ///
 /// `None` means `method` is not one of these; non-empty input to an
 /// empty-input method is a rejection, the same as the durable lane's fallthrough.
@@ -308,6 +379,15 @@ pub fn policy_wire(device: &mut Device, method: &str, input: &[u8]) -> Option<Re
             match serde_json::from_slice::<Args>(input) {
                 Ok(a) => device.sign_approval(&a.action, &a.device_id, &a.actor, &a.subject,
                                               &a.signing_key, &a.acceptance, a.base_revision),
+                Err(e) => Err(rejected(e)),
+            }
+        }
+        "sign_roles" => {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Args { device_id: String, actor: String, roles: Vec<String>, base_revision: u64 }
+            match serde_json::from_slice::<Args>(input) {
+                Ok(a) => device.sign_roles(&a.device_id, &a.actor, &a.roles, a.base_revision),
                 Err(e) => Err(rejected(e)),
             }
         }

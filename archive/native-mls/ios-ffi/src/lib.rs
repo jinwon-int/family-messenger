@@ -54,13 +54,14 @@ pub struct MlsDevice {
 }
 
 /// `dispatch` 가 받는 메서드 이름 — durable-worker `allowed` 중 `Device` 수준의 것.
-/// 마지막 네 개(`members`·`members_after_pending`·`policy_fingerprint`·`sign_approval`, #275 L2)는
-/// 파사드 `policy_wire` 를 거친다 — durable lane `Session::dispatch` 가 쓰는 바로 그 함수라 입출력 바이트가
-/// `web/durable-worker.js` 와 같다(CONTRACTS §1). 기기 지문은 dispatch 가 아니라 `fingerprint()` 로 노출한다.
+/// 마지막 다섯 개(`members`·`members_after_pending`·`policy_fingerprint`·`sign_approval`, #275 L2, 그리고
+/// E5 registrar 역할 서명 `sign_roles`, #574)는 파사드 `policy_wire` 를 거친다 — durable lane
+/// `Session::dispatch` 가 쓰는 바로 그 함수라 입출력 바이트가 `web/durable-worker.js` 와 같다(CONTRACTS §1).
+/// 기기 지문은 dispatch 가 아니라 `fingerprint()` 로 노출한다.
 pub const METHODS: &[&str] = &[
     "key_package", "delete_key_package", "create", "invite", "invite_with_commit", "join", "encrypt", "decrypt",
     "remove", "remove_pending", "commit", "merge_pending", "clear_pending", "stage_commit", "merge_staged",
-    "discard_staged", "members", "members_after_pending", "policy_fingerprint", "sign_approval",
+    "discard_staged", "members", "members_after_pending", "policy_fingerprint", "sign_approval", "sign_roles",
 ];
 
 #[uniffi::export]
@@ -162,7 +163,7 @@ fn run(device: &mut Device, method: &str, input: &[u8]) -> Result<Vec<u8>, MlsEr
         "merge_staged" => unit(device.merge_staged()),
         "discard_staged" => unit(device.discard_staged()),
         // 입력 규칙(빈 입력·UTF-8 hex·deny_unknown_fields JSON)과 출력 프레이밍은 파사드가 소유한다.
-        "members" | "members_after_pending" | "policy_fingerprint" | "sign_approval" => {
+        "members" | "members_after_pending" | "policy_fingerprint" | "sign_approval" | "sign_roles" => {
             match family_mls_browser_experiment::policy_wire(device, method, input) {
                 Some(result) => result.map_err(rejected),
                 None => Err(MlsError::Invalid { reason: format!("unknown method {method}") }),

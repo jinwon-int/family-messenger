@@ -632,8 +632,9 @@ impl Device {
 mod migrate;
 mod policy;
 /// Durable-lane byte contract for `members`, `members_after_pending`,
-/// `fingerprint`, `policy_fingerprint`, `sign_approval` — native hosts (ios-ffi)
-/// dispatch through it so their bytes match `web/durable-worker.js` (#275).
+/// `fingerprint`, `policy_fingerprint`, `sign_approval`, `sign_roles` (E5, #574) —
+/// native hosts (ios-ffi) dispatch through it so their bytes match
+/// `web/durable-worker.js` (#275).
 pub use policy::policy_wire;
 mod record;
 mod session;

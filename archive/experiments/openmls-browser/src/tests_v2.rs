@@ -826,6 +826,100 @@ fn approval_rejections_are_pure_and_self_approval_is_refused() {
                "fingerprint stays sha256(public key)");
 }
 
+/// E5 (#574) signing messages, generated from Go's `devicepolicy.RolesMessage`
+/// (`archive/native-mls/server/internal/devicepolicy/roles.go`, PR #578). Produced
+/// OUTSIDE the repo by a throwaway Go program (docker `golang:1.27`, 2026-10-29) that
+/// imports nothing from the repo and reproduces `RolesMessage` exactly:
+/// `"family-mls-v2/set-roles" ‖ 0x00 ‖ sha256(json.Marshal(RolesPayloadWire{
+/// Action:"set-roles", DeviceID:"dev-a2", Actor:"alice", Roles, BaseRevision:3}))`
+/// with `encoding/json` (compact, field order as declared). One vector per roles
+/// list: `["registrar"]` and `[]` (a non-nil empty slice marshals as `[]`, never
+/// `null`). If this test fails, the facade and the owner CLI disagree on canonical
+/// bytes — never regenerate the fixture from the Rust side.
+const GO_ROLES_REGISTRAR_MESSAGE_HEX: &str = "66616d696c792d6d6c732d76322f7365742d726f6c657300cc099fb39499943ec2e0690697fbdab93ce51d7f0b32718c63206dfb3f666d02";
+const GO_ROLES_EMPTY_MESSAGE_HEX: &str = "66616d696c792d6d6c732d76322f7365742d726f6c657300e6d5fc9714d0729ce2ae1d8646cbe72ce1997e8c31faf139ce4ba3ac5d948d18";
+
+/// Canonical payload + signature from `sign_roles` (actor `alice`), split at the length prefix.
+fn roles_evidence(device: &mut Device, device_id: &str, roles: &[&str], base_revision: u64)
+                  -> (Vec<u8>, Vec<u8>) {
+    let roles: Vec<String> = roles.iter().map(|r| (*r).to_owned()).collect();
+    let framed = device.sign_roles(device_id, "alice", &roles, base_revision).expect("roles evidence");
+    let len = u32::from_le_bytes(framed[..4].try_into().unwrap()) as usize;
+    assert_eq!(framed.len(), 4 + len + 64, "u32le n ‖ canonical ‖ 64-byte signature");
+    (framed[4..4 + len].to_vec(), framed[4 + len..].to_vec())
+}
+
+fn roles_message(canonical: &[u8]) -> Vec<u8> {
+    [b"family-mls-v2/set-roles\0".as_slice(), &staging::staged_checksum(canonical).unwrap()].concat()
+}
+
+#[test]
+fn roles_message_bytes_match_go_roles_message() {
+    let mut registrar = Device::new("dev-a1").unwrap();
+    let public_key = registrar.public_key().unwrap();
+    let verify = |message: &[u8], signature: &[u8]| {
+        RustCrypto::default().verify_signature(SignatureScheme::ED25519, message, &public_key, signature)
+            .expect("Ed25519 signature over the Go message verifies with the device key")
+    };
+
+    // Grant: the complete roles list the target ends up with.
+    let (canonical, signature) = roles_evidence(&mut registrar, "dev-a2", &["registrar"], 3);
+    assert_eq!(String::from_utf8(canonical.clone()).unwrap(),
+               r#"{"action":"set-roles","device_id":"dev-a2","actor":"alice","roles":["registrar"],"base_revision":3}"#,
+               "canonical payload is the exact Go field order, compact");
+    let message = roles_message(&canonical);
+    assert_eq!(hex(&message), GO_ROLES_REGISTRAR_MESSAGE_HEX, "domain-separated digest matches Go");
+    assert_eq!(signature.len(), 64, "compact Ed25519 signature (Go crypto/ed25519 verifies)");
+    verify(&message, &signature);
+
+    // Release: `[]` is the canonical "no roles" — a JSON array, never `null`.
+    let (empty, signature) = roles_evidence(&mut registrar, "dev-a2", &[], 3);
+    assert_eq!(String::from_utf8(empty.clone()).unwrap(),
+               r#"{"action":"set-roles","device_id":"dev-a2","actor":"alice","roles":[],"base_revision":3}"#);
+    assert_eq!(hex(&roles_message(&empty)), GO_ROLES_EMPTY_MESSAGE_HEX);
+    verify(&roles_message(&empty), &signature);
+
+    // Sort + de-dup (`devicepolicy.CanonicalRoles`): a repeated role collapses to one.
+    let (dedup, _) = roles_evidence(&mut registrar, "dev-a2", &["registrar", "registrar"], 3);
+    assert_eq!(dedup, canonical, "[registrar, registrar] canonicalizes to [registrar]");
+
+    // Unlike approve-device, approver == target is allowed (self-bootstrap of the
+    // first registrar / a registrar stepping down); the CLI's `VerifyRoles` decides.
+    let (own, signature) = roles_evidence(&mut registrar, "dev-a1", &["registrar"], 1);
+    assert_eq!(String::from_utf8(own.clone()).unwrap(),
+               r#"{"action":"set-roles","device_id":"dev-a1","actor":"alice","roles":["registrar"],"base_revision":1}"#);
+    verify(&roles_message(&own), &signature);
+}
+
+#[test]
+fn roles_rejections_are_pure() {
+    let mut registrar = Device::new("dev-a1").unwrap();
+    let own_key_hex = hex(&registrar.public_key().unwrap());
+    // Every malformed input is refused before any state is touched.
+    for (device, actor, roles, base) in [
+        ("dev-a2", "alice", vec!["admin"], 3),                  // unknown role
+        ("dev-a2", "alice", vec!["registrar", "owner"], 3),     // unknown role among known
+        ("dev-a2", "alice", vec!["Registrar"], 3),              // roles are case-sensitive literals
+        ("dev-a2", "alice", vec![""], 3),                       // empty role
+        ("dev-a2", "alice", vec!["registrar"], 0),              // base_revision 0
+        ("dev a2", "alice", vec!["registrar"], 3),              // device_id charset
+        ("dev/a2", "alice", vec!["registrar"], 3),              // device_id charset
+        ("", "alice", vec!["registrar"], 3),                    // empty device_id
+        ("dev-a2", "al\"ice", vec!["registrar"], 3),            // actor charset (would need JSON escaping)
+        ("dev-a2", "", vec![], 3),                              // empty actor
+    ] {
+        let roles: Vec<String> = roles.iter().map(|r| (*r).to_owned()).collect();
+        assert!(registrar.sign_roles(device, actor, &roles, base).is_err(), "{device} {actor} {roles:?} {base}");
+    }
+    // The device survived every pure rejection: it still creates a group and talks.
+    registrar.create().unwrap();
+    let plaintext = registrar.encrypt(&enc(ROOM, "person-a", b"still usable")).unwrap();
+    assert!(!plaintext.is_empty());
+    assert_eq!(registrar.fingerprint().unwrap(), policy::policy_fingerprint(&own_key_hex).unwrap(),
+               "fingerprint stays sha256(public key)");
+    assert!(registrar.sign_roles("dev-a2", "alice", &["registrar".to_owned()], 3).is_ok(), "still signs");
+}
+
 #[test]
 fn members_tracks_add_and_remove() {
     let mut a1 = Device::new("a:1").unwrap();
@@ -1574,6 +1668,43 @@ fn durable_lane_roster_fingerprint_and_sign_approval() {
     let n = u32::from_le_bytes(framed[..4].try_into().unwrap()) as usize;
     assert!(n > 0 && framed.len() == 4 + n + 64, "canonical payload + 64-byte signature");
     assert!(alice.session.apply("sign_approval", br#"{"action":"approve-device"}"#).is_err(), "malformed args rejected, device usable");
+    let _ = bob.step("members", &[]);
+}
+
+/// #574 E5: `sign_roles` on the durable lane — the `policy_wire` JSON contract
+/// `{device_id, actor, roles, base_revision}`, framed like `sign_approval` and
+/// signed with the durable identity's own key. Zero store changes; malformed
+/// args are a pure rejection and the lane stays usable.
+#[test]
+fn durable_lane_sign_roles() {
+    let (mut alice, mut bob) = pair();
+    let framed = alice.step("sign_roles",
+                            br#"{"device_id":"alice","actor":"alice","roles":["registrar","registrar"],"base_revision":2}"#);
+    let n = u32::from_le_bytes(framed[..4].try_into().unwrap()) as usize;
+    assert!(n > 0 && framed.len() == 4 + n + 64, "canonical payload + 64-byte signature");
+    assert_eq!(&framed[4..4 + n],
+               br#"{"action":"set-roles","device_id":"alice","actor":"alice","roles":["registrar"],"base_revision":2}"#,
+               "self-target allowed, roles de-duplicated, Go field order");
+    let public_key = alice.session.public_key();
+    RustCrypto::default().verify_signature(SignatureScheme::ED25519, &roles_message(&framed[4..4 + n]),
+                                           &public_key, &framed[4 + n..])
+        .expect("signed by the durable identity's own key");
+    for bad in [
+        &br#"{"device_id":"alice","actor":"alice","roles":["registrar"],"base_revision":2,"action":"set-roles"}"#[..], // unknown field
+        br#"{"device_id":"alice","actor":"alice","roles":["admin"],"base_revision":2}"#,          // unknown role
+        br#"{"device_id":"alice","actor":"alice","roles":null,"base_revision":2}"#,               // roles must be an array
+        br#"{"device_id":"alice","actor":"alice","base_revision":2}"#,                            // roles missing
+        br#"{"device_id":"alice","actor":"alice","roles":[],"base_revision":0}"#,                 // base_revision 0
+        br#"{"device_id":"alice","actor":"alice","roles":[],"base_revision":-1}"#,                // not u64
+        br#"not json"#,
+        b"",
+    ] {
+        assert!(alice.session.apply("sign_roles", bad).is_err(), "malformed args rejected: {}", String::from_utf8_lossy(bad));
+    }
+    // Still usable after the rejections, and `[]` (release) is accepted.
+    let released = alice.step("sign_roles", br#"{"device_id":"alice","actor":"alice","roles":[],"base_revision":3}"#);
+    let n = u32::from_le_bytes(released[..4].try_into().unwrap()) as usize;
+    assert_eq!(&released[4..4 + n], br#"{"action":"set-roles","device_id":"alice","actor":"alice","roles":[],"base_revision":3}"#);
     let _ = bob.step("members", &[]);
 }
 

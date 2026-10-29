@@ -157,11 +157,13 @@ impl Session {
             "clear_pending" if input.is_empty() => { device.clear_pending_inner()?; vec![] },
             // #243 2-a human relay client on the durable lane: read-only roster /
             // fingerprint views and the E2 approval signature, previously reachable
-            // only from the memory worker. None of these touch the store (zero
-            // changes in the Step); sign_approval signs with the durable identity's
+            // only from the memory worker; `sign_roles` (E5 registrar role change,
+            // #574) joins them. None of these touch the store (zero changes in the
+            // Step); sign_approval / sign_roles sign with the durable identity's
             // own key — the one the policy chain enrolled. The byte contract lives in
             // `policy::policy_wire`, shared with the native hosts (ios-ffi, #275).
-            "members" | "members_after_pending" | "fingerprint" | "policy_fingerprint" | "sign_approval" => {
+            "members" | "members_after_pending" | "fingerprint" | "policy_fingerprint" | "sign_approval"
+            | "sign_roles" => {
                 match crate::policy::policy_wire(device, method, input) {
                     Some(result) => result?,
                     None => return Err(rejected(())),
