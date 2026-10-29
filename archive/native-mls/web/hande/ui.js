@@ -119,36 +119,50 @@ export function renderFatal(root, { title = strings.fatal.title, detail = '', on
       onWipe ? el('button', { type: 'button', class: 'danger', onclick: onWipe }, strings.fatal.wipe) : null))));
 }
 
-export function renderEnroll(root, { deviceId, actor, fingerprint, subject = null, registrationJson = '', waiting = false, lastCheckedAt = null, onCopy, onCheck, onOpenApprove = null, onWipe, error = null }) {
-  const frame = JSON.stringify([deviceId, actor, fingerprint, subject, registrationJson, error, Boolean(onOpenApprove)]);
-  const statusText = waiting ? strings.enroll.waiting : strings.enroll.notWaiting;
-  const checked = lastCheckedAt ? strings.enroll.lastChecked(lastCheckedAt) : '';
+/**
+ * 기기 등록 화면. mode(#574):
+ * - 'operator'(기존): 등록 JSON 을 운영자에게 전달하고 403 이 풀리기를 기다린다.
+ * - 'sibling': 릴레이 우편함에 올라갔다 — 큰 지문과 「다른 기기에서 승인해 주세요」, 운영자 JSON 은 접힌 보조 경로.
+ * - 'id-taken': 체인에 같은 ID 가 이미 있다(409) — 지우고 새 ID 로 시작하라는 안내.
+ * statusText 가 오면 상태 줄 문구를 그것으로(없으면 waiting 에 따라 기존 문구).
+ */
+export function renderEnroll(root, { deviceId, actor, fingerprint, subject = null, registrationJson = '', waiting = false, lastCheckedAt = null, onCopy, onCheck, onOpenApprove = null, onWipe, error = null, mode = 'operator', statusText = null, expiresAt = null }) {
+  const frame = JSON.stringify([deviceId, actor, fingerprint, subject, registrationJson, error, Boolean(onOpenApprove), mode]);
+  const sibling = mode === 'sibling';
+  const taken = mode === 'id-taken';
+  const text = statusText ?? (sibling ? strings.enroll.waitingSibling : waiting ? strings.enroll.waiting : strings.enroll.notWaiting);
+  const tone = taken ? 'danger' : waiting || sibling ? 'warn' : 'info';
+  const extra = [lastCheckedAt ? strings.enroll.lastChecked(lastCheckedAt) : null, sibling && expiresAt ? strings.enroll.siblingExpires(formatTime(expiresAt)) : null].filter(Boolean).join(' · ');
   const existing = root.querySelector('section.enroll');
   if (existing && signatureOf(existing) === frame) {
     // 폴링 재렌더: 선택한 지문·JSON 을 지키려고 상태 줄만 바꾼다.
     const line = existing.querySelector('.enroll-status');
-    line.className = `status enroll-status ${waiting ? 'warn' : 'info'}`;
-    setChildren(line, statusText, checked ? el('span', { class: 'meta' }, ` · ${checked}`) : null);
+    line.className = `status enroll-status ${tone}`;
+    setChildren(line, text, extra ? el('span', { class: 'meta' }, ` · ${extra}`) : null);
     liveProps.set(existing, { onCopy, onCheck, onOpenApprove, onWipe });
     return;
   }
   clearScreen(root);
-  const card = el('section', { class: 'card enroll', 'aria-labelledby': 'enroll-title' });
+  const card = el('section', { class: `card enroll mode-${mode}`, 'aria-labelledby': 'enroll-title', 'data-testid': 'enroll', 'data-mode': mode });
   liveProps.set(card, { onCopy, onCheck, onOpenApprove, onWipe });
   const live = () => liveProps.get(card);
+  const jsonBlock = el('div', { class: 'json-block' },
+    el('div', { class: 'row between' }, el('span', { class: 'label' }, strings.enroll.registrationLabel), copyButton(() => live().onCopy?.(), strings.enroll.copyRegistration)),
+    el('pre', { class: 'json', tabindex: '0' }, registrationJson));
   setChildren(card,
     brand('s'),
-    el('h1', { id: 'enroll-title' }, strings.enroll.title),
-    el('p', { class: 'hint' }, strings.enroll.body),
+    el('h1', { id: 'enroll-title' }, sibling ? strings.enroll.siblingTitle : strings.enroll.title),
+    el('p', { class: 'hint' }, sibling ? strings.enroll.siblingBody : strings.enroll.body),
+    // 형제 승인 모드: 지문이 주인공 — 다른 기기의 카드와 한 자리씩 비교한다.
+    sibling ? el('div', { class: 'fingerprint-hero' }, el('span', { class: 'label' }, strings.enroll.fingerprintLabel), el('code', { class: 'fingerprint big', 'aria-label': strings.enroll.fingerprintLabel, 'data-testid': 'enroll-fingerprint' }, groupFingerprint(fingerprint))) : null,
     el('dl', { class: 'facts' },
       fact(strings.enroll.deviceIdLabel, deviceId, true),
       fact(strings.enroll.actorLabel, actor),
       fact(strings.enroll.subjectLabel, subject || el('span', { class: 'meta' }, strings.enroll.subjectUnknown), Boolean(subject)),
-      fact(strings.enroll.fingerprintLabel, fingerprintNode(fingerprint))),
-    el('p', { class: `status enroll-status ${waiting ? 'warn' : 'info'}`, role: 'status' }, statusText, checked ? el('span', { class: 'meta' }, ` · ${checked}`) : null),
-    el('div', { class: 'json-block' },
-      el('div', { class: 'row between' }, el('span', { class: 'label' }, strings.enroll.registrationLabel), copyButton(() => live().onCopy?.(), strings.enroll.copyRegistration)),
-      el('pre', { class: 'json', tabindex: '0' }, registrationJson)),
+      sibling ? null : fact(strings.enroll.fingerprintLabel, fingerprintNode(fingerprint))),
+    taken ? statusLine(strings.enroll.idTaken, 'danger', { 'data-testid': 'enroll-id-taken' }) : null,
+    el('p', { class: `status enroll-status ${tone}`, role: 'status' }, text, extra ? el('span', { class: 'meta' }, ` · ${extra}`) : null),
+    sibling ? el('details', { class: 'operator-fallback' }, el('summary', {}, strings.enroll.operatorDetails), el('p', { class: 'hint' }, strings.enroll.body), jsonBlock) : jsonBlock,
     statusLine(error, 'danger'),
     el('div', { class: 'actions wrap' },
       el('button', { type: 'button', class: 'primary', onclick: () => live().onCheck?.() }, strings.enroll.checkNow),
@@ -288,7 +302,31 @@ function inviteCard(invite) {
       el('button', { type: 'button', class: 'ghost', 'data-testid': 'invite-ignore', disabled: invite.busy ? 'disabled' : null, onclick: () => invite.onIgnore?.() }, strings.lobby.ignore)));
 }
 
-function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu, onOpenBox = null, sync = null, notice = null, deviceLabel = '', invites = [], orderEditing = false, onToggleOrderEdit = null, onMoveRoom = null, onOpenNotify = null }) {
+/**
+ * 새 기기 승인 카드(#574): 같은 사람의 새 기기가 릴레이 우편함에 올린 등록 요청 — 지문 비교 시트로 승인하거나 무시.
+ * candidate = {deviceId, actor, fingerprint, expiresAt(ms), busy, message, onApprove, onIgnore}
+ */
+function candidateCard(candidate) {
+  return el('li', { class: 'invite-item candidate-item', 'data-testid': 'device-candidate', 'data-device': candidate.deviceId },
+    el('p', { class: 'invite-head' }, el('span', { class: 'fire', 'aria-hidden': 'true' }, '📱'), el('strong', {}, displayName(candidate.deviceId)), el('code', { class: 'meta' }, candidate.deviceId)),
+    el('p', { class: 'hint' }, strings.candidates.cardBody(displayName(candidate.deviceId))),
+    el('code', { class: 'fingerprint small', 'aria-label': strings.candidates.fingerprintLabel }, groupFingerprint(candidate.fingerprint)),
+    candidate.expiresAt ? el('p', { class: 'meta' }, strings.candidates.expires(formatTime(candidate.expiresAt))) : null,
+    candidate.busy ? el('p', { class: 'hint invite-state', role: 'status' }, strings.candidates.busy) : null,
+    candidate.message ? el('p', { class: 'feedback', role: 'alert' }, candidate.message) : null,
+    el('div', { class: 'actions' },
+      el('button', { type: 'button', class: 'primary', 'data-testid': 'candidate-approve', disabled: candidate.busy ? 'disabled' : null, onclick: () => candidate.onApprove?.() }, strings.candidates.approve),
+      el('button', { type: 'button', class: 'ghost', 'data-testid': 'candidate-ignore', disabled: candidate.busy ? 'disabled' : null, onclick: () => candidate.onIgnore?.() }, strings.candidates.ignore)));
+}
+/** 🔔 의 짧은 알림 행(형제 기기 초대 결과 등): 글 + 「확인」. note = {key, text, tone, onDismiss} */
+function noteRow(note) {
+  return el('li', { class: `invite-item note-item status ${note.tone || 'info'}`, 'data-testid': 'notify-note', 'data-key': note.key },
+    el('span', {}, note.text),
+    note.onDismiss ? el('button', { type: 'button', class: 'ghost small', onclick: () => note.onDismiss() }, strings.candidates.noteDismiss) : null);
+}
+const candidateFrame = (candidates) => candidates.map((c) => [c.deviceId, c.fingerprint, c.expiresAt ?? null, Boolean(c.busy), c.message ?? null]);
+
+function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu, onOpenBox = null, sync = null, notice = null, deviceLabel = '', invites = [], candidates = [], notes = [], orderEditing = false, onToggleOrderEdit = null, onMoveRoom = null, onOpenNotify = null }) {
   const syncLabel = syncText(sync);
   const syncTone = sync?.reconnecting ? 'warn' : sync?.offlineSince ? 'danger' : 'ok';
   // 순서 편집은 방이 2개 이상이고 핸들러가 있을 때만(패밀리챗과 같음).
@@ -296,7 +334,9 @@ function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu,
   const editing = canReorder && orderEditing;
   // 서명에서 동기화 줄(syncLabel·syncTone)은 뺀다 — 마지막 동기화 시각은 몇 초마다 바뀌어, 넣으면 pane 전체가
   // 동기화마다 교체돼 포커스·순서 편집이 끊긴다. 그 줄은 updateListPane 이 따로 갈아 끼운다.
-  const frame = JSON.stringify([notice ? [notice.text, notice.tone] : null, rooms.length > 0, deviceLabel, Boolean(onOpenBox), canReorder, editing, invites.map((i) => [i.room, i.name ?? null, i.message ?? null, Boolean(i.busy), i.failed ? [i.failed.tries, i.failed.reason ?? null] : null]), Boolean(onOpenNotify)]);
+  const frame = JSON.stringify([notice ? [notice.text, notice.tone] : null, rooms.length > 0, deviceLabel, Boolean(onOpenBox), canReorder, editing, invites.map((i) => [i.room, i.name ?? null, i.message ?? null, Boolean(i.busy), i.failed ? [i.failed.tries, i.failed.reason ?? null] : null]), Boolean(onOpenNotify),
+    candidateFrame(candidates), notes.map((n) => [n.key, n.text, n.tone ?? null])]);
+  const bellCount = invites.length + candidates.length + notes.length;
   const body = rooms.length === 0
     ? el('div', { class: 'empty campfire-empty' }, el('span', { class: 'big-fire', 'aria-hidden': 'true' }, '🪵'), el('p', { class: 'empty-title' }, strings.rooms.empty), el('p', { class: 'hint' }, strings.rooms.noRooms))
     : el('ul', { class: 'rooms', 'aria-label': strings.rooms.listLabel }, rooms.map((room, index) => roomListItem(room, onSelect, room.roomId === currentRoomId,
@@ -307,7 +347,7 @@ function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu,
       el('div', { class: 'tools', role: 'group', 'aria-label': strings.rooms.actions },
         canReorder ? el('button', { type: 'button', class: editing ? 'primary small order-toggle' : 'ghost small order-toggle', 'aria-pressed': editing ? 'true' : 'false', 'aria-label': editing ? strings.rooms.orderDoneLabel : strings.rooms.orderEditLabel, title: editing ? strings.rooms.orderDoneLabel : strings.rooms.orderEditLabel, 'data-testid': 'order-toggle', onclick: () => onToggleOrderEdit() },
           editing ? strings.rooms.orderDone : [el('span', { class: 'order-icon', 'aria-hidden': 'true' }, strings.rooms.orderEditIcon), el('span', { class: 'order-label' }, strings.rooms.orderEdit)]) : null,
-        onOpenNotify ? bellButton(invites.length, onOpenNotify) : null,
+        onOpenNotify ? bellButton(bellCount, onOpenNotify) : null,
         // 참여 요청·방 만들기는 ⚙ 설정 메뉴로(오너 2026-10-27): 헤더는 🔔·🗂·⚙ 만.
         onOpenBox ? toolButton('🗂', strings.box.toggle, 'open-box', onOpenBox) : null,
         toolButton('⚙', strings.rooms.settings, 'open-menu', onOpenMenu))),
@@ -316,6 +356,10 @@ function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu,
     notice ? el('div', { class: `status ${notice.tone || 'info'} notice`, role: notice.tone === 'danger' ? 'alert' : 'status' },
       el('span', {}, notice.text),
       notice.onClose ? el('button', { type: 'button', class: 'ghost small', 'aria-label': strings.close, onclick: notice.onClose }, '✕') : null) : null,
+    // 새 기기 승인 카드(#574)가 초대 카드보다 위 — 같은 사람이 지금 기다리고 있는 일이다.
+    candidates.length > 0 ? el('section', { class: 'card invites candidates', 'aria-label': strings.candidates.sectionTitle, 'data-testid': 'candidate-section' },
+      el('h2', { class: 'section-title' }, strings.candidates.sectionTitle),
+      el('ul', { class: 'invite-list' }, candidates.map(candidateCard))) : null,
     invites.length > 0 ? el('section', { class: 'card invites', 'aria-label': strings.lobby.inviteSectionTitle },
       el('h2', { class: 'section-title' }, strings.lobby.inviteSectionTitle),
       el('ul', { class: 'invite-list' }, invites.map(inviteCard))) : null,
@@ -954,20 +998,24 @@ export function openMenuSheet(root, { items, onClose }) {
 }
 
 /** 🔔 알림 시트(#521): 받은 초대 목록 — 수락/다시 시도/무시. 누르면 닫고 처리한다(결과는 목록·배지에 반영). */
-export function openNotifySheet(root, { invites = [], onCopyLogs = null, onClose }) {
+export function openNotifySheet(root, { invites = [], candidates = [], notes = [], onCopyLogs = null, onClose }) {
   const { dialog, close } = openSheet(root, { className: 'notify', labelledBy: 'notify-title', onClose });
   const wrapped = invites.map((i) => ({ ...i, onAccept: () => { close(); i.onAccept?.(); }, onIgnore: () => { close(); i.onIgnore?.(); } }));
+  const wrappedCandidates = candidates.map((c) => ({ ...c, onApprove: () => { close(); c.onApprove?.(); }, onIgnore: () => { close(); c.onIgnore?.(); } }));
+  const wrappedNotes = notes.map((n) => ({ ...n, onDismiss: n.onDismiss ? () => { close(); n.onDismiss(); } : null }));
+  const empty = wrapped.length === 0 && wrappedCandidates.length === 0 && wrappedNotes.length === 0;
   setChildren(dialog,
     el('h2', { id: 'notify-title' }, strings.notify.title),
-    wrapped.length === 0
-      ? el('p', { class: 'hint', 'data-testid': 'notify-empty' }, strings.notify.empty)
-      : el('ul', { class: 'invite-list', 'aria-label': strings.notify.inviteNew }, wrapped.map(inviteCard)),
+    empty ? el('p', { class: 'hint', 'data-testid': 'notify-empty' }, strings.notify.empty) : null,
+    wrappedCandidates.length ? el('ul', { class: 'invite-list', 'aria-label': strings.notify.candidateNew }, wrappedCandidates.map(candidateCard)) : null,
+    wrapped.length ? el('ul', { class: 'invite-list', 'aria-label': strings.notify.inviteNew }, wrapped.map(inviteCard)) : null,
+    wrappedNotes.length ? el('ul', { class: 'invite-list', 'aria-label': strings.notify.notes }, wrappedNotes.map(noteRow)) : null,
     el('p', { class: 'hint' }, strings.notify.hint),
     closeRow(close, onCopyLogs ? el('button', { type: 'button', class: 'ghost', 'data-testid': 'notify-copy-logs', onclick: () => onCopyLogs() }, strings.notify.copyLogs) : null));
   return { close };
 }
 
-export function openSettingsSheet(root, { deviceId, actor, fingerprint, subject = null, origin = '', onCopyRegistration, onOpenApprove = null, onWipe, onClose }) {
+export function openSettingsSheet(root, { deviceId, actor, fingerprint, subject = null, origin = '', onCopyRegistration, onOpenApprove = null, onOpenDevices = null, onWipe, onClose }) {
   const { dialog, close } = openSheet(root, { className: 'settings', labelledBy: 'settings-title', onClose });
   setChildren(dialog,
     el('h2', { id: 'settings-title' }, strings.settings.title),
@@ -979,6 +1027,7 @@ export function openSettingsSheet(root, { deviceId, actor, fingerprint, subject 
       origin ? fact(strings.settings.originLabel, origin, true) : null),
     el('div', { class: 'menu-items' },
       el('button', { type: 'button', class: 'block', onclick: () => onCopyRegistration?.() }, strings.settings.copyRegistration),
+      onOpenDevices ? el('button', { type: 'button', class: 'block', 'data-testid': 'open-devices', onclick: () => { close(); onOpenDevices(); } }, strings.settings.openDevices) : null,
       onOpenApprove ? el('button', { type: 'button', class: 'block', onclick: () => { close(); onOpenApprove(); } }, strings.settings.openApprove) : null,
       el('button', { type: 'button', class: 'danger block', onclick: () => { close(); onWipe?.(); } }, strings.settings.wipe)),
     el('p', { class: 'hint' }, strings.settings.wipeHint),
@@ -1086,11 +1135,15 @@ export function openInviteSheet(root, { roomId, roomName = roomId, members = [],
   return sheet;
 }
 
-/** 신뢰 기기 승인(E2): 등록 JSON → 지문 보기 → 비교 → 승인 서명 → 증거 JSON 복사. */
-export function openApproveSheet(root, { onOffer, onApprove, onClose }) {
+/**
+ * 신뢰 기기 승인(E2). mode 'paste'(기존): 등록 JSON → 지문 보기 → 비교 → 승인 서명 → 증거 JSON 복사(운영자에게 전달).
+ * mode 'relay'(#574): 우편함 후보 `candidate = {deviceId, fingerprint}` 로 비교 단계부터 시작, onApprove() 가 릴레이에 올리고 끝나면 완료 문구(JSON 없음).
+ */
+export function openApproveSheet(root, { onOffer = null, onApprove, onClose, mode = 'paste', candidate: initial = null }) {
   const { dialog, close } = openSheet(root, { className: 'approve', labelledBy: 'approve-title', onClose });
-  let step = 'input';
-  let candidate = null;
+  const relay = mode === 'relay';
+  let step = relay && initial ? 'compare' : 'input';
+  let candidate = relay ? initial : null;
   let evidence = '';
   let error = null;
   let busy = false;
@@ -1114,23 +1167,75 @@ export function openApproveSheet(root, { onOffer, onApprove, onClose }) {
         el('button', { type: 'button', class: 'primary block', disabled: busy || null, onclick: offer }, busy ? strings.approve.checking : strings.approve.show)]
       : step === 'compare'
         ? [el('dl', { class: 'facts' }, fact(strings.approve.candidate, candidate.deviceId, true), fact(strings.approve.fingerprint, fingerprintNode(candidate.fingerprint))),
-          el('p', { class: 'compare' }, strings.approve.compare),
+          el('p', { class: 'compare' }, relay ? strings.approve.relayCompare : strings.approve.compare),
           el('div', { class: 'actions' },
-            el('button', { type: 'button', class: 'primary', disabled: busy || null, onclick: approve }, busy ? strings.approve.signing : strings.approve.accept),
-            el('button', { type: 'button', class: 'danger', disabled: busy || null, onclick: () => { step = 'rejected'; candidate = null; render(); } }, strings.approve.reject))]
+            el('button', { type: 'button', class: 'primary', 'data-testid': 'approve-accept', disabled: busy || null, onclick: approve }, busy ? strings.approve.signing : strings.approve.accept),
+            el('button', { type: 'button', class: 'danger', 'data-testid': 'approve-reject', disabled: busy || null, onclick: () => { step = 'rejected'; candidate = null; render(); } }, strings.approve.reject))]
         : step === 'done'
-          ? [statusLine(strings.room.approvalSigned, 'ok'),
-            el('div', { class: 'json-block' },
-              el('div', { class: 'row between' }, el('span', { class: 'label' }, strings.approve.evidenceTitle), copyButton(() => copyText(evidence))),
-              el('pre', { class: 'json', tabindex: '0' }, evidence)),
-            el('p', { class: 'hint' }, strings.approve.evidenceHint)]
+          ? relay
+            ? [statusLine(strings.approve.relayDone(initial?.deviceId ?? ''), 'ok', { 'data-testid': 'approve-done' })]
+            : [statusLine(strings.room.approvalSigned, 'ok'),
+              el('div', { class: 'json-block' },
+                el('div', { class: 'row between' }, el('span', { class: 'label' }, strings.approve.evidenceTitle), copyButton(() => copyText(evidence))),
+                el('pre', { class: 'json', tabindex: '0' }, evidence)),
+              el('p', { class: 'hint' }, strings.approve.evidenceHint)]
           : [statusLine(strings.approve.rejected, 'warn'),
-            el('button', { type: 'button', class: 'block', onclick: () => { step = 'input'; render(); textarea.focus(); } }, strings.retry)];
+            relay ? null : el('button', { type: 'button', class: 'block', onclick: () => { step = 'input'; render(); textarea.focus(); } }, strings.retry)];
     setChildren(dialog, el('h2', { id: 'approve-title' }, strings.approve.title), body, statusLine(error, 'danger'), closeRow(close));
   };
   render();
-  textarea.focus();
+  if (step === 'input') textarea.focus();
   return { close };
+}
+
+/**
+ * 「내 기기」 시트(#574 E5): 체인에 있는 내 subject 의 기기(self-service.js rolesActions 결과)와 registrar 부여·해제.
+ * onGrant(deviceId) / onRelease(deviceId) 는 끝나면 새 행 목록을 돌려준다(또는 던진다) — 시트는 제자리에서 다시 그린다.
+ * view = {canSign, actor, devices:[{deviceId, actor, status, registrar, isSelf, grant, release, lastRegistrar}]} · null 이면 옛 릴레이.
+ */
+export function openDevicesSheet(root, { view, onGrant, onRelease, onClose }) {
+  const { dialog, close } = openSheet(root, { className: 'devices', labelledBy: 'devices-title', onClose });
+  let current = view;
+  let busyId = null;
+  let error = null;
+  const act = async (deviceId, grant) => {
+    busyId = deviceId; error = null; render();
+    try { const next = await (grant ? onGrant : onRelease)(deviceId); if (next) current = next; }
+    catch (e) { error = e?.message || strings.errors.generic; }
+    busyId = null; render();
+  };
+  const row = (d) => {
+    const busy = busyId === d.deviceId;
+    const button = d.grant || d.release
+      ? el('button', { type: 'button', class: d.release ? 'ghost small danger-text' : 'secondary small', 'data-testid': d.release ? 'device-release' : 'device-grant', disabled: busyId ? true : null, onclick: () => act(d.deviceId, d.grant) }, busy ? strings.devices.busy : d.grant ? strings.devices.grant : strings.devices.release)
+      : null;
+    return el('li', { class: `member device-row status-${d.status}`, 'data-device': d.deviceId, 'data-registrar': d.registrar ? 'true' : 'false' },
+      el('span', { class: 'texts' },
+        el('span', { class: 'name' }, displayName(d.deviceId),
+          d.isSelf ? el('span', { class: 'pill you' }, strings.invite.thisDevice) : null,
+          el('span', { class: `pill state-${d.status === 'active' ? 'joined' : 'closed'}` }, d.status === 'active' ? strings.devices.active : strings.devices.revoked),
+          d.registrar ? el('span', { class: 'pill registrar' }, strings.devices.registrar) : null),
+        el('code', { class: 'meta' }, d.deviceId),
+        d.fingerprint ? el('code', { class: 'meta fingerprint-inline' }, groupFingerprint(d.fingerprint)) : null,
+        d.lastRegistrar ? el('span', { class: 'meta' }, strings.devices.lastRegistrar) : null),
+      button);
+  };
+  const render = () => {
+    const devices = current?.devices ?? [];
+    setChildren(dialog,
+      el('h2', { id: 'devices-title' }, strings.devices.title),
+      el('p', { class: 'hint' }, strings.devices.hint),
+      current === null
+        ? el('p', { class: 'status warn', role: 'status' }, strings.devices.unsupported)
+        : devices.length === 0
+          ? el('p', { class: 'hint', 'data-testid': 'devices-empty' }, strings.devices.empty)
+          : el('ul', { class: 'members devices-list', 'aria-label': strings.devices.title }, devices.map(row)),
+      current && devices.length && !current.canSign ? el('p', { class: 'meta', role: 'status' }, strings.devices.cannotSign) : null,
+      statusLine(error, 'danger'),
+      closeRow(close));
+  };
+  render();
+  return { close, update: (next) => { current = next; render(); } };
 }
 
 /**

@@ -24,6 +24,7 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
   attachments.js                                                 ← 보관함 「첨부」 탭 순수 로직(모든 방 첨부 최신순, 패밀리챗 collectAttachments 이식, #544 D)
   agent-consent.js                                               ← AI 참여 동의 판정·기록(참여 뒤 명단 기준, 이 기기 localStorage — #544 E 선택지 3)
   local-room.js                                                  ← 로컬 전용 방(릴레이에 없는 방) 판정 · 「이 기기에서 지우기」 키 정리
+  self-service.js                                                ← 기기 셀프서비스 순수 판정(승인 자격·형제 판정·증거 조립·역할 버튼·초대 대기열, #574 PR 2b)
   sw.js sw-policy.js                                             ← 서비스 워커(PWA 설치·오프라인 셸, 네트워크 우선 — #480 D)
   attachment-view.js agent-markdown.js                           ← 첨부 미리보기 판별 · 에이전트 답장 마크다운(iOS AgentMarkdown 블록 규칙 이식, 텍스트 노드만)
   room.js device.js relay.js identity.js worker-bridge.js        ← 방 세션(relay-app.js sync 이식)·기기(신원·로비·방 목록)·릴레이·신원
@@ -45,11 +46,12 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
    `signing_key`·`fingerprint`)을 보여 준다. `subject` 는 `GET /v2/me`(엣지 JWT 의 `sub`)로 채운다. 릴레이가
    403 `device_subject_mismatch` 를 돌려주는 동안 이 화면이 4초 폴링으로 기다리고, 운영자가 `-enroll-first` /
    `-add-device`(신뢰 기기 승인 E2 — 이 앱의 「신뢰 기기 승인」시트가 서명한다)로 체인에 올리면 다음 폴링에서
-   대화 화면으로 넘어간다. 재시작 불필요.
+   대화 화면으로 넘어간다. 재시작 불필요. **셀프서비스(#574 PR 2b, 아래 절)**: 같은 사람의 기기가 이미 있으면 운영자 없이
+   그 기기가 승인한다 — 이 화면은 자동으로 「다른 기기에서 승인해 주세요」(큰 지문) 모드가 된다.
 3. **대화**(`.ready`): 목록 pane + 대화 pane(900px 부터 분할). 방 처리 순서는 `room.js` = relay-app.js `sync()`
    = 봇·iOS 와 같다(내 commit echo → merge_pending(+Welcome) · Welcome → join · 타인 commit → stage →
    정책 ①~④ → merge / discard + ⛔ 정지 · application → decrypt → 봉인 보관(#370) → ack).
-   헤더: 🔔 알림·🗂 파일보관함·⚙ 설정(+순서 편집). 메뉴(⚙): 참여 요청(키 패키지 게시)·방 만들기·설정·초대·멤버 제거(#289)·신뢰 기기 승인·지금 동기화·이 기기 지우기 — 참여 요청·방 만들기는 2026-10-27 헤더에서 메뉴로 옮김.
+   헤더: 🔔 알림·🗂 파일보관함·⚙ 설정(+순서 편집). 메뉴(⚙): 참여 요청(키 패키지 게시)·방 만들기·설정·초대·멤버 제거(#289)·내 기기(#574)·신뢰 기기 승인·지금 동기화·이 기기 지우기 — 참여 요청·방 만들기는 2026-10-27 헤더에서 메뉴로 옮김.
 4. **정지**(`.halted`, #261/#289): 거부·제거는 durable 하고 새로고침 뒤에도 남는다. 다음 행동은 「이 기기 지우기」
    → 새 기기 ID(#290) → 운영자 등록 → 재초대뿐이다.
 
@@ -66,6 +68,35 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
 「멤버」 시트와 방 머리글의 「멤버 N」은 **사람 단위**다(2026-10-28 오너, `strings.js participantCount·groupParticipants`): 같은 사람의
 PC·폰이 두 명으로 서지 않고 사람 행 아래에 기기 줄(종류 · ID · 「이 기기」 · 제거)이 붙는다. MLS 좌석·릴레이 명단·초대·제거는 그대로 기기 단위.
 1차(방 1개) 설치는 첫 실행에서 기본 방 DB 의 서명키가 신원 스토어로 **이전**되므로 재등록이 필요 없다.
+
+## 새 기기 셀프서비스 (#574 PR 2b — 릴레이 PR #578 의 `/v2/devices/*` · `/v2/me`)
+
+운영자 없이 **내 기기가 내 새 기기를 승인**한다. 순수 판정은 `self-service.js`, 릴레이 호출은 `device.js`(`postCandidate` ·
+`listCandidates` · `postApproval` · `postRoles` · `signRoles`), 화면 흐름은 `app.js`.
+
+- **새 기기**(403 경로, `app.js enrollTick`): 8초 틱마다 `GET /v2/me` 를 보고, 체인에 없으면 `POST /v2/devices/candidates`
+  `{device_id, actor, signing_key, fingerprint}`(subject 없음 — 릴레이가 JWT 에서 묶는다). 201 이면 등록 화면이 **sibling 모드**
+  (큰 지문 + 「다른 기기에서 승인해 주세요」, 운영자 JSON 은 접힌 보조 경로), TTL 10분 중 5분 전에 다시 올린다. 409 `device_exists`
+  → **id-taken** 모드(지우고 새 ID). 403 `first_device_out_of_band`(첫 기기)·404(옛 릴레이·접근 인증 꺼짐) → 기존 **operator** 모드,
+  404 는 다시 묻지 않는다. `/v2/me` 의 내 기록이 `active` 가 되면 같은 틱에 방 목록을 다시 받아 대화 화면으로 넘어간다.
+- **승인하는 기기**(`discoverCandidates`): 이 기기가 승인할 수 있을 때만(`canApprove` = 활성이고, registrar 이거나 같은 actor 에
+  활성 registrar 가 없음 — 서버 `VerifyApproval` 과 같은 규칙) 틱마다 `GET /v2/devices/candidates` 를 보고 **내 actor 의 후보**를
+  목록 위 「새 기기 승인」 카드와 🔔 에 띄운다(기기 이름·ID·지문·만료). 「지문 비교 후 승인」 → `policy_fingerprint` 로 지문을
+  **로컬에서 다시 계산**해 릴레이가 전한 값과 다르면 거부 → 「신뢰 기기 승인」 시트의 비교 단계(relay 모드) → 「이 지문이 맞습니다」
+  → `sign_approval`(base_revision = 목록의 `policy_revision`) → `POST /v2/devices/approvals`. 409 `stale_revision` 이면 응답의
+  `revision` 으로 한 번 다시 서명, 403 `approval_rejected` 는 `detail` 을 카드에 보인다. 「무시」는 이 페이지 세션에서만 숨긴다.
+- **형제 기기 자동 초대·수락**: 승인 직후 내가 참여한 방(정지·대기 commit·이미 멤버인 방 제외, `siblingInviteRooms`)을
+  localStorage `hande:sibling-invites:<device>` 에 적고 매 refresh 끝에 `room.js invite()` 를 시도한다 — 새 기기는 활성이 된
+  다음 틱에야 로비 키를 올리므로 처음엔 「키 패키지 없음」으로 실패하고 다음 틱에 다시 한다(내 commit 대기·방이 먼저 바뀜·네트워크도
+  재시도). 30분이 지나면 포기하고 🔔 에 안내를 남긴다. 새 기기 쪽은 Welcome 의 `from` 이 **형제**(같은 actor 의 활성 체인 기록,
+  `isSibling`)면 오너 기기처럼 **자동 수락**한다 — 가족 기기도 자기 기기가 보낸 초대는 묻지 않는다.
+- **「내 기기」 시트**(⚙ 메뉴·설정, `/v2/me` 에 `devices` 가 있을 때만): 같은 subject 의 체인 기록 전부(활성/폐기·등록 기기 배지·지문).
+  「등록 기기로 지정」/「지정 해제」 = `sign_roles` `{device_id, actor, roles(완전한 정렬 목록), base_revision}` →
+  `POST /v2/devices/roles`(409 는 `/v2/me` 다시 읽고 한 번 재서명). 버튼 활성 규칙은 `rolesActions` = 서버 `VerifyRoles`:
+  대상은 활성·같은 actor, 마지막 활성 registrar 는 해제 불가(다른 기기에 먼저 지정). **런타임에 Rust 파사드의 `sign_roles` 와
+  durable-worker 허용 목록이 필요하다**(별도 PR) — 없으면 「서명을 만들지 못했습니다: sign_roles 거부…」로 보인다.
+- 붙여넣기 승인 시트(운영자 흐름)는 그대로이되 등록 JSON 의 `base_revision` 이 없으면 `/v2/me` 의 `policy_revision` 을 쓴다.
+  `room.js` 에 남아 있던 방별 `offerCandidate/approveCandidate/denyCandidate` 복제본은 지웠다(신원 스토어 경로만 산다).
 
 ## 키보드 (#478 — 패밀리챗 `web/app` 과 동일)
 
@@ -160,7 +191,8 @@ PC·폰이 두 명으로 서지 않고 사람 행 아래에 기기 줄(종류 ·
 
 - 순수 모듈: `node --test archive/native-mls/web/hande/tests/*.test.mjs` — 방 세션(가짜 워커·대본 릴레이: 403
   대기, Welcome 참여, 해독→보관→ack, 전송 CAS 재시도, 초대 commit→echo→Welcome, 거부·제거 정지, #296 복구),
-  문구·검증 헬퍼, 키보드 판정(`keyboard.test.mjs`), 목록 순서(`room-order.test.mjs`), 초안·첨부 파일 고르기(`drafts.test.mjs`·`composer-files.test.mjs`), 내 마지막 말(`last-sent.test.mjs`), 안 읽음 판정(`read-seq.test.mjs`), 복귀 동기화(`sync-recovery.test.mjs`), 미리보기 다시 시도(`preview-loader.test.mjs`), 보관함 첨부 목록(`attachments.test.mjs`), AI 참여 동의(`agent-consent.test.mjs`), 로컬 전용 방 지우기(`local-room.test.mjs`), 서비스 워커 정책(`sw-policy.test.mjs`).
+  문구·검증 헬퍼, 키보드 판정(`keyboard.test.mjs`), 목록 순서(`room-order.test.mjs`), 초안·첨부 파일 고르기(`drafts.test.mjs`·`composer-files.test.mjs`), 내 마지막 말(`last-sent.test.mjs`), 안 읽음 판정(`read-seq.test.mjs`), 복귀 동기화(`sync-recovery.test.mjs`), 미리보기 다시 시도(`preview-loader.test.mjs`), 보관함 첨부 목록(`attachments.test.mjs`), AI 참여 동의(`agent-consent.test.mjs`), 로컬 전용 방 지우기(`local-room.test.mjs`), 서비스 워커 정책(`sw-policy.test.mjs`),
+  기기 셀프서비스 판정(`self-service.test.mjs`)·기기 셀프서비스 릴레이 호출과 `sign_roles` 프레임(`device.test.mjs`)·`/v2/me` 본문(`relay.test.mjs`).
 - 브라우저: `archive/native-mls/tests/native_hande_web_smoke.py --bundle <mls-pkg> --relay-binary <relay>` —
   격리 릴레이(`-access-mode disabled`, `-hande-host`)가 이 디렉터리를 서빙하고 두 Chromium 컨텍스트가 **화면만
   으로** 이름 선택 → 방 만들기 → 참여 요청 → 초대 → 참여 → 양방향 메시지 → 새로고침 뒤 보관 이력 복원, 이어서 둘째 방을

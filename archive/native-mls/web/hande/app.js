@@ -22,11 +22,17 @@ import {installSyncRecovery} from './sync-recovery.js';
 import {fileboxConfig} from './filebox.js';
 import {collectAttachments} from './attachments.js';
 import {installShortcuts} from './shortcuts.js';
+import {
+  canApprove, isSibling, candidatesFor, approvalArgs, approvalEvidence, rolesActions, nextRoles, rolesArgs, rolesEvidence, recordOf,
+  siblingInviteRooms, enrollModeFrom, readSiblingQueue, writeSiblingQueue, enqueueSiblingInvites, splitSiblingQueue, isRetryableInviteError,
+  CANDIDATE_REPOST_MARGIN_MS,
+} from './self-service.js';
 
 const DEFAULT_ROOM = 'family';
 const AUTO_JOIN_ACTORS = new Set(['owner']);   // iOS AppModel.autoJoinActors
 const ADOPT_TRIES = 2;                      // a lobby Welcome gets one retry per page session (#517)
 const TICK_MS = 8000;                       // device-level refresh (rooms list, lobby welcomes, replenish)
+const ME_EVERY_TICKS = 4;                   // GET /v2/me (policy revision, my devices) every 4th tick (#574) — and right after any chain change
 
 async function loadConfig() {
   try {
@@ -49,6 +55,10 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     relayRooms: null,                                // 릴레이가 이 기기를 멤버라고 한 방 집합(GET /v2/rooms) — 로컬 전용 방 판정용, 받기 전엔 null
     roomOrder: [], orderEditing: false,              // 대화 목록 고정 순서(이 기기 localStorage, #480 A)
     notice: null, logs: [], offlineAt: null, tick: null,
+    // 기기 셀프서비스(#574 PR 2b): /v2/me 본문(정책 revision·내 기기), 등록 화면 모드, 승인할 후보, 🔔 메모.
+    me: null, meTick: 0,
+    enroll: {mode: 'operator', nextPostAt: 0, expiresAt: null},
+    candidates: [], candidateRevision: null, dismissedCandidates: new Set(), notes: [],
   };
   const identity = createIdentityStore({storage});
   const worker = createWorkerBridge();
@@ -124,6 +134,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       const reg = app.dev.registration(app.subject);
       ui.renderEnroll(root, {deviceId: app.device, actor: app.actor, fingerprint: D.fingerprint, subject: app.subject,
         registrationJson: JSON.stringify(reg, null, 1), waiting: true, lastCheckedAt: app.lastCheckedAt ?? null,
+        mode: app.enroll.mode, expiresAt: app.enroll.expiresAt,
         onCopy: () => copy(JSON.stringify(reg, null, 1)), onCheck: () => refresh().then(render),
         onOpenApprove: null, onWipe: confirmWipe, error: app.error});
       return;
@@ -136,7 +147,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       orderEditing: app.orderEditing, onToggleOrderEdit: toggleOrderEdit, onMoveRoom: moveRoomInList,
       sync: {lastSyncAt: anySynced, offlineSince: app.offlineAt, reconnecting: relay.offline},
       notice: app.notice, deviceLabel: app.device,
-      invites: inviteRows(), onOpenNotify: openNotify,
+      invites: inviteRows(), candidates: candidateRows(), notes: noteRows(), onOpenNotify: openNotify,
     };
     const R = app.roomOpen && app.current ? app.rooms.get(app.current) : null;
     const room = R ? (() => {
@@ -289,7 +300,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   async function startDevice(id) {
     app.actor = id.actor; app.device = id.device;
     app.phase = 'starting'; app.message = strings.app.deriving; render();
-    relay.me().then(subject => { app.subject = subject; render(); }).catch(() => {});
+    refreshMe().then(render);
     try {
       // Stage-2 install: the default room's single-store database holds the signer → migrate it.
       const legacy = {database: databaseFor(app.defaultRoom), room: app.defaultRoom};
@@ -354,10 +365,17 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     if (refreshing || !app.dev?.state.started) return;
     refreshing = true;
     try {
+      const meDue = app.meTick++ % ME_EVERY_TICKS === 0;
+      if (meDue) await refreshMe();
       let listed;
       try { listed = await app.dev.rooms(); } catch (error) { logLine(`방 목록 실패: ${error.message}`); listed = undefined; }
       app.lastCheckedAt = clock(true);
-      if (listed === null) { render(); return; }   // 403: waiting for the operator
+      if (listed === null) {
+        // 403: not on the chain yet — post this device into the relay's candidate mailbox for a sibling to approve
+        // (#574), or keep waiting for the operator. Returns the rooms list once the chain carries this device.
+        listed = await enrollTick(!meDue);
+        if (!Array.isArray(listed)) { render(); return; }
+      }
       if (Array.isArray(listed)) {
         app.relayRooms = new Set(listed.filter(r => r.member && ROOM.test(r.room)).map(r => r.room));
         for (const r of listed) if (r.member && !r.closed && ROOM.test(r.room) && !app.rooms.has(r.room)) {
@@ -373,7 +391,198 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
         try { const report = await app.dev.replenish(LOBBY_TARGET, {prune: refs.complete || app.adoptFailed.size === 0, protect: refs.set}); if (report) app.lobbyDue = false; }
         catch (error) { logLine(`로비 키 보충 실패: ${error.message}`); }
       }
+      await discoverCandidates();
+      await processSiblingInvites();
     } finally { refreshing = false; render(); }
+  }
+  // ---- device self-service (#574 PR 2b) ----
+  /** GET /v2/me → app.me (subject · policy_revision · my devices). An old relay gives only {subject}; 404 (access off) gives null. */
+  async function refreshMe() {
+    try {
+      const info = await relay.meInfo();
+      app.me = info;
+      if (typeof info?.subject === 'string') app.subject = info.subject;
+    } catch (error) { logLine(`/v2/me 실패: ${error.message}`); }
+  }
+  /**
+   * Enrollment tick on the 403 path. Refreshes /v2/me (unless this tick already did) — when the chain now lists this
+   * device as active, re-asks the rooms list and hands it back so the same refresh continues into the ready phase.
+   * Otherwise (re-)posts the candidate: first time, and again ~5 min before the 10-min TTL runs out. 404 → the relay has
+   * no self-service (old relay / access disabled): operator flow, never asked again. 409 device_exists → id-taken.
+   * 403 first_device_out_of_band → operator flow, re-checked every few minutes in case a sibling got enrolled meanwhile.
+   */
+  async function enrollTick(refreshMeFirst) {
+    const E = app.enroll, now = Date.now();
+    if (refreshMeFirst) await refreshMe();
+    if (recordOf(app.me, app.device)?.status === 'active') {
+      try {
+        const listed = await app.dev.rooms();
+        if (Array.isArray(listed)) { logLine('체인에 이 기기가 올라왔다 — 대화 화면으로'); E.mode = 'operator'; E.expiresAt = null; return listed; }
+      } catch (error) { logLine(`방 목록 실패: ${error.message}`); }
+    }
+    if (E.mode === 'id-taken' || app.dev.state.selfService.unsupported || now < E.nextPostAt) return null;
+    let r;
+    try { r = await app.dev.postCandidate(); } catch (error) { logLine(`후보 게시 실패: ${error.message}`); return null; }
+    const mode = enrollModeFrom(r.status, r.body);
+    if (mode !== E.mode) logLine(`등록 화면 모드 ${E.mode} → ${mode} (${relay.describe(r.status, r.body)})`);
+    E.mode = mode;
+    if (r.status === 201) {
+      E.expiresAt = app.dev.state.selfService.posted?.expiresAt ?? null;
+      E.nextPostAt = E.expiresAt ? E.expiresAt - CANDIDATE_REPOST_MARGIN_MS : now + CANDIDATE_REPOST_MARGIN_MS;
+      logLine(`후보 게시: 다른 기기의 승인을 기다린다(정책 revision ${r.body?.policy_revision ?? '?'}, 만료 ${E.expiresAt ? clock(true, new Date(E.expiresAt)) : '?'})`);
+    } else if (r.status === 409) { E.expiresAt = null; E.nextPostAt = Infinity; }
+    else if (r.status === 404) { E.expiresAt = null; logLine('릴레이에 기기 셀프서비스 없음 — 운영자 등록 흐름'); }
+    else { E.expiresAt = null; E.nextPostAt = now + CANDIDATE_REPOST_MARGIN_MS; }
+    return null;
+  }
+  /** Candidate mailbox (every tick while this device may approve): same-actor rows only, minus the ones ignored this page session. */
+  async function discoverCandidates() {
+    if (!app.me || !canApprove(app.me, app.device)) { app.candidates = []; return; }
+    let list;
+    try { list = await app.dev.listCandidates(); } catch (error) { logLine(`기기 후보 조회 실패: ${error.message}`); return; }
+    if (!list) { app.candidates = []; return; }
+    app.candidateRevision = Number.isSafeInteger(list.policy_revision) ? list.policy_revision : null;
+    const rows = candidatesFor(list, app.actor).filter(c => !app.dismissedCandidates.has(c.device_id));
+    for (const c of rows) if (!app.candidates.some(x => x.device_id === c.device_id)) logLine(`새 기기 승인 요청: ${c.device_id} (지문 ${c.fingerprint.slice(0, 8)}…)`);
+    app.candidates = rows.map(c => ({...(app.candidates.find(x => x.device_id === c.device_id) ?? {}), ...c}));
+  }
+  function candidateRows() {
+    return app.candidates.map(c => ({deviceId: c.device_id, actor: c.actor, fingerprint: c.fingerprint, expiresAt: Number.isFinite(c.expires_at) ? c.expires_at * 1000 : null,
+      busy: !!c.busy, message: c.message ?? null,
+      onApprove: () => openRelayApprove(c.device_id),
+      onIgnore: () => { app.dismissedCandidates.add(c.device_id); app.candidates = app.candidates.filter(x => x.device_id !== c.device_id); render(); }}));
+  }
+  /**
+   * Approve a mailbox candidate: recompute the fingerprint locally from signing_key (policy_fingerprint) and refuse when it
+   * differs from what the relay relayed, then the approve sheet's compare step (relay mode) → signApproval → POST.
+   */
+  async function openRelayApprove(deviceId) {
+    const c = app.candidates.find(x => x.device_id === deviceId);
+    if (!c || c.busy) return;
+    let fingerprint;
+    try { fingerprint = await app.dev.policyFingerprint(c.signing_key); }
+    catch (error) { c.message = strings.candidates.signFailed(error.message); render(); return; }
+    if (fingerprint !== c.fingerprint) {
+      c.message = strings.candidates.mismatch;
+      logLine(`후보 ${deviceId} 지문 불일치: 릴레이 ${c.fingerprint} ≠ 로컬 ${fingerprint} — 승인하지 않음`);
+      render();
+      return;
+    }
+    ui.openApproveSheet(root, {mode: 'relay', candidate: {deviceId, fingerprint}, onApprove: () => approveViaRelay(c, fingerprint), onClose: () => {}});
+  }
+  async function approveViaRelay(c, fingerprint) {
+    c.busy = true; c.message = null; render();
+    try {
+      let base = app.candidateRevision ?? app.me?.policy_revision ?? null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (!Number.isSafeInteger(base) || base < 1) throw new Error(strings.room.candidateMissing('base_revision'));
+        const args = approvalArgs(c, base);
+        let signature;
+        try { signature = await app.dev.signApproval(JSON.stringify(args)); }
+        catch (error) { throw new Error(strings.candidates.signFailed(error.message)); }
+        const r = await app.dev.postApproval(approvalEvidence(args, signature, fingerprint, app.device));
+        if (r.status === 201) {
+          logLine(`${c.device_id} 승인 → 체인 revision ${r.body?.revision ?? '?'} (approved_by ${r.body?.approved_by ?? app.device})`);
+          app.candidates = app.candidates.filter(x => x.device_id !== c.device_id);
+          status(strings.candidates.approved(c.device_id), 'ok');
+          await refreshMe();
+          queueSiblingInvites(c.device_id);
+          return;
+        }
+        if (r.status === 409 && r.body?.error === 'stale_revision' && attempt === 0) {
+          logLine(`${strings.candidates.stale} (revision ${base} → ${r.body.revision ?? '?'})`);
+          base = Number.isSafeInteger(r.body.revision) ? r.body.revision : null;
+          if (base === null) { await refreshMe(); base = app.me?.policy_revision ?? null; }
+          continue;
+        }
+        throw new Error(strings.candidates.rejected(r.body?.detail || relay.describe(r.status, r.body)));
+      }
+    } catch (error) { c.message = error.message; logLine(`${c.device_id} 승인 실패: ${error.message}`); throw error; }
+    finally { c.busy = false; render(); }
+  }
+  const roomsView = () => [...app.rooms.entries()].map(([roomId, R]) => { const S = R.session.state; return {roomId, joined: S.joined, halted: S.halted, pending: S.pending, roster: S.roster}; });
+  /** After approving a sibling: remember the rooms it should join; the queue is worked at the end of every refresh. */
+  function queueSiblingInvites(target) {
+    const rooms = siblingInviteRooms(roomsView(), target);
+    if (!rooms.length) return;
+    if (!writeSiblingQueue(storage, app.device, enqueueSiblingInvites(readSiblingQueue(storage, app.device), target, rooms, Date.now()))) logLine('형제 기기 초대 대기열 저장 실패 — 이번 화면에서만 시도');
+    logLine(`형제 기기 ${target} 초대 대기열: ${rooms.join(', ')}`);
+  }
+  /**
+   * Sibling invites (#574): a freshly approved device publishes its lobby keys only on its next tick, so the first
+   * invite usually fails with noKeyPackage — keep the room queued and retry next tick; give up after 30 min with a 🔔 note.
+   */
+  async function processSiblingInvites() {
+    const queue = readSiblingQueue(storage, app.device);
+    if (!queue.length) return;
+    const {live, expired} = splitSiblingQueue(queue, Date.now());
+    for (const e of expired) {
+      logLine(`형제 기기 ${e.target} 초대 포기(30분): ${e.rooms.join(', ')}`);
+      addNote(`sibling-expired:${e.target}`, strings.candidates.siblingGaveUp(e.target, e.rooms.map(roomLabel).join(', ')), 'warn');
+    }
+    const next = [];
+    for (const e of live) {
+      const remaining = [];
+      for (const roomId of e.rooms) {
+        const R = app.rooms.get(roomId);
+        if (!R) continue;   // room gone from this device — nothing to invite into
+        const S = R.session.state;
+        if (!siblingInviteRooms([{roomId, joined: S.joined, halted: S.halted, pending: S.pending, roster: S.roster}], e.target).length) {
+          if (S.pending && S.joined && !S.halted) remaining.push(roomId);   // my own commit still pending → next tick
+          continue;   // already a member / halted / not joined — done
+        }
+        try {
+          await R.session.invite(e.target);
+          logLine(strings.candidates.siblingInvited(e.target, roomId));
+          status(strings.candidates.siblingInvited(e.target, roomLabel(roomId)), 'ok');
+        } catch (error) {
+          if (isRetryableInviteError(error, [strings.room.noKeyPackage(e.target), strings.room.pendingCommit, strings.room.commitRaced])) remaining.push(roomId);
+          else { logLine(`형제 기기 ${e.target} 초대 실패(${roomId}, 포기): ${error.message}`); addNote(`sibling-failed:${e.target}:${roomId}`, strings.candidates.siblingFailed(e.target, roomLabel(roomId), error.message), 'danger'); }
+        }
+      }
+      if (remaining.length) next.push({...e, rooms: remaining});
+    }
+    writeSiblingQueue(storage, app.device, next);
+  }
+  function addNote(key, text, tone = 'info') {
+    if (app.notes.some(n => n.key === key)) return;
+    app.notes.push({key, text, tone});
+    render();
+  }
+  function noteRows() {
+    return app.notes.map(n => ({key: n.key, text: n.text, tone: n.tone, onDismiss: () => { app.notes = app.notes.filter(x => x.key !== n.key); render(); }}));
+  }
+  /** 「내 기기」 sheet (#574 E5): my chain records + grant/release registrar via sign_roles → POST /v2/devices/roles. */
+  const devicesView = () => (Array.isArray(app.me?.devices) ? rolesActions(app.me, app.device) : null);
+  function openDevices() {
+    ui.openDevicesSheet(root, {view: devicesView(), onGrant: id => setRoles(id, true), onRelease: id => setRoles(id, false), onClose: () => {}});
+  }
+  async function setRoles(targetId, grant) {
+    let base = app.me?.policy_revision ?? null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const target = recordOf(app.me, targetId);
+      if (!target) throw new Error(strings.devices.empty);
+      if (!Number.isSafeInteger(base) || base < 1) throw new Error(strings.room.candidateMissing('base_revision'));
+      const args = rolesArgs(target, nextRoles(target.roles, grant), base);
+      let signature;
+      try { signature = await app.dev.signRoles(JSON.stringify(args)); }
+      catch (error) { throw new Error(strings.candidates.signFailed(error.message)); }
+      const r = await app.dev.postRoles(rolesEvidence(args, signature, app.device));
+      if (r.status === 201) {
+        logLine(`${targetId} roles=${JSON.stringify(args.roles)} → 체인 revision ${r.body?.revision ?? '?'}`);
+        status(strings.devices.done(targetId, grant), 'ok');
+        await refreshMe(); render();
+        return devicesView();
+      }
+      if (r.status === 409 && r.body?.error === 'stale_revision' && attempt === 0) {
+        logLine(`${strings.candidates.stale} (revision ${base} → ${r.body.revision ?? '?'})`);
+        await refreshMe();   // the target's current roles may have moved too — re-read before re-signing
+        base = Number.isSafeInteger(r.body.revision) ? r.body.revision : (app.me?.policy_revision ?? null);
+        continue;
+      }
+      throw new Error(strings.devices.rejected(r.body?.detail || relay.describe(r.status, r.body)));
+    }
+    return devicesView();
   }
   /**
    * 탭·온라인·bfcache 복귀 직후 한 번(#544 A): ⚙ 「지금 동기화」와 같은 경로를 조용히 — 기기 refresh 뒤 방별 sync({quiet}).
@@ -401,8 +610,10 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       if (R && R.session.joined) continue;   // joined already — the next ack drops it from the list
       if (typeof w.key_package_ref === 'string' && w.key_package_ref) refs.set.add(w.key_package_ref); else refs.complete = false;
       if (app.dismissed.has(w.room) || invites.some(i => i.room === w.room)) continue;
-      if (AUTO_JOIN_ACTORS.has(app.actor)) {
-        // Owner devices auto-join; a failure is not silent — the invite stays in the 🔔 list
+      // Owner devices auto-join, and so does any device whose Welcome came from its own sibling (same actor, active on
+      // the chain — #574: the sibling that approved this device invites it into every room it was in).
+      if (AUTO_JOIN_ACTORS.has(app.actor) || isSibling(w.from, app.me, app.actor, app.device)) {
+        // A failure is not silent — the invite stays in the 🔔 list
         // (and the list card) with its state, where 「다시 시도」 resets the attempt count (#521).
         const failed = app.adoptFailed.get(w.room);
         const exhausted = failed && failed.seq === w.seq && failed.tries >= ADOPT_TRIES;
@@ -455,10 +666,12 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   function copyDiagnostics() {
     const rooms = [...app.rooms.entries()].map(([id, R]) => { const S = R.session.state; return `${id}: joined=${S.joined} halted=${!!S.halted} relaySeq=${S.relaySeq} epoch=${S.epoch} pending=${S.pending}`; });
     const invites = app.invites.map(i => `${i.room}: seq ${i.seq} ${i.failed ? `failed ${i.failed.tries}x (${i.failed.reason ?? '-'})` : i.busy ? 'busy' : 'new'}`);
-    const text = [`hande web diagnostics ${clock(true)} device=${app.device} actor=${app.actor}`, 'rooms:', ...rooms, 'invites:', ...invites, 'log:', ...app.logs.slice(-200)].join('\n');
+    const me = app.me ? `me: subject=${app.me.subject} policy_revision=${app.me.policy_revision ?? '-'} devices=${(app.me.devices ?? []).map(d => `${d.device_id}(${d.status}${d.roles?.length ? ',' + d.roles.join('+') : ''})`).join(' ') || '-'}` : 'me: -';
+    const candidates = app.candidates.map(c => `${c.device_id}: fp ${c.fingerprint.slice(0, 8)}… ${c.busy ? 'busy' : c.message ? `error ${c.message}` : 'new'}`);
+    const text = [`hande web diagnostics ${clock(true)} device=${app.device} actor=${app.actor} enroll=${app.enroll.mode}`, me, 'rooms:', ...rooms, 'invites:', ...invites, 'candidates:', ...candidates, 'log:', ...app.logs.slice(-200)].join('\n');
     return copy(text);
   }
-  function openNotify() { ui.openNotifySheet(root, {invites: inviteRows(), onCopyLogs: copyDiagnostics, onClose: () => {}}); }
+  function openNotify() { ui.openNotifySheet(root, {invites: inviteRows(), candidates: candidateRows(), notes: noteRows(), onCopyLogs: copyDiagnostics, onClose: () => {}}); }
 
   // ---- actions ----
   const cur = () => app.rooms.get(app.current)?.session;
@@ -490,6 +703,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       {label: strings.menu.create, run: openCreate, testid: 'menu-create'},
       {label: strings.menu.settings, run: openSettings},
       ...(cur() ? [{label: strings.menu.invite, run: openInvite}] : []),
+      ...(devicesView() ? [{label: strings.menu.devices, run: openDevices, testid: 'menu-devices'}] : []),
       {label: strings.menu.approve, run: openApprove},
       {label: strings.menu.sync, run: () => refresh().then(() => Promise.all([...app.rooms.values()].map(R => R.session.sync()))).then(render)},
       {label: strings.menu.wipe, run: confirmWipe, tone: 'danger'},
@@ -498,7 +712,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   function openSettings() {
     const reg = JSON.stringify(app.dev.registration(app.subject), null, 1);
     ui.openSettingsSheet(root, {deviceId: app.device, actor: app.actor, fingerprint: app.dev.state.fingerprint, subject: app.subject,
-      origin: location.host, onCopyRegistration: () => copy(reg), onOpenApprove: openApprove, onWipe: confirmWipe, onClose: () => {}});
+      origin: location.host, onCopyRegistration: () => copy(reg), onOpenApprove: openApprove, onOpenDevices: devicesView() ? openDevices : null, onWipe: confirmWipe, onClose: () => {}});
   }
   function openJoin() {
     ui.openJoinSheet(root, {defaultRoom: app.current ?? app.defaultRoom, busy: false, message: null, onClose: () => {}, onSubmit: async roomId => {
@@ -548,19 +762,22 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     ui.openApproveSheet(root, {
       onOffer: async json => {
         const c = JSON.parse(json);
-        for (const k of ['device_id', 'actor', 'subject', 'signing_key', 'base_revision']) if (!(k in c)) throw new Error(strings.room.candidateMissing(k));
+        for (const k of ['device_id', 'actor', 'subject', 'signing_key']) if (!(k in c)) throw new Error(strings.room.candidateMissing(k));
         if (!/^[a-f0-9]{64}$/.test(c.signing_key)) throw new Error(strings.room.candidateKeyInvalid);
+        // base_revision in the pasted JSON is optional since #574: the relay tells us the current policy revision (GET /v2/me).
+        const base = c.base_revision ?? app.me?.policy_revision ?? null;
+        if (base === null || base === undefined) throw new Error(strings.room.candidateMissing('base_revision'));
         const fingerprint = await app.dev.policyFingerprint(c.signing_key);
-        candidate = {...c, fingerprint};
+        candidate = {...c, base_revision: base, fingerprint};
         return {deviceId: c.device_id, fingerprint};
       },
       onApprove: async () => {
         if (!candidate) throw new Error('먼저 등록 JSON을 붙여 넣어 지문을 확인하세요');
-        const args = {action: 'approve-device', device_id: candidate.device_id, actor: candidate.actor, subject: candidate.subject,
-          signing_key: candidate.signing_key, acceptance: 'trusted-device-fingerprint', base_revision: Number(candidate.base_revision)};
-        const signature = await app.dev.signApproval(JSON.stringify(args));
-        const evidence = {...args, signature, fingerprint: candidate.fingerprint, approved_by: app.device};
-        delete evidence.action; delete evidence.acceptance;
+        const args = approvalArgs(candidate, candidate.base_revision);
+        let signature;
+        try { signature = await app.dev.signApproval(JSON.stringify(args)); }
+        catch (error) { throw new Error(strings.candidates.signFailed(error.message)); }
+        const evidence = approvalEvidence(args, signature, candidate.fingerprint, app.device);
         candidate = null;
         logLine(strings.room.approvalSigned);
         return JSON.stringify(evidence, null, 1);
