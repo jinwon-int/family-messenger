@@ -134,6 +134,13 @@ CREATE TABLE IF NOT EXISTS mls_members (
 	PRIMARY KEY (room, device)
 );
 CREATE INDEX IF NOT EXISTS mls_events_device ON mls_events(device);
+CREATE TABLE IF NOT EXISTS mls_read (
+	room       TEXT NOT NULL REFERENCES mls_rooms(room),
+	actor      TEXT NOT NULL,
+	seq        INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL,
+	PRIMARY KEY (room, actor)
+);
 CREATE TABLE IF NOT EXISTS mls_lobby_keypackages (
 	device        TEXT NOT NULL,
 	ref           TEXT NOT NULL,
@@ -924,6 +931,10 @@ type eventsPage struct {
 	// transaction as the rows so a client can check a commit's inner roster
 	// delta against it. Empty for a room that has no seeded membership yet.
 	members []memberRow
+	// readSeq is the reader's actor-wide read position (#571 B, read.go):
+	// keyed by the actor of the reader's mls_members row, 0 when the reader
+	// is not a tracked member or nobody of that actor has posted a read yet.
+	readSeq int64
 }
 
 // maxPageBytes bounds the event bytes one GET page carries (review 2 L: with
@@ -1006,6 +1017,11 @@ func (s *relay) readEvents(room, device string, after int64, limit int, ack *int
 	}
 	if page.members, err = readMembers(tx, room); err != nil {
 		return eventsPage{}, err
+	}
+	if actor := actorOfMember(page.members, device); actor != "" {
+		if page.readSeq, err = readActorSeq(tx, room, actor); err != nil {
+			return eventsPage{}, err
+		}
 	}
 	if ack == nil {
 		cur, err := readCursor(tx, room, device)
