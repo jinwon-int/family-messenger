@@ -73,6 +73,23 @@ final class RoomMembership {
             device: identity, packages: [KeyPackageInput(ref: Self.sha256Hex(package), bytes: package)]))
     }
 
+    /// 이 방 상태의 읽기 전용 요약(#574 형제 기기 초대 판정, `SelfService.siblingInviteRooms` 입력): 그룹 멤버인가 · 내 commit 이 대기 중인가 ·
+    /// 현재 명단(그룹이 없으면 nil). 상태를 바꾸지도 저장하지도 않는다. 방 상태 파일이 없으면 (false, false, nil).
+    struct Status: Equatable {
+        var joined: Bool
+        var pending: Bool
+        var roster: [DeviceID]?
+    }
+
+    func status() throws -> Status {
+        try stateStore.withExclusive(room: room, timeout: lockTimeout) { tx in
+            guard let bytes = try tx.load() else { return Status(joined: false, pending: false, roster: nil) }
+            let engine = try engineFactory.importState(identity: identity, bytes: bytes)
+            let roster = (try? engine.dispatch(.members, Data())).flatMap(CommitPolicy.parseRosterFrame)?.map(\.id)
+            return Status(joined: roster?.contains(identity) ?? false, pending: try engine.hasPending(), roster: roster)
+        }
+    }
+
     /// 방 만들기(로컬 그룹 생성). 릴레이의 방은 첫 commit(첫 초대)이 만든다.
     func createGroup() throws {
         try transaction { engine in

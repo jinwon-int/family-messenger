@@ -78,13 +78,24 @@ public final class URLSessionRelayTransport: RelayTransport {
         return .refused(code: body?.error ?? "http_\(status)", status: status)
     }
 
+    /// 기기 셀프서비스 라우트(#574, devices.go)의 거부 매핑: 본문을 호출자가 써야 하는 둘 — 409 `stale_revision`(`revision` = 현재, 다시 서명)
+    /// · 403 `approval_rejected`(`detail` = 사유) — 만 `DevicePolicyRefusal` 로, 그 밖(401·404 옛 릴레이·409 device_exists·403 first_device_out_of_band
+    /// 등)은 `relayFailure` 그대로. 코드는 같은데 본문이 깨졌으면 `RelayError` 로 떨어진다.
+    static func deviceRouteFailure(status: Int, data: Data) -> Error {
+        let failure = relayFailure(status: status, data: data)
+        guard case .refused(let code, _) = failure,
+              code == RelayErrorCode.staleRevision.rawValue || code == RelayErrorCode.approvalRejected.rawValue,
+              let body = try? JSONDecoder().decode(RelayErrorBody.self, from: data) else { return failure }
+        return DevicePolicyRefusal(code: code, status: status, detail: body.detail, revision: body.revision)
+    }
+
     func decode<T: Decodable>(_ type: T.Type, _ data: Data) throws -> T {
         do { return try JSONDecoder().decode(T.self, from: data) }
         catch { throw RelayError.decoding("\(T.self): \(error)") }
     }
 
-    /// 공통 왕복: 성공(2xx)이면 바디를 돌려주고, 아니면 relayFailure 매핑으로 던진다.
-    func perform(_ request: URLRequest) async throws -> Data {
+    /// 한 왕복: 전송 실패는 `.network`, HTTP 가 아니면 `.network` — 상태코드 판정은 호출자가 한다.
+    private func exchange(_ request: URLRequest) async throws -> (status: Int, data: Data) {
         let data: Data
         let response: URLResponse
         do {
@@ -95,9 +106,20 @@ public final class URLSessionRelayTransport: RelayTransport {
         guard let http = response as? HTTPURLResponse else {
             throw RelayError.network("non-http response")
         }
-        guard (200..<300).contains(http.statusCode) else {
-            throw Self.relayFailure(status: http.statusCode, data: data)
-        }
+        return (http.statusCode, data)
+    }
+
+    /// 공통 왕복: 성공(2xx)이면 바디를 돌려주고, 아니면 relayFailure 매핑으로 던진다.
+    func perform(_ request: URLRequest) async throws -> Data {
+        let (status, data) = try await exchange(request)
+        guard (200..<300).contains(status) else { throw Self.relayFailure(status: status, data: data) }
+        return data
+    }
+
+    /// 기기 셀프서비스 왕복: `perform` 과 같되 거부를 `deviceRouteFailure` 로 매핑한다.
+    func performDeviceRoute(_ request: URLRequest) async throws -> Data {
+        let (status, data) = try await exchange(request)
+        guard (200..<300).contains(status) else { throw Self.deviceRouteFailure(status: status, data: data) }
         return data
     }
 
@@ -291,5 +313,54 @@ public final class URLSessionRelayTransport: RelayTransport {
 
     func lobbyWelcomesRequest(device: DeviceID) throws -> URLRequest {
         try makeRequest(method: "GET", path: "/v2/lobby/welcomes", query: [URLQueryItem(name: "device", value: device)])
+    }
+
+    // MARK: - 기기 셀프서비스 (#574 D1, server/devices.go · me.go)
+
+    public func postDeviceCandidate(_ post: DeviceCandidatePost) async throws -> DeviceCandidatePosted {
+        // devices.go handlePostCandidate: JWT 만(아직 체인에 없는 기기). 201 · 409 device_exists · 403 first_device_out_of_band/subject_mismatch ·
+        // 400 bad_candidate. 라우트가 없는 옛 릴레이(또는 접근 인증·기기 저장소 없음)는 404 — 호출자(AppModel)가 운영자 흐름으로 간다.
+        try decode(DeviceCandidatePosted.self, await performDeviceRoute(try postDeviceCandidateRequest(post)))
+    }
+
+    public func listDeviceCandidates(device: DeviceID) async throws -> DeviceCandidates {
+        // devices.go handleListCandidates: `device` 는 호출자 subject 의 활성 기기(bindDevice) — 아니면 403 device_subject_mismatch.
+        try decode(DeviceCandidates.self, await performDeviceRoute(try listDeviceCandidatesRequest(device: device)))
+    }
+
+    public func postDeviceApproval(_ evidence: DeviceApprovalEvidence) async throws -> DevicePolicyCommit {
+        // devices.go handlePostApproval = devicepolicy.ApplyAddDevice + subject 바인딩. 409 stale_revision(revision) · 403 approval_rejected(detail)
+        // 는 DevicePolicyRefusal, 403 subject_mismatch/device_subject_mismatch · 400 은 RelayError.refused.
+        try decode(DevicePolicyCommit.self, await performDeviceRoute(try postDeviceApprovalRequest(evidence)))
+    }
+
+    public func postDeviceRoles(_ evidence: DeviceRolesEvidence) async throws -> DevicePolicyCommit {
+        // devices.go handlePostRoles = devicepolicy.ApplySetRoles + subject 바인딩. 거부 매핑은 승인과 같다.
+        try decode(DevicePolicyCommit.self, await performDeviceRoute(try postDeviceRolesRequest(evidence)))
+    }
+
+    public func me() async throws -> MeResponse {
+        // me.go handleMe: 접근 인증이 켜진 릴레이만(아니면 404). 기기 저장소가 있으면 policy_revision·devices 가 함께 온다.
+        try decode(MeResponse.self, await perform(try meRequest()))
+    }
+
+    func postDeviceCandidateRequest(_ post: DeviceCandidatePost) throws -> URLRequest {
+        try makeRequest(method: "POST", path: "/v2/devices/candidates", body: try JSONEncoder().encode(post))
+    }
+
+    func listDeviceCandidatesRequest(device: DeviceID) throws -> URLRequest {
+        try makeRequest(method: "GET", path: "/v2/devices/candidates", query: [URLQueryItem(name: "device", value: device)])
+    }
+
+    func postDeviceApprovalRequest(_ evidence: DeviceApprovalEvidence) throws -> URLRequest {
+        try makeRequest(method: "POST", path: "/v2/devices/approvals", body: try JSONEncoder().encode(evidence))
+    }
+
+    func postDeviceRolesRequest(_ evidence: DeviceRolesEvidence) throws -> URLRequest {
+        try makeRequest(method: "POST", path: "/v2/devices/roles", body: try JSONEncoder().encode(evidence))
+    }
+
+    func meRequest() throws -> URLRequest {
+        try makeRequest(method: "GET", path: "/v2/me")
     }
 }

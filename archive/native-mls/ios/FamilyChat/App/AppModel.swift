@@ -24,6 +24,13 @@
 // 자동 참여(A)가 실패해도 조용히 사라지지 않는다(#521, 웹 #522 와 동일): 같은 Welcome 은 세션당 `adoptTries` 번까지 다시 시도하고,
 // 그 뒤에도 `pendingInvites` 에 상태(`inviteStates`: 새 초대 / 수락하는 중 / 자동 수락 실패 n회 — 사유)와 함께 남아 🔔 알림 시트가
 // 「다시 시도」(횟수 초기화)·「무시」를 받는다. 참여하지 않은 Welcome 이 쓴 로비 키의 비밀은 보충이 지우지 않는다(`replenish(protect:)`, #518).
+//
+// 새 기기 셀프서비스(#574 PR 3, 웹 PR 2b 와 동일, 판정은 `SelfService`): 등록 대기(403) 바퀴마다 `GET /v2/me` 로 체인을 보고, 후보를
+// `POST /v2/devices/candidates` 에 올린다(만료 5분 전 재게시; 404 = 옛 릴레이 → 운영자 흐름, 409 device_exists → ID 재사용 불가).
+// 준비 상태의 바퀴는 `GET /v2/me`(`meEveryRounds` 마다) → 서명할 수 있으면(활성 + registrar 이거나 actor 에 registrar 없음) 우편함을 읽어
+// `candidates` 에 두고, 사람이 지문을 비교해 승인하면 `sign_approval` → `POST /v2/devices/approvals`(409 stale_revision 은 한 번 재서명).
+// 승인 직후 내가 참여한 방 목록을 `siblingQueue` 에 적고 바퀴마다 초대한다(새 기기가 로비 키를 올릴 때까지 재시도, 30분 뒤 🔔 에 알리고 포기).
+// 새 기기 쪽은 형제 기기(`from` 이 같은 actor 의 활성 기록)가 보낸 로비 Welcome 을 오너 기기처럼 묻지 않고 받는다.
 import Foundation
 import FamilyMLSCore
 
@@ -78,6 +85,12 @@ final class AppModel: ObservableObject {
         var lockScreenPreview: () async -> LockScreenPreview = { .unknown }
         /// #562 타이핑 신호의 방별 최소 간격(초) — 릴레이 TTL(6s)의 절반. 0 = 글이 바뀔 때마다(테스트).
         var typingInterval: TimeInterval = 3
+        /// #574 형제 기기 초대 대기열 영속(기기별). 기본 = 메모리(테스트), live() 는 App Group defaults.
+        var siblingQueue: SiblingQueueStoring = InMemorySiblingQueueStore()
+        /// #574 준비 상태에서 `GET /v2/me` 를 묻는 간격(바퀴 수, 웹 `ME_EVERY_TICKS` = 4). 로그인·전면 복귀·체인 변경 직후에는 바로 묻는다.
+        var meEveryRounds = 4
+        /// 시계(후보 재게시·대기열 TTL). 테스트가 돌린다.
+        var clock: () -> Date = { Date() }
     }
 
     /// 저장소 밖의 삭제 작업(§9-5). `storage` = MLS 상태 전부(identity 슬롯 포함) + messages.db 행, `identity` = 저장된 기기 ID.
@@ -194,6 +207,35 @@ final class AppModel: ObservableObject {
     static let diagnosticsKeep = 200
     private(set) var diagnostics: [String] = []
 
+    // #574 새 기기 셀프서비스
+    /// 마지막 `GET /v2/me`(내 subject 의 체인 기록·정책 revision). nil = 아직 안 물었거나 접근 인증이 꺼진 릴레이(404).
+    @Published private(set) var me: MeResponse?
+    /// 등록 대기 화면의 모드(후보 게시 결과)와 게시 만료 시각.
+    struct EnrollmentStatus: Equatable {
+        var mode: SelfService.EnrollMode = .operatorFlow
+        var expiresAt: Date?
+    }
+    @Published private(set) var enrollment = EnrollmentStatus()
+    /// 우편함의 내 actor 후보(이 기기가 서명할 수 있을 때만, 무시한 것 제외) — 🔔 「새 기기 승인」 칸.
+    @Published private(set) var candidates: [DeviceCandidate] = []
+    /// 형제 기기 초대의 포기·실패 알림(🔔) — 같은 key 는 한 번만.
+    struct SiblingNote: Equatable, Identifiable {
+        var id: String
+        var text: String
+    }
+    @Published private(set) var siblingNotes: [SiblingNote] = []
+    /// 다음 바퀴에 `GET /v2/me` 를 묻는다(로그인·전면 복귀·승인·역할 변경 뒤).
+    private var meDue = true
+    private var meRoundsSince = 0
+    /// 릴레이가 셀프서비스 라우트를 모른다(404) — 이 세션에서는 다시 묻지 않는다(로비·타이핑과 같은 규칙).
+    private var selfServiceUnsupported = false
+    /// 후보를 다시 올릴 시각(만료 5분 전). nil = 지금.
+    private var nextCandidatePostAt: Date?
+    /// 마지막 후보 목록의 `policy_revision` — 승인 서명의 base_revision.
+    private var candidateRevision: Int64?
+    /// 「무시」한 후보 — 이 세션에서만(우편함에는 TTL 까지 남는다).
+    private var dismissedCandidates: Set<DeviceID> = []
+
     private let deps: Dependencies
     private(set) var engine: MlsEngine?
     private var identitySeed: Data?
@@ -305,6 +347,8 @@ final class AppModel: ObservableObject {
         lobbyCheckDue = true; lobbyUnsupported = false; adoptFailed = [:]
         typingUnsupported = false; typingSentAt = [:]
         readUnsupported = false; readSentSeq = [:]
+        meDue = true; meRoundsSince = 0; selfServiceUnsupported = false; nextCandidatePostAt = nil
+        enrollment = EnrollmentStatus(); candidates = []; candidateRevision = nil
         refreshRegistrationSubject()
         push.loggedIn()
         lastError = nil
@@ -330,6 +374,7 @@ final class AppModel: ObservableObject {
         transport = nil
         syncEngines = [:]
         typing = [:]; relayReadSeq = [:]
+        me = nil; candidates = []; candidateRevision = nil
         phase = .needsLogin
         pushStatus = .off
         return Task {
@@ -367,6 +412,10 @@ final class AppModel: ObservableObject {
             self.relayReadSeq = [:]; self.readSentSeq = [:]
             self.pendingInvites = []; self.inviteStates = [:]; self.notice = nil; self.lobbyLive = nil
             self.adoptFailed = [:]; self.accepting = []; self.unadoptedWelcomes = []; self.dismissedInvites = []; self.diagnostics = []
+            // #574: 옛 기기 ID 의 초대 대기열·후보·체인 보기도 버린다(새 ID 는 새 대기열).
+            self.deps.siblingQueue.save(SiblingInviteQueue(), device: device)
+            self.me = nil; self.candidates = []; self.candidateRevision = nil; self.dismissedCandidates = []; self.siblingNotes = []
+            self.enrollment = EnrollmentStatus(); self.nextCandidatePostAt = nil; self.selfServiceUnsupported = false; self.meDue = true
             self.engine = nil; self.identitySeed = nil; self.registration = nil; self.rooms = []
             try self.deps.wipe.storage()
             self.deps.wipe.identity()
@@ -505,6 +554,7 @@ final class AppModel: ObservableObject {
                 }
             } catch RelayError.refused(let code, let status) where status == 403 && code == RelayErrorCode.deviceSubjectMismatch.rawValue {
                 phase = .needsEnrollment
+                try await enrollTickLocked(transport)   // #574: 후보 게시(형제 기기가 승인) — 옛 릴레이면 운영자 흐름 그대로
                 return
             } catch RelayError.refused(_, let status) where status == 404 {
                 // 확장 ① 이 없는 릴레이 — 아는 방만 동기화한다.
@@ -540,13 +590,19 @@ final class AppModel: ObservableObject {
             if pending {
                 phase = .needsEnrollment
                 lastError = nil
+                try await enrollTickLocked(transport)
             } else {
                 phase = haltedReasonFromRooms().map { .halted($0) } ?? .ready
                 try await syncPushLocked(transport)
                 lastError = nil
+                // #574: 체인 보기(/v2/me) — 형제 판정·서명 자격·「내 기기」. 로비 Welcome 판정보다 먼저.
+                try await refreshMeLocked(transport, force: false)
                 // 로비(#380): 아직 참여하지 않은 방의 Welcome → (A) 바로 참여 / (B) 수락 대기, 그 뒤 보충. 실패는 lastError 에만.
                 try await discoverLobbyWelcomesLocked(transport)
                 if lobbyCheckDue { try await replenishLobbyLocked() }
+                // #574: 우편함의 새 기기 후보 → 🔔 「새 기기 승인」, 승인한 형제 기기 초대 대기열 처리.
+                try await discoverCandidatesLocked(transport)
+                try await processSiblingInvitesLocked()
                 rooms = try deps.messageStore.rooms()
                 phase = haltedReasonFromRooms().map { .halted($0) } ?? .ready
             }
@@ -697,6 +753,9 @@ final class AppModel: ObservableObject {
         let stamp = ISO8601DateFormatter().string(from: now)
         // 배열 `+` 를 한 식에 여럿 묶으면 Linux Swift 타입체커가 시간 초과한다(CI 2026-10-27) — 단계별 append 로 쓴다.
         var lines: [String] = ["hande ios diagnostics \(stamp) device=\(deviceId) actor=\(actor) phase=\(phase)"]
+        // #574: 체인 보기·등록 모드·승인 대기 후보(기기 ID 만 — 키·지문 없음).
+        let meLine = me.map { "revision \($0.policyRevision.map { String($0) } ?? "-") devices \($0.devices?.count ?? 0)" } ?? "-"
+        lines.append("selfservice: me=\(meLine) enroll=\(enrollment.mode) candidates=\(candidates.map(\.deviceId).joined(separator: ","))")
         lines.append("rooms:")
         lines.append(contentsOf: roomLines)
         lines.append("invites:")
@@ -750,8 +809,9 @@ final class AppModel: ObservableObject {
             if (try? keyring.isMember(room: welcome.room)) == true { continue }   // 참여 끝 — 다음 ack 가 목록에서 지운다
             unadopted.append(welcome)
             if dismissedInvites.contains(welcome.room) || invites.contains(where: { $0.room == welcome.room }) { continue }
-            if autoJoinsLobbyInvites {
-                // 오너 기기(A)는 묻지 않고 들어간다. 실패는 조용히 사라지지 않는다(#521): 같은 seq 는 세션당 `adoptTries` 번까지 다시
+            if autoJoinsLobbyInvites || isSiblingWelcome(welcome) {
+                // 오너 기기(A)는 묻지 않고 들어간다 — 같은 actor 의 활성 형제 기기가 보낸 초대(#574: 나를 승인한 기기가 자기 방마다 초대)도.
+                // 실패는 조용히 사라지지 않는다(#521): 같은 seq 는 세션당 `adoptTries` 번까지 다시
                 // 시도하고, 그 뒤에도 상태와 함께 목록에 남아 「다시 시도」가 횟수를 되돌린다(웹 #522 와 동일).
                 let failed = adoptFailed[welcome.room]
                 let exhausted = failed.map { $0.seq == welcome.seq && $0.tries >= Self.adoptTries } ?? false
@@ -852,6 +912,7 @@ final class AppModel: ObservableObject {
     /// 앱이 전면으로 돌아왔다(scenePhase active) — 다음 바퀴에 로비 보충을 다시 본다.
     func foregrounded() async {
         lobbyCheckDue = true
+        meDue = true
         // 설정 앱에서 미리보기를 바꾸고 돌아온 경우가 여기다(#520).
         await refreshLockScreenPreview()
         await refresh()
@@ -892,6 +953,285 @@ final class AppModel: ObservableObject {
     }
 
     func clearNotice() { notice = nil }
+
+    // MARK: - 새 기기 셀프서비스 (#574 PR 3, 웹 app.js enrollTick · discoverCandidates · approveViaRelay · setRoles · processSiblingInvites)
+
+    enum SelfServiceError: Error, Equatable {
+        /// 릴레이가 전한 지문이 공개키에서 계산한 값(`policy_fingerprint`)과 다르다 — 승인하지 않는다.
+        case fingerprintMismatch
+        /// `base_revision` 을 모른다(후보 목록·/v2/me 둘 다 없음 — 옛 릴레이).
+        case baseRevisionUnknown
+        case unknownCandidate
+        case unknownDevice
+        case notReady
+    }
+
+    /// 이 기기의 actor(기기 ID 우선, 없으면 저장된 이름).
+    private var myActor: String? { ActorName.of(deviceId: deviceId) ?? deps.actorStore.actor }
+
+    /// 로비 Welcome 을 같은 actor 의 활성 형제 기기가 보냈나(`from`, #574) — 그러면 가족 기기도 묻지 않고 받는다.
+    private func isSiblingWelcome(_ welcome: PendingWelcome) -> Bool {
+        SelfService.isSibling(from: welcome.from, me: me, actor: myActor, device: deviceId)
+    }
+
+    /// 「내 기기」 화면의 행(체인의 내 subject 기기 전부 + 이 기기가 할 수 있는 역할 변경).
+    var deviceRoles: SelfService.RolesView { SelfService.rolesActions(me, device: deviceId) }
+
+    /// 🔔 배지 수: 받은 초대 + 승인 대기 새 기기 + 형제 초대 알림.
+    var notificationCount: Int { pendingInvites.count + candidates.count + siblingNotes.count }
+
+    /// `GET /v2/me`. 준비 상태의 바퀴는 `meEveryRounds` 마다(또는 `meDue`), 등록 대기·승인 뒤에는 `force`. 404 = 접근 인증 없는 릴레이(me 없음).
+    private func refreshMeLocked(_ transport: RelayTransport, force: Bool) async throws {
+        if !force && !meDue {
+            meRoundsSince += 1
+            if meRoundsSince < deps.meEveryRounds { return }
+        }
+        do {
+            let info = try await transport.me()
+            if info != me { me = info }
+            meDue = false; meRoundsSince = 0
+        } catch RelayError.refused(_, let status) where status == 404 {
+            me = nil; meDue = false; meRoundsSince = 0
+        } catch RelayError.unauthorized {
+            throw RelayError.unauthorized
+        } catch {
+            noteFailure(error)
+        }
+    }
+
+    /// 등록 대기(403) 바퀴: /v2/me 를 새로 보고(체인에 올라왔으면 다음 바퀴의 /v2/rooms 가 성공한다), 후보를 (다시) 올린다 — 처음 한 번,
+    /// 그 뒤 만료 5분 전. 404 → 셀프서비스 없는 릴레이(운영자 흐름, 다시 묻지 않음) · 409 device_exists → ID 재사용 불가 ·
+    /// 403 first_device_out_of_band 등 → 운영자 흐름(5분 뒤 다시 — 그사이 형제 기기가 등록됐을 수 있다).
+    private func enrollTickLocked(_ transport: RelayTransport) async throws {
+        try await refreshMeLocked(transport, force: true)
+        let now = deps.clock()
+        guard !selfServiceUnsupported, enrollment.mode != .idTaken, let registration else { return }
+        if let next = nextCandidatePostAt, now < next { return }
+        do {
+            let posted = try await transport.postDeviceCandidate(DeviceCandidatePost(registration))
+            let expires = Date(timeIntervalSince1970: TimeInterval(posted.expiresAt))
+            enrollment = EnrollmentStatus(mode: .sibling, expiresAt: expires)
+            nextCandidatePostAt = expires.addingTimeInterval(-SelfService.candidateRepostMargin)
+            record("enroll: candidate posted (policy revision \(posted.policyRevision), expires \(posted.expiresAt))")
+        } catch RelayError.unauthorized {
+            throw RelayError.unauthorized
+        } catch {
+            noteCandidatePostFailure(error, now: now)
+        }
+    }
+
+    private func noteCandidatePostFailure(_ error: Error, now: Date) {
+        let mode = SelfService.enrollMode(afterPost: error)
+        if mode != enrollment.mode { record("enroll: mode \(enrollment.mode) → \(mode) (\(Self.brief(error)))") }
+        enrollment = EnrollmentStatus(mode: mode, expiresAt: nil)
+        switch error {
+        case RelayError.refused(_, let status) where status == 404:
+            selfServiceUnsupported = true
+        case RelayError.refused(let code, let status) where status == 409 && code == RelayErrorCode.deviceExists.rawValue:
+            nextCandidatePostAt = .distantFuture
+        default:
+            nextCandidatePostAt = now.addingTimeInterval(SelfService.candidateRepostMargin)
+            if ConnectionIssue.classify(error, taskCancelled: Task.isCancelled) == .unreachable { noteFailure(error) }
+        }
+    }
+
+    /// 기록·알림용 짧은 오류 문구(릴레이 거부는 코드만, 비밀값 없음).
+    nonisolated static func brief(_ error: Error) -> String {
+        switch error {
+        case RelayError.refused(let code, let status): return "\(status) \(code)"
+        case MembershipError.noKeyPackage(let device): return "no key package for \(device)"
+        case let refusal as DevicePolicyRefusal: return refusal.detail ?? refusal.code
+        default: return "\(error)"
+        }
+    }
+
+    /// 우편함(바퀴마다, 이 기기가 서명할 수 있을 때만): 내 actor 의 후보에서 이 세션에 무시한 것을 뺀다. 403 = 아직 활성 아님, 404 = 셀프서비스 없음.
+    private func discoverCandidatesLocked(_ transport: RelayTransport) async throws {
+        guard !selfServiceUnsupported, let actor = myActor, SelfService.canApprove(me, device: deviceId) else {
+            if !candidates.isEmpty { candidates = [] }
+            return
+        }
+        let list: DeviceCandidates
+        do {
+            list = try await transport.listDeviceCandidates(device: deviceId)
+        } catch RelayError.refused(_, let status) where status == 404 {
+            selfServiceUnsupported = true; candidates = []; return
+        } catch RelayError.refused(_, let status) where status == 403 {
+            candidates = []; return
+        } catch RelayError.unauthorized {
+            throw RelayError.unauthorized
+        } catch {
+            noteFailure(error); return
+        }
+        candidateRevision = list.policyRevision
+        let rows = SelfService.candidates(in: list, actor: actor).filter { !dismissedCandidates.contains($0.deviceId) }
+        for c in rows where !candidates.contains(where: { $0.deviceId == c.deviceId }) {
+            record("candidate: \(c.deviceId) asks for approval (fingerprint \(c.fingerprint.prefix(8))…)")
+        }
+        if rows != candidates { candidates = rows }
+    }
+
+    /// 후보의 지문을 **이 기기에서** 공개키로 다시 계산한다(`policy_fingerprint`) — 릴레이가 전한 값과 다르면 `fingerprintMismatch`.
+    /// 승인 시트가 비교 단계에 보일 값(릴레이 값을 그대로 믿지 않는다).
+    func candidateFingerprint(_ candidateId: DeviceID) throws -> String {
+        guard let candidate = candidates.first(where: { $0.deviceId == candidateId }) else { throw SelfServiceError.unknownCandidate }
+        guard let engine else { throw SelfServiceError.notReady }
+        let local = String(decoding: try engine.dispatch(.policyFingerprint, Data(candidate.signingKey.utf8)), as: UTF8.self)
+        guard local == candidate.fingerprint else {
+            record("candidate \(candidateId): fingerprint mismatch (relay \(candidate.fingerprint.prefix(8))… ≠ local \(local.prefix(8))…) — not approved")
+            throw SelfServiceError.fingerprintMismatch
+        }
+        return local
+    }
+
+    /// 「이 지문이 맞습니다」: 지문을 다시 확인하고 `sign_approval` → `POST /v2/devices/approvals`. 409 stale_revision 이면 릴레이가 준 revision 으로
+    /// 한 번 다시 서명한다. 성공하면 후보가 빠지고, /v2/me 를 새로 읽고, 내가 참여한 방들에 초대할 대기열을 적는다(`processSiblingInvitesLocked`).
+    @discardableResult
+    func approveCandidate(_ candidateId: DeviceID) async throws -> DevicePolicyCommit {
+        try await serial.run {
+            guard let transport = self.transport, let engine = self.engine else { throw SelfServiceError.notReady }
+            guard let candidate = self.candidates.first(where: { $0.deviceId == candidateId }) else { throw SelfServiceError.unknownCandidate }
+            let fingerprint = try self.candidateFingerprint(candidateId)
+            var base = self.candidateRevision ?? self.me?.policyRevision
+            for attempt in 0..<2 {
+                guard let baseRevision = base, baseRevision >= 1 else { throw SelfServiceError.baseRevisionUnknown }
+                let args = try SelfService.approvalArgs(candidate, baseRevision: baseRevision)
+                let signature = try SelfService.signatureHex(framed: try engine.dispatch(.signApproval, try JSONEncoder().encode(args)))
+                do {
+                    // approved_by = 이 기기(self.deviceId), 대상 = 후보(candidateId).
+                    let commit = try await transport.postDeviceApproval(
+                        SelfService.approvalEvidence(args, signature: signature, fingerprint: fingerprint, approvedBy: self.deviceId))
+                    self.record("candidate \(candidateId): approved → policy revision \(commit.revision) (approved_by \(commit.approvedBy))")
+                    self.candidates.removeAll { $0.deviceId == candidateId }
+                    self.notice = Strings.candidateApproved(candidateId)
+                    self.meDue = true
+                    try await self.refreshMeLocked(transport, force: true)
+                    self.queueSiblingInvites(target: candidateId)
+                    return commit
+                } catch let refusal as DevicePolicyRefusal where refusal.code == RelayErrorCode.staleRevision.rawValue && attempt == 0 {
+                    self.record("candidate \(candidateId): stale revision \(baseRevision) → \(refusal.revision.map { String($0) } ?? "?") — re-signing")
+                    if let current = refusal.revision { base = current } else {
+                        try await self.refreshMeLocked(transport, force: true)
+                        base = self.me?.policyRevision
+                    }
+                } catch RelayError.unauthorized {
+                    self.expireSession()
+                    throw RelayError.unauthorized
+                }
+            }
+            throw SelfServiceError.baseRevisionUnknown
+        }
+    }
+
+    /// 「무시」: 이 세션에서는 보이지 않는다(우편함에는 TTL 까지 남아 다음 실행에 다시 보인다).
+    func dismissCandidate(_ candidateId: DeviceID) {
+        dismissedCandidates.insert(candidateId)
+        candidates.removeAll { $0.deviceId == candidateId }
+    }
+
+    /// 「내 기기」의 등록 기기 지정/해제(E5): `sign_roles` → `POST /v2/devices/roles`. roles 는 완전한 정렬 목록. 409 stale_revision 이면
+    /// /v2/me 를 다시 읽고(대상의 역할도 움직였을 수 있다) 한 번 다시 서명한다.
+    @discardableResult
+    func setRegistrar(_ targetId: DeviceID, grant: Bool) async throws -> DevicePolicyCommit {
+        try await serial.run {
+            guard let transport = self.transport, let engine = self.engine else { throw SelfServiceError.notReady }
+            var base = self.me?.policyRevision
+            for attempt in 0..<2 {
+                guard let target = SelfService.record(of: self.me, device: targetId) else { throw SelfServiceError.unknownDevice }
+                guard let baseRevision = base, baseRevision >= 1 else { throw SelfServiceError.baseRevisionUnknown }
+                let args = try SelfService.rolesArgs(target, roles: SelfService.nextRoles(target.roles, grant: grant), baseRevision: baseRevision)
+                let signature = try SelfService.signatureHex(framed: try engine.dispatch(.signRoles, try JSONEncoder().encode(args)))
+                do {
+                    let commit = try await transport.postDeviceRoles(SelfService.rolesEvidence(args, signature: signature, approvedBy: self.deviceId))
+                    self.record("roles \(targetId) = \(args.roles) → policy revision \(commit.revision)")
+                    self.meDue = true
+                    try await self.refreshMeLocked(transport, force: true)
+                    return commit
+                } catch let refusal as DevicePolicyRefusal where refusal.code == RelayErrorCode.staleRevision.rawValue && attempt == 0 {
+                    self.record("roles \(targetId): stale revision \(baseRevision) → \(refusal.revision.map { String($0) } ?? "?") — re-signing")
+                    try await self.refreshMeLocked(transport, force: true)
+                    base = refusal.revision ?? self.me?.policyRevision
+                } catch RelayError.unauthorized {
+                    self.expireSession()
+                    throw RelayError.unauthorized
+                }
+            }
+            throw SelfServiceError.baseRevisionUnknown
+        }
+    }
+
+    func dismissSiblingNote(_ id: String) { siblingNotes.removeAll { $0.id == id } }
+
+    private func addSiblingNote(_ id: String, _ text: String) {
+        guard !siblingNotes.contains(where: { $0.id == id }) else { return }
+        siblingNotes.append(SiblingNote(id: id, text: text))
+    }
+
+    /// 한 방의 초대 판정 입력(웹 `roomsView()`): 참여·정지·내 commit 대기·명단. 상태를 읽을 수 없으면 참여 안 함으로.
+    private func roomView(_ record: RoomRecord) -> SelfService.RoomView {
+        let status = (try? membership(record.room).status()) ?? RoomMembership.Status(joined: false, pending: false, roster: nil)
+        return SelfService.RoomView(roomId: record.room, joined: status.joined, halted: record.haltedReason != nil, pending: status.pending, roster: status.roster)
+    }
+
+    /// 승인 직후: 새 기기를 들일 방(내가 참여한·정지 아닌·명단에 없는 방)을 대기열에 적는다 — 초대 자체는 바퀴마다(`processSiblingInvitesLocked`).
+    private func queueSiblingInvites(target: DeviceID) {
+        let views = rooms.filter { $0.room != Strings.identityRoom && $0.room != LobbyKeyring.slot }.map(roomView)
+        let targets = SelfService.siblingInviteRooms(views, target: target)
+        guard !targets.isEmpty else { return }
+        let queue = deps.siblingQueue.load(device: deviceId).enqueued(target: target, rooms: targets, now: deps.clock())
+        deps.siblingQueue.save(queue, device: deviceId)
+        record("sibling \(target): invite queue \(targets.joined(separator: ","))")
+    }
+
+    /// 다시 시도할 실패(다음 바퀴에): 상대의 키 패키지가 아직 없다(새 기기는 활성이 된 다음 바퀴에야 로비 키를 올린다) · 내 commit 확인 전 ·
+    /// 방이 먼저 바뀜(409) · 릴레이에 닿지 않음. 그 밖(정책 거절 등)은 포기하고 🔔 에 남긴다.
+    nonisolated static func isRetryableInviteError(_ error: Error) -> Bool {
+        switch error {
+        case MembershipError.noKeyPackage, MembershipError.ownCommitNotMerged, RelayError.cas, RelayError.network: return true
+        case RelayError.refused(_, let status): return ConnectionIssue.isTransient(status: status)
+        default: return error is CancellationError || error is URLError
+        }
+    }
+
+    /// 형제 기기 초대 대기열(바퀴 끝): TTL 지난 항목은 🔔 에 알리고 버린다; 살아 있는 항목은 방마다 초대 — 아직 명단에 없고 초대할 수 있으면
+    /// `RoomMembership.invite`, 다시 시도할 실패는 남기고, 그 밖의 실패는 🔔 에 남기고 버린다.
+    private func processSiblingInvitesLocked() async throws {
+        let queue = deps.siblingQueue.load(device: deviceId)
+        guard !queue.isEmpty else { return }
+        let (live, expired) = queue.split(now: deps.clock())
+        for e in expired {
+            record("sibling \(e.target): gave up after \(Int(SelfService.siblingInviteTTL / 60)) min — \(e.rooms.joined(separator: ","))")
+            addSiblingNote("sibling-expired:\(e.target)", Strings.siblingGaveUp(e.target, e.rooms))
+        }
+        var next: [SiblingInviteQueue.Entry] = []
+        for e in live {
+            var remaining: [RoomID] = []
+            for room in e.rooms {
+                guard let recordRow = rooms.first(where: { $0.room == room }) else { continue }   // 이 기기에서 사라진 방
+                let view = roomView(recordRow)
+                guard !SelfService.siblingInviteRooms([view], target: e.target).isEmpty else {
+                    if view.pending && view.joined && !view.halted { remaining.append(room) }   // 내 commit 대기 → 다음 바퀴
+                    continue   // 이미 명단에 있음 / 정지 / 참여 안 함 — 끝
+                }
+                do {
+                    try await membership(room).invite(target: e.target, sync: try syncEngine(room))
+                    record("sibling \(e.target): invited into \(room)")
+                    notice = Strings.siblingInvited(e.target, room)
+                } catch RelayError.unauthorized {
+                    throw RelayError.unauthorized
+                } catch {
+                    if Self.isRetryableInviteError(error) {
+                        remaining.append(room)
+                    } else {
+                        record("sibling \(e.target): invite into \(room) failed (giving up) — \(Self.brief(error))")
+                        addSiblingNote("sibling-failed:\(e.target):\(room)", Strings.siblingInviteFailed(e.target, room, Self.brief(error)))
+                    }
+                }
+            }
+            if !remaining.isEmpty { next.append(SiblingInviteQueue.Entry(target: e.target, rooms: remaining, since: e.since)) }
+        }
+        deps.siblingQueue.save(SiblingInviteQueue(next), device: deviceId)
+    }
 
     // MARK: - 푸시 (§12-D)
 

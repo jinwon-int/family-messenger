@@ -351,6 +351,85 @@ final class RelayTransportTests: XCTestCase {
         }
     }
 
+    // MARK: - 기기 셀프서비스(#574, server/devices.go · me.go) — 5 라우트의 URL·바디 · 거부 매핑
+
+    func testDeviceSelfServiceRequestsMatchServerRoutes() throws {
+        let t = transport(.bearer("t"))
+        let key = String(repeating: "ab", count: 32), fp = String(repeating: "cd", count: 32)
+        let post = try t.postDeviceCandidateRequest(DeviceCandidatePost(deviceId: "mom-iphone-1", actor: "mom", signingKey: key, fingerprint: fp))
+        XCTAssertEqual(post.httpMethod, "POST")
+        XCTAssertEqual(post.url?.absoluteString, "https://relay.example.com/v2/devices/candidates")
+        XCTAssertEqual(post.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        XCTAssertEqual(post.value(forHTTPHeaderField: "Cf-Access-Jwt-Assertion"), "t")
+        let postJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(post.httpBody)) as? [String: Any])
+        XCTAssertEqual(Set(postJSON.keys), ["device_id", "actor", "signing_key", "fingerprint"], "strictJSON — subject 없음")
+
+        let list = try t.listDeviceCandidatesRequest(device: "mom-web-a")
+        XCTAssertEqual(list.httpMethod, "GET")
+        XCTAssertEqual(list.url?.absoluteString, "https://relay.example.com/v2/devices/candidates?device=mom-web-a")
+        XCTAssertNil(list.httpBody)
+
+        let approval = try t.postDeviceApprovalRequest(DeviceApprovalEvidence(deviceId: "mom-iphone-1", actor: "mom", subject: "sub-1", signingKey: key, baseRevision: 7,
+                                                                                signature: String(repeating: "ff", count: 64), fingerprint: fp, approvedBy: "mom-web-a"))
+        XCTAssertEqual(approval.httpMethod, "POST")
+        XCTAssertEqual(approval.url?.absoluteString, "https://relay.example.com/v2/devices/approvals")
+        let approvalJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(approval.httpBody)) as? [String: Any])
+        XCTAssertEqual(Set(approvalJSON.keys), ["device_id", "actor", "subject", "signing_key", "base_revision", "signature", "fingerprint", "approved_by"])
+
+        let roles = try t.postDeviceRolesRequest(DeviceRolesEvidence(deviceId: "mom-iphone-1", actor: "mom", roles: ["registrar"], baseRevision: 8,
+                                                                      signature: String(repeating: "ee", count: 64), approvedBy: "mom-web-a"))
+        XCTAssertEqual(roles.httpMethod, "POST")
+        XCTAssertEqual(roles.url?.absoluteString, "https://relay.example.com/v2/devices/roles")
+        let rolesJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(roles.httpBody)) as? [String: Any])
+        XCTAssertEqual(Set(rolesJSON.keys), ["device_id", "actor", "roles", "base_revision", "signature", "approved_by"])
+
+        let me = try transport(.accessCookie("jwt")).meRequest()
+        XCTAssertEqual(me.httpMethod, "GET")
+        XCTAssertEqual(me.url?.absoluteString, "https://relay.example.com/v2/me")
+        XCTAssertEqual(me.value(forHTTPHeaderField: "Cookie"), "CF_Authorization=jwt")
+        XCTAssertNil(me.httpBody)
+    }
+
+    /// devices.go 거부: 본문을 써야 하는 둘만 `DevicePolicyRefusal`(409 stale_revision 의 `revision`, 403 approval_rejected 의 `detail`), 나머지는 RelayError.
+    func testDeviceRouteFailureMapping() {
+        XCTAssertEqual(URLSessionRelayTransport.deviceRouteFailure(status: 409, data: body(#"{"error":"stale_revision","detail":"revision 7 is not current","revision":9}"#)) as? DevicePolicyRefusal,
+                       DevicePolicyRefusal(code: "stale_revision", status: 409, detail: "revision 7 is not current", revision: 9))
+        XCTAssertEqual(URLSessionRelayTransport.deviceRouteFailure(status: 403, data: body(#"{"error":"approval_rejected","detail":"approver is not a registrar"}"#)) as? DevicePolicyRefusal,
+                       DevicePolicyRefusal(code: "approval_rejected", status: 403, detail: "approver is not a registrar", revision: nil))
+        XCTAssertEqual(URLSessionRelayTransport.deviceRouteFailure(status: 401, data: Data()) as? RelayError, .unauthorized)
+        XCTAssertEqual(URLSessionRelayTransport.deviceRouteFailure(status: 409, data: body(#"{"error":"device_exists","detail":"ids are never reused"}"#)) as? RelayError,
+                       .refused(code: "device_exists", status: 409))
+        XCTAssertEqual(URLSessionRelayTransport.deviceRouteFailure(status: 403, data: body(#"{"error":"first_device_out_of_band"}"#)) as? RelayError,
+                       .refused(code: "first_device_out_of_band", status: 403))
+        XCTAssertEqual(URLSessionRelayTransport.deviceRouteFailure(status: 404, data: Data("404 page not found".utf8)) as? RelayError,
+                       .refused(code: "http_404", status: 404), "라우트 없는 옛 릴레이")
+        XCTAssertEqual(URLSessionRelayTransport.deviceRouteFailure(status: 404, data: body(#"{"error":"not_found"}"#)) as? RelayError,
+                       .refused(code: "not_found", status: 404), "기기 저장소 없는 릴레이")
+        XCTAssertEqual(URLSessionRelayTransport.deviceRouteFailure(status: 409, data: body(#"{"error":"cas_mismatch","epoch":1,"revision":2}"#)) as? RelayError,
+                       .cas(epoch: 1, revision: 2), "다른 라우트의 매핑은 그대로")
+    }
+
+    /// 셀프서비스 라우트를 구현하지 않은 전송(옛 테스트 대역)은 프로토콜 기본 구현이 404 — 호출자(AppModel)는 운영자 흐름으로.
+    func testTransportWithoutDeviceSelfServiceDefaultsTo404() async {
+        final class Legacy: RelayTransport {
+            func postKeyPackages(room: RoomID, _ post: KeyPackagePost) async throws -> KeyPackagesResponse { KeyPackagesResponse(stored: 0, duplicates: 0) }
+            func consumeKeyPackage(room: RoomID, device: DeviceID, target: DeviceID) async throws -> StoredKeyPackage? { nil }
+            func postEvent(room: RoomID, _ post: EventPost) async throws -> EventPostResponse { throw RelayError.network("n/a") }
+            func getEvents(room: RoomID, device: DeviceID, after: Int64, limit: Int, ack: Int64?) async throws -> EventsPage { throw RelayError.network("n/a") }
+            func closeRoom(room: RoomID, device: DeviceID) async throws {}
+            func listRooms(device: DeviceID) async throws -> RoomsResponse { RoomsResponse(rooms: []) }
+            func registerPush(_ registration: PushRegistration) async throws {}
+            func unregisterPush(device: DeviceID) async throws {}
+        }
+        let legacy = Legacy()
+        let notFound = RelayError.refused(code: "not_found", status: 404)
+        await XCTAssertThrowsErrorAsync(try await legacy.postDeviceCandidate(DeviceCandidatePost(deviceId: "d", actor: "a", signingKey: "k", fingerprint: "f"))) {
+            XCTAssertEqual($0 as? RelayError, notFound)
+        }
+        await XCTAssertThrowsErrorAsync(try await legacy.listDeviceCandidates(device: "me")) { XCTAssertEqual($0 as? RelayError, notFound) }
+        await XCTAssertThrowsErrorAsync(try await legacy.me()) { XCTAssertEqual($0 as? RelayError, notFound) }
+    }
+
     /// 등록 라우트의 서버 거부는 다른 라우트와 같은 매핑(재로그인·등록 대기·설정 오류를 호출자가 가른다).
     func testPushRefusalsMapLikeOtherRoutes() {
         XCTAssertEqual(URLSessionRelayTransport.relayFailure(status: 401, data: Data()), .unauthorized)

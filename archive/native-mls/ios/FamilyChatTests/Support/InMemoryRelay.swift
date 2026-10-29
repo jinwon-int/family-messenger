@@ -323,10 +323,161 @@ final class InMemoryRelay: RelayTransport, RelayControl {
             for (name, r) in rooms.sorted(by: { $0.key < $1.key }) where !r.closed {
                 let cursor = r.cursors[device] ?? 0
                 for ev in r.events where ev.kind == "welcome" && ev.targets.contains(device) && ev.seq > cursor {
-                    out.append(["room": name, "seq": ev.seq, "epoch": ev.epoch, "created_at": 0])
+                    // #574(lobby.go `From`): Welcome 을 올린 기기 — 형제 기기 자동 수락 판정.
+                    out.append(["room": name, "seq": ev.seq, "epoch": ev.epoch, "created_at": 0, "from": ev.device])
                 }
             }
             return try Self.decode(LobbyWelcomes.self, ["welcomes": out]).welcomes
+        }
+    }
+
+    // MARK: 기기 셀프서비스(server/devices.go · me.go, #574) — 호출자 subject 는 하나(`subject`), 체인은 `policyDevices`·`policyRevision`.
+    // 서명은 검증하지 않고 길이(128 hex)만 본다; 서명자 규칙(활성 · 같은 actor · registrar 이거나 actor 에 registrar 없음 · 마지막 registrar
+    // 해제 불가)과 subject 바인딩·CAS 는 서버와 같이 흉내 낸다.
+
+    struct PolicyDevice: Equatable {
+        var id: DeviceID; var actor: String; var subject: String; var fingerprint: String; var status: String; var acceptance: String; var roles: [String]
+    }
+    /// 모든 호출의 JWT subject.
+    var subject = "sub-test"
+    /// false = 기기 저장소 없는 릴레이: /v2/me 는 subject 만, 셀프서비스 라우트는 404 not_found.
+    var deviceStore = true
+    private(set) var policyRevision: Int64 = 1
+    private(set) var policyDevices: [PolicyDevice] = []
+    private var candidates: [DeviceCandidate] = []
+    private(set) var candidatePosts = 0
+    private(set) var candidateLists = 0
+    private(set) var meCalls = 0
+    private(set) var approvalPosts: [DeviceApprovalEvidence] = []
+    private(set) var rolesPosts: [DeviceRolesEvidence] = []
+    private var candidatePostErrors: [RelayError] = []
+    static let candidateTTL: Int64 = 600
+
+    /// 결함 주입: 다음 POST /v2/devices/candidates 들이 이 오류로 실패한다.
+    func failNextCandidatePosts(_ errors: [RelayError]) { lock.withLock { candidatePostErrors += errors } }
+    /// 테스트 시드: 체인에 기기 하나(기본 활성·역할 없음·이 릴레이의 subject).
+    func seedDevice(_ id: DeviceID, status: String = "active", roles: [String] = [], subject: String? = nil,
+                    fingerprint: String = String(repeating: "f", count: 64)) {
+        lock.withLock {
+            policyDevices.removeAll { $0.id == id }
+            policyDevices.append(PolicyDevice(id: id, actor: MessageRecord.actor(of: id), subject: subject ?? self.subject, fingerprint: fingerprint,
+                                              status: status, acceptance: "operator", roles: roles))
+        }
+    }
+    /// 테스트 시드: 다른 기기(CLI 등)가 체인을 움직였다 — 다음 승인·역할은 409 stale_revision.
+    func bumpPolicyRevision() { lock.withLock { policyRevision += 1 } }
+    func policyDevice(_ id: DeviceID) -> PolicyDevice? { lock.withLock { policyDevices.first { $0.id == id } } }
+    func candidateIds() -> [DeviceID] { lock.withLock { candidates.map(\.deviceId) } }
+
+    private func actorHasRegistrar(_ actor: String) -> Bool {
+        policyDevices.contains { $0.actor == actor && $0.status == "active" && $0.roles.contains("registrar") }
+    }
+
+    /// 잠금 안에서만: 서명자 규칙(devicepolicy.VerifyApproval/VerifyRoles) — 위반 사유를 돌려준다.
+    private func approverProblem(_ approverId: DeviceID, actor: String) -> String? {
+        guard let approver = policyDevices.first(where: { $0.id == approverId }) else { return "approver \(approverId) is not on the chain" }
+        guard approver.status == "active" else { return "approver is not active" }
+        guard approver.actor == actor else { return "approver actor differs" }
+        if actorHasRegistrar(actor) && !approver.roles.contains("registrar") { return "approver is not a registrar" }
+        return nil
+    }
+
+    func postDeviceCandidate(_ post: DeviceCandidatePost) async throws -> DeviceCandidatePosted {
+        try checkUp()
+        return try lock.withLock {
+            candidatePosts += 1
+            if !candidatePostErrors.isEmpty { throw candidatePostErrors.removeFirst() }
+            guard deviceStore else { throw RelayError.refused(code: "not_found", status: 404) }
+            if policyDevices.contains(where: { $0.id == post.deviceId }) { throw RelayError.refused(code: "device_exists", status: 409) }
+            guard policyDevices.contains(where: { $0.subject == subject && $0.status == "active" }) else {
+                throw RelayError.refused(code: "first_device_out_of_band", status: 403)
+            }
+            let at = Int64(now().timeIntervalSince1970)
+            candidates.removeAll { $0.deviceId == post.deviceId }
+            candidates.append(DeviceCandidate(deviceId: post.deviceId, actor: post.actor, subject: subject, signingKey: post.signingKey,
+                                              fingerprint: post.fingerprint, createdAt: at, expiresAt: at + Self.candidateTTL))
+            return try Self.decode(DeviceCandidatePosted.self, ["device_id": post.deviceId, "fingerprint": post.fingerprint,
+                                                                 "policy_revision": policyRevision, "expires_at": at + Self.candidateTTL])
+        }
+    }
+
+    func listDeviceCandidates(device: DeviceID) async throws -> DeviceCandidates {
+        try checkUp()
+        return try lock.withLock {
+            candidateLists += 1
+            guard deviceStore else { throw RelayError.refused(code: "not_found", status: 404) }
+            guard policyDevices.contains(where: { $0.id == device && $0.subject == subject && $0.status == "active" }) else {
+                throw RelayError.refused(code: "device_subject_mismatch", status: 403)
+            }
+            let at = Int64(now().timeIntervalSince1970)
+            candidates.removeAll { $0.expiresAt <= at }
+            let rows: [[String: Any]] = candidates.filter { $0.subject == subject }.map {
+                ["device_id": $0.deviceId, "actor": $0.actor, "subject": $0.subject, "signing_key": $0.signingKey, "fingerprint": $0.fingerprint,
+                 "created_at": $0.createdAt, "expires_at": $0.expiresAt]
+            }
+            return try Self.decode(DeviceCandidates.self, ["policy_revision": policyRevision, "candidates": rows])
+        }
+    }
+
+    func postDeviceApproval(_ evidence: DeviceApprovalEvidence) async throws -> DevicePolicyCommit {
+        try checkUp()
+        return try lock.withLock {
+            approvalPosts.append(evidence)
+            guard deviceStore else { throw RelayError.refused(code: "not_found", status: 404) }
+            guard evidence.subject == subject else { throw RelayError.refused(code: "subject_mismatch", status: 403) }
+            guard evidence.baseRevision == policyRevision else {
+                throw DevicePolicyRefusal(code: "stale_revision", status: 409, detail: "base_revision \(evidence.baseRevision) is not current", revision: policyRevision)
+            }
+            if let problem = approverProblem(evidence.approvedBy, actor: evidence.actor) {
+                throw DevicePolicyRefusal(code: "approval_rejected", status: 403, detail: problem)
+            }
+            guard evidence.signature.count == 128 else { throw DevicePolicyRefusal(code: "approval_rejected", status: 403, detail: "signature") }
+            guard !policyDevices.contains(where: { $0.id == evidence.deviceId }) else { throw RelayError.refused(code: "bad_candidate", status: 400) }
+            policyDevices.append(PolicyDevice(id: evidence.deviceId, actor: evidence.actor, subject: subject, fingerprint: evidence.fingerprint,
+                                              status: "active", acceptance: "trusted-device-fingerprint", roles: []))
+            policyRevision += 1
+            candidates.removeAll { $0.deviceId == evidence.deviceId }
+            return try Self.decode(DevicePolicyCommit.self, ["device_id": evidence.deviceId, "approved_by": evidence.approvedBy, "revision": policyRevision])
+        }
+    }
+
+    func postDeviceRoles(_ evidence: DeviceRolesEvidence) async throws -> DevicePolicyCommit {
+        try checkUp()
+        return try lock.withLock {
+            rolesPosts.append(evidence)
+            guard deviceStore else { throw RelayError.refused(code: "not_found", status: 404) }
+            guard let index = policyDevices.firstIndex(where: { $0.id == evidence.deviceId && $0.subject == subject }) else {
+                throw RelayError.refused(code: "device_subject_mismatch", status: 403)
+            }
+            guard evidence.baseRevision == policyRevision else {
+                throw DevicePolicyRefusal(code: "stale_revision", status: 409, detail: "base_revision \(evidence.baseRevision) is not current", revision: policyRevision)
+            }
+            let target = policyDevices[index]
+            if let problem = approverProblem(evidence.approvedBy, actor: target.actor) {
+                throw DevicePolicyRefusal(code: "approval_rejected", status: 403, detail: problem)
+            }
+            guard target.status == "active" else { throw DevicePolicyRefusal(code: "approval_rejected", status: 403, detail: "target is not active") }
+            guard evidence.signature.count == 128 else { throw DevicePolicyRefusal(code: "approval_rejected", status: 403, detail: "signature") }
+            let roles = Array(Set(evidence.roles)).sorted()
+            let registrars = policyDevices.filter { $0.actor == target.actor && $0.status == "active" && $0.roles.contains("registrar") }.count
+            if target.roles.contains("registrar") && !roles.contains("registrar") && registrars <= 1 {
+                throw DevicePolicyRefusal(code: "approval_rejected", status: 403, detail: "last registrar of \(target.actor) cannot be released")
+            }
+            policyDevices[index].roles = roles
+            policyRevision += 1
+            return try Self.decode(DevicePolicyCommit.self, ["device_id": evidence.deviceId, "roles": roles, "approved_by": evidence.approvedBy, "revision": policyRevision])
+        }
+    }
+
+    func me() async throws -> MeResponse {
+        try checkUp()
+        return try lock.withLock {
+            meCalls += 1
+            guard deviceStore else { return try Self.decode(MeResponse.self, ["subject": subject]) }
+            let rows: [[String: Any]] = policyDevices.filter { $0.subject == subject }.map {
+                ["device_id": $0.id, "actor": $0.actor, "fingerprint": $0.fingerprint, "status": $0.status, "acceptance": $0.acceptance, "roles": $0.roles]
+            }
+            return try Self.decode(MeResponse.self, ["subject": subject, "policy_revision": policyRevision, "devices": rows])
         }
     }
 }

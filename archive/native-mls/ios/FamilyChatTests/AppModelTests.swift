@@ -11,6 +11,7 @@ final class FakeEngine: MlsEngine {
     init(identity: DeviceID, state: Data = Data("s0".utf8)) { self.identity = identity; self.state = state }
     func dispatch(_ method: EngineMethod, _ input: Data) throws -> Data {
         if let r = rejectNext { rejectNext = nil; throw EngineError.rejected(r) }
+        if let policy = FakePolicyWire.respond(method, input) { return policy }   // #574 policy_fingerprint · sign_approval · sign_roles
         state.append(1)
         return Data("ct:".utf8) + input
     }
@@ -53,6 +54,11 @@ class InMemoryRelayWrapper: RelayTransport {
     func deleteLobbyKeyPackages(device: DeviceID) async throws -> Int { try await inner.deleteLobbyKeyPackages(device: device) }
     func postTyping(room: RoomID, device: DeviceID, clear: Bool) async throws { try await inner.postTyping(room: room, device: device, clear: clear) }
     func postRead(room: RoomID, device: DeviceID, seq: Int64) async throws -> Int64 { try await inner.postRead(room: room, device: device, seq: seq) }
+    func postDeviceCandidate(_ post: DeviceCandidatePost) async throws -> DeviceCandidatePosted { try await inner.postDeviceCandidate(post) }
+    func listDeviceCandidates(device: DeviceID) async throws -> DeviceCandidates { try await inner.listDeviceCandidates(device: device) }
+    func postDeviceApproval(_ evidence: DeviceApprovalEvidence) async throws -> DevicePolicyCommit { try await inner.postDeviceApproval(evidence) }
+    func postDeviceRoles(_ evidence: DeviceRolesEvidence) async throws -> DevicePolicyCommit { try await inner.postDeviceRoles(evidence) }
+    func me() async throws -> MeResponse { try await inner.me() }
 }
 
 @MainActor
