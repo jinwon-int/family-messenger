@@ -67,6 +67,12 @@ class Settings(context: Context, private val sealer: KeystoreSealer) {
         return seq
     }
 
+    /**
+     * 이 기기 지우기(#584 Play 「계정 삭제」 앱 내 경로): 설정 전부(릴레이·이름·봉인된 세션 값·로그인 state·대기열·읽음 위치·**기기 ID 접미**)를 지운다.
+     * `commit()` — 지운 뒤 바로 처음 설정으로 가므로 디스크 반영을 기다린다. 다음 `deviceSuffix` 는 새 난수 = 새 기기.
+     */
+    fun wipe() { prefs.edit().clear().commit() }
+
     companion object {
         private val ACTOR = Regex("^[a-z][a-z0-9]{1,15}$")
         fun validActor(s: String) = ACTOR.matches(s)

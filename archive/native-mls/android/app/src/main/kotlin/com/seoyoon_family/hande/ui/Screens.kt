@@ -1,8 +1,12 @@
 // 화면 3 + 1(#338 B1 골격): 처음 설정 · 등록 대기/세션 · 대화방 목록 · 대화. 꾸밈 없이 코어 동작을 눌러 볼 수 있는 최소 UI — C 단계가 다듬는다.
 // #574 PR 4: 등록 대기의 형제 승인 모드(큰 지문·만료) · 목록 위의 「새 기기 승인」 카드 · 「내 기기」(registrar 부여/해제).
 // #584 PR 3: 처음 설정의 서버 주소는 도메인만 — 「서버 찾기」(`.well-known/hande`) 가 서버 이름·주소를 보여 준 뒤 저장, 목록 제목 아래 서버 이름.
+// #584 Play 출시: 「설정」(정보 · 개인정보처리방침 · 계정 및 데이터 삭제 링크 · 「이 기기 지우기」) — 등록 대기·로그인·목록·오류 화면 어디서나 연다(Play 정책: 앱 안 링크 + 앱 내 삭제 경로).
+//   Android 16(targetSdk 36)은 edge-to-edge 강제(adjustResize 무효) → 입력 화면은 `imePadding`, 뒤로가기는 `BackHandler`(predictive back 기본 켜짐).
 package com.seoyoon_family.hande.ui
 
+import android.content.Context
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -12,15 +16,19 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -48,9 +56,12 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.seoyoon_family.hande.BuildConfig
+import com.seoyoon_family.hande.core.AppLogin
 import com.seoyoon_family.hande.core.CandidateUi
 import com.seoyoon_family.hande.core.DeviceHub
 import com.seoyoon_family.hande.core.HubUi
+import com.seoyoon_family.hande.core.LoginLauncher
 import com.seoyoon_family.hande.core.MessageUi
 import com.seoyoon_family.hande.core.Phase
 import com.seoyoon_family.hande.core.RoomUi
@@ -70,15 +81,26 @@ fun HandeRoot(hub: DeviceHub) {
     var openRoom by rememberSaveable { mutableStateOf<String?>(null) }
 
     var showDevices by rememberSaveable { mutableStateOf(false) }
+    var showSettings by rememberSaveable { mutableStateOf(false) }
+    val settingsOpen = showSettings && ui.phase !is Phase.Setup
 
+    // 시스템 뒤로가기(predictive back 포함): 설정 → 대화 → 내 기기 순으로 한 단계씩. 아무것도 열려 있지 않으면 기본 동작(앱 나가기).
+    BackHandler(enabled = settingsOpen) { showSettings = false }
+    BackHandler(enabled = !settingsOpen && openRoom != null) { openRoom = null }
+    BackHandler(enabled = !settingsOpen && openRoom == null && showDevices) { showDevices = false }
+
+    if (settingsOpen) {
+        SettingsScreen(ui, onBack = { showSettings = false }, onWipe = { showSettings = false; openRoom = null; showDevices = false; hub.wipeDevice(scope) }, onNoticeShown = hub::clearNotice)
+        return
+    }
     when (val phase = ui.phase) {
         Phase.Setup -> SetupScreen(hub.settings, hub::discover) { hub.start(scope) }
-        is Phase.WaitingEnrollment -> EnrollScreen(ui, phase) { hub.retryEnrollment(scope) }
+        is Phase.WaitingEnrollment -> EnrollScreen(ui, phase, onSettings = { showSettings = true }) { hub.retryEnrollment(scope) }
         Phase.NeedsLogin -> {
             val context = LocalContext.current
-            LoginScreen(hub.settings, ui, onGoogle = { hub.beginLogin(context) }, onSaved = { hub.reconfigure(scope) }, onNoticeShown = hub::clearNotice)
+            LoginScreen(hub.settings, ui, onGoogle = { hub.beginLogin(context) }, onSaved = { hub.reconfigure(scope) }, onSettings = { showSettings = true }, onNoticeShown = hub::clearNotice)
         }
-        is Phase.Fatal -> MessageScreen("앱을 시작할 수 없습니다", phase.message)
+        is Phase.Fatal -> MessageScreen("앱을 시작할 수 없습니다", phase.message, action = { TextButton(onClick = { showSettings = true }) { Text(Strings.settingsButton) } })
         Phase.Starting -> MessageScreen(Strings.appName, Strings.starting)
         Phase.Ready -> {
             val room = openRoom?.let { name -> ui.rooms.firstOrNull { it.room == name } }
@@ -93,7 +115,7 @@ fun HandeRoot(hub: DeviceHub) {
                 RoomListScreen(
                     ui, onOpen = { openRoom = it }, onRequestJoin = { hub.requestJoin(scope) },
                     onApprove = { hub.approve(scope, it) }, onIgnore = { hub.dismissCandidate(scope, it) }, onDevices = { showDevices = true },
-                    onNoticeShown = hub::clearNotice,
+                    onSettings = { showSettings = true }, onNoticeShown = hub::clearNotice,
                 )
             }
         }
@@ -104,11 +126,79 @@ fun HandeRoot(hub: DeviceHub) {
 private fun clock(ms: Long): String = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ms))
 
 @Composable
-private fun MessageScreen(title: String, body: String) {
-    Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center) {
+private fun MessageScreen(title: String, body: String, action: (@Composable () -> Unit)? = null) {
+    Column(Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp), verticalArrangement = Arrangement.Center) {
         Text(title, style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(12.dp))
         Text(body)
+        if (action != null) {
+            Spacer(Modifier.height(12.dp))
+            action()
+        }
+    }
+}
+
+/** 정책 링크(#584 Play): 브라우저(Custom Tabs, 없으면 ACTION_VIEW)로 연다. 브라우저가 아예 없으면 `onFailed`. */
+private fun openPolicy(context: Context, url: String, onFailed: () -> Unit) {
+    try {
+        LoginLauncher.open(context, url)
+    } catch (_: AppLogin.Failure) {
+        onFailed()
+    }
+}
+
+/** 설정 화면·처음 설정의 정책 항목 한 줄(제목 · 설명 · 주소). */
+@Composable
+private fun PolicyLink(title: String, hint: String, url: String, onFailed: () -> Unit) {
+    val context = LocalContext.current
+    ListItem(
+        headlineContent = { Text(title) },
+        supportingContent = { Text(hint, style = MaterialTheme.typography.bodySmall) },
+        overlineContent = { Text(url, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.labelSmall) },
+        modifier = Modifier.fillMaxWidth().clickable { openPolicy(context, url, onFailed) },
+    )
+}
+
+/**
+ * 설정(#584 Play 출시): 정보(앱 버전·서버·기기 ID) · 정책 링크(개인정보처리방침 · 계정 및 데이터 삭제 — `BuildConfig`, 빌드 때 `HANDE_PRIVACY_URL`/`HANDE_DELETE_URL`) ·
+ * 「이 기기 지우기」(확인 대화상자 → `DeviceHub.wipeDevice`). 계정 = CF Access 신원 + 릴레이 체인의 기기 기록이라 서버 쪽 폐기는 웹 안내로 요청한다(정직하게 적는다).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SettingsScreen(ui: HubUi, onBack: () -> Unit, onWipe: () -> Unit, onNoticeShown: () -> Unit) {
+    var confirmWipe by rememberSaveable { mutableStateOf(false) }
+    var linkError by remember { mutableStateOf<String?>(null) }
+    Scaffold(
+        topBar = { TopAppBar(title = { Text(Strings.settingsTitle) }, navigationIcon = { TextButton(onClick = onBack) { Text(Strings.back) } }) },
+        snackbarHost = { NoticeHost(ui.notice ?: linkError) { linkError = null; onNoticeShown() } },
+    ) { pad ->
+        Column(Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(Strings.aboutSection, style = MaterialTheme.typography.titleMedium)
+            Text(Strings.appVersion(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE), style = MaterialTheme.typography.bodySmall)
+            ui.server?.let { Text("${Strings.serverLabel}: $it", style = MaterialTheme.typography.bodySmall) }
+            ui.deviceId?.let { Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall) }
+            HorizontalDivider()
+            Text(Strings.policySection, style = MaterialTheme.typography.titleMedium)
+            PolicyLink(Strings.privacyPolicy, Strings.privacyPolicyHint, BuildConfig.PRIVACY_URL) { linkError = Strings.openLinkFailed }
+            PolicyLink(Strings.deleteAccount, Strings.deleteAccountHint, BuildConfig.DELETE_ACCOUNT_URL) { linkError = Strings.openLinkFailed }
+            HorizontalDivider()
+            Text(Strings.wipeSection, style = MaterialTheme.typography.titleMedium)
+            Text(Strings.wipeDeviceHint, style = MaterialTheme.typography.bodySmall)
+            Button(
+                onClick = { confirmWipe = true },
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError),
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(Strings.wipeDevice) }
+        }
+    }
+    if (confirmWipe) {
+        AlertDialog(
+            onDismissRequest = { confirmWipe = false },
+            title = { Text(Strings.wipeConfirmTitle) },
+            text = { Text(Strings.wipeConfirmBody) },
+            confirmButton = { TextButton(onClick = { confirmWipe = false; onWipe() }) { Text(Strings.wipeConfirmButton, color = MaterialTheme.colorScheme.error) } },
+            dismissButton = { TextButton(onClick = { confirmWipe = false }) { Text(Strings.cancel) } },
+        )
     }
 }
 
@@ -151,7 +241,7 @@ fun SetupScreen(settings: Settings, onDiscover: suspend (String) -> ServerDiscov
     }
 
     Scaffold(topBar = { TopAppBar(title = { Text(Strings.setupTitle) }) }) { pad ->
-        Column(Modifier.padding(pad).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.padding(pad).verticalScroll(rememberScrollState()).imePadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedTextField(server, { server = it; found = null }, label = { Text(Strings.serverField) }, supportingText = { Text(Strings.serverHint) }, singleLine = true, modifier = Modifier.fillMaxWidth(), enabled = !searching)
             TextButton(onClick = { discover() }, enabled = !searching && server.isNotBlank()) { Text(if (searching) Strings.findingServer else Strings.findServer) }
             found?.let { f ->
@@ -176,6 +266,10 @@ fun SetupScreen(settings: Settings, onDiscover: suspend (String) -> ServerDiscov
                     else -> discover { save(it) } // 바로 「확인」: 탐색부터 하고 성공하면 저장
                 }
             }) { Text(Strings.save) }
+            // 로그인 전에도 보이는 정책 링크(#584 Play: 개인정보처리방침은 앱 안에서 열려야 한다). 삭제 안내는 설정 화면에도 있다.
+            HorizontalDivider()
+            PolicyLink(Strings.privacyPolicy, Strings.privacyPolicyHint, BuildConfig.PRIVACY_URL) { error = Strings.openLinkFailed }
+            PolicyLink(Strings.deleteAccount, Strings.deleteAccountHint, BuildConfig.DELETE_ACCOUNT_URL) { error = Strings.openLinkFailed }
         }
     }
 }
@@ -186,13 +280,13 @@ fun SetupScreen(settings: Settings, onDiscover: suspend (String) -> ServerDiscov
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun EnrollScreen(ui: HubUi, phase: Phase.WaitingEnrollment, onRetry: () -> Unit) {
+fun EnrollScreen(ui: HubUi, phase: Phase.WaitingEnrollment, onSettings: () -> Unit, onRetry: () -> Unit) {
     val clipboard = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
     var operatorShown by rememberSaveable { mutableStateOf(false) }
     val sibling = phase.mode == SelfService.EnrollMode.SIBLING
     val json = phase.json
-    Scaffold(topBar = { TopAppBar(title = { Text(if (sibling) Strings.enrollSiblingTitle else Strings.enrollTitle) }) }) { pad ->
+    Scaffold(topBar = { TopAppBar(title = { Text(if (sibling) Strings.enrollSiblingTitle else Strings.enrollTitle) }, actions = { TextButton(onClick = onSettings) { Text(Strings.settingsButton) } }) }) { pad ->
         Column(Modifier.padding(pad).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             when (phase.mode) {
                 SelfService.EnrollMode.SIBLING -> Text(Strings.enrollSiblingBody)
@@ -285,11 +379,14 @@ fun DevicesScreen(ui: HubUi, onBack: () -> Unit, onGrant: (String) -> Unit, onRe
 /** 가족 로그인(B2, iOS LoginView 와 같은 구성): 「Google 계정으로 로그인」이 주 경로, 세션 값 붙여넣기는 운영자용으로 접어 둔다. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LoginScreen(settings: Settings, ui: HubUi, onGoogle: () -> Unit, onSaved: () -> Unit, onNoticeShown: () -> Unit) {
+fun LoginScreen(settings: Settings, ui: HubUi, onGoogle: () -> Unit, onSaved: () -> Unit, onSettings: () -> Unit, onNoticeShown: () -> Unit) {
     var token by rememberSaveable { mutableStateOf("") }
     var manualExpanded by rememberSaveable { mutableStateOf(false) }
-    Scaffold(topBar = { TopAppBar(title = { Text(Strings.loginTitle) }) }, snackbarHost = { NoticeHost(ui.notice, onNoticeShown) }) { pad ->
-        Column(Modifier.padding(pad).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Scaffold(
+        topBar = { TopAppBar(title = { Text(Strings.loginTitle) }, actions = { TextButton(onClick = onSettings) { Text(Strings.settingsButton) } }) },
+        snackbarHost = { NoticeHost(ui.notice, onNoticeShown) },
+    ) { pad ->
+        Column(Modifier.padding(pad).verticalScroll(rememberScrollState()).imePadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(onClick = onGoogle, enabled = settings.relayUrl != null, modifier = Modifier.fillMaxWidth()) { Text(Strings.loginGoogle) }
             Text(Strings.loginHint, style = MaterialTheme.typography.bodySmall)
             HorizontalDivider()
@@ -307,7 +404,7 @@ fun LoginScreen(settings: Settings, ui: HubUi, onGoogle: () -> Unit, onSaved: ()
 @Composable
 fun RoomListScreen(
     ui: HubUi, onOpen: (String) -> Unit, onRequestJoin: () -> Unit,
-    onApprove: (String) -> Unit, onIgnore: (String) -> Unit, onDevices: () -> Unit, onNoticeShown: () -> Unit,
+    onApprove: (String) -> Unit, onIgnore: (String) -> Unit, onDevices: () -> Unit, onSettings: () -> Unit, onNoticeShown: () -> Unit,
 ) {
     Scaffold(
         topBar = {
@@ -319,7 +416,10 @@ fun RoomListScreen(
                         ui.server?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                     }
                 },
-                actions = { TextButton(onClick = onDevices) { Text(Strings.devicesButton) } },
+                actions = {
+                    TextButton(onClick = onDevices) { Text(Strings.devicesButton) }
+                    TextButton(onClick = onSettings) { Text(Strings.settingsButton) }
+                },
             )
         },
         snackbarHost = { NoticeHost(ui.notice, onNoticeShown) },
@@ -378,7 +478,7 @@ fun RoomScreen(room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> 
         },
         snackbarHost = { NoticeHost(ui.notice, onNoticeShown) },
     ) { pad ->
-        Column(Modifier.padding(pad).fillMaxSize()) {
+        Column(Modifier.padding(pad).fillMaxSize().imePadding()) {
             LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState, contentPadding = PaddingValues(12.dp)) {
                 items(room.messages, key = { "${it.sender}-${it.seq}" }) { m -> MessageRow(m) }
             }

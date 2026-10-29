@@ -585,6 +585,36 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     fun clearNotice() = _ui.update { it.copy(notice = null) }
 
     /**
+     * 이 기기 지우기(#584 Play 「계정 삭제」의 앱 내 경로 · iOS §9-5 상당, 설정 화면의 확인 대화상자 뒤): poll 을 멈추고 로비·방 객체를 닫은 뒤
+     * `files/mls`(봉인된 MLS 상태·로비 슬롯·정지 마커) · `messages.db` · SharedPreferences(세션 값·기기 ID 접미 포함) · Keystore 봉인 키를 지운다.
+     * 다음 처음 설정은 **새 기기**(새 접미) — 옛 기기 ID 는 릴레이 체인에 남아 다시 쓸 수 없고, 그 폐기(E3)·방 데이터 삭제는 앱 권한 밖이라
+     * 웹 안내(`BuildConfig.DELETE_ACCOUNT_URL`, docs/hande/delete-account.md)로 요청한다. 같은 Activity scope 에서 `start` 를 다시 부를 수 있도록 `loop` 를 비운다.
+     */
+    fun wipeDevice(scope: CoroutineScope) = scope.launch(Dispatchers.IO) {
+        loop?.cancel()
+        loop = null
+        mutex.withLock {
+            Log.i(TAG, "wipe: closing ${rooms.size} rooms + lobby, deleting local state")
+            rooms.values.forEach { h -> runCatching { h.room.close() }.onFailure { e -> Log.w(TAG, "wipe: close ${h.name}: $e") } }
+            rooms.clear()
+            runCatching { lobby?.close() }.onFailure { e -> Log.w(TAG, "wipe: close lobby: $e") }
+            lobby = null
+            lobbyStore = null
+            me = null; meUnsupported = false; selfServiceUnsupported = false; nextPostAt = 0L
+            candidates = emptyList(); candidateRevision = null
+            dismissed.clear(); busy.clear(); candidateMessages.clear()
+            ticks = 0
+            runCatching { db.wipe() }.onFailure { e -> Log.w(TAG, "wipe: messages.db: $e") }
+            if (!dir.deleteRecursively()) Log.w(TAG, "wipe: some files under ${dir.name} could not be deleted")
+            dir.mkdirs()
+            settings.wipe()
+            runCatching { sealer.forget() }.onFailure { e -> Log.w(TAG, "wipe: keystore: $e") }
+            _ui.value = HubUi(phase = Phase.Setup, notice = Strings.wipeDone)
+            Log.i(TAG, "wipe: done → setup")
+        }
+    }
+
+    /**
      * 등록 JSON — 운영자 CLI(`-enroll-first`/`-add-device`) 입력과 키가 같다(iOS `EnrollmentRequest`). 비밀 없음.
      * `subject` = 세션 JWT 의 `sub`(`AppLogin.subjectOf`, iOS PR #347 과 같은 출처); 없으면(서비스 토큰) `/v2/me` 가 답한 subject;
      * 그것도 없으면 빈값(운영자가 채운다). 릴레이는 subject ≠ 실제 `sub` 면 403 으로 거부하므로 여기 값이 권한을 만들지는 않는다.

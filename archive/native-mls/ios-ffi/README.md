@@ -85,4 +85,5 @@ cargo install cargo-ndk --version 4.1.2 --locked
 - Kotlin 패키지 `com.seoyoon_family.hande.mls`(`uniffi.toml`) — Java 식별자 규칙상 하이픈 불가라 iOS 번들 ID 와 다르다.
 - 바인딩은 **dev 호스트 cdylib** 에서 생성한다(release 는 `strip = true` 라 Linux 에서 uniffi 메타데이터가 없다).
 - CI: `.github/workflows/native-mls-android.yml` — ubuntu 1 job ≤20분(결정 E 규칙 2). 수용 기준(#338 §4 A): 3 ABI 빌드 3/3, `.so` 합계 ≤ 15 MB. JVM/에뮬레이터 왕복은 다음 슬라이스.
+- **16 KB 페이지(#584 Play)**: targetSdk 35+ 앱은 64비트 `.so` 의 LOAD 세그먼트가 16 KB 정렬이어야 한다(2025-11-01 이후 신규 제출). NDK r28+ 는 기본 정렬, cargo-ndk 4.1.2 는 NDK ≤ 27 에만 `-Wl,-z,max-page-size=16384` 를 더한다(`src/cargo.rs`) — `build-android.sh` 는 NDK 와 무관하게 같은 플래그를 `RUSTFLAGS` 로 명시하고(cargo-ndk 는 자기 플래그를 링커 래퍼로 따로 넘기므로 충돌 없음) `llvm-readelf -lW` 로 arm64-v8a·x86_64 의 모든 LOAD Align ≥ 0x4000 을 검증해 `build-report.txt` 에 `16 KB page alignment: ok` 를 적는다(CI 수용 기준). CI 러너는 `ANDROID_NDK_LATEST_HOME`(NDK 30) 을 쓴다.
 - Kotlin 런타임 의존 `net.java.dev.jna:jna`(Apache-2.0)는 앱 Gradle 쪽 의존이며, #177 원칙 5 에 따라 앱 프로젝트 생성 시 `dependencies.json`·고지에 추가한다.

@@ -43,6 +43,14 @@ class KeystoreSealer(private val alias: String = "hande-mls-state") {
 
     private var strongBox = false
 
+    /** 이 기기 지우기(#584): 봉인 키를 Keystore 에서 삭제한다(봉인본은 이미 지웠다 — 키만 남겨도 복호화할 것이 없지만 깨끗이). 다음 `seal` 이 새 키를 만든다. */
+    @Synchronized
+    fun forget() {
+        val store = KeyStore.getInstance(PROVIDER).apply { load(null) }
+        if (store.containsAlias(alias)) store.deleteEntry(alias)
+        strongBox = false
+    }
+
     @Synchronized
     private fun key(): SecretKey {
         val store = KeyStore.getInstance(PROVIDER).apply { load(null) }
