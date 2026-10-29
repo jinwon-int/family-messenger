@@ -64,6 +64,8 @@ final class ServerScopeTests: XCTestCase {
     func testScopeIdIsStableAndCanonical() {
         let a = ServerScope(baseURL: url("https://relay.example.com"))
         XCTAssertEqual(a.id.count, 16)
+        // 고정 값: 디렉터리·키 이름이 되므로 플랫폼·버전이 바뀌어도 같아야 한다(FNV-1a 64 of the canonical string).
+        XCTAssertEqual(a.id, "ff6833f942233e24")
         XCTAssertTrue(a.id.allSatisfy { $0.isHexDigit && ($0.isNumber || $0.isLowercase) }, a.id)
         XCTAssertEqual(ServerScope(baseURL: url("https://Relay.Example.com/")), a, "scheme/host case and trailing slash do not change the scope")
         XCTAssertEqual(ServerScope(baseURL: url("HTTPS://relay.example.com")), a)
