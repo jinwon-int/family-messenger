@@ -110,6 +110,63 @@ final class RelayTypesTests: XCTestCase {
         XCTAssertEqual(EngineMethod.keyPackage.rawValue, "key_package")
         XCTAssertEqual(EngineMethod.inviteWithCommit.rawValue, "invite_with_commit")
         XCTAssertEqual(EngineMethod.signApproval.rawValue, "sign_approval")
-        XCTAssertEqual(EngineMethod.allCases.count, 20)
+        XCTAssertEqual(EngineMethod.signRoles.rawValue, "sign_roles", "#574 ios-ffi METHODS")
+        XCTAssertEqual(EngineMethod.allCases.count, 21)
+    }
+
+    /// 기기 셀프서비스(#574, server/devices.go · me.go · lobby.go): 후보 게시/목록 · 승인/역할 증거 · commit 응답 · /v2/me · Welcome 의 `from`.
+    func testDeviceSelfServiceWireShapes() throws {
+        let key = String(repeating: "ab", count: 32), fp = String(repeating: "cd", count: 32)
+        let post = try JSONEncoder().encode(DeviceCandidatePost(deviceId: "mom-iphone-1", actor: "mom", signingKey: key, fingerprint: fp))
+        let postObject = try XCTUnwrap(JSONSerialization.jsonObject(with: post) as? [String: Any])
+        XCTAssertEqual(Set(postObject.keys), ["device_id", "actor", "signing_key", "fingerprint"], "strictJSON — subject 는 릴레이가 JWT 에서 읽는다")
+        let posted = try JSONDecoder().decode(DeviceCandidatePosted.self, from: Data(
+            #"{"device_id":"mom-iphone-1","fingerprint":"\#(fp)","policy_revision":7,"expires_at":1700000600}"#.utf8))
+        XCTAssertEqual(posted, DeviceCandidatePosted(deviceId: "mom-iphone-1", fingerprint: fp, policyRevision: 7, expiresAt: 1_700_000_600))
+        let list = try JSONDecoder().decode(DeviceCandidates.self, from: Data(
+            #"{"policy_revision":7,"candidates":[{"device_id":"mom-iphone-1","actor":"mom","subject":"sub-1","signing_key":"\#(key)","fingerprint":"\#(fp)","created_at":1,"expires_at":601}]}"#.utf8))
+        XCTAssertEqual(list, DeviceCandidates(policyRevision: 7, candidates: [
+            DeviceCandidate(deviceId: "mom-iphone-1", actor: "mom", subject: "sub-1", signingKey: key, fingerprint: fp, createdAt: 1, expiresAt: 601)]))
+        XCTAssertEqual(try JSONDecoder().decode(DeviceCandidates.self, from: Data(#"{"policy_revision":7,"candidates":[]}"#.utf8)).candidates, [])
+
+        let approval = try JSONEncoder().encode(DeviceApprovalEvidence(deviceId: "mom-iphone-1", actor: "mom", subject: "sub-1", signingKey: key, baseRevision: 7,
+                                                                       signature: String(repeating: "ff", count: 64), fingerprint: fp, approvedBy: "mom-web-a"))
+        let approvalObject = try XCTUnwrap(JSONSerialization.jsonObject(with: approval) as? [String: Any])
+        XCTAssertEqual(Set(approvalObject.keys), ["device_id", "actor", "subject", "signing_key", "base_revision", "signature", "fingerprint", "approved_by"],
+                       "devicepolicy.AddDeviceEvidence — action·acceptance 없음")
+        XCTAssertEqual(approvalObject["base_revision"] as? Int, 7)
+        let roles = try JSONEncoder().encode(DeviceRolesEvidence(deviceId: "mom-iphone-1", actor: "mom", roles: [], baseRevision: 8,
+                                                                 signature: String(repeating: "ee", count: 64), approvedBy: "mom-web-a"))
+        let rolesObject = try XCTUnwrap(JSONSerialization.jsonObject(with: roles) as? [String: Any])
+        XCTAssertEqual(Set(rolesObject.keys), ["device_id", "actor", "roles", "base_revision", "signature", "approved_by"], "devicepolicy.RolesEvidence")
+        XCTAssertEqual(rolesObject["roles"] as? [String], [], "빈 배열 = 역할 없음(null 금지)")
+        XCTAssertEqual(try JSONDecoder().decode(DevicePolicyCommit.self, from: Data(#"{"device_id":"mom-iphone-1","approved_by":"mom-web-a","revision":8}"#.utf8)),
+                       DevicePolicyCommit(deviceId: "mom-iphone-1", approvedBy: "mom-web-a", revision: 8))
+        XCTAssertEqual(try JSONDecoder().decode(DevicePolicyCommit.self, from: Data(
+            #"{"device_id":"mom-iphone-1","roles":["registrar"],"approved_by":"mom-web-a","revision":9}"#.utf8)).roles, ["registrar"])
+
+        let me = try JSONDecoder().decode(MeResponse.self, from: Data(
+            #"{"subject":"sub-1","policy_revision":7,"devices":[{"device_id":"mom-web-a","actor":"mom","fingerprint":"\#(fp)","status":"active","acceptance":"operator","roles":["registrar"]},{"device_id":"mom-old","actor":"mom","fingerprint":"\#(fp)","status":"revoked","acceptance":"trusted-device-fingerprint","roles":[]}]}"#.utf8))
+        XCTAssertEqual(me, MeResponse(subject: "sub-1", policyRevision: 7, devices: [
+            MeDevice(deviceId: "mom-web-a", actor: "mom", fingerprint: fp, status: "active", acceptance: "operator", roles: ["registrar"]),
+            MeDevice(deviceId: "mom-old", actor: "mom", fingerprint: fp, status: "revoked", acceptance: "trusted-device-fingerprint", roles: [])]))
+        let legacy = try JSONDecoder().decode(MeResponse.self, from: Data(#"{"subject":"sub-1"}"#.utf8))
+        XCTAssertEqual(legacy, MeResponse(subject: "sub-1"), "기기 저장소가 없는 옛 릴레이는 subject 만")
+        XCTAssertNil(legacy.policyRevision); XCTAssertNil(legacy.devices)
+        let noRoles = try JSONDecoder().decode(MeDevice.self, from: Data(#"{"device_id":"mom-x","actor":"mom"}"#.utf8))
+        XCTAssertEqual(noRoles.roles, [], "roles 가 빠져도(방어) 빈 목록")
+
+        let welcome = try JSONDecoder().decode(LobbyWelcomes.self, from: Data(
+            #"{"welcomes":[{"room":"family","seq":4,"epoch":2,"created_at":1700000000,"key_package_ref":"ab12","from":"mom-web-a"}]}"#.utf8)).welcomes
+        XCTAssertEqual(welcome, [PendingWelcome(room: "family", seq: 4, epoch: 2, createdAt: 1_700_000_000, keyPackageRef: "ab12", from: "mom-web-a")])
+        XCTAssertNil(try JSONDecoder().decode(PendingWelcome.self, from: Data(#"{"room":"family","seq":4,"epoch":2,"created_at":0}"#.utf8)).from,
+                     "a relay from before #574 omits from")
+
+        let stale = try JSONDecoder().decode(RelayErrorBody.self, from: Data(#"{"error":"stale_revision","detail":"revision 7 is not current","revision":9}"#.utf8))
+        XCTAssertEqual(stale.detail, "revision 7 is not current"); XCTAssertEqual(stale.revision, 9)
+        XCTAssertEqual(RelayErrorCode(rawValue: stale.error), .staleRevision)
+        XCTAssertEqual(RelayErrorCode(rawValue: "approval_rejected"), .approvalRejected)
+        XCTAssertEqual(RelayErrorCode(rawValue: "device_exists"), .deviceExists)
+        XCTAssertEqual(RelayErrorCode(rawValue: "first_device_out_of_band"), .firstDeviceOutOfBand)
     }
 }

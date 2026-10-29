@@ -36,6 +36,20 @@ enum Strings {
     static let enrolledButton = "등록 확인"
     static let waitingOperator = "운영자 등록 대기 중 (403 device_subject_mismatch)"
 
+    // 새 기기 셀프서비스(#574 PR 3) — AppModel 이 쓰는 문구는 여기(NSE·Linux 스모크 공유 파일), 화면 전용은 Strings+Devices.swift
+    /// 형제 기기 승인 뒤 한 줄 안내(`notice`).
+    static func candidateApproved(_ device: String) -> String { "\(device) 기기를 승인했습니다. 이 기기가 참여한 대화방에 자동으로 초대합니다." }
+    /// 형제 기기를 어느 방에 초대했다(`notice`).
+    static func siblingInvited(_ device: String, _ room: String) -> String { "\(device) 기기를 「\(roomLabel(room))」에 초대했습니다." }
+    /// 🔔 알림: 30분 안에 새 기기가 로비 키를 올리지 않아 초대를 포기했다.
+    static func siblingGaveUp(_ device: String, _ rooms: [String]) -> String {
+        "\(device) 기기를 \(rooms.map(roomLabel).joined(separator: ", ")) 대화방에 초대하지 못했습니다(30분 동안 로비 키가 없음). 그 기기에서 앱을 열어 두고 이 기기에서 방의 「초대」로 다시 초대하세요."
+    }
+    /// 🔔 알림: 초대가 정책 거절 등으로 실패해 포기했다(다시 시도하지 않는 오류).
+    static func siblingInviteFailed(_ device: String, _ room: String, _ reason: String) -> String {
+        "\(device) 기기를 「\(roomLabel(room))」에 초대하지 못했습니다: \(reason)"
+    }
+
     // 방
     static let roomsTitle = "대화"
     static let noRooms = "아직 대화방이 없습니다. 오른쪽 위 + 로 참여를 요청하고, 운영자가 초대하면 여기 나타납니다."

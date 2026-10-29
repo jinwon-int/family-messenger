@@ -122,11 +122,26 @@ public struct StoredKeyPackage: Codable, Equatable {
     enum CodingKeys: String, CodingKey { case ref, bytes; case expiresAt = "expires_at" }
 }
 
-/// 오류 바디 `{"error":"<code>", "epoch":N?, "revision":N?}` — cas_mismatch 일 때 현재 값이 실린다.
+/// 오류 바디 `{"error":"<code>", "epoch":N?, "revision":N?, "detail":…?}` — cas_mismatch 일 때 현재 값이, 기기 셀프서비스(#574)의
+/// 409 `stale_revision` 에는 현재 정책 `revision`, 403 `approval_rejected` 에는 사유 `detail` 이 실린다.
 public struct RelayErrorBody: Codable, Equatable {
     public var error: String
     public var epoch: Int64?
     public var revision: Int64?
+    public var detail: String?
+}
+
+/// 기기 셀프서비스 라우트(#574, server/devices.go)의 정책 거부 — 본문의 `detail`·`revision` 을 호출자가 써야 하는 둘만 이 타입으로
+/// 던진다(`URLSessionRelayTransport.deviceRouteFailure`): 409 `stale_revision`(`revision` = 현재 → 그 값으로 한 번 다시 서명),
+/// 403 `approval_rejected`(`detail` = 서명·서명자 규칙 위반 사유). 그 밖은 다른 라우트와 같이 `RelayError`.
+public struct DevicePolicyRefusal: Error, Equatable {
+    public var code: String
+    public var status: Int
+    public var detail: String?
+    public var revision: Int64?
+    public init(code: String, status: Int, detail: String? = nil, revision: Int64? = nil) {
+        self.code = code; self.status = status; self.detail = detail; self.revision = revision
+    }
 }
 
 /// server.go 에 존재하는 오류 코드(2026-10-05). 새 코드는 여기 추가.
@@ -143,6 +158,15 @@ public enum RelayErrorCode: String {
     /// 기기당 미소비 상한(기본 8) 초과 — 서버에 이미 충분히 있다.
     case keyPackageLimit = "key_package_limit"
     case noLiveKeyPackage = "no_live_key_package"
+    // 기기 셀프서비스(server/devices.go, #574)
+    /// 후보 게시: 이 기기 ID 는 이미 체인에 있다(ID 는 재사용 불가) — 새 ID 로 다시 시작해야 한다.
+    case deviceExists = "device_exists"
+    /// 후보 게시: 호출자(subject)에게 활성 기기가 없다 — 첫 기기는 운영자 대역외 등록(E1).
+    case firstDeviceOutOfBand = "first_device_out_of_band"
+    /// 승인·역할: 서명한 base_revision 이 현재가 아니다(`revision` = 현재 → 한 번 다시 서명).
+    case staleRevision = "stale_revision"
+    /// 승인·역할: 서명·서명자 규칙 위반(`detail` 에 사유 — registrar 아님, 마지막 registrar 등).
+    case approvalRejected = "approval_rejected"
 }
 
 public enum RelayError: Error, Equatable {
@@ -209,9 +233,12 @@ public struct PendingWelcome: Codable, Equatable, Hashable {
     /// 이 방에서 소비된 이 기기의 로비 key package `ref`(sha256 hex) — 아직 참여하지 않은 Welcome 의 비밀을 보충이 지우지 않게
     /// (`LobbyKeyring.replenish(protect:)`, #518). 옛 릴레이는 싣지 않는다(nil) · 빈 문자열일 수 있다 → "모름" 으로 다룬다.
     public var keyPackageRef: String?
-    enum CodingKeys: String, CodingKey { case room, seq, epoch; case createdAt = "created_at", keyPackageRef = "key_package_ref" }
-    public init(room: RoomID, seq: Int64, epoch: Int64, createdAt: Int64, keyPackageRef: String? = nil) {
-        self.room = room; self.seq = seq; self.epoch = epoch; self.createdAt = createdAt; self.keyPackageRef = keyPackageRef
+    /// 이 Welcome 을 올린 기기(#574, lobby.go `From`) — 같은 actor 의 활성 형제 기기가 보낸 초대는 묻지 않고 받는다(`SelfService.isSibling`).
+    /// 옛 릴레이는 싣지 않는다(nil → 형제 아님).
+    public var from: DeviceID?
+    enum CodingKeys: String, CodingKey { case room, seq, epoch, from; case createdAt = "created_at", keyPackageRef = "key_package_ref" }
+    public init(room: RoomID, seq: Int64, epoch: Int64, createdAt: Int64, keyPackageRef: String? = nil, from: DeviceID? = nil) {
+        self.room = room; self.seq = seq; self.epoch = epoch; self.createdAt = createdAt; self.keyPackageRef = keyPackageRef; self.from = from
     }
 }
 /// DELETE /v2/lobby/keypackages 응답(#389, lobby.go `lobbyDeleteResponse`).
@@ -224,4 +251,143 @@ public struct LobbyDeleteResponse: Codable, Equatable {
 public struct LobbyWelcomes: Codable, Equatable {
     public var welcomes: [PendingWelcome]
     public init(welcomes: [PendingWelcome]) { self.welcomes = welcomes }
+}
+
+// MARK: - 기기 셀프서비스 (#574 D1, server/devices.go · me.go — 필드 이름 글자 그대로)
+
+/// POST /v2/devices/candidates 본문(strict JSON) — 새 기기(아직 체인에 없음)가 자기 공개 기록을 우편함에 올린다. `subject` 는 넣지 않는다
+/// (릴레이가 JWT 에서 읽는다). `fingerprint` 는 선택이지만 보내면 서버가 signing_key 와 대조한다.
+public struct DeviceCandidatePost: Codable, Equatable {
+    public var deviceId: DeviceID
+    public var actor: String
+    public var signingKey: String
+    public var fingerprint: String
+    enum CodingKeys: String, CodingKey { case actor, fingerprint; case deviceId = "device_id", signingKey = "signing_key" }
+    public init(deviceId: DeviceID, actor: String, signingKey: String, fingerprint: String) {
+        self.deviceId = deviceId; self.actor = actor; self.signingKey = signingKey; self.fingerprint = fingerprint
+    }
+    public init(_ registration: EnrollmentRequest) {
+        self.init(deviceId: registration.deviceId, actor: registration.actor, signingKey: registration.signingKey, fingerprint: registration.fingerprint)
+    }
+}
+
+/// 201 `{device_id, fingerprint, policy_revision, expires_at}` — `expires_at` 은 Unix 초(TTL 10분; 만료 5분 전에 다시 올린다).
+public struct DeviceCandidatePosted: Codable, Equatable {
+    public var deviceId: DeviceID
+    public var fingerprint: String
+    public var policyRevision: Int64
+    public var expiresAt: Int64
+    enum CodingKeys: String, CodingKey { case fingerprint; case deviceId = "device_id", policyRevision = "policy_revision", expiresAt = "expires_at" }
+    public init(deviceId: DeviceID, fingerprint: String, policyRevision: Int64, expiresAt: Int64) {
+        self.deviceId = deviceId; self.fingerprint = fingerprint; self.policyRevision = policyRevision; self.expiresAt = expiresAt
+    }
+}
+
+/// GET /v2/devices/candidates 의 한 행(`candidateView`) — 공개 값만(서명 **공개** 키·지문).
+public struct DeviceCandidate: Codable, Equatable, Hashable {
+    public var deviceId: DeviceID
+    public var actor: String
+    public var subject: String
+    public var signingKey: String
+    public var fingerprint: String
+    public var createdAt: Int64
+    public var expiresAt: Int64
+    enum CodingKeys: String, CodingKey {
+        case actor, subject, fingerprint
+        case deviceId = "device_id", signingKey = "signing_key", createdAt = "created_at", expiresAt = "expires_at"
+    }
+    public init(deviceId: DeviceID, actor: String, subject: String, signingKey: String, fingerprint: String, createdAt: Int64, expiresAt: Int64) {
+        self.deviceId = deviceId; self.actor = actor; self.subject = subject; self.signingKey = signingKey
+        self.fingerprint = fingerprint; self.createdAt = createdAt; self.expiresAt = expiresAt
+    }
+}
+
+/// GET /v2/devices/candidates?device= → `{policy_revision, candidates}` — `policy_revision` 이 승인 서명의 `base_revision`.
+public struct DeviceCandidates: Codable, Equatable {
+    public var policyRevision: Int64
+    public var candidates: [DeviceCandidate]
+    enum CodingKeys: String, CodingKey { case candidates; case policyRevision = "policy_revision" }
+    public init(policyRevision: Int64, candidates: [DeviceCandidate]) { self.policyRevision = policyRevision; self.candidates = candidates }
+}
+
+/// POST /v2/devices/approvals 본문 = `devicepolicy.AddDeviceEvidence`(CLI `-add-device` 입력, strict JSON — `action`·`acceptance` 는 없다).
+public struct DeviceApprovalEvidence: Codable, Equatable {
+    public var deviceId: DeviceID
+    public var actor: String
+    public var subject: String
+    public var signingKey: String
+    public var baseRevision: Int64
+    /// Ed25519 서명 lowercase hex(128자) — `sign_approval` 프레임의 마지막 64바이트.
+    public var signature: String
+    public var fingerprint: String
+    public var approvedBy: DeviceID
+    enum CodingKeys: String, CodingKey {
+        case actor, subject, signature, fingerprint
+        case deviceId = "device_id", signingKey = "signing_key", baseRevision = "base_revision", approvedBy = "approved_by"
+    }
+    public init(deviceId: DeviceID, actor: String, subject: String, signingKey: String, baseRevision: Int64, signature: String, fingerprint: String, approvedBy: DeviceID) {
+        self.deviceId = deviceId; self.actor = actor; self.subject = subject; self.signingKey = signingKey
+        self.baseRevision = baseRevision; self.signature = signature; self.fingerprint = fingerprint; self.approvedBy = approvedBy
+    }
+}
+
+/// POST /v2/devices/roles 본문 = `devicepolicy.RolesEvidence`(E5) — `roles` 는 대상이 갖게 될 **완전한 정렬 목록**(빈 배열 = 역할 없음).
+public struct DeviceRolesEvidence: Codable, Equatable {
+    public var deviceId: DeviceID
+    public var actor: String
+    public var roles: [String]
+    public var baseRevision: Int64
+    public var signature: String
+    public var approvedBy: DeviceID
+    enum CodingKeys: String, CodingKey { case actor, roles, signature; case deviceId = "device_id", baseRevision = "base_revision", approvedBy = "approved_by" }
+    public init(deviceId: DeviceID, actor: String, roles: [String], baseRevision: Int64, signature: String, approvedBy: DeviceID) {
+        self.deviceId = deviceId; self.actor = actor; self.roles = roles; self.baseRevision = baseRevision; self.signature = signature; self.approvedBy = approvedBy
+    }
+}
+
+/// 승인·역할 201 `{device_id, approved_by, revision[, roles]}` — 체인 commit 뒤의 새 revision.
+public struct DevicePolicyCommit: Codable, Equatable {
+    public var deviceId: DeviceID
+    public var approvedBy: DeviceID
+    public var revision: Int64
+    public var roles: [String]?
+    enum CodingKeys: String, CodingKey { case revision, roles; case deviceId = "device_id", approvedBy = "approved_by" }
+    public init(deviceId: DeviceID, approvedBy: DeviceID, revision: Int64, roles: [String]? = nil) {
+        self.deviceId = deviceId; self.approvedBy = approvedBy; self.revision = revision; self.roles = roles
+    }
+}
+
+/// GET /v2/me 의 `devices[]` 한 행(me.go `meDevice`) — 호출자 subject 의 체인 기록(폐기 포함), 서명 키 없음.
+public struct MeDevice: Codable, Equatable, Hashable {
+    public var deviceId: DeviceID
+    public var actor: String
+    public var fingerprint: String
+    /// `active` · `revoked`.
+    public var status: String
+    public var acceptance: String
+    public var roles: [String]
+    enum CodingKeys: String, CodingKey { case actor, fingerprint, status, acceptance, roles; case deviceId = "device_id" }
+    public init(deviceId: DeviceID, actor: String, fingerprint: String, status: String, acceptance: String, roles: [String]) {
+        self.deviceId = deviceId; self.actor = actor; self.fingerprint = fingerprint; self.status = status; self.acceptance = acceptance; self.roles = roles
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        deviceId = try c.decode(DeviceID.self, forKey: .deviceId)
+        actor = try c.decode(String.self, forKey: .actor)
+        fingerprint = try c.decodeIfPresent(String.self, forKey: .fingerprint) ?? ""
+        status = try c.decodeIfPresent(String.self, forKey: .status) ?? ""
+        acceptance = try c.decodeIfPresent(String.self, forKey: .acceptance) ?? ""
+        roles = try c.decodeIfPresent([String].self, forKey: .roles) ?? []   // 서버는 항상 배열을 쓰지만(null 금지) 방어적으로
+    }
+}
+
+/// GET /v2/me → `{subject[, policy_revision, devices]}`. 기기 저장소가 없는 옛 릴레이는 `subject` 만(둘 다 nil).
+public struct MeResponse: Codable, Equatable {
+    public var subject: String
+    public var policyRevision: Int64?
+    public var devices: [MeDevice]?
+    enum CodingKeys: String, CodingKey { case subject, devices; case policyRevision = "policy_revision" }
+    public init(subject: String, policyRevision: Int64? = nil, devices: [MeDevice]? = nil) {
+        self.subject = subject; self.policyRevision = policyRevision; self.devices = devices
+    }
 }

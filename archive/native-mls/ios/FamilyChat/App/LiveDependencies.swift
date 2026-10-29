@@ -65,7 +65,7 @@ extension AppModel.Dependencies {
             var wipe = AppModel.DeviceWipe()
             wipe.storage = { try stateStore.removeAllState(timeout: 5); try database.wipe() }
             wipe.identity = { SharedStorage.wipeIdentity(appGroup: config.appGroup) }
-            return Self(
+            var deps = Self(
                 engineFactory: FfiEngineFactory(),
                 stateStore: stateStore,
                 messageStore: database,
@@ -82,6 +82,9 @@ extension AppModel.Dependencies {
                 wipe: wipe,
                 agentRoster: config.agentRoster,
                 lockScreenPreview: Self.liveLockScreenPreview)
+            // #574: 형제 기기 초대 대기열(기기별, 30분 TTL)은 App Group defaults 에 — 기기 ID 와 같은 자리, 비밀 아님.
+            deps.siblingQueue = UserDefaultsSiblingQueueStore(defaults: SharedStorage.defaults(appGroup: config.appGroup))
+            return deps
         } catch {
             // 화면이 사유를 보여 줄 수 있게 메모리 스토어로 모델만 세운다(아무것도 저장하지 않는다).
             return Self(

@@ -37,6 +37,9 @@ public enum EngineMethod: String, CaseIterable {
     case membersAfterPending = "members_after_pending"
     case policyFingerprint = "policy_fingerprint"
     case signApproval = "sign_approval"
+    /// E5 registrar 역할 서명(#574, ios-ffi `METHODS` · 파사드 `policy_wire("sign_roles")`): 입력 `{device_id, actor, roles, base_revision}` JSON,
+    /// 출력은 `sign_approval` 과 같은 프레임(u32le n ‖ canonical ‖ 64바이트 서명) — `SelfService.signatureHex`.
+    case signRoles = "sign_roles"
 }
 
 public protocol MlsEngine: AnyObject {

@@ -29,6 +29,17 @@ struct SettingsView: View {
             Section(footer: Text(Strings.lobbyHint)) {
                 LabeledContent(Strings.lobbyKeysLabel) { Text(Strings.lobbyKeys(model.lobbyLive)).font(.footnote) }
             }
+            // #574: 「내 기기」 — 체인의 내 기기 목록·등록 기기(registrar) 지정/해제, 승인 대기 새 기기.
+            Section {
+                NavigationLink { DevicesView() } label: {
+                    HStack {
+                        Label(Strings.devicesTitle, systemImage: "iphone.gen3")
+                        Spacer()
+                        if !model.candidates.isEmpty { InviteCountBadge(count: model.candidates.count) }
+                    }
+                }
+                .accessibilityIdentifier("settings-devices")
+            }
             Section(footer: Text(Strings.logoutHint)) {
                 Button(Strings.logout, role: .destructive) { model.logout() }
             }

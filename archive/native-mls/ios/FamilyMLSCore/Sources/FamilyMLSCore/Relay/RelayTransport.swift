@@ -52,6 +52,19 @@ public protocol RelayTransport: AnyObject {
     /// 읽음 위치(올린 값보다 클 수 있다). 404 `no_such_room` · 410 `room_closed` · 403 `device_not_allowed`/`not_a_member` · 400 `bad_seq`.
     /// 기본 구현은 `.refused(code:"not_found", status:404)`(라우트 없는 옛 릴레이·옛 테스트 대역) — 호출자(AppModel)는 404 를 보면 그만둔다.
     func postRead(room: RoomID, device: DeviceID, seq: Int64) async throws -> Int64
+
+    // 기기 셀프서비스(#574 D1, server/devices.go · me.go) — 새 기기가 후보를 올리고 같은 사람의 다른 기기가 승인(E2)·역할(E5)을 서명한다.
+    // 기본 구현은 `.refused(code:"not_found", status:404)`(라우트 없는 옛 릴레이·옛 테스트 대역) — 호출자(AppModel)는 404 를 보면 운영자 흐름으로.
+    /// POST /v2/devices/candidates `{device_id, actor, signing_key, fingerprint}` → 201. 409 `device_exists` · 403 `first_device_out_of_band`.
+    func postDeviceCandidate(_ post: DeviceCandidatePost) async throws -> DeviceCandidatePosted
+    /// GET /v2/devices/candidates?device=<나> → `{policy_revision, candidates}`(같은 subject 의 활성 기기만, 403 그 밖).
+    func listDeviceCandidates(device: DeviceID) async throws -> DeviceCandidates
+    /// POST /v2/devices/approvals(E2 증거) → 201. 409 `stale_revision`·403 `approval_rejected` 는 `DevicePolicyRefusal` 로 던진다.
+    func postDeviceApproval(_ evidence: DeviceApprovalEvidence) async throws -> DevicePolicyCommit
+    /// POST /v2/devices/roles(E5 증거) → 201. 거부 매핑은 승인과 같다.
+    func postDeviceRoles(_ evidence: DeviceRolesEvidence) async throws -> DevicePolicyCommit
+    /// GET /v2/me → `{subject[, policy_revision, devices]}`(옛 릴레이는 subject 만). 404 = 접근 인증이 꺼진 릴레이.
+    func me() async throws -> MeResponse
 }
 
 /// blob 업로드 응답(server/blobs.go `blobResponse`). `created` = 201(새로 저장), false = 200(이미 있음).
@@ -89,6 +102,21 @@ public extension RelayTransport {
         throw RelayError.refused(code: "not_found", status: 404)
     }
     func postRead(room: RoomID, device: DeviceID, seq: Int64) async throws -> Int64 {
+        throw RelayError.refused(code: "not_found", status: 404)
+    }
+    func postDeviceCandidate(_ post: DeviceCandidatePost) async throws -> DeviceCandidatePosted {
+        throw RelayError.refused(code: "not_found", status: 404)
+    }
+    func listDeviceCandidates(device: DeviceID) async throws -> DeviceCandidates {
+        throw RelayError.refused(code: "not_found", status: 404)
+    }
+    func postDeviceApproval(_ evidence: DeviceApprovalEvidence) async throws -> DevicePolicyCommit {
+        throw RelayError.refused(code: "not_found", status: 404)
+    }
+    func postDeviceRoles(_ evidence: DeviceRolesEvidence) async throws -> DevicePolicyCommit {
+        throw RelayError.refused(code: "not_found", status: 404)
+    }
+    func me() async throws -> MeResponse {
         throw RelayError.refused(code: "not_found", status: 404)
     }
 }

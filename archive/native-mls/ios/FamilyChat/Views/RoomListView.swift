@@ -119,13 +119,13 @@ struct RoomListView: View {
                     .accessibilityLabel(orderEditing ? Strings.orderDoneLabel : Strings.orderEditLabel)
                 }
             }
-            // #521: 🔔 받은 초대 수를 배지로(웹 `bellButton`). 오너 기기의 자동 참여 실패도 여기 남는다.
+            // #521: 🔔 받은 초대 수를 배지로(웹 `bellButton`). 오너 기기의 자동 참여 실패도 여기 남는다. #574: 승인 대기 새 기기·형제 초대 알림도 센다.
             ToolbarItem(placement: .primaryAction) {
                 Button { showNotifications = true } label: {
-                    Image(systemName: model.pendingInvites.isEmpty ? "bell" : "bell.badge")
-                        .overlay(alignment: .topTrailing) { InviteCountBadge(count: model.pendingInvites.count) }
+                    Image(systemName: model.notificationCount == 0 ? "bell" : "bell.badge")
+                        .overlay(alignment: .topTrailing) { InviteCountBadge(count: model.notificationCount) }
                 }
-                .accessibilityLabel(Strings.notifyButton(model.pendingInvites.count))
+                .accessibilityLabel(Strings.notifyButton(model.notificationCount))
             }
             ToolbarItem(placement: .primaryAction) {
                 Menu {

@@ -14,12 +14,33 @@ struct NotificationsView: View {
     var body: some View {
         NavigationStack {
             List {
-                if model.pendingInvites.isEmpty {
+                if model.notificationCount == 0 {
                     Text(Strings.notifyEmpty).font(.footnote).foregroundStyle(.secondary)
-                } else {
+                }
+                // #574: 같은 계정의 새 기기가 우편함에 올린 승인 요청 — 지문 비교 시트로 승인하거나 무시(웹 `candidateCard`).
+                if !model.candidates.isEmpty {
+                    Section(Strings.candidatesSectionTitle) {
+                        ForEach(model.candidates, id: \.deviceId) { candidate in
+                            CandidateRow(candidate: candidate)
+                        }
+                    }
+                }
+                if !model.pendingInvites.isEmpty {
                     Section(Strings.inviteSectionTitle) {
                         ForEach(model.pendingInvites, id: \.room) { invite in
                             LobbyInviteRow(room: invite.room)
+                        }
+                    }
+                }
+                // #574: 승인한 형제 기기 초대의 포기·실패(웹 `noteRows`).
+                if !model.siblingNotes.isEmpty {
+                    Section(Strings.siblingNotesTitle) {
+                        ForEach(model.siblingNotes) { note in
+                            HStack(alignment: .top) {
+                                Text(note.text).font(.footnote)
+                                Spacer()
+                                Button(Strings.dismissNote) { model.dismissSiblingNote(note.id) }.font(.footnote).buttonStyle(.bordered)
+                            }
                         }
                     }
                 }
