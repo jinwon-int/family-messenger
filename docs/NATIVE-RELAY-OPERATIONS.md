@@ -32,7 +32,7 @@ python3 scripts/native_relay_snapshot.py \
   --dest /var/lib/native-relay-snapshots/local --state /var/lib/native-relay-snapshots/state \
   --push relay-snapshots@<대기호스트>:/var/lib/native-relay-snapshots/inbox \
   --push relay-snapshots@<오프사이트>:/var/lib/native-relay-snapshots/inbox \
-  --ssh-key /etc/native-relay/snapshot-push.key --keep-hours 48 --keep-days 30
+  --ssh-key /etc/native-relay/snapshot-push.key --keep-hours 6 --keep-days 30
 ```
 
 - 산출물: `<dest>/relay-<UTC시각>.tar.gz`(0600) + `.sha256` 사이드카. 상태 디렉터리에 `relay-<시각>.json`과
@@ -40,7 +40,7 @@ python3 scripts/native_relay_snapshot.py \
 - 복사본에 `PRAGMA integrity_check`를 돌려 `ok`가 아니면 보관하지 않는다.
 - 심볼릭 링크·특수 파일은 거부한다(복사본이 조용히 다른 것을 가리키는 일을 막는다).
 - 잠금 파일로 동시 실행을 막는다. 삭제는 보존 규칙이 정한 **이 스크립트가 만든 이름**만 건드린다.
-- 보존: 최근 48시간 전량 + 그 이전은 UTC 하루 1개 × 30일. 수신 호스트는 `--prune-only --dest <inbox>`로 같은 규칙 적용.
+- 보존: 최근 6시간 전량 + 그 이전은 UTC 하루 1개 × 30일. (2026-10-29 48h→6h: 5분 주기×48h=576개×~70MB로 서서·수신 2곳이 각 35~43G를 써서 축소. 5분 단위 복구 지점은 최근 6시간만 보장.) 수신 호스트는 `--prune-only --dest <inbox>`로 같은 규칙 적용.
 - 유닛: `deploy/native-relay/native-relay-snapshot.{service,timer}`(5분, 릴레이 호스트) ·
   `native-relay-snapshot-prune.{service,timer}`(수신 호스트). 경로는 `/etc/native-relay/snapshot.env`
   (`deploy/native-relay/snapshot.env.example`). 체크아웃 경로가 다른 호스트는 drop-in으로 `ExecStart`를 재지정한다.
