@@ -93,8 +93,11 @@ PC·폰이 두 명으로 서지 않고 사람 행 아래에 기기 줄(종류 ·
 - **「내 기기」 시트**(⚙ 메뉴·설정, `/v2/me` 에 `devices` 가 있을 때만): 같은 subject 의 체인 기록 전부(활성/폐기·등록 기기 배지·지문).
   「등록 기기로 지정」/「지정 해제」 = `sign_roles` `{device_id, actor, roles(완전한 정렬 목록), base_revision}` →
   `POST /v2/devices/roles`(409 는 `/v2/me` 다시 읽고 한 번 재서명). 버튼 활성 규칙은 `rolesActions` = 서버 `VerifyRoles`:
-  대상은 활성·같은 actor, 마지막 활성 registrar 는 해제 불가(다른 기기에 먼저 지정). **런타임에 Rust 파사드의 `sign_roles` 와
-  durable-worker 허용 목록이 필요하다**(별도 PR) — 없으면 「서명을 만들지 못했습니다: sign_roles 거부…」로 보인다.
+  대상은 활성·같은 actor, 마지막 활성 registrar 는 해제 불가(다른 기기에 먼저 지정). 런타임은 Rust 파사드의 `sign_roles`(#579,
+  `policy_wire`)와 `durable-worker.js` 허용 목록에 기대며 둘 다 올라와 있다 — #579 이전 wasm 번들이면 「서명을 만들지 못했습니다:
+  sign_roles 거부…」로 보인다(번들 sha 확인, `bundle-sha256.txt`).
+- **운영자 경로는 그대로 남는다**(폴백): 첫 기기(403 `first_device_out_of_band`)·옛 릴레이(404)는 위 2단계의 등록 JSON → `-enroll-first`/
+  `-add-device`, 역할 복구는 `native-devices -set-roles`. 운영 순서·오류표는 `docs/NATIVE-RELAY-OPERATIONS.md` 「기기 셀프서비스 운영」.
 - 붙여넣기 승인 시트(운영자 흐름)는 그대로이되 등록 JSON 의 `base_revision` 이 없으면 `/v2/me` 의 `policy_revision` 을 쓴다.
   `room.js` 에 남아 있던 방별 `offerCandidate/approveCandidate/denyCandidate` 복제본은 지웠다(신원 스토어 경로만 산다).
 

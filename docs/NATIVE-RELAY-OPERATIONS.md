@@ -173,6 +173,90 @@ python3 scripts/native_relay_restore.py --archive .../relay-<시각>.tar.gz \
 - 월 1회 예방 점검에 포함한다(Wiki 런북, DOC-3436 RB-988 형식): 타이머 active · `latest.json` `status=complete`
   신선도 · 수신 호스트 inbox 최신 시각 · 드릴 1회.
 
+## 기기 셀프서비스 운영 (#574)
+
+2026-10-29부터 **같은 사람의 기기가 그 사람의 새 기기를 승인**하고(E2), 「내 기기를 등록해 주는 기기」 = **registrar** 역할을
+사람이 직접 옮긴다(E5). 릴레이 라우트 `POST /v2/devices/candidates`·`GET /v2/devices/candidates`·`POST /v2/devices/approvals`·
+`POST /v2/devices/roles`(`archive/native-mls/server/devices.go`)와 `GET /v2/me`의 `devices`·`policy_revision`이 그 경로다. 검증
+코드는 운영자 CLI와 같은 `internal/devicepolicy.Apply*`이고 계약 전문은 `archive/native-mls/server/DEVICES-V4.md` 「등록 기기」·
+「셀프서비스 라우트」. 라우트는 `-access-mode required` **그리고** `-device-state`가 있을 때만 뜬다(운영 릴레이는 둘 다 있다).
+**운영자에게 남는 것**: E1(사람의 첫 기기 — 대역외 지문 의식 + `-enroll-first`), E3/E4(`-revoke`·`-revoke-all`), registrar 전멸
+복구(아래 c). 오너가 다른 사람의 첫 기기를 승인하는 D3는 2단계(미구현).
+
+### a. 배포 순서 — 바이너리 먼저, `roles` 레코드는 그다음
+
+1. 릴레이 바이너리(#578 이후) + 한데 웹 번들(#580 이후, `sign_roles`가 든 `durable-worker.js`·wasm 번들 — 바이너리와 짝,
+   ND-4059 규칙) + 운영자 `native-devices`(같은 모듈 빌드)를 **먼저** 올린다. 라우트는 뜨지만 체인은 아직 그대로다.
+2. 그 뒤에야 체인에 `roles` 키가 생긴다 — 배포 후 첫 E1(`ApplyEnrollFirst`가 첫 기기에 `roles:["registrar"]`를 쓴다), 첫 E5, 또는
+   운영자 `-set-roles`. **`roles`가 한 번이라도 기록된 체인은 #578 이전 바이너리가 읽지 못한다**: v4 디코더가 엄격(K6, 모르는 키 거부)이라
+   체인 재생이 실패하고 `-access-mode required` 릴레이는 **기동을 거부**한다(fail-closed; 운영 중이던 옛 프로세스는 다음 쓰기부터 500
+`device_policy_unavailable`). 역순 배포 = 릴레이 다운.
+3. `roles` 없는 기존 레코드의 바이트·`policy_sha256`·체인 링크는 바뀌지 않는다(`omitempty`) — 배포 자체는 체인을 건드리지 않는다.
+
+### b. 배포 뒤 첫 할 일 — 사람마다 registrar 지정
+
+- #574 이전 체인의 actor는 전부 **registrar가 없다**. 그동안은 종전 규칙(**그 사람의 활성 기기 아무나** E2 승인)이 그대로 산다 —
+  막히는 것은 없고, 좁히는 것이 아직 안 된 상태다.
+- 각 사람이 한데 웹 ⚙ 「내 기기」 시트(`archive/native-mls/web/hande/README.md` 「새 기기 셀프서비스」)에서 자기 기기 하나에
+  「등록 기기로 지정」을 누른다(활성 기기 아무 것이나 E5 한 번으로 부트스트랩, 자기 자신 지정 허용). iOS 앱의 같은 화면은 후속이다 —
+  그때까지 폰만 쓰는 사람은 PC 한데 웹으로 하거나 운영자 `-set-roles`(c의 명령, 대역외 의식)로 대신한다.
+- 지정된 뒤에는 **그 사람의 E2는 registrar 서명만** 받는다. 기기를 바꾸기 전에 새 폰에 먼저 역할을 주고(「등록 기기로 지정」) 옛 폰을
+  해제한다 — 마지막 registrar는 스스로 해제할 수 없다(먼저 다른 기기에 부여).
+- 확인: `runuser -u native-relay -- native-devices -device-state /var/lib/native-relay/policy -inspect`의 `roles`(서명 키는 출력되지 않는다).
+
+### c. 운영자 복구 — registrar를 전부 잃었을 때
+
+registrar 기기가 전부 폐기(E3/E4)·분실되면 그 actor는 registrar-less로 돌아가 종전 규칙이 되살아난다(남은 활성 기기가 있으면 그 기기가
+E5로 다시 부트스트랩할 수 있다). 남은 활성 기기가 있는데 사람이 못 하거나, 운영자가 특정 기기에 역할을 고정하고 싶을 때:
+
+```bash
+# 1) 대역외 의식: 대상 기기의 「내 기기」 시트 지문 ↔ -inspect 의 fingerprint 를 독립 채널(통화·대면)로 비교
+runuser -u native-relay -- native-devices -device-state /var/lib/native-relay/policy -inspect
+# 2) 현재 revision N 으로 CAS — 증거 없는 운영자 선언(approved_by 미기록), 릴레이 정지 불필요(체인 flock·CAS, 요청마다 재읽기)
+runuser -u native-relay -- native-devices -device-state /var/lib/native-relay/policy \
+  -set-roles <device_id> -roles registrar -expected-revision N
+```
+
+대상은 **활성** 기기여야 한다(tombstone에는 역할을 줄 수 없다 — `revoked` 오류). 활성 기기가 하나도 없으면 E1부터다(`-enroll-first`,
+첫 기기가 곧 registrar). 체인은 **최대 64 revision**(컴팩션 미구현)이라 셀프서비스로 revision이 전보다 빨리 는다 — `-inspect`의
+`revision`을 월 점검에 넣는다.
+
+### d. 라우트 오류 — 사람이 가져오는 문구 ↔ 원인
+
+| 응답 | 뜻 | 조치 |
+|---|---|---|
+| 403 `first_device_out_of_band` | 호출자(JWT subject)에게 활성 기기가 없다 — **첫 기기**는 셀프서비스 대상이 아님 | 등록 화면의 운영자 JSON → `-enroll-first`(대역외 지문 의식). D3 전까지 정상 |
+| 409 `device_exists` | 그 `device_id`가 체인에 이미 있다(활성이든 tombstone이든 — id 재사용 금지) | 기기에서 「이 기기 지우기」 → 새 ID로 다시(웹은 자동으로 id-taken 모드) |
+| 409 `stale_revision` | 증거의 `base_revision` ≠ 현재 revision(`revision` 필드가 현재값) — 그 사이 다른 등록/역할 변경 | 클라이언트가 한 번 자동 재서명한다. 반복되면 동시에 누가 체인을 바꾸는지(`-inspect`·릴레이 로그) 확인 |
+| 403 `approval_rejected` + `detail` | 서명·서명자 규칙 위반. `detail`: `is not a registrar` = 승인 기기가 registrar 아님(b에서 지정된 뒤) · `would be left without a registrar` = 마지막 registrar 해제 시도 · `no active … device signature verifies` = 서명이 그 actor의 어느 활성 키와도 안 맞음(다른 사람 기기·폐기된 기기·변조) · `fingerprint … does not match` = 승인자가 비교한 지문과 후보 키 불일치 · `approved_by … does not match` = 증거의 승인자 표기가 서명 키와 불일치 | registrar 기기에서 다시 승인 / 먼저 다른 기기에 역할 부여 / 후보 재게시 후 지문 재비교. 변조 의심이면 릴레이 로그와 함께 보고 |
+| 403 `subject_mismatch` | 증거·후보의 `subject`가 호출자 JWT와 다르다 | 다른 사람의 로그인 세션으로 올린 것 — 본인 세션에서 다시 |
+| 403 `device_subject_mismatch` | 승인 기기 또는 대상 기기가 호출자 subject 소유가 아니다(또는 폐기됨) | 자기 기기로만 승인·역할 변경 가능. 폐기된 기기면 새 기기 등록 |
+| 400 `bad_candidate` (`detail`) | 키·지문·역할 목록(`roles` 전체 목록 필수, 알 수 없는 역할)·중복 id 형태 오류 | 클라이언트 버그 가능성 — 번들 sha 확인(ND-4059) |
+| 404 (라우트 없음) | `-access-mode disabled` 또는 `-device-state` 없는 릴레이, 또는 #578 이전 바이너리 | 운영 릴레이에서 나오면 배포 상태(a) 확인. 웹은 운영자 모드로 조용히 폴백한다 |
+| 500 `device_policy_unavailable` | 체인을 읽지 못함(`pending-*` 잔재·링크 깨짐·권한) | 릴레이 전체가 쓰기 불가 상태다 — `DEVICES-V4.md` 「fail-closed와 CAS」, 스냅샷에서 복원 검토 |
+| 후보가 목록에 안 보임 | 후보 TTL **10분**(5분 전에 자동 재게시) 또는 승인 기기가 승인 자격이 없음(registrar 아님) | 새 기기 화면을 열어 두고 registrar 기기에서 본다 |
+
+### e. 롤백 주의 — `roles`가 생긴 뒤에는 체인 스냅샷이 필요하다
+
+바이너리만 #578 이전으로 되돌리면 (a)-2의 이유로 릴레이가 뜨지 않는다. 롤백하려면 **`roles`가 처음 기록되기 전의 `policy/` 스냅샷**
+(`native_relay_snapshot.py` 아카이브)이 함께 돌아가야 한다. `native_relay_restore.py`는 `--target-data-dir`과 `--target-policy-dir`을
+**함께** 요구하므로 스크립트로 하면 사실상 §복원 전체(DB도 그 시점으로 — `--bump-seq`와 「전 기기 동시 정지」가 따라온다)이고, `policy/`만
+되돌리는 것은 스크립트 밖의 수동 절차다(아카이브에서 `policy/` 추출 → 0700/0600·소유자 `native-relay` → 기존 디렉터리는 지우지 말고
+`.pre-restore-<시각>`으로 옮겨 둠). 어느 쪽이든 그 뒤 등록된 기기는 403을 받아 재등록 대상이다(스냅샷 `policy_revision` ↔ 현재 revision
+차이가 그 범위). 체인 레코드를 손으로 지우거나 고치는 것은 금지다(링크 sha256이 깨져 fail-closed). 따라서 **배포 직전 스냅샷 1회**를 반드시
+남기고, 롤백 결정은 `roles` 첫 기록 전에 내리는 것이 싸다.
+
+### f. 후보 우편함 — `device_candidates`
+
+| 열 | 내용 |
+|---|---|
+| `device` (PK) · `subject` · `actor` | 새 기기 id, 올린 사람의 JWT subject, actor |
+| `signing_key` · `fingerprint` | **공개** 서명 키 hex와 그 sha256 — 비밀 없음 |
+| `created_at` · `expires_at` | TTL **10분**(`candidateTTL`). 만료 행은 다음 게시 때 지워지고, 승인되면 즉시 삭제 |
+
+`native-mls-v2.db` 안의 테이블이라 스냅샷에 같이 들어가며(복원해도 만료돼 있을 뿐 해롭지 않다), 같은 id 재게시는 갱신, 목록은 subject당
+최대 16건. 체인의 일부가 아니다 — 지워도 정책은 바뀌지 않는다.
+
 ## 비밀과 공개 저장소 규칙
 
 이 저장소는 PUBLIC이다. 실제 호스트명·계정·키 경로·터널 ID는 호스트의 `snapshot.env`와 Family Wiki에만 쓴다.

@@ -51,7 +51,12 @@ status-v1(#560, `STATUS-V1.md`, `server/status.go`): 에이전트의 작업 상�
 (`/` = `index.html`, 점파일·`..`·디렉터리·없는 파일 404, GET/HEAD 외 405, 기동 시 `index.html` 필수). 다른 Host 의
 동작(`/app/*` 포함)은 그대로이고 한데 호스트는 `-static-dir` 의 relay-app 파일을 내지 않는다. 인증이 켜져 있을 때만
 `GET /v2/me` 가 엣지 JWT 를 검증해 `{"subject":"…"}` 를 돌려준다(웹앱 기기 등록 JSON 의 `subject` 용, 플래그·테이블
-없음; `-access-mode disabled` 에서는 app-login 처럼 라우트가 없어 404).
+없음; `-access-mode disabled` 에서는 app-login 처럼 라우트가 없어 404). `-device-state` 가 있으면 같은 응답에 `policy_revision` 과
+호출자 subject 의 `devices`(서명 키 없음)가 붙는다(#574).
+기기 셀프서비스(#574 D1, `server/devices.go`, 인증 + `-device-state` 둘 다 있을 때만): `POST`/`GET /v2/devices/candidates`(새 기기의 공개
+기록 우편함, 테이블 `device_candidates`, TTL 10분) · `POST /v2/devices/approvals`(E2, CLI `-add-device` 와 같은 증거) ·
+`POST /v2/devices/roles`(E5 registrar 역할) — 검증은 CLI 와 같은 `internal/devicepolicy`, 호출자 subject 바인딩 추가. 계약은
+`server/DEVICES-V4.md` 「등록 기기」·「셀프서비스 라우트」, 운영은 `docs/NATIVE-RELAY-OPERATIONS.md` 「기기 셀프서비스 운영」.
 
 ### 로비 key package (P5, #380)
 
