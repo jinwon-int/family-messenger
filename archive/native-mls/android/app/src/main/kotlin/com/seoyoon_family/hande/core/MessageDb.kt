@@ -15,8 +15,15 @@ import java.io.File
 
 data class MessageUi(val seq: Long, val sender: String, val text: String, val mine: Boolean, val attachment: Boolean = false)
 
-class MessageDb(context: Context, private val myDevice: () -> String?) : SQLiteOpenHelper(context, "messages.db", null, MessageSchema.VERSION) {
+class MessageDb(context: Context, private val myDevice: () -> String?) : SQLiteOpenHelper(context, DB_NAME, null, MessageSchema.VERSION) {
     private val lock = Any()
+    private val appContext: Context = context.applicationContext
+
+    /** 이 기기 지우기(#584): 연결을 닫고 `messages.db`(저널 포함)를 지운다. 다음 접근 때 `SQLiteOpenHelper` 가 빈 파일을 새로 만든다. */
+    fun wipe(): Boolean = synchronized(lock) {
+        close()
+        appContext.deleteDatabase(DB_NAME)
+    }
 
     override fun onCreate(db: SQLiteDatabase) {
         createSchema(db)
@@ -129,6 +136,7 @@ class MessageDb(context: Context, private val myDevice: () -> String?) : SQLiteO
     }
 
     companion object {
+        const val DB_NAME = "messages.db"
         private const val TAG = "hande.db"
         const val KIND_TEXT = MessageSchema.KIND_TEXT
         const val KIND_ATTACHMENT = MessageSchema.KIND_ATTACHMENT

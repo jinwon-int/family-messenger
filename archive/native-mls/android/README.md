@@ -2,13 +2,13 @@
 
 > **상태: B1 — 앱 골격(Compose).** Rust 코어(`MlsRoom`·`MlsLobby`, [`../HOST-CONTRACT.md`](../HOST-CONTRACT.md))를 Kotlin 에서 쓰는 **호스트 어댑터**(`host/`),
 > 그것이 봇·Rust 테스트와 같은 규칙으로 도는지 확인하는 **JVM 왕복 테스트**, 그리고 **앱 모듈**(`app/`: 처음 설정 → 등록 대기 → 대화방 목록/대화)이 있다.
-> 바인딩·`.so` 는 [`../ios-ffi`](../ios-ffi/README.md) `build-android.sh` 가 만든다(크레이트 개명은 #338 §2 결정 뒤). 패키지 `com.seoyoon_family.hande`, minSdk 26(G0).
+> 바인딩·`.so` 는 [`../ios-ffi`](../ios-ffi/README.md) `build-android.sh` 가 만든다(크레이트 개명은 #338 §2 결정 뒤). 패키지 `com.seoyoon_family.hande`, minSdk 26(G0), **targetSdk 36**(#584 Play 신규 앱 요건 — 아래 「Google Play 출시」).
 
 | 경로 | 역할 |
 |---|---|
-| `app/` | **앱 모듈(B1)**. `core/DeviceHub`(단일 작성자: `MlsLobby` 시드 → 방은 전부 `MlsRoom.adopt`, 전면 4 s poll, 로비 보충, Welcome 받아들이기, 등록 JSON, #574 셀프서비스 틱) · `core/SelfService`(#574 순수 판정 — 웹 `self-service.js` 1:1: `canApprove`·`isSibling`·`candidatesFor`·`rolesActions`·`enrollModeFrom`·형제 초대 대기열) · `core/KeystoreSealer`(Android Keystore AES-GCM 비수출 키, StrongBox 우선 — `FileRoomStore`/`FileLobbyStore` 의 `seal`/`open` 훅; Jetpack Security 미사용, 의존 0) · `core/Settings`(릴레이 주소·서버 이름·이름·봉인된 세션 값·진행 중 로그인 state·형제 초대 대기열) · `core/ServerDiscovery`(#584 서버 탐색 — 순수: `normalizeBase`·`candidates`·`parseWellKnown`·`compareVersions`·주입 `fetch` 의 `discover`; 전송은 `OkHttpTransport.get`) · `core/MessageDb`+`core/MessageSchema`(정식 저장소 — SQLite, iOS 동결 DDL v1 공유, B2) · `core/AppLogin`+`core/LoginLauncher`(가족 로그인, B2; `subjectOf` = JWT `sub`) · `core/Unread`(안 읽음 판정 — 웹 `read-seq.js`·iOS `Unread` 와 같은 규칙, #571 후속) · `ui/Screens`(설정(서버 찾기) · 등록(운영자/형제 승인 모드) · 로그인 · 목록(제목 아래 서버 이름 · 안 읽음 배지 · 새 기기 승인 카드) · 대화 · 내 기기). 전송은 `host/JdkHttpTransport`(OkHttp 는 보류 — 의존 0 으로 충분, 필요 시 같은 trait 로 교체) |
-| `settings.gradle.kts` · `build.gradle.kts` · `gradle/libs.versions.toml` | Gradle(wrapper jar 는 커밋하지 않는다 — CI 가 Gradle 8.11.1 을 핀으로 설치). 버전 핀은 toml |
-| `app/debug.keystore` | **디버그 서명키(PKCS12, 표준 공개 자격 `androiddebugkey`/`android`)** — 커밋해서 CI 디버그 APK 서명을 고정한다. 없으면 러너마다 새 키라 실기기 `adb install -r` 이 `INSTALL_FAILED_UPDATE_INCOMPATIBLE` 로 거부된다(2026-10-20 공융, 재설치 3회 무효). 릴리스 서명에는 절대 쓰지 않는다(E 단계 Play App Signing). CI 가 APK 서명자 지문을 이 키와 대조한다 |
+| `app/` | **앱 모듈(B1)**. `core/DeviceHub`(단일 작성자: `MlsLobby` 시드 → 방은 전부 `MlsRoom.adopt`, 전면 4 s poll, 로비 보충, Welcome 받아들이기, 등록 JSON, #574 셀프서비스 틱) · `core/SelfService`(#574 순수 판정 — 웹 `self-service.js` 1:1: `canApprove`·`isSibling`·`candidatesFor`·`rolesActions`·`enrollModeFrom`·형제 초대 대기열) · `core/KeystoreSealer`(Android Keystore AES-GCM 비수출 키, StrongBox 우선 — `FileRoomStore`/`FileLobbyStore` 의 `seal`/`open` 훅; Jetpack Security 미사용, 의존 0) · `core/Settings`(릴레이 주소·서버 이름·이름·봉인된 세션 값·진행 중 로그인 state·형제 초대 대기열 · `wipe`) · `core/ServerDiscovery`(#584 서버 탐색 — 순수: `normalizeBase`·`candidates`·`parseWellKnown`·`compareVersions`·주입 `fetch` 의 `discover`; 전송은 `OkHttpTransport.get`) · `core/MessageDb`+`core/MessageSchema`(정식 저장소 — SQLite, iOS 동결 DDL v1 공유, B2) · `core/AppLogin`+`core/LoginLauncher`(가족 로그인, B2; `subjectOf` = JWT `sub`) · `core/Unread`(안 읽음 판정 — 웹 `read-seq.js`·iOS `Unread` 와 같은 규칙, #571 후속) · `ui/Screens`(설정(서버 찾기) · 등록(운영자/형제 승인 모드) · 로그인 · 목록(제목 아래 서버 이름 · 안 읽음 배지 · 새 기기 승인 카드) · 대화 · 내 기기 · **설정**(#584 Play: 앱 버전·서버·기기 ID · 개인정보처리방침·계정 및 데이터 삭제 링크(`BuildConfig.PRIVACY_URL`/`DELETE_ACCOUNT_URL`) · 「이 기기 지우기」 = `DeviceHub.wipeDevice`)). 전송은 `host/JdkHttpTransport`(OkHttp 는 보류 — 의존 0 으로 충분, 필요 시 같은 trait 로 교체) |
+| `settings.gradle.kts` · `build.gradle.kts` · `gradle/libs.versions.toml` | Gradle(wrapper jar 는 커밋하지 않는다 — CI 가 Gradle 8.11.1 을 핀으로 설치). 버전 핀은 toml. `app/build.gradle.kts` 가 `-PversionCode`/`-PversionName`·업로드 키 서명·정책 링크 `BuildConfig` 를 읽는다(「Google Play 출시」) |
+| `app/debug.keystore` | **디버그 서명키(PKCS12, 표준 공개 자격 `androiddebugkey`/`android`)** — 커밋해서 CI 디버그 APK 서명을 고정한다. 없으면 러너마다 새 키라 실기기 `adb install -r` 이 `INSTALL_FAILED_UPDATE_INCOMPATIBLE` 로 거부된다(2026-10-20 공융, 재설치 3회 무효). **릴리스 서명에는 절대 쓰지 않는다** — release 는 업로드 키가 없으면 미서명이고(`signingConfig = null`), CI 번들 job 이 release 서명자 ≠ 이 키를 검사한다. CI 가 디버그 APK 서명자 지문을 이 키와 대조한다 |
 | `host/src/main/kotlin/.../host/JdkHttpTransport.kt` | `HttpTransport` — `HttpURLConnection`(Android 에도 있음). 응답이 있으면 상태코드 그대로, 연결 실패만 throw(→ transient). 앱은 OkHttp 로 바꿔도 같은 규칙 |
 | `host/src/main/kotlin/.../host/FileRoomStore.kt` | `RoomObserver` — 원자 영속(tmp → fsync → rename → 디렉터리 fsync) · 정지 마커 · 이벤트/메시지 싱크 · `load()` → `MlsRoom.import`. `seal`/`open` 훅에 Keystore 봉인(EncryptedFile 상당)을 끼운다 |
 | `host/src/main/kotlin/.../host/FileLobbyStore.kt` | `LobbyObserver`(3c) — 로비 슬롯(시드 + 로비 key package 비밀 + 게시 장부) 한 파일 원자 영속 · `load()` → `MlsLobby.import`. 같은 `seal`/`open` 훅 |
@@ -27,7 +27,7 @@ KOTLINC=/path/kotlinc/bin/kotlinc JNA_JAR=/path/jna-5.17.0.jar BINDINGS_DIR=out/
   ../android/scripts/jvm-roundtrip.sh      # 마지막 줄 ROUNDTRIP PASS
 ```
 
-CI: `.github/workflows/native-mls-android.yml` — job 1 `android-ffi`: 3 ABI `.so` + JVM 왕복(ubuntu, ≤20분) → job 2 `android-app`: 아티팩트로 `gradle :app:assembleDebug`(JDK 17 · Gradle 8.11.1 · 러너 내장 SDK), APK 에 3 ABI `.so` + `libjnidispatch.so` 포함 확인, 디버그 APK 아티팩트.
+CI: `.github/workflows/native-mls-android.yml` — job 1 `android-ffi`: 3 ABI `.so`(16 KB 페이지 정렬 검증 포함) + JVM 왕복(ubuntu, ≤20분) → job 2 `android-app`: 아티팩트로 `gradle :app:assembleDebug`(JDK 17 · Gradle 8.11.1 · 러너 내장 SDK), APK 에 3 ABI `.so` + `libjnidispatch.so` 포함 확인, 디버그 APK 아티팩트 → job 3 `android-bundle`(#584): `:app:bundleRelease` → `app-release.aab`(업로드 키 secret 이 있으면 서명, 없으면 미서명 + 알림) 아티팩트 `hande-android-bundle-<sha>`(14일).
 
 ```bash
 # 앱 빌드(로컬, Android SDK + JDK 17 + Gradle 8.11.1): 먼저 ../ios-ffi/build-android.sh
@@ -62,8 +62,8 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 | `kotlin-test-junit` (test 전용) | `2.1.20` (JUnit `4.13.2` 전이) | Apache-2.0 / EPL-1.0 | `AppLogin`·`Unread`·`FileV2`·`SelfService`·`ServerDiscovery` 순수 로직 JVM 단위 테스트(CI `:app:testDebugUnitTest`). 앱 APK 에는 들어가지 않는다 |
 | JNA | `5.17.0` | Apache-2.0 / LGPL-2.1 (이중) | uniffi Kotlin 바인딩의 런타임 요구(#338 §5 예고). 앱은 `jna@aar`(libjnidispatch.so 포함), JVM 테스트는 jar 직접 |
 | Kotlin 컴파일러 · KGP · Compose 컴파일러 플러그인 | `2.1.20` | Apache-2.0 | 앱 빌드·테스트 빌드 |
-| Android Gradle Plugin | `8.7.2` | Apache-2.0 | KGP 2.1.20 호환 상한(kotlinlang 호환표: AGP 7.3.1–8.7.2 · Gradle 7.6.3–8.12.1) |
-| Gradle | `8.11.1` | Apache-2.0 | 빌드 도구(CI 가 설치, wrapper jar 미커밋) |
+| Android Gradle Plugin | `8.10.1` | Apache-2.0 | **API 36 을 지원하는 첫 안정 계열**(8.7–8.9 는 최대 API 35; AGP 8.10.0 릴리스 노트: 최소 Gradle 8.11.1 · Build Tools 35.0.0 · JDK 17). kotlinlang 호환표에서 KGP 2.1.20 의 「완전 지원」 AGP 상한은 8.7.2 이지만 같은 표가 「AGP 는 최신까지 사용 가능(경고 가능)」이라 명시 — Kotlin 핀(kotlinc sha256·compose 컴파일러)을 흔들지 않으려고 KGP 는 그대로 둔다(#584). AGP 8.11+ 는 Gradle 8.13 이 필요해 CI 핀까지 바꿔야 하므로 보류 |
+| Gradle | `8.11.1` | Apache-2.0 | 빌드 도구(CI 가 설치, wrapper jar 미커밋). AGP 8.10.x 의 최소 버전과 같다 |
 | Compose BOM | `2024.12.01` | Apache-2.0 | `compose-ui` · `material3` 버전 묶음 |
 | `androidx.activity:activity-compose` | `1.9.3` | Apache-2.0 | `setContent` |
 | `androidx.lifecycle:lifecycle-runtime-compose` | `2.8.7` | Apache-2.0 | `collectAsStateWithLifecycle` |
@@ -90,8 +90,51 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ## 기기 셀프서비스(#574 PR 4) — 남은 것
 - `MlsRoom.invite` 의 대기 중 Welcome(commit 은 올렸는데 echo 가 같은 페이지에 없던 `Posted` 경우)은 영속하지 않는다 — 그 사이 프로세스가 죽으면 Welcome 이 나가지 않고, 대기열의 다음 `invite` 는 「이미 멤버」로 실패해 알린다(운영자 재초대). `RoomSyncState` 에 필드를 더하는 것은 `FileRoomStore` 형식 변경이라 후속.
-- 「무시」한 후보는 이번 실행에서만 숨긴다(우편함 행은 10분 뒤 사라진다). 「이 기기 지우기」(ID 사용 불가 때 새 ID) 는 iOS §9-5 상당 — 후속.
+- 「무시」한 후보는 이번 실행에서만 숨긴다(우편함 행은 10분 뒤 사라진다). 「이 기기 지우기」(ID 사용 불가 때 새 ID, iOS §9-5 상당)는 #584 Play 출시 PR 에서 설정 화면에 들어왔다(아래).
 - 승인 화면의 지문 비교는 사람의 눈(두 화면을 나란히) — QR 교차 확인은 범위 밖.
 
+## Google Play 출시 (#584 — 조직 계정, 오너 결정 2026-10-29)
+
+코드 쪽 준비는 이 절의 ①~⑤(PR 「Play 출시 준비」). 콘솔·정책·심사 준비(데모 서버·App access·콘텐츠 등급·D-U-N-S 재사용)는 #584 PR 4.
+
+### ① SDK 36 · Android 16 동작 변경
+- `compileSdk`/`targetSdk` **36**(신규 앱 요건; 기존 앱은 2026-08-31 이후 35+). AGP `8.10.1`(API 36 지원 첫 안정 계열, 최소 Gradle 8.11.1 = CI 핀 그대로, Build Tools 35.0.0 — 러너 내장). KGP 2.1.20 유지(의존성 표의 이유).
+- **edge-to-edge 강제**(35 에서 선택 해제 가능했던 것이 36 에서 불가): 화면은 전부 Material3 `Scaffold`/`TopAppBar`(인셋 처리)이고, `adjustResize` 가 더는 키보드에 맞춰 줄이지 않으므로 입력 화면(처음 설정·로그인·대화)에 `imePadding` 을 넣었다. 오류·시작 화면은 `safeDrawingPadding`.
+- **predictive back 기본 켜짐**(`enableOnBackInvokedCallback` 기본 true): `BackHandler` 로 설정 → 대화 → 내 기기 를 한 단계씩 닫는다(전에는 어느 화면에서든 뒤로가기 = 앱 종료).
+- **16 KB 페이지**(targetSdk 35+ 앱, 2025-11-01 이후 제출): 64비트 `.so` 의 LOAD 정렬 16 KB. `../ios-ffi/build-android.sh` 가 `-Wl,-z,max-page-size=16384` 를 명시하고 `llvm-readelf` 로 검증(`build-report.txt` 의 `16 KB page alignment: ok`, CI 수용 기준). JNA 의 `libjnidispatch.so`(5.17.0 aar, sha256 `4dbeffff…cf38`)도 arm64-v8a·x86_64·armeabi-v7a 모두 LOAD Align 0x4000(2026-10-29 `readelf` 확인) — CI 번들 job 이 AAB 안의 64비트 `.so` 전부를 다시 검사한다. 압축 없이 패키징(`useLegacyPackaging = false`).
+- 대형 화면 방향·크기 제한 무시(36): 이 앱은 방향을 고정하지 않아 해당 없음. 권한은 `INTERNET` 하나 — 알림 권한(FCM, D 단계) 은 아직 없다.
+
+### ② 릴리스 서명 — 업로드 키(Play App Signing)
+- `app/build.gradle.kts` 의 release `signingConfig` 는 네 값(Gradle 속성 `-P` 또는 환경 변수)이 **전부** 있을 때만 만들어진다: `HANDE_UPLOAD_KEYSTORE`(키스토어 경로) · `HANDE_UPLOAD_KEYSTORE_PASSWORD` · `HANDE_UPLOAD_KEY_ALIAS` · `HANDE_UPLOAD_KEY_PASSWORD`. 전부 없으면 **미서명** 번들(빌드는 성공 — Play Console 이 거부), 일부만 있으면 설정 오류로 멈춘다. 디버그 키스토어 경로를 주면 거부한다. release 는 어떤 경우에도 `app/debug.keystore` 로 서명하지 않는다.
+- 업로드 키 만들기(오너, 레포 밖 — 비밀 저장 위치만 Wiki 에 적는다). 키스토어는 PKCS12, 유효기간 ≥ 25년(Play 요건 2033-10-22 이후 만료):
+  ```bash
+  keytool -genkeypair -v -storetype PKCS12 -keystore hande-upload.keystore -alias hande-upload \
+    -keyalg RSA -keysize 4096 -validity 10000 -dname "CN=hande upload, O=<법인명>, C=KR"
+  base64 -w0 hande-upload.keystore > hande-upload.keystore.b64     # → GitHub secret HANDE_UPLOAD_KEYSTORE_B64
+  keytool -list -v -keystore hande-upload.keystore | grep SHA256    # 지문(비밀 아님) — Play Console 「업로드 키 인증서」와 대조
+  ```
+  Play App Signing 에서 **앱 서명 키는 Google 이 생성·보관**(기본) 하고 이 키는 업로드 전용이다. 업로드 키를 잃으면 Play Console 에서 재설정 요청(새 키 인증서 업로드).
+- `isMinifyEnabled = false` 유지: uniffi 바인딩이 JNA 로 심벌을 이름으로 찾고 JNA 자체가 리플렉션 기반이라 R8 keep 규칙을 실기기에서 검증하기 전에는 켜지 않는다(규칙 초안은 `app/build.gradle.kts` 주석).
+
+### ③ 버전 관리
+- `versionCode` = `-PversionCode=`(기본 1), `versionName` = `-PversionName=`(기본 `0.1.0`). CI 번들 job 은 **`versionCode = github.run_number`**(이 워크플로가 유일한 출처라 단조 증가; 디버그 APK job 은 기본값이라 실기기 `adb install -r` 호환이 그대로다) 와 `workflow_dispatch` 입력 `version_name`(비우면 Gradle 기본). Play 에 올릴 번들은 **`workflow_dispatch` 로 `version_name` 을 적어 만든다**(예: `0.2.0`); PR 의 자동 번들(`0.1.0 (run_number)`)은 검증용.
+- `versionName` 은 릴레이 `/.well-known/hande` 의 `min_app.android` 와 비교된다(#584 PR 3) — 서버가 최소 버전을 올리면 그보다 낮은 앱은 「앱이 오래됨」. 설정 화면에 `앱 버전 <name> (<code>)` 가 보인다.
+
+### ④ CI — `android-bundle` job
+- 입력: job 1 의 FFI 아티팩트. 비밀 `HANDE_UPLOAD_KEYSTORE_B64`(base64 키스토어) 가 있으면 러너 `$RUNNER_TEMP` 에 0600 으로 풀고(값은 찍지 않는다) `HANDE_UPLOAD_KEYSTORE_PASSWORD`·`HANDE_UPLOAD_KEY_ALIAS`·`HANDE_UPLOAD_KEY_PASSWORD` 와 함께 Gradle 에 넘긴다. 없으면(포크 PR 포함) `::notice` 와 함께 미서명 번들.
+- 검증(bundletool 없이): `app-release.aab` 존재 · `base/lib/{arm64-v8a,armeabi-v7a,x86_64}/libfamily_mls_ios_ffi.so` 3개 · `libjnidispatch.so` · 서명했으면 `jarsigner -verify -strict` + 서명자 SHA-256 ≠ `DEBUG_SIGNER_SHA256`, 미서명이면 `META-INF/*.{RSA,SF}` 없음. 아티팩트 `hande-android-bundle-<sha>`(14일).
+- 변수(선택, repo **variables**): `HANDE_PRIVACY_URL`·`HANDE_DELETE_URL` — 정책 페이지 주소를 바꿀 때(기본은 아래 ⑤).
+
+### ⑤ 앱 안 정책 링크 · 계정 삭제(Play 정책)
+- 설정 화면(목록·등록 대기·로그인·오류 화면의 「설정」) 과 처음 설정 화면에 **개인정보처리방침**·**계정 및 데이터 삭제** 링크. 주소는 `BuildConfig.PRIVACY_URL`/`DELETE_ACCOUNT_URL` — 기본 `https://jinwon-int.github.io/family-messenger/hande/privacy` · `…/hande/delete-account`(https 만). **GitHub Pages 는 아직 꺼져 있다**(`gh api repos/jinwon-int/family-messenger/pages` → 404, 2026-10-29) — PR 4 에서 켜거나(`docs/` 소스) 다른 호스트로 바꾸고 변수로 주소를 맞춘다. 초안: [`docs/hande/privacy.md`](../../../docs/hande/privacy.md) · [`docs/hande/delete-account.md`](../../../docs/hande/delete-account.md), Data safety 입력표 [`docs/hande/play-data-safety.md`](../../../docs/hande/play-data-safety.md).
+- **계정 삭제 경로(정직한 정의)**: 한데의 「계정」 = 가족 운영자가 허용한 Google 계정(CF Access 신원 `subject`) + 릴레이 기기 정책 체인의 기기 기록. 앱이 지울 수 있는 것은 **이 기기의 자료**(설정 → 「이 기기 지우기」 → 확인: `files/mls` 봉인 상태·로비 슬롯 · `messages.db` · SharedPreferences(세션 값·기기 ID 접미) · Keystore 봉인 키 → 처음 설정, 새 기기 ID). 서버 쪽 기기 기록 폐기(E3 `revoke`)·대화방 데이터 삭제·Access 허용 목록 제외는 앱 권한 밖이라 **웹 링크의 절차로 운영자에게 요청**한다 — 앱 안 문구와 문서가 같은 말을 한다.
+
+### 체크리스트 (코드 밖 — 오너·PR 4)
+1. Play Console 조직 계정($25) — D-U-N-S 는 Apple 가입 때 번호 재사용, 결제 프로필 법인명·주소를 D&B 와 일치.
+2. 업로드 키 생성(②) → GitHub secrets 4개(`HANDE_UPLOAD_KEYSTORE_B64`·`HANDE_UPLOAD_KEYSTORE_PASSWORD`·`HANDE_UPLOAD_KEY_ALIAS`·`HANDE_UPLOAD_KEY_PASSWORD`) → `workflow_dispatch`(version_name) → 서명된 `app-release.aab` 아티팩트 → 내부 테스트 트랙 업로드 → Play App Signing 등록.
+3. 정책 페이지 게시(GitHub Pages 또는 다른 호스트) → 필요하면 변수 `HANDE_PRIVACY_URL`/`HANDE_DELETE_URL` → 콘솔 「개인정보처리방침 URL」·「계정 삭제 URL」 에 같은 주소.
+4. App content: Data safety(`play-data-safety.md`) · 콘텐츠 등급(IARC) · 광고 없음 · App access(심사용 데모 서버·계정 — iOS 와 공용) · 건강/금융 해당 없음 · 뉴스 앱 아님.
+5. 내부 테스트 → (조직 계정이라 비공개 테스트 12명×14일 면제) → production 신청.
+
 ## 다음
-C(UI: 방 목록·대화 다듬기·첨부 ≤256 KiB·정지 표시·`imePadding`) · D(FCM — 릴레이 G3 푸시 와이어 일반화 선행) · E(서명·Play 내부 테스트 트랙).
+C(UI: 방 목록·대화 다듬기·첨부 ≤256 KiB·정지 표시) · D(FCM — 릴레이 G3 푸시 와이어 일반화 선행) · E(Play 내부 테스트 트랙 — 위 체크리스트).

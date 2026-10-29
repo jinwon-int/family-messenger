@@ -1,8 +1,14 @@
 name: Native MLS track — Android host
 # 독자 E2EE 트랙의 네 번째 호스트(Android) 스파이크 A (#338 §4). 예산: ubuntu 1 job ≤20분(결정 E 규칙 2).
-# main 필수 체크가 아니므로 워크플로 수준 paths 필터. 운영 서버·실계정·비밀값 무관. macOS 불필요.
+# main 필수 체크가 아니므로 워크플로 수준 paths 필터. 운영 서버·실계정 무관. macOS 불필요.
+# 비밀값(#584 Play 출시): `android-bundle` job 만 업로드 키 secret(HANDE_UPLOAD_KEYSTORE_B64 등)을 읽는다 — 없으면(포크 PR 포함) 미서명 번들.
 on:
   workflow_dispatch:
+    inputs:
+      version_name:
+        description: "versionName for the Play bundle (empty = Gradle default 0.1.0); versionCode is always github.run_number"
+        required: false
+        default: ""
   pull_request:
     paths:
       - "archive/native-mls/ios-ffi/**"
@@ -76,6 +82,8 @@ jobs:
           test "$total" -le "$SO_TOTAL_BYTES_MAX" || { echo "total .so $total > $SO_TOTAL_BYTES_MAX"; exit 1; }
           test "$(find out/android/kotlin -name '*.kt' | wc -l)" -ge 1
           grep -q 'package com.seoyoon_family.hande.mls' "$(find out/android/kotlin -name '*.kt' | head -1)"
+          # #584 Play 16 KB 페이지: build-android.sh 가 64비트 .so 의 LOAD 정렬(≥ 0x4000)을 검증하고 보고서에 적는다 — 그 줄이 있어야 한다.
+          grep -q '^16 KB page alignment: ok' out/android/build-report.txt
       # ---- #366 3b: JVM(Linux) 왕복 — Kotlin 바인딩 + 호스트 어댑터 + in-memory 릴레이로 MlsRoom 두 기기 시나리오 ----
       - name: JDK 17 (Temurin)
         uses: actions/setup-java@v4
@@ -116,7 +124,7 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # ---- #338 B1: Compose 앱 골격 — 러너 내장 Android SDK + Gradle 8.11.1(KGP 2.1.20 ↔ AGP 8.7.2 호환표) + JDK 17. 바인딩·.so 는 위 job 아티팩트. ----
+  # ---- #338 B1: Compose 앱 골격 — 러너 내장 Android SDK + Gradle 8.11.1(AGP 8.10.1 최소 Gradle = 8.11.1, API 36) + JDK 17. 바인딩·.so 는 위 job 아티팩트. ----
   android-app:
     name: Compose app assembleDebug (Gradle 8.11.1 · JDK 17 · runner SDK)
     needs: android-ffi
@@ -174,4 +182,103 @@ jobs:
           name: hande-android-debug-${{ github.sha }}
           path: archive/native-mls/android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 7
+          if-no-files-found: error
+
+  # ---- #584 Play 출시: Android App Bundle(bundleRelease). 업로드 키 secret 이 있으면 서명, 없으면 미서명 번들(알림 출력). 디버그 APK job 은 그대로. ----
+  android-bundle:
+    name: Play AAB bundleRelease (upload-key signed when secret present)
+    needs: android-ffi
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-mls-android-ffi-${{ github.sha }}
+          path: ${{ runner.temp }}/ffi-out
+      - name: JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Gradle 8.11.1 (pinned, no wrapper jar in the repo)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+      - name: Upload keystore from secret (optional — decoded to runner temp, 0600, never echoed)
+        id: keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.HANDE_UPLOAD_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=unsigned bundle::HANDE_UPLOAD_KEYSTORE_B64 is not set — building an UNSIGNED app-release.aab (Play Console rejects it; add the upload-key secrets to sign)."
+            echo "release bundle: UNSIGNED (no HANDE_UPLOAD_KEYSTORE_B64)" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          ks="$RUNNER_TEMP/hande-upload.keystore"
+          (umask 077; printf '%s' "$KEYSTORE_B64" | base64 -d > "$ks")
+          chmod 600 "$ks"
+          test -s "$ks"
+          echo "present=true" >> "$GITHUB_OUTPUT"
+          echo "path=$ks" >> "$GITHUB_OUTPUT"
+          echo "release bundle: signed with the upload keystore ($(stat -c %s "$ks") bytes, 0600)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: bundleRelease — timed (versionCode = run_number)
+        working-directory: archive/native-mls/android
+        env:
+          # 네 값은 함께만 넘긴다(절반만 있으면 Gradle 설정이 멈춘다 — app/build.gradle.kts). 키스토어가 없으면 전부 비워 미서명으로 간다.
+          HANDE_UPLOAD_KEYSTORE: ${{ steps.keystore.outputs.present == 'true' && steps.keystore.outputs.path || '' }}
+          HANDE_UPLOAD_KEYSTORE_PASSWORD: ${{ steps.keystore.outputs.present == 'true' && secrets.HANDE_UPLOAD_KEYSTORE_PASSWORD || '' }}
+          HANDE_UPLOAD_KEY_ALIAS: ${{ steps.keystore.outputs.present == 'true' && secrets.HANDE_UPLOAD_KEY_ALIAS || '' }}
+          HANDE_UPLOAD_KEY_PASSWORD: ${{ steps.keystore.outputs.present == 'true' && secrets.HANDE_UPLOAD_KEY_PASSWORD || '' }}
+          HANDE_PRIVACY_URL: ${{ vars.HANDE_PRIVACY_URL }}
+          HANDE_DELETE_URL: ${{ vars.HANDE_DELETE_URL }}
+          VERSION_NAME: ${{ inputs.version_name }}
+        run: |
+          start=$(date +%s)
+          test -d "$RUNNER_TEMP/ffi-out/kotlin" && test -d "$RUNNER_TEMP/ffi-out/jniLibs"
+          gradle --no-daemon --console=plain -PhandeFfiOut="$RUNNER_TEMP/ffi-out" \
+            -PversionCode="$GITHUB_RUN_NUMBER" -PversionName="$VERSION_NAME" \
+            :app:releaseSigningReport :app:bundleRelease 2>&1 | tail -n 80
+          echo "bundle_build_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "versionCode=$GITHUB_RUN_NUMBER versionName=${VERSION_NAME:-0.1.0 (default)}" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Acceptance — AAB exists · 3 ABI .so + JNA packaged · signature matches expectation (bundletool-free)
+        working-directory: archive/native-mls/android
+        env:
+          SIGNED: ${{ steps.keystore.outputs.present }}
+        run: |
+          aab=app/build/outputs/bundle/release/app-release.aab
+          test -s "$aab"
+          echo "aab bytes: $(stat -c %s "$aab")" | tee -a "$GITHUB_STEP_SUMMARY"
+          n=$(unzip -l "$aab" | grep -cE 'base/lib/(arm64-v8a|armeabi-v7a|x86_64)/libfamily_mls_ios_ffi\.so$')
+          test "$n" -eq 3 || { echo "expected 3 ABI .so in the AAB, got $n"; unzip -l "$aab" | grep '\.so$'; exit 1; }
+          unzip -l "$aab" | grep -q 'base/lib/arm64-v8a/libjnidispatch.so' || { echo "JNA native missing"; exit 1; }
+          # #584 16 KB 페이지: 번들 안의 64비트 .so 전부(우리 FFI + JNA libjnidispatch — 5.17.0 aar 는 0x4000 정렬, 2026-10-29 readelf 확인)의 LOAD Align ≥ 0x4000.
+          mkdir -p "$RUNNER_TEMP/aab-lib"
+          for so in $(unzip -l "$aab" | grep -oE 'base/lib/(arm64-v8a|x86_64)/[^ ]+\.so$'); do
+            unzip -p "$aab" "$so" > "$RUNNER_TEMP/aab-lib/one.so"
+            for a in $(readelf -lW "$RUNNER_TEMP/aab-lib/one.so" | awk '$1=="LOAD"{print $NF}'); do
+              [ $((a)) -ge 16384 ] || { echo "$so: LOAD align $a < 16384 (16 KB page size)"; exit 1; }
+            done
+            echo "16 KB aligned: $so"
+          done | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$SIGNED" = "true" ]; then
+            jarsigner -verify -strict "$aab" > "$RUNNER_TEMP/jarsigner.log" 2>&1 || { cat "$RUNNER_TEMP/jarsigner.log"; echo "AAB signature invalid"; exit 1; }
+            # 업로드 키 지문(비밀 아님 — 인증서 지문)은 커밋된 debug.keystore 와 달라야 한다(release 가 디버그 키로 서명되는 회귀 차단).
+            got="$(keytool -printcert -jarfile "$aab" | grep -m1 -oE 'SHA256: [0-9A-F:]+' | cut -d' ' -f2 | tr -d ':' | tr 'A-F' 'a-f')"
+            echo "upload signer sha256: $got" | tee -a "$GITHUB_STEP_SUMMARY"
+            test -n "$got"
+            test "$got" != "$DEBUG_SIGNER_SHA256" || { echo "release bundle is signed with the DEBUG keystore"; exit 1; }
+          else
+            # 미서명이어야 한다(META-INF 서명 파일 없음) — 디버그 키로 조용히 서명됐다면 실패.
+            if unzip -l "$aab" | grep -qE 'META-INF/.*\.(RSA|DSA|EC|SF)$'; then echo "unexpected signature in an unsigned bundle"; exit 1; fi
+            echo "unsigned bundle verified (no META-INF signature)" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: hande-android-bundle-${{ github.sha }}
+          path: archive/native-mls/android/app/build/outputs/bundle/release/app-release.aab
+          retention-days: 14
           if-no-files-found: error
