@@ -38,6 +38,8 @@ import FamilyMLSCore
 final class AppModel: ObservableObject {
     enum Phase: Equatable {
         case starting
+        /// #584 첫 실행(App Store 빌드): 서버를 고르기 전 — 저장된 선택도 빌드 기본값(`FC_RELAY_URL`)도 없다. `ServerSelectView`.
+        case needsServer
         /// 첫 실행: 이 기기 사용자 이름(actor)을 고르기 전. 기기 ID `<actor>-iphone-<hex>` 가 여기서 정해진다(가족 투입).
         case needsActor
         case needsLogin
@@ -91,6 +93,18 @@ final class AppModel: ObservableObject {
         var meEveryRounds = 4
         /// 시계(후보 재게시·대기열 TTL). 테스트가 돌린다.
         var clock: () -> Date = { Date() }
+        /// #584 선택한 서버. nil = 아직 고르지 않음 → `.needsServer`. 기본 = 테스트 서버(화면 건너뜀) — live() 가 App Group·빌드 기본값으로 채운다.
+        var server: ServerSelection? = .testing
+        /// #584 선택 영속(App Group `hande.server`, NSE 도 읽는다). 기본 = 메모리(테스트).
+        var serverStore: ServerStoring = InMemoryServerStore()
+        /// #584 빌드 기본값(`FC_RELAY_URL`) — 서버 선택 화면 미리 채움. App Store 빌드는 nil.
+        var defaultRelayURL: URL? = nil
+        /// #584 서버 탐색(`.well-known/hande` → `/v2/health`, Core `ServerDiscoverer`). 기본 = 닿지 않음(테스트는 표를 준다), live() 는 URLSession.
+        var discoverServer: (String) async -> Result<ServerInfo, ServerDiscoveryFailure> = { _ in .failure(.network("no discovery")) }
+        /// #584 서버를 고르거나 바꾼 뒤 의존성을 새 스코프로 다시 조립한다(live() = 번들에서 다시 읽음). nil = 그 자리에서 `server` 만 바꾼다(테스트).
+        var reopen: ((ServerSelection?) -> Dependencies)? = nil
+        /// #584 이 기기 표시 설정(읽음 위치·방 순서, `LocalPrefs`)의 defaults — 서버 스코프. 기본 = 앱 전용 standard(스코프 없음).
+        var localDefaults = ScopedDefaults(.standard)
     }
 
     /// 저장소 밖의 삭제 작업(§9-5). `storage` = MLS 상태 전부(identity 슬롯 포함) + messages.db 행, `identity` = 저장된 기기 ID.
@@ -103,8 +117,15 @@ final class AppModel: ObservableObject {
     /// #414: 첫 동기화 한 바퀴가 끝났는가. 시작 직후의 `.needsEnrollment` 는 "등록 확인 중" 자리라
     /// (저장된 세션으로 이어 갈 때 bootstrap 이 먼저 둔다) 화면은 그동안 오프닝을 보이고, 이 값이 서면 실제 상태를 보인다.
     @Published private(set) var settled = false
-    /// 로그인 시트가 여는 릴레이 주소(빌드 설정 FC_RELAY_URL). nil 이면 로그인 화면이 버튼 대신 안내를 보인다.
+    /// 로그인 시트가 여는 릴레이 주소(= 선택한 서버). nil 이면 로그인 화면이 버튼 대신 안내를 보인다.
     var relayURL: URL? { deps.relayURL }
+    /// #584 선택한 서버(설정 「서버」·로그인 화면 아래). nil = 서버 선택 화면.
+    var server: ServerSelection? { deps.server }
+    /// #584 빌드 기본값 — 서버 선택 화면이 미리 채운다.
+    var defaultRelayURL: URL? { deps.defaultRelayURL }
+    /// #584 탐색으로 찾은 서버(「이 서버로 계속」 전). 실패는 `lastError`.
+    @Published private(set) var serverCandidate: ServerInfo?
+    @Published private(set) var discovering = false
     @Published private(set) var deviceId: DeviceID = ""
     @Published private(set) var fingerprint: String = ""
     /// 바뀔 때마다 저장소에 반영한다(로그인 = 저장, 로그아웃·401 = 삭제) — NSE 가 같은 세션으로 릴레이를 읽는다.
@@ -236,7 +257,8 @@ final class AppModel: ObservableObject {
     /// 「무시」한 후보 — 이 세션에서만(우편함에는 TTL 까지 남는다).
     private var dismissedCandidates: Set<DeviceID> = []
 
-    private let deps: Dependencies
+    /// #584 서버를 고르거나 바꾸면 새 스코프로 다시 조립한다(`rebind`).
+    private var deps: Dependencies
     private(set) var engine: MlsEngine?
     private var identitySeed: Data?
     private var transport: RelayTransport?
@@ -281,11 +303,14 @@ final class AppModel: ObservableObject {
     /// 방별 마지막으로 본 영속 커서 — NSE 가 사이에 처리했는지 감지(전면 복귀 시 화면 갱신).
     private var seenCursors: [RoomID: Int64] = [:]
     private let serial = SerialAsyncQueue()
-    let push: PushRegistrar
+    private(set) var push: PushRegistrar
+    /// #584 이 기기 표시 설정(읽음 위치·방 순서) — 서버 스코프별. 화면은 `environmentObject` 로 받는다(RootView).
+    private(set) var localPrefs: LocalPrefs
 
     init(dependencies: Dependencies) {
         self.deps = dependencies
         self.push = PushRegistrar(dependencies.push)
+        self.localPrefs = LocalPrefs(defaults: dependencies.localDefaults)
     }
 
     // MARK: - 수명주기
@@ -296,6 +321,8 @@ final class AppModel: ObservableObject {
         guard deps.expectedDecryptFormat() == Framing.decryptFormat else {
             phase = .fatal(Strings.decryptFormatMismatch); return
         }
+        // #584: 서버가 없으면(App Store 빌드 첫 실행·「서버 바꾸기」 뒤) 저장소도 스코프도 없다 — 서버 선택 화면.
+        guard deps.server != nil else { phase = .needsServer; return }
         // 기기 ID 를 만들기 전에 actor 가 정해져 있어야 한다(기존 설치는 저장된 ID 에서 actor 를 읽으므로 이 화면을 보지 않는다).
         guard deps.actorStore.actor != nil else { phase = .needsActor; return }
         do {
@@ -335,6 +362,84 @@ final class AppModel: ObservableObject {
         phase = .starting
         await bootstrap()
         return true
+    }
+
+    // MARK: - 서버 선택·전환 (#584 PR 2)
+
+    /// 서버 선택 화면의 「서버 찾기」: 입력(도메인·주소·`hande://server?url=…`)을 탐색해 `serverCandidate` 에 둔다. 실패는 `lastError`.
+    func discoverServer(_ raw: String) async {
+        guard phase == .needsServer, !discovering else { return }
+        discovering = true
+        defer { discovering = false }
+        lastError = nil
+        serverCandidate = nil
+        let input = ServerDiscovery.serverLink(raw) ?? raw
+        switch await deps.discoverServer(input) {
+        case .success(let info): serverCandidate = info
+        case .failure(let failure): lastError = Strings.serverDiscoveryFailure(failure)
+        }
+    }
+
+    /// 「이 서버로 계속」: 선택을 App Group 에 적고(`ServerStore`) 의존성을 그 서버 스코프로 다시 조립한 뒤 시작을 이어 간다
+    /// (새 스코프는 비어 있으므로 `.needsActor` → 로그인 → 등록). 같은 서버를 다시 고르면 그 스코프의 데이터가 그대로 돌아온다.
+    func selectServer(_ info: ServerInfo) async {
+        guard phase == .needsServer else { return }
+        let selection = ServerSelection(info: info, at: deps.clock())
+        deps.serverStore.save(selection)
+        rebind(selection)
+        serverCandidate = nil
+        lastError = nil
+        phase = .starting
+        await bootstrap()
+    }
+
+    /// 「서버 바꾸기」(설정) · 「다른 서버 선택」(로그인·이름 화면): 로그아웃(푸시 DELETE 최선, 이 스코프의 자격증명 삭제)하고 이 서버의
+    /// 로컬 데이터는 그 스코프에 그대로 둔 채 선택을 비우고(`ServerStore.clear` — 다음 실행에 빌드 기본값으로 되돌아가지 않게)
+    /// 의존성을 서버 없는 상태로 다시 조립해 서버 선택 화면으로 돌아간다. 동기화와 겹치지 않게 `serial` 안에서.
+    func changeServer() async {
+        switch phase { case .starting, .fatal, .needsServer: return; default: break }
+        let device = deviceId
+        let previous = transport
+        try? await serial.run {
+            await self.push.unregister(device: device, transport: previous)
+            self.credential = nil      // didSet → 이 스코프의 Keychain 항목 삭제
+            self.transport = nil
+            self.discardRuntimeState()
+            self.outgoing = [:]
+            self.lobbyCheckDue = true; self.lobbyUnsupported = false
+            self.typingUnsupported = false; self.readUnsupported = false
+            self.deps.serverStore.clear()
+            self.rebind(nil)
+            self.pushStatus = .off
+            self.deviceId = ""; self.fingerprint = ""
+            self.lastError = nil; self.serverCandidate = nil
+            self.phase = .needsServer
+        }
+    }
+
+    /// 의존성을 새 서버(또는 없음)로 바꾼다 — live 는 번들·App Group 에서 다시 조립(`reopen`), 테스트는 그 자리에서 `server` 만.
+    /// 푸시 등록기·표시 설정도 새 스코프로.
+    private func rebind(_ selection: ServerSelection?) {
+        if let reopen = deps.reopen {
+            deps = reopen(selection)
+        } else {
+            deps.server = selection
+            deps.relayURL = selection?.baseURL
+        }
+        push = PushRegistrar(deps.push)
+        localPrefs = LocalPrefs(defaults: deps.localDefaults)
+    }
+
+    /// 메모리에 든 세션·동기화·초대·셀프서비스 상태를 전부 버린다(저장소는 건드리지 않는다) — 「이 기기 지우기」·「서버 바꾸기」 공통.
+    private func discardRuntimeState() {
+        syncEngines = [:]; unconfirmed = [:]; seenCursors = [:]; lastFlush = [:]
+        typing = [:]; typingSentAt = [:]
+        relayReadSeq = [:]; readSentSeq = [:]
+        pendingInvites = []; inviteStates = [:]; notice = nil; lobbyLive = nil
+        adoptFailed = [:]; accepting = []; unadoptedWelcomes = []; dismissedInvites = []; diagnostics = []
+        me = nil; candidates = []; candidateRevision = nil; dismissedCandidates = []; siblingNotes = []
+        enrollment = EnrollmentStatus(); nextCandidatePostAt = nil; selfServiceUnsupported = false; meDue = true
+        engine = nil; identitySeed = nil; registration = nil; rooms = []
     }
 
     func login(_ credential: RelayCredential) {
@@ -407,16 +512,9 @@ final class AppModel: ObservableObject {
             if let actor = self.deps.actorStore.actor { self.deps.actorStore.save(actor) }
             self.credential = nil
             self.transport = nil
-            self.syncEngines = [:]; self.unconfirmed = [:]; self.seenCursors = [:]; self.lastFlush = [:]
-            self.typing = [:]; self.typingSentAt = [:]
-            self.relayReadSeq = [:]; self.readSentSeq = [:]
-            self.pendingInvites = []; self.inviteStates = [:]; self.notice = nil; self.lobbyLive = nil
-            self.adoptFailed = [:]; self.accepting = []; self.unadoptedWelcomes = []; self.dismissedInvites = []; self.diagnostics = []
             // #574: 옛 기기 ID 의 초대 대기열·후보·체인 보기도 버린다(새 ID 는 새 대기열).
             self.deps.siblingQueue.save(SiblingInviteQueue(), device: device)
-            self.me = nil; self.candidates = []; self.candidateRevision = nil; self.dismissedCandidates = []; self.siblingNotes = []
-            self.enrollment = EnrollmentStatus(); self.nextCandidatePostAt = nil; self.selfServiceUnsupported = false; self.meDue = true
-            self.engine = nil; self.identitySeed = nil; self.registration = nil; self.rooms = []
+            self.discardRuntimeState()
             try self.deps.wipe.storage()
             self.deps.wipe.identity()
             self.deviceId = ""; self.fingerprint = ""

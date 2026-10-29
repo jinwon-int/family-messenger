@@ -36,36 +36,4 @@ enum HardwareKeyboard {
     }
 }
 
-/// 이 기기에 두는 표시 설정. 방 순서는 이 기기에만. 읽음 위치는 #571 B 부터 릴레이가 같은 사람(actor)의 기기들 사이에서 공유한다 —
-/// 방 화면이 `markRead` 와 함께 `AppModel.noteRead`(`POST /read`)를 부르고, 릴레이 값(`AppModel.relayReadSeq`)은 `RootView` 가 여기에 합친다(줄어들지 않음).
-/// MLS 상태·메시지 DB 와 섞지 않으려고 UserDefaults 에 둔다(방 행 displayOrder 는 동기화 엔진도 고쳐 쓰므로 건드리지 않는다).
-@MainActor
-final class LocalPrefs: ObservableObject {
-    static let shared = LocalPrefs()
-
-    private let defaults: UserDefaults
-    private static let readKey = "hande.readSeq"
-    private static let orderKey = "hande.roomOrder"
-
-    @Published private(set) var readSeq: [RoomID: Int64]
-    @Published private(set) var roomOrder: [RoomID]
-
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-        let raw = defaults.dictionary(forKey: Self.readKey) as? [String: NSNumber] ?? [:]
-        readSeq = raw.mapValues { $0.int64Value }
-        roomOrder = defaults.stringArray(forKey: Self.orderKey) ?? []
-    }
-
-    /// 이 방을 `seq` 까지 봤다(줄어들지 않는다).
-    func markRead(_ room: RoomID, seq: Int64) {
-        guard seq > (readSeq[room] ?? 0) else { return }
-        readSeq[room] = seq
-        defaults.set(readSeq.mapValues { NSNumber(value: $0) }, forKey: Self.readKey)
-    }
-
-    func setOrder(_ ids: [RoomID]) {
-        roomOrder = ids
-        defaults.set(ids, forKey: Self.orderKey)
-    }
-}
+// `LocalPrefs`(읽음 위치·방 순서)는 Sync/LocalPrefs.swift — AppModel 이 서버 스코프별로 소유한다(#584).

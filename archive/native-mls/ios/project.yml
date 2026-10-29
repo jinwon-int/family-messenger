@@ -48,7 +48,9 @@ targets:
         # 앱의 E2EE(MLS)는 표준 암호화(App Store 면제 범주)만 쓰고 독자 암호 알고리즘은 없다.
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
-        # 실제 호스트명·App Group 은 리포에 두지 않는다(CONTRIBUTING) — 빌드 설정으로 주입. 비면 앱이 안내한다.
+        # 실제 호스트명·App Group 은 리포에 두지 않는다(CONTRIBUTING) — 빌드 설정으로 주입.
+        # #584: FC_RELAY_URL 은 **기본값**이다 — 값이 있으면(가족 TestFlight, 릴리스 워크플로 vars.FC_RELAY_URL) 저장된 선택이 없을 때 그 서버를
+        # 쓰고 서버 선택 화면에 미리 채운다. 비면(App Store 빌드) 첫 화면이 서버 선택(.well-known/hande 탐색)이다. 선택은 App Group `hande.server`.
         FamilyChatRelayURL: $(FC_RELAY_URL)
         FamilyChatAppGroup: $(FC_APP_GROUP)
         # APNs topic(= 이 앱의 Bundle ID, §12-D). 릴레이 -apns-topics 허용목록과 같아야 한다.
@@ -79,6 +81,7 @@ targets:
         # 릴리스 수동 서명 자리(native-mls-ios-release.yml 이 xcodebuild 인자로 채움). 비면 무서명 CI 와 동일.
         PROVISIONING_PROFILE_SPECIFIER: $(FC_PROFILE_APP)
         FC_PROFILE_APP: ""
+        # 비어 있으면 App Store 빌드(서버 선택 화면). 릴리스 워크플로가 vars.FC_RELAY_URL 로 채우면 가족 기본 서버.
         FC_RELAY_URL: ""
         FC_APP_GROUP: ""
         FC_PUSH_TOPIC: $(PRODUCT_BUNDLE_IDENTIFIER)
@@ -100,6 +103,9 @@ targets:
       # #520: 카테고리(잠금 상태 일반 문구)·내용 쓰기 — 앱과 같은 코드
       - path: FamilyChat/Push/NotificationPrivacy.swift
       - path: FamilyChat/Sync/SharedStorage.swift
+      # #584: 선택한 서버(App Group `hande.server`)·서버별 스코프 — NSE 가 앱과 같은 규칙으로 읽는다(쓰지 않는다)
+      - path: FamilyChat/Sync/ServerStore.swift
+      - path: FamilyChat/Sync/ServerScope.swift
       - path: FamilyChat/Sync/SeededEngineFactory.swift
       - path: FamilyChat/Engine/FfiEngine.swift
       - path: FamilyChat/Engine/DeviceIdentity.swift
@@ -122,6 +128,7 @@ targets:
         NSExtension:
           NSExtensionPointIdentifier: com.apple.usernotifications.service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+        # 기본 서버(앱과 같은 값). NSE 는 App Group `hande.server` 를 먼저 읽고 이 값은 폴백(#584).
         FamilyChatRelayURL: $(FC_RELAY_URL)
         FamilyChatAppGroup: $(FC_APP_GROUP)
         # 봇 actor(쉼표 구분) — 알림 제목을 노드 닉네임으로

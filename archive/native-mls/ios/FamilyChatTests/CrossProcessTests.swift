@@ -66,8 +66,10 @@ extension ScenarioDevice {
         #if os(iOS)
         sealer = ChaChaPolySealer(key: sealKey)   // App 과 같은 봉인 키(운영에선 공유 Keychain 그룹)
         #endif
-        let state = try FileStateStore(directory: directory.appendingPathComponent("mls", isDirectory: true), sealer: sealer)
-        let db = try FileSQLiteStore(directory: directory)
+        // #584: 앱과 같은 서버 스코프 디렉터리(`<root>/servers/<id>/`) — NSEEnvironment.live 와 같은 규칙.
+        let scoped = try AppModel.Dependencies.storageDirectory(config)
+        let state = try FileStateStore(directory: scoped.appendingPathComponent("mls", isDirectory: true), sealer: sealer)
+        let db = try FileSQLiteStore(directory: scoped)
         let id = self.id
         return NotificationProcessor.Environment(
             identity: { id }, credential: { .bearer("smoke") }, makeTransport: { _ in transport },

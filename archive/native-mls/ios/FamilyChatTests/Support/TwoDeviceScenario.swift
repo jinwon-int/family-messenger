@@ -23,6 +23,8 @@ final class ScenarioDevice {
     let sealKey: SymmetricKey
     /// 엔진 팩토리 감싸기(복호화 계수 등, §12-D 교차 프로세스 테스트). nil = 그대로.
     let wrapFactory: ((MlsEngineFactory) -> MlsEngineFactory)?
+    /// live() 조립 설정 — NSE 대역(CrossProcessTests)이 같은 서버 스코프 디렉터리를 연다(#584).
+    private(set) var config: AppModel.Dependencies.LiveConfiguration
     private(set) var deps: AppModel.Dependencies
     private(set) var model: AppModel
 
@@ -33,12 +35,14 @@ final class ScenarioDevice {
         self.sealKey = SymmetricKey(size: .bits256)
         self.wrapFactory = wrapFactory
         let made = Self.make(id: id, directory: directory, lossy: lossy, sealKey: sealKey, wrapFactory: wrapFactory)
+        self.config = made.config
         self.deps = made.deps
         self.model = made.model
     }
 
     private static func make(id: DeviceID, directory: URL, lossy: LossyTransport, sealKey: SymmetricKey,
-                             wrapFactory: ((MlsEngineFactory) -> MlsEngineFactory)?) -> (deps: AppModel.Dependencies, model: AppModel) {
+                             wrapFactory: ((MlsEngineFactory) -> MlsEngineFactory)?)
+        -> (config: AppModel.Dependencies.LiveConfiguration, deps: AppModel.Dependencies, model: AppModel) {
         var config = AppModel.Dependencies.LiveConfiguration()
         config.baseDirectory = directory
         config.sealer = ChaChaPolySealer(key: sealKey)   // Keychain 대신 정적 키(무서명 시뮬레이터) — 봉인 경로는 같다
@@ -47,7 +51,7 @@ final class ScenarioDevice {
         var deps = AppModel.Dependencies.live(config)
         deps.makeTransport = { _ in lossy }
         if let wrapFactory { deps.engineFactory = wrapFactory(deps.engineFactory) }
-        return (deps: deps, model: AppModel(dependencies: deps))
+        return (config: config, deps: deps, model: AppModel(dependencies: deps))
     }
 
     /// 앱 재시작: 같은 디렉터리·같은 봉인 키로 저장소와 모델을 새로 연다. `configure` 로 의존성을 바꿀 수 있다(시나리오 ⑥ 자동 가입 actor).
@@ -55,6 +59,7 @@ final class ScenarioDevice {
         let made = Self.make(id: id, directory: directory, lossy: lossy, sealKey: sealKey, wrapFactory: wrapFactory)
         var deps = made.deps
         configure?(&deps)
+        self.config = made.config
         self.deps = deps
         model = configure == nil ? made.model : AppModel(dependencies: deps)
     }

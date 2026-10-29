@@ -49,6 +49,8 @@ struct LoginView: View {
                         Text(Strings.loginManualHint).font(.footnote).foregroundStyle(.secondary)
                     }
                 }
+                // #584: 현재 서버 + 「다른 서버 선택」(빌드 기본 서버가 자동으로 잡힌 설치의 출구)
+                ServerSwitchSection()
             }
             .navigationTitle(Strings.loginTitle)
         }

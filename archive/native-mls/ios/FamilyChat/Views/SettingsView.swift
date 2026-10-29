@@ -1,4 +1,4 @@
-// §9-5 설정: 지문·기기 ID·알림 상태(§12-D)·로그아웃(MLS 상태는 유지, 푸시 등록은 해제).
+// §9-5 설정: 지문·기기 ID·알림 상태(§12-D)·로그아웃(MLS 상태는 유지, 푸시 등록은 해제)·서버(#584: 현재 서버·「서버 바꾸기」).
 import SwiftUI
 import UIKit
 import FamilyMLSCore
@@ -8,6 +8,8 @@ struct SettingsView: View {
     @State private var confirmWipe = false
     @State private var wipeBusy = false
     @State private var wipeMessage: String?
+    @State private var confirmServerChange = false
+    @State private var serverChangeBusy = false
 
     var body: some View {
         Form {
@@ -43,6 +45,25 @@ struct SettingsView: View {
             Section(footer: Text(Strings.logoutHint)) {
                 Button(Strings.logout, role: .destructive) { model.logout() }
             }
+            // #584: 서버 — 현재 서버(이름·주소·찾은 방법) + 「서버 바꾸기」(로그아웃 뒤 서버 선택 화면; 이 서버의 로컬 데이터는 스코프에 남는다).
+            Section(header: Text(Strings.serverSection), footer: Text(Strings.serverChangeWarning)) {
+                if let server = model.server {
+                    LabeledContent(Strings.serverNameLabel) { Text(server.name ?? Strings.serverNoName).font(.footnote) }
+                    LabeledContent(Strings.serverURLLabel) {
+                        Text(server.baseURL.absoluteString).font(.footnote).textSelection(.enabled)
+                    }
+                    Text(Strings.serverVia(server.discoveredVia)).font(.footnote).foregroundStyle(.secondary)
+                }
+                Button(Strings.serverChange, role: .destructive) { confirmServerChange = true }
+                    .disabled(serverChangeBusy)
+                    .accessibilityIdentifier("settings-change-server")
+                    .confirmationDialog(Strings.serverChange, isPresented: $confirmServerChange, titleVisibility: .visible) {
+                        Button(Strings.serverChangeConfirm, role: .destructive) { Task { await changeServer() } }
+                        Button(Strings.close, role: .cancel) {}
+                    } message: {
+                        Text(Strings.serverChangeWarning)
+                    }
+            }
             Section(footer: Text(wipeMessage ?? Strings.wipeHint)) {
                 Button(Strings.wipeTitle, role: .destructive) { confirmWipe = true }
                     .disabled(wipeBusy)
@@ -55,6 +76,12 @@ struct SettingsView: View {
         } message: {
             Text(Strings.wipeWarning)
         }
+    }
+
+    private func changeServer() async {
+        serverChangeBusy = true
+        defer { serverChangeBusy = false }
+        await model.changeServer()
     }
 
     private func wipe() async {

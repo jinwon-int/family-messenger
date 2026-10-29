@@ -1,4 +1,6 @@
 // 한데(코드명 FamilyChat) iOS(독자 E2EE) — 앱 진입점. 파이널라이저 소유(CONTRACTS.md §0). 화면 정보구조는 #271 §9.
+// #584: 첫 화면은 서버 선택(`.needsServer`, ServerSelectView) — 저장된 선택도 빌드 기본값도 없을 때. 읽음 위치·방 순서(`LocalPrefs`)는
+// 모델이 서버 스코프별로 소유한다(`model.localPrefs`).
 // 의존성은 `Dependencies.live()`(L1 파일 저장소 + L3 릴레이 동기화 + ios-ffi 엔진, LiveDependencies.swift).
 // 화면이 떠 있는 동안 4초 포그라운드 폴링(CONTRACTS §2.2), 백그라운드 wake 는 푸시(§12-D, NSE).
 // 모델은 AppDelegate 가 소유한다 — APNs 토큰·알림 콜백이 UIKit 델리게이트로만 오기 때문(AppDelegate.swift).
@@ -45,6 +47,8 @@ struct RootView: View {
                 OpeningView()
             case .needsEnrollment where !model.settled && !openingExpired:
                 OpeningView()
+            case .needsServer:
+                ServerSelectView()
             case .needsActor:
                 ActorSetupView()
             case .needsLogin:
@@ -54,7 +58,7 @@ struct RootView: View {
             case .ready, .halted:
                 NavigationStack(path: $navigator.path) { RoomListView() }
                     .environmentObject(navigator)
-                    .environmentObject(LocalPrefs.shared)
+                    .environmentObject(model.localPrefs)
             case .fatal(let reason):
                 FatalView(reason: reason)
             }
@@ -75,7 +79,7 @@ struct RootView: View {
         .onChange(of: model.phase) { _ in openRequestedRoom() }
         // #571 B: 릴레이가 아는 같은 사람(actor)의 읽음 위치를 이 기기 값에 합쳐 둔다(웹 app.js mergeRelayRead) — `markRead` 는 줄어들지 않는다.
         .onChange(of: model.relayReadSeq) { relay in
-            for (room, seq) in relay { LocalPrefs.shared.markRead(room, seq: seq) }
+            for (room, seq) in relay { model.localPrefs.markRead(room, seq: seq) }
         }
         .task {
             try? await Task.sleep(nanoseconds: Self.openingLimitNanoseconds)

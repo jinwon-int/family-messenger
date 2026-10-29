@@ -3,7 +3,7 @@
 | 디렉터리 | 역할 | 소유 |
 |---|---|---|
 | `FamilyMLSCore/` | 순수 Swift 계약 층(프로토콜·와이어 타입·참조 구현·계약 테스트). Linux `swift test` | 계약: CONTRACTS.md PR · 구현: L1(`Store/File*`) · L3(`Relay/URLSession*`, `Sync/`, `Policy/`) |
-| `FamilyChat/` | 앱 타깃: `AppModel` 상태기계(starting→needsLogin→needsEnrollment→ready⇄halted), 화면(§9), `FfiEngine`(xcframework 어댑터) | 파이널라이저 |
+| `FamilyChat/` | 앱 타깃: `AppModel` 상태기계(starting→needsServer→needsActor→needsLogin→needsEnrollment→ready⇄halted), 화면(§9), `FfiEngine`(xcframework 어댑터) | 파이널라이저 |
 | `FamilyChatTests/` | 시뮬레이터 XCTest: 상태기계(가짜 엔진) + Rust 파사드 2기기 E2EE 왕복 | 파이널라이저 |
 | `project.yml` | XcodeGen 정의(생성물 커밋 금지) | 파이널라이저 |
 
@@ -18,6 +18,24 @@ xcodebuild -project FamilyChat.xcodeproj -scheme FamilyChat \
 🔔 알림 → 「새 기기 승인」에서 지문을 비교해 승인하면(`sign_approval`, `Views/DevicesView.swift`) 그 기기가 참여한 대화방에 자동 초대된다
 (형제 기기가 보낸 로비 Welcome 은 가족 기기도 자동 수락). 설정 → 「내 기기」가 체인의 내 기기와 등록 기기(registrar) 부여/해제(`sign_roles`)를
 보인다. 판정은 `FamilyMLSCore/Sync/SelfService.swift`(웹 `self-service.js` 와 동일), 와이어는 CONTRACTS.md §2.3.
+
+## 온보딩 — 서버 선택(#584 PR 2, 2026-10-29)
+
+한데 iOS 는 App Store 공개 앱을 전제로 한다(Element 의 홈서버 선택과 같은 구조). 릴레이 주소는 더 이상 빌드 시점 상수가 아니다.
+
+1. **첫 화면 `ServerSelectView`**(`AppModel.Phase.needsServer`): 도메인(`example.com`)이나 https 주소를 입력 → 「서버 찾기」 →
+   `https://<host>/.well-known/hande` → `https://hande.<host>/.well-known/hande` → (없으면) 입력 주소를 릴레이로 → `GET /v2/health` 확인
+   (`FamilyMLSCore/Relay/ServerDiscovery.swift`, CONTRACTS.md §2.5) → 서버 이름·주소 확인 → 「이 서버로 계속」 → 기존 흐름(사용자 이름 → Google 로그인 → 등록).
+   웹 설정 화면의 `hande://server?url=…` 링크를 붙여넣거나 열어도 된다. QR 스캔은 카메라 권한(`NSCameraUsageDescription`)이 아직 없어 후속.
+   오류: 못 찾음 · 릴레이 응답 없음 · 앱이 너무 오래됨(`min_app.ios`) · http 거부.
+2. **저장**: 선택은 App Group UserDefaults `hande.server`(JSON) — NSE 도 같은 값을 읽는다(`ServerStore.resolve`, App Group → Info.plist 폴백).
+3. **서버별 네임스페이스 `ServerScope`**(`Sync/ServerScope.swift`): 서버마다 `servers/<id>/` 디렉터리(MLS 상태·messages.db), 기기 ID·사용자 이름·푸시 기록·읽음 위치·방 순서의 defaults 키, Keychain 자격증명 account 가 따로다 — 서버를 바꿔도 데이터가 섞이지 않는다. 봉인 키만 공용(파일 보호 키).
+4. **설정 → 서버**: 현재 서버(이름·주소·찾은 방법) + 「서버 바꾸기」 — 로그아웃(푸시 DELETE·이 스코프의 자격증명 삭제) 뒤 서버 선택 화면. 이 서버의 로컬 데이터는 그 스코프에 남고, 새 서버는 빈 스코프(새 기기)로 시작한다. 로그인·이름 화면에도 「다른 서버 선택」이 있다.
+5. **`FC_RELAY_URL` 은 기본값**(project.yml): 값이 있으면(가족 TestFlight — 릴리스 워크플로가 `vars.FC_RELAY_URL` 로 채운다) 저장된 선택이 없을 때 그 서버를 그대로 쓰고(첫 화면 생략, `discoveredVia: .buildDefault`) 서버 선택 화면에 미리 채운다. **App Store 빌드는 비워 둔다** — 별도 워크플로(또는 `native-mls-ios-release.yml` 의 `test -n "$FC_RELAY_URL"` 가드를 입력으로 끈 실행)에서 `FC_RELAY_URL=""` 로 archive 하면 첫 화면이 서버 선택이 된다. TestFlight 워크플로는 바꾸지 않았다.
+6. **옛 설치 이관**(`Sync/LegacyScopeMigration.swift`): 업데이트 뒤 첫 실행에 저장된 선택이 없고 기본값이 있으면 스코프 없는 자리의 `mls/`·`messages.db*`·기기 ID·사용자 이름·푸시 기록·읽음 위치·방 순서·Keychain `v1` 자격증명을 기본 서버 스코프로 한 번 옮기고 `hande.server` 에 기본 서버를 적는다. 가족 기기는 화면 변화 없이 그대로 이어진다(재로그인 불필요). 그 사이 NSE 가 먼저 깨면 스코프 디렉터리가 없어 대체 알림만 보인다(앱을 한 번 열면 끝).
+
+테스트: `FamilyMLSCoreTests/ServerDiscoveryTests`(순수, Linux) · `FamilyChatTests/ServerScopeTests`(저장·스코프·이관, Linux 스모크에도 복사) ·
+`AppModelTests`(needsServer / 기본값 / 탐색·선택 / 서버 바꾸기 / reopen).
 
 뼈대 단계(2026-10-05)에서 앱은 InMemory 스토어를 쓰고 네트워크가 없다. L1·L3 머지 후 `AppModel.Dependencies.live()` 의
 의존성만 파일 스토어·릴레이 동기화로 바뀐다. 푸시/NSE(§12-D)·첨부·QR 등록(§12-E)은 통합 단계.

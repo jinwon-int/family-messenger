@@ -1,5 +1,6 @@
 // 사용자 문구 단일 출처(web/app `strings.js` 규칙 승계). 추출·동기화는 후속(#271 §9).
 import Foundation
+import FamilyMLSCore
 
 enum Strings {
     static let appName = "한데"
@@ -7,9 +8,27 @@ enum Strings {
     static let fatalTitle = "앱을 시작할 수 없습니다"
     static let decryptFormatMismatch = "암호화 모듈 버전이 맞지 않습니다(decrypt format). 앱을 업데이트해 주세요."
     static let identityRoom = "_identity"
-    static let relayNotConfigured = "릴레이 주소가 설정되지 않았습니다(빌드 설정 FC_RELAY_URL)."
+    static let relayNotConfigured = "릴레이 주소가 설정되지 않았습니다. 설정에서 서버를 다시 선택해 주세요."
     static let sessionExpired = "로그인 세션이 만료되었습니다. 다시 로그인해 주세요."
     static func storageUnavailable(_ detail: String) -> String { "기기 저장소를 열 수 없습니다: \(detail)" }
+
+    // 서버 선택(#584 PR 2) — AppModel 이 쓰는 탐색 실패 문구는 여기(NSE·Linux 스모크 공유 파일), 화면 문구는 Strings+Server.swift
+    static func serverDiscoveryFailure(_ failure: ServerDiscoveryFailure) -> String {
+        switch failure {
+        case .invalidInput:
+            return "서버 주소 형식이 맞지 않습니다. 도메인(예: example.com)이나 https:// 주소를 입력하세요."
+        case .insecure(let host):
+            return "\(host) 은(는) 암호화되지 않은 http 주소입니다. https 주소만 쓸 수 있습니다."
+        case .notFound(let host):
+            return "\(host) 에서 한데 서버를 찾지 못했습니다. 주소를 확인하거나 운영자에게 서버 주소를 물어보세요."
+        case .healthFailed(let baseURL, let detail):
+            return "서버 정보는 찾았지만 릴레이 \(baseURL.absoluteString) 가 응답하지 않습니다(\(detail)). 잠시 뒤 다시 시도해 주세요."
+        case .tooOld(let minimum, let current):
+            return "이 서버는 앱 \(minimum) 이상이 필요합니다(지금 \(current)). 앱을 업데이트해 주세요."
+        case .network:
+            return "서버에 닿지 않습니다. 네트워크 연결을 확인해 주세요."
+        }
+    }
 
     // 사용자 이름(actor) — 첫 실행 1회
     static let actorTitle = "이 기기 사용자"
