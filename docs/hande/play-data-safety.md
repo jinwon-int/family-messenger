@@ -16,7 +16,8 @@
 | `push_devices` | 기기 ID, **APNs 토큰**(iOS), topic | 예 | 등록 철회까지(Android 는 아직 푸시 없음 — 이 표는 iOS 만) |
 | `device_candidates` | 기기 ID, **subject(CF Access 신원 = 이메일 형식)**, actor, 서명 공개키, 지문, 만료 | 예 | **10분** TTL |
 | 기기 정책 체인(`-device-state`, 파일) | 기기 ID, actor, 서명 공개키, 지문, **subject(CF Access 신원)**, 상태(active/revoked), 역할(registrar), revision·서명 | 예 | **불변 기록**(폐기해도 revoked 로 남음) |
-| 서버 로그(stdout/journal) | `auth bind device=<id>` 등 경로·기기 ID·오류 — 토큰·내용 없음 | 예 | 운영자 로그 보존(PR 4 기입) |
+| 서버 로그(stdout/journal) | `auth bind device=<id>` 등 경로·기기 ID·오류 — 토큰·내용 없음 | 예 | **30일**(방침 2-1 의 운영 정책값, `release-checklist.md` 0-4) |
+| 오프호스트 스냅샷 | 위 DB·정책 체인 사본(`docs/NATIVE-RELAY-OPERATIONS.md`) | 예(암호문은 여전히 암호문) | 48시간 전량 + 하루 1개 × **30일** |
 | Cloudflare Access | Google 로그인 이메일·시각(Cloudflare 측 로그) | 한데 서버는 접근 안 함 | Cloudflare 정책 |
 
 앱이 서버로 **보내는** 것: 요청마다 세션 JWT(CF Access, `sub`=신원) · 기기 ID · 위 표의 값들. 앱 권한은 `INTERNET` 하나. 분석·광고·크래시 SDK 없음(의존성: Compose/AndroidX/OkHttp/JNA/androidx.browser 뿐).
@@ -47,11 +48,17 @@
 
 ### 보안 관행 항목
 - 전송 중 암호화: 예(TLS 1.2+; 릴레이는 Cloudflare 뒤).
-- 삭제 요청 메커니즘: 예 — `https://…/hande/delete-account`(앱 설정 화면 링크와 같은 주소).
-- 데이터 처리 위치/보관: 서버 1대(서윤가족 운영, 한국 외 위치면 PR 4 기입) — 위 표의 보관 기간.
+- 삭제 요청 메커니즘: 예 — `https://jinwon-int.github.io/family-messenger/hande/delete-account/`(앱 설정 화면 링크 `DELETE_ACCOUNT_URL` 은 끝 `/` 없는 같은 경로 → Pages 301).
+- 데이터 처리 위치/보관: 릴레이 서버 1대(운영 주체 = rnmaru.com 운영 법인; 호스트 위치는 Family Wiki 노드 문서) — 위 표의 보관 기간.
 
 ### 콘솔의 다른 선언과의 일관성
-- 개인정보처리방침 URL = 앱 안 링크(`BuildConfig.PRIVACY_URL`) 와 같아야 한다.
-- 계정 삭제: 「앱 내 삭제 경로 제공」 예(이 기기 지우기), 「웹 삭제 요청 URL」 = `DELETE_ACCOUNT_URL`. 체인의 폐기 기록이 남는 점은 삭제 페이지 3절에 명시(「일부 데이터 보관」 선택 → 사유: 변조 방지 보안 기록).
+- 개인정보처리방침 URL = `https://jinwon-int.github.io/family-messenger/hande/privacy/`(앱 안 링크 `BuildConfig.PRIVACY_URL` 과 같은 페이지).
+- 계정 삭제: 「앱 내 삭제 경로 제공」 예(이 기기 지우기), 「웹 삭제 요청 URL」 = 위 delete-account 주소. 체인의 폐기 기록이 남는 점은 삭제 페이지 3절에 명시(「일부 데이터 보관」 선택 → 사유: 변조 방지 보안 기록).
 - 광고: 없음. 콘텐츠 등급: IARC 설문(사용자 간 소통 있음 → 「사용자 상호작용」 예, 개인정보 공유 가능 예).
-- App access: 로그인 필요 — 심사용 데모 서버·Google 계정(PR 4, iOS 와 공용).
+- App access: 로그인 필요 — 심사용 데모 서버·Google 계정([`demo-server.md`](demo-server.md), iOS 와 공용 · 심사 노트 문안은 [`app-store-review.md`](app-store-review.md) §2).
+- Apple App Privacy 라벨은 같은 §0 표에서 뽑은 [`app-store-review.md`](app-store-review.md) §1 — 두 스토어의 답이 서로 모순되지 않게 같이 고친다.
+
+---
+
+## English summary
+Worksheet for the Google Play Data safety form, derived from the relay's actual SQLite schema and device-policy chain. Declared as collected (not shared, required, App functionality, encrypted in transit, deletion request available): email address (Cloudflare Access subject), name (operator-assigned display name), user ID and device ID (app-generated, plus iOS APNs token), and "other user-generated content" for plaintext room metadata (room names, membership, read positions, timestamps). Message and attachment content is **not** declared under Google's end-to-end-encryption rule (unreadable by the developer). No ads, analytics, crash SDKs, location, contacts, or photos access.

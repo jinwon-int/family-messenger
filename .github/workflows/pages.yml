@@ -1,0 +1,149 @@
+# GitHub Pages — 한데 정책 페이지(#584 PR 4).
+# docs/hande/*.md 만 정적 HTML 로 바꿔 https://jinwon-int.github.io/family-messenger/hande/<이름>/ 에 올린다.
+# 다른 디렉터리는 절대 게시하지 않는다(_site 에는 hande/ 하나만 생긴다). 저장소 Settings → Pages → Source 가
+# "GitHub Actions" 여야 deploy 가 성립한다(오너 항목, docs/hande/release-checklist.md 0-1).
+name: Pages (docs/hande)
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/hande/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pandoc (apt)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends pandoc
+          pandoc --version | head -1
+      - name: Build docs/hande/*.md into _site/hande
+        # <name>.md → _site/hande/<name>/index.html (index.md → _site/hande/index.html), so the public URL is
+        # https://jinwon-int.github.io/family-messenger/hande/<name>/ . Only *.md directly inside docs/hande are read.
+        # Links: other.md → ../other/ (or other/ from index); ../X → github.com blob URL (repo files outside docs/hande).
+        run: |
+          set -euo pipefail
+
+          src=docs/hande
+          out=_site
+          repo_blob="https://github.com/jinwon-int/family-messenger/blob/main"
+
+          rm -rf "$out"
+          mkdir -p "$out/hande"
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+
+          cat > "$tmp/links.lua" <<'LUA'
+          -- Rewrite relative Markdown links for the Pages layout (see the step comment above).
+          local from_index = os.getenv("HANDE_FROM_INDEX") == "1"
+          local blob = os.getenv("HANDE_REPO_BLOB")
+
+          local function rewrite(target)
+            if target:match("^%a[%w+.-]*:") or target:match("^#") then return target end
+            local path, frag = target:match("^([^#]*)(#?.*)$")
+            if path:match("^%.%./%.%./") then
+              return blob .. "/" .. path:gsub("^%.%./%.%./", "") .. frag
+            elseif path:match("^%.%./") then
+              return blob .. "/docs/" .. path:gsub("^%.%./", "") .. frag
+            end
+            local name = path:match("^([%w_%-]+)%.md$")
+            if name then
+              if name == "index" then
+                return (from_index and "./" or "../") .. frag
+              end
+              return (from_index and "" or "../") .. name .. "/" .. frag
+            end
+            return target
+          end
+
+          function Link(el)
+            el.target = rewrite(el.target)
+            return el
+          end
+          LUA
+
+          cat > "$tmp/header.html" <<'CSS'
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <meta name="color-scheme" content="light dark">
+          <style>
+            :root { color-scheme: light dark; }
+            body { max-width: 52rem; margin: 2rem auto; padding: 0 1rem; font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", system-ui, sans-serif; word-break: keep-all; overflow-wrap: anywhere; }
+            h1 { font-size: 1.6rem; line-height: 1.3; } h2 { font-size: 1.25rem; margin-top: 2rem; border-bottom: 1px solid #8884; padding-bottom: .2rem; } h3 { font-size: 1.05rem; }
+            table { border-collapse: collapse; width: 100%; font-size: .92em; display: block; overflow-x: auto; }
+            th, td { border: 1px solid #8886; padding: .35rem .5rem; vertical-align: top; text-align: left; }
+            code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9em; }
+            pre { padding: .75rem; border: 1px solid #8886; border-radius: 4px; overflow-x: auto; }
+            blockquote { margin: 1rem 0; padding: .25rem 1rem; border-left: 4px solid #8886; opacity: .9; }
+            a { color: #0a58ca; } @media (prefers-color-scheme: dark) { a { color: #6ea8fe; } }
+            footer { margin-top: 3rem; font-size: .85em; opacity: .75; border-top: 1px solid #8884; padding-top: .75rem; }
+            hr { border: 0; border-top: 1px solid #8884; margin: 2rem 0; }
+          </style>
+          CSS
+
+          cat > "$tmp/after.html" <<'FOOT'
+          <footer>한데(Hande) · <a href="../">목차 / Index</a> · 문의 support@rnmaru.com · 소스: <a href="https://github.com/jinwon-int/family-messenger/tree/main/docs/hande">docs/hande</a></footer>
+          FOOT
+          cat > "$tmp/after-index.html" <<'FOOT'
+          <footer>한데(Hande) · 문의 support@rnmaru.com · 소스: <a href="https://github.com/jinwon-int/family-messenger/tree/main/docs/hande">docs/hande</a></footer>
+          FOOT
+
+          count=0
+          for md in "$src"/*.md; do
+            [ -f "$md" ] || continue
+            name="$(basename "$md" .md)"
+            case "$name" in
+              *[!A-Za-z0-9_-]*) echo "refusing unexpected file name: $md" >&2; exit 1 ;;
+            esac
+            title="$(grep -m1 '^# ' "$md" | sed 's/^# *//')"
+            [ -n "$title" ] || title="$name"
+            if [ "$name" = "index" ]; then
+              dest="$out/hande/index.html"; from_index=1; after="$tmp/after-index.html"
+            else
+              mkdir -p "$out/hande/$name"
+              dest="$out/hande/$name/index.html"; from_index=0; after="$tmp/after.html"
+            fi
+            HANDE_FROM_INDEX="$from_index" HANDE_REPO_BLOB="$repo_blob" \
+            pandoc "$md" --from gfm-yaml_metadata_block --to html5 --standalone \
+              --metadata lang=ko --metadata pagetitle="$title" \
+              --lua-filter "$tmp/links.lua" \
+              --include-in-header "$tmp/header.html" --include-after-body "$after" \
+              --output "$dest"
+            count=$((count + 1))
+            echo "built $md -> $dest"
+          done
+          [ "$count" -gt 0 ] || { echo "no markdown files in $src" >&2; exit 1; }
+          echo "built $count page(s)"
+      - name: Verify nothing outside _site/hande was produced
+        run: |
+          set -eu
+          test -f _site/hande/index.html
+          test -f _site/hande/privacy/index.html
+          test -f _site/hande/delete-account/index.html
+          extra="$(find _site -mindepth 1 -maxdepth 1 ! -name hande | wc -l)"
+          test "$extra" = "0"
+          find _site -type f | sort | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}hande/
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
