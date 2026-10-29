@@ -38,10 +38,32 @@ v1 `devices` 배열과의 차이는 #177 §3.1의 그것 하나: **actor당 기�
 | `status` | `active`(\|`device_revision`=1) 또는 `revoked`(=2). 되돌리기 없음 |
 | `acceptance` | `out-of-band-fingerprint`(E1) 또는 `trusted-device-fingerprint`(E2) |
 | `approved_by` | 최대 1회: `{device_id, revision}` — 승인 기기 + 그 승인이 허가한 revision |
+| `roles` | (#574) 역할 집합, 정렬·중복 없음. 현재 `["registrar"]` 하나. 비어 있으면 **키 자체를 쓰지 않는다**(`omitempty`) — #574 이전 레코드의 바이트·`policy_sha256`·체인 링크가 그대로다. 활성 기기에만 있고 tombstone은 비운다 |
 
 불변식(전부 체인 재생 시 강제): 총 ≤32기기, actor당 active ≤4, id·키 전역 유일,
 fingerprint=key 해시 일치, `trusted` acceptance에는 `approved_by` 필수, 삭제·재활성
-불가, 불변 필드(id·actor·subject·key·fingerprint·acceptance) 변경 불가.
+불가, 불변 필드(id·actor·subject·key·fingerprint·acceptance) 변경 불가, `roles`는 활성
+기기에서만 바뀌고 폐기 시 비워진다.
+
+## 등록 기기(registrar) — #574 D2
+
+같은 사람의 어느 기기든 새 기기를 승인할 수 있던 §3.2 규칙 위에, 그 사람이 **"내 기기를 등록해
+주는 기기"를 지정**하는 역할을 얹는다. Matrix 크로스사이닝(자기서명키를 가진 기기가 새 기기를
+서명)의 "누구나"를 명시적·이전 가능한 역할로 좁힌 것이다.
+
+- **E1 첫 기기 = registrar.** `ApplyEnrollFirst`가 `roles:["registrar"]`를 쓴다.
+- **registrar가 하나라도 있는 actor의 E2는 registrar 서명만 유효하다**(`VerifyApproval`,
+  `approve-device`에 한함). 폐기 증거(`revoke-device`)는 종전대로 활성 기기 아무나 — 탈취된
+  registrar가 자기 제거를 혼자 막을 수 없어야 한다.
+- **registrar가 없는 actor**(#574 이전 체인 전부)는 종전 규칙 그대로이고, 그 actor의 활성 기기
+  아무나 E5 한 번으로 자기 또는 형제 기기에 역할을 올려 부트스트랩한다.
+- **E5 set-roles** 는 대상의 **완전한** 역할 목록(델타 아님)을 registrar가 서명한다. 대상·승인자
+  모두 활성·동일 actor; 승인자=대상 허용(자기 부트스트랩, 다른 registrar가 남을 때 사퇴).
+  registrar가 있는 actor는 **마지막 registrar를 비울 수 없다** — 먼저 다른 기기에 부여.
+  revision 소진·기기 한도는 다른 연산과 같다.
+- registrar를 **전부 잃으면**(E3/E4로 폐기) actor는 registrar-less가 되어 종전 규칙으로
+  돌아가며, 운영자가 `-set-roles <id> -roles registrar`(증거 없음, 대역외 의식)로 복구한다.
+- `roles`는 `approved_by`처럼 **관리 선언**이다. 지문 대조를 사람이 했다는 증명이 아니다.
 
 ## 다섯 연산 ↔ 오너 CLI (`cmd/native-devices`)
 
@@ -52,10 +74,24 @@ fingerprint=key 해시 일치, `trusted` acceptance에는 `approved_by` 필수, 
 | **E2 add-device** | `-add-device -input 증거` | 새 기기 `active`, `trusted-device-fingerprint`, `approved_by={승인기기, 새 revision}` |
 | **E3 revoke** | `-revoke <id> [-input 증거]` | `active`→`revoked` tombstone. 승인 증거는 선택적이며 `approved_by`가 아직 없는 기기의 tombstone에 1회 기록 |
 | **E4 recover-all-lost** | `-revoke-all <actor>` | 그 actor의 모든 활성 기기를 tombstone으로. 새 방/새 그룹은 클라이언트 측(ReInit/PSK 아님) |
+| **E5 set-roles** (#574) | `-set-roles <id> -roles registrar\|none [-input 증거]` | 활성 기기의 `roles`를 통째로 바꾼다. `-input`이 있으면 registrar 서명 증거(`RolesEvidence`)를 검증하고 플래그와 대조; 없으면 운영자 대역외 복구(증거 미기록) |
 
 모든 변이는 `-expected-revision`로 현재 revision과의 정확한 CAS다. E1의 대역외 의식에서
 비교할 값은 CLI 출력의 `fingerprint`다. `-inspect`와 모든 출력에 서명 키는 절대
-포함되지 않는다. E5(restore-history)는 이 계약 밖의 읽기전용 아카이브 기능이다.
+포함되지 않는다(`roles`는 보인다). 전이 빌더(`ApplyEnrollFirst`·`ApplyAddDevice`·
+`ApplySetRoles`·`SetRoles`·`Tombstone`·`FindApprover`)는 `internal/devicepolicy/apply.go`에
+있고 릴레이 셀프서비스 라우트(#574 D1, 별도 PR)와 공유한다. 옛 "E5 restore-history"는 이
+계약 밖의 읽기전용 아카이브 기능으로, 번호가 겹치지 않게 **E6**로 부른다.
+
+### E5 증거 (`RolesPayloadWire`)
+
+```
+{"action":"set-roles","device_id":"<대상>","actor":"<actor>","roles":["registrar"],"base_revision":N}
+```
+서명 입력 = `"family-mls-v2/set-roles\0" ‖ sha256(canonical payload)` — E2/E3와 같은 도메인
+분리, 다른 action. `roles`는 정렬·중복 없는 전체 목록(빈 배열 = 역할 없음, `null` 금지).
+증거 파일/본문 = `{device_id, actor, roles, base_revision, signature[, approved_by]}`.
+Rust 파사드(`policy_wire`)에는 `sign_roles`가 아직 없다 — 클라이언트 PR에서 같은 바이트를 만든다.
 
 ## 승인 증거 (B6 수정)
 
