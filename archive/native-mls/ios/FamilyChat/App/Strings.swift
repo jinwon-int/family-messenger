@@ -33,14 +33,14 @@ enum Strings {
     // 사용자 이름(actor) — 첫 실행 1회
     static let actorTitle = "이 기기 사용자"
     static let actorField = "이름(영문 소문자)"
-    static let actorHint = "가족 운영자가 정해 준 영문 이름을 입력하세요(예: mom, dad, jiyu). 소문자로 시작하는 영문 소문자·숫자 2~16자. 이 기기의 ID가 이 이름으로 만들어지며, 한 번 정하면 바꿀 수 없습니다(바꾸려면 앱을 지우고 새 기기로 다시 등록)."
+    static let actorHint = "한데는 가족 운영자가 구성원을 등록하는 비공개 메신저라 이름도 운영자가 정해 줍니다. 운영자가 정해 준 영문 이름을 입력하세요(예: mom, dad, jiyu). 소문자로 시작하는 영문 소문자·숫자 2~16자. 이 기기의 ID가 이 이름으로 만들어지며, 한 번 정하면 바꿀 수 없습니다(바꾸려면 앱을 지우고 새 기기로 다시 등록)."
     static let actorButton = "확인"
     static let actorInvalid = "이름 형식이 맞지 않습니다 — 소문자로 시작하는 영문 소문자·숫자 2~16자(하이픈·공백 불가)."
 
     // 로그인(§12-C A, LoginView · AppLogin.swift)
     static let loginTitle = "가족 로그인"
     static let loginGoogle = "Google 계정으로 로그인"
-    static let loginHint = "가족 운영자가 허용한 Google 계정으로 로그인합니다. 로그인 창은 iPhone 의 Safari 가 열고, 비밀번호는 앱에 전달되지 않습니다. 로그인이 끝나면 이 앱으로 자동으로 돌아옵니다."
+    static let loginHint = "한데에는 회원가입이 없습니다. 가족 운영자가 자기 서버에 허용해 둔 Google 계정으로 로그인합니다(운영자 서버의 접근 제어). 로그인 창은 iPhone 의 Safari 가 열고, 비밀번호는 앱에 전달되지 않습니다. 로그인이 끝나면 이 앱으로 자동으로 돌아옵니다."
     static func loginFailed(_ reason: String) -> String { "로그인하지 못했습니다: \(reason)" }
     static let loginManualTitle = "직접 입력(운영자용)"
     static let loginManualHint = "PC 브라우저의 세션 값(CF_Authorization)을 붙여넣는 운영자용 방법입니다. 가족은 위의 로그인 버튼을 쓰세요."

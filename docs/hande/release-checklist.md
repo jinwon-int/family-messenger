@@ -18,13 +18,13 @@
 | # | 항목 | 누가 | 의존 | 상태 |
 |---|---|---|---|---|
 | A-1 | App Store Connect 앱 레코드: 이름 「한데」, 번들 ID `com.seoyoon-family.hande`(NSE `…hande.nse`), SKU, 1차 언어 한국어 | 오너 | `archive/native-mls/ios/project.yml` | TestFlight 에 이미 존재(build 9 이력) — App Store 정보 탭만 채우면 됨 |
-| A-2 | **App Store 빌드**: `native-mls-ios-release.yml` 을 `FC_RELAY_URL` **빈 값**으로 archive(첫 화면 = 서버 선택). 워크플로의 `test -n "$FC_RELAY_URL"` 가드를 입력으로 끄는 변경(또는 별도 워크플로)이 필요 — **코드/워크플로 PR**(이 PR 범위 밖) | 노드(PR) → 오너(dispatch 승인) | `.github/workflows/native-mls-ios-release.yml` · `ios/README.md` 「온보딩」5 | 대기 |
+| A-2 | **App Store 빌드**: `native-mls-ios-release.yml` 을 `workflow_dispatch` 입력 **`distribution = appstore-public`** 으로 실행(`FC_RELAY_URL` 빈 값 → 첫 화면 = 서버 선택; 기본 `testflight-family` 는 지금까지의 가족 빌드). environment `testflight` 승인·서명·업로드는 같다. 아카이브 검증 단계가 앱·NSE `FamilyChatRelayURL` 빈 값과 Privacy manifest 2개를 확인 | 오너(dispatch 승인) | `.github/workflows/native-mls-ios-release.yml` · `ios/README.md` 「온보딩」5 | 코드 PR 머지 뒤 실행 |
 | A-3 | 개인정보처리방침 URL `…/hande/privacy/` · Privacy Choices URL `…/hande/delete-account/` · 지원 URL `…/hande/` | 오너 | `docs/hande/privacy.md` | 0-2 뒤 |
 | A-4 | App Privacy 라벨 입력(Email · Name · User ID · Device ID · Other User Content, Linked, App Functionality, 추적 없음) + 「Emails or Text Messages」 신고 여부 **오너 결정** | 오너 | `docs/hande/app-store-review.md` §1 | 대기 |
 | A-5 | 수출 규정: 질문지 답(표준 알고리즘·비독자·**프랑스 아니오**) + Pricing and Availability 에서 **France 제외** + `ITSAppUsesNonExemptEncryption: false` 유지 | 오너 | `app-store-review.md` §3 · `project.yml` | 대기 |
 | A-6 | **US BIS 자체 분류 보고/공개 소스 예외 — 확인 필요(non-US developer)**: 법률 확인 뒤 결과를 `app-store-review.md` §3-3 ③ 에 기록. 출시를 막지는 않음(Apple 요구 문서 없음) | 오너 | `app-store-review.md` §3-3 | 확인 필요 |
-| A-7 | Privacy manifest(`PrivacyInfo.xcprivacy`: Required Reason API·수집 유형·추적 없음) — **앱 코드 PR** | 노드 | `app-store-review.md` §1-2 | 대기 |
-| A-8 | 4.2 대비 온보딩 문구(서버 선택 화면 안내 + 도움말 링크) — **앱 코드 PR**(iOS·Android 공통 문구) | 노드 | `app-store-review.md` §5 | 대기 |
+| A-7 | Privacy manifest(`PrivacyInfo.xcprivacy` 앱·NSE: Required Reason API UserDefaults `CA92.1`+`1C8F.1` · FileTimestamp `C617.1`, 수집 유형 = §1-1, 추적 없음) — 코드 PR 에 포함. 업로드 뒤 ITMS-91053 메일이 오면 범주 추가 | 노드(PR) / 오너(메일 확인) | `app-store-review.md` §1-2 · `ios/README.md` 「App Store 준비」 | 코드 PR |
+| A-8 | 4.2 대비 온보딩 문구(서버 선택 화면 안내 + 안내서·개인정보처리방침 링크, 이름·로그인 화면 설명) + 설정 「정책」 링크·앱 버전 — iOS 코드 PR 에 포함(Android 는 #588 에 설정 링크, 서버 화면 안내 문구는 후속) | 노드 | `app-store-review.md` §5 · `ios/README.md` 「App Store 준비」 | iOS 코드 PR / Android 후속 |
 | A-9 | 심사 노트: 데모 서버 도메인·심사관 계정·절차·연락처·유효기한(KST) — `〔 〕` 채우기, 비밀번호는 ASC 에만 | 오너 | `app-store-review.md` §2 · `demo-server.md` | 0-6 뒤 |
 | A-10 | 스크린샷 6.9"(3~10장) · 설명(「운영자 서버 필요」 명시) · 키워드 · 카테고리 Social Networking · 연령 등급 질문지 · 저작권 | 오너(승인·문안 확정) / 노드(시뮬레이터 캡처·초안) | `app-store-review.md` §4 | 대기 |
 | A-11 | 빌드 선택 → 심사 제출. 거절 시 Resolution Center 답변 근거 = `app-store-review.md` §5 | 오너 | | |
@@ -50,9 +50,9 @@
 ## C. 코드 쪽 남은 PR(이 체크리스트가 기대는 것)
 | 항목 | 설명 | 의존 |
 |---|---|---|
-| iOS App Store 빌드 워크플로(A-2) | `FC_RELAY_URL` 빈 값 archive 허용 입력 | `native-mls-ios-release.yml` |
-| Privacy manifest(A-7) | `PrivacyInfo.xcprivacy` | iOS 앱 |
-| 온보딩 문구·도움말 링크(A-8) | 서버 선택 화면, iOS·Android | 양쪽 앱 |
+| iOS App Store 빌드 워크플로(A-2) | `distribution` 입력(`appstore-public` = `FC_RELAY_URL` 빈 값 archive) — iOS App Store 준비 PR(`feat/ios-appstore-readiness`) | `native-mls-ios-release.yml` |
+| Privacy manifest(A-7) | `PrivacyInfo.xcprivacy` 앱·NSE — 같은 PR | iOS 앱 |
+| 온보딩 문구·도움말 링크(A-8) | 서버 선택 화면 안내·정책 링크 — iOS 는 같은 PR, Android 서버 화면 안내 문구는 후속 | 양쪽 앱 |
 | (선택) 데모 첫 기기 자동 승인 플래그 | `demo-server.md` §4-7-c — 릴레이 코드 | `server/devices.go` |
 
 ---

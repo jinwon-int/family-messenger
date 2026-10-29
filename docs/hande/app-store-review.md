@@ -33,7 +33,9 @@ Apple 정의(「App privacy details on the App Store」): **「수집」= 기기
 **ⓐ 주의 — 「Emails or Text Messages」.** Apple 「Additional guidance」는 「앱 안에서 사용자 간 비 SMS 메시지를 제공하면 Emails or Text Messages 를 신고하라」고 적는다. 한데는 메시지 **내용**을 개발자가 읽을 수 없으므로 「수집」 정의(개발자가 접근 가능한 형태)에 들지 않는다고 판단해 신고하지 않는다 — 이것이 오너 결정 사항이다(Signal 등 E2EE 메신저의 라벨과 같은 입장). 보수적으로 가려면 「Emails or Text Messages — Linked, App Functionality」를 **추가**하고 방침 2-1 에 「서버는 암호문과 메타데이터만 보관」을 그대로 둔다. 어느 쪽이든 방침 문구와 라벨이 모순되지 않는다.
 
 ### 1-2. Privacy manifest(`PrivacyInfo.xcprivacy`)
-- iOS 앱은 서드파티 SDK 없음(Rust FFI 정적 라이브러리 + SwiftUI). **Required Reason API** 사용 여부(UserDefaults 는 App Group 공유 — `NSPrivacyAccessedAPICategoryUserDefaults` 사유 `CA92.1`; 파일 타임스탬프·디스크 공간·시스템 부팅 시각 API 는 코드 grep 로 확인) → 해당하면 매니페스트에 적는다. `NSPrivacyTracking = false`, `NSPrivacyCollectedDataTypes` 는 1-1 표와 같게. 매니페스트 추가는 **앱 코드 PR**(이 문서 범위 밖) — 체크리스트 A-7.
+- iOS 앱은 서드파티 SDK 없음(Rust FFI 정적 라이브러리 + SwiftUI). 매니페스트는 PR 4 코드 PR 로 들어갔다: `archive/native-mls/ios/FamilyChat/PrivacyInfo.xcprivacy`(앱, 수집 유형 = 1-1 표 그대로)·`FamilyChatNSE/PrivacyInfo.xcprivacy`(알림 확장 — 읽기 전용이라 User ID · Device ID 만). `NSPrivacyTracking = false`.
+- **Required Reason API**(코드 grep 결과, 근거 표는 `archive/native-mls/ios/README.md` 「App Store 준비」): `NSPrivacyAccessedAPICategoryUserDefaults` 사유 `CA92.1`(앱 전용 defaults) + `1C8F.1`(앱·NSE 가 공유하는 App Group defaults — Apple 정의상 App Group 공유는 1C8F.1 이 정확한 사유) · `NSPrivacyAccessedAPICategoryFileTimestamp` 사유 `C617.1`(Swift 코드가 아니라 정적 링크된 Rust 라이브러리의 `stat`/`fstat` 참조, 접근 대상은 앱 컨테이너 안 파일). 디스크 공간·시스템 부팅 시각·활성 키보드 API 는 없음. 업로드 뒤 ASC 가 **ITMS-91053** 메일로 다른 범주를 요구하면 그 범주를 두 파일과 `FamilyChatTests/PrivacyManifestTests` 에 추가한다.
+- 1-1 표의 「Emails or Text Messages」 ⓐ 결정을 보수 쪽으로 바꾸면 두 매니페스트·테스트·ASC 라벨을 함께 바꾼다(매니페스트와 ASC 라벨이 다르면 심사에서 지적될 수 있다).
 
 ## 2. 심사 노트(App Review Information) 템플릿
 
