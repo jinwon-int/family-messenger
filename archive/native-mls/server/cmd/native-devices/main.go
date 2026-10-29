@@ -1,24 +1,29 @@
 // native-devices is the owner CLI for the native device policy v4 chain
-// (#177 §3.1/§3.2). The five operations:
+// (#177 §3.1/§3.2). The operations:
 //
 //	-init          create the genesis revision in an empty directory
 //	-enroll-first  E1: an actor's first active device, out-of-band acceptance
+//	               (the actor's registrar, #574)
 //	-add-device    E2: add a device carrying Ed25519 approval evidence signed
-//	               by an active same-actor device (trusted acceptance)
+//	               by an active same-actor device (trusted acceptance) — a
+//	               registrar once the actor has one
 //	-revoke        E3: revoke one active device; optional device-signed
 //	               revocation evidence is written once on the tombstone
 //	-revoke-all    E4: revoke every active device of an actor (total device
 //	               loss recovery; the replacement room is client-side)
+//	-set-roles     E5: set a device's roles (`-roles registrar` or `-roles none`);
+//	               with -input the registrar-signed evidence is verified, without
+//	               it the operator restores a registrar out-of-band (#574)
 //
 // Every mutation is a compare-and-swap on the exact current revision. Output
 // and -inspect never include signing keys; fingerprints (sha256 over the
-// signing key bytes) are what operators compare out-of-band.
+// signing key bytes) are what operators compare out-of-band. The transition
+// builders live in internal/devicepolicy (apply.go) and are shared with the
+// relay's self-service routes.
 package main
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -31,29 +36,11 @@ import (
 	"github.com/jinwon-int/family-messenger/archive/native-mls/server/internal/devicepolicy"
 )
 
-type enrollCandidate struct {
-	DeviceID   string `json:"device_id"`
-	Actor      string `json:"actor"`
-	Subject    string `json:"subject"`
-	SigningKey string `json:"signing_key"`
-}
-
-type addDeviceCandidate struct {
-	DeviceID     string `json:"device_id"`
-	Actor        string `json:"actor"`
-	Subject      string `json:"subject"`
-	SigningKey   string `json:"signing_key"`
-	BaseRevision uint64 `json:"base_revision"`
-	Signature    string `json:"signature"`
-	// Optional cross-checks carried by relay-app's trusted-device evidence
-	// (openmls-browser/web/relay-app.js `approve`): the fingerprint the approver
-	// compared by eye, and the approver's own device id. They are never trusted
-	// as inputs — the CLI recomputes both and refuses on mismatch — but accepting
-	// them lets the evidence JSON be pasted as-is (2026-10-13: the operator had
-	// to hand-strip both fields before `-add-device` would decode it).
-	Fingerprint string `json:"fingerprint,omitempty"`
-	ApprovedBy  string `json:"approved_by,omitempty"`
-}
+type (
+	enrollCandidate    = devicepolicy.EnrollCandidate
+	addDeviceCandidate = devicepolicy.AddDeviceEvidence
+	rolesCandidate     = devicepolicy.RolesEvidence
+)
 
 type revokeEvidence struct {
 	Action       string `json:"action"`
@@ -72,6 +59,7 @@ type deviceSummary struct {
 	Revision    uint64                       `json:"device_revision"`
 	Fingerprint string                       `json:"fingerprint"`
 	ApprovedBy  *devicepolicy.DeviceApproval `json:"approved_by,omitempty"`
+	Roles       []string                     `json:"roles,omitempty"`
 }
 
 type stateView struct {
@@ -98,6 +86,8 @@ func run(args []string, out io.Writer) error {
 	addDevice := fs.Bool("add-device", false, "E2: add a device approved by an active same-actor device")
 	revoke := fs.String("revoke", "", "E3: revoke this active device id (optional -input evidence)")
 	revokeAll := fs.String("revoke-all", "", "E4: revoke every active device of this actor")
+	setRoles := fs.String("set-roles", "", "E5: set this active device's roles (-roles; optional -input registrar evidence)")
+	roles := fs.String("roles", "", "with -set-roles: `registrar` or `none`")
 	if e := fs.Parse(args); e != nil {
 		return e
 	}
@@ -106,21 +96,24 @@ func run(args []string, out io.Writer) error {
 	}
 
 	modes := 0
-	for _, on := range []bool{*initMode, *inspect, *enrollFirst, *addDevice, *revoke != "", *revokeAll != ""} {
+	for _, on := range []bool{*initMode, *inspect, *enrollFirst, *addDevice, *revoke != "", *revokeAll != "", *setRoles != ""} {
 		if on {
 			modes++
 		}
 	}
 	if *dir == "" || modes != 1 {
-		return errors.New("requires -device-state and exactly one of -init, -inspect, -enroll-first, -add-device, -revoke, -revoke-all")
+		return errors.New("requires -device-state and exactly one of -init, -inspect, -enroll-first, -add-device, -revoke, -revoke-all, -set-roles")
 	}
 	if !filepath.IsAbs(*dir) {
 		return errors.New("-device-state must be an absolute path")
 	}
-	if *input != "" && !(*enrollFirst || *addDevice || *revoke != "") {
-		return errors.New("-input applies only to -enroll-first, -add-device and (optionally) -revoke")
+	if *input != "" && !(*enrollFirst || *addDevice || *revoke != "" || *setRoles != "") {
+		return errors.New("-input applies only to -enroll-first, -add-device and (optionally) -revoke / -set-roles")
 	}
-	mutating := *enrollFirst || *addDevice || *revoke != "" || *revokeAll != ""
+	if (*roles != "") != (*setRoles != "") {
+		return errors.New("-roles and -set-roles go together")
+	}
+	mutating := *enrollFirst || *addDevice || *revoke != "" || *revokeAll != "" || *setRoles != ""
 	if mutating && *expected == 0 {
 		return errors.New("mutations require -expected-revision (exact CAS on the current revision)")
 	}
@@ -161,6 +154,8 @@ func run(args []string, out io.Writer) error {
 			next, e = addApprovedDevice(policy.Devices, *input, *expected)
 		case *revoke != "":
 			next, e = revokeDevice(policy.Devices, *revoke, *input, *expected)
+		case *setRoles != "":
+			next, e = setDeviceRoles(policy.Devices, *setRoles, *roles, *input, *expected)
 		default:
 			next, e = revokeAllDevices(policy.Devices, *revokeAll)
 		}
@@ -194,6 +189,7 @@ func view(info devicepolicy.DevicePolicyInfo, devices []devicepolicy.DeviceV4) s
 			Revision:    d.Revision,
 			Fingerprint: d.Fingerprint,
 			ApprovedBy:  d.ApprovedBy,
+			Roles:       d.Roles,
 		})
 	}
 	return v
@@ -202,6 +198,10 @@ func view(info devicepolicy.DevicePolicyInfo, devices []devicepolicy.DeviceV4) s
 func printView(v stateView, out io.Writer) error {
 	return json.NewEncoder(out).Encode(v)
 }
+
+// fingerprintOf is devicepolicy.Fingerprint under the CLI's historical name
+// (the approval test vectors call it).
+func fingerprintOf(signingKey string) (string, error) { return devicepolicy.Fingerprint(signingKey) }
 
 func readStrictInput(path string, v any) error {
 	b, e := devicepolicy.ReadCandidate(path)
@@ -219,31 +219,9 @@ func readStrictInput(path string, v any) error {
 	return nil
 }
 
-func fingerprintOf(signingKey string) (string, error) {
-	raw, e := devicepolicy.DecodeSigningKey(signingKey)
-	if e != nil {
-		return "", errors.New("signing_key must be 32 bytes of lowercase hex (the device signing key)")
-	}
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:]), nil
-}
-
-func cloneDevices(devices []devicepolicy.DeviceV4) []devicepolicy.DeviceV4 {
-	return append([]devicepolicy.DeviceV4(nil), devices...)
-}
-
-func findById(devices []devicepolicy.DeviceV4, id string) (int, bool) {
-	for i := range devices {
-		if devices[i].ID == id {
-			return i, true
-		}
-	}
-	return -1, false
-}
-
-// enrollFirstDevice builds the E1 transition: an out-of-band first active
-// device with no approved_by. The store's transition validator enforces that
-// the actor has no other active device.
+// enrollFirstDevice reads the E1 candidate and builds the transition
+// (devicepolicy.ApplyEnrollFirst): the actor's out-of-band first device,
+// registrar by default.
 func enrollFirstDevice(devices []devicepolicy.DeviceV4, input string) ([]devicepolicy.DeviceV4, error) {
 	if input == "" {
 		return nil, errors.New("-enroll-first requires -input (private candidate JSON)")
@@ -252,45 +230,11 @@ func enrollFirstDevice(devices []devicepolicy.DeviceV4, input string) ([]devicep
 	if e := readStrictInput(input, &c); e != nil {
 		return nil, e
 	}
-	if e := requireSubject(c.Subject); e != nil {
-		return nil, e
-	}
-	fp, e := fingerprintOf(c.SigningKey)
-	if e != nil {
-		return nil, e
-	}
-	if _, ok := findById(devices, c.DeviceID); ok {
-		return nil, fmt.Errorf("device id %q already exists; ids are never reused", c.DeviceID)
-	}
-	return append(cloneDevices(devices), devicepolicy.DeviceV4{
-		ID:          c.DeviceID,
-		Actor:       c.Actor,
-		Subject:     c.Subject,
-		SigningKey:  c.SigningKey,
-		Fingerprint: fp,
-		Status:      devicepolicy.StatusActive,
-		Revision:    1,
-		Acceptance:  devicepolicy.AcceptanceOutOfBand,
-	}), nil
+	return devicepolicy.ApplyEnrollFirst(devices, c)
 }
 
-// requireSubject names the relay's identity binding in the error: the v4
-// chain validator already rejects an empty subject structurally, but an
-// operator enrolling a device should learn what the field is for. The value
-// is the CF Access identity owning the device — the user's `sub`, or for a
-// bot the service-token `common_name` (the Client-Id); every relay request
-// made as this device must carry a JWT with exactly that identity (G-M6:
-// service tokens carry an empty `sub`).
-func requireSubject(subject string) error {
-	if !devicepolicy.IsSubject(subject, 128) {
-		return errors.New("subject is required ([A-Za-z0-9_.@-]{1,128}): the CF Access `sub` (or a bot's service-token `common_name`) the relay binds this device's requests to (DEVICES-V4.md)")
-	}
-	return nil
-}
-
-// addApprovedDevice builds the E2 transition: a trusted-acceptance device whose
-// approved_by evidence is verified against the active same-actor set and bound
-// to the revision this commit creates.
+// addApprovedDevice reads the E2 evidence and builds the transition
+// (devicepolicy.ApplyAddDevice).
 func addApprovedDevice(devices []devicepolicy.DeviceV4, input string, expected uint64) ([]devicepolicy.DeviceV4, error) {
 	if input == "" {
 		return nil, errors.New("-add-device requires -input (private candidate JSON with approval evidence)")
@@ -299,58 +243,17 @@ func addApprovedDevice(devices []devicepolicy.DeviceV4, input string, expected u
 	if e := readStrictInput(input, &c); e != nil {
 		return nil, e
 	}
-	if c.BaseRevision != expected {
-		return nil, fmt.Errorf("candidate base_revision %d does not bind the current revision %d; re-sign against the current state", c.BaseRevision, expected)
-	}
-	if e := requireSubject(c.Subject); e != nil {
-		return nil, e
-	}
-	fp, e := fingerprintOf(c.SigningKey)
-	if e != nil {
-		return nil, e
-	}
-	if c.Fingerprint != "" && !strings.EqualFold(c.Fingerprint, fp) {
-		return nil, fmt.Errorf("candidate fingerprint %q does not match sha256(signing_key) %q; the approver compared a different key", c.Fingerprint, fp)
-	}
-	if _, ok := findById(devices, c.DeviceID); ok {
-		return nil, fmt.Errorf("device id %q already exists; ids are never reused", c.DeviceID)
-	}
-	payload := devicepolicy.ApprovalPayloadWire{
-		Action:       devicepolicy.ApprovalActionAdd,
-		DeviceID:     c.DeviceID,
-		Actor:        c.Actor,
-		Subject:      c.Subject,
-		SigningKey:   c.SigningKey,
-		Fingerprint:  fp,
-		Acceptance:   devicepolicy.AcceptanceTrusted,
-		BaseRevision: c.BaseRevision,
-	}
-	approver, e := findApprover(devices, payload, c.Signature, expected)
-	if e != nil {
-		return nil, e
-	}
-	if c.ApprovedBy != "" && c.ApprovedBy != approver {
-		return nil, fmt.Errorf("candidate approved_by %q does not match the device whose key verifies the signature (%q)", c.ApprovedBy, approver)
-	}
-	return append(cloneDevices(devices), devicepolicy.DeviceV4{
-		ID:          c.DeviceID,
-		Actor:       c.Actor,
-		Subject:     c.Subject,
-		SigningKey:  c.SigningKey,
-		Fingerprint: fp,
-		Status:      devicepolicy.StatusActive,
-		Revision:    1,
-		Acceptance:  devicepolicy.AcceptanceTrusted,
-		ApprovedBy:  &devicepolicy.DeviceApproval{DeviceID: approver, Revision: expected + 1},
-	}), nil
+	next, _, e := devicepolicy.ApplyAddDevice(devices, c, expected)
+	return next, e
 }
 
-// revokeDevice builds the E3 transition: active/1 → revoked/2. With -input
-// evidence the tombstone carries the device-signed revocation approval, which
-// may be written exactly once and only when the device has no approved_by yet
-// (trusted-enrolled devices always carry their enrollment evidence).
+// revokeDevice builds the E3 transition: active/1 → revoked/2 (roles cleared).
+// With -input evidence the tombstone carries the device-signed revocation
+// approval, which may be written exactly once and only when the device has
+// no approved_by yet (trusted-enrolled devices always carry their enrollment
+// evidence).
 func revokeDevice(devices []devicepolicy.DeviceV4, id, input string, expected uint64) ([]devicepolicy.DeviceV4, error) {
-	idx, ok := findById(devices, id)
+	idx, ok := devicepolicy.FindByID(devices, id)
 	if !ok {
 		return nil, fmt.Errorf("device %q is not in the policy", id)
 	}
@@ -358,9 +261,8 @@ func revokeDevice(devices []devicepolicy.DeviceV4, id, input string, expected ui
 	if target.Status != devicepolicy.StatusActive {
 		return nil, fmt.Errorf("device %q is already revoked; tombstones are permanent", id)
 	}
-	next := cloneDevices(devices)
-	next[idx].Status = devicepolicy.StatusRevoked
-	next[idx].Revision = 2
+	next := append([]devicepolicy.DeviceV4(nil), devices...)
+	devicepolicy.Tombstone(&next[idx])
 	if input == "" {
 		return next, nil
 	}
@@ -390,7 +292,7 @@ func revokeDevice(devices []devicepolicy.DeviceV4, id, input string, expected ui
 		Acceptance:   target.Acceptance,
 		BaseRevision: ev.BaseRevision,
 	}
-	approver, e := findApprover(devices, payload, ev.Signature, expected)
+	approver, e := devicepolicy.FindApprover(devices, payload, ev.Signature, expected)
 	if e != nil {
 		return nil, e
 	}
@@ -402,12 +304,11 @@ func revokeDevice(devices []devicepolicy.DeviceV4, id, input string, expected ui
 // device of the actor becomes a tombstone. No signatures are possible (the
 // devices are lost); enrollment of the replacement device goes back through E1.
 func revokeAllDevices(devices []devicepolicy.DeviceV4, actor string) ([]devicepolicy.DeviceV4, error) {
-	next := cloneDevices(devices)
+	next := append([]devicepolicy.DeviceV4(nil), devices...)
 	changed := 0
 	for i := range next {
 		if next[i].Actor == actor && next[i].Status == devicepolicy.StatusActive {
-			next[i].Status = devicepolicy.StatusRevoked
-			next[i].Revision = 2
+			devicepolicy.Tombstone(&next[i])
 			changed++
 		}
 	}
@@ -417,18 +318,38 @@ func revokeAllDevices(devices []devicepolicy.DeviceV4, actor string) ([]devicepo
 	return next, nil
 }
 
-// findApprover identifies which active same-actor device produced the
-// signature: the policy already holds every candidate's public signing key, so
-// the operator never supplies one. VerifyApproval itself rejects self-approval
-// and cross-actor approvers.
-func findApprover(devices []devicepolicy.DeviceV4, payload devicepolicy.ApprovalPayloadWire, signature string, base uint64) (string, error) {
-	for _, d := range devices {
-		if d.Actor != payload.Actor || d.Status != devicepolicy.StatusActive {
-			continue
-		}
-		if id, e := devicepolicy.VerifyApproval(devices, payload.Action, payload, d.SigningKey, signature, base); e == nil {
-			return id, nil
-		}
+// setDeviceRoles builds the E5 transition. With -input the evidence must be
+// signed by a registrar of the actor (or, for an actor that has none yet, any
+// of its active devices) and name the same device and roles as the flags;
+// without -input this is the operator's out-of-band recovery for an actor
+// that lost every registrar — the chain records no evidence for it.
+func setDeviceRoles(devices []devicepolicy.DeviceV4, id, roles, input string, expected uint64) ([]devicepolicy.DeviceV4, error) {
+	var want []string
+	switch strings.ToLower(roles) {
+	case "none":
+		want = nil
+	case devicepolicy.RoleRegistrar:
+		want = []string{devicepolicy.RoleRegistrar}
+	default:
+		return nil, fmt.Errorf("-roles must be %q or \"none\"", devicepolicy.RoleRegistrar)
 	}
-	return "", fmt.Errorf("no active %q device signature verifies this approval evidence", payload.Actor)
+	if input == "" {
+		return devicepolicy.SetRoles(devices, id, want)
+	}
+	var ev rolesCandidate
+	if e := readStrictInput(input, &ev); e != nil {
+		return nil, e
+	}
+	if ev.DeviceID != id {
+		return nil, fmt.Errorf("evidence binds device %q, not %q", ev.DeviceID, id)
+	}
+	canonical, e := devicepolicy.CanonicalRoles(ev.Roles)
+	if e != nil {
+		return nil, e
+	}
+	if strings.Join(canonical, ",") != strings.Join(want, ",") {
+		return nil, fmt.Errorf("evidence roles %v do not match -roles %q", ev.Roles, roles)
+	}
+	next, _, e := devicepolicy.ApplySetRoles(devices, ev, expected)
+	return next, e
 }

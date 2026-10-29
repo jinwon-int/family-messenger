@@ -645,6 +645,14 @@ func (s *relay) routes() http.Handler {
 		// Caller identity echo for the hande web app (#431, me.go): same
 		// condition — no verifier, no subject, no route.
 		mux.HandleFunc("GET "+mePath, s.handleMe)
+		// Device self-service (#574 D1, devices.go): a verified subject AND
+		// a chain to write — without either there is nothing to bind to.
+		if s.devices != nil {
+			mux.HandleFunc("POST /v2/devices/candidates", s.handlePostCandidate)
+			mux.HandleFunc("GET /v2/devices/candidates", s.handleListCandidates)
+			mux.HandleFunc("POST /v2/devices/approvals", s.handlePostApproval)
+			mux.HandleFunc("POST /v2/devices/roles", s.handlePostRoles)
+		}
 	}
 	if s.staticRoot != nil {
 		mux.Handle(staticPrefix, staticHandler(s.staticRoot))

@@ -53,6 +53,10 @@ type pendingWelcome struct {
 	// Welcome is adopted (family-messenger #517: pruning it first made the
 	// Welcome unreadable for good).
 	KeyPackageRef string `json:"key_package_ref,omitempty"`
+	// From is the device that posted the Welcome (#574): a client may auto-
+	// accept an invitation sent by another device of its own actor (a sibling
+	// adding the new phone to every room) without a human tap. Never empty.
+	From string `json:"from"`
 }
 
 // lobbyDeleteResponse is DELETE /v2/lobby/keypackages: how many unconsumed
@@ -449,7 +453,8 @@ func (s *relay) pendingWelcomes(device string) ([]pendingWelcome, error) {
 SELECT e.room, e.seq, e.epoch, e.created_at,
   COALESCE((SELECT k.ref FROM mls_lobby_keypackages k
             WHERE k.device = ?1 AND k.consumed_room = e.room
-            ORDER BY k.rowid DESC LIMIT 1), '')
+            ORDER BY k.rowid DESC LIMIT 1), ''),
+  e.device
 FROM mls_events e
 JOIN mls_rooms r ON r.room = e.room
 LEFT JOIN mls_cursors c ON c.room = e.room AND c.device = ?1
@@ -468,7 +473,7 @@ LIMIT ?2`, device, maxListedWelcomes)
 	out := []pendingWelcome{}
 	for rows.Next() {
 		var pw pendingWelcome
-		if err := rows.Scan(&pw.Room, &pw.Seq, &pw.Epoch, &pw.CreatedAt, &pw.KeyPackageRef); err != nil {
+		if err := rows.Scan(&pw.Room, &pw.Seq, &pw.Epoch, &pw.CreatedAt, &pw.KeyPackageRef, &pw.From); err != nil {
 			return nil, err
 		}
 		out = append(out, pw)

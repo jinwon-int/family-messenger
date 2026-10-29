@@ -57,7 +57,17 @@ const (
 
 	ApprovalActionAdd    = "approve-device"
 	ApprovalActionRevoke = "revoke-device"
+	ApprovalActionRoles  = "set-roles" // E5 (#574): registrar grant / release, signed by a registrar
 	approvalDomainPrefix = "family-mls-v2/"
+
+	// RoleRegistrar marks a device the person designated to approve their own
+	// new devices (#574 D2): once an actor has at least one active registrar,
+	// only a registrar's E2 signature enrolls another device of that actor, and
+	// only a registrar's E5 signature moves the role. An actor with no
+	// registrar (every chain written before #574) keeps the pre-#574 rule —
+	// any active device approves — and any of its active devices may
+	// bootstrap the role onto itself or a sibling with one E5.
+	RoleRegistrar = "registrar"
 )
 
 var (
@@ -77,8 +87,11 @@ type DeviceApproval struct {
 }
 
 // DeviceV4 is one public device record. ID, actor, subject, key, fingerprint,
-// acceptance and approved_by are immutable once written; the only state change
-// is active/1 → revoked/2 (never deleted, never reactivated, IDs never reused).
+// acceptance and approved_by are immutable once written; the only state
+// changes are active/1 → revoked/2 (never deleted, never reactivated, IDs
+// never reused) and the roles set (E5, cleared by revocation). `roles` is
+// omitted when empty so every record written before #574 keeps its exact
+// bytes — and therefore its policy_sha256 and chain link.
 type DeviceV4 struct {
 	ID          string          `json:"device_id"`
 	Actor       string          `json:"actor"`
@@ -89,6 +102,55 @@ type DeviceV4 struct {
 	Revision    uint64          `json:"device_revision"`
 	Acceptance  string          `json:"acceptance"`
 	ApprovedBy  *DeviceApproval `json:"approved_by,omitempty"`
+	Roles       []string        `json:"roles,omitempty"`
+}
+
+// IsRegistrar reports whether d (active or not) carries the registrar role.
+func IsRegistrar(d DeviceV4) bool {
+	for _, r := range d.Roles {
+		if r == RoleRegistrar {
+			return true
+		}
+	}
+	return false
+}
+
+// HasRegistrar reports whether the actor has at least one ACTIVE registrar —
+// the switch between the pre-#574 "any active device approves" rule and the
+// registrar-only rule.
+func HasRegistrar(devices []DeviceV4, actor string) bool {
+	for _, d := range devices {
+		if d.Actor == actor && d.Status == StatusActive && IsRegistrar(d) {
+			return true
+		}
+	}
+	return false
+}
+
+// validRoles: each role known, no duplicates, in canonical (sorted) order so
+// the set has exactly one encoding in the chain and in signed payloads.
+func validRoles(roles []string) bool {
+	for i, r := range roles {
+		if r != RoleRegistrar {
+			return false
+		}
+		if i > 0 && roles[i-1] >= r {
+			return false
+		}
+	}
+	return true
+}
+
+func rolesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 type PolicyWire4 struct {
@@ -155,7 +217,7 @@ func devicePolicyAllowedKey(k string) bool {
 	switch k {
 	case "version", "devices", "device_id", "actor", "subject", "signing_key",
 		"fingerprint", "status", "device_revision", "acceptance", "approved_by",
-		"revision", "previous_sha256", "policy_sha256", "policy":
+		"roles", "revision", "previous_sha256", "policy_sha256", "policy":
 		return true
 	}
 	return false
@@ -329,6 +391,12 @@ func validateDeviceSet(devices []DeviceV4) error {
 		if d.Acceptance == AcceptanceTrusted && d.ApprovedBy == nil {
 			return fmt.Errorf("device %q is trusted-device enrolled but has no approved_by: %w", d.ID, ErrDevicePolicyConfig)
 		}
+		if !validRoles(d.Roles) {
+			return fmt.Errorf("device %q has an unknown or non-canonical roles list: %w", d.ID, ErrDevicePolicyConfig)
+		}
+		if d.Status == StatusRevoked && len(d.Roles) != 0 {
+			return fmt.Errorf("revoked device %q still carries roles: %w", d.ID, ErrDevicePolicyConfig)
+		}
 		if d.Status == StatusActive {
 			activePerActor[d.Actor]++
 			if activePerActor[d.Actor] > MaxActivePerActor {
@@ -359,7 +427,9 @@ func immutableDeviceFieldsDiffer(a, b DeviceV4) bool {
 }
 
 // deviceTransitionV4 validates old → next. The only permitted changes are
-// appending new active devices (E1/E2) and active→revoked tombstones (E3/E4);
+// appending new active devices (E1/E2), active→revoked tombstones (E3/E4) and
+// a roles change on a device that stays active (E5 — who may sign it is
+// VerifyRoles' business at apply time, the chain only pins the shape);
 // every other field, including approved_by once written, is immutable. Writing
 // approved_by at revocation time is allowed only on that tombstone transition.
 func deviceTransitionV4(old, next []DeviceV4, nextRevision uint64) error {
@@ -404,6 +474,9 @@ func deviceTransitionV4(old, next []DeviceV4, nextRevision uint64) error {
 			}
 		}
 		if o.Status == n.Status && o.Revision == n.Revision {
+			if !rolesEqual(o.Roles, n.Roles) && o.Status != StatusActive {
+				return fmt.Errorf("device %q changed roles while not active: %w", n.ID, ErrDevicePolicyConfig)
+			}
 			continue
 		}
 		if !(o.Status == StatusActive && o.Revision == 1 && n.Status == StatusRevoked && n.Revision == 2) {
@@ -462,6 +535,13 @@ func VerifyApproval(old []DeviceV4, action string, payload ApprovalPayloadWire, 
 	}
 	if approver.Actor != payload.Actor || approver.ID == payload.DeviceID {
 		return "", fmt.Errorf("approver must be a different device of the same actor: %w", ErrDevicePolicyApproval)
+	}
+	// #574 D2: once the person has a registrar, enrolling another device is the
+	// registrar's call alone. Revocation evidence stays open to any active
+	// device — a compromised registrar must not be the only one able to sign
+	// its own removal.
+	if action == ApprovalActionAdd && HasRegistrar(old, payload.Actor) && !IsRegistrar(*approver) {
+		return "", fmt.Errorf("approver %q is not a registrar of %q: %w", approver.ID, payload.Actor, ErrDevicePolicyApproval)
 	}
 	sig, err := hex.DecodeString(signatureHex)
 	if err != nil || len(sig) != ed25519.SignatureSize {
