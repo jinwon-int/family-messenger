@@ -14,7 +14,8 @@ import (
 // person moves "the device that approves my devices" to a new phone before
 // retiring the old one. The signing input mirrors the E2/E3 approval
 // message, with its own canonical payload and action: the Rust facade
-// (policy_wire `sign_roles`, PR 2+) must produce identical bytes.
+// (policy_wire `sign_roles`, #579) produces identical bytes — pinned both
+// ways by tests_v2.rs and cmd/native-devices/roles_vector_test.go.
 
 // RolesPayloadWire is the canonical E5 payload (fixed field order = canonical
 // byte encoding). Roles is the COMPLETE roles list the target ends up with
