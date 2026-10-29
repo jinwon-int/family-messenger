@@ -3,7 +3,7 @@
 > 이 문서는 Android(Google Play)·iOS(App Store) 「한데」 앱이 **앱 안에서** 여는 페이지이며, Google Play Console 「개인정보처리방침 URL」·App Store Connect 「Privacy Policy URL」 에 같은 주소를 적는다. 게시 주소: `https://jinwon-int.github.io/family-messenger/hande/privacy/`
 
 - 앱 이름: **한데**(Hande) — Android `com.seoyoon_family.hande` · iOS `com.seoyoon-family.hande`
-- 개발·운영 주체(개인정보처리자): **rnmaru.com 을 운영하는 법인**(Apple Developer Program·Google Play 개발자 계정의 조직 명의와 동일. 법인명·주소는 스토어 등록 명의와 같게 기입: 〔법인명〕)
+- 개발·운영 주체(개인정보처리자): **rnmaru.com 을 운영하는 법인**(Apple Developer Program·Google Play 개발자 계정의 조직 명의와 동일. 법인명·주소는 스토어 등록 명의와 같게 기입: 주식회사 진원인터내셔널)
 - 문의·요청 연락처: **support@rnmaru.com**
 - 시행일(최종 수정일): **2026-10-29**
 - 적용 범위: 한데 Android·iOS 앱과, 위 운영 주체가 운영하는 한데 릴레이 서버(`relay.seoyoon-family.com`)·한데 웹(`hande.seoyoon-family.com`)
