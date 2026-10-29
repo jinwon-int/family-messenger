@@ -53,6 +53,10 @@ func main() {
 	apnsKeyID := flag.String("apns-key-id", "", "APNs auth key ID (10 chars), the provider-token kid; required with -apns-key")
 	apnsHost := flag.String("apns-host", apnsDefaultHost, "APNs endpoint (https://api.sandbox.push.apple.com for development builds)")
 	apnsTopics := flag.String("apns-topics", "", "comma-separated allowed registration topics (app bundle ids); empty = any well-formed topic")
+	wellKnownURL := flag.String("well-known-public-url", "", "this relay's PUBLIC base URL (https://relay.example); enables GET /.well-known/hande so a client that only knows the domain finds the relay (#584). Empty = route off")
+	wellKnownName := flag.String("well-known-name", "", "human-readable server name shown by clients at server selection (≤64 chars); needs -well-known-public-url")
+	wellKnownMinIOS := flag.String("well-known-min-ios", "", "minimum iOS app version this relay accepts (e.g. 0.1.0), advertised in /.well-known/hande")
+	wellKnownMinAndroid := flag.String("well-known-min-android", "", "minimum Android app version this relay accepts, advertised in /.well-known/hande")
 	accessMaxLifetimeSeconds := flag.Int64("access-max-lifetime-seconds", 0, "override (tighten) the maximum accepted JWT lifetime in seconds (exp-now and exp-iat; default 31 days = the longest CF Access session; the account's apps use 730h)")
 	flag.Parse()
 
@@ -213,6 +217,14 @@ func main() {
 			log.Printf("hande web app may embed iframes from %s (CSP frame-src)", strings.Join(frameSrc, " "))
 		}
 		log.Printf("hande web app served at the root of host %s from %s (unauthenticated assets; /v2/* stays behind the JWT)", host, *handeDir)
+	}
+	wellKnown, err := newWellKnownDoc(*wellKnownURL, *wellKnownName, relay.handeHost, *wellKnownMinIOS, *wellKnownMinAndroid)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if wellKnown != nil {
+		relay.wellKnown = wellKnown
+		log.Printf("server discovery on: GET %s advertises relay %s (name %q)", wellKnownPath, wellKnown.Relay.BaseURL, wellKnown.Name)
 	}
 	srv := &http.Server{
 		Addr:              *addr,

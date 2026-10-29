@@ -127,6 +127,9 @@ type relay struct {
 	// hande.go); nil = off. handeHost is canonical (lower-case, no port).
 	handeHost string
 	handeRoot *os.Root
+	// wellKnown is the server-discovery document (#584, wellknown.go); nil =
+	// route off (no -well-known-public-url).
+	wellKnown *wellKnownDoc
 	// handeFrameSrc: https origins allowed as iframe sources on the hande host
 	// (-hande-frame-src; the filebox pane). Empty = no frames (handeCSP as is).
 	handeFrameSrc []string
@@ -637,6 +640,11 @@ func (s *relay) routes() http.Handler {
 	mux.HandleFunc("GET /v2/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
+	// Server discovery for public clients (#584, wellknown.go): only when the
+	// operator stated the relay's public base URL.
+	if s.wellKnown != nil {
+		mux.HandleFunc(wellKnownPath, s.handleWellKnown)
+	}
 	// App login hand-off (#271 §12-C A, applogin.go): only while caller
 	// authentication is on — without a verifier there is no edge token to
 	// hand back, so the route does not exist (404).
