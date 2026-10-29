@@ -52,6 +52,8 @@ object Strings {
     const val notJoined = "초대를 기다려 주세요"
     const val halted = "정지됨"
     const val keyCustody = "키 보관"
+    /** 대화방 목록의 안 읽음 표시(#571 후속, 웹 N 배지와 같은 뜻 — 개수 대신 「새 글」). */
+    const val unread = "새 글"
 
     // 첨부 자리 표시(v1·v2 같은 모양 — 파일 열기는 C 단계). 설명자가 잘못된 file-v2 는 웹 `fileV2Invalid` 와 같은 뜻.
     fun attachmentPlaceholder(bytes: Long) = "📎 첨부($bytes B)"

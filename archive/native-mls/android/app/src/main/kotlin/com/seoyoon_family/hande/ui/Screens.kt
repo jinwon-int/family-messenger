@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Badge
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -71,6 +72,8 @@ fun HandeRoot(hub: DeviceHub) {
         Phase.Ready -> {
             val room = openRoom?.let { name -> ui.rooms.firstOrNull { it.room == name } }
             if (room != null) {
+                // 보고 있는 방의 읽음 위치(#571 후속): 열 때 한 번, 그 뒤 마지막 seq 가 움직일 때마다(새 글·내 전송).
+                LaunchedEffect(room.room, room.messages.lastOrNull()?.seq) { hub.markRead(scope, room.room) }
                 RoomScreen(room, ui, onBack = { openRoom = null }, onSend = { text -> hub.send(scope, room.room, text) }, onNoticeShown = hub::clearNotice)
             } else {
                 RoomListScreen(ui, onOpen = { openRoom = it }, onRequestJoin = { hub.requestJoin(scope) }, onNoticeShown = hub::clearNotice)
@@ -178,6 +181,8 @@ fun RoomListScreen(ui: HubUi, onOpen: (String) -> Unit, onRequestJoin: () -> Uni
                             supportingContent = {
                                 Text(r.halted?.let { "${Strings.halted} · $it" } ?: if (!r.joined) Strings.notJoined else (r.messages.lastOrNull()?.text ?: ""))
                             },
+                            // 안 읽음 점(#571 후속): 같은 사람의 다른 기기(PC 웹·iPhone)에서 읽으면 다음 poll 에 꺼진다.
+                            trailingContent = { if (r.unread) Badge { Text(Strings.unread) } },
                             modifier = Modifier.fillMaxWidth().clickable { onOpen(r.room) },
                         )
                         HorizontalDivider()

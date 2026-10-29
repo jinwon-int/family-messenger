@@ -38,6 +38,8 @@ pub struct RoomRows {
     pub members: HashSet<String>,
     /// 기기별 마지막 ack(`welcomes` 가 "읽고 지나간" 판정에 쓴다).
     pub acks: HashMap<String, i64>,
+    /// 읽음 위치(#571 B, read.go): **actor** 별 하나(`max`). actor = 기기 ID 의 첫 `-` 앞(실제 릴레이는 mls_members.actor).
+    pub reads: HashMap<String, i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,6 +59,8 @@ pub struct Relay {
     pub down: AtomicBool,
     /// 참이면 로비 게시를 409 `key_package_limit` 로 거부한다(상태는 여유가 있다고 답한 뒤 — 경합 흉내).
     pub refuse_lobby_post: AtomicBool,
+    /// 참이면 #571 B 이전 릴레이 흉내: `GET /events` 에 `read_seq` 가 없고 `POST /read` 는 봉투 없는 404(Go mux 기본 응답).
+    pub no_read_route: AtomicBool,
 }
 
 impl Relay {
@@ -69,7 +73,16 @@ impl Relay {
             trace,
             down: AtomicBool::new(false),
             refuse_lobby_post: AtomicBool::new(false),
+            no_read_route: AtomicBool::new(false),
         })
+    }
+    /// 릴레이가 보관한 actor 의 읽음 위치(없으면 0).
+    pub fn read_seq(&self, room: &str, actor: &str) -> i64 {
+        self.rooms.lock().unwrap().get(room).and_then(|r| r.reads.get(actor).copied()).unwrap_or(0)
+    }
+    /// read.go 와 같은 키: 실제 릴레이는 mls_members.actor, 대역은 기기 ID 의 첫 `-` 앞.
+    fn actor_of(device: &str) -> String {
+        device.split('-').next().unwrap_or(device).to_string()
     }
     /// 다른 기기가 commit 을 올린 것처럼 epoch 만 올린다(cas_mismatch 유발).
     pub fn bump_epoch(&self, room: &str) {
@@ -132,7 +145,41 @@ impl Relay {
             }))
             .collect();
         let first_seq = state.rows.first().map(|r| r.seq).unwrap_or(0);
-        Self::respond(200, serde_json::json!({ "epoch": state.epoch, "revision": 0, "events": events, "first_seq": first_seq }))
+        let mut page = serde_json::json!({ "epoch": state.epoch, "revision": 0, "events": events, "first_seq": first_seq });
+        if !self.no_read_route.load(Ordering::SeqCst) {
+            page["read_seq"] = serde_json::json!(state.reads.get(&Self::actor_of(device)).copied().unwrap_or(0));
+        }
+        Self::respond(200, page)
+    }
+
+    /// `POST /v2/rooms/{room}/read {device, seq}`(#571 B, read.go `handlePostRead`/`markRead`): 404 · 410 · 403 `not_a_member`
+    /// · 400 `bad_seq`(0..last_seq 밖) 순서로 거르고, (방, actor) 값을 `max` 로 올린 뒤 그 값을 답한다.
+    fn post_read(&self, room: &str, body: &[u8]) -> Result<HttpResponse, RoomError> {
+        if self.no_read_route.load(Ordering::SeqCst) {
+            return Ok(HttpResponse { status: 404, body: b"404 page not found\n".to_vec() });
+        }
+        let post: serde_json::Value = serde_json::from_slice(body).expect("read post json");
+        let object = post.as_object().expect("read post object");
+        assert_eq!(object.len(), 2, "strict body: exactly device and seq ({post})");
+        let device = post["device"].as_str().expect("device").to_string();
+        let seq = post["seq"].as_i64().expect("seq");
+        self.trace.lock().unwrap().push(format!("READ {device} seq={seq}"));
+        let mut rooms = self.rooms.lock().unwrap();
+        let Some(state) = rooms.get_mut(room) else {
+            return Self::respond(404, serde_json::json!({ "error": "no_such_room" }));
+        };
+        if state.closed {
+            return Self::respond(410, serde_json::json!({ "error": "room_closed" }));
+        }
+        if !state.members.contains(&device) {
+            return Self::respond(403, serde_json::json!({ "error": "not_a_member" }));
+        }
+        if seq < 0 || seq > state.next_seq {
+            return Self::respond(400, serde_json::json!({ "error": "bad_seq" }));
+        }
+        let read = state.reads.entry(Self::actor_of(&device)).or_insert(0);
+        *read = (*read).max(seq);
+        Self::respond(200, serde_json::json!({ "read_seq": *read }))
     }
 
     fn post_event(&self, room: &str, body: &[u8]) -> Result<HttpResponse, RoomError> {
@@ -311,6 +358,10 @@ impl HttpTransport for Relay {
             if let Some(room) = rest.strip_suffix("/close") {
                 assert_eq!(method, "POST");
                 return self.close_room(room, query);
+            }
+            if let Some(room) = rest.strip_suffix("/read") {
+                assert_eq!(method, "POST");
+                return self.post_read(room, &body);
             }
         }
         match (method.as_str(), path) {

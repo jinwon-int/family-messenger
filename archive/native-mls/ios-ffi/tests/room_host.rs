@@ -139,6 +139,78 @@ fn transport_failure_is_a_transient_relay_error() {
     ok(owner.poll(), "back");
 }
 
+/// #571 B: the read position is per actor — `owner-phone` and `owner-pc` are one person. `poll` carries the relay's
+/// value on the page; `mark_read` posts the strict body, stores the answered max and never posts below what it knows.
+#[test]
+fn read_position_is_shared_across_an_actor_and_posted_on_mark_read() {
+    let h = Harness::new();
+    let ((owner, _), (peer, _)) = founded_pair(&h);
+    ok(peer.poll(), "peer joins");
+    ok(owner.send(b"one".to_vec()), "one"); // seq 2
+    ok(owner.send(b"two".to_vec()), "two"); // seq 3
+    ok(peer.poll(), "peer reads both");
+    assert_eq!(ok(peer.read_seq(), "nothing read"), 0);
+
+    // Another device of the same person (the web) read up to 2: the next page carries it.
+    h.relay.rooms.lock().unwrap().get_mut("room-a").expect("room").reads.insert("owner".into(), 2);
+    ok(peer.poll(), "peer polls");
+    assert_eq!(ok(peer.read_seq(), "from the page"), 2, "GET /events read_seq is merged");
+
+    assert_eq!(ok(peer.mark_read(3), "pc read it all"), 3);
+    assert_eq!(h.relay.read_seq("room-a", "owner"), 3, "stored per actor");
+    assert!(h.trace().iter().any(|l| l == "READ owner-pc seq=3"), "{:?}", h.trace());
+
+    // The phone has not polled since: it posts a lower value and learns the actor max from the answer.
+    assert_eq!(ok(owner.read_seq(), "phone before"), 0);
+    assert_eq!(ok(owner.mark_read(1), "phone marks 1"), 3, "the relay answers max(current, posted)");
+    assert_eq!(ok(owner.read_seq(), "phone after"), 3);
+    assert_eq!(h.relay.read_seq("room-a", "owner"), 3, "monotonic on the relay");
+
+    // Nothing at or below the known position is posted.
+    let posted = |h: &Harness| h.trace().iter().filter(|l| l.starts_with("READ ")).count();
+    let before = posted(&h);
+    assert_eq!(ok(peer.mark_read(2), "older"), 3);
+    assert_eq!(ok(peer.mark_read(3), "same"), 3);
+    assert_eq!(posted(&h), before, "no POST below or at the known read_seq: {:?}", h.trace());
+
+    // Local guard and relay refusals: the host sees an error it may log and ignore; nothing local moves.
+    assert!(matches!(peer.mark_read(-1).err().expect("negative"), RoomError::Host { .. }));
+    let err = peer.mark_read(99).err().expect("past last_seq");
+    assert!(matches!(&err, RoomError::Relay { transient: false, .. }) && err.to_string().contains("bad_seq"), "{err}");
+    let (guest, _) = h.room_in("guest-pc", "room-a");
+    let err = guest.mark_read(1).err().expect("not a member");
+    assert!(matches!(&err, RoomError::Relay { transient: false, .. }) && err.to_string().contains("not_a_member"), "{err}");
+    assert_eq!(ok(peer.read_seq(), "unchanged"), 3);
+    assert_eq!(ok(peer.sync_state(), "sync").acked, 3, "read position never touches the MLS cursor/ack");
+}
+
+/// A relay from before #571 B answers a bare 404 on `/read` and omits `read_seq`; a room the relay does not know yet is
+/// 404 `no_such_room`. Both are ignored (the position stays local), a closed room is the usual `Relay` error.
+#[test]
+fn mark_read_is_ignored_on_a_relay_without_the_route_or_the_room() {
+    let h = Harness::new();
+    let ((owner, _), (peer, _)) = founded_pair(&h);
+    ok(peer.poll(), "peer joins");
+    ok(owner.send(b"one".to_vec()), "one");
+    h.relay.no_read_route.store(true, Ordering::SeqCst);
+    ok(peer.poll(), "old relay page parses");
+    assert_eq!(ok(peer.read_seq(), "absent field"), 0);
+    assert_eq!(ok(peer.mark_read(2), "old relay"), 0, "bare 404 is a no-op, not an error");
+    assert_eq!(h.relay.read_seq("room-a", "owner"), 0);
+    h.relay.no_read_route.store(false, Ordering::SeqCst);
+
+    let (local_only, _) = h.room_in("owner-watch", "room-z");
+    assert_eq!(ok(local_only.mark_read(1), "room not on the relay"), 0, "404 no_such_room is a no-op");
+    assert!(h.trace().iter().any(|l| l == "READ owner-watch seq=1"), "it was posted: {:?}", h.trace());
+
+    assert!(ok(owner.close_room(), "close"));
+    let err = peer.mark_read(2).err().expect("closed room");
+    assert!(matches!(&err, RoomError::Relay { transient: false, .. }) && err.to_string().contains("room_closed"), "{err}");
+    h.relay.down.store(true, Ordering::SeqCst);
+    let err = peer.mark_read(2).err().expect("relay down");
+    assert!(matches!(err, RoomError::Relay { transient: true, .. }), "{err}");
+}
+
 #[test]
 fn pruned_history_halts_the_room_before_anything_moves() {
     let h = Harness::new();

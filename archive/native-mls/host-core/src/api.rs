@@ -190,11 +190,34 @@ pub struct EventsResponse {
     /// `first_seq - 1` lost history to pruning (#268).
     #[serde(default)]
     pub first_seq: i64,
+    /// The caller's **actor-wide** read position (#571 B, `server/read.go`):
+    /// the highest seq any device of the same person has posted through
+    /// [`Client::post_read`]. 0 = nothing read yet, or a relay that predates
+    /// the field. Unread indicators compare the last foreign message's seq
+    /// against `max(local, read_seq)`; the bot ignores it.
+    #[serde(default)]
+    pub read_seq: i64,
 }
 
 #[derive(Deserialize)]
 pub struct ApiErrorBody {
     pub error: String,
+}
+
+/// `POST /v2/rooms/<room>/read` body (read.go `readPost`). The relay parses it
+/// strictly — exactly these two fields, nothing else.
+#[derive(Serialize)]
+struct ReadPost<'a> {
+    device: &'a str,
+    seq: i64,
+}
+
+/// `POST /v2/rooms/<room>/read` answer (read.go `readResponse`): the actor's
+/// read position after the request — the posted seq, or the higher value
+/// another device of the same actor had already set.
+#[derive(Deserialize)]
+struct ReadResponse {
+    read_seq: i64,
 }
 
 // ---- #366 3c: device-level routes (lobby · rooms · push) — server.go/lobby.go/rooms.go/push.go json tags ----
@@ -470,6 +493,23 @@ impl Client {
         Ok(events)
     }
 
+    /// `POST /v2/rooms/<room>/read` `{device, seq}` (#571 B): the device has
+    /// shown the room up to `seq`. The relay keeps one row per (room, actor),
+    /// monotonic (`max(current, seq)`), and answers the resulting actor-wide
+    /// `read_seq` — which may exceed `seq` when another device of the same
+    /// person read further. Errors come back as the envelope: 404
+    /// `no_such_room`, 410 `room_closed`, 403 `device_not_allowed` /
+    /// `not_a_member`, 400 `bad_seq` (outside `0..last_seq`); a relay that
+    /// predates the route answers a bare 404 (`RelayError::Status`). The
+    /// caller decides what is ignorable — this is a courtesy signal, never
+    /// the MLS cursor or ack.
+    pub fn post_read(&self, room: &str, device: &str, seq: i64) -> Result<i64> {
+        let post = ReadPost { device, seq };
+        let resp = self.send("POST", &format!("/v2/rooms/{room}/read"), Some(serde_json::to_vec(&post)?.as_slice()))?;
+        let answer: ReadResponse = serde_json::from_slice(self.checked(resp)?.as_slice())?;
+        Ok(answer.read_seq)
+    }
+
     // ---- #366 3c: device-level routes ----
 
     /// `POST /v2/lobby/keypackages` (#380 P5-1): publish into the device's
@@ -654,5 +694,43 @@ mod tests {
         let plain = Client::with_access(&base, Access::None);
         assert!(plain.health().expect("plain health"));
         server.join().expect("server thread");
+    }
+
+    /// #571 B: the read body is exactly `{device, seq}` (the relay parses it
+    /// strictly) and the answer is the actor-wide value, which the relay may
+    /// raise above what was posted.
+    #[test]
+    fn post_read_sends_the_strict_body_and_returns_the_actor_wide_value() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            let body = br#"{"device":"owner-pc","seq":7}"#;
+            while !raw.ends_with(body) {
+                let n = stream.read(&mut buf).expect("read request");
+                assert!(n > 0, "eof before body");
+                raw.extend_from_slice(&buf[..n]);
+            }
+            let text = String::from_utf8(raw).expect("utf8");
+            assert!(text.starts_with("POST /v2/rooms/family/read HTTP/1.1\r\n"), "{text}");
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 14\r\n\r\n{\"read_seq\":9}").expect("write response");
+        });
+        let client = Client::with_access(&format!("http://127.0.0.1:{}", addr.port()), Access::None);
+        assert_eq!(client.post_read("family", "owner-pc", 7).expect("post read"), 9);
+        server.join().expect("server thread");
+    }
+
+    /// A relay that predates #571 B omits `read_seq`; the page still parses
+    /// and the position reads as 0 (nothing read).
+    #[test]
+    fn events_page_without_read_seq_reads_as_zero() {
+        let page: EventsResponse =
+            serde_json::from_str(r#"{"epoch":1,"revision":0,"events":[],"first_seq":0}"#).expect("old page");
+        assert_eq!(page.read_seq, 0);
+        let page: EventsResponse =
+            serde_json::from_str(r#"{"epoch":1,"revision":0,"events":[],"first_seq":0,"read_seq":12}"#).expect("new page");
+        assert_eq!(page.read_seq, 12);
     }
 }

@@ -574,7 +574,7 @@ mod tests {
     }
 
     fn events(epoch: i64, first_seq: i64, rows: Vec<StoredRow>) -> Result<EventsResponse, RelayError> {
-        Ok(EventsResponse { epoch, revision: 0, events: rows, members: None, first_seq })
+        Ok(EventsResponse { epoch, revision: 0, events: rows, members: None, first_seq, read_seq: 0 })
     }
 
     fn commit_row(device: &str, epoch: i64) -> StoredRow {
@@ -586,7 +586,7 @@ mod tests {
 
     fn page(epoch: i64, members: Option<&[&str]>) -> EventsResponse {
         EventsResponse {
-            epoch, revision: 0, events: Vec::new(), first_seq: 0,
+            epoch, revision: 0, events: Vec::new(), first_seq: 0, read_seq: 0,
             members: members.map(|m| m.iter().map(|d| MemberOwned { device: (*d).into(), actor: (*d).into() }).collect()),
         }
     }

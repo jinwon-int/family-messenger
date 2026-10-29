@@ -42,6 +42,20 @@ class Settings(context: Context, private val sealer: KeystoreSealer) {
 
     val isConfigured: Boolean get() = relayUrl != null && actor != null
 
+    // ---- 읽음 위치(#571 후속, 웹 localStorage `hande:readSeq:<device>:<room>` 과 같은 뜻) ----
+    // `messages.db` 는 iOS 와 동결 DDL 을 공유하므로 열을 더하지 않고 여기 둔다. 공개 값(seq 는 릴레이 메타데이터). 줄어들지 않는다.
+
+    /** 이 기기가 `room` 에서 본 마지막 seq(없으면 0). */
+    fun readSeq(room: String): Long = prefs.getLong("read_seq:$room", 0L).coerceAtLeast(0L)
+
+    /** `seq` 까지 봤다 — 지금 값보다 클 때만 저장하고, 결과 값을 돌려준다. */
+    fun markRead(room: String, seq: Long): Long {
+        val current = readSeq(room)
+        if (seq <= current) return current
+        prefs.edit().putLong("read_seq:$room", seq).apply()
+        return seq
+    }
+
     companion object {
         private val ACTOR = Regex("^[a-z][a-z0-9]{1,15}$")
         fun validActor(s: String) = ACTOR.matches(s)

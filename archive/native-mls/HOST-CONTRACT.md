@@ -35,6 +35,8 @@
 | `exportState()` · `syncState()` | 수동 스냅샷(디버그·백업) | 영속의 정본은 `persist` 콜백 |
 | `setAccessToken(token?)` | CF Access 토큰 교체 | 코어가 `Cf-Access-Jwt-Assertion` 헤더를 넣는다 — 전송 구현은 인증을 몰라도 된다 |
 | `closeRoom()` → `Boolean` (3c) | `POST /v2/rooms/{r}/close` — 방을 닫는다(멤버 전원 410 `room_closed`) | 참 = 닫혔다(이미 닫혀 있어도) · 거짓 = 릴레이에 그 방이 없다 · 403 `not_a_member` 는 `Relay` 오류 · 로컬 상태 버리기는 호스트 몫 |
+| `readSeq()` → `Long` (#571 후속) | 릴레이가 아는 **같은 사람(actor)의** 읽음 위치 — `poll` 의 `GET /events` `read_seq` 와 `markRead` 응답의 max | 영속하지 않는다(재시작 뒤 첫 `poll` 전에는 0) → 호스트는 자기 로컬 값(`Settings.readSeq`)과 `max` 로 합쳐 안 읽음을 판정한다(`Unread.isUnread`: 마지막 글이 남의 글이고 그 위치보다 뒤) · 옛 릴레이는 늘 0 · MLS 커서·ack 와 무관 |
+| `markRead(seq)` → `Long` (#571 후속) | `POST /v2/rooms/{r}/read {device, seq}` — 이 기기가 `seq` 까지 봤다. 돌아오는 값 = 릴레이의 actor 단위 결과(`seq` 보다 클 수 있다) | 이미 아는 위치 이하면 보내지 않음 · 옛 릴레이(봉투 없는 404)·404 `no_such_room` 은 **무시**(알던 값 반환) · 410/403/400 `bad_seq`·전송 실패는 `Relay` 오류 — 안내 신호이므로 호스트는 로그만 남긴다 · 시점 = 방을 열 때·보는 중 마지막 seq 가 움직일 때(웹 `room.js markRead` 와 같음) |
 
 ## 2b. `MlsLobby` API — 기기 수준(방 무관) 호출 (3c)
 

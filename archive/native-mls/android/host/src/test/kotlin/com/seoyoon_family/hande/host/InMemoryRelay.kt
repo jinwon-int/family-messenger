@@ -14,6 +14,8 @@ class InMemoryRelay(private val base: String) : HttpTransport {
     private class RoomRows(
         var epoch: Long = 0, var nextSeq: Long = 0, val rows: MutableList<Row> = mutableListOf(),
         var closed: Boolean = false, val members: MutableSet<String> = mutableSetOf(), val acks: MutableMap<String, Long> = mutableMapOf(),
+        /** 읽음 위치(#571 B, read.go): **actor** 별 하나(`max`). actor = 기기 ID 의 첫 `-` 앞(실제 릴레이는 mls_members.actor). */
+        val reads: MutableMap<String, Long> = mutableMapOf(),
     )
     data class PushRow(val device: String, val token: ByteArray, val topic: String)
 
@@ -24,8 +26,14 @@ class InMemoryRelay(private val base: String) : HttpTransport {
     val pushRows = mutableListOf<PushRow>()
     val trace = mutableListOf<String>()
     @Volatile var down = false
+    /** 참이면 #571 B 이전 릴레이 흉내: `GET /events` 에 `read_seq` 없음, `POST /read` 는 봉투 없는 404(Go mux 기본 응답). */
+    @Volatile var noReadRoute = false
 
     @Synchronized fun bumpEpoch(room: String) { rooms.getOrPut(room) { RoomRows() }.epoch += 1 }
+    @Synchronized fun readSeq(room: String, actor: String): Long = rooms[room]?.reads?.get(actor) ?: 0L
+    /** 같은 사람의 다른 기기(웹)가 읽은 것처럼 actor 값을 올린다. */
+    @Synchronized fun setRead(room: String, actor: String, seq: Long) { rooms.getOrPut(room) { RoomRows() }.reads[actor] = seq }
+    private fun actorOf(device: String) = device.substringBefore('-')
     @Synchronized fun pruneBefore(room: String, seq: Long) { rooms.getOrPut(room) { RoomRows() }.rows.removeAll { it.seq < seq } }
     @Synchronized fun rows(room: String): List<Row> = rooms[room]?.rows?.toList() ?: emptyList()
     @Synchronized fun lobbyLive(device: String): Int = lobby[device]?.size ?: 0
@@ -53,6 +61,7 @@ class InMemoryRelay(private val base: String) : HttpTransport {
                 }
             }
             if (rest.endsWith("/close")) { require(method == "POST"); return closeRoom(rest.removeSuffix("/close"), query) }
+            if (rest.endsWith("/read")) { require(method == "POST"); return postRead(rest.removeSuffix("/read"), bytes) }
         }
         return when (method to p) {
             "GET" to "/v2/rooms" -> listRooms(query)
@@ -87,11 +96,32 @@ class InMemoryRelay(private val base: String) : HttpTransport {
                     """"bytes":"${b64(r.bytes)}","sha256":"","created_at":0}"""
             }
         val firstSeq = state.rows.firstOrNull()?.seq ?: 0
-        return respond(200, """{"epoch":${state.epoch},"revision":0,"events":[$events],"first_seq":$firstSeq}""")
+        val readSeq = if (noReadRoute) "" else ""","read_seq":${state.reads[actorOf(device)] ?: 0}"""
+        return respond(200, """{"epoch":${state.epoch},"revision":0,"events":[$events],"first_seq":$firstSeq$readSeq}""")
+    }
+
+    /** `POST /v2/rooms/{room}/read {device, seq}`(#571 B, read.go): 404 · 410 · 403 `not_a_member` · 400 `bad_seq` 순서로 거르고 (방, actor) 값을 `max` 로 올린 뒤 답한다. */
+    private fun postRead(room: String, body: ByteArray): HttpResponse {
+        if (noReadRoute) return HttpResponse(404.toUShort(), "404 page not found\n".toByteArray(Charsets.UTF_8))
+        val json = String(body, Charsets.UTF_8)
+        check(reKey.findAll(json).count() == 2) { "strict body: exactly device and seq ($json)" }
+        val device = reString.find(json)?.groupValues?.get(2) ?: error("device")
+        val seq = reSeq.find(json)?.groupValues?.get(1)?.toLong() ?: error("seq")
+        trace += "READ $device seq=$seq"
+        val state = rooms[room] ?: return respond(404, """{"error":"no_such_room"}""")
+        if (state.closed) return respond(410, """{"error":"room_closed"}""")
+        if (device !in state.members) return respond(403, """{"error":"not_a_member"}""")
+        if (seq < 0 || seq > state.nextSeq) return respond(400, """{"error":"bad_seq"}""")
+        val actor = actorOf(device)
+        val read = maxOf(state.reads[actor] ?: 0L, seq)
+        state.reads[actor] = read
+        return respond(200, """{"read_seq":$read}""")
     }
 
     private val reString = Regex(""""(device|client_id|kind|bytes|topic|apns_token)":"([^"]*)"""")
     private val reEpoch = Regex(""""epoch":(-?\d+)""")
+    private val reSeq = Regex(""""seq":(-?\d+)""")
+    private val reKey = Regex(""""[a-z_]+":""")
     private val reTargets = Regex(""""targets":\[([^\]]*)\]""")
     private val rePackage = Regex(""""ref":"([^"]*)","bytes":"([^"]*)"""")
 

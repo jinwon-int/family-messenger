@@ -88,7 +88,9 @@ Python에서 하던 릴레이 호출을 브라우저로 옮긴 것이다. 합성
    `read_seq`로 상태만 올리고 나머지는 무시한다(옛 릴레이 404 포함, fire-and-forget). 릴레이는 값을 **actor 단위**로
    보관하므로 같은 4초 폴링 `GET /events`의 `read_seq`(키가 없으면 0)가 이 기기 값보다 크면 `app.js mergeRelayRead`가
    localStorage `hande:readSeq:<device>:<room>`를 올린다 — PC 에서 읽은 방의 N 배지가 폰에서도 다음 폴링에 꺼진다.
-   MLS 좌석·커서(`mls_cursors`, 전달 ack)는 그대로 기기 단위다. iOS·Android 는 아직 로컬 readSeq 만 쓴다(후속).
+   MLS 좌석·커서(`mls_cursors`, 전달 ack)는 그대로 기기 단위다. Android(한데)는 같은 규칙을 Rust 코어로 쓴다
+   (`host-core api::Client::post_read` · `EventsResponse.read_seq` → `MlsRoom.markRead(seq)`/`readSeq()`, #571 후속);
+   iOS 는 아직 로컬 readSeq 만 쓴다(후속).
 
 durable 워커 허용 메서드에 이번에 더해진 것: `invite_with_commit` `merge_pending` `clear_pending`
 `remove_pending` `members` `members_after_pending` `fingerprint` `policy_fingerprint` `sign_approval`
