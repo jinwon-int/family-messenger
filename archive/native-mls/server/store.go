@@ -157,6 +157,16 @@ CREATE TABLE IF NOT EXISTS push_devices (
 	topic      TEXT NOT NULL,
 	updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS device_candidates (
+	device      TEXT PRIMARY KEY,
+	subject     TEXT NOT NULL,
+	actor       TEXT NOT NULL,
+	signing_key TEXT NOT NULL,
+	fingerprint TEXT NOT NULL,
+	created_at  INTEGER NOT NULL,
+	expires_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS device_candidates_subject ON device_candidates(subject, expires_at);
 CREATE TABLE IF NOT EXISTS mls_blobs (
 	room       TEXT NOT NULL REFERENCES mls_rooms(room),
 	id         TEXT NOT NULL,

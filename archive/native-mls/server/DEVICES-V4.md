@@ -65,6 +65,33 @@ fingerprint=key 해시 일치, `trusted` acceptance에는 `approved_by` 필수, 
   돌아가며, 운영자가 `-set-roles <id> -roles registrar`(증거 없음, 대역외 의식)로 복구한다.
 - `roles`는 `approved_by`처럼 **관리 선언**이다. 지문 대조를 사람이 했다는 증명이 아니다.
 
+## 셀프서비스 라우트 — #574 D1 (`devices.go`)
+
+"서버는 다섯 연산을 위해 라우트를 추가하지 않는다"(#177 §3.2)를 오너 결정(2026-10-29)으로
+번복한다: E2·E5의 증거는 서버가 독립 검증하는 평문 Ed25519 서명이라, DEVICE-LIFECYCLE이 우려한
+"검증 불가 MLS 내부 메시지"가 아니다. 검증 코드는 CLI와 같은 `devicepolicy.Apply*`이고, 릴레이는
+그 위에 **호출자 subject 바인딩**을 얹는다. 라우트는 `-access-mode required` **그리고**
+`-device-state`가 있을 때만 등록된다(둘 다 없으면 404). 체인의 flock·CAS가 CLI와의 경합을 막고
+요청마다 재읽기라 재시작은 없다. E1(첫 기기)·E3/E4(폐기)는 여전히 운영자 CLI다(D3는 2단계).
+
+| 라우트 | 호출자 | 요청 | 응답 |
+|---|---|---|---|
+| `POST /v2/devices/candidates` | **새 기기**(JWT만 — 아직 체인에 없어 `bindDevice` 불가) | `{device_id, actor, signing_key[, subject, fingerprint]}` | 201 `{device_id, fingerprint, policy_revision, expires_at}`. 같은 id 재게시는 갱신. TTL 10분 |
+| `GET /v2/devices/candidates?device=<내 기기>` | 같은 subject의 활성 기기(`bindDevice`) | — | 200 `{policy_revision, candidates:[{device_id, actor, subject, signing_key, fingerprint, created_at, expires_at}]}` — `policy_revision`이 서명할 `base_revision` |
+| `POST /v2/devices/approvals` | 승인 기기의 사람(JWT) | CLI `-add-device` 입력과 동일(`AddDeviceEvidence`) | 201 `{device_id, approved_by, revision}`; 후보 행 삭제 |
+| `POST /v2/devices/roles` | registrar의 사람(JWT) | `RolesEvidence` `{device_id, actor, roles, base_revision, signature[, approved_by]}` | 201 `{device_id, roles, approved_by, revision}` |
+
+오류: 400 `bad_request`/`bad_identifier`/`bad_candidate` · 403 `subject_mismatch`(증거·후보의 subject ≠ JWT) ·
+403 `device_subject_mismatch`(승인 기기·대상 기기가 호출자 소유 아님) · 403 `approval_rejected`(서명·서명자
+규칙 — `detail`에 이유: registrar 아님, 마지막 registrar 등) · 403 `first_device_out_of_band`(호출자에게
+활성 기기 없음) · 409 `device_exists` · 409 `stale_revision`(`revision`=현재; 재서명) · 500
+`device_policy_unavailable`.
+
+`GET /v2/me`는 기기 저장소가 있으면 `policy_revision`과 `devices:[{device_id, actor, fingerprint,
+status, acceptance, roles}]`(호출자 subject의 기기 전부, 서명 키 없음)를 함께 준다. `GET /v2/lobby/welcomes`의
+각 항목에 보낸 기기 `from`이 실린다 — 같은 actor의 형제 기기가 보낸 초대를 클라이언트가 자동 수락하기 위함.
+후보 우편함은 `device_candidates` 테이블(공개 값만: 서명 **공개** 키·지문).
+
 ## 다섯 연산 ↔ 오너 CLI (`cmd/native-devices`)
 
 | 연산 | CLI | 정책 변화 |
