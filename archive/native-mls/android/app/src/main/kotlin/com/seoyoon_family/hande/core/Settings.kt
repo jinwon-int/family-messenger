@@ -1,4 +1,5 @@
 // 앱 설정(SharedPreferences). 비밀은 세션 값(CF Access 토큰) 하나 — Keystore 로 봉인해 base64 로 둔다. 나머지는 공개 값.
+// 서버(#584): `relayUrl`(정규형 base URL) + `serverName`(`.well-known/hande` 의 표시 이름) — 설정 화면의 「서버 찾기」(`ServerDiscovery`)가 함께 채운다.
 // 기기 ID = `<actor>-android-<6 hex>`(iOS 의 `<actor>-iphone-<6 hex>` 와 같은 모양). 접미는 한 번 만들고 고정 — 바꾸면 다른 기기다.
 package com.seoyoon_family.hande.core
 
@@ -12,6 +13,11 @@ class Settings(context: Context, private val sealer: KeystoreSealer) {
     var relayUrl: String?
         get() = prefs.getString("relay_url", null)?.takeIf { it.isNotBlank() }
         set(value) { prefs.edit().putString("relay_url", value?.trim()?.trimEnd('/')).apply() }
+
+    /** 서버 표시 이름(#584 — `.well-known/hande` 의 `name`). 릴레이 주소와 함께 저장한다; 문서가 없는 서버(주소 직접 입력)는 null. */
+    var serverName: String?
+        get() = prefs.getString("server_name", null)?.takeIf { it.isNotBlank() }
+        set(value) { if (value.isNullOrBlank()) prefs.edit().remove("server_name").apply() else prefs.edit().putString("server_name", value.trim()).apply() }
 
     /** 가족 운영자가 정해 준 영문 이름(소문자 시작, 영문 소문자·숫자 2~16자). 한 번 정하면 바꿀 수 없다(기기 ID 의 일부). */
     var actor: String?

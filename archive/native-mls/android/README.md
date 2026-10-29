@@ -6,7 +6,7 @@
 
 | 경로 | 역할 |
 |---|---|
-| `app/` | **앱 모듈(B1)**. `core/DeviceHub`(단일 작성자: `MlsLobby` 시드 → 방은 전부 `MlsRoom.adopt`, 전면 4 s poll, 로비 보충, Welcome 받아들이기, 등록 JSON, #574 셀프서비스 틱) · `core/SelfService`(#574 순수 판정 — 웹 `self-service.js` 1:1: `canApprove`·`isSibling`·`candidatesFor`·`rolesActions`·`enrollModeFrom`·형제 초대 대기열) · `core/KeystoreSealer`(Android Keystore AES-GCM 비수출 키, StrongBox 우선 — `FileRoomStore`/`FileLobbyStore` 의 `seal`/`open` 훅; Jetpack Security 미사용, 의존 0) · `core/Settings`(릴레이 주소·이름·봉인된 세션 값·진행 중 로그인 state·형제 초대 대기열) · `core/MessageDb`+`core/MessageSchema`(정식 저장소 — SQLite, iOS 동결 DDL v1 공유, B2) · `core/AppLogin`+`core/LoginLauncher`(가족 로그인, B2; `subjectOf` = JWT `sub`) · `core/Unread`(안 읽음 판정 — 웹 `read-seq.js`·iOS `Unread` 와 같은 규칙, #571 후속) · `ui/Screens`(설정 · 등록(운영자/형제 승인 모드) · 로그인 · 목록(안 읽음 배지 · 새 기기 승인 카드) · 대화 · 내 기기). 전송은 `host/JdkHttpTransport`(OkHttp 는 보류 — 의존 0 으로 충분, 필요 시 같은 trait 로 교체) |
+| `app/` | **앱 모듈(B1)**. `core/DeviceHub`(단일 작성자: `MlsLobby` 시드 → 방은 전부 `MlsRoom.adopt`, 전면 4 s poll, 로비 보충, Welcome 받아들이기, 등록 JSON, #574 셀프서비스 틱) · `core/SelfService`(#574 순수 판정 — 웹 `self-service.js` 1:1: `canApprove`·`isSibling`·`candidatesFor`·`rolesActions`·`enrollModeFrom`·형제 초대 대기열) · `core/KeystoreSealer`(Android Keystore AES-GCM 비수출 키, StrongBox 우선 — `FileRoomStore`/`FileLobbyStore` 의 `seal`/`open` 훅; Jetpack Security 미사용, 의존 0) · `core/Settings`(릴레이 주소·서버 이름·이름·봉인된 세션 값·진행 중 로그인 state·형제 초대 대기열) · `core/ServerDiscovery`(#584 서버 탐색 — 순수: `normalizeBase`·`candidates`·`parseWellKnown`·`compareVersions`·주입 `fetch` 의 `discover`; 전송은 `OkHttpTransport.get`) · `core/MessageDb`+`core/MessageSchema`(정식 저장소 — SQLite, iOS 동결 DDL v1 공유, B2) · `core/AppLogin`+`core/LoginLauncher`(가족 로그인, B2; `subjectOf` = JWT `sub`) · `core/Unread`(안 읽음 판정 — 웹 `read-seq.js`·iOS `Unread` 와 같은 규칙, #571 후속) · `ui/Screens`(설정(서버 찾기) · 등록(운영자/형제 승인 모드) · 로그인 · 목록(제목 아래 서버 이름 · 안 읽음 배지 · 새 기기 승인 카드) · 대화 · 내 기기). 전송은 `host/JdkHttpTransport`(OkHttp 는 보류 — 의존 0 으로 충분, 필요 시 같은 trait 로 교체) |
 | `settings.gradle.kts` · `build.gradle.kts` · `gradle/libs.versions.toml` | Gradle(wrapper jar 는 커밋하지 않는다 — CI 가 Gradle 8.11.1 을 핀으로 설치). 버전 핀은 toml |
 | `app/debug.keystore` | **디버그 서명키(PKCS12, 표준 공개 자격 `androiddebugkey`/`android`)** — 커밋해서 CI 디버그 APK 서명을 고정한다. 없으면 러너마다 새 키라 실기기 `adb install -r` 이 `INSTALL_FAILED_UPDATE_INCOMPATIBLE` 로 거부된다(2026-10-20 공융, 재설치 3회 무효). 릴리스 서명에는 절대 쓰지 않는다(E 단계 Play App Signing). CI 가 APK 서명자 지문을 이 키와 대조한다 |
 | `host/src/main/kotlin/.../host/JdkHttpTransport.kt` | `HttpTransport` — `HttpURLConnection`(Android 에도 있음). 응답이 있으면 상태코드 그대로, 연결 실패만 throw(→ transient). 앱은 OkHttp 로 바꿔도 같은 규칙 |
@@ -36,7 +36,13 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
 ## 앱 흐름(B1)
-1. **처음 설정**: 릴레이 주소 · 이름(영문 소문자, 한 번 정하면 고정 → 기기 ID `<이름>-android-<6 hex>`) · 세션 값(운영자용, 선택).
+1. **처음 설정**: 서버 주소(**도메인만**, #584 PR 3) · 이름(영문 소문자, 한 번 정하면 고정 → 기기 ID `<이름>-android-<6 hex>`) · 세션 값(운영자용, 선택).
+   **서버 탐색**(`core/ServerDiscovery`, 릴레이 `server/wellknown.go` 의 문서 — Matrix `.well-known/matrix/client` 방식): 「서버 찾기」(또는 「확인」) 가
+   `https://<도메인>/.well-known/hande` → `https://hande.<도메인>/.well-known/hande` 순서로 문서(`version` 1 · `relay.base_url` https · `name` · `min_app.android`)를 찾고,
+   둘 다 없으면 입력값을 릴레이 base URL 로 그대로 쓴다(옛 길 — `https://…` 를 직접 적어도 된다). 그 뒤 `GET <base>/v2/health` 가 `{"ok":true}` 면 확정,
+   302/401/403(CF Access 엣지가 가림)이면 「릴레이가 로그인 뒤에 있음」으로 역시 확정(저장 뒤 가족 로그인), 그 밖은 오류. `min_app.android` 가 앱 `versionName` 보다
+   높으면 「앱이 오래됨」으로 막는다(느슨한 semver). 찾은 서버 이름·주소를 카드로 보여 준 뒤 저장(`Settings.relayUrl`·`serverName`); 서버 이름은 대화방 목록 제목 아래에
+   (없으면 릴레이 호스트). 입력 정규화: 스킴 없으면 `https://`, 호스트 소문자, 끝 `/` 제거, http 는 localhost/127.0.0.1 만. 전송은 `OkHttpTransport.get`(토큰 없음·리다이렉트 무추적·16 KiB 상한).
 2. **등록 대기**: 릴레이가 403 `device_subject_mismatch` 면 지문·등록 JSON(`actor`·`device_id`·`fingerprint`·`signing_key`·`subject`, iOS 와 같은 키) 을 보여 준다 → 운영자 CLI(`-enroll-first`/`-add-device`). `subject` 는 세션 JWT 의 `sub`(`AppLogin.subjectOf`, iOS PR #347 과 같은 출처; 없으면 `/v2/me` 의 subject, 그것도 없으면 빈값). 401·엣지 302 면 **가족 로그인**(B2: 「Google 계정으로 로그인」 → Custom Tabs → `hande://auth#jwt` 콜백; 세션 값 붙여넣기는 운영자용).
    **셀프서비스(#574 PR 4, 웹 `app.js enrollTick` 와 같은 순서)**: 403 인 동안 틱마다 `MlsLobby.postCandidate()`(`POST /v2/devices/candidates`, subject 없는 strict JSON) — 201 이면 「다른 기기에서 승인해 주세요」 + 큰 지문(4자 묶음) + 만료 시각(만료 5분 전에 다시 올린다); 409 `device_exists` 면 「새 ID 로 다시」; 403 `first_device_out_of_band`·봉투 없는 404(옛 릴레이) 면 오늘의 운영자 JSON 화면. 3틱마다 `probe`(로비 상태) 가 200 이 되면 — 형제 기기가 승인했다 — 「이 기기가 등록되었습니다」 와 함께 대화방 목록으로.
 3. **대화방 목록**: 「참여 요청」 = `MlsLobby.replenish(8)`(로비 키 게시). 운영자(steward 봇)가 초대하면 `welcomes()` 에 방이 뜨고 `MlsRoom.adopt(seq - 1)` → `poll` 이 join → 목록에 나타난다. 하단에 기기 ID · 로비 키 n/8 · 키 보관 위치(StrongBox/TEE). 같은 사람의 다른 기기가 보낸 Welcome(`from` 이 `/v2/me` 의 같은 actor 활성 기기, `SelfService.isSibling`)도 같은 길로 자동 수락한다(이 앱에는 초대 카드가 없어 모든 Welcome 을 받는다 — 형제 기기면 알림에 그 사실을 적는다).
@@ -53,7 +59,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 |---|---|---|---|
 | OkHttp | `4.12.0` | Apache-2.0 | 앱 릴레이 전송(#338 §2 RelayClient). `host/JdkHttpTransport`(HttpURLConnection)는 실기기에서 CF Access/HTTP2 엣지에 멈춤(공융 build fa4f286) → OkHttp(HTTP/2·`callTimeout`·리다이렉트 무추적). okio 는 전이 의존 |
 | `androidx.browser:browser` | `1.8.0` | Apache-2.0 | 가족 로그인(B2) Chrome Custom Tabs — Google 은 WebView 로그인을 막고 Custom Tabs(브라우저 본체)는 허용. 제공자가 없으면 `ACTION_VIEW` 폴백 |
-| `kotlin-test-junit` (test 전용) | `2.1.20` (JUnit `4.13.2` 전이) | Apache-2.0 / EPL-1.0 | `AppLogin`·`Unread`·`FileV2`·`SelfService` 순수 로직 JVM 단위 테스트(CI `:app:testDebugUnitTest`). 앱 APK 에는 들어가지 않는다 |
+| `kotlin-test-junit` (test 전용) | `2.1.20` (JUnit `4.13.2` 전이) | Apache-2.0 / EPL-1.0 | `AppLogin`·`Unread`·`FileV2`·`SelfService`·`ServerDiscovery` 순수 로직 JVM 단위 테스트(CI `:app:testDebugUnitTest`). 앱 APK 에는 들어가지 않는다 |
 | JNA | `5.17.0` | Apache-2.0 / LGPL-2.1 (이중) | uniffi Kotlin 바인딩의 런타임 요구(#338 §5 예고). 앱은 `jna@aar`(libjnidispatch.so 포함), JVM 테스트는 jar 직접 |
 | Kotlin 컴파일러 · KGP · Compose 컴파일러 플러그인 | `2.1.20` | Apache-2.0 | 앱 빌드·테스트 빌드 |
 | Android Gradle Plugin | `8.7.2` | Apache-2.0 | KGP 2.1.20 호환 상한(kotlinlang 호환표: AGP 7.3.1–8.7.2 · Gradle 7.6.3–8.12.1) |
