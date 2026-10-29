@@ -37,7 +37,7 @@
 | `closeRoom()` → `Boolean` (3c) | `POST /v2/rooms/{r}/close` — 방을 닫는다(멤버 전원 410 `room_closed`) | 참 = 닫혔다(이미 닫혀 있어도) · 거짓 = 릴레이에 그 방이 없다 · 403 `not_a_member` 는 `Relay` 오류 · 로컬 상태 버리기는 호스트 몫 |
 | `readSeq()` → `Long` (#571 후속) | 릴레이가 아는 **같은 사람(actor)의** 읽음 위치 — `poll` 의 `GET /events` `read_seq` 와 `markRead` 응답의 max | 영속하지 않는다(재시작 뒤 첫 `poll` 전에는 0) → 호스트는 자기 로컬 값(`Settings.readSeq`)과 `max` 로 합쳐 안 읽음을 판정한다(`Unread.isUnread`: 마지막 글이 남의 글이고 그 위치보다 뒤) · 옛 릴레이는 늘 0 · MLS 커서·ack 와 무관 |
 | `markRead(seq)` → `Long` (#571 후속) | `POST /v2/rooms/{r}/read {device, seq}` — 이 기기가 `seq` 까지 봤다. 돌아오는 값 = 릴레이의 actor 단위 결과(`seq` 보다 클 수 있다) | 이미 아는 위치 이하면 보내지 않음 · 옛 릴레이(봉투 없는 404)·404 `no_such_room` 은 **무시**(알던 값 반환) · 410/403/400 `bad_seq`·전송 실패는 `Relay` 오류 — 안내 신호이므로 호스트는 로그만 남긴다 · 시점 = 방을 열 때·보는 중 마지막 seq 가 움직일 때(웹 `room.js markRead` 와 같음) |
-| `invite(target)` → `MlsInvite` (#574) | 형제 기기 초대(봇 `invite`·웹 `room.js invite` 순서): 대상 key package 를 방 풀(`GET /v2/rooms/{r}/keypackages`) → 로비(`GET /v2/lobby/keypackages?room=`) 순으로 소비 → `invite_with_commit` → **`persist`** → commit 게시 → `poll`(자기 echo merge) → Welcome 을 대상에게만 게시 | `Invited{commitSeq, welcomeSeq, epoch}` = 끝 · `Posted{commitSeq}` = echo 가 이 페이지에 없었다(Welcome 은 다음 `poll` 의 `after_page` 가 올린다; 전송 실패도 거기서 재시도) · `NoKeyPackage`(새 기기는 활성이 된 뒤 첫 틱에야 로비 키를 올린다) · `Pending`(내 commit 대기) · `Raced`(409 cas_mismatch — 대기 commit 을 버렸다) 는 **다음 틱에 다시** · 참여 전·정지된 방·식별자 위반은 `Host` 오류 · 대기 중 Welcome 은 영속하지 않는다(재시작 뒤 잃으면 호스트 대기열이 다시 초대) |
+| `invite(target)` → `MlsInvite` (#574) | 형제 기기 초대(봇 `invite`·웹 `room.js invite` 순서): 대상 key package 를 방 풀(`GET /v2/rooms/{r}/keypackages`) → 로비(`GET /v2/lobby/keypackages?room=`) 순으로 소비 → `invite_with_commit` → 대기 Welcome 을 `sync.pendingInvite` 에 싣고 **`persist`** → commit 게시 → `poll`(자기 echo merge) → Welcome 을 대상에게만 게시 | `Invited{commitSeq, welcomeSeq, epoch}` = 끝 · `Posted{commitSeq}` = echo 가 이 페이지에 없었다(Welcome 은 다음 `poll` 의 `after_page` 가 올린다; 전송 실패도 거기서 재시도) · `NoKeyPackage`(새 기기는 활성이 된 뒤 첫 틱에야 로비 키를 올린다) · `Pending`(내 commit 또는 대기 Welcome) · `Raced`(409 cas_mismatch — 대기 commit 을 버렸다) 는 **다음 틱에 다시** · 참여 전·정지된 방·식별자 위반은 `Host` 오류 · **대기 Welcome 은 영속된다**(#574 후속: `RoomSyncState.pendingInvite{commitSeq, targets, welcome}` — commit 이 나가기 전에 디스크에; 재시작한 `poll` 이 echo 를 merge 하면 올리고, commit 이 merge 없이 사라졌으면(릴레이에 닿지 않은 commit 을 외부 commit 이 지움·merge 거부) `WelcomeDropped{commitSeq, targets}` 로 버린다 → 호스트 대기열이 다시 초대) |
 
 ## 2b. `MlsLobby` API — 기기 수준(방 무관) 호출 (3c · #574)
 
@@ -71,8 +71,8 @@
 ### `RoomObserver`
 | 콜백 | 언제 | 호스트 의무 |
 |---|---|---|
-| `persist(state, sync)` | 그룹 상태가 움직인 뒤(`poll` 끝 · `send` 의 POST **전** · `dispatch` 성공 직후 · `postCommit`/`postWelcome` 전) | **원자 쓰기**(tmp → fsync → rename → 디렉터리 fsync) 뒤에 돌아온다. 돌아오기 전에는 바이트가 나가지 않는다(review 2 B-H2). 실패하면 throw — 코어는 그 전송을 하지 않는다. `state` 는 봉인해서(Keystore 키, EncryptedFile) 저장. `sync.sends`(dedup 카운터) 도 함께 |
-| `event(RoomEvent)` | 처리 이벤트마다 | 로그 싱크(봇 JSON 로그와 같은 어휘: `AckRefused` `Joined` `WelcomeIgnored` `Rejected` `CommitApplied` `Undecryptable` `OwnEvent` `OwnCommitMerged` `OwnCommitMergeRejected` `Conflict` `AlreadyDelivered` `Replayed` `Dropped`). 평문·키는 없다 |
+| `persist(state, sync)` | 그룹 상태가 움직인 뒤(`poll` 끝 · `send` 의 POST **전** · `dispatch` 성공 직후 · `postCommit`/`postWelcome` 전) | **원자 쓰기**(tmp → fsync → rename → 디렉터리 fsync) 뒤에 돌아온다. 돌아오기 전에는 바이트가 나가지 않는다(review 2 B-H2). 실패하면 throw — 코어는 그 전송을 하지 않는다. `state` 는 봉인해서(Keystore 키, EncryptedFile) 저장. `sync.sends`(dedup 카운터)·`sync.pendingInvite`(#574 후속 대기 Welcome — 대상의 key package 로 봉인된 공개 와이어 바이트, `state` 처럼 봉인할 필요 없음) 도 함께 |
+| `event(RoomEvent)` | 처리 이벤트마다 | 로그 싱크(봇 JSON 로그와 같은 어휘: `AckRefused` `Joined` `WelcomeIgnored` `Rejected` `CommitApplied` `Undecryptable` `OwnEvent` `OwnCommitMerged` `OwnCommitMergeRejected` `Conflict` `AlreadyDelivered` `Replayed` `Dropped` `WelcomeDropped`(#574 후속 — 호스트는 그 대상을 초대 대기열에 되돌린다)). 평문·키는 없다 |
 | `application(seq, sender, clientId, plaintext)` | 다른 기기의 복호화된 메시지, 페이지 순서 | 저장·표시·알림. `clientId` 가 `file-v1-…` 이면 첨부(relay-app 규칙, ≤256 KiB 는 호스트 정책) |
 | `halted(reason, detail, sync)` | 정책이 commit 을 거부(`reason` = 정책 코드) · 이력이 잘림(`history_gap`) | 마커 영속(재시작 뒤에도 정지) · 화면에 사유 · 해제 = 방 상태 버리고 재초대(iOS §3.5 와 같은 규칙) |
 
@@ -97,7 +97,7 @@
 - 남은 것: **첨부 크기 정책**(호스트 `application` 콜백에서 `client_id` `file-v1-…` 판정 뒤 적용) · 푸시 **와이어의 FCM 일반화**(릴레이 #338 G3 — 클라이언트 호출 모양은 그대로) · 로비 key package 의 **방 상태 사본에서의 정리**(`join` 이 남은 것을 모두 지우므로 방 쪽은 자동; 로비 쪽은 `replenish` 가 서버 `live` 기준으로 정리).
 
 ## 7. 검증
-- Rust: `ios-ffi/tests/room_host.rs`(3a, 9 시나리오 — #574 형제 기기 `invite` 포함) · `ios-ffi/tests/lobby_host.rs`(3c, 12 시나리오: 보충·상한·게시 실패 롤백·로비 Welcome adopt·import·회수·방 닫기·푸시 + #574 `/v2/me`·후보 게시→승인·역할·로비 `dispatch`) — 대역은 `tests/support/mod.rs`(in-memory 릴레이·관찰자·기기 정책 체인 대역).
+- Rust: `ios-ffi/tests/room_host.rs`(3a, 10 시나리오 — #574 형제 기기 `invite` · 후속의 대기 Welcome 영속·재시작 포함) · `ios-ffi/tests/lobby_host.rs`(3c, 12 시나리오: 보충·상한·게시 실패 롤백·로비 Welcome adopt·import·회수·방 닫기·푸시 + #574 `/v2/me`·후보 게시→승인·역할·로비 `dispatch`) — 대역은 `tests/support/mod.rs`(in-memory 릴레이·관찰자·기기 정책 체인 대역).
 - JVM(Linux, CI `native-mls-android.yml`): [`android/host`](android/) — Kotlin 바인딩 + `JdkHttpTransport`/`FileRoomStore`/`FileLobbyStore` + in-memory 릴레이로 **같은 시나리오**(두 기기 왕복 · 409 재전송 · 영속 뒤 `import` 이어 받기 · 정지 · 로비 보충→adopt→방 목록→닫기→푸시→회수 · 읽음 위치 · #574 후보→승인→역할→형제 초대→adopt). 실행 `android/scripts/jvm-roundtrip.sh`.
 - 호스트 판정(Android `core/SelfService`): `:app:testDebugUnitTest` 의 `SelfServiceTest`(웹 `tests/self-service.test.mjs` 와 같은 경우) · `AppLoginTest.subjectOf*`(등록 JSON `subject` = JWT `sub`).
 - 실기기·에뮬레이터(Android 앱)는 #338 B 단계.

@@ -312,6 +312,25 @@ private fun scenarioSelfService(tmp: File) {
     val bad = try { phoneRoom.invite("bad target"); null } catch (e: RoomException) { e }
     check(bad is RoomException.Host, "identifier rule on the target ($bad)")
 
+    // #574 후속 — 대기 Welcome 영속(`ios-ffi/tests/room_host.rs` 국면 (1)): Welcome POST 가 끊겨도 `<room>.sync` 에 남아(commit 게시 전에 적힌다),
+    // 저장소에서 다시 만든 방(`FileRoomStore.load` → `import`)의 다음 `poll` 이 올린다 — `from` 은 복원된 초대 기기.
+    val watch = MlsLobby("owner-watch", BASE, relay, FileLobbyStore(File(dir, "watch")))
+    watch.replenish(1u)
+    relay.failNextWelcome = true
+    val cut = try { phoneRoom.invite("owner-watch"); null } catch (e: RoomException) { e }
+    check(cut is RoomException.Relay && cut.transient, "welcome POST cut → Relay(transient) ($cut)")
+    val (phoneState, phoneSync) = phoneStore.load()!!
+    val pi = phoneSync.pendingInvite
+    check(pi != null && pi.commitSeq == 4L && pi.targets == listOf("owner-watch") && pi.welcome.isNotEmpty(), "the pending welcome round-trips through the sync file ($pi)")
+    check(relay.rows("room-a").none { it.kind == "welcome" && "owner-watch" in it.targets }, "nothing reached the relay")
+    phoneRoom.close()
+    val phoneAgain = MlsRoom.`import`("owner-phone", "room-a", phoneState, phoneSync, BASE, relay, phoneStore)
+    check(phoneAgain.invite("owner-watch") is MlsInvite.Pending, "a waiting welcome blocks new invites")
+    phoneAgain.poll()
+    check(relay.rows("room-a").any { it.kind == "welcome" && it.device == "owner-phone" && it.targets == listOf("owner-watch") }, "the restored room posted the welcome")
+    check(phoneAgain.syncState().pendingInvite == null && phoneStore.load()!!.second.pendingInvite == null, "cleared in memory and on disk")
+    check(watch.welcomes().singleOrNull()?.from == "owner-phone", "welcomes carries `from` = the restored inviter (${watch.welcomes()})")
+
     // 옛 릴레이(#574 이전): /v2/me 는 {subject} 만, 셀프서비스는 봉투 없는 404 → 운영자 흐름.
     relay.noSelfService = true
     val old = droid.me()

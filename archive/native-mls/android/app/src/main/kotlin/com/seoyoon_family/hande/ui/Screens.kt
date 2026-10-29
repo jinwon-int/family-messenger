@@ -89,13 +89,16 @@ fun HandeRoot(hub: DeviceHub) {
     BackHandler(enabled = !settingsOpen && openRoom != null) { openRoom = null }
     BackHandler(enabled = !settingsOpen && openRoom == null && showDevices) { showDevices = false }
 
+    // 「이 기기 지우기」: 설정 화면과 등록 대기(409 `device_exists`, #574 후속)의 버튼이 같은 동작 — 열린 화면을 닫고 허브가 지운 뒤 처음 설정으로.
+    val wipe: () -> Unit = { showSettings = false; openRoom = null; showDevices = false; hub.wipeDevice(scope) }
+
     if (settingsOpen) {
-        SettingsScreen(ui, onBack = { showSettings = false }, onWipe = { showSettings = false; openRoom = null; showDevices = false; hub.wipeDevice(scope) }, onNoticeShown = hub::clearNotice)
+        SettingsScreen(ui, onBack = { showSettings = false }, onWipe = wipe, onNoticeShown = hub::clearNotice)
         return
     }
     when (val phase = ui.phase) {
         Phase.Setup -> SetupScreen(hub.settings, hub::discover) { hub.start(scope) }
-        is Phase.WaitingEnrollment -> EnrollScreen(ui, phase, onSettings = { showSettings = true }) { hub.retryEnrollment(scope) }
+        is Phase.WaitingEnrollment -> EnrollScreen(ui, phase, onSettings = { showSettings = true }, onWipe = wipe) { hub.retryEnrollment(scope) }
         Phase.NeedsLogin -> {
             val context = LocalContext.current
             LoginScreen(hub.settings, ui, onGoogle = { hub.beginLogin(context) }, onSaved = { hub.reconfigure(scope) }, onSettings = { showSettings = true }, onNoticeShown = hub::clearNotice)
@@ -191,15 +194,19 @@ fun SettingsScreen(ui: HubUi, onBack: () -> Unit, onWipe: () -> Unit, onNoticeSh
             ) { Text(Strings.wipeDevice) }
         }
     }
-    if (confirmWipe) {
-        AlertDialog(
-            onDismissRequest = { confirmWipe = false },
-            title = { Text(Strings.wipeConfirmTitle) },
-            text = { Text(Strings.wipeConfirmBody) },
-            confirmButton = { TextButton(onClick = { confirmWipe = false; onWipe() }) { Text(Strings.wipeConfirmButton, color = MaterialTheme.colorScheme.error) } },
-            dismissButton = { TextButton(onClick = { confirmWipe = false }) { Text(Strings.cancel) } },
-        )
-    }
+    if (confirmWipe) WipeConfirmDialog(onConfirm = { confirmWipe = false; onWipe() }, onDismiss = { confirmWipe = false })
+}
+
+/** 「이 기기 지우기」 확인 대화상자 — 설정 화면과 등록 대기(ID 사용 불가)에서 같은 문구·같은 동작(#574 후속). */
+@Composable
+private fun WipeConfirmDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(Strings.wipeConfirmTitle) },
+        text = { Text(Strings.wipeConfirmBody) },
+        confirmButton = { TextButton(onClick = onConfirm) { Text(Strings.wipeConfirmButton, color = MaterialTheme.colorScheme.error) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(Strings.cancel) } },
+    )
 }
 
 /**
@@ -277,20 +284,29 @@ fun SetupScreen(settings: Settings, onDiscover: suspend (String) -> ServerDiscov
 /**
  * 등록 대기(#574): SIBLING 모드는 큰 지문(4자 묶음)과 만료 시각 — 같은 사람의 다른 기기가 「새 기기 승인」에서 견주어 승인한다.
  * OPERATOR(첫 기기·옛 릴레이)·ID_TAKEN 은 오늘의 운영자 JSON 화면; SIBLING 에서도 접어 둔 운영자 정보를 펼 수 있다.
+ * ID_TAKEN(409 `device_exists`, #574 후속)에는 「이 기기 지우기 / 새 ID로 다시 시작」 — 설정 화면의 「이 기기 지우기」와 같은 확인 대화상자·같은 동작(`onWipe`).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun EnrollScreen(ui: HubUi, phase: Phase.WaitingEnrollment, onSettings: () -> Unit, onRetry: () -> Unit) {
+fun EnrollScreen(ui: HubUi, phase: Phase.WaitingEnrollment, onSettings: () -> Unit, onWipe: () -> Unit, onRetry: () -> Unit) {
     val clipboard = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
     var operatorShown by rememberSaveable { mutableStateOf(false) }
+    var confirmWipe by rememberSaveable { mutableStateOf(false) }
     val sibling = phase.mode == SelfService.EnrollMode.SIBLING
     val json = phase.json
     Scaffold(topBar = { TopAppBar(title = { Text(if (sibling) Strings.enrollSiblingTitle else Strings.enrollTitle) }, actions = { TextButton(onClick = onSettings) { Text(Strings.settingsButton) } }) }) { pad ->
         Column(Modifier.padding(pad).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             when (phase.mode) {
                 SelfService.EnrollMode.SIBLING -> Text(Strings.enrollSiblingBody)
-                SelfService.EnrollMode.ID_TAKEN -> Text(Strings.enrollIdTaken, color = MaterialTheme.colorScheme.error)
+                SelfService.EnrollMode.ID_TAKEN -> {
+                    Text(Strings.enrollIdTaken, color = MaterialTheme.colorScheme.error)
+                    Button(
+                        onClick = { confirmWipe = true },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text(Strings.wipeAndRestart) }
+                }
                 SelfService.EnrollMode.OPERATOR -> Text(Strings.enrollBody)
             }
             Text(Strings.fingerprintLabel, style = MaterialTheme.typography.labelLarge)
@@ -316,9 +332,10 @@ fun EnrollScreen(ui: HubUi, phase: Phase.WaitingEnrollment, onSettings: () -> Un
             Text(Strings.waitingOperator, style = MaterialTheme.typography.bodySmall)
         }
     }
+    if (confirmWipe) WipeConfirmDialog(onConfirm = { confirmWipe = false; onWipe() }, onDismiss = { confirmWipe = false })
 }
 
-/** 우편함의 새 기기 승인 카드(#574): 지문을 크게, 「지문 비교 후 승인」·「무시」. 실패 사유는 카드 안에. */
+/** 우편함의 새 기기 승인 카드(#574): 지문을 크게, 「지문 비교 후 승인」·「무시」(프로세스가 다시 떠도 숨김 — 후보 TTL 뒤 만료). 실패 사유는 카드 안에. */
 @Composable
 private fun CandidateCard(c: CandidateUi, onApprove: () -> Unit, onIgnore: () -> Unit) {
     Card(Modifier.fillMaxWidth()) {

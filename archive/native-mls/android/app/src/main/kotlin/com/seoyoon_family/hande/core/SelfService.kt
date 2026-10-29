@@ -18,6 +18,8 @@ object SelfService {
     const val SIBLING_INVITE_TTL_MS = 30 * 60_000L
     /** 후보 게시의 재게시 여유: 만료(10분) 이만큼 전에 다시 올린다. */
     const val CANDIDATE_REPOST_MARGIN_MS = 5 * 60_000L
+    /** 후보 우편함 행의 수명(릴레이 `server/devices.go` `candidateTTL` = 10분), 초 — 「무시」 항목도 이만큼 뒤에 만료된다. */
+    const val CANDIDATE_TTL_SECONDS = 10 * 60L
 
     private val HEX64 = Regex("^[a-f0-9]{64}$")
 
@@ -166,4 +168,42 @@ object SelfService {
     /** 처리할 것(first)과 포기할 것(second, TTL 지남)으로 나눈다. */
     fun splitSiblingQueue(queue: List<SiblingInvite>, now: Long, ttl: Long = SIBLING_INVITE_TTL_MS): Pair<List<SiblingInvite>, List<SiblingInvite>> =
         queue.partition { now - it.since <= ttl }
+
+    // ---- 「무시」한 후보(SharedPreferences `dismissed_candidates`, #574 후속) ----
+    // 웹은 페이지 세션 메모리(`dismissedCandidates` Set)지만 앱은 프로세스가 자주 죽으므로 영속한다. 키는 **기기 ID**: 새 기기는 만료 5분 전마다
+    // 같은 ID 로 다시 올리고 릴레이는 그때 `created_at` 을 갱신하므로(devices.go upsert) (ID, created_at) 쌍으로 맞추면 5분마다 카드가 되살아난다.
+    // 항목은 무시한 후보의 `created_at` + TTL(10분, 릴레이 시계·초) 에 만료한다 — 그 행이 우편함에서 사라지는 시각과 같다. 그 뒤 같은 ID 가
+    // 또 올라오면(아직 기다리는 새 기기) 카드가 다시 보인다 — 영영 숨기지는 않는다. 저장 형식: 줄마다 `deviceId|createdAtSec`.
+
+    data class Dismissal(val deviceId: String, val createdAt: Long)
+
+    fun decodeDismissals(text: String?): List<Dismissal> {
+        if (text.isNullOrBlank()) return emptyList()
+        return text.lines().mapNotNull { line ->
+            val parts = line.split('|')
+            if (parts.size != 2) return@mapNotNull null
+            val id = parts[0].takeIf { IDENT.matches(it) } ?: return@mapNotNull null
+            val at = parts[1].toLongOrNull() ?: return@mapNotNull null
+            Dismissal(id, at)
+        }
+    }
+
+    fun encodeDismissals(list: List<Dismissal>): String = list.joinToString("\n") { "${it.deviceId}|${it.createdAt}" }
+
+    /** 아직 살아 있는 항목만(`createdAt + ttl > nowSec`). */
+    fun pruneDismissals(list: List<Dismissal>, nowSec: Long, ttlSec: Long = CANDIDATE_TTL_SECONDS): List<Dismissal> =
+        list.filter { it.createdAt + ttlSec > nowSec }
+
+    /**
+     * 후보를 무시한다: 만료된 항목을 걷어내고 같은 ID 의 항목을 이 후보의 `created_at` 으로 바꾼다. 릴레이가 `created_at` 을 주지 않으면(0 이하)
+     * 지금(`nowSec`)부터 TTL 동안 숨긴다.
+     */
+    fun dismiss(list: List<Dismissal>, deviceId: String, createdAt: Long, nowSec: Long, ttlSec: Long = CANDIDATE_TTL_SECONDS): List<Dismissal> {
+        val at = if (createdAt > 0L) createdAt else nowSec
+        return pruneDismissals(list, nowSec, ttlSec).filter { it.deviceId != deviceId } + Dismissal(deviceId, at)
+    }
+
+    /** 이 ID 의 살아 있는 「무시」 항목이 있나. */
+    fun isDismissed(list: List<Dismissal>, deviceId: String, nowSec: Long, ttlSec: Long = CANDIDATE_TTL_SECONDS): Boolean =
+        pruneDismissals(list, nowSec, ttlSec).any { it.deviceId == deviceId }
 }

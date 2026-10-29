@@ -2,6 +2,7 @@
 // 정지 마커, 이벤트·메시지 싱크. Android 앱은 `seal`/`open` 에 Keystore 키 봉인(EncryptedFile 상당)을 끼운다 — 파일 규칙은 그대로.
 package com.seoyoon_family.hande.host
 
+import com.seoyoon_family.hande.mls.PendingInvite
 import com.seoyoon_family.hande.mls.RoomEvent
 import com.seoyoon_family.hande.mls.RoomObserver
 import com.seoyoon_family.hande.mls.RoomSyncState
@@ -13,6 +14,7 @@ import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
+import java.util.Base64
 import java.util.Properties
 
 class FileRoomStore(
@@ -70,6 +72,12 @@ class FileRoomStore(
     }
 
     companion object {
+        /**
+         * `<room>.sync` 는 `Properties`(키=값) — 버전 필드 없이 **키가 선택적**이라 형식 번호를 올리지 않는다: 옛 파일(키 없음)은
+         * `pendingInvite` null 로 읽히고, 옛 앱은 모르는 키를 무시한다. #574 후속의 대기 Welcome 은 `pendingCommitSeq` ·
+         * `pendingTargets`(쉼표) · `pendingWelcome`(base64) 세 키 — Welcome 은 대상의 key package 로 봉인된 와이어 바이트(릴레이에 평문으로
+         * 올라가는 것)라 그룹 비밀이 아니므로 `state` 처럼 봉인하지 않는다.
+         */
         fun encode(s: RoomSyncState): ByteArray {
             val p = Properties()
             p["room"] = s.room
@@ -82,6 +90,11 @@ class FileRoomStore(
             p["ackDisabled"] = s.ackDisabled.toString()
             p["halted"] = s.halted.toString()
             p["sends"] = s.sends.toString()
+            s.pendingInvite?.let { pi ->
+                p["pendingCommitSeq"] = pi.commitSeq.toString()
+                p["pendingTargets"] = pi.targets.joinToString(",")
+                p["pendingWelcome"] = Base64.getEncoder().encodeToString(pi.welcome)
+            }
             val w = StringWriter()
             p.store(w, "hande room sync")
             return w.toString().toByteArray(Charsets.UTF_8)
@@ -91,11 +104,18 @@ class FileRoomStore(
             val p = Properties()
             p.load(StringReader(String(bytes, Charsets.UTF_8)))
             fun s(k: String) = p.getProperty(k) ?: throw IllegalStateException("sync file missing $k")
+            val pending = p.getProperty("pendingWelcome")?.takeIf { it.isNotBlank() }?.let { welcome ->
+                PendingInvite(
+                    commitSeq = p.getProperty("pendingCommitSeq")?.toLongOrNull() ?: 0L,
+                    targets = p.getProperty("pendingTargets").orEmpty().split(',').filter { it.isNotBlank() },
+                    welcome = Base64.getDecoder().decode(welcome),
+                )
+            }
             return RoomSyncState(
                 room = s("room"), cursor = s("cursor").toLong(), epoch = s("epoch").toLong(),
                 joined = s("joined").toBoolean(), joinable = s("joinable").toBoolean(),
                 acked = s("acked").toLong(), ackSent = s("ackSent").toLong(), ackDisabled = s("ackDisabled").toBoolean(),
-                halted = s("halted").toBoolean(), sends = s("sends").toULong(),
+                halted = s("halted").toBoolean(), sends = s("sends").toULong(), pendingInvite = pending,
             )
         }
     }

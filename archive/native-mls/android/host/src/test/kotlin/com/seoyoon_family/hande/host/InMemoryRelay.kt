@@ -36,6 +36,8 @@ class InMemoryRelay(private val base: String) : HttpTransport {
     @Volatile var noReadRoute = false
     /** 참이면 #574 이전 릴레이 흉내: `/v2/me` 는 `{subject}` 만, 셀프서비스 라우트는 봉투 없는 404, `welcomes` 에 `from` 없음. */
     @Volatile var noSelfService = false
+    /** 한 번만 터지는 전송 고장(#574 후속 — 대기 Welcome 영속): 다음 `POST welcome` 이 연결 끊김(transient)으로 실패하고 꺼진다. 행은 남지 않는다. */
+    @Volatile var failNextWelcome = false
 
     // ---- 기기 정책 체인 대역(#574): 호출자 subject 는 늘 SUBJECT(토큰 없는 테스트) ----
     val chain = mutableListOf<ChainDevice>()
@@ -162,6 +164,11 @@ class InMemoryRelay(private val base: String) : HttpTransport {
         val epoch = reEpoch.find(json)?.groupValues?.get(1)?.toLong() ?: 0
         val targets = reTargets.find(json)?.groupValues?.get(1)?.split(',')?.map { it.trim().trim('"') }?.filter { it.isNotEmpty() } ?: emptyList()
         trace += "POST $kind $clientId"
+        if (kind == "welcome" && failNextWelcome) {
+            failNextWelcome = false
+            trace += "CUT POST welcome $clientId"
+            throw RoomException.Host("connection reset (test)")
+        }
         val state = rooms.getOrPut(room) { RoomRows() }
         if (state.closed) return respond(410, """{"error":"room_closed"}""")
         state.rows.firstOrNull { it.device == device && it.clientId == clientId }?.let { existing ->
