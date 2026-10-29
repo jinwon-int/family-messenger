@@ -6,14 +6,14 @@
 
 | 경로 | 역할 |
 |---|---|
-| `app/` | **앱 모듈(B1)**. `core/DeviceHub`(단일 작성자: `MlsLobby` 시드 → 방은 전부 `MlsRoom.adopt`, 전면 4 s poll, 로비 보충, Welcome 받아들이기, 등록 JSON) · `core/KeystoreSealer`(Android Keystore AES-GCM 비수출 키, StrongBox 우선 — `FileRoomStore`/`FileLobbyStore` 의 `seal`/`open` 훅; Jetpack Security 미사용, 의존 0) · `core/Settings`(릴레이 주소·이름·봉인된 세션 값·진행 중 로그인 state) · `core/MessageDb`+`core/MessageSchema`(정식 저장소 — SQLite, iOS 동결 DDL v1 공유, B2) · `core/AppLogin`+`core/LoginLauncher`(가족 로그인, B2) · `ui/Screens`(설정 · 등록 · 로그인 · 목록 · 대화). 전송은 `host/JdkHttpTransport`(OkHttp 는 보류 — 의존 0 으로 충분, 필요 시 같은 trait 로 교체) |
+| `app/` | **앱 모듈(B1)**. `core/DeviceHub`(단일 작성자: `MlsLobby` 시드 → 방은 전부 `MlsRoom.adopt`, 전면 4 s poll, 로비 보충, Welcome 받아들이기, 등록 JSON) · `core/KeystoreSealer`(Android Keystore AES-GCM 비수출 키, StrongBox 우선 — `FileRoomStore`/`FileLobbyStore` 의 `seal`/`open` 훅; Jetpack Security 미사용, 의존 0) · `core/Settings`(릴레이 주소·이름·봉인된 세션 값·진행 중 로그인 state) · `core/MessageDb`+`core/MessageSchema`(정식 저장소 — SQLite, iOS 동결 DDL v1 공유, B2) · `core/AppLogin`+`core/LoginLauncher`(가족 로그인, B2) · `core/Unread`(안 읽음 판정 — 웹 `read-seq.js`·iOS `Unread` 와 같은 규칙, #571 후속) · `ui/Screens`(설정 · 등록 · 로그인 · 목록(안 읽음 배지) · 대화). 전송은 `host/JdkHttpTransport`(OkHttp 는 보류 — 의존 0 으로 충분, 필요 시 같은 trait 로 교체) |
 | `settings.gradle.kts` · `build.gradle.kts` · `gradle/libs.versions.toml` | Gradle(wrapper jar 는 커밋하지 않는다 — CI 가 Gradle 8.11.1 을 핀으로 설치). 버전 핀은 toml |
 | `app/debug.keystore` | **디버그 서명키(PKCS12, 표준 공개 자격 `androiddebugkey`/`android`)** — 커밋해서 CI 디버그 APK 서명을 고정한다. 없으면 러너마다 새 키라 실기기 `adb install -r` 이 `INSTALL_FAILED_UPDATE_INCOMPATIBLE` 로 거부된다(2026-10-20 공융, 재설치 3회 무효). 릴리스 서명에는 절대 쓰지 않는다(E 단계 Play App Signing). CI 가 APK 서명자 지문을 이 키와 대조한다 |
 | `host/src/main/kotlin/.../host/JdkHttpTransport.kt` | `HttpTransport` — `HttpURLConnection`(Android 에도 있음). 응답이 있으면 상태코드 그대로, 연결 실패만 throw(→ transient). 앱은 OkHttp 로 바꿔도 같은 규칙 |
 | `host/src/main/kotlin/.../host/FileRoomStore.kt` | `RoomObserver` — 원자 영속(tmp → fsync → rename → 디렉터리 fsync) · 정지 마커 · 이벤트/메시지 싱크 · `load()` → `MlsRoom.import`. `seal`/`open` 훅에 Keystore 봉인(EncryptedFile 상당)을 끼운다 |
 | `host/src/main/kotlin/.../host/FileLobbyStore.kt` | `LobbyObserver`(3c) — 로비 슬롯(시드 + 로비 key package 비밀 + 게시 장부) 한 파일 원자 영속 · `load()` → `MlsLobby.import`. 같은 `seal`/`open` 훅 |
-| `host/src/test/kotlin/.../host/InMemoryRelay.kt` | 테스트 전용 in-memory 릴레이(`ios-ffi/tests/support/mod.rs` 의 Relay 와 같은 규칙: events + 로비·방 목록·닫기·푸시) |
-| `host/src/test/kotlin/.../host/RoomRoundtrip.kt` | `main` 하나로 5 시나리오: 두 기기 왕복 · 409 재전송 · 영속 뒤 `import` 이어 받기 · 전송 실패 transient + 잘린 이력 정지(재시작 뒤 유지) · **로비**(보충 → steward 가 로비 키로 초대 → `welcomes` → `MlsRoom.adopt` → 방 목록 → 닫기 410 → 푸시 등록 → 회수). JUnit 의존 0 |
+| `host/src/test/kotlin/.../host/InMemoryRelay.kt` | 테스트 전용 in-memory 릴레이(`ios-ffi/tests/support/mod.rs` 의 Relay 와 같은 규칙: events(`read_seq`) + 로비·방 목록·닫기·푸시·읽음 위치 `POST /read`) |
+| `host/src/test/kotlin/.../host/RoomRoundtrip.kt` | `main` 하나로 6 시나리오: 두 기기 왕복 · 409 재전송 · 영속 뒤 `import` 이어 받기 · 전송 실패 transient + 잘린 이력 정지(재시작 뒤 유지) · **로비**(보충 → steward 가 로비 키로 초대 → `welcomes` → `MlsRoom.adopt` → 방 목록 → 닫기 410 → 푸시 등록 → 회수) · **읽음 위치**(#571 후속: `poll` 이 actor 단위 `read_seq` 를 실어 옴 · `markRead` 가 `POST /read` · 옛 릴레이 404 무시). JUnit 의존 0 |
 | `scripts/jvm-roundtrip.sh` | kotlinc 로 바인딩+어댑터+테스트를 jar 로 → JNA 로 호스트 `.so` 실행 |
 
 ## 실행 (Linux, Gradle·Android SDK 불필요)
@@ -40,6 +40,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 2. **등록 대기**: 릴레이가 403 `device_subject_mismatch` 면 지문·등록 JSON(`actor`·`device_id`·`fingerprint`·`signing_key`·`subject`, iOS 와 같은 키) 을 보여 준다 → 운영자 CLI(`-enroll-first`/`-add-device`). 401·엣지 302 면 **가족 로그인**(B2: 「Google 계정으로 로그인」 → Custom Tabs → `hande://auth#jwt` 콜백; 세션 값 붙여넣기는 운영자용).
 3. **대화방 목록**: 「참여 요청」 = `MlsLobby.replenish(8)`(로비 키 게시). 운영자(steward 봇)가 초대하면 `welcomes()` 에 방이 뜨고 `MlsRoom.adopt(seq - 1)` → `poll` 이 join → 목록에 나타난다. 하단에 기기 ID · 로비 키 n/8 · 키 보관 위치(StrongBox/TEE).
 4. **대화**: 텍스트 송수신(`send` → `Sent | Queued`), 첨부는 「📎 첨부(n B)」 자리 표시(C 단계). file-v2(#499) 설명자는 `FileV2.kt` 가 엄격 검증해 같은 자리 표시로 두고, 설명자(파일 키)는 글로 저장·표시하지 않는다(`FILE-V2.md` §6).
+5. **안 읽음·읽음 위치 공유**(#571 후속, 웹 `RELAY-APP.md` 8 과 같은 규칙): 목록의 「새 글」배지 = 마지막 글이 남의 글(actor 기준)이고 `max(Settings.readSeq, MlsRoom.readSeq())` 보다 뒤(`core/Unread`). 방을 열 때·보는 중 마지막 seq 가 움직일 때 `DeviceHub.markRead` 가 로컬 값을 적고 `MlsRoom.markRead(seq)` → `POST /v2/rooms/{room}/read` 로 올린다(릴레이가 **actor 단위**로 보관 → PC 웹에서 읽으면 폰 배지도 다음 poll 에 꺼진다). 로컬 값은 `Settings`(SharedPreferences, 줄어들지 않음) — `messages.db` 는 iOS 와 동결 DDL 을 공유하므로 열을 더하지 않는다. 실패(옛 릴레이 404·410·403·전송)는 로그만.
 
 첨부 전송·알림(FCM, D)·정식 아이콘(E)은 범위 밖(Google 로그인·정식 저장소는 B2 에서 들어왔다 — 아래 「B2 결정」).
 

@@ -12,7 +12,7 @@
 | `src/room.rs` | **`MlsRoom` 객체**(#366 3a, Android 먼저): 방 하나의 동기화(`poll`)·송신(`send`)·초대 게시(`post_commit`/`post_welcome`)·`dispatch`. 상태기계·릴레이 와이어는 host-core `room`/`api` — **봇과 같은 코드**. 호스트는 `HttpTransport`(바이트 전송)·`RoomObserver`(영속·이벤트·메시지·정지) 두 trait 만 구현한다(아래 절) |
 | `tests/host_roundtrip.rs` | 봇 `tests/native_facade_link.rs` 의 두 시나리오를 FFI 객체로 반복 + 거부 시 스냅샷 롤백 검사 (host, `cargo test`) |
 | `src/lobby.rs` | **`MlsLobby` 객체**(#366 3c, 기기 수준·방 무관): 로비 key package 보충(`replenish`, iOS `LobbyKeyring` 규칙)·`welcomes`·`withdraw` · 방 목록 `rooms` · 푸시 `register_push`/`unregister_push`. 호스트는 `LobbyObserver.persist(slot)` 하나를 구현한다. `MlsRoom::adopt`(로비 시드/Welcome 으로 방 시작)·`MlsRoom::close_room` 도 3c |
-| `tests/room_host.rs` | `MlsRoom` 게이트: in-memory 릴레이(`HttpTransport`)·관찰자(`tests/support/mod.rs`) 위에서 두 기기 왕복 · 자기 commit merge → 상대 적용 · 409 cas_mismatch 재시도 · `import` 이어 받기 · 전송 실패 = transient · history gap 정지 |
+| `tests/room_host.rs` | `MlsRoom` 게이트: in-memory 릴레이(`HttpTransport`)·관찰자(`tests/support/mod.rs`) 위에서 두 기기 왕복 · 자기 commit merge → 상대 적용 · 409 cas_mismatch 재시도 · `import` 이어 받기 · 전송 실패 = transient · history gap 정지 · 읽음 위치(#571 후속: `poll` 이 `read_seq` 를 실어 오고 `mark_read` 가 `POST /read` — actor 단위 공유, 옛 릴레이 404 무시) |
 | `tests/lobby_host.rs` | `MlsLobby` 게이트(3c): 보충·상한(릴레이 max·파사드 8)·게시 실패 롤백 · 로비 Welcome `adopt` → join · `import` · 회수 · `close_room` 410 · 푸시 등록 왕복 |
 | `build-xcframework.sh` | macOS: iOS 기기·시뮬레이터 staticlib → `FamilyMLS.xcframework` + Swift 바인딩 + sha256 목록 |
 | `uniffi.toml` | Swift 모듈명 `FamilyMLS` / FFI 모듈 `FamilyMLSFFI` |
@@ -55,11 +55,11 @@ CI: `.github/workflows/native-mls-ios.yml` (ubuntu host 게이트 ≤15분 · ma
 | `HttpTransport` | `send(method, url, headers, body) → HttpResponse{status, body}` | OkHttp 로 바이트만 옮긴다(TLS 는 여기). **연결 실패만** `Err`(→ transient) — HTTP 오류 상태는 보통의 응답. 경로·쿼리·JSON·오류 봉투·CF Access 헤더는 Rust |
 | `RoomObserver` | `persist(state, sync)` · `event(RoomEvent)` · `application(seq, sender, client_id, plaintext)` · `halted(reason, detail, sync)` | 원자 영속(tmp→fsync→rename, Keystore 봉인) — **돌아오기 전에는 바이트가 나가지 않는다**(review 2 B-H2) · 로그 · 메시지 저장/표시 · 정지 마커 |
 
-`MlsRoom`: `new(identity, room, base_url, transport, observer)` / `import(…, state, sync, …)` · `poll()`(봇 `poll_room` 순서: ack → GET → gap → welcome/commit/application; 끝에 dirty 면 persist) · `send(plaintext) → Sent | Queued(409 cas_mismatch, 다음 poll 뒤 재시도 ≤8) | AlreadyDelivered` · `post_commit` / `post_welcome`(초대: `dispatch("invite_with_commit")` → `post_commit` → `poll` 이 `OwnCommitMerged` → `post_welcome`) · `export_state` · `sync_state` · `dispatch`(성공 시 바로 persist) · `set_access_token`. 오류는 `RoomError{Relay{transient}, Mls, Host}` — 기존 `MlsError` 는 그대로.
+`MlsRoom`: `new(identity, room, base_url, transport, observer)` / `import(…, state, sync, …)` · `poll()`(봇 `poll_room` 순서: ack → GET → gap → welcome/commit/application; 끝에 dirty 면 persist) · `send(plaintext) → Sent | Queued(409 cas_mismatch, 다음 poll 뒤 재시도 ≤8) | AlreadyDelivered` · `post_commit` / `post_welcome`(초대: `dispatch("invite_with_commit")` → `post_commit` → `poll` 이 `OwnCommitMerged` → `post_welcome`) · `export_state` · `sync_state` · `dispatch`(성공 시 바로 persist) · `set_access_token` · `read_seq()` / `mark_read(seq)`(#571 후속: 릴레이가 아는 **같은 사람(actor)의** 읽음 위치 — `poll` 의 `GET /events` `read_seq` 와 `POST /read` 응답의 max, 영속 안 함; 옛 릴레이 404 · `no_such_room` 은 무시, 410/403/400 은 `Relay` 오류). 오류는 `RoomError{Relay{transient}, Mls, Host}` — 기존 `MlsError` 는 그대로.
 
 프레이밍은 봇과 바이트 동일(AAD client_id = 기기 identity). 릴레이 dedup client_id 는 iOS 와 같은 모양 `<identity>-<8 hex>`(카운터 영속). Kotlin 어댑터·JVM 왕복·`HOST-CONTRACT.md` 는 3b.
 
-3c(`MlsLobby` · `MlsRoom::adopt` · `MlsRoom::close_room`): 기기 수준 호출은 `../HOST-CONTRACT.md` §2b. host-core `api::Client` 에는 같은 와이어의 `post_lobby_key_packages` · `lobby_status` · `lobby_welcomes` · `delete_lobby_key_packages` · `list_rooms` · `register_push` · `unregister_push` 가 더해졌다(봇도 쓸 수 있다).
+3c(`MlsLobby` · `MlsRoom::adopt` · `MlsRoom::close_room`): 기기 수준 호출은 `../HOST-CONTRACT.md` §2b. host-core `api::Client` 에는 같은 와이어의 `post_lobby_key_packages` · `lobby_status` · `lobby_welcomes` · `delete_lobby_key_packages` · `list_rooms` · `register_push` · `unregister_push` 가 더해졌다(봇도 쓸 수 있다). #571 후속으로 `post_read(room, device, seq) → read_seq` 와 `EventsResponse.read_seq`(`#[serde(default)]` — 봇·옛 릴레이 무영향)도.
 
 ## 증명하지 않는 것
 

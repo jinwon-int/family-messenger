@@ -41,7 +41,8 @@ sealed interface Phase {
     data class Fatal(val message: String) : Phase
 }
 
-data class RoomUi(val room: String, val joined: Boolean, val halted: String?, val messages: List<MessageUi>)
+/** `unread`(#571 후속): 마지막 글이 남의 글이고 본 위치 `max(Settings.readSeq, MlsRoom.readSeq())` 보다 뒤 — `Unread.isUnread`. */
+data class RoomUi(val room: String, val joined: Boolean, val halted: String?, val messages: List<MessageUi>, val unread: Boolean)
 
 data class HubUi(
     val phase: Phase = Phase.Setup,
@@ -85,7 +86,13 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         )
         lateinit var room: MlsRoom
         init { db.upsertRoom(name) }
-        fun ui() = RoomUi(name, runCatching { room.syncState().joined }.getOrDefault(false), halted ?: store.haltReason(), db.messages(name))
+        fun ui(): RoomUi {
+            val messages = db.messages(name)
+            // 릴레이가 아는 같은 사람(actor)의 읽음 위치(#571 B) — 재시작 뒤 첫 poll 전에는 0 이므로 로컬 값과 max 로 합친다(웹 mergeRelayRead).
+            val relayRead = runCatching { room.readSeq() }.getOrDefault(0L)
+            val unread = Unread.isUnread(messages, maxOf(settings.readSeq(name), relayRead))
+            return RoomUi(name, runCatching { room.syncState().joined }.getOrDefault(false), halted ?: store.haltReason(), messages, unread)
+        }
     }
 
     /** 설정 화면이 저장한 뒤 또는 앱 시작 때. 같은 scope 에서 한 번만. */
@@ -232,6 +239,22 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             _ui.update { it.copy(rooms = rooms.values.map { r2 -> r2.ui() }) }
         } catch (e: RoomException) {
             notice(if (e is RoomException.Relay && e.transient) "연결 중입니다…" else (e.message ?: "전송 안 됨"))
+        }
+    }
+
+    /**
+     * 방을 보고 있다(열 때 · 보는 중 새 글, #571 후속 — 웹 `room.js markRead` 와 같은 시점): 마지막 seq 를 이 기기에 적고(`Settings`, 줄어들지 않음)
+     * `POST /v2/rooms/{room}/read` 로 올린다(`MlsRoom.markRead` — 릴레이가 actor 단위로 보관, 이미 아는 위치 이하면 보내지 않음).
+     * 안내 신호라 실패(옛 릴레이 404 는 코어가 무시 · 410/403/전송 실패)는 로그만 남긴다. MLS 커서·ack 와 무관.
+     */
+    fun markRead(scope: CoroutineScope, room: String) = scope.launch(Dispatchers.IO) {
+        mutex.withLock {
+            val h = rooms[room] ?: return@withLock
+            val seq = Unread.latestSeq(db.messages(room))
+            if (seq <= 0L) return@withLock
+            settings.markRead(room, seq)
+            runCatching { h.room.markRead(seq) }.onFailure { e -> Log.w(TAG, "markRead $room seq $seq: $e") }
+            _ui.update { it.copy(rooms = rooms.values.map { r -> r.ui() }) }
         }
     }
 

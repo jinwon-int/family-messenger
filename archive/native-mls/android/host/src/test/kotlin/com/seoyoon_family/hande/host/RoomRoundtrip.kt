@@ -198,6 +198,37 @@ private fun scenarioLobby(tmp: File) {
     check(slot.published.size == 8, "slot file follows the ledger (${slot.published.size})")
 }
 
+/** #571 후속 — 읽음 위치: `poll` 이 `GET /events` read_seq(actor 단위)를 실어 오고 `markRead` 가 `POST /read` 로 올린다(`ios-ffi/tests/room_host.rs` 와 같은 시나리오). */
+private fun scenarioReadSeq(tmp: File) {
+    println("⑥ read position: shared per actor via GET /events read_seq · markRead posts · old relay ignored")
+    val relay = InMemoryRelay(BASE)
+    val (owner, peer) = founded(relay, File(tmp, "s6")) // owner-phone · owner-pc = 같은 사람
+    peer.room.poll()
+    owner.room.send("one".toByteArray()) // seq 2
+    owner.room.send("two".toByteArray()) // seq 3
+    peer.room.poll()
+    check(peer.room.readSeq() == 0L, "nothing read yet")
+    relay.setRead("room-a", "owner", 2) // 같은 사람의 웹이 2 까지 읽었다
+    peer.room.poll()
+    check(peer.room.readSeq() == 2L, "GET /events read_seq merged on poll (${peer.room.readSeq()})")
+    check(peer.room.markRead(3) == 3L && relay.readSeq("room-a", "owner") == 3L, "markRead posts and the relay stores it per actor")
+    check(relay.trace.any { it == "READ owner-pc seq=3" }, "POST /read {device, seq}")
+    check(owner.room.readSeq() == 0L && owner.room.markRead(1) == 3L && owner.room.readSeq() == 3L, "a lower post learns the actor max from the answer")
+    val before = relay.trace.count { it.startsWith("READ ") }
+    check(peer.room.markRead(2) == 3L && relay.trace.count { it.startsWith("READ ") } == before, "nothing at or below the known position is posted")
+    val bad = try { peer.room.markRead(99); null } catch (e: RoomException) { e }
+    check(bad is RoomException.Relay && !bad.transient && bad.reason.contains("bad_seq"), "past last_seq → Relay(bad_seq) ($bad)")
+    check(peer.room.syncState().acked == 3L, "read position never touches the MLS cursor/ack")
+    relay.noReadRoute = true
+    owner.room.send("three".toByteArray()) // seq 4
+    peer.room.poll()
+    check(peer.room.readSeq() == 3L, "old relay page (no read_seq) keeps the known value")
+    check(peer.room.markRead(4) == 3L && relay.readSeq("room-a", "owner") == 3L, "bare 404 on /read is a no-op, not an error")
+    relay.noReadRoute = false
+    val never = MlsRoom("owner-watch", "room-z", BASE, relay, FileRoomStore(File(tmp, "s6/watch"), "room-z", onMessage = { _, _, _, _ -> }))
+    check(never.markRead(1) == 0L, "404 no_such_room (room not on the relay yet) is a no-op")
+}
+
 fun main() {
     val tmp = Files.createTempDirectory("hande-jvm-roundtrip").toFile()
     try {
@@ -206,6 +237,7 @@ fun main() {
         scenarioRestart(tmp)
         scenarioTransientAndGap(tmp)
         scenarioLobby(tmp)
+        scenarioReadSeq(tmp)
     } catch (e: Throwable) {
         failures += "exception: $e"
         e.printStackTrace()
@@ -213,7 +245,7 @@ fun main() {
         tmp.deleteRecursively()
     }
     if (failures.isEmpty()) {
-        println("ROUNDTRIP PASS (5 scenarios)")
+        println("ROUNDTRIP PASS (6 scenarios)")
     } else {
         println("ROUNDTRIP FAIL ${failures.size}: $failures")
         exitProcess(1)

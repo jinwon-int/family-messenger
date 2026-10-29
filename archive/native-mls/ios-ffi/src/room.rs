@@ -188,6 +188,9 @@ struct Inner {
     sends: u64,
     /// 409 cas_mismatch 로 밀린 평문(시도 횟수와 함께) — 다음 poll 뒤 순서대로 다시 보낸다.
     retry: VecDeque<(Vec<u8>, u32)>,
+    /// 릴레이가 아는 **같은 사람(actor)의** 읽음 위치(#571 B): `GET /events` 의 `read_seq` 와 `mark_read` 의 응답을 max 로 모은다.
+    /// 영속하지 않는다 — 다음 `poll` 이 다시 실어 온다(옛 릴레이는 0). MLS 커서·ack 와 무관한 안내 신호다.
+    read_seq: i64,
     client: Client,
     observer: Arc<dyn RoomObserver>,
 }
@@ -289,6 +292,38 @@ impl MlsRoom {
         inner.client.close_room(&inner.sync.room, &self.identity).map_err(relay_err)
     }
 
+    /// 릴레이가 아는 **같은 사람(actor)의** 읽음 위치(#571 B): 마지막 `poll` 의 `GET /events` `read_seq` 와 이 기기의 `mark_read`
+    /// 응답 중 큰 값. 영속하지 않으므로 재시작 뒤 첫 `poll` 전에는 0 — 호스트는 자기 로컬 값과 `max` 로 합쳐 쓴다(웹 `mergeRelayRead`).
+    /// 옛 릴레이(필드 없음)는 늘 0.
+    pub fn read_seq(&self) -> Result<i64, RoomError> {
+        Ok(self.lock()?.read_seq)
+    }
+
+    /// `POST /v2/rooms/{room}/read {device, seq}`(#571 B): 이 기기가 `seq` 까지 봤다고 알린다. 릴레이는 (방, actor) 당 하나를
+    /// `max` 로 보관하고 그 결과를 답하므로, 돌려주는 값은 `seq` 보다 클 수 있다(다른 기기가 더 읽었다). 이미 알고 있는 위치
+    /// (`read_seq()`) 이하면 보내지 않고 그 값을 돌려준다. 옛 릴레이(라우트 없음 — 봉투 없는 404)와 404 `no_such_room`(첫 초대가
+    /// 나가지 않은 로컬 방)은 **무시**하고 알고 있는 값을 돌려준다 — `close_room` 의 "없는 방 = 거짓" 과 같은 결. 그 밖의 봉투
+    /// (410 `room_closed` · 403 `not_a_member`/`device_not_allowed` · 400 `bad_seq`)·전송 실패는 `Relay` 오류 — 안내 신호이므로
+    /// 호스트는 로그만 남기고 넘어가도 된다. MLS 커서·ack 는 건드리지 않는다.
+    pub fn mark_read(&self, seq: i64) -> Result<i64, RoomError> {
+        if seq < 0 {
+            return Err(RoomError::Host { reason: format!("mark_read: seq {seq} must not be negative") });
+        }
+        let mut inner = self.lock()?;
+        if seq <= inner.read_seq {
+            return Ok(inner.read_seq);
+        }
+        match inner.client.post_read(&inner.sync.room, &self.identity, seq) {
+            Ok(answered) => {
+                inner.read_seq = inner.read_seq.max(answered);
+                Ok(inner.read_seq)
+            }
+            Err(RelayError::Status { status: 404 }) => Ok(inner.read_seq),
+            Err(RelayError::Api { status: 404, code }) if code == "no_such_room" => Ok(inner.read_seq),
+            Err(err) => Err(relay_err(err)),
+        }
+    }
+
     /// 동기화 한 바퀴(봇 `poll_room` 과 같은 순서). 상태가 움직였으면 끝에 영속한다.
     pub fn poll(&self) -> Result<(), RoomError> {
         let mut inner = self.lock()?;
@@ -365,7 +400,10 @@ impl MlsRoom {
         transport: Arc<dyn HttpTransport>, observer: Arc<dyn RoomObserver>,
     ) -> Arc<Self> {
         let client = Client::with_transport(&base_url, Access::None, Box::new(ForeignTransport(transport)));
-        Arc::new(Self { identity, inner: Mutex::new(Inner { device, sync, sends, retry: VecDeque::new(), client, observer }) })
+        Arc::new(Self {
+            identity,
+            inner: Mutex::new(Inner { device, sync, sends, retry: VecDeque::new(), read_seq: 0, client, observer }),
+        })
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, Inner>, RoomError> {
@@ -435,7 +473,10 @@ impl room::RoomAccess for Host<'_> {
 
 impl room::RoomHost for Host<'_> {
     fn fetch(&mut self, room: &str, after: i64, ack: Option<i64>) -> Result<api::EventsResponse, RelayError> {
-        self.inner.client.get_events(room, self.identity, after, ack)
+        let page = self.inner.client.get_events(room, self.identity, after, ack)?;
+        // #571 B: 같은 사람의 다른 기기가 읽은 위치 — 줄어들지 않는다(옛 릴레이는 0 을 실어 오므로 그대로).
+        self.inner.read_seq = self.inner.read_seq.max(page.read_seq);
+        Ok(page)
     }
 
     fn report(&mut self, event: SyncEvent<'_>) {
