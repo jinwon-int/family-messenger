@@ -258,7 +258,8 @@ private fun scenarioSelfService(tmp: File) {
     val posted = droid.postCandidate()
     check(posted is MlsCandidatePost.Posted && posted.policyRevision == 2uL && posted.expiresAt == InMemoryRelay.CANDIDATE_TTL_SECONDS && posted.fingerprint == sha256(droid.publicKey()), "candidate posted ($posted)")
     droid.postCandidate()
-    check(relay.candidates.size == 1 && relay.trace.count { it == "CANDIDATE owner-android" } == 2, "re-post refreshes the single row")
+    // trace 는 403(첫 기기 없음) 거부 전에 남으므로 위의 첫 호출까지 3건 — 행은 하나뿐이어야 한다(CI 2026-10-29 정정).
+    check(relay.candidates.size == 1 && relay.trace.count { it == "CANDIDATE owner-android" } == 3, "re-post refreshes the single row")
     val asCandidate = droid.listCandidates()
     check(asCandidate is MlsCandidateList.Refused && asCandidate.refusal.status.toInt() == 403, "a device not on the chain cannot read the mailbox ($asCandidate)")
     val listed = phone.listCandidates()
