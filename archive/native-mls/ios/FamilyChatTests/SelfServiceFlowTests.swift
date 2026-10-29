@@ -362,7 +362,9 @@ final class SelfServiceFlowTests: XCTestCase {
         XCTAssertNil(model.me)
     }
 
-    func testRetryableInviteErrors() {
+    // `async` like its siblings: on Linux the discovered-test runner calls a synchronous method of a
+    // @MainActor class from a nonisolated context and the smoke fails to compile (CI 2026-10-29).
+    func testRetryableInviteErrors() async {
         XCTAssertTrue(AppModel.isRetryableInviteError(MembershipError.noKeyPackage("x")))
         XCTAssertTrue(AppModel.isRetryableInviteError(MembershipError.ownCommitNotMerged))
         XCTAssertTrue(AppModel.isRetryableInviteError(RelayError.cas(epoch: 1, revision: 1)))
