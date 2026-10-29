@@ -78,9 +78,9 @@ func canonicalHost(h string) string {
 	return strings.ToLower(h)
 }
 
-// handeHandler routes by Host: on the hande host everything outside /v2/ is a
-// file below root; every other request (other hosts, and /v2/* on any host)
-// goes to the API mux untouched.
+// handeHandler routes by Host: on the hande host everything outside /v2/ (and
+// the server-discovery path, #584) is a file below root; every other request
+// (other hosts, and /v2/* on any host) goes to the API mux untouched.
 type handeHandler struct {
 	host string
 	root *os.Root
@@ -89,7 +89,7 @@ type handeHandler struct {
 }
 
 func (h *handeHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	if canonicalHost(req.Host) != h.host || strings.HasPrefix(req.URL.Path, "/v2/") {
+	if canonicalHost(req.Host) != h.host || strings.HasPrefix(req.URL.Path, "/v2/") || req.URL.Path == wellKnownPath {
 		h.api.ServeHTTP(w, req)
 		return
 	}

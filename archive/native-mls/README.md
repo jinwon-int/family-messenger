@@ -46,6 +46,11 @@ status-v1(#560, `STATUS-V1.md`, `server/status.go`): 에이전트의 작업 상�
 인증이 켜져 있을 때만 데이터가 아닌 보조 라우트 하나가 더 있다: `GET /v2/app-login?state=`(#271 §12-C A,
 `server/applogin.go`) — 엣지가 주입한 JWT 를 검증한 뒤 iOS 앱의 고정 스킴 `hande://auth#jwt=…&state=…` 로
 302 한다(앱 로그인 시트용, 플래그·테이블 없음).
+서버 탐색(#584, `server/wellknown.go`): `-well-known-public-url https://<relay>`를 주면 `GET /.well-known/hande`가
+`{"version":1,"relay":{"base_url","app_login"},"hande":{"web_url"},"name","min_app":{"ios","android"}}`를 무인증·5분 캐시·CORS `*`로
+답한다(API 호스트와 한데 호스트 모두, 한데 호스트에서는 정적 파일보다 먼저). 공개 클라이언트는 도메인만 입력해
+`https://<도메인>/.well-known/hande` → `https://hande.<도메인>/…` → 입력값을 릴레이 base URL로 직접 시도한다. 공개 URL은 요청
+Host로 추정하지 않고 운영자가 명시해야 켜진다(`-well-known-name`·`-well-known-min-ios/-android`는 선택).
 한데 웹(#431 1단계, `server/hande.go`·`server/me.go`): `-hande-host`·`-hande-dir`(둘 다 함께)를 주면 Host 헤더가
 그 이름(대소문자 무시, `:port` 무시)인 요청은 `/v2/*` 를 제외한 모든 경로를 `-hande-dir` 의 파일로 응답한다
 (`/` = `index.html`, 점파일·`..`·디렉터리·없는 파일 404, GET/HEAD 외 405, 기동 시 `index.html` 필수). 다른 Host 의
