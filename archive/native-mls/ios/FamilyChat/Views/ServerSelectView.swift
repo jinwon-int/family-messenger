@@ -13,6 +13,19 @@ struct ServerSelectView: View {
     var body: some View {
         NavigationStack {
             Form {
+                // #584 PR 4(가이드라인 4.2 대비): 서버 주소가 없어도 앱이 무엇인지 알 수 있는 안내 + 안내서·개인정보처리방침 링크(Safari).
+                Section {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(Strings.serverIntroTitle).font(.headline)
+                        Text(Strings.serverIntro).font(.footnote).foregroundStyle(.secondary)
+                        HStack(spacing: 16) {
+                            Link(Strings.serverHelp, destination: PolicyLinks.site)
+                            Link(Strings.privacyPolicy, destination: PolicyLinks.privacy)
+                        }
+                        .font(.footnote)
+                    }
+                    .accessibilityIdentifier("server-intro")
+                }
                 Section(footer: Text(Strings.serverHint)) {
                     TextField(Strings.serverField, text: $input)
                         .keyboardType(.URL)

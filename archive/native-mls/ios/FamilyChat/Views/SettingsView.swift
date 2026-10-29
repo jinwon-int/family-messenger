@@ -18,6 +18,8 @@ struct SettingsView: View {
                     Text(model.fingerprint).font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
                 }
                 LabeledContent(Strings.deviceIdLabel) { Text(model.deviceId).font(.footnote) }
+                // #584: 앱 버전(스토어 심사·문의 때 식별). 값은 빌드 설정 MARKETING_VERSION / CURRENT_PROJECT_VERSION(project.yml).
+                LabeledContent(Strings.versionLabel) { Text(Self.appVersionLine(Bundle.main)).font(.footnote) }
             }
             Section(footer: Text(Strings.notificationsHint)) {
                 LabeledContent(Strings.notifications) { Text(Self.describe(model.pushStatus)).font(.footnote) }
@@ -64,9 +66,18 @@ struct SettingsView: View {
                         Text(Strings.serverChangeWarning)
                     }
             }
+            // #584 PR 4: 정책 링크(App Store 5.1.1(v)·Play 정책 — 앱 안에서 열리는 개인정보처리방침·계정 삭제 안내). Link 는 Safari 로 연다.
+            // 「이 기기 지우기」(아래)가 앱 내 삭제 경로이고, 서버 쪽 기록은 「계정 및 데이터 삭제」 안내로 — docs/hande/delete-account.md 와 같은 구성.
+            Section(header: Text(Strings.policySection), footer: Text(Strings.policyHint)) {
+                Link(destination: PolicyLinks.privacy) { Label(Strings.privacyPolicy, systemImage: "hand.raised") }
+                    .accessibilityIdentifier("settings-privacy")
+                Link(destination: PolicyLinks.deleteAccount) { Label(Strings.deleteAccount, systemImage: "person.crop.circle.badge.xmark") }
+                    .accessibilityIdentifier("settings-delete-account")
+            }
             Section(footer: Text(wipeMessage ?? Strings.wipeHint)) {
                 Button(Strings.wipeTitle, role: .destructive) { confirmWipe = true }
                     .disabled(wipeBusy)
+                    .accessibilityIdentifier("settings-wipe-device")
             }
         }
         .navigationTitle(Strings.settingsTitle)
@@ -93,6 +104,12 @@ struct SettingsView: View {
         } catch {
             wipeMessage = Strings.wipeFailed("\(error)")
         }
+    }
+
+    /// `CFBundleShortVersionString (CFBundleVersion)` — 둘 다 없으면 "?"(무서명 로컬 빌드).
+    static func appVersionLine(_ bundle: Bundle) -> String {
+        Strings.appVersion(bundle.familyChatValue("CFBundleShortVersionString") ?? "?",
+                           bundle.familyChatValue("CFBundleVersion") ?? "?")
     }
 
     static func describe(_ status: PushRegistrar.Status) -> String {

@@ -3,6 +3,9 @@ name: Native MLS track — iOS TestFlight release
 # 서명(수동, 기기 등록 불필요): 팀의 Apple Distribution 인증서(.p12, environment secret) + App Store 프로비저닝 프로필(ASC API 로 실행 시 생성/조회 — scripts/asc_profiles.py).
 # 자동(클라우드) 서명은 archive 단계에 Development 프로필 → 등록 기기 1대 이상을 요구해(run 38345777567) 포기했다. 맥 불필요.
 # 비밀·환경값은 전부 GitHub environment `testflight`(required reviewer = 오너)에서 온다. 리포에는 호스트명·팀 ID·키가 없다.
+# 배포 종류(#584 PR 4, 입력 distribution): testflight-family = vars.FC_RELAY_URL 을 기본 서버로 넣는 가족 빌드(지금까지와 같음) /
+# appstore-public = FC_RELAY_URL 을 **비워** 첫 화면이 서버 선택(.well-known/hande 탐색)인 App Store 공개 빌드(ios/README.md 「온보딩」5).
+# 서명·버전 규칙·업로드는 같고 둘 다 environment `testflight`(오너 승인)를 거쳐 같은 ASC 앱 레코드로 올라간다 — 공개 빌드도 TestFlight 에서 확인한 뒤 심사 제출.
 # 예산: macOS 1 job ≤40분(결정 E 규칙 2). TestFlight 빌드는 APNs production 환경(aps-environment=production)이다 — 릴레이의 -apns-host(sandbox) 전환은 운영 쪽 별도 승인.
 # 버전 규칙(#528): TestFlight 는 버전 문자열이 큰 쪽을 「최신」으로 보여 준다. 그래서 marketing_version 을 올리면(예 0.1.0 → 1.0)
 # 그 아래 계열 빌드는 「이전 빌드」로 내려간다. 올릴 때는 옛 계열 빌드를 App Store Connect 에서 만료할지 함께 정한다(만료는 되돌릴 수 없다).
@@ -19,6 +22,11 @@ on:
         description: "App Store Connect 업로드 (false면 archive+export만, ipa 아티팩트)"
         type: boolean
         default: true
+      distribution:
+        description: "testflight-family: vars.FC_RELAY_URL 을 기본 서버로 넣는 가족 TestFlight 빌드 / appstore-public: FC_RELAY_URL 을 비워 첫 화면이 서버 선택인 App Store 공개 빌드(#584). 서명·업로드는 같다"
+        type: choice
+        options: [testflight-family, appstore-public]
+        default: testflight-family
 permissions:
   contents: read
 concurrency:
@@ -116,13 +124,22 @@ jobs:
         working-directory: archive/native-mls/ios
         env:
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
-          FC_RELAY_URL: ${{ vars.FC_RELAY_URL }}
+          # #584: 가족 빌드만 기본 서버를 넣는다. 공개 빌드는 빈 값 → Info.plist FamilyChatRelayURL="" → 앱은 기본 서버 없음(서버 선택 화면).
+          # (`cond && '' || x` 꼴은 빈 문자열이 falsy 라 x 로 떨어지므로 참 쪽에 값을 둔다.)
+          FC_RELAY_URL: ${{ inputs.distribution == 'testflight-family' && vars.FC_RELAY_URL || '' }}
+          DISTRIBUTION: ${{ inputs.distribution }}
           FC_APP_GROUP: ${{ vars.FC_APP_GROUP }}
           # 비어 있으면 project.yml 기본값(bot)을 빈 문자열로 덮어 NSE 🤖 표시가 꺼진다(10-14 파일럿 확인) — 기본값을 둔다.
           FC_AGENT_ACTORS: ${{ vars.FC_AGENT_ACTORS || 'bot' }}
           MARKETING_VERSION: ${{ inputs.marketing_version }}
         run: |
-          test -n "$APPLE_TEAM_ID" && test -n "$FC_RELAY_URL" && test -n "$FC_APP_GROUP" && test -n "$FC_PROFILE_APP" && test -n "$FC_PROFILE_NSE"
+          test -n "$APPLE_TEAM_ID" && test -n "$FC_APP_GROUP" && test -n "$FC_PROFILE_APP" && test -n "$FC_PROFILE_NSE"
+          case "$DISTRIBUTION" in
+            testflight-family) test -n "$FC_RELAY_URL" ;;   # 가족 빌드는 vars.FC_RELAY_URL 이 있어야 한다(지금까지와 같은 가드)
+            appstore-public)   test -z "$FC_RELAY_URL" ;;   # 공개 빌드는 반드시 빈 값
+            *) echo "unknown distribution: $DISTRIBUTION"; exit 1 ;;
+          esac
+          echo "distribution=$DISTRIBUTION relay_default=$([ -n "$FC_RELAY_URL" ] && echo set || echo empty)" | tee -a "$GITHUB_STEP_SUMMARY"
           start=$(date +%s)
           xcodebuild -project FamilyChat.xcodeproj -scheme FamilyChat -configuration Release \
             -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/Hande.xcarchive" \
@@ -146,6 +163,16 @@ jobs:
           test "$app_build" = "${{ github.run_number }}"
           test "$nse_build" = "$app_build"
           test "$app_short" = "${{ inputs.marketing_version }}"
+          # #584: 배포 종류와 아카이브의 기본 서버가 맞는지(앱·NSE 둘 다). 값 자체는 호스트명이라 출력하지 않는다.
+          app_relay="$(/usr/libexec/PlistBuddy -c 'Print :FamilyChatRelayURL' "$app/Info.plist")"
+          nse_relay="$(/usr/libexec/PlistBuddy -c 'Print :FamilyChatRelayURL' "$app/PlugIns/FamilyChatNSE.appex/Info.plist")"
+          case "${{ inputs.distribution }}" in
+            appstore-public)   test -z "$app_relay" && test -z "$nse_relay" ;;
+            testflight-family) test -n "$app_relay" && test "$nse_relay" = "$app_relay" ;;
+          esac
+          # Privacy manifest(#584 PR 4)가 두 번들 루트에 있어야 한다 — 없으면 ASC 가 업로드 뒤 ITMS-91053 메일로 거부 사유를 보낸다.
+          test -f "$app/PrivacyInfo.xcprivacy" && test -f "$app/PlugIns/FamilyChatNSE.appex/PrivacyInfo.xcprivacy"
+          echo "distribution=${{ inputs.distribution }} relay_default=$([ -n "$app_relay" ] && echo set || echo empty) privacy_manifest=app+nse" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Export options (manual signing)
         env:
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}

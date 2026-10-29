@@ -4,6 +4,12 @@ import Foundation
 import FamilyMLSCore
 
 extension Strings {
+    // 첫 화면 상단 안내(#584 PR 4, 가이드라인 4.2 대비): 서버 주소가 없는 사람(심사관 포함)도 이 앱이 무엇인지 알게 한다 —
+    // Element 홈서버 선택 화면과 같은 구성. 안내서 링크는 PolicyLinks.site(docs/hande 게시 주소).
+    static let serverIntroTitle = "한데는 가족 운영자의 서버에 연결하는 종단간 암호화 메신저입니다"
+    static let serverIntro = "공개 가입이 없습니다. 가족 중 한 사람(운영자)이 직접 세운 서버에 연결해 쓰고, 메시지는 기기에서만 풀리는 종단간 암호화(MLS)로 보호되어 서버 운영자도 읽을 수 없습니다. 운영자에게 서버 도메인(예: example.com)을 받아 아래에 입력하세요. 서버를 직접 운영하려면 안내서를 보세요."
+    static let serverHelp = "한데 안내서·서버 운영 방법"
+
     // 첫 화면(ServerSelectView)
     static let serverTitle = "서버 선택"
     static let serverField = "서버 주소(도메인 또는 https 주소)"
