@@ -16,6 +16,21 @@ final class RelayTypesTests: XCTestCase {
         XCTAssertEqual(page.events[0].bytes, Data([1, 2, 3]))
         XCTAssertEqual(page.members?.map(\.actor), ["owner", "bot"])
         XCTAssertNil(page.typing, "a relay from before #562 omits typing")
+        XCTAssertNil(page.readSeq, "a relay from before #571 omits read_seq")
+    }
+
+    /// #571 B(server/read.go): `GET /events` 의 `read_seq`(같은 사람의 읽음 위치, 없으면 0) · `POST /read` 바디 `{device, seq}` · 응답 `{read_seq}`.
+    func testReadWireShape() throws {
+        let page = try JSONDecoder().decode(EventsPage.self, from: Data(#"{"epoch":1,"revision":1,"events":[],"next_after":0,"typing":[],"read_seq":12}"#.utf8))
+        XCTAssertEqual(page.readSeq, 12)
+        let none = try JSONDecoder().decode(EventsPage.self, from: Data(#"{"epoch":1,"revision":1,"events":[],"next_after":0,"read_seq":0}"#.utf8))
+        XCTAssertEqual(none.readSeq, 0, "0 = nothing read yet (the key is always present on a #571 relay)")
+        let encoded = try JSONEncoder().encode(ReadPost(device: "owner-iphone-1", seq: 12))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(Set(object.keys), ["device", "seq"], "strictJSON — no other keys")
+        XCTAssertEqual(object["device"] as? String, "owner-iphone-1")
+        XCTAssertEqual(try JSONDecoder().decode(ReadPost.self, from: encoded), ReadPost(device: "owner-iphone-1", seq: 12))
+        XCTAssertEqual(try JSONDecoder().decode(ReadResponse.self, from: Data(#"{"read_seq":15}"#.utf8)), ReadResponse(readSeq: 15))
     }
 
     /// #562(server/typing.go): `GET /events` 의 `typing`(다른 기기, 정렬, 절대 null 아님) · `POST /typing` 바디 `{device, clear}`.

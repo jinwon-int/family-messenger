@@ -228,6 +228,19 @@ public final class URLSessionRelayTransport: RelayTransport {
                         body: try JSONEncoder().encode(TypingPost(device: device, clear: clear)))
     }
 
+    // MARK: - 읽음 위치 (#571 B, server/read.go)
+
+    public func postRead(room: RoomID, device: DeviceID, seq: Int64) async throws -> Int64 {
+        // read.go handlePostRead: 200 {read_seq}(요청 뒤 actor 의 값 — 올린 값보다 클 수 있다). 404 no_such_room · 410 room_closed ·
+        // 403 device_not_allowed/not_a_member · 400 bad_seq. 라우트가 없는 옛 릴레이는 404(코드 http_404) — 호출자(AppModel)가 이 세션에서는 다시 보내지 않는다.
+        try decode(ReadResponse.self, await perform(try postReadRequest(room: room, device: device, seq: seq))).readSeq
+    }
+
+    func postReadRequest(room: RoomID, device: DeviceID, seq: Int64) throws -> URLRequest {
+        try makeRequest(method: "POST", path: "/v2/rooms/\(Self.pathComponent(room))/read",
+                        body: try JSONEncoder().encode(ReadPost(device: device, seq: seq)))
+    }
+
     // MARK: - 로비 key package (#380 P5-1, server/lobby.go)
 
     public func postLobbyKeyPackages(_ post: KeyPackagePost) async throws -> KeyPackagesResponse {

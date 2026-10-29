@@ -46,6 +46,12 @@ public protocol RelayTransport: AnyObject {
     /// 다음 `GET /events` 의 `typing` 에 싣는다. 404 `no_such_room` · 410 `room_closed` · 403 `device_not_allowed`/`not_a_member` · 400.
     /// 기본 구현은 `.refused(code:"not_found", status:404)`(라우트 없는 옛 릴레이·옛 테스트 대역) — 호출자(AppModel)는 404 를 보면 그만둔다.
     func postTyping(room: RoomID, device: DeviceID, clear: Bool) async throws
+
+    /// POST /v2/rooms/{room}/read `{device, seq}` → 200 `{read_seq}`(#571 B, server/read.go). 이 기기가 이 방을 `seq` 까지 봤다 — 릴레이는
+    /// 같은 사람(actor)의 기기들에 한 값(max, 줄어들지 않음)을 두고 다음 `GET /events` 의 `read_seq` 에 싣는다. 반환 = 요청 뒤 actor 의
+    /// 읽음 위치(올린 값보다 클 수 있다). 404 `no_such_room` · 410 `room_closed` · 403 `device_not_allowed`/`not_a_member` · 400 `bad_seq`.
+    /// 기본 구현은 `.refused(code:"not_found", status:404)`(라우트 없는 옛 릴레이·옛 테스트 대역) — 호출자(AppModel)는 404 를 보면 그만둔다.
+    func postRead(room: RoomID, device: DeviceID, seq: Int64) async throws -> Int64
 }
 
 /// blob 업로드 응답(server/blobs.go `blobResponse`). `created` = 201(새로 저장), false = 200(이미 있음).
@@ -80,6 +86,9 @@ public extension RelayTransport {
         throw RelayError.refused(code: "not_found", status: 404)
     }
     func postTyping(room: RoomID, device: DeviceID, clear: Bool) async throws {
+        throw RelayError.refused(code: "not_found", status: 404)
+    }
+    func postRead(room: RoomID, device: DeviceID, seq: Int64) async throws -> Int64 {
         throw RelayError.refused(code: "not_found", status: 404)
     }
 }

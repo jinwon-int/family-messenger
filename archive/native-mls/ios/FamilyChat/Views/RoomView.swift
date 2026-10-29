@@ -358,8 +358,12 @@ struct RoomView: View {
         // 꼬리 경계: 종전 첫 꼬리 행이 아직 있으면 그 자리(새 글·과거 글이 붙어도 행이 이사하지 않는다), 없으면 끝에서 `TimelineTail.rows`.
         tailStart = TimelineTail.start(ids: messages.map(\.id), anchor: tailAnchor)
         tailAnchor = tailStart < messages.count ? messages[tailStart].id : nil
-        // #405 P3: 이 방을 보고 있다 = 마지막 글까지 읽음(이 기기에만). 보내는 글(음수 seq)은 읽음 표시에 넣지 않는다.
-        if let last = messages.last(where: { $0.outgoing == nil }) { prefs.markRead(room, seq: last.id) }
+        // #405 P3: 이 방을 보고 있다 = 마지막 글까지 읽음. 보내는 글(음수 seq)은 읽음 표시에 넣지 않는다.
+        // #571 B: 릴레이에도 알린다(`POST /read`, 같은 seq 는 한 번) — 같은 사람의 다른 기기에서 N 배지가 꺼지도록.
+        if let last = messages.last(where: { $0.outgoing == nil }) {
+            prefs.markRead(room, seq: last.id)
+            model.noteRead(room: room, seq: last.id)
+        }
         approvalStates = AgentApproval.states(messages.map(\.record), roster: model.agentRoster)
         stamps = TimelineStamps.compute(messages.map(\.record), calendar: .current)
     }

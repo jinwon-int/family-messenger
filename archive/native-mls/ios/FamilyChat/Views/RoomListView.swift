@@ -61,8 +61,10 @@ struct RoomListView: View {
             }
             ForEach(orderedRooms, id: \.room) { room in
                 let glance = glances[room.room] ?? RoomGlance.make([], roster: model.agentRoster)
+                // #571 B: 안 읽음 = 이 기기가 본 위치와 릴레이가 아는 같은 사람의 위치 중 큰 쪽 기준(웹 app.js mergeRelayRead 와 같다).
+                let readSeq = max(prefs.readSeq[room.room] ?? 0, model.relayReadSeq[room.room] ?? 0)
                 let card = CampfireCard(room: room, glance: glance,
-                                        unread: Unread.isUnread(last: glance.last, myDevice: model.deviceId, readSeq: prefs.readSeq[room.room]))
+                                        unread: Unread.isUnread(last: glance.last, myDevice: model.deviceId, readSeq: readSeq))
                 Group {
                     if orderEditing {
                         // 순서 모드: 방을 열지 않고 ▲▼(끝에서는 비활성) + 시스템 ≡ 끌기.

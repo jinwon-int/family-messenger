@@ -64,7 +64,12 @@ public struct EventsPage: Codable, Equatable {
     public var members: [MemberWire]?
     /// #562(server/typing.go): 이 방에서 지금 글을 쓰는 **다른** 기기(요청 기기 제외, 정렬, 만료 TTL 6s). 옛 릴레이는 싣지 않는다(nil).
     public var typing: [DeviceID]?
-    enum CodingKeys: String, CodingKey { case epoch, revision, events, cursor, members, typing; case nextAfter = "next_after", firstSeq = "first_seq" }
+    /// #571 B(server/read.go): 요청 기기와 **같은 사람(actor)** 의 어느 기기든 본 가장 큰 seq(`POST /read`). 없으면 0. 옛 릴레이는 싣지 않는다(nil).
+    public var readSeq: Int64?
+    enum CodingKeys: String, CodingKey {
+        case epoch, revision, events, cursor, members, typing
+        case nextAfter = "next_after", firstSeq = "first_seq", readSeq = "read_seq"
+    }
 }
 
 /// POST /v2/rooms/{room}/typing(#562, server/typing.go `typingPost`) → 204. `clear` = 입력을 멈췄다(신호 삭제).
@@ -72,6 +77,20 @@ public struct TypingPost: Codable, Equatable {
     public var device: DeviceID
     public var clear: Bool
     public init(device: DeviceID, clear: Bool) { self.device = device; self.clear = clear }
+}
+
+/// POST /v2/rooms/{room}/read(#571 B, server/read.go `readPost`) → 200 `ReadResponse`. `seq` = 이 기기가 이 방을 여기까지 봤다(0..last_seq).
+public struct ReadPost: Codable, Equatable {
+    public var device: DeviceID
+    public var seq: Int64
+    public init(device: DeviceID, seq: Int64) { self.device = device; self.seq = seq }
+}
+
+/// `POST /read` 응답 `{read_seq}` — 요청 뒤 같은 사람(actor)의 읽음 위치. 올린 값보다 클 수 있다(다른 기기가 더 멀리 봤다). 줄어들지 않는다.
+public struct ReadResponse: Codable, Equatable {
+    public var readSeq: Int64
+    enum CodingKeys: String, CodingKey { case readSeq = "read_seq" }
+    public init(readSeq: Int64) { self.readSeq = readSeq }
 }
 
 public struct KeyPackageInput: Codable, Equatable {
