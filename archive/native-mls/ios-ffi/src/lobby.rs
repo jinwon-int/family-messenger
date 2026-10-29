@@ -16,9 +16,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use family_mls_browser_experiment::Device;
 use native_mls_host::api::{self, Access, Client};
+use sha2::{Digest, Sha256};
 
 use crate::room::{mls_err, relay_err, ForeignTransport, HttpTransport, RoomError};
-use crate::{dispatch_guarded, rejected, MlsError};
+use crate::{dispatch_guarded, hex, rejected, MlsError};
 
 /// 로비 슬롯의 저장 형식(호스트가 통째로 봉인·영속; `import` 로 되돌린다).
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
@@ -55,6 +56,120 @@ pub struct MlsLobbyWelcome {
     pub seq: i64,
     pub epoch: i64,
     pub created_at: i64,
+    /// Welcome 을 올린 기기(#574) — 같은 actor 의 활성 형제 기기면 묻지 않고 받아들인다(`/v2/me` 로 판정). 옛 릴레이는 빈값.
+    pub from: String,
+    /// 이 Welcome 을 만든 로비 key package 의 ref(#380, sha256 hex). 방 패키지로 만든 것·옛 릴레이는 빈값.
+    pub key_package_ref: String,
+}
+
+// ---- #574 기기 셀프서비스(devices.go · me.go) — 와이어는 host-core `api::Client`, 서명은 파사드 `policy_wire` ----
+
+/// `/v2/me` 의 내 subject 기기 기록 하나(공개 필드만, 서명키 없음).
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct MlsMeDevice {
+    pub device_id: String,
+    pub actor: String,
+    pub fingerprint: String,
+    /// `active` | `revoked`.
+    pub status: String,
+    pub acceptance: String,
+    /// 정렬된 역할 목록 — 오늘은 `registrar` 하나.
+    pub roles: Vec<String>,
+}
+
+/// `GET /v2/me`: 검증된 JWT subject + (기기 저장소가 있는 릴레이) 정책 revision 과 내 기기 전부. 옛 릴레이는 `{subject}` 만 —
+/// 그때 `policy_revision` 은 없음, `devices` 는 빈 목록.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct MlsMe {
+    pub subject: String,
+    pub policy_revision: Option<u64>,
+    pub devices: Vec<MlsMeDevice>,
+}
+
+/// 우편함의 후보 하나(`GET /v2/devices/candidates`): 새 기기가 올린 공개 기록.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct MlsCandidate {
+    pub device_id: String,
+    pub actor: String,
+    pub subject: String,
+    /// Ed25519 공개키 lowercase hex(64자).
+    pub signing_key: String,
+    /// 릴레이가 계산한 sha256(공개키) — 승인 전에 로컬 `policy_fingerprint` 로 다시 계산해 대조한다.
+    pub fingerprint: String,
+    pub created_at: i64,
+    /// unix 초. 10분 TTL.
+    pub expires_at: i64,
+}
+
+/// 셀프서비스 라우트의 거절(값으로 — 다음 행동은 상태코드·코드로 정한다). `code`·`detail` 은 봉투가 아니면(옛 릴레이의 bare 404) 빈값,
+/// `revision` 은 409 `stale_revision` 의 현재 revision.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct MlsRefusal {
+    pub status: u16,
+    pub code: String,
+    pub detail: String,
+    pub revision: Option<i64>,
+}
+
+/// `POST /v2/devices/candidates` 의 결과: 201 = 형제 기기의 승인을 기다린다(`expires_at` 5분 전에 다시 올린다) ·
+/// 409 `device_exists` = 이 ID 는 다시 쓸 수 없다 · 403 `first_device_out_of_band`/404(옛 릴레이) = 운영자 흐름.
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
+pub enum MlsCandidatePost {
+    Posted { fingerprint: String, policy_revision: u64, expires_at: i64 },
+    Refused { refusal: MlsRefusal },
+}
+
+/// `GET /v2/devices/candidates?device=` 의 결과. `policy_revision` 이 승인 서명의 `base_revision`.
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
+pub enum MlsCandidateList {
+    Listed { policy_revision: u64, candidates: Vec<MlsCandidate> },
+    Refused { refusal: MlsRefusal },
+}
+
+/// 승인(E2)·역할(E5) commit 의 결과: 201 = 체인 revision 이 올랐다 · 409 `stale_revision`(`refusal.revision` 으로 다시 서명) ·
+/// 403 `approval_rejected`(`refusal.detail` 에 이유) · 403 `device_subject_mismatch`.
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
+pub enum MlsPolicyCommit {
+    Committed { device_id: String, approved_by: String, revision: u64, roles: Vec<String> },
+    Refused { refusal: MlsRefusal },
+}
+
+/// `dispatch` 가 로비(기기 수준) 객체에서 받는 메서드 — 파사드 `policy_wire` 의 서명·지문 셋. 그룹·key package 연산은
+/// 방(`MlsRoom::dispatch`)·보충(`replenish`)의 몫이라 여기서는 거부한다.
+pub const LOBBY_METHODS: &[&str] = &["policy_fingerprint", "sign_approval", "sign_roles"];
+
+/// 승인 서명의 고정 값(DEVICES-V4 E2): 파사드가 `approve-device` 에 허용하는 유일한 acceptance.
+pub const APPROVAL_ACCEPTANCE: &str = "trusted-device-fingerprint";
+
+fn refusal(r: api::Refusal) -> MlsRefusal {
+    MlsRefusal { status: r.status, code: r.code, detail: r.detail, revision: r.revision }
+}
+
+/// 파사드 `frame_evidence`(`u32le n ‖ canonical ‖ 64B 서명`) → 서명 lowercase hex(웹 `device.js signatureOf` 와 같은 추출).
+pub(crate) fn signature_hex(framed: &[u8]) -> Result<String, RoomError> {
+    let bad = || RoomError::Mls { reason: "evidence frame".into() };
+    if framed.len() < 4 { return Err(bad()); }
+    let n = u32::from_le_bytes(framed[0..4].try_into().map_err(|_| bad())?) as usize;
+    if framed.len() != 4 + n + 64 { return Err(bad()); }
+    Ok(framed[4 + n..].iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// JSON 문자열 리터럴(RFC 8259 §7: `"`·`\`·제어문자만 이스케이프). 식별자·hex 는 식별자 문자집합이라 그대로지만 `subject` 는 임의의
+/// 문자열(이메일·UUID)이라 안전하게 — 파사드가 어차피 `deny_unknown_fields` JSON 으로 다시 검증한다. serde_json 은 이 크레이트의
+/// dev 의존이라 손으로 쓴다.
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// 이 기기가 참여하는 방 하나(`GET /v2/rooms`): 공개 필드만.
@@ -220,8 +335,116 @@ impl MlsLobby {
         let list = inner.client.lobby_welcomes(&self.identity).map_err(relay_err)?;
         Ok(list
             .into_iter()
-            .map(|w| MlsLobbyWelcome { room: w.room, seq: w.seq, epoch: w.epoch, created_at: w.created_at })
+            .map(|w| MlsLobbyWelcome {
+                room: w.room, seq: w.seq, epoch: w.epoch, created_at: w.created_at, from: w.from, key_package_ref: w.key_package_ref,
+            })
             .collect())
+    }
+
+    // ---- #574 기기 셀프서비스 ----
+
+    /// `GET /v2/me`: 검증된 subject(등록 JSON 의 `subject`)·정책 revision·내 기기 전부. 401 → 세션 필요, 403 → (엣지) 허용되지
+    /// 않은 신원, 봉투 없는 404 → 호출자 인증이 꺼진 릴레이(셀프서비스 없음) — 모두 `Relay` 오류로 호스트가 가른다.
+    pub fn me(&self) -> Result<MlsMe, RoomError> {
+        let inner = self.lock()?;
+        let me = inner.client.get_me().map_err(relay_err)?;
+        Ok(MlsMe {
+            subject: me.subject,
+            policy_revision: me.policy_revision,
+            devices: me
+                .devices
+                .into_iter()
+                .map(|d| MlsMeDevice {
+                    device_id: d.device_id, actor: d.actor, fingerprint: d.fingerprint, status: d.status, acceptance: d.acceptance, roles: d.roles,
+                })
+                .collect(),
+        })
+    }
+
+    /// `POST /v2/devices/candidates`: 아직 체인에 없는 이 기기가 자기 공개 기록(`device_id`·actor·서명 공개키 hex·지문)을 우편함에
+    /// 올린다 — subject 는 보내지 않는다(릴레이가 JWT 에서). 같은 ID 재게시는 갱신(TTL 10분).
+    pub fn post_candidate(&self) -> Result<MlsCandidatePost, RoomError> {
+        let mut inner = self.lock()?;
+        let key = inner.device.public_key().map_err(|e| mls_err(rejected(e)))?;
+        let signing_key = hex(&key);
+        let fingerprint = hex(&Sha256::digest(&key));
+        let actor = self.identity.split('-').next().unwrap_or(&self.identity).to_owned();
+        match inner.client.post_candidate(&self.identity, &actor, &signing_key, &fingerprint).map_err(relay_err)? {
+            api::Answer::Ok(p) => Ok(MlsCandidatePost::Posted { fingerprint: p.fingerprint, policy_revision: p.policy_revision, expires_at: p.expires_at }),
+            api::Answer::Refused(r) => Ok(MlsCandidatePost::Refused { refusal: refusal(r) }),
+        }
+    }
+
+    /// `GET /v2/devices/candidates?device=<나>`: 내 subject 의 우편함(활성 기기만 볼 수 있다 — 403 은 `Refused`).
+    pub fn list_candidates(&self) -> Result<MlsCandidateList, RoomError> {
+        let inner = self.lock()?;
+        match inner.client.list_candidates(&self.identity).map_err(relay_err)? {
+            api::Answer::Ok(list) => Ok(MlsCandidateList::Listed {
+                policy_revision: list.policy_revision,
+                candidates: list
+                    .candidates
+                    .into_iter()
+                    .map(|c| MlsCandidate {
+                        device_id: c.device_id, actor: c.actor, subject: c.subject, signing_key: c.signing_key, fingerprint: c.fingerprint,
+                        created_at: c.created_at, expires_at: c.expires_at,
+                    })
+                    .collect(),
+            }),
+            api::Answer::Refused(r) => Ok(MlsCandidateList::Refused { refusal: refusal(r) }),
+        }
+    }
+
+    /// 후보 승인(E2, 웹 `app.js approveViaRelay` 와 같은 순서): ① 후보 공개키로 지문을 **로컬에서 다시 계산**(`policy_fingerprint`)해
+    /// 릴레이가 전한 지문과 다르면 `Mls` 오류로 거부 ② `sign_approval` `{action:"approve-device", …, acceptance, base_revision}`
+    /// ③ `POST /v2/devices/approvals`. 409 `stale_revision` 은 `Refused`(`refusal.revision` 으로 호스트가 한 번 다시 부른다).
+    /// 사람의 대역외 지문 비교는 이 호출 **앞** 에서 호스트 화면이 한다.
+    pub fn approve(&self, candidate: MlsCandidate, base_revision: u64) -> Result<MlsPolicyCommit, RoomError> {
+        let mut inner = self.lock()?;
+        let Inner { device, client, .. } = &mut *inner;
+        let computed = dispatch_guarded(device, &self.identity, "policy_fingerprint", candidate.signing_key.as_bytes()).map_err(mls_err)?;
+        if computed != candidate.fingerprint.as_bytes() {
+            return Err(RoomError::Mls { reason: "candidate fingerprint mismatch".into() });
+        }
+        let args = format!(
+            "{{\"action\":\"approve-device\",\"device_id\":{},\"actor\":{},\"subject\":{},\"signing_key\":{},\"acceptance\":\"{APPROVAL_ACCEPTANCE}\",\"base_revision\":{base_revision}}}",
+            json_str(&candidate.device_id), json_str(&candidate.actor), json_str(&candidate.subject), json_str(&candidate.signing_key),
+        );
+        let framed = dispatch_guarded(device, &self.identity, "sign_approval", args.as_bytes()).map_err(mls_err)?;
+        let evidence = api::ApprovalEvidence {
+            device_id: candidate.device_id, actor: candidate.actor, subject: candidate.subject, signing_key: candidate.signing_key,
+            base_revision, signature: signature_hex(&framed)?, fingerprint: candidate.fingerprint, approved_by: self.identity.clone(),
+        };
+        Self::committed(client.post_approval(&evidence).map_err(relay_err)?)
+    }
+
+    /// 역할 변경(E5): `roles` 는 대상이 최종적으로 갖는 **완전한** 목록(정렬·중복 제거는 여기서). `sign_roles` → `POST /v2/devices/roles`.
+    /// 409 `stale_revision` 은 `Refused` — 호스트가 `/v2/me` 를 다시 읽고(대상의 역할도 움직였을 수 있다) 한 번 다시 부른다.
+    pub fn set_roles(&self, device_id: String, actor: String, roles: Vec<String>, base_revision: u64) -> Result<MlsPolicyCommit, RoomError> {
+        let mut sorted = roles;
+        sorted.sort();
+        sorted.dedup();
+        let mut inner = self.lock()?;
+        let Inner { device, client, .. } = &mut *inner;
+        let roles_json: Vec<String> = sorted.iter().map(|r| json_str(r)).collect();
+        let args = format!(
+            "{{\"device_id\":{},\"actor\":{},\"roles\":[{}],\"base_revision\":{base_revision}}}",
+            json_str(&device_id), json_str(&actor), roles_json.join(","),
+        );
+        let framed = dispatch_guarded(device, &self.identity, "sign_roles", args.as_bytes()).map_err(mls_err)?;
+        let evidence = api::RolesEvidence {
+            device_id, actor, roles: sorted, base_revision, signature: signature_hex(&framed)?, approved_by: self.identity.clone(),
+        };
+        Self::committed(client.post_roles(&evidence).map_err(relay_err)?)
+    }
+
+    /// 파사드 정책 메서드(`policy_fingerprint`·`sign_approval`·`sign_roles`)를 기기 서명키로 직접 부른다 — `MlsDevice::dispatch` 와
+    /// 같은 바이트 규칙(`policy_wire`). 그 밖의 메서드는 `Invalid`(그룹·key package 연산은 방·`replenish` 의 몫).
+    pub fn dispatch(&self, method: String, input: Vec<u8>) -> Result<Vec<u8>, MlsError> {
+        if !LOBBY_METHODS.contains(&method.as_str()) {
+            return Err(MlsError::Invalid { reason: format!("not a lobby method: {method}") });
+        }
+        let mut inner = self.lock().map_err(|e| MlsError::Invalid { reason: e.to_string() })?;
+        dispatch_guarded(&mut inner.device, &self.identity, &method, &input)
     }
 
     /// `DELETE /v2/lobby/keypackages?device=`(#389, 「이 기기 지우기」 직전): 미소비 로비 키를 거두고 그 비밀도 지운다. 거둔 개수.
@@ -274,6 +497,13 @@ impl MlsLobby {
 
     fn lock(&self) -> Result<MutexGuard<'_, Inner>, RoomError> {
         self.inner.lock().map_err(|_| RoomError::Host { reason: "lobby lock poisoned".into() })
+    }
+
+    fn committed(answer: api::Answer<api::PolicyCommitted>) -> Result<MlsPolicyCommit, RoomError> {
+        Ok(match answer {
+            api::Answer::Ok(c) => MlsPolicyCommit::Committed { device_id: c.device_id, approved_by: c.approved_by, revision: c.revision, roles: c.roles },
+            api::Answer::Refused(r) => MlsPolicyCommit::Refused { refusal: refusal(r) },
+        })
     }
 
     fn snapshot(identity: &str, inner: &Inner) -> Result<MlsLobbySlot, RoomError> {

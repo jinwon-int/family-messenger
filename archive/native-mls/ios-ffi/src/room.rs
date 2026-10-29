@@ -138,6 +138,22 @@ pub struct PostedEvent {
     pub duplicate: bool,
 }
 
+/// `MlsRoom::invite` 의 결과(#574 형제 기기 초대 — 웹 `room.js invite` 와 같은 분기). 호스트는 `NoKeyPackage`·`Pending`·`Raced` 를
+/// 「다음 틱에 다시」로, 오류는 포기로 다룬다.
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
+pub enum MlsInvite {
+    /// commit 이 올라가 echo 가 merge 됐고 Welcome(`welcome_seq`)도 올렸다.
+    Invited { commit_seq: i64, welcome_seq: i64, epoch: i64 },
+    /// commit 은 올라갔지만 이 `poll` 페이지에 echo 가 없었다 — Welcome 은 echo 가 merge 된 다음 `poll` 이 올린다.
+    Posted { commit_seq: i64 },
+    /// 대상의 key package 가 방에도 로비에도 없다(새 기기는 활성이 된 뒤 첫 틱에야 로비 키를 올린다).
+    NoKeyPackage,
+    /// 이 기기의 commit 이 아직 echo 되지 않았다 — `poll` 뒤 다시.
+    Pending,
+    /// 409 cas_mismatch: 방이 먼저 바뀌었다 — 대기 commit 을 버렸다(`clear_pending`), 다음 `poll` 뒤 다시.
+    Raced,
+}
+
 /// HTTP 바이트 전송(호스트 구현). `url` = base + 경로·쿼리, `headers` 에는 CF Access 헤더가 들어 있을 수 있다.
 #[uniffi::export(foreign)]
 pub trait HttpTransport: Send + Sync {
@@ -191,6 +207,11 @@ struct Inner {
     /// 릴레이가 아는 **같은 사람(actor)의** 읽음 위치(#571 B): `GET /events` 의 `read_seq` 와 `mark_read` 의 응답을 max 로 모은다.
     /// 영속하지 않는다 — 다음 `poll` 이 다시 실어 온다(옛 릴레이는 0). MLS 커서·ack 와 무관한 안내 신호다.
     read_seq: i64,
+    /// `invite` 가 올린 commit 의 Welcome(대상과 함께) — 자기 echo 가 merge 된 뒤(`after_page`) 올린다. 영속하지 않는다(재시작 뒤
+    /// 잃으면 호스트의 초대 대기열이 다시 시도한다).
+    pending_welcome: Option<(Vec<u8>, Vec<String>)>,
+    /// 마지막으로 올린 Welcome(`invite` 가 결과에 싣는다).
+    last_welcome: Option<PostedEvent>,
     client: Client,
     observer: Arc<dyn RoomObserver>,
 }
@@ -377,6 +398,74 @@ impl MlsRoom {
         Ok(snapshot_state(&inner))
     }
 
+    /// 형제 기기 초대(#574, 봇 `invite`·웹 `room.js invite` 와 같은 순서): 대상의 key package 를 방 풀 → 로비 순으로 소비 →
+    /// `invite_with_commit` → 영속 → commit 게시 → `poll`(자기 echo 를 merge) → Welcome 게시(대상에게만). 409 cas_mismatch 면
+    /// 대기 commit 을 버리고 `Raced`; 이 페이지에 echo 가 없으면 `Posted`(Welcome 은 다음 `poll` 의 `after_page` 가 올린다).
+    /// 참여 전·정지된 방은 `Host` 오류.
+    pub fn invite(&self, target: String) -> Result<MlsInvite, RoomError> {
+        require_identifier("target", &target)?;
+        let mut inner = self.lock()?;
+        if inner.sync.halted {
+            return Err(RoomError::Host { reason: "room is halted".into() });
+        }
+        if !inner.sync.joined {
+            return Err(RoomError::Host { reason: "not a member of this room yet".into() });
+        }
+        if inner.device.has_pending() || inner.pending_welcome.is_some() {
+            return Ok(MlsInvite::Pending);
+        }
+        let room = inner.sync.room.clone();
+        let pkg = match inner.client.consume_key_package(&room, &target, &self.identity).map_err(relay_err)? {
+            Some(pkg) => pkg,
+            None => match inner.client.consume_lobby_key_package(&room, &target, &self.identity).map_err(relay_err)? {
+                Some(pkg) => pkg,
+                None => return Ok(MlsInvite::NoKeyPackage),
+            },
+        };
+        if api::ref_hex(&pkg.bytes) != pkg.key_ref {
+            return Err(RoomError::Mls { reason: "consumed key package bytes do not match its sha256 ref".into() });
+        }
+        let framed = dispatch_guarded(&mut inner.device, &self.identity, "invite_with_commit", &pkg.bytes).map_err(mls_err)?;
+        // `u32 LE commit_len ‖ commit ‖ welcome`
+        let bad = || RoomError::Mls { reason: "invite frame".into() };
+        if framed.len() < 4 { return Err(bad()); }
+        let n = u32::from_le_bytes(framed[0..4].try_into().map_err(|_| bad())?) as usize;
+        if framed.len() < 4 + n { return Err(bad()); }
+        let (commit, welcome) = (framed[4..4 + n].to_vec(), framed[4 + n..].to_vec());
+        inner.sync.dirty = true;
+        {
+            let mut host = Host { inner: &mut inner, identity: &self.identity };
+            room::SendHost::persist(&mut host).map_err(relay_err)?;
+        }
+        let posted = match Self::post_kind_in(&mut inner, &self.identity, "commit", commit, Vec::new()) {
+            Ok(posted) => posted,
+            Err(err) => {
+                // 릴레이가 받지 않은 commit 은 버린다(봇과 같음) — 그 상태도 디스크에.
+                let _ = dispatch_guarded(&mut inner.device, &self.identity, "clear_pending", &[]);
+                inner.sync.dirty = true;
+                let mut host = Host { inner: &mut inner, identity: &self.identity };
+                room::SendHost::persist(&mut host).map_err(relay_err)?;
+                return match err {
+                    RelayError::Api { status: 409, ref code } if code == "cas_mismatch" => Ok(MlsInvite::Raced),
+                    other => Err(relay_err(other)),
+                };
+            }
+        };
+        inner.pending_welcome = Some((welcome, vec![target]));
+        inner.last_welcome = None;
+        {
+            let mut host = Host { inner: &mut inner, identity: &self.identity };
+            room::poll(&mut host, &self.identity).map_err(relay_err)?;
+            if host.sync().dirty {
+                room::SendHost::persist(&mut host).map_err(relay_err)?;
+            }
+        }
+        Ok(match inner.last_welcome.take() {
+            Some(w) => MlsInvite::Invited { commit_seq: posted.seq, welcome_seq: w.seq, epoch: w.epoch },
+            None => MlsInvite::Posted { commit_seq: posted.seq },
+        })
+    }
+
     /// `MlsDevice::dispatch` 와 같은 진입점·같은 롤백(초대·key package·create 등). 성공하면 바로 영속한다 —
     /// 돌려받은 바이트(key package·commit·Welcome)가 릴레이로 나가기 전에 그 상태가 디스크에 있어야 한다.
     pub fn dispatch(&self, method: String, input: Vec<u8>) -> Result<Vec<u8>, MlsError> {
@@ -402,7 +491,9 @@ impl MlsRoom {
         let client = Client::with_transport(&base_url, Access::None, Box::new(ForeignTransport(transport)));
         Arc::new(Self {
             identity,
-            inner: Mutex::new(Inner { device, sync, sends, retry: VecDeque::new(), read_seq: 0, client, observer }),
+            inner: Mutex::new(Inner {
+                device, sync, sends, retry: VecDeque::new(), read_seq: 0, pending_welcome: None, last_welcome: None, client, observer,
+            }),
         })
     }
 
@@ -412,16 +503,21 @@ impl MlsRoom {
 
     fn post_kind(&self, kind: &str, bytes: Vec<u8>, targets: Vec<String>) -> Result<PostedEvent, RoomError> {
         let mut inner = self.lock()?;
-        let mut host = Host { inner: &mut inner, identity: &self.identity };
+        Self::post_kind_in(&mut inner, &self.identity, kind, bytes, targets).map_err(relay_err)
+    }
+
+    /// 잠금을 쥔 채로 게시(`post_kind`·`invite`·`after_page` 공용): dedup 키 예약 → 영속 → POST.
+    fn post_kind_in(inner: &mut Inner, identity: &str, kind: &str, bytes: Vec<u8>, targets: Vec<String>) -> Result<PostedEvent, RelayError> {
+        let mut host = Host { inner, identity };
         let client_id = room::SendHost::reserve_client_id(&mut host);
         host.sync().dirty = true;
-        room::SendHost::persist(&mut host).map_err(relay_err)?;
+        room::SendHost::persist(&mut host)?;
         let (room, epoch) = (host.inner.sync.room.clone(), host.inner.sync.epoch);
         let post = EventPost {
-            device: &self.identity, client_id: &client_id, kind, epoch, revision: None, group_id: &room,
+            device: identity, client_id: &client_id, kind, epoch, revision: None, group_id: &room,
             targets, members: Vec::new(), bytes,
         };
-        let resp = host.inner.client.post_event(&room, &post).map_err(relay_err)?;
+        let resp = host.inner.client.post_event(&room, &post)?;
         Ok(PostedEvent { seq: resp.seq, epoch: resp.epoch, duplicate: resp.duplicate })
     }
 }
@@ -532,7 +628,11 @@ impl room::RoomHost for Host<'_> {
                     self.inner.sync.dirty = true;
                     RoomEvent::OwnCommitMerged { seq: ev.seq, epoch: ev.epoch + 1 }
                 }
-                Err(()) => RoomEvent::OwnCommitMergeRejected { seq: ev.seq },
+                Err(()) => {
+                    // merge 가 거부된 commit 의 Welcome 은 쓸모가 없다(#574 invite) — 버린다.
+                    self.inner.pending_welcome = None;
+                    RoomEvent::OwnCommitMergeRejected { seq: ev.seq }
+                }
             };
             self.inner.observer.event(event);
         } else {
@@ -542,8 +642,20 @@ impl room::RoomHost for Host<'_> {
     }
 
     /// 이 poll 전에 밀린 것만 다시 보낸다(봇과 같은 규칙): 또 거부되면 다음 poll 로, 한도를 넘기면 버린다.
+    /// 그 전에, `invite` 의 commit echo 가 merge 됐으면(대기 commit 없음) 그 Welcome 을 대상에게 올린다(봇 `PendingCommit` 과
+    /// 같은 순서) — 실패하면 다음 poll 이 다시 시도한다.
     fn after_page(&mut self) -> Result<(), RelayError> {
         let own = self.identity;
+        if self.inner.pending_welcome.is_some() && !self.inner.device.has_pending() {
+            let (welcome, targets) = self.inner.pending_welcome.take().expect("checked above");
+            match MlsRoom::post_kind_in(self.inner, own, "welcome", welcome.clone(), targets.clone()) {
+                Ok(posted) => self.inner.last_welcome = Some(posted),
+                Err(err) => {
+                    self.inner.pending_welcome = Some((welcome, targets));
+                    return Err(err);
+                }
+            }
+        }
         let due = std::mem::take(&mut self.inner.retry);
         for (plaintext, attempts) in due {
             if attempts >= MAX_SEND_ATTEMPTS {

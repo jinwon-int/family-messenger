@@ -6,7 +6,7 @@ mod support;
 
 use std::sync::atomic::Ordering;
 
-use family_mls_ios_ffi::{MlsRoom, RoomError, RoomEvent, SendResult};
+use family_mls_ios_ffi::{MlsInvite, MlsRoom, RoomError, RoomEvent, SendResult};
 use support::{founded_pair, ok, Harness, Observer, BASE};
 
 #[test]
@@ -230,4 +230,68 @@ fn pruned_history_halts_the_room_before_anything_moves() {
     assert!(peer_obs.texts().is_empty());
     ok(peer.poll(), "halted room does nothing");
     assert_eq!(h.trace().iter().filter(|l| l.starts_with("GET owner-pc")).count(), 3, "no fetch while halted: {:?}", h.trace());
+}
+
+/// #574 형제 기기 초대: `invite(target)` 이 대상의 로비 키를 소비해 commit 을 올리고, 자기 echo 를 merge 한 뒤 Welcome 을 대상에게만
+/// 올린다(봇 `invite` 와 같은 순서). 대상은 `welcomes()`(`from` = 초대한 기기)로 발견해 `adopt` → join; 다른 멤버는 commit 을 적용한다.
+#[test]
+fn invite_consumes_the_lobby_package_and_posts_the_welcome_after_the_echo() {
+    let h = Harness::new();
+    let ((owner, owner_obs), (peer, peer_obs)) = founded_pair(&h);
+    ok(peer.poll(), "peer joins");
+    let (tablet, _) = h.lobby("owner-tablet");
+
+    // 아직 로비 키가 없다(새 기기는 활성이 된 뒤 첫 틱에야 올린다) — 다음 틱에 다시.
+    assert_eq!(ok(owner.invite("owner-tablet".into()), "invite without a key package"), MlsInvite::NoKeyPackage);
+    assert!(h.trace().iter().any(|l| l == "CONSUME room owner-tablet by owner-phone for room-a"), "room pool first: {:?}", h.trace());
+    ok(tablet.replenish(1), "tablet publishes a lobby key");
+
+    let invited = ok(owner.invite("owner-tablet".into()), "invite");
+    let MlsInvite::Invited { commit_seq, welcome_seq, epoch } = invited else { panic!("{invited:?}") };
+    assert_eq!((commit_seq, welcome_seq, epoch), (2, 3, 1));
+    assert!(h.trace().iter().any(|l| l == "CONSUME lobby owner-tablet by owner-phone for room-a"), "{:?}", h.trace());
+    assert!(owner_obs.events().iter().any(|e| matches!(e, RoomEvent::OwnCommitMerged { seq: 2, epoch: 1 })), "{:?}", owner_obs.events());
+    // persist-before-bytes-leave: the pending-commit state hit the store before the commit POST.
+    let trace = h.trace();
+    let persist = trace.iter().position(|l| l == "persist owner-phone cursor=0 sends=2").expect("persist before the commit post");
+    let post = trace.iter().position(|l| l.starts_with("POST commit owner-phone-")).expect("commit post");
+    assert!(persist < post, "{trace:?}");
+    let rows = h.relay.rows("room-a");
+    assert_eq!((rows[2].kind.as_str(), rows[2].targets.as_slice()), ("welcome", &["owner-tablet".to_string()][..]));
+
+    // 대상: welcomes 에 `from` = 초대한 기기 → adopt → join.
+    let pending = ok(tablet.welcomes(), "welcomes");
+    assert_eq!(pending.len(), 1);
+    assert_eq!((pending[0].room.as_str(), pending[0].seq, pending[0].from.as_str()), ("room-a", 3, "owner-phone"));
+    let tablet_obs = Observer::new("owner-tablet", h.trace.clone());
+    let tablet_room = ok(
+        MlsRoom::adopt("owner-tablet".into(), "room-a".into(), ok(tablet.seed_state(), "seed"), 2, BASE.into(), h.relay.clone(), tablet_obs.clone()),
+        "adopt",
+    );
+    ok(tablet_room.poll(), "tablet joins");
+    assert!(tablet_obs.events().iter().any(|e| matches!(e, RoomEvent::Joined { .. })), "{:?}", tablet_obs.events());
+    // 다른 멤버는 commit 을 적용하고, 셋이 같은 방에서 읽는다.
+    ok(peer.poll(), "peer applies the add");
+    assert!(peer_obs.events().iter().any(|e| matches!(e, RoomEvent::CommitApplied { adds, .. } if adds == &["owner-tablet".to_string()])), "{:?}", peer_obs.events());
+    ok(tablet_room.send(b"hi all".to_vec()), "tablet sends");
+    ok(owner.poll(), "owner reads");
+    ok(peer.poll(), "peer reads");
+    assert_eq!(owner_obs.texts().last().map(|t| t.2.as_str()), Some("hi all"));
+    assert_eq!(peer_obs.texts().last().map(|t| t.2.as_str()), Some("hi all"));
+
+    // 방이 먼저 움직였으면(409 cas_mismatch) 대기 commit 을 버리고 `Raced` — 다음 poll 뒤 다시 하면 된다.
+    let (watch, _) = h.lobby("owner-watch");
+    ok(watch.replenish(1), "watch publishes");
+    h.relay.bump_epoch("room-a");
+    assert_eq!(ok(owner.invite("owner-watch".into()), "invite into a moved room"), MlsInvite::Raced);
+    ok(owner.poll(), "catch up");
+    ok(watch.replenish(1), "watch publishes again (the raced consume used one)");
+    assert!(matches!(ok(owner.invite("owner-watch".into()), "invite again"), MlsInvite::Invited { .. }));
+
+    // 참여 전인 방에서는 초대할 수 없다.
+    let (stranger, _) = h.room_in("stranger-pc", "room-a");
+    let err = stranger.invite("owner-tablet".into()).expect_err("not joined");
+    assert!(matches!(err, RoomError::Host { .. }), "{err}");
+    let err = owner.invite("bad target".into()).expect_err("identifier rule");
+    assert!(matches!(err, RoomError::Host { .. }), "{err}");
 }

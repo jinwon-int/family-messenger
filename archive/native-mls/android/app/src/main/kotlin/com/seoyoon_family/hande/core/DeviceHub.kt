@@ -2,13 +2,23 @@
 // 호출 주기(전면 4 s poll) · 영속 어댑터(`FileLobbyStore`/`FileRoomStore` + Keystore 봉인) · 전송(`OkHttpTransport`) · 메시지 기록 · 화면 상태.
 // 신원: 로비 상태가 곧 시드 — 방은 전부 `MlsRoom.adopt(identity, room, lobby.seedState(), …)` 로 만든다(서명키 하나, §2b).
 // 참여 흐름: `replenish(8)` 로 로비 키를 올려 두면 운영자(steward 봇)가 초대 → `welcomes()` 에 방이 뜨면 `adopt(seq - 1)` → `poll` 이 join.
+// 기기 셀프서비스(#574 PR 4, 웹 `app.js` enrollTick/discoverCandidates/approveViaRelay/processSiblingInvites/setRoles 와 같은 순서):
+//   403 등록 대기 중 `POST /v2/devices/candidates` 로 후보를 올리고(「다른 기기에서 승인해 주세요」), 등록 기기는 우편함을 보고 승인하고
+//   (`MlsLobby.approve` — 지문 재계산·서명·POST), 승인한 형제 기기를 내가 있는 방마다 초대하며(`MlsRoom.invite`, 대기열 재시도),
+//   「내 기기」 에서 registrar 를 부여·해제한다(`MlsLobby.setRoles`). 판정은 `SelfService`(순수), 와이어·서명은 코어.
 package com.seoyoon_family.hande.core
 
 import android.content.Context
 import android.util.Log
 import com.seoyoon_family.hande.host.FileLobbyStore
 import com.seoyoon_family.hande.host.FileRoomStore
+import com.seoyoon_family.hande.mls.MlsCandidate
+import com.seoyoon_family.hande.mls.MlsCandidateList
+import com.seoyoon_family.hande.mls.MlsCandidatePost
+import com.seoyoon_family.hande.mls.MlsInvite
 import com.seoyoon_family.hande.mls.MlsLobby
+import com.seoyoon_family.hande.mls.MlsMe
+import com.seoyoon_family.hande.mls.MlsPolicyCommit
 import com.seoyoon_family.hande.mls.MlsRoom
 import com.seoyoon_family.hande.mls.RoomEvent
 import com.seoyoon_family.hande.mls.RoomException
@@ -33,8 +43,12 @@ sealed interface Phase {
     /** 릴레이 주소·이름이 없다. */
     data object Setup : Phase
     data object Starting : Phase
-    /** 릴레이가 403 `device_subject_mismatch` — 운영자 등록 대기. `json` 은 등록 JSON(비밀 없음). */
-    data class WaitingEnrollment(val json: String) : Phase
+    /**
+     * 릴레이가 403 `device_subject_mismatch` — 체인에 없는 기기. `json` 은 등록 JSON(비밀 없음, 운영자 흐름).
+     * `mode`(#574): SIBLING = 후보를 올렸고 같은 사람의 다른 기기가 승인한다(`expiresAt` ms 까지 유효, 그 5분 전에 다시 올린다) ·
+     * ID_TAKEN = 이 ID 는 다시 쓸 수 없다 · OPERATOR = 첫 기기이거나 셀프서비스 없는 릴레이 — 운영자 CLI.
+     */
+    data class WaitingEnrollment(val json: String, val mode: SelfService.EnrollMode = SelfService.EnrollMode.OPERATOR, val expiresAt: Long? = null) : Phase
     /** 401 — 세션 값이 없거나 만료. */
     data object NeedsLogin : Phase
     data object Ready : Phase
@@ -43,6 +57,9 @@ sealed interface Phase {
 
 /** `unread`(#571 후속): 마지막 글이 남의 글이고 본 위치 `max(Settings.readSeq, MlsRoom.readSeq())` 보다 뒤 — `Unread.isUnread`. */
 data class RoomUi(val room: String, val joined: Boolean, val halted: String?, val messages: List<MessageUi>, val unread: Boolean)
+
+/** 우편함의 새 기기 승인 요청 카드(#574). `expiresAt` ms. `message` 는 마지막 실패 사유. */
+data class CandidateUi(val deviceId: String, val actor: String, val fingerprint: String, val expiresAt: Long?, val busy: Boolean, val message: String?)
 
 data class HubUi(
     val phase: Phase = Phase.Setup,
@@ -54,6 +71,12 @@ data class HubUi(
     val lobbyMax: Int? = null,
     val connecting: Boolean = false,
     val notice: String? = null,
+    /** `/v2/me` 의 검증된 subject(#574) — 등록 JSON 의 보조 출처(정본은 세션 JWT 의 `sub`). */
+    val subject: String? = null,
+    /** 승인할 후보(등록 기기이거나 actor 에 registrar 가 없을 때만 채워진다). */
+    val candidates: List<CandidateUi> = emptyList(),
+    /** 「내 기기」(#574 E5): 체인의 내 기기 전부 + 역할 변경 가능 여부. 옛 릴레이(`/v2/me` 없음·기기 없음)는 null. */
+    val devices: SelfService.RolesView? = null,
 )
 
 class DeviceHub(context: Context, val settings: Settings, private val sealer: KeystoreSealer) {
@@ -71,6 +94,21 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     private var loop: Job? = null
     private var ticks = 0
 
+    // ---- 기기 셀프서비스 상태(#574) — 전부 메모리(대기열만 Settings) ----
+    /** 마지막 `/v2/me`. 옛 릴레이(봉투 없는 404)면 다시 묻지 않는다(`meUnsupported`). */
+    private var me: MlsMe? = null
+    private var meUnsupported = false
+    /** 셀프서비스 라우트가 없는 릴레이(봉투 없는 404) — 후보 게시·우편함을 다시 묻지 않는다. */
+    private var selfServiceUnsupported = false
+    /** 다음 후보 게시 시각(ms). 0 = 바로. `Long.MAX_VALUE` = 더는 안 올림(ID 사용 불가). */
+    private var nextPostAt = 0L
+    /** 우편함의 후보(내 actor, 모양 검사 통과)와 그 목록의 정책 revision(= 서명할 base_revision). */
+    private var candidates: List<MlsCandidate> = emptyList()
+    private var candidateRevision: ULong? = null
+    private val dismissed = HashSet<String>()
+    private val busy = HashSet<String>()
+    private val candidateMessages = HashMap<String, String>()
+
     private inner class Handle(val name: String) {
         var halted: String? = null
         val store = FileRoomStore(
@@ -86,12 +124,13 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         )
         lateinit var room: MlsRoom
         init { db.upsertRoom(name) }
+        fun joined(): Boolean = runCatching { room.syncState().joined }.getOrDefault(false)
         fun ui(): RoomUi {
             val messages = db.messages(name)
             // 릴레이가 아는 같은 사람(actor)의 읽음 위치(#571 B) — 재시작 뒤 첫 poll 전에는 0 이므로 로컬 값과 max 로 합친다(웹 mergeRelayRead).
             val relayRead = runCatching { room.readSeq() }.getOrDefault(0L)
             val unread = Unread.isUnread(messages, maxOf(settings.readSeq(name), relayRead))
-            return RoomUi(name, runCatching { room.syncState().joined }.getOrDefault(false), halted ?: store.haltReason(), messages, unread)
+            return RoomUi(name, joined(), halted ?: store.haltReason(), messages, unread)
         }
     }
 
@@ -153,7 +192,9 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         try {
             val s = l.status()
             Log.i(TAG, "probe: ok live=${s.live} max=${s.max}")
-            _ui.update { it.copy(phase = Phase.Ready, lobbyLive = s.live.toInt(), lobbyMax = s.max.toInt(), connecting = false, notice = null) }
+            val wasWaiting = _ui.value.phase is Phase.WaitingEnrollment
+            _ui.update { it.copy(phase = Phase.Ready, lobbyLive = s.live.toInt(), lobbyMax = s.max.toInt(), connecting = false, notice = if (wasWaiting) Strings.enrolledNow else null) }
+            if (wasWaiting) nextPostAt = 0L
         } catch (e: RoomException) {
             Log.w(TAG, "probe: $e")
             val transient = e is RoomException.Relay && e.transient
@@ -164,10 +205,12 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     /**
      * 릴레이 응답 → 화면 단계. 봉투(`relay error <status>: <code>`)는 코드로, 봉투 없는 상태(`relay status <n>`)는 CF Access 엣지다:
      * 302(로그인 리다이렉트)·401·403(허용되지 않은 신원) → 세션 값 입력. 403 `device_subject_mismatch` 는 릴레이 본체(등록 대기).
+     * 등록 대기 단계가 이미 셀프서비스 모드(후보 게시됨 등)면 그 모드를 지킨다 — `probe` 가 매번 운영자 화면으로 되돌리지 않게.
      */
     private fun classify(e: RoomException): Phase? = when {
         e is RoomException.Relay && e.transient -> null
-        e is RoomException.Relay && "device_subject_mismatch" in e.reason -> Phase.WaitingEnrollment(enrollmentJson())
+        e is RoomException.Relay && "device_subject_mismatch" in e.reason ->
+            (_ui.value.phase as? Phase.WaitingEnrollment)?.copy(json = enrollmentJson()) ?: Phase.WaitingEnrollment(enrollmentJson())
         e is RoomException.Relay && EDGE_AUTH.containsMatchIn(e.reason) -> Phase.NeedsLogin
         else -> null
     }
@@ -175,10 +218,14 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     private suspend fun tick() = mutex.withLock {
         val l = lobby ?: return@withLock
         ticks += 1
-        if (_ui.value.phase !is Phase.Ready) {
+        val phase = _ui.value.phase
+        if (phase !is Phase.Ready) {
             if (ticks % 3 == 0) probe()
+            // 등록 대기(#574): 아직 403 이면 `/v2/me`(subject·내 기록) 와 후보 게시.
+            if (_ui.value.phase is Phase.WaitingEnrollment) enrollTick(l)
             return@withLock
         }
+        if (me == null || ticks % ME_EVERY_TICKS == 1) refreshMe(l)
         var connecting = false
         for (h in rooms.values.toList()) {
             try {
@@ -191,21 +238,27 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
                 }
             }
         }
-        // 로비 Welcome → 모르는 방이면 로비 상태로 받아들인다(HOST-CONTRACT §2b).
+        // 로비 Welcome → 모르는 방이면 로비 상태로 받아들인다(HOST-CONTRACT §2b). 운영자(steward)의 초대도, 같은 사람의 다른 기기가
+        // 나를 방마다 초대한 것(#574 `from` = 활성 형제 기기)도 묻지 않고 받는다 — 이 앱에는 초대 카드가 없다.
         try {
             for (w in l.welcomes()) {
                 if (rooms.containsKey(w.room)) continue
+                val sibling = SelfService.isSibling(w.from, me, settings.actor, l.identity())
+                Log.i(TAG, "welcome ${w.room} seq ${w.seq} from=${w.from.ifEmpty { "?" }} sibling=$sibling → adopt")
                 val h = Handle(w.room)
                 h.room = MlsRoom.adopt(l.identity(), w.room, l.seedState(), w.seq - 1, settings.relayUrl!!, transport, h.store)
                 h.room.setAccessToken(settings.accessToken)
                 rooms[w.room] = h
                 h.room.poll()
+                if (sibling) notice(Strings.siblingWelcome(w.from, w.room))
                 replenish(l)
             }
         } catch (e: RoomException) {
             if (e is RoomException.Relay && e.transient) connecting = true else classify(e)?.let { p -> _ui.update { it.copy(phase = p) } }
         }
         if (ticks % REPLENISH_EVERY == 1) runCatching { replenish(l) }
+        discoverCandidates(l)
+        processSiblingInvites()
         _ui.update { it.copy(rooms = rooms.values.map { r -> r.ui() }, connecting = connecting) }
     }
 
@@ -213,6 +266,222 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         val r = l.replenish(LOBBY_TARGET.toUInt())
         _ui.update { it.copy(lobbyLive = r.live.toInt(), lobbyMax = r.max.toInt()) }
     }
+
+    // ---- 기기 셀프서비스(#574) ----
+
+    /** `GET /v2/me` → subject · 정책 revision · 내 기기. 옛 릴레이(봉투 없는 404)는 한 번만 묻는다. 401 등은 `classify` 로 화면 단계에. */
+    private fun refreshMe(l: MlsLobby) {
+        if (meUnsupported) return
+        try {
+            val info = l.me()
+            me = info
+            _ui.update { it.copy(subject = info.subject, devices = if (info.policyRevision == null) null else SelfService.rolesActions(info, l.identity())) }
+        } catch (e: RoomException) {
+            when {
+                e is RoomException.Relay && e.transient -> {}
+                e is RoomException.Relay && "relay status 404" in e.reason -> { meUnsupported = true; Log.i(TAG, "me: relay has no /v2/me — self-service off") }
+                else -> { Log.w(TAG, "me: $e"); classify(e)?.let { p -> _ui.update { it.copy(phase = p) } } }
+            }
+        }
+    }
+
+    /**
+     * 등록 대기 틱(웹 `enrollTick`): `probe` 가 아직 403 이면 — 3틱마다 `/v2/me`(등록 JSON 의 subject 보조 출처), 그리고 후보 게시.
+     * 첫 틱에 바로, 그 뒤 만료 5분 전에 다시(`SelfService.nextPostAt`). 404(옛 릴레이·접근 인증 꺼짐) → 운영자 흐름, 다시 묻지 않음.
+     * 409 device_exists → ID 사용 불가(더는 안 올림). 403 first_device_out_of_band → 운영자 흐름, 5분마다 다시(그새 형제 기기가 생길 수 있다).
+     * 체인에 내 기록이 활성으로 올라오면 다음 `probe`(3틱) 가 Ready 로 넘긴다.
+     */
+    private fun enrollTick(l: MlsLobby) {
+        val now = System.currentTimeMillis()
+        if (ticks % 3 == 0 || me == null) refreshMe(l)
+        val current = _ui.value.phase as? Phase.WaitingEnrollment ?: return
+        if (current.mode == SelfService.EnrollMode.ID_TAKEN || selfServiceUnsupported || now < nextPostAt) return
+        val r = try {
+            l.postCandidate()
+        } catch (e: RoomException) {
+            if (e is RoomException.Relay && e.transient) _ui.update { it.copy(connecting = true) } else { Log.w(TAG, "candidate: $e"); classify(e)?.let { p -> _ui.update { it.copy(phase = p) } } }
+            return
+        }
+        when (r) {
+            is MlsCandidatePost.Posted -> {
+                val expiresAt = r.expiresAt * 1000L
+                nextPostAt = SelfService.nextPostAt(expiresAt, now)
+                Log.i(TAG, "candidate posted: policy revision ${r.policyRevision}, expires ${r.expiresAt}")
+                _ui.update { it.copy(phase = Phase.WaitingEnrollment(enrollmentJson(), SelfService.EnrollMode.SIBLING, expiresAt), connecting = false) }
+            }
+            is MlsCandidatePost.Refused -> {
+                val f = r.refusal
+                val mode = SelfService.enrollModeFrom(f.status.toInt(), f.code)
+                Log.i(TAG, "candidate refused: ${f.status} ${f.code} ${f.detail} → $mode")
+                when {
+                    f.status.toInt() == 404 && f.code.isEmpty() -> selfServiceUnsupported = true
+                    mode == SelfService.EnrollMode.ID_TAKEN -> nextPostAt = Long.MAX_VALUE
+                    else -> nextPostAt = now + SelfService.CANDIDATE_REPOST_MARGIN_MS
+                }
+                _ui.update { it.copy(phase = Phase.WaitingEnrollment(enrollmentJson(), mode, null), connecting = false) }
+            }
+        }
+    }
+
+    /** 우편함(틱마다, 이 기기가 승인할 수 있을 때만): 내 actor 의 후보만, 이번 실행에서 무시한 것은 뺀다. */
+    private fun discoverCandidates(l: MlsLobby) {
+        val identity = l.identity()
+        if (selfServiceUnsupported || !SelfService.canApprove(me, identity)) { candidates = emptyList(); publishCandidates(); return }
+        val r = try { l.listCandidates() } catch (e: RoomException) { Log.w(TAG, "candidates: $e"); return }
+        when (r) {
+            is MlsCandidateList.Listed -> {
+                candidateRevision = r.policyRevision
+                val rows = SelfService.candidatesFor(r.candidates, settings.actor ?: "").filter { it.deviceId !in dismissed }
+                for (c in rows) if (candidates.none { it.deviceId == c.deviceId }) notice(Strings.candidateNew(c.deviceId))
+                candidates = rows
+            }
+            is MlsCandidateList.Refused -> {
+                if (r.refusal.status.toInt() == 404 && r.refusal.code.isEmpty()) selfServiceUnsupported = true
+                candidates = emptyList()
+            }
+        }
+        publishCandidates()
+    }
+
+    private fun publishCandidates() = _ui.update { ui ->
+        ui.copy(candidates = candidates.map { c ->
+            CandidateUi(c.deviceId, c.actor, c.fingerprint, c.expiresAt.takeIf { t -> t > 0L }?.let { t -> t * 1000L }, c.deviceId in busy, candidateMessages[c.deviceId])
+        })
+    }
+
+    /**
+     * 「지문 비교 후 승인」(웹 `approveViaRelay`): 사람이 새 기기 화면의 지문과 카드의 지문을 견준 뒤 누른다. 코어 `MlsLobby.approve` 가
+     * 후보 공개키로 지문을 다시 계산해 다르면 거부하고, `sign_approval` → `POST /v2/devices/approvals`. 409 stale_revision 이면 릴레이가 준
+     * revision 으로 한 번 다시 서명. 403 은 `detail` 을 카드에. 201 이면 `/v2/me` 를 새로 읽고 내가 있는 방마다 초대를 대기열에 넣는다.
+     */
+    fun approve(scope: CoroutineScope, deviceId: String) = scope.launch(Dispatchers.IO) {
+        mutex.withLock {
+            val l = lobby ?: return@withLock
+            val c = candidates.firstOrNull { it.deviceId == deviceId } ?: return@withLock
+            if (!busy.add(deviceId)) return@withLock
+            candidateMessages.remove(deviceId)
+            publishCandidates()
+            try {
+                var base: ULong? = candidateRevision ?: me?.policyRevision
+                for (attempt in 0 until 2) {
+                    if (base == null || base < 1uL) { candidateMessages[deviceId] = Strings.candidateNoRevision; return@withLock }
+                    when (val r = l.approve(c, base)) {
+                        is MlsPolicyCommit.Committed -> {
+                            Log.i(TAG, "approved $deviceId → policy revision ${r.revision} (approved_by ${r.approvedBy})")
+                            candidates = candidates.filter { it.deviceId != deviceId }
+                            notice(Strings.candidateApproved(deviceId))
+                            refreshMe(l)
+                            queueSiblingInvites(deviceId)
+                            return@withLock
+                        }
+                        is MlsPolicyCommit.Refused -> {
+                            val f = r.refusal
+                            if (f.status.toInt() == 409 && f.code == "stale_revision" && attempt == 0) {
+                                Log.i(TAG, "approve $deviceId: stale revision $base → ${f.revision}")
+                                base = f.revision?.takeIf { it > 0L }?.toULong() ?: run { refreshMe(l); me?.policyRevision }
+                                continue
+                            }
+                            candidateMessages[deviceId] = Strings.candidateRejected(f.detail.ifEmpty { "${f.status} ${f.code}" })
+                            return@withLock
+                        }
+                    }
+                }
+            } catch (e: RoomException) {
+                Log.w(TAG, "approve $deviceId: $e")
+                candidateMessages[deviceId] = if (e is RoomException.Mls && "fingerprint mismatch" in e.reason) Strings.candidateMismatch else Strings.candidateFailed(e.message ?: "?")
+            } finally {
+                busy.remove(deviceId)
+                publishCandidates()
+            }
+        }
+    }
+
+    /** 카드의 「무시」: 이번 실행 동안 보이지 않는다(우편함의 행은 10분 뒤 사라진다). */
+    fun dismissCandidate(scope: CoroutineScope, deviceId: String) = scope.launch(Dispatchers.IO) {
+        mutex.withLock { dismissed += deviceId; candidates = candidates.filter { it.deviceId != deviceId }; publishCandidates() }
+    }
+
+    /** 승인 직후: 내가 참여한(정지 아닌) 방마다 새 형제 기기를 초대하도록 대기열에 적는다 — 틱마다 `processSiblingInvites` 가 시도한다. */
+    private fun queueSiblingInvites(target: String) {
+        val list = SelfService.siblingInviteRooms(rooms.values.map { SelfService.RoomView(it.name, it.joined(), (it.halted ?: it.store.haltReason()) != null) })
+        if (list.isEmpty()) return
+        val queue = SelfService.enqueueSiblingInvites(SelfService.decodeSiblingQueue(settings.siblingQueue), target, list, System.currentTimeMillis())
+        settings.siblingQueue = SelfService.encodeSiblingQueue(queue)
+        Log.i(TAG, "sibling $target queued for ${list.joinToString(",")}")
+    }
+
+    /**
+     * 형제 기기 초대(#574, 웹 `processSiblingInvites`): 막 승인된 기기는 다음 틱에야 로비 키를 올리므로 첫 초대는 보통 `NoKeyPackage` —
+     * 방을 대기열에 두고 다음 틱에 다시. `Pending`(내 commit 대기)·`Raced`(방이 먼저 바뀜)도 다시. 그 밖의 오류는 포기하고 알린다.
+     * 30분이 지나면 포기(알림). `Invited`/`Posted` = 끝(Welcome 은 코어가 echo 뒤 올린다).
+     */
+    private fun processSiblingInvites() {
+        val queue = SelfService.decodeSiblingQueue(settings.siblingQueue)
+        if (queue.isEmpty()) return
+        val (live, expired) = SelfService.splitSiblingQueue(queue, System.currentTimeMillis())
+        for (e in expired) { Log.w(TAG, "sibling ${e.target}: gave up after 30 min (${e.rooms})"); notice(Strings.siblingGaveUp(e.target)) }
+        val next = ArrayList<SelfService.SiblingInvite>()
+        for (e in live) {
+            val remaining = ArrayList<String>()
+            for (room in e.rooms) {
+                val h = rooms[room] ?: continue
+                if ((h.halted ?: h.store.haltReason()) != null || !h.joined()) continue
+                val r = try {
+                    h.room.invite(e.target)
+                } catch (ex: RoomException) {
+                    if (ex is RoomException.Relay && ex.transient) remaining += room
+                    else { Log.w(TAG, "sibling ${e.target} in $room: $ex"); notice(Strings.siblingFailed(e.target, room, ex.message ?: "?")) }
+                    continue
+                }
+                when (r) {
+                    is MlsInvite.Invited, is MlsInvite.Posted -> { Log.i(TAG, "sibling ${e.target} invited into $room: $r"); notice(Strings.siblingInvited(e.target, room)) }
+                    is MlsInvite.NoKeyPackage, is MlsInvite.Pending, is MlsInvite.Raced -> remaining += room
+                }
+            }
+            if (remaining.isNotEmpty()) next += e.copy(rooms = remaining)
+        }
+        settings.siblingQueue = SelfService.encodeSiblingQueue(next)
+    }
+
+    /**
+     * 「내 기기」의 registrar 부여/해제(E5, 웹 `setRoles`): 대상의 완전한 역할 목록(`SelfService.nextRoles`)에 `sign_roles` →
+     * `POST /v2/devices/roles`. 409 stale_revision 이면 `/v2/me` 를 다시 읽고(대상의 역할도 움직였을 수 있다) 한 번 다시 서명.
+     * 가능 여부는 화면이 `SelfService.rolesActions` 로 미리 가린다; 서버가 거절하면(403) `detail` 을 알린다.
+     */
+    fun setRoles(scope: CoroutineScope, targetId: String, grant: Boolean) = scope.launch(Dispatchers.IO) {
+        mutex.withLock {
+            val l = lobby ?: return@withLock
+            var base: ULong? = me?.policyRevision
+            for (attempt in 0 until 2) {
+                val target = SelfService.recordOf(me, targetId) ?: run { notice(Strings.devicesUnknown(targetId)); return@withLock }
+                if (base == null || base < 1uL) { notice(Strings.candidateNoRevision); return@withLock }
+                val r = try {
+                    l.setRoles(target.deviceId, target.actor, SelfService.nextRoles(target.roles, grant), base)
+                } catch (e: RoomException) { Log.w(TAG, "roles $targetId: $e"); notice(Strings.rolesFailed(e.message ?: "?")); return@withLock }
+                when (r) {
+                    is MlsPolicyCommit.Committed -> {
+                        Log.i(TAG, "roles $targetId=${r.roles} → policy revision ${r.revision}")
+                        notice(Strings.rolesDone(targetId, grant))
+                        refreshMe(l)
+                        return@withLock
+                    }
+                    is MlsPolicyCommit.Refused -> {
+                        val f = r.refusal
+                        if (f.status.toInt() == 409 && f.code == "stale_revision" && attempt == 0) {
+                            refreshMe(l)
+                            base = f.revision?.takeIf { it > 0L }?.toULong() ?: me?.policyRevision
+                            continue
+                        }
+                        notice(Strings.rolesRejected(f.detail.ifEmpty { "${f.status} ${f.code}" }))
+                        return@withLock
+                    }
+                }
+            }
+        }
+    }
+
+    /** 「내 기기」를 열 때: `/v2/me` 를 바로 새로 읽는다(다음 4틱을 기다리지 않게). */
+    fun refreshDevices(scope: CoroutineScope) = scope.launch(Dispatchers.IO) { mutex.withLock { lobby?.let { refreshMe(it) } } }
 
     // ---- 화면이 부르는 것 ----
 
@@ -258,9 +527,9 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         }
     }
 
-    /** 설정 저장 뒤(세션 값 포함) 다시 접촉. */
+    /** 설정 저장 뒤(세션 값 포함) 다시 접촉. 새 세션이면 `/v2/me` 와 후보 게시도 처음부터. */
     fun reconfigure(scope: CoroutineScope) = scope.launch(Dispatchers.IO) {
-        mutex.withLock { applyAccessToken(); _ui.update { it.copy(phase = Phase.Starting) }; probe() }
+        mutex.withLock { applyAccessToken(); me = null; meUnsupported = false; selfServiceUnsupported = false; nextPostAt = 0L; _ui.update { it.copy(phase = Phase.Starting) }; probe() }
     }
 
     fun retryEnrollment(scope: CoroutineScope) = reconfigure(scope)
@@ -300,7 +569,11 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
 
     fun clearNotice() = _ui.update { it.copy(notice = null) }
 
-    /** 등록 JSON — 운영자 CLI(`-enroll-first`/`-add-device`) 입력과 키가 같다(iOS `EnrollmentRequest`). 비밀 없음. */
+    /**
+     * 등록 JSON — 운영자 CLI(`-enroll-first`/`-add-device`) 입력과 키가 같다(iOS `EnrollmentRequest`). 비밀 없음.
+     * `subject` = 세션 JWT 의 `sub`(`AppLogin.subjectOf`, iOS PR #347 과 같은 출처); 없으면(서비스 토큰) `/v2/me` 가 답한 subject;
+     * 그것도 없으면 빈값(운영자가 채운다). 릴레이는 subject ≠ 실제 `sub` 면 403 으로 거부하므로 여기 값이 권한을 만들지는 않는다.
+     */
     fun enrollmentJson(): String {
         val l = lobby ?: return ""
         val id = l.identity()
@@ -310,7 +583,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             .put("device_id", id)
             .put("fingerprint", sha256Hex(pub))
             .put("signing_key", pub.joinToString("") { "%02x".format(it) })
-            .put("subject", "")
+            .put("subject", AppLogin.subjectOf(settings.accessToken) ?: me?.subject ?: "")
             .toString(2)
     }
 
@@ -323,6 +596,8 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         const val POLL_MS = 4_000L
         const val LOBBY_TARGET = 8
         const val REPLENISH_EVERY = 15 // ≈ 1분
+        /** `GET /v2/me` 주기(#574, 웹 `ME_EVERY_TICKS`) — 체인이 바뀐 직후(승인·역할)에는 바로 다시 읽는다. */
+        const val ME_EVERY_TICKS = 4
         fun sha256Hex(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
     }
 }

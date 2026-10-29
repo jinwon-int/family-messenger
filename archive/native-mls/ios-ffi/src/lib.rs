@@ -191,6 +191,6 @@ pub fn methods() -> Vec<String> {
     METHODS.iter().map(|m| (*m).to_owned()).collect()
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
