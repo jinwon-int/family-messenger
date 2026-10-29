@@ -691,3 +691,21 @@ ul.files .download { flex: none; min-height: 32px; }
 /* 서비스 봇 말풍선의 허용 링크(ui.js serviceLinkNodes · service-links.js) — 글 색 그대로, 밑줄로만 구분. */
 .bubble .body a.service-link { color: inherit; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
 .bubble .body a.service-link:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; border-radius: 3px; }
+
+/* ---------- 기기 셀프서비스(#574 PR 2b): 형제 승인 대기 화면 · 새 기기 승인 카드 · 내 기기 시트 ---------- */
+/* 형제 승인 모드의 등록 화면: 지문이 주인공 — 다른 기기의 카드와 한 자리씩 비교할 수 있게 크게. */
+.enroll .fingerprint-hero { display: flex; flex-direction: column; gap: var(--space-2); }
+.enroll .fingerprint-hero .label { font-size: var(--text-s); font-weight: 600; color: var(--text-2); }
+code.fingerprint.big { font-size: var(--text-l); letter-spacing: 0.12em; line-height: 1.8; text-align: center; }
+code.fingerprint.small { font-size: var(--text-s); letter-spacing: 0.06em; line-height: 1.6; padding: var(--space-2) var(--space-3); }
+.enroll details.operator-fallback { border-top: 1px solid var(--line); padding-top: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); }
+.enroll details.operator-fallback summary { cursor: pointer; color: var(--text-2); font-size: var(--text-s); }
+/* 새 기기 승인 카드(목록 위·🔔): 초대 카드와 같은 틀, 기기 ID 는 이름 옆에 작게. */
+.candidate-item .invite-head code.meta { font-size: var(--text-xs); overflow-wrap: anywhere; }
+.note-item { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.note-item button { flex: none; }
+/* 내 기기 시트: 활성/폐기·등록 기기 배지, 지문은 한 줄 작게. */
+.pill.registrar { background: var(--brand-soft); color: var(--brand); }
+.pill.state-joined { background: var(--ok-soft); color: var(--ok); }
+.devices-list .device-row.status-revoked .name { color: var(--text-2); }
+.devices-list code.fingerprint-inline { font-size: var(--text-xs); letter-spacing: 0.04em; overflow-wrap: anywhere; color: var(--text-2); }

@@ -318,6 +318,13 @@ export const strings = {
     checkNow: '지금 확인',
     openApprove: '다른 기기 승인(신뢰 기기)',
     wipe: '이 기기 지우기',
+    // 셀프서비스(#574): 이미 가진 기기가 있으면 릴레이 우편함에 올리고 그 기기의 승인을 기다린다.
+    siblingTitle: '다른 기기에서 승인해 주세요',
+    siblingBody: '이미 쓰고 있는 한데 기기(폰·PC)를 열면 「새 기기 승인」 카드가 뜹니다. 그 화면의 지문이 아래와 같은지 한 자리씩 비교한 뒤 승인하세요. 승인되면 이 화면이 저절로 넘어갑니다.',
+    waitingSibling: '다른 기기의 승인 대기 중',
+    siblingExpires: (t) => `승인 요청 유효 ${t}까지 (만료 전에 자동 갱신)`,
+    operatorDetails: '다른 기기가 없나요? 운영자 등록 정보',
+    idTaken: '이 기기 ID 는 체인에 이미 있습니다(지문이 다름). 기기 ID 는 다시 쓰지 않으니 「이 기기 지우기」로 새 ID 로 시작하세요.',
   },
 
   // 오른쪽 보관함 pane(#544 D, 패밀리챗과 같은 탭 2개): 「첨부」(모든 방 첨부 최신순) + 파일보관함 iframe(config.json 이 있을 때만).
@@ -483,8 +490,47 @@ export const strings = {
     originLabel: '릴레이',
     copyRegistration: '등록 정보 복사',
     openApprove: '다른 기기 승인(신뢰 기기)',
+    openDevices: '내 기기',
     wipe: '이 기기 지우기',
     wipeHint: '이 기기의 암호화 상태(서명키)·대화 기록·기기 ID 를 모두 지우고 새 기기가 됩니다.',
+  },
+
+  // 「내 기기」 시트(#574 E5): 체인에 있는 내 subject 의 기기와 registrar(새 기기 승인 권한) 부여·해제.
+  devices: {
+    title: '내 기기',
+    hint: '같은 로그인(subject)으로 등록된 기기입니다. 「등록 기기」(registrar)만 새 기기를 승인할 수 있습니다 — 아직 아무 기기도 지정하지 않았으면 활성 기기 누구나 승인하고, 지정할 수도 있습니다.',
+    empty: '아직 체인에 등록된 기기가 없습니다.',
+    unsupported: '이 릴레이는 기기 목록을 주지 않습니다(옛 릴레이 또는 접근 인증 꺼짐).',
+    registrar: '등록 기기',
+    active: '활성',
+    revoked: '폐기',
+    grant: '등록 기기로 지정',
+    release: '지정 해제',
+    busy: '서명하는 중…',
+    lastRegistrar: '마지막 등록 기기는 해제할 수 없습니다 — 다른 기기를 먼저 지정하세요.',
+    cannotSign: '이 기기는 역할을 바꿀 수 없습니다(등록 기기가 아니거나 활성이 아님).',
+    done: (device, grant) => `${device} 기기를 등록 기기${grant ? '로 지정했습니다' : '에서 해제했습니다'}.`,
+    rejected: (detail) => `릴레이가 역할 변경을 거절했습니다: ${detail}`,
+  },
+
+  // 새 기기 승인 카드·흐름(#574 E2 셀프서비스): 우편함의 후보 → 지문 비교 → 서명 → 릴레이가 체인에 올린다.
+  candidates: {
+    sectionTitle: '새 기기 승인',
+    cardBody: (name) => `${name} 이름으로 새 기기가 등록을 요청했습니다. 그 기기 화면의 지문과 같을 때만 승인하세요.`,
+    fingerprintLabel: '그 기기의 지문',
+    expires: (t) => `${t} 만료`,
+    approve: '지문 비교 후 승인',
+    ignore: '무시',
+    busy: '승인하는 중…',
+    mismatch: '릴레이가 전한 지문이 서명키와 맞지 않습니다 — 승인하지 않았습니다. 그 기기에서 다시 요청하게 하세요.',
+    approved: (device) => `${device} 기기를 체인에 올렸습니다. 참여 중인 대화방에 자동으로 초대합니다.`,
+    rejected: (detail) => `릴레이가 승인을 거절했습니다: ${detail}`,
+    stale: '체인이 먼저 바뀌어 다시 서명합니다…',
+    signFailed: (detail) => `서명을 만들지 못했습니다: ${detail}`,
+    siblingInvited: (device, room) => `${device} 기기를 「${room}」 대화방에 초대했습니다.`,
+    siblingGaveUp: (device, rooms) => `${device} 기기를 ${rooms} 대화방에 초대하지 못했습니다(30분 동안 키 패키지 없음). 그 기기에서 앱을 연 뒤 「초대」로 직접 들이세요.`,
+    siblingFailed: (device, room, reason) => `${device} 기기를 「${room}」 대화방에 초대하지 못했습니다: ${reason}`,
+    noteDismiss: '확인',
   },
 
   // 로컬 전용 방 「이 기기에서 지우기」(2026-10-28 오너 요청): 릴레이에 없는 방(참여 요청만·방금 만든 방)만 — 다른 기기 무관.
@@ -520,6 +566,9 @@ export const strings = {
     evidenceTitle: '승인 증거(운영자에게 전달)',
     evidenceHint: '아래 JSON 을 운영자에게 전달하면 운영자가 체인에 올립니다. 비밀키는 들어 있지 않습니다.',
     rejected: '승인하지 않았습니다. 그 기기의 등록 정보를 다시 확인하세요.',
+    // 릴레이 모드(#574): 붙여넣기 없이 우편함 후보를 비교·서명하고 릴레이가 바로 체인에 올린다.
+    relayCompare: '새 기기 화면의 지문과 한 자리씩 비교하세요. 같을 때만 승인합니다 — 승인은 되돌릴 수 없습니다.',
+    relayDone: (device) => `${device} 기기를 승인했습니다. 그 기기 화면이 곧 대화로 넘어갑니다.`,
   },
 
   menu: {
@@ -530,6 +579,7 @@ export const strings = {
     settings: '설정',
     invite: '기기 초대 · 멤버',
     approve: '신뢰 기기 승인',
+    devices: '내 기기',
     sync: '지금 동기화',
     wipe: '이 기기 지우기',
   },
@@ -563,8 +613,10 @@ export const strings = {
   notify: {
     title: '알림',
     button: (count) => (count > 0 ? `알림 ${count}건` : '알림'),
-    empty: '새 알림이 없습니다. 받은 초대와 수락 상태가 여기 모입니다.',
+    empty: '새 알림이 없습니다. 받은 초대와 수락 상태, 새 기기 승인 요청이 여기 모입니다.',
     inviteNew: '새 대화방 초대',
+    candidateNew: '새 기기 승인 요청',
+    notes: '알림',
     inviteBusy: '수락하는 중…',
     inviteFailed: (tries, reason) => `자동 수락 실패 ${tries}회${reason ? ` — ${reason}` : ''}`,
     hint: '수락은 이 기기의 로비 키로 보낸 Welcome 을 읽어 대화방에 들어가는 일입니다. 실패해도 키는 지워지지 않으니 「다시 시도」할 수 있습니다.',

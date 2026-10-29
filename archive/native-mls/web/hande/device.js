@@ -12,7 +12,8 @@ const WORKER = 'device';
 export const LOBBY_TARGET = 8;   // facade cap on outstanding key packages (`key package limit`)
 
 export function createDevice({device, worker, relay, storage, on = {}}) {
-  const D = {started: false, fresh: false, migrated: false, publicKey: '', fingerprint: '', lobby: {live: null, max: null, unsupported: false}, enrolled: null};
+  const D = {started: false, fresh: false, migrated: false, publicKey: '', fingerprint: '', lobby: {live: null, max: null, unsupported: false}, enrolled: null,
+    selfService: {unsupported: false, posted: null}};   // #574: candidate mailbox / approvals / roles routes (404 on an old relay → never asked again)
   const log = (...parts) => on.log?.(parts.join(' '));
   const publishedKey = `hande:lobby:published:${device}`;
   const readPublished = () => { try { const v = JSON.parse(storage.getItem(publishedKey) || '[]'); return Array.isArray(v) ? v.filter(x => typeof x === 'string') : []; } catch (_) { return []; } };
@@ -114,14 +115,49 @@ export function createDevice({device, worker, relay, storage, on = {}}) {
   async function policyFingerprint(signingKeyHex) {
     return decoder.decode(new Uint8Array((await op(worker, IDENTITY_ROOM, 'policy_fingerprint', utf8.encode(signingKeyHex))).output));
   }
-  async function signApproval(argsJson) {
-    const framed = new Uint8Array((await op(worker, IDENTITY_ROOM, 'sign_approval', utf8.encode(argsJson))).output);
+  /** Framed facade output = u32le(n) ‖ canonical payload(n bytes) ‖ Ed25519 signature(64) → signature hex. */
+  const signatureOf = framed => {
     const n = new DataView(framed.buffer, framed.byteOffset, framed.byteLength).getUint32(0, true);
     return hex(framed.subarray(4 + n));
+  };
+  async function signApproval(argsJson) {
+    return signatureOf(new Uint8Array((await op(worker, IDENTITY_ROOM, 'sign_approval', utf8.encode(argsJson))).output));
   }
+  /** E5 (#574): `sign_roles` with `{device_id, actor, roles, base_revision}` — same frame as sign_approval. */
+  async function signRoles(argsJson) {
+    return signatureOf(new Uint8Array((await op(worker, IDENTITY_ROOM, 'sign_roles', utf8.encode(argsJson))).output));
+  }
+  const actor = () => device.split('-')[0];
   function registration(subject) {
-    return {device_id: device, actor: device.split('-')[0], subject: subject || strings.app.subjectUnknown, signing_key: D.publicKey, fingerprint: D.fingerprint};
+    return {device_id: device, actor: actor(), subject: subject || strings.app.subjectUnknown, signing_key: D.publicKey, fingerprint: D.fingerprint};
   }
+  // ---- device self-service (#574 PR 2b, server/devices.go) — every call returns {status, body}; the caller reads the code ----
+  /**
+   * `POST /v2/devices/candidates` — this (not yet enrolled) device posts its public record for a sibling to approve.
+   * Body is strict JSON without `subject` (the relay takes it from the JWT). 201 {device_id, fingerprint, policy_revision, expires_at(s)};
+   * 409 device_exists · 403 first_device_out_of_band · 404 old relay / access disabled (D.selfService.unsupported, stop asking).
+   */
+  async function postCandidate() {
+    if (D.selfService.unsupported) return {status: 404, body: null};
+    const r = await relay.api('POST', '/v2/devices/candidates', {device_id: device, actor: actor(), signing_key: D.publicKey, fingerprint: D.fingerprint});
+    if (r.status === 404) D.selfService.unsupported = true;
+    if (r.status === 201) D.selfService.posted = {expiresAt: Number(r.body?.expires_at ?? 0) * 1000, policyRevision: r.body?.policy_revision ?? null};
+    return r;
+  }
+  /** `GET /v2/devices/candidates?device=` (an active device of the same subject) → {policy_revision, candidates} · null when absent/forbidden. */
+  async function listCandidates() {
+    if (D.selfService.unsupported) return null;
+    const r = await relay.api('GET', `/v2/devices/candidates?device=${encodeURIComponent(device)}`);
+    if (r.status === 404) { D.selfService.unsupported = true; return null; }
+    if (r.status === 403) return null;
+    if (r.status !== 200 || !Array.isArray(r.body?.candidates)) throw new Error(`기기 후보 목록 ${describe(r.status, r.body)}`);
+    return r.body;
+  }
+  /** `POST /v2/devices/approvals` (E2 evidence) → 201 {device_id, approved_by, revision} · 409 stale_revision(body.revision) · 403 approval_rejected(detail). */
+  async function postApproval(evidence) { return relay.api('POST', '/v2/devices/approvals', evidence); }
+  /** `POST /v2/devices/roles` (E5 evidence) → 201 {device_id, roles, approved_by, revision} · 409 · 403 as above. */
+  async function postRoles(evidence) { return relay.api('POST', '/v2/devices/roles', evidence); }
   function stop() { worker.stop(WORKER); D.started = false; }
-  return {device, get state() { return D; }, start, openLobby, rooms, welcomes, replenish, policyFingerprint, signApproval, registration, stop};
+  return {device, get state() { return D; }, start, openLobby, rooms, welcomes, replenish, policyFingerprint, signApproval, signRoles, registration,
+    postCandidate, listCandidates, postApproval, postRoles, stop};
 }

@@ -171,6 +171,10 @@ test('strings: 모든 문구가 채워져 있고 코디네이터 키가 있다',
   assert.equal(strings.appName, '한데');
   assert.equal(strings.wordmark, 'hande');
   assert.equal(strings.room.waitingOperator, strings.enroll.waiting);
+  assert.notEqual(strings.enroll.waitingSibling, strings.enroll.waiting, '#574: 형제 승인 대기는 운영자 대기와 다른 문구');
+  for (const key of ['siblingTitle', 'siblingBody', 'idTaken']) assert.ok(strings.enroll[key].length > 0, key);
+  assert.equal(typeof strings.candidates.cardBody('x'), 'string');
+  assert.equal(typeof strings.devices.done('x', true), 'string');
   assert.equal(strings.room.notJoined, strings.chat.notJoined);
   assert.equal(typeof strings.room.haltRefused(1, 'x', 'y'), 'string');
   assert.equal(strings.app.starting, '준비 중…');

@@ -584,32 +584,8 @@ export function createRoomSession({room, device, database, worker, relay, storag
     } finally { S.transferring = false; changed(); }
   }
 
-  // ---- E2 approval (trusted-device screen) ----
-  let candidate = null;
-  async function offerCandidate(json) {
-    requireOpen();
-    const c = JSON.parse(json);
-    for (const k of ['device_id', 'actor', 'subject', 'signing_key', 'base_revision']) if (!(k in c)) throw new Error(strings.room.candidateMissing(k));
-    if (!/^[a-f0-9]{64}$/.test(c.signing_key)) throw new Error(strings.room.candidateKeyInvalid);
-    const fp = decoder.decode(new Uint8Array((await roomOp('policy_fingerprint', utf8.encode(c.signing_key))).output));
-    candidate = {...c, fingerprint: fp};
-    log(`후보 ${c.device_id} 지문 표시 — 새 기기 화면의 지문과 눈으로 비교한다`);
-    return {deviceId: c.device_id, fingerprint: fp};
-  }
-  async function approveCandidate() {
-    requireOpen();
-    if (!candidate) throw new Error('먼저 등록 JSON을 붙여 넣어 지문을 확인하세요');
-    const args = {action: 'approve-device', device_id: candidate.device_id, actor: candidate.actor, subject: candidate.subject,
-      signing_key: candidate.signing_key, acceptance: 'trusted-device-fingerprint', base_revision: Number(candidate.base_revision)};
-    const framed = new Uint8Array((await roomOp('sign_approval', utf8.encode(JSON.stringify(args)))).output);
-    const n = new DataView(framed.buffer, framed.byteOffset, framed.byteLength).getUint32(0, true);
-    const evidence = {...args, signature: hex(framed.subarray(4 + n)), fingerprint: candidate.fingerprint, approved_by: device};
-    delete evidence.action; delete evidence.acceptance;
-    candidate = null;
-    log(strings.room.approvalSigned);
-    return JSON.stringify(evidence, null, 1);
-  }
-  function denyCandidate() { candidate = null; }
+  // E2 approval lives on the identity store (device.js policyFingerprint / signApproval / signRoles, app.js openApprove) —
+  // the per-room copies that used to sit here were dead since stage 4 (#431) and were removed in #574 PR 2b.
 
   // ---- forget this room's store (⛔ 정지 해제 = 상태를 버리고 재초대를 기다림, iOS §3.5) ----
   async function wipe() {
@@ -633,6 +609,6 @@ export function createRoomSession({room, device, database, worker, relay, storag
     get attachmentPending() { return !!attachments?.pending || !!fileV2s?.pending; },
     get joined() { return S.joined; },
     open, activate, sync, create, publishKeyPackage, invite, remove, send, sendAttachment, typing, markRead,
-    offerCandidate, approveCandidate, denyCandidate, wipe, stop, registration,
+    wipe, stop, registration,
   };
 }

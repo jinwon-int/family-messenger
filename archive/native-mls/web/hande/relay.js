@@ -32,8 +32,16 @@ export function createRelay({fetch = globalThis.fetch.bind(globalThis), onOfflin
   const describe = (status, body) => `${status} ${body && body.error ? body.error : ''}`.trim();
   /** Access subject of the logged-in person (GET /v2/me, #431) — null when the route is absent (access disabled). */
   async function me() {
+    const info = await meInfo();
+    return info ? info.subject : null;
+  }
+  /**
+   * GET /v2/me 본문 전체(#574): `{subject, policy_revision, devices:[{device_id, actor, fingerprint, status, acceptance, roles}]}`.
+   * 기기 스토어가 없는 옛 릴레이는 `{subject}` 만, 경로가 없으면(접근 인증 꺼짐) null.
+   */
+  async function meInfo() {
     const r = await api('GET', '/v2/me');
-    if (r.status === 200 && typeof r.body?.subject === 'string') return r.body.subject;
+    if (r.status === 200 && typeof r.body?.subject === 'string') return r.body;
     if (r.status === 404) return null;
     throw new Error(`/v2/me ${describe(r.status, r.body)}`);
   }
@@ -82,5 +90,5 @@ export function createRelay({fetch = globalThis.fetch.bind(globalThis), onOfflin
     if (response.status === 401) { const e = new Error(strings.relay.unauthorized); e.unauthorized = true; throw e; }
     return {status: response.status, body: json};
   }
-  return {api, roomPath, describe, me, blob, postBlob, get offline() { return offline; }};
+  return {api, roomPath, describe, me, meInfo, blob, postBlob, get offline() { return offline; }};
 }
