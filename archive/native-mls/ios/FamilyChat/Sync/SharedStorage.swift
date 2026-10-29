@@ -5,6 +5,7 @@
 //   - MLS 상태·messages.db  → App Group 컨테이너(LiveDependencies.storageDirectory)
 //   - 기기 ID               → App Group UserDefaults(앱 전용 standard 에 있던 값은 1회 옮긴다)
 //   - 봉인 키·릴레이 자격증명 → Keychain 접근 그룹 = App Group ID(iOS 는 App Group 을 keychain 접근 그룹으로 쓸 수 있다)
+//   - #584: 기기 ID·사용자 이름·자격증명은 **서버별 스코프**(`ServerScope` — defaults 키 접미·Keychain account). 봉인 키는 스코프 없음.
 // App Group 이 없으면(무서명 시뮬레이터·CI) 모두 앱 전용으로 폴백한다 — 이때 NSE 는 대체 알림만 보인다.
 // 비밀값(쿠키·봉인 키)은 Keychain 에만, `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`(NSE 가 잠금 화면에서 읽는다), iCloud 동기화 금지.
 import Foundation
@@ -37,14 +38,19 @@ enum SharedStorage {
         return shared
     }
 
+    /// #584: 서버 스코프가 붙은 App Group defaults(기기 ID·사용자 이름).
+    static func scopedDefaults(appGroup: String?, scope: ServerScope) -> ScopedDefaults {
+        scope.defaults(defaults(appGroup: appGroup))
+    }
+
     /// NSE 용: 기기 ID 를 읽기만 한다(없으면 nil — NSE 가 새 기기를 만들면 안 된다).
-    static func existingDeviceId(appGroup: String?) -> DeviceID? {
-        defaults(appGroup: appGroup).string(forKey: DeviceIdentity.defaultsKey)
+    static func existingDeviceId(appGroup: String?, scope: ServerScope) -> DeviceID? {
+        scopedDefaults(appGroup: appGroup, scope: scope).string(forKey: DeviceIdentity.defaultsKey)
     }
 
     /// "이 기기 지우기": 기기 ID 를 suite·standard 양쪽에서 지운다. actor 는 지우지 않는다(같은 사용자의 새 기기).
-    static func wipeIdentity(appGroup: String?) {
-        DeviceIdentity.reset(defaults: defaults(appGroup: appGroup))
+    static func wipeIdentity(appGroup: String?, scope: ServerScope) {
+        DeviceIdentity.reset(defaults: scopedDefaults(appGroup: appGroup, scope: scope))
     }
 }
 
@@ -136,12 +142,21 @@ final class KeychainCredentialStore: CredentialStoring {
 #endif
 
 extension SharedStorage {
-    /// 운영 자격증명 저장소: Keychain(공유 그룹), Keychain 이 없는 플랫폼은 메모리.
-    static func credentialStore(appGroup: String?) -> CredentialStoring {
+    /// 운영 자격증명 저장소: Keychain(공유 그룹, account = 서버 스코프 `v1.<id>`), Keychain 이 없는 플랫폼은 메모리.
+    static func credentialStore(appGroup: String?, scope: ServerScope) -> CredentialStoring {
         #if canImport(Security)
-        return KeychainCredentialStore(accessGroup: keychainGroup(appGroup))
+        return KeychainCredentialStore(account: scope.keychainAccount, accessGroup: keychainGroup(appGroup))
         #else
         return InMemoryCredentialStore()
+        #endif
+    }
+
+    /// 옛 설치의 스코프 없는 자격증명(account `v1`) — 이관(`LegacyScopeMigration`)이 읽고 지운다. Keychain 이 없으면 nil.
+    static func legacyCredentialStore(appGroup: String?) -> CredentialStoring? {
+        #if canImport(Security)
+        return KeychainCredentialStore(account: ServerScope.legacyKeychainAccount, accessGroup: keychainGroup(appGroup))
+        #else
+        return nil
         #endif
     }
 

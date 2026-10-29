@@ -6,6 +6,11 @@ enum DeviceIdentity {
     static let defaultsKey = "familychat.deviceId"
 
     static func stableDeviceId(actor: String, defaults: UserDefaults = .standard) -> String {
+        stableDeviceId(actor: actor, defaults: ScopedDefaults(defaults))
+    }
+
+    /// #584: 서버별 스코프 키(`ScopedDefaults`). 스코프 없는 겉면(위)은 옛 설치·테스트와 같은 키.
+    static func stableDeviceId(actor: String, defaults: ScopedDefaults) -> String {
         if let existing = defaults.string(forKey: defaultsKey), existing.hasPrefix(actor + "-") { return existing }
         let fresh = generate(actor: actor)
         defaults.set(fresh, forKey: defaultsKey)
@@ -15,6 +20,10 @@ enum DeviceIdentity {
     /// 저장된 기기 ID 가 있으면 actor 와 무관하게 그대로(설치당 하나 — actor 를 바꾼다고 새 기기를 만들지 않는다),
     /// 없으면 `actor` 로 새로 만든다. 앱(live)은 이것을 쓴다.
     static func existingOrNew(actor: String, defaults: UserDefaults = .standard) -> String {
+        existingOrNew(actor: actor, defaults: ScopedDefaults(defaults))
+    }
+
+    static func existingOrNew(actor: String, defaults: ScopedDefaults) -> String {
         if let existing = defaults.string(forKey: defaultsKey), !existing.isEmpty { return existing }
         let fresh = generate(actor: actor)
         defaults.set(fresh, forKey: defaultsKey)
@@ -25,8 +34,14 @@ enum DeviceIdentity {
     /// (tombstone, DEVICES-V4)라 되살리면 안 되므로 App Group suite 와 **앱 전용 standard 양쪽**을 지운다(SharedStorage 가 standard 의
     /// 옛 값을 suite 로 1회 옮기는 경로가 있어, standard 를 남기면 지운 ID 가 되살아난다).
     static func reset(defaults: UserDefaults) {
+        reset(defaults: ScopedDefaults(defaults))
+    }
+
+    /// 스코프 키와 함께 옛 스코프 없는 키(suite·standard)도 지운다 — 이관 경로가 옛 값을 되살리지 못하게.
+    static func reset(defaults: ScopedDefaults) {
         defaults.removeObject(forKey: defaultsKey)
-        if defaults !== UserDefaults.standard { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+        defaults.base.removeObject(forKey: defaultsKey)
+        if defaults.base !== UserDefaults.standard { UserDefaults.standard.removeObject(forKey: defaultsKey) }
     }
 
     static func generate(actor: String) -> String {
@@ -75,9 +90,10 @@ final class InMemoryActorStore: ActorStoring {
 /// 이 PR 이전 설치(오너 `owner-iphone-…`)는 이름 선택 화면을 보지 않고 그대로 이어 간다.
 final class DefaultsActorStore: ActorStoring {
     static let key = "familychat.actor"
-    private let defaults: UserDefaults
+    private let defaults: ScopedDefaults
 
-    init(defaults: UserDefaults) { self.defaults = defaults }
+    init(defaults: ScopedDefaults) { self.defaults = defaults }
+    convenience init(defaults: UserDefaults) { self.init(defaults: ScopedDefaults(defaults)) }
 
     var actor: String? {
         if let saved = defaults.string(forKey: Self.key), ActorName.isValid(saved) { return saved }

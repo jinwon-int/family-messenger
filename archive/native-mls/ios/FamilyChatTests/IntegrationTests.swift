@@ -64,8 +64,14 @@ final class IntegrationTests: XCTestCase {
     func testLiveStorageFallsBackWithoutAppGroup() throws {
         var config = AppModel.Dependencies.LiveConfiguration()
         config.appGroup = "group.invalid.familychat.tests"
+        let root = try AppModel.Dependencies.storageRoot(config)
+        XCTAssertEqual(root.lastPathComponent, "FamilyChat")
+        XCTAssertTrue(root.path.contains("Application Support"), root.path)
+        // #584: 실제 저장소는 뿌리 아래 서버 스코프
         let directory = try AppModel.Dependencies.storageDirectory(config)
-        XCTAssertEqual(directory.lastPathComponent, "FamilyChat")
-        XCTAssertTrue(directory.path.contains("Application Support"), directory.path)
+        XCTAssertEqual(directory, ServerScope(baseURL: ServerSelection.testing.baseURL).directory(in: root))
+        XCTAssertEqual(directory.deletingLastPathComponent().lastPathComponent, "servers")
+        config.server = nil
+        XCTAssertEqual(try AppModel.Dependencies.storageDirectory(config), root, "no server → no scope (and nothing is opened)")
     }
 }

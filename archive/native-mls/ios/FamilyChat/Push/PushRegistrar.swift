@@ -35,11 +35,12 @@ final class InMemoryPushRecordStore: PushRecordStoring {
     func save(_ record: PushRegistrationRecord?) { self.record = record }
 }
 
-/// 앱 전용 UserDefaults(NSE 는 등록하지 않으므로 공유할 필요 없다).
+/// 앱 전용 UserDefaults(NSE 는 등록하지 않으므로 공유할 필요 없다). #584: 서버 스코프 키(`ScopedDefaults`).
 final class UserDefaultsPushRecordStore: PushRecordStoring {
     static let key = "familychat.push.registration.v1"
-    private let defaults: UserDefaults
-    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    private let defaults: ScopedDefaults
+    init(defaults: ScopedDefaults) { self.defaults = defaults }
+    convenience init(defaults: UserDefaults = .standard) { self.init(defaults: ScopedDefaults(defaults)) }
     func load() -> PushRegistrationRecord? {
         defaults.data(forKey: Self.key).flatMap { try? JSONDecoder().decode(PushRegistrationRecord.self, from: $0) }
     }
@@ -171,9 +172,9 @@ final class PushRegistrar {
 extension PushRegistrar.Dependencies {
     /// 운영: 알림 권한(alert·sound·badge)을 묻고 허용이면 APNs 토큰을 요청한다. 토큰은 AppDelegate 콜백으로 온다.
     /// (UIKit 이 없는 Linux 스모크에서는 요청하지 않는다 — 등록 정책 자체는 플랫폼 무관.)
-    static func live(topic: String) -> Self {
+    static func live(topic: String, records: ScopedDefaults = ScopedDefaults(.standard)) -> Self {
         var deps = Self(topic: topic)
-        deps.records = UserDefaultsPushRecordStore()
+        deps.records = UserDefaultsPushRecordStore(defaults: records)
         #if canImport(UIKit)
         deps.requestToken = { onDenied in
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in

@@ -497,4 +497,140 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.phase, .needsLogin)
         XCTAssertEqual(model.fingerprint, fp)
     }
+
+    // MARK: 서버 선택·전환 (#584 PR 2)
+
+    private static let found = ServerInfo(baseURL: URL(string: "https://relay.example.com")!, name: "집", discoveredVia: .wellKnown)
+
+    private func serverModel(server: ServerSelection?, store: InMemoryServerStore = InMemoryServerStore(), actor: String? = "owner",
+                             discover: @escaping (String) async -> Result<ServerInfo, ServerDiscoveryFailure> = { _ in .success(AppModelTests.found) })
+        -> (AppModel, InMemoryCredentialStore, InMemoryServerStore) {
+        let credentials = InMemoryCredentialStore()
+        var deps = AppModel.Dependencies(
+            engineFactory: FakeFactory(), stateStore: InMemoryStateStore(), messageStore: InMemoryMessageStore(),
+            outbox: InMemoryOutboxStore(), cursors: InMemoryCursorStore(),
+            identityProvider: { "owner-iphone-abc123" }, expectedDecryptFormat: { 2 },
+            makeTransport: { _ in InMemoryRelay() })
+        deps.credentials = credentials
+        deps.actorStore = InMemoryActorStore(actor)
+        deps.server = server
+        deps.serverStore = store
+        deps.discoverServer = discover
+        return (AppModel(dependencies: deps), credentials, store)
+    }
+
+    func testBootstrapNeedsServerWhenNothingIsSelectedAndNoDefault() async {
+        let (model, _, _) = serverModel(server: nil, actor: nil)
+        await model.bootstrap()
+        XCTAssertEqual(model.phase, .needsServer, "App Store build, first run: pick a server before anything else")
+        XCTAssertEqual(model.deviceId, "", "no identity is created without a server scope")
+        XCTAssertNil(model.server)
+        // 서버 전에는 이름도 로그인도 받지 않는다
+        let chosen = await model.chooseActor("mom")
+        XCTAssertFalse(chosen)
+        XCTAssertEqual(model.phase, .needsServer)
+    }
+
+    func testBuildDefaultOrSavedSelectionSkipsTheServerScreen() async {
+        let (fromDefault, _, _) = serverModel(server: ServerSelection(defaultURL: URL(string: "https://family.example.com")!))
+        await fromDefault.bootstrap()
+        XCTAssertEqual(fromDefault.phase, .needsLogin, "family TestFlight: FC_RELAY_URL default is adopted silently")
+        XCTAssertEqual(fromDefault.server?.discoveredVia, .buildDefault)
+
+        let saved = ServerSelection(info: Self.found, at: Date(timeIntervalSince1970: 5))
+        let (fromStore, _, _) = serverModel(server: saved, store: InMemoryServerStore(.selected(saved)), actor: nil)
+        await fromStore.bootstrap()
+        XCTAssertEqual(fromStore.phase, .needsActor, "selected server, fresh scope → actor name next")
+    }
+
+    private final class Calls { var raw: [String] = [] }
+
+    func testDiscoverThenSelectServerContinuesTheExistingFlow() async {
+        let asked = Calls()
+        let (model, _, store) = serverModel(server: nil, actor: nil, discover: { raw in asked.raw.append(raw); return .success(AppModelTests.found) })
+        await model.bootstrap()
+        await model.discoverServer("hande://server?url=example.com")
+        XCTAssertEqual(asked.raw, ["example.com"], "a pasted hande://server link is unwrapped before discovery")
+        XCTAssertEqual(model.serverCandidate, Self.found)
+        XCTAssertNil(model.lastError)
+        XCTAssertFalse(model.discovering)
+
+        await model.selectServer(Self.found)
+        XCTAssertEqual(model.phase, .needsActor, "new scope is empty → actor name → login → enrollment")
+        XCTAssertEqual(model.server?.baseURL, Self.found.baseURL)
+        XCTAssertEqual(model.server?.name, "집")
+        XCTAssertEqual(model.relayURL, Self.found.baseURL, "login sheet opens the chosen relay")
+        if case .selected(let selection) = store.load() { XCTAssertEqual(selection.baseURL, Self.found.baseURL) } else { XCTFail("selection persisted") }
+        XCTAssertNil(model.serverCandidate)
+        let chosen = await model.chooseActor("mom")
+        XCTAssertTrue(chosen)
+        XCTAssertEqual(model.phase, .needsLogin)
+    }
+
+    func testDiscoverFailureIsShownAndNothingIsSelected() async {
+        let (model, _, store) = serverModel(server: nil, actor: nil, discover: { _ in .failure(.notFound(host: "nowhere.example")) })
+        await model.bootstrap()
+        await model.discoverServer("nowhere.example")
+        XCTAssertNil(model.serverCandidate)
+        XCTAssertEqual(model.lastError, Strings.serverDiscoveryFailure(.notFound(host: "nowhere.example")))
+        XCTAssertEqual(model.phase, .needsServer)
+        XCTAssertEqual(store.load(), .unset)
+        // 선택 화면이 아니면 탐색하지 않는다
+        let (ready, _, _) = serverModel(server: .testing)
+        await ready.bootstrap()
+        await ready.discoverServer("example.com")
+        XCTAssertNil(ready.serverCandidate)
+    }
+
+    func testChangeServerLogsOutClearsTheSelectionAndStartsTheNextScopeEmpty() async {
+        let (model, credentials, store) = serverModel(server: .testing, store: InMemoryServerStore(.selected(.testing)))
+        await model.bootstrap(); model.login(.bearer("jwt")); await model.refresh()
+        XCTAssertEqual(model.phase, .ready)
+        XCTAssertNotNil(credentials.load())
+        let oldDevice = model.deviceId
+
+        await model.changeServer()
+        XCTAssertEqual(model.phase, .needsServer)
+        XCTAssertNil(credentials.load(), "logged out: this scope's credential is deleted")
+        XCTAssertEqual(store.load(), .cleared, "next launch must not fall back to the build default")
+        XCTAssertNil(model.server); XCTAssertNil(model.relayURL)
+        XCTAssertEqual(model.deviceId, ""); XCTAssertEqual(model.fingerprint, "")
+        XCTAssertTrue(model.rooms.isEmpty)
+        XCTAssertEqual(model.pushStatus, .off)
+        XCTAssertFalse(oldDevice.isEmpty)
+
+        // 다시 고르면 그 서버로 시작을 이어 간다(테스트 의존성은 그 자리에서 바뀐다 — live 는 reopen 으로 새 스코프 저장소를 연다)
+        await model.selectServer(Self.found)
+        XCTAssertEqual(model.phase, .needsLogin)
+        XCTAssertEqual(model.server?.baseURL, Self.found.baseURL)
+    }
+
+    func testReopenHookRebuildsDependenciesForTheNewScope() async {
+        // reopen = live() 의 자리: 새 스코프의 저장소·identity·actor 를 다시 조립한다
+        let reopened = Calls()
+        var template = AppModel.Dependencies(
+            engineFactory: FakeFactory(), stateStore: InMemoryStateStore(), messageStore: InMemoryMessageStore(),
+            outbox: InMemoryOutboxStore(), cursors: InMemoryCursorStore(),
+            identityProvider: { "mom-iphone-000001" }, expectedDecryptFormat: { 2 }, makeTransport: { _ in InMemoryRelay() })
+        template.server = nil
+        template.actorStore = InMemoryActorStore(nil)
+        let base = template
+        var deps = template
+        deps.reopen = { selection in
+            reopened.raw.append(selection?.baseURL.absoluteString ?? "nil")
+            var next = base
+            next.server = selection
+            next.actorStore = InMemoryActorStore("mom")
+            next.relayURL = selection?.baseURL
+            return next
+        }
+        let reopening = AppModel(dependencies: deps)
+        await reopening.bootstrap()
+        XCTAssertEqual(reopening.phase, .needsServer)
+        await reopening.selectServer(Self.found)
+        XCTAssertEqual(reopened.raw, [Self.found.baseURL.absoluteString])
+        XCTAssertEqual(reopening.phase, .needsLogin, "the reopened scope already has an actor")
+        XCTAssertEqual(reopening.deviceId, "mom-iphone-000001")
+        XCTAssertEqual(reopening.relayURL, Self.found.baseURL)
+    }
 }

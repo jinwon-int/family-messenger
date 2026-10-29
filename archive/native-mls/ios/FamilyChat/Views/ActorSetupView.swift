@@ -22,6 +22,8 @@ struct ActorSetupView: View {
                 }
                 Button(Strings.actorButton) { submit() }
                     .disabled(busy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                // #584: 현재 서버 + 「다른 서버 선택」
+                ServerSwitchSection()
             }
             .navigationTitle(Strings.actorTitle)
         }
