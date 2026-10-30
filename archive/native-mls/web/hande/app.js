@@ -104,7 +104,10 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     const last = R.entries.filter(e => e.kind === 'text' || e.kind === 'attachment').at(-1);
     // 미리보기: 마크다운 기호를 걷어낸 한 줄, 첨부는 [사진]/[파일](내용 판별 결과) — 패밀리챗 목록과 같은 모양(#480 A).
     const body = last ? (last.kind === 'attachment' ? (last.image ? strings.rooms.photoPreview : strings.rooms.filePreview) : last.body) : '';
-    return {roomId, name: roomLabel(roomId), emoji: halted ? '🪵' : '🔥',
+    // status-v1(#560): 에이전트가 일하는 중이면 그 최신 「⏳ Working …」 줄 — 목록에서 미리보기 자리에 보인다(오너 2026-10-30).
+    // 안 읽음·정렬·미리보기 원본(entries)은 그대로다.
+    const working = halted ? null : (visibleStatuses(R.statuses).at(-1)?.text ?? null);
+    return {roomId, name: roomLabel(roomId), emoji: halted ? '🪵' : '🔥', working,
       // 1:1 방은 상대가 한 명뿐이라 「이름: 」 접두를 빼고 내용만(2026-10-26 오너).
       preview: last ? previewLine(isOneToOne(S.roster) ? '' : last.senderName, body) : (S.joined ? strings.rooms.noMessages : strings.room.notJoined),
       time: last?.ts ? relativeTime(last.ts, Date.now()) : '', unread: isUnread(R.entries, R.readSeq) && !(app.roomOpen && app.current === roomId),
