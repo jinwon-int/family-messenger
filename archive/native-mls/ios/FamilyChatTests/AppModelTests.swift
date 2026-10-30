@@ -159,7 +159,7 @@ final class AppModelTests: XCTestCase {
     // MARK: status-v1 (#560)
 
     /// 작업 상태 임시 말풍선: 보낸이별 최신 1개, 그 보낸이의 다음 **저장된** 글(답)이 오면 사라지고, 5분 뒤 사라진다. 저장소에는 아무것도 쓰지 않는다.
-    func testAgentStatusIsTransientPerSenderAndClearedByTheReply() throws {
+    func testAgentStatusIsTransientPerSenderAndClearedByTheReply() async throws {
         let store = InMemoryMessageStore()
         let deps = AppModel.Dependencies(
             engineFactory: FakeFactory(), stateStore: InMemoryStateStore(), messageStore: store,
