@@ -91,11 +91,12 @@ struct RoomView: View {
                         // 꼬리는 lazy 가 아니다: 최근 행·「생각하는 중」·바닥 표지가 항상 실제 높이로 존재해야 `scrollTo` 와 표지 측정이 정확하다.
                         // 새 글은 늘 여기에 붙는다(경계 고정 — `TimelineTail`).
                         ForEach(messages.dropFirst(tailStart)) { item in row(item, proxy) }
-                        // #405 P1: 내 글 뒤 에이전트 답이 아직 없으면 "생각하는 중"(앱 추정, 20분 상한 — 15초마다 다시 본다).
+                        // #405 P1 · #601: 내 글 뒤 에이전트 답이 아직 없으면 "…의 답 기다리는 중"(앱 추정 — 에이전트 신호 없음,
+                        // 20분 상한 — 15초마다 다시 본다). 작업 중이라고 말하지 않는다.
                         TimelineView(.periodic(from: .now, by: 15)) { context in
                             if let agent = AgentThinking.agent(messages.map(\.record), roster: model.agentRoster,
                                                                myDevice: model.deviceId, now: context.date) {
-                                ThinkingRow(name: AgentRoster.displayName(device: agent, names: Strings.agentNames))
+                                AwaitingReplyRow(name: AgentRoster.displayName(device: agent, names: Strings.agentNames))
                                     .padding(.top, 2)
                             }
                         }

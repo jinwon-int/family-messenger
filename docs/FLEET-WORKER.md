@@ -116,7 +116,8 @@ room_remove / room_close / room_mode`) 호출마다 SDK `can_use_tool` → 이 �
   `reason=notice_not_agent_room`).
 
 저널: 게시된 두 프레임은 `agent_outbound`의 `kind`가 `interim`·`notice`로 남는다. 입력 중 표시(typing)는
-이 포트에도 릴레이 프로토콜에도 휘발성 신호가 없어 아직 다루지 않는다(iOS `AgentThinking`이 추정).
+이 포트에 없고 봇은 릴레이 typing(#562)도 보내지 않는다. iOS `AgentThinking`은 타임라인만 보고 추정하므로
+「…의 답 기다리는 중」(기다림)으로만 표시한다 — 작업 중 신호는 status-v1 이다(#560, #601).
 JSON escaping으로 출력 프레임은 입력보다 클 수 있으므로 부모는 최대 512KiB까지
 읽되 상한 초과를 오류로 처리한다. stdout에는 요청에 대한 응답/승인 인수가 포함될 수 있으므로
 일반 로그로 복사하지 않는다. 연결부는 암호화된 원래 방에 전달한다.

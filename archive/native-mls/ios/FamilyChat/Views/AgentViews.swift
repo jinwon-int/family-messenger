@@ -190,23 +190,16 @@ struct ApprovalCard: View {
     }
 }
 
-/// "공명이 생각하는 중 •••" — 불씨 세 개가 차례로 밝아진다.
-struct ThinkingRow: View {
+/// "공명의 답 기다리는 중" — 정적 표시. 앱 추정(`AgentThinking`)이라 작업 중을 연상시키는 애니메이션은 쓰지 않는다(#601).
+/// 실제 작업 신호(status-v1 `⏳` 말풍선, #560)가 생기면 그쪽이 "일하는 중"을 보여 준다.
+struct AwaitingReplyRow: View {
     let name: String
-    @State private var phase = 0
-    private let timer = Timer.publish(every: 0.45, on: .main, in: .common).autoconnect()
 
     var body: some View {
         HStack(spacing: 6) {
-            Circle().fill(AgentPalette.accent).frame(width: 8, height: 8)
-            Text(Strings.agentThinking(name)).font(.caption).foregroundStyle(.secondary)
-            HStack(spacing: 3) {
-                ForEach(0..<3) { i in
-                    Circle().fill(AgentPalette.ember).frame(width: 5, height: 5).opacity(i == phase ? 1 : 0.3)
-                }
-            }
+            Circle().fill(AgentPalette.accent.opacity(0.5)).frame(width: 8, height: 8)
+            Text(Strings.agentAwaitingReply(name)).font(.caption).foregroundStyle(.secondary)
         }
-        .onReceive(timer) { _ in phase = (phase + 1) % 3 }
         .accessibilityElement(children: .combine)
     }
 }
