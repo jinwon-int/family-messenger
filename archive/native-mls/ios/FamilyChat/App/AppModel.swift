@@ -516,6 +516,7 @@ final class AppModel: ObservableObject {
             self.deps.siblingQueue.save(SiblingInviteQueue(), device: device)
             self.discardRuntimeState()
             try self.deps.wipe.storage()
+            self.localPrefs.clearDrafts()
             self.deps.wipe.identity()
             self.deviceId = ""; self.fingerprint = ""
             self.lastError = nil

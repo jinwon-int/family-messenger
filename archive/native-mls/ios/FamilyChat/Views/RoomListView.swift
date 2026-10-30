@@ -103,7 +103,8 @@ struct RoomListView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: reloadGlances)
         .onChange(of: model.messagesRevision) { _ in reloadGlances() }
-        .navigationDestination(for: RoomID.self) { RoomView(room: $0) }
+        // `.id`: 방을 바꾸면(PageUp/Down · 목록) 새 화면 — 작성창 글(@State)이 다른 방으로 따라가 그 방 초안에 저장되지 않게.
+        .navigationDestination(for: RoomID.self) { RoomView(room: $0).id($0) }
         .toolbar {
             ToolbarItem(placement: .principal) { Color.clear.frame(width: 1, height: 1).accessibilityHidden(true) }
             // #549: 웹 한데의 「↕ 순서」/「완료」 — 시스템 `편집` 대신 무엇을 하는 버튼인지 보이게.

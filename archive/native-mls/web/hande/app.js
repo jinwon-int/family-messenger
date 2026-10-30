@@ -684,7 +684,10 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     if (!s || app.sending) return false;
     if (consentRequired(app.rooms.get(app.current))) { status(strings.consent.blocked, 'warn'); openConsentSheet(app.current); return false; }
     app.sending = true; render();
-    try { await s.send(text); app.draft.set(app.current, ''); writeDraft(storage, app.device, app.current, ''); markRoomRead(app.current); return true; }
+    // 초안은 작성창이 보내기 직전에 이미 비웠다(ui.js onDraft('')). 전송이 끝난 뒤 다시 비우면 그 사이 더 쓴 글이나 —
+    // `await` 동안 다른 방으로 옮겼다면 — 그 방의 초안까지 지운다. 보낸 방은 시작 때 잡아 둔다.
+    const roomId = app.current;
+    try { await s.send(text); markRoomRead(roomId); return true; }
     catch (error) { status(error.message, 'danger'); return false; }
     finally { app.sending = false; render(); }
   }
