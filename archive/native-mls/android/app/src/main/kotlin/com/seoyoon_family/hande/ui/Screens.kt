@@ -7,6 +7,7 @@ package com.seoyoon_family.hande.ui
 
 import android.content.Context
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -34,6 +35,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
@@ -53,7 +55,9 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.seoyoon_family.hande.BuildConfig
@@ -68,6 +72,7 @@ import com.seoyoon_family.hande.core.RoomUi
 import com.seoyoon_family.hande.core.SelfService
 import com.seoyoon_family.hande.core.ServerDiscovery
 import com.seoyoon_family.hande.core.Settings
+import com.seoyoon_family.hande.core.StatusUi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -459,7 +464,13 @@ fun RoomListScreen(
                         ListItem(
                             headlineContent = { Text(r.room) },
                             supportingContent = {
-                                Text(r.halted?.let { "${Strings.halted} · $it" } ?: if (!r.joined) Strings.notJoined else (r.messages.lastOrNull()?.text ?: ""))
+                                // status-v1(#560): 에이전트가 일하는 중이면 미리보기 자리에 최신 「⏳ Working …」 줄(오너 2026-10-30).
+                                val working = r.working
+                                if (working != null && r.halted == null) {
+                                    Text(working, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                } else {
+                                    Text(r.halted?.let { "${Strings.halted} · $it" } ?: if (!r.joined) Strings.notJoined else (r.messages.lastOrNull()?.text ?: ""))
+                                }
                             },
                             // 안 읽음 점(#571 후속): 같은 사람의 다른 기기(PC 웹·iPhone)에서 읽으면 다음 poll 에 꺼진다.
                             trailingContent = { if (r.unread) Badge { Text(Strings.unread) } },
@@ -485,7 +496,9 @@ fun RoomListScreen(
 fun RoomScreen(room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> Unit, onNoticeShown: () -> Unit) {
     var draft by rememberSaveable(room.room) { mutableStateOf("") }
     val listState = rememberLazyListState()
-    LaunchedEffect(room.messages.size) { if (room.messages.isNotEmpty()) listState.animateScrollToItem(room.messages.size - 1) }
+    // 맨 아래 따라가기: 새 글이나 작업 상태 말풍선이 생기면(사라질 때는 아님) 마지막 항목으로.
+    val total = room.messages.size + room.statuses.size
+    LaunchedEffect(room.messages.size, room.statuses.size) { if (total > 0) listState.animateScrollToItem(total - 1) }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -498,6 +511,8 @@ fun RoomScreen(room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> 
         Column(Modifier.padding(pad).fillMaxSize().imePadding()) {
             LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState, contentPadding = PaddingValues(12.dp)) {
                 items(room.messages, key = { "${it.sender}-${it.seq}" }) { m -> MessageRow(m) }
+                // status-v1(#560): 보낸이별 임시 말풍선 하나 — 키가 보낸이라 제자리에서 본문만 바뀐다.
+                items(room.statuses, key = { "status:${it.sender}" }) { s -> StatusRow(s) }
             }
             if (room.halted != null) {
                 Text("${Strings.halted} · ${room.halted}", Modifier.padding(12.dp), color = MaterialTheme.colorScheme.error)
@@ -524,6 +539,20 @@ private fun MessageRow(m: MessageUi) {
             }
         }
         if (!m.mine) Spacer(Modifier.width(48.dp))
+    }
+}
+
+/** status-v1(#560) 작업 상태 말풍선: 반투명 없이 에이전트(primary) 색 테두리로 일반 말풍선과 구분만 한다(오너 2026-10-30). */
+@Composable
+private fun StatusRow(s: StatusUi) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalArrangement = Arrangement.Start) {
+        OutlinedCard(border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary)) {
+            Column(Modifier.padding(10.dp)) {
+                Text(s.sender.substringBefore('-'), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                Text(s.text)
+            }
+        }
+        Spacer(Modifier.width(48.dp))
     }
 }
 
