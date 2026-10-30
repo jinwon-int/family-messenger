@@ -540,6 +540,18 @@ function bubble(entry, onOpenAttachment, onRetryPreview = null) {
     foot ? el('span', { class: 'foot' }, foot) : null), signature);
 }
 
+/**
+ * status-v1(#560) 임시 말풍선: 에이전트의 「⏳ Working — 10s | Bash: …」 한 줄. 보낸이마다 하나, 키가 보낸이라서
+ * 새 status 가 오면 같은 자리(맨 아래)의 본문만 바뀐다. `transient` 는 캐럿 이동·새 메시지 배지에서 빠진다.
+ * 매 5초 갱신이 화면 낭독기로 계속 읽히지 않게 aria-live 는 끈다.
+ */
+function statusRow(st) {
+  return signed(el('li', { class: 'bubble kind-status agent transient', 'data-key': `status:${st.sender}`, 'data-me': 'false', 'data-testid': 'status-bubble', 'aria-live': 'off' },
+    el('span', { class: 'who' }, st.senderName || displayName(st.sender)),
+    el('div', { class: 'body' }, st.text)),
+  JSON.stringify(['status', st.sender, st.senderName ?? '', st.text]));
+}
+
 function timelineRows(timeline, onOpenAttachment, onRetryPreview = null) {
   const rows = [];
   let day = '';
@@ -573,7 +585,7 @@ function updateTimeline(oldWrap, freshWrap) {
   else if (near) list.scrollTop = top + (list.scrollHeight - height);
   else if (anchor?.isConnected) list.scrollTop = top + (anchor.offsetTop - anchorOffset);
   else list.scrollTop = top;
-  if (!near && !ownAdded && added.some((node) => node.classList.contains('bubble')) && badge) badge.hidden = false;
+  if (!near && !ownAdded && added.some((node) => node.classList.contains('bubble') && !node.classList.contains('transient')) && badge) badge.hidden = false;
 }
 
 function snapshotRoomPane(root) {
@@ -785,7 +797,8 @@ function buildRoom(room) {
   JSON.stringify([room.name, room.roomId, participantCount(members), Boolean(room.halted), Boolean(room.joined), Boolean(room.onOpenBox), room.typing ?? '']));
   const notice = room.notice?.text ? signed(el('p', { class: `status ${room.notice.tone || 'info'}`, role: 'status', 'data-part': 'notice' }, room.notice.text), JSON.stringify(room.notice)) : null;
   const list = el('ul', { class: 'timeline', tabindex: '-1', 'aria-live': 'polite', 'aria-label': strings.chat.timelineLabel, 'data-testid': 'timeline' },
-    room.timeline.length === 0 ? signed(el('li', { class: 'empty', 'data-key': 'empty' }, strings.chat.empty), 'empty') : timelineRows(room.timeline, room.onOpenAttachment, room.onRetryPreview ?? null));
+    room.timeline.length === 0 ? signed(el('li', { class: 'empty', 'data-key': 'empty' }, strings.chat.empty), 'empty') : timelineRows(room.timeline, room.onOpenAttachment, room.onRetryPreview ?? null),
+    (Array.isArray(room.statuses) ? room.statuses : []).map(statusRow));
   const badge = el('button', { type: 'button', class: 'new-messages', hidden: true, onclick: () => { list.scrollTop = list.scrollHeight; badge.hidden = true; } }, strings.chat.newMessages);
   list.addEventListener('scroll', () => { if (isNearBottom(list)) badge.hidden = true; });
   const timelineWrap = el('div', { class: 'timeline-wrap', 'data-part': 'timeline' }, list, badge);
