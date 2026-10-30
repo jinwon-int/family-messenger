@@ -65,7 +65,9 @@ struct RoomListView: View {
                 let readSeq = max(prefs.readSeq[room.room] ?? 0, model.relayReadSeq[room.room] ?? 0)
                 let card = CampfireCard(room: room, glance: glance,
                                         unread: Unread.isUnread(last: glance.last, myDevice: model.deviceId, readSeq: readSeq),
-                                        muted: model.relayMuted[room.room] == true)
+                                        muted: model.relayMuted[room.room] == true,
+                                        // status-v1(#560, 오너 2026-10-30): 에이전트가 일하는 중이면 미리보기 대신 최신 「⏳ Working …」 줄.
+                                        working: AgentStatusBoard.listLine(model.agentStatuses[room.room] ?? []))
                 Group {
                     if orderEditing {
                         // 순서 모드: 방을 열지 않고 ▲▼(끝에서는 비활성) + 시스템 ≡ 끌기.
@@ -187,6 +189,9 @@ struct CampfireCard: View {
     var unread = false
     /// 방별 알림(server/mute.go): 이 사람이 이 방 알림을 껐다 — 이름 옆 🔕(웹 목록 `room-muted` 와 같다).
     var muted = false
+    /// status-v1(#560): 이 방 에이전트의 지금 작업 줄(`⏳ Working — 10s | Bash: …`) — 있으면 미리보기 자리에 에이전트 색으로.
+    /// 안 읽음 점·굵기·정렬은 바꾸지 않는다(저장된 글이 아니다). 답이 오거나 5분 지나면 nil → 평소 미리보기.
+    var working: String? = nil
 
     private var out: Bool { room.haltedReason != nil }
     private var bright: Bool { glance.hasAgent && !out }
@@ -212,8 +217,14 @@ struct CampfireCard: View {
                             .foregroundStyle(Hande.agent)
                     }
                 }
-                Text(preview).font(unread ? .footnote.weight(.semibold) : .footnote)
-                    .foregroundStyle(unread ? Hande.ink : Hande.inkDim).lineLimit(1)
+                if let working, !out {
+                    Text(working).font(.footnote.weight(.medium))
+                        .foregroundStyle(AgentPalette.accent).lineLimit(1).truncationMode(.tail)
+                        .accessibilityLabel(Strings.agentWorkingListAccessibility(working))
+                } else {
+                    Text(preview).font(unread ? .footnote.weight(.semibold) : .footnote)
+                        .foregroundStyle(unread ? Hande.ink : Hande.inkDim).lineLimit(1)
+                }
                 if !out && (!glance.people.isEmpty || glance.hasAgent) {
                     SeatDots(people: glance.people.count, agents: glance.agents.count, size: 7)
                 }
