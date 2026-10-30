@@ -28,6 +28,8 @@ struct RoomView: View {
     @State private var pickedPhoto: PhotosPickerItem?
     @State private var showPhotoPicker = false
     @State private var showFileImporter = false
+    /// 「선택해서 복사」 창에 띄울 글(말풍선 꾹 누르기 메뉴). 행이 아니라 방에 둔다 — lazy 행이 화면 밖으로 나가도 창이 닫히지 않게.
+    @State private var selecting: SelectableMessage?
     @State private var attachBusy = false
     /// #405 P1: 승인 요청 seq → 상태(허락/거절 버튼을 보일지).
     @State private var approvalStates: [Int64: AgentApproval.State] = [:]
@@ -311,6 +313,7 @@ struct RoomView: View {
             }
         }
         .sheet(isPresented: $showInvite) { InviteView(room: room).environmentObject(model) }
+        .sheet(item: $selecting) { SelectableTextSheet(text: $0.text) }
         .photosPicker(isPresented: $showPhotoPicker, selection: $pickedPhoto, matching: .images)
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.data]) { result in
             Task { await sendFile(result) }
@@ -332,7 +335,8 @@ struct RoomView: View {
                    roster: model.agentRoster, approval: approvalStates[item.id], canAnswer: isReady,
                    decide: { number, allow in answerApproval(number, allow: allow) },
                    onAttachmentLoaded: { attachmentLoaded(item.id, proxy) },
-                   retry: { Task { await model.retry(outgoingId: item.id, room: room) } })
+                   retry: { Task { await model.retry(outgoingId: item.id, room: room) } },
+                   selectText: { selecting = SelectableMessage(text: $0) })
             .id(item.id)
     }
 
@@ -612,6 +616,8 @@ struct MessageRow: View {
     var onAttachmentLoaded: () -> Void = {}
     /// 보내는 글이 실패했을 때 「다시 보내기」.
     var retry: () -> Void = {}
+    /// 꾹 누르기 메뉴 「선택해서 복사」 — 방 화면이 창을 띄운다.
+    var selectText: (String) -> Void = { _ in }
     private var message: MessageRecord { item.record }
     /// 받은(저장된) 첨부 말풍선 — 보내는 중인 첨부는 한 줄 글이라 종전 여백.
     private var isMedia: Bool { message.kind.isFile && item.outgoing == nil }
@@ -642,6 +648,7 @@ struct MessageRow: View {
             .frame(maxWidth: .infinity, alignment: .center)
         } else {
             AgentMessageCard(name: name, text: message.body, time: time)
+                .messageCopyMenu(MessageCopy.text(of: message), select: selectText)
         }
     }
 
@@ -686,6 +693,8 @@ struct MessageRow: View {
                     .background(mine ? AnyShapeStyle(Hande.emberDeep) : AnyShapeStyle(Hande.surface))
                     .foregroundStyle(mine ? Hande.onEmber : Hande.ink)
                     .clipShape(BubbleShape(mine: mine))
+                    .contentShape(.contextMenuPreview, BubbleShape(mine: mine))
+                    .messageCopyMenu(MessageCopy.text(of: message), select: selectText)
                     .opacity(item.outgoing == nil ? 1 : 0.75)
                 outgoingStatus
             }
