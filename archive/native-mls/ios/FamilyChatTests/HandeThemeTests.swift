@@ -1,5 +1,6 @@
 import XCTest
 import SwiftUI
+import FamilyMLSCore
 @testable import FamilyChat
 
 /// 디자인 1차(2026-10-31) 테마: 밤이 기본·고정, 낮불은 설정에서 고르는 별도 고대비 테마. 토큰 정본 docs/design/hande-tokens.json.
