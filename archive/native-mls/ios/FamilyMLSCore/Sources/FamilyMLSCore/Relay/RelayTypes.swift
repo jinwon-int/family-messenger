@@ -66,8 +66,10 @@ public struct EventsPage: Codable, Equatable {
     public var typing: [DeviceID]?
     /// #571 B(server/read.go): 요청 기기와 **같은 사람(actor)** 의 어느 기기든 본 가장 큰 seq(`POST /read`). 없으면 0. 옛 릴레이는 싣지 않는다(nil).
     public var readSeq: Int64?
+    /// 방별 알림 설정(server/mute.go): 요청 기기와 **같은 사람(actor)** 이 이 방 알림을 껐는가(`POST /mute`). 옛 릴레이는 싣지 않는다(nil).
+    public var muted: Bool?
     enum CodingKeys: String, CodingKey {
-        case epoch, revision, events, cursor, members, typing
+        case epoch, revision, events, cursor, members, typing, muted
         case nextAfter = "next_after", firstSeq = "first_seq", readSeq = "read_seq"
     }
 }
@@ -84,6 +86,19 @@ public struct ReadPost: Codable, Equatable {
     public var device: DeviceID
     public var seq: Int64
     public init(device: DeviceID, seq: Int64) { self.device = device; self.seq = seq }
+}
+
+/// POST /v2/rooms/{room}/mute(server/mute.go `mutePost`) → 200 `MuteResponse`. `muted` = 이 사람의 모든 기기에서 이 방 알림을 끈다.
+public struct MutePost: Codable, Equatable {
+    public var device: DeviceID
+    public var muted: Bool
+    public init(device: DeviceID, muted: Bool) { self.device = device; self.muted = muted }
+}
+
+/// `POST /mute` 응답 `{muted}` — 요청 뒤 같은 사람(actor)의 이 방 알림 설정.
+public struct MuteResponse: Codable, Equatable {
+    public var muted: Bool
+    public init(muted: Bool) { self.muted = muted }
 }
 
 /// `POST /read` 응답 `{read_seq}` — 요청 뒤 같은 사람(actor)의 읽음 위치. 올린 값보다 클 수 있다(다른 기기가 더 멀리 봤다). 줄어들지 않는다.

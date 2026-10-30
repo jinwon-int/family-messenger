@@ -18,7 +18,8 @@ import (
 //     is behind the new seq (sender excluded) get one APNs alert, sent outside
 //     the events transaction and outside s.mu. An application event also skips
 //     the sender's other devices (same actor) and devices whose actor already
-//     read past it (mls_read, #571 B); a welcome does not — it is how a new
+//     read past it (mls_read, #571 B) or muted the room (mls_mute, mute.go);
+//     a welcome does not — it is how a new
 //     device of the same person gets invited. Failures are logged only; a token
 //     Apple reports as gone (410, BadDeviceToken) is deleted if still current.
 //
@@ -151,7 +152,8 @@ type pushTarget struct {
 // selection is actor-wide (#571 B): a device of the sender's own actor is
 // skipped (a message typed on the PC must not ring the same person's phone),
 // and so is a device whose actor's read position (mls_read) is already at or
-// past seq. Both need the room's member rows; a room seeded before membership
+// past seq, or whose actor muted the room (mls_mute, mute.go). All three need
+// the room's member rows; a room seeded before membership
 // tracking has none and stays device-scoped. A welcome keeps the device-scoped
 // rule: the target may well be the same actor's new device.
 func (s *relay) pushTargets(room, sender, kind string, seq int64) ([]pushTarget, error) {
@@ -171,6 +173,8 @@ WHERE p.device <> ?2
                              WHERE tm.room = ?1 AND tm.device = p.device AND sm.device = ?2))
   AND (?4 = 0 OR COALESCE((SELECT r.seq FROM mls_read r JOIN mls_members tm ON tm.room = r.room AND tm.actor = r.actor
                            WHERE r.room = ?1 AND tm.device = p.device), 0) < ?3)
+  AND (?4 = 0 OR NOT EXISTS (SELECT 1 FROM mls_mute u JOIN mls_members tm ON tm.room = u.room AND tm.actor = u.actor
+                             WHERE u.room = ?1 AND tm.device = p.device))
 ORDER BY p.device`, room, sender, seq, actorScoped)
 	if err != nil {
 		return nil, err

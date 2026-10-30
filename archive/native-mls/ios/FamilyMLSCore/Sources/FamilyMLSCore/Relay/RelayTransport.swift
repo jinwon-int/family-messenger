@@ -53,6 +53,12 @@ public protocol RelayTransport: AnyObject {
     /// 기본 구현은 `.refused(code:"not_found", status:404)`(라우트 없는 옛 릴레이·옛 테스트 대역) — 호출자(AppModel)는 404 를 보면 그만둔다.
     func postRead(room: RoomID, device: DeviceID, seq: Int64) async throws -> Int64
 
+    /// POST /v2/rooms/{room}/mute `{device, muted}` → 200 `{muted}`(server/mute.go). 같은 사람(actor)의 모든 기기에 한 값 — 릴레이는 꺼진
+    /// 사람의 기기에 이 방 새 글 APNs 알림을 보내지 않고, 다음 `GET /events` 의 `muted` 에 싣는다. 반환 = 요청 뒤 값.
+    /// 404 `no_such_room` · 410 `room_closed` · 403 `device_not_allowed`/`not_a_member` · 400.
+    /// 기본 구현은 `.refused(code:"not_found", status:404)`(라우트 없는 옛 릴레이·옛 테스트 대역).
+    func postMute(room: RoomID, device: DeviceID, muted: Bool) async throws -> Bool
+
     // 기기 셀프서비스(#574 D1, server/devices.go · me.go) — 새 기기가 후보를 올리고 같은 사람의 다른 기기가 승인(E2)·역할(E5)을 서명한다.
     // 기본 구현은 `.refused(code:"not_found", status:404)`(라우트 없는 옛 릴레이·옛 테스트 대역) — 호출자(AppModel)는 404 를 보면 운영자 흐름으로.
     /// POST /v2/devices/candidates `{device_id, actor, signing_key, fingerprint}` → 201. 409 `device_exists` · 403 `first_device_out_of_band`.
@@ -102,6 +108,9 @@ public extension RelayTransport {
         throw RelayError.refused(code: "not_found", status: 404)
     }
     func postRead(room: RoomID, device: DeviceID, seq: Int64) async throws -> Int64 {
+        throw RelayError.refused(code: "not_found", status: 404)
+    }
+    func postMute(room: RoomID, device: DeviceID, muted: Bool) async throws -> Bool {
         throw RelayError.refused(code: "not_found", status: 404)
     }
     func postDeviceCandidate(_ post: DeviceCandidatePost) async throws -> DeviceCandidatePosted {

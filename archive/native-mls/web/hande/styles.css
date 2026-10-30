@@ -392,6 +392,7 @@ ul.rooms { list-style: none; margin: 0; padding: 0; display: flex; flex-directio
 .room-item .room-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
 .room-item .room-title .room-name { flex: 0 1 auto; min-width: 0; }
 .unread-badge { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: var(--unread); color: var(--on-unread); font-size: 11px; font-weight: 800; line-height: 1; letter-spacing: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+.muted-mark { flex: none; font-size: 12px; line-height: 1; opacity: .7; }
 .ember-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--ember); box-shadow: 0 0 8px var(--ember); }
 /* 순서 편집(▲▼, PC 끌기) — 패밀리챗 ui.js roomListItem 과 같은 모양. */
 ul.rooms > li.reorderable { display: flex; align-items: stretch; gap: var(--space-2); }

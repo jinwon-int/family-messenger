@@ -187,6 +187,28 @@ final class InMemoryRelay: RelayTransport, RelayControl {
         }
     }
 
+    // MARK: 방별 알림(server/mute.go) — (방, actor) 에 한 값. actor 는 읽음 위치와 같이 기기 ID 접두.
+
+    private var mutes: [RoomID: Set<String>] = [:]
+    /// 테스트 관찰: 받은 POST /mute(순서대로).
+    private(set) var mutePosts: [(room: RoomID, device: DeviceID, muted: Bool)] = []
+    private var muteErrors: [RelayError] = []
+    /// 결함 주입: 다음 POST /mute 들이 이 오류로 실패한다.
+    func failNextMutePosts(_ errors: [RelayError]) { lock.withLock { muteErrors += errors } }
+
+    func postMute(room: RoomID, device: DeviceID, muted: Bool) async throws -> Bool {
+        try checkUp()
+        return try lock.withLock {
+            mutePosts.append((room, device, muted))
+            if !muteErrors.isEmpty { throw muteErrors.removeFirst() }
+            guard let r = rooms[room], !r.events.isEmpty else { throw RelayError.refused(code: "no_such_room", status: 404) }
+            if r.closed { throw RelayError.refused(code: "room_closed", status: 410) }
+            let actor = MessageRecord.actor(of: device)
+            if muted { mutes[room, default: []].insert(actor) } else { mutes[room]?.remove(actor) }
+            return mutes[room]?.contains(actor) ?? false
+        }
+    }
+
     /// 응답에 실을 `read_seq`: 읽는 기기와 같은 사람의 값, 없으면 0(절대 null 아님).
     private func readSnapshot(room: RoomID, device: DeviceID) -> Int64 {
         readSeqs[room]?[MessageRecord.actor(of: device)] ?? 0
@@ -207,7 +229,8 @@ final class InMemoryRelay: RelayTransport, RelayControl {
             var page: [String: Any] = ["epoch": r.epoch, "revision": 0, "events": events,
                                        "next_after": visible.last?.seq ?? after, "first_seq": 1, "members": [Any](),
                                        "typing": typingSnapshot(room: room, exclude: device),
-                                       "read_seq": readSnapshot(room: room, device: device)]
+                                       "read_seq": readSnapshot(room: room, device: device),
+                                       "muted": mutes[room]?.contains(MessageRecord.actor(of: device)) ?? false]
             if let cursor = r.cursors[device] { page["cursor"] = cursor }
             return try Self.decode(EventsPage.self, page)
         }

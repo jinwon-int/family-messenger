@@ -107,6 +107,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       // 1:1 방은 상대가 한 명뿐이라 「이름: 」 접두를 빼고 내용만(2026-10-26 오너).
       preview: last ? previewLine(isOneToOne(S.roster) ? '' : last.senderName, body) : (S.joined ? strings.rooms.noMessages : strings.room.notJoined),
       time: last?.ts ? relativeTime(last.ts, Date.now()) : '', unread: isUnread(R.entries, R.readSeq) && !(app.roomOpen && app.current === roomId),
+      muted: S.muted === true,
       state: halted ? 'halted' : S.joined ? 'joined' : 'pending', hasAgent: S.roster.some(isAgentDevice), members: participantCount(S.roster), order: R.order};
   }
   /** 대화 목록에서 방 하나를 옮긴다 — 화면은 즉시, 저장은 이 기기 localStorage(패밀리챗 moveRoomInList). */
@@ -118,6 +119,14 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     writeRoomOrder(storage, app.device, next);
     render();
     if (focus) queueMicrotask(() => ui.focusRoomOrderControl(root, roomId, focus));
+  }
+  /** 방 알림 켜기/끄기 — 화면은 바로 바뀌고, 릴레이가 거절하면 되돌리며 알린다(iOS AppModel.setMuted 와 같은 결). */
+  async function toggleMute(roomId) {
+    const R = app.rooms.get(roomId);
+    if (!R || typeof R.session.state.muted !== 'boolean') return;
+    const next = !R.session.state.muted;
+    const ok = await R.session.setMuted(next);
+    status(ok ? (next ? strings.chat.mutedDone : strings.chat.unmutedDone) : strings.chat.muteFailed, ok ? 'ok' : 'warn');
   }
   function toggleOrderEdit() { app.orderEditing = !app.orderEditing; render(); }
   function paint() {
@@ -159,6 +168,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
         // 입력 중 신호(#562): 글이 있으면 「입력 중」(3초에 한 번), 비우면 해제. 릴레이 응답은 보지 않는다.
         onDraft: text => { app.draft.set(app.current, text); writeDraft(storage, app.device, app.current, text); R.session.typing(text.trim().length === 0); },
         typing: typingLabel(S.typing, {device: app.device, actor: app.actor, roster: S.roster}),
+        // 방별 알림(mute.go): 같은 사람의 모든 기기에 한 값. null(옛 릴레이·아직 모름)이면 머리글에 버튼이 없다.
+        muted: S.joined && !S.halted ? S.muted : null, onToggleMute: () => toggleMute(app.current),
         notice: null, sending: app.sending || S.transferring,
         attachmentPending: R.session.attachmentPending ? {size: 0, onRetry: () => sendAttachment(null)} : null};
     })() : null;

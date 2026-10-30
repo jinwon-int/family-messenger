@@ -54,6 +54,7 @@ class InMemoryRelayWrapper: RelayTransport {
     func deleteLobbyKeyPackages(device: DeviceID) async throws -> Int { try await inner.deleteLobbyKeyPackages(device: device) }
     func postTyping(room: RoomID, device: DeviceID, clear: Bool) async throws { try await inner.postTyping(room: room, device: device, clear: clear) }
     func postRead(room: RoomID, device: DeviceID, seq: Int64) async throws -> Int64 { try await inner.postRead(room: room, device: device, seq: seq) }
+    func postMute(room: RoomID, device: DeviceID, muted: Bool) async throws -> Bool { try await inner.postMute(room: room, device: device, muted: muted) }
     func postDeviceCandidate(_ post: DeviceCandidatePost) async throws -> DeviceCandidatePosted { try await inner.postDeviceCandidate(post) }
     func listDeviceCandidates(device: DeviceID) async throws -> DeviceCandidates { try await inner.listDeviceCandidates(device: device) }
     func postDeviceApproval(_ evidence: DeviceApprovalEvidence) async throws -> DevicePolicyCommit { try await inner.postDeviceApproval(evidence) }
@@ -277,6 +278,43 @@ final class AppModelTests: XCTestCase {
         model.noteTyping(room: "family")
         await model.typingInFlight?.value
         XCTAssertEqual(relay.typingPosts.count, 2, "a room that is not on the relay yet does not switch typing off")
+    }
+
+    // MARK: - 방별 알림 설정 (server/mute.go)
+
+    /// 릴레이 `GET /events` 의 `muted` 는 같은 사람(actor)의 값이다 — 다른 사람이 끈 것은 내 것이 아니고, 로그아웃하면 버린다.
+    func testRelayMutedIsSurfacedPerActorAndDroppedOnLogout() async throws {
+        let relay = InMemoryRelay()
+        let model = try await readyModel(relay: relay)
+        XCTAssertEqual(model.relayMuted["family"], false, "a relay that sends the key yields a known value (button shown)")
+        _ = try await relay.postMute(room: "family", device: "mom-iphone-1", muted: true)
+        await model.refresh()
+        XCTAssertEqual(model.relayMuted["family"], false, "another actor's setting is not mine")
+        _ = try await relay.postMute(room: "family", device: "owner-pc", muted: true)
+        await model.refresh()
+        XCTAssertEqual(model.relayMuted["family"], true, "my other device muted the room")
+        model.logout()
+        XCTAssertTrue(model.relayMuted.isEmpty)
+    }
+
+    func testSetMutedPostsAndRollsBackOnFailure() async throws {
+        let relay = InMemoryRelay()
+        let model = try await readyModel(relay: relay)
+        let ok = await model.setMuted(room: "family", muted: true)
+        XCTAssertTrue(ok)
+        XCTAssertEqual(relay.mutePosts.count, 1)
+        XCTAssertEqual(relay.mutePosts.first?.device, model.deviceId)
+        XCTAssertEqual(relay.mutePosts.first?.muted, true)
+        XCTAssertEqual(model.relayMuted["family"], true)
+        await model.refresh()
+        XCTAssertEqual(model.relayMuted["family"], true, "the relay keeps it across a sync")
+        relay.failNextMutePosts([.refused(code: "not_a_member", status: 403)])
+        let refused = await model.setMuted(room: "family", muted: false)
+        XCTAssertFalse(refused)
+        XCTAssertEqual(model.relayMuted["family"], true, "a refused change is rolled back")
+        let unknown = await model.setMuted(room: "other", muted: true)
+        XCTAssertFalse(unknown, "a room whose setting is unknown is left alone")
+        XCTAssertEqual(relay.mutePosts.count, 2, "no round trip for the unknown room")
     }
 
     // MARK: - 읽음 위치 공유 (#571 B)

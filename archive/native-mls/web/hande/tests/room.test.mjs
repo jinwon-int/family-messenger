@@ -342,6 +342,49 @@ test('typing: GET /events `typing` lands in state; a relay without the key means
   assert.deepEqual(s.state.typing, []);
 });
 
+// ---- per-room notification setting (server/mute.go) ----
+test('muted: GET /events `muted` lands in state; old relay (no key) keeps null; junk ignored', async () => {
+  const {bridge} = fakeWorker({fresh: false, group: ['owner-pc', 'mom-web-1', 'owner-web-aaaaaa']});
+  let muted = null;
+  const relay = fakeRelay(() => {
+    const body = {epoch: 2, events: [], cursor: 5, members: []};
+    if (muted !== null) body.muted = muted;
+    return {status: 200, body};
+  });
+  const {s} = session({worker: bridge, relay, storage: joinedStorage()});
+  await s.open(); await s.activate();
+  assert.equal(s.state.muted, null, 'old relay → unknown');
+  muted = true; await s.sync();
+  assert.equal(s.state.muted, true);
+  muted = 'junk'; await s.sync();
+  assert.equal(s.state.muted, true, 'not a boolean → ignored');
+  muted = false; await s.sync();
+  assert.equal(s.state.muted, false);
+});
+
+test('setMuted(): optimistic flip, 200 settles, failure or throw restores and resolves false', async () => {
+  const {bridge} = fakeWorker({fresh: false, group: ['owner-pc', 'mom-web-1', 'owner-web-aaaaaa']});
+  let answer = (body) => ({status: 200, body: {muted: body.muted}});
+  const relay = fakeRelay((m, path, body) => {
+    if (path.endsWith('/mute')) return answer(body);
+    return {status: 200, body: {epoch: 2, events: [], cursor: 5, members: [], muted: false}};
+  });
+  const {s} = session({worker: bridge, relay, storage: joinedStorage()});
+  await s.open(); await s.activate();
+  const posts = () => relay.calls.filter(c => c.method === 'POST' && c.path === '/v2/rooms/family/mute');
+  assert.equal(await s.setMuted(true), true);
+  assert.deepEqual(posts()[0].body, {device: 'owner-web-aaaaaa', muted: true});
+  assert.equal(s.state.muted, true);
+  assert.equal(await s.setMuted('yes'), false, 'non-boolean → refused without a POST');
+  assert.equal(posts().length, 1);
+  answer = () => ({status: 403, body: {error: 'not_a_member'}});
+  assert.equal(await s.setMuted(false), false);
+  assert.equal(s.state.muted, true, 'refused → restored');
+  answer = () => { throw new Error('offline'); };
+  assert.equal(await s.setMuted(false), false);
+  assert.equal(s.state.muted, true, 'thrown → restored');
+});
+
 // ---- shared read position (#571 B) ----
 test('read_seq: GET /events `read_seq` lands in state and never shrinks; a relay without the key means 0 (#571)', async () => {
   const {bridge} = fakeWorker({fresh: false, group: ['owner-pc', 'mom-web-1', 'owner-web-aaaaaa']});

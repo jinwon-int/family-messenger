@@ -353,6 +353,8 @@ export const strings = {
     // 안 읽은 방 이름 옆 둥근 배지(패밀리챗과 같은 카카오톡식 N). 글자 N은 보조기기에서 숨기고 unreadLabel을 읽는다.
     unreadBadge: 'N',
     unreadLabel: '새 메시지',
+    // 알림을 끈 방(mute.go): 이름 옆 🔕. 보조기기에는 mutedLabel 을 읽는다.
+    mutedLabel: '알림 꺼짐',
     justNow: '방금',
     minutesAgo: (n) => `${n}분 전`,
     hoursAgo: (n) => `${n}시간 전`,
@@ -412,6 +414,12 @@ export const strings = {
     notJoined: '아직 이 대화방에 참여하지 않았습니다. 초대를 기다려 주세요.',
     members: (n) => `멤버 ${n}`,
     membersButton: '멤버',
+    // 방별 알림 설정(mute.go): 머리글 🔔/🔕 버튼. 같은 사람의 PC·폰에 함께 적용된다(릴레이가 그 사람 기기 알림을 건너뛴다).
+    muteButton: '이 방 알림 끄기',
+    unmuteButton: '이 방 알림 켜기',
+    mutedDone: '이 방 알림을 껐습니다 (내 모든 기기)',
+    unmutedDone: '이 방 알림을 켰습니다',
+    muteFailed: '알림 설정을 바꾸지 못했습니다. 잠시 뒤 다시 시도해 주세요.',
     // 입력 중 표시(#562): 단체방은 이름을 앞에, 1:1 방은 문구만(패밀리챗 "입력중.." 과 같은 결).
     typing: (names) => (names.length ? `${names.join(', ')} 입력중…` : '입력중…'),
     invite: '초대',

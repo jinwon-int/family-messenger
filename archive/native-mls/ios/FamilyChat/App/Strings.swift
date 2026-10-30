@@ -133,6 +133,12 @@ enum Strings {
     static let createDone = "대화방을 만들었습니다. 방에 들어가 '초대'로 다른 기기를 들이세요."
     static let roomIdInvalid = "대화방 ID 형식이 맞지 않습니다 — 영문 소문자·숫자로 시작, 소문자·숫자·하이픈 최대 48자."
 
+    // 방별 알림 설정(server/mute.go, 웹 strings.chat.muteButton 과 같은 문구): 방 화면 🔔/🔕 · 목록 카드 🔕.
+    static let muteButton = "이 방 알림 끄기"
+    static let unmuteButton = "이 방 알림 켜기"
+    static let mutedLabel = "알림 꺼짐"
+    static let muteFailed = "알림 설정을 바꾸지 못했습니다. 잠시 뒤 다시 시도해 주세요."
+
     // 초대(InviteView, §12-E)
     static let inviteTitle = "기기 초대"
     static let inviteField = "초대할 기기 ID"

@@ -25,6 +25,8 @@ struct RoomView: View {
     /// 목록 내용의 마지막 높이(진입 직후 실제 배치·이미지 로딩으로 커지면 다시 최하단, `ScrollFollow.shouldRescrollOnContentGrowth`).
     @State private var contentHeight: Double = 0
     @State private var showInvite = false
+    /// 방별 알림(mute.go): `POST /mute` 실패 알림.
+    @State private var muteFailed = false
     @State private var pickedPhoto: PhotosPickerItem?
     @State private var showPhotoPicker = false
     @State private var showFileImporter = false
@@ -306,6 +308,16 @@ struct RoomView: View {
                 .animation(.easeOut(duration: 0.2), value: model.reconnecting)
                 .animation(.easeOut(duration: 0.2), value: typingLabel)
             }
+            // 방별 알림(server/mute.go): 🔔 켜짐 / 🔕 꺼짐 — 같은 사람의 모든 기기에 적용. 값을 모르면(옛 릴레이) 버튼이 없다.
+            if let muted = model.relayMuted[room] {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        Task { if !(await model.setMuted(room: room, muted: !muted)) { muteFailed = true } }
+                    } label: { Image(systemName: muted ? "bell.slash" : "bell") }
+                        .accessibilityLabel(muted ? Strings.unmuteButton : Strings.muteButton)
+                        .accessibilityIdentifier("room-mute")
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button { showInvite = true } label: { Image(systemName: "person.badge.plus") }
                     .accessibilityLabel(Strings.inviteTitle)
@@ -313,6 +325,7 @@ struct RoomView: View {
             }
         }
         .sheet(isPresented: $showInvite) { InviteView(room: room).environmentObject(model) }
+        .alert(Strings.muteFailed, isPresented: $muteFailed) { Button(Strings.close, role: .cancel) {} }
         .sheet(item: $selecting) { SelectableTextSheet(text: $0.text) }
         .photosPicker(isPresented: $showPhotoPicker, selection: $pickedPhoto, matching: .images)
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.data]) { result in
