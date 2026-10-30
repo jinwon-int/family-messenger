@@ -210,8 +210,10 @@ function roomListItem(room, onSelect, active, order = null) {
   const preview = room.preview || (out ? strings.rooms.closedPreview : strings.rooms.noMessages);
   const unread = Boolean(room.unread) && !out;
   const muted = Boolean(room.muted) && !out;
-  const signature = JSON.stringify([room.roomId, room.name, emoji, preview, room.time, unread, muted, room.state, Boolean(room.hasAgent), room.members ?? 0, active, order ? [order.index, order.count] : null]);
-  const classes = ['room-item', `state-${room.state}`, unread ? 'unread' : '', room.hasAgent && !out ? 'bright' : ''].filter(Boolean).join(' ');
+  // status-v1(#560): 일하는 중인 방은 미리보기 자리에 최신 「⏳ Working …」 줄(오너 2026-10-30 — 목록에서 작업 중인지 보이게).
+  const working = !out && typeof room.working === 'string' && room.working ? room.working : null;
+  const signature = JSON.stringify([room.roomId, room.name, emoji, preview, working, room.time, unread, muted, room.state, Boolean(room.hasAgent), room.members ?? 0, active, order ? [order.index, order.count] : null]);
+  const classes = ['room-item', `state-${room.state}`, unread ? 'unread' : '', room.hasAgent && !out ? 'bright' : '', working ? 'working' : ''].filter(Boolean).join(' ');
   const name = room.name || room.roomId;
   const content = [
     el('span', { class: 'fire', 'aria-hidden': 'true' }, emoji),
@@ -229,7 +231,7 @@ function roomListItem(room, onSelect, active, order = null) {
         // 방 목록에는 「에이전트」 배지를 두지 않는다(오너 요청 2026-10-27) — 에이전트 방 강조(bright)는 그대로.
         STATE_LABEL[room.state] ? el('span', { class: `pill state-${room.state}` }, STATE_LABEL[room.state]) : null,
         room.time ? el('span', { class: 'when' }, room.time) : null),
-      el('span', { class: 'preview' }, preview)),
+      working ? el('span', { class: 'preview working', 'data-testid': 'room-working' }, working) : el('span', { class: 'preview' }, preview)),
   ];
   const rowAttrs = { class: classes, 'data-room-id': room.roomId, 'data-testid': 'room-item', 'data-state': room.state, 'data-members': String(room.members ?? 0), 'aria-current': active ? 'true' : null };
   const dragAttrs = order ? {
