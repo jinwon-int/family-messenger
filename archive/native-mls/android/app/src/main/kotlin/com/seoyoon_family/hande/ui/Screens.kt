@@ -4,7 +4,7 @@
 // #584 Play 출시: 「설정」(정보 · 개인정보처리방침 · 계정 및 데이터 삭제 링크 · 「이 기기 지우기」) — 등록 대기·로그인·목록·오류 화면 어디서나 연다(Play 정책: 앱 안 링크 + 앱 내 삭제 경로).
 //   Android 16(targetSdk 36)은 edge-to-edge 강제(adjustResize 무효) → 입력 화면은 `imePadding`, 뒤로가기는 `BackHandler`(predictive back 기본 켜짐).
 // 한데 디자인 1차(2026-10-31, docs/design/HANDE-DESIGN-SYSTEM.md): 토큰은 `ui/theme/HandeTheme.kt`(`LocalHandeColors`), 모닥불 배경 위에 투명 Scaffold/앱바 ·
-//   목록 = 「자리」(불 세기 불꽃 · 「불지기」 배지 · 좌석 점 · 안 읽음 주황 점) · 대화 = 말풍선(면/불/파랑) + 알약 입력창 · 설정 「화면」(밤/낮불).
+//   목록 = 「자리」(불 세기 불꽃 · 좌석 점 · 안 읽음 주황 점; 「불지기」 배지는 오너 결정 #613/#540 으로 없음) · 대화 = 말풍선(면/불/파랑) + 알약 입력창 · 설정 「화면」(밤/낮불).
 package com.seoyoon_family.hande.ui
 
 import android.content.Context
@@ -559,7 +559,8 @@ fun RoomListScreen(
 }
 
 /**
- * 방 행 카드: 원형 아이콘(불 세기 1~3단 불꽃 / 꺼진 자리는 장작) · 이름 + 「불지기」 배지(에이전트가 글을 쓴 방) · 미리보기 · 좌석 점 · 안 읽음 주황 점(개수 없음).
+ * 방 행 카드: 원형 아이콘(불 세기 1~3단 불꽃 / 꺼진 자리는 장작) · 이름 · 미리보기 · 좌석 점 · 안 읽음 주황 점(개수 없음).
+ * 「불지기」 배지는 목록에 넣지 않는다(오너 2026-10-31 iOS #613 · 웹 #540 — 디자인 1차 1b 보다 이 결정이 우선). 에이전트는 좌석 점의 파란 점으로 보인다.
  * 「오늘의 불 세기」는 시각이 화면 모델에 없어(`MessageUi` 에 received_at 없음) 보관된 글 수로 가늠한다 — 12건 이상 3단 · 3건 이상 2단 · 그 밖 1단. 숫자는 보이지 않는다.
  * 꺼진 자리 = 60% 흐림 + 장작 + 「불이 꺼진 자리 · 운영자가 닫음」(`room_closed` 일 때만 — 다른 정지 사유는 토큰을 그대로 적는다).
  */
@@ -573,7 +574,6 @@ private fun RoomRow(r: RoomUi, onOpen: () -> Unit) {
         r.messages.size >= 3 -> 2
         else -> 1
     }
-    val hasAgent = r.messages.any { AgentActors.isAgentDevice(it.sender) }
     Row(
         Modifier
             .fillMaxWidth()
@@ -593,7 +593,6 @@ private fun RoomRow(r: RoomUi, onOpen: () -> Unit) {
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(r.room, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                if (hasAgent) AgentPill()
             }
             Spacer(Modifier.height(2.dp))
             val working = r.working
@@ -617,23 +616,6 @@ private fun RoomRow(r: RoomUi, onOpen: () -> Unit) {
             Box(Modifier.size(10.dp).clip(CircleShape).background(colors.ember).semantics { contentDescription = Strings.unread })
         }
     }
-}
-
-/** 「불지기」 배지 — 에이전트가 있는 방. 밤: 파랑 fill 10% + stroke 35% · 낮불: fill 없음 + 파랑 실선(색과 모양 둘 다 다르게). */
-@Composable
-private fun AgentPill() {
-    val colors = LocalHandeColors.current
-    val shape = RoundedCornerShape(10.dp)
-    Text(
-        Strings.agentBadge,
-        Modifier
-            .clip(shape)
-            .background(if (colors.isDay) Color.Transparent else colors.agent.copy(alpha = 0.10f))
-            .border(if (colors.isDay) colors.lineWidth else 1.dp, if (colors.isDay) colors.agent else colors.agent.copy(alpha = 0.35f), shape)
-            .padding(horizontal = 8.dp, vertical = 2.dp),
-        color = colors.agentText,
-        style = MaterialTheme.typography.labelSmall,
-    )
 }
 
 /**

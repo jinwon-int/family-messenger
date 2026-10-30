@@ -229,9 +229,8 @@ struct CampfireCard: View {
                         Image(systemName: "bell.slash").font(.caption).foregroundStyle(p.inkDim)
                             .accessibilityLabel(Strings.mutedLabel)
                     }
-                    if glance.hasAgent && !out {
-                        AgentBadge()
-                    }
+                    // 「불지기」 배지는 넣지 않는다(오너 2026-10-31 #613 — 웹 #540 과 같다; 디자인 1차 1b 의 배지보다 이 결정이 우선).
+                    // 에이전트 자리는 SeatDots 의 파란 점으로 보인다.
                 }
                 if let working, !out {
                     Text(working).font(.footnote.weight(.medium))
@@ -276,19 +275,6 @@ struct CampfireCard: View {
         let body = last.kind.isFile ? Strings.attachmentImage : last.body
         // 1:1 방은 방 이름이 곧 상대라 「이름: 」 접두를 빼고 내용만(오너 2026-10-30, 웹 한데와 같다). 여럿이 말한 방은 누가 했는지 남긴다.
         return Strings.previewLine(name: glance.isOneToOne ? "" : AgentRosterNames.person(last.senderDevice), body: body)
-    }
-}
-
-/// 「불지기」 배지(에이전트가 있는 자리): 파랑 글자 · fill 10% · stroke 35%.
-struct AgentBadge: View {
-    @Environment(\.hande) private var p
-    var body: some View {
-        Text(Strings.agentBadge).font(.caption.weight(.medium))
-            .padding(.horizontal, 8).padding(.vertical, 2)
-            .foregroundStyle(p.agentText)
-            .background(Capsule().fill(p.agentFill))
-            .overlay(Capsule().stroke(p.agentStroke, lineWidth: p.lineWidth))
-            .fixedSize()
     }
 }
 
