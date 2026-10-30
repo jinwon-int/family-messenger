@@ -57,7 +57,13 @@ sealed interface Phase {
 }
 
 /** `unread`(#571 후속): 마지막 글이 남의 글이고 본 위치 `max(Settings.readSeq, MlsRoom.readSeq())` 보다 뒤 — `Unread.isUnread`. */
-data class RoomUi(val room: String, val joined: Boolean, val halted: String?, val messages: List<MessageUi>, val unread: Boolean)
+data class RoomUi(
+    val room: String, val joined: Boolean, val halted: String?, val messages: List<MessageUi>, val unread: Boolean,
+    /** status-v1(#560): 에이전트 작업 상태 임시 말풍선(보낸이별 하나) — 대화방 맨 아래. 저장하지 않는다. */
+    val statuses: List<StatusUi> = emptyList(),
+    /** 대화 목록 미리보기 자리에 보일 최신 「⏳ Working …」 줄(오너 2026-10-30). 없으면 null. */
+    val working: String? = null,
+)
 
 /** 우편함의 새 기기 승인 요청 카드(#574). `expiresAt` ms. `message` 는 마지막 실패 사유. */
 data class CandidateUi(val deviceId: String, val actor: String, val fingerprint: String, val expiresAt: Long?, val busy: Boolean, val message: String?)
@@ -115,6 +121,8 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
 
     private inner class Handle(val name: String) {
         var halted: String? = null
+        /** status-v1(#560): 이 방의 보낸이별 최신 작업 상태(메모리만). onMessage·ui() 모두 DeviceHub mutex 안에서 불린다. */
+        val statuses = AgentStatusBoard()
         val store = FileRoomStore(
             dir, name, seal = sealer::seal, open = sealer::open,
             onEvent = { e ->
@@ -130,10 +138,16 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             },
             onMessage = { seq, sender, clientId, plaintext ->
                 // file-v2 평문은 파일 키가 든 설명자 — 글로 저장·표시하지 않는다(#499, FileV2.classify).
-                // status-v1(#560): 에이전트 작업 상태 한 줄은 저장하지 않는다(임시 말풍선 — 표시는 후속).
+                // status-v1(#560): 에이전트 작업 상태 한 줄은 저장하지 않고 임시 말풍선 보드에만 둔다.
+                if (FileV2.isStatusClientId(clientId)) {
+                    statuses.apply(sender, String(plaintext, Charsets.UTF_8), seq, System.currentTimeMillis())
+                    return@FileRoomStore
+                }
                 val row = FileV2.classify(clientId, plaintext) ?: return@FileRoomStore
                 if (row.kind == MessageSchema.KIND_UNDECRYPTABLE) Log.w(TAG, "$name seq $seq: file-v2 message rejected")
                 db.insert(name, seq, sender, clientId, row.kind, row.body, row.attachment)
+                // 같은 보낸이의 다음 일반 메시지(답·첨부)가 오면 그 보낸이의 작업 상태는 끝난다.
+                statuses.clear(sender, seq)
             },
         )
         lateinit var room: MlsRoom
@@ -144,7 +158,10 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             // 릴레이가 아는 같은 사람(actor)의 읽음 위치(#571 B) — 재시작 뒤 첫 poll 전에는 0 이므로 로컬 값과 max 로 합친다(웹 mergeRelayRead).
             val relayRead = runCatching { room.readSeq() }.getOrDefault(0L)
             val unread = Unread.isUnread(messages, maxOf(settings.readSeq(name), relayRead))
-            return RoomUi(name, joined(), halted ?: store.haltReason(), messages, unread)
+            val h = halted ?: store.haltReason()
+            val now = System.currentTimeMillis()
+            val live = if (h == null) statuses.visible(now) else emptyList()
+            return RoomUi(name, joined(), h, messages, unread, statuses = live, working = live.lastOrNull()?.text)
         }
     }
 
