@@ -47,4 +47,5 @@ final class LossyTransport: RelayTransport {
     func deleteLobbyKeyPackages(device: DeviceID) async throws -> Int { try await base.deleteLobbyKeyPackages(device: device) }
     func postTyping(room: RoomID, device: DeviceID, clear: Bool) async throws { try await base.postTyping(room: room, device: device, clear: clear) }
     func postRead(room: RoomID, device: DeviceID, seq: Int64) async throws -> Int64 { try await base.postRead(room: room, device: device, seq: seq) }
+    func postMute(room: RoomID, device: DeviceID, muted: Bool) async throws -> Bool { try await base.postMute(room: room, device: device, muted: muted) }
 }

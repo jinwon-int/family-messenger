@@ -64,7 +64,8 @@ struct RoomListView: View {
                 // #571 B: 안 읽음 = 이 기기가 본 위치와 릴레이가 아는 같은 사람의 위치 중 큰 쪽 기준(웹 app.js mergeRelayRead 와 같다).
                 let readSeq = max(prefs.readSeq[room.room] ?? 0, model.relayReadSeq[room.room] ?? 0)
                 let card = CampfireCard(room: room, glance: glance,
-                                        unread: Unread.isUnread(last: glance.last, myDevice: model.deviceId, readSeq: readSeq))
+                                        unread: Unread.isUnread(last: glance.last, myDevice: model.deviceId, readSeq: readSeq),
+                                        muted: model.relayMuted[room.room] == true)
                 Group {
                     if orderEditing {
                         // 순서 모드: 방을 열지 않고 ▲▼(끝에서는 비활성) + 시스템 ≡ 끌기.
@@ -184,6 +185,8 @@ struct CampfireCard: View {
     let glance: RoomGlance
     /// #405 P3: 이 기기에서 아직 안 본 남의 글이 있다(불씨 점 + 굵은 미리보기).
     var unread = false
+    /// 방별 알림(server/mute.go): 이 사람이 이 방 알림을 껐다 — 이름 옆 🔕(웹 목록 `room-muted` 와 같다).
+    var muted = false
 
     private var out: Bool { room.haltedReason != nil }
     private var bright: Bool { glance.hasAgent && !out }
@@ -198,6 +201,10 @@ struct CampfireCard: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(Strings.roomLabel(room.room)).font(.headline).foregroundStyle(out ? Hande.inkDim : Hande.ink)
+                    if muted && !out {
+                        Image(systemName: "bell.slash").font(.caption).foregroundStyle(Hande.inkDim)
+                            .accessibilityLabel(Strings.mutedLabel)
+                    }
                     if glance.hasAgent && !out {
                         Text(Strings.agentBadge).font(.caption2.weight(.semibold))
                             .padding(.horizontal, 6).padding(.vertical, 2)

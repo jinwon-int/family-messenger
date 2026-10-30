@@ -157,6 +157,11 @@ final class AppModel: ObservableObject {
     /// #571 B: 방별로 릴레이가 아는 **같은 사람(actor)** 의 읽음 위치(`GET /events` 의 `read_seq` — 어느 기기든 본 가장 큰 seq).
     /// 동기화 패스의 값과 `POST /read` 응답의 최댓값으로만 오른다(줄어들지 않는다). 안 읽음 판정은 `LocalPrefs.readSeq` 와 이 값의 max.
     @Published private(set) var relayReadSeq: [RoomID: Int64] = [:]
+    /// 방별 알림 설정(server/mute.go): 릴레이가 아는 **같은 사람(actor)** 의 값(`GET /events` 의 `muted`, `POST /mute` 응답).
+    /// 키가 없으면 아직 모름(또는 필드 없는 옛 릴레이) — 방 화면이 알림 버튼을 숨긴다. 웹 room.js `S.muted` 와 같은 규칙.
+    @Published private(set) var relayMuted: [RoomID: Bool] = [:]
+    /// `POST /mute` 가 진행 중인 방 — 그 사이 끝난 동기화 패스(요청 전 값)가 화면의 새 값을 덮지 않게.
+    private var muteInFlight: Set<RoomID> = []
     /// 방별로 이 세션에서 `POST /read` 로 올린 마지막 seq — 같은 값을 두 번 보내지 않는다(웹 room.js `readSentSeq`).
     private var readSentSeq: [RoomID: Int64] = [:]
     /// 릴레이가 읽음 라우트를 모른다(404 http_404) — 이 세션에서는 다시 보내지 않는다(`typingUnsupported` 와 같은 규칙).
@@ -445,7 +450,7 @@ final class AppModel: ObservableObject {
         syncEngines = [:]; unconfirmed = [:]; seenCursors = [:]; lastFlush = [:]
         typing = [:]; typingSentAt = [:]
         agentStatuses = [:]; statusBoards = [:]
-        relayReadSeq = [:]; readSentSeq = [:]
+        relayReadSeq = [:]; readSentSeq = [:]; relayMuted = [:]
         pendingInvites = []; inviteStates = [:]; notice = nil; lobbyLive = nil
         adoptFailed = [:]; accepting = []; unadoptedWelcomes = []; dismissedInvites = []; diagnostics = []
         me = nil; candidates = []; candidateRevision = nil; dismissedCandidates = []; siblingNotes = []
@@ -489,7 +494,7 @@ final class AppModel: ObservableObject {
         credential = nil
         transport = nil
         syncEngines = [:]
-        typing = [:]; relayReadSeq = [:]
+        typing = [:]; relayReadSeq = [:]; relayMuted = [:]
         agentStatuses = [:]; statusBoards = [:]
         me = nil; candidates = []; candidateRevision = nil
         phase = .needsLogin
@@ -696,6 +701,11 @@ final class AppModel: ObservableObject {
                 // #571 B: 같은 사람의 어느 기기든 본 위치 — 패스 값의 최댓값으로만 오른다(옛 릴레이는 0 → 그대로). 같으면 화면을 다시 그리지 않는다.
                 let readNow = passes.map(\.readSeq).max() ?? 0
                 if readNow > (relayReadSeq[record.room] ?? 0) { relayReadSeq[record.room] = readNow }
+                // 방별 알림(mute.go): 마지막으로 값을 실은 패스. 옛 릴레이(nil)는 그대로, POST /mute 진행 중이면 덮지 않는다.
+                if let mutedNow = passes.compactMap(\.muted).last, !muteInFlight.contains(record.room),
+                   relayMuted[record.room] != mutedNow {
+                    relayMuted[record.room] = mutedNow
+                }
                 // 커서가 움직였으면(이 프로세스든 NSE 든 새로 처리·기록했다) 화면이 다시 읽는다.
                 let cursor = try deps.cursors.cursor(room: record.room)
                 if passes.contains(where: { !$0.inserted.isEmpty || !$0.rejected.isEmpty }) || seenCursors[record.room] != cursor {
@@ -842,6 +852,27 @@ final class AppModel: ObservableObject {
             } catch {
                 // 최선 노력: 닿지 않음·거부(403 not_a_member·400 bad_seq 등)는 다음 새 글(더 큰 seq)에 다시 시도한다.
             }
+        }
+    }
+
+    // MARK: - 방별 알림 설정 (server/mute.go)
+
+    /// 방 화면의 🔔/🔕 버튼: 이 사람(actor)의 모든 기기에서 이 방 새 글 알림을 끄거나 켠다(`POST /v2/rooms/{room}/mute`). 릴레이가 꺼진
+    /// 사람의 기기에는 APNs 를 보내지 않는다. 화면은 바로 바뀌고(낙관적), 200 이면 응답 값으로 맞추고, 실패하면 이전 값으로 되돌려
+    /// `false` 를 돌려준다(방 화면이 실패 문구를 보인다). 값을 아직 모르는 방(옛 릴레이)·`ready` 아님·전송 없음이면 아무것도 하지 않는다.
+    @discardableResult
+    func setMuted(room: RoomID, muted: Bool) async -> Bool {
+        guard let transport, case .ready = phase, let before = relayMuted[room] else { return false }
+        relayMuted[room] = muted
+        muteInFlight.insert(room)
+        defer { muteInFlight.remove(room) }
+        do {
+            relayMuted[room] = try await transport.postMute(room: room, device: deviceId, muted: muted)
+            return true
+        } catch {
+            relayMuted[room] = before
+            record("mute: room=\(room) muted=\(muted) failed: \(error)")
+            return false
         }
     }
 
@@ -1440,7 +1471,7 @@ final class AppModel: ObservableObject {
     }
 
     private func expireSession() {
-        credential = nil; transport = nil; syncEngines = [:]; typing = [:]; relayReadSeq = [:]
+        credential = nil; transport = nil; syncEngines = [:]; typing = [:]; relayReadSeq = [:]; relayMuted = [:]
         agentStatuses = [:]; statusBoards = [:]
         phase = .needsLogin
         lastError = Strings.sessionExpired

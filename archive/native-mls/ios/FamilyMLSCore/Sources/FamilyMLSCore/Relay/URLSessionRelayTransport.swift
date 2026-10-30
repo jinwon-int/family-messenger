@@ -263,6 +263,18 @@ public final class URLSessionRelayTransport: RelayTransport {
                         body: try JSONEncoder().encode(ReadPost(device: device, seq: seq)))
     }
 
+    // MARK: - 방별 알림 설정 (server/mute.go)
+
+    public func postMute(room: RoomID, device: DeviceID, muted: Bool) async throws -> Bool {
+        // mute.go handlePostMute: 200 {muted}. 404 no_such_room · 410 room_closed · 403 device_not_allowed/not_a_member · 400.
+        try decode(MuteResponse.self, await perform(try postMuteRequest(room: room, device: device, muted: muted))).muted
+    }
+
+    func postMuteRequest(room: RoomID, device: DeviceID, muted: Bool) throws -> URLRequest {
+        try makeRequest(method: "POST", path: "/v2/rooms/\(Self.pathComponent(room))/mute",
+                        body: try JSONEncoder().encode(MutePost(device: device, muted: muted)))
+    }
+
     // MARK: - 로비 key package (#380 P5-1, server/lobby.go)
 
     public func postLobbyKeyPackages(_ post: KeyPackagePost) async throws -> KeyPackagesResponse {

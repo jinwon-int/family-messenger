@@ -91,6 +91,11 @@ Python에서 하던 릴레이 호출을 브라우저로 옮긴 것이다. 합성
    MLS 좌석·커서(`mls_cursors`, 전달 ack)는 그대로 기기 단위다. Android(한데)는 같은 규칙을 Rust 코어로 쓴다
    (`host-core api::Client::post_read` · `EventsResponse.read_seq` → `MlsRoom.markRead(seq)`/`readSeq()`, #571 후속);
    iOS 는 아직 로컬 readSeq 만 쓴다(후속).
+9. **방별 알림 설정(server/mute.go, 한데 웹·iOS)**: 방 머리글 🔔/🔕 버튼이 `POST /v2/rooms/{room}/mute`
+   `{device, muted}` → 200 `{muted}`를 보낸다. 릴레이는 값을 **actor 단위**(`mls_mute`, 행 있음 = 꺼짐)로 보관하고
+   `GET /events`에 `muted: bool`로 싣는다 — PC 에서 끄면 같은 사람의 폰에도 적용된다. 꺼진 사람의 기기는 그 방
+   application 이벤트의 APNs 알림 대상(`pushTargets`)에서 빠진다(welcome 은 그대로). 게이트·오류 코드는 `/read`와 같다
+   (404 · 410 · 403 `device_not_allowed`/`not_a_member` · 400 `muted_required`). 키가 없는 옛 릴레이면 버튼을 숨긴다.
 
 ### 새 기기 셀프서비스 (#574) — 이 페이지에는 없고 한데 웹에 있다
 

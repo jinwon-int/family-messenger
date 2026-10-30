@@ -75,6 +75,8 @@ public struct SyncPass: Equatable {
     public var typing: [DeviceID] = []
     /// #571 B: 이 페이지의 `read_seq` — 같은 사람(actor)의 어느 기기든 본 가장 큰 seq. 옛 릴레이(필드 없음)·거부·정지 패스는 0.
     public var readSeq: Int64 = 0
+    /// 방별 알림 설정(server/mute.go): 이 페이지의 `muted` — 같은 사람(actor)이 이 방 알림을 껐는가. 옛 릴레이(필드 없음)·거부·정지 패스는 nil.
+    public var muted: Bool? = nil
     /// status-v1(#560): 이 패스에서 해독한 에이전트 작업 상태 줄(seq 순). MessageStore 에는 넣지 않는다 — 커서·ack 는 그대로 전진.
     public var statuses: [AgentStatusLine] = []
 }
@@ -239,6 +241,7 @@ public final class RoomSyncEngine {
         outcome.hasMore = outcome.halted == nil && outcome.deferredSeq == nil && page.events.count >= configuration.pageLimit
         outcome.typing = page.typing ?? []
         outcome.readSeq = page.readSeq ?? 0
+        outcome.muted = page.muted
         return outcome
     }
 

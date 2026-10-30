@@ -141,6 +141,12 @@ CREATE TABLE IF NOT EXISTS mls_read (
 	updated_at INTEGER NOT NULL,
 	PRIMARY KEY (room, actor)
 );
+CREATE TABLE IF NOT EXISTS mls_mute (
+	room       TEXT NOT NULL REFERENCES mls_rooms(room),
+	actor      TEXT NOT NULL,
+	updated_at INTEGER NOT NULL,
+	PRIMARY KEY (room, actor)
+);
 CREATE TABLE IF NOT EXISTS mls_lobby_keypackages (
 	device        TEXT NOT NULL,
 	ref           TEXT NOT NULL,
@@ -945,6 +951,9 @@ type eventsPage struct {
 	// keyed by the actor of the reader's mls_members row, 0 when the reader
 	// is not a tracked member or nobody of that actor has posted a read yet.
 	readSeq int64
+	// muted is the reader's actor-wide notification setting (mute.go),
+	// false when the reader is not a tracked member or never muted the room.
+	muted bool
 }
 
 // maxPageBytes bounds the event bytes one GET page carries (review 2 L: with
@@ -1030,6 +1039,9 @@ func (s *relay) readEvents(room, device string, after int64, limit int, ack *int
 	}
 	if actor := actorOfMember(page.members, device); actor != "" {
 		if page.readSeq, err = readActorSeq(tx, room, actor); err != nil {
+			return eventsPage{}, err
+		}
+		if page.muted, err = readActorMuted(tx, room, actor); err != nil {
 			return eventsPage{}, err
 		}
 	}

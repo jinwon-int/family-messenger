@@ -217,6 +217,11 @@ type eventsResponse struct {
 	// the highest seq any device of the same actor reported as shown, 0 when
 	// none or when the caller is not a tracked member of a seeded room.
 	ReadSeq int64 `json:"read_seq"`
+	// Muted is the caller's actor-wide notification setting for the room
+	// (POST /mute, mute.go): true when any device of the same actor turned
+	// the room's alerts off; false when not, or when the caller is not a
+	// tracked member of a seeded room.
+	Muted bool `json:"muted"`
 }
 
 // keyPackageInput is one posted KeyPackage: an opaque caller-chosen ref as
@@ -625,6 +630,8 @@ func (s *relay) routes() http.Handler {
 	mux.HandleFunc("POST /v2/rooms/{room}/typing", s.handlePostTyping)
 	// Actor-wide read position, surfaced in GET /events `read_seq` (#571 B, read.go).
 	mux.HandleFunc("POST /v2/rooms/{room}/read", s.handlePostRead)
+	// Actor-wide per-room notification setting, surfaced in GET /events `muted` (mute.go).
+	mux.HandleFunc("POST /v2/rooms/{room}/mute", s.handlePostMute)
 	// Room-scoped blob store for detached attachments (#499 file-v2, blobs.go).
 	mux.HandleFunc("POST /v2/rooms/{room}/blobs", s.handlePostBlob)
 	mux.HandleFunc("GET /v2/rooms/{room}/blobs/{id}", s.handleGetBlob)
@@ -1073,7 +1080,7 @@ func (s *relay) handleGetEvents(w http.ResponseWriter, req *http.Request) {
 		if len(page.members) == 0 || memberOf(page.members, device) {
 			typing = s.typing.snapshot(room, device, time.Now().Unix())
 		}
-		writeJSON(w, http.StatusOK, eventsResponse{Epoch: page.room.epoch, Revision: page.room.revision, Events: page.rows, NextAfter: page.nextAfter, Cursor: page.cursor, FirstSeq: page.firstSeq, Members: members, Typing: typing, ReadSeq: page.readSeq})
+		writeJSON(w, http.StatusOK, eventsResponse{Epoch: page.room.epoch, Revision: page.room.revision, Events: page.rows, NextAfter: page.nextAfter, Cursor: page.cursor, FirstSeq: page.firstSeq, Members: members, Typing: typing, ReadSeq: page.readSeq, Muted: page.muted})
 	case errors.As(err, &bad):
 		s.fail(w, http.StatusBadRequest, apiError{Error: "bad_ack", Detail: bad.Error()})
 	case errors.Is(err, errNotMember):

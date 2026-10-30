@@ -116,6 +116,9 @@ export function createRoomSession({room, device, database, worker, relay, storag
     // #571 B: the relay's actor-wide read position (last GET /events `read_seq` — the highest seq any of my devices
     // reported as shown; old relays send no key → 0). Not persisted; app.js merges it into this device's readSeq.
     readSeq: 0,
+    // Per-room notification setting (server/mute.go): the relay's actor-wide `muted` from the last GET /events.
+    // null = not known yet or an old relay without the key (the UI hides the toggle). Not persisted.
+    muted: null,
     // #295 F4: epoch an invite/remove commit was built on when its POST outcome is unknown (else null).
     pendingUncertain: null,
     expectedRoster: null, pendingWelcome: null, relaySeq: 0, epoch: 0, wcursor: 0, roster: [], timer: null, busy: false,
@@ -138,7 +141,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
     try { const v = JSON.parse(storage.getItem(stateKey()) || 'null'); if (v) Object.assign(S, v); } catch (_) { /* ignore */ }
   }
   function resetState() {
-    Object.assign(S, {joined: false, pending: false, pendingUncertain: null, relaySeq: 0, roster: [], expectedRoster: null, pendingWelcome: null, halted: null, epoch: 0, typing: [], readSeq: 0});
+    Object.assign(S, {joined: false, pending: false, pendingUncertain: null, relaySeq: 0, roster: [], expectedRoster: null, pendingWelcome: null, halted: null, epoch: 0, typing: [], readSeq: 0, muted: null});
   }
 
   // ---- worker (multi-store: every message carries this room) ----
@@ -240,6 +243,8 @@ export function createRoomSession({room, device, database, worker, relay, storag
       S.typing = Array.isArray(body.typing) ? body.typing : [];
       // #571 B: where the same person (any device) has read up to — only ever grows within a session.
       if (Number.isSafeInteger(body.read_seq) && body.read_seq > S.readSeq) S.readSeq = body.read_seq;
+      // Notification setting (mute.go): a GET that started before our own POST /mute answered must not undo it.
+      if (typeof body.muted === 'boolean' && !muteBusy) S.muted = body.muted;
       if (body.first_seq > S.relaySeq + 1 && S.relaySeq > 0) notify(strings.room.historyGap(S.relaySeq + 1, body.first_seq - 1), 'warn');
       for (const ev of body.events) {
         const seqBefore = S.relaySeq;
@@ -560,6 +565,28 @@ export function createRoomSession({room, device, database, worker, relay, storag
   // knows a value at least that high. Every answer is ignored except a 200 whose read_seq lifts S.readSeq
   // (another device got there first); an old relay says 404.
   let readSentSeq = 0;
+  // ---- per-room notification setting (server/mute.go) ----
+  // POST /mute {device, muted} sets it for every device of this person (the relay skips their APNs alerts for
+  // this room). Optimistic: the state flips at once, a 200 settles it, anything else restores the old value and
+  // resolves false (the caller shows the failure). muteBusy keeps an in-flight GET from overwriting the flip.
+  let muteBusy = 0;
+  async function setMuted(muted) {
+    if (!S.started || !S.joined || S.halted || typeof muted !== 'boolean') return false;
+    const before = S.muted;
+    S.muted = muted; changed();
+    muteBusy += 1;
+    try {
+      const r = await relay.api('POST', path('mute'), {device, muted});
+      if (r.status === 200 && typeof r.body?.muted === 'boolean') { S.muted = r.body.muted; changed(); return true; }
+      log('알림 설정 실패:', describe(r.status, r.body));
+    } catch (error) {
+      log('알림 설정 실패:', error?.message ?? String(error));
+    } finally {
+      muteBusy -= 1;
+    }
+    S.muted = before; changed();
+    return false;
+  }
   function markRead(seq) {
     if (!S.started || !S.joined || S.halted) return;
     if (!Number.isSafeInteger(seq) || seq <= 0 || seq <= readSentSeq || seq <= S.readSeq) return;
@@ -616,7 +643,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
     get state() { return S; },
     get attachmentPending() { return !!attachments?.pending || !!fileV2s?.pending; },
     get joined() { return S.joined; },
-    open, activate, sync, create, publishKeyPackage, invite, remove, send, sendAttachment, typing, markRead,
+    open, activate, sync, create, publishKeyPackage, invite, remove, send, sendAttachment, typing, markRead, setMuted,
     wipe, stop, registration,
   };
 }

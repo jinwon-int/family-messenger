@@ -209,7 +209,8 @@ function roomListItem(room, onSelect, active, order = null) {
   const emoji = room.emoji || (out ? '🪵' : '🔥');
   const preview = room.preview || (out ? strings.rooms.closedPreview : strings.rooms.noMessages);
   const unread = Boolean(room.unread) && !out;
-  const signature = JSON.stringify([room.roomId, room.name, emoji, preview, room.time, unread, room.state, Boolean(room.hasAgent), room.members ?? 0, active, order ? [order.index, order.count] : null]);
+  const muted = Boolean(room.muted) && !out;
+  const signature = JSON.stringify([room.roomId, room.name, emoji, preview, room.time, unread, muted, room.state, Boolean(room.hasAgent), room.members ?? 0, active, order ? [order.index, order.count] : null]);
   const classes = ['room-item', `state-${room.state}`, unread ? 'unread' : '', room.hasAgent && !out ? 'bright' : ''].filter(Boolean).join(' ');
   const name = room.name || room.roomId;
   const content = [
@@ -219,6 +220,9 @@ function roomListItem(room, onSelect, active, order = null) {
         // 이름과 N 배지를 한 묶음으로 둔다 — 긴 이름은 말줄임되고 배지는 이름 바로 옆에 항상 보인다.
         el('span', { class: 'room-title' },
           el('span', { class: 'room-name' }, name),
+          muted ? el('span', { class: 'muted-mark', 'data-testid': 'room-muted', title: strings.rooms.mutedLabel },
+            el('span', { 'aria-hidden': 'true' }, '🔕'),
+            el('span', { class: 'visually-hidden' }, strings.rooms.mutedLabel)) : null,
           unread ? el('span', { class: 'unread-badge', title: strings.rooms.unreadLabel },
             el('span', { 'aria-hidden': 'true' }, strings.rooms.unreadBadge),
             el('span', { class: 'visually-hidden' }, strings.rooms.unreadLabel)) : null),
@@ -791,10 +795,15 @@ function buildRoom(room) {
       // 멤버 수는 사람 단위(같은 사람의 PC·폰 = 한 명, 2026-10-28 오너) — 멤버 시트의 사람 묶음과 같은 수.
       el('span', { class: 'subtitle' }, strings.chat.members(participantCount(members)))),
     el('div', { class: 'tools' },
+      // 방별 알림(mute.go): 켜짐 🔔 / 꺼짐 🔕. muted 가 boolean 일 때만(옛 릴레이·미참여·정지 방은 버튼 없음).
+      typeof room.muted === 'boolean' ? el('button', { type: 'button', class: 'ghost small mute-toggle', 'data-testid': 'room-mute',
+        'aria-pressed': room.muted ? 'true' : 'false', 'aria-label': room.muted ? strings.chat.unmuteButton : strings.chat.muteButton,
+        title: room.muted ? strings.chat.unmuteButton : strings.chat.muteButton,
+        onclick: () => liveProps.get(screen)?.onToggleMute?.() }, room.muted ? '🔕' : '🔔') : null,
       room.onOpenBox ? el('button', { type: 'button', class: 'ghost small box-toggle', 'data-testid': 'open-box', 'aria-label': strings.box.toggle, onclick: () => liveProps.get(screen)?.onOpenBox?.() }, '🗂') : null,
       el('button', { type: 'button', class: 'ghost small', onclick: () => liveProps.get(screen)?.onOpenMembers?.() }, strings.chat.membersButton),
       el('button', { type: 'button', class: 'secondary small', 'data-testid': 'open-invite', disabled: room.joined ? null : true, onclick: () => liveProps.get(screen)?.onOpenInvite?.() }, strings.chat.invite))),
-  JSON.stringify([room.name, room.roomId, participantCount(members), Boolean(room.halted), Boolean(room.joined), Boolean(room.onOpenBox), room.typing ?? '']));
+  JSON.stringify([room.name, room.roomId, participantCount(members), Boolean(room.halted), Boolean(room.joined), Boolean(room.onOpenBox), room.typing ?? '', typeof room.muted === 'boolean' ? room.muted : null]));
   const notice = room.notice?.text ? signed(el('p', { class: `status ${room.notice.tone || 'info'}`, role: 'status', 'data-part': 'notice' }, room.notice.text), JSON.stringify(room.notice)) : null;
   const list = el('ul', { class: 'timeline', tabindex: '-1', 'aria-live': 'polite', 'aria-label': strings.chat.timelineLabel, 'data-testid': 'timeline' },
     room.timeline.length === 0 ? signed(el('li', { class: 'empty', 'data-key': 'empty' }, strings.chat.empty), 'empty') : timelineRows(room.timeline, room.onOpenAttachment, room.onRetryPreview ?? null),
