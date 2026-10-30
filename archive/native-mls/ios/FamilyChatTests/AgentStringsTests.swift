@@ -33,6 +33,7 @@ final class AgentStringsTests: XCTestCase {
     func testPreviewLineDropsMarkdownNoise() {
         XCTAssertEqual(Strings.previewLine(name: "공명", body: "## 결과\n| 방 | 모드 |\n**두 개**입니다 `room_status`"),
                        "공명: 결과 방 | 모드 | 두 개입니다 room_status")
+        XCTAssertEqual(Strings.previewLine(name: "", body: "**두 개**입니다"), "두 개입니다", "1:1 방 — 이름 접두 없음")
     }
 
     func testMessageTimeAndDayLabels() {

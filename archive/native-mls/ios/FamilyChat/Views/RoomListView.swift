@@ -262,7 +262,8 @@ struct CampfireCard: View {
         if out { return Strings.roomClosedPreview }
         guard let last = glance.last else { return Strings.roomNoMessages }
         let body = last.kind.isFile ? Strings.attachmentImage : last.body
-        return Strings.previewLine(name: AgentRosterNames.person(last.senderDevice), body: body)
+        // 1:1 방은 방 이름이 곧 상대라 「이름: 」 접두를 빼고 내용만(오너 2026-10-30, 웹 한데와 같다). 여럿이 말한 방은 누가 했는지 남긴다.
+        return Strings.previewLine(name: glance.isOneToOne ? "" : AgentRosterNames.person(last.senderDevice), body: body)
     }
 }
 

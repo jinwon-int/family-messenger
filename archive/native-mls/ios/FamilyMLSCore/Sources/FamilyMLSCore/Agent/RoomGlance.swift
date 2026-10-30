@@ -13,6 +13,11 @@ public struct RoomGlance: Equatable {
 
     public var hasAgent: Bool { !agents.isEmpty }
 
+    /// 1:1 대화로 보이는가 — 이 방에서 말한 참여자(사람 actor + 에이전트 기기)가 2명 이하. 목록 미리보기의 「이름: 」 접두를
+    /// 뺄지 정한다(방 이름이 이미 상대라 중복 — 오너 2026-10-30, 웹 한데 `isOneToOne` 2026-10-26 과 같은 결과).
+    /// 웹은 MLS 명단(roster)으로 세지만 iOS 목록은 방마다 엔진을 열지 않으므로 말한 사람으로 근사한다.
+    public var isOneToOne: Bool { people.count + agents.count <= 2 }
+
     /// 점(둘러앉은 자리)은 이만큼만 그린다.
     public static let maxSeats = 6
 
