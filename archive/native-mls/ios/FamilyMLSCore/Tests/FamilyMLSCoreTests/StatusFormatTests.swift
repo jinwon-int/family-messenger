@@ -110,6 +110,22 @@ final class StatusFormatTests: XCTestCase {
         XCTAssertEqual(board.visible(now: now.addingTimeInterval(AgentStatusBoard.ttl + 1)).count, 0)
     }
 
+    func testRoomListLineIsTheNewestVisibleStatusAndNilWhenNone() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        var board = AgentStatusBoard()
+        XCTAssertNil(AgentStatusBoard.listLine(board.visible(now: now)), "no status → the list shows its normal preview")
+        board.apply(line(bot, "⏳ Working — 5s", 10, at: now), now: now)
+        board.apply(line("seoseo-bot", "⏳ Working — 20s | Bash: df", 14, at: now), now: now)
+        board.apply(line(bot, "⏳ Working — 10s | Read", 12, at: now), now: now)
+        XCTAssertEqual(AgentStatusBoard.listLine(board.visible(now: now)), "⏳ Working — 20s | Bash: df", "newest seq across senders")
+        board.clear(sender: "seoseo-bot", seq: 15)
+        XCTAssertEqual(AgentStatusBoard.listLine(board.visible(now: now)), "⏳ Working — 10s | Read")
+        board.clear(sender: bot, seq: 16)
+        XCTAssertNil(AgentStatusBoard.listLine(board.visible(now: now)), "reply arrived → back to the normal preview")
+        board.apply(line(bot, "⏳ Working — 5s", 17, at: now), now: now)
+        XCTAssertNil(AgentStatusBoard.listLine(board.visible(now: now.addingTimeInterval(AgentStatusBoard.ttl + 1))), "expired → normal preview")
+    }
+
     func testBlankLinesAreIgnoredAndLongLinesBounded() {
         var board = AgentStatusBoard()
         XCTAssertFalse(board.apply(line(bot, "   \n", 1, at: Date())))
