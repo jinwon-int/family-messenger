@@ -16,17 +16,12 @@ enum AgentPalette {
 /// 에이전트 이름 머리줄: ● 공명 · 에이전트
 struct AgentHeader: View {
     let name: String
-    var time: Date? = nil
     var body: some View {
         HStack(spacing: 6) {
             Circle().fill(AgentPalette.accent).frame(width: 8, height: 8)
                 .shadow(color: AgentPalette.accent.opacity(0.8), radius: 3)
             Text(name).font(.caption.weight(.semibold))
             Text("· \(Strings.agentBadge)").font(.caption).foregroundStyle(.secondary)
-            if let time {
-                Spacer(minLength: 6)
-                Text(Strings.messageTime(time)).font(.caption2).foregroundStyle(.secondary)
-            }
         }
         .accessibilityElement(children: .combine)
     }
@@ -40,8 +35,13 @@ struct AgentMessageCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            AgentHeader(name: name, time: time)
+            AgentHeader(name: name)
             MarkdownBlocksView(blocks: AgentMarkdown.parse(text))
+            // 시간은 카드 오른쪽 아래(오너 2026-10-30 — 전에는 머리줄 오른쪽 위). 글을 다 읽은 자리에 둔다.
+            if let time {
+                Text(Strings.messageTime(time)).font(.caption2).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -158,8 +158,7 @@ struct ApprovalCard: View {
                 Text("🔥")
                 Text(Strings.approvalTitle(name)).font(.subheadline.weight(.semibold))
                 Spacer()
-                Text(time.map { "#\(request.number) · \(Strings.messageTime($0))" } ?? "#\(request.number)")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text("#\(request.number)").font(.caption).foregroundStyle(.secondary)
             }
             if !request.summary.isEmpty {
                 Text(request.summary).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
@@ -181,6 +180,11 @@ struct ApprovalCard: View {
                 Label(Strings.approvalDenied, systemImage: "xmark.circle.fill").font(.footnote).foregroundStyle(.red)
             case .closed:
                 Label(Strings.approvalClosed, systemImage: "minus.circle").font(.footnote).foregroundStyle(.secondary)
+            }
+            // 시간은 카드 오른쪽 아래(오너 2026-10-30, AgentMessageCard 와 같은 자리).
+            if let time {
+                Text(Strings.messageTime(time)).font(.caption2).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
         .padding(12)

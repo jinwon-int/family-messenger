@@ -107,6 +107,31 @@ extension Strings {
         let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: now)
         return (sameYear ? dayFormatter : dayYearFormatter).string(from: date)
     }
+
+    private static let shortDayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "ko_KR")
+        f.dateFormat = "M월 d일"
+        return f
+    }()
+    private static let shortDayYearFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "ko_KR")
+        f.dateFormat = "yyyy년 M월 d일"
+        return f
+    }()
+
+    /// 방 목록 카드 오른쪽: 마지막 말이 언제였나(오너 2026-10-30) — 방금 · N분 전 · N시간 전 · N일 전(7일 미만) · 10월 18일 · 2025년 10월 18일.
+    /// 기준은 `MessageRecord.receivedAt`(동기화된 글 = 릴레이 기록 시각). 시계가 어긋나 미래 시각이면 「방금」.
+    static func relativeTime(_ date: Date, now: Date = Date(), calendar: Calendar = .current) -> String {
+        let seconds = now.timeIntervalSince(date)
+        if seconds < 60 { return "방금" }
+        if seconds < 3_600 { return "\(Int(seconds / 60))분 전" }
+        if seconds < 86_400 { return "\(Int(seconds / 3_600))시간 전" }
+        if seconds < 7 * 86_400 { return "\(Int(seconds / 86_400))일 전" }
+        let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: now)
+        return (sameYear ? shortDayFormatter : shortDayYearFormatter).string(from: date)
+    }
 }
 
 // #414 오프닝 화면.

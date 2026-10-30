@@ -230,9 +230,20 @@ struct CampfireCard: View {
                 }
             }
             Spacer(minLength: 0)
-            if unread && !out {
-                Circle().fill(Hande.ember).frame(width: 10, height: 10).shadow(color: Hande.ember.opacity(0.9), radius: 4)
-                    .accessibilityLabel(Strings.unreadLabel)
+            // 오른쪽 칸: 위 = 마지막 말 시각(방금 · N분 전 · N시간 전 …, 오너 2026-10-30), 아래 = 안 읽음 점.
+            VStack(alignment: .trailing, spacing: 8) {
+                if let last = glance.last, !out {
+                    // 목록을 열어 둔 동안에도 「N분 전」이 흘러가도록 30초마다 다시 그린다.
+                    TimelineView(.periodic(from: .now, by: 30)) { context in
+                        Text(Strings.relativeTime(last.receivedAt, now: context.date))
+                            .font(.caption2).foregroundStyle(unread ? Hande.ember : Hande.inkDim)
+                            .fixedSize()
+                    }
+                }
+                if unread && !out {
+                    Circle().fill(Hande.ember).frame(width: 10, height: 10).shadow(color: Hande.ember.opacity(0.9), radius: 4)
+                        .accessibilityLabel(Strings.unreadLabel)
+                }
             }
         }
         .padding(12)

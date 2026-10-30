@@ -47,6 +47,26 @@ final class AgentStringsTests: XCTestCase {
         XCTAssertTrue(time.hasPrefix("오전") || time.hasPrefix("오후"), time)
     }
 
+    /// 방 목록 카드 오른쪽의 마지막 말 시각(오너 2026-10-30).
+    func testRelativeTimeForRoomList() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Seoul")!
+        let now = Date(timeIntervalSince1970: 1_792_306_680)  // 2026-10-18 15:58 KST
+        func rel(_ ago: TimeInterval) -> String { Strings.relativeTime(now.addingTimeInterval(-ago), now: now, calendar: calendar) }
+        XCTAssertEqual(rel(0), "방금")
+        XCTAssertEqual(rel(59), "방금")
+        XCTAssertEqual(rel(-120), "방금")  // 시계 어긋남(미래)
+        XCTAssertEqual(rel(60), "1분 전")
+        XCTAssertEqual(rel(59 * 60 + 59), "59분 전")
+        XCTAssertEqual(rel(3_600), "1시간 전")
+        XCTAssertEqual(rel(23 * 3_600 + 59 * 60), "23시간 전")
+        XCTAssertEqual(rel(86_400), "1일 전")
+        XCTAssertEqual(rel(6 * 86_400), "6일 전")
+        let older = rel(10 * 86_400)
+        XCTAssertTrue(older.hasSuffix("일") && older.contains("월") && !older.contains("년"), older)
+        XCTAssertTrue(rel(400 * 86_400).contains("년"))
+    }
+
     func testListHeaderWordmarkAndTagline() {
         XCTAssertEqual(Strings.wordmark, "hande")
         XCTAssertEqual(Strings.campfireSubtitle, "오늘 밤, 모닥불에 한데 모여")
