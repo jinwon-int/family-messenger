@@ -75,6 +75,8 @@ public struct SyncPass: Equatable {
     public var typing: [DeviceID] = []
     /// #571 B: 이 페이지의 `read_seq` — 같은 사람(actor)의 어느 기기든 본 가장 큰 seq. 옛 릴레이(필드 없음)·거부·정지 패스는 0.
     public var readSeq: Int64 = 0
+    /// status-v1(#560): 이 패스에서 해독한 에이전트 작업 상태 줄(seq 순). MessageStore 에는 넣지 않는다 — 커서·ack 는 그대로 전진.
+    public var statuses: [AgentStatusLine] = []
 }
 
 public enum SendOutcome: Equatable {
@@ -340,7 +342,10 @@ public final class RoomSyncEngine {
                 if try isStored(ev.seq) {
                     break   // D4(b): 다른 프로세스가 이미 복호화·기록했다 — MLS 는 같은 메시지를 다시 풀 수 없다(재시도 = 거부)
                 }
-                if try storeApplication(ev, engine: engine, dirty: &dirty) { pass.inserted.append(ev.seq) }
+                if StatusFormat.isClientId(ev.clientId) {
+                    // status-v1(#560): 저장하지 않는다(이력·안 읽음·미리보기·알림 밖). 해독 불가도 행을 남기지 않는다.
+                    if let line = try decryptStatus(ev, engine: engine, dirty: &dirty) { pass.statuses.append(line) }
+                } else if try storeApplication(ev, engine: engine, dirty: &dirty) { pass.inserted.append(ev.seq) }
                 else { pass.rejected.append(ev.seq) }
             default:
                 break   // Welcome 이전의 commit·application 은 이 기기가 읽을 것이 아니다
@@ -433,6 +438,24 @@ public final class RoomSyncEngine {
             try messages.insert(record)
         }
         return ok
+    }
+
+    /// status-v1(#560): `status-<uuid>` application 1건을 해독만 한다(수신 ratchet 전진 → dirty) — MessageStore 에 쓰지 않는다.
+    /// 해독 거부·형식 오류·발신자 불일치는 nil: 지나간 작업 상태는 다시 볼 가치가 없고, 다른 프로세스(NSE)가 이미 해독해 ratchet 이
+    /// 지나간 경우(D4 — status 는 `isStored` 로 거를 수 없다)에도 「해독할 수 없는 메시지」 행이 생기지 않는다.
+    private func decryptStatus(_ ev: StoredEvent, engine: MlsEngine, dirty: inout Bool) throws -> AgentStatusLine? {
+        do {
+            let output = try engine.dispatch(.decrypt, Framing.decryptInput(room: room, ciphertext: ev.bytes))
+            dirty = true
+            let decrypted = try Framing.parseDecrypted(output)
+            guard decrypted.senderDevice == ev.device else { return nil }
+            return AgentStatusLine(sender: decrypted.senderDevice, text: String(decoding: decrypted.plaintext, as: UTF8.self),
+                                   seq: ev.seq, sentAt: Self.sentAt(ev))
+        } catch EngineError.rejected {
+            return nil
+        } catch is Framing.FramingError {
+            return nil
+        }
     }
 
     private func undecryptable(_ ev: StoredEvent, reason: String) -> MessageRecord {
