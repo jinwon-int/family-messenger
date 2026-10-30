@@ -156,6 +156,40 @@ final class AppModelTests: XCTestCase {
         return model
     }
 
+    // MARK: status-v1 (#560)
+
+    /// 작업 상태 임시 말풍선: 보낸이별 최신 1개, 그 보낸이의 다음 **저장된** 글(답)이 오면 사라지고, 5분 뒤 사라진다. 저장소에는 아무것도 쓰지 않는다.
+    func testAgentStatusIsTransientPerSenderAndClearedByTheReply() throws {
+        let store = InMemoryMessageStore()
+        let deps = AppModel.Dependencies(
+            engineFactory: FakeFactory(), stateStore: InMemoryStateStore(), messageStore: store,
+            outbox: InMemoryOutboxStore(), cursors: InMemoryCursorStore(),
+            identityProvider: { "owner-iphone-abc123" }, expectedDecryptFormat: { 2 },
+            makeTransport: { _ in InMemoryRelay() })
+        let model = AppModel(dependencies: deps)
+        let now = Date()
+        let bot = "dungae-bot"
+        try model.updateAgentStatuses("family", [AgentStatusLine(sender: bot, text: "⏳ Working — 5s", seq: 10, sentAt: now),
+                                                 AgentStatusLine(sender: bot, text: "⏳ Working — 10s | Bash: ls", seq: 11, sentAt: now)], now: now)
+        XCTAssertEqual(model.agentStatuses["family"]?.map(\.text), ["⏳ Working — 10s | Bash: ls"], "one bubble per sender, newest text")
+        XCTAssertEqual(try store.messages(room: "family", after: 0, limit: 10), [], "a status is never stored")
+        // 사람의 글은 에이전트 말풍선을 지우지 않는다.
+        try store.insert(MessageRecord(room: "family", seq: 12, senderDevice: "owner-iphone-abc123", clientId: "c1", kind: .text,
+                                       body: "또?", attachment: nil, receivedAt: now, decryptedBy: .app))
+        try model.updateAgentStatuses("family", [], now: now)
+        XCTAssertEqual(model.agentStatuses["family"]?.count, 1)
+        // 같은 보낸이의 답(더 큰 seq)이 저장되면 사라진다 — NSE 가 저장했어도 같다(저장소를 본다).
+        try store.insert(MessageRecord(room: "family", seq: 13, senderDevice: bot, clientId: "\(bot)-echo-1", kind: .text,
+                                       body: "답", attachment: nil, receivedAt: now, decryptedBy: .nse))
+        try model.updateAgentStatuses("family", [], now: now)
+        XCTAssertNil(model.agentStatuses["family"])
+        // 답이 없으면 5분 뒤 사라진다.
+        try model.updateAgentStatuses("family", [AgentStatusLine(sender: bot, text: "⏳ Working — 5s", seq: 14, sentAt: now)], now: now)
+        XCTAssertEqual(model.agentStatuses["family"]?.count, 1)
+        try model.updateAgentStatuses("family", [], now: now.addingTimeInterval(AgentStatusBoard.ttl + 1))
+        XCTAssertNil(model.agentStatuses["family"])
+    }
+
     func testTypingFromRelayIsSurfacedPerRoomAndCleared() async throws {
         let relay = InMemoryRelay()
         let model = try await readyModel(relay: relay)
