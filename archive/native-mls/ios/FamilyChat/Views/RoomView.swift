@@ -103,6 +103,10 @@ struct RoomView: View {
                             }
                         }
                         .id(Self.thinkingRowID)
+                        // status-v1(#560): 에이전트 작업 상태 임시 말풍선(보낸이마다 하나 — 제자리 갱신, 답이 오면·5분 뒤 사라짐). 저장하지 않는다.
+                        ForEach(model.agentStatuses[room] ?? []) { status in
+                            AgentStatusRow(name: AgentRoster.displayName(device: status.sender, names: Strings.agentNames), text: status.text)
+                        }
                         Color.clear.frame(height: 1).id(Self.bottomSentinelID)
                             // 표지의 **실제** 위치(스크롤 뷰 좌표) — 배치가 끝난 뒤 표지가 화면 아래에 남아 있으면 한 번 더 맞춘다.
                             .background(GeometryReader { geo in

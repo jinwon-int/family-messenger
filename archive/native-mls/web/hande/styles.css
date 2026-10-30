@@ -550,6 +550,8 @@ main.shell[data-view="room"] .pane-list { display: none; }
 .bubble[data-me="true"] { align-self: flex-end; align-items: flex-end; }
 .bubble[data-me="true"] .body { background: var(--bubble-me); color: var(--bubble-me-text); border-color: transparent; border-radius: var(--radius-l); border-bottom-right-radius: 5px; box-shadow: var(--ember-shadow); }
 .bubble.kind-undecryptable .body { color: var(--text-2); font-style: italic; border-style: dashed; background: transparent; }
+/* status-v1(#560): 에이전트 작업 상태 임시 말풍선 — 흐린 톤·한 줄 크기, 답이 오면 사라진다. */
+.bubble.kind-status .body { color: var(--text-2); font-size: 0.9em; background: transparent; border-style: dashed; opacity: 0.85; }
 .bubble .body.media, .bubble .body.file { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-2); }
 /* 사진 말풍선: 베젤 최소화(3px)·사진 확대 — 오너 요청 2026-10-27, iOS #533 과 같은 모양(사진이 말풍선을 거의 채운다).
    모서리 15px = 말풍선 곡률 18px − 3px. 사진에는 「내려받기」 버튼이 없다(크게 보기에서 저장). */

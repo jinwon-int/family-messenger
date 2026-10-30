@@ -15,6 +15,7 @@ import {parseStageReport, checkCommit, outerForCommit, resolveUncertainPending} 
 import {attachmentOutbox, isAttachment} from './relay-attachments.js';
 import {isFileV2, parseDescriptor, decryptFile, safeFileName} from './file-v2.js';
 import {fileV2Outbox, sendsFileV2} from './file-v2-outbox.js';
+import {isStatusClient} from './status-v1.js';
 import {strings} from './strings.js';
 import {actorOf, DEVICE} from './identity.js';
 
@@ -104,6 +105,7 @@ export function nextDeviceId(dev) {
  * @param {{api, roomPath, describe}} deps.relay
  * @param {Storage} deps.storage  localStorage (page state, attachment outbox)
  * @param {object} deps.on  callbacks: change(), message(entry), log(text), notice(text, tone), synced(), offline(bool)
+ *   status({sender, text, seq, ts}) — status-v1 (#560) live agent line, transient (never history)
  * @param {object} [deps.policy]  commit policy functions (injectable for tests)
  * @param {() => number} [deps.now]  clock for the typing throttle (injectable for tests)
  */
@@ -334,7 +336,13 @@ export function createRoomSession({room, device, database, worker, relay, storag
         if (out.rejected === true) { await out.ack(); log(`해독 거부 → 건너뜀(seq ${ev.seq}, ${ev.device})`); emitUndecryptable(ev); continue; }
         const sender = out.sender ?? ev.device, client = out.client ?? '';
         const ts = Number.isSafeInteger(ev.created_at) ? ev.created_at * 1000 : Date.now();
-        if (isAttachment(ev.client_id)) {
+        if (isStatusClient(ev.client_id)) {
+          // status-v1 (#560): the agent's live 「⏳ Working …」 line — a transient bubble, never history, never a
+          // timeline entry (so no unread badge, no list preview). Undecodable bytes are simply dropped.
+          let text = null;
+          try { text = decoder.decode(new Uint8Array(out.output)); } catch (_) { text = null; }
+          if (text !== null) on.status?.({sender, text, seq: ev.seq, ts});
+        } else if (isAttachment(ev.client_id)) {
           const bytes = new Uint8Array(out.output);
           emitAttachment(sender, bytes.length, ev.seq, ts, async () => bytes);
           await remember({seq: ev.seq, sender, client, kind: 'attachment', text: '', bytes: Array.from(bytes)});

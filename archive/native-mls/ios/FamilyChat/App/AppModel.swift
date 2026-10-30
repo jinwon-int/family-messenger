@@ -143,6 +143,11 @@ final class AppModel: ObservableObject {
     /// #562: 방별로 지금 글을 쓰는 **다른** 기기(릴레이 `GET /events` 의 `typing` — 요청 기기 제외, TTL 6s). 방 화면 제목 옆 「입력중…」.
     /// 동기화 한 바퀴마다 그 방의 마지막 페이지 값으로 바꾸고, 릴레이에 닿지 않으면 비운다(오래된 신호를 보이지 않게).
     @Published private(set) var typing: [RoomID: [DeviceID]] = [:]
+    /// status-v1(#560): 방별 에이전트 작업 상태 임시 말풍선(`⏳ Working — 10s | Bash: …`) — 방 화면 타임라인 맨 아래. 저장하지 않는다
+    /// (MessageStore 밖 → 안 읽음·목록 미리보기·「내 마지막 말」·복사·알림에 들어가지 않는다). 동기화 한 바퀴마다 다시 판정한다.
+    @Published private(set) var agentStatuses: [RoomID: [AgentStatusBoard.Entry]] = [:]
+    /// `agentStatuses` 의 원본 — 방별 보낸이 → 최신 status(`AgentStatusBoard`).
+    private var statusBoards: [RoomID: AgentStatusBoard] = [:]
     /// 방별 마지막 타이핑 신호 시각(`Dependencies.typingInterval` 간격 제한). clear 를 보내면 지운다.
     private var typingSentAt: [RoomID: Date] = [:]
     /// 릴레이가 타이핑 라우트를 모른다(404 http_404) — 이 세션에서는 다시 보내지 않는다(`lobbyUnsupported` 와 같은 규칙).
@@ -444,6 +449,7 @@ final class AppModel: ObservableObject {
     private func discardRuntimeState() {
         syncEngines = [:]; unconfirmed = [:]; seenCursors = [:]; lastFlush = [:]
         typing = [:]; typingSentAt = [:]
+        agentStatuses = [:]; statusBoards = [:]
         relayReadSeq = [:]; readSentSeq = [:]; relayMuted = [:]
         pendingInvites = []; inviteStates = [:]; notice = nil; lobbyLive = nil
         adoptFailed = [:]; accepting = []; unadoptedWelcomes = []; dismissedInvites = []; diagnostics = []
@@ -489,6 +495,7 @@ final class AppModel: ObservableObject {
         transport = nil
         syncEngines = [:]
         typing = [:]; relayReadSeq = [:]; relayMuted = [:]
+        agentStatuses = [:]; statusBoards = [:]
         me = nil; candidates = []; candidateRevision = nil
         phase = .needsLogin
         pushStatus = .off
@@ -689,6 +696,8 @@ final class AppModel: ObservableObject {
                 // #562: 이 방에서 지금 글을 쓰는 다른 기기 — 마지막 페이지 값. 같으면 화면을 다시 그리지 않는다.
                 let typingNow = passes.last?.typing ?? []
                 if typing[record.room] != typingNow { typing[record.room] = typingNow }
+                // status-v1(#560): 이 바퀴의 작업 상태 줄 반영 · 답이 온 보낸이는 지움 · 5분 만료.
+                try? updateAgentStatuses(record.room, passes.flatMap(\.statuses))   // 말풍선 판정 실패가 동기화를 멈추지 않게
                 // #571 B: 같은 사람의 어느 기기든 본 위치 — 패스 값의 최댓값으로만 오른다(옛 릴레이는 0 → 그대로). 같으면 화면을 다시 그리지 않는다.
                 let readNow = passes.map(\.readSeq).max() ?? 0
                 if readNow > (relayReadSeq[record.room] ?? 0) { relayReadSeq[record.room] = readNow }
@@ -764,6 +773,31 @@ final class AppModel: ObservableObject {
         case .other: lastError = "\(error)"; record("error: \(error)")
         }
     }
+
+    // MARK: - 에이전트 작업 상태 (status-v1, #560)
+
+    /// 방 하나의 임시 말풍선을 다시 판정한다: 이 바퀴 패스들의 status 줄(`SyncPass.statuses`)을 반영하고, 남은 status 보다 뒤에 **저장된** 같은 보낸이의 글이 있으면
+    /// (이 프로세스든 NSE 든 저장했다) 지우고, 5분 지난 것을 지운다. 바뀌었을 때만 화면에 올린다.
+    func updateAgentStatuses(_ room: RoomID, _ lines: [AgentStatusLine], now: Date = Date()) throws {
+        var board = statusBoards[room] ?? AgentStatusBoard()
+        for line in lines { board.apply(line, now: now) }
+        if let floor = board.oldestSeq {
+            // 행 머리만(첨부 바이트 없이) — 말풍선이 떠 있는 동안 4초마다 읽으므로 사진 본체를 올리지 않는다.
+            let after: [MessageRecord]
+            if let loading = deps.messageStore as? AttachmentLoading {
+                after = try loading.messageHeads(room: room, after: floor, limit: Self.statusClearScan).map(\.record)
+            } else {
+                after = try deps.messageStore.messages(room: room, after: floor, limit: Self.statusClearScan)
+            }
+            for message in after where message.kind != .system { board.clear(sender: message.senderDevice, seq: message.seq) }
+        }
+        board.expire(now: now)
+        statusBoards[room] = board.isEmpty ? nil : board
+        let visible = board.visible(now: now)
+        if (agentStatuses[room] ?? []) != visible { agentStatuses[room] = visible.isEmpty ? nil : visible }
+    }
+    /// 소멸 판정에 읽는 status 뒤 글 수 상한(그보다 많이 쌓였으면 5분 만료가 먼저 지운다).
+    static let statusClearScan = 200
 
     // MARK: - 타이핑 신호 (#562)
 
@@ -1438,6 +1472,7 @@ final class AppModel: ObservableObject {
 
     private func expireSession() {
         credential = nil; transport = nil; syncEngines = [:]; typing = [:]; relayReadSeq = [:]; relayMuted = [:]
+        agentStatuses = [:]; statusBoards = [:]
         phase = .needsLogin
         lastError = Strings.sessionExpired
     }

@@ -12,6 +12,7 @@ import {readDraft, writeDraft} from './drafts.js';
 import {readReadSeq, writeReadSeq, latestSeq, isUnread} from './read-seq.js';
 import {readConsent, writeConsent, agentsIn, needsConsent} from './agent-consent.js';
 import {isLocalOnlyRoom, forgetRoomKeys} from './local-room.js';
+import {createStatusBoard, applyStatus, clearStatusOnMessage, visibleStatuses} from './status-v1.js';
 import {createWorkerBridge} from './worker-bridge.js';
 import {createRelay} from './relay.js';
 import {createIdentityStore, databaseFor, ROOM, IDENTITY_DATABASE, LOBBY_DATABASE} from './identity.js';
@@ -47,7 +48,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   const app = {
     phase: 'starting', message: strings.app.starting, error: null, fatal: null,
     actor: null, device: null, subject: null, defaultRoom: DEFAULT_ROOM, dev: null,
-    rooms: new Map(),          // roomId → {session, entries, entryKeys, readSeq, order}
+    rooms: new Map(),          // roomId → {session, entries, entryKeys, readSeq, order, statuses}
     current: null, roomOpen: false, draft: new Map(), sending: false,
     invites: [], adoptFailed: new Map(), dismissed: new Set(), lobbyDue: true, pendingWelcomeRefs: {set: new Set(), complete: true},
     filebox: null, boxOpen: false, boxTab: 'attachments', boxRefresh: 0, pendingJump: null,   // 오른쪽 보관함 pane: 첨부 탭(#544 D) + 파일보관함 iframe(config.json filebox)
@@ -162,7 +163,9 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     const room = R ? (() => {
       const S = R.session.state;
       return {roomId: app.current, name: roomLabel(app.current), members: S.roster.slice(), joined: S.joined, halted: S.halted ? {...S.halted} : null,
-        timeline: R.entries, draft: app.draft.get(app.current) ?? '', onSend: sendText, onAttach: sendAttachment, onOpenAttachment: e => e.load(), onRetryPreview: loadPreview,
+        timeline: R.entries, draft: app.draft.get(app.current) ?? '',
+        // status-v1(#560): 에이전트 「⏳ Working …」 임시 말풍선 — 타임라인 맨 아래, entries 밖(안 읽음·미리보기 제외).
+        statuses: visibleStatuses(R.statuses).map(st => ({sender: st.sender, senderName: displayName(st.sender), text: st.text})), onSend: sendText, onAttach: sendAttachment, onOpenAttachment: e => e.load(), onRetryPreview: loadPreview,
         onBack: () => { app.roomOpen = false; render(); }, onOpenInvite: openInvite, onOpenMembers: openInvite, onOpenBox: toggleBox,
         consentRequired: consentRequired(R), onOpenConsent: () => openConsentSheet(app.current),
         // 입력 중 신호(#562): 글이 있으면 「입력 중」(3초에 한 번), 비우면 해제. 릴레이 응답은 보지 않는다.
@@ -194,6 +197,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   function addEntry(roomId, m) {
     const R = app.rooms.get(roomId);
     if (!R) return;
+    // status-v1(#560): 보낸이의 다음 일반 메시지(답·첨부)가 오면 그 보낸이의 작업 상태 말풍선은 끝난다.
+    if (m.sender && m.kind !== 'system') clearStatusOnMessage(R.statuses, m.sender, m.seq);
     const key = m.key ?? (m.seq !== null && m.seq !== undefined ? `seq-${m.seq}` : `sys-${R.entries.length}`);
     if (R.entryKeys.has(key)) return;
     R.entryKeys.add(key);
@@ -216,6 +221,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     return createRoomSession({room: roomId, device: app.device, database: databaseFor(roomId), worker, relay, storage, on: {
       change: () => { mergeRelayRead(roomId); render(); },
       message: m => addEntry(roomId, m),
+      status: m => { const R = app.rooms.get(roomId); if (R && applyStatus(R.statuses, m)) render(); },
       log: logLine,
       notice: (text, tone) => status(text, tone),
       synced: () => render(),
@@ -227,7 +233,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     if (R && !opts.replace) return R;
     if (R) { R.session.stop(); app.rooms.delete(roomId); }
     const session = newSession(roomId);
-    R = {session, entries: [], entryKeys: new Set(), readSeq: readReadSeq(storage, app.device, roomId), order: app.rooms.size,
+    R = {session, entries: [], entryKeys: new Set(), statuses: createStatusBoard(), readSeq: readReadSeq(storage, app.device, roomId), order: app.rooms.size,
       consented: readConsent(storage, app.device, roomId)};   // AI 참여 동의(#544 E) — 이 기기·이 방
     app.rooms.set(roomId, R); writeKnown();
     // 새로고침 뒤에도 쓰던 글이 남는다(#480 B) — 메모리 초안이 없을 때만 저장분을 올린다.
