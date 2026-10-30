@@ -10,7 +10,7 @@ export const CACHE_NAME = 'hande-shell-v1';
 /** 설치 때 프리캐시하는 셸(오프라인에서 첫 화면·워커·wasm 이 뜨게). 없는 파일이 있어도 설치는 계속된다(allSettled). */
 export const SHELL_ASSETS = [
   './', './index.html', './styles.css', './manifest.webmanifest', './icons/icon.svg',
-  './main.js', './app.js', './ui.js', './strings.js', './room.js', './device.js', './relay.js', './identity.js',
+  './main.js', './theme.js', './app.js', './ui.js', './strings.js', './room.js', './device.js', './relay.js', './identity.js',
   './worker-bridge.js', './attachment-view.js', './agent-markdown.js', './filebox.js', './keyboard.js', './timeline-caret.js',
   './shortcuts.js', './room-order.js', './drafts.js', './read-seq.js', './composer-files.js', './last-sent.js', './sync-recovery.js', './preview-loader.js', './attachments.js', './agent-consent.js', './local-room.js', './service-links.js', './self-service.js', './status-v1.js',
   './durable-worker.js', './session-store.js', './history-store.js', './commit-policy.js', './relay-attachments.js', './file-v2.js', './file-v2-outbox.js',

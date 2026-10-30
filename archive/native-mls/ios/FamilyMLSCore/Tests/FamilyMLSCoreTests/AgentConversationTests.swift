@@ -218,6 +218,25 @@ final class RoomGlanceTests: XCTestCase {
         XCTAssertFalse(group.isOneToOne, "three speakers keep the name prefix")
     }
 
+    /// 디자인 1차 「오늘의 불 세기」: 최근 24시간 글 수로 1~3단 — 0~2 조용함 · 3~11 보통 · 12+ 활발. 하루 지난 글은 세지 않는다.
+    func testFireLevelCountsOnlyTheLastDay() {
+        XCTAssertEqual(RoomGlance.fireLevel(recentCount: 0), 1)
+        XCTAssertEqual(RoomGlance.fireLevel(recentCount: 2), 1)
+        XCTAssertEqual(RoomGlance.fireLevel(recentCount: 3), 2)
+        XCTAssertEqual(RoomGlance.fireLevel(recentCount: 11), 2)
+        XCTAssertEqual(RoomGlance.fireLevel(recentCount: 12), 3)
+        let now = Date(timeIntervalSince1970: 200_000)
+        func at(_ seq: Int64, _ secondsAgo: Double) -> MessageRecord {
+            MessageRecord(room: "family", seq: seq, senderDevice: "owner-pc", clientId: "c\(seq)", kind: .text, body: "x",
+                          attachment: nil, receivedAt: now.addingTimeInterval(-secondsAgo), decryptedBy: .app)
+        }
+        let quiet = RoomGlance.make([at(1, 90_000), at(2, 90_001), at(3, 90_002)], roster: roster, now: now)
+        XCTAssertEqual(quiet.fireLevel, 1, "three posts, all older than a day")
+        let normal = RoomGlance.make([at(1, 90_000), at(2, 10), at(3, 20), at(4, 30)], roster: roster, now: now)
+        XCTAssertEqual(normal.fireLevel, 2)
+        XCTAssertEqual(RoomGlance.make([], roster: roster, now: now).fireLevel, 1)
+    }
+
     func testDeviceKind() {
         XCTAssertEqual(DeviceLabel.kind("owner-iphone-27a879"), "iphone")
         XCTAssertEqual(DeviceLabel.kind("owner-PC"), "pc")

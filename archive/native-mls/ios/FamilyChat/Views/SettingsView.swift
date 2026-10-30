@@ -10,9 +10,21 @@ struct SettingsView: View {
     @State private var wipeMessage: String?
     @State private var confirmServerChange = false
     @State private var serverChangeBusy = false
+    /// 디자인 1차: 테마 모드(RootView 가 같은 키를 읽어 팔레트·컬러 스킴을 바꾼다).
+    @AppStorage(HandeThemeMode.storageKey) private var themeRaw = HandeThemeMode.night.rawValue
 
     var body: some View {
         Form {
+            // 「화면」: 밤(기본·고정) / 낮불(e-ink·밝은 곳). 밤을 밝게 뒤집은 라이트 모드가 아니라 별도 고대비 설계.
+            Section(header: Text(Strings.themeSection), footer: Text(Strings.themeHint)) {
+                Picker(Strings.themeLabel, selection: $themeRaw) {
+                    Text(Strings.themeNight).tag(HandeThemeMode.night.rawValue)
+                    Text(Strings.themeDay).tag(HandeThemeMode.day.rawValue)
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+                .accessibilityIdentifier("settings-theme")
+            }
             Section {
                 LabeledContent(Strings.fingerprintLabel) {
                     Text(model.fingerprint).font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
@@ -137,7 +149,7 @@ struct LockPreviewWarningBanner: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.18))
+        .background(Hande.ember.opacity(0.18))
     }
 
     /// 이 앱의 알림 설정 화면(iOS 16+). 열 수 없으면 아무것도 하지 않는다.
@@ -160,7 +172,7 @@ struct HaltedBanner: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.red.opacity(0.15))
+        .background(Hande.warn.opacity(0.15))
         .sheet(isPresented: $showDetails) { HaltedRoomsView() }
     }
 }

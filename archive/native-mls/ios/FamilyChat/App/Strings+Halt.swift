@@ -22,7 +22,7 @@ extension Strings {
     static func rejoinPrepareFailed(_ reason: String) -> String { "준비하지 못했습니다: \(reason)" }
     static let rejoinPublishFailed = "이 기기의 상태는 지웠지만 참여 요청을 올리지 못했습니다. 연결된 뒤 + → 참여 요청을 다시 눌러 주세요."
     static let reportToOperator = "운영자에게 알리기"
-    static let haltedRoomsTitle = "정지된 대화방"
+    static let haltedRoomsTitle = "불이 꺼진 자리"
     static let haltedDetails = "자세히"
     static let haltedReasonLabel = "사유 코드"
     /// 전역 배너 본문(#389): 사유 토큰 대신 쉬운 설명 — 토큰은 '자세히'의 「사유 코드」 줄과 운영자 보고에만 남는다.

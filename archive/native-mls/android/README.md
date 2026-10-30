@@ -70,6 +70,10 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 | `androidx.core:core-ktx` | `1.15.0` | Apache-2.0 | 플랫폼 확장 |
 | `kotlinx-coroutines-android` | `1.9.0` | Apache-2.0 | 허브 poll 루프·IO 디스패처 |
 
+## 디자인 토큰 — 한데 디자인 1차 (2026-10-31)
+
+색·타이포·반경의 정본은 [`docs/design/hande-tokens.json`](../../../docs/design/hande-tokens.json)(화면 규칙·용어표는 [`HANDE-DESIGN-SYSTEM.md`](../../../docs/design/HANDE-DESIGN-SYSTEM.md)) — `app/src/main/kotlin/.../ui/theme/HandeTheme.kt` 의 `HandeColors.Night`/`Day` 가 그 hex 값을 그대로 가지며(iOS `Hande.*`·웹 `--hd-*` 와 같은 값), `HandeTheme` 가 `LocalHandeColors` 와 M3 `colorScheme`/`Typography`/`Shapes` 매핑을 함께 제공한다. **밤이 기본·고정**(시스템 라이트 모드를 따르지 않음), **낮불**(e-ink·밝은 곳)은 설정 → 「화면」에서 고르고 `Settings.theme`(`"day"`, 없으면 밤)에 남는다 — `MainActivity` 가 모드에 맞춰 `enableEdgeToEdge` 시스템 바 아이콘 색도 바꾼다. 화면: 목록 = 「자리」(불 세기 불꽃 벡터 · 「불지기」 배지 · 좌석 점 · 안 읽음 주황 점 · 꺼진 자리 장작) · 대화 = 말풍선(면/불/파랑) + 알약 입력창. 에이전트 판정은 `core/AgentActors`(웹 `strings.js` `AGENT_ACTORS`·`agentNames` 와 같은 목록, JVM 테스트). 새 의존성 없음(아이콘은 `PathParser` 벡터, 글꼴은 시스템 — Pretendard 는 2차).
+
 ## B2 결정 — 메시지 저장소 · 가족 로그인 (2026-10-20)
 
 **저장소 = 프레임워크 SQLite(`core/MessageDb`, `SQLiteOpenHelper`) + iOS 동결 DDL v1 공유.** #338 §2 의 Room·"Rust 우선 검토(rusqlite)" 는 채택하지 않았다:

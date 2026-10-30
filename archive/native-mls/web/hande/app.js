@@ -44,7 +44,8 @@ async function loadConfig() {
   } catch (_) { return {}; }
 }
 
-export function startApp(root, {storage = localStorage, fetch: fetchImpl = globalThis.fetch.bind(globalThis)} = {}) {
+// theme: main.js 의 installTheme() 핸들({get, set}) — 설정 시트의 「화면」 행이 쓴다. 없으면(테스트) 행을 숨긴다.
+export function startApp(root, {storage = localStorage, fetch: fetchImpl = globalThis.fetch.bind(globalThis), theme = null} = {}) {
   const app = {
     phase: 'starting', message: strings.app.starting, error: null, fatal: null,
     actor: null, device: null, subject: null, defaultRoom: DEFAULT_ROOM, dev: null,
@@ -735,7 +736,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   function openSettings() {
     const reg = JSON.stringify(app.dev.registration(app.subject), null, 1);
     ui.openSettingsSheet(root, {deviceId: app.device, actor: app.actor, fingerprint: app.dev.state.fingerprint, subject: app.subject,
-      origin: location.host, onCopyRegistration: () => copy(reg), onOpenApprove: openApprove, onOpenDevices: devicesView() ? openDevices : null, onWipe: confirmWipe, onClose: () => {}});
+      origin: location.host, onCopyRegistration: () => copy(reg), onOpenApprove: openApprove, onOpenDevices: devicesView() ? openDevices : null, onWipe: confirmWipe, onClose: () => {},
+      theme: theme ? theme.get() : null, onTheme: theme ? value => theme.set(value) : null});
   }
   function openJoin() {
     ui.openJoinSheet(root, {defaultRoom: app.current ?? app.defaultRoom, busy: false, message: null, onClose: () => {}, onSubmit: async roomId => {
@@ -821,7 +823,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       for (const R of app.rooms.values()) { try { await R.session.wipe(); } catch (_) {} }
       app.dev.stop();
       await wipeIdentityStores();
-      for (const k of Object.keys(storage)) if (k.startsWith('hande:') && k !== 'hande:identity') storage.removeItem(k);
+      // 화면 테마(hande:theme)는 암호화 상태·기록·기기 ID 가 아니라 이 화면의 보기 설정이라 남긴다.
+      for (const k of Object.keys(storage)) if (k.startsWith('hande:') && k !== 'hande:identity' && k !== 'hande:theme') storage.removeItem(k);
       identity.rotate(); identity.forgetPassphrase();
       status(strings.room.wipeDone(next), 'warn');
       setTimeout(() => location.reload(), 1500);

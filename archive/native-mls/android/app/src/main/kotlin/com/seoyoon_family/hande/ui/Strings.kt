@@ -100,23 +100,37 @@ object Strings {
         AppLogin.Failure.MalformedToken -> loginFailed("세션 형식이 올바르지 않습니다.")
     }
 
-    const val roomsTitle = "대화"
-    const val noRooms = "아직 대화방이 없습니다. 아래 「참여 요청」을 누르고, 운영자가 초대하면 여기 나타납니다."
+    // 모닥불 용어(한데 디자인 1차, docs/design/HANDE-DESIGN-SYSTEM.md §4): 채팅방 = 자리 · AI 에이전트 = 불지기 · 닫힌 방 = 불이 꺼진 자리. 동작어(보내기·설정)는 일반어 고정.
+    const val roomsTitle = "자리"
+    const val campfireSubtitle = "오늘 밤, 모닥불에 한데 모여"
+    const val noRooms = "아직 피운 모닥불이 없습니다. 아래 「참여 요청」을 누르고, 운영자가 초대하면 여기 나타납니다."
     const val requestJoin = "참여 요청"
     const val lobbyKeys = "로비 키"
     const val notJoined = "초대를 기다려 주세요"
-    const val halted = "정지됨"
+    const val halted = "불이 꺼진 자리"
+    /** 운영자가 닫은 방(`room_closed`)의 목록 미리보기. 다른 정지 사유는 `halted · <사유>`(정직하게 적는다). */
+    const val roomClosedPreview = "불이 꺼진 자리 · 운영자가 닫음"
+    /** 에이전트 배지·보낸 이 라벨(「공명 · 불지기」). 설정 설명문에는 「불지기(AI 에이전트)」 병기. */
+    const val agentBadge = "불지기"
     const val keyCustody = "키 보관"
-    /** 대화방 목록의 안 읽음 표시(#571 후속, 웹 N 배지와 같은 뜻 — 개수 대신 「새 글」). */
+    /** 대화방 목록의 안 읽음 표시(#571 후속, 웹 N 배지와 같은 뜻 — 개수 대신 「새 글」). 1차 디자인에서는 주황 점 하나, 글자는 접근성 문구로만. */
     const val unread = "새 글"
+    /** 「오늘의 불 세기」 접근성 문구(숫자·그래프 없음 — 조용함/보통/활발). */
+    fun fireLevel(level: Int) = "오늘의 불 세기 · " + when (level) { 1 -> "조용함"; 2 -> "보통"; else -> "활발" }
 
     // 첨부 자리 표시(v1·v2 같은 모양 — 파일 열기는 C 단계). 설명자가 잘못된 file-v2 는 웹 `fileV2Invalid` 와 같은 뜻.
     fun attachmentPlaceholder(bytes: Long) = "📎 첨부($bytes B)"
     const val fileV2Invalid = "⚠ 첨부 정보가 올바르지 않아 열 수 없음"
 
-    const val composerPlaceholder = "메시지"
+    const val composerPlaceholder = "이야기 나누기…"
     const val sendButton = "보내기"
     const val back = "뒤로"
+
+    // 화면 테마(한데 디자인 1차): 밤이 기본·고정, 낮불은 e-ink·밝은 곳용 고대비(설정에서 고른다 — `Settings.theme`).
+    const val themeSection = "화면"
+    const val themeNight = "밤 (기본)"
+    const val themeDay = "낮불 — e-ink·밝은 곳"
+    const val themeHint = "낮불은 그라데이션·반투명 없이 먹색 선으로 그립니다. 사람은 ●, 불지기(AI 에이전트)는 파랑 ◆ 로 표시합니다."
 
     // 설정·정보(#584 Play 출시): 앱 안의 개인정보처리방침·계정 삭제 링크(Play 정책 요건) · 「이 기기 지우기」(앱 내 삭제 경로, README 「계정 삭제」 참고)
     const val settingsTitle = "설정"

@@ -1,0 +1,58 @@
+{
+  "$schema": "https://design-tokens.github.io/community-group/format/",
+  "$description": "한데(Hande) 디자인 토큰 — 1차 (2026-10-31, Claude Design 「한데앱 및 웹 디자인 개선 – Hande 1차」). 밤(night)은 iOS Theme.swift 정본, 낮불(day)은 e-ink·밝은 곳용 고대비 테마. iOS Hande.*, Android HandeColors, 한데 웹 styles.css :root 변수가 이 파일과 같은 값을 가져야 한다.",
+  "color": {
+    "night": {
+      "bgTop":        { "$value": "#0F1324", "$description": "배경 위 · 밤하늘. 아래 가운데서 glow가 radial로 번짐(45%→0)" },
+      "bgGlow":       { "$value": "#5A2C12", "$description": "배경 아래 · 불빛이 닿은 땅" },
+      "ember":        { "$value": "#F59E42", "$description": "불 · 1차 강조 — 주 버튼·내 말풍선·포커스. 한 화면에 큰 주황 면은 1~2개" },
+      "emberDeep":    { "$value": "#E8833A", "$description": "진한 불 — 눌림" },
+      "onEmber":      { "$value": "#1B0F06", "$description": "불 위 글자" },
+      "person":       { "$value": "#FFD79A", "$description": "사람 점 ● 크림. 사람은 항상 크림" },
+      "agent":        { "$value": "#61A6FA", "$description": "에이전트 점 ●(빛남) · 카드 fill 10% / stroke 35%. 에이전트는 항상 파랑" },
+      "agentText":    { "$value": "#9CC8FF", "$description": "에이전트 라벨 글자(파랑 위 가독용)" },
+      "ink":          { "$value": "#F3E6D3", "$description": "글자 — 순백 금지" },
+      "inkDim":       { "$value": "#C9B89C", "$description": "보조 글자" },
+      "surface":      { "$value": "rgba(255,255,255,0.07)", "$description": "면 — 카드·남의 말풍선·입력창(반투명)" },
+      "stroke":       { "$value": "rgba(255,191,120,0.14)", "$description": "선 1px 따뜻한 색" },
+      "warn":         { "$value": "#D9583B", "$description": "상태 · 주의/실패 — 붉은 잉걸. 반드시 글자 동반" },
+      "ash":          { "$value": "#6B5A48", "$description": "상태 · 정지/꺼짐 — 꺼진 재" },
+      "focus":        { "$value": "#FFD79A", "$description": "포커스 2px 바깥선" }
+    },
+    "day": {
+      "bgTop":        { "$value": "#F7F3EA", "$description": "종이, 단색. 그라데이션 없음" },
+      "bgGlow":       { "$value": null,       "$description": "없음(그라데이션 금지)" },
+      "ember":        { "$value": "#D97A1E", "$description": "포인트 1색 — 허락·보내기 버튼만" },
+      "emberDeep":    { "$value": "#B8650F", "$description": "눌림" },
+      "onEmber":      { "$value": "#1A1510" },
+      "person":       { "$value": "#1A1510", "$description": "사람 점 ● 먹" },
+      "agent":        { "$value": "#2F6FC4", "$description": "에이전트 ◆ · 테두리 2px 실선/점선, fill 없음 — 색과 모양 둘 다 다르게" },
+      "agentText":    { "$value": "#2F6FC4" },
+      "ink":          { "$value": "#1A1510" },
+      "inkDim":       { "$value": "#3A322B", "$description": "AA 10:1" },
+      "surface":      { "$value": "#FFFFFF", "$description": "불투명" },
+      "stroke":       { "$value": "#1A1510", "$description": "선 1.5px 먹(e-ink 1px 끊김 방지)" },
+      "warn":         { "$value": "#A8321C", "$description": "+ 글자 필수" },
+      "ash":          { "$value": "#8A8178", "$description": "회색 8단계" },
+      "focus":        { "$value": "#1A1510", "$description": "2px, 오프셋 2" }
+    }
+  },
+  "typography": {
+    "family": { "$value": "Pretendard, -apple-system, 'Apple SD Gothic Neo', Roboto, 'Noto Sans KR', sans-serif", "$description": "Pretendard 1벌(OFL)까지 허용. 시스템 글꼴 기본" },
+    "mono":   { "$value": "'JetBrains Mono', ui-monospace, Menlo, monospace", "$description": "지문·기기 ID·서버 주소. 14" },
+    "wordmark": { "$value": "Questrial", "$description": "소문자 hande, 자간 0.04em, 크림, 은은한 불빛 번짐. 대문자·굵은 글꼴 금지" },
+    "scale": {
+      "display": { "size": 32, "weight": 600, "ios": "largeTitle" },
+      "title":   { "size": 22, "weight": 600, "ios": "title2" },
+      "body":    { "size": 17, "weight": 400, "ios": "body" },
+      "label":   { "size": 15, "weight": 500, "ios": "subheadline" },
+      "caption": { "size": 13, "weight": 400, "ios": "footnote" },
+      "mono":    { "size": 14, "weight": 400, "ios": "body(monospaced)" }
+    }
+  },
+  "space": { "$value": [4, 8, 12, 16, 24, 32], "$description": "4pt 그리드" },
+  "radius": { "s": 10, "m": 16, "l": 24, "$description": "낮불도 동일" },
+  "line": { "night": 1, "day": 1.5 },
+  "touch": { "min": 44 },
+  "motion": { "$description": "오프닝 불꽃(끌 수 있음) · 생각하는 중 점 3개 · 전송 햅틱 1회. 낮불·reduce motion에서 전부 0" }
+}

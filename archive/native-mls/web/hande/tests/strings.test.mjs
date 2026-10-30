@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   ACTOR, ROOM, DEVICE, AGENT_ACTORS, strings, allStringsFilled, peopleNames,
   formatTime, formatClock, dayLabel, dayKey, groupFingerprint, displayName, isAgentDevice, isServiceDevice, actorOf, isMine, relativeTime,
-  participantOf, isOneToOne, participantCount, groupParticipants, typingNames, typingLabel,
+  participantOf, isOneToOne, participantCount, groupParticipants, typingNames, typingLabel, subjectParticle,
   humanSize, previewLine, haltGuidance, roomLabel, agentNames,
 } from '../strings.js';
 
@@ -242,10 +242,22 @@ test('typingNames / typingLabel: 내 기기 제외, 한 사람의 여러 기기�
   assert.deepEqual(typingNames(['jungin-web-aa'], {...me, roster: ['owner-web-aaaaaa', 'jungin-web-aa']}), [], '1:1 방은 이름 생략');
   assert.deepEqual(typingNames([], me), []);
   assert.deepEqual(typingNames(undefined, me), []);
-  assert.equal(strings.chat.typing([]), '입력중…');
-  assert.equal(strings.chat.typing(['쩡이🍎']), '쩡이🍎 입력중…');
+  // 디자인 1차 용어: 「입력중…」 → 「타닥타닥…」, 이름 뒤 조사는 받침으로(이모지·마커는 건너뛴다).
+  assert.equal(strings.chat.typing([]), '타닥타닥…');
+  assert.equal(strings.chat.typing(['쩡이🍎']), '쩡이🍎가 타닥타닥…');
+  assert.equal(strings.chat.typing(['정인']), '정인이 타닥타닥…');
+  assert.equal(strings.chat.typing(['공명✴️', '정인']), '공명✴️, 정인이 타닥타닥…', '조사는 마지막 이름 기준');
   assert.equal(typingLabel([], me), '', '아무도 없으면 표시 없음');
   assert.equal(typingLabel(['owner-iphone-27a879'], me), '', '내 기기만이면 표시 없음');
-  assert.equal(typingLabel(['jungin-iphone-0f'], me), '쩡이🍎 입력중…');
-  assert.equal(typingLabel(['jungin-iphone-0f'], {...me, roster: ['owner-web-aaaaaa', 'jungin-iphone-0f']}), '입력중…', '1:1 은 문구만');
+  assert.equal(typingLabel(['jungin-iphone-0f'], me), '쩡이🍎가 타닥타닥…');
+  assert.equal(typingLabel(['jungin-iphone-0f'], {...me, roster: ['owner-web-aaaaaa', 'jungin-iphone-0f']}), '타닥타닥…', '1:1 은 문구만');
+});
+
+test('subjectParticle: 받침 있으면 이, 없으면 가, 끝의 이모지·마커는 건너뛰고, 한글이 없으면 이', () => {
+  assert.equal(subjectParticle('정인'), '이');
+  assert.equal(subjectParticle('쩡이🍎'), '가');
+  assert.equal(subjectParticle('공명✴️'), '이');
+  assert.equal(subjectParticle('서서✴️'), '가');
+  assert.equal(subjectParticle('mom'), '이');
+  assert.equal(subjectParticle(''), '이');
 });

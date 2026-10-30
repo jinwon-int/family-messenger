@@ -187,6 +187,16 @@ PC·폰이 두 명으로 서지 않고 사람 행 아래에 기기 줄(종류 ·
 → IndexedDB `family-mls-synthetic-hande-<room>`(+`-history`, 최선 노력) → 목록에서 사라진다. 릴레이가 멤버로 아는 방에는 버튼이 없다(지워도 다음 refresh 에 다시 열린다 —
 명단에서 빠지는 건 「제거」·재초대의 일). 기본 방(`family`)도 릴레이에 없으면 지울 수 있지만 알려진 목록이 비면 다음 시작에 다시 열린다.
 
+## 화면 테마 · 용어 (한데 디자인 1차, `docs/design/hande-tokens.json`)
+
+`styles.css` 의 `:root` 가 밤(night) 토큰, `html[data-theme="day"]` 와 `html[data-theme="auto"]` + `prefers-color-scheme: light` 가
+낮불(day, e-ink·밝은 곳) 토큰이다(두 블록은 같은 내용). **밤이 기본·고정** — OS 라이트 모드를 따라가지 않고, 설정 시트 「화면」에서
+「밤 (기본)」「낮불」「시스템 따라가기」를 고른다(`theme.js`, localStorage `hande:theme` = `night|day|auto`, 기본은 키 없음 = 밤).
+`main.js` 가 모듈 시작에 `<html data-theme>` 과 `theme-color` 메타를 맞춘다(CSP 가 인라인 스크립트를 막아 낮불 기기는 한 프레임
+밤이 보일 수 있다). 「이 기기 지우기」의 `hande:*` 정리에서 이 키는 남긴다(암호화 상태·기록이 아니라 보기 설정).
+용어(§4 모닥불 용어표): 자리(채팅방) · 불지기(AI 에이전트, 설명문에는 병기) · 타닥타닥(입력 중) · 불 피우기(방 만들기) ·
+불이 꺼진 자리(닫힌 방). 보내기·사진·설정·승인 같은 동작어·시스템 영역은 일반어 그대로.
+
 ## 서비스 워커 (#480 D)
 
 `main.js` 가 `sw.js` 를 모듈 워커로 등록한다(PC 크롬). 정책(`sw-policy.js`): **같은 origin 은 전부 네트워크 우선**, 캐시는

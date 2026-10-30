@@ -13,20 +13,22 @@ extension Strings {
 struct AgentStatusRow: View {
     let name: String
     let text: String
+    /// 디자인 1차: 에이전트 색·선 굵기는 테마(밤/낮불)를 따른다.
+    @Environment(\.hande) private var p
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Circle().fill(AgentPalette.accent).frame(width: 8, height: 8)
+            SeatDot(agent: true, size: 8)
             VStack(alignment: .leading, spacing: 2) {
-                Text(name).font(.caption2.weight(.semibold)).foregroundStyle(AgentPalette.accent)
-                Text(text).font(.footnote).foregroundStyle(Hande.ink).lineLimit(3)
+                Text(name).font(.caption2.weight(.semibold)).foregroundStyle(p.agentText)
+                Text(text).font(.footnote).foregroundStyle(p.ink).lineLimit(3)
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 14).fill(AgentPalette.cardFill))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(AgentPalette.cardStroke, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+        .background(RoundedRectangle(cornerRadius: 14).fill(p.agentFill))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(p.agentStroke, style: StrokeStyle(lineWidth: p.lineWidth, dash: [4, 3])))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Strings.agentStatusAccessibility(name, text))
     }
