@@ -15,6 +15,8 @@ struct RoomView: View {
     @Environment(\.dismiss) private var dismiss
     let room: RoomID
     @State private var draft = ""
+    /// 저장된 초안을 작성창에 채우는 중 — 그 한 번의 `onChange(of: draft)` 는 사용자 입력이 아니다.
+    @State private var restoringDraft = false
     @State private var messages: [AppModel.TimelineItem] = []
     /// #398: 최하단을 따라가는 중인가 — 방 진입·새 메시지 때 켜지고, 사용자가 끌어 올리면 꺼진다.
     @State private var followLatest = true
@@ -241,7 +243,12 @@ struct RoomView: View {
                     .lineLimit(1...6)
                     .focused($composerFocused)
                     // #405 P3: 하드웨어 키보드 Enter = 전송, Shift+Enter = 줄바꿈(웹 keyboard.js). 화면 키보드는 줄바꿈 그대로.
+                    // 방을 나갔다 오거나 앱을 다시 켜도 쓰던 글이 남는다(웹 drafts.js · 패밀리챗과 같음). 저장분은 이 방이 열릴 때 한 번 채운다.
+                    .onAppear(perform: restoreDraft)
                     .onChange(of: draft) { new in
+                        prefs.setDraft(new, for: room)
+                        // 저장분을 채운 것뿐이면 「입력중…」 신호·키 판정을 하지 않는다(사용자가 친 글이 아니다).
+                        if restoringDraft { restoringDraft = false; return }
                         // #562: 다른 기기에 「입력중…」 신호(간격 제한은 AppModel). 비면 clear.
                         model.noteTyping(room: room, clear: new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         let old = previousDraft
@@ -518,6 +525,16 @@ struct RoomView: View {
                                           sinceDrag: Date().timeIntervalSince(tracking.lastDrag)) else { return }
         followLatest = true
         hasNewBelow = false
+    }
+
+    /// 이 방에 쓰다 만 글을 작성창에 채운다. 이미 글이 있으면(사진 보기에서 돌아온 경우 등) 그대로 둔다.
+    private func restoreDraft() {
+        guard draft.isEmpty else { return }
+        let saved = prefs.draft(for: room)
+        guard !saved.isEmpty else { return }
+        previousDraft = saved
+        restoringDraft = true
+        draft = saved
     }
 
     /// 작성창 글을 보낸다. 암호화 전에 실패하면(동기화 실패·정지 등) 입력을 되돌린다 — 평문은 이 화면만 들고 있다.
