@@ -303,6 +303,11 @@ final class AppModel: ObservableObject {
     /// 방별 마지막으로 본 영속 커서 — NSE 가 사이에 처리했는지 감지(전면 복귀 시 화면 갱신).
     private var seenCursors: [RoomID: Int64] = [:]
     private let serial = SerialAsyncQueue()
+    /// #599: `serial` 에 줄 선 송신 수. 0 보다 크면 동기화 바퀴가 방과 방 사이·부가 작업 앞에서 양보한다(`yieldToSend`) —
+    /// 종전에는 FIFO 라 4초 바퀴(방마다 GET 직렬 + push·me·로비·후보)가 끝나야 글이 나갔다.
+    private var sendsWaiting = 0
+    /// #599: 마지막 바퀴가 송신에 양보해 남은 방·부가 작업을 건너뛰었다 — 전면 폴링이 기다리지 않고 곧바로 다음 바퀴를 돈다.
+    private(set) var syncPreempted = false
     private(set) var push: PushRegistrar
     /// #584 이 기기 표시 설정(읽음 위치·방 순서) — 서버 스코프별. 화면은 `environmentObject` 로 받는다(RootView).
     private(set) var localPrefs: LocalPrefs
@@ -629,8 +634,18 @@ final class AppModel: ObservableObject {
     func runForeground() async {
         while !Task.isCancelled {
             await refresh()
+            // #599: 송신에 양보한 바퀴 — 건너뛴 방·부가 작업을 기다리지 않고 다시(송신은 `serial` 에서 이 바퀴보다 먼저 처리된다).
+            if syncPreempted { continue }
             try? await Task.sleep(nanoseconds: UInt64(deps.syncConfiguration.pollInterval * 1_000_000_000))
         }
+    }
+
+    /// #599: 줄 선 송신이 있으면 이 바퀴의 남은 일을 건너뛰고 `serial` 을 넘긴다. 진행 중인 요청 하나는 끝까지 간다(취소하지 않음 —
+    /// 트랜잭션·커서 저장 순서는 그대로). 건너뛴 일은 송신 직후 `runForeground` 의 다음 바퀴가 한다.
+    private func yieldToSend() -> Bool {
+        guard sendsWaiting > 0 else { return false }
+        syncPreempted = true
+        return true
     }
 
     // MARK: - 동기화
@@ -642,6 +657,7 @@ final class AppModel: ObservableObject {
     }
 
     private func refreshLocked() async {
+        syncPreempted = false
         guard let transport, engine != nil else { return }
         switch phase { case .starting, .needsActor, .needsLogin, .fatal: return; default: break }
         defer { settled = true }
@@ -661,6 +677,7 @@ final class AppModel: ObservableObject {
             var pending = false
             lastFlush = [:]
             for record in try deps.messageStore.rooms() {
+                if yieldToSend() { break }   // #599: 남은 방은 송신 뒤 곧바로 도는 다음 바퀴가
                 let sync = try syncEngine(record.room)
                 let passes = try await sync.syncAll()
                 noteSyncPasses(record.room, passes)
@@ -692,16 +709,7 @@ final class AppModel: ObservableObject {
                 try await enrollTickLocked(transport)
             } else {
                 phase = haltedReasonFromRooms().map { .halted($0) } ?? .ready
-                try await syncPushLocked(transport)
-                lastError = nil
-                // #574: 체인 보기(/v2/me) — 형제 판정·서명 자격·「내 기기」. 로비 Welcome 판정보다 먼저.
-                try await refreshMeLocked(transport, force: false)
-                // 로비(#380): 아직 참여하지 않은 방의 Welcome → (A) 바로 참여 / (B) 수락 대기, 그 뒤 보충. 실패는 lastError 에만.
-                try await discoverLobbyWelcomesLocked(transport)
-                if lobbyCheckDue { try await replenishLobbyLocked() }
-                // #574: 우편함의 새 기기 후보 → 🔔 「새 기기 승인」, 승인한 형제 기기 초대 대기열 처리.
-                try await discoverCandidatesLocked(transport)
-                try await processSiblingInvitesLocked()
+                try await refreshExtrasLocked(transport)
                 rooms = try deps.messageStore.rooms()
                 phase = haltedReasonFromRooms().map { .halted($0) } ?? .ready
             }
@@ -710,6 +718,28 @@ final class AppModel: ObservableObject {
         } catch {
             noteFailure(error)
         }
+    }
+
+    /// 방 루프 뒤 부가 작업(각 1왕복 안팎). #599: 단계마다 줄 선 송신에 양보한다 — 남은 단계는 송신 직후 다음 바퀴가 한다.
+    private func refreshExtrasLocked(_ transport: RelayTransport) async throws {
+        if yieldToSend() { return }
+        try await syncPushLocked(transport)
+        lastError = nil
+        // #574: 체인 보기(/v2/me) — 형제 판정·서명 자격·「내 기기」. 로비 Welcome 판정보다 먼저.
+        if yieldToSend() { return }
+        try await refreshMeLocked(transport, force: false)
+        // 로비(#380): 아직 참여하지 않은 방의 Welcome → (A) 바로 참여 / (B) 수락 대기, 그 뒤 보충. 실패는 lastError 에만.
+        if yieldToSend() { return }
+        try await discoverLobbyWelcomesLocked(transport)
+        if lobbyCheckDue {
+            if yieldToSend() { return }
+            try await replenishLobbyLocked()
+        }
+        // #574: 우편함의 새 기기 후보 → 🔔 「새 기기 승인」, 승인한 형제 기기 초대 대기열 처리.
+        if yieldToSend() { return }
+        try await discoverCandidatesLocked(transport)
+        if yieldToSend() { return }
+        try await processSiblingInvitesLocked()
     }
 
     /// 동기화·송신·로비에서 잡힌 오류 하나를 화면 상태로 옮긴다(`ConnectionIssue`): 취소는 무시, 닿지 않음은
@@ -1534,8 +1564,14 @@ final class AppModel: ObservableObject {
             updateOutgoing(id, room: room) { $0.state = .failed(Strings.notReady) }
             return nil
         }
+        // #599: 줄 선 송신을 알린다 — 진행 중인 동기화 바퀴가 다음 방·단계 앞에서 `serial` 을 넘긴다. 차례가 오면 곧바로 내린다
+        // (클로저 첫 줄 — 어떤 경로로 끝나도 남지 않는다. 남으면 바퀴가 매번 양보해 폴링이 쉬지 않고 돈다).
+        sendsWaiting += 1
         do {
-            let outcome = try await serial.run { try await operation(try self.syncEngine(room)) }
+            let outcome = try await serial.run { () async throws -> SendOutcome in
+                self.sendsWaiting = max(0, self.sendsWaiting - 1)
+                return try await operation(try self.syncEngine(room))
+            }
             var pending = pending
             if let value = stored() { pending.stored = value }
             switch outcome {
