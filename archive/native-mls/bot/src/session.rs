@@ -640,7 +640,7 @@ fn run_loop(
                         // Handled above; never text for the room.
                         emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": main.room, "reason": "tool_call" }));
                     }
-                    Outbound::Notice { room, .. } if *room != main.room => {
+                    Outbound::Notice { room, .. } | Outbound::StatusNotice { room, .. } if *room != main.room => {
                         // #474: only an agent room (#423: or the alert room)
                         // carries agent text (B-H3); a notice addressed
                         // anywhere else stays unsaid.
@@ -660,7 +660,7 @@ fn run_loop(
                             emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": main.room, "reason": "not_joined_or_halted" }));
                             continue;
                         }
-                        if matches!(item, Outbound::Status { .. }) {
+                        if matches!(item, Outbound::Status { .. } | Outbound::StatusNotice { .. }) {
                             // status-v1 (#560): `status-<uuid>` client_id, never
                             // retried — a stale status line is worthless.
                             if let Err(err) = publish_status(ctx, main, text.as_bytes()) {
@@ -705,6 +705,7 @@ fn agent_text(item: &Outbound) -> String {
         Outbound::Reply { text, .. } => text.clone(),
         Outbound::Interim { text, .. } => text.clone(),
         Outbound::Status { text, .. } => text.clone(),
+        Outbound::StatusNotice { text, .. } => text.clone(),
         Outbound::Notice { text, .. } => text.clone(),
         Outbound::ApprovalRequest { text, .. } => text.clone(),
         Outbound::ApprovalResolved { n, allowed } => {
@@ -728,7 +729,7 @@ fn agent_kind(item: &Outbound) -> &'static str {
     match item {
         Outbound::Reply { .. } => "reply",
         Outbound::Interim { .. } => "interim",
-        Outbound::Status { .. } => "status",
+        Outbound::Status { .. } | Outbound::StatusNotice { .. } => "status",
         Outbound::Notice { .. } => "notice",
         Outbound::ApprovalRequest { .. } => "approval_request",
         Outbound::ApprovalResolved { .. } => "approval_resolved",
@@ -1946,6 +1947,9 @@ for line in sys.stdin:
         assert_eq!(agent_kind(&Outbound::Interim { seq: 1, text: String::new() }), "interim");
         assert_eq!(agent_text(&Outbound::Notice { room: "r".into(), text: "⏰".into(), depth: 1 }), "⏰");
         assert_eq!(agent_kind(&Outbound::Notice { room: "r".into(), text: String::new(), depth: 1 }), "notice");
+        // ccc-node#2590: a turnless status line is journaled and posted as a status.
+        assert_eq!(agent_kind(&Outbound::StatusNotice { room: "r".into(), text: String::new() }), "status");
+        assert_eq!(agent_text(&Outbound::StatusNotice { room: "r".into(), text: "⏳ 대기 중".into() }), "⏳ 대기 중");
         // P4: a tool call is never room text.
         let call = Outbound::ToolCall { tool_id: "n1".into(), name: "room_status".into(), op: "status".into(), room: "-".into(), arg: String::new() };
         assert_eq!(agent_kind(&call), "tool_call");
@@ -2528,6 +2532,11 @@ for line in sys.stdin:
         assert_eq!(pick(&mut rooms, true, "family", &notice("family")), None, "silent room stays silent");
         assert_eq!(pick(&mut rooms, true, "family", &reply), None, "switched to silent mid-turn = unsaid");
         assert_eq!(pick(&mut rooms, true, "nowhere", &notice("nowhere")), None);
+        // ccc-node#2590: a status notice goes to its own agent room only — never the alert room.
+        let status = |room: &str| Outbound::StatusNotice { room: room.into(), text: "⏳".into() };
+        assert_eq!(pick(&mut rooms, true, "dungae", &status("dungae")).as_deref(), Some("dungae"));
+        assert_eq!(pick(&mut rooms, true, "fleet", &status("fleet")), None, "no wait line in the alert room");
+        assert_eq!(pick(&mut rooms, true, "family", &status("family")), None);
     }
 
     #[test]

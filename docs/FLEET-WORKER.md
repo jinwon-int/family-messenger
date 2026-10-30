@@ -114,6 +114,14 @@ room_remove / room_close / room_mode`) 호출마다 SDK `can_use_tool` → 이 �
   활성 turn이 없어도 받는다. `room`은 릴레이 식별자 규칙 `[A-Za-z0-9_-]{1,64}`, 본문이 비면 버린다.
   봇은 **agent 방과 이름이 같을 때만** 게시하고 다른 방은 침묵한다(B-H3, 저널 `agent_outbound_dropped`
   `reason=notice_not_agent_room`).
+  - `"kind":"status"` (ccc-node#2590, `archive/native-mls/STATUS-V1.md` §1·§2): turn 밖의 상태 한 줄 — 브리지가
+    턴이 끝난 뒤에도 남은 백그라운드 대기(CI·빌드)를 `⏳ 대기 중 · …` 로 보인다. 봇은 일반 notice 가 아니라
+    status-v1 경로(`Outbound::StatusNotice` → 릴레이 `client_id` `status-<uuid>`, 저장·푸시 없음)로 게시한다.
+    활성 turn 이 있어도 그대로 게시한다. 라우팅은 notice 와 같되 **agent 방만**(alert 방에는 게시하지 않음).
+    방마다 **20초에 1건**(`DEFAULT_STATUS_NOTICE_MIN_SECS`)까지, 넘으면 버린다(저널 `agent_outbound_suppressed`
+    `kind=status_notice_rate`). 일반 notice 의 분당 상한(`notice_per_min`)과는 별개다. 앱은 5분 갱신이 없으면
+    말풍선을 지우므로 브리지는 대기가 남아 있는 동안 ≤2분마다 다시 보낸다. 모르는 `kind` 는 일반 notice 다 —
+    옛 봇은 `kind` 를 무시하고 글로 게시하므로 켜는 순서는 **봇 교체 → 브리지 설정**. 저널 `agent_outbound` `kind=status`.
 
 저널: 게시된 두 프레임은 `agent_outbound`의 `kind`가 `interim`·`notice`로 남는다. 입력 중 표시(typing)는
 이 포트에 없고 봇은 릴레이 typing(#562)도 보내지 않는다. iOS `AgentThinking`은 타임라인만 보고 추정하므로

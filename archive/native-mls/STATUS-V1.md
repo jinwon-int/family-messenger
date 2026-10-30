@@ -11,6 +11,7 @@
 | 층 | 규칙 |
 |---|---|
 | FLEET-WORKER 포트 (브리지 → 봇) | `{"type":"interim","turn_id":"t-12","text":"⏳ Working — 10s \| Bash: …","kind":"status"}` — `kind` 가 없으면 지금과 같은 일반 `interim`. 봇은 모르는 `kind` 를 일반 interim 으로 취급한다(옛 봇 호환: 그래서 브리지는 봇이 교체된 뒤에만 `status_frames` 를 켠다). |
+| FLEET-WORKER 포트 — turn 밖 (ccc-node#2590) | `{"type":"notice","room":"dungae","text":"⏳ 대기 중 · PR #603 CI","kind":"status"}` — 턴이 끝난 뒤 남은 백그라운드 대기 줄. 봇은 같은 `status-<uuid>` 메시지로 게시한다(아래 행). 브리지는 대기가 남은 동안 ≤2분마다 다시 보낸다(앱 5분 만료 전에). 모르는 `kind` 는 일반 notice(옛 봇 호환 → 봇 교체 뒤에 브리지 설정을 켠다). |
 | 릴레이 이벤트 (봇 → 앱) | application 이벤트, 바깥 `client_id` = **`status-<uuid v4 소문자>`** (`^status-[a-f0-9-]{36}$`; `file-v2-<uuid>` 와 같은 전례). 평문 = status 본문 UTF-8(그 자체가 사람이 읽는 한 줄). AAD/`client_id` 의 MLS 측 의미는 그대로(발신 기기 ID). |
 | 릴레이 푸시 | `status-` client_id 의 application 이벤트는 **푸시하지 않는다**(APNs/NSE 가 5초마다 깨지 않도록). 저장·커서·보존 규칙은 다른 이벤트와 같다(보존 만료로 회수). |
 
@@ -22,6 +23,10 @@
 - 수신 측 루프 가드: `status-` client_id 메시지는 **turn 으로 만들지 않는다**(첨부 `file-v1-/file-v2-` 와
   같은 자리, `is_attachment_client_id` 옆). 다른 봇의 status 가 peer turn 을 일으키면 안 된다.
 - 답(`reply`)이 나가면 status 시퀀스는 끝난다 — 별도 clear 프레임은 없다(앱이 답을 보고 지운다).
+- `notice` + `kind:"status"`(ccc-node#2590) → `Outbound::StatusNotice { room, text }` → 같은 `status-<uuid>` 전송.
+  turn 이 없어도(대기 줄은 턴이 끝난 뒤에 온다), 있어도 게시한다. agent 방만(alert 방 제외). 방마다 20초에 1건
+  (`DEFAULT_STATUS_NOTICE_MIN_SECS`), 넘으면 `Suppressed{kind:"status_notice_rate"}` — `notice_per_min` 과 별개.
+  앱은 바뀌지 않는다: 보낸이(봇 기기)별 임시 말풍선·목록 줄 규칙 그대로(다음 일반 메시지·5분 무갱신에 사라짐).
 
 ## 3. 앱 (웹 한데 / iOS / Android)
 

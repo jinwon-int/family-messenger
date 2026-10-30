@@ -76,6 +76,12 @@ pub const DEFAULT_INTERIM_MAX: usize = 40;
 /// (and the relay sends no push for it). Capped per turn separately from
 /// `interim_max`: 720 ≈ one hour at 5 s; past it the rest are dropped.
 pub const DEFAULT_STATUS_MAX: usize = 720;
+/// ccc-node#2590: `notice` frames with `kind:"status"` — the bridge's
+/// "⏳ 대기 중 · …" line for a background wait, sent outside any turn and
+/// re-sent by the bridge every ~2 min while the wait lasts (the apps drop a
+/// status bubble after 5 min without an update). At most one per room per this
+/// many seconds; the rest are suppressed. Separate from `notice_per_min`.
+pub const DEFAULT_STATUS_NOTICE_MIN_SECS: u64 = 20;
 /// #425: peer (bot) messages one room may turn into read-only turns per minute.
 pub const DEFAULT_PEER_PER_MIN: usize = 6;
 /// #425: notices one room may carry per minute (the rest are suppressed).
@@ -124,6 +130,9 @@ pub struct Config {
     /// #425: rate caps per room and minute (0 = no cap).
     pub peer_per_min: usize,
     pub notice_per_min: usize,
+    /// ccc-node#2590: minimum seconds between two `kind:"status"` notices in
+    /// one room (0 = no cap).
+    pub status_notice_min_secs: u64,
 }
 
 impl Config {
@@ -141,6 +150,7 @@ impl Config {
             room_frames: false,
             peer_per_min: DEFAULT_PEER_PER_MIN,
             notice_per_min: DEFAULT_NOTICE_PER_MIN,
+            status_notice_min_secs: DEFAULT_STATUS_NOTICE_MIN_SECS,
         }
     }
 }
@@ -167,6 +177,11 @@ pub enum Outbound {
     /// #425 `depth`: 1, or the active peer turn's depth + 1 (the alert header
     /// the poll loop writes in an `alert` room carries it).
     Notice { room: String, text: String, depth: u8 },
+    /// ccc-node#2590: a status line for room `room` outside any turn
+    /// (FLEET-WORKER `notice` with `kind:"status"`: the bridge's background
+    /// wait line). Posted like `Status` — `status-<uuid>` client_id, no push,
+    /// not stored by the apps — and routed like a `Notice` (agent room only).
+    StatusNotice { room: String, text: String },
     /// #425: an item that is deliberately not posted — any output of a peer
     /// (bot-started) turn, or a notice over the per-minute cap. Logged only.
     Suppressed { seq: i64, kind: &'static str },
@@ -301,6 +316,8 @@ pub struct Responder {
     /// #425: per-room minute windows for peer intake and notices.
     peer_window: HashMap<String, VecDeque<Instant>>,
     notice_window: HashMap<String, VecDeque<Instant>>,
+    /// ccc-node#2590: when each room last carried a `kind:"status"` notice.
+    status_notice_at: HashMap<String, Instant>,
 }
 
 /// #425: one turn-bound item, or its `Suppressed` stand-in for a peer turn.
@@ -420,6 +437,7 @@ impl Responder {
             age_notice_due: None,
             peer_window: HashMap::new(),
             notice_window: HashMap::new(),
+            status_notice_at: HashMap::new(),
         };
         // A turn left active by an earlier run was never confirmed: say so
         // once, clear it, never re-run it.
@@ -600,6 +618,19 @@ impl Responder {
             // its own), so it is read before the active-turn filter below.
             let room = value.get("room").and_then(|v| v.as_str()).unwrap_or("");
             let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if is_room_id(room) && !text.is_empty() && value.get("kind").and_then(|v| v.as_str()) == Some("status") {
+                // ccc-node#2590: a background-wait status line — status-v1
+                // shape, its own per-room spacing (not the notice cap).
+                let now = Instant::now();
+                let gap = Duration::from_secs(self.config.status_notice_min_secs);
+                if self.status_notice_at.get(room).is_some_and(|at| now.duration_since(*at) < gap) {
+                    out.push((room.to_string(), Outbound::Suppressed { seq: 0, kind: "status_notice_rate" }));
+                    return Ok(());
+                }
+                self.status_notice_at.insert(room.to_string(), now);
+                out.push((room.to_string(), Outbound::StatusNotice { room: room.to_string(), text: bounded_reply(text, self.config.reply_max_bytes) }));
+                return Ok(());
+            }
             if is_room_id(room) && !text.is_empty() {
                 if !within_rate(&mut self.notice_window, room, self.config.notice_per_min) {
                     out.push((room.to_string(), Outbound::Suppressed { seq: 0, kind: "notice_rate" }));
@@ -1242,6 +1273,40 @@ for line in sys.stdin:
             Outbound::Interim { seq: 7, text: "plain".into() },
             Outbound::Reply { seq: 7, text: "echo:status|@owner-pc:hande".into() },
         ]);
+    }
+
+    #[test]
+    fn status_notice_is_a_turnless_status_line_with_its_own_spacing() {
+        // ccc-node#2590: `notice` + `kind:"status"` → StatusNotice (no turn needed),
+        // at most one per room per status_notice_min_secs, apart from the notice cap.
+        let mut r = fake(|c| c.notice_per_min = 1, None);
+        assert!(r.active.is_none());
+        let frame = |room: &str, text: &str| serde_json::json!({"type": "notice", "room": room, "text": text, "kind": "status"});
+        let mut out = Vec::new();
+        r.handle(frame("dungae", "  ⏳ 대기 중 · PR #603 CI  "), &mut out).unwrap();
+        r.handle(frame("dungae", "⏳ 대기 중 · again"), &mut out).unwrap();
+        r.handle(frame("soonwook", "⏳ 대기 중 · other room"), &mut out).unwrap();
+        r.handle(frame("bad room!", "⏳ x"), &mut out).unwrap();
+        r.handle(frame("dungae", "   "), &mut out).unwrap();
+        // A plain notice still has its own (separate) cap: one per minute here.
+        r.handle(serde_json::json!({"type": "notice", "room": "dungae", "text": "reminder"}), &mut out).unwrap();
+        // An unknown kind is a plain notice (the cap of 1 is now used up).
+        r.handle(serde_json::json!({"type": "notice", "room": "dungae", "text": "odd", "kind": "later"}), &mut out).unwrap();
+        assert_eq!(out, vec![
+            ("dungae".to_string(), Outbound::StatusNotice { room: "dungae".into(), text: "⏳ 대기 중 · PR #603 CI".into() }),
+            ("dungae".to_string(), Outbound::Suppressed { seq: 0, kind: "status_notice_rate" }),
+            ("soonwook".to_string(), Outbound::StatusNotice { room: "soonwook".into(), text: "⏳ 대기 중 · other room".into() }),
+            ("dungae".to_string(), Outbound::Notice { room: "dungae".into(), text: "reminder".into(), depth: 1 }),
+            ("dungae".to_string(), Outbound::Suppressed { seq: 0, kind: "notice_rate" }),
+        ], "bad room / blank text unsaid; status spacing does not consume the notice cap");
+
+        // Spacing elapsed (0 = no cap) → every status notice goes out.
+        let mut r = fake(|c| c.status_notice_min_secs = 0, None);
+        let mut out = Vec::new();
+        r.handle(frame("dungae", "⏳ a"), &mut out).unwrap();
+        r.handle(frame("dungae", "⏳ b"), &mut out).unwrap();
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|(_, o)| matches!(o, Outbound::StatusNotice { .. })));
     }
 
     #[test]
