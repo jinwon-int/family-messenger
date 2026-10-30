@@ -91,7 +91,7 @@ function placeCaret(list) {
 }
 
 function lastVisibleBubble(list) {
-  const bubbles = [...list.querySelectorAll('li.bubble')];
+  const bubbles = [...list.querySelectorAll('li.bubble:not(.transient)')];   // status-v1(#560) 임시 말풍선은 건너뛴다
   const box = list.getBoundingClientRect();
   if (box.height > 0) {
     for (let i = bubbles.length - 1; i >= 0; i--) {

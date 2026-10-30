@@ -471,3 +471,32 @@ test('typing(): no POST before join / after halt; a sent message resets the thro
   assert.equal(typingPosts.length, 2, 'the send reset the 3 s throttle');
   assert.ok(relay2.calls.some(c => c.path === '/v2/rooms/family/events' && c.body?.kind === 'application'));
 });
+
+// ---- status-v1 (#560): the agent's live 「⏳ Working …」 line ----
+test('status-<uuid> event: on.status only — never a timeline message, never history; still acked', async () => {
+  const {bridge, w} = fakeWorker({fresh: false, group: ['dungae-bot', 'owner-web-aaaaaa'], decrypt: () => ({sender: 'dungae-bot', client: 'dungae-bot'})});
+  const events = [
+    {seq: 6, device: 'dungae-bot', kind: 'application', epoch: 3, bytes: b64(Array.from(utf8.encode('⏳ Working — 10s | Bash: ls'))), client_id: 'status-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2', created_at: 1700000006},
+    {seq: 7, device: 'dungae-bot', kind: 'application', epoch: 3, bytes: b64(Array.from(utf8.encode('답'))), client_id: 'dungae-bot-echo-1', created_at: 1700000007},
+    // `status-` without the uuid tail is a normal message (the relay/bot/iOS rule).
+    {seq: 8, device: 'dungae-bot', kind: 'application', epoch: 3, bytes: b64(Array.from(utf8.encode('status-report'))), client_id: 'status-report', created_at: 1700000008},
+  ];
+  const relay = fakeRelay((m, path) => {
+    if (path.includes('ack=')) return {status: 200, body: {epoch: 3, events: [], cursor: 8, members: []}};
+    return {status: 200, body: {epoch: 3, revision: 1, events, cursor: 5, first_seq: 1, members: []}};
+  });
+  const storage = memStorage();
+  storage.setItem('hande:room:family:owner-web-aaaaaa:family-mls-synthetic-hande-family', JSON.stringify({joined: true, relaySeq: 5, epoch: 3, roster: ['dungae-bot', 'owner-web-aaaaaa']}));
+  const statuses = [];
+  const evs = {messages: []};
+  const s = createRoomSession({room: 'family', device: 'owner-web-aaaaaa', database: 'family-mls-synthetic-hande-family', worker: bridge, relay, storage, policy: policy(),
+    on: {message: m => evs.messages.push(m), status: st => statuses.push(st), log: () => {}, change: () => {}, notice: () => {}},
+    setInterval: () => 1, clearInterval: () => {}});
+  await s.open(); await s.activate();
+  assert.deepEqual(statuses, [{sender: 'dungae-bot', text: '⏳ Working — 10s | Bash: ls', seq: 6, ts: 1700000006000}]);
+  assert.ok(!evs.messages.some(x => x.seq === 6), 'a status is never a timeline message');
+  assert.deepEqual(evs.messages.filter(x => x.kind === 'text').map(x => x.seq), [7, 8]);
+  assert.deepEqual(w.history.map(r => r.seq), [7, 8], 'a status is never stored');
+  assert.equal(s.state.relaySeq, 8);
+  assert.ok(relay.calls.some(c => c.path.includes('ack=8')), 'the status event is acked like any other');
+});
