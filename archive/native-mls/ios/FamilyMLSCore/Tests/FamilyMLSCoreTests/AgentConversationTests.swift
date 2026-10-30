@@ -205,6 +205,17 @@ final class RoomGlanceTests: XCTestCase {
         let glance = RoomGlance.make([], roster: roster)
         XCTAssertNil(glance.last)
         XCTAssertFalse(glance.hasAgent)
+        XCTAssertTrue(glance.isOneToOne)
+    }
+
+    /// 목록 미리보기의 「이름: 」 접두는 1:1 방에서 뺀다(오너 2026-10-30) — 같은 사람의 두 기기는 한 명.
+    func testOneToOneCountsSpeakersNotDevices() {
+        let agentRoom = RoomGlance.make([rec(1, "owner-iphone-1", "안녕"), rec(2, "bot-gongmyoung", "네"), rec(3, "owner-pc", "고마워")], roster: roster)
+        XCTAssertTrue(agentRoom.isOneToOne, "owner (two devices) + one agent")
+        let pair = RoomGlance.make([rec(1, "owner-iphone-1", "밥"), rec(2, "jungin-iphone-2", "응")], roster: roster)
+        XCTAssertTrue(pair.isOneToOne)
+        let group = RoomGlance.make([rec(1, "owner-iphone-1", "안녕"), rec(2, "bot-gongmyoung", "네"), rec(3, "jungin-iphone-2", "나도")], roster: roster)
+        XCTAssertFalse(group.isOneToOne, "three speakers keep the name prefix")
     }
 
     func testDeviceKind() {

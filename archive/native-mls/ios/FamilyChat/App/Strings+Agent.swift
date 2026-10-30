@@ -52,7 +52,7 @@ extension Strings {
             return s
         }.filter { !$0.isEmpty }
         let flat = lines.joined(separator: " ").replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "`", with: "")
-        return "\(name): \(flat)"
+        return name.isEmpty ? flat : "\(name): \(flat)"  // 이름이 비면 접두 없이(1:1 방 — 웹 previewLine 과 같다)
     }
 }
 
