@@ -210,12 +210,7 @@ struct CampfireCard: View {
                         Image(systemName: "bell.slash").font(.caption).foregroundStyle(Hande.inkDim)
                             .accessibilityLabel(Strings.mutedLabel)
                     }
-                    if glance.hasAgent && !out {
-                        Text(Strings.agentBadge).font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(Capsule().fill(Hande.agent.opacity(0.18)))
-                            .foregroundStyle(Hande.agent)
-                    }
+                    // 「에이전트」 배지는 넣지 않는다(오너 2026-10-31 — 웹 #540 과 같다). 에이전트 자리는 SeatDots·밝은 불로 보인다.
                 }
                 if let working, !out {
                     Text(working).font(.footnote.weight(.medium))
