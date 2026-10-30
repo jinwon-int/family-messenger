@@ -18,5 +18,5 @@
   <path d="M60 138l72 10M132 138l-72 10" stroke="#5a2c12" stroke-width="10" stroke-linecap="round"/>
   <circle cx="50" cy="118" r="6" fill="#ffd79a"/>
   <circle cx="142" cy="118" r="6" fill="#ffd79a"/>
-  <circle cx="96" cy="158" r="6" fill="#7fb4ff"/>
+  <circle cx="96" cy="158" r="6" fill="#61A6FA"/>
 </svg>

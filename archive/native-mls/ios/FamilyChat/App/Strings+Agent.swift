@@ -3,16 +3,16 @@ import Foundation
 import FamilyMLSCore
 extension Strings {
     // 에이전트·사람 닉네임 표(agentNames·peopleNames)는 Strings+Names.swift — NSE 와 공유.
-    static let agentBadge = "에이전트"
+    /// AI 에이전트 = 불지기(모닥불 용어, 오너 승인). 설정 설명문에는 「불지기(AI 에이전트)」 병기.
+    static let agentBadge = "불지기"
+    static let agentBadgePlain = "불지기(AI 에이전트)"
     /// 내 글 뒤 에이전트 답이 아직 없을 때(`AgentThinking` — 앱 추정, 에이전트 쪽 신호 없음). 작업 중이라고 단정하지 않는다(#601):
     /// 봇·브리지가 멈춰도 같은 조건이 성립하므로 "생각하는 중"이 아니라 내 쪽 상태(기다림)만 말한다.
     static func agentAwaitingReply(_ name: String) -> String { "\(name)의 답 기다리는 중" }
     static func approvalTitle(_ name: String) -> String { "\(name)\(subjectParticle(name)) 허락을 구합니다" }
-    /// 받침 있으면 "이", 없으면 "가"(공명이 · 루나가). 한글 음절이 아니면 "이(가)".
-    static func subjectParticle(_ name: String) -> String {
-        guard let last = name.unicodeScalars.last, (0xAC00...0xD7A3).contains(last.value) else { return "이(가)" }
-        return (last.value - 0xAC00) % 28 == 0 ? "가" : "이"
-    }
+    // subjectParticle 은 Strings.swift(타닥타닥 라벨과 공용).
+    /// 허락 카드 본문 줄 머리(디자인 1차: 대상·내용·영향 3줄 고정 — 봇이 아직 한 줄 요약만 보내므로 「내용」 한 줄, 나머지는 봇 쪽 후속).
+    static let approvalSummaryLabel = "내용"
     static let approvalAllow = "허락"
     static let approvalDeny = "거절"
     static let approvalAllowed = "허락했습니다"
@@ -32,12 +32,30 @@ extension Strings {
     static let wordmark = "hande"
     static let campfireEmpty = "아직 피운 모닥불이 없습니다"
     static let roomClosedPreview = "불이 꺼진 자리"
+    /// 운영자가 닫은 방(`SyncHaltReason.roomClosed`) — 방 행 보조 글자.
+    static let roomClosedByOperator = "불이 꺼진 자리 · 운영자가 닫음"
     static let roomNoMessages = "아직 아무도 말하지 않았어요"
+    /// 오늘의 불 세기(방 행 아이콘 불꽃 1~3단, 숫자 없음) — VoiceOver 만 말로.
+    static func fireLevelLabel(_ level: Int) -> String {
+        switch level {
+        case ...1: return "오늘의 불 세기 조용함"
+        case 2: return "오늘의 불 세기 보통"
+        default: return "오늘의 불 세기 활발"
+        }
+    }
+    /// 대화방 제목 아래 자리 요약: ●●● 가족 3 · ● 불지기 공명
+    static func seatPeople(_ count: Int) -> String { "가족 \(count)" }
+    static func seatAgents(_ names: [String]) -> String { "\(agentBadge) \(names.joined(separator: ", "))" }
+    /// 설정 「화면」 — 테마(밤 고정이 기본, 낮불은 e-ink·밝은 곳용 고대비).
+    static let themeSection = "화면"
+    static let themeLabel = "테마"
+    static let themeNight = "밤 (기본)"
+    static let themeDay = "낮불 — e-ink·밝은 곳"
+    static let themeHint = "낮불은 e-ink 태블릿과 밝은 곳에서 읽기 쉬운 고대비 화면입니다. 사람은 ●, 불지기(AI 에이전트)는 ◆ 로 구별합니다."
     /// 기기 종류(기기 ID 둘째 마디) → 표시. 없으면 표시하지 않는다.
     static let deviceKinds: [String: String] = [
         "iphone": "아이폰", "ipad": "아이패드", "pc": "PC", "web": "웹", "android": "안드로이드", "mac": "맥",
     ]
-    static func composerPlaceholderAgent(_ name: String) -> String { "\(name)에게 말 걸기…" }
     /// 다른 사람 말풍선 위 이름줄: 오너 · PC
     static func senderLabel(device: String) -> String {
         let name = AgentRosterNames.person(device)
@@ -71,9 +89,9 @@ enum DeviceKindName {
 extension Strings {
     static let unreadLabel = "안 읽은 글"
     static let shortcutReadTimeline = "대화 읽기"
-    static let shortcutPreviousRoom = "이전 대화방"
-    static let shortcutNextRoom = "다음 대화방"
-    static let shortcutRoomList = "대화 목록"
+    static let shortcutPreviousRoom = "이전 자리"
+    static let shortcutNextRoom = "다음 자리"
+    static let shortcutRoomList = "자리 목록"
 }
 
 // #405 메시지 시간 표시.

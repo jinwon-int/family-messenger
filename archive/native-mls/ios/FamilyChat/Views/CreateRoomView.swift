@@ -34,7 +34,7 @@ struct CreateRoomView: View {
                         .disabled(busy || trimmed.isEmpty || !model.canRequestJoin)
                 }
             }
-            .navigationTitle(Strings.createTitle)
+            .navigationTitle(Strings.createSheetTitle)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button(Strings.close) { dismiss() } } }
         }
     }

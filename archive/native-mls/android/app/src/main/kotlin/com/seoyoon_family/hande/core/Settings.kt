@@ -48,6 +48,11 @@ class Settings(context: Context, private val sealer: KeystoreSealer) {
 
     val isConfigured: Boolean get() = relayUrl != null && actor != null
 
+    /** 화면 테마(한데 디자인 1차): `HandeThemeMode.key` — `"night"`(기본, 없으면 밤) · `"day"`(낮불). 공개 값. `wipe()` 로 함께 지워진다(= 밤). */
+    var theme: String?
+        get() = prefs.getString("theme", null)?.takeIf { it.isNotBlank() }
+        set(value) { if (value.isNullOrBlank()) prefs.edit().remove("theme").apply() else prefs.edit().putString("theme", value.trim()).apply() }
+
     /** 형제 기기 초대 대기열(#574, `SelfService.encodeSiblingQueue` 형식 — 공개 값: 기기 ID·방 이름·시각). 비면 지운다. */
     var siblingQueue: String?
         get() = prefs.getString("sibling_invites", null)?.takeIf { it.isNotBlank() }

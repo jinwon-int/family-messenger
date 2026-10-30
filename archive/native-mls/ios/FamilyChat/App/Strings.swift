@@ -70,20 +70,32 @@ enum Strings {
     }
 
     // 방
-    static let roomsTitle = "대화"
-    static let noRooms = "아직 대화방이 없습니다. 오른쪽 위 + 로 참여를 요청하고, 운영자가 초대하면 여기 나타납니다."
-    static let composerPlaceholder = "메시지"
+    // 모닥불 용어(디자인 1차 용어 적용표, 오너 「전부 적용」): 채팅방=자리 · 방 만들기=불 피우기 · 입력 중=타닥타닥 · 새 메시지=불씨가 튀었어요.
+    // 은유는 제목·버튼에, 일반어는 첫 노출 보조 설명(1회)과 시스템 영역(알림 설정·권한·오류)에. 동작어(보내기·사진·설정)는 그대로.
+    static let roomsTitle = "자리"
+    static let noRooms = "자리(대화방)는 운영자가 초대하면 여기 나타납니다. 오른쪽 위 + 로 참여를 요청하거나, 아래 「불 피우기」로 새 자리를 만드세요."
+    static let composerPlaceholder = "이야기 나누기…"
     static let sendButton = "보내기"
     static let undecryptable = "🔒 복호화하지 못한 메시지"
     static func sendRejected(_ reason: String) -> String { "보내지 못했습니다(\(reason)). 동기화 뒤 다시 시도해 주세요." }
     /// 방 화면 제목 아래: 릴레이에 닿지 않는 동안(`AppModel.reconnecting`).
     static let connecting = "연결 중입니다…"
     /// #562 방 화면 제목 옆: 다른 사람이 글을 쓰는 중(1:1 방 — 이름 없이). AppModel 과 같은 Linux 스모크 복사 파일에 둔다.
-    static let typing = "입력중…"
-    /// 여럿이 있는 방: 「jinon86 입력중…」 · 「쩡이🍎, jinon86 입력중…」. 이름이 없으면 `typing` 만.
+    static let typing = "타닥타닥…"
+    /// 여럿이 있는 방: 「정인이 타닥타닥…」 · 「쩡이🍎가 타닥타닥…」. 이름이 없으면 `typing` 만. 조사는 웹 한데 `subjectParticle` 과 같은 규칙 —
+    /// 꼬리의 이모지·기호를 건너뛰고 마지막 한글 음절의 받침으로, 한글이 없으면(영문 ID) 「이」.
     static func typingLabel(_ names: [String]) -> String {
-        if names.isEmpty { return typing }
-        return names.joined(separator: ", ") + " " + typing
+        guard let last = names.last else { return typing }
+        return names.joined(separator: ", ") + typingParticle(last) + " " + typing
+    }
+    static func typingParticle(_ name: String) -> String {
+        guard let syllable = name.unicodeScalars.last(where: { (0xAC00...0xD7A3).contains($0.value) }) else { return "이" }
+        return (syllable.value - 0xAC00) % 28 == 0 ? "가" : "이"
+    }
+    /// 받침 있으면 "이", 없으면 "가"(공명이 · 루나가). 한글 음절이 아니면 "이(가)". (허락 카드 제목·타닥타닥 공용 — NSE·Linux 스모크 공유 파일.)
+    static func subjectParticle(_ name: String) -> String {
+        guard let last = name.unicodeScalars.last, (0xAC00...0xD7A3).contains(last.value) else { return "이(가)" }
+        return (last.value - 0xAC00) % 28 == 0 ? "가" : "이"
     }
     /// 보내는 글(오너 요청 build 31: 누르는 즉시 목록에 올리고, 상태는 말풍선 아래에).
     static let outgoingSending = "보내는 중…"
@@ -114,23 +126,24 @@ enum Strings {
     static let joinRequested = "참여를 요청했습니다. 운영자의 초대를 기다려 주세요."
     static func joinFailed(_ reason: String) -> String { "참여 요청에 실패했습니다: \(reason)" }
     static let close = "닫기"
-    static let roomActions = "대화방"
+    static let roomActions = "자리"
 
     // #549 대화 목록 고정 순서(웹 한데 strings.js `orderEdit`/`orderDone`/`orderHint` 와 같은 뜻 — 이 기기에만 저장)
     static let orderEdit = "순서"
-    static let orderEditLabel = "대화 순서 편집"
+    static let orderEditLabel = "자리 순서 편집"
     static let orderDone = "완료"
-    static let orderDoneLabel = "대화 순서 편집 완료"
+    static let orderDoneLabel = "자리 순서 편집 완료"
     static let orderHint = "▲▼나 ≡ 를 끌어 순서를 바꾸세요. 목록은 최근 대화순으로 움직이지 않고 이 순서로 고정되며, 이 기기에만 저장됩니다."
     static func orderUp(_ room: String) -> String { "\(roomLabel(room)) 위로" }
     static func orderDown(_ room: String) -> String { "\(roomLabel(room)) 아래로" }
     static let orderPinTop = "맨 위로 고정"
 
     // 방 만들기(CreateRoomView, §12-E)
-    static let createTitle = "대화방 만들기"
-    static let createHint = "이 기기에서 새 대화방을 만듭니다(영문 소문자·숫자·하이픈, 최대 48자). 릴레이에는 첫 초대 때 생깁니다 — 만든 뒤 방에 들어가 '초대'로 다른 기기를 들이세요."
-    static let createButton = "만들기"
-    static let createDone = "대화방을 만들었습니다. 방에 들어가 '초대'로 다른 기기를 들이세요."
+    static let createTitle = "불 피우기"
+    static let createSheetTitle = "새 자리 — 불 피우기"
+    static let createHint = "이 기기에서 새 자리(대화방)를 만듭니다(영문 소문자·숫자·하이픈, 최대 48자). 릴레이에는 첫 초대 때 생깁니다 — 만든 뒤 자리에 들어가 '초대'로 다른 기기를 들이세요."
+    static let createButton = "불 피우기"
+    static let createDone = "불을 피웠습니다. 자리에 들어가 '초대'로 다른 기기를 들이세요."
     static let roomIdInvalid = "대화방 ID 형식이 맞지 않습니다 — 영문 소문자·숫자로 시작, 소문자·숫자·하이픈 최대 48자."
 
     // 방별 알림 설정(server/mute.go, 웹 strings.chat.muteButton 과 같은 문구): 방 화면 🔔/🔕 · 목록 카드 🔕.
@@ -198,7 +211,7 @@ enum Strings {
     // (NSE 가 죽거나 시간을 넘기면 iOS 가 원래 alert 의 loc-key 를 그 파일로 푼다).
     static let pushFallbackBody = "새 메시지가 도착했습니다"
     /// #520: 미리보기를 숨길 때(잠금 상태 · 설정 「잠금 해제 시」) 잠금화면에 보이는 일반 문구. 제목(보낸 사람)도 함께 숨는다.
-    static let pushHiddenPreviewPlaceholder = "새 메시지"
+    static let pushHiddenPreviewPlaceholder = "불씨가 튀었어요"
 
     // 잠금화면 미리보기(#520) — 설정 화면 값·경고 배너
     static let lockPreviewLabel = "잠금화면 미리보기"

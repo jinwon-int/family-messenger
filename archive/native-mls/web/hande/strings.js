@@ -161,6 +161,19 @@ export function typingNames(devices, { device, actor, roster }) {
   return names;
 }
 
+/**
+ * 주격 조사 이/가: 마지막 한글 음절의 받침으로 고른다. 이름 끝의 이모지·계정 마커(✳️·🍎)는 건너뛰고 본다.
+ * 한글이 없으면(영문 ID 등) 「이」(디자인 표기 「정인이 타닥타닥…」을 따른다).
+ */
+export function subjectParticle(name) {
+  const text = String(name ?? '');
+  for (let i = text.length - 1; i >= 0; i -= 1) {
+    const code = text.charCodeAt(i);
+    if (code >= 0xac00 && code <= 0xd7a3) return (code - 0xac00) % 28 === 0 ? '가' : '이';
+  }
+  return '이';
+}
+
 /** 방 머리글의 입력 중 문구: 다른 사람이 아무도 입력 중이 아니면 ''(표시 없음). */
 export function typingLabel(devices, me) {
   const list = Array.isArray(devices) ? devices.filter(Boolean) : [];
@@ -343,11 +356,12 @@ export const strings = {
     newWindow: '새 창에서 열기',
     loginHint: '처음이면 새 창에서 로그인한 뒤 새로고침하세요.',
   },
+  // 모닥불 용어(한데 디자인 1차 §4): 채팅방 = 「자리」, 닫힌 방 = 「불이 꺼진 자리」, 방 만들기 = 「불 피우기」.
   rooms: {
-    title: '대화',
+    title: '자리',
     empty: '아직 피운 모닥불이 없습니다',
     noRooms: '아직 대화방이 없습니다. 위의 + 로 참여를 요청하고, 운영자가 초대하면 여기 나타납니다.',
-    closedPreview: '불이 꺼진 자리',
+    closedPreview: '불이 꺼진 자리 · 운영자가 닫음',
     noMessages: '아직 아무도 말하지 않았어요',
     selectHint: '왼쪽 목록에서 모닥불을 고르세요.',
     // 안 읽은 방 이름 옆 둥근 배지(패밀리챗과 같은 카카오톡식 N). 글자 N은 보조기기에서 숨기고 unreadLabel을 읽는다.
@@ -374,9 +388,9 @@ export const strings = {
     closed: '닫힘',
     actions: '대화방',
     join: '참여 요청',
-    create: '방 만들기',
+    create: '불 피우기',
     settings: '설정',
-    listLabel: '대화 목록',
+    listLabel: '자리 목록',
     deviceLabel: '이 기기',
   },
 
@@ -388,7 +402,7 @@ export const strings = {
   },
 
   chat: {
-    placeholder: '메시지',
+    placeholder: '이야기 나누기…',
     placeholderDisabled: '지금은 보낼 수 없습니다',
     send: '보내기',
     sending: '보내는 중…',
@@ -420,8 +434,10 @@ export const strings = {
     mutedDone: '이 방 알림을 껐습니다 (내 모든 기기)',
     unmutedDone: '이 방 알림을 켰습니다',
     muteFailed: '알림 설정을 바꾸지 못했습니다. 잠시 뒤 다시 시도해 주세요.',
-    // 입력 중 표시(#562): 단체방은 이름을 앞에, 1:1 방은 문구만(패밀리챗 "입력중.." 과 같은 결).
-    typing: (names) => (names.length ? `${names.join(', ')} 입력중…` : '입력중…'),
+    // 입력 중 표시(#562 → 디자인 1차 「타닥타닥」): 단체방은 「정인이 타닥타닥…」(조사는 마지막 이름의 받침으로), 1:1 방은 문구만.
+    typing: (names) => (names.length ? `${names.join(', ')}${subjectParticle(names[names.length - 1])} 타닥타닥…` : '타닥타닥…'),
+    // 보낸 이 라벨의 불지기 표시: 「공명✴️ · 불지기」(에이전트 = 불지기, 설명문에만 「AI 에이전트」 병기).
+    agentBadge: '불지기',
     invite: '초대',
     image: '사진',
     viewImage: '크게 보기',
@@ -461,10 +477,10 @@ export const strings = {
   },
 
   create: {
-    title: '대화방 만들기',
+    title: '새 자리 — 불 피우기',
     field: '대화방 ID',
-    hint: "이 기기에서 새 대화방을 만듭니다(영문 소문자·숫자·하이픈, 최대 48자). 릴레이에는 첫 초대 때 생깁니다 — 만든 뒤 방에 들어가 '초대'로 다른 기기를 들이세요.",
-    button: '만들기',
+    hint: "이 기기에서 새 자리(대화방)를 만듭니다(영문 소문자·숫자·하이픈, 최대 48자). 릴레이에는 첫 초대 때 생깁니다 — 만든 뒤 방에 들어가 '초대'로 다른 기기를 들이세요.",
+    button: '불 피우기',
     busy: '만드는 중…',
     done: "대화방을 만들었습니다. 방에 들어가 '초대'로 다른 기기를 들이세요.",
     invalid: '대화방 ID 형식이 맞지 않습니다 — 영문 소문자·숫자로 시작, 소문자·숫자·하이픈 최대 48자.',
@@ -501,6 +517,11 @@ export const strings = {
     openDevices: '내 기기',
     wipe: '이 기기 지우기',
     wipeHint: '이 기기의 암호화 상태(서명키)·대화 기록·기기 ID 를 모두 지우고 새 기기가 됩니다.',
+    // 화면 테마(theme.js, 디자인 1차): 밤이 기본·고정, 낮불은 e-ink·밝은 곳용, 「시스템 따라가기」만 OS 라이트 모드를 본다.
+    theme: '화면',
+    themeNight: '밤 (기본)',
+    themeDay: '낮불 — e-ink·밝은 곳',
+    themeAuto: '시스템 따라가기',
   },
 
   // 「내 기기」 시트(#574 E5): 체인에 있는 내 subject 의 기기와 registrar(새 기기 승인 권한) 부여·해제.
@@ -583,7 +604,7 @@ export const strings = {
     title: '설정',
     open: '설정',
     join: '🔑 참여 요청',
-    create: '🔥 방 만들기',
+    create: '🔥 불 피우기',
     settings: '설정',
     invite: '기기 초대 · 멤버',
     approve: '신뢰 기기 승인',
@@ -605,9 +626,9 @@ export const strings = {
   },
   // AI 참여 동의(#544 E 선택지 3): 참여 뒤 명단에 에이전트가 있으면 방을 처음 열 때 — 동의 전에는 작성창 잠금. 문구는 패밀리챗 invite.aiConsent*·README 범위 안내.
   consent: {
-    title: '이 방에는 AI 참여자가 있습니다',
+    title: '이 자리에는 불지기(AI 에이전트)가 있습니다',
     body: '이 AI는 이 방의 대화를 읽을 수 있으며, 답변에 필요한 내용이 설정된 AI 제공업체에 전달될 수 있습니다. 호출 여부와 열람 권한은 다릅니다.',
-    agents: (names) => `AI 참여자: ${names}`,
+    agents: (names) => `불지기: ${names}`,
     label: '이해했으며 동의합니다',
     required: '위 안내에 체크해야 동의할 수 있습니다.',
     confirm: '동의하고 대화하기',

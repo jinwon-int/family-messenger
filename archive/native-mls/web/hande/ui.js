@@ -515,6 +515,9 @@ function previewRetry(entry, onRetryPreview) {
       busy ? strings.chat.previewRetrying : strings.chat.previewRetry));
 }
 
+/** 보낸 이 라벨(디자인 1차): 에이전트는 「공명✴️ · 불지기」(점은 CSS ::before, 사람 크림·불지기 파랑). */
+const senderLabel = (name, isAgent) => (isAgent && name ? `${name} · ${strings.chat.agentBadge}` : name);
+
 function bubble(entry, onOpenAttachment, onRetryPreview = null) {
   const time = formatTime(entry.ts);
   const signature = JSON.stringify([entry.key, entry.kind, Boolean(entry.isMe), Boolean(entry.isAgent), entry.senderName ?? null, entry.body ?? '', time, entry.size ?? null, entry.image?.url ?? null, Boolean(entry.replay), entry.seq ?? null,
@@ -541,7 +544,7 @@ function bubble(entry, onOpenAttachment, onRetryPreview = null) {
   else body = el('div', { class: 'body' }, entry.body);
   const foot = [entry.replay ? strings.chat.replay : null, time].filter(Boolean).join(' · ');
   return signed(el('li', { class: `bubble kind-${entry.kind}${entry.isAgent ? ' agent' : ''}`, 'data-key': entry.key, 'data-me': entry.isMe ? 'true' : 'false', 'data-testid': entry.kind === 'undecryptable' ? 'system-row' : 'bubble' },
-    entry.isMe ? null : el('span', { class: 'who' }, entry.senderName || displayName(entry.sender)),
+    entry.isMe ? null : el('span', { class: 'who' }, senderLabel(entry.senderName || displayName(entry.sender), entry.isAgent)),
     body,
     foot ? el('span', { class: 'foot' }, foot) : null), signature);
 }
@@ -553,7 +556,7 @@ function bubble(entry, onOpenAttachment, onRetryPreview = null) {
  */
 function statusRow(st) {
   return signed(el('li', { class: 'bubble kind-status agent transient', 'data-key': `status:${st.sender}`, 'data-me': 'false', 'data-testid': 'status-bubble', 'aria-live': 'off' },
-    el('span', { class: 'who' }, st.senderName || displayName(st.sender)),
+    el('span', { class: 'who' }, senderLabel(st.senderName || displayName(st.sender), true)),
     el('div', { class: 'body' }, st.text)),
   JSON.stringify(['status', st.sender, st.senderName ?? '', st.text]));
 }
@@ -1039,10 +1042,22 @@ export function openNotifySheet(root, { invites = [], candidates = [], notes = [
   return { close };
 }
 
-export function openSettingsSheet(root, { deviceId, actor, fingerprint, subject = null, origin = '', onCopyRegistration, onOpenApprove = null, onOpenDevices = null, onWipe, onClose }) {
+/** 설정 시트의 「화면」 행(한데 디자인 1차): 밤(기본) · 낮불 · 시스템 따라가기 — 라디오, 고르면 바로 적용(theme.js). */
+function themeRow(theme, onTheme) {
+  const t = strings.settings;
+  const options = [['night', t.themeNight], ['day', t.themeDay], ['auto', t.themeAuto]];
+  return el('fieldset', { class: 'theme-row', 'data-testid': 'theme-row' },
+    el('legend', {}, t.theme),
+    options.map(([value, label]) => el('label', { class: 'theme-option' },
+      el('input', { type: 'radio', name: 'theme', value, checked: theme === value ? true : null, 'data-testid': `theme-${value}`, onchange: () => onTheme(value) }),
+      el('span', { class: 'name' }, label))));
+}
+
+export function openSettingsSheet(root, { deviceId, actor, fingerprint, subject = null, origin = '', onCopyRegistration, onOpenApprove = null, onOpenDevices = null, onWipe, onClose, theme = null, onTheme = null }) {
   const { dialog, close } = openSheet(root, { className: 'settings', labelledBy: 'settings-title', onClose });
   setChildren(dialog,
     el('h2', { id: 'settings-title' }, strings.settings.title),
+    typeof onTheme === 'function' ? themeRow(theme ?? 'night', onTheme) : null,
     el('dl', { class: 'facts' },
       fact(strings.settings.deviceIdLabel, deviceId, true),
       fact(strings.settings.actorLabel, actor),

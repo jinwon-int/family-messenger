@@ -38,7 +38,11 @@ struct RootView: View {
     @State private var openingExpired = false
     /// #520 경고 배너를 「나중에」로 닫았다(이 실행 동안만 — 다음 실행에 설정이 그대로면 다시 보인다).
     @State private var previewWarningDismissed = false
+    /// 디자인 1차: 테마 모드(설정 「화면」). 밤이 기본·고정, 낮불은 e-ink·밝은 곳용 고대비 — 기기 표시 설정이라 서버 스코프 밖.
+    @AppStorage(HandeThemeMode.storageKey) private var themeRaw = HandeThemeMode.night.rawValue
     private static let openingLimitNanoseconds: UInt64 = 8_000_000_000
+
+    private var theme: HandeThemeMode { HandeThemeMode.from(themeRaw) }
 
     var body: some View {
         Group {
@@ -85,9 +89,10 @@ struct RootView: View {
             try? await Task.sleep(nanoseconds: Self.openingLimitNanoseconds)
             openingExpired = true
         }
-        // #405 P2: 밤 테마 고정(오너 결정) + 불빛 강조색.
-        .preferredColorScheme(.dark)
-        .tint(Hande.ember)
+        // #405 P2: 밤 테마 고정(오너 결정) + 불빛 강조색. 디자인 1차: 낮불을 고르면 밝은 스킴 + 낮불 팔레트(시스템 라이트 모드는 따르지 않는다).
+        .environment(\.hande, theme.palette)
+        .preferredColorScheme(theme.colorScheme)
+        .tint(theme.palette.ember)
     }
 }
 

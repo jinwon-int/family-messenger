@@ -13,6 +13,8 @@ struct RoomView: View {
     /// iOS 16 `onChange` 는 새 값만 준다 — 줄바꿈 하나가 막 들어왔는지 보려고 직전 글을 쥔다.
     @State private var previousDraft = ""
     @Environment(\.dismiss) private var dismiss
+    /// 디자인 1차: 테마(밤/낮불) 색 토큰.
+    @Environment(\.hande) private var p
     let room: RoomID
     @State private var draft = ""
     /// 저장된 초안을 작성창에 채우는 중 — 그 한 번의 `onChange(of: draft)` 는 사용자 입력이 아니다.
@@ -158,8 +160,8 @@ struct RoomView: View {
                             Label(Strings.newMessagesBelow, systemImage: "arrow.down")
                                 .font(.footnote.weight(.semibold))
                                 .padding(.horizontal, 14).padding(.vertical, 8)
-                                .background(Capsule().fill(Hande.ember))
-                                .foregroundStyle(Hande.onEmber)
+                                .background(Capsule().fill(p.ember))
+                                .foregroundStyle(p.onEmber)
                         }
                         .buttonStyle(.plain)
                         .padding(.bottom, 10)
@@ -229,11 +231,11 @@ struct RoomView: View {
             if let halted = haltedReason {
                 HaltedRoomCard(room: room, reason: halted, onForgotten: { dismiss() })
                     .padding()
-                    .background(Color.red.opacity(0.15))
+                    .background(p.warn.opacity(0.15))
             }
             if let error = model.lastError {
-                // 긴 오류가 대화를 가리지 않게 두 줄까지만(연결 끊김은 여기 오지 않고 제목 아래 「연결 중입니다…」).
-                Text(error).font(.footnote).foregroundStyle(.red).lineLimit(2).padding(.horizontal)
+                // 긴 오류가 대화를 가리지 않게 두 줄까지만(연결 끊김은 여기 오지 않고 제목 아래 「연결 중입니다…」). 주의색은 붉은 잉걸 + 글자.
+                Text(error).font(.footnote).foregroundStyle(p.warn).lineLimit(2).padding(.horizontal)
             }
             if attachBusy {
                 Text(Strings.attachPreparing).font(.footnote).foregroundStyle(.secondary).padding(.horizontal)
@@ -244,11 +246,14 @@ struct RoomView: View {
                 Menu {
                     Button { showPhotoPicker = true } label: { Label(Strings.attachPhoto, systemImage: "photo") }
                     Button { showFileImporter = true } label: { Label(Strings.attachFile, systemImage: "doc") }
-                } label: { Image(systemName: "plus").font(.title3.weight(.semibold)).foregroundStyle(Hande.ember) }
+                } label: {
+                    Image(systemName: "plus").font(.title3.weight(.semibold)).foregroundStyle(p.ember)
+                        .frame(width: 44, height: 44)
+                }
                     .accessibilityLabel(Strings.attachMenu)
                     .disabled(!isReady || attachBusy)
-                // #405 P2: 불가 자리 — 둥근 입력칸 + 불빛 원형 전송 버튼.
-                TextField(placeholder, text: $draft, axis: .vertical)
+                // #405 P2 → 디자인 1차 1c: 둥근 입력칸(면 + 선, 반경 23) + 44pt 불빛 원형 전송 버튼. 「이야기 나누기…」.
+                TextField(Strings.composerPlaceholder, text: $draft, axis: .vertical)
                     .lineLimit(1...6)
                     .focused($composerFocused)
                     // #405 P3: 하드웨어 키보드 Enter = 전송, Shift+Enter = 줄바꿈(웹 keyboard.js). 화면 키보드는 줄바꿈 그대로.
@@ -269,23 +274,25 @@ struct RoomView: View {
                         case .send(let text): sendText(text)
                         }
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .background(RoundedRectangle(cornerRadius: 20).fill(Hande.surface))
-                    .overlay(RoundedRectangle(cornerRadius: 20).stroke(Hande.ember.opacity(0.28), lineWidth: 1))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 11)
+                    .foregroundStyle(p.ink)
+                    .background(RoundedRectangle(cornerRadius: 23).fill(p.surface))
+                    .overlay(RoundedRectangle(cornerRadius: 23).stroke(composerFocused ? p.focus.opacity(0.6) : p.stroke, lineWidth: p.lineWidth))
                 Button {
                     sendText(draft)
                 } label: {
-                    Image(systemName: "arrow.up").font(.body.weight(.bold)).foregroundStyle(Hande.onEmber)
-                        .frame(width: 36, height: 36)
-                        .background(Circle().fill(canSend ? Hande.ember : Hande.ember.opacity(0.35)))
+                    Image(systemName: "arrow.up").font(.body.weight(.bold)).foregroundStyle(p.onEmber)
+                        .frame(width: 44, height: 44)
+                        .background(Circle().fill(canSend ? p.ember : p.ember.opacity(0.35)))
+                        .overlay(Circle().stroke(p.isDay ? p.stroke : .clear, lineWidth: p.lineWidth))
                 }
                 .accessibilityLabel(Strings.sendButton)
                 .disabled(!canSend)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
-            .background(LinearGradient(colors: [Hande.glow.opacity(0.0), Hande.glow.opacity(0.85)], startPoint: .top, endPoint: .bottom))
+            .background(composerBackground)
         }
         .background(CampfireBackground())
         .background(keyboardShortcuts)
@@ -294,19 +301,20 @@ struct RoomView: View {
         .toolbar {
             // #405 P2: 제목 아래 불가에 둘러앉은 자리(사람 크림색 · 에이전트 파란색).
             ToolbarItem(placement: .principal) {
-                VStack(spacing: 3) {
+                VStack(spacing: 4) {
                     HStack(spacing: 6) {
-                        Text(Strings.roomLabel(room)).font(.headline).foregroundStyle(Hande.ink)
-                        // #562: 제목 옆 「입력중…」 — 릴레이에 닿지 않는 동안은 오래된 신호일 수 있어 보이지 않는다.
+                        Text(Strings.roomLabel(room)).font(.headline).foregroundStyle(p.ink)
+                        // #562: 제목 옆 「타닥타닥…」 — 릴레이에 닿지 않는 동안은 오래된 신호일 수 있어 보이지 않는다.
                         if let label = typingLabel, !model.reconnecting {
-                            Text(label).font(.caption2).foregroundStyle(Hande.inkDim)
+                            Text(label).font(.caption2).foregroundStyle(p.inkDim)
                                 .transition(.opacity)
                         }
                     }
-                    SeatDots(people: glance.people.count, agents: glance.agents.count, size: 6)
+                    // 디자인 1차 1c: 제목 아래 자리 요약 — ●●● 가족 3 · ● 불지기 공명.
+                    SeatSummary(glance: glance)
                     // 릴레이에 닿지 않는 동안만(원문 오류 대신). 동기화가 한 번 성공하면 사라진다.
                     if model.reconnecting {
-                        Text(Strings.connecting).font(.caption2).foregroundStyle(Hande.inkDim)
+                        Text(Strings.connecting).font(.caption2).foregroundStyle(p.inkDim)
                             .transition(.opacity)
                     }
                 }
@@ -377,9 +385,13 @@ struct RoomView: View {
         return Strings.typingLabel(names)
     }
 
-    private var placeholder: String {
-        guard let agent = glance.agents.last else { return Strings.composerPlaceholder }
-        return Strings.composerPlaceholderAgent(AgentRoster.displayName(device: agent, names: Strings.agentNames))
+    /// 작성창 뒤: 밤은 아래로 짙어지는 불빛, 낮불은 종이 위 선 하나(그라데이션 금지).
+    @ViewBuilder private var composerBackground: some View {
+        if let glow = p.bgGlow {
+            LinearGradient(colors: [glow.opacity(0.0), glow.opacity(0.85)], startPoint: .top, endPoint: .bottom)
+        } else {
+            p.bgTop.overlay(alignment: .top) { Rectangle().fill(p.stroke).frame(height: p.lineWidth) }
+        }
     }
 
     private func reload() {
@@ -636,6 +648,7 @@ struct MessageRow: View {
     var retry: () -> Void = {}
     /// 꾹 누르기 메뉴 「선택해서 복사」 — 방 화면이 창을 띄운다.
     var selectText: (String) -> Void = { _ in }
+    @Environment(\.hande) private var p
     private var message: MessageRecord { item.record }
     /// 받은(저장된) 첨부 말풍선 — 보내는 중인 첨부는 한 줄 글이라 종전 여백.
     private var isMedia: Bool { message.kind.isFile && item.outgoing == nil }
@@ -659,9 +672,9 @@ struct MessageRow: View {
         } else if AgentApproval.resolution(in: message.body) != nil {
             // 처리 결과(「승인 #1: 허용했습니다.」)는 카드 대신 한 줄 — 위 승인 카드가 이미 결과를 보여 준다.
             HStack(spacing: 6) {
-                Circle().fill(AgentPalette.accent).frame(width: 6, height: 6)
-                Text(message.body).font(.caption).foregroundStyle(.secondary)
-                if let time { Text("· \(Strings.messageTime(time))").font(.caption2).foregroundStyle(.secondary) }
+                SeatDot(agent: true, size: 6)
+                Text(message.body).font(.caption).foregroundStyle(p.inkDim)
+                if let time { Text("· \(Strings.messageTime(time))").font(.caption2).foregroundStyle(p.inkDim) }
             }
             .frame(maxWidth: .infinity, alignment: .center)
         } else {
@@ -674,13 +687,14 @@ struct MessageRow: View {
     @ViewBuilder private var outgoingStatus: some View {
         switch item.outgoing {
         case .sending?:
-            Text(Strings.outgoingSending).font(.caption2).foregroundStyle(Hande.inkDim)
+            Text(Strings.outgoingSending).font(.caption2).foregroundStyle(p.inkDim)
         case .queued?:
-            Label(Strings.outgoingQueued, systemImage: "clock").font(.caption2).foregroundStyle(Hande.inkDim)
+            Label(Strings.outgoingQueued, systemImage: "clock").font(.caption2).foregroundStyle(p.inkDim)
         case .failed(let reason)?:
+            // 주의/실패 = 붉은 잉걸 + 글자(디자인 1차 토큰 warn) — 빨강 신호등 대신.
             HStack(spacing: 6) {
-                Label(Strings.outgoingFailed, systemImage: "exclamationmark.circle").foregroundStyle(.red)
-                Button(Strings.outgoingRetry, action: retry).buttonStyle(.borderless).foregroundStyle(Hande.ember)
+                Label(Strings.outgoingFailed, systemImage: "exclamationmark.circle").foregroundStyle(p.warn)
+                Button(Strings.outgoingRetry, action: retry).buttonStyle(.borderless).foregroundStyle(p.ember)
             }
             .font(.caption2)
             .accessibilityHint(reason)
@@ -691,26 +705,34 @@ struct MessageRow: View {
 
     @ViewBuilder private var timeLabel: some View {
         if let time {
-            Text(Strings.messageTime(time)).font(.caption2).foregroundStyle(Hande.inkDim).fixedSize()
+            Text(Strings.messageTime(time)).font(.caption2).foregroundStyle(p.inkDim).fixedSize()
         }
     }
+
+    /// 내 말풍선 = 불(낮불은 먹 — 주황은 허락·보내기 버튼만), 남의 말풍선 = 면 + 선. 디자인 1차 1c/1d.
+    private var bubbleFill: Color { mine ? (p.isDay ? p.ink : p.ember) : p.surface }
+    private var bubbleText: Color { mine ? (p.isDay ? p.bgTop : p.onEmber) : p.ink }
 
     private var bubbleRow: some View {
         HStack(alignment: .bottom, spacing: 6) {
             if mine { Spacer(minLength: 40); timeLabel }
-            VStack(alignment: mine ? .trailing : .leading, spacing: 2) {
+            VStack(alignment: mine ? .trailing : .leading, spacing: 4) {
                 if !mine {
-                    // #405 P2: 기기 ID 대신 이름 · 기기 종류(오너 · PC).
-                    Text(Strings.senderLabel(device: message.senderDevice)).font(.caption).foregroundStyle(Hande.inkDim)
-                        .padding(.leading, 4)
+                    // #405 P2: 기기 ID 대신 이름 · 기기 종류(오너 · PC). 앞에 사람 점 ●(크림).
+                    HStack(spacing: 5) {
+                        SeatDot(size: 7)
+                        Text(Strings.senderLabel(device: message.senderDevice)).font(.caption).foregroundStyle(p.inkDim)
+                    }
+                    .padding(.leading, 4)
                 }
                 content
                     // 첨부(사진·파일)는 베젤을 최소화(오너 요청 2026-10-27) — 사진이 말풍선을 거의 채우고, 글 줄은 AttachmentBubble 이 자체 여백을 준다.
-                    .padding(.horizontal, isMedia ? Self.mediaInset : 13)
-                    .padding(.vertical, isMedia ? Self.mediaInset : 9)
-                    .background(mine ? AnyShapeStyle(Hande.emberDeep) : AnyShapeStyle(Hande.surface))
-                    .foregroundStyle(mine ? Hande.onEmber : Hande.ink)
+                    .padding(.horizontal, isMedia ? Self.mediaInset : 14)
+                    .padding(.vertical, isMedia ? Self.mediaInset : 11)
+                    .background(bubbleFill)
+                    .foregroundStyle(bubbleText)
                     .clipShape(BubbleShape(mine: mine))
+                    .overlay(BubbleShape(mine: mine).stroke(mine ? .clear : p.stroke, lineWidth: p.lineWidth))
                     .contentShape(.contextMenuPreview, BubbleShape(mine: mine))
                     .messageCopyMenu(MessageCopy.text(of: message), select: selectText)
                     .opacity(item.outgoing == nil ? 1 : 0.75)
@@ -917,7 +939,7 @@ struct BubbleShape: Shape {
     let mine: Bool
     /// iOS 16 대상이라 `UnevenRoundedRectangle`(17+) 대신 직접 그린다.
     func path(in rect: CGRect) -> Path {
-        let big = min(18, rect.height / 2, rect.width / 2), small = min(5, big)
+        let big = min(18, rect.height / 2, rect.width / 2), small = min(6, big)
         let tl = big, tr = big, bl = mine ? big : small, br = mine ? small : big
         var p = Path()
         p.move(to: CGPoint(x: rect.minX + tl, y: rect.minY))
@@ -937,14 +959,45 @@ struct BubbleShape: Shape {
 /// #405 시간 표시: 날짜가 바뀌는 자리의 구분선(오늘 · 어제 · 10월 18일 토요일).
 struct DayDivider: View {
     let text: String
+    @Environment(\.hande) private var p
     var body: some View {
         HStack(spacing: 10) {
-            Rectangle().fill(Hande.stroke).frame(height: 1)
-            Text(text).font(.caption2.weight(.semibold)).foregroundStyle(Hande.inkDim).fixedSize()
-            Rectangle().fill(Hande.stroke).frame(height: 1)
+            Rectangle().fill(p.stroke).frame(height: p.lineWidth)
+            Text(text).font(.caption2.weight(.semibold)).foregroundStyle(p.inkDim).fixedSize()
+            Rectangle().fill(p.stroke).frame(height: p.lineWidth)
         }
         .padding(.vertical, 6)
         .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// 대화방 제목 아래 자리 요약(디자인 1차 1c): ●●● 가족 3 · ● 불지기 공명. 아무도 말하지 않았으면 비운다.
+struct SeatSummary: View {
+    let glance: RoomGlance
+    @Environment(\.hande) private var p
+
+    private var agentNames: [String] {
+        glance.agents.map { AgentRoster.displayName(device: $0, names: Strings.agentNames) }
+    }
+
+    var body: some View {
+        if !glance.people.isEmpty || glance.hasAgent {
+            HStack(spacing: 10) {
+                if !glance.people.isEmpty {
+                    HStack(spacing: 5) {
+                        SeatDots(people: glance.people.count, agents: 0, size: 6)
+                        Text(Strings.seatPeople(glance.people.count)).font(.caption2).foregroundStyle(p.inkDim)
+                    }
+                }
+                if glance.hasAgent {
+                    HStack(spacing: 5) {
+                        SeatDot(agent: true, size: 6)
+                        Text(Strings.seatAgents(agentNames)).font(.caption2).foregroundStyle(p.agentText).lineLimit(1)
+                    }
+                }
+            }
+            .accessibilityElement(children: .combine)
+        }
     }
 }
 

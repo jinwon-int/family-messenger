@@ -14,6 +14,7 @@ struct RoomListView: View {
     @State private var glances: [RoomID: RoomGlance] = [:]
     /// #549: 「↕ 순서」 모드(웹 한데 `orderEditing`) — 행마다 ▲▼, ≡ 끌기, 행 탭으로 방이 열리지 않음. 시스템 `편집` 대신 이 버튼이 켠다.
     @State private var editMode: EditMode = .inactive
+    @Environment(\.hande) private var p
 
     private var orderEditing: Bool { editMode.isEditing }
 
@@ -22,8 +23,8 @@ struct RoomListView: View {
             // 오너 요청: 목록 머리 = 오프닝과 같은 hande 워드마크 + 「오늘 밤, 모닥불에 한데 모여」(내비게이션 큰 제목 대신).
             Section {
                 VStack(alignment: .leading, spacing: 6) {
-                    HandeWordmark(size: 32)
-                    Text(Strings.campfireSubtitle).font(.footnote).foregroundStyle(Hande.inkDim)
+                    HandeWordmark(size: 34)
+                    Text(Strings.campfireSubtitle).font(.subheadline).foregroundStyle(p.inkDim)
                 }
                 .padding(.top, 4)
                 .listRowBackground(Color.clear)
@@ -44,9 +45,9 @@ struct RoomListView: View {
             // 배지 수가 🔔 에 보이므로 목록은 대화방 카드만. 방이 하나도 없고 초대만 있으면 🔔 로 안내한다.
             if model.listedRooms.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(Strings.campfireEmpty).font(.headline).foregroundStyle(Hande.ink)
+                    Text(Strings.campfireEmpty).font(.headline).foregroundStyle(p.ink)
                     Text(model.pendingInvites.isEmpty ? Strings.noRooms : Strings.invitesInBell(model.pendingInvites.count))
-                        .font(.footnote).foregroundStyle(Hande.inkDim)
+                        .font(.footnote).foregroundStyle(p.inkDim)
                 }
                 .listRowBackground(Color.clear)
             }
@@ -54,7 +55,7 @@ struct RoomListView: View {
             if orderEditing {
                 Section {
                     Label(Strings.orderHint, systemImage: "arrow.up.arrow.down")
-                        .font(.footnote).foregroundStyle(Hande.inkDim)
+                        .font(.footnote).foregroundStyle(p.inkDim)
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                 }
@@ -101,6 +102,18 @@ struct RoomListView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(CampfireBackground())
+        // 디자인 1차 1b: 목록 아래 가운데 주 버튼 「불 피우기」(+). 큰 주황 면은 이 하나. 순서 모드에서는 숨긴다.
+        .safeAreaInset(edge: .bottom) {
+            if !orderEditing {
+                Button { showCreateRoom = true } label: {
+                    Label(Strings.createTitle, systemImage: "plus").labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(HandePillButtonStyle())
+                .disabled(!model.canRequestJoin)
+                .padding(.bottom, 8)
+                .accessibilityIdentifier("rooms-create")
+            }
+        }
         // 바 제목은 비우고(머리글이 제목 역할), 대화방의 뒤로 가기에는 hande 가 보이게 한다.
         .navigationTitle(Strings.wordmark)
         .navigationBarTitleDisplayMode(.inline)
@@ -181,7 +194,8 @@ extension RoomListView {
     }
 }
 
-/// #405 P2: 방 = 모닥불 카드. 에이전트가 있는 자리는 불이 밝고, 정지·닫힌 방은 장작만 남는다.
+/// #405 P2 → 디자인 1차 1b: 방 = 모닥불 카드(면 + 따뜻한 선, 반경 16). 아이콘 원 안 불꽃 1~3단 = 오늘의 불 세기(숫자 없음),
+/// 불지기 배지(파랑), 자리 점, 안 읽음 = 주황 점 하나(개수 없음). 꺼진 자리는 60% 흐림 + 장작 아이콘.
 struct CampfireCard: View {
     let room: RoomRecord
     let glance: RoomGlance
@@ -192,36 +206,42 @@ struct CampfireCard: View {
     /// status-v1(#560): 이 방 에이전트의 지금 작업 줄(`⏳ Working — 10s | Bash: …`) — 있으면 미리보기 자리에 에이전트 색으로.
     /// 안 읽음 점·굵기·정렬은 바꾸지 않는다(저장된 글이 아니다). 답이 오거나 5분 지나면 nil → 평소 미리보기.
     var working: String? = nil
+    @Environment(\.hande) private var p
 
     private var out: Bool { room.haltedReason != nil }
-    private var bright: Bool { glance.hasAgent && !out }
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 14) {
             ZStack {
-                Circle().fill(out ? Color.white.opacity(0.06) : Hande.ember.opacity(bright ? 0.22 : 0.14))
-                Text(out ? "🪵" : "🔥").font(.title3).saturation(out ? 0.3 : 1)
+                Circle().fill(out ? p.ink.opacity(0.05) : p.ember.opacity(0.12))
+                if out {
+                    LogIcon(size: 24)
+                } else {
+                    FlameIcon(level: glance.fireLevel, size: 26)
+                }
             }
-            .frame(width: 44, height: 44)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(Strings.roomLabel(room.room)).font(.headline).foregroundStyle(out ? Hande.inkDim : Hande.ink)
+            .frame(width: 48, height: 48)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Text(Strings.roomLabel(room.room)).font(.headline).foregroundStyle(out ? p.inkDim : p.ink)
+                        .lineLimit(1).truncationMode(.tail)
                     if muted && !out {
-                        Image(systemName: "bell.slash").font(.caption).foregroundStyle(Hande.inkDim)
+                        Image(systemName: "bell.slash").font(.caption).foregroundStyle(p.inkDim)
                             .accessibilityLabel(Strings.mutedLabel)
                     }
-                    // 「에이전트」 배지는 넣지 않는다(오너 2026-10-31 — 웹 #540 과 같다). 에이전트 자리는 SeatDots·밝은 불로 보인다.
+                    // 「불지기」 배지는 넣지 않는다(오너 2026-10-31 #613 — 웹 #540 과 같다; 디자인 1차 1b 의 배지보다 이 결정이 우선).
+                    // 에이전트 자리는 SeatDots 의 파란 점으로 보인다.
                 }
                 if let working, !out {
                     Text(working).font(.footnote.weight(.medium))
-                        .foregroundStyle(AgentPalette.accent).lineLimit(1).truncationMode(.tail)
+                        .foregroundStyle(p.agentText).lineLimit(1).truncationMode(.tail)
                         .accessibilityLabel(Strings.agentWorkingListAccessibility(working))
                 } else {
                     Text(preview).font(unread ? .footnote.weight(.semibold) : .footnote)
-                        .foregroundStyle(unread ? Hande.ink : Hande.inkDim).lineLimit(1)
+                        .foregroundStyle(unread ? p.ink : p.inkDim).lineLimit(1)
                 }
                 if !out && (!glance.people.isEmpty || glance.hasAgent) {
-                    SeatDots(people: glance.people.count, agents: glance.agents.count, size: 7)
+                    SeatDots(people: glance.people.count, agents: glance.agents.count, size: 8)
                 }
             }
             Spacer(minLength: 0)
@@ -231,30 +251,26 @@ struct CampfireCard: View {
                     // 목록을 열어 둔 동안에도 「N분 전」이 흘러가도록 30초마다 다시 그린다.
                     TimelineView(.periodic(from: .now, by: 30)) { context in
                         Text(Strings.relativeTime(last.receivedAt, now: context.date))
-                            .font(.caption2).foregroundStyle(unread ? Hande.ember : Hande.inkDim)
+                            .font(.caption2).foregroundStyle(p.inkDim)
                             .fixedSize()
                     }
                 }
                 if unread && !out {
-                    Circle().fill(Hande.ember).frame(width: 10, height: 10).shadow(color: Hande.ember.opacity(0.9), radius: 4)
+                    Circle().fill(p.ember).frame(width: 10, height: 10).shadow(color: p.ember.opacity(0.6 * p.glow), radius: 4)
                         .accessibilityLabel(Strings.unreadLabel)
                 }
             }
         }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 18)
-                .fill(bright ? AnyShapeStyle(LinearGradient(colors: [Hande.ember.opacity(0.20), Hande.surface],
-                                                            startPoint: .topLeading, endPoint: .bottomTrailing))
-                             : AnyShapeStyle(Hande.surface))
-        )
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(bright ? Hande.ember.opacity(0.35) : Hande.stroke, lineWidth: 1))
-        .shadow(color: bright ? Hande.ember.opacity(0.18) : .clear, radius: 12)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(RoundedRectangle(cornerRadius: Hande.radiusM).fill(p.surface))
+        .overlay(RoundedRectangle(cornerRadius: Hande.radiusM).stroke(p.stroke, lineWidth: p.lineWidth))
+        .opacity(out ? 0.6 : 1)
         .accessibilityElement(children: .combine)
     }
 
     private var preview: String {
-        if out { return Strings.roomClosedPreview }
+        if out { return room.haltedReason == SyncHaltReason.roomClosed ? Strings.roomClosedByOperator : Strings.roomClosedPreview }
         guard let last = glance.last else { return Strings.roomNoMessages }
         let body = last.kind.isFile ? Strings.attachmentImage : last.body
         // 1:1 방은 방 이름이 곧 상대라 「이름: 」 접두를 빼고 내용만(오너 2026-10-30, 웹 한데와 같다). 여럿이 말한 방은 누가 했는지 남긴다.
@@ -267,6 +283,7 @@ struct OrderStepButtons: View {
     let room: RoomID
     let ids: [RoomID]
     let onStep: (Int) -> Void
+    @Environment(\.hande) private var p
 
     var body: some View {
         VStack(spacing: 6) {
@@ -282,9 +299,9 @@ struct OrderStepButtons: View {
             Image(systemName: symbol)
                 .font(.body.weight(.semibold))
                 .frame(width: 36, height: 30)
-                .background(RoundedRectangle(cornerRadius: 9).fill(Hande.surface))
-                .overlay(RoundedRectangle(cornerRadius: 9).stroke(Hande.stroke, lineWidth: 1))
-                .foregroundStyle(enabled ? Hande.ink : Hande.inkDim.opacity(0.5))
+                .background(RoundedRectangle(cornerRadius: Hande.radiusS).fill(p.surface))
+                .overlay(RoundedRectangle(cornerRadius: Hande.radiusS).stroke(p.stroke, lineWidth: p.lineWidth))
+                .foregroundStyle(enabled ? p.ink : p.inkDim.opacity(0.5))
         }
         .disabled(!enabled)
         .accessibilityLabel(label)
@@ -311,7 +328,7 @@ struct LobbyInviteRow: View {
             Text(Strings.roomLabel(room)).font(.headline)
             Text(Strings.inviteBody(Strings.roomLabel(room))).font(.footnote).foregroundStyle(.secondary)
             InviteStateLine(state: state)
-            if let message { Text(message).font(.footnote).foregroundStyle(.red) }
+            if let message { Text(message).font(.footnote).foregroundStyle(Hande.warn) }
             HStack {
                 Button(failed ? Strings.retryInvite : Strings.acceptInvite) { Task { await accept() } }.buttonStyle(.borderedProminent).disabled(busy)
                 Button(Strings.ignoreInvite) { model.dismissInvite(room: room) }.buttonStyle(.bordered).disabled(busy)
@@ -347,7 +364,7 @@ struct InviteStateLine: View {
         case .some(.accepting):
             Text(Strings.inviteAccepting).font(.footnote).foregroundStyle(.secondary)
         case .some(.failed(let tries, let reason)):
-            Text(Strings.inviteAutoFailed(tries, reason)).font(.footnote).foregroundStyle(.red)
+            Text(Strings.inviteAutoFailed(tries, reason)).font(.footnote).foregroundStyle(Hande.warn)
         default:
             EmptyView()
         }
@@ -357,13 +374,14 @@ struct InviteStateLine: View {
 /// 🔔 배지: 받은 초대 수(목록 카드의 불씨 점과 같은 색). 0 이면 그리지 않는다.
 struct InviteCountBadge: View {
     let count: Int
+    @Environment(\.hande) private var p
 
     var body: some View {
         if count > 0 {
             Text(count > 99 ? "99+" : "\(count)")
-                .font(.caption2.weight(.bold)).foregroundStyle(Hande.onEmber)
+                .font(.caption2.weight(.bold)).foregroundStyle(p.onEmber)
                 .padding(.horizontal, 4).padding(.vertical, 1)
-                .background(Capsule().fill(Hande.ember))
+                .background(Capsule().fill(p.ember))
                 .offset(x: 8, y: -6)
                 .accessibilityHidden(true)
         }

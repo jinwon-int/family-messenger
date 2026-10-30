@@ -73,6 +73,40 @@ final class AgentStringsTests: XCTestCase {
         XCTAssertEqual(Strings.campfireSubtitle, "오늘 밤, 모닥불에 한데 모여")
     }
 
+    /// 디자인 1차 용어 적용표(오너 「전부 적용」): 자리 · 불지기 · 불 피우기 · 타닥타닥 · 불씨가 튀었어요 · 불이 꺼진 자리. 동작어(보내기)는 그대로.
+    func testCampfireTerminology() {
+        XCTAssertEqual(Strings.roomsTitle, "자리")
+        XCTAssertEqual(Strings.agentBadge, "불지기")
+        XCTAssertEqual(Strings.createTitle, "불 피우기")
+        XCTAssertEqual(Strings.createSheetTitle, "새 자리 — 불 피우기")
+        XCTAssertEqual(Strings.pushHiddenPreviewPlaceholder, "불씨가 튀었어요")
+        XCTAssertEqual(Strings.roomClosedByOperator, "불이 꺼진 자리 · 운영자가 닫음")
+        XCTAssertEqual(Strings.haltedRoomsTitle, "불이 꺼진 자리")
+        XCTAssertEqual(Strings.sendButton, "보내기")
+        XCTAssertTrue(Strings.noRooms.contains("자리(대화방)"), "첫 노출 보조 설명 1회")
+    }
+
+    /// 「정인이 타닥타닥…」: 웹 한데 strings.js `subjectParticle` 과 같은 벡터 — 꼬리 이모지를 건너뛰고 받침 판정, 영문은 「이」. 1:1 방은 이름 없이.
+    func testTypingLabelIsCrackling() {
+        XCTAssertEqual(Strings.typing, "타닥타닥…")
+        XCTAssertEqual(Strings.typingLabel([]), "타닥타닥…")
+        XCTAssertEqual(Strings.typingLabel(["정인"]), "정인이 타닥타닥…")
+        XCTAssertEqual(Strings.typingLabel(["루나"]), "루나가 타닥타닥…")
+        XCTAssertEqual(Strings.typingLabel(["쩡이🍎"]), "쩡이🍎가 타닥타닥…")
+        XCTAssertEqual(Strings.typingLabel(["공명✴️"]), "공명✴️이 타닥타닥…")
+        XCTAssertEqual(Strings.typingLabel(["쩡이🍎", "진원"]), "쩡이🍎, 진원이 타닥타닥…")
+        XCTAssertEqual(Strings.typingLabel(["jinon86"]), "jinon86이 타닥타닥…")
+    }
+
+    /// 오늘의 불 세기는 말로만(숫자 없음).
+    func testFireLevelLabel() {
+        XCTAssertEqual(Strings.fireLevelLabel(1), "오늘의 불 세기 조용함")
+        XCTAssertEqual(Strings.fireLevelLabel(2), "오늘의 불 세기 보통")
+        XCTAssertEqual(Strings.fireLevelLabel(3), "오늘의 불 세기 활발")
+        XCTAssertEqual(Strings.seatAgents(["공명✴️"]), "불지기 공명✴️")
+        XCTAssertEqual(Strings.seatPeople(3), "가족 3")
+    }
+
     /// 워드마크 윤곽: 파서가 끝까지 읽고(h1·a2·n1·d2·e2 = 닫힌 윤곽 8개), 모든 점이 선언한 칸 안에 있다.
     func testWordmarkArtParsesWithinItsBox() throws {
         let commands = try XCTUnwrap(SVGPathData.parse(HandeWordmarkArt.d))

@@ -5,33 +5,34 @@ import SwiftUI
 import Combine
 import FamilyMLSCore
 
-/// 에이전트 색(앱 아이콘의 파란 점). P2 테마에서 팔레트로 옮긴다.
+/// 에이전트 색(앱 아이콘의 파란 점) — 디자인 1차부터 `Hande`(밤 토큰)의 별칭. 테마를 따라야 하는 뷰는 `@Environment(\.hande)`.
 enum AgentPalette {
-    static let accent = Color(red: 0.38, green: 0.65, blue: 0.98)
-    static let cardFill = Color(red: 0.38, green: 0.65, blue: 0.98).opacity(0.10)
-    static let cardStroke = Color(red: 0.38, green: 0.65, blue: 0.98).opacity(0.35)
-    static let ember = Color(red: 0.96, green: 0.62, blue: 0.26)
+    static let accent = Hande.agent
+    static let cardFill = Hande.agent.opacity(0.10)
+    static let cardStroke = Hande.agent.opacity(0.35)
+    static let ember = Hande.ember
 }
 
-/// 에이전트 이름 머리줄: ● 공명 · 에이전트
+/// 에이전트 이름 머리줄: ● 공명 · 불지기
 struct AgentHeader: View {
     let name: String
+    @Environment(\.hande) private var p
     var body: some View {
         HStack(spacing: 6) {
-            Circle().fill(AgentPalette.accent).frame(width: 8, height: 8)
-                .shadow(color: AgentPalette.accent.opacity(0.8), radius: 3)
-            Text(name).font(.caption.weight(.semibold))
-            Text("· \(Strings.agentBadge)").font(.caption).foregroundStyle(.secondary)
+            SeatDot(agent: true, size: 8)
+            Text(name).font(.caption.weight(.semibold)).foregroundStyle(p.agentText)
+            Text("· \(Strings.agentBadge)").font(.caption).foregroundStyle(p.agentText.opacity(0.8))
         }
         .accessibilityElement(children: .combine)
     }
 }
 
-/// 에이전트 답장: 말풍선 대신 화면 폭 카드 + 마크다운 블록.
+/// 에이전트 답장: 말풍선 대신 화면 폭 카드 + 마크다운 블록. 밤 = 파랑 fill 10% / stroke 35%, 낮불 = 흰 면 + 파랑 점선(1d).
 struct AgentMessageCard: View {
     let name: String
     let text: String
     var time: Date? = nil
+    @Environment(\.hande) private var p
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -39,22 +40,24 @@ struct AgentMessageCard: View {
             MarkdownBlocksView(blocks: AgentMarkdown.parse(text))
             // 시간은 카드 오른쪽 아래(오너 2026-10-30 — 전에는 머리줄 오른쪽 위). 글을 다 읽은 자리에 둔다.
             if let time {
-                Text(Strings.messageTime(time)).font(.caption2).foregroundStyle(.secondary)
+                Text(Strings.messageTime(time)).font(.caption2).foregroundStyle(p.inkDim)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
-        .padding(12)
+        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 16).fill(AgentPalette.cardFill))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(AgentPalette.cardStroke, lineWidth: 1))
+        .foregroundStyle(p.ink)
+        .background(RoundedRectangle(cornerRadius: 18).fill(p.agentFill))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(p.agentStroke, style: StrokeStyle(lineWidth: p.lineWidth, dash: p.agentDash)))
         // 복사는 카드 바깥(MessageRow)의 꾹 누르기 메뉴 「복사」·「선택해서 복사」가 맡는다(2026-10-30). 종전 `.textSelection(.enabled)` 는
         // 블록(문단)마다 따로 전체 복사만 됐고, 그 길게 누르기가 카드 메뉴를 가로채서 뺐다.
-        .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 16))
+        .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 18))
     }
 }
 
 struct MarkdownBlocksView: View {
     let blocks: [AgentMarkdown.Block]
+    @Environment(\.hande) private var p
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -90,7 +93,7 @@ struct MarkdownBlocksView: View {
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
         case .quote(let text):
             HStack(spacing: 8) {
-                RoundedRectangle(cornerRadius: 1).fill(AgentPalette.accent.opacity(0.6)).frame(width: 3)
+                RoundedRectangle(cornerRadius: 1).fill(p.agent.opacity(0.6)).frame(width: 3)
                 InlineMarkdown(text).font(.callout).foregroundStyle(.secondary)
             }
         case .rule:
@@ -144,6 +147,8 @@ struct InlineMarkdown: View {
 }
 
 /// 봇의 `⚠️ 승인 필요 #n` 을 카드로. 버튼은 「승인 n」/「거절 n」 글을 대신 보낸다(봇이 owner actor 의 답만 받는다).
+/// 디자인 1차 1c 허락 카드: 에이전트 파랑 테두리 + fill · 머리 「공명이 허락을 구합니다」 · 본문 줄(머리말 + 내용) · 허락(불)/거절(면) 48pt
+/// → 처리 기다림 → 결과(글자·아이콘으로만, 초록/빨강 없음). 봇이 대상·내용·영향 3줄을 보내게 되면 본문 줄만 늘린다.
 struct ApprovalCard: View {
     let name: String
     let request: AgentApproval.Request
@@ -151,46 +156,51 @@ struct ApprovalCard: View {
     let enabled: Bool
     var time: Date? = nil
     let decide: (Bool) -> Void
+    @Environment(\.hande) private var p
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Text("🔥")
-                Text(Strings.approvalTitle(name)).font(.subheadline.weight(.semibold))
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                SeatDot(agent: true, size: 8)
+                Text(Strings.approvalTitle(name)).font(.subheadline.weight(.semibold)).foregroundStyle(p.agentText)
                 Spacer()
-                Text("#\(request.number)").font(.caption).foregroundStyle(.secondary)
+                Text("#\(request.number)").font(.caption).foregroundStyle(p.inkDim)
             }
             if !request.summary.isEmpty {
-                Text(request.summary).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(Strings.approvalSummaryLabel).font(.subheadline).foregroundStyle(p.inkDim).frame(width: 40, alignment: .leading)
+                    Text(request.summary).font(.subheadline).foregroundStyle(p.ink).textSelection(.enabled)
+                }
             }
             switch state {
             case .open:
-                HStack(spacing: 8) {
-                    Button { decide(true) } label: { Text(Strings.approvalAllow).frame(maxWidth: .infinity) }
-                        .buttonStyle(.borderedProminent).tint(AgentPalette.ember)
-                    Button { decide(false) } label: { Text(Strings.approvalDeny).frame(maxWidth: .infinity) }
-                        .buttonStyle(.bordered)
+                HStack(spacing: 10) {
+                    Button { decide(true) } label: { Text(Strings.approvalAllow) }
+                        .buttonStyle(HandePrimaryButtonStyle())
+                    Button { decide(false) } label: { Text(Strings.approvalDeny) }
+                        .buttonStyle(HandeSecondaryButtonStyle())
                 }
                 .disabled(!enabled)
             case .answered:
-                Label(Strings.approvalSending, systemImage: "hourglass").font(.footnote).foregroundStyle(.secondary)
+                Label(Strings.approvalSending, systemImage: "hourglass").font(.footnote).foregroundStyle(p.inkDim)
             case .allowed:
-                Label(Strings.approvalAllowed, systemImage: "checkmark.circle.fill").font(.footnote).foregroundStyle(.green)
+                Label(Strings.approvalAllowed, systemImage: "checkmark.circle").font(.footnote).foregroundStyle(p.ink)
             case .denied:
-                Label(Strings.approvalDenied, systemImage: "xmark.circle.fill").font(.footnote).foregroundStyle(.red)
+                Label(Strings.approvalDenied, systemImage: "xmark.circle").font(.footnote).foregroundStyle(p.ink)
             case .closed:
-                Label(Strings.approvalClosed, systemImage: "minus.circle").font(.footnote).foregroundStyle(.secondary)
+                Label(Strings.approvalClosed, systemImage: "minus.circle").font(.footnote).foregroundStyle(p.inkDim)
             }
             // 시간은 카드 오른쪽 아래(오너 2026-10-30, AgentMessageCard 와 같은 자리).
             if let time {
-                Text(Strings.messageTime(time)).font(.caption2).foregroundStyle(.secondary)
+                Text(Strings.messageTime(time)).font(.caption2).foregroundStyle(p.inkDim)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
-        .padding(12)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 16).fill(AgentPalette.ember.opacity(state == .open ? 0.14 : 0.06)))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(AgentPalette.ember.opacity(state == .open ? 0.6 : 0.25), lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: 20).fill(p.isDay ? p.surface : p.agent.opacity(state == .open ? 0.08 : 0.05)))
+        .overlay(RoundedRectangle(cornerRadius: 20).stroke(state == .open ? p.agent.opacity(p.isDay ? 1 : 0.45) : p.agentStroke,
+                                                          lineWidth: state == .open ? p.lineWidth + 0.5 : p.lineWidth))
     }
 }
 
@@ -198,11 +208,12 @@ struct ApprovalCard: View {
 /// 실제 작업 신호(status-v1 `⏳` 말풍선, #560)가 생기면 그쪽이 "일하는 중"을 보여 준다.
 struct AwaitingReplyRow: View {
     let name: String
+    @Environment(\.hande) private var p
 
     var body: some View {
         HStack(spacing: 6) {
-            Circle().fill(AgentPalette.accent.opacity(0.5)).frame(width: 8, height: 8)
-            Text(Strings.agentAwaitingReply(name)).font(.caption).foregroundStyle(.secondary)
+            SeatDot(agent: true, size: 8, dim: true)
+            Text(Strings.agentAwaitingReply(name)).font(.caption).foregroundStyle(p.agentText.opacity(0.8))
         }
         .accessibilityElement(children: .combine)
     }
@@ -212,11 +223,12 @@ struct AwaitingReplyRow: View {
 struct LastSentBar: View {
     let lastSent: LastSent
     let jump: () -> Void
+    @Environment(\.hande) private var p
 
     var body: some View {
         Button(action: jump) {
             HStack(spacing: 8) {
-                Image(systemName: "arrow.turn.down.right").font(.caption).foregroundStyle(AgentPalette.ember)
+                Image(systemName: "arrow.turn.down.right").font(.caption).foregroundStyle(p.ember)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(Strings.lastSentLabel).font(.caption2).foregroundStyle(.secondary)
                     Text(preview).font(.footnote).lineLimit(1)
