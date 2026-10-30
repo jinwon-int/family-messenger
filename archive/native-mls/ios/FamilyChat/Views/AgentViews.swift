@@ -47,7 +47,9 @@ struct AgentMessageCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 16).fill(AgentPalette.cardFill))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(AgentPalette.cardStroke, lineWidth: 1))
-        .textSelection(.enabled)
+        // 복사는 카드 바깥(MessageRow)의 꾹 누르기 메뉴 「복사」·「선택해서 복사」가 맡는다(2026-10-30). 종전 `.textSelection(.enabled)` 는
+        // 블록(문단)마다 따로 전체 복사만 됐고, 그 길게 누르기가 카드 메뉴를 가로채서 뺐다.
+        .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 16))
     }
 }
 
