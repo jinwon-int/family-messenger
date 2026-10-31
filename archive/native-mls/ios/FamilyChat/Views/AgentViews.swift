@@ -204,6 +204,101 @@ struct ApprovalCard: View {
     }
 }
 
+/// agent-choices-v1(#620): 에이전트 글 끝 번호 선택지 — 말풍선 아래 카드. 행을 눌러 하나만 고르고(다시 누르면 해제) [보내기]가
+/// 손으로 치는 답과 같은 글 `N` 을 평소 전송 경로로 보낸다. 판정·상태는 Core `AgentChoices`, 여기는 그리기만.
+/// open = 선택 카드 · answered(N) = 한 줄 「✓ N번 선택 — 라벨」 · closed = 그리지 않는다.
+struct AgentChoicesCard: View {
+    let choices: AgentChoices
+    let state: AgentChoices.State
+    /// 방이 준비됐고 보내는 중이 아니다(보내는 동안 카드 비활성).
+    let enabled: Bool
+    let send: (Int) -> Void
+    @State private var selected: Int?
+    @Environment(\.hande) private var p
+
+    var body: some View {
+        switch state {
+        case .open:
+            openCard
+        case .answered(let number):
+            Text(Strings.choiceAnswered(number, label: choices.label(of: number) ?? ""))
+                .font(.footnote)
+                .foregroundStyle(p.inkDim)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .padding(.horizontal, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        case .closed:
+            EmptyView()
+        }
+    }
+
+    private var openCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(choices.items, id: \.number) { item in
+                row(item)
+            }
+            Button {
+                if let selected { send(selected) }
+            } label: {
+                Text(Strings.choiceSend)
+            }
+            .buttonStyle(HandePrimaryButtonStyle())
+            .disabled(selected == nil)
+            .accessibilityLabel(Strings.choiceSendA11y(selected))
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: Hande.radiusM).fill(p.isDay ? p.surface : p.agent.opacity(0.06)))
+        .overlay(RoundedRectangle(cornerRadius: Hande.radiusM).stroke(p.agentStroke, lineWidth: p.lineWidth))
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.6)
+    }
+
+    /// 행 = 체크 원 + 번호 + 라벨(최대 3줄) + 권장 알약. 선택 표시는 에이전트 파랑(주황은 보내기 버튼만).
+    private func row(_ item: AgentChoices.Item) -> some View {
+        let isSelected = selected == item.number
+        let isRecommended = choices.recommended == item.number
+        return Button {
+            selected = isSelected ? nil : item.number
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.body)
+                    .foregroundStyle(isSelected ? p.agent : p.inkDim)
+                Text("\(item.number)")
+                    .font(.callout.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(p.ink)
+                Text(item.label)
+                    .font(.callout)
+                    .foregroundStyle(p.ink)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if isRecommended {
+                    Text(Strings.choiceRecommended)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(p.agentText)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(p.agent.opacity(0.14)))
+                        .overlay(Capsule().stroke(p.agent.opacity(0.5), lineWidth: 1))
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: Hande.radiusS).fill(isSelected ? p.agent.opacity(0.12) : Color.clear))
+            .overlay(RoundedRectangle(cornerRadius: Hande.radiusS).stroke(isSelected ? p.agent : p.stroke, lineWidth: p.lineWidth))
+            .contentShape(RoundedRectangle(cornerRadius: Hande.radiusS))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Strings.choiceRowA11y(item.number, label: item.label, recommended: isRecommended))
+        .accessibilityHint(Strings.choiceA11yHint)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+}
+
 /// "공명의 답 기다리는 중" — 정적 표시. 앱 추정(`AgentThinking`)이라 작업 중을 연상시키는 애니메이션은 쓰지 않는다(#601).
 /// 실제 작업 신호(status-v1 `⏳` 말풍선, #560)가 생기면 그쪽이 "일하는 중"을 보여 준다.
 struct AwaitingReplyRow: View {

@@ -22,4 +22,12 @@ class StringsTest {
         assertEquals("다른 기기의 승인을 기다리는 중 · 21:40까지", Strings.enrollWaitingSiblingUntil("21:40"))
         assertEquals("4단계 중 2단계", Strings.onboardingStep(2, Strings.onboardingSteps))
     }
+
+    @Test fun agentChoiceLabels() {
+        assertEquals("2번: 롤백, 권장", Strings.choiceRowLabel(2, "롤백", recommended = true))
+        assertEquals("1번: 유지", Strings.choiceRowLabel(1, "유지", recommended = false))
+        assertEquals("2번 보내기", Strings.choiceSendLabel(2))
+        assertEquals("보내기", Strings.choiceSendLabel(null))
+        assertEquals("✓ 2번 선택 — 롤백", Strings.choiceAnswered(2, "롤백"))
+    }
 }

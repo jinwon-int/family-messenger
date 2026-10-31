@@ -634,10 +634,78 @@ function previewRetry(entry, onRetryPreview) {
 /** 보낸 이 라벨(디자인 1차): 에이전트는 「공명✴️ · 불지기」(점은 CSS ::before, 사람 크림·불지기 파랑). */
 const senderLabel = (name, isAgent) => (isAgent && name ? `${name} · ${strings.chat.agentBadge}` : name);
 
-function bubble(entry, onOpenAttachment, onRetryPreview = null) {
+// ---- 에이전트 선택지 카드(#620, AGENT-CHOICES-V1.md §3) ----
+// 상태(open/answered)는 app.js 가 타임라인에서 계산해 넘긴다(agent-choices.js choiceState). 고른 번호는 이 화면만의 상태라
+// 서명에 넣지 않는다: 같은 서명이면 붙어 있는 노드(그 DOM 의 선택)를 그대로 두고, 보내는 중 잠금·방 전환으로 다시 그려질 때는
+// 아래 맵(choice.id = 방 + entry 키)에서 되살린다. 답이 오거나 카드가 닫히면 지운다.
+const choiceSelection = new Map();
+
+/** 말풍선 서명에 더할 카드 서명 — 선택은 빼고, open 일 때만 잠금(보내는 중·쓸 수 없는 방)을 넣는다. */
+const choiceSignature = (choice) => (choice
+  ? [choice.state, choice.number ?? null, choice.label ?? null, choice.choices?.items ?? null, choice.choices?.recommended ?? null,
+    choice.state === 'open' ? Boolean(choice.sending) : null, choice.state === 'open' ? Boolean(choice.disabled) : null]
+  : null);
+
+function choiceCard(choice) {
+  if (!choice) return null;
+  const t = strings.choices;
+  if (choice.state === 'answered') {
+    choiceSelection.delete(choice.id);
+    return el('p', { class: 'choices-answered', 'data-testid': 'choice-answered', title: t.answered(choice.number, choice.label) }, t.answered(choice.number, choice.label));
+  }
+  if (choice.state !== 'open') { choiceSelection.delete(choice.id); return null; }
+  const { items, recommended } = choice.choices;
+  const remembered = choiceSelection.get(choice.id);
+  let selected = items.some((item) => item.number === remembered) ? remembered : null;
+  let busy = false;   // 보내기를 누른 뒤 app 의 결과가 올 때까지(sendText false 면 풀린다)
+  const rows = items.map((item) => el('button', {
+    type: 'button', class: 'choice-row', 'data-testid': 'choice-row', 'data-number': String(item.number),
+    'aria-label': t.row(item.number, item.label, item.number === recommended),
+    onclick: () => select(selected === item.number ? null : item.number),   // 단일 선택 — 다시 누르면 해제
+  },
+  el('span', { class: 'choice-check', 'aria-hidden': 'true' }),
+  el('span', { class: 'choice-num', 'aria-hidden': 'true' }, String(item.number)),
+  el('span', { class: 'choice-label', 'aria-hidden': 'true' }, item.label),
+  item.number === recommended ? el('span', { class: 'pill choice-recommended', 'aria-hidden': 'true' }, t.recommended) : null));
+  const send = el('button', { type: 'button', class: 'primary small choice-send', 'data-testid': 'choice-send', onclick: () => submit() }, t.send);
+  const card = el('div', { class: 'choices', role: 'group', 'aria-label': t.region, 'data-testid': 'agent-choices' },
+    el('div', { class: 'choice-list' }, rows), el('div', { class: 'choice-actions' }, send));
+  const paint = () => {
+    const locked = busy || Boolean(choice.sending) || Boolean(choice.disabled);
+    card.dataset.locked = locked ? 'true' : 'false';
+    for (const row of rows) {
+      const on = Number(row.dataset.number) === selected;
+      row.setAttribute('aria-pressed', on ? 'true' : 'false');
+      row.disabled = locked;
+    }
+    send.disabled = locked || selected === null;
+    const label = busy || choice.sending ? t.sending : t.send;
+    if (send.textContent !== label) send.textContent = label;
+    if (selected !== null) send.setAttribute('aria-label', t.sendNumber(selected)); else send.removeAttribute('aria-label');
+  };
+  const select = (number) => {
+    selected = number;
+    if (number === null) choiceSelection.delete(choice.id); else choiceSelection.set(choice.id, number);
+    paint();
+  };
+  // 평소 전송 경로(app.js sendText)로 `"N"` 을 보낸다. 보낸 글이 타임라인에 오면 상태 규칙으로 answered 가 된다.
+  const submit = () => {
+    if (selected === null || send.disabled) return;
+    const screen = card.closest('.room-screen');
+    const onChoose = screen ? liveProps.get(screen)?.onChoose : null;
+    if (typeof onChoose !== 'function') return;
+    busy = true; paint();
+    const unlock = () => { busy = false; if (card.isConnected) paint(); };
+    Promise.resolve(onChoose(selected)).then((ok) => { if (ok === false) unlock(); }, unlock);
+  };
+  paint();
+  return card;
+}
+
+function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null) {
   const time = formatTime(entry.ts);
   const signature = JSON.stringify([entry.key, entry.kind, Boolean(entry.isMe), Boolean(entry.isAgent), entry.senderName ?? null, entry.body ?? '', time, entry.size ?? null, entry.image?.url ?? null, Boolean(entry.replay), entry.seq ?? null,
-    entry.fileName ?? null, Boolean(entry.previewFailed), Boolean(entry.previewFailed) && Boolean(entry.previewBusy)]);
+    entry.fileName ?? null, Boolean(entry.previewFailed), Boolean(entry.previewFailed) && Boolean(entry.previewBusy), choiceSignature(choice)]);
   if (entry.kind === 'system') {
     return signed(el('li', { class: 'system', 'data-key': entry.key, 'data-testid': 'system-row' }, el('span', { class: 'body' }, entry.body), time ? el('span', { class: 'foot' }, time) : null), signature);
   }
@@ -662,6 +730,7 @@ function bubble(entry, onOpenAttachment, onRetryPreview = null) {
   return signed(el('li', { class: `bubble kind-${entry.kind}${entry.isAgent ? ' agent' : ''}`, 'data-key': entry.key, 'data-me': entry.isMe ? 'true' : 'false', 'data-testid': entry.kind === 'undecryptable' ? 'system-row' : 'bubble' },
     entry.isMe ? null : el('span', { class: 'who' }, senderLabel(entry.senderName || displayName(entry.sender), entry.isAgent)),
     body,
+    choiceCard(choice),
     foot ? el('span', { class: 'foot' }, foot) : null), signature);
 }
 
@@ -677,7 +746,8 @@ function statusRow(st) {
   JSON.stringify(['status', st.sender, st.senderName ?? '', st.text]));
 }
 
-function timelineRows(timeline, onOpenAttachment, onRetryPreview = null) {
+/** choices: entry 키 → 선택지 상태(#620, app.js 가 open·answered 인 에이전트 글만 넣는다). */
+function timelineRows(timeline, onOpenAttachment, onRetryPreview = null, choices = null) {
   const rows = [];
   let day = '';
   for (const entry of timeline) {
@@ -686,7 +756,7 @@ function timelineRows(timeline, onOpenAttachment, onRetryPreview = null) {
       day = key;
       rows.push(signed(el('li', { class: 'day-divider', 'data-key': `day:${key}`, role: 'separator' }, el('span', {}, dayLabel(entry.ts))), key));
     }
-    rows.push(bubble(entry, onOpenAttachment, onRetryPreview));
+    rows.push(bubble(entry, onOpenAttachment, onRetryPreview, choices?.get(entry.key) ?? null));
   }
   return rows;
 }
@@ -929,7 +999,7 @@ function buildRoom(room) {
   JSON.stringify([room.name, room.roomId, participantCount(members), Boolean(room.halted), room.halted?.reason ?? null, Boolean(room.joined), Boolean(room.onOpenBox), room.typing ?? '', typeof room.muted === 'boolean' ? room.muted : null]));
   const notice = room.notice?.text ? signed(el('p', { class: `status ${room.notice.tone || 'info'}`, role: 'status', 'data-part': 'notice' }, room.notice.text), JSON.stringify(room.notice)) : null;
   const list = el('ul', { class: 'timeline', tabindex: '-1', 'aria-live': 'polite', 'aria-label': strings.chat.timelineLabel, 'data-testid': 'timeline' },
-    room.timeline.length === 0 ? signed(el('li', { class: 'empty', 'data-key': 'empty' }, strings.chat.empty), 'empty') : timelineRows(room.timeline, room.onOpenAttachment, room.onRetryPreview ?? null),
+    room.timeline.length === 0 ? signed(el('li', { class: 'empty', 'data-key': 'empty' }, strings.chat.empty), 'empty') : timelineRows(room.timeline, room.onOpenAttachment, room.onRetryPreview ?? null, room.choices ?? null),
     (Array.isArray(room.statuses) ? room.statuses : []).map(statusRow));
   const badge = el('button', { type: 'button', class: 'new-messages', hidden: true, onclick: () => { list.scrollTop = list.scrollHeight; badge.hidden = true; } }, strings.chat.newMessages);
   list.addEventListener('scroll', () => { if (isNearBottom(list)) badge.hidden = true; });
