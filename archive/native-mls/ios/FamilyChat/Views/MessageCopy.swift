@@ -113,8 +113,11 @@ struct SelectableTextView: UIViewRepresentable {
     var focusOnAppear = false
 
     func makeUIView(context: Context) -> UITextView {
-        let view = UITextView()
-        view.isEditable = false
+        // 키보드로 연 창(선택 모드 Enter)은 「편집 가능하지만 바뀌지 않는」 글 칸: iOS 는 편집 불가 UITextView 에서 하드웨어 키보드
+        // 방향키·Shift+방향키 커서·블록 선택을 하지 않는다(오너 실기기 0.1.0 (77): 창은 열리는데 Shift+방향키로 블록이 안 잡힘).
+        // 손가락으로 연 창은 종전대로 편집 불가(화면 키보드·커서 없이 손가락 선택).
+        let view: UITextView = focusOnAppear ? KeyboardSelectableTextView() : UITextView()
+        view.isEditable = focusOnAppear
         view.isSelectable = true
         view.dataDetectorTypes = []
         view.backgroundColor = .clear
@@ -123,7 +126,7 @@ struct SelectableTextView: UIViewRepresentable {
         view.textContainerInset = UIEdgeInsets(top: 12, left: 0, bottom: 12, right: 0)
         view.text = text
         if focusOnAppear {
-            // 시트가 다 올라온 뒤 글 맨 앞에 커서 — 키보드로 바로 범위를 고른다(편집 불가라 글은 바뀌지 않는다).
+            // 시트가 다 올라온 뒤 글 맨 앞에 커서 — 키보드로 바로 범위를 고른다(글은 바뀌지 않는다).
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
                 if view.becomeFirstResponder() { view.selectedRange = NSRange(location: 0, length: 0) }
             }
@@ -132,6 +135,45 @@ struct SelectableTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: UITextView, context: Context) {
-        if view.text != text { view.text = text }
+        if view.text != text { view.text = text }   // text 대입은 입력 경로(replace·delegate)를 거치지 않는다
+    }
+}
+
+/// 하드웨어 키보드로 커서를 움직이고 블록을 잡을 수 있지만 글은 바뀌지 않는 UITextView(받은 글은 고치지 않는다).
+/// 편집 가능 상태라야 iOS 가 방향키·Shift+방향키·⌘A 를 처리하므로 `isEditable = true` 로 두고, 글이 바뀌는 길을 모두 막는다:
+/// 입력·지우기·조합·바꾸기는 무시, 메뉴는 복사·선택·전체 선택만, 화면 키보드는 띄우지 않는다(빈 입력 뷰).
+final class KeyboardSelectableTextView: UITextView, UITextViewDelegate {
+
+    override init(frame: CGRect, textContainer: NSTextContainer?) {
+        super.init(frame: frame, textContainer: textContainer)
+        inputView = UIView()                       // 화면 키보드 없음(하드웨어 키보드는 그대로)
+        inputAssistantItem.leadingBarButtonGroups = []
+        inputAssistantItem.trailingBarButtonGroups = []
+        autocorrectionType = .no
+        spellCheckingType = .no
+        smartQuotesType = .no
+        smartDashesType = .no
+        smartInsertDeleteType = .no
+        delegate = self                            // 마지막 방어선: 어떤 바꾸기 요청도 거절
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
+
+    override func insertText(_ text: String) {}
+    override func deleteBackward() {}
+    override func setMarkedText(_ markedText: String?, selectedRange: NSRange) {}
+    override func replace(_ range: UITextRange, withText text: String) {}
+
+    func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool { false }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        let allowed: [Selector] = [
+            #selector(UIResponderStandardEditActions.copy(_:)),
+            #selector(UIResponderStandardEditActions.select(_:)),
+            #selector(UIResponderStandardEditActions.selectAll(_:)),
+        ]
+        return allowed.contains(action) && super.canPerformAction(action, withSender: sender)
     }
 }
