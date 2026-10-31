@@ -9,7 +9,8 @@ struct RoomView: View {
     /// #405 P3: 방 전환·목록 복귀(단축키) · 이 기기 읽음 표시.
     @EnvironmentObject private var navigator: Navigator
     @EnvironmentObject private var prefs: LocalPrefs
-    @FocusState private var composerFocused: Bool
+    /// 작성창에 커서가 있는가 — `ComposerTextView`(UITextView)가 입력 시작·끝을 알려 주고, 앱이 바꾸면 커서를 넣고 뺀다.
+    @State private var composerFocused = false
     /// iOS 16 `onChange` 는 새 값만 준다 — 줄바꿈 하나가 막 들어왔는지 보려고 직전 글을 쥔다.
     @State private var previousDraft = ""
     @Environment(\.dismiss) private var dismiss
@@ -66,18 +67,11 @@ struct RoomView: View {
     @State private var tailAnchor: Int64?
     /// 대화 읽기 ↑/↓ 로 지난번에 옮겨 간 말풍선(seq). 읽기를 새로 시작하면(Esc·End·작성창 복귀) 비운다 — 마지막 말풍선에서 다시 시작.
     @State private var keyCursor: Int64?
-    /// 대화 읽기에서 Enter 로 작성창에 들어온 시각 — 그 Enter 의 키 반복이 초안을 보내지 않게(`HardwareKeys.suppressSend`).
-    @State private var keyFocusedAt: Date?
     /// 선택 모드(웹 캐럿 모드의 iOS 판): `keyCursor` 말풍선에 점선 테두리. Esc(대화 읽기)로 켜고 Esc 로 끈다.
     @State private var selectingByKey = false
-    /// 입력칸이 Return 으로 **스스로** 줄바꿈을 넣은 시각 — 그 기기에서는 종전 `ComposerKeys` 가 처리하므로 키 경로는 다시 처리하지 않는다.
-    @State private var nativeNewlineAt: Date?
-    /// Shift+Enter 로 앱이 줄바꿈을 넣은 시각 — 그 글 변화를 `ComposerKeys` 가 Enter 전송으로 오판하지 않게(Shift 를 이미 뗐을 수 있다).
-    @State private var keyNewlineAt: Date?
     /// 「복사했어요」(선택 모드 ⌘C).
     @State private var toast: String?
-    /// 작성창 키 처리(Enter·Shift+Enter)는 조금 늦게 돈다 — 그 사이 Esc(대화 읽기)가 오면 이 값이 바뀌어 늦은 처리를 버린다.
-    @State private var composerKeyEpoch = 0
+
 
     var body: some View {
         VStack(spacing: 0) {
@@ -341,7 +335,7 @@ struct RoomView: View {
         }
         .sheet(isPresented: $showInvite) { InviteView(room: room).environmentObject(model) }
         .alert(Strings.muteFailed, isPresented: $muteFailed) { Button(Strings.close, role: .cancel) {} }
-        .sheet(item: $selecting) { SelectableTextSheet(text: $0.text, focusText: $0.fromKeyboard) }
+        .sheet(item: $selecting) { SelectableTextSheet(text: $0.text, focusText: $0.fromKeyboard, onKeyNote: { model.noteKey($0) }) }
         .photosPicker(isPresented: $showPhotoPicker, selection: $pickedPhoto, matching: .images)
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.data]) { result in
             Task { await sendFile(result) }
@@ -368,14 +362,19 @@ struct RoomView: View {
                 .accessibilityLabel(Strings.attachMenu)
                 .disabled(!isReady || attachBusy)
             // #405 P2 → 디자인 1차 1c: 둥근 입력칸(면 + 선, 반경 23) + 44pt 불빛 원형 전송 버튼. 「이야기 나누기…」.
-            TextField(Strings.composerPlaceholder, text: $draft, axis: .vertical)
-                .lineLimit(1...6)
-                .focused($composerFocused)
-                // 하드웨어 Return 을 입력칸보다 먼저(iOS 17+) — 커서를 놓지 않게. 같은 누름의 GameController 도착은 키 단위로 버린다.
-                .modifier(ComposerReturnKeys { shift in
-                    HardwareKeyRouter.shared.once("key:enter", from: .keyPress) { perform(shift ? .newline : .send, nil) }
-                })
-                // #405 P3: 하드웨어 키보드 Enter = 전송, Shift+Enter = 줄바꿈(웹 keyboard.js). 화면 키보드는 줄바꿈 그대로.
+            // 하드웨어 Return 을 입력칸이 스스로 처리하는 UITextView(Return = 보내기 · Shift+Return = 커서 자리 줄바꿈, 커서 유지).
+            // SwiftUI TextField 는 하드웨어 Return 에 커서를 놓았다(오너 실기기 70·73·75) — ComposerTextView.swift 머리말.
+            ComposerTextView(text: $draft, isFocused: $composerFocused, textColor: UIColor(p.ink),
+                             accessibilityLabel: Strings.composerPlaceholder,
+                             onSubmit: { text in if let out = HardwareKeys.outgoingText(text) { sendText(out) } },
+                             onKeyNote: { model.noteKey($0) })
+                .overlay(alignment: .topLeading) {
+                    if draft.isEmpty {
+                        Text(Strings.composerPlaceholder).foregroundStyle(p.inkDim)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
+                }
                 // 방을 나갔다 오거나 앱을 다시 켜도 쓰던 글이 남는다(웹 drafts.js · 패밀리챗과 같음). 저장분은 이 방이 열릴 때 한 번 채운다.
                 .onAppear(perform: restoreDraft)
                 .onChange(of: draft) { new in
@@ -384,25 +383,8 @@ struct RoomView: View {
                     if restoringDraft { restoringDraft = false; return }
                     // #562: 다른 기기에 「입력중…」 신호(간격 제한은 AppModel). 비면 clear.
                     model.noteTyping(room: room, clear: new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    let old = previousDraft
                     previousDraft = new
-                    if HardwareKeys.insertedNewline(old: old, new: new) {
-                        // 앱이 Shift+Enter 로 넣은 줄바꿈이면 그대로 둔다(전송 판정 없음).
-                        if let at = keyNewlineAt, Date().timeIntervalSince(at) < 0.5 { keyNewlineAt = nil; return }
-                        nativeNewlineAt = Date()
-                    }
-                    switch ComposerKeys.decide(old: old, new: new, hardwareKeyboard: HardwareKeyboard.isConnected,
-                                               shift: HardwareKeyboard.isShiftPressed) {
-                    case .keep: break
-                    case .revert(let text): draft = text
-                    case .send(let text):
-                        // Enter 로 작성창에 막 들어왔다면 그 Enter 의 반복 입력 — 보내지 않고 줄바꿈만 되돌린다.
-                        if HardwareKeys.suppressSend(sinceKeyFocus: keyFocusedAt.map { Date().timeIntervalSince($0) }) {
-                            draft = text
-                        } else {
-                            sendText(text)
-                        }
-                    }
+                    // 하드웨어 Enter 전송·Shift+Enter 줄바꿈은 입력칸(ComposerTextView)이 키로 직접 처리한다 — 글 변화로 판정하지 않는다.
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 11)
@@ -747,7 +729,10 @@ struct RoomView: View {
     }
 
     private func handleKey(_ press: HardwareKeys.Press, _ proxy: ScrollViewProxy) {
-        guard let action = HardwareKeys.roomAction(press, mode: keyMode) else { return }
+        let decided = HardwareKeys.roomAction(press, mode: keyMode)
+        model.noteKey("gc \(press.key.rawValue) mods=\(press.modifiers.rawValue) mode=\(keyMode) → \(decided?.rawValue ?? "-")"
+                      + (keysBlocked ? " blocked" : "") + " input=\(FirstResponderText.isActive)")
+        guard let action = decided else { return }
         // 같은 물리 키가 SwiftUI 단축키 길로 이미 처리됐으면(앱을 켜고 첫 누름) 버린다 — 그 사이 상태가 바뀌어(예: 작성창 → 읽기)
         // 같은 키가 다른 동작(선택 모드 시작)으로 판정되는 것까지 막으려고 동작 이름이 아니라 키 단위로 거른다.
         HardwareKeyRouter.shared.once("key:" + press.key.rawValue, from: .gameController) { perform(action, proxy) }
@@ -757,6 +742,7 @@ struct RoomView: View {
     /// 여기서 하지 않고 GameController 길에 맡긴다(proxy 없이 기록만 하고 진짜 처리를 막는 일이 없게).
     private func shortcut(_ key: HardwareKeys.Key) {
         guard let action = HardwareKeys.roomAction(.init(key), mode: keyMode), !Self.needsScrollProxy.contains(action) else { return }
+        model.noteKey("shortcut \(key.rawValue) mode=\(keyMode) → \(action.rawValue)")
         HardwareKeyRouter.shared.once("key:" + key.rawValue, from: .shortcut) { perform(action, nil) }
     }
 
@@ -770,24 +756,20 @@ struct RoomView: View {
         case .nextRoom: switchRoom(1)
         case .backToList: navigator.backToList()
         case .readTimeline:
-            composerKeyEpoch += 1   // 대기 중인 Enter·Shift+Enter 처리 취소(커서를 다시 작성창으로 끌어오지 않게)
             // 작성창 → 대화 읽기는 마지막 말풍선부터, 선택 모드 → 대화 읽기는 고르던 자리에서 이어 읽는다.
             if !selectingByKey { keyCursor = nil }
             selectingByKey = false
-            keyFocusedAt = nil
             composerFocused = false
         case .focusComposer:
             keyCursor = nil
             selectingByKey = false
-            keyFocusedAt = Date()
             composerFocused = true   // onChange(of: composerFocused) 가 최신 글로 내려 준다
         case .scrollUp, .scrollDown, .scrollToLatest:
             selectingByKey = false
             if let proxy { scrollByKey(action, proxy) }
-        case .send:
-            composerKey(newline: false)
-        case .newline:
-            composerKey(newline: true)
+        case .send, .newline:
+            // 작성창 Return 은 입력칸(ComposerTextView)이 키를 직접 받아 처리한다 — 같은 누름의 GameController 도착은 쓰지 않는다.
+            break
         case .startSelecting:
             if let proxy { select(step: 0, proxy) }
         case .selectUp:
@@ -796,57 +778,28 @@ struct RoomView: View {
             if let proxy { select(step: 1, proxy) }
         case .openSelection:
             if let text = selectedText { selecting = SelectableMessage(text: text, fromKeyboard: true) }
+            model.noteKey("open-selection len=\(selectedText?.count ?? -1)")
         case .copySelection:
             if let text = selectedText {
                 MessageCopy.copy(text)
                 toast = Strings.notifyCopied
             }
+            model.noteKey("copy-bubble len=\(selectedText?.count ?? -1)")
         case .pasteToComposer:
             // 선택 창에서 블록으로 복사한 글을 답장에 쓰는 흐름: 작성창으로 가서 커서 자리에 붙인다.
-            guard let clip = MessageCopy.clipboardText, !clip.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { break }
+            guard let clip = MessageCopy.clipboardText, !clip.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                model.noteKey("paste clipboard=empty")
+                break
+            }
             keyCursor = nil
             selectingByKey = false
             composerFocused = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                if !FirstResponderText.insert(clip) { draft += clip }
+                let inserted = FirstResponderText.insert(clip)
+                if !inserted { draft += clip }
+                model.noteKey("paste len=\(clip.count) inserted=\(inserted) input=\(FirstResponderText.isActive)")
             }
         }
-    }
-
-    /// 작성창 Enter(보내기) · Shift+Enter(커서 자리에 줄바꿈). 입력칸이 스스로 줄바꿈을 넣는 기기에서는 종전 `ComposerKeys` 가 이미
-    /// 처리했으므로(`nativeNewlineAt`) 다시 하지 않는다.
-    /// 한글 조합: Enter 를 받은 뒤 입력칸(UITextView)의 **실제 글**을 읽는다(SwiftUI 바인딩이 늦을 수 있다). 조합 중인 글자가 남아 있으면
-    /// 확정될 때까지 잠깐 기다리고(최대 약 0.3초), 그래도 남으면 확정시킨 뒤 보낸다 — 마지막 음절이 빠지거나 보낸 뒤 작성창에 되살아나지 않게.
-    /// (웹은 조합을 확정하는 Enter 를 무시해 한 번 더 눌러야 보낸다. iOS 는 키가 언제 조합을 끝냈는지 알 수 없어 확정 뒤 한 번에 보낸다.)
-    private func composerKey(newline: Bool, attempt: Int = 0) {
-        let pressedAt = Date()
-        let epoch = composerKeyEpoch
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
-            // 그 사이 다른 방으로 넘어갔으면(PageUp/Down) 입력칸은 새 방 것이다 — 새 방 글을 이 방으로 보내지 않게 버린다.
-            // 그 사이 Esc 로 대화 읽기로 나갔으면 버린다.
-            guard navigator.path.last == room, epoch == composerKeyEpoch else { return }
-            if let native = nativeNewlineAt, native >= pressedAt.addingTimeInterval(-0.3 - Double(attempt) * 0.06) { return }
-            // (작성창 상태에서 누른 키다. 입력칸이 Return 으로 커서를 놓아 FocusState 가 벌써 false 일 수 있어 여기서 다시 묻지 않는다.)
-            if FirstResponderText.hasMarkedText {
-                if attempt < 4 { composerKey(newline: newline, attempt: attempt + 1); return }
-                FirstResponderText.commitMarkedText()
-            }
-            if newline {
-                keyNewlineAt = Date()
-                if !FirstResponderText.insert("\n") { draft += "\n" }
-            } else if let text = HardwareKeys.outgoingText(FirstResponderText.currentText ?? draft) {
-                sendText(text)
-            }
-            keepComposerCursor()
-        }
-    }
-
-    /// Return 뒤 입력칸이 커서를 놓았으면(iOS 16 · onKeyPress 가 못 받은 경우) 작성창 커서를 되살린다 — 다음 글을 바로 이어 치게.
-    /// FocusState 가 아직 true 로 남아 있을 수 있어 한 번 내렸다 올린다.
-    private func keepComposerCursor() {
-        guard !FirstResponderText.isActive else { return }
-        composerFocused = false
-        DispatchQueue.main.async { composerFocused = true }
     }
 
     /// 선택 모드에서 고른 말풍선의 글(복사할 수 없는 첨부·복호화 실패 행은 고르지 않는다).

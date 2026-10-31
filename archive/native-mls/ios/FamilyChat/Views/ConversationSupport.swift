@@ -126,33 +126,6 @@ final class HardwareKeyRouter {
     #endif
 }
 
-/// iOS 17+: 작성창 Return 을 **입력칸보다 먼저** 받는다(`onKeyPress`). 이 기기(오너 실기기 0.1.0 (73))에서는 SwiftUI 세로 TextField 가
-/// 하드웨어 Return 을 받으면 줄바꿈 대신 입력을 끝내 커서를 놓는다 — 그래서 GameController 로 받아 처리하면 줄바꿈은 들어가도 커서가 사라졌다.
-/// 여기서 처리하고 `.handled` 를 돌려주면 입력칸은 Return 을 보지 못해 커서가 남는다. Return = 보내기, Shift+Return = 줄바꿈,
-/// 다른 수정키(⌘↩ 등)는 `.ignored` — SwiftUI 단축키가 처리한다. iOS 16 은 GameController 길 + 커서 되살리기로 남는다.
-struct ComposerReturnKeys: ViewModifier {
-    let onReturn: (_ shift: Bool) -> Void
-
-    func body(content: Content) -> some View {
-        if #available(iOS 17.0, *) {
-            content.onKeyPress(.return, phases: .down) { press in
-                switch press.modifiers {
-                case []:
-                    onReturn(false)
-                    return .handled
-                case .shift:
-                    onReturn(true)
-                    return .handled
-                default:
-                    return .ignored
-                }
-            }
-        } else {
-            content
-        }
-    }
-}
-
 /// 지금 키 입력을 받는 글 입력칸(작성창의 UITextView)을 직접 다룬다. SwiftUI(iOS 16) TextField 에는 커서 위치·조합 상태 API 가 없어
 /// Shift+Enter 줄바꿈을 끝에 붙이면 가운데에서 친 줄바꿈이 엉뚱한 자리로 가고, Enter 전송 때 조합 중인 한글 음절을 알 수 없다.
 @MainActor
