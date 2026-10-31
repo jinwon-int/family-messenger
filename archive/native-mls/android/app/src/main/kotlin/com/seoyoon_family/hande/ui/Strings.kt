@@ -152,4 +152,104 @@ object Strings {
     const val wipeConfirmButton = "지우기"
     const val cancel = "취소"
     const val wipeDone = "이 기기의 자료를 지웠습니다. 새 기기로 다시 설정합니다."
+
+    // ---- 한데 디자인 2차-A(2026-10-31, docs/design/HANDE-DESIGN-SYSTEM.md §A1~A6) — iOS `Strings+Onboarding.swift`·`Strings+Agent.swift` 와 같은 말.
+    // 규칙: 설명은 1줄 + 「자세히」, 성공 표시는 글자로만, 숫자 카운트다운 없음, 기술값(403 …)은 화면에서 빼고 진단 기록으로. 옛 문구는 그대로 둔다.
+
+    // 공통(HandeKit)
+    const val wordmark = "hande"
+    const val onboardingMore = "자세히"
+    const val onboardingLess = "접기"
+    const val onboardingBack = "뒤로"
+    const val onboardingSteps = 4
+    fun onboardingStep(step: Int, total: Int) = "${total}단계 중 ${step}단계"
+    /** 지문 행 접근성: 「3번, 1a2b 3c4d, 맞춤 표시 안 됨」(표시가 없는 목록은 번호·값만). */
+    fun fingerprintRowLabel(number: Int, value: String, ticked: Boolean?): String =
+        if (ticked == null) "${number}번, $value" else "${number}번, $value, 맞춤 표시 ${if (ticked) "됨" else "안 됨"}"
+    const val close = "닫기"
+    const val copyAction = "복사"
+    const val copiedToast = "복사했어요"
+
+    // ① 서버 찾기
+    const val serverStepTitle = "가족 서버를\n찾아 주세요"
+    const val serverDeclaration = "한데에는 회원가입이 없습니다 — 가족 운영자가 등록합니다."
+    const val serverAddressLabel = "서버 주소"
+    const val serverAddressPlaceholder = "example.com"
+    const val serverAddressHint = "운영자에게 받은 주소를 입력하세요."
+    const val serverAddressDetail = "도메인(예: example.com)이나 https:// 주소. http 주소는 쓸 수 없습니다."
+    const val serverFound = "찾았어요"
+    const val serverContinue = "이 서버로 계속"
+
+    // ② 이름
+    const val actorStepTitle = "이 기기를 쓰는 분의\n이름"
+    const val actorStepLabel = "운영자가 정해 준 영문 이름"
+    const val actorStepPlaceholder = "영문 이름"
+    const val actorStepHint = "한 번 정하면 바꿀 수 없어요."
+    const val actorStepDetail = "영문 소문자로 시작, 소문자·숫자 2~16자(예: mom, dad, jiyu). 이 기기 ID가 이 이름으로 만들어집니다. 바꾸려면 앱을 지우고 새 기기로 다시 등록합니다."
+    /** 형식 오류 — 판정은 `Settings.validActor` 그대로, 화면에는 이 한 줄. */
+    const val actorStepInvalid = "영문 소문자·숫자 2~16자로 써 주세요"
+
+    // ③ Google 로그인
+    const val loginStepLine = "운영자가 허용해 둔 Google 계정으로 들어갑니다."
+    const val loginStepDetail = "로그인 창은 브라우저가 열고, 비밀번호는 앱에 전달되지 않습니다. 끝나면 자동으로 돌아옵니다."
+
+    // ④ 이 기기 등록
+    const val enrollStepLine = "이미 쓰는 내 기기나 운영자가 이 지문을 보고 승인합니다."
+    const val enrollWaitingOperator = "운영자 승인을 기다리는 중"
+    const val enrollWaitingSibling = "다른 기기의 승인을 기다리는 중"
+    fun enrollWaitingSiblingUntil(at: String) = "$enrollWaitingSibling · ${at}까지"
+    const val shareRegistration = "등록 정보 공유"
+    const val deviceIdLabel = "기기 ID"
+
+    // 새 기기 승인(§A1) — 후보 카드 · ApproveScreen
+    const val candidateIncoming = "새 기기가 들어오려고 합니다"
+    /** 「요청 21:10 · 21:40에 만료」 — 시각만, 카운트다운 없음. 요청 시각을 모르면 만료만, 둘 다 모르면 null. */
+    fun candidateTimes(created: String?, expires: String?): String? = when {
+        created != null && expires != null -> "요청 $created · ${expires}에 만료"
+        expires != null -> "${expires}에 만료"
+        created != null -> "요청 $created"
+        else -> null
+    }
+    const val candidateCompareButton = "지문 비교"
+    const val approveCompareTitle = "새 기기 화면과 하나씩 맞춰 보세요"
+    fun approveProgress(ticked: Int, total: Int) = "같으면 눌러 표시하세요 · $ticked / $total"
+    const val approveAllMatched = "모두 맞췄어요"
+    const val approveWarning = "지문이 다르면 승인하지 말고 운영자에게 알려 주세요."
+    const val approveConfirm = "승인"
+    fun approveDisabled(total: Int) = "${total}줄을 모두 맞춰 보세요"
+    fun approveDisabledAccessibility(total: Int) = "${total}줄을 모두 맞춘 뒤 승인할 수 있습니다"
+    const val approveMismatchButton = "다릅니다"
+    const val approveLaterButton = "나중에"
+    fun approvedTitle(device: String) = "${device}를 승인했어요"
+    const val approvedBody = "이 기기가 있는 자리에 자동으로 초대합니다."
+    const val approveConfirmButton = "확인"
+    const val rejectedTitle = "승인하지 않았어요"
+    fun rejectedBody(device: String) = "${device}는 들어오지 못합니다. 운영자에게 지문이 달랐다고 알려 주세요."
+    const val copyDiagnosticsButton = "진단 기록 복사"
+
+    // 목록 빈 상태(§A3) · 꺼진 자리(§A6)
+    const val campfireEmpty = "아직 피운 모닥불이 없습니다"
+    const val emptyRoomsHint = "운영자가 초대하면 여기에 자리가 생겨요."
+    const val roomClosedTitle = "운영자가 이 자리를 닫았어요"
+    const val roomClosedBody = "지난 이야기는 읽을 수 있지만 더 쓸 수는 없어요. 다시 열려면 운영자에게 말해 주세요."
+    const val haltedDeviceTitle = "이 기기의 대화가 멈췄어요"
+    const val haltedDeviceHint = "운영자에게 알려 주세요. 아래 기록을 붙여 보내면 원인을 찾을 수 있어요."
+
+    // 설정(§A5)
+    const val settingsServer = "서버"
+    const val settingsThisDevice = "이 기기"
+    const val settingsDeviceManage = "기기 관리"
+    const val settingsDanger = "위험 구역"
+    const val themeChipNight = "밤"
+    const val themeChipDay = "낮불"
+    const val themeNightHint = "밤이 기본이에요. 시스템 다크/라이트를 따르지 않습니다."
+    const val themeDayHint = "밝은 곳·e-ink 화면용. 종이 바탕에 먹 글자, 움직임이 꺼집니다."
+    const val operatorInfo = "운영자용 정보"
+    const val relayLabel = "릴레이"
+    const val lobbyHintPlain = "로비 키는 이 기기의 공개 키 묶음이에요. 앱을 열 때마다 채웁니다."
+    const val wipeDangerBody = "이 기기의 키와 대화가 모두 지워집니다. 되돌릴 수 없어요."
+    /** 정보 칸의 링크 이름(목적지는 `BuildConfig.DELETE_ACCOUNT_URL` 그대로). */
+    const val deleteDataGuide = "데이터 삭제 안내"
+    const val versionShort = "버전"
+    fun versionLine(name: String, code: Int) = "$name ($code)"
 }

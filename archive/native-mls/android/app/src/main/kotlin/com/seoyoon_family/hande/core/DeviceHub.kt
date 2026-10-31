@@ -65,8 +65,11 @@ data class RoomUi(
     val working: String? = null,
 )
 
-/** 우편함의 새 기기 승인 요청 카드(#574). `expiresAt` ms. `message` 는 마지막 실패 사유. */
-data class CandidateUi(val deviceId: String, val actor: String, val fingerprint: String, val expiresAt: Long?, val busy: Boolean, val message: String?)
+/** 우편함의 새 기기 승인 요청 카드(#574). `expiresAt`·`createdAt` ms(릴레이가 안 주면 null — 디자인 2차-A 카드의 「요청 HH:mm · HH:mm에 만료」). `message` 는 마지막 실패 사유. */
+data class CandidateUi(
+    val deviceId: String, val actor: String, val fingerprint: String, val expiresAt: Long?, val busy: Boolean, val message: String?,
+    val createdAt: Long? = null,
+)
 
 data class HubUi(
     val phase: Phase = Phase.Setup,
@@ -390,7 +393,10 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
 
     private fun publishCandidates() = _ui.update { ui ->
         ui.copy(candidates = candidates.map { c ->
-            CandidateUi(c.deviceId, c.actor, c.fingerprint, c.expiresAt.takeIf { t -> t > 0L }?.let { t -> t * 1000L }, c.deviceId in busy, candidateMessages[c.deviceId])
+            CandidateUi(
+                c.deviceId, c.actor, c.fingerprint, c.expiresAt.takeIf { t -> t > 0L }?.let { t -> t * 1000L }, c.deviceId in busy, candidateMessages[c.deviceId],
+                createdAt = c.createdAt.takeIf { t -> t > 0L }?.let { t -> t * 1000L },
+            )
         })
     }
 
