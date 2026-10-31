@@ -670,6 +670,7 @@ export const strings = {
     recommended: '권장',
     row: (n, label, recommended) => `${n}번: ${label}${recommended ? ' (권장)' : ''}`,
     answered: (numbers, labels) => `✓ ${numbers.join(', ')}번 선택 — ${labels.join(' · ')}`,
+    keysHint: '⌥1~9 체크 · ⌥Enter 보내기',   // 단축키 안내(#629 §3.1) — `(pointer: fine)` 일 때만 열린 카드 아래
   },
   // 🔔 알림(#521): 받은 초대와 그 처리 상태 — 오너 기기의 자동 참여가 실패해도 로그가 아니라 여기 남는다.
   notify: {

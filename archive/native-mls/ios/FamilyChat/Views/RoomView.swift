@@ -41,6 +41,8 @@ struct RoomView: View {
     @State private var choiceCards: [Int64: AgentChoices.Card] = [:]
     /// 선택지 카드에서 「보내기」를 눌러 보내는 중인 글 seq — 그동안 그 카드는 비활성.
     @State private var choiceSending: Set<Int64> = []
+    /// 선택지 카드의 체크(글 seq → 번호). 카드가 아니라 방이 들고 있어 §3.1(#629) ⌥1~9 단축키도 같은 선택을 토글한다.
+    @State private var choiceSelections: [Int64: Set<Int>] = [:]
     /// #405 시간 표시: 행별 시간 보임 여부 · 날짜 구분선.
     @State private var stamps: [Int64: TimelineStamps.Stamp] = [:]
     private static let thinkingRowID: Int64 = -1
@@ -288,6 +290,7 @@ struct RoomView: View {
         }
         .background(CampfireBackground())
         .background(keyboardShortcuts)
+        .background(AgentChoiceKeyCommands(card: openChoiceKeyCard, perform: choiceKey))
         .handeToast($toast)
         .navigationTitle(Strings.roomLabel(room))
         .navigationBarTitleDisplayMode(.inline)
@@ -432,6 +435,7 @@ struct RoomView: View {
                    roster: model.agentRoster, approval: approvalStates[item.id], canAnswer: isReady,
                    decide: { number, allow in answerApproval(number, allow: allow) },
                    choiceCard: choiceCards[item.id], choiceSending: choiceSending.contains(item.id),
+                   choiceSelected: choiceSelection(item.id),
                    choose: { numbers in Task { await answerChoice(item.id, numbers) } },
                    onAttachmentLoaded: { attachmentLoaded(item.id, proxy) },
                    retry: { Task { await model.retry(outgoingId: item.id, room: room) } },
@@ -508,6 +512,37 @@ struct RoomView: View {
         choiceSending.insert(seq)
         defer { choiceSending.remove(seq) }
         _ = await model.send(room: room, text: text)
+    }
+
+    /// 선택지 카드 체크(글 seq 별) 바인딩 — 탭과 ⌥1~9 단축키가 같은 선택을 쓴다.
+    private func choiceSelection(_ seq: Int64) -> Binding<Set<Int>> {
+        Binding(get: { choiceSelections[seq] ?? [] }, set: { choiceSelections[seq] = $0 })
+    }
+
+    /// §3.1(#629): 방의 open 선택지 카드(방의 마지막 글에만 생기므로 최대 1개).
+    private var openChoiceSeq: Int64? {
+        choiceCards.filter { $0.value.state == .open }.map(\.key).max()
+    }
+
+    /// 단축키 판정 입력. 활성 = 방 준비됨 · 보내는 중 아님 · 꺼진 자리 아님 · 창이 떠 있지 않고 이 방이 맨 위.
+    private var openChoiceKeyCard: AgentChoiceKeys.Card? {
+        guard let seq = openChoiceSeq, let card = choiceCards[seq] else { return nil }
+        let enabled = isReady && !choiceSending.contains(seq) && haltedReason == nil && !keysBlocked
+        return AgentChoiceKeys.Card(count: card.choices.items.count, selected: choiceSelections[seq] ?? [], enabled: enabled)
+    }
+
+    /// ⌥N = 그 번호 체크 토글 · ⌥Return = 카드 [보내기]와 같은 compose 전송.
+    private func choiceKey(_ action: AgentChoiceKeys.Action) {
+        guard let seq = openChoiceSeq else { return }
+        switch action {
+        case .toggle(let number):
+            var selected = choiceSelections[seq] ?? []
+            if selected.contains(number) { selected.remove(number) } else { selected.insert(number) }
+            choiceSelections[seq] = selected
+        case .send:
+            let numbers = (choiceSelections[seq] ?? []).sorted()
+            Task { await answerChoice(seq, numbers) }
+        }
     }
 
     /// #472: 과거 글 한 페이지를 위에 붙인다. 보던 행(종전 첫 행)을 화면 위에 그대로 두어 점프하지 않는다 — 새 행이 붙은 뒤
@@ -898,6 +933,8 @@ struct MessageRow: View {
     /// agent-choices-v1(#620 · 복수 #624): 이 에이전트 글의 선택지 카드(nil = 선택지 없음) · 보내는 중 · 「보내기」(고른 번호, 오름차순).
     var choiceCard: AgentChoices.Card? = nil
     var choiceSending = false
+    /// 카드의 체크(대화방이 글 seq 별로 들고 있다 — §3.1 단축키와 공유).
+    var choiceSelected: Binding<Set<Int>> = .constant([])
     var choose: ([Int]) -> Void = { _ in }
     /// #398: 첨부 본체를 읽어 행 높이가 바뀐 뒤 한 번.
     var onAttachmentLoaded: () -> Void = {}
@@ -940,7 +977,8 @@ struct MessageRow: View {
                     .messageCopyMenu(MessageCopy.text(of: message), select: selectText)
                 // 선택지(open = 체크 + 보내기, answered = 한 줄). closed 는 말풍선만.
                 if let card = choiceCard, card.state != .closed {
-                    AgentChoicesCard(choices: card.choices, state: card.state, enabled: canAnswer && !choiceSending, send: choose)
+                    AgentChoicesCard(choices: card.choices, state: card.state, enabled: canAnswer && !choiceSending,
+                                     selected: choiceSelected, send: choose)
                 }
             }
         }

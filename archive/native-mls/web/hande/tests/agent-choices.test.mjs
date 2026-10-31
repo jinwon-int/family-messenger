@@ -3,7 +3,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseChoices, choiceReply, composeChoice, choiceState } from '../agent-choices.js';
+import { parseChoices, choiceReply, composeChoice, choiceState, choiceKeyAction, choiceKeyInput } from '../agent-choices.js';
+import { installShortcuts } from '../shortcuts.js';
 
 const vectors = JSON.parse(readFileSync(new URL('../../../tests/fixtures/agent-choices-vectors.json', import.meta.url), 'utf8'));
 
@@ -161,4 +162,138 @@ test('agent-choices.js 가 build.sh 배포 목록과 SHELL_ASSETS 에 있다', a
   assert.ok(SHELL_ASSETS.includes('./agent-choices.js'));
   const build = readFileSync(new URL('../build.sh', import.meta.url), 'utf8');
   assert.match(build, /\sagent-choices\.js\s/);
+});
+
+// ---- 키보드 단축키(#629, 규격 §3.1) ----
+
+test('공유 벡터 keys 가 실렸다', () => {
+  assert.equal(vectors.keys.length, 18);
+});
+
+for (const v of vectors.keys) {
+  test(`keys: ${v.name}`, () => {
+    assert.deepEqual(choiceKeyAction(v.input, v.card), v.expected);
+  });
+}
+
+const OPEN3 = {count: 3, selected: [], enabled: true};
+const base = {key: 'digit', digit: null, alt: false, ctrl: false, meta: false, shift: false, composing: false};
+
+test('keys: KeyboardEvent → 입력 — Mac ⌥+1(key ¡)도 code Digit1 로 숫자 1', () => {
+  assert.deepEqual(choiceKeyInput({code: 'Digit1', key: '¡', altKey: true}), {...base, digit: 1, alt: true});
+  assert.deepEqual(choiceKeyAction(choiceKeyInput({code: 'Digit1', key: '¡', altKey: true}), OPEN3), {action: 'toggle', number: 1});
+});
+
+test('keys: KeyboardEvent → 입력 — Numpad3 · Digit0/Numpad0 은 숫자가 아니다', () => {
+  assert.deepEqual(choiceKeyInput({code: 'Numpad3', key: '3', altKey: true}), {...base, digit: 3, alt: true});
+  assert.equal(choiceKeyInput({code: 'Digit0', key: 'º', altKey: true}).key, 'other');
+  assert.equal(choiceKeyInput({code: 'Numpad0', key: '0', altKey: true}).key, 'other');
+  assert.equal(choiceKeyInput({code: 'KeyA', key: '1', altKey: true}).key, 'other');   // key 가 '1' 이어도 code 로 본다
+});
+
+test('keys: KeyboardEvent → 입력 — Enter·NumpadEnter 는 enter, 수정키는 그대로', () => {
+  assert.deepEqual(choiceKeyInput({code: 'Enter', key: 'Enter', altKey: true}), {...base, key: 'enter', alt: true});
+  assert.equal(choiceKeyInput({code: 'NumpadEnter', key: 'Enter'}).key, 'enter');
+  assert.deepEqual(choiceKeyInput({code: 'Digit2', key: '@', altKey: true, ctrlKey: true, metaKey: true, shiftKey: true}),
+    {...base, digit: 2, alt: true, ctrl: true, meta: true, shift: true});
+});
+
+test('keys: KeyboardEvent → 입력 — isComposing / keyCode 229 는 조합 중(null)', () => {
+  assert.equal(choiceKeyInput({code: 'Digit1', key: '1', altKey: true, isComposing: true}).composing, true);
+  assert.equal(choiceKeyInput({code: 'Digit1', key: 'Process', altKey: true, keyCode: 229}).composing, true);
+  assert.equal(choiceKeyAction(choiceKeyInput({code: 'Digit1', key: '1', altKey: true, keyCode: 229}), OPEN3), null);
+  assert.equal(choiceKeyInput({}).key, 'other');
+});
+
+/** document 캡처 단계 리스너를 흉내 낸다 — 캡처 리스너가 stopPropagation 하면 대상(작성창)·버블 리스너는 돌지 않는다. */
+function fakeDoc() {
+  const listeners = [];
+  return {
+    listeners,
+    defaultView: null, activeElement: null,
+    addEventListener: (type, fn, capture) => listeners.push({type, fn, capture: Boolean(capture)}),
+    removeEventListener: (type, fn, capture) => {
+      const i = listeners.findIndex((l) => l.type === type && l.fn === fn && l.capture === Boolean(capture));
+      if (i >= 0) listeners.splice(i, 1);
+    },
+    dispatch(init, targetHandler) {
+      const event = {defaultPrevented: false, stopped: false, target: {tagName: 'TEXTAREA'}, ...init,
+        preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.stopped = true; }};
+      for (const l of listeners.filter((x) => x.type === 'keydown' && x.capture)) { l.fn(event); if (event.stopped) return event; }
+      targetHandler?.(event);
+      if (event.stopped) return event;
+      for (const l of listeners.filter((x) => x.type === 'keydown' && !x.capture)) l.fn(event);
+      return event;
+    },
+  };
+}
+
+function shortcutHarness({card = {count: 3, selected: [], enabled: true}, roomId = 'r1'} = {}) {
+  const doc = fakeDoc();
+  const root = {ownerDocument: doc, querySelector: () => null, querySelectorAll: () => []};
+  const calls = [];
+  const state = {card};
+  const uninstall = installShortcuts(root, {
+    document: doc, matchMedia: () => ({matches: false}),
+    openRoom: () => {}, openRooms: () => {}, currentRoomId: () => roomId,
+    openChoiceCard: () => (state.card ? {
+      card: () => state.card,
+      toggle: (n) => calls.push(['toggle', n]),
+      submit: () => calls.push(['send']),
+    } : null),
+  });
+  // 작성창(ui.js buildComposer)의 Enter 전송 — defaultPrevented 면 건너뛴다.
+  const composer = (event) => {
+    if (event.defaultPrevented || event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+    event.preventDefault();
+    calls.push(['composer-send']);
+  };
+  return {doc, calls, state, uninstall, press: (init) => doc.dispatch(init, composer)};
+}
+
+test('shortcuts: ⌥1 은 카드 토글 — preventDefault, 작성창으로 가지 않는다', () => {
+  const h = shortcutHarness();
+  const event = h.press({key: '¡', code: 'Digit1', altKey: true});
+  assert.deepEqual(h.calls, [['toggle', 1]]);
+  assert.equal(event.defaultPrevented, true);
+});
+
+test('shortcuts: ⌥Enter(체크 있음)는 카드 보내기만 — 작성창 Enter 전송은 돌지 않는다', () => {
+  const h = shortcutHarness({card: {count: 3, selected: [2], enabled: true}});
+  const event = h.press({key: 'Enter', code: 'Enter', altKey: true});
+  assert.deepEqual(h.calls, [['send']]);
+  assert.equal(event.defaultPrevented, true);
+});
+
+test('shortcuts: ⌥Enter(체크 없음)·Enter·⌥4(k=3)·카드 없음은 가로채지 않는다(기존 동작)', () => {
+  const h = shortcutHarness();
+  assert.equal(h.press({key: 'Enter', code: 'Enter', altKey: true}).defaultPrevented, true);   // 작성창이 평소처럼 보냄
+  assert.deepEqual(h.calls, [['composer-send']]);
+  h.calls.length = 0;
+  h.press({key: 'Enter', code: 'Enter'});
+  assert.deepEqual(h.calls, [['composer-send']]);
+  h.calls.length = 0;
+  assert.equal(h.press({key: '¢', code: 'Digit4', altKey: true}).defaultPrevented, false);
+  h.state.card = null;
+  assert.equal(h.press({key: '¡', code: 'Digit1', altKey: true}).defaultPrevented, false);
+  assert.deepEqual(h.calls, []);
+});
+
+test('shortcuts: 조합 중·AltGr(Ctrl+Alt)·잠긴 카드·방 없음은 가로채지 않는다', () => {
+  const h = shortcutHarness();
+  assert.equal(h.press({key: '1', code: 'Digit1', altKey: true, isComposing: true}).defaultPrevented, false);
+  assert.equal(h.press({key: '1', code: 'Digit1', altKey: true, ctrlKey: true}).defaultPrevented, false);
+  h.state.card = {count: 3, selected: [1], enabled: false};
+  assert.equal(h.press({key: '1', code: 'Digit1', altKey: true}).defaultPrevented, false);
+  assert.deepEqual(h.calls, []);
+  const none = shortcutHarness({roomId: null});
+  assert.equal(none.press({key: '1', code: 'Digit1', altKey: true}).defaultPrevented, false);
+  assert.deepEqual(none.calls, []);
+});
+
+test('shortcuts: 해제하면 캡처 리스너도 떨어진다', () => {
+  const h = shortcutHarness();
+  assert.ok(h.doc.listeners.some((l) => l.capture));
+  h.uninstall();
+  assert.equal(h.doc.listeners.length, 0);
 });

@@ -47,6 +47,11 @@ extension Strings {
         Array(Set(numbers)).sorted().map { String($0) }.joined(separator: ", ")
     }
     static let choiceA11yHint = "눌러서 체크하거나 해제하세요. 여러 개 고른 뒤 보내기를 누르세요"
+    /// §3.1(#629): 하드웨어 키보드가 연결돼 있을 때 열린 카드 아래 작은 안내.
+    static let choiceKeyHint = "⌥1~9 체크 · ⌥Enter 보내기"
+    /// iPad ⌘ 길게 누르기 단축키 목록에 보이는 이름.
+    static func choiceKeyToggle(_ number: Int) -> String { "선택지 \(number)번 체크" }
+    static let choiceKeySend = "선택지 보내기"
 }
 
 // #405 P2 모닥불 테마 문구.

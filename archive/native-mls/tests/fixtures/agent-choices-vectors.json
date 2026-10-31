@@ -743,5 +743,353 @@
    ],
    "expected": "1. (내용 없음)\n2. B"
   }
+ ],
+ "keys": [
+  {
+   "name": "alt+1 toggles 1",
+   "input": {
+    "key": "digit",
+    "digit": 1,
+    "alt": true,
+    "ctrl": false,
+    "meta": false,
+    "shift": false,
+    "composing": false
+   },
+   "card": {
+    "count": 3,
+    "selected": [],
+    "enabled": true
+   },
+   "expected": {
+    "action": "toggle",
+    "number": 1
+   }
+  },
+  {
+   "name": "alt+3 toggles 3 (k=3)",
+   "input": {
+    "key": "digit",
+    "digit": 3,
+    "alt": true,
+    "ctrl": false,
+    "meta": false,
+    "shift": false,
+    "composing": false
+   },
+   "card": {
+    "count": 3,
+    "selected": [],
+    "enabled": true
+   },
+   "expected": {
+    "action": "toggle",
+    "number": 3
+   }
+  },
+  {
+   "name": "alt+4 beyond k -> null",
+   "input": {
+    "key": "digit",
+    "digit": 4,
+    "alt": true,
+    "ctrl": false,
+    "meta": false,
+    "shift": false,
+    "composing": false
+   },
+   "card": {
+    "count": 3,
+    "selected": [],
+    "enabled": true
+   },
+   "expected": null
+  },
+  {
+   "name": "alt+9 with k=9",
+   "input": {
+    "key": "digit",
+    "digit": 9,
+    "alt": true,
+    "ctrl": false,
+    "meta": false,
+    "shift": false,
+    "composing": false
+   },
+   "card": {
+    "count": 9,
+    "selected": [],
+    "enabled": true
+   },
+   "expected": {
+    "action": "toggle",
+    "number": 9
+   }
+  },
+  {
+   "name": "alt+2 on already-selected still toggles",
+   "input": {
+    "key": "digit",
+    "digit": 2,
+    "alt": true,
+    "ctrl": false,
+    "meta": false,
+    "shift": false,
+    "composing": false
+   },
+   "card": {
+    "count": 3,
+    "selected": [
+     2
+    ],
+    "enabled": true
+   },
+   "expected": {
+    "action": "toggle",
+    "number": 2
+   }
+  },
+  {
+   "name": "alt+enter with selection sends",
+   "input": {
+    "key": "enter",
+    "digit": null,
+    "alt": true,
+    "ctrl": false,
+    "meta": false,
+    "shift": false,
+    "composing": false
+   },
+   "card": {
+    "count": 3,
+    "selected": [
+     2
+    ],
+    "enabled": true
+   },
+   "expected": {
+    "action": "send"
+   }
+  },
+  {
+   "name": "alt+enter with nothing selected -> null",
+   "input": {
+    "key": "enter",
+    "digit": null,
+    "alt": true,
+    "ctrl": false,
+    "meta": false,
+    "shift": false,
+    "composing": false
+   },
+   "card": {
+    "count": 3,
+    "selected": [],
+    "enabled": true
+   },
+   "expected": null
+  },
+  {
+   "name": "plain digit -> null",
+   "input": {
+    "key": "digit",
+    "digit": 1,
+    "alt": false,
+    "ctrl": false,
+    "meta": false,
+    "shift": false,
+    "composing": false
+   },
+   "card": {
+    "count": 3,
+    "selected": [],
+    "enabled": true
+   },
+   "expected": null
+  },
+  {
+   "name": "plain enter -> null",
+   "input": {
+    "key": "enter",
+    "digit": null,
+    "alt": false,
+    "ctrl": false,
+    "meta": false,
+    "shift": false,
+    "composing": false
+   },
+   "card": {
+    "count": 3,
+    "selected": [
+     2
+    ],
+    "enabled": true
+   },
+   "expected": null
+  },
+  {
+   "name": "ctrl+alt (AltGr) digit -> null",
+   "input": {
+    "key": "digit",
+    "digit": 1,
+    "alt": true,
+    "ctrl": true,
+    "meta": false,
+    "shift": false,
+    "composing": false
+   },
+   "card": {
+    "count": 3,
+    "selected": [],
+    "enabled": true
+   },
+   "expected": null
+  },
+  {
+   "name": "meta+alt digit -> null",
+   "input": {
+    "key": "digit",
+    "digit": 1,
+    "alt": true,
+    "ctrl": false,
+    "meta": true,
+    "shift": false,
+    "composing": false
+   },
+   "card": {
+    "count": 3,
+    "selected": [],
+    "enabled": true
+   },
+   "expected": null
+  },
+  {
+   "name": "shift+alt digit -> null",
+   "input": {
+    "key": "digit",
+    "digit": 1,
+    "alt": true,
+    "ctrl": false,
+    "meta": false,
+    "shift": true,
+    "composing": false
+   },
+   "card": {
+    "count": 3,
+    "selected": [],
+    "enabled": true
+   },
+   "expected": null
+  },
+  {
+   "name": "shift+alt enter -> null",
+   "input": {
+    "key": "enter",
+    "digit": null,
+    "alt": true,
+    "ctrl": false,
+    "meta": false,
+    "shift": true,
+    "composing": false
+   },
+   "card": {
+    "count": 3,
+    "selected": [
+     2
+    ],
+    "enabled": true
+   },
+   "expected": null
+  },
+  {
+   "name": "composing -> null",
+   "input": {
+    "key": "digit",
+    "digit": 1,
+    "alt": true,
+    "ctrl": false,
+    "meta": false,
+    "shift": false,
+    "composing": true
+   },
+   "card": {
+    "count": 3,
+    "selected": [],
+    "enabled": true
+   },
+   "expected": null
+  },
+  {
+   "name": "no open card -> null",
+   "input": {
+    "key": "digit",
+    "digit": 1,
+    "alt": true,
+    "ctrl": false,
+    "meta": false,
+    "shift": false,
+    "composing": false
+   },
+   "card": null,
+   "expected": null
+  },
+  {
+   "name": "disabled card digit -> null",
+   "input": {
+    "key": "digit",
+    "digit": 1,
+    "alt": true,
+    "ctrl": false,
+    "meta": false,
+    "shift": false,
+    "composing": false
+   },
+   "card": {
+    "count": 3,
+    "selected": [],
+    "enabled": false
+   },
+   "expected": null
+  },
+  {
+   "name": "disabled card enter -> null",
+   "input": {
+    "key": "enter",
+    "digit": null,
+    "alt": true,
+    "ctrl": false,
+    "meta": false,
+    "shift": false,
+    "composing": false
+   },
+   "card": {
+    "count": 3,
+    "selected": [
+     1
+    ],
+    "enabled": false
+   },
+   "expected": null
+  },
+  {
+   "name": "alt+other key -> null",
+   "input": {
+    "key": "other",
+    "digit": null,
+    "alt": true,
+    "ctrl": false,
+    "meta": false,
+    "shift": false,
+    "composing": false
+   },
+   "card": {
+    "count": 3,
+    "selected": [
+     2
+    ],
+    "enabled": true
+   },
+   "expected": null
+  }
  ]
 }
