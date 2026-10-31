@@ -34,6 +34,12 @@ final class AgentChoicesTests: XCTestCase {
         return (raw as? NSNumber)?.intValue
     }
 
+    /// JSON 숫자 배열 → [Int], null(또는 배열 아님) → nil.
+    private func ints(_ raw: Any?) -> [Int]? {
+        guard let raw, !(raw is NSNull), let array = raw as? [Any] else { return nil }
+        return array.compactMap { ($0 as? NSNumber)?.intValue }
+    }
+
     // MARK: - shared vectors
 
     func testParseVectors() throws {
@@ -65,7 +71,21 @@ final class AgentChoicesTests: XCTestCase {
         for (idx, raw) in vectors.enumerated() {
             let text = try XCTUnwrap(raw["text"] as? String, "reply[\(idx)] text")
             let count = try XCTUnwrap(int(raw["count"]), "reply[\(idx)] count")
-            XCTAssertEqual(AgentChoices.reply(text, count: count), int(raw["expected"]), "reply[\(idx)] \(text.debugDescription)")
+            // #624: expected = 번호 배열(오름차순·중복 없음) 또는 null.
+            XCTAssertEqual(AgentChoices.reply(text, count: count), ints(raw["expected"]), "reply[\(idx)] \(text.debugDescription)")
+        }
+    }
+
+    func testComposeVectors() throws {
+        let root = try loadRoot()
+        let vectors = try XCTUnwrap(root["compose"] as? [[String: Any]], "fixture must have a compose array")
+        XCTAssertFalse(vectors.isEmpty)
+        for (idx, raw) in vectors.enumerated() {
+            let numbers = try XCTUnwrap(ints(raw["numbers"]), "compose[\(idx)] numbers")
+            let expected = try XCTUnwrap(raw["expected"] as? String, "compose[\(idx)] expected")
+            XCTAssertEqual(AgentChoices.compose(numbers), expected, "compose[\(idx)] \(numbers)")
+            // 보낸 글은 다시 같은 번호 집합으로 읽혀야 한다(answered 왕복).
+            XCTAssertEqual(AgentChoices.reply(expected, count: 9), Array(Set(numbers)).sorted(), "compose[\(idx)] round-trip")
         }
     }
 
@@ -91,13 +111,27 @@ final class AgentChoicesTests: XCTestCase {
     }
 
     func testMyNumberReplyAnswersIncludingOtherDeviceAndManualTyping() {
-        XCTAssertEqual(AgentChoices.states([rec(1, bot, choices), rec(2, me, "2")], roster: roster, myDevice: me)[1], .answered(2))
-        XCTAssertEqual(AgentChoices.states([rec(1, bot, choices), rec(2, me, " 3번. ")], roster: roster, myDevice: me)[1], .answered(3))
+        XCTAssertEqual(AgentChoices.states([rec(1, bot, choices), rec(2, me, "2")], roster: roster, myDevice: me)[1], .answered([2]))
+        XCTAssertEqual(AgentChoices.states([rec(1, bot, choices), rec(2, me, " 3번. ")], roster: roster, myDevice: me)[1], .answered([3]))
         // 같은 사람의 다른 기기(PC)에서 보낸 답도 내 답(MessageRecord.isMine).
-        XCTAssertEqual(AgentChoices.states([rec(1, bot, choices), rec(2, myPC, "1")], roster: roster, myDevice: me)[1], .answered(1))
+        XCTAssertEqual(AgentChoices.states([rec(1, bot, choices), rec(2, myPC, "1")], roster: roster, myDevice: me)[1], .answered([1]))
         // 답 뒤에 에이전트가 이어 말해도 「바로 다음」이 내 답이면 answered.
         let after = [rec(1, bot, choices), rec(2, me, "1"), rec(3, bot, "병합하겠습니다.")]
-        XCTAssertEqual(AgentChoices.states(after, roster: roster, myDevice: me)[1], .answered(1))
+        XCTAssertEqual(AgentChoices.states(after, roster: roster, myDevice: me)[1], .answered([1]))
+    }
+
+    /// #624 복수 선택: 카드가 보낸 `1, 3` 이나 손으로 친 `3,1` · `1 → 2 → 3` 도 answered(번호 목록, 오름차순·중복 없음).
+    func testMultiNumberReplyAnswers() {
+        XCTAssertEqual(AgentChoices.states([rec(1, bot, choices), rec(2, me, AgentChoices.compose([3, 1]))], roster: roster, myDevice: me)[1],
+                       .answered([1, 3]))
+        XCTAssertEqual(AgentChoices.states([rec(1, bot, choices), rec(2, me, "3,1")], roster: roster, myDevice: me)[1], .answered([1, 3]))
+        XCTAssertEqual(AgentChoices.states([rec(1, bot, choices), rec(2, me, "1 → 2 → 3")], roster: roster, myDevice: me)[1],
+                       .answered([1, 2, 3]))
+        XCTAssertEqual(AgentChoices.states([rec(1, bot, choices), rec(2, myPC, "2번, 2번")], roster: roster, myDevice: me)[1], .answered([2]))
+        // 하나라도 범위 밖 · 끝이 구분자 · 다른 사람의 복수 답 → closed.
+        for next in [rec(2, me, "1, 4"), rec(2, me, "1,"), rec(2, other, "1, 3")] {
+            XCTAssertEqual(AgentChoices.states([rec(1, bot, choices), next], roster: roster, myDevice: me)[1], .closed, next.body)
+        }
     }
 
     func testOtherFollowUpsClose() {
@@ -113,7 +147,7 @@ final class AgentChoicesTests: XCTestCase {
 
     func testSystemRowsAreSkipped() {
         let records = [rec(1, bot, choices), rec(2, "relay", "멤버 추가", kind: .system), rec(3, me, "2")]
-        XCTAssertEqual(AgentChoices.states(records, roster: roster, myDevice: me)[1], .answered(2))
+        XCTAssertEqual(AgentChoices.states(records, roster: roster, myDevice: me)[1], .answered([2]))
         let openAfterSystem = [rec(1, bot, choices), rec(2, "relay", "멤버 추가", kind: .system)]
         XCTAssertEqual(AgentChoices.states(openAfterSystem, roster: roster, myDevice: me)[1], .open)
     }
@@ -125,7 +159,7 @@ final class AgentChoicesTests: XCTestCase {
         // 앞선 선택지는 뒤 선택지가 와도 각자 판정한다.
         let records = [rec(1, bot, choices), rec(2, me, "1"), rec(3, bot, "어느 쪽?\n1. 가\n2. 나")]
         let states = AgentChoices.states(records, roster: roster, myDevice: me)
-        XCTAssertEqual(states[1], .answered(1))
+        XCTAssertEqual(states[1], .answered([1]))
         XCTAssertEqual(states[3], .open)
     }
 

@@ -754,17 +754,17 @@ main.shell[data-view="room"] .pane-list { display: none; }
 .bubble.kind-undecryptable .body { color: var(--text-2); font-style: italic; border-style: dashed; background: transparent; }
 /* status-v1(#560): 에이전트 작업 상태 임시 말풍선 — 흐린 톤·한 줄 크기, 답이 오면 사라진다. */
 .bubble.kind-status .body { color: var(--text); font-size: 0.9em; border-style: dashed; border-color: var(--agent-stroke); background: var(--agent-soft); }
-/* 에이전트 선택지 카드(#620, AGENT-CHOICES-V1.md §3): 말풍선 아래 · 행 = 체크 원 + 번호 + 라벨(최대 3줄) + 「권장」 알약.
-   선택 행 = 파랑 선 + 파랑 14% 면(낮불의 agent-soft 는 흰색이라 color-mix 로 둘 다 구분되게). 답한 뒤에는 한 줄 「✓ N번 선택 — 라벨」. */
+/* 에이전트 선택지 카드(#620, AGENT-CHOICES-V1.md §3): 말풍선 아래 · 행 = 체크 상자(둥근 사각, 복수 선택 #624) + 번호 + 라벨(최대 3줄) + 「권장」 알약.
+   선택 행 = 파랑 선 + 파랑 14% 면(낮불의 agent-soft 는 흰색이라 color-mix 로 둘 다 구분되게). 답한 뒤에는 한 줄 「✓ N번 선택 — 라벨」(여럿이면 「✓ 1, 3번 선택 — 라벨1 · 라벨3」). */
 .bubble .choices { margin-top: var(--space-1); display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-2); border-radius: var(--radius); border: var(--line-w) var(--agent-border-style) var(--agent-stroke); background: var(--surface); }
 .choices .choice-list { display: flex; flex-direction: column; gap: var(--space-1); }
 .choices .choice-row { width: 100%; justify-content: flex-start; align-items: flex-start; text-align: left; padding: var(--space-2) var(--space-3); border-radius: var(--radius-s); border: var(--line-w) solid var(--line); background: transparent; color: var(--text); font-weight: 500; }
 .choices .choice-row:hover { background: color-mix(in srgb, var(--agent) 8%, transparent); }
-.choices .choice-row[aria-pressed="true"] { border-color: var(--agent); background: color-mix(in srgb, var(--agent) 14%, transparent); }
+.choices .choice-row[aria-checked="true"] { border-color: var(--agent); background: color-mix(in srgb, var(--agent) 14%, transparent); }
 .choices .choice-row:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
-.choices .choice-check { flex: none; width: 18px; height: 18px; margin-top: 0.15em; border-radius: 50%; border: 2px solid var(--agent-stroke); display: inline-flex; align-items: center; justify-content: center; }
-.choices .choice-row[aria-pressed="true"] .choice-check { background: var(--agent); border-color: var(--agent); }
-.choices .choice-row[aria-pressed="true"] .choice-check::after { content: ""; width: 4px; height: 8px; border: solid var(--surface-solid); border-width: 0 2px 2px 0; transform: translateY(-1px) rotate(45deg); }
+.choices .choice-check { flex: none; width: 18px; height: 18px; margin-top: 0.15em; border-radius: 4px; border: 2px solid var(--agent-stroke); display: inline-flex; align-items: center; justify-content: center; }
+.choices .choice-row[aria-checked="true"] .choice-check { background: var(--agent); border-color: var(--agent); }
+.choices .choice-row[aria-checked="true"] .choice-check::after { content: ""; width: 4px; height: 8px; border: solid var(--surface-solid); border-width: 0 2px 2px 0; transform: translateY(-1px) rotate(45deg); }
 .choices .choice-num { flex: none; min-width: 1.1em; font-weight: 700; color: var(--agent-text); font-variant-numeric: tabular-nums; line-height: 1.45; }
 .choices .choice-label { flex: 1; min-width: 0; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
 .choices .choice-recommended { flex: none; background: var(--brand-soft); color: var(--brand-text); }

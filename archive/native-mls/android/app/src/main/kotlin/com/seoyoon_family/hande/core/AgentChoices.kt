@@ -14,7 +14,8 @@ data class AgentChoices(val items: List<AgentChoiceItem>, val recommended: Int?)
     /** 선택지 카드의 상태(규격 §2). */
     sealed class State {
         object Open : State()
-        data class Answered(val number: Int) : State()
+        /** 내 바로 다음 글이 고른 번호들(오름차순·중복 없음·비어 있지 않음, #624 복수 선택). */
+        data class Answered(val numbers: List<Int>) : State()
         object Closed : State()
     }
 
@@ -26,7 +27,6 @@ data class AgentChoices(val items: List<AgentChoiceItem>, val recommended: Int?)
         // `.` 대신 줄 끝 문자를 뺀 묶음 — JVM `.`/`$` 의 줄 끝 규칙(마지막 \r 앞에서 `$` 일치 등)이 웹·iOS 와 달라지지 않게 matchEntire 로 쓴다.
         private val ITEM = Regex("^ {0,3}([0-9]{1,2})[.)][ \\t]+([^ \\t\\n\\r\\u2028\\u2029][^\\n\\r\\u2028\\u2029]*)$")
         private val RECOMMENDED = Regex("권장$WS*[:：]?$WS*([0-9]{1,2})$WS*번")
-        private val REPLY = Regex("([0-9]{1,2})$WS*번?\\.?")
         private val SPACES = Regex("[ \\t]+")
         private val CUES = listOf(
             "?", "？", "권장", "선택", "골라", "고르", "답해", "원하시", "할까요", "하시겠", "정해", "다음 액션", "다음 단계", "옵션",
@@ -100,19 +100,55 @@ data class AgentChoices(val items: List<AgentChoiceItem>, val recommended: Int?)
             return AgentChoices(items, recommended)
         }
 
-        /** 규격 §2 답 판정: 본문(양끝 공백 제거)이 `N`·`N번`·`N.`·`N번.` 이고 N ∈ 1..count 이면 N. */
-        fun reply(text: String, count: Int): Int? {
-            val t = text.trim { it == ' ' || it == '\t' || it == '\n' || it == '\r' }
-            val n = REPLY.matchEntire(t)?.groupValues?.get(1)?.toInt() ?: return null
-            return n.takeIf { it in 1..count }
+        private fun trimChar(c: Char) = c == ' ' || c == '\t' || c == '\n' || c == '\r'
+        private fun digit(c: Char) = c in '0'..'9'
+        private const val SEPARATORS = ",，、/+→" // 한 글자 구분자(`->` 는 따로 본다)
+
+        /**
+         * 규격 §2 「답 판정」(#624): 정규식 대신 차례로 읽는다. 번호(ASCII 1~2자, 뒤에 [공백+]`번` 이 있으면 소비) 와
+         * 구분자(공백 + `,` `，` `、` `/` `+` `→` `->` 중 하나(선택) + 공백 — 한 글자 이상, 글 끝이 아니어야 함)가 번갈아 온다.
+         * 번호가 모두 1..count 이면 오름차순·중복 없는 목록, 아니면 null.
+         */
+        fun reply(text: String, count: Int): List<Int>? {
+            var t = text.trim { trimChar(it) }
+            if (t.endsWith('.')) t = t.dropLast(1).trimEnd { trimChar(it) }
+            if (t.isEmpty()) return null
+            val n = t.length
+            val picked = sortedSetOf<Int>()
+            var i = 0
+            while (true) {
+                // 번호: ASCII 숫자 1~2자(3자 이상이면 null).
+                val start = i
+                while (i < n && digit(t[i])) i++
+                if (i - start !in 1..2) return null
+                val number = t.substring(start, i).toInt()
+                if (number !in 1..count) return null
+                picked += number
+                // 뒤에 (스페이스·탭 +) `번` 이 있을 때만 거기까지 소비 — 없으면 공백은 구분자 몫.
+                var j = i
+                while (j < n && spaceChar(t[j])) j++
+                if (j < n && t[j] == '번') i = j + 1
+                if (i == n) break
+                // 구분자: 공백 → (한 글자 구분자 또는 `->`) → 공백. 한 글자도 못 먹었거나 뒤가 글 끝이면 null.
+                val sepStart = i
+                while (i < n && spaceChar(t[i])) i++
+                if (i < n && t[i] in SEPARATORS) i++
+                else if (t.startsWith("->", i)) i += 2
+                while (i < n && spaceChar(t[i])) i++
+                if (i == sepStart || i == n) return null
+            }
+            return picked.toList()
         }
+
+        /** 규격 §2 「보낼 글」: 고른 번호 → 오름차순·중복 제거 후 `", "` 로 잇는다({3,1} → `"1, 3"`, {2} → `"2"`). */
+        fun compose(numbers: Collection<Int>): String = numbers.toSortedSet().joinToString(", ")
 
         /** 에이전트가 보낸 텍스트 글인가(내 글·첨부·사람 글은 선택지를 판정하지 않는다). */
         fun isAgentText(m: MessageUi): Boolean = !m.mine && !m.attachment && AgentActors.isAgentDevice(m.sender)
 
         /**
          * 규격 §2: `messages`(저장된 글, seq 순 — status 임시 줄 없음)의 `index` 번째 글의 상태. 선택지가 아니면 null.
-         * 뒤에 글이 없으면 open, 바로 다음 글이 내 것이고 답 판정이 맞으면 answered(N), 그 밖은 closed.
+         * 뒤에 글이 없으면 open, 바로 다음 글이 내 것이고 답 판정이 맞으면 answered(번호 목록), 그 밖은 closed.
          */
         fun stateAt(messages: List<MessageUi>, index: Int, choices: AgentChoices): State {
             val next = messages.getOrNull(index + 1) ?: return State.Open

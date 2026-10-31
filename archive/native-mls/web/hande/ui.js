@@ -635,14 +635,14 @@ function previewRetry(entry, onRetryPreview) {
 const senderLabel = (name, isAgent) => (isAgent && name ? `${name} · ${strings.chat.agentBadge}` : name);
 
 // ---- 에이전트 선택지 카드(#620, AGENT-CHOICES-V1.md §3) ----
-// 상태(open/answered)는 app.js 가 타임라인에서 계산해 넘긴다(agent-choices.js choiceState). 고른 번호는 이 화면만의 상태라
-// 서명에 넣지 않는다: 같은 서명이면 붙어 있는 노드(그 DOM 의 선택)를 그대로 두고, 보내는 중 잠금·방 전환으로 다시 그려질 때는
+// 상태(open/answered)는 app.js 가 타임라인에서 계산해 넘긴다(agent-choices.js choiceState). 고른 번호(Set, 복수 선택 #624)는
+// 이 화면만의 상태라 서명에 넣지 않는다: 같은 서명이면 붙어 있는 노드(그 DOM 의 선택)를 그대로 두고, 보내는 중 잠금·방 전환으로 다시 그려질 때는
 // 아래 맵(choice.id = 방 + entry 키)에서 되살린다. 답이 오거나 카드가 닫히면 지운다.
 const choiceSelection = new Map();
 
 /** 말풍선 서명에 더할 카드 서명 — 선택은 빼고, open 일 때만 잠금(보내는 중·쓸 수 없는 방)을 넣는다. */
 const choiceSignature = (choice) => (choice
-  ? [choice.state, choice.number ?? null, choice.label ?? null, choice.choices?.items ?? null, choice.choices?.recommended ?? null,
+  ? [choice.state, choice.numbers ?? null, choice.labels ?? null, choice.choices?.items ?? null, choice.choices?.recommended ?? null,
     choice.state === 'open' ? Boolean(choice.sending) : null, choice.state === 'open' ? Boolean(choice.disabled) : null]
   : null);
 
@@ -651,17 +651,19 @@ function choiceCard(choice) {
   const t = strings.choices;
   if (choice.state === 'answered') {
     choiceSelection.delete(choice.id);
-    return el('p', { class: 'choices-answered', 'data-testid': 'choice-answered', title: t.answered(choice.number, choice.label) }, t.answered(choice.number, choice.label));
+    const line = t.answered(choice.numbers, choice.labels);
+    return el('p', { class: 'choices-answered', 'data-testid': 'choice-answered', title: line }, line);
   }
   if (choice.state !== 'open') { choiceSelection.delete(choice.id); return null; }
   const { items, recommended } = choice.choices;
   const remembered = choiceSelection.get(choice.id);
-  let selected = items.some((item) => item.number === remembered) ? remembered : null;
+  const selected = new Set(items.filter((item) => remembered?.has(item.number)).map((item) => item.number));
+  const picked = () => [...selected].sort((a, b) => a - b);
   let busy = false;   // 보내기를 누른 뒤 app 의 결과가 올 때까지(sendText false 면 풀린다)
   const rows = items.map((item) => el('button', {
-    type: 'button', class: 'choice-row', 'data-testid': 'choice-row', 'data-number': String(item.number),
+    type: 'button', role: 'checkbox', class: 'choice-row', 'data-testid': 'choice-row', 'data-number': String(item.number),
     'aria-label': t.row(item.number, item.label, item.number === recommended),
-    onclick: () => select(selected === item.number ? null : item.number),   // 단일 선택 — 다시 누르면 해제
+    onclick: () => toggle(item.number),   // 복수 선택(#624) — 행마다 따로 켜고 끈다
   },
   el('span', { class: 'choice-check', 'aria-hidden': 'true' }),
   el('span', { class: 'choice-num', 'aria-hidden': 'true' }, String(item.number)),
@@ -674,29 +676,29 @@ function choiceCard(choice) {
     const locked = busy || Boolean(choice.sending) || Boolean(choice.disabled);
     card.dataset.locked = locked ? 'true' : 'false';
     for (const row of rows) {
-      const on = Number(row.dataset.number) === selected;
-      row.setAttribute('aria-pressed', on ? 'true' : 'false');
+      const on = selected.has(Number(row.dataset.number));
+      row.setAttribute('aria-checked', on ? 'true' : 'false');
       row.disabled = locked;
     }
-    send.disabled = locked || selected === null;
+    send.disabled = locked || selected.size === 0;
     const label = busy || choice.sending ? t.sending : t.send;
     if (send.textContent !== label) send.textContent = label;
-    if (selected !== null) send.setAttribute('aria-label', t.sendNumber(selected)); else send.removeAttribute('aria-label');
+    if (selected.size > 0) send.setAttribute('aria-label', t.sendNumber(picked())); else send.removeAttribute('aria-label');
   };
-  const select = (number) => {
-    selected = number;
-    if (number === null) choiceSelection.delete(choice.id); else choiceSelection.set(choice.id, number);
+  const toggle = (number) => {
+    if (selected.has(number)) selected.delete(number); else selected.add(number);
+    if (selected.size === 0) choiceSelection.delete(choice.id); else choiceSelection.set(choice.id, new Set(selected));
     paint();
   };
-  // 평소 전송 경로(app.js sendText)로 `"N"` 을 보낸다. 보낸 글이 타임라인에 오면 상태 규칙으로 answered 가 된다.
+  // 평소 전송 경로(app.js sendText)로 compose 결과(`"2"`·`"1, 3"`)를 보낸다. 보낸 글이 타임라인에 오면 answered 가 된다.
   const submit = () => {
-    if (selected === null || send.disabled) return;
+    if (selected.size === 0 || send.disabled) return;
     const screen = card.closest('.room-screen');
     const onChoose = screen ? liveProps.get(screen)?.onChoose : null;
     if (typeof onChoose !== 'function') return;
     busy = true; paint();
     const unlock = () => { busy = false; if (card.isConnected) paint(); };
-    Promise.resolve(onChoose(selected)).then((ok) => { if (ok === false) unlock(); }, unlock);
+    Promise.resolve(onChoose(picked())).then((ok) => { if (ok === false) unlock(); }, unlock);
   };
   paint();
   return card;

@@ -9,15 +9,20 @@ final class AgentStringsTests: XCTestCase {
         XCTAssertEqual(Strings.approvalReply(12, allow: false), "거절 12")
     }
 
-    /// agent-choices-v1(#620): 보내기 = 손으로 치는 답과 같은 `N` · 답한 줄 · 접근성 라벨.
+    /// agent-choices-v1(#620 · 복수 #624): 보내기 = 손으로 치는 답과 같은 `2` / `1, 3` · 답한 줄 · 접근성 라벨.
     func testChoiceCardStrings() {
-        XCTAssertEqual(Strings.choiceReply(2), "2")
-        XCTAssertEqual(AgentChoices.reply(Strings.choiceReply(3), count: 3), 3, "보낸 글이 다시 answered 로 읽혀야 한다")
-        XCTAssertEqual(Strings.choiceAnswered(1, label: "병합"), "✓ 1번 선택 — 병합")
+        XCTAssertEqual(AgentChoices.compose([2]), "2")
+        XCTAssertEqual(AgentChoices.compose([3, 1]), "1, 3")
+        XCTAssertEqual(AgentChoices.reply(AgentChoices.compose([3, 1]), count: 3), [1, 3], "보낸 글이 다시 answered 로 읽혀야 한다")
+        XCTAssertEqual(Strings.choiceAnswered([1], labels: ["병합"]), "✓ 1번 선택 — 병합")
+        XCTAssertEqual(Strings.choiceAnswered([1, 3], labels: ["병합", "롤백"]), "✓ 1, 3번 선택 — 병합 · 롤백")
         XCTAssertEqual(Strings.choiceRowA11y(2, label: "보류", recommended: false), "2번: 보류")
         XCTAssertEqual(Strings.choiceRowA11y(1, label: "병합", recommended: true), "1번: 병합, 권장")
-        XCTAssertEqual(Strings.choiceSendA11y(2), "2번 보내기")
-        XCTAssertEqual(Strings.choiceSendA11y(nil), "보내기")
+        XCTAssertEqual(Strings.choiceRowA11yValue(true), "체크됨")
+        XCTAssertEqual(Strings.choiceRowA11yValue(false), "체크 안 됨")
+        XCTAssertEqual(Strings.choiceSendA11y([2]), "2번 보내기")
+        XCTAssertEqual(Strings.choiceSendA11y([3, 1]), "1, 3번 보내기")
+        XCTAssertEqual(Strings.choiceSendA11y([]), "보내기")
     }
 
     func testSubjectParticleFollowsTheFinalConsonant() {

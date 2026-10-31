@@ -26,8 +26,11 @@ class StringsTest {
     @Test fun agentChoiceLabels() {
         assertEquals("2번: 롤백, 권장", Strings.choiceRowLabel(2, "롤백", recommended = true))
         assertEquals("1번: 유지", Strings.choiceRowLabel(1, "유지", recommended = false))
-        assertEquals("2번 보내기", Strings.choiceSendLabel(2))
-        assertEquals("보내기", Strings.choiceSendLabel(null))
-        assertEquals("✓ 2번 선택 — 롤백", Strings.choiceAnswered(2, "롤백"))
+        assertEquals("2번 보내기", Strings.choiceSendLabel(setOf(2)))
+        assertEquals("1, 3번 보내기", Strings.choiceSendLabel(setOf(3, 1)))
+        assertEquals("보내기", Strings.choiceSendLabel(emptySet()))
+        assertEquals("✓ 2번 선택 — 롤백", Strings.choiceAnswered(listOf(2), listOf("롤백")))
+        assertEquals("✓ 1, 3번 선택 — 유지 · 보류", Strings.choiceAnswered(listOf(1, 3), listOf("유지", "보류")))
+        assertEquals("✓ 2번 선택", Strings.choiceAnswered(listOf(2), listOf(null)))
     }
 }

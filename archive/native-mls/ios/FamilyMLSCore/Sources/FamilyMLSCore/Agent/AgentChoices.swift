@@ -1,6 +1,6 @@
 // agent-choices-v1(#620) — 에이전트 글 끝의 번호 선택지를 탭해서 고르는 카드의 판정(화면 없이 테스트하는 순수 로직).
 // 정본: archive/native-mls/AGENT-CHOICES-V1.md · 공유 벡터 tests/fixtures/agent-choices-vectors.json(웹·안드로이드와 같은 답).
-// 보내는 것은 손으로 치는 것과 같은 글 `N` 이다 — 봇·브리지·와이어 무변경(승인 카드 「승인 n」과 같은 결).
+// 보내는 것은 손으로 치는 것과 같은 글 `N`(복수 선택이면 `1, 3`, #624) 이다 — 봇·브리지·와이어 무변경(승인 카드 「승인 n」과 같은 결).
 //
 // 플랫폼 간 차이를 없애려고 정규식 대신 유니코드 스칼라를 직접 훑는다: 숫자는 ASCII `0-9` 만(전각 `１` 은 숫자가 아니다),
 // 공백(`\s`)은 스페이스·탭·줄바꿈만. Linux Foundation 에서도 같은 결과(Regex 리터럴·NSRegularExpression 미사용).
@@ -34,8 +34,9 @@ public struct AgentChoices: Equatable {
     public enum State: Equatable {
         /// 그 글 뒤에 저장된 메시지가 없다 — 선택 카드(체크 + 보내기).
         case open
-        /// 바로 다음 메시지가 내 글 `N`(1..k) — 한 줄 「✓ N번 선택 — 라벨」.
-        case answered(Int)
+        /// 바로 다음 메시지가 내 글이고 「답 판정」으로 번호 목록 S(오름차순·중복 없음·비어 있지 않음, 모두 1..k)가 된다(#624)
+        /// — 한 줄 「✓ N번 선택 — 라벨」 / 여럿이면 「✓ 1, 3번 선택 — 라벨1 · 라벨3」.
+        case answered([Int])
         /// 그 밖 — 카드 없음(말풍선만).
         case closed
     }
@@ -119,27 +120,66 @@ public struct AgentChoices: Equatable {
         return AgentChoices(items: block, recommended: recommendedNumber(lines: lines, items: block))
     }
 
-    /// 사람의 답장 본문 → 고른 번호(1..count), 아니면 nil. `^([0-9]{1,2})\s*번?\.?$`(양끝 공백 제거 뒤).
-    public static func reply(_ text: String, count: Int) -> Int? {
-        var scalars = Array(text.unicodeScalars)
-        while let first = scalars.first, isSpaceOrNewline(first) || first == "\r" { scalars.removeFirst() }
-        while let last = scalars.last, isSpaceOrNewline(last) || last == "\r" { scalars.removeLast() }
-
-        var i = 0
-        var value = 0
-        while i < scalars.count, let d = digitValue(scalars[i]) {
-            value = value * 10 + d
-            i += 1
-            if i > 2 { return nil }
+    /// 사람의 답장 본문 → 고른 번호 목록(오름차순·중복 없음, 모두 1..count), 아니면 nil. 규격 §2 「답 판정」(#624):
+    /// 정규식 대신 차례로 읽는다 — 번호(ASCII 숫자 1~2자, 뒤에 공백·탭 + `번` 이 있으면 소비) · 구분자(공백·탭, 그리고
+    /// `,` `，` `、` `/` `+` `→` `->` 가운데 하나, 다시 공백·탭 — 한 글자 이상 소비, 뒤가 글의 끝이면 안 됨)를 번갈아.
+    /// 예: `1` · `2번` · `1, 3` · `1 → 2 → 3` · `1번, 2번`. 유니코드 스칼라 단위(→ ， 、 번 은 각각 스칼라 하나).
+    public static func reply(_ text: String, count: Int) -> [Int]? {
+        var s = Array(text.unicodeScalars)
+        // 1. 양끝의 스페이스·탭·\r·\n 제거 → 끝 `.` 하나 제거 → 다시 오른쪽 공백 제거.
+        while let first = s.first, isReplyTrim(first) { s.removeFirst() }
+        while let last = s.last, isReplyTrim(last) { s.removeLast() }
+        if s.last == "." {
+            s.removeLast()
+            while let last = s.last, isReplyTrim(last) { s.removeLast() }
         }
-        guard i >= 1 else { return nil }
-        while i < scalars.count, isSpaceOrNewline(scalars[i]) { i += 1 }
-        if i < scalars.count, scalars[i] == "번" { i += 1 }
-        if i < scalars.count, scalars[i] == "." { i += 1 }
-        guard i == scalars.count else { return nil }
-        guard value >= 1, value <= count else { return nil }
-        return value
+        guard !s.isEmpty else { return nil }
+
+        var numbers: [Int] = []
+        var i = 0
+        while true {
+            // 2. 번호: ASCII 숫자 1~2자(3자 이상 nil — 긴 숫자열도 넘치지 않게 앞 두 자리만 셈).
+            var value = 0
+            var digits = 0
+            while i < s.count, let d = digitValue(s[i]) {
+                if digits < 2 { value = value * 10 + d }
+                digits += 1
+                i += 1
+            }
+            guard digits >= 1, digits <= 2 else { return nil }
+            numbers.append(value)
+            // (스페이스·탭 0개 이상 +) `번` 이 있으면 거기까지 소비 — 없으면 공백은 구분자 몫으로 남긴다.
+            var j = i
+            while j < s.count, isSpaceOrTab(s[j]) { j += 1 }
+            if j < s.count, s[j] == "번" { i = j + 1 }
+            // 3. 글의 끝이면 끝.
+            if i == s.count { break }
+            // 구분자: 공백·탭 → (선택) 구분 기호 하나 → 공백·탭. 한 글자도 못 먹었거나 뒤가 끝이면 nil.
+            let start = i
+            while i < s.count, isSpaceOrTab(s[i]) { i += 1 }
+            if i < s.count {
+                let c = s[i]
+                if c == "," || c == "，" || c == "、" || c == "/" || c == "+" || c == "→" {
+                    i += 1
+                } else if c == "-", i + 1 < s.count, s[i + 1] == ">" {
+                    i += 2
+                }
+            }
+            while i < s.count, isSpaceOrTab(s[i]) { i += 1 }
+            guard i > start, i < s.count else { return nil }
+        }
+        // 4. 모두 1..count, 오름차순·중복 제거.
+        guard numbers.allSatisfy({ $0 >= 1 && $0 <= count }) else { return nil }
+        return Array(Set(numbers)).sorted()
     }
+
+    /// 보낼 글(규격 §2 「보낼 글」): 오름차순·중복 제거 후 `", "` 로 잇는다 — {3,1} → `"1, 3"`, {2} → `"2"`.
+    public static func compose(_ numbers: [Int]) -> String {
+        Array(Set(numbers)).sorted().map { String($0) }.joined(separator: ", ")
+    }
+
+    /// 답 판정의 양끝 공백 = 스페이스·탭·\r·\n.
+    static func isReplyTrim(_ s: Unicode.Scalar) -> Bool { s == " " || s == "\t" || s == "\r" || s == "\n" }
 
     // MARK: - 상태(규격 §2)
 
@@ -157,8 +197,8 @@ public struct AgentChoices: Equatable {
             } else {
                 let next = visible[index + 1]
                 if next.kind == .text, next.isMine(device: myDevice),
-                   let number = reply(next.body, count: choices.items.count) {
-                    state = .answered(number)
+                   let numbers = reply(next.body, count: choices.items.count) {
+                    state = .answered(numbers)
                 } else {
                     state = .closed
                 }

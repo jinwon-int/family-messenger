@@ -46,8 +46,24 @@ class AgentChoicesTest {
             c as Map<*, *>
             val text = c["text"] as String
             val count = (c["count"] as Long).toInt()
-            val expected = (c["expected"] as Long?)?.toInt()
+            val expected = (c["expected"] as List<*>?)?.map { (it as Long).toInt() }
             assertEquals(expected, AgentChoices.reply(text, count), "reply('$text', $count)")
+        }
+    }
+
+    @Test fun composeVectors() {
+        val cases = fixture["compose"] as List<*>
+        assertTrue(cases.isNotEmpty(), "compose 벡터가 비어 있지 않다")
+        for (c in cases) {
+            c as Map<*, *>
+            val numbers = (c["numbers"] as List<*>).map { (it as Long).toInt() }
+            assertEquals(c["expected"] as String, AgentChoices.compose(numbers), "compose($numbers)")
+        }
+    }
+
+    @Test fun composeRoundTripsThroughReply() {
+        for (picked in listOf(setOf(2), setOf(3, 1), setOf(1, 2, 3))) {
+            assertEquals(picked.sorted(), AgentChoices.reply(AgentChoices.compose(picked), 3), "$picked")
         }
     }
 
@@ -69,15 +85,27 @@ class AgentChoicesTest {
     @Test fun answeredWhenMyNextMessageIsTheNumber() {
         for (reply in listOf("2", " 2번 ", "2.", "2 번.")) {
             val cards = AgentChoices.cards(listOf(agent(1), me(2, reply)))
-            assertEquals(AgentChoices.State.Answered(2), cards[0]!!.state, reply)
+            assertEquals(AgentChoices.State.Answered(listOf(2)), cards[0]!!.state, reply)
             assertNull(cards[1])
         }
+    }
+
+    @Test fun answeredWithSeveralNumbers() {
+        for (reply in listOf("1, 3", "3,1", "1 3", "1/3", "1번, 3번", "3, 1, 3.")) {
+            val cards = AgentChoices.cards(listOf(agent(1), me(2, reply)))
+            assertEquals(AgentChoices.State.Answered(listOf(1, 3)), cards[0]!!.state, reply)
+        }
+        val all = AgentChoices.cards(listOf(agent(1), me(2, "1 → 2 → 3")))
+        assertEquals(AgentChoices.State.Answered(listOf(1, 2, 3)), all[0]!!.state)
     }
 
     @Test fun closedWhenNextIsSomethingElse() {
         val cases = listOf(
             "다른 사람의 숫자" to person(2, "2"),
             "범위 밖" to me(2, "4"),
+            "여럿 중 하나가 범위 밖" to me(2, "1, 4"),
+            "끝이 구분자" to me(2, "1,"),
+            "하이픈은 구분자가 아님" to me(2, "1-2"),
             "문장" to me(2, "2번으로 해 주세요"),
             "첨부" to me(2, "2", attachment = true),
             "에이전트의 다음 글" to agent(2, "작업을 시작합니다."),
@@ -104,7 +132,7 @@ class AgentChoicesTest {
 
     @Test fun earlierAnsweredAndLaterOpenCoexist() {
         val cards = AgentChoices.cards(listOf(agent(1), me(2, "1"), agent(3)))
-        assertEquals(AgentChoices.State.Answered(1), cards[0]!!.state)
+        assertEquals(AgentChoices.State.Answered(listOf(1)), cards[0]!!.state)
         assertEquals(AgentChoices.State.Open, cards[2]!!.state)
     }
 }

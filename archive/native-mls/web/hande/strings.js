@@ -658,15 +658,16 @@ export const strings = {
     blocked: 'AI 참여 안내에 먼저 동의해 주세요.',
     done: '동의를 이 기기에 기록했습니다. 「이 기기 지우기」로 함께 지워집니다.',
   },
-  // 에이전트 선택지 탭 선택(#620, AGENT-CHOICES-V1.md §3): 보내는 글은 손으로 치는 것과 같은 `N`.
+  // 에이전트 선택지 탭 선택(#620, AGENT-CHOICES-V1.md §3): 보내는 글은 손으로 치는 것과 같은 `N`(복수 선택 #624 면 `1, 3`).
+  // sendNumber·answered 는 오름차순 번호 목록을 받는다 — 하나면 「2번」, 여럿이면 「1, 3번」.
   choices: {
     region: '선택지',
     send: '보내기',
     sending: '보내는 중…',
-    sendNumber: (n) => `${n}번 보내기`,
+    sendNumber: (numbers) => `${numbers.join(', ')}번 보내기`,
     recommended: '권장',
     row: (n, label, recommended) => `${n}번: ${label}${recommended ? ' (권장)' : ''}`,
-    answered: (n, label) => `✓ ${n}번 선택 — ${label}`,
+    answered: (numbers, labels) => `✓ ${numbers.join(', ')}번 선택 — ${labels.join(' · ')}`,
   },
   // 🔔 알림(#521): 받은 초대와 그 처리 상태 — 오너 기기의 자동 참여가 실패해도 로그가 아니라 여기 남는다.
   notify: {
