@@ -21,16 +21,44 @@ struct RoomListView: View {
     var body: some View {
         List {
             // 오너 요청: 목록 머리 = 오프닝과 같은 hande 워드마크 + 「오늘 밤, 모닥불에 한데 모여」(내비게이션 큰 제목 대신).
+            // 디자인 2차 2c: 순서 모드에서는 머리를 「자리 순서」 + 주황 「완료」 + 안내 한 줄로 바꿔 모드가 바뀐 것이 분명하게.
             Section {
-                VStack(alignment: .leading, spacing: 6) {
-                    HandeWordmark(size: 34)
-                    Text(Strings.campfireSubtitle).font(.subheadline).foregroundStyle(p.inkDim)
+                if orderEditing {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .center) {
+                            Text(Strings.orderModeTitle).font(.system(size: 22, weight: .semibold)).foregroundStyle(p.ink)
+                                .accessibilityAddTraits(.isHeader)
+                            Spacer()
+                            Button { setOrderEditing(false) } label: {
+                                Text(Strings.orderDone)
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundStyle(p.onEmber)
+                                    .padding(.horizontal, 16)
+                                    .frame(height: 36)
+                                    .background(Capsule().fill(p.ember))
+                                    .overlay(Capsule().stroke(p.isDay ? p.stroke : .clear, lineWidth: p.lineWidth))
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel(Strings.orderDoneLabel)
+                            .accessibilityIdentifier("rooms-order-done")
+                        }
+                        Text(Strings.orderHint).font(.system(size: 14)).foregroundStyle(p.inkDim)
+                    }
+                    .padding(.top, 4)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .moveDisabled(true)
+                } else {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HandeWordmark(size: 34)
+                        Text(Strings.campfireSubtitle).font(.subheadline).foregroundStyle(p.inkDim)
+                    }
+                    .padding(.top, 4)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityAddTraits(.isHeader)
                 }
-                .padding(.top, 4)
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
-                .accessibilityElement(children: .combine)
-                .accessibilityAddTraits(.isHeader)
             }
             if let notice = model.notice {
                 Section {
@@ -43,21 +71,36 @@ struct RoomListView: View {
             }
             // 오너 요청(2026-10-28): 받은 초대(수락·다시 시도·무시)는 목록에 칸을 두지 않고 🔔 알림 시트에만 둔다 —
             // 배지 수가 🔔 에 보이므로 목록은 대화방 카드만. 방이 하나도 없고 초대만 있으면 🔔 로 안내한다.
+            // 디자인 2차 2c: 빈 상태에만 불 그림(꺼진 장작 + 불씨 1점 + 흐린 자리 점 2) — 초대가 있으면 건수 없이 「있어요」 카드.
             if model.listedRooms.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(Strings.campfireEmpty).font(.headline).foregroundStyle(p.ink)
-                    Text(model.pendingInvites.isEmpty ? Strings.noRooms : Strings.invitesInBell(model.pendingInvites.count))
-                        .font(.footnote).foregroundStyle(p.inkDim)
-                }
-                .listRowBackground(Color.clear)
-            }
-            // #549: 순서 모드 안내(웹 `orderHint`) — 고정 순서는 이 기기에만 저장된다는 것을 여기서 말한다.
-            if orderEditing {
                 Section {
-                    Label(Strings.orderHint, systemImage: "arrow.up.arrow.down")
-                        .font(.footnote).foregroundStyle(p.inkDim)
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
+                    VStack(spacing: 16) {
+                        EmptyCampfireArt()
+                        Text(Strings.campfireEmpty).font(.system(size: 20, weight: .semibold)).foregroundStyle(p.ink)
+                            .multilineTextAlignment(.center)
+                        Text(Strings.emptyRoomsHint).font(.system(size: 15)).foregroundStyle(p.inkDim)
+                            .multilineTextAlignment(.center)
+                        if !model.pendingInvites.isEmpty {
+                            HStack(spacing: 10) {
+                                Circle().fill(p.ember).frame(width: 8, height: 8).accessibilityHidden(true)
+                                Text(Strings.invitesInBellPlain).font(.system(size: 15)).foregroundStyle(p.ink)
+                                    .multilineTextAlignment(.leading)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                            .handeCard()
+                            .padding(.top, 8)
+                            .accessibilityElement(children: .combine)
+                            .accessibilityIdentifier("rooms-empty-invites")
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 56)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .accessibilityIdentifier("rooms-empty")
                 }
             }
             ForEach(orderedRooms, id: \.room) { room in
@@ -71,11 +114,11 @@ struct RoomListView: View {
                                         working: AgentStatusBoard.listLine(model.agentStatuses[room.room] ?? []))
                 Group {
                     if orderEditing {
-                        // 순서 모드: 방을 열지 않고 ▲▼(끝에서는 비활성) + 시스템 ≡ 끌기.
-                        HStack(spacing: 8) {
-                            card
-                            OrderStepButtons(room: room.room, ids: orderedIds) { delta in stepRoom(room.room, by: delta) }
-                        }
+                        // 순서 모드(디자인 2차 2c): 불 세기·미리보기·안 읽음은 숨기고 이름 + 고정 핀 + ▲▼ 만(끝에서는 비활성) + 시스템 ≡ 끌기.
+                        // 방은 열리지 않는다. 꺼진 자리는 60% 흐림 + 고정 불가.
+                        OrderRow(room: room, isFirst: orderedIds.first == room.room,
+                                 steps: OrderStepButtons(room: room.room, ids: orderedIds) { delta in stepRoom(room.room, by: delta) },
+                                 onPin: { pinToTop(room.room) })
                     } else {
                         NavigationLink(value: room.room) { card }
                             // #549: 길게 눌러 「맨 위로 고정」(저장 순서 맨 앞) · 「순서」 모드 진입.
@@ -123,17 +166,14 @@ struct RoomListView: View {
         .navigationDestination(for: RoomID.self) { RoomView(room: $0).id($0) }
         .toolbar {
             ToolbarItem(placement: .principal) { Color.clear.frame(width: 1, height: 1).accessibilityHidden(true) }
-            // #549: 웹 한데의 「↕ 순서」/「완료」 — 시스템 `편집` 대신 무엇을 하는 버튼인지 보이게.
-            if orderedRooms.count > 1 || orderEditing {
+            // #549: 웹 한데의 「↕ 순서」 — 시스템 `편집` 대신 무엇을 하는 버튼인지 보이게. 자리가 0~1개면 숨김(디자인 2차 2c).
+            // 「완료」는 순서 모드의 머리(「자리 순서」 옆 주황 알약)에만 — 바에 또 두지 않는다.
+            if orderedRooms.count > 1 && !orderEditing {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button { setOrderEditing(!orderEditing) } label: {
-                        if orderEditing {
-                            Text(Strings.orderDone).fontWeight(.semibold)
-                        } else {
-                            Label(Strings.orderEdit, systemImage: "arrow.up.arrow.down").labelStyle(.titleAndIcon)
-                        }
+                    Button { setOrderEditing(true) } label: {
+                        Label(Strings.orderEdit, systemImage: "arrow.up.arrow.down").labelStyle(.titleAndIcon)
                     }
-                    .accessibilityLabel(orderEditing ? Strings.orderDoneLabel : Strings.orderEditLabel)
+                    .accessibilityLabel(Strings.orderEditLabel)
                 }
             }
             // #521: 🔔 받은 초대 수를 배지로(웹 `bellButton`). 오너 기기의 자동 참여 실패도 여기 남는다. #574: 승인 대기 새 기기·형제 초대 알림도 센다.
@@ -279,6 +319,7 @@ struct CampfireCard: View {
 }
 
 /// #549: 순서 모드의 ▲▼(웹 한데 `orderUp`/`orderDown`). 끝에서는 비활성, 눌러도 방은 열리지 않는다(`.borderless` 로 행 탭과 분리).
+/// 디자인 2차 2c: 각 40×22, 주황 글자, 면 없음 — 끌기가 어려운 조부모용.
 struct OrderStepButtons: View {
     let room: RoomID
     let ids: [RoomID]
@@ -286,7 +327,7 @@ struct OrderStepButtons: View {
     @Environment(\.hande) private var p
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 0) {
             stepButton(delta: -1, symbol: "chevron.up", label: Strings.orderUp(room))
             stepButton(delta: 1, symbol: "chevron.down", label: Strings.orderDown(room))
         }
@@ -297,24 +338,95 @@ struct OrderStepButtons: View {
         let enabled = RoomOrder.canStep(ids, room: room, by: delta)
         return Button { onStep(delta) } label: {
             Image(systemName: symbol)
-                .font(.body.weight(.semibold))
-                .frame(width: 36, height: 30)
-                .background(RoundedRectangle(cornerRadius: Hande.radiusS).fill(p.surface))
-                .overlay(RoundedRectangle(cornerRadius: Hande.radiusS).stroke(p.stroke, lineWidth: p.lineWidth))
-                .foregroundStyle(enabled ? p.ink : p.inkDim.opacity(0.5))
+                .font(.system(size: 13, weight: .bold))
+                .frame(width: 40, height: 22)
+                .contentShape(Rectangle())
+                .foregroundStyle(enabled ? p.ember : p.inkDim.opacity(0.35))
         }
         .disabled(!enabled)
         .accessibilityLabel(label)
     }
 }
 
+/// 디자인 2차 2c: 순서 모드의 행 — 카드(면 + 선) 안에 이름 17/600 + 보조 13(「맨 위 고정」 / 「불이 꺼진 자리 · 운영자가 닫음」) +
+/// 고정 핀 40pt(켜짐 = 주황 16% 면 + 주황 핀, 꺼짐 = 면 없이 보조색) + ▲▼. 불 세기·미리보기·안 읽음은 보이지 않는다.
+/// 끌기 손잡이 ≡ 는 List 편집 모드의 시스템 손잡이(오른쪽)를 그대로 쓴다 — 같은 손잡이를 둘 그리지 않는다.
+struct OrderRow: View {
+    let room: RoomRecord
+    let isFirst: Bool
+    let steps: OrderStepButtons
+    let onPin: () -> Void
+    @Environment(\.hande) private var p
+
+    private var out: Bool { room.haltedReason != nil }
+    private var note: String? {
+        if out { return Strings.roomClosedByOperator }
+        return isFirst ? Strings.orderPinnedNote : nil
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(Strings.roomLabel(room.room)).font(.system(size: 17, weight: .semibold)).foregroundStyle(p.ink)
+                    .lineLimit(1).truncationMode(.tail)
+                if let note {
+                    Text(note).font(.system(size: 13)).foregroundStyle(p.inkDim).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+            Button(action: onPin) {
+                Image(systemName: isFirst ? "pin.fill" : "pin")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(isFirst ? p.ember : p.inkDim)
+                    .frame(width: 40, height: 40)
+                    .background(Circle().fill(isFirst ? p.ember.opacity(0.16) : Color.clear))
+            }
+            .buttonStyle(.borderless)
+            .disabled(isFirst || out)
+            .accessibilityLabel(Strings.orderPinTop)
+            steps
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 8)
+        .padding(.vertical, 10)
+        .handeCard()
+        .opacity(out ? 0.6 : 1)
+    }
+}
+
+/// 디자인 2차 2c: 목록 빈 상태 그림(96×64) — 꺼진 장작 두 토막 + 가지 둘(재 색) + 남은 불씨 1점 + 둘러앉을 자리 점 2개(크림·파랑, 흐림).
+/// 불 그림은 이 빈 상태에만 쓴다. 정적(움직이지 않는다).
+struct EmptyCampfireArt: View {
+    @Environment(\.hande) private var p
+    /// 디자인 원문 SVG path(장작 2 + 가지 2) — SVGPathData 는 M/L/H/V/C/Q/Z 만 읽는다.
+    static let logs = "M18 50h60M22 58h52M30 46l14-12M66 46L52 34"
+    static let size = CGSize(width: 96, height: 64)
+
+    var body: some View {
+        ZStack {
+            OpeningArt.path(Self.logs)
+                .stroke(p.ash, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+            Circle().fill(p.ember.opacity(0.7)).frame(width: 6, height: 6).position(x: 48, y: 30)
+            Circle().fill(p.person.opacity(0.5)).frame(width: 8, height: 8).position(x: 20, y: 40)
+            Circle().fill(p.agent.opacity(0.5)).frame(width: 8, height: 8).position(x: 76, y: 40)
+        }
+        .frame(width: Self.size.width, height: Self.size.height)
+        .accessibilityHidden(true)
+    }
+}
+
 /// 로비 초대 1탭(🔔 알림 시트 전용 — 목록 칸은 오너 요청 2026-10-28 로 뺌): 수락 = 방 상태를 로비 키로 받아들여 참여, 무시 = 이 세션에서 숨김(다음 실행에 다시 보임).
 /// 가족 기기(오너 결정 D1 B)의 새 초대와, 오너 기기(A)의 자동 참여가 실패한 초대(#521 — 「다시 시도」가 횟수를 되돌린다)가 같은 줄을 쓴다.
+/// 디자인 2차 2e — 카드 3상태: 기본(수락 주 44pt / 무시 보조) · 수락하는 중(크림 점 3 + 글자, 버튼 자리 대체) ·
+/// 실패(카드 선 붉은 잉걸 45% + 사람 말 한 줄, 「다시 시도」/「무시」). 실패 횟수 숫자·기술 사유는 진단 기록으로.
 struct LobbyInviteRow: View {
     @EnvironmentObject private var model: AppModel
     let room: RoomID
+    /// 초대가 올라온 시각(릴레이 `created_at`, Unix 초) — 카드 머리의 「방금 · N분 전」. 모르면 nil.
+    var createdAt: Int64? = nil
     @State private var busy = false
     @State private var message: String?
+    @Environment(\.hande) private var p
 
     private var state: AppModel.InviteState? { model.inviteStates[room] }
     /// 실패한 초대는 「수락」 대신 「다시 시도」.
@@ -322,20 +434,58 @@ struct LobbyInviteRow: View {
         if case .some(.failed) = state { return true }
         return false
     }
+    private var accepting: Bool {
+        if case .some(.accepting) = state { return true }
+        return busy
+    }
+    private var tries: Int {
+        if case .some(.failed(let tries, _)) = state { return tries }
+        return 0
+    }
+    private var label: String { Strings.roomLabel(room) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(Strings.roomLabel(room)).font(.headline)
-            Text(Strings.inviteBody(Strings.roomLabel(room))).font(.footnote).foregroundStyle(.secondary)
-            InviteStateLine(state: state)
-            if let message { Text(message).font(.footnote).foregroundStyle(Hande.warn) }
-            HStack {
-                Button(failed ? Strings.retryInvite : Strings.acceptInvite) { Task { await accept() } }.buttonStyle(.borderedProminent).disabled(busy)
-                Button(Strings.ignoreInvite) { model.dismissInvite(room: room) }.buttonStyle(.bordered).disabled(busy)
-                if busy { ProgressView() }
+        VStack(alignment: .leading, spacing: 12) {
+            Text(Strings.inviteKickerLine(relativeTime)).font(.system(size: 13)).foregroundStyle(p.inkDim)
+            Text(failed ? Strings.inviteFailedTitle(label) : Strings.inviteCardBody(label))
+                .font(.system(size: 16)).foregroundStyle(p.ink)
+                .fixedSize(horizontal: false, vertical: true)
+            if failed {
+                Text(Strings.inviteAutoFailedPlain(tries)).font(.system(size: 14)).foregroundStyle(p.warn)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let message { Text(message).font(.system(size: 13)).foregroundStyle(p.warn) }
+            if accepting {
+                HStack(spacing: 10) {
+                    DotsRow(color: p.person, size: 8)
+                    Text(Strings.inviteAccepting).font(.system(size: 15)).foregroundStyle(p.inkDim)
+                }
+                .frame(height: 28)
+            } else {
+                HStack(spacing: 8) {
+                    if failed {
+                        Button(Strings.retryInvite) { Task { await accept() } }
+                            .buttonStyle(HandeSecondaryButtonStyle())
+                            .accessibilityIdentifier("invite-accept")
+                    } else {
+                        Button(Strings.acceptInvite) { Task { await accept() } }
+                            .buttonStyle(HandePrimaryButtonStyle())
+                            .accessibilityIdentifier("invite-accept")
+                    }
+                    Button(Strings.ignoreInvite) { model.dismissInvite(room: room) }
+                        .buttonStyle(HandeSecondaryButtonStyle())
+                        .accessibilityIdentifier("invite-ignore")
+                }
             }
         }
-        .padding(.vertical, 4)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .handeCard(stroke: failed ? p.warn.opacity(0.45) : nil)
+    }
+
+    private var relativeTime: String? {
+        guard let createdAt, createdAt > 0 else { return nil }
+        return Strings.relativeTime(Date(timeIntervalSince1970: TimeInterval(createdAt)))
     }
 
     private func accept() async {
@@ -358,13 +508,14 @@ struct LobbyInviteRow: View {
 /// 초대 처리 상태 한 줄(웹 `inviteState`): 수락하는 중… / 자동 수락 실패 n회 — 사유. 새 초대는 비운다.
 struct InviteStateLine: View {
     let state: AppModel.InviteState?
+    @Environment(\.hande) private var p
 
     var body: some View {
         switch state {
         case .some(.accepting):
-            Text(Strings.inviteAccepting).font(.footnote).foregroundStyle(.secondary)
+            Text(Strings.inviteAccepting).font(.footnote).foregroundStyle(p.inkDim)
         case .some(.failed(let tries, let reason)):
-            Text(Strings.inviteAutoFailed(tries, reason)).font(.footnote).foregroundStyle(Hande.warn)
+            Text(Strings.inviteAutoFailed(tries, reason)).font(.footnote).foregroundStyle(p.warn)
         default:
             EmptyView()
         }

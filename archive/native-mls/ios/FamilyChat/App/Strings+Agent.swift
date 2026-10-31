@@ -158,3 +158,81 @@ extension Strings {
     static let openingTagline = "모닥불가에 한데 모여 이야기를 나눠요"
     static let openingAccessibility = "한데 — 모닥불가에 한데 모여 이야기를 나눠요. 준비 중"
 }
+
+// 디자인 2차-A(2026-10-31) 2c~2f 화면 문구 — 화면 전용(AppModel 이 쓰는 문구는 Strings.swift).
+extension Strings {
+    // 2c 대화 목록 빈 상태 · 순서 편집
+    static let emptyRoomsHint = "운영자가 초대하면 여기에 자리가 생겨요."
+    /// 초대가 있을 때 빈 상태 아래 안내 카드 — 건수 숫자 대신 「있어요」.
+    static let invitesInBellPlain = "받은 초대가 있어요 — 오른쪽 위 알림에서 수락하세요"
+    static let orderModeTitle = "자리 순서"
+    /// 순서 모드 첫 행의 보조 글자(고정 핀이 켜진 자리).
+    static let orderPinnedNote = "맨 위 고정"
+
+    // 2d 대화방 상태
+    static let relayUnreachableBanner = "릴레이에 닿지 않아요 — 연결되면 보낼게요"
+    /// 운영자가 닫은 자리(`SyncHaltReason.roomClosed`) — 입력창 자리의 안내 상자.
+    static let roomClosedTitle = "운영자가 이 자리를 닫았어요"
+    static let roomClosedBody = "지난 이야기는 읽을 수 있지만 더 쓸 수는 없어요. 다시 열려면 운영자에게 말해 주세요."
+
+    // 2e 설정
+    static let settingsThisDevice = "이 기기"
+    static let settingsDeviceManage = "기기 관리"
+    static let settingsAccount = "계정"
+    static let settingsDanger = "위험 구역"
+    static let settingsAbout = "정보"
+    static let serverChangeShort = "바꾸기"
+    static let themeChipNight = "밤"
+    static let themeChipDay = "낮불"
+    static let themeNightHint = "밤이 기본이에요. 시스템 다크/라이트를 따르지 않습니다."
+    static let themeDayHint = "밝은 곳·e-ink 화면용. 종이 바탕에 먹 글자, 움직임이 꺼집니다."
+    static let pushLabel = "새 메시지 알림"
+    /// 설정 행 값(짧게). 긴 설명판 `lockPreview(_:)` 는 측정 기록·접근성용으로 남긴다.
+    static func lockPreviewShort(_ value: LockScreenPreview) -> String {
+        switch value {
+        case .unknown: return "확인 전"
+        case .off: return "꺼짐"
+        case .whenUnlocked: return "잠금 해제 시"
+        case .never: return "안 함"
+        case .always: return "항상"
+        }
+    }
+    static let lockPreviewWarningBodyShort = "「잠금 해제 시」로 바꾸면 잠금화면엔 「새 메시지」만 보여요."
+    static let copyAction = "복사"
+    static let operatorInfo = "운영자용 정보"
+    static let relayLabel = "릴레이"
+    static let lobbyHintPlain = "로비 키는 이 기기의 공개 키 묶음이에요. 앱을 열 때마다 채웁니다."
+    static let logoutHintPlain = "세션만 지워요. 다시 로그인하면 같은 기기로 이어집니다."
+    static let wipeDangerBody = "이 기기의 키와 대화가 모두 지워집니다. 되돌릴 수 없어요."
+    /// 정보 칸의 링크 이름(목적지는 `PolicyLinks.deleteAccount` 그대로).
+    static let deleteDataGuide = "데이터 삭제 안내"
+    static let versionShort = "버전"
+
+    // 2e 알림함
+    static let notifyCopyLogsShort = "기록 복사"
+    static let notifyEmptyBody = "받은 초대와 수락 상태가 여기 모입니다."
+    static let inviteKicker = "새 자리 초대"
+    /// 카드 머리: 「새 자리 초대 · 방금」 — 시각을 모르면 「새 자리 초대」만.
+    static func inviteKickerLine(_ when: String?) -> String {
+        guard let when, !when.isEmpty else { return inviteKicker }
+        return "\(inviteKicker) · \(when)"
+    }
+    static func inviteCardBody(_ room: String) -> String { "운영자가 「\(room)」 자리에 이 기기를 초대했어요." }
+    static func inviteFailedTitle(_ room: String) -> String { "「\(room)」 자리에 들어가지 못했어요." }
+    /// 실패 횟수를 사람 말로(한·두·세 번, 넷부터는 숫자). 기술 사유는 진단 기록으로.
+    static func inviteAutoFailedPlain(_ tries: Int) -> String {
+        "자동 수락이 \(countWord(tries)) 안 됐어요 — 키는 그대로라 다시 시도할 수 있어요."
+    }
+    static func countWord(_ n: Int) -> String {
+        switch n {
+        case ...1: return "한 번"
+        case 2: return "두 번"
+        case 3: return "세 번"
+        default: return "\(n)번"
+        }
+    }
+
+    // 2f 정지된 기기
+    static let haltedDeviceTitle = "이 기기의 대화가\n멈췄어요"
+    static let haltedDeviceHint = "운영자에게 알려 주세요. 아래 기록을 붙여 보내면 원인을 찾을 수 있어요."
+}

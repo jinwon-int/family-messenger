@@ -133,7 +133,8 @@ enum Strings {
     static let orderEditLabel = "자리 순서 편집"
     static let orderDone = "완료"
     static let orderDoneLabel = "자리 순서 편집 완료"
-    static let orderHint = "▲▼나 ≡ 를 끌어 순서를 바꾸세요. 목록은 최근 대화순으로 움직이지 않고 이 순서로 고정되며, 이 기기에만 저장됩니다."
+    /// 디자인 2차 2c: 순서 모드 머리 아래 한 줄(목록은 최근 대화순으로 움직이지 않는다 — 이 기기에만 저장).
+    static let orderHint = "끌어서 순서를 바꾸세요. 이 기기에만 저장돼요."
     static func orderUp(_ room: String) -> String { "\(roomLabel(room)) 위로" }
     static func orderDown(_ room: String) -> String { "\(roomLabel(room)) 아래로" }
     static let orderPinTop = "맨 위로 고정"
@@ -162,7 +163,8 @@ enum Strings {
     static let deviceIdInvalid = "기기 ID 형식이 맞지 않습니다(영문·숫자·하이픈·밑줄, 최대 64자)."
 
     // 정지
-    static let haltedTitle = "⛔ 이 기기의 대화가 정지되었습니다"
+    // 디자인 2차 2f: ⛔ 이모지 없이 사람 말로. 정지 화면의 큰 제목은 줄바꿈 판(Strings+Agent `haltedDeviceTitle`).
+    static let haltedTitle = "이 기기의 대화가 멈췄어요"
 
     // 설정
     static let settingsTitle = "설정"
@@ -194,8 +196,9 @@ enum Strings {
     // 🔔 알림(#521, 웹 `strings.notify` 와 동일) — 받은 초대와 처리 상태. 오너 기기의 자동 참여가 실패해도 로그가 아니라 여기 남는다.
     static let notifyTitle = "알림"
     static func notifyButton(_ count: Int) -> String { count > 0 ? "알림 \(count)건" : "알림" }
-    static let notifyEmpty = "새 알림이 없습니다. 받은 초대와 수락 상태가 여기 모입니다."
-    static let notifyHint = "수락은 이 기기의 로비 키로 보낸 Welcome 을 읽어 대화방에 들어가는 일입니다. 실패해도 키는 지워지지 않으니 「다시 시도」할 수 있습니다."
+    // 디자인 2차 2e: 빈 상태 제목(본문은 Strings+Agent `notifyEmptyBody`) · 기술어(Welcome) 없는 안내 한 줄.
+    static let notifyEmpty = "새 알림이 없어요"
+    static let notifyHint = "수락이 안 되면 「기록 복사」로 운영자에게 보내 주세요. 비밀값은 들어가지 않아요."
     static let inviteAccepting = "수락하는 중…"
     static func inviteAutoFailed(_ tries: Int, _ reason: String?) -> String {
         let detail = reason.flatMap { $0.isEmpty ? nil : " — \($0)" } ?? ""
@@ -205,7 +208,7 @@ enum Strings {
     // 「진단 기록 복사」(#535 iOS 판, 웹 `strings.notify.copyLogs` 와 동일) — 최근 기록·방/초대 상태를 클립보드로. 비밀값 없음.
     static let notifyCopyLogs = "진단 기록 복사"
     static let notifyCopyLogsHint = "기기·방·초대 상태와 최근 기록을 클립보드로 복사합니다(비밀값 없음). 수락이 안 될 때 운영자에게 붙여넣어 보내 주세요."
-    static let notifyCopied = "복사했습니다"
+    static let notifyCopied = "복사했어요"
 
     // 알림 확장(NSE, §12-D) — 대체 문구는 앱 번들 `ko.lproj/Localizable.strings` 의 `NEW_MESSAGE` 와 같아야 한다
     // (NSE 가 죽거나 시간을 넘기면 iOS 가 원래 alert 의 loc-key 를 그 파일로 푼다).
