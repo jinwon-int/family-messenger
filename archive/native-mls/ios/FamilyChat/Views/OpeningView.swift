@@ -41,17 +41,11 @@ struct OpeningView: View {
     }
 }
 
-/// 준비 중 표시: 불씨 세 개가 차례로 밝아진다.
+/// 준비 중 표시(디자인 2차-A §A3): 페이지 표시가 아니라 자리 점 — 크림 2(사람) + 파랑 1(불지기)이 차례로 밝아지며 "자리에 모이는 중".
+/// reduce motion 이면 세 점 모두 켜진 채 고정(SeatLoader).
 private struct LoadingEmbers: View {
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.45)) { timeline in
-            let phase = Int(timeline.date.timeIntervalSinceReferenceDate / 0.45) % 3
-            HStack(spacing: 7) {
-                ForEach(0..<3, id: \.self) { i in
-                    Circle().fill(Hande.ember).frame(width: 6, height: 6).opacity(i == phase ? 0.95 : 0.35)
-                }
-            }
-        }
+        SeatLoader(agents: [false, false, true], size: 8, interval: 0.45)
     }
 }
 

@@ -1,4 +1,5 @@
-// ⛔ 정지 해제 안내 문구(§9-4 상태줄 "정지 이유", 작업지시서 DOC-3944 4절 #9). 앱 화면 전용 — NSE 소스 목록(project.yml)에 넣지 말 것.
+// 정지 해제 안내 문구(§9-4 상태줄 "정지 이유", 작업지시서 DOC-3944 4절 #9). 앱 화면 전용 — NSE 소스 목록(project.yml)에 넣지 말 것.
+// 디자인 2차 2f: 화면·보고 어디에도 ⛔ 이모지를 쓰지 않는다 — 사유별 한 문장 + 운영자 안내.
 //
 // 원칙: 정지는 안전장치다(AppModel 머리말 "무음 금지"). 여기서 주는 "다음 행동"은 둘뿐이다 —
 //   ① 운영자에게 알리기(사유·방·기기 ID 를 공유), ② "다시 참여 준비"(이 기기의 방 상태를 버리고 재초대를 기다림).
@@ -76,7 +77,7 @@ extension Strings {
         formatter.formatOptions = [.withInternetDateTime]
         let guidance = haltGuidance(reason)
         return """
-        한데 ⛔ 정지 보고
+        한데 정지 보고
         대화방: \(room)
         기기: \(device)
         사유: \(reason)

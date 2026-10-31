@@ -38,6 +38,9 @@ struct RootView: View {
     @State private var openingExpired = false
     /// #520 경고 배너를 「나중에」로 닫았다(이 실행 동안만 — 다음 실행에 설정이 그대로면 다시 보인다).
     @State private var previewWarningDismissed = false
+    /// 디자인 2차-A(§A2 ④): 이 실행에서 온보딩(서버 선택·이름)을 거쳤다 — 그 뒤의 `.starting`(이름 확정 → bootstrap 의 키 생성)과 첫 동기화
+    /// 대기는 오프닝 그림 대신 「불을 피우는 중…」(KindlingView). 저장된 설치의 차가운 시작은 그대로 오프닝.
+    @State private var sawOnboarding = false
     /// 디자인 1차: 테마 모드(설정 「화면」). 밤이 기본·고정, 낮불은 e-ink·밝은 곳용 고대비 — 기기 표시 설정이라 서버 스코프 밖.
     @AppStorage(HandeThemeMode.storageKey) private var themeRaw = HandeThemeMode.night.rawValue
     private static let openingLimitNanoseconds: UInt64 = 8_000_000_000
@@ -48,9 +51,9 @@ struct RootView: View {
         Group {
             switch model.phase {
             case .starting:
-                OpeningView()
+                if sawOnboarding { KindlingView() } else { OpeningView() }
             case .needsEnrollment where !model.settled && !openingExpired:
-                OpeningView()
+                if sawOnboarding { KindlingView() } else { OpeningView() }
             case .needsServer:
                 ServerSelectView()
             case .needsActor:
@@ -80,7 +83,10 @@ struct RootView: View {
         // 배너 탭(§12-D): 알림의 방이 아는 방이고 목록을 보일 수 있으면 그 방으로. 로그인·첫 동기화 전이면 준비된 뒤에.
         .onChange(of: model.requestedRoom) { _ in openRequestedRoom() }
         .onChange(of: model.rooms) { _ in openRequestedRoom() }
-        .onChange(of: model.phase) { _ in openRequestedRoom() }
+        .onChange(of: model.phase) { phase in
+            if phase == .needsServer || phase == .needsActor { sawOnboarding = true }
+            openRequestedRoom()
+        }
         // #571 B: 릴레이가 아는 같은 사람(actor)의 읽음 위치를 이 기기 값에 합쳐 둔다(웹 app.js mergeRelayRead) — `markRead` 는 줄어들지 않는다.
         .onChange(of: model.relayReadSeq) { relay in
             for (room, seq) in relay { model.localPrefs.markRead(room, seq: seq) }

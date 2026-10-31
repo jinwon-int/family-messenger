@@ -288,3 +288,151 @@ struct HandePillButtonStyle: ButtonStyle {
             .opacity(enabled ? 1 : 0.45)
     }
 }
+
+// MARK: - 디자인 2차-A(2026-10-31) 공용 부품: 위험 버튼 · 배너 · 토스트 · 설정 카드.
+
+// 위험 버튼 `HandeDangerButtonStyle`(46pt · warn 8% 면 + 1.5pt warn 60% 선 + warn 글자)과 정적 점 3개 `DotsRow(color:size:)` 는
+// 온보딩 부품(OnboardingKit.swift)에 있다 — 설정 「위험 구역」·배너·알림함도 같은 것을 쓴다.
+
+/// 한 줄 배너(방 화면 제목 아래 · 설정): 반경 12. info = 면 + 선, warn = 붉은 잉걸 10% 면 + 45% 선 + 앞에 작은 점 3개(정적).
+struct HandeBanner: View {
+    enum Kind: Equatable { case info, warn }
+    let kind: Kind
+    let text: String
+    @Environment(\.hande) private var p
+
+    init(kind: Kind, text: String) {
+        self.kind = kind
+        self.text = text
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if kind == .warn { DotsRow(color: p.warn, size: 6) }
+            Text(text).font(.subheadline).foregroundStyle(p.ink).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(RoundedRectangle(cornerRadius: 12).fill(kind == .warn ? p.warn.opacity(0.10) : p.surface))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(kind == .warn ? p.warn.opacity(0.45) : p.stroke, lineWidth: p.lineWidth))
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// 토스트 한 줄(「복사했어요」): 아래 입력창 자리, 면 #1C2136(밤)/종이 면(낮불) + 선, 14pt. 2초 뒤 사라진다(`handeToast`).
+struct HandeToast: View {
+    let text: String
+    @Environment(\.hande) private var p
+    /// 밤 토스트 면 — 밤하늘보다 한 단 밝은 남색(토큰 JSON 밖, 디자인 2차 2e).
+    static let nightFill = Color(hande: 0x1C2136)
+    var body: some View {
+        Text(text)
+            .font(.subheadline)
+            .foregroundStyle(p.ink)
+            .padding(.horizontal, 16)
+            .frame(minHeight: 40)
+            .background(Capsule().fill(p.isDay ? p.surface : Self.nightFill))
+            .overlay(Capsule().stroke(p.stroke, lineWidth: p.lineWidth))
+            .shadow(color: Color.black.opacity(0.35 * p.glow), radius: 8, y: 4)
+    }
+}
+
+/// `message` 가 생기면 아래에 토스트를 띄우고 `duration` 뒤 지운다(새 글이 오면 시간을 다시 센다).
+struct HandeToastModifier: ViewModifier {
+    @Binding var message: String?
+    var duration: TimeInterval = 2
+    func body(content: Content) -> some View {
+        content
+            .overlay(alignment: .bottom) {
+                if let message {
+                    HandeToast(text: message)
+                        .padding(.bottom, 24)
+                        .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.2), value: message)
+            .task(id: message) {
+                guard message != nil else { return }
+                try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+                if !Task.isCancelled { message = nil }
+            }
+    }
+}
+
+extension View {
+    func handeToast(_ message: Binding<String?>, duration: TimeInterval = 2) -> some View {
+        modifier(HandeToastModifier(message: message, duration: duration))
+    }
+    /// 카드 면(면 + 따뜻한 선, 반경 16) — 알림함 카드·빈 상태 안내 카드·순서 행.
+    func handeCard(radius: CGFloat = Hande.radiusM, fill: Color? = nil, stroke: Color? = nil) -> some View {
+        modifier(HandeCardModifier(radius: radius, fill: fill, stroke: stroke))
+    }
+}
+
+struct HandeCardModifier: ViewModifier {
+    var radius: CGFloat = Hande.radiusM
+    var fill: Color? = nil
+    var stroke: Color? = nil
+    @Environment(\.hande) private var p
+    func body(content: Content) -> some View {
+        content
+            .background(RoundedRectangle(cornerRadius: radius).fill(fill ?? p.surface))
+            .overlay(RoundedRectangle(cornerRadius: radius).stroke(stroke ?? p.stroke, lineWidth: p.lineWidth))
+    }
+}
+
+/// 설정 구역 머리(13/600 보조색, 여백 0 20 8).
+struct SectionHeader: View {
+    let text: String
+    var color: Color? = nil
+    @Environment(\.hande) private var p
+    init(_ text: String, color: Color? = nil) {
+        self.text = text
+        self.color = color
+    }
+    var body: some View {
+        Text(text)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(color ?? p.inkDim)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 8)
+            .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// 설정 카드(반경 16 면 + 선) — 안은 `SectionRow` 를 세로로 쌓는다. 좌우 16pt 여백은 카드가 가진다.
+struct SectionCard<Content: View>: View {
+    private let content: Content
+    @Environment(\.hande) private var p
+    init(@ViewBuilder content: () -> Content) { self.content = content() }
+    var body: some View {
+        VStack(spacing: 0) { content }
+            .frame(maxWidth: .infinity)
+            .background(RoundedRectangle(cornerRadius: Hande.radiusM).fill(p.surface))
+            .overlay(RoundedRectangle(cornerRadius: Hande.radiusM).stroke(p.stroke, lineWidth: p.lineWidth))
+            .clipShape(RoundedRectangle(cornerRadius: Hande.radiusM))
+            .padding(.horizontal, 16)
+    }
+}
+
+/// 설정 카드의 한 행(48pt 이상, 여백 10 16). 첫 행 뒤의 행은 위에 선 하나(`divider`).
+struct SectionRow<Content: View>: View {
+    private let divider: Bool
+    private let content: Content
+    @Environment(\.hande) private var p
+    init(divider: Bool = true, @ViewBuilder content: () -> Content) {
+        self.divider = divider
+        self.content = content()
+    }
+    var body: some View {
+        VStack(spacing: 0) {
+            if divider { Rectangle().fill(p.stroke).frame(height: p.lineWidth) }
+            HStack(spacing: 12) { content }
+                .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+        }
+    }
+}

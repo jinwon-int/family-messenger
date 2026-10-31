@@ -61,6 +61,14 @@ struct RoomView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // 디자인 2차 2d: 릴레이에 닿지 않는 동안 제목 아래 배너 한 줄(붉은 잉걸 10% 면 + 45% 선, 좌우 16). 연결되면 교체 없이 사라진다.
+            if model.reconnecting {
+                HandeBanner(kind: .warn, text: Strings.relayUnreachableBanner)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    .transition(.opacity)
+                    .accessibilityIdentifier("room-reconnecting")
+            }
             // #385: 타임라인은 seq 오름차순(오래된 것이 위)이라 기본 ScrollView 는 최상단에서 열린다.
             // 진입 시 최신 메시지(최하단)로 바로 가고, 새 메시지가 붙으면 따라 내려간다.
             ScrollViewReader { proxy in
@@ -157,13 +165,22 @@ struct RoomView: View {
                             hasNewBelow = false
                             scrollToLatest(proxy, animated: true)
                         } label: {
-                            Label(Strings.newMessagesBelow, systemImage: "arrow.down")
-                                .font(.footnote.weight(.semibold))
-                                .padding(.horizontal, 14).padding(.vertical, 8)
-                                .background(Capsule().fill(p.ember))
-                                .foregroundStyle(p.onEmber)
+                            // 디자인 2차 2d: 높이 36 알약 — 면 #1C2136(밤)/종이 면(낮불) + 따뜻한 선 30%, 주황 점 + 「새 메시지 ↓」. 개수 없음.
+                            HStack(spacing: 6) {
+                                Circle().fill(p.ember).frame(width: 7, height: 7).accessibilityHidden(true)
+                                Text(Strings.newMessagesBelow)
+                                Image(systemName: "arrow.down").font(.system(size: 12, weight: .semibold))
+                            }
+                            .font(.system(size: 14))
+                            .foregroundStyle(p.ink)
+                            .padding(.horizontal, 16)
+                            .frame(height: 36)
+                            .background(Capsule().fill(p.isDay ? p.surface : HandeToast.nightFill))
+                            .overlay(Capsule().stroke(p.isDay ? p.stroke : Color(hande: 0xFFBF78).opacity(0.3), lineWidth: p.lineWidth))
+                            .shadow(color: Color.black.opacity(0.35 * p.glow), radius: 7, y: 4)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel(Strings.newMessagesBelow)
                         .padding(.bottom, 10)
                         .transition(.opacity)
                     }
@@ -227,72 +244,26 @@ struct RoomView: View {
                     }
                 }
               }
-            }
-            if let halted = haltedReason {
-                HaltedRoomCard(room: room, reason: halted, onForgotten: { dismiss() })
-                    .padding()
-                    .background(p.warn.opacity(0.15))
+              // 디자인 2차 2f: 꺼진 자리의 지난 말풍선은 60% 흐림(목록 행 흐림과 같은 값).
+              .opacity(haltedReason == nil ? 1 : 0.6)
             }
             if let error = model.lastError {
                 // 긴 오류가 대화를 가리지 않게 두 줄까지만(연결 끊김은 여기 오지 않고 제목 아래 「연결 중입니다…」). 주의색은 붉은 잉걸 + 글자.
                 Text(error).font(.footnote).foregroundStyle(p.warn).lineLimit(2).padding(.horizontal)
             }
             if attachBusy {
-                Text(Strings.attachPreparing).font(.footnote).foregroundStyle(.secondary).padding(.horizontal)
+                Text(Strings.attachPreparing).font(.footnote).foregroundStyle(p.inkDim).padding(.horizontal)
             }
-            HStack(spacing: 10) {
-                // `PhotosPicker` 를 Menu 항목으로 두면 iOS 가 선택 창을 띄우지 않는다(build 13 실기기: 파일은 뜨고 사진은 안 뜸).
-                // 메뉴는 플래그만 올리고, 선택 창은 뷰에 붙인 `.photosPicker(isPresented:)` 수정자가 띄운다.
-                Menu {
-                    Button { showPhotoPicker = true } label: { Label(Strings.attachPhoto, systemImage: "photo") }
-                    Button { showFileImporter = true } label: { Label(Strings.attachFile, systemImage: "doc") }
-                } label: {
-                    Image(systemName: "plus").font(.title3.weight(.semibold)).foregroundStyle(p.ember)
-                        .frame(width: 44, height: 44)
-                }
-                    .accessibilityLabel(Strings.attachMenu)
-                    .disabled(!isReady || attachBusy)
-                // #405 P2 → 디자인 1차 1c: 둥근 입력칸(면 + 선, 반경 23) + 44pt 불빛 원형 전송 버튼. 「이야기 나누기…」.
-                TextField(Strings.composerPlaceholder, text: $draft, axis: .vertical)
-                    .lineLimit(1...6)
-                    .focused($composerFocused)
-                    // #405 P3: 하드웨어 키보드 Enter = 전송, Shift+Enter = 줄바꿈(웹 keyboard.js). 화면 키보드는 줄바꿈 그대로.
-                    // 방을 나갔다 오거나 앱을 다시 켜도 쓰던 글이 남는다(웹 drafts.js · 패밀리챗과 같음). 저장분은 이 방이 열릴 때 한 번 채운다.
-                    .onAppear(perform: restoreDraft)
-                    .onChange(of: draft) { new in
-                        prefs.setDraft(new, for: room)
-                        // 저장분을 채운 것뿐이면 「입력중…」 신호·키 판정을 하지 않는다(사용자가 친 글이 아니다).
-                        if restoringDraft { restoringDraft = false; return }
-                        // #562: 다른 기기에 「입력중…」 신호(간격 제한은 AppModel). 비면 clear.
-                        model.noteTyping(room: room, clear: new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        let old = previousDraft
-                        previousDraft = new
-                        switch ComposerKeys.decide(old: old, new: new, hardwareKeyboard: HardwareKeyboard.isConnected,
-                                                   shift: HardwareKeyboard.isShiftPressed) {
-                        case .keep: break
-                        case .revert(let text): draft = text
-                        case .send(let text): sendText(text)
-                        }
-                    }
+            if let halted = haltedReason {
+                // 디자인 2차 2f: 입력창 자리를 안내 상자로 교체 — 장작 아이콘 + 한 문장 이유 + 운영자 안내 + 작은 주황 링크(보고·지우기·다시 참여 준비).
+                HaltedRoomCard(room: room, reason: halted, onForgotten: { dismiss() })
                     .padding(.horizontal, 16)
-                    .padding(.vertical, 11)
-                    .foregroundStyle(p.ink)
-                    .background(RoundedRectangle(cornerRadius: 23).fill(p.surface))
-                    .overlay(RoundedRectangle(cornerRadius: 23).stroke(composerFocused ? p.focus.opacity(0.6) : p.stroke, lineWidth: p.lineWidth))
-                Button {
-                    sendText(draft)
-                } label: {
-                    Image(systemName: "arrow.up").font(.body.weight(.bold)).foregroundStyle(p.onEmber)
-                        .frame(width: 44, height: 44)
-                        .background(Circle().fill(canSend ? p.ember : p.ember.opacity(0.35)))
-                        .overlay(Circle().stroke(p.isDay ? p.stroke : .clear, lineWidth: p.lineWidth))
-                }
-                .accessibilityLabel(Strings.sendButton)
-                .disabled(!canSend)
+                    .padding(.top, 8)
+                    .padding(.bottom, 12)
+                    .accessibilityIdentifier("room-halted-notice")
+            } else {
+                composer
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(composerBackground)
         }
         .background(CampfireBackground())
         .background(keyboardShortcuts)
@@ -302,20 +273,26 @@ struct RoomView: View {
             // #405 P2: 제목 아래 불가에 둘러앉은 자리(사람 크림색 · 에이전트 파란색).
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text(Strings.roomLabel(room)).font(.headline).foregroundStyle(p.ink)
-                        // #562: 제목 옆 「타닥타닥…」 — 릴레이에 닿지 않는 동안은 오래된 신호일 수 있어 보이지 않는다.
-                        if let label = typingLabel, !model.reconnecting {
-                            Text(label).font(.caption2).foregroundStyle(p.inkDim)
-                                .transition(.opacity)
-                        }
-                    }
-                    // 디자인 1차 1c: 제목 아래 자리 요약 — ●●● 가족 3 · ● 불지기 공명.
-                    SeatSummary(glance: glance)
-                    // 릴레이에 닿지 않는 동안만(원문 오류 대신). 동기화가 한 번 성공하면 사라진다.
-                    if model.reconnecting {
+                    Text(Strings.roomLabel(room)).font(.headline).foregroundStyle(p.ink)
+                    // 제목 아래 한 줄(바 높이에 두 줄만 들어간다): 꺼진 자리 > 연결 중 > 타닥타닥 > 자리 요약.
+                    if haltedReason != nil {
+                        // 디자인 2차 2f: 꺼진 자리는 자리 요약 대신 「불이 꺼진 자리」.
+                        Text(Strings.roomClosedPreview).font(.caption2).foregroundStyle(p.inkDim)
+                    } else if model.reconnecting {
+                        // 릴레이에 닿지 않는 동안만(원문 오류 대신). 동기화가 한 번 성공하면 사라진다.
                         Text(Strings.connecting).font(.caption2).foregroundStyle(p.inkDim)
                             .transition(.opacity)
+                    } else if let label = typingLabel {
+                        // #562 → 디자인 2차 2d: 크림 점 6 + 「정인이 타닥타닥…」 13. 릴레이에 닿지 않는 동안은 오래된 신호일 수 있어 보이지 않는다.
+                        HStack(spacing: 6) {
+                            SeatDot(size: 6)
+                            Text(label).font(.system(size: 13)).foregroundStyle(p.inkDim)
+                        }
+                        .transition(.opacity)
+                        .accessibilityElement(children: .combine)
+                    } else {
+                        // 디자인 1차 1c: 제목 아래 자리 요약 — ●●● 가족 3 · ● 불지기 공명.
+                        SeatSummary(glance: glance)
                     }
                 }
                 .animation(.easeOut(duration: 0.2), value: model.reconnecting)
@@ -349,6 +326,63 @@ struct RoomView: View {
             pickedPhoto = nil
             Task { await sendPhoto(item) }
         }
+    }
+
+    /// 작성창(첨부 메뉴 + 둥근 입력칸 + 보내기). 꺼진 자리에서는 자리를 안내 상자가 대신한다.
+    private var composer: some View {
+        HStack(spacing: 10) {
+            // `PhotosPicker` 를 Menu 항목으로 두면 iOS 가 선택 창을 띄우지 않는다(build 13 실기기: 파일은 뜨고 사진은 안 뜸).
+            // 메뉴는 플래그만 올리고, 선택 창은 뷰에 붙인 `.photosPicker(isPresented:)` 수정자가 띄운다.
+            Menu {
+                Button { showPhotoPicker = true } label: { Label(Strings.attachPhoto, systemImage: "photo") }
+                Button { showFileImporter = true } label: { Label(Strings.attachFile, systemImage: "doc") }
+            } label: {
+                Image(systemName: "plus").font(.title3.weight(.semibold)).foregroundStyle(p.ember)
+                    .frame(width: 44, height: 44)
+            }
+                .accessibilityLabel(Strings.attachMenu)
+                .disabled(!isReady || attachBusy)
+            // #405 P2 → 디자인 1차 1c: 둥근 입력칸(면 + 선, 반경 23) + 44pt 불빛 원형 전송 버튼. 「이야기 나누기…」.
+            TextField(Strings.composerPlaceholder, text: $draft, axis: .vertical)
+                .lineLimit(1...6)
+                .focused($composerFocused)
+                // #405 P3: 하드웨어 키보드 Enter = 전송, Shift+Enter = 줄바꿈(웹 keyboard.js). 화면 키보드는 줄바꿈 그대로.
+                // 방을 나갔다 오거나 앱을 다시 켜도 쓰던 글이 남는다(웹 drafts.js · 패밀리챗과 같음). 저장분은 이 방이 열릴 때 한 번 채운다.
+                .onAppear(perform: restoreDraft)
+                .onChange(of: draft) { new in
+                    prefs.setDraft(new, for: room)
+                    // 저장분을 채운 것뿐이면 「입력중…」 신호·키 판정을 하지 않는다(사용자가 친 글이 아니다).
+                    if restoringDraft { restoringDraft = false; return }
+                    // #562: 다른 기기에 「입력중…」 신호(간격 제한은 AppModel). 비면 clear.
+                    model.noteTyping(room: room, clear: new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    let old = previousDraft
+                    previousDraft = new
+                    switch ComposerKeys.decide(old: old, new: new, hardwareKeyboard: HardwareKeyboard.isConnected,
+                                               shift: HardwareKeyboard.isShiftPressed) {
+                    case .keep: break
+                    case .revert(let text): draft = text
+                    case .send(let text): sendText(text)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 11)
+                .foregroundStyle(p.ink)
+                .background(RoundedRectangle(cornerRadius: 23).fill(p.surface))
+                .overlay(RoundedRectangle(cornerRadius: 23).stroke(composerFocused ? p.focus.opacity(0.6) : p.stroke, lineWidth: p.lineWidth))
+            Button {
+                sendText(draft)
+            } label: {
+                Image(systemName: "arrow.up").font(.body.weight(.bold)).foregroundStyle(p.onEmber)
+                    .frame(width: 44, height: 44)
+                    .background(Circle().fill(canSend ? p.ember : p.ember.opacity(0.35)))
+                    .overlay(Circle().stroke(p.isDay ? p.stroke : .clear, lineWidth: p.lineWidth))
+            }
+            .accessibilityLabel(Strings.sendButton)
+            .disabled(!canSend)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(composerBackground)
     }
 
     /// 타임라인 한 행(날짜 구분선 + 말풍선). lazy 본문과 꼬리가 같은 행을 쓴다.
@@ -691,10 +725,11 @@ struct MessageRow: View {
         case .queued?:
             Label(Strings.outgoingQueued, systemImage: "clock").font(.caption2).foregroundStyle(p.inkDim)
         case .failed(let reason)?:
-            // 주의/실패 = 붉은 잉걸 + 글자(디자인 1차 토큰 warn) — 빨강 신호등 대신.
-            HStack(spacing: 6) {
-                Label(Strings.outgoingFailed, systemImage: "exclamationmark.circle").foregroundStyle(p.warn)
-                Button(Strings.outgoingRetry, action: retry).buttonStyle(.borderless).foregroundStyle(p.ember)
+            // 주의/실패 = 붉은 잉걸 + 글자(디자인 2차 2d: 「전송 안 됨 · 다시 보내기」, 링크 600) — 색만이 아니라 글자로 남긴다.
+            HStack(spacing: 4) {
+                Text("\(Strings.outgoingFailed) ·").foregroundStyle(p.warn)
+                Button(Strings.outgoingRetry, action: retry).buttonStyle(.borderless).font(.caption2.weight(.semibold)).foregroundStyle(p.warn)
+                    .accessibilityIdentifier("outgoing-retry")
             }
             .font(.caption2)
             .accessibilityHint(reason)
@@ -709,9 +744,30 @@ struct MessageRow: View {
         }
     }
 
+    private var failed: Bool {
+        if case .failed? = item.outgoing { return true }
+        return false
+    }
+    /// 보내는 중인 첨부(저장소에 아직 없음) — 200×150 자리 그림 말풍선(여백 0).
+    private var isPendingAttachment: Bool { message.kind.isFile && item.outgoing != nil }
+
     /// 내 말풍선 = 불(낮불은 먹 — 주황은 허락·보내기 버튼만), 남의 말풍선 = 면 + 선. 디자인 1차 1c/1d.
-    private var bubbleFill: Color { mine ? (p.isDay ? p.ink : p.ember) : p.surface }
-    private var bubbleText: Color { mine ? (p.isDay ? p.bgTop : p.onEmber) : p.ink }
+    /// 전송 안 됨(디자인 2차 2d) = 면 주황 22% + 선 1.5 붉은 잉걸 + 크림 글자.
+    private var bubbleFill: Color {
+        if isPendingAttachment { return .clear }
+        if mine && failed { return p.ember.opacity(0.22) }
+        return mine ? (p.isDay ? p.ink : p.ember) : p.surface
+    }
+    private var bubbleText: Color { mine && !failed ? (p.isDay ? p.bgTop : p.onEmber) : p.ink }
+    private var bubbleStroke: Color {
+        if failed { return p.warn }
+        return mine ? .clear : p.stroke
+    }
+    private var bubbleStrokeWidth: CGFloat { failed ? 1.5 : p.lineWidth }
+    /// 연결되면 보냅니다·보내는 중 = 75% 흐림(시계 아이콘과 함께). 전송 안 됨은 흐리지 않는다 — 색·선·글자로 말한다.
+    private var bubbleOpacity: Double { item.outgoing == nil || failed ? 1 : 0.75 }
+    private var contentInset: CGFloat { isMedia ? Self.mediaInset : (isPendingAttachment ? 0 : 14) }
+    private var contentInsetV: CGFloat { isMedia ? Self.mediaInset : (isPendingAttachment ? 0 : 11) }
 
     private var bubbleRow: some View {
         HStack(alignment: .bottom, spacing: 6) {
@@ -727,15 +783,15 @@ struct MessageRow: View {
                 }
                 content
                     // 첨부(사진·파일)는 베젤을 최소화(오너 요청 2026-10-27) — 사진이 말풍선을 거의 채우고, 글 줄은 AttachmentBubble 이 자체 여백을 준다.
-                    .padding(.horizontal, isMedia ? Self.mediaInset : 14)
-                    .padding(.vertical, isMedia ? Self.mediaInset : 11)
+                    .padding(.horizontal, contentInset)
+                    .padding(.vertical, contentInsetV)
                     .background(bubbleFill)
                     .foregroundStyle(bubbleText)
                     .clipShape(BubbleShape(mine: mine))
-                    .overlay(BubbleShape(mine: mine).stroke(mine ? .clear : p.stroke, lineWidth: p.lineWidth))
+                    .overlay(BubbleShape(mine: mine).stroke(bubbleStroke, lineWidth: bubbleStrokeWidth))
                     .contentShape(.contextMenuPreview, BubbleShape(mine: mine))
                     .messageCopyMenu(MessageCopy.text(of: message), select: selectText)
-                    .opacity(item.outgoing == nil ? 1 : 0.75)
+                    .opacity(bubbleOpacity)
                 outgoingStatus
             }
             if !mine { timeLabel; Spacer(minLength: 40) }
@@ -745,8 +801,8 @@ struct MessageRow: View {
     @ViewBuilder private var content: some View {
         switch message.kind {
         case .attachment where item.outgoing != nil, .fileV2 where item.outgoing != nil:
-            // 아직 저장소에 없는 첨부(보내는 중): 본체 대신 종류·크기만.
-            Text(Strings.outgoingAttachment).font(.footnote)
+            // 아직 저장소에 없는 첨부(보내는 중): 디자인 2차 2d — 200×150 자리 그림 + 아래 「사진·파일 보내는 중」 + 진행선 3px(숫자·% 없음).
+            OutgoingAttachmentPlaceholder()
         case .attachment:
             AttachmentBubble(item: item, onLoaded: onAttachmentLoaded)
         case .fileV2:
@@ -762,6 +818,61 @@ struct MessageRow: View {
                 Text(message.body)
             }
         }
+    }
+}
+
+/// 디자인 2차 2d: 보내는 중인 첨부의 자리 그림 — 200×150(말풍선 모양은 바깥 BubbleShape 18/6), 어두운 두 색 그라데이션 면(낮불은 종이 면),
+/// 아래 덮개에 「사진·파일 보내는 중」 13 + 진행선 3px. 진행률 값이 없으므로 선은 45% 토막이 오가는 부정형(reduce motion·낮불은 고정).
+struct OutgoingAttachmentPlaceholder: View {
+    @Environment(\.hande) private var p
+    static let size = CGSize(width: 200, height: 150)
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            if p.isDay {
+                p.surface
+            } else {
+                LinearGradient(colors: [Color(hande: 0x3A2A22), Color(hande: 0x2A2230)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text(Strings.outgoingAttachment).font(.system(size: 13)).foregroundStyle(p.ink)
+                IndeterminateBar()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(LinearGradient(colors: [p.bgTop.opacity(0), p.bgTop.opacity(p.isDay ? 0 : 0.85)], startPoint: .top, endPoint: .bottom))
+        }
+        .frame(width: Self.size.width, height: Self.size.height)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Strings.outgoingAttachment)
+    }
+}
+
+/// 3px 부정형 진행선: 주황 45% 토막이 왼쪽↔오른쪽을 오간다(숫자·% 없음). reduce motion 이거나 낮불(움직임 0)이면 45% 고정.
+struct IndeterminateBar: View {
+    @Environment(\.hande) private var p
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var toEnd = false
+
+    private var still: Bool { reduceMotion || p.isDay }
+
+    var body: some View {
+        GeometryReader { geo in
+            let width = geo.size.width
+            ZStack(alignment: .leading) {
+                Capsule().fill(p.ink.opacity(0.15))
+                Capsule().fill(p.ember)
+                    .frame(width: width * 0.45)
+                    .offset(x: toEnd && !still ? width * 0.55 : 0)
+            }
+        }
+        .frame(height: 3)
+        .onAppear {
+            guard !still else { return }
+            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) { toEnd = true }
+        }
+        .accessibilityHidden(true)
     }
 }
 
