@@ -31,6 +31,7 @@ struct ComposerTextView: UIViewRepresentable {
         view.textContainerInset = .zero
         view.textContainer.lineFragmentPadding = 0
         view.isScrollEnabled = false
+        view.maxLines = maxLines
         view.textColor = textColor
         view.text = text
         view.accessibilityLabel = accessibilityLabel
@@ -44,10 +45,15 @@ struct ComposerTextView: UIViewRepresentable {
     func updateUIView(_ view: HandeComposerTextView, context: Context) {
         context.coordinator.parent = self
         view.textColor = textColor
-        // 앱이 글을 바꿨다(보낸 뒤 비우기 · 초안 복원 · 붙여넣기 대체). 조합 중이면 조합이 끝난 뒤의 갱신에 맡긴다.
-        if view.text != text, view.markedTextRange == nil {
+        // 앱이 글을 바꿨다(보낸 뒤 비우기 · 초안 복원 · 붙여넣기 대체). 사용자가 치는 동안은 입력칸 → `text` 가 먼저 같아지므로 여기 오지 않는다.
+        // 조합 중이어도 반영한다: 조합 중 전송 버튼·⌘↩ 로 보낸 뒤 비우기를 건너뛰면 보낸 글이 입력칸에 남아 다음 키에 되살아난다(리뷰 #632).
+        // 확정·대입 중에 입력칸이 알리는 변경은 `applying` 으로 무시한다 — 방금 비운 `text` 를 옛 글로 덮지 않게.
+        if view.text != text {
+            context.coordinator.applying = true
+            if view.markedTextRange != nil { view.unmarkText() }
             view.text = text
-            context.coordinator.updateScrolling(view)
+            context.coordinator.applying = false
+            view.updateScrolling()
         }
         if isFocused, !view.isFirstResponder {
             DispatchQueue.main.async {
@@ -71,14 +77,17 @@ struct ComposerTextView: UIViewRepresentable {
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: ComposerTextView
         weak var textView: HandeComposerTextView?
+        /// 앱이 글을 넣는 중 — 그동안 오는 변경 알림은 사용자 입력이 아니다.
+        var applying = false
 
         init(_ parent: ComposerTextView) {
             self.parent = parent
         }
 
         func textViewDidChange(_ textView: UITextView) {
+            guard !applying else { return }
             if parent.text != textView.text { parent.text = textView.text }
-            updateScrolling(textView)
+            (textView as? HandeComposerTextView)?.updateScrolling()
         }
 
         func textViewDidBeginEditing(_ textView: UITextView) {
@@ -90,13 +99,6 @@ struct ComposerTextView: UIViewRepresentable {
             DispatchQueue.main.async { if self.parent.isFocused { self.parent.isFocused = false } }
         }
 
-        /// 최대 줄 수를 넘으면 입력칸 안에서 스크롤(그 전에는 늘어난다).
-        func updateScrolling(_ textView: UITextView) {
-            let line = ceil(textView.font?.lineHeight ?? 20)
-            let fit = textView.sizeThatFits(CGSize(width: textView.bounds.width, height: .greatestFiniteMagnitude)).height
-            let scroll = textView.bounds.width > 0 && fit > line * CGFloat(parent.maxLines) + 1
-            if textView.isScrollEnabled != scroll { textView.isScrollEnabled = scroll }
-        }
 
         /// 하드웨어 Return. Shift = 커서 자리 줄바꿈, 아니면 보내기. 조합 중인 글자는 먼저 확정한다.
         func handleReturn(shift: Bool) {
@@ -118,6 +120,24 @@ struct ComposerTextView: UIViewRepresentable {
 /// 하드웨어 Return 을 입력칸 기본 동작보다 먼저 받는 UITextView.
 final class HandeComposerTextView: UITextView {
     var onReturn: ((_ shift: Bool) -> Void)?
+    var maxLines = 6
+
+    /// 배치가 바뀔 때마다(첫 배치 · 회전 · 글자 크기) 스크롤 여부를 다시 정한다 — 글이 바뀔 때만 보면 첫 배치 폭 0·회전을 놓친다.
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        updateScrolling()
+    }
+
+    /// 최대 줄 수를 넘으면 입력칸 안에서 스크롤(그 전에는 늘어난다). 스크롤을 끌 때는 맨 위로 되돌린다(글이 어긋나 보이지 않게).
+    func updateScrolling() {
+        guard bounds.width > 0 else { return }
+        let line = ceil(font?.lineHeight ?? 20)
+        let fit = sizeThatFits(CGSize(width: bounds.width, height: .greatestFiniteMagnitude)).height
+        let scroll = fit > line * CGFloat(maxLines) + 1
+        guard isScrollEnabled != scroll else { return }
+        isScrollEnabled = scroll
+        if !scroll { contentOffset = .zero }
+    }
     /// 우리가 처리한 Return 누름 — 끝·취소 이벤트도 기본 동작으로 넘기지 않는다(시작만 가로채면 짝이 맞지 않는다).
     private var handled = Set<UIPress>()
 

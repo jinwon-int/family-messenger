@@ -730,8 +730,9 @@ struct RoomView: View {
 
     private func handleKey(_ press: HardwareKeys.Press, _ proxy: ScrollViewProxy) {
         let decided = HardwareKeys.roomAction(press, mode: keyMode)
-        model.noteKey("gc \(press.key.rawValue) mods=\(press.modifiers.rawValue) mode=\(keyMode) → \(decided?.rawValue ?? "-")"
-                      + (keysBlocked ? " blocked" : "") + " input=\(FirstResponderText.isActive)")
+        // 작성 중 글자·방향키는 남기지 않는다(진단 기록을 밀어내고 타이핑 메타데이터가 된다) — 동작이 정해진 키만.
+        if decided != nil || keyMode != .composer { model.noteKey("gc \(press.key.rawValue) mods=\(press.modifiers.rawValue) mode=\(keyMode) → \(decided?.rawValue ?? "-")"
+                      + (keysBlocked ? " blocked" : "") + " input=\(FirstResponderText.isActive)") }
         guard let action = decided else { return }
         // 같은 물리 키가 SwiftUI 단축키 길로 이미 처리됐으면(앱을 켜고 첫 누름) 버린다 — 그 사이 상태가 바뀌어(예: 작성창 → 읽기)
         // 같은 키가 다른 동작(선택 모드 시작)으로 판정되는 것까지 막으려고 동작 이름이 아니라 키 단위로 거른다.
