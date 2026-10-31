@@ -3,18 +3,26 @@
 //
 // 대화방(웹 `listPageNavAction` 'switch' · `timelineKeyAction` · `viewKeyAction`):
 //   PageUp/PageDown = 이전·다음 대화방(작성 중이어도 — 초안은 방별 저장) · Home = 대화 목록
-//   작성창: Esc·End = 대화 읽기(작성창에서 나와 위 대화를 본다) · Enter = 전송(ComposerKeys, 여기서는 다루지 않음)
-//   대화 읽기: ↑/↓ = 말풍선 하나씩 위·아래 · End = 맨 아래(최신) · Enter = 작성창으로
+//   작성창: Esc·End = 대화 읽기(작성창에서 나와 위 대화를 본다) · Enter = 전송 · Shift+Enter = 줄바꿈(웹 `composerKeyAction`)
+//   대화 읽기: ↑/↓ = 말풍선 하나씩 위·아래 · End = 맨 아래(최신) · Enter = 작성창으로 · Esc = 선택 모드
+//   선택 모드(웹 캐럿 모드 `timeline-caret.js` 의 iOS 판): 말풍선 하나에 점선 테두리 · ↑/↓ = 테두리 이동 ·
+//     Enter = 그 말풍선을 「선택해서 복사」 창으로(창 안에서 Shift+방향키 글자 선택 · ⌘C 복사) · ⌘C = 말풍선 글 전체 복사 ·
+//     Esc = 대화 읽기로 · End = 맨 아래 · PageUp/PageDown/Home 은 쓰지 않는다(웹 캐럿 모드도 방을 넘기지 않음)
 // 대화 목록(웹 `listPageNavAction` 'navigate' · `listPageMove`):
 //   PageUp/PageDown = 표시 행을 한 칸씩(열지 않음) · Enter = 표시된 행 열기 · 순서 모드에서는 움직이지 않는다(웹 #480 A)
 //
-// 수정키(⌘·⌥·⌃·Shift)가 붙은 키는 건드리지 않는다 — ⌘↩ 보내기, Shift+방향키 선택, ⌘↑ 글 처음으로 같은 편집 동작이다.
-// 웹의 캐럿 모드(대화 내용 Esc → 글자 선택)는 옮기지 않는다: iOS 는 말풍선을 꾹 눌러 「선택해서 복사」로 고른다.
+// 수정키(⌘·⌥·⌃·Shift)가 붙은 키는 건드리지 않는다 — ⌘↩ 보내기(SwiftUI 단축키), Shift+방향키 선택, ⌘↑ 글 처음으로 같은 편집 동작이다.
+// 예외: 작성창 Shift+Enter(줄바꿈) · 선택 모드 ⌘C(복사).
+// 왜 작성창 Enter 를 여기서 판정하나: 하드웨어 키보드 Return 이 SwiftUI 세로 TextField 에 줄바꿈을 넣지 않는 기기가 있어(오너 실기기 2026-10-31:
+// Enter 전송·Shift+Enter 줄바꿈 둘 다 안 됨) `ComposerKeys` 의 글 변화 판정이 한 번도 불리지 않았다. 줄바꿈이 들어오는 기기에서는
+// 종전 판정이 먼저 처리하고, 앱이 `insertedNewline` 으로 그것을 알아 두 번 처리하지 않는다.
 import Foundation
 
 public enum HardwareKeys {
     public enum Key: String, Equatable, Sendable {
         case pageUp, pageDown, home, end, escape, upArrow, downArrow, enter
+        /// 글자 C — 선택 모드 ⌘C 복사에만 쓴다.
+        case letterC
     }
 
     public struct Modifiers: OptionSet, Equatable, Sendable {
@@ -37,31 +45,90 @@ public enum HardwareKeys {
 
     // MARK: 대화방
 
+    /// 대화방 안에서 키보드가 어디를 다루는가.
+    public enum RoomMode: Equatable, Sendable {
+        /// 작성창에 커서.
+        case composer
+        /// 작성창 밖 — 대화를 위아래로 읽는다.
+        case reading
+        /// 말풍선 하나를 골라 둔 상태(웹 캐럿 모드).
+        case selecting
+    }
+
     public enum RoomAction: String, Equatable, Sendable {
         case previousRoom, nextRoom, backToList
-        /// 작성창에서 나와 대화 읽기(웹: 타임라인으로 포커스).
+        /// 작성창에서 나와 대화 읽기(웹: 타임라인으로 포커스). 선택 모드에서는 선택을 끝내고 읽기로.
         case readTimeline
         /// 대화 읽기에서 작성창으로(웹: 대화형 요소 밖 Enter).
         case focusComposer
         case scrollUp, scrollDown
         /// 맨 아래(최신 글) — 웹은 타임라인 End 를 브라우저 기본(맨 아래로)에 맡긴다.
         case scrollToLatest
+        /// 작성창 Enter = 보내기 · Shift+Enter = 커서 자리에 줄바꿈.
+        case send, newline
+        /// 대화 읽기 Esc = 선택 모드 시작.
+        case startSelecting
+        /// 선택 모드 ↑/↓ = 테두리를 위·아래 말풍선으로.
+        case selectUp, selectDown
+        /// 선택 모드 Enter = 「선택해서 복사」 창 · ⌘C = 글 전체 복사.
+        case openSelection, copySelection
     }
 
     /// 대화방 화면에서 이 키가 할 일. 없으면 nil(키를 그대로 둔다).
-    public static func roomAction(_ press: Press, composerFocused: Bool) -> RoomAction? {
-        guard press.modifiers.isEmpty else { return nil }
-        switch press.key {
-        case .pageUp: return .previousRoom
-        case .pageDown: return .nextRoom
-        case .home: return .backToList
-        case .escape: return composerFocused ? .readTimeline : nil
-        case .end: return composerFocused ? .readTimeline : .scrollToLatest
-        case .upArrow: return composerFocused ? nil : .scrollUp
-        case .downArrow: return composerFocused ? nil : .scrollDown
-        // 작성창 Enter 는 전송/줄바꿈(ComposerKeys — 글 변화로 판정)이라 여기서는 건드리지 않는다.
-        case .enter: return composerFocused ? nil : .focusComposer
+    public static func roomAction(_ press: Press, mode: RoomMode) -> RoomAction? {
+        switch (mode, press.key, press.modifiers) {
+        case (.composer, .enter, .shift): return .newline
+        case (.selecting, .letterC, .command): return .copySelection
+        default: break
         }
+        guard press.modifiers.isEmpty else { return nil }
+        switch (mode, press.key) {
+        case (.composer, .pageUp), (.reading, .pageUp): return .previousRoom
+        case (.composer, .pageDown), (.reading, .pageDown): return .nextRoom
+        case (.composer, .home), (.reading, .home): return .backToList
+        case (.composer, .escape), (.composer, .end): return .readTimeline
+        case (.composer, .enter): return .send
+        case (.reading, .upArrow): return .scrollUp
+        case (.reading, .downArrow): return .scrollDown
+        case (.reading, .end), (.selecting, .end): return .scrollToLatest
+        case (.reading, .enter): return .focusComposer
+        case (.reading, .escape): return .startSelecting
+        case (.selecting, .upArrow): return .selectUp
+        case (.selecting, .downArrow): return .selectDown
+        case (.selecting, .enter): return .openSelection
+        case (.selecting, .escape): return .readTimeline
+        default: return nil
+        }
+    }
+
+    /// 선택 모드의 테두리 위치. `rows` = 복사할 글이 있는 말풍선만(첨부·복호화 실패 제외), seq 오름차순. 커서가 없으면 마지막 말풍선,
+    /// 커서가 고를 수 없는 행(첨부 등)이면 그 위의 가장 가까운 말풍선(없으면 첫 말풍선). 이동은 끝에서 멈춘다(맨 아래로 빠지지 않는다).
+    /// `step` 0 = 시작 위치.
+    public static func selectTarget(rows: [Int64], cursor: Int64?, step: Int) -> Int64? {
+        guard !rows.isEmpty else { return nil }
+        let index: Int
+        if let cursor {
+            index = rows.firstIndex(of: cursor) ?? rows.lastIndex(where: { $0 < cursor }) ?? 0
+        } else {
+            index = rows.count - 1
+        }
+        return rows[min(rows.count - 1, max(0, index + step))]
+    }
+
+    /// `old` → `new` 가 줄바꿈 한 글자 삽입인가(입력칸이 Return 으로 스스로 줄바꿈을 넣었다 — 그 경우 종전 `ComposerKeys` 가 처리한다).
+    public static func insertedNewline(old: String, new: String) -> Bool {
+        guard new.count == old.count + 1 else { return false }
+        let o = Array(old), n = Array(new)
+        var i = 0
+        while i < o.count, o[i] == n[i] { i += 1 }
+        return n[i] == "\n" && Array(n[(i + 1)...]) == Array(o[i...])
+    }
+
+    /// 보낼 글: 끝의 줄바꿈·공백만 걷는다(앞·가운데 줄바꿈은 그대로). 비면 nil.
+    public static func outgoingText(_ draft: String) -> String? {
+        var text = draft
+        while let last = text.last, last.isWhitespace || last.isNewline { text.removeLast() }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
     }
 
     public enum ScrollTarget: Equatable, Sendable {
