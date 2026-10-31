@@ -7,34 +7,80 @@ final class HardwareKeysTests: XCTestCase {
 
     func testRoomActionsMatchWebSinglePane() {
         // 작성창에 커서가 있을 때.
-        XCTAssertEqual(K.roomAction(.init(.pageUp), composerFocused: true), .previousRoom)   // 작성 중이어도 방을 넘긴다(웹 'switch')
-        XCTAssertEqual(K.roomAction(.init(.pageDown), composerFocused: true), .nextRoom)
-        XCTAssertEqual(K.roomAction(.init(.home), composerFocused: true), .backToList)       // 웹 viewKeyAction Home
-        XCTAssertEqual(K.roomAction(.init(.escape), composerFocused: true), .readTimeline)   // 웹 'focus-timeline'
-        XCTAssertEqual(K.roomAction(.init(.end), composerFocused: true), .readTimeline)
-        XCTAssertNil(K.roomAction(.init(.enter), composerFocused: true))                     // 전송은 ComposerKeys
-        XCTAssertNil(K.roomAction(.init(.upArrow), composerFocused: true))                   // 작성창 안 커서 이동
-        XCTAssertNil(K.roomAction(.init(.downArrow), composerFocused: true))
+        XCTAssertEqual(K.roomAction(.init(.pageUp), mode: .composer), .previousRoom)   // 작성 중이어도 방을 넘긴다(웹 'switch')
+        XCTAssertEqual(K.roomAction(.init(.pageDown), mode: .composer), .nextRoom)
+        XCTAssertEqual(K.roomAction(.init(.home), mode: .composer), .backToList)       // 웹 viewKeyAction Home
+        XCTAssertEqual(K.roomAction(.init(.escape), mode: .composer), .readTimeline)   // 웹 'focus-timeline'
+        XCTAssertEqual(K.roomAction(.init(.end), mode: .composer), .readTimeline)
+        XCTAssertEqual(K.roomAction(.init(.enter), mode: .composer), .send)            // 웹 composerKeyAction 'send'
+        XCTAssertEqual(K.roomAction(.init(.enter, .shift), mode: .composer), .newline) // 'newline'
+        XCTAssertNil(K.roomAction(.init(.upArrow), mode: .composer))                   // 작성창 안 커서 이동
+        XCTAssertNil(K.roomAction(.init(.downArrow), mode: .composer))
+        XCTAssertNil(K.roomAction(.init(.letterC), mode: .composer))                   // 글자 입력
 
         // 대화 읽기(작성창 밖).
-        XCTAssertEqual(K.roomAction(.init(.pageUp), composerFocused: false), .previousRoom)
-        XCTAssertEqual(K.roomAction(.init(.pageDown), composerFocused: false), .nextRoom)
-        XCTAssertEqual(K.roomAction(.init(.home), composerFocused: false), .backToList)
-        XCTAssertEqual(K.roomAction(.init(.upArrow), composerFocused: false), .scrollUp)     // 웹 'scroll-up'
-        XCTAssertEqual(K.roomAction(.init(.downArrow), composerFocused: false), .scrollDown)
-        XCTAssertEqual(K.roomAction(.init(.enter), composerFocused: false), .focusComposer)  // 웹 viewKeyAction Enter
-        XCTAssertEqual(K.roomAction(.init(.end), composerFocused: false), .scrollToLatest)
-        XCTAssertNil(K.roomAction(.init(.escape), composerFocused: false))                   // 캐럿 모드는 옮기지 않는다
+        XCTAssertEqual(K.roomAction(.init(.pageUp), mode: .reading), .previousRoom)
+        XCTAssertEqual(K.roomAction(.init(.pageDown), mode: .reading), .nextRoom)
+        XCTAssertEqual(K.roomAction(.init(.home), mode: .reading), .backToList)
+        XCTAssertEqual(K.roomAction(.init(.upArrow), mode: .reading), .scrollUp)       // 웹 'scroll-up'
+        XCTAssertEqual(K.roomAction(.init(.downArrow), mode: .reading), .scrollDown)
+        XCTAssertEqual(K.roomAction(.init(.enter), mode: .reading), .focusComposer)    // 웹 viewKeyAction Enter
+        XCTAssertEqual(K.roomAction(.init(.end), mode: .reading), .scrollToLatest)
+        XCTAssertEqual(K.roomAction(.init(.escape), mode: .reading), .startSelecting)  // 웹 'enter-caret'
+        XCTAssertNil(K.roomAction(.init(.letterC, .command), mode: .reading))          // 고른 말풍선이 없다
+
+        // 선택 모드(웹 캐럿 모드).
+        XCTAssertEqual(K.roomAction(.init(.upArrow), mode: .selecting), .selectUp)
+        XCTAssertEqual(K.roomAction(.init(.downArrow), mode: .selecting), .selectDown)
+        XCTAssertEqual(K.roomAction(.init(.enter), mode: .selecting), .openSelection)
+        XCTAssertEqual(K.roomAction(.init(.letterC, .command), mode: .selecting), .copySelection)
+        XCTAssertEqual(K.roomAction(.init(.escape), mode: .selecting), .readTimeline)  // 웹 'exit-caret'
+        XCTAssertEqual(K.roomAction(.init(.end), mode: .selecting), .scrollToLatest)
+        // 웹 캐럿 모드처럼 방을 넘기거나 목록으로 가지 않는다.
+        XCTAssertNil(K.roomAction(.init(.pageUp), mode: .selecting))
+        XCTAssertNil(K.roomAction(.init(.pageDown), mode: .selecting))
+        XCTAssertNil(K.roomAction(.init(.home), mode: .selecting))
+        XCTAssertNil(K.roomAction(.init(.letterC), mode: .selecting))
     }
 
     func testModifiedKeysAreLeftToEditing() {
+        let modes: [K.RoomMode] = [.composer, .reading, .selecting]
         for modifiers: K.Modifiers in [.shift, .command, .option, .control, [.shift, .command]] {
-            for key: K.Key in [.pageUp, .pageDown, .home, .end, .escape, .upArrow, .downArrow, .enter] {
-                XCTAssertNil(K.roomAction(.init(key, modifiers), composerFocused: true), "\(key) \(modifiers)")
-                XCTAssertNil(K.roomAction(.init(key, modifiers), composerFocused: false), "\(key) \(modifiers)")
+            for key: K.Key in [.pageUp, .pageDown, .home, .end, .escape, .upArrow, .downArrow, .enter, .letterC] {
+                for mode in modes {
+                    let allowed = (mode == .composer && key == .enter && modifiers == .shift)
+                        || (mode == .selecting && key == .letterC && modifiers == .command)
+                    if allowed { continue }
+                    XCTAssertNil(K.roomAction(.init(key, modifiers), mode: mode), "\(key) \(modifiers) \(mode)")
+                }
                 XCTAssertNil(K.listAction(.init(key, modifiers), count: 3, highlighted: 1, anchor: nil, orderEditing: false), "\(key) \(modifiers)")
             }
         }
+        XCTAssertNil(K.roomAction(.init(.enter, .command), mode: .composer))   // ⌘↩ 는 SwiftUI 단축키가 보낸다(두 번 보내지 않게)
+    }
+
+    func testSelectTargetClampsAtEnds() {
+        let rows: [Int64] = [10, 11, 15]
+        XCTAssertEqual(K.selectTarget(rows: rows, cursor: nil, step: 0), 15)   // 시작 = 마지막 말풍선
+        XCTAssertEqual(K.selectTarget(rows: rows, cursor: 99, step: 0), 15)    // 사라진 커서
+        XCTAssertEqual(K.selectTarget(rows: rows, cursor: 15, step: -1), 11)
+        XCTAssertEqual(K.selectTarget(rows: rows, cursor: 10, step: -1), 10)   // 맨 위 제자리
+        XCTAssertEqual(K.selectTarget(rows: rows, cursor: 15, step: 1), 15)    // 맨 아래로 빠지지 않는다
+        XCTAssertEqual(K.selectTarget(rows: rows, cursor: 11, step: 0), 11)    // 읽던 자리에서 시작
+        XCTAssertNil(K.selectTarget(rows: [], cursor: nil, step: 0))
+    }
+
+    func testInsertedNewlineAndOutgoingText() {
+        XCTAssertTrue(K.insertedNewline(old: "", new: "\n"))
+        XCTAssertTrue(K.insertedNewline(old: "안녕", new: "안녕\n"))
+        XCTAssertTrue(K.insertedNewline(old: "ab", new: "a\nb"))          // 가운데 커서
+        XCTAssertFalse(K.insertedNewline(old: "ab", new: "abc"))
+        XCTAssertFalse(K.insertedNewline(old: "ab", new: "ab\n\n"))
+        XCTAssertFalse(K.insertedNewline(old: "안", new: "안녕"))          // 한글 조합 확정은 줄바꿈이 아니다
+        XCTAssertEqual(K.outgoingText("안녕\n"), "안녕")
+        XCTAssertEqual(K.outgoingText("첫 줄\n둘째 줄  \n"), "첫 줄\n둘째 줄")
+        XCTAssertNil(K.outgoingText(" \n "))
+        XCTAssertNil(K.outgoingText(""))
     }
 
     func testPageMoveMatchesWebListPageMove() {

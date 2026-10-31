@@ -1,6 +1,7 @@
 // P3 편의(#405) 앱 쪽 부품: 화면 이동(방 전환) · 하드웨어 키보드 상태 · 이 기기에만 두는 표시 설정(읽음·방 순서).
 // 판정 규칙은 Core(ComposerKeys·RoomOrder·Unread)에 있고, 여기는 상태를 들고 저장만 한다.
 import SwiftUI
+import UIKit
 import Combine
 import FamilyMLSCore
 #if canImport(GameController)
@@ -107,6 +108,7 @@ final class HardwareKeyRouter {
         case .upArrow: return .upArrow
         case .downArrow: return .downArrow
         case .returnOrEnter: return .enter
+        case .keyC: return .letterC   // 선택 모드 ⌘C(물리 키 위치라 한글 입력 중에도 같다)
         default: return nil
         }
     }
@@ -121,6 +123,32 @@ final class HardwareKeyRouter {
         return out
     }
     #endif
+}
+
+/// 지금 키 입력을 받는 글 입력칸(작성창의 UITextView)에 커서 자리로 글을 넣는다. SwiftUI(iOS 16) TextField 에는 커서 위치 API 가 없어
+/// Shift+Enter 줄바꿈을 끝에 붙이면 가운데에서 친 줄바꿈이 엉뚱한 자리로 간다. 입력칸이 없으면 false(호출부가 끝에 붙인다).
+@MainActor
+enum FirstResponderText {
+    fileprivate static weak var found: UIResponder?
+
+    static func insert(_ text: String) -> Bool {
+        guard let input = current() as? UIKeyInput else { return false }
+        input.insertText(text)
+        return true
+    }
+
+    private static func current() -> UIResponder? {
+        found = nil
+        UIApplication.shared.sendAction(#selector(UIResponder.handeCaptureFirstResponder(_:)), to: nil, from: nil, for: nil)
+        return found
+    }
+}
+
+extension UIResponder {
+    /// `sendAction(to: nil)` 은 첫 응답자에게 간다 — 그 응답자를 적어 둔다(`FirstResponderText`).
+    @objc fileprivate func handeCaptureFirstResponder(_ sender: Any?) {
+        FirstResponderText.found = self
+    }
 }
 
 // `LocalPrefs`(읽음 위치·방 순서)는 Sync/LocalPrefs.swift — AppModel 이 서버 스코프별로 소유한다(#584).

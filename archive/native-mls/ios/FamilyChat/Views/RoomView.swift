@@ -66,6 +66,14 @@ struct RoomView: View {
     @State private var keyCursor: Int64?
     /// 대화 읽기에서 Enter 로 작성창에 들어온 시각 — 그 Enter 의 키 반복이 초안을 보내지 않게(`HardwareKeys.suppressSend`).
     @State private var keyFocusedAt: Date?
+    /// 선택 모드(웹 캐럿 모드의 iOS 판): `keyCursor` 말풍선에 점선 테두리. Esc(대화 읽기)로 켜고 Esc 로 끈다.
+    @State private var selectingByKey = false
+    /// 입력칸이 Return 으로 **스스로** 줄바꿈을 넣은 시각 — 그 기기에서는 종전 `ComposerKeys` 가 처리하므로 키 경로는 다시 처리하지 않는다.
+    @State private var nativeNewlineAt: Date?
+    /// Shift+Enter 로 앱이 줄바꿈을 넣은 시각 — 그 글 변화를 `ComposerKeys` 가 Enter 전송으로 오판하지 않게(Shift 를 이미 뗐을 수 있다).
+    @State private var keyNewlineAt: Date?
+    /// 「복사했어요」(선택 모드 ⌘C).
+    @State private var toast: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -202,6 +210,7 @@ struct RoomView: View {
                 // 쓰려고 작성창을 누르면 = 최신 대화에 답하는 중: 따라가기를 다시 켜고 최하단으로 간다(하드웨어 키보드는 칸이 안 줄어 여기서만 맞춘다).
                 .onChange(of: composerFocused) { focused in
                     guard focused else { return }
+                    selectingByKey = false
                     followLatest = true
                     hasNewBelow = false
                     scrollToLatest(proxy, animated: true)
@@ -277,6 +286,7 @@ struct RoomView: View {
         }
         .background(CampfireBackground())
         .background(keyboardShortcuts)
+        .handeToast($toast)
         .navigationTitle(Strings.roomLabel(room))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -326,7 +336,7 @@ struct RoomView: View {
         }
         .sheet(isPresented: $showInvite) { InviteView(room: room).environmentObject(model) }
         .alert(Strings.muteFailed, isPresented: $muteFailed) { Button(Strings.close, role: .cancel) {} }
-        .sheet(item: $selecting) { SelectableTextSheet(text: $0.text) }
+        .sheet(item: $selecting) { SelectableTextSheet(text: $0.text, focusText: $0.fromKeyboard) }
         .photosPicker(isPresented: $showPhotoPicker, selection: $pickedPhoto, matching: .images)
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.data]) { result in
             Task { await sendFile(result) }
@@ -367,6 +377,11 @@ struct RoomView: View {
                     model.noteTyping(room: room, clear: new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     let old = previousDraft
                     previousDraft = new
+                    if HardwareKeys.insertedNewline(old: old, new: new) {
+                        // 앱이 Shift+Enter 로 넣은 줄바꿈이면 그대로 둔다(전송 판정 없음).
+                        if let at = keyNewlineAt, Date().timeIntervalSince(at) < 0.5 { keyNewlineAt = nil; return }
+                        nativeNewlineAt = Date()
+                    }
                     switch ComposerKeys.decide(old: old, new: new, hardwareKeyboard: HardwareKeyboard.isConnected,
                                                shift: HardwareKeyboard.isShiftPressed) {
                     case .keep: break
@@ -415,6 +430,15 @@ struct RoomView: View {
                    onAttachmentLoaded: { attachmentLoaded(item.id, proxy) },
                    retry: { Task { await model.retry(outgoingId: item.id, room: room) } },
                    selectText: { selecting = SelectableMessage(text: $0) })
+            // 선택 모드: 고른 말풍선 점선 테두리(웹 캐럿 모드의 점선 테두리와 같은 표시).
+            .overlay {
+                if selectingByKey && keyCursor == item.id {
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(p.focus, style: StrokeStyle(lineWidth: 2, dash: [5, 4]))
+                        .padding(-4)
+                        .accessibilityHidden(true)
+                }
+            }
             .id(item.id)
     }
 
@@ -651,10 +675,10 @@ struct RoomView: View {
     private var keyboardShortcuts: some View {
         ZStack {
             Button(Strings.sendButton) { sendText(draft) }.keyboardShortcut(.return, modifiers: .command)
-            Button(Strings.shortcutReadTimeline) { perform(.readTimeline, nil, from: .shortcut) }.keyboardShortcut(.escape, modifiers: [])
-            Button(Strings.shortcutPreviousRoom) { perform(.previousRoom, nil, from: .shortcut) }.keyboardShortcut(.pageUp, modifiers: [])
-            Button(Strings.shortcutNextRoom) { perform(.nextRoom, nil, from: .shortcut) }.keyboardShortcut(.pageDown, modifiers: [])
-            Button(Strings.shortcutRoomList) { perform(.backToList, nil, from: .shortcut) }.keyboardShortcut(.home, modifiers: [])
+            Button(Strings.shortcutReadTimeline) { shortcut(.escape) }.keyboardShortcut(.escape, modifiers: [])
+            Button(Strings.shortcutPreviousRoom) { shortcut(.pageUp) }.keyboardShortcut(.pageUp, modifiers: [])
+            Button(Strings.shortcutNextRoom) { shortcut(.pageDown) }.keyboardShortcut(.pageDown, modifiers: [])
+            Button(Strings.shortcutRoomList) { shortcut(.home) }.keyboardShortcut(.home, modifiers: [])
         }
         .opacity(0)
         .frame(width: 0, height: 0)
@@ -673,9 +697,21 @@ struct RoomView: View {
     }
 
     /// GameController 로 받은 키(`HardwareKeyRouter`). 판정은 Core `HardwareKeys.roomAction`(웹 keyboard.js 휴대폰 세로 규칙).
+    /// 지금 키보드가 다루는 곳(작성창 · 대화 읽기 · 선택 모드).
+    private var keyMode: HardwareKeys.RoomMode {
+        if composerFocused { return .composer }
+        return selectingByKey ? .selecting : .reading
+    }
+
     private func handleKey(_ press: HardwareKeys.Press, _ proxy: ScrollViewProxy) {
-        guard let action = HardwareKeys.roomAction(press, composerFocused: composerFocused) else { return }
+        guard let action = HardwareKeys.roomAction(press, mode: keyMode) else { return }
         perform(action, proxy, from: .gameController)
+    }
+
+    /// SwiftUI 단축키 길 — GameController 길과 **같은 판정**을 거쳐 같은 동작 이름이 되므로 `once` 가 한 번만 한다.
+    private func shortcut(_ key: HardwareKeys.Key) {
+        guard let action = HardwareKeys.roomAction(.init(key), mode: keyMode) else { return }
+        perform(action, nil, from: .shortcut)
     }
 
     /// 단축키 동작 — SwiftUI 단축키와 GameController 두 길에서 오므로 `once` 로 한 번만. 스크롤은 GameController 길(proxy 있음)에서만 온다.
@@ -688,17 +724,72 @@ struct RoomView: View {
             case .nextRoom: switchRoom(1)
             case .backToList: navigator.backToList()
             case .readTimeline:
-                keyCursor = nil
+                // 작성창 → 대화 읽기는 마지막 말풍선부터, 선택 모드 → 대화 읽기는 고르던 자리에서 이어 읽는다.
+                if !selectingByKey { keyCursor = nil }
+                selectingByKey = false
                 keyFocusedAt = nil
                 composerFocused = false
             case .focusComposer:
                 keyCursor = nil
+                selectingByKey = false
                 keyFocusedAt = Date()
                 composerFocused = true   // onChange(of: composerFocused) 가 최신 글로 내려 준다
             case .scrollUp, .scrollDown, .scrollToLatest:
+                selectingByKey = false
                 if let proxy { scrollByKey(action, proxy) }
+            case .send:
+                composerKey(newline: false)
+            case .newline:
+                composerKey(newline: true)
+            case .startSelecting:
+                if let proxy { select(step: 0, proxy) }
+            case .selectUp:
+                if let proxy { select(step: -1, proxy) }
+            case .selectDown:
+                if let proxy { select(step: 1, proxy) }
+            case .openSelection:
+                if let text = selectedText { selecting = SelectableMessage(text: text, fromKeyboard: true) }
+            case .copySelection:
+                if let text = selectedText {
+                    MessageCopy.copy(text)
+                    toast = Strings.notifyCopied
+                }
             }
         }
+    }
+
+    /// 작성창 Enter(보내기) · Shift+Enter(커서 자리에 줄바꿈). 키를 받은 뒤 잠깐 기다린다 — 한글 조합 중 Enter 는 입력칸이 먼저 조합을
+    /// 확정하므로 그 글까지 보내야 한다(웹: 조합 확정 Enter 무시 · 글자 잘림 방지). 입력칸이 스스로 줄바꿈을 넣는 기기에서는 종전
+    /// `ComposerKeys` 가 이미 처리했으므로(`nativeNewlineAt`) 다시 하지 않는다.
+    private func composerKey(newline: Bool) {
+        let pressedAt = Date()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+            if let native = nativeNewlineAt, native >= pressedAt.addingTimeInterval(-0.3) { return }
+            if newline {
+                keyNewlineAt = Date()
+                if !FirstResponderText.insert("\n") { draft += "\n" }
+                return
+            }
+            if HardwareKeys.suppressSend(sinceKeyFocus: keyFocusedAt.map { Date().timeIntervalSince($0) }) { return }
+            if let text = HardwareKeys.outgoingText(draft) { sendText(text) }
+        }
+    }
+
+    /// 선택 모드에서 고른 말풍선의 글(복사할 수 없는 첨부·복호화 실패 행은 고르지 않는다).
+    private var selectedText: String? {
+        guard selectingByKey, let id = keyCursor, let item = messages.first(where: { $0.id == id }) else { return nil }
+        return MessageCopy.text(of: item.record)
+    }
+
+    /// 선택 모드 시작(`step` 0)·이동(±1). 복사할 글이 있는 말풍선만 오간다.
+    private func select(step: Int, _ proxy: ScrollViewProxy) {
+        let rows = messages.filter { MessageCopy.text(of: $0.record) != nil }.map(\.id)
+        guard let id = HardwareKeys.selectTarget(rows: rows, cursor: keyCursor, step: step) else { return }
+        keyCursor = id
+        selectingByKey = true
+        followLatest = false
+        tracking.lastDrag = Date()
+        withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(id, anchor: .center) }
     }
 
     /// 대화 읽기 ↑/↓(말풍선 하나씩, `HardwareKeys.scrollTarget`) · End(맨 아래). 위로 가면 따라가기를 끄고, 맨 아래에 닿으면 다시 켠다(「내 마지막 말」 바와 같은 방식).
