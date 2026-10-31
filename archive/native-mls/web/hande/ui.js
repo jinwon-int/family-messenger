@@ -3,7 +3,7 @@
 // 모닥불 팔레트로 다시 입혔다. 업무 로직 없음: app.js 가 넘긴 props 를 그리고 콜백만 부른다.
 
 import {
-  strings, ACTOR, ROOM, DEVICE, formatTime, dayLabel, dayKey, groupFingerprint, displayName, isServiceDevice, humanSize, relativeTime,
+  strings, ACTOR, ROOM, DEVICE, formatTime, dayLabel, dayKey, groupFingerprint, fingerprintRows, displayName, isServiceDevice, humanSize, relativeTime,
   participantCount, participantOf, groupParticipants, deviceKind, deviceKinds,
 } from './strings.js';
 import {imageType, downloadSpec} from './attachment-view.js';
@@ -52,19 +52,9 @@ function clearScreen(root) {
   }
 }
 
-function field(labelText, inputAttrs, hint = null) {
-  const id = `f-${inputAttrs.name}`;
-  return el('div', { class: 'field' },
-    el('label', { for: id }, labelText),
-    el('input', { id, autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false', 'aria-describedby': hint ? `${id}-hint` : null, ...inputAttrs }),
-    hint ? el('p', { class: 'hint', id: `${id}-hint` }, hint) : null);
-}
-
 const brand = (size = 'l') => el('div', { class: `brand brand-${size}` },
   el('span', { class: 'wordmark', 'aria-label': strings.appName }, strings.wordmark),
   el('span', { class: 'subtitle' }, strings.subtitle));
-
-const fingerprintNode = (hex) => el('code', { class: 'fingerprint', 'aria-label': strings.enroll.fingerprintLabel }, groupFingerprint(hex));
 
 const fact = (label, value, mono = false) => el('div', { class: 'fact' }, el('dt', {}, label), el('dd', { class: mono ? 'mono' : null }, value));
 
@@ -84,24 +74,111 @@ function copyButton(copy, label = strings.copy) {
 
 const statusLine = (text, tone = 'info', extra = {}) => (text ? el('p', { class: `status ${tone}`, role: tone === 'danger' ? 'alert' : 'status', ...extra }, text) : null);
 
+// ---- 디자인 2차-A 공용 조각(iOS OnboardingKit 과 같은 결) ----
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+/** SVG 요소(벡터 그림 — 이모지 🔥🪵 대신). 글은 넣지 않는다. */
+function svgEl(tag, attrs = {}, ...children) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [key, value] of Object.entries(attrs)) if (value != null) node.setAttribute(key, String(value));
+  for (const child of children.flat()) if (child) node.append(child);
+  return node;
+}
+
+/**
+ * 자리 점: 사람 = 크림 ●(낮불 먹), 에이전트 = 파랑 ●(낮불 ◆). kinds = 'p' | 'a' 배열. 장식(aria-hidden).
+ * 「…하는 중」 표시는 **정지된** 점 3개(움직임 없음, §A2·A5).
+ */
+const seatDots = (kinds = ['p', 'p', 'p'], extra = '') => el('span', { class: `seat-dots ${extra}`.trim(), 'aria-hidden': 'true' },
+  kinds.map((kind) => el('span', { class: `seat-dot ${kind === 'a' ? 'agent' : 'person'}` })));
+
+/** 상단 진행 막대(§A2): 3px · 반경 2 · 켜짐 = 불. 웹은 2칸(이름 · 등록). */
+function stepBar(step, total = strings.onboarding.steps) {
+  return el('div', { class: 'step-bar', role: 'img', 'aria-label': strings.onboarding.step(step, total) },
+    Array.from({ length: total }, (_, index) => el('span', { class: index < step ? 'on' : null })));
+}
+
+/** 1줄 안내 + 「자세히」 → 접힌 카드(§2차-A 규칙: 설명은 1줄 + 자세히). detail 은 노드나 글. */
+function moreLine(line, detail, { className = '' } = {}) {
+  const card = el('div', { class: 'card more-card', hidden: true }, typeof detail === 'string' ? el('p', { class: 'hint' }, detail) : detail);
+  const button = el('button', { type: 'button', class: 'more', 'aria-expanded': 'false', onclick: () => {
+    const open = card.hidden;
+    card.hidden = !open;
+    button.textContent = open ? strings.onboarding.less : strings.onboarding.more;
+    button.setAttribute('aria-expanded', open ? 'true' : 'false');
+  } }, strings.onboarding.more);
+  return el('div', { class: `more-line ${className}`.trim() }, el('p', { class: 'hint line' }, line, ' ', button), card);
+}
+
+/**
+ * 지문 1열(§A1): 행 42px · 번호 13 · 값 모노 19 · (승인 쪽) 표시 원 22px. 등록 화면과 승인 시트가 같은 번호로 같은 행을 보인다.
+ * ticks 가 Set 이면 행이 버튼(눌러 표시, aria-pressed), 아니면 그냥 행. onToggle(index) 는 호출자가 다시 그린다.
+ * @param {string[]} rows fingerprintRows() 결과
+ */
+export function renderFingerprintRows(rows, { ticks = null, onToggle = null, label = strings.enroll.fingerprintLabel, ...attrs } = {}) {
+  const interactive = ticks instanceof Set && typeof onToggle === 'function';
+  return el('ol', { class: `fp-list${interactive ? ' ticking' : ''}`, 'aria-label': label, ...attrs },
+    rows.map((value, index) => {
+      const ticked = interactive ? ticks.has(index) : null;
+      const number = el('span', { class: 'fp-n', 'aria-hidden': 'true' }, String(index + 1));
+      const text = el('span', { class: 'fp-v mono', 'aria-hidden': 'true' }, value);
+      if (!interactive) return el('li', { class: 'fp-row', 'aria-label': strings.onboarding.fingerprintRowLabel(index + 1, value) }, number, text);
+      return el('li', { class: `fp-row${ticked ? ' ticked' : ''}` },
+        el('button', { type: 'button', class: 'fp-tick-row', 'aria-pressed': ticked ? 'true' : 'false', 'aria-label': strings.onboarding.fingerprintRowLabel(index + 1, value, ticked), 'data-row': String(index), onclick: () => onToggle(index) },
+          number, text, el('span', { class: 'fp-tick', 'aria-hidden': 'true' }, ticked ? '✓' : '')));
+    }));
+}
+
+const TOAST_BRIEF_MS = 2000;
+/** 시트 안 짧은 토스트 「복사했어요」(2초, §A5) — 시트는 top layer 라 시트 안에 붙여야 보인다. */
+function sheetToast(dialog, text) {
+  dialog.querySelector(':scope > .toast-brief')?.remove();
+  const toast = el('p', { class: 'toast-brief', role: 'status', 'aria-live': 'polite' }, text);
+  dialog.append(toast);
+  setTimeout(() => toast.remove(), TOAST_BRIEF_MS);
+}
+
+/** 「복사」 글자 버튼 + 시트 토스트. */
+const copyLink = (dialog, copy, label = strings.settings2.copy) => el('button', { type: 'button', class: 'more', onclick: async () => {
+  const ok = await copy();
+  sheetToast(dialog, ok === false ? strings.app.copyFailed : strings.settings2.copied);
+} }, label);
+
 // ---- 시작·이름·치명 오류·등록 화면 ----
 
+/**
+ * ② 이름(디자인 2차-A §A2): 진행 막대 + 제목 + 「회원가입이 없습니다」 선언 카드 + 라벨·모노 칸 + 1줄 안내 + 「자세히」.
+ * 형식이 틀리면 칸 선이 warn 으로 바뀌고 밑줄 자리에 한 줄(「영문 소문자·숫자 2~16자로 써 주세요」).
+ */
 export function renderActorSetup(root, { onSubmit, error = null, busy = false }) {
   clearScreen(root);
-  const feedback = el('p', { class: 'feedback', role: 'alert' }, error ?? '');
-  const form = el('form', { class: 'column', onsubmit: (event) => {
+  const t = strings.onboarding;
+  const feedback = el('p', { class: 'feedback', role: 'alert', id: 'f-actor-feedback' }, error ?? '');
+  const input = el('input', { id: 'f-actor', name: 'actor', class: 'mono', required: true, placeholder: t.actorPlaceholder, autocomplete: 'off', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false',
+    inputmode: 'latin', maxlength: '16', disabled: busy || null, 'aria-describedby': 'f-actor-hint f-actor-feedback', 'aria-invalid': error ? 'true' : null, 'data-testid': 'actor-input',
+    oninput: () => { if (fieldBox.classList.contains('invalid')) { fieldBox.classList.remove('invalid'); input.removeAttribute('aria-invalid'); feedback.textContent = ''; } } });
+  const fieldBox = el('div', { class: `field onboarding-field${error ? ' invalid' : ''}` },
+    el('label', { for: 'f-actor' }, t.actorLabel),
+    input,
+    moreLine(t.actorHint, t.actorDetail, { className: 'actor-more' }),
+    feedback);
+  fieldBox.querySelector('.more-line .hint.line').id = 'f-actor-hint';
+  const form = el('form', { class: 'column onboarding-form', onsubmit: (event) => {
     event.preventDefault();
-    const value = form.querySelector('input[name=actor]').value.trim().toLowerCase();
-    if (!ACTOR.test(value)) { feedback.textContent = strings.actor.invalid; return; }
-    feedback.textContent = '';
+    const value = input.value.trim().toLowerCase();
+    if (!ACTOR.test(value)) { fieldBox.classList.add('invalid'); input.setAttribute('aria-invalid', 'true'); feedback.textContent = t.actorInvalid; input.focus(); return; }
+    fieldBox.classList.remove('invalid'); input.removeAttribute('aria-invalid'); feedback.textContent = '';
     onSubmit(value);
   } },
-    field(strings.actor.field, { name: 'actor', required: true, placeholder: 'mom', autocomplete: 'off', inputmode: 'latin', maxlength: '16', disabled: busy || null, 'data-testid': 'actor-input' }, strings.actor.hint),
-    feedback,
-    el('button', { type: 'submit', class: 'primary block', disabled: busy || null, 'data-testid': 'actor-submit' }, busy ? strings.actor.busy : strings.actor.button));
-  root.append(el('main', { class: 'center' }, el('section', { class: 'card hero', 'aria-labelledby': 'actor-title' },
-    brand(), el('h1', { id: 'actor-title' }, strings.actor.title), form)));
-  form.querySelector('input')?.focus();
+    fieldBox,
+    el('div', { class: 'onboarding-footer' }, el('button', { type: 'submit', class: 'primary block', disabled: busy || null, 'data-testid': 'actor-submit' }, busy ? strings.actor.busy : strings.actor.button)));
+  root.append(el('main', { class: 'center onboarding' }, el('section', { class: 'card hero onboarding-screen', 'aria-labelledby': 'actor-title' },
+    stepBar(1),
+    brand('s'),
+    el('h1', { id: 'actor-title', class: 'onboarding-title' }, t.actorTitle),
+    el('p', { class: 'declaration' }, t.declaration),
+    form)));
+  input.focus();
 }
 
 export function renderStarting(root, { message = strings.app.starting }) {
@@ -128,47 +205,59 @@ export function renderFatal(root, { title = strings.fatal.title, detail = '', on
  */
 export function renderEnroll(root, { deviceId, actor, fingerprint, subject = null, registrationJson = '', waiting = false, lastCheckedAt = null, onCopy, onCheck, onOpenApprove = null, onWipe, error = null, mode = 'operator', statusText = null, expiresAt = null }) {
   const frame = JSON.stringify([deviceId, actor, fingerprint, subject, registrationJson, error, Boolean(onOpenApprove), mode]);
+  const t = strings.onboarding;
   const sibling = mode === 'sibling';
   const taken = mode === 'id-taken';
-  const text = statusText ?? (sibling ? strings.enroll.waitingSibling : waiting ? strings.enroll.waiting : strings.enroll.notWaiting);
-  const tone = taken ? 'danger' : waiting || sibling ? 'warn' : 'info';
-  const extra = [lastCheckedAt ? strings.enroll.lastChecked(lastCheckedAt) : null, sibling && expiresAt ? strings.enroll.siblingExpires(formatTime(expiresAt)) : null].filter(Boolean).join(' · ');
+  // 대기 문구(§A2): 기술값 「(403 device_subject_mismatch)」는 화면에 내지 않는다 — 진단 기록 몫. 형제 모드는 만료 시각만(카운트다운 없음).
+  const text = statusText ?? (sibling
+    ? (expiresAt ? t.enrollWaitingSiblingUntil(formatTime(expiresAt)) : t.enrollWaitingSibling)
+    : waiting ? t.enrollWaitingOperator : strings.enroll.notWaiting);
+  const tone = taken ? 'danger' : 'waiting';
+  const extra = lastCheckedAt ? strings.enroll.lastChecked(lastCheckedAt) : '';
+  const statusChildren = () => [taken ? null : seatDots(['p', 'p', 'p'], 'thinking'), el('span', { class: 'text' }, text), extra ? el('span', { class: 'meta' }, extra) : null];
   const existing = root.querySelector('section.enroll');
   if (existing && signatureOf(existing) === frame) {
     // 폴링 재렌더: 선택한 지문·JSON 을 지키려고 상태 줄만 바꾼다.
     const line = existing.querySelector('.enroll-status');
     line.className = `status enroll-status ${tone}`;
-    setChildren(line, text, extra ? el('span', { class: 'meta' }, ` · ${extra}`) : null);
+    setChildren(line, statusChildren());
     liveProps.set(existing, { onCopy, onCheck, onOpenApprove, onWipe });
     return;
   }
   clearScreen(root);
-  const card = el('section', { class: `card enroll mode-${mode}`, 'aria-labelledby': 'enroll-title', 'data-testid': 'enroll', 'data-mode': mode });
+  const card = el('section', { class: `card hero onboarding-screen enroll mode-${mode}`, 'aria-labelledby': 'enroll-title', 'data-testid': 'enroll', 'data-mode': mode });
   liveProps.set(card, { onCopy, onCheck, onOpenApprove, onWipe });
   const live = () => liveProps.get(card);
-  const jsonBlock = el('div', { class: 'json-block' },
-    el('div', { class: 'row between' }, el('span', { class: 'label' }, strings.enroll.registrationLabel), copyButton(() => live().onCopy?.(), strings.enroll.copyRegistration)),
-    el('pre', { class: 'json', tabindex: '0' }, registrationJson));
-  setChildren(card,
-    brand('s'),
-    el('h1', { id: 'enroll-title' }, sibling ? strings.enroll.siblingTitle : strings.enroll.title),
-    el('p', { class: 'hint' }, sibling ? strings.enroll.siblingBody : strings.enroll.body),
-    // 형제 승인 모드: 지문이 주인공 — 다른 기기의 카드와 한 자리씩 비교한다.
-    sibling ? el('div', { class: 'fingerprint-hero' }, el('span', { class: 'label' }, strings.enroll.fingerprintLabel), el('code', { class: 'fingerprint big', 'aria-label': strings.enroll.fingerprintLabel, 'data-testid': 'enroll-fingerprint' }, groupFingerprint(fingerprint))) : null,
+  // 운영자용 정보: 등록 JSON(복사) + 이름·로그인 주체 — 접힌 details(숨기지는 않는다).
+  const operatorInfo = el('details', { class: 'operator-fallback section-card' },
+    el('summary', {}, t.operatorInfo),
+    el('p', { class: 'hint' }, sibling ? strings.enroll.operatorDetails : strings.enroll.body),
     el('dl', { class: 'facts' },
-      fact(strings.enroll.deviceIdLabel, deviceId, true),
       fact(strings.enroll.actorLabel, actor),
-      fact(strings.enroll.subjectLabel, subject || el('span', { class: 'meta' }, strings.enroll.subjectUnknown), Boolean(subject)),
-      sibling ? null : fact(strings.enroll.fingerprintLabel, fingerprintNode(fingerprint))),
+      fact(strings.enroll.subjectLabel, subject || el('span', { class: 'meta' }, strings.enroll.subjectUnknown), Boolean(subject))),
+    el('div', { class: 'json-block' },
+      el('div', { class: 'row between' }, el('span', { class: 'label' }, strings.enroll.registrationLabel), copyButton(() => live().onCopy?.(), strings.enroll.copyRegistration)),
+      el('pre', { class: 'json', tabindex: '0' }, registrationJson)));
+  setChildren(card,
+    stepBar(2),
+    el('h1', { id: 'enroll-title', class: 'onboarding-title' }, t.enrollTitle),
+    moreLine(t.enrollLine, sibling ? strings.enroll.siblingBody : strings.enroll.body),
+    // 지문 1열(§A1): 승인하는 기기의 시트와 같은 번호·같은 행. 컨테이너에 testid 를 둔다.
+    el('div', { class: 'fingerprint-hero' },
+      el('span', { class: 'label' }, strings.enroll.fingerprintLabel),
+      renderFingerprintRows(fingerprintRows(fingerprint), { 'data-testid': 'enroll-fingerprint', 'data-fingerprint': fingerprint }),
+      el('p', { class: 'meta device-caption' }, el('span', { class: 'label' }, strings.enroll.deviceIdLabel, ' '), el('code', { class: 'mono' }, deviceId))),
     taken ? statusLine(strings.enroll.idTaken, 'danger', { 'data-testid': 'enroll-id-taken' }) : null,
-    el('p', { class: `status enroll-status ${tone}`, role: 'status' }, text, extra ? el('span', { class: 'meta' }, ` · ${extra}`) : null),
-    sibling ? el('details', { class: 'operator-fallback' }, el('summary', {}, strings.enroll.operatorDetails), el('p', { class: 'hint' }, strings.enroll.body), jsonBlock) : jsonBlock,
+    el('p', { class: `status enroll-status ${tone}`, role: 'status' }, statusChildren()),
     statusLine(error, 'danger'),
-    el('div', { class: 'actions wrap' },
-      el('button', { type: 'button', class: 'primary', onclick: () => live().onCheck?.() }, strings.enroll.checkNow),
-      onOpenApprove ? el('button', { type: 'button', class: 'secondary', onclick: () => live().onOpenApprove?.() }, strings.enroll.openApprove) : null,
-      el('button', { type: 'button', class: 'ghost danger-text', onclick: () => live().onWipe?.() }, strings.enroll.wipe)));
-  root.append(el('main', { class: 'center' }, signed(card, frame)));
+    el('div', { class: 'onboarding-footer column' },
+      el('button', { type: 'button', class: 'secondary block', onclick: () => live().onCopy?.() }, t.shareRegistration),
+      el('div', { class: 'row gap center-row' },
+        el('button', { type: 'button', class: 'more', onclick: () => live().onCheck?.() }, strings.enroll.checkNow),
+        onOpenApprove ? el('button', { type: 'button', class: 'more', onclick: () => live().onOpenApprove?.() }, strings.enroll.openApprove) : null,
+        el('button', { type: 'button', class: 'more danger-text', onclick: () => live().onWipe?.() }, strings.enroll.wipe))),
+    operatorInfo);
+  root.append(el('main', { class: 'center onboarding' }, signed(card, frame)));
 }
 
 /** 항상 DOM 에 있는 상태 토스트([data-testid="status"]). 화면 교체에도 살아남는다(clearScreen). */
@@ -290,47 +379,72 @@ function bellButton(count, onOpen) {
   return el('button', { type: 'button', class: 'icon ghost tool bell', 'aria-label': label, title: label, 'data-testid': 'open-notify', onclick: () => onOpen?.() },
     '🔔', count > 0 ? el('span', { class: 'unread-badge bell-badge', 'aria-hidden': 'true' }, String(count > 99 ? '99+' : count)) : null);
 }
-/** 초대 처리 상태 한 줄: 수락 중 / 자동 수락 실패 n회(사유). 상태가 없으면 비운다. */
-function inviteState(invite) {
-  if (invite.busy) return el('p', { class: 'hint invite-state', role: 'status' }, strings.notify.inviteBusy);
-  if (invite.failed) return el('p', { class: 'feedback invite-state', role: 'status' }, strings.notify.inviteFailed(invite.failed.tries, invite.failed.reason));
-  return null;
-}
-/** 로비 초대 카드(#431 4단계): 운영자/봇이 로비 키로 보낸 새 대화방 Welcome — 수락 1탭 또는 무시. */
+/** 「…하는 중」 줄(§A5): 정지된 크림 점 3 + 글자 — 버튼 자리를 대체한다. */
+const thinkingLine = (text) => el('p', { class: 'thinking-line', role: 'status' }, seatDots(['p', 'p', 'p'], 'thinking'), el('span', {}, text));
+
+/**
+ * 로비 초대 카드(#431 4단계 → 디자인 2차-A 2e): 운영자/봇이 로비 키로 보낸 새 대화방 Welcome.
+ * 상태 3 — 기본(수락 주 44 / 무시 보조) · 수락하는 중(크림 점 3 + 글자, 버튼 자리 대체) · 실패(선 warn + 사람 말 한 줄 + 다시 시도/무시).
+ * 실패 횟수 숫자·기술 사유는 진단 기록(「기록 복사」)으로 — message 가 오면 아래 한 줄로.
+ */
 function inviteCard(invite) {
-  return el('li', { class: 'invite-item', 'data-testid': 'lobby-invite', 'data-room-id': invite.room },
-    el('p', { class: 'invite-head' }, el('span', { class: 'fire', 'aria-hidden': 'true' }, '🔥'), el('strong', {}, invite.name || invite.room)),
-    el('p', { class: 'hint' }, strings.lobby.inviteBody(invite.name || invite.room)),
-    inviteState(invite),
-    invite.message ? el('p', { class: 'feedback', role: 'alert' }, invite.message) : null,
-    el('div', { class: 'actions' },
-      el('button', { type: 'button', class: 'primary', 'data-testid': 'invite-accept', disabled: invite.busy ? 'disabled' : null, onclick: () => invite.onAccept?.() }, invite.failed ? strings.notify.retry : strings.lobby.accept),
-      el('button', { type: 'button', class: 'ghost', 'data-testid': 'invite-ignore', disabled: invite.busy ? 'disabled' : null, onclick: () => invite.onIgnore?.() }, strings.lobby.ignore)));
+  const n = strings.notify2;
+  const name = invite.name || invite.room;
+  const failed = Boolean(invite.failed);
+  return el('li', { class: `invite-item notice-card${failed ? ' failed' : ''}${invite.busy ? ' busy' : ''}`, 'data-testid': 'lobby-invite', 'data-room-id': invite.room, 'data-state': invite.busy ? 'busy' : failed ? 'failed' : 'new' },
+    el('p', { class: 'kicker' }, n.inviteKickerLine(invite.when ?? null)),
+    el('p', { class: 'body-line' }, failed ? n.inviteFailedTitle(name) : n.inviteBody(name)),
+    failed ? el('p', { class: 'plain-fail', role: 'status' }, n.inviteAutoFailed(invite.failed.tries)) : null,
+    invite.message && !failed ? el('p', { class: 'feedback', role: 'alert' }, invite.message) : null,
+    invite.busy
+      ? thinkingLine(n.accepting)
+      : el('div', { class: 'actions' },
+        el('button', { type: 'button', class: failed ? 'secondary' : 'primary', 'data-testid': 'invite-accept', onclick: () => invite.onAccept?.() }, failed ? strings.notify.retry : strings.lobby.accept),
+        el('button', { type: 'button', class: 'secondary dim', 'data-testid': 'invite-ignore', onclick: () => invite.onIgnore?.() }, strings.lobby.ignore)));
 }
 
 /**
- * 새 기기 승인 카드(#574): 같은 사람의 새 기기가 릴레이 우편함에 올린 등록 요청 — 지문 비교 시트로 승인하거나 무시.
- * candidate = {deviceId, actor, fingerprint, expiresAt(ms), busy, message, onApprove, onIgnore}
+ * 새 기기 승인 카드(#574 → 디자인 2차-A 2a 기기 카드): 같은 사람의 새 기기가 릴레이 우편함에 올린 등록 요청.
+ * 기기 ID 모노 18 · 요청·만료 시각(카운트다운 없음) · 「지문 비교 후 승인」 → 비교 시트(openApproveSheet relay) / 무시.
+ * candidate = {deviceId, actor, fingerprint, createdAt(ms), expiresAt(ms), busy, message, onApprove, onIgnore}
  */
 function candidateCard(candidate) {
-  return el('li', { class: 'invite-item candidate-item', 'data-testid': 'device-candidate', 'data-device': candidate.deviceId },
-    el('p', { class: 'invite-head' }, el('span', { class: 'fire', 'aria-hidden': 'true' }, '📱'), el('strong', {}, displayName(candidate.deviceId)), el('code', { class: 'meta' }, candidate.deviceId)),
+  const a = strings.approve2;
+  const times = candidate.createdAt && candidate.expiresAt ? a.times(formatTime(candidate.createdAt), formatTime(candidate.expiresAt)) : candidate.expiresAt ? a.expiresOnly(formatTime(candidate.expiresAt)) : null;
+  return el('li', { class: `invite-item notice-card candidate-item${candidate.busy ? ' busy' : ''}`, 'data-testid': 'device-candidate', 'data-device': candidate.deviceId },
+    el('p', { class: 'kicker' }, strings.notify2.candidateKicker),
+    el('p', { class: 'device-card-id' }, el('span', { class: 'hint' }, a.incoming), el('code', { class: 'mono big-id' }, candidate.deviceId)),
+    times ? el('p', { class: 'meta' }, times) : null,
     el('p', { class: 'hint' }, strings.candidates.cardBody(displayName(candidate.deviceId))),
-    el('code', { class: 'fingerprint small', 'aria-label': strings.candidates.fingerprintLabel }, groupFingerprint(candidate.fingerprint)),
-    candidate.expiresAt ? el('p', { class: 'meta' }, strings.candidates.expires(formatTime(candidate.expiresAt))) : null,
-    candidate.busy ? el('p', { class: 'hint invite-state', role: 'status' }, strings.candidates.busy) : null,
     candidate.message ? el('p', { class: 'feedback', role: 'alert' }, candidate.message) : null,
-    el('div', { class: 'actions' },
-      el('button', { type: 'button', class: 'primary', 'data-testid': 'candidate-approve', disabled: candidate.busy ? 'disabled' : null, onclick: () => candidate.onApprove?.() }, strings.candidates.approve),
-      el('button', { type: 'button', class: 'ghost', 'data-testid': 'candidate-ignore', disabled: candidate.busy ? 'disabled' : null, onclick: () => candidate.onIgnore?.() }, strings.candidates.ignore)));
+    candidate.busy
+      ? thinkingLine(strings.candidates.busy)
+      : el('div', { class: 'actions' },
+        el('button', { type: 'button', class: 'primary', 'data-testid': 'candidate-approve', onclick: () => candidate.onApprove?.() }, strings.candidates.approve),
+        el('button', { type: 'button', class: 'secondary dim', 'data-testid': 'candidate-ignore', onclick: () => candidate.onIgnore?.() }, strings.candidates.ignore)));
 }
 /** 🔔 의 짧은 알림 행(형제 기기 초대 결과 등): 글 + 「확인」. note = {key, text, tone, onDismiss} */
 function noteRow(note) {
-  return el('li', { class: `invite-item note-item status ${note.tone || 'info'}`, 'data-testid': 'notify-note', 'data-key': note.key },
-    el('span', {}, note.text),
-    note.onDismiss ? el('button', { type: 'button', class: 'ghost small', onclick: () => note.onDismiss() }, strings.candidates.noteDismiss) : null);
+  return el('li', { class: `invite-item notice-card note-item tone-${note.tone || 'info'}`, 'data-testid': 'notify-note', 'data-key': note.key },
+    el('p', { class: 'body-line' }, note.text),
+    note.onDismiss ? el('div', { class: 'actions' }, el('button', { type: 'button', class: 'secondary', onclick: () => note.onDismiss() }, strings.candidates.noteDismiss)) : null);
 }
-const candidateFrame = (candidates) => candidates.map((c) => [c.deviceId, c.fingerprint, c.expiresAt ?? null, Boolean(c.busy), c.message ?? null]);
+
+/** 목록 빈 상태의 꺼진 장작 그림(§A3 — 불 그림은 여기만): 장작 2 + 불씨 1점 + 둘러앉을 자리 점 2(흐림). */
+function emptyLogsIcon() {
+  return svgEl('svg', { width: '96', height: '64', viewBox: '0 0 96 64', fill: 'none', 'aria-hidden': 'true', class: 'empty-logs' },
+    svgEl('path', { d: 'M18 50h60M22 58h52', class: 'log', 'stroke-width': '3', 'stroke-linecap': 'round' }),
+    svgEl('path', { d: 'M30 46l14-12M66 46L52 34', class: 'log', 'stroke-width': '3', 'stroke-linecap': 'round' }),
+    svgEl('circle', { cx: '48', cy: '30', r: '3', class: 'ember-spark' }),
+    svgEl('circle', { cx: '20', cy: '40', r: '4', class: 'seat person' }),
+    svgEl('circle', { cx: '76', cy: '40', r: '4', class: 'seat agent' }));
+}
+/** 꺼진 자리 안내 상자의 장작 아이콘(§A6). */
+function closedLogIcon() {
+  return svgEl('svg', { width: '28', height: '28', viewBox: '0 0 24 24', fill: 'none', 'aria-hidden': 'true', class: 'closed-log' },
+    svgEl('path', { d: 'M4 14h12M4 18h12M4 14a2 2 0 1 0 0 4M16 14a2 2 0 1 1 0 4M9 10l4-4M14 10l3-3', 'stroke-width': '1.6', 'stroke-linecap': 'round' }));
+}
+const candidateFrame = (candidates) => candidates.map((c) => [c.deviceId, c.fingerprint, c.createdAt ?? null, c.expiresAt ?? null, Boolean(c.busy), c.message ?? null]);
 
 function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu, onOpenBox = null, sync = null, notice = null, deviceLabel = '', invites = [], candidates = [], notes = [], orderEditing = false, onToggleOrderEdit = null, onMoveRoom = null, onOpenNotify = null }) {
   const syncLabel = syncText(sync);
@@ -343,8 +457,10 @@ function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu,
   const frame = JSON.stringify([notice ? [notice.text, notice.tone] : null, rooms.length > 0, deviceLabel, Boolean(onOpenBox), canReorder, editing, invites.map((i) => [i.room, i.name ?? null, i.message ?? null, Boolean(i.busy), i.failed ? [i.failed.tries, i.failed.reason ?? null] : null]), Boolean(onOpenNotify),
     candidateFrame(candidates), notes.map((n) => [n.key, n.text, n.tone ?? null])]);
   const bellCount = invites.length + candidates.length + notes.length;
+  // 빈 상태(§A3): 꺼진 장작 그림 + 「아직 피운 모닥불이 없습니다 / 운영자가 초대하면 여기에 자리가 생겨요.」 + 초대가 있으면 안내 카드(건수 대신 「있어요」).
   const body = rooms.length === 0
-    ? el('div', { class: 'empty campfire-empty' }, el('span', { class: 'big-fire', 'aria-hidden': 'true' }, '🪵'), el('p', { class: 'empty-title' }, strings.rooms.empty), el('p', { class: 'hint' }, strings.rooms.noRooms))
+    ? el('div', { class: 'empty campfire-empty' }, emptyLogsIcon(), el('p', { class: 'empty-title' }, strings.rooms.empty), el('p', { class: 'hint' }, strings.empty.roomsHint),
+      invites.length > 0 ? el('div', { class: 'card invite-hint-card' }, el('span', { class: 'ember-dot', 'aria-hidden': 'true' }), el('span', {}, strings.empty.invitesInBell)) : null)
     : el('ul', { class: 'rooms', 'aria-label': strings.rooms.listLabel }, rooms.map((room, index) => roomListItem(room, onSelect, room.roomId === currentRoomId,
       editing ? { index, count: rooms.length, onMove: onMoveRoom } : null)));
   return signed(el('aside', { class: 'pane pane-list', 'aria-label': strings.rooms.title, 'data-testid': 'room-list' },
@@ -687,6 +803,8 @@ function buildComposer(room) {
 /** 작성창 위 게이트: ⛔ 정지 > 미참여 > AI 동의 대기(#544 E — 「안내 보기」로 동의 시트를 다시 연다). live() 는 최신 props. */
 function haltBanner(room, live = () => room) {
   const halted = room.halted;
+  // 운영자가 닫은 자리(§A6)는 입력창 자리의 안내 상자가 설명한다 — 기술값(사유 코드)이 있는 정지 배너는 두지 않는다(진단 기록 몫).
+  if (halted && halted.reason === 'room_closed' && !halted.removed) return null;
   if (halted) {
     const detail = strings.halt.detail(halted.seq, halted.committer, halted.at);
     return signed(el('div', { class: 'halt-banner', role: 'alert', 'data-part': 'gate' },
@@ -797,8 +915,8 @@ function buildRoom(room) {
       el('h2', {}, el('span', { class: 'fire', 'aria-hidden': 'true' }, room.halted ? '🪵' : '🔥'), ' ', room.name || room.roomId),
       // 입력 중(#562): 머리글에만(목록 행에는 없음). 서명에 들어가므로 바뀔 때 머리글만 다시 그린다.
       room.typing ? el('span', { class: 'typing', role: 'status', 'aria-live': 'polite', 'data-testid': 'typing' }, room.typing) : null,
-      // 멤버 수는 사람 단위(같은 사람의 PC·폰 = 한 명, 2026-10-28 오너) — 멤버 시트의 사람 묶음과 같은 수.
-      el('span', { class: 'subtitle' }, strings.chat.members(participantCount(members)))),
+      // 멤버 수는 사람 단위(같은 사람의 PC·폰 = 한 명, 2026-10-28 오너) — 멤버 시트의 사람 묶음과 같은 수. 닫힌 방은 「불이 꺼진 자리」(§A6).
+      el('span', { class: 'subtitle' }, room.halted?.reason === 'room_closed' ? strings.closed.subtitle : strings.chat.members(participantCount(members)))),
     el('div', { class: 'tools' },
       // 방별 알림(mute.go): 켜짐 🔔 / 꺼짐 🔕. muted 가 boolean 일 때만(옛 릴레이·미참여·정지 방은 버튼 없음).
       typeof room.muted === 'boolean' ? el('button', { type: 'button', class: 'ghost small mute-toggle', 'data-testid': 'room-mute',
@@ -808,7 +926,7 @@ function buildRoom(room) {
       room.onOpenBox ? el('button', { type: 'button', class: 'ghost small box-toggle', 'data-testid': 'open-box', 'aria-label': strings.box.toggle, onclick: () => liveProps.get(screen)?.onOpenBox?.() }, '🗂') : null,
       el('button', { type: 'button', class: 'ghost small', onclick: () => liveProps.get(screen)?.onOpenMembers?.() }, strings.chat.membersButton),
       el('button', { type: 'button', class: 'secondary small', 'data-testid': 'open-invite', disabled: room.joined ? null : true, onclick: () => liveProps.get(screen)?.onOpenInvite?.() }, strings.chat.invite))),
-  JSON.stringify([room.name, room.roomId, participantCount(members), Boolean(room.halted), Boolean(room.joined), Boolean(room.onOpenBox), room.typing ?? '', typeof room.muted === 'boolean' ? room.muted : null]));
+  JSON.stringify([room.name, room.roomId, participantCount(members), Boolean(room.halted), room.halted?.reason ?? null, Boolean(room.joined), Boolean(room.onOpenBox), room.typing ?? '', typeof room.muted === 'boolean' ? room.muted : null]));
   const notice = room.notice?.text ? signed(el('p', { class: `status ${room.notice.tone || 'info'}`, role: 'status', 'data-part': 'notice' }, room.notice.text), JSON.stringify(room.notice)) : null;
   const list = el('ul', { class: 'timeline', tabindex: '-1', 'aria-live': 'polite', 'aria-label': strings.chat.timelineLabel, 'data-testid': 'timeline' },
     room.timeline.length === 0 ? signed(el('li', { class: 'empty', 'data-key': 'empty' }, strings.chat.empty), 'empty') : timelineRows(room.timeline, room.onOpenAttachment, room.onRetryPreview ?? null),
@@ -819,8 +937,17 @@ function buildRoom(room) {
   const composer = buildComposer(room);
   applyComposerState(composer, { enabled: canCompose, sending: room.sending });
   const composerWrap = el('div', { class: 'composer-wrap', 'data-part': 'composer' }, composer);
-  const parts = { header, notice, lastSent: lastSentBar(room), gate: haltBanner(room, () => liveProps.get(screen)), timeline: timelineWrap, resend: resendBar(room.attachmentPending), composer: composerWrap };
-  const screen = el('section', { class: 'room-screen', 'data-room-id': room.roomId,
+  // 꺼진 자리(§A6, 운영자가 닫은 방): 입력창 자리를 안내 상자로 — 장작 아이콘 + 한 문장 + 운영자 안내. 작성창 노드는 남기고(IME·같은 방 재렌더 규칙) CSS 로 숨긴다.
+  const closed = room.halted && (room.halted.reason === 'room_closed')
+    ? signed(el('div', { class: 'closed-notice', role: 'status', 'data-part': 'closed' }, closedLogIcon(),
+      el('div', { class: 'texts' }, el('strong', {}, strings.closed.title), el('p', { class: 'hint' }, strings.closed.body))), 'closed')
+    : null;
+  // 연결 배너(§A4): 릴레이에 닿지 않을 때만(app.js 가 offline 을 준다). 면 warn 10% · 선 45% · 반경 12.
+  const banner = room.offline
+    ? signed(el('div', { class: 'relay-banner warn', role: 'status', 'data-part': 'banner' }, seatDots(['p', 'p', 'p'], 'thinking'), el('span', {}, strings.closed.relayUnreachable)), 'offline')
+    : null;
+  const parts = { header, banner, notice, lastSent: lastSentBar(room), gate: haltBanner(room, () => liveProps.get(screen)), timeline: timelineWrap, resend: resendBar(room.attachmentPending), closed, composer: composerWrap };
+  const screen = el('section', { class: 'room-screen', 'data-room-id': room.roomId, 'data-halted': room.halted ? 'true' : null, 'data-closed': closed ? 'true' : null,
     // 방 화면 어디에나 파일을 끌어다 놓으면 첨부로 보낸다(#480 B). 글자 선택을 끌 때는 표시도 켜지 않는다.
     ondragenter: (event) => { if (transferHasFiles(event.dataTransfer)) { event.preventDefault(); screen.dataset.drop = 'over'; } },
     ondragover: (event) => { if (transferHasFiles(event.dataTransfer)) { event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'; screen.dataset.drop = 'over'; } },
@@ -845,11 +972,13 @@ function buildRoom(room) {
   return { screen, parts, mount, canCompose };
 }
 
-const PART_ORDER = ['header', 'notice', 'lastSent', 'gate', 'timeline', 'resend', 'composer'];
+const PART_ORDER = ['header', 'banner', 'notice', 'lastSent', 'gate', 'timeline', 'resend', 'closed', 'composer'];
 
 /** 같은 방 재렌더: 작성창은 절대 교체하지 않고(IME), 타임라인은 행만 맞추고, 나머지는 서명이 바뀐 것만 교체. */
 function patchRoomScreen(screen, built, room) {
   liveProps.set(screen, room);
+  if (room.halted) screen.dataset.halted = 'true'; else delete screen.dataset.halted;
+  if (built.parts.closed) screen.dataset.closed = 'true'; else delete screen.dataset.closed;
   for (const name of PART_ORDER) {
     const fresh = built.parts[name];
     const old = screen.querySelector(`:scope > [data-part="${name}"]`);
@@ -1024,52 +1153,93 @@ export function openMenuSheet(root, { items, onClose }) {
   return { close };
 }
 
-/** 🔔 알림 시트(#521): 받은 초대 목록 — 수락/다시 시도/무시. 누르면 닫고 처리한다(결과는 목록·배지에 반영). */
+/**
+ * 🔔 알림 시트(#521 → 디자인 2차-A 2e): 머리 「알림」 + 오른쪽 위 글자 버튼 「기록 복사」(토스트 「복사했어요」).
+ * 카드 = 새 기기 승인(2a 기기 카드) → 새 자리 초대(3상태) → 짧은 알림. 빈 상태 = 흐린 자리 점 3 + 「새 알림이 없어요」 + 한 줄.
+ * 수락·승인·무시는 닫고 처리한다(결과는 목록·배지에 반영).
+ */
 export function openNotifySheet(root, { invites = [], candidates = [], notes = [], onCopyLogs = null, onClose }) {
   const { dialog, close } = openSheet(root, { className: 'notify', labelledBy: 'notify-title', onClose });
+  const n = strings.notify2;
   const wrapped = invites.map((i) => ({ ...i, onAccept: () => { close(); i.onAccept?.(); }, onIgnore: () => { close(); i.onIgnore?.(); } }));
   const wrappedCandidates = candidates.map((c) => ({ ...c, onApprove: () => { close(); c.onApprove?.(); }, onIgnore: () => { close(); c.onIgnore?.(); } }));
-  const wrappedNotes = notes.map((n) => ({ ...n, onDismiss: n.onDismiss ? () => { close(); n.onDismiss(); } : null }));
+  const wrappedNotes = notes.map((nt) => ({ ...nt, onDismiss: nt.onDismiss ? () => { close(); nt.onDismiss(); } : null }));
   const empty = wrapped.length === 0 && wrappedCandidates.length === 0 && wrappedNotes.length === 0;
+  const copyLogs = onCopyLogs
+    ? el('button', { type: 'button', class: 'more sheet-action', 'data-testid': 'notify-copy-logs', 'aria-label': strings.notify.copyLogs, title: strings.notify.copyLogs, onclick: async () => {
+      const ok = await onCopyLogs();
+      sheetToast(dialog, ok === false ? strings.app.copyFailed : n.copied);
+    } }, n.copyLogsShort)
+    : null;
   setChildren(dialog,
-    el('h2', { id: 'notify-title' }, strings.notify.title),
-    empty ? el('p', { class: 'hint', 'data-testid': 'notify-empty' }, strings.notify.empty) : null,
+    el('div', { class: 'sheet-head' },
+      el('button', { type: 'button', class: 'icon ghost close', 'aria-label': strings.close, title: strings.close, onclick: close }, '✕'),
+      el('h2', { id: 'notify-title' }, strings.notify.title),
+      copyLogs ?? el('span', { class: 'sheet-action-space', 'aria-hidden': 'true' })),
+    empty
+      ? el('div', { class: 'empty notify-empty', 'data-testid': 'notify-empty' }, seatDots(['p', 'p', 'a'], 'dim'), el('p', { class: 'empty-title' }, n.empty), el('p', { class: 'hint' }, n.emptyBody))
+      : null,
     wrappedCandidates.length ? el('ul', { class: 'invite-list', 'aria-label': strings.notify.candidateNew }, wrappedCandidates.map(candidateCard)) : null,
     wrapped.length ? el('ul', { class: 'invite-list', 'aria-label': strings.notify.inviteNew }, wrapped.map(inviteCard)) : null,
     wrappedNotes.length ? el('ul', { class: 'invite-list', 'aria-label': strings.notify.notes }, wrappedNotes.map(noteRow)) : null,
-    el('p', { class: 'hint' }, strings.notify.hint),
-    closeRow(close, onCopyLogs ? el('button', { type: 'button', class: 'ghost', 'data-testid': 'notify-copy-logs', onclick: () => onCopyLogs() }, strings.notify.copyLogs) : null));
+    empty ? null : el('p', { class: 'hint notify-hint' }, n.hint));
   return { close };
 }
 
-/** 설정 시트의 「화면」 행(한데 디자인 1차): 밤(기본) · 낮불 · 시스템 따라가기 — 라디오, 고르면 바로 적용(theme.js). */
+/**
+ * 설정 「화면」(한데 디자인 1차 → 2차-A 칩 탭): 밤 · 낮불 · 시스템 — 라디오를 칩 탭(높이 36·반경 10)으로 입힌다. 고르면 바로 적용(theme.js).
+ * testid theme-row · theme-night/day/auto 는 그대로. 아래 힌트는 고른 테마 설명 한 줄.
+ */
 function themeRow(theme, onTheme) {
-  const t = strings.settings;
-  const options = [['night', t.themeNight], ['day', t.themeDay], ['auto', t.themeAuto]];
+  const t = strings.settings2;
+  const options = [['night', t.themeChipNight, t.themeNightHint], ['day', t.themeChipDay, t.themeDayHint], ['auto', t.themeChipAuto, t.themeAutoHint]];
+  const hint = el('p', { class: 'hint theme-hint' }, options.find(([value]) => value === theme)?.[2] ?? t.themeNightHint);
   return el('fieldset', { class: 'theme-row', 'data-testid': 'theme-row' },
-    el('legend', {}, t.theme),
-    options.map(([value, label]) => el('label', { class: 'theme-option' },
-      el('input', { type: 'radio', name: 'theme', value, checked: theme === value ? true : null, 'data-testid': `theme-${value}`, onchange: () => onTheme(value) }),
-      el('span', { class: 'name' }, label))));
+    el('legend', { class: 'visually-hidden' }, strings.settings.theme),
+    el('div', { class: 'chip-tabs', role: 'radiogroup', 'aria-label': strings.settings.theme },
+      options.map(([value, label, line]) => el('label', { class: 'chip-tab theme-option' },
+        el('input', { type: 'radio', name: 'theme', value, checked: theme === value ? true : null, 'data-testid': `theme-${value}`, onchange: () => { hint.textContent = line; onTheme(value); } }),
+        el('span', { class: 'name' }, label)))),
+    hint);
 }
 
-export function openSettingsSheet(root, { deviceId, actor, fingerprint, subject = null, origin = '', onCopyRegistration, onOpenApprove = null, onOpenDevices = null, onWipe, onClose, theme = null, onTheme = null }) {
+/** 설정 칸: 머리 13/600 + 카드(행 48). tone 'danger' 면 머리가 warn 색. */
+const section = (title, body, tone = null) => el('section', { class: `section${tone ? ` ${tone}` : ''}`, 'aria-label': title },
+  el('h3', { class: 'section-title' }, title), body);
+const sectionRow = (main, aside = null, attrs = {}) => el('div', { class: 'section-row', ...attrs }, el('div', { class: 'texts' }, main), aside);
+
+/**
+ * 설정 시트(디자인 2차-A §A5, 순서 = 자주 → 드물게 → 위험): 서버 → 화면 → 이 기기(ID + 복사 · 「운영자용 정보」 접힘) →
+ * 기기 관리 → 위험 구역(「이 기기 지우기」 하나만). 웹에는 서버 바꾸기·로그아웃·버전이 없어 계정·정보 칸은 없다.
+ * 운영자용 정보: 지문(묶음) · 이름 · 로그인 주체 · 정책 revision · 등록 정보 복사 · 신뢰 기기 승인(붙여넣기).
+ */
+export function openSettingsSheet(root, { deviceId, actor, fingerprint, subject = null, origin = '', policyRevision = null, onCopyRegistration, onOpenApprove = null, onOpenDevices = null, onWipe, onClose, theme = null, onTheme = null }) {
   const { dialog, close } = openSheet(root, { className: 'settings', labelledBy: 'settings-title', onClose });
+  const t = strings.settings2;
+  const operatorInfo = el('details', { class: 'operator-info' },
+    el('summary', { class: 'section-row' }, el('span', {}, t.operatorInfo), el('span', { class: 'chevron', 'aria-hidden': 'true' }, '▸')),
+    el('div', { class: 'operator-body' },
+      el('dl', { class: 'facts' },
+        fact(strings.settings.fingerprintLabel, el('code', { class: 'mono fingerprint-inline', 'aria-label': strings.settings.fingerprintLabel }, groupFingerprint(fingerprint))),
+        fact(strings.settings.actorLabel, actor),
+        fact(strings.settings.subjectLabel, subject || el('span', { class: 'meta' }, strings.enroll.subjectUnknown), Boolean(subject)),
+        policyRevision != null ? fact(t.policyRevision, String(policyRevision), true) : null),
+      el('p', { class: 'hint' }, t.lobbyHint),
+      el('div', { class: 'menu-items' },
+        el('button', { type: 'button', class: 'secondary block', onclick: async () => { const ok = await onCopyRegistration?.(); sheetToast(dialog, ok === false ? strings.app.copyFailed : t.copied); } }, strings.settings.copyRegistration),
+        onOpenApprove ? el('button', { type: 'button', class: 'secondary block', onclick: () => { close(); onOpenApprove(); } }, strings.settings.openApprove) : null)));
   setChildren(dialog,
     el('h2', { id: 'settings-title' }, strings.settings.title),
-    typeof onTheme === 'function' ? themeRow(theme ?? 'night', onTheme) : null,
-    el('dl', { class: 'facts' },
-      fact(strings.settings.deviceIdLabel, deviceId, true),
-      fact(strings.settings.actorLabel, actor),
-      fact(strings.settings.fingerprintLabel, fingerprintNode(fingerprint)),
-      fact(strings.settings.subjectLabel, subject || el('span', { class: 'meta' }, strings.enroll.subjectUnknown), Boolean(subject)),
-      origin ? fact(strings.settings.originLabel, origin, true) : null),
-    el('div', { class: 'menu-items' },
-      el('button', { type: 'button', class: 'block', onclick: () => onCopyRegistration?.() }, strings.settings.copyRegistration),
-      onOpenDevices ? el('button', { type: 'button', class: 'block', 'data-testid': 'open-devices', onclick: () => { close(); onOpenDevices(); } }, strings.settings.openDevices) : null,
-      onOpenApprove ? el('button', { type: 'button', class: 'block', onclick: () => { close(); onOpenApprove(); } }, strings.settings.openApprove) : null,
-      el('button', { type: 'button', class: 'danger block', onclick: () => { close(); onWipe?.(); } }, strings.settings.wipe)),
-    el('p', { class: 'hint' }, strings.settings.wipeHint),
+    origin ? section(t.server, el('div', { class: 'section-card' }, sectionRow([el('span', {}, strings.settings.originLabel), el('code', { class: 'mono meta' }, origin)]))) : null,
+    typeof onTheme === 'function' ? section(t.screen, el('div', { class: 'section-card padded' }, themeRow(theme ?? 'night', onTheme))) : null,
+    section(t.thisDevice, el('div', { class: 'section-card' },
+      sectionRow([el('span', { class: 'meta' }, strings.settings.deviceIdLabel), el('code', { class: 'mono' }, deviceId)], copyLink(dialog, () => copyText(deviceId)), { 'data-testid': 'settings-device-id' }),
+      operatorInfo)),
+    onOpenDevices ? section(t.deviceManage, el('div', { class: 'section-card' },
+      el('button', { type: 'button', class: 'section-row link-row', 'data-testid': 'open-devices', onclick: () => { close(); onOpenDevices(); } }, el('span', {}, strings.settings.openDevices), el('span', { class: 'chevron', 'aria-hidden': 'true' }, '›')))) : null,
+    section(t.danger, el('div', { class: 'danger-zone' },
+      el('p', { class: 'hint' }, t.wipeDangerBody),
+      el('button', { type: 'button', class: 'btn-danger block', onclick: () => { close(); onWipe?.(); } }, strings.settings.wipe)), 'danger'),
     closeRow(close));
   return { close };
 }
@@ -1178,14 +1348,18 @@ export function openInviteSheet(root, { roomId, roomName = roomId, members = [],
  * 신뢰 기기 승인(E2). mode 'paste'(기존): 등록 JSON → 지문 보기 → 비교 → 승인 서명 → 증거 JSON 복사(운영자에게 전달).
  * mode 'relay'(#574): 우편함 후보 `candidate = {deviceId, fingerprint}` 로 비교 단계부터 시작, onApprove() 가 릴레이에 올리고 끝나면 완료 문구(JSON 없음).
  */
-export function openApproveSheet(root, { onOffer = null, onApprove, onClose, mode = 'paste', candidate: initial = null }) {
+export function openApproveSheet(root, { onOffer = null, onApprove, onReject = null, onCopyDiagnostics = null, onClose, mode = 'paste', candidate: initial = null }) {
   const { dialog, close } = openSheet(root, { className: 'approve', labelledBy: 'approve-title', onClose });
+  const a = strings.approve2;
   const relay = mode === 'relay';
   let step = relay && initial ? 'compare' : 'input';
   let candidate = relay ? initial : null;
   let evidence = '';
   let error = null;
   let busy = false;
+  // 지문 대조 게이트(§A1): 행마다 직접 눌러 표시해야 하고, 전부 표시되기 전까지 「승인」은 꺼짐. 후보가 바뀌면 표시를 비운다.
+  let ticks = new Set();
+  let rejected = null;   // 「다릅니다」를 누른 기기 — 결과 화면 문구용
   const textarea = el('textarea', { id: 'f-candidate', name: 'candidate', rows: '8', placeholder: strings.approve.placeholder, 'aria-label': strings.approve.field, spellcheck: 'false' });
   const run = async (action) => {
     busy = true; error = null; render();
@@ -1196,31 +1370,74 @@ export function openApproveSheet(root, { onOffer = null, onApprove, onClose, mod
     const json = textarea.value.trim();
     if (!json) throw new Error(strings.room.candidateMissing('device_id'));
     candidate = await onOffer(json);
+    ticks = new Set();
     step = 'compare';
   });
   const approve = () => run(async () => { evidence = await onApprove(); step = 'done'; });
+  const reject = () => {
+    rejected = candidate;
+    step = 'rejected'; candidate = null; ticks = new Set();
+    render();
+    onReject?.(rejected);
+  };
+  const copyDiagnostics = () => (onCopyDiagnostics ? onCopyDiagnostics() : copyText(`${rejected?.deviceId ?? ''}\n${groupFingerprint(rejected?.fingerprint ?? '')}`));
+  const compareBody = () => {
+    const rows = fingerprintRows(candidate.fingerprint);
+    const total = rows.length;
+    const done = ticks.size >= total && total > 0;
+    const times = candidate.createdAt && candidate.expiresAt ? a.times(formatTime(candidate.createdAt), formatTime(candidate.expiresAt)) : candidate.expiresAt ? a.expiresOnly(formatTime(candidate.expiresAt)) : null;
+    const approveButton = el('button', { type: 'button', class: 'primary block tall', 'data-testid': 'approve-accept', disabled: busy || !done ? true : null,
+      'aria-describedby': done ? null : 'approve-gate-hint', onclick: approve }, busy ? a.signing : done ? a.approve : a.disabled(total));
+    return [
+      el('div', { class: 'card device-card' },
+        el('span', { class: 'hint' }, a.incoming),
+        el('code', { class: 'mono big-id' }, candidate.deviceId),
+        times ? el('span', { class: 'meta' }, times) : null),
+      el('p', { class: 'compare' }, a.compareTitle),
+      renderFingerprintRows(rows, { ticks, onToggle: (index) => { if (busy) return; if (ticks.has(index)) ticks.delete(index); else ticks.add(index); render(); }, label: strings.approve.fingerprint, 'data-testid': 'approve-fingerprint' }),
+      el('p', { class: 'hint progress-line', role: 'status', 'data-testid': 'approve-progress' }, done ? a.allMatched : a.progress(ticks.size, total)),
+      el('div', { class: 'warn-box', role: 'note' }, el('span', { class: 'warn-dot', 'aria-hidden': 'true' }), el('span', {}, a.warning)),
+      el('span', { id: 'approve-gate-hint', class: 'visually-hidden' }, a.disabledAccessibility(total)),
+      el('div', { class: 'column approve-actions' },
+        approveButton,
+        el('div', { class: 'actions' },
+          el('button', { type: 'button', class: 'btn-danger', 'data-testid': 'approve-reject', disabled: busy || null, onclick: reject }, a.mismatch),
+          el('button', { type: 'button', class: 'secondary', 'data-testid': 'approve-later', disabled: busy || null, onclick: close }, a.later))),
+    ];
+  };
   const render = () => {
     const body = step === 'input'
       ? [el('p', { class: 'hint' }, strings.approve.intro),
         el('div', { class: 'field' }, el('label', { for: 'f-candidate' }, strings.approve.field), textarea),
         el('button', { type: 'button', class: 'primary block', disabled: busy || null, onclick: offer }, busy ? strings.approve.checking : strings.approve.show)]
       : step === 'compare'
-        ? [el('dl', { class: 'facts' }, fact(strings.approve.candidate, candidate.deviceId, true), fact(strings.approve.fingerprint, fingerprintNode(candidate.fingerprint))),
-          el('p', { class: 'compare' }, relay ? strings.approve.relayCompare : strings.approve.compare),
-          el('div', { class: 'actions' },
-            el('button', { type: 'button', class: 'primary', 'data-testid': 'approve-accept', disabled: busy || null, onclick: approve }, busy ? strings.approve.signing : strings.approve.accept),
-            el('button', { type: 'button', class: 'danger', 'data-testid': 'approve-reject', disabled: busy || null, onclick: () => { step = 'rejected'; candidate = null; render(); } }, strings.approve.reject))]
+        ? compareBody()
         : step === 'done'
           ? relay
-            ? [statusLine(strings.approve.relayDone(initial?.deviceId ?? ''), 'ok', { 'data-testid': 'approve-done' })]
+            // 성공 표시는 글자로만(체크 배지 없음): 크림 점 3 + 「○○를 승인했어요」 + 자동 초대 안내.
+            ? [el('div', { class: 'result-state', role: 'status', 'data-testid': 'approve-done' },
+                seatDots(['p', 'p', 'p']),
+                el('p', { class: 'result-title' }, a.approvedTitle(initial?.deviceId ?? '')),
+                el('p', { class: 'hint' }, a.approvedBody)),
+              el('button', { type: 'button', class: 'primary block', onclick: close }, a.confirm)]
             : [statusLine(strings.room.approvalSigned, 'ok'),
               el('div', { class: 'json-block' },
                 el('div', { class: 'row between' }, el('span', { class: 'label' }, strings.approve.evidenceTitle), copyButton(() => copyText(evidence))),
                 el('pre', { class: 'json', tabindex: '0' }, evidence)),
               el('p', { class: 'hint' }, strings.approve.evidenceHint)]
-          : [statusLine(strings.approve.rejected, 'warn'),
+          : [el('div', { class: 'result-state', role: 'status', 'data-testid': 'approve-rejected' },
+              el('span', { class: 'seat-dot ash', 'aria-hidden': 'true' }),
+              el('p', { class: 'result-title' }, a.rejectedTitle),
+              el('p', { class: 'hint' }, a.rejectedBody(rejected?.deviceId ?? ''))),
+            el('button', { type: 'button', class: 'secondary block', onclick: async () => { const ok = await copyDiagnostics(); sheetToast(dialog, ok === false ? strings.app.copyFailed : strings.settings2.copied); } }, a.copyDiagnostics),
             relay ? null : el('button', { type: 'button', class: 'block', onclick: () => { step = 'input'; render(); textarea.focus(); } }, strings.retry)];
-    setChildren(dialog, el('h2', { id: 'approve-title' }, strings.approve.title), body, statusLine(error, 'danger'), closeRow(close));
+    // 비교 단계는 「나중에」가, 릴레이 승인 완료는 「확인」이 닫는다 — 그 밖은 「닫기」 행.
+    const hasOwnClose = step === 'compare' || (step === 'done' && relay);
+    setChildren(dialog,
+      el('h2', { id: 'approve-title' }, relay ? a.title : strings.approve.title),
+      body,
+      statusLine(error, 'danger'),
+      hasOwnClose ? null : closeRow(close));
   };
   render();
   if (step === 'input') textarea.focus();

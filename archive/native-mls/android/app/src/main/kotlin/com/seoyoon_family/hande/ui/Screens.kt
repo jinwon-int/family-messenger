@@ -2,12 +2,17 @@
 // #574 PR 4: 등록 대기의 형제 승인 모드(큰 지문·만료) · 목록 위의 「새 기기 승인」 카드 · 「내 기기」(registrar 부여/해제).
 // #584 PR 3: 처음 설정의 서버 주소는 도메인만 — 「서버 찾기」(`.well-known/hande`) 가 서버 이름·주소를 보여 준 뒤 저장, 목록 제목 아래 서버 이름.
 // #584 Play 출시: 「설정」(정보 · 개인정보처리방침 · 계정 및 데이터 삭제 링크 · 「이 기기 지우기」) — 등록 대기·로그인·목록·오류 화면 어디서나 연다(Play 정책: 앱 안 링크 + 앱 내 삭제 경로).
-//   Android 16(targetSdk 36)은 edge-to-edge 강제(adjustResize 무효) → 입력 화면은 `imePadding`, 뒤로가기는 `BackHandler`(predictive back 기본 켜짐).
+//   Android 16(targetSdk 36)은 edge-to-edge 강제(adjustResize 무효) → 입력 화면은 `imePadding`/`safeDrawingPadding`, 뒤로가기는 `BackHandler`(predictive back 기본 켜짐).
 // 한데 디자인 1차(2026-10-31, docs/design/HANDE-DESIGN-SYSTEM.md): 토큰은 `ui/theme/HandeTheme.kt`(`LocalHandeColors`), 모닥불 배경 위에 투명 Scaffold/앱바 ·
 //   목록 = 「자리」(불 세기 불꽃 · 좌석 점 · 안 읽음 주황 점; 「불지기」 배지는 오너 결정 #613/#540 으로 없음) · 대화 = 말풍선(면/불/파랑) + 알약 입력창 · 설정 「화면」(밤/낮불).
+// 한데 디자인 2차-A(§A1~A6, iOS 전 화면의 M3 판 — 조각은 `ui/theme/HandeKit.kt`): 온보딩 4단계(진행 막대 · ① 서버 찾기 → ② 이름 → ③ 가족 로그인 → ④ 이 기기 등록) ·
+//   새 기기 승인 전체 화면(`ApproveScreen`: 8행을 모두 눌러 표시해야 「승인」) · 목록 빈 상태 그림 · 꺼진 자리 안내 상자 · 설정 재배치(자주 → 드물게 → 위험).
+//   Android 에 데이터가 없는 것(알림함·순서 편집·오프닝·로그아웃·서버 바꾸기·전송 상태·타닥타닥·폐기)은 그리지 않는다. 허브 호출·단계 매핑은 그대로.
 package com.seoyoon_family.hande.ui
 
+import android.content.ActivityNotFoundException
 import android.content.Context
+import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -16,6 +21,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -33,27 +39,18 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Badge
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -85,7 +82,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -96,6 +94,7 @@ import com.seoyoon_family.hande.core.AgentActors
 import com.seoyoon_family.hande.core.AppLogin
 import com.seoyoon_family.hande.core.CandidateUi
 import com.seoyoon_family.hande.core.DeviceHub
+import com.seoyoon_family.hande.core.FingerprintRows
 import com.seoyoon_family.hande.core.HandeThemeMode
 import com.seoyoon_family.hande.core.HubUi
 import com.seoyoon_family.hande.core.LoginLauncher
@@ -107,10 +106,32 @@ import com.seoyoon_family.hande.core.ServerDiscovery
 import com.seoyoon_family.hande.core.Settings
 import com.seoyoon_family.hande.core.StatusUi
 import com.seoyoon_family.hande.ui.theme.CampfireBackground
+import com.seoyoon_family.hande.ui.theme.Chevron
+import com.seoyoon_family.hande.ui.theme.ChipTabs
+import com.seoyoon_family.hande.ui.theme.CreamButton
+import com.seoyoon_family.hande.ui.theme.DangerButton
+import com.seoyoon_family.hande.ui.theme.DetailDisclosure
+import com.seoyoon_family.hande.ui.theme.DotsRow
+import com.seoyoon_family.hande.ui.theme.EmptyCampfireArt
+import com.seoyoon_family.hande.ui.theme.FieldLabel
+import com.seoyoon_family.hande.ui.theme.FingerprintList
 import com.seoyoon_family.hande.ui.theme.FlameIcon
+import com.seoyoon_family.hande.ui.theme.HandeCard
+import com.seoyoon_family.hande.ui.theme.HandeField
+import com.seoyoon_family.hande.ui.theme.HandeToast
+import com.seoyoon_family.hande.ui.theme.HandeWordmark
+import com.seoyoon_family.hande.ui.theme.LinkButton
 import com.seoyoon_family.hande.ui.theme.LocalHandeColors
 import com.seoyoon_family.hande.ui.theme.LogIcon
+import com.seoyoon_family.hande.ui.theme.OnboardingTitle
+import com.seoyoon_family.hande.ui.theme.PrimaryButton
 import com.seoyoon_family.hande.ui.theme.SeatDot
+import com.seoyoon_family.hande.ui.theme.SecondaryButton
+import com.seoyoon_family.hande.ui.theme.SectionCard
+import com.seoyoon_family.hande.ui.theme.SectionHeader
+import com.seoyoon_family.hande.ui.theme.SectionRow
+import com.seoyoon_family.hande.ui.theme.StepBar
+import com.seoyoon_family.hande.ui.theme.WarnBox
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -120,6 +141,7 @@ import java.util.Locale
 /**
  * 뿌리: 모닥불 배경(`CampfireBackground`) 위에 화면 하나. `themeMode`/`onThemeMode` 는 설정의 「화면」(밤/낮불) —
  * `MainActivity` 가 `HandeTheme` 모드를 바꾸고 `Settings.theme` 에 적는다(기본값은 다른 호출처가 그대로 컴파일되게 둔 것).
+ * `approveId`(2차-A): 목록 카드의 「지문 비교」가 고른 후보 — 전체 화면 `ApproveScreen` 으로 연다(Ready 단계에서만).
  */
 @Composable
 fun HandeRoot(hub: DeviceHub, themeMode: HandeThemeMode = HandeThemeMode.NIGHT, onThemeMode: (HandeThemeMode) -> Unit = {}) {
@@ -129,19 +151,34 @@ fun HandeRoot(hub: DeviceHub, themeMode: HandeThemeMode = HandeThemeMode.NIGHT, 
 
     var showDevices by rememberSaveable { mutableStateOf(false) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    var approveId by rememberSaveable { mutableStateOf<String?>(null) }
     val settingsOpen = showSettings && ui.phase !is Phase.Setup
+    val approveTarget = approveId
+    val approveOpen = !settingsOpen && approveTarget != null && ui.phase is Phase.Ready
 
-    // 시스템 뒤로가기(predictive back 포함): 설정 → 대화 → 내 기기 순으로 한 단계씩. 아무것도 열려 있지 않으면 기본 동작(앱 나가기).
+    // 시스템 뒤로가기(predictive back 포함): 설정 → 승인 → 대화 → 내 기기 순으로 한 단계씩. 아무것도 열려 있지 않으면 기본 동작(앱 나가기).
     BackHandler(enabled = settingsOpen) { showSettings = false }
-    BackHandler(enabled = !settingsOpen && openRoom != null) { openRoom = null }
-    BackHandler(enabled = !settingsOpen && openRoom == null && showDevices) { showDevices = false }
+    BackHandler(enabled = approveOpen) { approveId = null }
+    BackHandler(enabled = !settingsOpen && !approveOpen && openRoom != null) { openRoom = null }
+    BackHandler(enabled = !settingsOpen && !approveOpen && openRoom == null && showDevices) { showDevices = false }
 
     // 「이 기기 지우기」: 설정 화면과 등록 대기(409 `device_exists`, #574 후속)의 버튼이 같은 동작 — 열린 화면을 닫고 허브가 지운 뒤 처음 설정으로.
-    val wipe: () -> Unit = { showSettings = false; openRoom = null; showDevices = false; hub.wipeDevice(scope) }
+    val wipe: () -> Unit = { showSettings = false; openRoom = null; showDevices = false; approveId = null; hub.wipeDevice(scope) }
 
     CampfireBackground {
         if (settingsOpen) {
-            SettingsScreen(ui, onBack = { showSettings = false }, onWipe = wipe, onNoticeShown = hub::clearNotice, themeMode = themeMode, onThemeMode = onThemeMode)
+            val onDevices: (() -> Unit)? = if (ui.phase is Phase.Ready) ({ showSettings = false; openRoom = null; showDevices = true }) else null
+            SettingsScreen(
+                ui, onBack = { showSettings = false }, onWipe = wipe, onNoticeShown = hub::clearNotice, themeMode = themeMode, onThemeMode = onThemeMode,
+                relayHost = hub.settings.relayUrl?.substringAfter("://")?.substringBefore('/'), onDevices = onDevices,
+            )
+            return@CampfireBackground
+        }
+        if (approveOpen && approveTarget != null) {
+            ApproveScreen(
+                ui, deviceId = approveTarget, onApprove = { hub.approve(scope, it) }, onIgnore = { hub.dismissCandidate(scope, it) },
+                onClose = { approveId = null }, onNoticeShown = hub::clearNotice,
+            )
             return@CampfireBackground
         }
         when (val phase = ui.phase) {
@@ -165,7 +202,7 @@ fun HandeRoot(hub: DeviceHub, themeMode: HandeThemeMode = HandeThemeMode.NIGHT, 
                 } else {
                     RoomListScreen(
                         ui, onOpen = { openRoom = it }, onRequestJoin = { hub.requestJoin(scope) },
-                        onApprove = { hub.approve(scope, it) }, onIgnore = { hub.dismissCandidate(scope, it) }, onDevices = { showDevices = true },
+                        onCompare = { approveId = it }, onIgnore = { hub.dismissCandidate(scope, it) }, onDevices = { showDevices = true },
                         onSettings = { showSettings = true }, onNoticeShown = hub::clearNotice,
                     )
                 }
@@ -174,8 +211,11 @@ fun HandeRoot(hub: DeviceHub, themeMode: HandeThemeMode = HandeThemeMode.NIGHT, 
     }
 }
 
-/** 시각 한 줄(만료 표시). */
+/** 시각 한 줄(요청·만료 표시 — 시각만, 카운트다운 없음). */
 private fun clock(ms: Long): String = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ms))
+
+/** 릴레이 호스트(표시용): `https://relay.example/` → `relay.example`. */
+private fun hostOf(url: String): String = url.substringAfter("://").substringBefore('/')
 
 @Composable
 private fun MessageScreen(title: String, body: String, action: (@Composable () -> Unit)? = null) {
@@ -199,63 +239,24 @@ private fun openPolicy(context: Context, url: String, onFailed: () -> Unit) {
     }
 }
 
-/** 설정 화면·처음 설정의 정책 항목 한 줄(제목 · 설명 · 주소). 바탕은 투명(모닥불 배경). */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun PolicyLink(title: String, hint: String, url: String, onFailed: () -> Unit) {
-    val context = LocalContext.current
-    ListItem(
-        headlineContent = { Text(title) },
-        supportingContent = { Text(hint, style = MaterialTheme.typography.bodySmall) },
-        overlineContent = { Text(url, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.labelSmall) },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-        modifier = Modifier.fillMaxWidth().clickable { openPolicy(context, url, onFailed) },
-    )
+/** 「등록 정보 공유」: 시스템 공유 시트(ACTION_SEND, text/plain). 받을 앱이 없으면 `onFailed`(호출처가 클립보드로 대신한다). */
+private fun shareText(context: Context, text: String, onFailed: () -> Unit) {
+    val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
+    try {
+        context.startActivity(Intent.createChooser(send, null))
+    } catch (_: ActivityNotFoundException) {
+        onFailed()
+    }
 }
 
-/**
- * 설정(#584 Play 출시): 정보(앱 버전·서버·기기 ID) · 정책 링크(개인정보처리방침 · 계정 및 데이터 삭제 — `BuildConfig`, 빌드 때 `HANDE_PRIVACY_URL`/`HANDE_DELETE_URL`) ·
- * 「이 기기 지우기」(확인 대화상자 → `DeviceHub.wipeDevice`). 계정 = CF Access 신원 + 릴레이 체인의 기기 기록이라 서버 쪽 폐기는 웹 안내로 요청한다(정직하게 적는다).
- */
+/** 투명 앱바 — 모닥불 배경이 비치게(한데 디자인 1차). 제목·버튼 색은 테마(onSurface = ink · primary = ember). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(
-    ui: HubUi, onBack: () -> Unit, onWipe: () -> Unit, onNoticeShown: () -> Unit,
-    themeMode: HandeThemeMode = HandeThemeMode.NIGHT, onThemeMode: (HandeThemeMode) -> Unit = {},
-) {
-    var confirmWipe by rememberSaveable { mutableStateOf(false) }
-    var linkError by remember { mutableStateOf<String?>(null) }
-    Scaffold(
-        containerColor = Color.Transparent, contentColor = MaterialTheme.colorScheme.onBackground,
-        topBar = { HandeTopBar(title = { Text(Strings.settingsTitle) }, navigationIcon = { TextButton(onClick = onBack) { Text(Strings.back) } }) },
-        snackbarHost = { NoticeHost(ui.notice ?: linkError) { linkError = null; onNoticeShown() } },
-    ) { pad ->
-        Column(Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            // 화면(한데 디자인 1차): 밤이 기본·고정(시스템 라이트 모드를 따르지 않는다), 낮불은 e-ink·밝은 곳용. 고르면 바로 바뀌고 `Settings.theme` 에 남는다.
-            Text(Strings.themeSection, style = MaterialTheme.typography.titleMedium)
-            ThemeChoice(Strings.themeNight, selected = themeMode == HandeThemeMode.NIGHT) { onThemeMode(HandeThemeMode.NIGHT) }
-            ThemeChoice(Strings.themeDay, selected = themeMode == HandeThemeMode.DAY) { onThemeMode(HandeThemeMode.DAY) }
-            Text(Strings.themeHint, style = MaterialTheme.typography.bodySmall)
-            HorizontalDivider()
-            Text(Strings.aboutSection, style = MaterialTheme.typography.titleMedium)
-            Text(Strings.appVersion(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE), style = MaterialTheme.typography.bodySmall)
-            ui.server?.let { Text("${Strings.serverLabel}: $it", style = MaterialTheme.typography.bodySmall) }
-            ui.deviceId?.let { Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall) }
-            HorizontalDivider()
-            Text(Strings.policySection, style = MaterialTheme.typography.titleMedium)
-            PolicyLink(Strings.privacyPolicy, Strings.privacyPolicyHint, BuildConfig.PRIVACY_URL) { linkError = Strings.openLinkFailed }
-            PolicyLink(Strings.deleteAccount, Strings.deleteAccountHint, BuildConfig.DELETE_ACCOUNT_URL) { linkError = Strings.openLinkFailed }
-            HorizontalDivider()
-            Text(Strings.wipeSection, style = MaterialTheme.typography.titleMedium)
-            Text(Strings.wipeDeviceHint, style = MaterialTheme.typography.bodySmall)
-            Button(
-                onClick = { confirmWipe = true },
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError),
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text(Strings.wipeDevice) }
-        }
-    }
-    if (confirmWipe) WipeConfirmDialog(onConfirm = { confirmWipe = false; onWipe() }, onDismiss = { confirmWipe = false })
+private fun HandeTopBar(title: @Composable () -> Unit, navigationIcon: @Composable () -> Unit = {}, actions: @Composable RowScope.() -> Unit = {}) {
+    TopAppBar(
+        title = title, navigationIcon = navigationIcon, actions = actions,
+        colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent, scrolledContainerColor = Color.Transparent),
+    )
 }
 
 /** 「이 기기 지우기」 확인 대화상자 — 설정 화면과 등록 대기(ID 사용 불가)에서 같은 문구·같은 동작(#574 후속). */
@@ -270,49 +271,87 @@ private fun WipeConfirmDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
     )
 }
 
-/** 투명 앱바 — 모닥불 배경이 비치게(한데 디자인 1차). 제목·버튼 색은 테마(onSurface = ink · primary = ember). */
-@OptIn(ExperimentalMaterial3Api::class)
+/** 허브의 한 줄 알림(3초 뒤 지움). `SnackbarHostState` 큐 대신 상태 하나 — 알림은 최신 것 하나면 된다. 모양은 2차-A 토스트(`HandeToast`). */
 @Composable
-private fun HandeTopBar(title: @Composable () -> Unit, navigationIcon: @Composable () -> Unit = {}, actions: @Composable RowScope.() -> Unit = {}) {
-    TopAppBar(
-        title = title, navigationIcon = navigationIcon, actions = actions,
-        colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent, scrolledContainerColor = Color.Transparent),
-    )
-}
-
-/** 설정의 「화면」 한 줄(라디오 + 글자). 줄 전체가 눌린다(터치 44 이상). */
-@Composable
-private fun ThemeChoice(label: String, selected: Boolean, onSelect: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().selectable(selected = selected, onClick = onSelect, role = Role.RadioButton).padding(vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        RadioButton(selected = selected, onClick = null)
-        Spacer(Modifier.width(8.dp))
-        Text(label)
+private fun NoticeHost(notice: String?, onShown: () -> Unit) {
+    if (notice != null) {
+        LaunchedEffect(notice) { delay(3_000); onShown() }
+        HandeToast(notice)
     }
 }
 
+// ---- 온보딩 4단계(2차-A §A2) ----
+
 /**
- * 처음 설정(#584 PR 3): 서버 주소는 도메인만 적어도 된다 — 「서버 찾기」가 `.well-known/hande` 로 릴레이를 찾아 서버 이름·주소를 카드로 보여 주고,
- * 「확인」이 그 결과(없으면 먼저 탐색해서)를 저장한다. 릴레이 주소(https://…)를 그대로 적은 옛 길은 문서가 없을 때의 폴백으로 그대로 된다.
+ * 온보딩 화면 틀: 진행 막대(4칸) + (뒤로 / 오른쪽 위 링크) + (워드마크) + 제목 28/600 + 내용(스크롤) + 아래 버튼 칸(좌우 24·상하 12).
+ * `safeDrawingPadding` 이 시스템 바·키보드를 모두 피한다(edge-to-edge). 알림은 맨 아래 토스트.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun OnboardingFrame(
+    step: Int,
+    title: String?,
+    wordmark: Boolean = false,
+    onBack: (() -> Unit)? = null,
+    topEnd: (@Composable () -> Unit)? = null,
+    notice: String? = null,
+    onNoticeShown: () -> Unit = {},
+    footer: @Composable ColumnScope.() -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Box(Modifier.fillMaxSize().safeDrawingPadding()) {
+        Column(Modifier.fillMaxSize()) {
+            StepBar(step, modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp))
+            Column(
+                Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 24.dp, end = 24.dp, top = 18.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp),
+            ) {
+                if (onBack != null || topEnd != null) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        if (onBack != null) LinkButton("‹ ${Strings.onboardingBack}", onClick = onBack)
+                        Spacer(Modifier.weight(1f))
+                        topEnd?.invoke()
+                    }
+                }
+                if (wordmark) HandeWordmark()
+                if (title != null) OnboardingTitle(title)
+                content()
+            }
+            Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp), content = footer)
+        }
+        Box(Modifier.align(Alignment.BottomCenter)) { NoticeHost(notice, onNoticeShown) }
+    }
+}
+
+/** 오류 카드(2차-A): 카드 자리에 warn 선 1.5 + 1줄. */
+@Composable
+private fun ErrorCard(text: String) {
+    val colors = LocalHandeColors.current
+    HandeCard(stroke = colors.warn, lineWidth = 1.5.dp) { Text(text, color = colors.ink, fontSize = 14.sp, lineHeight = 20.sp) }
+}
+
+/**
+ * 처음 설정(#584 PR 3 → 2차-A ①②): ① 서버 찾기 — 「서버 찾기」가 `.well-known/hande` 로 릴레이를 찾아 이름·주소 카드를 보여 주고 버튼이 「이 서버로 계속」으로 바뀐다
+ * (릴레이 주소를 그대로 적은 옛 길은 문서가 없을 때의 폴백으로 그대로). ② 이름 — 이미 정해진 기기(`settings.actor != null`)는 건너뛰고 바로 저장.
+ * 운영자용 세션 값은 ③ 가족 로그인의 「직접 입력」으로 옮겼다(같은 `Settings.accessToken`). 정책 링크는 로그인 전에도 보인다(#584 Play).
+ */
 @Composable
 fun SetupScreen(settings: Settings, onDiscover: suspend (String) -> ServerDiscovery.Result, onSaved: () -> Unit) {
+    val colors = LocalHandeColors.current
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    var step by rememberSaveable { mutableStateOf(1) }
     var server by rememberSaveable { mutableStateOf(settings.relayUrl ?: "") }
     var actor by rememberSaveable { mutableStateOf(settings.actor ?: "") }
-    var token by rememberSaveable { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    var actorInvalid by remember { mutableStateOf(false) }
     var searching by remember { mutableStateOf(false) }
     var found by remember { mutableStateOf<ServerDiscovery.Result.Found?>(null) }
+    val needsActor = settings.actor == null
 
     fun save(f: ServerDiscovery.Result.Found) {
         settings.relayUrl = f.baseUrl
         settings.serverName = f.name
         if (settings.actor == null) settings.actor = actor.trim()
-        if (token.isNotBlank()) settings.accessToken = token
         onSaved()
     }
 
@@ -331,118 +370,342 @@ fun SetupScreen(settings: Settings, onDiscover: suspend (String) -> ServerDiscov
         }
     }
 
-    Scaffold(containerColor = Color.Transparent, contentColor = MaterialTheme.colorScheme.onBackground, topBar = { HandeTopBar(title = { Text(Strings.setupTitle) }) }) { pad ->
-        Column(Modifier.padding(pad).verticalScroll(rememberScrollState()).imePadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            OutlinedTextField(server, { server = it; found = null }, label = { Text(Strings.serverField) }, supportingText = { Text(Strings.serverHint) }, singleLine = true, modifier = Modifier.fillMaxWidth(), enabled = !searching)
-            TextButton(onClick = { discover() }, enabled = !searching && server.isNotBlank()) { Text(if (searching) Strings.findingServer else Strings.findServer) }
-            found?.let { f ->
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(f.name ?: Strings.serverUnnamed, style = MaterialTheme.typography.titleMedium)
-                        Text(f.baseUrl, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-                        Text(if (f.wellKnown != null) Strings.serverViaWellKnown else Strings.serverDirect, style = MaterialTheme.typography.bodySmall)
-                        if (!f.healthOk) Text(Strings.serverGated, style = MaterialTheme.typography.bodySmall)
-                    }
+    fun confirmActor() {
+        if (!Settings.validActor(actor.trim())) { actorInvalid = true; return }
+        actorInvalid = false
+        val f = found
+        if (f != null) save(f) else discover { save(it) } // 회전 등으로 찾은 서버를 잃었으면 다시 찾고 저장
+    }
+
+    BackHandler(enabled = step == 2) { step = 1 }
+
+    if (step == 1) {
+        val f = found
+        OnboardingFrame(
+            step = 1, title = Strings.serverStepTitle, wordmark = true,
+            footer = {
+                if (f != null && error == null) {
+                    PrimaryButton(Strings.serverContinue, enabled = !searching) { if (needsActor) step = 2 else save(f) }
+                } else {
+                    PrimaryButton(if (searching) Strings.findingServer else Strings.findServer, enabled = !searching && server.isNotBlank()) { discover() }
+                }
+            },
+        ) {
+            // #584 PR 4(가이드라인 4.2 대비): 서버 주소가 없어도 앱이 무엇인지 알 수 있는 선언 — 첫 화면 맨 위 카드.
+            HandeCard(fill = colors.ember.copy(alpha = 0.08f), stroke = colors.ember.copy(alpha = 0.35f)) {
+                Text(Strings.serverDeclaration, color = colors.ink, fontSize = 16.sp, lineHeight = 24.sp, fontWeight = FontWeight.Medium)
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                FieldLabel(Strings.serverAddressLabel)
+                HandeField(
+                    server, { server = it; found = null; error = null }, placeholder = Strings.serverAddressPlaceholder, mono = true,
+                    invalid = error != null, enabled = !searching, keyboardType = KeyboardType.Uri, onDone = { discover() },
+                )
+                DetailDisclosure(hint = Strings.serverAddressHint, detail = Strings.serverAddressDetail)
+                // 로그인 전에도 보이는 정책 링크(#584 Play: 개인정보처리방침은 앱 안에서 열려야 한다). 삭제 안내는 설정 화면에도 있다.
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    LinkButton(Strings.privacyPolicy, size = 13.sp) { openPolicy(context, BuildConfig.PRIVACY_URL) { error = Strings.openLinkFailed } }
+                    LinkButton(Strings.deleteAccount, size = 13.sp) { openPolicy(context, BuildConfig.DELETE_ACCOUNT_URL) { error = Strings.openLinkFailed } }
                 }
             }
-            Text(Strings.actorTitle, style = MaterialTheme.typography.titleMedium)
-            OutlinedTextField(actor, { actor = it.lowercase() }, label = { Text(Strings.actorField) }, supportingText = { Text(Strings.actorHint) }, singleLine = true, modifier = Modifier.fillMaxWidth(), enabled = settings.actor == null)
-            OutlinedTextField(token, { token = it }, label = { Text(Strings.tokenField) }, supportingText = { Text(Strings.tokenHint) }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            Button(enabled = !searching, onClick = {
-                val f = found
-                when {
-                    settings.actor == null && !Settings.validActor(actor.trim()) -> error = Strings.actorInvalid
-                    f != null -> save(f) // 「서버 찾기」로 이미 확인한 서버
-                    else -> discover { save(it) } // 바로 「확인」: 탐색부터 하고 성공하면 저장
+            val err = error
+            if (err != null) {
+                ErrorCard(err)
+            } else if (f != null) {
+                HandeCard {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            SeatDot(agent = false); SeatDot(agent = false); SeatDot(agent = true)
+                        }
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(f.name ?: Strings.serverUnnamed, color = colors.ink, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                            Text(hostOf(f.baseUrl), color = colors.inkDim, fontSize = 13.sp, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        Text(Strings.serverFound, color = colors.inkDim, fontSize = 13.sp)
+                    }
+                    if (f.wellKnown == null) Text(Strings.serverDirect, Modifier.padding(top = 8.dp), color = colors.inkDim, fontSize = 13.sp)
+                    if (!f.healthOk) Text(Strings.serverGated, Modifier.padding(top = 4.dp), color = colors.inkDim, fontSize = 13.sp)
                 }
-            }) { Text(Strings.save) }
-            // 로그인 전에도 보이는 정책 링크(#584 Play: 개인정보처리방침은 앱 안에서 열려야 한다). 삭제 안내는 설정 화면에도 있다.
-            HorizontalDivider()
-            PolicyLink(Strings.privacyPolicy, Strings.privacyPolicyHint, BuildConfig.PRIVACY_URL) { error = Strings.openLinkFailed }
-            PolicyLink(Strings.deleteAccount, Strings.deleteAccountHint, BuildConfig.DELETE_ACCOUNT_URL) { error = Strings.openLinkFailed }
+            }
+        }
+    } else {
+        OnboardingFrame(
+            step = 2, title = Strings.actorStepTitle, onBack = { step = 1 },
+            footer = { PrimaryButton(Strings.save, enabled = !searching && actor.isNotBlank()) { confirmActor() } },
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                FieldLabel(Strings.actorStepLabel)
+                HandeField(
+                    actor, { actor = it.lowercase(); actorInvalid = false }, placeholder = Strings.actorStepPlaceholder, mono = true,
+                    invalid = actorInvalid, enabled = !searching, keyboardType = KeyboardType.Ascii, onDone = { confirmActor() },
+                )
+                if (actorInvalid) Text(Strings.actorStepInvalid, Modifier.padding(horizontal = 4.dp), color = colors.warn, fontSize = 14.sp)
+                DetailDisclosure(hint = Strings.actorStepHint, detail = Strings.actorStepDetail)
+            }
+            error?.let { ErrorCard(it) }
         }
     }
 }
 
 /**
- * 등록 대기(#574): SIBLING 모드는 큰 지문(4자 묶음)과 만료 시각 — 같은 사람의 다른 기기가 「새 기기 승인」에서 견주어 승인한다.
- * OPERATOR(첫 기기·옛 릴레이)·ID_TAKEN 은 오늘의 운영자 JSON 화면; SIBLING 에서도 접어 둔 운영자 정보를 펼 수 있다.
+ * 가족 로그인(B2 → 2차-A ③, iOS LoginView 와 같은 구성): 1줄 + 「자세히」 + 크림 면 「Google 계정으로 로그인」(화면의 할 일이 하나).
+ * 운영자용 세션 값 붙여넣기는 맨 아래 접힌 행 「직접 입력(운영자용)」 — 숨기지 않되 가족 눈에 덜 띄게. 저장은 그대로 `Settings.accessToken` → `onSaved`.
+ */
+@Composable
+fun LoginScreen(settings: Settings, ui: HubUi, onGoogle: () -> Unit, onSaved: () -> Unit, onSettings: () -> Unit, onNoticeShown: () -> Unit) {
+    val colors = LocalHandeColors.current
+    var token by rememberSaveable { mutableStateOf("") }
+    var manualExpanded by rememberSaveable { mutableStateOf(false) }
+    fun connect() {
+        if (token.isBlank()) return
+        settings.accessToken = token
+        token = ""
+        onSaved()
+    }
+    OnboardingFrame(
+        step = 3, title = Strings.loginTitle, topEnd = { LinkButton(Strings.settingsButton, onClick = onSettings) },
+        notice = ui.notice, onNoticeShown = onNoticeShown,
+        footer = {
+            HandeCard(padding = 0.dp) {
+                SectionRow(divider = false, onClick = { manualExpanded = !manualExpanded }) {
+                    Text(Strings.loginManualTitle, Modifier.weight(1f), color = colors.inkDim, fontSize = 15.sp)
+                    Chevron(down = manualExpanded)
+                }
+                if (manualExpanded) {
+                    Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        HandeField(token, { token = it }, placeholder = Strings.loginField, mono = true, secure = true, onDone = { connect() })
+                        SecondaryButton(Strings.loginButton, enabled = token.isNotBlank()) { connect() }
+                        Text(Strings.loginManualHint, color = colors.inkDim, fontSize = 13.sp, lineHeight = 18.sp)
+                    }
+                }
+            }
+        },
+    ) {
+        DetailDisclosure(hint = Strings.loginStepLine, detail = Strings.loginStepDetail, hintSize = 16.sp)
+        CreamButton(Strings.loginGoogle, Modifier.padding(top = 8.dp), enabled = settings.relayUrl != null) { onGoogle() }
+    }
+}
+
+/**
+ * 이 기기 등록(#574 → 2차-A ④): 1줄 + 「자세히」(모드별 긴 안내) + 지문 1열 8행(승인 화면과 같은 행·번호) + 기기 ID 모노 +
+ * 「운영자 승인을 기다리는 중」/「다른 기기의 승인을 기다리는 중 · HH:mm까지」(점 3개 고정, 만료는 시각만) + 「등록 정보 공유」(시스템 공유; 못 열면 클립보드) + 「등록 확인」.
+ * 운영자 JSON 은 「운영자 등록 정보 보기」로 접어 둔다(복사 버튼 포함). 옛 문구의 기술값 「(403 device_subject_mismatch)」는 화면에서 뺐다.
  * ID_TAKEN(409 `device_exists`, #574 후속)에는 「이 기기 지우기 / 새 ID로 다시 시작」 — 설정 화면의 「이 기기 지우기」와 같은 확인 대화상자·같은 동작(`onWipe`).
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EnrollScreen(ui: HubUi, phase: Phase.WaitingEnrollment, onSettings: () -> Unit, onWipe: () -> Unit, onRetry: () -> Unit) {
+    val colors = LocalHandeColors.current
+    val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
-    var copied by remember { mutableStateOf(false) }
+    var toast by remember { mutableStateOf<String?>(null) }
     var operatorShown by rememberSaveable { mutableStateOf(false) }
     var confirmWipe by rememberSaveable { mutableStateOf(false) }
-    val sibling = phase.mode == SelfService.EnrollMode.SIBLING
+    val mode = phase.mode
     val json = phase.json
-    Scaffold(
-        containerColor = Color.Transparent, contentColor = MaterialTheme.colorScheme.onBackground,
-        topBar = { HandeTopBar(title = { Text(if (sibling) Strings.enrollSiblingTitle else Strings.enrollTitle) }, actions = { TextButton(onClick = onSettings) { Text(Strings.settingsButton) } }) },
-    ) { pad ->
-        Column(Modifier.padding(pad).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            when (phase.mode) {
-                SelfService.EnrollMode.SIBLING -> Text(Strings.enrollSiblingBody)
-                SelfService.EnrollMode.ID_TAKEN -> {
-                    Text(Strings.enrollIdTaken, color = MaterialTheme.colorScheme.error)
-                    Button(
-                        onClick = { confirmWipe = true },
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError),
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text(Strings.wipeAndRestart) }
-                }
-                SelfService.EnrollMode.OPERATOR -> Text(Strings.enrollBody)
+    val detail = when (mode) {
+        SelfService.EnrollMode.SIBLING -> Strings.enrollSiblingBody
+        SelfService.EnrollMode.ID_TAKEN -> Strings.enrollIdTaken
+        SelfService.EnrollMode.OPERATOR -> "${Strings.enrollBody} ${Strings.enrollOperatorOnly}"
+    }
+    val status = when (mode) {
+        SelfService.EnrollMode.SIBLING -> phase.expiresAt?.let { Strings.enrollWaitingSiblingUntil(clock(it)) } ?: Strings.enrollWaitingSibling
+        SelfService.EnrollMode.ID_TAKEN, SelfService.EnrollMode.OPERATOR -> Strings.enrollWaitingOperator
+    }
+    val rows = remember(ui.fingerprint) { FingerprintRows.make(ui.fingerprint ?: "") }
+    fun copyJson() { clipboard.setText(AnnotatedString(json)); toast = Strings.copiedToast }
+
+    OnboardingFrame(
+        step = 4, title = Strings.enrollTitle, topEnd = { LinkButton(Strings.settingsButton, onClick = onSettings) },
+        notice = toast, onNoticeShown = { toast = null },
+        footer = {
+            if (mode != SelfService.EnrollMode.ID_TAKEN && json.isNotEmpty()) {
+                SecondaryButton(Strings.shareRegistration) { shareText(context, json) { copyJson() } }
             }
-            Text(Strings.fingerprintLabel, style = MaterialTheme.typography.labelLarge)
-            if (sibling) {
-                Card { Text(SelfService.groupedFingerprint(ui.fingerprint ?: ""), Modifier.padding(16.dp), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.titleLarge) }
-            } else {
-                Text(ui.fingerprint ?: "", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+            LinkButton(Strings.enrolledButton, Modifier.align(Alignment.CenterHorizontally), onClick = onRetry)
+        },
+    ) {
+        DetailDisclosure(hint = Strings.enrollStepLine, detail = detail, hintSize = 15.sp)
+        if (mode == SelfService.EnrollMode.ID_TAKEN) {
+            ErrorCard(Strings.enrollIdTaken)
+            DangerButton(Strings.wipeAndRestart) { confirmWipe = true }
+        } else {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                FieldLabel(Strings.fingerprintLabel)
+                FingerprintList(rows)
             }
-            Text(ui.deviceId ?: "", fontFamily = FontFamily.Monospace)
-            if (sibling) {
-                phase.expiresAt?.let { Text(Strings.enrollSiblingExpires(clock(it)), style = MaterialTheme.typography.bodySmall) }
-                TextButton(onClick = { operatorShown = !operatorShown }) { Text(if (operatorShown) Strings.hideOperatorInfo else Strings.showOperatorInfo) }
-            } else if (phase.mode == SelfService.EnrollMode.OPERATOR) {
-                Text(Strings.enrollOperatorOnly, style = MaterialTheme.typography.bodySmall)
+            Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                DotsRow(colors.person)
+                Text(status, color = colors.ink, fontSize = 15.sp)
             }
-            if (!sibling || operatorShown) {
-                Card { Text(json, Modifier.padding(12.dp), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall) }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { clipboard.setText(AnnotatedString(json)); copied = true }) { Text(if (copied) Strings.copied else Strings.copyRegistration) }
-                    TextButton(onClick = onRetry) { Text(Strings.enrolledButton) }
-                }
-            }
-            Text(Strings.waitingOperator, style = MaterialTheme.typography.bodySmall)
+        }
+        Text("${Strings.deviceIdLabel} ${ui.deviceId ?: ""}", Modifier.padding(horizontal = 4.dp), color = colors.inkDim, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+        // 운영자 CLI(`-add-device`)에 줄 등록 JSON — 접어 두되 숨기지 않는다.
+        LinkButton(if (operatorShown) Strings.hideOperatorInfo else Strings.showOperatorInfo) { operatorShown = !operatorShown }
+        if (operatorShown) {
+            HandeCard(padding = 12.dp) { Text(json, color = colors.ink, fontSize = 12.sp, lineHeight = 17.sp, fontFamily = FontFamily.Monospace) }
+            SecondaryButton(Strings.copyRegistration, height = 44.dp) { copyJson() }
         }
     }
     if (confirmWipe) WipeConfirmDialog(onConfirm = { confirmWipe = false; onWipe() }, onDismiss = { confirmWipe = false })
 }
 
-/** 우편함의 새 기기 승인 카드(#574): 지문을 크게, 「지문 비교 후 승인」·「무시」(프로세스가 다시 떠도 숨김 — 후보 TTL 뒤 만료). 실패 사유는 카드 안에. */
+// ---- 새 기기 승인(2차-A §A1) ----
+
+/** 후보 기기 정보(목록 카드·승인 화면 공용): 15 보조 + ID 모노 18 + 「요청 HH:mm · HH:mm에 만료」 14(아는 시각만). */
 @Composable
-private fun CandidateCard(c: CandidateUi, onApprove: () -> Unit, onIgnore: () -> Unit) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(c.deviceId, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.titleSmall)
-            Text(SelfService.groupedFingerprint(c.fingerprint), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodyLarge)
-            c.expiresAt?.let { Text(Strings.candidateExpires(clock(it)), style = MaterialTheme.typography.bodySmall) }
-            c.message?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onApprove, enabled = !c.busy) { Text(if (c.busy) Strings.approving else Strings.approveButton) }
-                TextButton(onClick = onIgnore, enabled = !c.busy) { Text(Strings.ignoreButton) }
+private fun CandidateInfo(c: CandidateUi) {
+    val colors = LocalHandeColors.current
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(Strings.candidateIncoming, color = colors.inkDim, fontSize = 15.sp)
+        Text(c.deviceId, color = colors.ink, fontSize = 18.sp, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Strings.candidateTimes(c.createdAt?.let(::clock), c.expiresAt?.let(::clock))?.let { Text(it, color = colors.inkDim, fontSize = 14.sp) }
+    }
+}
+
+/** 목록 위의 새 기기 승인 카드(#574 → 2차-A): 정보 + 「지문 비교」(주, 전체 화면으로) / 「무시」(보조 — 프로세스가 다시 떠도 숨김, 후보 TTL 뒤 만료). 실패 사유는 카드 안에. */
+@Composable
+private fun CandidateCard(c: CandidateUi, onCompare: () -> Unit, onIgnore: () -> Unit) {
+    val colors = LocalHandeColors.current
+    HandeCard {
+        CandidateInfo(c)
+        c.message?.let { Text(it, Modifier.padding(top = 6.dp), color = colors.warn, fontSize = 14.sp) }
+        Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            PrimaryButton(Strings.candidateCompareButton, Modifier.weight(1f), enabled = !c.busy, height = 44.dp, disabledText = Strings.approving, onClick = onCompare)
+            SecondaryButton(Strings.ignoreButton, Modifier.weight(1f), enabled = !c.busy, height = 44.dp, onClick = onIgnore)
+        }
+    }
+}
+
+/**
+ * 지문 비교 → 승인, 전체 화면(iOS CandidateApprovalView · 웹 approve 시트 relay 모드). 「대충 승인」을 막는 세 겹(§A1):
+ * 등록 화면과 같은 1열·같은 번호, 행마다 직접 눌러 표시(8행 전부 표시 전엔 「승인」 꺼짐 — 「8줄을 모두 맞춰 보세요」), 「지문이 다르면…」 경고 + 같은 높이의 「다릅니다」.
+ * 승인은 기존 `DeviceHub.approve`(코어가 지문을 다시 계산해 다르면 거부). 결과 판정: 누른 뒤 후보가 목록에서 사라지면 승인됨(허브가 승인 뒤 제거),
+ * 바쁨이 끝났는데 남아 있으면 실패(사유는 `message`). 「다릅니다」 = 후보를 무시(`dismissCandidate`) + 「승인하지 않았어요」 + 진단 기록 복사.
+ * 표시 상태는 회전하면 비워진다(`remember`) — 다시 맞춰 보게 하는 쪽이 안전하다.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ApproveScreen(ui: HubUi, deviceId: String, onApprove: (String) -> Unit, onIgnore: (String) -> Unit, onClose: () -> Unit, onNoticeShown: () -> Unit) {
+    val colors = LocalHandeColors.current
+    val clipboard = LocalClipboardManager.current
+    val candidate = ui.candidates.firstOrNull { it.deviceId == deviceId }
+    val first = remember { candidate }
+    val info = candidate ?: first
+    var ticked by remember { mutableStateOf(emptySet<Int>()) }
+    var submitted by remember { mutableStateOf(false) }
+    var sawBusy by remember { mutableStateOf(false) }
+    var outcome by rememberSaveable { mutableStateOf<String?>(null) } // "approved" | "rejected"
+    var toast by remember { mutableStateOf<String?>(null) }
+    val rows = remember(info?.fingerprint) { FingerprintRows.make(info?.fingerprint ?: "") }
+    val allTicked = rows.isNotEmpty() && ticked.size == rows.size
+    val busy = candidate?.busy == true
+
+    LaunchedEffect(candidate, submitted) {
+        if (outcome != null) return@LaunchedEffect
+        if (!submitted) {
+            if (candidate == null) onClose() // 만료·다른 기기의 승인 등으로 사라졌다 — 비교할 것이 없다
+            return@LaunchedEffect
+        }
+        when {
+            candidate == null -> outcome = "approved"
+            candidate.busy -> sawBusy = true
+            sawBusy -> { submitted = false; sawBusy = false } // 바쁨이 끝났는데 남아 있다 = 실패(사유는 카드의 message)
+        }
+    }
+
+    fun diagnostics(): String = buildString {
+        appendLine("hande new-device candidate — rejected by user (fingerprint mismatch)")
+        appendLine("candidate: ${info?.deviceId ?: deviceId}")
+        appendLine("actor: ${info?.actor ?: "?"}")
+        appendLine("fingerprint: ${info?.fingerprint ?: "?"}")
+        appendLine("created_at: ${info?.createdAt?.let(::clock) ?: "?"} · expires_at: ${info?.expiresAt?.let(::clock) ?: "?"}")
+        appendLine("last_message: ${info?.message ?: "-"}")
+        appendLine("this_device: ${ui.deviceId ?: "?"} · server: ${ui.server ?: "?"}")
+    }
+
+    Scaffold(
+        containerColor = Color.Transparent, contentColor = MaterialTheme.colorScheme.onBackground,
+        topBar = {
+            HandeTopBar(
+                title = { Text(Strings.candidatesTitle) },
+                navigationIcon = { TextButton(onClick = onClose, modifier = Modifier.semantics { contentDescription = Strings.close }) { Text("✕", fontSize = 18.sp) } },
+            )
+        },
+        snackbarHost = { NoticeHost(ui.notice ?: toast) { toast = null; onNoticeShown() } },
+    ) { pad ->
+        when (outcome) {
+            "approved" -> ResultColumn(pad, footer = { PrimaryButton(Strings.approveConfirmButton, onClick = onClose) }) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { SeatDot(agent = false, size = 12.dp); SeatDot(agent = false, size = 12.dp); SeatDot(agent = false, size = 12.dp) }
+                Text(Strings.approvedTitle(deviceId), color = colors.ink, fontSize = 22.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+                Text(Strings.approvedBody, color = colors.inkDim, fontSize = 16.sp, lineHeight = 24.sp, textAlign = TextAlign.Center)
+            }
+            "rejected" -> ResultColumn(pad, footer = {
+                SecondaryButton(Strings.copyDiagnosticsButton) { clipboard.setText(AnnotatedString(diagnostics())); toast = Strings.copiedToast }
+                PrimaryButton(Strings.close, onClick = onClose)
+            }) {
+                Box(Modifier.size(12.dp).clip(CircleShape).background(colors.ash))
+                Text(Strings.rejectedTitle, color = colors.ink, fontSize = 22.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+                Text(Strings.rejectedBody(deviceId), color = colors.inkDim, fontSize = 16.sp, lineHeight = 24.sp, textAlign = TextAlign.Center)
+            }
+            else -> Column(Modifier.padding(pad).fillMaxSize()) {
+                Column(
+                    Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    if (info != null) HandeCard { CandidateInfo(info) }
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(Strings.approveCompareTitle, Modifier.padding(horizontal = 4.dp), color = colors.ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                        FingerprintList(rows, ticked = ticked, enabled = !busy) { i -> ticked = if (i in ticked) ticked - i else ticked + i }
+                        Text(
+                            if (allTicked) Strings.approveAllMatched else Strings.approveProgress(ticked.size, rows.size),
+                            Modifier.padding(horizontal = 4.dp), color = colors.inkDim, fontSize = 14.sp,
+                        )
+                    }
+                    WarnBox(Strings.approveWarning)
+                    candidate?.message?.let { Text(it, Modifier.padding(horizontal = 4.dp), color = colors.warn, fontSize = 14.sp) }
+                }
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    val gateLabel = Strings.approveDisabledAccessibility(rows.size)
+                    PrimaryButton(
+                        Strings.approveConfirm,
+                        if (allTicked) Modifier else Modifier.semantics { contentDescription = gateLabel },
+                        enabled = allTicked && !busy && rows.isNotEmpty(),
+                        disabledText = if (busy) Strings.approving else Strings.approveDisabled(rows.size),
+                    ) { submitted = true; sawBusy = false; onApprove(deviceId) }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        DangerButton(Strings.approveMismatchButton, Modifier.weight(1f), enabled = !busy) { outcome = "rejected"; onIgnore(deviceId) }
+                        SecondaryButton(Strings.approveLaterButton, Modifier.weight(1f), enabled = !busy, height = 46.dp, onClick = onClose)
+                    }
+                }
             }
         }
     }
 }
 
-/** 「내 기기」(#574 E5): 체인의 내 기기 전부(이 기기 먼저) — 상태·등록 기기 표시·지문, 허용될 때만 부여/해제 버튼. */
+/** 결과 화면 틀(승인했어요 / 승인하지 않았어요): 가운데 글자(성공 표시는 글자로만, 체크 배지 없음) + 아래 버튼. */
+@Composable
+private fun ResultColumn(pad: PaddingValues, footer: @Composable ColumnScope.() -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    Column(Modifier.padding(pad).fillMaxSize()) {
+        Column(
+            Modifier.weight(1f).fillMaxWidth().padding(horizontal = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterVertically), horizontalAlignment = Alignment.CenterHorizontally,
+            content = content,
+        )
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp), content = footer)
+    }
+}
+
+/** 작은 표지(이 기기 · 등록 기기 · 폐기). */
+@Composable
+private fun Pill(text: String, color: Color, fill: Color) {
+    Text(text, Modifier.clip(CircleShape).background(fill).padding(horizontal = 8.dp, vertical = 3.dp), color = color, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+}
+
+/** 「내 기기」(#574 E5): 체인의 내 기기 전부(이 기기 먼저) — 상태·등록 기기 표시·지문, 허용될 때만 부여/해제 링크. 폐기(revoke)는 Android 에 API 가 없어 없다. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DevicesScreen(ui: HubUi, onBack: () -> Unit, onGrant: (String) -> Unit, onRelease: (String) -> Unit, onNoticeShown: () -> Unit) {
+    val colors = LocalHandeColors.current
     Scaffold(
         containerColor = Color.Transparent, contentColor = MaterialTheme.colorScheme.onBackground,
         topBar = { HandeTopBar(title = { Text(Strings.devicesTitle) }, navigationIcon = { TextButton(onClick = onBack) { Text(Strings.back) } }) },
@@ -450,70 +713,47 @@ fun DevicesScreen(ui: HubUi, onBack: () -> Unit, onGrant: (String) -> Unit, onRe
     ) { pad ->
         val view = ui.devices
         Column(Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(Strings.devicesHint, style = MaterialTheme.typography.bodySmall)
             if (view == null || view.devices.isEmpty()) {
-                Text(Strings.devicesEmpty)
+                HandeCard { Text(Strings.devicesEmpty, color = colors.inkDim, fontSize = 14.sp) }
             } else {
                 for (d in view.devices) {
-                    Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text(d.deviceId, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.titleSmall)
-                                if (d.isSelf) Badge { Text(Strings.thisDevice) }
-                                if (d.registrar) Badge { Text(Strings.registrarPill) }
-                            }
-                            Text(
-                                if (d.status == SelfService.STATUS_ACTIVE) Strings.statusActive else "${Strings.statusRevoked} · ${d.status}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = if (d.status == SelfService.STATUS_ACTIVE) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error,
-                            )
-                            Text(SelfService.groupedFingerprint(d.fingerprint), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-                            when {
-                                d.grant -> TextButton(onClick = { onGrant(d.deviceId) }) { Text(Strings.grantButton) }
-                                d.release -> TextButton(onClick = { onRelease(d.deviceId) }) { Text(Strings.releaseButton) }
-                                d.lastRegistrar -> Text(Strings.lastRegistrarNote, style = MaterialTheme.typography.bodySmall)
-                            }
+                    val active = d.status == SelfService.STATUS_ACTIVE
+                    HandeCard(Modifier.alpha(if (active) 1f else 0.55f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(d.deviceId, Modifier.weight(1f, fill = false), color = colors.ink, fontSize = 15.sp, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (d.isSelf) Pill(Strings.thisDevice, colors.inkDim, colors.surface)
+                            if (d.registrar) Pill(Strings.registrarPill, colors.ember, colors.ember.copy(alpha = 0.16f))
+                            if (!active) Pill(Strings.statusRevoked, colors.inkDim, colors.ash.copy(alpha = 0.35f))
+                        }
+                        Text(
+                            if (active) Strings.statusActive else "${Strings.statusRevoked} · ${d.status}",
+                            Modifier.padding(top = 4.dp), color = if (active) colors.inkDim else colors.warn, fontSize = 13.sp,
+                        )
+                        Text(SelfService.groupedFingerprint(d.fingerprint), Modifier.padding(top = 4.dp), color = colors.inkDim, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                        when {
+                            d.grant -> LinkButton(Strings.grantButton) { onGrant(d.deviceId) }
+                            d.release -> LinkButton(Strings.releaseButton) { onRelease(d.deviceId) }
+                            d.lastRegistrar -> Text(Strings.lastRegistrarNote, Modifier.padding(top = 6.dp), color = colors.inkDim, fontSize = 13.sp)
                         }
                     }
                 }
             }
+            Text(Strings.devicesHint, Modifier.padding(horizontal = 4.dp), color = colors.inkDim, fontSize = 13.sp, lineHeight = 18.sp)
         }
     }
 }
 
-/** 가족 로그인(B2, iOS LoginView 와 같은 구성): 「Google 계정으로 로그인」이 주 경로, 세션 값 붙여넣기는 운영자용으로 접어 둔다. */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun LoginScreen(settings: Settings, ui: HubUi, onGoogle: () -> Unit, onSaved: () -> Unit, onSettings: () -> Unit, onNoticeShown: () -> Unit) {
-    var token by rememberSaveable { mutableStateOf("") }
-    var manualExpanded by rememberSaveable { mutableStateOf(false) }
-    Scaffold(
-        containerColor = Color.Transparent, contentColor = MaterialTheme.colorScheme.onBackground,
-        topBar = { HandeTopBar(title = { Text(Strings.loginTitle) }, actions = { TextButton(onClick = onSettings) { Text(Strings.settingsButton) } }) },
-        snackbarHost = { NoticeHost(ui.notice, onNoticeShown) },
-    ) { pad ->
-        Column(Modifier.padding(pad).verticalScroll(rememberScrollState()).imePadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Button(onClick = onGoogle, enabled = settings.relayUrl != null, modifier = Modifier.fillMaxWidth()) { Text(Strings.loginGoogle) }
-            Text(Strings.loginHint, style = MaterialTheme.typography.bodySmall)
-            HorizontalDivider()
-            TextButton(onClick = { manualExpanded = !manualExpanded }) { Text(Strings.loginManualTitle) }
-            if (manualExpanded) {
-                OutlinedTextField(token, { token = it }, label = { Text(Strings.loginField) }, singleLine = true, modifier = Modifier.fillMaxWidth(), visualTransformation = PasswordVisualTransformation())
-                Button(enabled = token.isNotBlank(), onClick = { settings.accessToken = token; token = ""; onSaved() }) { Text(Strings.loginButton) }
-                Text(Strings.loginManualHint, style = MaterialTheme.typography.bodySmall)
-            }
-        }
-    }
-}
+// ---- 대화 목록 · 대화방 ----
 
 /**
  * 대화 목록 = 「자리」(한데 디자인 1차): 머리(제목 · 「오늘 밤, 모닥불에 한데 모여」 · 서버 이름) + 방 행 카드(`RoomRow`).
  * 머리는 TopAppBar 대신 본문 위에 그린다 — Display 32 + 보조 두 줄은 64dp 앱바에 들어가지 않는다. 초대 벨·순서 편집·「불 피우기」는 Android 에 그 데이터/동작이 없어 두지 않는다.
+ * 빈 상태(2차-A §A3): 꺼진 장작 그림(불 그림은 여기만) + 「아직 피운 모닥불이 없습니다」 + 1줄. 「참여 요청」은 그대로 아래.
  */
 @Composable
 fun RoomListScreen(
     ui: HubUi, onOpen: (String) -> Unit, onRequestJoin: () -> Unit,
-    onApprove: (String) -> Unit, onIgnore: (String) -> Unit, onDevices: () -> Unit, onSettings: () -> Unit, onNoticeShown: () -> Unit,
+    onCompare: (String) -> Unit, onIgnore: (String) -> Unit, onDevices: () -> Unit, onSettings: () -> Unit, onNoticeShown: () -> Unit,
 ) {
     val colors = LocalHandeColors.current
     Scaffold(
@@ -532,28 +772,33 @@ fun RoomListScreen(
                 TextButton(onClick = onDevices) { Text(Strings.devicesButton) }
                 TextButton(onClick = onSettings) { Text(Strings.settingsButton) }
             }
-            // 새 기기 승인 요청(#574): 등록 기기(또는 registrar 없는 actor 의 활성 기기)에게만 보인다.
+            // 새 기기 승인 요청(#574): 등록 기기(또는 registrar 없는 actor 의 활성 기기)에게만 보인다. 「지문 비교」→ 전체 화면 `ApproveScreen`.
             if (ui.candidates.isNotEmpty()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(Strings.candidatesTitle, style = MaterialTheme.typography.titleMedium)
-                    Text(Strings.candidatesHint, style = MaterialTheme.typography.bodySmall)
-                    for (c in ui.candidates) CandidateCard(c, onApprove = { onApprove(c.deviceId) }, onIgnore = { onIgnore(c.deviceId) })
+                    for (c in ui.candidates) CandidateCard(c, onCompare = { onCompare(c.deviceId) }, onIgnore = { onIgnore(c.deviceId) })
                 }
                 HorizontalDivider(color = colors.stroke)
             }
             if (ui.rooms.isEmpty()) {
-                Text(Strings.noRooms, Modifier.padding(16.dp), color = colors.inkDim)
+                Column(
+                    Modifier.weight(1f).fillMaxWidth().padding(horizontal = 40.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically), horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    EmptyCampfireArt()
+                    Text(Strings.campfireEmpty, color = colors.ink, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+                    Text(Strings.emptyRoomsHint, color = colors.inkDim, fontSize = 15.sp, lineHeight = 22.sp, textAlign = TextAlign.Center)
+                }
             } else {
                 LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(vertical = 6.dp)) {
                     items(ui.rooms, key = { it.room }) { r -> RoomRow(r) { onOpen(r.room) } }
                 }
             }
-            if (ui.rooms.isEmpty()) Spacer(Modifier.weight(1f))
             HorizontalDivider(color = colors.stroke)
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("${ui.deviceId ?: ""}", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall, color = colors.inkDim)
                 Text("${Strings.lobbyKeys} ${ui.lobbyLive ?: "-"}/${ui.lobbyMax ?: "-"} · ${Strings.keyCustody}: ${ui.keyCustody ?: "-"}", style = MaterialTheme.typography.bodySmall, color = colors.inkDim)
-                Button(onClick = onRequestJoin, modifier = Modifier.fillMaxWidth()) { Text(Strings.requestJoin) }
+                PrimaryButton(Strings.requestJoin, height = 48.dp, onClick = onRequestJoin)
             }
         }
     }
@@ -639,12 +884,16 @@ private fun SeatDots(messages: List<MessageUi>) {
     }
 }
 
-/** 대화방(한데 디자인 1차): 말풍선(`MessageRow`) · 작업 상태(`StatusRow`) · 알약 입력창 + 주황 보내기 원(`Composer`). 정지된 방은 `warn` 색 한 줄 + 사유. */
+/**
+ * 대화방(한데 디자인 1차): 말풍선(`MessageRow`) · 작업 상태(`StatusRow`) · 알약 입력창 + 주황 보내기 원(`Composer`).
+ * 꺼진 자리(2차-A §A6): 제목 아래 「불이 꺼진 자리」, 지난 말풍선 60%, 입력창 자리를 안내 상자(`HaltedBox`)로 교체 — 「덮어 두기」(보관)는 Android 에 없어 두지 않는다.
+ */
 @Composable
 fun RoomScreen(room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> Unit, onNoticeShown: () -> Unit) {
     val colors = LocalHandeColors.current
     var draft by rememberSaveable(room.room) { mutableStateOf("") }
     val listState = rememberLazyListState()
+    val halted = room.halted
     // 맨 아래 따라가기: 새 글이나 작업 상태 말풍선이 생기면(사라질 때는 아님) 마지막 항목으로.
     val total = room.messages.size + room.statuses.size
     LaunchedEffect(room.messages.size, room.statuses.size) { if (total > 0) listState.animateScrollToItem(total - 1) }
@@ -652,24 +901,62 @@ fun RoomScreen(room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> 
         containerColor = Color.Transparent, contentColor = MaterialTheme.colorScheme.onBackground,
         topBar = {
             HandeTopBar(
-                title = { Text(if (ui.connecting) Strings.connecting else room.room) },
+                title = {
+                    Column {
+                        Text(if (ui.connecting) Strings.connecting else room.room, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (halted != null) Text(Strings.halted, color = colors.inkDim, fontSize = 12.sp)
+                    }
+                },
                 navigationIcon = { TextButton(onClick = onBack) { Text(Strings.back) } },
             )
         },
         snackbarHost = { NoticeHost(ui.notice, onNoticeShown) },
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize().imePadding()) {
-            LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState, contentPadding = PaddingValues(12.dp)) {
+            LazyColumn(Modifier.weight(1f).fillMaxWidth().alpha(if (halted != null) 0.6f else 1f), state = listState, contentPadding = PaddingValues(12.dp)) {
                 items(room.messages, key = { "${it.sender}-${it.seq}" }) { m -> MessageRow(m) }
                 // status-v1(#560): 보낸이별 임시 말풍선 하나 — 키가 보낸이라 제자리에서 본문만 바뀐다.
                 items(room.statuses, key = { "status:${it.sender}" }) { s -> StatusRow(s) }
             }
-            if (room.halted != null) {
-                Text("${Strings.halted} · ${room.halted}", Modifier.padding(12.dp), color = colors.warn)
+            if (halted != null) {
+                HaltedBox(halted)
             } else if (!room.joined) {
                 Text(Strings.notJoined, Modifier.padding(12.dp), color = colors.inkDim)
             } else {
                 Composer(draft, onDraft = { draft = it }, onSend = { onSend(draft.trim()); draft = "" })
+            }
+        }
+    }
+}
+
+/**
+ * 꺼진 자리 안내 상자(입력창 자리): 장작 28 + 「운영자가 이 자리를 닫았어요」 16/600 + 1줄(`room_closed`).
+ * 다른 정지 사유는 「이 기기의 대화가 멈췄어요」 + 사유 토큰 모노(정직하게 적는다) + 운영자 안내 1줄.
+ */
+@Composable
+private fun HaltedBox(reason: String) {
+    val colors = LocalHandeColors.current
+    val shape = RoundedCornerShape(16.dp)
+    val closed = reason == "room_closed"
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 16.dp, bottom = 16.dp, top = 4.dp)
+            .clip(shape)
+            .background(if (colors.isDay) colors.surface else Color.White.copy(alpha = 0.05f))
+            .border(colors.lineWidth, colors.stroke, shape)
+            .padding(16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        LogIcon(size = 28.dp)
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(if (closed) Strings.roomClosedTitle else Strings.haltedDeviceTitle, color = colors.ink, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            if (closed) {
+                Text(Strings.roomClosedBody, color = colors.inkDim, fontSize = 14.sp, lineHeight = 21.sp)
+            } else {
+                Text(reason, color = colors.inkDim, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+                Text(Strings.haltedDeviceHint, color = colors.inkDim, fontSize = 14.sp, lineHeight = 21.sp)
             }
         }
     }
@@ -775,11 +1062,146 @@ private fun StatusRow(s: StatusUi) {
     }
 }
 
-/** 허브의 한 줄 알림(3초 뒤 지움). `SnackbarHostState` 큐 대신 상태 하나 — 알림은 최신 것 하나면 된다. */
+// ---- 설정(2차-A §A5: 순서 = 자주 → 드물게 → 위험) ----
+
+/**
+ * 설정(#584 Play 출시 → 2차-A 재배치): 서버(이름 · 모노 호스트; 「바꾸기」는 Android 에 서버 변경 동작이 없어 표시만) → 화면(밤/낮불 칩 + 힌트) →
+ * 이 기기(기기 ID + 「복사」 · 「운영자용 정보」 접힘: 지문·로비 키·키 보관·릴레이) → 기기 관리(「내 기기」, Ready 일 때만) → 위험 구역(「이 기기 지우기」 하나만, 확인 대화상자 →
+ * `DeviceHub.wipeDevice`) → 정보(개인정보처리방침 · 데이터 삭제 안내 — `BuildConfig` 링크 · 버전 모노). 계정(로그아웃)·알림은 Android 에 없어 두지 않는다.
+ * 계정 = CF Access 신원 + 릴레이 체인의 기기 기록이라 서버 쪽 폐기는 웹 안내로 요청한다(「자세히」에 정직하게 적는다).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun NoticeHost(notice: String?, onShown: () -> Unit) {
-    if (notice != null) {
-        LaunchedEffect(notice) { delay(3_000); onShown() }
-        Snackbar(Modifier.padding(12.dp)) { Text(notice) }
+fun SettingsScreen(
+    ui: HubUi, onBack: () -> Unit, onWipe: () -> Unit, onNoticeShown: () -> Unit,
+    themeMode: HandeThemeMode = HandeThemeMode.NIGHT, onThemeMode: (HandeThemeMode) -> Unit = {},
+    relayHost: String? = null, onDevices: (() -> Unit)? = null,
+) {
+    val colors = LocalHandeColors.current
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    var confirmWipe by rememberSaveable { mutableStateOf(false) }
+    var opsOpen by rememberSaveable { mutableStateOf(false) }
+    var linkError by remember { mutableStateOf<String?>(null) }
+    var toast by remember { mutableStateOf<String?>(null) }
+    val isDay = themeMode == HandeThemeMode.DAY
+    Scaffold(
+        containerColor = Color.Transparent, contentColor = MaterialTheme.colorScheme.onBackground,
+        topBar = { HandeTopBar(title = { Text(Strings.settingsTitle) }, navigationIcon = { TextButton(onClick = onBack) { Text(Strings.back) } }) },
+        snackbarHost = { NoticeHost(ui.notice ?: linkError ?: toast) { linkError = null; toast = null; onNoticeShown() } },
+    ) { pad ->
+        Column(
+            Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()).padding(top = 8.dp, bottom = 40.dp),
+            verticalArrangement = Arrangement.spacedBy(22.dp),
+        ) {
+            // 서버
+            Column {
+                SectionHeader(Strings.settingsServer)
+                SectionCard {
+                    SectionRow(divider = false) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(ui.server ?: "-", color = colors.ink, fontSize = 17.sp)
+                            if (relayHost != null && relayHost != ui.server) {
+                                Text(relayHost, color = colors.inkDim, fontSize = 13.sp, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                }
+            }
+            // 화면(한데 디자인 1차): 밤이 기본·고정(시스템 라이트 모드를 따르지 않는다), 낮불은 e-ink·밝은 곳용. 고르면 바로 바뀌고 `Settings.theme` 에 남는다.
+            Column {
+                SectionHeader(Strings.themeSection)
+                SectionCard {
+                    Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        ChipTabs(listOf(Strings.themeChipNight, Strings.themeChipDay), selected = if (isDay) 1 else 0) { i ->
+                            onThemeMode(if (i == 1) HandeThemeMode.DAY else HandeThemeMode.NIGHT)
+                        }
+                        Text(if (isDay) Strings.themeDayHint else Strings.themeNightHint, color = colors.inkDim, fontSize = 14.sp, lineHeight = 20.sp)
+                    }
+                }
+            }
+            // 이 기기
+            Column {
+                SectionHeader(Strings.settingsThisDevice)
+                SectionCard {
+                    SectionRow(divider = false) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(Strings.deviceIdLabel, color = colors.inkDim, fontSize = 13.sp)
+                            Text(ui.deviceId ?: "-", color = colors.ink, fontSize = 15.sp, fontFamily = FontFamily.Monospace)
+                        }
+                        LinkButton(Strings.copyAction, enabled = ui.deviceId != null) {
+                            ui.deviceId?.let { clipboard.setText(AnnotatedString(it)); toast = Strings.copiedToast }
+                        }
+                    }
+                    SectionRow(onClick = { opsOpen = !opsOpen }) {
+                        Text(Strings.operatorInfo, Modifier.weight(1f), color = colors.inkDim, fontSize = 15.sp)
+                        Chevron(down = opsOpen)
+                    }
+                    if (opsOpen) {
+                        val block = buildString {
+                            appendLine(Strings.fingerprintLabel)
+                            appendLine(SelfService.groupedFingerprint(ui.fingerprint ?: "-"))
+                            appendLine("${Strings.lobbyKeys}  ${ui.lobbyLive ?: "-"}/${ui.lobbyMax ?: "-"}")
+                            appendLine("${Strings.keyCustody}  ${ui.keyCustody ?: "-"}")
+                            append("${Strings.relayLabel}  ${relayHost ?: ui.server ?: "-"}")
+                        }
+                        val shape = RoundedCornerShape(10.dp)
+                        Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                block,
+                                Modifier.fillMaxWidth().clip(shape).background(if (colors.isDay) colors.surface else Color.Black.copy(alpha = 0.25f))
+                                    .border(colors.lineWidth, colors.stroke, shape).padding(horizontal = 12.dp, vertical = 10.dp),
+                                color = colors.ink, fontSize = 13.sp, lineHeight = 22.sp, fontFamily = FontFamily.Monospace,
+                            )
+                            Text(Strings.lobbyHintPlain, color = colors.inkDim, fontSize = 13.sp, lineHeight = 19.sp)
+                        }
+                    }
+                }
+            }
+            // 기기 관리(#574 「내 기기」) — 허브가 Ready 일 때만 열 수 있다.
+            if (onDevices != null) {
+                Column {
+                    SectionHeader(Strings.settingsDeviceManage)
+                    SectionCard {
+                        SectionRow(divider = false, onClick = onDevices) {
+                            Text(Strings.devicesTitle, Modifier.weight(1f), color = colors.ink, fontSize = 17.sp)
+                            if (ui.candidates.isNotEmpty()) Box(Modifier.size(8.dp).clip(CircleShape).background(colors.ember).semantics { contentDescription = Strings.candidatesTitle })
+                            Chevron()
+                        }
+                    }
+                }
+            }
+            // 위험 구역 — 「이 기기의 키와 대화가 모두 지워집니다」 + 「이 기기 지우기」 하나만. 서버 기록·새 ID 이야기는 「자세히」.
+            Column {
+                SectionHeader(Strings.settingsDanger, color = colors.warn)
+                val shape = RoundedCornerShape(16.dp)
+                Column(
+                    Modifier.padding(horizontal = 16.dp).fillMaxWidth().clip(shape).border(1.5.dp, colors.warn.copy(alpha = 0.5f), shape).padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    DetailDisclosure(hint = Strings.wipeDangerBody, detail = Strings.wipeDeviceHint)
+                    DangerButton(Strings.wipeDevice) { confirmWipe = true }
+                }
+            }
+            // 정보(#584 Play): 정책 링크 2개(브라우저로 연다) + 버전.
+            Column {
+                SectionHeader(Strings.aboutSection)
+                SectionCard {
+                    SectionRow(divider = false, onClick = { openPolicy(context, BuildConfig.PRIVACY_URL) { linkError = Strings.openLinkFailed } }) {
+                        Text(Strings.privacyPolicy, Modifier.weight(1f), color = colors.ink, fontSize = 17.sp)
+                        Chevron()
+                    }
+                    SectionRow(onClick = { openPolicy(context, BuildConfig.DELETE_ACCOUNT_URL) { linkError = Strings.openLinkFailed } }) {
+                        Text(Strings.deleteDataGuide, Modifier.weight(1f), color = colors.ink, fontSize = 17.sp)
+                        Chevron()
+                    }
+                    SectionRow {
+                        Text(Strings.versionShort, Modifier.weight(1f), color = colors.ink, fontSize = 17.sp)
+                        Text(Strings.versionLine(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE), color = colors.inkDim, fontSize = 14.sp, fontFamily = FontFamily.Monospace)
+                    }
+                }
+            }
+        }
     }
+    if (confirmWipe) WipeConfirmDialog(onConfirm = { confirmWipe = false; onWipe() }, onDismiss = { confirmWipe = false })
 }

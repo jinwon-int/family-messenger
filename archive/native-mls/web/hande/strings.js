@@ -239,6 +239,26 @@ export function groupFingerprint(hex) {
   return clean.match(/.{1,4}/g)?.join(' ') ?? '';
 }
 
+/**
+ * 지문 hex → 화면 행(디자인 2차-A §A1, iOS FingerprintRows): 4자 묶음을 둘씩 짝지어 「xxxx xxxx」 — 64자 지문이면 8행.
+ * 등록 화면과 승인 시트가 같은 행을 같은 번호로 보여 한 줄씩 맞추게 한다. 짧은 입력은 있는 만큼만.
+ */
+export function fingerprintRows(hex, perRow = 2) {
+  const groups = groupFingerprint(hex).split(' ').filter(Boolean);
+  const rows = [];
+  for (let i = 0; i < groups.length; i += perRow) rows.push(groups.slice(i, i + perRow).join(' '));
+  return rows;
+}
+
+/** 횟수를 사람 말로(iOS Strings.countWord): 한·두·세 번, 넷부터는 숫자. */
+export function countWord(n) {
+  const count = Number(n);
+  if (!Number.isFinite(count) || count <= 1) return '한 번';
+  if (count === 2) return '두 번';
+  if (count === 3) return '세 번';
+  return `${count}번`;
+}
+
 /** 사람이 읽는 크기: 1,234 B · 12.3 KB · 1.2 MB. */
 export function humanSize(bytes) {
   if (!Number.isFinite(bytes) || bytes < 0) return '';
@@ -651,6 +671,110 @@ export const strings = {
     hint: '수락은 이 기기의 로비 키로 보낸 Welcome 을 읽어 대화방에 들어가는 일입니다. 실패해도 키는 지워지지 않으니 「다시 시도」할 수 있습니다.',
     retry: '다시 시도',
     copyLogs: '진단 기록 복사',
+  },
+
+  // 디자인 2차-A(2026-10-31) 온보딩 — iOS Strings+Onboarding 문구 그대로. 웹은 서버 선택·Google 로그인 단계가 없어 ② 이름 → ④ 이 기기 등록 두 칸.
+  // 규칙(§A2): 설명은 1줄 + 「자세히」, 성공 표시는 글자로만, 숫자 카운트다운 없음, 기술값(403…)은 화면에서 뺀다.
+  onboarding: {
+    more: '자세히',
+    less: '접기',
+    back: '뒤로',
+    steps: 2,
+    stepNames: ['이름', '등록'],
+    step: (step, total) => `${total}단계 중 ${step}단계`,
+    /** 지문 행 보조기기 이름: 「3번, 1a2b 3c4d, 맞춤 표시 안 됨」 — ticked 가 null 이면 표시 없이. */
+    fingerprintRowLabel: (number, value, ticked = null) => (ticked === null ? `${number}번, ${value}` : `${number}번, ${value}, 맞춤 표시 ${ticked ? '됨' : '안 됨'}`),
+    declaration: '한데에는 회원가입이 없습니다 — 가족 운영자가 등록합니다.',
+    // ② 이름
+    actorTitle: '이 기기를 쓰는 분의 이름',
+    actorLabel: '운영자가 정해 준 영문 이름',
+    actorPlaceholder: '영문 이름',
+    actorHint: '한 번 정하면 바꿀 수 없어요.',
+    actorDetail: '영문 소문자로 시작, 소문자·숫자 2~16자(예: mom, dad, jiyu). 이 기기 ID가 이 이름으로 만들어집니다. 바꾸려면 앱을 지우고 새 기기로 다시 등록합니다.',
+    actorInvalid: '영문 소문자·숫자 2~16자로 써 주세요',
+    // ④ 이 기기 등록
+    enrollTitle: '이 기기 등록',
+    enrollLine: '이미 쓰는 내 기기나 운영자가 이 지문을 보고 승인합니다.',
+    enrollWaitingOperator: '운영자 승인을 기다리는 중',
+    enrollWaitingSibling: '다른 기기의 승인을 기다리는 중',
+    enrollWaitingSiblingUntil: (t) => `다른 기기의 승인을 기다리는 중 · ${t}까지`,
+    shareRegistration: '등록 정보 공유',
+    operatorInfo: '운영자용 정보',
+    kindlingTitle: '불을 피우는 중…',
+    kindlingBody: '암호 키를 만들고 있어요',
+  },
+  // 새 기기 승인(2a) — 「대충 승인」을 막는 세 겹(§A1): 같은 1열·같은 번호, 행마다 눌러 표시, 전부 표시 전 「승인」 꺼짐.
+  approve2: {
+    title: '새 기기 승인',
+    incoming: '새 기기가 들어오려고 합니다',
+    times: (created, expires) => `요청 ${created} · ${expires}에 만료`,
+    expiresOnly: (expires) => `${expires}에 만료`,
+    compareTitle: '새 기기 화면과 하나씩 맞춰 보세요',
+    progress: (ticked, total) => `같으면 눌러 표시하세요 · ${ticked} / ${total}`,
+    allMatched: '모두 맞췄어요',
+    warning: '지문이 다르면 승인하지 말고 운영자에게 알려 주세요.',
+    approve: '승인',
+    disabled: (total) => `${total}줄을 모두 맞춰 보세요`,
+    disabledAccessibility: (total) => `${total}줄을 모두 맞춘 뒤 승인할 수 있습니다`,
+    mismatch: '다릅니다',
+    later: '나중에',
+    approvedTitle: (device) => `${device}를 승인했어요`,
+    approvedBody: '이 기기가 있는 자리에 자동으로 초대합니다.',
+    confirm: '확인',
+    rejectedTitle: '승인하지 않았어요',
+    rejectedBody: (device) => `${device}는 들어오지 못합니다. 운영자에게 지문이 달랐다고 알려 주세요.`,
+    copyDiagnostics: '진단 기록 복사',
+    signing: '서명하는 중…',
+  },
+  // 설정(2e, §A5): 순서 = 자주 → 드물게 → 위험. 웹에는 서버 바꾸기·로그아웃·버전이 없어 그 칸은 비운다.
+  settings2: {
+    server: '서버',
+    screen: '화면',
+    thisDevice: '이 기기',
+    deviceManage: '기기 관리',
+    account: '계정',
+    danger: '위험 구역',
+    about: '정보',
+    themeChipNight: '밤',
+    themeChipDay: '낮불',
+    themeChipAuto: '시스템',
+    themeNightHint: '밤이 기본이에요. 시스템 다크/라이트를 따르지 않습니다.',
+    themeDayHint: '밝은 곳·e-ink 화면용. 종이 바탕에 먹 글자, 움직임이 꺼집니다.',
+    themeAutoHint: '시스템이 라이트 모드일 때만 낮불로 바뀝니다.',
+    copy: '복사',
+    copied: '복사했어요',
+    operatorInfo: '운영자용 정보',
+    relay: '릴레이',
+    policyRevision: '정책 revision',
+    lobbyHint: '로비 키는 이 기기의 공개 키 묶음이에요. 앱을 열 때마다 채웁니다.',
+    wipeDangerBody: '이 기기의 키와 대화가 모두 지워집니다. 되돌릴 수 없어요.',
+  },
+  // 알림함(2e): 카드 3상태 — 기본 / 수락하는 중(크림 점 3) / 실패(선 warn + 사람 말 1줄). 오른쪽 위 「기록 복사」.
+  notify2: {
+    copyLogsShort: '기록 복사',
+    copied: '복사했어요',
+    empty: '새 알림이 없어요',
+    emptyBody: '받은 초대와 수락 상태가 여기 모입니다.',
+    hint: '수락이 안 되면 「기록 복사」로 운영자에게 보내 주세요. 비밀값은 들어가지 않아요.',
+    inviteKicker: '새 자리 초대',
+    inviteKickerLine: (when) => (when ? `새 자리 초대 · ${when}` : '새 자리 초대'),
+    inviteBody: (room) => `운영자가 「${room}」 자리에 이 기기를 초대했어요.`,
+    inviteFailedTitle: (room) => `「${room}」 자리에 들어가지 못했어요.`,
+    inviteAutoFailed: (tries) => `자동 수락이 ${countWord(tries)} 안 됐어요 — 키는 그대로라 다시 시도할 수 있어요.`,
+    accepting: '수락하는 중…',
+    candidateKicker: '새 기기 승인',
+  },
+  // 꺼진 자리(2f, §A6): 입력창 자리를 안내 상자로 교체. 대화방 상태(2d, §A4) 배너.
+  closed: {
+    title: '운영자가 이 자리를 닫았어요',
+    body: '지난 이야기는 읽을 수 있지만 더 쓸 수는 없어요. 다시 열려면 운영자에게 말해 주세요.',
+    subtitle: '불이 꺼진 자리',
+    relayUnreachable: '릴레이에 닿지 않아요 — 연결되면 보낼게요',
+  },
+  // 대화 목록 빈 상태(2c, §A3): 꺼진 장작 그림은 여기만. 초대가 있으면 건수 대신 「있어요」.
+  empty: {
+    roomsHint: '운영자가 초대하면 여기에 자리가 생겨요.',
+    invitesInBell: '받은 초대가 있어요 — 오른쪽 위 알림에서 수락하세요',
   },
 
   errors: {

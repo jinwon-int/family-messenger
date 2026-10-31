@@ -5,7 +5,7 @@ import {
   ACTOR, ROOM, DEVICE, AGENT_ACTORS, strings, allStringsFilled, peopleNames,
   formatTime, formatClock, dayLabel, dayKey, groupFingerprint, displayName, isAgentDevice, isServiceDevice, actorOf, isMine, relativeTime,
   participantOf, isOneToOne, participantCount, groupParticipants, typingNames, typingLabel, subjectParticle,
-  humanSize, previewLine, haltGuidance, roomLabel, agentNames,
+  humanSize, previewLine, haltGuidance, roomLabel, agentNames, fingerprintRows, countWord,
 } from '../strings.js';
 
 test('ACTOR: 소문자 시작, 영문 소문자·숫자 2~16자', () => {
@@ -54,6 +54,84 @@ test('groupFingerprint: 4자리씩 띄움', () => {
   assert.equal(groupFingerprint('ab cd ef'), 'abcd ef');
   assert.equal(groupFingerprint(''), '');
   assert.equal(groupFingerprint(null), '');
+});
+
+test('fingerprintRows: 4자 묶음을 둘씩 짝지어 「xxxx xxxx」 — 64자 지문이면 8행, 짧으면 있는 만큼(디자인 2차-A §A1, iOS FingerprintRows)', () => {
+  const hex = '0123456789abcdef'.repeat(4);
+  const rows = fingerprintRows(hex);
+  assert.equal(rows.length, 8);
+  assert.equal(rows[0], '0123 4567');
+  assert.equal(rows[7], '89ab cdef');
+  assert.equal(rows.join(' ').replaceAll(' ', ''), hex, '행을 이으면 원래 지문');
+  assert.deepEqual(rows, groupFingerprint(hex).split(' ').reduce((acc, g, i) => { if (i % 2 === 0) acc.push(g); else acc[acc.length - 1] += ` ${g}`; return acc; }, []), 'groupFingerprint 와 같은 묶음');
+  assert.deepEqual(fingerprintRows('abcdefgh'), ['abcd efgh']);
+  assert.deepEqual(fingerprintRows('abcdefghij'), ['abcd efgh', 'ij']);
+  assert.deepEqual(fingerprintRows('ab cd ef gh'), ['abcd efgh'], '공백은 걷어 낸다');
+  assert.deepEqual(fingerprintRows(''), []);
+  assert.deepEqual(fingerprintRows(null), []);
+  assert.equal(fingerprintRows(hex, 4).length, 4);
+});
+
+test('countWord: 한·두·세 번, 넷부터는 숫자(iOS Strings.countWord)', () => {
+  assert.equal(countWord(0), '한 번');
+  assert.equal(countWord(1), '한 번');
+  assert.equal(countWord(2), '두 번');
+  assert.equal(countWord(3), '세 번');
+  assert.equal(countWord(4), '4번');
+  assert.equal(countWord(12), '12번');
+  assert.equal(countWord(undefined), '한 번');
+  assert.equal(strings.notify2.inviteAutoFailed(2), '자동 수락이 두 번 안 됐어요 — 키는 그대로라 다시 시도할 수 있어요.');
+  assert.equal(strings.notify2.inviteAutoFailed(5), '자동 수락이 5번 안 됐어요 — 키는 그대로라 다시 시도할 수 있어요.');
+});
+
+test('디자인 2차-A 문구: iOS Strings+Onboarding·Strings+Agent 와 같은 글, 기술값(403) 없음', () => {
+  const o = strings.onboarding;
+  assert.equal(o.declaration, '한데에는 회원가입이 없습니다 — 가족 운영자가 등록합니다.');
+  assert.equal(o.actorTitle, '이 기기를 쓰는 분의 이름');
+  assert.equal(o.actorHint, '한 번 정하면 바꿀 수 없어요.');
+  assert.equal(o.actorInvalid, '영문 소문자·숫자 2~16자로 써 주세요');
+  assert.equal(o.enrollTitle, '이 기기 등록');
+  assert.equal(o.enrollWaitingOperator, '운영자 승인을 기다리는 중');
+  assert.doesNotMatch(o.enrollWaitingOperator, /403|device_subject_mismatch/, '대기 문구에 기술값 없음');
+  assert.equal(o.enrollWaitingSiblingUntil('21:40'), '다른 기기의 승인을 기다리는 중 · 21:40까지');
+  assert.equal(o.step(2, 2), '2단계 중 2단계');
+  assert.equal(o.stepNames.length, o.steps, '웹은 이름 · 등록 두 칸');
+  assert.equal(o.fingerprintRowLabel(3, '1a2b 3c4d'), '3번, 1a2b 3c4d');
+  assert.equal(o.fingerprintRowLabel(3, '1a2b 3c4d', false), '3번, 1a2b 3c4d, 맞춤 표시 안 됨');
+  assert.equal(o.fingerprintRowLabel(3, '1a2b 3c4d', true), '3번, 1a2b 3c4d, 맞춤 표시 됨');
+  const a = strings.approve2;
+  assert.equal(a.times('21:10', '21:40'), '요청 21:10 · 21:40에 만료');
+  assert.equal(a.compareTitle, '새 기기 화면과 하나씩 맞춰 보세요');
+  assert.equal(a.progress(3, 8), '같으면 눌러 표시하세요 · 3 / 8');
+  assert.equal(a.allMatched, '모두 맞췄어요');
+  assert.equal(a.disabled(8), '8줄을 모두 맞춰 보세요');
+  assert.equal(a.disabledAccessibility(8), '8줄을 모두 맞춘 뒤 승인할 수 있습니다');
+  assert.equal(a.warning, '지문이 다르면 승인하지 말고 운영자에게 알려 주세요.');
+  assert.equal(a.mismatch, '다릅니다');
+  assert.equal(a.later, '나중에');
+  assert.equal(a.approvedTitle('jiyu-ipad'), 'jiyu-ipad를 승인했어요');
+  assert.equal(a.approvedBody, '이 기기가 있는 자리에 자동으로 초대합니다.');
+  assert.equal(a.rejectedTitle, '승인하지 않았어요');
+  assert.equal(a.rejectedBody('jiyu-ipad'), 'jiyu-ipad는 들어오지 못합니다. 운영자에게 지문이 달랐다고 알려 주세요.');
+  assert.equal(a.copyDiagnostics, '진단 기록 복사');
+  const s = strings.settings2;
+  assert.deepEqual([s.server, s.screen, s.thisDevice, s.deviceManage, s.account, s.danger, s.about], ['서버', '화면', '이 기기', '기기 관리', '계정', '위험 구역', '정보']);
+  assert.equal(s.operatorInfo, '운영자용 정보');
+  assert.equal(s.wipeDangerBody, '이 기기의 키와 대화가 모두 지워집니다. 되돌릴 수 없어요.');
+  assert.equal(s.copied, '복사했어요');
+  const n = strings.notify2;
+  assert.equal(n.empty, '새 알림이 없어요');
+  assert.equal(n.emptyBody, '받은 초대와 수락 상태가 여기 모입니다.');
+  assert.equal(n.hint, '수락이 안 되면 「기록 복사」로 운영자에게 보내 주세요. 비밀값은 들어가지 않아요.');
+  assert.equal(n.inviteKickerLine(null), '새 자리 초대');
+  assert.equal(n.inviteKickerLine('방금'), '새 자리 초대 · 방금');
+  assert.equal(n.inviteBody('할머니댁'), '운영자가 「할머니댁」 자리에 이 기기를 초대했어요.');
+  assert.equal(n.copyLogsShort, '기록 복사');
+  assert.equal(strings.closed.title, '운영자가 이 자리를 닫았어요');
+  assert.equal(strings.closed.body, '지난 이야기는 읽을 수 있지만 더 쓸 수는 없어요. 다시 열려면 운영자에게 말해 주세요.');
+  assert.equal(strings.closed.relayUnreachable, '릴레이에 닿지 않아요 — 연결되면 보낼게요');
+  assert.equal(strings.empty.roomsHint, '운영자가 초대하면 여기에 자리가 생겨요.');
+  assert.equal(strings.empty.invitesInBell, '받은 초대가 있어요 — 오른쪽 위 알림에서 수락하세요');
 });
 
 test('actorOf / isAgentDevice', () => {

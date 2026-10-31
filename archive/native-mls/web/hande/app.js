@@ -95,9 +95,10 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     if (app.phase === 'starting') app.message = strings.app.starting;
   }
   const status = (text, tone = 'info') => ui.setStatus(root, text, tone);
+  /** 클립보드 복사. 시트 안에서는 ui 가 결과로 토스트(「복사했어요」)를 띄우므로 성공 여부를 돌려준다. */
   async function copy(text) {
-    try { await navigator.clipboard.writeText(text); status(strings.app.copied, 'ok'); }
-    catch (_) { status(strings.app.copyFailed, 'warn'); }
+    try { await navigator.clipboard.writeText(text); status(strings.app.copied, 'ok'); return true; }
+    catch (_) { status(strings.app.copyFailed, 'warn'); return false; }
   }
   function roomRow(roomId) {
     const R = app.rooms.get(roomId), S = R.session.state;
@@ -178,6 +179,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
         // 방별 알림(mute.go): 같은 사람의 모든 기기에 한 값. null(옛 릴레이·아직 모름)이면 머리글에 버튼이 없다.
         muted: S.joined && !S.halted ? S.muted : null, onToggleMute: () => toggleMute(app.current),
         notice: null, sending: app.sending || S.transferring,
+        // 연결 배너(디자인 2차-A §A4): 릴레이에 닿지 않는 동안 머리 아래 「릴레이에 닿지 않아요 — 연결되면 보낼게요」.
+        offline: Boolean(relay.offline || app.offlineAt),
         attachmentPending: R.session.attachmentPending ? {size: 0, onRetry: () => sendAttachment(null)} : null};
     })() : null;
     // 보관함(#544 D): 「첨부」 탭은 항상, 파일보관함 탭은 config.json 이 있을 때만. 첨부 목록은 화면 타임라인에서 매 paint 다시 센다.
@@ -469,6 +472,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   }
   function candidateRows() {
     return app.candidates.map(c => ({deviceId: c.device_id, actor: c.actor, fingerprint: c.fingerprint, expiresAt: Number.isFinite(c.expires_at) ? c.expires_at * 1000 : null,
+      createdAt: Number.isFinite(c.created_at) ? c.created_at * 1000 : null,
       busy: !!c.busy, message: c.message ?? null,
       onApprove: () => openRelayApprove(c.device_id),
       onIgnore: () => { app.dismissedCandidates.add(c.device_id); app.candidates = app.candidates.filter(x => x.device_id !== c.device_id); render(); }}));
@@ -489,7 +493,12 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       render();
       return;
     }
-    ui.openApproveSheet(root, {mode: 'relay', candidate: {deviceId, fingerprint}, onApprove: () => approveViaRelay(c, fingerprint), onClose: () => {}});
+    // 디자인 2차-A §A1: 기기 카드에 요청·만료 시각(카운트다운 없음). 「다릅니다」는 후보를 무시 목록에 넣고, 「진단 기록 복사」는 🔔 과 같은 보고서.
+    ui.openApproveSheet(root, {mode: 'relay',
+      candidate: {deviceId, fingerprint, createdAt: Number.isFinite(c.created_at) ? c.created_at * 1000 : null, expiresAt: Number.isFinite(c.expires_at) ? c.expires_at * 1000 : null},
+      onApprove: () => approveViaRelay(c, fingerprint),
+      onReject: () => { logLine(`후보 ${deviceId} 지문 다름(사용자 판단) — 승인하지 않음`); app.dismissedCandidates.add(deviceId); app.candidates = app.candidates.filter(x => x.device_id !== deviceId); render(); },
+      onCopyDiagnostics: copyDiagnostics, onClose: () => {}});
   }
   async function approveViaRelay(c, fingerprint) {
     c.busy = true; c.message = null; render();
@@ -736,7 +745,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   function openSettings() {
     const reg = JSON.stringify(app.dev.registration(app.subject), null, 1);
     ui.openSettingsSheet(root, {deviceId: app.device, actor: app.actor, fingerprint: app.dev.state.fingerprint, subject: app.subject,
-      origin: location.host, onCopyRegistration: () => copy(reg), onOpenApprove: openApprove, onOpenDevices: devicesView() ? openDevices : null, onWipe: confirmWipe, onClose: () => {},
+      origin: location.host, policyRevision: app.me?.policy_revision ?? null, onCopyRegistration: () => copy(reg), onOpenApprove: openApprove, onOpenDevices: devicesView() ? openDevices : null, onWipe: confirmWipe, onClose: () => {},
       theme: theme ? theme.get() : null, onTheme: theme ? value => theme.set(value) : null});
   }
   function openJoin() {
