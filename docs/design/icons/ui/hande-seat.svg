@@ -1,0 +1,9 @@
+<!-- 자리(둘러앉음) — 한데 고유 UI 아이콘(2차-B B2). 선 currentColor 1.6 둥근 끝. data-role 채움은 테마 토큰(ember/ember-deep/person/agent/ink)으로 칠한다. -->
+<svg id="hande.seat" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 14.5c-1.3 0-2.1-.9-2.1-2.1 0-1.5 1.3-2.5 2.1-4.6.8 2.1 2.1 3.1 2.1 4.6 0 1.2-.8 2.1-2.1 2.1Z"/>
+  <path data-role="person" d="M2.6 13.5a1.4 1.4 0 1 0 2.8 0a1.4 1.4 0 1 0 -2.8 0Z" fill="currentColor" stroke="none"/>
+  <path data-role="agent" d="M5.199999999999999 18.5a1.4 1.4 0 1 0 2.8 0a1.4 1.4 0 1 0 -2.8 0Z" fill="currentColor" stroke="none"/>
+  <path data-role="person" d="M10.6 20.5a1.4 1.4 0 1 0 2.8 0a1.4 1.4 0 1 0 -2.8 0Z" fill="currentColor" stroke="none"/>
+  <path data-role="agent" d="M15.999999999999998 18.5a1.4 1.4 0 1 0 2.8 0a1.4 1.4 0 1 0 -2.8 0Z" fill="currentColor" stroke="none"/>
+  <path data-role="person" d="M18.6 13.5a1.4 1.4 0 1 0 2.8 0a1.4 1.4 0 1 0 -2.8 0Z" fill="currentColor" stroke="none"/>
+</svg>

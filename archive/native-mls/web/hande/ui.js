@@ -14,6 +14,7 @@ import {attachmentTitle} from './attachments.js';
 import {parseBlocks, inlineSpans, hasMarkdown} from './agent-markdown.js';
 import {linkParts} from './service-links.js';
 import {isCaretMode} from './timeline-caret.js';
+import {icon} from './icons.js';
 
 // ---- DOM 도우미 ----
 
@@ -287,6 +288,17 @@ export function setStatus(root, message, tone = 'info') {
 const STATE_LABEL = { pending: strings.rooms.pending, halted: strings.rooms.halted, closed: strings.rooms.closed };
 
 /**
+ * 방 행·머리글의 불 표시: 48px 원(밤 ember 12% 면 / 낮불 1.5px 먹 테두리) 안 불꽃 아이콘(level 1~3) 또는 장작(level 0 = 꺼진 자리).
+ * 아이콘은 장식, 불 세기는 보조기기만 말로(「오늘의 불 세기 조용함/보통/활발」).
+ */
+function fireMark(level, size = 26) {
+  const out = !(level >= 1);
+  return el('span', { class: `fire${out ? ' out' : ''}`, 'data-fire': String(out ? 0 : level) },
+    out ? icon('embers-out', { size: Math.round(size * 24 / 26) }) : icon('flame', { level, size }),
+    out ? null : el('span', { class: 'visually-hidden' }, strings.rooms.fireLevel(level)));
+}
+
+/**
  * @param {object} room
  * @param {Function} onSelect
  * @param {boolean} active
@@ -295,17 +307,18 @@ const STATE_LABEL = { pending: strings.rooms.pending, halted: strings.rooms.halt
  */
 function roomListItem(room, onSelect, active, order = null) {
   const out = room.state === 'halted' || room.state === 'closed';
-  const emoji = room.emoji || (out ? '🪵' : '🔥');
+  // 오늘의 불 세기(디자인 2차-B §B2): 불꽃 1~3갈래(app.js 가 24시간 글 수로 계산), 꺼진 자리는 장작(embers-out). 숫자는 화면에 없다.
+  const fire = out ? 0 : Math.min(3, Math.max(1, Number(room.fire) || 1));
   const preview = room.preview || (out ? strings.rooms.closedPreview : strings.rooms.noMessages);
   const unread = Boolean(room.unread) && !out;
   const muted = Boolean(room.muted) && !out;
   // status-v1(#560): 일하는 중인 방은 미리보기 자리에 최신 「⏳ Working …」 줄(오너 2026-10-30 — 목록에서 작업 중인지 보이게).
   const working = !out && typeof room.working === 'string' && room.working ? room.working : null;
-  const signature = JSON.stringify([room.roomId, room.name, emoji, preview, working, room.time, unread, muted, room.state, Boolean(room.hasAgent), room.members ?? 0, active, order ? [order.index, order.count] : null]);
+  const signature = JSON.stringify([room.roomId, room.name, fire, preview, working, room.time, unread, muted, room.state, Boolean(room.hasAgent), room.members ?? 0, active, order ? [order.index, order.count] : null]);
   const classes = ['room-item', `state-${room.state}`, unread ? 'unread' : '', room.hasAgent && !out ? 'bright' : '', working ? 'working' : ''].filter(Boolean).join(' ');
   const name = room.name || room.roomId;
   const content = [
-    el('span', { class: 'fire', 'aria-hidden': 'true' }, emoji),
+    fireMark(fire),
     el('span', { class: 'texts' },
       el('span', { class: 'room-head' },
         // 이름과 N 배지를 한 묶음으로 둔다 — 긴 이름은 말줄임되고 배지는 이름 바로 옆에 항상 보인다.
@@ -314,8 +327,10 @@ function roomListItem(room, onSelect, active, order = null) {
           muted ? el('span', { class: 'muted-mark', 'data-testid': 'room-muted', title: strings.rooms.mutedLabel },
             el('span', { 'aria-hidden': 'true' }, '🔕'),
             el('span', { class: 'visually-hidden' }, strings.rooms.mutedLabel)) : null,
+          // 안 읽음: 밤 주황 점 / 낮불 먹 알약 「새 글」 — 둘 다 두고 CSS 토큰이 테마별로 하나만 보인다(디자인 2차-B B1).
           unread ? el('span', { class: 'unread-badge', title: strings.rooms.unreadLabel },
-            el('span', { 'aria-hidden': 'true' }, strings.rooms.unreadBadge),
+            el('span', { class: 'unread-dot', 'aria-hidden': 'true' }),
+            el('span', { class: 'unread-pill', 'aria-hidden': 'true' }, strings.rooms.unreadBadge),
             el('span', { class: 'visually-hidden' }, strings.rooms.unreadLabel)) : null),
         // 방 목록에는 「에이전트」 배지를 두지 않는다(오너 요청 2026-10-27) — 에이전트 방 강조(bright)는 그대로.
         STATE_LABEL[room.state] ? el('span', { class: `pill state-${room.state}` }, STATE_LABEL[room.state]) : null,
@@ -373,11 +388,11 @@ function syncText(sync) {
   return strings.sync.never;
 }
 
-/** 🔔 알림 버튼(#521): 받은 초대 수를 배지로. */
+/** 초대 벨 버튼(#521 → 디자인 2차-B B2 invite-bell): 받은 알림이 있으면 점 하나(숫자 없음 — 수는 접근성 이름 「알림 N건」으로만). */
 function bellButton(count, onOpen) {
   const label = strings.notify.button(count);
-  return el('button', { type: 'button', class: 'icon ghost tool bell', 'aria-label': label, title: label, 'data-testid': 'open-notify', onclick: () => onOpen?.() },
-    '🔔', count > 0 ? el('span', { class: 'unread-badge bell-badge', 'aria-hidden': 'true' }, String(count > 99 ? '99+' : count)) : null);
+  return el('button', { type: 'button', class: 'icon ghost tool bell', 'aria-label': label, title: label, 'data-testid': 'open-notify', 'data-count': String(count), onclick: () => onOpen?.() },
+    icon('invite-bell', { size: 22 }), count > 0 ? el('span', { class: 'bell-badge', 'aria-hidden': 'true' }) : null);
 }
 /** 「…하는 중」 줄(§A5): 정지된 크림 점 3 + 글자 — 버튼 자리를 대체한다. */
 const thinkingLine = (text) => el('p', { class: 'thinking-line', role: 'status' }, seatDots(['p', 'p', 'p'], 'thinking'), el('span', {}, text));
@@ -467,8 +482,9 @@ function buildRoomList({ rooms = [], currentRoomId = null, onSelect, onOpenMenu,
     el('header', { class: 'appbar' },
       brand('s'),
       el('div', { class: 'tools', role: 'group', 'aria-label': strings.rooms.actions },
-        canReorder ? el('button', { type: 'button', class: editing ? 'primary small order-toggle' : 'ghost small order-toggle', 'aria-pressed': editing ? 'true' : 'false', 'aria-label': editing ? strings.rooms.orderDoneLabel : strings.rooms.orderEditLabel, title: editing ? strings.rooms.orderDoneLabel : strings.rooms.orderEditLabel, 'data-testid': 'order-toggle', onclick: () => onToggleOrderEdit() },
-          editing ? strings.rooms.orderDone : [el('span', { class: 'order-icon', 'aria-hidden': 'true' }, strings.rooms.orderEditIcon), el('span', { class: 'order-label' }, strings.rooms.orderEdit)]) : null,
+        // 순서 편집(디자인 2차-B B2 reorder): 둥근 아이콘 버튼(낮불 흰 면 + 1.5 먹 선), 편집 중에는 글자 「완료」 주 버튼.
+        canReorder ? el('button', { type: 'button', class: editing ? 'primary small order-toggle' : 'icon ghost tool order-toggle', 'aria-pressed': editing ? 'true' : 'false', 'aria-label': editing ? strings.rooms.orderDoneLabel : strings.rooms.orderEditLabel, title: editing ? strings.rooms.orderDoneLabel : strings.rooms.orderEditLabel, 'data-testid': 'order-toggle', onclick: () => onToggleOrderEdit() },
+          editing ? strings.rooms.orderDone : [icon('reorder', { size: 22 }), el('span', { class: 'order-label visually-hidden' }, strings.rooms.orderEdit)]) : null,
         onOpenNotify ? bellButton(bellCount, onOpenNotify) : null,
         // 참여 요청·방 만들기는 ⚙ 설정 메뉴로(오너 2026-10-27): 헤더는 🔔·🗂·⚙ 만.
         onOpenBox ? toolButton('🗂', strings.box.toggle, 'open-box', onOpenBox) : null,
@@ -704,8 +720,10 @@ function choiceCard(choice) {
 
 function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null) {
   const time = formatTime(entry.ts);
+  // 전송 상태(2차-B B3): entry.state 'queued'(연결되면 보냄) · 'failed'(전송 안 됨) 가 오면 내 말풍선의 면·선이 바뀐다. 지금 app.js 는 보내기를 기다리므로 주지 않는다(훅만).
+  const sendState = entry.isMe && (entry.state === 'queued' || entry.state === 'failed') ? entry.state : null;
   const signature = JSON.stringify([entry.key, entry.kind, Boolean(entry.isMe), Boolean(entry.isAgent), entry.senderName ?? null, entry.body ?? '', time, entry.size ?? null, entry.image?.url ?? null, Boolean(entry.replay), entry.seq ?? null,
-    entry.fileName ?? null, Boolean(entry.previewFailed), Boolean(entry.previewFailed) && Boolean(entry.previewBusy), choiceSignature(choice)]);
+    entry.fileName ?? null, Boolean(entry.previewFailed), Boolean(entry.previewFailed) && Boolean(entry.previewBusy), choiceSignature(choice), sendState]);
   if (entry.kind === 'system') {
     return signed(el('li', { class: 'system', 'data-key': entry.key, 'data-testid': 'system-row' }, el('span', { class: 'body' }, entry.body), time ? el('span', { class: 'foot' }, time) : null), signature);
   }
@@ -727,7 +745,7 @@ function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null) {
   else if (entry.kind === 'text' && isServiceDevice(entry.sender)) body = el('div', { class: 'body' }, serviceLinkNodes(entry.body));
   else body = el('div', { class: 'body' }, entry.body);
   const foot = [entry.replay ? strings.chat.replay : null, time].filter(Boolean).join(' · ');
-  return signed(el('li', { class: `bubble kind-${entry.kind}${entry.isAgent ? ' agent' : ''}`, 'data-key': entry.key, 'data-me': entry.isMe ? 'true' : 'false', 'data-testid': entry.kind === 'undecryptable' ? 'system-row' : 'bubble' },
+  return signed(el('li', { class: `bubble kind-${entry.kind}${entry.isAgent ? ' agent' : ''}${sendState ? ` ${sendState}` : ''}`, 'data-key': entry.key, 'data-me': entry.isMe ? 'true' : 'false', 'data-testid': entry.kind === 'undecryptable' ? 'system-row' : 'bubble' },
     entry.isMe ? null : el('span', { class: 'who' }, senderLabel(entry.senderName || displayName(entry.sender), entry.isAgent)),
     body,
     choiceCard(choice),
@@ -982,7 +1000,7 @@ function buildRoom(room) {
   const header = signed(el('header', { class: 'appbar', 'data-part': 'header' },
     el('button', { type: 'button', class: 'icon ghost back', 'aria-label': strings.chat.back, onclick: () => liveProps.get(screen)?.onBack?.() }, '←'),
     el('div', { class: 'titles' },
-      el('h2', {}, el('span', { class: 'fire', 'aria-hidden': 'true' }, room.halted ? '🪵' : '🔥'), ' ', room.name || room.roomId),
+      el('h2', {}, fireMark(room.halted ? 0 : Math.min(3, Math.max(1, Number(room.fire) || 1)), 18), ' ', room.name || room.roomId),
       // 입력 중(#562): 머리글에만(목록 행에는 없음). 서명에 들어가므로 바뀔 때 머리글만 다시 그린다.
       room.typing ? el('span', { class: 'typing', role: 'status', 'aria-live': 'polite', 'data-testid': 'typing' }, room.typing) : null,
       // 멤버 수는 사람 단위(같은 사람의 PC·폰 = 한 명, 2026-10-28 오너) — 멤버 시트의 사람 묶음과 같은 수. 닫힌 방은 「불이 꺼진 자리」(§A6).
@@ -996,7 +1014,7 @@ function buildRoom(room) {
       room.onOpenBox ? el('button', { type: 'button', class: 'ghost small box-toggle', 'data-testid': 'open-box', 'aria-label': strings.box.toggle, onclick: () => liveProps.get(screen)?.onOpenBox?.() }, '🗂') : null,
       el('button', { type: 'button', class: 'ghost small', onclick: () => liveProps.get(screen)?.onOpenMembers?.() }, strings.chat.membersButton),
       el('button', { type: 'button', class: 'secondary small', 'data-testid': 'open-invite', disabled: room.joined ? null : true, onclick: () => liveProps.get(screen)?.onOpenInvite?.() }, strings.chat.invite))),
-  JSON.stringify([room.name, room.roomId, participantCount(members), Boolean(room.halted), room.halted?.reason ?? null, Boolean(room.joined), Boolean(room.onOpenBox), room.typing ?? '', typeof room.muted === 'boolean' ? room.muted : null]));
+  JSON.stringify([room.name, room.roomId, participantCount(members), Boolean(room.halted), room.halted?.reason ?? null, Boolean(room.joined), Boolean(room.onOpenBox), room.typing ?? '', typeof room.muted === 'boolean' ? room.muted : null, room.fire ?? null]));
   const notice = room.notice?.text ? signed(el('p', { class: `status ${room.notice.tone || 'info'}`, role: 'status', 'data-part': 'notice' }, room.notice.text), JSON.stringify(room.notice)) : null;
   const list = el('ul', { class: 'timeline', tabindex: '-1', 'aria-live': 'polite', 'aria-label': strings.chat.timelineLabel, 'data-testid': 'timeline' },
     room.timeline.length === 0 ? signed(el('li', { class: 'empty', 'data-key': 'empty' }, strings.chat.empty), 'empty') : timelineRows(room.timeline, room.onOpenAttachment, room.onRetryPreview ?? null, room.choices ?? null),
@@ -1097,7 +1115,7 @@ export function renderShell(root, { list, room, box = null }) {
     roomPane = el('section', { class: 'pane pane-room' }, built.screen);
     mount = () => built.mount({ focus: snap.hadFocus || isWide() });
   } else {
-    roomPane = el('section', { class: 'pane pane-room' }, el('div', { class: 'pane-empty' }, el('span', { class: 'big-fire', 'aria-hidden': 'true' }, '🔥'), el('p', { class: 'empty' }, strings.rooms.selectHint)));
+    roomPane = el('section', { class: 'pane pane-room' }, el('div', { class: 'pane-empty' }, el('span', { class: 'big-fire', 'aria-hidden': 'true' }, icon('flame', { level: 3, size: 48 })), el('p', { class: 'empty' }, strings.rooms.selectHint)));
   }
   if (existingShell) {
     updateListPane(existingShell, listPane);

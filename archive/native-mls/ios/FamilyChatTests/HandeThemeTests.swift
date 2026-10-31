@@ -37,12 +37,31 @@ final class HandeThemeTests: XCTestCase {
         XCTAssertEqual(Hande.radiusL, 24)
     }
 
-    /// 벡터 아이콘의 path 가 파서(M/L/H/V/C/Q/Z)로 끝까지 읽힌다 — 반쯤 그려지는 일이 없게.
+    /// 벡터 아이콘의 path 가 파서(M/L/H/V/C/Q/A/Z)로 끝까지 읽힌다 — 반쯤 그려지는 일이 없게. 2차-B 정본(HandeIconArt)은 호(`a`)를 쓴다.
     func testIconPathsParse() throws {
+        XCTAssertEqual(FlameIcon.tongues.count, 3)
         for d in FlameIcon.tongues {
             let commands = try XCTUnwrap(SVGPathData.parse(d), d)
             XCTAssertEqual(commands.last, .close)
         }
-        XCTAssertNotNil(SVGPathData.parse("M6 14h12M6 18h12M6 14c-1.1 0-2 0.9-2 2c0 1.1 0.9 2 2 2M18 14c1.1 0 2 0.9 2 2c0 1.1-0.9 2-2 2M9 10l4-4M14 10l3-3"))
+        XCTAssertEqual(HandeIconArt.icons.count, 11)
+        XCTAssertFalse(HandeIconArt.allPaths.isEmpty)
+        for d in HandeIconArt.allPaths {
+            let commands = try XCTUnwrap(SVGPathData.parse(d), d)
+            XCTAssertFalse(commands.isEmpty, d)
+            // 24 뷰박스 안(제어점 포함).
+            for command in commands {
+                switch command {
+                case .move(let a), .line(let a):
+                    XCTAssertTrue((0...24).contains(a.x) && (0...24).contains(a.y), "\(d) → \(a)")
+                case .cubic(let c1, let c2, let e):
+                    for a in [c1, c2, e] { XCTAssertTrue((-0.5...24.5).contains(a.x) && (-0.5...24.5).contains(a.y), "\(d) → \(a)") }
+                case .quad(let q, let e):
+                    for a in [q, e] { XCTAssertTrue((0...24).contains(a.x) && (0...24).contains(a.y), "\(d) → \(a)") }
+                case .close: break
+                }
+            }
+        }
+        XCTAssertNotNil(SVGPathData.parse(EmptyCampfireArt.logs))
     }
 }

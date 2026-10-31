@@ -65,7 +65,7 @@
   --agent-soft: rgba(97, 166, 250, 0.16);
   --focus: var(--cream);
   --focus-ring: 0 0 0 3px var(--brand-soft);
-  --input-focus-line: var(--brand);
+  --input-focus-line: var(--cream);   /* 입력칸 포커스 = 2px 크림(2차-B B3) */
   --button-line: transparent;
   --backdrop: rgba(5, 7, 16, 0.65);
   --backdrop-blur: blur(2px);
@@ -99,6 +99,78 @@
   --cream-face: #F3E6D3;
   --on-cream: #1B0F06;
   --log: #8E7B66;
+  /* 디자인 2차-B(§B1~B3) — 아이콘 역할색(icons.js data-role) · 불 원 · 꺼진 자리 · 안 읽음 표시 · 머리 도구 버튼 · 지문 체크 · 버튼 4종 상태 · 입력칸 · 말풍선 전송 상태 · 토스트.
+   * 낮불은 색 대신 채움·선·점선으로 상태를 나눈다(투명도 0). 토큰만 바꾸면 밤·낮불·시스템 따라가기 모두 같은 규칙을 탄다. */
+  --ic-ember: var(--ember);
+  --ic-ember-deep: var(--ember-deep);
+  --ic-person: var(--person);
+  --ic-agent: var(--agent);
+  --ic-ink: var(--text);
+  --ic-unlit: 0.35;
+  --ic-seat-circle: inline;
+  --ic-seat-diamond: none;
+  --fire-bg: rgba(245, 158, 66, 0.12);
+  --fire-line: transparent;
+  --fire-out-bg: rgba(255, 255, 255, 0.05);
+  --fire-out-line: transparent;
+  --room-out-opacity: 0.6;
+  --room-out-line: var(--line);
+  --room-out-style: solid;
+  --room-out-text: var(--text-2);
+  --unread-dot: inline-flex;
+  --unread-pill: none;
+  --tool-bg: transparent;
+  --tool-line: transparent;
+  --bell-dot: var(--ember);
+  --bell-dot-ring: var(--bg);
+  --tick-bg: var(--ember);
+  --tick-fg: var(--on-ember);
+  --tick-line: var(--line-strong);
+  --tick-row-bg: var(--ember-fill);
+  --tick-row-weight: 400;
+  --btn-primary-weight: 600;
+  --btn-disabled-style: solid;
+  --btn-disabled-line: transparent;
+  --btn-primary-disabled-bg: rgba(245, 158, 66, 0.18);
+  --btn-secondary-disabled-bg: rgba(255, 255, 255, 0.04);
+  --btn-secondary-disabled-line: var(--line);
+  --btn-cream-disabled-bg: rgba(243, 230, 211, 0.18);
+  --press: rgba(255, 255, 255, 0.13);
+  --btn-danger-bg: rgba(217, 88, 59, 0.08);
+  --btn-danger-line: rgba(217, 88, 59, 0.6);
+  --btn-danger-w: 1.5px;
+  --btn-danger-fg: #F08A70;
+  --btn-danger-press-bg: rgba(217, 88, 59, 0.22);
+  --btn-danger-press-line: #D9583B;
+  --btn-danger-press-fg: #FFD0C2;
+  --btn-danger-disabled-line: rgba(217, 88, 59, 0.25);
+  --btn-danger-disabled-fg: rgba(240, 138, 112, 0.4);
+  --cream-press: #E3D3BA;
+  --cream-line-w: 0px;
+  --input-focus-w: 2px;
+  --input-error-w: 1.5px;
+  --warn-box-w: 1.5px;
+  --warn-dot-size: 8px;
+  --warn-dot-radius: 50%;
+  --chip-on-bg: var(--brand);
+  --chip-on-fg: var(--on-brand);
+  --chip-check: none;
+  --link-underline: none;
+  --section-weight: 600;
+  --danger-zone-w: 1.5px;
+  --danger-zone-bg: transparent;
+  --toast-bg: var(--surface-solid);
+  --toast-fg: var(--text);
+  --toast-line: var(--line-strong);
+  --banner-w: 1px;
+  --bubble-queued-bg: var(--bubble-me);
+  --bubble-queued-fg: var(--bubble-me-text);
+  --bubble-queued-line: transparent;
+  --bubble-queued-opacity: 0.75;
+  --bubble-failed-bg: rgba(245, 158, 66, 0.22);
+  --bubble-failed-fg: var(--text);
+  --bubble-failed-line: #D9583B;
+  --bubble-failed-w: 1.5px;
 
   /* 반경 S 10 / M 16 / L 24 (낮불도 동일) · 말풍선 18, 꼬리 6 */
   --radius-s: 10px;
@@ -209,9 +281,77 @@ html[data-theme="day"] {
   --step-off: #D9D2C4;
   --pill-bg: #FFFFFF;
   --disabled-fg: #8A8178;
-  --cream-face: #1A1510;
-  --on-cream: #F7F3EA;
+  --cream-face: #FFFFFF;
+  --on-cream: #1A1510;
   --log: #8A8178;
+  /* 2차-B: 아이콘 채움은 먹(에이전트만 파랑), 꺼진 갈래 선 100%, seat 에이전트 점 ◆. 불 원 = 1.5 먹 선. 꺼진 자리 = 점선 #8A8178. 안 읽음 = 먹 알약. */
+  --ic-ember: #1A1510;
+  --ic-ember-deep: #1A1510;
+  --ic-unlit: 1;
+  --ic-seat-circle: none;
+  --ic-seat-diamond: inline;
+  --fire-bg: transparent;
+  --fire-line: #1A1510;
+  --fire-out-bg: transparent;
+  --fire-out-line: #8A8178;
+  --room-out-opacity: 1;
+  --room-out-line: #8A8178;
+  --room-out-style: dashed;
+  --room-out-text: #8A8178;
+  --unread-dot: none;
+  --unread-pill: inline-flex;
+  --tool-bg: #FFFFFF;
+  --tool-line: #1A1510;
+  --bell-dot: #1A1510;
+  --bell-dot-ring: #FFFFFF;
+  --tick-bg: #1A1510;
+  --tick-fg: #F7F3EA;
+  --tick-line: #1A1510;
+  --tick-row-bg: #EFE9DC;
+  --tick-row-weight: 700;
+  --btn-primary-weight: 700;
+  --btn-disabled-style: dashed;
+  --btn-disabled-line: #8A8178;
+  --btn-primary-disabled-bg: #F7F3EA;
+  --btn-secondary-disabled-bg: #F7F3EA;
+  --btn-secondary-disabled-line: #8A8178;
+  --btn-cream-disabled-bg: #F7F3EA;
+  --press: #E9E4DA;
+  --btn-danger-bg: #FFFFFF;
+  --btn-danger-line: #A8321C;
+  --btn-danger-w: 2px;
+  --btn-danger-fg: #A8321C;
+  --btn-danger-press-bg: #A8321C;
+  --btn-danger-press-line: #A8321C;
+  --btn-danger-press-fg: #F7F3EA;
+  --btn-danger-disabled-line: #8A8178;
+  --btn-danger-disabled-fg: #8A8178;
+  --cream-press: #E9E4DA;
+  --cream-line-w: 2px;
+  --input-focus-w: 2px;
+  --input-error-w: 2px;
+  --warn-box-w: 2px;
+  --warn-dot-size: 9px;
+  --warn-dot-radius: 0;
+  --chip-on-bg: #1A1510;
+  --chip-on-fg: #F7F3EA;
+  --chip-check: inline;
+  --link-underline: underline;
+  --section-weight: 700;
+  --danger-zone-w: 2px;
+  --danger-zone-bg: #FFFFFF;
+  --toast-bg: #1A1510;
+  --toast-fg: #F7F3EA;
+  --toast-line: transparent;
+  --banner-w: 2px;
+  --bubble-queued-bg: #FFFFFF;
+  --bubble-queued-fg: #1A1510;
+  --bubble-queued-line: #1A1510;
+  --bubble-queued-opacity: 1;
+  --bubble-failed-bg: #FFFFFF;
+  --bubble-failed-fg: #1A1510;
+  --bubble-failed-line: #A8321C;
+  --bubble-failed-w: 2px;
 }
 @media (prefers-color-scheme: light) {
   html[data-theme="auto"] {
@@ -293,9 +433,77 @@ html[data-theme="day"] {
     --step-off: #D9D2C4;
     --pill-bg: #FFFFFF;
     --disabled-fg: #8A8178;
-    --cream-face: #1A1510;
-    --on-cream: #F7F3EA;
+    --cream-face: #FFFFFF;
+    --on-cream: #1A1510;
     --log: #8A8178;
+    /* 2차-B: 아이콘 채움은 먹(에이전트만 파랑), 꺼진 갈래 선 100%, seat 에이전트 점 ◆. 불 원 = 1.5 먹 선. 꺼진 자리 = 점선 #8A8178. 안 읽음 = 먹 알약. */
+    --ic-ember: #1A1510;
+    --ic-ember-deep: #1A1510;
+    --ic-unlit: 1;
+    --ic-seat-circle: none;
+    --ic-seat-diamond: inline;
+    --fire-bg: transparent;
+    --fire-line: #1A1510;
+    --fire-out-bg: transparent;
+    --fire-out-line: #8A8178;
+    --room-out-opacity: 1;
+    --room-out-line: #8A8178;
+    --room-out-style: dashed;
+    --room-out-text: #8A8178;
+    --unread-dot: none;
+    --unread-pill: inline-flex;
+    --tool-bg: #FFFFFF;
+    --tool-line: #1A1510;
+    --bell-dot: #1A1510;
+    --bell-dot-ring: #FFFFFF;
+    --tick-bg: #1A1510;
+    --tick-fg: #F7F3EA;
+    --tick-line: #1A1510;
+    --tick-row-bg: #EFE9DC;
+    --tick-row-weight: 700;
+    --btn-primary-weight: 700;
+    --btn-disabled-style: dashed;
+    --btn-disabled-line: #8A8178;
+    --btn-primary-disabled-bg: #F7F3EA;
+    --btn-secondary-disabled-bg: #F7F3EA;
+    --btn-secondary-disabled-line: #8A8178;
+    --btn-cream-disabled-bg: #F7F3EA;
+    --press: #E9E4DA;
+    --btn-danger-bg: #FFFFFF;
+    --btn-danger-line: #A8321C;
+    --btn-danger-w: 2px;
+    --btn-danger-fg: #A8321C;
+    --btn-danger-press-bg: #A8321C;
+    --btn-danger-press-line: #A8321C;
+    --btn-danger-press-fg: #F7F3EA;
+    --btn-danger-disabled-line: #8A8178;
+    --btn-danger-disabled-fg: #8A8178;
+    --cream-press: #E9E4DA;
+    --cream-line-w: 2px;
+    --input-focus-w: 2px;
+    --input-error-w: 2px;
+    --warn-box-w: 2px;
+    --warn-dot-size: 9px;
+    --warn-dot-radius: 0;
+    --chip-on-bg: #1A1510;
+    --chip-on-fg: #F7F3EA;
+    --chip-check: inline;
+    --link-underline: underline;
+    --section-weight: 700;
+    --danger-zone-w: 2px;
+    --danger-zone-bg: #FFFFFF;
+    --toast-bg: #1A1510;
+    --toast-fg: #F7F3EA;
+    --toast-line: transparent;
+    --banner-w: 2px;
+    --bubble-queued-bg: #FFFFFF;
+    --bubble-queued-fg: #1A1510;
+    --bubble-queued-line: #1A1510;
+    --bubble-queued-opacity: 1;
+    --bubble-failed-bg: #FFFFFF;
+    --bubble-failed-fg: #1A1510;
+    --bubble-failed-line: #A8321C;
+    --bubble-failed-w: 2px;
   }
 }
 /* 낮불·움직임 줄이기: 애니메이션 0 (디자인: 낮불은 빛남·애니메이션 없음). */
@@ -428,7 +636,8 @@ input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), textarea {
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 textarea { padding: 10px var(--space-4); line-height: 1.45; resize: vertical; }
-input:focus, textarea:focus { outline: none; border-color: var(--input-focus-line); box-shadow: var(--focus-ring); }
+/* 포커스 = 2px(밤 크림 / 낮불 먹), 오류 = 밤 1.5 · 낮불 2px warn(2차-B B3). 선 굵기를 바꾸지 않고 테두리 밖 그림자로 2px 를 맞춘다(레이아웃 흔들림 0). */
+input:focus, textarea:focus { outline: none; border-color: var(--input-focus-line); box-shadow: 0 0 0 calc(var(--input-focus-w) - var(--line-w)) var(--input-focus-line); }
 input::placeholder, textarea::placeholder { color: var(--text-3); }
 input:disabled, textarea:disabled { opacity: 0.55; }
 
@@ -449,9 +658,13 @@ button {
 }
 button:hover { background: color-mix(in srgb, var(--surface-2) 70%, var(--brand-soft)); }
 button:active { transform: translateY(1px); }
-button.primary { background: var(--brand); color: var(--on-brand); border-color: transparent; box-shadow: var(--ember-shadow); }
-button.primary:hover { background: var(--brand-strong); }
-button.secondary { background: var(--brand-soft); color: var(--brand-text); }
+/* 주 버튼(2차-B B3): 밤 #F59E42 / 눌림 #E8833A · 낮불 #D97A1E + 1.5 먹 선(--button-line) / 눌림 #B8650F · 글자 밤 600 / 낮불 700. */
+button.primary { background: var(--brand); color: var(--on-brand); border-color: var(--button-line); box-shadow: var(--ember-shadow); font-weight: var(--btn-primary-weight); }
+button.primary:hover, button.primary:active { background: var(--brand-strong); }
+/* 보조 버튼: 밤 면 white 7% + 선 14% / 눌림 white 13% · 낮불 흰 면 + 1.5 먹 / 눌림 #E9E4DA · 글자 500. */
+button.secondary { background: var(--surface); color: var(--text); border-color: var(--line); font-weight: 500; }
+button.secondary:hover { background: var(--surface-2); }
+button.secondary:active { background: var(--press); }
 button.ghost { background: transparent; border-color: var(--line-strong); color: var(--text-2); }
 button.ghost:hover { background: var(--surface); color: var(--text); }
 /* 주의/실패(붉은 잉걸)는 글자와 함께 — 글자는 잉크, 붉은색은 테두리로(붉은 면 위 붉은 글자는 대비가 모자란다). */
@@ -510,6 +723,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shado
 .status.notice { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
 .status.notice button { flex: none; min-height: 32px; width: 32px; padding: 0; }
 /* 상태 토스트(setStatus): #app 바로 아래 고정, 항상 DOM 에 있고 비면 숨긴다. */
+/* 토스트(2차-B B3): 밤 #1C2136 면 + 선 30% · 낮불 먹 면 + 종이 글자, 선 없음. 성공/주의 글자색도 토스트 글자색(먹 위 먹 글자가 되지 않게). */
 .status.toast {
   position: fixed;
   left: 50%;
@@ -519,14 +733,14 @@ button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shado
   max-width: min(92vw, 560px);
   z-index: 20;
   box-shadow: var(--shadow-2);
-  background: var(--surface-solid);
-  border-color: var(--line-strong);
-  color: var(--text);
+  background: var(--toast-bg);
+  border-color: var(--toast-line);
+  color: var(--toast-fg);
 }
 .status.toast[hidden] { display: none; }
-.status.toast.ok { color: var(--ok); }
-.status.toast.warn { color: var(--text); border-color: var(--warn); }
-.status.toast.danger, .status.toast.error { color: var(--text); border-color: var(--danger); }
+.status.toast.ok { color: var(--toast-fg); }
+.status.toast.warn { color: var(--toast-fg); border-color: var(--warn); }
+.status.toast.danger, .status.toast.error { color: var(--toast-fg); border-color: var(--danger); }
 .status .meta { color: inherit; opacity: 0.8; }
 
 /* ---------- 앱 바 ---------- */
@@ -540,10 +754,12 @@ button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shado
 .appbar .tools { display: flex; gap: var(--space-2); flex: none; align-items: center; }
 .appbar .brand { flex: 1; min-width: 0; }
 .appbar .brand .subtitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.appbar .tool { width: 40px; min-height: 40px; font-size: 1.1rem; }
+/* 머리 도구 버튼(초대 벨 · 순서 편집, 2차-B B2 아이콘): 둥근 40 · 밤 면 없음 / 낮불 흰 면 + 1.5 먹 선. */
+.appbar .tool { width: 40px; min-height: 40px; font-size: 1.1rem; background: var(--tool-bg); border-color: var(--tool-line); color: var(--text); }
 .appbar .tool:hover { background: var(--brand-soft); }
 .appbar .tool.bell { position: relative; }
-.bell-badge { position: absolute; top: 2px; right: 2px; min-width: 18px; width: auto; padding: 0 4px; }
+/* 초대 배지: 점 10 + 2px 바탕색 테두리, 숫자 없음(수는 버튼의 접근성 이름 「알림 N건」). 밤 불 / 낮불 먹. */
+.bell-badge { position: absolute; top: 5px; right: 6px; width: 10px; height: 10px; border-radius: 50%; background: var(--bell-dot); border: 2px solid var(--bell-dot-ring); box-sizing: border-box; }
 dialog.sheet.notify .invite-list { margin: var(--space-2) 0; }
 .sync-line { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-xs); color: var(--text-2); padding: 0 var(--space-1); }
 .sync-line .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; }
@@ -574,11 +790,12 @@ ul.rooms { list-style: none; margin: 0; padding: 0; display: flex; flex-directio
 .room-item:hover { background: var(--surface-2); }
 .room-item.bright { background: var(--room-bright-bg); border-color: var(--room-bright-line); box-shadow: var(--ember-shadow); }
 .room-item[aria-current="true"] { border-color: var(--room-current-line); background: var(--brand-soft); }
-.room-item .fire { width: 44px; height: 44px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 1.35rem; flex: none; background: var(--brand-soft); }
-/* 불이 꺼진 자리(정지·닫힘): 60% 흐림 + 장작(🪵) — 디자인 1차. */
-.room-item.state-halted, .room-item.state-closed { opacity: 0.6; }
-.room-item.state-halted .fire, .room-item.state-closed .fire { background: var(--surface-2); filter: saturate(0.3); }
-.room-item.state-halted .room-name, .room-item.state-closed .room-name { color: var(--text-2); }
+/* 불 원(2차-B B1): 48 원 안 불꽃 아이콘(icons.js flame 1~3) — 밤 ember 12% 면 / 낮불 1.5 먹 선, 면 없음. 꺼진 자리 = 장작(embers-out) + 재색 선. */
+.fire { width: 48px; height: 48px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; flex: none; background: var(--fire-bg); border: 1.5px solid var(--fire-line); color: var(--text); }
+.fire.out { background: var(--fire-out-bg); border-color: var(--fire-out-line); color: var(--log); }
+/* 불이 꺼진 자리(정지·닫힘): 밤 60% 흐림 · 낮불은 투명도 대신 점선 1.5 #8A8178 테두리 + 재색 글자(e-ink 에서 흐림은 안 읽힌다). */
+.room-item.state-halted, .room-item.state-closed { opacity: var(--room-out-opacity); border: var(--line-w) var(--room-out-style) var(--room-out-line); }
+.room-item.state-halted .room-name, .room-item.state-closed .room-name, .room-item.state-halted .preview, .room-item.state-closed .preview { color: var(--room-out-text); }
 .room-item .texts { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .room-item .room-head { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
 .room-item .room-name { flex: 0 1 auto; min-width: 0; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -591,10 +808,10 @@ ul.rooms { list-style: none; margin: 0; padding: 0; display: flex; flex-directio
 /* 이름 + 안 읽음 점 묶음: 묶음이 남는 폭을 차지하고 이름만 줄어들며 말줄임된다(점은 항상 보인다) — 패밀리챗(#480 A). */
 .room-item .room-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
 .room-item .room-title .room-name { flex: 0 1 auto; min-width: 0; }
-.unread-badge { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: var(--unread); color: var(--on-unread); font-size: 11px; font-weight: 800; line-height: 1; letter-spacing: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-/* 안 읽음 = 주황 점 하나, 개수 없음(디자인 1차). 글자 「N」은 숨기고 보조기기용 숨김 라벨은 그대로. 🔔 의 수 배지(.bell-badge)는 수를 보인다. */
-.room-item .unread-badge { width: 10px; height: 10px; }
-.room-item .unread-badge > [aria-hidden="true"] { display: none; }
+/* 안 읽음(2차-B B1) = 밤 주황 점 하나(개수·글자 없음) / 낮불 먹 알약 「새 글」(20 · 반경 10 · 12/700 종이 글자 — 작은 점은 e-ink 잔상에 묻힌다). 보조기기는 숨김 라벨을 읽는다. */
+.unread-badge { flex: none; display: inline-flex; align-items: center; }
+.unread-dot { display: var(--unread-dot); width: 10px; height: 10px; border-radius: 50%; background: var(--unread); box-shadow: var(--dot-glow); }
+.unread-pill { display: var(--unread-pill); align-items: center; height: 20px; padding: 0 7px; border-radius: 10px; background: var(--text); color: var(--bg); font-size: 12px; font-weight: 700; line-height: 1; white-space: nowrap; }
 .muted-mark { flex: none; font-size: 12px; line-height: 1; opacity: .7; }
 .ember-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--ember); box-shadow: var(--dot-glow); }
 /* 순서 편집(▲▼, PC 끌기) — 패밀리챗 ui.js roomListItem 과 같은 모양. */
@@ -608,9 +825,9 @@ ul.rooms > li.reorderable.dragging { opacity: 0.5; }
 .order-hint { font-size: var(--text-s); color: var(--text-2); margin: 0; padding: 0 var(--space-3) var(--space-2); }
 .campfire-empty { display: flex; flex-direction: column; align-items: center; gap: var(--space-2); }
 .campfire-empty .empty-title { font-weight: 700; color: var(--text); font-size: var(--text-m); }
-.big-fire { font-size: 2.4rem; line-height: 1; filter: saturate(0.6); }
+.big-fire { display: inline-flex; line-height: 1; color: var(--text); }
 .pane-empty { margin: auto; display: flex; flex-direction: column; align-items: center; gap: var(--space-2); }
-.pane-empty .big-fire { filter: none; opacity: 0.8; }
+.pane-empty .big-fire { opacity: 0.8; }
 
 /* ---------- 셸: 목록 | 대화 ---------- */
 
@@ -625,7 +842,7 @@ main.shell[data-view="room"] .pane-list { display: none; }
 
 .room-screen { display: flex; flex-direction: column; flex: 1; min-height: 0; width: 100%; max-width: 760px; margin: 0 auto; padding: 0 var(--space-4); }
 .room-screen .appbar { position: static; flex: none; }
-.room-screen .appbar h2 .fire { font-size: 1rem; }
+.room-screen .appbar h2 .fire { width: 30px; height: 30px; vertical-align: middle; }
 .room-screen > .status { flex: none; margin-bottom: var(--space-2); }
 .halt-banner {
   flex: none;
@@ -634,12 +851,14 @@ main.shell[data-view="room"] .pane-list { display: none; }
   gap: var(--space-1);
   padding: var(--space-3) var(--space-4);
   margin-bottom: var(--space-2);
-  border: var(--line-w) solid var(--danger);
+  border: var(--banner-w) solid var(--danger);
   border-left: 5px solid var(--danger);
   border-radius: var(--radius);
   background: var(--danger-soft);
   font-size: var(--text-s);
 }
+/* 주의/실패 배너(2차-B B3): 낮불은 2px warn + 흰 면. */
+.status.warn, .status.danger, .status.error { border-width: var(--banner-w); }
 .halt-banner strong { color: var(--text); font-size: var(--text-m); }
 .halt-banner .meta { font-size: var(--text-xs); }
 
@@ -751,6 +970,10 @@ main.shell[data-view="room"] .pane-list { display: none; }
 .bubble .foot { font-size: var(--text-xs); color: var(--text-3); padding: 0 var(--space-1); }
 .bubble[data-me="true"] { align-self: flex-end; align-items: flex-end; }
 .bubble[data-me="true"] .body { background: var(--bubble-me); color: var(--bubble-me-text); border-color: transparent; border-radius: var(--bubble-radius); border-bottom-right-radius: var(--bubble-tail); border-bottom-left-radius: var(--bubble-radius); box-shadow: var(--ember-shadow); }
+/* 내 말풍선 전송 상태(2차-B B3): 연결되면 보냄(queued) = 밤 75% / 낮불 흰 면 + 1.5 먹 점선 · 전송 안 됨(failed) = 밤 면 22% + 1.5 #D9583B / 낮불 흰 면 + 2px #A8321C. */
+.bubble[data-me="true"].queued .body { background: var(--bubble-queued-bg); color: var(--bubble-queued-fg); border: var(--line-w) dashed var(--bubble-queued-line); opacity: var(--bubble-queued-opacity); box-shadow: none; }
+.bubble[data-me="true"].failed .body { background: var(--bubble-failed-bg); color: var(--bubble-failed-fg); border: var(--bubble-failed-w) solid var(--bubble-failed-line); box-shadow: none; }
+.bubble.failed .foot { color: var(--warn-text); font-weight: 600; }
 .bubble.kind-undecryptable .body { color: var(--text-2); font-style: italic; border-style: dashed; background: transparent; }
 /* status-v1(#560): 에이전트 작업 상태 임시 말풍선 — 흐린 톤·한 줄 크기, 답이 오면 사라진다. */
 .bubble.kind-status .body { color: var(--text); font-size: 0.9em; border-style: dashed; border-color: var(--agent-stroke); background: var(--agent-soft); }
@@ -844,7 +1067,9 @@ ul.members { list-style: none; margin: 0; padding: 0; display: flex; flex-direct
 .chip-tabs { display: flex; gap: 6px; padding: 3px; border-radius: 12px; background: var(--surface); border: var(--line-w) solid var(--line); }
 .chip-tab { flex: 1; min-height: 36px; border-radius: var(--radius-s); display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 500; cursor: pointer; color: var(--text-2); position: relative; }
 .chip-tab input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; pointer-events: none; }
-.chip-tab:has(input:checked) { background: var(--brand); color: var(--on-brand); font-weight: 600; }
+/* 고른 칩 = 밤 불 면 / 낮불 먹 면 + 종이 글자 + ✓(색 없이 채움·기호로, 2차-B B1). */
+.chip-tab:has(input:checked) { background: var(--chip-on-bg); color: var(--chip-on-fg); font-weight: 700; }
+.chip-tab:has(input:checked) .name::after { content: " ✓"; display: var(--chip-check); }
 .chip-tab:has(input:focus-visible) { outline: 3px solid var(--focus); outline-offset: 2px; }
 .theme-hint { font-size: var(--text-s); }
 
@@ -955,10 +1180,12 @@ main.onboarding .card.hero.onboarding-screen { gap: 18px; }
 .onboarding-field { gap: var(--space-2); }
 .onboarding-field label { font-size: 13px; font-weight: 500; padding: 0 var(--space-1); }
 .onboarding-field input { min-height: 52px; border-radius: 14px; }
-.field.invalid input { border-color: var(--warn); }
-.field.invalid input:focus { border-color: var(--warn); box-shadow: 0 0 0 3px var(--warn-fill-2); }
+.field.invalid input, .field.invalid input:focus { border-color: var(--warn); box-shadow: 0 0 0 calc(var(--input-error-w) - var(--line-w)) var(--warn); }
+/* 오류 도움말 12.5 warn 글자(밤 #F08A70 / 낮불 #A8321C). */
+.feedback { color: var(--warn-text); font-size: 12.5px; }
 .onboarding-field .feedback { padding: 0 var(--space-1); }
-button.more { background: none; border: 0; padding: 0; min-height: 0; border-radius: 4px; color: var(--brand-text); font-size: inherit; font-weight: 600; display: inline; vertical-align: baseline; }
+/* 글자 링크(「복사」「자세히」「바꾸기」): 밤 불 글자 / 낮불 먹 + 밑줄 600(색 대신). */
+button.more { background: none; border: 0; padding: 0; min-height: 0; border-radius: 4px; color: var(--brand-text); font-size: inherit; font-weight: 600; display: inline; vertical-align: baseline; text-decoration: var(--link-underline); text-underline-offset: 3px; }
 button.more:hover { background: none; text-decoration: underline; text-underline-offset: 2px; }
 button.more.danger-text { color: var(--danger); }
 .more-line { display: flex; flex-direction: column; gap: var(--space-2); }
@@ -1000,20 +1227,28 @@ button.more.danger-text { color: var(--danger); }
 .fp-tick-row:hover { background: var(--surface-2); }
 .fp-tick-row:active { transform: none; }
 .fp-tick-row:focus-visible { outline-offset: -3px; }
-.fp-row.ticked .fp-tick-row { background: var(--ember-fill); }
-.fp-tick { width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--line-strong); display: inline-flex; align-items: center; justify-content: center; color: var(--on-ember); font-size: 14px; font-weight: 800; line-height: 1; justify-self: end; }
-.fp-row.ticked .fp-tick { background: var(--ember); border-color: var(--ember); }
-html[data-theme="day"] .fp-row.ticked .fp-tick-row { background: var(--ember-fill-2); }
+/* 표시한 행(2차-B B3): 밤 주황 8% 면 + 불 원 ✓ / 낮불 #EFE9DC 면 + hex 굵게 + 먹 채움 원 + 종이 ✓(주황 아님 — 불은 주 버튼 1곳). */
+.fp-row.ticked .fp-tick-row { background: var(--tick-row-bg); }
+.fp-row.ticked .fp-v { font-weight: var(--tick-row-weight); }
+.fp-tick { width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--tick-line); display: inline-flex; align-items: center; justify-content: center; color: var(--tick-fg); font-size: 14px; font-weight: 800; line-height: 1; justify-self: end; }
+.fp-row.ticked .fp-tick { background: var(--tick-bg); border-color: var(--tick-bg); }
 
-/* 경고 상자(항상 보임, 닫기 없음): 선 1.5px warn 55% · 면 7% · 점 8 + 글자 15/500. */
-.warn-box { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: 14px; border: 1.5px solid var(--warn-line); background: var(--warn-fill); font-size: 15px; font-weight: 500; line-height: 1.45; color: var(--text); }
-.warn-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); margin-top: 7px; flex: none; }
+/* 경고 상자(항상 보임, 닫기 없음): 밤 선 1.5px warn 55% · 면 7% · 점 8 / 낮불 2px #A8321C + 흰 면 + 네모 9 표지(사람 ●·에이전트 ◆와 다른 모양). 글자 15/500. */
+.warn-box { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: 14px; border: var(--warn-box-w) solid var(--warn-line); background: var(--warn-fill); font-size: 15px; font-weight: 500; line-height: 1.45; color: var(--text); }
+.warn-dot { width: var(--warn-dot-size); height: var(--warn-dot-size); border-radius: var(--warn-dot-radius); background: var(--warn); margin-top: 7px; flex: none; }
 
-/* 버튼: 승인 꺼짐 = 면 ember 18% · 글자 45% · 위험 = 선 1.5px warn 60% + 글자 warn · 크림 면 = 화면 할 일이 하나일 때. */
-button.primary:disabled { background: var(--ember-fill-2); color: var(--disabled-fg); opacity: 1; box-shadow: none; border-color: transparent; }
-button.btn-danger { background: var(--warn-fill); color: var(--warn-text); border: 1.5px solid var(--warn-line); min-height: 46px; font-weight: 600; }
+/* 버튼 상태(2차-B B3). 비활성: 밤 = 흐린 면(주 18% · 보조 white 4% · 크림 18%) + 글자 45% / 낮불 = 종이 면 + 1.5 점선 #8A8178 + 회색 글자(투명도 0). */
+button.primary:disabled { background: var(--btn-primary-disabled-bg); color: var(--disabled-fg); opacity: 1; box-shadow: none; border: var(--line-w) var(--btn-disabled-style) var(--btn-disabled-line); }
+button.secondary:disabled { background: var(--btn-secondary-disabled-bg); color: var(--disabled-fg); opacity: 1; border: var(--line-w) var(--btn-disabled-style) var(--btn-secondary-disabled-line); }
+/* 위험 버튼 46: 밤 면 #D9583B 8% + 선 1.5 60% + 글자 #F08A70 / 눌림 면 22% · 낮불 흰 면 + 2px #A8321C + 글자 #A8321C / 눌림 면 #A8321C + 종이 글자. */
+button.btn-danger { background: var(--btn-danger-bg); color: var(--btn-danger-fg); border: var(--btn-danger-w) solid var(--btn-danger-line); min-height: 46px; font-weight: 600; }
 button.btn-danger:hover { background: var(--warn-fill-2); }
-button.btn-cream { background: var(--cream-face); color: var(--on-cream); border-color: transparent; }
+button.btn-danger:active { background: var(--btn-danger-press-bg); color: var(--btn-danger-press-fg); border-color: var(--btn-danger-press-line); }
+button.btn-danger:disabled { background: transparent; color: var(--btn-danger-disabled-fg); opacity: 1; border: var(--btn-danger-w) var(--btn-disabled-style) var(--btn-danger-disabled-line); }
+/* 크림 버튼 52(한 화면 단일 행동): 밤 #F3E6D3 / 눌림 #E3D3BA · 글자 #1B0F06 · 낮불 흰 면 + 2px 먹 / 눌림 #E9E4DA. */
+button.btn-cream { background: var(--cream-face); color: var(--on-cream); border: var(--cream-line-w) solid var(--line); font-weight: 600; }
+button.btn-cream:hover, button.btn-cream:active { background: var(--cream-press); }
+button.btn-cream:disabled { background: var(--btn-cream-disabled-bg); color: var(--disabled-fg); opacity: 1; border: var(--line-w) var(--btn-disabled-style) var(--btn-disabled-line); }
 button.secondary.dim { color: var(--text-2); }
 .approve-actions { gap: 10px; margin-top: var(--space-1); }
 .approve-actions .actions { margin-top: 0; }
@@ -1027,7 +1262,7 @@ button.secondary.dim { color: var(--text-2); }
 
 /* 설정 칸(§A5): 머리 13/600 + 카드(행 48, 행 사이 선). 위험 구역 = 선 1.5px warn 50% 상자, 버튼 하나. */
 .section { display: flex; flex-direction: column; gap: var(--space-2); }
-.section-title { font-size: 13px; font-weight: 600; color: var(--text-2); letter-spacing: 0.02em; padding: 0 var(--space-1); }
+.section-title { font-size: 13px; font-weight: var(--section-weight); color: var(--text-2); letter-spacing: 0.02em; padding: 0 var(--space-1); }
 .section.danger .section-title { color: var(--warn-text); }
 .section-card { background: var(--surface); border: var(--line-w) solid var(--line); border-radius: var(--radius); overflow: hidden; display: flex; flex-direction: column; }
 .section-card.padded { padding: 12px 14px; gap: 10px; }
@@ -1046,7 +1281,8 @@ details.operator-info[open] > summary .chevron { transform: rotate(90deg); }
 .operator-body { padding: 4px 16px 14px; display: flex; flex-direction: column; gap: 10px; }
 .operator-body .menu-items { margin-top: var(--space-1); }
 code.fingerprint-inline { font-size: 13px; letter-spacing: 0.04em; overflow-wrap: anywhere; color: var(--fingerprint-color); line-height: 1.7; }
-.danger-zone { padding: 14px; border-radius: var(--radius); border: 1.5px solid var(--warn-line-2); display: flex; flex-direction: column; gap: 10px; }
+/* 위험 구역: 밤 1.5 warn 45% 선 / 낮불 2px #A8321C + 흰 면(글자는 그대로, 면은 붉게 칠하지 않는다). */
+.danger-zone { padding: 14px; border-radius: var(--radius); border: var(--danger-zone-w) solid var(--warn-line-2); background: var(--danger-zone-bg); display: flex; flex-direction: column; gap: 10px; }
 .sheet-head { display: flex; align-items: center; gap: var(--space-2); }
 .sheet-head h2 { flex: 1; text-align: center; min-width: 0; }
 .sheet-head .close { width: var(--touch); font-size: 1rem; }
@@ -1056,7 +1292,7 @@ code.fingerprint-inline { font-size: 13px; letter-spacing: 0.04em; overflow-wrap
 
 /* 알림함(§A5): 카드 3상태 — 기본 / 수락하는 중(점 3 + 글자) / 실패(선 warn 45% + 사람 말 1줄). 빈 상태 = 흐린 자리 점 3 + 글자. */
 .notice-card { padding: 14px 16px; border-radius: var(--radius); background: var(--surface); border: var(--line-w) solid var(--line); display: flex; flex-direction: column; gap: 12px; }
-.notice-card.failed { border-color: var(--warn-line-2); }
+.notice-card.failed { border-color: var(--warn-line-2); border-width: var(--banner-w); }
 .notice-card .kicker { font-size: 13px; color: var(--text-2); }
 .notice-card .body-line { font-size: var(--text-m); line-height: 1.5; }
 .notice-card .plain-fail { font-size: var(--text-s); color: var(--warn-text); line-height: 1.5; }
@@ -1064,13 +1300,13 @@ code.fingerprint-inline { font-size: 13px; letter-spacing: 0.04em; overflow-wrap
 .notice-card .actions > button { min-height: 44px; border-radius: 12px; }
 .notice-card .device-card-id { display: flex; flex-direction: column; gap: 4px; }
 .notice-card .feedback { font-size: var(--text-s); }
-.note-item.tone-danger, .note-item.tone-warn { border-color: var(--warn-line-2); }
+.note-item.tone-danger, .note-item.tone-warn { border-color: var(--warn-line-2); border-width: var(--banner-w); }
 .invites { background: transparent; border: 0; padding: 0 var(--space-1); }
 .notify-empty { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: var(--space-8) var(--space-6); }
 .notify-empty .empty-title { font-size: 19px; font-weight: 600; color: var(--text); }
 .notify-hint { padding: var(--space-1); font-size: 13px; }
-/* 토스트 「복사했어요」(2초): 시트 안 하단, 면 pill-bg · 선 따뜻한 14%. */
-.toast-brief { position: fixed; left: 50%; bottom: max(24px, env(safe-area-inset-bottom)); transform: translateX(-50%); margin: 0; padding: 10px 16px; border-radius: var(--radius); background: var(--pill-bg); border: var(--line-w) solid var(--line); color: var(--text); font-size: var(--text-s); z-index: 30; box-shadow: var(--shadow-1); white-space: nowrap; }
+/* 토스트 「복사했어요」(2초): 시트 안 하단 · 높이 40 · 반경 20 · 밤 #1C2136 + 선 30% / 낮불 먹 면 + 종이 글자, 선 없음(2차-B B3). */
+.toast-brief { position: fixed; left: 50%; bottom: max(24px, env(safe-area-inset-bottom)); transform: translateX(-50%); margin: 0; min-height: 40px; display: flex; align-items: center; padding: 0 16px; border-radius: 20px; background: var(--toast-bg); border: var(--line-w) solid var(--toast-line); color: var(--toast-fg); font-size: var(--text-s); z-index: 30; box-shadow: var(--shadow-1); white-space: nowrap; }
 
 /* 목록 빈 상태(§A3): 꺼진 장작 벡터(불 그림은 여기만) + 20/600 + 1줄 + 초대 안내 카드. */
 .campfire-empty { gap: var(--space-3); }
@@ -1089,7 +1325,20 @@ code.fingerprint-inline { font-size: 13px; letter-spacing: 0.04em; overflow-wrap
 .closed-notice strong { font-size: var(--text-m); font-weight: 600; }
 .room-screen[data-closed="true"] .composer-wrap { display: none; }
 .room-screen[data-halted="true"] .timeline { opacity: 0.6; }
-.relay-banner { flex: none; display: flex; align-items: center; gap: 10px; margin: 0 0 var(--space-4); padding: 9px 14px; border-radius: 12px; background: var(--warn-fill-2); border: var(--line-w) solid var(--warn-line-2); font-size: var(--text-s); color: var(--text); }
+.relay-banner { flex: none; display: flex; align-items: center; gap: 10px; margin: 0 0 var(--space-4); padding: 9px 14px; border-radius: 12px; background: var(--warn-fill-2); border: var(--banner-w) solid var(--warn-line-2); font-size: var(--text-s); color: var(--text); }
+
+/* ---------- 디자인 2차-B(§B2) 한데 고유 아이콘(icons.js) ----------
+ * 선 1.6 currentColor. 역할색 채움(data-role)은 토큰: 밤 ember #F59E42 · ember-deep #E8833A · person 크림 · agent 파랑 / 낮불 ember·ember-deep·person·ink = 먹, agent #2F6FC4.
+ * 꺼진 불꽃 갈래(unlit)는 선만 — 밤 35% / 낮불 100%. 낮불 seat 의 에이전트 점은 ◆(.seat-diamond) 로, 원(.seat-circle)은 숨긴다. */
+.ic { display: inline-block; vertical-align: middle; flex: none; }
+.ic [data-role="ember"] { fill: var(--ic-ember); }
+.ic [data-role="ember-deep"] { fill: var(--ic-ember-deep); }
+.ic [data-role="person"] { fill: var(--ic-person); }
+.ic [data-role="agent"] { fill: var(--ic-agent); }
+.ic [data-role="ink"] { fill: var(--ic-ink); }
+.ic [data-role="unlit"] { stroke-opacity: var(--ic-unlit); }
+.ic .seat-circle { display: var(--ic-seat-circle); }
+.ic .seat-diamond { display: var(--ic-seat-diamond); }
 /* 새 메시지 점프 알약(§A4): 입력창 위 10 · 높이 36 · 면 pill-bg · 불 점 + 「새 메시지 ↓」. 타닥타닥 = 크림 점 6 + 글자. */
 .new-messages { background: var(--pill-bg); color: var(--text); border: var(--line-w) solid var(--line-strong); min-height: 36px; bottom: 10px; gap: 6px; box-shadow: var(--shadow-1); font-weight: 500; }
 .new-messages::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ember); flex: none; }

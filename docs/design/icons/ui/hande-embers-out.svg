@@ -1,0 +1,9 @@
+<!-- 꺼진 자리 — 한데 고유 UI 아이콘(2차-B B2). 선 currentColor 1.6 둥근 끝. data-role 채움은 테마 토큰(ember/ember-deep/person/agent/ink)으로 칠한다. -->
+<svg id="hande.embers-out" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3.5 19.5L20.5 14.5"/>
+  <path d="M3.5 14.5L20.5 19.5"/>
+  <path d="M2.1 19.5a1.4 1.4 0 1 0 2.8 0a1.4 1.4 0 1 0 -2.8 0Z"/>
+  <path d="M19.1 14.5a1.4 1.4 0 1 0 2.8 0a1.4 1.4 0 1 0 -2.8 0Z"/>
+  <path d="M12 11.5c-1.4-1.4 1.4-2.8 0-4.2"/>
+  <path d="M15 10c-.9-.9.9-1.8 0-2.7"/>
+</svg>

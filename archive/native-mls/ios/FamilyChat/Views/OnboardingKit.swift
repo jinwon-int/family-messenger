@@ -85,7 +85,7 @@ struct OnboardingScreen<Content: View, Footer: View>: View {
                             Button(action: onBack) {
                                 Image(systemName: "chevron.left")
                                     .font(.system(size: 22, weight: .semibold))
-                                    .foregroundStyle(p.ember)
+                                    .foregroundStyle(p.isDay ? p.ink : p.ember)
                                     .frame(width: 44, height: 44)
                             }
                             .buttonStyle(.plain)
@@ -136,7 +136,8 @@ struct FieldLabel: View {
     }
 }
 
-/// 입력 칸: 52pt · 반경 14 · 면 + 선(불 30%, 오류면 warn) · 모노 선택.
+/// 입력 칸: 52pt · 반경 14 · 면 + 선(밤 불 30% / 낮불 1.5 먹) · 모노 선택. 2차-B B3: 포커스 2px 포커스색(밤 #FFD79A / 낮불 먹),
+/// 오류 = warn 선(낮불 2 / 밤 1.5) — 도움말 한 줄은 호출부가 `HandeFieldHelper` 로 밑에 둔다.
 struct HandeField: View {
     let placeholder: String
     @Binding var text: String
@@ -147,6 +148,7 @@ struct HandeField: View {
     var contentType: UITextContentType? = nil
     var onSubmit: () -> Void = {}
     @Environment(\.hande) private var p
+    @FocusState private var focused: Bool
 
     var body: some View {
         Group {
@@ -162,14 +164,38 @@ struct HandeField: View {
         .textContentType(contentType)
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled()
+        .focused($focused)
         .onSubmit(onSubmit)
         .padding(.horizontal, 16)
         .frame(height: 52)
         .background(RoundedRectangle(cornerRadius: 14).fill(p.surface))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(invalid ? p.warn : normalStroke, lineWidth: invalid ? 1.5 : p.lineWidth))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(strokeColor, lineWidth: strokeWidth))
     }
 
-    private var normalStroke: Color { p.isDay ? p.stroke : p.ember.opacity(0.3) }
+    private var strokeColor: Color {
+        if invalid { return p.warn }
+        if focused { return p.focus }
+        return p.isDay ? p.stroke : p.ember.opacity(0.3)
+    }
+    private var strokeWidth: CGFloat {
+        if invalid { return p.warnLineWidth }
+        if focused { return 2 }
+        return p.lineWidth
+    }
+}
+
+/// 입력 칸 아래 오류 도움말 한 줄(12.5, warn) — 2차-B B3 「오류 2px #A8321C + 도움말 12.5」.
+struct HandeFieldHelper: View {
+    let text: String
+    @Environment(\.hande) private var p
+    init(_ text: String) { self.text = text }
+    var body: some View {
+        Text(text)
+            .font(.system(size: 12.5))
+            .foregroundStyle(p.warn)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 4)
+    }
 }
 
 /// 카드: 반경 16 · 면 + 선(기본 토큰, 선언 카드·오류 카드는 색을 넘긴다).
@@ -224,9 +250,9 @@ struct DetailDisclosure: View {
                 Button {
                     withAnimation(.easeOut(duration: 0.2)) { expanded.toggle() }
                 } label: {
-                    Text(label).font(.system(size: hintSize, weight: .medium)).foregroundStyle(p.ember)
+                    Text(label)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(HandeLinkButtonStyle(size: hintSize))
                 .accessibilityAddTraits(expanded ? [.isSelected] : [])
             }
             .padding(.horizontal, 4)
@@ -292,7 +318,7 @@ struct FingerprintList: View {
                 .foregroundStyle(p.inkDim)
                 .frame(width: 28, alignment: .leading)
             Text(value)
-                .font(.system(size: 19, design: .monospaced))
+                .font(.system(size: 19, weight: tick == true && p.isDay ? .bold : .regular, design: .monospaced))
                 .foregroundStyle(p.ink)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
@@ -303,24 +329,25 @@ struct FingerprintList: View {
         }
         .padding(.horizontal, 14)
         .frame(maxWidth: .infinity, minHeight: 42, maxHeight: 42)
-        .background(tick == true ? p.ember.opacity(0.08) : Color.clear)
+        // 표시된 행: 밤 불 8% / 낮불 #EFE9DC + hex 굵게(2차-B).
+        .background(tick == true ? p.tickedRowFill : Color.clear)
         .contentShape(Rectangle())
     }
 }
 
-/// 표시 원 22pt: 빈 원(먹 45% · 1.5px) / 켜짐(불 채움 + ✓ 불 위 글자).
+/// 표시 원 22pt: 빈 원(밤 먹 45% / 낮불 먹 · 1.5px) / 켜짐(밤 불 채움 + ✓ 불 위 글자 / 낮불 먹 채움 + 종이 ✓ — 주황 아님, 불은 주 버튼 1곳).
 struct TickCircle: View {
     let on: Bool
     @Environment(\.hande) private var p
     var body: some View {
         ZStack {
             if on {
-                Circle().fill(p.ember)
+                Circle().fill(p.isDay ? p.ink : p.ember)
                 Image(systemName: "checkmark")
                     .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(p.onEmber)
+                    .foregroundStyle(p.isDay ? p.bgTop : p.onEmber)
             } else {
-                Circle().stroke(p.ink.opacity(0.45), lineWidth: 1.5)
+                Circle().stroke(p.isDay ? p.ink : p.ink.opacity(0.45), lineWidth: 1.5)
             }
         }
         .frame(width: 22, height: 22)
@@ -400,65 +427,63 @@ struct KindlingView: View {
     }
 }
 
-/// 크림 면 주 버튼(로그인 — 화면의 할 일이 하나라 주황 대신 크림 면 + 진한 글자). 낮불은 불 면.
+/// 크림 면 주 버튼(로그인 — 화면의 할 일이 하나라 주황 대신 크림 면 + 진한 글자): 밤 #F3E6D3 · 눌림 #E3D3BA / 낮불 흰 면 + 2px 먹 · 눌림 #E9E4DA
+/// (2차-B B3 — 낮불의 주황은 허락·보내기·주 버튼만). 비활성: 밤 크림 18% + 글자 45% / 낮불 종이 + 점선.
 struct HandeCreamButtonStyle: ButtonStyle {
     @Environment(\.hande) private var p
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
+        let face = p.buttonFace(.cream, pressed: configuration.isPressed, enabled: enabled)
+        return configuration.label
             .font(.body.weight(.semibold))
-            .foregroundStyle(p.onEmber)
+            .foregroundStyle(face.text)
             .frame(maxWidth: .infinity, minHeight: 52)
-            .background(RoundedRectangle(cornerRadius: Hande.radiusM).fill(face(pressed: configuration.isPressed)))
-            .overlay(RoundedRectangle(cornerRadius: Hande.radiusM).stroke(p.isDay ? p.stroke : .clear, lineWidth: p.lineWidth))
-            .opacity(enabled ? 1 : 0.45)
-    }
-
-    private func face(pressed: Bool) -> Color {
-        if p.isDay { return pressed ? p.emberDeep : p.ember }
-        return pressed ? p.person : p.ink
+            .background(RoundedRectangle(cornerRadius: Hande.radiusM).fill(face.fill))
+            .overlay(RoundedRectangle(cornerRadius: Hande.radiusM).stroke(face.stroke, style: face.strokeStyle))
     }
 }
 
-/// 위험 버튼(「다릅니다」): 면 warn 8% · 선 1.5px warn 60% · 글자 warn · 46pt.
+/// 위험 버튼(「다릅니다」·「이 기기 지우기」) 46pt: 밤 면 warn 8% · 선 1.5 warn 60% · 글자 #F08A70 · 눌림 면 22% /
+/// 낮불 흰 면 + 2px #A8321C · 글자 #A8321C · 눌림 = warn 면 + 종이 글자. 비활성: 밤 선 25% + 글자 40% / 낮불 종이 + 점선.
 struct HandeDangerButtonStyle: ButtonStyle {
     @Environment(\.hande) private var p
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
+        let face = p.buttonFace(.danger, pressed: configuration.isPressed, enabled: enabled)
+        return configuration.label
             .font(.system(size: 16, weight: .semibold))
-            .foregroundStyle(p.warn)
+            .foregroundStyle(face.text)
             .frame(maxWidth: .infinity, minHeight: 46)
-            .background(RoundedRectangle(cornerRadius: Hande.radiusM).fill(p.warn.opacity(configuration.isPressed ? 0.16 : 0.08)))
-            .overlay(RoundedRectangle(cornerRadius: Hande.radiusM).stroke(p.warn.opacity(0.6), lineWidth: 1.5))
-            .opacity(enabled ? 1 : 0.45)
+            .background(RoundedRectangle(cornerRadius: Hande.radiusM).fill(face.fill))
+            .overlay(RoundedRectangle(cornerRadius: Hande.radiusM).stroke(face.stroke, style: face.strokeStyle))
     }
 }
 
-/// 작은 보조 버튼(기기 행의 지정/해제): 36pt · 반경 10 · 면 + 선.
+/// 작은 보조 버튼(기기 행의 지정/해제): 36pt · 반경 10 · 면 + 선(보조 버튼과 같은 상태 값).
 struct HandeSmallSecondaryButtonStyle: ButtonStyle {
     @Environment(\.hande) private var p
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
+        let face = p.buttonFace(.secondary, pressed: configuration.isPressed, enabled: enabled)
+        return configuration.label
             .font(.system(size: 15, weight: .medium))
-            .foregroundStyle(p.ink)
+            .foregroundStyle(face.text)
             .padding(.horizontal, 14)
             .frame(minHeight: 36)
-            .background(RoundedRectangle(cornerRadius: Hande.radiusS).fill(configuration.isPressed ? p.stroke : p.surface))
-            .overlay(RoundedRectangle(cornerRadius: Hande.radiusS).stroke(p.stroke, lineWidth: p.lineWidth))
-            .opacity(enabled ? 1 : 0.45)
+            .background(RoundedRectangle(cornerRadius: Hande.radiusS).fill(face.fill))
+            .overlay(RoundedRectangle(cornerRadius: Hande.radiusS).stroke(face.stroke, style: face.strokeStyle))
     }
 }
 
-/// 불 색 글자 링크(「등록 확인」·「다른 서버 선택」).
+/// 글자 링크(「등록 확인」·「다른 서버 선택」·「자세히」·설정의 「바꾸기」「복사」): 밤 = 불 색 500 / 낮불 = 먹 밑줄 600(색 대신 기호 — 2차-B).
 struct HandeLinkButtonStyle: ButtonStyle {
     @Environment(\.hande) private var p
     var size: CGFloat = 15
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: size, weight: .medium))
-            .foregroundStyle(p.ember)
+            .font(.system(size: size, weight: p.isDay ? .semibold : .medium))
+            .foregroundStyle(p.isDay ? p.ink : p.ember)
+            .underline(p.isDay)
             .opacity(configuration.isPressed ? 0.6 : 1)
     }
 }

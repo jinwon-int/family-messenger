@@ -8,6 +8,12 @@
 // 한데 디자인 2차-A(§A1~A6, iOS 전 화면의 M3 판 — 조각은 `ui/theme/HandeKit.kt`): 온보딩 4단계(진행 막대 · ① 서버 찾기 → ② 이름 → ③ 가족 로그인 → ④ 이 기기 등록) ·
 //   새 기기 승인 전체 화면(`ApproveScreen`: 8행을 모두 눌러 표시해야 「승인」) · 목록 빈 상태 그림 · 꺼진 자리 안내 상자 · 설정 재배치(자주 → 드물게 → 위험).
 //   Android 에 데이터가 없는 것(알림함·순서 편집·오프닝·로그아웃·서버 바꾸기·전송 상태·타닥타닥·폐기)은 그리지 않는다. 허브 호출·단계 매핑은 그대로.
+// 한데 디자인 3차-A(Android Material 3 관용구): 투명 TopAppBar(64dp, 제목 왼쪽, 아이콘 버튼) · M3 OutlinedTextField(떠 있는 라벨 · isError + supportingText) · M3 Button/OutlinedButton/TextButton(알약) ·
+//   목록 머리 = 큰 워드마크 + 설정 아이콘, ExtendedFloatingActionButton(56 · 반경 16) = 「참여 요청」(방 만들기가 없어 iOS 「불 피우기」의 Android 짝) · 설정 「화면」 = SingleChoiceSegmentedButtonRow ·
+//   「이 기기 지우기」 확인 = AlertDialog(반경 28, surfaceContainerHigh) — 바텀시트 없음 · 등록되면 목록 + Snackbar 「등록됐어요 — 불 곁으로 오세요」 · 「등록 정보 공유」 = OutlinedButton + share ·
+//   정책 링크 행은 open_in_new. 아이콘은 `ui/theme/HandeIcons.kt`(2차-B 아이콘 세트 + Material Symbols 짝 글리프, 라이브러리 의존 없음).
+// 2차-B 낮불 세부: 꺼진 자리 = 흐림 대신 점선 1.5 회색 테두리 + 회색 글자 · 안 읽음 = 먹 알약 「새 글」 + 이름 800 · 승인 표시 = 먹 채움 + 종이 ✓ · 위험 구역 2px · 토스트 먹 면.
+//   전송 상태(보내는 중·연결되면·전송 안 됨) 말풍선은 Android 화면 모델(`MessageUi`)에 상태가 없어 그리지 않는다.
 package com.seoyoon_family.hande.ui
 
 import android.content.ActivityNotFoundException
@@ -44,14 +50,22 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -110,7 +124,6 @@ import com.seoyoon_family.hande.core.Settings
 import com.seoyoon_family.hande.core.StatusUi
 import com.seoyoon_family.hande.ui.theme.CampfireBackground
 import com.seoyoon_family.hande.ui.theme.Chevron
-import com.seoyoon_family.hande.ui.theme.ChipTabs
 import com.seoyoon_family.hande.ui.theme.CreamButton
 import com.seoyoon_family.hande.ui.theme.DangerButton
 import com.seoyoon_family.hande.ui.theme.DetailDisclosure
@@ -120,7 +133,9 @@ import com.seoyoon_family.hande.ui.theme.FieldLabel
 import com.seoyoon_family.hande.ui.theme.FingerprintList
 import com.seoyoon_family.hande.ui.theme.FlameIcon
 import com.seoyoon_family.hande.ui.theme.HandeCard
-import com.seoyoon_family.hande.ui.theme.HandeField
+import com.seoyoon_family.hande.ui.theme.HandeIcons
+import com.seoyoon_family.hande.ui.theme.HandeOutlinedField
+import com.seoyoon_family.hande.ui.theme.HandeSegmented
 import com.seoyoon_family.hande.ui.theme.HandeToast
 import com.seoyoon_family.hande.ui.theme.HandeWordmark
 import com.seoyoon_family.hande.ui.theme.LinkButton
@@ -203,9 +218,10 @@ fun HandeRoot(hub: DeviceHub, themeMode: HandeThemeMode = HandeThemeMode.NIGHT, 
                     LaunchedEffect(Unit) { hub.refreshDevices(scope) }
                     DevicesScreen(ui, onBack = { showDevices = false }, onGrant = { hub.setRoles(scope, it, true) }, onRelease = { hub.setRoles(scope, it, false) }, onNoticeShown = hub::clearNotice)
                 } else {
+                    // 「내 기기」는 설정 → 기기 관리에서 연다(3차-A: 목록 오른쪽 위는 설정 아이콘 하나).
                     RoomListScreen(
                         ui, onOpen = { openRoom = it }, onRequestJoin = { hub.requestJoin(scope) },
-                        onCompare = { approveId = it }, onIgnore = { hub.dismissCandidate(scope, it) }, onDevices = { showDevices = true },
+                        onCompare = { approveId = it }, onIgnore = { hub.dismissCandidate(scope, it) },
                         onSettings = { showSettings = true }, onNoticeShown = hub::clearNotice,
                     )
                 }
@@ -262,15 +278,40 @@ private fun HandeTopBar(title: @Composable () -> Unit, navigationIcon: @Composab
     )
 }
 
-/** 「이 기기 지우기」 확인 대화상자 — 설정 화면과 등록 대기(ID 사용 불가)에서 같은 문구·같은 동작(#574 후속). */
+/** 앱바 왼쪽 아이콘 버튼(뒤로 arrow_back / 닫기 close) 48dp — 글리프는 `HandeIcons`(아이콘 라이브러리 의존 없음). */
+@Composable
+private fun BackButton(onClick: () -> Unit) {
+    val colors = LocalHandeColors.current
+    IconButton(onClick = onClick) { Icon(HandeIcons.back(colors.ink), contentDescription = Strings.back, tint = Color.Unspecified) }
+}
+
+@Composable
+private fun CloseButton(onClick: () -> Unit) {
+    val colors = LocalHandeColors.current
+    IconButton(onClick = onClick) { Icon(HandeIcons.close(colors.ink), contentDescription = Strings.close, tint = Color.Unspecified) }
+}
+
+/**
+ * 「이 기기 지우기」 확인 — 설정 화면과 등록 대기(ID 사용 불가)에서 같은 문구·같은 동작(#574 후속). 3차-A: 바텀시트 대신 M3 `AlertDialog`(안정 API) —
+ * 반경 28(`shapes.extraLarge`) · 면 surfaceContainerHigh #1C2136(낮불 흰 면) · 제목 24/500 · 본문 15 · TextButton 「취소」/「지우기」(위험 쪽은 주의 글자색). 「지우기」가 기본 포커스를 받지 않는다.
+ */
 @Composable
 private fun WipeConfirmDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    val colors = LocalHandeColors.current
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(Strings.wipeConfirmTitle) },
-        text = { Text(Strings.wipeConfirmBody) },
-        confirmButton = { TextButton(onClick = onConfirm) { Text(Strings.wipeConfirmButton, color = MaterialTheme.colorScheme.error) } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(Strings.cancel) } },
+        shape = MaterialTheme.shapes.extraLarge,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        titleContentColor = colors.ink,
+        textContentColor = colors.inkDim,
+        title = { Text(Strings.wipeDialogTitle, fontSize = 24.sp, lineHeight = 32.sp, fontWeight = FontWeight.Medium) },
+        text = { Text(Strings.wipeDialogBody, fontSize = 15.sp, lineHeight = 23.sp) },
+        confirmButton = {
+            TextButton(onClick = onConfirm, colors = ButtonDefaults.textButtonColors(contentColor = colors.warnText)) { Text(Strings.wipeDialogConfirm) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, colors = ButtonDefaults.textButtonColors(contentColor = if (colors.isDay) colors.ink else colors.ember)) { Text(Strings.cancel) }
+        },
     )
 }
 
@@ -346,6 +387,7 @@ fun SetupScreen(settings: Settings, onDiscover: suspend (String) -> ServerDiscov
     var server by rememberSaveable { mutableStateOf(settings.relayUrl ?: "") }
     var actor by rememberSaveable { mutableStateOf(settings.actor ?: "") }
     var error by remember { mutableStateOf<String?>(null) }
+    var linkError by remember { mutableStateOf<String?>(null) }
     var actorInvalid by remember { mutableStateOf(false) }
     var searching by remember { mutableStateOf(false) }
     var found by remember { mutableStateOf<ServerDiscovery.Result.Found?>(null) }
@@ -386,6 +428,7 @@ fun SetupScreen(settings: Settings, onDiscover: suspend (String) -> ServerDiscov
         val f = found
         OnboardingFrame(
             step = 1, title = Strings.serverStepTitle, wordmark = true,
+            notice = linkError, onNoticeShown = { linkError = null },
             footer = {
                 if (f != null && error == null) {
                     PrimaryButton(Strings.serverContinue, enabled = !searching) { if (needsActor) step = 2 else save(f) }
@@ -399,22 +442,19 @@ fun SetupScreen(settings: Settings, onDiscover: suspend (String) -> ServerDiscov
                 Text(Strings.serverDeclaration, color = colors.ink, fontSize = 16.sp, lineHeight = 24.sp, fontWeight = FontWeight.Medium)
             }
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                FieldLabel(Strings.serverAddressLabel)
-                HandeField(
-                    server, { server = it; found = null; error = null }, placeholder = Strings.serverAddressPlaceholder, mono = true,
-                    invalid = error != null, enabled = !searching, keyboardType = KeyboardType.Uri, onDone = { discover() },
+                // 3차-A: M3 OutlinedTextField — 라벨이 선 위에 뜨고, 찾기 실패는 isError + supportingText(오류 카드 대신).
+                HandeOutlinedField(
+                    server, { server = it; found = null; error = null }, label = Strings.serverAddressLabel, placeholder = Strings.serverAddressPlaceholder, mono = true,
+                    error = error, enabled = !searching, keyboardType = KeyboardType.Uri, onDone = { discover() },
                 )
                 DetailDisclosure(hint = Strings.serverAddressHint, detail = Strings.serverAddressDetail)
                 // 로그인 전에도 보이는 정책 링크(#584 Play: 개인정보처리방침은 앱 안에서 열려야 한다). 삭제 안내는 설정 화면에도 있다.
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    LinkButton(Strings.privacyPolicy, size = 13.sp) { openPolicy(context, BuildConfig.PRIVACY_URL) { error = Strings.openLinkFailed } }
-                    LinkButton(Strings.deleteAccount, size = 13.sp) { openPolicy(context, BuildConfig.DELETE_ACCOUNT_URL) { error = Strings.openLinkFailed } }
+                    LinkButton(Strings.privacyPolicy, size = 13.sp) { openPolicy(context, BuildConfig.PRIVACY_URL) { linkError = Strings.openLinkFailed } }
+                    LinkButton(Strings.deleteAccount, size = 13.sp) { openPolicy(context, BuildConfig.DELETE_ACCOUNT_URL) { linkError = Strings.openLinkFailed } }
                 }
             }
-            val err = error
-            if (err != null) {
-                ErrorCard(err)
-            } else if (f != null) {
+            if (f != null && error == null) {
                 HandeCard {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -437,12 +477,11 @@ fun SetupScreen(settings: Settings, onDiscover: suspend (String) -> ServerDiscov
             footer = { PrimaryButton(Strings.save, enabled = !searching && actor.isNotBlank()) { confirmActor() } },
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                FieldLabel(Strings.actorStepLabel)
-                HandeField(
-                    actor, { actor = it.lowercase(); actorInvalid = false }, placeholder = Strings.actorStepPlaceholder, mono = true,
-                    invalid = actorInvalid, enabled = !searching, keyboardType = KeyboardType.Ascii, onDone = { confirmActor() },
+                // 형식 오류는 isError + supportingText 주의 글자색(판정은 `Settings.validActor` 그대로).
+                HandeOutlinedField(
+                    actor, { actor = it.lowercase(); actorInvalid = false }, label = Strings.actorStepLabel, placeholder = Strings.actorStepPlaceholder, mono = true,
+                    error = if (actorInvalid) Strings.actorStepInvalid else null, enabled = !searching, keyboardType = KeyboardType.Ascii, onDone = { confirmActor() },
                 )
-                if (actorInvalid) Text(Strings.actorStepInvalid, Modifier.padding(horizontal = 4.dp), color = colors.warn, fontSize = 14.sp)
                 DetailDisclosure(hint = Strings.actorStepHint, detail = Strings.actorStepDetail)
             }
             error?.let { ErrorCard(it) }
@@ -476,7 +515,7 @@ fun LoginScreen(settings: Settings, ui: HubUi, onGoogle: () -> Unit, onSaved: ()
                 }
                 if (manualExpanded) {
                     Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        HandeField(token, { token = it }, placeholder = Strings.loginField, mono = true, secure = true, onDone = { connect() })
+                        HandeOutlinedField(token, { token = it }, label = Strings.loginField, mono = true, secure = true, onDone = { connect() })
                         SecondaryButton(Strings.loginButton, enabled = token.isNotBlank()) { connect() }
                         Text(Strings.loginManualHint, color = colors.inkDim, fontSize = 13.sp, lineHeight = 18.sp)
                     }
@@ -522,7 +561,11 @@ fun EnrollScreen(ui: HubUi, phase: Phase.WaitingEnrollment, onSettings: () -> Un
         notice = toast, onNoticeShown = { toast = null },
         footer = {
             if (mode != SelfService.EnrollMode.ID_TAKEN && json.isNotEmpty()) {
-                SecondaryButton(Strings.shareRegistration) { shareText(context, json) { copyJson() } }
+                // 3차-A: OutlinedButton + share 아이콘 → 시스템 공유 시트.
+                SecondaryButton(
+                    Strings.shareRegistration,
+                    icon = { Icon(HandeIcons.share(colors.ink), contentDescription = null, Modifier.size(20.dp), tint = Color.Unspecified) },
+                ) { shareText(context, json) { copyJson() } }
             }
             LinkButton(Strings.enrolledButton, Modifier.align(Alignment.CenterHorizontally), onClick = onRetry)
         },
@@ -629,10 +672,7 @@ fun ApproveScreen(ui: HubUi, deviceId: String, onApprove: (String) -> Unit, onIg
     Scaffold(
         containerColor = Color.Transparent, contentColor = MaterialTheme.colorScheme.onBackground,
         topBar = {
-            HandeTopBar(
-                title = { Text(Strings.candidatesTitle) },
-                navigationIcon = { TextButton(onClick = onClose, modifier = Modifier.semantics { contentDescription = Strings.close }) { Text("✕", fontSize = 18.sp) } },
-            )
+            HandeTopBar(title = { Text(Strings.candidatesTitle) }, navigationIcon = { CloseButton(onClose) })
         },
         snackbarHost = { NoticeHost(ui.notice ?: toast) { toast = null; onNoticeShown() } },
     ) { pad ->
@@ -711,7 +751,7 @@ fun DevicesScreen(ui: HubUi, onBack: () -> Unit, onGrant: (String) -> Unit, onRe
     val colors = LocalHandeColors.current
     Scaffold(
         containerColor = Color.Transparent, contentColor = MaterialTheme.colorScheme.onBackground,
-        topBar = { HandeTopBar(title = { Text(Strings.devicesTitle) }, navigationIcon = { TextButton(onClick = onBack) { Text(Strings.back) } }) },
+        topBar = { HandeTopBar(title = { Text(Strings.devicesTitle) }, navigationIcon = { BackButton(onBack) }) },
         snackbarHost = { NoticeHost(ui.notice, onNoticeShown) },
     ) { pad ->
         val view = ui.devices
@@ -749,32 +789,64 @@ fun DevicesScreen(ui: HubUi, onBack: () -> Unit, onGrant: (String) -> Unit, onRe
 // ---- 대화 목록 · 대화방 ----
 
 /**
- * 대화 목록 = 「자리」(한데 디자인 1차): 머리(제목 · 「오늘 밤, 모닥불에 한데 모여」 · 서버 이름) + 방 행 카드(`RoomRow`).
- * 머리는 TopAppBar 대신 본문 위에 그린다 — Display 32 + 보조 두 줄은 64dp 앱바에 들어가지 않는다. 초대 벨·순서 편집·「불 피우기」는 Android 에 그 데이터/동작이 없어 두지 않는다.
- * 빈 상태(2차-A §A3): 꺼진 장작 그림(불 그림은 여기만) + 「아직 피운 모닥불이 없습니다」 + 1줄. 「참여 요청」은 그대로 아래.
+ * 대화 목록 = 「자리」(3차-A A2): 머리는 TopAppBar 대신 큰 워드마크(34) + 「오늘 밤, 모닥불에 한데 모여」 + 서버 이름(#584), 오른쪽 위는 설정 아이콘 하나
+ * (초대 벨·순서 편집은 Android 에 그 데이터가 없다; 「내 기기」는 설정 → 기기 관리). 낮불은 머리 아래 먹 선 1.5(2차-B). 방 행 카드(`RoomRow`).
+ * `ExtendedFloatingActionButton`(56 · 반경 16 · 오른쪽 아래 16dp · 불 면) — iOS 「불 피우기」의 Android 짝이지만 Android 에는 방 만들기가 없어 기존 동작 「참여 요청」(로비 키 게시)을 단다(의도된 차이).
+ * 빈 상태(2차-A §A3): 꺼진 장작 그림(불 그림은 여기만) + 「아직 피운 모닥불이 없습니다」 + 1줄.
+ * 등록 직후(허브가 WaitingEnrollment → Ready 전환에 `enrolledNow` 알림을 싣는다)는 토스트 대신 M3 Snackbar 「등록됐어요 — 불 곁으로 오세요」.
+ * 기기 ID·로비 키·키 보관은 설정 → 이 기기 → 운영자용 정보로 옮겼다(목록 아래 줄 없음).
  */
 @Composable
 fun RoomListScreen(
     ui: HubUi, onOpen: (String) -> Unit, onRequestJoin: () -> Unit,
-    onCompare: (String) -> Unit, onIgnore: (String) -> Unit, onDevices: () -> Unit, onSettings: () -> Unit, onNoticeShown: () -> Unit,
+    onCompare: (String) -> Unit, onIgnore: (String) -> Unit, onSettings: () -> Unit, onNoticeShown: () -> Unit,
 ) {
     val colors = LocalHandeColors.current
+    val snackbar = remember { SnackbarHostState() }
+    val enrolled = ui.notice == Strings.enrolledNow
+    LaunchedEffect(enrolled) {
+        if (enrolled) {
+            snackbar.showSnackbar(Strings.enrolledSnackbar, duration = SnackbarDuration.Short)
+            onNoticeShown()
+        }
+    }
     Scaffold(
         containerColor = Color.Transparent, contentColor = MaterialTheme.colorScheme.onBackground,
-        snackbarHost = { NoticeHost(ui.notice, onNoticeShown) },
+        snackbarHost = {
+            Column {
+                NoticeHost(if (enrolled) null else ui.notice, onNoticeShown)
+                SnackbarHost(snackbar) { data ->
+                    Snackbar(
+                        data, shape = RoundedCornerShape(20.dp),
+                        containerColor = if (colors.isDay) colors.ink else MaterialTheme.colorScheme.surfaceContainerHigh,
+                        contentColor = if (colors.isDay) colors.bgTop else colors.ink,
+                    )
+                }
+            }
+        },
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                text = { Text(Strings.requestJoin, fontSize = 16.sp, fontWeight = FontWeight.SemiBold) },
+                icon = { Icon(HandeIcons.add(colors.onEmber), contentDescription = null, tint = Color.Unspecified) },
+                onClick = onRequestJoin,
+                shape = RoundedCornerShape(16.dp),
+                containerColor = colors.ember,
+                contentColor = colors.onEmber,
+            )
+        },
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
-            Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(Strings.roomsTitle, style = MaterialTheme.typography.headlineLarge)
-                    // 연결 중이면 부제 자리에 그 사실을(제목은 그대로 「자리」).
-                    Text(if (ui.connecting) Strings.connecting else Strings.campfireSubtitle, style = MaterialTheme.typography.bodySmall, color = colors.inkDim)
-                    // 제목 아래 서버 이름(#584): `.well-known` 의 이름, 없으면 릴레이 호스트 — 다른 운영자의 서버에 붙었을 때 어디인지 보인다.
+            Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 16.dp, bottom = 10.dp), verticalAlignment = Alignment.Bottom) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    HandeWordmark(size = 34.sp)
+                    // 연결 중이면 부제 자리에 그 사실을.
+                    Text(if (ui.connecting) Strings.connecting else Strings.campfireSubtitle, color = colors.inkDim, fontSize = 15.sp)
+                    // 워드마크 아래 서버 이름(#584): `.well-known` 의 이름, 없으면 릴레이 호스트 — 다른 운영자의 서버에 붙었을 때 어디인지 보인다.
                     ui.server?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = colors.inkDim, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 }
-                TextButton(onClick = onDevices) { Text(Strings.devicesButton) }
-                TextButton(onClick = onSettings) { Text(Strings.settingsButton) }
+                IconButton(onClick = onSettings) { Icon(HandeIcons.settings(colors.ink), contentDescription = Strings.settingsButton, tint = Color.Unspecified) }
             }
+            if (colors.isDay) HorizontalDivider(thickness = 1.5.dp, color = colors.ink)
             // 새 기기 승인 요청(#574): 등록 기기(또는 registrar 없는 actor 의 활성 기기)에게만 보인다. 「지문 비교」→ 전체 화면 `ApproveScreen`.
             if (ui.candidates.isNotEmpty()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -793,15 +865,10 @@ fun RoomListScreen(
                     Text(Strings.emptyRoomsHint, color = colors.inkDim, fontSize = 15.sp, lineHeight = 22.sp, textAlign = TextAlign.Center)
                 }
             } else {
-                LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(vertical = 6.dp)) {
+                // 아래 여백 88 = FAB 56 + 16 + 16 — 마지막 행이 FAB 에 가리지 않게.
+                LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(top = 6.dp, bottom = 88.dp)) {
                     items(ui.rooms, key = { it.room }) { r -> RoomRow(r) { onOpen(r.room) } }
                 }
-            }
-            HorizontalDivider(color = colors.stroke)
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("${ui.deviceId ?: ""}", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall, color = colors.inkDim)
-                Text("${Strings.lobbyKeys} ${ui.lobbyLive ?: "-"}/${ui.lobbyMax ?: "-"} · ${Strings.keyCustody}: ${ui.keyCustody ?: "-"}", style = MaterialTheme.typography.bodySmall, color = colors.inkDim)
-                PrimaryButton(Strings.requestJoin, height = 48.dp, onClick = onRequestJoin)
             }
         }
     }
@@ -812,38 +879,48 @@ fun RoomListScreen(
  * 「불지기」 배지는 목록에 넣지 않는다(오너 2026-10-31 iOS #613 · 웹 #540 — 디자인 1차 1b 보다 이 결정이 우선). 에이전트는 좌석 점의 파란 점으로 보인다.
  * 「오늘의 불 세기」는 시각이 화면 모델에 없어(`MessageUi` 에 received_at 없음) 보관된 글 수로 가늠한다 — 12건 이상 3단 · 3건 이상 2단 · 그 밖 1단. 숫자는 보이지 않는다.
  * 꺼진 자리 = 60% 흐림 + 장작 + 「불이 꺼진 자리 · 운영자가 닫음」(`room_closed` 일 때만 — 다른 정지 사유는 토큰을 그대로 적는다).
+ * 낮불(2차-B): 흐림(투명도) 금지 → 점선 1.5 회색 #8A8178 테두리 + 회색 글자 + 장작 · 아이콘 원은 면 대신 먹 선 1.5 · 안 읽음은 주황 점 대신 먹 알약 「새 글」 + 이름 800(작은 점은 e-ink 잔상에 묻힌다).
  */
 @Composable
 private fun RoomRow(r: RoomUi, onOpen: () -> Unit) {
     val colors = LocalHandeColors.current
+    val day = colors.isDay
     val halted = r.halted != null
+    val closedDay = halted && day
     val shape = RoundedCornerShape(16.dp)
     val level = when {
         r.messages.size >= 12 -> 3
         r.messages.size >= 3 -> 2
         else -> 1
     }
+    val textColor = if (closedDay) colors.ash else colors.ink
     Row(
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 5.dp)
-            .alpha(if (halted) 0.6f else 1f)
+            .alpha(if (halted && !day) 0.6f else 1f)
             .clip(shape)
             .background(colors.surface)
-            .border(colors.lineWidth, colors.stroke, shape)
+            .then(if (closedDay) Modifier.dashedBorder(1.5.dp, colors.ash, shape) else Modifier.border(colors.lineWidth, colors.stroke, shape))
             .clickable(onClick = onOpen)
-            .padding(horizontal = 14.dp, vertical = 16.dp),
+            .padding(horizontal = 14.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(48.dp).clip(CircleShape).background(colors.ember.copy(alpha = if (halted) 0.06f else 0.12f)), contentAlignment = Alignment.Center) {
+        val ring = if (day) {
+            Modifier.border(1.5.dp, if (halted) colors.ash else colors.ink, CircleShape)
+        } else {
+            Modifier.background(colors.ember.copy(alpha = if (halted) 0.06f else 0.12f))
+        }
+        Box(Modifier.size(48.dp).clip(CircleShape).then(ring), contentAlignment = Alignment.Center) {
             if (halted) LogIcon() else FlameIcon(level, dim = false, contentDescription = Strings.fireLevel(level))
         }
-        Spacer(Modifier.width(12.dp))
+        Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(r.room, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-            }
-            Spacer(Modifier.height(2.dp))
+            Text(
+                r.room, color = textColor, fontSize = 17.sp, lineHeight = 22.sp,
+                fontWeight = if (day && r.unread) FontWeight.ExtraBold else FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(3.dp))
             val working = r.working
             val preview = when {
                 halted -> if (r.halted == "room_closed") Strings.roomClosedPreview else "${Strings.halted} · ${r.halted}"
@@ -854,15 +931,35 @@ private fun RoomRow(r: RoomUi, onOpen: () -> Unit) {
             }
             val workingShown = !halted && r.joined && working != null
             Text(
-                preview, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                color = if (workingShown) colors.ember else colors.inkDim, fontWeight = if (workingShown) FontWeight.SemiBold else FontWeight.Normal,
+                preview, fontSize = 15.sp, lineHeight = 20.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                color = when {
+                    workingShown -> colors.ember
+                    closedDay -> colors.ash
+                    else -> colors.inkDim
+                },
+                fontWeight = if (workingShown) FontWeight.SemiBold else FontWeight.Normal,
             )
             SeatDots(r.messages)
         }
-        // 안 읽음(#571 후속): 주황 점 하나(개수 없음) — 글자는 접근성 문구로만. 같은 사람의 다른 기기(PC 웹·iPhone)에서 읽으면 다음 poll 에 꺼진다.
+        // 안 읽음(#571 후속): 밤 = 주황 점 하나 + 빛남(개수 없음 — 글자는 접근성 문구로만) · 낮불 = 먹 알약 「새 글」(20dp · 반경 10 · 종이 12 굵게).
+        // 같은 사람의 다른 기기(PC 웹·iPhone)에서 읽으면 다음 poll 에 꺼진다.
         if (r.unread) {
             Spacer(Modifier.width(8.dp))
-            Box(Modifier.size(10.dp).clip(CircleShape).background(colors.ember).semantics { contentDescription = Strings.unread })
+            if (day) {
+                Box(
+                    Modifier.height(20.dp).clip(RoundedCornerShape(10.dp)).background(colors.ink).padding(horizontal = 7.dp),
+                    contentAlignment = Alignment.Center,
+                ) { Text(Strings.newPostPill, color = colors.bgTop, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+            } else {
+                Box(
+                    Modifier
+                        .size(10.dp)
+                        .drawBehind { drawCircle(colors.ember.copy(alpha = 0.35f), radius = size.minDimension * 0.9f) }
+                        .clip(CircleShape)
+                        .background(colors.ember)
+                        .semantics { contentDescription = Strings.unread },
+                )
+            }
         }
     }
 }
@@ -913,7 +1010,7 @@ fun RoomScreen(room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> 
                         if (halted != null) Text(Strings.halted, color = colors.inkDim, fontSize = 12.sp)
                     }
                 },
-                navigationIcon = { TextButton(onClick = onBack) { Text(Strings.back) } },
+                navigationIcon = { BackButton(onBack) },
             )
         },
         snackbarHost = { NoticeHost(ui.notice, onNoticeShown) },
@@ -1005,7 +1102,7 @@ private fun Composer(draft: String, onDraft: (String) -> Unit, onSend: () -> Uni
                 .clickable(enabled = canSend, role = Role.Button, onClick = onSend)
                 .semantics { contentDescription = Strings.sendButton },
             contentAlignment = Alignment.Center,
-        ) { Text("↑", color = colors.onEmber, fontWeight = FontWeight.Bold, fontSize = 20.sp) }
+        ) { Icon(HandeIcons.send(colors.onEmber), contentDescription = null, Modifier.size(20.dp), tint = Color.Unspecified) }
     }
 }
 
@@ -1191,7 +1288,7 @@ fun SettingsScreen(
     val isDay = themeMode == HandeThemeMode.DAY
     Scaffold(
         containerColor = Color.Transparent, contentColor = MaterialTheme.colorScheme.onBackground,
-        topBar = { HandeTopBar(title = { Text(Strings.settingsTitle) }, navigationIcon = { TextButton(onClick = onBack) { Text(Strings.back) } }) },
+        topBar = { HandeTopBar(title = { Text(Strings.settingsTitle) }, navigationIcon = { BackButton(onBack) }) },
         snackbarHost = { NoticeHost(ui.notice ?: linkError ?: toast) { linkError = null; toast = null; onNoticeShown() } },
     ) { pad ->
         Column(
@@ -1213,15 +1310,14 @@ fun SettingsScreen(
                 }
             }
             // 화면(한데 디자인 1차): 밤이 기본·고정(시스템 라이트 모드를 따르지 않는다), 낮불은 e-ink·밝은 곳용. 고르면 바로 바뀌고 `Settings.theme` 에 남는다.
+            // 3차-A: SingleChoiceSegmentedButtonRow(40dp, 선택 = ✓ + 불 22% / 낮불 먹 면 + 종이 글자) — 카드 없이 칸 머리 아래 바로.
             Column {
                 SectionHeader(Strings.themeSection)
-                SectionCard {
-                    Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        ChipTabs(listOf(Strings.themeChipNight, Strings.themeChipDay), selected = if (isDay) 1 else 0) { i ->
-                            onThemeMode(if (i == 1) HandeThemeMode.DAY else HandeThemeMode.NIGHT)
-                        }
-                        Text(if (isDay) Strings.themeDayHint else Strings.themeNightHint, color = colors.inkDim, fontSize = 14.sp, lineHeight = 20.sp)
+                Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    HandeSegmented(listOf(Strings.themeChipNight, Strings.themeChipDay), selected = if (isDay) 1 else 0) { i ->
+                        onThemeMode(if (i == 1) HandeThemeMode.DAY else HandeThemeMode.NIGHT)
                     }
+                    Text(if (isDay) Strings.themeDayHint else Strings.themeNightHint, Modifier.padding(horizontal = 4.dp), color = colors.inkDim, fontSize = 13.sp, lineHeight = 19.sp)
                 }
             }
             // 이 기기
@@ -1233,8 +1329,9 @@ fun SettingsScreen(
                             Text(Strings.deviceIdLabel, color = colors.inkDim, fontSize = 13.sp)
                             Text(ui.deviceId ?: "-", color = colors.ink, fontSize = 15.sp, fontFamily = FontFamily.Monospace)
                         }
-                        LinkButton(Strings.copyAction, enabled = ui.deviceId != null) {
-                            ui.deviceId?.let { clipboard.setText(AnnotatedString(it)); toast = Strings.copiedToast }
+                        // content_copy 글리프(3차-A) — 접근성 이름은 「복사」.
+                        IconButton(onClick = { ui.deviceId?.let { clipboard.setText(AnnotatedString(it)); toast = Strings.copiedToast } }, enabled = ui.deviceId != null) {
+                            Icon(HandeIcons.copy(if (colors.isDay) colors.ink else colors.ember), contentDescription = Strings.copyAction, tint = Color.Unspecified)
                         }
                     }
                     SectionRow(onClick = { opsOpen = !opsOpen }) {
@@ -1275,29 +1372,34 @@ fun SettingsScreen(
                     }
                 }
             }
-            // 위험 구역 — 「이 기기의 키와 대화가 모두 지워집니다」 + 「이 기기 지우기」 하나만. 서버 기록·새 ID 이야기는 「자세히」.
+            // 위험 구역 — 「이 기기의 키와 대화가 모두 지워집니다」 + 「이 기기 지우기」 하나만. 서버 기록·새 ID 이야기는 「자세히」. 낮불은 흰 면 + 2px #A8321C(2차-B).
             Column {
-                SectionHeader(Strings.settingsDanger, color = colors.warn)
+                SectionHeader(Strings.settingsDanger, color = colors.warnText)
                 val shape = RoundedCornerShape(16.dp)
                 Column(
-                    Modifier.padding(horizontal = 16.dp).fillMaxWidth().clip(shape).border(1.5.dp, colors.warn.copy(alpha = 0.5f), shape).padding(14.dp),
+                    Modifier
+                        .padding(horizontal = 16.dp)
+                        .fillMaxWidth()
+                        .clip(shape)
+                        .then(if (colors.isDay) Modifier.background(colors.surface).border(2.dp, colors.warn, shape) else Modifier.border(1.5.dp, colors.warn.copy(alpha = 0.5f), shape))
+                        .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     DetailDisclosure(hint = Strings.wipeDangerBody, detail = Strings.wipeDeviceHint)
                     DangerButton(Strings.wipeDevice) { confirmWipe = true }
                 }
             }
-            // 정보(#584 Play): 정책 링크 2개(브라우저로 연다) + 버전.
+            // 정보(#584 Play): 정책 링크 2개(open_in_new 글리프 — Custom Tabs, 없으면 ACTION_VIEW) + 버전.
             Column {
                 SectionHeader(Strings.aboutSection)
                 SectionCard {
                     SectionRow(divider = false, onClick = { openPolicy(context, BuildConfig.PRIVACY_URL) { linkError = Strings.openLinkFailed } }) {
                         Text(Strings.privacyPolicy, Modifier.weight(1f), color = colors.ink, fontSize = 17.sp)
-                        Chevron()
+                        OpenInNewGlyph()
                     }
                     SectionRow(onClick = { openPolicy(context, BuildConfig.DELETE_ACCOUNT_URL) { linkError = Strings.openLinkFailed } }) {
                         Text(Strings.deleteDataGuide, Modifier.weight(1f), color = colors.ink, fontSize = 17.sp)
-                        Chevron()
+                        OpenInNewGlyph()
                     }
                     SectionRow {
                         Text(Strings.versionShort, Modifier.weight(1f), color = colors.ink, fontSize = 17.sp)
@@ -1308,4 +1410,11 @@ fun SettingsScreen(
         }
     }
     if (confirmWipe) WipeConfirmDialog(onConfirm = { confirmWipe = false; onWipe() }, onDismiss = { confirmWipe = false })
+}
+
+/** 행 끝 open_in_new 18dp(밖에서 열리는 링크 — 정책 페이지). 장식이라 접근성 이름 없음(행 글자가 이름). */
+@Composable
+private fun OpenInNewGlyph() {
+    val colors = LocalHandeColors.current
+    Icon(HandeIcons.openInNew(colors.inkDim), contentDescription = null, Modifier.size(18.dp), tint = Color.Unspecified)
 }

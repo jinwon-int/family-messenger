@@ -72,11 +72,19 @@ struct RoomListView: View {
                     .listRowSeparator(.hidden)
                     .moveDisabled(true)
                 } else {
+                    // 2차-B 낮불: 머리 아래 1.5 먹 가는 선(밤은 없음).
                     VStack(alignment: .leading, spacing: 6) {
                         HandeWordmark(size: 34)
                         Text(Strings.campfireSubtitle).font(.subheadline).foregroundStyle(p.inkDim)
                     }
-                    .padding(.top, 4)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+                    .padding(.bottom, p.isDay ? 12 : 0)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .overlay(alignment: .bottom) {
+                        if p.isDay { Rectangle().fill(p.stroke).frame(height: 1.5) }
+                    }
+                    .listRowInsets(EdgeInsets())
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .accessibilityElement(children: .combine)
@@ -276,8 +284,14 @@ extension RoomListView {
     }
 }
 
+extension Strings {
+    /// 2차-B 낮불 목록의 안 읽음 알약(주황 점 대신 — 작은 점은 e-ink 잔상에 묻힌다). 밤은 종전 주황 점.
+    static let unreadPill = "새 글"
+}
+
 /// #405 P2 → 디자인 1차 1b: 방 = 모닥불 카드(면 + 따뜻한 선, 반경 16). 아이콘 원 안 불꽃 1~3단 = 오늘의 불 세기(숫자 없음),
-/// 불지기 배지(파랑), 자리 점, 안 읽음 = 주황 점 하나(개수 없음). 꺼진 자리는 60% 흐림 + 장작 아이콘.
+/// 자리 점, 안 읽음 = 주황 점 하나(개수 없음). 꺼진 자리는 60% 흐림 + 장작 아이콘.
+/// 2차-B 낮불: 아이콘 원 = 1.5 먹 테두리(면 없음) · 안 읽음 = 먹 알약 「새 글」 + 이름 800 · 꺼진 자리 = 점선 #8A8178 테두리 + 회색 글자 + 장작(투명도 0).
 struct CampfireCard: View {
     let room: RoomRecord
     let glance: RoomGlance
@@ -291,11 +305,19 @@ struct CampfireCard: View {
     @Environment(\.hande) private var p
 
     private var out: Bool { room.haltedReason != nil }
+    /// 꺼진 자리 글자: 낮불 #8A8178 / 밤 보조색.
+    private var mutedText: Color { p.isDay ? p.ash : p.inkDim }
+    /// 낮불 안 읽음 = 이름 800(밤은 굵기 그대로 — 주황 점이 말한다).
+    private var nameFont: Font { p.isDay && unread && !out ? .headline.weight(.heavy) : .headline }
 
     var body: some View {
         HStack(spacing: 14) {
             ZStack {
-                Circle().fill(out ? p.ink.opacity(0.05) : p.ember.opacity(0.12))
+                if p.isDay {
+                    Circle().stroke(out ? p.ash : p.stroke, lineWidth: 1.5)
+                } else {
+                    Circle().fill(out ? p.ink.opacity(0.05) : p.ember.opacity(0.12))
+                }
                 if out {
                     LogIcon(size: 24)
                 } else {
@@ -305,7 +327,7 @@ struct CampfireCard: View {
             .frame(width: 48, height: 48)
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
-                    Text(Strings.roomLabel(room.room)).font(.headline).foregroundStyle(out ? p.inkDim : p.ink)
+                    Text(Strings.roomLabel(room.room)).font(nameFont).foregroundStyle(out ? mutedText : p.ink)
                         .lineLimit(1).truncationMode(.tail)
                     if muted && !out {
                         Image(systemName: "bell.slash").font(.caption).foregroundStyle(p.inkDim)
@@ -319,8 +341,8 @@ struct CampfireCard: View {
                         .foregroundStyle(p.agentText).lineLimit(1).truncationMode(.tail)
                         .accessibilityLabel(Strings.agentWorkingListAccessibility(working))
                 } else {
-                    Text(preview).font(unread ? .footnote.weight(.semibold) : .footnote)
-                        .foregroundStyle(unread ? p.ink : p.inkDim).lineLimit(1)
+                    Text(preview).font(unread && !out ? .footnote.weight(.semibold) : .footnote)
+                        .foregroundStyle(out ? mutedText : (unread ? p.ink : p.inkDim)).lineLimit(1)
                 }
                 if !out && (!glance.people.isEmpty || glance.hasAgent) {
                     SeatDots(people: glance.people.count, agents: glance.agents.count, size: 8)
@@ -338,16 +360,29 @@ struct CampfireCard: View {
                     }
                 }
                 if unread && !out {
-                    Circle().fill(p.ember).frame(width: 10, height: 10).shadow(color: p.ember.opacity(0.6 * p.glow), radius: 4)
-                        .accessibilityLabel(Strings.unreadLabel)
+                    if p.isDay {
+                        // 2차-B: 먹 알약 「새 글」 20pt · 반경 10 · 12/700 종이 글자.
+                        Text(Strings.unreadPill)
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(p.bgTop)
+                            .padding(.horizontal, 7)
+                            .frame(height: 20)
+                            .background(Capsule().fill(p.ink))
+                            .accessibilityLabel(Strings.unreadLabel)
+                    } else {
+                        Circle().fill(p.ember).frame(width: 10, height: 10).shadow(color: p.ember.opacity(0.6 * p.glow), radius: 4)
+                            .accessibilityLabel(Strings.unreadLabel)
+                    }
                 }
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
         .background(RoundedRectangle(cornerRadius: Hande.radiusM).fill(p.surface))
-        .overlay(RoundedRectangle(cornerRadius: Hande.radiusM).stroke(p.stroke, lineWidth: p.lineWidth))
-        .opacity(out ? 0.6 : 1)
+        .overlay(RoundedRectangle(cornerRadius: Hande.radiusM)
+            .stroke(out && p.isDay ? p.ash : p.stroke, style: StrokeStyle(lineWidth: p.lineWidth, dash: out ? p.disabledDash : [])))
+        // 낮불은 투명도 금지 — 꺼진 자리는 점선·회색으로만.
+        .opacity(out && !p.isDay ? 0.6 : 1)
         .accessibilityElement(children: .combine)
     }
 
@@ -440,7 +475,7 @@ struct OrderRow: View {
 /// 불 그림은 이 빈 상태에만 쓴다. 정적(움직이지 않는다).
 struct EmptyCampfireArt: View {
     @Environment(\.hande) private var p
-    /// 디자인 원문 SVG path(장작 2 + 가지 2) — SVGPathData 는 M/L/H/V/C/Q/Z 만 읽는다.
+    /// 디자인 원문 SVG path(장작 2 + 가지 2) — SVGPathData 가 읽는다(M/L/H/V/C/Q/A/Z).
     static let logs = "M18 50h60M22 58h52M30 46l14-12M66 46L52 34"
     static let size = CGSize(width: 96, height: 64)
 
@@ -569,13 +604,13 @@ struct InviteCountBadge: View {
     let count: Int
     @Environment(\.hande) private var p
 
+    /// 2차-B B3(오너 결정 2026-10-31): 숫자 없이 점 하나 — 10pt + 2px 바탕색 테두리(밤 불 / 낮불 먹). 수는 버튼의 접근성 라벨(「알림 n건」)이 말한다.
     var body: some View {
         if count > 0 {
-            Text(count > 99 ? "99+" : "\(count)")
-                .font(.caption2.weight(.bold)).foregroundStyle(p.onEmber)
-                .padding(.horizontal, 4).padding(.vertical, 1)
-                .background(Capsule().fill(p.ember))
-                .offset(x: 8, y: -6)
+            Circle().fill(p.isDay ? p.ink : p.ember)
+                .frame(width: 10, height: 10)
+                .overlay(Circle().stroke(p.bgTop, lineWidth: 2))
+                .offset(x: 4, y: -4)
                 .accessibilityHidden(true)
         }
     }

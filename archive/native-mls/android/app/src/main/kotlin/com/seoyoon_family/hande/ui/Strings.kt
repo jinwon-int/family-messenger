@@ -262,4 +262,14 @@ object Strings {
     const val deleteDataGuide = "데이터 삭제 안내"
     const val versionShort = "버전"
     fun versionLine(name: String, code: Int) = "$name ($code)"
+
+    // ---- 한데 디자인 3차-A(2026-10-31, Android Material 3 관용구) · 2차-B 낮불 세부
+    /** 등록되면 목록 위 M3 Snackbar 한 줄(허브의 `enrolledNow` 알림을 이 문구로 보인다). */
+    const val enrolledSnackbar = "등록됐어요 — 불 곁으로 오세요"
+    /** 「이 기기 지우기」 AlertDialog(반경 28) — 제목 24 · 본문 15 · TextButton 「취소」/「지우기」(error 색). */
+    const val wipeDialogTitle = "이 기기를 지울까요?"
+    const val wipeDialogBody = "이 기기의 키와 대화가 모두 지워집니다. 다시 쓰려면 새 기기로 등록하고 다른 기기에서 승인받아야 해요."
+    const val wipeDialogConfirm = "지우기"
+    /** 낮불 목록의 안 읽음 알약(먹 면 + 종이 글자) — 밤의 주황 점과 같은 뜻(`unread`). */
+    const val newPostPill = unread
 }

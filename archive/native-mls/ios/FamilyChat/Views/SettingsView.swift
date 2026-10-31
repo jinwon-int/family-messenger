@@ -74,8 +74,7 @@ struct SettingsView: View {
                     }
                     Spacer(minLength: 8)
                     Button(Strings.serverChangeShort) { confirmServerChange = true }
-                        .buttonStyle(.borderless)
-                        .font(.system(size: 15)).foregroundStyle(p.ember).tint(p.ember)
+                        .buttonStyle(HandeLinkButtonStyle(size: 15))
                         .disabled(serverChangeBusy)
                         .accessibilityLabel(Strings.serverChange)
                         .accessibilityIdentifier("settings-change-server")
@@ -95,7 +94,9 @@ struct SettingsView: View {
                         themeChip(.day, label: Strings.themeChipDay)
                     }
                     .padding(3)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(p.ink.opacity(0.05)))
+                    // 2차-B 낮불: 세그먼트 틀 = 1.5 먹 선(면 없음), 선택 = 먹 면 + 종이 글자 + ✓. 밤: 먹 5% 면, 선택 = 불 면.
+                    .background(RoundedRectangle(cornerRadius: 12).fill(p.isDay ? Color.clear : p.ink.opacity(0.05)))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(p.isDay ? p.stroke : Color.clear, lineWidth: 1.5))
                     .accessibilityElement(children: .contain)
                     .accessibilityLabel(Strings.themeLabel)
                     .accessibilityIdentifier("settings-theme")
@@ -112,12 +113,13 @@ struct SettingsView: View {
     private func themeChip(_ mode: HandeThemeMode, label: String) -> some View {
         let on = theme == mode
         return Button { themeRaw = mode.rawValue } label: {
-            Text(label)
-                .font(.system(size: 15, weight: on ? .semibold : .regular))
-                .foregroundStyle(on ? p.onEmber : p.inkDim)
+            // 낮불 선택: 색 없이 채움 + 기호(✓)로. 읽기 라벨은 글자만(✓는 isSelected 가 말한다).
+            Text(on && p.isDay ? "\(label) ✓" : label)
+                .font(.system(size: 15, weight: on ? (p.isDay ? .bold : .semibold) : (p.isDay ? .medium : .regular)))
+                .foregroundStyle(on ? (p.isDay ? p.bgTop : p.onEmber) : (p.isDay ? p.ink : p.inkDim))
                 .frame(maxWidth: .infinity, minHeight: 36)
-                .background(RoundedRectangle(cornerRadius: 10).fill(on ? p.ember : Color.clear))
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(on && p.isDay ? p.stroke : Color.clear, lineWidth: p.lineWidth))
+                .background(RoundedRectangle(cornerRadius: 10).fill(on ? (p.isDay ? p.ink : p.ember) : Color.clear))
+                .accessibilityLabel(label)
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(on ? .isSelected : AccessibilityTraits())
@@ -159,7 +161,9 @@ struct SettingsView: View {
                 }
                 .padding(14)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .handeCard(fill: p.warn.opacity(0.07), stroke: p.warn.opacity(0.55))
+                // 밤 warn 7% 면 + 55% 선 / 낮불 흰 면 + 2px warn(2차-B).
+                .handeCard(fill: p.isDay ? p.surface : p.warn.opacity(0.07), stroke: p.isDay ? p.warn : p.warn.opacity(0.55),
+                           lineWidth: p.isDay ? 2 : nil)
                 .padding(.horizontal, 16)
                 .padding(.top, 10)
                 .accessibilityIdentifier("settings-lock-preview-warning")
@@ -180,8 +184,7 @@ struct SettingsView: View {
                     }
                     Spacer(minLength: 8)
                     Button(Strings.copyAction) { copy(model.deviceId) }
-                        .buttonStyle(.borderless)
-                        .font(.system(size: 15)).foregroundStyle(p.ember).tint(p.ember)
+                        .buttonStyle(HandeLinkButtonStyle(size: 15))
                         .accessibilityLabel("\(Strings.deviceIdLabel) \(Strings.copyAction)")
                         .accessibilityIdentifier("settings-copy-device-id")
                 }
@@ -267,6 +270,7 @@ struct SettingsView: View {
     }
 
     // MARK: 위험 구역 — 「이 기기의 키와 대화가 모두 지워집니다」 + 「이 기기 지우기」 하나만(위험 버튼). 결과는 상자 안 한 줄.
+    // 상자: 밤 1.5 warn 50% 선(면 없음) / 낮불 흰 면 + 2px warn(2차-B — 면은 흰색 유지).
     private var dangerSection: some View {
         VStack(alignment: .leading, spacing: 0) {
             SectionHeader(Strings.settingsDanger, color: p.warn)
@@ -284,7 +288,8 @@ struct SettingsView: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .overlay(RoundedRectangle(cornerRadius: Hande.radiusM).stroke(p.warn.opacity(0.5), lineWidth: 1.5))
+            .background(RoundedRectangle(cornerRadius: Hande.radiusM).fill(p.isDay ? p.surface : Color.clear))
+            .overlay(RoundedRectangle(cornerRadius: Hande.radiusM).stroke(p.isDay ? p.warn : p.warn.opacity(0.5), lineWidth: p.isDay ? 2 : 1.5))
             .padding(.horizontal, 16)
         }
     }
@@ -367,16 +372,20 @@ struct LockPreviewWarningBanner: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(Strings.lockPreviewWarningTitle).font(.headline).foregroundStyle(p.ink)
             Text(Strings.lockPreviewWarningBody).font(.footnote).foregroundStyle(p.inkDim)
+            // 링크: 밤 불 색 / 낮불 먹 밑줄 600(HandeLinkButtonStyle).
             HStack(spacing: 16) {
-                Button(Strings.lockPreviewOpenSettings) { Self.openNotificationSettings() }.font(.footnote.bold())
-                Button(Strings.lockPreviewLater, action: onDismiss).font(.footnote)
+                Button(Strings.lockPreviewOpenSettings) { Self.openNotificationSettings() }
+                    .buttonStyle(HandeLinkButtonStyle(size: 13))
+                Button(Strings.lockPreviewLater, action: onDismiss)
+                    .buttonStyle(HandeLinkButtonStyle(size: 13))
             }
-            .foregroundStyle(p.ember)
-            .tint(p.ember)
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(p.ember.opacity(0.18))
+        .background(p.isDay ? p.surface : p.ember.opacity(0.18))
+        .overlay(alignment: .bottom) {
+            if p.isDay { Rectangle().fill(p.warn).frame(height: 2) }
+        }
     }
 
     /// 이 앱의 알림 설정 화면(iOS 16+). 열 수 없으면 아무것도 하지 않는다.
@@ -396,11 +405,15 @@ struct HaltedBanner: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(Strings.haltedTitle).font(.headline).foregroundStyle(p.ink)
             Text(Strings.haltBannerBody(reason)).font(.footnote).foregroundStyle(p.inkDim)
-            Button(Strings.haltedDetails) { showDetails = true }.font(.footnote.bold()).foregroundStyle(p.ember).tint(p.ember)
+            Button(Strings.haltedDetails) { showDetails = true }.buttonStyle(HandeLinkButtonStyle(size: 13))
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(p.warn.opacity(0.15))
+        // 밤 붉은 잉걸 15% 면 / 낮불 흰 면 + 아래 2px warn 선(투명 면 금지).
+        .background(p.isDay ? p.surface : p.warn.opacity(0.15))
+        .overlay(alignment: .bottom) {
+            if p.isDay { Rectangle().fill(p.warn).frame(height: 2) }
+        }
         .sheet(isPresented: $showDetails) { HaltedRoomsView() }
     }
 }

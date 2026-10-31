@@ -18,6 +18,9 @@ xcodebuild -project FamilyChat.xcodeproj -scheme FamilyChat \
 규칙 `docs/design/HANDE-DESIGN-SYSTEM.md`. `Views/Theme.swift` — `HandePalette.night/.day`(밤 기본·고정, 낮불 = e-ink·밝은 곳 고대비, 설정 「화면」,
 `UserDefaults` `hande.theme`), 뷰는 `@Environment(\.hande)` 로 받는다(정적 `Hande.*` 는 밤 별칭). 벡터 `FlameIcon`(오늘의 불 세기 1~3,
 `RoomGlance.fireLevel` = 24h 글 수)·`LogIcon`·`SeatDot`(사람 ● / 에이전트 ●·낮불 ◆), 버튼 스타일 3종. 용어: 자리·불지기·불 피우기·타닥타닥·불씨가 튀었어요.
+디자인 2차-B(2026-10-31): 한데 고유 UI 아이콘 14종 `HandeIcon`/`HandeIconView`(path 정본 `Views/HandeIconArt.swift` = `docs/design/icons/ui/*.svg`,
+Core `SVGPathData` 가 호 `A/a`·매끈한 3차 `S/s` 를 베지어로 읽는다) · 컴포넌트 상태표 값 `HandePalette.buttonFace`/`disabled*`/`pressedSurface`/`warnText` ·
+낮불 세부(목록 「새 글」 알약·점선 꺼진 자리, 승인 먹 체크·네모 경고, 설정 먹 세그먼트·밑줄 링크, 점선 비활성 버튼).
 
 새 기기 셀프서비스(#574 PR 3, 2026-10-29): 등록 대기 화면이 후보를 릴레이 우편함에 올리고(`AppModel.enrollment`), 같은 계정의 다른 기기가
 🔔 알림 → 「새 기기 승인」에서 지문을 비교해 승인하면(`sign_approval`, `Views/DevicesView.swift`) 그 기기가 참여한 대화방에 자동 초대된다

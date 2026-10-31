@@ -14,7 +14,7 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
 
 ```text
 <hande-dir>/
-  index.html styles.css strings.js ui.js app.js main.js          ← 화면·상태기계 (이 디렉터리)
+  index.html styles.css strings.js icons.js ui.js app.js main.js ← 화면·상태기계 (이 디렉터리; icons.js = 2차-B 고유 아이콘 14종, docs/design/icons/ui 경로 내장)
   keyboard.js shortcuts.js timeline-caret.js                     ← 키보드 판정·전역 단축키·캐럿 모드(패밀리챗 이식, #478)
   room-order.js                                                  ← 대화 목록 고정 순서(▲▼ 편집, 이 기기 localStorage — 패밀리챗 이식, #480)
   read-seq.js                                                    ← 방별 「어디까지 봤나」·안 읽음 판정(iOS readSeq·Unread.isUnread 이식, #541)

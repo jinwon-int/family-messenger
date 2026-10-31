@@ -108,3 +108,47 @@
 - `hande-mark-master.svg`(1024, 큰 크기) · `hande-mark-small.svg`(≤29pt·favicon: 양옆 불 제거·가운데 확대·점 3) · `hande-mark-dark.svg`(배경 투명) · `hande-mark-tinted.svg`(회색조). 점 6 = **크림 3·파랑 3 교대**(현재 1024 원본 기준 — 시안의 크림 4·파랑 2에서 정정).
 - iOS: `AppIcon.appiconset` Any/Dark/Tinted 1024. Android: `mipmap-anydpi-v26/ic_launcher(+_round).xml` adaptive(전경/배경/monochrome VectorDrawable, 108dp, 마크 scale .072) + `values-v31` 스플래시(#0F1324 + 전경 마크). 웹: `icons/icon.svg`(마스터) + `favicon-32/16.png`(작은 변형) + `icon-192/512.png`(manifest maskable).
 - 래스터: `render.sh <svg> <png> <size> <transparent 0|1>`(headless Chrome). 미리보기 `preview-sheet.png`.
+
+---
+
+# 2차-B · 3차-A · 3차-B (2026-10-31)
+
+원본(파일보관함): 「… Hande 2차-B.html」(sha256 `e05aa3e8…`) · 「… 3차-A.html」(`9effd731…`) · 「… 3차-B.html`(`a528b823…`).
+
+## B1. 낮불 세부 규칙(밤 → 낮불에서 바뀌는 것)
+- 불 세기: 켠 갈래 = **먹 채움**, 끈 갈래 = 먹 선만(색 대신 채움으로 단계). 아이콘 원은 1.5px 먹 선, 채움 없음.
+- 안 읽음: 주황 점 대신 **먹 알약 「새 글」**(20pt, 반경 10) + 이름 굵게 800 (작은 점은 e-ink 잔상에 묻힘).
+- 꺼진 자리: 흐림(투명도 금지) 대신 **점선 테두리 1.5 + 회색 `#8A8178` 글자 + 장작**.
+- 체크(지문 행): **먹 채움 + 종이 ✓**(주황 아님 — 불은 주 버튼 1곳), 표시한 행 면 `#EFE9DC` + hex 굵게.
+- 「승인」 꺼짐: 종이 면 + 1.5 **점선** `#8A8178` + 회색 글자 → 켜짐 `#D97A1E` 면 + 먹 선. 비활성은 모두 투명도 대신 **점선 + 회색**.
+- 경고 상자: 2px `#A8321C` + **네모** 표지(사람 ●·에이전트 ◆와 다른 모양). 위험 버튼 = 흰 면 + 2px `#A8321C` 글자 `#A8321C`.
+- 세그먼트 선택 = 먹 면 + 종이 글자 + ✓. 링크 = 밑줄 600(색 대신). 진행 중·생각하는 중 = 점 애니메이션 대신 **정지 글자**.
+- 내 말풍선 = 먹 면 + 종이 글자, 연결되면 보냄 = 흰 면 + 점선, 전송 안 됨 = 흰 면 + 2px warn. 토스트 = 먹 면 + 종이 글자.
+
+## B2. 한데 고유 UI 아이콘 세트 → `docs/design/icons/ui/`(14종 SVG + README·매핑표)
+24 뷰박스 · 선 1.6 둥근 끝 · `currentColor` · 역할색 채움 `data-role`(ember/ember-deep/person/agent/ink; 낮불은 agent 외 전부 먹). 불지기 = 사람 실루엣 + ◆ 불티(로봇 금지) · 지문 = 8행 묶음 모양(자물쇠·방패·생체지문 곡선 금지) · 자리 = 작은 불 + 점 5(크림·파랑 교대) · 덮어 두기 = 불 위 뚜껑.
+iOS: `HandeIconView`(Core `SVGPathData`에 호(`A/a`) 지원 추가) · Android: `HandeIcons` ImageVector · 웹: `icons.js`.
+
+## B3. 컴포넌트 상태표(기본/눌림/비활성/오류 · 밤/낮불) — 코드 반영 값
+| 컴포넌트 | 밤 | 낮불 |
+|---|---|---|
+| 주 버튼 48 r16 | `#F59E42` / 눌림 `#E8833A` / 비활성 면 18%·글자 45% | `#D97A1E`+1.5 먹 / 눌림 `#B8650F` / 비활성 종이+점선 `#8A8178` |
+| 보조 48 | 면 7% + 선 14% / 눌림 white 13% | 흰 면 + 1.5 먹 / 눌림 `#E9E4DA` |
+| 위험 46 | 면 warn 8% + 선 1.5 60%, 글자 `#F08A70` / 눌림 22% | 흰 면 + 2px `#A8321C` / 눌림 warn 면 + 종이 글자 |
+| 크림 52 | `#F3E6D3` / 눌림 `#E3D3BA` | 흰 면 + 2px 먹 / 눌림 `#E9E4DA` |
+| 입력칸 52 r14 | 면 7% + 선 30% / 포커스 2px `#FFD79A` / 오류 1.5 warn + 도움말 `#F08A70` | 흰 + 1.5 먹 / 포커스 2px 먹 / 오류 2px warn |
+| 지문 행 42 + 체크 22 | 표시 = ember + ✓, 행 주황 8% | 표시 = 먹 채움 + 종이 ✓, 행 `#EFE9DC` 굵게 |
+| 승인 카드 r16 | 만료 = 점선 · 지문 다름 = warn 선 | 동일(선 2px) |
+| 허락 카드 r20 | 1.5 agent 45% + 면 8%, 불확실 = 「확인 못 했어요」 | 2px `#2F6FC4` 흰 면, 진행/결과 정지 글자 |
+| 배너 r12 | 정보 면 / 주의 warn 10%·선 45% | 정보 흰+먹 / 주의 2px warn |
+| 토스트 40 r20 | `#1C2136` + 선 30%, 2초 | 먹 면 + 종이 글자, 애니메이션 없음 |
+| 자리 점 | 사람 ● `#FFD79A` / 에이전트 ● `#61A6FA` 빛남 / 꺼짐 `#6B5A48` | 사람 ● 먹 / 에이전트 ◆ `#2F6FC4` / 꺼짐 `#8A8178` |
+| 배지(초대) | 점 10pt + 2px 바탕 테두리, **숫자 없음**(디자이너 제안 — 오너 결정 대기; 현재 iOS는 숫자) | 먹 점 |
+
+## 3차-A. Android Material 3 관용구
+투명 TopAppBar 64(제목 왼쪽) · M3 버튼 48 알약 · `OutlinedTextField` 56 r14 떠 있는 라벨 12sp, 포커스 2dp `#FFD79A`, 오류 `isError`+supportingText `#F08A70` · `SingleChoiceSegmentedButtonRow` 40(선택 ✓ + 주황 22%) · `ListItem` 56 · `ExtendedFloatingActionButton` 56 r16 오른쪽 아래 16(iOS 가운데 알약의 짝; Android는 방 만들기가 없어 「참여 요청」) · 확인은 **`AlertDialog` r28, `surfaceContainerHigh #1C2136`**(바텀시트 없음) · edge-to-edge · 등록 완료 = Snackbar 「등록됐어요 — 불 곁으로 오세요」.
+Compose 인계: `primary`=ember · `secondary`=person · `tertiary`=agent · `surface`=bgTop · `surfaceContainer #202433` · `surfaceContainerHigh #1C2136` · `outline` `#FFBF78` 40% / `outlineVariant` 14% · `error`=warn · 타이포 displaySmall 32/titleLarge 22/bodyLarge 17/labelLarge 15/bodySmall 13 · 지문 Monospace 19 자간 .06em · Shapes 10/16/24/28. 디자이너 질문(surfaceContainer 채움) → **예**.
+그리지 않음(Android에 없음): 알림함·순서 편집·타닥타닥·전송 상태·오프닝·로그아웃·서버 바꾸기.
+
+## 3차-B. 스토어 자산 → `docs/design/store/`
+Play 아이콘 512 · 피처 그래픽 1024×500 · OG 1200×630 · 스크린샷 틀 10장(Play 1080×1920 / iPhone 1320×2868, 실기기 캡처 합성 스크립트) · 문구 `store-listing.md`. 디자이너 질문(암호화 방식 명시 ↔ 수출 규정) → 오너 결정 대기.
