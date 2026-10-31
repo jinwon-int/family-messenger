@@ -1,0 +1,460 @@
+{
+ "spec": "archive/native-mls/AGENT-CHOICES-V1.md",
+ "parse": [
+  {
+   "name": "hande-style: 다음 단계 heading, 권장 in item 1, trailing line",
+   "text": "조사가 끝났습니다.\n\n**다음 단계**\n1. **권장: 탭하면 체크되고 [보내기]로 전송.** 오탭 방지.\n2. 1번과 같되 여러 개 선택도 허용.\n3. 탭하면 바로 전송.\n\n번호로 답해 주시면 시작하겠습니다.",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "권장: 탭하면 체크되고 [보내기]로 전송. 오탭 방지."
+     },
+     {
+      "number": 2,
+      "label": "1번과 같되 여러 개 선택도 허용."
+     },
+     {
+      "number": 3,
+      "label": "탭하면 바로 전송."
+     }
+    ],
+    "recommended": 1
+   }
+  },
+  {
+   "name": "권장 N번 line before the list wins",
+   "text": "두 가지 방법이 있습니다. 권장: 2번 — 더 안전합니다.\n\n1. 지금 바로 배포\n2. 내일 아침 배포",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "지금 바로 배포"
+     },
+     {
+      "number": 2,
+      "label": "내일 아침 배포"
+     }
+    ],
+    "recommended": 2
+   }
+  },
+  {
+   "name": "권장 N번 out of range falls back to label",
+   "text": "권장: 5번\n\n어떻게 할까요?\n1. 유지\n2. 롤백 (권장)\n3. 보류",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "유지"
+     },
+     {
+      "number": 2,
+      "label": "롤백 (권장)"
+     },
+     {
+      "number": 3,
+      "label": "보류"
+     }
+    ],
+    "recommended": 2
+   }
+  },
+  {
+   "name": "no cue anywhere -> null",
+   "text": "설치 순서입니다.\n1. 패키지 설치\n2. 서비스 시작",
+   "expected": null
+  },
+  {
+   "name": "single item -> null",
+   "text": "어떻게 할까요?\n1. 그대로 진행",
+   "expected": null
+  },
+  {
+   "name": "numbering gap invalidates -> null",
+   "text": "선택해 주세요\n1. 가\n3. 다",
+   "expected": null
+  },
+  {
+   "name": "list only inside a code fence -> null",
+   "text": "예시 출력입니다. 선택은?\n```\n1. alpha\n2. beta\n```",
+   "expected": null
+  },
+  {
+   "name": "too many trailing lines -> null",
+   "text": "선택지:\n1. 가\n2. 나\n\n첫째 줄\n둘째 줄\n셋째 줄\n넷째 줄",
+   "expected": null
+  },
+  {
+   "name": "exactly three trailing lines ok",
+   "text": "선택지:\n1. 가\n2. 나\n\n첫째 줄\n둘째 줄\n셋째 줄",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "가"
+     },
+     {
+      "number": 2,
+      "label": "나"
+     }
+    ],
+    "recommended": null
+   }
+  },
+  {
+   "name": "two lists: the last one counts",
+   "text": "한 일:\n1. 빌드\n2. 테스트\n\n다음 액션\n1. 병합\n2. 보류",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "병합"
+     },
+     {
+      "number": 2,
+      "label": "보류"
+     }
+    ],
+    "recommended": null
+   }
+  },
+  {
+   "name": "restarted numbering after blank line",
+   "text": "1. a\n2. b\n\n1. c\n2. d\n선택해 주세요",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "c"
+     },
+     {
+      "number": 2,
+      "label": "d"
+     }
+    ],
+    "recommended": null
+   }
+  },
+  {
+   "name": "paren markers",
+   "text": "Which option?\n1) Alpha\n2) Beta",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "Alpha"
+     },
+     {
+      "number": 2,
+      "label": "Beta"
+     }
+    ],
+    "recommended": null
+   }
+  },
+  {
+   "name": "indented sub-bullets are continuation, not labels",
+   "text": "다음 단계\n1. 이슈 열기\n   - 규격 문서 포함\n   - 테스트 예제\n2. 바로 구현\n\t탭 들여쓰기도 이어짐\n3. 보류",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "이슈 열기"
+     },
+     {
+      "number": 2,
+      "label": "바로 구현"
+     },
+     {
+      "number": 3,
+      "label": "보류"
+     }
+    ],
+    "recommended": null
+   }
+  },
+  {
+   "name": "unindented bullet after list ends block but counts as trailing",
+   "text": "정해 주세요\n1. A안\n2. B안\n- 참고: 둘 다 되돌릴 수 있음",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "A안"
+     },
+     {
+      "number": 2,
+      "label": "B안"
+     }
+    ],
+    "recommended": null
+   }
+  },
+  {
+   "name": "stray wrong number after closed block invalidates",
+   "text": "선택?\n1. 가\n2. 나\n설명 한 줄\n5. 다섯",
+   "expected": null
+  },
+  {
+   "name": "ten items -> null",
+   "text": "고르세요\n1. 항목1\n2. 항목2\n3. 항목3\n4. 항목4\n5. 항목5\n6. 항목6\n7. 항목7\n8. 항목8\n9. 항목9\n10. 항목10",
+   "expected": null
+  },
+  {
+   "name": "nine items ok",
+   "text": "고르세요\n1. 항목1\n2. 항목2\n3. 항목3\n4. 항목4\n5. 항목5\n6. 항목6\n7. 항목7\n8. 항목8\n9. 항목9",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "항목1"
+     },
+     {
+      "number": 2,
+      "label": "항목2"
+     },
+     {
+      "number": 3,
+      "label": "항목3"
+     },
+     {
+      "number": 4,
+      "label": "항목4"
+     },
+     {
+      "number": 5,
+      "label": "항목5"
+     },
+     {
+      "number": 6,
+      "label": "항목6"
+     },
+     {
+      "number": 7,
+      "label": "항목7"
+     },
+     {
+      "number": 8,
+      "label": "항목8"
+     },
+     {
+      "number": 9,
+      "label": "항목9"
+     }
+    ],
+    "recommended": null
+   }
+  },
+  {
+   "name": "CRLF line endings",
+   "text": "어떻게 할까요?\r\n1. 예\r\n2. 아니오\r\n",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "예"
+     },
+     {
+      "number": 2,
+      "label": "아니오"
+     }
+    ],
+    "recommended": null
+   }
+  },
+  {
+   "name": "leading spaces up to three on items",
+   "text": "선택\n   1. 셋 칸\n  2. 두 칸",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "셋 칸"
+     },
+     {
+      "number": 2,
+      "label": "두 칸"
+     }
+    ],
+    "recommended": null
+   }
+  },
+  {
+   "name": "four leading spaces is not an item -> null",
+   "text": "선택\n    1. 네 칸\n    2. 네 칸",
+   "expected": null
+  },
+  {
+   "name": "no space after marker is not an item -> null",
+   "text": "선택?\n1.가\n2.나",
+   "expected": null
+  },
+  {
+   "name": "label strips bold underscores backticks and collapses spaces",
+   "text": "다음 액션\n1. `618 승인` 이라고   답하기\n2. __나중에__ **다시**",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "618 승인 이라고 답하기"
+     },
+     {
+      "number": 2,
+      "label": "나중에 다시"
+     }
+    ],
+    "recommended": null
+   }
+  },
+  {
+   "name": "cue only in trailing line",
+   "text": "1. 가\n2. 나\n원하시는 번호를 알려 주세요.",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "가"
+     },
+     {
+      "number": 2,
+      "label": "나"
+     }
+    ],
+    "recommended": null
+   }
+  },
+  {
+   "name": "cue only in an item label",
+   "text": "1. 이대로 진행할까요\n2. 멈춤",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "이대로 진행할까요"
+     },
+     {
+      "number": 2,
+      "label": "멈춤"
+     }
+    ],
+    "recommended": null
+   }
+  },
+  {
+   "name": "cue in a line far above (not nearest) does not count -> null",
+   "text": "어떻게 할까요?\n\n배경 설명입니다.\n1. 가\n2. 나",
+   "expected": null
+  },
+  {
+   "name": "english cue case-insensitive",
+   "text": "Recommended path below\n1. Ship\n2. Wait",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "Ship"
+     },
+     {
+      "number": 2,
+      "label": "Wait"
+     }
+    ],
+    "recommended": null
+   }
+  },
+  {
+   "name": "block in middle followed by heading and prose is closed -> trailing too long -> null",
+   "text": "선택지\n1. 가\n2. 나\n## 부록\n본문 1\n본문 2\n본문 3",
+   "expected": null
+  },
+  {
+   "name": "first label containing 권장 wins when no N번 pattern",
+   "text": "다음 단계\n1. 보류\n2. 권장 — 배포\n3. 권장 아님? 롤백",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "보류"
+     },
+     {
+      "number": 2,
+      "label": "권장 — 배포"
+     },
+     {
+      "number": 3,
+      "label": "권장 아님? 롤백"
+     }
+    ],
+    "recommended": 2
+   }
+  }
+ ],
+ "reply": [
+  {
+   "text": "1",
+   "count": 3,
+   "expected": 1
+  },
+  {
+   "text": " 2 ",
+   "count": 3,
+   "expected": 2
+  },
+  {
+   "text": "2번",
+   "count": 3,
+   "expected": 2
+  },
+  {
+   "text": "3.",
+   "count": 3,
+   "expected": 3
+  },
+  {
+   "text": "1번.",
+   "count": 3,
+   "expected": 1
+  },
+  {
+   "text": "1 번",
+   "count": 3,
+   "expected": 1
+  },
+  {
+   "text": "4",
+   "count": 3,
+   "expected": null
+  },
+  {
+   "text": "0",
+   "count": 3,
+   "expected": null
+  },
+  {
+   "text": "10",
+   "count": 3,
+   "expected": null
+  },
+  {
+   "text": "1,3",
+   "count": 3,
+   "expected": null
+  },
+  {
+   "text": "승인 1",
+   "count": 3,
+   "expected": null
+  },
+  {
+   "text": "1번으로",
+   "count": 3,
+   "expected": null
+  },
+  {
+   "text": "１",
+   "count": 3,
+   "expected": null
+  }
+ ]
+}
