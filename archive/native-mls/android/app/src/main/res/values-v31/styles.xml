@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 12+ 스플래시: 배경 #0F1324 + adaptive 전경 마크(움직임 없음). -->
+    <style name="Theme.Hande" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#0F1324</item>
+        <item name="android:windowSplashScreenBackground">#0F1324</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+    </style>
+</resources>

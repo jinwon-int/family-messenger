@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 한데 디자인 2차-A: 창 테마는 어두운 Material(밤 배경 #0F1324) — 첫 프레임 밝은 번쩍임 방지. 화면은 Compose HandeTheme 가 그린다. -->
+    <style name="Theme.Hande" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#0F1324</item>
+    </style>
+</resources>
