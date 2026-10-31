@@ -126,15 +126,21 @@ object Strings {
     const val sendButton = "보내기"
     const val back = "뒤로"
 
-    // 에이전트 선택지 카드(agent-choices-v1 #620 §3): 행 = 체크 원 + N + 라벨 + 「권장」 알약, [보내기] 는 고른 번호 `"N"` 을 평소 전송 경로로.
+    // 에이전트 선택지 카드(agent-choices-v1 #620 §3 · 복수 선택 #624): 행 = 체크 상자 + N + 라벨 + 「권장」 알약, [보내기] 는 고른 번호들
+    // (줄마다 `N. 라벨` — `AgentChoices.compose`) 을 평소 전송 경로로.
     const val choiceRecommended = "권장"
     const val choiceSend = "보내기"
-    /** 행 접근성 라벨 「N번: 라벨」(+ 「, 권장」). 선택 상태는 semantics `selected` 로 따로 알린다. */
+    /** 행 접근성 라벨 「N번: 라벨」(+ 「, 권장」). 체크 상태는 semantics `toggleableState` 로 따로 알린다. */
     fun choiceRowLabel(number: Int, label: String, recommended: Boolean) = "${number}번: $label" + (if (recommended) ", $choiceRecommended" else "")
-    /** [보내기] 접근성 라벨 — 고른 번호가 없으면 그냥 「보내기」. */
-    fun choiceSendLabel(number: Int?) = if (number == null) choiceSend else "${number}번 보내기"
-    /** 답한 뒤 한 줄 「✓ N번 선택 — 라벨」. */
-    fun choiceAnswered(number: Int, label: String?) = if (label.isNullOrEmpty()) "✓ ${number}번 선택" else "✓ ${number}번 선택 — $label"
+    /** [보내기] 접근성 라벨 「1, 3번 보내기」(오름차순·중복 없음) — 고른 번호가 없으면 그냥 「보내기」. */
+    fun choiceSendLabel(numbers: Collection<Int>) =
+        if (numbers.isEmpty()) choiceSend else "${numbers.toSortedSet().joinToString(", ")}번 보내기"
+    /** 답한 뒤 한 줄 「✓ N번 선택 — 라벨」 / 여럿이면 「✓ 1, 3번 선택 — 라벨1 · 라벨3」(라벨이 없는 번호는 뺀다). */
+    fun choiceAnswered(numbers: List<Int>, labels: List<String?>): String {
+        val head = "✓ ${numbers.joinToString(", ")}번 선택"
+        val tail = labels.filterNot { it.isNullOrEmpty() }.joinToString(" · ")
+        return if (tail.isEmpty()) head else "$head — $tail"
+    }
 
     // 화면 테마(한데 디자인 1차): 밤이 기본·고정, 낮불은 e-ink·밝은 곳용 고대비(설정에서 고른다 — `Settings.theme`).
     const val themeSection = "화면"

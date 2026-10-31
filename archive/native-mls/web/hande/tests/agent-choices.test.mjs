@@ -3,13 +3,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseChoices, choiceReply, choiceState } from '../agent-choices.js';
+import { parseChoices, choiceReply, composeChoice, choiceState } from '../agent-choices.js';
 
 const vectors = JSON.parse(readFileSync(new URL('../../../tests/fixtures/agent-choices-vectors.json', import.meta.url), 'utf8'));
 
 test('공유 벡터가 실렸다', () => {
   assert.ok(vectors.parse.length > 20);
   assert.ok(vectors.reply.length > 10);
+  assert.ok(vectors.compose.length > 0);
 });
 
 for (const v of vectors.parse) {
@@ -20,9 +21,42 @@ for (const v of vectors.parse) {
 
 for (const v of vectors.reply) {
   test(`reply: ${JSON.stringify(v.text)} / ${v.count}`, () => {
-    assert.equal(choiceReply(v.text, v.count), v.expected);
+    assert.deepEqual(choiceReply(v.text, v.count), v.expected);
   });
 }
+
+for (const v of vectors.compose) {
+  test(`compose: ${JSON.stringify(v.numbers)} / ${JSON.stringify(v.labels)}`, () => {
+    assert.equal(composeChoice(v.numbers, v.labels), v.expected);
+  });
+}
+
+test('reply: compose 결과는 답 판정 B 로 다시 같은 번호가 된다(왕복)', () => {
+  for (const v of vectors.compose) {
+    assert.deepEqual(choiceReply(composeChoice(v.numbers, v.labels), v.labels.length), [...new Set(v.numbers)].sort((a, b) => a - b));
+  }
+  // 파싱한 선택지 라벨로도 왕복한다 — 라벨 안의 `.`·`[ ]`·숫자가 A 를 흔들지 않는다.
+  const choices = parseChoices(vectors.parse[0].text);
+  const labels = choices.items.map((it) => it.label);
+  for (const numbers of [[1], [2, 3], [3, 1, 2]]) {
+    assert.deepEqual(choiceReply(composeChoice(numbers, labels), labels.length), [...numbers].sort((a, b) => a - b));
+  }
+});
+
+test('compose: 라벨이 없거나 빈 번호는 (내용 없음)', () => {
+  assert.equal(composeChoice([2, 1], ['A']), '1. A\n2. (내용 없음)');
+  assert.equal(composeChoice([], ['A']), '');
+});
+
+test('reply: 문자열이 아니거나 공백·점뿐이면 null', () => {
+  assert.equal(choiceReply(null, 3), null);
+  assert.equal(choiceReply('', 3), null);
+  assert.equal(choiceReply(' . ', 3), null);
+  assert.equal(choiceReply('1..', 3), null);   // 끝 `.` 은 하나만 지운다
+  assert.equal(choiceReply('1 -2', 3), null);
+  assert.equal(choiceReply('\n \t\n', 3), null);   // B: 공백뿐인 줄만 남으면 null
+  assert.deepEqual(choiceReply('1. A\r\n3. C\r\n', 3), [1, 3]);   // B: CRLF
+});
 
 test('parse: 문자열이 아니거나 빈 글은 null', () => {
   assert.equal(parseChoices(''), null);
@@ -49,13 +83,37 @@ test('state: 시스템 줄만 뒤에 있으면 여전히 open', () => {
   assert.equal(s.state, 'open');
 });
 
-test('state: 바로 다음이 내 `N` 이면 answered(N) + 라벨', () => {
+test('state: 바로 다음이 내 `N` 이면 answered([N]) + 라벨', () => {
   for (const reply of ['2', ' 2번 ', '2.', '2 번.']) {
     const s = choiceState([agent('b'), mine('c', reply)], 0);
     assert.equal(s.state, 'answered', reply);
-    assert.equal(s.number, 2);
-    assert.equal(s.label, '롤백 (권장)');
+    assert.deepEqual(s.numbers, [2]);
+    assert.deepEqual(s.labels, ['롤백 (권장)']);
   }
+});
+
+test('state: 내 답이 여러 번호면 answered(오름차순 목록) + 라벨들(#624)', () => {
+  for (const reply of ['1, 3', '3,1', '1 3', '1번, 3번', '3 → 1', '1/3/1']) {
+    const s = choiceState([agent('b'), mine('c', reply)], 0);
+    assert.equal(s.state, 'answered', reply);
+    assert.deepEqual(s.numbers, [1, 3], reply);
+    assert.deepEqual(s.labels, ['유지', '보류'], reply);
+  }
+  assert.equal(choiceState([agent('b'), mine('c', '1, 4')], 0), null);   // 하나라도 범위 밖이면 closed
+  assert.equal(choiceState([agent('b'), mine('c', '1,')], 0), null);
+});
+
+test('state: 카드가 보낸 줄 형식(compose)이 다음 내 글이면 answered(#624)', () => {
+  const open = choiceState([agent('b')], 0);
+  const sent = composeChoice([3, 1], open.choices.items.map((it) => it.label));
+  assert.equal(sent, '1. 유지\n3. 보류');
+  const s = choiceState([agent('b'), mine('c', sent)], 0);
+  assert.equal(s.state, 'answered');
+  assert.deepEqual(s.numbers, [1, 3]);
+  assert.deepEqual(s.labels, ['유지', '보류']);
+  // 라벨 글은 비교하지 않는다 — 손으로 친 `2. 아무 말` 도 answered([2]).
+  assert.deepEqual(choiceState([agent('b'), mine('c', '2. 아무 말')], 0)?.numbers, [2]);
+  assert.equal(choiceState([agent('b'), mine('c', '1. 유지\n그리고 빨리요')], 0), null);
 });
 
 test('state: 범위 밖 번호·다른 글·남의 글·첨부는 closed(null)', () => {
@@ -67,7 +125,7 @@ test('state: 범위 밖 번호·다른 글·남의 글·첨부는 closed(null)',
 
 test('state: 복호화 실패·시스템 줄은 건너뛴다(iOS 와 같다)', () => {
   assert.equal(choiceState([agent('b'), { key: 'c', kind: 'undecryptable', isMe: false, body: '' }], 0)?.state, 'open');
-  assert.equal(choiceState([agent('b'), { key: 's', kind: 'system', isMe: false, body: 'x' }, mine('c', '2')], 0)?.number, 2);
+  assert.deepEqual(choiceState([agent('b'), { key: 's', kind: 'system', isMe: false, body: 'x' }, mine('c', '2')], 0)?.numbers, [2]);
 });
 
 test('state: 「바로 다음」만 본다 — 남의 글 뒤의 내 `N` 은 closed', () => {
@@ -86,7 +144,7 @@ test('state: isMine 판정을 바꿔 끼울 수 있다(같은 사람의 다른 �
   assert.equal(choiceState(entries, 0), null);
   const s = choiceState(entries, 0, (e) => e.sender?.startsWith('mom-'));
   assert.equal(s.state, 'answered');
-  assert.equal(s.number, 3);
+  assert.deepEqual(s.numbers, [3]);
 });
 
 test('state: 같은 entry 의 본문이 바뀌면 다시 판정한다(메모 무효화)', () => {

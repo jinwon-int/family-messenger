@@ -204,24 +204,26 @@ struct ApprovalCard: View {
     }
 }
 
-/// agent-choices-v1(#620): 에이전트 글 끝 번호 선택지 — 말풍선 아래 카드. 행을 눌러 하나만 고르고(다시 누르면 해제) [보내기]가
-/// 손으로 치는 답과 같은 글 `N` 을 평소 전송 경로로 보낸다. 판정·상태는 Core `AgentChoices`, 여기는 그리기만.
-/// open = 선택 카드 · answered(N) = 한 줄 「✓ N번 선택 — 라벨」 · closed = 그리지 않는다.
+/// agent-choices-v1(#620 · 복수 선택 #624): 에이전트 글 끝 번호 선택지 — 말풍선 아래 카드. 행을 누르면 그 행 체크 토글(여러 개 가능),
+/// 하나라도 체크돼 있으면 [보내기]가 고른 번호를 넘기고, 방 화면이 줄마다 `N. 라벨`(`AgentChoices.composeReply`)을 평소 전송 경로로 보낸다.
+/// 판정·상태는 Core `AgentChoices`, 여기는 그리기만.
+/// open = 선택 카드 · answered(S) = 한 줄 「✓ N번 선택 — 라벨」 / 「✓ 1, 3번 선택 — 라벨1 · 라벨3」 · closed = 그리지 않는다.
 struct AgentChoicesCard: View {
     let choices: AgentChoices
     let state: AgentChoices.State
     /// 방이 준비됐고 보내는 중이 아니다(보내는 동안 카드 비활성).
     let enabled: Bool
-    let send: (Int) -> Void
-    @State private var selected: Int?
+    /// 고른 번호(오름차순).
+    let send: ([Int]) -> Void
+    @State private var selected: Set<Int> = []
     @Environment(\.hande) private var p
 
     var body: some View {
         switch state {
         case .open:
             openCard
-        case .answered(let number):
-            Text(Strings.choiceAnswered(number, label: choices.label(of: number) ?? ""))
+        case .answered(let numbers):
+            Text(Strings.choiceAnswered(numbers, labels: numbers.map { choices.label(of: $0) ?? "" }))
                 .font(.footnote)
                 .foregroundStyle(p.inkDim)
                 .lineLimit(1)
@@ -239,13 +241,13 @@ struct AgentChoicesCard: View {
                 row(item)
             }
             Button {
-                if let selected { send(selected) }
+                if !selected.isEmpty { send(selected.sorted()) }
             } label: {
                 Text(Strings.choiceSend)
             }
             .buttonStyle(HandePrimaryButtonStyle())
-            .disabled(selected == nil)
-            .accessibilityLabel(Strings.choiceSendA11y(selected))
+            .disabled(selected.isEmpty)
+            .accessibilityLabel(Strings.choiceSendA11y(selected.sorted()))
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -255,15 +257,15 @@ struct AgentChoicesCard: View {
         .opacity(enabled ? 1 : 0.6)
     }
 
-    /// 행 = 체크 원 + 번호 + 라벨(최대 3줄) + 권장 알약. 선택 표시는 에이전트 파랑(주황은 보내기 버튼만).
+    /// 행 = 체크 상자(둥근 사각 — 복수 선택 관례) + 번호 + 라벨(최대 3줄) + 권장 알약. 선택 표시는 에이전트 파랑(주황은 보내기 버튼만).
     private func row(_ item: AgentChoices.Item) -> some View {
-        let isSelected = selected == item.number
+        let isSelected = selected.contains(item.number)
         let isRecommended = choices.recommended == item.number
         return Button {
-            selected = isSelected ? nil : item.number
+            if isSelected { selected.remove(item.number) } else { selected.insert(item.number) }
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
                     .font(.body)
                     .foregroundStyle(isSelected ? p.agent : p.inkDim)
                 Text("\(item.number)")
@@ -294,6 +296,7 @@ struct AgentChoicesCard: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(Strings.choiceRowA11y(item.number, label: item.label, recommended: isRecommended))
+        .accessibilityValue(Strings.choiceRowA11yValue(isSelected))
         .accessibilityHint(Strings.choiceA11yHint)
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }

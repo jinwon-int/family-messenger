@@ -411,7 +411,7 @@ struct RoomView: View {
                    roster: model.agentRoster, approval: approvalStates[item.id], canAnswer: isReady,
                    decide: { number, allow in answerApproval(number, allow: allow) },
                    choiceCard: choiceCards[item.id], choiceSending: choiceSending.contains(item.id),
-                   choose: { number in Task { await answerChoice(item.id, number) } },
+                   choose: { numbers in Task { await answerChoice(item.id, numbers) } },
                    onAttachmentLoaded: { attachmentLoaded(item.id, proxy) },
                    retry: { Task { await model.retry(outgoingId: item.id, room: room) } },
                    selectText: { selecting = SelectableMessage(text: $0) })
@@ -469,13 +469,15 @@ struct RoomView: View {
         Task { _ = await model.send(room: room, text: Strings.approvalReply(number, allow: allow)) }
     }
 
-    /// agent-choices-v1(#620): 선택지 카드 「보내기」 = 손으로 치는 답과 같은 글 `N` 을 평소 전송 경로(`answerApproval` 과 같은 `model.send`)로.
-    /// 보내는 동안 그 카드는 비활성 — 보낸 글이 저장소에 오르면 상태 규칙으로 answered(N) 가 된다(실패하면 다시 고를 수 있다).
-    private func answerChoice(_ seq: Int64, _ number: Int) async {
-        guard !choiceSending.contains(seq) else { return }
+    /// agent-choices-v1(#620 · 복수 #624): 선택지 카드 「보내기」 = 줄마다 `N. 라벨`(`AgentChoices.composeReply` — 번호보다 내용)을
+    /// 평소 전송 경로(`answerApproval` 과 같은 `model.send`)로. 보내는 동안 그 카드는 비활성 — 보낸 글이 저장소에 오르면 상태 규칙(답 판정 B)으로
+    /// answered(S) 가 된다(실패하면 다시 고를 수 있다).
+    private func answerChoice(_ seq: Int64, _ numbers: [Int]) async {
+        guard !numbers.isEmpty, !choiceSending.contains(seq), let card = choiceCards[seq] else { return }
+        let text = card.choices.composeReply(numbers)
         choiceSending.insert(seq)
         defer { choiceSending.remove(seq) }
-        _ = await model.send(room: room, text: Strings.choiceReply(number))
+        _ = await model.send(room: room, text: text)
     }
 
     /// #472: 과거 글 한 페이지를 위에 붙인다. 보던 행(종전 첫 행)을 화면 위에 그대로 두어 점프하지 않는다 — 새 행이 붙은 뒤
@@ -765,10 +767,10 @@ struct MessageRow: View {
     var approval: AgentApproval.State? = nil
     var canAnswer = true
     var decide: (Int, Bool) -> Void = { _, _ in }
-    /// agent-choices-v1(#620): 이 에이전트 글의 선택지 카드(nil = 선택지 없음) · 보내는 중 · 「보내기」(번호).
+    /// agent-choices-v1(#620 · 복수 #624): 이 에이전트 글의 선택지 카드(nil = 선택지 없음) · 보내는 중 · 「보내기」(고른 번호, 오름차순).
     var choiceCard: AgentChoices.Card? = nil
     var choiceSending = false
-    var choose: (Int) -> Void = { _ in }
+    var choose: ([Int]) -> Void = { _ in }
     /// #398: 첨부 본체를 읽어 행 높이가 바뀐 뒤 한 번.
     var onAttachmentLoaded: () -> Void = {}
     /// 보내는 글이 실패했을 때 「다시 보내기」.
