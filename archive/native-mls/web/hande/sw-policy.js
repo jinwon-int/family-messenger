@@ -11,7 +11,7 @@ export const CACHE_NAME = 'hande-shell-v1';
 export const SHELL_ASSETS = [
   './', './index.html', './styles.css', './manifest.webmanifest', './icons/icon.svg', './icons/favicon-32.png', './icons/favicon-16.png', './icons/icon-192.png',
   './main.js', './theme.js', './app.js', './ui.js', './strings.js', './icons.js', './room.js', './device.js', './relay.js', './identity.js',
-  './worker-bridge.js', './attachment-view.js', './agent-markdown.js', './filebox.js', './keyboard.js', './timeline-caret.js',
+  './worker-bridge.js', './attachment-view.js', './agent-markdown.js', './agent-choices.js', './filebox.js', './keyboard.js', './timeline-caret.js',
   './shortcuts.js', './room-order.js', './drafts.js', './read-seq.js', './composer-files.js', './last-sent.js', './sync-recovery.js', './preview-loader.js', './attachments.js', './agent-consent.js', './local-room.js', './service-links.js', './self-service.js', './status-v1.js',
   './durable-worker.js', './session-store.js', './history-store.js', './commit-policy.js', './relay-attachments.js', './file-v2.js', './file-v2-outbox.js',
   './pkg/family_mls_browser_experiment.js', './pkg/family_mls_browser_experiment_bg.wasm', './pkg/custody.js',

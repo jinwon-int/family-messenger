@@ -14,6 +14,7 @@ import {readReadSeq, writeReadSeq, latestSeq, isUnread} from './read-seq.js';
 import {readConsent, writeConsent, agentsIn, needsConsent} from './agent-consent.js';
 import {isLocalOnlyRoom, forgetRoomKeys} from './local-room.js';
 import {createStatusBoard, applyStatus, clearStatusOnMessage, visibleStatuses} from './status-v1.js';
+import {choiceState} from './agent-choices.js';
 import {createWorkerBridge} from './worker-bridge.js';
 import {createRelay} from './relay.js';
 import {createIdentityStore, databaseFor, ROOM, IDENTITY_DATABASE, LOBBY_DATABASE} from './identity.js';
@@ -181,6 +182,10 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
         // 방별 알림(mute.go): 같은 사람의 모든 기기에 한 값. null(옛 릴레이·아직 모름)이면 머리글에 버튼이 없다.
         muted: S.joined && !S.halted ? S.muted : null, onToggleMute: () => toggleMute(app.current),
         notice: null, sending: app.sending || S.transferring,
+        // 에이전트 선택지(#620): open·answered 인 에이전트 글만. 카드의 [보내기]는 작성창과 같은 sendText 로 `"N"` 을 보낸다
+        // (보내는 중이거나 AI 동의 전이면 false — 카드는 선택을 지킨 채 다시 열린다).
+        choices: choiceStates(app.current, R, {sending: app.sending || S.transferring, disabled: !S.joined || Boolean(S.halted)}),
+        onChoose: n => sendText(String(n)),
         // 연결 배너(디자인 2차-A §A4): 릴레이에 닿지 않는 동안 머리 아래 「릴레이에 닿지 않아요 — 연결되면 보낼게요」.
         offline: Boolean(relay.offline || app.offlineAt),
         attachmentPending: R.session.attachmentPending ? {size: 0, onRetry: () => sendAttachment(null)} : null};
@@ -203,6 +208,16 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   }
 
   // ---- timeline per room ----
+  /** entry 키 → 선택지 상태(agent-choices.js §2). 저장하지 않고 매 paint 타임라인에서 다시 센다. closed 는 넣지 않는다. */
+  function choiceStates(roomId, R, {sending, disabled}) {
+    const out = new Map();
+    R.entries.forEach((e, i) => {
+      if (!e.isAgent || e.kind !== 'text') return;
+      const st = choiceState(R.entries, i);
+      if (st) out.set(e.key, {...st, id: `${roomId}\u0000${e.key}`, sending, disabled});
+    });
+    return out;
+  }
   function addEntry(roomId, m) {
     const R = app.rooms.get(roomId);
     if (!R) return;

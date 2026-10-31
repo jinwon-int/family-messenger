@@ -126,6 +126,16 @@ object Strings {
     const val sendButton = "보내기"
     const val back = "뒤로"
 
+    // 에이전트 선택지 카드(agent-choices-v1 #620 §3): 행 = 체크 원 + N + 라벨 + 「권장」 알약, [보내기] 는 고른 번호 `"N"` 을 평소 전송 경로로.
+    const val choiceRecommended = "권장"
+    const val choiceSend = "보내기"
+    /** 행 접근성 라벨 「N번: 라벨」(+ 「, 권장」). 선택 상태는 semantics `selected` 로 따로 알린다. */
+    fun choiceRowLabel(number: Int, label: String, recommended: Boolean) = "${number}번: $label" + (if (recommended) ", $choiceRecommended" else "")
+    /** [보내기] 접근성 라벨 — 고른 번호가 없으면 그냥 「보내기」. */
+    fun choiceSendLabel(number: Int?) = if (number == null) choiceSend else "${number}번 보내기"
+    /** 답한 뒤 한 줄 「✓ N번 선택 — 라벨」. */
+    fun choiceAnswered(number: Int, label: String?) = if (label.isNullOrEmpty()) "✓ ${number}번 선택" else "✓ ${number}번 선택 — $label"
+
     // 화면 테마(한데 디자인 1차): 밤이 기본·고정, 낮불은 e-ink·밝은 곳용 고대비(설정에서 고른다 — `Settings.theme`).
     const val themeSection = "화면"
     const val themeNight = "밤 (기본)"

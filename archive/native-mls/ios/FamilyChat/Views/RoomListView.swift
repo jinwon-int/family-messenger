@@ -18,9 +18,30 @@ struct RoomListView: View {
     @State private var editMode: EditMode = .inactive
     @Environment(\.hande) private var p
 
+    /// 하드웨어 키보드 PageUp/PageDown 으로 표시해 둔 방(웹 한데 목록 roving focus — 열지 않고 테두리만). Enter 로 연다.
+    @State private var keyHighlight: RoomID?
+    /// 목록이 맨 위에 보이는 동안만 키를 쓴다(설정은 경로 밖 NavigationLink 로 덮으므로 path 만으로는 모른다).
+    @State private var listVisible = false
+
     private var orderEditing: Bool { editMode.isEditing }
 
     var body: some View {
+        // 하드웨어 키보드(웹 한데 단축키 동등성): 표시 행이 목록 밖이면 그 행까지만 스크롤한다.
+        ScrollViewReader { proxy in
+            listBody
+                .onReceive(HardwareKeyRouter.shared.presses) { handleKey($0, proxy) }
+                .onAppear {
+                    listVisible = true
+                    keyHighlight = nil
+                }
+                .onDisappear {
+                    listVisible = false
+                    keyHighlight = nil
+                }
+        }
+    }
+
+    private var listBody: some View {
         List {
             // 오너 요청: 목록 머리 = 오프닝과 같은 hande 워드마크 + 「오늘 밤, 모닥불에 한데 모여」(내비게이션 큰 제목 대신).
             // 디자인 2차 2c: 순서 모드에서는 머리를 「자리 순서」 + 주황 「완료」 + 안내 한 줄로 바꿔 모드가 바뀐 것이 분명하게.
@@ -132,7 +153,14 @@ struct RoomListView: View {
                     } else {
                         // 오너 2026-10-31: List 안 NavigationLink 는 행 오른쪽에 「>」를 붙여 카드가 그만큼 좁아진다 —
                         // 평범한 버튼으로 같은 경로(navigator.open = path [room])를 열어 표시를 없애고 카드를 오른쪽 끝까지 쓴다.
-                        Button { navigator.open(room.room) } label: { card }
+                        Button { navigator.open(room.room) } label: {
+                            card.overlay {
+                                if keyHighlight == room.room {
+                                    RoundedRectangle(cornerRadius: Hande.radiusM).stroke(p.focus, lineWidth: 2)
+                                        .accessibilityHidden(true)
+                                }
+                            }
+                        }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("room-row")
                             // #549: 길게 눌러 「맨 위로 고정」(저장 순서 맨 앞) · 「순서」 모드 진입.
@@ -212,6 +240,24 @@ extension RoomListView {
     /// 저장된 순서를 먼저, 새 방은 기본 순서로 뒤에.
     fileprivate var orderedRooms: [RoomRecord] { RoomOrder.apply(model.listedRooms, saved: prefs.roomOrder) }
     fileprivate var orderedIds: [RoomID] { orderedRooms.map(\.room) }
+
+    /// GameController 로 받은 키(`HardwareKeyRouter`). 판정은 Core `HardwareKeys.listAction`(웹 keyboard.js `listPageMove`).
+    /// 창(참여 요청·자리 만들기·알림함)이 떠 있거나 대화방·설정이 덮고 있으면 쓰지 않는다.
+    fileprivate func handleKey(_ press: HardwareKeys.Press, _ proxy: ScrollViewProxy) {
+        guard listVisible, navigator.path.isEmpty, !showJoinRequest, !showCreateRoom, !showNotifications else { return }
+        let ids = orderedIds
+        let highlighted = keyHighlight.flatMap { ids.firstIndex(of: $0) }
+        let anchor = navigator.lastOpened.flatMap { ids.firstIndex(of: $0) }
+        switch HardwareKeys.listAction(press, count: ids.count, highlighted: highlighted, anchor: anchor, orderEditing: orderEditing) {
+        case .highlight(let index)?:
+            keyHighlight = ids[index]
+            withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(ids[index]) }
+        case .open(let index)?:
+            navigator.open(ids[index])
+        case nil:
+            break
+        }
+    }
 
     fileprivate func setOrderEditing(_ on: Bool) {
         withAnimation { editMode = on ? .active : .inactive }

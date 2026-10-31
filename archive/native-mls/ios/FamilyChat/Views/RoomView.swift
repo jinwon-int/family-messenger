@@ -37,6 +37,10 @@ struct RoomView: View {
     @State private var attachBusy = false
     /// #405 P1: 승인 요청 seq → 상태(허락/거절 버튼을 보일지).
     @State private var approvalStates: [Int64: AgentApproval.State] = [:]
+    /// agent-choices-v1(#620): 선택지가 있는 에이전트 글 seq → 선택지 + 상태(open/answered/closed). 타임라인에서 계산(저장 안 함).
+    @State private var choiceCards: [Int64: AgentChoices.Card] = [:]
+    /// 선택지 카드에서 「보내기」를 눌러 보내는 중인 글 seq — 그동안 그 카드는 비활성.
+    @State private var choiceSending: Set<Int64> = []
     /// #405 시간 표시: 행별 시간 보임 여부 · 날짜 구분선.
     @State private var stamps: [Int64: TimelineStamps.Stamp] = [:]
     private static let thinkingRowID: Int64 = -1
@@ -58,6 +62,10 @@ struct RoomView: View {
     /// 과거 글을 위에 붙인 뒤에만 생긴다(미배치 행 추정치가 진입·바닥 추종 중에는 존재하지 않는다).
     @State private var tailStart = 0
     @State private var tailAnchor: Int64?
+    /// 대화 읽기 ↑/↓ 로 지난번에 옮겨 간 말풍선(seq). 읽기를 새로 시작하면(Esc·End·작성창 복귀) 비운다 — 마지막 말풍선에서 다시 시작.
+    @State private var keyCursor: Int64?
+    /// 대화 읽기에서 Enter 로 작성창에 들어온 시각 — 그 Enter 의 키 반복이 초안을 보내지 않게(`HardwareKeys.suppressSend`).
+    @State private var keyFocusedAt: Date?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -198,6 +206,8 @@ struct RoomView: View {
                     hasNewBelow = false
                     scrollToLatest(proxy, animated: true)
                 }
+                // 하드웨어 키보드(웹 한데 단축키 동등성): 작성창이 먼저 써 버리는 키도 GameController 로 받는다(`HardwareKeyRouter`).
+                .onReceive(HardwareKeyRouter.shared.presses) { handleKey($0, proxy) }
                 .onAppear {
                     guard !PhotoViewerPresence.active else { return }
                     reload()
@@ -361,7 +371,13 @@ struct RoomView: View {
                                                shift: HardwareKeyboard.isShiftPressed) {
                     case .keep: break
                     case .revert(let text): draft = text
-                    case .send(let text): sendText(text)
+                    case .send(let text):
+                        // Enter 로 작성창에 막 들어왔다면 그 Enter 의 반복 입력 — 보내지 않고 줄바꿈만 되돌린다.
+                        if HardwareKeys.suppressSend(sinceKeyFocus: keyFocusedAt.map { Date().timeIntervalSince($0) }) {
+                            draft = text
+                        } else {
+                            sendText(text)
+                        }
                     }
                 }
                 .padding(.horizontal, 16)
@@ -394,6 +410,8 @@ struct RoomView: View {
                    time: stamps[item.id]?.showTime == true ? item.record.receivedAt : nil,
                    roster: model.agentRoster, approval: approvalStates[item.id], canAnswer: isReady,
                    decide: { number, allow in answerApproval(number, allow: allow) },
+                   choiceCard: choiceCards[item.id], choiceSending: choiceSending.contains(item.id),
+                   choose: { number in Task { await answerChoice(item.id, number) } },
                    onAttachmentLoaded: { attachmentLoaded(item.id, proxy) },
                    retry: { Task { await model.retry(outgoingId: item.id, room: room) } },
                    selectText: { selecting = SelectableMessage(text: $0) })
@@ -440,12 +458,24 @@ struct RoomView: View {
             model.noteRead(room: room, seq: last.id)
         }
         approvalStates = AgentApproval.states(messages.map(\.record), roster: model.agentRoster)
+        // 규격 §2: 「저장된」 메시지만 본다 — 보내는 중인 글(outgoing, 음수 seq)은 저장소에 오르면 그때 answered 가 된다.
+        choiceCards = AgentChoices.cards(messages.filter { $0.outgoing == nil }.map(\.record),
+                                         roster: model.agentRoster, myDevice: model.deviceId)
         stamps = TimelineStamps.compute(messages.map(\.record), calendar: .current)
     }
 
     /// #405 P1: 승인 카드 버튼 = 봇이 알아듣는 「승인 n」/「거절 n」 글을 대신 보낸다.
     private func answerApproval(_ number: Int, allow: Bool) {
         Task { _ = await model.send(room: room, text: Strings.approvalReply(number, allow: allow)) }
+    }
+
+    /// agent-choices-v1(#620): 선택지 카드 「보내기」 = 손으로 치는 답과 같은 글 `N` 을 평소 전송 경로(`answerApproval` 과 같은 `model.send`)로.
+    /// 보내는 동안 그 카드는 비활성 — 보낸 글이 저장소에 오르면 상태 규칙으로 answered(N) 가 된다(실패하면 다시 고를 수 있다).
+    private func answerChoice(_ seq: Int64, _ number: Int) async {
+        guard !choiceSending.contains(seq) else { return }
+        choiceSending.insert(seq)
+        defer { choiceSending.remove(seq) }
+        _ = await model.send(room: room, text: Strings.choiceReply(number))
     }
 
     /// #472: 과거 글 한 페이지를 위에 붙인다. 보던 행(종전 첫 행)을 화면 위에 그대로 두어 점프하지 않는다 — 새 행이 붙은 뒤
@@ -616,13 +646,15 @@ struct RoomView: View {
 
     /// #405 P3 하드웨어 키보드 단축키(웹 keyboard.js 차용, iPad 에서 ⌘ 를 누르고 있으면 목록이 보인다):
     /// ⌘↩ 보내기 · Esc 작성창 닫기(대화 읽기) · PageUp/PageDown 이전·다음 대화방 · Home 대화 목록.
+    /// 작성창이 키를 먼저 쓰면 여기까지 오지 않아 같은 키를 GameController 로도 받는다(`handleKey`) — 두 길 모두 `perform` 으로 한 번만.
+    /// 이 버튼들은 iPad ⌘ 길게 누르기 목록에 이름을 보이는 역할도 한다.
     private var keyboardShortcuts: some View {
         ZStack {
             Button(Strings.sendButton) { sendText(draft) }.keyboardShortcut(.return, modifiers: .command)
-            Button(Strings.shortcutReadTimeline) { composerFocused = false }.keyboardShortcut(.escape, modifiers: [])
-            Button(Strings.shortcutPreviousRoom) { switchRoom(-1) }.keyboardShortcut(.pageUp, modifiers: [])
-            Button(Strings.shortcutNextRoom) { switchRoom(1) }.keyboardShortcut(.pageDown, modifiers: [])
-            Button(Strings.shortcutRoomList) { navigator.backToList() }.keyboardShortcut(.home, modifiers: [])
+            Button(Strings.shortcutReadTimeline) { perform(.readTimeline, nil, from: .shortcut) }.keyboardShortcut(.escape, modifiers: [])
+            Button(Strings.shortcutPreviousRoom) { perform(.previousRoom, nil, from: .shortcut) }.keyboardShortcut(.pageUp, modifiers: [])
+            Button(Strings.shortcutNextRoom) { perform(.nextRoom, nil, from: .shortcut) }.keyboardShortcut(.pageDown, modifiers: [])
+            Button(Strings.shortcutRoomList) { perform(.backToList, nil, from: .shortcut) }.keyboardShortcut(.home, modifiers: [])
         }
         .opacity(0)
         .frame(width: 0, height: 0)
@@ -632,6 +664,63 @@ struct RoomView: View {
     private func switchRoom(_ step: Int) {
         let ids = RoomOrder.apply(model.listedRooms, saved: prefs.roomOrder).map(\.room)
         if let next = RoomOrder.neighbor(of: room, in: ids, step: step) { navigator.open(next) }
+    }
+
+    /// 이 방이 맨 위에 보이지 않거나 창(초대·복사·사진·파일·알림 실패·사진 전체 화면)이 떠 있으면 키를 쓰지 않는다(웹: 시트가 떠 있으면 가로채지 않음).
+    private var keysBlocked: Bool {
+        navigator.path.last != room || showInvite || muteFailed || selecting != nil || showPhotoPicker || showFileImporter
+            || PhotoViewerPresence.active
+    }
+
+    /// GameController 로 받은 키(`HardwareKeyRouter`). 판정은 Core `HardwareKeys.roomAction`(웹 keyboard.js 휴대폰 세로 규칙).
+    private func handleKey(_ press: HardwareKeys.Press, _ proxy: ScrollViewProxy) {
+        guard let action = HardwareKeys.roomAction(press, composerFocused: composerFocused) else { return }
+        perform(action, proxy, from: .gameController)
+    }
+
+    /// 단축키 동작 — SwiftUI 단축키와 GameController 두 길에서 오므로 `once` 로 한 번만. 스크롤은 GameController 길(proxy 있음)에서만 온다.
+    /// 창이 떠 있거나 맨 위가 아니면 어느 길이든 쓰지 않는다(띄운 화면이 시트의 다음 응답자라 SwiftUI 단축키도 닿는다).
+    private func perform(_ action: HardwareKeys.RoomAction, _ proxy: ScrollViewProxy?, from source: KeyDeduper.Source) {
+        guard !keysBlocked else { return }
+        HardwareKeyRouter.shared.once(action.rawValue, from: source) {
+            switch action {
+            case .previousRoom: switchRoom(-1)
+            case .nextRoom: switchRoom(1)
+            case .backToList: navigator.backToList()
+            case .readTimeline:
+                keyCursor = nil
+                keyFocusedAt = nil
+                composerFocused = false
+            case .focusComposer:
+                keyCursor = nil
+                keyFocusedAt = Date()
+                composerFocused = true   // onChange(of: composerFocused) 가 최신 글로 내려 준다
+            case .scrollUp, .scrollDown, .scrollToLatest:
+                if let proxy { scrollByKey(action, proxy) }
+            }
+        }
+    }
+
+    /// 대화 읽기 ↑/↓(말풍선 하나씩, `HardwareKeys.scrollTarget`) · End(맨 아래). 위로 가면 따라가기를 끄고, 맨 아래에 닿으면 다시 켠다(「내 마지막 말」 바와 같은 방식).
+    private func scrollByKey(_ action: HardwareKeys.RoomAction, _ proxy: ScrollViewProxy) {
+        let target: HardwareKeys.ScrollTarget? = action == .scrollToLatest
+            ? .latest
+            : HardwareKeys.scrollTarget(rows: messages.map(\.id), cursor: keyCursor, up: action == .scrollUp)
+        switch target {
+        case .row(let id)?:
+            keyCursor = id
+            followLatest = false
+            // 손가락 끌기와 같게 취급한다: 바닥 근처에서 ↑ 해도 `refollowIfSettledAtBottom`(sinceDrag 기준)이 바로 따라가기를 되돌리지 않게.
+            tracking.lastDrag = Date()
+            withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(id, anchor: .center) }
+        case .latest?:
+            keyCursor = nil
+            followLatest = true
+            hasNewBelow = false
+            scrollToLatest(proxy, animated: true)
+        case nil:
+            break
+        }
     }
 
     private var canSend: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && isReady }
@@ -676,6 +765,10 @@ struct MessageRow: View {
     var approval: AgentApproval.State? = nil
     var canAnswer = true
     var decide: (Int, Bool) -> Void = { _, _ in }
+    /// agent-choices-v1(#620): 이 에이전트 글의 선택지 카드(nil = 선택지 없음) · 보내는 중 · 「보내기」(번호).
+    var choiceCard: AgentChoices.Card? = nil
+    var choiceSending = false
+    var choose: (Int) -> Void = { _ in }
     /// #398: 첨부 본체를 읽어 행 높이가 바뀐 뒤 한 번.
     var onAttachmentLoaded: () -> Void = {}
     /// 보내는 글이 실패했을 때 「다시 보내기」.
@@ -712,8 +805,14 @@ struct MessageRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .center)
         } else {
-            AgentMessageCard(name: name, text: message.body, time: time)
-                .messageCopyMenu(MessageCopy.text(of: message), select: selectText)
+            VStack(alignment: .leading, spacing: 6) {
+                AgentMessageCard(name: name, text: message.body, time: time)
+                    .messageCopyMenu(MessageCopy.text(of: message), select: selectText)
+                // 선택지(open = 체크 + 보내기, answered = 한 줄). closed 는 말풍선만.
+                if let card = choiceCard, card.state != .closed {
+                    AgentChoicesCard(choices: card.choices, state: card.state, enabled: canAnswer && !choiceSending, send: choose)
+                }
+            }
         }
     }
 

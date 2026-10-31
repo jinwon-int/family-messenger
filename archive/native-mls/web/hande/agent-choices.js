@@ -1,0 +1,128 @@
+// agent-choices-v1 (family-messenger#620, archive/native-mls/AGENT-CHOICES-V1.md) — 에이전트 선택지 탭 선택.
+//
+// 에이전트 글이 `1. … 2. … 3. …` 선택지로 끝나면 말풍선 아래에 선택 카드를 그린다. 보내는 것은 손으로 치는 것과
+// 똑같은 텍스트 `N` 이다(와이어 변경 없음). 상태(open / answered / closed)는 타임라인에서 매번 계산하고 저장하지 않는다.
+// 판정 규칙은 세 앱 공통 — 공유 벡터 archive/native-mls/tests/fixtures/agent-choices-vectors.json 과 같아야 한다.
+// 정규식의 숫자는 ASCII [0-9] 만, 공백은 스페이스·탭·줄바꿈만(규격 §1 — JS \s 의 유니코드 공백과 다르게 보지 않게 명시).
+//
+// 순수 함수(DOM 없음) — node --test 로 검증한다.
+
+const ITEM = /^ {0,3}([0-9]{1,2})[.)][ \t]+([^ \t\n][^\n]*)$/;
+const FENCE = /^[ \t]*```/;
+const BLANK = /^[ \t]*$/;
+const INDENTED = /^( {2,}|\t)/;
+const RECOMMENDED = /권장[ \t\n]*[:：]?[ \t\n]*([0-9]{1,2})[ \t\n]*번/;
+const REPLY = /^([0-9]{1,2})[ \t\n]*번?\.?$/;
+const CUES = ['?', '？', '권장', '선택', '골라', '고르', '답해', '원하시', '할까요', '하시겠', '정해', '다음 액션', '다음 단계', '옵션', 'choose', 'option', 'recommend'];
+
+export const MIN_ITEMS = 2;
+export const MAX_ITEMS = 9;
+export const MAX_TRAILING = 3;
+
+const hasCue = (line) => {
+  const lower = line.toLowerCase();   // 영문만 대소문자 무시(한글·기호는 그대로)
+  return CUES.some((cue) => lower.includes(cue));
+};
+
+/** 라벨: `**`·`__`·`` ` `` 를 지우고 연속 공백을 한 칸으로, 양끝 공백 제거. */
+function cleanLabel(raw) {
+  return raw.replaceAll('**', '').replaceAll('__', '').replaceAll('`', '').replace(/[ \t\n]+/g, ' ').replace(/^ | $/g, '');
+}
+
+/**
+ * 에이전트 글 본문에서 끝의 선택지를 찾는다(규격 §1).
+ * @param {string} text
+ * @returns {null | {items: {number: number, label: string}[], recommended: number | null}}
+ */
+export function parseChoices(text) {
+  if (typeof text !== 'string' || text.length === 0) return null;
+  const source = text.replace(/\r\n/g, '\n');
+  const lines = source.split('\n');
+  let block = null;   // {items:[{number, label}], start, end, open, invalid}
+  let fenced = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (FENCE.test(line)) {
+      fenced = !fenced;
+      if (block) block.open = false;   // 펜스 줄 = 일반 줄
+      continue;
+    }
+    if (fenced) { if (block) block.open = false; continue; }   // 펜스 안 = 항목이 될 수 없는 일반 줄
+    const item = ITEM.exec(line);
+    if (item) {
+      const number = Number.parseInt(item[1], 10);
+      const label = cleanLabel(item[2]);
+      if (number === 1) block = {items: [{number, label}], start: i, end: i, open: true, invalid: false};
+      else if (block && block.open && !block.invalid && number === block.items.at(-1).number + 1) { block.items.push({number, label}); block.end = i; }
+      else if (block) { block.invalid = true; block.open = false; }   // 뒤에 `1` 이 오면 다시 시작
+      continue;
+    }
+    if (BLANK.test(line)) continue;
+    if (INDENTED.test(line)) { if (block && block.open) block.end = i; continue; }   // 이어지는 줄(라벨엔 넣지 않는다)
+    if (block) block.open = false;
+  }
+  if (!block || block.invalid) return null;
+  const count = block.items.length;
+  if (count < MIN_ITEMS || count > MAX_ITEMS) return null;
+  const trailing = lines.slice(block.end + 1).filter((line) => !BLANK.test(line));
+  if (trailing.length > MAX_TRAILING) return null;
+  let above = null;
+  for (let i = block.start - 1; i >= 0; i--) if (!BLANK.test(lines[i])) { above = lines[i]; break; }
+  const cued = (above !== null && hasCue(above)) || trailing.some(hasCue) || block.items.some((it) => hasCue(it.label));
+  if (!cued) return null;
+  let recommended = null;
+  const named = RECOMMENDED.exec(source);   // 메시지 전체(펜스 포함)의 첫 일치만
+  const n = named ? Number.parseInt(named[1], 10) : 0;
+  if (n >= 1 && n <= count) recommended = n;
+  else recommended = block.items.find((it) => it.label.includes('권장'))?.number ?? null;
+  return {items: block.items, recommended};
+}
+
+/**
+ * 내 답이 선택지 번호인가(규격 §2): 양끝 공백을 뺀 본문이 `N`·`N번`·`N.`·`N번.` 이고 N ∈ 1..count.
+ * @returns {number | null}
+ */
+export function choiceReply(text, count) {
+  if (typeof text !== 'string') return null;
+  const m = REPLY.exec(text.replace(/^[ \t\n]+|[ \t\n]+$/g, ''));
+  if (!m) return null;
+  const n = Number.parseInt(m[1], 10);
+  return n >= 1 && n <= count ? n : null;
+}
+
+const parsed = new WeakMap();   // entry → {body, choices}: 재렌더마다 같은 글을 다시 훑지 않게
+function choicesOf(entry) {
+  const hit = parsed.get(entry);
+  if (hit && hit.body === entry.body) return hit.choices;
+  const choices = parseChoices(entry.body);
+  parsed.set(entry, {body: entry.body, choices});
+  return choices;
+}
+
+/** 상태 판정에 세는 「저장된 메시지」 — 시스템 줄은 뺀다(status-v1 임시 줄은 entries 밖이라 애초에 없다). */
+// 규격 §2 「저장된 메시지(텍스트·첨부)」 — 시스템 줄·복호화 실패 줄은 건너뛴다(iOS AgentChoices.cards 와 같다).
+const isStoredMessage = (e) => e != null && (e.kind === 'text' || e.kind === 'attachment');
+
+/**
+ * 타임라인 entries[index] 의 선택지 상태(규격 §2).
+ *   null                                   — 에이전트 텍스트가 아니거나 선택지가 없거나 `closed`(카드 없음)
+ *   {state: 'open', choices}               — 뒤에 메시지가 없다 → 선택 카드
+ *   {state: 'answered', number, label, choices} — 바로 다음 메시지가 내 `N` → 한 줄 「✓ N번 선택 — 라벨」
+ * @param {{key:string, kind:string, body:string, isAgent:boolean, isMe:boolean}[]} entries app.js R.entries
+ * @param {number} index
+ * @param {(entry) => boolean} [isMine] 「내 것」 판정 — 기본은 app.js 가 계산해 둔 entry.isMe(같은 사람의 다른 기기 포함)
+ */
+export function choiceState(entries, index, isMine = (e) => Boolean(e?.isMe)) {
+  const entry = entries?.[index];
+  if (!entry || !entry.isAgent || entry.kind !== 'text') return null;
+  let next = null;
+  for (let j = index + 1; j < entries.length; j++) if (isStoredMessage(entries[j])) { next = entries[j]; break; }
+  // 뒤에 남의 글·첨부가 있으면 무조건 closed — 선택지를 훑을 필요도 없다.
+  if (next && !(next.kind === 'text' && isMine(next))) return null;
+  const choices = choicesOf(entry);
+  if (!choices) return null;
+  if (!next) return {state: 'open', choices};
+  const number = choiceReply(next.body, choices.items.length);
+  if (number === null) return null;
+  return {state: 'answered', number, label: choices.items[number - 1].label, choices};
+}
