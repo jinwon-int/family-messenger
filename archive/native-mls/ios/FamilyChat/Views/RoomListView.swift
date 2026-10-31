@@ -334,7 +334,11 @@ struct CampfireCard: View {
                             .accessibilityLabel(Strings.mutedLabel)
                     }
                     // 「불지기」 배지는 넣지 않는다(오너 2026-10-31 #613 — 웹 #540 과 같다; 디자인 1차 1b 의 배지보다 이 결정이 우선).
-                    // 에이전트 자리는 SeatDots 의 파란 점으로 보인다.
+                    // 자리 점(사람 크림 ● · 에이전트 파랑)은 이름 줄의 🔕 옆에(오너 2026-10-31: 맨 아래 줄을 점만 차지해 공간 낭비).
+                    // 이름이 길면 이름이 줄고(…) 점은 줄지 않는다.
+                    if !out && (!glance.people.isEmpty || glance.hasAgent) {
+                        SeatDots(people: glance.people.count, agents: glance.agents.count, size: 8).fixedSize()
+                    }
                 }
                 if let working, !out {
                     Text(working).font(.footnote.weight(.medium))
@@ -343,9 +347,6 @@ struct CampfireCard: View {
                 } else {
                     Text(preview).font(unread && !out ? .footnote.weight(.semibold) : .footnote)
                         .foregroundStyle(out ? mutedText : (unread ? p.ink : p.inkDim)).lineLimit(1)
-                }
-                if !out && (!glance.people.isEmpty || glance.hasAgent) {
-                    SeatDots(people: glance.people.count, agents: glance.agents.count, size: 8)
                 }
             }
             Spacer(minLength: 0)
