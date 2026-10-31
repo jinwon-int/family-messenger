@@ -81,7 +81,8 @@ struct SelectableTextSheet: View {
         .presentationDetents([.medium, .large])
         // 하드웨어 키보드 Esc = 닫기(글 칸이 Esc 를 먼저 쓰면 SwiftUI 단축키가 닿지 않아 GameController 길로도 받는다).
         .onReceive(HardwareKeyRouter.shared.presses) { press in
-            if press == HardwareKeys.Press(.escape) { dismiss() }
+            // 한 박자 늦게 닫는다: 같은 Esc 를 대화방도 받는데, 창이 아직 열려 있어야 대화방이 「창 열림」으로 무시한다(선택 모드 유지).
+            if press == HardwareKeys.Press(.escape) { DispatchQueue.main.async { dismiss() } }
         }
     }
 }

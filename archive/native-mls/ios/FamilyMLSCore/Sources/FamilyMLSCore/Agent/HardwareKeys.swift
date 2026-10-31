@@ -101,11 +101,17 @@ public enum HardwareKeys {
         }
     }
 
-    /// 선택 모드의 테두리 위치. `rows` = 복사할 글이 있는 말풍선만(첨부·복호화 실패 제외). 커서가 없거나 사라졌으면 마지막 말풍선,
-    /// 이동은 끝에서 멈춘다(맨 아래로 빠지지 않는다). `step` 0 = 시작 위치.
+    /// 선택 모드의 테두리 위치. `rows` = 복사할 글이 있는 말풍선만(첨부·복호화 실패 제외), seq 오름차순. 커서가 없으면 마지막 말풍선,
+    /// 커서가 고를 수 없는 행(첨부 등)이면 그 위의 가장 가까운 말풍선(없으면 첫 말풍선). 이동은 끝에서 멈춘다(맨 아래로 빠지지 않는다).
+    /// `step` 0 = 시작 위치.
     public static func selectTarget(rows: [Int64], cursor: Int64?, step: Int) -> Int64? {
         guard !rows.isEmpty else { return nil }
-        let index = cursor.flatMap { rows.firstIndex(of: $0) } ?? rows.count - 1
+        let index: Int
+        if let cursor {
+            index = rows.firstIndex(of: cursor) ?? rows.lastIndex(where: { $0 < cursor }) ?? 0
+        } else {
+            index = rows.count - 1
+        }
         return rows[min(rows.count - 1, max(0, index + step))]
     }
 

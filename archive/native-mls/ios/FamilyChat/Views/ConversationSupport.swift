@@ -125,16 +125,41 @@ final class HardwareKeyRouter {
     #endif
 }
 
-/// 지금 키 입력을 받는 글 입력칸(작성창의 UITextView)에 커서 자리로 글을 넣는다. SwiftUI(iOS 16) TextField 에는 커서 위치 API 가 없어
-/// Shift+Enter 줄바꿈을 끝에 붙이면 가운데에서 친 줄바꿈이 엉뚱한 자리로 간다. 입력칸이 없으면 false(호출부가 끝에 붙인다).
+/// 지금 키 입력을 받는 글 입력칸(작성창의 UITextView)을 직접 다룬다. SwiftUI(iOS 16) TextField 에는 커서 위치·조합 상태 API 가 없어
+/// Shift+Enter 줄바꿈을 끝에 붙이면 가운데에서 친 줄바꿈이 엉뚱한 자리로 가고, Enter 전송 때 조합 중인 한글 음절을 알 수 없다.
 @MainActor
 enum FirstResponderText {
     fileprivate static weak var found: UIResponder?
 
+    /// 커서 자리에 `text` 를 넣는다. 조합 중인 글자가 있으면 먼저 확정한다(그 글자를 덮어쓰지 않게). 입력칸이 없거나 글이 실제로
+    /// 바뀌지 않았으면(입력칸이 줄바꿈을 막는 경우 등) false — 호출부가 끝에 붙인다.
     static func insert(_ text: String) -> Bool {
-        guard let input = current() as? UIKeyInput else { return false }
+        guard let input = current() as? (UIResponder & UITextInput) else { return false }
+        if input.markedTextRange != nil { input.unmarkText() }
+        let before = fullText(input)
         input.insertText(text)
-        return true
+        return fullText(input) != before
+    }
+
+    /// 입력칸에 아직 확정되지 않은 조합 글자(한글 등)가 있는가.
+    static var hasMarkedText: Bool {
+        (current() as? (UIResponder & UITextInput))?.markedTextRange != nil
+    }
+
+    /// 조합 중인 글자를 그대로 확정한다.
+    static func commitMarkedText() {
+        (current() as? (UIResponder & UITextInput))?.unmarkText()
+    }
+
+    /// 입력칸의 실제 글(SwiftUI 바인딩보다 먼저 바뀐다). 입력칸이 없으면 nil.
+    static var currentText: String? {
+        guard let input = current() as? (UIResponder & UITextInput) else { return nil }
+        return fullText(input)
+    }
+
+    private static func fullText(_ input: UITextInput) -> String? {
+        guard let range = input.textRange(from: input.beginningOfDocument, to: input.endOfDocument) else { return nil }
+        return input.text(in: range)
     }
 
     private static func current() -> UIResponder? {

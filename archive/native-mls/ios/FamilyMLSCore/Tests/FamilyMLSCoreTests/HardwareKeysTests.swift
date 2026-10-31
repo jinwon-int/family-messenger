@@ -62,7 +62,10 @@ final class HardwareKeysTests: XCTestCase {
     func testSelectTargetClampsAtEnds() {
         let rows: [Int64] = [10, 11, 15]
         XCTAssertEqual(K.selectTarget(rows: rows, cursor: nil, step: 0), 15)   // 시작 = 마지막 말풍선
-        XCTAssertEqual(K.selectTarget(rows: rows, cursor: 99, step: 0), 15)    // 사라진 커서
+        XCTAssertEqual(K.selectTarget(rows: rows, cursor: 99, step: 0), 15)    // 사라진 커서(맨 아래 뒤) = 위의 가장 가까운 말풍선
+        XCTAssertEqual(K.selectTarget(rows: rows, cursor: 12, step: 0), 11)    // 첨부 행(12)에서 시작 = 바로 위 말풍선
+        XCTAssertEqual(K.selectTarget(rows: rows, cursor: 12, step: 1), 15)
+        XCTAssertEqual(K.selectTarget(rows: rows, cursor: 3, step: 0), 10)     // 첫 말풍선보다 위 = 첫 말풍선
         XCTAssertEqual(K.selectTarget(rows: rows, cursor: 15, step: -1), 11)
         XCTAssertEqual(K.selectTarget(rows: rows, cursor: 10, step: -1), 10)   // 맨 위 제자리
         XCTAssertEqual(K.selectTarget(rows: rows, cursor: 15, step: 1), 15)    // 맨 아래로 빠지지 않는다
