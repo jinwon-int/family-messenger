@@ -19,6 +19,11 @@ enum MessageCopy {
     @MainActor static func copy(_ text: String) {
         UIPasteboard.general.string = text
     }
+
+    /// 붙여넣을 글(대화 읽기·선택 모드 ⌘V).
+    @MainActor static var clipboardText: String? {
+        UIPasteboard.general.string
+    }
 }
 
 /// 「선택해서 복사」 시트에 넘기는 글(시트 `item:` 용).
@@ -58,6 +63,8 @@ struct SelectableTextSheet: View {
     let text: String
     var focusText = false
     @Environment(\.dismiss) private var dismiss
+    /// 「복사했어요」(⌘C 로 블록 복사).
+    @State private var toast: String?
 
     var body: some View {
         NavigationStack {
@@ -78,11 +85,17 @@ struct SelectableTextSheet: View {
                     }
                 }
         }
+        .handeToast($toast)
         .presentationDetents([.medium, .large])
         // 하드웨어 키보드 Esc = 닫기(글 칸이 Esc 를 먼저 쓰면 SwiftUI 단축키가 닿지 않아 GameController 길로도 받는다).
         .onReceive(HardwareKeyRouter.shared.presses) { press in
             // 한 박자 늦게 닫는다: 같은 Esc 를 대화방도 받는데, 창이 아직 열려 있어야 대화방이 「창 열림」으로 무시한다(선택 모드 유지).
             if press == HardwareKeys.Press(.escape) { DispatchQueue.main.async { dismiss() } }
+            // ⌘C: Shift+방향키로 잡은 블록을 복사한다(iOS 기본 복사가 이 창에서 안 먹는 경우에도). 잡은 것이 없으면 그대로 둔다.
+            if press == HardwareKeys.Press(.letterC, .command), let text = FirstResponderText.selectedText {
+                MessageCopy.copy(text)
+                toast = Strings.notifyCopied
+            }
         }
     }
 }

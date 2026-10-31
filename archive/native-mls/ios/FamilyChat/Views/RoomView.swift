@@ -366,6 +366,10 @@ struct RoomView: View {
             TextField(Strings.composerPlaceholder, text: $draft, axis: .vertical)
                 .lineLimit(1...6)
                 .focused($composerFocused)
+                // 하드웨어 Return 을 입력칸보다 먼저(iOS 17+) — 커서를 놓지 않게. 같은 누름의 GameController 도착은 키 단위로 버린다.
+                .modifier(ComposerReturnKeys { shift in
+                    HardwareKeyRouter.shared.once("key:enter", from: .keyPress) { perform(shift ? .newline : .send, nil) }
+                })
                 // #405 P3: 하드웨어 키보드 Enter = 전송, Shift+Enter = 줄바꿈(웹 keyboard.js). 화면 키보드는 줄바꿈 그대로.
                 // 방을 나갔다 오거나 앱을 다시 켜도 쓰던 글이 남는다(웹 drafts.js · 패밀리챗과 같음). 저장분은 이 방이 열릴 때 한 번 채운다.
                 .onAppear(perform: restoreDraft)
@@ -759,6 +763,15 @@ struct RoomView: View {
                 MessageCopy.copy(text)
                 toast = Strings.notifyCopied
             }
+        case .pasteToComposer:
+            // 선택 창에서 블록으로 복사한 글을 답장에 쓰는 흐름: 작성창으로 가서 커서 자리에 붙인다.
+            guard let clip = MessageCopy.clipboardText, !clip.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { break }
+            keyCursor = nil
+            selectingByKey = false
+            composerFocused = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                if !FirstResponderText.insert(clip) { draft += clip }
+            }
         }
     }
 
@@ -771,7 +784,7 @@ struct RoomView: View {
         let pressedAt = Date()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
             if let native = nativeNewlineAt, native >= pressedAt.addingTimeInterval(-0.3 - Double(attempt) * 0.06) { return }
-            guard composerFocused else { return }
+            // (작성창 상태에서 누른 키다. 입력칸이 Return 으로 커서를 놓아 FocusState 가 벌써 false 일 수 있어 여기서 다시 묻지 않는다.)
             if FirstResponderText.hasMarkedText {
                 if attempt < 4 { composerKey(newline: newline, attempt: attempt + 1); return }
                 FirstResponderText.commitMarkedText()
@@ -779,10 +792,19 @@ struct RoomView: View {
             if newline {
                 keyNewlineAt = Date()
                 if !FirstResponderText.insert("\n") { draft += "\n" }
-                return
+            } else if let text = HardwareKeys.outgoingText(FirstResponderText.currentText ?? draft) {
+                sendText(text)
             }
-            if let text = HardwareKeys.outgoingText(FirstResponderText.currentText ?? draft) { sendText(text) }
+            keepComposerCursor()
         }
+    }
+
+    /// Return 뒤 입력칸이 커서를 놓았으면(iOS 16 · onKeyPress 가 못 받은 경우) 작성창 커서를 되살린다 — 다음 글을 바로 이어 치게.
+    /// FocusState 가 아직 true 로 남아 있을 수 있어 한 번 내렸다 올린다.
+    private func keepComposerCursor() {
+        guard !FirstResponderText.isActive else { return }
+        composerFocused = false
+        DispatchQueue.main.async { composerFocused = true }
     }
 
     /// 선택 모드에서 고른 말풍선의 글(복사할 수 없는 첨부·복호화 실패 행은 고르지 않는다).
