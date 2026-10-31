@@ -6,9 +6,6 @@ extension Strings {
     /// AI 에이전트 = 불지기(모닥불 용어, 오너 승인). 설정 설명문에는 「불지기(AI 에이전트)」 병기.
     static let agentBadge = "불지기"
     static let agentBadgePlain = "불지기(AI 에이전트)"
-    /// 내 글 뒤 에이전트 답이 아직 없을 때(`AgentThinking` — 앱 추정, 에이전트 쪽 신호 없음). 작업 중이라고 단정하지 않는다(#601):
-    /// 봇·브리지가 멈춰도 같은 조건이 성립하므로 "생각하는 중"이 아니라 내 쪽 상태(기다림)만 말한다.
-    static func agentAwaitingReply(_ name: String) -> String { "\(name)의 답 기다리는 중" }
     static func approvalTitle(_ name: String) -> String { "\(name)\(subjectParticle(name)) 허락을 구합니다" }
     // subjectParticle 은 Strings.swift(타닥타닥 라벨과 공용).
     /// 허락 카드 본문 줄 머리(디자인 1차: 대상·내용·영향 3줄 고정 — 봇이 아직 한 줄 요약만 보내므로 「내용」 한 줄, 나머지는 봇 쪽 후속).
