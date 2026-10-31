@@ -73,7 +73,7 @@ enum Strings {
     // 모닥불 용어(디자인 1차 용어 적용표, 오너 「전부 적용」): 채팅방=자리 · 방 만들기=불 피우기 · 입력 중=타닥타닥 · 새 메시지=불씨가 튀었어요.
     // 은유는 제목·버튼에, 일반어는 첫 노출 보조 설명(1회)과 시스템 영역(알림 설정·권한·오류)에. 동작어(보내기·사진·설정)는 그대로.
     static let roomsTitle = "자리"
-    static let noRooms = "자리(대화방)는 운영자가 초대하면 여기 나타납니다. 오른쪽 위 + 로 참여를 요청하거나, 아래 「불 피우기」로 새 자리를 만드세요."
+    static let noRooms = "자리(대화방)는 운영자가 초대하면 여기 나타납니다. 오른쪽 위 + 로 참여를 요청하거나 새 자리를 만드세요."
     static let composerPlaceholder = "이야기 나누기…"
     static let sendButton = "보내기"
     static let undecryptable = "🔒 복호화하지 못한 메시지"
