@@ -558,13 +558,13 @@ struct InviteCountBadge: View {
     let count: Int
     @Environment(\.hande) private var p
 
+    /// 2차-B B3(오너 결정 2026-10-31): 숫자 없이 점 하나 — 10pt + 2px 바탕색 테두리(밤 불 / 낮불 먹). 수는 버튼의 접근성 라벨(「알림 n건」)이 말한다.
     var body: some View {
         if count > 0 {
-            Text(count > 99 ? "99+" : "\(count)")
-                .font(.caption2.weight(.bold)).foregroundStyle(p.onEmber)
-                .padding(.horizontal, 4).padding(.vertical, 1)
-                .background(Capsule().fill(p.ember))
-                .offset(x: 8, y: -6)
+            Circle().fill(p.isDay ? p.ink : p.ember)
+                .frame(width: 10, height: 10)
+                .overlay(Circle().stroke(p.bgTop, lineWidth: 2))
+                .offset(x: 4, y: -4)
                 .accessibilityHidden(true)
         }
     }
