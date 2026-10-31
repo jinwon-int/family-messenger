@@ -82,10 +82,11 @@ final class AgentChoicesTests: XCTestCase {
         XCTAssertFalse(vectors.isEmpty)
         for (idx, raw) in vectors.enumerated() {
             let numbers = try XCTUnwrap(ints(raw["numbers"]), "compose[\(idx)] numbers")
+            let labels = try XCTUnwrap(raw["labels"] as? [String], "compose[\(idx)] labels")
             let expected = try XCTUnwrap(raw["expected"] as? String, "compose[\(idx)] expected")
-            XCTAssertEqual(AgentChoices.compose(numbers), expected, "compose[\(idx)] \(numbers)")
-            // 보낸 글은 다시 같은 번호 집합으로 읽혀야 한다(answered 왕복).
-            XCTAssertEqual(AgentChoices.reply(expected, count: 9), Array(Set(numbers)).sorted(), "compose[\(idx)] round-trip")
+            XCTAssertEqual(AgentChoices.compose(numbers, labels: labels), expected, "compose[\(idx)] \(numbers)")
+            // 보낸 글은 답 판정 B 로 다시 같은 번호 집합이 된다(answered 왕복).
+            XCTAssertEqual(AgentChoices.reply(expected, count: labels.count), Array(Set(numbers)).sorted(), "compose[\(idx)] round-trip")
         }
     }
 
@@ -120,10 +121,17 @@ final class AgentChoicesTests: XCTestCase {
         XCTAssertEqual(AgentChoices.states(after, roster: roster, myDevice: me)[1], .answered([1]))
     }
 
-    /// #624 복수 선택: 카드가 보낸 `1, 3` 이나 손으로 친 `3,1` · `1 → 2 → 3` 도 answered(번호 목록, 오름차순·중복 없음).
+    /// #624 복수 선택: 카드가 보낸 `1. 병합\n3. 롤백` 이나 손으로 친 `3,1` · `1 → 2 → 3` 도 answered(번호 목록, 오름차순·중복 없음).
     func testMultiNumberReplyAnswers() {
-        XCTAssertEqual(AgentChoices.states([rec(1, bot, choices), rec(2, me, AgentChoices.compose([3, 1]))], roster: roster, myDevice: me)[1],
-                       .answered([1, 3]))
+        // 카드가 보내는 글 = 여러 줄 `N. 라벨`(답 판정 B).
+        let parsed = AgentChoices.parse(choices)
+        let sent = parsed?.composeReply([3, 1]) ?? ""
+        XCTAssertEqual(sent, "1. 병합\n3. 롤백")
+        XCTAssertEqual(AgentChoices.states([rec(1, bot, choices), rec(2, me, sent)], roster: roster, myDevice: me)[1], .answered([1, 3]))
+        XCTAssertEqual(AgentChoices.states([rec(1, bot, choices), rec(2, me, parsed?.composeReply([2]) ?? "")], roster: roster, myDevice: me)[1],
+                       .answered([2]))
+        // 줄 형식은 모든 줄이 항목 줄이어야 한다 — 덧붙인 말이 있으면 closed.
+        XCTAssertEqual(AgentChoices.states([rec(1, bot, choices), rec(2, me, sent + "\n그리고 빨리요")], roster: roster, myDevice: me)[1], .closed)
         XCTAssertEqual(AgentChoices.states([rec(1, bot, choices), rec(2, me, "3,1")], roster: roster, myDevice: me)[1], .answered([1, 3]))
         XCTAssertEqual(AgentChoices.states([rec(1, bot, choices), rec(2, me, "1 → 2 → 3")], roster: roster, myDevice: me)[1],
                        .answered([1, 2, 3]))

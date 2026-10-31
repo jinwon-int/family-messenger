@@ -1051,7 +1051,7 @@ private fun MessageRow(m: MessageUi) {
 /**
  * 에이전트 선택지 카드(agent-choices-v1 #620 §3 · 복수 선택 #624): 행 = 체크 상자(둥근 사각) + 번호 + 라벨(최대 3줄) + 「권장」 알약.
  * 행을 누르면 그 행 체크를 토글하고(여러 개 가능), 하나라도 체크돼 있을 때만 [보내기] → 평소 전송 경로(`onSend`)로
- * `AgentChoices.compose` 결과(`"2"` 또는 `"1, 3"` — 손으로 치는 것과 같은 글)를 보낸다. 보내는 동안 카드는 꺼지고,
+ * `AgentChoices.compose` 결과(줄마다 `N. 라벨` — 번호보다 내용이 중요해서, 답 판정 B 로 같은 번호가 된다)를 보낸다. 보내는 동안 카드는 꺼지고,
  * 보낸 글이 타임라인에 오면 상태가 answered 로 바뀌어 한 줄 「✓ 1, 3번 선택 — 라벨1 · 라벨3」 이 된다. 전송이 실패해 글이 안 오면 10초 뒤 다시 켠다.
  * `enabled = false`(꺼진 자리·참여 전)면 고를 수도 보낼 수도 없다.
  */
@@ -1126,7 +1126,7 @@ private fun AgentChoicesCard(m: MessageUi, card: AgentChoices.Card, enabled: Boo
                     .clickable(enabled = canSend, role = Role.Button) {
                         if (picked.isNotEmpty()) {
                             sending = true
-                            onSend(AgentChoices.compose(picked))
+                            onSend(AgentChoices.compose(picked, choices.items.map { it.label }))
                         }
                     }
                     .semantics { contentDescription = Strings.choiceSendLabel(picked) }

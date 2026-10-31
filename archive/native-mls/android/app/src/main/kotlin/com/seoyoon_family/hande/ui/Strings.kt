@@ -127,7 +127,7 @@ object Strings {
     const val back = "뒤로"
 
     // 에이전트 선택지 카드(agent-choices-v1 #620 §3 · 복수 선택 #624): 행 = 체크 상자 + N + 라벨 + 「권장」 알약, [보내기] 는 고른 번호들
-    // (`"2"` 또는 `"1, 3"` — `AgentChoices.compose`) 을 평소 전송 경로로.
+    // (줄마다 `N. 라벨` — `AgentChoices.compose`) 을 평소 전송 경로로.
     const val choiceRecommended = "권장"
     const val choiceSend = "보내기"
     /** 행 접근성 라벨 「N번: 라벨」(+ 「, 권장」). 체크 상태는 semantics `toggleableState` 로 따로 알린다. */

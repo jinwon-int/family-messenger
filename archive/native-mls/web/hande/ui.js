@@ -690,7 +690,7 @@ function choiceCard(choice) {
     if (selected.size === 0) choiceSelection.delete(choice.id); else choiceSelection.set(choice.id, new Set(selected));
     paint();
   };
-  // 평소 전송 경로(app.js sendText)로 compose 결과(`"2"`·`"1, 3"`)를 보낸다. 보낸 글이 타임라인에 오면 answered 가 된다.
+  // 평소 전송 경로(app.js sendText)로 compose 결과(줄마다 `"N. 라벨"`)를 보낸다. 보낸 글이 타임라인에 오면 answered 가 된다.
   const submit = () => {
     if (selected.size === 0 || send.disabled) return;
     const screen = card.closest('.room-screen');
@@ -698,7 +698,7 @@ function choiceCard(choice) {
     if (typeof onChoose !== 'function') return;
     busy = true; paint();
     const unlock = () => { busy = false; if (card.isConnected) paint(); };
-    Promise.resolve(onChoose(picked())).then((ok) => { if (ok === false) unlock(); }, unlock);
+    Promise.resolve(onChoose(picked(), items.map((item) => item.label))).then((ok) => { if (ok === false) unlock(); }, unlock);
   };
   paint();
   return card;

@@ -1,6 +1,6 @@
 // agent-choices-v1(#620) — 에이전트 글 끝의 번호 선택지를 탭해서 고르는 카드의 판정(화면 없이 테스트하는 순수 로직).
 // 정본: archive/native-mls/AGENT-CHOICES-V1.md · 공유 벡터 tests/fixtures/agent-choices-vectors.json(웹·안드로이드와 같은 답).
-// 보내는 것은 손으로 치는 것과 같은 글 `N`(복수 선택이면 `1, 3`, #624) 이다 — 봇·브리지·와이어 무변경(승인 카드 「승인 n」과 같은 결).
+// 보내는 것은 손으로 치는 것과 같은 꼴의 글 `N. 라벨` 줄들(#624 — 손으로 친 `1, 3` 도 같은 답) 이다 — 봇·브리지·와이어 무변경(승인 카드 「승인 n」과 같은 결).
 //
 // 플랫폼 간 차이를 없애려고 정규식 대신 유니코드 스칼라를 직접 훑는다: 숫자는 ASCII `0-9` 만(전각 `１` 은 숫자가 아니다),
 // 공백(`\s`)은 스페이스·탭·줄바꿈만. Linux Foundation 에서도 같은 결과(Regex 리터럴·NSRegularExpression 미사용).
@@ -121,10 +121,29 @@ public struct AgentChoices: Equatable {
     }
 
     /// 사람의 답장 본문 → 고른 번호 목록(오름차순·중복 없음, 모두 1..count), 아니면 nil. 규격 §2 「답 판정」(#624):
-    /// 정규식 대신 차례로 읽는다 — 번호(ASCII 숫자 1~2자, 뒤에 공백·탭 + `번` 이 있으면 소비) · 구분자(공백·탭, 그리고
+    /// A. 번호 나열(`1` · `1, 3`)을 먼저, nil 이면 B. 줄 형식(카드가 보내는 `1. 라벨` 줄들 — `compose` 결과)을 본다.
+    public static func reply(_ text: String, count: Int) -> [Int]? {
+        replyNumberList(text, count: count) ?? replyLines(text, count: count)
+    }
+
+    /// B. 줄 형식: `\r\n` → `\n` 후 줄로 나누고 공백뿐인 줄(스페이스·탭·`\r`)은 버린다. 남은 **모든** 줄이 §1 항목 줄
+    /// (`itemLine` — parse 와 같은 판정)이어야 하고 번호가 모두 1..count. 라벨 글은 비교하지 않는다.
+    static func replyLines(_ text: String, count: Int) -> [Int]? {
+        let lines = splitLines(text).filter { line in !line.allSatisfy { $0 == " " || $0 == "\t" || $0 == "\r" } }
+        guard !lines.isEmpty else { return nil }
+        var numbers: [Int] = []
+        for line in lines {
+            guard let item = itemLine(line) else { return nil }
+            numbers.append(item.number)
+        }
+        guard numbers.allSatisfy({ $0 >= 1 && $0 <= count }) else { return nil }
+        return Array(Set(numbers)).sorted()
+    }
+
+    /// A. 번호 나열: 정규식 대신 차례로 읽는다 — 번호(ASCII 숫자 1~2자, 뒤에 공백·탭 + `번` 이 있으면 소비) · 구분자(공백·탭, 그리고
     /// `,` `，` `、` `/` `+` `→` `->` 가운데 하나, 다시 공백·탭 — 한 글자 이상 소비, 뒤가 글의 끝이면 안 됨)를 번갈아.
     /// 예: `1` · `2번` · `1, 3` · `1 → 2 → 3` · `1번, 2번`. 유니코드 스칼라 단위(→ ， 、 번 은 각각 스칼라 하나).
-    public static func reply(_ text: String, count: Int) -> [Int]? {
+    static func replyNumberList(_ text: String, count: Int) -> [Int]? {
         var s = Array(text.unicodeScalars)
         // 1. 양끝의 스페이스·탭·\r·\n 제거 → 끝 `.` 하나 제거 → 다시 오른쪽 공백 제거.
         while let first = s.first, isReplyTrim(first) { s.removeFirst() }
@@ -173,10 +192,24 @@ public struct AgentChoices: Equatable {
         return Array(Set(numbers)).sorted()
     }
 
-    /// 보낼 글(규격 §2 「보낼 글」): 오름차순·중복 제거 후 `", "` 로 잇는다 — {3,1} → `"1, 3"`, {2} → `"2"`.
-    public static func compose(_ numbers: [Int]) -> String {
-        Array(Set(numbers)).sorted().map { String($0) }.joined(separator: ", ")
+    /// 보낼 글(규격 §2 「보낼 글」): 오름차순·중복 제거 후 줄마다 `N. 라벨` 을 `\n` 으로 잇는다 — 번호보다 내용이 중요하다(오너).
+    /// `labels[N - 1]` = N번의 정리된 라벨(§1.6, `items.map(\.label)`). 라벨이 비었거나 없으면 `N. (내용 없음)`.
+    /// 이 글은 답 판정 B 로 다시 같은 번호 집합이 된다(왕복).
+    public static func compose(_ numbers: [Int], labels: [String]) -> String {
+        Array(Set(numbers)).sorted().map { number -> String in
+            let label = (number >= 1 && number <= labels.count) ? labels[number - 1] : ""
+            let shown = label.trimmingCharacters(in: .whitespaces).isEmpty ? emptyLabel : label
+            return "\(number). \(shown)"
+        }.joined(separator: "\n")
     }
+
+    /// 이 선택지의 라벨로 `compose`(카드 「보내기」가 보내는 글).
+    public func composeReply(_ numbers: [Int]) -> String {
+        AgentChoices.compose(numbers, labels: items.map(\.label))
+    }
+
+    /// 라벨이 빈 항목을 보낼 때(예: `1. **`).
+    public static let emptyLabel = "(내용 없음)"
 
     /// 답 판정의 양끝 공백 = 스페이스·탭·\r·\n.
     static func isReplyTrim(_ s: Unicode.Scalar) -> Bool { s == " " || s == "\t" || s == "\r" || s == "\n" }

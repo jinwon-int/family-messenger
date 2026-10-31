@@ -205,7 +205,7 @@ struct ApprovalCard: View {
 }
 
 /// agent-choices-v1(#620 · 복수 선택 #624): 에이전트 글 끝 번호 선택지 — 말풍선 아래 카드. 행을 누르면 그 행 체크 토글(여러 개 가능),
-/// 하나라도 체크돼 있으면 [보내기]가 손으로 치는 답과 같은 글(`AgentChoices.compose` — `2` / `1, 3`)을 평소 전송 경로로 보낸다.
+/// 하나라도 체크돼 있으면 [보내기]가 고른 번호를 넘기고, 방 화면이 줄마다 `N. 라벨`(`AgentChoices.composeReply`)을 평소 전송 경로로 보낸다.
 /// 판정·상태는 Core `AgentChoices`, 여기는 그리기만.
 /// open = 선택 카드 · answered(S) = 한 줄 「✓ N번 선택 — 라벨」 / 「✓ 1, 3번 선택 — 라벨1 · 라벨3」 · closed = 그리지 않는다.
 struct AgentChoicesCard: View {

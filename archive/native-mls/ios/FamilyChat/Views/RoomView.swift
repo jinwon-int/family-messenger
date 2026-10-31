@@ -469,14 +469,15 @@ struct RoomView: View {
         Task { _ = await model.send(room: room, text: Strings.approvalReply(number, allow: allow)) }
     }
 
-    /// agent-choices-v1(#620 · 복수 #624): 선택지 카드 「보내기」 = 손으로 치는 답과 같은 글(`AgentChoices.compose` — `2` / `1, 3`)을
-    /// 평소 전송 경로(`answerApproval` 과 같은 `model.send`)로. 보내는 동안 그 카드는 비활성 — 보낸 글이 저장소에 오르면 상태 규칙으로
+    /// agent-choices-v1(#620 · 복수 #624): 선택지 카드 「보내기」 = 줄마다 `N. 라벨`(`AgentChoices.composeReply` — 번호보다 내용)을
+    /// 평소 전송 경로(`answerApproval` 과 같은 `model.send`)로. 보내는 동안 그 카드는 비활성 — 보낸 글이 저장소에 오르면 상태 규칙(답 판정 B)으로
     /// answered(S) 가 된다(실패하면 다시 고를 수 있다).
     private func answerChoice(_ seq: Int64, _ numbers: [Int]) async {
-        guard !numbers.isEmpty, !choiceSending.contains(seq) else { return }
+        guard !numbers.isEmpty, !choiceSending.contains(seq), let card = choiceCards[seq] else { return }
+        let text = card.choices.composeReply(numbers)
         choiceSending.insert(seq)
         defer { choiceSending.remove(seq) }
-        _ = await model.send(room: room, text: AgentChoices.compose(numbers))
+        _ = await model.send(room: room, text: text)
     }
 
     /// #472: 과거 글 한 페이지를 위에 붙인다. 보던 행(종전 첫 행)을 화면 위에 그대로 두어 점프하지 않는다 — 새 행이 붙은 뒤

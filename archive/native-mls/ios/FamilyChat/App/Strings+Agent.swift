@@ -25,12 +25,12 @@ extension Strings {
     static func lastSentReplies(_ count: Int) -> String { count == 0 ? "아직 답 없음" : "답 \(count)개" }
 
     // agent-choices-v1(#620 · 복수 선택 #624): 에이전트 선택지 카드. 보내기 버튼이 대신 보내는 글은 Core `AgentChoices.compose`
-    // (손으로 치는 답과 같은 `2` / `1, 3` — 봇·브리지 무변경).
+    // (줄마다 `N. 라벨` — 번호보다 내용, 봇·브리지 무변경).
     static let choiceSend = "보내기"
     static let choiceRecommended = "권장"
     /// 답한 뒤 카드 대신 한 줄: 「✓ 2번 선택 — 보류」 / 여럿이면 「✓ 1, 3번 선택 — 병합 · 롤백」.
     static func choiceAnswered(_ numbers: [Int], labels: [String]) -> String {
-        "✓ \(AgentChoices.compose(numbers))번 선택 — \(labels.joined(separator: " · "))"
+        "✓ \(choiceNumberList(numbers))번 선택 — \(labels.joined(separator: " · "))"
     }
     /// 접근성: 행 = 「N번: 라벨」(+ 「, 권장」).
     static func choiceRowA11y(_ number: Int, label: String, recommended: Bool) -> String {
@@ -40,7 +40,11 @@ extension Strings {
     static func choiceRowA11yValue(_ checked: Bool) -> String { checked ? "체크됨" : "체크 안 됨" }
     /// 접근성: 보내기 버튼 = 「1, 3번 보내기」(고른 번호, 선택 없음 = 「보내기」).
     static func choiceSendA11y(_ numbers: [Int]) -> String {
-        numbers.isEmpty ? choiceSend : "\(AgentChoices.compose(numbers))번 보내기"
+        numbers.isEmpty ? choiceSend : "\(choiceNumberList(numbers))번 보내기"
+    }
+    /// 번호 목록 표시(오름차순·중복 없음): [3, 1] → 「1, 3」.
+    static func choiceNumberList(_ numbers: [Int]) -> String {
+        Array(Set(numbers)).sorted().map { String($0) }.joined(separator: ", ")
     }
     static let choiceA11yHint = "눌러서 체크하거나 해제하세요. 여러 개 고른 뒤 보내기를 누르세요"
 }

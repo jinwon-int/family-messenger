@@ -105,11 +105,16 @@ data class AgentChoices(val items: List<AgentChoiceItem>, val recommended: Int?)
         private const val SEPARATORS = ",，、/+→" // 한 글자 구분자(`->` 는 따로 본다)
 
         /**
-         * 규격 §2 「답 판정」(#624): 정규식 대신 차례로 읽는다. 번호(ASCII 1~2자, 뒤에 [공백+]`번` 이 있으면 소비) 와
-         * 구분자(공백 + `,` `，` `、` `/` `+` `→` `->` 중 하나(선택) + 공백 — 한 글자 이상, 글 끝이 아니어야 함)가 번갈아 온다.
+         * 규격 §2 「답 판정」(#624): 먼저 A. 번호 나열(`1` · `1, 3` …), 아니면 B. 줄 형식(`1. 라벨` 줄들 — compose 결과).
          * 번호가 모두 1..count 이면 오름차순·중복 없는 목록, 아니면 null.
          */
-        fun reply(text: String, count: Int): List<Int>? {
+        fun reply(text: String, count: Int): List<Int>? = replyNumbers(text, count) ?: replyLines(text, count)
+
+        /**
+         * 답 판정 A: 정규식 대신 차례로 읽는다. 번호(ASCII 1~2자, 뒤에 [공백+]`번` 이 있으면 소비) 와
+         * 구분자(공백 + `,` `，` `、` `/` `+` `→` `->` 중 하나(선택) + 공백 — 한 글자 이상, 글 끝이 아니어야 함)가 번갈아 온다.
+         */
+        private fun replyNumbers(text: String, count: Int): List<Int>? {
             var t = text.trim { trimChar(it) }
             if (t.endsWith('.')) t = t.dropLast(1).trimEnd { trimChar(it) }
             if (t.isEmpty()) return null
@@ -140,8 +145,33 @@ data class AgentChoices(val items: List<AgentChoiceItem>, val recommended: Int?)
             return picked.toList()
         }
 
-        /** 규격 §2 「보낼 글」: 고른 번호 → 오름차순·중복 제거 후 `", "` 로 잇는다({3,1} → `"1, 3"`, {2} → `"2"`). */
-        fun compose(numbers: Collection<Int>): String = numbers.toSortedSet().joinToString(", ")
+        /**
+         * 답 판정 B: 공백뿐인 줄(스페이스·탭·\r)을 버린 뒤 남은 **모든** 줄이 §1 항목 줄(`ITEM`)이어야 한다. 라벨 글은 비교하지 않는다.
+         */
+        private fun replyLines(text: String, count: Int): List<Int>? {
+            val lines = text.replace("\r\n", "\n").split("\n").filterNot { line -> line.all { spaceChar(it) || it == '\r' } }
+            if (lines.isEmpty()) return null
+            val picked = sortedSetOf<Int>()
+            for (line in lines) {
+                val number = ITEM.matchEntire(line)?.groupValues?.get(1)?.toInt() ?: return null
+                if (number !in 1..count) return null
+                picked += number
+            }
+            return picked.toList()
+        }
+
+        /** 라벨이 비었을 때 보낼 글에 쓰는 자리 글. */
+        const val EMPTY_LABEL = "(내용 없음)"
+
+        /**
+         * 규격 §2 「보낼 글」: 고른 번호 → 오름차순·중복 제거 후 줄마다 `N. 라벨`(§1.6 정리된 라벨, 비었으면 `(내용 없음)`)을 `\n` 으로 잇는다.
+         * `labels[i]` 는 번호 `i + 1` 의 라벨(보통 `choices.items.map { it.label }`). 결과는 답 판정 B 로 같은 집합이 된다(왕복).
+         */
+        fun compose(numbers: Collection<Int>, labels: List<String>): String =
+            numbers.toSortedSet().joinToString("\n") { n ->
+                val label = labels.getOrNull(n - 1)?.let { cleanLabel(it) }.orEmpty()
+                "$n. " + label.ifEmpty { EMPTY_LABEL }
+            }
 
         /** 에이전트가 보낸 텍스트 글인가(내 글·첨부·사람 글은 선택지를 판정하지 않는다). */
         fun isAgentText(m: MessageUi): Boolean = !m.mine && !m.attachment && AgentActors.isAgentDevice(m.sender)

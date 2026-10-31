@@ -1,7 +1,7 @@
 // agent-choices-v1 (family-messenger#620, archive/native-mls/AGENT-CHOICES-V1.md) — 에이전트 선택지 탭 선택.
 //
 // 에이전트 글이 `1. … 2. … 3. …` 선택지로 끝나면 말풍선 아래에 선택 카드를 그린다. 보내는 것은 손으로 치는 것과
-// 똑같은 텍스트 `N`(복수 선택 #624 면 `1, 3`)이다(와이어 변경 없음). 상태(open / answered / closed)는 타임라인에서 매번 계산하고 저장하지 않는다.
+// 똑같은 텍스트다 — 카드는 줄마다 `N. 라벨`(복수 선택 #624)을 보내고, 손으로 친 `1`·`1, 3` 도 같은 답이 된다(와이어 변경 없음). 상태(open / answered / closed)는 타임라인에서 매번 계산하고 저장하지 않는다.
 // 판정 규칙은 세 앱 공통 — 공유 벡터 archive/native-mls/tests/fixtures/agent-choices-vectors.json 과 같아야 한다.
 // 정규식의 숫자는 ASCII [0-9] 만, 공백은 스페이스·탭·줄바꿈만(규격 §1 — JS \s 의 유니코드 공백과 다르게 보지 않게 명시).
 //
@@ -82,15 +82,14 @@ const isGap = (ch) => ch === ' ' || ch === '\t';
 const SEPARATORS = ['->', ',', '，', '、', '/', '+', '→'];   // 두 글자 `->` 를 먼저 본다
 
 /**
- * 내 답이 고른 번호 목록인가(규격 §2 「답 판정」, #624) — 정규식 대신 차례로 읽는다.
+ * 답 판정 A. 번호 나열(규격 §2 「답 판정」, #624) — 정규식 대신 차례로 읽는다.
  *   1. 양끝 스페이스·탭·\r·\n 제거 → 끝이 `.` 이면 하나만 지우고 오른쪽 공백 다시 제거 → 빈 글이면 null.
  *   2. 번호: ASCII 숫자 1~2자(3자 이상 null). 뒤에 (스페이스·탭* +) `번` 이 있을 때만 거기까지 소비.
  *   3. 끝이면 끝. 아니면 구분자: 공백* + (, ， 、 / + → ->)? + 공백* — 한 글자도 못 먹었거나 뒤가 끝이면 null. 2로.
  *   4. 모든 번호 ∈ 1..count, 결과는 오름차순·중복 제거.
  * @returns {number[] | null}
  */
-export function choiceReply(text, count) {
-  if (typeof text !== 'string') return null;
+function numberListReply(text, count) {
   let s = text.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, '');
   if (s.endsWith('.')) s = s.slice(0, -1).replace(/[ \t\r\n]+$/, '');
   if (s.length === 0) return null;
@@ -120,9 +119,43 @@ export function choiceReply(text, count) {
   return [...new Set(numbers)].sort((a, b) => a - b);
 }
 
-/** 보낼 글(규격 §2 compose): 고른 번호 → 오름차순·중복 제거 후 `", "` 로 잇는다. {3,1} → "1, 3". */
-export function composeChoice(numbers) {
-  return [...new Set(Array.from(numbers ?? [], Number))].sort((a, b) => a - b).join(', ');
+/**
+ * 답 판정 B. 줄 형식: 공백뿐인 줄을 버리고 남은 줄이 모두 §1 항목 줄이어야 한다(라벨 글은 비교하지 않는다).
+ * 번호가 모두 1..count → 오름차순·중복 제거.
+ */
+function lineFormReply(text, count) {
+  const lines = text.replace(/\r\n/g, '\n').split('\n').filter((line) => !BLANK.test(line));
+  if (lines.length === 0) return null;
+  const numbers = [];
+  for (const line of lines) {
+    const item = ITEM.exec(line);
+    if (!item) return null;
+    numbers.push(Number.parseInt(item[1], 10));
+  }
+  if (numbers.some((n) => n < 1 || n > count)) return null;
+  return [...new Set(numbers)].sort((a, b) => a - b);
+}
+
+/**
+ * 내 답이 고른 번호 목록인가(규격 §2 「답 판정」): A. 번호 나열(`1`·`1, 3`)을 먼저, null 이면 B. 줄 형식(`1. 라벨` 줄들).
+ * @returns {number[] | null} 오름차순·중복 없는 번호 목록
+ */
+export function choiceReply(text, count) {
+  if (typeof text !== 'string') return null;
+  return numberListReply(text, count) ?? lineFormReply(text, count);
+}
+
+export const EMPTY_LABEL = '(내용 없음)';
+
+/**
+ * 보낼 글(규격 §2 compose): 고른 번호 → 오름차순·중복 제거 후 줄마다 `N. 라벨` 을 `\n` 으로 잇는다.
+ * labels 는 choices.items 의 라벨(§1.6 정리된 라벨, 번호 n → labels[n-1]). 빈 라벨은 `N. (내용 없음)`.
+ * 이 글은 답 판정 B 로 다시 같은 번호 집합이 된다(왕복).
+ */
+export function composeChoice(numbers, labels) {
+  return [...new Set(Array.from(numbers ?? [], Number))].sort((a, b) => a - b)
+    .map((n) => { const label = labels?.[n - 1]; return `${n}. ${typeof label === 'string' && label !== '' ? label : EMPTY_LABEL}`; })
+    .join('\n');
 }
 
 const parsed = new WeakMap();   // entry → {body, choices}: 재렌더마다 같은 글을 다시 훑지 않게

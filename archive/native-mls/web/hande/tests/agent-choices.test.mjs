@@ -26,13 +26,26 @@ for (const v of vectors.reply) {
 }
 
 for (const v of vectors.compose) {
-  test(`compose: ${JSON.stringify(v.numbers)}`, () => {
-    assert.equal(composeChoice(v.numbers), v.expected);
+  test(`compose: ${JSON.stringify(v.numbers)} / ${JSON.stringify(v.labels)}`, () => {
+    assert.equal(composeChoice(v.numbers, v.labels), v.expected);
   });
 }
 
-test('reply: compose 결과는 다시 같은 번호로 읽힌다(왕복)', () => {
-  for (const v of vectors.compose) assert.deepEqual(choiceReply(composeChoice(v.numbers), 3), [...new Set(v.numbers)].sort((a, b) => a - b));
+test('reply: compose 결과는 답 판정 B 로 다시 같은 번호가 된다(왕복)', () => {
+  for (const v of vectors.compose) {
+    assert.deepEqual(choiceReply(composeChoice(v.numbers, v.labels), v.labels.length), [...new Set(v.numbers)].sort((a, b) => a - b));
+  }
+  // 파싱한 선택지 라벨로도 왕복한다 — 라벨 안의 `.`·`[ ]`·숫자가 A 를 흔들지 않는다.
+  const choices = parseChoices(vectors.parse[0].text);
+  const labels = choices.items.map((it) => it.label);
+  for (const numbers of [[1], [2, 3], [3, 1, 2]]) {
+    assert.deepEqual(choiceReply(composeChoice(numbers, labels), labels.length), [...numbers].sort((a, b) => a - b));
+  }
+});
+
+test('compose: 라벨이 없거나 빈 번호는 (내용 없음)', () => {
+  assert.equal(composeChoice([2, 1], ['A']), '1. A\n2. (내용 없음)');
+  assert.equal(composeChoice([], ['A']), '');
 });
 
 test('reply: 문자열이 아니거나 공백·점뿐이면 null', () => {
@@ -41,6 +54,8 @@ test('reply: 문자열이 아니거나 공백·점뿐이면 null', () => {
   assert.equal(choiceReply(' . ', 3), null);
   assert.equal(choiceReply('1..', 3), null);   // 끝 `.` 은 하나만 지운다
   assert.equal(choiceReply('1 -2', 3), null);
+  assert.equal(choiceReply('\n \t\n', 3), null);   // B: 공백뿐인 줄만 남으면 null
+  assert.deepEqual(choiceReply('1. A\r\n3. C\r\n', 3), [1, 3]);   // B: CRLF
 });
 
 test('parse: 문자열이 아니거나 빈 글은 null', () => {
@@ -86,6 +101,19 @@ test('state: 내 답이 여러 번호면 answered(오름차순 목록) + 라벨�
   }
   assert.equal(choiceState([agent('b'), mine('c', '1, 4')], 0), null);   // 하나라도 범위 밖이면 closed
   assert.equal(choiceState([agent('b'), mine('c', '1,')], 0), null);
+});
+
+test('state: 카드가 보낸 줄 형식(compose)이 다음 내 글이면 answered(#624)', () => {
+  const open = choiceState([agent('b')], 0);
+  const sent = composeChoice([3, 1], open.choices.items.map((it) => it.label));
+  assert.equal(sent, '1. 유지\n3. 보류');
+  const s = choiceState([agent('b'), mine('c', sent)], 0);
+  assert.equal(s.state, 'answered');
+  assert.deepEqual(s.numbers, [1, 3]);
+  assert.deepEqual(s.labels, ['유지', '보류']);
+  // 라벨 글은 비교하지 않는다 — 손으로 친 `2. 아무 말` 도 answered([2]).
+  assert.deepEqual(choiceState([agent('b'), mine('c', '2. 아무 말')], 0)?.numbers, [2]);
+  assert.equal(choiceState([agent('b'), mine('c', '1. 유지\n그리고 빨리요')], 0), null);
 });
 
 test('state: 범위 밖 번호·다른 글·남의 글·첨부는 closed(null)', () => {

@@ -47,7 +47,7 @@ class AgentChoicesTest {
             val text = c["text"] as String
             val count = (c["count"] as Long).toInt()
             val expected = (c["expected"] as List<*>?)?.map { (it as Long).toInt() }
-            assertEquals(expected, AgentChoices.reply(text, count), "reply('$text', $count)")
+            assertEquals(expected, AgentChoices.reply(text, count), "reply('${text.replace("\n", "\\n")}', $count)")
         }
     }
 
@@ -56,15 +56,20 @@ class AgentChoicesTest {
         assertTrue(cases.isNotEmpty(), "compose 벡터가 비어 있지 않다")
         for (c in cases) {
             c as Map<*, *>
+            val labels = (c["labels"] as List<*>).map { it as String }
             val numbers = (c["numbers"] as List<*>).map { (it as Long).toInt() }
-            assertEquals(c["expected"] as String, AgentChoices.compose(numbers), "compose($numbers)")
+            assertEquals(c["expected"] as String, AgentChoices.compose(numbers, labels), "compose($numbers, $labels)")
         }
     }
 
     @Test fun composeRoundTripsThroughReply() {
+        val choices = AgentChoices.parse(question)!!
+        val labels = choices.items.map { it.label }
         for (picked in listOf(setOf(2), setOf(3, 1), setOf(1, 2, 3))) {
-            assertEquals(picked.sorted(), AgentChoices.reply(AgentChoices.compose(picked), 3), "$picked")
+            assertEquals(picked.sorted(), AgentChoices.reply(AgentChoices.compose(picked, labels), labels.size), "$picked")
         }
+        // 빈 라벨도 `(내용 없음)` 줄로 왕복한다.
+        assertEquals(listOf(1, 2), AgentChoices.reply(AgentChoices.compose(listOf(2, 1), listOf("**", "B")), 2))
     }
 
     private val question = "어떻게 할까요?\n1. 유지\n2. 롤백 (권장)\n3. 보류"
@@ -97,6 +102,17 @@ class AgentChoicesTest {
         }
         val all = AgentChoices.cards(listOf(agent(1), me(2, "1 → 2 → 3")))
         assertEquals(AgentChoices.State.Answered(listOf(1, 2, 3)), all[0]!!.state)
+    }
+
+    @Test fun answeredWhenMyNextMessageIsComposedLines() {
+        // 카드 [보내기] 가 보내는 글(줄마다 `N. 라벨`) — 라벨 글은 비교하지 않는다.
+        val sent = AgentChoices.compose(setOf(3, 1), listOf("유지", "롤백 (권장)", "보류"))
+        assertEquals("1. 유지\n3. 보류", sent)
+        val cards = AgentChoices.cards(listOf(agent(1), me(2, sent)))
+        assertEquals(AgentChoices.State.Answered(listOf(1, 3)), cards[0]!!.state)
+        assertNull(cards[1])
+        // 줄 형식이 아닌 줄이 섞이면 closed.
+        assertNull(AgentChoices.cards(listOf(agent(1), me(2, "$sent\n그리고 빨리요")))[0])
     }
 
     @Test fun closedWhenNextIsSomethingElse() {
