@@ -41,15 +41,22 @@ final class HardwareKeysTests: XCTestCase {
         XCTAssertNil(K.roomAction(.init(.pageDown), mode: .selecting))
         XCTAssertNil(K.roomAction(.init(.home), mode: .selecting))
         XCTAssertNil(K.roomAction(.init(.letterC), mode: .selecting))
+
+        // ⌘V: 작성창 밖에서는 작성창으로 가서 붙여넣기, 작성창 안은 입력칸 기본 붙여넣기.
+        XCTAssertEqual(K.roomAction(.init(.letterV, .command), mode: .reading), .pasteToComposer)
+        XCTAssertEqual(K.roomAction(.init(.letterV, .command), mode: .selecting), .pasteToComposer)
+        XCTAssertNil(K.roomAction(.init(.letterV, .command), mode: .composer))
+        XCTAssertNil(K.roomAction(.init(.letterV), mode: .reading))
     }
 
     func testModifiedKeysAreLeftToEditing() {
         let modes: [K.RoomMode] = [.composer, .reading, .selecting]
         for modifiers: K.Modifiers in [.shift, .command, .option, .control, [.shift, .command]] {
-            for key: K.Key in [.pageUp, .pageDown, .home, .end, .escape, .upArrow, .downArrow, .enter, .letterC] {
+            for key: K.Key in [.pageUp, .pageDown, .home, .end, .escape, .upArrow, .downArrow, .enter, .letterC, .letterV] {
                 for mode in modes {
                     let allowed = (mode == .composer && key == .enter && modifiers == .shift)
                         || (mode == .selecting && key == .letterC && modifiers == .command)
+                        || (mode != .composer && key == .letterV && modifiers == .command)
                     if allowed { continue }
                     XCTAssertNil(K.roomAction(.init(key, modifiers), mode: mode), "\(key) \(modifiers) \(mode)")
                 }
@@ -133,6 +140,13 @@ final class HardwareKeysTests: XCTestCase {
         XCTAssertEqual(K.scrollTarget(rows: rows, cursor: 99, up: true), .row(15))   // 사라진 커서 = 마지막에서 다시
         XCTAssertNil(K.scrollTarget(rows: [], cursor: nil, up: true))
         XCTAssertEqual(K.scrollTarget(rows: [], cursor: nil, up: false), .latest)
+    }
+
+    func testDeduperKeyPressBeatsGameControllerForComposerReturn() {
+        var dedupe = KeyDeduper(window: 0.5)
+        XCTAssertTrue(dedupe.accept("key:enter", from: .keyPress, at: 10.000))         // onKeyPress 가 먼저(입력칸보다 앞)
+        XCTAssertFalse(dedupe.accept("key:enter", from: .gameController, at: 10.040))  // 같은 누름의 GameController 도착
+        XCTAssertTrue(dedupe.accept("key:enter", from: .keyPress, at: 10.200))         // 빠른 다음 Enter
     }
 
     func testDeduperDropsOtherPathDeliveryOfOnePress() {

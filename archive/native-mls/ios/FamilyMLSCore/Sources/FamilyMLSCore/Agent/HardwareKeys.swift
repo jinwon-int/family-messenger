@@ -12,7 +12,7 @@
 //   PageUp/PageDown = 표시 행을 한 칸씩(열지 않음) · Enter = 표시된 행 열기 · 순서 모드에서는 움직이지 않는다(웹 #480 A)
 //
 // 수정키(⌘·⌥·⌃·Shift)가 붙은 키는 건드리지 않는다 — ⌘↩ 보내기(SwiftUI 단축키), Shift+방향키 선택, ⌘↑ 글 처음으로 같은 편집 동작이다.
-// 예외: 작성창 Shift+Enter(줄바꿈) · 선택 모드 ⌘C(복사).
+// 예외: 작성창 Shift+Enter(줄바꿈) · 선택 모드 ⌘C(복사) · 대화 읽기·선택 모드 ⌘V(작성창에 붙여넣기).
 // 왜 작성창 Enter 를 여기서 판정하나: 하드웨어 키보드 Return 이 SwiftUI 세로 TextField 에 줄바꿈을 넣지 않는 기기가 있어(오너 실기기 2026-10-31:
 // Enter 전송·Shift+Enter 줄바꿈 둘 다 안 됨) `ComposerKeys` 의 글 변화 판정이 한 번도 불리지 않았다. 줄바꿈이 들어오는 기기에서는
 // 종전 판정이 먼저 처리하고, 앱이 `insertedNewline` 으로 그것을 알아 두 번 처리하지 않는다.
@@ -23,6 +23,8 @@ public enum HardwareKeys {
         case pageUp, pageDown, home, end, escape, upArrow, downArrow, enter
         /// 글자 C — 선택 모드 ⌘C 복사에만 쓴다.
         case letterC
+        /// 글자 V — 대화 읽기·선택 모드 ⌘V(작성창에 붙여넣기)에만 쓴다.
+        case letterV
     }
 
     public struct Modifiers: OptionSet, Equatable, Sendable {
@@ -72,6 +74,8 @@ public enum HardwareKeys {
         case selectUp, selectDown
         /// 선택 모드 Enter = 「선택해서 복사」 창 · ⌘C = 글 전체 복사.
         case openSelection, copySelection
+        /// 대화 읽기·선택 모드 ⌘V = 작성창으로 가서 커서 자리에 붙여넣기(선택 창에서 복사한 글을 바로 답장에 쓰게).
+        case pasteToComposer
     }
 
     /// 대화방 화면에서 이 키가 할 일. 없으면 nil(키를 그대로 둔다).
@@ -79,6 +83,7 @@ public enum HardwareKeys {
         switch (mode, press.key, press.modifiers) {
         case (.composer, .enter, .shift): return .newline
         case (.selecting, .letterC, .command): return .copySelection
+        case (.reading, .letterV, .command), (.selecting, .letterV, .command): return .pasteToComposer
         default: break
         }
         guard press.modifiers.isEmpty else { return nil }
@@ -197,7 +202,9 @@ public enum HardwareKeys {
 /// **다른 길**에서 `window` 안에 온 같은 동작만 버린다: 같은 길의 빠른 두 번 누름(일부러 두 칸)은 그대로 둔다. 창은 처리 시각 기준이라,
 /// 첫 처리(새 대화방 화면 만들기)로 메인 스레드가 잠시 막혀 두 번째 길이 늦게 와도 걸러지도록 넉넉히 둔다.
 public struct KeyDeduper: Sendable {
-    public enum Source: Sendable, Equatable { case shortcut, gameController }
+    /// `shortcut` = SwiftUI `.keyboardShortcut` · `gameController` = GameController 키 변화 ·
+    /// `keyPress` = SwiftUI `onKeyPress`(iOS 17+, 작성창 Return 을 입력칸보다 먼저 받는다).
+    public enum Source: Sendable, Equatable { case shortcut, gameController, keyPress }
 
     public let window: TimeInterval
     private var last: [String: (source: Source, at: TimeInterval)] = [:]
