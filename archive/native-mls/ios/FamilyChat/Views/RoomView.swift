@@ -74,6 +74,8 @@ struct RoomView: View {
     @State private var keyNewlineAt: Date?
     /// 「복사했어요」(선택 모드 ⌘C).
     @State private var toast: String?
+    /// 작성창 키 처리(Enter·Shift+Enter)는 조금 늦게 돈다 — 그 사이 Esc(대화 읽기)가 오면 이 값이 바뀌어 늦은 처리를 버린다.
+    @State private var composerKeyEpoch = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -733,6 +735,7 @@ struct RoomView: View {
         case .nextRoom: switchRoom(1)
         case .backToList: navigator.backToList()
         case .readTimeline:
+            composerKeyEpoch += 1   // 대기 중인 Enter·Shift+Enter 처리 취소(커서를 다시 작성창으로 끌어오지 않게)
             // 작성창 → 대화 읽기는 마지막 말풍선부터, 선택 모드 → 대화 읽기는 고르던 자리에서 이어 읽는다.
             if !selectingByKey { keyCursor = nil }
             selectingByKey = false
@@ -782,7 +785,11 @@ struct RoomView: View {
     /// (웹은 조합을 확정하는 Enter 를 무시해 한 번 더 눌러야 보낸다. iOS 는 키가 언제 조합을 끝냈는지 알 수 없어 확정 뒤 한 번에 보낸다.)
     private func composerKey(newline: Bool, attempt: Int = 0) {
         let pressedAt = Date()
+        let epoch = composerKeyEpoch
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+            // 그 사이 다른 방으로 넘어갔으면(PageUp/Down) 입력칸은 새 방 것이다 — 새 방 글을 이 방으로 보내지 않게 버린다.
+            // 그 사이 Esc 로 대화 읽기로 나갔으면 버린다.
+            guard navigator.path.last == room, epoch == composerKeyEpoch else { return }
             if let native = nativeNewlineAt, native >= pressedAt.addingTimeInterval(-0.3 - Double(attempt) * 0.06) { return }
             // (작성창 상태에서 누른 키다. 입력칸이 Return 으로 커서를 놓아 FocusState 가 벌써 false 일 수 있어 여기서 다시 묻지 않는다.)
             if FirstResponderText.hasMarkedText {
