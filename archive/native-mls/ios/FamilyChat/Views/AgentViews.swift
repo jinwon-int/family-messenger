@@ -213,15 +213,25 @@ struct AgentChoicesCard: View {
     let state: AgentChoices.State
     /// 방이 준비됐고 보내는 중이 아니다(보내는 동안 카드 비활성).
     let enabled: Bool
+    /// 체크한 번호 — 대화방이 글 seq 별로 들고 있다(§3.1 #629: ⌥1~9 단축키도 같은 선택을 토글한다).
+    @Binding var selected: Set<Int>
     /// 고른 번호(오름차순).
     let send: ([Int]) -> Void
-    @State private var selected: Set<Int> = []
     @Environment(\.hande) private var p
 
     var body: some View {
         switch state {
         case .open:
-            openCard
+            VStack(alignment: .leading, spacing: 4) {
+                openCard
+                // §3.1(#629): 하드웨어 키보드가 있으면 카드 아래 작은 안내.
+                if HardwareKeyboard.isConnected {
+                    Text(Strings.choiceKeyHint)
+                        .font(.caption2)
+                        .foregroundStyle(p.inkDim)
+                        .padding(.horizontal, 4)
+                }
+            }
         case .answered(let numbers):
             Text(Strings.choiceAnswered(numbers, labels: numbers.map { choices.label(of: $0) ?? "" }))
                 .font(.footnote)
