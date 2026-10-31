@@ -46,7 +46,6 @@ struct RoomView: View {
     @State private var choiceSelections: [Int64: Set<Int>] = [:]
     /// #405 시간 표시: 행별 시간 보임 여부 · 날짜 구분선.
     @State private var stamps: [Int64: TimelineStamps.Stamp] = [:]
-    private static let thinkingRowID: Int64 = -1
     /// 최하단 표지(높이 1pt, 항상 있음) — 진입·새 메시지·내용 증가 때의 스크롤 목표. 「생각하는 중」 줄은 에이전트가 바로 답하는 방
     /// (family-acc)에서는 높이 0이라 그 줄을 목표로 삼으면 끝까지 가지 않았다(오너 보고 build 31: family 는 되고 family-acc 는 2~3번째).
     private static let bottomSentinelID: Int64 = -2
@@ -114,19 +113,10 @@ struct RoomView: View {
                                     }
                             }
                         }
-                        // 꼬리는 lazy 가 아니다: 최근 행·「생각하는 중」·바닥 표지가 항상 실제 높이로 존재해야 `scrollTo` 와 표지 측정이 정확하다.
+                        // 꼬리는 lazy 가 아니다: 최근 행·바닥 표지가 항상 실제 높이로 존재해야 `scrollTo` 와 표지 측정이 정확하다.
                         // 새 글은 늘 여기에 붙는다(경계 고정 — `TimelineTail`).
                         ForEach(messages.dropFirst(tailStart)) { item in row(item, proxy) }
-                        // #405 P1 · #601: 내 글 뒤 에이전트 답이 아직 없으면 "…의 답 기다리는 중"(앱 추정 — 에이전트 신호 없음,
-                        // 20분 상한 — 15초마다 다시 본다). 작업 중이라고 말하지 않는다.
-                        TimelineView(.periodic(from: .now, by: 15)) { context in
-                            if let agent = AgentThinking.agent(messages.map(\.record), roster: model.agentRoster,
-                                                               myDevice: model.deviceId, now: context.date) {
-                                AwaitingReplyRow(name: AgentRoster.displayName(device: agent, names: Strings.agentNames))
-                                    .padding(.top, 2)
-                            }
-                        }
-                        .id(Self.thinkingRowID)
+                        // 「…의 답 기다리는 중」 줄은 오너 요청(2026-11-01)으로 없앴다 — 실제 작업 신호는 아래 status-v1 말풍선(#560)이 보여 준다.
                         // status-v1(#560): 에이전트 작업 상태 임시 말풍선(보낸이마다 하나 — 제자리 갱신, 답이 오면·5분 뒤 사라짐). 저장하지 않는다.
                         ForEach(model.agentStatuses[room] ?? []) { status in
                             AgentStatusRow(name: AgentRoster.displayName(device: status.sender, names: Strings.agentNames), text: status.text)
@@ -553,7 +543,7 @@ struct RoomView: View {
     /// #497: 같은 런루프의 요청(내용 증가·표지 실측·첨부 로딩·새 글)은 **하나**로 합친다 — 하나라도 즉시면 즉시. 애니메이션 스크롤 뒤에는
     /// 그동안 미룬 보정을 한 번 다시 잰다(애니메이션 중 즉시 보정이 끼어들어 위아래로 흔들렸다).
     private func scrollToLatest(_ proxy: ScrollViewProxy, animated: Bool) {
-        // 목표는 높이 1pt 의 최하단 표지(「생각하는 중」 줄이 있으면 그 아래) — 높이 0 인 뷰는 scrollTo 가 끝까지 가지 않는다.
+        // 목표는 높이 1pt 의 최하단 표지— 높이 0 인 뷰는 scrollTo 가 끝까지 가지 않는다.
         guard !messages.isEmpty, tracking.request(animated: animated) else { return }
         let last = Self.bottomSentinelID
         let animation: TimeInterval = 0.2

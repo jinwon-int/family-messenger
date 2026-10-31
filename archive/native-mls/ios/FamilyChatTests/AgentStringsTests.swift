@@ -33,13 +33,6 @@ final class AgentStringsTests: XCTestCase {
         XCTAssertEqual(Strings.subjectParticle("newnode"), "이(가)")
     }
 
-    /// #601: 답 없음 표시는 앱 추정이다 — 작업 중("생각하는 중")이라고 단정하지 않고 기다림만 말한다.
-    func testAwaitingReplyDoesNotClaimTheAgentIsWorking() {
-        XCTAssertEqual(Strings.agentAwaitingReply("노숙"), "노숙의 답 기다리는 중")
-        XCTAssertEqual(Strings.agentAwaitingReply("공명✴️"), "공명✴️의 답 기다리는 중")
-        XCTAssertFalse(Strings.agentAwaitingReply("공명").contains("생각"))
-    }
-
     func testSenderLabelUsesNamesAndDeviceKind() {
         XCTAssertEqual(Strings.senderLabel(device: "owner-pc"), "진원 · PC")
         XCTAssertEqual(Strings.senderLabel(device: "jungin-iphone-1b89e3"), "쩡이🍎 · 아이폰")

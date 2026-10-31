@@ -1,5 +1,5 @@
 // 에이전트 대화 화면 조각(#405 P1): 에이전트 카드(마크다운) · 승인 카드(허락/거절) · 생각 중 · "내 마지막 말" 바.
-// 판정은 모두 Core(AgentMarkdown·AgentApproval·AgentThinking·LastSent)가 하고, 여기는 그리기만 한다.
+// 판정은 모두 Core(AgentMarkdown·AgentApproval·LastSent)가 하고, 여기는 그리기만 한다.
 // 받은 글은 신뢰하지 않는다(웹 rich-text.js 원칙): 링크는 눌러도 열리지 않게 글자로만 두고, 이미지는 그리지 않는다.
 import SwiftUI
 import Combine
@@ -309,21 +309,6 @@ struct AgentChoicesCard: View {
         .accessibilityValue(Strings.choiceRowA11yValue(isSelected))
         .accessibilityHint(Strings.choiceA11yHint)
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-    }
-}
-
-/// "공명의 답 기다리는 중" — 정적 표시. 앱 추정(`AgentThinking`)이라 작업 중을 연상시키는 애니메이션은 쓰지 않는다(#601).
-/// 실제 작업 신호(status-v1 `⏳` 말풍선, #560)가 생기면 그쪽이 "일하는 중"을 보여 준다.
-struct AwaitingReplyRow: View {
-    let name: String
-    @Environment(\.hande) private var p
-
-    var body: some View {
-        HStack(spacing: 6) {
-            SeatDot(agent: true, size: 8, dim: true)
-            Text(Strings.agentAwaitingReply(name)).font(.caption).foregroundStyle(p.agentText.opacity(0.8))
-        }
-        .accessibilityElement(children: .combine)
     }
 }
 
