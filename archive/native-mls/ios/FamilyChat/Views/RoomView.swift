@@ -60,6 +60,8 @@ struct RoomView: View {
     @State private var tailAnchor: Int64?
     /// 대화 읽기 ↑/↓ 로 지난번에 옮겨 간 말풍선(seq). 읽기를 새로 시작하면(Esc·End·작성창 복귀) 비운다 — 마지막 말풍선에서 다시 시작.
     @State private var keyCursor: Int64?
+    /// 대화 읽기에서 Enter 로 작성창에 들어온 시각 — 그 Enter 의 키 반복이 초안을 보내지 않게(`HardwareKeys.suppressSend`).
+    @State private var keyFocusedAt: Date?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -365,7 +367,13 @@ struct RoomView: View {
                                                shift: HardwareKeyboard.isShiftPressed) {
                     case .keep: break
                     case .revert(let text): draft = text
-                    case .send(let text): sendText(text)
+                    case .send(let text):
+                        // Enter 로 작성창에 막 들어왔다면 그 Enter 의 반복 입력 — 보내지 않고 줄바꿈만 되돌린다.
+                        if HardwareKeys.suppressSend(sinceKeyFocus: keyFocusedAt.map { Date().timeIntervalSince($0) }) {
+                            draft = text
+                        } else {
+                            sendText(text)
+                        }
                     }
                 }
                 .padding(.horizontal, 16)
@@ -625,10 +633,10 @@ struct RoomView: View {
     private var keyboardShortcuts: some View {
         ZStack {
             Button(Strings.sendButton) { sendText(draft) }.keyboardShortcut(.return, modifiers: .command)
-            Button(Strings.shortcutReadTimeline) { perform(.readTimeline, nil) }.keyboardShortcut(.escape, modifiers: [])
-            Button(Strings.shortcutPreviousRoom) { perform(.previousRoom, nil) }.keyboardShortcut(.pageUp, modifiers: [])
-            Button(Strings.shortcutNextRoom) { perform(.nextRoom, nil) }.keyboardShortcut(.pageDown, modifiers: [])
-            Button(Strings.shortcutRoomList) { perform(.backToList, nil) }.keyboardShortcut(.home, modifiers: [])
+            Button(Strings.shortcutReadTimeline) { perform(.readTimeline, nil, from: .shortcut) }.keyboardShortcut(.escape, modifiers: [])
+            Button(Strings.shortcutPreviousRoom) { perform(.previousRoom, nil, from: .shortcut) }.keyboardShortcut(.pageUp, modifiers: [])
+            Button(Strings.shortcutNextRoom) { perform(.nextRoom, nil, from: .shortcut) }.keyboardShortcut(.pageDown, modifiers: [])
+            Button(Strings.shortcutRoomList) { perform(.backToList, nil, from: .shortcut) }.keyboardShortcut(.home, modifiers: [])
         }
         .opacity(0)
         .frame(width: 0, height: 0)
@@ -648,22 +656,26 @@ struct RoomView: View {
 
     /// GameController 로 받은 키(`HardwareKeyRouter`). 판정은 Core `HardwareKeys.roomAction`(웹 keyboard.js 휴대폰 세로 규칙).
     private func handleKey(_ press: HardwareKeys.Press, _ proxy: ScrollViewProxy) {
-        guard !keysBlocked, let action = HardwareKeys.roomAction(press, composerFocused: composerFocused) else { return }
-        perform(action, proxy)
+        guard let action = HardwareKeys.roomAction(press, composerFocused: composerFocused) else { return }
+        perform(action, proxy, from: .gameController)
     }
 
     /// 단축키 동작 — SwiftUI 단축키와 GameController 두 길에서 오므로 `once` 로 한 번만. 스크롤은 GameController 길(proxy 있음)에서만 온다.
-    private func perform(_ action: HardwareKeys.RoomAction, _ proxy: ScrollViewProxy?) {
-        HardwareKeyRouter.shared.once(action.rawValue) {
+    /// 창이 떠 있거나 맨 위가 아니면 어느 길이든 쓰지 않는다(띄운 화면이 시트의 다음 응답자라 SwiftUI 단축키도 닿는다).
+    private func perform(_ action: HardwareKeys.RoomAction, _ proxy: ScrollViewProxy?, from source: KeyDeduper.Source) {
+        guard !keysBlocked else { return }
+        HardwareKeyRouter.shared.once(action.rawValue, from: source) {
             switch action {
             case .previousRoom: switchRoom(-1)
             case .nextRoom: switchRoom(1)
             case .backToList: navigator.backToList()
             case .readTimeline:
                 keyCursor = nil
+                keyFocusedAt = nil
                 composerFocused = false
             case .focusComposer:
                 keyCursor = nil
+                keyFocusedAt = Date()
                 composerFocused = true   // onChange(of: composerFocused) 가 최신 글로 내려 준다
             case .scrollUp, .scrollDown, .scrollToLatest:
                 if let proxy { scrollByKey(action, proxy) }
@@ -680,6 +692,8 @@ struct RoomView: View {
         case .row(let id)?:
             keyCursor = id
             followLatest = false
+            // 손가락 끌기와 같게 취급한다: 바닥 근처에서 ↑ 해도 `refollowIfSettledAtBottom`(sinceDrag 기준)이 바로 따라가기를 되돌리지 않게.
+            tracking.lastDrag = Date()
             withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(id, anchor: .center) }
         case .latest?:
             keyCursor = nil

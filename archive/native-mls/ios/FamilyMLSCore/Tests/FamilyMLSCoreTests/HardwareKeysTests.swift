@@ -86,12 +86,23 @@ final class HardwareKeysTests: XCTestCase {
         XCTAssertEqual(K.scrollTarget(rows: [], cursor: nil, up: false), .latest)
     }
 
-    func testDeduperDropsSecondDeliveryOfOnePress() {
-        var dedupe = KeyDeduper(window: 0.08)
-        XCTAssertTrue(dedupe.accept("nextRoom", at: 100.000))
-        XCTAssertFalse(dedupe.accept("nextRoom", at: 100.010))   // 같은 누름이 두 번째 길로 도착
-        XCTAssertTrue(dedupe.accept("previousRoom", at: 100.012)) // 다른 동작은 막지 않는다
-        XCTAssertTrue(dedupe.accept("nextRoom", at: 100.150))    // 일부러 다시 누름
-        XCTAssertTrue(dedupe.accept("nextRoom", at: 50.0))       // 시계가 뒤로 가면(재부팅 등) 막지 않는다
+    func testDeduperDropsOtherPathDeliveryOfOnePress() {
+        var dedupe = KeyDeduper(window: 0.5)
+        XCTAssertTrue(dedupe.accept("nextRoom", from: .shortcut, at: 100.000))
+        XCTAssertFalse(dedupe.accept("nextRoom", from: .gameController, at: 100.300))  // 같은 누름이 다른 길로 늦게 도착(메인 스레드 막힘)
+        XCTAssertTrue(dedupe.accept("nextRoom", from: .shortcut, at: 100.120))         // 같은 길의 빠른 두 번째 누름은 살린다
+        XCTAssertTrue(dedupe.accept("previousRoom", from: .gameController, at: 100.130)) // 다른 동작은 막지 않는다
+        XCTAssertTrue(dedupe.accept("nextRoom", from: .gameController, at: 100.700))  // 창 밖 = 새 누름
+        XCTAssertTrue(dedupe.accept("nextRoom", from: .gameController, at: 100.750))  // GameController 만 오는 경우(작성창) 빠른 연타
+        XCTAssertTrue(dedupe.accept("nextRoom", from: .shortcut, at: 50.0))           // 시계가 뒤로 가면(재부팅 등) 막지 않는다
+    }
+
+    func testSendGuardAfterEnterFocus() {
+        XCTAssertFalse(K.suppressSend(sinceKeyFocus: nil))    // 손으로 작성창을 누른 경우
+        XCTAssertTrue(K.suppressSend(sinceKeyFocus: 0.0))
+        XCTAssertTrue(K.suppressSend(sinceKeyFocus: 0.55))    // 키 반복으로 들어온 줄바꿈
+        XCTAssertFalse(K.suppressSend(sinceKeyFocus: 0.8))
+        XCTAssertFalse(K.suppressSend(sinceKeyFocus: 5))
+        XCTAssertFalse(K.suppressSend(sinceKeyFocus: -1))     // 시계 역행은 막지 않는다
     }
 }

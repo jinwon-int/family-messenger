@@ -47,6 +47,8 @@ enum HardwareKeyboard {
 /// 무관하게 키 변화를 받는다 — Shift+Enter 판정(`HardwareKeyboard.isShiftPressed`)이 이미 쓰는 길이다.
 /// 화면(대화방·목록)이 `presses` 를 구독하고, 자기가 맨 위에 보일 때만 처리한다. 한 번의 누름이 SwiftUI 단축키와 이 길 두 곳으로 올 수 있어
 /// 동작은 `once` 로 한 번만 한다(앱 전체에 하나 — 방을 바꾸면 화면 인스턴스가 새로 생기므로 화면마다 두면 두 번 넘어간다).
+/// GameController 누름이 한 번이라도 도착하면(`gameControllerDelivering`) 그 뒤로는 SwiftUI 단축키 길을 쓰지 않는다 — 두 길 경합 자체를 없앤다.
+/// GameController 가 키를 주지 않는 기기에서는 SwiftUI 길이 지금처럼 남는다(나빠지지 않음).
 @MainActor
 final class HardwareKeyRouter {
     static let shared = HardwareKeyRouter()
@@ -54,6 +56,8 @@ final class HardwareKeyRouter {
     let presses = PassthroughSubject<HardwareKeys.Press, Never>()
     private var deduper = KeyDeduper()
     private var started = false
+    /// GameController 로 키 누름을 한 번이라도 받았다.
+    private(set) var gameControllerDelivering = false
     private var connectObserver: NSObjectProtocol?
 
     /// 한 번만 붙인다(이미 연결된 키보드 + 나중에 연결되는 키보드).
@@ -68,9 +72,15 @@ final class HardwareKeyRouter {
         #endif
     }
 
-    /// 같은 동작이 아주 짧은 간격으로 두 번 오면(한 누름 · 두 길) 한 번만 한다.
-    func once(_ action: String, _ body: () -> Void) {
-        if deduper.accept(action, at: ProcessInfo.processInfo.systemUptime) { body() }
+    /// 한 누름이 두 길로 와도 한 번만 한다. SwiftUI 단축키 길은 GameController 가 키를 주기 시작하면 쓰지 않는다.
+    func once(_ action: String, from source: KeyDeduper.Source, _ body: () -> Void) {
+        if source == .shortcut && gameControllerDelivering { return }
+        if deduper.accept(action, from: source, at: ProcessInfo.processInfo.systemUptime) { body() }
+    }
+
+    private func deliver(_ press: HardwareKeys.Press) {
+        gameControllerDelivering = true
+        presses.send(press)
     }
 
     #if canImport(GameController)
@@ -83,7 +93,7 @@ final class HardwareKeyRouter {
         { input, _, code, pressed in
             guard pressed, let mapped = HardwareKeyRouter.key(for: code) else { return }
             let press = HardwareKeys.Press(mapped, HardwareKeyRouter.modifiers(input))
-            Task { @MainActor in HardwareKeyRouter.shared.presses.send(press) }
+            Task { @MainActor in HardwareKeyRouter.shared.deliver(press) }
         }
     }
 

@@ -106,6 +106,17 @@ public enum HardwareKeys {
         }
     }
 
+    /// 대화 읽기에서 Enter 로 작성창에 들어간 직후, 그 Enter 를 누르고 있어 반복 입력된 줄바꿈이 작성창에 들어오면
+    /// `ComposerKeys` 가 저장된 초안을 보내 버린다 — 이 시간 안의 Enter 전송은 줄바꿈만 되돌린다(보내지 않음).
+    /// 키 반복은 보통 0.5초 뒤 시작하므로 그보다 조금 길게 둔다.
+    public static let sendGuardAfterKeyFocus: TimeInterval = 0.8
+
+    /// `sinceKeyFocus` = Enter 로 작성창에 들어온 뒤 지난 초(없으면 nil). true 면 이번 Enter 전송을 막는다.
+    public static func suppressSend(sinceKeyFocus: TimeInterval?) -> Bool {
+        guard let sinceKeyFocus else { return false }
+        return sinceKeyFocus >= 0 && sinceKeyFocus < sendGuardAfterKeyFocus
+    }
+
     /// 웹 `listPageMove` 와 같다: 출발점이 없거나 범위 밖이면 PageDown 은 첫 행, PageUp 은 마지막 행. 끝에서는 제자리.
     public static func pageMove(down: Bool, count: Int, current: Int?) -> Int? {
         guard count > 0 else { return nil }
@@ -114,21 +125,24 @@ public enum HardwareKeys {
     }
 }
 
-/// 같은 동작이 아주 짧은 간격으로 두 번 오면 한 번만 한다. 앱은 한 번의 키 누름을 두 길로 받을 수 있다:
-/// SwiftUI `.keyboardShortcut`(작성창이 키를 먼저 쓰지 않을 때) + GameController 키 변화(늘). 둘 다 PageDown 을 처리하면 방이 두 칸 넘어간다.
-/// 창은 사람이 일부러 두 번 누르는 간격(≥ 약 100ms)보다 짧게 둔다.
+/// 한 번의 키 누름이 두 길로 와도 한 번만 한다. 앱은 같은 누름을 SwiftUI `.keyboardShortcut`(작성창이 키를 먼저 쓰지 않을 때)과
+/// GameController 키 변화(늘) 양쪽에서 받을 수 있다 — 둘 다 PageDown 을 처리하면 방이 두 칸 넘어간다.
+/// **다른 길**에서 `window` 안에 온 같은 동작만 버린다: 같은 길의 빠른 두 번 누름(일부러 두 칸)은 그대로 둔다. 창은 처리 시각 기준이라,
+/// 첫 처리(새 대화방 화면 만들기)로 메인 스레드가 잠시 막혀 두 번째 길이 늦게 와도 걸러지도록 넉넉히 둔다.
 public struct KeyDeduper: Sendable {
-    public let window: TimeInterval
-    private var last: [String: TimeInterval] = [:]
+    public enum Source: Sendable, Equatable { case shortcut, gameController }
 
-    public init(window: TimeInterval = 0.08) {
+    public let window: TimeInterval
+    private var last: [String: (source: Source, at: TimeInterval)] = [:]
+
+    public init(window: TimeInterval = 0.5) {
         self.window = window
     }
 
-    /// `now`(단조 시계 초)에 `action` 을 해도 되는가 — 해도 되면 기록하고 true.
-    public mutating func accept(_ action: String, at now: TimeInterval) -> Bool {
-        if let previous = last[action], now >= previous, now - previous < window { return false }
-        last[action] = now
+    /// `now`(단조 시계 초)에 `source` 길로 온 `action` 을 해도 되는가 — 해도 되면 기록하고 true. 버린 것은 기록하지 않는다.
+    public mutating func accept(_ action: String, from source: Source, at now: TimeInterval) -> Bool {
+        if let previous = last[action], previous.source != source, now >= previous.at, now - previous.at < window { return false }
+        last[action] = (source, now)
         return true
     }
 }
