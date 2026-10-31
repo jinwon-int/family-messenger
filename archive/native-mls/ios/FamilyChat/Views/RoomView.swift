@@ -37,6 +37,10 @@ struct RoomView: View {
     @State private var attachBusy = false
     /// #405 P1: 승인 요청 seq → 상태(허락/거절 버튼을 보일지).
     @State private var approvalStates: [Int64: AgentApproval.State] = [:]
+    /// agent-choices-v1(#620): 선택지가 있는 에이전트 글 seq → 선택지 + 상태(open/answered/closed). 타임라인에서 계산(저장 안 함).
+    @State private var choiceCards: [Int64: AgentChoices.Card] = [:]
+    /// 선택지 카드에서 「보내기」를 눌러 보내는 중인 글 seq — 그동안 그 카드는 비활성.
+    @State private var choiceSending: Set<Int64> = []
     /// #405 시간 표시: 행별 시간 보임 여부 · 날짜 구분선.
     @State private var stamps: [Int64: TimelineStamps.Stamp] = [:]
     private static let thinkingRowID: Int64 = -1
@@ -394,6 +398,8 @@ struct RoomView: View {
                    time: stamps[item.id]?.showTime == true ? item.record.receivedAt : nil,
                    roster: model.agentRoster, approval: approvalStates[item.id], canAnswer: isReady,
                    decide: { number, allow in answerApproval(number, allow: allow) },
+                   choiceCard: choiceCards[item.id], choiceSending: choiceSending.contains(item.id),
+                   choose: { number in Task { await answerChoice(item.id, number) } },
                    onAttachmentLoaded: { attachmentLoaded(item.id, proxy) },
                    retry: { Task { await model.retry(outgoingId: item.id, room: room) } },
                    selectText: { selecting = SelectableMessage(text: $0) })
@@ -440,12 +446,24 @@ struct RoomView: View {
             model.noteRead(room: room, seq: last.id)
         }
         approvalStates = AgentApproval.states(messages.map(\.record), roster: model.agentRoster)
+        // 규격 §2: 「저장된」 메시지만 본다 — 보내는 중인 글(outgoing, 음수 seq)은 저장소에 오르면 그때 answered 가 된다.
+        choiceCards = AgentChoices.cards(messages.filter { $0.outgoing == nil }.map(\.record),
+                                         roster: model.agentRoster, myDevice: model.deviceId)
         stamps = TimelineStamps.compute(messages.map(\.record), calendar: .current)
     }
 
     /// #405 P1: 승인 카드 버튼 = 봇이 알아듣는 「승인 n」/「거절 n」 글을 대신 보낸다.
     private func answerApproval(_ number: Int, allow: Bool) {
         Task { _ = await model.send(room: room, text: Strings.approvalReply(number, allow: allow)) }
+    }
+
+    /// agent-choices-v1(#620): 선택지 카드 「보내기」 = 손으로 치는 답과 같은 글 `N` 을 평소 전송 경로(`answerApproval` 과 같은 `model.send`)로.
+    /// 보내는 동안 그 카드는 비활성 — 보낸 글이 저장소에 오르면 상태 규칙으로 answered(N) 가 된다(실패하면 다시 고를 수 있다).
+    private func answerChoice(_ seq: Int64, _ number: Int) async {
+        guard !choiceSending.contains(seq) else { return }
+        choiceSending.insert(seq)
+        defer { choiceSending.remove(seq) }
+        _ = await model.send(room: room, text: Strings.choiceReply(number))
     }
 
     /// #472: 과거 글 한 페이지를 위에 붙인다. 보던 행(종전 첫 행)을 화면 위에 그대로 두어 점프하지 않는다 — 새 행이 붙은 뒤
@@ -676,6 +694,10 @@ struct MessageRow: View {
     var approval: AgentApproval.State? = nil
     var canAnswer = true
     var decide: (Int, Bool) -> Void = { _, _ in }
+    /// agent-choices-v1(#620): 이 에이전트 글의 선택지 카드(nil = 선택지 없음) · 보내는 중 · 「보내기」(번호).
+    var choiceCard: AgentChoices.Card? = nil
+    var choiceSending = false
+    var choose: (Int) -> Void = { _ in }
     /// #398: 첨부 본체를 읽어 행 높이가 바뀐 뒤 한 번.
     var onAttachmentLoaded: () -> Void = {}
     /// 보내는 글이 실패했을 때 「다시 보내기」.
@@ -712,8 +734,14 @@ struct MessageRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .center)
         } else {
-            AgentMessageCard(name: name, text: message.body, time: time)
-                .messageCopyMenu(MessageCopy.text(of: message), select: selectText)
+            VStack(alignment: .leading, spacing: 6) {
+                AgentMessageCard(name: name, text: message.body, time: time)
+                    .messageCopyMenu(MessageCopy.text(of: message), select: selectText)
+                // 선택지(open = 체크 + 보내기, answered = 한 줄). closed 는 말풍선만.
+                if let card = choiceCard, card.state != .closed {
+                    AgentChoicesCard(choices: card.choices, state: card.state, enabled: canAnswer && !choiceSending, send: choose)
+                }
+            }
         }
     }
 

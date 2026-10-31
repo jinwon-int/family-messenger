@@ -37,6 +37,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -78,6 +79,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -91,6 +93,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.seoyoon_family.hande.BuildConfig
 import com.seoyoon_family.hande.core.AgentActors
+import com.seoyoon_family.hande.core.AgentChoices
 import com.seoyoon_family.hande.core.AppLogin
 import com.seoyoon_family.hande.core.CandidateUi
 import com.seoyoon_family.hande.core.DeviceHub
@@ -897,6 +900,9 @@ fun RoomScreen(room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> 
     // 맨 아래 따라가기: 새 글이나 작업 상태 말풍선이 생기면(사라질 때는 아님) 마지막 항목으로.
     val total = room.messages.size + room.statuses.size
     LaunchedEffect(room.messages.size, room.statuses.size) { if (total > 0) listState.animateScrollToItem(total - 1) }
+    // agent-choices-v1(#620): 에이전트 글 끝 번호 선택지 → 말풍선 아래 카드(open/answered). 상태는 타임라인에서 계산(저장 안 함).
+    val choiceCards = remember(room.messages) { AgentChoices.cards(room.messages) }
+    val canChoose = halted == null && room.joined
     Scaffold(
         containerColor = Color.Transparent, contentColor = MaterialTheme.colorScheme.onBackground,
         topBar = {
@@ -914,7 +920,17 @@ fun RoomScreen(room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> 
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize().imePadding()) {
             LazyColumn(Modifier.weight(1f).fillMaxWidth().alpha(if (halted != null) 0.6f else 1f), state = listState, contentPadding = PaddingValues(12.dp)) {
-                items(room.messages, key = { "${it.sender}-${it.seq}" }) { m -> MessageRow(m) }
+                itemsIndexed(room.messages, key = { _, m -> "${m.sender}-${m.seq}" }) { i, m ->
+                    val card = choiceCards.getOrNull(i)
+                    if (card == null) {
+                        MessageRow(m)
+                    } else {
+                        Column(Modifier.fillMaxWidth()) {
+                            MessageRow(m)
+                            AgentChoicesCard(m, card, enabled = canChoose, onSend = onSend)
+                        }
+                    }
+                }
                 // status-v1(#560): 보낸이별 임시 말풍선 하나 — 키가 보낸이라 제자리에서 본문만 바뀐다.
                 items(room.statuses, key = { "status:${it.sender}" }) { s -> StatusRow(s) }
             }
@@ -1028,6 +1044,94 @@ private fun MessageRow(m: MessageUi) {
             color = if (m.mine) colors.onEmber else colors.ink,
             style = MaterialTheme.typography.bodyLarge,
         )
+    }
+}
+
+/**
+ * 에이전트 선택지 카드(agent-choices-v1 #620 §3): 행 = 체크 원 + 번호 + 라벨(최대 3줄) + 「권장」 알약. 행을 누르면 그 하나만 고르고(다시 누르면 해제),
+ * 고른 것이 있을 때만 [보내기] → 평소 전송 경로(`onSend`)로 `"N"` 을 보낸다(손으로 치는 것과 같은 글). 보내는 동안 카드는 꺼지고,
+ * 보낸 글이 타임라인에 오면 상태가 answered 로 바뀌어 한 줄 「✓ N번 선택 — 라벨」 이 된다. 전송이 실패해 글이 안 오면 10초 뒤 다시 켠다.
+ * `enabled = false`(꺼진 자리·참여 전)면 고를 수도 보낼 수도 없다.
+ */
+@Composable
+private fun AgentChoicesCard(m: MessageUi, card: AgentChoices.Card, enabled: Boolean, onSend: (String) -> Unit) {
+    val colors = LocalHandeColors.current
+    val choices = card.choices
+    val state = card.state
+    if (state is AgentChoices.State.Answered) {
+        Text(
+            Strings.choiceAnswered(state.number, choices.labelOf(state.number)),
+            Modifier.fillMaxWidth(0.82f).padding(start = 4.dp, top = 4.dp, bottom = 2.dp),
+            color = colors.agentText, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
+        )
+        return
+    }
+    var picked by remember(m.seq) { mutableStateOf<Int?>(null) }
+    var sending by remember(m.seq) { mutableStateOf(false) }
+    LaunchedEffect(sending) {
+        if (sending) {
+            delay(10_000)
+            sending = false
+        }
+    }
+    val active = enabled && !sending
+    val shape = RoundedCornerShape(14.dp)
+    Column(
+        Modifier
+            .fillMaxWidth(0.82f)
+            .padding(top = 6.dp)
+            .clip(shape)
+            .background(if (colors.isDay) colors.surface else colors.agent.copy(alpha = 0.06f))
+            .border(colors.lineWidth, if (colors.isDay) colors.agent else colors.agent.copy(alpha = 0.35f), shape)
+            .alpha(if (active) 1f else 0.6f)
+            .padding(vertical = 4.dp),
+    ) {
+        for (item in choices.items) {
+            val on = picked == item.number
+            val recommended = choices.recommended == item.number
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = active, role = Role.Button) { picked = if (on) null else item.number }
+                    .semantics {
+                        contentDescription = Strings.choiceRowLabel(item.number, item.label, recommended)
+                        this.selected = on
+                    }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Box(
+                    Modifier
+                        .padding(top = 1.dp)
+                        .size(20.dp)
+                        .clip(CircleShape)
+                        .then(if (on) Modifier.background(colors.ember) else Modifier.border(1.5.dp, colors.inkDim, CircleShape)),
+                    contentAlignment = Alignment.Center,
+                ) { if (on) Text("✓", color = colors.onEmber, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+                Text("${item.number}", color = colors.agentText, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyLarge)
+                Text(item.label, Modifier.weight(1f), color = colors.ink, style = MaterialTheme.typography.bodyLarge, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                if (recommended) Pill(Strings.choiceRecommended, colors.ink, colors.ember.copy(alpha = 0.22f))
+            }
+        }
+        val canSend = active && picked != null
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.End) {
+            Text(
+                Strings.choiceSend,
+                Modifier
+                    .clip(CircleShape)
+                    .background(if (canSend) colors.ember else colors.ember.copy(alpha = 0.35f))
+                    .clickable(enabled = canSend, role = Role.Button) {
+                        picked?.let { n ->
+                            sending = true
+                            onSend(n.toString())
+                        }
+                    }
+                    .semantics { contentDescription = Strings.choiceSendLabel(picked) }
+                    .padding(horizontal = 18.dp, vertical = 8.dp),
+                color = colors.onEmber, fontWeight = FontWeight.SemiBold,
+            )
+        }
     }
 }
 
