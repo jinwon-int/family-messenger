@@ -913,6 +913,12 @@ final class AppModel: ObservableObject {
     /// 같은 초 안의 순서를 읽을 수 있게 첫 기록 기준 ms 를 붙인다(2차 계측: 끌기 시작 → 높이 변화 → 명령의 선후가 핵심).
     private var scrollNoteEpoch: Date?
 
+    /// 하드웨어 키보드 진단(오너 실기기 확인용, 알림함 「기록 복사」에 실린다). 글 내용은 넣지 않는다 — 키·상태·길이만.
+    /// 사람이 누르는 속도로만 생겨 별도 예산 없이 기록한다.
+    func noteKey(_ line: String) {
+        record("key \(line)")
+    }
+
     func noteScroll(_ line: String, now: Date = Date()) {
         scrollNoteTimes.removeAll { now.timeIntervalSince($0) > Self.scrollNoteWindow }
         if scrollNoteTimes.count >= Self.scrollNoteBudget {
