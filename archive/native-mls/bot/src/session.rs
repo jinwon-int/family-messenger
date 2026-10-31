@@ -263,6 +263,9 @@ fn refused_marker_path(state_file: &Path) -> std::path::PathBuf {
 struct Ctx<'a> {
     client: &'a Client,
     own: &'a str,
+    /// The relay's typing route (#562 bot side, `TypingRoute`); `None` = no
+    /// typing signal at all (unit tests that never reach the relay).
+    typing: Option<&'a TypingRoute>,
 }
 
 /// Flush the room's MLS state to disk (rooms with a state path — the watch
@@ -466,7 +469,7 @@ pub fn run(opts: Options) -> Result<(), BotError> {
             emit(&serde_json::json!({
                 "event": "agent_started", "room": opts.room, "device": opts.device,
                 "owner_actor": config.owner_actor, "queue_max": config.queue_max,
-                "turn_secs": config.turn_secs, "turn_age_notice_secs": config.turn_age_notice_secs, "turn_age_renotice_secs": config.turn_age_renotice_secs, "reply_max_bytes": config.reply_max_bytes,
+                "turn_secs": config.turn_secs, "turn_age_notice_secs": config.turn_age_notice_secs, "turn_age_renotice_secs": config.turn_age_renotice_secs, "reply_max_bytes": config.reply_max_bytes, "typing": config.typing,
             }));
             Some(responder)
         }
@@ -502,7 +505,8 @@ pub fn run(opts: Options) -> Result<(), BotError> {
             echoes: 0, retry: VecDeque::new(), device: Device::new(&opts.device).map_err(|_| BotError::Local("device new: identity shape rejected"))?, state_path: None, mode: Mode::Watch, pending: None,
         });
     }
-    let ctx = Ctx { client: &client, own: &opts.device };
+    let typing = TypingRoute::new(&opts.base, opts.access.clone());
+    let ctx = Ctx { client: &client, own: &opts.device, typing: Some(&typing) };
     run_loop(&ctx, &mut rooms, &mut agent, deadline, None)
 }
 
@@ -512,6 +516,19 @@ pub fn run(opts: Options) -> Result<(), BotError> {
 fn run_loop(
     ctx: &Ctx, rooms: &mut Vec<RoomState>, agent: &mut Option<Responder>, deadline: Option<Instant>,
     steward: Option<&Steward>,
+) -> Result<(), BotError> {
+    let mut keepalive = TypingKeepalive::default();
+    let result = run_rounds(ctx, rooms, agent, deadline, steward, &mut keepalive);
+    // Leaving with a turn still typing (deadline, a fatal relay error, the
+    // worker gone): drop the signal now instead of letting the TTL run out.
+    let reason = if agent.as_ref().is_some_and(|r| r.typing_turn() == Err("worker_gone")) { "worker_gone" } else { "shutdown" };
+    typing_round(ctx, &mut keepalive, Err(reason), None, Instant::now());
+    result
+}
+
+fn run_rounds(
+    ctx: &Ctx, rooms: &mut Vec<RoomState>, agent: &mut Option<Responder>, deadline: Option<Instant>,
+    steward: Option<&Steward>, keepalive: &mut TypingKeepalive,
 ) -> Result<(), BotError> {
     let expired = |deadline: Option<Instant>| deadline.is_some_and(|d| Instant::now() >= d);
 
@@ -592,6 +609,8 @@ fn run_loop(
         // worker ends the session: the service manager restarts both halves
         // together rather than leaving a bot that reads everything and answers
         // nothing.
+        // Typing keepalive: the current turn's ending line, if this round posts it.
+        let mut typing_ended: Option<&'static str> = None;
         if let Some(responder) = agent.as_mut() {
             let multi = responder.room_frames();
             for (item_room, item) in responder.pump_routed()? {
@@ -631,6 +650,9 @@ fn run_loop(
                     emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": item_room, "reason": "no_agent_room" }));
                     continue;
                 };
+                if keepalive.room() == Some(main.room.as_str()) {
+                    typing_ended = typing_end_kind(&item).or(typing_ended);
+                }
                 match &item {
                     Outbound::WorkerGone { reason } => {
                         emit(&serde_json::json!({ "event": "agent_worker_gone", "room": main.room, "reason": reason }));
@@ -674,6 +696,12 @@ fn run_loop(
                     }
                 }
             }
+        }
+        // Typing keepalive (#562 bot side): after this round's posts, so a
+        // status line or interim that just dropped the relay's signal is
+        // re-armed at once and a posted reply ends it without a clear.
+        if let Some(responder) = agent.as_ref().filter(|r| r.typing()) {
+            typing_round(ctx, keepalive, typing_want(rooms, responder), typing_ended, Instant::now());
         }
         rounds += 1;
         if rounds % STATUS_EVERY == 0 {
@@ -1139,7 +1167,7 @@ impl room::SendHost for BotSender<'_, '_> {
     }
     fn persist(&mut self) -> Result<(), BotError> { flush(self.ctx, self.state) }
     fn post(&mut self, room: &str, post: &EventPost<'_>) -> Result<api::EventResponse, BotError> {
-        self.ctx.client.post_event(room, post)
+        post_application(self.ctx, room, post)
     }
 }
 
@@ -1196,8 +1224,22 @@ impl room::SendHost for StatusSender<'_, '_> {
     fn reserve_client_id(&mut self) -> String { status_client_id() }
     fn persist(&mut self) -> Result<(), BotError> { flush(self.ctx, self.state) }
     fn post(&mut self, room: &str, post: &EventPost<'_>) -> Result<api::EventResponse, BotError> {
-        self.ctx.client.post_event(room, post)
+        post_application(self.ctx, room, post)
     }
+}
+
+/// POST one encrypted application event (echo, reply, status line). A fresh
+/// row makes the relay drop this device's typing signal in the room
+/// (server.go `s.typing.clear` after storeEvent, #562) — the typing keepalive
+/// learns it here and re-arms on its next round if the turn goes on.
+fn post_application(ctx: &Ctx, room: &str, post: &EventPost<'_>) -> Result<api::EventResponse, BotError> {
+    let response = ctx.client.post_event(room, post)?;
+    if !response.duplicate {
+        if let Some(typing) = ctx.typing {
+            typing.note_post(room);
+        }
+    }
+    Ok(response)
 }
 
 /// `status-<uuid v4 shape, lowercase>` from the OS random source; on a host
@@ -1241,6 +1283,267 @@ fn publish_status(ctx: &Ctx, state: &mut RoomState, plaintext: &[u8]) -> Result<
         })),
     }
     Ok(())
+}
+
+// ---- typing keepalive (#562 bot side) ----
+//
+// The Telegram `sendChatAction(typing)` / Matrix `m.typing` pattern: while a
+// turn produces a reply for room R the poll loop keeps the relay's memory-only
+// typing signal fresh, so the family's apps show 「공명이 타닥타닥…」. Relay
+// contract (server typing.go): `POST /v2/rooms/{room}/typing {device, clear}`
+// → 204, members only, TTL `policy.TypingTTLSeconds` (6 s), a refresh younger
+// than 1 s is ignored, and any fresh application event of this device clears
+// the signal (so a status line, interim or reply ends it until the next set).
+
+/// Re-send interval while a turn produces: under the relay's 6 s TTL so the
+/// indicator never lapses between two sets, far above its 1 s refresh floor.
+const TYPING_REFRESH: Duration = Duration::from_secs(4);
+/// Transient failures in a row after which a turn's keepalive goes quiet.
+const TYPING_MAX_FAILURES: u32 = 3;
+/// Typing is a 6 s hint: a stuck relay may cost the poll loop at most this
+/// much per call (host-core's default read timeout is 120 s).
+const TYPING_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const TYPING_READ_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// `POST /v2/rooms/{room}/typing` body — typing.go `typingPost`, the same
+/// `{device, clear}` the web client (`room.js` `typing()`) sends.
+#[derive(serde::Serialize)]
+struct TypingPost<'a> {
+    device: &'a str,
+    clear: bool,
+}
+
+/// The relay's typing route. host-core's `Client` has no typing call (and
+/// its request helper is private), so the bot speaks this one route itself
+/// over the same HTTP client and the same CF Access header as every other
+/// request.
+struct TypingRoute {
+    base: String,
+    access: api::Access,
+    /// Rooms this device posted a fresh application event to since the last
+    /// keepalive round: the relay already dropped the typing signal there.
+    posted: std::cell::RefCell<Vec<String>>,
+}
+
+impl TypingRoute {
+    fn new(base: &str, access: api::Access) -> Self {
+        TypingRoute { base: base.trim_end_matches('/').to_string(), access, posted: Default::default() }
+    }
+
+    fn note_post(&self, room: &str) {
+        let mut posted = self.posted.borrow_mut();
+        if !posted.iter().any(|r| r == room) {
+            posted.push(room.to_string());
+        }
+    }
+
+    fn take_posted(&self) -> Vec<String> {
+        std::mem::take(&mut *self.posted.borrow_mut())
+    }
+
+    /// One `POST /typing` as `device`; `clear` drops the signal instead of
+    /// (re)arming it. Errors come back like host-core's envelope.
+    fn post(&self, room: &str, device: &str, clear: bool) -> Result<(), BotError> {
+        let token = access_token(&self.access)?;
+        let mut headers: Vec<(&str, &str)> = Vec::new();
+        if let Some(token) = token.as_deref() {
+            headers.push(("Cf-Access-Jwt-Assertion", token));
+        }
+        let body = serde_json::to_vec(&TypingPost { device, clear })?;
+        // 짧은 타임아웃: typing 은 6초짜리 힌트라 멈춘 릴레이가 폴 루프를 120초 붙잡으면 안 된다.
+        let resp = native_mls_host::http::request_with_timeouts(
+            &self.base, "POST", &format!("/v2/rooms/{room}/typing"), Some(&body), &headers,
+            TYPING_CONNECT_TIMEOUT, TYPING_READ_TIMEOUT,
+        )?;
+        if (200..300).contains(&resp.status) {
+            return Ok(());
+        }
+        let code = serde_json::from_slice::<serde_json::Value>(&resp.body)
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
+        Err(match code {
+            Some(code) => BotError::Api { status: resp.status, code },
+            None => BotError::Status { status: resp.status },
+        })
+    }
+}
+
+/// host-core `Access::token` (private there): the CF Access assertion, the
+/// file source re-read per request.
+fn access_token(access: &api::Access) -> Result<Option<String>, BotError> {
+    match access {
+        api::Access::None => Ok(None),
+        api::Access::Static(raw) if raw.trim().is_empty() => Err(BotError::Local("access token (env) is empty")),
+        api::Access::Static(raw) => Ok(Some(raw.trim().to_string())),
+        api::Access::File(path) => {
+            let raw = std::fs::read_to_string(path).map_err(|_| BotError::AccessUnavailable("access token file unreadable"))?;
+            match raw.trim() {
+                "" => Err(BotError::AccessUnavailable("access token file is empty")),
+                token => Ok(Some(token.to_string())),
+            }
+        }
+    }
+}
+
+/// What one keepalive round does, in order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TypingStep {
+    /// A turn began producing in `room` (`typing_started`).
+    Start { room: String, seq: i64 },
+    /// `POST /typing {clear:false}`.
+    Set { room: String },
+    /// The turn stopped producing (`typing_stopped`). `clear`: the relay may
+    /// still hold the signal (no post of ours dropped it) → `{clear:true}`.
+    Stop { room: String, seq: i64, reason: &'static str, clear: bool, sent: u32, failed: u32 },
+}
+
+#[derive(Debug)]
+struct TypingTurn {
+    room: String,
+    seq: i64,
+    /// When the last set went out; `None` = due now.
+    last_set: Option<Instant>,
+    /// A set was accepted and no post of ours has dropped it since.
+    armed: bool,
+    sent: u32,
+    failed: u32,
+    failed_in_row: u32,
+    /// Gave up for the rest of this turn (a refusal, or too many failures).
+    muted: bool,
+}
+
+/// The keepalive scheduler: pure state, driven once per poll round by
+/// `typing_round` with the turn that should be typing (`Responder::typing_turn`
+/// resolved to a room) and the clock. One turn at a time, like the responder.
+#[derive(Debug, Default)]
+struct TypingKeepalive {
+    turn: Option<TypingTurn>,
+}
+
+impl TypingKeepalive {
+    fn room(&self) -> Option<&str> {
+        self.turn.as_ref().map(|t| t.room.as_str())
+    }
+
+    /// `want`: `(room, seq)` of the turn producing a reply now, `None` when
+    /// nobody should type (`reason` says why the current one stopped).
+    /// `posted`: rooms where a post of ours just dropped the relay's signal.
+    fn tick(&mut self, want: Option<(&str, i64)>, reason: &'static str, posted: &[String], now: Instant) -> Vec<TypingStep> {
+        let mut steps = Vec::new();
+        if let Some(turn) = self.turn.as_mut() {
+            if posted.iter().any(|r| *r == turn.room) {
+                turn.armed = false;
+                turn.last_set = None;
+            }
+        }
+        let same = match (&self.turn, want) {
+            (Some(t), Some((room, seq))) => t.room == room && t.seq == seq,
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            if let Some(t) = self.turn.take() {
+                steps.push(TypingStep::Stop { room: t.room, seq: t.seq, reason, clear: t.armed, sent: t.sent, failed: t.failed });
+            }
+            if let Some((room, seq)) = want {
+                self.turn = Some(TypingTurn {
+                    room: room.to_string(), seq, last_set: None, armed: false, sent: 0, failed: 0, failed_in_row: 0, muted: false,
+                });
+                steps.push(TypingStep::Start { room: room.to_string(), seq });
+            }
+        }
+        if let Some(t) = self.turn.as_mut() {
+            if !t.muted && t.last_set.is_none_or(|at| now.saturating_duration_since(at) >= TYPING_REFRESH) {
+                t.last_set = Some(now);
+                steps.push(TypingStep::Set { room: t.room.clone() });
+            }
+        }
+        steps
+    }
+
+    /// The outcome of the `Set` just sent. A refusal (anything but a
+    /// transient relay error: 404 not a member / no route on an old relay,
+    /// 403, 401 …) or `TYPING_MAX_FAILURES` transient ones in a row mute the
+    /// rest of the turn — no retry storm. `true` = the turn's first failure,
+    /// the one line worth logging.
+    fn record(&mut self, outcome: Result<(), &BotError>) -> bool {
+        let Some(t) = self.turn.as_mut() else { return false };
+        match outcome {
+            Ok(()) => {
+                t.armed = true;
+                t.sent += 1;
+                t.failed_in_row = 0;
+                false
+            }
+            Err(err) => {
+                t.failed += 1;
+                t.failed_in_row += 1;
+                if !is_transient(err) || t.failed_in_row >= TYPING_MAX_FAILURES {
+                    t.muted = true;
+                }
+                t.failed == 1
+            }
+        }
+    }
+}
+
+/// The room a turn's typing signal belongs to — the room its reply goes to
+/// (`target_room`'s rule), only while that room is joined, open and still in
+/// agent mode.
+fn typing_want<'r>(rooms: &'r [RoomState], responder: &'r Responder) -> Result<(&'r str, i64), &'static str> {
+    let (room, seq) = responder.typing_turn()?;
+    let target = if !responder.room_frames() || room.is_empty() {
+        rooms.iter().find(|r| r.mode == Mode::Agent)
+    } else {
+        rooms.iter().find(|r| r.room == room && r.mode == Mode::Agent)
+    };
+    match target {
+        Some(r) if r.joined && !r.halted => Ok((r.room.as_str(), seq)),
+        _ => Err("room_unavailable"),
+    }
+}
+
+/// The kind of a turn-ending item, as a `typing_stopped` reason.
+fn typing_end_kind(item: &Outbound) -> Option<&'static str> {
+    match item {
+        Outbound::Reply { .. } => Some("reply"),
+        Outbound::Uncertain { .. } => Some("uncertain"),
+        Outbound::Stopped { .. } => Some("stopped"),
+        _ => None,
+    }
+}
+
+/// One keepalive round: run the scheduler and send what it asks. Every
+/// relay answer is best-effort — logged once per turn (`typing_failed`, the
+/// error code only, never text), never fatal, never retried early.
+/// `ended`: this round posted the current turn's reply/uncertain/stopped line.
+fn typing_round(ctx: &Ctx, keepalive: &mut TypingKeepalive, want: Result<(&str, i64), &'static str>, ended: Option<&'static str>, now: Instant) {
+    let Some(route) = ctx.typing else { return };
+    let posted = route.take_posted();
+    let reason = ended.unwrap_or(match want {
+        Err(why) if why != "idle" => why,
+        _ => "turn_end",
+    });
+    for step in keepalive.tick(want.ok(), reason, &posted, now) {
+        match step {
+            TypingStep::Start { room, seq } => emit(&serde_json::json!({ "event": "typing_started", "room": room, "seq": seq })),
+            TypingStep::Set { room } => {
+                let outcome = route.post(&room, ctx.own, false);
+                if keepalive.record(outcome.as_ref().map(|_| ())) {
+                    if let Err(err) = &outcome {
+                        emit(&serde_json::json!({ "event": "typing_failed", "room": room, "error": err.to_string() }));
+                    }
+                }
+            }
+            TypingStep::Stop { room, seq, reason, clear, sent, failed } => {
+                // Best-effort: a lost clear lapses on the relay's TTL anyway.
+                let cleared = clear && route.post(&room, ctx.own, true).is_ok();
+                emit(&serde_json::json!({
+                    "event": "typing_stopped", "room": room, "seq": seq, "reason": reason, "sent": sent, "failed": failed, "cleared": cleared,
+                }));
+            }
+        }
+    }
 }
 
 
@@ -1404,7 +1707,8 @@ pub fn run_steward(opts: StewardOptions) -> Result<(), BotError> {
         Some(Instant::now().checked_add(Duration::from_secs(max_secs)).ok_or(BotError::Local("NATIVE_MLS_BOT_MAX_SECS out of range"))?)
     };
     let client = Client::with_access(&opts.base, opts.access.clone());
-    let ctx = Ctx { client: &client, own: &opts.device };
+    let typing = TypingRoute::new(&opts.base, opts.access.clone());
+    let ctx = Ctx { client: &client, own: &opts.device, typing: Some(&typing) };
     std::fs::create_dir_all(opts.rooms_dir.join("cmd")).map_err(|_| BotError::Local("rooms dir create"))?;
     std::fs::create_dir_all(opts.rooms_dir.join("out")).map_err(|_| BotError::Local("rooms dir create"))?;
     // The identity must load before anything else: a steward that cannot
@@ -1433,7 +1737,7 @@ pub fn run_steward(opts: StewardOptions) -> Result<(), BotError> {
                 "event": "agent_started", "device": opts.device, "owner_actor": config.owner_actor,
                 "agent_room": rooms.iter().find(|r| r.mode == Mode::Agent).map(|r| r.room.clone()),
                 "agent_rooms": rooms.iter().filter(|r| r.mode == Mode::Agent).map(|r| r.room.clone()).collect::<Vec<_>>(),
-                "room_frames": config.room_frames,
+                "room_frames": config.room_frames, "typing": config.typing,
             }));
             Some(responder)
         }
@@ -2008,6 +2312,16 @@ for line in sys.stdin:
 
     /// `canned_relay` with an explicit status per reply (404 for "no key package").
     fn canned_relay_with_status(replies: Vec<(u16, String)>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let (base, raw) = canned_relay_raw(replies);
+        let handle = std::thread::spawn(move || {
+            raw.join().expect("canned relay").iter().map(|text| text.lines().next().unwrap_or_default().to_string()).collect()
+        });
+        (base, handle)
+    }
+
+    /// `canned_relay_with_status` that records each whole request (request
+    /// line, headers and body) instead of only its first line.
+    fn canned_relay_raw(replies: Vec<(u16, String)>) -> (String, std::thread::JoinHandle<Vec<String>>) {
         use std::io::{Read, Write as _};
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
         let base = format!("http://127.0.0.1:{}", listener.local_addr().expect("addr").port());
@@ -2031,8 +2345,7 @@ for line in sys.stdin:
                     assert!(n > 0, "eof before body end");
                     raw.extend_from_slice(&buf[..n]);
                 }
-                let text = String::from_utf8_lossy(&raw).to_string();
-                seen.push(text.lines().next().unwrap_or_default().to_string());
+                seen.push(String::from_utf8_lossy(&raw).to_string());
                 let reason = if status == 200 { "OK" } else { "Not Found" };
                 let resp = format!("HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\n\r\n{body}", body.len());
                 stream.write_all(resp.as_bytes()).expect("write response");
@@ -2068,7 +2381,7 @@ for line in sys.stdin:
             (200, r#"{"seq":21,"epoch":2,"revision":1,"duplicate":false}"#.to_string()),
         ]);
         let client = Client::with_access(&base, api::Access::None);
-        let ctx = Ctx { client: &client, own: "bot-1" };
+        let ctx = Ctx { client: &client, own: "bot-1", typing: None };
         let path = state_path("send-2c");
         let mut state = joined_room_at("family", 4, Some(path.clone()));
         state.device.create().expect("a one-member group to encrypt in");
@@ -2098,7 +2411,7 @@ for line in sys.stdin:
         let path = state_path("gap");
         let marker = refused_marker_path(&path);
         let _ = std::fs::remove_file(&marker);
-        let ctx = Ctx { client: &client, own: "bot-1" };
+        let ctx = Ctx { client: &client, own: "bot-1", typing: None };
 
         // Contiguous history: no halt.
         let mut contiguous = joined_room_at("family", 4, Some(path.clone()));
@@ -2154,7 +2467,7 @@ for line in sys.stdin:
         let page = r#"{"epoch":2,"revision":1,"events":[],"first_seq":5}"#.to_string();
         let (base, server) = canned_relay_with_status(vec![(503, "unavailable".into()), (200, page)]);
         let client = Client::with_access(&base, api::Access::None);
-        let ctx = Ctx { client: &client, own: "bot-1" };
+        let ctx = Ctx { client: &client, own: "bot-1", typing: None };
         let mut rooms = vec![joined_room("family", 4)];
         let started = Instant::now();
         let err = run_loop(&ctx, &mut rooms, &mut None, Some(Instant::now() + Duration::from_millis(2500)), None)
@@ -2221,7 +2534,7 @@ for line in sys.stdin:
             r#"{"seq":3,"epoch":1,"revision":3,"duplicate":false}"#.into(),   // remove commit
         ]);
         let client = Client::with_access(&base, api::Access::None);
-        let ctx = Ctx { client: &client, own: "bot-1" };
+        let ctx = Ctx { client: &client, own: "bot-1", typing: None };
         let steward = Steward { device: "bot-1".into(), rooms_dir: dir.clone(), identity_file: identity.clone(), multi_agent: false };
         let mut rooms = Vec::new();
 
@@ -2301,7 +2614,7 @@ for line in sys.stdin:
             (404, none),                                                            // two: lobby consume — nothing
         ]);
         let client = Client::with_access(&base, api::Access::None);
-        let ctx = Ctx { client: &client, own: "bot-1" };
+        let ctx = Ctx { client: &client, own: "bot-1", typing: None };
         let steward = Steward { device: "bot-1".into(), rooms_dir: dir.clone(), identity_file: identity.clone(), multi_agent: false };
         let mut rooms = Vec::new();
 
@@ -2348,7 +2661,7 @@ for line in sys.stdin:
             (403, r#"{"error":"not_a_member"}"#.into()),        // three: removed from it
         ]);
         let client = Client::with_access(&base, api::Access::None);
-        let ctx = Ctx { client: &client, own: "bot-1" };
+        let ctx = Ctx { client: &client, own: "bot-1", typing: None };
         let steward = Steward { device: "bot-1".into(), rooms_dir: dir.clone(), identity_file: identity.clone(), multi_agent: false };
         let mut rooms = Vec::new();
         for room in ["family", "two", "three"] {
@@ -2413,7 +2726,7 @@ for line in sys.stdin:
         let steward = Steward { device: "bot-1".into(), rooms_dir: dir.clone(), identity_file: identity, multi_agent: false };
         let (base, _server) = canned_relay(Vec::new());
         let client = Client::with_access(&base, api::Access::None);
-        let ctx = Ctx { client: &client, own: "bot-1" };
+        let ctx = Ctx { client: &client, own: "bot-1", typing: None };
         let spawn = |record: &Path| {
             let argv = vec!["python3".into(), "-c".into(), TOOL_WORKER.into(), record.to_string_lossy().into_owned()];
             Responder::spawn(responder::Config::new(responder::Transport::Argv(argv), "owner".into()), None).unwrap_or_else(|e| panic!("spawn: {e}"))
@@ -2467,7 +2780,7 @@ for line in sys.stdin:
         let steward = Steward { device: "bot-1".into(), rooms_dir: dir.clone(), identity_file: identity, multi_agent: false };
         let (base, _server) = canned_relay(Vec::new());
         let client = Client::with_access(&base, api::Access::None);
-        let ctx = Ctx { client: &client, own: "bot-1" };
+        let ctx = Ctx { client: &client, own: "bot-1", typing: None };
         let mut rooms = Vec::new();
 
         std::fs::write(dir.join("cmd").join("0-garbage.json"), b"{not json").expect("write");
@@ -2562,7 +2875,7 @@ for line in sys.stdin:
         );
         config.room_frames = true;
         let client = Client::with_access("http://127.0.0.1:9", api::Access::None); // never called
-        let ctx = Ctx { client: &client, own: "bot-1" };
+        let ctx = Ctx { client: &client, own: "bot-1", typing: None };
         let dir = temp_dir("turn-durable");
         for (room, mode, device, client_id, text) in [
             ("family", Mode::Agent, "owner-iphone-1", "owner-iphone-1-7", "run the report"),
@@ -2642,5 +2955,133 @@ for line in sys.stdin:
         ], "exactly the two admitted alerts became turns, and neither is answered");
         assert_eq!(room_peers(&state), vec!["dungae".to_string(), "nosuk".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Typing keepalive scheduler (#562 bot side): set at once when a turn
+    /// starts producing, refresh every TYPING_REFRESH (< the relay's 6 s TTL,
+    /// >= its 1 s floor), re-arm at once after a post of ours dropped the
+    /// signal, stop with the reason, clear only when the relay may still hold it.
+    #[test]
+    fn typing_keepalive_cadence_and_stop_reasons() {
+        assert!(TYPING_REFRESH < Duration::from_secs(6) && TYPING_REFRESH >= Duration::from_secs(1));
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let fam = || "family".to_string();
+        let posted_family = vec![fam()];
+        let mut k = TypingKeepalive::default();
+        assert_eq!(k.tick(None, "turn_end", &[], at(0)), vec![], "idle: nothing");
+
+        // Start → immediate set; nothing until the refresh is due.
+        assert_eq!(k.tick(Some(("family", 5)), "turn_end", &[], at(0)), vec![
+            TypingStep::Start { room: fam(), seq: 5 }, TypingStep::Set { room: fam() },
+        ]);
+        assert!(!k.record(Ok(())));
+        assert_eq!(k.tick(Some(("family", 5)), "turn_end", &[], at(200)), vec![]);
+        assert_eq!(k.tick(Some(("family", 5)), "turn_end", &[], at(3_999)), vec![]);
+        assert_eq!(k.tick(Some(("family", 5)), "turn_end", &[], at(4_000)), vec![TypingStep::Set { room: fam() }]);
+        k.record(Ok(()));
+        // A status line / interim of ours dropped the signal: re-armed this round.
+        assert_eq!(k.tick(Some(("family", 5)), "turn_end", &posted_family, at(4_200)), vec![TypingStep::Set { room: fam() }]);
+        k.record(Ok(()));
+        // A post in another room changes nothing here.
+        assert_eq!(k.tick(Some(("family", 5)), "turn_end", &["work".to_string()], at(4_400)), vec![]);
+
+        // Waiting on the owner's approval: stop, and clear (no post dropped it).
+        assert_eq!(k.tick(None, "approval", &[], at(5_000)), vec![
+            TypingStep::Stop { room: fam(), seq: 5, reason: "approval", clear: true, sent: 3, failed: 0 },
+        ]);
+        assert_eq!(k.room(), None);
+        // Approved, the worker goes on: typing resumes for the same turn.
+        assert_eq!(k.tick(Some(("family", 5)), "turn_end", &[], at(9_000)), vec![
+            TypingStep::Start { room: fam(), seq: 5 }, TypingStep::Set { room: fam() },
+        ]);
+        k.record(Ok(()));
+        // The reply was posted (the relay cleared the signal itself): no clear.
+        assert_eq!(k.tick(None, "reply", &posted_family, at(9_200)), vec![
+            TypingStep::Stop { room: fam(), seq: 5, reason: "reply", clear: false, sent: 1, failed: 0 },
+        ]);
+
+        // One turn ends and the next (another room) starts in the same round.
+        k.tick(Some(("family", 6)), "turn_end", &[], at(10_000));
+        k.record(Ok(()));
+        assert_eq!(k.tick(Some(("work", 7)), "turn_end", &[], at(10_200)), vec![
+            TypingStep::Stop { room: fam(), seq: 6, reason: "turn_end", clear: true, sent: 1, failed: 0 },
+            TypingStep::Start { room: "work".into(), seq: 7 },
+            TypingStep::Set { room: "work".into() },
+        ]);
+
+        // A refusal (403 not_a_member, or an old relay's bare 404) mutes the
+        // turn at once and is reported once; nothing to clear at the end.
+        assert!(k.record(Err(&BotError::Api { status: 403, code: "not_a_member".into() })), "first failure is the one logged");
+        assert_eq!(k.tick(Some(("work", 7)), "turn_end", &[], at(20_000)), vec![], "muted: no retry storm");
+        assert_eq!(k.tick(None, "stop", &[], at(20_200)), vec![
+            TypingStep::Stop { room: "work".into(), seq: 7, reason: "stop", clear: false, sent: 0, failed: 1 },
+        ]);
+
+        // Transient failures keep the cadence, TYPING_MAX_FAILURES in a row mute.
+        k.tick(Some(("family", 8)), "turn_end", &[], at(30_000));
+        assert!(k.record(Err(&BotError::Status { status: 503 })));
+        for n in 1..TYPING_MAX_FAILURES {
+            let steps = k.tick(Some(("family", 8)), "turn_end", &[], at(30_000 + 4_000 * u64::from(n)));
+            assert_eq!(steps, vec![TypingStep::Set { room: fam() }], "transient #{n}: retried on the cadence only");
+            assert!(!k.record(Err(&BotError::Status { status: 503 })), "logged once per turn");
+        }
+        assert_eq!(k.tick(Some(("family", 8)), "turn_end", &[], at(60_000)), vec![], "muted after {TYPING_MAX_FAILURES}");
+    }
+
+    /// The wire: `POST /v2/rooms/<room>/typing {"device","clear"}` with the CF
+    /// Access assertion; `typing_round` sets, refreshes, clears on a stop that
+    /// no post covered, and stays quiet once the relay refuses.
+    #[test]
+    fn typing_round_speaks_the_relay_route() {
+        let empty = || (204u16, String::new());
+        let (base, server) = canned_relay_raw(vec![
+            empty(), empty(), empty(),
+            (403, r#"{"error":"not_a_member"}"#.to_string()),
+        ]);
+        let client = Client::with_access(&base, api::Access::None);
+        let route = TypingRoute::new(&base, api::Access::Static("jwt-abc".into()));
+        let ctx = Ctx { client: &client, own: "bot-1", typing: Some(&route) };
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut k = TypingKeepalive::default();
+        typing_round(&ctx, &mut k, Ok(("family", 5)), None, at(0));        // set
+        typing_round(&ctx, &mut k, Ok(("family", 5)), None, at(1_000));    // —
+        typing_round(&ctx, &mut k, Ok(("family", 5)), None, at(4_000));    // refresh
+        typing_round(&ctx, &mut k, Err("stop"), None, at(4_500));          // clear
+        typing_round(&ctx, &mut k, Ok(("family", 6)), None, at(5_000));    // set → 403, muted
+        typing_round(&ctx, &mut k, Ok(("family", 6)), None, at(9_000));    // —
+        route.note_post("family");
+        typing_round(&ctx, &mut k, Err("idle"), Some("reply"), at(9_200)); // nothing to clear
+        assert_eq!(k.room(), None);
+        let seen = server.join().expect("relay");
+        assert_eq!(seen.len(), 4, "{seen:?}");
+        let body = |req: &str| req.split("\r\n\r\n").nth(1).unwrap_or_default().to_string();
+        for (req, clear) in seen.iter().zip([false, false, true, false]) {
+            assert!(req.starts_with("POST /v2/rooms/family/typing HTTP/1.1\r\n"), "{req}");
+            assert!(req.contains("Cf-Access-Jwt-Assertion: jwt-abc\r\n"), "{req}");
+            assert_eq!(body(req), format!(r#"{{"device":"bot-1","clear":{clear}}}"#));
+        }
+    }
+
+    /// The typing room is the turn's agent room, only while it is joined, open
+    /// and still in agent mode; the responder's own reasons pass through.
+    #[test]
+    fn typing_want_follows_the_agent_room() {
+        let mut config = responder::Config::new(responder::Transport::Argv(vec!["python3".into(), "-c".into(), "import sys\nfor _ in sys.stdin: pass\n".into()]), "owner".into());
+        config.room_frames = true;
+        let mut agent = Responder::spawn(config, None).unwrap_or_else(|e| panic!("spawn: {e}"));
+        let mut rooms = vec![room_in("fleet", Mode::Alert), room_in("family", Mode::Agent)];
+        for r in rooms.iter_mut() { r.sync.joined = true; }
+        assert_eq!(typing_want(&rooms, &agent), Err("idle"));
+        agent.offer(Inbound { room: "family".into(), seq: 5, sender_device: "owner-pc".into(), text: "work".into(), peer_depth: 0 }).expect("offer");
+        assert_eq!(typing_want(&rooms, &agent), Ok(("family", 5)));
+        rooms[1].sync.halted = true;
+        assert_eq!(typing_want(&rooms, &agent), Err("room_unavailable"));
+        rooms[1].sync.halted = false;
+        rooms[1].mode = Mode::Silent;
+        assert_eq!(typing_want(&rooms, &agent), Err("room_unavailable"), "switched to silent mid-turn: its reply stays unsaid");
+        assert_eq!(typing_end_kind(&Outbound::Reply { seq: 5, text: String::new() }), Some("reply"));
+        assert_eq!(typing_end_kind(&Outbound::Status { seq: 5, text: String::new() }), None, "a status line does not end the turn");
     }
 }
