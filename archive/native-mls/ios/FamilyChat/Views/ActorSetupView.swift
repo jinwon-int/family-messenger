@@ -22,10 +22,7 @@ struct ActorSetupView: View {
                 HandeField(placeholder: Strings.actorStepPlaceholder, text: $name, mono: true, invalid: invalid, onSubmit: submit)
                     .accessibilityLabel(Strings.actorField)
                 if invalid {
-                    Text(Strings.actorStepInvalid)
-                        .font(.system(size: 14))
-                        .foregroundStyle(p.warn)
-                        .padding(.horizontal, 4)
+                    HandeFieldHelper(Strings.actorStepInvalid)
                 }
                 DetailDisclosure(hint: Strings.actorStepHint, text: Strings.actorStepDetail)
             }

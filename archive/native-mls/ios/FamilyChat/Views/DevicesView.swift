@@ -248,7 +248,7 @@ struct CandidateApprovalView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button { dismiss() } label: {
-                        Image(systemName: "xmark").font(.system(size: 17, weight: .semibold)).foregroundStyle(p.ember)
+                        Image(systemName: "xmark").font(.system(size: 17, weight: .semibold)).foregroundStyle(p.isDay ? p.ink : p.ember)
                     }
                     .accessibilityLabel(Strings.close)
                 }
@@ -320,12 +320,17 @@ struct CandidateApprovalView: View {
         }
     }
 
-    /// 경고 상자: 선 1.5px warn 55% · 면 7% · 점 8pt + 글자 15/500. 문구 고정, 닫기 없음.
+    /// 경고 상자: 밤 선 1.5px warn 55% · 면 7% · 점 8pt + 글자 15/500 / 낮불(2차-B) 흰 면 + 2px warn · **네모** 표지 9pt(사람 ●·에이전트 ◆와
+    /// 다른 모양) + 글자 15/600. 문구 고정, 닫기 없음.
     private var warningBox: some View {
         HStack(alignment: .top, spacing: 10) {
-            Circle().fill(p.warn).frame(width: 8, height: 8).padding(.top, 7)
+            if p.isDay {
+                Rectangle().fill(p.warn).frame(width: 9, height: 9).padding(.top, 6)
+            } else {
+                Circle().fill(p.warn).frame(width: 8, height: 8).padding(.top, 7)
+            }
             Text(Strings.approveWarning)
-                .font(.system(size: 15, weight: .medium))
+                .font(.system(size: 15, weight: p.isDay ? .semibold : .medium))
                 .foregroundStyle(p.ink)
                 .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
@@ -333,8 +338,8 @@ struct CandidateApprovalView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 14).fill(p.warn.opacity(0.07)))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(p.warn.opacity(0.55), lineWidth: 1.5))
+        .background(RoundedRectangle(cornerRadius: 14).fill(p.isDay ? p.surface : p.warn.opacity(0.07)))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(p.isDay ? p.warn : p.warn.opacity(0.55), lineWidth: p.warnLineWidth))
     }
 
     // MARK: 결과

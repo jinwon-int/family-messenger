@@ -726,12 +726,13 @@ struct MessageRow: View {
             Label(Strings.outgoingQueued, systemImage: "clock").font(.caption2).foregroundStyle(p.inkDim)
         case .failed(let reason)?:
             // 주의/실패 = 붉은 잉걸 + 글자(디자인 2차 2d: 「전송 안 됨 · 다시 보내기」, 링크 600) — 색만이 아니라 글자로 남긴다.
+            // 2차-B B3: 글자 600, 밤은 #F08A70(붉은 잉걸 위 가독).
             HStack(spacing: 4) {
-                Text("\(Strings.outgoingFailed) ·").foregroundStyle(p.warn)
-                Button(Strings.outgoingRetry, action: retry).buttonStyle(.borderless).font(.caption2.weight(.semibold)).foregroundStyle(p.warn)
+                Text("\(Strings.outgoingFailed) ·").foregroundStyle(p.warnText)
+                Button(Strings.outgoingRetry, action: retry).buttonStyle(.borderless).font(.caption2.weight(.semibold)).foregroundStyle(p.warnText)
                     .accessibilityIdentifier("outgoing-retry")
             }
-            .font(.caption2)
+            .font(.caption2.weight(.semibold))
             .accessibilityHint(reason)
         case nil:
             EmptyView()
@@ -748,24 +749,39 @@ struct MessageRow: View {
         if case .failed? = item.outgoing { return true }
         return false
     }
+    private var queued: Bool {
+        if case .queued? = item.outgoing { return true }
+        return false
+    }
+    /// 낮불의 「연결되면 보냅니다」 = 흰 면 + 1.5 먹 점선 + 먹 글자(투명도 대신 — 2차-B B3).
+    private var queuedDay: Bool { mine && queued && p.isDay }
     /// 보내는 중인 첨부(저장소에 아직 없음) — 200×150 자리 그림 말풍선(여백 0).
     private var isPendingAttachment: Bool { message.kind.isFile && item.outgoing != nil }
 
     /// 내 말풍선 = 불(낮불은 먹 — 주황은 허락·보내기 버튼만), 남의 말풍선 = 면 + 선. 디자인 1차 1c/1d.
-    /// 전송 안 됨(디자인 2차 2d) = 면 주황 22% + 선 1.5 붉은 잉걸 + 크림 글자.
+    /// 전송 안 됨(디자인 2차 2d) = 밤 면 주황 22% + 선 1.5 붉은 잉걸 + 크림 글자 / 낮불 흰 면 + 2px 붉은 잉걸 + 먹 글자(2차-B).
     private var bubbleFill: Color {
         if isPendingAttachment { return .clear }
-        if mine && failed { return p.ember.opacity(0.22) }
+        if mine && failed { return p.isDay ? p.surface : p.ember.opacity(0.22) }
+        if queuedDay { return p.surface }
         return mine ? (p.isDay ? p.ink : p.ember) : p.surface
     }
-    private var bubbleText: Color { mine && !failed ? (p.isDay ? p.bgTop : p.onEmber) : p.ink }
+    private var bubbleText: Color {
+        if mine && (failed || queuedDay) { return p.ink }
+        return mine ? (p.isDay ? p.bgTop : p.onEmber) : p.ink
+    }
     private var bubbleStroke: Color {
         if failed { return p.warn }
+        if queuedDay { return p.ink }
         return mine ? .clear : p.stroke
     }
-    private var bubbleStrokeWidth: CGFloat { failed ? 1.5 : p.lineWidth }
-    /// 연결되면 보냅니다·보내는 중 = 75% 흐림(시계 아이콘과 함께). 전송 안 됨은 흐리지 않는다 — 색·선·글자로 말한다.
-    private var bubbleOpacity: Double { item.outgoing == nil || failed ? 1 : 0.75 }
+    private var bubbleStrokeWidth: CGFloat {
+        if failed { return p.warnLineWidth }
+        return queuedDay ? 1.5 : p.lineWidth
+    }
+    private var bubbleDash: [CGFloat] { queuedDay ? p.disabledDash : [] }
+    /// 연결되면 보냅니다·보내는 중 = 밤 75% 흐림(시계 아이콘과 함께). 전송 안 됨은 흐리지 않는다 — 색·선·글자로 말한다. 낮불은 투명도 0.
+    private var bubbleOpacity: Double { item.outgoing == nil || failed || p.isDay ? 1 : 0.75 }
     private var contentInset: CGFloat { isMedia ? Self.mediaInset : (isPendingAttachment ? 0 : 14) }
     private var contentInsetV: CGFloat { isMedia ? Self.mediaInset : (isPendingAttachment ? 0 : 11) }
 
@@ -788,7 +804,7 @@ struct MessageRow: View {
                     .background(bubbleFill)
                     .foregroundStyle(bubbleText)
                     .clipShape(BubbleShape(mine: mine))
-                    .overlay(BubbleShape(mine: mine).stroke(bubbleStroke, lineWidth: bubbleStrokeWidth))
+                    .overlay(BubbleShape(mine: mine).stroke(bubbleStroke, style: StrokeStyle(lineWidth: bubbleStrokeWidth, dash: bubbleDash)))
                     .contentShape(.contextMenuPreview, BubbleShape(mine: mine))
                     .messageCopyMenu(MessageCopy.text(of: message), select: selectText)
                     .opacity(bubbleOpacity)

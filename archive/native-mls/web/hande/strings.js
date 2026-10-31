@@ -384,9 +384,11 @@ export const strings = {
     closedPreview: '불이 꺼진 자리 · 운영자가 닫음',
     noMessages: '아직 아무도 말하지 않았어요',
     selectHint: '왼쪽 목록에서 모닥불을 고르세요.',
-    // 안 읽은 방 이름 옆 둥근 배지(패밀리챗과 같은 카카오톡식 N). 글자 N은 보조기기에서 숨기고 unreadLabel을 읽는다.
-    unreadBadge: 'N',
+    // 안 읽은 방 이름 옆 표시: 밤 = 주황 점(글자 없음), 낮불 = 먹 알약 「새 글」(디자인 2차-B B1). 보조기기는 unreadLabel 을 읽는다.
+    unreadBadge: '새 글',
     unreadLabel: '새 메시지',
+    // 오늘의 불 세기(방 행 불꽃 1~3단, 숫자 없음) — 보조기기만 말로(iOS Strings.fireLevelLabel 과 같은 문구).
+    fireLevel: (level) => (level >= 3 ? '오늘의 불 세기 활발' : level === 2 ? '오늘의 불 세기 보통' : '오늘의 불 세기 조용함'),
     // 알림을 끈 방(mute.go): 이름 옆 🔕. 보조기기에는 mutedLabel 을 읽는다.
     mutedLabel: '알림 꺼짐',
     justNow: '방금',

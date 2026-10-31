@@ -123,9 +123,10 @@ struct HaltedRoomCard: View {
                         Button(Strings.rejoinPrepareTitle) { confirmRejoin = true }.disabled(busy)
                     }
                 }
-                .font(.system(size: 15))
-                .foregroundStyle(p.ember)
-                .tint(p.ember)
+                .font(.system(size: 15, weight: p.isDay ? .semibold : .regular))
+                .foregroundStyle(p.isDay ? p.ink : p.ember)
+                .tint(p.isDay ? p.ink : p.ember)
+                .underline(p.isDay)
                 .buttonStyle(.borderless)
                 .padding(.top, 4)
             }

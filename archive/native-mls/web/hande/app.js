@@ -8,6 +8,7 @@
 import * as ui from './ui.js';
 import {strings, displayName, isAgentDevice, isMine, isOneToOne, participantCount, roomLabel, previewLine, relativeTime, typingLabel} from './strings.js';
 import {orderRooms, moveRoom, readRoomOrder, writeRoomOrder} from './room-order.js';
+import {fireLevel, recentMessageCount} from './icons.js';
 import {readDraft, writeDraft} from './drafts.js';
 import {readReadSeq, writeReadSeq, latestSeq, isUnread} from './read-seq.js';
 import {readConsent, writeConsent, agentsIn, needsConsent} from './agent-consent.js';
@@ -109,7 +110,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     // status-v1(#560): 에이전트가 일하는 중이면 그 최신 「⏳ Working …」 줄 — 목록에서 미리보기 자리에 보인다(오너 2026-10-30).
     // 안 읽음·정렬·미리보기 원본(entries)은 그대로다.
     const working = halted ? null : (visibleStatuses(R.statuses).at(-1)?.text ?? null);
-    return {roomId, name: roomLabel(roomId), emoji: halted ? '🪵' : '🔥', working,
+    // 오늘의 불 세기(디자인 2차-B): 최근 24시간 글 수 → 불꽃 1~3갈래(iOS RoomGlance.fireLevel 과 같은 문턱). 꺼진 자리는 장작.
+    return {roomId, name: roomLabel(roomId), fire: halted ? 0 : fireLevel(recentMessageCount(R.entries, Date.now())), working,
       // 1:1 방은 상대가 한 명뿐이라 「이름: 」 접두를 빼고 내용만(2026-10-26 오너).
       preview: last ? previewLine(isOneToOne(S.roster) ? '' : last.senderName, body) : (S.joined ? strings.rooms.noMessages : strings.room.notJoined),
       time: last?.ts ? relativeTime(last.ts, Date.now()) : '', unread: isUnread(R.entries, R.readSeq) && !(app.roomOpen && app.current === roomId),
@@ -168,7 +170,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     const room = R ? (() => {
       const S = R.session.state;
       return {roomId: app.current, name: roomLabel(app.current), members: S.roster.slice(), joined: S.joined, halted: S.halted ? {...S.halted} : null,
-        timeline: R.entries, draft: app.draft.get(app.current) ?? '',
+        timeline: R.entries, draft: app.draft.get(app.current) ?? '', fire: S.halted ? 0 : fireLevel(recentMessageCount(R.entries, Date.now())),
         // status-v1(#560): 에이전트 「⏳ Working …」 임시 말풍선 — 타임라인 맨 아래, entries 밖(안 읽음·미리보기 제외).
         statuses: visibleStatuses(R.statuses).map(st => ({sender: st.sender, senderName: displayName(st.sender), text: st.text})), onSend: sendText, onAttach: sendAttachment, onOpenAttachment: e => e.load(), onRetryPreview: loadPreview,
         onBack: () => { app.roomOpen = false; render(); }, onOpenInvite: openInvite, onOpenMembers: openInvite, onOpenBox: toggleBox,
