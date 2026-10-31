@@ -60,6 +60,72 @@ task로 실행되므로 승인/취소 입력이 작업 뒤에 막히지 않는�
   프레임의 답. `turn_id`·`tool_id`가 대기 중인 호출과 맞아야 하고(아니면 `control.accepted=false`),
   `ok`가 `true`가 아니면 거절로 본다(`error` 문자열이 없으면 `steward_error`).
 
+### 첨부 turn — `attachment` (#636 · ccc-node#2606, 계약 확정 · 구현 전)
+
+이 절은 결정(#636 코멘트, 2026-11-01)을 옮긴 **계약**이다. 아직 어느 쪽에도 구현이 없다. 봇 송신부와
+ccc-node 한데 수신부 구현 PR은 이 절을 따르고, 계약이 바뀌면 이 절도 같은 PR에서 고친다.
+
+한데에서 받은 file-v2/file-v1 첨부를 native-mls 봇이 복호해 노드 로컬 파일로 두고, `turn` 프레임에 선택 객체
+`attachment`로 그 **경로**를 넘긴다. 파일 바이트(64KiB 프레임 상한)와 파일 키·설명자는 프레임에 싣지 않는다.
+
+```json
+{"type":"turn","turn_id":"t-agent-12","prompt":"[첨부: 사진 1개(image/jpeg, 2481920 B) — 이 실행부는 첨부를 열 수 없습니다. 받았지만 볼 수 없다고 답하세요.]",
+ "session_id":null,"sender":"@owner-pc:hande","room_kind":"family","room":"agent",
+ "attachment":{"v":1,"path":"/…/hande-attachments/3f9c…(32 hex).bin","kind":"image","mime":"image/jpeg",
+               "name":"사진.jpg","size":2481920,"sha256":"<64 hex>","caption":""}}
+```
+
+| 키 | 필수 | 규칙 |
+|---|---|---|
+| `v` | ✓ | 정수 `1`. 다른 값이면 수신 측은 `attachment`를 **무시**하고 `prompt`로 실행한다(앞으로의 확장 대비). |
+| `path` | ✓ | 절대 경로, 양쪽에 설정된 **spool 디렉터리의 직속 자식**. 파일 이름은 봇이 만든 무작위 `[0-9a-f]{32}\.bin`이고, 사용자가 준 이름이나 turn_id는 넣지 않는다. |
+| `kind` | ✓ | `image` \| `file`. 판별한 `mime`이 이미지 허용 목록(ccc-node `IMAGE_EXTENSIONS`: jpeg·png·gif·webp·heic·heif·bmp·tiff)에 있으면 `image`, 아니면 `file`. |
+| `mime` | ✓ | 봇이 **복호한 바이트의 매직 바이트**로 판별한 `type/subtype`. 설명자 `mime`은 쓰지 않는다(FILE-V2 §4.4). 판별하지 못하면 `application/octet-stream`. |
+| `name` |  | 설명자 `name`(표시용 힌트, 신뢰하지 않음). 1~255자, 제어 문자 없음. 양방향 제어 문자가 섞였으면 키를 빼서 보낸다(FILE-V2 저장 이름 규칙). 경로를 만들 때는 쓰지 않는다. |
+| `size` | ✓ | 평문 바이트 수 = 파일 크기, `1..`봇 상한. |
+| `sha256` | ✓ | **평문**의 sha256(소문자 hex 64자). 설명자 `blob`(암호문 해시)과는 다른 값이다. |
+| `caption` | ✓ | 사용자 지시문(`prompt`와 같은 신뢰 수준의 사람 글). **1단계에서는 항상 `""`**(클라이언트에 캡션 입력이 없다). 2단계에서 같은 발신자의 다음 텍스트를 묶을 때 봇만 채운다. 빈 문자열이면 수신 측의 기본 지시문을 쓴다. |
+
+모르는 키는 무시한다. `attachment` JSON은 2KiB를 넘지 않는다(프레임 전체 64KiB 상한은 그대로다).
+
+**`prompt` 대체 문구.** 옛 `fleet_worker.py`·`native-responder`·ccc-node는 모르는 키 `attachment`를 무시하고
+`prompt`만으로 턴을 실행한다. 그래서 봇은 첨부 턴의 `prompt`에 위 예처럼 "첨부를 받았지만 열 수 없다"는 문구를
+넣는다. 첨부를 받아들이는 수신 측은 이 문구를 버리고, `attachment`와 `caption`으로 이미지/문서 프롬프트를 만든다
+(ccc-node `build_image_prompt`·`build_document_prompt`, channel `Hande`).
+
+**파일 수명과 소유권** — 같은 파일을 지우는 쪽은 언제나 하나다.
+
+1. 봇: 큐에는 설명자만 메모리에 둔다(대기 중인 첨부는 파일을 만들지 않는다). **턴을 시작할 때** poll loop 밖의
+   스레드에서 blob을 받고 FILE-V2 §4 순서로 확인한다: 길이 `size+16` → sha256 = `blob` → AES-256-GCM 복호(AAD
+   `hande-file-v2`) → 평문 길이 = `size`. 그다음 spool에 `O_CREAT|O_EXCL|O_NOFOLLOW`, 0600으로 쓰고 fsync한 뒤
+   프레임을 보낸다. file-v1(MLS에 들어 있는 평문)은 받기·복호 단계를 건너뛴다. 받기·확인이 실패하면 턴을 시작하지
+   않고 방에 고정 문구를 하나 올린다.
+2. 수신 측(받아들일 때): 아래 검증을 통과하면 파일을 자기 0700 staging 디렉터리로 `rename`해 **소유권을 가져가고**,
+   턴이 끝나면(완료·취소·오류) 지운다. `EXDEV`(다른 파일시스템)면 복사하지 않고 실패로 처리한다.
+   검증: spool 직속 자식인지, 심볼릭 링크 없음(`O_NOFOLLOW`), 일반 파일, 같은 uid, 모드 0600, 크기 = `size`,
+   sha256 = `sha256`, 자기 한도 이하(ccc-node는 Matrix와 같은 `max_document_size_mb`·`image_context_guard` 설정).
+3. 봇: 그 턴이 `result`·`uncertain`·worker 종료로 끝났을 때 spool 파일이 아직 있으면 지운다(`ENOENT`는 정상).
+   봇이 시작할 때 spool을 비운다.
+4. 설명자 원문·파일 키·blob id는 봇 메모리 밖으로 나가지 않는다. 프레임, 저널, `<state>.inbox.json` 모두 금지다.
+   저널에는 `kind`·`size`·평문 sha256 앞 12자만 남긴다.
+
+**수신 측 응답.** `attachment`의 형식이 틀리면(타입·필수 키·경로 규칙) `{"type":"rejected","turn_id":…,"reason":"invalid-attachment"}`로
+답한다. 파일 단계 실패(없음·크기/sha 불일치·한도 초과·`EXDEV`)는 모델을 부르지 않고, Matrix 첨부 실패와 같은 고정
+문구로 `result`(`complete`)를 돌려준다. 이미지를 볼 수 없는 런타임도 막지 않는다. 프롬프트의 "볼 수 없으면
+그렇다고 말하라" 문구로 처리한다(Telegram·Matrix와 같다).
+
+**게이트와 켜는 순서.**
+
+- 봇: 첨부 전달 플래그(기본 off)·spool 경로·상한(기본 10,000,000 B, ccc-node `max_document_size_mb` 기본값과
+  같다). 설명자 `size`가 상한을 넘으면 **받지 않고** `agent_skipped`(`reason=attachment_oversize`)와 고정 문구로 처리한다.
+  1단계는 **`owner_actor` 발신만** 전달한다. 다른 actor의 첨부는 지금처럼 `agent_skipped`(`reason=attachment`)로 둔다.
+- ccc-node 한데: `attachment_frames`(기본 `false`)와 spool 경로. 꺼져 있으면 `attachment`를 무시하고 `prompt`로
+  실행하며, 파일은 3번에 따라 봇이 지운다.
+- 봇과 브리지는 **같은 uid, 같은 파일시스템**이어야 한다(Termux runit 노드 공융은 충족을 확인했다. 다른 노드는
+  켜기 전에 서비스 사용자·PrivateTmp를 확인한다). 두 쪽의 spool 경로가 같아야 한다.
+- 켜는 순서는 **브리지 교체·`attachment_frames` → 봇 교체·플래그**다. interim과 반대인데, 여기서는 봇이 보내는
+  쪽이기 때문이다. 끄는 순서는 반대다.
+
 ### 도구 프레임 — `--steward-tools` (#372 P4, `--provider claude` 전용)
 
 worker는 in-process SDK MCP 서버 `steward`로 방 운영 도구 `room_create / room_join /
