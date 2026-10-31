@@ -133,6 +133,11 @@ pub struct Config {
     /// ccc-node#2590: minimum seconds between two `kind:"status"` notices in
     /// one room (0 = no cap).
     pub status_notice_min_secs: u64,
+    /// Typing keepalive (#562 bot side): while a turn produces a reply the
+    /// poll loop keeps the relay's `POST /v2/rooms/{room}/typing` signal
+    /// fresh (Telegram `sendChatAction(typing)` / Matrix `m.typing`). On by
+    /// default; `--no-typing` / env `NATIVE_MLS_BOT_TYPING=0` turn it off.
+    pub typing: bool,
 }
 
 impl Config {
@@ -151,6 +156,7 @@ impl Config {
             peer_per_min: DEFAULT_PEER_PER_MIN,
             notice_per_min: DEFAULT_NOTICE_PER_MIN,
             status_notice_min_secs: DEFAULT_STATUS_NOTICE_MIN_SECS,
+            typing: true,
         }
     }
 }
@@ -452,6 +458,34 @@ impl Responder {
 
     /// #423: several agent rooms share this responder (see `Config::room_frames`).
     pub fn room_frames(&self) -> bool { self.config.room_frames }
+
+    /// Typing keepalive switch (`Config::typing`).
+    pub fn typing(&self) -> bool { self.config.typing }
+
+    /// Typing keepalive (#562 bot side): the turn whose reply the worker is
+    /// producing right now, as `(room, seq)` — the room is the turn's own
+    /// (`""` only for an inbox from before #423, never an active turn). `Err`
+    /// says why nobody is typing: `idle` (no active turn), `peer` (a #425
+    /// read-only turn, its output is never posted), `approval` (the turn
+    /// waits on the owner's `승인 n` — the human's move, not the bot's;
+    /// typing resumes once the worker resolves it), `stop` (a `/stop` is
+    /// landing) or `worker_gone`.
+    pub fn typing_turn(&self) -> Result<(&str, i64), &'static str> {
+        if self.gone {
+            return Err("worker_gone");
+        }
+        let Some((turn, _)) = &self.active else { return Err("idle") };
+        if turn.peer_depth > 0 {
+            return Err("peer");
+        }
+        if turn.stop_requested {
+            return Err("stop");
+        }
+        if !self.approvals.is_empty() {
+            return Err("approval");
+        }
+        Ok((turn.room.as_str(), turn.seq))
+    }
 
     /// #425: admit one peer message for `room` under the per-minute cap.
     pub fn admit_peer(&mut self, room: &str) -> bool {
@@ -1363,6 +1397,40 @@ for line in sys.stdin:
         assert_eq!(got[0], Outbound::ApprovalResolved { n: 1, allowed: false });
         assert_eq!(got[1], Outbound::Reply { seq: 5, text: "did:False".into() });
         assert!(r.approvals.is_empty());
+    }
+
+    /// Typing keepalive input: typing while the worker produces, not while the
+    /// owner is asked to approve, not for a peer turn, not once a `/stop` is
+    /// landing, and never after the turn (or the worker) ended.
+    #[test]
+    fn typing_turn_follows_the_turn_lifecycle() {
+        let mut r = fake(|_| {}, None);
+        assert!(r.typing(), "typing is on by default");
+        assert_eq!(r.typing_turn(), Err("idle"));
+        r.offer(inbound(5, "owner-pc", "ask: delete")).unwrap();
+        assert_eq!(r.typing_turn(), Ok(("agent", 5)), "typing from the moment the turn starts");
+        assert!(matches!(pump_until(&mut r, 1)[0], Outbound::ApprovalRequest { .. }));
+        assert_eq!(r.typing_turn(), Err("approval"), "the owner's move: no typing while waiting");
+        r.resolve(1, true);
+        assert_eq!(pump_until(&mut r, 2)[1], Outbound::Reply { seq: 5, text: "did:True".into() });
+        assert_eq!(r.typing_turn(), Err("idle"), "reply posted, turn over");
+
+        r.offer(inbound(6, "owner-pc", "hold on")).unwrap();
+        assert_eq!(r.typing_turn(), Ok(("agent", 6)));
+        assert_eq!(r.stop("agent", 7, "owner-pc"), Stop::Cancelling { seq: 6 });
+        assert_eq!(r.typing_turn(), Err("stop"));
+        assert_eq!(pump_until(&mut r, 1), vec![Outbound::Stopped { seq: 6 }]);
+        assert_eq!(r.typing_turn(), Err("idle"));
+
+        r.offer(Inbound { peer_depth: 1, ..inbound(8, "dungae-bot", "hold") }).unwrap();
+        assert_eq!(r.typing_turn(), Err("peer"), "a read-only peer turn never answers");
+        drop(r);
+
+        let mut r = fake(|c| c.typing = false, None);
+        assert!(!r.typing());
+        r.offer(inbound(1, "owner-pc", "fail now")).unwrap();
+        assert!(matches!(pump_until(&mut r, 2)[1], Outbound::WorkerGone { .. }));
+        assert_eq!(r.typing_turn(), Err("worker_gone"));
     }
 
     #[test]

@@ -54,6 +54,21 @@ pub fn request(
     body: Option<&[u8]>,
     extra_headers: &[(&str, &str)],
 ) -> Result<Response, HttpError> {
+    request_with_timeouts(base, method, path_qs, body, extra_headers, CONNECT_TIMEOUT, READ_TIMEOUT)
+}
+
+/// `request` with caller-chosen connect/read timeouts — for best-effort hints
+/// (the bot's typing keepalive) that must never hold the poll loop for the
+/// full `READ_TIMEOUT`. Same guards, same wire format.
+pub fn request_with_timeouts(
+    base: &str,
+    method: &str,
+    path_qs: &str,
+    body: Option<&[u8]>,
+    extra_headers: &[(&str, &str)],
+    connect_timeout: Duration,
+    read_timeout: Duration,
+) -> Result<Response, HttpError> {
     let (host, port) = split_base(base)?;
     // Request-line guard (review 2 L: URL not encoded): the path goes on the
     // wire verbatim, so a space, CR/LF or control byte in it would split the
@@ -80,9 +95,9 @@ pub fn request(
         .to_socket_addrs()?
         .next()
         .ok_or(HttpError::BadUrl)?;
-    let stream = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT)?;
-    stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
-    stream.set_read_timeout(Some(READ_TIMEOUT))?;
+    let stream = TcpStream::connect_timeout(&addr, connect_timeout)?;
+    stream.set_write_timeout(Some(WRITE_TIMEOUT.min(read_timeout.max(connect_timeout))))?;
+    stream.set_read_timeout(Some(read_timeout))?;
     let mut stream = stream;
     let mut req = format!("{method} {path_qs} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n");
     req.push_str(&headers_block);

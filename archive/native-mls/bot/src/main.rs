@@ -79,6 +79,13 @@ fn main() -> ExitCode {
         Some(_) => (true, args.iter().filter(|a| *a != "--room-frames").cloned().collect::<Vec<_>>()),
         None => (std::env::var("NATIVE_MLS_BOT_ROOM_FRAMES").ok().is_some_and(|v| v.trim() == "1"), args),
     };
+    // Typing keepalive (#562 bot side): on by default in agent mode — the bot
+    // keeps POST /typing fresh while a turn produces a reply. `--no-typing`
+    // (env NATIVE_MLS_BOT_TYPING=0) turns it off.
+    let (typing, args) = match args.iter().position(|a| a == "--no-typing") {
+        Some(_) => (false, args.iter().filter(|a| *a != "--no-typing").cloned().collect::<Vec<_>>()),
+        None => (std::env::var("NATIVE_MLS_BOT_TYPING").ok().is_none_or(|v| v.trim() != "0"), args),
+    };
     let owner_ok = api::require_identifier("owner actor must match [A-Za-z0-9_-]{1,64}", &owner_actor).is_ok();
     let responder = match (responder_json, responder_unix) {
         (None, None) => None,
@@ -108,6 +115,7 @@ fn main() -> ExitCode {
     let age_renotice_min = env_u64("NATIVE_MLS_BOT_TURN_AGE_RENOTICE_MIN");
     let responder = responder.map(|mut config| {
         config.room_frames = room_frames;
+        config.typing = typing;
         if let Some(v) = turn_secs { config.turn_secs = v; }
         if let Some(v) = age_notice_min { config.turn_age_notice_secs = v.saturating_mul(60); }
         if let Some(v) = age_renotice_min { config.turn_age_renotice_secs = v.saturating_mul(60); }
@@ -193,6 +201,7 @@ fn main() -> ExitCode {
             eprintln!("application message becomes one turn of the stdio worker (docs/FLEET-WORKER.md) instead of an echo;");
             eprintln!("--owner-actor <actor> (env NATIVE_MLS_BOT_OWNER_ACTOR, default owner) answers approvals with 승인 n / 거절 n");
             eprintln!("--room-frames (env NATIVE_MLS_BOT_ROOM_FRAMES=1, #423): several agent rooms on one responder; each turn names its room");
+            eprintln!("--no-typing (env NATIVE_MLS_BOT_TYPING=0): do not send the relay typing signal while a turn produces a reply (default on)");
             return ExitCode::FAILURE;
         }
     };
