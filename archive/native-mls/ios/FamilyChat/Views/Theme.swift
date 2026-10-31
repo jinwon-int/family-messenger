@@ -272,23 +272,6 @@ struct HandeSecondaryButtonStyle: ButtonStyle {
     }
 }
 
-/// 둥근 알약 주 버튼(목록 아래 「불 피우기」): 52pt · 반경 26 · 불빛 번짐(밤).
-struct HandePillButtonStyle: ButtonStyle {
-    @Environment(\.hande) private var p
-    @Environment(\.isEnabled) private var enabled
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.body.weight(.semibold))
-            .foregroundStyle(p.onEmber)
-            .padding(.horizontal, 28)
-            .frame(minHeight: 52)
-            .background(Capsule().fill(configuration.isPressed ? p.emberDeep : p.ember))
-            .overlay(Capsule().stroke(p.isDay ? p.stroke : .clear, lineWidth: p.lineWidth))
-            .shadow(color: p.ember.opacity(0.25 * p.glow), radius: 14)
-            .opacity(enabled ? 1 : 0.45)
-    }
-}
-
 // MARK: - 디자인 2차-A(2026-10-31) 공용 부품: 위험 버튼 · 배너 · 토스트 · 설정 카드.
 
 // 위험 버튼 `HandeDangerButtonStyle`(46pt · warn 8% 면 + 1.5pt warn 60% 선 + warn 글자)과 정적 점 3개 `DotsRow(color:size:)` 는

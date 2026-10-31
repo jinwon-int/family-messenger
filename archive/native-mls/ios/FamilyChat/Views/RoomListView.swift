@@ -6,6 +6,8 @@ struct RoomListView: View {
     @EnvironmentObject private var model: AppModel
     /// #405 P3: 이 기기의 방 순서·읽음 표시.
     @EnvironmentObject private var prefs: LocalPrefs
+    /// 오너 2026-10-31: 행 오른쪽 「>」 없이 카드를 끝까지 — NavigationLink 대신 이 경로로 연다(FamilyChatApp 이 주입).
+    @EnvironmentObject private var navigator: Navigator
     @State private var showJoinRequest = false
     @State private var showCreateRoom = false
     /// #521: 🔔 알림 시트(받은 초대와 처리 상태).
@@ -120,7 +122,11 @@ struct RoomListView: View {
                                  steps: OrderStepButtons(room: room.room, ids: orderedIds) { delta in stepRoom(room.room, by: delta) },
                                  onPin: { pinToTop(room.room) })
                     } else {
-                        NavigationLink(value: room.room) { card }
+                        // 오너 2026-10-31: List 안 NavigationLink 는 행 오른쪽에 「>」를 붙여 카드가 그만큼 좁아진다 —
+                        // 평범한 버튼으로 같은 경로(navigator.open = path [room])를 열어 표시를 없애고 카드를 오른쪽 끝까지 쓴다.
+                        Button { navigator.open(room.room) } label: { card }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("room-row")
                             // #549: 길게 눌러 「맨 위로 고정」(저장 순서 맨 앞) · 「순서」 모드 진입.
                             .contextMenu {
                                 if orderedIds.first != room.room {
@@ -145,18 +151,8 @@ struct RoomListView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(CampfireBackground())
-        // 디자인 1차 1b: 목록 아래 가운데 주 버튼 「불 피우기」(+). 큰 주황 면은 이 하나. 순서 모드에서는 숨긴다.
-        .safeAreaInset(edge: .bottom) {
-            if !orderEditing {
-                Button { showCreateRoom = true } label: {
-                    Label(Strings.createTitle, systemImage: "plus").labelStyle(.titleAndIcon)
-                }
-                .buttonStyle(HandePillButtonStyle())
-                .disabled(!model.canRequestJoin)
-                .padding(.bottom, 8)
-                .accessibilityIdentifier("rooms-create")
-            }
-        }
+        // 오너 2026-10-31: 목록 아래 「불 피우기」 알약은 뺀다 — 목록이 화면 아래까지 늘어난다.
+        // 방 만들기는 오른쪽 위 + 메뉴에 그대로 있다(웹 한데 ⚙ 메뉴 · Android 와 같은 결).
         // 바 제목은 비우고(머리글이 제목 역할), 대화방의 뒤로 가기에는 hande 가 보이게 한다.
         .navigationTitle(Strings.wordmark)
         .navigationBarTitleDisplayMode(.inline)
