@@ -917,10 +917,15 @@ private fun RoomRow(r: RoomUi, onOpen: () -> Unit) {
         }
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
-            Text(
-                r.room, color = textColor, fontSize = 17.sp, lineHeight = 22.sp,
-                fontWeight = if (day && r.unread) FontWeight.ExtraBold else FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
-            )
+            // 자리 점은 이름 옆에(오너 2026-10-31, iOS `CampfireCard` 와 같다): 맨 아래 줄을 점만 차지하지 않게. 이름이 길면 이름이 줄고 점은 그대로.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    r.room, color = textColor, fontSize = 17.sp, lineHeight = 22.sp,
+                    fontWeight = if (day && r.unread) FontWeight.ExtraBold else FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                SeatDots(r.messages)
+            }
             Spacer(Modifier.height(3.dp))
             val working = r.working
             val preview = when {
@@ -940,7 +945,6 @@ private fun RoomRow(r: RoomUi, onOpen: () -> Unit) {
                 },
                 fontWeight = if (workingShown) FontWeight.SemiBold else FontWeight.Normal,
             )
-            SeatDots(r.messages)
         }
         // 안 읽음(#571 후속): 밤 = 주황 점 하나 + 빛남(개수 없음 — 글자는 접근성 문구로만) · 낮불 = 먹 알약 「새 글」(20dp · 반경 10 · 종이 12 굵게).
         // 같은 사람의 다른 기기(PC 웹·iPhone)에서 읽으면 다음 poll 에 꺼진다.
@@ -966,7 +970,7 @@ private fun RoomRow(r: RoomUi, onOpen: () -> Unit) {
 }
 
 /**
- * 좌석 점 줄: 글을 쓴 사람(actor 단위 — 같은 사람의 여러 기기는 한 점, 최대 5) 크림 ● 뒤에 에이전트(노드 단위) 파랑 ● — 합쳐 최대 6.
+ * 좌석 점(이름 옆): 글을 쓴 사람(actor 단위 — 같은 사람의 여러 기기는 한 점, 최대 5) 크림 ● 뒤에 에이전트(노드 단위) 파랑 ● — 합쳐 최대 6.
  * Android 는 명단(roster)을 받지 않으므로 보관된 글의 보낸 이로 가늠한다. 아무도 없으면 그리지 않는다.
  */
 @Composable
@@ -979,7 +983,7 @@ private fun SeatDots(messages: List<MessageUi>) {
     val personCount = minOf(people.size, 5)
     val agentCount = minOf(agents.size, 6 - personCount)
     if (personCount + agentCount == 0) return
-    Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.padding(start = 8.dp), horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
         repeat(personCount) { SeatDot(agent = false) }
         repeat(agentCount) { SeatDot(agent = true) }
     }
