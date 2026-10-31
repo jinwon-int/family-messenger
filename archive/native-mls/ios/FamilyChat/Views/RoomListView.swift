@@ -198,34 +198,30 @@ struct RoomListView: View {
         .navigationDestination(for: RoomID.self) { RoomView(room: $0).id($0) }
         .toolbar {
             ToolbarItem(placement: .principal) { Color.clear.frame(width: 1, height: 1).accessibilityHidden(true) }
-            // #549: 웹 한데의 「↕ 순서」 — 시스템 `편집` 대신 무엇을 하는 버튼인지 보이게. 자리가 0~1개면 숨김(디자인 2차 2c).
-            // 「완료」는 순서 모드의 머리(「자리 순서」 옆 주황 알약)에만 — 바에 또 두지 않는다.
-            if orderedRooms.count > 1 && !orderEditing {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button { setOrderEditing(true) } label: {
-                        Label(Strings.orderEdit, systemImage: "arrow.up.arrow.down").labelStyle(.titleAndIcon)
+            // 오른쪽 네 버튼을 한 묶음으로(오너 2026-10-31): 「↕ 순서」가 왼쪽에 홀로 떨어져 있던 것을 🔔 · + · ⚙ 앞에 붙이고,
+            // 간격은 시스템 기본(항목마다 따로 둘 때)보다 좁게 — HStack 12pt. 그림만 두고 글자는 접근성 문구로.
+            ToolbarItem(placement: .primaryAction) {
+                HStack(spacing: 12) {
+                    // #549: 웹 한데의 「↕ 순서」 — 시스템 `편집` 대신. 자리가 0~1개면 숨김(디자인 2차 2c).
+                    // 「완료」는 순서 모드의 머리(「자리 순서」 옆 주황 알약)에만 — 바에 또 두지 않는다.
+                    if orderedRooms.count > 1 && !orderEditing {
+                        Button { setOrderEditing(true) } label: { Image(systemName: "arrow.up.arrow.down") }
+                            .accessibilityLabel(Strings.orderEditLabel)
                     }
-                    .accessibilityLabel(Strings.orderEditLabel)
+                    // #521: 🔔 받은 초대 수를 배지로(웹 `bellButton`). 오너 기기의 자동 참여 실패도 여기 남는다. #574: 승인 대기 새 기기·형제 초대 알림도 센다.
+                    Button { showNotifications = true } label: {
+                        Image(systemName: model.notificationCount == 0 ? "bell" : "bell.badge")
+                            .overlay(alignment: .topTrailing) { InviteCountBadge(count: model.notificationCount) }
+                    }
+                    .accessibilityLabel(Strings.notifyButton(model.notificationCount))
+                    Menu {
+                        Button { showJoinRequest = true } label: { Label(Strings.joinTitle, systemImage: "person.badge.key") }
+                        Button { showCreateRoom = true } label: { Label(Strings.createTitle, systemImage: "flame") }
+                    } label: { Image(systemName: "plus") }
+                        .accessibilityLabel(Strings.roomActions)
+                        .disabled(!model.canRequestJoin)
+                    NavigationLink { SettingsView() } label: { Image(systemName: "gearshape") }
                 }
-            }
-            // #521: 🔔 받은 초대 수를 배지로(웹 `bellButton`). 오너 기기의 자동 참여 실패도 여기 남는다. #574: 승인 대기 새 기기·형제 초대 알림도 센다.
-            ToolbarItem(placement: .primaryAction) {
-                Button { showNotifications = true } label: {
-                    Image(systemName: model.notificationCount == 0 ? "bell" : "bell.badge")
-                        .overlay(alignment: .topTrailing) { InviteCountBadge(count: model.notificationCount) }
-                }
-                .accessibilityLabel(Strings.notifyButton(model.notificationCount))
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    Button { showJoinRequest = true } label: { Label(Strings.joinTitle, systemImage: "person.badge.key") }
-                    Button { showCreateRoom = true } label: { Label(Strings.createTitle, systemImage: "flame") }
-                } label: { Image(systemName: "plus") }
-                    .accessibilityLabel(Strings.roomActions)
-                    .disabled(!model.canRequestJoin)
-            }
-            ToolbarItem(placement: .primaryAction) {
-                NavigationLink { SettingsView() } label: { Image(systemName: "gearshape") }
             }
         }
         .sheet(isPresented: $showJoinRequest) { JoinRequestView().environmentObject(model) }
