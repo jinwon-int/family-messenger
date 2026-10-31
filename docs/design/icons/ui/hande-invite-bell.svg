@@ -1,0 +1,5 @@
+<!-- 초대 벨 — 한데 고유 UI 아이콘(2차-B B2). 선 currentColor 1.6 둥근 끝. data-role 채움은 테마 토큰(ember/ember-deep/person/agent/ink)으로 칠한다. -->
+<svg id="hande.invite-bell" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M6 10a6 6 0 0 1 12 0v4l1.5 2.5h-15L6 14Z"/>
+  <path d="M10 19.5a2 2 0 0 0 4 0"/>
+</svg>

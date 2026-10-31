@@ -1,0 +1,6 @@
+<!-- 불 세기 2(보통) — 한데 고유 UI 아이콘(2차-B B2). 선 currentColor 1.6 둥근 끝. data-role 채움은 테마 토큰(ember/ember-deep/person/agent/ink)으로 칠한다. -->
+<svg id="hande.flame-2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <path data-role="ember-deep" d="M5.5 20.5c-1.7 0-2.7-1.2-2.7-2.8 0-1.9 1.6-3 2.7-5.2 1.1 2.2 2.7 3.3 2.7 5.2 0 1.6-1 2.8-2.7 2.8Z" fill="currentColor" stroke="none"/>
+  <path data-role="ember" d="M12 20.5c-2.1 0-3.4-1.6-3.4-3.7 0-2.9 2.2-4.8 3.4-8.8 1.2 4 3.4 5.9 3.4 8.8 0 2.1-1.3 3.7-3.4 3.7Z" fill="currentColor" stroke="none"/>
+  <path data-role="unlit" d="M18.5 20.5c-1.7 0-2.7-1.2-2.7-2.8 0-1.9 1.6-3 2.7-5.2 1.1 2.2 2.7 3.3 2.7 5.2 0 1.6-1 2.8-2.7 2.8Z" stroke-opacity=".35"/>
+</svg>
