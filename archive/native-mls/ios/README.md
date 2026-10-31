@@ -64,3 +64,24 @@ App Store Connect 쪽 답(App Privacy·심사 노트·수출 규정)은 [`docs/h
 
 뼈대 단계(2026-10-05)에서 앱은 InMemory 스토어를 쓰고 네트워크가 없다. L1·L3 머지 후 `AppModel.Dependencies.live()` 의
 의존성만 파일 스토어·릴레이 동기화로 바뀐다. 푸시/NSE(§12-D)·첨부·QR 등록(§12-E)은 통합 단계.
+
+## 하드웨어 키보드 단축키 — 웹 한데와 같게(2026-10-31)
+
+웹 한데 `web/hande/README.md` 단축키 표의 **휴대폰 세로(단일 pane)** 줄과 같다. 판정은 Core `HardwareKeys`(Linux `swift test`),
+키는 SwiftUI `.keyboardShortcut` 과 GameController(`HardwareKeyRouter`) 두 길로 받아 한 번만 처리한다 — 작성창(UITextView)이
+PageUp/PageDown·Esc 를 먼저 써 버려 SwiftUI 단축키만으로는 Home 외에 닿지 않았다(오너 보고 2026-10-31).
+
+| 키 | 어디서 | 동작 |
+|---|---|---|
+| Enter / Shift+Enter | 작성창 | 전송 / 줄바꿈(`ComposerKeys`, 화면 키보드는 늘 줄바꿈) · ⌘↩ 도 전송 |
+| PageUp / PageDown | 대화방(작성 중이어도) | 이전·다음 대화방(초안은 방별 보존) |
+| PageUp / PageDown | 대화 목록 | 표시 행을 한 칸씩(열지 않음, 테두리) — 표시가 없으면 방금 나온 방에서 출발. 순서 모드에서는 움직이지 않음 |
+| Enter | 대화 목록 | 표시된 행 열기 |
+| Home | 대화방 | 대화 목록으로 |
+| Esc · End | 작성창 | 대화 읽기(작성창에서 나옴) |
+| ↑ / ↓ | 대화 읽기 | 말풍선 하나씩 위·아래(웹은 60px — SwiftUI 에 픽셀 스크롤 명령이 없어 행 단위) |
+| End | 대화 읽기 | 맨 아래(최신, 따라가기 다시 켬) |
+| Enter | 대화 읽기 | 작성창으로 |
+
+수정키(⌘·⌥·⌃·Shift)가 붙은 키는 편집 동작이라 가로채지 않는다. 웹의 캐럿 모드(대화 내용 Esc → 글자 선택)는 옮기지 않았다 —
+iOS 는 말풍선을 꾹 눌러 「선택해서 복사」. 창(초대·복사·사진·파일·알림함·참여 요청·자리 만들기)이 떠 있으면 키를 쓰지 않는다.

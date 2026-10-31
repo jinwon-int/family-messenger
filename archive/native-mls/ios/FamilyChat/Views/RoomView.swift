@@ -58,6 +58,8 @@ struct RoomView: View {
     /// 과거 글을 위에 붙인 뒤에만 생긴다(미배치 행 추정치가 진입·바닥 추종 중에는 존재하지 않는다).
     @State private var tailStart = 0
     @State private var tailAnchor: Int64?
+    /// 대화 읽기 ↑/↓ 로 지난번에 옮겨 간 말풍선(seq). 읽기를 새로 시작하면(Esc·End·작성창 복귀) 비운다 — 마지막 말풍선에서 다시 시작.
+    @State private var keyCursor: Int64?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -198,6 +200,8 @@ struct RoomView: View {
                     hasNewBelow = false
                     scrollToLatest(proxy, animated: true)
                 }
+                // 하드웨어 키보드(웹 한데 단축키 동등성): 작성창이 먼저 써 버리는 키도 GameController 로 받는다(`HardwareKeyRouter`).
+                .onReceive(HardwareKeyRouter.shared.presses) { handleKey($0, proxy) }
                 .onAppear {
                     guard !PhotoViewerPresence.active else { return }
                     reload()
@@ -616,13 +620,15 @@ struct RoomView: View {
 
     /// #405 P3 하드웨어 키보드 단축키(웹 keyboard.js 차용, iPad 에서 ⌘ 를 누르고 있으면 목록이 보인다):
     /// ⌘↩ 보내기 · Esc 작성창 닫기(대화 읽기) · PageUp/PageDown 이전·다음 대화방 · Home 대화 목록.
+    /// 작성창이 키를 먼저 쓰면 여기까지 오지 않아 같은 키를 GameController 로도 받는다(`handleKey`) — 두 길 모두 `perform` 으로 한 번만.
+    /// 이 버튼들은 iPad ⌘ 길게 누르기 목록에 이름을 보이는 역할도 한다.
     private var keyboardShortcuts: some View {
         ZStack {
             Button(Strings.sendButton) { sendText(draft) }.keyboardShortcut(.return, modifiers: .command)
-            Button(Strings.shortcutReadTimeline) { composerFocused = false }.keyboardShortcut(.escape, modifiers: [])
-            Button(Strings.shortcutPreviousRoom) { switchRoom(-1) }.keyboardShortcut(.pageUp, modifiers: [])
-            Button(Strings.shortcutNextRoom) { switchRoom(1) }.keyboardShortcut(.pageDown, modifiers: [])
-            Button(Strings.shortcutRoomList) { navigator.backToList() }.keyboardShortcut(.home, modifiers: [])
+            Button(Strings.shortcutReadTimeline) { perform(.readTimeline, nil) }.keyboardShortcut(.escape, modifiers: [])
+            Button(Strings.shortcutPreviousRoom) { perform(.previousRoom, nil) }.keyboardShortcut(.pageUp, modifiers: [])
+            Button(Strings.shortcutNextRoom) { perform(.nextRoom, nil) }.keyboardShortcut(.pageDown, modifiers: [])
+            Button(Strings.shortcutRoomList) { perform(.backToList, nil) }.keyboardShortcut(.home, modifiers: [])
         }
         .opacity(0)
         .frame(width: 0, height: 0)
@@ -632,6 +638,57 @@ struct RoomView: View {
     private func switchRoom(_ step: Int) {
         let ids = RoomOrder.apply(model.listedRooms, saved: prefs.roomOrder).map(\.room)
         if let next = RoomOrder.neighbor(of: room, in: ids, step: step) { navigator.open(next) }
+    }
+
+    /// 이 방이 맨 위에 보이지 않거나 창(초대·복사·사진·파일·알림 실패·사진 전체 화면)이 떠 있으면 키를 쓰지 않는다(웹: 시트가 떠 있으면 가로채지 않음).
+    private var keysBlocked: Bool {
+        navigator.path.last != room || showInvite || muteFailed || selecting != nil || showPhotoPicker || showFileImporter
+            || PhotoViewerPresence.active
+    }
+
+    /// GameController 로 받은 키(`HardwareKeyRouter`). 판정은 Core `HardwareKeys.roomAction`(웹 keyboard.js 휴대폰 세로 규칙).
+    private func handleKey(_ press: HardwareKeys.Press, _ proxy: ScrollViewProxy) {
+        guard !keysBlocked, let action = HardwareKeys.roomAction(press, composerFocused: composerFocused) else { return }
+        perform(action, proxy)
+    }
+
+    /// 단축키 동작 — SwiftUI 단축키와 GameController 두 길에서 오므로 `once` 로 한 번만. 스크롤은 GameController 길(proxy 있음)에서만 온다.
+    private func perform(_ action: HardwareKeys.RoomAction, _ proxy: ScrollViewProxy?) {
+        HardwareKeyRouter.shared.once(action.rawValue) {
+            switch action {
+            case .previousRoom: switchRoom(-1)
+            case .nextRoom: switchRoom(1)
+            case .backToList: navigator.backToList()
+            case .readTimeline:
+                keyCursor = nil
+                composerFocused = false
+            case .focusComposer:
+                keyCursor = nil
+                composerFocused = true   // onChange(of: composerFocused) 가 최신 글로 내려 준다
+            case .scrollUp, .scrollDown, .scrollToLatest:
+                if let proxy { scrollByKey(action, proxy) }
+            }
+        }
+    }
+
+    /// 대화 읽기 ↑/↓(말풍선 하나씩, `HardwareKeys.scrollTarget`) · End(맨 아래). 위로 가면 따라가기를 끄고, 맨 아래에 닿으면 다시 켠다(「내 마지막 말」 바와 같은 방식).
+    private func scrollByKey(_ action: HardwareKeys.RoomAction, _ proxy: ScrollViewProxy) {
+        let target: HardwareKeys.ScrollTarget? = action == .scrollToLatest
+            ? .latest
+            : HardwareKeys.scrollTarget(rows: messages.map(\.id), cursor: keyCursor, up: action == .scrollUp)
+        switch target {
+        case .row(let id)?:
+            keyCursor = id
+            followLatest = false
+            withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(id, anchor: .center) }
+        case .latest?:
+            keyCursor = nil
+            followLatest = true
+            hasNewBelow = false
+            scrollToLatest(proxy, animated: true)
+        case nil:
+            break
+        }
     }
 
     private var canSend: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && isReady }

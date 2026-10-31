@@ -17,6 +17,8 @@ struct FamilyChatApp: App {
             RootView()
                 .environmentObject(appDelegate.model)
                 .task {
+                    // 하드웨어 키보드 단축키(웹 한데 동등성): GameController 키 변화를 화면들에 넘긴다(ConversationSupport `HardwareKeyRouter`).
+                    HardwareKeyRouter.shared.start()
                     // #520: 첫 활성화는 scenePhase 변화가 없어 여기서 읽는다(전면 복귀는 foregrounded 가 다시 읽는다).
                     await appDelegate.model.refreshLockScreenPreview()
                     await appDelegate.model.bootstrap()
