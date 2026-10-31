@@ -13,6 +13,7 @@ import {
   TIMELINE_ARROW_STEP_PX,
 } from './keyboard.js';
 import { enterCaretMode, exitCaretMode, isCaretMode } from './timeline-caret.js';
+import { choiceKeyAction, choiceKeyInput } from './agent-choices.js';
 
 const EDITABLE_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
 
@@ -23,6 +24,8 @@ const EDITABLE_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
  *   openRooms: () => void,                   // 방 화면 → 목록(초안은 app 이 방별로 보존)
  *   currentRoomId: () => string|null,        // 열린 방이 없으면 null
  *   orderEditing?: () => boolean,            // 순서 편집 중이면 Page Up/Down 으로 방을 열지 않는다
+ *   openChoiceCard?: () => ({card: () => {count: number, selected: number[], enabled: boolean}, toggle: (n: number) => void, submit: () => void}|null),
+ *                                            // 열린 방의 open 선택지 카드 조작(#629, ui.openChoiceCard) — 없으면 null
  *   document?: Document, matchMedia?: (q: string) => {matches?: boolean}|null,
  * }} actions
  * @returns {() => void} 해제 함수
@@ -139,9 +142,27 @@ export function installShortcuts(root, actions) {
     }
   }
 
+  // 선택지 카드 단축키(#629, AGENT-CHOICES-V1.md §3.1): ⌥1~9 체크 토글 · ⌥Enter 보내기. 판정은 agent-choices.js choiceKeyAction.
+  // document **캡처** 단계에 붙인다 — 작성창 textarea 의 Enter 전송(ui.js buildComposer, 대상 단계)보다 먼저 돌아야
+  // ⌥Enter 가 작성창 글을 보내지 않는다. 가로챈 키만 preventDefault + stopPropagation(작성창·onRoomKeys 로 가지 않음),
+  // null 이면 아무것도 하지 않아 기존 동작(⌥+숫자 특수문자 입력·Enter 규칙) 그대로.
+  function onChoiceKeys(event) {
+    if (event.defaultPrevented || !event.altKey) return;
+    if (!actions.currentRoomId() || sheetOpen()) return;
+    const controls = actions.openChoiceCard?.() ?? null;
+    const action = choiceKeyAction(choiceKeyInput(event), controls ? controls.card() : null);
+    if (!action) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (action.action === 'toggle') controls.toggle(action.number);
+    else controls.submit();
+  }
+
+  doc.addEventListener('keydown', onChoiceKeys, true);
   doc.addEventListener('keydown', onListNav);
   doc.addEventListener('keydown', onRoomKeys);
   return () => {
+    doc.removeEventListener('keydown', onChoiceKeys, true);
     doc.removeEventListener('keydown', onListNav);
     doc.removeEventListener('keydown', onRoomKeys);
   };

@@ -655,6 +655,10 @@ const senderLabel = (name, isAgent) => (isAgent && name ? `${name} · ${strings.
 // 이 화면만의 상태라 서명에 넣지 않는다: 같은 서명이면 붙어 있는 노드(그 DOM 의 선택)를 그대로 두고, 보내는 중 잠금·방 전환으로 다시 그려질 때는
 // 아래 맵(choice.id = 방 + entry 키)에서 되살린다. 답이 오거나 카드가 닫히면 지운다.
 const choiceSelection = new Map();
+// 열린 카드 노드 → 단축키(#629, §3.1)가 쓰는 조작: 행 탭·[보내기]와 같은 toggle/submit 을 그대로 부른다.
+const choiceControls = new WeakMap();
+/** 하드웨어 키보드가 있다고 볼 수 있을 때만(웹: `(pointer: fine)`) 열린 카드 아래 단축키 안내를 붙인다. */
+const finePointer = () => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && Boolean(window.matchMedia('(pointer: fine)')?.matches);
 
 /** 말풍선 서명에 더할 카드 서명 — 선택은 빼고, open 일 때만 잠금(보내는 중·쓸 수 없는 방)을 넣는다. */
 const choiceSignature = (choice) => (choice
@@ -687,9 +691,11 @@ function choiceCard(choice) {
   item.number === recommended ? el('span', { class: 'pill choice-recommended', 'aria-hidden': 'true' }, t.recommended) : null));
   const send = el('button', { type: 'button', class: 'primary small choice-send', 'data-testid': 'choice-send', onclick: () => submit() }, t.send);
   const card = el('div', { class: 'choices', role: 'group', 'aria-label': t.region, 'data-testid': 'agent-choices' },
-    el('div', { class: 'choice-list' }, rows), el('div', { class: 'choice-actions' }, send));
+    el('div', { class: 'choice-list' }, rows), el('div', { class: 'choice-actions' }, send),
+    finePointer() ? el('p', { class: 'choice-hint', 'data-testid': 'choice-hint' }, t.keysHint) : null);
+  const isLocked = () => busy || Boolean(choice.sending) || Boolean(choice.disabled);
   const paint = () => {
-    const locked = busy || Boolean(choice.sending) || Boolean(choice.disabled);
+    const locked = isLocked();
     card.dataset.locked = locked ? 'true' : 'false';
     for (const row of rows) {
       const on = selected.has(Number(row.dataset.number));
@@ -717,7 +723,22 @@ function choiceCard(choice) {
     Promise.resolve(onChoose(picked(), items.map((item) => item.label))).then((ok) => { if (ok === false) unlock(); }, unlock);
   };
   paint();
+  choiceControls.set(card, {
+    card: () => ({ count: items.length, selected: picked(), enabled: !isLocked() }),
+    toggle: (number) => { if (!isLocked() && items.some((item) => item.number === number)) toggle(number); },
+    submit,
+  });
   return card;
+}
+
+/**
+ * 지금 열린 방의 open 선택지 카드 조작(#629) — open 은 방의 마지막 글에만 생기므로 많아야 하나다. 없으면 null.
+ * @returns {null | {card: () => {count: number, selected: number[], enabled: boolean}, toggle: (n: number) => void, submit: () => void}}
+ */
+export function openChoiceCard(root) {
+  const cards = root?.querySelectorAll?.('.room-screen .choices[data-testid="agent-choices"]') ?? [];
+  const node = cards.length > 0 ? cards[cards.length - 1] : null;
+  return node && node.isConnected !== false ? choiceControls.get(node) ?? null : null;
 }
 
 function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null) {
@@ -844,7 +865,8 @@ function buildComposer(room) {
     name: 'body', rows: '1', autocomplete: 'off', enterkeyhint: 'send', placeholder: strings.chat.placeholder, 'aria-label': strings.chat.placeholder, 'data-testid': 'composer',
     onkeydown: (event) => {
       // Enter 전송, Shift+Enter 줄바꿈. IME 조합을 확정하는 Enter(isComposing / keyCode 229)는 그대로 둔다.
-      if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+      // 이미 가로챈 키(선택지 ⌥Enter #629 — shortcuts.js 캡처 단계)는 다시 보내지 않는다.
+      if (event.defaultPrevented || event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return;
       event.preventDefault();
       form.requestSubmit();
     },

@@ -865,6 +865,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     openRooms: () => { app.roomOpen = false; render(); },
     currentRoomId: () => (app.roomOpen && app.phase === 'ready' ? app.current : null),
     orderEditing: () => app.orderEditing,
+    // 선택지 카드 ⌥1~9 체크 · ⌥Enter 보내기(#629): 열린 방의 open 카드(행 탭·[보내기]와 같은 경로).
+    openChoiceCard: () => ui.openChoiceCard(root),
   });
   // 탭·온라인·bfcache 복귀 즉시 동기화(#544 A, 패밀리챗 installSyncRecovery): 백그라운드 탭의 늦춰진 타이머를 기다리지 않는다.
   installSyncRecovery({document, window, resume: () => { resumeSync().catch(() => {}); }});

@@ -195,3 +195,39 @@ export function choiceState(entries, index, isMine = (e) => Boolean(e?.isMe)) {
   if (numbers === null) return null;
   return {state: 'answered', numbers, labels: numbers.map((n) => choices.items[n - 1].label), choices};
 }
+
+// ---- 키보드 단축키(#629, 규격 §3.1) — 공유 벡터 `keys` ----
+
+/**
+ * 웹 KeyboardEvent → 판정 입력. 숫자는 `event.code`(Digit1~9·Numpad1~9)로 본다 — Mac ⌥+1 의 `event.key` 는 `¡` 다.
+ * Enter 는 `event.key === 'Enter'`(Numpad Enter 포함). IME 조합 = isComposing 또는 keyCode 229.
+ * @param {{code?: string, key?: string, altKey?: boolean, ctrlKey?: boolean, metaKey?: boolean, shiftKey?: boolean, isComposing?: boolean, keyCode?: number}} event
+ * @returns {{key: 'digit'|'enter'|'other', digit: number|null, alt: boolean, ctrl: boolean, meta: boolean, shift: boolean, composing: boolean}}
+ */
+export function choiceKeyInput(event = {}) {
+  const match = /^(?:Digit|Numpad)([1-9])$/.exec(event.code ?? '');
+  const key = match ? 'digit' : event.key === 'Enter' ? 'enter' : 'other';
+  return {
+    key, digit: match ? Number(match[1]) : null,
+    alt: Boolean(event.altKey), ctrl: Boolean(event.ctrlKey), meta: Boolean(event.metaKey), shift: Boolean(event.shiftKey),
+    composing: Boolean(event.isComposing) || event.keyCode === 229,
+  };
+}
+
+/**
+ * 열린 선택지 카드에 대한 단축키 판정(규격 §3.1). Alt 만(Ctrl·⌘·Shift 없이), 조합 중이 아니고, 카드가 활성일 때만:
+ *   Alt+N(1..k) → {action:'toggle', number:N} · Alt+Enter(체크 ≥1) → {action:'send'} · 그 밖 → null(가로채지 않음).
+ * @param {{key: string, digit?: number|null, alt?: boolean, ctrl?: boolean, meta?: boolean, shift?: boolean, composing?: boolean}} input
+ * @param {null | {count: number, selected: number[], enabled: boolean}} card 방의 open 카드(없으면 null)
+ * @returns {null | {action: 'toggle', number: number} | {action: 'send'}}
+ */
+export function choiceKeyAction(input, card) {
+  if (!input || !card || !card.enabled) return null;
+  if (!input.alt || input.ctrl || input.meta || input.shift || input.composing) return null;
+  if (input.key === 'digit') {
+    const n = input.digit;
+    return Number.isInteger(n) && n >= 1 && n <= 9 && n <= card.count ? {action: 'toggle', number: n} : null;
+  }
+  if (input.key === 'enter') return (card.selected?.length ?? 0) > 0 ? {action: 'send'} : null;
+  return null;
+}
