@@ -20,6 +20,11 @@ extension Strings {
     static func approvalReply(_ number: Int, allow: Bool) -> String { allow ? "승인 \(number)" : "거절 \(number)" }
     static let lastSentLabel = "내 마지막 말"
     static func lastSentReplies(_ count: Int) -> String { count == 0 ? "아직 답 없음" : "답 \(count)개" }
+    /// 펼침·접기(오너 2026-11-01 「누르면 과거에 쓴 말 10개 이상」, 웹 last-sent 바와 같은 말).
+    static let lastSentExpand = "내 마지막 말 펼치기"
+    static let lastSentCollapse = "내 마지막 말 접기"
+    static let lastSentJumpHint = "누르면 그 메시지로 이동"
+    static let lastSentEarlierRegion = "이전에 내가 한 말 — 누르면 그 메시지로 이동"
 
     // agent-choices-v1(#620 · 복수 선택 #624): 에이전트 선택지 카드. 보내기 버튼이 대신 보내는 글은 Core `AgentChoices.compose`
     // (줄마다 `N. 라벨` — 번호보다 내용, 봇·브리지 무변경).
@@ -175,6 +180,16 @@ extension Strings {
         if seconds < 7 * 86_400 { return "\(Int(seconds / 86_400))일 전" }
         let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: now)
         return (sameYear ? shortDayFormatter : shortDayYearFormatter).string(from: date)
+    }
+
+    /// 「내 마지막 말」 펼친 목록의 시각: 오늘 = 오후 3:58 · 어제 오후 3:58 · 10월 18일 오후 3:58 · (다른 해) 2025년 10월 18일 오후 3:58.
+    /// 오늘 말이 적으면 지난 날 말로 채우므로(`LastSent.earlier`) 날짜를 붙여 오늘 것과 구별한다.
+    static func lastSentTime(_ date: Date, now: Date = Date(), calendar: Calendar = .current) -> String {
+        let clock = messageTime(date)
+        if calendar.isDate(date, inSameDayAs: now) { return clock }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(date, inSameDayAs: yesterday) { return "어제 \(clock)" }
+        let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: now)
+        return "\((sameYear ? shortDayFormatter : shortDayYearFormatter).string(from: date)) \(clock)"
     }
 }
 

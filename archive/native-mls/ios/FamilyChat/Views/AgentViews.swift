@@ -312,31 +312,126 @@ struct AgentChoicesCard: View {
     }
 }
 
-/// 대화창 위 "내 마지막 말" 바(웹 last-sent.js): 누르면 그 메시지로 간다.
+/// 대화창 위 "내 마지막 말" 바(웹 last-sent.js). 오너 2026-11-01: 한 줄만 보이던 것을 웹처럼 펼쳐 **이전에 내가 한 말**(오늘 말 전부,
+/// 적으면 지난 날 말로 10개까지 — `LastSent.earlier`)을 보인다.
+/// - 접힘(기본)에서 바를 누르면 이동 대신 펼친다. 이전 말이 없으면 예전처럼 바로 그 메시지로 간다.
+/// - 펼친 뒤 바를 누르면 가장 최근 내 말로, 목록 항목을 누르면 그 말로 간다. 접기는 오른쪽 화살표로만(웹과 같음).
+/// - 펼침 상태는 방별로 기억한다(웹 `hande:lastSent:collapsed:<방>` 과 같은 뜻, 기기 로컬).
+/// - 목록은 높이 상한 안에서 스크롤 — 펼쳐도 대화가 가려지지 않게.
 struct LastSentBar: View {
+    let room: RoomID
     let lastSent: LastSent
-    let jump: () -> Void
+    let earlier: [LastSent]
+    /// 그 메시지(seq)로 스크롤.
+    let jump: (Int64) -> Void
     @Environment(\.hande) private var p
+    @State private var expanded: Bool
 
-    var body: some View {
-        Button(action: jump) {
-            HStack(spacing: 8) {
-                Image(systemName: "arrow.turn.down.right").font(.caption).foregroundStyle(p.ember)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(Strings.lastSentLabel).font(.caption2).foregroundStyle(.secondary)
-                    Text(preview).font(.footnote).lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                Text(Strings.lastSentReplies(lastSent.repliesAfter)).font(.caption).foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(.ultraThinMaterial)
-        }
-        .buttonStyle(.plain)
+    /// 펼친 목록이 차지하는 최대 높이(pt) — 10개 이상이어도 대화 칸을 남긴다.
+    static let earlierMaxHeight: CGFloat = 260
+    /// 이 개수까지는 스크롤 없이 그린다(한 줄 ≈ 40pt → 상한 안).
+    static let earlierUnscrolledMax = 5
+
+    init(room: RoomID, lastSent: LastSent, earlier: [LastSent], jump: @escaping (Int64) -> Void) {
+        self.room = room
+        self.lastSent = lastSent
+        self.earlier = earlier
+        self.jump = jump
+        _expanded = State(initialValue: UserDefaults.standard.bool(forKey: Self.expandedKey(room)))
     }
 
-    private var preview: String {
-        lastSent.record.kind.isFile ? Strings.attachmentImage : lastSent.record.body.replacingOccurrences(of: "\n", with: " ")
+    static func expandedKey(_ room: RoomID) -> String { "hande.lastSent.expanded.\(room)" }
+
+    private var showsEarlier: Bool { expanded && !earlier.isEmpty }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                Button(action: tapBar) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.turn.down.right").font(.caption).foregroundStyle(p.ember)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(Strings.lastSentLabel).font(.caption2).foregroundStyle(.secondary)
+                            Text(Self.preview(lastSent.record)).font(.footnote).lineLimit(1)
+                        }
+                        Spacer(minLength: 8)
+                        Text(Strings.lastSentReplies(lastSent.repliesAfter)).font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(.leading, 14)
+                    .padding(.trailing, earlier.isEmpty ? 14 : 4)
+                    .padding(.vertical, 8)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint(earlier.isEmpty || expanded ? Strings.lastSentJumpHint : Strings.lastSentExpand)
+                .accessibilityIdentifier("last-sent-jump")
+                if !earlier.isEmpty {
+                    Button { setExpanded(!expanded) } label: {
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44, height: 40)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(expanded ? Strings.lastSentCollapse : Strings.lastSentExpand)
+                    .accessibilityIdentifier("last-sent-toggle")
+                }
+            }
+            if showsEarlier {
+                Divider()
+                // 몇 개뿐이면 그대로, 많으면(보통 10개 이상) 높이 상한 안에서 스크롤 — ScrollView 는 내용이 짧아도 상한까지 늘어나므로 나눈다.
+                Group {
+                    if earlier.count > Self.earlierUnscrolledMax {
+                        ScrollView { earlierList }.frame(height: Self.earlierMaxHeight)
+                    } else {
+                        earlierList
+                    }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel(Strings.lastSentEarlierRegion)
+                .accessibilityIdentifier("last-sent-earlier")
+            }
+        }
+        .background(.ultraThinMaterial)
+    }
+
+    private var earlierList: some View {
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(earlier, id: \.record.seq) { item in
+                Button { jump(item.record.seq) } label: { earlierRow(item) }
+                    .buttonStyle(.plain)
+                    .accessibilityHint(Strings.lastSentJumpHint)
+                Divider().padding(.leading, 14)
+            }
+        }
+    }
+
+    private func earlierRow(_ item: LastSent) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(Self.preview(item.record)).font(.footnote).lineLimit(2)
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(Strings.lastSentReplies(item.repliesAfter)).font(.caption2).foregroundStyle(.secondary)
+                Text(Strings.lastSentTime(item.record.receivedAt)).font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .contentShape(Rectangle())
+    }
+
+    private func tapBar() {
+        if earlier.isEmpty || expanded { jump(lastSent.record.seq) } else { setExpanded(true) }
+    }
+
+    private func setExpanded(_ next: Bool) {
+        withAnimation(.easeOut(duration: 0.15)) { expanded = next }
+        if next { UserDefaults.standard.set(true, forKey: Self.expandedKey(room)) }
+        else { UserDefaults.standard.removeObject(forKey: Self.expandedKey(room)) }
+    }
+
+    static func preview(_ record: MessageRecord) -> String {
+        record.kind.isFile ? Strings.attachmentImage : record.body.replacingOccurrences(of: "\n", with: " ")
     }
 }

@@ -151,6 +151,48 @@ final class AgentConversationTests: XCTestCase {
         XCTAssertNil(LastSent.find(records, myDevice: ""))
     }
 
+    /// 펼친 목록(오너 2026-11-01): 바 본문(가장 최근 내 말)은 빼고, 최신순, 답 수는 다음 내 말 전까지 — 승인 답장은 경계가 아니다.
+    func testLastSentEarlierExcludesLatestAndCountsRepliesUntilMyNextWord() {
+        let records = [
+            rec(1, me, "방 상태 알려줘", at: 2_000),
+            rec(2, bot, "두 개입니다", at: 2_001),
+            rec(3, bot, "더 있어요", at: 2_002),
+            rec(4, me, "test-rs 만들어줘", at: 2_003),
+            rec(5, me, "승인 1", at: 2_004),
+            rec(6, bot, "승인 #1: 허용했습니다.", at: 2_005),
+            rec(7, "owner-pc", "사진", kind: .attachment, at: 2_006),
+            rec(8, bot, "잘 받았어요", at: 2_007),
+            rec(9, bot, "없음", kind: .undecryptable, at: 2_008),
+        ]
+        let since = t0.addingTimeInterval(1_000)
+        let earlier = LastSent.earlier(records, myDevice: me, since: since)
+        XCTAssertEqual(earlier.map(\.record.seq), [4, 1], "latest (#7, my PC's photo) is the bar itself; approval reply #5 is not a word")
+        XCTAssertEqual(earlier.map(\.repliesAfter), [1, 2], "#4 → bot #6 (my approval reply is no boundary); #1 → bot #2, #3")
+        XCTAssertEqual(LastSent.find(records, myDevice: me)?.repliesAfter, 1, "the bar keeps counting to the end (#8; undecryptable #9 not)")
+        XCTAssertEqual(LastSent.earlier(records, myDevice: "", since: since), [])
+        XCTAssertEqual(LastSent.earlier([rec(1, me, "only one", at: 2_000)], myDevice: me, since: since), [], "nothing before the latest")
+    }
+
+    /// 오늘 말은 모두, 오늘 말이 적으면 지난 날 말로 10개까지 채운다 — 웹처럼 오늘만이면 아침에 말이 없을 때 빈 목록이었다.
+    func testLastSentEarlierShowsAllOfTodayAndFillsToTenFromEarlierDays() {
+        let since = t0.addingTimeInterval(10_000)
+        let old = (1...15).map { rec(Int64($0), me, "old \($0)", at: TimeInterval($0)) }
+
+        let onlyOld = LastSent.earlier(old + [rec(100, me, "latest", at: 20_000)], myDevice: me, since: since)
+        XCTAssertEqual(onlyOld.map(\.record.seq), Array((6...15).reversed()).map { Int64($0) }, "no word today → the 10 most recent from earlier days")
+
+        let today = (101...112).map { rec(Int64($0), me, "today \($0)", at: 10_000 + TimeInterval($0)) }
+        let busyDay = LastSent.earlier(old + today + [rec(200, me, "latest", at: 30_000)], myDevice: me, since: since)
+        XCTAssertEqual(busyDay.map(\.record.seq), Array((101...112).reversed()).map { Int64($0) }, "12 words today → all of today, nothing older")
+
+        let quietDay = LastSent.earlier(old + Array(today.prefix(3)) + [rec(200, me, "latest", at: 30_000)], myDevice: me, since: since)
+        XCTAssertEqual(quietDay.map(\.record.seq), [103, 102, 101, 15, 14, 13, 12, 11, 10, 9], "3 today + 7 older = 10")
+
+        XCTAssertEqual(LastSent.earlier(old + today + [rec(200, me, "latest", at: 30_000)], myDevice: me, since: since, limit: 5).count, 5, "limit caps today too")
+        XCTAssertEqual(LastSent.earlier(old + [rec(100, me, "latest", at: 20_000)], myDevice: me, since: since, minimum: 0), [], "minimum 0 = today only (web rule)")
+        XCTAssertEqual(LastSent.earlier(old + [rec(100, me, "latest", at: 20_000)], myDevice: me, since: since, minimum: 99, limit: 4).count, 4, "minimum never exceeds limit")
+    }
+
     func testThinkingOnlyAfterMyTextInAnAgentRoomWithinTheWindow() {
         let base = [rec(1, me, "안녕"), rec(2, bot, "안녕하세요")]
         XCTAssertNil(AgentThinking.agent(base, roster: roster, myDevice: me, now: t0))

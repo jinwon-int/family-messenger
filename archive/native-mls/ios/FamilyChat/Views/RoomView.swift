@@ -88,10 +88,14 @@ struct RoomView: View {
               VStack(spacing: 0) {
                 // #405 P1: "내 마지막 말" 바(웹 last-sent.js) — 에이전트에게 무엇을 시켰는지, 답이 몇 개 왔는지.
                 if let last = LastSent.find(messages.map(\.record), myDevice: model.deviceId) {
-                    LastSentBar(lastSent: last) {
+                    // 오너 2026-11-01: 펼치면 이전에 내가 한 말(오늘 전부, 적으면 지난 날 말로 10개까지) — 누르면 그 말로 간다.
+                    LastSentBar(room: room, lastSent: last,
+                                earlier: LastSent.earlier(messages.map(\.record), myDevice: model.deviceId,
+                                                          since: Calendar.current.startOfDay(for: Date()))) { seq in
                         followLatest = false
-                        withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last.record.seq, anchor: .center) }
+                        withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(seq, anchor: .center) }
                     }
+                    .id(room) // 펼침 상태(@State)는 방별 저장값에서 시작 — 방을 바꾸면 새로 만든다.
                     Divider()
                 }
                 ScrollView {

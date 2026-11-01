@@ -123,11 +123,52 @@ public struct LastSent: Equatable {
     /// "내가 한 말"로 치지 않는다 — 에이전트에게 무엇을 시켰는지가 이 바의 목적.
     public static func find(_ records: [MessageRecord], myDevice: DeviceID) -> LastSent? {
         guard !myDevice.isEmpty else { return nil }
-        guard let index = records.lastIndex(where: { r in
-            r.isMine(device: myDevice) && (r.kind.isFile || (r.kind == .text && AgentApproval.reply(in: r.body) == nil))
-        }) else { return nil }
+        guard let index = records.lastIndex(where: { isSpoken($0, myDevice: myDevice) }) else { return nil }
         let replies = records[(index + 1)...].filter { !$0.isMine(device: myDevice) && ($0.kind == .text || $0.kind.isFile) }.count
         return LastSent(record: records[index], repliesAfter: replies)
+    }
+
+    /// 바를 펼쳤을 때 기본으로 채우는 이전 내 말 수(오너 2026-11-01 「10개 이상」).
+    public static let earlierMinimum = 10
+    /// 펼친 목록 상한(웹 `lastSentView` 와 같음).
+    public static let earlierLimit = 50
+
+    /// 바를 펼쳤을 때의 목록(웹 last-sent.js `lastSentView` 의 `earlierSent` + 오너 2026-11-01 「과거에 쓴 말 10개 이상」):
+    /// 가장 최근 내 말(`find`, 바 본문)을 **뺀** 그 이전 내 말을 최신순으로.
+    /// - 오늘(`since` 이후) 쓴 말은 모두(최대 `limit`).
+    /// - 오늘 말이 `minimum` 개보다 적으면 날짜와 무관하게 `minimum` 개까지 채운다(웹은 오늘 말만 — 아침에 한 말이 없으면 빈 목록이었다).
+    /// 각 항목의 답 수 = 그 말 뒤부터 **다음 내 말 전까지** 남이 쓴 글·첨부. 승인 답장(「승인 1」)은 내 말이 아니어서 목록에도
+    /// 경계에도 들지 않는다(`find` 와 같은 규칙 — 바 본문의 답 수 = `find(...).repliesAfter`).
+    public static func earlier(_ records: [MessageRecord], myDevice: DeviceID, since: Date,
+                               minimum: Int = earlierMinimum, limit: Int = earlierLimit) -> [LastSent] {
+        guard !myDevice.isEmpty, limit > 0 else { return [] }
+        let atLeast = min(max(0, minimum), limit)
+        var out: [LastSent] = []
+        var replies = 0
+        var passedLatest = false
+        for record in records.reversed() {
+            if !record.isMine(device: myDevice) {
+                if record.kind == .text || record.kind.isFile { replies += 1 }
+                continue
+            }
+            guard isSpoken(record, myDevice: myDevice) else { continue }
+            if !passedLatest {
+                // 바 본문(가장 최근 내 말) — 목록에는 넣지 않고 경계로만 쓴다.
+                passedLatest = true
+                replies = 0
+                continue
+            }
+            if out.count >= limit { break }
+            if out.count >= atLeast && record.receivedAt < since { break }
+            out.append(LastSent(record: record, repliesAfter: replies))
+            replies = 0
+        }
+        return out
+    }
+
+    /// 내 말로 치는 기록 — 내(같은 actor) 글(승인 답장 제외)·첨부.
+    static func isSpoken(_ record: MessageRecord, myDevice: DeviceID) -> Bool {
+        record.isMine(device: myDevice) && (record.kind.isFile || (record.kind == .text && AgentApproval.reply(in: record.body) == nil))
     }
 }
 
