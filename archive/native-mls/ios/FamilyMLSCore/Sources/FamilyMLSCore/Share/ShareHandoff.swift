@@ -32,6 +32,11 @@ public enum ShareHandoff {
         fileV2 ? FileV2Format.maxFileBytes : AttachmentFormat.maxBytes
     }
 
+    /// 맡김 시각은 **정수 밀리초**로 디스크에 둔다. `Date` 는 2001 기준 초(Double)라 1970 기준 초로 바꿔 쓰고 읽으면 마지막 자리가
+    /// 흔들린다(macOS 실측 — 돌려받은 Item 과 디스크 값이 달랐다). `commit` 도 같은 계산(`date(milliseconds:)`)으로 시각을 만들어 둘이 비트까지 같다.
+    public static func milliseconds(_ date: Date) -> Int64 { Int64((date.timeIntervalSince1970 * 1000).rounded()) }
+    public static func date(milliseconds: Int64) -> Date { Date(timeIntervalSince1970: Double(milliseconds) / 1000) }
+
     /// 공유 대상: 목록 화면과 같은 순서(`RoomOrder.apply`)에서 정지된 방을 뺀 ID.
     public static func targets(_ rooms: [RoomRecord], saved: [RoomID]) -> [RoomID] {
         RoomOrder.apply(rooms, saved: saved).filter { $0.haltedReason == nil }.map(\.room)
@@ -93,15 +98,20 @@ public final class ShareHandoffStore {
 
     private static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
-        // 초 미만까지 보존(.iso8601 은 초 단위로 잘라 돌려받은 값과 디스크 값이 달라지고, 같은 초의 두 맡김 순서가 흔들린다).
-        encoder.dateEncodingStrategy = .secondsSince1970
+        // 정수 밀리초(위 `ShareHandoff.milliseconds` 설명 — .iso8601 은 초를 자르고, .secondsSince1970 은 마지막 자리가 흔들린다).
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            try container.encode(ShareHandoff.milliseconds(date))
+        }
         encoder.outputFormatting = [.sortedKeys]
         return encoder
     }()
 
     private static let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .secondsSince1970
+        decoder.dateDecodingStrategy = .custom { decoder in
+            ShareHandoff.date(milliseconds: try decoder.singleValueContainer().decode(Int64.self))
+        }
         return decoder
     }()
 
@@ -142,7 +152,8 @@ public final class ShareHandoffStore {
                 try fileManager.copyItem(at: file, to: staging.appendingPathComponent(name))
                 names.append(name)
             }
-            let item = ShareHandoff.Item(id: id, createdAt: now, scope: scope, room: room, text: body, files: names)
+            let item = ShareHandoff.Item(id: id, createdAt: ShareHandoff.date(milliseconds: ShareHandoff.milliseconds(now)),
+                                         scope: scope, room: room, text: body, files: names)
             try Self.encoder.encode(item).write(to: staging.appendingPathComponent(Self.itemFile), options: .atomic)
             try fileManager.moveItem(at: staging, to: root.appendingPathComponent(id, isDirectory: true))
             return item

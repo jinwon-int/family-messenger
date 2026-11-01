@@ -69,6 +69,12 @@ final class ShareHandoffTests: XCTestCase {
         let now = Date(timeIntervalSince1970: 1_800_000_000.123_456)
         let item = try s.commit(scope: "s1", room: "family", text: "초 미만", files: [], now: now, id: "ms")
         XCTAssertEqual(s.pending(scope: "s1", now: now), [item], "createdAt round-trips exactly")
+        // 실제 시계 값(임의의 소수부)도 비트까지 같아야 한다 — 앱 테스트가 `commit` 의 반환값과 `pending` 을 비교한다.
+        for _ in 0..<50 {
+            let live = try s.commit(scope: "s1", room: "family", text: "now", files: [], now: Date())
+            XCTAssertEqual(s.pending(scope: "s1", now: Date()).first(where: { $0.id == live.id }), live)
+            s.finish(live.id)
+        }
     }
 
     func testReleasePutsBackOnlyWhatWasNotSent() throws {
