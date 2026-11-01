@@ -887,9 +887,13 @@ struct MessageRow: View {
     /// 꾹 누르기 메뉴 「선택해서 복사」 — 방 화면이 창을 띄운다.
     var selectText: (String) -> Void = { _ in }
     @Environment(\.hande) private var p
+    /// #647(오너 요청 2026-11-01): 사진 말풍선 옆 공유 아이콘의 공유 파일 — 말풍선(AttachmentBubble)이 준비되면 알려 준다.
+    @State private var photoShareURL: URL?
     private var message: MessageRecord { item.record }
     /// 받은(저장된) 첨부 말풍선 — 보내는 중인 첨부는 한 줄 글이라 종전 여백.
     private var isMedia: Bool { message.kind.isFile && item.outgoing == nil }
+    /// 사진 말풍선(내용 힌트가 image/*) — 「저장·공유」 줄 대신 말풍선 바깥 옆에 공유 아이콘. 자리는 첫 프레임부터 둔다.
+    private var isPhotoRow: Bool { isMedia && AttachmentBubble.sharesBeside(message) }
     /// 사진 말풍선의 테두리 두께(pt).
     static let mediaInset: CGFloat = 3
 
@@ -998,30 +1002,39 @@ struct MessageRow: View {
 
     private var bubbleRow: some View {
         HStack(alignment: .bottom, spacing: 6) {
-            if mine { Spacer(minLength: 40); timeLabel }
-            VStack(alignment: mine ? .trailing : .leading, spacing: 4) {
-                if !mine {
-                    // #405 P2: 기기 ID 대신 이름 · 기기 종류(오너 · PC). 앞에 사람 점 ●(크림).
-                    HStack(spacing: 5) {
-                        SeatDot(size: 7)
-                        Text(Strings.senderLabel(device: message.senderDevice)).font(.caption).foregroundStyle(p.inkDim)
-                    }
-                    .padding(.leading, 4)
-                }
-                content
-                    // 첨부(사진·파일)는 베젤을 최소화(오너 요청 2026-10-27) — 사진이 말풍선을 거의 채우고, 글 줄은 AttachmentBubble 이 자체 여백을 준다.
-                    .padding(.horizontal, contentInset)
-                    .padding(.vertical, contentInsetV)
-                    .background(bubbleFill)
-                    .foregroundStyle(bubbleText)
-                    .clipShape(BubbleShape(mine: mine))
-                    .overlay(BubbleShape(mine: mine).stroke(bubbleStroke, style: StrokeStyle(lineWidth: bubbleStrokeWidth, dash: bubbleDash)))
-                    .contentShape(.contextMenuPreview, BubbleShape(mine: mine))
-                    .messageCopyMenu(MessageCopy.text(of: message), select: selectText)
-                    .opacity(bubbleOpacity)
-                outgoingStatus
+            // 사진 행은 공유 아이콘 자리(44pt)가 반대쪽 여백 몫을 한다 — 좁은 화면에서 사진이 종전보다 더 줄지 않게.
+            if mine { Spacer(minLength: isPhotoRow ? 0 : 40); timeLabel }
+            if isPhotoRow {
+                PhotoShareRow(mine: mine, shareURL: photoShareURL) { bubbleColumn }
+            } else {
+                bubbleColumn
             }
-            if !mine { timeLabel; Spacer(minLength: 40) }
+            if !mine { timeLabel; Spacer(minLength: isPhotoRow ? 0 : 40) }
+        }
+    }
+
+    private var bubbleColumn: some View {
+        VStack(alignment: mine ? .trailing : .leading, spacing: 4) {
+            if !mine {
+                // #405 P2: 기기 ID 대신 이름 · 기기 종류(오너 · PC). 앞에 사람 점 ●(크림).
+                HStack(spacing: 5) {
+                    SeatDot(size: 7)
+                    Text(Strings.senderLabel(device: message.senderDevice)).font(.caption).foregroundStyle(p.inkDim)
+                }
+                .padding(.leading, 4)
+            }
+            content
+                // 첨부(사진·파일)는 베젤을 최소화(오너 요청 2026-10-27) — 사진이 말풍선을 거의 채우고, 글 줄은 AttachmentBubble 이 자체 여백을 준다.
+                .padding(.horizontal, contentInset)
+                .padding(.vertical, contentInsetV)
+                .background(bubbleFill)
+                .foregroundStyle(bubbleText)
+                .clipShape(BubbleShape(mine: mine))
+                .overlay(BubbleShape(mine: mine).stroke(bubbleStroke, style: StrokeStyle(lineWidth: bubbleStrokeWidth, dash: bubbleDash)))
+                .contentShape(.contextMenuPreview, BubbleShape(mine: mine))
+                .messageCopyMenu(MessageCopy.text(of: message), select: selectText)
+                .opacity(bubbleOpacity)
+            outgoingStatus
         }
     }
 
@@ -1031,10 +1044,10 @@ struct MessageRow: View {
             // 아직 저장소에 없는 첨부(보내는 중): 디자인 2차 2d — 200×150 자리 그림 + 아래 「사진·파일 보내는 중」 + 진행선 3px(숫자·% 없음).
             OutgoingAttachmentPlaceholder()
         case .attachment:
-            AttachmentBubble(item: item, onLoaded: onAttachmentLoaded)
+            AttachmentBubble(item: item, onLoaded: onAttachmentLoaded, onShareURL: { photoShareURL = $0 })
         case .fileV2:
             // 분리 첨부(#499): attachment 칸은 설명자(키) — 말풍선이 blob 을 받아 열고, 설명자는 화면·공유에 쓰지 않는다.
-            AttachmentBubble(item: item, onLoaded: onAttachmentLoaded)
+            AttachmentBubble(item: item, onLoaded: onAttachmentLoaded, onShareURL: { photoShareURL = $0 })
         case .undecryptable:
             Text(Strings.undecryptable)
         default:
@@ -1107,13 +1120,17 @@ struct IndeterminateBar: View {
 /// #497: 준비물(축소 비트맵 + 공유 파일)은 `AttachmentPreviewCache` 에 행마다 한 번 — 꼬리↔LazyVStack 경계를 넘어 뷰가 새로 만들어져도
 /// 첫 프레임부터 실제 높이다. body 는 디코드·파일 쓰기를 하지 않는다.
 /// #647 ①: 사진 자리는 **최종 크기**로 시작한다 — 설명자 w/h 힌트 또는 이 기기가 전에 잰 크기(`AttachmentSizeMemory`)를
-/// `AttachmentThumbnail.displaySize` 에 넣어 빈 자리와 썸네일이 같은 틀(`photoFrame`)을 쓴다. 「저장·공유」 줄도 처음부터 자리를 둔다.
+/// `AttachmentThumbnail.displaySize` 에 넣어 빈 자리와 썸네일이 같은 틀(`photoFrame`)을 쓴다. 사진 말풍선 안에는 「저장·공유」 줄이 없다(아래).
 /// 크기를 모르는 구 사진만 첫 디코드에서 한 번 바뀌고(4:3 → 실제), 그 크기를 기억해 다음 진입부터는 바뀌지 않는다.
+/// 사진의 저장·공유는 말풍선 안 줄이 아니라 바깥 옆 아이콘(`PhotoShareRow`, 오너 요청 2026-11-01) — 말풍선은 공유 파일을 `onShareURL` 로 알린다.
+/// 사진이 아닌 파일은 종전처럼 말풍선 안 「저장·공유」 줄.
 struct AttachmentBubble: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.displayScale) private var displayScale
     let item: AppModel.TimelineItem
     var onLoaded: () -> Void = {}
+    /// 사진 말풍선의 공유 파일(준비되면 URL, 아니면 nil) — 행이 말풍선 옆 공유 아이콘에 쓴다.
+    var onShareURL: (URL?) -> Void = { _ in }
     @State private var preview: AttachmentPreview?
     /// 사진 탭 → 전체 화면 보기(오너 요청 build 30). 확대용 원본은 누를 때 디코드한다.
     @State private var viewerImage: UIImage?
@@ -1130,11 +1147,16 @@ struct AttachmentBubble: View {
     /// 저장소 읽기 재시도(앱·NSE 가 같은 DB 를 쓸 때 잠깐 잠길 수 있다).
     static let readAttempts = 3
 
-    init(item: AppModel.TimelineItem, onLoaded: @escaping () -> Void = {}) {
+    init(item: AppModel.TimelineItem, onLoaded: @escaping () -> Void = {}, onShareURL: @escaping (URL?) -> Void = { _ in }) {
         self.item = item
         self.onLoaded = onLoaded
+        self.onShareURL = onShareURL
         _preview = State(initialValue: AttachmentPreviewCache.shared.preview(room: item.record.room, seq: item.record.seq))
     }
+
+    /// 이 행의 공유를 말풍선 바깥 옆 아이콘으로 하는가 = 사진 힌트(image/*). `MessageRow` 가 첫 프레임부터 아이콘 자리를 두는 기준이라
+    /// 받은 내용과 무관하게 행마다 고정이다(디코드 실패한 사진도 옆 아이콘으로 공유한다).
+    static func sharesBeside(_ record: MessageRecord) -> Bool { AttachmentFormat.isImage(mime: record.body) }
 
     private var message: MessageRecord { item.record }
     /// 자리 표시 모양만 정한다(v1 = sniff 한 MIME, file-v2 = 보낸 쪽 힌트). 실제 미리보기 여부는 받은 내용으로 정한다.
@@ -1153,8 +1175,6 @@ struct AttachmentBubble: View {
         let known = AttachmentSizeMemory.shared.knownSize(sizeRow)
         return AttachmentThumbnail.displaySize(ImagePixelSize.resolve(hint: known, measured: preview?.pixelSize))
     }
-    /// 「저장·공유」 줄 자리를 처음부터 둔다(#647 — 로딩 뒤 줄이 새로 붙어 행이 커지지 않게). 읽기 실패 줄에는 없다.
-    private var reservesShareRow: Bool { !unreadable }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -1184,18 +1204,13 @@ struct AttachmentBubble: View {
             } else {
                 Text(Strings.attachmentFile(byteCount, preview?.mime ?? message.body)).font(.footnote).modifier(AttachmentTextInset())
             }
-            if reservesShareRow {
-                // 줄 높이는 늘 숨긴 Label 이 정한다 — 준비 전·후 같은 높이(#647). 공유 파일이 생기면 그 위에 ShareLink 를 얹는다.
-                Label(Strings.attachmentSave, systemImage: "square.and.arrow.up").font(.caption)
-                    .hidden()
-                    .overlay(alignment: .leading) {
-                        if let url = preview?.shareURL {
-                            ShareLink(item: url) { Label(Strings.attachmentSave, systemImage: "square.and.arrow.up") }.font(.caption)
-                        }
-                    }
+            // 사진은 말풍선 바깥 옆 아이콘(`PhotoShareRow`)으로 공유한다 — 말풍선 안 줄이 없어 로딩 뒤 높이가 바뀔 일이 없다(#647).
+            if !Self.sharesBeside(message), let url = preview?.shareURL {
+                ShareLink(item: url) { Label(Strings.attachmentSave, systemImage: "square.and.arrow.up") }.font(.caption)
                     .modifier(AttachmentTextInset(bottomOnly: true))
             }
         }
+        .onAppear { onShareURL(preview?.shareURL) }
         .fullScreenCover(isPresented: $showViewer, onDismiss: {
             // 밑의 방 화면이 다시 나타나는 콜백(onAppear)이 지난 뒤에 내린다.
             DispatchQueue.main.async { PhotoViewerPresence.active = false }
@@ -1212,6 +1227,7 @@ struct AttachmentBubble: View {
             for attempt in 0..<Self.readAttempts {
                 if let data = model.attachment(room: message.room, seq: message.seq) {
                     preview = await AttachmentPreviewCache.shared.prepare(record: message, bytes: data, scale: displayScale)
+                    onShareURL(preview?.shareURL)
                     rememberSize()
                     onLoaded()
                     return
@@ -1235,6 +1251,7 @@ struct AttachmentBubble: View {
                                       kind: .attachment, body: AttachmentFormat.sniffMime(bytes), attachment: nil,
                                       receivedAt: message.receivedAt, decryptedBy: message.decryptedBy)
             preview = await AttachmentPreviewCache.shared.prepare(record: shown, bytes: bytes, scale: displayScale)
+            onShareURL(preview?.shareURL)
             rememberSize()
             onLoaded()
         } catch {
@@ -1274,6 +1291,66 @@ struct AttachmentPhotoFrame<Content: View>: View {
             .frame(maxWidth: size.width)
             .overlay(content)
             .clipShape(RoundedRectangle(cornerRadius: AttachmentThumbnail.cornerRadius))
+    }
+}
+
+/// #647(오너 요청 2026-11-01): 사진 말풍선 + 바깥 옆 공유 아이콘. 받은 사진 = 말풍선 오른쪽 바깥, 내 사진 = 왼쪽 바깥, 아래 맞춤
+/// (텔레그램의 옆 공유 단추처럼). 아이콘 자리(44×44 누름 영역, 아이콘은 말풍선 쪽으로 붙여 간격 ≈ `spacing`)는 공유 파일이 준비되기 전에도
+/// 같은 크기로 둔다(흐린 비활성 단추) — 준비돼도 행 높이·말풍선 위치가 바뀌지 않는다. 사진 말풍선(최소 48 + 테두리)이 아이콘보다 높아 행 높이는 말풍선이 정한다.
+struct PhotoShareRow<Bubble: View>: View {
+    enum Part: Hashable { case bubble, share }
+
+    let mine: Bool
+    let shareURL: URL?
+    let bubble: () -> Bubble
+    @Environment(\.hande) private var p
+
+    // private 환경 값이 있어 멤버별 생성자가 파일 밖(테스트)에서 안 보이므로 직접 둔다.
+    init(mine: Bool, shareURL: URL?, @ViewBuilder bubble: @escaping () -> Bubble) {
+        self.mine = mine
+        self.shareURL = shareURL
+        self.bubble = bubble
+    }
+
+    static var slot: CGFloat { 44 }
+    static var iconSize: CGFloat { 18 }
+    static var spacing: CGFloat { 6 }
+
+    /// 왼쪽 → 오른쪽 배치. 내 사진(오른쪽 말풍선)은 아이콘이 왼쪽 바깥, 받은 사진은 오른쪽 바깥.
+    static func order(mine: Bool) -> [Part] { mine ? [.share, .bubble] : [.bubble, .share] }
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: Self.spacing) {
+            ForEach(Self.order(mine: mine), id: \.self) { part in
+                switch part {
+                case .bubble: bubble()
+                case .share: shareButton
+                }
+            }
+        }
+    }
+
+    /// 아이콘(작게) + 44×44 누름 영역 — 단추의 라벨 자체가 44pt 라야 누름 영역이 넓어진다. 아이콘은 말풍선 쪽 끝에 붙인다.
+    private func shareIcon(_ color: Color) -> some View {
+        Image(systemName: "square.and.arrow.up")
+            .font(.system(size: Self.iconSize, weight: .regular))
+            .foregroundStyle(color)
+            .frame(width: Self.slot, height: Self.slot, alignment: mine ? .trailing : .leading)
+            .contentShape(Rectangle())
+    }
+
+    @ViewBuilder private var shareButton: some View {
+        Group {
+            if let shareURL {
+                ShareLink(item: shareURL) { shareIcon(p.inkDim) }
+            } else {
+                // 준비 전: 같은 크기의 비활성 단추(흐림) — 자리를 미리 차지한다.
+                Button {} label: { shareIcon(p.inkDim.opacity(0.35)) }.disabled(true)
+            }
+        }
+        .buttonStyle(.plain)
+        .frame(width: Self.slot, height: Self.slot)
+        .accessibilityLabel(Strings.attachmentSave)
     }
 }
 

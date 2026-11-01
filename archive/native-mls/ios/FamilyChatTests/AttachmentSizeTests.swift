@@ -56,6 +56,74 @@ final class AttachmentSizeTests: XCTestCase {
         }
     }
 
+    // MARK: 사진 옆 공유 아이콘(오너 요청 2026-11-01) — 「저장·공유」 줄 대신
+
+    private final class FrameBox { var frame: CGRect? }
+
+    /// 사진 말풍선(틀 + 3pt 테두리)을 `PhotoShareRow` 에 넣어 창에 띄우고, 행 크기와 행 안 말풍선 위치를 잰다.
+    private func layout(mine: Bool, url: URL?, width: CGFloat = 400) throws -> (row: CGSize, bubble: CGRect, alone: CGSize) {
+        let size = AttachmentThumbnail.displaySize(pixelWidth: 3024, pixelHeight: 4032)
+        let bubble = AttachmentPhotoFrame(size: size, content: Text("사진 불러오는 중").font(.footnote)).padding(MessageRow.mediaInset)
+        let box = FrameBox()
+        let row = PhotoShareRow(mine: mine, shareURL: url) {
+            bubble.background(GeometryReader { g in Color.clear.onAppear { box.frame = g.frame(in: .named("row")) } })
+        }
+        .coordinateSpace(name: "row")
+        let host = UIHostingController(rootView: row)
+        // 장면에 붙은 창이어야 그려진다(iOS 13+). 테스트 호스트 앱의 장면이 없으면 frame 창으로.
+        let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        let window = scene.map { UIWindow(windowScene: $0) } ?? UIWindow()
+        window.frame = CGRect(x: 0, y: 0, width: width, height: 800)
+        window.rootViewController = host
+        window.isHidden = false
+        defer { window.isHidden = true }
+        host.view.layoutIfNeeded()
+        let deadline = Date().addingTimeInterval(3)
+        while box.frame == nil && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+        let proposal = CGSize(width: width, height: .greatestFiniteMagnitude)
+        let alone = UIHostingController(rootView: bubble).sizeThatFits(in: proposal)
+        return (host.sizeThatFits(in: proposal), try XCTUnwrap(box.frame, "bubble laid out"), alone)
+    }
+
+    func testShareIconSitsOutsideTheBubbleOnTheFarSide() throws {
+        XCTAssertEqual(PhotoShareRow<EmptyView>.order(mine: false), [.bubble, .share], "received photo: icon outside the right edge")
+        XCTAssertEqual(PhotoShareRow<EmptyView>.order(mine: true), [.share, .bubble], "my photo: icon outside the left edge")
+        let slot = PhotoShareRow<EmptyView>.slot, gap = PhotoShareRow<EmptyView>.spacing
+        XCTAssertGreaterThanOrEqual(slot, 44, "tap target ≥ 44pt")
+        let received = try layout(mine: false, url: nil)
+        XCTAssertEqual(received.bubble.minX, 0, accuracy: 0.5, "received: bubble first, icon slot to its right")
+        let mine = try layout(mine: true, url: nil)
+        XCTAssertEqual(mine.bubble.minX, slot + gap, accuracy: 0.5, "mine: icon slot first, bubble to its right")
+        XCTAssertEqual(mine.row.width, received.row.width, accuracy: 0.5)
+        XCTAssertEqual(received.row.width, received.alone.width + gap + slot, accuracy: 0.5, "icon slot is beside, not inside")
+    }
+
+    /// 공유 파일이 준비되기 전·후 행 높이 = 사진 말풍선 높이, 말풍선 위치·크기도 같다(아이콘은 높이를 보태지 않는다).
+    func testShareIconDoesNotChangeTheRowWhenTheFileBecomesReady() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("attachment-647.jpg")
+        for mine in [false, true] {
+            let before = try layout(mine: mine, url: nil), after = try layout(mine: mine, url: url)
+            XCTAssertEqual(before.row.height, before.alone.height, accuracy: 0.5, "row height = photo bubble height (mine \(mine))")
+            XCTAssertEqual(after.row.height, before.row.height, accuracy: 0.01, "no height change when ready (mine \(mine))")
+            XCTAssertEqual(after.row.width, before.row.width, accuracy: 0.01)
+            XCTAssertEqual(after.bubble.minX, before.bubble.minX, accuracy: 0.01, "bubble does not move (mine \(mine))")
+            XCTAssertEqual(after.bubble.size.width, before.bubble.size.width, accuracy: 0.01)
+            XCTAssertEqual(after.bubble.size.height, before.bubble.size.height, accuracy: 0.01)
+        }
+    }
+
+    /// 사진 힌트 행만 옆 아이콘(첫 프레임부터 자리) — 사진이 아닌 파일은 종전처럼 말풍선 안 「저장·공유」 줄.
+    func testOnlyPhotoRowsShareBeside() {
+        func record(_ mime: String) -> MessageRecord {
+            MessageRecord(room: "family", seq: 1, senderDevice: "dad-pc", clientId: AttachmentFormat.newClientId(), kind: .attachment,
+                          body: mime, attachment: nil, receivedAt: Date(), decryptedBy: .app)
+        }
+        XCTAssertTrue(AttachmentBubble.sharesBeside(record("image/jpeg")))
+        XCTAssertTrue(AttachmentBubble.sharesBeside(record("image/heic")))
+        XCTAssertFalse(AttachmentBubble.sharesBeside(record("application/pdf")))
+        XCTAssertFalse(AttachmentBubble.sharesBeside(record("")))
+    }
+
     // MARK: ImageIO 표시 방향 읽기
 
     /// 40×30 비트맵을 EXIF 방향과 함께 인코딩(디스크 픽스처 없이).
