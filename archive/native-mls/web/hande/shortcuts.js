@@ -50,15 +50,22 @@ export function installShortcuts(root, actions) {
     if (delta !== 0) pane.scrollTop += delta;
   }
 
+  // 기준점: 목록 행에 키 포커스가 있으면 그 행, 방이 열려 있으면 **그 방**, 아니면 마지막 키 위치.
+  // 예전에는 마지막 키 위치(listFocusRoomId)를 열린 방보다 먼저 봤는데, 그 값은 목록에서 Page Up/Down 할 때만
+  // 바뀌었다 — 방 화면에서 넘긴 뒤·터치로 연 방에서는 옛 방에 묶여 「다음 방」이 지금 방과 같아 멈추거나(어떤 방에서는
+  // 안 됨) 엉뚱한 방으로 뛰었다(2026-11-01 오너, 안드로이드 크롬). 패밀리챗은 openRoom 이 이 값을 갱신해 문제가 없었다.
   function currentListIndex(buttons) {
     const focused = buttons.indexOf(doc.activeElement);
     if (focused >= 0) return focused;
-    const id = state.listFocusRoomId || actions.currentRoomId();
+    const id = actions.currentRoomId() || state.listFocusRoomId;
     return id ? buttons.findIndex((button) => button.dataset.roomId === id) : -1;
   }
 
   // 대화목록 Page Up/Page Down 탐색(roving focus / 2분할 미리보기 / 단일 pane 방 전환).
   function onListNav(event) {
+    // 열린 방을 마지막 키 위치로 따라간다 — 터치로 연 방에서 Home·뒤로 간 뒤 목록 Page Up/Down 이 그 방에서 이어지게.
+    const openRoomId = actions.currentRoomId();
+    if (openRoomId) state.listFocusRoomId = openRoomId;
     if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
     const shell = root.querySelector('main.shell');
     if (!shell || sheetOpen()) return;
@@ -77,6 +84,7 @@ export function installShortcuts(root, actions) {
     const nextRoomId = buttons[next].dataset.roomId;
     if (action === 'switch') {
       // 단일 pane 방 화면: 목록 순서대로 이전/다음 방을 바로 연다. 첫·마지막 방에서는 제자리.
+      state.listFocusRoomId = nextRoomId;
       if (nextRoomId !== actions.currentRoomId()) actions.openRoom(nextRoomId);
       return;
     }
