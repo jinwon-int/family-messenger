@@ -531,15 +531,48 @@ function reconcileChildren(parent, desired, keyOf) {
 
 const keyOfRow = (node) => node.dataset?.key ?? null;
 
+/**
+ * 목록 갱신 전: 키 포커스(PageUp/Down 위치)가 있는 방 행의 roomId. 목록 밖이거나 방 행이 아니면 null.
+ * @param {Element|null} pane  .pane-list
+ * @param {Document|null} doc
+ */
+export function focusedRoomRowId(pane, doc) {
+  const active = doc?.activeElement;
+  if (!active || !pane?.contains?.(active)) return null;
+  const row = active.closest?.('button.room-item');
+  return row && pane.contains(row) ? (row.dataset?.roomId ?? null) : null;
+}
+
+/**
+ * 목록 갱신이 포커스된 방 행을 새 노드로 바꿨으면(시간 라벨 「1분 전」→「2분 전」·미리보기·불 세기·안 읽음이
+ * 바뀐 행, 또는 틀이 바뀐 pane 전체) 포커스가 body 로 떨어진다 — 하이라이트가 사라지고 Enter 가 먹지 않아
+ * 「고른 뒤 빨리 Enter」해야 했다(2026-11-01 오너, 안드로이드 크롬). 패밀리챗 restoreRoomListFocus 와 같은
+ * 규칙으로, 포커스가 떨어졌을 때만(body·null·문서에서 빠진 노드) 같은 방의 새 행으로 돌려준다.
+ * 다른 곳(시트·작성창)으로 옮겨 간 포커스는 건드리지 않는다. 스크롤은 그대로 둔다(preventScroll).
+ * @returns {boolean} 포커스를 돌려줬으면 true
+ */
+export function restoreRoomRowFocus(pane, roomId, doc) {
+  if (!roomId || !pane) return false;
+  const active = doc?.activeElement;
+  if (active && active !== doc.body && active.isConnected !== false) return false;
+  const row = Array.from(pane.querySelectorAll('button.room-item')).find((button) => button.dataset?.roomId === roomId);
+  if (!row) return false;
+  row.focus({ preventScroll: true });
+  return true;
+}
+
 function updateListPane(shell, fresh) {
   const old = shell.querySelector(':scope > .pane-list');
   if (!old) { shell.prepend(fresh); return; }
+  const doc = shell.ownerDocument;
+  const focusedRoom = focusedRoomRowId(old, doc);
   if (signatureOf(old) !== signatureOf(fresh)) {
     // The list pane is the room list's scroll container — a plain replace would throw a
     // scrolled-down list back to the top (2026-10-26, #502). Keep the reader's position.
     const top = old.scrollTop;
     old.replaceWith(fresh);
     if (top > 0) fresh.scrollTop = top;
+    restoreRoomRowFocus(fresh, focusedRoom, doc);
     return;
   }
   // Same frame: the sync line (last sync time — changes every few seconds) is left out of the
@@ -554,6 +587,7 @@ function updateListPane(shell, fresh) {
   const oldRooms = old.querySelector('ul.rooms');
   const freshRooms = fresh.querySelector('ul.rooms');
   if (oldRooms && freshRooms) reconcileChildren(oldRooms, [...freshRooms.children], keyOfRow);
+  restoreRoomRowFocus(old, focusedRoom, doc);
 }
 
 // ---- 방 pane ----
