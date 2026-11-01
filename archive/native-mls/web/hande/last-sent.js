@@ -43,11 +43,13 @@ export function lastSentEntry(timeline) {
  * 내가 보낸 최근 메시지 요약을 최신순으로 최대 `limit`개. 각 항목의 답장 수는 그 말 뒤부터 **다음 내 말 전까지**
  * 남이 쓴 메시지 수 — 가장 최근 항목은 끝까지 센다. 미리보기가 비는 내 말은 목록에도 경계에도 넣지 않는다.
  * @param {Array<object>|null|undefined} timeline
- * @param {{labels: {photo: string, file: string}, limit?: number, sinceTs?: number}} options
+ * `minimum`(기본 1)개까지는 날짜와 무관하게 넣고, 그 뒤로는 `sinceTs` 이후 것만 — 첫 항목(바 본문)은 언제나 들어간다.
+ * @param {{labels: {photo: string, file: string}, limit?: number, sinceTs?: number, minimum?: number}} options
  * @returns {Array<{key: string|null, text: string, ts: number|null, replies: number}>}
  */
-export function recentSentSummaries(timeline, { labels, limit = 50, sinceTs = 0 } = {}) {
+export function recentSentSummaries(timeline, { labels, limit = 50, sinceTs = 0, minimum = 1 } = {}) {
   if (!Array.isArray(timeline) || !Number.isInteger(limit) || limit <= 0) return [];
+  const atLeast = Math.min(limit, Math.max(1, Number.isInteger(minimum) ? minimum : 1));
   const out = [];
   let replies = 0;
   for (let i = timeline.length - 1; i >= 0 && out.length < limit; i--) {
@@ -56,22 +58,43 @@ export function recentSentSummaries(timeline, { labels, limit = 50, sinceTs = 0 
     if (!entry.isMe) { replies += 1; continue; }
     const text = previewOf(entry, labels);
     if (!text) continue;
-    // 첫 항목(바 본문)은 날짜와 무관하게 가장 최근 내 말, 나머지는 sinceTs 이후만.
-    if (out.length > 0 && (entry.ts ?? 0) < sinceTs) break;
+    // 앞의 atLeast 개(첫 항목 = 바 본문 포함)는 날짜와 무관, 그 뒤로는 sinceTs 이후만.
+    if (out.length >= atLeast && (entry.ts ?? 0) < sinceTs) break;
     out.push(summarize(entry, text, replies));
     replies = 0;
   }
   return out;
 }
 
+/** 펼친 목록에 기본으로 채우는 이전 내 말 수(오너 2026-11-01 「과거에 쓴 말 10개 이상」 — iOS LastSent.earlierMinimum 과 같다). */
+export const EARLIER_MINIMUM = 10;
+
 /**
- * 바에 그릴 것: 가장 최근 내 말(lastSent)과 그 전의 오늘 내 말(earlierSent). 없으면 lastSent null.
+ * 바에 그릴 것: 가장 최근 내 말(lastSent)과 그 이전 내 말(earlierSent). 없으면 lastSent null.
+ * earlierSent = 오늘 내 말 전부(최대 limit) — 오늘 말이 `minimum` 개보다 적으면 지난 날 말로 `minimum` 개까지 채운다
+ * (오늘만 보이던 때는 아침에 한 말이 없으면 빈 목록이었다). `minimum: 0` = 예전 규칙(오늘 것만).
  * @param {Array<object>|null|undefined} timeline
- * @param {{labels: {photo: string, file: string}, now?: number, limit?: number}} options
+ * @param {{labels: {photo: string, file: string}, now?: number, limit?: number, minimum?: number}} options
  */
-export function lastSentView(timeline, { labels, now = Date.now(), limit = 50 } = {}) {
-  const items = recentSentSummaries(timeline, { labels, limit: limit + 1, sinceTs: dayStart(now) });
+export function lastSentView(timeline, { labels, now = Date.now(), limit = 50, minimum = EARLIER_MINIMUM } = {}) {
+  const earlierFloor = Math.max(0, Number.isInteger(minimum) ? minimum : EARLIER_MINIMUM);
+  const items = recentSentSummaries(timeline, { labels, limit: limit + 1, sinceTs: dayStart(now), minimum: 1 + earlierFloor });
   return { lastSent: items[0] ?? null, earlierSent: items.slice(1, limit + 1) };
+}
+
+/**
+ * 펼친 목록 시각 앞에 붙일 날짜: 오늘 = '' · 어제 = labels.yesterday · 그 전 = `M.D.`(목록 relativeTime 과 같은 모양).
+ * 지난 날 말이 오늘 말 아래에 섞이므로 시각만으로는 구별되지 않는다.
+ * @param {number|null|undefined} ts
+ * @param {{now?: number, yesterday?: string}} [options]
+ */
+export function sentDayPrefix(ts, { now = Date.now(), yesterday = '어제' } = {}) {
+  if (!Number.isFinite(ts) || ts <= 0) return '';
+  const today = dayStart(now);
+  if (ts >= today) return '';
+  if (ts >= dayStart(today - 1)) return yesterday;
+  const d = new Date(ts);
+  return `${d.getMonth() + 1}.${d.getDate()}.`;
 }
 
 /**
