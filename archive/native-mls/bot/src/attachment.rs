@@ -308,15 +308,15 @@ fn ensure_spool(dir: &Path) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// The spool file mode follows the directory: a directory that grants its
-/// group anything (the Linux layout — bot-owned, group `native-relay-bot`,
-/// 2770, so a non-root bridge in that group can read and rename) gets 0640
-/// files; a private one (Termux, one uid) gets 0600. No setting to forget.
+/// The spool file mode follows the directory: a directory its group may
+/// **write** (the Linux layout — bot-owned, group `native-relay-bot`, 2770, so
+/// a non-root bridge in that group can read and rename) gets 0640 files; any
+/// other (Termux 0700, an ordinary 0755) gets 0600. No setting to forget.
 pub fn spool_file_mode(dir: &Path) -> u32 {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if std::fs::metadata(dir).is_ok_and(|m| m.permissions().mode() & 0o070 != 0) {
+        if std::fs::metadata(dir).is_ok_and(|m| m.permissions().mode() & 0o020 != 0) {
             return 0o640;
         }
     }
@@ -557,6 +557,9 @@ pub(crate) mod tests {
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         let private = spool(&dir, b"x", None).unwrap();
         assert_eq!(std::fs::metadata(&private.path).unwrap().permissions().mode() & 0o777, 0o600);
+        // An ordinary umask-022 directory is not a shared spool.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(spool_file_mode(&dir), 0o600);
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o2770)).unwrap();
         assert_eq!(spool_file_mode(&dir), 0o640);
         let shared = spool(&dir, b"y", None).unwrap();
