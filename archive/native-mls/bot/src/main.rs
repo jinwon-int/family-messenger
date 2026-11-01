@@ -128,7 +128,11 @@ fn main() -> ExitCode {
             .filter(|v| *v > 0)
             .unwrap_or(attachment::DEFAULT_MAX_BYTES)
             .min(attachment::MAX_FILE_V2);
-        Some(attachment::AttachmentConfig { spool_dir, max_bytes })
+        // Stage 2 caption window: NATIVE_MLS_BOT_ATTACHMENT_CAPTION_SECS (default 10, 0 = off, ≤ 120).
+        let caption_secs = env_u64("NATIVE_MLS_BOT_ATTACHMENT_CAPTION_SECS")
+            .unwrap_or(attachment::DEFAULT_CAPTION_SECS)
+            .min(attachment::MAX_CAPTION_SECS);
+        Some(attachment::AttachmentConfig { spool_dir, max_bytes, caption_secs })
     } else {
         None
     };
@@ -224,7 +228,8 @@ fn main() -> ExitCode {
             eprintln!("--no-typing (env NATIVE_MLS_BOT_TYPING=0): do not send the relay typing signal while a turn produces a reply (default on)");
             eprintln!("env NATIVE_MLS_BOT_AGENT_ATTACHMENTS=1 (#636): the owner's photos/files become turns — the bot decrypts them into");
             eprintln!("NATIVE_MLS_BOT_ATTACHMENT_SPOOL (absolute; the bridge's attachment_spool_dir) and names the file in the turn frame;");
-            eprintln!("NATIVE_MLS_BOT_ATTACHMENT_MAX_BYTES caps the file (default 10000000)");
+            eprintln!("NATIVE_MLS_BOT_ATTACHMENT_MAX_BYTES caps the file (default 10000000); NATIVE_MLS_BOT_ATTACHMENT_CAPTION_SECS (default 10, 0 = off)");
+            eprintln!("holds the photo for the sender's next plain text, sent along as its caption (one turn)");
             return ExitCode::FAILURE;
         }
     };

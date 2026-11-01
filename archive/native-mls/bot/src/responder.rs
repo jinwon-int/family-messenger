@@ -246,6 +246,9 @@ pub type Routed = (String, Outbound);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Offer {
     Started,
+    /// #636 stage 2: an owner attachment waits up to `caption_secs` for the
+    /// sender's next plain text (its caption) before it is offered.
+    Held,
     Queued { depth: usize },
     Dropped { reason: &'static str },
 }
@@ -343,6 +346,19 @@ pub struct Responder {
     /// #636: the spool file of the active turn; removed when the turn ends if
     /// the bridge has not taken it over (renamed it away).
     active_spool: Option<PathBuf>,
+    /// #636 stage 2: the attachment waiting for its caption, and its deadline.
+    held: Option<(Inbound, Instant)>,
+}
+
+/// Matrix parity (ccc-node `NOTICE_QUEUED` / `NOTICE_QUEUE_FULL`, same
+/// wording): the room line an offer earns — the running turn counts as 1, so
+/// the first one waiting is 2 — or `None` (started, held, worker gone).
+pub fn queue_line(offer: &Offer) -> Option<String> {
+    match offer {
+        Offer::Queued { depth } => Some(format!("⏳ 이 메시지는 대기 순번 {}번에 저장되었으며 도착 순서대로 처리됩니다.", depth + 1)),
+        Offer::Dropped { reason: "queue_full" } => Some("대기 중인 요청이 많습니다. 잠시 후 다시 요청해 주세요.".to_string()),
+        Offer::Started | Offer::Held | Offer::Dropped { .. } => None,
+    }
 }
 
 /// #425: one turn-bound item, or its `Suppressed` stand-in for a peer turn.
@@ -473,6 +489,7 @@ impl Responder {
             prep_rx,
             preparing: None,
             active_spool: None,
+            held: None,
         };
         // A turn left active by an earlier run was never confirmed: say so
         // once, clear it, never re-run it.
@@ -535,7 +552,55 @@ impl Responder {
     fn is_gone(&self) -> bool { self.gone }
 
     /// Offer a decrypted room message. Starts the turn now or queues it.
+    /// #636 stage 2: the sender's plain text right after their held attachment
+    /// becomes that attachment's caption (one turn); any other message in the
+    /// held attachment's room first releases it, so arrival order is kept.
     pub fn offer(&mut self, inbound: Inbound) -> Result<Offer, BotError> {
+        if let Some((held, _)) = &self.held {
+            let same_room = held.room == inbound.room;
+            let caption = same_room
+                && inbound.attachment.is_none()
+                && inbound.peer_depth == 0
+                && actor_of(&held.sender_device) == actor_of(&inbound.sender_device)
+                && attachment::is_caption_text(&inbound.text);
+            if caption {
+                let (mut held, _) = self.held.take().expect("held checked above");
+                crate::session::emit_caption_merged(&held.room, held.seq, inbound.seq);
+                held.text = bounded(inbound.text.trim(), attachment::MAX_CAPTION_BYTES);
+                return self.enqueue(held);
+            }
+            if same_room {
+                self.release_held()?;
+            }
+        }
+        self.enqueue(inbound)
+    }
+
+    /// #636 stage 2: an owner attachment from the poll loop. Held for its
+    /// caption when the window is on; otherwise offered at once.
+    pub fn hold_attachment(&mut self, inbound: Inbound) -> Result<Offer, BotError> {
+        let secs = self.config.attachments.as_ref().map_or(0, |a| a.caption_secs);
+        if secs == 0 || self.gone {
+            return self.enqueue(inbound);
+        }
+        self.release_held()?;
+        self.held = Some((inbound, Instant::now() + Duration::from_secs(secs)));
+        Ok(Offer::Held)
+    }
+
+    /// Offer the held attachment without a caption. A queue line (or the
+    /// queue-full refusal) is posted from here, since no poll-loop offer did.
+    fn release_held(&mut self) -> Result<(), BotError> {
+        let Some((held, _)) = self.held.take() else { return Ok(()) };
+        let (room, seq) = (held.room.clone(), held.seq);
+        let offer = self.enqueue(held)?;
+        if let Some(text) = queue_line(&offer) {
+            self.pending_items.push((room, Outbound::Reply { seq, text }));
+        }
+        Ok(())
+    }
+
+    fn enqueue(&mut self, inbound: Inbound) -> Result<Offer, BotError> {
         if self.gone {
             return Ok(Offer::Dropped { reason: "worker_gone" });
         }
@@ -608,6 +673,10 @@ impl Responder {
         let mut out = std::mem::take(&mut self.pending_items);
         while let Ok((turn_id, prepared)) = self.prep_rx.try_recv() {
             self.on_prepared(&turn_id, prepared, &mut out)?;
+        }
+        if self.held.as_ref().is_some_and(|(_, due)| Instant::now() >= *due) {
+            self.release_held()?;
+            out.append(&mut self.pending_items);
         }
         loop {
             match self.from_child.try_recv() {
@@ -738,8 +807,10 @@ impl Responder {
                 self.finish_active()
             }
             Ok(spooled) => {
-                frame["prompt"] = serde_json::Value::String(attachment::fallback_prompt(&spooled));
-                frame["attachment"] = attachment::frame_object(&spooled);
+                // An attachment turn's `prompt` slot carried its caption so far.
+                let caption = frame["prompt"].as_str().unwrap_or("").to_string();
+                frame["prompt"] = serde_json::Value::String(attachment::fallback_prompt(&spooled, &caption));
+                frame["attachment"] = attachment::frame_object(&spooled, &caption);
                 self.active_spool = Some(spooled.path.clone());
                 crate::session::emit_attachment_ready(&room, seq, &spooled);
                 self.send_frame(frame)
@@ -965,6 +1036,9 @@ impl Responder {
             self.approvals.clear();
             self.pending_tool = None;
             self.write_inbox(None)?;
+        }
+        if let Some((held, _)) = self.held.take() {
+            out.push(turn_item(held.peer_depth, held.room.clone(), Outbound::Uncertain { seq: held.seq, reason: "worker_gone".to_string() }));
         }
         for dropped in self.queue.drain(..) {
             out.push(turn_item(dropped.peer_depth, dropped.room.clone(), Outbound::Uncertain { seq: dropped.seq, reason: "worker_gone".to_string() }));
@@ -2152,7 +2226,7 @@ for line in f:
         let dir = spool_dir("ok");
         let stale = dir.join(format!("{}.bin", "ab".repeat(16)));
         std::fs::write(&stale, b"left by a crash").unwrap();
-        let mut r = fake(|c| c.attachments = Some(AttachmentConfig { spool_dir: dir.clone(), max_bytes: 1_000 }), None);
+        let mut r = fake(|c| c.attachments = Some(AttachmentConfig { spool_dir: dir.clone(), max_bytes: 1_000, caption_secs: 0 }), None);
         assert!(!stale.exists(), "start-up sweeps the spool");
         r.set_fetcher(vector_fetcher(Duration::from_millis(0)));
         assert_eq!(r.attachment_max_bytes(), Some(1_000));
@@ -2173,7 +2247,7 @@ for line in f:
     #[test]
     fn attachment_failure_answers_once_and_the_queue_moves_on() {
         let dir = spool_dir("fail");
-        let mut r = fake(|c| c.attachments = Some(AttachmentConfig { spool_dir: dir.clone(), max_bytes: 1_000 }), None);
+        let mut r = fake(|c| c.attachments = Some(AttachmentConfig { spool_dir: dir.clone(), max_bytes: 1_000, caption_secs: 0 }), None);
         r.set_fetcher(std::sync::Arc::new(|_, _| Err("relay error 404: no_such_blob".to_string())));
         assert_eq!(r.offer(attachment_inbound(30)).unwrap(), Offer::Started);
         assert_eq!(r.offer(inbound(31, "owner-pc", "after")).unwrap(), Offer::Queued { depth: 1 });
@@ -2187,7 +2261,7 @@ for line in f:
     #[test]
     fn stop_while_preparing_never_reaches_the_worker() {
         let dir = spool_dir("stop");
-        let mut r = fake(|c| c.attachments = Some(AttachmentConfig { spool_dir: dir.clone(), max_bytes: 1_000 }), None);
+        let mut r = fake(|c| c.attachments = Some(AttachmentConfig { spool_dir: dir.clone(), max_bytes: 1_000, caption_secs: 0 }), None);
         r.set_fetcher(vector_fetcher(Duration::from_millis(400)));
         assert_eq!(r.offer(attachment_inbound(40)).unwrap(), Offer::Started);
         assert_eq!(r.stop("agent", 41, "owner-pc"), Stop::Cancelling { seq: 40 });
@@ -2205,7 +2279,7 @@ for line in f:
         use crate::attachment::tests::{VECTOR_BLOB, VECTOR_KEY, VECTOR_NONCE};
         let dir = spool_dir("inbox");
         let state = dir.join("bot.state");
-        let mut r = fake(|c| c.attachments = Some(AttachmentConfig { spool_dir: dir.join("spool"), max_bytes: 1_000 }), Some(&state));
+        let mut r = fake(|c| c.attachments = Some(AttachmentConfig { spool_dir: dir.join("spool"), max_bytes: 1_000, caption_secs: 0 }), Some(&state));
         r.set_fetcher(vector_fetcher(Duration::from_millis(300)));
         assert_eq!(r.offer(attachment_inbound(50)).unwrap(), Offer::Started);
         let inbox = std::fs::read_to_string(inbox_path(&state)).unwrap();
@@ -2221,7 +2295,7 @@ for line in f:
     fn a_late_preparation_result_only_removes_its_file() {
         let dir = spool_dir("late");
         let mut r = fake(|c| {
-            c.attachments = Some(AttachmentConfig { spool_dir: dir.clone(), max_bytes: 1_000 });
+            c.attachments = Some(AttachmentConfig { spool_dir: dir.clone(), max_bytes: 1_000, caption_secs: 0 });
             c.turn_secs = 0;
         }, None);
         r.set_fetcher(vector_fetcher(Duration::from_millis(300)));
@@ -2233,6 +2307,81 @@ for line in f:
         std::thread::sleep(Duration::from_millis(500));
         let _ = r.pump().unwrap();
         assert!(spool_entries(&dir).is_empty(), "{:?}", spool_entries(&dir));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // ---- #636 stage 2: caption window ----
+
+    fn caption_responder(tag: &str, secs: u64) -> (Responder, PathBuf) {
+        let dir = spool_dir(tag);
+        let mut r = fake(|c| c.attachments = Some(AttachmentConfig { spool_dir: dir.clone(), max_bytes: 1_000, caption_secs: secs }), None);
+        r.set_fetcher(vector_fetcher(Duration::from_millis(0)));
+        (r, dir)
+    }
+
+    fn att_shown(item: &Outbound) -> serde_json::Value {
+        let Outbound::Reply { text, .. } = item else { panic!("{item:?}") };
+        serde_json::from_str(text.strip_prefix("att:").unwrap_or_else(|| panic!("{text}"))).unwrap()
+    }
+
+    #[test]
+    fn the_senders_next_text_becomes_the_held_attachments_caption() {
+        let (mut r, dir) = caption_responder("cap", 30);
+        assert_eq!(r.hold_attachment(attachment_inbound(70)).unwrap(), Offer::Held);
+        assert!(r.pump().unwrap().is_empty(), "nothing runs while the photo waits");
+        // Another device of the same person still counts (actor rule).
+        assert_eq!(r.offer(inbound(71, "owner-iphone-1", " 이거 뭐야? ")).unwrap(), Offer::Started);
+        let got = pump_until(&mut r, 1);
+        assert_eq!(got.len(), 1, "one turn for photo + caption: {got:?}");
+        let Outbound::Reply { seq, .. } = &got[0] else { panic!() };
+        assert_eq!(*seq, 70, "the turn is the attachment's");
+        let shown = att_shown(&got[0]);
+        assert_eq!((shown["caption"].as_str(), shown["fallback"].as_bool()), (Some("이거 뭐야?"), Some(true)));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_held_attachment_runs_alone_when_the_window_closes() {
+        let (mut r, dir) = caption_responder("expire", 1);
+        assert_eq!(r.hold_attachment(attachment_inbound(80)).unwrap(), Offer::Held);
+        std::thread::sleep(Duration::from_millis(1100));
+        let got = pump_until(&mut r, 1);
+        assert_eq!(att_shown(&got[0])["caption"], "");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn commands_and_other_people_release_the_held_attachment_first() {
+        let (mut r, dir) = caption_responder("order", 30);
+        assert_eq!(r.hold_attachment(attachment_inbound(90)).unwrap(), Offer::Held);
+        // A command is never a caption: the photo goes first, uncaptioned, then the command.
+        assert_eq!(r.offer(inbound(91, "owner-pc", "/new")).unwrap(), Offer::Queued { depth: 1 });
+        let got = pump_until(&mut r, 2);
+        assert_eq!(att_shown(&got[0])["caption"], "");
+        assert_eq!(got[1], Outbound::Reply { seq: 91, text: "echo:/new|@owner-pc:hande".into() });
+        // Someone else's message releases it too (order kept), and is not its caption.
+        assert_eq!(r.hold_attachment(attachment_inbound(92)).unwrap(), Offer::Held);
+        assert_eq!(r.offer(inbound(93, "mom-iphone-1", "저녁 뭐 먹지")).unwrap(), Offer::Queued { depth: 1 });
+        let got = pump_until(&mut r, 2);
+        assert_eq!(att_shown(&got[0])["caption"], "");
+        assert_eq!(got[1], Outbound::Reply { seq: 93, text: "echo:저녁 뭐 먹지|@mom-iphone-1:hande".into() });
+        // A second photo releases the first; the caption goes to the newest.
+        assert_eq!(r.hold_attachment(attachment_inbound(94)).unwrap(), Offer::Held);
+        assert_eq!(r.hold_attachment(attachment_inbound(95)).unwrap(), Offer::Held);
+        assert_eq!(r.offer(inbound(96, "owner-pc", "두 번째 사진 설명")).unwrap(), Offer::Queued { depth: 1 });
+        let got = pump_until(&mut r, 2);
+        let seqs: Vec<i64> = got.iter().map(|o| match o { Outbound::Reply { seq, .. } => *seq, other => panic!("{other:?}") }).collect();
+        assert_eq!(seqs, vec![94, 95]);
+        assert_eq!((att_shown(&got[0])["caption"].as_str(), att_shown(&got[1])["caption"].as_str()), (Some(""), Some("두 번째 사진 설명")));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn caption_window_off_offers_at_once() {
+        let (mut r, dir) = caption_responder("off", 0);
+        assert_eq!(r.hold_attachment(attachment_inbound(99)).unwrap(), Offer::Started);
+        assert_eq!(att_shown(&pump_until(&mut r, 1)[0])["caption"], "");
+        assert_eq!(queue_line(&Offer::Held), None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
