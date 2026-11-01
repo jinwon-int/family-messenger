@@ -1105,7 +1105,10 @@ struct IndeterminateBar: View {
 
 /// 첨부 말풍선: 본체는 보일 때 한 번 읽는다(#364 지연 로딩). 이미지는 미리보기(긴 변 ≤220pt), 그 밖은 종류·크기. 둘 다 저장·공유(ShareLink → 임시 파일).
 /// #497: 준비물(축소 비트맵 + 공유 파일)은 `AttachmentPreviewCache` 에 행마다 한 번 — 꼬리↔LazyVStack 경계를 넘어 뷰가 새로 만들어져도
-/// 첫 프레임부터 실제 높이다. body 는 디코드·파일 쓰기를 하지 않는다. 아직 준비 전인 사진은 고정 크기 자리로 높이 변화를 줄인다.
+/// 첫 프레임부터 실제 높이다. body 는 디코드·파일 쓰기를 하지 않는다.
+/// #647 ①: 사진 자리는 **최종 크기**로 시작한다 — 설명자 w/h 힌트 또는 이 기기가 전에 잰 크기(`AttachmentSizeMemory`)를
+/// `AttachmentThumbnail.displaySize` 에 넣어 빈 자리와 썸네일이 같은 틀(`photoFrame`)을 쓴다. 「저장·공유」 줄도 처음부터 자리를 둔다.
+/// 크기를 모르는 구 사진만 첫 디코드에서 한 번 바뀌고(4:3 → 실제), 그 크기를 기억해 다음 진입부터는 바뀌지 않는다.
 struct AttachmentBubble: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.displayScale) private var displayScale
@@ -1122,8 +1125,8 @@ struct AttachmentBubble: View {
     /// file-v2 설명자의 평문 크기(받기 전 「불러오는 중」 표시용).
     @State private var v2Size: Int?
 
-    /// 로딩 중 사진 자리(4:3 가로). 가로 사진은 높이가 그대로, 세로 사진은 +55pt 만 커진다(종전: 한 줄 → 220pt).
-    static let placeholderSize = CGSize(width: AttachmentThumbnail.maxWidth, height: AttachmentThumbnail.maxWidth * 3 / 4)
+    /// 크기를 모르는 사진의 로딩 자리(4:3 가로) — #647 부터는 w/h 힌트·잰 크기가 없을 때만 쓴다.
+    static let placeholderSize = AttachmentThumbnail.fallbackSize
     /// 저장소 읽기 재시도(앱·NSE 가 같은 DB 를 쓸 때 잠깐 잠길 수 있다).
     static let readAttempts = 3
 
@@ -1139,26 +1142,38 @@ struct AttachmentBubble: View {
     private var isV2: Bool { message.kind == .fileV2 }
     /// 표시 크기: 준비물이 있으면 실제 바이트, v2 는 설명자 size, v1 은 저장된 본체 크기(v2 행의 attachmentBytes 는 설명자 길이라 쓰지 않는다).
     private var byteCount: Int { preview?.size ?? (isV2 ? (v2Size ?? 0) : item.attachmentBytes) }
+    /// #647: 이 행의 크기 출처(설명자 w/h · 기억 키). file-v2 설명자는 프로세스 동안 행마다 한 번만 읽는다.
+    private var sizeRow: AttachmentSizeMemory.Row {
+        AttachmentSizeMemory.shared.row(room: message.room, seq: message.seq, isFileV2: isV2) {
+            model.fileV2Descriptor(room: message.room, seq: message.seq)
+        }
+    }
+    /// 사진 틀 크기(pt): 디코드 전엔 아는 크기(힌트·기억), 디코드 뒤엔 힌트와 실측 중 `ImagePixelSize.resolve` 가 고른 것 — 비가 맞으면 같은 값.
+    private var photoSize: CGSize {
+        let known = AttachmentSizeMemory.shared.knownSize(sizeRow)
+        return AttachmentThumbnail.displaySize(ImagePixelSize.resolve(hint: known, measured: preview?.pixelSize))
+    }
+    /// 「저장·공유」 줄 자리를 처음부터 둔다(#647 — 로딩 뒤 줄이 새로 붙어 행이 커지지 않게). 읽기 실패 줄에는 없다.
+    private var reservesShareRow: Bool { !unreadable }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             if let thumbnail = preview?.thumbnail {
-                Image(uiImage: thumbnail)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: AttachmentThumbnail.maxWidth, maxHeight: AttachmentThumbnail.maxHeight)
-                    .clipShape(RoundedRectangle(cornerRadius: AttachmentThumbnail.cornerRadius))
-                    .contentShape(RoundedRectangle(cornerRadius: AttachmentThumbnail.cornerRadius))
-                    .onTapGesture { openViewer() }
-                    .accessibilityLabel(Strings.attachmentImage)
-                    .accessibilityAddTraits(.isButton)
+                // 썸네일은 고유 크기가 아니라 빈 자리와 같은 틀에 채운다(#647) — 비가 같아 잘리는 곳은 반올림 1px 뿐.
+                photoFrame {
+                    Image(uiImage: thumbnail)
+                        .resizable()
+                        .scaledToFill()
+                }
+                .contentShape(RoundedRectangle(cornerRadius: AttachmentThumbnail.cornerRadius))
+                .onTapGesture { openViewer() }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Strings.attachmentImage)
+                .accessibilityAddTraits(.isButton)
             } else if preview == nil && !unreadable && isImage {
-                // 4:3 자리 — 남은 폭이 280pt 보다 좁으면 그 폭에 맞춰 줄어든다(고정 폭이면 좁은 화면에서 넘친다).
-                RoundedRectangle(cornerRadius: AttachmentThumbnail.cornerRadius)
-                    .fill(Color.primary.opacity(0.06))
-                    .aspectRatio(Self.placeholderSize.width / Self.placeholderSize.height, contentMode: .fit)
-                    .frame(maxWidth: Self.placeholderSize.width)
-                    .overlay(Text(Strings.attachmentLoading(byteCount)).font(.footnote))
+                photoFrame {
+                    Text(Strings.attachmentLoading(byteCount)).font(.footnote)
+                }
             } else if preview == nil && !unreadable {
                 Text(Strings.attachmentLoading(byteCount)).font(.footnote).modifier(AttachmentTextInset())
             } else if unreadable && isV2 {
@@ -1169,8 +1184,15 @@ struct AttachmentBubble: View {
             } else {
                 Text(Strings.attachmentFile(byteCount, preview?.mime ?? message.body)).font(.footnote).modifier(AttachmentTextInset())
             }
-            if let url = preview?.shareURL {
-                ShareLink(item: url) { Label(Strings.attachmentSave, systemImage: "square.and.arrow.up") }.font(.caption)
+            if reservesShareRow {
+                // 줄 높이는 늘 숨긴 Label 이 정한다 — 준비 전·후 같은 높이(#647). 공유 파일이 생기면 그 위에 ShareLink 를 얹는다.
+                Label(Strings.attachmentSave, systemImage: "square.and.arrow.up").font(.caption)
+                    .hidden()
+                    .overlay(alignment: .leading) {
+                        if let url = preview?.shareURL {
+                            ShareLink(item: url) { Label(Strings.attachmentSave, systemImage: "square.and.arrow.up") }.font(.caption)
+                        }
+                    }
                     .modifier(AttachmentTextInset(bottomOnly: true))
             }
         }
@@ -1190,6 +1212,7 @@ struct AttachmentBubble: View {
             for attempt in 0..<Self.readAttempts {
                 if let data = model.attachment(room: message.room, seq: message.seq) {
                     preview = await AttachmentPreviewCache.shared.prepare(record: message, bytes: data, scale: displayScale)
+                    rememberSize()
                     onLoaded()
                     return
                 }
@@ -1212,10 +1235,21 @@ struct AttachmentBubble: View {
                                       kind: .attachment, body: AttachmentFormat.sniffMime(bytes), attachment: nil,
                                       receivedAt: message.receivedAt, decryptedBy: message.decryptedBy)
             preview = await AttachmentPreviewCache.shared.prepare(record: shown, bytes: bytes, scale: displayScale)
+            rememberSize()
             onLoaded()
         } catch {
             if !Task.isCancelled { unreadable = true }   // 화면 밖으로 나가 취소된 것은 실패가 아니다
         }
+    }
+
+    private func photoFrame<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        AttachmentPhotoFrame(size: photoSize, content: content())
+    }
+
+    /// #647: 디코드해 잰 크기를 기억한다 — w/h 힌트 없는 구 사진이 다음 진입부터 처음부터 같은 크기로 잡히게.
+    private func rememberSize() {
+        guard let pixels = preview?.pixelSize else { return }
+        AttachmentSizeMemory.shared.remember(pixels, for: sizeRow)
     }
 
     /// 전체 화면은 확대(최대 4배)가 있어 원본을 디코드한다 — 누를 때 한 번. file-v2 는 준비물의 공유 파일(복호화한 원본)에서 읽는다.
@@ -1224,6 +1258,22 @@ struct AttachmentBubble: View {
         guard let data = original, let image = UIImage(data: data) else { return }
         viewerImage = image
         showViewer = true
+    }
+}
+
+/// #647: 사진 틀 — 빈 자리·썸네일 공통. 비 = `size`, 최대 폭 = `size.width`(남은 폭이 더 좁으면 같은 비로 줄어든다 —
+/// 종전 4:3 자리와 같은 규칙). 내용(`content`)은 겹쳐 그릴 뿐 크기에 관여하지 않는다 — 그래서 로딩 전후 높이가 같다.
+struct AttachmentPhotoFrame<Content: View>: View {
+    let size: CGSize
+    let content: Content
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: AttachmentThumbnail.cornerRadius)
+            .fill(Color.primary.opacity(0.06))
+            .aspectRatio(size.width / size.height, contentMode: .fit)
+            .frame(maxWidth: size.width)
+            .overlay(content)
+            .clipShape(RoundedRectangle(cornerRadius: AttachmentThumbnail.cornerRadius))
     }
 }
 

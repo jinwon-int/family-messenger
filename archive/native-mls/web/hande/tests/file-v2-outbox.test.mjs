@@ -1,7 +1,7 @@
 // file-v2 송신 보관함(#499 3단계, FILE-V2.md §3) — 업로드 → 설명자 MLS 암호화 → 보관 → 게시, 재시도·409·한도·보관 내용.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {fileV2Outbox, sendsFileV2, SEND_FILE_V2, SEND_OVERRIDE_KEY, isFileV2Client} from '../file-v2-outbox.js';
+import {fileV2Outbox, sendsFileV2, SEND_FILE_V2, SEND_OVERRIDE_KEY, isFileV2Client, imageHints, browserImageSize} from '../file-v2-outbox.js';
 import {parseDescriptor, decryptFile, sha256Hex, MAX_FILE_V2} from '../file-v2.js';
 
 const KEY = 'hande:attachment-v2:db:family:me-pc';
@@ -155,4 +155,64 @@ test('잠금 없는 브라우저·동시 전송은 거부한다', async () => {
   await assert.rejects(fileV2Outbox({...deps, locks: null}).send(fileOf(photo()), 1), /지원하지 않는다/);
   const {deps: d2} = harness();
   await assert.rejects(fileV2Outbox({...d2, locks: {request: async (_n, _o, fn) => fn(null)}}).send(fileOf(photo()), 1), /다른 탭/);
+});
+
+// ---- #647 ①: 사진의 표시 방향 크기를 설명자 w/h 로 ----
+
+test('사진: 크기 재기(주입) 결과가 설명자 w/h 로 실린다 — 받는 쪽이 디코드 전에 자리를 잡는다', async () => {
+  const seen = [];
+  const {deps} = harness();
+  const calls = {encrypt: []};
+  const outbox = fileV2Outbox({...deps, encrypt: async b => { calls.encrypt.push(b); return deps.encrypt(b); },
+    imageSize: async file => { seen.push(file.type); return {w: 3024, h: 4032}; }});
+  await outbox.send(fileOf(photo()), 1);
+  const d = parseDescriptor(unwrapDescriptor(calls.encrypt[0]));
+  assert.equal(d.w, 3024); assert.equal(d.h, 4032);
+  assert.deepEqual(seen, ['image/jpeg']);
+});
+
+test('크기 재기 실패·범위 밖·시간 초과·사진 아님 → w/h 만 빠지고 보내기는 그대로', async () => {
+  for (const imageSize of [
+    async () => { throw new Error('decode failed'); },
+    () => { throw new Error('sync throw'); },
+    async () => ({w: 0, h: 10}),
+    async () => ({w: 30000, h: 10}),
+    async () => ({w: 10}),
+    async () => null,
+  ]) {
+    const {deps, calls} = harness();
+    const result = await fileV2Outbox({...deps, imageSize}).send(fileOf(photo()), 1);
+    assert.equal(result.seq, 42);
+    const d = parseDescriptor(unwrapDescriptor(calls.encrypt[0]));
+    assert.equal(d.w, undefined); assert.equal(d.h, undefined);
+    assert.equal(d.mime, 'image/jpeg', 'other hints stay');
+  }
+  let probed = false;
+  const {deps, calls} = harness();
+  await fileV2Outbox({...deps, imageSize: async () => { probed = true; return {w: 1, h: 1}; }}).send(fileOf(photo(), {type: 'application/pdf', name: 'a.pdf'}), 1);
+  assert.equal(probed, false, 'non-images are not probed');
+  assert.equal(parseDescriptor(unwrapDescriptor(calls.encrypt[0])).w, undefined);
+});
+
+test('imageHints: 시간 초과면 기다리지 않고 {}', async () => {
+  const started = Date.now();
+  const never = () => new Promise(() => {});
+  assert.deepEqual(await imageHints({type: 'image/png'}, never, 20), {});
+  assert.ok(Date.now() - started < 1000);
+  assert.deepEqual(await imageHints({type: 'image/png'}, async () => ({w: 5, h: 7})), {w: 5, h: 7});
+  assert.deepEqual(await imageHints({type: 'image/png'}, null), {});
+  assert.deepEqual(await imageHints(null, async () => ({w: 5, h: 7})), {});
+});
+
+test('browserImageSize: createImageBitmap(EXIF 반영 기본값)의 크기, 없으면 null, 비트맵은 닫는다', async () => {
+  assert.equal(typeof globalThis.createImageBitmap, 'undefined', 'node has no createImageBitmap — unit tests never decode');
+  assert.equal(await browserImageSize({}), null);
+  let closed = false;
+  globalThis.createImageBitmap = async () => ({width: 3024, height: 4032, close: () => { closed = true; }});
+  try {
+    assert.deepEqual(await browserImageSize({type: 'image/jpeg'}), {w: 3024, h: 4032});
+    assert.equal(closed, true);
+  } finally {
+    delete globalThis.createImageBitmap;
+  }
 });

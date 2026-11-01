@@ -6,7 +6,7 @@ import {
   strings, ACTOR, ROOM, DEVICE, formatTime, dayLabel, dayKey, groupFingerprint, fingerprintRows, displayName, isServiceDevice, humanSize, relativeTime,
   participantCount, participantOf, groupParticipants, deviceKind, deviceKinds,
 } from './strings.js';
-import {imageType, downloadSpec} from './attachment-view.js';
+import {imageType, downloadSpec, mediaBoxStyle, pendingMedia, dimsAgree} from './attachment-view.js';
 import { pickTransferFile, transferHasFiles } from './composer-files.js';
 import { lastSentView, collapsedKey } from './last-sent.js';
 import {fileboxRefreshUrl} from './filebox.js';
@@ -746,7 +746,8 @@ function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null) {
   // 전송 상태(2차-B B3): entry.state 'queued'(연결되면 보냄) · 'failed'(전송 안 됨) 가 오면 내 말풍선의 면·선이 바뀐다. 지금 app.js 는 보내기를 기다리므로 주지 않는다(훅만).
   const sendState = entry.isMe && (entry.state === 'queued' || entry.state === 'failed') ? entry.state : null;
   const signature = JSON.stringify([entry.key, entry.kind, Boolean(entry.isMe), Boolean(entry.isAgent), entry.senderName ?? null, entry.body ?? '', time, entry.size ?? null, entry.image?.url ?? null, Boolean(entry.replay), entry.seq ?? null,
-    entry.fileName ?? null, Boolean(entry.previewFailed), Boolean(entry.previewFailed) && Boolean(entry.previewBusy), choiceSignature(choice), sendState]);
+    entry.fileName ?? null, Boolean(entry.previewFailed), Boolean(entry.previewFailed) && Boolean(entry.previewBusy), choiceSignature(choice), sendState,
+    entry.dims ? [entry.dims.w, entry.dims.h] : null, pendingMedia(entry)]);
   if (entry.kind === 'system') {
     return signed(el('li', { class: 'system', 'data-key': entry.key, 'data-testid': 'system-row' }, el('span', { class: 'body' }, entry.body), time ? el('span', { class: 'foot' }, time) : null), signature);
   }
@@ -758,10 +759,17 @@ function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null) {
       : null;
     // 사진에는 「내려받기」 버튼을 두지 않는다(오너 요청 2026-10-27) — 크게 보기에서 길게 누르기·우클릭으로 저장된다.
     // 사진이 아닌 파일은 버튼이 유일한 받기 경로라 남긴다.
+    // #647 ①: 설명자 w/h 가 있으면 사진 상자 크기를 처음부터 정한다(mediaBoxStyle) — 불러오는 중 자리와 img 가 같은 크기라 행 높이가 안 바뀐다.
+    // 디코드한 사진의 비가 힌트와 다르면(틀린 힌트) img 의 고정 크기를 풀어 사진 고유 크기로 돌아간다.
+    const box = mediaBoxStyle(entry.dims);
     body = entry.image
       ? el('div', { class: 'body media' },
           el('button', { type: 'button', class: 'media-open', title: strings.chat.viewImage, 'aria-label': strings.chat.viewImage, onclick: () => openImageViewer(entry) },
-            el('img', { src: entry.image.url, alt: entry.image.alt || strings.chat.image, loading: 'lazy' })))
+            el('img', { src: entry.image.url, alt: entry.image.alt || strings.chat.image, loading: 'lazy', style: box,
+              onload: box ? (event) => { const img = event.currentTarget; if (!dimsAgree(entry.dims, img.naturalWidth, img.naturalHeight)) img.removeAttribute('style'); } : null })))
+      : pendingMedia(entry)
+      ? el('div', { class: 'body media' },
+          el('span', { class: 'media-placeholder', role: 'img', 'aria-label': strings.chat.image, 'aria-busy': 'true', 'data-testid': 'media-placeholder', style: box }))
       // 파일명(#544 C): file-v2 수신분은 보낸 쪽 이름(file-v2.js safeFileName 으로 줄인 것)을, file-v1 은 와이어에 이름이 없어 「파일」.
       : el('div', { class: 'body file' }, el('span', { class: 'file-label' }, strings.chat.file(humanSize(entry.size ?? 0), entry.fileName)), previewRetry(entry, onRetryPreview), download);
   } else if (entry.isAgent && entry.kind === 'text' && hasMarkdown(entry.body)) body = agentMarkdownBody(entry.body);

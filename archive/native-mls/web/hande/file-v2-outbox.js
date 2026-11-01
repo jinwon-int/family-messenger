@@ -7,7 +7,7 @@
 //
 // 보내기 스위치: SEND_FILE_V2 — #499 전환 계획 3에 따라 모든 기기의 v2 수신(웹·iOS·안드로이드·봇) 확인 뒤 오너 승인으로 켰다.
 // 시험용으로 한 브라우저에서만 켜려면 localStorage `hande:file-v2-send` = "1".
-import {MAX_FILE_V2, encryptFile, encodeDescriptor} from './file-v2.js';
+import {MAX_FILE_V2, MAX_DIMENSION, encryptFile, encodeDescriptor} from './file-v2.js';
 
 export const SEND_FILE_V2 = true;   // #499 3단계 켜기(오너 승인) — 끄려면 false 로 되돌린다(보낸 v2 는 계속 열린다)
 export const SEND_OVERRIDE_KEY = 'hande:file-v2-send';
@@ -28,14 +28,45 @@ function base64(bytes) {
   return btoa(binary);
 }
 
-/** 보낸 쪽 힌트(FILE-V2.md §1): 형식에 맞을 때만 싣는다 — 맞지 않으면 빼고 보낸다(받는 쪽은 내용으로 판단). */
-function hints(file) {
+/** 사진 크기를 재는 데 기다리는 최대 시간 — 넘기면 w/h 없이 보낸다(보내기를 막지 않는다, #647). */
+export const IMAGE_SIZE_TIMEOUT_MS = 3000;
+
+/**
+ * 브라우저 기본 크기 재기(#647 ①): 화면에 보이는 방향의 픽셀 크기 {w, h}. createImageBitmap 은 기본값
+ * (imageOrientation 'from-image')으로 EXIF 방향을 반영한다 — iOS ImageIO 의 표시 방향 크기와 같다. 없으면 null.
+ */
+export async function browserImageSize(file) {
+  if (typeof globalThis.createImageBitmap !== 'function') return null;
+  const bitmap = await globalThis.createImageBitmap(file);
+  try { return {w: bitmap.width, h: bitmap.height}; } finally { bitmap.close?.(); }
+}
+
+const dimension = n => Number.isSafeInteger(n) && n >= 1 && n <= MAX_DIMENSION;
+
+/** 사진이면 표시 방향 크기 {w, h}, 아니면·모르면·실패·시간 초과면 {} — 어떤 경우에도 throw 하지 않는다. */
+export async function imageHints(file, imageSize = browserImageSize, timeoutMs = IMAGE_SIZE_TIMEOUT_MS) {
+  if (typeof file?.type !== 'string' || !file.type.startsWith('image/') || typeof imageSize !== 'function') return {};
+  let timer;
+  try {
+    const timeout = new Promise(resolve => { timer = setTimeout(() => resolve(null), timeoutMs); });
+    const size = await Promise.race([Promise.resolve().then(() => imageSize(file)), timeout]);
+    return size && dimension(size.w) && dimension(size.h) ? {w: size.w, h: size.h} : {};
+  } catch (_) {
+    return {};
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** 보낸 쪽 힌트(FILE-V2.md §1): 형식에 맞을 때만 싣는다 — 맞지 않으면 빼고 보낸다(받는 쪽은 내용으로 판단).
+ *  #647: 사진은 w/h(표시 방향 픽셀) — 받는 쪽이 디코드 전에 말풍선 자리를 최종 크기로 잡는다. */
+async function hints(file, imageSize) {
   const out = {};
   if (typeof file?.type === 'string' && file.type.length <= 100
       && /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,63}\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,63}$/.test(file.type)) out.mime = file.type;
   // eslint-disable-next-line no-control-regex
   if (typeof file?.name === 'string' && file.name.length >= 1 && [...file.name].length <= 255 && !/[\u0000-\u001f\u007f-\u009f]/.test(file.name)) out.name = file.name;
-  return out;
+  return {...out, ...await imageHints(file, imageSize)};
 }
 
 /**
@@ -46,9 +77,10 @@ function hints(file) {
  * @param {(bytes: Uint8Array) => Promise<ArrayBuffer|Uint8Array>} deps.encrypt  MLS application 암호화(설명자 평문)
  * @param {(payload: object) => Promise<{status:number, body:any}>} deps.post    POST /events
  * @param {(ciphertext: Uint8Array) => Promise<{status:number, body:any}>} deps.upload  POST /blobs
+ * @param {(file: Blob) => Promise<{w:number, h:number}|null>} [deps.imageSize]  사진 표시 방향 크기(#647, 테스트 주입용)
  */
 export function fileV2Outbox({storage, key, device, encrypt, post, upload, newId = () => crypto.randomUUID(),
-  locks = globalThis.navigator?.locks, crypto: webCrypto} = {}) {
+  locks = globalThis.navigator?.locks, crypto: webCrypto, imageSize = browserImageSize} = {}) {
   let pending = null;
   function readPending() {
     const saved = storage.getItem(key);
@@ -87,6 +119,8 @@ export function fileV2Outbox({storage, key, device, encrypt, post, upload, newId
           }
           const bytes = new Uint8Array(await file.arrayBuffer());
           if (bytes.length !== file.size) throw new Error('첨부파일 크기가 바뀌었다. 다시 선택한다.');
+          // 힌트(크기 재기 포함)는 업로드 전에 — 재기가 늦거나 실패해도 w/h 만 빠진다.
+          const shown = await hints(file, imageSize);
           const sealed = await encryptFile(bytes, {crypto: webCrypto});
           // 업로드 먼저(FILE-V2.md §3-2): 응답 id 가 계산한 blob 과 같아야 한다. 실패면 아무것도 보관하지 않는다.
           const up = await upload(sealed.ciphertext);
@@ -94,7 +128,7 @@ export function fileV2Outbox({storage, key, device, encrypt, post, upload, newId
             const code = up.body?.error ? ` ${up.body.error}` : '';
             throw new Error(`첨부 업로드 실패(${up.status}${code}). 다시 보내 주세요.`);
           }
-          descriptor = encodeDescriptor({blob: sealed.blob, size: sealed.size, key: sealed.key, nonce: sealed.nonce, ...hints(file)});
+          descriptor = encodeDescriptor({blob: sealed.blob, size: sealed.size, key: sealed.key, nonce: sealed.nonce, ...shown});
           const ciphertext = await encrypt(utf8.encode(descriptor));
           pending = {device, client_id: `file-v2-${newId()}`, kind: 'application', epoch,
             bytes: base64(new Uint8Array(ciphertext)), size: sealed.size};

@@ -21,6 +21,7 @@ import {createIdentityStore, databaseFor, ROOM, IDENTITY_DATABASE, LOBBY_DATABAS
 import {createRoomSession, nextDeviceId, clock} from './room.js';
 import {createDevice, LOBBY_TARGET} from './device.js';
 import {createPreviewLoader} from './preview-loader.js';
+import {mediaDims} from './attachment-view.js';
 import {installSyncRecovery} from './sync-recovery.js';
 import {fileboxConfig} from './filebox.js';
 import {collectAttachments} from './attachments.js';
@@ -228,7 +229,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     R.entryKeys.add(key);
     const entry = {key, kind: m.kind, seq: m.seq ?? null, sender: m.sender ?? '', senderName: m.sender ? displayName(m.sender) : '',
       isMe: isMine(m.sender, {device: app.device, actor: app.actor}), isAgent: m.sender ? isAgentDevice(m.sender) : false, body: m.text ?? '', ts: m.ts ?? null,
-      size: m.size ?? 0, image: null, replay: !!m.replay, load: m.load ?? null, fileName: m.fileName ?? null,
+      size: m.size ?? 0, image: null, replay: !!m.replay, load: m.load ?? null, fileName: m.fileName ?? null, dims: mediaDims(m.dims),
       previewFailed: false, previewBusy: false};
     R.entries.push(entry);
     R.entries.sort((a, b) => (a.seq ?? Infinity) - (b.seq ?? Infinity) || 0);

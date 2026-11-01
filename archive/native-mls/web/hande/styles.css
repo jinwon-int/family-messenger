@@ -1008,6 +1008,8 @@ main.shell[data-view="room"] .pane-list { display: none; }
    모서리 15px = 말풍선 곡률 18px − 3px. 사진에는 「내려받기」 버튼이 없다(크게 보기에서 저장). */
 .bubble .body.media { --media-inset: 3px; padding: var(--media-inset); }
 .bubble .body.media img { display: block; max-width: min(400px, 72vw); max-height: 440px; border-radius: calc(var(--bubble-radius) - var(--media-inset)); object-fit: contain; }
+/* #647: 크기를 아는 사진의 불러오는 중 자리 — 크기는 인라인 style(attachment-view.js mediaBoxStyle, 위 img 와 같은 값). */
+.bubble .body.media .media-placeholder { display: block; max-width: min(400px, 72vw); max-height: 440px; border-radius: calc(var(--bubble-radius) - var(--media-inset)); background: color-mix(in srgb, currentColor 8%, transparent); }
 .bubble .body.media .media-open { display: block; padding: 0; margin: 0; border: 0; background: none; cursor: zoom-in; border-radius: calc(var(--bubble-radius) - var(--media-inset)); }
 .bubble .body.media .media-open:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 
