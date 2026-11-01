@@ -63,9 +63,13 @@ final class NotificationCenterDelegate: NSObject, UNUserNotificationCenterDelega
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         let model = self.model
-        let room = NotificationPayload.room(in: response.notification.request.content.userInfo)
+        let userInfo = response.notification.request.content.userInfo
+        let room = NotificationPayload.room(in: userInfo)
+        // #643: 공유 확장이 띄운 「탭하면 보냅니다」 알림 — 맡김을 보낸다(방은 같은 `room` 키라 위에서 이미 연다).
+        let share = userInfo[ShareHandoff.notificationKey] != nil
         Task { @MainActor in
             if let room { model.requestOpen(room: room) }
+            if share { await model.deliverPendingShares() }
             await model.receivedWhileActive()
             completionHandler()
         }

@@ -35,6 +35,7 @@ Apple 정의(「App privacy details on the App Store」): **「수집」= 기기
 ### 1-2. Privacy manifest(`PrivacyInfo.xcprivacy`)
 - iOS 앱은 서드파티 SDK 없음(Rust FFI 정적 라이브러리 + SwiftUI). 매니페스트는 PR 4 코드 PR 로 들어갔다: `archive/native-mls/ios/FamilyChat/PrivacyInfo.xcprivacy`(앱, 수집 유형 = 1-1 표 그대로)·`FamilyChatNSE/PrivacyInfo.xcprivacy`(알림 확장 — 읽기 전용이라 User ID · Device ID 만). `NSPrivacyTracking = false`.
 - **Required Reason API**(코드 grep 결과, 근거 표는 `archive/native-mls/ios/README.md` 「App Store 준비」): `NSPrivacyAccessedAPICategoryUserDefaults` 사유 `CA92.1`(앱 전용 defaults) + `1C8F.1`(앱·NSE 가 공유하는 App Group defaults — Apple 정의상 App Group 공유는 1C8F.1 이 정확한 사유) · `NSPrivacyAccessedAPICategoryFileTimestamp` 사유 `C617.1`(Swift 코드가 아니라 정적 링크된 Rust 라이브러리의 `stat`/`fstat` 참조, 접근 대상은 앱 컨테이너 안 파일). 디스크 공간·시스템 부팅 시각·활성 키보드 API 는 없음. 업로드 뒤 ASC 가 **ITMS-91053** 메일로 다른 범주를 요구하면 그 범주를 두 파일과 `FamilyChatTests/PrivacyManifestTests` 에 추가한다.
+- 공유 확장(#643, `FamilyChatShare/PrivacyInfo.xcprivacy`)은 네트워크 없이 기기 안 App Group 에 맡기기만 하므로 **수집 유형 없음**, Required Reason API 는 App Group defaults `1C8F.1` 하나(파일 시각 API·Rust 라이브러리 없음). 확장은 ASC App Privacy 라벨에 새 항목을 더하지 않는다.
 - 1-1 표의 「Emails or Text Messages」 ⓐ 결정을 보수 쪽으로 바꾸면 두 매니페스트·테스트·ASC 라벨을 함께 바꾼다(매니페스트와 ASC 라벨이 다르면 심사에서 지적될 수 있다).
 
 ## 2. 심사 노트(App Review Information) 템플릿

@@ -66,13 +66,25 @@ final class PrivacyManifestTests: XCTestCase {
         XCTAssertEqual(try accessedAPIs(nse), Self.expectedAPIs)
     }
 
-    /// 호스트 앱(FamilyChat.app)에서 도는 경우에만: xcodegen 이 두 파일을 Resources 로 넣어 번들 루트에 복사했는지(ITMS-91053 예방).
+    /// #643 공유 확장: 네트워크 없이 기기 안 App Group 에 맡기기만 한다 — 수집 유형 없음, App Group defaults(1C8F.1)만.
+    /// (Rust 라이브러리·파일 시각 API 를 쓰지 않으므로 FileTimestamp 범주가 없다 — 앱·NSE 와 다르다.)
+    func testShareExtensionManifestDeclaresNoCollectionAndOnlyAppGroupDefaults() throws {
+        let share = try manifest("FamilyChatShare/PrivacyInfo.xcprivacy")
+        XCTAssertEqual(share["NSPrivacyTracking"] as? Bool, false)
+        XCTAssertEqual(try XCTUnwrap(share["NSPrivacyTrackingDomains"] as? [String]), [])
+        XCTAssertEqual(try collectedTypes(share), [])
+        XCTAssertEqual(try accessedAPIs(share), ["NSPrivacyAccessedAPICategoryUserDefaults": ["1C8F.1"]])
+    }
+
+    /// 호스트 앱(FamilyChat.app)에서 도는 경우에만: xcodegen 이 세 파일을 Resources 로 넣어 번들 루트에 복사했는지(ITMS-91053 예방).
     func testManifestsAreBundledAtTheRootOfTheAppAndTheExtension() throws {
         let app = Bundle.main
         try XCTSkipUnless(app.bundleURL.pathExtension == "app", "hosted test only (Bundle.main = \(app.bundleURL.lastPathComponent))")
         XCTAssertNotNil(app.url(forResource: "PrivacyInfo", withExtension: "xcprivacy"), "app bundle root")
         let nse = app.bundleURL.appendingPathComponent("PlugIns/FamilyChatNSE.appex/PrivacyInfo.xcprivacy")
         XCTAssertTrue(FileManager.default.fileExists(atPath: nse.path), nse.path)
+        let share = app.bundleURL.appendingPathComponent("PlugIns/FamilyChatShare.appex/PrivacyInfo.xcprivacy")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: share.path), share.path)
     }
 
     func testPolicyLinksAreTheCanonicalPagesURLs() {

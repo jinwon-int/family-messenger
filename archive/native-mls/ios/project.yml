@@ -38,6 +38,8 @@ targets:
       - package: FamilyMLSCore
       # 알림 확장(§12-D) — 앱 번들 PlugIns/ 에 들어간다
       - target: FamilyChatNSE
+      # 공유 확장(#643) — 공유 시트의 「한데」. 같은 PlugIns/
+      - target: FamilyChatShare
     info:
       path: FamilyChat/Info.plist
       properties:
@@ -152,6 +154,57 @@ targets:
         # 봇 actor 기본값(알림 제목 = 노드 닉네임). 릴리스 워크플로가 vars.FC_AGENT_ACTORS 로 덮어쓸 수 있다.
         FC_AGENT_ACTORS: bot
         OTHER_LDFLAGS: ["-lc++"]
+  # 공유 확장(#643 1단계): 공유 시트에서 받은 글·링크·사진·동영상·파일과 고른 방을 App Group `share-outbox/` 에 맡기고(Core
+  # `ShareHandoffStore`) 로컬 알림을 띄운다 — 보내는 것은 앱(`AppModel.deliverPendingShares`, 결정 D1). MLS 상태·Keychain·FFI 를
+  # 링크하지 않는다(메모리 한도·동시 작성 위험 밖). 서버·스코프는 NSE 와 같은 `ServerStore.resolve`·`ServerScope`, 방 이름은 `roomLabel`.
+  # Bundle ID 는 앱의 하위(…hande.share), App Group·기본 서버는 앱과 **같은 값**을 빌드 설정으로 준다.
+  FamilyChatShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      # FamilyChatShare/PrivacyInfo.xcprivacy 도 이 그룹에서 Resources 로 들어간다(앱·NSE 와 같은 규칙).
+      - path: FamilyChatShare
+      - path: FamilyChat/Sync/ServerStore.swift
+      - path: FamilyChat/Sync/ServerScope.swift
+      - path: FamilyChat/App/Strings+Names.swift
+    dependencies:
+      - package: FamilyMLSCore
+    info:
+      path: FamilyChatShare/Info.plist
+      properties:
+        CFBundleDisplayName: 한데
+        CFBundleDevelopmentRegion: ko
+        # 확장의 버전은 앱과 같아야 한다(ASC 검증) — 같은 빌드 설정을 참조.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            # 받는 종류(D6). 개수 상한은 Core `ShareHandoff.maxAttachments`(10)와 같게.
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsImageWithMaxCount: 10
+              NSExtensionActivationSupportsMovieWithMaxCount: 10
+              NSExtensionActivationSupportsFileWithMaxCount: 10
+              NSExtensionActivationSupportsAttachmentsWithMaxCount: 10
+        # 기본 서버(앱과 같은 값). App Group `hande.server` 를 먼저 읽고 이 값은 폴백(#584, NSE 와 같은 규칙).
+        FamilyChatRelayURL: $(FC_RELAY_URL)
+        FamilyChatAppGroup: $(FC_APP_GROUP)
+    # 서명 빌드용 자리 — 무서명 CI 에는 적용되지 않는다.
+    entitlements:
+      path: FamilyChatShare/FamilyChatShare.entitlements
+      properties:
+        com.apple.security.application-groups: [$(FC_APP_GROUP)]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.seoyoon-family.hande.share
+        TARGETED_DEVICE_FAMILY: "1"
+        PROVISIONING_PROFILE_SPECIFIER: $(FC_PROFILE_SHARE)
+        FC_PROFILE_SHARE: ""
+        FC_RELAY_URL: ""
+        FC_APP_GROUP: ""
   FamilyChatTests:
     type: bundle.unit-test
     platform: iOS

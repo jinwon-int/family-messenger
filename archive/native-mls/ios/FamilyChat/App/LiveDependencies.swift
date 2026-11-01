@@ -151,6 +151,11 @@ extension AppModel.Dependencies {
             deps.siblingQueue = UserDefaultsSiblingQueueStore(defaults: SharedStorage.defaults(appGroup: config.appGroup))
             // #584: 읽음 위치·방 순서(앱 전용 defaults)도 서버 스코프.
             deps.localDefaults = scope.defaults(.standard)
+            // #643: 공유 확장 맡김·공유 대상 방 목록 — App Group 이 있을 때만(확장이 같은 컨테이너·같은 스코프 defaults 를 본다).
+            if let container = SharedStorage.appGroupContainer(config.appGroup) {
+                deps.shareStore = ShareHandoffStore(container: container)
+                deps.shareTargets = SharedStorage.scopedDefaults(appGroup: config.appGroup, scope: scope)
+            }
             serverFields(&deps)
             return deps
         } catch {

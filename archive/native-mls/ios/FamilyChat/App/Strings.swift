@@ -113,6 +113,9 @@ enum Strings {
     static func shortcutUnknownRoom(_ room: String) -> String { "이 기기에는 '\(room)' 대화방이 없습니다. 한데에서 그 방에 초대받았는지 확인해 주세요." }
     static func shortcutSent(_ room: String) -> String { "\(roomLabel(room))에게 보냈습니다. 답은 한데 대화방으로 옵니다." }
     static func shortcutQueued(_ room: String) -> String { "\(roomLabel(room))에게 보낼 글을 보관했습니다. 연결되면 그대로 보냅니다." }
+    /// #643 공유 확장 맡김 전달(AppModel.deliverPendingShares) — Linux 스모크 복사 파일이라 여기에 둔다.
+    static func shareRoomGone(_ room: String) -> String { "공유한 내용을 보내지 못했습니다: 이 기기에 「\(roomLabel(room))」 대화방이 없습니다." }
+    static let shareFileUnreadable = "공유한 파일 하나를 읽지 못해 보내지 못했습니다. 다시 공유해 주세요."
     /// 첨부 한도(AttachmentFormat.maxBytes) 초과 — AppModel 이 쓰므로 여기(NSE 공유 파일)에 둔다.
     static func attachmentTooLarge(_ bytes: Int) -> String {
         "첨부는 5 MiB(5,242,880바이트) 이하여야 합니다(지금 \(bytes.formatted())바이트). 사진은 자동으로 줄이지만 파일은 줄일 수 없습니다."
