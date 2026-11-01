@@ -43,6 +43,12 @@ Proven here:
   h. restart keeps the inbox: SIGKILL while a turn is in flight → on start the
      bot posts the "not confirmed" notice once, in THAT turn's room only, and
      the turn is never re-sent to the responder.
+  i. typing (#635 / #639 A1): while a slow turn produces its reply, the
+     person's own GET /events lists the bot in `typing`; once the reply lands
+     the bot is gone from it (the reply post clears it on the relay), and the
+     bot logs `typing_started` then `typing_stopped` (reason reply, failed 0).
+  j. typing off: restarted with NATIVE_MLS_BOT_TYPING=0, the same slow turn
+     never shows the bot in `typing` and the bot logs no typing event at all.
 
 Usage:
   python archive/native-mls/tests/native_mls_bot_rooms_smoke.py \\
@@ -81,6 +87,13 @@ QUEUE_LINE_FIRST = '⏳ 이 메시지는 대기 순번 2번에 저장되었으�
 # What a person in the alert room reads by the end: na's two alerts (re-headed
 # by na) and nb's depth-2 reaction — never nb's suppressed peer answers.
 ALERT_ROOM_FINAL = ['[alert:na] disk 91%', '[alert:na] chain check', '[alert:nb:2] reaction']
+# How long the stand-in responder sits on a "slow…" turn: long enough for a
+# person's polls to catch the bot's typing signal (the bot sets it on its next
+# poll round, refreshes every 4 s; relay TTL policy.TypingTTLSeconds = 6 s).
+SLOW_SECS = 5
+# After the reply lands the bot must be gone from `typing` well before the
+# relay TTL could have dropped it on its own (the reply post clears it).
+TYPING_GONE_SECS = 3
 
 # The stand-in responder (FLEET-WORKER port, JSON lines). Every turn frame is
 # appended to argv[1] before anything else, so the harness can count turns.
@@ -89,10 +102,12 @@ ALERT_ROOM_FINAL = ['[alert:na] disk 91%', '[alert:na] chain check', '[alert:nb:
 #   "hang…"             → no answer at all (the bot is killed mid-turn)
 #   "alert <text>"      → notice to the alert room with a spoofed header, then
 #                         a normal result
+#   "slow…"             → the normal result, but only after argv[3] seconds
+#                         (the typing steps watch the relay while it waits)
 #   anything else       → result "answer[<room>]: <prompt>"
 FAKE_RESPONDER = r'''
-import json, sys
-log_path, alert_room = sys.argv[1], sys.argv[2]
+import json, sys, time
+log_path, alert_room, slow_secs = sys.argv[1], sys.argv[2], float(sys.argv[3])
 def out(frame):
     print(json.dumps(frame), flush=True)
 for line in sys.stdin:
@@ -112,6 +127,8 @@ for line in sys.stdin:
         continue
     if prompt.startswith("alert "):
         out({"type": "notice", "room": alert_room, "text": "[alert:spoof] " + prompt[len("alert "):]})
+    if prompt.startswith("slow"):
+        time.sleep(slow_secs)
     out({"type": "result", "turn_id": tid, "status": "complete", "session_id": "s1",
          "text": "answer[%s]: %s" % (cmd.get("room"), prompt)})
 '''
@@ -121,14 +138,15 @@ class Steward(Bot):
     """`native-mls-bot steward` with --room-frames and the stand-in responder.
     Reuses Bot's line reader, waits and stop/kill contracts."""
 
-    def __init__(self, binary, relay, device, identity_file, rooms_dir, responder_argv, owner_actor):
+    def __init__(self, binary, relay, device, identity_file, rooms_dir, responder_argv, owner_actor, typing=True):
         self.binary, self.device, self.rooms_dir = binary, device, rooms_dir
         argv = [str(binary), f'http://127.0.0.1:{relay.port}', 'steward', device,
                 '--identity-file', str(identity_file), '--rooms-dir', str(rooms_dir),
                 '--responder-argv-json', json.dumps(responder_argv),
                 '--owner-actor', owner_actor, '--room-frames']
         # No session cap: the default (300 s) would end a slow CI run mid-step.
-        env = dict(os.environ, NATIVE_MLS_BOT_MAX_SECS='0')
+        # Typing is pinned either way so an inherited env cannot flip step i/j.
+        env = dict(os.environ, NATIVE_MLS_BOT_MAX_SECS='0', NATIVE_MLS_BOT_TYPING='1' if typing else '0')
         self.proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         self.lines = []
         self.lock = threading.Condition()
@@ -273,9 +291,10 @@ def main():
     dir_a, dir_b = evidence / 'rooms-na', evidence / 'rooms-nb'
     stewards = []
 
-    def start_steward(device, identity_file, rooms_dir, log_path):
+    def start_steward(device, identity_file, rooms_dir, log_path, typing=True):
         steward = Steward(bot_binary, relay, device, identity_file, rooms_dir,
-                          [sys.executable, str(responder_py), str(log_path), ALERTS], owner_actor='u')
+                          [sys.executable, str(responder_py), str(log_path), ALERTS, str(SLOW_SECS)],
+                          owner_actor='u', typing=typing)
         stewards.append(steward)
         return steward
 
@@ -311,6 +330,7 @@ def main():
                     self.page.wait_for_function('() => window.ready === true')
                     self.page.evaluate("spawn('main')")
                     self.cursor, self.epoch, self.joined, self.serial = 0, 0, False, 0
+                    self.typing = []  # the last GET /events `typing` list (other devices only)
                     self.seen = []  # every application plaintext, in relay order (queue lines aside)
                     self.queued = []  # queue-position lines (QUEUE_PREFIX), in relay order
                     self.call('init', dev)
@@ -352,6 +372,7 @@ def main():
                             text = bytes(self.call('decrypt', sealed(data, room=self.room))).decode()
                             (self.queued if text.startswith(QUEUE_PREFIX) else self.seen).append(text)
                     self.epoch = body['epoch']
+                    self.typing = body['typing']
 
                 def wait_seen(self, count, timeout=60):
                     deadline = time.monotonic() + timeout
@@ -542,6 +563,72 @@ def main():
             assert not [line for line in bot_a.events('agent_outbound') if line.get('kind') == 'uncertain'
                         and line.get('room') != 'a-two'], bot_a.events('agent_outbound')
             receipt['checks']['sigkill_mid_turn_inbox_notice_in_turn_room_once_no_rerun'] = True
+
+            def slow_turn(text):
+                """One "slow…" mention from u-1 in a-one, polled through u-1's
+                own GET /events until the answer lands. Returns the message
+                seq and every poll's `typing` list split at the answer."""
+                before = len(one.seen)
+                seq = one.say(text)
+                started = time.monotonic()
+                pending, after = [], []
+                while len(one.seen) == before:
+                    assert time.monotonic() - started < SLOW_SECS + 30, (text, one.seen, pending)
+                    one.sync()
+                    (pending if len(one.seen) == before else after).append(
+                        (round(time.monotonic() - started, 2), list(one.typing)))
+                    time.sleep(0.1)
+                assert one.seen[before:] == [f'answer[a-one]: {text}'], one.seen[before:]
+                return seq, started, pending, after
+
+            # --- i. typing while a turn produces: visible to the person, gone
+            # --- with the reply, and the bot's own typing lines agree.
+            mark = bot_a.mark()
+            seq, started, pending, after = slow_turn('slow typing check')
+            answered = time.monotonic()
+            shown = [at for at, typing in pending if typing == ['na-bot']]
+            assert shown, f'na-bot never in typing while its turn was pending: {pending}'
+            assert all(typing in ([], ['na-bot']) for _, typing in pending + after), pending + after
+            # The reply post clears the signal on the relay (TTL is 6 s; the
+            # last set may be up to 4 s old, so a TTL lapse alone could not
+            # explain a fast drop). Poll on until the bot is gone, bounded.
+            while 'na-bot' in one.typing:
+                assert time.monotonic() - answered < TYPING_GONE_SECS, (
+                    f'na-bot still typing {TYPING_GONE_SECS}s after its reply: {after}')
+                time.sleep(0.1)
+                one.sync()
+            gone_after = round(time.monotonic() - answered, 2)
+            typing_started = bot_a.wait_after(mark, lambda line: line.get('event') == 'typing_started'
+                                              and line.get('room') == 'a-one')
+            typing_stopped = bot_a.wait_after(mark, lambda line: line.get('event') == 'typing_stopped'
+                                              and line.get('room') == 'a-one')
+            with bot_a.lock:
+                order = [line['event'] for line in bot_a.lines[mark:]
+                         if line.get('event', '').startswith('typing_')]
+            assert order == ['typing_started', 'typing_stopped'], order
+            assert typing_started['seq'] == typing_stopped['seq'] == seq, (typing_started, typing_stopped, seq)
+            assert typing_stopped['reason'] == 'reply' and typing_stopped['failed'] == 0, typing_stopped
+            assert typing_stopped['sent'] >= 1, typing_stopped
+            receipt['checks']['typing_shown_while_turn_pending_gone_after_reply'] = {
+                'room': 'a-one', 'seq': seq, 'slow_secs': SLOW_SECS,
+                'first_seen_after_secs': shown[0], 'polls_with_typing': len(shown), 'polls_pending': len(pending),
+                'gone_after_reply_secs': gone_after,
+                'typing_stopped': {k: typing_stopped[k] for k in ('reason', 'sent', 'failed', 'cleared')}}
+
+            # --- j. typing off (NATIVE_MLS_BOT_TYPING=0): same slow turn, the
+            # --- bot never shows up in `typing` and logs no typing line.
+            bot_a.stop()
+            bot_a = start_steward('na-bot', id_a, dir_a, log_a, typing=False)
+            started_line = bot_a.wait_for(lambda line: line.get('event') == 'agent_started')
+            assert started_line['typing'] is False, started_line
+            mark = bot_a.mark()
+            _, _, pending, after = slow_turn('slow no typing')
+            assert all(typing == [] for _, typing in pending + after), pending + after
+            bot_a.wait_after(mark, lambda line: line.get('event') == 'status', timeout=30)
+            with bot_a.lock:
+                typing_lines = [line for line in bot_a.lines if line.get('event', '').startswith('typing_')]
+            assert typing_lines == [], typing_lines
+            receipt['checks']['typing_off_env_no_typing_signal'] = {'polls_pending': len(pending)}
 
             # Final: people saw exactly what the rules allow.
             for person in people.values():
