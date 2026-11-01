@@ -308,7 +308,23 @@ fn ensure_spool(dir: &Path) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Write `bytes` to a fresh `<32 hex>.bin` (create-new, 0600, fsync).
+/// The spool file mode follows the directory: a directory that grants its
+/// group anything (the Linux layout — bot-owned, group `native-relay-bot`,
+/// 2770, so a non-root bridge in that group can read and rename) gets 0640
+/// files; a private one (Termux, one uid) gets 0600. No setting to forget.
+pub fn spool_file_mode(dir: &Path) -> u32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if std::fs::metadata(dir).is_ok_and(|m| m.permissions().mode() & 0o070 != 0) {
+            return 0o640;
+        }
+    }
+    0o600
+}
+
+/// Write `bytes` to a fresh `<32 hex>.bin` (create-new, 0600 or 0640 per
+/// `spool_file_mode`, fsync).
 pub fn spool(dir: &Path, bytes: &[u8], name: Option<String>) -> Result<Spooled, &'static str> {
     ensure_spool(dir)?;
     let path = dir.join(format!("{}.bin", random_hex()?));
@@ -317,7 +333,7 @@ pub fn spool(dir: &Path, bytes: &[u8], name: Option<String>) -> Result<Spooled, 
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        options.mode(spool_file_mode(dir));
     }
     let mut file = options.open(&path).map_err(|_| "storage")?;
     if file.write_all(bytes).and_then(|()| file.sync_all()).is_err() {
@@ -531,6 +547,22 @@ pub(crate) mod tests {
         std::fs::write(&other, b"x").unwrap();
         assert_eq!(sweep_spool(&dir), 1);
         assert!(!spooled.path.exists() && other.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn spool_file_mode_follows_the_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("mode");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let private = spool(&dir, b"x", None).unwrap();
+        assert_eq!(std::fs::metadata(&private.path).unwrap().permissions().mode() & 0o777, 0o600);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o2770)).unwrap();
+        assert_eq!(spool_file_mode(&dir), 0o640);
+        let shared = spool(&dir, b"y", None).unwrap();
+        // 0640 unless the process umask strips group read (it never adds bits).
+        let mode = std::fs::metadata(&shared.path).unwrap().permissions().mode() & 0o777;
+        assert!(mode == 0o640 || mode == 0o600, "{mode:o}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

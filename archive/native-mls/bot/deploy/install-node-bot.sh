@@ -34,11 +34,21 @@
 # Usage: install-node-bot.sh --node <name> --relay-url http://<relay-tailnet>:18921
 #          --relay-public-url https://<access-protected relay host>
 #          --binary /path/to/native-mls-bot --token-env /root/.config/native-relay/bot-service-token.env
-#          [--responder-socket /run/ccc-hande/responder.sock] [--owner-actor owner] [--dry-run]
+#          [--responder-socket /run/ccc-hande/responder.sock] [--owner-actor owner] [--attachments] [--dry-run]
+#
+# --attachments (#636, docs/FLEET-WORKER.md "첨부 turn"): the owner's photos/files become agent
+# turns. Creates $STATE_DIR/attachments (bot-owned, group native-relay-bot, 2770 → spool files
+# 0640), opens $STATE_DIR to its group for traversal only (0710), and writes the drop-in
+# native-relay-bot.service.d/50-attachments.conf (the env + ReadWritePaths). The hande bridge
+# must then set "attachment_frames": true and "attachment_spool_dir": "$STATE_DIR/attachments"
+# — bridge first, then this (FLEET-WORKER order). A root bridge reads the files as root; a bridge
+# user must be in the native-relay-bot group (it already is when it owns the responder socket).
+# An existing node only needs this drop-in + directory: re-run with --attachments, or apply
+# those two by hand. Undo: delete the drop-in, daemon-reload, restart the bot.
 set -euo pipefail
 
 NODE="" RELAY_URL="" RELAY_PUBLIC_URL="" BINARY="" TOKEN_ENV="" OWNER_ACTOR="owner"
-RESPONDER_SOCKET="/run/ccc-hande/responder.sock" DRY_RUN=0
+RESPONDER_SOCKET="/run/ccc-hande/responder.sock" DRY_RUN=0 ATTACHMENTS=0
 BOT_USER="native-relay-bot"
 STATE_DIR="/var/lib/native-relay-bot"
 BIN_DIR="/opt/native-relay-bot/bin"
@@ -55,6 +65,7 @@ while [ $# -gt 0 ]; do
     --token-env) TOKEN_ENV="${2:-}"; shift 2 ;;
     --responder-socket) RESPONDER_SOCKET="${2:-}"; shift 2 ;;
     --owner-actor) OWNER_ACTOR="${2:-}"; shift 2 ;;
+    --attachments) ATTACHMENTS=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -165,6 +176,18 @@ write_file "$UNIT_DIR/native-relay-bot.service.d/30-agent.conf" 0644 <<EOF
 Environment=NATIVE_MLS_BOT_RESPONDER_UNIX=$RESPONDER_SOCKET
 Environment=NATIVE_MLS_BOT_OWNER_ACTOR=$OWNER_ACTOR
 EOF
+if [ "$ATTACHMENTS" = 1 ]; then
+  # #636: the spool the hande bridge takes files over from (rename, same filesystem).
+  run install -d -m 2770 -o "$BOT_USER" -g "$BOT_USER" "$STATE_DIR/attachments"
+  run chmod 0710 "$STATE_DIR"
+  write_file "$UNIT_DIR/native-relay-bot.service.d/50-attachments.conf" 0644 <<EOF
+# #636 attachment turns (docs/FLEET-WORKER.md "첨부 turn"). Undo: delete this file, daemon-reload, restart.
+[Service]
+ReadWritePaths=$STATE_DIR/attachments
+Environment=NATIVE_MLS_BOT_AGENT_ATTACHMENTS=1
+Environment=NATIVE_MLS_BOT_ATTACHMENT_SPOOL=$STATE_DIR/attachments
+EOF
+fi
 
 # 5. reload, mint, start, enrollment candidate
 if [ "$DRY_RUN" = 1 ]; then say "dry-run: not reloading/starting"; exit 0; fi

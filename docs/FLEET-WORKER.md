@@ -125,8 +125,11 @@ task로 실행되므로 승인/취소 입력이 작업 뒤에 막히지 않는�
   1단계는 **`owner_actor` 발신만** 전달한다. 다른 actor의 첨부는 지금처럼 `agent_skipped`(`reason=attachment`)로 둔다.
 - ccc-node 한데: `attachment_frames`(기본 `false`)와 spool 경로. 꺼져 있으면 `attachment`를 무시하고 `prompt`로
   실행하며, 파일은 3번에 따라 봇이 지운다.
-- 봇과 브리지는 **같은 uid, 같은 파일시스템**이어야 한다(Termux runit 노드 공융은 충족을 확인했다. 다른 노드는
-  켜기 전에 서비스 사용자·PrivateTmp를 확인한다). 두 쪽의 spool 경로가 같아야 한다.
+- 봇과 브리지는 **같은 파일시스템**이어야 하고 두 쪽의 spool 경로가 같아야 한다. Termux(공융·대교)는 한 uid 라 파일
+  0600. Linux systemd 노드는 봇(`native-relay-bot`)과 브리지(root 또는 그 그룹 사용자)가 달라, spool 을 봇 소유·그룹
+  `native-relay-bot`·2770 디렉터리(`/var/lib/native-relay-bot/attachments`, 봇 유닛 `ReadWritePaths`)로 두고 파일은
+  디렉터리를 따라 0640 이 된다. 브리지는 spool 디렉터리 소유자 uid 의 0600/0640 파일을 받고, *other* 가 쓸 수 있는 spool 은
+  거부한다(ccc-node#2625). 설치: `bot/deploy/install-node-bot.sh --attachments`.
 - 켜는 순서는 **브리지 교체·`attachment_frames` → 봇 교체·플래그**다. interim과 반대인데, 여기서는 봇이 보내는
   쪽이기 때문이다. 끄는 순서는 반대다.
 
