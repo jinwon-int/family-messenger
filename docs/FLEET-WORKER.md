@@ -60,10 +60,11 @@ task로 실행되므로 승인/취소 입력이 작업 뒤에 막히지 않는�
   프레임의 답. `turn_id`·`tool_id`가 대기 중인 호출과 맞아야 하고(아니면 `control.accepted=false`),
   `ok`가 `true`가 아니면 거절로 본다(`error` 문자열이 없으면 `steward_error`).
 
-### 첨부 turn — `attachment` (#636 · ccc-node#2606, 계약 확정 · 구현 전)
+### 첨부 turn — `attachment` (#636 · ccc-node#2606, 구현됨 · 양쪽 기본 off)
 
-이 절은 결정(#636 코멘트, 2026-11-01)을 옮긴 **계약**이다. 아직 어느 쪽에도 구현이 없다. 봇 송신부와
-ccc-node 한데 수신부 구현 PR은 이 절을 따르고, 계약이 바뀌면 이 절도 같은 PR에서 고친다.
+이 절은 결정(#636 코멘트, 2026-11-01)을 옮긴 **계약**이다. 구현: 봇 송신부 `archive/native-mls/bot/src/attachment.rs`
+(+ `responder.rs` 준비 단계, `session.rs` `route_attachment`, host-core `Client::get_blob`), ccc-node 수신부
+`core/hande/attachments.py`(ccc-node#2614). 계약이 바뀌면 이 절도 같은 PR에서 고친다.
 
 한데에서 받은 file-v2/file-v1 첨부를 native-mls 봇이 복호해 노드 로컬 파일로 두고, `turn` 프레임에 선택 객체
 `attachment`로 그 **경로**를 넘긴다. 파일 바이트(64KiB 프레임 상한)와 파일 키·설명자는 프레임에 싣지 않는다.
@@ -116,8 +117,10 @@ ccc-node 한데 수신부 구현 PR은 이 절을 따르고, 계약이 바뀌면
 
 **게이트와 켜는 순서.**
 
-- 봇: 첨부 전달 플래그(기본 off)·spool 경로·상한(기본 10,000,000 B, ccc-node `max_document_size_mb` 기본값과
-  같다). 설명자 `size`가 상한을 넘으면 **받지 않고** `agent_skipped`(`reason=attachment_oversize`)와 고정 문구로 처리한다.
+- 봇: 첨부 전달 플래그 `NATIVE_MLS_BOT_AGENT_ATTACHMENTS=1`(기본 off)·spool 경로 `NATIVE_MLS_BOT_ATTACHMENT_SPOOL`
+  (절대 경로, 켜면 필수)·상한 `NATIVE_MLS_BOT_ATTACHMENT_MAX_BYTES`(기본 10,000,000 B, ccc-node `max_document_size_mb` 기본값과
+  같다, 최대 50 MiB). 준비(받기·복호·spool)가 끝나기 전의 `/stop` 은 워커에 `cancel` 을 보내지 않고 `⏹️` 로 끝낸다.
+  저널: `agent_attachment`(`outcome=ready` + kind·mime·size·sha256 앞 12자, 또는 `outcome=failed` + reason). 설명자 `size`가 상한을 넘으면 **받지 않고** `agent_skipped`(`reason=attachment_oversize`)와 고정 문구로 처리한다.
   1단계는 **`owner_actor` 발신만** 전달한다. 다른 actor의 첨부는 지금처럼 `agent_skipped`(`reason=attachment`)로 둔다.
 - ccc-node 한데: `attachment_frames`(기본 `false`)와 spool 경로. 꺼져 있으면 `attachment`를 무시하고 `prompt`로
   실행하며, 파일은 3번에 따라 봇이 지운다.

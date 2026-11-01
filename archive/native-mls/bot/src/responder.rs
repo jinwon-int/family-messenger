@@ -35,6 +35,7 @@
 //! `ok=false` on the port and never reaches the room.
 
 use crate::api::BotError;
+use crate::attachment::{self, AttachmentConfig, Fetcher, Source, Spooled};
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -138,6 +139,9 @@ pub struct Config {
     /// fresh (Telegram `sendChatAction(typing)` / Matrix `m.typing`). On by
     /// default; `--no-typing` / env `NATIVE_MLS_BOT_TYPING=0` turn it off.
     pub typing: bool,
+    /// #636: 「한데」 attachments as agent turns (`docs/FLEET-WORKER.md` "첨부
+    /// turn"). `None` (the default) keeps the #514 rule: attachments are skipped.
+    pub attachments: Option<AttachmentConfig>,
 }
 
 impl Config {
@@ -157,6 +161,7 @@ impl Config {
             notice_per_min: DEFAULT_NOTICE_PER_MIN,
             status_notice_min_secs: DEFAULT_STATUS_NOTICE_MIN_SECS,
             typing: true,
+            attachments: None,
         }
     }
 }
@@ -229,6 +234,9 @@ pub struct Inbound {
     /// #425: 0 = a person's message; d > 0 = a peer bot's alert at depth d —
     /// a read-only turn whose output is never posted.
     pub peer_depth: u8,
+    /// #636: an owner's file-v1/v2 attachment (memory only — the descriptor
+    /// carries the file key). The turn fetches and spools it when it starts.
+    pub attachment: Option<Source>,
 }
 
 /// #423: one `Outbound` and the room it belongs to — the room of the turn
@@ -324,6 +332,17 @@ pub struct Responder {
     notice_window: HashMap<String, VecDeque<Instant>>,
     /// ccc-node#2590: when each room last carried a `kind:"status"` notice.
     status_notice_at: HashMap<String, Instant>,
+    /// #636: fetches a file-v2 blob for an attachment turn (set by the poll loop).
+    fetcher: Option<Fetcher>,
+    /// #636: attachment preparation results from the helper thread, by turn id.
+    prep_tx: Sender<(String, Result<Spooled, &'static str>)>,
+    prep_rx: Receiver<(String, Result<Spooled, &'static str>)>,
+    /// #636: the active turn is still being prepared (blob fetch, decrypt,
+    /// spool): its turn id and the frame to send once the file is ready.
+    preparing: Option<(String, serde_json::Value)>,
+    /// #636: the spool file of the active turn; removed when the turn ends if
+    /// the bridge has not taken it over (renamed it away).
+    active_spool: Option<PathBuf>,
 }
 
 /// #425: one turn-bound item, or its `Suppressed` stand-in for a peer turn.
@@ -425,6 +444,11 @@ impl Responder {
             let _ = out_tx.send(Err("worker stdout closed".to_string()));
         });
         let inbox_path = state_file.map(inbox_path);
+        if let Some(attachments) = &config.attachments {
+            // Files a previous run left (a turn cut short by a restart).
+            attachment::sweep_spool(&attachments.spool_dir);
+        }
+        let (prep_tx, prep_rx) = mpsc::channel();
         let mut responder = Responder {
             config,
             child,
@@ -444,6 +468,11 @@ impl Responder {
             peer_window: HashMap::new(),
             notice_window: HashMap::new(),
             status_notice_at: HashMap::new(),
+            fetcher: None,
+            prep_tx,
+            prep_rx,
+            preparing: None,
+            active_spool: None,
         };
         // A turn left active by an earlier run was never confirmed: say so
         // once, clear it, never re-run it.
@@ -455,6 +484,16 @@ impl Responder {
     }
 
     pub fn owner_actor(&self) -> &str { &self.config.owner_actor }
+
+    /// #636: the size cap for attachment turns; `None` = attachments are off.
+    pub fn attachment_max_bytes(&self) -> Option<u64> {
+        self.config.attachments.as_ref().map(|a| a.max_bytes)
+    }
+
+    /// #636: how an attachment turn reaches the relay's blob store.
+    pub fn set_fetcher(&mut self, fetcher: Fetcher) {
+        self.fetcher = Some(fetcher);
+    }
 
     /// #423: several agent rooms share this responder (see `Config::room_frames`).
     pub fn room_frames(&self) -> bool { self.config.room_frames }
@@ -535,10 +574,15 @@ impl Responder {
             return ignored("not_allowed");
         }
         let active_seq = turn.seq;
+        let preparing = self.preparing.as_ref().is_some_and(|(id, _)| *id == turn.turn_id);
         if !turn.stop_requested {
             turn.stop_requested = true;
-            let line = serde_json::json!({ "type": "cancel", "turn_id": turn.turn_id }).to_string();
-            let _ = self.to_child.send(Cmd::Line(line));
+            // #636: a turn still being prepared never reached the worker; the
+            // preparation result lands it as `Stopped` instead of a `cancel`.
+            if !preparing {
+                let line = serde_json::json!({ "type": "cancel", "turn_id": turn.turn_id }).to_string();
+                let _ = self.to_child.send(Cmd::Line(line));
+            }
         }
         Stop::Cancelling { seq: active_seq }
     }
@@ -562,6 +606,9 @@ impl Responder {
     /// #423: `pump` with each item's room (see `Routed`).
     pub fn pump_routed(&mut self) -> Result<Vec<Routed>, BotError> {
         let mut out = std::mem::take(&mut self.pending_items);
+        while let Ok((turn_id, prepared)) = self.prep_rx.try_recv() {
+            self.on_prepared(&turn_id, prepared, &mut out)?;
+        }
         loop {
             match self.from_child.try_recv() {
                 Ok(Ok(value)) => self.handle(value, &mut out)?,
@@ -637,12 +684,76 @@ impl Responder {
         if inbound.peer_depth > 0 {
             frame["peer"] = serde_json::Value::Bool(true);
         }
+        if let Some(source) = inbound.attachment {
+            // #636: fetch/verify/decrypt/spool off the poll loop; the frame
+            // goes out when the result comes back (`on_prepared`).
+            self.preparing = Some((turn_id.clone(), frame));
+            let config = self.config.attachments.clone();
+            let fetcher = self.fetcher.clone();
+            let tx = self.prep_tx.clone();
+            let room = inbound.room.clone();
+            std::thread::spawn(move || {
+                let result = match &config {
+                    Some(config) => attachment::prepare(&source, &room, config, fetcher.as_ref()),
+                    None => Err("storage"),
+                };
+                if let Err(Ok(spooled)) = tx.send((turn_id, result)).map_err(|e| e.0 .1) {
+                    attachment::remove_spooled(&spooled.path);
+                }
+            });
+            return Ok(());
+        }
+        self.send_frame(frame)
+    }
+
+    fn send_frame(&mut self, frame: serde_json::Value) -> Result<(), BotError> {
         let line = frame.to_string();
         if self.to_child.send(Cmd::Line(line)).is_err() {
             self.gone = true;
             return Err(BotError::Local("responder stdin closed"));
         }
         Ok(())
+    }
+
+    /// #636: an attachment turn's preparation finished. Ready → the frame
+    /// carries `attachment` and the fallback prompt; failed → one room line,
+    /// no turn; stopped meanwhile → `Stopped`. A result for a turn that is no
+    /// longer active (watchdog, worker gone) only removes its file.
+    fn on_prepared(&mut self, turn_id: &str, prepared: Result<Spooled, &'static str>, out: &mut Vec<Routed>) -> Result<(), BotError> {
+        let current = self.preparing.as_ref().is_some_and(|(id, _)| id == turn_id)
+            && self.active.as_ref().is_some_and(|(turn, _)| turn.turn_id == turn_id);
+        if !current {
+            if let Ok(spooled) = prepared {
+                attachment::remove_spooled(&spooled.path);
+            }
+            return Ok(());
+        }
+        let Some((_, mut frame)) = self.preparing.take() else { return Ok(()) };
+        let Some((turn, _)) = &self.active else { return Ok(()) };
+        let (seq, room, depth, stopped) = (turn.seq, turn.room.clone(), turn.peer_depth, turn.stop_requested);
+        match prepared {
+            Ok(spooled) if stopped => {
+                attachment::remove_spooled(&spooled.path);
+                out.push(turn_item(depth, room, Outbound::Stopped { seq }));
+                self.finish_active()
+            }
+            Ok(spooled) => {
+                frame["prompt"] = serde_json::Value::String(attachment::fallback_prompt(&spooled));
+                frame["attachment"] = attachment::frame_object(&spooled);
+                self.active_spool = Some(spooled.path.clone());
+                crate::session::emit_attachment_ready(&room, seq, &spooled);
+                self.send_frame(frame)
+            }
+            Err(_) if stopped => {
+                out.push(turn_item(depth, room, Outbound::Stopped { seq }));
+                self.finish_active()
+            }
+            Err(reason) => {
+                crate::session::emit_attachment_failed(&room, seq, reason);
+                out.push(turn_item(depth, room, Outbound::Reply { seq, text: attachment::failure_text(reason).to_string() }));
+                self.finish_active()
+            }
+        }
     }
 
     fn handle(&mut self, value: serde_json::Value, out: &mut Vec<Routed>) -> Result<(), BotError> {
@@ -827,7 +938,16 @@ impl Responder {
         let _ = self.to_child.send(Cmd::Line(line.to_string()));
     }
 
+    /// #636: the active turn's spool file, unless the bridge took it over.
+    fn release_spool(&mut self) {
+        self.preparing = None;
+        if let Some(path) = self.active_spool.take() {
+            attachment::remove_spooled(&path);
+        }
+    }
+
     fn finish_active(&mut self) -> Result<(), BotError> {
+        self.release_spool();
         self.active = None;
         self.approvals.clear();
         self.pending_tool = None;
@@ -839,6 +959,7 @@ impl Responder {
             return Ok(());
         }
         self.gone = true;
+        self.release_spool();
         if let Some((turn, _)) = self.active.take() {
             out.push(turn_item(turn.peer_depth, turn.room.clone(), Outbound::Uncertain { seq: turn.seq, reason: "worker_gone".to_string() }));
             self.approvals.clear();
@@ -892,6 +1013,7 @@ impl Responder {
 
 impl Drop for Responder {
     fn drop(&mut self) {
+        self.release_spool();
         let _ = self.to_child.send(Cmd::Close);
         if let Some(child) = self.child.as_mut() {
             let _ = child.kill();
@@ -1180,6 +1302,16 @@ for line in sys.stdin:
                 frame.update(spec)
                 print(json.dumps(frame), flush=True)
             continue
+        if "attachment" in cmd:
+            # #636: read the spooled file the way the bridge would.
+            import hashlib, os
+            a = cmd["attachment"]
+            data = open(a["path"], "rb").read()
+            shown = json.dumps({"v": a["v"], "kind": a["kind"], "mime": a["mime"], "name": a.get("name"), "size": a["size"], "caption": a["caption"],
+                                "sha_ok": hashlib.sha256(data).hexdigest() == a["sha256"], "mode": oct(os.stat(a["path"]).st_mode & 0o777),
+                                "fallback": cmd["prompt"].startswith("[첨부: ")}, sort_keys=True, ensure_ascii=False)
+            print(json.dumps({"type": "result", "turn_id": tid, "status": "complete", "session_id": "s1", "text": "att:" + shown}), flush=True)
+            continue
         if cmd["prompt"].startswith("noticein"):
             # #425: a notice raised while this turn is still active.
             print(json.dumps({"type": "notice", "room": "fleet", "text": "mid-turn"}), flush=True)
@@ -1234,7 +1366,7 @@ for line in sys.stdin:
     }
 
     fn inbound(seq: i64, device: &str, text: &str) -> Inbound {
-        Inbound { room: "agent".into(), seq, sender_device: device.into(), text: text.into(), peer_depth: 0 }
+        Inbound { room: "agent".into(), seq, sender_device: device.into(), text: text.into(), peer_depth: 0, attachment: None }
     }
 
     #[test]
@@ -1499,7 +1631,7 @@ for line in sys.stdin:
     #[test]
     fn stop_in_another_room_is_idle_there() {
         let mut r = fake(|c| c.room_frames = true, None);
-        r.offer(Inbound { room: "family".into(), seq: 1, sender_device: "owner-pc".into(), text: "hold".into(), peer_depth: 0 }).unwrap();
+        r.offer(Inbound { room: "family".into(), seq: 1, sender_device: "owner-pc".into(), text: "hold".into(), peer_depth: 0, attachment: None }).unwrap();
         assert_eq!(r.stop("fleet", 2, "owner-pc"), Stop::Ignored { reason: "idle" });
         assert_eq!(r.stop("family", 3, "owner-pc"), Stop::Cancelling { seq: 1 });
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -1813,7 +1945,7 @@ for line in f:
     }
 
     fn inbound_in(room: &str, seq: i64, text: &str) -> Inbound {
-        Inbound { room: room.into(), seq, sender_device: "owner-pc".into(), text: text.into(), peer_depth: 0 }
+        Inbound { room: room.into(), seq, sender_device: "owner-pc".into(), text: text.into(), peer_depth: 0, attachment: None }
     }
 
     /// #423 off (default): the deployed single-room wire is unchanged — no
@@ -1912,7 +2044,7 @@ for line in f:
     }
 
     fn peer_in(room: &str, seq: i64, text: &str, depth: u8) -> Inbound {
-        Inbound { room: room.into(), seq, sender_device: "dungae-bot".into(), text: text.into(), peer_depth: depth }
+        Inbound { room: room.into(), seq, sender_device: "dungae-bot".into(), text: text.into(), peer_depth: depth, attachment: None }
     }
 
     /// #425 (a): a peer turn is read-only — its reply is suppressed, an
@@ -1986,5 +2118,121 @@ for line in f:
         let written = alert_text("nosuk", 2, "y");
         let (actor, depth, rest) = parse_alert_header(&written).unwrap();
         assert_eq!((actor, depth, rest), ("nosuk", 2, " y"));
+    }
+
+    // ---- #636: attachment turns ----
+
+    fn spool_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("nmls-resp-{tag}-{}-{}", std::process::id(), now_secs()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn spool_entries(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir).map(|it| it.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default()
+    }
+
+    fn attachment_inbound(seq: i64) -> Inbound {
+        use crate::attachment::tests::vector_descriptor_json;
+        let descriptor = crate::attachment::parse_descriptor(vector_descriptor_json("").as_bytes()).unwrap();
+        Inbound { room: "agent".into(), seq, sender_device: "owner-pc".into(), text: String::new(), peer_depth: 0, attachment: Some(Source::V2(descriptor)) }
+    }
+
+    fn vector_fetcher(delay: Duration) -> Fetcher {
+        use crate::attachment::tests::{unhex, VECTOR_CT_HEX};
+        std::sync::Arc::new(move |_room, _blob| {
+            std::thread::sleep(delay);
+            Ok(unhex(VECTOR_CT_HEX))
+        })
+    }
+
+    #[test]
+    fn attachment_turn_names_the_spooled_file_and_cleans_up() {
+        let dir = spool_dir("ok");
+        let stale = dir.join(format!("{}.bin", "ab".repeat(16)));
+        std::fs::write(&stale, b"left by a crash").unwrap();
+        let mut r = fake(|c| c.attachments = Some(AttachmentConfig { spool_dir: dir.clone(), max_bytes: 1_000 }), None);
+        assert!(!stale.exists(), "start-up sweeps the spool");
+        r.set_fetcher(vector_fetcher(Duration::from_millis(0)));
+        assert_eq!(r.attachment_max_bytes(), Some(1_000));
+        assert_eq!(r.offer(attachment_inbound(21)).unwrap(), Offer::Started);
+        let got = pump_until(&mut r, 1);
+        let Outbound::Reply { seq: 21, text } = &got[0] else { panic!("{got:?}") };
+        let shown: serde_json::Value = serde_json::from_str(text.strip_prefix("att:").unwrap()).unwrap();
+        assert_eq!(shown, serde_json::json!({
+            "v": 1, "kind": "image", "mime": "image/png", "name": "사진.png", "size": 29, "caption": "",
+            "sha_ok": true, "mode": "0o600", "fallback": true,
+        }));
+        // The fake worker did not take the file over: the bot removes it.
+        assert!(spool_entries(&dir).is_empty(), "{:?}", spool_entries(&dir));
+        assert!(r.active.is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn attachment_failure_answers_once_and_the_queue_moves_on() {
+        let dir = spool_dir("fail");
+        let mut r = fake(|c| c.attachments = Some(AttachmentConfig { spool_dir: dir.clone(), max_bytes: 1_000 }), None);
+        r.set_fetcher(std::sync::Arc::new(|_, _| Err("relay error 404: no_such_blob".to_string())));
+        assert_eq!(r.offer(attachment_inbound(30)).unwrap(), Offer::Started);
+        assert_eq!(r.offer(inbound(31, "owner-pc", "after")).unwrap(), Offer::Queued { depth: 1 });
+        let got = pump_until(&mut r, 2);
+        assert_eq!(got[0], Outbound::Reply { seq: 30, text: crate::attachment::failure_text("download").into() });
+        assert_eq!(got[1], Outbound::Reply { seq: 31, text: "echo:after|@owner-pc:hande".into() });
+        assert!(spool_entries(&dir).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn stop_while_preparing_never_reaches_the_worker() {
+        let dir = spool_dir("stop");
+        let mut r = fake(|c| c.attachments = Some(AttachmentConfig { spool_dir: dir.clone(), max_bytes: 1_000 }), None);
+        r.set_fetcher(vector_fetcher(Duration::from_millis(400)));
+        assert_eq!(r.offer(attachment_inbound(40)).unwrap(), Offer::Started);
+        assert_eq!(r.stop("agent", 41, "owner-pc"), Stop::Cancelling { seq: 40 });
+        let got = pump_until(&mut r, 1);
+        assert_eq!(got, vec![Outbound::Stopped { seq: 40 }]);
+        assert!(spool_entries(&dir).is_empty());
+        // The worker is still there and serves the next turn.
+        assert_eq!(r.offer(inbound(42, "owner-pc", "next")).unwrap(), Offer::Started);
+        assert_eq!(pump_until(&mut r, 1), vec![Outbound::Reply { seq: 42, text: "echo:next|@owner-pc:hande".into() }]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_never_holds_the_descriptor() {
+        use crate::attachment::tests::{VECTOR_BLOB, VECTOR_KEY, VECTOR_NONCE};
+        let dir = spool_dir("inbox");
+        let state = dir.join("bot.state");
+        let mut r = fake(|c| c.attachments = Some(AttachmentConfig { spool_dir: dir.join("spool"), max_bytes: 1_000 }), Some(&state));
+        r.set_fetcher(vector_fetcher(Duration::from_millis(300)));
+        assert_eq!(r.offer(attachment_inbound(50)).unwrap(), Offer::Started);
+        let inbox = std::fs::read_to_string(inbox_path(&state)).unwrap();
+        assert!(inbox.contains("\"seq\":50"), "{inbox}");
+        for secret in [VECTOR_KEY, VECTOR_NONCE, VECTOR_BLOB] {
+            assert!(!inbox.contains(secret), "{inbox}");
+        }
+        let _ = pump_until(&mut r, 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_late_preparation_result_only_removes_its_file() {
+        let dir = spool_dir("late");
+        let mut r = fake(|c| {
+            c.attachments = Some(AttachmentConfig { spool_dir: dir.clone(), max_bytes: 1_000 });
+            c.turn_secs = 0;
+        }, None);
+        r.set_fetcher(vector_fetcher(Duration::from_millis(300)));
+        assert_eq!(r.offer(attachment_inbound(60)).unwrap(), Offer::Started);
+        std::thread::sleep(Duration::from_millis(20));
+        // Watchdog (turn_secs 0) ends the turn while it is still preparing.
+        let got = pump_until(&mut r, 1);
+        assert_eq!(got, vec![Outbound::Uncertain { seq: 60, reason: "watchdog".into() }]);
+        std::thread::sleep(Duration::from_millis(500));
+        let _ = r.pump().unwrap();
+        assert!(spool_entries(&dir).is_empty(), "{:?}", spool_entries(&dir));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -20,3 +20,6 @@ sha2 = "=0.10.9"
 # Batch g: wipe state-file snapshots (export_state JSON = the whole store) once
 # written, loaded or rolled back. Transitive already; direct for the calls.
 zeroize = "=1.9.0"
+# #636: open file-v2 attachments (FILE-V2 §2, AES-256-GCM). Already in the
+# graph through openmls_rust_crypto; direct (same pin) for `attachment.rs`.
+aes-gcm = { version = "=0.10.3", default-features = false, features = ["aes", "alloc"] }

@@ -22,6 +22,7 @@ native-mls-bot <base-url> session <room> <device> \
 - 응답기 바인딩: `fleet_worker.py --provider codex`(기본, CodexRuntime) 또는 **`--provider claude`**(ccc-node `ClaudeRuntime`, `--model claude-opus-5-5 --effort high --claude-permission-mode default`; 브리지 venv 파이썬 필요). 공명 운영은 Claude(2026-10-15 오너 결정 — ChatGPT 계정 Codex 가 `*-sol` 모델을 거부함).
 - `--owner-actor`(env `NATIVE_MLS_BOT_OWNER_ACTOR`, 기본 `owner`): 승인 답장을 낼 수 있는 actor(기기 ID 의 첫 `-` 앞).
 - 응답기가 죽으면 세션도 끝난다(exit 1) — 서비스 매니저가 봇·응답기를 함께 다시 띄운다(`Restart=on-failure`).
+- **첨부 turn**(#636, 기본 끔): env `NATIVE_MLS_BOT_AGENT_ATTACHMENTS=1` + `NATIVE_MLS_BOT_ATTACHMENT_SPOOL=<절대 경로>`(ccc-node 한데 `attachment_spool_dir` 와 **같은 문자열**), 선택 `NATIVE_MLS_BOT_ATTACHMENT_MAX_BYTES`(기본 10000000). 봇과 브리지가 **같은 uid·같은 파일시스템**이어야 한다(브리지는 `rename` 으로 파일을 가져가고 uid·0600 을 확인한다 — 봇·브리지 사용자가 다른 systemd 배치에서는 아직 쓸 수 없다). 켜는 순서: ccc-node `attachment_frames` → 이 플래그. 계약 `docs/FLEET-WORKER.md` "첨부 turn".
 - `--room-frames`(env `NATIVE_MLS_BOT_ROOM_FRAMES=1`, #423): steward 에서 agent 방 여러 개 — `turn` 에 `room`, 답은 요청 온 방으로. 규칙표는 `STEWARD.md` "여러 agent 방".
 - **입력 중 표시**(#562 봇 쪽, 기본 켬; 끄기 `--no-typing` 또는 env `NATIVE_MLS_BOT_TYPING=0`): Telegram `sendChatAction(typing)`·Matrix `m.typing` 과 같은 모델 — turn 이 답을 만드는 동안 폴 루프가 그 turn 의 방에 릴레이 `POST /v2/rooms/{room}/typing {"device":"<봇 기기>","clear":false}`(웹 `room.js` `typing()` 과 같은 본문, 같은 CF Access 헤더)를 turn 시작 즉시, 이후 4초마다 보낸다(릴레이 TTL `TypingTTLSeconds` 6초 미만, 갱신 하한 1초 이상) → 가족 앱 방 제목 옆에 「공명이 타닥타닥…」. 릴레이는 봇의 새 application 이벤트(답·interim·status-v1 ⏳ 줄·승인 요청)가 저장되면 그 기기의 신호를 스스로 지우므로, turn 이 계속되면 그 라운드에 바로 다시 켠다. 멈춤: 답 게시(`reply`)·불확실/중단 줄(`uncertain`·`stopped`)·빈 답으로 끝(`turn_end`)·**승인 요청을 올리고 owner 답을 기다리는 동안**(`approval`, 승인 처리 뒤 워커가 계속하면 다시 켬)·`/stop` 처리 중(`stop`)·방이 agent 모드가 아니거나 halted(`room_unavailable`)·워커 사망(`worker_gone`)·세션 종료(`shutdown`). 게시로 이미 지워진 경우가 아니면 멈출 때 `{"clear":true}` 를 한 번 보낸다(실패해도 TTL 로 사라짐). peer turn(#425)은 답이 안 나가므로 표시하지 않는다. 호출은 best-effort: 실패는 turn 당 한 줄(`typing_failed`, 오류 코드만·본문 없음), 거절(4xx·옛 릴레이의 404)이나 일시 오류 3회 연속이면 그 turn 은 더 보내지 않는다 — turn 을 실패시키거나 재시도 폭주하지 않는다.
 - 플릿 알림방(#425): `alert` 모드 방에서 `<방>.peers` 에 있는 봇의 `[alert:<actor>]` 글만 읽기 전용 turn(답 없음). 규칙은 `STEWARD.md` "플릿 알림방의 봇끼리 메시지".
@@ -36,7 +37,7 @@ native-mls-bot <base-url> session <room> <device> \
 |---|---|
 | ②-B 모든 메시지에 반응 | 멘션 게이트 없음. 응답기가 빈 답을 주면 전송 없음 |
 | 봇끼리 루프 방지 | actor 가 `bot` 으로 시작하는 발신 무시(`agent_skipped: bot_actor`) + 기존 `*-echo-<n>` 무시 |
-| 첨부 무시 | `client_id` 가 `file-v1-<uuid>` 또는 `file-v2-<uuid>`(#499 분리 첨부 — 설명자에 파일 키가 있어 에이전트에 절대 넘기지 않음)면 무시(`agent_skipped: attachment`) |
+| 첨부 | 기본: `client_id` 가 `file-v1-<uuid>` 또는 `file-v2-<uuid>`(#499 분리 첨부 — 설명자에 파일 키가 있어 에이전트에 절대 넘기지 않음)면 무시(`agent_skipped: attachment`). `NATIVE_MLS_BOT_AGENT_ATTACHMENTS=1`(#636, 위 "켜는 법")이면 **owner actor** 의 첨부만 turn 이 된다: 설명자 검증(실패 `attachment_invalid`)·상한(넘으면 받지 않고 `attachment_oversize` + 고정 문구) → turn 시작 때 별도 스레드가 blob 받기·검증·복호·spool → `turn.attachment` + 대체 문구 prompt. 다른 actor 첨부는 그대로 무시 |
 | ③-B 가족 허용 | `bot*` 를 뺀 모든 actor 의 메시지가 turn 이 된다. 실행 권한은 아래 승인으로만 |
 | ④-B 승인 왕복 | 응답기 `approval` → 방에 `⚠️ 승인 필요 #n: …` → **owner actor 의 답장** `승인 n` / `거절 n`(`approve n`/`deny n`) 만 유효 → 응답기 `approve`/`deny`. 미응답은 응답기 `--approval-timeout` 이 거절 |
 | 동시성 | 한 번에 1 turn, 대기열 8(초과는 `agent_offer: Dropped{queue_full}`) |

@@ -48,6 +48,7 @@ use native_mls_host::room::{self, is_transient, relay_backoff, Halt, RoomSync, S
 use native_mls_host::room::history_gap;
 #[cfg(test)]
 use native_mls_host::room::RELAY_BACKOFF_MAX;
+use crate::attachment;
 use crate::responder::{self, Inbound, Outbound, Responder};
 use family_mls_browser_experiment::Device;
 use std::collections::VecDeque;
@@ -465,7 +466,8 @@ pub fn run(opts: Options) -> Result<(), BotError> {
     // A spawn failure is fatal — running as a silent echo-less bot would hide it.
     let mut agent: Option<Responder> = match &opts.responder {
         Some(config) => {
-            let responder = Responder::spawn(config.clone(), opts.state_file.as_deref())?;
+            let mut responder = Responder::spawn(config.clone(), opts.state_file.as_deref())?;
+            responder.set_fetcher(blob_fetcher(&opts.base, &opts.access, &opts.device));
             emit(&serde_json::json!({
                 "event": "agent_started", "room": opts.room, "device": opts.device,
                 "owner_actor": config.owner_actor, "queue_max": config.queue_max,
@@ -1009,8 +1011,7 @@ fn route_to_agent(state: &mut RoomState, ev: &StoredRow, sender: &[u8], plaintex
         return Ok(None);
     }
     if responder::is_attachment_client_id(&ev.client_id) {
-        skipped("attachment");
-        return Ok(None);
+        return route_attachment(state, ev, &sender_device, plaintext, agent);
     }
     if responder::is_status_client_id(&ev.client_id) {
         // status-v1 (#560): another agent's live status line — never a turn.
@@ -1042,11 +1043,80 @@ fn route_to_agent(state: &mut RoomState, ev: &StoredRow, sender: &[u8], plaintex
         }));
         return Ok(None);
     }
-    let offer = agent.offer(Inbound { room: state.room.clone(), seq: ev.seq, sender_device: sender_device.clone(), text, peer_depth: 0 })?;
+    let offer = agent.offer(Inbound { room: state.room.clone(), seq: ev.seq, sender_device: sender_device.clone(), text, peer_depth: 0, attachment: None })?;
     emit(&serde_json::json!({
         "event": "agent_offer", "room": state.room, "seq": ev.seq, "from": sender_device, "outcome": format!("{offer:?}"),
     }));
     Ok(queue_notice(&offer))
+}
+
+/// #636: an attachment becomes a turn only with attachments on and only from
+/// the owner actor (stage 1 decision); anything else keeps the #514 skip. The
+/// descriptor is checked here (an invalid one is an unopenable message, never
+/// text) and an oversize file is refused before anything is fetched.
+fn route_attachment(state: &mut RoomState, ev: &StoredRow, sender_device: &str, plaintext: &[u8], agent: &mut Responder) -> Result<Option<String>, BotError> {
+    let skipped = |reason: &str| {
+        emit(&serde_json::json!({
+            "event": "agent_skipped", "room": state.room, "seq": ev.seq, "from": sender_device, "reason": reason,
+        }));
+    };
+    let Some(max_bytes) = agent.attachment_max_bytes() else {
+        skipped("attachment");
+        return Ok(None);
+    };
+    if responder::actor_of(sender_device) != agent.owner_actor() {
+        skipped("attachment");
+        return Ok(None);
+    }
+    let source = if ev.client_id.starts_with("file-v2-") {
+        match attachment::parse_descriptor(plaintext) {
+            Ok(descriptor) => attachment::Source::V2(descriptor),
+            Err(_) => {
+                skipped("attachment_invalid");
+                return Ok(None);
+            }
+        }
+    } else if plaintext.is_empty() {
+        skipped("attachment_invalid");
+        return Ok(None);
+    } else {
+        attachment::Source::V1(zeroize::Zeroizing::new(plaintext.to_vec()))
+    };
+    if source.size() > max_bytes {
+        skipped("attachment_oversize");
+        return Ok(Some(attachment::failure_text("oversize").to_string()));
+    }
+    let size = source.size();
+    let offer = agent.offer(Inbound {
+        room: state.room.clone(), seq: ev.seq, sender_device: sender_device.to_string(), text: String::new(), peer_depth: 0,
+        attachment: Some(source),
+    })?;
+    emit(&serde_json::json!({
+        "event": "agent_offer", "room": state.room, "seq": ev.seq, "from": sender_device, "outcome": format!("{offer:?}"),
+        "attachment": {"size": size},
+    }));
+    Ok(queue_notice(&offer))
+}
+
+/// #636: the relay blob GET for attachment turns, run on the responder's
+/// helper thread (its own `Client`: same base, same caller-auth source).
+fn blob_fetcher(base: &str, access: &api::Access, device: &str) -> attachment::Fetcher {
+    let (base, access, device) = (base.to_string(), access.clone(), device.to_string());
+    std::sync::Arc::new(move |room: &str, blob: &str| {
+        Client::with_access(&base, access.clone()).get_blob(room, &device, blob).map_err(|e| e.to_string())
+    })
+}
+
+/// #636 journal: never the key, nonce or blob id — kind, size, sha256 prefix.
+pub(crate) fn emit_attachment_ready(room: &str, seq: i64, spooled: &attachment::Spooled) {
+    emit(&serde_json::json!({
+        "event": "agent_attachment", "room": room, "seq": seq, "outcome": "ready",
+        "kind": spooled.kind, "mime": spooled.mime, "size": spooled.size, "sha256": &spooled.sha256[..12],
+    }));
+}
+
+pub(crate) fn emit_attachment_failed(room: &str, seq: i64, reason: &str) {
+    emit(&serde_json::json!({ "event": "agent_attachment", "room": room, "seq": seq, "outcome": "failed", "reason": reason }));
 }
 
 /// Matrix parity (ccc-node `NOTICE_QUEUED` / `NOTICE_QUEUE_FULL`, same
@@ -1131,7 +1201,7 @@ fn route_peer(state: &mut RoomState, ev: &StoredRow, sender: &[u8], plaintext: &
         skipped("rate");
         return Ok(());
     }
-    let offer = agent.offer(Inbound { room: state.room.clone(), seq: ev.seq, sender_device: sender_device.clone(), text: text.to_string(), peer_depth: depth })?;
+    let offer = agent.offer(Inbound { room: state.room.clone(), seq: ev.seq, sender_device: sender_device.clone(), text: text.to_string(), peer_depth: depth, attachment: None })?;
     emit(&serde_json::json!({
         "event": "peer_offer", "room": state.room, "seq": ev.seq, "from": sender_device, "depth": depth, "outcome": format!("{offer:?}"),
     }));
@@ -1732,12 +1802,14 @@ pub fn run_steward(opts: StewardOptions) -> Result<(), BotError> {
     }));
     let mut agent: Option<Responder> = match &opts.responder {
         Some(config) => {
-            let responder = Responder::spawn(config.clone(), Some(&opts.rooms_dir.join("responder.state")))?;
+            let mut responder = Responder::spawn(config.clone(), Some(&opts.rooms_dir.join("responder.state")))?;
+            responder.set_fetcher(blob_fetcher(&opts.base, &opts.access, &opts.device));
             emit(&serde_json::json!({
                 "event": "agent_started", "device": opts.device, "owner_actor": config.owner_actor,
                 "agent_room": rooms.iter().find(|r| r.mode == Mode::Agent).map(|r| r.room.clone()),
                 "agent_rooms": rooms.iter().filter(|r| r.mode == Mode::Agent).map(|r| r.room.clone()).collect::<Vec<_>>(),
                 "room_frames": config.room_frames, "typing": config.typing,
+                "attachments": config.attachments.as_ref().map(|a| serde_json::json!({"spool_dir": a.spool_dir.to_string_lossy(), "max_bytes": a.max_bytes})),
             }));
             Some(responder)
         }
@@ -2203,6 +2275,66 @@ mod tests {
     /// Agent mode routing (#354): bot actors and attachments never become
     /// turns, the owner's approval reply is routed (not a turn), and a plain
     /// family message comes back as the worker's reply.
+    #[test]
+    fn route_attachment_is_owner_only_and_checked_before_fetching() {
+        use crate::attachment::tests::{unhex, vector_descriptor_json, VECTOR_CT_HEX};
+        const ATT_WORKER: &str = r#"
+import json, sys
+for line in sys.stdin:
+    cmd = json.loads(line)
+    if cmd["type"] == "turn":
+        a = cmd.get("attachment") or {}
+        print(json.dumps({"type": "result", "turn_id": cmd["turn_id"], "status": "complete", "session_id": "s", "text": "got:" + str(a.get("kind")) + ":" + str(a.get("size"))}), flush=True)
+"#;
+        let spool = std::env::temp_dir().join(format!("nmls-route-{}", std::process::id()));
+        let mut config = responder::Config::new(responder::Transport::Argv(vec!["python3".into(), "-c".into(), ATT_WORKER.into()]), "owner".into());
+        config.attachments = Some(attachment::AttachmentConfig { spool_dir: spool.clone(), max_bytes: 1_000 });
+        let mut agent = Responder::spawn(config, None).unwrap_or_else(|e| panic!("spawn: {e}"));
+        agent.set_fetcher(std::sync::Arc::new(|_, _| Ok(unhex(VECTOR_CT_HEX))));
+        let mut state = joined_room("family", 4);
+        let row = |seq: i64, device: &str, client_id: &str| StoredRow {
+            seq, device: device.into(), client_id: client_id.into(), kind: "application".into(), epoch: 2,
+            bytes: Vec::new(), sha256: String::new(), created_at: 0,
+        };
+        let v2 = "file-v2-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2";
+        let descriptor = vector_descriptor_json("");
+        // Not the owner → the #514 skip, nothing offered.
+        assert_eq!(route_to_agent(&mut state, &row(5, "mom-iphone-1", v2), b"mom-iphone-1", descriptor.as_bytes(), &mut agent).unwrap(), None);
+        // Broken descriptor → never a turn, never text.
+        assert_eq!(route_to_agent(&mut state, &row(6, "owner-pc", v2), b"owner-pc", br#"{"v":2}"#, &mut agent).unwrap(), None);
+        // Over the cap → one room line, nothing fetched.
+        let big = descriptor.replace(r#""size":29"#, r#""size":1001"#);
+        assert_eq!(
+            route_to_agent(&mut state, &row(7, "owner-pc", v2), b"owner-pc", big.as_bytes(), &mut agent).unwrap().as_deref(),
+            Some(attachment::failure_text("oversize")),
+        );
+        // The owner's photo → a turn naming the spooled file.
+        assert_eq!(route_to_agent(&mut state, &row(8, "owner-pc", v2), b"owner-pc", descriptor.as_bytes(), &mut agent).unwrap(), None);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut got = Vec::new();
+        while got.is_empty() && Instant::now() < deadline {
+            got.extend(agent.pump().unwrap_or_else(|e| panic!("pump: {e}")));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(got, vec![Outbound::Reply { seq: 8, text: "got:image:29".into() }]);
+        let _ = std::fs::remove_dir_all(&spool);
+    }
+
+    #[test]
+    fn route_attachment_stays_skipped_when_attachments_are_off() {
+        let config = responder::Config::new(responder::Transport::Argv(vec!["python3".into(), "-c".into(), "import sys\nfor _ in sys.stdin: pass".into()]), "owner".into());
+        let mut agent = Responder::spawn(config, None).unwrap_or_else(|e| panic!("spawn: {e}"));
+        assert_eq!(agent.attachment_max_bytes(), None);
+        let mut state = joined_room("family", 4);
+        let row = StoredRow {
+            seq: 3, device: "owner-pc".into(), client_id: "file-v1-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2".into(), kind: "application".into(), epoch: 2,
+            bytes: Vec::new(), sha256: String::new(), created_at: 0,
+        };
+        assert_eq!(route_to_agent(&mut state, &row, b"owner-pc", b"\xff\xd8\xff", &mut agent).unwrap(), None);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(agent.pump().unwrap().is_empty(), "no turn started");
+    }
+
     #[test]
     fn route_to_agent_filters_and_answers() {
         const ECHO_WORKER: &str = r#"
@@ -2742,7 +2874,7 @@ for line in sys.stdin:
         // Steward present: the owner's turn asks room_create p4 → executed.
         let record = dir.join("tool-result-1.json");
         let mut agent = Some(spawn(&record));
-        agent.as_mut().unwrap().offer(Inbound { room: "agent".into(), seq: 1, sender_device: "owner-pc".into(), text: "room_create p4".into(), peer_depth: 0 }).expect("offer");
+        agent.as_mut().unwrap().offer(Inbound { room: "agent".into(), seq: 1, sender_device: "owner-pc".into(), text: "room_create p4".into(), peer_depth: 0, attachment: None }).expect("offer");
         let mut rooms = Vec::new();
         // The loop ends on the deadline — or earlier, once it polls the new room
         // against the canned relay (which answers nothing); either way the tool
@@ -2758,7 +2890,7 @@ for line in sys.stdin:
         // No steward (legacy session): refused on the port, nothing executed.
         let record = dir.join("tool-result-2.json");
         let mut agent = Some(spawn(&record));
-        agent.as_mut().unwrap().offer(Inbound { room: "agent".into(), seq: 2, sender_device: "owner-pc".into(), text: "room_create p5".into(), peer_depth: 0 }).expect("offer");
+        agent.as_mut().unwrap().offer(Inbound { room: "agent".into(), seq: 2, sender_device: "owner-pc".into(), text: "room_create p5".into(), peer_depth: 0, attachment: None }).expect("offer");
         let mut rooms = Vec::new();
         let err = run_loop(&ctx, &mut rooms, &mut agent, Some(Instant::now() + Duration::from_millis(1500)), None).expect_err("deadline ends the loop");
         assert!(err.to_string().contains("deadline"), "{err}");
@@ -3074,7 +3206,7 @@ for line in sys.stdin:
         let mut rooms = vec![room_in("fleet", Mode::Alert), room_in("family", Mode::Agent)];
         for r in rooms.iter_mut() { r.sync.joined = true; }
         assert_eq!(typing_want(&rooms, &agent), Err("idle"));
-        agent.offer(Inbound { room: "family".into(), seq: 5, sender_device: "owner-pc".into(), text: "work".into(), peer_depth: 0 }).expect("offer");
+        agent.offer(Inbound { room: "family".into(), seq: 5, sender_device: "owner-pc".into(), text: "work".into(), peer_depth: 0, attachment: None }).expect("offer");
         assert_eq!(typing_want(&rooms, &agent), Ok(("family", 5)));
         rooms[1].sync.halted = true;
         assert_eq!(typing_want(&rooms, &agent), Err("room_unavailable"));
