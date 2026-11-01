@@ -22,6 +22,8 @@ struct FamilyChatApp: App {
                     // #520: 첫 활성화는 scenePhase 변화가 없어 여기서 읽는다(전면 복귀는 foregrounded 가 다시 읽는다).
                     await appDelegate.model.refreshLockScreenPreview()
                     await appDelegate.model.bootstrap()
+                    // #643: 공유 시트에서 맡겨 둔 글·첨부(알림을 누르지 않고 앱을 연 경우도 여기서 보낸다).
+                    await appDelegate.model.deliverPendingShares()
                     await appDelegate.model.runForeground()
                 }
                 // 전면 복귀(#380 로비 보충 시점) — 첫 활성화는 bootstrap 뒤 첫 바퀴가 맡는다(lobbyCheckDue 초기값 true).

@@ -105,6 +105,16 @@ final class AppModel: ObservableObject {
         var reopen: ((ServerSelection?) -> Dependencies)? = nil
         /// #584 이 기기 표시 설정(읽음 위치·방 순서, `LocalPrefs`)의 defaults — 서버 스코프. 기본 = 앱 전용 standard(스코프 없음).
         var localDefaults = ScopedDefaults(.standard)
+        /// #643 공유 확장 맡김(App Group `share-outbox/`, Core `ShareHandoffStore`). nil = 공유 없음(테스트 기본·App Group 없는 빌드).
+        var shareStore: ShareHandoffStore? = nil
+        /// #643 공유할 수 있는 방 ID 를 써 둘 App Group 서버 스코프 defaults(`ShareHandoff.targetsKey`, 확장이 읽는다). nil = 쓰지 않음.
+        /// 방 순서(`localDefaults`)는 앱 전용 standard 라 확장이 못 읽으므로 따로 쓴다.
+        var shareTargets: ScopedDefaults? = nil
+        /// #643 준비 상태(.ready)가 될 때마다 맡김 전달을 다시 시도한다(오프라인·등록 중에 앱을 열었다가 나중에 준비된 경우).
+        /// 기본 꺼짐 — 테스트는 `deliverPendingShares()` 를 직접 부른다(결정적). live() 가 켠다.
+        var deliverSharesWhenReady = false
+        /// #643 맡김 하나를 다 보낸 뒤(맡김 ID) — live() 는 그 공유 알림을 알림 센터에서 지운다.
+        var shareDelivered: (String) -> Void = { _ in }
     }
 
     /// 저장소 밖의 삭제 작업(§9-5). `storage` = MLS 상태 전부(identity 슬롯 포함) + messages.db 행, `identity` = 저장된 기기 ID.
@@ -113,7 +123,14 @@ final class AppModel: ObservableObject {
         var identity: () -> Void = {}
     }
 
-    @Published private(set) var phase: Phase = .starting
+    @Published private(set) var phase: Phase = .starting {
+        didSet {
+            // #643: 준비 상태가 되면 맡겨 둔 공유를 보낸다(재진입은 deliverPendingShares 가 막는다).
+            if phase == .ready, oldValue != .ready, deps.deliverSharesWhenReady, deps.shareStore != nil {
+                Task { await self.deliverPendingShares() }
+            }
+        }
+    }
     /// #414: 첫 동기화 한 바퀴가 끝났는가. 시작 직후의 `.needsEnrollment` 는 "등록 확인 중" 자리라
     /// (저장된 세션으로 이어 갈 때 bootstrap 이 먼저 둔다) 화면은 그동안 오프닝을 보이고, 이 값이 서면 실제 상태를 보인다.
     @Published private(set) var settled = false
@@ -135,7 +152,9 @@ final class AppModel: ObservableObject {
             if let credential { try? deps.credentials.save(credential) } else { deps.credentials.delete() }
         }
     }
-    @Published private(set) var rooms: [RoomRecord] = []
+    @Published private(set) var rooms: [RoomRecord] = [] {
+        didSet { publishShareTargets() }
+    }
     @Published private(set) var lastError: String?
     /// 릴레이에 닿지 않는 중(네트워크 끊김·게이트웨이 502~504) — 방 화면 제목 아래 「연결 중입니다…」(오너 요청, build 29).
     /// 원문 오류(NSURLErrorDomain …)는 화면에 띄우지 않는다. 동기화·송신이 한 번 성공하면 내려간다.
@@ -316,6 +335,12 @@ final class AppModel: ObservableObject {
     /// #599: `serial` 에 줄 선 송신 수. 0 보다 크면 동기화 바퀴가 방과 방 사이·부가 작업 앞에서 양보한다(`yieldToSend`) —
     /// 종전에는 FIFO 라 4초 바퀴(방마다 GET 직렬 + push·me·로비·후보)가 끝나야 글이 나갔다.
     private var sendsWaiting = 0
+    /// #643 마지막으로 써 둔 공유 대상(같으면 다시 쓰지 않는다 — `rooms` 는 바퀴마다 다시 읽힌다).
+    private var publishedShareTargets: [RoomID]?
+    /// #643 맡김 전달이 도는 중(시작·전면 복귀·알림 탭이 겹쳐도 한 번만).
+    private var deliveringShares = false
+    /// #643 이번 실행에서 지난 실행의 claim 찌꺼기를 치웠다.
+    private var shareClaimsSwept = false
     /// #599: 마지막 바퀴가 송신에 양보해 남은 방·부가 작업을 건너뛰었다 — 전면 폴링이 기다리지 않고 곧바로 다음 바퀴를 돈다.
     private(set) var syncPreempted = false
     private(set) var push: PushRegistrar
@@ -443,6 +468,9 @@ final class AppModel: ObservableObject {
         }
         push = PushRegistrar(deps.push)
         localPrefs = LocalPrefs(defaults: deps.localDefaults)
+        // #643: 새 스코프의 defaults 에 다시 쓴다(스코프마다 따로).
+        publishedShareTargets = nil
+        publishShareTargets()
     }
 
     /// 메모리에 든 세션·동기화·초대·셀프서비스 상태를 전부 버린다(저장소는 건드리지 않는다) — 「이 기기 지우기」·「서버 바꾸기」 공통.
@@ -1116,6 +1144,8 @@ final class AppModel: ObservableObject {
         // 설정 앱에서 미리보기를 바꾸고 돌아온 경우가 여기다(#520).
         await refreshLockScreenPreview()
         await refresh()
+        // #643: 앱 밖(공유 시트)에서 맡긴 글·첨부.
+        await deliverPendingShares()
     }
 
     /// #520: 미리보기 설정을 다시 읽는다 — 실행 시작·전면 복귀·알림 권한 허용(토큰 수신) 뒤.
@@ -1560,6 +1590,73 @@ final class AppModel: ObservableObject {
             default: return .failed(Strings.outgoingFailed)
             }
         }
+    }
+
+    // MARK: - #643 공유 확장 맡김
+
+    /// 공유할 수 있는 방(목록 화면 순서, 정지된 방 제외)을 App Group 서버 스코프 defaults 에 써 둔다 — 공유 확장의 방 고르기 목록.
+    /// 순서를 바꾸면 다음 동기화 바퀴(`rooms` 다시 읽기)에 반영된다.
+    private func publishShareTargets() {
+        guard let defaults = deps.shareTargets else { return }
+        let ids = ShareHandoff.targets(listedRooms, saved: localPrefs.roomOrder)
+        guard ids != publishedShareTargets else { return }
+        publishedShareTargets = ids
+        defaults.set(ids, forKey: ShareHandoff.targetsKey)
+    }
+
+    /// 공유 확장이 맡긴 글·첨부를 보낸다(#643 D4) — 화면·단축어와 **같은 모델·같은 송신 경로**(`send`·`sendAttachment`)라
+    /// flock·`serial`·내 글 기록·보관(「연결되면 보냅니다」)·실패(「다시 보내기」)가 같다. 시작(bootstrap 뒤)·전면 복귀·공유 알림(탭·앱 안 표시)·
+    /// 준비 상태 전환(live)에서 부른다. 준비 전이면 맡김을 남긴다. 보내는 도중 준비 상태가 풀리면(로그아웃·정지) 못 보낸 부분만 되돌리고 멈춘다.
+    /// 없어진 방의 맡김은 버리고 알린다. 다 보낸 맡김 수.
+    @discardableResult
+    func deliverPendingShares() async -> Int {
+        guard let store = deps.shareStore, deps.server != nil, !deliveringShares else { return 0 }
+        deliveringShares = true
+        defer { deliveringShares = false }
+        if !shareClaimsSwept {
+            store.discardStaleClaims()
+            shareClaimsSwept = true
+        }
+        guard let server = deps.server else { return 0 }
+        let scope = ServerScope(baseURL: server.baseURL).id
+        guard !store.pending(scope: scope, now: deps.clock()).isEmpty else { return 0 }
+        // 알림을 눌러 차갑게 켜진 경우 시작 작업보다 먼저 올 수 있다 — 단축어처럼 시작과 한 바퀴를 기다린다.
+        await bootstrap()
+        if phase != .ready { await refresh() }
+        var delivered = 0
+        // 준비를 기다리는 동안 새로 맡겨졌을 수 있으니 다시 읽는다.
+        for item in store.pending(scope: scope, now: deps.clock()) {
+            guard case .ready = phase else { break }   // 남은 맡김은 그대로 다음 기회에
+            guard var remaining = store.claim(item.id) else { continue }
+            guard rooms.contains(where: { $0.room == remaining.room }) else {
+                lastError = Strings.shareRoomGone(remaining.room)
+                store.finish(remaining.id)
+                continue
+            }
+            var interrupted = false
+            if let text = remaining.text {
+                _ = await send(room: remaining.room, text: text)
+                remaining.text = nil
+            }
+            while let name = remaining.files.first {
+                guard case .ready = phase else { interrupted = true; break }
+                if let data = try? Data(contentsOf: store.fileURL(remaining, name)) {
+                    _ = await sendAttachment(room: remaining.room, data: data)
+                } else {
+                    lastError = Strings.shareFileUnreadable
+                }
+                remaining.files.removeFirst()
+            }
+            if interrupted {
+                store.release(remaining)   // 못 보낸 파일만 되돌린다
+                break
+            }
+            store.finish(remaining.id)
+            deps.shareDelivered(remaining.id)
+            requestOpen(room: remaining.room)
+            delivered += 1
+        }
+        return delivered
     }
 
     /// 보내는 글을 목록 맨 아래에 바로 올린다(결과는 `sendOwn` 이 갱신).

@@ -49,7 +49,7 @@ Core `SVGPathData` 가 호 `A/a`·매끈한 3차 `S/s` 를 베지어로 읽는�
 
 App Store Connect 쪽 답(App Privacy·심사 노트·수출 규정)은 [`docs/hande/app-store-review.md`](../../../docs/hande/app-store-review.md), 체크리스트는 [`release-checklist.md`](../../../docs/hande/release-checklist.md)(A-2·A-7·A-8 가 이 절).
 
-1. **Privacy manifest** — `FamilyChat/PrivacyInfo.xcprivacy`(앱)·`FamilyChatNSE/PrivacyInfo.xcprivacy`(알림 확장). 두 파일은 각 타깃의 소스 그룹 안에 있어 xcodegen 이 Resources 로 넣는다(알 수 없는 확장자의 기본 build phase; 별도 항목으로 또 적으면 중복). `NSPrivacyTracking = false`, 추적 도메인 없음.
+1. **Privacy manifest** — `FamilyChat/PrivacyInfo.xcprivacy`(앱)·`FamilyChatNSE/PrivacyInfo.xcprivacy`(알림 확장)·`FamilyChatShare/PrivacyInfo.xcprivacy`(공유 확장, #643 — 수집 없음·App Group defaults `1C8F.1` 만, 아래 「공유 확장」). 세 파일은 각 타깃의 소스 그룹 안에 있어 xcodegen 이 Resources 로 넣는다(알 수 없는 확장자의 기본 build phase; 별도 항목으로 또 적으면 중복). `NSPrivacyTracking = false`, 추적 도메인 없음.
    - **수집 유형**(앱): `app-store-review.md` §1-1 표 그대로 — Email Address(CF Access subject) · Name(actor) · User ID(체인의 기기 기록) · Device ID(앱이 만든 기기 ID + APNs 토큰) · Other User Content(대화방 이름·참여 목록·읽음 위치·발신 시각), 모두 Linked=예 · Tracking=아니오 · App Functionality. 메시지 내용(Emails or Text Messages)은 E2EE 라 신고하지 않는다(§1-1 ⓐ 오너 결정; 보수적으로 가려면 두 파일과 ASC 라벨을 함께 바꾼다). NSE 는 릴레이에서 읽기만 하므로 그 요청이 싣는 User ID · Device ID 만.
    - **Required Reason API** — 코드 grep(2026-10-29, Swift 앱·NSE·FamilyMLSCore 소스 + 정적 링크되는 Rust 크레이트)으로 확인한 범주만 적는다. 바꾸면 `FamilyChatTests/PrivacyManifestTests` 의 기대값도 함께.
 
@@ -67,6 +67,23 @@ App Store Connect 쪽 답(App Privacy·심사 노트·수출 규정)은 [`docs/h
 
 뼈대 단계(2026-10-05)에서 앱은 InMemory 스토어를 쓰고 네트워크가 없다. L1·L3 머지 후 `AppModel.Dependencies.live()` 의
 의존성만 파일 스토어·릴레이 동기화로 바뀐다. 푸시/NSE(§12-D)·첨부·QR 등록(§12-E)은 통합 단계.
+
+## 공유 확장 — 공유 시트의 「한데」(#643 1단계)
+사진·Safari·파일 앱·메모의 「공유」에 한데가 뜬다(타깃 `FamilyChatShare`, Bundle ID `…hande.share`, 앱 번들 `PlugIns/`). 받는 종류: 글·웹 링크 1·
+이미지·동영상·파일 각 10(첨부 합계 10, 파일 1개 ≤ `FileV2Format.maxFileBytes`).
+1. **확장은 맡기기만 한다**(결정 D1 — 단축어 송신과 같은 원칙): 확장은 MLS 상태·Keychain·FFI 를 링크하지 않고, 받은 내용과 고른 방을
+   App Group `share-outbox/<id>/` 에 쓴다(Core `ShareHandoffStore.commit` — staging 에 쓰고 디렉터리째 rename, `item.json` 이 완성 표시).
+   그리고 로컬 알림 「누르면 한데에서 보냅니다」(잠금화면용 일반 문구, userInfo `room`·`hande.share`)를 띄우고 닫는다.
+2. **앱이 보낸다**: `AppModel.deliverPendingShares()` — 시작(bootstrap 뒤)·전면 복귀·공유 알림 탭에서, 지금 서버 스코프의 맡김을 생성 순으로
+   claim(`item.json` → `claimed.json` rename, 한 번만) → 화면·단축어와 같은 `send(room:text:)`·`sendAttachment(room:data:)` → 지움 → 그 방을 연다.
+   준비 전이면 남기고, 이 기기에 없는 방이면 버리고 알린다. 지난 실행이 보내다 남긴 claim 은 다시 보내지 않고 지운다(중복 송신 방지). 24시간 지난 맡김은 지운다.
+3. **방 고르기 목록**: 앱이 방 목록이 바뀔 때마다 App Group 서버 스코프 defaults `hande.shareTargets` 에 목록 화면 순서(정지된 방 제외)로 써 둔다
+   (방 순서 `LocalPrefs` 는 앱 전용 standard 라 확장이 못 읽는다). 확장은 NSE 와 같은 `ServerStore.resolve`·`ServerScope` 로 스코프를 정하고 `roomLabel` 로 보인다.
+4. **서명**: 릴리스 워크플로가 `…hande.share` 프로필을 만들고(asc_profiles.py) 아카이브 검증에서 버전·기본 서버·매니페스트를 앱과 맞춘다.
+   **선행 조건(운영자)**: Apple Developer 에 App ID `com.seoyoon-family.hande.share` 를 등록하고 App Groups 를 켜 앱과 같은 그룹을 지정한다 — 미등록이면
+   `asc_profiles.py` 가 `bundle id not registered` 로 멈춘다.
+5. **범위 밖(후속)**: 확장이 직접 보내기 · 공유 시트 맨 윗줄 대화 추천(`INSendMessageIntent` 기부) · 파일 이름 보존(첨부 와이어에 이름 필드 없음).
+테스트: Core `ShareHandoffTests`(Linux) · `OutgoingTests`(맡김 전달 6건, Linux 스모크 + macOS) · `PrivacyManifestTests`(세 번째 매니페스트).
 
 ## 하드웨어 키보드 단축키 — 웹 한데와 같게(2026-10-31)
 

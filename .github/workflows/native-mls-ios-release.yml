@@ -94,12 +94,14 @@ jobs:
           mkdir -p "$RUNNER_TEMP/profiles" "$HOME/Library/MobileDevice/Provisioning Profiles"
           "$RUNNER_TEMP/asc-venv/bin/python" scripts/asc_profiles.py --key-path "$ASC_KEY_PATH" --key-id "$ASC_KEY_ID" --issuer-id "$ASC_ISSUER_ID" \
             --cert-serial "$IOS_DIST_CERT_SERIAL" --out "$RUNNER_TEMP/profiles" \
-            com.seoyoon-family.hande com.seoyoon-family.hande.nse | tee "$RUNNER_TEMP/profiles.tsv"
+            com.seoyoon-family.hande com.seoyoon-family.hande.nse com.seoyoon-family.hande.share | tee "$RUNNER_TEMP/profiles.tsv"
           while IFS=$'\t' read -r bid name uuid; do
             cp "$RUNNER_TEMP/profiles/$bid.mobileprovision" "$HOME/Library/MobileDevice/Provisioning Profiles/$uuid.mobileprovision"
             case "$bid" in
               com.seoyoon-family.hande) echo "FC_PROFILE_APP=$name" >> "$GITHUB_ENV" ;;
               com.seoyoon-family.hande.nse) echo "FC_PROFILE_NSE=$name" >> "$GITHUB_ENV" ;;
+              # #643 공유 확장 — App ID(App Groups = 앱과 같은 그룹)를 Apple Developer 에 먼저 등록해야 한다(미등록이면 asc_profiles 가 멈춘다).
+              com.seoyoon-family.hande.share) echo "FC_PROFILE_SHARE=$name" >> "$GITHUB_ENV" ;;
             esac
           done < "$RUNNER_TEMP/profiles.tsv"
           cut -f1,2 "$RUNNER_TEMP/profiles.tsv" | tee -a "$GITHUB_STEP_SUMMARY"
@@ -133,7 +135,7 @@ jobs:
           FC_AGENT_ACTORS: ${{ vars.FC_AGENT_ACTORS || 'bot' }}
           MARKETING_VERSION: ${{ inputs.marketing_version }}
         run: |
-          test -n "$APPLE_TEAM_ID" && test -n "$FC_APP_GROUP" && test -n "$FC_PROFILE_APP" && test -n "$FC_PROFILE_NSE"
+          test -n "$APPLE_TEAM_ID" && test -n "$FC_APP_GROUP" && test -n "$FC_PROFILE_APP" && test -n "$FC_PROFILE_NSE" && test -n "$FC_PROFILE_SHARE"
           case "$DISTRIBUTION" in
             testflight-family) test -n "$FC_RELAY_URL" ;;   # 가족 빌드는 vars.FC_RELAY_URL 이 있어야 한다(지금까지와 같은 가드)
             appstore-public)   test -z "$FC_RELAY_URL" ;;   # 공개 빌드는 반드시 빈 값
@@ -145,13 +147,13 @@ jobs:
             -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/Hande.xcarchive" \
             OTHER_CODE_SIGN_FLAGS="--keychain $SIGNING_KEYCHAIN" \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_IDENTITY="Apple Distribution" \
-            FC_PROFILE_APP="$FC_PROFILE_APP" FC_PROFILE_NSE="$FC_PROFILE_NSE" \
+            FC_PROFILE_APP="$FC_PROFILE_APP" FC_PROFILE_NSE="$FC_PROFILE_NSE" FC_PROFILE_SHARE="$FC_PROFILE_SHARE" \
             FC_APS_ENVIRONMENT=production FC_RELAY_URL="$FC_RELAY_URL" FC_APP_GROUP="$FC_APP_GROUP" FC_AGENT_ACTORS="$FC_AGENT_ACTORS" \
             MARKETING_VERSION="$MARKETING_VERSION" CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
             archive 2>&1 | tee "$RUNNER_TEMP/archive.log" | grep -E 'error:|warning: .*(sign|provision|entitle)|\*\* ARCHIVE' || true
           grep -q '\*\* ARCHIVE SUCCEEDED \*\*' "$RUNNER_TEMP/archive.log"
           echo "archive_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Verify archive version (CFBundleVersion == run_number, app == NSE)
+      - name: Verify archive version (CFBundleVersion == run_number, app == NSE == share)
         # project.yml 의 Info.plist 가 $(CURRENT_PROJECT_VERSION) 을 참조하지 않으면 xcodegen 이 "1" 을 고정해 ASC 가 업로드를 거부한다
         # (run 38372256608). 업로드 전에 아카이브에서 실제 값을 읽어 막는다.
         run: |
@@ -159,20 +161,24 @@ jobs:
           app_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Info.plist")"
           app_short="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")"
           nse_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/PlugIns/FamilyChatNSE.appex/Info.plist")"
-          echo "archive version: $app_short ($app_build), nse ($nse_build), expected build ${{ github.run_number }}" | tee -a "$GITHUB_STEP_SUMMARY"
+          share_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/PlugIns/FamilyChatShare.appex/Info.plist")"
+          echo "archive version: $app_short ($app_build), nse ($nse_build), share ($share_build), expected build ${{ github.run_number }}" | tee -a "$GITHUB_STEP_SUMMARY"
           test "$app_build" = "${{ github.run_number }}"
           test "$nse_build" = "$app_build"
+          test "$share_build" = "$app_build"
           test "$app_short" = "${{ inputs.marketing_version }}"
           # #584: 배포 종류와 아카이브의 기본 서버가 맞는지(앱·NSE 둘 다). 값 자체는 호스트명이라 출력하지 않는다.
           app_relay="$(/usr/libexec/PlistBuddy -c 'Print :FamilyChatRelayURL' "$app/Info.plist")"
           nse_relay="$(/usr/libexec/PlistBuddy -c 'Print :FamilyChatRelayURL' "$app/PlugIns/FamilyChatNSE.appex/Info.plist")"
+          share_relay="$(/usr/libexec/PlistBuddy -c 'Print :FamilyChatRelayURL' "$app/PlugIns/FamilyChatShare.appex/Info.plist")"
           case "${{ inputs.distribution }}" in
-            appstore-public)   test -z "$app_relay" && test -z "$nse_relay" ;;
-            testflight-family) test -n "$app_relay" && test "$nse_relay" = "$app_relay" ;;
+            appstore-public)   test -z "$app_relay" && test -z "$nse_relay" && test -z "$share_relay" ;;
+            testflight-family) test -n "$app_relay" && test "$nse_relay" = "$app_relay" && test "$share_relay" = "$app_relay" ;;
           esac
           # Privacy manifest(#584 PR 4)가 두 번들 루트에 있어야 한다 — 없으면 ASC 가 업로드 뒤 ITMS-91053 메일로 거부 사유를 보낸다.
-          test -f "$app/PrivacyInfo.xcprivacy" && test -f "$app/PlugIns/FamilyChatNSE.appex/PrivacyInfo.xcprivacy"
-          echo "distribution=${{ inputs.distribution }} relay_default=$([ -n "$app_relay" ] && echo set || echo empty) privacy_manifest=app+nse" | tee -a "$GITHUB_STEP_SUMMARY"
+          test -f "$app/PrivacyInfo.xcprivacy" && test -f "$app/PlugIns/FamilyChatNSE.appex/PrivacyInfo.xcprivacy" \
+            && test -f "$app/PlugIns/FamilyChatShare.appex/PrivacyInfo.xcprivacy"
+          echo "distribution=${{ inputs.distribution }} relay_default=$([ -n "$app_relay" ] && echo set || echo empty) privacy_manifest=app+nse+share" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Export options (manual signing)
         env:
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
@@ -191,6 +197,7 @@ jobs:
             <key>provisioningProfiles</key><dict>
               <key>com.seoyoon-family.hande</key><string>$FC_PROFILE_APP</string>
               <key>com.seoyoon-family.hande.nse</key><string>$FC_PROFILE_NSE</string>
+              <key>com.seoyoon-family.hande.share</key><string>$FC_PROFILE_SHARE</string>
             </dict>
             <key>uploadSymbols</key><true/>
             <key>manageAppVersionAndBuildNumber</key><false/>

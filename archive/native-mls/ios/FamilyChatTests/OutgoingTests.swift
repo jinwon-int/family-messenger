@@ -219,6 +219,150 @@ final class OutgoingTests: XCTestCase {
         XCTAssertEqual(result, .queued)
         XCTAssertEqual(model.messages(room: "jingun").first?.outgoing, .queued)
     }
+
+    // MARK: - #643 공유 확장 맡김 → 앱이 보낸다(deliverPendingShares)
+
+    private static let jpegHead = Data([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00])
+    /// 테스트 서버(`ServerSelection.testing`)의 스코프 — 앱이 지금 스코프의 맡김만 보낸다.
+    private static var scope: String { ServerScope(baseURL: ServerSelection.testing.baseURL).id }
+
+    private func shareContainer() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("share-app-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        return dir
+    }
+
+    private func shareFile(_ name: String, _ bytes: Data, in dir: URL) throws -> URL {
+        let url = dir.appendingPathComponent("picked-\(UUID().uuidString)-\(name)")
+        try bytes.write(to: url)
+        return url
+    }
+
+    /// `family`·`jingun` 이 기록에 있는 모델 + 맡김 저장소(+ 공유 대상 defaults). v1 첨부 경로(가짜 엔진, AttachmentTests 와 같다).
+    private func shareModel(store: ShareHandoffStore, targets: ScopedDefaults? = nil, login: Bool = true,
+                            whenReady: Bool = false, delivered: @escaping (String) -> Void = { _ in }) async -> AppModel {
+        let relay = InMemoryRelay()
+        var deps = AppModel.Dependencies(
+            engineFactory: AnyFactory(MemberFakeFactory()), stateStore: InMemoryStateStore(),
+            messageStore: InMemoryMessageStore(seedRooms: [
+                RoomRecord(room: "family", epoch: 0, revision: 0, haltedReason: nil, displayOrder: 0),
+                RoomRecord(room: "jingun", epoch: 0, revision: 0, haltedReason: nil, displayOrder: 1),
+            ]),
+            outbox: InMemoryOutboxStore(), cursors: InMemoryCursorStore(),
+            identityProvider: { "owner-iphone-a1b2c3" }, expectedDecryptFormat: { 2 }, makeTransport: { _ in relay })
+        deps.sendFileV2 = false
+        deps.shareStore = store
+        deps.shareTargets = targets
+        deps.deliverSharesWhenReady = whenReady
+        deps.shareDelivered = delivered
+        // 방 순서(`LocalPrefs`)가 테스트 호스트의 standard 에 남지 않게 일회용 suite 로.
+        let suite = "share-prefs-\(UUID().uuidString)"
+        if let prefs = UserDefaults(suiteName: suite) {
+            deps.localDefaults = ScopedDefaults(prefs)
+            addTeardownBlock { prefs.removePersistentDomain(forName: suite) }
+        }
+        let model = AppModel(dependencies: deps)
+        await model.bootstrap()
+        if login { model.login(.bearer("t")); await model.refresh() }
+        return model
+    }
+
+    func testShareDeliverySendsTextThenFilesThroughTheSendPathAndOpensTheRoom() async throws {
+        let container = try shareContainer()
+        let store = ShareHandoffStore(container: container)
+        let photo = Self.jpegHead + Data(repeating: 7, count: 200)
+        let item = try store.commit(scope: Self.scope, room: "family", text: "이거 봐 https://example.com/a",
+                                    files: [try shareFile("IMG.JPG", photo, in: container)])
+        var removedNotifications: [String] = []
+        let model = await shareModel(store: store, delivered: { removedNotifications.append($0) })
+        XCTAssertEqual(model.phase, .ready)
+        let delivered = await model.deliverPendingShares()
+        XCTAssertEqual(delivered, 1)
+        let mine = model.messages(room: "family")
+        XCTAssertEqual(mine.map(\.record.kind), [.text, .attachment], "text first, then files in order")
+        XCTAssertEqual(mine.first?.record.body, "이거 봐 https://example.com/a")
+        XCTAssertEqual(mine.last?.record.body, "image/jpeg", "same sniffed row as the composer's attachment send")
+        XCTAssertEqual(mine.last?.attachmentBytes, photo.count)
+        XCTAssertEqual(model.requestedRoom, "family", "open the room it went to")
+        XCTAssertNil(model.lastError)
+        XCTAssertEqual(store.pending(scope: Self.scope), [], "delivered handoffs are gone")
+        XCTAssertEqual(store.discardStaleClaims(), 0, "nothing left claimed")
+        XCTAssertEqual(removedNotifications, [item.id], "its 「누르면 보냅니다」 notification is cleared")
+    }
+
+    func testShareIsDeliveredWhenTheAppBecomesReadyLater() async throws {
+        let store = ShareHandoffStore(container: try shareContainer())
+        try store.commit(scope: Self.scope, room: "family", text: "오프라인에서 열었다", files: [])
+        let model = await shareModel(store: store, login: false, whenReady: true)
+        XCTAssertNotEqual(model.phase, .ready)
+        XCTAssertEqual(store.pending(scope: Self.scope).count, 1, "kept while not ready")
+        model.login(.bearer("t"))
+        await model.refresh()   // → .ready: the phase change starts a delivery
+        for _ in 0..<200 where !model.messages(room: "family").contains(where: { $0.record.body == "오프라인에서 열었다" }) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(model.messages(room: "family").map(\.record.body), ["오프라인에서 열었다"])
+        XCTAssertEqual(store.pending(scope: Self.scope), [])
+    }
+
+    func testShareDeliveryBeforeLoginKeepsTheHandoff() async throws {
+        let store = ShareHandoffStore(container: try shareContainer())
+        let item = try store.commit(scope: Self.scope, room: "family", text: "나중에", files: [])
+        let model = await shareModel(store: store, login: false)
+        let delivered = await model.deliverPendingShares()
+        XCTAssertEqual(delivered, 0)
+        XCTAssertEqual(store.pending(scope: Self.scope), [item], "kept for the next chance (foreground · notification tap)")
+        XCTAssertNil(model.requestedRoom)
+    }
+
+    func testShareToARoomThisDeviceDoesNotHaveIsDroppedWithANotice() async throws {
+        let store = ShareHandoffStore(container: try shareContainer())
+        try store.commit(scope: Self.scope, room: "gone", text: "hi", files: [])
+        let model = await shareModel(store: store)
+        let delivered = await model.deliverPendingShares()
+        XCTAssertEqual(delivered, 0)
+        XCTAssertEqual(model.lastError, Strings.shareRoomGone("gone"))
+        XCTAssertNil(model.outgoing["gone"], "nothing sent")
+        XCTAssertEqual(store.pending(scope: Self.scope), [], "not retried forever")
+    }
+
+    func testOverlappingDeliveriesSendOnce() async throws {
+        let store = ShareHandoffStore(container: try shareContainer())
+        try store.commit(scope: Self.scope, room: "family", text: "한 번만", files: [])
+        let model = await shareModel(store: store)
+        async let first = model.deliverPendingShares()
+        async let second = model.deliverPendingShares()
+        let total = await first + second
+        // 시작·전면 복귀·알림 탭이 겹쳐도 한 번만 보낸다(재진입 가드 + claim 1회성 중 먼저 걸리는 쪽).
+        XCTAssertEqual(total, 1, "start · foreground · tap may overlap — one send")
+        XCTAssertEqual(model.messages(room: "family").map(\.record.body), ["한 번만"])
+    }
+
+    func testShareFromAnotherServerScopeIsNotSent() async throws {
+        let store = ShareHandoffStore(container: try shareContainer())
+        let other = try store.commit(scope: "other-server", room: "family", text: "다른 서버", files: [])
+        let model = await shareModel(store: store)
+        let delivered = await model.deliverPendingShares()
+        XCTAssertEqual(delivered, 0)
+        XCTAssertTrue(model.messages(room: "family").isEmpty)
+        XCTAssertEqual(store.pending(scope: "other-server"), [other], "kept until it expires")
+    }
+
+    func testShareTargetsArePublishedInListOrderForTheExtension() async throws {
+        let suite = "share-targets-\(UUID().uuidString)"
+        let base = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { base.removePersistentDomain(forName: suite) }
+        let scoped = ScopedDefaults(base, scope: ServerScope(baseURL: ServerSelection.testing.baseURL))
+        let model = await shareModel(store: ShareHandoffStore(container: try shareContainer()), targets: scoped)
+        let expected = ShareHandoff.targets(model.listedRooms, saved: model.localPrefs.roomOrder)
+        XCTAssertEqual(scoped.stringArray(forKey: ShareHandoff.targetsKey), expected)
+        XCTAssertTrue(expected.contains("family"), "\(expected)")
+        // 순서를 바꾸면 다음 바퀴(방 목록 다시 읽기)에 반영된다.
+        model.localPrefs.setOrder(Array(expected.reversed()))
+        await model.refresh()
+        XCTAssertEqual(scoped.stringArray(forKey: ShareHandoff.targetsKey), Array(expected.reversed()))
+    }
 }
 
 /// 두 팩토리를 한 타입으로(테스트 편의).

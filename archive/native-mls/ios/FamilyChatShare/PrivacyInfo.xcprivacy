@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 한데 공유 확장 Privacy manifest (#643). 확장은 네트워크를 쓰지 않는다 — 공유받은 내용과 고른 방을 기기 안 App Group 컨테이너에
+	     맡기기만 하고(보내는 것은 앱), 그래서 수집 유형이 없다. Required Reason API 는 App Group defaults(`UserDefaults(suiteName:)` —
+	     선택한 서버 `hande.server`·공유 대상 방 목록 읽기)뿐: 1C8F.1. 파일 크기는 리소스 값(fileSizeKey)으로 읽고 파일 시각 API·Rust
+	     라이브러리는 쓰지 않는다(FileTimestamp 범주 없음). 바꾸면 FamilyChatTests/PrivacyManifestTests 의 기대값도 함께. -->
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>1C8F.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>
