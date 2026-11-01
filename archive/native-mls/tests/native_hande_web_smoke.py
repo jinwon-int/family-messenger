@@ -7,6 +7,8 @@ product screens only — zero Python-side relay calls:
   requests to join (key package) → owner invites mom from the invite sheet → mom
   joins from the Welcome → messages both ways (sender labels) → owner's relay
   cursor acked → mom reloads the page and the sealed history (#370) comes back.
+  … and at the end the typing line (#562/#635, #639 A2): mom composes → owner's room header
+  shows 「타닥타닥…」 (1:1) / 「mom이 타닥타닥…」 (three people) → gone once mom clears or sends.
 
 Access mode is disabled (loopback, no JWT), membership enforcement off; the hande
 host is a Host header the page never sees. Synthetic only (disposable keys).
@@ -452,6 +454,93 @@ def run_flow(Dev, receipt, screenshot=None, relay_base=None):
     assert after['syncLines'] == 1, after
     receipt['checks']['room_list_keeps_scroll_and_focus_across_sync'] = True
     owner.page.set_viewport_size({'width': 1280, 'height': 900})
+
+    # ---- typing indicator (#562 / #635, #639 A2): mom composes in the family room → owner's room
+    # header shows the typing line (data-testid="typing", strings.chat.typing) → it goes away once
+    # mom stops. Page side only: mom's composer → R.session.typing → POST /typing (TTL 6 s), owner's
+    # 4 s room poll → GET /events `typing` → typingLabel. 1:1 (two people) drops the name by design
+    # (strings.js typingNames), so the name is checked after dad joins as a third person.
+    def typing_line(dev):
+        return dev.page.evaluate("() => document.querySelector('[data-testid=\"typing\"]')?.textContent ?? null")
+
+    def wait_typing_shown(dev, expect, timeout_s=30):
+        """Keep mom typing (one key a second; the page re-posts every 3 s) until dev's header
+        shows exactly `expect`. Returns the seconds it took."""
+        composer = mom.page.locator('[data-testid="composer"]')
+        started = time.monotonic()
+        while True:
+            composer.press_sequentially('.')
+            try:
+                dev.page.wait_for_function("t => document.querySelector('[data-testid=\"typing\"]')?.textContent === t",
+                                           arg=expect, timeout=1000)
+                return round(time.monotonic() - started, 2)
+            except Exception:  # noqa: BLE001 — playwright TimeoutError: not yet, type on
+                assert time.monotonic() - started < timeout_s, (
+                    f'{dev.actor} never showed typing {expect!r} in {timeout_s}s; header line: {typing_line(dev)!r}')
+
+    def wait_typing_gone(dev, timeout_s=15):
+        started = time.monotonic()
+        dev.page.wait_for_function("() => !document.querySelector('[data-testid=\"typing\"]')",
+                                   timeout=timeout_s * 1000)
+        return round(time.monotonic() - started, 2)
+
+    owner.open_room_id(ROOM)
+    mom.open_room_id(ROOM)
+    assert typing_line(owner) is None and typing_line(mom) is None, (typing_line(owner), typing_line(mom))
+    mom.page.fill('[data-testid="composer"]', '타자 치는 중')
+    shown_1to1 = wait_typing_shown(owner, '타닥타닥…')
+    assert typing_line(mom) is None, ('own typing must not show on mom\'s screen', typing_line(mom))
+    mom.page.fill('[data-testid="composer"]', '')   # draft cleared, nothing sent → POST /typing {clear}
+    gone_1to1 = wait_typing_gone(owner)
+    assert not any('타자 치는 중' in b for b in owner.bubbles()), 'a draft is never sent'
+    receipt['checks']['typing_shown_on_peer_screen_and_gone_after_draft_cleared_1to1'] = {
+        'label': '타닥타닥…', 'shown_after_secs': shown_1to1, 'gone_after_clear_secs': gone_1to1}
+
+    # Three people for the named line: owner founds fam4 and adds dad, then mom. This relay tracks
+    # no membership (no -device-state), so an online member that merges someone else's add commit
+    # refuses it by design (commit-policy.js outer roster check, #295 F1: relay [] vs MLS [...]).
+    # So nobody but the committer may hold the room while a commit lands: dad only publishes his
+    # key package and goes offline (his Welcome waits), mom asks to join after dad is in and
+    # joins from her own Welcome. Owner's roster (and mom's) is then owner · dad · mom.
+    room3 = 'fam4'
+    owner.open_menu_item('menu-create')
+    owner.page.fill('[data-testid="create-room"]', room3)
+    owner.page.click('[data-testid="create-submit"]')
+    owner.wait_room(room3, 1)
+    dad = Dev('dad')
+    dad_id = dad.device_id()
+    dad.open_menu_item('menu-join')
+    dad.page.fill('[data-testid="join-room"]', room3)
+    dad.page.click('[data-testid="join-submit"]')
+    dad.wait_status('참여를 요청했습니다')
+    dad.ctx.close()   # offline from here on (dump() reports a closed page as unavailable)
+    owner.open_room_id(room3)
+    owner.page.click('[data-testid="open-invite"]')
+    owner.page.fill('[data-testid="invite-device"]', dad_id)
+    owner.page.click('[data-testid="invite-submit"]')
+    owner.wait_room(room3, 2)
+    mom.open_menu_item('menu-join')
+    mom.page.fill('[data-testid="join-room"]', room3)
+    mom.page.click('[data-testid="join-submit"]')
+    mom.wait_status('참여를 요청했습니다')
+    owner.page.click('[data-testid="open-invite"]')
+    owner.page.fill('[data-testid="invite-device"]', mom_id)
+    owner.page.click('[data-testid="invite-submit"]')
+    owner.wait_room(room3, 3)
+    mom.wait_room(room3, 3)
+    owner.open_room_id(room3)
+    mom.open_room_id(room3)
+    # mom's display name = participantName('mom-web-…') = 'mom' (no Korean nickname → particle 이).
+    label = 'mom이 타닥타닥…'
+    mom.page.fill('[data-testid="composer"]', '셋이서 타자 치는 중')
+    shown_group = wait_typing_shown(owner, label)
+    mom.page.press('[data-testid="composer"]', 'Enter')   # sending ends it (clear + the relay drops it on store)
+    mom.wait_bubble('셋이서 타자 치는 중')
+    gone_group = wait_typing_gone(owner)
+    owner.wait_bubble('셋이서 타자 치는 중')
+    receipt['checks']['typing_names_sender_in_group_room_and_gone_after_send'] = {
+        'label': label, 'shown_after_secs': shown_group, 'gone_after_send_secs': gone_group,
+        'participants': 3}
 
 
 if __name__ == '__main__':
