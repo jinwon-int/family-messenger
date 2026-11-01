@@ -43,3 +43,44 @@ export function downloadSpec(seq, type, fileName = null) {
   if (typeof fileName === 'string' && fileName && !/[\\/\u0000-\u001f\u007f]/.test(fileName) && !fileName.startsWith('.')) spec.name = fileName;
   return spec;
 }
+
+// ---- 사진 자리 크기(#647 ①) ----
+// file-v2 설명자 w/h 힌트(보낸 쪽이 잰 표시 방향 픽셀)가 있으면, 사진을 받기·디코드하기 **전에** 말풍선 자리를 최종 크기로 잡는다 —
+// 방에 들어온 뒤 사진 행 높이가 바뀌어 타임라인 위치가 어긋나지 않게(#497·#647). 상자는 styles.css 의
+// `.bubble .body.media img { max-width: min(400px, 72vw); max-height: 440px }` 와 같다(값을 바꾸면 둘 다).
+
+export const MEDIA_MAX_WIDTH_PX = 400;
+export const MEDIA_MAX_WIDTH_VW = 72;
+export const MEDIA_MAX_HEIGHT_PX = 440;
+const MAX_HINT = 20000;   // file-v2.js MAX_DIMENSION(FILE-V2.md §1)
+
+/** {w, h} 힌트를 검증해 그대로(둘 다 1~20000 정수) 또는 null. */
+export function mediaDims(dims) {
+  const ok = n => Number.isSafeInteger(n) && n >= 1 && n <= MAX_HINT;
+  return dims && ok(dims.w) && ok(dims.h) ? {w: dims.w, h: dims.h} : null;
+}
+
+/**
+ * 사진 상자의 인라인 style — 너비 = min(원본 폭, 400px, 72vw, 440px × 비), 높이는 aspect-ratio 로.
+ * CSS 의 max-width·max-height 가 원본 크기의 사진에 하는 일(비를 지켜 줄이고 키우지 않음)을 디코드 없이 같게 계산한다.
+ * 같은 값을 빈 자리와 img 에 함께 쓴다 — 로딩 전후 행 높이가 같다. 힌트가 없으면 null(종전처럼 사진 고유 크기).
+ */
+export function mediaBoxStyle(dims) {
+  const d = mediaDims(dims);
+  if (!d) return null;
+  const byHeight = Math.round(MEDIA_MAX_HEIGHT_PX * d.w / d.h * 1000) / 1000;
+  return `width: min(${d.w}px, ${MEDIA_MAX_WIDTH_PX}px, ${MEDIA_MAX_WIDTH_VW}vw, ${byHeight}px); aspect-ratio: ${d.w} / ${d.h}; height: auto;`;
+}
+
+/** 크기를 아는 사진이 아직 불러오는 중인가 — 이때 파일 줄 대신 같은 크기의 사진 자리를 그린다. */
+export function pendingMedia(entry) {
+  return entry?.kind === 'attachment' && !entry.image && !entry.previewFailed && Boolean(entry.previewBusy) && mediaDims(entry.dims) !== null;
+}
+
+/** 디코드된 사진의 비가 힌트와 맞는가(상대 2%, iOS ImagePixelSize.resolve 와 같은 기준). 틀린 힌트면 img 의 고정 크기를 푼다. */
+export function dimsAgree(dims, naturalWidth, naturalHeight, tolerance = 0.02) {
+  const d = mediaDims(dims);
+  if (!d || !(naturalWidth > 0) || !(naturalHeight > 0)) return true;
+  const measured = naturalWidth / naturalHeight;
+  return Math.abs(d.w / d.h - measured) / measured <= tolerance;
+}

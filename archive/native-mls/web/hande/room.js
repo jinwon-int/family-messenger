@@ -182,8 +182,9 @@ export function createRoomSession({room, device, database, worker, relay, storag
   function emitText(sender, client, text, seq, ts, replay) {
     on.message?.({kind: 'text', seq, sender, client: client ?? '', text, ts, replay: !!replay});
   }
-  function emitAttachment(sender, size, seq, ts, loadBytes, fileName = null) {
-    on.message?.({kind: 'attachment', seq, sender, client: '', text: '', size, ts, load: loadBytes, fileName});
+  // dims(#647): file-v2 설명자 w/h 힌트 {w, h} — 화면이 사진을 디코드하기 전에 말풍선 자리를 최종 크기로 잡는다. 없으면 null.
+  function emitAttachment(sender, size, seq, ts, loadBytes, fileName = null, dims = null) {
+    on.message?.({kind: 'attachment', seq, sender, client: '', text: '', size, ts, load: loadBytes, fileName, dims});
   }
   // ---- file-v2 (#499, FILE-V2.md): the MLS message carries only the descriptor ----
   function descriptorOf(text) {
@@ -198,7 +199,11 @@ export function createRoomSession({room, device, database, worker, relay, storag
       pending ??= (async () => decryptFile(await relay.blob(room, d.blob, device), d))();
       return pending.catch(error => { pending = null; log(strings.room.fileV2Failed(seq), error.message); throw error; });
     };
-    emitAttachment(sender, d.size, seq, ts, load, safeFileName(d.name));
+    emitAttachment(sender, d.size, seq, ts, load, safeFileName(d.name), descriptorDims(d));
+  }
+  /** 설명자의 w/h 힌트(둘 다 있을 때만, parseDescriptor 가 범위를 검증했다). */
+  function descriptorDims(d) {
+    return d && Number.isSafeInteger(d.w) && Number.isSafeInteger(d.h) ? {w: d.w, h: d.h} : null;
   }
   function emitSystem(text, key) { on.message?.({kind: 'system', seq: null, text, key}); }
 
@@ -610,7 +615,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
         // 내 v2 첨부: 화면은 가진 바이트로 바로(다시 받지 않는다), 이력에는 설명자만(FILE-V2.md §4-2 — 파일 바이트는 보관하지 않음).
         // 새로고침 뒤 재시도로 끝난 경우 설명자가 없다(보관함은 MLS 암호문만 둔다) — v1 과 같이 내 쪽 행을 남기지 않는다.
         if (bytes && result.descriptor) {
-          emitAttachment(device, bytes.length, result.seq, Date.now(), async () => bytes, safeFileName(file?.name));
+          emitAttachment(device, bytes.length, result.seq, Date.now(), async () => bytes, safeFileName(file?.name), descriptorDims(descriptorOf(result.descriptor)));
           await remember({seq: result.seq, sender: device, client: result.client_id, kind: 'file-v2', text: result.descriptor, bytes: []});
         }
       } else if (bytes) { emitAttachment(device, bytes.length, result.seq, Date.now(), async () => bytes); await remember({seq: result.seq, sender: device, client: device, kind: 'attachment', text: '', bytes: Array.from(bytes)}); }

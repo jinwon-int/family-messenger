@@ -562,6 +562,7 @@ final class AppModel: ObservableObject {
             self.discardRuntimeState()
             try self.deps.wipe.storage()
             self.localPrefs.clearDrafts()
+            AttachmentSizeMemory.shared.clear()   // #647: 잰 사진 크기(blob·방 키)도 대화 기록과 함께
             self.deps.wipe.identity()
             self.deviceId = ""; self.fingerprint = ""
             self.lastError = nil
@@ -1713,10 +1714,14 @@ final class AppModel: ObservableObject {
     private func sendFileV2(room: RoomID, data: Data) async -> SendOutcome? {
         guard (1...FileV2Format.maxFileBytes).contains(data.count) else { lastError = Strings.attachmentTooLarge(data.count); return nil }
         let mime = AttachmentFormat.sniffMime(data)
+        // #647 ①: 사진이면 표시 방향 픽셀 크기를 설명자 w/h 힌트로 싣는다 — 받는 기기가 디코드 전에 말풍선을 최종 크기로 잡는다.
+        // 헤더만 읽는다(ImageIO, 디코드 없음). 모르면(이미지 아님·범위 밖·Linux) 빼고 보낸다 — 보내기를 막지 않는다.
+        let pixels = AttachmentFormat.isImage(mime: mime) ? ImagePixelSize.probe(data) : nil
         let pending = PendingOwn(room: room, kind: .fileV2, body: mime, attachment: data)
         let descriptor = DescriptorBox()
         return await sendOwn(room: room, pending: pending, outgoing: enqueueOutgoing(pending), stored: { descriptor.value }) { engine in
-            let sent = try await engine.send(fileV2: data, mime: mime == AttachmentFormat.fallbackMime ? nil : mime)
+            let sent = try await engine.send(fileV2: data, mime: mime == AttachmentFormat.fallbackMime ? nil : mime,
+                                             width: pixels?.width, height: pixels?.height)
             descriptor.value = sent.descriptor
             return sent.outcome
         }

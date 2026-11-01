@@ -260,7 +260,7 @@ test('file-v2 event: descriptor-only history row, lazy blob load verified + decr
   const {encryptFile, encodeDescriptor} = await import('../file-v2.js');
   const photo = Uint8Array.from({length: 3000}, (_, i) => (i * 7) & 255);
   const enc = await encryptFile(photo);
-  const desc = encodeDescriptor({blob: enc.blob, size: enc.size, key: enc.key, nonce: enc.nonce, name: '../사진.jpg'});
+  const desc = encodeDescriptor({blob: enc.blob, size: enc.size, key: enc.key, nonce: enc.nonce, name: '../사진.jpg', w: 3024, h: 4032});
   const {bridge, w} = fakeWorker({fresh: false, group: ['owner-pc', 'owner-web-aaaaaa'], decrypt: () => ({sender: 'owner-pc', client: 'owner-pc'})});
   const events = [
     {seq: 6, device: 'owner-pc', kind: 'application', epoch: 3, bytes: b64(Array.from(utf8.encode(desc))), client_id: 'file-v2-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2', created_at: 1700000006},
@@ -284,6 +284,7 @@ test('file-v2 event: descriptor-only history row, lazy blob load verified + decr
   const att = ev.messages.find(x => x.kind === 'attachment' && x.seq === 6);
   assert.ok(att, 'file-v2 shows as an attachment entry');
   assert.equal(att.size, photo.length); assert.equal(att.fileName, '사진.jpg', 'sender name reduced to a safe last segment');
+  assert.deepEqual(att.dims, {w: 3024, h: 4032}, '#647: descriptor w/h reach the timeline before any fetch');
   assert.equal(blobCalls, 0, 'nothing fetched until the timeline asks');
   await assert.rejects(() => att.load(), /no_such_blob/);
   assert.deepEqual(await att.load(), photo, 'a failed load is retried on the next ask');
@@ -312,6 +313,7 @@ test('file-v2 history restore: descriptor rows become lazy attachments again', a
   await s.open(); await s.activate();
   const att = ev.messages.find(x => x.kind === 'attachment' && x.seq === 9);
   assert.ok(att); assert.deepEqual(await att.load(), new Uint8Array([1, 2, 3, 4]));
+  assert.equal(att.dims, null, '#647: no w/h in the descriptor → no size hint (legacy photo)');
   assert.ok(ev.messages.some(x => x.kind === 'undecryptable' && x.seq === 10));
   assert.ok(!ev.messages.some(x => x.kind === 'text'));
 });
