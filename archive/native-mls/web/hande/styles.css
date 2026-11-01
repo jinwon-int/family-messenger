@@ -791,13 +791,13 @@ ul.rooms { list-style: none; margin: 0; padding: 0; display: flex; flex-directio
 .room-item.bright { background: var(--room-bright-bg); border-color: var(--room-bright-line); box-shadow: var(--ember-shadow); }
 .room-item[aria-current="true"] { border-color: var(--room-current-line); background: var(--brand-soft); }
 /* 낮불 목록 위치 표시(#640): 낮불은 모든 행 테두리가 이미 1.5 먹이라 같은 먹 선의 열린 방·키 포커스가 묻힌다(e-ink 에서는 면 #EFE8DB 차이도 거의 안 읽힘).
-   열린 방·PageUp/Down 키 위치 = 안쪽 링 1.5 로 테두리 3px + 왼쪽 8px 먹 막대(inset 단색 면 — 빛남·그림자 아님, 레이아웃 이동 없음).
-   키 포커스는 바깥 외곽선을 3px 띄워 이중선으로 열린 방과도 구분한다. 밤은 바꾸지 않는다(크림 표시가 남색 위에서 보임). */
-html[data-theme="day"] .room-item[aria-current="true"], html[data-theme="day"] .room-item:focus-visible { box-shadow: inset 0 0 0 var(--line-w) var(--room-current-line), inset 8px 0 0 var(--room-current-line); }
-html[data-theme="day"] .room-item:focus-visible { outline-offset: 3px; }
+   열린 방·PageUp/Down 키 위치 = 안쪽 링 1px 로 테두리만 2.5px(다른 행 1.5). 오너 2026-11-01 "더 얇게, 테두리만 구분이 가면 돼" → 막대·바깥 이중선 없음.
+   키 포커스는 전역 3px 외곽선 대신 이 링만 쓴다. 열린 방은 면(#EFE8DB)이 남아 키 위치(면 없음)와 구분된다. 밤은 바꾸지 않는다. */
+html[data-theme="day"] .room-item[aria-current="true"], html[data-theme="day"] .room-item:focus-visible { box-shadow: inset 0 0 0 1px var(--room-current-line); }
+html[data-theme="day"] .room-item:focus-visible { outline: none; }
 @media (prefers-color-scheme: light) {
-  html[data-theme="auto"] .room-item[aria-current="true"], html[data-theme="auto"] .room-item:focus-visible { box-shadow: inset 0 0 0 var(--line-w) var(--room-current-line), inset 8px 0 0 var(--room-current-line); }
-  html[data-theme="auto"] .room-item:focus-visible { outline-offset: 3px; }
+  html[data-theme="auto"] .room-item[aria-current="true"], html[data-theme="auto"] .room-item:focus-visible { box-shadow: inset 0 0 0 1px var(--room-current-line); }
+  html[data-theme="auto"] .room-item:focus-visible { outline: none; }
 }
 /* 불 원(2차-B B1): 48 원 안 불꽃 아이콘(icons.js flame 1~3) — 밤 ember 12% 면 / 낮불 1.5 먹 선, 면 없음. 꺼진 자리 = 장작(embers-out) + 재색 선. */
 .fire { width: 48px; height: 48px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; flex: none; background: var(--fire-bg); border: 1.5px solid var(--fire-line); color: var(--text); }

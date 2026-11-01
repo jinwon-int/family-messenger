@@ -157,15 +157,10 @@ struct RoomListView: View {
                             card.overlay {
                                 if keyHighlight == room.room {
                                     if p.isDay {
-                                        // #640: 낮불은 카드 선이 이미 1.5 먹이라 같은 자리 2px 먹 선은 묻힌다 —
-                                        // 안쪽 3px 선 + 왼쪽 8px 먹 막대(웹 낮불 목록 위치 표시와 같은 모양). 단색 면이라 빛남·그림자 아님.
-                                        let shape = RoundedRectangle(cornerRadius: Hande.radiusM)
-                                        ZStack(alignment: .leading) {
-                                            shape.strokeBorder(p.focus, lineWidth: 3)
-                                            Rectangle().fill(p.focus).frame(width: 8)
-                                        }
-                                        .clipShape(shape)
-                                        .accessibilityHidden(true)
+                                        // #640: 낮불은 카드 선이 이미 1.5 먹이라 같은 자리 2px 먹 선은 묻힌다 — 안쪽 2.5px 선으로 테두리만 굵게
+                                        // (오너 2026-11-01 "더 얇게, 테두리만 구분이 가면 돼": 막대 없음, 웹 낮불 목록 위치 표시와 같은 모양).
+                                        RoundedRectangle(cornerRadius: Hande.radiusM).strokeBorder(p.focus, lineWidth: 2.5)
+                                            .accessibilityHidden(true)
                                     } else {
                                         RoundedRectangle(cornerRadius: Hande.radiusM).stroke(p.focus, lineWidth: 2)
                                             .accessibilityHidden(true)
