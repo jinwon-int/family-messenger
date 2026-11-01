@@ -53,10 +53,13 @@ final class NotificationCenterDelegate: NSObject, UNUserNotificationCenterDelega
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         let model = self.model
+        // #643: 한데 안에서 공유 시트로 한데를 고른 경우(앱이 떠 있음) — 배너 없이 바로 보낸다.
+        let share = notification.request.content.userInfo[ShareHandoff.notificationKey] != nil
         Task { @MainActor in
             let active = UIApplication.shared.applicationState == .active
             completionHandler(ForegroundPresentation.options(appActive: active))
             if active { await model.receivedWhileActive() }
+            if share { await model.deliverPendingShares() }
         }
     }
 
@@ -69,9 +72,10 @@ final class NotificationCenterDelegate: NSObject, UNUserNotificationCenterDelega
         let share = userInfo[ShareHandoff.notificationKey] != nil
         Task { @MainActor in
             if let room { model.requestOpen(room: room) }
-            if share { await model.deliverPendingShares() }
             await model.receivedWhileActive()
             completionHandler()
+            // 시스템 콜백을 첨부 업로드(최대 수십 MB)만큼 붙잡지 않도록 콜백 뒤에 보낸다.
+            if share { await model.deliverPendingShares() }
         }
     }
 }

@@ -93,14 +93,15 @@ public final class ShareHandoffStore {
 
     private static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
+        // 초 미만까지 보존(.iso8601 은 초 단위로 잘라 돌려받은 값과 디스크 값이 달라지고, 같은 초의 두 맡김 순서가 흔들린다).
+        encoder.dateEncodingStrategy = .secondsSince1970
         encoder.outputFormatting = [.sortedKeys]
         return encoder
     }()
 
     private static let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .secondsSince1970
         return decoder
     }()
 
@@ -194,6 +195,26 @@ public final class ShareHandoffStore {
             return nil
         }
         return item
+    }
+
+    /// 앱: 보내던 중 준비 상태가 풀렸다(로그아웃·정지 등) — 아직 못 보낸 부분(`remaining`: 글·남은 파일)만 다시 맡김으로 되돌린다.
+    /// 이미 보낸 파일은 지운다. 남은 것이 없으면 `finish` 와 같다.
+    public func release(_ remaining: ShareHandoff.Item) {
+        let directory = root.appendingPathComponent(remaining.id, isDirectory: true)
+        let claimed = directory.appendingPathComponent(Self.claimedFile)
+        guard remaining.text != nil || !remaining.files.isEmpty,
+              let data = try? Self.encoder.encode(remaining) else { return finish(remaining.id) }
+        let keep = Set(remaining.files + [Self.claimedFile, Self.itemFile])
+        for entry in (try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+        where !keep.contains(entry.lastPathComponent) {
+            try? fileManager.removeItem(at: entry)
+        }
+        do {
+            try data.write(to: directory.appendingPathComponent(Self.itemFile), options: .atomic)
+            try? fileManager.removeItem(at: claimed)
+        } catch {
+            finish(remaining.id)
+        }
     }
 
     /// 맡김 안 내용 파일 경로.

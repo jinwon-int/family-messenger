@@ -17,6 +17,9 @@
 // 실제 호스트명·Bundle ID·Team ID 는 리포에 두지 않는다(CONTRIBUTING) — 빌드 설정으로 주입.
 import Foundation
 import FamilyMLSCore
+#if canImport(UserNotifications)
+import UserNotifications
+#endif
 
 extension AppModel.Dependencies {
     struct LiveConfiguration {
@@ -155,6 +158,8 @@ extension AppModel.Dependencies {
             if let container = SharedStorage.appGroupContainer(config.appGroup) {
                 deps.shareStore = ShareHandoffStore(container: container)
                 deps.shareTargets = SharedStorage.scopedDefaults(appGroup: config.appGroup, scope: scope)
+                deps.deliverSharesWhenReady = true
+                deps.shareDelivered = Self.removeShareNotification
             }
             serverFields(&deps)
             return deps
@@ -177,6 +182,13 @@ extension AppModel.Dependencies {
     }
 
     /// #520: 잠금화면 미리보기 설정 읽기. UserNotifications 가 없는 Linux 스모크에서는 모름.
+    /// #643 보낸 맡김의 「누르면 보냅니다」 알림을 알림 센터에서 지운다(확장이 `hande.share.<id>` 로 띄웠다).
+    static func removeShareNotification(_ id: String) {
+        #if canImport(UserNotifications)
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["hande.share.\(id)"])
+        #endif
+    }
+
     static func liveLockScreenPreview() async -> LockScreenPreview {
         #if canImport(UserNotifications)
         return await LockScreenPreview.readLive()

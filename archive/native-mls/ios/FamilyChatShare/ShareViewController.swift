@@ -68,8 +68,9 @@ final class ShareModel: ObservableObject {
     var canSend: Bool { !loading && !saving && problem == nil && selected != nil && (text != nil || !files.isEmpty) }
 
     /// 공유받은 항목을 글·링크·파일로 나눈다(등록된 타입 식별자로). UTType 에서는 `public.url`·`public.plain-text` 도 `public.data` 를
-    /// 따르므로 순서가 중요하다: ① 글·URL 이 아닌 데이터(사진·동영상·PDF·문서) = 파일 → ② URL(웹 링크, 파일 URL 이면 복사해 파일)
-    /// → ③ 글(서식 있는 글도 평문으로).
+    /// 따르므로 순서가 중요하다: ① 동영상·사진(일반 식별자로 읽어 가장 알맞은 표현 — Live Photo 는 사진) → ② 웹 링크(지도 등 미리보기 데이터가
+    /// 함께 와도 링크) → ③ 글·URL·패키지가 아닌 데이터(PDF·문서) → ④ 파일 URL(파일 앱, 폴더 제외) → ⑤ 글(서식 있는 글도 평문으로).
+    /// 패키지(디렉터리 — iWork·Live Photo 묶음)는 파일 하나로 보낼 수 없어 받지 않는다.
     func load(_ items: [NSExtensionItem]) async {
         var texts: [String] = []
         var urls: [URL] = []
@@ -77,18 +78,23 @@ final class ShareModel: ObservableObject {
         try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
         for provider in items.flatMap({ $0.attachments ?? [] }) {
             let types = provider.registeredTypeIdentifiers.compactMap { UTType($0) }
-            let fileType = types.first { ($0.conforms(to: .data) || $0.conforms(to: .package))
-                && !$0.conforms(to: .url) && !$0.conforms(to: .text) }
-            let urlType = types.first { $0.conforms(to: .url) }
+            let isMovie = types.contains(where: { $0.conforms(to: .movie) })
+            let isImage = types.contains(where: { $0.conforms(to: .image) })
+            let media: UTType? = isMovie ? .movie : (isImage ? .image : nil)
+            let webURLType = types.first { $0.conforms(to: .url) && !$0.conforms(to: .fileURL) }
+            let dataType = types.first { $0.conforms(to: .data) && !$0.conforms(to: .url) && !$0.conforms(to: .text)
+                && !$0.conforms(to: .package) }
+            let fileURLType = types.first { $0.conforms(to: .fileURL) }
             let textType = types.first { $0.conforms(to: .plainText) }
-            if let fileType, let copy = await loadFile(provider, type: fileType) {
+            if let media, let copy = await loadFile(provider, type: media) {
                 picked.append(copy)
-            } else if let urlType, let url = await loadURL(provider, type: urlType) {
-                if url.isFileURL {
-                    if let copy = copyIntoScratch(url, name: url.lastPathComponent) { picked.append(copy) }
-                } else {
-                    urls.append(url)
-                }
+            } else if let webURLType, let url = await loadURL(provider, type: webURLType), !url.isFileURL {
+                urls.append(url)
+            } else if let dataType, let copy = await loadFile(provider, type: dataType) {
+                picked.append(copy)
+            } else if let fileURLType, let url = await loadURL(provider, type: fileURLType), url.isFileURL,
+                      let copy = copyIntoScratch(url, name: url.lastPathComponent) {
+                picked.append(copy)
             } else if let textType, let value = await loadText(provider, type: textType) {
                 texts.append(value)
             }
@@ -176,7 +182,11 @@ final class ShareModel: ObservableObject {
             _ = provider.loadFileRepresentation(forTypeIdentifier: type.identifier) { url, _ in
                 guard let url else { return continuation.resume(returning: nil) }
                 var name = suggested ?? url.lastPathComponent
-                if (name as NSString).pathExtension.isEmpty, let ext = type.preferredFilenameExtension { name += ".\(ext)" }
+                if (name as NSString).pathExtension.isEmpty {
+                    // 일반 식별자(public.image 등)에는 정해진 확장자가 없다 — 실제 임시 파일의 확장자를 쓴다.
+                    let ext = url.pathExtension.isEmpty ? (type.preferredFilenameExtension ?? "") : url.pathExtension
+                    if !ext.isEmpty { name += ".\(ext)" }
+                }
                 continuation.resume(returning: Self.copy(url, into: scratch, name: name))
             }
         }
@@ -185,6 +195,8 @@ final class ShareModel: ObservableObject {
     private func copyIntoScratch(_ url: URL, name: String) -> URL? {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        // 폴더는 파일 하나로 보낼 수 없다.
+        if (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true { return nil }
         return Self.copy(url, into: scratch, name: name)
     }
 

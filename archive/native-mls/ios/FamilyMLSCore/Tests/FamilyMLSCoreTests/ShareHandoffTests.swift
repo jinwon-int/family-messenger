@@ -64,6 +64,33 @@ final class ShareHandoffTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: s.root.appendingPathComponent("c").path))
     }
 
+    func testReturnedItemEqualsWhatIsReadBackWithSubSecondTime() throws {
+        let s = store()
+        let now = Date(timeIntervalSince1970: 1_800_000_000.123_456)
+        let item = try s.commit(scope: "s1", room: "family", text: "초 미만", files: [], now: now, id: "ms")
+        XCTAssertEqual(s.pending(scope: "s1", now: now), [item], "createdAt round-trips exactly")
+    }
+
+    func testReleasePutsBackOnlyWhatWasNotSent() throws {
+        let s = store()
+        let a = try file("a.jpg", bytes: 3)
+        let b = try file("b.pdf", bytes: 4)
+        let item = try s.commit(scope: "s1", room: "family", text: "글", files: [a, b], now: t0, id: "r")
+        var remaining = try XCTUnwrap(s.claim("r"))
+        // 글과 첫 파일은 보냈고 준비 상태가 풀렸다 — 두 번째 파일만 되돌린다.
+        remaining.text = nil
+        remaining.files = [item.files[1]]
+        s.release(remaining)
+        XCTAssertEqual(s.pending(scope: "s1", now: t0), [remaining])
+        let left = try FileManager.default.contentsOfDirectory(atPath: s.root.appendingPathComponent("r").path).sorted()
+        XCTAssertEqual(left, [item.files[1], "item.json"], "sent file removed, claim marker gone")
+        // 남은 것이 없으면 지운다.
+        var nothing = try XCTUnwrap(s.claim("r"))
+        nothing.files = []
+        s.release(nothing)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: s.root.appendingPathComponent("r").path))
+    }
+
     func testPendingLeavesClaimedDirectoriesButDiscardStaleClaimsRemovesThem() throws {
         let s = store()
         try s.commit(scope: "s1", room: "family", text: "보내는 중", files: [], now: t0, id: "d")

@@ -240,7 +240,8 @@ final class OutgoingTests: XCTestCase {
     }
 
     /// `family`·`jingun` 이 기록에 있는 모델 + 맡김 저장소(+ 공유 대상 defaults). v1 첨부 경로(가짜 엔진, AttachmentTests 와 같다).
-    private func shareModel(store: ShareHandoffStore, targets: ScopedDefaults? = nil, login: Bool = true) async -> AppModel {
+    private func shareModel(store: ShareHandoffStore, targets: ScopedDefaults? = nil, login: Bool = true,
+                            whenReady: Bool = false, delivered: @escaping (String) -> Void = { _ in }) async -> AppModel {
         let relay = InMemoryRelay()
         var deps = AppModel.Dependencies(
             engineFactory: AnyFactory(MemberFakeFactory()), stateStore: InMemoryStateStore(),
@@ -253,6 +254,14 @@ final class OutgoingTests: XCTestCase {
         deps.sendFileV2 = false
         deps.shareStore = store
         deps.shareTargets = targets
+        deps.deliverSharesWhenReady = whenReady
+        deps.shareDelivered = delivered
+        // 방 순서(`LocalPrefs`)가 테스트 호스트의 standard 에 남지 않게 일회용 suite 로.
+        let suite = "share-prefs-\(UUID().uuidString)"
+        if let prefs = UserDefaults(suiteName: suite) {
+            deps.localDefaults = ScopedDefaults(prefs)
+            addTeardownBlock { prefs.removePersistentDomain(forName: suite) }
+        }
         let model = AppModel(dependencies: deps)
         await model.bootstrap()
         if login { model.login(.bearer("t")); await model.refresh() }
@@ -263,9 +272,10 @@ final class OutgoingTests: XCTestCase {
         let container = try shareContainer()
         let store = ShareHandoffStore(container: container)
         let photo = Self.jpegHead + Data(repeating: 7, count: 200)
-        try store.commit(scope: Self.scope, room: "family", text: "이거 봐 https://example.com/a",
-                         files: [try shareFile("IMG.JPG", photo, in: container)])
-        let model = await shareModel(store: store)
+        let item = try store.commit(scope: Self.scope, room: "family", text: "이거 봐 https://example.com/a",
+                                    files: [try shareFile("IMG.JPG", photo, in: container)])
+        var removedNotifications: [String] = []
+        let model = await shareModel(store: store, delivered: { removedNotifications.append($0) })
         XCTAssertEqual(model.phase, .ready)
         let delivered = await model.deliverPendingShares()
         XCTAssertEqual(delivered, 1)
@@ -278,6 +288,22 @@ final class OutgoingTests: XCTestCase {
         XCTAssertNil(model.lastError)
         XCTAssertEqual(store.pending(scope: Self.scope), [], "delivered handoffs are gone")
         XCTAssertEqual(store.discardStaleClaims(), 0, "nothing left claimed")
+        XCTAssertEqual(removedNotifications, [item.id], "its 「누르면 보냅니다」 notification is cleared")
+    }
+
+    func testShareIsDeliveredWhenTheAppBecomesReadyLater() async throws {
+        let store = ShareHandoffStore(container: try shareContainer())
+        try store.commit(scope: Self.scope, room: "family", text: "오프라인에서 열었다", files: [])
+        let model = await shareModel(store: store, login: false, whenReady: true)
+        XCTAssertNotEqual(model.phase, .ready)
+        XCTAssertEqual(store.pending(scope: Self.scope).count, 1, "kept while not ready")
+        model.login(.bearer("t"))
+        await model.refresh()   // → .ready: the phase change starts a delivery
+        for _ in 0..<200 where !model.messages(room: "family").contains(where: { $0.record.body == "오프라인에서 열었다" }) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(model.messages(room: "family").map(\.record.body), ["오프라인에서 열었다"])
+        XCTAssertEqual(store.pending(scope: Self.scope), [])
     }
 
     func testShareDeliveryBeforeLoginKeepsTheHandoff() async throws {
@@ -308,6 +334,7 @@ final class OutgoingTests: XCTestCase {
         async let first = model.deliverPendingShares()
         async let second = model.deliverPendingShares()
         let total = await first + second
+        // 시작·전면 복귀·알림 탭이 겹쳐도 한 번만 보낸다(재진입 가드 + claim 1회성 중 먼저 걸리는 쪽).
         XCTAssertEqual(total, 1, "start · foreground · tap may overlap — one send")
         XCTAssertEqual(model.messages(room: "family").map(\.record.body), ["한 번만"])
     }

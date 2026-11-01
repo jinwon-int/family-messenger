@@ -110,6 +110,11 @@ final class AppModel: ObservableObject {
         /// #643 공유할 수 있는 방 ID 를 써 둘 App Group 서버 스코프 defaults(`ShareHandoff.targetsKey`, 확장이 읽는다). nil = 쓰지 않음.
         /// 방 순서(`localDefaults`)는 앱 전용 standard 라 확장이 못 읽으므로 따로 쓴다.
         var shareTargets: ScopedDefaults? = nil
+        /// #643 준비 상태(.ready)가 될 때마다 맡김 전달을 다시 시도한다(오프라인·등록 중에 앱을 열었다가 나중에 준비된 경우).
+        /// 기본 꺼짐 — 테스트는 `deliverPendingShares()` 를 직접 부른다(결정적). live() 가 켠다.
+        var deliverSharesWhenReady = false
+        /// #643 맡김 하나를 다 보낸 뒤(맡김 ID) — live() 는 그 공유 알림을 알림 센터에서 지운다.
+        var shareDelivered: (String) -> Void = { _ in }
     }
 
     /// 저장소 밖의 삭제 작업(§9-5). `storage` = MLS 상태 전부(identity 슬롯 포함) + messages.db 행, `identity` = 저장된 기기 ID.
@@ -118,7 +123,14 @@ final class AppModel: ObservableObject {
         var identity: () -> Void = {}
     }
 
-    @Published private(set) var phase: Phase = .starting
+    @Published private(set) var phase: Phase = .starting {
+        didSet {
+            // #643: 준비 상태가 되면 맡겨 둔 공유를 보낸다(재진입은 deliverPendingShares 가 막는다).
+            if phase == .ready, oldValue != .ready, deps.deliverSharesWhenReady, deps.shareStore != nil {
+                Task { await self.deliverPendingShares() }
+            }
+        }
+    }
     /// #414: 첫 동기화 한 바퀴가 끝났는가. 시작 직후의 `.needsEnrollment` 는 "등록 확인 중" 자리라
     /// (저장된 세션으로 이어 갈 때 bootstrap 이 먼저 둔다) 화면은 그동안 오프닝을 보이고, 이 값이 서면 실제 상태를 보인다.
     @Published private(set) var settled = false
@@ -1593,39 +1605,55 @@ final class AppModel: ObservableObject {
     }
 
     /// 공유 확장이 맡긴 글·첨부를 보낸다(#643 D4) — 화면·단축어와 **같은 모델·같은 송신 경로**(`send`·`sendAttachment`)라
-    /// flock·`serial`·내 글 기록·보관(「연결되면 보냅니다」)·실패(「다시 보내기」)가 같다. 시작(bootstrap 뒤)·전면 복귀·공유 알림 탭에서 부른다.
-    /// 준비 전이면 맡김을 남긴다(다음 기회). 없어진 방의 맡김은 버리고 알린다. 보낸 맡김 수.
+    /// flock·`serial`·내 글 기록·보관(「연결되면 보냅니다」)·실패(「다시 보내기」)가 같다. 시작(bootstrap 뒤)·전면 복귀·공유 알림(탭·앱 안 표시)·
+    /// 준비 상태 전환(live)에서 부른다. 준비 전이면 맡김을 남긴다. 보내는 도중 준비 상태가 풀리면(로그아웃·정지) 못 보낸 부분만 되돌리고 멈춘다.
+    /// 없어진 방의 맡김은 버리고 알린다. 다 보낸 맡김 수.
     @discardableResult
     func deliverPendingShares() async -> Int {
-        guard let store = deps.shareStore, let server = deps.server, !deliveringShares else { return 0 }
+        guard let store = deps.shareStore, deps.server != nil, !deliveringShares else { return 0 }
         deliveringShares = true
         defer { deliveringShares = false }
         if !shareClaimsSwept {
             store.discardStaleClaims()
             shareClaimsSwept = true
         }
+        guard let server = deps.server else { return 0 }
         let scope = ServerScope(baseURL: server.baseURL).id
         guard !store.pending(scope: scope, now: deps.clock()).isEmpty else { return 0 }
+        // 알림을 눌러 차갑게 켜진 경우 시작 작업보다 먼저 올 수 있다 — 단축어처럼 시작과 한 바퀴를 기다린다.
+        await bootstrap()
         if phase != .ready { await refresh() }
-        guard case .ready = phase else { return 0 }
         var delivered = 0
         // 준비를 기다리는 동안 새로 맡겨졌을 수 있으니 다시 읽는다.
         for item in store.pending(scope: scope, now: deps.clock()) {
-            guard let claimed = store.claim(item.id) else { continue }
-            defer { store.finish(claimed.id) }
-            guard rooms.contains(where: { $0.room == claimed.room }) else {
-                lastError = Strings.shareRoomGone(claimed.room)
+            guard case .ready = phase else { break }   // 남은 맡김은 그대로 다음 기회에
+            guard var remaining = store.claim(item.id) else { continue }
+            guard rooms.contains(where: { $0.room == remaining.room }) else {
+                lastError = Strings.shareRoomGone(remaining.room)
+                store.finish(remaining.id)
                 continue
             }
-            if let text = claimed.text { _ = await send(room: claimed.room, text: text) }
-            for name in claimed.files {
-                guard let data = try? Data(contentsOf: store.fileURL(claimed, name)) else {
-                    lastError = Strings.shareFileUnreadable
-                    continue
-                }
-                _ = await sendAttachment(room: claimed.room, data: data)
+            var interrupted = false
+            if let text = remaining.text {
+                _ = await send(room: remaining.room, text: text)
+                remaining.text = nil
             }
-            requestOpen(room: claimed.room)
+            while let name = remaining.files.first {
+                guard case .ready = phase else { interrupted = true; break }
+                if let data = try? Data(contentsOf: store.fileURL(remaining, name)) {
+                    _ = await sendAttachment(room: remaining.room, data: data)
+                } else {
+                    lastError = Strings.shareFileUnreadable
+                }
+                remaining.files.removeFirst()
+            }
+            if interrupted {
+                store.release(remaining)   // 못 보낸 파일만 되돌린다
+                break
+            }
+            store.finish(remaining.id)
+            deps.shareDelivered(remaining.id)
+            requestOpen(room: remaining.room)
             delivered += 1
         }
         return delivered
