@@ -1087,7 +1087,9 @@ fn route_attachment(state: &mut RoomState, ev: &StoredRow, sender_device: &str, 
         return Ok(Some(attachment::failure_text("oversize").to_string()));
     }
     let size = source.size();
-    let offer = agent.offer(Inbound {
+    // Stage 2: held for the sender's next plain text (its caption) when the
+    // window is on; `responder::offer` merges it.
+    let offer = agent.hold_attachment(Inbound {
         room: state.room.clone(), seq: ev.seq, sender_device: sender_device.to_string(), text: String::new(), peer_depth: 0,
         attachment: Some(source),
     })?;
@@ -1115,6 +1117,10 @@ pub(crate) fn emit_attachment_ready(room: &str, seq: i64, spooled: &attachment::
     }));
 }
 
+pub(crate) fn emit_caption_merged(room: &str, attachment_seq: i64, caption_seq: i64) {
+    emit(&serde_json::json!({ "event": "agent_caption", "room": room, "seq": attachment_seq, "caption_seq": caption_seq }));
+}
+
 pub(crate) fn emit_attachment_failed(room: &str, seq: i64, reason: &str) {
     emit(&serde_json::json!({ "event": "agent_attachment", "room": room, "seq": seq, "outcome": "failed", "reason": reason }));
 }
@@ -1125,11 +1131,7 @@ pub(crate) fn emit_attachment_failed(room: &str, seq: i64, reason: &str) {
 /// the full queue refuses is told to try again. Nothing for a started turn
 /// or a retired worker (that one already gets `WorkerGone`).
 fn queue_notice(offer: &responder::Offer) -> Option<String> {
-    match offer {
-        responder::Offer::Queued { depth } => Some(format!("⏳ 이 메시지는 대기 순번 {}번에 저장되었으며 도착 순서대로 처리됩니다.", depth + 1)),
-        responder::Offer::Dropped { reason: "queue_full" } => Some("대기 중인 요청이 많습니다. 잠시 후 다시 요청해 주세요.".to_string()),
-        responder::Offer::Started | responder::Offer::Dropped { .. } => None,
-    }
+    responder::queue_line(offer)
 }
 
 /// Post one `queue_notice` line in the agent room the message came from.
@@ -2288,7 +2290,7 @@ for line in sys.stdin:
 "#;
         let spool = std::env::temp_dir().join(format!("nmls-route-{}", std::process::id()));
         let mut config = responder::Config::new(responder::Transport::Argv(vec!["python3".into(), "-c".into(), ATT_WORKER.into()]), "owner".into());
-        config.attachments = Some(attachment::AttachmentConfig { spool_dir: spool.clone(), max_bytes: 1_000 });
+        config.attachments = Some(attachment::AttachmentConfig { spool_dir: spool.clone(), max_bytes: 1_000, caption_secs: 0 });
         let mut agent = Responder::spawn(config, None).unwrap_or_else(|e| panic!("spawn: {e}"));
         agent.set_fetcher(std::sync::Arc::new(|_, _| Ok(unhex(VECTOR_CT_HEX))));
         let mut state = joined_room("family", 4);

@@ -85,7 +85,7 @@ task로 실행되므로 승인/취소 입력이 작업 뒤에 막히지 않는�
 | `name` |  | 설명자 `name`(표시용 힌트, 신뢰하지 않음). 1~255자, 제어 문자 없음. 양방향 제어 문자가 섞였으면 키를 빼서 보낸다(FILE-V2 저장 이름 규칙). 경로를 만들 때는 쓰지 않는다. |
 | `size` | ✓ | 평문 바이트 수 = 파일 크기, `1..`봇 상한. |
 | `sha256` | ✓ | **평문**의 sha256(소문자 hex 64자). 설명자 `blob`(암호문 해시)과는 다른 값이다. |
-| `caption` | ✓ | 사용자 지시문(`prompt`와 같은 신뢰 수준의 사람 글). **1단계에서는 항상 `""`**(클라이언트에 캡션 입력이 없다). 2단계에서 같은 발신자의 다음 텍스트를 묶을 때 봇만 채운다. 빈 문자열이면 수신 측의 기본 지시문을 쓴다. |
+| `caption` | ✓ | 사용자 지시문(`prompt`와 같은 신뢰 수준의 사람 글, 8,000 B 이하). 클라이언트에 캡션 입력이 없어 **봇이 채운다**(2단계): 오너 첨부를 `caption_secs`(기본 10초) 동안 보류하고, 그사이 같은 방·같은 actor 의 **일반 텍스트**(빈 글·`/` 명령 아님 — 승인 답장·`/stop` 은 그 전에 따로 처리)가 오면 그 글을 캡션으로 묶어 turn 하나로 보낸다(turn 은 첨부의 seq, 저널 `agent_caption`). 창이 끝나거나 다른 사람의 글·명령·다음 첨부가 오면 보류분을 캡션 없이(`""`) 먼저 보낸다 — 도착 순서는 유지. 빈 문자열이면 수신 측의 기본 지시문을 쓴다. |
 
 모르는 키는 무시한다. `attachment` JSON은 2KiB를 넘지 않는다(프레임 전체 64KiB 상한은 그대로다).
 
@@ -119,7 +119,8 @@ task로 실행되므로 승인/취소 입력이 작업 뒤에 막히지 않는�
 
 - 봇: 첨부 전달 플래그 `NATIVE_MLS_BOT_AGENT_ATTACHMENTS=1`(기본 off)·spool 경로 `NATIVE_MLS_BOT_ATTACHMENT_SPOOL`
   (절대 경로, 켜면 필수)·상한 `NATIVE_MLS_BOT_ATTACHMENT_MAX_BYTES`(기본 10,000,000 B, ccc-node `max_document_size_mb` 기본값과
-  같다, 최대 50 MiB). 준비(받기·복호·spool)가 끝나기 전의 `/stop` 은 워커에 `cancel` 을 보내지 않고 `⏹️` 로 끝낸다.
+  같다, 최대 50 MiB)·캡션 창 `NATIVE_MLS_BOT_ATTACHMENT_CAPTION_SECS`(기본 10, 0 = 보류 없이 바로, 최대 120). 대체 문구
+  `prompt` 끝에는 캡션이 한 줄 붙는다(옛 실행부도 사람의 질문은 본다). 준비(받기·복호·spool)가 끝나기 전의 `/stop` 은 워커에 `cancel` 을 보내지 않고 `⏹️` 로 끝낸다.
   저널: `agent_attachment`(`outcome=ready` + kind·mime·size·sha256 앞 12자, 또는 `outcome=failed` + reason). 설명자 `size`가 상한을 넘으면 **받지 않고** `agent_skipped`(`reason=attachment_oversize`)와 고정 문구로 처리한다.
   1단계는 **`owner_actor` 발신만** 전달한다. 다른 actor의 첨부는 지금처럼 `agent_skipped`(`reason=attachment`)로 둔다.
 - ccc-node 한데: `attachment_frames`(기본 `false`)와 spool 경로. 꺼져 있으면 `attachment`를 무시하고 `prompt`로

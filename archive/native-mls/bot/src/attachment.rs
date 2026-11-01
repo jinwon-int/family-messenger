@@ -30,6 +30,12 @@ pub const FILE_V2_AAD: &[u8] = b"hande-file-v2";
 pub const DEFAULT_MAX_BYTES: u64 = 10_000_000;
 const GCM_TAG_BYTES: u64 = 16;
 const MAX_DIMENSION: u64 = 20_000;
+/// #636 stage 2: how long an owner attachment waits for the sender's next
+/// plain text, which then rides along as `attachment.caption` (0 = never wait).
+pub const DEFAULT_CAPTION_SECS: u64 = 10;
+pub const MAX_CAPTION_SECS: u64 = 120;
+/// ccc-node `MAX_CAPTION_BYTES` is 8 KiB; stay under it.
+pub const MAX_CAPTION_BYTES: usize = 8000;
 /// Frame contract version (`attachment.v`).
 pub const FRAME_VERSION: u64 = 1;
 
@@ -45,6 +51,8 @@ pub struct AttachmentConfig {
     /// Absolute path; the bridge's `attachment_spool_dir` must be the same string.
     pub spool_dir: PathBuf,
     pub max_bytes: u64,
+    /// Stage 2 caption window in seconds (0 = off): see `DEFAULT_CAPTION_SECS`.
+    pub caption_secs: u64,
 }
 
 /// `(room, blob id) → ciphertext`. The poll loop installs one bound to its
@@ -360,18 +368,28 @@ pub fn prepare(source: &Source, room: &str, config: &AttachmentConfig, fetch: Op
 
 /// `turn.prompt` for an attachment turn: what a worker that ignores
 /// `attachment` (an older `fleet_worker.py` / `native-responder` / ccc-node, or
-/// the bridge knob off) runs on — it then says the file could not be opened.
-pub fn fallback_prompt(spooled: &Spooled) -> String {
+/// the bridge knob off) runs on — it then says the file could not be opened,
+/// and still sees the caption (the person's question) after it.
+pub fn fallback_prompt(spooled: &Spooled, caption: &str) -> String {
     let what = if spooled.kind == "image" { "사진 1개" } else { "파일 1개" };
-    format!(
+    let line = format!(
         "[첨부: {what}({}, {} B) — 이 실행부는 첨부를 열 수 없습니다. 받았지만 볼 수 없다고 답하세요.]",
         spooled.mime, spooled.size
-    )
+    );
+    if caption.is_empty() { line } else { format!("{line}\n{caption}") }
 }
 
-/// The `turn.attachment` object (FLEET-WORKER contract v1). `caption` is always
-/// empty in stage 1: the clients have no caption field.
-pub fn frame_object(spooled: &Spooled) -> serde_json::Value {
+/// Stage 2: may this text become an attachment's caption? Commands (`/…`)
+/// never do — they keep their own meaning (approval replies and `/stop` are
+/// routed before any offer, so they never get here).
+pub fn is_caption_text(text: &str) -> bool {
+    let text = text.trim();
+    !text.is_empty() && !text.starts_with('/')
+}
+
+/// The `turn.attachment` object (FLEET-WORKER contract v1). `caption` is the
+/// sender's next plain text when the stage-2 window merged one, else empty.
+pub fn frame_object(spooled: &Spooled, caption: &str) -> serde_json::Value {
     let mut object = serde_json::json!({
         "v": FRAME_VERSION,
         "path": spooled.path.to_string_lossy(),
@@ -379,7 +397,7 @@ pub fn frame_object(spooled: &Spooled) -> serde_json::Value {
         "mime": spooled.mime,
         "size": spooled.size,
         "sha256": spooled.sha256,
-        "caption": "",
+        "caption": caption,
     });
     if let Some(name) = &spooled.name {
         object["name"] = serde_json::Value::String(name.clone());
@@ -531,7 +549,7 @@ pub(crate) mod tests {
     #[test]
     fn prepare_v2_fetches_decrypts_and_frames() {
         let dir = temp_dir("prep");
-        let config = AttachmentConfig { spool_dir: dir.clone(), max_bytes: DEFAULT_MAX_BYTES };
+        let config = AttachmentConfig { spool_dir: dir.clone(), max_bytes: DEFAULT_MAX_BYTES, caption_secs: 0 };
         let descriptor = parse_descriptor(vector_descriptor_json("").as_bytes()).unwrap();
         let fetch: Fetcher = Arc::new(|room, blob| {
             assert_eq!((room, blob), ("agent", VECTOR_BLOB));
@@ -539,7 +557,7 @@ pub(crate) mod tests {
         });
         let spooled = prepare(&Source::V2(descriptor.clone()), "agent", &config, Some(&fetch)).unwrap();
         assert_eq!(std::fs::read(&spooled.path).unwrap(), unhex(VECTOR_PLAIN_HEX));
-        let frame = frame_object(&spooled);
+        let frame = frame_object(&spooled, "");
         assert_eq!(frame["v"], 1);
         assert_eq!(frame["kind"], "image");
         assert_eq!(frame["mime"], "image/png");
@@ -548,12 +566,15 @@ pub(crate) mod tests {
         assert_eq!(frame["caption"], "");
         let text = frame.to_string();
         assert!(!text.contains(VECTOR_KEY) && !text.contains(VECTOR_BLOB), "no key or blob id in the frame: {text}");
-        assert!(fallback_prompt(&spooled).starts_with("[첨부: 사진 1개(image/png, 29 B)"));
+        assert!(fallback_prompt(&spooled, "").starts_with("[첨부: 사진 1개(image/png, 29 B)"));
+        assert!(fallback_prompt(&spooled, "이거 뭐야?").ends_with("]\n이거 뭐야?"));
+        assert_eq!(frame_object(&spooled, "이거 뭐야?")["caption"], "이거 뭐야?");
+        assert!(is_caption_text(" 이거 뭐야? ") && !is_caption_text("/new") && !is_caption_text("  "));
         // Failures.
         let failing: Fetcher = Arc::new(|_, _| Err("relay error 404: no_such_blob".into()));
         assert_eq!(prepare(&Source::V2(descriptor.clone()), "agent", &config, Some(&failing)).unwrap_err(), "download");
         assert_eq!(prepare(&Source::V2(descriptor.clone()), "agent", &config, None).unwrap_err(), "download");
-        let small = AttachmentConfig { spool_dir: dir.clone(), max_bytes: 28 };
+        let small = AttachmentConfig { spool_dir: dir.clone(), max_bytes: 28, caption_secs: 0 };
         assert_eq!(prepare(&Source::V2(descriptor), "agent", &small, Some(&fetch)).unwrap_err(), "oversize");
         let v1 = prepare(&Source::V1(Zeroizing::new(b"\xff\xd8\xff\xe0jpeg".to_vec())), "agent", &config, None).unwrap();
         assert_eq!((v1.kind, v1.mime, v1.name.clone()), ("image", "image/jpeg", None));
