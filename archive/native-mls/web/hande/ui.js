@@ -8,7 +8,7 @@ import {
 } from './strings.js';
 import {imageType, downloadSpec, mediaBoxStyle, pendingMedia, dimsAgree} from './attachment-view.js';
 import { pickTransferFile, transferHasFiles } from './composer-files.js';
-import { lastSentView, collapsedKey } from './last-sent.js';
+import { lastSentView, collapsedKey, sentDayPrefix } from './last-sent.js';
 import {fileboxRefreshUrl} from './filebox.js';
 import {attachmentTitle} from './attachments.js';
 import {parseBlocks, inlineSpans, hasMarkdown} from './agent-markdown.js';
@@ -1049,7 +1049,7 @@ function lastSentBar(room) {
       el('button', { type: 'button', class: 'earlier-jump', title: t.jump, 'data-key': item.key ?? null, onclick: () => goTo(item.key) },
         el('span', { class: 'text' }, item.text),
         el('span', { class: 'chip' }, t.replies(item.replies)),
-        item.ts ? el('span', { class: 'chip time' }, formatTime(item.ts)) : null))))
+        item.ts ? el('span', { class: 'chip time' }, [sentDayPrefix(item.ts, { yesterday: t.yesterday }), formatTime(item.ts)].filter(Boolean).join(' ')) : null))))
     : null;
   const main = el('div', { class: 'main' }, jump, earlierList);
   toggle = el('button', { type: 'button', class: 'toggle', 'data-testid': 'last-sent-toggle', 'aria-label': collapsed ? t.expand : t.collapse, 'aria-expanded': collapsed ? 'false' : 'true',
