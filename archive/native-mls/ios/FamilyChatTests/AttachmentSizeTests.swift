@@ -80,9 +80,11 @@ final class AttachmentSizeTests: XCTestCase {
         host.view.layoutIfNeeded()
         let deadline = Date().addingTimeInterval(3)
         while box.frame == nil && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+        // 크기는 창 밖 호스트로 잰다 — 창에 붙은 호스트의 sizeThatFits 는 창의 안전 영역(위·아래)을 높이에 더한다.
         let proposal = CGSize(width: width, height: .greatestFiniteMagnitude)
         let alone = UIHostingController(rootView: bubble).sizeThatFits(in: proposal)
-        return (host.sizeThatFits(in: proposal), try XCTUnwrap(box.frame, "bubble laid out"), alone)
+        let measured = UIHostingController(rootView: PhotoShareRow(mine: mine, shareURL: url) { bubble }).sizeThatFits(in: proposal)
+        return (measured, try XCTUnwrap(box.frame, "bubble laid out"), alone)
     }
 
     func testShareIconSitsOutsideTheBubbleOnTheFarSide() throws {
