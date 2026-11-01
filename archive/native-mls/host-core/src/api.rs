@@ -647,6 +647,20 @@ impl Client {
         Ok(events)
     }
 
+    /// `GET /v2/rooms/<room>/blobs/<id>?device=<device>` (FILE-V2 §4, #636):
+    /// the opaque file-v2 ciphertext, verbatim. The caller checks length,
+    /// sha256 and GCM itself — the relay never sees the key. Errors are the
+    /// envelope: 403 `not_a_member`, 404 `no_such_blob`, 410 `room_closed`.
+    pub fn get_blob(&self, room: &str, device: &str, blob: &str) -> Result<Vec<u8>> {
+        require_identifier("room must match [A-Za-z0-9_-]{1,64}", room)?;
+        require_identifier("device must match [A-Za-z0-9_-]{1,64}", device)?;
+        if blob.len() != 64 || !blob.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+            return Err(RelayError::Local("blob id must be 64 lowercase hex"));
+        }
+        let resp = self.send("GET", &format!("/v2/rooms/{room}/blobs/{blob}?device={device}"), None)?;
+        self.checked(resp)
+    }
+
     /// `POST /v2/rooms/<room>/read` `{device, seq}` (#571 B): the device has
     /// shown the room up to `seq`. The relay keeps one row per (room, actor),
     /// monotonic (`max(current, seq)`), and answers the resulting actor-wide
@@ -849,6 +863,32 @@ mod identifier_tests {
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    /// #636: the blob GET is a plain byte pass-through on the FILE-V2 path;
+    /// ids are checked before anything reaches the transport.
+    #[test]
+    fn get_blob_passes_ciphertext_through_and_checks_ids() {
+        use std::sync::{Arc, Mutex};
+        struct Recording(Arc<Mutex<Vec<String>>>, u16, Vec<u8>);
+        impl Transport for Recording {
+            fn send(&self, _base: &str, method: &str, path_qs: &str, _body: Option<&[u8]>, _h: &[(&str, &str)]) -> Result<http::Response> {
+                self.0.lock().unwrap().push(format!("{method} {path_qs}"));
+                Ok(http::Response { status: self.1, body: self.2.clone() })
+            }
+        }
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let blob = "ab".repeat(32);
+        let ok = Client::with_transport("http://relay:1", Access::None, Box::new(Recording(seen.clone(), 200, vec![0, 1, 0xff])));
+        assert_eq!(ok.get_blob("agent", "gongyung-bot", &blob).unwrap(), vec![0, 1, 0xff]);
+        assert_eq!(seen.lock().unwrap().as_slice(), [format!("GET /v2/rooms/agent/blobs/{blob}?device=gongyung-bot")]);
+        for bad in ["AB".repeat(32), "ab".repeat(31), format!("{}/x", "a".repeat(62))] {
+            assert!(ok.get_blob("agent", "gongyung-bot", &bad).is_err(), "{bad}");
+        }
+        assert!(ok.get_blob("bad room", "gongyung-bot", &blob).is_err());
+        assert_eq!(seen.lock().unwrap().len(), 1, "nothing invalid reached the transport");
+        let gone = Client::with_transport("http://relay:1", Access::None, Box::new(Recording(seen, 404, br#"{"error":"no_such_blob"}"#.to_vec())));
+        assert!(matches!(gone.get_blob("agent", "gongyung-bot", &blob), Err(RelayError::Api { status: 404, ref code }) if code == "no_such_blob"));
+    }
 
     /// The file source resolves the current content on every call, so an
     /// external refresher can rotate short-lived tokens; missing and empty

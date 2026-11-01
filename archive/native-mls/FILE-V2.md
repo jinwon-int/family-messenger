@@ -83,7 +83,9 @@ base64url 정규형: RFC 4648 §5 알파벳, `=` 패딩 없음, 다시 인코딩
 - 안드로이드: `archive/native-mls/android/app/src/main/kotlin/com/seoyoon_family/hande/core/FileV2.kt`(설명자 엄격 검증·수신 분류, 테스트
   `FileV2Test.kt`). 정상 설명자 → 이력 kind `file-v2`(본문 = 「📎 첨부(n B)」 자리 표시, attachment 칸 = 설명자), 잘못된 설명자 →
   `undecryptable`(평문 버림). blob 받기·열기는 v1 첨부 미리보기와 함께 C 단계. 웹보다 엄격한 점: 중복 키·앞머리 BOM 거부.
-- 봇: `archive/native-mls/bot/src/responder.rs` — `file-v2-` 첨부를 에이전트 턴으로 넘기지 않음(#514).
+- 봇: 기본은 `file-v2-` 첨부를 에이전트 턴으로 넘기지 않음(#514, `responder.rs`). `NATIVE_MLS_BOT_AGENT_ATTACHMENTS=1`
+  이면(#636) 오너 발신 첨부를 봇이 직접 받아 §4 순서로 검증·복호(`bot/src/attachment.rs`, host-core `Client::get_blob`)하고
+  평문 파일 **경로**만 에이전트 turn 에 넘긴다 — 설명자·키·blob id 는 봇 밖으로 나가지 않는다(`docs/FLEET-WORKER.md` "첨부 turn").
 - iOS: `archive/native-mls/ios/FamilyMLSCore/Sources/FamilyMLSCore/Sync/FileV2Format.swift`(설명자 엄격 검증, 테스트
   `FileV2FormatTests.swift`), 분류는 `RoomSyncEngine.storeApplication`(앱·NSE 공용). 정상 → `MessageRecord.Kind.fileV2`(저장 값
   `file-v2`, body = mime 힌트, attachment 칸 = 설명자), 잘못됨·비정규 client_id → `.undecryptable`(사유 `file_v2_descriptor`).

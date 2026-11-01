@@ -17,6 +17,7 @@ use native_mls_host::policy;
 /// without pulling an unused import into the release build.
 #[cfg(test)]
 use native_mls_host::b64;
+mod attachment;
 mod responder;
 mod session;
 
@@ -113,9 +114,28 @@ fn main() -> ExitCode {
     let turn_secs = env_u64("NATIVE_MLS_BOT_TURN_SECS").filter(|v| *v > 0);
     let age_notice_min = env_u64("NATIVE_MLS_BOT_TURN_AGE_NOTICE_MIN");
     let age_renotice_min = env_u64("NATIVE_MLS_BOT_TURN_AGE_RENOTICE_MIN");
+    // #636: 「한데」 attachments as agent turns (docs/FLEET-WORKER.md "첨부 turn").
+    // Off unless NATIVE_MLS_BOT_AGENT_ATTACHMENTS=1; then NATIVE_MLS_BOT_ATTACHMENT_SPOOL
+    // (absolute, the bridge's `attachment_spool_dir`) is required and
+    // NATIVE_MLS_BOT_ATTACHMENT_MAX_BYTES caps the file (default 10,000,000, ≤ 50 MiB).
+    let attachments = if std::env::var("NATIVE_MLS_BOT_AGENT_ATTACHMENTS").ok().is_some_and(|v| v.trim() == "1") {
+        let spool = std::env::var("NATIVE_MLS_BOT_ATTACHMENT_SPOOL").ok().map(|v| std::path::PathBuf::from(v.trim()));
+        let Some(spool_dir) = spool.filter(|p| p.is_absolute()) else {
+            eprintln!("native-mls-bot: NATIVE_MLS_BOT_AGENT_ATTACHMENTS=1 needs an absolute NATIVE_MLS_BOT_ATTACHMENT_SPOOL");
+            return ExitCode::FAILURE;
+        };
+        let max_bytes = env_u64("NATIVE_MLS_BOT_ATTACHMENT_MAX_BYTES")
+            .filter(|v| *v > 0)
+            .unwrap_or(attachment::DEFAULT_MAX_BYTES)
+            .min(attachment::MAX_FILE_V2);
+        Some(attachment::AttachmentConfig { spool_dir, max_bytes })
+    } else {
+        None
+    };
     let responder = responder.map(|mut config| {
         config.room_frames = room_frames;
         config.typing = typing;
+        config.attachments = attachments.clone();
         if let Some(v) = turn_secs { config.turn_secs = v; }
         if let Some(v) = age_notice_min { config.turn_age_notice_secs = v.saturating_mul(60); }
         if let Some(v) = age_renotice_min { config.turn_age_renotice_secs = v.saturating_mul(60); }
@@ -202,6 +222,9 @@ fn main() -> ExitCode {
             eprintln!("--owner-actor <actor> (env NATIVE_MLS_BOT_OWNER_ACTOR, default owner) answers approvals with 승인 n / 거절 n");
             eprintln!("--room-frames (env NATIVE_MLS_BOT_ROOM_FRAMES=1, #423): several agent rooms on one responder; each turn names its room");
             eprintln!("--no-typing (env NATIVE_MLS_BOT_TYPING=0): do not send the relay typing signal while a turn produces a reply (default on)");
+            eprintln!("env NATIVE_MLS_BOT_AGENT_ATTACHMENTS=1 (#636): the owner's photos/files become turns — the bot decrypts them into");
+            eprintln!("NATIVE_MLS_BOT_ATTACHMENT_SPOOL (absolute; the bridge's attachment_spool_dir) and names the file in the turn frame;");
+            eprintln!("NATIVE_MLS_BOT_ATTACHMENT_MAX_BYTES caps the file (default 10000000)");
             return ExitCode::FAILURE;
         }
     };
