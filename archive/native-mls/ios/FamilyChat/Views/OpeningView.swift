@@ -36,6 +36,8 @@ struct OpeningView: View {
             }
             .ignoresSafeArea()
         }
+        // 그림은 테마와 무관하게 늘 밤하늘이다 — 낮불 팔레트를 받으면 워드마크·자리 점이 먹색이 되어 하늘에 묻힌다. 밤 팔레트로 고정.
+        .environment(\.hande, .night)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Strings.openingAccessibility)
     }
