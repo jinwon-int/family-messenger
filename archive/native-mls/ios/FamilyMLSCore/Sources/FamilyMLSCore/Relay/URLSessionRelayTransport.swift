@@ -78,6 +78,28 @@ public final class URLSessionRelayTransport: RelayTransport {
         return .refused(code: body?.error ?? "http_\(status)", status: status)
     }
 
+    /// #656: Cloudflare Access 세션 만료·무효는 401 이 아니라 Access 로그인 페이지로의 302 다. URLSession 은 이를 따라가
+    /// 200 + HTML(「Sign in ・ Cloudflare Access」)을 받는데, 이것을 그대로 JSON 으로 읽으면 `decoding(...dataCorrupted)` 이 되어
+    /// 재로그인 화면(`AppModel` `catch .unauthorized → expireSession()`)에 닿지 못한다. 최종 URL(따라간 경우) 또는
+    /// 3xx `Location`(따라가지 않은 경우)이 Access 로그인이면 `.unauthorized` 로 본다. 릴레이 자체 응답은 판정에 걸리지 않는다.
+    static func isAccessLoginResponse(_ http: HTTPURLResponse) -> Bool {
+        if let url = http.url, isAccessLoginURL(url) { return true }
+        if (300..<400).contains(http.statusCode),
+           let location = http.value(forHTTPHeaderField: "Location"),
+           let target = URL(string: location, relativeTo: http.url),
+           isAccessLoginURL(target) {
+            return true
+        }
+        return false
+    }
+
+    /// Access 로그인 위치: 팀 도메인(`<team>.cloudflareaccess.com`) 또는 앱 도메인의 `/cdn-cgi/access/login` 경로.
+    static func isAccessLoginURL(_ url: URL) -> Bool {
+        let host = (url.host ?? "").lowercased()
+        if host == "cloudflareaccess.com" || host.hasSuffix(".cloudflareaccess.com") { return true }
+        return url.path.hasPrefix("/cdn-cgi/access/login")
+    }
+
     /// 기기 셀프서비스 라우트(#574, devices.go)의 거부 매핑: 본문을 호출자가 써야 하는 둘 — 409 `stale_revision`(`revision` = 현재, 다시 서명)
     /// · 403 `approval_rejected`(`detail` = 사유) — 만 `DevicePolicyRefusal` 로, 그 밖(401·404 옛 릴레이·409 device_exists·403 first_device_out_of_band
     /// 등)은 `relayFailure` 그대로. 코드는 같은데 본문이 깨졌으면 `RelayError` 로 떨어진다.
@@ -106,6 +128,7 @@ public final class URLSessionRelayTransport: RelayTransport {
         guard let http = response as? HTTPURLResponse else {
             throw RelayError.network("non-http response")
         }
+        if Self.isAccessLoginResponse(http) { throw RelayError.unauthorized }
         return (http.statusCode, data)
     }
 
@@ -183,6 +206,7 @@ public final class URLSessionRelayTransport: RelayTransport {
             throw RelayError.network("\(error)")
         }
         guard let http = response as? HTTPURLResponse else { throw RelayError.network("non-http response") }
+        if Self.isAccessLoginResponse(http) { throw RelayError.unauthorized }
         guard http.statusCode == 201 || http.statusCode == 200 else { throw Self.relayFailure(status: http.statusCode, data: data) }
         var upload = try decode(BlobUpload.self, data)
         upload.created = http.statusCode == 201
