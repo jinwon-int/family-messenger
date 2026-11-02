@@ -91,6 +91,18 @@ struct RoomListView: View {
                     .accessibilityAddTraits(.isHeader)
                 }
             }
+            // #654: 릴레이에 닿지 않는 동안 목록 머리 아래 「연결 중」 한 줄(방 화면 배너와 같은 모양) — 첫 확인이 실패해도 등록 화면 대신
+            // 이 목록이 보인다. 연결되면 사라진다. 순서 모드에서는 머리가 바뀌므로 숨긴다.
+            if model.reconnecting && !orderEditing {
+                Section {
+                    HandeBanner(kind: .warn, text: Strings.roomsReconnectingBanner)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .moveDisabled(true)
+                        .accessibilityIdentifier("rooms-reconnecting")
+                }
+            }
             if let notice = model.notice {
                 Section {
                     HStack {

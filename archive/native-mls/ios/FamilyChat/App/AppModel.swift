@@ -1,6 +1,6 @@
 // 앱 상태기계 (#271 §5·§9) + 통합(파이널라이저): L1 파일 저장소 · L3 동기화 엔진 · ios-ffi 엔진을 잇는다.
 //
-//   starting → needsLogin → needsEnrollment → ready ⇄ halted(reason)
+//   starting → needsLogin → checking → (needsEnrollment →) ready ⇄ halted(reason)
 //                                                ↘ fatal(reason)
 //
 // 규칙(설계 승계):
@@ -43,6 +43,10 @@ final class AppModel: ObservableObject {
         /// 첫 실행: 이 기기 사용자 이름(actor)을 고르기 전. 기기 ID `<actor>-iphone-<hex>` 가 여기서 정해진다(가족 투입).
         case needsActor
         case needsLogin
+        /// #654: 자격증명은 있고 첫 등록 확인(동기화 한 바퀴) 전 — 오프닝을 보인다. 확인에 실패하면(릴레이에 닿지 않음 등) 등록 화면이 아니라
+        /// 저장된 방이 있으면 방 목록 + 「연결 중」으로 간다(`leaveCheckingUnconfirmed`). 실제 미등록은 403 이 `needsEnrollment` 로 보낸다.
+        case checking
+        /// 실제 등록 대기: 릴레이가 403 `device_subject_mismatch` 를 줬거나 방 동기화가 `registrationPending` 이다.
         case needsEnrollment
         case ready
         case halted(String)
@@ -131,8 +135,8 @@ final class AppModel: ObservableObject {
             }
         }
     }
-    /// #414: 첫 동기화 한 바퀴가 끝났는가. 시작 직후의 `.needsEnrollment` 는 "등록 확인 중" 자리라
-    /// (저장된 세션으로 이어 갈 때 bootstrap 이 먼저 둔다) 화면은 그동안 오프닝을 보이고, 이 값이 서면 실제 상태를 보인다.
+    /// #414: 첫 동기화 한 바퀴가 끝났는가. #654 부터 "등록 확인 중" 자리는 `.checking` 이 따로 맡는다(종전에는 `.needsEnrollment` 를
+    /// 빌려 써서, 첫 바퀴가 실패하면 등록된 기기에도 「이 기기 등록」이 떴다).
     @Published private(set) var settled = false
     /// 로그인 시트가 여는 릴레이 주소(= 선택한 서버). nil 이면 로그인 화면이 버튼 대신 안내를 보인다.
     var relayURL: URL? { deps.relayURL }
@@ -385,7 +389,7 @@ final class AppModel: ObservableObject {
             rooms = try deps.messageStore.rooms()
             // 지난 실행의 세션(Keychain)으로 이어 간다 — 만료됐으면 첫 동기화의 401 이 로그인 화면으로 보낸다.
             if credential == nil, let saved = deps.credentials.load() { login(saved) }
-            phase = credential == nil ? .needsLogin : .needsEnrollment
+            phase = credential == nil ? .needsLogin : .checking
         } catch {
             phase = .fatal("\(error)")
         }
@@ -501,7 +505,7 @@ final class AppModel: ObservableObject {
         refreshRegistrationSubject()
         push.loggedIn()
         lastError = nil
-        if phase == .needsLogin { phase = .needsEnrollment }
+        if phase == .needsLogin { phase = .checking }
     }
 
     /// 등록 JSON 의 `subject` = 자격증명 JWT 의 `sub`(DEVICES-V4 §필드 필수, relay-app `enroll-info` 와 같은 규칙).
@@ -765,7 +769,27 @@ final class AppModel: ObservableObject {
             expireSession()
         } catch {
             noteFailure(error)
+            // #654: 첫 확인이 실패했다(취소는 다음 바퀴가 다시 확인) — 등록 화면으로 보내지 않는다.
+            if ConnectionIssue.classify(error, taskCancelled: Task.isCancelled) != .cancelled { leaveCheckingUnconfirmed() }
         }
+    }
+
+    /// #654: 첫 등록 확인(`.checking`)이 답을 얻지 못했다. 이 기기에 저장된 방이 있으면(지난 실행에서 릴레이가 방 목록을 줬다 = 등록 확인됨)
+    /// 방 목록으로 가서 「연결 중」(`reconnecting`)을 보이고, 다음 성공 바퀴가 실제 상태를 정한다(정말 해제됐으면 403 → 등록 화면).
+    /// 저장된 방이 없으면(새 기기) 종전처럼 등록 화면.
+    private func leaveCheckingUnconfirmed() {
+        guard phase == .checking else { return }
+        if let stored = try? deps.messageStore.rooms() { rooms = stored }
+        if rooms.isEmpty { phase = .needsEnrollment; return }
+        phase = haltedReasonFromRooms().map { .halted($0) } ?? .ready
+    }
+
+    /// #654: 오프닝 상한(RootView, 8초)이 지났는데 첫 확인이 아직 끝나지 않았다(요청이 늦다). 닿지 않는 것으로 보고 위와 같이 넘어간다 —
+    /// 늦게 끝난 바퀴가 그 결과로 상태를 다시 정한다.
+    func openingTimedOut() {
+        guard phase == .checking else { return }
+        reconnecting = true
+        leaveCheckingUnconfirmed()
     }
 
     /// 방 루프 뒤 부가 작업(각 1왕복 안팎). #599: 단계마다 줄 선 송신에 양보한다 — 남은 단계는 송신 직후 다음 바퀴가 한다.

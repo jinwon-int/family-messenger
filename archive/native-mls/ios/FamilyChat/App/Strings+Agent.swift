@@ -212,6 +212,8 @@ extension Strings {
 
     // 2d 대화방 상태
     static let relayUnreachableBanner = "릴레이에 닿지 않아요 — 연결되면 보낼게요"
+    /// #654 방 목록 머리 아래: 릴레이에 닿지 않는 동안(`AppModel.reconnecting`) — 등록 화면 대신 목록을 보이며 연결을 기다린다.
+    static let roomsReconnectingBanner = "연결 중입니다… 연결되면 새 이야기를 불러올게요"
     /// 운영자가 닫은 자리(`SyncHaltReason.roomClosed`) — 입력창 자리의 안내 상자.
     static let roomClosedTitle = "운영자가 이 자리를 닫았어요"
     static let roomClosedBody = "지난 이야기는 읽을 수 있지만 더 쓸 수는 없어요. 다시 열려면 운영자에게 말해 주세요."

@@ -1,7 +1,7 @@
 // 오프닝 화면(#414): 밤하늘 아래 모닥불가에 사람 셋과 에이전트 하나가 둘러앉은 장면 + hande 워드마크.
 // 그림은 시안(/root/hande-ui/make_opening_v5.py, 오너 선택 A v5 + 워드마크 B)과 같은 360×760 설계 좌표·path 문자열을 쓴다 —
 // Core `SVGPathData` 가 path 를 해석하고, 여기서는 Canvas 로 칠하기만 한다. 불꽃은 흔들리고 불티는 오른다(TimelineView).
-// 앱이 시작해서 첫 동기화 한 바퀴가 끝날 때까지 보인다(RootView) — 그 사이 `.needsEnrollment` 가 「이 기기 등록」으로 스치지 않게.
+// 앱이 시작해서 첫 등록 확인(`.checking`, #654)이 끝날 때까지 보인다(RootView) — 그 사이 「이 기기 등록」이 스치지 않게.
 import SwiftUI
 import FamilyMLSCore
 
