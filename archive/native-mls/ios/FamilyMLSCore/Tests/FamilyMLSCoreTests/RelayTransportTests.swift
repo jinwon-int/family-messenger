@@ -4,6 +4,9 @@
 // 상태·코드 분류는 static relayFailure 로 전수 고정하고, 와이어 왕립은 server.go 대조 테스트(RelayTypesTests)와
 // 라이브 스모크로 담보한다. server.go 2026-10-05 전수 대조 기준.
 import XCTest
+#if canImport(FoundationNetworking)
+import FoundationNetworking  // Linux corelibs: HTTPURLResponse (#656)
+#endif
 @testable import FamilyMLSCore
 
 final class RelayTransportTests: XCTestCase {
