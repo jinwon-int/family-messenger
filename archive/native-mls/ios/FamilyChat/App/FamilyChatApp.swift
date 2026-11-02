@@ -38,8 +38,6 @@ struct RootView: View {
     @EnvironmentObject private var model: AppModel
     /// #405 P3: 방 전환(PageUp/PageDown)·목록 복귀(Home)를 위해 이동 경로를 쥔다.
     @StateObject private var navigator = Navigator()
-    /// #414: 첫 동기화가 오래 걸려도(오프라인 등) 오프닝에 갇히지 않게 — 이 시간이 지나면 실제 상태를 보인다.
-    @State private var openingExpired = false
     /// #520 경고 배너를 「나중에」로 닫았다(이 실행 동안만 — 다음 실행에 설정이 그대로면 다시 보인다).
     @State private var previewWarningDismissed = false
     /// 디자인 2차-A(§A2 ④): 이 실행에서 온보딩(서버 선택·이름)을 거쳤다 — 그 뒤의 `.starting`(이름 확정 → bootstrap 의 키 생성)과 첫 동기화
@@ -54,9 +52,8 @@ struct RootView: View {
     var body: some View {
         Group {
             switch model.phase {
-            case .starting:
-                if sawOnboarding { KindlingView() } else { OpeningView() }
-            case .needsEnrollment where !model.settled && !openingExpired:
+            case .starting, .checking:
+                // #654: 등록 확인 중(.checking)은 오프닝 — 확인이 실패하거나 상한을 넘기면 AppModel 이 방 목록(연결 중)으로 넘긴다.
                 if sawOnboarding { KindlingView() } else { OpeningView() }
             case .needsServer:
                 ServerSelectView()
@@ -95,9 +92,13 @@ struct RootView: View {
         .onChange(of: model.relayReadSeq) { relay in
             for (room, seq) in relay { model.localPrefs.markRead(room, seq: seq) }
         }
-        .task {
+        // #414·#654: 첫 확인이 오래 걸려도(요청이 늦게 끝남) 오프닝에 갇히지 않게 — `.checking` 에 들어설 때마다 상한을 다시 잰다
+        // (차가운 시작·로그인 직후 모두). 상한이 지나면 등록 화면이 아니라 「연결 중」으로 본다(`openingTimedOut`).
+        .task(id: model.phase == .checking) {
+            guard model.phase == .checking else { return }
             try? await Task.sleep(nanoseconds: Self.openingLimitNanoseconds)
-            openingExpired = true
+            guard !Task.isCancelled else { return }
+            model.openingTimedOut()
         }
         // #405 P2: 밤 테마 고정(오너 결정) + 불빛 강조색. 디자인 1차: 낮불을 고르면 밝은 스킴 + 낮불 팔레트(시스템 라이트 모드는 따르지 않는다).
         .environment(\.hande, theme.palette)

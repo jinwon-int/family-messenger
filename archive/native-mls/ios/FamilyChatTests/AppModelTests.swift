@@ -27,6 +27,15 @@ struct FakeFactory: MlsEngineFactory {
 }
 
 /// listRooms 만 정해진 오류로 거부하는 전송(나머지는 메모리 릴레이).
+/// #654: 방 목록 응답을 켜고 끌 수 있는 릴레이 — 오프라인으로 시작한 뒤 연결이 돌아왔을 때 실제 해제(403)를 흉내 낸다.
+final class SwitchableListingRelay: InMemoryRelayWrapper {
+    var listingRefusal: Error?
+    override func listRooms(device: DeviceID) async throws -> RoomsResponse {
+        if let listingRefusal { throw listingRefusal }
+        return try await inner.listRooms(device: device)
+    }
+}
+
 final class RefusingRelay: InMemoryRelayWrapper {
     let error: Error
     init(_ error: Error) { self.error = error }
@@ -119,7 +128,7 @@ final class AppModelTests: XCTestCase {
         let (model, _) = makeModel(rooms: [halted])
         await model.bootstrap()
         model.login(.accessCookie("jwt"))
-        XCTAssertEqual(model.phase, .needsEnrollment)
+        XCTAssertEqual(model.phase, .checking, "#654: before the first round the device is being checked, not waiting for enrollment")
         await model.refresh()
         XCTAssertEqual(model.phase, .halted("commit_refused"), "halt survives restart via MessageStore")
     }
@@ -140,6 +149,94 @@ final class AppModelTests: XCTestCase {
         await model.refresh()
         XCTAssertFalse(model.reconnecting, "one successful round clears it")
         XCTAssertNil(model.lastError)
+    }
+
+    // MARK: - #654 첫 확인이 릴레이에 닿지 않아도 등록 화면으로 가지 않는다
+
+    private var knownFamily: RoomRecord { RoomRecord(room: "family", epoch: 0, revision: 0, haltedReason: nil, displayOrder: 0) }
+
+    /// 오너 보고 2026-11-02: 등록된 기기(저장된 방 있음)가 릴레이에 닿지 않는 채로 열리면 「이 기기 등록」이 떴다(해제된 것처럼).
+    /// 이제 첫 확인 전은 `.checking`(오프닝), 닿지 않으면 방 목록 + 「연결 중」, 다시 닿으면 배너가 사라진다.
+    func testOfflineStartOfEnrolledDeviceShowsRoomsWithConnecting() async throws {
+        let relay = InMemoryRelay()
+        let (model, _) = makeModel(rooms: [knownFamily], transport: relay)
+        try await relay.stop()
+        await model.bootstrap(); model.login(.bearer("t"))
+        XCTAssertEqual(model.phase, .checking)
+        await model.refresh()
+        XCTAssertEqual(model.phase, .ready, "an unreachable first check must not look like a revoked device")
+        XCTAssertTrue(model.reconnecting, "the room list shows the connecting banner")
+        XCTAssertTrue(model.settled)
+        XCTAssertNil(model.lastError, "no raw network error on screen")
+        XCTAssertEqual(model.rooms.map(\.room), ["family"])
+        try await relay.start()
+        try await postMomMessage(relay, 1)
+        await model.refresh()
+        XCTAssertEqual(model.phase, .ready)
+        XCTAssertFalse(model.reconnecting, "one successful round clears the banner")
+    }
+
+    /// 오프라인으로 열려 방 목록에 있다가 연결이 돌아왔는데 정말 해제된 기기(403 device_subject_mismatch)면 그때 등록 화면.
+    func testOfflineStartThenRevokedDeviceGoesToEnrollment() async throws {
+        let relay = SwitchableListingRelay()
+        let (model, _) = makeModel(rooms: [knownFamily], transport: relay)
+        try await relay.inner.stop()
+        await model.bootstrap(); model.login(.bearer("t"))
+        await model.refresh()
+        XCTAssertEqual(model.phase, .ready)
+        try await relay.inner.start()
+        relay.listingRefusal = RelayError.refused(code: "device_subject_mismatch", status: 403)
+        await model.refresh()
+        XCTAssertEqual(model.phase, .needsEnrollment, "the relay's real answer still wins")
+    }
+
+    /// 저장된 방이 없는 새 기기는 종전처럼 등록 화면(보일 목록이 없고, 새 기기는 대개 아직 미등록이다).
+    func testOfflineStartOfNewDeviceStaysOnEnrollment() async throws {
+        let relay = InMemoryRelay()
+        let (model, _) = makeModel(transport: relay)
+        try await relay.stop()
+        await model.bootstrap(); model.login(.bearer("t"))
+        await model.refresh()
+        XCTAssertEqual(model.phase, .needsEnrollment)
+        XCTAssertTrue(model.settled)
+    }
+
+    /// 저장된 ⛔ 정지는 오프라인 시작에서도 그대로 보인다(재시작 뒤 유지 규칙).
+    func testOfflineStartKeepsHaltedRoomSurfaced() async throws {
+        let halted = RoomRecord(room: "family", epoch: 1, revision: 1, haltedReason: "commit_refused", displayOrder: 0)
+        let relay = InMemoryRelay()
+        let (model, _) = makeModel(rooms: [halted], transport: relay)
+        try await relay.stop()
+        await model.bootstrap(); model.login(.bearer("t"))
+        await model.refresh()
+        XCTAssertEqual(model.phase, .halted("commit_refused"))
+        XCTAssertTrue(model.reconnecting)
+    }
+
+    /// RootView 8초 상한(`openingTimedOut`): 첫 확인이 아직 안 끝났으면(요청이 늦다) 같은 규칙. 확인이 끝난 뒤에는 아무것도 바꾸지 않는다.
+    func testOpeningTimeoutWhileCheckingFollowsSameRule() async throws {
+        let relay = InMemoryRelay()
+        let (withRooms, _) = makeModel(rooms: [knownFamily], transport: relay)
+        await withRooms.bootstrap(); withRooms.login(.bearer("t"))
+        withRooms.openingTimedOut()
+        XCTAssertEqual(withRooms.phase, .ready)
+        XCTAssertTrue(withRooms.reconnecting)
+        try await postMomMessage(relay, 1)   // 빈 방 로그는 404 no_such_room — 글 하나로 정상 바퀴를 만든다
+        await withRooms.refresh()
+        XCTAssertFalse(withRooms.reconnecting, "the late round decides — reachable now")
+
+        let (fresh, _) = makeModel()
+        await fresh.bootstrap(); fresh.login(.bearer("t"))
+        fresh.openingTimedOut()
+        XCTAssertEqual(fresh.phase, .needsEnrollment)
+
+        let (enrolling, _) = makeModel(transport: RefusingRelay(RelayError.refused(code: "device_subject_mismatch", status: 403)))
+        await enrolling.bootstrap(); enrolling.login(.bearer("t"))
+        await enrolling.refresh()
+        XCTAssertEqual(enrolling.phase, .needsEnrollment)
+        enrolling.openingTimedOut()
+        XCTAssertEqual(enrolling.phase, .needsEnrollment)
+        XCTAssertFalse(enrolling.reconnecting, "after the check settled the timeout changes nothing")
     }
 
     // MARK: - 타이핑 (#562)
@@ -252,7 +349,7 @@ final class AppModelTests: XCTestCase {
         let relay = InMemoryRelay()
         let (model, _) = makeModel(transport: relay, typingInterval: 0)
         await model.bootstrap(); model.login(.bearer("t"))
-        XCTAssertEqual(model.phase, .needsEnrollment)
+        XCTAssertEqual(model.phase, .checking, "#654: before the first round the device is being checked, not waiting for enrollment")
         model.noteTyping(room: "family")
         await model.typingInFlight?.value
         XCTAssertTrue(relay.typingPosts.isEmpty, "not before the first successful round")
@@ -408,7 +505,7 @@ final class AppModelTests: XCTestCase {
         let (model, _) = makeModel(rooms: [known], transport: relay)
         await model.bootstrap(); model.login(.bearer("t"))
         try await postMomMessage(relay, 1)
-        XCTAssertEqual(model.phase, .needsEnrollment)
+        XCTAssertEqual(model.phase, .checking, "#654: before the first round the device is being checked, not waiting for enrollment")
         model.noteRead(room: "family", seq: 1)
         await model.readInFlight?.value
         XCTAssertTrue(relay.readPosts.isEmpty, "not before the first successful round")
