@@ -75,6 +75,39 @@ final class RelayTransportTests: XCTestCase {
                        .refused(code: "http_503", status: 503))
     }
 
+    // MARK: - Access 세션 만료(#656) — 302→로그인 HTML 200 을 .unauthorized 로
+
+    private let accessLogin = "https://seoyoon-family.cloudflareaccess.com/cdn-cgi/access/login/relay.example.com?kid=k&redirect_url=%2Fv2%2Frooms"
+
+    private func http(_ url: String, _ status: Int, headers: [String: String] = [:]) -> HTTPURLResponse {
+        HTTPURLResponse(url: URL(string: url)!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!
+    }
+
+    func testFollowedRedirectToAccessLoginIsUnauthorized() {
+        // 빌드 83 증상: URLSession 이 302 를 따라가 최종 200 text/html 로그인 페이지를 받는다.
+        XCTAssertTrue(URLSessionRelayTransport.isAccessLoginResponse(http(accessLogin, 200, headers: ["Content-Type": "text/html"])))
+    }
+
+    func testUnfollowedRedirectToAccessLoginIsUnauthorized() {
+        XCTAssertTrue(URLSessionRelayTransport.isAccessLoginResponse(
+            http("https://relay.example.com/v2/rooms?device=d", 302, headers: ["Location": accessLogin])))
+        // 같은 호스트의 상대 경로 로그인(앱 도메인 /cdn-cgi/access/login)도 같다.
+        XCTAssertTrue(URLSessionRelayTransport.isAccessLoginResponse(
+            http("https://relay.example.com/v2/rooms?device=d", 302, headers: ["Location": "/cdn-cgi/access/login/relay.example.com"])))
+    }
+
+    func testRelayOwnResponsesAreNotAccessLogin() {
+        let rooms = "https://relay.example.com/v2/rooms?device=d"
+        XCTAssertFalse(URLSessionRelayTransport.isAccessLoginResponse(http(rooms, 200, headers: ["Content-Type": "application/json"])))
+        XCTAssertFalse(URLSessionRelayTransport.isAccessLoginResponse(http(rooms, 401)))
+        XCTAssertFalse(URLSessionRelayTransport.isAccessLoginResponse(http(rooms, 403)))
+        // 로그인이 아닌 곳으로의 3xx 는 종전대로 relayFailure(http_3xx) 몫이다.
+        XCTAssertFalse(URLSessionRelayTransport.isAccessLoginResponse(http(rooms, 302, headers: ["Location": "https://relay.example.com/v2/other"])))
+        // 이름이 비슷한 다른 도메인에 속지 않는다.
+        XCTAssertFalse(URLSessionRelayTransport.isAccessLoginURL(URL(string: "https://evilcloudflareaccess.com/cdn-cgi/x")!))
+        XCTAssertTrue(URLSessionRelayTransport.isAccessLoginURL(URL(string: "https://team.CloudflareAccess.com/")!))
+    }
+
     // MARK: - makeRequest (URL · 쿼리 · 헤더 빌드)
 
     func testConsumeKeyPackageQueryIsDeviceTargetAndConsumerDevice() throws {
