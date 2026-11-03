@@ -6,10 +6,17 @@ import UIKit
 import SwiftUI
 import UniformTypeIdentifiers
 import UserNotifications
+import Intents
 import FamilyMLSCore
 
 final class ShareViewController: UIViewController {
-    private let model = ShareModel(environment: ShareEnvironment.live())
+    /// `extensionContext` 는 viewDidLoad 때 있다 — 맨 윗줄 추천(#666)으로 열렸으면 그 방을 미리 고른다(지금 스코프의 식별자일 때만).
+    private lazy var model: ShareModel = {
+        let environment = ShareEnvironment.live()
+        let conversation = (extensionContext?.intent as? INSendMessageIntent)?.conversationIdentifier
+        let preferred = environment.flatMap { env in conversation.flatMap { ShareSuggestions.room(conversation: $0, scope: env.scope) } }
+        return ShareModel(environment: environment, preferred: preferred)
+    }()
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -59,9 +66,11 @@ final class ShareModel: ObservableObject {
     /// 확장 전용 임시 디렉터리(맡기면 App Group 으로 복사하고 지운다).
     private let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("share-\(UUID().uuidString)", isDirectory: true)
 
-    init(environment: ShareEnvironment?) {
+    /// `preferred` = 추천으로 열린 방(#666). 공유할 수 있는 방이면 그 방, 아니면(정지·사라짐) 첫 방.
+    init(environment: ShareEnvironment?, preferred: RoomID? = nil) {
         self.environment = environment
-        selected = environment?.targets.first
+        let targets = environment?.targets ?? []
+        selected = preferred.flatMap { targets.contains($0) ? $0 : nil } ?? targets.first
     }
 
     var targets: [RoomID] { environment?.targets ?? [] }

@@ -69,6 +69,8 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLName: com.seoyoon-family.hande.auth
             CFBundleURLSchemes: [hande]
+        # #666 공유 시트 맨 윗줄 대화 추천: 앱이 기부하는 의도(`ShareSuggestionDonor.live`). 확장 쪽은 `IntentsSupported`.
+        NSUserActivityTypes: [INSendMessageIntent]
     # 서명 빌드용 자리(오너가 Team·프로비저닝을 붙일 때). 무서명 CI(CODE_SIGNING_ALLOWED=NO)에서는 적용되지 않는다.
     # aps-environment 는 개발 빌드 = development(릴레이 -apns-host 샌드박스), TestFlight·배포 = production.
     entitlements:
@@ -181,6 +183,8 @@ targets:
           NSExtensionPointIdentifier: com.apple.share-services
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
           NSExtensionAttributes:
+            # #666 공유 시트 맨 윗줄에서 「한데 — <방>」을 누르면 iOS 가 이 확장을 그 의도와 함께 연다(`extensionContext.intent`).
+            IntentsSupported: [INSendMessageIntent]
             # 받는 종류(D6). 개수 상한은 Core `ShareHandoff.maxAttachments`(10)와 같게.
             NSExtensionActivationRule:
               NSExtensionActivationSupportsText: true
