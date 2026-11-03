@@ -345,6 +345,91 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertTrue(try h.outbox.pending(room: h.room).isEmpty)
     }
 
+    // MARK: - #659 송신 직전 동기화 생략(릴레이 `last_seq` 힌트)
+
+    func testSendSkipsPreSyncWhenRelayLastSeqMatchesCursor() async throws {
+        let h = try joinedHarness()
+        try await h.sync.syncAll()                                   // 참여 확인 · 커서 = 릴레이 마지막 seq
+        let gets = h.relay.getCalls.count
+        h.sync.noteRelayLastSeq(try h.cursors.cursor(room: h.room))
+        XCTAssertTrue(h.sync.relayHasNothingNew())
+
+        let outcome = try await h.sync.send(text: "hello")
+
+        guard case .sent = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertEqual(h.relay.getCalls.count, gets, "GET 없이 바로 POST — 왕복 1회")
+        XCTAssertEqual(h.relay.posts.count, 1)
+        XCTAssertEqual(h.sync.lastSendTiming?.preSyncSkipped, true)
+        XCTAssertEqual(h.sync.lastSendTiming?.casRetried, false)
+        XCTAssertEqual(h.sync.lastSendTiming?.syncSeconds, 0)
+        XCTAssertTrue(try h.outbox.pending(room: h.room).isEmpty)
+    }
+
+    func testSendSyncsFirstWithoutAFreshMatchingHint() async throws {
+        let h = try joinedHarness()
+        try await h.sync.syncAll()
+        // 힌트 없음(옛 릴레이 · 목록 실패) → 종전대로 먼저 동기화.
+        var gets = h.relay.getCalls.count
+        _ = try await h.sync.send(text: "a")
+        XCTAssertGreaterThan(h.relay.getCalls.count, gets)
+        XCTAssertEqual(h.sync.lastSendTiming?.preSyncSkipped, false)
+        // 힌트 > 커서(릴레이에 새 이벤트) → 동기화.
+        try await h.sync.syncAll()
+        h.sync.noteRelayLastSeq(try h.cursors.cursor(room: h.room) + 1)
+        XCTAssertFalse(h.sync.relayHasNothingNew())
+        gets = h.relay.getCalls.count
+        _ = try await h.sync.send(text: "b")
+        XCTAssertGreaterThan(h.relay.getCalls.count, gets)
+        // 힌트 만료(`preSendSyncSkipMaxAge` 지남) → 동기화. nil 힌트는 지운다.
+        try await h.sync.syncAll()
+        h.sync.noteRelayLastSeq(try h.cursors.cursor(room: h.room), at: Date(timeIntervalSinceNow: -60))
+        XCTAssertFalse(h.sync.relayHasNothingNew())
+        h.sync.noteRelayLastSeq(try h.cursors.cursor(room: h.room))
+        XCTAssertTrue(h.sync.relayHasNothingNew())
+        h.sync.noteRelayLastSeq(nil)
+        XCTAssertFalse(h.sync.relayHasNothingNew())
+    }
+
+    func testPreSendSkipCanBeTurnedOffByConfiguration() async throws {
+        let h = try joinedHarness()
+        h.configuration.preSendSyncSkipMaxAge = 0
+        try h.restart()
+        try await h.sync.syncAll()
+        h.sync.noteRelayLastSeq(try h.cursors.cursor(room: h.room))
+        XCTAssertFalse(h.sync.relayHasNothingNew(), "0 = 생략하지 않음")
+        let gets = h.relay.getCalls.count
+        _ = try await h.sync.send(text: "x")
+        XCTAssertGreaterThan(h.relay.getCalls.count, gets)
+    }
+
+    func testSkippedPreSyncFallsBackToSyncOnCasMismatch() async throws {
+        let h = try joinedHarness(pending: [alice, carol, "me-iphone-aaaaaa"].sorted())
+        try await h.sync.syncAll()
+        h.sync.noteRelayLastSeq(try h.cursors.cursor(room: h.room))
+        // 힌트를 받은 뒤 alice 가 carol 을 추가했다 — 앱은 모른 채(GET 생략) epoch 1 로 POST → 409 → 동기화 → epoch 2 로 재암호화.
+        h.relay.inject(device: alice, kind: .commit, bytes: FakeCommit(committer: alice, adds: [carol]).bytes)
+        h.relay.members = [alice, carol, h.me]
+        let gets = h.relay.getCalls.count
+
+        let outcome = try await h.sync.send(text: "hi")
+
+        XCTAssertEqual(h.relay.posts.count, 2)
+        XCTAssertEqual(h.relay.posts[0].epoch, 1)
+        XCTAssertEqual(h.relay.posts[1].epoch, 2)
+        XCTAssertEqual(h.relay.getCalls.count, gets + 1, "409 뒤에만 동기화")
+        guard case .sent(_, let seq, false) = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertEqual(seq, 2)
+        XCTAssertEqual(h.sync.lastSendTiming?.preSyncSkipped, true)
+        XCTAssertEqual(h.sync.lastSendTiming?.casRetried, true)
+        XCTAssertTrue(try h.outbox.pending(room: h.room).isEmpty, "옛 항목 reconciled · 새 항목 sent")
+    }
+
+    func testSendBeforeJoinNeverSkipsPreSync() async throws {
+        let h = try SyncHarness()
+        h.sync.noteRelayLastSeq(0)
+        XCTAssertFalse(h.sync.relayHasNothingNew(), "참여 전에는 힌트가 맞아도 동기화한다")
+    }
+
     func testSendBeforeJoinThrowsNotJoinedAndLeavesNothing() async throws {
         let h = try SyncHarness()
         do { _ = try await h.sync.send(text: "x"); XCTFail("참여 전 송신") }

@@ -102,6 +102,9 @@ public final class RoomSyncEngine {
         public var outboxKeep: Int = 256
         /// `syncAll` 한 번에 따라가는 최대 페이지 수.
         public var maxPages: Int = 20
+        /// #659: 릴레이 방 목록의 `last_seq` 힌트(`noteRelayLastSeq`)를 이만큼 오래 믿는다 — 그 안이고 영속 커서와
+        /// 같으면 송신 직전 GET 을 생략한다(앱 바퀴 4초 + 여유). 0 이하 = 생략하지 않음.
+        public var preSendSyncSkipMaxAge: TimeInterval = 15
         /// 복호화한 프로세스 표시(`MessageRecord.decryptedBy`). NSE 는 `.nse`.
         public var decryptedBy: MessageRecord.DecryptedBy = .app
         /// 이 크기(암호문 바이트)를 넘는 application 이벤트는 처리하지 않고 **그 앞에서 페이지를 끝낸다**(`SyncPass.deferredSeq`,
@@ -134,6 +137,38 @@ public final class RoomSyncEngine {
     public private(set) var haltedReason: String?
     /// nil 이 아니면 "운영자 등록 대기" 화면에 이 JSON 을 보여 준다(`EnrollmentRequest.json()`).
     public private(set) var registrationPending: EnrollmentRequest?
+
+    /// #659: 릴레이 `GET /v2/rooms` 가 알려 준 이 방의 `last_seq` 와 그때(호출자 시계). 송신 직전 GET 생략 판단에만 쓴다.
+    public private(set) var relayLastSeqHint: (seq: Int64, at: Date)?
+
+    /// #659: 마지막 `send` 의 계측(진단 줄·전/후 비교). 평문·바이트 없음.
+    public struct SendTiming: Equatable {
+        /// 송신 직전 `syncAll` 을 생략했다(`relayHasNothingNew`).
+        public var preSyncSkipped: Bool
+        /// 송신 직전 동기화에 쓴 초(생략이면 0).
+        public var syncSeconds: TimeInterval
+        /// 암호화~POST 응답까지(409 재시도 포함) 초.
+        public var postSeconds: TimeInterval
+        /// 409 `cas_mismatch` 로 재동기화·재암호화했다.
+        public var casRetried: Bool
+    }
+    public private(set) var lastSendTiming: SendTiming?
+
+    /// #659: 방 목록(`RoomListing.lastSeq`)을 받은 호출자가 넘긴다. nil(옛 릴레이)은 힌트를 지운다.
+    public func noteRelayLastSeq(_ seq: Int64?, at now: Date = Date()) {
+        relayLastSeqHint = seq.map { ($0, now) }
+    }
+
+    /// #659: 릴레이에 받을 것이 없다고 믿어도 되는가 — 참여했고, 정지·등록 대기가 아니고, 힌트가 `preSendSyncSkipMaxAge` 안이고,
+    /// 힌트가 **영속 커서와 같다**(새 이벤트 없음 = epoch 도 그대로). 송신 직전 GET 과(앱) 바퀴의 방 GET 을 생략하는 근거.
+    /// 그 사이 방이 움직였으면 POST 는 릴레이 409 로 알린다 — 정확성은 서버 CAS 가 보장하고, 이 판단은 왕복을 아끼는 최적화일 뿐이다.
+    public func relayHasNothingNew(now: Date = Date()) -> Bool {
+        guard joined, haltedReason == nil, registrationPending == nil else { return false }
+        guard configuration.preSendSyncSkipMaxAge > 0, let hint = relayLastSeqHint else { return false }
+        guard now.timeIntervalSince(hint.at) <= configuration.preSendSyncSkipMaxAge, now >= hint.at else { return false }
+        guard let cursor = try? cursors.cursor(room: room) else { return false }
+        return hint.seq == cursor
+    }
 
     public init(room: RoomID, identity: DeviceID, engineFactory: MlsEngineFactory, stateStore: MlsStateStore,
                 outbox: OutboxStore, cursors: CursorStore, messages: MessageStore, transport: RelayTransport,
@@ -517,7 +552,15 @@ public final class RoomSyncEngine {
     /// `clientId` = 릴레이 dedup 키 생성기(기본 = 생성자의 `makeClientId`; 첨부는 `file-v1-` 접두). 시도마다 새로 부른다.
     public func send(plaintext: Data, clientId: (() -> String)? = nil) async throws -> SendOutcome {
         if let haltedReason { throw SyncError.halted(haltedReason) }
-        try await syncAll()
+        // #659: 방 목록 힌트가 "받을 것이 없다"고 하면 GET 을 건너뛰고 바로 POST — 왕복 1회. 틀렸으면(그 사이 commit)
+        // 릴레이 409 가 아래 재동기화 경로로 보낸다. 옛 릴레이·힌트 없음·참여 전·힌트 만료는 종전대로 먼저 동기화.
+        let started = Date()
+        let skipped = relayHasNothingNew(now: started)
+        if !skipped { try await syncAll() }
+        let synced = Date()
+        // 생략이면 동기화 시간은 정의상 0(두 Date() 사이 마이크로초를 동기화로 보고하지 않는다).
+        var timing = SendTiming(preSyncSkipped: skipped, syncSeconds: skipped ? 0 : synced.timeIntervalSince(started), postSeconds: 0, casRetried: false)
+        defer { timing.postSeconds = Date().timeIntervalSince(synced); lastSendTiming = timing }
         var retried = false
         while true {
             if let haltedReason { throw SyncError.halted(haltedReason) }
@@ -530,6 +573,7 @@ public final class RoomSyncEngine {
                 try outbox.mark(room: room, clientId: entry.clientId, status: .reconciled)
                 if retried { throw SyncError.casRetryExhausted }
                 retried = true
+                timing.casRetried = true
                 try transaction { engine, dirty in
                     if try engine.hasPending() { _ = try engine.dispatch(.clearPending, Data()); dirty = true }
                 }

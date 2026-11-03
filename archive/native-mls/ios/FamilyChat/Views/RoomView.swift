@@ -147,6 +147,7 @@ struct RoomView: View {
                 .onDisappear {
                     guard !PhotoViewerPresence.active else { return }
                     model.resetTimelineWindow(room: room)
+                    model.roomHidden(room)   // #659: 바퀴가 이 방을 다시 "변화 없으면 건너뛰기" 대상으로 본다.
                 }
                 // 손가락으로 끌면(위로 읽으러 감) 늦은 이미지 로딩이 화면을 끌어내리지 않게 한다.
                 // #497: 손을 떼고 맨 아래에 멈추면 다시 따라간다(`ScrollFollow.shouldRefollow`).
@@ -212,6 +213,7 @@ struct RoomView: View {
                 .onAppear {
                     guard !PhotoViewerPresence.active else { return }
                     reload()
+                    model.roomShown(room)   // #659: 보이는 방은 매 바퀴 GET(타이핑·읽음 위치 갱신).
                     model.noteScroll("\(room) appear rows=\(messages.count) tail=\(messages.count - tailStart) viewport=\(Self.pt(viewportHeight)) "
                                      + "content=\(Self.pt(contentHeight)) anchor=\(BottomAnchoredTimeline.mode)")
                     followLatest = true

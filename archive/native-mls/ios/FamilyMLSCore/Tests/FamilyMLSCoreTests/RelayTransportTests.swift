@@ -249,6 +249,12 @@ final class RelayTransportTests: XCTestCase {
         let listing = try transport(.bearer("t")).decode(RoomsResponse.self, body(
             #"{"rooms":[{"room":"family","epoch":3,"revision":5,"member":true,"keypackages_outstanding":0,"closed":false}]}"#))
         XCTAssertEqual(listing.rooms, [RoomListing(room: "family", epoch: 3, revision: 5, member: true, keypackagesOutstanding: 0, closed: false)])
+        XCTAssertNil(listing.rooms[0].lastSeq, "옛 릴레이(키 없음) → nil")
+        // #659: 새 릴레이는 last_seq 를 싣는다(rooms.go). 0 = 이벤트 없는 방.
+        let withSeq = try transport(.bearer("t")).decode(RoomsResponse.self, body(
+            #"{"rooms":[{"room":"family","epoch":3,"revision":5,"member":true,"keypackages_outstanding":0,"closed":false,"last_seq":1598},"#
+            + #"{"room":"k","epoch":0,"revision":0,"member":false,"keypackages_outstanding":1,"closed":false,"last_seq":0}]}"#))
+        XCTAssertEqual(withSeq.rooms.map(\.lastSeq), [1598, 0])
     }
 
     /// server push.go handleRegisterPush: POST /v2/push/devices, JSON {device, apns_token(std base64), topic} — strictJSON 이라 다른 키 없음.

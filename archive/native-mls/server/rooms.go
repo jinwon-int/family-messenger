@@ -12,6 +12,10 @@ import (
 // otherwise), so one person cannot enumerate another's rooms.
 
 // roomListing mirrors FamilyMLSCore RoomListing; every key is always present.
+// last_seq (#659) is the room's newest event seq (0 when the room has none):
+// a client whose persisted cursor equals it has nothing to fetch, so it can
+// skip the per-room GET in its sync round and the GET before a send. Still
+// public state only — no bytes, members or group material.
 type roomListing struct {
 	Room                   string `json:"room"`
 	Epoch                  int64  `json:"epoch"`
@@ -19,6 +23,7 @@ type roomListing struct {
 	Member                 bool   `json:"member"`
 	KeyPackagesOutstanding int    `json:"keypackages_outstanding"`
 	Closed                 bool   `json:"closed"`
+	LastSeq                int64  `json:"last_seq"`
 }
 
 type roomsResponse struct {
@@ -69,7 +74,7 @@ func (s *relay) listRooms(device string, now int64) ([]roomListing, error) {
 	}
 	defer tx.Rollback()
 	rows, err := tx.Query(`
-SELECT r.room, r.epoch, r.revision, r.closed_at IS NOT NULL,
+SELECT r.room, r.epoch, r.revision, r.closed_at IS NOT NULL, r.last_seq,
        EXISTS (SELECT 1 FROM mls_members m WHERE m.room = r.room AND m.device = ?1),
        EXISTS (SELECT 1 FROM mls_members m WHERE m.room = r.room),
        EXISTS (SELECT 1 FROM mls_cursors c WHERE c.room = r.room AND c.device = ?1 AND c.removed_at IS NULL),
@@ -89,7 +94,7 @@ LIMIT ?3`, device, now, maxListedRooms)
 	for rows.Next() {
 		var l roomListing
 		var tracked, anyTracked, liveCursor bool
-		if err := rows.Scan(&l.Room, &l.Epoch, &l.Revision, &l.Closed, &tracked, &anyTracked, &liveCursor, &l.KeyPackagesOutstanding); err != nil {
+		if err := rows.Scan(&l.Room, &l.Epoch, &l.Revision, &l.Closed, &l.LastSeq, &tracked, &anyTracked, &liveCursor, &l.KeyPackagesOutstanding); err != nil {
 			return nil, err
 		}
 		l.Member = tracked || (!anyTracked && liveCursor)

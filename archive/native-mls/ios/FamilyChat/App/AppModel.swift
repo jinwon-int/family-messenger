@@ -706,12 +706,17 @@ final class AppModel: ObservableObject {
         guard let transport, engine != nil else { return }
         switch phase { case .starting, .needsActor, .needsLogin, .fatal: return; default: break }
         defer { settled = true }
+        // #659: 이 바퀴의 방 목록이 알려 준 `last_seq`(옛 릴레이·목록 실패 = 없음). 방 루프가 엔진 힌트로 넘긴다.
+        var listedLastSeq: [RoomID: Int64] = [:]
+        var listedAt = Date()
         do {
             do {
                 let listing = try await transport.listRooms(device: deviceId)
+                listedAt = Date()
                 for room in listing.rooms where !room.closed && (room.member || room.keypackagesOutstanding > 0) {
                     try ensureRoomRecord(room.room)
                 }
+                for room in listing.rooms { if let seq = room.lastSeq { listedLastSeq[room.room] = seq } }
             } catch RelayError.refused(let code, let status) where status == 403 && code == RelayErrorCode.deviceSubjectMismatch.rawValue {
                 phase = .needsEnrollment
                 try await enrollTickLocked(transport)   // #574: 후보 게시(형제 기기가 승인) — 옛 릴레이면 운영자 흐름 그대로
@@ -724,7 +729,16 @@ final class AppModel: ObservableObject {
             for record in try deps.messageStore.rooms() {
                 if yieldToSend() { break }   // #599: 남은 방은 송신 뒤 곧바로 도는 다음 바퀴가
                 let sync = try syncEngine(record.room)
-                let passes = try await sync.syncAll()
+                // #659: 목록의 last_seq 를 엔진 힌트로(송신 직전 GET 생략 근거). 보이지 않는 방이 "받을 것 없음"이면 이 바퀴의
+                // GET 도 건너뛴다 — 보이는 방은 매 바퀴 GET(타이핑·읽음 위치·알림 설정은 GET 응답에 실려 온다).
+                sync.noteRelayLastSeq(listedLastSeq[record.room], at: listedAt)
+                let passes: [SyncPass]
+                if record.room != visibleRoom, sync.relayHasNothingNew() {
+                    passes = []
+                    skippedRoomSyncs += 1
+                } else {
+                    passes = try await sync.syncAll()
+                }
                 noteSyncPasses(record.room, passes)
                 // #562: 이 방에서 지금 글을 쓰는 다른 기기 — 마지막 페이지 값. 같으면 화면을 다시 그리지 않는다.
                 let typingNow = passes.last?.typing ?? []
@@ -935,6 +949,24 @@ final class AppModel: ObservableObject {
     private func record(_ line: String) {
         diagnostics.append("\(Self.diagnosticsClock.string(from: Date())) \(line)")
         if diagnostics.count > Self.diagnosticsKeep { diagnostics.removeFirst(diagnostics.count - Self.diagnosticsKeep) }
+    }
+
+    // MARK: - #659 보이는 방 · 바퀴 GET 생략 · 송신 계측
+
+    /// 지금 화면에 떠 있는 방(`RoomView` onAppear/onDisappear). 바퀴는 이 방만 매번 GET 하고, 변화 없는 다른 방은 건너뛴다.
+    private(set) var visibleRoom: RoomID?
+    /// 이 세션에서 바퀴가 "변화 없음"으로 건너뛴 방 GET 수(진단·테스트).
+    private(set) var skippedRoomSyncs = 0
+
+    func roomShown(_ room: RoomID) { visibleRoom = room }
+    func roomHidden(_ room: RoomID) { if visibleRoom == room { visibleRoom = nil } }
+
+    /// 송신 1건의 계측을 진단 기록에 한 줄로(평문 없음): 전체 ms · 송신 직전 동기화(생략/ms) · POST ms · 409 재시도.
+    private func noteSendTiming(_ room: RoomID, _ timing: RoomSyncEngine.SendTiming?) {
+        guard let t = timing else { return }
+        func ms(_ s: TimeInterval) -> Int { Int((s * 1000).rounded()) }
+        record("send \(room): \(ms(t.syncSeconds + t.postSeconds))ms presync=\(t.preSyncSkipped ? "skip" : "\(ms(t.syncSeconds))ms")"
+               + " post=\(ms(t.postSeconds))ms\(t.casRetried ? " cas-retry" : "")")
     }
 
     private static let diagnosticsClock: DateFormatter = {
@@ -1770,6 +1802,7 @@ final class AppModel: ObservableObject {
                 self.sendsWaiting = max(0, self.sendsWaiting - 1)
                 return try await operation(try self.syncEngine(room))
             }
+            noteSendTiming(room, syncEngines[room]?.lastSendTiming)   // #659
             var pending = pending
             if let value = stored() { pending.stored = value }
             switch outcome {
