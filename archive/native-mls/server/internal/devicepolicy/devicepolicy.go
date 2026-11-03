@@ -634,6 +634,87 @@ func devicePolicyRevisionName(n uint64) string { return fmt.Sprintf("policy-%06d
 type DevicePolicyStore struct {
 	dir string
 	mu  sync.Mutex
+	// Read cache (#662), guarded by mu: the last successful whole-chain replay
+	// and the directory fingerprint it was taken under. The relay calls Read on
+	// nearly every request (GET events included); replaying ~40 revisions each
+	// time — strict decode, re-marshal, sha256, set and transition checks — kept
+	// one core busy at idle. A hit returns a deep copy; any change to the
+	// directory or to any file in it (name, inode, size, mode, nlink, owner,
+	// mtime, ctime) misses and replays exactly as before. Errors are never
+	// cached, so a broken chain stays fail-closed on every call.
+	cacheKey    string
+	cacheInfo   DevicePolicyInfo
+	cachePolicy PolicyWire4
+	cacheValid  bool
+}
+
+// readReplayHook, when set by tests, runs before every uncached Read replay.
+var readReplayHook func()
+
+// devicePolicyDirKey fingerprints the chain directory from metadata only, via
+// a second descriptor so the replay's own ReadDir offset is untouched. Callers
+// hold the store flock, so cooperating writers (Init/Commit, the policy CLI)
+// cannot change the directory while the key and the replay are taken; a
+// non-locking writer racing the replay can only make the next key differ and
+// force another replay. Writers rename a fresh file into place (new inode), and
+// an in-place rewrite moves ctime, which no unprivileged caller can set.
+// Entries are listed through the held descriptor and stat'ed by name with
+// Lstat under the same path locked() just validated (no symlink is followed;
+// the standard syscall package has no Fstatat). The key only decides whether
+// to skip a replay — the replay itself stays descriptor-based and strict.
+// ok=false (unreadable or oversized directory) disables the cache for the call.
+func devicePolicyDirKey(d *os.File, dir string) (key string, ok bool) {
+	var st syscall.Stat_t
+	if syscall.Fstat(int(d.Fd()), &st) != nil {
+		return "", false
+	}
+	fd, e := syscall.Openat(int(d.Fd()), ".", syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if e != nil {
+		return "", false
+	}
+	list := os.NewFile(uintptr(fd), "native device policy directory (key)")
+	defer list.Close()
+	limit := MaxDevicePolicyRevisions + MaxPendingPolicyFiles + 2
+	names, e := list.Readdirnames(limit + 1)
+	if (e != nil && e != io.EOF) || len(names) > limit {
+		return "", false
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	fmt.Fprintf(&b, "dir %d %d %d.%d %d.%d\n", st.Dev, st.Ino, st.Mtim.Sec, st.Mtim.Nsec, st.Ctim.Sec, st.Ctim.Nsec)
+	for _, name := range names {
+		fi, e := os.Lstat(filepath.Join(dir, name))
+		if e != nil {
+			return "", false
+		}
+		fst, isStat := fi.Sys().(*syscall.Stat_t)
+		if !isStat {
+			return "", false
+		}
+		fmt.Fprintf(&b, "%q %d %d %o %d %d %d.%d %d.%d\n", name, fst.Ino, fst.Size, fst.Mode, fst.Nlink, fst.Uid,
+			fst.Mtim.Sec, fst.Mtim.Nsec, fst.Ctim.Sec, fst.Ctim.Nsec)
+	}
+	return b.String(), true
+}
+
+// clonePolicy deep-copies a policy so a cached value can never be mutated
+// through a returned slice or pointer.
+func clonePolicy(p PolicyWire4) PolicyWire4 {
+	out := PolicyWire4{Version: p.Version}
+	if p.Devices != nil {
+		out.Devices = make([]DeviceV4, len(p.Devices))
+		for i, d := range p.Devices {
+			if d.ApprovedBy != nil {
+				a := *d.ApprovedBy
+				d.ApprovedBy = &a
+			}
+			if d.Roles != nil {
+				d.Roles = append([]string(nil), d.Roles...)
+			}
+			out.Devices[i] = d
+		}
+	}
+	return out
 }
 
 func OpenDevicePolicyStore(dir string) (*DevicePolicyStore, error) {
@@ -792,15 +873,29 @@ func devicePolicyRecords(d *os.File) (DevicePolicyInfo, PolicyWire4, error) {
 	return info, current, nil
 }
 
-// Read validates and returns the current chain state.
+// Read validates and returns the current chain state. An unchanged directory
+// (see devicePolicyDirKey) returns the cached result of the last successful
+// replay; anything else replays the whole chain (#662).
 func (s *DevicePolicyStore) Read() (DevicePolicyInfo, PolicyWire4, error) {
 	var info DevicePolicyInfo
 	var policy PolicyWire4
 	e := s.locked(func(d *os.File) error {
+		key, cacheable := devicePolicyDirKey(d, s.dir)
+		if cacheable && s.cacheValid && key == s.cacheKey {
+			info, policy = s.cacheInfo, clonePolicy(s.cachePolicy)
+			return nil
+		}
+		s.cacheValid = false
+		if readReplayHook != nil {
+			readReplayHook()
+		}
 		var e error
 		info, policy, e = devicePolicyRecords(d)
 		if e == nil && info.Revision == 0 {
 			return ErrDevicePolicyState
+		}
+		if e == nil && cacheable {
+			s.cacheKey, s.cacheInfo, s.cachePolicy, s.cacheValid = key, info, clonePolicy(policy), true
 		}
 		return e
 	})
@@ -813,6 +908,7 @@ func (s *DevicePolicyStore) Read() (DevicePolicyInfo, PolicyWire4, error) {
 func (s *DevicePolicyStore) Init() (DevicePolicyInfo, error) {
 	var out DevicePolicyInfo
 	e := s.locked(func(d *os.File) error {
+		s.cacheValid = false
 		entries, e := d.ReadDir(MaxDevicePolicyRevisions + 2)
 		if e != nil && e != io.EOF {
 			return ErrDevicePolicyState
@@ -841,6 +937,7 @@ func (s *DevicePolicyStore) Commit(expected uint64, next PolicyWire4) (DevicePol
 	}
 	var out DevicePolicyInfo
 	e := s.locked(func(d *os.File) error {
+		s.cacheValid = false
 		old, previous, e := devicePolicyRecords(d)
 		if e != nil {
 			return e
