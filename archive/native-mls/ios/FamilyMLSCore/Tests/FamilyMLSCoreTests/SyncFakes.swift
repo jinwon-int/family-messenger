@@ -392,6 +392,8 @@ final class SyncHarness {
     var clientSeq = 0
     var configuration = RoomSyncEngine.Configuration()
     var subject = "cf-sub-me"
+    /// #665 내 글 기록 재료 저장소. nil(기본) = 종전 조립(엔진이 내 글을 기록하지 않는다). 테스트가 넣고 `restart()` 한다.
+    var ownPending: OwnPendingStore?
     private(set) var sync: RoomSyncEngine!
 
     init(me: DeviceID = "me-iphone-aaaaaa") throws {
@@ -404,7 +406,8 @@ final class SyncHarness {
         try RoomSyncEngine(room: room, identity: me, engineFactory: factory, stateStore: store, outbox: outbox,
                            cursors: cursors, messages: messages, transport: relay, configuration: configuration,
                            enrollmentSubject: subject,
-                           makeClientId: { [unowned self] in self.clientSeq += 1; return "\(self.me)-c\(self.clientSeq)" })
+                           makeClientId: { [unowned self] in self.clientSeq += 1; return "\(self.me)-c\(self.clientSeq)" },
+                           ownPending: ownPending)
     }
 
     @discardableResult

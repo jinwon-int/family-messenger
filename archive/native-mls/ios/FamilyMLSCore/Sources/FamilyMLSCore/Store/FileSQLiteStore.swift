@@ -18,7 +18,7 @@ import SQLite3
 import CryptoKit
 #endif
 
-public final class FileSQLiteStore: MessageStore, OutboxStore, CursorStore, AttachmentLoading {
+public final class FileSQLiteStore: MessageStore, OutboxStore, CursorStore, OwnPendingStore, AttachmentLoading {
     public let path: String
     private let db: SQLiteBridge.DB
     private let lock = NSLock()
@@ -299,6 +299,92 @@ public final class FileSQLiteStore: MessageStore, OutboxStore, CursorStore, Atta
         }
     }
 
+    public func entry(room: RoomID, clientId: String) throws -> OutboxEntry? {
+        lock.lock(); defer { lock.unlock() }
+        let stmt = try db.prepare("""
+        SELECT room, client_id, kind, epoch, bytes, status, created_at FROM outbox WHERE room = ? AND client_id = ?
+        """)
+        defer { stmt.finalize() }
+        stmt.bindText(room, at: 1)
+        stmt.bindText(clientId, at: 2)
+        guard try stmt.step() else { return nil }
+        return OutboxEntry(
+            room: stmt.columnText(0),
+            clientId: stmt.columnText(1),
+            kind: stmt.columnText(2),
+            epoch: stmt.columnInt64(3),
+            bytes: stmt.columnBlob(4),
+            status: OutboxEntry.Status(rawValue: stmt.columnText(5)) ?? .pending,
+            createdAt: Date(timeIntervalSince1970: stmt.columnDouble(6))
+        )
+    }
+
+    // MARK: - OwnPendingStore (#665)
+
+    public func putOwnPending(_ record: OwnPendingRecord) throws {
+        lock.lock(); defer { lock.unlock() }
+        let stmt = try db.prepare("""
+        INSERT OR REPLACE INTO own_pending (room, client_id, kind, body, attachment, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """)
+        defer { stmt.finalize() }
+        stmt.bindText(record.room, at: 1)
+        stmt.bindText(record.clientId, at: 2)
+        stmt.bindText(record.kind.rawValue, at: 3)
+        stmt.bindText(record.body, at: 4)
+        if let attachment = record.attachment {
+            stmt.bind(attachment, at: 5)
+        } else {
+            stmt.bindNull(at: 5)
+        }
+        stmt.bind(record.createdAt.timeIntervalSince1970, at: 6)
+        try stepOnce(stmt, context: "own_pending.put")
+    }
+
+    public func ownPending(room: RoomID) throws -> [OwnPendingRecord] {
+        lock.lock(); defer { lock.unlock() }
+        let stmt = try db.prepare("""
+        SELECT room, client_id, kind, body, attachment, created_at FROM own_pending WHERE room = ? ORDER BY created_at, rowid
+        """)
+        defer { stmt.finalize() }
+        stmt.bindText(room, at: 1)
+        var out: [OwnPendingRecord] = []
+        while try stmt.step() { out.append(ownPendingRow(stmt)) }
+        return out
+    }
+
+    public func ownPending(room: RoomID, clientId: String) throws -> OwnPendingRecord? {
+        lock.lock(); defer { lock.unlock() }
+        let stmt = try db.prepare("""
+        SELECT room, client_id, kind, body, attachment, created_at FROM own_pending WHERE room = ? AND client_id = ?
+        """)
+        defer { stmt.finalize() }
+        stmt.bindText(room, at: 1)
+        stmt.bindText(clientId, at: 2)
+        guard try stmt.step() else { return nil }
+        return ownPendingRow(stmt)
+    }
+
+    public func removeOwnPending(room: RoomID, clientId: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        let stmt = try db.prepare("DELETE FROM own_pending WHERE room = ? AND client_id = ?")
+        defer { stmt.finalize() }
+        stmt.bindText(room, at: 1)
+        stmt.bindText(clientId, at: 2)
+        try stepOnce(stmt, context: "own_pending.remove")
+    }
+
+    private func ownPendingRow(_ stmt: SQLiteBridge.Stmt) -> OwnPendingRecord {
+        OwnPendingRecord(
+            room: stmt.columnText(0),
+            clientId: stmt.columnText(1),
+            kind: MessageRecord.Kind(rawValue: stmt.columnText(2)) ?? .system,
+            body: stmt.columnText(3),
+            attachment: stmt.columnBlobOpt(4),
+            createdAt: Date(timeIntervalSince1970: stmt.columnDouble(5))
+        )
+    }
+
     // MARK: - CursorStore
 
     public func cursor(room: RoomID) throws -> Int64 {
@@ -329,7 +415,7 @@ public final class FileSQLiteStore: MessageStore, OutboxStore, CursorStore, Atta
     public func wipe() throws {
         lock.lock(); defer { lock.unlock() }
         do {
-            try db.exec("BEGIN IMMEDIATE; DELETE FROM messages; DELETE FROM rooms; DELETE FROM outbox; DELETE FROM cursors; COMMIT;")
+            try db.exec("BEGIN IMMEDIATE; DELETE FROM messages; DELETE FROM rooms; DELETE FROM outbox; DELETE FROM cursors; DELETE FROM own_pending; COMMIT;")
         } catch {
             try? db.exec("ROLLBACK;")   // 중간 실패: 열린 트랜잭션을 남기지 않는다(없으면 no-op 오류, 무시)
             throw error
@@ -343,7 +429,7 @@ public final class FileSQLiteStore: MessageStore, OutboxStore, CursorStore, Atta
         lock.lock(); defer { lock.unlock() }
         do {
             try db.exec("BEGIN IMMEDIATE;")
-            for sql in ["DELETE FROM messages WHERE room = ?", "DELETE FROM rooms WHERE room = ?"] {
+            for sql in ["DELETE FROM messages WHERE room = ?", "DELETE FROM rooms WHERE room = ?", "DELETE FROM own_pending WHERE room = ?"] {
                 let stmt = try db.prepare(sql)
                 defer { stmt.finalize() }
                 stmt.bindText(room, at: 1)

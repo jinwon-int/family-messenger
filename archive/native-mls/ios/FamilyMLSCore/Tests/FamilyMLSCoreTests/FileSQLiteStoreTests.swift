@@ -40,7 +40,7 @@ final class FileSQLiteStoreTests: XCTestCase {
     func testAllFrozenTablesExist() throws {
         let dir = try makeTempDir()
         let store = try makeStore(dir)
-        for table in ["schema_version", "rooms", "messages", "outbox", "cursors"] {
+        for table in ["schema_version", "rooms", "messages", "outbox", "cursors", "own_pending"] {
             let count = try store.debugScalar("SELECT COUNT(*) FROM \(table)")
             XCTAssertNotNil(count, "table \(table) missing")
         }
@@ -208,5 +208,67 @@ final class FileSQLiteStoreTests: XCTestCase {
 
         // 같은 파일을 다시 열어도 지운 방은 없다(커밋됨).
         XCTAssertEqual(try FileSQLiteStore(directory: dir).rooms().map(\.room), ["kept"])
+    }
+
+    // MARK: OwnPendingStore (#665)
+
+    private func ownRecord(_ room: RoomID = "r", _ clientId: String, body: String = "hi", kind: MessageRecord.Kind = .text,
+                           attachment: Data? = nil, at: TimeInterval = 1_700_000_000) -> OwnPendingRecord {
+        OwnPendingRecord(room: room, clientId: clientId, kind: kind, body: body, attachment: attachment,
+                         createdAt: Date(timeIntervalSince1970: at))
+    }
+
+    func testOwnPendingPutGetRemoveMatchesReferenceDiscipline() throws {
+        let dir = try makeTempDir()
+        let store = try makeStore(dir)
+        let reference = InMemoryOwnPendingStore()
+        for s in [store as OwnPendingStore, reference] {
+            try s.putOwnPending(ownRecord("r", "c2", body: "second", at: 2))
+            try s.putOwnPending(ownRecord("r", "c1", body: "first", kind: .fileV2, attachment: Data([9, 9]), at: 1))
+            try s.putOwnPending(ownRecord("other", "c9", body: "elsewhere", at: 3))
+            XCTAssertEqual(try s.ownPending(room: "r").map(\.clientId), ["c1", "c2"], "보낸 순서(createdAt)")
+            XCTAssertEqual(try s.ownPending(room: "r", clientId: "c1")?.attachment, Data([9, 9]))
+            XCTAssertEqual(try s.ownPending(room: "r", clientId: "c1")?.kind, .fileV2)
+            XCTAssertNil(try s.ownPending(room: "r", clientId: "c9"), "다른 방의 행은 보이지 않는다")
+
+            try s.putOwnPending(ownRecord("r", "c1", body: "replaced", kind: .text, at: 1))
+            XCTAssertEqual(try s.ownPending(room: "r", clientId: "c1")?.body, "replaced", "같은 키는 덮어쓴다")
+            XCTAssertEqual(try s.ownPending(room: "r").count, 2)
+
+            try s.removeOwnPending(room: "r", clientId: "c1")
+            try s.removeOwnPending(room: "r", clientId: "c1")   // 멱등
+            try s.removeOwnPending(room: "r", clientId: "never")
+            XCTAssertEqual(try s.ownPending(room: "r").map(\.clientId), ["c2"])
+        }
+        // 같은 파일을 다시 열어도 남아 있다(재시작 뒤 복원의 근거).
+        XCTAssertEqual(try FileSQLiteStore(directory: dir).ownPending(room: "r").map(\.body), ["second"])
+    }
+
+    func testOutboxEntryLookupRegardlessOfStatus() throws {
+        let dir = try makeTempDir()
+        let store = try makeStore(dir)
+        let reference = InMemoryOutboxStore()
+        for s in [store as OutboxStore, reference] {
+            let entry = OutboxEntry(room: "r", clientId: "c1", kind: "application", epoch: 3, bytes: Data([1]), status: .pending,
+                                    createdAt: Date(timeIntervalSince1970: 1_700_000_000))
+            try s.enqueue(entry)
+            XCTAssertEqual(try s.entry(room: "r", clientId: "c1"), entry)
+            try s.mark(room: "r", clientId: "c1", status: .reconciled)
+            XCTAssertEqual(try s.entry(room: "r", clientId: "c1")?.status, .reconciled, "pending 이 아니어도 보인다")
+            XCTAssertNil(try s.entry(room: "r", clientId: "c2"))
+            XCTAssertNil(try s.entry(room: "other", clientId: "c1"))
+        }
+    }
+
+    func testWipeAndForgetRoomClearOwnPending() throws {
+        let dir = try makeTempDir()
+        let store = try makeStore(dir)
+        try store.putOwnPending(ownRecord("gone", "c1"))
+        try store.putOwnPending(ownRecord("kept", "c2"))
+        try (store as RoomForgetting).forgetRoom("gone")
+        XCTAssertTrue(try store.ownPending(room: "gone").isEmpty)
+        XCTAssertEqual(try store.ownPending(room: "kept").map(\.clientId), ["c2"])
+        try store.wipe()
+        XCTAssertTrue(try store.ownPending(room: "kept").isEmpty)
     }
 }
