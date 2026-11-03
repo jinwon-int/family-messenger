@@ -59,6 +59,36 @@ public protocol OutboxStore: AnyObject {
     func mark(room: RoomID, clientId: String, status: OutboxEntry.Status) throws
     /// 서버가 200/201 로 확인했고 커서가 지난 항목을 지운다. 장부 상한 256(#177 §3.5).
     func prune(room: RoomID, keepingLast: Int) throws
+    /// #665: 상태와 무관하게 한 항목(없으면 nil) — own_pending 행의 짝(pending·sent·reconciled·지워짐)을 가리는 데 쓴다.
+    func entry(room: RoomID, clientId: String) throws -> OutboxEntry?
+}
+
+/// #665: 서버 확인 전 내 글의 **기록 재료**. outbox 항목(암호문)과 같은 DB·같은 `clientId` 로 붙어 다닌다 — 앱이 재시작했거나
+/// 다른 프로세스(공유 확장, #664)가 보낸 글도, 나중에 같은 바이트가 나가면(`flushOutbox`) 내 화면에 실제 기록으로 잇기 위해서다.
+/// 재전송용 원본이 아니라 `MessageRecord` 의 kind·body·attachment 칸 값이다: 글 = 본문, v1 첨부 = 본체, file-v2 = 설명자(FILE-V2.md §4-2).
+/// 수명: `RoomSyncEngine` 이 outbox 에 넣을 때 쓰고, 서버가 seq 를 주면 기록한 뒤 지운다. 짝(outbox 항목)이 pending 이 아닌데 남은 행은
+/// 앱이 복원(reconciled → 새로 암호화)하거나 버린다(sent 인데 seq 를 모름 = 종전과 같은 포기).
+public struct OwnPendingRecord: Equatable {
+    public let room: RoomID
+    public let clientId: String
+    public let kind: MessageRecord.Kind
+    public let body: String
+    public let attachment: Data?
+    /// 보낸 순간(outbox 항목의 `createdAt` 과 같다) — 기록의 `receivedAt`(#405: 내 글 = 보낸 순간).
+    public let createdAt: Date
+    public init(room: RoomID, clientId: String, kind: MessageRecord.Kind, body: String, attachment: Data?, createdAt: Date) {
+        self.room = room; self.clientId = clientId; self.kind = kind; self.body = body; self.attachment = attachment; self.createdAt = createdAt
+    }
+}
+
+public protocol OwnPendingStore: AnyObject {
+    /// 같은 (room, clientId) 가 있으면 덮어쓴다.
+    func putOwnPending(_ record: OwnPendingRecord) throws
+    /// 보낸 순서(createdAt, 삽입 순).
+    func ownPending(room: RoomID) throws -> [OwnPendingRecord]
+    func ownPending(room: RoomID, clientId: String) throws -> OwnPendingRecord?
+    /// 없으면 성공(멱등).
+    func removeOwnPending(room: RoomID, clientId: String) throws
 }
 
 public protocol CursorStore: AnyObject {

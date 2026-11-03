@@ -376,3 +376,110 @@ private struct AnyFactory: MlsEngineFactory {
     func create(identity: DeviceID) throws -> MlsEngine { try create(identity) }
     func importState(identity: DeviceID, bytes: Data) throws -> MlsEngine { try importState(identity, bytes) }
 }
+
+// MARK: - #665 내 글 평문 영속(재시작 뒤에도 내 말풍선이 기록으로 이어진다)
+
+extension OutgoingTests {
+    /// 재시작을 흉내 내는 공유 저장소 — 새 `AppModel` 은 메모리 평문(`unconfirmed`)이 없고 저장소만 같다.
+    private final class RestartableStores {
+        let relay = InMemoryRelay()
+        let stateStore = InMemoryStateStore()
+        let messageStore = InMemoryMessageStore()
+        let outbox = InMemoryOutboxStore()
+        let cursors = InMemoryCursorStore()
+        let ownPending = InMemoryOwnPendingStore()
+    }
+
+    private func model(over stores: RestartableStores) -> AppModel {
+        var deps = AppModel.Dependencies(
+            engineFactory: AnyFactory(MemberFakeFactory()), stateStore: stores.stateStore, messageStore: stores.messageStore,
+            outbox: stores.outbox, cursors: stores.cursors,
+            identityProvider: { "mom-iphone-a1b2c3" }, expectedDecryptFormat: { 2 }, makeTransport: { _ in stores.relay })
+        deps.ownPending = stores.ownPending
+        return AppModel(dependencies: deps)
+    }
+
+    private func readyModel(over stores: RestartableStores) async -> AppModel {
+        let restarted = model(over: stores)
+        await restarted.bootstrap(); restarted.login(.bearer("t")); await restarted.refresh()
+        XCTAssertEqual(restarted.phase, .ready)
+        return restarted
+    }
+
+    /// 보관된 글(outbox pending) → 앱 종료 → 다시 열면 같은 바이트가 나가고 **내 화면에도** 기록으로 잇는다(종전: 상대에게만 도착).
+    func testQueuedMessageSurvivesARestartAndIsRecordedOnceWhenFlushed() async throws {
+        let stores = RestartableStores()
+        let first = await readyModel(over: stores)
+        await sendFirstSoTheRoomIsListed(first)
+        stores.relay.failNextPosts([.network("lost")])
+        guard case .queued? = await first.send(room: "family", text: "later") else { return XCTFail() }
+        XCTAssertEqual(try stores.ownPending.ownPending(room: "family").map(\.body), ["later"])
+
+        let second = await readyModel(over: stores)   // 재시작: refresh 가 복원 → flush → 기록
+
+        XCTAssertNil(second.outgoing["family"], "the restored bubble is replaced by the record")
+        XCTAssertEqual(second.messages(room: "family").map(\.record.body), ["hi", "later"])
+        XCTAssertEqual(second.messages(room: "family").map(\.record.senderDevice), [second.deviceId, second.deviceId])
+        XCTAssertEqual(stores.relay.applicationEvents(room: "family"), 2, "same bytes once, no re-encryption")
+        XCTAssertTrue(try stores.ownPending.ownPending(room: "family").isEmpty)
+    }
+
+    /// 오프라인으로 다시 열어도 보관된 글은 「연결되면 보냅니다」로 **보인다**(동기화 전에 복원) — 연결되면 그대로 나간다.
+    func testRestoredBubbleIsShownWhileStillOfflineAndSentWhenBack() async throws {
+        let stores = RestartableStores()
+        let first = await readyModel(over: stores)
+        await sendFirstSoTheRoomIsListed(first)
+        stores.relay.failNextPosts([.network("lost")])
+        guard case .queued? = await first.send(room: "family", text: "later") else { return XCTFail() }
+
+        let second = model(over: stores)
+        await second.bootstrap(); second.login(.bearer("t"))
+        try await stores.relay.stop()
+        await second.refresh()
+
+        let shown = second.messages(room: "family")
+        XCTAssertEqual(shown.map(\.record.body), ["hi", "later"])
+        XCTAssertEqual(shown.last?.outgoing, .queued, "restored from the stored material, before any sync")
+        XCTAssertLessThan(shown.last!.id, -2)
+
+        try await stores.relay.start()
+        await second.refresh()
+        XCTAssertNil(second.outgoing["family"])
+        XCTAssertEqual(second.messages(room: "family").map(\.record.body), ["hi", "later"])
+        XCTAssertEqual(stores.relay.applicationEvents(room: "family"), 2)
+    }
+
+    /// 재시작 뒤 보관된 항목이 닫히면(reconciled) 재료로 새로 암호화해 **한 번** 보낸다 — 종전에는 평문이 없어 사라졌다.
+    func testReconciledAfterRestartIsReencryptedOnceFromTheStoredMaterial() async throws {
+        let stores = RestartableStores()
+        let first = await readyModel(over: stores)
+        await sendFirstSoTheRoomIsListed(first)
+        stores.relay.failNextPosts([.network("lost")])
+        guard case .queued? = await first.send(room: "family", text: "later") else { return XCTFail() }
+
+        let second = model(over: stores)
+        await second.bootstrap(); second.login(.bearer("t"))
+        stores.relay.failNextPosts([.refused(code: "bad_request", status: 400)])   // 보관된 바이트는 닫힌다
+        await second.refresh()
+
+        XCTAssertNil(second.outgoing["family"], "not stuck on 「연결되면 보냅니다」")
+        XCTAssertEqual(second.messages(room: "family").map(\.record.body), ["hi", "later"])
+        XCTAssertEqual(stores.relay.applicationEvents(room: "family"), 2, "hi + later(re-encrypted), each once")
+        XCTAssertTrue(try stores.ownPending.ownPending(room: "family").isEmpty)
+    }
+
+    /// 재료는 있는데 outbox 항목이 이미 `sent`(기록 전에 죽음)거나 없다 — 포기하고 치운다(종전과 같다, 되풀이 없음).
+    func testOrphanedMaterialIsDroppedQuietly() async throws {
+        let stores = RestartableStores()
+        let first = await readyModel(over: stores)
+        await sendFirstSoTheRoomIsListed(first)
+        try stores.ownPending.putOwnPending(OwnPendingRecord(room: "family", clientId: "ghost", kind: .text, body: "lost",
+                                                             attachment: nil, createdAt: Date()))
+
+        let second = await readyModel(over: stores)
+
+        XCTAssertNil(second.outgoing["family"])
+        XCTAssertEqual(second.messages(room: "family").map(\.record.body), ["hi"])
+        XCTAssertTrue(try stores.ownPending.ownPending(room: "family").isEmpty)
+    }
+}

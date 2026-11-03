@@ -125,6 +125,9 @@ public final class RoomSyncEngine {
     private let transport: RelayTransport
     private let makeClientId: () -> String
     private let enrollmentSubject: String
+    /// #665: 내 글의 기록 재료(평문). nil = 종전대로(호출자가 평문을 쥐고 기록한다 — 테스트·옛 조립). 있으면 outbox 에 넣을 때 같이
+    /// 쓰고, 서버가 seq 를 주면(`post` — 즉시 송신이든 `flushOutbox` 든) 여기서 `MessageStore` 에 기록한 뒤 지운다.
+    private let ownPending: OwnPendingStore?
 
     /// 마지막으로 저장(또는 로드)한 엔진과 그 generation. 다른 작성자(NSE)가 사이에 쓰면 generation 이 달라져 다시 import 한다.
     private var cached: (generation: UInt64, engine: MlsEngine)?
@@ -174,9 +177,11 @@ public final class RoomSyncEngine {
                 outbox: OutboxStore, cursors: CursorStore, messages: MessageStore, transport: RelayTransport,
                 configuration: Configuration = Configuration(),
                 enrollmentSubject: String = "",
-                makeClientId: (() -> String)? = nil) throws {
+                makeClientId: (() -> String)? = nil,
+                ownPending: OwnPendingStore? = nil) throws {
         self.room = room; self.identity = identity; self.configuration = configuration
         self.enrollmentSubject = enrollmentSubject
+        self.ownPending = ownPending
         self.engineFactory = engineFactory; self.stateStore = stateStore
         self.outbox = outbox; self.cursors = cursors; self.messages = messages; self.transport = transport
         self.makeClientId = makeClientId ?? { "\(identity)-\(UUID().uuidString.prefix(8).lowercased())" }
@@ -521,13 +526,28 @@ public final class RoomSyncEngine {
     // MARK: - 송신
 
     public func send(text: String) async throws -> SendOutcome {
-        try await send(plaintext: Data(text.utf8))
+        try await send(plaintext: Data(text.utf8), own: OwnPayload(kind: .text, body: text, attachment: nil))
     }
 
     /// 첨부(원본 바이트 그대로, ≤256 KiB): 릴레이 client_id 만 `file-v1-<uuid>` 로 바꾼다(AttachmentFormat). 409 재암호화도 새 `file-v1-` ID.
     public func send(attachment: Data) async throws -> SendOutcome {
         guard attachment.count <= AttachmentFormat.maxBytes else { throw SyncError.attachmentTooLarge(attachment.count) }
-        return try await send(plaintext: attachment, clientId: { AttachmentFormat.newClientId() })
+        return try await send(plaintext: attachment, clientId: { AttachmentFormat.newClientId() },
+                              own: OwnPayload(kind: .attachment, body: AttachmentFormat.sniffMime(attachment), attachment: attachment))
+    }
+
+    /// #665: 설명자가 이미 있는 file-v2 를 다시 보낸다(blob 은 그대로, 새 `file-v2-` client_id) — 재시작 뒤 outbox 항목이 닫힌(reconciled)
+    /// 내 글을 원본 바이트 없이 되살리는 길. `send(fileV2:)` 의 409 재암호화와 같은 동작이다.
+    public func resend(fileV2Descriptor descriptor: Data, mime: String?) async throws -> SendOutcome {
+        try await send(plaintext: descriptor, clientId: { FileV2Format.newClientId() },
+                       own: OwnPayload(kind: .fileV2, body: mime ?? AttachmentFormat.fallbackMime, attachment: descriptor))
+    }
+
+    /// #665: 송신 1건의 기록 재료 — `OwnPendingRecord` 의 내용 칸(평문 바이트와 별개로, 기록이 보일 모습).
+    private struct OwnPayload {
+        let kind: MessageRecord.Kind
+        let body: String
+        let attachment: Data?
     }
 
     /// file-v2 첨부(#499 3단계, FILE-V2.md §3): 새 키로 암호화 → `POST /blobs`(멱등, 응답 id = sha256 확인) → 설명자 JSON 을
@@ -542,7 +562,9 @@ public final class RoomSyncEngine {
         guard upload.id == sealed.blob else { throw SyncError.blobMismatch }
         let descriptor = try FileV2Format.encodeDescriptor(blob: sealed.blob, size: sealed.size, key: sealed.key, nonce: sealed.nonce,
                                                            mime: mime, name: name, width: width, height: height)
-        let outcome = try await send(plaintext: descriptor, clientId: { FileV2Format.newClientId() })
+        // 내 기록(#665)은 수신 쪽과 같은 모습: kind file-v2 · body = MIME · attachment = 설명자(원본 바이트가 아니다 — FILE-V2.md §4-2).
+        let outcome = try await send(plaintext: descriptor, clientId: { FileV2Format.newClientId() },
+                                     own: OwnPayload(kind: .fileV2, body: mime ?? AttachmentFormat.fallbackMime, attachment: descriptor))
         return (outcome, descriptor)
     }
 
@@ -551,6 +573,11 @@ public final class RoomSyncEngine {
     /// 릴레이에 닿지 않으면 ratchet 을 쓰기 전에 실패한다(평문은 호출자가 들고 있다).
     /// `clientId` = 릴레이 dedup 키 생성기(기본 = 생성자의 `makeClientId`; 첨부는 `file-v1-` 접두). 시도마다 새로 부른다.
     public func send(plaintext: Data, clientId: (() -> String)? = nil) async throws -> SendOutcome {
+        try await send(plaintext: plaintext, clientId: clientId, own: nil)
+    }
+
+    /// `own` 이 있고 `ownPending` 저장소가 조립됐으면 outbox 항목과 함께 기록 재료를 남긴다(#665). 날 바이트 송신(`own` nil)은 종전대로.
+    private func send(plaintext: Data, clientId: (() -> String)? = nil, own: OwnPayload?) async throws -> SendOutcome {
         if let haltedReason { throw SyncError.halted(haltedReason) }
         // #659: 방 목록 힌트가 "받을 것이 없다"고 하면 GET 을 건너뛰고 바로 POST — 왕복 1회. 틀렸으면(그 사이 commit)
         // 릴레이 409 가 아래 재동기화 경로로 보낸다. 옛 릴레이·힌트 없음·참여 전·힌트 만료는 종전대로 먼저 동기화.
@@ -565,12 +592,14 @@ public final class RoomSyncEngine {
         while true {
             if let haltedReason { throw SyncError.halted(haltedReason) }
             if registrationPending != nil { throw SyncError.registrationPending }   // 409 뒤 재동기화에서 403 이 났을 수도
-            let entry = try encryptAndEnqueue(plaintext, clientId: (clientId ?? makeClientId)())
+            let entry = try encryptAndEnqueue(plaintext, clientId: (clientId ?? makeClientId)(), own: own)
             do {
                 return try await post(entry)
             } catch RelayError.cas {
                 // 방이 움직였다: 이 바이트는 영영 못 들어간다 → reconciled. 대기 commit 은 버리고 동기화 후 새 epoch 로 다시.
+                // 기록 재료(#665)도 이 client_id 와 함께 닫는다 — 재암호화가 새 client_id 로 새 행을 만든다(포기해도 평문은 호출자가 쥐고 있다).
                 try outbox.mark(room: room, clientId: entry.clientId, status: .reconciled)
+                try ownPending?.removeOwnPending(room: room, clientId: entry.clientId)
                 if retried { throw SyncError.casRetryExhausted }
                 retried = true
                 timing.casRetried = true
@@ -589,8 +618,9 @@ public final class RoomSyncEngine {
                 throw SyncError.registrationPending
             } catch RelayError.refused(let code, let status) {
                 // #497 B: 영구 거절(413 용량·400·403·410 등) — 같은 바이트는 다시 보내도 같다. 닫아서 폴링마다 다시 올리지 않게 하고
-                // 호출자에게 그대로 알린다(평문을 쥔 호출자가 「전송 안 됨」으로 보인다).
+                // 호출자에게 그대로 알린다(평문을 쥔 호출자가 「전송 안 됨」으로 보인다). 기록 재료(#665)도 함께 닫는다.
                 try outbox.mark(room: room, clientId: entry.clientId, status: .reconciled)
+                try ownPending?.removeOwnPending(room: room, clientId: entry.clientId)
                 throw RelayError.refused(code: code, status: status)
             }
         }
@@ -628,7 +658,7 @@ public final class RoomSyncEngine {
         return outcomes
     }
 
-    private func encryptAndEnqueue(_ plaintext: Data, clientId: String) throws -> OutboxEntry {
+    private func encryptAndEnqueue(_ plaintext: Data, clientId: String, own: OwnPayload? = nil) throws -> OutboxEntry {
         let bytes = try transaction { engine, dirty -> Data in
             guard try isJoined(engine) else { throw SyncError.notJoined }
             // AAD client_id 는 **기기 ID**(파사드 리뷰 H1: 수신측 decrypt 가 인증된 발신 기기와 같지 않으면 거부, 봇 session.rs 와 같음).
@@ -641,6 +671,12 @@ public final class RoomSyncEngine {
         let entry = OutboxEntry(room: room, clientId: clientId, kind: EventKind.application.rawValue, epoch: epoch,
                                 bytes: bytes, status: .pending, createdAt: Date())
         try outbox.enqueue(entry)
+        // #665: 기록 재료는 outbox 항목 **뒤에**(같은 DB, 같은 client_id). 사이에서 죽으면 종전과 같은 상태(항목만 있음)라 더 나빠지지 않고,
+        // 재료만 있고 항목이 없는 경우는 생기지 않는다.
+        if let own, let ownPending {
+            try ownPending.putOwnPending(OwnPendingRecord(room: room, clientId: clientId, kind: own.kind, body: own.body,
+                                                          attachment: own.attachment, createdAt: entry.createdAt))
+        }
         return entry
     }
 
@@ -649,8 +685,21 @@ public final class RoomSyncEngine {
                              epoch: entry.epoch, bytes: entry.bytes)
         let response = try await transport.postEvent(room: room, post)
         try outbox.mark(room: room, clientId: entry.clientId, status: .sent)
+        try recordOwn(clientId: entry.clientId, seq: response.seq)
         try outbox.prune(room: room, keepingLast: configuration.outboxKeep)
         return .sent(clientId: entry.clientId, seq: response.seq, duplicate: response.duplicate)
+    }
+
+    /// #665: 서버가 seq 를 준 내 글을 기록 재료로 `MessageStore` 에 쓴다(이미 그 seq 가 있으면 건너뜀) — 즉시 송신·`flushOutbox`·
+    /// 다른 프로세스가 넣은 항목 모두 같은 길. 재료가 없으면(옛 조립·날 바이트 송신) 호출자가 기록한다(종전).
+    private func recordOwn(clientId: String, seq: Int64) throws {
+        guard let ownPending, let own = try ownPending.ownPending(room: room, clientId: clientId) else { return }
+        if try !isStored(seq) {
+            try messages.insert(MessageRecord(room: room, seq: seq, senderDevice: identity, clientId: clientId, kind: own.kind,
+                                              body: own.body, attachment: own.attachment, receivedAt: own.createdAt,
+                                              decryptedBy: configuration.decryptedBy))
+        }
+        try ownPending.removeOwnPending(room: room, clientId: clientId)
     }
 
     // MARK: - 전면 폴링

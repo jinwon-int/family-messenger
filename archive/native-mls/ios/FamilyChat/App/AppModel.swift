@@ -119,6 +119,9 @@ final class AppModel: ObservableObject {
         var deliverSharesWhenReady = false
         /// #643 맡김 하나를 다 보낸 뒤(맡김 ID) — live() 는 그 공유 알림을 알림 센터에서 지운다.
         var shareDelivered: (String) -> Void = { _ in }
+        /// #665 내 글의 기록 재료(평문) 영속 — outbox 와 같은 DB(`FileSQLiteStore`). 엔진이 쓰고·기록하고·지운다; 앱은 재시작 뒤
+        /// 「연결되면 보냅니다」 말풍선을 여기서 복원하고, 닫힌(reconciled) 글을 새로 암호화해 보낸다. nil = 종전(메모리 평문만, 테스트 기본).
+        var ownPending: OwnPendingStore? = nil
     }
 
     /// 저장소 밖의 삭제 작업(§9-5). `storage` = MLS 상태 전부(identity 슬롯 포함) + messages.db 행, `identity` = 저장된 기기 ID.
@@ -332,6 +335,8 @@ final class AppModel: ObservableObject {
         let createdAt: Date
         var clientId: String?
         var state: OutgoingState
+        /// #665 재시작 뒤 복원된 file-v2 글: 원본 바이트는 없고 설명자만 있다 — 「다시 보내기」는 설명자를 다시 보낸다(blob 은 그대로).
+        var descriptor: Data? = nil
     }
     /// 방별 마지막으로 본 영속 커서 — NSE 가 사이에 처리했는지 감지(전면 복귀 시 화면 갱신).
     private var seenCursors: [RoomID: Int64] = [:]
@@ -387,6 +392,8 @@ final class AppModel: ObservableObject {
             fingerprint = try engine.fingerprint()
             registration = try EnrollmentRequest(engine: engine, subject: "")
             rooms = try deps.messageStore.rooms()
+            // #665: 지난 실행이 보내지 못한 내 글을 지금 바로 말풍선으로 — 릴레이에 닿기 전(오프라인·로그인 전)에도 보인다.
+            for record in rooms { try restoreOwnPending(record.room) }
             // 지난 실행의 세션(Keychain)으로 이어 간다 — 만료됐으면 첫 동기화의 401 이 로그인 화면으로 보낸다.
             if credential == nil, let saved = deps.credentials.load() { login(saved) }
             phase = credential == nil ? .needsLogin : .checking
@@ -729,6 +736,8 @@ final class AppModel: ObservableObject {
             for record in try deps.messageStore.rooms() {
                 if yieldToSend() { break }   // #599: 남은 방은 송신 뒤 곧바로 도는 다음 바퀴가
                 let sync = try syncEngine(record.room)
+                // #665: 지난 실행이 outbox 에 남긴 내 글을 말풍선으로 먼저 — 동기화 전이라 릴레이에 닿지 않아도(오프라인으로 앱을 열어도) 보인다.
+                try restoreOwnPending(record.room)
                 // #659: 목록의 last_seq 를 엔진 힌트로(송신 직전 GET 생략 근거). 보이지 않는 방이 "받을 것 없음"이면 이 바퀴의
                 // GET 도 건너뛴다 — 보이는 방은 매 바퀴 GET(타이핑·읽음 위치·알림 설정은 GET 응답에 실려 온다).
                 sync.noteRelayLastSeq(listedLastSeq[record.room], at: listedAt)
@@ -763,8 +772,8 @@ final class AppModel: ObservableObject {
                 if sync.haltedReason == nil {
                     let outcomes = try await sync.flushOutbox()
                     lastFlush[record.room] = outcomes
-                    for case .sent(let clientId, let seq, _) in outcomes { try recordOwn(clientId: clientId, seq: seq) }
-                    for case .reconciled(let clientId) in outcomes { reopenReconciled(clientId: clientId) }
+                    for case .sent(let clientId, let seq, _) in outcomes { try recordOwn(room: record.room, clientId: clientId, seq: seq) }
+                    for case .reconciled(let clientId) in outcomes { try reopenReconciled(room: record.room, clientId: clientId) }
                 }
             }
             rooms = try deps.messageStore.rooms()
@@ -1748,10 +1757,25 @@ final class AppModel: ObservableObject {
         guard let failed = outgoing[room]?.first(where: { $0.id == outgoingId }) else { return }
         removeOutgoing(id: outgoingId, room: room)
         switch failed.kind {
+        case .fileV2 where failed.attachment == nil:
+            // #665 복원된 글(원본 없음): 설명자를 새 client_id 로 다시 보낸다 — blob 은 이미 올라가 있다.
+            if let descriptor = failed.descriptor { _ = await resendFileV2(room: room, descriptor: descriptor, mime: failed.body) }
         case .attachment, .fileV2:
             if let data = failed.attachment { _ = await sendAttachment(room: room, data: data) }
         default:
             _ = await send(room: room, text: failed.body)
+        }
+    }
+
+    /// #665: 설명자만 남은 file-v2 글을 다시 보낸다(`RoomSyncEngine.resend(fileV2Descriptor:)`). 기록은 설명자 행(.fileV2).
+    private func resendFileV2(room: RoomID, descriptor: Data, mime: String) async -> SendOutcome? {
+        var pending = PendingOwn(room: room, kind: .fileV2, body: mime, attachment: nil)
+        pending.stored = descriptor
+        let id = enqueueOutgoing(pending)
+        updateOutgoing(id, room: room) { $0.descriptor = descriptor }
+        let sent = mime == AttachmentFormat.fallbackMime ? nil : mime
+        return await sendOwn(room: room, pending: pending, outgoing: id, stored: { descriptor }) {
+            try await $0.resend(fileV2Descriptor: descriptor, mime: sent)
         }
     }
 
@@ -1809,7 +1833,7 @@ final class AppModel: ObservableObject {
             case .sent(let clientId, let seq, _):
                 unconfirmed[clientId] = pending
                 removeOutgoing(id: id, room: room)
-                try recordOwn(clientId: clientId, seq: seq)
+                try recordOwn(room: room, clientId: clientId, seq: seq)
                 lastError = nil
                 reconnecting = false
             case .queued(let clientId):
@@ -1857,10 +1881,70 @@ final class AppModel: ObservableObject {
     /// 말풍선이 「연결되면 보냅니다」에 영원히 남았다. 평문을 쥐고 있으면(`unconfirmed`) clientId 를 떼어 「연결되면 보냅니다」(outbox 밖)로
     /// 되돌린다 — 이 바퀴 뒤 `resendUnsent` 가 새로 암호화해 한 번 보낸다. 그 송신이 다시 거절되면 `sendOwn` 이 「전송 안 됨」으로
     /// 바꾸므로 되풀이되지 않는다. 평문이 없으면(재시작 뒤) 보일 말풍선도 없다.
-    private func reopenReconciled(clientId: String) {
-        guard let pending = unconfirmed.removeValue(forKey: clientId),
-              let id = outgoing[pending.room]?.first(where: { $0.clientId == clientId })?.id else { return }
-        updateOutgoing(id, room: pending.room) { $0.clientId = nil; $0.state = .queued }
+    private func reopenReconciled(room: RoomID, clientId: String) throws {
+        if let pending = unconfirmed.removeValue(forKey: clientId) {
+            guard let id = outgoing[pending.room]?.first(where: { $0.clientId == clientId })?.id else { return }
+            updateOutgoing(id, room: pending.room) { $0.clientId = nil; $0.state = .queued }
+            try deps.ownPending?.removeOwnPending(room: room, clientId: clientId)
+            return
+        }
+        // #665: 평문이 메모리에 없다(재시작 뒤) — 기록 재료로 되살린다. 재료도 없으면 보일 말풍선이 없다(종전).
+        guard let store = deps.ownPending, let material = try store.ownPending(room: room, clientId: clientId) else { return }
+        try store.removeOwnPending(room: room, clientId: clientId)
+        if let id = outgoing[room]?.first(where: { $0.clientId == clientId })?.id {
+            updateOutgoing(id, room: room) { $0.clientId = nil; $0.state = .queued }
+        } else {
+            appendRestored([material], keepClientId: false)
+        }
+    }
+
+    /// #665: 지난 실행(또는 다른 프로세스, #664)이 남긴 내 글을 outbox 항목의 상태로 가려 말풍선으로 복원하고, 짝을 잃은 재료는 치운다.
+    /// - pending → 「연결되면 보냅니다」(clientId 있음 — `flushOutbox` 가 같은 바이트로 보내고 `.sent` 가 거둔다)
+    /// - reconciled → 「연결되면 보냅니다」(clientId 없음 — `resendUnsent` 가 새로 암호화해 보낸다), 재료는 새 송신이 새로 만든다
+    /// - sent(기록 전에 죽어 seq 를 모름)·없음(장부에서 지워짐) → 포기(상대는 정상 수신 — 종전과 같다)
+    /// 이 실행이 보낸 글(`unconfirmed`)은 메모리가 정본이라 건드리지 않는다.
+    private func restoreOwnPending(_ room: RoomID) throws {
+        guard let store = deps.ownPending else { return }
+        var pending: [OwnPendingRecord] = []
+        var reopened: [OwnPendingRecord] = []
+        for material in try store.ownPending(room: room) where unconfirmed[material.clientId] == nil {
+            let shown = (outgoing[room] ?? []).contains(where: { $0.clientId == material.clientId })
+            switch try deps.outbox.entry(room: room, clientId: material.clientId)?.status {
+            case .pending?:
+                if !shown { pending.append(material) }
+            case .reconciled?:
+                try store.removeOwnPending(room: room, clientId: material.clientId)
+                if let id = outgoing[room]?.first(where: { $0.clientId == material.clientId })?.id {
+                    updateOutgoing(id, room: room) { $0.clientId = nil; $0.state = .queued }
+                } else {
+                    reopened.append(material)
+                }
+            case .sent?, nil:
+                try store.removeOwnPending(room: room, clientId: material.clientId)
+                if shown { removeOutgoing(clientId: material.clientId, room: room) }
+            }
+        }
+        appendRestored(pending, keepClientId: true)
+        appendRestored(reopened, keepClientId: false)
+    }
+
+    /// 복원된 글을 보내는 글 목록 **앞에**(지난 실행의 글이라 이 실행의 어떤 글보다 오래됐다) 보낸 순서로 끼운다.
+    /// `keepClientId` = outbox 항목이 살아 있어 같은 바이트로 나갈 글(true) / 새로 암호화할 글(false — `resendUnsent` 대상).
+    private func appendRestored(_ materials: [OwnPendingRecord], keepClientId: Bool) {
+        guard !materials.isEmpty else { return }
+        var restored: [OutgoingMessage] = []
+        for material in materials.sorted(by: { $0.createdAt < $1.createdAt }) {
+            let id = nextOutgoingId
+            nextOutgoingId -= 1
+            let isV2 = material.kind == .fileV2
+            restored.append(OutgoingMessage(id: id, room: material.room, kind: material.kind, body: material.body,
+                                            attachment: isV2 ? nil : material.attachment, createdAt: material.createdAt,
+                                            clientId: keepClientId ? material.clientId : nil, state: .queued,
+                                            descriptor: isV2 ? material.attachment : nil))
+        }
+        let room = materials[0].room
+        outgoing[room] = restored + (outgoing[room] ?? [])
+        bumpRevision(room)
     }
 
     /// 연결이 돌아왔다(동기화 성공): outbox 에 못 들어가고 「연결되면 보냅니다」로 남은 글을 같은 내용으로 다시 보낸다.
@@ -2001,7 +2085,8 @@ final class AppModel: ObservableObject {
         guard let transport else { throw RelayError.unauthorized }
         let sync = try RoomSyncEngine(room: room, identity: deviceId, engineFactory: roomEngineFactory, stateStore: deps.stateStore,
                                       outbox: deps.outbox, cursors: deps.cursors, messages: deps.messageStore, transport: transport,
-                                      configuration: deps.syncConfiguration, enrollmentSubject: registration?.subject ?? "")
+                                      configuration: deps.syncConfiguration, enrollmentSubject: registration?.subject ?? "",
+                                      ownPending: deps.ownPending)
         syncEngines[room] = sync
         return sync
     }
@@ -2020,8 +2105,14 @@ final class AppModel: ObservableObject {
     }
 
     /// 서버가 seq 를 준 내 메시지를 기록한다(이미 있으면 건너뜀 — 같은 seq 를 두 번 쓰지 않는다).
-    private func recordOwn(clientId: String, seq: Int64) throws {
-        guard let pending = unconfirmed.removeValue(forKey: clientId) else { return }
+    private func recordOwn(room: RoomID, clientId: String, seq: Int64) throws {
+        guard let pending = unconfirmed.removeValue(forKey: clientId) else {
+            // #665: 평문이 메모리에 없다(재시작 뒤 복원된 글·다른 프로세스가 넣은 항목) — 엔진이 기록 재료로 이미 기록했다.
+            // 복원된 말풍선만 거두고 화면이 다시 읽게 한다(재료가 없었으면 종전처럼 기록 없이 지나간다).
+            removeOutgoing(clientId: clientId, room: room)
+            bumpRevision(room)
+            return
+        }
         // outbox 에서 나간 글(「연결되면 보냅니다」)은 이제 실제 기록이 잇는다.
         removeOutgoing(clientId: clientId, room: pending.room)
         // file-v2 는 설명자(stored)만 기록한다 — 원본 바이트를 .fileV2 행에 넣으면 설명자로 읽히지 않는다.

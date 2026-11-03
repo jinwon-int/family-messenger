@@ -94,5 +94,17 @@ public enum MessageSchema {
       PRIMARY KEY (room, client_id)
     );
     CREATE TABLE IF NOT EXISTS cursors (room TEXT PRIMARY KEY, seq INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS own_pending (
+      room TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      body TEXT NOT NULL,
+      attachment BLOB,
+      created_at REAL NOT NULL,
+      PRIMARY KEY (room, client_id)
+    );
     """
 }
+// `own_pending`(#665)은 v1 에 **덧붙인** 표다 — 기존 표·열은 그대로이고 `CREATE TABLE IF NOT EXISTS` 라 옛 DB 를 열면 생긴다.
+// 버전을 올리지 않는 이유: 앱·NSE·공유 확장이 같은 파일을 여는데 빌드가 어긋나는 창(업데이트 직후·TestFlight 되돌림)에
+// 옛 빌드가 "version 2 != 1" 로 fatal 이 되면 안 된다. 옛 빌드는 이 표를 모른 채 열고, 행은 새 빌드가 치운다.

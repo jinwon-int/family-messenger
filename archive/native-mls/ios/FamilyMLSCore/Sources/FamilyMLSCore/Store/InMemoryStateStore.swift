@@ -90,6 +90,35 @@ public final class InMemoryOutboxStore: OutboxStore {
         let keepDone = Array(done.suffix(keepingLast))
         entries[room] = all.filter { $0.status == .pending } + keepDone
     }
+    public func entry(room: RoomID, clientId: String) throws -> OutboxEntry? {
+        lock.lock(); defer { lock.unlock() }
+        return (entries[room] ?? []).first { $0.clientId == clientId }
+    }
+}
+
+/// #665 참조 구현 — 파일 구현(`FileSQLiteStore`)과 같은 규율: (room, clientId) 덮어쓰기, 보낸 순서, 멱등 삭제.
+public final class InMemoryOwnPendingStore: OwnPendingStore {
+    private var records: [RoomID: [OwnPendingRecord]] = [:]
+    private let lock = NSLock()
+    public init() {}
+    public func putOwnPending(_ record: OwnPendingRecord) throws {
+        lock.lock(); defer { lock.unlock() }
+        var list = (records[record.room] ?? []).filter { $0.clientId != record.clientId }
+        list.append(record)
+        records[record.room] = list
+    }
+    public func ownPending(room: RoomID) throws -> [OwnPendingRecord] {
+        lock.lock(); defer { lock.unlock() }
+        return records[room] ?? []
+    }
+    public func ownPending(room: RoomID, clientId: String) throws -> OwnPendingRecord? {
+        lock.lock(); defer { lock.unlock() }
+        return (records[room] ?? []).first { $0.clientId == clientId }
+    }
+    public func removeOwnPending(room: RoomID, clientId: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        records[room] = (records[room] ?? []).filter { $0.clientId != clientId }
+    }
 }
 
 public final class InMemoryCursorStore: CursorStore {
