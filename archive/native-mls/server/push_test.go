@@ -83,10 +83,11 @@ func TestListRoomsReportsPublicStatePerDevice(t *testing.T) {
 		t.Fatalf("list: %d %s", st, raw)
 	}
 	got := decodeRooms(t, raw)
+	// last_seq (#659): r has two events, q one, k none (key packages only).
 	want := []roomListing{
-		{Room: "k", Epoch: 0, Revision: 0, Member: false, KeyPackagesOutstanding: 1, Closed: false},
-		{Room: "q", Epoch: 0, Revision: 1, Member: true, KeyPackagesOutstanding: 0, Closed: true},
-		{Room: "r", Epoch: 1, Revision: 2, Member: true, KeyPackagesOutstanding: 0, Closed: false},
+		{Room: "k", Epoch: 0, Revision: 0, Member: false, KeyPackagesOutstanding: 1, Closed: false, LastSeq: 0},
+		{Room: "q", Epoch: 0, Revision: 1, Member: true, KeyPackagesOutstanding: 0, Closed: true, LastSeq: 1},
+		{Room: "r", Epoch: 1, Revision: 2, Member: true, KeyPackagesOutstanding: 0, Closed: false, LastSeq: 2},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("rooms = %+v, want %+v", got, want)
@@ -105,10 +106,10 @@ func TestListRoomsReportsPublicStatePerDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, r := range generic.Rooms {
-		if len(r) != 6 {
-			t.Fatalf("listing keys = %v, want exactly the 6 contract keys", r)
+		if len(r) != 7 {
+			t.Fatalf("listing keys = %v, want exactly the 7 contract keys", r)
 		}
-		for _, k := range []string{"room", "epoch", "revision", "member", "keypackages_outstanding", "closed"} {
+		for _, k := range []string{"room", "epoch", "revision", "member", "keypackages_outstanding", "closed", "last_seq"} {
 			if _, ok := r[k]; !ok {
 				t.Fatalf("listing missing %q: %v", k, r)
 			}

@@ -205,7 +205,14 @@ public struct RoomListing: Codable, Equatable {
     public var member: Bool
     public var keypackagesOutstanding: Int
     public var closed: Bool
-    enum CodingKeys: String, CodingKey { case room, epoch, revision, member, closed; case keypackagesOutstanding = "keypackages_outstanding" }
+    /// #659: 방의 마지막 이벤트 seq(server rooms.go `last_seq`, 없으면 0). 영속 커서와 같으면 받을 것이 없다 —
+    /// 바퀴의 방 GET·송신 직전 GET 을 생략하는 근거. 옛 릴레이는 키가 없다 → nil → 생략하지 않는다.
+    public var lastSeq: Int64? = nil
+    enum CodingKeys: String, CodingKey {
+        case room, epoch, revision, member, closed
+        case keypackagesOutstanding = "keypackages_outstanding"
+        case lastSeq = "last_seq"
+    }
 }
 public struct RoomsResponse: Codable, Equatable { public var rooms: [RoomListing] }
 

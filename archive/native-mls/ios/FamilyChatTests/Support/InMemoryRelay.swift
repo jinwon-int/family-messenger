@@ -274,6 +274,10 @@ final class InMemoryRelay: RelayTransport, RelayControl {
         }
     }
 
+    /// #659: 새 릴레이(rooms.go `last_seq`)처럼 목록에 마지막 seq 를 실을지. 기본 false = 옛 릴레이(키 없음) — 기존 테스트의
+    /// GET 횟수 기대를 바꾸지 않는다. 바퀴·송신 생략 테스트만 켠다.
+    var reportsLastSeq = false
+
     func listRooms(device: DeviceID) async throws -> RoomsResponse {
         try checkUp()
         return try lock.withLock {
@@ -281,8 +285,10 @@ final class InMemoryRelay: RelayTransport, RelayControl {
                 let member = r.events.contains { $0.device == device || $0.targets.contains(device) }
                 let outstanding = r.keyPackages[device]?.count ?? 0
                 guard member || outstanding > 0 else { return nil }
-                return ["room": name, "epoch": r.epoch, "revision": 0, "member": member,
-                        "keypackages_outstanding": outstanding, "closed": r.closed]
+                var listing: [String: Any] = ["room": name, "epoch": r.epoch, "revision": 0, "member": member,
+                                              "keypackages_outstanding": outstanding, "closed": r.closed]
+                if reportsLastSeq { listing["last_seq"] = r.events.last?.seq ?? 0 }
+                return listing
             }
             return try Self.decode(RoomsResponse.self, ["rooms": listings])
         }
