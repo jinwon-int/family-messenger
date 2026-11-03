@@ -109,7 +109,7 @@ public final class InMemoryOwnPendingStore: OwnPendingStore {
     }
     public func ownPending(room: RoomID) throws -> [OwnPendingRecord] {
         lock.lock(); defer { lock.unlock() }
-        return records[room] ?? []
+        return (records[room] ?? []).sorted { $0.createdAt < $1.createdAt }   // 보낸 순서(파일 구현 ORDER BY created_at 과 같게, 안정 정렬)
     }
     public func ownPending(room: RoomID, clientId: String) throws -> OwnPendingRecord? {
         lock.lock(); defer { lock.unlock() }
