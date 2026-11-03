@@ -1305,13 +1305,50 @@ impl room::SendHost for StatusSender<'_, '_> {
 /// (server.go `s.typing.clear` after storeEvent, #562) — the typing keepalive
 /// learns it here and re-arms on its next round if the turn goes on.
 fn post_application(ctx: &Ctx, room: &str, post: &EventPost<'_>) -> Result<api::EventResponse, BotError> {
-    let response = ctx.client.post_event(room, post)?;
+    let response = post_event_retrying(ctx, room, post, SEND_RETRIES)?;
     if !response.duplicate {
         if let Some(typing) = ctx.typing {
             typing.note_post(room);
         }
     }
     Ok(response)
+}
+
+/// Transient-failure retries for one application POST: `relay_backoff`
+/// 0.5 s … 30 s, so seven retries wait ~61 s in total — long enough to
+/// ride out a relay restart (a binary swap is ~1 s, a swap whose health
+/// probe fails restarts twice within ~30 s).
+const SEND_RETRIES: u32 = 7;
+
+/// POST one application event, waiting out a relay that is restarting.
+///
+/// A connection reset/refused or a gateway 502–504 while the relay restarts
+/// used to end the whole session mid-turn: the restart then posted
+/// `⚠️ 요청(#n)을 끝까지 확인하지 못했습니다(restart)` and the worker's reply was
+/// lost. The ciphertext, epoch and client_id were fixed and persisted before
+/// the first attempt (host-core `send_application`), so the retry re-sends
+/// the *same* bytes under the *same* dedup key: if the first attempt did land
+/// before the reset, the relay answers the byte-equal replay as a 200
+/// duplicate (store.go K4, ahead of CAS) and nothing is posted twice.
+/// Non-transient errors (409 cas_mismatch / client_id_reuse, 4xx policy) are
+/// returned at once, as before; after `retries` the last transient error is
+/// returned and the session ends as before (fail closed).
+fn post_event_retrying(ctx: &Ctx, room: &str, post: &EventPost<'_>, retries: u32) -> Result<api::EventResponse, BotError> {
+    let mut attempt = 0u32;
+    loop {
+        match ctx.client.post_event(room, post) {
+            Err(err) if is_transient(&err) && attempt < retries => {
+                attempt += 1;
+                let wait = relay_backoff(attempt);
+                emit(&serde_json::json!({
+                    "event": "send_retry", "room": room, "client_id": post.client_id, "attempt": attempt,
+                    "wait_ms": wait.as_millis() as u64, "error": err.to_string(),
+                }));
+                std::thread::sleep(wait);
+            }
+            other => return other,
+        }
+    }
 }
 
 /// `status-<uuid v4 shape, lowercase>` from the OS random source; on a host
@@ -2591,6 +2628,58 @@ for line in sys.stdin:
         let waits: Vec<u64> = (1..=8).map(|n| relay_backoff(n).as_millis() as u64).collect();
         assert_eq!(waits, vec![500, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000]);
         assert_eq!(relay_backoff(u32::MAX), RELAY_BACKOFF_MAX);
+    }
+
+    /// Relay restart mid-reply (순욱 #7577, 2026-11-03): the POST of an agent
+    /// reply hit 503/502 while the relay restarted. The bot must re-send the
+    /// byte-identical request (same client_id, same ciphertext — the relay's
+    /// byte-equal replay is a 200 duplicate) instead of ending the session,
+    /// and reserve only one dedup key for it.
+    #[test]
+    fn publish_echo_resends_the_same_post_through_a_relay_restart() {
+        let (base, server) = canned_relay_raw(vec![
+            (503, "unavailable".to_string()),
+            (502, "bad gateway".to_string()),
+            (200, r#"{"seq":21,"epoch":2,"revision":1,"duplicate":false}"#.to_string()),
+        ]);
+        let client = Client::with_access(&base, api::Access::None);
+        let ctx = Ctx { client: &client, own: "bot-1", typing: None };
+        let path = state_path("send-restart");
+        let mut state = joined_room_at("family", 4, Some(path.clone()));
+        state.device.create().expect("a one-member group to encrypt in");
+        publish_echo(&ctx, &mut state, b"reply", 0).unwrap_or_else(|e| panic!("a relay restart must not end the send: {e}"));
+        assert_eq!(state.echoes, 4, "one dedup key for the reply, not one per attempt");
+        assert!(state.retry.is_empty(), "delivered, nothing queued");
+        let seen = server.join().expect("server thread");
+        assert_eq!(seen.len(), 3, "two retries then the 200");
+        let body = |raw: &String| raw.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
+        assert!(seen.iter().all(|r| r.starts_with("POST /v2/rooms/family/events")), "{seen:?}");
+        assert!(body(&seen[0]).contains("bot-1-echo-4"), "{}", body(&seen[0]));
+        assert!(seen.iter().all(|r| body(r) == body(&seen[0])), "every attempt is the byte-identical POST");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The retry is bounded: once `retries` transient failures are spent the
+    /// last error comes back (the session then ends and restarts, as before),
+    /// and a non-transient answer is never retried.
+    #[test]
+    fn post_event_retrying_is_bounded_and_skips_non_transient_errors() {
+        let (base, server) = canned_relay_raw(vec![
+            (503, "unavailable".to_string()),
+            (503, "unavailable".to_string()),
+            (409, r#"{"error":"cas_mismatch"}"#.to_string()),
+        ]);
+        let client = Client::with_access(&base, api::Access::None);
+        let ctx = Ctx { client: &client, own: "bot-1", typing: None };
+        let post = EventPost {
+            device: "bot-1", client_id: "bot-1-echo-9", kind: "application", epoch: 2, revision: None,
+            group_id: "family", targets: Vec::new(), members: Vec::new(), bytes: b"ct".to_vec(),
+        };
+        let err = post_event_retrying(&ctx, "family", &post, 1).expect_err("retries exhausted");
+        assert!(is_transient(&err), "the last transient error is returned: {err}");
+        let err = post_event_retrying(&ctx, "family", &post, 5).expect_err("409 is final");
+        assert_eq!(api::error_code(&err), Some("cas_mismatch"), "{err}");
+        assert_eq!(server.join().expect("server thread").len(), 3, "2 attempts, then 1 — the 409 is not retried");
     }
 
     /// #392 through `run_loop`: a 503 while the relay restarts, then a normal
