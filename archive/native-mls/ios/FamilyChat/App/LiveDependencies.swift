@@ -156,6 +156,10 @@ extension AppModel.Dependencies {
             deps.localDefaults = scope.defaults(.standard)
             // #665: 내 글의 기록 재료도 같은 messages.db — 재시작 뒤·공유 확장(#664)이 보낸 글이 내 화면에 기록으로 이어진다.
             deps.ownPending = database
+            #if canImport(Intents)
+            // #666: 공유 시트 맨 윗줄 대화 추천 — App Group 과 무관(Intents 저장소는 앱 것). Linux 스모크는 기본(no-op).
+            deps.shareSuggestions = .live
+            #endif
             // #643: 공유 확장 맡김·공유 대상 방 목록 — App Group 이 있을 때만(확장이 같은 컨테이너·같은 스코프 defaults 를 본다).
             if let container = SharedStorage.appGroupContainer(config.appGroup) {
                 deps.shareStore = ShareHandoffStore(container: container)

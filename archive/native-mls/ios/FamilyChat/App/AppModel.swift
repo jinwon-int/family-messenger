@@ -122,6 +122,8 @@ final class AppModel: ObservableObject {
         /// #665 내 글의 기록 재료(평문) 영속 — outbox 와 같은 DB(`FileSQLiteStore`). 엔진이 쓰고·기록하고·지운다; 앱은 재시작 뒤
         /// 「연결되면 보냅니다」 말풍선을 여기서 복원하고, 닫힌(reconciled) 글을 새로 암호화해 보낸다. nil = 종전(메모리 평문만, 테스트 기본).
         var ownPending: OwnPendingStore? = nil
+        /// #666 공유 시트 맨 윗줄 대화 추천(`INSendMessageIntent` 기부). 기본 = 아무것도 안 함(테스트·Linux), live() 는 Intents.
+        var shareSuggestions = ShareSuggestionDonor()
     }
 
     /// 저장소 밖의 삭제 작업(§9-5). `storage` = MLS 상태 전부(identity 슬롯 포함) + messages.db 행, `identity` = 저장된 기기 ID.
@@ -457,6 +459,8 @@ final class AppModel: ObservableObject {
             self.transport = nil
             self.discardRuntimeState()
             self.outgoing = [:]
+            self.deps.shareSuggestions.deleteAll()   // #666: 옛 서버의 방 추천은 전부 내린다
+            self.publishedShareTargets = nil
             self.lobbyCheckDue = true; self.lobbyUnsupported = false
             self.typingUnsupported = false; self.readUnsupported = false
             self.deps.serverStore.clear()
@@ -967,7 +971,7 @@ final class AppModel: ObservableObject {
     /// 이 세션에서 바퀴가 "변화 없음"으로 건너뛴 방 GET 수(진단·테스트).
     private(set) var skippedRoomSyncs = 0
 
-    func roomShown(_ room: RoomID) { visibleRoom = room }
+    func roomShown(_ room: RoomID) { visibleRoom = room; donateShareSuggestion(room) }
     func roomHidden(_ room: RoomID) { if visibleRoom == room { visibleRoom = nil } }
 
     /// 송신 1건의 계측을 진단 기록에 한 줄로(평문 없음): 전체 ms · 송신 직전 동기화(생략/ms) · POST ms · 409 재시도.
@@ -1663,11 +1667,24 @@ final class AppModel: ObservableObject {
     /// 공유할 수 있는 방(목록 화면 순서, 정지된 방 제외)을 App Group 서버 스코프 defaults 에 써 둔다 — 공유 확장의 방 고르기 목록.
     /// 순서를 바꾸면 다음 동기화 바퀴(`rooms` 다시 읽기)에 반영된다.
     private func publishShareTargets() {
-        guard let defaults = deps.shareTargets else { return }
         let ids = ShareHandoff.targets(listedRooms, saved: localPrefs.roomOrder)
         guard ids != publishedShareTargets else { return }
+        // #666: 목록에서 빠진 방(정지·탈퇴)은 공유 시트 추천에서도 내린다 — 추천 집합 = 확장의 방 목록.
+        if let scope = shareScope {
+            let retired = ShareSuggestions.retired(previous: publishedShareTargets ?? [], current: ids)
+            if !retired.isEmpty { deps.shareSuggestions.delete(retired.map { ShareSuggestions.conversation(scope: scope, room: $0) }) }
+        }
         publishedShareTargets = ids
-        defaults.set(ids, forKey: ShareHandoff.targetsKey)
+        deps.shareTargets?.set(ids, forKey: ShareHandoff.targetsKey)
+    }
+
+    /// #666 대화 식별자의 스코프(= 서버 스코프 ID). 서버가 없으면 nil.
+    private var shareScope: String? { deps.server.map { ServerScope(baseURL: $0.baseURL).id } }
+
+    /// #666: 방을 열거나 보냈다 — 공유 시트 맨 윗줄 추천에 올린다(공유할 수 있는 방일 때만, 이름은 화면과 같은 `roomLabel`).
+    private func donateShareSuggestion(_ room: RoomID) {
+        guard let scope = shareScope, publishedShareTargets?.contains(room) == true else { return }
+        deps.shareSuggestions.donate(ShareSuggestions.conversation(scope: scope, room: room), Strings.roomLabel(room))
     }
 
     /// 공유 확장이 맡긴 글·첨부를 보낸다(#643 D4) — 화면·단축어와 **같은 모델·같은 송신 경로**(`send`·`sendAttachment`)라
@@ -1836,11 +1853,13 @@ final class AppModel: ObservableObject {
                 try recordOwn(room: room, clientId: clientId, seq: seq)
                 lastError = nil
                 reconnecting = false
+                donateShareSuggestion(room)   // #666
             case .queued(let clientId):
                 // 릴레이에 닿지 않아 outbox 에 보관 — 연결되면 같은 바이트로 다시 보낸다(`recordOwn` 이 그때 지운다).
                 unconfirmed[clientId] = pending
                 updateOutgoing(id, room: room) { $0.clientId = clientId; $0.state = .queued }
                 reconnecting = true
+                donateShareSuggestion(room)   // #666
             case .reconciled:
                 removeOutgoing(id: id, room: room)
                 lastError = nil
