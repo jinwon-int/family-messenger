@@ -558,7 +558,8 @@ public final class RoomSyncEngine {
         let skipped = relayHasNothingNew(now: started)
         if !skipped { try await syncAll() }
         let synced = Date()
-        var timing = SendTiming(preSyncSkipped: skipped, syncSeconds: synced.timeIntervalSince(started), postSeconds: 0, casRetried: false)
+        // 생략이면 동기화 시간은 정의상 0(두 Date() 사이 마이크로초를 동기화로 보고하지 않는다).
+        var timing = SendTiming(preSyncSkipped: skipped, syncSeconds: skipped ? 0 : synced.timeIntervalSince(started), postSeconds: 0, casRetried: false)
         defer { timing.postSeconds = Date().timeIntervalSince(synced); lastSendTiming = timing }
         var retried = false
         while true {
