@@ -531,6 +531,88 @@ func TestStrictDecodeRejections(t *testing.T) {
 	}
 }
 
+// #662: Read replays the chain only when the directory changed; hits return
+// deep copies; commits (this store or another process) and in-place tampering
+// all force a replay; errors are never cached.
+func TestReadCacheReplaysOnlyOnChange(t *testing.T) {
+	s, a1, _ := baseWithAlice(t)
+	replays := 0
+	readReplayHook = func() { replays++ }
+	t.Cleanup(func() { readReplayHook = nil })
+
+	info1, p1 := mustRead(t, s)
+	for i := 0; i < 5; i++ {
+		info, p := mustRead(t, s)
+		if info != info1 || len(p.Devices) != len(p1.Devices) || p.Devices[0].ID != p1.Devices[0].ID {
+			t.Fatalf("cached read differs: %+v %+v", info, p)
+		}
+	}
+	if replays != 1 {
+		t.Fatalf("replays = %d after 6 reads of an unchanged chain, want 1", replays)
+	}
+
+	// A caller mutating the returned value must not poison the cache.
+	_, p := mustRead(t, s)
+	p.Devices[0].Status = "mutated"
+	p.Devices[0].Roles = append(p.Devices[0].Roles, "mutated")
+	p.Devices = append(p.Devices, DeviceV4{ID: "ghost"})
+	if _, again := mustRead(t, s); again.Devices[0].Status != StatusActive || len(again.Devices) != 1 || len(again.Devices[0].Roles) != 0 {
+		t.Fatalf("cache poisoned through returned value: %+v", again)
+	}
+
+	// Commit through this store invalidates.
+	kb := newKey(t)
+	if _, e := s.Commit(2, set(a1, kb.device("dev-b1", "bob", "person-bob", AcceptanceOutOfBand, StatusActive, 1, nil))); e != nil {
+		t.Fatal(e)
+	}
+	before := replays
+	if info, p := mustRead(t, s); info.Revision != 3 || len(p.Devices) != 2 {
+		t.Fatalf("after commit: revision %d devices %d, want 3/2", info.Revision, len(p.Devices))
+	}
+	if replays != before+1 {
+		t.Fatalf("commit did not force a replay")
+	}
+
+	// A commit through another store on the same directory (the policy CLI's
+	// shape) changes the directory fingerprint.
+	other := mustOpen(t, s.dir)
+	_, cur := mustRead(t, other)
+	kc := newKey(t)
+	if _, e := other.Commit(3, set(append(cur.Devices, kc.device("dev-c1", "carol", "person-carol", AcceptanceOutOfBand, StatusActive, 1, nil))...)); e != nil {
+		t.Fatal(e)
+	}
+	if info, p := mustRead(t, s); info.Revision != 4 || len(p.Devices) != 3 {
+		t.Fatalf("external commit not seen: revision %d devices %d, want 4/3", info.Revision, len(p.Devices))
+	}
+
+	// Same-length in-place tamper (same inode and size): ctime/mtime move, the
+	// key misses, the replay refuses. Sleep past coarse timestamp ticks first.
+	time.Sleep(20 * time.Millisecond)
+	rev2 := filepath.Join(s.dir, "policy-000002.json")
+	raw, e := os.ReadFile(rev2)
+	if e != nil {
+		t.Fatal(e)
+	}
+	tampered := bytes.Replace(raw, []byte(`"person-alice"`), []byte(`"person-alicf"`), 1)
+	if len(tampered) != len(raw) || bytes.Equal(tampered, raw) {
+		t.Fatal("tamper must keep the length and change the bytes")
+	}
+	if e := os.WriteFile(rev2, tampered, 0600); e != nil {
+		t.Fatal(e)
+	}
+	for i := 0; i < 2; i++ { // the error is not cached
+		if _, _, e := s.Read(); e == nil {
+			t.Fatal("same-length tampered chain served from cache")
+		}
+	}
+	if e := os.WriteFile(rev2, raw, 0600); e != nil {
+		t.Fatal(e)
+	}
+	if info := mustReadCurrent(t, s); info != 4 {
+		t.Fatalf("restored chain revision = %d, want 4", info)
+	}
+}
+
 func TestCorruptedChainFailClosed(t *testing.T) {
 	s, a1, _ := baseWithAlice(t)
 	rev2 := filepath.Join(s.dir, "policy-000002.json")
@@ -858,4 +940,62 @@ func TestIsSubjectCharset(t *testing.T) {
 	if IsSubject("subject-alice", 12) {
 		t.Error("IsSubject must honor the caller's cap")
 	}
+}
+
+// BenchmarkRead40 measures Read on a production-sized chain (40 revisions,
+// #662): "cached" is the steady state, "replay" forces the pre-cache path.
+func BenchmarkRead40(b *testing.B) {
+	dir, e := os.MkdirTemp("", "devpol-bench")
+	if e != nil {
+		b.Fatal(e)
+	}
+	defer os.RemoveAll(dir)
+	if e := os.Chmod(dir, 0700); e != nil {
+		b.Fatal(e)
+	}
+	s, e := OpenDevicePolicyStore(dir)
+	if e != nil {
+		b.Fatal(e)
+	}
+	if _, e := s.Init(); e != nil {
+		b.Fatal(e)
+	}
+	var devices []DeviceV4
+	for rev := uint64(1); rev < 32; rev++ { // 31 out-of-band adds → revision 32
+		pub, _, _ := ed25519.GenerateKey(crand.Reader)
+		sum := sha256.Sum256(pub)
+		id := fmt.Sprintf("dev-%02d", rev)
+		devices = append(devices, DeviceV4{ID: id, Actor: "actor-" + id, Subject: "person-" + id,
+			SigningKey: hex.EncodeToString(pub), Fingerprint: hex.EncodeToString(sum[:]),
+			Status: StatusActive, Revision: 1, Acceptance: AcceptanceOutOfBand})
+		if _, e := s.Commit(rev, set(append([]DeviceV4(nil), devices...)...)); e != nil {
+			b.Fatal(e)
+		}
+	}
+	for i, rev := 0, uint64(32); rev < 40; i, rev = i+1, rev+1 { // 8 revocations → revision 40
+		devices[i].Status, devices[i].Revision = StatusRevoked, 2
+		if _, e := s.Commit(rev, set(append([]DeviceV4(nil), devices...)...)); e != nil {
+			b.Fatal(e)
+		}
+	}
+	if info, _, e := s.Read(); e != nil || info.Revision != 40 {
+		b.Fatalf("bench chain revision = %d (%v), want 40", info.Revision, e)
+	}
+	b.Run("cached", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if _, _, e := s.Read(); e != nil {
+				b.Fatal(e)
+			}
+		}
+	})
+	b.Run("replay", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			s.mu.Lock()
+			s.cacheValid = false
+			s.mu.Unlock()
+			if _, _, e := s.Read(); e != nil {
+				b.Fatal(e)
+			}
+		}
+	})
 }
