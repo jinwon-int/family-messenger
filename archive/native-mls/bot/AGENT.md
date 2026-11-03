@@ -44,6 +44,7 @@ native-mls-bot <base-url> session <room> <device> \
 | `/stop` (Matrix 와 같게) | 가족방의 `/stop`(앞뒤 공백·대소문자 무시, 정확히 그 한 단어)은 turn 이 아니라 **제어**다 — 대기열에 서지 않고 지금 도는 turn 에 바로 FLEET-WORKER `cancel` 을 보낸다(`agent_stop`). 그 방의 turn 만, **turn 을 시작한 사람이나 owner 만**. 결과 `uncertain/cancelled` 은 `⏹️ 요청(#n)을 중단했습니다.` 로 게시하고 응답기는 퇴역하지 않는다(ccc-node 브리지는 사용자 취소 뒤에도 계속 서빙; 스스로 끝나는 응답기는 stdout 닫힘으로 기존처럼 `worker_gone`). 대기열의 다른 메시지는 그대로 이어서 실행. 도는 turn 이 없으면 `ℹ️ 중단할 요청이 없습니다.`, 남의 turn 이면 `ℹ️ 다른 사람의 요청은 오너만 중단할 수 있습니다.` — turn 없이 즉답 |
 | 중복 실행 금지 | 활성 turn 을 `<state>.inbox.json`(0600)에 **응답기에 보내기 전** 기록. 재시작 때 남아 있으면 `⚠️ 요청(#seq)을 끝까지 확인하지 못했습니다` 1건만 게시하고 지운다 — 재실행 없음 |
 | 불확실 결과 | `result.status=uncertain`·`rejected`·워치독(21780초 = Matrix `CLAUDE_PROCESS_TIMEOUT` 21720초 + 60초, env `NATIVE_MLS_BOT_TURN_SECS`) → 같은 안내 1건. 30분마다 「⏱ 요청(#n)을 처리한 지 N분」 알림(알림만, env `NATIVE_MLS_BOT_TURN_AGE_NOTICE_MIN`·`_RENOTICE_MIN`, 0=끔). uncertain 뒤 응답기는 퇴역(FLEET-WORKER)하므로 세션 종료 → 재시작 |
+| 릴레이 재시작 | 폴링 GET의 일시 오류(#392)뿐 아니라 **답·중간보고·상태 줄 POST**의 연결 리셋/거부·502–504도 같은 바이트·같은 `client_id`로 백오프 재전송한다(최대 7회, 약 61 s — 바이트가 같은 재전송은 릴레이가 200 `duplicate`로 받는다). 그래도 실패해야 세션이 끝나고 재시작 때 위 안내가 나간다(2026-11-03 순욱 #7577) |
 | 입력 중 표시(#562) | turn 이 답을 만드는 동안 `POST /v2/rooms/{room}/typing` 4초 간격(TTL 6초), 답·승인 요청·끝·중단에 멈춤. 기본 켬, `--no-typing` / `NATIVE_MLS_BOT_TYPING=0` 끔(위 "켜는 법") |
 | 답 길이 | 8 KiB 초과는 글자 경계에서 자르고 `…(길어서 줄임)` |
 | 발신자 표기 | 응답기의 `sender` 검증이 Matrix 형식이라 `@<device>:hande` 로 넘긴다 → 프롬프트 머리글 `[가족방 메시지 · 보낸 사람: @owner-iphone-27a879:hande]` |

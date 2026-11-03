@@ -11,6 +11,7 @@
 | `native-relay-snapshot-prune.service` / `.timer` | 수신 호스트 쪽 보존 정리(48 h 전량 + 하루 1개 30일) |
 | `30-fence.conf.example` / `fence.env.example` | **1단계 펜스** — 양쪽 릴레이 유닛 drop-in. DNS TXT `_native-relay-active.<도메인>`이 자기 이름일 때만 기동(`scripts/native_relay_fence.py`, DoH, fail-closed). 스냅샷 유닛도 `SNAPSHOT_FENCE_ARGS`로 같은 게이트 |
 | `native-relay-repoint` | **1단계 ⑤ 재지정 훅**(봇 호스트, 예: 공명 `/usr/local/sbin/`). `<http://tailnet:port>`을 `/etc/native-relay/relay.env`의 `NATIVE_RELAY_URL`에 쓰고 `native-relay-bot` 재시작 → 새 PID의 `steward_ready` 확인. 쓰기 전 `<url>/v2/health` 200 필수, https·같은 URL 거부(`--force`는 설치 검증용), `--check`는 읽기 전용. 봇 유닛은 `EnvironmentFile=/etc/native-relay/relay.env` + `ExecStart=… ${NATIVE_RELAY_URL} …`로 바꿔 둔다 |
+| `native-relay-swap` | **릴레이 바이너리 교체 정본**(릴레이 호스트, root). `native-relay-swap <staged-binary> <sha256>` — 스테이징 sha256 일치 확인 → `<bin>.old-<sha16>` 백업 → 같은 디렉터리 임시 파일 + `mv`(실행 중 파일에 `cp` 금지: ETXTBSY) → 재시작 → `/v2/health` 200·`"ok":true`(기본 60 s; `/healthz`는 없는 경로) → 실패 시 같은 방식으로 롤백(exit 6, 롤백도 실패 7). 2026-11-03 #659 배포의 이중 재시작 재발 방지 |
 | `native-relay-standby.service.example` | 대기 호스트 릴레이 유닛(APNs 없음, 평시 disabled) |
 | `cloudflared-relay-standby.service.example` | 대기 호스트 **별도** 터널(같은 토큰 복제본 금지), ingress 사전 구성 |
 | `native-relay-fence-watch.service` / `.timer` | **펜스 정지 측** — 1분마다 TXT를 읽어 다른 호스트가 활성이면 이 호스트 릴레이를 stop(exit 1만; 못 읽으면 그대로 둠). 시작 측 drop-in과 함께 설치해야 펜스가 완성 |

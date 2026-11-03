@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# native-relay-swap — 한데 릴레이 바이너리 교체(정본). 2026-11-03 서서 #659 배포 때의 이중 재시작 재발 방지.
+# 사용: native-relay-swap <staged-binary> <sha256>
+#  - <staged-binary> 의 sha256 이 <sha256>(스테이징 STAGE-SHA256SUMS 값)과 같을 때만 진행한다. 이미 같은 바이너리면 무변경.
+#  - 현재 바이너리를 <bin>.old-<sha 앞 16자> 로 백업한다(이미 있으면 그대로 둔다 — 이름이 내용의 해시다).
+#  - 새 바이너리는 같은 디렉터리의 임시 파일에 쓴 뒤 mv(rename)로 바꾼다. 실행 중인 파일에 cp 로 덮어쓰면
+#    ETXTBSY(Text file busy)로 실패한다 — 11-03 의 롤백이 그래서 실패했고, 되돌린다던 재시작이 새 바이너리를 다시 띄웠다.
+#  - 재시작 후 /v2/health 가 200 + "ok":true 일 때까지 HEALTH_TIMEOUT 초(기본 60) 기다린다.
+#    /healthz 는 릴레이에 없는 경로(404)다 — 11-03 의 오판(정상 릴레이를 실패로 봄)이 그것이었다.
+#  - health 실패 → 백업을 같은 방식(임시 파일 + mv)으로 되돌리고 재시작 → 다시 health.
+#    종료 코드: 0 교체 완료 · 6 롤백 완료(옛 바이너리 정상) · 7 롤백 후에도 health 실패(수동 확인) · 64/65/66/77 시작 전 거부(무변경).
+#  - 재시작은 봇들의 릴레이 연결을 끊는다. 송신 재시도(봇 session.rs post_event_retrying)가 없는 봇은 진행 중 턴을 잃으므로,
+#    가능하면 진행 중 턴이 없을 때 돌린다. 비밀값은 다루지 않는다(경로·해시만).
+# 환경: RELAY_BIN · RELAY_UNIT · RELAY_HEALTH_URL · HEALTH_TIMEOUT. NATIVE_RELAY_SWAP_SYSTEMCTL/_CURL 은 테스트용 대역.
+set -euo pipefail
+BIN=${RELAY_BIN:-/opt/native-relay/bin/native-mls-relay}
+UNIT=${RELAY_UNIT:-native-relay.service}
+HEALTH_URL=${RELAY_HEALTH_URL:-http://127.0.0.1:18921/v2/health}
+HEALTH_TIMEOUT=${HEALTH_TIMEOUT:-60}
+SYSTEMCTL=${NATIVE_RELAY_SWAP_SYSTEMCTL:-systemctl}
+CURL=${NATIVE_RELAY_SWAP_CURL:-curl}
+log() { printf '[%s] %s\n' "$(date -Iseconds)" "$*"; }
+
+[ $# -eq 2 ] || { echo "usage: $0 <staged-binary> <sha256>" >&2; exit 64; }
+NEW=$1; WANT=$2
+[[ "$WANT" =~ ^[0-9a-f]{64}$ ]] || { echo "refused: sha256 must be 64 lowercase hex" >&2; exit 65; }
+if [ -z "${NATIVE_RELAY_SWAP_SYSTEMCTL:-}" ] && [ "$(id -u)" != 0 ]; then echo "run as root (sudo)" >&2; exit 77; fi
+[ -f "$NEW" ] || { echo "refused: staged binary not found: $NEW" >&2; exit 66; }
+[ -f "$BIN" ] || { echo "refused: current binary not found: $BIN" >&2; exit 66; }
+GOT=$(sha256sum "$NEW" | cut -d' ' -f1)
+[ "$GOT" = "$WANT" ] || { echo "refused: staged sha256 $GOT != $WANT" >&2; exit 65; }
+CUR=$(sha256sum "$BIN" | cut -d' ' -f1)
+if [ "$CUR" = "$WANT" ]; then log "unchanged: $BIN is already ${WANT:0:16}"; exit 0; fi
+BAK="$BIN.old-${CUR:0:16}"
+
+TMP=""
+trap '[ -n "$TMP" ] && rm -f "$TMP"' EXIT
+# <src> 를 $BIN 자리에 rename 으로 놓는다 — 실행 중인 파일에는 절대 쓰지 않는다.
+place() {
+  local src=$1
+  TMP=$(mktemp "$BIN.swap.XXXXXX")
+  cp "$src" "$TMP"
+  chmod --reference="$BIN" "$TMP"
+  if [ "$(id -u)" = 0 ]; then chown --reference="$BIN" "$TMP"; fi
+  mv -f "$TMP" "$BIN"
+  TMP=""
+}
+healthy() {
+  local deadline=$((SECONDS + HEALTH_TIMEOUT)) out code
+  while :; do
+    out=$($CURL -s -m 3 -w '\n%{http_code}' "$HEALTH_URL" 2>/dev/null || true)
+    code=${out##*$'\n'}
+    if [ "$code" = 200 ] && [[ "$out" == *'"ok":true'* ]]; then return 0; fi
+    if [ "$SECONDS" -ge "$deadline" ]; then log "health: $HEALTH_URL -> ${code:-none} after ${HEALTH_TIMEOUT}s"; return 1; fi
+    sleep 0.5
+  done
+}
+
+[ -e "$BAK" ] || cp -p "$BIN" "$BAK"
+log "pre: ${CUR:0:16} -> ${WANT:0:16} (backup $BAK)"
+place "$NEW"
+[ "$(sha256sum "$BIN" | cut -d' ' -f1)" = "$WANT" ] || { log "placed binary hash mismatch"; place "$BAK"; exit 7; }
+"$SYSTEMCTL" restart "$UNIT" || log "restart $UNIT failed"
+if healthy; then log "ok: ${WANT:0:16} active, $HEALTH_URL 200"; exit 0; fi
+log "health failed -> rollback to ${CUR:0:16}"
+place "$BAK"
+"$SYSTEMCTL" restart "$UNIT" || log "restart $UNIT failed"
+if healthy; then log "rolled back: ${CUR:0:16} active, $HEALTH_URL 200"; exit 6; fi
+log "rollback health also failed — manual check needed ($UNIT, $BIN, backup $BAK)"
+exit 7
