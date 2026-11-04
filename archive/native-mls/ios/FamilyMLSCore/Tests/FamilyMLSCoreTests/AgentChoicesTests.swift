@@ -124,6 +124,46 @@ final class AgentChoicesTests: XCTestCase {
         }
     }
 
+    /// #671 PR B(규격 §5.1): 공유 벡터 `toggle` — many 는 켜고 끄기, one 은 바꿔 고르기(웹 `choiceToggle` 과 같은 답).
+    func testToggleVectors() throws {
+        let root = try loadRoot()
+        let vectors = try XCTUnwrap(root["toggle"] as? [[String: Any]], "fixture must have a toggle array")
+        XCTAssertGreaterThanOrEqual(vectors.count, 8, "toggle vectors loaded")
+        for (idx, raw) in vectors.enumerated() {
+            let rawMode = try XCTUnwrap(raw["mode"] as? String, "toggle[\(idx)] mode")
+            let mode = try XCTUnwrap(AgentChoices.Mode(rawValue: rawMode), "toggle[\(idx)] mode \(rawMode)")
+            let selected = try XCTUnwrap(ints(raw["selected"]), "toggle[\(idx)] selected")
+            let number = try XCTUnwrap(int(raw["number"]), "toggle[\(idx)] number")
+            let expected = try XCTUnwrap(ints(raw["expected"]), "toggle[\(idx)] expected")
+            XCTAssertEqual(AgentChoices.toggle(selected: selected, number: number, mode: mode), expected,
+                           "toggle[\(idx)] \(rawMode) \(selected) + \(number)")
+        }
+    }
+
+    /// #671 PR B(규격 §5.1): 공유 벡터 `answer` — parse(text) 뒤 answer(choices, reply). one 에 번호 둘 이상 → nil.
+    func testAnswerVectors() throws {
+        let root = try loadRoot()
+        let vectors = try XCTUnwrap(root["answer"] as? [[String: Any]], "fixture must have an answer array")
+        XCTAssertGreaterThanOrEqual(vectors.count, 8, "answer vectors loaded")
+        for (idx, raw) in vectors.enumerated() {
+            let name = (raw["name"] as? String) ?? "answer[\(idx)]"
+            let text = try XCTUnwrap(raw["text"] as? String, "[\(name)] text")
+            let reply = try XCTUnwrap(raw["reply"] as? String, "[\(name)] reply")
+            let parsed = try XCTUnwrap(AgentChoices.parse(text), "[\(name)] text must parse")
+            XCTAssertEqual(AgentChoices.answer(parsed, reply), ints(raw["expected"]), "[\(name)] \(reply.debugDescription)")
+        }
+    }
+
+    /// #671 PR B: `one`(「하나만」) 선택지 뒤 내 답이 번호 둘 이상이면 closed, 하나면 answered.
+    func testOneModeMultiNumberReplyCloses() {
+        let one = "**[답변 필요]** 하나만 선택\n1. A\n2. B\n3. C"
+        XCTAssertEqual(AgentChoices.parse(one)?.mode, .one)
+        XCTAssertEqual(AgentChoices.states([rec(1, bot, one), rec(2, me, "1, 2")], roster: roster, myDevice: me)[1], .closed)
+        XCTAssertEqual(AgentChoices.states([rec(1, bot, one), rec(2, me, "1. A\n2. B")], roster: roster, myDevice: me)[1], .closed)
+        XCTAssertEqual(AgentChoices.states([rec(1, bot, one), rec(2, me, "2")], roster: roster, myDevice: me)[1], .answered([2]))
+        XCTAssertEqual(AgentChoices.cards([rec(1, bot, one), rec(2, me, "2. B")], roster: roster, myDevice: me)[1]?.state, .answered([2]))
+    }
+
     // MARK: - timeline state
 
     let roster = AgentRoster(setting: "bot")

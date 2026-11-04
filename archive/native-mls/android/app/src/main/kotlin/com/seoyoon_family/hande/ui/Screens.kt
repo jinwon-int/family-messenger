@@ -46,6 +46,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -93,6 +94,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.state.ToggleableState
@@ -1155,6 +1157,8 @@ private fun MessageRow(m: MessageUi) {
  * `AgentChoices.compose` 결과(줄마다 `N. 라벨` — 번호보다 내용이 중요해서, 답 판정 B 로 같은 번호가 된다)를 보낸다. 보내는 동안 카드는 꺼지고,
  * 보낸 글이 타임라인에 오면 상태가 answered 로 바뀌어 한 줄 「✓ 1, 3번 선택 — 라벨1 · 라벨3」 이 된다. 전송이 실패해 글이 안 오면 10초 뒤 다시 켠다.
  * `enabled = false`(꺼진 자리·참여 전)면 고를 수도 보낼 수도 없다.
+ * 「하나만」 명시 블록(mode ONE, 규격 §5.1 · #671 PR B)은 라디오: 둥근 테두리 + 가운데 점, 역할 RadioButton(묶음 selectableGroup),
+ * 행 탭은 `AgentChoices.toggle` 로 바꿔 고르기라 [보내기] 는 `N. 라벨` 한 줄이다. MANY·v1 은 그대로.
  */
 @Composable
 private fun AgentChoicesCard(m: MessageUi, card: AgentChoices.Card, enabled: Boolean, onSend: (String) -> Unit) {
@@ -1169,7 +1173,10 @@ private fun AgentChoicesCard(m: MessageUi, card: AgentChoices.Card, enabled: Boo
         )
         return
     }
-    var picked by remember(m.seq) { mutableStateOf(setOf<Int>()) }
+    val mode = choices.mode
+    val one = mode == AgentChoices.Mode.ONE
+    var remembered by remember(m.seq) { mutableStateOf(listOf<Int>()) }
+    val picked = if (one && remembered.size > 1) emptyList() else remembered // ONE 카드는 옛 복수 선택 기억을 버린다
     var sending by remember(m.seq) { mutableStateOf(false) }
     LaunchedEffect(sending) {
         if (sending) {
@@ -1187,6 +1194,7 @@ private fun AgentChoicesCard(m: MessageUi, card: AgentChoices.Card, enabled: Boo
             .background(if (colors.isDay) colors.surface else colors.agent.copy(alpha = 0.06f))
             .border(colors.lineWidth, if (colors.isDay) colors.agent else colors.agent.copy(alpha = 0.35f), shape)
             .alpha(if (active) 1f else 0.6f)
+            .then(if (one) Modifier.selectableGroup() else Modifier)
             .padding(vertical = 4.dp),
     ) {
         for (item in choices.items) {
@@ -1195,23 +1203,40 @@ private fun AgentChoicesCard(m: MessageUi, card: AgentChoices.Card, enabled: Boo
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .clickable(enabled = active, role = Role.Checkbox) { picked = if (on) picked - item.number else picked + item.number }
+                    .clickable(enabled = active, role = if (one) Role.RadioButton else Role.Checkbox) {
+                        remembered = AgentChoices.toggle(picked, item.number, mode)
+                    }
                     .semantics {
                         contentDescription = Strings.choiceRowLabel(item.number, item.label, recommended)
-                        toggleableState = if (on) ToggleableState.On else ToggleableState.Off
+                        if (one) {
+                            selected = on
+                        } else {
+                            toggleableState = if (on) ToggleableState.On else ToggleableState.Off
+                        }
                     }
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.Top,
             ) {
-                Box(
-                    Modifier
-                        .padding(top = 1.dp)
-                        .size(20.dp)
-                        .clip(RoundedCornerShape(4.dp))
-                        .then(if (on) Modifier.background(colors.ember) else Modifier.border(1.5.dp, colors.inkDim, RoundedCornerShape(4.dp))),
-                    contentAlignment = Alignment.Center,
-                ) { if (on) Text("✓", color = colors.onEmber, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+                if (one) {
+                    Box(
+                        Modifier
+                            .padding(top = 1.dp)
+                            .size(20.dp)
+                            .clip(CircleShape)
+                            .border(1.5.dp, if (on) colors.ember else colors.inkDim, CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) { if (on) Box(Modifier.size(10.dp).clip(CircleShape).background(colors.ember)) }
+                } else {
+                    Box(
+                        Modifier
+                            .padding(top = 1.dp)
+                            .size(20.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .then(if (on) Modifier.background(colors.ember) else Modifier.border(1.5.dp, colors.inkDim, RoundedCornerShape(4.dp))),
+                        contentAlignment = Alignment.Center,
+                    ) { if (on) Text("✓", color = colors.onEmber, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+                }
                 Text("${item.number}", color = colors.agentText, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyLarge)
                 Text(item.label, Modifier.weight(1f), color = colors.ink, style = MaterialTheme.typography.bodyLarge, maxLines = 3, overflow = TextOverflow.Ellipsis)
                 if (recommended) Pill(Strings.choiceRecommended, colors.ink, colors.ember.copy(alpha = 0.22f))

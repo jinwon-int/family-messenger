@@ -19,7 +19,7 @@ data class AgentChoices(
     val mode: Mode = Mode.MANY,
     val explicit: Boolean = false,
 ) {
-    /** 선택 모드(규격 §5.2). 화면의 ONE(라디오) 은 다음 단계(#671 PR B) — 그 전까지 MANY 처럼 그린다. */
+    /** 선택 모드(규격 §5.2). ONE 은 라디오 카드·한 개만 답(§5.1, #671 PR B), MANY 는 복수 선택(#624). */
     enum class Mode { ONE, MANY }
 
     /** 번호의 라벨(없으면 null). */
@@ -270,6 +270,25 @@ data class AgentChoices(
             return picked.toList()
         }
 
+        /**
+         * 규격 §5.1 「고르기」(#671 PR B): 고른 번호 + 행 하나 탭 → 새 선택(오름차순·중복 없음).
+         * MANY: 그 번호를 켜고 끈다(#624). ONE: 그 번호 하나로 바꾼다 — 이미 그것만 골랐으면 비운다(남은 복수 선택 기억도 버린다).
+         */
+        fun toggle(selected: List<Int>, number: Int, mode: Mode): List<Int> {
+            val current = selected.toSortedSet()
+            if (mode == Mode.ONE) return if (current.size == 1 && current.first() == number) emptyList() else listOf(number)
+            if (!current.remove(number)) current += number
+            return current.toList()
+        }
+
+        /**
+         * 규격 §2 「답 판정」 + §5.1: 내 답 → 고른 번호. ONE 선택지에 번호가 둘 이상이면 답이 아니다(null → closed).
+         */
+        fun answer(choices: AgentChoices, text: String): List<Int>? {
+            val numbers = reply(text, choices.items.size) ?: return null
+            return if (choices.mode == Mode.ONE && numbers.size > 1) null else numbers
+        }
+
         /** 라벨이 비었을 때 보낼 글에 쓰는 자리 글. */
         const val EMPTY_LABEL = "(내용 없음)"
 
@@ -288,12 +307,12 @@ data class AgentChoices(
 
         /**
          * 규격 §2: `messages`(저장된 글, seq 순 — status 임시 줄 없음)의 `index` 번째 글의 상태. 선택지가 아니면 null.
-         * 뒤에 글이 없으면 open, 바로 다음 글이 내 것이고 답 판정이 맞으면 answered(번호 목록), 그 밖은 closed.
+         * 뒤에 글이 없으면 open, 바로 다음 글이 내 것이고 답 판정(`answer` — ONE 에 번호 여럿이면 아님)이 맞으면 answered(번호 목록), 그 밖은 closed.
          */
         fun stateAt(messages: List<MessageUi>, index: Int, choices: AgentChoices): State {
             val next = messages.getOrNull(index + 1) ?: return State.Open
             if (next.mine && !next.attachment) {
-                reply(next.text, choices.items.size)?.let { return State.Answered(it) }
+                answer(choices, next.text)?.let { return State.Answered(it) }
             }
             return State.Closed
         }

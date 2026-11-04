@@ -494,7 +494,13 @@ struct RoomView: View {
 
     /// 선택지 카드 체크(글 seq 별) 바인딩 — 탭과 ⌥1~9 단축키가 같은 선택을 쓴다.
     private func choiceSelection(_ seq: Int64) -> Binding<Set<Int>> {
-        Binding(get: { choiceSelections[seq] ?? [] }, set: { choiceSelections[seq] = $0 })
+        Binding(get: { selectedChoices(seq) }, set: { choiceSelections[seq] = $0 })
+    }
+
+    /// 그 카드의 지금 선택. #671 PR B: `one` 카드에 남아 있던 복수 선택 기억은 버린다(웹 ui.js 와 같다).
+    private func selectedChoices(_ seq: Int64) -> Set<Int> {
+        let remembered = choiceSelections[seq] ?? []
+        return choiceCards[seq]?.choices.mode == .one && remembered.count > 1 ? [] : remembered
     }
 
     /// §3.1(#629): 방의 open 선택지 카드(방의 마지막 글에만 생기므로 최대 1개).
@@ -506,19 +512,19 @@ struct RoomView: View {
     private var openChoiceKeyCard: AgentChoiceKeys.Card? {
         guard let seq = openChoiceSeq, let card = choiceCards[seq] else { return nil }
         let enabled = isReady && !choiceSending.contains(seq) && haltedReason == nil && !keysBlocked
-        return AgentChoiceKeys.Card(count: card.choices.items.count, selected: choiceSelections[seq] ?? [], enabled: enabled)
+        return AgentChoiceKeys.Card(count: card.choices.items.count, selected: selectedChoices(seq), enabled: enabled)
     }
 
-    /// ⌥N = 그 번호 체크 토글 · ⌥Return = 카드 [보내기]와 같은 compose 전송.
+    /// ⌥N = 그 번호 체크 토글(`one` 이면 바꿔 고르기 — 탭과 같은 `AgentChoices.toggle`, #671 PR B) · ⌥Return = 카드 [보내기]와 같은 compose 전송.
     private func choiceKey(_ action: AgentChoiceKeys.Action) {
-        guard let seq = openChoiceSeq else { return }
+        guard let seq = openChoiceSeq, let card = choiceCards[seq] else { return }
         switch action {
         case .toggle(let number):
-            var selected = choiceSelections[seq] ?? []
-            if selected.contains(number) { selected.remove(number) } else { selected.insert(number) }
-            choiceSelections[seq] = selected
+            let next = AgentChoices.toggle(selected: Array(selectedChoices(seq)), number: number, mode: card.choices.mode)
+            choiceSelections[seq] = Set(next)
         case .send:
-            let numbers = (choiceSelections[seq] ?? []).sorted()
+            let numbers = selectedChoices(seq).sorted()
+            if card.choices.mode == .one, numbers.count != 1 { return }
             Task { await answerChoice(seq, numbers) }
         }
     }

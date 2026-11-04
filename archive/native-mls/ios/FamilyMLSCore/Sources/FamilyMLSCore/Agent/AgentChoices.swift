@@ -312,6 +312,25 @@ public struct AgentChoices: Equatable {
         return Array(Set(numbers)).sorted()
     }
 
+    /// 고른 번호 + 행 하나 탭(또는 ⌥N) → 새 선택(오름차순·중복 없음, #671 PR B, 규격 §5.1). 웹 `choiceToggle` 과 같은 답(공유 벡터 `toggle`).
+    /// `many`: 그 번호를 켜고 끈다(#624). `one`: 그 번호 하나로 바꾼다 — 이미 그것만 골랐으면 비운다(남은 복수 선택 기억도 버린다).
+    public static func toggle(selected: [Int], number: Int, mode: Mode) -> [Int] {
+        let current = Array(Set(selected)).sorted()
+        switch mode {
+        case .one:
+            return current == [number] ? [] : [number]
+        case .many:
+            return current.contains(number) ? current.filter { $0 != number } : (current + [number]).sorted()
+        }
+    }
+
+    /// 내 답 → 고른 번호(규격 §2 「답 판정」 + §5.1). `one` 선택지에 번호가 둘 이상이면 답이 아니다(nil → closed).
+    /// 웹 `choiceAnswer` 와 같은 답(공유 벡터 `answer`).
+    public static func answer(_ choices: AgentChoices, _ text: String) -> [Int]? {
+        guard let numbers = reply(text, count: choices.items.count) else { return nil }
+        return choices.mode == .one && numbers.count > 1 ? nil : numbers
+    }
+
     /// 보낼 글(규격 §2 「보낼 글」): 오름차순·중복 제거 후 줄마다 `N. 라벨` 을 `\n` 으로 잇는다 — 번호보다 내용이 중요하다(오너).
     /// `labels[N - 1]` = N번의 정리된 라벨(§1.6, `items.map(\.label)`). 라벨이 비었거나 없으면 `N. (내용 없음)`.
     /// 이 글은 답 판정 B 로 다시 같은 번호 집합이 된다(왕복).
@@ -350,7 +369,7 @@ public struct AgentChoices: Equatable {
             } else {
                 let next = visible[index + 1]
                 if next.kind == .text, next.isMine(device: myDevice),
-                   let numbers = reply(next.body, count: choices.items.count) {
+                   let numbers = answer(choices, next.body) {   // one 모드에서 번호 여럿 → nil(closed, #671 PR B)
                     state = .answered(numbers)
                 } else {
                     state = .closed
