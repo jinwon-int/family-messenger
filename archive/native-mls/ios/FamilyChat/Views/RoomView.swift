@@ -27,6 +27,8 @@ struct RoomView: View {
     @State private var viewportHeight: Double = 0
     /// 목록 내용의 마지막 높이(진입 직후 실제 배치·이미지 로딩으로 커지면 다시 최하단, `ScrollFollow.shouldRescrollOnContentGrowth`).
     @State private var contentHeight: Double = 0
+    /// 타임라인 칸의 너비 — 넓은 뒤로가기 스와이프의 「왼쪽 2/5」 기준(`BackSwipe`).
+    @State private var timelineWidth: Double = 0
     @State private var showInvite = false
     /// 방별 알림(mute.go): `POST /mute` 실패 알림.
     @State private var muteFailed = false
@@ -166,6 +168,21 @@ struct RoomView: View {
                         tracking.lastDrag = Date()
                         DispatchQueue.main.asyncAfter(deadline: .now() + ScrollFollow.settleDelay + 0.1) { refollowIfSettledAtBottom() }
                     })
+                // 오너 2026-11-04: 넓은 뒤로가기 — 타임라인 왼쪽 2/5 안에서 시작해 오른쪽으로 밀고 손을 떼면 목록으로(판정 `BackSwipe`).
+                // 손가락을 따라 밀리지는 않는다(공개 API만). 기본 가장자리 스와이프는 그대로 — 둘 다 와도 `backToList` 는 같은 결과다.
+                // 작성창에는 붙이지 않는다(글자 선택 끌기와 섞이지 않게). 창이 떠 있거나 맨 위가 아니면 쓰지 않는다(`keysBlocked`).
+                .simultaneousGesture(DragGesture(minimumDistance: 20)
+                    .onEnded { value in
+                        guard !keysBlocked,
+                              BackSwipe.shouldGoBack(startX: Double(value.startLocation.x), width: timelineWidth,
+                                                     dx: Double(value.translation.width), dy: Double(value.translation.height))
+                        else { return }
+                        model.noteScroll("\(room) back-swipe x=\(Self.pt(value.startLocation.x)) dx=\(Self.pt(value.translation.width)) width=\(Self.pt(timelineWidth))")
+                        navigator.backToList()
+                    })
+                .background(GeometryReader { geo in
+                    Measured(value: Double(geo.size.width)) { timelineWidth = $0 }
+                })
                 // #497: 위로 읽는 중에 새 글이 왔다 — 화면은 그대로 두고 버튼으로 알린다.
                 .overlay(alignment: .bottom) {
                     if hasNewBelow {
