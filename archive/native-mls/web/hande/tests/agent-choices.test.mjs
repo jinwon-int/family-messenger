@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseChoices, choiceReply, composeChoice, choiceState, choiceKeyAction, choiceKeyInput } from '../agent-choices.js';
+import { parseChoices, choiceReply, composeChoice, choiceState, choiceKeyAction, choiceKeyInput, choiceToggle, choiceAnswer } from '../agent-choices.js';
 import { installShortcuts } from '../shortcuts.js';
 
 const vectors = JSON.parse(readFileSync(new URL('../../../tests/fixtures/agent-choices-vectors.json', import.meta.url), 'utf8'));
@@ -30,6 +30,34 @@ for (const v of vectors.explicit) {
     assert.deepEqual(parseChoices(v.text), v.expected);
   });
 }
+
+// #671 PR B: `one` 모드 — 행 탭은 바꿔 고르기, 답에 번호가 여럿이면 답이 아니다(closed).
+test('공유 벡터 toggle·answer 가 실렸다', () => {
+  assert.ok(vectors.toggle.length >= 8);
+  assert.ok(vectors.answer.length >= 8);
+});
+
+for (const v of vectors.toggle) {
+  test(`toggle: ${v.mode} ${JSON.stringify(v.selected)} + ${v.number}`, () => {
+    assert.deepEqual(choiceToggle(v.selected, v.number, v.mode), v.expected);
+  });
+}
+
+for (const v of vectors.answer) {
+  test(`answer: ${v.name}`, () => {
+    assert.deepEqual(choiceAnswer(parseChoices(v.text), v.reply), v.expected);
+  });
+}
+
+test('choiceState: one 모드에서 번호 둘을 보낸 답은 closed(null)', () => {
+  const entries = [
+    {key: 'a', kind: 'text', isAgent: true, isMe: false, body: '**[답변 필요]** 하나만 선택\n1. A\n2. B'},
+    {key: 'b', kind: 'text', isAgent: false, isMe: true, body: '1, 2'},
+  ];
+  assert.equal(choiceState(entries, 0), null);
+  entries[1].body = '2';
+  assert.deepEqual(choiceState(entries, 0).numbers, [2]);
+});
 
 for (const v of vectors.reply) {
   test(`reply: ${JSON.stringify(v.text)} / ${v.count}`, () => {

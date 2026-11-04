@@ -15,6 +15,7 @@ import {parseBlocks, inlineSpans, hasMarkdown} from './agent-markdown.js';
 import {linkParts} from './service-links.js';
 import {isCaretMode} from './timeline-caret.js';
 import {icon} from './icons.js';
+import {choiceToggle} from './agent-choices.js';
 
 // ---- DOM 도우미 ----
 
@@ -696,7 +697,7 @@ const finePointer = () => typeof window !== 'undefined' && typeof window.matchMe
 
 /** 말풍선 서명에 더할 카드 서명 — 선택은 빼고, open 일 때만 잠금(보내는 중·쓸 수 없는 방)을 넣는다. */
 const choiceSignature = (choice) => (choice
-  ? [choice.state, choice.numbers ?? null, choice.labels ?? null, choice.choices?.items ?? null, choice.choices?.recommended ?? null,
+  ? [choice.state, choice.numbers ?? null, choice.labels ?? null, choice.choices?.items ?? null, choice.choices?.recommended ?? null, choice.choices?.mode ?? 'many',
     choice.state === 'open' ? Boolean(choice.sending) : null, choice.state === 'open' ? Boolean(choice.disabled) : null]
   : null);
 
@@ -710,21 +711,24 @@ function choiceCard(choice) {
   }
   if (choice.state !== 'open') { choiceSelection.delete(choice.id); return null; }
   const { items, recommended } = choice.choices;
+  // #671 PR B: 「하나만」 블록(mode one)은 라디오 — 행 탭은 바꿔 고르기, 보내는 것도 하나다.
+  const one = choice.choices.mode === 'one';
   const remembered = choiceSelection.get(choice.id);
-  const selected = new Set(items.filter((item) => remembered?.has(item.number)).map((item) => item.number));
+  let selected = new Set(items.filter((item) => remembered?.has(item.number)).map((item) => item.number));
+  if (one && selected.size > 1) selected = new Set();   // 옛 복수 선택 기억은 버린다
   const picked = () => [...selected].sort((a, b) => a - b);
   let busy = false;   // 보내기를 누른 뒤 app 의 결과가 올 때까지(sendText false 면 풀린다)
   const rows = items.map((item) => el('button', {
-    type: 'button', role: 'checkbox', class: 'choice-row', 'data-testid': 'choice-row', 'data-number': String(item.number),
+    type: 'button', role: one ? 'radio' : 'checkbox', class: 'choice-row', 'data-testid': 'choice-row', 'data-number': String(item.number),
     'aria-label': t.row(item.number, item.label, item.number === recommended),
-    onclick: () => toggle(item.number),   // 복수 선택(#624) — 행마다 따로 켜고 끈다
+    onclick: () => toggle(item.number),   // many: 행마다 켜고 끈다(#624) · one: 그 행으로 바꾼다(#671 PR B)
   },
   el('span', { class: 'choice-check', 'aria-hidden': 'true' }),
   el('span', { class: 'choice-num', 'aria-hidden': 'true' }, String(item.number)),
   el('span', { class: 'choice-label', 'aria-hidden': 'true' }, item.label),
   item.number === recommended ? el('span', { class: 'pill choice-recommended', 'aria-hidden': 'true' }, t.recommended) : null));
   const send = el('button', { type: 'button', class: 'primary small choice-send', 'data-testid': 'choice-send', onclick: () => submit() }, t.send);
-  const card = el('div', { class: 'choices', role: 'group', 'aria-label': t.region, 'data-testid': 'agent-choices' },
+  const card = el('div', { class: 'choices', role: one ? 'radiogroup' : 'group', 'aria-label': t.region, 'data-testid': 'agent-choices', 'data-mode': one ? 'one' : 'many' },
     el('div', { class: 'choice-list' }, rows), el('div', { class: 'choice-actions' }, send),
     finePointer() ? el('p', { class: 'choice-hint', 'data-testid': 'choice-hint' }, t.keysHint) : null);
   const isLocked = () => busy || Boolean(choice.sending) || Boolean(choice.disabled);
@@ -742,7 +746,7 @@ function choiceCard(choice) {
     if (selected.size > 0) send.setAttribute('aria-label', t.sendNumber(picked())); else send.removeAttribute('aria-label');
   };
   const toggle = (number) => {
-    if (selected.has(number)) selected.delete(number); else selected.add(number);
+    selected = new Set(choiceToggle(picked(), number, one ? 'one' : 'many'));
     if (selected.size === 0) choiceSelection.delete(choice.id); else choiceSelection.set(choice.id, new Set(selected));
     paint();
   };

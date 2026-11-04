@@ -204,6 +204,34 @@ export function choiceReply(text, count) {
   return numberListReply(text, count) ?? lineFormReply(text, count);
 }
 
+/**
+ * 고른 번호 + 행 하나 탭 → 새 선택(오름차순, #671 PR B, 규격 §5.1).
+ *   many: 그 번호를 켜고 끈다(#624). one: 그 번호 하나로 바꾼다 — 이미 그것만 골랐으면 비운다.
+ * @param {number[]} selected
+ * @param {number} number
+ * @param {'one'|'many'} [mode]
+ * @returns {number[]}
+ */
+export function choiceToggle(selected, number, mode = 'many') {
+  const current = [...new Set(Array.from(selected ?? [], Number))];
+  if (mode === 'one') return current.length === 1 && current[0] === number ? [] : [number];
+  const next = current.includes(number) ? current.filter((n) => n !== number) : [...current, number];
+  return next.sort((a, b) => a - b);
+}
+
+/**
+ * 내 답 → 고른 번호(규격 §2 「답 판정」 + §5.1): `one` 선택지에 번호가 둘 이상이면 답이 아니다(null → closed).
+ * @param {null | {items: unknown[], mode?: 'one'|'many'}} choices parseChoices 결과
+ * @param {string} text 바로 다음 내 글
+ * @returns {number[] | null}
+ */
+export function choiceAnswer(choices, text) {
+  if (!choices) return null;
+  const numbers = choiceReply(text, choices.items.length);
+  if (numbers === null) return null;
+  return choices.mode === 'one' && numbers.length > 1 ? null : numbers;
+}
+
 export const EMPTY_LABEL = '(내용 없음)';
 
 /**
@@ -250,7 +278,7 @@ export function choiceState(entries, index, isMine = (e) => Boolean(e?.isMe)) {
   const choices = choicesOf(entry);
   if (!choices) return null;
   if (!next) return {state: 'open', choices};
-  const numbers = choiceReply(next.body, choices.items.length);
+  const numbers = choiceAnswer(choices, next.body);   // one 모드에서 번호 여럿 → null(closed, #671 PR B)
   if (numbers === null) return null;
   return {state: 'answered', numbers, labels: numbers.map((n) => choices.items[n - 1].label), choices};
 }
