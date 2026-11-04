@@ -1276,9 +1276,107 @@ fn bounded_reply(text: &str, max: usize) -> String {
         return text.to_string();
     }
     let marker = "\n…(길어서 줄임)";
+    // #671 PR C: the agent's last `[답변 필요]` block is what the owner must answer — Hande turns it into the choice
+    // card (agent-choices-v2). When the plain cut would drop it, shorten what comes before and keep the block whole.
+    if let Some((start, end)) = answer_block_span(text) {
+        if end > max.saturating_sub(marker.len()) {
+            let block = &text[start..end];
+            let gap = "\n…(길어서 줄임)\n\n";
+            let fence_close = "\n```";
+            let room = max.saturating_sub(block.len() + gap.len() + fence_close.len());
+            if room > 0 {
+                let mut head = bounded(&text[..start], room).trim_end().to_string();
+                // A head cut inside a code fence would swallow the block into it: close the fence first.
+                if head.lines().filter(|l| l.trim_start().starts_with("```")).count() % 2 == 1 {
+                    head.push_str(fence_close);
+                }
+                head.push_str(gap);
+                head.push_str(block);
+                return head;
+            }
+        }
+    }
     let mut cut = bounded(text, max.saturating_sub(marker.len()));
     cut.push_str(marker);
     cut
+}
+
+/// `N. ` / `N) ` item line (up to 3 leading spaces, ASCII digits, AGENT-CHOICES-V1 §1.3) → its number.
+fn choice_item_number(line: &str) -> Option<u32> {
+    let rest = line.strip_prefix("   ").or_else(|| line.strip_prefix("  ")).or_else(|| line.strip_prefix(' ')).unwrap_or(line);
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 || digits > 2 {
+        return None;
+    }
+    let after = &rest[digits..];
+    let after = after.strip_prefix('.').or_else(|| after.strip_prefix(')'))?;
+    let label = after.strip_prefix(' ').or_else(|| after.strip_prefix('\t'))?;
+    if label.trim_start_matches([' ', '\t']).is_empty() {
+        return None;
+    }
+    rest[..digits].parse().ok()
+}
+
+/// Byte span of the last agent-choices-v2 block (§5): a `[답변 필요]` / `[Answer needed]` header line outside a code
+/// fence, then items numbered from 1 (blank and indented lines in between). Ends after its last item or continuation.
+fn answer_block_span(text: &str) -> Option<(usize, usize)> {
+    let mut lines: Vec<(usize, &str)> = Vec::new();
+    let mut offset = 0;
+    for raw in text.split_inclusive('\n') {
+        lines.push((offset, raw.trim_end_matches(['\n', '\r'])));
+        offset += raw.len();
+    }
+    let is_header = |line: &str| {
+        let clean = line.replace("**", "").replace("__", "").replace('`', "").to_lowercase();
+        clean.contains("[답변 필요]") || clean.contains("[answer needed]")
+    };
+    let mut found = None;
+    let mut fenced = false;
+    let mut i = 0;
+    while i < lines.len() {
+        let (start, line) = lines[i];
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+            i += 1;
+            continue;
+        }
+        if fenced || !is_header(line) {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < lines.len() && lines[j].1.trim().is_empty() {
+            j += 1;
+        }
+        if j >= lines.len() || choice_item_number(lines[j].1) != Some(1) {
+            i += 1;
+            continue;
+        }
+        let mut last = 1;
+        let mut end = lines[j].0 + lines[j].1.len();
+        let mut k = j + 1;
+        while k < lines.len() {
+            let line = lines[k].1;
+            if let Some(n) = choice_item_number(line) {
+                if n != last + 1 {
+                    break;
+                }
+                last = n;
+            } else if line.trim().is_empty() {
+                k += 1;
+                continue;
+            } else if !(line.starts_with("  ") || line.starts_with('\t')) {
+                break;
+            }
+            end = lines[k].0 + line.len();
+            k += 1;
+        }
+        if last <= 9 {
+            found = Some((start, end));
+        }
+        i = k;
+    }
+    found
 }
 
 #[cfg(test)]
@@ -1331,6 +1429,62 @@ mod tests {
         assert!(cut.ends_with("…(길어서 줄임)"));
         assert_eq!(bounded_reply("짧다", 64), "짧다");
         assert_eq!(bounded("abc", 2), "ab");
+    }
+
+    // #671 PR C: an agent's `[답변 필요]` block past the cut survives — Hande renders it as the choice card.
+    const BLOCK: &str = "**[답변 필요]** 하나만 선택\n1. 진행 (권장)\n2. 보류";
+
+    #[test]
+    fn reply_bounds_keep_the_answer_block_past_the_cut() {
+        let text = format!("{}\n\n{}", "가".repeat(200), BLOCK); // block far beyond 128 bytes
+        let cut = bounded_reply(&text, 128);
+        assert!(cut.len() <= 128, "len {}", cut.len());
+        assert!(cut.ends_with(BLOCK), "block kept whole at the end: {cut:?}");
+        assert!(cut.contains("…(길어서 줄임)"));
+    }
+
+    #[test]
+    fn reply_bounds_keep_a_middle_block_and_drop_the_tail() {
+        let text = format!("{}\n\n{}\n\n확인 사항\n{}", "가".repeat(200), BLOCK, "나".repeat(200));
+        let cut = bounded_reply(&text, 160);
+        assert!(cut.len() <= 160);
+        assert!(cut.ends_with(BLOCK));
+    }
+
+    #[test]
+    fn reply_bounds_unchanged_when_the_block_is_already_kept() {
+        let text = format!("{}\n\n{}", BLOCK, "가".repeat(200));
+        let cut = bounded_reply(&text, 128);
+        assert!(cut.starts_with(BLOCK));
+        assert!(cut.ends_with("…(길어서 줄임)"));
+        assert!(cut.len() <= 128);
+    }
+
+    #[test]
+    fn reply_bounds_close_a_fence_cut_open_before_the_block() {
+        let text = format!("```\n{}\n```\n\n{}", "x".repeat(300), BLOCK);
+        let cut = bounded_reply(&text, 128);
+        assert!(cut.len() <= 128);
+        assert!(cut.ends_with(BLOCK));
+        let fences = cut.lines().filter(|l| l.trim_start().starts_with("```")).count();
+        assert_eq!(fences % 2, 0, "the cut fence is closed so the block is not inside it: {cut:?}");
+    }
+
+    #[test]
+    fn reply_bounds_english_header_and_fallbacks() {
+        let en = "**[Answer needed]** choose one\n1. Ship\n2. Hold";
+        let cut = bounded_reply(&format!("{}\n{}", "a".repeat(300), en), 96);
+        assert!(cut.ends_with(en) && cut.len() <= 96);
+        // no block: the old cut
+        let plain = bounded_reply(&"a".repeat(300), 96);
+        assert!(plain.ends_with("…(길어서 줄임)") && plain.len() <= 96);
+        // a block too big to keep: the old cut, still bounded
+        let big = format!("x\n**[답변 필요]**\n1. {}\n2. b", "c".repeat(400));
+        let cut = bounded_reply(&big, 96);
+        assert!(cut.len() <= 96 && cut.ends_with("…(길어서 줄임)"));
+        // a header inside a code fence is not a block
+        let fenced = format!("{}\n```\n{}\n```", "a".repeat(300), BLOCK);
+        assert!(bounded_reply(&fenced, 96).ends_with("…(길어서 줄임)"));
     }
 
     /// A tiny stand-in worker speaking the FLEET-WORKER port: one approval,
