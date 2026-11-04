@@ -7,6 +7,10 @@
 //   <id>/item.json             완성된 맡김. 보이는 디렉터리는 언제나 완성본이다.
 //   <id>/claimed.json          앱이 가져갔다(item.json 을 rename — 두 경로가 동시에 집어도 한 번만 성공).
 //   <id>/<n>-<이름>             내용 파일(순서 = n).
+//   <id>/sent-<조각>            #669 확장이 그 조각을 **직접 처리했다**(내용 = sent·queued·refused). 조각 = `text` 또는 내용 파일 이름.
+//                              앱은 `claim` 때 이 조각을 빼고 받는다(D-A3: 확장이 죽어도 앱이 나머지만 이어 보낸다, 중복 없음).
+//   <id>/sending.json          #669 확장이 직접 보내는 중(내용 = 시작 밀리초). `sendingLease` 안에서는 앱이 `pending` 에서 건너뛴다 —
+//                              확장과 앱이 같은 맡김을 동시에 보내지 않게. 임대가 지나면(확장이 죽음) 앱이 이어받는다.
 // claim 된 채 남은 디렉터리(송신 중 앱 종료)는 다시 보내지 않고 버린다(`discardStaleClaims`) — 중복 송신보다 드문 유실이 낫다.
 // 24시간이 지난 맡김·다른 서버 스코프의 맡김은 만료 때 정리한다(다른 스코프는 그 전까지 보존 — 서버를 되돌리면 보낸다).
 //
@@ -26,6 +30,35 @@ public enum ShareHandoff {
     public static let lifetime: TimeInterval = 24 * 60 * 60
     /// 쓰다 만 staging 을 다른 프로세스가 지워도 되는 나이(확장이 아직 쓰는 중일 수 있으므로 넉넉히).
     public static let stagingLifetime: TimeInterval = 60 * 60
+    /// #669 확장의 직접 송신 임대(`sending.json`) — 이 안에서는 앱이 그 맡김을 건너뛴다. 확장 프로세스는 길어도 수십 초를
+    /// 살고(사진 10장 ≈ 24MB 업로드 포함) 죽으면 임대만 남는다; 지나면 앱이 남은 조각을 이어 보낸다.
+    public static let sendingLease: TimeInterval = 120
+
+    /// #669 맡김의 조각 — 글 하나 + 내용 파일들(디렉터리 안 이름). 확장이 조각마다 직접 보내고 표시한다.
+    public enum Piece: Hashable {
+        case text
+        case file(String)
+
+        /// 표시 파일 이름의 꼬리(`sent-<key>`). 내용 파일은 `<n>-` 로 시작하므로 `text` 와 겹치지 않는다.
+        var key: String {
+            switch self {
+            case .text: return "text"
+            case .file(let name): return name
+            }
+        }
+
+        /// 맡김의 조각을 보낼 순서로(글 → 파일 순).
+        public static func all(of item: Item) -> [Piece] {
+            let head: [Piece] = item.text == nil ? [] : [.text]
+            return head + item.files.map(Piece.file)
+        }
+    }
+
+    /// #669 확장이 조각을 어떻게 처리했나(D-A5). 셋 다 앱이 **다시 보내지 않는다**: sent = 서버 확인, queued = outbox 에
+    /// 있어 앱 `flushOutbox` 가 같은 바이트로 보낸다(맡기면 중복), refused = 영구 거절(같은 바이트는 다시 보내도 같다).
+    public enum PieceStatus: String {
+        case sent, queued, refused
+    }
 
     /// 파일 1개 한도 — 앱의 송신 경로(`AppModel.sendAttachment`)와 같은 값.
     public static func maxFileBytes(fileV2: Bool = FileV2Format.sendDefault) -> Int {
@@ -73,6 +106,17 @@ public enum ShareHandoff {
             self.version = Self.currentVersion
             self.id = id; self.createdAt = createdAt; self.scope = scope; self.room = room; self.text = text; self.files = files
         }
+
+        /// #669 처리된 조각을 뺀 나머지(앱이 이어 보낼 것). 순서는 유지.
+        public func removing(_ handled: Set<Piece>) -> Item {
+            var out = self
+            if handled.contains(.text) { out.text = nil }
+            out.files = files.filter { !handled.contains(.file($0)) }
+            return out
+        }
+
+        /// 보낼 것이 하나도 없다(글도 파일도).
+        public var isEmpty: Bool { text == nil && files.isEmpty }
     }
 
     public enum Failure: Error, Equatable {
@@ -90,6 +134,9 @@ public final class ShareHandoffStore {
     private static let itemFile = "item.json"
     private static let claimedFile = "claimed.json"
     private static let stagingPrefix = ".staging-"
+    /// #669 조각 처리 표시 `sent-<key>`(내용 = `PieceStatus.rawValue`)와 직접 송신 임대 `sending.json`(내용 = 시작 밀리초).
+    private static let sentPrefix = "sent-"
+    private static let sendingFile = "sending.json"
 
     /// `container` = App Group 컨테이너(테스트는 임시 디렉터리). 맡김은 그 아래 `share-outbox/`.
     public init(container: URL) {
@@ -187,12 +234,15 @@ public final class ShareHandoffStore {
                 try? fileManager.removeItem(at: entry)
                 continue
             }
+            // #669: 확장이 직접 보내는 중(임대 안) — 건너뛴다. 임대가 지났으면 확장이 죽은 것, 앱이 남은 조각을 이어받는다.
+            if let started = sendingStartedAt(entry), now.timeIntervalSince(started) < ShareHandoff.sendingLease { continue }
             if item.scope == scope { out.append(item) }
         }
         return out.sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
     }
 
     /// 앱: 보내기 직전에 가져간다(item.json → claimed.json, 원자 rename). 이미 누가 가져갔으면 nil.
+    /// #669: 확장이 직접 처리한 조각(`sent-*`)은 빼고 돌려준다 — 앱은 나머지만 보낸다(다 처리됐으면 빈 Item → 호출자가 `finish`).
     public func claim(_ id: String) -> ShareHandoff.Item? {
         let directory = root.appendingPathComponent(id, isDirectory: true)
         let claimed = directory.appendingPathComponent(Self.claimedFile)
@@ -205,7 +255,49 @@ public final class ShareHandoffStore {
             try? fileManager.removeItem(at: directory)
             return nil
         }
-        return item
+        return item.removing(Set(handledPieces(id).keys))
+    }
+
+    // MARK: - #669 확장 직접 송신(조각 표시·임대)
+
+    /// 확장: 조각 하나를 직접 처리했다(D-A3 `sent/<n>`). 원자 쓰기 — 있으면 덮어쓴다. 디렉터리가 없으면(이미 finish) 조용히 무시.
+    public func markPiece(_ id: String, _ piece: ShareHandoff.Piece, _ status: ShareHandoff.PieceStatus) {
+        let marker = root.appendingPathComponent(id, isDirectory: true).appendingPathComponent(Self.sentPrefix + piece.key)
+        try? Data(status.rawValue.utf8).write(to: marker, options: .atomic)
+    }
+
+    /// 처리된 조각과 상태(표시 파일에서). 읽을 수 없는 표시는 무시.
+    public func handledPieces(_ id: String) -> [ShareHandoff.Piece: ShareHandoff.PieceStatus] {
+        let directory = root.appendingPathComponent(id, isDirectory: true)
+        var out: [ShareHandoff.Piece: ShareHandoff.PieceStatus] = [:]
+        for entry in (try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [] {
+            let name = entry.lastPathComponent
+            guard name.hasPrefix(Self.sentPrefix),
+                  let data = try? Data(contentsOf: entry),
+                  let status = ShareHandoff.PieceStatus(rawValue: String(decoding: data, as: UTF8.self)) else { continue }
+            let key = String(name.dropFirst(Self.sentPrefix.count))
+            out[key == ShareHandoff.Piece.text.key ? .text : .file(key)] = status
+        }
+        return out
+    }
+
+    /// 확장: 직접 송신을 시작한다 — 임대를 쓴다(`sendingLease` 동안 앱이 이 맡김을 건너뛴다). 못 쓰면 false(직접 보내지 말 것).
+    @discardableResult
+    public func beginSending(_ id: String, now: Date = Date()) -> Bool {
+        let lease = root.appendingPathComponent(id, isDirectory: true).appendingPathComponent(Self.sendingFile)
+        return (try? Data("\(ShareHandoff.milliseconds(now))".utf8).write(to: lease, options: .atomic)) != nil
+    }
+
+    /// 확장: 직접 송신이 끝났다(전부든 일부든) — 임대를 지워 앱이 바로 이어받을 수 있게 한다.
+    public func endSending(_ id: String) {
+        try? fileManager.removeItem(at: root.appendingPathComponent(id, isDirectory: true).appendingPathComponent(Self.sendingFile))
+    }
+
+    /// 임대 시작 시각(없거나 못 읽으면 nil).
+    private func sendingStartedAt(_ directory: URL) -> Date? {
+        guard let data = try? Data(contentsOf: directory.appendingPathComponent(Self.sendingFile)),
+              let millis = Int64(String(decoding: data, as: UTF8.self)) else { return nil }
+        return ShareHandoff.date(milliseconds: millis)
     }
 
     /// 앱: 보내던 중 준비 상태가 풀렸다(로그아웃·정지 등) — 아직 못 보낸 부분(`remaining`: 글·남은 파일)만 다시 맡김으로 되돌린다.

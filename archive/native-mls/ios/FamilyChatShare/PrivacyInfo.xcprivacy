@@ -2,16 +2,41 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- 한데 공유 확장 Privacy manifest (#643). 확장은 네트워크를 쓰지 않는다 — 공유받은 내용과 고른 방을 기기 안 App Group 컨테이너에
-	     맡기기만 하고(보내는 것은 앱), 그래서 수집 유형이 없다. Required Reason API 는 App Group defaults(`UserDefaults(suiteName:)` —
-	     선택한 서버 `hande.server`·공유 대상 방 목록 읽기)뿐: 1C8F.1. 파일 크기는 리소스 값(fileSizeKey)으로 읽고 파일 시각 API·Rust
-	     라이브러리는 쓰지 않는다(FileTimestamp 범주 없음). 바꾸면 FamilyChatTests/PrivacyManifestTests 의 기대값도 함께. -->
+	<!-- 한데 공유 확장 Privacy manifest (#643 → #669). 2단계(#664 과제 A)부터 확장은 NSE 와 같은 엔진으로 릴레이에 **직접 보낸다** — 그 요청이 싣는
+	     식별자(기기 ID·세션의 subject)를 NSE 와 같이 적는다. 내용(글·사진)은 E2EE 라 신고하지 않는다(앱 매니페스트와 같은 오너 결정 ⓐ, app-store-review.md §1-1).
+	     Required Reason API 는 이제 앱·NSE 와 같은 코드(SharedStorage·ServerStore·DeviceIdentity + Core 파일 저장소 + Rust 라이브러리)라 같은 선언:
+	     UserDefaults CA92.1(앱 전용 defaults — 옛 기기 ID 이관 읽기)·1C8F.1(App Group) · FileTimestamp C617.1. 바꾸면 FamilyChatTests/PrivacyManifestTests 의 기대값도 함께. -->
 	<key>NSPrivacyTracking</key>
 	<false/>
 	<key>NSPrivacyTrackingDomains</key>
 	<array/>
 	<key>NSPrivacyCollectedDataTypes</key>
-	<array/>
+	<array>
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeUserID</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeDeviceID</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSPrivacyAccessedAPITypes</key>
 	<array>
 		<dict>
@@ -19,7 +44,16 @@
 			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
 			<key>NSPrivacyAccessedAPITypeReasons</key>
 			<array>
+				<string>CA92.1</string>
 				<string>1C8F.1</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>C617.1</string>
 			</array>
 		</dict>
 	</array>
