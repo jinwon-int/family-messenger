@@ -2,6 +2,7 @@
 // `messages.db` 모양을 가진다(C 단계 화면·내보내기 규칙을 한 번만 정한다). CI `scripts/check-ddl-sync.sh` 가 두 파일의 DDL 을 비교한다.
 // Android 가 실제로 쓰는 표는 `rooms`·`messages` 뿐이다 — `outbox`·`cursors` 는 Rust 코어가 `<room>.sync` 에 가지고 있다(HOST-CONTRACT §1).
 // 빈 표로 두는 것이 스키마 공유보다 싸다. 바꾸려면 iOS 와 함께 `schema_version` 을 올리고 마이그레이션을 쓴다.
+// `own_pending`(iOS #665/#667, Android 는 쓰지 않음)은 iOS 처럼 v1 에 덧붙인 빈 표 — 버전 그대로, 옛 DB 를 열면 생긴다(#673).
 package com.seoyoon_family.hande.core
 
 object MessageSchema {
@@ -41,6 +42,15 @@ object MessageSchema {
       PRIMARY KEY (room, client_id)
     );
     CREATE TABLE IF NOT EXISTS cursors (room TEXT PRIMARY KEY, seq INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS own_pending (
+      room TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      body TEXT NOT NULL,
+      attachment BLOB,
+      created_at REAL NOT NULL,
+      PRIMARY KEY (room, client_id)
+    );
     """
     // ddl-sync-end
 

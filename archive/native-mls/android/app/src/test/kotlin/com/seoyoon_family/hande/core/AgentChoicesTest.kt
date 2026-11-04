@@ -41,6 +41,34 @@ class AgentChoicesTest {
         }
     }
 
+    // v2(#671, 규격 §5): `[답변 필요]` 머리줄 명시 블록 — 결과에 mode·explicit 가 붙는다.
+    @Test fun explicitVectors() {
+        val cases = fixture["explicit"] as List<*>
+        assertTrue(cases.size >= 10, "explicit 벡터가 10개 이상")
+        for (c in cases) {
+            c as Map<*, *>
+            val name = c["name"] as String
+            val got = AgentChoices.parse(c["text"] as String)
+            val expected = c["expected"] as Map<*, *>?
+            if (expected == null) {
+                assertNull(got, name)
+                continue
+            }
+            val items = (expected["items"] as List<*>).map {
+                it as Map<*, *>
+                AgentChoiceItem((it["number"] as Long).toInt(), it["label"] as String)
+            }
+            val recommended = (expected["recommended"] as Long?)?.toInt()
+            val mode = when (expected["mode"] as String) {
+                "one" -> AgentChoices.Mode.ONE
+                "many" -> AgentChoices.Mode.MANY
+                else -> fail("$name: unknown mode ${expected["mode"]}")
+            }
+            assertEquals(true, expected["explicit"], name)
+            assertEquals(AgentChoices(items, recommended, mode, explicit = true), got, name)
+        }
+    }
+
     @Test fun replyVectors() {
         for (c in fixture["reply"] as List<*>) {
             c as Map<*, *>

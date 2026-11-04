@@ -1,4 +1,5 @@
 // agent-choices-v1 (family-messenger#620, archive/native-mls/AGENT-CHOICES-V1.md) — 에이전트 선택지 탭 선택.
+// v2(#671, 같은 규격 §5): 에이전트가 `[답변 필요]` 머리줄로 명시한 블록을 먼저 본다.
 //
 // 에이전트 글이 `1. … 2. … 3. …` 선택지로 끝나면 말풍선 아래에 선택 카드를 그린다. 보내는 것은 손으로 치는 것과
 // 똑같은 텍스트다 — 카드는 줄마다 `N. 라벨`(복수 선택 #624)을 보내고, 손으로 친 `1`·`1, 3` 도 같은 답이 된다(와이어 변경 없음). 상태(open / answered / closed)는 타임라인에서 매번 계산하고 저장하지 않는다.
@@ -28,15 +29,78 @@ function cleanLabel(raw) {
   return raw.replaceAll('**', '').replaceAll('__', '').replaceAll('`', '').replace(/[ \t\n]+/g, ' ').replace(/^ | $/g, '');
 }
 
+const HEADERS = ['[답변 필요]', '[answer needed]'];   // v2(#671) 머리줄 — 영문은 소문자로 비교
+const ONE_WORD = /(^|[^a-z0-9])one([^a-z0-9]|$)/;
+
+/** v2 머리줄이면 모드(`one`·`many`), 아니면 null(규격 §5). */
+function headerMode(line) {
+  const clean = line.replaceAll('**', '').replaceAll('__', '').replaceAll('`', '');
+  const lower = clean.toLowerCase();
+  if (!HEADERS.some((h) => lower.includes(h))) return null;
+  return clean.includes('하나만') || ONE_WORD.test(lower) ? 'one' : 'many';
+}
+
+/** 권장 번호(규격 §1.7): 메시지 전체의 `권장 N번`(1..k) → 라벨에 `권장` 이 든 첫 항목 → null. */
+function recommendedOf(source, items) {
+  const named = RECOMMENDED.exec(source);   // 메시지 전체(펜스 포함)의 첫 일치만
+  const n = named ? Number.parseInt(named[1], 10) : 0;
+  if (n >= 1 && n <= items.length) return n;
+  return items.find((it) => it.label.includes('권장'))?.number ?? null;
+}
+
 /**
- * 에이전트 글 본문에서 끝의 선택지를 찾는다(규격 §1).
+ * v2(#671, 규격 §5): 에이전트가 `[답변 필요]` 머리줄로 명시한 블록 — 위치·뒤 줄 수·단서어는 보지 않는다.
+ * 머리줄 = 펜스 밖, 블록 첫 항목 바로 위의 비어 있지 않은 줄. 마지막 유효 명시 블록(항목 1~9)이 결과.
+ * 닫힌 블록은 뒤의 번호 줄로 무효가 되지 않는다(무효는 열린 블록만).
+ */
+function parseExplicitChoices(source, lines) {
+  let found = null;
+  let block = null;   // {items, mode, invalid}
+  let prev = null;    // 바로 앞의 비어 있지 않은 줄 {text, fenced}
+  let fenced = false;
+  const finish = () => {
+    if (block && !block.invalid && block.mode && block.items.length <= MAX_ITEMS) found = block;
+    block = null;
+  };
+  for (const line of lines) {
+    if (FENCE.test(line)) { fenced = !fenced; finish(); prev = {text: line, fenced: true}; continue; }
+    if (fenced) { finish(); if (!BLANK.test(line)) prev = {text: line, fenced: true}; continue; }
+    const item = ITEM.exec(line);
+    if (item) {
+      const number = Number.parseInt(item[1], 10);
+      const label = cleanLabel(item[2]);
+      if (number === 1) {
+        finish();
+        block = {items: [{number, label}], mode: prev && !prev.fenced ? headerMode(prev.text) : null, invalid: false};
+      } else if (block && number === block.items.at(-1).number + 1) block.items.push({number, label});
+      else if (block) { block.invalid = true; finish(); }
+      prev = {text: line, fenced: false};
+      continue;
+    }
+    if (BLANK.test(line)) continue;
+    if (block && INDENTED.test(line)) continue;   // 이어지는 줄(라벨엔 넣지 않는다)
+    finish();
+    prev = {text: line, fenced: false};
+  }
+  finish();
+  if (!found) return null;
+  return {items: found.items, recommended: recommendedOf(source, found.items), mode: found.mode, explicit: true};
+}
+
+/**
+ * 에이전트 글 본문에서 선택지를 찾는다: v2 명시 블록(§5)이 있으면 그것, 없으면 v1 끝의 선택지(§1).
  * @param {string} text
- * @returns {null | {items: {number: number, label: string}[], recommended: number | null}}
+ * @returns {null | {items: {number: number, label: string}[], recommended: number | null, mode?: 'one' | 'many', explicit?: true}}
  */
 export function parseChoices(text) {
   if (typeof text !== 'string' || text.length === 0) return null;
   const source = text.replace(/\r\n/g, '\n');
   const lines = source.split('\n');
+  return parseExplicitChoices(source, lines) ?? parseTrailingChoices(source, lines);
+}
+
+/** v1(규격 §1): 글 끝의 번호 목록을 단서어로 찾는다. */
+function parseTrailingChoices(source, lines) {
   let block = null;   // {items:[{number, label}], start, end, open, invalid}
   let fenced = false;
   for (let i = 0; i < lines.length; i++) {
@@ -69,12 +133,7 @@ export function parseChoices(text) {
   for (let i = block.start - 1; i >= 0; i--) if (!BLANK.test(lines[i])) { above = lines[i]; break; }
   const cued = (above !== null && hasCue(above)) || trailing.some(hasCue) || block.items.some((it) => hasCue(it.label));
   if (!cued) return null;
-  let recommended = null;
-  const named = RECOMMENDED.exec(source);   // 메시지 전체(펜스 포함)의 첫 일치만
-  const n = named ? Number.parseInt(named[1], 10) : 0;
-  if (n >= 1 && n <= count) recommended = n;
-  else recommended = block.items.find((it) => it.label.includes('권장'))?.number ?? null;
-  return {items: block.items, recommended};
+  return {items: block.items, recommended: recommendedOf(source, block.items)};
 }
 
 const isDigit = (ch) => ch >= '0' && ch <= '9';   // ASCII 만 — 전각 `１` 은 숫자가 아니다

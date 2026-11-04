@@ -1,13 +1,27 @@
 // agent-choices-v1(#620): 에이전트 글 끝의 번호 선택지 판정 — 규격 `archive/native-mls/AGENT-CHOICES-V1.md` 그대로(웹·iOS 와 같은 공유 벡터
 // `tests/fixtures/agent-choices-vectors.json`). 숫자는 ASCII 0-9 만, 공백(\s)은 스페이스·탭·줄바꿈만 — 플랫폼 정규식 차이를 없애려고 문자 묶음을 직접 쓴다.
 // android.* 없이 JVM 에서 돈다. 상태(open/answered/closed)는 타임라인에서 계산하고 저장하지 않는다.
+// v2(#671, 같은 규격 §5): 에이전트가 `[답변 필요]` 머리줄로 명시한 블록을 먼저 보고, 없으면 v1(§1) 끝의 선택지.
 package com.seoyoon_family.hande.core
+
+import java.util.Locale
 
 /** 선택지 하나: 번호(1..k) + 라벨(`**`·`__`·`` ` `` 지움, 연속 공백 한 칸, 양끝 공백 제거). */
 data class AgentChoiceItem(val number: Int, val label: String)
 
-/** 판정 결과: 항목 2~9개(번호 1..k 연속) + 권장 번호(없으면 null). */
-data class AgentChoices(val items: List<AgentChoiceItem>, val recommended: Int?) {
+/**
+ * 판정 결과: 항목(번호 1..k 연속 — v1 2~9개, v2 명시 블록 1~9개) + 권장 번호(없으면 null).
+ * v2(§5): `mode`(머리줄의 `하나만`·`one` → ONE, 아니면 MANY)·`explicit`(명시 블록이면 true). v1 결과는 기본값(MANY, false).
+ */
+data class AgentChoices(
+    val items: List<AgentChoiceItem>,
+    val recommended: Int?,
+    val mode: Mode = Mode.MANY,
+    val explicit: Boolean = false,
+) {
+    /** 선택 모드(규격 §5.2). 화면의 ONE(라디오) 은 다음 단계(#671 PR B) — 그 전까지 MANY 처럼 그린다. */
+    enum class Mode { ONE, MANY }
+
     /** 번호의 라벨(없으면 null). */
     fun labelOf(number: Int): String? = items.firstOrNull { it.number == number }?.label
 
@@ -44,11 +58,110 @@ data class AgentChoices(val items: List<AgentChoiceItem>, val recommended: Int?)
         private fun cleanLabel(raw: String): String =
             raw.replace("**", "").replace("__", "").replace("`", "").replace(SPACES, " ").trim { it == ' ' || it == '\t' }
 
-        /** 규격 §1: 에이전트 텍스트 본문 → 선택지(아니면 null). */
+        private const val MAX_ITEMS = 9
+        private val HEADERS = listOf("[답변 필요]", "[answer needed]") // 영문은 소문자로 비교
+
+        private fun isFenceLine(line: String) = line.trimStart { it == ' ' || it == '\t' }.startsWith("```")
+        private fun asciiAlnum(c: Char) = c in 'a'..'z' || c in '0'..'9'
+
+        /** 단어 `one`: 앞뒤가 ASCII 소문자·숫자가 아니다(이미 소문자로 바꾼 줄에서 본다 — JS `(^|[^a-z0-9])one([^a-z0-9]|$)`). */
+        private fun hasWordOne(lower: String): Boolean {
+            var at = lower.indexOf("one")
+            while (at >= 0) {
+                val before = at == 0 || !asciiAlnum(lower[at - 1])
+                val after = at + 3 >= lower.length || !asciiAlnum(lower[at + 3])
+                if (before && after) return true
+                at = lower.indexOf("one", at + 1)
+            }
+            return false
+        }
+
+        /** 규격 §5.1·§5.2: v2 머리줄이면 모드, 아니면 null. */
+        private fun headerMode(line: String): Mode? {
+            val clean = line.replace("**", "").replace("__", "").replace("`", "")
+            val lower = clean.lowercase(Locale.ROOT)
+            if (HEADERS.none { it in lower }) return null
+            return if ("하나만" in clean || hasWordOne(lower)) Mode.ONE else Mode.MANY
+        }
+
+        /** 권장 번호(규격 §1.7): 메시지 전체의 `권장 N번`(1..k) → 라벨에 `권장` 이 든 첫 항목 → null. */
+        private fun recommendedOf(normalized: String, items: List<AgentChoiceItem>): Int? {
+            val k = items.size
+            val fromPattern = RECOMMENDED.find(normalized)?.groupValues?.get(1)?.toInt()?.takeIf { it in 1..k }
+            return fromPattern ?: items.firstOrNull { "권장" in it.label }?.number
+        }
+
+        /** v2 명시 블록 하나(판정 중). `mode` 가 null 이면 머리줄이 없는 블록. */
+        private class ExplicitBlock(val items: MutableList<AgentChoiceItem>, val mode: Mode?) {
+            var invalid = false
+        }
+
+        /**
+         * 규격 §5: `[답변 필요]` 머리줄이 붙은 블록 — 위치·뒤 줄 수·단서어는 보지 않는다.
+         * 머리줄 = 펜스 밖, 블록 첫 항목 바로 위의 비어 있지 않은 줄. 마지막 유효 명시 블록(항목 1~9)이 결과.
+         * 닫힌 블록은 뒤의 번호 줄로 무효가 되지 않는다(무효는 열린 블록만).
+         */
+        private fun parseExplicit(normalized: String, lines: List<String>): AgentChoices? {
+            var found: ExplicitBlock? = null
+            var block: ExplicitBlock? = null // 열린 블록(닫히면 null)
+            var prevText: String? = null // 바로 앞의 비어 있지 않은 줄
+            var prevFenced = false // 그 줄이 펜스 줄·펜스 안 줄인가
+            var fenced = false
+            fun finish() {
+                val b = block
+                if (b != null && !b.invalid && b.mode != null && b.items.size <= MAX_ITEMS) found = b
+                block = null
+            }
+            for (line in lines) {
+                if (isFenceLine(line)) {
+                    fenced = !fenced
+                    finish(); prevText = line; prevFenced = true
+                    continue
+                }
+                if (fenced) {
+                    finish()
+                    if (!blankLine(line)) { prevText = line; prevFenced = true }
+                    continue
+                }
+                val item = ITEM.matchEntire(line)
+                if (item != null) {
+                    val number = item.groupValues[1].toInt()
+                    val label = cleanLabel(item.groupValues[2])
+                    val current = block
+                    val header = prevText
+                    when {
+                        number == 1 -> {
+                            finish()
+                            block = ExplicitBlock(
+                                mutableListOf(AgentChoiceItem(1, label)),
+                                if (header != null && !prevFenced) headerMode(header) else null,
+                            )
+                        }
+                        current != null && number == current.items.last().number + 1 -> { current.items += AgentChoiceItem(number, label) }
+                        current != null -> { current.invalid = true; finish() }
+                    }
+                    prevText = line; prevFenced = false
+                    continue
+                }
+                if (blankLine(line)) continue
+                if (block != null && indentedLine(line)) continue // 이어지는 줄(라벨엔 넣지 않는다)
+                finish(); prevText = line; prevFenced = false
+            }
+            finish()
+            val f = found ?: return null
+            val items = f.items.toList()
+            return AgentChoices(items, recommendedOf(normalized, items), f.mode ?: Mode.MANY, explicit = true)
+        }
+
+        /** 규격 §5 → §1: 에이전트 텍스트 본문 → 선택지(아니면 null). v2 명시 블록이 있으면 그것, 없으면 v1 끝의 선택지. */
         fun parse(text: String): AgentChoices? {
             val normalized = text.replace("\r\n", "\n")
             val lines = normalized.split("\n")
+            return parseExplicit(normalized, lines) ?: parseTrailing(normalized, lines)
+        }
 
+        /** 규격 §1(v1): 글 끝의 번호 목록을 단서어로 찾는다. */
+        private fun parseTrailing(normalized: String, lines: List<String>): AgentChoices? {
             var inFence = false
             var block: MutableList<AgentChoiceItem>? = null
             var open = false
@@ -57,7 +170,7 @@ data class AgentChoices(val items: List<AgentChoiceItem>, val recommended: Int?)
             var blockEnd = -1 // 마지막 항목 줄 또는 그 이어지는 줄
 
             for ((i, line) in lines.withIndex()) {
-                val fenceLine = line.trimStart { it == ' ' || it == '\t' }.startsWith("```")
+                val fenceLine = isFenceLine(line)
                 val item = if (inFence || fenceLine) null else ITEM.matchEntire(line)
                 if (fenceLine) inFence = !inFence
                 when {
@@ -94,10 +207,7 @@ data class AgentChoices(val items: List<AgentChoiceItem>, val recommended: Int?)
             val cue = (above != null && hasCue(above)) || trailing.any { hasCue(it) } || items.any { hasCue(it.label) }
             if (!cue) return null
 
-            val k = items.size
-            val fromPattern = RECOMMENDED.find(normalized)?.groupValues?.get(1)?.toInt()?.takeIf { it in 1..k }
-            val recommended = fromPattern ?: items.firstOrNull { "권장" in it.label }?.number
-            return AgentChoices(items, recommended)
+            return AgentChoices(items, recommendedOf(normalized, items))
         }
 
         private fun trimChar(c: Char) = c == ' ' || c == '\t' || c == '\n' || c == '\r'

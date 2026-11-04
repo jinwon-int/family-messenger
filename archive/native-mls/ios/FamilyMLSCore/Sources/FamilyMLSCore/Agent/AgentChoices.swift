@@ -17,14 +17,26 @@ public struct AgentChoices: Equatable {
         }
     }
 
-    /// 1부터 이어지는 항목(2~9개).
+    /// v2(#671, 규격 §5) 선택 모드 — 머리줄에 `하나만`·`one` 이 있으면 `one`. v1 결과는 언제나 `many`.
+    public enum Mode: String, Equatable {
+        case one
+        case many
+    }
+
+    /// 1부터 이어지는 항목(v1 2~9개 · v2 명시 블록 1~9개).
     public let items: [Item]
     /// 권장 번호(1..items.count) 또는 nil.
     public let recommended: Int?
+    /// 선택 모드(v1 = `many`).
+    public let mode: Mode
+    /// v2 `[답변 필요]` 명시 블록에서 나왔는가(v1 끝 선택지 = false).
+    public let explicit: Bool
 
-    public init(items: [Item], recommended: Int?) {
+    public init(items: [Item], recommended: Int?, mode: Mode = .many, explicit: Bool = false) {
         self.items = items
         self.recommended = recommended
+        self.mode = mode
+        self.explicit = explicit
     }
 
     /// 번호의 라벨(없으면 nil).
@@ -54,9 +66,117 @@ public struct AgentChoices: Equatable {
 
     // MARK: - 판정(규격 §1)
 
-    /// 에이전트 글 본문 → 선택지, 아니면 nil.
+    /// 에이전트 글 본문 → 선택지, 아니면 nil. v2 명시 블록(§5)이 있으면 그것, 없으면 v1 끝의 선택지(§1).
     public static func parse(_ text: String) -> AgentChoices? {
         let lines = splitLines(text)
+        return parseExplicit(lines) ?? parseTrailing(lines)
+    }
+
+    // MARK: - v2 명시 블록(규격 §5, #671)
+
+    static let headerMarks: [[Unicode.Scalar]] = ["[답변 필요]", "[answer needed]"].map { Array($0.unicodeScalars) }
+    static let oneOnly: [Unicode.Scalar] = Array("하나만".unicodeScalars)
+
+    /// v2 머리줄이면 모드, 아니면 nil: `**`·`__`·`` ` `` 를 (차례로) 지운 줄을 소문자로 바꿔 머리 표시를 찾고,
+    /// `하나만` 또는 단어 `one`(앞뒤가 ASCII 영숫자가 아님)이 있으면 `one`.
+    static func headerMode(_ line: [Unicode.Scalar]) -> Mode? {
+        let clean = removeAll(removeAll(removeAll(line, ["*", "*"]), ["_", "_"]), ["`"])
+        var view = String.UnicodeScalarView()
+        view.append(contentsOf: clean)
+        let lower = Array(String(view).lowercased().unicodeScalars)
+        guard headerMarks.contains(where: { scalarsContain(lower, $0) }) else { return nil }
+        return scalarsContain(clean, oneOnly) || hasWordOne(lower) ? .one : .many
+    }
+
+    /// JS `replaceAll(needle, '')` 와 같은 결과(왼쪽부터 겹치지 않게 지운다).
+    static func removeAll(_ hay: [Unicode.Scalar], _ needle: [Unicode.Scalar]) -> [Unicode.Scalar] {
+        var out: [Unicode.Scalar] = []
+        var i = 0
+        while i < hay.count {
+            if i + needle.count <= hay.count, Array(hay[i..<(i + needle.count)]) == needle {
+                i += needle.count
+                continue
+            }
+            out.append(hay[i])
+            i += 1
+        }
+        return out
+    }
+
+    /// `(^|[^a-z0-9])one([^a-z0-9]|$)` — 소문자로 바꾼 줄에서.
+    static func hasWordOne(_ s: [Unicode.Scalar]) -> Bool {
+        func isAlnum(_ c: Unicode.Scalar) -> Bool { (c >= "a" && c <= "z") || (c >= "0" && c <= "9") }
+        guard s.count >= 3 else { return false }
+        for start in 0...(s.count - 3) where s[start] == "o" && s[start + 1] == "n" && s[start + 2] == "e" {
+            let beforeOK = start == 0 || !isAlnum(s[start - 1])
+            let afterOK = start + 3 == s.count || !isAlnum(s[start + 3])
+            if beforeOK && afterOK { return true }
+        }
+        return false
+    }
+
+    /// 명시 블록: 머리줄 = 펜스 밖, `1` 항목 줄 바로 위의 비어 있지 않은 줄. 마지막 유효 명시 블록(항목 1~9)이 결과.
+    /// 닫힌 블록은 뒤의 번호 줄로 무효가 되지 않는다(무효는 열린 블록만). 위치·뒤 줄 수·단서어는 보지 않는다.
+    static func parseExplicit(_ lines: [[Unicode.Scalar]]) -> AgentChoices? {
+        var found: (items: [Item], mode: Mode)?
+        var blockItems: [Item] = []
+        var blockMode: Mode?
+        var blockOpen = false
+        var blockInvalid = false
+        var prev: (text: [Unicode.Scalar], fenced: Bool)?   // 바로 앞의 비어 있지 않은 줄
+        var fenced = false
+
+        func finish() {
+            if blockOpen, !blockInvalid, let mode = blockMode, blockItems.count <= 9 { found = (blockItems, mode) }
+            blockOpen = false
+            blockItems = []
+            blockMode = nil
+            blockInvalid = false
+        }
+
+        for line in lines {
+            if isFenceLine(line) {
+                fenced.toggle()
+                finish()
+                prev = (line, true)
+                continue
+            }
+            if fenced {
+                finish()
+                if !isBlank(line) { prev = (line, true) }
+                continue
+            }
+            if let item = itemLine(line) {
+                let label = cleanLabel(item.rest)
+                if item.number == 1 {
+                    finish()
+                    blockOpen = true
+                    blockItems = [Item(number: 1, label: label)]
+                    if let prev, !prev.fenced { blockMode = headerMode(prev.text) } else { blockMode = nil }
+                } else if blockOpen, let last = blockItems.last, item.number == last.number + 1 {
+                    blockItems.append(Item(number: item.number, label: label))
+                } else if blockOpen {
+                    blockInvalid = true
+                    finish()
+                }
+                prev = (line, false)
+                continue
+            }
+            if isBlank(line) { continue }
+            if blockOpen, isIndented(line) { continue }   // 이어지는 줄(라벨엔 넣지 않는다)
+            finish()
+            prev = (line, false)
+        }
+        finish()
+        guard let found else { return nil }
+        return AgentChoices(items: found.items, recommended: recommendedNumber(lines: lines, items: found.items),
+                            mode: found.mode, explicit: true)
+    }
+
+    // MARK: - v1 끝의 선택지(규격 §1)
+
+    /// v1: 글 끝의 번호 목록을 단서어로 찾는다.
+    static func parseTrailing(_ lines: [[Unicode.Scalar]]) -> AgentChoices? {
 
         // 블록 훑기(규격 §1-4). 후보 = 마지막으로 시작된 블록.
         var block: [Item] = []
