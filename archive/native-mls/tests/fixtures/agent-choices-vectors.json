@@ -1091,5 +1091,241 @@
    },
    "expected": null
   }
+ ],
+ "explicit": [
+  {
+   "name": "header one-mode, list in the middle with many trailing lines (v1 would refuse)",
+   "text": "PR 둘을 올렸습니다.\n\n**[답변 필요]** 하나만 선택\n1. #155 relay 머지 (권장)\n2. #156 relay 머지\n\n확정 사실\n- a\n- b\n- c\n- d",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "#155 relay 머지 (권장)"
+     },
+     {
+      "number": 2,
+      "label": "#156 relay 머지"
+     }
+    ],
+    "recommended": 1,
+    "mode": "one",
+    "explicit": true
+   }
+  },
+  {
+   "name": "header many-mode (no 하나만) at the end",
+   "text": "**[답변 필요]** 여러 개 선택 가능\n1. A\n2. B\n3. C",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "A"
+     },
+     {
+      "number": 2,
+      "label": "B"
+     },
+     {
+      "number": 3,
+      "label": "C"
+     }
+    ],
+    "recommended": null,
+    "mode": "many",
+    "explicit": true
+   }
+  },
+  {
+   "name": "a single item is enough with a header",
+   "text": "**[답변 필요]**\n1. TestFlight 0.7.24 배포 승인",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "TestFlight 0.7.24 배포 승인"
+     }
+    ],
+    "recommended": null,
+    "mode": "many",
+    "explicit": true
+   }
+  },
+  {
+   "name": "English header, one (word, case-insensitive)",
+   "text": "[Answer needed] pick ONE\n1. ship\n2. hold",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "ship"
+     },
+     {
+      "number": 2,
+      "label": "hold"
+     }
+    ],
+    "recommended": null,
+    "mode": "one",
+    "explicit": true
+   }
+  },
+  {
+   "name": "header without bold, markdown heading marks",
+   "text": "## [답변 필요] 하나만\n1. 예\n2. 아니요",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "예"
+     },
+     {
+      "number": 2,
+      "label": "아니요"
+     }
+    ],
+    "recommended": null,
+    "mode": "one",
+    "explicit": true
+   }
+  },
+  {
+   "name": "blank line between header and list",
+   "text": "**[답변 필요]** 하나만 선택\n\n1. 예\n2. 아니요\n\n이어서 하겠습니다.",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "예"
+     },
+     {
+      "number": 2,
+      "label": "아니요"
+     }
+    ],
+    "recommended": null,
+    "mode": "one",
+    "explicit": true
+   }
+  },
+  {
+   "name": "explicit block wins over a later v1-style list",
+   "text": "**[답변 필요]** 하나만 선택\n1. 진행\n2. 보류\n\n참고 순서:\n1. 설치\n2. 시작\n어떻게 할까요?",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "진행"
+     },
+     {
+      "number": 2,
+      "label": "보류"
+     }
+    ],
+    "recommended": null,
+    "mode": "one",
+    "explicit": true
+   }
+  },
+  {
+   "name": "last explicit block wins",
+   "text": "**[답변 필요]** 하나만 선택\n1. 옛 질문 A\n2. 옛 질문 B\n\n**[답변 필요]** 여러 개 선택 가능\n1. 새 A\n2. 새 B",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "새 A"
+     },
+     {
+      "number": 2,
+      "label": "새 B"
+     }
+    ],
+    "recommended": null,
+    "mode": "many",
+    "explicit": true
+   }
+  },
+  {
+   "name": "a later stray numbered line does not invalidate a closed explicit block",
+   "text": "**[답변 필요]** 하나만 선택\n1. 진행\n2. 보류\n\n메모:\n5. 다섯째 줄 같은 번호 문장",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "진행"
+     },
+     {
+      "number": 2,
+      "label": "보류"
+     }
+    ],
+    "recommended": null,
+    "mode": "one",
+    "explicit": true
+   }
+  },
+  {
+   "name": "broken numbering inside the explicit block -> falls back to v1 (null here)",
+   "text": "**[답변 필요]** 하나만 선택\n1. 진행\n3. 보류",
+   "expected": null
+  },
+  {
+   "name": "header inside a code fence is not a header",
+   "text": "```\n**[답변 필요]** 하나만 선택\n```\n1. 설치\n2. 시작",
+   "expected": null
+  },
+  {
+   "name": "list inside a code fence after a header is not a block",
+   "text": "**[답변 필요]**\n```\n1. A\n2. B\n```",
+   "expected": null
+  },
+  {
+   "name": "more than 9 items -> not explicit, v1 also refuses",
+   "text": "**[답변 필요]**\n1. x1\n2. x2\n3. x3\n4. x4\n5. x5\n6. x6\n7. x7\n8. x8\n9. x9\n10. x10",
+   "expected": null
+  },
+  {
+   "name": "recommended from 권장 N번 sentence",
+   "text": "권장: 2번 — 더 안전합니다.\n\n**[답변 필요]** 하나만 선택\n1. 지금 배포\n2. 내일 배포",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "지금 배포"
+     },
+     {
+      "number": 2,
+      "label": "내일 배포"
+     }
+    ],
+    "recommended": 2,
+    "mode": "one",
+    "explicit": true
+   }
+  },
+  {
+   "name": "label cleanup and indented continuation lines",
+   "text": "**[답변 필요]** 여러 개 선택 가능\n1. **#155 relay 머지** — `b92c2d1f`\n   CI 3/3 green\n2. __보류__",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "#155 relay 머지 — b92c2d1f"
+     },
+     {
+      "number": 2,
+      "label": "보류"
+     }
+    ],
+    "recommended": null,
+    "mode": "many",
+    "explicit": true
+   }
+  },
+  {
+   "name": "the text '답변 필요' without brackets is not a header (v1 rules apply)",
+   "text": "답변 필요 사항\n1. A\n2. B\n3. C\n4. D\n5. E\n\n- x\n- y\n- z\n- w",
+   "expected": null
+  }
  ]
 }

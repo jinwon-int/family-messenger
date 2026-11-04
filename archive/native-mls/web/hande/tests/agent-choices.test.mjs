@@ -20,6 +20,17 @@ for (const v of vectors.parse) {
   });
 }
 
+// agent-choices-v2(#671): 에이전트가 `[답변 필요]` 머리줄로 명시한 블록.
+test('공유 벡터 explicit 이 실렸다', () => {
+  assert.ok(vectors.explicit.length > 10);
+});
+
+for (const v of vectors.explicit) {
+  test(`explicit: ${v.name}`, () => {
+    assert.deepEqual(parseChoices(v.text), v.expected);
+  });
+}
+
 for (const v of vectors.reply) {
   test(`reply: ${JSON.stringify(v.text)} / ${v.count}`, () => {
     assert.deepEqual(choiceReply(v.text, v.count), v.expected);
