@@ -64,6 +64,40 @@ final class AgentChoicesTests: XCTestCase {
         }
     }
 
+    /// v2(#671, 규격 §5): `[답변 필요]` 명시 블록 — 공유 벡터 `explicit`(웹·안드로이드와 같은 답).
+    func testExplicitVectors() throws {
+        let root = try loadRoot()
+        let vectors = try XCTUnwrap(root["explicit"] as? [[String: Any]], "fixture must have an explicit array")
+        XCTAssertGreaterThanOrEqual(vectors.count, 10, "explicit vectors loaded")
+        for (idx, raw) in vectors.enumerated() {
+            let name = (raw["name"] as? String) ?? "explicit[\(idx)]"
+            let text = try XCTUnwrap(raw["text"] as? String, "[\(name)] text")
+            let got = AgentChoices.parse(text)
+            guard let expected = raw["expected"] as? [String: Any] else {
+                XCTAssertNil(got, "[\(name)] expected null, got \(String(describing: got))")
+                continue
+            }
+            let rawItems = try XCTUnwrap(expected["items"] as? [[String: Any]], "[\(name)] expected.items")
+            let items = try rawItems.map { item in
+                AgentChoices.Item(number: try XCTUnwrap(int(item["number"]), "[\(name)] item.number"),
+                                  label: try XCTUnwrap(item["label"] as? String, "[\(name)] item.label"))
+            }
+            let rawMode = try XCTUnwrap(expected["mode"] as? String, "[\(name)] expected.mode")
+            let mode = try XCTUnwrap(AgentChoices.Mode(rawValue: rawMode), "[\(name)] mode \(rawMode)")
+            let parsed = try XCTUnwrap(got, "[\(name)] expected choices, got nil")
+            XCTAssertEqual(parsed.items, items, "[\(name)] items")
+            XCTAssertEqual(parsed.recommended, int(expected["recommended"]), "[\(name)] recommended")
+            XCTAssertEqual(parsed.mode, mode, "[\(name)] mode")
+            XCTAssertTrue(parsed.explicit, "[\(name)] explicit")
+        }
+    }
+
+    func testV1ResultsAreManyAndNotExplicit() {
+        let parsed = AgentChoices.parse(choices)
+        XCTAssertEqual(parsed?.mode, .many)
+        XCTAssertEqual(parsed?.explicit, false)
+    }
+
     func testReplyVectors() throws {
         let root = try loadRoot()
         let vectors = try XCTUnwrap(root["reply"] as? [[String: Any]], "fixture must have a reply array")
