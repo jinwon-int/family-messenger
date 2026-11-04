@@ -90,6 +90,48 @@ class AgentChoicesTest {
         }
     }
 
+    private fun modeOf(name: String) = when (name) {
+        "one" -> AgentChoices.Mode.ONE
+        "many" -> AgentChoices.Mode.MANY
+        else -> fail("unknown mode $name")
+    }
+
+    // v2 §5.1(#671 PR B): 행 탭 → 새 선택. ONE 은 바꿔 고르기, MANY 는 켜고 끄기.
+    @Test fun toggleVectors() {
+        val cases = fixture["toggle"] as List<*>
+        assertTrue(cases.size >= 8, "toggle 벡터가 8개 이상")
+        for (c in cases) {
+            c as Map<*, *>
+            val mode = modeOf(c["mode"] as String)
+            val selected = (c["selected"] as List<*>).map { (it as Long).toInt() }
+            val number = (c["number"] as Long).toInt()
+            val expected = (c["expected"] as List<*>).map { (it as Long).toInt() }
+            assertEquals(expected, AgentChoices.toggle(selected, number, mode), "toggle($selected, $number, $mode)")
+        }
+    }
+
+    // v2 §5.1: 답 판정 + ONE 규칙(번호 둘 이상이면 null).
+    @Test fun answerVectors() {
+        val cases = fixture["answer"] as List<*>
+        assertTrue(cases.size >= 8, "answer 벡터가 8개 이상")
+        for (c in cases) {
+            c as Map<*, *>
+            val name = c["name"] as String
+            val choices = AgentChoices.parse(c["text"] as String) ?: fail("$name: parse 가 null")
+            val expected = (c["expected"] as List<*>?)?.map { (it as Long).toInt() }
+            assertEquals(expected, AgentChoices.answer(choices, c["reply"] as String), name)
+        }
+    }
+
+    @Test fun oneModeCardClosesOnSeveralNumbers() {
+        val oneQuestion = "**[답변 필요]** 하나만 선택\n1. A\n2. B\n3. C"
+        assertEquals(AgentChoices.Mode.ONE, AgentChoices.parse(oneQuestion)!!.mode)
+        assertNull(AgentChoices.cards(listOf(agent(1, oneQuestion), me(2, "1, 2")))[0], "ONE + 번호 둘 → closed")
+        assertNull(AgentChoices.cards(listOf(agent(1, oneQuestion), me(2, "1. A\n2. B")))[0], "ONE + 줄 둘 → closed")
+        assertEquals(AgentChoices.State.Answered(listOf(2)), AgentChoices.cards(listOf(agent(1, oneQuestion), me(2, "2")))[0]!!.state)
+        assertEquals(AgentChoices.State.Open, AgentChoices.cards(listOf(agent(1, oneQuestion)))[0]!!.state)
+    }
+
     @Test fun composeRoundTripsThroughReply() {
         val choices = AgentChoices.parse(question)!!
         val labels = choices.items.map { it.label }

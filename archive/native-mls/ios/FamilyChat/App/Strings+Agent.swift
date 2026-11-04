@@ -49,6 +49,9 @@ extension Strings {
         Array(Set(numbers)).sorted().map { String($0) }.joined(separator: ", ")
     }
     static let choiceA11yHint = "눌러서 체크하거나 해제하세요. 여러 개 고른 뒤 보내기를 누르세요"
+    /// #671 PR B(규격 §5.1): 「하나만」 카드 행 = 라디오 — 상태는 값으로, 바꿔 고르기를 힌트로 말한다(SwiftUI 에 radio 역할이 없다).
+    static func choiceRadioA11yValue(_ selected: Bool) -> String { selected ? "선택됨, 하나만 고를 수 있음" : "선택 안 됨, 하나만 고를 수 있음" }
+    static let choiceRadioA11yHint = "하나만 고를 수 있어요. 누르면 이 항목으로 바꿉니다. 고른 뒤 보내기를 누르세요"
     /// §3.1(#629): 하드웨어 키보드가 연결돼 있을 때 열린 카드 아래 작은 안내.
     static let choiceKeyHint = "⌥1~9 체크 · ⌥Enter 보내기"
     /// iPad ⌘ 길게 누르기 단축키 목록에 보이는 이름.

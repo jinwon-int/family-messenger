@@ -206,8 +206,8 @@ struct ApprovalCard: View {
 
 /// agent-choices-v1(#620 · 복수 선택 #624): 에이전트 글 끝 번호 선택지 — 말풍선 아래 카드. 행을 누르면 그 행 체크 토글(여러 개 가능),
 /// 하나라도 체크돼 있으면 [보내기]가 고른 번호를 넘기고, 방 화면이 줄마다 `N. 라벨`(`AgentChoices.composeReply`)을 평소 전송 경로로 보낸다.
-/// 판정·상태는 Core `AgentChoices`, 여기는 그리기만.
-/// open = 선택 카드 · answered(S) = 한 줄 「✓ N번 선택 — 라벨」 / 「✓ 1, 3번 선택 — 라벨1 · 라벨3」 · closed = 그리지 않는다.
+/// 판정·상태는 Core `AgentChoices`, 여기는 그리기만. #671 PR B: 「하나만」(`mode == .one`) 블록은 라디오 — 행 탭은 바꿔 고르기(`AgentChoices.toggle`).
+/// open =선택 카드 · answered(S) = 한 줄 「✓ N번 선택 — 라벨」 / 「✓ 1, 3번 선택 — 라벨1 · 라벨3」 · closed = 그리지 않는다.
 struct AgentChoicesCard: View {
     let choices: AgentChoices
     let state: AgentChoices.State
@@ -245,18 +245,21 @@ struct AgentChoicesCard: View {
         }
     }
 
+    /// [보내기] 가능: many = 하나 이상 · one = 정확히 하나(규격 §5.1).
+    private var canSend: Bool { isOne ? selected.count == 1 : !selected.isEmpty }
+
     private var openCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(choices.items, id: \.number) { item in
                 row(item)
             }
             Button {
-                if !selected.isEmpty { send(selected.sorted()) }
+                if canSend { send(selected.sorted()) }
             } label: {
                 Text(Strings.choiceSend)
             }
             .buttonStyle(HandePrimaryButtonStyle())
-            .disabled(selected.isEmpty)
+            .disabled(!canSend)
             .accessibilityLabel(Strings.choiceSendA11y(selected.sorted()))
         }
         .padding(12)
@@ -267,15 +270,20 @@ struct AgentChoicesCard: View {
         .opacity(enabled ? 1 : 0.6)
     }
 
-    /// 행 = 체크 상자(둥근 사각 — 복수 선택 관례) + 번호 + 라벨(최대 3줄) + 권장 알약. 선택 표시는 에이전트 파랑(주황은 보내기 버튼만).
+    /// #671 PR B(규격 §5.1): 「하나만」 블록 = 라디오(바꿔 고르기). many·v1 은 체크 상자 그대로.
+    private var isOne: Bool { choices.mode == .one }
+
+    /// 행 = 체크 상자(둥근 사각 — 복수 선택 관례, `one` 이면 둥근 라디오) + 번호 + 라벨(최대 3줄) + 권장 알약.
+    /// 선택 표시는 에이전트 파랑(주황은 보내기 버튼만). 탭은 Core `AgentChoices.toggle`(⌥N 과 같은 규칙).
     private func row(_ item: AgentChoices.Item) -> some View {
         let isSelected = selected.contains(item.number)
         let isRecommended = choices.recommended == item.number
         return Button {
-            if isSelected { selected.remove(item.number) } else { selected.insert(item.number) }
+            selected = Set(AgentChoices.toggle(selected: Array(selected), number: item.number, mode: choices.mode))
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                Image(systemName: isOne ? (isSelected ? "largecircle.fill.circle" : "circle")
+                                        : (isSelected ? "checkmark.square.fill" : "square"))
                     .font(.body)
                     .foregroundStyle(isSelected ? p.agent : p.inkDim)
                 Text("\(item.number)")
@@ -306,8 +314,8 @@ struct AgentChoicesCard: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(Strings.choiceRowA11y(item.number, label: item.label, recommended: isRecommended))
-        .accessibilityValue(Strings.choiceRowA11yValue(isSelected))
-        .accessibilityHint(Strings.choiceA11yHint)
+        .accessibilityValue(isOne ? Strings.choiceRadioA11yValue(isSelected) : Strings.choiceRowA11yValue(isSelected))
+        .accessibilityHint(isOne ? Strings.choiceRadioA11yHint : Strings.choiceA11yHint)
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 }
