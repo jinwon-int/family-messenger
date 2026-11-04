@@ -1710,6 +1710,7 @@ final class AppModel: ObservableObject {
         // 준비를 기다리는 동안 새로 맡겨졌을 수 있으니 다시 읽는다.
         for item in store.pending(scope: scope, now: deps.clock()) {
             guard case .ready = phase else { break }   // 남은 맡김은 그대로 다음 기회에
+            // #669: 확장이 직접 보낸 조각(sent/queued/refused 표시)은 `claim` 이 빼고 준다 — 나머지만 보낸다. 전부 처리돼 있으면 빈 Item → finish.
             guard var remaining = store.claim(item.id) else { continue }
             guard rooms.contains(where: { $0.room == remaining.room }) else {
                 lastError = Strings.shareRoomGone(remaining.room)

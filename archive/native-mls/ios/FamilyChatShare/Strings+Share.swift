@@ -14,6 +14,20 @@ extension Strings {
     static let shareLoading = "공유한 내용을 읽는 중…"
     static let shareNoRooms = "보낼 대화방을 아직 모릅니다. 한데 앱을 한 번 열어 로그인하고 대화방 목록을 불러온 뒤 다시 공유해 주세요."
     static let shareHowItWorks = "「보내기」를 누르면 알림이 뜹니다. 알림을 누르거나 한데를 열면 그 대화방으로 보냅니다(24시간 안)."
+    /// #669 직접 송신이 가능한 상태의 안내(큰 파일·지금 못 보내는 것은 종전처럼 앱이 보낸다).
+    static let shareHowItWorksDirect = "「보내기」를 누르면 바로 보냅니다. 큰 파일이나 지금 보낼 수 없는 것은 알림이 뜨고, 알림을 누르거나 한데를 열면 그 대화방으로 보냅니다(24시간 안)."
+    static let shareSending = "보내는 중…"
+    static let shareClose = "닫기"
+    /// #669 D-A5 영구 거절 — 수치(상태 코드)는 화면에 내지 않는다(로그에만). 앱에 맡기지 않으므로 "다시 공유" 안내.
+    static func shareRefused(_ status: Int) -> String {
+        switch status {
+        case 413: return "서버가 받지 않았습니다: 내용이 너무 큽니다. 더 작게 해서 다시 공유해 주세요."
+        case 403, 410: return "서버가 받지 않았습니다: 이 대화방에 보낼 수 없습니다. 한데 앱에서 확인해 주세요."
+        default: return "서버가 받지 않았습니다. 한데 앱에서 다시 보내 주세요."
+        }
+    }
+    /// `_identity` 슬롯 이름 — 앱 `Strings.swift` 의 `identityRoom` 과 같은 값(확장은 Strings.swift 를 링크하지 않는다, NSE 는 링크한다).
+    static let identityRoom = "_identity"
     static func shareFiles(_ count: Int) -> String { "사진·파일 \(count)개" }
     static let shareNothing = "보낼 수 있는 내용이 없습니다(글·링크·사진·동영상·파일만 보낼 수 있습니다)."
     static func shareTooMany(_ count: Int, _ limit: Int) -> String { "한 번에 \(limit)개까지 보낼 수 있습니다(지금 \(count)개)." }
@@ -26,6 +40,8 @@ extension Strings {
     /// 로컬 알림 — 잠금화면에도 보이므로 방 이름·내용을 싣지 않는다(#520 과 같은 원칙).
     static let shareNotificationTitle = "한데"
     static let shareNotificationBody = "공유한 내용을 보낼 준비가 됐습니다. 누르면 한데에서 보냅니다."
+    /// #669 D-A5 `.queued`: 바이트는 outbox 에 있다 — 앱이 연결되면 같은 바이트로 보낸다(맡기지 않음, 중복 없음).
+    static let shareQueuedNotificationBody = "지금은 연결되지 않아 보관했습니다. 연결되면 한데가 보냅니다."
 
     static func shareProblem(_ failure: ShareHandoff.Failure) -> String {
         switch failure {

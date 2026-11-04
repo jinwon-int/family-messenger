@@ -66,14 +66,14 @@ final class PrivacyManifestTests: XCTestCase {
         XCTAssertEqual(try accessedAPIs(nse), Self.expectedAPIs)
     }
 
-    /// #643 공유 확장: 네트워크 없이 기기 안 App Group 에 맡기기만 한다 — 수집 유형 없음, App Group defaults(1C8F.1)만.
-    /// (Rust 라이브러리·파일 시각 API 를 쓰지 않으므로 FileTimestamp 범주가 없다 — 앱·NSE 와 다르다.)
-    func testShareExtensionManifestDeclaresNoCollectionAndOnlyAppGroupDefaults() throws {
+    /// #643 → #669 공유 확장: 2단계부터 NSE 와 같은 엔진으로 릴레이에 직접 보낸다 — NSE 와 같은 식별자(세션 subject · 기기 ID)와 같은
+    /// Required Reason API(SharedStorage·ServerStore·DeviceIdentity + Core 파일 저장소 + Rust 라이브러리). 내용은 E2EE 라 신고하지 않는다(ⓐ).
+    func testShareExtensionManifestMatchesTheNSEBecauseItSendsTheSameRequests() throws {
         let share = try manifest("FamilyChatShare/PrivacyInfo.xcprivacy")
         XCTAssertEqual(share["NSPrivacyTracking"] as? Bool, false)
         XCTAssertEqual(try XCTUnwrap(share["NSPrivacyTrackingDomains"] as? [String]), [])
-        XCTAssertEqual(try collectedTypes(share), [])
-        XCTAssertEqual(try accessedAPIs(share), ["NSPrivacyAccessedAPICategoryUserDefaults": ["1C8F.1"]])
+        XCTAssertEqual(try collectedTypes(share), ["NSPrivacyCollectedDataTypeUserID", "NSPrivacyCollectedDataTypeDeviceID"])
+        XCTAssertEqual(try accessedAPIs(share), Self.expectedAPIs)
     }
 
     /// 호스트 앱(FamilyChat.app)에서 도는 경우에만: xcodegen 이 세 파일을 Resources 로 넣어 번들 루트에 복사했는지(ITMS-91053 예방).

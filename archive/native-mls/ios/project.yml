@@ -156,9 +156,10 @@ targets:
         # 봇 actor 기본값(알림 제목 = 노드 닉네임). 릴리스 워크플로가 vars.FC_AGENT_ACTORS 로 덮어쓸 수 있다.
         FC_AGENT_ACTORS: bot
         OTHER_LDFLAGS: ["-lc++"]
-  # 공유 확장(#643 1단계): 공유 시트에서 받은 글·링크·사진·동영상·파일과 고른 방을 App Group `share-outbox/` 에 맡기고(Core
-  # `ShareHandoffStore`) 로컬 알림을 띄운다 — 보내는 것은 앱(`AppModel.deliverPendingShares`, 결정 D1). MLS 상태·Keychain·FFI 를
-  # 링크하지 않는다(메모리 한도·동시 작성 위험 밖). 서버·스코프는 NSE 와 같은 `ServerStore.resolve`·`ServerScope`, 방 이름은 `roomLabel`.
+  # 공유 확장(#643 1단계 + #669 2단계): 공유 시트에서 받은 글·링크·사진·동영상·파일과 고른 방을 App Group `share-outbox/` 에 **먼저 맡기고**
+  # (Core `ShareHandoffStore`, D-A3 크래시 안전) 글·링크·소형 사진(D-A4 문턱 안)은 NSE 와 같은 `RoomSyncEngine`(App Group 의 MLS 상태·
+  # messages.db, flock 단일 작성자)으로 **직접 보낸다**(#664 결정 D-A1). 나머지(큰 파일·폴백)는 로컬 알림 → 앱(`AppModel.deliverPendingShares`).
+  # 그래서 NSE 와 같은 공유 저장·엔진 파일과 xcframework 를 링크한다. 서버·스코프는 `ServerStore.resolve`·`ServerScope`, 방 이름은 `roomLabel`.
   # Bundle ID 는 앱의 하위(…hande.share), App Group·기본 서버는 앱과 **같은 값**을 빌드 설정으로 준다.
   FamilyChatShare:
     type: app-extension
@@ -169,7 +170,16 @@ targets:
       - path: FamilyChat/Sync/ServerStore.swift
       - path: FamilyChat/Sync/ServerScope.swift
       - path: FamilyChat/App/Strings+Names.swift
+      # #669: NSE 와 같은 공유 저장(Keychain·기기 ID 읽기)·시드·FFI 엔진 — 직접 송신 조립(`ShareDirectEnvironment`)
+      - path: FamilyChat/Sync/SharedStorage.swift
+      - path: FamilyChat/Sync/SeededEngineFactory.swift
+      - path: FamilyChat/Engine/FfiEngine.swift
+      - path: FamilyChat/Engine/DeviceIdentity.swift
+      - path: ../ios-ffi/out/swift/FamilyMLS.swift
+        group: Generated
     dependencies:
+      - framework: ../ios-ffi/out/FamilyMLS.xcframework
+        embed: false
       - package: FamilyMLSCore
     info:
       path: FamilyChatShare/Info.plist
@@ -209,6 +219,8 @@ targets:
         FC_PROFILE_SHARE: ""
         FC_RELAY_URL: ""
         FC_APP_GROUP: ""
+        # #669: xcframework 의 정적 라이브러리(앱·NSE 와 같은 링크 플래그)
+        OTHER_LDFLAGS: ["-lc++"]
   FamilyChatTests:
     type: bundle.unit-test
     platform: iOS
