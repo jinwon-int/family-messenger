@@ -684,3 +684,23 @@ func captureLog(t *testing.T, buf *bytes.Buffer) {
 	log.SetOutput(lb)
 	t.Cleanup(func() { log.SetOutput(prev) })
 }
+
+// The image target is rebuilt from a constant host prefix: case, fragment and
+// anything but path+query from the caller are dropped (CodeQL go/request-forgery).
+func TestNormalizeImageURLRebuildsFromConstantHost(t *testing.T) {
+	cases := map[string]string{
+		"https://PBS.twimg.com/media/a.jpg?format=jpg&name=small#frag": "https://pbs.twimg.com/media/a.jpg?format=jpg&name=small",
+		"https://abs.twimg.com/emoji/v2/72x72/1f600.png":                "https://abs.twimg.com/emoji/v2/72x72/1f600.png",
+	}
+	for in, want := range cases {
+		got, ok := normalizeImageURL(in)
+		if !ok || got != want {
+			t.Errorf("normalizeImageURL(%q) = %q, %v; want %q", in, got, ok, want)
+		}
+	}
+	for _, bad := range []string{"https://pbs.twimg.com.evil.example/a.jpg", "http://pbs.twimg.com/a.jpg", "https://u@pbs.twimg.com/a.jpg", "https://pbs.twimg.com:444/a.jpg"} {
+		if got, ok := normalizeImageURL(bad); ok {
+			t.Errorf("normalizeImageURL(%q) = %q, want refused", bad, got)
+		}
+	}
+}

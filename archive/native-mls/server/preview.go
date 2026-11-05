@@ -114,9 +114,23 @@ func normalizeImageURL(raw string) (string, bool) {
 	if err != nil || !allowedHTTPSURL(u, previewImageHosts) {
 		return "", false
 	}
-	u.Host = strings.ToLower(u.Host)
-	u.Fragment, u.RawFragment = "", ""
-	return u.String(), true
+	// Rebuild from a constant scheme+host prefix (CodeQL go/request-forgery):
+	// only the path and query come from the caller, never the host, so the
+	// request target cannot leave the allowlist even if this check changes.
+	var prefix string
+	switch strings.ToLower(u.Hostname()) {
+	case "pbs.twimg.com":
+		prefix = "https://pbs.twimg.com/"
+	case "abs.twimg.com":
+		prefix = "https://abs.twimg.com/"
+	default:
+		return "", false
+	}
+	out := prefix + strings.TrimPrefix(u.EscapedPath(), "/")
+	if u.RawQuery != "" {
+		out += "?" + u.RawQuery
+	}
+	return out, true
 }
 
 // ogMeta is what a page told us about itself.
