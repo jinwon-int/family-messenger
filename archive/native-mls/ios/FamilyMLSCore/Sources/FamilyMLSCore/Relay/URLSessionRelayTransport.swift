@@ -417,12 +417,22 @@ public final class URLSessionRelayTransport: RelayTransport {
         try await perform(try linkPreviewImageRequest(path: path))
     }
 
+    /// #690 계약 v2: 사이트 목록. 404(라우트 없음)는 relayFailure 로, version ≠ 2·유효 항목 없음은 `.decoding` 으로 던진다(앱은 폴백).
+    public func previewSites() async throws -> PreviewSites {
+        try decode(PreviewSites.self, await perform(try previewSitesRequest()))
+    }
+
+    /// GET /v2/preview/sites — 다른 라우트와 같은 인증 헤더(makeRequest).
+    func previewSitesRequest() throws -> URLRequest {
+        try makeRequest(method: "GET", path: PreviewSites.routePath)
+    }
+
     /// 쿼리 값 인코딩: RFC 3986 unreserved 만 통과(`:`·`/`·`?`·`&`·`=`·`+`·`%` 모두 인코딩) — 서버 `Query().Get` 이 원래 값을 그대로 받는다.
     static func queryValue(_ value: String) -> String {
         value.addingPercentEncoding(withAllowedCharacters: pathSegmentAllowed) ?? value
     }
 
-    /// GET /v2/preview?url=<원래 x.com 주소> — 정규화(handle·id·뒤 경로·쿼리 버림)는 릴레이가 한다. 인증 헤더는 다른 라우트와 같다(makeRequest).
+    /// GET /v2/preview?url=<말풍선의 원래 링크> — 사이트 판정·정규화(경로 규칙·쿼리 버림)는 릴레이가 한다(#690 계약 v2). 인증 헤더는 다른 라우트와 같다(makeRequest).
     func linkPreviewRequest(url: URL) throws -> URLRequest {
         try makeRequest(method: "GET", path: LinkPreview.routePath, encodedQuery: "url=" + Self.queryValue(url.absoluteString))
     }

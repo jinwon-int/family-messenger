@@ -283,6 +283,11 @@ final class AppModel: ObservableObject {
         var text: String
     }
     @Published private(set) var siblingNotes: [SiblingNote] = []
+    /// #690 계약 v2: 말풍선 링크·카드 대상을 정하는 사이트 목록(`GET /v2/preview/sites`). 로그인할 때마다(세션당 한 번) 묻고 메모리에만 둔다.
+    /// 받기 전·실패·404(옛 릴레이·`-link-preview` 꺼짐)·디코드 실패는 내장 폴백(v1: x 링크 + x status 미리보기). 바뀌면 보이는 말풍선이 다시 그린다.
+    @Published private(set) var previewSites: PreviewSites = .fallback
+    /// 지금 세션의 사이트 목록 요청(새 로그인·서버 전환이 취소한다; 테스트가 기다린다).
+    private(set) var previewSitesLoad: Task<Void, Never>?
     /// 다음 바퀴에 `GET /v2/me` 를 묻는다(로그인·전면 복귀·승인·역할 변경 뒤).
     private var meDue = true
     private var meRoundsSince = 0
@@ -499,6 +504,8 @@ final class AppModel: ObservableObject {
         me = nil; candidates = []; candidateRevision = nil; dismissedCandidates = []; siblingNotes = []
         enrollment = EnrollmentStatus(); nextCandidatePostAt = nil; selfServiceUnsupported = false; meDue = true
         engine = nil; identitySeed = nil; registration = nil; rooms = []
+        previewSitesLoad?.cancel(); previewSitesLoad = nil
+        if previewSites != .fallback { previewSites = .fallback }   // #690: 다른 서버의 사이트 목록을 들고 가지 않는다
     }
 
     func login(_ credential: RelayCredential) {
@@ -513,6 +520,7 @@ final class AppModel: ObservableObject {
         readUnsupported = false; readSentSeq = [:]
         meDue = true; meRoundsSince = 0; selfServiceUnsupported = false; nextCandidatePostAt = nil
         enrollment = EnrollmentStatus(); candidates = []; candidateRevision = nil
+        loadPreviewSites(transport)
         refreshRegistrationSubject()
         push.loggedIn()
         lastError = nil
@@ -2083,6 +2091,18 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: - 링크 미리보기 (#683 2단계 — 캐시·카드는 앱 전용 `LinkPreviewStore`/`LinkPreviewCard`)
+
+    /// #690: 이 세션의 사이트 목록을 한 번 묻는다(`login` 이 부른다). 같은 전송·인증 헤더. 성공 = 받은 목록, 실패(404·네트워크·디코드) = 폴백.
+    /// 그 사이 다시 로그인했거나 로그아웃·서버 전환으로 전송이 바뀌었으면 결과를 버린다.
+    private func loadPreviewSites(_ transport: RelayTransport) {
+        previewSitesLoad?.cancel()
+        previewSitesLoad = Task { [weak self] in
+            let loaded = try? await transport.previewSites()
+            guard let self, !Task.isCancelled, self.transport === transport else { return }
+            let sites = loaded ?? .fallback
+            if self.previewSites != sites { self.previewSites = sites }
+        }
+    }
 
     /// 지금 릴레이 전송이 있다(로그인됨). 없으면 미리보기를 묻지도 캐시하지도 않는다.
     var canLoadLinkPreviews: Bool { transport != nil }

@@ -1,4 +1,4 @@
-// x.com 링크 미리보기(#683 2단계, 이슈 #683 「2단계 API 계약 v1」) — 응답 디코드 · 이미지 경로 검증 · 요청 URL/인증 헤더.
+// 링크 미리보기(#683 2단계 계약 v1 · #690 계약 v2) — 응답 디코드 · 이미지 경로 검증 · 요청 URL/인증 헤더.
 // 실제 왕복은 RelayTransportTests 와 같은 이유(Linux corelibs URLSession 모킹 불가)로 순수 함수만 고정한다.
 import XCTest
 #if canImport(FoundationNetworking)
@@ -24,7 +24,24 @@ final class LinkPreviewTests: XCTestCase {
                                             image: "/v2/preview/image?u=https%3A%2F%2Fpbs.twimg.com%2Fmedia%2FAbC.jpg"))
         XCTAssertEqual(preview.shownTitle, "jack on X")
         XCTAssertEqual(preview.shownDescription, "just setting up my twttr")
+        XCTAssertEqual(preview.shownSite, "X")
         XCTAssertTrue(preview.hasText)
+    }
+
+    /// #690 계약 v2: 응답 모양은 v1 그대로 + `site` 이름(카드에 작게). 비면 nil.
+    func testV2ResponseCarriesSiteName() throws {
+        let preview = try decode(#"{"url":"https://www.youtube.com/watch?v=dQw4w9WgXcQ","site":"YouTube","title":"t","description":null,"image":"/v2/preview/image?u=https%3A%2F%2Fi.ytimg.com%2Fvi%2FdQw4w9WgXcQ%2Fhqdefault.jpg"}"#)
+        XCTAssertEqual(preview.shownSite, "YouTube")
+        XCTAssertEqual(LinkPreview.imageSource(preview.image ?? ""), "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg")
+        XCTAssertNil(try decode(#"{"site":"  ","title":"t"}"#).shownSite)
+        XCTAssertNil(try decode(#"{"title":"t"}"#).shownSite)
+    }
+
+    func testV2PreviewRequestSendsTheLinkAsWritten() throws {
+        let link = URL(string: "https://ko.wikipedia.org/wiki/%EC%84%9C%EC%9A%B8?action=x")!
+        let request = try transport(.bearer("t")).linkPreviewRequest(url: link)
+        XCTAssertEqual(request.url?.absoluteString,
+                       "https://relay.example.com/v2/preview?url=https%3A%2F%2Fko.wikipedia.org%2Fwiki%2F%25EC%2584%259C%25EC%259A%25B8%3Faction%3Dx")
     }
 
     func testImageNullAndMissingKeysDecodeAsNil() throws {
@@ -72,6 +89,14 @@ final class LinkPreviewTests: XCTestCase {
         XCTAssertEqual(LinkPreview.imageSource("/v2/preview/image?u=https%3A%2F%2FPBS.twimg.com%2Fa.jpg"), "https://PBS.twimg.com/a.jpg")
     }
 
+    /// #690 계약 v2: 이미지 호스트 허용 목록은 릴레이가 판정한다(사이트가 늘어도 앱을 고치지 않게) — 클라이언트는 모양만 본다.
+    func testImageSourceAcceptsV2SiteImageHostsShapeOnly() {
+        for host in ["i.ytimg.com", "imgnews.pstatic.net", "upload.wikimedia.org", "thumb.wikimedia.org",
+                     "opengraph.githubassets.com", "avatars.githubusercontent.com", "ichef.bbci.co.uk"] {
+            XCTAssertEqual(LinkPreview.imageSource("/v2/preview/image?u=https%3A%2F%2F\(host)%2Fa.jpg"), "https://\(host)/a.jpg", host)
+        }
+    }
+
     func testImageSourceRejectsOtherShapes() {
         for bad in [
             "https://evil.example/v2/preview/image?u=https%3A%2F%2Fpbs.twimg.com%2Fa.jpg",   // 절대 주소
@@ -81,8 +106,9 @@ final class LinkPreviewTests: XCTestCase {
             "/v2/preview/image",
             "/v2/preview/image?x=https%3A%2F%2Fpbs.twimg.com%2Fa.jpg",
             "/v2/preview/image?u=http%3A%2F%2Fpbs.twimg.com%2Fa.jpg",
-            "/v2/preview/image?u=https%3A%2F%2Fevil.example%2Fa.jpg",
-            "/v2/preview/image?u=https%3A%2F%2Fpbs.twimg.com.evil.example%2Fa.jpg",
+            "/v2/preview/image?u=https%3A%2F%2F127.0.0.1%2Fa.jpg",                          // IP — 평범한 호스트 이름 아님
+            "/v2/preview/image?u=https%3A%2F%2Flocalhost%2Fa.jpg",
+            "/v2/preview/image?u=https%3A%2F%2F%5B%3A%3A1%5D%2Fa.jpg",
             "/v2/preview/image?u=https%3A%2F%2Fuser%40pbs.twimg.com%2Fa.jpg",
             "/v2/preview/image?u=https%3A%2F%2Fpbs.twimg.com%3A8443%2Fa.jpg",
             "",
@@ -127,7 +153,7 @@ final class LinkPreviewTests: XCTestCase {
 
     func testImageRequestRefusesPathsOutsideTheContract() {
         for bad in ["https://evil.example/v2/preview/image?u=https%3A%2F%2Fpbs.twimg.com%2Fa.jpg",
-                    "/v2/preview/image?u=https%3A%2F%2Fevil.example%2Fa.jpg"] {
+                    "/v2/preview/image?u=https%3A%2F%2F127.0.0.1%2Fa.jpg"] {
             XCTAssertThrowsError(try transport(.bearer("t")).linkPreviewImageRequest(path: bad), bad) {
                 XCTAssertEqual($0 as? RelayError, .refused(code: "bad_url", status: 400))
             }
