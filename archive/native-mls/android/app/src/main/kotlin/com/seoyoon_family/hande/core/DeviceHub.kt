@@ -94,6 +94,8 @@ data class HubUi(
 class DeviceHub(context: Context, val settings: Settings, private val sealer: KeystoreSealer) {
     private val dir = File(context.filesDir, "mls").apply { mkdirs() }
     private val transport = OkHttpTransport()
+    /** x.com 링크 미리보기(#683 2단계) — 릴레이 주소·세션 값은 요청할 때마다 설정에서 읽는다(로그인·서버 변경 즉시 반영). */
+    val linkPreviews = LinkPreviews(relayUrl = { settings.relayUrl }, accessToken = { settings.accessToken }, http = transport)
     private val mutex = Mutex()
     private val _ui = MutableStateFlow(HubUi(phase = if (settings.isConfigured) Phase.Starting else Phase.Setup, server = serverLabel()))
     val ui: StateFlow<HubUi> = _ui
@@ -660,6 +662,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             if (!dir.deleteRecursively()) Log.w(TAG, "wipe: some files under ${dir.name} could not be deleted")
             dir.mkdirs()
             settings.wipe()
+            linkPreviews.clear()
             runCatching { sealer.forget() }.onFailure { e -> Log.w(TAG, "wipe: keystore: $e") }
             _ui.value = HubUi(phase = Phase.Setup, notice = Strings.wipeDone)
             Log.i(TAG, "wipe: done → setup")
