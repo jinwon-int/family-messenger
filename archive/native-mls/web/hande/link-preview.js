@@ -1,7 +1,11 @@
 /**
- * x.com 링크 미리보기 카드(#683 2단계, 「2단계 API 계약 v1」 클라이언트 절) — 순수 모듈(DOM 없음, node:test 로 검증).
+ * 링크 미리보기 카드(#683 2단계 「계약 v1」 → #690 「계약 v2」 클라이언트 절) — 순수 모듈(DOM 없음, node:test 로 검증).
  *
- * - `previewTarget(text)`: 사람·서비스 봇 말풍선 글에서 **첫 번째 x.com 글(status) 주소**를 정규 URL 로, 없으면 null.
+ * - `previewTarget(text, links)`: 사람·서비스 봇 말풍선 글에서 카드를 물을 링크 하나, 없으면 null.
+ *   `links` 는 preview-sites.js 의 링크 집합이다.
+ *   · v2(릴레이가 사이트 목록을 줌): 말풍선의 링크 중 **preview:true 사이트에 속하는 첫 링크**를 그대로(링크의 href) 돌려준다.
+ *     경로 규칙 판정은 릴레이의 몫이다(400 bad_url → 카드 없음, 음성 캐시). 링크만 사이트(Threads·Reuters)는 건너뛴다.
+ *   · 폴백(목록 전·옛 릴레이·실패): 아래 v1 규칙 — **첫 번째 x.com 글(status) 주소**를 정규 URL 로.
  *   1단계 `xHosts`·`linkParts` 규칙(https, 사용자 정보·포트 없음, 호스트 정확히 일치) 위에 경로 규칙을 더한다:
  *   `/{handle}/status/{id}` 또는 `/i/web/status/{id}` (handle = `[A-Za-z0-9_]{1,15}`, id = 숫자 1–25자리).
  *   뒤 경로(`/photo/1` 등)·쿼리·조각은 버린다 — 릴레이 정규화와 같은 모양이라 캐시 키가 맞는다.
@@ -14,6 +18,7 @@
  * iOS·Android 클라이언트도 같은 규칙(계약 v1).
  */
 import {linkParts, xHosts} from './service-links.js';
+import {FALLBACK_LINKS} from './preview-sites.js';
 
 const HANDLE = /^[A-Za-z0-9_]{1,15}$/;
 const STATUS_ID = /^[0-9]{1,25}$/;
@@ -46,21 +51,36 @@ export function statusUrl(href) {
 }
 
 /**
- * 말풍선 글에서 미리보기를 붙일 첫 x.com 글 주소(정규형), 없으면 null.
- * x.com 링크라도 글 주소가 아니면(프로필 `https://x.com/name` 등) 건너뛰고 다음 링크를 본다.
+ * 말풍선 글에서 미리보기를 물을 링크, 없으면 null.
+ * - 폴백(v1): 첫 x.com 글 주소(정규형). x.com 링크라도 글 주소가 아니면(프로필 `https://x.com/name` 등) 건너뛴다.
+ * - v2: preview:true 사이트 호스트의 첫 링크(href 그대로). 카드를 누르면 이 주소로 간다(응답 url 은 쓰지 않음).
  * @param {string} text
+ * @param {{mode: string, hosts: Set<string>, previewSiteFor: (host: string) => object|null}} [links] preview-sites.js 링크 집합
  * @returns {string|null}
  */
-export function previewTarget(text) {
-  for (const part of linkParts(text, xHosts)) {
+export function previewTarget(text, links = FALLBACK_LINKS) {
+  const v2 = links?.mode === 'v2';
+  for (const part of linkParts(text, v2 ? links.hosts : xHosts)) {
     if (typeof part === 'string') continue;
-    const target = statusUrl(part.href);
-    if (target) return target;
+    if (!v2) {
+      const target = statusUrl(part.href);
+      if (target) return target;
+      continue;
+    }
+    let host;
+    try { host = new URL(part.href).hostname; } catch { continue; }
+    if (links.previewSiteFor(host)) return part.href;
   }
   return null;
 }
 
-/** 릴레이 응답 본문 → 카드 `{url, title, description, image}`, 쓸 수 없으면 null. 문자열은 화면에서 텍스트 노드로만 쓴다. */
+/** 카드에 작게 보이는 사이트 이름(응답 `site`) 상한. */
+export const MAX_SITE_NAME = 40;
+
+/**
+ * 릴레이 응답 본문 → 카드 `{url, site, title, description, image}`, 쓸 수 없으면 null. 문자열은 화면에서 텍스트 노드로만 쓴다.
+ * `url` 은 응답이 아니라 우리가 물은 링크(target)다. `site` 는 응답의 사이트 이름(v2 `"YouTube"` 등, v1 릴레이도 `"X"`) — 없으면 ''.
+ */
 export function cardFrom(target, body) {
   if (!body || typeof body !== 'object') return null;
   const text = (value) => (typeof value === 'string' ? value.trim() : '');
@@ -68,7 +88,8 @@ export function cardFrom(target, body) {
   const description = text(body.description);
   if (!title && !description) return null;
   const image = typeof body.image === 'string' && body.image.startsWith(IMAGE_PREFIX) && !/[\s\\]/.test(body.image) ? body.image : null;
-  return {url: target, title, description, image};
+  const site = text(body.site).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, '').slice(0, MAX_SITE_NAME);
+  return {url: target, site, title, description, image};
 }
 
 /**

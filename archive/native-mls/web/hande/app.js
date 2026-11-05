@@ -17,6 +17,7 @@ import {createStatusBoard, applyStatus, clearStatusOnMessage, visibleStatuses} f
 import {choiceState, composeChoice} from './agent-choices.js';
 import {createWorkerBridge} from './worker-bridge.js';
 import {createRelay} from './relay.js';
+import {createPreviewSites} from './preview-sites.js';
 import {createIdentityStore, databaseFor, ROOM, IDENTITY_DATABASE, LOBBY_DATABASE} from './identity.js';
 import {createRoomSession, nextDeviceId, clock} from './room.js';
 import {createDevice, LOBBY_TARGET} from './device.js';
@@ -68,6 +69,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   const identity = createIdentityStore({storage});
   const worker = createWorkerBridge();
   const relay = createRelay({fetch: fetchImpl, onOffline: down => { app.offlineAt = down ? clock() : null; render(); }});
+  // 미리보기 사이트 목록(#690 계약 v2): 세션당 한 번 GET /v2/preview/sites. 오기 전·실패면 폴백(v1 = x.com 링크·x status 카드).
+  const previewSites = createPreviewSites({fetch: fetchImpl});
   const knownKey = () => `hande:rooms:${app.device}`;
   const readKnown = () => { try { const v = JSON.parse(storage.getItem(knownKey()) || '[]'); return Array.isArray(v) ? v.filter(r => ROOM.test(r)) : []; } catch (_) { return []; } };
   const writeKnown = () => storage.setItem(knownKey(), JSON.stringify([...app.rooms.keys()]));
@@ -186,6 +189,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
         // 에이전트 선택지(#620): open·answered 인 에이전트 글만. 카드의 [보내기]는 작성창과 같은 sendText 로 줄마다 `"N. 라벨"`(#624)을 보낸다
         // (보내는 중이거나 AI 동의 전이면 false — 카드는 선택을 지킨 채 다시 열린다).
         choices: choiceStates(app.current, R, {sending: app.sending || S.transferring, disabled: !S.joined || Boolean(S.halted)}),
+        // 링크·미리보기 카드 대상(#690): 사이트 목록이 오면 링크 집합이 바뀌고(key), 링크가 있는 말풍선만 다시 그려진다.
+        links: previewSites.current,
         onChoose: (numbers, labels) => sendText(composeChoice(numbers, labels)),
         // 연결 배너(디자인 2차-A §A4): 릴레이에 닿지 않는 동안 머리 아래 「릴레이에 닿지 않아요 — 연결되면 보낼게요」.
         offline: Boolean(relay.offline || app.offlineAt),
@@ -343,6 +348,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     app.actor = id.actor; app.device = id.device;
     app.phase = 'starting'; app.message = strings.app.deriving; render();
     refreshMe().then(render);
+    // 렌더는 기다리지 않는다 — 폴백으로 먼저 그리고, v2 목록이 오면 다시 그린다(타임라인 스크롤 규칙은 updateTimeline 그대로).
+    previewSites.load().then(changed => { if (changed) { logLine(`미리보기 사이트 ${previewSites.current.sites.length}곳(v2)`); render(); } });
     try {
       // Stage-2 install: the default room's single-store database holds the signer → migrate it.
       const legacy = {database: databaseFor(app.defaultRoom), room: app.defaultRoom};

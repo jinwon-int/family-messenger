@@ -2,7 +2,8 @@
  * 말풍선의 링크 — 허용한 호스트의 https 주소만 누를 수 있는 조각으로 나눈다.
  *
  * 서비스 봇(알림 전용)은 사람이 쓴 글을 옮기지 않고 고정 형식의 알림만 보내므로 `linkHosts`(인스타그램 + x.com)를,
- * 사람 말풍선은 `xHosts`(x.com·twitter.com, #683)만 링크로 바꾼다. 에이전트 말풍선은 링크를 만들지 않는다
+ * 사람 말풍선은 `xHosts`(x.com·twitter.com, #683)만 링크로 바꾼다 — 릴레이가 미리보기 사이트 목록(v2, #690)을 주면
+ * 두 집합 모두 그 목록의 hosts 합집합으로 넓어진다(preview-sites.js). 에이전트 말풍선은 링크를 만들지 않는다
  * (agent-markdown 은 링크 문법을 글로 둔다). 그 밖의 주소(http, 다른 호스트, 사용자 정보·포트가 붙은 주소)는 글 그대로 둔다.
  * iOS `ServiceLinks`·Android `TextLinks` 와 같은 규칙.
  */
@@ -10,8 +11,14 @@
 /** 사람·서비스 봇 말풍선에서 링크로 바꿀 x.com 계열 호스트(소문자, 정확히 일치, #683). */
 export const xHosts = new Set(['x.com', 'www.x.com', 'mobile.x.com', 'twitter.com', 'www.twitter.com', 'mobile.twitter.com']);
 
-/** 서비스 봇 말풍선에서 링크로 바꿀 호스트. 인스타그램 새 글 알림(`insta` 봇)용 + x.com 계열. */
-export const linkHosts = new Set(['instagram.com', 'www.instagram.com', ...xHosts]);
+/** 서비스 봇 말풍선에만 더하는 인스타그램 호스트(`insta` 봇 새 글 알림). */
+export const instagramHosts = new Set(['instagram.com', 'www.instagram.com']);
+
+/**
+ * 서비스 봇 말풍선에서 링크로 바꿀 v1 기본 호스트. 인스타그램 + x.com 계열.
+ * 미리보기 사이트 목록 v2(#690)가 오면 ui.js 는 preview-sites.js 의 `serviceHosts`(합집합 + 인스타그램)를 넘긴다.
+ */
+export const linkHosts = new Set([...instagramHosts, ...xHosts]);
 
 const CANDIDATE = /https:\/\/[^\s<>"'`]+/g;
 /** 문장부호로 끝나는 주소에서 떼어 낼 꼬리(괄호·마침표 등은 주소가 아니라 문장의 일부일 때가 많다). */

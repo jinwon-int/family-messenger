@@ -74,8 +74,13 @@ test('previewTarget: 첫 번째 글 주소만 — 글 주소가 아닌 x.com 링
 test('cardFrom: 제목·본문 중 하나는 있어야 하고, image 는 릴레이 상대 경로만', () => {
   const t = 'https://x.com/a/status/1';
   const image = `${IMAGE_PREFIX}${encodeURIComponent('https://pbs.twimg.com/media/x.jpg')}`;
-  assert.deepEqual(cardFrom(t, { url: t, site: 'X', title: ' 제목 ', description: '본문', image }), { url: t, title: '제목', description: '본문', image });
-  assert.deepEqual(cardFrom(t, { title: '제목', description: null, image: null }), { url: t, title: '제목', description: '', image: null });
+  assert.deepEqual(cardFrom(t, { url: t, site: 'X', title: ' 제목 ', description: '본문', image }), { url: t, site: 'X', title: '제목', description: '본문', image });
+  assert.deepEqual(cardFrom(t, { title: '제목', description: null, image: null }), { url: t, site: '', title: '제목', description: '', image: null });
+  // 사이트 이름(#690): 문자열만, 앞뒤 공백·제어 문자 제거, 40자 상한.
+  assert.equal(cardFrom(t, { title: '제목', site: ' 네이버 뉴스 ' }).site, '네이버 뉴스');
+  assert.equal(cardFrom(t, { title: '제목', site: 'You\nTube\u2028' }).site, 'YouTube');
+  assert.equal(cardFrom(t, { title: '제목', site: 'S'.repeat(80) }).site, 'S'.repeat(40));
+  for (const badSite of [42, null, ['X'], { name: 'X' }]) assert.equal(cardFrom(t, { title: '제목', site: badSite }).site, '', String(badSite));
   assert.equal(cardFrom(t, { title: '', description: '  ', image }), null);
   assert.equal(cardFrom(t, null), null);
   assert.equal(cardFrom(t, 'nope'), null);
@@ -102,7 +107,7 @@ test('get: 같은 origin /v2/preview?url=… 를 same-origin 자격으로 한 �
   const previews = createLinkPreviews({ fetch });
   assert.equal(previews.peek(t), undefined, '아직 모름');
   const card = await previews.get(t);
-  assert.deepEqual(card, { url: t, title: '제목', description: '본문', image: null });
+  assert.deepEqual(card, { url: t, site: 'X', title: '제목', description: '본문', image: null });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].path, `/v2/preview?url=${encodeURIComponent(t)}`);
   assert.equal(calls[0].init.method, 'GET');
