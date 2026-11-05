@@ -690,7 +690,7 @@ func captureLog(t *testing.T, buf *bytes.Buffer) {
 func TestNormalizeImageURLRebuildsFromConstantHost(t *testing.T) {
 	cases := map[string]string{
 		"https://PBS.twimg.com/media/a.jpg?format=jpg&name=small#frag": "https://pbs.twimg.com/media/a.jpg?format=jpg&name=small",
-		"https://abs.twimg.com/emoji/v2/72x72/1f600.png":                "https://abs.twimg.com/emoji/v2/72x72/1f600.png",
+		"https://abs.twimg.com/emoji/v2/72x72/1f600.png":               "https://abs.twimg.com/emoji/v2/72x72/1f600.png",
 	}
 	for in, want := range cases {
 		got, ok := normalizeImageURL(in)
