@@ -143,7 +143,7 @@ type relay struct {
 	// typing is the memory-only typing-indicator state (#562, typing.go);
 	// own mutex, never taken under mu, lazily allocated on first set.
 	typing typingState
-	// preview is the x.com link preview proxy (#683 phase 2, preview.go);
+	// preview is the link preview proxy (#683 phase 2, #690 v2, preview.go);
 	// nil = -link-preview off, routes absent (404).
 	preview *linkPreviewer
 }
@@ -655,9 +655,11 @@ func (s *relay) routes() http.Handler {
 	if s.wellKnown != nil {
 		mux.HandleFunc(wellKnownPath, s.handleWellKnown)
 	}
-	// x.com link preview proxy (#683 phase 2, preview.go): only with
-	// -link-preview; same caller authentication as the contract routes.
+	// Link preview proxy (#683 phase 2 / #690 v2, preview.go and
+	// preview_sites.go): only with -link-preview; same caller
+	// authentication as the contract routes.
 	if s.preview != nil {
+		mux.HandleFunc("GET "+previewSitesPath, s.handlePreviewSites)
 		mux.HandleFunc("GET "+previewPath, s.handlePreview)
 		mux.HandleFunc("GET "+previewImagePath, s.handlePreviewImage)
 	}

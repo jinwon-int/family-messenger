@@ -57,7 +57,7 @@ func main() {
 	wellKnownName := flag.String("well-known-name", "", "human-readable server name shown by clients at server selection (≤64 chars); needs -well-known-public-url")
 	wellKnownMinIOS := flag.String("well-known-min-ios", "", "minimum iOS app version this relay accepts (e.g. 0.1.0), advertised in /.well-known/hande")
 	wellKnownMinAndroid := flag.String("well-known-min-android", "", "minimum Android app version this relay accepts, advertised in /.well-known/hande")
-	linkPreview := flag.Bool("link-preview", false, "enable the x.com link preview proxy GET /v2/preview and /v2/preview/image (#683): the relay fetches og: tags from x.com/twitter.com status pages and images from pbs/abs.twimg.com only, behind caller authentication. Off = routes absent (404). The relay then sees which x.com posts are previewed (never logged)")
+	linkPreview := flag.Bool("link-preview", false, "enable the link preview proxy GET /v2/preview/sites, /v2/preview and /v2/preview/image (#683, #690 v2): the relay fetches og: tags only from the canonical pages of the registry's preview sites (X, YouTube, Naver News, Wikipedia ko/en, GitHub, BBC) and images only from their image hosts, behind caller authentication. Off = routes absent (404). The relay then sees which pages are previewed (never logged)")
 	accessMaxLifetimeSeconds := flag.Int64("access-max-lifetime-seconds", 0, "override (tighten) the maximum accepted JWT lifetime in seconds (exp-now and exp-iat; default 31 days = the longest CF Access session; the account's apps use 730h)")
 	flag.Parse()
 
@@ -229,7 +229,7 @@ func main() {
 	}
 	if *linkPreview {
 		relay.preview = newLinkPreviewer(nil)
-		log.Printf("link preview proxy on: GET %s, %s (x.com family pages, pbs/abs.twimg.com images; no URL paths logged)", previewPath, previewImagePath)
+		log.Printf("link preview proxy on: GET %s, %s, %s (%d registry sites; no URL paths logged)", previewSitesPath, previewPath, previewImagePath, len(previewSites))
 	}
 	srv := &http.Server{
 		Addr:              *addr,
