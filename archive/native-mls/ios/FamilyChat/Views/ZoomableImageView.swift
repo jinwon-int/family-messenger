@@ -1,5 +1,5 @@
 // 전체 화면 사진 줌 — UIKit `UIScrollView` 줌(핀치 위치 기준 확대·관성·바운스, 두 번 탭은 탭 위치로 확대/원래,
-// 한 번 탭은 `onSingleTap` — 사진 보기 닫기, 줌 1 에서 위로 밀기는 `onSwipeUpDismiss` — 역시 닫기, 오너 2026-11-05).
+// 한 번 탭은 `onSingleTap` — 사진 보기 닫기, 줌 1 에서 위·아래로 밀기는 `onSwipeDismiss` — 역시 닫기, 오너 2026-11-05).
 // SwiftUI `MagnificationGesture` 는 iOS 16 에서 거칠다(ryohey/Zoomable README caveat: 핀치 위치가 좌상단 고정;
 // home-assistant/ios#4592 도 순수 SwiftUI 제스처에서 UIKit 으로 전환) — 오너 보고 build 32 "투박하고 되다 안 되다".
 // UIKit 전용(Linux 스모크 목록에 넣지 말 것).
@@ -13,8 +13,8 @@ struct ZoomableImageView: UIViewRepresentable {
     var doubleTapZoom: CGFloat = 2.5
     /// 한 번 탭(두 번 탭이 아닐 때만). 사진 보기에서는 닫기.
     var onSingleTap: (() -> Void)? = nil
-    /// 줌 1 에서 위로 밀어 손을 뗐을 때(판정 `PhotoSwipeDismiss`). 사진 보기에서는 닫기.
-    var onSwipeUpDismiss: (() -> Void)? = nil
+    /// 줌 1 에서 위나 아래로 밀어 손을 뗐을 때(판정 `PhotoSwipeDismiss`). 사진 보기에서는 닫기.
+    var onSwipeDismiss: (() -> Void)? = nil
 
     func makeUIView(context: Context) -> ZoomScrollView {
         let scroll = ZoomScrollView()
@@ -41,12 +41,12 @@ struct ZoomableImageView: UIViewRepresentable {
         singleTap.numberOfTapsRequired = 1
         singleTap.require(toFail: doubleTap)
         scroll.addGestureRecognizer(singleTap)
-        // 위로 밀어 닫기 — 한 손가락, 줌 1 에서 세로로 시작한 끌기만(`gestureRecognizerShouldBegin`). 확대 중 끌기(사진 이동)와 섞이지 않는다.
-        let swipeUp = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.panned(_:)))
-        swipeUp.maximumNumberOfTouches = 1
-        swipeUp.delegate = context.coordinator
-        scroll.addGestureRecognizer(swipeUp)
-        context.coordinator.onSwipeUpDismiss = onSwipeUpDismiss
+        // 위·아래로 밀어 닫기 — 한 손가락, 줌 1 에서 세로로 시작한 끌기만(`gestureRecognizerShouldBegin`). 확대 중 끌기(사진 이동)와 섞이지 않는다.
+        let swipe = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.panned(_:)))
+        swipe.maximumNumberOfTouches = 1
+        swipe.delegate = context.coordinator
+        scroll.addGestureRecognizer(swipe)
+        context.coordinator.onSwipeDismiss = onSwipeDismiss
         // 처음·회전 때 화면 크기에 맞춰 잡는다(makeUIView 시점엔 bounds 가 0).
         scroll.onLayout = { [weak scroll, coordinator = context.coordinator] in
             if let scroll { coordinator.fit(scroll) }
@@ -56,7 +56,7 @@ struct ZoomableImageView: UIViewRepresentable {
 
     func updateUIView(_ scroll: ZoomScrollView, context: Context) {
         context.coordinator.onSingleTap = onSingleTap
-        context.coordinator.onSwipeUpDismiss = onSwipeUpDismiss
+        context.coordinator.onSwipeDismiss = onSwipeDismiss
         if context.coordinator.imageView?.image !== image {
             context.coordinator.imageView?.image = image
             context.coordinator.fittedSize = .zero
@@ -79,7 +79,7 @@ struct ZoomableImageView: UIViewRepresentable {
         var imageView: UIImageView?
         var doubleTapZoom: CGFloat = 2.5
         var onSingleTap: (() -> Void)?
-        var onSwipeUpDismiss: (() -> Void)?
+        var onSwipeDismiss: (() -> Void)?
         var fittedSize: CGSize = .zero
 
         func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
@@ -89,10 +89,10 @@ struct ZoomableImageView: UIViewRepresentable {
             onSingleTap?()
         }
 
-        /// 위로 밀기 끌기는 줌 1(확대 안 함)에서, 세로로 시작했을 때만 받는다. 탭 인식기에는 delegate 를 두지 않으므로 여기 오는 것은 이 끌기뿐이다.
+        /// 위·아래로 밀기 끌기는 줌 1(확대 안 함)에서, 세로로 시작했을 때만 받는다. 탭 인식기에는 delegate 를 두지 않으므로 여기 오는 것은 이 끌기뿐이다.
         func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
             guard let pan = recognizer as? UIPanGestureRecognizer, let scroll = pan.view as? UIScrollView else { return true }
-            guard onSwipeUpDismiss != nil, scroll.zoomScale <= scroll.minimumZoomScale + 0.01 else { return false }
+            guard onSwipeDismiss != nil, scroll.zoomScale <= scroll.minimumZoomScale + 0.01 else { return false }
             let velocity = pan.velocity(in: scroll)
             return abs(velocity.y) > abs(velocity.x)
         }
@@ -100,7 +100,7 @@ struct ZoomableImageView: UIViewRepresentable {
         /// 스크롤 뷰 자체의 끌기·핀치와 함께 인식한다(줌 1 에서는 내용이 화면 크기라 스크롤 뷰는 움직이지 않는다).
         func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 
-        /// 끄는 동안 사진(스크롤 뷰 전체)이 위로만 따라 올라간다. 손을 떼면 판정이 참이면 위로 내보내고 닫기, 아니면 제자리로.
+        /// 끄는 동안 사진(스크롤 뷰 전체)이 손가락을 따라 위아래로 움직인다. 손을 떼면 판정이 참이면 민 방향(위/아래)으로 내보내고 닫기, 아니면 제자리로.
         /// 두 번째 손가락이 닿거나 핀치가 시작되면 취소하고 제자리로 돌린다.
         @objc func panned(_ pan: UIPanGestureRecognizer) {
             guard let scroll = pan.view as? UIScrollView else { return }
@@ -112,13 +112,13 @@ struct ZoomableImageView: UIViewRepresentable {
                     pan.isEnabled = true
                     return
                 }
-                scroll.transform = CGAffineTransform(translationX: 0, y: CGFloat(PhotoSwipeDismiss.followOffset(dy: Double(moved.y))))
+                scroll.transform = CGAffineTransform(translationX: 0, y: moved.y)
             case .ended:
                 if PhotoSwipeDismiss.shouldDismiss(dx: Double(moved.x), dy: Double(moved.y)) {
-                    let height = scroll.bounds.height
+                    let height = moved.y < 0 ? -scroll.bounds.height : scroll.bounds.height
                     UIView.animate(withDuration: 0.18, delay: 0, options: .curveEaseIn, animations: {
-                        scroll.transform = CGAffineTransform(translationX: 0, y: -height)
-                    }, completion: { [weak self] _ in self?.onSwipeUpDismiss?() })
+                        scroll.transform = CGAffineTransform(translationX: 0, y: height)
+                    }, completion: { [weak self] _ in self?.onSwipeDismiss?() })
                 } else {
                     restore(scroll)
                 }

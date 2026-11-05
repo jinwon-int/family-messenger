@@ -1403,7 +1403,7 @@ enum PhotoViewerPresence {
 }
 
 /// 전체 화면 사진 보기: 검은 바탕 · UIKit 줌(핀치 위치 기준 1~4배, 두 번 탭은 탭 위치로 2.5배/원래, `ZoomableImageView`) · 저장·공유.
-/// 닫기는 사진을 한 번 탭(X 버튼 없음). VoiceOver 는 「닫기」 접근성 동작.
+/// 닫기는 사진을 한 번 탭하거나 줌 1 에서 위·아래로 밀기(X 버튼 없음). VoiceOver 는 「닫기」 접근성 동작.
 struct ImageViewer: View {
     let image: UIImage
     let shareURL: URL?
@@ -1412,7 +1412,7 @@ struct ImageViewer: View {
     var body: some View {
         ZStack(alignment: .topTrailing) {
             Color.black.ignoresSafeArea()
-            ZoomableImageView(image: image, onSingleTap: { dismiss() }, onSwipeUpDismiss: { dismiss() })
+            ZoomableImageView(image: image, onSingleTap: { dismiss() }, onSwipeDismiss: { dismiss() })
                 .ignoresSafeArea()
             if let shareURL {
                 ShareLink(item: shareURL) { Image(systemName: "square.and.arrow.up") }
