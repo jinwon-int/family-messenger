@@ -1039,9 +1039,15 @@ dialog.viewer .viewer-hint { position: absolute; left: 0; right: 0; bottom: max(
 .composer-wrap { flex: none; background: var(--bg); padding: var(--space-2) 0 max(var(--space-2), env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
 .composer { display: flex; gap: var(--space-2); align-items: flex-end; }
 .composer textarea { flex: 1; min-height: var(--touch); border-radius: 22px; resize: none; max-height: 160px; overflow-y: auto; border-color: var(--line-strong); }
-/* 보내기 = 44px 불 원(↑). 글자 「보내기」/「보내는 중…」은 접근성 이름으로만 남는다(font-size 0). */
+/* 보내기 = 44px 불 원 + 위 화살표. 글자 「보내기」/「보내는 중…」은 접근성 이름으로만 남는다(font-size 0).
+   화살표는 글자(↑)가 아니라 24 격자 SVG 마스크다 — 글꼴마다 굵기·기준선이 달라 원 안에서 한쪽으로 쏠리고 몸통·머리 비율이 원과 따로 놀았다(오너 2026-11-05).
+   몸통·머리 모두 같은 선 2.4 · 둥근 끝, 화살표 상자(y 5.5~18.5)를 원 한가운데(12)에 둔다. 색은 currentColor(--on-brand). CSP img-src 에 data: 허용. */
 .composer button.primary { width: var(--touch); height: var(--touch); min-height: var(--touch); min-width: 0; padding: 0; border-radius: 50%; flex: none; font-size: 0; }
-.composer button.primary::before { content: '↑'; font-size: 1.35rem; font-weight: 800; line-height: 1; }
+.composer button.primary::before {
+  content: ''; width: 22px; height: 22px; flex: none; background-color: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 18.5V5.5'/%3E%3Cpath d='M6.5 11 12 5.5l5.5 5.5'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 18.5V5.5'/%3E%3Cpath d='M6.5 11 12 5.5l5.5 5.5'/%3E%3C/svg%3E") center / contain no-repeat;
+}
 .composer button.icon.attach { color: var(--brand); border-color: transparent; }
 
 /* ---------- 시트(대화상자) ---------- */
