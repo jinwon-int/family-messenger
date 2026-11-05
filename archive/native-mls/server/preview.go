@@ -117,20 +117,18 @@ func normalizeImageURL(raw string) (string, bool) {
 	// Rebuild from a constant scheme+host prefix (CodeQL go/request-forgery):
 	// only the path and query come from the caller, never the host, so the
 	// request target cannot leave the allowlist even if this check changes.
-	var prefix string
+	rest := strings.TrimPrefix(u.EscapedPath(), "/")
+	if u.RawQuery != "" {
+		rest += "?" + u.RawQuery
+	}
 	switch strings.ToLower(u.Hostname()) {
 	case "pbs.twimg.com":
-		prefix = "https://pbs.twimg.com/"
+		return "https://pbs.twimg.com/" + rest, true
 	case "abs.twimg.com":
-		prefix = "https://abs.twimg.com/"
+		return "https://abs.twimg.com/" + rest, true
 	default:
 		return "", false
 	}
-	out := prefix + strings.TrimPrefix(u.EscapedPath(), "/")
-	if u.RawQuery != "" {
-		out += "?" + u.RawQuery
-	}
-	return out, true
 }
 
 // ogMeta is what a page told us about itself.
