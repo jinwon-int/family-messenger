@@ -12,8 +12,9 @@ import { lastSentView, collapsedKey, sentDayPrefix } from './last-sent.js';
 import {fileboxRefreshUrl} from './filebox.js';
 import {attachmentTitle} from './attachments.js';
 import {parseBlocks, inlineSpans, hasMarkdown} from './agent-markdown.js';
-import {linkParts, xHosts} from './service-links.js';
+import {linkParts} from './service-links.js';
 import {previewTarget, createLinkPreviews} from './link-preview.js';
+import {FALLBACK_LINKS} from './preview-sites.js';
 import {isCaretMode} from './timeline-caret.js';
 import {icon} from './icons.js';
 import {choiceToggle} from './agent-choices.js';
@@ -662,15 +663,16 @@ function markdownBlock(block) {
   }
 }
 
-/** 말풍선 글: 허용 링크만 <a>, 나머지는 글 그대로(service-links.js). 기본은 서비스 봇 집합(인스타그램 + x.com). */
+/** 말풍선 글: 허용 링크만 <a>, 나머지는 글 그대로(service-links.js). 호스트 집합은 preview-sites.js 링크 집합에서 고른다. */
 function serviceLinkNodes(text, hosts) {
   return linkParts(text, hosts).map((part) => (typeof part === 'string'
     ? part
     : el('a', { href: part.href, target: '_blank', rel: 'noopener noreferrer', class: 'service-link' }, part.text)));
 }
 
-// ---- x.com 링크 미리보기 카드(#683 2단계, link-preview.js · 「2단계 API 계약 v1」) ----
-// 사람·서비스 봇 말풍선의 첫 x.com 글 주소에만. 말풍선(.body)이 화면 근처에 오면 그때 /v2/preview 를 묻는다(lazy).
+// ---- 링크 미리보기 카드(#683 2단계 「계약 v1」 → #690 「계약 v2」, link-preview.js · preview-sites.js) ----
+// 사람·서비스 봇 말풍선에서 preview:true 사이트의 첫 링크(폴백 = 첫 x.com 글 주소)에만. 말풍선(.body)이 화면 근처에 오면 그때 /v2/preview 를 묻는다(lazy).
+// 카드 위에 응답의 사이트 이름(`site`)을 작게, 카드를 누르면 말풍선의 원 링크로 간다(응답 url 은 쓰지 않는다).
 // 릴레이 라우트가 꺼져 있거나(404) 실패하면 카드 없이 링크만 — 조용히. 카드 글은 전부 텍스트 노드(innerHTML 없음).
 // 이미지는 릴레이 상대 경로(/v2/preview/image?u=…, 같은 origin = CSP img-src 'self', Access 쿠키가 같이 실린다)를 그대로 쓴다.
 
@@ -686,6 +688,7 @@ function linkCard(card) {
         onerror: (event) => event.currentTarget.remove() })
     : null;
   return el('a', { class: 'link-card', href: card.url, target: '_blank', rel: 'noopener noreferrer', 'data-testid': 'link-card' },
+    card.site ? el('span', { class: 'link-card-site' }, card.site) : null,
     card.title ? el('span', { class: 'link-card-title' }, card.title) : null,
     card.description ? el('span', { class: 'link-card-desc' }, card.description) : null,
     image);
@@ -730,8 +733,8 @@ function watchPreview(anchor, slot) {
 }
 
 /** 말풍선 아래 카드 자리. 이미 아는 결과면 바로 그리고(카드 없음이면 null), 모르면 숨긴 자리를 두고 본문이 보일 때 묻는다. */
-function linkPreviewSlot(text, anchor) {
-  const target = previewTarget(text);
+function linkPreviewSlot(text, anchor, links) {
+  const target = previewTarget(text, links);
   if (!target) return null;
   const known = linkPreviews.peek(target);
   if (known === null) return null;
@@ -852,13 +855,20 @@ export function openChoiceCard(root) {
   return node && node.isConnected !== false ? choiceControls.get(node) ?? null : null;
 }
 
-function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null) {
+/**
+ * 링크를 그리는 말풍선(사람·서비스 봇 글, https 주소가 있을 때)만 링크 집합 키를 서명에 넣는다 — 사이트 목록(v2)이 뒤늦게 오면
+ * 그 말풍선만 다시 그려져 링크·카드가 넓어진다(#690). 사진·에이전트 마크다운 행은 그대로 둔다.
+ */
+const linksSignature = (entry, links) => (entry.kind === 'text' && (isServiceDevice(entry.sender) || !entry.isAgent) && String(entry.body ?? '').includes('https://')
+  ? links.key : null);
+
+function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null, links = FALLBACK_LINKS) {
   const time = formatTime(entry.ts);
   // 전송 상태(2차-B B3): entry.state 'queued'(연결되면 보냄) · 'failed'(전송 안 됨) 가 오면 내 말풍선의 면·선이 바뀐다. 지금 app.js 는 보내기를 기다리므로 주지 않는다(훅만).
   const sendState = entry.isMe && (entry.state === 'queued' || entry.state === 'failed') ? entry.state : null;
   const signature = JSON.stringify([entry.key, entry.kind, Boolean(entry.isMe), Boolean(entry.isAgent), entry.senderName ?? null, entry.body ?? '', time, entry.size ?? null, entry.image?.url ?? null, Boolean(entry.replay), entry.seq ?? null,
     entry.fileName ?? null, Boolean(entry.previewFailed), Boolean(entry.previewFailed) && Boolean(entry.previewBusy), choiceSignature(choice), sendState,
-    entry.dims ? [entry.dims.w, entry.dims.h] : null, pendingMedia(entry)]);
+    entry.dims ? [entry.dims.w, entry.dims.h] : null, pendingMedia(entry), linksSignature(entry, links)]);
   if (entry.kind === 'system') {
     return signed(el('li', { class: 'system', 'data-key': entry.key, 'data-testid': 'system-row' }, el('span', { class: 'body' }, entry.body), time ? el('span', { class: 'foot' }, time) : null), signature);
   }
@@ -884,13 +894,14 @@ function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null) {
       // 파일명(#544 C): file-v2 수신분은 보낸 쪽 이름(file-v2.js safeFileName 으로 줄인 것)을, file-v1 은 와이어에 이름이 없어 「파일」.
       : el('div', { class: 'body file' }, el('span', { class: 'file-label' }, strings.chat.file(humanSize(entry.size ?? 0), entry.fileName)), previewRetry(entry, onRetryPreview), download);
   } else if (entry.isAgent && entry.kind === 'text' && hasMarkdown(entry.body)) body = agentMarkdownBody(entry.body);
-  else if (entry.kind === 'text' && isServiceDevice(entry.sender)) body = el('div', { class: 'body' }, serviceLinkNodes(entry.body));
-  // 사람 말풍선: x.com 계열 링크만 누를 수 있게(#683). 에이전트 말풍선은 그대로(iOS·Android 와 같은 범위).
-  else if (entry.kind === 'text' && !entry.isAgent) body = el('div', { class: 'body' }, serviceLinkNodes(entry.body, xHosts));
+  // 서비스 봇: 사이트 hosts 합집합 + 인스타그램(#690, 폴백 = v1 linkHosts 와 같음).
+  else if (entry.kind === 'text' && isServiceDevice(entry.sender)) body = el('div', { class: 'body' }, serviceLinkNodes(entry.body, links.serviceHosts));
+  // 사람 말풍선: 사이트 hosts 합집합만 누를 수 있게(#690, 폴백 = x.com 계열 #683). 에이전트 말풍선은 그대로(iOS·Android 와 같은 범위).
+  else if (entry.kind === 'text' && !entry.isAgent) body = el('div', { class: 'body' }, serviceLinkNodes(entry.body, links.hosts));
   else body = el('div', { class: 'body' }, entry.body);
-  // 사람·서비스 봇 말풍선의 첫 x.com 글 주소 → 미리보기 카드(#683 2단계). 에이전트 말풍선은 대상이 아니다.
+  // 사람·서비스 봇 말풍선의 첫 미리보기 사이트 링크 → 미리보기 카드(#683 2단계 · #690). 에이전트 말풍선은 대상이 아니다.
   const preview = entry.kind === 'text' && (isServiceDevice(entry.sender) || !entry.isAgent) && !(entry.isAgent && hasMarkdown(entry.body))
-    ? linkPreviewSlot(entry.body, body) : null;
+    ? linkPreviewSlot(entry.body, body, links) : null;
   const foot = [entry.replay ? strings.chat.replay : null, time].filter(Boolean).join(' · ');
   return signed(el('li', { class: `bubble kind-${entry.kind}${entry.isAgent ? ' agent' : ''}${sendState ? ` ${sendState}` : ''}`, 'data-key': entry.key, 'data-me': entry.isMe ? 'true' : 'false', 'data-testid': entry.kind === 'undecryptable' ? 'system-row' : 'bubble' },
     entry.isMe ? null : el('span', { class: 'who' }, senderLabel(entry.senderName || displayName(entry.sender), entry.isAgent)),
@@ -912,8 +923,11 @@ function statusRow(st) {
   JSON.stringify(['status', st.sender, st.senderName ?? '', st.text]));
 }
 
-/** choices: entry 키 → 선택지 상태(#620, app.js 가 open·answered 인 에이전트 글만 넣는다). */
-function timelineRows(timeline, onOpenAttachment, onRetryPreview = null, choices = null) {
+/**
+ * choices: entry 키 → 선택지 상태(#620, app.js 가 open·answered 인 에이전트 글만 넣는다).
+ * links: preview-sites.js 링크 집합(#690) — 없으면 폴백(v1).
+ */
+function timelineRows(timeline, onOpenAttachment, onRetryPreview = null, choices = null, links = FALLBACK_LINKS) {
   const rows = [];
   let day = '';
   for (const entry of timeline) {
@@ -922,7 +936,7 @@ function timelineRows(timeline, onOpenAttachment, onRetryPreview = null, choices
       day = key;
       rows.push(signed(el('li', { class: 'day-divider', 'data-key': `day:${key}`, role: 'separator' }, el('span', {}, dayLabel(entry.ts))), key));
     }
-    rows.push(bubble(entry, onOpenAttachment, onRetryPreview, choices?.get(entry.key) ?? null));
+    rows.push(bubble(entry, onOpenAttachment, onRetryPreview, choices?.get(entry.key) ?? null, links));
   }
   return rows;
 }
@@ -1166,7 +1180,7 @@ function buildRoom(room) {
   JSON.stringify([room.name, room.roomId, participantCount(members), Boolean(room.halted), room.halted?.reason ?? null, Boolean(room.joined), Boolean(room.onOpenBox), room.typing ?? '', typeof room.muted === 'boolean' ? room.muted : null, room.fire ?? null]));
   const notice = room.notice?.text ? signed(el('p', { class: `status ${room.notice.tone || 'info'}`, role: 'status', 'data-part': 'notice' }, room.notice.text), JSON.stringify(room.notice)) : null;
   const list = el('ul', { class: 'timeline', tabindex: '-1', 'aria-live': 'polite', 'aria-label': strings.chat.timelineLabel, 'data-testid': 'timeline' },
-    room.timeline.length === 0 ? signed(el('li', { class: 'empty', 'data-key': 'empty' }, strings.chat.empty), 'empty') : timelineRows(room.timeline, room.onOpenAttachment, room.onRetryPreview ?? null, room.choices ?? null),
+    room.timeline.length === 0 ? signed(el('li', { class: 'empty', 'data-key': 'empty' }, strings.chat.empty), 'empty') : timelineRows(room.timeline, room.onOpenAttachment, room.onRetryPreview ?? null, room.choices ?? null, room.links ?? FALLBACK_LINKS),
     (Array.isArray(room.statuses) ? room.statuses : []).map(statusRow));
   const badge = el('button', { type: 'button', class: 'new-messages', hidden: true, onclick: () => { list.scrollTop = list.scrollHeight; badge.hidden = true; } }, strings.chat.newMessages);
   list.addEventListener('scroll', () => { if (isNearBottom(list)) badge.hidden = true; });
