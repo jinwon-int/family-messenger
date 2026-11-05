@@ -71,6 +71,13 @@ public protocol RelayTransport: AnyObject {
     func postDeviceRoles(_ evidence: DeviceRolesEvidence) async throws -> DevicePolicyCommit
     /// GET /v2/me → `{subject[, policy_revision, devices]}`(옛 릴레이는 subject 만). 404 = 접근 인증이 꺼진 릴레이.
     func me() async throws -> MeResponse
+
+    // 링크 미리보기(#683 2단계, 계약 v1) — 릴레이 플래그 `-link-preview`(기본 off)를 켠 때만 라우트가 있다(끄면 404).
+    // 기본 구현은 `.refused(code:"not_found", status:404)` — 호출자(앱 `LinkPreviewStore`)는 모든 실패를 「카드 없이 링크만」으로 본다.
+    /// GET /v2/preview?url=<x.com 주소> → `{url, site, title, description, image}`. 404 `no_preview`·라우트 없음 · 502 `upstream_failed` · 400 `bad_url`.
+    func linkPreview(url: URL) async throws -> LinkPreview
+    /// GET /v2/preview/image?u=… — 응답 `image`(릴레이 상대 경로) 그대로. 이미지 원시 바이트(≤ 2 MiB, jpeg·png·webp·gif).
+    func linkPreviewImage(path: String) async throws -> Data
 }
 
 /// blob 업로드 응답(server/blobs.go `blobResponse`). `created` = 201(새로 저장), false = 200(이미 있음).
@@ -126,6 +133,12 @@ public extension RelayTransport {
         throw RelayError.refused(code: "not_found", status: 404)
     }
     func me() async throws -> MeResponse {
+        throw RelayError.refused(code: "not_found", status: 404)
+    }
+    func linkPreview(url: URL) async throws -> LinkPreview {
+        throw RelayError.refused(code: "not_found", status: 404)
+    }
+    func linkPreviewImage(path: String) async throws -> Data {
         throw RelayError.refused(code: "not_found", status: 404)
     }
 }
