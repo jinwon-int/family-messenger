@@ -433,6 +433,7 @@ struct RoomView: View {
                    choiceSelected: choiceSelection(item.id),
                    choose: { numbers in Task { await answerChoice(item.id, numbers) } },
                    onAttachmentLoaded: { attachmentLoaded(item.id, proxy) },
+                   previewSites: model.previewSites,
                    loadLinkPreview: { await model.linkPreviewCard(for: $0) },
                    retry: { Task { await model.retry(outgoingId: item.id, room: room) } },
                    selectText: { selecting = SelectableMessage(text: $0) })
@@ -912,7 +913,9 @@ struct MessageRow: View {
     var choose: ([Int]) -> Void = { _ in }
     /// #398: 첨부 본체를 읽어 행 높이가 바뀐 뒤 한 번.
     var onAttachmentLoaded: () -> Void = {}
-    /// #683 2단계: x.com 링크 미리보기 카드를 받아 온다(방 화면이 `AppModel.linkPreviewCard` — 같은 릴레이 인증·앱 메모리 캐시). nil = 카드 없음.
+    /// #690 계약 v2: 링크·카드 대상을 정하는 사이트 목록(`AppModel.previewSites` — 받기 전·실패면 내장 폴백). 바뀌면 이 행이 다시 그려진다.
+    var previewSites: PreviewSites = .fallback
+    /// #683 2단계: 링크 미리보기 카드를 받아 온다(방 화면이 `AppModel.linkPreviewCard` — 같은 릴레이 인증·앱 메모리 캐시). nil = 카드 없음.
     var loadLinkPreview: (URL) async -> LinkPreviewStore.Card? = { _ in nil }
     /// 보내는 글이 실패했을 때 「다시 보내기」.
     var retry: () -> Void = {}
@@ -921,8 +924,9 @@ struct MessageRow: View {
     @Environment(\.hande) private var p
     /// #647(오너 요청 2026-11-01): 사진 말풍선 옆 공유 아이콘의 공유 파일 — 말풍선(AttachmentBubble)이 준비되면 알려 준다.
     @State private var photoShareURL: URL?
-    /// #683 2단계: 이 행에서 받아 온 미리보기 카드(캐시에 이미 있으면 `shownPreview` 가 첫 프레임부터 그린다).
-    @State private var linkPreview: LinkPreviewStore.Card?
+    /// #683 2단계: 이 행에서 받아 온 미리보기 카드와 그 대상 링크(캐시에 이미 있으면 `shownPreview` 가 첫 프레임부터 그린다).
+    /// #690: 사이트 목록이 도착하면 대상이 바뀔 수 있어 링크와 함께 둔다(다른 링크의 카드를 그리지 않게).
+    @State private var linkPreview: LoadedLinkPreview?
     private var message: MessageRecord { item.record }
     /// 받은(저장된) 첨부 말풍선 — 보내는 중인 첨부는 한 줄 글이라 종전 여백.
     private var isMedia: Bool { message.kind.isFile && item.outgoing == nil }
@@ -1077,24 +1081,29 @@ struct MessageRow: View {
         }
     }
 
-    /// #683 2단계 미리보기 대상: 저장된 사람·서비스 봇 글 말풍선의 첫 x.com 상태 글 링크(`ServiceLinks.previewTarget`).
-    /// 에이전트 글은 `agentRow`(링크 지움)로 가서 여기 오지 않는다. 보내는 중·실패한 내 글은 저장된 뒤에.
+    /// 미리보기 대상(#690 계약 v2): 저장된 사람·서비스 봇 글 말풍선 링크 중 preview 사이트의 첫 링크(`ServiceLinks.previewTarget`,
+    /// 폴백 목록이면 v1 x status 규칙). 에이전트 글은 `agentRow`(링크 지움)로 가서 여기 오지 않는다. 보내는 중·실패한 내 글은 저장된 뒤에.
     private var previewTarget: URL? {
         guard message.kind == .text, item.outgoing == nil else { return nil }
-        return ServiceLinks.previewTarget(in: message.body)
+        return ServiceLinks.previewTarget(in: message.body, sites: previewSites)
     }
 
-    /// 그릴 카드: 이 행이 받아 온 것, 없으면 캐시(행이 새로 만들어져도 첫 프레임부터 같은 높이 — 첨부 `AttachmentPreviewCache` 와 같은 이유).
+    /// 그릴 카드: 이 행이 지금 대상으로 받아 온 것, 없으면 캐시(행이 새로 만들어져도 첫 프레임부터 같은 높이 — 첨부 `AttachmentPreviewCache` 와 같은 이유).
     private var shownPreview: LinkPreviewStore.Card? {
-        linkPreview ?? previewTarget.flatMap { LinkPreviewStore.shared.cached($0)?.card }
+        guard let target = previewTarget else { return nil }
+        if let loaded = linkPreview, loaded.url == target { return loaded.card }
+        return LinkPreviewStore.shared.cached(target)?.card
     }
 
     private func loadPreview() async {
-        guard let target = previewTarget, linkPreview == nil else { return }
-        if let hit = LinkPreviewStore.shared.cached(target) { linkPreview = hit.card; return }
+        guard let target = previewTarget, linkPreview?.url != target else { return }
+        if let hit = LinkPreviewStore.shared.cached(target) {
+            linkPreview = hit.card.map { LoadedLinkPreview(url: target, card: $0) }
+            return
+        }
         let card = await loadLinkPreview(target)
         guard !Task.isCancelled, let card else { return }
-        linkPreview = card
+        linkPreview = LoadedLinkPreview(url: target, card: card)
         onAttachmentLoaded()   // 행 높이가 바뀌었다 — 맨 아래를 따라가는 중이면 다시 붙인다(첨부 로딩과 같은 경로)
     }
 
@@ -1112,11 +1121,11 @@ struct MessageRow: View {
             Text(Strings.undecryptable)
         default:
             if Strings.serviceNames[message.senderActor] != nil {
-                // 서비스 봇(알림 전용): 허용 링크(https://instagram.com/… · x.com/…)를 누를 수 있게.
-                Text(ServiceLinks.attributed(message.body))
+                // 서비스 봇(알림 전용): 허용 링크(인스타그램 + 사이트 목록 호스트)를 누를 수 있게.
+                Text(ServiceLinks.attributed(message.body, hosts: ServiceLinks.serviceHosts(previewSites)))
             } else {
-                // 사람 말풍선: x.com 계열 링크만(#683). 에이전트 글은 agentRow(링크 지움)로 가서 여기 오지 않는다.
-                Text(ServiceLinks.attributed(message.body, hosts: ServiceLinks.xHosts))
+                // 사람 말풍선: 사이트 목록 호스트 합집합만(#690, 폴백 = x.com 계열). 에이전트 글은 agentRow(링크 지움)로 가서 여기 오지 않는다.
+                Text(ServiceLinks.attributed(message.body, hosts: ServiceLinks.personHosts(previewSites)))
             }
         }
     }

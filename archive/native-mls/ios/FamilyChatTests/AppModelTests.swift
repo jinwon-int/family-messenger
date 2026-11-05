@@ -71,6 +71,23 @@ class InMemoryRelayWrapper: RelayTransport {
     func me() async throws -> MeResponse { try await inner.me() }
 }
 
+/// #690 계약 v2: 사이트 목록만 정해진 결과로 답하는 전송(나머지 라우트는 쓰지 않는다). 프로토콜 기본 구현(404)을 대신하려면
+/// 이 클래스가 직접 채택해야 한다 — `InMemoryRelayWrapper` 하위 클래스의 메서드는 프로토콜 확장 기본 구현을 덮지 못한다.
+final class PreviewSitesRelay: RelayTransport {
+    var result: Result<PreviewSites, Error>
+    private(set) var calls = 0
+    init(_ result: Result<PreviewSites, Error>) { self.result = result }
+    func previewSites() async throws -> PreviewSites { calls += 1; return try result.get() }
+    func postKeyPackages(room: RoomID, _ post: KeyPackagePost) async throws -> KeyPackagesResponse { throw RelayError.network("n/a") }
+    func consumeKeyPackage(room: RoomID, device: DeviceID, target: DeviceID) async throws -> StoredKeyPackage? { throw RelayError.network("n/a") }
+    func postEvent(room: RoomID, _ post: EventPost) async throws -> EventPostResponse { throw RelayError.network("n/a") }
+    func getEvents(room: RoomID, device: DeviceID, after: Int64, limit: Int, ack: Int64?) async throws -> EventsPage { throw RelayError.network("n/a") }
+    func closeRoom(room: RoomID, device: DeviceID) async throws { throw RelayError.network("n/a") }
+    func listRooms(device: DeviceID) async throws -> RoomsResponse { throw RelayError.network("n/a") }
+    func registerPush(_ registration: PushRegistration) async throws {}
+    func unregisterPush(device: DeviceID) async throws {}
+}
+
 @MainActor
 final class AppModelTests: XCTestCase {
     func makeModel(rooms: [RoomRecord] = [], format: UInt32 = 2, transport: RelayTransport? = InMemoryRelay(),
@@ -801,5 +818,52 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(reopening.phase, .needsLogin, "the reopened scope already has an actor")
         XCTAssertEqual(reopening.deviceId, "mom-iphone-000001")
         XCTAssertEqual(reopening.relayURL, Self.found.baseURL)
+    }
+
+    // MARK: - #690 미리보기 사이트 목록 (세션당 한 번, 실패는 폴백)
+
+    func testPreviewSitesLoadOncePerLoginAndFallBackOnFailure() async {
+        let sites = PreviewSites(sites: [
+            PreviewSite(id: "youtube", name: "YouTube", hosts: ["youtube.com", "youtu.be"], preview: true),
+            PreviewSite(id: "threads", name: "Threads", hosts: ["threads.net"], preview: false),
+        ])
+        let relay = PreviewSitesRelay(.success(sites))
+        let (model, _) = makeModel(transport: relay)
+        await model.bootstrap()
+        XCTAssertEqual(model.previewSites, .fallback, "로그인 전 = 내장 폴백")
+        XCTAssertEqual(relay.calls, 0)
+
+        model.login(.bearer("t"))
+        XCTAssertEqual(model.previewSites, .fallback, "받기 전 = 폴백")
+        await model.previewSitesLoad?.value
+        XCTAssertEqual(model.previewSites, sites)
+        XCTAssertEqual(relay.calls, 1)
+        await Task.yield()
+        XCTAssertEqual(relay.calls, 1, "세션 동안 다시 묻지 않는다")
+
+        // 새 세션(다시 로그인) = 다시 묻는다. 404(옛 릴레이·플래그 꺼짐)·디코드 실패·네트워크 → 폴백.
+        for failure in [RelayError.refused(code: "http_404", status: 404), .decoding("PreviewSites"), .network("offline")] {
+            relay.result = .success(sites)
+            model.login(.bearer("t"))
+            await model.previewSitesLoad?.value
+            XCTAssertEqual(model.previewSites, sites)
+            relay.result = .failure(failure)
+            model.login(.bearer("t"))
+            await model.previewSitesLoad?.value
+            XCTAssertEqual(model.previewSites, .fallback, "\(failure) → 폴백")
+        }
+        XCTAssertEqual(relay.calls, 7)
+    }
+
+    func testPreviewSitesFromAnOldTransportAreIgnored() async {
+        let sites = PreviewSites(sites: [PreviewSite(id: "github", name: "GitHub", hosts: ["github.com"], preview: true)])
+        let relay = PreviewSitesRelay(.success(sites))
+        let (model, _) = makeModel(transport: relay)
+        await model.bootstrap()
+        model.login(.bearer("t"))
+        let load = model.previewSitesLoad
+        model.logout()
+        await load?.value
+        XCTAssertEqual(model.previewSites, .fallback, "로그아웃 뒤 도착한 목록은 버린다")
     }
 }

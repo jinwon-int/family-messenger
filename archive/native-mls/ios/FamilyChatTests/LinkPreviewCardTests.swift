@@ -3,7 +3,7 @@ import UIKit
 import FamilyMLSCore
 @testable import FamilyChat
 
-/// x.com 링크 미리보기(#683 2단계, 이슈 #683 「2단계 API 계약 v1」 클라이언트 절): 대상 링크 표 · 앱 메모리 캐시(실패 포함) · 카드 이미지 높이.
+/// 링크 미리보기(#683 2단계 계약 v1 · #690 계약 v2 클라이언트 절): 대상 링크 표 · 앱 메모리 캐시(실패 포함) · 카드 이미지 높이.
 @MainActor
 final class LinkPreviewCardTests: XCTestCase {
 
@@ -49,6 +49,74 @@ final class LinkPreviewCardTests: XCTestCase {
         ] {
             XCTAssertNil(ServiceLinks.previewTarget(in: "보기 \(text) 끝"), text)
         }
+    }
+
+    // MARK: 대상 — 사이트 목록 v2 (#690): preview 사이트의 첫 링크, 경로 판정은 릴레이
+
+    func testV2TargetIsFirstLinkOfAPreviewSite() {
+        let yt = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        let gh = "https://github.com/jinwon-int/family-messenger/issues/690"
+        let cases: [(String, String?)] = [
+            ("영상 \(yt) 봐", yt),
+            ("https://youtu.be/dQw4w9WgXcQ", "https://youtu.be/dQw4w9WgXcQ"),
+            ("https://m.youtube.com/shorts/dQw4w9WgXcQ.", "https://m.youtube.com/shorts/dQw4w9WgXcQ"),
+            ("기사 https://n.news.naver.com/article/001/0012345678 끝", "https://n.news.naver.com/article/001/0012345678"),
+            ("https://m.news.naver.com/mnews/article/001/0012345678?sid=100", "https://m.news.naver.com/mnews/article/001/0012345678?sid=100"),
+            ("https://ko.wikipedia.org/wiki/%EC%84%9C%EC%9A%B8", "https://ko.wikipedia.org/wiki/%EC%84%9C%EC%9A%B8"),
+            ("https://en.m.wikipedia.org/wiki/Seoul", "https://en.m.wikipedia.org/wiki/Seoul"),
+            (gh, gh),
+            ("https://www.bbc.com/news/articles/c0abcdefgh", "https://www.bbc.com/news/articles/c0abcdefgh"),
+            ("https://bbc.co.uk/news/articles/c0abcdefgh", "https://bbc.co.uk/news/articles/c0abcdefgh"),
+            ("https://x.com/jack/status/20", "https://x.com/jack/status/20"),
+            // 링크만 사이트(Threads·Reuters)는 건너뛰고 다음 preview 사이트 링크
+            ("https://www.threads.net/t/AbC 그리고 \(yt)", yt),
+            ("https://www.reuters.com/world/ 그리고 \(gh)", gh),
+            // 순서대로 첫 것(사이트가 달라도)
+            ("\(gh) 그리고 https://x.com/a/status/2", gh),
+            ("https://x.com/a/status/2 그리고 \(gh)", "https://x.com/a/status/2"),
+            // 경로 규칙은 릴레이 몫 — preview 사이트의 첫 링크를 그대로 묻는다(맞지 않으면 400 → 카드 없음)
+            ("https://x.com/jack 그리고 https://x.com/a/status/2", "https://x.com/jack"),
+            ("https://www.youtube.com/", "https://www.youtube.com/"),
+            // 호스트 대소문자는 무시, 링크는 쓴 그대로
+            ("https://WWW.YouTube.com/watch?v=dQw4w9WgXcQ", "https://WWW.YouTube.com/watch?v=dQw4w9WgXcQ"),
+        ]
+        for (text, expected) in cases {
+            XCTAssertEqual(ServiceLinks.previewTarget(in: text, sites: .contractV2)?.absoluteString, expected, text)
+        }
+    }
+
+    func testV2LinkOnlyAndDisallowedLinksHaveNoTarget() {
+        for text in [
+            "그냥 글",
+            "https://www.threads.net/t/AbC",
+            "https://threads.com/t/AbC 그리고 https://www.reuters.com/world/",
+            "http://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "https://youtube.com.evil.example/watch?v=dQw4w9WgXcQ",
+            "https://user@github.com/a/b",
+            "https://github.com:444/a/b",
+            "https://de.wikipedia.org/wiki/Seoul",
+            "https://www.instagram.com/p/A/",
+            "https://t.co/abc",
+        ] {
+            XCTAssertNil(ServiceLinks.previewTarget(in: "보기 \(text) 끝", sites: .contractV2), text)
+        }
+    }
+
+    /// 목록을 받기 전·실패(폴백)는 v1 — x.com 상태 글 링크만 대상, 새 사이트는 링크도 카드도 아니다.
+    func testFallbackTargetKeepsV1XStatusRule() {
+        XCTAssertNil(ServiceLinks.previewTarget(in: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", sites: .fallback))
+        XCTAssertNil(ServiceLinks.previewTarget(in: "https://x.com/jack", sites: .fallback))
+        XCTAssertEqual(ServiceLinks.previewTarget(in: "https://github.com/a/b https://x.com/jack https://x.com/a/status/2", sites: .fallback)?.absoluteString,
+                       "https://x.com/a/status/2")
+        XCTAssertEqual(ServiceLinks.previewTarget(in: "https://x.com/a/status/2")?.absoluteString, "https://x.com/a/status/2", "기본값 = 폴백")
+    }
+
+    /// 릴레이가 x 를 빼면 x 링크는 대상도 링크도 아니다(목록이 기준).
+    func testV2ListWithoutXDropsX() {
+        let sites = PreviewSites(sites: [PreviewSite(id: "youtube", name: "YouTube", hosts: ["youtu.be"], preview: true)])
+        XCTAssertNil(ServiceLinks.previewTarget(in: "https://x.com/a/status/2", sites: sites))
+        XCTAssertEqual(ServiceLinks.previewTarget(in: "https://x.com/a/status/2 https://youtu.be/dQw4w9WgXcQ", sites: sites)?.absoluteString,
+                       "https://youtu.be/dQw4w9WgXcQ")
     }
 
     // MARK: 캐시 — 같은 주소는 한 번, 실패도 담는다
@@ -132,6 +200,25 @@ final class LinkPreviewCardTests: XCTestCase {
         XCTAssertNotNil(store.cached(blank)?.card, "성공은 만료되지 않는다")
     }
 
+    /// #690: 릴레이가 경로 규칙에 안 맞는 링크를 400 `bad_url` 로 거절하면 그 URL 만 음성 캐시(다른 링크는 따로 묻는다).
+    func testBadURLIsNegativeCachedPerURL() async {
+        let store = LinkPreviewStore()
+        let calls = Calls()
+        let channel = URL(string: "https://www.youtube.com/channel/abc")!
+        let watch = URL(string: "https://www.youtube.com/watch?v=dQw4w9WgXcQ")!
+        for _ in 0..<3 {
+            let outcome = await store.load(channel, fetch: { calls.previews.append($0); throw RelayError.refused(code: "bad_url", status: 400) },
+                                           fetchImage: { _ in Data() })
+            XCTAssertNil(outcome.card)
+        }
+        XCTAssertEqual(calls.previews, [channel], "400 도 TTL 안에서 다시 묻지 않는다")
+        if case .noCard? = store.cached(channel) {} else { XCTFail("400 → 음성 캐시") }
+        let ok = await store.load(watch, fetch: { calls.previews.append($0); return LinkPreview(site: "YouTube", title: "영상") },
+                                  fetchImage: { _ in Data() })
+        XCTAssertEqual(ok.card?.preview.shownSite, "YouTube", "카드에 사이트 이름")
+        XCTAssertEqual(calls.previews, [channel, watch])
+    }
+
     func testConcurrentLoadsShareOneRequest() async {
         let store = LinkPreviewStore()
         let calls = Calls()
@@ -169,6 +256,7 @@ final class LinkPreviewCardTests: XCTestCase {
         XCTAssertEqual(LinkPreviewCard.imageHeight(.zero), 200)
         XCTAssertEqual(LinkPreviewCard.maxImageHeight, 200)
         XCTAssertEqual(LinkPreviewCard.titleLines, 1)
+        XCTAssertEqual(LinkPreviewCard.siteLines, 1)
         XCTAssertEqual(LinkPreviewCard.descriptionLines, 4)
     }
 }

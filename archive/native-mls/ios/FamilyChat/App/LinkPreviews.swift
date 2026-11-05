@@ -1,4 +1,4 @@
-// x.com 링크 미리보기 카드(#683 2단계, 이슈 #683 「2단계 API 계약 v1」 클라이언트 절)의 앱 메모리 캐시. 앱 전용(UIKit) —
+// 링크 미리보기 카드(#683 2단계 계약 v1 → #690 계약 v2 클라이언트 절)의 앱 메모리 캐시 — 키 = 말풍선 링크 그대로(URL별 음성 캐시). 앱 전용(UIKit) —
 // NSE·공유 확장 소스 목록과 Linux 스모크 복사 목록(scripts/linux-smoke.sh)에 넣지 말 것.
 // 같은 주소는 프로세스 동안 한 번만 릴레이에 묻는다(동시에 여러 말풍선이 물어도 요청 하나). 성공(카드)과 실패(카드 없음:
 // 404 라우트 없음·no_preview · 502 · 네트워크 · 디코드 · 글 없음)를 모두 담는다 — 실패는 릴레이 캐시와 같은 10분 뒤 다시 묻는다.
@@ -103,6 +103,12 @@ final class LinkPreviewStore {
 
     /// 축소 디코드의 긴 변(pt) — 카드 폭(`LinkPreviewCard.maxWidth` 280)보다 조금 크게(세로 사진도 200pt 높이에 선명하게).
     static let imageMaxPoints: CGFloat = 320
+}
+
+/// 말풍선 한 행이 받아 온 카드와 그 대상 링크(#690: 사이트 목록이 도착하면 대상이 바뀔 수 있다 — 다른 링크의 카드를 그리지 않게).
+struct LoadedLinkPreview {
+    let url: URL
+    let card: LinkPreviewStore.Card
 }
 
 extension AppModel {
