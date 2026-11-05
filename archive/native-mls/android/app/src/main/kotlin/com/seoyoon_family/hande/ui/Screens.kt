@@ -21,6 +21,7 @@ import android.content.Context
 import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -35,6 +36,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -90,8 +92,10 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.inset
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
@@ -123,6 +127,8 @@ import com.seoyoon_family.hande.core.DeviceHub
 import com.seoyoon_family.hande.core.FingerprintRows
 import com.seoyoon_family.hande.core.HandeThemeMode
 import com.seoyoon_family.hande.core.HubUi
+import com.seoyoon_family.hande.core.LinkPreview
+import com.seoyoon_family.hande.core.LinkPreviews
 import com.seoyoon_family.hande.core.LoginLauncher
 import com.seoyoon_family.hande.core.MessageUi
 import com.seoyoon_family.hande.core.Phase
@@ -222,7 +228,7 @@ fun HandeRoot(hub: DeviceHub, themeMode: HandeThemeMode = HandeThemeMode.NIGHT, 
                 if (room != null) {
                     // 보고 있는 방의 읽음 위치(#571 후속): 열 때 한 번, 그 뒤 마지막 seq 가 움직일 때마다(새 글·내 전송).
                     LaunchedEffect(room.room, room.messages.lastOrNull()?.seq) { hub.markRead(scope, room.room) }
-                    RoomScreen(room, ui, onBack = { openRoom = null }, onSend = { text -> hub.send(scope, room.room, text) }, onNoticeShown = hub::clearNotice)
+                    RoomScreen(room, ui, onBack = { openRoom = null }, onSend = { text -> hub.send(scope, room.room, text) }, onNoticeShown = hub::clearNotice, previews = hub.linkPreviews)
                 } else if (showDevices) {
                     LaunchedEffect(Unit) { hub.refreshDevices(scope) }
                     DevicesScreen(ui, onBack = { showDevices = false }, onGrant = { hub.setRoles(scope, it, true) }, onRelease = { hub.setRoles(scope, it, false) }, onNoticeShown = hub::clearNotice)
@@ -1002,7 +1008,7 @@ private fun SeatDots(messages: List<MessageUi>) {
  * 꺼진 자리(2차-A §A6): 제목 아래 「불이 꺼진 자리」, 지난 말풍선 60%, 입력창 자리를 안내 상자(`HaltedBox`)로 교체 — 「덮어 두기」(보관)는 Android 에 없어 두지 않는다.
  */
 @Composable
-fun RoomScreen(room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> Unit, onNoticeShown: () -> Unit) {
+fun RoomScreen(room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> Unit, onNoticeShown: () -> Unit, previews: LinkPreviews? = null) {
     val colors = LocalHandeColors.current
     var draft by rememberSaveable(room.room) { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -1033,10 +1039,10 @@ fun RoomScreen(room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> 
                 itemsIndexed(room.messages, key = { _, m -> "${m.sender}-${m.seq}" }) { i, m ->
                     val card = choiceCards.getOrNull(i)
                     if (card == null) {
-                        MessageRow(m)
+                        MessageRow(m, previews)
                     } else {
                         Column(Modifier.fillMaxWidth()) {
-                            MessageRow(m)
+                            MessageRow(m, previews)
                             AgentChoicesCard(m, card, enabled = canChoose, onSend = onSend)
                         }
                     }
@@ -1124,7 +1130,7 @@ private fun Composer(draft: String, onDraft: (String) -> Unit, onSend: () -> Uni
  * 보낸 이 라벨 = 좌석 점 + 이름(에이전트는 「공명 · 불지기」 파랑). 너비는 82% 까지. 첨부는 본문의 자리 표시 글 그대로(C 단계).
  */
 @Composable
-private fun MessageRow(m: MessageUi) {
+private fun MessageRow(m: MessageUi, previews: LinkPreviews? = null) {
     val colors = LocalHandeColors.current
     val agent = !m.mine && AgentActors.isAgentDevice(m.sender)
     Column(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalAlignment = if (m.mine) Alignment.End else Alignment.Start) {
@@ -1163,6 +1169,55 @@ private fun MessageRow(m: MessageUi) {
             color = if (m.mine) colors.onEmber else colors.ink,
             style = MaterialTheme.typography.bodyLarge,
         )
+        // #683 2단계: 사람 말풍선(내 글 포함, 첨부 자리 글 제외)의 첫 x.com 글 링크 → 릴레이 미리보기 카드. 없거나 실패면 아무것도 그리지 않는다.
+        if (!agent && !m.attachment && previews != null) {
+            val target = remember(m.text) { LinkPreview.target(m.text) }
+            if (target != null) LinkPreviewCard(target, previews)
+        }
+    }
+}
+
+/**
+ * x.com 링크 미리보기 카드(#683 2단계, 계약 v1 클라이언트 절): 제목 1줄 · 본문 최대 4줄 · 이미지(있으면, 최대 높이 200dp, 비율 유지).
+ * 화면에 보일 때(`LaunchedEffect` — LazyColumn 은 보이는 항목만 그린다) 한 번 묻고, 결과는 `LinkPreviews` 메모리 캐시. 카드 탭 = 말풍선의 원래 링크 열기.
+ * 면+선 카드(남 말풍선과 같은 면) — 내 말풍선 아래에서도 같은 모양(주황 면은 말풍선·보내기 버튼만).
+ */
+@Composable
+private fun LinkPreviewCard(link: String, previews: LinkPreviews) {
+    val colors = LocalHandeColors.current
+    val uriHandler = LocalUriHandler.current
+    var card by remember(link) { mutableStateOf(previews.cachedCard(link)) }
+    LaunchedEffect(link) { if (card == null) card = previews.card(link) }
+    val c = card ?: return
+    val imagePath = c.image
+    var image by remember(imagePath) { mutableStateOf(imagePath?.let { previews.cachedImage(it) }) }
+    LaunchedEffect(imagePath) { if (imagePath != null && image == null) image = previews.image(imagePath) }
+    val shape = RoundedCornerShape(14.dp)
+    Column(
+        Modifier
+            .fillMaxWidth(0.82f)
+            .padding(top = 6.dp)
+            .clip(shape)
+            .background(colors.surface)
+            .border(colors.lineWidth, colors.stroke, shape)
+            .clickable(role = Role.Button, onClickLabel = Strings.linkPreviewOpen) { runCatching { uriHandler.openUri(link) } },
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            if (c.title.isNotEmpty()) {
+                Text(c.title, color = colors.ink, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            if (c.description.isNotEmpty()) {
+                Text(c.description, color = colors.inkDim, style = MaterialTheme.typography.bodySmall, maxLines = 4, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        image?.let { bitmap ->
+            Image(
+                bitmap = bitmap,
+                contentDescription = null,
+                modifier = Modifier.fillMaxWidth().heightIn(max = 200.dp),
+                contentScale = ContentScale.Fit,
+            )
+        }
     }
 }
 

@@ -86,6 +86,24 @@ class OkHttpTransport(
         }
     }
 
+    /**
+     * 링크 미리보기(#683 2단계)의 인증 GET — `/v2/preview` · `/v2/preview/image`. 코어의 릴레이 요청과 **같은 인증 헤더**
+     * (`Cf-Access-Jwt-Assertion: <세션 값>`, host-core `Access::Static` 처럼 앞뒤 공백 제거·비면 헤더 없음), 리다이렉트 무추적(엣지 302 는 상태 그대로).
+     * 본문은 `maxBytes` 까지만 — 넘치면 `body = null`. 응답이 없으면 `IOException` 그대로. 로그에는 경로만(질의 = 가족이 본 링크는 안 찍는다).
+     */
+    fun getPreview(url: String, accessToken: String?, maxBytes: Int): LinkPreview.Fetched {
+        val id = "#${seq.incrementAndGet()}"
+        val builder = Request.Builder().url(url).get().tag(String::class.java, id)
+        accessToken?.trim()?.takeIf { it.isNotEmpty() }?.let { builder.header(ACCESS_HEADER, it) }
+        Log.i(TAG, "$id preview /${url.substringAfter("://").substringAfter('/').substringBefore('?')}")
+        val t0 = System.nanoTime()
+        client.newCall(builder.build()).execute().use { resp ->
+            val bytes = resp.peekBody(maxBytes + 1L).bytes()
+            Log.i(TAG, "$id done ${resp.code} ${resp.protocol} ${bytes.size}B in ${ms(t0)}ms")
+            return LinkPreview.Fetched(resp.code, if (bytes.size > maxBytes) null else bytes)
+        }
+    }
+
     /** OkHttp 단계 로그 — 끊기는 줄이 멈춘 지점. 주소·프로토콜만, 헤더·본문은 안 찍는다. */
     private class PhaseLogger(private val id: String) : EventListener() {
         private val t0 = System.nanoTime()
@@ -112,6 +130,8 @@ class OkHttpTransport(
 
     private companion object {
         const val TAG = "hande.http"
+        /** host-core `api.rs` 가 릴레이 요청에 붙이는 이름 그대로. */
+        const val ACCESS_HEADER = "Cf-Access-Jwt-Assertion"
         fun ms(t0: Long) = (System.nanoTime() - t0) / 1_000_000
     }
 }

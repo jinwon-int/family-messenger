@@ -112,6 +112,8 @@ object Strings {
     const val roomClosedPreview = "불이 꺼진 자리 · 운영자가 닫음"
     /** 에이전트 배지·보낸 이 라벨(「공명 · 불지기」). 설정 설명문에는 「불지기(AI 에이전트)」 병기. */
     const val agentBadge = "불지기"
+    /** x.com 링크 미리보기 카드(#683 2단계)의 탭 동작 접근성 문구. */
+    const val linkPreviewOpen = "링크 열기"
     const val keyCustody = "키 보관"
     /** 대화방 목록의 안 읽음 표시(#571 후속, 웹 N 배지와 같은 뜻 — 개수 대신 「새 글」). 1차 디자인에서는 주황 점 하나, 글자는 접근성 문구로만. */
     const val unread = "새 글"
