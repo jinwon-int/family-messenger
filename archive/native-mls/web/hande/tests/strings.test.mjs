@@ -210,7 +210,7 @@ test('AGENT_ACTORS: 옛 bot + 12노드(iOS FC_AGENT_ACTORS 와 같은 목록)', 
 });
 
 test('roomLabel: Matrix 방 이름과 동일, 모르는 방은 ID', () => {
-  assert.equal(roomLabel('family'), '가족');
+  assert.equal(roomLabel('family'), '🏠 가족');
   assert.equal(roomLabel('family-acc'), '공명✴️');
   assert.equal(roomLabel('dungae'), '등애✳️');
   assert.equal(roomLabel('nosuk'), '노숙✳️');

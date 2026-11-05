@@ -17,7 +17,7 @@ extension Strings {
     ]
     /// 대화방 ID → Matrix 방 이름. 노드 개인방(ID = 노드 이름)은 그 노드 닉네임. `family-acc` = 오너 ↔ 공명 에이전트 방.
     static let roomNames: [String: String] = [
-        "family": "가족",
+        "family": "🏠 가족",
         "family-acc": "공명✴️",
         "family-card": "💳 가족 카드 알림",
         "fleet-alerts": "🔔 플릿 알림",

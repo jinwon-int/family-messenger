@@ -24,7 +24,7 @@ export const peopleNames = { owner: '진원', jungin: '쩡이🍎' };
  * 대화방 ID → 보여 줄 방 이름 = Matrix 방 이름과 동일. 노드 개인방(ID = 노드 이름)은 그 노드 닉네임.
  * `family-acc` 는 오너 ↔ 공명 에이전트 방(Matrix 의 공명 개인방).
  */
-export const roomNames = { family: '가족', 'family-acc': '공명✴️', 'family-card': '💳 가족 카드 알림', 'fleet-alerts': '🔔 플릿 알림', 'bunjang-alerts': '⚡ 번개장터 알림', 'insta-news': '📷 인스타 새 글' };
+export const roomNames = { family: '🏠 가족', 'family-acc': '공명✴️', 'family-card': '💳 가족 카드 알림', 'fleet-alerts': '🔔 플릿 알림', 'bunjang-alerts': '⚡ 번개장터 알림', 'insta-news': '📷 인스타 새 글' };
 /**
  * 알림 전용 서비스 봇 actor → 보여 줄 이름(사람도 에이전트도 아님 — 🤖 표시·에이전트 동작 없음, iOS Strings.serviceNames).
  * `card` = 카드 결제 알림 봇(기기 `card-bot`, 방 `family-card` — Matrix 「💳 가족 카드 알림」과 같은 알림).
