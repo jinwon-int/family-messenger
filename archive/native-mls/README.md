@@ -62,15 +62,35 @@ Host로 추정하지 않고 운영자가 명시해야 켜진다(`-well-known-nam
 기록 우편함, 테이블 `device_candidates`, TTL 10분) · `POST /v2/devices/approvals`(E2, CLI `-add-device` 와 같은 증거) ·
 `POST /v2/devices/roles`(E5 registrar 역할) — 검증은 CLI 와 같은 `internal/devicepolicy`, 호출자 subject 바인딩 추가. 계약은
 `server/DEVICES-V4.md` 「등록 기기」·「셀프서비스 라우트」, 운영은 `docs/NATIVE-RELAY-OPERATIONS.md` 「기기 셀프서비스 운영」.
-x.com 링크 미리보기(#683 2단계, `server/preview.go`, 플래그 `-link-preview` 기본 **off** — 끄면 라우트가 없어 404):
-`GET /v2/preview?url=<x.com status URL>` → `{"url","site":"X","title","description","image"}`(og 태그 없음 404 `no_preview`, 상류 실패
-502 `upstream_failed`, 잘못된 링크 400 `bad_url`), `GET /v2/preview/image?u=<pbs|abs.twimg.com URL>` → 이미지 바이트(jpeg/png/webp/gif,
-2 MiB 상한, `nosniff`). 둘 다 다른 라우트와 같은 호출자 인증 뒤에 있다. 릴레이는 고정 허용 호스트(페이지: x.com·twitter.com과
-www/mobile, 이미지: pbs/abs.twimg.com)에만 https 로 접속하고 리다이렉트도 같은 목록·최대 3회, 사설/루프백/CGNAT 주소는 다이얼하지
-않으며, 5초 타임아웃·페이지 512 KiB 상한·동시 상류 요청 4개·메모리 캐시(status id 키, 성공 6시간·실패 10분, 최대 512개)를 쓴다.
-클라이언트의 쿠키·인증 헤더는 상류로 보내지 않는다. **프라이버시:** 플래그를 켜면 릴레이(운영자)는 가족이 어떤 x.com 글을
-미리보기했는지 요청 시점에 알 수 있고, x.com 은 릴레이 IP 에서 온 요청을 본다. 로그에는 상태·호스트·시간만 남기고 URL 경로·status
-id 는 남기지 않는다(캐시는 메모리 전용, 재시작하면 사라짐). 계약 전문은 이슈 #683 「2단계 API 계약 v1」.
+링크 미리보기(#683 2단계 → #690 계약 v2, `server/preview.go` + 사이트 레지스트리 `server/preview_sites.go`, 플래그 `-link-preview`
+기본 **off** — 끄면 세 라우트 모두 없어 404). 라우트 3개, 모두 다른 라우트와 같은 호출자 인증 뒤에 있다:
+`GET /v2/preview/sites` → `{"version":2,"sites":[{"id","name","hosts","preview"}]}`(`Cache-Control: private, max-age=3600`,
+클라이언트가 세션당 한 번 받아 링크·카드 대상을 정한다), `GET /v2/preview?url=<원 링크>` → 호스트로 사이트를 고르고 그 사이트의
+경로 규칙으로 정규 URL 을 만들어 og 태그를 가져와 `{"url","site","title","description","image"}`(`site` = 사이트 이름; 링크만
+사이트·경로 불일치·잘못된 링크 400 `bad_url`, og 태그 없음 404 `no_preview`, 상류 실패 502 `upstream_failed`),
+`GET /v2/preview/image?u=<이미지 URL>` → 이미지 바이트(허용 = 미리보기 사이트 이미지 호스트의 합집합, jpeg/png/webp/gif,
+2 MiB 상한, `nosniff`, CSP sandbox). 레지스트리(호스트는 소문자 정확히 일치):
+
+| id | 이름 | hosts | 미리보기 | 경로 → 정규 URL | 이미지 호스트 |
+|---|---|---|---|---|---|
+| `x` | X | x.com, www./mobile.x.com, twitter.com, www./mobile.twitter.com | ✓ | `/{handle}/status/{id}`, `/i/web/status/{id}` → `https://x.com/…`(v1 그대로) | pbs.twimg.com, abs.twimg.com |
+| `youtube` | YouTube | youtube.com, www./m.youtube.com, youtu.be | ✓ | `/watch?v={id}`, `/shorts/{id}`, youtu.be `/{id}` → `https://www.youtube.com/watch?v={id}` | i.ytimg.com |
+| `naver-news` | 네이버 뉴스 | n.news.naver.com, news.naver.com, m.news.naver.com | ✓ | `/article/{oid}/{aid}`, `/mnews/article/{oid}/{aid}` → `https://n.news.naver.com/article/{oid}/{aid}` | imgnews.pstatic.net |
+| `wikipedia` | 위키백과 | ko./en.wikipedia.org, ko.m./en.m.wikipedia.org | ✓ | `/wiki/{title}`(1–300 바이트, 인코딩 유지) → `https://{ko\|en}.wikipedia.org/wiki/{title}` | thumb.wikimedia.org, upload.wikimedia.org |
+| `github` | GitHub | github.com, www.github.com | ✓ | `/{owner}/{repo}`, `/{owner}/{repo}/(issues\|pull\|discussions)/{n}` → `https://github.com/…` | opengraph.githubassets.com, repository-images.githubusercontent.com, avatars.githubusercontent.com |
+| `bbc` | BBC | bbc.com, www.bbc.com, bbc.co.uk, www.bbc.co.uk | ✓ | `/news/articles/{id}` → `https://www.bbc.com/news/articles/{id}` | ichef.bbci.co.uk |
+| `threads` | Threads | threads.net, www.threads.net, threads.com, www.threads.com | 링크만 | — | — |
+| `reuters` | Reuters | reuters.com, www.reuters.com | 링크만 | — | — |
+
+새 사이트는 레지스트리 한 항목 + (미리보기 사이트면) 경로 규칙 함수 + `normalizeImageURL` 의 호스트별 리터럴 접두 case 만
+추가한다(테스트가 레지스트리·switch 불일치를 잡는다). 릴레이는 고정 허용 호스트에만 https 로 접속하고(UA 기본
+`Twitterbot/1.0`, 사이트별 필드), 리다이렉트는 **요청한 사이트의 hosts**(이미지는 그 사이트의 이미지 호스트)로만 최대 3회,
+사설/루프백/CGNAT 주소는 다이얼하지 않으며, 5초 타임아웃·페이지 512 KiB 상한·동시 상류 요청 4개·메모리 캐시(키 = 사이트 id +
+정규 URL — x 는 v1 처럼 status id 기준 `https://x.com/i/web/status/{id}`; 성공 6시간·실패 10분, 최대 512개)를 쓴다. 상류 URL 은
+페이지·이미지 모두 호스트별 상수 `https://<host>/` 접두에 검증된 경로만 이어 붙여 만든다(CodeQL go/request-forgery).
+클라이언트의 쿠키·인증 헤더는 상류로 보내지 않는다. **프라이버시:** 플래그를 켜면 릴레이(운영자)는 가족이 어떤 페이지를
+미리보기했는지 요청 시점에 알 수 있고, 각 사이트는 릴레이 IP 에서 온 요청을 본다. 로그에는 사이트 id·상태·호스트·시간만 남기고
+URL 경로·id 는 남기지 않는다(캐시는 메모리 전용, 재시작하면 사라짐). 계약 전문은 이슈 #690 「계약 v2」(v1: #683 「2단계 API 계약 v1」).
 
 ### 로비 key package (P5, #380)
 
