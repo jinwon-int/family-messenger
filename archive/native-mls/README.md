@@ -62,6 +62,15 @@ Host로 추정하지 않고 운영자가 명시해야 켜진다(`-well-known-nam
 기록 우편함, 테이블 `device_candidates`, TTL 10분) · `POST /v2/devices/approvals`(E2, CLI `-add-device` 와 같은 증거) ·
 `POST /v2/devices/roles`(E5 registrar 역할) — 검증은 CLI 와 같은 `internal/devicepolicy`, 호출자 subject 바인딩 추가. 계약은
 `server/DEVICES-V4.md` 「등록 기기」·「셀프서비스 라우트」, 운영은 `docs/NATIVE-RELAY-OPERATIONS.md` 「기기 셀프서비스 운영」.
+x.com 링크 미리보기(#683 2단계, `server/preview.go`, 플래그 `-link-preview` 기본 **off** — 끄면 라우트가 없어 404):
+`GET /v2/preview?url=<x.com status URL>` → `{"url","site":"X","title","description","image"}`(og 태그 없음 404 `no_preview`, 상류 실패
+502 `upstream_failed`, 잘못된 링크 400 `bad_url`), `GET /v2/preview/image?u=<pbs|abs.twimg.com URL>` → 이미지 바이트(jpeg/png/webp/gif,
+2 MiB 상한, `nosniff`). 둘 다 다른 라우트와 같은 호출자 인증 뒤에 있다. 릴레이는 고정 허용 호스트(페이지: x.com·twitter.com과
+www/mobile, 이미지: pbs/abs.twimg.com)에만 https 로 접속하고 리다이렉트도 같은 목록·최대 3회, 사설/루프백/CGNAT 주소는 다이얼하지
+않으며, 5초 타임아웃·페이지 512 KiB 상한·동시 상류 요청 4개·메모리 캐시(status id 키, 성공 6시간·실패 10분, 최대 512개)를 쓴다.
+클라이언트의 쿠키·인증 헤더는 상류로 보내지 않는다. **프라이버시:** 플래그를 켜면 릴레이(운영자)는 가족이 어떤 x.com 글을
+미리보기했는지 요청 시점에 알 수 있고, x.com 은 릴레이 IP 에서 온 요청을 본다. 로그에는 상태·호스트·시간만 남기고 URL 경로·status
+id 는 남기지 않는다(캐시는 메모리 전용, 재시작하면 사라짐). 계약 전문은 이슈 #683 「2단계 API 계약 v1」.
 
 ### 로비 key package (P5, #380)
 
