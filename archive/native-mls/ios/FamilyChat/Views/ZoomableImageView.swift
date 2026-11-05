@@ -100,7 +100,8 @@ struct ZoomableImageView: UIViewRepresentable {
         /// 스크롤 뷰 자체의 끌기·핀치와 함께 인식한다(줌 1 에서는 내용이 화면 크기라 스크롤 뷰는 움직이지 않는다).
         func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 
-        /// 끄는 동안 사진(스크롤 뷰 전체)이 손가락을 따라 위아래로 움직인다. 손을 떼면 판정이 참이면 민 방향(위/아래)으로 내보내고 닫기, 아니면 제자리로.
+        /// 끄는 동안 사진(스크롤 뷰 전체)이 손가락을 따라 위아래로 움직이며 조금씩 옅어진다(`PhotoSwipeDismiss.dragAlpha`).
+        /// 손을 떼면 판정이 참이면 손가락 속도를 이어받아 민 방향(위/아래)으로 감속하며(easeOut) 옅어진 채 나가고 닫기, 아니면 제자리로.
         /// 두 번째 손가락이 닿거나 핀치가 시작되면 취소하고 제자리로 돌린다.
         @objc func panned(_ pan: UIPanGestureRecognizer) {
             guard let scroll = pan.view as? UIScrollView else { return }
@@ -113,11 +114,15 @@ struct ZoomableImageView: UIViewRepresentable {
                     return
                 }
                 scroll.transform = CGAffineTransform(translationX: 0, y: moved.y)
+                scroll.alpha = CGFloat(PhotoSwipeDismiss.dragAlpha(dy: Double(moved.y), height: Double(scroll.bounds.height)))
             case .ended:
                 if PhotoSwipeDismiss.shouldDismiss(dx: Double(moved.x), dy: Double(moved.y)) {
-                    let height = moved.y < 0 ? -scroll.bounds.height : scroll.bounds.height
-                    UIView.animate(withDuration: 0.18, delay: 0, options: .curveEaseIn, animations: {
-                        scroll.transform = CGAffineTransform(translationX: 0, y: height)
+                    let target = moved.y < 0 ? -scroll.bounds.height : scroll.bounds.height
+                    let velocity = pan.velocity(in: scroll.superview ?? scroll).y
+                    let duration = PhotoSwipeDismiss.exitDuration(remaining: Double(abs(target - moved.y)), velocity: Double(velocity))
+                    UIView.animate(withDuration: duration, delay: 0, options: [.curveEaseOut, .beginFromCurrentState], animations: {
+                        scroll.transform = CGAffineTransform(translationX: 0, y: target)
+                        scroll.alpha = 0
                     }, completion: { [weak self] _ in self?.onSwipeDismiss?() })
                 } else {
                     restore(scroll)
@@ -132,6 +137,7 @@ struct ZoomableImageView: UIViewRepresentable {
         private func restore(_ scroll: UIScrollView) {
             UIView.animate(withDuration: 0.25, delay: 0, usingSpringWithDamping: 0.85, initialSpringVelocity: 0, options: [.allowUserInteraction], animations: {
                 scroll.transform = .identity
+                scroll.alpha = 1
             })
         }
 
