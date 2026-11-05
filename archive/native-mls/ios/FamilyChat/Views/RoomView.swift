@@ -1412,7 +1412,12 @@ struct ImageViewer: View {
     var body: some View {
         ZStack(alignment: .topTrailing) {
             Color.black.ignoresSafeArea()
-            ZoomableImageView(image: image, onSingleTap: { dismiss() }, onSwipeDismiss: { dismiss() })
+            ZoomableImageView(image: image, onSingleTap: { dismiss() }, onSwipeDismiss: {
+                // 사진은 이미 옅어지며 화면 밖으로 나갔다 — 덮개는 애니메이션 없이 내린다(기본 아래로 미끄러짐이 한 번 더 겹치지 않게, 오너 build 93).
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { dismiss() }
+            })
                 .ignoresSafeArea()
             if let shareURL {
                 ShareLink(item: shareURL) { Image(systemName: "square.and.arrow.up") }
