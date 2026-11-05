@@ -1,5 +1,6 @@
 // 말풍선의 링크(#683) — 웹 web/hande/service-links.js · iOS App/ServiceLinks.swift 와 같은 규칙.
-// https · 사용자 정보/포트 없음 · 호스트 정확히 일치(소문자) · 주소 끝 문장부호는 뺀다. 사람 말풍선은 x.com 계열만 링크로 바꾸고,
+// https · 사용자 정보/포트 없음 · 호스트 정확히 일치(소문자) · 주소 끝 문장부호는 뺀다. 사람 말풍선은 허용 호스트만 링크로 바꾸고
+// (v2 #690: 릴레이 사이트 목록의 hosts 합집합 — `PreviewSites.Registry.linkHosts`, 못 받으면 폴백 = `xHosts`),
 // 에이전트 말풍선은 링크를 만들지 않는다(화면이 고른다). android.* 없음 → JVM 테스트(`TextLinksTest`).
 package com.seoyoon_family.hande.core
 
@@ -7,7 +8,7 @@ import java.net.URI
 import java.net.URISyntaxException
 
 object TextLinks {
-    /** 사람 말풍선에서 링크로 바꿀 x.com 계열 호스트(소문자, 정확히 일치). */
+    /** x.com 계열 호스트(소문자, 정확히 일치) — 사이트 목록을 못 받았을 때의 폴백(v1) 링크 호스트. */
     val xHosts: Set<String> = setOf("x.com", "www.x.com", "mobile.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com")
 
     /** 글 속 링크 한 개: `[start, end)` 글자 위치(UTF-16, String 색인)와 열 주소. */

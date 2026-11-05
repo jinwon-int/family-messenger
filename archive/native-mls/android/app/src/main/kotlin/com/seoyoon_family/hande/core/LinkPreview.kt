@@ -3,6 +3,7 @@
 // `/i/web/status/{id}`). 요청: `<relay>/v2/preview?url=<URL-encoded>`, 이미지는 응답의 릴레이 상대 경로(`/v2/preview/image?u=…`)만 —
 // 절대 주소는 버린다(인증 헤더를 릴레이 밖으로 보내지 않는다). 404/400/502/네트워크 실패/라우트 없음 → 카드 없음(조용히).
 // 캐시(앱 메모리, URL 별 한 번): 성공·확정 실패(400·404·200 인데 읽을 수 없음)는 프로세스 동안, 일시 실패(네트워크·5xx·401·302 등)는 10분 뒤 다시.
+// v2(#690): 어느 링크를 보낼지는 `PreviewSites.Registry.target` 이 정한다 — 여기의 x status 경로 규칙(`isStatusUrl`·`target`)은 폴백(v1) 모드 전용.
 package com.seoyoon_family.hande.core
 
 import java.net.URI
@@ -10,7 +11,7 @@ import java.net.URISyntaxException
 import java.net.URLEncoder
 
 object LinkPreview {
-    /** 릴레이 응답 `{url,site,title,description,image}`. `image` = 릴레이 상대 경로 또는 null. 빈 문자열 = 없음. */
+    /** 릴레이 응답 `{url,site,title,description,image}`. `image` = 릴레이 상대 경로 또는 null. 빈 문자열 = 없음(`site` 가 비면 화면이 사이트 목록의 이름). */
     data class Card(val url: String, val site: String, val title: String, val description: String, val image: String?)
 
     /** 응답 한 건(상태코드 + 본문). 본문이 상한을 넘었으면 null. */
@@ -45,7 +46,7 @@ object LinkPreview {
         return seg.size >= 3 && HANDLE.matches(seg[0]) && seg[1] == "status" && STATUS_ID.matches(seg[2])
     }
 
-    /** 말풍선 글에서 미리보기를 그릴 링크: 첫 번째 x.com 글 링크. 없으면 null. */
+    /** 폴백(v1) 모드의 카드 대상: 첫 번째 x.com 글 링크. 없으면 null. v2 모드는 `PreviewSites.Registry.target`. */
     fun target(text: String): String? = TextLinks.links(text).firstOrNull { isStatusUrl(it.url) }?.url
 
     /** `<relay>/v2/preview?url=<link>` — 릴레이 주소의 끝 `/`·경로 접두는 `AppLogin.loginUrl` 과 같은 규칙. http(s) 가 아니면 null. */
@@ -74,7 +75,7 @@ object LinkPreview {
         val description = text("description")
         if (title.isEmpty() && description.isEmpty()) return null
         val image = (doc["image"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
-        return Card(url = text("url"), site = text("site").ifEmpty { "X" }, title = title, description = description, image = image)
+        return Card(url = text("url"), site = text("site"), title = title, description = description, image = image)
     }
 
     /** `GET /v2/preview` 응답 → 캐시 값. `fetched == null` = 응답 없음(네트워크 실패·타임아웃). */
@@ -87,7 +88,8 @@ object LinkPreview {
         }
     }
 
-    private fun base(relayUrl: String): String? {
+    /** 릴레이 주소 → `scheme://authority[/경로 접두]`(끝 `/` 없음). http(s) 가 아니면 null. `PreviewSites.sitesUrl` 도 쓴다. */
+    internal fun base(relayUrl: String): String? {
         val u = try { URI(relayUrl.trim()) } catch (_: URISyntaxException) { return null }
         val scheme = u.scheme?.lowercase() ?: return null
         if (scheme != "https" && scheme != "http") return null
