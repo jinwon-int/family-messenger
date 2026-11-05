@@ -99,10 +99,15 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -111,6 +116,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.seoyoon_family.hande.BuildConfig
 import com.seoyoon_family.hande.core.AgentActors
 import com.seoyoon_family.hande.core.AgentChoices
+import com.seoyoon_family.hande.core.TextLinks
 import com.seoyoon_family.hande.core.AppLogin
 import com.seoyoon_family.hande.core.CandidateUi
 import com.seoyoon_family.hande.core.DeviceHub
@@ -1137,8 +1143,17 @@ private fun MessageRow(m: MessageUi) {
             agent -> Modifier.background(colors.agent.copy(alpha = 0.10f)).border(1.dp, colors.agent.copy(alpha = 0.35f), shape)
             else -> Modifier.background(colors.surface).border(colors.lineWidth, colors.stroke, shape)
         }
+        // #683: 사람 말풍선의 x.com 계열 https 주소만 누를 수 있게(웹·iOS 와 같은 규칙). 에이전트 말풍선은 글 그대로.
+        val body = remember(m.text, agent) {
+            if (agent) AnnotatedString(m.text) else buildAnnotatedString {
+                append(m.text)
+                for (link in TextLinks.links(m.text)) {
+                    addLink(LinkAnnotation.Url(link.url, TextLinkStyles(SpanStyle(textDecoration = TextDecoration.Underline))), link.start, link.end)
+                }
+            }
+        }
         Text(
-            m.text,
+            body,
             Modifier
                 .fillMaxWidth(0.82f)
                 .wrapContentWidth(if (m.mine) Alignment.End else Alignment.Start)

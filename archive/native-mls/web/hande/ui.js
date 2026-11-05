@@ -12,7 +12,7 @@ import { lastSentView, collapsedKey, sentDayPrefix } from './last-sent.js';
 import {fileboxRefreshUrl} from './filebox.js';
 import {attachmentTitle} from './attachments.js';
 import {parseBlocks, inlineSpans, hasMarkdown} from './agent-markdown.js';
-import {linkParts} from './service-links.js';
+import {linkParts, xHosts} from './service-links.js';
 import {isCaretMode} from './timeline-caret.js';
 import {icon} from './icons.js';
 import {choiceToggle} from './agent-choices.js';
@@ -661,9 +661,9 @@ function markdownBlock(block) {
   }
 }
 
-/** 서비스 봇 말풍선: 허용 링크(https://instagram.com/…)만 <a>, 나머지는 글 그대로(service-links.js). */
-function serviceLinkNodes(text) {
-  return linkParts(text).map((part) => (typeof part === 'string'
+/** 말풍선 글: 허용 링크만 <a>, 나머지는 글 그대로(service-links.js). 기본은 서비스 봇 집합(인스타그램 + x.com). */
+function serviceLinkNodes(text, hosts) {
+  return linkParts(text, hosts).map((part) => (typeof part === 'string'
     ? part
     : el('a', { href: part.href, target: '_blank', rel: 'noopener noreferrer', class: 'service-link' }, part.text)));
 }
@@ -812,6 +812,8 @@ function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null) {
       : el('div', { class: 'body file' }, el('span', { class: 'file-label' }, strings.chat.file(humanSize(entry.size ?? 0), entry.fileName)), previewRetry(entry, onRetryPreview), download);
   } else if (entry.isAgent && entry.kind === 'text' && hasMarkdown(entry.body)) body = agentMarkdownBody(entry.body);
   else if (entry.kind === 'text' && isServiceDevice(entry.sender)) body = el('div', { class: 'body' }, serviceLinkNodes(entry.body));
+  // 사람 말풍선: x.com 계열 링크만 누를 수 있게(#683). 에이전트 말풍선은 그대로(iOS·Android 와 같은 범위).
+  else if (entry.kind === 'text' && !entry.isAgent) body = el('div', { class: 'body' }, serviceLinkNodes(entry.body, xHosts));
   else body = el('div', { class: 'body' }, entry.body);
   const foot = [entry.replay ? strings.chat.replay : null, time].filter(Boolean).join(' · ');
   return signed(el('li', { class: `bubble kind-${entry.kind}${entry.isAgent ? ' agent' : ''}${sendState ? ` ${sendState}` : ''}`, 'data-key': entry.key, 'data-me': entry.isMe ? 'true' : 'false', 'data-testid': entry.kind === 'undecryptable' ? 'system-row' : 'bubble' },
