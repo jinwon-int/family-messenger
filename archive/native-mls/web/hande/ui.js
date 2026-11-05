@@ -13,6 +13,7 @@ import {fileboxRefreshUrl} from './filebox.js';
 import {attachmentTitle} from './attachments.js';
 import {parseBlocks, inlineSpans, hasMarkdown} from './agent-markdown.js';
 import {linkParts, xHosts} from './service-links.js';
+import {previewTarget, createLinkPreviews} from './link-preview.js';
 import {isCaretMode} from './timeline-caret.js';
 import {icon} from './icons.js';
 import {choiceToggle} from './agent-choices.js';
@@ -668,6 +669,78 @@ function serviceLinkNodes(text, hosts) {
     : el('a', { href: part.href, target: '_blank', rel: 'noopener noreferrer', class: 'service-link' }, part.text)));
 }
 
+// ---- x.com 링크 미리보기 카드(#683 2단계, link-preview.js · 「2단계 API 계약 v1」) ----
+// 사람·서비스 봇 말풍선의 첫 x.com 글 주소에만. 말풍선(.body)이 화면 근처에 오면 그때 /v2/preview 를 묻는다(lazy).
+// 릴레이 라우트가 꺼져 있거나(404) 실패하면 카드 없이 링크만 — 조용히. 카드 글은 전부 텍스트 노드(innerHTML 없음).
+// 이미지는 릴레이 상대 경로(/v2/preview/image?u=…, 같은 origin = CSP img-src 'self', Access 쿠키가 같이 실린다)를 그대로 쓴다.
+
+const linkPreviews = createLinkPreviews();
+/** 지켜보는 말풍선 본문 → 카드를 채울 자리. */
+const previewSlots = new Map();
+let previewObserver = null;
+
+function linkCard(card) {
+  const image = card.image
+    ? el('img', { class: 'link-card-image', src: card.image, alt: '', loading: 'lazy', decoding: 'async', referrerpolicy: 'no-referrer',
+        onload: (event) => keepBottom(event.currentTarget, event.currentTarget.offsetHeight),
+        onerror: (event) => event.currentTarget.remove() })
+    : null;
+  return el('a', { class: 'link-card', href: card.url, target: '_blank', rel: 'noopener noreferrer', 'data-testid': 'link-card' },
+    card.title ? el('span', { class: 'link-card-title' }, card.title) : null,
+    card.description ? el('span', { class: 'link-card-desc' }, card.description) : null,
+    image);
+}
+
+/** 맨 아래 근처에서 보던 타임라인이면, 카드·사진이 뒤늦게 붙어 늘어난 만큼 따라 내려간다. */
+function keepBottom(node, grew = 0) {
+  const list = node?.closest?.('.timeline');
+  if (!list || isCaretMode(list)) return;
+  if (list.scrollHeight - list.scrollTop - list.clientHeight <= NEAR_BOTTOM_PX + grew) list.scrollTop = list.scrollHeight;
+}
+
+function fillPreview(slot, card) {
+  if (!card) { slot.remove(); return; }
+  const node = linkCard(card);
+  slot.replaceChildren(node);
+  slot.hidden = false;
+  keepBottom(slot, slot.offsetHeight);
+}
+
+function loadLinkPreview(anchor) {
+  const slot = previewSlots.get(anchor);
+  previewSlots.delete(anchor);
+  previewObserver?.unobserve(anchor);
+  if (!slot) return;
+  linkPreviews.get(slot.dataset.target).then((card) => fillPreview(slot, card));
+}
+
+function watchPreview(anchor, slot) {
+  // 재렌더는 새 행을 만든 뒤 서명이 같으면 버린다(reconcileChildren) — 붙은 행만 지켜본다.
+  queueMicrotask(() => {
+    if (!anchor.isConnected) return;
+    previewSlots.set(anchor, slot);
+    const Observer = globalThis.IntersectionObserver;
+    if (typeof Observer !== 'function') { loadLinkPreview(anchor); return; }
+    previewObserver ??= new Observer((entries) => {
+      for (const entry of entries) if (entry.isIntersecting) loadLinkPreview(entry.target);
+      for (const watched of [...previewSlots.keys()]) if (!watched.isConnected) { previewSlots.delete(watched); previewObserver.unobserve(watched); }
+    }, { rootMargin: '200px 0px' });
+    previewObserver.observe(anchor);
+  });
+}
+
+/** 말풍선 아래 카드 자리. 이미 아는 결과면 바로 그리고(카드 없음이면 null), 모르면 숨긴 자리를 두고 본문이 보일 때 묻는다. */
+function linkPreviewSlot(text, anchor) {
+  const target = previewTarget(text);
+  if (!target) return null;
+  const known = linkPreviews.peek(target);
+  if (known === null) return null;
+  if (known) return el('div', { class: 'link-preview', 'data-testid': 'link-preview' }, linkCard(known));
+  const slot = el('div', { class: 'link-preview', 'data-testid': 'link-preview', 'data-target': target, hidden: true });
+  watchPreview(anchor, slot);
+  return slot;
+}
+
 function agentMarkdownBody(text) {
   return el('div', { class: 'body md', 'data-testid': 'agent-markdown' }, parseBlocks(text).map(markdownBlock));
 }
@@ -815,10 +888,14 @@ function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null) {
   // 사람 말풍선: x.com 계열 링크만 누를 수 있게(#683). 에이전트 말풍선은 그대로(iOS·Android 와 같은 범위).
   else if (entry.kind === 'text' && !entry.isAgent) body = el('div', { class: 'body' }, serviceLinkNodes(entry.body, xHosts));
   else body = el('div', { class: 'body' }, entry.body);
+  // 사람·서비스 봇 말풍선의 첫 x.com 글 주소 → 미리보기 카드(#683 2단계). 에이전트 말풍선은 대상이 아니다.
+  const preview = entry.kind === 'text' && (isServiceDevice(entry.sender) || !entry.isAgent) && !(entry.isAgent && hasMarkdown(entry.body))
+    ? linkPreviewSlot(entry.body, body) : null;
   const foot = [entry.replay ? strings.chat.replay : null, time].filter(Boolean).join(' · ');
   return signed(el('li', { class: `bubble kind-${entry.kind}${entry.isAgent ? ' agent' : ''}${sendState ? ` ${sendState}` : ''}`, 'data-key': entry.key, 'data-me': entry.isMe ? 'true' : 'false', 'data-testid': entry.kind === 'undecryptable' ? 'system-row' : 'bubble' },
     entry.isMe ? null : el('span', { class: 'who' }, senderLabel(entry.senderName || displayName(entry.sender), entry.isAgent)),
     body,
+    preview,
     choiceCard(choice),
     foot ? el('span', { class: 'foot' }, foot) : null), signature);
 }

@@ -1167,6 +1167,16 @@ ul.files .download { flex: none; min-height: 32px; }
 /* 서비스 봇 말풍선의 허용 링크(ui.js serviceLinkNodes · service-links.js) — 글 색 그대로, 밑줄로만 구분. */
 .bubble .body a.service-link { color: inherit; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
 .bubble .body a.service-link:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; border-radius: 3px; }
+/* x.com 링크 미리보기 카드(#683 2단계, ui.js linkPreviewSlot · link-preview.js) — 선택지 카드와 같은 면·선, 테마는 변수로 따라간다.
+   제목 1줄 · 본문 최대 4줄 · 사진 최대 높이 200px(비율 유지). 카드 전체가 링크. */
+.bubble .link-preview { margin-top: var(--space-1); max-width: min(360px, 72vw); }
+.bubble .link-preview[hidden] { display: none; }
+.bubble .link-card { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-2) var(--space-3); border-radius: var(--radius); border: var(--line-w) solid var(--line); background: var(--surface); color: var(--text); text-decoration: none; box-shadow: var(--shadow-1); overflow: hidden; }
+.bubble .link-card:hover { background: var(--surface-2); border-color: var(--line-strong); }
+.bubble .link-card:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.link-card .link-card-title { font-weight: 600; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.link-card .link-card-desc { font-size: var(--text-s); color: var(--text-2); line-height: 1.45; white-space: pre-line; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; line-clamp: 4; overflow: hidden; }
+.link-card .link-card-image { display: block; align-self: center; max-width: 100%; max-height: 200px; object-fit: contain; border-radius: var(--radius-s); }
 
 /* ---------- 기기 셀프서비스(#574 PR 2b): 형제 승인 대기 화면 · 새 기기 승인 카드 · 내 기기 시트 ---------- */
 /* 형제 승인 모드의 등록 화면: 지문이 주인공 — 다른 기기의 카드와 한 자리씩 비교할 수 있게 크게. */
