@@ -142,7 +142,7 @@ class AgentChoicesTest {
         assertEquals(listOf(1, 2), AgentChoices.reply(AgentChoices.compose(listOf(2, 1), listOf("**", "B")), 2))
     }
 
-    private val question = "어떻게 할까요?\n1. 유지\n2. 롤백 (권장)\n3. 보류"
+    private val question = "어떻게 할까요?\n**[답변 필요]** 여러 개 선택 가능\n1. 유지\n2. 롤백 (권장)\n3. 보류"
     private fun agent(seq: Long, text: String = question) = MessageUi(seq, "gongmyoung-ab12", text, mine = false)
     private fun me(seq: Long, text: String, attachment: Boolean = false) = MessageUi(seq, "owner-cd34", text, mine = true, attachment = attachment)
     private fun person(seq: Long, text: String) = MessageUi(seq, "jungin-ef56", text, mine = false)
@@ -214,6 +214,14 @@ class AgentChoicesTest {
         )
         assertEquals(listOf(null, null, null), cards.take(3))
         assertEquals(AgentChoices.State.Open, cards[3]!!.state, "옛 bot-<node> 기기도 에이전트")
+    }
+
+    // §6(#671 PR D): 머리줄 없는 끝 목록은 단서어가 있어도 카드가 아니다.
+    @Test fun unheadedTrailingListGetsNoCard() {
+        val v1Style = "어떻게 할까요? 권장: 2번\n1. 유지\n2. 롤백\n3. 보류"
+        assertNull(AgentChoices.parse(v1Style))
+        assertNull(AgentChoices.cards(listOf(agent(1, v1Style)))[0])
+        assertEquals(true, AgentChoices.parse(question)!!.explicit)
     }
 
     @Test fun earlierAnsweredAndLaterOpenCoexist() {

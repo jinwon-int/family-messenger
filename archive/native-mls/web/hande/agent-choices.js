@@ -1,7 +1,8 @@
 // agent-choices-v1 (family-messenger#620, archive/native-mls/AGENT-CHOICES-V1.md) — 에이전트 선택지 탭 선택.
-// v2(#671, 같은 규격 §5): 에이전트가 `[답변 필요]` 머리줄로 명시한 블록을 먼저 본다.
+// v2(#671, 같은 규격 §5): 에이전트가 `[답변 필요]` 머리줄로 명시한 블록을 카드로 만든다.
+// §6(#671 PR D, 오너 2026-11-05): 명시 블록**만** 카드가 된다 — 머리줄 없는 끝 목록을 단서어로 추측하던 v1 판정은 없앴다.
 //
-// 에이전트 글이 `1. … 2. … 3. …` 선택지로 끝나면 말풍선 아래에 선택 카드를 그린다. 보내는 것은 손으로 치는 것과
+// 에이전트가 명시한 `1. … 2. … 3. …` 선택지는 말풍선 아래에 선택 카드로 그린다. 보내는 것은 손으로 치는 것과
 // 똑같은 텍스트다 — 카드는 줄마다 `N. 라벨`(복수 선택 #624)을 보내고, 손으로 친 `1`·`1, 3` 도 같은 답이 된다(와이어 변경 없음). 상태(open / answered / closed)는 타임라인에서 매번 계산하고 저장하지 않는다.
 // 판정 규칙은 세 앱 공통 — 공유 벡터 archive/native-mls/tests/fixtures/agent-choices-vectors.json 과 같아야 한다.
 // 정규식의 숫자는 ASCII [0-9] 만, 공백은 스페이스·탭·줄바꿈만(규격 §1 — JS \s 의 유니코드 공백과 다르게 보지 않게 명시).
@@ -13,16 +14,8 @@ const FENCE = /^[ \t]*```/;
 const BLANK = /^[ \t]*$/;
 const INDENTED = /^( {2,}|\t)/;
 const RECOMMENDED = /권장[ \t\n]*[:：]?[ \t\n]*([0-9]{1,2})[ \t\n]*번/;
-const CUES = ['?', '？', '권장', '선택', '골라', '고르', '답해', '원하시', '할까요', '하시겠', '정해', '다음 액션', '다음 단계', '옵션', 'choose', 'option', 'recommend'];
 
-export const MIN_ITEMS = 2;
 export const MAX_ITEMS = 9;
-export const MAX_TRAILING = 3;
-
-const hasCue = (line) => {
-  const lower = line.toLowerCase();   // 영문만 대소문자 무시(한글·기호는 그대로)
-  return CUES.some((cue) => lower.includes(cue));
-};
 
 /** 라벨: `**`·`__`·`` ` `` 를 지우고 연속 공백을 한 칸으로, 양끝 공백 제거. */
 function cleanLabel(raw) {
@@ -88,52 +81,15 @@ function parseExplicitChoices(source, lines) {
 }
 
 /**
- * 에이전트 글 본문에서 선택지를 찾는다: v2 명시 블록(§5)이 있으면 그것, 없으면 v1 끝의 선택지(§1).
+ * 에이전트 글 본문에서 선택지를 찾는다: 에이전트가 `[답변 필요]` 머리줄로 명시한 블록(§5)만 카드가 된다.
+ * 머리줄 없는 번호 목록은 끝에 있어도 카드가 아니다(§6, #671 PR D — v1 의 단서어 추측은 쓰지 않는다).
  * @param {string} text
- * @returns {null | {items: {number: number, label: string}[], recommended: number | null, mode?: 'one' | 'many', explicit?: true}}
+ * @returns {null | {items: {number: number, label: string}[], recommended: number | null, mode: 'one' | 'many', explicit: true}}
  */
 export function parseChoices(text) {
   if (typeof text !== 'string' || text.length === 0) return null;
   const source = text.replace(/\r\n/g, '\n');
-  const lines = source.split('\n');
-  return parseExplicitChoices(source, lines) ?? parseTrailingChoices(source, lines);
-}
-
-/** v1(규격 §1): 글 끝의 번호 목록을 단서어로 찾는다. */
-function parseTrailingChoices(source, lines) {
-  let block = null;   // {items:[{number, label}], start, end, open, invalid}
-  let fenced = false;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (FENCE.test(line)) {
-      fenced = !fenced;
-      if (block) block.open = false;   // 펜스 줄 = 일반 줄
-      continue;
-    }
-    if (fenced) { if (block) block.open = false; continue; }   // 펜스 안 = 항목이 될 수 없는 일반 줄
-    const item = ITEM.exec(line);
-    if (item) {
-      const number = Number.parseInt(item[1], 10);
-      const label = cleanLabel(item[2]);
-      if (number === 1) block = {items: [{number, label}], start: i, end: i, open: true, invalid: false};
-      else if (block && block.open && !block.invalid && number === block.items.at(-1).number + 1) { block.items.push({number, label}); block.end = i; }
-      else if (block) { block.invalid = true; block.open = false; }   // 뒤에 `1` 이 오면 다시 시작
-      continue;
-    }
-    if (BLANK.test(line)) continue;
-    if (INDENTED.test(line)) { if (block && block.open) block.end = i; continue; }   // 이어지는 줄(라벨엔 넣지 않는다)
-    if (block) block.open = false;
-  }
-  if (!block || block.invalid) return null;
-  const count = block.items.length;
-  if (count < MIN_ITEMS || count > MAX_ITEMS) return null;
-  const trailing = lines.slice(block.end + 1).filter((line) => !BLANK.test(line));
-  if (trailing.length > MAX_TRAILING) return null;
-  let above = null;
-  for (let i = block.start - 1; i >= 0; i--) if (!BLANK.test(lines[i])) { above = lines[i]; break; }
-  const cued = (above !== null && hasCue(above)) || trailing.some(hasCue) || block.items.some((it) => hasCue(it.label));
-  if (!cued) return null;
-  return {items: block.items, recommended: recommendedOf(source, block.items)};
+  return parseExplicitChoices(source, source.split('\n'));
 }
 
 const isDigit = (ch) => ch >= '0' && ch <= '9';   // ASCII 만 — 전각 `１` 은 숫자가 아니다
