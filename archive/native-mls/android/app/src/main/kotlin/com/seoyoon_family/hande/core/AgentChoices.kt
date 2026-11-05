@@ -1,7 +1,8 @@
-// agent-choices-v1(#620): 에이전트 글 끝의 번호 선택지 판정 — 규격 `archive/native-mls/AGENT-CHOICES-V1.md` 그대로(웹·iOS 와 같은 공유 벡터
+// agent-choices(#620 · v2 #671): 에이전트가 명시한 번호 선택지 판정 — 규격 `archive/native-mls/AGENT-CHOICES-V1.md` 그대로(웹·iOS 와 같은 공유 벡터
 // `tests/fixtures/agent-choices-vectors.json`). 숫자는 ASCII 0-9 만, 공백(\s)은 스페이스·탭·줄바꿈만 — 플랫폼 정규식 차이를 없애려고 문자 묶음을 직접 쓴다.
 // android.* 없이 JVM 에서 돈다. 상태(open/answered/closed)는 타임라인에서 계산하고 저장하지 않는다.
-// v2(#671, 같은 규격 §5): 에이전트가 `[답변 필요]` 머리줄로 명시한 블록을 먼저 보고, 없으면 v1(§1) 끝의 선택지.
+// v2(#671, 같은 규격 §5): 에이전트가 `[답변 필요]` 머리줄로 명시한 블록을 카드로 만든다.
+// §6(#671 PR D): 명시 블록만 카드가 된다 — 머리줄 없는 끝 목록을 단서어로 추측하던 v1 판정은 없앴다.
 package com.seoyoon_family.hande.core
 
 import java.util.Locale
@@ -10,8 +11,8 @@ import java.util.Locale
 data class AgentChoiceItem(val number: Int, val label: String)
 
 /**
- * 판정 결과: 항목(번호 1..k 연속 — v1 2~9개, v2 명시 블록 1~9개) + 권장 번호(없으면 null).
- * v2(§5): `mode`(머리줄의 `하나만`·`one` → ONE, 아니면 MANY)·`explicit`(명시 블록이면 true). v1 결과는 기본값(MANY, false).
+ * 판정 결과: 항목(번호 1..k 연속 — 명시 블록 1~9개) + 권장 번호(없으면 null).
+ * §5: `mode`(머리줄의 `하나만`·`one` → ONE, 아니면 MANY)·`explicit`(명시 블록이면 true — `parse` 결과는 언제나 true, §6).
  */
 data class AgentChoices(
     val items: List<AgentChoiceItem>,
@@ -42,18 +43,10 @@ data class AgentChoices(
         private val ITEM = Regex("^ {0,3}([0-9]{1,2})[.)][ \\t]+([^ \\t\\n\\r\\u2028\\u2029][^\\n\\r\\u2028\\u2029]*)$")
         private val RECOMMENDED = Regex("권장$WS*[:：]?$WS*([0-9]{1,2})$WS*번")
         private val SPACES = Regex("[ \\t]+")
-        private val CUES = listOf(
-            "?", "？", "권장", "선택", "골라", "고르", "답해", "원하시", "할까요", "하시겠", "정해", "다음 액션", "다음 단계", "옵션",
-            "choose", "option", "recommend",
-        )
 
         private fun spaceChar(c: Char) = c == ' ' || c == '\t'
         private fun blankLine(line: String) = line.all { spaceChar(it) }
         private fun indentedLine(line: String) = line.startsWith("\t") || line.startsWith("  ")
-        private fun hasCue(s: String): Boolean {
-            val lower = s.lowercase()
-            return CUES.any { it in lower }
-        }
 
         private fun cleanLabel(raw: String): String =
             raw.replace("**", "").replace("__", "").replace("`", "").replace(SPACES, " ").trim { it == ' ' || it == '\t' }
@@ -153,61 +146,13 @@ data class AgentChoices(
             return AgentChoices(items, recommendedOf(normalized, items), f.mode ?: Mode.MANY, explicit = true)
         }
 
-        /** 규격 §5 → §1: 에이전트 텍스트 본문 → 선택지(아니면 null). v2 명시 블록이 있으면 그것, 없으면 v1 끝의 선택지. */
+        /**
+         * 규격 §5·§6: 에이전트 텍스트 본문 → 선택지(아니면 null). `[답변 필요]` 머리줄로 명시한 블록만 카드가 된다 —
+         * 머리줄 없는 번호 목록은 끝에 있어도 null(§6, #671 PR D — v1 단서어 추측은 쓰지 않는다).
+         */
         fun parse(text: String): AgentChoices? {
             val normalized = text.replace("\r\n", "\n")
-            val lines = normalized.split("\n")
-            return parseExplicit(normalized, lines) ?: parseTrailing(normalized, lines)
-        }
-
-        /** 규격 §1(v1): 글 끝의 번호 목록을 단서어로 찾는다. */
-        private fun parseTrailing(normalized: String, lines: List<String>): AgentChoices? {
-            var inFence = false
-            var block: MutableList<AgentChoiceItem>? = null
-            var open = false
-            var invalid = false
-            var blockStart = -1 // 블록 첫 항목 줄
-            var blockEnd = -1 // 마지막 항목 줄 또는 그 이어지는 줄
-
-            for ((i, line) in lines.withIndex()) {
-                val fenceLine = isFenceLine(line)
-                val item = if (inFence || fenceLine) null else ITEM.matchEntire(line)
-                if (fenceLine) inFence = !inFence
-                when {
-                    item != null -> {
-                        val number = item.groupValues[1].toInt()
-                        val label = cleanLabel(item.groupValues[2])
-                        val current = block
-                        when {
-                            number == 1 -> {
-                                block = mutableListOf(AgentChoiceItem(1, label))
-                                open = true; invalid = false; blockStart = i; blockEnd = i
-                            }
-                            open && current != null && number == current.last().number + 1 -> {
-                                current += AgentChoiceItem(number, label)
-                                blockEnd = i
-                            }
-                            else -> { invalid = true; open = false }
-                        }
-                    }
-                    // 펜스 줄과 펜스 안의 줄은 항목이 될 수 없는 일반 줄(펜스 줄은 블록을 닫는다).
-                    fenceLine -> open = false
-                    blankLine(line) -> Unit
-                    indentedLine(line) -> if (open) blockEnd = i
-                    else -> open = false
-                }
-            }
-
-            val items = block ?: return null
-            if (invalid) return null
-            if (items.size !in 2..9) return null
-            val trailing = lines.subList(blockEnd + 1, lines.size).filterNot { blankLine(it) }
-            if (trailing.size > 3) return null
-            val above = lines.subList(0, blockStart).lastOrNull { !blankLine(it) }
-            val cue = (above != null && hasCue(above)) || trailing.any { hasCue(it) } || items.any { hasCue(it.label) }
-            if (!cue) return null
-
-            return AgentChoices(items, recommendedOf(normalized, items))
+            return parseExplicit(normalized, normalized.split("\n"))
         }
 
         private fun trimChar(c: Char) = c == ' ' || c == '\t' || c == '\n' || c == '\r'

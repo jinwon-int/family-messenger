@@ -1,4 +1,5 @@
-// agent-choices-v1(#620) — 에이전트 글 끝의 번호 선택지를 탭해서 고르는 카드의 판정(화면 없이 테스트하는 순수 로직).
+// agent-choices(#620 · v2 #671) — 에이전트가 `[답변 필요]` 로 명시한 번호 선택지를 탭해서 고르는 카드의 판정(화면 없이 테스트하는 순수 로직).
+// §6(#671 PR D): 명시 블록만 카드가 된다 — 머리줄 없는 끝 목록을 단서어로 추측하던 v1 판정은 없앴다.
 // 정본: archive/native-mls/AGENT-CHOICES-V1.md · 공유 벡터 tests/fixtures/agent-choices-vectors.json(웹·안드로이드와 같은 답).
 // 보내는 것은 손으로 치는 것과 같은 꼴의 글 `N. 라벨` 줄들(#624 — 손으로 친 `1, 3` 도 같은 답) 이다 — 봇·브리지·와이어 무변경(승인 카드 「승인 n」과 같은 결).
 //
@@ -17,19 +18,19 @@ public struct AgentChoices: Equatable {
         }
     }
 
-    /// v2(#671, 규격 §5) 선택 모드 — 머리줄에 `하나만`·`one` 이 있으면 `one`. v1 결과는 언제나 `many`.
+    /// v2(#671, 규격 §5) 선택 모드 — 머리줄에 `하나만`·`one` 이 있으면 `one`, 아니면 `many`.
     public enum Mode: String, Equatable {
         case one
         case many
     }
 
-    /// 1부터 이어지는 항목(v1 2~9개 · v2 명시 블록 1~9개).
+    /// 1부터 이어지는 항목(명시 블록 1~9개).
     public let items: [Item]
     /// 권장 번호(1..items.count) 또는 nil.
     public let recommended: Int?
-    /// 선택 모드(v1 = `many`).
+    /// 선택 모드.
     public let mode: Mode
-    /// v2 `[답변 필요]` 명시 블록에서 나왔는가(v1 끝 선택지 = false).
+    /// v2 `[답변 필요]` 명시 블록에서 나왔는가 — `parse` 결과는 언제나 true(§6).
     public let explicit: Bool
 
     public init(items: [Item], recommended: Int?, mode: Mode = .many, explicit: Bool = false) {
@@ -66,10 +67,10 @@ public struct AgentChoices: Equatable {
 
     // MARK: - 판정(규격 §1)
 
-    /// 에이전트 글 본문 → 선택지, 아니면 nil. v2 명시 블록(§5)이 있으면 그것, 없으면 v1 끝의 선택지(§1).
+    /// 에이전트 글 본문 → 선택지, 아니면 nil. 에이전트가 `[답변 필요]` 머리줄로 명시한 블록(§5)만 카드가 된다 —
+    /// 머리줄 없는 번호 목록은 끝에 있어도 nil(§6, #671 PR D — v1 단서어 추측은 쓰지 않는다).
     public static func parse(_ text: String) -> AgentChoices? {
-        let lines = splitLines(text)
-        return parseExplicit(lines) ?? parseTrailing(lines)
+        parseExplicit(splitLines(text))
     }
 
     // MARK: - v2 명시 블록(규격 §5, #671)
@@ -171,73 +172,6 @@ public struct AgentChoices: Equatable {
         guard let found else { return nil }
         return AgentChoices(items: found.items, recommended: recommendedNumber(lines: lines, items: found.items),
                             mode: found.mode, explicit: true)
-    }
-
-    // MARK: - v1 끝의 선택지(규격 §1)
-
-    /// v1: 글 끝의 번호 목록을 단서어로 찾는다.
-    static func parseTrailing(_ lines: [[Unicode.Scalar]]) -> AgentChoices? {
-
-        // 블록 훑기(규격 §1-4). 후보 = 마지막으로 시작된 블록.
-        var block: [Item] = []
-        var started = false        // 블록이 시작된 적이 있다
-        var open = false           // 아직 항목·이어지는 줄을 받는다
-        var invalid = false        // 무효(뒤에 `1` 이 오면 다시 시작)
-        var firstLine = 0          // 블록 첫 항목 줄 index
-        var lastLine = 0           // 마지막 항목 줄 또는 이어지는 줄 index
-        var inFence = false
-
-        for (index, line) in lines.enumerated() {
-            if isFenceLine(line) {
-                inFence.toggle()
-                open = false       // 펜스 줄 = 그 밖의 줄 → 블록을 닫는다
-                continue
-            }
-            if !inFence, let item = itemLine(line) {
-                let number = item.number
-                let rest = item.rest
-                if number == 1 {
-                    block = [Item(number: 1, label: cleanLabel(rest))]
-                    started = true
-                    open = true
-                    invalid = false
-                    firstLine = index
-                    lastLine = index
-                } else if started, open, !invalid, let last = block.last, number == last.number + 1 {
-                    block.append(Item(number: number, label: cleanLabel(rest)))
-                    lastLine = index
-                } else {
-                    invalid = true
-                    open = false
-                }
-                continue
-            }
-            if isBlank(line) { continue }
-            if isIndented(line) {
-                if started, open, !invalid { lastLine = index }
-                continue
-            }
-            open = false
-        }
-
-        guard started, !invalid else { return nil }
-        // 항목 수 2~9.
-        guard (2...9).contains(block.count) else { return nil }
-
-        // 블록 뒤의 비어 있지 않은 줄 ≤ 3.
-        let trailing = lines[(lastLine + 1)...].filter { !isBlank($0) }
-        guard trailing.count <= 3 else { return nil }
-
-        // 단서: 첫 항목 바로 위의 비어 있지 않은 줄 · 블록 뒤 줄들 · 항목 라벨.
-        var cueSources: [[Unicode.Scalar]] = []
-        if firstLine > 0, let above = lines[..<firstLine].last(where: { !isBlank($0) }) {
-            cueSources.append(above)
-        }
-        cueSources.append(contentsOf: trailing)
-        cueSources.append(contentsOf: block.map { Array($0.label.unicodeScalars) })
-        guard cueSources.contains(where: hasCue) else { return nil }
-
-        return AgentChoices(items: block, recommended: recommendedNumber(lines: lines, items: block))
     }
 
     /// 사람의 답장 본문 → 고른 번호 목록(오름차순·중복 없음, 모두 1..count), 아니면 nil. 규격 §2 「답 판정」(#624):
@@ -488,21 +422,7 @@ public struct AgentChoices: Equatable {
         return String(out)
     }
 
-    // MARK: - 단서 · 권장
-
-    static let cueWords: [String] = [
-        "?", "？", "권장", "선택", "골라", "고르", "답해", "원하시", "할까요", "하시겠", "정해", "다음 액션", "다음 단계", "옵션",
-        "choose", "option", "recommend",
-    ]
-    static let cues: [[Unicode.Scalar]] = cueWords.map { Array($0.unicodeScalars) }
-
-    /// 단서 문자열이 들어 있는가(영문은 대소문자 무시 — 줄을 소문자로 바꿔 비교).
-    static func hasCue(_ line: [Unicode.Scalar]) -> Bool {
-        var view = String.UnicodeScalarView()
-        view.append(contentsOf: line)
-        let lowered = Array(String(view).lowercased().unicodeScalars)
-        return cues.contains { scalarsContain(lowered, $0) }
-    }
+    // MARK: - 권장
 
     static func scalarsContain(_ hay: [Unicode.Scalar], _ needle: [Unicode.Scalar]) -> Bool {
         guard !needle.isEmpty else { return true }

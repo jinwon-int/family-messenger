@@ -14,8 +14,10 @@ test('공유 벡터가 실렸다', () => {
   assert.ok(vectors.compose.length > 0);
 });
 
+// §6(#671 PR D): 머리줄 없는 목록은 끝에 있고 단서어가 있어도 카드가 아니다 — 옛 v1 벡터는 모두 null.
 for (const v of vectors.parse) {
   test(`parse: ${v.name}`, () => {
+    assert.equal(v.expected, null);
     assert.deepEqual(parseChoices(v.text), v.expected);
   });
 }
@@ -76,7 +78,7 @@ test('reply: compose 결과는 답 판정 B 로 다시 같은 번호가 된다(�
     assert.deepEqual(choiceReply(composeChoice(v.numbers, v.labels), v.labels.length), [...new Set(v.numbers)].sort((a, b) => a - b));
   }
   // 파싱한 선택지 라벨로도 왕복한다 — 라벨 안의 `.`·`[ ]`·숫자가 A 를 흔들지 않는다.
-  const choices = parseChoices(vectors.parse[0].text);
+  const choices = parseChoices(vectors.explicit.find((v) => v.name === 'header many-mode (no 하나만) at the end').text);
   const labels = choices.items.map((it) => it.label);
   for (const numbers of [[1], [2, 3], [3, 1, 2]]) {
     assert.deepEqual(choiceReply(composeChoice(numbers, labels), labels.length), [...numbers].sort((a, b) => a - b));
@@ -106,7 +108,7 @@ test('parse: 문자열이 아니거나 빈 글은 null', () => {
 
 // ---- 상태(규격 §2) — app.js R.entries 모양 ----
 
-const ASK = '어떻게 할까요?\n1. 유지\n2. 롤백 (권장)\n3. 보류';
+const ASK = '어떻게 할까요?\n**[답변 필요]** 여러 개 선택 가능\n1. 유지\n2. 롤백 (권장)\n3. 보류';
 const agent = (key, body = ASK) => ({ key, kind: 'text', isAgent: true, isMe: false, body });
 const mine = (key, body) => ({ key, kind: 'text', isAgent: false, isMe: true, body });
 const other = (key, body) => ({ key, kind: 'text', isAgent: false, isMe: false, body });
@@ -177,6 +179,11 @@ test('state: 선택지 없는 글·사람 글·에이전트 첨부는 null', () 
   assert.equal(choiceState([{ ...agent('b'), isAgent: false }], 0), null);
   assert.equal(choiceState([{ ...agent('b'), kind: 'attachment' }], 0), null);
   assert.equal(choiceState([], 0), null);
+});
+
+test('state: 머리줄 없는 끝 목록은 단서어가 있어도 카드가 없다(§6, #671 PR D)', () => {
+  assert.equal(choiceState([agent('b', '어떻게 할까요? 권장: 2번\n1. 유지\n2. 롤백\n3. 보류')], 0), null);
+  assert.equal(choiceState([agent('b', '다음 단계\n1. 병합\n2. 보류'), mine('c', '1')], 0), null);
 });
 
 test('state: isMine 판정을 바꿔 끼울 수 있다(같은 사람의 다른 기기)', () => {

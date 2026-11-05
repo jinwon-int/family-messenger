@@ -1016,7 +1016,7 @@ fun RoomScreen(room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> 
     // 맨 아래 따라가기: 새 글이나 작업 상태 말풍선이 생기면(사라질 때는 아님) 마지막 항목으로.
     val total = room.messages.size + room.statuses.size
     LaunchedEffect(room.messages.size, room.statuses.size) { if (total > 0) listState.animateScrollToItem(total - 1) }
-    // agent-choices-v1(#620): 에이전트 글 끝 번호 선택지 → 말풍선 아래 카드(open/answered). 상태는 타임라인에서 계산(저장 안 함).
+    // agent-choices(#620 · §6 #671 PR D): 에이전트가 `[답변 필요]` 로 명시한 번호 선택지 → 말풍선 아래 카드(open/answered). 상태는 타임라인에서 계산(저장 안 함).
     val choiceCards = remember(room.messages) { AgentChoices.cards(room.messages) }
     val canChoose = halted == null && room.joined
     Scaffold(

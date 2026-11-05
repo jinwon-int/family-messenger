@@ -1,7 +1,7 @@
 import XCTest
 @testable import FamilyMLSCore
 
-/// agent-choices-v1(#620): 공유 벡터(웹·안드로이드와 같은 답) + 타임라인 상태.
+/// agent-choices(#620 · v2 #671 · §6 명시 블록만): 공유 벡터(웹·안드로이드와 같은 답) + 타임라인 상태.
 final class AgentChoicesTests: XCTestCase {
     // MARK: - fixture loading (#filePath walk-up)
 
@@ -92,10 +92,13 @@ final class AgentChoicesTests: XCTestCase {
         }
     }
 
-    func testV1ResultsAreManyAndNotExplicit() {
+    /// §6(#671 PR D): 머리줄 없는 끝 목록은 단서어가 있어도 카드가 아니다. 명시 블록 결과는 언제나 explicit.
+    func testOnlyExplicitBlocksParse() {
+        XCTAssertNil(AgentChoices.parse("다음 단계\n1. 병합\n2. 보류\n3. 롤백"))
+        XCTAssertNil(AgentChoices.parse("어떻게 할까요? 권장: 2번\n1. 유지\n2. 롤백"))
         let parsed = AgentChoices.parse(choices)
         XCTAssertEqual(parsed?.mode, .many)
-        XCTAssertEqual(parsed?.explicit, false)
+        XCTAssertEqual(parsed?.explicit, true)
     }
 
     func testReplyVectors() throws {
@@ -171,7 +174,7 @@ final class AgentChoicesTests: XCTestCase {
     let myPC: DeviceID = "owner-pc"
     let other: DeviceID = "jungin-iphone-1b89e3"
     let bot: DeviceID = "bot-gongmyoung"
-    let choices = "다음 단계\n1. 병합\n2. 보류\n3. 롤백"
+    let choices = "다음 단계\n**[답변 필요]** 여러 개 선택 가능\n1. 병합\n2. 보류\n3. 롤백"
 
     func rec(_ seq: Int64, _ device: DeviceID, _ body: String, kind: MessageRecord.Kind = .text) -> MessageRecord {
         MessageRecord(room: "family-acc", seq: seq, senderDevice: device, clientId: "c\(seq)", kind: kind, body: body,
@@ -238,8 +241,10 @@ final class AgentChoicesTests: XCTestCase {
         // 사람이 쓴 같은 글은 카드가 아니다 · 선택지 없는 에이전트 글도 아니다.
         XCTAssertTrue(AgentChoices.cards([rec(1, other, choices)], roster: roster, myDevice: me).isEmpty)
         XCTAssertTrue(AgentChoices.cards([rec(1, bot, "설치 순서입니다.\n1. a\n2. b")], roster: roster, myDevice: me).isEmpty)
+        // §6: 머리줄 없는 끝 질문 목록도 카드가 아니다(단서어 추측 없음).
+        XCTAssertTrue(AgentChoices.cards([rec(1, bot, "어느 쪽?\n1. 가\n2. 나")], roster: roster, myDevice: me).isEmpty)
         // 앞선 선택지는 뒤 선택지가 와도 각자 판정한다.
-        let records = [rec(1, bot, choices), rec(2, me, "1"), rec(3, bot, "어느 쪽?\n1. 가\n2. 나")]
+        let records = [rec(1, bot, choices), rec(2, me, "1"), rec(3, bot, "**[답변 필요]** 하나만 선택\n1. 가\n2. 나")]
         let states = AgentChoices.states(records, roster: roster, myDevice: me)
         XCTAssertEqual(states[1], .answered([1]))
         XCTAssertEqual(states[3], .open)
@@ -254,7 +259,9 @@ final class AgentChoicesTests: XCTestCase {
         let long = String(repeating: "9", count: 40)
         XCTAssertNil(AgentChoices.parse("선택?\n\(long). 가\n\(long). 나"))
         XCTAssertNil(AgentChoices.reply(long, count: 3))
-        XCTAssertEqual(AgentChoices.parse("권장: \(long)번\n선택?\n1. 가\n2. 나")?.recommended, nil)
+        let parsed = AgentChoices.parse("권장: \(long)번\n**[답변 필요]**\n1. 가\n2. 나")
+        XCTAssertNotNil(parsed)
+        XCTAssertNil(parsed?.recommended)
     }
 
     func testLabelLookup() {
