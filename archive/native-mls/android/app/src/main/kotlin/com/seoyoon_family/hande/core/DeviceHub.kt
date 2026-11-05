@@ -94,7 +94,10 @@ data class HubUi(
 class DeviceHub(context: Context, val settings: Settings, private val sealer: KeystoreSealer) {
     private val dir = File(context.filesDir, "mls").apply { mkdirs() }
     private val transport = OkHttpTransport()
-    /** x.com 링크 미리보기(#683 2단계) — 릴레이 주소·세션 값은 요청할 때마다 설정에서 읽는다(로그인·서버 변경 즉시 반영). */
+    /**
+     * 링크 미리보기(#683 2단계 · v2 #690) — 릴레이 주소·세션 값은 요청할 때마다 설정에서 읽는다(로그인·서버 변경 즉시 반영).
+     * 사이트 목록(`linkPreviews.sites`)은 준비 단계(로그인 뒤)에 세션당 한 번 받고(`loadSites`), 다시 설정·로그인·지우기 때 비운다.
+     */
     val linkPreviews = LinkPreviews(relayUrl = { settings.relayUrl }, accessToken = { settings.accessToken }, http = transport)
     private val mutex = Mutex()
     private val _ui = MutableStateFlow(HubUi(phase = if (settings.isConfigured) Phase.Starting else Phase.Setup, server = serverLabel()))
@@ -241,6 +244,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             val wasWaiting = _ui.value.phase is Phase.WaitingEnrollment
             _ui.update { it.copy(phase = Phase.Ready, lobbyLive = s.live.toInt(), lobbyMax = s.max.toInt(), connecting = false, notice = if (wasWaiting) Strings.enrolledNow else null) }
             if (wasWaiting) nextPostAt = 0L
+            linkPreviews.loadSites()
         } catch (e: RoomException) {
             Log.w(TAG, "probe: $e")
             val transient = e is RoomException.Relay && e.transient
@@ -272,6 +276,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             return@withLock
         }
         if (me == null || ticks % ME_EVERY_TICKS == 1) refreshMe(l)
+        linkPreviews.loadSites() // 받았거나 받는 중·재시도 시각 전이면 아무것도 안 한다(일시 실패만 10분 뒤 다시)
         var connecting = false
         for (h in rooms.values.toList()) {
             try {
@@ -598,6 +603,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
 
     /** 설정 저장 뒤(세션 값 포함) 다시 접촉. 새 세션이면 `/v2/me` 와 후보 게시도 처음부터. */
     fun reconfigure(scope: CoroutineScope) = scope.launch(Dispatchers.IO) {
+        linkPreviews.resetSites() // 새 세션 — 사이트 목록은 준비 단계에서 다시 받는다
         mutex.withLock { applyAccessToken(); me = null; meUnsupported = false; selfServiceUnsupported = false; nextPostAt = 0L; _ui.update { it.copy(phase = Phase.Starting) }; probe() }
     }
 

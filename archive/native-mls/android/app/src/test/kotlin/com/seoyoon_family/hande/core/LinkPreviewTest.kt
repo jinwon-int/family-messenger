@@ -103,7 +103,7 @@ class LinkPreviewTest {
         assertEquals("제목", onlyTitle.title)
         assertEquals("", onlyTitle.description)
         assertEquals("", onlyTitle.url)
-        assertEquals("X", onlyTitle.site, "site 가 없으면 X")
+        assertEquals("", onlyTitle.site, "site 가 없으면 빈 값 — 화면이 사이트 목록의 이름을 쓴다(#690)")
         assertEquals("본문", LinkPreview.parse("""{"description":"본문","title":null}""")!!.description)
         assertEquals("", LinkPreview.parse("""{"description":"본문","title":7}""")!!.title, "문자열이 아니면 없는 것")
         // 그릴 것이 없다

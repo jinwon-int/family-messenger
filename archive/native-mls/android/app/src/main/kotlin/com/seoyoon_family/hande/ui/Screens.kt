@@ -120,15 +120,14 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.seoyoon_family.hande.BuildConfig
 import com.seoyoon_family.hande.core.AgentActors
 import com.seoyoon_family.hande.core.AgentChoices
-import com.seoyoon_family.hande.core.TextLinks
 import com.seoyoon_family.hande.core.AppLogin
 import com.seoyoon_family.hande.core.CandidateUi
 import com.seoyoon_family.hande.core.DeviceHub
 import com.seoyoon_family.hande.core.FingerprintRows
 import com.seoyoon_family.hande.core.HandeThemeMode
 import com.seoyoon_family.hande.core.HubUi
-import com.seoyoon_family.hande.core.LinkPreview
 import com.seoyoon_family.hande.core.LinkPreviews
+import com.seoyoon_family.hande.core.PreviewSites
 import com.seoyoon_family.hande.core.LoginLauncher
 import com.seoyoon_family.hande.core.MessageUi
 import com.seoyoon_family.hande.core.Phase
@@ -166,6 +165,7 @@ import com.seoyoon_family.hande.ui.theme.SectionRow
 import com.seoyoon_family.hande.ui.theme.StepBar
 import com.seoyoon_family.hande.ui.theme.WarnBox
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -1019,6 +1019,9 @@ fun RoomScreen(room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> 
     // agent-choices(#620 · §6 #671 PR D): 에이전트가 `[답변 필요]` 로 명시한 번호 선택지 → 말풍선 아래 카드(open/answered). 상태는 타임라인에서 계산(저장 안 함).
     val choiceCards = remember(room.messages) { AgentChoices.cards(room.messages) }
     val canChoose = halted == null && room.joined
+    // #690 v2: 이 세션의 미리보기 사이트 목록(받기 전·실패 = v1 폴백). 목록이 도착하면 보이는 말풍선이 링크·카드를 다시 정한다.
+    val sitesFlow = remember(previews) { previews?.sites ?: MutableStateFlow(PreviewSites.FALLBACK) }
+    val sites by sitesFlow.collectAsStateWithLifecycle()
     Scaffold(
         containerColor = Color.Transparent, contentColor = MaterialTheme.colorScheme.onBackground,
         topBar = {
@@ -1039,10 +1042,10 @@ fun RoomScreen(room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> 
                 itemsIndexed(room.messages, key = { _, m -> "${m.sender}-${m.seq}" }) { i, m ->
                     val card = choiceCards.getOrNull(i)
                     if (card == null) {
-                        MessageRow(m, previews)
+                        MessageRow(m, previews, sites)
                     } else {
                         Column(Modifier.fillMaxWidth()) {
-                            MessageRow(m, previews)
+                            MessageRow(m, previews, sites)
                             AgentChoicesCard(m, card, enabled = canChoose, onSend = onSend)
                         }
                     }
@@ -1130,7 +1133,7 @@ private fun Composer(draft: String, onDraft: (String) -> Unit, onSend: () -> Uni
  * 보낸 이 라벨 = 좌석 점 + 이름(에이전트는 「공명 · 불지기」 파랑). 너비는 82% 까지. 첨부는 본문의 자리 표시 글 그대로(C 단계).
  */
 @Composable
-private fun MessageRow(m: MessageUi, previews: LinkPreviews? = null) {
+private fun MessageRow(m: MessageUi, previews: LinkPreviews? = null, sites: PreviewSites.Registry = PreviewSites.FALLBACK) {
     val colors = LocalHandeColors.current
     val agent = !m.mine && AgentActors.isAgentDevice(m.sender)
     Column(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalAlignment = if (m.mine) Alignment.End else Alignment.Start) {
@@ -1149,11 +1152,12 @@ private fun MessageRow(m: MessageUi, previews: LinkPreviews? = null) {
             agent -> Modifier.background(colors.agent.copy(alpha = 0.10f)).border(1.dp, colors.agent.copy(alpha = 0.35f), shape)
             else -> Modifier.background(colors.surface).border(colors.lineWidth, colors.stroke, shape)
         }
-        // #683: 사람 말풍선의 x.com 계열 https 주소만 누를 수 있게(웹·iOS 와 같은 규칙). 에이전트 말풍선은 글 그대로.
-        val body = remember(m.text, agent) {
+        // #683 · #690 v2: 사람 말풍선의 허용 호스트(사이트 목록 hosts 합집합, 폴백 = x.com 계열) https 주소만 누를 수 있게(웹·iOS 와 같은 규칙).
+        // 에이전트 말풍선은 글 그대로.
+        val body = remember(m.text, agent, sites) {
             if (agent) AnnotatedString(m.text) else buildAnnotatedString {
                 append(m.text)
-                for (link in TextLinks.links(m.text)) {
+                for (link in sites.links(m.text)) {
                     addLink(LinkAnnotation.Url(link.url, TextLinkStyles(SpanStyle(textDecoration = TextDecoration.Underline))), link.start, link.end)
                 }
             }
@@ -1169,21 +1173,22 @@ private fun MessageRow(m: MessageUi, previews: LinkPreviews? = null) {
             color = if (m.mine) colors.onEmber else colors.ink,
             style = MaterialTheme.typography.bodyLarge,
         )
-        // #683 2단계: 사람 말풍선(내 글 포함, 첨부 자리 글 제외)의 첫 x.com 글 링크 → 릴레이 미리보기 카드. 없거나 실패면 아무것도 그리지 않는다.
+        // #683 2단계 · #690 v2: 사람 말풍선(내 글 포함, 첨부 자리 글 제외)의 카드 대상(v2 = preview 사이트의 첫 링크, 폴백 = 첫 x.com 글 링크)
+        // → 릴레이 미리보기 카드. 없거나 실패면 아무것도 그리지 않는다.
         if (!agent && !m.attachment && previews != null) {
-            val target = remember(m.text) { LinkPreview.target(m.text) }
-            if (target != null) LinkPreviewCard(target, previews)
+            val target = remember(m.text, sites) { sites.target(m.text) }
+            if (target != null) LinkPreviewCard(target, previews, siteName = remember(target, sites) { sites.siteOf(target)?.name.orEmpty() })
         }
     }
 }
 
 /**
- * x.com 링크 미리보기 카드(#683 2단계, 계약 v1 클라이언트 절): 제목 1줄 · 본문 최대 4줄 · 이미지(있으면, 최대 높이 200dp, 비율 유지).
+ * 링크 미리보기 카드(#683 2단계 · #690 v2): 작은 사이트 이름(응답 `site`, 비면 사이트 목록의 이름) · 제목 1줄 · 본문 최대 4줄 · 이미지(있으면, 최대 높이 200dp, 비율 유지).
  * 화면에 보일 때(`LaunchedEffect` — LazyColumn 은 보이는 항목만 그린다) 한 번 묻고, 결과는 `LinkPreviews` 메모리 캐시. 카드 탭 = 말풍선의 원래 링크 열기.
  * 면+선 카드(남 말풍선과 같은 면) — 내 말풍선 아래에서도 같은 모양(주황 면은 말풍선·보내기 버튼만).
  */
 @Composable
-private fun LinkPreviewCard(link: String, previews: LinkPreviews) {
+private fun LinkPreviewCard(link: String, previews: LinkPreviews, siteName: String = "") {
     val colors = LocalHandeColors.current
     val uriHandler = LocalUriHandler.current
     var card by remember(link) { mutableStateOf(previews.cachedCard(link)) }
@@ -1203,6 +1208,10 @@ private fun LinkPreviewCard(link: String, previews: LinkPreviews) {
             .clickable(role = Role.Button, onClickLabel = Strings.linkPreviewOpen) { runCatching { uriHandler.openUri(link) } },
     ) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            val site = c.site.ifEmpty { siteName }
+            if (site.isNotEmpty()) {
+                Text(site, color = colors.inkDim, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
             if (c.title.isNotEmpty()) {
                 Text(c.title, color = colors.ink, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
