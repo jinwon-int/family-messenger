@@ -40,6 +40,39 @@ enum ServiceLinks {
         return found
     }
 
+    // MARK: 미리보기 카드 대상 (#683 2단계, 계약 v1 클라이언트 절)
+
+    /// 사람·서비스 봇 말풍선 글 속 x.com 계열 링크(`xHosts`, 위 링크 규칙) 중 상태 글 주소인 **첫 번째**. 없으면 nil(카드 없음).
+    static func previewTarget(in text: String) -> URL? {
+        links(in: text, hosts: xHosts).first { isStatusURL($0.url) }?.url
+    }
+
+    /// 릴레이 입력 규칙과 같은 경로: `/{handle}/status/{id}` 또는 `/i/web/status/{id}` — handle `[A-Za-z0-9_]{1,15}`, id 숫자 1–25자리.
+    /// 그 뒤 경로(`/photo/1` 등)·쿼리는 있어도 된다(릴레이가 버린다). 호스트·스킴은 `links(in:hosts:)` 가 이미 걸렀다.
+    static func isStatusURL(_ url: URL) -> Bool {
+        guard let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedPath, path.hasPrefix("/") else { return false }
+        let s = path.dropFirst().split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        if s.count >= 4, s[0] == "i", s[1] == "web", s[2] == "status" { return isStatusID(s[3]) }
+        return s.count >= 3 && isHandle(s[0]) && s[1] == "status" && isStatusID(s[2])
+    }
+
+    private static func isHandle(_ s: String) -> Bool {
+        guard (1...15).contains(s.utf8.count) else { return false }
+        return s.utf8.allSatisfy { (b: UInt8) -> Bool in
+            switch b {
+            case UInt8(ascii: "0")...UInt8(ascii: "9"), UInt8(ascii: "A")...UInt8(ascii: "Z"), UInt8(ascii: "a")...UInt8(ascii: "z"), UInt8(ascii: "_"):
+                return true
+            default:
+                return false
+            }
+        }
+    }
+
+    private static func isStatusID(_ s: String) -> Bool {
+        guard (1...25).contains(s.utf8.count) else { return false }
+        return s.utf8.allSatisfy { (b: UInt8) -> Bool in UInt8(ascii: "0") <= b && b <= UInt8(ascii: "9") }
+    }
+
     /// 말풍선 글: 허용 링크 구간에만 `.link`(누르면 시스템이 연다), 나머지는 글 그대로.
     static func attributed(_ text: String, hosts: Set<String> = ServiceLinks.hosts) -> AttributedString {
         var value = AttributedString(text)

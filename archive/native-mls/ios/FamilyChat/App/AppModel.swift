@@ -2082,6 +2082,23 @@ final class AppModel: ObservableObject {
         return try await Task.detached(priority: .userInitiated) { try FileV2Format.open(ciphertext, descriptor) }.value
     }
 
+    // MARK: - 링크 미리보기 (#683 2단계 — 캐시·카드는 앱 전용 `LinkPreviewStore`/`LinkPreviewCard`)
+
+    /// 지금 릴레이 전송이 있다(로그인됨). 없으면 미리보기를 묻지도 캐시하지도 않는다.
+    var canLoadLinkPreviews: Bool { transport != nil }
+
+    /// `GET /v2/preview?url=` — 다른 릴레이 요청과 **같은 전송·인증 헤더**(CF Access 쿠키/assertion). 라우트가 꺼진 릴레이는 404 로 던진다.
+    func linkPreview(url: URL) async throws -> LinkPreview {
+        guard let transport else { throw RelayError.unauthorized }
+        return try await transport.linkPreview(url: url)
+    }
+
+    /// `GET /v2/preview/image?u=` — 미리보기 응답의 `image`(릴레이 상대 경로). 같은 인증 헤더로 받는다(일반 이미지 로더에 URL 만 넘기지 않는다).
+    func linkPreviewImage(path: String) async throws -> Data {
+        guard let transport else { throw RelayError.unauthorized }
+        return try await transport.linkPreviewImage(path: path)
+    }
+
     func refreshRooms() {
         rooms = (try? deps.messageStore.rooms()) ?? []
     }

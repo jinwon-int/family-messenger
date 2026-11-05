@@ -433,6 +433,7 @@ struct RoomView: View {
                    choiceSelected: choiceSelection(item.id),
                    choose: { numbers in Task { await answerChoice(item.id, numbers) } },
                    onAttachmentLoaded: { attachmentLoaded(item.id, proxy) },
+                   loadLinkPreview: { await model.linkPreviewCard(for: $0) },
                    retry: { Task { await model.retry(outgoingId: item.id, room: room) } },
                    selectText: { selecting = SelectableMessage(text: $0) })
             // 선택 모드: 고른 말풍선 점선 테두리(웹 캐럿 모드의 점선 테두리와 같은 표시).
@@ -911,6 +912,8 @@ struct MessageRow: View {
     var choose: ([Int]) -> Void = { _ in }
     /// #398: 첨부 본체를 읽어 행 높이가 바뀐 뒤 한 번.
     var onAttachmentLoaded: () -> Void = {}
+    /// #683 2단계: x.com 링크 미리보기 카드를 받아 온다(방 화면이 `AppModel.linkPreviewCard` — 같은 릴레이 인증·앱 메모리 캐시). nil = 카드 없음.
+    var loadLinkPreview: (URL) async -> LinkPreviewStore.Card? = { _ in nil }
     /// 보내는 글이 실패했을 때 「다시 보내기」.
     var retry: () -> Void = {}
     /// 꾹 누르기 메뉴 「선택해서 복사」 — 방 화면이 창을 띄운다.
@@ -918,6 +921,8 @@ struct MessageRow: View {
     @Environment(\.hande) private var p
     /// #647(오너 요청 2026-11-01): 사진 말풍선 옆 공유 아이콘의 공유 파일 — 말풍선(AttachmentBubble)이 준비되면 알려 준다.
     @State private var photoShareURL: URL?
+    /// #683 2단계: 이 행에서 받아 온 미리보기 카드(캐시에 이미 있으면 `shownPreview` 가 첫 프레임부터 그린다).
+    @State private var linkPreview: LinkPreviewStore.Card?
     private var message: MessageRecord { item.record }
     /// 받은(저장된) 첨부 말풍선 — 보내는 중인 첨부는 한 줄 글이라 종전 여백.
     private var isMedia: Bool { message.kind.isFile && item.outgoing == nil }
@@ -1063,8 +1068,34 @@ struct MessageRow: View {
                 .contentShape(.contextMenuPreview, BubbleShape(mine: mine))
                 .messageCopyMenu(MessageCopy.text(of: message), select: selectText)
                 .opacity(bubbleOpacity)
+                // #683 2단계: 말풍선이 보일 때 미리보기를 묻는다(lazy). 대상이 없으면 바로 끝난다.
+                .task(id: previewTarget) { await loadPreview() }
+            if let target = previewTarget, let card = shownPreview {
+                LinkPreviewCard(url: target, card: card)
+            }
             outgoingStatus
         }
+    }
+
+    /// #683 2단계 미리보기 대상: 저장된 사람·서비스 봇 글 말풍선의 첫 x.com 상태 글 링크(`ServiceLinks.previewTarget`).
+    /// 에이전트 글은 `agentRow`(링크 지움)로 가서 여기 오지 않는다. 보내는 중·실패한 내 글은 저장된 뒤에.
+    private var previewTarget: URL? {
+        guard message.kind == .text, item.outgoing == nil else { return nil }
+        return ServiceLinks.previewTarget(in: message.body)
+    }
+
+    /// 그릴 카드: 이 행이 받아 온 것, 없으면 캐시(행이 새로 만들어져도 첫 프레임부터 같은 높이 — 첨부 `AttachmentPreviewCache` 와 같은 이유).
+    private var shownPreview: LinkPreviewStore.Card? {
+        linkPreview ?? previewTarget.flatMap { LinkPreviewStore.shared.cached($0)?.card }
+    }
+
+    private func loadPreview() async {
+        guard let target = previewTarget, linkPreview == nil else { return }
+        if let hit = LinkPreviewStore.shared.cached(target) { linkPreview = hit.card; return }
+        let card = await loadLinkPreview(target)
+        guard !Task.isCancelled, let card else { return }
+        linkPreview = card
+        onAttachmentLoaded()   // 행 높이가 바뀌었다 — 맨 아래를 따라가는 중이면 다시 붙인다(첨부 로딩과 같은 경로)
     }
 
     @ViewBuilder private var content: some View {

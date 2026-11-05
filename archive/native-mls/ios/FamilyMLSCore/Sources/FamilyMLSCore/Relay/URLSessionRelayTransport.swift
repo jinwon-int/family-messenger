@@ -44,14 +44,20 @@ public final class URLSessionRelayTransport: RelayTransport {
         }
     }
 
-    func makeRequest(method: String, path: String, query: [URLQueryItem] = [], body: Data? = nil) throws -> URLRequest {
+    /// `encodedQuery` = 이미 percent-encoding 한 쿼리(`queryValue` 로 만든 값만) — 값에 URL 이 들어가는 라우트(#683 미리보기)용.
+    /// `queryItems` 대입은 `+`·`&` 를 그대로 두는 등 값 전체를 보존하지 않아 쓰지 않는다. 주면 `query` 는 무시한다.
+    func makeRequest(method: String, path: String, query: [URLQueryItem] = [], encodedQuery: String? = nil, body: Data? = nil) throws -> URLRequest {
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
         // `path` 는 pathComponent 로 이미 인코딩돼 있으므로 percentEncodedPath 로 넣는다(`.path` 대입은 `%` 를 다시 인코딩한다).
         // 기준 경로는 로컬로 복사(같은 식에서 components 를 읽고 쓰면 Swift 6 exclusivity 오류), 끝 `/` 는 하나로 합친다.
         var basePath = components?.percentEncodedPath ?? ""
         if basePath.hasSuffix("/") { basePath.removeLast() }
         components?.percentEncodedPath = basePath + path
-        if !query.isEmpty { components?.queryItems = query }
+        if let encodedQuery {
+            components?.percentEncodedQuery = encodedQuery
+        } else if !query.isEmpty {
+            components?.queryItems = query
+        }
         guard let url = components?.url else {
             throw RelayError.network("bad relay url: \(baseURL) \(path)")
         }
@@ -398,5 +404,35 @@ public final class URLSessionRelayTransport: RelayTransport {
 
     func meRequest() throws -> URLRequest {
         try makeRequest(method: "GET", path: "/v2/me")
+    }
+
+    // MARK: - 링크 미리보기 (#683 2단계, 계약 v1 — 릴레이 `-link-preview`)
+
+    public func linkPreview(url: URL) async throws -> LinkPreview {
+        // 404(라우트 없음 = 플래그 off·옛 릴레이, 또는 no_preview) · 502 upstream_failed · 400 bad_url 은 relayFailure 로 던진다.
+        try decode(LinkPreview.self, await perform(try linkPreviewRequest(url: url)))
+    }
+
+    public func linkPreviewImage(path: String) async throws -> Data {
+        try await perform(try linkPreviewImageRequest(path: path))
+    }
+
+    /// 쿼리 값 인코딩: RFC 3986 unreserved 만 통과(`:`·`/`·`?`·`&`·`=`·`+`·`%` 모두 인코딩) — 서버 `Query().Get` 이 원래 값을 그대로 받는다.
+    static func queryValue(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: pathSegmentAllowed) ?? value
+    }
+
+    /// GET /v2/preview?url=<원래 x.com 주소> — 정규화(handle·id·뒤 경로·쿼리 버림)는 릴레이가 한다. 인증 헤더는 다른 라우트와 같다(makeRequest).
+    func linkPreviewRequest(url: URL) throws -> URLRequest {
+        try makeRequest(method: "GET", path: LinkPreview.routePath, encodedQuery: "url=" + Self.queryValue(url.absoluteString))
+    }
+
+    /// GET /v2/preview/image?u=<원본> — 응답 `image` 경로를 검증(`LinkPreview.imageSource`)한 뒤 **이 릴레이 기준 주소**에 다시 붙인다
+    /// (응답이 다른 호스트·경로를 가리켜도 따라가지 않는다). 인증 헤더는 같고 Accept 만 이미지.
+    func linkPreviewImageRequest(path: String) throws -> URLRequest {
+        guard let source = LinkPreview.imageSource(path) else { throw RelayError.refused(code: "bad_url", status: 400) }
+        var request = try makeRequest(method: "GET", path: LinkPreview.imageRoutePath, encodedQuery: "u=" + Self.queryValue(source))
+        request.setValue("image/jpeg, image/png, image/webp, image/gif", forHTTPHeaderField: "Accept")
+        return request
     }
 }
