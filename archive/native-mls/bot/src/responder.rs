@@ -187,7 +187,10 @@ pub enum Outbound {
     /// The poll loop posts it only when `room` is the agent room.
     /// #425 `depth`: 1, or the active peer turn's depth + 1 (the alert header
     /// the poll loop writes in an `alert` room carries it).
-    Notice { room: String, text: String, depth: u8 },
+    /// #703 `id`: the frame's optional opaque `id` — the poll loop answers it
+    /// on the port with `notice_ack` once the relay accepted the post, or
+    /// `notice_nack` when the notice is not posted. `None` = no answer (#474).
+    Notice { room: String, text: String, depth: u8, id: Option<String> },
     /// ccc-node#2590: a status line for room `room` outside any turn
     /// (FLEET-WORKER `notice` with `kind:"status"`: the bridge's background
     /// wait line). Posted like `Status` — `status-<uuid>` client_id, no push,
@@ -834,6 +837,21 @@ impl Responder {
             // its own), so it is read before the active-turn filter below.
             let room = value.get("room").and_then(|v| v.as_str()).unwrap_or("");
             let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
+            // #703: an `id` asks for `notice_ack`/`notice_nack` on this port
+            // (plain notices only — a status line is never retried). A present
+            // but malformed id is refused unposted: the sender could not match
+            // an answer to it.
+            let id = match value.get("id") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(v) => match v.as_str().filter(|id| valid_notice_id(id)) {
+                    Some(id) => Some(id.to_string()),
+                    None => {
+                        self.notice_result(None, Err("bad_id"));
+                        out.push((room.to_string(), Outbound::Suppressed { seq: 0, kind: "notice_bad_id" }));
+                        return Ok(());
+                    }
+                },
+            };
             if is_room_id(room) && !text.is_empty() && value.get("kind").and_then(|v| v.as_str()) == Some("status") {
                 // ccc-node#2590: a background-wait status line — status-v1
                 // shape, its own per-room spacing (not the notice cap).
@@ -849,12 +867,17 @@ impl Responder {
             }
             if is_room_id(room) && !text.is_empty() {
                 if !within_rate(&mut self.notice_window, room, self.config.notice_per_min) {
+                    if let Some(id) = &id {
+                        self.notice_result(Some(id), Err("rate"));
+                    }
                     out.push((room.to_string(), Outbound::Suppressed { seq: 0, kind: "notice_rate" }));
                     return Ok(());
                 }
                 // #425: raised while a peer turn runs = one hop deeper.
                 let depth = self.active.as_ref().map_or(0, |(a, _)| a.peer_depth).saturating_add(1);
-                out.push((room.to_string(), Outbound::Notice { room: room.to_string(), text: bounded_reply(text, self.config.reply_max_bytes), depth }));
+                out.push((room.to_string(), Outbound::Notice { room: room.to_string(), text: bounded_reply(text, self.config.reply_max_bytes), depth, id }));
+            } else if let Some(id) = &id {
+                self.notice_result(Some(id), Err("invalid"));
             }
             return Ok(());
         }
@@ -999,6 +1022,19 @@ impl Responder {
         let turn_id = active.turn_id.clone();
         self.pending_tool = None;
         self.send_tool_result(&turn_id, tool_id, outcome);
+    }
+
+    /// #703: answer a notice `id` on the port — `notice_ack` (with the relay
+    /// `seq` when known) after the post, or `notice_nack` with a reason when
+    /// it is not posted. The sender keeps its row until one of them arrives
+    /// (at-least-once); only a frame that carried an `id` is ever answered, so
+    /// a worker that never sends one sees no new frame type.
+    pub fn notice_result(&self, id: Option<&str>, result: Result<Option<i64>, &str>) {
+        let line = match result {
+            Ok(seq) => serde_json::json!({ "type": "notice_ack", "id": id, "seq": seq }),
+            Err(reason) => serde_json::json!({ "type": "notice_nack", "id": id, "reason": reason }),
+        };
+        let _ = self.to_child.send(Cmd::Line(line.to_string()));
     }
 
     fn send_tool_result(&self, turn_id: &str, tool_id: &str, outcome: Result<serde_json::Value, String>) {
@@ -1188,6 +1224,12 @@ pub fn parse_approval_reply(text: &str) -> Option<(u64, bool)> {
 }
 
 /// #474 `notice` room: the relay identifier rule `[A-Za-z0-9_-]{1,64}`.
+/// #703: a notice `id` the sender can match an answer to — 1..=128 bytes of
+/// `[A-Za-z0-9._:-]` (a queue row id or transaction id), nothing else.
+fn valid_notice_id(id: &str) -> bool {
+    (1..=128).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
+}
+
 fn is_room_id(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
@@ -1569,6 +1611,9 @@ for line in sys.stdin:
             print(json.dumps({"type": "notice", "room": "bad room!", "text": "x"}), flush=True)
             print(json.dumps({"type": "notice", "room": "soonwook", "text": " "}), flush=True)
             print(json.dumps({"type": "notice", "text": "no room"}), flush=True)
+    elif cmd["type"] in ("notice_ack", "notice_nack"):
+        # #703: hand the answer back as an id-less notice (room "acks") so a test can read it.
+        print(json.dumps({"type": "notice", "room": "acks", "text": json.dumps(cmd, sort_keys=True)}), flush=True)
     elif cmd["type"] == "tool-result":
         print(json.dumps({"type": "result", "turn_id": cmd["turn_id"], "status": "complete", "session_id": "s1", "text": "tool:" + json.dumps(cmd, sort_keys=True)}), flush=True)
     elif cmd["type"] in ("approve", "deny"):
@@ -1690,7 +1735,7 @@ for line in sys.stdin:
             ("dungae".to_string(), Outbound::StatusNotice { room: "dungae".into(), text: "⏳ 대기 중 · PR #603 CI".into() }),
             ("dungae".to_string(), Outbound::Suppressed { seq: 0, kind: "status_notice_rate" }),
             ("soonwook".to_string(), Outbound::StatusNotice { room: "soonwook".into(), text: "⏳ 대기 중 · other room".into() }),
-            ("dungae".to_string(), Outbound::Notice { room: "dungae".into(), text: "reminder".into(), depth: 1 }),
+            ("dungae".to_string(), Outbound::Notice { room: "dungae".into(), text: "reminder".into(), depth: 1, id: None }),
             ("dungae".to_string(), Outbound::Suppressed { seq: 0, kind: "notice_rate" }),
         ], "bad room / blank text unsaid; status spacing does not consume the notice cap");
 
@@ -1714,6 +1759,63 @@ for line in sys.stdin:
     }
 
     #[test]
+    fn notice_id_is_carried_and_every_refusal_is_answered_on_the_port() {
+        // #703: a valid id rides the Notice; a malformed id, a bad room / blank
+        // text, or the per-minute cap answers `notice_nack` at once; an id-less
+        // frame is never answered (the #474 wire is unchanged).
+        let mut r = fake(|c| c.notice_per_min = 1, None);
+        let frame = |room: &str, text: &str, id: serde_json::Value| serde_json::json!({"type": "notice", "room": room, "text": text, "id": id});
+        let mut out = Vec::new();
+        r.handle(frame("dungae", "카드 결제", serde_json::json!("q:17")), &mut out).unwrap();
+        r.handle(frame("dungae", "x", serde_json::json!(42)), &mut out).unwrap();
+        r.handle(frame("dungae", "x", serde_json::json!("has space")), &mut out).unwrap();
+        r.handle(frame("dungae", "x", serde_json::json!("a".repeat(129))), &mut out).unwrap();
+        r.handle(frame("bad room!", "x", serde_json::json!("q:18")), &mut out).unwrap();
+        r.handle(frame("dungae", "  ", serde_json::json!("q:19")), &mut out).unwrap();
+        r.handle(frame("dungae", "over the cap", serde_json::json!("q:20")), &mut out).unwrap();
+        r.handle(serde_json::json!({"type": "notice", "room": "bad room!", "text": "no id, no answer"}), &mut out).unwrap();
+        r.handle(frame("dungae", "null id is no id", serde_json::Value::Null), &mut out).unwrap();
+        assert_eq!(out, vec![
+            ("dungae".to_string(), Outbound::Notice { room: "dungae".into(), text: "카드 결제".into(), depth: 1, id: Some("q:17".into()) }),
+            ("dungae".to_string(), Outbound::Suppressed { seq: 0, kind: "notice_bad_id" }),
+            ("dungae".to_string(), Outbound::Suppressed { seq: 0, kind: "notice_bad_id" }),
+            ("dungae".to_string(), Outbound::Suppressed { seq: 0, kind: "notice_bad_id" }),
+            ("dungae".to_string(), Outbound::Suppressed { seq: 0, kind: "notice_rate" }),
+            ("dungae".to_string(), Outbound::Suppressed { seq: 0, kind: "notice_rate" }),
+        ]);
+        // The poll loop's answer after the post, then what the worker read, in order
+        // (the echoed answers are notices for room "acks": lift the cap for them).
+        r.config.notice_per_min = 100;
+        r.notice_result(Some("q:17"), Ok(Some(965)));
+        r.notice_result(Some("q:21"), Ok(None));
+        let answers: Vec<serde_json::Value> = pump_until(&mut r, 8).into_iter().map(|o| match o {
+            Outbound::Notice { room, text, id: None, .. } if room == "acks" => serde_json::from_str(&text).unwrap(),
+            other => panic!("unexpected {other:?}"),
+        }).collect();
+        let nack = |id: serde_json::Value, reason: &str| serde_json::json!({"type": "notice_nack", "id": id, "reason": reason});
+        assert_eq!(answers, vec![
+            nack(serde_json::Value::Null, "bad_id"),
+            nack(serde_json::Value::Null, "bad_id"),
+            nack(serde_json::Value::Null, "bad_id"),
+            nack(serde_json::json!("q:18"), "invalid"),
+            nack(serde_json::json!("q:19"), "invalid"),
+            nack(serde_json::json!("q:20"), "rate"),
+            serde_json::json!({"type": "notice_ack", "id": "q:17", "seq": 965}),
+            serde_json::json!({"type": "notice_ack", "id": "q:21", "seq": null}),
+        ]);
+    }
+
+    #[test]
+    fn notice_id_shape() {
+        for ok in ["1", "q:17", "card-feeder.row_42", &"a".repeat(128)] {
+            assert!(valid_notice_id(ok), "{ok}");
+        }
+        for bad in ["", "has space", "줄", "a/b", "x\n", &"a".repeat(129)] {
+            assert!(!valid_notice_id(bad), "{bad}");
+        }
+    }
+
+    #[test]
     fn notice_needs_no_active_turn_but_a_room_and_text() {
         let mut r = fake(|_| {}, None);
         r.offer(inbound(9, "owner-pc", "notify")).unwrap();
@@ -1722,7 +1824,7 @@ for line in sys.stdin:
         got.extend(r.pump().unwrap());
         assert_eq!(got, vec![
             Outbound::Reply { seq: 9, text: "echo:notify|@owner-pc:hande".into() },
-            Outbound::Notice { room: "soonwook".into(), text: "reminder".into(), depth: 1 },
+            Outbound::Notice { room: "soonwook".into(), text: "reminder".into(), depth: 1, id: None },
         ], "a bad room, a blank text and a missing room are not posted");
         assert!(r.active.is_none());
         assert!(is_room_id("family-acc") && !is_room_id("") && !is_room_id(&"a".repeat(65)) && !is_room_id("방"));
@@ -2226,7 +2328,7 @@ for line in f:
         r.offer(inbound_in("dungae", 2, "notify")).unwrap();
         let got = pump_routed_until(&mut r, 2);
         assert_eq!(got[0].0, "dungae");
-        assert_eq!(got[1], ("soonwook".to_string(), Outbound::Notice { room: "soonwook".into(), text: "reminder".into(), depth: 1 }));
+        assert_eq!(got[1], ("soonwook".to_string(), Outbound::Notice { room: "soonwook".into(), text: "reminder".into(), depth: 1, id: None }));
     }
 
     /// #423: the inbox remembers the turn's room, so the restart notice lands
@@ -2291,9 +2393,9 @@ for line in f:
         r.offer(inbound_in("soonwook", 5, "noticein")).unwrap();
         let got = pump_routed_until(&mut r, 4);
         assert_eq!(got, vec![
-            ("fleet".to_string(), Outbound::Notice { room: "fleet".into(), text: "mid-turn".into(), depth: 2 }),
+            ("fleet".to_string(), Outbound::Notice { room: "fleet".into(), text: "mid-turn".into(), depth: 2, id: None }),
             ("fleet".to_string(), Outbound::Suppressed { seq: 4, kind: "reply" }),
-            ("fleet".to_string(), Outbound::Notice { room: "fleet".into(), text: "mid-turn".into(), depth: 1 }),
+            ("fleet".to_string(), Outbound::Notice { room: "fleet".into(), text: "mid-turn".into(), depth: 1, id: None }),
             ("soonwook".to_string(), Outbound::Reply { seq: 5, text: "peer:None".into() }),
         ], "a notice raised inside a peer turn is one hop deeper");
     }
@@ -2322,8 +2424,8 @@ for line in f:
         }
         let got: Vec<Outbound> = pump_until(&mut r, 6).into_iter().filter(|o| !matches!(o, Outbound::Reply { .. })).collect();
         assert_eq!(got, vec![
-            Outbound::Notice { room: "soonwook".into(), text: "reminder".into(), depth: 1 },
-            Outbound::Notice { room: "soonwook".into(), text: "reminder".into(), depth: 1 },
+            Outbound::Notice { room: "soonwook".into(), text: "reminder".into(), depth: 1, id: None },
+            Outbound::Notice { room: "soonwook".into(), text: "reminder".into(), depth: 1, id: None },
             Outbound::Suppressed { seq: 0, kind: "notice_rate" },
         ]);
         let mut unlimited = HashMap::new();

@@ -195,6 +195,19 @@ room_remove / room_close / room_mode`) 호출마다 SDK `can_use_tool` → 이 �
     `kind=status_notice_rate`). 일반 notice 의 분당 상한(`notice_per_min`)과는 별개다. 앱은 5분 갱신이 없으면
     말풍선을 지우므로 브리지는 대기가 남아 있는 동안 ≤2분마다 다시 보낸다. 모르는 `kind` 는 일반 notice 다 —
     옛 봇은 `kind` 를 무시하고 글로 게시하므로 켜는 순서는 **봇 교체 → 브리지 설정**. 저널 `agent_outbound` `kind=status`.
+  - `"id":"<불투명 문자열>"` (family-messenger#703, 선택): 보낸 쪽(feeder)이 큐 행을 **확인 응답을 받은 뒤에만** 지우도록
+    봇이 같은 포트(같은 연결)로 답한다. `id` 는 `[A-Za-z0-9._:-]{1,128}`. **일반 notice 에만** 답한다(`kind:"status"` 는 답 없음).
+    - 릴레이가 게시를 받은 뒤(POST 성공): `{"type":"notice_ack","id":"…","seq":N}` — 같은 `client_id` 가 이미 릴레이에
+      있으면(`client_id_reuse`) `seq` 는 `null`. 409 `cas_mismatch` 로 재시도 큐에 들어간 notice 는 재게시가 성공한 뒤에 답한다.
+    - 게시하지 않을 때: `{"type":"notice_nack","id":…,"reason":"…"}`. `reason` — `rate`(방당 분당 상한) · `conflict`(재시도
+      8회 소진) 은 **잠시 뒤 다시 보낸다**. `invalid`(방 식별자·빈 본문) · `bad_id`(`id` 모양이 틀림 → 응답의 `id` 는 `null`, 게시도
+      안 함) · `no_agent_room` · `notice_not_agent_room` · `not_joined_or_halted` 는 기록 후 지운다.
+    - POST 가 실패해 봇 세션이 끝나면(릴레이 중지·재시작) **답이 없다** — 연결이 끊기면 보낸 쪽은 미확인 행을 다음 연결에서 다시
+      보낸다(at-least-once). 중복은 게시 직후·답을 쓰기 전에 봇이 죽은 경우에만 생긴다.
+    - `id` 가 없는 프레임은 지금과 같다(답 없음). 봇은 `id` 를 보낸 쪽에만 새 프레임을 쓰므로 응답기(ccc_adapter 등)는 바뀌지 않는다.
+    - 기능 감지(feeder): 이 기능이 없는 옛 봇은 `id` 를 무시하고 게시만 한다. 연결에서 `notice_ack`/`notice_nack` 를 **한 번이라도**
+      받기 전까지는 옛 방식(쓰고 나서 지움)을 유지하고, 받은 뒤부터 확인 응답 방식으로 바꾼다. 저널 `agent_notice_ack{room, seq}` ·
+      `agent_notice_nack{room, reason}`(`id` 는 남기지 않는다).
 
 저널: 게시된 두 프레임은 `agent_outbound`의 `kind`가 `interim`·`notice`로 남는다. 입력 중 표시(typing)는
 이 포트에 없고 봇은 릴레이 typing(#562)도 보내지 않는다. iOS `AgentThinking`은 타임라인만 보고 추정하므로

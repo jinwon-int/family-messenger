@@ -233,7 +233,13 @@ struct RoomState {
     /// attempts — and dropped (`echo_dropped`, non-fatal) after
     /// MAX_ECHO_ATTEMPTS, so a room that keeps moving cannot livelock the
     /// session (batch f: the drain used to loop inside one poll).
-    retry: VecDeque<(Vec<u8>, u32)>,
+    /// #703: the third slot is the notice `id` the sender waits on (an echo,
+    /// reply or id-less notice carries `None`).
+    retry: VecDeque<(Vec<u8>, u32, Option<String>)>,
+    /// #703: notice ids settled since the poll loop last looked — `Ok(seq)`
+    /// posted (`None` = the relay already had it), `Err(reason)` given up.
+    /// The agent section answers them on the responder port each round.
+    notice_results: Vec<(String, Result<Option<i64>, &'static str>)>,
     /// This room's MLS device (#372 P2: one `Device` = one group, so a
     /// multi-room bot holds one per room, all sharing the identity's signer).
     device: Device,
@@ -497,14 +503,14 @@ pub fn run(opts: Options) -> Result<(), BotError> {
     }
     let mut rooms = vec![RoomState {
         sync: RoomSync { room: opts.room.clone(), cursor: c0, epoch: e0, joined: j0, joinable: true, dirty: false, acked: c0, ack_sent: 0, ack_disabled: false, halted: halted0.is_some() },
-        echoes: x0, retry: VecDeque::new(), device, state_path: opts.state_file.clone(), mode: if agent.is_some() { Mode::Agent } else { Mode::Echo }, pending: None,
+        echoes: x0, retry: VecDeque::new(), notice_results: Vec::new(), device, state_path: opts.state_file.clone(), mode: if agent.is_some() { Mode::Agent } else { Mode::Echo }, pending: None,
     }];
     if let Some(watch) = &opts.watch_room {
         // The negative control: a room the bot is never invited to. It must
         // stay unjoined and silent there for the whole session.
         rooms.push(RoomState {
             sync: RoomSync { room: watch.clone(), cursor: 0, epoch: 0, joined: false, joinable: false, dirty: false, acked: 0, ack_sent: 0, ack_disabled: true, halted: false },
-            echoes: 0, retry: VecDeque::new(), device: Device::new(&opts.device).map_err(|_| BotError::Local("device new: identity shape rejected"))?, state_path: None, mode: Mode::Watch, pending: None,
+            echoes: 0, retry: VecDeque::new(), notice_results: Vec::new(), device: Device::new(&opts.device).map_err(|_| BotError::Local("device new: identity shape rejected"))?, state_path: None, mode: Mode::Watch, pending: None,
         });
     }
     let typing = TypingRoute::new(&opts.base, opts.access.clone());
@@ -648,8 +654,11 @@ fn run_rounds(
                 }
                 // #423: the item goes to its turn's room (or a notice's own
                 // room); `""` and the single-room wire keep the one agent room.
+                // #703: a notice the sender waits on; every drop below answers it.
+                let notice_id = match &item { Outbound::Notice { id, .. } => id.clone(), _ => None };
                 let Some(main) = target_room(rooms, multi, &item_room, &item) else {
                     emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": item_room, "reason": "no_agent_room" }));
+                    nack_notice(responder, &item_room, notice_id.as_deref(), "no_agent_room");
                     continue;
                 };
                 if keepalive.room() == Some(main.room.as_str()) {
@@ -669,6 +678,7 @@ fn run_rounds(
                         // carries agent text (B-H3); a notice addressed
                         // anywhere else stays unsaid.
                         emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": room, "reason": "notice_not_agent_room" }));
+                        nack_notice(responder, room, notice_id.as_deref(), "notice_not_agent_room");
                     }
                     _ => {
                         let mut text = agent_text(&item);
@@ -682,6 +692,7 @@ fn run_rounds(
                         }));
                         if !main.joined || main.halted {
                             emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": main.room, "reason": "not_joined_or_halted" }));
+                            nack_notice(responder, &main.room, notice_id.as_deref(), "not_joined_or_halted");
                             continue;
                         }
                         if matches!(item, Outbound::Status { .. } | Outbound::StatusNotice { .. }) {
@@ -692,10 +703,23 @@ fn run_rounds(
                             }
                             continue;
                         }
-                        if let Err(err) = publish_echo(ctx, main, text.as_bytes(), 0) {
+                        // #703: a failed POST ends the session unanswered — the
+                        // sender resends the row on its next connection.
+                        if let Err(err) = publish_echo(ctx, main, text.as_bytes(), 0, notice_id.as_deref()) {
                             return Err(report_dropped(main, text.as_bytes(), err));
                         }
                     }
+                }
+            }
+            // #703: answer every notice id settled this round — the posts just
+            // made and the cas_mismatch replays the room polls ran.
+            for state in rooms.iter_mut() {
+                for (id, result) in std::mem::take(&mut state.notice_results) {
+                    match result {
+                        Ok(seq) => emit(&serde_json::json!({ "event": "agent_notice_ack", "room": state.room, "seq": seq })),
+                        Err(reason) => emit(&serde_json::json!({ "event": "agent_notice_nack", "room": state.room, "reason": reason })),
+                    }
+                    responder.notice_result(Some(&id), result);
                 }
             }
         }
@@ -710,6 +734,15 @@ fn run_rounds(
             status(rooms);
         }
         std::thread::sleep(POLL);
+    }
+}
+
+/// #703: a notice with an `id` that will not be posted — journal it and tell
+/// the sender, which then drops its row (or retries a transient reason).
+fn nack_notice(responder: &Responder, room: &str, id: Option<&str>, reason: &'static str) {
+    if let Some(id) = id {
+        emit(&serde_json::json!({ "event": "agent_notice_nack", "room": room, "reason": reason }));
+        responder.notice_result(Some(id), Err(reason));
     }
 }
 
@@ -871,13 +904,16 @@ impl room::RoomHost for BotRoom<'_, '_> {
     fn after_page(&mut self) -> Result<(), BotError> {
         let state = &mut *self.state;
         let due = std::mem::take(&mut state.retry);
-        for (plaintext, attempts) in due {
+        for (plaintext, attempts, notice) in due {
             if attempts >= MAX_ECHO_ATTEMPTS {
                 let err = BotError::Local("echo replay attempts exhausted");
                 report_dropped(state, &plaintext, err);
+                if let Some(id) = notice {
+                    state.notice_results.push((id, Err("conflict")));
+                }
                 continue;
             }
-            if let Err(err) = publish_echo(self.ctx, state, &plaintext, attempts) {
+            if let Err(err) = publish_echo(self.ctx, state, &plaintext, attempts, notice.as_deref()) {
                 return Err(report_dropped(state, &plaintext, err));
             }
         }
@@ -972,7 +1008,7 @@ fn echo(ctx: &Ctx, state: &mut RoomState, ev: &StoredRow, sender: &[u8], plainte
             }
         },
         Mode::Silent | Mode::Watch | Mode::Alert => Ok(()),
-        Mode::Echo => match publish_echo(ctx, state, plaintext, 0) {
+        Mode::Echo => match publish_echo(ctx, state, plaintext, 0, None) {
             Ok(()) => Ok(()),
             Err(err) => Err(report_dropped(state, plaintext, err)),
         },
@@ -1146,7 +1182,7 @@ fn post_queue_notice(ctx: &Ctx, state: &mut RoomState, text: &str) {
         emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": state.room, "reason": "not_joined_or_halted" }));
         return;
     }
-    if let Err(err) = publish_echo(ctx, state, text.as_bytes(), 0) {
+    if let Err(err) = publish_echo(ctx, state, text.as_bytes(), 0, None) {
         emit(&serde_json::json!({
             "event": "agent_outbound_dropped", "room": state.room, "reason": "queue_notice_send_failed", "error": err.to_string(),
         }));
@@ -1248,24 +1284,36 @@ impl room::SendHost for BotSender<'_, '_> {
 /// leaves (review 2 B-H2). A 409 cas_mismatch queues the plaintext for the
 /// next poll (replayed once at the fresh epoch); a 409 client_id_reuse means an
 /// earlier incarnation already delivered it.
-fn publish_echo(ctx: &Ctx, state: &mut RoomState, plaintext: &[u8], attempts: u32) -> Result<(), BotError> {
+fn publish_echo(ctx: &Ctx, state: &mut RoomState, plaintext: &[u8], attempts: u32, notice: Option<&str>) -> Result<(), BotError> {
     let outcome = room::send_application(&mut BotSender { ctx, state }, ctx.own, plaintext)?;
     match outcome {
-        SendOutcome::Sent { client_id, response } => emit(&serde_json::json!({
-            "event": "echo", "room": state.room, "bytes": plaintext.len(),
-            "seq": response.seq, "epoch": response.epoch, "client_id": client_id, "duplicate": response.duplicate,
-        })),
+        SendOutcome::Sent { client_id, response } => {
+            emit(&serde_json::json!({
+                "event": "echo", "room": state.room, "bytes": plaintext.len(),
+                "seq": response.seq, "epoch": response.epoch, "client_id": client_id, "duplicate": response.duplicate,
+            }));
+            if let Some(id) = notice {
+                state.notice_results.push((id.to_string(), Ok(Some(response.seq))));
+            }
+        }
         SendOutcome::Conflict { client_id, error } => {
-            state.retry.push_back((plaintext.to_vec(), attempts + 1));
+            // #703: a queued notice is answered when the replay lands (or is given up).
+            state.retry.push_back((plaintext.to_vec(), attempts + 1, notice.map(str::to_string)));
             emit(&serde_json::json!({
                 "event": "echo_conflict", "room": state.room, "client_id": client_id,
                 "attempt": attempts + 1, "error": error.to_string(),
             }));
         }
-        SendOutcome::AlreadyDelivered { client_id, error } => emit(&serde_json::json!({
-            "event": "echo_client_id_reuse", "room": state.room, "client_id": client_id,
-            "error": error.to_string(),
-        })),
+        SendOutcome::AlreadyDelivered { client_id, error } => {
+            emit(&serde_json::json!({
+                "event": "echo_client_id_reuse", "room": state.room, "client_id": client_id,
+                "error": error.to_string(),
+            }));
+            // The relay already holds this client_id's post: delivered, seq unknown here.
+            if let Some(id) = notice {
+                state.notice_results.push((id.to_string(), Ok(None)));
+            }
+        }
     }
     Ok(())
 }
@@ -1806,7 +1854,7 @@ fn load_room(dir: &Path, room: &str, device: &str) -> Result<RoomState, BotError
     let halted = refused_marker_path(&path).exists();
     Ok(RoomState {
         sync: RoomSync { room: room.to_string(), cursor, epoch, joined, joinable: true, dirty: false, acked: cursor, ack_sent: 0, ack_disabled: false, halted },
-        echoes, retry: VecDeque::new(), device: dev, state_path: Some(path), mode: read_mode(dir, room), pending: None,
+        echoes, retry: VecDeque::new(), notice_results: Vec::new(), device: dev, state_path: Some(path), mode: read_mode(dir, room), pending: None,
     })
 }
 
@@ -1913,7 +1961,7 @@ impl Steward {
                 std::fs::write(room_mode_path(&self.rooms_dir, &cmd.room), mode.name()).map_err(|_| BotError::Local("mode file write"))?;
                 rooms.push(RoomState {
                     sync: RoomSync { room: cmd.room.clone(), cursor: 0, epoch: 0, joined: true, joinable: true, dirty: false, acked: 0, ack_sent: 0, ack_disabled: false, halted: false },
-                    echoes: 0, retry: VecDeque::new(), device: dev, state_path: Some(path), mode, pending: None,
+                    echoes: 0, retry: VecDeque::new(), notice_results: Vec::new(), device: dev, state_path: Some(path), mode, pending: None,
                 });
                 Ok(serde_json::json!({ "op": "create", "room": cmd.room, "mode": mode.name(), "epoch": 0 }))
             }
@@ -1929,7 +1977,7 @@ impl Steward {
                 std::fs::write(room_mode_path(&self.rooms_dir, &cmd.room), Mode::Silent.name()).map_err(|_| BotError::Local("mode file write"))?;
                 rooms.push(RoomState {
                     sync: RoomSync { room: cmd.room.clone(), cursor: 0, epoch: 0, joined: false, joinable: true, dirty: false, acked: 0, ack_sent: 0, ack_disabled: false, halted: false },
-                    echoes: 0, retry: VecDeque::new(), device: dev, state_path: Some(path), mode: Mode::Silent, pending: None,
+                    echoes: 0, retry: VecDeque::new(), notice_results: Vec::new(), device: dev, state_path: Some(path), mode: Mode::Silent, pending: None,
                 });
                 Ok(serde_json::json!({ "op": "join", "room": cmd.room, "key_ref": key_ref, "stored": stored }))
             }
@@ -2420,8 +2468,8 @@ for line in sys.stdin:
         assert!(agent_text(&Outbound::Uncertain { seq: 9, reason: "watchdog".into() }).contains("#9"));
         assert_eq!(agent_kind(&Outbound::Reply { seq: 1, text: String::new() }), "reply");
         assert_eq!(agent_kind(&Outbound::Interim { seq: 1, text: String::new() }), "interim");
-        assert_eq!(agent_text(&Outbound::Notice { room: "r".into(), text: "⏰".into(), depth: 1 }), "⏰");
-        assert_eq!(agent_kind(&Outbound::Notice { room: "r".into(), text: String::new(), depth: 1 }), "notice");
+        assert_eq!(agent_text(&Outbound::Notice { room: "r".into(), text: "⏰".into(), depth: 1, id: None }), "⏰");
+        assert_eq!(agent_kind(&Outbound::Notice { room: "r".into(), text: String::new(), depth: 1, id: None }), "notice");
         // ccc-node#2590: a turnless status line is journaled and posted as a status.
         assert_eq!(agent_kind(&Outbound::StatusNotice { room: "r".into(), text: String::new() }), "status");
         assert_eq!(agent_text(&Outbound::StatusNotice { room: "r".into(), text: "⏳ 대기 중".into() }), "⏳ 대기 중");
@@ -2532,7 +2580,7 @@ for line in sys.stdin:
     fn joined_room_at(room: &str, cursor: i64, state_path: Option<PathBuf>) -> RoomState {
         RoomState {
             sync: RoomSync { room: room.into(), cursor, epoch: 2, joined: true, joinable: true, dirty: false, acked: cursor, ack_sent: cursor, ack_disabled: false, halted: false },
-            echoes: 3, retry: VecDeque::new(), device: Device::new("bot-1").unwrap_or_else(|_| panic!("device new")), state_path, mode: Mode::Echo, pending: None,
+            echoes: 3, retry: VecDeque::new(), notice_results: Vec::new(), device: Device::new("bot-1").unwrap_or_else(|_| panic!("device new")), state_path, mode: Mode::Echo, pending: None,
         }
     }
 
@@ -2545,6 +2593,28 @@ for line in sys.stdin:
     /// cas_mismatch queues the plaintext for the next poll (attempt 1), a reused
     /// dedup key is skipped, and the echo counter is persisted before each POST.
     #[test]
+    fn publish_echo_settles_a_notice_id_only_once_the_relay_has_it() {
+        // #703: conflict → the id rides the replay entry, nothing settled yet;
+        // client_id_reuse → delivered with no seq; 200 → delivered with its seq.
+        let (base, server) = canned_relay_with_status(vec![
+            (409, r#"{"error":"cas_mismatch"}"#.to_string()),
+            (409, r#"{"error":"client_id_reuse"}"#.to_string()),
+            (200, r#"{"seq":21,"epoch":2,"revision":1,"duplicate":false}"#.to_string()),
+        ]);
+        let client = Client::with_access(&base, api::Access::None);
+        let ctx = Ctx { client: &client, own: "bot-1", typing: None };
+        let mut state = joined_room_at("family", 4, Some(state_path("send-703")));
+        state.device.create().expect("a one-member group to encrypt in");
+        publish_echo(&ctx, &mut state, b"card 1", 0, Some("row-1")).unwrap_or_else(|e| panic!("conflict: {e}"));
+        assert_eq!(state.retry[0], (b"card 1".to_vec(), 1, Some("row-1".to_string())));
+        assert!(state.notice_results.is_empty(), "a queued replay is not an ack");
+        publish_echo(&ctx, &mut state, b"card 2", 0, Some("row-2")).unwrap_or_else(|e| panic!("reuse: {e}"));
+        publish_echo(&ctx, &mut state, b"card 3", 0, Some("row-3")).unwrap_or_else(|e| panic!("sent: {e}"));
+        assert_eq!(state.notice_results, vec![("row-2".to_string(), Ok(None)), ("row-3".to_string(), Ok(Some(21)))]);
+        server.join().expect("relay");
+    }
+
+    #[test]
     fn publish_echo_queues_a_conflict_and_skips_a_reused_key() {
         let (base, server) = canned_relay_with_status(vec![
             (409, r#"{"error":"cas_mismatch"}"#.to_string()),
@@ -2556,12 +2626,12 @@ for line in sys.stdin:
         let path = state_path("send-2c");
         let mut state = joined_room_at("family", 4, Some(path.clone()));
         state.device.create().expect("a one-member group to encrypt in");
-        publish_echo(&ctx, &mut state, b"hello", 0).unwrap_or_else(|e| panic!("conflict: {e}"));
+        publish_echo(&ctx, &mut state, b"hello", 0, None).unwrap_or_else(|e| panic!("conflict: {e}"));
         assert_eq!(state.retry.len(), 1, "cas_mismatch queues the plaintext");
-        assert_eq!(state.retry[0], (b"hello".to_vec(), 1));
-        publish_echo(&ctx, &mut state, b"again", 0).unwrap_or_else(|e| panic!("reuse: {e}"));
+        assert_eq!(state.retry[0], (b"hello".to_vec(), 1, None));
+        publish_echo(&ctx, &mut state, b"again", 0, None).unwrap_or_else(|e| panic!("reuse: {e}"));
         assert_eq!(state.retry.len(), 1, "client_id_reuse is not replayed");
-        publish_echo(&ctx, &mut state, b"third", 0).unwrap_or_else(|e| panic!("sent: {e}"));
+        publish_echo(&ctx, &mut state, b"third", 0, None).unwrap_or_else(|e| panic!("sent: {e}"));
         assert_eq!(state.echoes, 6, "three dedup keys reserved after 3 earlier echoes");
         assert!(!state.dirty, "persisted before each POST");
         let on_disk: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).expect("state file")).expect("json");
@@ -2647,7 +2717,7 @@ for line in sys.stdin:
         let path = state_path("send-restart");
         let mut state = joined_room_at("family", 4, Some(path.clone()));
         state.device.create().expect("a one-member group to encrypt in");
-        publish_echo(&ctx, &mut state, b"reply", 0).unwrap_or_else(|e| panic!("a relay restart must not end the send: {e}"));
+        publish_echo(&ctx, &mut state, b"reply", 0, None).unwrap_or_else(|e| panic!("a relay restart must not end the send: {e}"));
         assert_eq!(state.echoes, 4, "one dedup key for the reply, not one per attempt");
         assert!(state.retry.is_empty(), "delivered, nothing queued");
         let seen = server.join().expect("server thread");
@@ -3055,7 +3125,7 @@ for line in sys.stdin:
     fn target_room_routes_by_the_items_room() {
         let mut rooms = vec![room_in("soonwook", Mode::Agent), room_in("fleet", Mode::Alert), room_in("family", Mode::Silent), room_in("dungae", Mode::Agent)];
         let reply = Outbound::Reply { seq: 1, text: "x".into() };
-        let notice = |room: &str| Outbound::Notice { room: room.into(), text: "n".into(), depth: 1 };
+        let notice = |room: &str| Outbound::Notice { room: room.into(), text: "n".into(), depth: 1, id: None };
         let pick = |rooms: &mut Vec<RoomState>, multi: bool, room: &str, item: &Outbound| target_room(rooms, multi, room, item).map(|r| r.room.clone());
         // Off: always the first agent room (the caller drops a notice for another room).
         assert_eq!(pick(&mut rooms, false, "dungae", &reply).as_deref(), Some("soonwook"));
