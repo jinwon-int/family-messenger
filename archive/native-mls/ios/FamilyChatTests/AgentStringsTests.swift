@@ -141,7 +141,7 @@ final class AgentStringsTests: XCTestCase {
     func testNamesMatchMatrix() {
         XCTAssertEqual(Strings.agentNames["gongmyoung"], "공명✴️")
         XCTAssertEqual(Strings.agentNames.count, 12)
-        XCTAssertEqual(Strings.roomLabel("family"), "가족")
+        XCTAssertEqual(Strings.roomLabel("family"), "🏠 가족")
         XCTAssertEqual(Strings.roomLabel("family-acc"), "공명✴️")
         XCTAssertEqual(Strings.roomLabel("dungae"), "등애✳️")
         XCTAssertEqual(Strings.roomLabel("test-rs2"), "test-rs2")
