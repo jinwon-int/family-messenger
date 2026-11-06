@@ -10,6 +10,7 @@ import FamilyMLSCore
 #if canImport(UIKit)
 import UIKit
 import ImageIO
+import QuickLookThumbnailing
 
 /// 말풍선 하나의 준비물. `thumbnail == nil` = 이미지가 아니거나 디코드하지 못했다(파일 말풍선으로 보인다).
 struct AttachmentPreview {
@@ -20,6 +21,8 @@ struct AttachmentPreview {
     var size: Int = 0
     /// #647: 원본의 표시 방향 픽셀 크기(ImageIO 헤더) — 없으면 썸네일 비트맵 크기. 말풍선 크기·구 사진 크기 기억에 쓴다.
     var pixelSize: PixelSize? = nil
+    /// PDF(내용 판별) 첫 장 미리보기 — 시스템 썸네일 서비스가 앱 밖 프로세스에서 그린다(`PDFFirstPage`). 실패하면 nil(카드는 아이콘).
+    var pdfFirstPage: UIImage? = nil
 }
 
 /// 방·seq → 준비물. `NSCache` 는 스레드 안전하고 메모리 압박 때 스스로 비운다(비워지면 말풍선이 다시 준비할 뿐).
@@ -41,8 +44,8 @@ final class AttachmentPreviewCache {
 
     /// 캐시 비용 = 축소 비트맵의 픽셀 바이트(RGBA) — 공유 파일은 디스크라 세지 않는다.
     static func cost(of preview: AttachmentPreview) -> Int {
-        guard let cg = preview.thumbnail?.cgImage else { return 1 }
-        return max(1, cg.bytesPerRow * cg.height)
+        let bitmaps = [preview.thumbnail, preview.pdfFirstPage].compactMap { $0?.cgImage }
+        return max(1, bitmaps.reduce(0) { $0 + $1.bytesPerRow * $1.height })
     }
 
     private static func key(room: RoomID, seq: Int64) -> NSString { "\(room)\u{1F}\(seq)" as NSString }
@@ -54,16 +57,36 @@ final class AttachmentPreviewCache {
     /// 백그라운드에서 축소 디코드 + 공유 파일을 만들고 캐시에 넣는다. 이미 있으면 그대로 돌려준다.
     func prepare(record: MessageRecord, bytes: Data, scale: CGFloat) async -> AttachmentPreview {
         if let cached = preview(room: record.room, seq: record.seq) { return cached }
-        let made = await Task.detached(priority: .userInitiated) { () -> AttachmentPreview in
+        let made = await Task.detached(priority: .userInitiated) { () async -> AttachmentPreview in
             let thumbnail = AttachmentFormat.isImage(mime: record.body) ? AttachmentThumbnail.make(bytes, scale: scale) : nil
             let pixels = thumbnail.flatMap { thumb in
                 ImagePixelSize.probe(bytes) ?? thumb.cgImage.flatMap { PixelSize(width: $0.width, height: $0.height) }
             }
-            return AttachmentPreview(thumbnail: thumbnail, shareURL: AttachmentExport.temporaryURL(for: record, bytes: bytes),
-                                     mime: record.body, size: bytes.count, pixelSize: pixels)
+            let shareURL = AttachmentExport.temporaryURL(for: record, bytes: bytes)
+            // record.body = 받은 바이트를 sniff 한 MIME(v1 수신 때 · file-v2 는 복호화 뒤 `shown`) — 보낸 쪽 힌트가 아니다.
+            var firstPage: UIImage?
+            if AttachmentFormat.isPDF(mime: record.body), let shareURL {
+                firstPage = await PDFFirstPage.make(url: shareURL, scale: scale)
+            }
+            return AttachmentPreview(thumbnail: thumbnail, shareURL: shareURL,
+                                     mime: record.body, size: bytes.count, pixelSize: pixels, pdfFirstPage: firstPage)
         }.value
         cache.setObject(Entry(made), forKey: Self.key(room: record.room, seq: record.seq), cost: Self.cost(of: made))
         return made
+    }
+}
+
+/// PDF 첫 장 미리보기(오너 요청 2026-11-06). 받은 PDF 를 앱이 직접 파싱하지 않고 iOS 썸네일 서비스(`QLThumbnailGenerator`,
+/// 앱 밖 프로세스)에 공유용 임시 파일을 넘겨 카드 크기 그대로 받는다. 암호 걸린·손상된 PDF 는 nil.
+enum PDFFirstPage {
+    /// PDF 카드(`PDFAttachmentCard`)의 폭과 미리보기 칸 높이(pt) — 로딩 전후 같은 틀(#647).
+    static let cardWidth: CGFloat = 240
+    static let pageHeight: CGFloat = 300
+
+    static func make(url: URL, scale: CGFloat) async -> UIImage? {
+        let request = QLThumbnailGenerator.Request(fileAt: url, size: CGSize(width: cardWidth, height: pageHeight),
+                                                   scale: scale, representationTypes: .thumbnail)
+        return try? await QLThumbnailGenerator.shared.generateBestRepresentation(for: request).uiImage
     }
 }
 
