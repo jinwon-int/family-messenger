@@ -427,6 +427,40 @@ public final class URLSessionRelayTransport: RelayTransport {
         try makeRequest(method: "GET", path: PreviewSites.routePath)
     }
 
+    // MARK: - 방 순서 (#715 room-order v1)
+
+    public func roomOrder(device: DeviceID) async throws -> RoomOrderState {
+        // 200 {rooms, revision, updated_at}. 라우트가 없는 옛 릴레이는 404(코드 http_404) — 호출자가 이 세션에서는 다시 묻지 않는다.
+        try decode(RoomOrderState.self, await perform(try roomOrderRequest(device: device)))
+    }
+
+    public func putRoomOrder(device: DeviceID, rooms: [RoomID], baseRevision: Int64) async throws -> RoomOrderPutResult {
+        let (status, data) = try await exchange(try putRoomOrderRequest(device: device, rooms: rooms, baseRevision: baseRevision))
+        return try roomOrderPutResult(status: status, data: data)
+    }
+
+    /// GET /v2/me/room-order?device= — 다른 라우트와 같은 인증 헤더(makeRequest).
+    func roomOrderRequest(device: DeviceID) throws -> URLRequest {
+        try makeRequest(method: "GET", path: RoomOrderState.routePath, query: [URLQueryItem(name: "device", value: device)])
+    }
+
+    func putRoomOrderRequest(device: DeviceID, rooms: [RoomID], baseRevision: Int64) throws -> URLRequest {
+        try makeRequest(method: "PUT", path: RoomOrderState.routePath,
+                        body: try JSONEncoder().encode(RoomOrderPut(device: device, rooms: rooms, baseRevision: baseRevision)))
+    }
+
+    /// PUT 응답 매핑: 2xx → `.saved`, 409 `revision_conflict`(본문 = 서버 현재 값) → `.conflict`, 그 밖 → `relayFailure`
+    /// (409 인데 본문이 깨졌으면 `.refused(revision_conflict, 409)` — 앱은 다음 주기의 GET 으로 서버 값을 받는다).
+    func roomOrderPutResult(status: Int, data: Data) throws -> RoomOrderPutResult {
+        if (200..<300).contains(status) { return .saved(try decode(RoomOrderState.self, data)) }
+        if status == 409,
+           (try? JSONDecoder().decode(RelayErrorBody.self, from: data))?.error == RelayErrorCode.revisionConflict.rawValue,
+           let current = try? JSONDecoder().decode(RoomOrderState.self, from: data) {
+            return .conflict(current)
+        }
+        throw Self.relayFailure(status: status, data: data)
+    }
+
     /// 쿼리 값 인코딩: RFC 3986 unreserved 만 통과(`:`·`/`·`?`·`&`·`=`·`+`·`%` 모두 인코딩) — 서버 `Query().Get` 이 원래 값을 그대로 받는다.
     static func queryValue(_ value: String) -> String {
         value.addingPercentEncoding(withAllowedCharacters: pathSegmentAllowed) ?? value

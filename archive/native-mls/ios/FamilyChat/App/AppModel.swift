@@ -293,6 +293,15 @@ final class AppModel: ObservableObject {
     private var meRoundsSince = 0
     /// 릴레이가 셀프서비스 라우트를 모른다(404) — 이 세션에서는 다시 묻지 않는다(로비·타이핑과 같은 규칙).
     private var selfServiceUnsupported = false
+    /// #715 room-order v1: 이 세션(로그인 한 번)의 방 순서 동기화 판정(Core `RoomOrderSync` — 마지막 revision·404·간격·보내지 못한 변경).
+    private(set) var roomOrderSync = RoomOrderSync()
+    /// #715: 다음 기회(준비된 바퀴·목록 표시·당겨서 새로고침)에 `GET /v2/me/room-order` 를 묻는다 — 로그인·전면 복귀·목록 새로고침·실패 뒤 true.
+    /// 실제 간격(≥60초)은 `roomOrderSync.canFetch` 가 정한다.
+    private var roomOrderDue = true
+    /// #715: 마지막 방 순서 왕복(동기화 `serial` 밖, 최선 노력 — 화면을 막지 않는다). 테스트는 `roomOrderSettled()` 로 기다린다.
+    private(set) var roomOrderTask: Task<Void, Never>?
+    /// #715: 세션 번호 — 로그인·로그아웃·서버 전환마다 오른다. 늦게 끝난 지난 세션의 왕복은 새 판정기를 건드리지 않는다.
+    private var roomOrderSession = 0
     /// 후보를 다시 올릴 시각(만료 5분 전). nil = 지금.
     private var nextCandidatePostAt: Date?
     /// 마지막 후보 목록의 `policy_revision` — 승인 서명의 base_revision.
@@ -511,6 +520,7 @@ final class AppModel: ObservableObject {
         engine = nil; identitySeed = nil; registration = nil; rooms = []
         previewSitesLoad?.cancel(); previewSitesLoad = nil
         if previewSites != .fallback { previewSites = .fallback }   // #690: 다른 서버의 사이트 목록을 들고 가지 않는다
+        resetRoomOrderSync()
     }
 
     func login(_ credential: RelayCredential) {
@@ -525,6 +535,7 @@ final class AppModel: ObservableObject {
         readUnsupported = false; readSentSeq = [:]
         meDue = true; meRoundsSince = 0; selfServiceUnsupported = false; nextCandidatePostAt = nil
         enrollment = EnrollmentStatus(); candidates = []; candidateRevision = nil
+        resetRoomOrderSync()   // #715: 새 세션 — 첫 준비된 바퀴가 바로 묻는다(업데이트 뒤 첫 실행의 시드도 여기서)
         loadPreviewSites(transport)
         refreshRegistrationSubject()
         push.loggedIn()
@@ -553,6 +564,7 @@ final class AppModel: ObservableObject {
         typing = [:]; relayReadSeq = [:]; relayMuted = [:]
         agentStatuses = [:]; statusBoards = [:]
         me = nil; candidates = []; candidateRevision = nil
+        resetRoomOrderSync()
         phase = .needsLogin
         pushStatus = .off
         return Task {
@@ -811,6 +823,8 @@ final class AppModel: ObservableObject {
                 try await enrollTickLocked(transport)
             } else {
                 phase = haltedReasonFromRooms().map { .halted($0) } ?? .ready
+                // #715: 방 목록을 막 불러왔다 — 방 순서를 물을 때면(로그인·전면 복귀·새로고침 뒤, ≥60초) 따로 묻는다(이 바퀴를 기다리게 하지 않는다).
+                syncRoomOrderIfDue()
                 try await refreshExtrasLocked(transport)
                 rooms = try deps.messageStore.rooms()
                 phase = haltedReasonFromRooms().map { .halted($0) } ?? .ready
@@ -1243,6 +1257,7 @@ final class AppModel: ObservableObject {
         suspended = false   // #701: 폴링·재전송·타임라인 읽기 재개
         lobbyCheckDue = true
         meDue = true
+        roomOrderDue = true   // #715: 다른 기기에서 바꾼 순서(≥60초 간격)
         // 설정 앱에서 미리보기를 바꾸고 돌아온 경우가 여기다(#520).
         await refreshLockScreenPreview()
         await refresh()
@@ -2115,6 +2130,95 @@ final class AppModel: ObservableObject {
         let ciphertext = try await transport.getBlob(room: room, device: deviceId, id: descriptor.blob)
         // 최대 50 MiB 해시·복호화는 메인 스레드 밖에서.
         return try await Task.detached(priority: .userInitiated) { try FileV2Format.open(ciphertext, descriptor) }.value
+    }
+
+    // MARK: - 방 순서 동기화 (#715 room-order v1)
+
+    /// 목록 화면이 보이거나 당겨서 새로고침했다 — 방 순서를 다시 물을 때가 됐으면(≥60초) 묻는다.
+    func requestRoomOrderSync() {
+        roomOrderDue = true
+        syncRoomOrderIfDue()
+    }
+
+    /// 목록 화면의 순서 바꾸기(끌기 · ▲▼ · 「맨 위로 고정」): 로컬에 바로 저장하고(화면은 곧바로 바뀐다) 릴레이에 올린다
+    /// (`PUT base_revision = 마지막으로 본 revision`, 규칙 2). 아직 revision 을 모르면 다음 GET 뒤에 올린다. 404 릴레이면 로컬만.
+    func setRoomOrder(_ ids: [RoomID]) {
+        localPrefs.setOrder(ids)
+        let action = roomOrderSync.reordered(saved: localPrefs.roomOrder, rooms: listedRooms.map(\.room))
+        runRoomOrder(action)
+        if roomOrderSync.revision == nil { requestRoomOrderSync() }
+    }
+
+    /// 지금 묻는다: 전송·기기 ID 가 있고, 준비(또는 정지 표시) 상태이고, 릴레이에 닿고, 앞으로(백그라운드 아님) — 그리고 판정기가 허락할 때
+    /// (404 아님 · 왕복 없음 · 마지막 GET 뒤 60초). 결과는 판정기가 정한다: 채택(revision > 0) · 시드(revision 0 + 로컬 사용자 순서) · 올리기.
+    private func syncRoomOrderIfDue() {
+        guard roomOrderDue, let transport, !deviceId.isEmpty, !reconnecting, !suspended else { return }
+        switch phase { case .ready, .halted: break; default: return }
+        guard roomOrderSync.beginFetch(now: deps.clock()) else { return }
+        roomOrderDue = false
+        let device = deviceId, session = roomOrderSession
+        roomOrderTask = Task {
+            do {
+                let server = try await transport.roomOrder(device: device)
+                guard self.roomOrderSession == session else { return }   // 그 사이 로그아웃·재로그인·서버 전환
+                self.runRoomOrder(self.roomOrderSync.fetched(server, saved: self.localPrefs.roomOrder, rooms: self.listedRooms.map(\.room)))
+            } catch {
+                guard self.roomOrderSession == session else { return }
+                self.roomOrderFailed(error, route: "GET")
+            }
+        }
+    }
+
+    private func runRoomOrder(_ action: RoomOrderSync.Action) {
+        switch action {
+        case .none:
+            return
+        case .adopt(let rooms):
+            localPrefs.setOrder(rooms)
+            record("room-order: adopted relay order r\(roomOrderSync.revision ?? 0) (\(rooms.count) rooms)")
+        case .put(let rooms, let base):
+            guard let transport, !deviceId.isEmpty else { roomOrderSync.failed(.transient); return }
+            let device = deviceId, session = roomOrderSession
+            roomOrderTask = Task {
+                do {
+                    let result = try await transport.putRoomOrder(device: device, rooms: rooms, baseRevision: base)
+                    guard self.roomOrderSession == session else { return }
+                    if case .conflict(let server) = result { self.record("room-order: 409 base r\(base) → relay r\(server.revision)") }
+                    else if base == 0 { self.record("room-order: seeded relay with this device's order (\(rooms.count) rooms)") }
+                    self.runRoomOrder(self.roomOrderSync.putFinished(result, saved: self.localPrefs.roomOrder, rooms: self.listedRooms.map(\.room)))
+                } catch {
+                    guard self.roomOrderSession == session else { return }
+                    self.roomOrderFailed(error, route: "PUT")
+                }
+            }
+        }
+    }
+
+    /// 404 → 이 세션은 로컬만(다시 묻지 않는다) · 400 → 그 변경은 버림 · 그 밖(닿지 않음 등) → 다음 주기(≥60초)에 다시. 화면에는 올리지 않는다.
+    private func roomOrderFailed(_ error: Error, route: String) {
+        let failure = RoomOrderSync.Failure.classify(error)
+        roomOrderSync.failed(failure)
+        switch failure {
+        case .unsupported: record("room-order: relay has no room-order route (404) — local order only this session")
+        case .rejected: record("room-order: \(route) rejected: \(error)")
+        case .transient: roomOrderDue = true
+        }
+    }
+
+    private func resetRoomOrderSync() {
+        roomOrderTask?.cancel(); roomOrderTask = nil
+        roomOrderSession += 1
+        roomOrderSync = RoomOrderSync()
+        roomOrderDue = true
+    }
+
+    /// 테스트: 이어지는 방 순서 왕복(GET → PUT → …)이 다 끝날 때까지 기다린다.
+    func roomOrderSettled() async {
+        var last: Task<Void, Never>?
+        while let task = roomOrderTask, task != last {
+            await task.value
+            last = task
+        }
     }
 
     // MARK: - 링크 미리보기 (#683 2단계 — 캐시·카드는 앱 전용 `LinkPreviewStore`/`LinkPreviewCard`)

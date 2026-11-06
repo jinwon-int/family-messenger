@@ -1,4 +1,6 @@
-// 이 기기에 두는 표시 설정(#549 방 순서 · #571 읽음 위치). 방 순서는 이 기기에만. 읽음 위치는 #571 B 부터 릴레이가 같은 사람(actor)의
+// 이 기기에 두는 표시 설정(#549 방 순서 · #571 읽음 위치). 방 순서는 #715(room-order v1)부터 릴레이가 같은 사람(actor)의 기기들 사이에서
+// 공유한다 — 여기 값이 화면의 정본이고, `AppModel.setRoomOrder` 가 사용자 변경을 올리며(PUT), 서버 순서를 받으면(GET revision > 0·409)
+// `setOrder` 로 덮어쓴다. 서버에 아직 순서가 없으면(revision 0) 여기 저장된 순서가 시드가 된다. 읽음 위치는 #571 B 부터 릴레이가 같은 사람(actor)의
 // 기기들 사이에서 공유한다 — 방 화면이 `markRead` 와 함께 `AppModel.noteRead`(`POST /read`)를 부르고, 릴레이 값(`AppModel.relayReadSeq`)은
 // `RootView` 가 여기에 합친다(줄어들지 않음). MLS 상태·메시지 DB 와 섞지 않으려고 UserDefaults 에 둔다(방 행 displayOrder 는 동기화 엔진도
 // 고쳐 쓰므로 건드리지 않는다). #584: 서버별 스코프(`ScopedDefaults`) — `AppModel.localPrefs` 가 서버를 바꿀 때 새로 만든다.

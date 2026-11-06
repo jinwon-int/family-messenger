@@ -197,8 +197,9 @@ struct RoomListView: View {
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
             }
-            // #405 P3: 순서 모드에서 끌어 순서를 바꾼다(웹 room-order.js — 최근 활동순으로 움직이지 않음, 이 기기에만 저장).
-            .onMove { from, to in prefs.setOrder(RoomOrder.move(orderedIds, from: from, to: to)) }
+            // #405 P3: 순서 모드에서 끌어 순서를 바꾼다(웹 room-order.js — 최근 활동순으로 움직이지 않음).
+            // #715: 로컬에 바로 저장하고 릴레이에 올린다 — 같은 사람의 다른 기기(웹·안드로이드·다른 아이폰)가 같은 순서를 쓴다.
+            .onMove { from, to in model.setRoomOrder(RoomOrder.move(orderedIds, from: from, to: to)) }
         }
         .environment(\.editMode, $editMode)
         // 방이 하나뿐이 되면(나감·닫힘) 순서 모드는 뜻이 없다 — 조용히 끈다.
@@ -246,8 +247,9 @@ struct RoomListView: View {
         .sheet(isPresented: $showJoinRequest) { JoinRequestView().environmentObject(model) }
         .sheet(isPresented: $showCreateRoom) { CreateRoomView().environmentObject(model) }
         .sheet(isPresented: $showNotifications) { NotificationsView().environmentObject(model) }
-        .refreshable { await model.refresh() }
-        .onAppear { model.refreshRooms() }
+        // #715: 목록 새로고침 = 방 순서도 다시 묻는다(≥60초 간격은 AppModel 이 지킨다).
+        .refreshable { model.requestRoomOrderSync(); await model.refresh() }
+        .onAppear { model.refreshRooms(); model.requestRoomOrderSync() }
     }
 }
 
@@ -281,13 +283,13 @@ extension RoomListView {
     /// ▲(−1)/▼(+1): 화면 순서에서 한 칸 옮겨 저장 — 저장 순서에 없던 방도 화면 순서로 함께 저장되므로 유실 없음.
     fileprivate func stepRoom(_ room: RoomID, by delta: Int) {
         guard let next = RoomOrder.step(orderedIds, room: room, by: delta) else { return }
-        withAnimation { prefs.setOrder(next) }
+        withAnimation { model.setRoomOrder(next) }
     }
 
     /// 「맨 위로 고정」: 저장 순서 맨 앞으로.
     fileprivate func pinToTop(_ room: RoomID) {
         guard let next = RoomOrder.moveToTop(orderedIds, room: room) else { return }
-        withAnimation { prefs.setOrder(next) }
+        withAnimation { model.setRoomOrder(next) }
     }
 
     fileprivate func reloadGlances() {
