@@ -36,4 +36,29 @@ class AgentActorsTest {
         assertEquals("mom", AgentActors.displayName("mom-iphone-aaaaaa"), "모르는 사람은 actor 그대로")
         assertEquals("", AgentActors.displayName(""))
     }
+
+    // 방 이름 = iOS `Strings.roomNames`·웹 `roomNames` 와 같은 표(오너 2026-11-06: 「대화방명 닉네임도 아이폰이랑 맞춰줘」).
+    @Test fun roomLabelMatchesIosAndWeb() {
+        assertEquals("🏠 가족", AgentActors.roomLabel("family"))
+        assertEquals("공명✴️", AgentActors.roomLabel("family-acc"))
+        assertEquals("💳 가족 카드 알림", AgentActors.roomLabel("family-card"))
+        assertEquals("🔔 플릿 알림", AgentActors.roomLabel("fleet-alerts"))
+        assertEquals("⚡ 번개장터 알림", AgentActors.roomLabel("bunjang-alerts"))
+        assertEquals("📷 인스타 새 글", AgentActors.roomLabel("insta-news"))
+        // 노드 개인방(ID = 노드 이름)은 그 노드 닉네임
+        assertEquals("순욱✴️", AgentActors.roomLabel("soonwook"))
+        assertEquals("등애✳️", AgentActors.roomLabel("dungae"))
+        // 모르는 방은 ID 그대로
+        assertEquals("lobby-test", AgentActors.roomLabel("lobby-test"))
+    }
+
+    @Test fun serviceBotsShowTheirAlertName() {
+        assertEquals("💳 카드 알림", AgentActors.displayName("card-bot"))
+        assertEquals("🔔 플릿 알림", AgentActors.displayName("fleet-bot"))
+        assertEquals("⚡ 번개장터 알림", AgentActors.displayName("bunjang-bot"))
+        assertEquals("📷 인스타 알림", AgentActors.displayName("insta-bot"))
+        // 사람·에이전트는 그대로
+        assertEquals("진원", AgentActors.displayName("owner-android-55f1ba"))
+        assertEquals("순욱✴️", AgentActors.displayName("soonwook-bot"))
+    }
 }

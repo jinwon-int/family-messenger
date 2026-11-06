@@ -31,6 +31,27 @@ object AgentActors {
 
     fun isServiceDevice(device: String): Boolean = actorOf(device) in SERVICE_ACTORS
 
+    /** 알림 전용 서비스 봇 actor → 보여 줄 이름(웹 `serviceNames`·iOS `Strings.serviceNames` 와 같은 표). */
+    private val SERVICE_NAMES: Map<String, String> = mapOf(
+        "card" to "💳 카드 알림", "fleet" to "🔔 플릿 알림", "bunjang" to "⚡ 번개장터 알림", "insta" to "📷 인스타 알림",
+    )
+
+    /**
+     * 대화방 ID → 보여 줄 방 이름 = Matrix 방 이름(결정 2026-10-19 ③, #422). 웹 `roomNames`·iOS `Strings.roomNames` 와 같은 표 —
+     * 바뀌면 셋을 함께 고친다. 노드 개인방(ID = 노드 이름)은 그 노드 닉네임. `family-acc` = 오너 ↔ 공명 에이전트 방.
+     */
+    private val ROOM_NAMES: Map<String, String> = mapOf(
+        "family" to "🏠 가족",
+        "family-acc" to "공명✴️",
+        "family-card" to "💳 가족 카드 알림",
+        "fleet-alerts" to "🔔 플릿 알림",
+        "bunjang-alerts" to "⚡ 번개장터 알림",
+        "insta-news" to "📷 인스타 새 글",
+    )
+
+    /** 보여 줄 방 이름(iOS `Strings.roomLabel`·웹 `roomLabel` 과 같은 규칙). 모르는 방은 ID 그대로. */
+    fun roomLabel(room: String): String = ROOM_NAMES[room] ?: NAMES[room] ?: room
+
     /** 봇 기기 → 노드 이름. 옛 `bot-<node>` 는 둘째 마디, 새 `<node>-<suffix>` 는 actor. 노드를 모르면 "". */
     fun agentNode(device: String): String {
         val actor = actorOf(device)
@@ -49,6 +70,7 @@ object AgentActors {
             return if (node.isEmpty()) "봇" else NAMES[node] ?: node
         }
         val actor = actorOf(device)
+        SERVICE_NAMES[actor]?.let { return it }
         return PEOPLE[actor] ?: actor
     }
 }

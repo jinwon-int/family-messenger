@@ -934,7 +934,7 @@ private fun RoomRow(r: RoomUi, onOpen: () -> Unit) {
             // 자리 점은 이름 옆에(오너 2026-10-31, iOS `CampfireCard` 와 같다): 맨 아래 줄을 점만 차지하지 않게. 이름이 길면 이름이 줄고 점은 그대로.
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    r.room, color = textColor, fontSize = 17.sp, lineHeight = 22.sp,
+                    AgentActors.roomLabel(r.room), color = textColor, fontSize = 17.sp, lineHeight = 22.sp,
                     fontWeight = if (day && r.unread) FontWeight.ExtraBold else FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false),
                 )
@@ -1028,7 +1028,7 @@ fun RoomScreen(room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> 
             HandeTopBar(
                 title = {
                     Column {
-                        Text(if (ui.connecting) Strings.connecting else room.room, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(if (ui.connecting) Strings.connecting else AgentActors.roomLabel(room.room), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         if (halted != null) Text(Strings.halted, color = colors.inkDim, fontSize = 12.sp)
                     }
                 },
