@@ -335,6 +335,20 @@ v2 smoke는 required 모드로 돈다(ES256 키를 만들어 JWKS 파일로 넘�
   `mls_read` 가 새 seq 이상인 기기를 뺀다. `welcome` 은 그대로다 — 같은 사람의 새 기기에 보내는
   초대가 막히면 안 된다. 시드 전 방(멤버 행 없음)은 종전대로 기기 단위다. 배지 수와 이미 뜬 알림
   제거(iOS `setBadgeCount`/`removeDeliveredNotifications`)는 후속.
+- **대화방 순서는 actor 단위**(#715 room-order v1, `room_order.go`): `GET /v2/me/room-order?device=<id>` → 200
+  `{rooms, revision, updated_at}`(저장된 적 없으면 `{"rooms":[],"revision":0,"updated_at":0}`) · `PUT /v2/me/room-order`
+  `{device, rooms, base_revision}` → `base_revision` 이 현재 revision 과 같으면 저장하고 200 `{rooms, revision: N+1, updated_at}`,
+  다르면 409 `{"error":"revision_conflict", rooms, revision, updated_at}`(현재 값 — `revision` 0 도 실린다; 클라이언트는 이것을
+  채택). 릴레이는 `actor_room_order(actor PK, rooms JSON 배열, revision, updated_at)`에 **actor당 한 행**을 둔다. 방 단위가
+  아니므로 actor 는 `mls_members` 가 아니라 **그 기기의 정책 체인 기록 `actor`**(`policyActor`)다 — 본문·기기 ID 접두사에서
+  추측하지 않는다. 앞단은 `/read`·`/mute`·`GET /v2/devices/candidates` 와 같다: JWT(401 `unauthorized`) → `device`(400
+  `device_required`/`bad_identifier`) → `bindDevice`(활성 기기 + subject = JWT subject, 아니면 모르는·폐기·남의 기기 모두 403
+  `device_subject_mismatch`; 그 사이 폐기 경합은 403 `device_not_allowed`; 체인 불가 500 `device_policy_unavailable`). 본문은
+  엄격 JSON, `rooms`·`base_revision` 필수(400 `rooms_required`/`base_revision_required`, 음수 400 `bad_request`), `rooms`
+  ≤ **64**(400 `too_many_rooms`, `max`), 각 항목 식별자(400 `bad_identifier` `detail: rooms`), 중복 400 `duplicate_room`.
+  멤버가 아닌 방 ID도 저장한다(목록은 클라이언트가 자기 방만 거른다 — 릴레이는 남의 정보를 내주지 않는다). 라우트는 인증 +
+  기기 저장소가 둘 다 있을 때만 있고(없으면 404 = 옛 릴레이 → 클라이언트는 로컬 순서만), 테이블은 같은 sqlite 파일이라
+  스냅샷·복원에 그대로 포함된다. `-reset-room` 은 이 행을 건드리지 않는다(없어진 방 ID 는 클라이언트가 무시).
 
 ### 리뷰 2차 Low 묶음 (#231 배치 f)
 
