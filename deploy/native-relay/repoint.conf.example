@@ -1,0 +1,16 @@
+# /etc/native-relay/repoint.conf — native-relay-repoint 노드별 설정 (#699 P0-d). KEY=VALUE 줄만 읽는다(source 하지 않음).
+# 없으면 v1 기본값: REPOINT_ENV_FILE=/etc/native-relay/relay.env · REPOINT_UNITS=native-relay-bot.service (systemd).
+#
+# 릴레이 호스트(서서·순욱) — 봇 URL 을 릴레이 설정과 다른 파일에 둔다(유닛 drop-in 의 EnvironmentFile 과 같은 경로):
+#   REPOINT_ENV_FILE=/etc/native-relay/bot-relay.env
+#   REPOINT_UNITS="native-relay-bot.service hande-card-bot.service hande-fleet-alerts-bot.service"
+#
+# 곽가(번개장터 봇 동거):
+#   REPOINT_UNITS="native-relay-bot.service hande-bunjang-bot.service"
+#
+# Termux(runit) — 설정 경로는 $PREFIX/etc/native-relay/repoint.conf(기본), 항목은 <서비스>:<svlogd 로그 디렉터리>:
+#   REPOINT_ENV_FILE=/data/data/com.termux/files/home/.native-relay-bot/relay.env
+#   REPOINT_SUPERVISOR=runit
+#   REPOINT_UNITS="native-relay-bot:/data/data/com.termux/files/home/.native-relay-bot/logs"
+REPOINT_ENV_FILE=/etc/native-relay/relay.env
+REPOINT_UNITS="native-relay-bot.service"
