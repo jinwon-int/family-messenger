@@ -247,8 +247,12 @@ data class AgentChoices(
                 "$n. " + label.ifEmpty { EMPTY_LABEL }
             }
 
-        /** 에이전트가 보낸 텍스트 글인가(내 글·첨부·사람 글은 선택지를 판정하지 않는다). */
-        fun isAgentText(m: MessageUi): Boolean = !m.mine && !m.attachment && AgentActors.isAgentDevice(m.sender)
+        /**
+         * 에이전트 또는 알림 전용 서비스 봇(§6.1 — 플릿 알림 ok/hold)이 보낸 텍스트 글인가(내 글·첨부·사람 글은 선택지를 판정하지 않는다).
+         * 카드는 명시 블록만이라(§6) 블록을 쓰지 않는 다른 서비스 봇에는 영향이 없다.
+         */
+        fun isAgentText(m: MessageUi): Boolean =
+            !m.mine && !m.attachment && (AgentActors.isAgentDevice(m.sender) || AgentActors.isServiceDevice(m.sender))
 
         /**
          * 규격 §2: `messages`(저장된 글, seq 순 — status 임시 줄 없음)의 `index` 번째 글의 상태. 선택지가 아니면 null.

@@ -291,11 +291,14 @@ public struct AgentChoices: Equatable {
 
     /// 선택지가 있는 에이전트 글 seq → 카드(선택지 + 상태). `records` 는 **저장된** 메시지만(seq 오름차순 — 보내는 중인 글 제외).
     /// 볼 메시지 = 글·첨부(시스템 줄·복호화 실패 제외). 「내 것」= `MessageRecord.isMine`(같은 사람의 다른 기기 포함 — 기존 규칙).
-    public static func cards(_ records: [MessageRecord], roster: AgentRoster, myDevice: DeviceID) -> [Int64: Card] {
+    /// `serviceActors` = 알림 전용 서비스 봇 actor(앱 `Strings.serviceNames` 키) — 그 글의 명시 블록도 카드다(§6.1, 플릿 알림 ok/hold).
+    public static func cards(_ records: [MessageRecord], roster: AgentRoster, myDevice: DeviceID,
+                             serviceActors: Set<String> = []) -> [Int64: Card] {
         let visible = records.filter { $0.kind == .text || $0.kind.isFile }
         var result: [Int64: Card] = [:]
         for (index, record) in visible.enumerated() {
-            guard record.kind == .text, roster.isAgent(record), !record.isMine(device: myDevice),
+            guard record.kind == .text, roster.isAgent(record) || serviceActors.contains(record.senderActor),
+                  !record.isMine(device: myDevice),
                   let choices = parse(record.body) else { continue }
             let state: State
             if index + 1 >= visible.count {
@@ -315,8 +318,9 @@ public struct AgentChoices: Equatable {
     }
 
     /// 선택지 글 seq → 상태(`cards` 의 상태만).
-    public static func states(_ records: [MessageRecord], roster: AgentRoster, myDevice: DeviceID) -> [Int64: State] {
-        cards(records, roster: roster, myDevice: myDevice).mapValues(\.state)
+    public static func states(_ records: [MessageRecord], roster: AgentRoster, myDevice: DeviceID,
+                              serviceActors: Set<String> = []) -> [Int64: State] {
+        cards(records, roster: roster, myDevice: myDevice, serviceActors: serviceActors).mapValues(\.state)
     }
 
     // MARK: - 줄 단위 도우미

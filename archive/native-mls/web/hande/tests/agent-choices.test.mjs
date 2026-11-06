@@ -343,3 +343,22 @@ test('shortcuts: 해제하면 캡처 리스너도 떨어진다', () => {
   h.uninstall();
   assert.equal(h.doc.listeners.length, 0);
 });
+
+// §6.1(ccc-node#2700): 알림 전용 서비스 봇(플릿 알림) 글의 명시 블록도 카드 — ok/hold 를 눌러 고른다.
+const FLEET = '#69pgri ⏰ 재통지 1/3 #6c9kzj (action, 15분 전 알림, 회신 없음) — 아래에서 고르거나 `ok 6c9kzj` 또는 `hold 6c9kzj`로 답하면 멈춥니다(남은 재통지 2회). 상세: 릴레이 호스트 fleet_alerts_receipt.py --queue <큐> 6c9kzj\n\n[답변 필요] 하나만 선택\n1. ok 6c9kzj\n2. hold 6c9kzj';
+const fleet = (key, body = FLEET) => ({ key, kind: 'text', isAgent: false, isService: true, isMe: false, body });
+
+test('state: 서비스 봇의 명시 블록(플릿 ok/hold)은 하나만 카드, 카드가 보내는 줄로 answered', () => {
+  const s = choiceState([fleet('a')], 0);
+  assert.equal(s.state, 'open');
+  assert.equal(s.choices.mode, 'one');
+  assert.deepEqual(s.choices.items.map((it) => it.label), ['ok 6c9kzj', 'hold 6c9kzj']);
+  const sent = composeChoice([2], s.choices.items.map((it) => it.label));
+  assert.equal(sent, '2. hold 6c9kzj');
+  assert.deepEqual(choiceState([fleet('a'), mine('b', sent)], 0).numbers, [2]);
+});
+
+test('state: 서비스 봇이라도 머리줄 없는 목록·사람 글은 카드가 없다', () => {
+  assert.equal(choiceState([fleet('a', '알림입니다\n1. 하나\n2. 둘')], 0), null);
+  assert.equal(choiceState([{ ...fleet('a'), isService: false }], 0), null);   // 사람 글
+});

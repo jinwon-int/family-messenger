@@ -224,6 +224,21 @@ class AgentChoicesTest {
         assertEquals(true, AgentChoices.parse(question)!!.explicit)
     }
 
+    // §6.1(ccc-node#2700): 알림 전용 서비스 봇(플릿 알림)의 명시 블록도 카드 — ok/hold 를 눌러 고른다.
+    @Test fun serviceBotExplicitBlockIsACard() {
+        val alert = "#69pgri ⏰ 재통지 1/3 #6c9kzj (action) — 아래에서 고르거나 답하면 멈춥니다.\n\n[답변 필요] 하나만 선택\n1. ok 6c9kzj\n2. hold 6c9kzj"
+        val fleet = MessageUi(1, "fleet-bot", alert, mine = false)
+        val card = AgentChoices.cards(listOf(fleet))[0]!!
+        assertEquals(AgentChoices.State.Open, card.state)
+        assertEquals(AgentChoices.Mode.ONE, card.choices.mode)
+        assertEquals(listOf("ok 6c9kzj", "hold 6c9kzj"), card.choices.items.map { it.label })
+        val sent = AgentChoices.compose(setOf(2), card.choices.items.map { it.label })
+        assertEquals("2. hold 6c9kzj", sent)
+        assertEquals(AgentChoices.State.Answered(listOf(2)), AgentChoices.cards(listOf(fleet, me(2, sent)))[0]!!.state)
+        assertNull(AgentChoices.cards(listOf(MessageUi(1, "fleet-bot", "알림\n1. 하나\n2. 둘", mine = false)))[0])
+        assertNull(AgentChoices.cards(listOf(MessageUi(1, "jungin-ef56", alert, mine = false)))[0], "사람 글은 카드가 아니다")
+    }
+
     @Test fun earlierAnsweredAndLaterOpenCoexist() {
         val cards = AgentChoices.cards(listOf(agent(1), me(2, "1"), agent(3)))
         assertEquals(AgentChoices.State.Answered(listOf(1)), cards[0]!!.state)

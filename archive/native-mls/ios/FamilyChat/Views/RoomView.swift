@@ -492,7 +492,8 @@ struct RoomView: View {
         approvalStates = AgentApproval.states(messages.map(\.record), roster: model.agentRoster)
         // 규격 §2: 「저장된」 메시지만 본다 — 보내는 중인 글(outgoing, 음수 seq)은 저장소에 오르면 그때 answered 가 된다.
         choiceCards = AgentChoices.cards(messages.filter { $0.outgoing == nil }.map(\.record),
-                                         roster: model.agentRoster, myDevice: model.deviceId)
+                                         roster: model.agentRoster, myDevice: model.deviceId,
+                                         serviceActors: Set(Strings.serviceNames.keys))   // 플릿 알림 ok/hold(§6.1)
         stamps = TimelineStamps.compute(messages.map(\.record), calendar: .current)
     }
 
