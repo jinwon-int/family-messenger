@@ -1,6 +1,7 @@
 // 화면 문구 — iOS `FamilyChat/App/Strings.swift` 와 같은 말을 쓴다(가족이 두 플랫폼에서 같은 안내를 본다).
 package com.seoyoon_family.hande.ui
 
+import com.seoyoon_family.hande.core.AgentActors
 import com.seoyoon_family.hande.core.AppLogin
 
 object Strings {
@@ -117,6 +118,19 @@ object Strings {
     const val keyCustody = "키 보관"
     /** 대화방 목록의 안 읽음 표시(#571 후속, 웹 N 배지와 같은 뜻 — 개수 대신 「새 글」). 1차 디자인에서는 주황 점 하나, 글자는 접근성 문구로만. */
     const val unread = "새 글"
+    // #549 · #715 대화 목록 순서 편집 — iOS `Strings.orderEditLabel`/`orderModeTitle`/`orderDone`/`orderDoneLabel`/`orderPinTop`/`orderPinnedNote`/`orderUp`/`orderDown`
+    // 와 같은 말(웹 strings.js `rooms.order*` 와 같은 뜻). 안내 한 줄만 동기화 여부를 말한다(#715: 릴레이에 actor 단위로 저장, 옛 릴레이는 이 기기에만).
+    const val orderEditLabel = "자리 순서 편집"
+    const val orderModeTitle = "자리 순서"
+    const val orderDone = "완료"
+    const val orderDoneLabel = "자리 순서 편집 완료"
+    const val orderPinTop = "맨 위로 고정"
+    const val orderPinnedNote = "맨 위 고정"
+    fun orderHint(synced: Boolean) =
+        if (synced) "▲▼로 순서를 바꾸세요. 내 다른 기기에도 같은 순서로 맞춰져요." else "▲▼로 순서를 바꾸세요. 이 기기에만 저장돼요."
+    fun orderUp(room: String) = "${AgentActors.roomLabel(room)} 위로"
+    fun orderDown(room: String) = "${AgentActors.roomLabel(room)} 아래로"
+
     /** 「오늘의 불 세기」 접근성 문구(숫자·그래프 없음 — 조용함/보통/활발). */
     fun fireLevel(level: Int) = "오늘의 불 세기 · " + when (level) { 1 -> "조용함"; 2 -> "보통"; else -> "활발" }
 

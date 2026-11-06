@@ -45,6 +45,12 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
     }
 
+    /** 전면 복귀(#715 room-order 규칙 1): 방 순서를 다시 묻는다 — 60초 간격·준비 단계 여부는 허브가 본다(네트워크는 IO). */
+    override fun onResume() {
+        super.onResume()
+        (application as HandeApp).hub.onForeground()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
