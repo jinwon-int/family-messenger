@@ -79,3 +79,24 @@ test('같은 entry 를 겹쳐 부르면(폴링 재렌더 + 다시 시도 클릭)
   await first;
   assert.equal(e.image?.type, 'image/jpeg');
 });
+
+test('PDF(#697): 내용이 %PDF- 면 entry.pdf = {url}(application/pdf), image 는 없음 · 다시 부르면 다시 받지 않는다', async () => {
+  const h = harness();
+  const PDF = new TextEncoder().encode('%PDF-1.7\n1 0 obj');
+  let loads = 0;
+  const e = entry(async () => { loads += 1; return PDF; });
+  await h.loadPreview(e);
+  assert.equal(e.image, null);
+  assert.deepEqual(e.pdf, { url: `blob:application/pdf:${PDF.length}` });
+  assert.equal(e.previewFailed, false);
+  await h.loadPreview(e);
+  assert.equal(loads, 1, 'PDF 판별 뒤에는 다시 부르지 않는다');
+});
+
+test('PDF(#697): 이름이 .pdf 여도 내용이 PDF 가 아니면 entry.pdf 없음(보낸 쪽 이름은 믿지 않는다)', async () => {
+  const h = harness();
+  const e = entry(async () => TEXT, { fileName: 'report.pdf' });
+  await h.loadPreview(e);
+  assert.equal(e.pdf, undefined);
+  assert.equal(h.urls.length, 0);
+});

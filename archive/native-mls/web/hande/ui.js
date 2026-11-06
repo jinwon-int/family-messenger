@@ -6,7 +6,7 @@ import {
   strings, ACTOR, ROOM, DEVICE, formatTime, dayLabel, dayKey, groupFingerprint, fingerprintRows, displayName, isServiceDevice, humanSize, relativeTime,
   participantCount, participantOf, groupParticipants, deviceKind, deviceKinds,
 } from './strings.js';
-import {imageType, downloadSpec, mediaBoxStyle, pendingMedia, dimsAgree} from './attachment-view.js';
+import {contentType, downloadSpec, mediaBoxStyle, pendingMedia, dimsAgree, PDF_TYPE} from './attachment-view.js';
 import { pickTransferFile, transferHasFiles } from './composer-files.js';
 import { lastSentView, collapsedKey, sentDayPrefix } from './last-sent.js';
 import {fileboxRefreshUrl} from './filebox.js';
@@ -604,7 +604,7 @@ function firstVisibleRow(list) {
   return null;
 }
 
-/** 첨부 본체를 받아 저장한다(blob 링크). 내용으로 판별된 이미지는 attachment-<seq>.jpg 등 + 그 MIME,
+/** 첨부 본체를 받아 저장한다(blob 링크). 내용으로 판별된 이미지·PDF 는 attachment-<seq>.jpg·.pdf 등 + 그 MIME,
  *  나머지는 attachment-<seq>.bin + 불활성 MIME(attachment-view.js downloadSpec). */
 async function downloadAttachment(entry, button, onOpenAttachment) {
   const label = button.textContent;
@@ -612,7 +612,7 @@ async function downloadAttachment(entry, button, onOpenAttachment) {
   button.textContent = strings.chat.downloading;
   try {
     const bytes = await onOpenAttachment(entry);
-    const {name, type} = downloadSpec(entry.seq, entry.image?.type ?? imageType(bytes), entry.fileName);
+    const {name, type} = downloadSpec(entry.seq, entry.image?.type ?? (entry.pdf ? PDF_TYPE : contentType(bytes)), entry.fileName);
     const url = URL.createObjectURL(new Blob([bytes], { type }));
     const link = el('a', { href: url, download: name, hidden: true });
     document.body.append(link);
@@ -868,7 +868,7 @@ function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null, l
   const sendState = entry.isMe && (entry.state === 'queued' || entry.state === 'failed') ? entry.state : null;
   const signature = JSON.stringify([entry.key, entry.kind, Boolean(entry.isMe), Boolean(entry.isAgent), entry.senderName ?? null, entry.body ?? '', time, entry.size ?? null, entry.image?.url ?? null, Boolean(entry.replay), entry.seq ?? null,
     entry.fileName ?? null, Boolean(entry.previewFailed), Boolean(entry.previewFailed) && Boolean(entry.previewBusy), choiceSignature(choice), sendState,
-    entry.dims ? [entry.dims.w, entry.dims.h] : null, pendingMedia(entry), linksSignature(entry, links)]);
+    entry.dims ? [entry.dims.w, entry.dims.h] : null, pendingMedia(entry), linksSignature(entry, links), entry.pdf?.url ?? null]);
   if (entry.kind === 'system') {
     return signed(el('li', { class: 'system', 'data-key': entry.key, 'data-testid': 'system-row' }, el('span', { class: 'body' }, entry.body), time ? el('span', { class: 'foot' }, time) : null), signature);
   }
@@ -892,6 +892,13 @@ function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null, l
       ? el('div', { class: 'body media' },
           el('span', { class: 'media-placeholder', role: 'img', 'aria-label': strings.chat.image, 'aria-busy': 'true', 'data-testid': 'media-placeholder', style: box }))
       // 파일명(#544 C): file-v2 수신분은 보낸 쪽 이름(file-v2.js safeFileName 으로 줄인 것)을, file-v1 은 와이어에 이름이 없어 「파일」.
+      // PDF(#697, 내용 `%PDF-` 판별): 파일 줄을 누르면 새 탭의 브라우저 PDF 뷰어로 연다 — 한데 CSP(frame-src·object-src)는 그대로,
+      // 페이지 안 끼워 넣기 없이 같은 출처 blob URL 을 새 탭으로(서서 실측 Chromium 151). 저장은 기존 다운로드 버튼(attachment-<seq>.pdf).
+      : entry.pdf
+      ? el('div', { class: 'body file pdf' },
+          el('a', { class: 'file-label pdf-open', href: entry.pdf.url, target: '_blank', rel: 'noopener', 'data-testid': 'pdf-open', title: strings.chat.pdfOpen },
+            strings.chat.pdf(humanSize(entry.size ?? 0), entry.fileName)),
+          download)
       : el('div', { class: 'body file' }, el('span', { class: 'file-label' }, strings.chat.file(humanSize(entry.size ?? 0), entry.fileName)), previewRetry(entry, onRetryPreview), download);
   } else if (entry.isAgent && entry.kind === 'text' && hasMarkdown(entry.body)) body = agentMarkdownBody(entry.body);
   // 서비스 봇: 사이트 hosts 합집합 + 인스타그램(#690, 폴백 = v1 linkHosts 와 같음).

@@ -4,25 +4,27 @@
 // 캐시를 비워 다음 호출에서 다시 받는다 — room.js emitFileV2). 사진이 아닌 파일(판별 null)은 실패가 아니다 — 그냥 파일 행.
 // 순수 모듈: imageType·createUrl·onChange 를 주입받아 node:test 로 검증한다(tests/preview-loader.test.mjs).
 
-import {imageType as sniff, shouldPreview} from './attachment-view.js';
+import {imageType as sniff, pdfType as sniffPdf, shouldPreview} from './attachment-view.js';
 
 /**
  * @param {object} deps
  * @param {(bytes: Uint8Array) => string|null} [deps.imageType]  내용 판별(attachment-view.js)
+ * @param {(bytes: Uint8Array) => string|null} [deps.pdfType]  PDF 판별(#697) — 맞으면 entry.pdf = {url} (새 탭 PDF 뷰어로 연다)
  * @param {(bytes: Uint8Array, type: string) => string} deps.createUrl  blob URL 생성
  * @param {() => void} deps.onChange  entry 상태가 바뀔 때(화면 재렌더)
  * @param {(entry: object) => string} [deps.altFor]  img alt
  * @returns {(entry: object) => Promise<void>} loadPreview — 한 entry 에 대해 동시에 한 번만 돈다
  */
-export function createPreviewLoader({ imageType = sniff, createUrl, onChange, altFor = (e) => `${e.senderName ?? ''}의 사진` }) {
+export function createPreviewLoader({ imageType = sniff, pdfType = sniffPdf, createUrl, onChange, altFor = (e) => `${e.senderName ?? ''}의 사진` }) {
   return async function loadPreview(entry) {
-    if (!shouldPreview(entry) || entry.image || entry.previewBusy) return;
+    if (!shouldPreview(entry) || entry.image || entry.pdf || entry.previewBusy) return;
     entry.previewBusy = true;
     onChange();
     try {
       const bytes = await entry.load();
       const type = imageType(bytes);
       if (type) entry.image = { url: createUrl(bytes, type), type, alt: altFor(entry) };
+      else if (pdfType(bytes)) entry.pdf = { url: createUrl(bytes, pdfType(bytes)) };   // #697: 사진처럼 방에 있는 동안 URL 유지
       entry.previewFailed = false;
     } catch (_) {
       entry.previewFailed = true;
