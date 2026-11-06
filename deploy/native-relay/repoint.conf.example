@@ -8,7 +8,7 @@
 # 곽가(번개장터 봇 동거):
 #   REPOINT_UNITS="native-relay-bot.service hande-bunjang-bot.service"
 #
-# Termux(runit) — 설정 경로는 NATIVE_RELAY_REPOINT_CONF 로 지정, 항목은 <서비스>:<svlogd 로그 디렉터리>:
+# Termux(runit) — 설정 경로는 $PREFIX/etc/native-relay/repoint.conf(기본), 항목은 <서비스>:<svlogd 로그 디렉터리>:
 #   REPOINT_ENV_FILE=/data/data/com.termux/files/home/.native-relay-bot/relay.env
 #   REPOINT_SUPERVISOR=runit
 #   REPOINT_UNITS="native-relay-bot:/data/data/com.termux/files/home/.native-relay-bot/logs"

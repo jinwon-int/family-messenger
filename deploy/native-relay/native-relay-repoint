@@ -8,7 +8,8 @@
 #  - 봇마다 재시작 → 새 PID 로그에서 steward_ready 확인(relay_unreachable 이면 실패). 봇이 여럿이면 하나씩 차례로.
 #  - 비밀값은 다루지 않는다(URL·경로만). 한데 브리지(ccc-hande-bridge)는 릴레이 주소를 갖지 않으므로 건드리지 않는다.
 #
-# 노드별 설정(선택) — ${NATIVE_RELAY_REPOINT_CONF:-/etc/native-relay/repoint.conf}, KEY=VALUE 줄만 읽는다(source 하지 않음):
+# 노드별 설정(선택) — ${NATIVE_RELAY_REPOINT_CONF:-${PREFIX:-}/etc/native-relay/repoint.conf}(Linux /etc/…, Termux $PREFIX/etc/…),
+# KEY=VALUE 줄만 읽는다(source 하지 않음):
 #   REPOINT_ENV_FILE=/etc/native-relay/relay.env          봇 유닛이 EnvironmentFile 로 읽는 파일(기본값)
 #   REPOINT_SUPERVISOR=systemd                            systemd(기본) | runit(Termux)
 #   REPOINT_UNITS="native-relay-bot.service"              systemd: 유닛 이름들(공백 구분, 기본값은 이 하나)
@@ -18,7 +19,7 @@
 # 테스트 대역: NATIVE_RELAY_REPOINT_SYSTEMCTL / _JOURNALCTL / _SV / _CURL, READY_TIMEOUT(초, 기본 30).
 set -euo pipefail
 
-CONF=${NATIVE_RELAY_REPOINT_CONF:-/etc/native-relay/repoint.conf}
+CONF=${NATIVE_RELAY_REPOINT_CONF:-${PREFIX:-}/etc/native-relay/repoint.conf}  # Linux: /etc/…, Termux: $PREFIX/etc/…
 REPOINT_ENV_FILE=/etc/native-relay/relay.env
 REPOINT_SUPERVISOR=systemd
 REPOINT_UNITS=native-relay-bot.service

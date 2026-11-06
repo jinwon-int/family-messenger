@@ -167,6 +167,19 @@ esac
         self.assertIn('env=/etc/native-relay/relay.env', proc.stdout)
         self.assertIn('unit=native-relay-bot.service', proc.stdout)
 
+    def test_termux_prefix_conf_is_the_default_path(self):
+        prefix = self.tmp / 'usr'
+        (prefix / 'etc' / 'native-relay').mkdir(parents=True)
+        envf = self.tmp / 'termux-relay.env'
+        (prefix / 'etc' / 'native-relay' / 'repoint.conf').write_text(
+            f'REPOINT_ENV_FILE={envf}\nREPOINT_SUPERVISOR=runit\nREPOINT_UNITS="native-relay-bot:/x"\n')
+        env = dict(os.environ, PREFIX=str(prefix), NATIVE_RELAY_REPOINT_SV=str(self.tmp / 'sv'))
+        env.pop('NATIVE_RELAY_REPOINT_CONF', None)
+        proc = subprocess.run(['bash', str(SCRIPT), '--check'], env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn(f'env={envf}', proc.stdout)
+        self.assertIn('supervisor=runit', proc.stdout)
+
     def test_rejects_non_tailnet_url(self):
         proc = self.run_hook('https://relay.example.com', conf=self.systemd_conf('native-relay-bot.service'))
         self.assertEqual(proc.returncode, 65)
