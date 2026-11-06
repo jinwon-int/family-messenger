@@ -354,8 +354,17 @@ def main():
             dump=a.evaluate(DUMP,databases[0])+b.evaluate(DUMP,databases[1])
             needles=[bytes(message),b'GroupState',b'SignatureKeyPair',b'alice',b'bob']+[p['device_id'].encode() for p in pins]
             needles+=[bytes.fromhex(p['signing_key']) for p in pins]+[p['fingerprint'].encode() for p in pins]
+            # Binary values are hex in the dump, so a short needle's hex can match random ciphertext by
+            # chance: 'bob' = 6 hex digits ~ 2^-24 per nibble offset, a few % per run on a dump of a few
+            # hundred KB (#609). Needles under 8 bytes (the actor labels) are therefore checked as text
+            # only; a leaked plaintext MLS state would still carry the >=9-byte device ids, signing keys,
+            # fingerprints and type labels, which keep the hex check (2^-72 or less per offset).
             for needle in needles:
-                assert needle.hex() not in dump and needle.decode('latin-1') not in dump,'plaintext at rest'
+                forms=[('text',needle.decode('latin-1'))]+([('hex',needle.hex())] if len(needle)>=8 else [])
+                for form,text in forms:
+                    at=dump.find(text)
+                    assert at<0,(f'plaintext at rest: needle={needle[:24]!r} len={len(needle)} form={form} '
+                                 f'offset={at}/{len(dump)} context={dump[max(0,at-24):at+len(text)+24]!r}')
             proof['checks']['no_plaintext_pins_labels_or_keys_at_rest']=True
             observer=page(0);init(observer,0)
             lost=op_arg('lost','encrypt',list(b'lost trusted response'),fault='lost-response')
