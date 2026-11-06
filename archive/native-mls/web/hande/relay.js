@@ -90,5 +90,16 @@ export function createRelay({fetch = globalThis.fetch.bind(globalThis), onOfflin
     if (response.status === 401) { const e = new Error(strings.relay.unauthorized); e.unauthorized = true; throw e; }
     return {status: response.status, body: json};
   }
-  return {api, roomPath, describe, me, meInfo, blob, postBlob, get offline() { return offline; }};
+  /**
+   * room-order v1(#715): 이 사람(actor)의 대화방 순서. `GET /v2/me/room-order?device=` → {status, body}
+   * (200 {rooms, revision, updated_at} · 404 = 옛 릴레이). throw 하지 않고 상태를 돌려준다; 네트워크 실패만 api() 처럼 throw.
+   */
+  function getRoomOrder(device) {
+    return api('GET', `/v2/me/room-order?device=${encodeURIComponent(device)}`);
+  }
+  /** `PUT /v2/me/room-order {device, rooms, base_revision}` → 200 {rooms, revision, updated_at} · 409 revision_conflict {현재 값} · 404. */
+  function putRoomOrder(device, rooms, baseRevision) {
+    return api('PUT', '/v2/me/room-order', {device, rooms, base_revision: baseRevision});
+  }
+  return {api, roomPath, describe, me, meInfo, blob, postBlob, getRoomOrder, putRoomOrder, get offline() { return offline; }};
 }
