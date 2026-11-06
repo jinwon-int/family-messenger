@@ -187,6 +187,28 @@ room_remove / room_close / room_mode`) 호출마다 SDK `can_use_tool` → 이 �
   활성 turn이 없어도 받는다. `room`은 릴레이 식별자 규칙 `[A-Za-z0-9_-]{1,64}`, 본문이 비면 버린다.
   봇은 **agent 방과 이름이 같을 때만** 게시하고 다른 방은 침묵한다(B-H3, 저널 `agent_outbound_dropped`
   `reason=notice_not_agent_room`).
+  - `"id":"<불투명 문자열>"` (선택, family-messenger#703): 보내는 쪽(알림 feeder)의 큐 행 id·txn,
+    `[A-Za-z0-9_.:-]{1,128}`. 있으면 봇이 **그 프레임이 온 같은 연결**로 결과를 한 줄 돌려준다 —
+    릴레이 POST 가 성공해 seq 가 정해진 뒤 `{"type":"notice_ack","id":"<id>","seq":N}`, 버리면
+    `{"type":"notice_nack","id":"<id>","reason":"<이유>"}`. `id` 가 없으면 지금과 똑같다(답 없음, 하위 호환).
+    형식이 틀린 `id`(문자열 아님·길이·문자)는 무시하고 id 없는 프레임으로 다룬다(저널 `notice_bad_id{room, bytes}`,
+    값은 남기지 않음). `kind:"status"` 에는 답하지 않는다(브리지가 어차피 다시 보냄). 409 cas_mismatch 로 다음
+    폴의 재게시를 기다리는 notice 는 그 재게시가 성공했을 때 ack 한다.
+
+    | `reason` | 뜻 | feeder |
+    | --- | --- | --- |
+    | `rate` | 방당 분당 상한(`notice_per_min`, 기본 10) 초과 | 늦춰서 다시 보냄 |
+    | `relay` | 릴레이 POST 재시도(약 61 s)도 실패 — 봇 세션이 끝난다. best-effort(연결이 먼저 닫힐 수 있음) | 다시 보냄 |
+    | `conflict` | 409 cas_mismatch 재게시 한도(8 폴) 소진 | 다시 보냄 |
+    | `client_id_reuse` | 봇의 dedup 키가 예전 실행에서 이미 쓰임(상태 백업 복원 등) — 이 글은 저장되지 않음 | 다시 보냄(새 키) |
+    | `bad_room` · `empty_text` | 방 식별자 규칙 위반 · 공백뿐인 본문 | 기록 후 삭제 |
+    | `not_agent_room` · `no_agent_room` | agent(·alert) 방이 아닌 곳으로 보냄 / 봇에 agent 방이 없음 | 기록 후 삭제 |
+    | `not_joined_or_halted` | 방에 아직 안 들어갔거나 정지(⛔) | 기록 후 삭제 |
+
+    ack 를 받기 전에 연결이 끊기면(봇 재시작 등) 미확인 행을 다시 보낸다(at-least-once). 게시 직후·ack 쓰기 전에
+    봇이 죽은 경우에만 같은 알림이 두 번 게시될 수 있다. 저널 `notice_acked{room,id,seq}` ·
+    `notice_nacked{room,id,reason}` · 연결이 이미 없을 때 `notice_answer_lost{room,id,answer,…}`(본문은 남기지 않음).
+    ack 를 모르는 옛 봇은 `id` 를 무시하므로 feeder 는 ack 가 오지 않으면 지금 방식으로 동작하게 둔다(기능 감지).
   - `"kind":"status"` (ccc-node#2590, `archive/native-mls/STATUS-V1.md` §1·§2): turn 밖의 상태 한 줄 — 브리지가
     턴이 끝난 뒤에도 남은 백그라운드 대기(CI·빌드)를 `⏳ 대기 중 · …` 로 보인다. 봇은 일반 notice 가 아니라
     status-v1 경로(`Outbound::StatusNotice` → 릴레이 `client_id` `status-<uuid>`, 저장·푸시 없음)로 게시한다.

@@ -122,7 +122,7 @@ native-mls-bot room status  <room>                  --rooms-dir <dir>   # room �
   도구는 owner-only 라 거절. 응답기에는 `"peer": true` 가 붙어 간다.
 - **깊이(b)**: 알림방에 쓰는 모든 notice 앞에 봇이 **자기 actor** 로 `[alert:<actor>]` 를 붙인다(워커가 쓴 머리는 지우고 다시 씀 — 사칭 불가).
   peer turn 이 도는 동안 나온 notice 는 `[alert:<actor>:2]` — 사람은 보지만 다른 봇은 받지 않는다. 연쇄는 한 단계에서 끝난다.
-- **속도(c)**: notice 는 방마다 분당 10건(`notice_per_min`), 넘으면 `notice_rate` 로 버린다(모든 방 공통).
+- **속도(c)**: notice 는 방마다 분당 10건(`notice_per_min`), 넘으면 `notice_rate` 로 버린다(모든 방 공통). 프레임에 `id` 가 있으면 보낸 연결로 `notice_nack` `reason=rate` 를 돌려준다(#703, `docs/FLEET-WORKER.md` notice).
 - 알림 형식: `[alert:<node>] <제목>` + 줄바꿈 뒤 본문. 발신 경로 = ccc-node push spool → 브리지 `notice` 프레임 → 봇 → 알림방.
 - 응답기(ccc-node hande 브리지)는 `sender` 가 자기 `owner`/`family_users` 에 없으면 `rejected: sender-not-allowed` 로 거절한다 — peer actor
   를 받으려면 브리지 설정에 넣어야 한다(거절돼도 peer turn 은 방에 아무것도 쓰지 않는다).

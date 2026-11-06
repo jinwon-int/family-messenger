@@ -233,7 +233,9 @@ struct RoomState {
     /// attempts — and dropped (`echo_dropped`, non-fatal) after
     /// MAX_ECHO_ATTEMPTS, so a room that keeps moving cannot livelock the
     /// session (batch f: the drain used to loop inside one poll).
-    retry: VecDeque<(Vec<u8>, u32)>,
+    /// #703: the third field is the responder notice id the text answers
+    /// (`publish_echo`'s `notice`), `None` for anything else.
+    retry: VecDeque<(Vec<u8>, u32, Option<String>)>,
     /// This room's MLS device (#372 P2: one `Device` = one group, so a
     /// multi-room bot holds one per room, all sharing the identity's signer).
     device: Device,
@@ -646,10 +648,17 @@ fn run_rounds(
                     emit(&serde_json::json!({ "event": "agent_outbound_suppressed", "room": item_room, "seq": seq, "kind": kind }));
                     continue;
                 }
+                // #703: a notice whose sender wants an answer (ack/nack below).
+                let notice_id = match &item {
+                    Outbound::Notice { id, .. } => id.clone(),
+                    _ => None,
+                };
+                let notice_id = notice_id.as_deref();
                 // #423: the item goes to its turn's room (or a notice's own
                 // room); `""` and the single-room wire keep the one agent room.
                 let Some(main) = target_room(rooms, multi, &item_room, &item) else {
                     emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": item_room, "reason": "no_agent_room" }));
+                    answer_notice(Some(&mut *responder), &item_room, notice_id, Err("no_agent_room"));
                     continue;
                 };
                 if keepalive.room() == Some(main.room.as_str()) {
@@ -669,6 +678,7 @@ fn run_rounds(
                         // carries agent text (B-H3); a notice addressed
                         // anywhere else stays unsaid.
                         emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": room, "reason": "notice_not_agent_room" }));
+                        answer_notice(Some(&mut *responder), room, notice_id, Err("not_agent_room"));
                     }
                     _ => {
                         let mut text = agent_text(&item);
@@ -682,6 +692,7 @@ fn run_rounds(
                         }));
                         if !main.joined || main.halted {
                             emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": main.room, "reason": "not_joined_or_halted" }));
+                            answer_notice(Some(&mut *responder), &main.room, notice_id, Err("not_joined_or_halted"));
                             continue;
                         }
                         if matches!(item, Outbound::Status { .. } | Outbound::StatusNotice { .. }) {
@@ -692,8 +703,19 @@ fn run_rounds(
                             }
                             continue;
                         }
-                        if let Err(err) = publish_echo(ctx, main, text.as_bytes(), 0) {
-                            return Err(report_dropped(main, text.as_bytes(), err));
+                        match publish_echo(ctx, main, text.as_bytes(), 0, notice_id) {
+                            Ok(posted) => {
+                                // #703: answered now, or by the replay that posts it.
+                                if let Some(outcome) = posted.notice_outcome() {
+                                    answer_notice(Some(&mut *responder), &main.room, notice_id, outcome);
+                                }
+                            }
+                            Err(err) => {
+                                // The session ends (fail closed): best effort —
+                                // the port closes next and the sender re-sends.
+                                answer_notice(Some(&mut *responder), &main.room, notice_id, Err("relay"));
+                                return Err(report_dropped(main, text.as_bytes(), err));
+                            }
                         }
                     }
                 }
@@ -871,14 +893,25 @@ impl room::RoomHost for BotRoom<'_, '_> {
     fn after_page(&mut self) -> Result<(), BotError> {
         let state = &mut *self.state;
         let due = std::mem::take(&mut state.retry);
-        for (plaintext, attempts) in due {
+        for (plaintext, attempts, notice) in due {
+            let notice = notice.as_deref();
             if attempts >= MAX_ECHO_ATTEMPTS {
                 let err = BotError::Local("echo replay attempts exhausted");
                 report_dropped(state, &plaintext, err);
+                answer_notice(self.agent.as_mut(), &state.room, notice, Err("conflict"));
                 continue;
             }
-            if let Err(err) = publish_echo(self.ctx, state, &plaintext, attempts) {
-                return Err(report_dropped(state, &plaintext, err));
+            match publish_echo(self.ctx, state, &plaintext, attempts, notice) {
+                Ok(posted) => {
+                    if let Some(outcome) = posted.notice_outcome() {
+                        answer_notice(self.agent.as_mut(), &state.room, notice, outcome);
+                    }
+                }
+                Err(err) => {
+                    // Fatal for the session: best effort, the port closes next.
+                    answer_notice(self.agent.as_mut(), &state.room, notice, Err("relay"));
+                    return Err(report_dropped(state, &plaintext, err));
+                }
             }
         }
         Ok(())
@@ -972,8 +1005,8 @@ fn echo(ctx: &Ctx, state: &mut RoomState, ev: &StoredRow, sender: &[u8], plainte
             }
         },
         Mode::Silent | Mode::Watch | Mode::Alert => Ok(()),
-        Mode::Echo => match publish_echo(ctx, state, plaintext, 0) {
-            Ok(()) => Ok(()),
+        Mode::Echo => match publish_echo(ctx, state, plaintext, 0, None) {
+            Ok(_) => Ok(()),
             Err(err) => Err(report_dropped(state, plaintext, err)),
         },
     }
@@ -1121,6 +1154,26 @@ pub(crate) fn emit_caption_merged(room: &str, attachment_seq: i64, caption_seq: 
     emit(&serde_json::json!({ "event": "agent_caption", "room": room, "seq": attachment_seq, "caption_seq": caption_seq }));
 }
 
+/// #703 journal: the sender's id and the outcome — never the notice text.
+/// `written = false`: the port was gone, nobody got the answer.
+pub(crate) fn emit_notice_answer(room: &str, id: &str, outcome: Result<i64, &str>, written: bool) {
+    let mut event = match (outcome, written) {
+        (Ok(seq), true) => serde_json::json!({ "event": "notice_acked", "seq": seq }),
+        (Err(reason), true) => serde_json::json!({ "event": "notice_nacked", "reason": reason }),
+        (Ok(seq), false) => serde_json::json!({ "event": "notice_answer_lost", "answer": "ack", "seq": seq }),
+        (Err(reason), false) => serde_json::json!({ "event": "notice_answer_lost", "answer": "nack", "reason": reason }),
+    };
+    event["room"] = room.into();
+    event["id"] = id.into();
+    emit(&event);
+}
+
+/// #703: a notice `id` that is not `[A-Za-z0-9_.:-]{1,128}` — ignored (the
+/// frame is handled as one without an id); logged by length only.
+pub(crate) fn emit_notice_bad_id(room: &str, bytes: usize) {
+    emit(&serde_json::json!({ "event": "notice_bad_id", "room": room, "bytes": bytes }));
+}
+
 pub(crate) fn emit_attachment_failed(room: &str, seq: i64, reason: &str) {
     emit(&serde_json::json!({ "event": "agent_attachment", "room": room, "seq": seq, "outcome": "failed", "reason": reason }));
 }
@@ -1146,7 +1199,7 @@ fn post_queue_notice(ctx: &Ctx, state: &mut RoomState, text: &str) {
         emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": state.room, "reason": "not_joined_or_halted" }));
         return;
     }
-    if let Err(err) = publish_echo(ctx, state, text.as_bytes(), 0) {
+    if let Err(err) = publish_echo(ctx, state, text.as_bytes(), 0, None) {
         emit(&serde_json::json!({
             "event": "agent_outbound_dropped", "room": state.room, "reason": "queue_notice_send_failed", "error": err.to_string(),
         }));
@@ -1248,26 +1301,69 @@ impl room::SendHost for BotSender<'_, '_> {
 /// leaves (review 2 B-H2). A 409 cas_mismatch queues the plaintext for the
 /// next poll (replayed once at the fresh epoch); a 409 client_id_reuse means an
 /// earlier incarnation already delivered it.
-fn publish_echo(ctx: &Ctx, state: &mut RoomState, plaintext: &[u8], attempts: u32) -> Result<(), BotError> {
+///
+/// #703 `notice`: the id of the responder notice this text is (`None` for
+/// anything else). It rides along into the replay queue on a conflict, so
+/// the replay that finally posts it can still answer the sender.
+fn publish_echo(ctx: &Ctx, state: &mut RoomState, plaintext: &[u8], attempts: u32, notice: Option<&str>) -> Result<Posted, BotError> {
     let outcome = room::send_application(&mut BotSender { ctx, state }, ctx.own, plaintext)?;
-    match outcome {
-        SendOutcome::Sent { client_id, response } => emit(&serde_json::json!({
-            "event": "echo", "room": state.room, "bytes": plaintext.len(),
-            "seq": response.seq, "epoch": response.epoch, "client_id": client_id, "duplicate": response.duplicate,
-        })),
+    Ok(match outcome {
+        SendOutcome::Sent { client_id, response } => {
+            emit(&serde_json::json!({
+                "event": "echo", "room": state.room, "bytes": plaintext.len(),
+                "seq": response.seq, "epoch": response.epoch, "client_id": client_id, "duplicate": response.duplicate,
+            }));
+            Posted::Seq(response.seq)
+        }
         SendOutcome::Conflict { client_id, error } => {
-            state.retry.push_back((plaintext.to_vec(), attempts + 1));
+            state.retry.push_back((plaintext.to_vec(), attempts + 1, notice.map(str::to_string)));
             emit(&serde_json::json!({
                 "event": "echo_conflict", "room": state.room, "client_id": client_id,
                 "attempt": attempts + 1, "error": error.to_string(),
             }));
+            Posted::Queued
         }
-        SendOutcome::AlreadyDelivered { client_id, error } => emit(&serde_json::json!({
-            "event": "echo_client_id_reuse", "room": state.room, "client_id": client_id,
-            "error": error.to_string(),
-        })),
+        SendOutcome::AlreadyDelivered { client_id, error } => {
+            emit(&serde_json::json!({
+                "event": "echo_client_id_reuse", "room": state.room, "client_id": client_id,
+                "error": error.to_string(),
+            }));
+            Posted::Reused
+        }
+    })
+}
+
+/// What one `publish_echo` did with the text (#703: how a notice with an id
+/// is answered).
+#[derive(Debug, PartialEq, Eq)]
+enum Posted {
+    /// Stored at this relay seq (for a byte-equal replay: the original's).
+    Seq(i64),
+    /// 409 cas_mismatch: queued for the next poll's replay (`after_page`).
+    Queued,
+    /// 409 client_id_reuse: the dedup key was spent by an earlier
+    /// incarnation, so this text was not stored under it; not replayed.
+    Reused,
+}
+
+impl Posted {
+    /// #703: the notice answer this outcome settles, or `None` while the
+    /// text waits in the replay queue.
+    fn notice_outcome(&self) -> Option<Result<i64, &'static str>> {
+        match self {
+            Posted::Seq(seq) => Some(Ok(*seq)),
+            Posted::Queued => None,
+            Posted::Reused => Some(Err("client_id_reuse")),
+        }
     }
-    Ok(())
+}
+
+/// #703: tell the sender of a notice with an id what became of it (no-op
+/// without an id or a responder).
+fn answer_notice(agent: Option<&mut Responder>, room: &str, id: Option<&str>, outcome: Result<i64, &'static str>) {
+    if let (Some(agent), Some(id)) = (agent, id) {
+        agent.answer_notice(room, id, outcome);
+    }
 }
 
 fn report_dropped(state: &RoomState, plaintext: &[u8], err: BotError) -> BotError {
@@ -2420,8 +2516,8 @@ for line in sys.stdin:
         assert!(agent_text(&Outbound::Uncertain { seq: 9, reason: "watchdog".into() }).contains("#9"));
         assert_eq!(agent_kind(&Outbound::Reply { seq: 1, text: String::new() }), "reply");
         assert_eq!(agent_kind(&Outbound::Interim { seq: 1, text: String::new() }), "interim");
-        assert_eq!(agent_text(&Outbound::Notice { room: "r".into(), text: "⏰".into(), depth: 1 }), "⏰");
-        assert_eq!(agent_kind(&Outbound::Notice { room: "r".into(), text: String::new(), depth: 1 }), "notice");
+        assert_eq!(agent_text(&Outbound::Notice { room: "r".into(), text: "⏰".into(), depth: 1, id: None }), "⏰");
+        assert_eq!(agent_kind(&Outbound::Notice { room: "r".into(), text: String::new(), depth: 1, id: None }), "notice");
         // ccc-node#2590: a turnless status line is journaled and posted as a status.
         assert_eq!(agent_kind(&Outbound::StatusNotice { room: "r".into(), text: String::new() }), "status");
         assert_eq!(agent_text(&Outbound::StatusNotice { room: "r".into(), text: "⏳ 대기 중".into() }), "⏳ 대기 중");
@@ -2556,12 +2652,12 @@ for line in sys.stdin:
         let path = state_path("send-2c");
         let mut state = joined_room_at("family", 4, Some(path.clone()));
         state.device.create().expect("a one-member group to encrypt in");
-        publish_echo(&ctx, &mut state, b"hello", 0).unwrap_or_else(|e| panic!("conflict: {e}"));
+        publish_echo(&ctx, &mut state, b"hello", 0, None).unwrap_or_else(|e| panic!("conflict: {e}"));
         assert_eq!(state.retry.len(), 1, "cas_mismatch queues the plaintext");
-        assert_eq!(state.retry[0], (b"hello".to_vec(), 1));
-        publish_echo(&ctx, &mut state, b"again", 0).unwrap_or_else(|e| panic!("reuse: {e}"));
+        assert_eq!(state.retry[0], (b"hello".to_vec(), 1, None));
+        publish_echo(&ctx, &mut state, b"again", 0, None).unwrap_or_else(|e| panic!("reuse: {e}"));
         assert_eq!(state.retry.len(), 1, "client_id_reuse is not replayed");
-        publish_echo(&ctx, &mut state, b"third", 0).unwrap_or_else(|e| panic!("sent: {e}"));
+        publish_echo(&ctx, &mut state, b"third", 0, None).unwrap_or_else(|e| panic!("sent: {e}"));
         assert_eq!(state.echoes, 6, "three dedup keys reserved after 3 earlier echoes");
         assert!(!state.dirty, "persisted before each POST");
         let on_disk: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).expect("state file")).expect("json");
@@ -2647,7 +2743,7 @@ for line in sys.stdin:
         let path = state_path("send-restart");
         let mut state = joined_room_at("family", 4, Some(path.clone()));
         state.device.create().expect("a one-member group to encrypt in");
-        publish_echo(&ctx, &mut state, b"reply", 0).unwrap_or_else(|e| panic!("a relay restart must not end the send: {e}"));
+        publish_echo(&ctx, &mut state, b"reply", 0, None).unwrap_or_else(|e| panic!("a relay restart must not end the send: {e}"));
         assert_eq!(state.echoes, 4, "one dedup key for the reply, not one per attempt");
         assert!(state.retry.is_empty(), "delivered, nothing queued");
         let seen = server.join().expect("server thread");
@@ -2701,6 +2797,71 @@ for line in sys.stdin:
         assert_eq!(seen.len(), 2, "{seen:?}");
         assert!(seen.iter().all(|l| l.starts_with("GET /v2/rooms/family/events?device=bot-1&after=4")), "{seen:?}");
         assert_eq!(rooms[0].cursor, 4, "nothing moved");
+    }
+
+    /// #703 through `run_loop`: notices a sender (alert feeder) writes on the
+    /// responder socket are posted to the agent room and answered on that
+    /// same connection — `notice_ack` with the seq the relay stored it at
+    /// (also when the first POST hit a 409 cas_mismatch and the next poll's
+    /// replay stored it), `notice_nack` for one the loop does not post; a
+    /// notice without an id is posted exactly as before and never answered.
+    #[test]
+    fn run_loop_acks_a_posted_notice_on_the_senders_connection() {
+        use std::io::{BufRead, BufReader};
+        let page = r#"{"epoch":2,"revision":1,"events":[],"first_seq":5}"#.to_string();
+        let stored = |seq: i64| format!(r#"{{"seq":{seq},"epoch":2,"revision":1,"duplicate":false}}"#);
+        let (base, server) = canned_relay_with_status(vec![
+            (200, page.clone()),                              // round 1: poll
+            (200, stored(21)),                                // row-1
+            (200, stored(22)),                                // the id-less notice
+            (409, r#"{"error":"cas_mismatch"}"#.to_string()), // row-3: queued for the replay
+            (200, page),                                      // round 2: poll
+            (200, stored(23)),                                // row-3, replayed
+        ]);
+        let client = Client::with_access(&base, api::Access::None);
+        let ctx = Ctx { client: &client, own: "bot-1", typing: None };
+        let dir = temp_dir("notice-ack");
+        let sock = dir.join("responder.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).expect("bind");
+        let mut config = responder::Config::new(responder::Transport::Unix(sock), "owner".into());
+        config.typing = false;
+        let mut agent = Some(Responder::spawn(config, None).unwrap_or_else(|e| panic!("connect: {e}")));
+        let (mut feeder, _) = listener.accept().expect("accept");
+        for frame in [
+            serde_json::json!({"type": "notice", "room": "soonwook", "text": "카드 결제 1", "id": "row-1"}),
+            serde_json::json!({"type": "notice", "room": "soonwook", "text": "no id"}),
+            // Single-room wire: a notice for another room stays unsaid.
+            serde_json::json!({"type": "notice", "room": "elsewhere", "text": "x", "id": "row-2"}),
+            serde_json::json!({"type": "notice", "room": "soonwook", "text": "카드 결제 3", "id": "row-3"}),
+        ] {
+            feeder.write_all(format!("{frame}\n").as_bytes()).expect("feeder write");
+        }
+        std::thread::sleep(Duration::from_millis(300)); // all four reach the pump in round 1
+        let mut state = joined_room_at("soonwook", 4, Some(dir.join("soonwook.state")));
+        state.device.create().expect("a one-member group to encrypt in");
+        state.mode = Mode::Agent;
+        let mut rooms = vec![state];
+        let err = run_loop(&ctx, &mut rooms, &mut agent, Some(Instant::now() + Duration::from_millis(2500)), None)
+            .expect_err("the deadline ends the loop");
+        assert!(err.to_string().contains("deadline"), "{err}");
+        let seen = server.join().expect("relay");
+        assert_eq!(seen.len(), 6, "{seen:?}");
+        assert!(seen[0].starts_with("GET /v2/rooms/soonwook/events") && seen[4].starts_with("GET /v2/rooms/soonwook/events"), "{seen:?}");
+        assert!([1, 2, 3, 5].iter().all(|&i| seen[i].starts_with("POST /v2/rooms/soonwook/events")), "{seen:?}");
+        assert!(rooms[0].retry.is_empty(), "the replay posted row-3");
+
+        feeder.set_read_timeout(Some(Duration::from_millis(500))).expect("timeout");
+        let mut answers = BufReader::new(feeder);
+        let mut read = || {
+            let mut line = String::new();
+            answers.read_line(&mut line).ok().filter(|n| *n > 0).map(|_| serde_json::from_str::<serde_json::Value>(&line).expect("answer json"))
+        };
+        assert_eq!(read(), Some(serde_json::json!({"type": "notice_ack", "id": "row-1", "seq": 21})));
+        assert_eq!(read(), Some(serde_json::json!({"type": "notice_nack", "id": "row-2", "reason": "not_agent_room"})));
+        assert_eq!(read(), Some(serde_json::json!({"type": "notice_ack", "id": "row-3", "seq": 23})));
+        assert_eq!(read(), None, "nothing for the id-less notice");
+        drop(agent);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn temp_dir(tag: &str) -> PathBuf {
@@ -3055,7 +3216,7 @@ for line in sys.stdin:
     fn target_room_routes_by_the_items_room() {
         let mut rooms = vec![room_in("soonwook", Mode::Agent), room_in("fleet", Mode::Alert), room_in("family", Mode::Silent), room_in("dungae", Mode::Agent)];
         let reply = Outbound::Reply { seq: 1, text: "x".into() };
-        let notice = |room: &str| Outbound::Notice { room: room.into(), text: "n".into(), depth: 1 };
+        let notice = |room: &str| Outbound::Notice { room: room.into(), text: "n".into(), depth: 1, id: None };
         let pick = |rooms: &mut Vec<RoomState>, multi: bool, room: &str, item: &Outbound| target_room(rooms, multi, room, item).map(|r| r.room.clone());
         // Off: always the first agent room (the caller drops a notice for another room).
         assert_eq!(pick(&mut rooms, false, "dungae", &reply).as_deref(), Some("soonwook"));
