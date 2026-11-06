@@ -250,6 +250,24 @@ final class AgentChoicesTests: XCTestCase {
         XCTAssertEqual(states[3], .open)
     }
 
+    /// §6.1(ccc-node#2700): 알림 전용 서비스 봇(플릿 알림)의 명시 블록도 카드 — 서비스 actor 로 넘겼을 때만.
+    func testServiceBotExplicitBlockIsACardOnlyWhenListed() {
+        let fleet: DeviceID = "fleet-bot"
+        let alert = "#69pgri ⏰ 재통지 1/3 #6c9kzj (action) — 아래에서 고르거나 답하면 멈춥니다.\n\n[답변 필요] 하나만 선택\n1. ok 6c9kzj\n2. hold 6c9kzj"
+        XCTAssertTrue(AgentChoices.cards([rec(1, fleet, alert)], roster: roster, myDevice: me).isEmpty, "not listed → no card")
+        let cards = AgentChoices.cards([rec(1, fleet, alert)], roster: roster, myDevice: me, serviceActors: ["fleet"])
+        XCTAssertEqual(cards[1]?.state, .open)
+        XCTAssertEqual(cards[1]?.choices.mode, .one)
+        XCTAssertEqual(cards[1]?.choices.items.map(\.label), ["ok 6c9kzj", "hold 6c9kzj"])
+        let sent = cards[1]?.choices.composeReply([2]) ?? ""
+        XCTAssertEqual(sent, "2. hold 6c9kzj")
+        XCTAssertEqual(AgentChoices.states([rec(1, fleet, alert), rec(2, me, sent)], roster: roster, myDevice: me,
+                                           serviceActors: ["fleet"])[1], .answered([2]))
+        // 머리줄 없는 서비스 봇 목록은 카드가 아니다.
+        XCTAssertTrue(AgentChoices.cards([rec(1, fleet, "알림\n1. 하나\n2. 둘")], roster: roster, myDevice: me,
+                                         serviceActors: ["fleet"]).isEmpty)
+    }
+
     func testEmptyDeviceNeverAnswers() {
         XCTAssertEqual(AgentChoices.states([rec(1, bot, choices), rec(2, me, "1")], roster: roster, myDevice: "")[1], .closed)
     }

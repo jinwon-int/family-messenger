@@ -23,6 +23,14 @@ object AgentActors {
 
     fun isAgentDevice(device: String): Boolean = actorOf(device) in ACTORS
 
+    /**
+     * 알림 전용 서비스 봇 actor(사람도 에이전트도 아님) — 웹 `serviceNames`·iOS `Strings.serviceNames` 의 키와 같은 목록.
+     * 이 글의 `[답변 필요]` 명시 블록도 선택 카드다(AGENT-CHOICES §6.1 — 플릿 알림 ok/hold, ccc-node#2700).
+     */
+    val SERVICE_ACTORS: Set<String> = setOf("card", "fleet", "bunjang", "insta")
+
+    fun isServiceDevice(device: String): Boolean = actorOf(device) in SERVICE_ACTORS
+
     /** 봇 기기 → 노드 이름. 옛 `bot-<node>` 는 둘째 마디, 새 `<node>-<suffix>` 는 actor. 노드를 모르면 "". */
     fun agentNode(device: String): String {
         val actor = actorOf(device)

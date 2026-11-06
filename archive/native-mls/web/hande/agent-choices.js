@@ -220,13 +220,14 @@ const isStoredMessage = (e) => e != null && (e.kind === 'text' || e.kind === 'at
  *   {state: 'open', choices}               — 뒤에 메시지가 없다 → 선택 카드
  *   {state: 'answered', numbers, labels, choices} — 바로 다음 메시지가 내 답(번호 목록, #624)
  *                                          → 한 줄 「✓ N번 선택 — 라벨」 / 「✓ 1, 3번 선택 — 라벨1 · 라벨3」
- * @param {{key:string, kind:string, body:string, isAgent:boolean, isMe:boolean}[]} entries app.js R.entries
+ * @param {{key:string, kind:string, body:string, isAgent:boolean, isService?:boolean, isMe:boolean}[]} entries app.js R.entries
  * @param {number} index
  * @param {(entry) => boolean} [isMine] 「내 것」 판정 — 기본은 app.js 가 계산해 둔 entry.isMe(같은 사람의 다른 기기 포함)
  */
 export function choiceState(entries, index, isMine = (e) => Boolean(e?.isMe)) {
   const entry = entries?.[index];
-  if (!entry || !entry.isAgent || entry.kind !== 'text') return null;
+  // §6.1: 에이전트 글 + 알림 전용 서비스 봇 글(플릿 알림 ok/hold). 명시 블록만 카드라 다른 알림 봇에는 영향 없다.
+  if (!entry || !(entry.isAgent || entry.isService) || entry.kind !== 'text') return null;
   let next = null;
   for (let j = index + 1; j < entries.length; j++) if (isStoredMessage(entries[j])) { next = entries[j]; break; }
   // 뒤에 남의 글·첨부가 있으면 무조건 closed — 선택지를 훑을 필요도 없다.

@@ -6,7 +6,7 @@
 // (owner actors join automatically, family devices accept with one tap — iOS
 // AppModel.discoverLobbyWelcomes / acceptInvite).
 import * as ui from './ui.js';
-import {strings, displayName, isAgentDevice, isMine, isOneToOne, participantCount, roomLabel, previewLine, relativeTime, typingLabel} from './strings.js';
+import {strings, displayName, isAgentDevice, isServiceDevice, isMine, isOneToOne, participantCount, roomLabel, previewLine, relativeTime, typingLabel} from './strings.js';
 import {orderRooms, moveRoom, readRoomOrder, writeRoomOrder} from './room-order.js';
 import {fireLevel, recentMessageCount} from './icons.js';
 import {readDraft, writeDraft} from './drafts.js';
@@ -218,7 +218,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   function choiceStates(roomId, R, {sending, disabled}) {
     const out = new Map();
     R.entries.forEach((e, i) => {
-      if (!e.isAgent || e.kind !== 'text') return;
+      if (!(e.isAgent || e.isService) || e.kind !== 'text') return;   // 서비스 봇(플릿 알림 ok/hold)도 명시 블록 카드(§6.1)
       const st = choiceState(R.entries, i);
       if (st) out.set(e.key, {...st, id: `${roomId}\u0000${e.key}`, sending, disabled});
     });
@@ -233,7 +233,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     if (R.entryKeys.has(key)) return;
     R.entryKeys.add(key);
     const entry = {key, kind: m.kind, seq: m.seq ?? null, sender: m.sender ?? '', senderName: m.sender ? displayName(m.sender) : '',
-      isMe: isMine(m.sender, {device: app.device, actor: app.actor}), isAgent: m.sender ? isAgentDevice(m.sender) : false, body: m.text ?? '', ts: m.ts ?? null,
+      isMe: isMine(m.sender, {device: app.device, actor: app.actor}), isAgent: m.sender ? isAgentDevice(m.sender) : false, isService: m.sender ? isServiceDevice(m.sender) : false, body: m.text ?? '', ts: m.ts ?? null,
       size: m.size ?? 0, image: null, replay: !!m.replay, load: m.load ?? null, fileName: m.fileName ?? null, dims: mediaDims(m.dims),
       previewFailed: false, previewBusy: false};
     R.entries.push(entry);
