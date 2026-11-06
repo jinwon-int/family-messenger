@@ -138,9 +138,11 @@ python3 scripts/native_relay_cutover.py @/etc/native-relay/cutover.args --confir
 
 - 실패한 단계에서 멈추고 **되돌리지 않는다**. 기록 JSON(`state/cutover-<시각>.json`)에 어디까지 됐는지 남으므로
   운영자가 이어서 처리한다(예: fence는 바뀌었는데 start 실패 → 원인 수정 후 `systemctl start`, 그다음 dns부터 수동).
-- 봇은 릴레이 주소를 `/etc/native-relay/relay.env`(`NATIVE_RELAY_URL`, 비밀 없음) 한 곳에서 읽고(공명 `native-relay-bot`
-  유닛·drop-in의 `ExecStart=… ${NATIVE_RELAY_URL} …`, 1단계 ⑤), 재지정 훅은 `deploy/native-relay/native-relay-repoint`
-  (`ssh gongmyoung sudo /usr/local/sbin/native-relay-repoint <새 릴레이 http URL>`)가 맡는다(오너 결정 D4). 한데 브리지
+- 봇은 릴레이 주소를 env 파일 한 곳(`NATIVE_RELAY_URL`, 비밀 없음)에서 읽는다 — 유닛 drop-in `60-relay-url.conf`의
+  `ExecStart=… ${NATIVE_RELAY_URL} …` + `EnvironmentFile=/etc/native-relay/bot-relay.env`(공명만 #451 방식 `relay.env`), Termux는 runit
+  `run`이 `$PREFIX/etc/native-relay/bot-relay.env`를 읽는다(#699 P0-d). 재지정 훅 `deploy/native-relay/native-relay-repoint` v2(#702)는
+  노드별 `repoint.conf`의 봇 목록을 하나씩 재시작하고 `steward_ready`를 확인한다 — `cutover.args`에 노드마다
+  `--client-hook ssh -n -o BatchMode=yes <node> /usr/local/sbin/native-relay-repoint <새 릴레이 http URL>` 한 줄(오너 결정 D4). 한데 브리지
   (`ccc-hande-bridge`)는 릴레이 주소를 갖지 않고 봇과 Unix 소켓으로만 통신하므로 재지정 대상이 아니다. JWT 갱신
   (`jwt-refresh.sh`)은 공개 호스트명(`relay.<도메인>`)을 쓰므로 dns 단계를 따라간다.
 - `--dry-run`은 판정·계획까지만, `--probe-only`는 판정만(워치독·cron에서 쓴다).
@@ -151,8 +153,34 @@ python3 scripts/native_relay_cutover.py @/etc/native-relay/cutover.args --confir
   `activating` 중인 peer를 못 볼 수 있다; 정지 측 타이머가 그 창을 닫는다.
 - 스냅샷 유닛의 `state/skipped-latest.json`은 다음 성공 스냅샷이 지운다 — 워치독은 이 파일의 존재만으로 "펜스에 막힘"을 판정해도 된다.
 
+### 계획 이전 — 활성 호스트를 정상 상태에서 옮길 때 (#699, 2026-11-06 서서→순욱 실측)
+
+`probe`는 옛 호스트가 살아 있으면 `not-down:healthy`로 거부한다(장애 대응용 설계). 계획 이전은 **옛 호스트를 먼저 멈추고** 같은
+스크립트를 돌린다. 2026-11-06 실측: 중단 약 4분 12초, hook 12/12, 오너 앱·푸시 정상.
+
+1. **사전**: 새 호스트 `--dry-run --probe-tries 1` = `not-down:healthy`, `--dry-run --skip-probe` = plan OK. 새 호스트의 릴레이 바이너리·drop-in·
+   APNs 키가 옛 호스트와 같은지(유효 `ExecStart` 인자 비교), 양쪽 `cutover.args`의 hook 줄, 반대 방향(되돌리기) `cutover.args`와 DNS·Access
+   토큰을 미리 확인한다.
+2. **알림 feeder 일시 중지**(#703이 배포되기 전까지 필수): 봇은 notice 확인 프레임이 없어 feeder가 「소켓에 쓰면 삭제」한다. 릴레이가 멈춘
+   동안 봇이 hook으로 재시작되면 그 사이 넘겨받은 알림은 사라진다(실측: 카드 알림 1건). 옛 호스트 중지 **전에**
+   `hande-card-feeder`·`fleet-alerts-sender-hande`(서서), `bunjang-hande`(곽가), `insta-feeder`(대교, `sv down`)를 멈추고 6단계 뒤 다시 켠다
+   (멈춘 동안의 알림은 각 큐에 남았다가 재개 때 나간다).
+3. **옛 호스트**: `systemctl stop native-relay-snapshot.timer` 그리고 `systemctl stop native-relay` — 타이머를 멈추지 않으면 plan과
+   confirm 사이에 새 아카이브가 도착해 토큰이 어긋난다. 릴레이를 먼저 멈춰야 plan의 `peer_snapshot`이 **마지막 메시지까지** 담는다.
+4. **새 호스트**: `cutover.args --probe-tries 1`(plan — probe `relay-down` → peer_snapshot → 토큰). integrity ok, peer_snapshot exit 0,
+   아카이브 생성 시각 ≥ 중지 시각을 확인한 뒤 `--confirm <토큰>`.
+5. **확인**: 엣지 200, 노드마다 `native-relay-repoint --check` = 새 URL, 새 호스트 첫 스냅샷이 push 대상에 도착, 펜스 TXT = 새 이름.
+6. **옛 호스트 정리**: `native-relay-snapshot.timer` 다시 켜기(펜스로 skip — 이제 대기 역할), 2단계 feeder 재개.
+
+- **대화 채널이 이 릴레이를 거칠 때**(한데로 운영자와 대화 중인 에이전트): 위 전체를 대화와 분리된 유닛(`systemd-run --on-active=90s …`)으로
+  돌리고 결과는 다른 채널(Matrix 플릿 알림)로 받는다 — 릴레이가 멈추면 대화도 멈추고, 그 노드 봇의 hook 재시작이 진행 중 답을 끊는다.
+- Cloudflare proxied CNAME은 ttl을 1(auto)로 보관하므로 `dns_upsert(ttl=60)`는 같은 내용에도 `updated`를 낸다(무해 — 내용·proxied는 같다).
+- 되돌리기: 몇 분 안·사용자 트래픽 전이면 옛 호스트 원본으로(새 호스트 stop → TXT·CNAME 원복 → 옛 호스트 start → hook 원복), 그 뒤에는
+  옛 호스트의 반대 방향 `cutover.args`로 **데이터를 가지고** 전환한다.
+
 ### 전환 뒤 가족·봇 복구 (오너 결정 D3)
 1. 전 기기가 `history_gap` 정지 — 안내문대로 "다시 참여 준비".
+   (2026-11-06 계획 이전 실측: 오너 앱 송수신·푸시는 재참여 없이 정상이었다 — 아래 2~4단계가 필요한지는 기기별로 확인한다.)
 2. 운영자 relay-app(`owner-pc`)에서 새 방 개설 → 로비 키패키지로 가족 기기·봇 전원 초대.
 3. 봇(`bot-gongmyoung`)은 재지정 훅으로 새 릴레이를 보고 있으므로 초대만 받으면 된다.
 4. 이전 방은 "이력 보관"으로 둔다(릴레이의 `-reset-room`은 쓰지 않는다 — 영구 삭제).
