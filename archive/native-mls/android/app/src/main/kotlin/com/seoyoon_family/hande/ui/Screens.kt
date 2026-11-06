@@ -7,7 +7,8 @@
 //   목록 = 「자리」(불 세기 불꽃 · 좌석 점 · 안 읽음 주황 점; 「불지기」 배지는 오너 결정 #613/#540 으로 없음) · 대화 = 말풍선(면/불/파랑) + 알약 입력창 · 설정 「화면」(밤/낮불).
 // 한데 디자인 2차-A(§A1~A6, iOS 전 화면의 M3 판 — 조각은 `ui/theme/HandeKit.kt`): 온보딩 4단계(진행 막대 · ① 서버 찾기 → ② 이름 → ③ 가족 로그인 → ④ 이 기기 등록) ·
 //   새 기기 승인 전체 화면(`ApproveScreen`: 8행을 모두 눌러 표시해야 「승인」) · 목록 빈 상태 그림 · 꺼진 자리 안내 상자 · 설정 재배치(자주 → 드물게 → 위험).
-//   Android 에 데이터가 없는 것(알림함·순서 편집·오프닝·로그아웃·서버 바꾸기·전송 상태·타닥타닥·폐기)은 그리지 않는다. 허브 호출·단계 매핑은 그대로.
+//   Android 에 데이터가 없는 것(알림함·오프닝·로그아웃·서버 바꾸기·전송 상태·타닥타닥·폐기)은 그리지 않는다. 허브 호출·단계 매핑은 그대로.
+// #715 · #549: 대화 목록 순서 편집(머리의 순서 아이콘 → 「자리 순서」 모드: 행마다 「맨 위로 고정」·▲▼, 방은 열리지 않음) — 순서는 릴레이에 actor 단위로 동기화(`RoomOrderSync`).
 // 한데 디자인 3차-A(Android Material 3 관용구): 투명 TopAppBar(64dp, 제목 왼쪽, 아이콘 버튼) · M3 OutlinedTextField(떠 있는 라벨 · isError + supportingText) · M3 Button/OutlinedButton/TextButton(알약) ·
 //   목록 머리 = 큰 워드마크 + 설정 아이콘, ExtendedFloatingActionButton(56 · 반경 16) = 「참여 요청」(방 만들기가 없어 iOS 「불 피우기」의 Android 짝) · 설정 「화면」 = SingleChoiceSegmentedButtonRow ·
 //   「이 기기 지우기」 확인 = AlertDialog(반경 28, surfaceContainerHigh) — 바텀시트 없음 · 등록되면 목록 + Snackbar 「등록됐어요 — 불 곁으로 오세요」 · 「등록 정보 공유」 = OutlinedButton + share ·
@@ -98,6 +99,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.toggleableState
@@ -238,6 +240,7 @@ fun HandeRoot(hub: DeviceHub, themeMode: HandeThemeMode = HandeThemeMode.NIGHT, 
                         ui, onOpen = { openRoom = it }, onRequestJoin = { hub.requestJoin(scope) },
                         onCompare = { approveId = it }, onIgnore = { hub.dismissCandidate(scope, it) },
                         onSettings = { showSettings = true }, onNoticeShown = hub::clearNotice,
+                        onMoveRoom = hub::moveRoom, onMoveRoomToTop = hub::moveRoomToTop,
                     )
                 }
             }
@@ -804,8 +807,10 @@ fun DevicesScreen(ui: HubUi, onBack: () -> Unit, onGrant: (String) -> Unit, onRe
 // ---- 대화 목록 · 대화방 ----
 
 /**
- * 대화 목록 = 「자리」(3차-A A2): 머리는 TopAppBar 대신 큰 워드마크(34) + 「오늘 밤, 모닥불에 한데 모여」 + 서버 이름(#584), 오른쪽 위는 설정 아이콘 하나
- * (초대 벨·순서 편집은 Android 에 그 데이터가 없다; 「내 기기」는 설정 → 기기 관리). 낮불은 머리 아래 먹 선 1.5(2차-B). 방 행 카드(`RoomRow`).
+ * 대화 목록 = 「자리」(3차-A A2): 머리는 TopAppBar 대신 큰 워드마크(34) + 「오늘 밤, 모닥불에 한데 모여」 + 서버 이름(#584), 오른쪽 위는 순서 편집(자리 2개 이상) + 설정 아이콘
+ * (초대 벨은 Android 에 그 데이터가 없다; 「내 기기」는 설정 → 기기 관리). 낮불은 머리 아래 먹 선 1.5(2차-B). 방 행 카드(`RoomRow`).
+ * 순서 편집(#549 · #715, iOS 「↕ 순서」 모드와 같은 결): 머리가 「자리 순서」 + 주황 「완료」 + 안내 한 줄로 바뀌고, 행은 `OrderRow`(이름 + 「맨 위로 고정」 + ▲▼, 끝에서는 비활성).
+ * 행을 눌러도 방이 열리지 않는다. 뒤로 가기 = 편집 끝. 자리가 1개 이하가 되면 조용히 끈다. 옮기면 허브가 로컬에 바로 저장하고 릴레이에 올린다(`DeviceHub.moveRoom`).
  * `ExtendedFloatingActionButton`(56 · 반경 16 · 오른쪽 아래 16dp · 불 면) — iOS 「불 피우기」의 Android 짝이지만 Android 에는 방 만들기가 없어 기존 동작 「참여 요청」(로비 키 게시)을 단다(의도된 차이).
  * 빈 상태(2차-A §A3): 꺼진 장작 그림(불 그림은 여기만) + 「아직 피운 모닥불이 없습니다」 + 1줄.
  * 등록 직후(허브가 WaitingEnrollment → Ready 전환에 `enrolledNow` 알림을 싣는다)는 토스트 대신 M3 Snackbar 「등록됐어요 — 불 곁으로 오세요」.
@@ -815,9 +820,15 @@ fun DevicesScreen(ui: HubUi, onBack: () -> Unit, onGrant: (String) -> Unit, onRe
 fun RoomListScreen(
     ui: HubUi, onOpen: (String) -> Unit, onRequestJoin: () -> Unit,
     onCompare: (String) -> Unit, onIgnore: (String) -> Unit, onSettings: () -> Unit, onNoticeShown: () -> Unit,
+    onMoveRoom: (String, Int) -> Unit = { _, _ -> }, onMoveRoomToTop: (String) -> Unit = {},
 ) {
     val colors = LocalHandeColors.current
     val snackbar = remember { SnackbarHostState() }
+    val canReorder = ui.rooms.size > 1
+    var editing by rememberSaveable { mutableStateOf(false) }
+    val ordering = editing && canReorder
+    LaunchedEffect(canReorder) { if (!canReorder) editing = false }
+    BackHandler(enabled = ordering) { editing = false }
     val enrolled = ui.notice == Strings.enrolledNow
     LaunchedEffect(enrolled) {
         if (enrolled) {
@@ -840,7 +851,8 @@ fun RoomListScreen(
             }
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
+            // 순서 편집 중에는 숨긴다 — 마지막 행의 ▼ 를 가리지 않고, 편집 모드가 바뀐 것이 분명하게.
+            if (!ordering) ExtendedFloatingActionButton(
                 text = { Text(Strings.requestJoin, fontSize = 16.sp, fontWeight = FontWeight.SemiBold) },
                 icon = { Icon(HandeIcons.add(colors.onEmber), contentDescription = null, tint = Color.Unspecified) },
                 onClick = onRequestJoin,
@@ -851,19 +863,27 @@ fun RoomListScreen(
         },
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
-            Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 16.dp, bottom = 10.dp), verticalAlignment = Alignment.Bottom) {
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    HandeWordmark(size = 34.sp)
-                    // 연결 중이면 부제 자리에 그 사실을.
-                    Text(if (ui.connecting) Strings.connecting else Strings.campfireSubtitle, color = colors.inkDim, fontSize = 15.sp)
-                    // 워드마크 아래 서버 이름(#584): `.well-known` 의 이름, 없으면 릴레이 호스트 — 다른 운영자의 서버에 붙었을 때 어디인지 보인다.
-                    ui.server?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = colors.inkDim, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            if (ordering) {
+                OrderHeader(hint = Strings.orderHint(ui.roomOrderSynced), onDone = { editing = false })
+            } else {
+                Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 16.dp, bottom = 10.dp), verticalAlignment = Alignment.Bottom) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        HandeWordmark(size = 34.sp)
+                        // 연결 중이면 부제 자리에 그 사실을.
+                        Text(if (ui.connecting) Strings.connecting else Strings.campfireSubtitle, color = colors.inkDim, fontSize = 15.sp)
+                        // 워드마크 아래 서버 이름(#584): `.well-known` 의 이름, 없으면 릴레이 호스트 — 다른 운영자의 서버에 붙었을 때 어디인지 보인다.
+                        ui.server?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = colors.inkDim, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    }
+                    // #549 · #715: 순서 편집 진입(iOS 「↕ 순서」·웹 reorder 아이콘). 자리가 0~1개면 숨김. 「완료」는 편집 머리에만.
+                    if (canReorder) {
+                        IconButton(onClick = { editing = true }) { Icon(HandeIcons.reorder(colors), contentDescription = Strings.orderEditLabel, tint = Color.Unspecified) }
+                    }
+                    IconButton(onClick = onSettings) { Icon(HandeIcons.settings(colors.ink), contentDescription = Strings.settingsButton, tint = Color.Unspecified) }
                 }
-                IconButton(onClick = onSettings) { Icon(HandeIcons.settings(colors.ink), contentDescription = Strings.settingsButton, tint = Color.Unspecified) }
             }
             if (colors.isDay) HorizontalDivider(thickness = 1.5.dp, color = colors.ink)
             // 새 기기 승인 요청(#574): 등록 기기(또는 registrar 없는 actor 의 활성 기기)에게만 보인다. 「지문 비교」→ 전체 화면 `ApproveScreen`.
-            if (ui.candidates.isNotEmpty()) {
+            if (ui.candidates.isNotEmpty() && !ordering) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(Strings.candidatesTitle, style = MaterialTheme.typography.titleMedium)
                     for (c in ui.candidates) CandidateCard(c, onCompare = { onCompare(c.deviceId) }, onIgnore = { onIgnore(c.deviceId) })
@@ -882,10 +902,117 @@ fun RoomListScreen(
             } else {
                 // 아래 여백 88 = FAB 56 + 16 + 16 — 마지막 행이 FAB 에 가리지 않게.
                 LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(top = 6.dp, bottom = 88.dp)) {
-                    items(ui.rooms, key = { it.room }) { r -> RoomRow(r) { onOpen(r.room) } }
+                    if (ordering) {
+                        val last = ui.rooms.lastIndex
+                        itemsIndexed(ui.rooms, key = { _, r -> r.room }) { i, r ->
+                            OrderRow(
+                                r, isFirst = i == 0, canUp = i > 0, canDown = i < last,
+                                onUp = { onMoveRoom(r.room, -1) }, onDown = { onMoveRoom(r.room, 1) }, onTop = { onMoveRoomToTop(r.room) },
+                            )
+                        }
+                    } else {
+                        items(ui.rooms, key = { it.room }) { r -> RoomRow(r) { onOpen(r.room) } }
+                    }
                 }
             }
         }
+    }
+}
+
+/** 순서 편집 머리(iOS 디자인 2차 2c): 「자리 순서」 22/600 + 오른쪽 주황 알약 「완료」 + 안내 한 줄. */
+@Composable
+private fun OrderHeader(hint: String, onDone: () -> Unit) {
+    val colors = LocalHandeColors.current
+    Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 16.dp, top = 20.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                Strings.orderModeTitle, color = colors.ink, fontSize = 22.sp, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f).semantics { heading() },
+            )
+            val pill = RoundedCornerShape(18.dp)
+            Box(
+                Modifier
+                    .heightIn(min = 48.dp)
+                    .clip(pill)
+                    .clickable(role = Role.Button, onClick = onDone)
+                    .semantics { contentDescription = Strings.orderDoneLabel },
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    Modifier
+                        .height(36.dp)
+                        .clip(pill)
+                        .background(colors.ember)
+                        .then(if (colors.isDay) Modifier.border(colors.lineWidth, colors.stroke, pill) else Modifier)
+                        .padding(horizontal = 16.dp),
+                    contentAlignment = Alignment.Center,
+                ) { Text(Strings.orderDone, color = colors.onEmber, fontSize = 16.sp, fontWeight = FontWeight.SemiBold) }
+            }
+        }
+        Text(hint, color = colors.inkDim, fontSize = 14.sp, lineHeight = 20.sp)
+    }
+}
+
+/**
+ * 순서 편집 행(iOS `OrderRow` 와 같은 결): 카드 안에 이름 17/600 + 보조 13(맨 앞 = 「맨 위 고정」 · 꺼진 자리 = 「불이 꺼진 자리 · 운영자가 닫음」) +
+ * 「맨 위로 고정」(맨 앞·꺼진 자리는 비활성) + ▲▼(끝에서는 비활성, 웹 한데 ▲▼). 불 세기·미리보기·안 읽음은 숨긴다. 눌러도 방은 열리지 않는다.
+ */
+@Composable
+private fun OrderRow(r: RoomUi, isFirst: Boolean, canUp: Boolean, canDown: Boolean, onUp: () -> Unit, onDown: () -> Unit, onTop: () -> Unit) {
+    val colors = LocalHandeColors.current
+    val day = colors.isDay
+    val halted = r.halted != null
+    val closedDay = halted && day
+    val shape = RoundedCornerShape(16.dp)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 5.dp)
+            .alpha(if (halted && !day) 0.6f else 1f)
+            .clip(shape)
+            .background(colors.surface)
+            .then(if (closedDay) Modifier.dashedBorder(1.5.dp, colors.ash, shape) else Modifier.border(colors.lineWidth, colors.stroke, shape))
+            .padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                AgentActors.roomLabel(r.room), color = if (closedDay) colors.ash else colors.ink, fontSize = 17.sp, lineHeight = 22.sp,
+                fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            val note = when {
+                halted -> if (r.halted == "room_closed") Strings.roomClosedPreview else "${Strings.halted} · ${r.halted}"
+                isFirst -> Strings.orderPinnedNote
+                else -> null
+            }
+            if (note != null) {
+                Spacer(Modifier.height(2.dp))
+                Text(note, color = colors.inkDim, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        TextButton(onClick = onTop, enabled = !isFirst && !halted) {
+            Text(Strings.orderPinTop, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = if (!isFirst && !halted) colors.ember else colors.inkDim.copy(alpha = 0.5f))
+        }
+        Column {
+            OrderStepButton("▲", Strings.orderUp(r.room), canUp, onUp)
+            OrderStepButton("▼", Strings.orderDown(r.room), canDown, onDown)
+        }
+    }
+}
+
+/** ▲/▼ 한 칸(48×32 — 두 개 겹쳐 64, 끌기가 어려운 조부모용). 끝에서는 비활성(흐린 글자). */
+@Composable
+private fun OrderStepButton(symbol: String, label: String, enabled: Boolean, onClick: () -> Unit) {
+    val colors = LocalHandeColors.current
+    Box(
+        Modifier
+            .size(width = 48.dp, height = 32.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(symbol, color = if (enabled) colors.ember else colors.inkDim.copy(alpha = 0.35f), fontSize = 15.sp, fontWeight = FontWeight.Bold)
     }
 }
 

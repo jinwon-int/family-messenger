@@ -7,7 +7,7 @@ import android.content.Context
 import android.util.Base64
 import java.security.SecureRandom
 
-class Settings(context: Context, private val sealer: KeystoreSealer) {
+class Settings(context: Context, private val sealer: KeystoreSealer) : RoomOrderSync.Store {
     private val prefs = context.getSharedPreferences("hande", Context.MODE_PRIVATE)
 
     var relayUrl: String?
@@ -80,8 +80,26 @@ class Settings(context: Context, private val sealer: KeystoreSealer) {
         return seq
     }
 
+    // ---- 대화 목록 순서(#715 room-order v1 · #549, 웹 localStorage `hande:room-order:<device>` · iOS `hande.roomOrder` 와 같은 뜻) ----
+    // 공개 값(방 ID 목록 — 릴레이에도 actor 단위로 둔다). 동기화 규칙은 `RoomOrderSync`. `wipe()` 로 함께 지워진다.
+
+    /** 이 기기의 방 순서(`RoomOrder.encode` 형식 JSON 배열). 비면 지운다(= 기본 순서). */
+    override var roomOrder: List<String>
+        get() = RoomOrder.decode(prefs.getString("room_order", null))
+        set(value) { if (value.isEmpty()) prefs.edit().remove("room_order").apply() else prefs.edit().putString("room_order", RoomOrder.encode(value)).apply() }
+
+    /** 마지막으로 본 서버 순서 revision(0 = 서버에 저장된 적 없음/모름). 다음 PUT 의 `base_revision`. */
+    override var roomOrderRevision: Long
+        get() = prefs.getLong("room_order_revision", 0L).coerceAtLeast(0L)
+        set(value) { prefs.edit().putLong("room_order_revision", value.coerceAtLeast(0L)).apply() }
+
+    /** 서버에 아직 올리지 못한 로컬 변경이 있다(오프라인 이동·일시 실패 — 다음 주기에 다시 올린다). */
+    override var roomOrderPending: Boolean
+        get() = prefs.getBoolean("room_order_pending", false)
+        set(value) { prefs.edit().putBoolean("room_order_pending", value).apply() }
+
     /**
-     * 이 기기 지우기(#584 Play 「계정 삭제」 앱 내 경로): 설정 전부(릴레이·이름·봉인된 세션 값·로그인 state·대기열·읽음 위치·**기기 ID 접미**)를 지운다.
+     * 이 기기 지우기(#584 Play 「계정 삭제」 앱 내 경로): 설정 전부(릴레이·이름·봉인된 세션 값·로그인 state·대기열·읽음 위치·방 순서·**기기 ID 접미**)를 지운다.
      * `commit()` — 지운 뒤 바로 처음 설정으로 가므로 디스크 반영을 기다린다. 다음 `deviceSuffix` 는 새 난수 = 새 기기.
      */
     fun wipe() { prefs.edit().clear().commit() }

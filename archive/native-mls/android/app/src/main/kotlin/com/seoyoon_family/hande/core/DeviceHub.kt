@@ -9,9 +9,11 @@
 package com.seoyoon_family.hande.core
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import com.seoyoon_family.hande.host.FileLobbyStore
 import com.seoyoon_family.hande.host.FileRoomStore
+import com.seoyoon_family.hande.mls.HttpHeader
 import com.seoyoon_family.hande.mls.MlsCandidate
 import com.seoyoon_family.hande.mls.MlsCandidateList
 import com.seoyoon_family.hande.mls.MlsCandidatePost
@@ -27,6 +29,8 @@ import com.seoyoon_family.hande.ui.Strings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -89,6 +93,8 @@ data class HubUi(
     val devices: SelfService.RolesView? = null,
     /** 서버 표시(#584): `Settings.serverName`, 없으면 릴레이 호스트. 설정 전에는 null. */
     val server: String? = null,
+    /** 방 순서를 릴레이와 맞추는가(#715) — 옛 릴레이(404)면 false(이 기기에만 저장). 순서 편집 안내 문구가 고른다. */
+    val roomOrderSynced: Boolean = true,
 )
 
 class DeviceHub(context: Context, val settings: Settings, private val sealer: KeystoreSealer) {
@@ -102,6 +108,20 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     private val mutex = Mutex()
     private val _ui = MutableStateFlow(HubUi(phase = if (settings.isConfigured) Phase.Starting else Phase.Setup, server = serverLabel()))
     val ui: StateFlow<HubUi> = _ui
+    /**
+     * 대화 목록 순서(#715 room-order v1 · #549): 로컬 순서(`Settings.roomOrder`)와 릴레이(`GET/PUT /v2/me/room-order`)를 맞춘다 — 규칙은 `RoomOrderSync`.
+     * 네트워크는 허브 mutex 밖 `orderScope` 에서 `orderMutex` 로 한 번에 하나씩(방 poll·전송을 막지 않고, 화면도 막지 않는다).
+     * 인증은 코어 요청과 같은 `Cf-Access-Jwt-Assertion`(세션 값), actor 판정은 릴레이가 `device` 로 한다.
+     */
+    private val orderScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val orderMutex = Mutex()
+    private val roomOrder = RoomOrderSync(
+        store = settings, relayUrl = { settings.relayUrl }, device = { settings.deviceId },
+        http = ::orderHttp, now = { SystemClock.elapsedRealtime() }, log = { Log.i(TAG, it) },
+    ).also { sync ->
+        // 채택·이동 뒤 지금 목록을 새 순서로 다시 늘어놓는다(저장 순서에 없는 방의 기본 순서는 다음 틱의 `roomList` 가 바로잡는다).
+        sync.onChange = { order -> _ui.update { ui -> ui.copy(rooms = RoomOrder.apply(ui.rooms, order) { r -> r.room }, roomOrderSynced = sync.synced) } }
+    }
     /** 앱 versionName(`min_app.android` 와 견준다, #584). 못 읽으면 "0" — 서버가 최소 버전을 적어 두면 「앱이 오래됨」으로 막힌다. */
     private val appVersion: String = runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "0"
 
@@ -214,7 +234,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         Log.i(TAG, "boot: rooms=${rooms.size} token=${if (settings.accessToken == null) "none" else "set"}")
         val fp = sha256Hex(l.publicKey())
         Log.i(TAG, "boot: fingerprint ${fp.take(12)}… → probe")
-        _ui.update { it.copy(deviceId = identity, fingerprint = fp, keyCustody = sealer.describe(), rooms = rooms.values.map { r -> r.ui() }, server = serverLabel()) }
+        _ui.update { it.copy(deviceId = identity, fingerprint = fp, keyCustody = sealer.describe(), rooms = roomList(), server = serverLabel(), roomOrderSynced = roomOrder.synced) }
         probe()
     }
 
@@ -310,7 +330,59 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         if (ticks % REPLENISH_EVERY == 1) runCatching { replenish(l) }
         discoverCandidates(l)
         processSiblingInvites()
-        _ui.update { it.copy(rooms = rooms.values.map { r -> r.ui() }, connecting = connecting) }
+        _ui.update { it.copy(rooms = roomList(), connecting = connecting, roomOrderSynced = roomOrder.synced) }
+        kickRoomOrder()
+    }
+
+    /** 화면 목록: 저장된 순서를 먼저, 거기 없는 방은 기본 순서(참여 순서)로 뒤에(#715 규칙 3 · `RoomOrder.apply`). */
+    private fun roomList(): List<RoomUi> = RoomOrder.apply(rooms.values.map { it.ui() }, roomOrder.order) { it.room }
+
+    // ---- 대화 목록 순서(#715 room-order v1 · #549 편집) ----
+
+    /** 준비 단계에서 때가 됐으면(시작·로그인·전면 복귀·일시 실패 뒤, 최소 60초 간격) GET 을 IO 에 띄운다. 네트워크 없이 바로 돌아온다. */
+    private fun kickRoomOrder() {
+        if (_ui.value.phase !is Phase.Ready || !roomOrder.isDue()) return
+        orderScope.launch {
+            orderMutex.withLock { roomOrder.sync() }
+            _ui.update { it.copy(roomOrderSynced = roomOrder.synced) }
+        }
+    }
+
+    /** 순서 동기화용 인증 요청(코어와 같은 헤더). 응답이 없으면 null — `RoomOrderSync` 가 다음 주기에 다시 한다. */
+    private fun orderHttp(method: String, url: String, body: ByteArray?): RoomOrderSync.Reply? {
+        val token = settings.accessToken?.trim()?.takeIf { it.isNotEmpty() }
+        val headers = if (token == null) emptyList() else listOf(HttpHeader(ACCESS_HEADER, token))
+        return try {
+            transport.send(method, url, headers, body).let { RoomOrderSync.Reply(it.status.toInt(), it.body) }
+        } catch (e: RoomException) {
+            Log.w(TAG, "room-order $method: ${e.message}")
+            null
+        }
+    }
+
+    /** 앱이 전면으로 돌아왔다(`MainActivity.onResume`) — 규칙 1 의 계기. 60초 간격은 `RoomOrderSync` 가 지킨다. */
+    fun onForeground() {
+        roomOrder.request()
+        kickRoomOrder()
+    }
+
+    /** 순서 편집 ▲(−1)/▼(+1): 화면 순서에서 한 칸. 끝이면 아무것도 안 한다. */
+    fun moveRoom(room: String, delta: Int) = reorder { ids -> RoomOrder.step(ids, room, delta) }
+
+    /** 순서 편집 「맨 위로 고정」. */
+    fun moveRoomToTop(room: String) = reorder { ids -> RoomOrder.moveToTop(ids, room) }
+
+    /**
+     * 규칙 2: 로컬에 바로 반영(화면도 바로 — `onChange`)하고 PUT 은 IO 에서. 저장 순서 = 옮긴 화면 순서 + 지금 목록에 없는 저장 ID(다른 기기에만 있는 방).
+     * 화면 스레드에서 불러도 된다(네트워크 없음).
+     */
+    private fun reorder(change: (List<String>) -> List<String>?) {
+        val next = change(_ui.value.rooms.map { it.room }) ?: return
+        roomOrder.move(RoomOrder.withHidden(next, roomOrder.order))
+        orderScope.launch {
+            orderMutex.withLock { roomOrder.push() }
+            _ui.update { it.copy(roomOrderSynced = roomOrder.synced) }
+        }
     }
 
     private fun replenish(l: MlsLobby) {
@@ -579,7 +651,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
                 is SendResult.Queued -> notice("연결되면 보냅니다")
                 is SendResult.AlreadyDelivered -> {}
             }
-            _ui.update { it.copy(rooms = rooms.values.map { r2 -> r2.ui() }) }
+            _ui.update { it.copy(rooms = roomList()) }
         } catch (e: RoomException) {
             notice(if (e is RoomException.Relay && e.transient) "연결 중입니다…" else (e.message ?: "전송 안 됨"))
         }
@@ -597,13 +669,14 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             if (seq <= 0L) return@withLock
             settings.markRead(room, seq)
             runCatching { h.room.markRead(seq) }.onFailure { e -> Log.w(TAG, "markRead $room seq $seq: $e") }
-            _ui.update { it.copy(rooms = rooms.values.map { r -> r.ui() }) }
+            _ui.update { it.copy(rooms = roomList()) }
         }
     }
 
     /** 설정 저장 뒤(세션 값 포함) 다시 접촉. 새 세션이면 `/v2/me` 와 후보 게시도 처음부터. */
     fun reconfigure(scope: CoroutineScope) = scope.launch(Dispatchers.IO) {
         linkPreviews.resetSites() // 새 세션 — 사이트 목록은 준비 단계에서 다시 받는다
+        roomOrder.resetSession() // 새 세션 — 방 순서도 준비 단계에서 바로 다시 묻는다(404 판정도 지운다)
         mutex.withLock { applyAccessToken(); me = null; meUnsupported = false; selfServiceUnsupported = false; nextPostAt = 0L; _ui.update { it.copy(phase = Phase.Starting) }; probe() }
     }
 
@@ -667,6 +740,8 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             runCatching { db.wipe() }.onFailure { e -> Log.w(TAG, "wipe: messages.db: $e") }
             if (!dir.deleteRecursively()) Log.w(TAG, "wipe: some files under ${dir.name} could not be deleted")
             dir.mkdirs()
+            orderScope.coroutineContext.cancelChildren()
+            roomOrder.clear()
             settings.wipe()
             linkPreviews.clear()
             runCatching { sealer.forget() }.onFailure { e -> Log.w(TAG, "wipe: keystore: $e") }
@@ -697,6 +772,8 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
 
     private companion object {
         const val TAG = "hande.hub"
+        /** host-core `api.rs` 가 릴레이 요청에 붙이는 인증 헤더 이름 그대로(`OkHttpTransport.ACCESS_HEADER` 와 같다). */
+        const val ACCESS_HEADER = "Cf-Access-Jwt-Assertion"
         /** 엣지 인증 실패 모양: `relay status 301|302|303|307|308|401|403` · `relay error 401: …`. */
         val EDGE_AUTH = Regex("relay (status (30[12378]|401|403)\\b|error 401\\b)")
         const val POLL_MS = 4_000L

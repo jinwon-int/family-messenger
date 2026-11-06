@@ -23,6 +23,16 @@ class StringsTest {
         assertEquals("4단계 중 2단계", Strings.onboardingStep(2, Strings.onboardingSteps))
     }
 
+    /** #549 · #715 순서 편집 — iOS `Strings.orderUp`/`orderDown`/`orderPinTop` 와 같은 말. */
+    @Test fun roomOrderLabels() {
+        assertEquals("zz-room 위로", Strings.orderUp("zz-room"), "모르는 방은 ID 그대로")
+        assertEquals("zz-room 아래로", Strings.orderDown("zz-room"))
+        assertEquals("맨 위로 고정", Strings.orderPinTop)
+        assertEquals("자리 순서 편집", Strings.orderEditLabel)
+        assertEquals("▲▼로 순서를 바꾸세요. 이 기기에만 저장돼요.", Strings.orderHint(synced = false))
+        assertEquals("▲▼로 순서를 바꾸세요. 내 다른 기기에도 같은 순서로 맞춰져요.", Strings.orderHint(synced = true))
+    }
+
     @Test fun agentChoiceLabels() {
         assertEquals("2번: 롤백, 권장", Strings.choiceRowLabel(2, "롤백", recommended = true))
         assertEquals("1번: 유지", Strings.choiceRowLabel(1, "유지", recommended = false))
