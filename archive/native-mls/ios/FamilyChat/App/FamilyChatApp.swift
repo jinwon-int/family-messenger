@@ -5,6 +5,7 @@
 // 화면이 떠 있는 동안 4초 포그라운드 폴링(CONTRACTS §2.2), 백그라운드 wake 는 푸시(§12-D, NSE).
 // 모델은 AppDelegate 가 소유한다 — APNs 토큰·알림 콜백이 UIKit 델리게이트로만 오기 때문(AppDelegate.swift).
 import SwiftUI
+import UIKit
 import FamilyMLSCore
 
 @main
@@ -27,8 +28,13 @@ struct FamilyChatApp: App {
                     await appDelegate.model.runForeground()
                 }
                 // 전면 복귀(#380 로비 보충 시점) — 첫 활성화는 bootstrap 뒤 첫 바퀴가 맡는다(lobbyCheckDue 초기값 true).
+                // #701: 백그라운드 전환 — 폴링을 멈추고 진행 중인 일을 끝낼 시간을 받는다(App Group DB 를 쥔 채 정지 = 0xdead10cc).
                 .onChange(of: scenePhase) { phase in
-                    if phase == .active { Task { await appDelegate.model.foregrounded() } }
+                    switch phase {
+                    case .active: Task { await appDelegate.model.foregrounded() }
+                    case .background: BackgroundDrain.run(named: "hande.background-drain") { await appDelegate.model.backgrounded() }
+                    default: break
+                    }
                 }
         }
     }
@@ -127,5 +133,26 @@ struct FatalView: View {
             Text(Strings.fatalTitle).font(.headline)
             Text(reason).font(.footnote).multilineTextAlignment(.center)
         }.padding()
+    }
+}
+
+/// #701: 백그라운드로 가는 순간 진행 중인 일(송신·동기화 한 바퀴의 SQLite 읽기)을 끝낼 시간을 UIKit 에 받는다.
+/// 일이 끝나면 곧바로, 시간이 다 되면(만료 콜백) 그때 반납한다 — 반납하지 않으면 시스템이 앱을 죽인다.
+@MainActor
+enum BackgroundDrain {
+    private final class Token { var id: UIBackgroundTaskIdentifier = .invalid }
+
+    static func run(named name: String, _ work: @escaping @MainActor () async -> Void) {
+        let token = Token()
+        let end = {
+            guard token.id != .invalid else { return }
+            UIApplication.shared.endBackgroundTask(token.id)
+            token.id = .invalid
+        }
+        token.id = UIApplication.shared.beginBackgroundTask(withName: name) { end() }
+        Task { @MainActor in
+            await work()
+            end()
+        }
     }
 }

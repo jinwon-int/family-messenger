@@ -359,6 +359,11 @@ final class AppModel: ObservableObject {
     private var shareClaimsSwept = false
     /// #599: 마지막 바퀴가 송신에 양보해 남은 방·부가 작업을 건너뛰었다 — 전면 폴링이 기다리지 않고 곧바로 다음 바퀴를 돈다.
     private(set) var syncPreempted = false
+    /// #701: 앱이 백그라운드에 있다(scenePhase `.background` → `.active` 사이). 새 동기화 바퀴·outbox 재전송·화면의 타임라인 DB 읽기를
+    /// 하지 않는다 — App Group 의 messages.db 를 읽는 중에 정지되면 RunningBoard 가 `0xdead10cc` 로 앱을 죽인다(TestFlight 7건).
+    private(set) var suspended = false
+    /// #701: 방마다 마지막으로 읽은 타임라인. 백그라운드 동안 화면이 다시 그려지면 DB 대신 이것을 준다.
+    private var timelineSnapshots: [RoomID: [TimelineItem]] = [:]
     private(set) var push: PushRegistrar
     /// #584 이 기기 표시 설정(읽음 위치·방 순서) — 서버 스코프별. 화면은 `environmentObject` 로 받는다(RootView).
     private(set) var localPrefs: LocalPrefs
@@ -697,6 +702,11 @@ final class AppModel: ObservableObject {
     /// 포그라운드 폴링(CONTRACTS §2.2: 4초). 화면의 `.task` 가 소유하고 취소하면 끝난다.
     func runForeground() async {
         while !Task.isCancelled {
+            // #701: 백그라운드에서는 바퀴를 돌지 않는다(곧 정지된다). 복귀하면 `foregrounded` 가 먼저 한 바퀴를 돈다.
+            if suspended {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                continue
+            }
             await refresh()
             // #599: 송신에 양보한 바퀴 — 건너뛴 방·부가 작업을 기다리지 않고 다시(송신은 `serial` 에서 이 바퀴보다 먼저 처리된다).
             if syncPreempted { continue }
@@ -707,6 +717,8 @@ final class AppModel: ObservableObject {
     /// #599: 줄 선 송신이 있으면 이 바퀴의 남은 일을 건너뛰고 `serial` 을 넘긴다. 진행 중인 요청 하나는 끝까지 간다(취소하지 않음 —
     /// 트랜잭션·커서 저장 순서는 그대로). 건너뛴 일은 송신 직후 `runForeground` 의 다음 바퀴가 한다.
     private func yieldToSend() -> Bool {
+        // #701: 백그라운드로 갔다 — 남은 방·부가 작업을 여기서 끊는다(`syncPreempted` 는 세우지 않는다: 곧바로 다음 바퀴를 돌 일이 아니다).
+        if suspended { return true }
         guard sendsWaiting > 0 else { return false }
         syncPreempted = true
         return true
@@ -716,12 +728,15 @@ final class AppModel: ObservableObject {
 
     /// 한 바퀴: 등록 확인·방 목록(확장 ①) → 방마다 syncAll → 정지 아니면 outbox 재전송(같은 바이트).
     func refresh() async {
+        guard !suspended else { return }   // #701
         try? await serial.run { await self.refreshLocked() }
-        if !reconnecting { await resendUnsent() }
+        if !reconnecting, !suspended { await resendUnsent() }
     }
 
     private func refreshLocked() async {
         syncPreempted = false
+        // #701: 백그라운드 전환 전에 줄 선 바퀴 — 차례가 왔을 때 이미 백그라운드면 DB 를 열지 않고 끝낸다.
+        guard !suspended else { return }
         guard let transport, engine != nil else { return }
         switch phase { case .starting, .needsActor, .needsLogin, .fatal: return; default: break }
         defer { settled = true }
@@ -1215,8 +1230,17 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// #701: 앱이 백그라운드로 갔다(scenePhase background). 새 바퀴·재전송·화면의 DB 읽기를 멈추고, 이미 `serial` 에 들어간 일
+    /// (누른 송신·진행 중인 바퀴 — 바퀴는 다음 양보 지점에서 끊긴다)이 끝날 때까지 기다린다. 호출부(FamilyChatApp)는 이 동안
+    /// `beginBackgroundTask` 로 시간을 받는다 — 진행 중인 SQLite 읽기가 끝나기 전에 정지되지 않게. outbox 는 그대로 남아 복귀 뒤 재전송된다.
+    func backgrounded() async {
+        suspended = true
+        try? await serial.run {}
+    }
+
     /// 앱이 전면으로 돌아왔다(scenePhase active) — 다음 바퀴에 로비 보충을 다시 본다.
     func foregrounded() async {
+        suspended = false   // #701: 폴링·재전송·타임라인 읽기 재개
         lobbyCheckDue = true
         meDue = true
         // 설정 앱에서 미리보기를 바꾸고 돌아온 경우가 여기다(#520).
@@ -2049,6 +2073,8 @@ final class AppModel: ObservableObject {
     }
 
     private func storedMessages(room: RoomID) -> [TimelineItem] {
+        // #701: 백그라운드에서 화면이 다시 그려지면(메인 스레드) DB 를 읽지 않고 마지막에 읽은 그대로.
+        if suspended { return timelineSnapshots[room] ?? [] }
         let window = timelineWindow(room: room)
         let items: [TimelineItem]
         if let loading = deps.messageStore as? AttachmentLoading,
@@ -2065,6 +2091,7 @@ final class AppModel: ObservableObject {
         }
         // 창보다 적게 왔다 = 저장소의 가장 오래된 행까지 올렸다(#472).
         if items.count < window { timelineExhausted.insert(room) } else { timelineExhausted.remove(room) }
+        timelineSnapshots[room] = items
         return items
     }
 
