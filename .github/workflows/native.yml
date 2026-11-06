@@ -103,5 +103,7 @@ jobs:
             artifacts/native-policy-*/verification.json
             artifacts/native-browser-*/verification.json
             artifacts/native-browser-*/*.png
+            artifacts/native-browser-*/server.log
             artifacts/native-media-browser-*/verification.json
             artifacts/native-media-browser-*/*.png
+            artifacts/native-media-browser-*/server.log

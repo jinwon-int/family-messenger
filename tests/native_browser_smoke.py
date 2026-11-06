@@ -16,6 +16,8 @@ from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright, expect
 
+START_TIMEOUT = 30  # seconds per attempt (#675)
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -34,23 +36,39 @@ def main():
     address = "127.0.0.1:0"
     url = None
 
+    def log_tail(offset):
+        return log.read_bytes()[offset:][-2000:].decode(errors="replace")
+
     def start():
+        # #675: a merge-queue runner once stalled >10 s before the "listening" line and the
+        # cause could not be classified (server.log was not kept). Wait up to START_TIMEOUT,
+        # retry a stalled start once, and put the server log tail in the failure; the log
+        # itself is now uploaded with the browser evidence.
         nonlocal process, output, address, url
-        output = log.open("ab")
-        offset = log.stat().st_size
-        process = subprocess.Popen([str(binary), "--synthetic-only", "--state", str(state),
-                                    "--listen", address], stdout=subprocess.DEVNULL, stderr=output)
-        until = time.monotonic() + 10
-        while time.monotonic() < until:
-            if process.poll() is not None:
-                raise RuntimeError("prototype exited before listening")
-            match = re.search(r"listening (127\.0\.0\.1:\d+)", log.read_bytes()[offset:].decode())
-            if match:
-                address = match[1]
-                url = "http://" + address
-                return
-            time.sleep(0.02)
-        raise RuntimeError("prototype start timeout")
+        stalled = ""
+        for attempt in (1, 2):
+            output = log.open("ab")
+            offset = log.stat().st_size
+            began = time.monotonic()
+            process = subprocess.Popen([str(binary), "--synthetic-only", "--state", str(state),
+                                        "--listen", address], stdout=subprocess.DEVNULL, stderr=output)
+            while time.monotonic() < began + START_TIMEOUT:
+                if process.poll() is not None:
+                    raise RuntimeError(f"prototype exited before listening (code {process.returncode}): {log_tail(offset)!r}")
+                match = re.search(r"listening (127\.0\.0\.1:\d+)", log.read_bytes()[offset:].decode(errors="replace"))
+                if match:
+                    address = match[1]
+                    url = "http://" + address
+                    evidence.setdefault("start_seconds", []).append(round(time.monotonic() - began, 3))
+                    return
+                time.sleep(0.02)
+            stalled = log_tail(offset)
+            process.kill()
+            process.wait(timeout=5)
+            output.close()
+            print(f"::warning::prototype start attempt {attempt}: no 'listening' line in {START_TIMEOUT} s; "
+                  f"server log tail: {stalled!r}", flush=True)
+        raise RuntimeError(f"prototype start timeout after 2 attempts; server log tail: {stalled!r}")
 
     def request(method, path, data=None):
         req = urllib.request.Request(url + path, method=method,
