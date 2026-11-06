@@ -7,7 +7,7 @@
 // AppModel.discoverLobbyWelcomes / acceptInvite).
 import * as ui from './ui.js';
 import {strings, displayName, isAgentDevice, isServiceDevice, isMine, isOneToOne, participantCount, roomLabel, previewLine, relativeTime, typingLabel} from './strings.js';
-import {orderRooms, moveRoom, readRoomOrder, writeRoomOrder} from './room-order.js';
+import {orderRooms, moveRoom, readRoomOrder, writeRoomOrder, createRoomOrderSync} from './room-order.js';
 import {fireLevel, recentMessageCount} from './icons.js';
 import {readDraft, writeDraft} from './drafts.js';
 import {readReadSeq, writeReadSeq, latestSeq, isUnread} from './read-seq.js';
@@ -59,7 +59,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     filebox: null, boxOpen: false, boxTab: 'attachments', boxRefresh: 0, pendingJump: null,   // 오른쪽 보관함 pane: 첨부 탭(#544 D) + 파일보관함 iframe(config.json filebox)
     consentPrompted: new Set(),                      // AI 참여 동의 시트를 이 페이지 세션에서 자동으로 띄운 방(#544 E)
     relayRooms: null,                                // 릴레이가 이 기기를 멤버라고 한 방 집합(GET /v2/rooms) — 로컬 전용 방 판정용, 받기 전엔 null
-    roomOrder: [], orderEditing: false,              // 대화 목록 고정 순서(이 기기 localStorage, #480 A)
+    roomOrder: [], orderEditing: false,              // 대화 목록 고정 순서(이 기기 localStorage, #480 A · 릴레이 room-order v1 동기화 #715)
     notice: null, logs: [], offlineAt: null, tick: null,
     // 기기 셀프서비스(#574 PR 2b): /v2/me 본문(정책 revision·내 기기), 등록 화면 모드, 승인할 후보, 🔔 메모.
     me: null, meTick: 0,
@@ -71,6 +71,15 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   const relay = createRelay({fetch: fetchImpl, onOffline: down => { app.offlineAt = down ? clock() : null; render(); }});
   // 미리보기 사이트 목록(#690 계약 v2): 세션당 한 번 GET /v2/preview/sites. 오기 전·실패면 폴백(v1 = x.com 링크·x status 카드).
   const previewSites = createPreviewSites({fetch: fetchImpl});
+  // room-order v1(#715): 대화방 순서를 사람 단위로 릴레이와 맞춘다. 기기 ID 가 정해진 뒤(startDevice) 만든다.
+  // 네트워크는 화면을 막지 않는다 — 채택으로 순서가 바뀌면 onChange 가 다시 그린다.
+  let orderSync = null;
+  const createOrderSync = () => createRoomOrderSync({
+    transport: {get: () => relay.getRoomOrder(app.device), put: (rooms, base) => relay.putRoomOrder(app.device, rooms, base)},
+    getLocal: () => app.roomOrder,
+    setLocal: order => { app.roomOrder = order; writeRoomOrder(storage, app.device, order); },
+    onChange: render, log: logLine,
+  });
   const knownKey = () => `hande:rooms:${app.device}`;
   const readKnown = () => { try { const v = JSON.parse(storage.getItem(knownKey()) || '[]'); return Array.isArray(v) ? v.filter(r => ROOM.test(r)) : []; } catch (_) { return []; } };
   const writeKnown = () => storage.setItem(knownKey(), JSON.stringify([...app.rooms.keys()]));
@@ -123,13 +132,14 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       muted: S.muted === true,
       state: halted ? 'halted' : S.joined ? 'joined' : 'pending', hasAgent: S.roster.some(isAgentDevice), members: participantCount(S.roster), order: R.order};
   }
-  /** 대화 목록에서 방 하나를 옮긴다 — 화면은 즉시, 저장은 이 기기 localStorage(패밀리챗 moveRoomInList). */
+  /** 대화 목록에서 방 하나를 옮긴다 — 화면은 즉시, 저장은 이 기기 localStorage(패밀리챗 moveRoomInList) + 릴레이 PUT(#715, 백그라운드). */
   function moveRoomInList(roomId, toIndex, focus = null) {
     const visibleIds = orderRooms([...app.rooms.keys()].map(roomRow), app.roomOrder).map(r => r.roomId);
     const next = moveRoom(visibleIds, roomId, toIndex, app.roomOrder);
     if (!next) return;
     app.roomOrder = next;
     writeRoomOrder(storage, app.device, next);
+    orderSync?.changed().catch(() => {});   // 409 → 서버 순서 채택 후 onChange 로 다시 그린다
     render();
     if (focus) queueMicrotask(() => ui.focusRoomOrderControl(root, roomId, focus));
   }
@@ -391,6 +401,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       storage.setItem(markerKey(), '1');
       app.dev = dev;
       app.roomOrder = readRoomOrder(storage, app.device);
+      orderSync = createOrderSync();
       if (opened.migrated) logLine(`신원 이전: ${legacy.database} → ${IDENTITY_DATABASE}`);
       app.roomOpen = false;
       // Known rooms open first (their own 4 s polling); the default room is always known.
@@ -430,6 +441,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
         for (const r of listed) if (r.member && !r.closed && ROOM.test(r.room) && !app.rooms.has(r.room)) {
           try { await ensureRoom(r.room); } catch (error) { logLine(`방 ${r.room} 열기 실패: ${error.message}`); }
         }
+        // 목록을 불러올 때(시작·로그인·탭 복귀·틱) 대화방 순서 GET — 최소 60초 간격, 기다리지 않는다(#715 규칙 1).
+        orderSync?.pull().catch(() => {});
       }
       await discoverLobbyWelcomes();
       if (app.lobbyDue) {

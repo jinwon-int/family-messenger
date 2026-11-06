@@ -16,7 +16,7 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
 <hande-dir>/
   index.html styles.css strings.js icons.js ui.js app.js main.js ← 화면·상태기계 (이 디렉터리; icons.js = 2차-B 고유 아이콘 14종, docs/design/icons/ui 경로 내장)
   keyboard.js shortcuts.js timeline-caret.js                     ← 키보드 판정·전역 단축키·캐럿 모드(패밀리챗 이식, #478)
-  room-order.js                                                  ← 대화 목록 고정 순서(▲▼ 편집, 이 기기 localStorage — 패밀리챗 이식, #480)
+  room-order.js                                                  ← 대화 목록 고정 순서(▲▼ 편집, 이 기기 localStorage — 패밀리챗 이식, #480 · 릴레이 room-order v1 동기화 #715)
   read-seq.js                                                    ← 방별 「어디까지 봤나」·안 읽음 판정(iOS readSeq·Unread.isUnread 이식, #541)
   drafts.js composer-files.js                                    ← 방별 초안 영속화 · 붙여넣기/끌어다 놓기 첨부 파일 고르기(#480 B)
   last-sent.js                                                   ← 대화창 상단 「내 마지막 말」 바 순수 로직(패밀리챗 이식, #480 C)
@@ -121,7 +121,10 @@ PC·폰이 두 명으로 서지 않고 사람 행 아래에 기기 줄(종류 ·
 ## 대화 목록 (#480 A — 패밀리챗 `web/app` 과 동일)
 
 - 순서: 최근 활동순으로 움직이지 않는다. 기본은 참여한 순서, 「↕ 순서」로 편집 모드(▲▼, PC 는 끌어서) → 이 기기
-  localStorage `hande:room-order:<device>` 에 저장(패밀리챗은 account data 로 기기 간 동기화 — 한데에는 그 저장소가 없다).
+  localStorage `hande:room-order:<device>` 에 저장하고, 릴레이에 room-order v1(#715)이 있으면 사람(actor) 단위로 맞춘다:
+  목록을 불러올 때(최소 60초 간격) `GET /v2/me/room-order` — revision>0 이면 서버 순서 채택, revision 0 이고 이 기기 순서가
+  있으면 base 0 으로 시드. 옮기면 `PUT base_revision=<마지막 revision>`, 409 면 서버 순서 채택 후 다시 그림. 404(옛 릴레이)면
+  그 세션은 로컬만, 네트워크 오류면 다음 주기에 다시(`createRoomOrderSync`, 화면을 기다리게 하지 않는다).
   편집 중에는 행을 눌러도 열리지 않고 PageUp/PageDown 도 방을 열지 않는다.
 - 행: 이름 옆 **N 배지**(안 읽은 방, 보조기기에는 "새 메시지" — 판정은 iOS 와 같은 readSeq: 마지막 글이 남의 글이고 이 기기가 본 seq 보다
   뒤일 때만. 본 위치는 localStorage `hande:readSeq:<device>:<room>` 라 새로고침 뒤 보관 이력이 다시 들어와도 배지가 켜지지 않는다, #541.
