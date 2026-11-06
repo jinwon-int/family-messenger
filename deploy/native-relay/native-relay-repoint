@@ -1,45 +1,128 @@
 #!/usr/bin/env bash
-# native-relay-repoint — family-messenger #440 ⑤: 이 노드의 native-mls 봇을 다른 한데 릴레이로 재지정한다(전환 스크립트 --client-hook).
+# native-relay-repoint — family-messenger #440 ⑤ / #699 P0-d: 이 노드의 native-mls 봇들을 다른 한데 릴레이로 재지정한다(전환 스크립트 --client-hook).
 # 사용: native-relay-repoint <http://tailnet-host:port> [--force]   |   native-relay-repoint --check
 #  - URL은 tailnet 평문 http만(봇은 tailnet 안에서 http를 쓴다). 쓰기 전에 <url>/v2/health 200 을 확인한다(미기동 릴레이로 돌리지 않는다).
 #  - 같은 URL이면 아무것도 하지 않는다(--force 는 재시작 강제: 설치 검증용).
-#  - env 파일(/etc/native-relay/relay.env)을 백업 후 갱신 → native-relay-bot 재시작 → 새 PID 로그에서 steward_ready 확인(relay_unreachable 이면 실패).
+#  - env 파일의 NATIVE_RELAY_URL 줄만 바꾼다. 다른 줄은 그대로 둔다(#699: 릴레이 호스트에서는 /etc/native-relay/relay.env 가
+#    릴레이 자신의 Access 설정 파일이기도 하다 — v1 은 파일 전체를 덮어써서 그 값을 지웠다). 권한·소유자도 유지한다.
+#  - 봇마다 재시작 → 새 PID 로그에서 steward_ready 확인(relay_unreachable 이면 실패). 봇이 여럿이면 하나씩 차례로.
 #  - 비밀값은 다루지 않는다(URL·경로만). 한데 브리지(ccc-hande-bridge)는 릴레이 주소를 갖지 않으므로 건드리지 않는다.
+#
+# 노드별 설정(선택) — ${NATIVE_RELAY_REPOINT_CONF:-/etc/native-relay/repoint.conf}, KEY=VALUE 줄만 읽는다(source 하지 않음):
+#   REPOINT_ENV_FILE=/etc/native-relay/relay.env          봇 유닛이 EnvironmentFile 로 읽는 파일(기본값)
+#   REPOINT_SUPERVISOR=systemd                            systemd(기본) | runit(Termux)
+#   REPOINT_UNITS="native-relay-bot.service"              systemd: 유닛 이름들(공백 구분, 기본값은 이 하나)
+#                                                         runit: <서비스 이름>:<svlogd 로그 디렉터리> 들
+#   REPOINT_SVDIR=$PREFIX/var/service                     runit 서비스 디렉터리(기본: $SVDIR → $PREFIX/var/service)
+# 설정 파일이 없으면 v1 과 같다: /etc/native-relay/relay.env + native-relay-bot.service.
+# 테스트 대역: NATIVE_RELAY_REPOINT_SYSTEMCTL / _JOURNALCTL / _SV / _CURL, READY_TIMEOUT(초, 기본 30).
 set -euo pipefail
-ENV_FILE=/etc/native-relay/relay.env
-UNIT=native-relay-bot.service
+
+CONF=${NATIVE_RELAY_REPOINT_CONF:-/etc/native-relay/repoint.conf}
+REPOINT_ENV_FILE=/etc/native-relay/relay.env
+REPOINT_SUPERVISOR=systemd
+REPOINT_UNITS=native-relay-bot.service
+REPOINT_SVDIR=${SVDIR:-${PREFIX:-}/var/service}
+if [ -f "$CONF" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" =~ ^(REPOINT_ENV_FILE|REPOINT_SUPERVISOR|REPOINT_UNITS|REPOINT_SVDIR)=(.*)$ ]] || continue
+    val=${BASH_REMATCH[2]}; val=${val#\"}; val=${val%\"}; val=${val#\'}; val=${val%\'}
+    printf -v "${BASH_REMATCH[1]}" '%s' "$val"
+  done < "$CONF"
+fi
+ENV_FILE=$REPOINT_ENV_FILE
+SYSTEMCTL=${NATIVE_RELAY_REPOINT_SYSTEMCTL:-systemctl}
+JOURNALCTL=${NATIVE_RELAY_REPOINT_JOURNALCTL:-journalctl}
+SV=${NATIVE_RELAY_REPOINT_SV:-sv}
+CURL=${NATIVE_RELAY_REPOINT_CURL:-curl}
+READY_TIMEOUT=${READY_TIMEOUT:-30}
+case "$REPOINT_SUPERVISOR" in systemd|runit) ;; *) echo "refused: REPOINT_SUPERVISOR must be systemd or runit (got: $REPOINT_SUPERVISOR)" >&2; exit 64;; esac
+read -r -a UNITS <<<"$REPOINT_UNITS"
+[ "${#UNITS[@]}" -ge 1 ] || { echo "refused: REPOINT_UNITS is empty" >&2; exit 64; }
+
 current() { sed -nE 's/^NATIVE_RELAY_URL=//p' "$ENV_FILE" 2>/dev/null | tail -1; }
-pid() { systemctl show -p MainPID --value "$UNIT"; }
+svc_name() { printf '%s' "${1%%:*}"; }
+svc_log() { [[ "$1" == *:* ]] && printf '%s/current' "${1#*:}"; }
+pid_of() {  # <unit entry>
+  if [ "$REPOINT_SUPERVISOR" = systemd ]; then
+    "$SYSTEMCTL" show -p MainPID --value "$1"
+  else
+    "$SV" status "$REPOINT_SVDIR/$(svc_name "$1")" 2>/dev/null | sed -nE 's/^run: [^:]*: \(pid ([0-9]+)\).*/\1/p' | head -1
+  fi
+}
+state_of() {
+  if [ "$REPOINT_SUPERVISOR" = systemd ]; then "$SYSTEMCTL" is-active "$1" 2>/dev/null || true
+  else "$SV" status "$REPOINT_SVDIR/$(svc_name "$1")" 2>/dev/null | cut -d: -f1 || true; fi
+}
+
 [ $# -ge 1 ] || { echo "usage: $0 <http://tailnet-host:port> [--force] | --check" >&2; exit 64; }
 if [ "$1" = --check ]; then
-  printf 'current=%s unit=%s pid=%s\n' "$(current)" "$(systemctl is-active "$UNIT" || true)" "$(pid)"; exit 0
+  printf 'current=%s env=%s supervisor=%s\n' "$(current)" "$ENV_FILE" "$REPOINT_SUPERVISOR"
+  for u in "${UNITS[@]}"; do printf 'unit=%s state=%s pid=%s\n' "$(svc_name "$u")" "$(state_of "$u")" "$(pid_of "$u")"; done
+  exit 0
 fi
 URL=$1; FORCE=0; [ "${2:-}" = --force ] && FORCE=1
 [[ "$URL" =~ ^http://[0-9A-Za-z.-]+(:[0-9]+)?$ ]] || { echo "refused: relay URL must be a plain http tailnet URL (got: $URL)" >&2; exit 65; }
-[ "$(id -u)" = 0 ] || { echo "run as root (sudo)" >&2; exit 77; }
+if [ "$REPOINT_SUPERVISOR" = systemd ] && [ -z "${NATIVE_RELAY_REPOINT_SYSTEMCTL:-}" ] && [ "$(id -u)" != 0 ]; then
+  echo "run as root (sudo)" >&2; exit 77
+fi
 CUR=$(current)
 if [ "$CUR" = "$URL" ] && [ "$FORCE" = 0 ]; then echo "unchanged: $URL"; exit 0; fi
-code=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$URL/v2/health" || true)
+code=$("$CURL" -s -o /dev/null -m 5 -w '%{http_code}' "$URL/v2/health" || true)
 [ "$code" = 200 ] || { echo "refused: $URL/v2/health -> ${code:-none} (relay not serving)" >&2; exit 69; }
+
+# NATIVE_RELAY_URL 줄만 바꾼 새 파일을 같은 디렉터리에 만들고 rename — 다른 줄·권한·소유자 유지.
 TS=$(date -u +%Y%m%dT%H%M%SZ)
-install -d -m 0755 /etc/native-relay
-[ -f "$ENV_FILE" ] && cp -a "$ENV_FILE" "$ENV_FILE.bak-$TS"
-umask 022
-printf '# written by native-relay-repoint %s (prev: %s)\nNATIVE_RELAY_URL=%s\n' "$TS" "${CUR:-none}" "$URL" > "$ENV_FILE.tmp"
-mv -f "$ENV_FILE.tmp" "$ENV_FILE"
-OLD_PID=$(pid)
-systemctl restart "$UNIT"
-for _ in $(seq 1 30); do
-  NEW_PID=$(pid)
-  if [ "$NEW_PID" != 0 ] && [ "$NEW_PID" != "$OLD_PID" ]; then
-    log=$(journalctl -u "$UNIT" --no-pager -o cat "_PID=$NEW_PID" 2>/dev/null || true)
-    if grep -q '"event":"relay_unreachable"' <<<"$log"; then
-      echo "FAILED: bot (pid $NEW_PID) reports relay_unreachable for $URL — env updated, relay not reachable" >&2; exit 1
-    fi
-    if grep -q '"event":"steward_ready"' <<<"$log"; then
-      echo "repointed: ${CUR:-none} -> $URL (pid $OLD_PID -> $NEW_PID, steward_ready)"; exit 0
-    fi
+mkdir -p "$(dirname "$ENV_FILE")"
+TMP=$(mktemp "$ENV_FILE.repoint.XXXXXX")
+trap 'rm -f "$TMP"' EXIT
+if [ -f "$ENV_FILE" ]; then
+  cp -p "$ENV_FILE" "$ENV_FILE.bak-$TS"
+  { grep -vE '^(NATIVE_RELAY_URL=|# written by native-relay-repoint )' "$ENV_FILE" || true; } > "$TMP"
+  chmod --reference="$ENV_FILE" "$TMP"
+  if [ "$(id -u)" = 0 ]; then chown --reference="$ENV_FILE" "$TMP"; fi
+else
+  chmod 644 "$TMP"
+fi
+printf '# written by native-relay-repoint %s (prev: %s)\nNATIVE_RELAY_URL=%s\n' "$TS" "${CUR:-none}" "$URL" >> "$TMP"
+mv -f "$TMP" "$ENV_FILE"
+trap - EXIT
+
+# 봇을 하나씩 재시작하고 새 PID 의 steward_ready 를 본다.
+restart_and_wait() {  # <unit entry> → 0 ready · 1 failed
+  local u=$1 name old new log lines=0 logf
+  name=$(svc_name "$u"); old=$(pid_of "$u")
+  if [ "$REPOINT_SUPERVISOR" = systemd ]; then
+    "$SYSTEMCTL" restart "$u"
+  else
+    logf=$(svc_log "$u")
+    [ -n "$logf" ] || { echo "FAILED: $name: runit entry needs <name>:<logdir>" >&2; return 1; }
+    [ -f "$logf" ] && lines=$(wc -l < "$logf")
+    "$SV" restart "$REPOINT_SVDIR/$name" >/dev/null
   fi
-  sleep 1
-done
-echo "restarted but steward_ready not seen within 30s: state=$(systemctl is-active "$UNIT" || true) pid=$(pid)" >&2; exit 1
+  for _ in $(seq 1 "$READY_TIMEOUT"); do
+    new=$(pid_of "$u")
+    if [ -n "$new" ] && [ "$new" != 0 ] && [ "$new" != "$old" ]; then
+      if [ "$REPOINT_SUPERVISOR" = systemd ]; then
+        log=$("$JOURNALCTL" -u "$u" --no-pager -o cat "_PID=$new" 2>/dev/null || true)
+      else
+        log=$(tail -n +"$((lines + 1))" "$logf" 2>/dev/null || true)
+      fi
+      if grep -q '"event":"relay_unreachable"' <<<"$log"; then
+        echo "FAILED: $name (pid $new) reports relay_unreachable for $URL" >&2; return 1
+      fi
+      if grep -q '"event":"steward_ready"' <<<"$log"; then
+        echo "ready: $name pid $old -> $new (steward_ready)" >&2; return 0  # stdout 은 v1 처럼 마지막 'repointed:' 한 줄
+      fi
+    fi
+    sleep 1
+  done
+  echo "FAILED: $name restarted but steward_ready not seen within ${READY_TIMEOUT}s: state=$(state_of "$u") pid=$(pid_of "$u")" >&2
+  return 1
+}
+failed=()
+for u in "${UNITS[@]}"; do restart_and_wait "$u" || failed+=("$(svc_name "$u")"); done
+if [ "${#failed[@]}" -gt 0 ]; then
+  echo "FAILED: env updated (${CUR:-none} -> $URL) but not ready: ${failed[*]}" >&2; exit 1
+fi
+echo "repointed: ${CUR:-none} -> $URL (${#UNITS[@]} unit(s) steward_ready)"
