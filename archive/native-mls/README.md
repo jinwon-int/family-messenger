@@ -62,6 +62,10 @@ Host로 추정하지 않고 운영자가 명시해야 켜진다(`-well-known-nam
 기록 우편함, 테이블 `device_candidates`, TTL 10분) · `POST /v2/devices/approvals`(E2, CLI `-add-device` 와 같은 증거) ·
 `POST /v2/devices/roles`(E5 registrar 역할) — 검증은 CLI 와 같은 `internal/devicepolicy`, 호출자 subject 바인딩 추가. 계약은
 `server/DEVICES-V4.md` 「등록 기기」·「셀프서비스 라우트」, 운영은 `docs/NATIVE-RELAY-OPERATIONS.md` 「기기 셀프서비스 운영」.
+대화방 순서(#715 room-order v1, `server/room_order.go`, 같은 조건 — 인증 + `-device-state`): `GET /v2/me/room-order?device=` →
+`{rooms, revision, updated_at}` · `PUT /v2/me/room-order {device, rooms, base_revision}` → 200(revision+1) 또는 409 `revision_conflict`
+(현재 값). 정책 체인 actor 단위 한 행(테이블 `actor_room_order`), `rooms` ≤ 64·식별자·중복 없음. 계약은 `server/DEVICES-V4.md`
+「대화방 순서는 actor 단위」.
 링크 미리보기(#683 2단계 → #690 계약 v2, `server/preview.go` + 사이트 레지스트리 `server/preview_sites.go`, 플래그 `-link-preview`
 기본 **off** — 끄면 세 라우트 모두 없어 404). 라우트 3개, 모두 다른 라우트와 같은 호출자 인증 뒤에 있다:
 `GET /v2/preview/sites` → `{"version":2,"sites":[{"id","name","hosts","preview"}]}`(`Cache-Control: private, max-age=3600`,

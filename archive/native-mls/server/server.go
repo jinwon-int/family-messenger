@@ -678,6 +678,12 @@ func (s *relay) routes() http.Handler {
 			mux.HandleFunc("GET /v2/devices/candidates", s.handleListCandidates)
 			mux.HandleFunc("POST /v2/devices/approvals", s.handlePostApproval)
 			mux.HandleFunc("POST /v2/devices/roles", s.handlePostRoles)
+			// Actor-wide room list order (#715, room_order.go): the actor
+			// is the chain record of the JWT subject's device, so the
+			// route needs both — an older or chain-less relay is 404 and
+			// clients keep their local order.
+			mux.HandleFunc("GET "+roomOrderPath, s.handleGetRoomOrder)
+			mux.HandleFunc("PUT "+roomOrderPath, s.handlePutRoomOrder)
 		}
 	}
 	if s.staticRoot != nil {

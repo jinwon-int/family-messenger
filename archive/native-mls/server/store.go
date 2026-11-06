@@ -183,6 +183,12 @@ CREATE TABLE IF NOT EXISTS mls_blobs (
 	PRIMARY KEY (room, id)
 );
 CREATE INDEX IF NOT EXISTS mls_blobs_device ON mls_blobs(device);
+CREATE TABLE IF NOT EXISTS actor_room_order (
+	actor      TEXT PRIMARY KEY,
+	rooms      TEXT NOT NULL,
+	revision   INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL
+);
 `
 
 func openStore(dataDir string) (*store, error) {

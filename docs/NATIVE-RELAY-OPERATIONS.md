@@ -285,6 +285,18 @@ runuser -u native-relay -- native-devices -device-state /var/lib/native-relay/po
 `native-mls-v2.db` 안의 테이블이라 스냅샷에 같이 들어가며(복원해도 만료돼 있을 뿐 해롭지 않다), 같은 id 재게시는 갱신, 목록은 subject당
 최대 16건. 체인의 일부가 아니다 — 지워도 정책은 바뀌지 않는다.
 
+### g. 대화방 순서 — `actor_room_order` (#715)
+
+| 열 | 내용 |
+|---|---|
+| `actor` (PK) | 정책 체인 기록의 actor(사람 단위, 기기 단위 아님) |
+| `rooms` | 방 ID JSON 배열(≤ 64) — 순서 메타데이터만, E2EE 본문과 무관 |
+| `revision` · `updated_at` | `PUT /v2/me/room-order` 의 CAS revision(저장마다 +1)과 마지막 저장 시각 |
+
+`native-mls-v2.db` 안의 테이블이라 스냅샷에 같이 들어가고(`manifest.json` 의 테이블 건수 요약 대상은 아니다), 이 테이블이 없는 옛
+스냅샷을 복원해도 릴레이가 기동 때 만든다(revision 0 → 클라이언트가 다음 목록 갱신 때 다시 시드). 복원으로 revision 이 되돌아가면
+그 뒤 저장한 기기는 다음 `PUT` 에서 409 를 받고 서버 값을 채택한다. 행을 지우면 그 사람의 순서만 초기화된다.
+
 ## 비밀과 공개 저장소 규칙
 
 이 저장소는 PUBLIC이다. 실제 호스트명·계정·키 경로·터널 ID는 호스트의 `snapshot.env`와 Family Wiki에만 쓴다.
