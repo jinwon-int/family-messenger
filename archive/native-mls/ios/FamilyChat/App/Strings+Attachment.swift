@@ -15,6 +15,9 @@ extension Strings {
     }
     static func attachmentFile(_ bytes: Int, _ mime: String) -> String { "📎 파일 · \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)) · \(mime)" }
     static let attachmentSave = "저장·공유"
+    /// PDF 첨부(받은 바이트로 판별) — 누르면 QuickLook 으로 바로 본다.
+    static func attachmentPDF(_ bytes: Int) -> String { "📄 PDF · \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)) · 눌러서 보기" }
+    static let attachmentPDFOpen = "PDF 보기"
     /// 전체 화면 사진 보기(사진 탭). 닫기는 한 번 탭(VoiceOver 접근성 동작 이름으로도 쓴다).
     static let attachmentViewerClose = "닫기"
     static let attachmentViewerHint = "한 번 탭하거나 위나 아래로 밀면 닫기 · 두 손가락으로 확대 · 두 번 탭"

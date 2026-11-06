@@ -2,6 +2,7 @@
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
+import QuickLook
 import FamilyMLSCore
 
 struct RoomView: View {
@@ -1205,6 +1206,8 @@ struct AttachmentBubble: View {
     /// 사진 탭 → 전체 화면 보기(오너 요청 build 30). 확대용 원본은 누를 때 디코드한다.
     @State private var viewerImage: UIImage?
     @State private var showViewer = false
+    /// PDF 탭 → QuickLook 전체 화면 보기(오너 요청 2026-11-06). nil = 닫힘.
+    @State private var quickLookURL: URL?
     /// 본체를 끝내 읽지 못했다(재시도 소진) — 「불러오는 중」에 영원히 머물지 않게.
     @State private var unreadable = false
     /// file-v2 「다시 시도」 — 바뀌면 `.task(id:)` 가 다시 돈다.
@@ -1271,6 +1274,12 @@ struct AttachmentBubble: View {
                 Button { unreadable = false; reload += 1 } label: { Text(Strings.fileV2Failed(byteCount)).font(.footnote) }
                     .buttonStyle(.plain)
                     .modifier(AttachmentTextInset())
+            } else if let url = pdfURL {
+                // PDF(받은 바이트를 sniff 한 결과 — 보낸 쪽 힌트 아님): 누르면 QuickLook 으로 바로 본다. 저장·공유 줄은 아래 그대로.
+                Button { openPDF(url) } label: { Text(Strings.attachmentPDF(byteCount)).font(.footnote) }
+                    .buttonStyle(.plain)
+                    .modifier(AttachmentTextInset())
+                    .accessibilityLabel(Strings.attachmentPDFOpen)
             } else {
                 Text(Strings.attachmentFile(byteCount, preview?.mime ?? message.body)).font(.footnote).modifier(AttachmentTextInset())
             }
@@ -1281,6 +1290,12 @@ struct AttachmentBubble: View {
             }
         }
         .onAppear { onShareURL(preview?.shareURL) }
+        .quickLookPreview($quickLookURL)
+        .onChange(of: quickLookURL) { url in
+            // 사진 보기와 같은 #497 규칙: 떠 있는 동안 밑의 방 화면이 "나갔다"로 보지 않게, 닫힌 뒤(다음 런루프)에 내린다.
+            guard url == nil else { return }
+            DispatchQueue.main.async { PhotoViewerPresence.active = false }
+        }
         .fullScreenCover(isPresented: $showViewer, onDismiss: {
             // 밑의 방 화면이 다시 나타나는 콜백(onAppear)이 지난 뒤에 내린다.
             DispatchQueue.main.async { PhotoViewerPresence.active = false }
@@ -1337,6 +1352,19 @@ struct AttachmentBubble: View {
     private func rememberSize() {
         guard let pixels = preview?.pixelSize else { return }
         AttachmentSizeMemory.shared.remember(pixels, for: sizeRow)
+    }
+
+    /// 준비물이 내용으로 PDF 라고 판별했고 공유 파일(`attachment-<seq>.pdf`)이 있으면 그 URL.
+    private var pdfURL: URL? {
+        guard let preview, AttachmentFormat.isPDF(mime: preview.mime) else { return nil }
+        return preview.shareURL
+    }
+
+    /// PDF 를 QuickLook 으로 연다. 임시 파일이 지워졌으면(시스템 정리) 아무것도 하지 않는다 — 사진 보기(`openViewer`)와 같은 전제.
+    private func openPDF(_ url: URL) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        PhotoViewerPresence.active = true
+        quickLookURL = url
     }
 
     /// 전체 화면은 확대(최대 4배)가 있어 원본을 디코드한다 — 누를 때 한 번. file-v2 는 준비물의 공유 파일(복호화한 원본)에서 읽는다.

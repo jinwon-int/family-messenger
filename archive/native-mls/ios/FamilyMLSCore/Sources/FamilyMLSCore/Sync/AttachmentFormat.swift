@@ -50,6 +50,10 @@ public enum AttachmentFormat {
 
     public static func isImage(mime: String) -> Bool { mime.hasPrefix("image/") }
 
+    /// 받은 바이트를 `sniffMime` 으로 판별한 결과가 PDF(`%PDF-`)인가 — 보낸 쪽 힌트가 아니라 내용 판별 결과만 넘긴다.
+    /// 앱은 이것일 때만 첨부를 QuickLook 으로 연다(오너 요청 2026-11-06).
+    public static func isPDF(mime: String) -> Bool { mime == "application/pdf" }
+
     /// 저장·공유용 확장자(웹은 `attachment-<seq>.bin`; 여기서는 MIME 을 알면 그 확장자).
     public static func fileExtension(mime: String) -> String {
         switch mime {
