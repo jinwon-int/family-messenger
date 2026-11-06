@@ -48,6 +48,17 @@ final class SyncAttachmentTests: XCTestCase {
         XCTAssertEqual(AttachmentFormat.fileExtension(mime: "x/y"), "bin")
     }
 
+    /// 오너 요청 2026-11-06: 앱은 내용 판별이 PDF 일 때만 QuickLook 으로 연다 — `.pdf` 이름·힌트만으로는 PDF 가 아니다.
+    func testPDFIsDecidedByContent() {
+        XCTAssertTrue(AttachmentFormat.isPDF(mime: AttachmentFormat.sniffMime(Data("%PDF-1.4\n%âãÏÓ".utf8))))
+        XCTAssertEqual(AttachmentFormat.fileExtension(mime: AttachmentFormat.sniffMime(Data("%PDF-1.7".utf8))), "pdf")
+        for notPDF in [Data("<html>%PDF-1.7".utf8), Data("%PDF".utf8), Data(" %PDF-1.7".utf8), Self.jpegHead, Data()] {
+            XCTAssertFalse(AttachmentFormat.isPDF(mime: AttachmentFormat.sniffMime(notPDF)), "\(Array(notPDF.prefix(8)))")
+        }
+        XCTAssertFalse(AttachmentFormat.isPDF(mime: "application/x-pdf"))
+        XCTAssertFalse(AttachmentFormat.isPDF(mime: AttachmentFormat.fallbackMime))
+    }
+
     // MARK: 송신
 
     func testSendAttachmentUsesFileV1ClientIdAndRawBytes() async throws {
