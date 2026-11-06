@@ -175,4 +175,23 @@ final class AttachmentTests: XCTestCase {
         let cost = AttachmentPreviewCache.cost(of: AttachmentPreview(thumbnail: thumb, shareURL: nil))
         XCTAssertGreaterThanOrEqual(cost, Int(pixels.width * pixels.height) * 4 - 64, "RGBA bytes")
     }
+
+    /// PDF 카드(오너 요청 2026-11-06): 첫 장 미리보기 비트맵도 캐시 비용에 든다 — 사진과 같은 바이트 상한으로 묶이게.
+    func testPreviewCostCountsThePDFFirstPage() throws {
+        // 크기·형식이 확정되는 RGBA 비트맵(렌더러 이미지는 내부 표현이 OS 마다 달라 바이트 수를 가정하지 않는다).
+        let width = Int(PDFFirstPage.cardWidth) * 3, height = Int(PDFFirstPage.pageHeight) * 3
+        let context = try XCTUnwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                              space: CGColorSpaceCreateDeviceRGB(),
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(UIColor.white.cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let cg = try XCTUnwrap(context.makeImage())
+        let page = UIImage(cgImage: cg)
+        let none = AttachmentPreviewCache.cost(of: AttachmentPreview(thumbnail: nil, shareURL: nil, mime: "application/pdf"))
+        let withPage = AttachmentPreviewCache.cost(of: AttachmentPreview(thumbnail: nil, shareURL: nil, mime: "application/pdf",
+                                                                         pdfFirstPage: page))
+        XCTAssertEqual(none, 1)
+        XCTAssertEqual(withPage, cg.bytesPerRow * cg.height, "first page bitmap bytes")
+        XCTAssertGreaterThanOrEqual(withPage, width * height * 4, "RGBA")
+    }
 }

@@ -1267,6 +1267,9 @@ struct AttachmentBubble: View {
                 photoFrame {
                     Text(Strings.attachmentLoading(byteCount)).font(.footnote)
                 }
+            } else if preview == nil && !unreadable && isPDFHint {
+                // PDF 카드 자리를 최종 크기로 먼저 잡는다(#647) — 받기·첫 장 그리기가 끝나도 행 높이가 그대로다.
+                PDFAttachmentCard(firstPage: nil, byteCount: byteCount, loading: true)
             } else if preview == nil && !unreadable {
                 Text(Strings.attachmentLoading(byteCount)).font(.footnote).modifier(AttachmentTextInset())
             } else if unreadable && isV2 {
@@ -1275,11 +1278,12 @@ struct AttachmentBubble: View {
                     .buttonStyle(.plain)
                     .modifier(AttachmentTextInset())
             } else if let url = pdfURL {
-                // PDF(받은 바이트를 sniff 한 결과 — 보낸 쪽 힌트 아님): 누르면 QuickLook 으로 바로 본다. 저장·공유 줄은 아래 그대로.
-                Button { openPDF(url) } label: { Text(Strings.attachmentPDF(byteCount)).font(.footnote) }
+                // PDF(받은 바이트를 sniff 한 결과 — 보낸 쪽 힌트 아님): 첫 장 미리보기 카드, 누르면 QuickLook(#696). 저장·공유 줄은 아래 그대로.
+                Button { openPDF(url) } label: { PDFAttachmentCard(firstPage: preview?.pdfFirstPage, byteCount: byteCount, loading: false) }
                     .buttonStyle(.plain)
-                    .modifier(AttachmentTextInset())
+                    .accessibilityElement(children: .ignore)
                     .accessibilityLabel(Strings.attachmentPDFOpen)
+                    .accessibilityAddTraits(.isButton)
             } else {
                 Text(Strings.attachmentFile(byteCount, preview?.mime ?? message.body)).font(.footnote).modifier(AttachmentTextInset())
             }
@@ -1354,6 +1358,9 @@ struct AttachmentBubble: View {
         AttachmentSizeMemory.shared.remember(pixels, for: sizeRow)
     }
 
+    /// 로딩 자리 모양만 정한다(v1 = sniff 한 MIME, file-v2 = 보낸 쪽 힌트) — 실제 카드·QuickLook 은 받은 내용(`pdfURL`)으로 정한다.
+    private var isPDFHint: Bool { AttachmentFormat.isPDF(mime: message.body) }
+
     /// 준비물이 내용으로 PDF 라고 판별했고 공유 파일(`attachment-<seq>.pdf`)이 있으면 그 URL.
     private var pdfURL: URL? {
         guard let preview, AttachmentFormat.isPDF(mime: preview.mime) else { return nil }
@@ -1373,6 +1380,46 @@ struct AttachmentBubble: View {
         guard let data = original, let image = UIImage(data: data) else { return }
         viewerImage = image
         showViewer = true
+    }
+}
+
+/// PDF 카드(오너 요청 2026-11-06): 고정 크기(`PDFFirstPage.cardWidth` × 미리보기 칸 + 아래 줄) — 첫 장 미리보기(없으면 문서 아이콘)와
+/// 「PDF · 크기 · 눌러서 보기」. 빈 자리·로딩·완료가 같은 틀이라 행 높이가 바뀌지 않는다(#647).
+struct PDFAttachmentCard: View {
+    let firstPage: UIImage?
+    let byteCount: Int
+    let loading: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ZStack {
+                Color.primary.opacity(0.06)
+                if let firstPage {
+                    Image(uiImage: firstPage)
+                        .resizable()
+                        .scaledToFit()
+                        .shadow(color: .black.opacity(0.15), radius: 1.5, y: 0.5)
+                        .padding(8)
+                } else {
+                    Image(systemName: "doc.richtext")
+                        .font(.system(size: 44, weight: .light))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: PDFFirstPage.cardWidth, height: PDFFirstPage.pageHeight)
+            HStack(spacing: 6) {
+                Image(systemName: "doc.fill").foregroundStyle(.red)
+                Text(Strings.attachmentPDFSize(byteCount)).lineLimit(1)
+                Spacer(minLength: 4)
+                Text(loading ? Strings.attachmentPDFLoading : Strings.attachmentPDFTap).foregroundStyle(.secondary)
+            }
+            .font(.subheadline)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(width: PDFFirstPage.cardWidth)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: AttachmentThumbnail.cornerRadius))
+        .contentShape(RoundedRectangle(cornerRadius: AttachmentThumbnail.cornerRadius))
     }
 }
 
