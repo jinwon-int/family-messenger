@@ -134,7 +134,73 @@ struct InlineMarkdown: View {
     let source: String
     init(_ source: String) { self.source = source }
 
-    var body: some View { Text(Self.attributed(source)) }
+    var body: some View { Self.text(source) }
+
+    /// #711: 해석된 한 구간과 그 서식. 실기기(iOS 27)에서 `Text(AttributedString)`이 굵게만 그리고 기울임·코드는
+    /// 기호만 지운 채 일반 글씨로 그려서, 서식을 SwiftUI 기본 처리에 맡기지 않고 구간마다 직접 건다.
+    struct Segment: Equatable {
+        var text: String
+        var bold = false
+        var italic = false
+        var code = false
+        var strike = false
+
+        func sameStyle(as other: Segment) -> Bool {
+            bold == other.bold && italic == other.italic && code == other.code && strike == other.strike
+        }
+    }
+
+    /// 인라인 코드 배경 — 코드 블록(`Color.primary.opacity(0.06)`)과 같은 계열, 줄 안이라 조금 진하게. 새 색 토큰 없음.
+    static var codeBackground: Color { Color.primary.opacity(0.10) }
+
+    /// 해석 결과(`attributed`)를 서식이 같은 연속 구간으로 나눈다(링크는 이미 글자만).
+    static func segments(_ source: String) -> [Segment] {
+        let value = attributed(source)
+        var out: [Segment] = []
+        for run in value.runs {
+            let intent = run.inlinePresentationIntent ?? []
+            let piece = Segment(
+                text: String(value[run.range].characters),
+                bold: intent.contains(.stronglyEmphasized),
+                italic: intent.contains(.emphasized),
+                code: intent.contains(.code),
+                strike: intent.contains(.strikethrough)
+            )
+            if let last = out.last, last.sameStyle(as: piece) {
+                out[out.count - 1].text += piece.text
+            } else {
+                out.append(piece)
+            }
+        }
+        return out
+    }
+
+    /// 구간을 이어 붙인 한 `Text` — 바깥 `.font(...)`(본문·제목·표 크기)를 그대로 물려받는다.
+    static func text(_ source: String) -> Text {
+        segments(source).reduce(Text(verbatim: "")) { joined, segment in
+            Text("\(joined)\(piece(segment))")
+        }
+    }
+
+    static func piece(_ segment: Segment) -> Text {
+        var text: Text
+        if segment.code {
+            var value = AttributedString(segment.text)
+            value.backgroundColor = codeBackground
+            text = Text(value)
+            if #available(iOS 16.4, *) {
+                text = text.monospaced()
+            } else {
+                text = text.font(.system(.callout, design: .monospaced))
+            }
+        } else {
+            text = Text(verbatim: segment.text)
+        }
+        if segment.bold { text = text.bold() }
+        if segment.italic { text = text.italic() }
+        if segment.strike { text = text.strikethrough() }
+        return text
+    }
 
     static func attributed(_ source: String) -> AttributedString {
         guard AgentMarkdown.hasInlineMarkup(source),
