@@ -80,6 +80,15 @@ public protocol RelayTransport: AnyObject {
     func linkPreviewImage(path: String) async throws -> Data
     /// GET /v2/preview/sites(#690 계약 v2) → `{version:2, sites:[{id,name,hosts,preview}]}`. 404 = 옛 릴레이·플래그 꺼짐 → 앱은 내장 폴백.
     func previewSites() async throws -> PreviewSites
+
+    // 방 순서(#715 room-order v1) — 같은 사람(actor)의 기기들이 한 목록 순서를 쓴다(판정은 `RoomOrderSync`). 인증·actor 판정은 `/v2/me`·
+    // `POST /read`·`/mute` 와 같다(JWT → `device` 가 정책 체인 active · 같은 subject). 기본 구현은 `.refused(code:"not_found", status:404)`
+    // (라우트 없는 옛 릴레이·옛 테스트 대역) — 호출자(AppModel)는 404 를 보면 이 세션에서 로컬 순서만 쓴다.
+    /// GET /v2/me/room-order?device= → `{rooms, revision, updated_at}`(저장된 적 없으면 revision 0). 403 `device_not_allowed` · 400 `bad_identifier`.
+    func roomOrder(device: DeviceID) async throws -> RoomOrderState
+    /// PUT /v2/me/room-order `{device, rooms, base_revision}` → 200 `.saved`(revision+1) · 409 `revision_conflict` `.conflict`(서버 현재 값).
+    /// 400 `duplicate_room`·`bad_identifier` 등 그 밖의 거부는 `RelayError` 로 던진다.
+    func putRoomOrder(device: DeviceID, rooms: [RoomID], baseRevision: Int64) async throws -> RoomOrderPutResult
 }
 
 /// blob 업로드 응답(server/blobs.go `blobResponse`). `created` = 201(새로 저장), false = 200(이미 있음).
@@ -144,6 +153,12 @@ public extension RelayTransport {
         throw RelayError.refused(code: "not_found", status: 404)
     }
     func previewSites() async throws -> PreviewSites {
+        throw RelayError.refused(code: "not_found", status: 404)
+    }
+    func roomOrder(device: DeviceID) async throws -> RoomOrderState {
+        throw RelayError.refused(code: "not_found", status: 404)
+    }
+    func putRoomOrder(device: DeviceID, rooms: [RoomID], baseRevision: Int64) async throws -> RoomOrderPutResult {
         throw RelayError.refused(code: "not_found", status: 404)
     }
 }

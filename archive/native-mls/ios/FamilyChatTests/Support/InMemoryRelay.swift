@@ -187,6 +187,51 @@ final class InMemoryRelay: RelayTransport, RelayControl {
         }
     }
 
+    // MARK: 방 순서(#715 room-order v1) — actor 하나에 {rooms, revision}(CAS). actor 는 읽음 위치와 같이 기기 ID 접두.
+    // 기본 꺼짐 = 라우트 없는 옛 릴레이(404 http_404) — 다른 테스트의 바퀴가 그대로이도록. 방 순서 테스트가 켠다.
+
+    var roomOrderRoute = false
+    private var roomOrders: [String: RoomOrderState] = [:]
+    private var roomOrderErrors: [RelayError] = []
+    /// 테스트 관찰: GET /v2/me/room-order 횟수(404 포함).
+    private(set) var roomOrderGets = 0
+    /// 테스트 관찰: 받은 PUT(순서대로, 409 포함).
+    private(set) var roomOrderPuts: [RoomOrderPut] = []
+    /// 결함 주입: 다음 GET·PUT 들이 이 오류로 실패한다.
+    func failNextRoomOrderCalls(_ errors: [RelayError]) { lock.withLock { roomOrderErrors += errors } }
+    /// 테스트 시드: 같은 사람의 다른 기기(웹 등)가 이 순서를 저장했다.
+    func setRoomOrder(actor: String, rooms: [RoomID], revision: Int64) {
+        lock.withLock { roomOrders[actor] = RoomOrderState(rooms: rooms, revision: revision, updatedAt: 1_800_000_000) }
+    }
+    func roomOrderState(actor: String) -> RoomOrderState { lock.withLock { roomOrders[actor] ?? .empty } }
+
+    func roomOrder(device: DeviceID) async throws -> RoomOrderState {
+        try checkUp()
+        return try lock.withLock {
+            roomOrderGets += 1
+            guard roomOrderRoute else { throw RelayError.refused(code: "http_404", status: 404) }
+            if !roomOrderErrors.isEmpty { throw roomOrderErrors.removeFirst() }
+            return roomOrders[MessageRecord.actor(of: device)] ?? .empty
+        }
+    }
+
+    func putRoomOrder(device: DeviceID, rooms: [RoomID], baseRevision: Int64) async throws -> RoomOrderPutResult {
+        try checkUp()
+        return try lock.withLock {
+            guard roomOrderRoute else { throw RelayError.refused(code: "http_404", status: 404) }
+            roomOrderPuts.append(RoomOrderPut(device: device, rooms: rooms, baseRevision: baseRevision))
+            if !roomOrderErrors.isEmpty { throw roomOrderErrors.removeFirst() }
+            guard rooms.count <= 64, rooms.allSatisfy(RoomOrderSync.isValidRoomID) else { throw RelayError.refused(code: "bad_identifier", status: 400) }
+            guard Set(rooms).count == rooms.count else { throw RelayError.refused(code: "duplicate_room", status: 400) }
+            let actor = MessageRecord.actor(of: device)
+            let current = roomOrders[actor] ?? .empty
+            guard baseRevision == current.revision else { return .conflict(current) }
+            let next = RoomOrderState(rooms: rooms, revision: current.revision + 1, updatedAt: 1_800_000_000)
+            roomOrders[actor] = next
+            return .saved(next)
+        }
+    }
+
     // MARK: 방별 알림(server/mute.go) — (방, actor) 에 한 값. actor 는 읽음 위치와 같이 기기 ID 접두.
 
     private var mutes: [RoomID: Set<String>] = [:]

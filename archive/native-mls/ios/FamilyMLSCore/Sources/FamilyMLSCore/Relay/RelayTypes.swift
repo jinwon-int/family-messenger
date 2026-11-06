@@ -182,6 +182,10 @@ public enum RelayErrorCode: String {
     case staleRevision = "stale_revision"
     /// 승인·역할: 서명·서명자 규칙 위반(`detail` 에 사유 — registrar 아님, 마지막 registrar 등).
     case approvalRejected = "approval_rejected"
+    /// #715 room-order v1: `PUT /v2/me/room-order` 의 `base_revision` 이 현재와 다르다(본문 = 서버 현재 값 → `RoomOrderPutResult.conflict`).
+    case revisionConflict = "revision_conflict"
+    /// #715: `rooms` 에 같은 방이 두 번.
+    case duplicateRoom = "duplicate_room"
 }
 
 public enum RelayError: Error, Equatable {
