@@ -157,6 +157,10 @@ PC·폰이 두 명으로 서지 않고 사람 행 아래에 기기 줄(종류 ·
   다시 부른다(file-v2 는 실패한 load 의 캐시를 비워 다시 받는다). 사진이 아닌 파일(내용 판별 null)은 실패가 아니다.
 - **파일명(C)**: 파일 행은 이름이 있으면 「📎 이름 · 크기」. 이름은 **file-v2 수신분**(#499/#511, `safeFileName` 으로 줄인 것)에만 있다 —
   file-v1(현재 기본 송신, MLS 안에 바이트 직접)은 와이어에 이름이 없어 지금처럼 「📎 파일 · 크기」.
+- **PDF 새 탭 보기(#697)**: 미리보기 판별 때 내용이 `%PDF-` 로 시작하면(`attachment-view.js pdfType`, iOS `sniffMime` 과 같은 규칙)
+  `entry.pdf` blob URL(`application/pdf`)을 만들고, 파일 줄을 「📄 PDF · 크기 · 눌러서 보기」 링크(`target=_blank rel=noopener`)로 그린다 —
+  누르면 새 탭의 브라우저 PDF 뷰어. 한데 CSP 는 그대로다(새 탭 blob 은 허용, iframe/object 끼워 넣기는 `frame-src`·`object-src` 가 막는 그대로).
+  저장 버튼은 `attachment-<seq>.pdf` + `application/pdf`. 보낸 쪽 이름·MIME 은 판별에 쓰지 않는다.
 
 ## 보관함 pane — 「첨부」 탭 + 파일보관함 (#544 D — 패밀리챗 `web/app` 과 동일)
 

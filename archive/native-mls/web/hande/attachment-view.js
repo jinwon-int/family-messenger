@@ -1,7 +1,7 @@
 // 받은 첨부를 어떻게 보여 주고 저장할지 — 내용(매직 바이트)만 보고 정한다.
 // 첨부는 봉투 없는 날 바이트 한 덩어리(relay-attachments.js)라 발신자가 말한 파일명·MIME 이 없고,
 // 있더라도 믿지 않는다. 여기서 판별한 래스터 이미지(JPEG/PNG/GIF/WebP)만 미리보기와
-// 확장자를 얻고, 나머지는 전부 `attachment-<seq>.bin` + 불활성 MIME 으로 남는다.
+// 확장자를 얻고, PDF(`%PDF-`, #697)는 새 탭 PDF 뷰어로 열 수 있다. 나머지는 전부 `attachment-<seq>.bin` + 불활성 MIME 으로 남는다.
 // iOS AttachmentFormat.sniffMime / AttachmentSupport(사진은 한도 안의 JPEG/PNG/GIF/WebP 그대로).
 import {MAX_ATTACHMENT} from './relay-attachments.js';
 
@@ -9,7 +9,8 @@ import {MAX_ATTACHMENT} from './relay-attachments.js';
  *  (2026-10-20 family seq 372: 3.1 MiB 사진이 "파일"로 보임) 그보다 낮은 상한은 사진을 파일로 만든다. */
 export const IMAGE_PREVIEW_MAX = MAX_ATTACHMENT;
 
-const EXTENSION = {'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp'};
+export const PDF_TYPE = 'application/pdf';
+const EXTENSION = {'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp', [PDF_TYPE]: 'pdf'};
 export const INERT_TYPE = 'application/octet-stream';
 
 /** 래스터 이미지 MIME(JPEG/PNG/GIF/WebP) 또는 null. 브라우저가 그릴 수 있는 형식만 — HEIC 등은 null. */
@@ -23,6 +24,18 @@ export function imageType(bytes) {
   return null;
 }
 
+/**
+ * PDF 면 'application/pdf', 아니면 null(#697). 앞 5바이트가 정확히 `%PDF-` 일 때만 — iOS AttachmentFormat.sniffMime 과 같은 규칙.
+ * 앞 공백·`<html>%PDF`·`%PDF` 뒤 하이픈 없음은 PDF 가 아니다. 보낸 쪽 이름·MIME 은 보지 않는다.
+ */
+export function pdfType(bytes) {
+  if (!bytes || bytes.length < 5) return null;
+  return bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46 && bytes[4] === 0x2d ? PDF_TYPE : null;
+}
+
+/** 저장 MIME 판별: 래스터 이미지 → PDF → null(불활성). downloadSpec 의 `type` 인자로 넘긴다. */
+export const contentType = (bytes) => imageType(bytes) ?? pdfType(bytes);
+
 /** 이 첨부를 미리보기로 판별해 볼지(크기 한도 안, 본체를 읽을 수 있을 때). */
 export function shouldPreview(entry) {
   return entry?.kind === 'attachment' && typeof entry.load === 'function'
@@ -30,8 +43,8 @@ export function shouldPreview(entry) {
 }
 
 /**
- * 저장 파일명·MIME. `type` 은 imageType() 결과(내용 판별)만 넘긴다 — 판별된 이미지는
- * `attachment-<seq>.<jpg|png|gif|webp>` + 그 MIME, 그 밖은 `attachment-<seq>.bin` + 불활성 MIME.
+ * 저장 파일명·MIME. `type` 은 contentType() 결과(내용 판별)만 넘긴다 — 판별된 이미지·PDF 는
+ * `attachment-<seq>.<jpg|png|gif|webp|pdf>` + 그 MIME, 그 밖은 `attachment-<seq>.bin` + 불활성 MIME.
  */
 export function downloadSpec(seq, type, fileName = null) {
   const ext = EXTENSION[type];

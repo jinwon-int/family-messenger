@@ -105,3 +105,31 @@ test('dimsAgree: 디코드한 비가 힌트와 2% 안이면 고정 크기 유지
   assert.equal(dimsAgree(null, 10, 10), true, 'no hint → nothing to undo');
   assert.equal(dimsAgree({w: 3, h: 4}, 0, 0), true, 'not decoded yet');
 });
+
+test('pdfType (#697): 앞 5바이트가 정확히 %PDF- 일 때만 — 앞 공백·<html>%PDF·하이픈 없음·짧은 바이트는 아님', async () => {
+  const {pdfType, contentType, PDF_TYPE} = await import('../attachment-view.js');
+  const enc = (t) => new TextEncoder().encode(t);
+  assert.equal(PDF_TYPE, 'application/pdf');
+  assert.equal(pdfType(enc('%PDF-1.7\n%âãÏÓ')), 'application/pdf');
+  assert.equal(pdfType(enc('%PDF-')), 'application/pdf');
+  assert.equal(pdfType(enc(' %PDF-1.7')), null, '앞 공백');
+  assert.equal(pdfType(enc('<html>%PDF-1.7')), null);
+  assert.equal(pdfType(enc('%PDF')), null, '하이픈 없음(4바이트)');
+  assert.equal(pdfType(enc('%PDF 1.7')), null, '하이픈 자리가 공백');
+  assert.equal(pdfType(enc('%pdf-1.7')), null, '소문자');
+  assert.equal(pdfType(null), null);
+  assert.equal(pdfType(new Uint8Array()), null);
+  // contentType: 사진이 먼저, 그다음 PDF, 그 밖 null
+  assert.equal(contentType(JPEG_LIKE()), 'image/jpeg');
+  assert.equal(contentType(enc('%PDF-1.4 ......')), 'application/pdf');
+  assert.equal(contentType(enc('hello, plain text bytes')), null);
+});
+
+test('downloadSpec (#697): PDF 는 attachment-<seq>.pdf + application/pdf, file-v2 이름이 오면 이름만 바뀌고 MIME 은 판별값', async () => {
+  const {downloadSpec} = await import('../attachment-view.js');
+  assert.deepEqual(downloadSpec(42, 'application/pdf'), {name: 'attachment-42.pdf', type: 'application/pdf'});
+  assert.deepEqual(downloadSpec(42, 'application/pdf', '계약서.pdf'), {name: '계약서.pdf', type: 'application/pdf'});
+  assert.deepEqual(downloadSpec(42, 'application/x-pdf').type, 'application/octet-stream', '판별하지 않은 MIME 은 불활성');
+});
+
+function JPEG_LIKE() { const b = new Uint8Array(16); b.set([0xff, 0xd8, 0xff, 0xe0]); return b; }

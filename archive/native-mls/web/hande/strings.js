@@ -467,6 +467,9 @@ export const strings = {
     closeImage: '저장: 사진을 길게 누르거나 우클릭 · 닫기: 아무 곳이나 누르세요',
     // 파일 행(#544 C): 이름이 오면 「📎 이름 · 크기」, 없으면(file-v1 — 와이어에 이름이 없다) 「📎 파일 · 크기」.
     file: (size, name = null) => `📎 ${name || '파일'} · ${size}`,
+    // PDF 줄(#697, iOS attachmentPDFSize·attachmentPDFTap 와 같은 말): 「📄 이름 · PDF · 크기 · 눌러서 보기」, 이름이 없으면 이름 칸을 뺀다.
+    pdf: (size, name = null) => `📄 ${name ? `${name} · ` : ''}PDF · ${size} · 눌러서 보기`,
+    pdfOpen: 'PDF 보기(새 탭)',
     // 미리보기 실패(#544 B): 사진일 수 있는 첨부를 불러오지 못했을 때 파일 행 옆에 — 누르면 같은 load() 를 다시 부른다.
     previewFailed: '미리보기를 불러오지 못했습니다',
     previewRetry: '미리보기 다시 시도',
