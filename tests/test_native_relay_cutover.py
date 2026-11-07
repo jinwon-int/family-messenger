@@ -239,7 +239,8 @@ class CutoverTests(unittest.TestCase):
     def test_enable_runs_after_healthy_start_and_before_dns(self):
         cf = FakeCloudflare(); runner = Runner()
         plan = cut.cutover(cut.parse(self.argv()), self.io(self.down_status(), cf, runner))['plan']
-        record = cut.cutover(cut.parse(self.argv('--confirm', plan['confirm'])), self.io(self.down_status(), cf, runner))
+        record = cut.cutover(cut.parse(self.argv('--confirm', plan['confirm'])),
+                             self.io(self.down_status(), cf, runner))
         self.assertEqual(record['status'], 'complete', record)
         self.assertLess(runner.commands.index('systemctl start native-relay'),
                         runner.commands.index('systemctl enable native-relay'))
@@ -251,7 +252,8 @@ class CutoverTests(unittest.TestCase):
     def test_enable_failure_is_recorded_not_fatal(self):
         cf = FakeCloudflare(); runner = Runner(fail={'systemctl enable native-relay'})
         plan = cut.cutover(cut.parse(self.argv()), self.io(self.down_status(), cf, runner))['plan']
-        record = cut.cutover(cut.parse(self.argv('--confirm', plan['confirm'])), self.io(self.down_status(), cf, runner))
+        record = cut.cutover(cut.parse(self.argv('--confirm', plan['confirm'])),
+                             self.io(self.down_status(), cf, runner))
         self.assertEqual(record['status'], 'complete-with-hook-failures', record)
         self.assertEqual(cf.records[('CNAME', 'relay.example.test')]['content'], TUNNEL,
                          'a failed enable must not leave DNS on the old host')
