@@ -13,6 +13,7 @@ import {fileboxRefreshUrl} from './filebox.js';
 import {attachmentTitle} from './attachments.js';
 import {parseBlocks, inlineSpans, hasMarkdown} from './agent-markdown.js';
 import {linkParts} from './service-links.js';
+import {parseAlertRefs, isFleetDevice} from './alert-refs.js';
 import {previewTarget, createLinkPreviews} from './link-preview.js';
 import {FALLBACK_LINKS} from './preview-sites.js';
 import {isCaretMode} from './timeline-caret.js';
@@ -664,10 +665,41 @@ function markdownBlock(block) {
 }
 
 /** 말풍선 글: 허용 링크만 <a>, 나머지는 글 그대로(service-links.js). 호스트 집합은 preview-sites.js 링크 집합에서 고른다. */
-function serviceLinkNodes(text, hosts) {
-  return linkParts(text, hosts).map((part) => (typeof part === 'string'
-    ? part
-    : el('a', { href: part.href, target: '_blank', rel: 'noopener noreferrer', class: 'service-link' }, part.text)));
+function serviceLinkNodes(text, hosts, alertRefs = false) {
+  return linkParts(text, hosts).flatMap((part) => (typeof part === 'string'
+    ? (alertRefs ? alertRefNodes(part) : [part])
+    : [el('a', { href: part.href, target: '_blank', rel: 'noopener noreferrer', class: 'service-link' }, part.text)]));
+}
+
+// ---- 플릿 알림 `#번호` → 원래 알림으로 이동(alert-refs-v1, ALERT-REFS-V1.md) ----
+// 참조만 링크(자기 번호는 글 그대로). 대상은 누를 때 화면에서 찾는다 — 말풍선은 서명이 같으면 다시 만들지 않으므로
+// 그릴 때의 타임라인을 붙잡지 않는다. 대상 = 같은 타임라인의 플릿 알림 말풍선 중 data-alert-id 가 그 번호인 마지막 것(누른 글 제외).
+const ALERT_MISSING_MS = 2500;
+function alertRefNodes(text) {
+  const { refs } = parseAlertRefs(text);
+  if (refs.length === 0) return [text];
+  const out = [];
+  let at = 0;
+  for (const ref of refs) {
+    if (ref.start > at) out.push(text.slice(at, ref.start));
+    out.push(el('a', { href: '#', class: 'alert-ref', 'data-alert-ref': ref.id, title: strings.chat.alertRefJump,
+      onclick: (event) => { event.preventDefault(); jumpToAlert(event.currentTarget, ref.id); } }, text.slice(ref.start, ref.end)));
+    at = ref.end;
+  }
+  if (at < text.length) out.push(text.slice(at));
+  return out;
+}
+function jumpToAlert(anchor, id) {
+  const list = anchor.closest('ul.timeline');
+  const from = anchor.closest('li.bubble');
+  const targets = list ? [...list.querySelectorAll(`li.bubble[data-alert-id="${CSS.escape(id)}"]`)].filter((li) => li !== from) : [];
+  const target = targets.at(-1);
+  if (target && jumpToBubble(list, target.dataset.key)) return;
+  const body = anchor.closest('.body');
+  if (!body || body.querySelector('.alert-ref-missing')) return;
+  const hint = el('span', { class: 'alert-ref-missing', role: 'status' }, strings.chat.alertRefMissing);
+  body.append(hint);
+  setTimeout(() => hint.remove(), ALERT_MISSING_MS);
 }
 
 // ---- 링크 미리보기 카드(#683 2단계 「계약 v1」 → #690 「계약 v2」, link-preview.js · preview-sites.js) ----
@@ -902,7 +934,7 @@ function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null, l
       : el('div', { class: 'body file' }, el('span', { class: 'file-label' }, strings.chat.file(humanSize(entry.size ?? 0), entry.fileName)), previewRetry(entry, onRetryPreview), download);
   } else if (entry.isAgent && entry.kind === 'text' && hasMarkdown(entry.body)) body = agentMarkdownBody(entry.body);
   // 서비스 봇: 사이트 hosts 합집합 + 인스타그램(#690, 폴백 = v1 linkHosts 와 같음).
-  else if (entry.kind === 'text' && isServiceDevice(entry.sender)) body = el('div', { class: 'body' }, serviceLinkNodes(entry.body, links.serviceHosts));
+  else if (entry.kind === 'text' && isServiceDevice(entry.sender)) body = el('div', { class: 'body' }, serviceLinkNodes(entry.body, links.serviceHosts, isFleetDevice(entry.sender)));
   // 사람 말풍선: 사이트 hosts 합집합만 누를 수 있게(#690, 폴백 = x.com 계열 #683). 에이전트 말풍선은 그대로(iOS·Android 와 같은 범위).
   else if (entry.kind === 'text' && !entry.isAgent) body = el('div', { class: 'body' }, serviceLinkNodes(entry.body, links.hosts));
   else body = el('div', { class: 'body' }, entry.body);
@@ -910,7 +942,8 @@ function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null, l
   const preview = entry.kind === 'text' && (isServiceDevice(entry.sender) || !entry.isAgent) && !(entry.isAgent && hasMarkdown(entry.body))
     ? linkPreviewSlot(entry.body, body, links) : null;
   const foot = [entry.replay ? strings.chat.replay : null, time].filter(Boolean).join(' · ');
-  return signed(el('li', { class: `bubble kind-${entry.kind}${entry.isAgent ? ' agent' : ''}${sendState ? ` ${sendState}` : ''}`, 'data-key': entry.key, 'data-me': entry.isMe ? 'true' : 'false', 'data-testid': entry.kind === 'undecryptable' ? 'system-row' : 'bubble' },
+  const alertId = entry.kind === 'text' && isFleetDevice(entry.sender) ? parseAlertRefs(entry.body).self : null;   // alert-refs-v1 이동 대상 표시
+  return signed(el('li', { class: `bubble kind-${entry.kind}${entry.isAgent ? ' agent' : ''}${sendState ? ` ${sendState}` : ''}`, 'data-key': entry.key, 'data-alert-id': alertId, 'data-me': entry.isMe ? 'true' : 'false', 'data-testid': entry.kind === 'undecryptable' ? 'system-row' : 'bubble' },
     entry.isMe ? null : el('span', { class: 'who' }, senderLabel(entry.senderName || displayName(entry.sender), entry.isAgent)),
     body,
     preview,

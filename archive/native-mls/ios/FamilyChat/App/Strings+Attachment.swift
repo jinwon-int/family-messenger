@@ -20,6 +20,8 @@ extension Strings {
     static let attachmentPDFTap = "눌러서 보기"
     static let attachmentPDFLoading = "불러오는 중"
     static let attachmentPDFOpen = "PDF 보기"
+    /// alert-refs-v1: 플릿 알림의 `#번호` 를 눌렀는데 원래 알림이 지금 불러온 화면에 없다.
+    static let alertRefMissing = "원래 알림이 이 화면에 없어요"
     /// 전체 화면 사진 보기(사진 탭). 닫기는 한 번 탭(VoiceOver 접근성 동작 이름으로도 쓴다).
     static let attachmentViewerClose = "닫기"
     static let attachmentViewerHint = "한 번 탭하거나 위나 아래로 밀면 닫기 · 두 손가락으로 확대 · 두 번 탭"

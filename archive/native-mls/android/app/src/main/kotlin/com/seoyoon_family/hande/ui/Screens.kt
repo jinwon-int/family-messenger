@@ -80,6 +80,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -122,6 +123,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.seoyoon_family.hande.BuildConfig
 import com.seoyoon_family.hande.core.AgentActors
 import com.seoyoon_family.hande.core.AgentChoices
+import com.seoyoon_family.hande.core.AlertRefs
 import com.seoyoon_family.hande.core.AppLogin
 import com.seoyoon_family.hande.core.CandidateUi
 import com.seoyoon_family.hande.core.DeviceHub
@@ -1140,6 +1142,14 @@ fun RoomScreen(room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> 
     var draft by rememberSaveable(room.room) { mutableStateOf("") }
     val listState = rememberLazyListState()
     val halted = room.halted
+    // alert-refs-v1(ALERT-REFS-V1 §2): 플릿 알림 `#번호` → 같은 방에서 그 번호로 시작하는 가장 최근 알림으로. 없으면 토스트만.
+    val alertScope = rememberCoroutineScope()
+    val alertContext = LocalContext.current
+    val onAlertRef: (Int, String) -> Unit = { from, id ->
+        val target = AlertRefs.targetIndex(room.messages, id, from)
+        if (target >= 0) alertScope.launch { listState.animateScrollToItem(target) }
+        else android.widget.Toast.makeText(alertContext, Strings.alertRefMissing, android.widget.Toast.LENGTH_SHORT).show()
+    }
     // 맨 아래 따라가기: 새 글이나 작업 상태 말풍선이 생기면(사라질 때는 아님) 마지막 항목으로.
     val total = room.messages.size + room.statuses.size
     LaunchedEffect(room.messages.size, room.statuses.size) { if (total > 0) listState.animateScrollToItem(total - 1) }
@@ -1169,10 +1179,10 @@ fun RoomScreen(room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> 
                 itemsIndexed(room.messages, key = { _, m -> "${m.sender}-${m.seq}" }) { i, m ->
                     val card = choiceCards.getOrNull(i)
                     if (card == null) {
-                        MessageRow(m, previews, sites)
+                        MessageRow(m, previews, sites) { id -> onAlertRef(i, id) }
                     } else {
                         Column(Modifier.fillMaxWidth()) {
-                            MessageRow(m, previews, sites)
+                            MessageRow(m, previews, sites) { id -> onAlertRef(i, id) }
                             AgentChoicesCard(m, card, enabled = canChoose, onSend = onSend)
                         }
                     }
@@ -1260,7 +1270,12 @@ private fun Composer(draft: String, onDraft: (String) -> Unit, onSend: () -> Uni
  * 보낸 이 라벨 = 좌석 점 + 이름(에이전트는 「공명 · 불지기」 파랑). 너비는 82% 까지. 첨부는 본문의 자리 표시 글 그대로(C 단계).
  */
 @Composable
-private fun MessageRow(m: MessageUi, previews: LinkPreviews? = null, sites: PreviewSites.Registry = PreviewSites.FALLBACK) {
+private fun MessageRow(
+    m: MessageUi,
+    previews: LinkPreviews? = null,
+    sites: PreviewSites.Registry = PreviewSites.FALLBACK,
+    onAlertRef: ((String) -> Unit)? = null,
+) {
     val colors = LocalHandeColors.current
     val agent = !m.mine && AgentActors.isAgentDevice(m.sender)
     Column(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalAlignment = if (m.mine) Alignment.End else Alignment.Start) {
@@ -1281,11 +1296,24 @@ private fun MessageRow(m: MessageUi, previews: LinkPreviews? = null, sites: Prev
         }
         // #683 · #690 v2: 사람 말풍선의 허용 호스트(사이트 목록 hosts 합집합, 폴백 = x.com 계열) https 주소만 누를 수 있게(웹·iOS 와 같은 규칙).
         // 에이전트 말풍선은 글 그대로.
+        // 말풍선 글은 remember 로 캐시된다 — 그 안 클릭은 늘 최신 콜백(최신 목록·index)을 부르게.
+        val latestOnAlertRef by rememberUpdatedState(onAlertRef)
         val body = remember(m.text, agent, sites) {
             if (agent) AnnotatedString(m.text) else buildAnnotatedString {
                 append(m.text)
-                for (link in sites.links(m.text)) {
+                val found = sites.links(m.text)
+                for (link in found) {
                     addLink(LinkAnnotation.Url(link.url, TextLinkStyles(SpanStyle(textDecoration = TextDecoration.Underline))), link.start, link.end)
+                }
+                // alert-refs-v1: 플릿 알림 봇 글의 참조 `#번호` → 원래 알림으로 이동(허용 링크와 겹치면 링크가 이긴다).
+                if (onAlertRef != null && AlertRefs.isFleetDevice(m.sender)) {
+                    for (ref in AlertRefs.parse(m.text).refs) {
+                        if (found.any { it.start < ref.end && ref.start < it.end }) continue
+                        addLink(
+                            LinkAnnotation.Clickable("alert:${ref.id}", TextLinkStyles(SpanStyle(textDecoration = TextDecoration.Underline))) { latestOnAlertRef?.invoke(ref.id) },
+                            ref.start, ref.end,
+                        )
+                    }
                 }
             }
         }

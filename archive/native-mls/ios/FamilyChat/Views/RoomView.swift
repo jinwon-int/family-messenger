@@ -141,6 +141,12 @@ struct RoomView: View {
                     })
                 }
                 .coordinateSpace(name: "timeline")
+                // alert-refs-v1: 플릿 알림 말풍선의 `#번호`(hande-alert://<번호>) 는 시스템에 넘기지 않고 원래 알림으로 이동.
+                .environment(\.openURL, OpenURLAction { url in
+                    guard let id = AlertRefs.id(from: url) else { return .systemAction }
+                    jumpToAlert(id, proxy)
+                    return .handled
+                })
                 // #497 A4(오너 build 51 기록으로 확정: 손을 댄 순간 앱의 스크롤 명령 없이 화면이 위로 밀림 = LazyVStack 의 미배치 행이
                 // 실체화·재추정되며 내용 높이가 바뀌는데 스크롤 위치가 **위 기준**이라 보이는 행이 밀린다). 바닥 기준으로 바꾼다 —
                 // 내용·칸 크기가 바뀌어도 바닥과의 거리를 유지하므로 위쪽 추정치가 아무리 바뀌어도 보이는 행은 그대로. iOS 16 은 종전대로.
@@ -553,6 +559,18 @@ struct RoomView: View {
     /// #472: 과거 글 한 페이지를 위에 붙인다. 보던 행(종전 첫 행)을 화면 위에 그대로 두어 점프하지 않는다 — 새 행이 붙은 뒤
     /// 한 런루프 뒤에 `scrollTo(anchor: .top)`(같은 틱에는 아직 배치되지 않아 조용히 무시된다, `scrollToLatest` 와 같은 이유).
     /// `messagesRevision` 은 올리지 않는다(그 경로는 "새 글 → 최하단").
+    /// alert-refs-v1(ALERT-REFS-V1 §2): 같은 방에서 그 번호로 시작하는 가장 최근 플릿 알림(지금 불러온 창 안)으로 — 「내 마지막 말」 바와
+    /// 같은 이동(따라가기를 끄고 가운데로). 없으면(옛 글·다이제스트에만 있는 info) 안내만.
+    private func jumpToAlert(_ id: String, _ proxy: ScrollViewProxy) {
+        guard let seq = AlertRefs.target(id: id, in: messages.filter { $0.outgoing == nil }.map(\.record)) else {
+            toast = Strings.alertRefMissing
+            return
+        }
+        followLatest = false
+        tracking.lastDrag = Date()
+        withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(seq, anchor: .center) }
+    }
+
     private func loadOlder(_ proxy: ScrollViewProxy) {
         guard let anchor = messages.first?.id, model.loadOlder(room: room) else { return }
         olderBusy = true
@@ -1130,7 +1148,8 @@ struct MessageRow: View {
         default:
             if Strings.serviceNames[message.senderActor] != nil {
                 // 서비스 봇(알림 전용): 허용 링크(인스타그램 + 사이트 목록 호스트)를 누를 수 있게.
-                Text(ServiceLinks.attributed(message.body, hosts: ServiceLinks.serviceHosts(previewSites)))
+                Text(ServiceLinks.attributed(message.body, hosts: ServiceLinks.serviceHosts(previewSites),
+                                             alertRefs: message.senderActor == AlertRefs.fleetActor))
             } else {
                 // 사람 말풍선: 사이트 목록 호스트 합집합만(#690, 폴백 = x.com 계열). 에이전트 글은 agentRow(링크 지움)로 가서 여기 오지 않는다.
                 Text(ServiceLinks.attributed(message.body, hosts: ServiceLinks.personHosts(previewSites)))

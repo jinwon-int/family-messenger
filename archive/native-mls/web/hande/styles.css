@@ -1169,6 +1169,10 @@ ul.files .download { flex: none; min-height: 32px; }
 /* 서비스 봇 말풍선의 허용 링크(ui.js serviceLinkNodes · service-links.js) — 글 색 그대로, 밑줄로만 구분. */
 .bubble .body a.service-link { color: inherit; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
 .bubble .body a.service-link:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; border-radius: 3px; }
+/* alert-refs-v1: 플릿 알림의 `#번호` → 원래 알림으로 이동(점선 밑줄 = 화면 안 이동, 실선 = 바깥 링크). */
+.bubble .body a.alert-ref { color: inherit; text-decoration: underline dotted; text-underline-offset: 2px; font-variant-numeric: tabular-nums; }
+.bubble .body a.alert-ref:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; border-radius: 3px; }
+.bubble .body .alert-ref-missing { display: block; margin-top: 4px; font-size: 12px; color: var(--ink-dim, inherit); }
 /* 링크 미리보기 카드(#683 2단계 · #690 v2, ui.js linkPreviewSlot · link-preview.js) — 선택지 카드와 같은 면·선, 테마는 변수로 따라간다.
    사이트 이름(작게) · 제목 1줄 · 본문 최대 4줄 · 사진 최대 높이 200px(비율 유지). 카드 전체가 링크. */
 .bubble .link-preview { margin-top: var(--space-1); max-width: min(360px, 72vw); }
