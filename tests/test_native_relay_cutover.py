@@ -185,8 +185,8 @@ class CutoverTests(unittest.TestCase):
         record = cut.cutover(cut.parse(argv), self.io(self.down_status(), cf, runner))
         self.assertEqual(record['status'], 'complete', record)
         self.assertEqual([s['step'] for s in record['steps']],
-                         ['probe', 'plan', 'peer_stop', 'restore', 'fence', 'reprobe', 'start', 'dns', 'edge',
-                          'client_hook'])
+                         ['probe', 'plan', 'peer_stop', 'restore', 'fence', 'reprobe', 'start', 'enable', 'dns',
+                          'edge', 'client_hook'])
         # fence TXT is rewritten BEFORE the relay starts and BEFORE the CNAMEs move
         methods = [(m, p.split('?')[0]) for m, p, _ in cf.calls]
         txt_put = methods.index(('PUT', '/zones/zone123/dns_records/t1'))
@@ -200,7 +200,7 @@ class CutoverTests(unittest.TestCase):
         self.assertEqual(cf.records[('CNAME', 'relay.example.test')]['content'], TUNNEL)
         self.assertEqual(cf.records[('CNAME', 'hande.example.test')]['content'], TUNNEL)
         self.assertTrue(cf.records[('CNAME', 'hande.example.test')]['proxied'])
-        self.assertEqual(record['steps'][7]['detail'],
+        self.assertEqual(record['steps'][8]['detail'],
                          {'relay.example.test': 'updated', 'hande.example.test': 'created'})
         self.assertIn('ssh gongmyoung systemctl restart native-relay-bot', runner.commands)
         db = sqlite3.connect(str(self.target / 'data' / snap.DB_NAME))
@@ -233,6 +233,43 @@ class CutoverTests(unittest.TestCase):
                              self.io(self.down_status(), cf, runner))
         self.assertEqual(record['status'], 'complete-with-hook-failures')
         self.assertEqual(cf.records[('CNAME', 'relay.example.test')]['content'], TUNNEL)
+
+    # --- the new active host must come back after a reboot (2026-11-07: soonwook active but disabled) ---
+
+    def test_enable_runs_after_healthy_start_and_before_dns(self):
+        cf = FakeCloudflare(); runner = Runner()
+        plan = cut.cutover(cut.parse(self.argv()), self.io(self.down_status(), cf, runner))['plan']
+        record = cut.cutover(cut.parse(self.argv('--confirm', plan['confirm'])),
+                             self.io(self.down_status(), cf, runner))
+        self.assertEqual(record['status'], 'complete', record)
+        self.assertLess(runner.commands.index('systemctl start native-relay'),
+                        runner.commands.index('systemctl enable native-relay'))
+        steps = [s['step'] for s in record['steps']]
+        self.assertEqual(steps[steps.index('start') + 1], 'enable')
+        self.assertLess(steps.index('enable'), steps.index('dns'))
+        self.assertTrue(record['steps'][steps.index('enable')]['ok'])
+
+    def test_enable_failure_is_recorded_not_fatal(self):
+        cf = FakeCloudflare(); runner = Runner(fail={'systemctl enable native-relay'})
+        plan = cut.cutover(cut.parse(self.argv()), self.io(self.down_status(), cf, runner))['plan']
+        record = cut.cutover(cut.parse(self.argv('--confirm', plan['confirm'])),
+                             self.io(self.down_status(), cf, runner))
+        self.assertEqual(record['status'], 'complete-with-hook-failures', record)
+        self.assertEqual(cf.records[('CNAME', 'relay.example.test')]['content'], TUNNEL,
+                         'a failed enable must not leave DNS on the old host')
+        enable = [s for s in record['steps'] if s['step'] == 'enable']
+        self.assertEqual(len(enable), 1)
+        self.assertFalse(enable[0]['ok'])
+
+    def test_unhealthy_start_does_not_enable(self):
+        cf = FakeCloudflare(); runner = Runner()
+        status = Status({'http://100.64.0.1:18921/v2/health': [None], 'https://relay.example.test/v2/health': [502],
+                         'http://127.0.0.1:18921/v2/health': [None]})
+        plan = cut.cutover(cut.parse(self.argv()), self.io(status, cf, runner))['plan']
+        record = cut.cutover(cut.parse(self.argv('--confirm', plan['confirm'], '--start-wait', '3')),
+                             self.io(status, cf, runner))
+        self.assertEqual(record['status'], 'failed')
+        self.assertNotIn('systemctl enable native-relay', runner.commands)
 
     # --- regression tests from the adversarial review (2026-10-19) ---
 
@@ -314,7 +351,7 @@ class CutoverTests(unittest.TestCase):
         self.assertEqual(args.to, 'soonwook')
         self.assertEqual(args.hostname, ['relay.example.test', 'hande.example.test'])
         self.assertEqual(args.peer_stop_cmd,
-                         'ssh -o BatchMode=yes -o ConnectTimeout=10 seoseo systemctl stop native-relay')
+                         'ssh -o BatchMode=yes -o ConnectTimeout=10 seoseo systemctl disable --now native-relay')
         crlf = self.root / 'args.txt'
         crlf.write_bytes(b'# comment\r\n\r\n--to\r\nsoonwook \r\n--fence-record\r\nr\r\n--peer-health\r\nu\r\n'
                          b'--inbox\r\n' + str(self.inbox).encode() + b'\r\n--target-data-dir\r\na\r\n'

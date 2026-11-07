@@ -39,7 +39,7 @@ hande.example.test
 --peer-snapshot-cmd
 ssh -o BatchMode=yes -o ConnectTimeout=10 seoseo systemctl start native-relay-snapshot.service
 --peer-stop-cmd
-ssh -o BatchMode=yes -o ConnectTimeout=10 seoseo systemctl stop native-relay
+ssh -o BatchMode=yes -o ConnectTimeout=10 seoseo systemctl disable --now native-relay
 --client-hook
 ssh -o BatchMode=yes gongmyoung sudo /usr/local/sbin/native-relay-repoint http://100.64.0.2:18921
 --state
