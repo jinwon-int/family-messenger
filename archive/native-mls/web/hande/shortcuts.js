@@ -9,9 +9,10 @@
 // 에서의 Esc·Enter 는 조합 중이어도 처리한다(캐럿 모드에서 한글을 쳐서 풀린 뒤 브라우저에 조합이
 // 남는 PC 크롬 실기기 문제, 패밀리챗 #284 후속). 작성창의 End·Esc·Home 도 조합 중에 받는다 — 안드로이드
 // 키보드는 쓰는 동안 거의 늘 조합 중이라 예전에는 이 키들이 버려졌다(2026-11-07 오너, 안드로이드 크롬).
+// 작성창 Page Up/Down(방 넘기기)도 같은 이유로 조합 중에 받는다(onComposingPageKey).
 // 조합은 취소할 수 없으므로 이동은 다음 태스크로 미루고, 포커스를 빼서 조합을 확정시킨다(쓰던 글자 보존).
 import {
-  composingComposerKeyAction, isSplitLayout, listPageMove, listPageNavAction, listRevealDelta, timelineKeyAction, viewKeyAction,
+  composingComposerKeyAction, composingPageKey, isSplitLayout, listPageMove, listPageNavAction, listRevealDelta, timelineKeyAction, viewKeyAction,
   TIMELINE_ARROW_STEP_PX,
 } from './keyboard.js';
 import { enterCaretMode, exitCaretMode, isCaretMode } from './timeline-caret.js';
@@ -70,7 +71,11 @@ export function installShortcuts(root, actions) {
     // 열린 방을 마지막 키 위치로 따라간다 — 터치로 연 방에서 Home·뒤로 간 뒤 목록 Page Up/Down 이 그 방에서 이어지게.
     const openRoomId = actions.currentRoomId();
     if (openRoomId) state.listFocusRoomId = openRoomId;
-    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+    if (event.defaultPrevented) return;
+    if (event.isComposing || event.keyCode === 229) {
+      onComposingPageKey(event);
+      return;
+    }
     const shell = root.querySelector('main.shell');
     if (!shell || sheetOpen()) return;
     // 순서 편집 중에는 Page Up/Down 으로 방을 열지 않는다(행을 눌러도 안 열리는 것과 같게, #480 A).
@@ -102,6 +107,37 @@ export function installShortcuts(root, actions) {
     // 단일 pane 목록: 포커스만 옮긴다(열지 않는다).
     buttons[next].focus({ preventScroll: true });
     revealRoomInList(nextRoomId);
+  }
+
+  // 작성창 IME 조합 중 Page Up/Down → 방 넘기기(#722 후속). 안드로이드 키보드는 쓰는 동안 거의 늘 조합 중이라
+  // 예전에는 onListNav 의 조합 가드가 이 키를 버렸다. onComposingComposerKey 와 같은 방법: keydown 에서는
+  // preventDefault 만 하고, 다음 태스크에 작성창 포커스를 빼서 조합을 확정한 뒤 방을 연다. 조합 중 글자는 input
+  // 이벤트마다 방별 초안으로 저장되므로(app.js onDraft) 다른 방으로 넘어가도 보존된다. 첫·마지막 방이라 갈 곳이
+  // 없으면 포커스를 빼지 않는다(쓰던 조합 그대로). 방 목록(작성창 없음)·캐럿 모드는 대상이 아니다.
+  function onComposingPageKey(event) {
+    const key = composingPageKey(event);
+    if (!key) return;
+    const roomId = actions.currentRoomId();
+    const shell = root.querySelector('main.shell');
+    if (!roomId || !shell || sheetOpen() || actions.orderEditing?.()) return;
+    const input = root.querySelector('.room-screen form.composer textarea[name=body]');
+    if (!input || event.target !== input) return;
+    const action = listPageNavAction({ key, split: splitLayout(), view: shell.dataset.view, composerFocused: true });
+    if (action !== 'preview' && action !== 'switch') return;
+    event.preventDefault(); // 화면 스크롤 대신 방 넘기기로 쓴다
+    defer(() => {
+      // 그 사이 방을 바꿨거나 다른 곳을 눌렀거나 시트·순서 편집이 열렸으면 아무것도 하지 않는다.
+      if (actions.currentRoomId() !== roomId || doc.activeElement !== input || sheetOpen() || actions.orderEditing?.()) return;
+      const buttons = listRoomButtons();
+      const next = listPageMove({ key, count: buttons.length, currentIndex: currentListIndex(buttons) });
+      if (next === null) return;
+      const nextRoomId = buttons[next].dataset.roomId;
+      state.listFocusRoomId = nextRoomId;
+      if (nextRoomId === roomId) return; // 첫·마지막 방: 제자리
+      input.blur();
+      actions.openRoom(nextRoomId);
+      if (action === 'preview') revealRoomInList(nextRoomId);
+    });
   }
 
   // 방 화면 단축키: 작성창 Esc·End → 대화 내용, 대화 내용 ↑/↓ 스크롤·Esc 캐럿 모드, 대화형 요소 밖 Enter → 작성창, Home → 목록.

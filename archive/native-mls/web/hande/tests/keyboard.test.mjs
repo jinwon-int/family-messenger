@@ -1,7 +1,7 @@
 // 키보드 판정 테스트 — 패밀리챗 web/app/tests/keyboard.test.js 이식(#478). node --test archive/native-mls/web/hande/tests/keyboard.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { composerKeyAction, viewKeyAction, listPageMove, isSplitLayout, listPageNavAction, timelineKeyAction, listRevealDelta, composingComposerKeyAction } from '../keyboard.js';
+import { composerKeyAction, viewKeyAction, listPageMove, isSplitLayout, listPageNavAction, timelineKeyAction, listRevealDelta, composingComposerKeyAction, composingPageKey } from '../keyboard.js';
 
 test('작성창 Enter는 전송이다', () => {
   assert.equal(composerKeyAction({ key: 'Enter', shiftKey: false, isComposing: false }), 'send');
@@ -165,4 +165,22 @@ test('조합 중 작성창: 글자·Enter·수정키 조합·알 수 없는 키�
   assert.equal(composingComposerKeyAction({ key: 'Home', code: 'Home', metaKey: true }), null);
   assert.equal(composingComposerKeyAction({ key: 'Escape', code: 'Escape', altKey: true }), null);
   assert.equal(composingComposerKeyAction(), null);
+});
+
+test('조합 중 작성창 Page Up/Down 판정 — key 가 자리표시자면 code 로', () => {
+  assert.equal(composingPageKey({ key: 'PageDown', code: 'PageDown' }), 'PageDown');
+  assert.equal(composingPageKey({ key: 'PageUp', code: 'PageUp' }), 'PageUp');
+  assert.equal(composingPageKey({ key: 'Unidentified', code: 'PageDown' }), 'PageDown', '안드로이드 크롬');
+  assert.equal(composingPageKey({ key: 'Process', code: 'PageUp' }), 'PageUp', 'PC 윈도 IME');
+});
+
+test('조합 중 Page Up/Down: 수정키 조합·다른 키·알 수 없는 키는 null', () => {
+  assert.equal(composingPageKey({ key: 'PageDown', code: 'PageDown', shiftKey: true }), null, 'Shift+Page Down 선택');
+  assert.equal(composingPageKey({ key: 'PageUp', code: 'PageUp', ctrlKey: true }), null);
+  assert.equal(composingPageKey({ key: 'PageUp', code: 'PageUp', altKey: true }), null);
+  assert.equal(composingPageKey({ key: 'PageUp', code: 'PageUp', metaKey: true }), null);
+  assert.equal(composingPageKey({ key: 'End', code: 'End' }), null);
+  assert.equal(composingPageKey({ key: 'a', code: 'PageDown' }), null, '실제 key 가 있으면 code 를 보지 않는다');
+  assert.equal(composingPageKey({ key: 'Unidentified', code: '' }), null);
+  assert.equal(composingPageKey(), null);
 });
