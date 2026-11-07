@@ -357,6 +357,18 @@ def run_flow(Dev, receipt, screenshot=None, relay_base=None):
     assert owner_focus() == 'timeline', owner_focus()
     owner.page.keyboard.press('Enter')
     assert owner_focus() == 'composer', owner_focus()
+    # 작성창 IME 조합 중 End(2026-11-07 오너, 안드로이드 크롬): 실제 조합('한')을 건 채 안드로이드 크롬 형태의
+    # keydown(key=Unidentified, code=End, keyCode 229)을 보내면 대화 내용으로 옮겨 가고, 조합 중이던 글자는 작성창에 남는다.
+    cdp = owner.page.context.new_cdp_session(owner.page)
+    cdp.send('Input.imeSetComposition', {'text': '한', 'selectionStart': 1, 'selectionEnd': 1})
+    owner.page.evaluate("""() => document.querySelector('[data-testid="composer"]').dispatchEvent(new KeyboardEvent('keydown',
+        {key: 'Unidentified', code: 'End', keyCode: 229, isComposing: true, bubbles: true, cancelable: true}))""")
+    owner.page.wait_for_function("() => document.activeElement?.dataset.testid === 'timeline'", timeout=5000)
+    composed = owner.page.evaluate("() => document.querySelector('[data-testid=\"composer\"]').value")
+    assert composed.endswith('한'), repr(composed)
+    cdp.detach()
+    owner.page.fill('[data-testid="composer"]', '')   # 초안 비움 — 이후 시나리오에 남기지 않는다
+    receipt['checks']['keyboard_composing_end_keeps_text'] = True
     owner.page.keyboard.press('Home')
     owner.page.wait_for_function(
         "() => document.querySelector('main.shell')?.dataset.view === 'list'"

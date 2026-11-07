@@ -1,7 +1,7 @@
 // 키보드 판정 테스트 — 패밀리챗 web/app/tests/keyboard.test.js 이식(#478). node --test archive/native-mls/web/hande/tests/keyboard.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { composerKeyAction, viewKeyAction, listPageMove, isSplitLayout, listPageNavAction, timelineKeyAction, listRevealDelta } from '../keyboard.js';
+import { composerKeyAction, viewKeyAction, listPageMove, isSplitLayout, listPageNavAction, timelineKeyAction, listRevealDelta, composingComposerKeyAction } from '../keyboard.js';
 
 test('작성창 Enter는 전송이다', () => {
   assert.equal(composerKeyAction({ key: 'Enter', shiftKey: false, isComposing: false }), 'send');
@@ -144,4 +144,25 @@ test('캐럿 모드(#284): Esc=스크롤 모드 복귀, Enter=작성창, 나머�
   }
   assert.equal(timelineKeyAction({ key: 'ArrowUp', onTimeline: true, caretMode: false }), 'scroll-up', '캐럿 모드 밖 ↑는 그대로 스크롤');
   assert.equal(timelineKeyAction({ key: 'Escape', inComposer: true, caretMode: true }), 'focus-timeline', 'caretMode는 대화 내용 포커스일 때만 의미');
+});
+
+test('조합 중 작성창(안드로이드): End·Esc=대화 내용, Home=목록 — key 가 Process/Unidentified 면 code 로 판정', () => {
+  assert.equal(composingComposerKeyAction({ key: 'End', code: 'End' }), 'focus-timeline');
+  assert.equal(composingComposerKeyAction({ key: 'Escape', code: 'Escape' }), 'focus-timeline');
+  assert.equal(composingComposerKeyAction({ key: 'Home', code: 'Home' }), 'back');
+  assert.equal(composingComposerKeyAction({ key: 'Process', code: 'End' }), 'focus-timeline', 'PC 윈도 IME');
+  assert.equal(composingComposerKeyAction({ key: 'Unidentified', code: 'Escape' }), 'focus-timeline', '안드로이드 크롬');
+  assert.equal(composingComposerKeyAction({ key: 'Unidentified', code: 'Home' }), 'back');
+});
+
+test('조합 중 작성창: 글자·Enter·수정키 조합·알 수 없는 키는 건드리지 않는다', () => {
+  assert.equal(composingComposerKeyAction({ key: 'Process', code: 'KeyA' }), null, '한글 자모 입력');
+  assert.equal(composingComposerKeyAction({ key: 'Unidentified', code: '' }), null, '가상 키보드 — 어떤 키인지 모름');
+  assert.equal(composingComposerKeyAction({ key: 'Enter', code: 'Enter' }), null, '조합 확정 Enter');
+  assert.equal(composingComposerKeyAction({ key: 'a', code: 'End' }), null, '실제 key 가 있으면 code 를 보지 않는다');
+  assert.equal(composingComposerKeyAction({ key: 'End', code: 'End', shiftKey: true }), null, 'Shift+End 선택');
+  assert.equal(composingComposerKeyAction({ key: 'End', code: 'End', ctrlKey: true }), null);
+  assert.equal(composingComposerKeyAction({ key: 'Home', code: 'Home', metaKey: true }), null);
+  assert.equal(composingComposerKeyAction({ key: 'Escape', code: 'Escape', altKey: true }), null);
+  assert.equal(composingComposerKeyAction(), null);
 });
