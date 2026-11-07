@@ -137,6 +137,8 @@ object Strings {
     // 첨부 자리 표시(v1·v2 같은 모양 — 파일 열기는 C 단계). 설명자가 잘못된 file-v2 는 웹 `fileV2Invalid` 와 같은 뜻.
     fun attachmentPlaceholder(bytes: Long) = "📎 첨부($bytes B)"
     const val fileV2Invalid = "⚠ 첨부 정보가 올바르지 않아 열 수 없음"
+    // alert-refs-v1: 플릿 알림의 `#번호` 를 눌렀는데 원래 알림이 이 화면에 없다(웹·iOS 와 같은 문구).
+    const val alertRefMissing = "원래 알림이 이 화면에 없어요"
 
     const val composerPlaceholder = "이야기 나누기…"
     const val sendButton = "보내기"

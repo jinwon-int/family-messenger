@@ -89,11 +89,25 @@ enum ServiceLinks {
     }
 
     /// 말풍선 글: 허용 링크 구간에만 `.link`(누르면 시스템이 연다), 나머지는 글 그대로.
-    static func attributed(_ text: String, hosts: Set<String> = ServiceLinks.hosts) -> AttributedString {
+    /// `alertRefs`(플릿 알림 봇 글): 참조 `#번호` 에 `hande-alert://<번호>` — 방 화면의 openURL 이 가로채 원래 알림으로 간다(ALERT-REFS-V1).
+    /// 허용 링크와 겹치는 번호는 링크가 이긴다.
+    static func attributed(_ text: String, hosts: Set<String> = ServiceLinks.hosts, alertRefs: Bool = false) -> AttributedString {
         var value = AttributedString(text)
-        for link in links(in: text, hosts: hosts) {
+        let found = links(in: text, hosts: hosts)
+        for link in found {
             guard let range = Range(link.range, in: value) else { continue }
             value[range].link = link.url
+        }
+        guard alertRefs else { return value }
+        let scalars = text.unicodeScalars
+        for ref in AlertRefs.parse(text).refs {
+            let lower = scalars.index(scalars.startIndex, offsetBy: ref.start)
+            let upper = scalars.index(scalars.startIndex, offsetBy: ref.end)
+            let ns = NSRange(lower..<upper, in: text)
+            guard !found.contains(where: { NSIntersectionRange($0.range, ns).length > 0 }),
+                  let range = Range(ns, in: value), let url = AlertRefs.url(for: ref.id) else { continue }
+            value[range].link = url
+            value[range].underlineStyle = .single
         }
         return value
     }

@@ -247,7 +247,7 @@ class AgentChoicesTest {
 }
 
 /** 테스트 전용 최소 JSON 읽개: 객체 → Map, 배열 → List, 문자열 → String, 정수 → Long, true/false → Boolean, null → null. */
-private class MiniJson(private val s: String) {
+internal class MiniJson(private val s: String) {   // alert-refs AlertRefsTest 도 쓴다
     private var i = 0
 
     fun parse(): Any? {
