@@ -33,6 +33,12 @@ Order of operations, each recorded in the state file:
               (judged by health within ``--start-wait``, not by one exit code:
               the unit's own ExecStartPre may read a stale answer once and
               ``Restart=on-failure`` retries).
+   enable   — then ``systemctl enable`` the unit so the relay comes back on
+              its own after a reboot of the now-active host (the standby
+              unit ships disabled; the start-side fence still gates every
+              boot). Not fatal: the relay is already serving, so a failure
+              is recorded and the run ends with exit 3 like a hook failure
+              (2026-11-07: soonwook served for a day as active but disabled).
 8. dns      — point every relay hostname's CNAME at this host's tunnel.
 9. edge     — wait for the edge probe to answer 200 through the new path.
 10. hooks   — client re-pointing commands (bots, bridges); failures are
@@ -371,6 +377,13 @@ def cutover(args, io=None):
             return {'health': 200, 'start_exit': result['exit']}
         step('start', do_start)
 
+        # Follow-up, not a gate: the relay is already serving, and stopping here would leave DNS on the old host.
+        # A standby unit is installed disabled, so without this the new active host does not start its relay after a
+        # reboot (tunnel and bots come back, the relay does not). The start-side fence still decides on every boot.
+        enabled = run_cmd('systemctl enable ' + args.unit, 60, runner)
+        record['steps'].append({'step': 'enable', 'ok': enabled['exit'] == 0, 'detail': enabled})
+        follow_ups = 0 if enabled['exit'] == 0 else 1
+
         def do_dns():
             changes = {}
             for host in planned['hostnames']:
@@ -391,7 +404,7 @@ def cutover(args, io=None):
                 return {'health': 200}
             step('edge', do_edge)
 
-        hook_failures = 0
+        hook_failures = follow_ups
         for command in args.client_hook:
             result = run_cmd(command, 120, runner)
             record['steps'].append({'step': 'client_hook', 'ok': result['exit'] == 0, 'detail': result})

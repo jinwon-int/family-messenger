@@ -127,11 +127,12 @@ python3 scripts/native_relay_cutover.py @/etc/native-relay/cutover.args --confir
 | probe | peer `/v2/health`(tailnet) **그리고** 엣지 `/v2/health`(CF Access 서비스 토큰, **리다이렉트 불인정** — Access 로그인 페이지는 200이 아니다) 각 3회×60 s. `--edge-health` 없이는 판정 자체를 거부 | 둘 다 실패(`relay-down`)일 때만 진행. `edge-only`·`peer-unreachable`·`healthy`·`edge-unknown`은 exit 10, 무변경 |
 | plan | inbox 최신 아카이브(사이드카 있는 것만)·manifest 요약·**확인 토큰** = sha256(호스트·아카이브·sha·호스트명·터널·펜스 레코드·bump)[:16] | `--confirm` 불일치 → exit 11, 무변경 |
 | peer_snapshot | (선택) **계획 실행(토큰 없는 1차)에서만** 살아 있는 peer에 마지막 스냅샷 1회 → 그 결과가 계획·토큰에 들어간다. 확인 실행은 새 스냅샷을 찍지 않는다(토큰이 가리키는 아카이브 = 운영자가 본 아카이브) | — |
-| peer_stop | (선택) peer 릴레이 정지. **실패는 치명** — 못 멈춘 peer는 아직 서빙 중일 수 있다. peer 호스트가 죽은 게 확실할 때만 `--peer-unreachable-ok` | exit≠0 |
+| peer_stop | (선택) peer 릴레이 정지(예제 `cutover.args.example`은 `systemctl disable --now` — 정지와 함께 옛 호스트 자동 기동도 끈다). **실패는 치명** — 못 멈춘 peer는 아직 서빙 중일 수 있다. peer 호스트가 죽은 게 확실할 때만 `--peer-unreachable-ok` | exit≠0 |
 | restore | `native_relay_restore.py --bump-seq N --owner native-relay`(유닛 active면 거부) | 건수 불일치 |
 | fence | TXT → 자기 이름, DoH로 **연속 3회** 확인될 때까지 대기(≤300 s, 리졸버 TTL 창) | 미확인 |
 | reprobe | peer·엣지 1회 재확인 — 복원하는 사이 peer가 살아났으면 **여기서 멈춘다**(두 번째 작성자 방지) | 어느 쪽이든 200 |
 | start | `systemctl start native-relay` + 로컬 health 200(≤120 s — 유닛의 ExecStartPre가 옛 값을 한 번 읽어 실패해도 `Restart=on-failure` 30 s 재시도를 기다린다) | 미기동 — **DNS는 아직 옛 호스트** |
+| enable | `systemctl enable native-relay` — 새 활성 호스트가 **재부팅 뒤 스스로 릴레이를 올리게**(대기 유닛은 disabled로 설치된다; 부팅마다 시작 측 펜스가 판정). 2026-11-07 순욱이 활성인데 disabled로 하루 운영된 빈칸의 수정 | 멈추지 않음 — 실패는 기록 + exit 3(릴레이는 이미 서빙 중이라 여기서 멈추면 DNS가 옛 호스트에 남는다) |
 | dns | 호스트명별 CNAME → 자기 터널(`proxied`) | API 실패 |
 | edge | 엣지 프로브 200(≤180 s) | — |
 | client_hook | 봇·브리지 재지정 명령(반복 가능) | 실패는 기록 + exit 3(`complete-with-hook-failures`); 전환 자체는 끝난 상태 |
@@ -170,7 +171,9 @@ python3 scripts/native_relay_cutover.py @/etc/native-relay/cutover.args --confir
 4. **새 호스트**: `cutover.args --probe-tries 1`(plan — probe `relay-down` → peer_snapshot → 토큰). integrity ok, peer_snapshot exit 0,
    아카이브 생성 시각 ≥ 중지 시각을 확인한 뒤 `--confirm <토큰>`.
 5. **확인**: 엣지 200, 노드마다 `native-relay-repoint --check` = 새 URL, 새 호스트 첫 스냅샷이 push 대상에 도착, 펜스 TXT = 새 이름.
-6. **옛 호스트 정리**: `native-relay-snapshot.timer` 다시 켜기(펜스로 skip — 이제 대기 역할), 2단계 feeder 재개.
+6. **옛 호스트 정리**: `systemctl disable native-relay`(이제 대기 역할 — 자동 재부팅 때 기동 시도→펜스 거부→30 s 재시도 반복과,
+   TXT 캐시 창의 split-brain 기동을 막는다; 되돌릴 때는 전환 스크립트의 enable 단계가 다시 켠다), `native-relay-snapshot.timer` 다시 켜기
+   (펜스로 skip — 이제 대기 역할), 2단계 feeder 재개. 확인: 옛 호스트 `is-enabled` = disabled, 새 호스트 = enabled.
 
 - **대화 채널이 이 릴레이를 거칠 때**(한데로 운영자와 대화 중인 에이전트): 위 전체를 대화와 분리된 유닛(`systemd-run --on-active=90s …`)으로
   돌리고 결과는 다른 채널(Matrix 플릿 알림)로 받는다 — 릴레이가 멈추면 대화도 멈추고, 그 노드 봇의 hook 재시작이 진행 중 답을 끊는다.
