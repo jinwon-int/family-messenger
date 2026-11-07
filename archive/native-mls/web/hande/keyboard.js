@@ -111,6 +111,33 @@ export function timelineKeyAction({
   return null;
 }
 
+// 작성창에서 IME 조합 중에도 받는 이동 키. 조합 중 keydown 은 key 가 실제 키 대신
+// 'Process'(PC 크롬·윈도 IME) 나 'Unidentified'(안드로이드 크롬) 로 오기도 해서 물리 키(code)로 보완한다.
+const COMPOSING_EXIT_KEYS = new Set(['End', 'Escape', 'Home']);
+const PLACEHOLDER_KEYS = new Set(['Process', 'Unidentified', '']);
+
+/**
+ * 작성창에서 **IME 조합 중**에 눌린 키 판정(안드로이드 한데 웹, 2026-11-07 오너 「End·Esc 가 잘 안 된다」).
+ * 안드로이드 키보드(Gboard·삼성)는 마지막 한글 음절뿐 아니라 영어 단어도 조합 상태로 붙잡아 두므로,
+ * 글을 쓰다 바로 누른 End·Esc·Home 이 늘 조합 중(isComposing / keyCode 229)으로 와서 예전에는 모두 버려졌다.
+ * End·Esc = 대화 내용으로, Home = 방 목록으로 — 조합 아닐 때(timelineKeyAction·viewKeyAction)와 같은 뜻.
+ * 수정키 조합(Shift+End 선택 등)은 편집 동작이라 뺏지 않는다. 다른 키(글자·Enter 등)는 null — 조합을 건드리지 않는다.
+ * 실제 이동은 호출부가 조합이 끝난 뒤(다음 태스크, 포커스를 빼서 조합 확정)에 한다.
+ * @param {{key?: string, code?: string, shiftKey?: boolean, ctrlKey?: boolean, altKey?: boolean, metaKey?: boolean}} input
+ * @returns {'focus-timeline'|'back'|null}
+ */
+export function composingComposerKeyAction({
+  key, code, shiftKey = false, ctrlKey = false, altKey = false, metaKey = false,
+} = {}) {
+  if (shiftKey || ctrlKey || altKey || metaKey) return null;
+  let name = null;
+  if (COMPOSING_EXIT_KEYS.has(key)) name = key;
+  else if (PLACEHOLDER_KEYS.has(key ?? '') && COMPOSING_EXIT_KEYS.has(code)) name = code;
+  if (name === 'End' || name === 'Escape') return 'focus-timeline';
+  if (name === 'Home') return 'back';
+  return null;
+}
+
 const INTERACTIVE = new Set(['INPUT', 'TEXTAREA', 'BUTTON', 'A', 'SELECT', 'LABEL', 'SUMMARY']);
 
 /**

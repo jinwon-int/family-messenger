@@ -7,9 +7,11 @@
 // 공통 가드(패밀리챗과 같음): 이미 defaultPrevented 인 이벤트, 시트(dialog[open])가 떠 있을 때,
 // IME 조합 중(isComposing / keyCode 229)은 가로채지 않는다 — 단 편집할 수 없는 대화 내용(스크롤 모드)
 // 에서의 Esc·Enter 는 조합 중이어도 처리한다(캐럿 모드에서 한글을 쳐서 풀린 뒤 브라우저에 조합이
-// 남는 PC 크롬 실기기 문제, 패밀리챗 #284 후속).
+// 남는 PC 크롬 실기기 문제, 패밀리챗 #284 후속). 작성창의 End·Esc·Home 도 조합 중에 받는다 — 안드로이드
+// 키보드는 쓰는 동안 거의 늘 조합 중이라 예전에는 이 키들이 버려졌다(2026-11-07 오너, 안드로이드 크롬).
+// 조합은 취소할 수 없으므로 이동은 다음 태스크로 미루고, 포커스를 빼서 조합을 확정시킨다(쓰던 글자 보존).
 import {
-  isSplitLayout, listPageMove, listPageNavAction, listRevealDelta, timelineKeyAction, viewKeyAction,
+  composingComposerKeyAction, isSplitLayout, listPageMove, listPageNavAction, listRevealDelta, timelineKeyAction, viewKeyAction,
   TIMELINE_ARROW_STEP_PX,
 } from './keyboard.js';
 import { enterCaretMode, exitCaretMode, isCaretMode } from './timeline-caret.js';
@@ -27,12 +29,14 @@ const EDITABLE_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
  *   openChoiceCard?: () => ({card: () => {count: number, selected: number[], enabled: boolean}, toggle: (n: number) => void, submit: () => void}|null),
  *                                            // 열린 방의 open 선택지 카드 조작(#629, ui.openChoiceCard) — 없으면 null
  *   document?: Document, matchMedia?: (q: string) => {matches?: boolean}|null,
+ *   defer?: (fn: () => void) => void,        // 다음 태스크 예약(기본 setTimeout 0) — 테스트 주입용
  * }} actions
  * @returns {() => void} 해제 함수
  */
 export function installShortcuts(root, actions) {
   const doc = actions.document ?? root.ownerDocument ?? document;
   const matchMedia = actions.matchMedia ?? ((query) => doc.defaultView?.matchMedia?.(query));
+  const defer = actions.defer ?? ((fn) => setTimeout(fn, 0));
   const state = { listFocusRoomId: null };
 
   const splitLayout = () => isSplitLayout(matchMedia);
@@ -105,7 +109,10 @@ export function installShortcuts(root, actions) {
     if (event.defaultPrevented) return;
     const composing = event.isComposing || event.keyCode === 229;
     const plainTimeline = event.target?.classList?.contains('timeline') && !event.target.isContentEditable;
-    if (composing && !(plainTimeline && (event.key === 'Escape' || event.key === 'Enter'))) return;
+    if (composing && !(plainTimeline && (event.key === 'Escape' || event.key === 'Enter'))) {
+      onComposingComposerKey(event);
+      return;
+    }
     if (!actions.currentRoomId()) return;
     if (sheetOpen()) return;
     const list = root.querySelector('.room-screen .timeline');
@@ -148,6 +155,33 @@ export function installShortcuts(root, actions) {
       event.preventDefault();
       input.focus();
     }
+  }
+
+  // 작성창 IME 조합 중의 End·Esc → 대화 내용, Home → 방 목록(composingComposerKeyAction).
+  // 조합은 keydown 에서 취소할 수 없다 — 이동은 다음 태스크로 미루고, 작성창에서 포커스를 빼서 브라우저가
+  // 조합을 확정하게 한다(timeline-caret.js compositionstart 와 같은 방법). 쓰던 글은 작성창에 남고,
+  // 조합 중 글자도 input 이벤트마다 초안으로 저장되므로(ui.js oninput → app onDraft) Home 으로 나가도 보존된다.
+  // preventDefault 는 「처리했음」 표시 — 안드로이드가 처리 안 된 Esc 를 「뒤로」로 바꾸는 것을 막는다.
+  function onComposingComposerKey(event) {
+    const roomId = actions.currentRoomId();
+    if (!roomId || sheetOpen()) return;
+    const input = root.querySelector('.room-screen form.composer textarea[name=body]');
+    if (!input || event.target !== input) return;
+    const action = composingComposerKeyAction(event);
+    if (!action) return;
+    event.preventDefault();
+    defer(() => {
+      // 그 사이 방을 바꿨거나 다른 곳을 눌렀으면 아무것도 하지 않는다.
+      if (actions.currentRoomId() !== roomId || doc.activeElement !== input || sheetOpen()) return;
+      if (action === 'back') {
+        input.blur();
+        actions.openRooms();
+        return;
+      }
+      const list = root.querySelector('.room-screen .timeline');
+      if (list) list.focus({ preventScroll: true });
+      else input.blur();
+    });
   }
 
   // 선택지 카드 단축키(#629, AGENT-CHOICES-V1.md §3.1): ⌥1~9 체크 토글 · ⌥Enter 보내기. 판정은 agent-choices.js choiceKeyAction.
