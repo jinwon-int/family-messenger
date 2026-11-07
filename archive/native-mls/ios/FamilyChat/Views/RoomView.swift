@@ -1079,6 +1079,12 @@ struct MessageRow: View {
             if let target = previewTarget, let card = shownPreview {
                 LinkPreviewCard(url: target, card: card)
             }
+            // §6.1(#713): 서비스 봇 글(플릿 알림 ok/hold)의 명시 블록 카드. `choiceCard` 는 에이전트·서비스 봇 글에만 계산되고
+            // 에이전트 글은 `agentRow` 가 그리므로, 여기 오는 카드는 서비스 봇 몫이다(#713 은 계산만 넓히고 이 행에 그리지 않았다).
+            if !mine, let card = choiceCard, card.state != .closed {
+                AgentChoicesCard(choices: card.choices, state: card.state, enabled: canAnswer && !choiceSending,
+                                 selected: choiceSelected, send: choose)
+            }
             outgoingStatus
         }
     }
