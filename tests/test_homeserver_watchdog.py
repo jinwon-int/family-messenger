@@ -494,6 +494,11 @@ class UnitTemplatesTest(unittest.TestCase):
             self.assertIn(directive, unit, directive)
         self.assertNotIn('User=', unit, 'runs as root: the spool lives under /root')
         self.assertNotIn('tuwunel.service', unit, 'off-host: must not order after the homeserver unit')
+        execstart = [line for line in unit.splitlines() if line.startswith('ExecStart=')]
+        self.assertEqual(len(execstart), 1)
+        self.assertIn(' /opt/family-messenger/scripts/homeserver_watchdog.py ', execstart[0],
+                      'off-host checkout is /opt/family-messenger, not the homeserver checkout')
+        self.assertNotIn('family-messenger-tuwunel', execstart[0])
 
     def test_timer_shape(self):
         timer = (PKG / 'family-messenger-watchdog.timer').read_text(encoding='utf-8')

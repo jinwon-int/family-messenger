@@ -297,6 +297,15 @@ class UnitTemplateTest(unittest.TestCase):
             self.assertIn('${%s}' % key if key != 'RELAY_WATCHDOG_EXTRA_ARGS' else '$' + key, service)
         self.assertNotIn('CF_ACCESS_CLIENT_SECRET=', env)
 
+    def test_execstart_uses_offhost_checkout(self):
+        # #426: installed off-host (not on the homeserver), where the checkout is /opt/family-messenger.
+        # The homeserver path /opt/family-messenger-tuwunel does not exist there, so the unit failed every minute.
+        service = (PKG / 'family-messenger-relay-watchdog.service').read_text(encoding='utf-8')
+        execstart = [line for line in service.splitlines() if line.startswith('ExecStart=')]
+        self.assertEqual(len(execstart), 1)
+        self.assertIn(' /opt/family-messenger/scripts/relay_watchdog.py ', execstart[0])
+        self.assertNotIn('family-messenger-tuwunel', execstart[0])
+
 
 if __name__ == '__main__':
     unittest.main()
