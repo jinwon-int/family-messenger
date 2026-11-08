@@ -74,14 +74,24 @@ Telegram 브리지가 폴백 채널이다.
 
 대상: 서서(seoseo, Telegram 폴백 브리지 보유). 홈서버 노드에는 설치하지 않는다.
 
+**코드 체크아웃 경로 = `/opt/family-messenger`** (유닛 `ExecStart` 가 이 경로를 가리킨다). 오프호스트 노드의
+실제 체크아웃 위치다(2026-11-08 실측: 서서·순욱 `/opt/family-messenger`). `/opt/family-messenger-tuwunel` 은
+홈서버 노드(육손)의 체크아웃 — `deploy/tuwunel/` 유닛용 — 이며 오프호스트 노드에는 없다. 다른 경로에 체크아웃했다면
+설치 전에 유닛의 `ExecStart` 경로만 그 경로로 바꾼다.
+
 ```bash
-# 1. 코드 체크아웃이 /opt/family-messenger-tuwunel 에 있는지 확인(scripts/homeserver_watchdog.py, scripts/push_spool.py)
+# 1. 코드 체크아웃 확인(scripts/homeserver_watchdog.py, scripts/push_spool.py)
+ls /opt/family-messenger/scripts/homeserver_watchdog.py /opt/family-messenger/scripts/push_spool.py
 # 2. 환경 파일(0600 root): 사설 주소·노드명
+install -d -m 0755 /etc/family-messenger
 install -m 0600 deploy/watchdog/watchdog.env.example /etc/family-messenger/watchdog.env
 $EDITOR /etc/family-messenger/watchdog.env           # WATCHDOG_HOST=<홈서버 Tailscale 주소>, WATCHDOG_NODE=seoseo
-# 3. 수동 1회 실행으로 판정·spool 경로 확인(알림은 3회 연속 확정 전에는 나가지 않는다)
-python3 /opt/family-messenger-tuwunel/scripts/homeserver_watchdog.py --host <Tailscale 주소> --push-node seoseo \
-  --state /tmp/watchdog-test.json --json        # --push-spool 없이: 판정만
+# 3. 수동 1회 실행으로 판정·spool 경로 확인(알림은 3회 연속 확정 전에는 나가지 않는다).
+#    상태 디렉터리는 0700 이어야 한다 — 공유 /tmp(1777)는 `untrusted watchdog state directory` 로 거부된다.
+T=$(mktemp -d)                                  # 0700
+python3 /opt/family-messenger/scripts/homeserver_watchdog.py --host <Tailscale 주소> --push-node seoseo \
+  --state "$T/state.json" --json                # --push-spool 없이: 판정만
+rm -rf "$T"
 # 4. 유닛 설치·활성화
 install -m 0644 deploy/watchdog/family-messenger-watchdog.service deploy/watchdog/family-messenger-watchdog.timer /etc/systemd/system/
 systemctl daemon-reload
@@ -144,24 +154,35 @@ spool 디렉터리 `/root/.claude/state/telegram-spool` 는 그 노드의 ccc �
 디바운스 3회 × 60s(≤3분), 6h 재알림, spool 실패 시 `pending` 재시도, 첫 `up` 무음은 홈서버 워치독과 같다.
 레코드는 `health-alert-relay_<…>-<epoch_ms>.json`, `dedup` 은 `relay-watchdog:<code>:<since>:<transition|epoch>`.
 
-## 어디에 설치하나 — 두 곳 (노드 변경, **별도 오너 승인 후**)
+## 어디에 설치하나 (노드 변경, **별도 오너 승인 후**)
 
-릴레이는 서서(seoseo)에서 돈다. 알림 경로는 릴레이에 의존하지 않아야 하므로 실패 범위가 다른 두 곳에 같은 코드를 둔다.
+알림 경로는 릴레이에 의존하지 않아야 하므로 워치독은 **활성 릴레이 호스트가 아닌** 노드, 그중 Telegram 폴백 브리지가
+있는 노드에 둔다. 2026-11-06 #699 전환 이후 활성 릴레이 = 순욱(soonwook), 대기 = 서서(seoseo)
+(Wiki soonwook ND-4445). 순욱에는 Telegram 브리지가 없고 한데 브리지는 릴레이에 의존하므로 알림 경로로 쓸 수 없다.
 
 | 설치 노드 | 잡는 사건 | 알림 경로 |
 |---|---|---|
-| 서서(릴레이 호스트) | 릴레이 **프로세스**만 죽음, 터널만 끊김 | 서서 Telegram 브리지(오너 결정 ② 폴백 채널) |
-| 진군(오프호스트) | 서서 **호스트 전체** 불통(이때는 서서 Telegram 도 죽는다) | 진군 Matrix 브리지 — 홈서버는 육손이라 릴레이·서서와 독립 |
+| 서서(대기 호스트, 오프호스트) | 순욱 릴레이 **프로세스** 다운 · 순욱 **호스트 전체** 불통(둘 다 `relay_down`) · 터널만 끊김(`relay_edge`, authed 모드만) | 서서 Telegram 브리지(오너 결정 ② 폴백 채널) |
+| 진군(선택, 2차) | 서서까지 함께 불통인 경우 | 진군 Matrix 브리지 — 홈서버는 육손이라 릴레이·서서와 독립 |
 
-두 곳 모두 `RELAY_WATCHDOG_SPOOL` 은 그 노드 ccc 브리지가 소비하는 push spool 이다.
+릴레이가 다시 서서로 전환되면 서서는 릴레이 호스트가 되므로, 그때는 워치독을 다른 오프호스트 노드로 옮기거나
+env 의 직결 URL 을 새 활성 호스트로 바꾼다(아래 범위 메모). 설치 노드 모두 `RELAY_WATCHDOG_SPOOL` 은 그 노드 ccc
+브리지가 소비하는 push spool 이다.
+
+**코드 체크아웃 경로 = `/opt/family-messenger`** — 홈서버 워치독과 같다(위 설치 절 참고). 유닛 `ExecStart` 가 이
+경로를 가리키며, 다르면 설치 전에 그 줄만 바꾼다.
 
 ```bash
-# 1. 코드 체크아웃(/opt/family-messenger-tuwunel)에 scripts/relay_watchdog.py · homeserver_watchdog.py · push_spool.py 확인
+# 1. 코드 체크아웃 확인(scripts/relay_watchdog.py · homeserver_watchdog.py · push_spool.py)
+ls /opt/family-messenger/scripts/{relay_watchdog,homeserver_watchdog,push_spool}.py
+install -d -m 0755 /etc/family-messenger
 install -m 0600 deploy/watchdog/relay-watchdog.env.example /etc/family-messenger/relay-watchdog.env
 $EDITOR /etc/family-messenger/relay-watchdog.env      # 직결 URL·엣지 URL·노드명·spool
-# 2. 수동 1회(--push-spool 없이 판정만)
-python3 /opt/family-messenger-tuwunel/scripts/relay_watchdog.py --direct-url <직결> --edge-url <엣지> \
-  --state /tmp/relay-watchdog-test.json --json
+# 2. 수동 1회(--push-spool 없이 판정만). 상태 디렉터리는 0700(공유 /tmp 는 거부됨)
+T=$(mktemp -d)
+python3 /opt/family-messenger/scripts/relay_watchdog.py --direct-url <직결> --edge-url <엣지> \
+  --state "$T/relay-state.json" --json         # 기대: "candidate": "up", direct 200, edge 302(edge-only)
+rm -rf "$T"
 # 3. 유닛 설치·활성화
 install -m 0644 deploy/watchdog/family-messenger-relay-watchdog.{service,timer} /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now family-messenger-relay-watchdog.timer
@@ -171,9 +192,9 @@ systemctl daemon-reload && systemctl enable --now family-messenger-relay-watchdo
 
 | 드릴 | 절차 | 기대 |
 |---|---|---|
-| 릴레이 다운 | 서서 `systemctl stop native-relay.service`(승인 — 한데 전체 정지) | ≤3분 안에 서서 Telegram·진군 Matrix 에 `relay_down` |
+| 릴레이 다운 | 활성 릴레이 호스트(현재 순욱)에서 `systemctl stop native-relay.service`(승인 — 한데 전체 정지) | ≤3분 안에 서서 Telegram(설치했으면 진군 Matrix 도)에 `relay_down` |
 | 복구 | `systemctl start native-relay.service` | 3회 연속 up 뒤 `relay_recovered`(지속 시간 포함) |
-| 터널만 정지 | 서서 cloudflared 의 한데 ingress 정지(승인) | authed 모드: ≤3분 `relay_edge`. edge-only 모드: 감지 못함(위 한계) |
+| 터널만 정지 | 활성 릴레이 호스트의 한데 터널(현재 순욱 `cloudflared-relay-standby.service`) 정지(승인) | authed 모드: ≤3분 `relay_edge`. edge-only 모드: 감지 못함(위 한계) |
 | 6h 재알림 억제 | 나쁜 상태 유지 또는 상태 파일 `last_alert` 조작 드라이런 | 6h 안 두 번째 레코드 없음, 경과 후 `kind: realert` 1건 |
 
 ## 범위 메모
