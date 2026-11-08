@@ -10,7 +10,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/native-relay/snapshot.env
-ExecStart=/usr/bin/python3 /opt/family-messenger-tuwunel/scripts/native_relay_snapshot.py \
+ExecStart=/usr/bin/python3 /opt/family-messenger/scripts/native_relay_snapshot.py \
   --data-dir ${RELAY_DATA_DIR} --policy-dir ${RELAY_POLICY_DIR} \
   --static-dir ${RELAY_STATIC_DIR} --hande-dir ${RELAY_HANDE_DIR} \
   --dropin-dir ${RELAY_DROPIN_DIR} --env-file ${RELAY_ENV_FILE} \

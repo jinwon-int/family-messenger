@@ -9,5 +9,5 @@ Description=native-relay fence watch — stop this relay when the TXT names anot
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/native-relay/fence.env
-ExecStart=/usr/bin/python3 /opt/family-messenger-tuwunel/scripts/native_relay_fence.py --expect ${FENCE_SELF} --record ${FENCE_RECORD} --stop-unit native-relay --streak-file /var/lib/native-relay/fence-watch.json
+ExecStart=/usr/bin/python3 /opt/family-messenger/scripts/native_relay_fence.py --expect ${FENCE_SELF} --record ${FENCE_RECORD} --stop-unit native-relay --streak-file /var/lib/native-relay/fence-watch.json
 ReadWritePaths=/var/lib/native-relay
