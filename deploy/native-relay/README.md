@@ -20,5 +20,10 @@
 복원·드릴은 유닛이 아니라 운영자가 승인 하에 `scripts/native_relay_restore.py`로 실행한다(릴레이 유닛이 active면 거부).
 전환은 대기 호스트에서 `scripts/native_relay_cutover.py`를 두 번 실행한다 — 한 번은 계획과 확인 토큰, 한 번은 `--confirm`(반자동, 오너 결정 B).
 
+코드 경로 = 릴레이 호스트의 체크아웃 `/opt/family-messenger`(2026-11-08 실측: 서서·순욱). 홈서버 노드의
+`/opt/family-messenger-tuwunel` 은 릴레이 호스트에 없다 — 이전 템플릿이 그 경로를 가리켜, 설치된 호스트는
+스냅샷 유닛에 drop-in `10-checkout-path.conf` 를 두거나 펜스 유닛을 손으로 고쳐 돌렸다(#426 후속). 그 drop-in 은
+이제 템플릿과 같은 값이라 남겨도 무해하다. 체크아웃 위치가 다르면 설치 시 `ExecStart`/`ExecStartPre` 줄만 고친다.
+
 이 디렉터리는 코드·문서만이다. 실제 설치(서서 타이머, 수신 호스트 계정·키)는 머지 후 별도 승인으로 진행하며,
 여기에 실제 호스트명·키·터널 ID를 쓰지 않는다. APNs `.p8`은 스냅샷에 포함되지 않는다(#440-A).

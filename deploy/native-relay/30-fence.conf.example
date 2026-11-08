@@ -5,6 +5,6 @@
 # 이미 돌고 있는 릴레이를 멈추는 "정지 측"은 native-relay-fence-watch.timer 가 맡는다(둘 다 설치해야 펜스가 완성된다).
 [Service]
 EnvironmentFile=/etc/native-relay/fence.env
-ExecStartPre=/usr/bin/python3 /opt/family-messenger-tuwunel/scripts/native_relay_fence.py --expect ${FENCE_SELF} --record ${FENCE_RECORD}
+ExecStartPre=/usr/bin/python3 /opt/family-messenger/scripts/native_relay_fence.py --expect ${FENCE_SELF} --record ${FENCE_RECORD}
 Restart=on-failure
 RestartSec=30s
