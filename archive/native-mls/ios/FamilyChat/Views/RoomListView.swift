@@ -407,7 +407,8 @@ struct CampfireCard: View {
     private var preview: String {
         if out { return room.haltedReason == SyncHaltReason.roomClosed ? Strings.roomClosedByOperator : Strings.roomClosedPreview }
         guard let last = glance.last else { return Strings.roomNoMessages }
-        let body = last.kind.isFile ? Strings.attachmentImage : last.body
+        // 답장 글은 인용 머리(원문 요약)를 빼고 내 글만(ReplyQuote, 2026-11-09).
+        let body = last.kind.isFile ? Strings.attachmentImage : ReplyQuote.visibleText(last.body)
         // 1:1 방은 방 이름이 곧 상대라 「이름: 」 접두를 빼고 내용만(오너 2026-10-30, 웹 한데와 같다). 여럿이 말한 방은 누가 했는지 남긴다.
         return Strings.previewLine(name: glance.isOneToOne ? "" : AgentRosterNames.person(last.senderDevice), body: body)
     }

@@ -152,7 +152,8 @@ final class NotificationProcessor {
         let body: String
         switch record.kind {
         case .text, .system:
-            body = record.body.isEmpty ? Strings.pushFallbackBody : record.body
+            // 답장 글은 인용 머리를 빼고 내 글만(ReplyQuote — 잠금화면에 원문 요약이 겹쳐 보이지 않게).
+            body = record.body.isEmpty ? Strings.pushFallbackBody : ReplyQuote.visibleText(record.body)
         case .attachment, .fileV2:
             // fileV2 의 body 는 보낸 쪽 mime 힌트(설명자 JSON·키는 attachment 칸에만) — 「사진」/「파일」 문구만 고른다.
             body = Self.isImage(record.body) ? Strings.pushPhoto : Strings.pushFile
