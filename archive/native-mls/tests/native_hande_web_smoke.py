@@ -369,6 +369,21 @@ def run_flow(Dev, receipt, screenshot=None, relay_base=None):
     cdp.detach()
     owner.page.fill('[data-testid="composer"]', '')   # 초안 비움 — 이후 시나리오에 남기지 않는다
     receipt['checks']['keyboard_composing_end_keeps_text'] = True
+    # 작성창 IME 조합 중 Page Down(#722 후속): 조합('한')을 건 채 안드로이드 크롬 형태 keydown(key=Unidentified,
+    # code=PageDown, keyCode 229)을 보내면 다음 방(fam3)으로 넘어가고, 조합 중이던 글자는 원래 방(fam2) 초안으로 남는다.
+    owner.page.focus('[data-testid="composer"]')
+    cdp = owner.page.context.new_cdp_session(owner.page)
+    cdp.send('Input.imeSetComposition', {'text': '한', 'selectionStart': 1, 'selectionEnd': 1})
+    owner.page.evaluate("""() => document.querySelector('[data-testid="composer"]').dispatchEvent(new KeyboardEvent('keydown',
+        {key: 'Unidentified', code: 'PageDown', keyCode: 229, isComposing: true, bubbles: true, cancelable: true}))""")
+    owner.wait_open('fam3', timeout=5000)
+    cdp.detach()
+    owner.page.keyboard.press('PageUp')
+    owner.wait_open('fam2')
+    drafted = owner.page.evaluate("() => document.querySelector('[data-testid=\"composer\"]').value")
+    assert drafted.endswith('한'), repr(drafted)
+    owner.page.fill('[data-testid="composer"]', '')   # 초안 비움 — 이후 시나리오에 남기지 않는다
+    receipt['checks']['keyboard_composing_pagedown_keeps_draft'] = True
     owner.page.keyboard.press('Home')
     owner.page.wait_for_function(
         "() => document.querySelector('main.shell')?.dataset.view === 'list'"

@@ -138,6 +138,25 @@ export function composingComposerKeyAction({
   return null;
 }
 
+const COMPOSING_PAGE_KEYS = new Set(['PageUp', 'PageDown']);
+
+/**
+ * 작성창 **IME 조합 중** Page Up/Down 판정 — composingComposerKeyAction 의 짝(#722 후속).
+ * 조합 중 keydown 이 isComposing / keyCode 229 로 와서 onListNav 가드에 버려지던 방 넘기기를 살린다.
+ * key 가 'Process'/'Unidentified' 면 물리 키(code)로 판정. 수정키 조합(Shift+Page Up 선택 등)은 편집 동작이라 null.
+ * 방을 넘길지(preview/switch)는 호출부가 listPageNavAction 으로 정하고, 이동은 조합이 끝난 뒤(다음 태스크)에 한다.
+ * @param {{key?: string, code?: string, shiftKey?: boolean, ctrlKey?: boolean, altKey?: boolean, metaKey?: boolean}} input
+ * @returns {'PageUp'|'PageDown'|null}
+ */
+export function composingPageKey({
+  key, code, shiftKey = false, ctrlKey = false, altKey = false, metaKey = false,
+} = {}) {
+  if (shiftKey || ctrlKey || altKey || metaKey) return null;
+  if (COMPOSING_PAGE_KEYS.has(key)) return key;
+  if (PLACEHOLDER_KEYS.has(key ?? '') && COMPOSING_PAGE_KEYS.has(code)) return code;
+  return null;
+}
+
 const INTERACTIVE = new Set(['INPUT', 'TEXTAREA', 'BUTTON', 'A', 'SELECT', 'LABEL', 'SUMMARY']);
 
 /**
