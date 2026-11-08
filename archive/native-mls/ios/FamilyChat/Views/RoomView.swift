@@ -38,6 +38,8 @@ struct RoomView: View {
     @State private var showFileImporter = false
     /// 「선택해서 복사」 창에 띄울 글(말풍선 꾹 누르기 메뉴). 행이 아니라 방에 둔다 — lazy 행이 화면 밖으로 나가도 창이 닫히지 않게.
     @State private var selecting: SelectableMessage?
+    /// 꾹 누르기 「답장」으로 고른 글 — 작성창 위 띠로 보이고, 보낼 때 본문 앞에 인용 한 줄로 붙는다(2026-11-09).
+    @State private var replying: ReplyTarget?
     @State private var attachBusy = false
     /// #405 P1: 승인 요청 seq → 상태(허락/거절 버튼을 보일지).
     @State private var approvalStates: [Int64: AgentApproval.State] = [:]
@@ -369,6 +371,45 @@ struct RoomView: View {
 
     /// 작성창(첨부 메뉴 + 둥근 입력칸 + 보내기). 꺼진 자리에서는 자리를 안내 상자가 대신한다.
     private var composer: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let target = replying { replyBanner(target) }
+            composerRow
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(composerBackground)
+    }
+
+    /// 작성창 위 「OO에게 답장 · 원문 요약 ✕」 띠. ✕ 는 답장만 취소한다(쓰던 글은 그대로).
+    private func replyBanner(_ target: ReplyTarget) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrowshape.turn.up.left.fill").font(.footnote).foregroundStyle(p.ember)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(Strings.replyingTo(target.name)).font(.caption.weight(.semibold)).foregroundStyle(p.ink)
+                Text(target.snippet).font(.caption).foregroundStyle(p.inkDim).lineLimit(1)
+            }
+            .accessibilityElement(children: .combine)
+            Spacer(minLength: 0)
+            Button { replying = nil } label: {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(p.inkDim).frame(width: 32, height: 32)
+            }
+            .accessibilityLabel(Strings.replyCancel)
+            .accessibilityIdentifier("reply-cancel")
+        }
+        .padding(.leading, 14)
+        .accessibilityIdentifier("reply-banner")
+    }
+
+    /// 꾹 누르기 「답장」: 답할 글을 고르고 작성창에 커서를 넣는다.
+    private func startReply(_ record: MessageRecord) {
+        guard let original = MessageCopy.text(of: record) else { return }
+        replying = ReplyTarget(name: AgentRosterNames.person(record.senderDevice), original: original)
+        composerFocused = true
+    }
+
+    /// 첨부 메뉴 + 둥근 입력칸 + 보내기 한 줄.
+    private var composerRow: some View {
         HStack(spacing: 10) {
             // `PhotosPicker` 를 Menu 항목으로 두면 iOS 가 선택 창을 띄우지 않는다(build 13 실기기: 파일은 뜨고 사진은 안 뜸).
             // 메뉴는 플래그만 올리고, 선택 창은 뷰에 붙인 `.photosPicker(isPresented:)` 수정자가 띄운다.
@@ -422,9 +463,6 @@ struct RoomView: View {
             .accessibilityLabel(Strings.sendButton)
             .disabled(!canSend)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(composerBackground)
     }
 
     /// 타임라인 한 행(날짜 구분선 + 말풍선). lazy 본문과 꼬리가 같은 행을 쓴다.
@@ -443,7 +481,8 @@ struct RoomView: View {
                    previewSites: model.previewSites,
                    loadLinkPreview: { await model.linkPreviewCard(for: $0) },
                    retry: { Task { await model.retry(outgoingId: item.id, room: room) } },
-                   selectText: { selecting = SelectableMessage(text: $0) })
+                   selectText: { selecting = SelectableMessage(text: $0) },
+                   reply: isReady && haltedReason == nil ? { startReply(item.record) } : nil)
             // 선택 모드: 고른 말풍선 점선 테두리(웹 캐럿 모드의 점선 테두리와 같은 표시).
             .overlay {
                 if selectingByKey && keyCursor == item.id {
@@ -730,8 +769,11 @@ struct RoomView: View {
         guard isReady, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         previousDraft = ""
         draft = ""
+        // 답장이면 본문 앞에 `> 이름: 요약` + 빈 줄(ReplyQuote). 다시 보내기도 이 본문 그대로다.
+        let body = replying.map { ReplyQuote.compose(name: $0.name, original: $0.original, reply: text) } ?? text
+        replying = nil
         // 글은 누르는 즉시 목록에 오른다(`AppModel.outgoing`); 실패하면 말풍선 아래 「전송 안 됨 · 다시 보내기」 — 작성창에 되돌리지 않는다.
-        Task { _ = await model.send(room: room, text: text) }
+        Task { _ = await model.send(room: room, text: body) }
     }
 
     /// #405 P3 하드웨어 키보드 단축키(웹 keyboard.js 차용, iPad 에서 ⌘ 를 누르고 있으면 목록이 보인다):
@@ -941,6 +983,8 @@ struct MessageRow: View {
     var retry: () -> Void = {}
     /// 꾹 누르기 메뉴 「선택해서 복사」 — 방 화면이 창을 띄운다.
     var selectText: (String) -> Void = { _ in }
+    /// 꾹 누르기 메뉴 「답장」 — nil 이면 항목 없음(보낼 수 없는 방).
+    var reply: (() -> Void)? = nil
     @Environment(\.hande) private var p
     /// #647(오너 요청 2026-11-01): 사진 말풍선 옆 공유 아이콘의 공유 파일 — 말풍선(AttachmentBubble)이 준비되면 알려 준다.
     @State private var photoShareURL: URL?
@@ -980,7 +1024,7 @@ struct MessageRow: View {
         } else {
             VStack(alignment: .leading, spacing: 6) {
                 AgentMessageCard(name: name, text: message.body, time: time)
-                    .messageCopyMenu(MessageCopy.text(of: message), select: selectText)
+                    .messageCopyMenu(MessageCopy.text(of: message), select: selectText, reply: reply)
                 // 선택지(open = 체크 + 보내기, answered = 한 줄). closed 는 말풍선만.
                 if let card = choiceCard, card.state != .closed {
                     AgentChoicesCard(choices: card.choices, state: card.state, enabled: canAnswer && !choiceSending,
@@ -1090,7 +1134,7 @@ struct MessageRow: View {
                 .clipShape(BubbleShape(mine: mine))
                 .overlay(BubbleShape(mine: mine).stroke(bubbleStroke, style: StrokeStyle(lineWidth: bubbleStrokeWidth, dash: bubbleDash)))
                 .contentShape(.contextMenuPreview, BubbleShape(mine: mine))
-                .messageCopyMenu(MessageCopy.text(of: message), select: selectText)
+                .messageCopyMenu(MessageCopy.text(of: message), select: selectText, reply: reply)
                 .opacity(bubbleOpacity)
                 // #683 2단계: 말풍선이 보일 때 미리보기를 묻는다(lazy). 대상이 없으면 바로 끝난다.
                 .task(id: previewTarget) { await loadPreview() }
@@ -1111,7 +1155,8 @@ struct MessageRow: View {
     /// 폴백 목록이면 v1 x status 규칙). 에이전트 글은 `agentRow`(링크 지움)로 가서 여기 오지 않는다. 보내는 중·실패한 내 글은 저장된 뒤에.
     private var previewTarget: URL? {
         guard message.kind == .text, item.outgoing == nil else { return nil }
-        return ServiceLinks.previewTarget(in: message.body, sites: previewSites)
+        // 답장 글은 인용 머리(원문 요약)의 링크가 아니라 내 글의 링크로.
+        return ServiceLinks.previewTarget(in: ReplyQuote.visibleText(message.body), sites: previewSites)
     }
 
     /// 그릴 카드: 이 행이 지금 대상으로 받아 온 것, 없으면 캐시(행이 새로 만들어져도 첫 프레임부터 같은 높이 — 첨부 `AttachmentPreviewCache` 와 같은 이유).
@@ -1152,7 +1197,15 @@ struct MessageRow: View {
                                              alertRefs: message.senderActor == AlertRefs.fleetActor))
             } else {
                 // 사람 말풍선: 사이트 목록 호스트 합집합만(#690, 폴백 = x.com 계열). 에이전트 글은 agentRow(링크 지움)로 가서 여기 오지 않는다.
-                Text(ServiceLinks.attributed(message.body, hosts: ServiceLinks.personHosts(previewSites)))
+                if let parsed = ReplyQuote.parse(message.body) {
+                    // 답장 글(2026-11-09): 인용 상자(원문 요약) + 내 글.
+                    VStack(alignment: .leading, spacing: 6) {
+                        ReplyQuoteBox(quote: parsed.quote)
+                        Text(ServiceLinks.attributed(parsed.text, hosts: ServiceLinks.personHosts(previewSites)))
+                    }
+                } else {
+                    Text(ServiceLinks.attributed(message.body, hosts: ServiceLinks.personHosts(previewSites)))
+                }
             }
         }
     }

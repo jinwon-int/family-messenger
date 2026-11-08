@@ -1,4 +1,5 @@
 // 말풍선 글 복사(오너 요청 2026-10-30, 「2」): 꾹 누르기 메뉴 「복사」(글 전체) + 「선택해서 복사」(읽기 전용 글 창에서 일부만 골라 복사).
+// 공유·답장(오너 요청 2026-11-09): 「공유」= iOS 공유 시트(글만) · 「답장」= 작성창 위 답장 띠 → 본문 앞 인용 한 줄(FamilyMLSCore `ReplyQuote`).
 // SwiftUI `.textSelection(.enabled)` 는 iOS 에서 범위 선택이 안 되고(글 전체 복사만) 메뉴도 정할 수 없어서, 범위 선택은 UITextView 로 한다.
 // 첨부(설명자·파일 키)·복호화 실패 행은 복사 대상이 아니다 — 글로 보이거나 공유하지 않는다(#499 원칙).
 import SwiftUI
@@ -10,7 +11,9 @@ enum MessageCopy {
     static func text(of record: MessageRecord) -> String? {
         switch record.kind {
         case .text, .system:
-            return record.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : record.body
+            // 답장 글(ReplyQuote)은 인용 머리를 빼고 내 글만 — 복사·공유·답장 요약 모두 보이는 본문 기준.
+            let body = ReplyQuote.visibleText(record.body)
+            return body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : body
         case .attachment, .fileV2, .undecryptable:
             return nil
         }
@@ -34,17 +37,32 @@ struct SelectableMessage: Identifiable, Equatable {
     var fromKeyboard = false
 }
 
-/// 꾹 누르기 메뉴: 「복사」 · 「선택해서 복사」. 복사할 글이 없으면(첨부 등) 메뉴를 붙이지 않는다.
+/// 답장 대상(작성창 위 「OO에게 답장」 띠). 보낼 때 `ReplyQuote.compose` 로 본문 앞에 인용 한 줄을 붙인다.
+struct ReplyTarget: Equatable {
+    /// 답할 글을 쓴 사람(에이전트·서비스 봇 이름 포함).
+    let name: String
+    /// 답할 글(보이는 본문 — 인용 머리 뺀 것).
+    let original: String
+    var snippet: String { ReplyQuote.snippet(of: original) }
+}
+
+/// 꾹 누르기 메뉴: 「답장」 · 「복사」 · 「선택해서 복사」 · 「공유」. 복사할 글이 없으면(첨부 등) 메뉴를 붙이지 않는다.
+/// 「답장」은 보낼 수 있는 방에서만(`reply` nil = 항목 없음). 「공유」는 iOS 공유 시트로 글만 — 첨부·설명자는 대상이 아니다(#499).
 struct MessageCopyMenu: ViewModifier {
     let text: String?
     let select: (String) -> Void
+    var reply: (() -> Void)? = nil
 
     @ViewBuilder func body(content: Content) -> some View {
         if let text {
             content
                 .contextMenu {
+                    if let reply {
+                        Button(action: reply) { Label(Strings.messageReply, systemImage: "arrowshape.turn.up.left") }
+                    }
                     Button { MessageCopy.copy(text) } label: { Label(Strings.messageCopy, systemImage: "doc.on.doc") }
                     Button { select(text) } label: { Label(Strings.messageSelectCopy, systemImage: "selection.pin.in.out") }
+                    ShareLink(item: text) { Label(Strings.messageShare, systemImage: "square.and.arrow.up") }
                 }
         } else {
             content
@@ -53,8 +71,23 @@ struct MessageCopyMenu: ViewModifier {
 }
 
 extension View {
-    func messageCopyMenu(_ text: String?, select: @escaping (String) -> Void) -> some View {
-        modifier(MessageCopyMenu(text: text, select: select))
+    func messageCopyMenu(_ text: String?, select: @escaping (String) -> Void, reply: (() -> Void)? = nil) -> some View {
+        modifier(MessageCopyMenu(text: text, select: select, reply: reply))
+    }
+}
+
+/// 답장 글 말풍선 안의 인용 상자: 왼쪽 세로 선 + 「이름: 요약」(두 줄까지). 색은 말풍선 글자색을 한 단계 흐리게(내 글·남의 글 모두).
+struct ReplyQuoteBox: View {
+    let quote: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 7) {
+            RoundedRectangle(cornerRadius: 1.5).fill(.secondary).frame(width: 3)
+            Text(quote).font(.footnote).foregroundStyle(.secondary).lineLimit(2).multilineTextAlignment(.leading)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Strings.replyQuoteLabel(quote))
     }
 }
 

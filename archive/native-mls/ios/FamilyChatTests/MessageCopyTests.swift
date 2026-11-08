@@ -22,6 +22,15 @@ final class MessageCopyTests: XCTestCase {
         XCTAssertNil(MessageCopy.text(of: record(.undecryptable, "키 없음")))
     }
 
+    /// 답장 글(2026-11-09): 복사·공유·답장 요약은 인용 머리를 뺀 내 글만.
+    func testReplyCopiesOnlyTheReplyText() {
+        let body = ReplyQuote.compose(name: "엄마", original: "내일 몇 시에 와?", reply: "7시쯤!")
+        XCTAssertEqual(MessageCopy.text(of: record(.text, body)), "7시쯤!")
+        let target = ReplyTarget(name: "아빠", original: MessageCopy.text(of: record(.text, body))!)
+        XCTAssertEqual(target.snippet, "7시쯤!", "답장에 다시 답하면 안쪽 글만 인용")
+        XCTAssertEqual(MessageCopy.text(of: record(.text, "> 인용만")), "> 인용만", "답장이 아닌 인용 글은 그대로")
+    }
+
     func testBlankTextHasNoCopyMenu() {
         XCTAssertNil(MessageCopy.text(of: record(.text, "")))
         XCTAssertNil(MessageCopy.text(of: record(.text, " \n\t")))
