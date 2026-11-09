@@ -149,7 +149,7 @@ extension AppModel.Dependencies {
                 wipe: wipe,
                 agentRoster: config.agentRoster,
                 lockScreenPreview: Self.liveLockScreenPreview)
-            // #574: 형제 기기 초대 대기열(기기별, 30분 TTL)은 App Group defaults 에 — 기기 ID 와 같은 자리, 비밀 아님.
+            // #574: 형제 기기 초대 대기열(기기별, 마지막 진행부터 24시간 TTL — #616)은 App Group defaults 에 — 기기 ID 와 같은 자리, 비밀 아님.
             // 키가 기기 ID 를 품고 기기 ID 는 서버 스코프마다 새로 나므로 따로 스코프하지 않는다(#584).
             deps.siblingQueue = UserDefaultsSiblingQueueStore(defaults: SharedStorage.defaults(appGroup: config.appGroup))
             // #584: 읽음 위치·방 순서(앱 전용 defaults)도 서버 스코프.
