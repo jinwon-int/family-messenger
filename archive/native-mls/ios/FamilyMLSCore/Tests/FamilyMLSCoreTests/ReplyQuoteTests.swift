@@ -6,8 +6,36 @@ final class ReplyQuoteTests: XCTestCase {
     func testComposeThenParseRoundTrips() {
         let body = ReplyQuote.compose(name: "엄마", original: "내일 몇 시에 와?", reply: "7시쯤!\n늦으면 연락할게")
         XCTAssertEqual(body, "> 엄마: 내일 몇 시에 와?\n\n7시쯤!\n늦으면 연락할게")
-        XCTAssertEqual(ReplyQuote.parse(body), ReplyQuote.Parsed(quote: "엄마: 내일 몇 시에 와?", text: "7시쯤!\n늦으면 연락할게"))
+        XCTAssertEqual(ReplyQuote.parse(body), ReplyQuote.Parsed(quote: "엄마: 내일 몇 시에 와?", text: "7시쯤!\n늦으면 연락할게",
+                                                                 name: "엄마", seq: nil, snippet: "내일 몇 시에 와?"))
         XCTAssertEqual(ReplyQuote.visibleText(body), "7시쯤!\n늦으면 연락할게")
+    }
+
+    /// v2(2026-11-09): 답한 글의 릴레이 seq 를 `이름 #seq` 로 — 앱은 그 글로 이동, 봇은 원문 전체를 찾는다.
+    func testComposeWithSeqAndParseBack() {
+        let body = ReplyQuote.compose(name: "공명✴️", seq: 1253, original: "TestFlight 업로드까지 끝났습니다.", reply: "어떻게 보여?")
+        XCTAssertEqual(body, "> 공명✴️ #1253: TestFlight 업로드까지 끝났습니다.\n\n어떻게 보여?")
+        let parsed = ReplyQuote.parse(body)
+        XCTAssertEqual(parsed?.name, "공명✴️")
+        XCTAssertEqual(parsed?.seq, 1253)
+        XCTAssertEqual(parsed?.snippet, "TestFlight 업로드까지 끝났습니다.")
+        XCTAssertEqual(parsed?.text, "어떻게 보여?")
+        XCTAssertEqual(ReplyQuote.compose(name: "", seq: 7, original: "안녕", reply: "응"), "> #7: 안녕\n\n응")
+        XCTAssertEqual(ReplyQuote.parse("> #7: 안녕\n\n응")?.seq, 7)
+        XCTAssertNil(ReplyQuote.parse("> #7: 안녕\n\n응")?.name)
+    }
+
+    func testMissingOrInvalidSeqIsLeftOut() {
+        XCTAssertEqual(ReplyQuote.compose(name: "엄마", seq: nil, original: "안녕", reply: "응"), "> 엄마: 안녕\n\n응", "보내는 중인 글(번호 없음)")
+        XCTAssertEqual(ReplyQuote.compose(name: "엄마", seq: -3, original: "안녕", reply: "응"), "> 엄마: 안녕\n\n응", "음수 = 아직 안 보낸 글")
+        XCTAssertNil(ReplyQuote.parse("> 엄마 #abc: 안녕\n\n응")?.seq)
+        XCTAssertEqual(ReplyQuote.parse("> 엄마 #abc: 안녕\n\n응")?.name, "엄마 #abc", "숫자가 아니면 이름 그대로")
+        XCTAssertNil(ReplyQuote.parse("> 엄마#12: 안녕\n\n응")?.seq, "`#` 앞은 띄어쓰기여야")
+        XCTAssertNil(ReplyQuote.parse("> 엄마 #0: 안녕\n\n응")?.seq)
+        XCTAssertNil(ReplyQuote.parse("> 엄마 #99999999999999999999: 안녕\n\n응")?.seq, "Int64 넘침")
+        let noLabel = ReplyQuote.parse("> 콜론 없는 인용\n\n응")
+        XCTAssertNil(noLabel?.name)
+        XCTAssertEqual(noLabel?.snippet, "콜론 없는 인용")
     }
 
     func testEmptyNameQuotesSnippetOnly() {
@@ -27,6 +55,8 @@ final class ReplyQuoteTests: XCTestCase {
         let first = ReplyQuote.compose(name: "엄마", original: "내일 몇 시에 와?", reply: "7시쯤!")
         let second = ReplyQuote.compose(name: "아빠", original: first, reply: "좋아")
         XCTAssertEqual(second, "> 아빠: 7시쯤!\n\n좋아", "인용이 겹겹이 쌓이지 않는다")
+        let withSeq = ReplyQuote.compose(name: "엄마", seq: 10, original: "질문", reply: "답")
+        XCTAssertEqual(ReplyQuote.compose(name: "아빠", seq: 11, original: withSeq, reply: "좋아"), "> 아빠 #11: 답\n\n좋아")
     }
 
     func testOrdinaryTextAndPlainQuotesAreNotReplies() {

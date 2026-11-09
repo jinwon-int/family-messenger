@@ -41,6 +41,8 @@ struct SelectableMessage: Identifiable, Equatable {
 struct ReplyTarget: Equatable {
     /// 답할 글을 쓴 사람(에이전트·서비스 봇 이름 포함).
     let name: String
+    /// 답할 글의 릴레이 seq(v2 `#번호`). 보내는 중인 글(음수 seq)은 nil.
+    var seq: Int64? = nil
     /// 답할 글(보이는 본문 — 인용 머리 뺀 것).
     let original: String
     var snippet: String { ReplyQuote.snippet(of: original) }
@@ -76,18 +78,32 @@ extension View {
     }
 }
 
-/// 답장 글 말풍선 안의 인용 상자: 왼쪽 세로 선 + 「이름: 요약」(두 줄까지). 색은 말풍선 글자색을 한 단계 흐리게(내 글·남의 글 모두).
+/// 답장 글 말풍선 안의 인용 상자: 왼쪽 세로 선 + 이름(굵게) + 원문 요약(세 줄까지). 색은 말풍선 글자색을 한 단계 흐리게.
+/// `#번호`는 화면에 쓰지 않는다 — 번호가 있으면 상자를 눌러 그 글로 간다(`open`).
 struct ReplyQuoteBox: View {
-    let quote: String
+    let parsed: ReplyQuote.Parsed
+    var open: ((Int64) -> Void)? = nil
 
     var body: some View {
-        HStack(alignment: .top, spacing: 7) {
+        let box = HStack(alignment: .top, spacing: 7) {
             RoundedRectangle(cornerRadius: 1.5).fill(.secondary).frame(width: 3)
-            Text(quote).font(.footnote).foregroundStyle(.secondary).lineLimit(2).multilineTextAlignment(.leading)
+            VStack(alignment: .leading, spacing: 1) {
+                if let name = parsed.name { Text(name).font(.footnote.weight(.semibold)) }
+                Text(parsed.snippet).font(.footnote).lineLimit(3).multilineTextAlignment(.leading)
+            }
+            .foregroundStyle(.secondary)
         }
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Strings.replyQuoteLabel(quote))
+        .accessibilityLabel(Strings.replyQuoteLabel([parsed.name, parsed.snippet].compactMap { $0 }.joined(separator: ": ")))
+        if let seq = parsed.seq, let open {
+            box.contentShape(Rectangle())
+                .onTapGesture { open(seq) }
+                .accessibilityAddTraits(.isButton)
+                .accessibilityHint(Strings.replyQuoteOpenHint)
+        } else {
+            box
+        }
     }
 }
 

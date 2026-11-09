@@ -11,4 +11,6 @@ extension Strings {
     static let replyCancel = "답장 취소"
     static func replyingTo(_ name: String) -> String { name.isEmpty ? "답장" : "\(name)에게 답장" }
     static func replyQuoteLabel(_ quote: String) -> String { "답장한 글: \(quote)" }
+    static let replyQuoteOpenHint = "누르면 원래 글로 이동"
+    static let replyTargetMissing = "원래 글이 지금 불러온 대화에 없어요. 위로 올려 이전 대화를 불러온 뒤 다시 눌러 보세요."
 }
