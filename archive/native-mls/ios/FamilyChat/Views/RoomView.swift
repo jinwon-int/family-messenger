@@ -1245,7 +1245,11 @@ struct MessageRow: View {
 
 /// 말풍선 「밀어서 답장」(오너 2026-11-09, 판정 `SwipeReply`): 왼쪽으로 밀면 행이 손가락을 따라가고 오른쪽 끝에 답장 아이콘이 드러난다.
 /// 문턱을 넘으면 진동 한 번, 그 상태로 손을 떼면 `reply`(꾹 누르기 「답장」과 같은 `startReply`). 오른쪽 밀기는 「넓은 뒤로가기」 몫이라 쓰지 않는다.
-/// 타임라인 세로 스크롤·뒤로가기를 막지 않게 `simultaneousGesture`. 이동은 `@GestureState` 라 손을 떼거나 스크롤에 뺏기면 저절로 제자리로 온다.
+///
+/// 오너 2026-11-09 TestFlight 107: 말풍선 위에서 시작한 세로 스크롤이 안 됐다 — iOS 18+ 에서는 ScrollView 안 행에 붙인 SwiftUI
+/// `DragGesture` 가 `simultaneousGesture` 여도 스크롤 팬을 막는다. iOS 18+ 는 UIKit 팬(`SwipeReplyPan`)으로 바꿔 **왼쪽 가로 끌기일 때만
+/// 시작**(`gestureRecognizerShouldBegin` → `SwipeReply.shouldBegin`)하게 한다 — 세로 끌기는 팬이 아예 시작하지 않아 스크롤이 받는다.
+/// iOS 16·17 은 종전 SwiftUI 경로(그 버전에선 스크롤을 막지 않는다).
 /// `reply` 가 nil 이면(보낼 수 없는 방·대상 아님) 제스처를 끈다 — 뷰 구조는 그대로 두어 말풍선 안 상태(사진 로딩 등)가 다시 만들어지지 않게.
 struct SwipeToReply: ViewModifier {
     let reply: (() -> Void)?
@@ -1261,34 +1265,48 @@ struct SwipeToReply: ViewModifier {
         let axis: SwipeReply.Axis
     }
 
+    // iOS 16·17 SwiftUI 경로.
     @GestureState(resetTransaction: Transaction(animation: .spring(response: 0.3, dampingFraction: 0.8)))
     private var live: Live?
     /// 이번 끌기의 축 — 시작점으로 끌기를 구분한다(취소된 끌기의 값이 다음 끌기에 남지 않게).
     @State private var lock: Lock?
+    // iOS 18+ UIKit 경로: 팬이 시작한(=이미 왼쪽 가로로 판정된) 끌기의 이동. 끝나거나 취소되면 nil.
+    @State private var panTranslation: CGSize?
 
-    private var sliding: Live? {
+    private var translation: CGSize? {
+        if let panTranslation { return panTranslation }
         guard let live, let lock, lock.start == live.start, lock.axis == .reply else { return nil }
-        return live
+        return live.translation
     }
 
     private var offset: CGFloat {
-        guard let live = sliding else { return 0 }
-        return CGFloat(SwipeReply.offset(dx: Double(live.translation.width)))
+        guard let t = translation else { return 0 }
+        return CGFloat(SwipeReply.offset(dx: Double(t.width)))
     }
 
     private var armed: Bool {
-        guard let live = sliding else { return false }
-        return SwipeReply.shouldReply(dx: Double(live.translation.width), dy: Double(live.translation.height))
+        guard let t = translation else { return false }
+        return SwipeReply.shouldReply(dx: Double(t.width), dy: Double(t.height))
     }
 
-    func body(content: Content) -> some View {
-        content
+    @ViewBuilder func body(content: Content) -> some View {
+        let moved = content
             .offset(x: offset)
             .background(alignment: .trailing) { icon }
-            .simultaneousGesture(drag, including: reply == nil ? .subviews : .all)
             .onChange(of: armed) { on in
                 if on { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
             }
+        if #available(iOS 18.0, *) {
+            moved.gesture(SwipeReplyPan(enabled: reply != nil, changed: { panTranslation = $0 }, ended: panEnded))
+        } else {
+            moved.simultaneousGesture(drag, including: reply == nil ? .subviews : .all)
+        }
+    }
+
+    private func panEnded(_ t: CGSize, cancelled: Bool) {
+        let fire = !cancelled && SwipeReply.shouldReply(dx: Double(t.width), dy: Double(t.height))
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { panTranslation = nil }
+        if fire { reply?() }
     }
 
     private var drag: some Gesture {
@@ -1320,6 +1338,55 @@ struct SwipeToReply: ViewModifier {
             .opacity(progress)
             .padding(.trailing, 10)
             .accessibilityHidden(true)
+    }
+}
+
+/// iOS 18+ 밀어서 답장 팬. 시작 순간의 속도가 왼쪽 가로 우세일 때만 시작한다(`SwipeReply.shouldBegin`) — 세로·오른쪽 끌기는
+/// 시작하지 않으므로 타임라인 스크롤·넓은 뒤로가기가 그대로 받는다. 시작한 뒤에는 다른 인식기와 함께 돈다(꾹 누르기 메뉴 등).
+@available(iOS 18.0, *)
+struct SwipeReplyPan: UIGestureRecognizerRepresentable {
+    let enabled: Bool
+    let changed: (CGSize) -> Void
+    let ended: (CGSize, _ cancelled: Bool) -> Void
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
+
+    func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
+        let pan = UIPanGestureRecognizer()
+        pan.maximumNumberOfTouches = 1
+        pan.delegate = context.coordinator
+        context.coordinator.enabled = enabled
+        return pan
+    }
+
+    func updateUIGestureRecognizer(_ recognizer: UIPanGestureRecognizer, context: Context) {
+        context.coordinator.enabled = enabled
+    }
+
+    func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer, context: Context) {
+        let t = recognizer.translation(in: recognizer.view)
+        let size = CGSize(width: t.x, height: t.y)
+        switch recognizer.state {
+        case .began, .changed: changed(size)
+        case .ended: ended(size, false)
+        case .cancelled, .failed: ended(size, true)
+        default: break
+        }
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var enabled = true
+
+        func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
+            guard enabled, let pan = recognizer as? UIPanGestureRecognizer else { return false }
+            let v = pan.velocity(in: pan.view)
+            return SwipeReply.shouldBegin(vx: Double(v.x), vy: Double(v.y))
+        }
+
+        func gestureRecognizer(_ recognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            true
+        }
     }
 }
 

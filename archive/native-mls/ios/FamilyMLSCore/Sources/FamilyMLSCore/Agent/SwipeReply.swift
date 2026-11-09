@@ -33,6 +33,12 @@ public enum SwipeReply {
         return dx < 0 && abs(dx) > abs(dy) * horizontalDominance ? .reply : .ignore
     }
 
+    /// iOS 18+ UIKit 팬의 시작 판정(시작 순간 속도, pt/s): 왼쪽 + 가로 우세일 때만 시작한다. 0 속도(정지)·세로·오른쪽은 시작하지 않아
+    /// 스크롤 팬이 받는다 — 오너 2026-11-09 TestFlight 107 「말풍선 위에서 위아래로 안 움직임」 수정.
+    public static func shouldBegin(vx: Double, vy: Double) -> Bool {
+        vx < 0 && abs(vx) > abs(vy) * horizontalDominance
+    }
+
     /// 말풍선을 그릴 가로 이동(pt, 0 또는 음수). 오른쪽 끌기는 0, 문턱까지는 손가락 그대로, 그 뒤는 저항 + `maxOffset` 상한.
     public static func offset(dx: Double) -> Double {
         guard dx < 0 else { return 0 }

@@ -47,6 +47,17 @@ final class SwipeReplyTests: XCTestCase {
         }
     }
 
+    func testPanBeginsOnlyForLeftwardHorizontalVelocity() {
+        // TestFlight 107: 말풍선 위 세로 스크롤이 막혔다 — 세로·오른쪽·정지 끌기는 팬이 시작하지 않아야 스크롤이 받는다.
+        XCTAssertTrue(SwipeReply.shouldBegin(vx: -400, vy: 50))
+        XCTAssertTrue(SwipeReply.shouldBegin(vx: -151, vy: 100), "151 > 100 × 1.5")
+        XCTAssertFalse(SwipeReply.shouldBegin(vx: -150, vy: 100), "45°-ish diagonal")
+        XCTAssertFalse(SwipeReply.shouldBegin(vx: -20, vy: 600), "vertical scroll up")
+        XCTAssertFalse(SwipeReply.shouldBegin(vx: 10, vy: -600), "vertical scroll down")
+        XCTAssertFalse(SwipeReply.shouldBegin(vx: 400, vy: 0), "rightward belongs to BackSwipe")
+        XCTAssertFalse(SwipeReply.shouldBegin(vx: 0, vy: 0), "no motion")
+    }
+
     func testSideScrollBlocksDisableSwipe() {
         XCTAssertFalse(SwipeReply.hasSideScroll(AgentMarkdown.parse("그냥 글\n\n- 목록")))
         XCTAssertTrue(SwipeReply.hasSideScroll(AgentMarkdown.parse("코드:\n```\nlet x = 1\n```")))
