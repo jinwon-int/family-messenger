@@ -1015,11 +1015,28 @@ struct MessageRow: View {
     static let mediaInset: CGFloat = 3
 
     var body: some View {
-        if !mine, message.kind == .text, roster.isAgent(message) {
+        rowBody.modifier(SwipeToReply(reply: swipeReply))
+    }
+
+    @ViewBuilder private var rowBody: some View {
+        if isAgentRow {
             agentRow
         } else {
             bubbleRow
         }
+    }
+
+    private var isAgentRow: Bool { !mine && message.kind == .text && roster.isAgent(message) }
+
+    /// 밀어서 답장(오너 2026-11-09): 꾹 누르기 「답장」이 있는 말풍선·에이전트 카드만. 승인 카드·처리 결과 한 줄은 메뉴가 없어 제외,
+    /// 옆으로 미는 블록(코드·표)이 든 에이전트 카드는 그 스크롤과 겹쳐 제외(메뉴 「답장」은 그대로).
+    private var swipeReply: (() -> Void)? {
+        guard let reply, MessageCopy.text(of: message) != nil else { return nil }
+        if isAgentRow {
+            guard AgentApproval.request(in: message.body) == nil, AgentApproval.resolution(in: message.body) == nil,
+                  !SwipeReply.hasSideScroll(AgentMarkdown.parse(message.body)) else { return nil }
+        }
+        return reply
     }
 
     @ViewBuilder private var agentRow: some View {
@@ -1223,6 +1240,86 @@ struct MessageRow: View {
                 }
             }
         }
+    }
+}
+
+/// 말풍선 「밀어서 답장」(오너 2026-11-09, 판정 `SwipeReply`): 왼쪽으로 밀면 행이 손가락을 따라가고 오른쪽 끝에 답장 아이콘이 드러난다.
+/// 문턱을 넘으면 진동 한 번, 그 상태로 손을 떼면 `reply`(꾹 누르기 「답장」과 같은 `startReply`). 오른쪽 밀기는 「넓은 뒤로가기」 몫이라 쓰지 않는다.
+/// 타임라인 세로 스크롤·뒤로가기를 막지 않게 `simultaneousGesture`. 이동은 `@GestureState` 라 손을 떼거나 스크롤에 뺏기면 저절로 제자리로 온다.
+/// `reply` 가 nil 이면(보낼 수 없는 방·대상 아님) 제스처를 끈다 — 뷰 구조는 그대로 두어 말풍선 안 상태(사진 로딩 등)가 다시 만들어지지 않게.
+struct SwipeToReply: ViewModifier {
+    let reply: (() -> Void)?
+    @Environment(\.hande) private var p
+
+    private struct Live: Equatable {
+        let start: CGPoint
+        let translation: CGSize
+    }
+
+    private struct Lock: Equatable {
+        let start: CGPoint
+        let axis: SwipeReply.Axis
+    }
+
+    @GestureState(resetTransaction: Transaction(animation: .spring(response: 0.3, dampingFraction: 0.8)))
+    private var live: Live?
+    /// 이번 끌기의 축 — 시작점으로 끌기를 구분한다(취소된 끌기의 값이 다음 끌기에 남지 않게).
+    @State private var lock: Lock?
+
+    private var sliding: Live? {
+        guard let live, let lock, lock.start == live.start, lock.axis == .reply else { return nil }
+        return live
+    }
+
+    private var offset: CGFloat {
+        guard let live = sliding else { return 0 }
+        return CGFloat(SwipeReply.offset(dx: Double(live.translation.width)))
+    }
+
+    private var armed: Bool {
+        guard let live = sliding else { return false }
+        return SwipeReply.shouldReply(dx: Double(live.translation.width), dy: Double(live.translation.height))
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .offset(x: offset)
+            .background(alignment: .trailing) { icon }
+            .simultaneousGesture(drag, including: reply == nil ? .subviews : .all)
+            .onChange(of: armed) { on in
+                if on { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+            }
+    }
+
+    private var drag: some Gesture {
+        DragGesture(minimumDistance: SwipeReply.lockDistance)
+            .updating($live) { value, state, _ in
+                state = Live(start: value.startLocation, translation: value.translation)
+            }
+            .onChanged { value in
+                guard lock?.start != value.startLocation else { return }
+                let axis = SwipeReply.axis(dx: Double(value.translation.width), dy: Double(value.translation.height))
+                lock = axis.map { Lock(start: value.startLocation, axis: $0) }
+            }
+            .onEnded { value in
+                let fire = lock?.start == value.startLocation && lock?.axis == .reply
+                    && SwipeReply.shouldReply(dx: Double(value.translation.width), dy: Double(value.translation.height))
+                lock = nil
+                if fire { reply?() }
+            }
+    }
+
+    private var icon: some View {
+        let progress = min(1, Double(-offset) / SwipeReply.triggerDistance)
+        return Image(systemName: "arrowshape.turn.up.left.fill")
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(armed ? p.ember : p.inkDim)
+            .frame(width: 30, height: 30)
+            .background(Circle().fill(p.inkDim.opacity(0.15)))
+            .scaleEffect(armed ? 1.1 : 0.6 + 0.4 * progress)
+            .opacity(progress)
+            .padding(.trailing, 10)
+            .accessibilityHidden(true)
     }
 }
 

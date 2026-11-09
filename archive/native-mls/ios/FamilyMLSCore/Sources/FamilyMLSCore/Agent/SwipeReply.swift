@@ -1,0 +1,59 @@
+// 말풍선 「밀어서 답장」 판정(순수 로직, Linux `swift test`).
+// 오너 2026-11-09: 말풍선을 옆으로 밀면 그 말풍선에 답장(꾹 누르기 메뉴 「답장」 #727 과 같은 결과).
+//
+// 방향은 **왼쪽**(손가락이 오른쪽 → 왼쪽)만 쓴다. 오른쪽 밀기는 이미 「넓은 뒤로가기」(`BackSwipe`, 화면 왼쪽 3/5 에서 오른쪽으로)
+// 몫이라 겹치지 않게 한다. 말풍선은 손가락을 따라 왼쪽으로 밀리고(최대 `maxOffset`), `triggerDistance` 를 넘기면 답장 아이콘이
+// 켜지고(진동 한 번) 손을 떼면 답장 띠가 열린다. 그 전에 손을 떼거나 되돌리면 아무 일도 없다.
+//
+// 축 고정: 끌기가 처음 감지된 순간(`lockDistance` 이상) 가로 우세 + 왼쪽이면 답장 끌기, 아니면 그 끌기 동안은 무시한다 —
+// 타임라인 세로 스크롤 중에 말풍선이 옆으로 흔들리지 않게.
+import Foundation
+
+public enum SwipeReply {
+    /// 끌기의 축을 정하는 최소 이동(pt) — 제스처 `minimumDistance` 로도 쓴다.
+    public static let lockDistance = 12.0
+    /// 왼쪽으로 이만큼(pt) 이상 밀고 손을 떼면 답장.
+    public static let triggerDistance = 60.0
+    /// 말풍선이 밀려 보이는 최대 거리(pt). `triggerDistance` 를 넘은 뒤로는 저항(`overshootRatio`)을 준다.
+    public static let maxOffset = 80.0
+    public static let overshootRatio = 0.3
+    /// 가로 이동이 세로 이동의 이 배수보다 커야 한다(`BackSwipe` 와 같은 값).
+    public static let horizontalDominance = 1.5
+
+    public enum Axis: Equatable {
+        /// 왼쪽 가로 끌기 — 말풍선을 민다.
+        case reply
+        /// 세로 스크롤·오른쪽·비스듬한 끌기 — 이 끌기 동안 말풍선은 움직이지 않는다.
+        case ignore
+    }
+
+    /// 끌기 첫 감지 때 한 번 정한다. 아직 `lockDistance` 만큼 움직이지 않았으면 nil(다음 변화에서 다시 판단).
+    public static func axis(dx: Double, dy: Double) -> Axis? {
+        guard (dx * dx + dy * dy).squareRoot() >= lockDistance else { return nil }
+        return dx < 0 && abs(dx) > abs(dy) * horizontalDominance ? .reply : .ignore
+    }
+
+    /// 말풍선을 그릴 가로 이동(pt, 0 또는 음수). 오른쪽 끌기는 0, 문턱까지는 손가락 그대로, 그 뒤는 저항 + `maxOffset` 상한.
+    public static func offset(dx: Double) -> Double {
+        guard dx < 0 else { return 0 }
+        let pulled = -dx
+        if pulled <= triggerDistance { return -pulled }
+        return -min(maxOffset, triggerDistance + (pulled - triggerDistance) * overshootRatio)
+    }
+
+    /// 손을 뗄 때(또는 끌기 중 아이콘을 켤 때) 답장 여부.
+    public static func shouldReply(dx: Double, dy: Double) -> Bool {
+        dx <= -triggerDistance && abs(dx) > abs(dy) * horizontalDominance
+    }
+
+    /// 에이전트 카드 안에 옆으로 미는 블록(코드·표 — `ScrollView(.horizontal)`)이 있으면 밀어서 답장을 붙이지 않는다.
+    /// 그 카드는 꾹 누르기 메뉴 「답장」으로 답한다.
+    public static func hasSideScroll(_ blocks: [AgentMarkdown.Block]) -> Bool {
+        blocks.contains { block in
+            switch block {
+            case .code, .table: return true
+            default: return false
+            }
+        }
+    }
+}
