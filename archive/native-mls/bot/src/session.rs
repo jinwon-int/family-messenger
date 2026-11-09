@@ -477,7 +477,7 @@ pub fn run(opts: Options) -> Result<(), BotError> {
             emit(&serde_json::json!({
                 "event": "agent_started", "room": opts.room, "device": opts.device,
                 "owner_actor": config.owner_actor, "queue_max": config.queue_max,
-                "turn_secs": config.turn_secs, "turn_age_notice_secs": config.turn_age_notice_secs, "turn_age_renotice_secs": config.turn_age_renotice_secs, "reply_max_bytes": config.reply_max_bytes, "typing": config.typing,
+                "turn_secs": config.turn_secs, "turn_max_secs": config.turn_max_secs, "turn_age_notice_secs": config.turn_age_notice_secs, "turn_age_renotice_secs": config.turn_age_renotice_secs, "reply_max_bytes": config.reply_max_bytes, "typing": config.typing,
             }));
             Some(responder)
         }

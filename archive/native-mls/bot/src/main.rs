@@ -113,6 +113,8 @@ fn main() -> ExitCode {
     // NATIVE_MLS_BOT_TURN_AGE_RENOTICE_MIN (notify-only age line, 0 = off).
     let env_u64 = |name: &str| std::env::var(name).ok().and_then(|v| v.trim().parse::<u64>().ok());
     let turn_secs = env_u64("NATIVE_MLS_BOT_TURN_SECS").filter(|v| *v > 0);
+    // #477: whole-turn ceiling (default twice the silence watchdog).
+    let turn_max_secs = env_u64("NATIVE_MLS_BOT_TURN_MAX_SECS").filter(|v| *v > 0);
     let age_notice_min = env_u64("NATIVE_MLS_BOT_TURN_AGE_NOTICE_MIN");
     let age_renotice_min = env_u64("NATIVE_MLS_BOT_TURN_AGE_RENOTICE_MIN");
     // #636: 「한데」 attachments as agent turns (docs/FLEET-WORKER.md "첨부 turn").
@@ -141,7 +143,9 @@ fn main() -> ExitCode {
         config.room_frames = room_frames;
         config.typing = typing;
         config.attachments = attachments.clone();
-        if let Some(v) = turn_secs { config.turn_secs = v; }
+        if let Some(v) = turn_secs { config.turn_secs = v; config.turn_max_secs = v.saturating_mul(2); }
+        if let Some(v) = turn_max_secs { config.turn_max_secs = v; }
+        config.turn_max_secs = config.turn_max_secs.max(config.turn_secs);
         if let Some(v) = age_notice_min { config.turn_age_notice_secs = v.saturating_mul(60); }
         if let Some(v) = age_renotice_min { config.turn_age_renotice_secs = v.saturating_mul(60); }
         config
