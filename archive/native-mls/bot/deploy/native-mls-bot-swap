@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# native-mls-bot-swap — 한데 봇(native-mls-bot) 바이너리 교체(정본, 노드에서 실행). 2026-11-04 #676·11-06 #703·11-09 #731+#733
+# 플릿 롤아웃의 임시 스크립트(hande-bot676/733, hande-bot703 swap-*)를 한 파일로 모았다. 바이너리만 바꾸고 **봇만** 재시작한다
+# (설정·브리지 무변경 — 브리지 재시작은 별도 승인 게이트).
+#
+# 사용: native-mls-bot-swap <staged-binary> <sha256> [<marker>]
+#   1. <staged-binary> sha256 == <sha256> 이어야 진행(64 hex). 현재 바이너리가 이미 같으면 무변경(RESULT=UNCHANGED).
+#   2. <marker>(선택): 새 바이너리 안에 있어야 할 고정 문자열(새 기능의 리터럴, 예 `watchdog_max`). 없으면 거부.
+#   3. 유휴 게이트: 브리지 health.json `workload.turn_occupancy.state` 가 occupied 가 아닌 것을 IDLE_NEED 번 연속
+#      (IDLE_INTERVAL 초 간격) 볼 때까지, 최대 IDLE_TRIES 번. 못 보면 아무것도 바꾸지 않고 RESULT=ABORT_BUSY(exit 3).
+#      health 파일이 없으면 거부(진행 중 턴을 보호할 방법이 없음). IDLE_GATE=0 이면 게이트를 건너뛴다(알림 전용 봇).
+#   4. 백업 <bin>.old-<현재 sha 앞 16자>(이미 있으면 그대로 — 이름이 내용의 해시) → 새 바이너리를 같은 디렉터리 임시 파일에
+#      쓴 뒤 mv(rename). 실행 중인 파일에 cp 로 덮어쓰면 ETXTBSY 로 실패한다(native-relay-swap 과 같은 교훈).
+#   5. 봇 유닛 재시작 → 검증: 새 PID(이전과 다름) · /proc/<pid>/exe sha == <sha256> · 재시작 뒤 로그의 마지막 joined 줄이
+#      `"joined":true` + `"halted":false` · 브리지 active(PID 가 바뀌면 WARN). BOT_EXTRA_UNITS(같은 파일을 쓰는 다른 봇
+#      유닛, 예 gwakga hande-bunjang-bot)도 하나씩 같은 검증.
+#   6. 검증 실패 → 백업을 같은 방식으로 되돌리고 모든 봇 유닛 재시작 → RESULT=ROLLED_BACK(exit 5). 되돌린 뒤에도
+#      봇이 안 뜨면 RESULT=ROLLBACK_FAILED(exit 7, 수동 확인).
+# 종료 코드: 0 PASS/UNCHANGED · 3 ABORT_BUSY(무변경) · 5 ROLLED_BACK · 7 ROLLBACK_FAILED · 8 marker 없음(무변경)
+#            · 64 사용법 · 65 sha 불일치 · 66 파일 없음 · 6 health 파일 없음(모두 무변경).
+# 마지막 줄은 항상 `RESULT=<값> <UTC 시각>` — 드라이버(native-mls-bot-fleet)는 이 줄만 본다.
+#
+# 모드(BOT_MODE): systemd(기본, root) | runit(Termux: sv, svlogd 로그).
+# 환경: BOT_BIN · BOT_UNIT(기본 native-relay-bot) · BOT_EXTRA_UNITS(공백 구분) · BRIDGE_UNIT(기본 ccc-hande-bridge) ·
+#   BRIDGE_USER(브리지가 그 사용자의 systemd --user 유닛이면 사용자명, 예 gongmyoung) · BOT_HEALTH_FILE ·
+#   IDLE_GATE/IDLE_TRIES/IDLE_INTERVAL/IDLE_NEED · VERIFY_TRIES/VERIFY_INTERVAL · RESTART_SETTLE ·
+#   runit: SV_DIR · BOT_LOG(봇 svlogd current) · BOT_SWAP_BACKUP_DIR(기본 <bin> 옆 .old-*).
+#   테스트 대역: NATIVE_MLS_BOT_SWAP_SYSTEMCTL · _JOURNALCTL · _SV.
+# 비밀값은 다루지 않는다(경로·해시만).
+set -uo pipefail
+MODE=${BOT_MODE:-systemd}
+SYSTEMCTL=${NATIVE_MLS_BOT_SWAP_SYSTEMCTL:-systemctl}
+JOURNALCTL=${NATIVE_MLS_BOT_SWAP_JOURNALCTL:-journalctl}
+SV=${NATIVE_MLS_BOT_SWAP_SV:-sv}
+UNIT=${BOT_UNIT:-native-relay-bot}
+EXTRA=${BOT_EXTRA_UNITS:-}
+BRIDGE=${BRIDGE_UNIT:-ccc-hande-bridge}
+BRIDGE_USER=${BRIDGE_USER:-}
+IDLE_GATE=${IDLE_GATE:-1}
+IDLE_TRIES=${IDLE_TRIES:-180}
+IDLE_INTERVAL=${IDLE_INTERVAL:-10}
+IDLE_NEED=${IDLE_NEED:-2}
+VERIFY_TRIES=${VERIFY_TRIES:-9}
+VERIFY_INTERVAL=${VERIFY_INTERVAL:-10}
+RESTART_SETTLE=${RESTART_SETTLE:-5}
+case "$MODE" in
+  systemd) BIN=${BOT_BIN:-/opt/native-relay-bot/bin/native-mls-bot} ;;
+  runit)   BIN=${BOT_BIN:-$HOME/.native-relay-bot/bin/native-mls-bot}
+           SV_DIR=${SV_DIR:-${PREFIX:-/data/data/com.termux/files/usr}/var/service}
+           BOT_LOG=${BOT_LOG:-$HOME/.native-relay-bot/logs/current} ;;
+  *) echo "usage: BOT_MODE must be systemd or runit" >&2; exit 64 ;;
+esac
+now() { date -u +%FT%TZ; }
+log() { printf '[%s] %s\n' "$(now)" "$*"; }
+result() { echo "RESULT=$1 $(now)"; exit "$2"; }
+
+[ $# -ge 2 ] && [ $# -le 3 ] || { echo "usage: $0 <staged-binary> <sha256> [<marker>]" >&2; exit 64; }
+NEW=$1; WANT=$2; MARKER=${3:-}
+[[ "$WANT" =~ ^[0-9a-f]{64}$ ]] || { echo "refused: sha256 must be 64 lowercase hex"; result ABORT_SHA 65; }
+[ -f "$NEW" ] || { echo "refused: staged binary not found: $NEW"; result ABORT_MISSING 66; }
+[ -f "$BIN" ] || { echo "refused: current binary not found: $BIN"; result ABORT_MISSING 66; }
+GOT=$(sha256sum "$NEW" | cut -d' ' -f1)
+[ "$GOT" = "$WANT" ] || { echo "refused: staged sha256 $GOT != $WANT"; result ABORT_SHA 65; }
+if [ -n "$MARKER" ] && [ "$(grep -acF -- "$MARKER" "$NEW")" -eq 0 ]; then
+  echo "refused: marker '$MARKER' not in the staged binary"; result ABORT_NO_MARKER 8
+fi
+CUR=$(sha256sum "$BIN" | cut -d' ' -f1)
+if [ "$CUR" = "$WANT" ]; then log "unchanged: $BIN is already ${WANT:0:16}"; result UNCHANGED 0; fi
+
+# --- service access per mode ---------------------------------------------------------------
+bridge_ctl() {
+  if [ -n "$BRIDGE_USER" ]; then "$SYSTEMCTL" --user -M "$BRIDGE_USER@" "$@"; else "$SYSTEMCTL" "$@"; fi
+}
+pid_of() {  # main pid of a bot/bridge service, empty if down
+  if [ "$MODE" = runit ]; then
+    "$SV" status "$SV_DIR/$1" 2>/dev/null | sed -n 's/^run: [^ ]*: (pid \([0-9]*\)).*/\1/p'
+  elif [ "$1" = "$BRIDGE" ]; then
+    local p; p=$(bridge_ctl show -p MainPID --value "$1" 2>/dev/null); [ "${p:-0}" != 0 ] && echo "$p"
+  else
+    local p; p=$("$SYSTEMCTL" show -p MainPID --value "$1" 2>/dev/null); [ "${p:-0}" != 0 ] && echo "$p"
+  fi
+}
+restart() {
+  if [ "$MODE" = runit ]; then "$SV" -w 90 force-restart "$SV_DIR/$1"; else "$SYSTEMCTL" restart "$1"; fi
+}
+bridge_up() {
+  if [ "$MODE" = runit ]; then "$SV" status "$SV_DIR/$BRIDGE" 2>/dev/null | grep -q '^run:'
+  else [ "$(bridge_ctl is-active "$BRIDGE" 2>/dev/null)" = active ]; fi
+}
+# Log lines a bot unit wrote since the marker taken by `log_mark` (journal time / svlogd line count).
+log_mark() {
+  if [ "$MODE" = runit ]; then wc -l < "$BOT_LOG" 2>/dev/null || echo 0; else date '+%Y-%m-%d %H:%M:%S'; fi
+}
+log_since() {  # $1=unit $2=mark
+  if [ "$MODE" = runit ]; then
+    local n; n=$(wc -l < "$BOT_LOG" 2>/dev/null || echo 0)
+    # svlogd rotated (fewer lines than the mark): fall back to the last 80 lines.
+    if [ "$n" -ge "$2" ]; then tail -n +"$(($2 + 1))" "$BOT_LOG"; else tail -n 80 "$BOT_LOG"; fi
+  else
+    "$JOURNALCTL" -u "$1" --since "$2" --no-pager -o cat 2>/dev/null
+  fi
+}
+
+if [ -z "${BOT_HEALTH_FILE:-}" ]; then
+  if [ "$MODE" = runit ]; then BOT_HEALTH_FILE=$HOME/.ccc-hande/health.json
+  else
+    dd=$(bridge_ctl show "$BRIDGE" -p Environment --value 2>/dev/null | tr ' ' '\n' | sed -n 's/^BOT_DATA_DIR=//p' | tail -1)
+    BOT_HEALTH_FILE=${dd:-/root/.ccc-hande}/health.json
+  fi
+fi
+occupancy() {
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workload"]["turn_occupancy"]["state"])' "$BOT_HEALTH_FILE" 2>/dev/null
+}
+
+log "start host=$(hostname) mode=$MODE bin=$BIN units=$UNIT${EXTRA:+ +$EXTRA} ${CUR:0:16} -> ${WANT:0:16}"
+# --- idle gate (no change on failure) ------------------------------------------------------------
+if [ "$IDLE_GATE" != 0 ]; then
+  [ -f "$BOT_HEALTH_FILE" ] || { echo "refused: no bridge health file $BOT_HEALTH_FILE (IDLE_GATE=0 for a bot without a bridge)"; result ABORT_NOHEALTH 6; }
+  idle=0
+  for _ in $(seq 1 "$IDLE_TRIES"); do
+    if [ "$(occupancy)" != occupied ]; then idle=$((idle + 1)); else idle=0; fi
+    [ "$idle" -ge "$IDLE_NEED" ] && break
+    sleep "$IDLE_INTERVAL"
+  done
+  [ "$idle" -ge "$IDLE_NEED" ] || { log "bridge never idle — no change made"; result ABORT_BUSY 3; }
+  log "idle gate passed"
+fi
+
+# --- swap by rename ----------------------------------------------------------------------------
+BAK=${BOT_SWAP_BACKUP_DIR:+$BOT_SWAP_BACKUP_DIR/native-mls-bot.old-${CUR:0:16}}
+BAK=${BAK:-$BIN.old-${CUR:0:16}}
+TMP=""
+trap '[ -n "$TMP" ] && rm -f "$TMP"' EXIT
+place() {  # <src> → $BIN by rename; never write into the running file
+  TMP=$(mktemp "$BIN.swap.XXXXXX") || return 1
+  cp "$1" "$TMP" && chmod --reference="$BIN" "$TMP" || return 1
+  if [ "$(id -u)" = 0 ]; then chown --reference="$BIN" "$TMP" || return 1; fi
+  mv -f "$TMP" "$BIN" || return 1
+  TMP=""
+}
+mkdir -p "$(dirname "$BAK")"
+[ -e "$BAK" ] || cp -p "$BIN" "$BAK" || { echo "backup failed: $BAK"; result ABORT_BACKUP 66; }
+pre_bridge=$(pid_of "$BRIDGE")
+log "backup=$BAK pre_bridge=${pre_bridge:-none}"
+
+all_units="$UNIT $EXTRA"
+rollback() {
+  log "ROLLBACK: $1"
+  place "$BAK" || { log "restore by rename failed"; result ROLLBACK_FAILED 7; }
+  for u in $all_units; do restart "$u" || log "restart $u failed"; done
+  sleep "$RESTART_SETTLE"
+  for u in $all_units; do [ -n "$(pid_of "$u")" ] || { log "$u not running after rollback"; result ROLLBACK_FAILED 7; }; done
+  log "rolled back to ${CUR:0:16}"
+  result ROLLED_BACK 5
+}
+verify_unit() {  # $1=unit: restart and check new pid, exe sha, joined/halted
+  local u=$1 pre post mark ok=0 exe
+  pre=$(pid_of "$u"); mark=$(log_mark)
+  restart "$u" || rollback "restart $u failed"
+  sleep "$RESTART_SETTLE"
+  for _ in $(seq 1 "$VERIFY_TRIES"); do
+    post=$(pid_of "$u")
+    if [ -n "$post" ] && [ "$post" != "$pre" ] \
+       && log_since "$u" "$mark" | grep -E '"joined":true' | tail -1 | grep -q '"halted":false'; then ok=1; break; fi
+    sleep "$VERIFY_INTERVAL"
+  done
+  [ "$ok" = 1 ] || rollback "$u: no new healthy process (pid ${pre:-none} -> ${post:-none}, joined/halted)"
+  exe=$(sha256sum "/proc/$post/exe" 2>/dev/null | cut -d' ' -f1)
+  [ "$exe" = "$WANT" ] || rollback "$u: running exe ${exe:0:16} is not ${WANT:0:16}"
+  log "$u pid ${pre:-none} -> $post exe=${exe:0:16}"
+}
+
+place "$NEW" || rollback "place failed"
+[ "$(sha256sum "$BIN" | cut -d' ' -f1)" = "$WANT" ] || rollback "placed binary hash mismatch"
+for u in $all_units; do verify_unit "$u"; done
+bridge_up || rollback "bridge $BRIDGE not active"
+post_bridge=$(pid_of "$BRIDGE")
+[ "$post_bridge" = "$pre_bridge" ] || log "WARN: bridge pid changed (${pre_bridge:-none} -> ${post_bridge:-none})"
+log "new_sha=${WANT:0:16} bridge=${post_bridge:-none}${MARKER:+ marker=$MARKER}"
+result PASS 0

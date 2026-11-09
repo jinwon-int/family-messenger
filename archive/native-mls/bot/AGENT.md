@@ -31,6 +31,17 @@ native-mls-bot <base-url> session <room> <device> \
 
 노드마다 **봇 기기 1개 + 방 1개**: `deploy/install-node-bot.sh --node <node> --relay-url http://<릴레이 tailnet>:18921 --relay-public-url https://<릴레이 호스트> --binary <native-mls-bot 빌드> --token-env /root/.config/native-relay/bot-service-token.env` (root). 사용자·디렉터리·바이너리·JWT 갱신 타이머·steward 유닛(`<node>-bot`, actor = `<node>`)·응답기 drop-in(`/run/ccc-hande/responder.sock`, ccc-node 브리지가 서빙)을 만들고, **신원을 부트스트랩**하고(steward 모드는 identity 파일을 만들지 않고 읽기만 하므로, 8초 한도의 `session` 1회 실행으로 state 파일을 만든 뒤 `extract-identity`로 `bot/identity.json`을 뽑고 state는 파기 — 기존 파일이 있으면 유지), 봇의 `steward_ready` 로그에서 공개키를 읽어 등록 후보 JSON을 `/var/lib/native-relay-bot/bot/enrollment.json`(0600)에 쓴다 — 릴레이 운영자가 `native-devices -enroll-first`에 넣는다(승인). 등록 전 봇은 403을 받으며 재시도한다(정상). 응답기(ccc-node `CCC_CHANNEL=hande`)는 ccc-node `scripts/install-hande-bridge.sh`가 세운다. 되돌리기: `systemctl disable --now native-relay-bot native-relay-jwt-refresh.timer`.
 
+## 바이너리 교체 (플릿 롤아웃 — `deploy/native-mls-bot-swap` · `deploy/native-mls-bot-fleet`)
+
+새 봇 빌드를 노드에 올리는 정본(#676·#703·#731+#733 임시 스크립트를 일반화). **바이너리만 바꾸고 봇만 재시작**한다 — 브리지·설정 무변경. 노드 교체도 봇 재시작이라 **오너 승인 뒤에만** 돌린다(파일럿 1노드 → PASS 확인 → 나머지).
+
+1. **빌드**(main 의 깨끗한 클론, toolchain 은 `rust-toolchain.toml`): `cargo build --release --locked --bin native-mls-bot` → x86_64-gnu. Termux 는 `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld cargo build --release --locked --bin native-mls-bot --target aarch64-unknown-linux-musl`(정적). 스테이징 디렉터리에 파일명에 `x86_64-gnu`·`aarch64-musl` 이 들어가게 두고 `sha256sum native-mls-bot-* > SHA256SUMS`. CI 는 릴리스 바이너리를 내보내지 않는다.
+2. **표식**: 새 빌드에만 있는 고정 문자열 하나(새 기능의 리터럴 — 예 #733 `watchdog_max`)를 골라 `grep -ac` 로 새 바이너리 ≥1·현재 운영 바이너리 0 을 확인한다(일부 리터럴은 다른 문자열과 붙어 grep 에 안 잡힌다).
+3. **드라이버**(세션과 분리해 실행, 실행마다 새 로그 파일): `ORDER="<노드>" systemd-run --unit <이름> --collect bash -c 'deploy/native-mls-bot-fleet <stage-dir> <표식> >> <새 로그> 2>&1; echo EXIT=$? >> <새 로그>'`. `--dry-run` 이 노드별 계획(모드·바이너리·sha·환경)만 찍는다. `ORDER` 항목 `<ssh 대상>[:옵션…]` — `runit`(Termux) · `extra=<유닛+유닛>`(같은 파일을 쓰는 다른 봇, 예 gwakga `extra=hande-bunjang-bot`) · `bridge_user=<사용자>`(브리지가 사용자 유닛, 예 gongmyoung) · `bin=` · `unit=` · `idle=0`(브리지 없는 알림 전용 봇).
+4. **노드에서**(`native-mls-bot-swap <staged> <sha256> [<표식>]`, 드라이버가 보내 분리 실행): sha·표식 확인 → 브리지 유휴 게이트(health.json `turn_occupancy` 가 occupied 아님 10초×2 연속, 최대 30분 — 못 보면 무변경 `ABORT_BUSY`) → 백업 `<bin>.old-<sha16>` → **임시 파일 + rename**(실행 중인 파일에 쓰면 ETXTBSY) → 봇(+`extra`) 재시작 → 새 PID·`/proc/<pid>/exe` sha·재시작 뒤 로그의 `"joined":true`+`"halted":false`·브리지 active(PID 변경은 WARN) → 실패 시 같은 방식으로 되돌림(`ROLLED_BACK`). 마지막 줄 `RESULT=PASS|UNCHANGED|ABORT_BUSY|ROLLED_BACK|ROLLBACK_FAILED|ABORT_*`.
+5. **드라이버 규칙**: PASS·UNCHANGED → 다음 노드, ABORT_BUSY → 끝에서 1회 재시도, 그 밖 → 그 자리 HALT(남은 노드 무변경). 마지막 줄 `FLEET_EXIT=PASS|PARTIAL_BUSY|HALT`. 노드 로그 `~/.ccc-node/state/native-mls-bot-swap.log`.
+6. **확인·기록**: 끝난 뒤 노드마다 `/proc/<MainPID>/exe` sha 를 직접 다시 보고, 노드별 표(이전·새 sha, 봇·브리지 PID, 결과)를 이슈에 남긴다. 롤백은 `<bin>.old-<sha16>` 을 다시 `native-mls-bot-swap` 으로 올리면 된다.
+
 ## 동작 규칙 (오너 결정 2026-10-15, #354)
 
 | 규칙 | 구현 |
