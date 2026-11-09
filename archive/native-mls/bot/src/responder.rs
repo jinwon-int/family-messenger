@@ -93,7 +93,7 @@ pub const DEFAULT_NOTICE_PER_MIN: usize = 10;
 pub const PEER_DEPTH_MAX: u8 = 2;
 /// Largest `text` field the bot sends to the worker (fleet_core MAX_TEXT_BYTES
 /// is 16 KiB; the header the worker prepends needs a little room).
-const PROMPT_MAX_BYTES: usize = 15 * 1024;
+pub(crate) const PROMPT_MAX_BYTES: usize = 15 * 1024;
 
 /// How the bot reaches the worker. Both carry the same JSON-lines port.
 #[derive(Clone, Debug)]
