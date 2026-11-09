@@ -30,6 +30,7 @@ import {installShortcuts} from './shortcuts.js';
 import {
   canApprove, isSibling, candidatesFor, approvalArgs, approvalEvidence, rolesActions, nextRoles, rolesArgs, rolesEvidence, recordOf,
   siblingInviteRooms, enrollModeFrom, readSiblingQueue, writeSiblingQueue, enqueueSiblingInvites, splitSiblingQueue, isRetryableInviteError,
+  siblingInviteTurn, SIBLING_INVITE_TTL_MS,
   CANDIDATE_REPOST_MARGIN_MS,
 } from './self-service.js';
 
@@ -37,6 +38,10 @@ const DEFAULT_ROOM = 'family';
 const AUTO_JOIN_ACTORS = new Set(['owner']);   // iOS AppModel.autoJoinActors
 const ADOPT_TRIES = 2;                      // a lobby Welcome gets one retry per page session (#517)
 const TICK_MS = 8000;                       // device-level refresh (rooms list, lobby welcomes, replenish)
+// #616: also replenish every this many ticks (≈ 1 min) — not only after a Welcome is adopted. A sibling may be
+// consuming this device's lobby keys one room per tick (17 rooms vs a cap of 8), and a consumed package's secret
+// is only pruned on a replenish after its grace (device.js LOBBY_CONSUMED_GRACE_MS).
+const LOBBY_EVERY_TICKS = 8;
 const ME_EVERY_TICKS = 4;                   // GET /v2/me (policy revision, my devices) every 4th tick (#574) — and right after any chain change
 
 async function loadConfig() {
@@ -55,7 +60,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     actor: null, device: null, subject: null, defaultRoom: DEFAULT_ROOM, dev: null,
     rooms: new Map(),          // roomId → {session, entries, entryKeys, readSeq, order, statuses}
     current: null, roomOpen: false, draft: new Map(), sending: false,
-    invites: [], adoptFailed: new Map(), dismissed: new Set(), lobbyDue: true, pendingWelcomeRefs: {set: new Set(), complete: true},
+    invites: [], adoptFailed: new Map(), dismissed: new Set(), lobbyDue: true, lobbyTick: 0, lobbyRetryAt: null, pendingWelcomeRefs: {set: new Set(), complete: true},
     filebox: null, boxOpen: false, boxTab: 'attachments', boxRefresh: 0, pendingJump: null,   // 오른쪽 보관함 pane: 첨부 탭(#544 D) + 파일보관함 iframe(config.json filebox)
     consentPrompted: new Set(),                      // AI 참여 동의 시트를 이 페이지 세션에서 자동으로 띄운 방(#544 E)
     relayRooms: null,                                // 릴레이가 이 기기를 멤버라고 한 방 집합(GET /v2/rooms) — 로컬 전용 방 판정용, 받기 전엔 null
@@ -445,12 +450,16 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
         orderSync?.pull().catch(() => {});
       }
       await discoverLobbyWelcomes();
+      if (++app.lobbyTick % LOBBY_EVERY_TICKS === 0 || (app.lobbyRetryAt !== null && Date.now() >= app.lobbyRetryAt)) app.lobbyDue = true;
       if (app.lobbyDue) {
         // While a lobby Welcome is still unadopted, the package it was built from keeps its
         // secret (#517): precisely by `key_package_ref` when the relay reports it, otherwise
         // (older relay) by not pruning at all while an adoption is outstanding. Minting is unaffected.
         const refs = app.pendingWelcomeRefs;
-        try { const report = await app.dev.replenish(LOBBY_TARGET, {prune: refs.complete || app.adoptFailed.size === 0, protect: refs.set}); if (report) app.lobbyDue = false; }
+        try {
+          const report = await app.dev.replenish(LOBBY_TARGET, {prune: refs.complete || app.adoptFailed.size === 0, protect: refs.set});
+          if (report) { app.lobbyDue = false; app.lobbyRetryAt = report.graceUntil ?? null; }   // #616: prune the graced ones once their grace ends
+        }
         catch (error) { logLine(`로비 키 보충 실패: ${error.message}`); }
       }
       await discoverCandidates();
@@ -578,37 +587,41 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   }
   /**
    * Sibling invites (#574): a freshly approved device publishes its lobby keys only on its next tick, so the first
-   * invite usually fails with noKeyPackage — keep the room queued and retry next tick; give up after 30 min with a 🔔 note.
+   * invite usually fails with noKeyPackage — keep the room queued and retry next tick.
+   * #616: each invite spends one of the sibling's lobby keys (cap 8), so a turn tries only as many rooms as the
+   * sibling has keys live (`GET /v2/lobby/status`); with none it waits (`recheckAt`) instead of collecting 404s.
+   * The queue gives up only after SIBLING_INVITE_TTL_MS without progress, with a 🔔 note.
    */
   async function processSiblingInvites() {
     const queue = readSiblingQueue(storage, app.device);
     if (!queue.length) return;
-    const {live, expired} = splitSiblingQueue(queue, Date.now());
+    const now = Date.now();
+    const {live, expired} = splitSiblingQueue(queue, now);
     for (const e of expired) {
-      logLine(`형제 기기 ${e.target} 초대 포기(30분): ${e.rooms.join(', ')}`);
+      logLine(`형제 기기 ${e.target} 초대 포기(진행 없이 ${Math.round(SIBLING_INVITE_TTL_MS / 3_600_000)}시간): ${e.rooms.join(', ')}`);
       addNote(`sibling-expired:${e.target}`, strings.candidates.siblingGaveUp(e.target, e.rooms.map(roomLabel).join(', ')), 'warn');
     }
     const next = [];
+    const noKey = target => strings.room.noKeyPackage(target);
     for (const e of live) {
-      const remaining = [];
-      for (const roomId of e.rooms) {
-        const R = app.rooms.get(roomId);
-        if (!R) continue;   // room gone from this device — nothing to invite into
-        const S = R.session.state;
-        if (!siblingInviteRooms([{roomId, joined: S.joined, halted: S.halted, pending: S.pending, roster: S.roster}], e.target).length) {
-          if (S.pending && S.joined && !S.halted) remaining.push(roomId);   // my own commit still pending → next tick
-          continue;   // already a member / halted / not joined — done
-        }
-        try {
-          await R.session.invite(e.target);
-          logLine(strings.candidates.siblingInvited(e.target, roomId));
-          status(strings.candidates.siblingInvited(e.target, roomLabel(roomId)), 'ok');
-        } catch (error) {
-          if (isRetryableInviteError(error, [strings.room.noKeyPackage(e.target), strings.room.pendingCommit, strings.room.commitRaced])) remaining.push(roomId);
-          else { logLine(`형제 기기 ${e.target} 초대 실패(${roomId}, 포기): ${error.message}`); addNote(`sibling-failed:${e.target}:${roomId}`, strings.candidates.siblingFailed(e.target, roomLabel(roomId), error.message), 'danger'); }
-        }
+      const {entry, invited, failed} = await siblingInviteTurn(e, {
+        now,
+        lobbyStatus: () => app.dev.lobbyStatusOf(e.target),
+        roomState: roomId => { const S = app.rooms.get(roomId)?.session.state; return S ? {joined: S.joined, halted: S.halted, pending: S.pending, roster: S.roster} : null; },
+        invite: roomId => app.rooms.get(roomId).session.invite(e.target),
+        retryable: [noKey(e.target), strings.room.pendingCommit, strings.room.commitRaced],
+        noKey: noKey(e.target),
+      });
+      for (const roomId of invited) {
+        logLine(strings.candidates.siblingInvited(e.target, roomId));
+        status(strings.candidates.siblingInvited(e.target, roomLabel(roomId)), 'ok');
       }
-      if (remaining.length) next.push({...e, rooms: remaining});
+      for (const {roomId, error} of failed) {
+        logLine(`형제 기기 ${e.target} 초대 실패(${roomId}, 포기): ${error.message}`);
+        addNote(`sibling-failed:${e.target}:${roomId}`, strings.candidates.siblingFailed(e.target, roomLabel(roomId), error.message), 'danger');
+      }
+      if (entry && entry.recheckAt && entry.recheckAt !== e.recheckAt) logLine(`형제 기기 ${e.target} 초대용 키 없음 — ${entry.rooms.length}개 방은 키가 보충되면 이어서`);
+      if (entry) next.push(entry);
     }
     writeSiblingQueue(storage, app.device, next);
   }
@@ -659,6 +672,9 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   async function resumeSync() {
     if (!app.dev?.state.started) return;
     logLine('복귀 동기화(탭·온라인·페이지 복귀)');
+    // #616: a backgrounded tab's timers stop, so its lobby keys (consumed by a sibling's invites meanwhile) were
+    // replenished only after the next adopted Welcome — 15 h later on 2026-10-30. Top up on every return.
+    app.lobbyDue = true;
     try { await refresh(); } catch (_) { /* refresh 가 자체 로그를 남긴다 */ }
     await Promise.all([...app.rooms.values()].map(R => R.session.sync({quiet: true}).catch(() => {})));
     render();

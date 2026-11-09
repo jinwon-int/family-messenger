@@ -10,14 +10,26 @@ import {op, b64, unb64, hex} from './room.js';
 
 const WORKER = 'device';
 export const LOBBY_TARGET = 8;   // facade cap on outstanding key packages (`key package limit`)
+/**
+ * #616: a lobby package the relay reports consumed keeps its secret this long after this device first sees it
+ * consumed. The inviter consumes the package, then commits, then posts the Welcome — until that Welcome is listed
+ * (`GET /v2/lobby/welcomes` → `key_package_ref`, the `protect` set) nothing says the package is wanted, and a
+ * replenish in that gap deleted the secret the Welcome needed (2026-10-31 dungae: Welcome 965 at 11:59:21, the
+ * replenish that pruned its package at 11:59:22). Short on purpose: a kept secret occupies a facade slot.
+ */
+export const LOBBY_CONSUMED_GRACE_MS = 2 * 60_000;
 
-export function createDevice({device, worker, relay, storage, on = {}}) {
+export function createDevice({device, worker, relay, storage, on = {}, now = () => Date.now(), lobbyGraceMs = LOBBY_CONSUMED_GRACE_MS}) {
   const D = {started: false, fresh: false, migrated: false, publicKey: '', fingerprint: '', lobby: {live: null, max: null, unsupported: false}, enrolled: null,
     selfService: {unsupported: false, posted: null}};   // #574: candidate mailbox / approvals / roles routes (404 on an old relay → never asked again)
   const log = (...parts) => on.log?.(parts.join(' '));
   const publishedKey = `hande:lobby:published:${device}`;
   const readPublished = () => { try { const v = JSON.parse(storage.getItem(publishedKey) || '[]'); return Array.isArray(v) ? v.filter(x => typeof x === 'string') : []; } catch (_) { return []; } };
   const writePublished = list => storage.setItem(publishedKey, JSON.stringify(list.slice(-64)));
+  // #616: ref → when this device first saw that package consumed (ms). Entries leave with their secret.
+  const consumedKey = `hande:lobby:consumed:${device}`;
+  const readConsumed = () => { try { const v = JSON.parse(storage.getItem(consumedKey) || '{}'); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch (_) { return {}; } };
+  const writeConsumed = map => { if (Object.keys(map).length) storage.setItem(consumedKey, JSON.stringify(map)); else storage.removeItem(consumedKey); };
 
   /** Open the identity store (one custody KDF); `legacy` migrates a stage-2 single-room database. */
   async function start({passphrase, identityDatabase, legacy = null}) {
@@ -67,6 +79,8 @@ export function createDevice({device, worker, relay, storage, on = {}}) {
    * `GET /v2/lobby/welcomes` reports as `key_package_ref`) whose secrets must stay; they keep
    * their place at the head of the list and go on the first replenish after the Welcome is
    * adopted. The caller passes `prune: false` only when a pending Welcome carries no ref.
+   * #616: an unprotected consumed package is deleted only `lobbyGraceMs` after this device first saw it consumed
+   * (its Welcome may not be listed yet); `graceUntil` in the report says when the next replenish can prune it.
    */
   async function replenish(target = LOBBY_TARGET, {prune = true, protect = new Set()} = {}) {
     if (D.lobby.unsupported) return null;
@@ -78,14 +92,21 @@ export function createDevice({device, worker, relay, storage, on = {}}) {
     await openLobby();
     let published = readPublished();
     const consumed = Math.min(Math.max(0, published.length - live), published.length);
-    let pruned = 0, kept = 0;
+    let pruned = 0, kept = 0, graced = 0, graceUntil = null;
     if (prune) {
-      const remaining = [];
+      const remaining = [], seen = readConsumed(), t = now(), still = {};
       for (const bytes of published.slice(0, consumed)) {
-        if (protect.size && protect.has(await refOf(bytes))) { remaining.push(bytes); kept++; continue; }
+        const ref = await refOf(bytes);
+        if (protect.size && protect.has(ref)) { remaining.push(bytes); kept++; still[ref] = seen[ref] ?? t; continue; }
+        const since = Number.isFinite(seen[ref]) ? seen[ref] : t;
+        if (t - since < lobbyGraceMs) {
+          remaining.push(bytes); graced++; still[ref] = since;
+          graceUntil = Math.min(graceUntil ?? Infinity, since + lobbyGraceMs);
+          continue;
+        }
         try { await op(worker, LOBBY_ROOM, 'delete_key_package', unb64(bytes)); pruned++; } catch (_) { /* already gone */ }
       }
-      published = remaining.concat(published.slice(consumed)); writePublished(published);
+      published = remaining.concat(published.slice(consumed)); writePublished(published); writeConsumed(still);
     } else kept = consumed;
     const want = Math.min(target, max) - live;
     const fresh = [];
@@ -107,8 +128,21 @@ export function createDevice({device, worker, relay, storage, on = {}}) {
       }
     }
     D.lobby.live = live + stored; D.lobby.max = max;
-    log(`로비 키: 서버 ${live}→${D.lobby.live}/${max}, 지움 ${pruned}, 새로 ${stored}` + (kept ? `, 수락 안 된 초대가 있어 소비된 ${kept}개 비밀키는 남김` : ''));
-    return {live: D.lobby.live, max, minted: stored, pruned, kept};
+    log(`로비 키: 서버 ${live}→${D.lobby.live}/${max}, 지움 ${pruned}, 새로 ${stored}` + (kept ? `, 수락 안 된 초대가 있어 소비된 ${kept}개 비밀키는 남김` : '')
+      + (graced ? `, 방금 소비된 ${graced}개는 초대가 도착할 때까지 잠시 남김` : ''));
+    return {live: D.lobby.live, max, minted: stored, pruned, kept, graced, graceUntil};
+  }
+  /**
+   * #616: another device's live lobby count (`GET /v2/lobby/status?device=<sibling>` — the relay answers for any
+   * active device of the caller's own subject). `null` = unknown (old relay, not on the chain, error): the caller
+   * then behaves as before.
+   */
+  async function lobbyStatusOf(target) {
+    if (D.lobby.unsupported) return null;
+    let r;
+    try { r = await relay.api('GET', `/v2/lobby/status?device=${encodeURIComponent(target)}`); } catch (_) { return null; }
+    if (r.status !== 200 || !Number.isFinite(Number(r.body?.live))) return null;
+    return {live: Math.max(0, Number(r.body.live)), max: Number(r.body.max ?? LOBBY_TARGET)};
   }
   // ---- identity store operations (E2 approval) ----
   const utf8 = new TextEncoder(), decoder = new TextDecoder();
@@ -158,6 +192,6 @@ export function createDevice({device, worker, relay, storage, on = {}}) {
   /** `POST /v2/devices/roles` (E5 evidence) → 201 {device_id, roles, approved_by, revision} · 409 · 403 as above. */
   async function postRoles(evidence) { return relay.api('POST', '/v2/devices/roles', evidence); }
   function stop() { worker.stop(WORKER); D.started = false; }
-  return {device, get state() { return D; }, start, openLobby, rooms, welcomes, replenish, policyFingerprint, signApproval, signRoles, registration,
+  return {device, get state() { return D; }, start, openLobby, rooms, welcomes, replenish, lobbyStatusOf, policyFingerprint, signApproval, signRoles, registration,
     postCandidate, listCandidates, postApproval, postRoles, stop};
 }

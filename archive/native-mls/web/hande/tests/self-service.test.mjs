@@ -5,6 +5,7 @@ import {
   canApprove, isSibling, candidatesFor, approvalArgs, approvalEvidence, rolesActions, nextRoles, rolesArgs, rolesEvidence, recordOf, actorHasRegistrar,
   siblingInviteRooms, enrollModeFrom, readSiblingQueue, writeSiblingQueue, enqueueSiblingInvites, splitSiblingQueue, isRetryableInviteError,
   siblingQueueKey, SIBLING_INVITE_TTL_MS, ROLE_REGISTRAR,
+  siblingInviteBudget, nextSiblingEntry, siblingInviteTurn, SIBLING_LOBBY_RECHECK_MS,
 } from '../self-service.js';
 
 const KEY = 'ab'.repeat(32), FP = 'cd'.repeat(32);
@@ -156,4 +157,109 @@ test('isRetryableInviteError: 네트워크·지정 문구만 다시 시도', () 
   assert.equal(isRetryableInviteError(Object.assign(new Error('연결 실패'), {network: true}), []), true);
   assert.equal(isRetryableInviteError(new Error('변경이 거절되었습니다: 403'), [noKey]), false);
   assert.equal(isRetryableInviteError(null, [noKey]), false);
+});
+
+// ---- #616: 형제 기기 초대가 로비 키 상한(8)에 막혀 9번째 방부터 빠지던 문제 ----
+
+test('splitSiblingQueue(#616): TTL 은 마지막 진행(progress)부터 — 진행이 있으면 오래된 항목도 산다', () => {
+  const q = [{target: 'a', rooms: ['x'], since: 0, progress: 10 * 3_600_000}, {target: 'b', rooms: ['x'], since: 0}];
+  const {live, expired} = splitSiblingQueue(q, SIBLING_INVITE_TTL_MS + 1);
+  assert.deepEqual(live.map(e => e.target), ['a']);
+  assert.deepEqual(expired.map(e => e.target), ['b']);
+  assert.ok(SIBLING_INVITE_TTL_MS >= 24 * 3_600_000, '15시간 동안 백그라운드였던 탭(10-30)도 기다린다');
+});
+
+test('siblingInviteBudget / nextSiblingEntry', () => {
+  assert.equal(siblingInviteBudget(null), Infinity, '모르면 예전처럼 제한 없음');
+  assert.equal(siblingInviteBudget({live: 3}), 3);
+  assert.equal(siblingInviteBudget({live: -1}), 0);
+  const e = {target: 't', rooms: ['a', 'b'], since: 1, recheckAt: 5};
+  assert.equal(nextSiblingEntry(e, [], {now: 10}), null, '남은 방이 없으면 끝');
+  assert.deepEqual(nextSiblingEntry(e, ['b'], {now: 10, progressed: true}), {target: 't', rooms: ['b'], since: 1, progress: 10});
+  assert.deepEqual(nextSiblingEntry(e, ['b'], {now: 10, starved: true}), {target: 't', rooms: ['b'], since: 1, recheckAt: 10 + SIBLING_LOBBY_RECHECK_MS});
+});
+
+/** 형제 기기(새 웹 기기)를 흉내: 로비 키 상한 8, 초대가 하나씩 쓰고, replenish() 가 상한까지 채운다. */
+function sibling(maxKeys = 8) {
+  const s = {live: 0, statusCalls: 0, inviteCalls: 0, members: new Set()};
+  s.replenish = () => { s.live = maxKeys; };
+  s.lobbyStatus = async () => { s.statusCalls++; return {live: s.live, max: maxKeys}; };
+  s.invite = async roomId => {
+    s.inviteCalls++;
+    if (s.live <= 0) throw new Error('t-web 기기의 키 패키지가 없습니다 (404 no_live_key_package)');
+    s.live--; s.members.add(roomId);
+  };
+  return s;
+}
+const NO_KEY = 't-web 기기의 키 패키지가 없습니다';
+
+test('siblingInviteTurn(#616): 방 17개 · 로비 키 8개 — 잔량만큼만 쓰고, 키가 없으면 기다렸다가 보충되면 마저 들인다', async () => {
+  const rooms = Array.from({length: 17}, (_, i) => `room${i + 1}`);
+  const sib = sibling(8);
+  const roomState = roomId => ({joined: true, halted: false, pending: false, roster: sib.members.has(roomId) ? ['t-web'] : ['me-iphone']});
+  const turn = (e, now) => siblingInviteTurn(e, {now, lobbyStatus: sib.lobbyStatus, roomState, invite: sib.invite, retryable: [NO_KEY], noKey: NO_KEY});
+  let entry = {target: 't-web', rooms, since: 0};
+  let now = 0;
+  // 승인 직후: 새 기기가 아직 키를 안 올림 → 초대 시도 0, 다시 물을 시각만.
+  let r = await turn(entry, now);
+  assert.equal(sib.inviteCalls, 0, '잔량 0 이면 404 를 쌓지 않는다');
+  assert.equal(r.entry.recheckAt, now + SIBLING_LOBBY_RECHECK_MS);
+  entry = r.entry;
+  // 다시 물을 시각 전에는 잔량도 묻지 않는다.
+  const calls = sib.statusCalls;
+  r = await turn(entry, now + 1000);
+  assert.equal(sib.statusCalls, calls);
+  // 새 기기가 키 8개를 올림 → 한 차례에 정확히 8개 방.
+  sib.replenish(); now += SIBLING_LOBBY_RECHECK_MS;
+  r = await turn(entry, now);
+  assert.equal(r.invited.length, 8);
+  assert.equal(sib.inviteCalls, 8, '9번째 방에서 404 를 내지 않는다');
+  assert.equal(r.entry.rooms.length, 9);
+  assert.equal(r.entry.progress, now, '진행 시각 갱신');
+  entry = r.entry;
+  // 새 기기가 15시간 백그라운드(10-30 실측) — 키 0 인 채로 기다려도 TTL 은 마지막 진행부터라 버리지 않는다.
+  now += 15 * 3_600_000;
+  assert.equal(splitSiblingQueue([entry], now).expired.length, 0);
+  r = await turn(entry, now);
+  assert.equal(r.invited.length, 0);
+  entry = r.entry;
+  // 복귀해서 보충 → 8개, 다시 보충 → 마지막 1개.
+  sib.replenish(); now += SIBLING_LOBBY_RECHECK_MS;
+  r = await turn(entry, now); entry = r.entry;
+  assert.equal(r.invited.length, 8);
+  sib.replenish(); now += 1;
+  r = await turn(entry, now);
+  assert.deepEqual(r.invited, ['room17']);
+  assert.equal(r.entry, null, '17개 방 모두 들어가면 대기열에서 빠진다');
+  assert.equal(sib.members.size, 17);
+  assert.equal(sib.inviteCalls, 17, '실패한 초대 시도 0');
+});
+
+test('siblingInviteTurn(#616): 잔량 수치가 낡아 404 가 나면 그 차례는 멈춘다 · 옛 릴레이(null)는 예전처럼 · 포기 사유는 failed', async () => {
+  const sib = sibling(8);
+  sib.live = 0;
+  const stale = async () => ({live: 5});   // 다른 형제가 방금 다 써 버림
+  const roomState = () => ({joined: true, halted: false, pending: false, roster: []});
+  const e = {target: 't-web', rooms: ['a', 'b', 'c'], since: 0};
+  let r = await siblingInviteTurn(e, {now: 1, lobbyStatus: stale, roomState, invite: sib.invite, retryable: [NO_KEY], noKey: NO_KEY});
+  assert.equal(sib.inviteCalls, 1, '첫 404 뒤 나머지는 시도하지 않는다');
+  assert.deepEqual(r.entry.rooms, ['a', 'b', 'c']);
+  assert.equal(r.entry.recheckAt, 1 + SIBLING_LOBBY_RECHECK_MS);
+  const calls = [];
+  r = await siblingInviteTurn(e, {now: 1, lobbyStatus: async () => null, roomState, invite: async roomId => { calls.push(roomId); if (roomId === 'b') throw new Error('변경이 거절되었습니다: 403'); },
+    retryable: [NO_KEY], noKey: NO_KEY});
+  assert.deepEqual(calls, ['a', 'b', 'c'], '잔량을 모르면 제한 없이');
+  assert.deepEqual(r.invited, ['a', 'c']);
+  assert.deepEqual(r.failed.map(f => f.roomId), ['b'], '재시도 불가 사유는 포기 목록');
+  assert.equal(r.entry, null);
+  // 이 기기에 없는 방 · 이미 멤버 · 내 commit 대기는 예산을 쓰지 않는다.
+  const spent = [];
+  r = await siblingInviteTurn({target: 't-web', rooms: ['gone', 'member', 'pending', 'x'], since: 0}, {now: 1, lobbyStatus: async () => ({live: 1}),
+    roomState: id => {
+      const known = {gone: null, member: {joined: true, halted: false, pending: false, roster: ['t-web']}, pending: {joined: true, halted: false, pending: true, roster: []}};
+      return id in known ? known[id] : {joined: true, halted: false, pending: false, roster: []};
+    },
+    invite: async id => { spent.push(id); }, retryable: [NO_KEY], noKey: NO_KEY});
+  assert.deepEqual(spent, ['x']);
+  assert.deepEqual(r.entry.rooms, ['pending']);
 });

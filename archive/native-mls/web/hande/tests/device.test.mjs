@@ -6,7 +6,7 @@
 // node --test archive/native-mls/web/hande/tests/device.test.mjs
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {createDevice, LOBBY_TARGET} from '../device.js';
+import {createDevice, LOBBY_TARGET, LOBBY_CONSUMED_GRACE_MS} from '../device.js';
 import {LOBBY_ROOM, LOBBY_DATABASE, IDENTITY_ROOM} from '../identity.js';
 
 const memStorage = () => { const m = new Map(); return {getItem: k => m.has(k) ? m.get(k) : null, setItem: (k, v) => m.set(k, String(v)), removeItem: k => m.delete(k)}; };
@@ -42,7 +42,7 @@ const published = storage => JSON.parse(storage.getItem('hande:lobby:published:o
 
 test('replenish(기본): 소비된 선두 항목의 비밀을 지우고 부족분을 발행한다', async () => {
   const {bridge, w} = fakeWorker(); const relay = fakeRelay(0); const storage = memStorage(); const logs = [];
-  const dev = createDevice({device: 'owner-web-aaaaaa', worker: bridge, relay, storage, on: {log: l => logs.push(l)}});
+  const dev = createDevice({device: 'owner-web-aaaaaa', worker: bridge, relay, storage, on: {log: l => logs.push(l)}, lobbyGraceMs: 0});
   const first = await dev.replenish(LOBBY_TARGET);
   assert.deepEqual([first.minted, first.pruned, first.kept, first.live], [8, 0, 0, 8]);
   assert.equal(published(storage).length, 8);
@@ -56,7 +56,7 @@ test('replenish(기본): 소비된 선두 항목의 비밀을 지우고 부족�
 
 test('replenish({prune: false}): 수락 안 된 Welcome 이 있으면 소비분 비밀을 남기고 발행만 한다 (#517)', async () => {
   const {bridge, w} = fakeWorker(); const relay = fakeRelay(0); const storage = memStorage(); const logs = [];
-  const dev = createDevice({device: 'owner-web-aaaaaa', worker: bridge, relay, storage, on: {log: l => logs.push(l)}});
+  const dev = createDevice({device: 'owner-web-aaaaaa', worker: bridge, relay, storage, on: {log: l => logs.push(l)}, lobbyGraceMs: 0});
   await dev.replenish(LOBBY_TARGET);
   relay.live = 5;
   const kept = await dev.replenish(LOBBY_TARGET, {prune: false});
@@ -80,7 +80,7 @@ test('openLobby: 로비 스토어를 identity 사본으로 연다 — adoptWelco
 
 test('replenish({protect}): 수락 안 된 Welcome 의 key_package_ref 에 해당하는 비밀만 남기고 나머지 소비분은 지운다 (#517 정밀 보호)', async () => {
   const {bridge, w} = fakeWorker(); const relay = fakeRelay(0); const storage = memStorage(); const logs = [];
-  const dev = createDevice({device: 'owner-web-aaaaaa', worker: bridge, relay, storage, on: {log: l => logs.push(l)}});
+  const dev = createDevice({device: 'owner-web-aaaaaa', worker: bridge, relay, storage, on: {log: l => logs.push(l)}, lobbyGraceMs: 0});
   await dev.replenish(LOBBY_TARGET);
   const refOf = async b64s => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', Uint8Array.from(Buffer.from(b64s, 'base64'))))).map(x => x.toString(16).padStart(2, '0')).join('');
   const second = await refOf(published(storage)[1]);   // the second-minted package: consumed, but its Welcome is still pending
@@ -97,6 +97,62 @@ test('replenish({protect}): 수락 안 된 Welcome 의 key_package_ref 에 해�
   assert.deepEqual([later.minted, later.pruned, later.kept], [0, 1, 0]);
   assert.deepEqual(w.deleted.map(b => b[0]), [1, 3, 2]);
   assert.equal(published(storage).length, 8);
+});
+
+test('replenish(#616 유예): 방금 소비된 패키지는 Welcome 이 목록에 오르기 전이라도 유예 동안 비밀을 남긴다', async () => {
+  // 2026-10-31 dungae: 초대자가 키를 소비 → commit → Welcome 게시. 그 사이(1초) 다른 방 Welcome 수락으로 돈 보충이
+  // 아직 목록에 없는 ref 의 비밀을 지워 Welcome 을 못 열었다. protect 는 목록에 오른 것만 덮으므로 처음 본 시각부터 유예한다.
+  const {bridge, w} = fakeWorker(); const relay = fakeRelay(0); const storage = memStorage(); const logs = [];
+  let t = 1_000_000;
+  const dev = createDevice({device: 'owner-web-aaaaaa', worker: bridge, relay, storage, on: {log: l => logs.push(l)}, now: () => t});
+  await dev.replenish(LOBBY_TARGET);
+  relay.live = 6;   // two consumed; their Welcomes are not listed yet (protect empty)
+  const first = await dev.replenish(LOBBY_TARGET);
+  assert.deepEqual([first.minted, first.pruned, first.graced, first.live], [2, 0, 2, 8]);
+  assert.equal(first.graceUntil, t + LOBBY_CONSUMED_GRACE_MS);
+  assert.equal(w.deleted.length, 0, '유예 중에는 하나도 지우지 않는다');
+  assert.match(logs.at(-1), /잠시 남김/);
+  t += LOBBY_CONSUMED_GRACE_MS - 1;
+  const again = await dev.replenish(LOBBY_TARGET);
+  assert.deepEqual([again.pruned, again.graced, again.graceUntil], [0, 2, 1_000_000 + LOBBY_CONSUMED_GRACE_MS], '처음 본 시각이 기준 — 다시 봐도 늘지 않는다');
+  t += 1;
+  const after = await dev.replenish(LOBBY_TARGET);
+  assert.deepEqual([after.pruned, after.graced, after.graceUntil], [2, 0, null]);
+  assert.deepEqual(w.deleted.map(b => b[0]), [1, 2]);
+  assert.equal(storage.getItem('hande:lobby:consumed:owner-web-aaaaaa'), null, '지운 것은 장부에서도 빠진다');
+});
+
+test('replenish(#616 유예 + protect): 목록에 오른 Welcome 의 ref 는 유예가 지나도 남고, 수락 뒤 바로 지운다', async () => {
+  const {bridge, w} = fakeWorker(); const relay = fakeRelay(0); const storage = memStorage();
+  let t = 5_000_000;
+  const dev = createDevice({device: 'owner-web-aaaaaa', worker: bridge, relay, storage, now: () => t});
+  await dev.replenish(LOBBY_TARGET);
+  const refOf = async b64s => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', Uint8Array.from(Buffer.from(b64s, 'base64'))))).map(x => x.toString(16).padStart(2, '0')).join('');
+  const firstRef = await refOf(published(storage)[0]);
+  relay.live = 7;
+  await dev.replenish(LOBBY_TARGET, {protect: new Set([firstRef])});
+  t += 10 * LOBBY_CONSUMED_GRACE_MS;
+  const held = await dev.replenish(LOBBY_TARGET, {protect: new Set([firstRef])});
+  assert.deepEqual([held.pruned, held.kept, held.graced], [0, 1, 0], 'protect 가 유예보다 우선');
+  const adopted = await dev.replenish(LOBBY_TARGET);
+  assert.deepEqual([adopted.pruned, adopted.graced], [1, 0], '수락 뒤에는 처음 본 시각이 오래돼 바로 지운다');
+  assert.deepEqual(w.deleted.map(b => b[0]), [1]);
+});
+
+test('lobbyStatusOf: 형제 기기 잔량 — 200 이면 live, 그 밖(403·404·오류)은 null', async () => {
+  const {bridge} = fakeWorker(); const storage = memStorage();
+  const answers = {'mom-pc-1': {status: 200, body: {live: 3, max: 8}}, 'mom-pc-2': {status: 403, body: {error: 'device_subject_mismatch'}}};
+  const relay = {describe: () => '', api: async (method, path) => {
+    assert.equal(method, 'GET');
+    const device = new URL(path, 'http://x').searchParams.get('device');
+    if (device === 'mom-pc-3') throw new Error('network');
+    return answers[device] ?? {status: 404, body: null};
+  }};
+  const dev = createDevice({device: 'mom-web-aaaaaa', worker: bridge, relay, storage});
+  assert.deepEqual(await dev.lobbyStatusOf('mom-pc-1'), {live: 3, max: 8});
+  assert.equal(await dev.lobbyStatusOf('mom-pc-2'), null);
+  assert.equal(await dev.lobbyStatusOf('mom-pc-3'), null);
+  assert.equal(await dev.lobbyStatusOf('mom-pc-4'), null);
 });
 
 // ---- device self-service (#574 PR 2b): candidate mailbox / approvals / roles against a scripted relay, sign_roles frame ----
