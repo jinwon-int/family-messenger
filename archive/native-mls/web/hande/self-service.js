@@ -12,8 +12,14 @@
 export const ROLE_REGISTRAR = 'registrar';
 export const APPROVAL_ACTION = 'approve-device';
 export const APPROVAL_ACCEPTANCE = 'trusted-device-fingerprint';
-/** 형제 기기 초대 대기열(localStorage)의 수명 — 새 기기가 활성이 된 뒤 로비 키를 올릴 때까지 기다리되, 영원히는 아니다. */
-export const SIBLING_INVITE_TTL_MS = 30 * 60_000;
+/**
+ * 형제 기기 초대 대기열(localStorage)의 수명 — **마지막 진행**(대기열에 넣은 때, 초대가 하나라도 성공한 때)부터 잰다(#616).
+ * 30분 고정이던 때는 새 기기(백그라운드 크롬 탭)가 로비 키를 15시간 뒤에야 보충해 9개 방이 영영 빠졌다. 잔량이 0 인 동안은
+ * `SIBLING_LOBBY_RECHECK_MS` 마다 잔량만 묻고(초대 시도 없음) 기다리므로 길게 둬도 비용이 작다. 그래도 영원히는 아니다.
+ */
+export const SIBLING_INVITE_TTL_MS = 24 * 60 * 60_000;
+/** #616: 형제 기기 로비 키 잔량이 0 일 때 다음에 다시 물을 때까지(틱 8초마다 묻지 않게). */
+export const SIBLING_LOBBY_RECHECK_MS = 60_000;
 /** 후보 게시의 재게시 여유: 만료(10분) 이만큼 전에 다시 올린다. */
 export const CANDIDATE_REPOST_MARGIN_MS = 5 * 60_000;
 
@@ -166,11 +172,64 @@ export function enqueueSiblingInvites(queue, target, rooms, now) {
   return [...queue, {target, rooms: add, since: now}];
 }
 
-/** 처리할 것과 포기할 것(TTL 지남)으로 나눈다. */
+/** 처리할 것과 포기할 것(마지막 진행 `progress`, 없으면 `since` 부터 TTL 지남)으로 나눈다. */
 export function splitSiblingQueue(queue, now, ttl = SIBLING_INVITE_TTL_MS) {
   const live = [], expired = [];
-  for (const e of queue) (now - e.since > ttl ? expired : live).push(e);
+  for (const e of queue) (now - (Number.isFinite(e.progress) ? e.progress : e.since) > ttl ? expired : live).push(e);
   return {live, expired};
+}
+
+/**
+ * #616: 이번 차례에 초대를 시도할 방 수. 방마다 형제 기기의 로비 키를 하나씩 쓰는데(상한 8), 17개 방을 한꺼번에 돌면 9번째부터
+ * 「키 패키지 없음」만 쌓인다. `status` = 형제 기기 `GET /v2/lobby/status`(`{live}`) — null(옛 릴레이·오류)이면 제한 없이 예전처럼.
+ */
+export function siblingInviteBudget(status) {
+  if (!status || !Number.isFinite(status.live)) return Infinity;
+  return Math.max(0, Math.floor(status.live));
+}
+
+/** 한 항목의 이번 차례 결과 → 다음 대기열 항목(남은 방이 없으면 null). 성공이 있으면 진행 시각을, 잔량 0 이면 다시 물을 시각을 적는다. */
+export function nextSiblingEntry(entry, remaining, {now, progressed = false, starved = false}) {
+  if (!remaining.length) return null;
+  const next = {...entry, rooms: remaining};
+  if (progressed) next.progress = now;
+  if (starved) next.recheckAt = now + SIBLING_LOBBY_RECHECK_MS; else delete next.recheckAt;
+  return next;
+}
+
+/**
+ * #616: 대기열 항목 하나의 이번 차례(app.js processSiblingInvites 가 항목마다 부른다 — DOM·워커 없이 테스트 가능).
+ * - `lobbyStatus()` → 형제 기기 잔량(`{live}` | null). 잔량만큼만 초대하고, 0 이면 시도 없이 `recheckAt` 까지 기다린다.
+ * - `roomState(roomId)` → `{joined, halted, pending, roster}` | null(이 기기에 없는 방).
+ * - `invite(roomId)` → 성공하면 resolve. 실패는 `retryable`(메시지 조각들) 이면 남기고, `noKey` 조각이면 이번 차례 예산을 0 으로.
+ * 반환: `{entry, invited, failed}` — entry 는 다음 대기열 항목(남은 방 없으면 null), failed 는 포기한 [{roomId, error}].
+ */
+export async function siblingInviteTurn(e, {now, lobbyStatus, roomState, invite, retryable = [], noKey = ''}) {
+  if (Number.isFinite(e.recheckAt) && now < e.recheckAt) return {entry: e, invited: [], failed: []};
+  let budget = siblingInviteBudget(await lobbyStatus());
+  let starved = budget === 0;
+  const remaining = [], invited = [], failed = [];
+  for (const roomId of e.rooms) {
+    const S = roomState(roomId);
+    if (!S) continue;   // room gone from this device — nothing to invite into
+    if (!siblingInviteRooms([{roomId, ...S}], e.target).length) {
+      if (S.pending && S.joined && !S.halted) remaining.push(roomId);   // my own commit still pending → next turn
+      continue;   // already a member / halted / not joined — done
+    }
+    if (budget <= 0) { remaining.push(roomId); continue; }   // no lobby key left for this one this turn
+    budget--;
+    try {
+      await invite(roomId);
+      invited.push(roomId);
+    } catch (error) {
+      if (isRetryableInviteError(error, retryable)) {
+        remaining.push(roomId);
+        if (noKey && String(error?.message ?? '').includes(noKey)) { budget = 0; starved = true; }   // stale count: stop spending
+      } else failed.push({roomId, error});
+    }
+  }
+  const progressed = invited.length > 0;
+  return {entry: nextSiblingEntry(e, remaining, {now, progressed, starved: starved && !progressed}), invited, failed};
 }
 
 /**

@@ -586,7 +586,7 @@ export const strings = {
     stale: '체인이 먼저 바뀌어 다시 서명합니다…',
     signFailed: (detail) => `서명을 만들지 못했습니다: ${detail}`,
     siblingInvited: (device, room) => `${device} 기기를 「${room}」 대화방에 초대했습니다.`,
-    siblingGaveUp: (device, rooms) => `${device} 기기를 ${rooms} 대화방에 초대하지 못했습니다(30분 동안 키 패키지 없음). 그 기기에서 앱을 연 뒤 「초대」로 직접 들이세요.`,
+    siblingGaveUp: (device, rooms) => `${device} 기기를 ${rooms} 대화방에 초대하지 못했습니다(하루 동안 그 기기의 초대용 키가 없음). 그 기기에서 앱을 연 뒤 「초대」로 직접 들이세요.`,
     siblingFailed: (device, room, reason) => `${device} 기기를 「${room}」 대화방에 초대하지 못했습니다: ${reason}`,
     noteDismiss: '확인',
   },
