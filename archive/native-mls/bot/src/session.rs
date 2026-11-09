@@ -49,6 +49,7 @@ use native_mls_host::room::history_gap;
 #[cfg(test)]
 use native_mls_host::room::RELAY_BACKOFF_MAX;
 use crate::attachment;
+use crate::reply_quote::{self, Recent};
 use crate::responder::{self, Inbound, Outbound, Responder};
 use family_mls_browser_experiment::Device;
 use std::collections::VecDeque;
@@ -244,6 +245,9 @@ struct RoomState {
     state_path: Option<PathBuf>,
     mode: Mode,
     pending: Option<PendingCommit>,
+    /// #728: this room's recent plaintexts (agent mode only; memory only,
+    /// wiped on drop) so a ReplyQuote v2 `#seq` can be expanded for the agent.
+    recent: Recent,
 }
 
 impl std::ops::Deref for RoomState {
@@ -499,14 +503,14 @@ pub fn run(opts: Options) -> Result<(), BotError> {
     }
     let mut rooms = vec![RoomState {
         sync: RoomSync { room: opts.room.clone(), cursor: c0, epoch: e0, joined: j0, joinable: true, dirty: false, acked: c0, ack_sent: 0, ack_disabled: false, halted: halted0.is_some() },
-        echoes: x0, retry: VecDeque::new(), device, state_path: opts.state_file.clone(), mode: if agent.is_some() { Mode::Agent } else { Mode::Echo }, pending: None,
+        echoes: x0, retry: VecDeque::new(), device, state_path: opts.state_file.clone(), mode: if agent.is_some() { Mode::Agent } else { Mode::Echo }, pending: None, recent: Recent::default(),
     }];
     if let Some(watch) = &opts.watch_room {
         // The negative control: a room the bot is never invited to. It must
         // stay unjoined and silent there for the whole session.
         rooms.push(RoomState {
             sync: RoomSync { room: watch.clone(), cursor: 0, epoch: 0, joined: false, joinable: false, dirty: false, acked: 0, ack_sent: 0, ack_disabled: true, halted: false },
-            echoes: 0, retry: VecDeque::new(), device: Device::new(&opts.device).map_err(|_| BotError::Local("device new: identity shape rejected"))?, state_path: None, mode: Mode::Watch, pending: None,
+            echoes: 0, retry: VecDeque::new(), device: Device::new(&opts.device).map_err(|_| BotError::Local("device new: identity shape rejected"))?, state_path: None, mode: Mode::Watch, pending: None, recent: Recent::default(),
         });
     }
     let typing = TypingRoute::new(&opts.base, opts.access.clone());
@@ -969,6 +973,7 @@ fn write_halt_marker(_ctx: &Ctx, state: &RoomState, marker: &serde_json::Value) 
 /// `room::poll` decrypted it and logged `application`): skip another bot's
 /// echo, offer it to the agent, stay silent, or reply with the identical plaintext.
 fn echo(ctx: &Ctx, state: &mut RoomState, ev: &StoredRow, sender: &[u8], plaintext: &[u8], agent: &mut Option<Responder>) -> Result<(), BotError> {
+    remember(state, ev, sender, plaintext);
     // Another bot's echo (relay client_id `<device>-echo-<n>`) is read but not
     // echoed back: two bots in one room would otherwise ping-pong until the
     // room cap (review 2 B-M5).
@@ -1009,6 +1014,18 @@ fn echo(ctx: &Ctx, state: &mut RoomState, ev: &StoredRow, sender: &[u8], plainte
             Ok(_) => Ok(()),
             Err(err) => Err(report_dropped(state, plaintext, err)),
         },
+    }
+}
+
+/// #728: keep an agent room's decrypted text (any sender, bots included) so a
+/// later reply quoting its seq can be expanded. Attachments and status lines
+/// are never kept — they are not expanded.
+fn remember(state: &mut RoomState, ev: &StoredRow, sender: &[u8], plaintext: &[u8]) {
+    if state.mode != Mode::Agent || responder::is_attachment_client_id(&ev.client_id) || responder::is_status_client_id(&ev.client_id) {
+        return;
+    }
+    if let Ok(text) = std::str::from_utf8(plaintext) {
+        state.recent.record(ev.seq, &String::from_utf8_lossy(sender), text);
     }
 }
 
@@ -1076,10 +1093,21 @@ fn route_to_agent(state: &mut RoomState, ev: &StoredRow, sender: &[u8], plaintex
         }));
         return Ok(None);
     }
+    // #728: a ReplyQuote v2 head (`> 이름 #seq: 요약`) becomes the whole
+    // original when this room still holds it; otherwise the text as sent.
+    let (text, reply_quote) = match reply_quote::expand(&text, &state.recent, responder::PROMPT_MAX_BYTES) {
+        reply_quote::Expansion::NotReply => (text, serde_json::Value::Null),
+        reply_quote::Expansion::Miss { seq } => (text, serde_json::json!({ "seq": seq, "outcome": "miss" })),
+        reply_quote::Expansion::Hit { seq, text } => (text, serde_json::json!({ "seq": seq, "outcome": "expanded" })),
+    };
     let offer = agent.offer(Inbound { room: state.room.clone(), seq: ev.seq, sender_device: sender_device.clone(), text, peer_depth: 0, attachment: None })?;
-    emit(&serde_json::json!({
+    let mut event = serde_json::json!({
         "event": "agent_offer", "room": state.room, "seq": ev.seq, "from": sender_device, "outcome": format!("{offer:?}"),
-    }));
+    });
+    if !reply_quote.is_null() {
+        event["reply_quote"] = reply_quote;
+    }
+    emit(&event);
     Ok(queue_notice(&offer))
 }
 
@@ -1309,6 +1337,12 @@ fn publish_echo(ctx: &Ctx, state: &mut RoomState, plaintext: &[u8], attempts: u3
     let outcome = room::send_application(&mut BotSender { ctx, state }, ctx.own, plaintext)?;
     Ok(match outcome {
         SendOutcome::Sent { client_id, response } => {
+            // #728: the bot's own replies can be quoted too (relay ack seq).
+            if state.mode == Mode::Agent {
+                if let Ok(text) = std::str::from_utf8(plaintext) {
+                    state.recent.record(response.seq, ctx.own, text);
+                }
+            }
             emit(&serde_json::json!({
                 "event": "echo", "room": state.room, "bytes": plaintext.len(),
                 "seq": response.seq, "epoch": response.epoch, "client_id": client_id, "duplicate": response.duplicate,
@@ -1902,7 +1936,7 @@ fn load_room(dir: &Path, room: &str, device: &str) -> Result<RoomState, BotError
     let halted = refused_marker_path(&path).exists();
     Ok(RoomState {
         sync: RoomSync { room: room.to_string(), cursor, epoch, joined, joinable: true, dirty: false, acked: cursor, ack_sent: 0, ack_disabled: false, halted },
-        echoes, retry: VecDeque::new(), device: dev, state_path: Some(path), mode: read_mode(dir, room), pending: None,
+        echoes, retry: VecDeque::new(), device: dev, state_path: Some(path), mode: read_mode(dir, room), pending: None, recent: Recent::default(),
     })
 }
 
@@ -2009,7 +2043,7 @@ impl Steward {
                 std::fs::write(room_mode_path(&self.rooms_dir, &cmd.room), mode.name()).map_err(|_| BotError::Local("mode file write"))?;
                 rooms.push(RoomState {
                     sync: RoomSync { room: cmd.room.clone(), cursor: 0, epoch: 0, joined: true, joinable: true, dirty: false, acked: 0, ack_sent: 0, ack_disabled: false, halted: false },
-                    echoes: 0, retry: VecDeque::new(), device: dev, state_path: Some(path), mode, pending: None,
+                    echoes: 0, retry: VecDeque::new(), device: dev, state_path: Some(path), mode, pending: None, recent: Recent::default(),
                 });
                 Ok(serde_json::json!({ "op": "create", "room": cmd.room, "mode": mode.name(), "epoch": 0 }))
             }
@@ -2025,7 +2059,7 @@ impl Steward {
                 std::fs::write(room_mode_path(&self.rooms_dir, &cmd.room), Mode::Silent.name()).map_err(|_| BotError::Local("mode file write"))?;
                 rooms.push(RoomState {
                     sync: RoomSync { room: cmd.room.clone(), cursor: 0, epoch: 0, joined: false, joinable: true, dirty: false, acked: 0, ack_sent: 0, ack_disabled: false, halted: false },
-                    echoes: 0, retry: VecDeque::new(), device: dev, state_path: Some(path), mode: Mode::Silent, pending: None,
+                    echoes: 0, retry: VecDeque::new(), device: dev, state_path: Some(path), mode: Mode::Silent, pending: None, recent: Recent::default(),
                 });
                 Ok(serde_json::json!({ "op": "join", "room": cmd.room, "key_ref": key_ref, "stored": stored }))
             }
@@ -2470,6 +2504,49 @@ for line in sys.stdin:
         assert!(agent.pump().unwrap().is_empty(), "no turn started");
     }
 
+    /// #728: an agent room keeps its texts (not attachments or status lines,
+    /// not in other modes) and a v2 reply to one reaches the worker expanded.
+    #[test]
+    fn a_reply_quote_reaches_the_agent_with_the_whole_original() {
+        const ECHO_WORKER: &str = r#"
+import json, sys
+for line in sys.stdin:
+    cmd = json.loads(line)
+    if cmd["type"] == "turn":
+        print(json.dumps({"type": "result", "turn_id": cmd["turn_id"], "status": "complete", "session_id": "s", "text": "답:" + cmd["prompt"]}), flush=True)
+"#;
+        let row = |seq: i64, device: &str, client_id: &str| StoredRow {
+            seq, device: device.into(), client_id: client_id.into(), kind: "application".into(), epoch: 2,
+            bytes: Vec::new(), sha256: String::new(), created_at: 0,
+        };
+        // Not an agent room: nothing kept.
+        let mut echo_room = joined_room("family", 4);
+        remember(&mut echo_room, &row(5, "gongmyung-bot", "gongmyung-bot-echo-1"), b"gongmyung-bot", "원문".as_bytes());
+        assert_eq!(echo_room.recent.get(5), None);
+
+        let mut state = room_in("family", Mode::Agent);
+        let original = format!("어제 정리한 내용입니다.\n{}\n끝.", "- 항목\n".repeat(40));
+        remember(&mut state, &row(5, "gongmyung-bot", "gongmyung-bot-echo-1"), b"gongmyung-bot", original.as_bytes());
+        remember(&mut state, &row(6, "owner-pc", "file-v1-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2"), b"owner-pc", b"\xff\xd8");
+        remember(&mut state, &row(7, "gongmyung-bot", "status-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2"), b"gongmyung-bot", "⏳ Working".as_bytes());
+        assert!(state.recent.get(5).is_some());
+        assert_eq!(state.recent.get(6), None, "attachment not kept");
+        assert_eq!(state.recent.get(7), None, "status line not kept");
+
+        let config = responder::Config::new(responder::Transport::Argv(vec!["python3".into(), "-c".into(), ECHO_WORKER.into()]), "owner".into());
+        let mut agent = Responder::spawn(config, None).unwrap_or_else(|e| panic!("spawn: {e}"));
+        let reply = "> 공명✴️ #5: 어제 정리한 내용입니다. - 항목 …\n\n세 번째 항목 자세히";
+        route_to_agent(&mut state, &row(8, "owner-pc", "owner-pc-c8"), b"owner-pc", reply.as_bytes(), &mut agent).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut got = Vec::new();
+        while got.is_empty() && Instant::now() < deadline {
+            got.extend(agent.pump().unwrap_or_else(|e| panic!("pump: {e}")));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let want = format!("답:[답장 대상 #5 · 공명✴️]\n{}\n\n세 번째 항목 자세히", original.trim_end());
+        assert_eq!(got, vec![Outbound::Reply { seq: 8, text: want }]);
+    }
+
     #[test]
     fn route_to_agent_filters_and_answers() {
         const ECHO_WORKER: &str = r#"
@@ -2628,7 +2705,7 @@ for line in sys.stdin:
     fn joined_room_at(room: &str, cursor: i64, state_path: Option<PathBuf>) -> RoomState {
         RoomState {
             sync: RoomSync { room: room.into(), cursor, epoch: 2, joined: true, joinable: true, dirty: false, acked: cursor, ack_sent: cursor, ack_disabled: false, halted: false },
-            echoes: 3, retry: VecDeque::new(), device: Device::new("bot-1").unwrap_or_else(|_| panic!("device new")), state_path, mode: Mode::Echo, pending: None,
+            echoes: 3, retry: VecDeque::new(), device: Device::new("bot-1").unwrap_or_else(|_| panic!("device new")), state_path, mode: Mode::Echo, pending: None, recent: Recent::default(),
         }
     }
 
