@@ -401,11 +401,23 @@ struct RoomView: View {
         .accessibilityIdentifier("reply-banner")
     }
 
-    /// 꾹 누르기 「답장」: 답할 글을 고르고 작성창에 커서를 넣는다.
-    private func startReply(_ record: MessageRecord) {
-        guard let original = MessageCopy.text(of: record) else { return }
-        replying = ReplyTarget(name: AgentRosterNames.person(record.senderDevice), original: original)
+    /// 꾹 누르기 「답장」: 답할 글을 고르고 작성창에 커서를 넣는다. 저장된 글이면 릴레이 seq 를 함께(v2 `#번호`).
+    private func startReply(_ item: AppModel.TimelineItem) {
+        guard let original = MessageCopy.text(of: item.record) else { return }
+        let seq = item.outgoing == nil && item.record.seq > 0 ? item.record.seq : nil
+        replying = ReplyTarget(name: AgentRosterNames.person(item.record.senderDevice), seq: seq, original: original)
         composerFocused = true
+    }
+
+    /// 인용 상자를 눌렀다: 같은 방의 그 seq 글로(지금 불러온 창 안 — `jumpToAlert` 와 같은 이동). 없으면 안내만.
+    private func jumpToReplyTarget(_ seq: Int64, _ proxy: ScrollViewProxy) {
+        guard messages.contains(where: { $0.outgoing == nil && $0.id == seq }) else {
+            toast = Strings.replyTargetMissing
+            return
+        }
+        followLatest = false
+        tracking.lastDrag = Date()
+        withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(seq, anchor: .center) }
     }
 
     /// 첨부 메뉴 + 둥근 입력칸 + 보내기 한 줄.
@@ -482,7 +494,8 @@ struct RoomView: View {
                    loadLinkPreview: { await model.linkPreviewCard(for: $0) },
                    retry: { Task { await model.retry(outgoingId: item.id, room: room) } },
                    selectText: { selecting = SelectableMessage(text: $0) },
-                   reply: isReady && haltedReason == nil ? { startReply(item.record) } : nil)
+                   reply: isReady && haltedReason == nil ? { startReply(item) } : nil,
+                   openReplyTarget: { jumpToReplyTarget($0, proxy) })
             // 선택 모드: 고른 말풍선 점선 테두리(웹 캐럿 모드의 점선 테두리와 같은 표시).
             .overlay {
                 if selectingByKey && keyCursor == item.id {
@@ -769,8 +782,8 @@ struct RoomView: View {
         guard isReady, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         previousDraft = ""
         draft = ""
-        // 답장이면 본문 앞에 `> 이름: 요약` + 빈 줄(ReplyQuote). 다시 보내기도 이 본문 그대로다.
-        let body = replying.map { ReplyQuote.compose(name: $0.name, original: $0.original, reply: text) } ?? text
+        // 답장이면 본문 앞에 `> 이름 #seq: 요약` + 빈 줄(ReplyQuote). 다시 보내기도 이 본문 그대로다.
+        let body = replying.map { ReplyQuote.compose(name: $0.name, seq: $0.seq, original: $0.original, reply: text) } ?? text
         replying = nil
         // 글은 누르는 즉시 목록에 오른다(`AppModel.outgoing`); 실패하면 말풍선 아래 「전송 안 됨 · 다시 보내기」 — 작성창에 되돌리지 않는다.
         Task { _ = await model.send(room: room, text: body) }
@@ -985,6 +998,8 @@ struct MessageRow: View {
     var selectText: (String) -> Void = { _ in }
     /// 꾹 누르기 메뉴 「답장」 — nil 이면 항목 없음(보낼 수 없는 방).
     var reply: (() -> Void)? = nil
+    /// 인용 상자를 누르면 그 seq 글로(방 화면이 스크롤).
+    var openReplyTarget: (Int64) -> Void = { _ in }
     @Environment(\.hande) private var p
     /// #647(오너 요청 2026-11-01): 사진 말풍선 옆 공유 아이콘의 공유 파일 — 말풍선(AttachmentBubble)이 준비되면 알려 준다.
     @State private var photoShareURL: URL?
@@ -1200,7 +1215,7 @@ struct MessageRow: View {
                 if let parsed = ReplyQuote.parse(message.body) {
                     // 답장 글(2026-11-09): 인용 상자(원문 요약) + 내 글.
                     VStack(alignment: .leading, spacing: 6) {
-                        ReplyQuoteBox(quote: parsed.quote)
+                        ReplyQuoteBox(parsed: parsed, open: openReplyTarget)
                         Text(ServiceLinks.attributed(parsed.text, hosts: ServiceLinks.personHosts(previewSites)))
                     }
                 } else {
