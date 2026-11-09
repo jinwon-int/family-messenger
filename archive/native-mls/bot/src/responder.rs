@@ -58,7 +58,17 @@ pub const DEFAULT_QUEUE_MAX: usize = 8;
 /// answer lands first. Was 1200 s, which dropped the answers of long turns
 /// (CI waits, deploys) that the bridge was still working on.
 /// Env `NATIVE_MLS_BOT_TURN_SECS` overrides.
+/// #477: counted from the turn's last frame (interim, status, approval, tool…),
+/// not from its start — a turn that keeps reporting progress is never cut off
+/// by this; only `DEFAULT_TURN_MAX_SECS` bounds it.
 pub const DEFAULT_TURN_SECS: u64 = 21_780;
+/// #477: hard ceiling on one turn however many frames it sends (a bridge whose
+/// status line loops must not hold the room's queue forever). Twice the
+/// silence watchdog by default; env `NATIVE_MLS_BOT_TURN_MAX_SECS`.
+pub const DEFAULT_TURN_MAX_SECS: u64 = 2 * DEFAULT_TURN_SECS;
+/// #477: watchdog-ended turns whose late final answer is still accepted (once
+/// each). Oldest forgotten first.
+pub const LATE_TURNS_MAX: usize = 4;
 /// Turn-age notice (ccc-node `CCC_TURN_AGE_NOTIFY_MIN`/`_RENOTIFY_MIN`, 30/30):
 /// past this age the room gets one notify-only line, repeated every
 /// `DEFAULT_TURN_AGE_RENOTICE_SECS`. Never touches the turn. 0 = off.
@@ -116,6 +126,8 @@ pub struct Config {
     pub reply_max_bytes: usize,
     pub queue_max: usize,
     pub turn_secs: u64,
+    /// #477: whole-turn ceiling (`DEFAULT_TURN_MAX_SECS`).
+    pub turn_max_secs: u64,
     /// Turn-age notice threshold / repeat interval in seconds (0 = off / once).
     pub turn_age_notice_secs: u64,
     pub turn_age_renotice_secs: u64,
@@ -152,6 +164,7 @@ impl Config {
             reply_max_bytes: DEFAULT_REPLY_MAX_BYTES,
             queue_max: DEFAULT_QUEUE_MAX,
             turn_secs: DEFAULT_TURN_SECS,
+            turn_max_secs: DEFAULT_TURN_MAX_SECS,
             turn_age_notice_secs: DEFAULT_TURN_AGE_NOTICE_SECS,
             turn_age_renotice_secs: DEFAULT_TURN_AGE_RENOTICE_SECS,
             interim_max: DEFAULT_INTERIM_MAX,
@@ -334,6 +347,13 @@ pub struct Responder {
     status_sent: usize,
     /// Age of the active turn at which the next turn-age notice is due.
     age_notice_due: Option<Duration>,
+    /// #477: when the active turn last sent a frame (its start until then) —
+    /// the silence watchdog counts from here.
+    last_frame: Instant,
+    /// #477: turns the watchdog ended — (turn_id, seq, room, peer_depth). A
+    /// `result{status:"complete"}` for one of them is posted once, marked
+    /// late; it is never re-run (FLEET-BRIDGE "uncertain work is never re-run").
+    late: VecDeque<(String, i64, String, u8)>,
     /// #425: per-room minute windows for peer intake and notices.
     peer_window: HashMap<String, VecDeque<Instant>>,
     notice_window: HashMap<String, VecDeque<Instant>>,
@@ -485,6 +505,8 @@ impl Responder {
             interim_sent: 0,
             status_sent: 0,
             age_notice_due: None,
+            last_frame: Instant::now(),
+            late: VecDeque::new(),
             peer_window: HashMap::new(),
             notice_window: HashMap::new(),
             status_notice_at: HashMap::new(),
@@ -707,10 +729,22 @@ impl Responder {
             }
         }
         if let Some((turn, started)) = &self.active {
-            if started.elapsed() > Duration::from_secs(self.config.turn_secs) {
-                let (seq, room, depth) = (turn.seq, turn.room.clone(), turn.peer_depth);
-                out.push(turn_item(depth, room, Outbound::Uncertain { seq, reason: "watchdog".to_string() }));
+            // #477: silence since the last frame, or the whole-turn ceiling.
+            let reason = if self.last_frame.elapsed() > Duration::from_secs(self.config.turn_secs) {
+                Some("watchdog")
+            } else if started.elapsed() > Duration::from_secs(self.config.turn_max_secs) {
+                Some("watchdog_max")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                let (turn_id, seq, room, depth) = (turn.turn_id.clone(), turn.seq, turn.room.clone(), turn.peer_depth);
+                out.push(turn_item(depth, room.clone(), Outbound::Uncertain { seq, reason: reason.to_string() }));
                 self.finish_active()?;
+                self.late.push_back((turn_id, seq, room, depth));
+                while self.late.len() > LATE_TURNS_MAX {
+                    self.late.pop_front();
+                }
             }
         }
         if self.active.is_none() && !self.gone {
@@ -733,6 +767,7 @@ impl Responder {
         // the duplicate guard, not the port).
         self.write_inbox(Some(&active))?;
         self.active = Some((active, Instant::now()));
+        self.last_frame = Instant::now();
         self.interim_sent = 0;
         self.status_sent = 0;
         self.age_notice_due = (self.config.turn_age_notice_secs > 0).then(|| Duration::from_secs(self.config.turn_age_notice_secs));
@@ -884,13 +919,29 @@ impl Responder {
             return Ok(());
         }
         let turn_id = value.get("turn_id").and_then(|v| v.as_str()).unwrap_or("");
-        let Some((active, _)) = &self.active else {
-            // Output for no active turn (late events after a watchdog): ignore.
-            return Ok(());
-        };
-        if !turn_id.is_empty() && turn_id != active.turn_id {
+        let is_active = self.active.as_ref().is_some_and(|(active, _)| turn_id.is_empty() || turn_id == active.turn_id);
+        if !is_active {
+            // #477: the final answer of a turn the watchdog ended is posted
+            // once, marked late. Everything else for a turn that is no longer
+            // active (its interims, approvals, an uncertain result) is ignored.
+            if kind == "result" && !turn_id.is_empty() {
+                if let Some(at) = self.late.iter().position(|(id, ..)| id == turn_id) {
+                    let complete = value.get("status").and_then(|v| v.as_str()) == Some("complete");
+                    let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
+                    if let (true, false, Some((_, seq, room, depth))) = (complete, text.is_empty(), self.late.remove(at)) {
+                        let text = format!("⏱ 늦게 도착한 답(#{seq})\n\n{text}");
+                        out.push(turn_item(depth, room, Outbound::Reply { seq, text: bounded_reply(&text, self.config.reply_max_bytes) }));
+                    } else {
+                        // Not a usable answer: the turn will not answer again.
+                        self.late.remove(at);
+                    }
+                }
+            }
             return Ok(());
         }
+        // #477: any frame of the active turn is a sign of life.
+        self.last_frame = Instant::now();
+        let Some((active, _)) = &self.active else { return Ok(()) };
         let seq = active.seq;
         let room = active.room.clone();
         let depth = active.peer_depth;
@@ -1560,6 +1611,24 @@ for line in sys.stdin:
             print(json.dumps({"type": "control", "turn_id": nxt.get("turn_id", ""), "accepted": accepted}), flush=True)
             if accepted:
                 print(json.dumps({"type": "result", "turn_id": tid, "status": "uncertain", "reason": "cancelled", "session_id": "s1"}), flush=True)
+            continue
+        if cmd["prompt"].startswith("tardy "):
+            # #477: answers after the bot's watchdog: the same final result twice
+            # (posted once), preceded by an interim nobody should see.
+            import time
+            time.sleep(float(cmd["prompt"].split()[1]))
+            print(json.dumps({"type": "interim", "turn_id": tid, "text": "too late"}), flush=True)
+            for _ in range(2):
+                print(json.dumps({"type": "result", "turn_id": tid, "status": "complete", "session_id": "s1", "text": "late-done"}), flush=True)
+            continue
+        if cmd["prompt"].startswith("beat "):
+            # #477: a long turn that keeps reporting: a status line every `gap` s, `n` times, then the answer.
+            import time
+            _, n, gap = cmd["prompt"].split()
+            for i in range(int(n)):
+                time.sleep(float(gap))
+                print(json.dumps({"type": "interim", "turn_id": tid, "kind": "status", "text": "⏳ Working — %d" % i}), flush=True)
+            print(json.dumps({"type": "result", "turn_id": tid, "status": "complete", "session_id": "s1", "text": "beat-done"}), flush=True)
             continue
         if cmd["prompt"].startswith("askroom"):
             print(json.dumps({"type": "approval", "turn_id": tid, "approval_id": "ap-2", "action": "mcp__steward__room_invite",
@@ -2297,6 +2366,86 @@ for line in f:
     fn default_turn_limits_match_matrix() {
         let c = Config::new(Transport::Argv(vec!["true".into()]), "owner".into());
         assert_eq!((c.turn_secs, c.turn_age_notice_secs, c.turn_age_renotice_secs), (21_780, 1800, 1800));
+        assert_eq!(c.turn_max_secs, 2 * 21_780);
+    }
+
+    /// Replies and uncertain lines only (status lines and interims dropped).
+    fn answers(got: Vec<Outbound>) -> Vec<Outbound> {
+        got.into_iter().filter(|o| matches!(o, Outbound::Reply { .. } | Outbound::Uncertain { .. })).collect()
+    }
+
+    fn pump_for(r: &mut Responder, secs: f64) -> Vec<Outbound> {
+        let deadline = Instant::now() + Duration::from_secs_f64(secs);
+        let mut got = Vec::new();
+        while Instant::now() < deadline {
+            got.extend(r.pump().unwrap_or_else(|e| panic!("pump: {e}")));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        got
+    }
+
+    /// #477 ②: the watchdog's warning, then the late final answer once, marked
+    /// late; its interim and the duplicate result are dropped.
+    #[test]
+    fn a_late_final_answer_after_the_watchdog_is_posted_once() {
+        let mut r = fake(|c| c.turn_secs = 0, None);
+        r.offer(inbound(7, "owner-pc", "tardy 0.3")).unwrap();
+        let got = answers(pump_for(&mut r, 1.5));
+        assert_eq!(got, vec![
+            Outbound::Uncertain { seq: 7, reason: "watchdog".into() },
+            Outbound::Reply { seq: 7, text: "⏱ 늦게 도착한 답(#7)\n\nlate-done".into() },
+        ]);
+        assert!(r.late.is_empty(), "answered turns are forgotten");
+    }
+
+    /// #477 ③: status lines keep a long turn alive past `turn_secs` of total
+    /// time — no warning, the answer arrives as usual.
+    #[test]
+    fn frames_keep_a_long_turn_alive() {
+        let mut r = fake(|c| c.turn_secs = 1, None);
+        r.offer(inbound(8, "owner-pc", "beat 6 0.35")).unwrap(); // ≈ 2.1 s, never 1 s silent
+        let got = answers(pump_for(&mut r, 3.5));
+        assert_eq!(got, vec![Outbound::Reply { seq: 8, text: "beat-done".into() }]);
+    }
+
+    /// #477 ③: a silent turn still ends at `turn_secs` and its answer lands late.
+    #[test]
+    fn a_silent_turn_still_ends_and_answers_late() {
+        let mut r = fake(|c| c.turn_secs = 1, None);
+        r.offer(inbound(9, "owner-pc", "tardy 1.6")).unwrap();
+        let got = answers(pump_for(&mut r, 3.0));
+        assert_eq!(got, vec![
+            Outbound::Uncertain { seq: 9, reason: "watchdog".into() },
+            Outbound::Reply { seq: 9, text: "⏱ 늦게 도착한 답(#9)\n\nlate-done".into() },
+        ]);
+    }
+
+    /// #477: the ceiling ends a turn that never stops reporting.
+    #[test]
+    fn the_whole_turn_ceiling_ends_a_chatty_turn() {
+        let mut r = fake(|c| { c.turn_secs = 10; c.turn_max_secs = 1; }, None);
+        r.offer(inbound(10, "owner-pc", "beat 6 0.3")).unwrap();
+        let got = answers(pump_for(&mut r, 3.0));
+        assert_eq!(got, vec![
+            Outbound::Uncertain { seq: 10, reason: "watchdog_max".into() },
+            Outbound::Reply { seq: 10, text: "⏱ 늦게 도착한 답(#10)\n\nbeat-done".into() },
+        ]);
+    }
+
+    /// #477: only the last `LATE_TURNS_MAX` watchdog-ended turns are remembered.
+    #[test]
+    fn late_turns_are_bounded() {
+        let mut r = fake(|c| c.turn_secs = 0, None);
+        for seq in 1..=(LATE_TURNS_MAX as i64 + 2) {
+            r.late.push_back((format!("t-{seq}"), seq, "agent".into(), 0));
+            while r.late.len() > LATE_TURNS_MAX { r.late.pop_front(); }
+        }
+        let mut out = Vec::new();
+        for seq in [1, LATE_TURNS_MAX as i64 + 2] {
+            r.handle(serde_json::json!({"type": "result", "turn_id": format!("t-{seq}"), "status": "complete", "text": "x"}), &mut out).unwrap();
+        }
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].1, Outbound::Reply { seq: LATE_TURNS_MAX as i64 + 2, text: format!("⏱ 늦게 도착한 답(#{})\n\nx", LATE_TURNS_MAX + 2) });
     }
 
     #[test]
