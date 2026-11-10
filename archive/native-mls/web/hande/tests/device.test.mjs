@@ -141,7 +141,8 @@ test('replenish(#616 유예 + protect): 목록에 오른 Welcome 의 ref 는 유
 
 test('lobbyStatusOf: 형제 기기 잔량 — 200 이면 live, 그 밖(403·404·오류)은 null', async () => {
   const {bridge} = fakeWorker(); const storage = memStorage();
-  const answers = {'mom-pc-1': {status: 200, body: {live: 3, max: 8}}, 'mom-pc-2': {status: 403, body: {error: 'device_subject_mismatch'}}};
+  const answers = {'mom-pc-1': {status: 200, body: {live: 3, max: 8}}, 'mom-pc-2': {status: 403, body: {error: 'device_subject_mismatch'}},
+    'mom-pc-5': {status: 200, body: {live: 0, max: 8, excluded_rooms: ['family', 7, 'work']}}, 'mom-pc-6': {status: 200, body: {live: 1, max: 8, excluded_rooms: []}}};
   const relay = {describe: () => '', api: async (method, path) => {
     assert.equal(method, 'GET');
     const device = new URL(path, 'http://x').searchParams.get('device');
@@ -149,7 +150,9 @@ test('lobbyStatusOf: 형제 기기 잔량 — 200 이면 live, 그 밖(403·404�
     return answers[device] ?? {status: 404, body: null};
   }};
   const dev = createDevice({device: 'mom-web-aaaaaa', worker: bridge, relay, storage});
-  assert.deepEqual(await dev.lobbyStatusOf('mom-pc-1'), {live: 3, max: 8});
+  assert.deepEqual(await dev.lobbyStatusOf('mom-pc-1'), {live: 3, max: 8, excluded: null});   // 옛 릴레이(#616 필드 없음) → 재탐색 끔
+  assert.deepEqual(await dev.lobbyStatusOf('mom-pc-5'), {live: 0, max: 8, excluded: ['family', 'work']});   // 문자열만
+  assert.deepEqual(await dev.lobbyStatusOf('mom-pc-6'), {live: 1, max: 8, excluded: []});
   assert.equal(await dev.lobbyStatusOf('mom-pc-2'), null);
   assert.equal(await dev.lobbyStatusOf('mom-pc-3'), null);
   assert.equal(await dev.lobbyStatusOf('mom-pc-4'), null);

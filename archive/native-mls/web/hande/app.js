@@ -31,6 +31,7 @@ import {
   canApprove, isSibling, candidatesFor, approvalArgs, approvalEvidence, rolesActions, nextRoles, rolesArgs, rolesEvidence, recordOf,
   siblingInviteRooms, enrollModeFrom, readSiblingQueue, writeSiblingQueue, enqueueSiblingInvites, splitSiblingQueue, isRetryableInviteError,
   siblingInviteTurn, SIBLING_INVITE_TTL_MS,
+  siblingDevices, siblingRescanTurn, rescanDue, readRescanState, writeRescanState, rescanOff, setRescanOff,
   CANDIDATE_REPOST_MARGIN_MS,
 } from './self-service.js';
 
@@ -463,6 +464,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
         catch (error) { logLine(`로비 키 보충 실패: ${error.message}`); }
       }
       await discoverCandidates();
+      try { await rescanSiblings(); } catch (error) { logLine(`빠진 방 재탐색 실패: ${error.message}`); }
       await processSiblingInvites();
     } finally { refreshing = false; render(); }
   }
@@ -577,13 +579,41 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     } catch (error) { c.message = error.message; logLine(`${c.device_id} 승인 실패: ${error.message}`); throw error; }
     finally { c.busy = false; render(); }
   }
-  const roomsView = () => [...app.rooms.entries()].map(([roomId, R]) => { const S = R.session.state; return {roomId, joined: S.joined, halted: S.halted, pending: S.pending, roster: S.roster}; });
+  const roomsView = () => [...app.rooms.entries()].map(([roomId, R]) => { const S = R.session.state; return {roomId, joined: S.joined, halted: S.halted, pending: S.pending, roster: S.roster, synced: S.syncedAt !== null}; });
   /** After approving a sibling: remember the rooms it should join; the queue is worked at the end of every refresh. */
   function queueSiblingInvites(target) {
     const rooms = siblingInviteRooms(roomsView(), target);
     if (!rooms.length) return;
     if (!writeSiblingQueue(storage, app.device, enqueueSiblingInvites(readSiblingQueue(storage, app.device), target, rooms, Date.now()))) logLine('형제 기기 초대 대기열 저장 실패 — 이번 화면에서만 시도');
     logLine(`형제 기기 ${target} 초대 대기열: ${rooms.join(', ')}`);
+  }
+  /**
+   * #616 rescan (owner D1–D3): while the app is open, at most every 6 h, find the rooms my other *active* devices are
+   * missing and feed them to the same queue (lobby-key budget, 24 h progress TTL). Rooms a device was removed from by
+   * commit (relay `excluded_rooms`) are skipped; an older relay without that field turns the rescan off for that device.
+   * One inviter per room: the lowest device ID of mine in it invites now, the others only if it is still missing 30 min on.
+   */
+  async function rescanSiblings() {
+    if (rescanOff(storage, app.device)) return;
+    const siblings = siblingDevices(app.me, app.device);
+    if (!siblings.length) return;
+    const state = readRescanState(storage, app.device);
+    const now = Date.now();
+    if (!rescanDue(state, now)) return;
+    const excluded = new Map();
+    for (const target of siblings) excluded.set(target, (await app.dev.lobbyStatusOf(target))?.excluded ?? null);
+    const turn = siblingRescanTurn({rooms: roomsView(), device: app.device, siblings, excluded, state, now});
+    if (!turn.ready) return;   // a joined room has not synced yet this session — its roster may be stale
+    writeRescanState(storage, app.device, turn.state);
+    const skipped = siblings.filter(t => excluded.get(t) === null);
+    if (skipped.length) logLine(`빠진 방 재탐색: 릴레이가 제외 목록을 주지 않아 건너뜀 — ${skipped.join(', ')}`);
+    if (!turn.enqueue.length) return;
+    let queue = readSiblingQueue(storage, app.device);
+    for (const {target, rooms} of turn.enqueue) {
+      queue = enqueueSiblingInvites(queue, target, rooms, now, {origin: 'rescan'});
+      logLine(`빠진 방 재탐색: ${target} → ${rooms.join(', ')}`);
+    }
+    if (!writeSiblingQueue(storage, app.device, queue)) logLine('형제 기기 초대 대기열 저장 실패 — 이번 화면에서만 시도');
   }
   /**
    * Sibling invites (#574): a freshly approved device publishes its lobby keys only on its next tick, so the first
@@ -599,9 +629,10 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     const {live, expired} = splitSiblingQueue(queue, now);
     for (const e of expired) {
       logLine(`형제 기기 ${e.target} 초대 포기(진행 없이 ${Math.round(SIBLING_INVITE_TTL_MS / 3_600_000)}시간): ${e.rooms.join(', ')}`);
-      addNote(`sibling-expired:${e.target}`, strings.candidates.siblingGaveUp(e.target, e.rooms.map(roomLabel).join(', ')), 'warn');
+      if (e.origin !== 'rescan') addNote(`sibling-expired:${e.target}`, strings.candidates.siblingGaveUp(e.target, e.rooms.map(roomLabel).join(', ')), 'warn');   // #616: the rescan retries on its own
     }
     const next = [];
+    const rescanned = {devices: new Set(), rooms: 0};
     const noKey = target => strings.room.noKeyPackage(target);
     for (const e of live) {
       const {entry, invited, failed} = await siblingInviteTurn(e, {
@@ -616,14 +647,16 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
         logLine(strings.candidates.siblingInvited(e.target, roomId));
         status(strings.candidates.siblingInvited(e.target, roomLabel(roomId)), 'ok');
       }
+      if (e.origin === 'rescan' && invited.length) { rescanned.devices.add(e.target); rescanned.rooms += invited.length; }
       for (const {roomId, error} of failed) {
         logLine(`형제 기기 ${e.target} 초대 실패(${roomId}, 포기): ${error.message}`);
-        addNote(`sibling-failed:${e.target}:${roomId}`, strings.candidates.siblingFailed(e.target, roomLabel(roomId), error.message), 'danger');
+        if (e.origin !== 'rescan') addNote(`sibling-failed:${e.target}:${roomId}`, strings.candidates.siblingFailed(e.target, roomLabel(roomId), error.message), 'danger');
       }
       if (entry && entry.recheckAt && entry.recheckAt !== e.recheckAt) logLine(`형제 기기 ${e.target} 초대용 키 없음 — ${entry.rooms.length}개 방은 키가 보충되면 이어서`);
       if (entry) next.push(entry);
     }
     writeSiblingQueue(storage, app.device, next);
+    if (rescanned.rooms) addNote(`sibling-rescan:${now}`, strings.candidates.siblingRescanned(rescanned.devices.size, rescanned.rooms), 'info');
   }
   function addNote(key, text, tone = 'info') {
     if (app.notes.some(n => n.key === key)) return;
@@ -800,7 +833,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     const reg = JSON.stringify(app.dev.registration(app.subject), null, 1);
     ui.openSettingsSheet(root, {deviceId: app.device, actor: app.actor, fingerprint: app.dev.state.fingerprint, subject: app.subject,
       origin: location.host, policyRevision: app.me?.policy_revision ?? null, onCopyRegistration: () => copy(reg), onOpenApprove: openApprove, onOpenDevices: devicesView() ? openDevices : null, onWipe: confirmWipe, onClose: () => {},
-      theme: theme ? theme.get() : null, onTheme: theme ? value => theme.set(value) : null});
+      theme: theme ? theme.get() : null, onTheme: theme ? value => theme.set(value) : null,
+      rescan: devicesView() ? !rescanOff(storage, app.device) : null, onRescan: on => { setRescanOff(storage, app.device, !on); logLine(`빠진 방 재탐색 ${on ? '켬' : '끔'}`); }});
   }
   function openJoin() {
     ui.openJoinSheet(root, {defaultRoom: app.current ?? app.defaultRoom, busy: false, message: null, onClose: () => {}, onSubmit: async roomId => {

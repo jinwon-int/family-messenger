@@ -588,6 +588,7 @@ export const strings = {
     siblingInvited: (device, room) => `${device} 기기를 「${room}」 대화방에 초대했습니다.`,
     siblingGaveUp: (device, rooms) => `${device} 기기를 ${rooms} 대화방에 초대하지 못했습니다(하루 동안 그 기기의 초대용 키가 없음). 그 기기에서 앱을 연 뒤 「초대」로 직접 들이세요.`,
     siblingFailed: (device, room, reason) => `${device} 기기를 「${room}」 대화방에 초대하지 못했습니다: ${reason}`,
+    siblingRescanned: (devices, rooms) => `내 다른 기기 ${devices}대를 대화방 ${rooms}개에 다시 넣었습니다.`,
     noteDismiss: '확인',
   },
 
@@ -762,6 +763,9 @@ export const strings = {
     themeNightHint: '밤이 기본이에요. 시스템 다크/라이트를 따르지 않습니다.',
     themeDayHint: '밝은 곳·e-ink 화면용. 종이 바탕에 먹 글자, 움직임이 꺼집니다.',
     themeAutoHint: '시스템이 라이트 모드일 때만 낮불로 바뀝니다.',
+    rescanTitle: '빠진 방 다시 찾기',
+    rescanLabel: '내 다른 기기가 빠진 대화방에 자동으로 다시 초대',
+    rescanHint: '앱을 열 때, 최소 6시간 간격으로 확인합니다. 일부러 내보낸 방은 건너뜁니다.',
     copy: '복사',
     copied: '복사했어요',
     operatorInfo: '운영자용 정보',
