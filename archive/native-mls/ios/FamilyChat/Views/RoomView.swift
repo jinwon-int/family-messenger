@@ -1361,6 +1361,18 @@ struct SwipeToReply: ViewModifier {
     }
 }
 
+/// 밀어서 답장 팬의 판정 기록(재현 화면 `SwipeReplyHarness` 용). DEBUG 에서 재현 화면이 받을 곳을 달았을 때만 쓴다 — 출시 빌드는 빈 함수.
+enum SwipeReplyTrace {
+    #if DEBUG
+    static var sink: ((String) -> Void)?
+    #endif
+    static func note(_ line: @autoclosure () -> String) {
+        #if DEBUG
+        sink?(line())
+        #endif
+    }
+}
+
 /// iOS 18+ 밀어서 답장 팬. 시작 순간의 속도가 왼쪽 가로 우세일 때만 시작한다(`SwipeReply.shouldBegin`) — 세로·오른쪽 끌기는
 /// 시작하지 않으므로 타임라인 스크롤·넓은 뒤로가기가 그대로 받는다. 시작한 뒤에는 다른 인식기와 함께 돈다(꾹 누르기 메뉴 등).
 /// #737: 시작점이 코드·표 영역(`zones`, 행 좌표) 안이면 시작하지 않는다 — 그 끌기는 블록의 가로 스크롤이 받는다.
@@ -1390,6 +1402,9 @@ struct SwipeReplyPan: UIGestureRecognizerRepresentable {
     func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer, context: Context) {
         let t = recognizer.translation(in: recognizer.view)
         let size = CGSize(width: t.x, height: t.y)
+        if recognizer.state != .changed {
+            SwipeReplyTrace.note("pan state=\(recognizer.state.rawValue) t=(\(Int(t.x)),\(Int(t.y)))")
+        }
         switch recognizer.state {
         case .began, .changed: changed(size)
         case .ended: ended(size, false)
@@ -1411,10 +1426,13 @@ struct SwipeReplyPan: UIGestureRecognizerRepresentable {
         func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
             guard enabled, let pan = recognizer as? UIPanGestureRecognizer else { return false }
             let v = pan.velocity(in: pan.view)
+            let local = converter.location(in: .local)
+            SwipeReplyTrace.note("begin? v=(\(Int(v.x)),\(Int(v.y))) local=(\(Int(local.x)),\(Int(local.y))) "
+                                 + "view=\(pan.view.map { String(describing: type(of: $0)) } ?? "nil") zones=\(zones.count)")
             guard SwipeReply.shouldBegin(vx: Double(v.x), vy: Double(v.y)) else { return false }
             guard !zones.isEmpty else { return true }
             // 팬은 손가락이 조금 움직인 뒤에 판정한다 — 지금 위치에서 그동안의 이동을 빼 시작점을 구한다.
-            let now = converter.location(in: .local)
+            let now = local
             let moved = pan.translation(in: pan.view)
             return !SwipeReply.startsInSideScroll(x: Double(now.x - moved.x), y: Double(now.y - moved.y), zones: zones)
         }

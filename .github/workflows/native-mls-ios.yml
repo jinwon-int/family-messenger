@@ -202,7 +202,7 @@ jobs:
         run: |
           log="$RUNNER_TEMP/xcodebuild-test.log"
           test -f "$log" || exit 0
-          grep -E '\[scenario\]|\[xproc\]|\[nse\]|Test Case .*(Integration|RelaySmoke|CrossProcess|NotificationProcessor|PushRegistration).*(passed|failed|skipped)|Executed [0-9]+ tests|\*\* TEST (SUCCEEDED|FAILED) \*\*' "$log" \
+          grep -E '\[scenario\]|\[xproc\]|\[nse\]|\[swipe\]|Test Case .*(Integration|RelaySmoke|CrossProcess|NotificationProcessor|PushRegistration|SwipeReply).*(passed|failed|skipped)|Executed [0-9]+ tests|\*\* TEST (SUCCEEDED|FAILED) \*\*' "$log" \
             | tee -a "$GITHUB_STEP_SUMMARY" || true
       - name: App size
         working-directory: archive/native-mls/ios
