@@ -36,14 +36,17 @@ case "$1" in
     cat "$FAKE_DIR/pid.$5" 2>/dev/null || echo 0 ;;
   restart)
     old=$(cat "$FAKE_DIR/pid.$2" 2>/dev/null); [ -n "$old" ] && kill "$old" 2>/dev/null
-    setsid "$FAKE_BIN" 60 >/dev/null 2>&1 < /dev/null &
+    # argv[0]=sleep: a multicall coreutils (uutils, ubuntu-26.04) picks the tool by argv[0], and a
+    # copy named native-mls-bot would not sleep. exec keeps the pid, so $! is still the bot's.
+    setsid bash -c 'exec -a sleep "$0" 60' "$FAKE_BIN" >/dev/null 2>&1 < /dev/null &
     echo $! > "$FAKE_DIR/pid.$2"; echo $! >> "$FAKE_DIR/spawned" ;;
   is-active) echo active ;;
 esac
 '''
-# journalctl double: a healthy room unless the binary now in place carries BAD.
+# journalctl double: a healthy room unless the binary now in place carries the BAD marker. The marker
+# must not occur in any `sleep` build: uutils' multicall binary holds errno names (EBADF, EBADMSG).
 FAKE_JOURNALCTL = r'''#!/usr/bin/env bash
-if grep -q BAD "$FAKE_BIN"; then echo '{"event":"steward_ready","rooms":[{"joined":true,"halted":true}]}'
+if grep -q SWAPTEST-BAD-7c1e "$FAKE_BIN"; then echo '{"event":"steward_ready","rooms":[{"joined":true,"halted":true}]}'
 else echo '{"event":"steward_ready","rooms":[{"halted":false,"joined":true,"mode":"agent"}]}'; fi
 '''
 
@@ -56,6 +59,7 @@ class NativeMlsBotSwapTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.addCleanup(self.kill_spawned)
         base = Path(SLEEP).read_bytes()
+        self.assertNotIn(b'SWAPTEST-BAD-7c1e', base, 'the BAD marker must not occur in the sleep binary')
         (self.tmp / 'bin').mkdir()
         self.bin = self.tmp / 'bin' / 'native-mls-bot'
         self.bin.write_bytes(base + b'\nOLD-GOOD\n')
@@ -63,7 +67,7 @@ class NativeMlsBotSwapTest(unittest.TestCase):
         self.good = self.tmp / 'stage-good'
         self.good.write_bytes(base + b'\nNEW-GOOD watchdog_max\n')
         self.bad = self.tmp / 'stage-bad'
-        self.bad.write_bytes(base + b'\nNEW-BAD watchdog_max\n')
+        self.bad.write_bytes(base + b'\nNEW SWAPTEST-BAD-7c1e watchdog_max\n')
         for name, body in (('systemctl', FAKE_SYSTEMCTL), ('journalctl', FAKE_JOURNALCTL)):
             (self.tmp / name).write_text(body)
             (self.tmp / name).chmod(0o755)
