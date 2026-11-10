@@ -1374,7 +1374,8 @@ enum SwipeReplyTrace {
 }
 
 /// iOS 18+ 밀어서 답장 팬. 시작 순간의 속도가 왼쪽 가로 우세일 때만 시작한다(`SwipeReply.shouldBegin`) — 세로·오른쪽 끌기는
-/// 시작하지 않으므로 타임라인 스크롤·넓은 뒤로가기가 그대로 받는다. 시작한 뒤에는 다른 인식기와 함께 돈다(꾹 누르기 메뉴 등).
+/// 시작하지 않으므로 타임라인 스크롤·넓은 뒤로가기가 그대로 받는다. 시작한 뒤에는 다른 인식기와 함께 돈다(꾹 누르기 메뉴 등) —
+/// 타임라인 세로 스크롤만 예외로, 밀리는 동안 잠근다(#745).
 /// #737: 시작점이 코드·표 영역(`zones`, 행 좌표) 안이면 시작하지 않는다 — 그 끌기는 블록의 가로 스크롤이 받는다.
 @available(iOS 18.0, *)
 struct SwipeReplyPan: UIGestureRecognizerRepresentable {
@@ -1439,9 +1440,24 @@ struct SwipeReplyPan: UIGestureRecognizerRepresentable {
             return !SwipeReply.startsInSideScroll(x: Double(now.x - moved.x), y: Double(now.y - moved.y), zones: zones)
         }
 
+        /// #745: 타임라인의 세로 스크롤 팬인가(가로로 넘치는 표·코드 블록의 스크롤은 아니다 — 그 끌기는 영역 판정이 맡는다).
+        static func isTimelineScrollPan(_ other: UIGestureRecognizer) -> Bool {
+            guard let scroll = other.view as? UIScrollView, other === scroll.panGestureRecognizer else { return false }
+            return scroll.contentSize.width <= scroll.bounds.width + 1
+        }
+
+        /// 다른 인식기(꾹 누르기 메뉴 등)와는 함께 돈다. 타임라인 세로 스크롤과는 함께 돌지 않는다(#745) — 아래 실패 요구와 짝.
         func gestureRecognizer(_ recognizer: UIGestureRecognizer,
                                shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-            true
+            !Self.isTimelineScrollPan(other)
+        }
+
+        /// #745: 타임라인 세로 스크롤은 이 팬이 실패한 뒤에 시작한다. 세로 끌기는 시작 판정(`shouldBegin`)에서 곧바로 실패하므로 스크롤은
+        /// 종전과 같고, 왼쪽 밀기가 시작되면 그 끌기 동안 타임라인이 같이 움직이지 않는다 — 종전엔 엄지가 위아래로 조금만 흔들려도
+        /// 화면이 세로로 밀려 말풍선이 손가락 아래에서 빠져나갔다(위쪽 말풍선일수록 엄지 궤적이 비스듬해 잦았다).
+        func gestureRecognizer(_ recognizer: UIGestureRecognizer,
+                               shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+            Self.isTimelineScrollPan(other)
         }
 
         #if DEBUG
