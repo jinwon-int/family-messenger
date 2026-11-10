@@ -311,6 +311,8 @@ final class FakeRelay: RelayTransport {
     /// false = 로비가 없는 옛 릴레이(404).
     var lobbyEnabled = true
     var lobbyMax = 8
+    /// #616: lobby/status excluded_rooms(기기별). 없으면 nil = 옛 릴레이.
+    var lobbyExcluded: [DeviceID: [RoomID]] = [:]
     var lobbyLive: [DeviceID: [KeyPackageInput]] = [:]
     var lobbyConsumed: [(device: DeviceID, consumer: DeviceID, room: RoomID, ref: String)] = []
     var lobbyPosts: [KeyPackagePost] = []
@@ -344,7 +346,7 @@ final class FakeRelay: RelayTransport {
     func lobbyStatus(device: DeviceID) async throws -> LobbyStatus {
         check("lobbyStatus"); try lobbyGate()
         lobbyStatusCalls += 1
-        return LobbyStatus(device: device, live: lobbyLive[device]?.count ?? 0, max: lobbyMax, ttlSeconds: 30 * 86_400)
+        return LobbyStatus(device: device, live: lobbyLive[device]?.count ?? 0, max: lobbyMax, ttlSeconds: 30 * 86_400, excludedRooms: lobbyExcluded[device])
     }
 
     func lobbyWelcomes(device: DeviceID) async throws -> [PendingWelcome] {

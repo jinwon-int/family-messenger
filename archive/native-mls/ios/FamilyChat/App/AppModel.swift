@@ -93,6 +93,8 @@ final class AppModel: ObservableObject {
         var typingInterval: TimeInterval = 3
         /// #574 형제 기기 초대 대기열 영속(기기별). 기본 = 메모리(테스트), live() 는 App Group defaults.
         var siblingQueue: SiblingQueueStoring = InMemorySiblingQueueStore()
+        /// #616 빠진 방 재탐색 상태·끄기 스위치(기기별). 기본 = 메모리(테스트), live() 는 App Group defaults.
+        var siblingRescan: SiblingRescanStoring = InMemorySiblingRescanStore()
         /// #574 준비 상태에서 `GET /v2/me` 를 묻는 간격(바퀴 수, 웹 `ME_EVERY_TICKS` = 4). 로그인·전면 복귀·체인 변경 직후에는 바로 묻는다.
         var meEveryRounds = 4
         /// 시계(후보 재게시·대기열 TTL). 테스트가 돌린다.
@@ -269,6 +271,8 @@ final class AppModel: ObservableObject {
     // #574 새 기기 셀프서비스
     /// 마지막 `GET /v2/me`(내 subject 의 체인 기록·정책 revision). nil = 아직 안 물었거나 접근 인증이 꺼진 릴레이(404).
     @Published private(set) var me: MeResponse?
+    /// #616: 「빠진 방 다시 찾기」 토글이 바뀔 때 올린다(값은 `siblingRescanEnabled` 가 저장소에서 읽는다).
+    @Published private(set) var siblingRescanRevision = 0
     /// 등록 대기 화면의 모드(후보 게시 결과)와 게시 만료 시각.
     struct EnrollmentStatus: Equatable {
         var mode: SelfService.EnrollMode = .operatorFlow
@@ -599,6 +603,7 @@ final class AppModel: ObservableObject {
             self.transport = nil
             // #574: 옛 기기 ID 의 초대 대기열·후보·체인 보기도 버린다(새 ID 는 새 대기열).
             self.deps.siblingQueue.save(SiblingInviteQueue(), device: device)
+            self.deps.siblingRescan.save(SiblingRescan.State(), device: device)
             self.discardRuntimeState()
             try self.deps.wipe.storage()
             self.localPrefs.clearDrafts()
@@ -874,6 +879,8 @@ final class AppModel: ObservableObject {
         // #574: 우편함의 새 기기 후보 → 🔔 「새 기기 승인」, 승인한 형제 기기 초대 대기열 처리.
         if yieldToSend() { return }
         try await discoverCandidatesLocked(transport)
+        if yieldToSend() { return }
+        await rescanSiblingsLocked(transport)
         if yieldToSend() { return }
         try await processSiblingInvitesLocked(transport)
     }
@@ -1520,6 +1527,46 @@ final class AppModel: ObservableObject {
         return SelfService.RoomView(roomId: record.room, joined: status.joined, halted: record.haltedReason != nil, pending: status.pending, roster: status.roster)
     }
 
+    /// 설정 「빠진 방 다시 찾기」(#616, 기본 켜짐).
+    var siblingRescanEnabled: Bool { !deps.siblingRescan.isOff(device: deviceId) }
+
+    func setSiblingRescanEnabled(_ on: Bool) {
+        deps.siblingRescan.setOff(!on, device: deviceId)
+        siblingRescanRevision += 1   // 설정 화면 갱신(@Published) — Linux 스모크의 Combine 대역에는 objectWillChange 가 없다
+        record("sibling rescan \(on ? "on" : "off")")
+    }
+
+    /// #616 빠진 방 주기적 재탐색(오너 D1~D3, 웹 `rescanSiblings`): 최소 6시간마다 내 다른 활성 기기가 빠진 방을 형제 초대 대기열에 넣는다.
+    /// commit 으로 내보낸 방(`LobbyStatus.excludedRooms`)은 건너뛰고, 그 필드가 없는 옛 릴레이면 그 기기는 재탐색하지 않는다(fail-closed).
+    /// 방마다 초대 기기는 하나: 그 방의 내 기기 중 ID 최소가 바로, 나머지는 30분 뒤에도 빠져 있을 때만. 바퀴는 모든 방을 동기화한 뒤 여기에
+    /// 오므로 명단은 최신이다(`RoomView.synced` 기본 true). 조회 실패는 이번 재탐색을 미룬다(다음 바퀴).
+    private func rescanSiblingsLocked(_ transport: RelayTransport) async {
+        guard !deps.siblingRescan.isOff(device: deviceId) else { return }
+        let siblings = SiblingRescan.siblings(me: me, device: deviceId)
+        guard !siblings.isEmpty else { return }
+        let now = deps.clock()
+        let state = deps.siblingRescan.load(device: deviceId)
+        guard SiblingRescan.due(state, now: now) else { return }
+        var excluded: [DeviceID: [RoomID]?] = [:]
+        for target in siblings {
+            do { excluded[target] = try await transport.lobbyStatus(device: target).excludedRooms }
+            catch { record("sibling rescan: lobby status \(target) failed — \(Self.brief(error)); retry next round"); return }
+        }
+        let views = rooms.filter { $0.room != Strings.identityRoom && $0.room != LobbyKeyring.slot }.map(roomView)
+        let turn = SiblingRescan.turn(rooms: views, device: deviceId, siblings: siblings, excluded: excluded, state: state, now: now)
+        guard turn.ready else { return }
+        deps.siblingRescan.save(turn.state, device: deviceId)
+        let skipped = siblings.filter { (excluded[$0] ?? nil) == nil }
+        if !skipped.isEmpty { record("sibling rescan: relay gave no excluded_rooms — skipped \(skipped.joined(separator: ","))") }
+        guard !turn.enqueue.isEmpty else { return }
+        var queue = deps.siblingQueue.load(device: deviceId)
+        for item in turn.enqueue {
+            queue = queue.enqueued(target: item.target, rooms: item.rooms, now: now, origin: SiblingRescan.origin)
+            record("sibling rescan: \(item.target) missing from \(item.rooms.joined(separator: ","))")
+        }
+        deps.siblingQueue.save(queue, device: deviceId)
+    }
+
     /// 승인 직후: 새 기기를 들일 방(내가 참여한·정지 아닌·명단에 없는 방)을 대기열에 적는다 — 초대 자체는 바퀴마다(`processSiblingInvitesLocked`).
     private func queueSiblingInvites(target: DeviceID) {
         let views = rooms.filter { $0.room != Strings.identityRoom && $0.room != LobbyKeyring.slot }.map(roomView)
@@ -1550,9 +1597,11 @@ final class AppModel: ObservableObject {
         let (live, expired) = queue.split(now: now)
         for e in expired {
             record("sibling \(e.target): gave up after \(Int(SelfService.siblingInviteTTL / 3600)) h without progress — \(e.rooms.joined(separator: ","))")
-            addSiblingNote("sibling-expired:\(e.target)", Strings.siblingGaveUp(e.target, e.rooms))
+            // #616: 재탐색이 넣은 항목은 🔔 없이 — 다음 재탐색이 다시 시도한다.
+            if e.origin != SiblingRescan.origin { addSiblingNote("sibling-expired:\(e.target)", Strings.siblingGaveUp(e.target, e.rooms)) }
         }
         var next: [SiblingInviteQueue.Entry] = []
+        var rescannedDevices: Set<DeviceID> = [], rescannedRooms = 0
         for e in live {
             let turn = try await SiblingInviteQueue.turn(
                 e, now: now,
@@ -1565,9 +1614,12 @@ final class AppModel: ObservableObject {
                 record("sibling \(e.target): invited into \(room)")
                 notice = Strings.siblingInvited(e.target, room)
             }
+            if e.origin == SiblingRescan.origin, !turn.invited.isEmpty { rescannedDevices.insert(e.target); rescannedRooms += turn.invited.count }
             for failure in turn.failed {
                 record("sibling \(e.target): invite into \(failure.room) failed (giving up) — \(Self.brief(failure.error))")
-                addSiblingNote("sibling-failed:\(e.target):\(failure.room)", Strings.siblingInviteFailed(e.target, failure.room, Self.brief(failure.error)))
+                if e.origin != SiblingRescan.origin {
+                    addSiblingNote("sibling-failed:\(e.target):\(failure.room)", Strings.siblingInviteFailed(e.target, failure.room, Self.brief(failure.error)))
+                }
             }
             if let entry = turn.entry {
                 if let recheck = entry.recheckAt, recheck != e.recheckAt {
@@ -1577,6 +1629,9 @@ final class AppModel: ObservableObject {
             }
         }
         deps.siblingQueue.save(SiblingInviteQueue(next), device: deviceId)
+        if rescannedRooms > 0 {
+            addSiblingNote("sibling-rescan:\(Int(now.timeIntervalSince1970))", Strings.siblingRescanned(devices: rescannedDevices.count, rooms: rescannedRooms))
+        }
     }
 
     // MARK: - 푸시 (§12-D)

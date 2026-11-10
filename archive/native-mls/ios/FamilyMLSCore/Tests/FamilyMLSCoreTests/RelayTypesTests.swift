@@ -86,6 +86,10 @@ final class RelayTypesTests: XCTestCase {
     func testLobbyTypesDecodeServerShape() throws {
         let status = try JSONDecoder().decode(LobbyStatus.self, from: Data(#"{"device":"owner-iphone-1","live":3,"max":8,"ttl_seconds":2592000}"#.utf8))
         XCTAssertEqual(status, LobbyStatus(device: "owner-iphone-1", live: 3, max: 8, ttlSeconds: 2_592_000))
+        XCTAssertNil(status.excludedRooms, "#616: a relay from before excluded_rooms → nil (rescan off)")
+        let withExcluded = try JSONDecoder().decode(LobbyStatus.self, from: Data(#"{"device":"d","live":0,"max":8,"ttl_seconds":1,"excluded_rooms":["family"]}"#.utf8))
+        XCTAssertEqual(withExcluded.excludedRooms, ["family"])
+        XCTAssertEqual(try JSONDecoder().decode(LobbyStatus.self, from: Data(#"{"device":"d","live":0,"max":8,"ttl_seconds":1,"excluded_rooms":[]}"#.utf8)).excludedRooms, [])
         let welcomes = try JSONDecoder().decode(LobbyWelcomes.self, from: Data(
             #"{"welcomes":[{"room":"ops-yukson","seq":2,"epoch":1,"created_at":1700000000}]}"#.utf8))
         XCTAssertEqual(welcomes.welcomes, [PendingWelcome(room: "ops-yukson", seq: 2, epoch: 1, createdAt: 1_700_000_000)])

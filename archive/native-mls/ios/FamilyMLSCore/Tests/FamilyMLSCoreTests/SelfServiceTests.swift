@@ -307,4 +307,105 @@ final class SelfServiceTests: XCTestCase {
         XCTAssertEqual(SelfService.fingerprintGroups(""), "")
         XCTAssertEqual(SelfService.fingerprintGroups(String(repeating: "f", count: 64)).count, 64 + 15)
     }
+
+    // MARK: - #616 빠진 방 주기적 재탐색(오너 D1~D3) — 웹 self-service.test.mjs 와 같은 사례
+
+    private func view(_ room: RoomID, _ roster: [DeviceID], halted: Bool = false, synced: Bool = true, joined: Bool = true) -> SelfService.RoomView {
+        SelfService.RoomView(roomId: room, joined: joined, halted: halted, pending: false, roster: roster, synced: synced)
+    }
+
+    func testRescanSiblingsAreOtherActiveDevicesOfMyActor() {
+        let m = me(dev("mom-web-a"), dev("mom-iphone-b"), dev("mom-android-c", status: "revoked"), dev("dad-pc-d"), dev("mom-android-e"))
+        XCTAssertEqual(SiblingRescan.siblings(me: m, device: "mom-web-a"), ["mom-android-e", "mom-iphone-b"])
+        XCTAssertEqual(SiblingRescan.siblings(me: m, device: "mom-ghost-z"), [])
+        XCTAssertEqual(SiblingRescan.siblings(me: me(dev("mom-web-a", status: "revoked"), dev("mom-iphone-b")), device: "mom-web-a"), [], "철회된 내가 초대하지 않는다")
+        XCTAssertEqual(SiblingRescan.siblings(me: MeResponse(subject: "sub-1"), device: "mom-web-a"), [], "옛 릴레이")
+        XCTAssertEqual(SiblingRescan.siblings(me: nil, device: "mom-web-a"), [])
+    }
+
+    func testRescanDueEverySixHoursOrWhenADeferredRoomRipens() {
+        let t0: TimeInterval = 1_000_000_000
+        XCTAssertTrue(SiblingRescan.due(.init(), now: Date(timeIntervalSince1970: t0)))
+        XCTAssertFalse(SiblingRescan.due(.init(last: t0), now: Date(timeIntervalSince1970: t0 + SiblingRescan.interval - 1)))
+        XCTAssertTrue(SiblingRescan.due(.init(last: t0), now: Date(timeIntervalSince1970: t0 + SiblingRescan.interval)))
+        XCTAssertFalse(SiblingRescan.due(.init(last: t0, pending: ["b|r": t0]), now: Date(timeIntervalSince1970: t0 + SiblingRescan.deferral - 1)))
+        XCTAssertTrue(SiblingRescan.due(.init(last: t0, pending: ["b|r": t0]), now: Date(timeIntervalSince1970: t0 + SiblingRescan.deferral)))
+    }
+
+    func testRescanSkipsRemovedHaltedAndPresentRoomsButKeepsNeverJoinedOnes() {
+        var rooms = (0..<17).map { view(String(format: "r%02d", $0), ["mom-a"]) }
+        rooms[3] = view("r03", ["mom-a"], halted: true)
+        rooms[4] = view("r04", ["mom-a", "mom-z"])
+        let turn = SiblingRescan.turn(rooms: rooms, device: "mom-a", siblings: ["mom-z"], excluded: ["mom-z": ["r00", "r01", "gone-room"]],
+                                      state: .init(), now: Date(timeIntervalSince1970: 5))
+        XCTAssertTrue(turn.ready)
+        XCTAssertEqual(turn.enqueue.map(\.target), ["mom-z"])
+        XCTAssertEqual(turn.enqueue.first?.rooms, rooms.map(\.roomId).filter { !["r00", "r01", "r03", "r04"].contains($0) })
+        XCTAssertEqual(turn.enqueue.first?.rooms.count, 13)
+        XCTAssertEqual(turn.state, .init(last: 5, pending: [:]))
+    }
+
+    func testRescanFailsClosedOnOldRelayAndWaitsForStaleRosters() {
+        let rooms = [view("family", ["mom-a"])]
+        let mixed = SiblingRescan.turn(rooms: rooms, device: "mom-a", siblings: ["mom-b", "mom-c"], excluded: ["mom-b": nil, "mom-c": []], state: .init(), now: Date(timeIntervalSince1970: 1))
+        XCTAssertEqual(mixed.enqueue.map(\.target), ["mom-c"], "excluded nil(옛 릴레이) 기기는 건너뛴다")
+        XCTAssertTrue(SiblingRescan.turn(rooms: rooms, device: "mom-a", siblings: ["mom-b"], excluded: [:], state: .init(), now: Date(timeIntervalSince1970: 1)).enqueue.isEmpty)
+        let state = SiblingRescan.State(last: nil, pending: ["x|y": 1])
+        let stale = SiblingRescan.turn(rooms: [view("a", ["mom-a"]), view("b", ["mom-a"], synced: false)], device: "mom-a", siblings: ["mom-z"],
+                                       excluded: ["mom-z": []], state: state, now: Date(timeIntervalSince1970: 9))
+        XCTAssertFalse(stale.ready)
+        XCTAssertTrue(stale.enqueue.isEmpty)
+        XCTAssertEqual(stale.state, state)
+    }
+
+    func testRescanOneInviterPerRoomLowestIdNowOthersAfterThirtyMinutes() {
+        let rooms = [view("family", ["mom-a", "mom-b"]), view("solo", ["mom-b"])]
+        let ex: [DeviceID: [RoomID]?] = ["mom-z": []]
+        let t1 = SiblingRescan.turn(rooms: rooms, device: "mom-b", siblings: ["mom-a", "mom-z"], excluded: ex, state: .init(), now: Date(timeIntervalSince1970: 100))
+        XCTAssertEqual(t1.enqueue.first?.rooms, ["solo"], "내가 유일한 내 기기인 방은 바로")
+        XCTAssertEqual(t1.state.pending, ["mom-z|family": 100], "리더(mom-a)가 있는 방은 미룬다")
+        let t2 = SiblingRescan.turn(rooms: rooms, device: "mom-b", siblings: ["mom-a", "mom-z"], excluded: ex, state: t1.state,
+                                    now: Date(timeIntervalSince1970: 100 + SiblingRescan.deferral - 1))
+        XCTAssertFalse(t2.enqueue.flatMap(\.rooms).contains("family"))
+        XCTAssertEqual(t2.state.pending["mom-z|family"], 100, "처음 본 시각 유지")
+        let t3 = SiblingRescan.turn(rooms: rooms, device: "mom-b", siblings: ["mom-a", "mom-z"], excluded: ex, state: t1.state,
+                                    now: Date(timeIntervalSince1970: 100 + SiblingRescan.deferral))
+        XCTAssertEqual(t3.enqueue.first?.rooms, ["family", "solo"])
+        XCTAssertEqual(t3.state.pending, [:])
+        let t4 = SiblingRescan.turn(rooms: [view("family", ["mom-a", "mom-b", "mom-z"])], device: "mom-b", siblings: ["mom-a", "mom-z"], excluded: ex,
+                                    state: t1.state, now: Date(timeIntervalSince1970: 100 + SiblingRescan.deferral))
+        XCTAssertTrue(t4.enqueue.isEmpty, "리더가 먼저 들였다")
+        XCTAssertEqual(t4.state.pending, [:])
+        let lead = SiblingRescan.turn(rooms: [view("family", ["mom-a", "mom-b"])], device: "mom-a", siblings: ["mom-b", "mom-z"], excluded: ex,
+                                      state: .init(), now: Date(timeIntervalSince1970: 100))
+        XCTAssertEqual(lead.enqueue.first?.rooms, ["family"])
+    }
+
+    func testRescanStoresRoundTripAndQueueKeepsOrigin() throws {
+        let suite = "rescan-test-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = UserDefaultsSiblingRescanStore(defaults: defaults)
+        XCTAssertEqual(store.load(device: "mom-a"), .init())
+        store.save(.init(last: 7, pending: ["x|y": 3]), device: "mom-a")
+        XCTAssertEqual(store.load(device: "mom-a"), .init(last: 7, pending: ["x|y": 3]))
+        defaults.set(Data("not json".utf8), forKey: UserDefaultsSiblingRescanStore.key("mom-a"))
+        XCTAssertEqual(store.load(device: "mom-a"), .init(), "깨진 값은 빈 상태")
+        XCTAssertFalse(store.isOff(device: "mom-a"), "기본 켜짐")
+        store.setOff(true, device: "mom-a")
+        XCTAssertTrue(store.isOff(device: "mom-a"))
+        XCTAssertFalse(store.isOff(device: "mom-b"), "기기별")
+        store.setOff(false, device: "mom-a")
+        XCTAssertFalse(store.isOff(device: "mom-a"))
+
+        let q = SiblingInviteQueue().enqueued(target: "mom-z", rooms: ["family"], now: Date(timeIntervalSince1970: 1), origin: SiblingRescan.origin)
+        XCTAssertEqual(q.entries.first?.origin, "rescan")
+        let merged = SiblingInviteQueue([.init(target: "mom-z", rooms: ["a"], since: 0)]).enqueued(target: "mom-z", rooms: ["family"], now: Date(timeIntervalSince1970: 1), origin: SiblingRescan.origin)
+        XCTAssertEqual(merged.entries, [.init(target: "mom-z", rooms: ["a", "family"], since: 0)], "승인 항목에 합칠 때는 원래 출처 유지")
+        let queueStore = UserDefaultsSiblingQueueStore(defaults: defaults)
+        queueStore.save(q, device: "mom-a")
+        XCTAssertEqual(queueStore.load(device: "mom-a"), q, "origin 이 저장값을 왕복")
+        let old = try JSONDecoder().decode([SiblingInviteQueue.Entry].self, from: Data(#"[{"target":"mom-z","rooms":["r"],"since":1}]"#.utf8))
+        XCTAssertNil(old.first?.origin, "옛 저장값")
+    }
 }
