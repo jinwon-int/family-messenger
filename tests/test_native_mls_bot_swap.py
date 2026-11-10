@@ -18,14 +18,17 @@ import unittest
 DEPLOY = Path(__file__).parents[1] / 'archive' / 'native-mls' / 'bot' / 'deploy'
 SWAP = DEPLOY / 'native-mls-bot-swap'
 FLEET = DEPLOY / 'native-mls-bot-fleet'
-SLEEP = shutil.which('sleep')
+# The fake bot is a copy of bash (+ a marker), not of `sleep`: ubuntu-26.04's coreutils is the uutils
+# multicall binary, which picks the tool from its own file name (/proc/self/exe, not argv[0]), so a
+# `sleep` copy named native-mls-bot exits at once. bash does not care what it is called.
+BASH = shutil.which('bash')
 
 
 def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-# systemctl double: per-unit pid files; `restart` starts the *current* BOT_BIN (an ELF `sleep` with a
+# systemctl double: per-unit pid files; `restart` starts the *current* BOT_BIN (an ELF `bash` with a
 # marker appended) so /proc/<pid>/exe is the file the swap placed. `--user -M <u>@` is logged and stripped.
 FAKE_SYSTEMCTL = r'''#!/usr/bin/env bash
 echo "$*" >> "$FAKE_DIR/calls"
@@ -36,30 +39,30 @@ case "$1" in
     cat "$FAKE_DIR/pid.$5" 2>/dev/null || echo 0 ;;
   restart)
     old=$(cat "$FAKE_DIR/pid.$2" 2>/dev/null); [ -n "$old" ] && kill "$old" 2>/dev/null
-    # argv[0]=sleep: a multicall coreutils (uutils, ubuntu-26.04) picks the tool by argv[0], and a
-    # copy named native-mls-bot would not sleep. exec keeps the pid, so $! is still the bot's.
-    setsid bash -c 'exec -a sleep "$0" 60' "$FAKE_BIN" >/dev/null 2>&1 < /dev/null &
+    # The bash copy waits in the `read` builtin (no child): $! is the pid whose exe is the bot file.
+    setsid "$FAKE_BIN" -c 'read -r -t 60 _ <> "$FAKE_DIR/fifo"' >/dev/null 2>&1 < /dev/null &
     echo $! > "$FAKE_DIR/pid.$2"; echo $! >> "$FAKE_DIR/spawned" ;;
   is-active) echo active ;;
 esac
 '''
-# journalctl double: a healthy room unless the binary now in place carries the BAD marker. The marker
-# must not occur in any `sleep` build: uutils' multicall binary holds errno names (EBADF, EBADMSG).
+# journalctl double: a healthy room unless the binary now in place carries the BAD marker — a string
+# no real binary holds (uutils' coreutils, for one, carries errno names such as EBADF).
 FAKE_JOURNALCTL = r'''#!/usr/bin/env bash
 if grep -q SWAPTEST-BAD-7c1e "$FAKE_BIN"; then echo '{"event":"steward_ready","rooms":[{"joined":true,"halted":true}]}'
 else echo '{"event":"steward_ready","rooms":[{"halted":false,"joined":true,"mode":"agent"}]}'; fi
 '''
 
 
-@unittest.skipUnless(SLEEP and shutil.which('bash') and shutil.which('setsid') and Path('/proc/self/exe').exists(),
-                     'needs bash, setsid, an ELF sleep and /proc')
+@unittest.skipUnless(BASH and shutil.which('setsid') and Path('/proc/self/exe').exists(),
+                     'needs bash, setsid and /proc')
 class NativeMlsBotSwapTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix='bot-swap-'))
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.addCleanup(self.kill_spawned)
-        base = Path(SLEEP).read_bytes()
-        self.assertNotIn(b'SWAPTEST-BAD-7c1e', base, 'the BAD marker must not occur in the sleep binary')
+        base = Path(BASH).read_bytes()
+        self.assertNotIn(b'SWAPTEST-BAD-7c1e', base, 'the BAD marker must not occur in the bash binary')
+        os.mkfifo(self.tmp / 'fifo')
         (self.tmp / 'bin').mkdir()
         self.bin = self.tmp / 'bin' / 'native-mls-bot'
         self.bin.write_bytes(base + b'\nOLD-GOOD\n')
