@@ -10,17 +10,17 @@ import (
 
 // roomCounts is what -reset-room would delete (or deleted) for one room.
 type roomCounts struct {
-	Rooms, Events, KeyPackages, Members, Cursors, Blobs, Read, Mute int64
+	Rooms, Events, KeyPackages, Members, Cursors, Blobs, Read, Mute, Exclusions int64
 }
 
 func (c roomCounts) total() int64 {
-	return c.Rooms + c.Events + c.KeyPackages + c.Members + c.Cursors + c.Blobs + c.Read + c.Mute
+	return c.Rooms + c.Events + c.KeyPackages + c.Members + c.Cursors + c.Blobs + c.Read + c.Mute + c.Exclusions
 }
 
 // resetTables are every table keyed by room. mls_rooms goes last so a crash
 // mid-way (impossible inside one transaction, but cheap to keep) never
 // leaves rows without their room.
-var resetTables = []string{"mls_events", "mls_keypackages", "mls_members", "mls_cursors", "mls_blobs", "mls_read", "mls_mute", "mls_rooms"}
+var resetTables = []string{"mls_events", "mls_keypackages", "mls_members", "mls_cursors", "mls_blobs", "mls_read", "mls_mute", "mls_room_exclusions", "mls_rooms"}
 
 // resetRoom is the offline operator recovery for review H3: room names are
 // first-come among authenticated devices, so a squatted name or a mistaken
@@ -56,6 +56,7 @@ func resetRoom(dataDir, room string, confirm bool) (roomCounts, error) {
 	dst := map[string]*int64{
 		"mls_rooms": &c.Rooms, "mls_events": &c.Events, "mls_keypackages": &c.KeyPackages,
 		"mls_members": &c.Members, "mls_cursors": &c.Cursors, "mls_blobs": &c.Blobs, "mls_read": &c.Read, "mls_mute": &c.Mute,
+		"mls_room_exclusions": &c.Exclusions,
 	}
 	present := map[string]bool{}
 	for _, table := range resetTables {
@@ -104,8 +105,8 @@ func runResetRoom(out io.Writer, dataDir, room string, confirm bool) int {
 		fmt.Fprintf(out, "reset-room %q: %v\n", room, err)
 		return 1
 	}
-	fmt.Fprintf(out, "room %q: rooms=%d events=%d key_packages=%d members=%d cursors=%d blobs=%d read=%d mute=%d\n",
-		room, c.Rooms, c.Events, c.KeyPackages, c.Members, c.Cursors, c.Blobs, c.Read, c.Mute)
+	fmt.Fprintf(out, "room %q: rooms=%d events=%d key_packages=%d members=%d cursors=%d blobs=%d read=%d mute=%d exclusions=%d\n",
+		room, c.Rooms, c.Events, c.KeyPackages, c.Members, c.Cursors, c.Blobs, c.Read, c.Mute, c.Exclusions)
 	switch {
 	case c.total() == 0:
 		fmt.Fprintln(out, "nothing to delete")

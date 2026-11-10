@@ -133,6 +133,15 @@ CREATE TABLE IF NOT EXISTS mls_members (
 	added_seq INTEGER NOT NULL,
 	PRIMARY KEY (room, device)
 );
+CREATE TABLE IF NOT EXISTS mls_room_exclusions (
+	room        TEXT NOT NULL REFERENCES mls_rooms(room),
+	device      TEXT NOT NULL,
+	removed_seq INTEGER NOT NULL,
+	removed_at  INTEGER NOT NULL,
+	by_device   TEXT NOT NULL,
+	PRIMARY KEY (room, device)
+);
+CREATE INDEX IF NOT EXISTS mls_room_exclusions_device ON mls_room_exclusions(device);
 CREATE INDEX IF NOT EXISTS mls_events_device ON mls_events(device);
 CREATE TABLE IF NOT EXISTS mls_read (
 	room       TEXT NOT NULL REFERENCES mls_rooms(room),
@@ -916,6 +925,10 @@ func applyMembership(tx *sql.Tx, room string, tracked []memberRow, ev eventInput
 			room, m.Device); err != nil {
 			return err
 		}
+		// #616: adding the device back lifts its exclusion.
+		if _, err := tx.Exec(`DELETE FROM mls_room_exclusions WHERE room = ? AND device = ?`, room, m.Device); err != nil {
+			return err
+		}
 	}
 	postedList := make(map[string]bool, len(ev.members))
 	for _, m := range ev.members {
@@ -932,8 +945,39 @@ func applyMembership(tx *sql.Tx, room string, tracked []memberRow, ev eventInput
 			now, seq, room, m.Device); err != nil {
 			return err
 		}
+		// #616: unlike the cursor mark above (pruned once the device reads
+		// its removal or the grace elapses), the exclusion is durable: a
+		// device removed by commit stays out of the sibling-rescan set until
+		// a later commit adds it back.
+		if _, err := tx.Exec(`INSERT INTO mls_room_exclusions (room, device, removed_seq, removed_at, by_device) VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT (room, device) DO UPDATE SET removed_seq = excluded.removed_seq, removed_at = excluded.removed_at, by_device = excluded.by_device`,
+			room, m.Device, seq, now, ev.device); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// excludedRooms lists the open rooms the device was removed from by commit
+// and not added back since (#616), for GET /v2/lobby/status.
+func (s *relay) excludedRooms(device string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(`SELECT x.room FROM mls_room_exclusions x JOIN mls_rooms r ON r.room = x.room
+		WHERE x.device = ? AND r.closed_at IS NULL ORDER BY x.room LIMIT ?`, device, maxListedRooms)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var room string
+		if err := rows.Scan(&room); err != nil {
+			return nil, err
+		}
+		out = append(out, room)
+	}
+	return out, rows.Err()
 }
 
 // eventsPage is readEvents' result: one page of rows, the room's CAS state,

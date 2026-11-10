@@ -114,6 +114,7 @@ URL 경로·id 는 남기지 않는다(캐시는 메모리 전용, 재시작하�
   함(403 `not_a_member`), 닫힌 방 410 `room_closed`, 남은 패키지 없음 404 `no_live_key_package`.
   응답은 방 소비와 같은 `{"ref","bytes","expires_at"}`.
 - `GET /v2/lobby/status?device=` — `{"device","live","max","ttl_seconds"}` (만료 행 정리 뒤). 앱의 보충 판단용.
+  `excluded_rooms`(#616): 이 기기가 commit으로 내보내진 뒤 다시 추가되지 않은 열린 방 목록입니다(`mls_room_exclusions`, 커서 prune과 무관하게 유지되며 재추가하면 사라짐). 항상 배열이고, 필드가 없으면 옛 릴레이입니다. 형제 기기의 '빠진 방 재탐색'은 이 방들을 건너뛰고, 필드가 없으면 재탐색하지 않습니다.
 - `DELETE /v2/lobby/keypackages?device=` — 이 기기의 **미소비** 로비 키를 모두 거둔다(소비된 행은 Welcome 추적용으로 만료까지 남음).
   `{"device","deleted"}`, 멱등(남은 게 없으면 200 `deleted=0`), 정책 게이트 없음(자기 키 회수). 앱 「이 기기 지우기」가 신원을 버리기 전에 부른다(#389).
 - `GET /v2/lobby/welcomes?device=` — 이 기기를 `targets`로 하는 `welcome` 이벤트 중 기기의 커서가 아직 지나지

@@ -33,11 +33,20 @@ const maxListedWelcomes = 100
 
 // lobbyStatusResponse is GET /v2/lobby/status: the device's live lobby count
 // against the policy bounds, for the app's replenish decision.
+//
+// ExcludedRooms (#616) lists the open rooms the device was removed from by
+// commit and not added back since. A sibling device runs its periodic
+// "rooms my other device is missing" rescan only when the field is present
+// (an older relay omits it, and the client then fails closed), and skips
+// these rooms. Always a list, never null. bindDevice already limits the
+// caller to its own subject's devices, and every listed room once had the
+// device as a member, so the field tells the subject nothing new.
 type lobbyStatusResponse struct {
-	Device     string `json:"device"`
-	Live       int    `json:"live"`
-	Max        int    `json:"max"`
-	TTLSeconds int64  `json:"ttl_seconds"`
+	Device        string   `json:"device"`
+	Live          int      `json:"live"`
+	Max           int      `json:"max"`
+	TTLSeconds    int64    `json:"ttl_seconds"`
+	ExcludedRooms []string `json:"excluded_rooms"`
 }
 
 // pendingWelcome is one room holding a Welcome the device has not read past.
@@ -200,11 +209,18 @@ func (s *relay) handleLobbyStatus(w http.ResponseWriter, req *http.Request) {
 		s.fail(w, http.StatusInternalServerError, apiError{Error: "internal"})
 		return
 	}
+	excluded, err := s.excludedRooms(device)
+	if err != nil {
+		log.Printf("lobby status exclusions device=%s: %v", device, err)
+		s.fail(w, http.StatusInternalServerError, apiError{Error: "internal"})
+		return
+	}
 	writeJSON(w, http.StatusOK, lobbyStatusResponse{
-		Device:     device,
-		Live:       live,
-		Max:        s.policy.LobbyKeyPackagesMaxPerDevice,
-		TTLSeconds: s.policy.LobbyKeyPackageTTLSeconds,
+		Device:        device,
+		Live:          live,
+		Max:           s.policy.LobbyKeyPackagesMaxPerDevice,
+		TTLSeconds:    s.policy.LobbyKeyPackageTTLSeconds,
+		ExcludedRooms: excluded,
 	})
 }
 
