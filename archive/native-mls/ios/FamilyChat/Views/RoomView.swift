@@ -1441,8 +1441,32 @@ struct SwipeReplyPan: UIGestureRecognizerRepresentable {
                                shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
             true
         }
+
+        #if DEBUG
+        /// 재현 화면 판정 기록: 터치가 이 인식기에 왔는지, 그 순간 타임라인 스크롤이 끌리는 중·감속 중이었는지.
+        func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            SwipeReplyTrace.note("recv \(SwipeReplyTrace.scrollState(from: touch.view))")
+            return true
+        }
+        #endif
     }
 }
+
+#if DEBUG
+extension SwipeReplyTrace {
+    /// 터치한 뷰에서 위로 올라가 처음 만나는 세로 스크롤뷰의 상태(끌기·감속·스크롤 팬 상태).
+    static func scrollState(from view: UIView?) -> String {
+        var v = view
+        while let cur = v {
+            if let sv = cur as? UIScrollView, sv.contentSize.height > sv.bounds.height {
+                return "sv(drag=\(sv.isDragging) decel=\(sv.isDecelerating) track=\(sv.isTracking) pan=\(sv.panGestureRecognizer.state.rawValue))"
+            }
+            v = cur.superview
+        }
+        return "sv(none)"
+    }
+}
+#endif
 
 /// 디자인 2차 2d: 보내는 중인 첨부의 자리 그림 — 200×150(말풍선 모양은 바깥 BubbleShape 18/6), 어두운 두 색 그라데이션 면(낮불은 종이 면),
 /// 아래 덮개에 「사진·파일 보내는 중」 13 + 진행선 3px. 진행률 값이 없으므로 선은 45% 토막이 오가는 부정형(reduce motion·낮불은 고정).
@@ -2034,9 +2058,17 @@ struct SwipeReplyHarness: View {
                 .modifier(BottomAnchoredTimeline())
                 // 방 화면과 같은 타임라인 동시 제스처 두 개(스크롤 따라가기 · 넓은 뒤로가기).
                 .simultaneousGesture(DragGesture(minimumDistance: 10)
-                    .onChanged { _ in if followLatest { followLatest = false } }
-                    .onEnded { _ in })
+                    .onChanged { value in
+                        if !box.svDragging {
+                            box.svDragging = true
+                            SwipeReplyTrace.note("sv-drag start t=(\(Int(value.translation.width)),\(Int(value.translation.height)))")
+                        }
+                        if followLatest { followLatest = false }
+                    }
+                    .onEnded { _ in box.svDragging = false })
                 .simultaneousGesture(DragGesture(minimumDistance: 20).onEnded { _ in })
+                // 탐침: 같은 판정의 UIKit 팬을 행이 아니라 타임라인(ScrollView)에 단다 — 감속 중 터치에서도 판정이 불리는지 비교.
+                .modifier(TimelineProbe())
                 .onAppear { proxy.scrollTo(Int64(-2), anchor: .bottom) }
             }
         }
@@ -2045,5 +2077,51 @@ struct SwipeReplyHarness: View {
 }
 final class TraceBox {
     var lines: [String] = []
+    var svDragging = false
+}
+
+/// 재현 화면 탐침: 타임라인 레벨 UIKit 팬(시작 판정은 `SwipeReply.shouldBegin` 과 같음). 아무것도 하지 않고 기록만 남긴다.
+@available(iOS 18.0, *)
+struct TimelineProbePanImpl: UIGestureRecognizerRepresentable {
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
+    func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
+        let pan = UIPanGestureRecognizer()
+        pan.maximumNumberOfTouches = 1
+        pan.cancelsTouchesInView = false
+        pan.delegate = context.coordinator
+        return pan
+    }
+    func updateUIGestureRecognizer(_ recognizer: UIPanGestureRecognizer, context: Context) {}
+    func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer, context: Context) {
+        if recognizer.state != .changed {
+            let t = recognizer.translation(in: recognizer.view)
+            SwipeReplyTrace.note("probe state=\(recognizer.state.rawValue) t=(\(Int(t.x)),\(Int(t.y)))")
+        }
+    }
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            SwipeReplyTrace.note("probe recv \(SwipeReplyTrace.scrollState(from: touch.view))")
+            return true
+        }
+        func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
+            guard let pan = recognizer as? UIPanGestureRecognizer else { return false }
+            let v = pan.velocity(in: pan.view)
+            SwipeReplyTrace.note("probe begin? v=(\(Int(v.x)),\(Int(v.y)))")
+            return SwipeReply.shouldBegin(vx: Double(v.x), vy: Double(v.y))
+        }
+        func gestureRecognizer(_ recognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+    }
+}
+
+/// iOS 16·17 에서는 탐침 없음.
+struct TimelineProbe: ViewModifier {
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.gesture(TimelineProbePanImpl())
+        } else {
+            content
+        }
+    }
 }
 #endif
