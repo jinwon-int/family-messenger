@@ -1,6 +1,9 @@
-// 밀어서 답장 실제 터치 재현(오너 2026-11-10 「가장 최신 말풍선은 되는데 두 번째 이상은 잘 안 됨」).
-// 재현 화면(`SwipeReplyHarness`, 실행 인자 `-swipeReplyHarness`)의 말풍선을 하나씩 왼쪽으로 밀고, 어느 행에 답장이 열렸는지와
-// 팬 판정 기록을 `[swipe]` 줄로 남긴다 — 모든 행을 다 민 뒤에 판정해 한 번의 실행으로 행별 결과를 다 본다.
+// 밀어서 답장 실제 터치 회귀(#745, 오너 2026-11-10 「가장 최신 말풍선은 되는데 두 번째 이상은 잘 안 됨」).
+// 재현 화면(`SwipeReplyHarness`, DEBUG 실행 인자 `-swipeReplyHarness`)에서 실제 `MessageRow`·`SwipeToReply` 를 민다.
+// 행마다 `[swipe]` 줄(결과 · 말풍선 위치 · 팬 판정 기록)을 남기고, 모든 행을 다 민 뒤에 판정한다.
+//
+// 조사 기록(#746): 정지·스크롤 뒤·관성 직후·에이전트 카드(최신/이전) 모두 수평 밀기는 위치와 상관없이 성공 — 행 위치에 따른 코드
+// 분기는 없었다. 차이는 엄지 궤적(위쪽 말풍선일수록 비스듬함)과 밀리는 동안 타임라인이 같이 세로로 움직이던 것 → 아래 대각선·잠금 회귀.
 import XCTest
 
 final class SwipeReplyUITests: XCTestCase {
@@ -8,174 +11,101 @@ final class SwipeReplyUITests: XCTestCase {
         continueAfterFailure = true
     }
 
-    private func launch(rows: Int) -> XCUIApplication {
+    private func launch(_ extra: [String]) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["-swipeReplyHarness", "-swipeReplyRows", String(rows)]
+        app.launchArguments = ["-swipeReplyHarness"] + extra
         app.launch()
         XCTAssertTrue(app.staticTexts["harness-replied"].waitForExistence(timeout: 10))
         return app
     }
 
-    private func bubble(_ app: XCUIApplication, _ n: Int) -> XCUIElement {
-        app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "메시지 \(n) ")).firstMatch
+    private func text(_ app: XCUIApplication, _ prefix: String) -> XCUIElement {
+        app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", prefix)).firstMatch
     }
 
-    /// 행 `n` 의 말풍선 글자 위에서 왼쪽으로 140pt 민다. 답장이 그 행으로 열렸으면 true.
-    @discardableResult
-    private func swipe(_ app: XCUIApplication, _ n: Int, label: String, clearFirst: Bool = true) -> Bool {
-        if clearFirst { app.buttons["harness-clear"].tap() }
-        let target = bubble(app, n)
-        guard target.waitForExistence(timeout: 3), target.isHittable else {
-            print("[swipe] \(label) row=\(n) NOT-HITTABLE frame=\(target.frame)")
-            return false
-        }
-        let start = target.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
-        let end = start.withOffset(CGVector(dx: -140, dy: 0))
-        start.press(forDuration: 0.05, thenDragTo: end, withVelocity: XCUIGestureVelocity(rawValue: 500), thenHoldForDuration: 0.05)
-        let replied = app.staticTexts["harness-replied"].label
-        app.buttons["harness-dump"].tap()
-        let trace = app.staticTexts["harness-trace"].label.replacingOccurrences(of: "\n", with: " | ")
-        let ok = replied == "replied:\(n)"
-        print("[swipe] \(label) row=\(n) \(ok ? "OK" : "FAIL") \(replied) frame=\(target.frame) trace: \(trace)")
-        return ok
-    }
-
-    /// 한 화면에 다 들어가는 8행: 최신(8)부터 위로 한 행씩.
-    func testEveryVisibleRowReplies() {
-        let app = launch(rows: 8)
-        var failed: [Int] = []
-        for n in stride(from: 8, through: 2, by: -1) where !swipe(app, n, label: "fit") { failed.append(n) }
-        // 같은 행을 두 번 — 첫 끌기 뒤 상태가 남아 다음 끌기를 막는지.
-        for n in [8, 7, 8, 6] where !swipe(app, n, label: "repeat") { failed.append(n) }
-        XCTAssertEqual(failed, [], "swipe-to-reply failed on rows \(failed)")
-    }
-
-    /// 스크롤이 생기는 40행: 바닥에서 보이는 행들, 그다음 위로 스크롤한 뒤 가운데 행.
-    func testRowsAfterScrolling() {
-        let app = launch(rows: 40)
-        var failed: [String] = []
-        for n in [40, 39, 38, 36] where !swipe(app, n, label: "bottom") { failed.append("bottom-\(n)") }
-        app.scrollViews.firstMatch.swipeDown()
-        sleep(2)
-        let visible = (1...40).reversed().first { bubble(app, $0).exists && bubble(app, $0).isHittable && $0 < 30 }
-        if let n = visible {
-            if !swipe(app, n, label: "scrolled") { failed.append("scrolled-\(n)") }
-            if !swipe(app, n - 1, label: "scrolled") { failed.append("scrolled-\(n - 1)") }
-        } else {
-            print("[swipe] scrolled: no hittable row below 30")
-        }
-        // 스크롤 직후(감속 중) 바로 민다.
-        app.scrollViews.firstMatch.swipeUp()
-        if let n = (1...40).reversed().first(where: { bubble(app, $0).exists && bubble(app, $0).isHittable }) {
-            if !swipe(app, n, label: "decelerating") { failed.append("decelerating-\(n)") }
-        }
-        XCTAssertEqual(failed, [], "swipe-to-reply failed: \(failed)")
-    }
-
-    /// 가운데쯤 보이는 행 번호(바닥·꼭대기 가장자리 제외).
-    private func midRow(_ app: XCUIApplication) -> Int? {
-        let window = app.windows.firstMatch.frame
-        return (1...40).reversed().first { n in
-            let b = bubble(app, n)
-            guard b.exists, b.isHittable else { return false }
-            return b.frame.midY > window.height * 0.45 && b.frame.midY < window.height * 0.75
-        }
-    }
-
-    /// 감속 가설(1차 실측: 스크롤 2초 뒤 민 29행만 실패, 판정 기록 비어 있음)을 세 조건으로 나눠 본다.
-    func testSwipeAfterFlingVersusSettled() {
-        let app = launch(rows: 40)
-        var failed: [String] = []
-        let scroll = app.scrollViews.firstMatch
-        // A. 아래로 휙(관성) → 곧바로 고정 좌표에서 민다(요소 조회는 수 초가 걸려 감속이 끝나 버린다).
-        //    판정: recv(행 인식기에 터치 도착) 있음 + 답장 = OK, recv 있음 + 답장 없음 = GATED, recv 없음 = MISS(말풍선 사이 빈 곳).
-        var gated = 0
-        for round in 1...6 {
-            app.buttons["harness-clear"].tap()
-            scroll.swipeDown(velocity: .fast)
-            let start = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.45 + 0.04 * Double(round % 3)))
-            start.press(forDuration: 0.02, thenDragTo: start.withOffset(CGVector(dx: -140, dy: 0)),
-                        withVelocity: XCUIGestureVelocity(rawValue: 500), thenHoldForDuration: 0.05)
-            let replied = app.staticTexts["harness-replied"].label
-            app.buttons["harness-dump"].tap()
-            let trace = app.staticTexts["harness-trace"].label.replacingOccurrences(of: "\n", with: " | ")
-            let hitRow = trace.components(separatedBy: " | ").contains { $0.hasPrefix("recv ") }   // 탐침 줄은 "probe recv"
-            let verdict = replied != "replied:none" ? "OK" : (hitRow ? "GATED" : "MISS")
-            if verdict == "GATED" { gated += 1; failed.append("fling-now-\(round)") }
-            print("[swipe] fling-now-\(round) \(verdict) \(replied) trace: \(trace)")
-        }
-        print("[swipe] fling-now gated=\(gated)/6")
-        // B. 아래로 휙 → 5초 기다린 뒤 민다.
-        for round in 1...2 {
-            scroll.swipeDown(velocity: .fast)
-            sleep(5)
-            if let n = midRow(app) {
-                if !swipe(app, n, label: "fling-wait5-\(round)") { failed.append("fling-wait5-\(round)-\(n)") }
-            }
-        }
-        // C. 관성 없이 천천히 끌어 내리고(끝에서 멈춘 채 뗌) 바로 민다.
-        for round in 1...2 {
-            app.buttons["harness-clear"].tap()
-            let from = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
-            let to = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7))
-            from.press(forDuration: 0.05, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 0.5)
-            if let n = midRow(app) {
-                if !swipe(app, n, label: "slow-now-\(round)", clearFirst: false) { failed.append("slow-now-\(round)-\(n)") }
-            }
-        }
-        print("[swipe] summary fling-vs-settled failed=\(failed)")
-        XCTAssertEqual(failed, [], "swipe-to-reply failed: \(failed)")
-    }
-
-    /// 3차: 표·목록이 든 에이전트 카드(오너가 주로 답하는 보고서). 최신 카드와 그 위 카드의 표 위·아래 글자에서 밀고,
-    /// 대조로 표 칸 위에서 민다(답장이 열리면 안 된다).
-    private func agentSwipe(_ app: XCUIApplication, _ text: String, label: String) -> String {
+    /// `prefix` 로 시작하는 글자 위에서 (dx, dy) 만큼 민다. 반환: 열린 답장(`replied:<seq>` / `replied:none`)과 밀기 전후 글자의 세로 이동.
+    private func swipe(_ app: XCUIApplication, _ prefix: String, dx: CGFloat = -140, dy: CGFloat = 0,
+                       at x: CGFloat = 0.6, label: String) -> (replied: String, moved: CGFloat)? {
         app.buttons["harness-clear"].tap()
-        let el = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", text)).firstMatch
-        guard el.waitForExistence(timeout: 3), el.isHittable else {
-            print("[swipe] \(label) '\(text)' NOT-HITTABLE frame=\(el.frame)")
-            return "not-hittable"
+        let el = text(app, prefix)
+        guard el.waitForExistence(timeout: 3), el.isHittable, el.frame.minX > 0 else {
+            print("[swipe] \(label) '\(prefix)' NOT-HITTABLE frame=\(el.frame)")
+            return nil
         }
-        let start = el.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5))
-        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -140, dy: 0)),
+        let before = el.frame.minY
+        let start = el.coordinate(withNormalizedOffset: CGVector(dx: x, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: dx, dy: dy)),
                     withVelocity: XCUIGestureVelocity(rawValue: 500), thenHoldForDuration: 0.05)
         let replied = app.staticTexts["harness-replied"].label
+        let moved = text(app, prefix).frame.minY - before
         app.buttons["harness-dump"].tap()
         let trace = app.staticTexts["harness-trace"].label.replacingOccurrences(of: "\n", with: " | ")
-        print("[swipe] \(label) '\(text)' \(replied) frame=\(el.frame) trace: \(trace)")
-        return replied
+        print("[swipe] \(label) '\(prefix)' \(replied) moved=\(Int(moved)) frame=\(el.frame) trace: \(trace)")
+        return (replied, moved)
     }
 
-    func testAgentCardsLatestAndOlder() {
-        let app = XCUIApplication()
-        app.launchArguments = ["-swipeReplyHarness", "-swipeReplyRows", "6", "-swipeReplyAgent"]
-        app.launch()
-        XCTAssertTrue(app.staticTexts["harness-replied"].waitForExistence(timeout: 10))
+    /// 한 화면에 다 들어가는 8행: 최신(8)부터 위로 한 행씩 수평으로.
+    func testEveryVisibleRowReplies() {
+        let app = launch(["-swipeReplyRows", "8"])
         var failed: [String] = []
-        let scroll = app.scrollViews.firstMatch
-        func expect(_ n: Int, _ text: String, _ label: String) {
-            let r = agentSwipe(app, text, label: label)
-            if r != "not-hittable" && r != "replied:\(n)" { failed.append("\(label)") }
+        for n in stride(from: 8, through: 2, by: -1) {
+            if let r = swipe(app, "메시지 \(n) ", at: 0.85, label: "fit-\(n)"), r.replied != "replied:\(n)" { failed.append("fit-\(n)") }
         }
-        // 최신(6) 카드: 아래 문단 · 목록 · 위 문단 · (대조) 표 칸.
+        XCTAssertEqual(failed, [], "swipe-to-reply failed on \(failed)")
+    }
+
+    /// #745: 위쪽 말풍선을 엄지로 미는 비스듬한 궤적(왼쪽 위·왼쪽 아래 약 34°) — 종전 1.5배 판정은 시작조차 하지 않았다.
+    /// 밀리는 동안 타임라인이 세로로 움직이지 않아야 한다(말풍선이 손가락 아래에 남는다).
+    func testDiagonalThumbSwipeRepliesOnLatestAndOlderRows() {
+        // 40행(스크롤 가능)이라야 잠금이 보인다 — 한 화면에 다 들어가면 타임라인이 고무줄처럼 제자리로 돌아와 이동이 0 으로 잰다.
+        let app = launch(["-swipeReplyRows", "40"])
+        var failed: [String] = []
+        for n in [40, 39, 37, 36, 34] {
+            for (dy, tag) in [(CGFloat(-95), "up"), (CGFloat(95), "down")] {
+                let label = "diag-\(tag)-\(n)"
+                guard let r = swipe(app, "메시지 \(n) ", dx: -140, dy: dy, at: 0.85, label: label) else { continue }
+                if r.replied != "replied:\(n)" { failed.append(label) }
+                if abs(r.moved) > 2 { failed.append("\(label)-timeline-moved-\(Int(r.moved))") }
+            }
+        }
+        XCTAssertEqual(failed, [], "diagonal swipe-to-reply failed: \(failed)")
+    }
+
+    /// 회귀(#732): 말풍선 위에서 시작한 세로 끌기는 여전히 타임라인을 스크롤하고 답장을 열지 않는다.
+    func testVerticalDragOnBubbleStillScrolls() {
+        let app = launch(["-swipeReplyRows", "40"])
+        guard let r = swipe(app, "메시지 38 ", dx: 0, dy: 260, at: 0.5, label: "vertical") else {
+            XCTFail("row 38 not hittable"); return
+        }
+        XCTAssertEqual(r.replied, "replied:none", "a vertical drag must not reply")
+        XCTAssertGreaterThan(r.moved, 100, "a vertical drag on a bubble must scroll the timeline")
+    }
+
+    /// 표·목록이 든 에이전트 카드(오너가 주로 답하는 보고서): 최신 카드와 그 위 카드의 글자에서는 답장, 표 칸 위에서는 표 몫(답장 없음).
+    func testAgentCardsLatestAndOlder() {
+        let app = launch(["-swipeReplyRows", "6", "-swipeReplyAgent"])
+        var failed: [String] = []
+        func expect(_ n: Int, _ prefix: String, _ label: String, dy: CGFloat = 0) {
+            if let r = swipe(app, prefix, dy: dy, label: label), r.replied != "replied:\(n)" { failed.append(label) }
+        }
         expect(6, "마지막 문단 6", "latest-last")
         expect(6, "목록 하나 6", "latest-list")
         expect(6, "첫 문단 6", "latest-first")
-        let ctrl = agentSwipe(app, "표칸 6", label: "latest-table-control")
-        if ctrl != "replied:none" && ctrl != "not-hittable" { failed.append("latest-table-control") }
-        // 그 위 카드(5·4): 보이도록 천천히(관성 없이) 내린 뒤.
+        expect(6, "첫 문단 6", "latest-first-diag", dy: -90)
+        if let c = swipe(app, "표칸 6", at: 0.5, label: "latest-table-control"), c.replied != "replied:none" {
+            failed.append("latest-table-control")
+        }
+        let scroll = app.scrollViews.firstMatch
         for n in [5, 4] {
             for _ in 0..<4 {
-                let el = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "마지막 문단 \(n)")).firstMatch
+                let el = text(app, "마지막 문단 \(n)")
                 if el.exists && el.isHittable && el.frame.midY > 300 { break }
-                let from = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.35))
+                let from = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.35))
                 from.press(forDuration: 0.05, thenDragTo: from.withOffset(CGVector(dx: 0, dy: 250)), withVelocity: .slow, thenHoldForDuration: 0.4)
             }
             expect(n, "마지막 문단 \(n)", "older\(n)-last")
             expect(n, "목록 하나 \(n)", "older\(n)-list")
-            expect(n, "첫 문단 \(n)", "older\(n)-first")
-            let c = agentSwipe(app, "표칸 \(n)", label: "older\(n)-table-control")
-            if c != "replied:none" && c != "not-hittable" { failed.append("older\(n)-table-control") }
+            expect(n, "마지막 문단 \(n)", "older\(n)-last-diag", dy: -90)
         }
         print("[swipe] summary agent failed=\(failed)")
         XCTAssertEqual(failed, [], "agent swipe-to-reply failed: \(failed)")
