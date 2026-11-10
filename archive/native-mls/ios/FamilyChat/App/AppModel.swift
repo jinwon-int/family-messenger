@@ -271,6 +271,8 @@ final class AppModel: ObservableObject {
     // #574 새 기기 셀프서비스
     /// 마지막 `GET /v2/me`(내 subject 의 체인 기록·정책 revision). nil = 아직 안 물었거나 접근 인증이 꺼진 릴레이(404).
     @Published private(set) var me: MeResponse?
+    /// #616: 「빠진 방 다시 찾기」 토글이 바뀔 때 올린다(값은 `siblingRescanEnabled` 가 저장소에서 읽는다).
+    @Published private(set) var siblingRescanRevision = 0
     /// 등록 대기 화면의 모드(후보 게시 결과)와 게시 만료 시각.
     struct EnrollmentStatus: Equatable {
         var mode: SelfService.EnrollMode = .operatorFlow
@@ -1529,8 +1531,8 @@ final class AppModel: ObservableObject {
     var siblingRescanEnabled: Bool { !deps.siblingRescan.isOff(device: deviceId) }
 
     func setSiblingRescanEnabled(_ on: Bool) {
-        objectWillChange.send()
         deps.siblingRescan.setOff(!on, device: deviceId)
+        siblingRescanRevision += 1   // 설정 화면 갱신(@Published) — Linux 스모크의 Combine 대역에는 objectWillChange 가 없다
         record("sibling rescan \(on ? "on" : "off")")
     }
 
