@@ -14,6 +14,23 @@
 | `<dir>/<room>.state.refused` | #263 정지 마커(기존과 동일). |
 | `<dir>/cmd/<id>.json` → `<dir>/out/<id>.json` | 명령 큐. CLI 가 쓰고, 세션이 하나씩 처리한 뒤 결과를 쓴다. |
 | `<dir>/responder.state` | 응답기 inbox(#354, 기존 `<state>.inbox.json` 역할). |
+| `<dir>/health.json` | #426 노드 로컬 진단(doctor/fleet-watch 가 읽음). 아래 「health.json」. |
+
+## health.json (#426, 스키마 v1)
+
+세션이 journal 에만 남기던 릴레이 도달성·403·방 정지 상태를 파일로 투영한다. **값이 바뀔 때**(릴레이 up↔unreachable, 오류 분류, 403, 방 `joined`/`mode`/`halted`/`pending`) 바로 쓰고, 그 밖에는 **30초마다** 다시 쓴다(`cursor`·`epoch`·`attempts` 는 이 주기에 실린다). tmp + rename 원자적 쓰기, 모드 0640. 쓰기 실패는 `health_write_failed` 한 줄만 남기고 세션은 계속 돈다.
+
+```json
+{"version":1,"device":"seoseo-bot","pid":1234,"started":1794260000,"updated":1794270000,
+ "relay":{"state":"up","since":1794269900,"attempts":0,"last_error_class":"timeout","outages":3},
+ "access":{"last_403":{"code":"device_subject_mismatch","at":1794260000}},
+ "rooms":[{"room":"seoseo","joined":true,"mode":"agent","halted":false,"halt_reason":null,"pending":false,"cursor":120,"epoch":4}]}
+```
+
+- `relay.since` = 마지막 전이 시각, `outages` = 이 프로세스가 시작한 뒤 unreachable 로 바뀐 횟수, `last_error_class` = 마지막 끊김의 분류(회복 뒤에도 남음): `refused`·`timeout`(연결 타임아웃)·`read_timeout`(응답 대기 타임아웃, EAGAIN)·`reset`·`protocol`·`gateway`(502–504)·`io`·`other`. 원문·주소는 남기지 않는다.
+- `access.last_403` 은 루프를 끝내는 403 이다. 재시작한 같은 device 의 프로세스가 이어받는다.
+- `halt_reason` 은 `<room>.state.refused` 마커의 `reason` 을 쓰는 순간 복사한 값이다(정본은 마커). 읽을 수 없는 마커는 `unreadable`.
+- 단일 방 `session` 모드는 파일을 쓰지 않는다(steward 전용).
 
 ## 명령
 

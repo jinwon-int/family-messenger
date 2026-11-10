@@ -49,6 +49,7 @@ use native_mls_host::room::history_gap;
 #[cfg(test)]
 use native_mls_host::room::RELAY_BACKOFF_MAX;
 use crate::attachment;
+use crate::health;
 use crate::reply_quote::{self, Recent};
 use crate::responder::{self, Inbound, Outbound, Responder};
 use family_mls_browser_experiment::Device;
@@ -544,11 +545,14 @@ fn run_rounds(
     let mut auth_wait_announced = false;
     // #392: consecutive rounds that could not reach the relay.
     let mut unreachable = 0u32;
+    // #426: the steward's `<rooms-dir>/health.json` (node-local diagnostics).
+    let mut health = steward.map(|s| health::Health::open(&s.rooms_dir, ctx.own, health::unix_now()));
     loop {
         if expired(deadline) {
             return Err(BotError::Local("session deadline exceeded"));
         }
-        let mut round_unreachable: Option<String> = None;
+        let mut round_unreachable: Option<BotError> = None;
+        let mut fatal: Option<BotError> = None;
         for state in rooms.iter_mut() {
             let before = (state.cursor, state.epoch, state.dirty);
             match poll_room(ctx, state, agent) {
@@ -575,10 +579,15 @@ fn run_rounds(
                 // or echo POST mid-page) still ends the session: the restart
                 // resumes from the persisted cursor and replays that step.
                 Err(err) if is_transient(&err) && (state.cursor, state.epoch, state.dirty) == before => {
-                    round_unreachable = Some(err.to_string());
+                    round_unreachable = Some(err);
                     break;
                 }
-                Err(err) => return Err(err),
+                // Ends the session as before (this room unflushed, later
+                // rooms unpolled); the health file learns a 403 first.
+                Err(err) => {
+                    fatal = Some(err);
+                    break;
+                }
             }
             // MLS state that moved this round goes to disk before the next
             // poll: a restart must resume from exactly this cursor or it
@@ -590,15 +599,26 @@ fn run_rounds(
                 flush(ctx, state)?;
             }
         }
+        if let Some(err) = fatal {
+            if let Some(h) = health.as_mut() {
+                h.record_error(&err, health::unix_now());
+            }
+            health_tick(&mut health, rooms);
+            return Err(err);
+        }
         if let Some(error) = round_unreachable {
             unreachable += 1;
             let mut wait = relay_backoff(unreachable);
             if let Some(d) = deadline {
                 wait = wait.min(d.saturating_duration_since(Instant::now()));
             }
+            if let Some(h) = health.as_mut() {
+                h.relay_unreachable(&error, unreachable, health::unix_now());
+            }
+            health_tick(&mut health, rooms);
             emit(&serde_json::json!({
                 "event": "relay_unreachable", "device": ctx.own, "attempt": unreachable,
-                "wait_ms": wait.as_millis() as u64, "error": error,
+                "wait_ms": wait.as_millis() as u64, "error": error.to_string(),
             }));
             std::thread::sleep(wait);
             continue;
@@ -606,6 +626,9 @@ fn run_rounds(
         if unreachable > 0 {
             emit(&serde_json::json!({ "event": "relay_reachable", "device": ctx.own, "after_attempts": unreachable }));
             unreachable = 0;
+            if let Some(h) = health.as_mut() {
+                h.relay_reachable(health::unix_now());
+            }
         }
         // Steward (#372 P2): one queued operator command per round.
         if let Some(steward) = steward {
@@ -735,7 +758,27 @@ fn run_rounds(
         if rounds % STATUS_EVERY == 0 {
             status(rooms);
         }
+        health_tick(&mut health, rooms);
         std::thread::sleep(POLL);
+    }
+}
+
+/// #426: refresh `health.json` (written on a change or the heartbeat only).
+/// Best effort — a failed write is logged once and never ends the session.
+fn health_tick(health: &mut Option<health::Health>, rooms: &[RoomState]) {
+    let Some(h) = health.as_mut() else { return };
+    let view: Vec<_> = rooms
+        .iter()
+        .map(|s| health::RoomHealth {
+            room: s.room.clone(), joined: s.joined, mode: s.mode.name(), halted: s.halted,
+            pending: s.pending.is_some(), cursor: s.cursor, epoch: s.epoch,
+            marker: if s.halted { s.state_path.as_deref().map(refused_marker_path) } else { None },
+        })
+        .collect();
+    if let Err(err) = h.observe(&view, health::unix_now(), Instant::now()) {
+        if h.announce_failure() {
+            emit(&serde_json::json!({ "event": "health_write_failed", "path": h.path().display().to_string(), "error": err.to_string() }));
+        }
     }
 }
 
@@ -2874,6 +2917,56 @@ for line in sys.stdin:
         assert_eq!(seen.len(), 2, "{seen:?}");
         assert!(seen.iter().all(|l| l.starts_with("GET /v2/rooms/family/events?device=bot-1&after=4")), "{seen:?}");
         assert_eq!(rooms[0].cursor, 4, "nothing moved");
+    }
+
+    /// #426 through `run_loop` (steward): 503 → page → connection refused (the
+    /// canned relay stops listening). `health.json` follows each transition
+    /// and still names the room; the session itself behaves exactly as #392.
+    #[test]
+    fn steward_health_file_follows_relay_transitions() {
+        let dir = temp_dir("health-relay");
+        let page = r#"{"epoch":2,"revision":1,"events":[],"first_seq":5}"#.to_string();
+        let (base, server) = canned_relay_with_status(vec![(503, "unavailable".into()), (200, page)]);
+        let client = Client::with_access(&base, api::Access::None);
+        let ctx = Ctx { client: &client, own: "bot-1", typing: None };
+        let steward = Steward { device: "bot-1".into(), rooms_dir: dir.clone(), identity_file: dir.join("identity.json"), multi_agent: false };
+        let mut rooms = vec![joined_room("family", 4)];
+        let err = run_loop(&ctx, &mut rooms, &mut None, Some(Instant::now() + Duration::from_millis(2500)), Some(&steward))
+            .expect_err("only the deadline ends the loop");
+        assert!(err.to_string().contains("deadline"), "{err}");
+        assert_eq!(server.join().expect("server thread").len(), 2);
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("health.json")).expect("health.json")).expect("json");
+        assert_eq!((v["version"].as_u64(), v["device"].as_str()), (Some(1), Some("bot-1")));
+        // 503 (gateway) → up → refused: two outages, the second still open.
+        assert_eq!(v["relay"]["state"], "unreachable", "{v}");
+        assert_eq!(v["relay"]["last_error_class"], "refused", "{v}");
+        assert_eq!(v["relay"]["outages"], 2, "{v}");
+        assert!(v["relay"]["attempts"].as_u64() >= Some(1), "{v}");
+        assert_eq!(v["access"]["last_403"], serde_json::Value::Null);
+        assert_eq!(v["rooms"][0]["room"], "family");
+        assert_eq!((v["rooms"][0]["joined"].as_bool(), v["rooms"][0]["halted"].as_bool()), (Some(true), Some(false)));
+        assert!(!dir.join("health.json.tmp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #426: a 403 still ends the session (the service manager restarts it),
+    /// but `health.json` records it first.
+    #[test]
+    fn steward_health_file_records_the_403_that_ends_the_session() {
+        let dir = temp_dir("health-403");
+        let (base, server) = canned_relay_with_status(vec![(403, r#"{"error":"device_not_allowed"}"#.into())]);
+        let client = Client::with_access(&base, api::Access::None);
+        let ctx = Ctx { client: &client, own: "bot-1", typing: None };
+        let steward = Steward { device: "bot-1".into(), rooms_dir: dir.clone(), identity_file: dir.join("identity.json"), multi_agent: false };
+        let mut rooms = vec![joined_room("family", 4)];
+        let err = run_loop(&ctx, &mut rooms, &mut None, Some(Instant::now() + Duration::from_secs(5)), Some(&steward))
+            .expect_err("a 403 is fatal");
+        assert_eq!(api::error_code(&err), Some("device_not_allowed"), "{err}");
+        server.join().expect("server thread");
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("health.json")).expect("health.json")).expect("json");
+        assert_eq!(v["access"]["last_403"]["code"], "device_not_allowed", "{v}");
+        assert_eq!(v["relay"]["state"], "up", "a 403 is an answer, not an outage: {v}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// #703 through `run_loop`: notices a sender (alert feeder) writes on the
