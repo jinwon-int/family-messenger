@@ -58,9 +58,34 @@ final class SwipeReplyTests: XCTestCase {
         XCTAssertFalse(SwipeReply.shouldBegin(vx: 0, vy: 0), "no motion")
     }
 
-    func testSideScrollBlocksDisableSwipe() {
-        XCTAssertFalse(SwipeReply.hasSideScroll(AgentMarkdown.parse("그냥 글\n\n- 목록")))
-        XCTAssertTrue(SwipeReply.hasSideScroll(AgentMarkdown.parse("코드:\n```\nlet x = 1\n```")))
-        XCTAssertTrue(SwipeReply.hasSideScroll(AgentMarkdown.parse("| a | b |\n|---|---|\n| 1 | 2 |")))
+    func testSideScrollZoneBlocksOnlyDragsStartingInsideIt() {
+        // #737: 표가 든 카드도 표 밖(문단·제목)에서 시작한 밀기는 답장, 표 위에서 시작한 밀기만 표 넘기기 몫.
+        let table = SwipeReply.Zone(minX: 14, minY: 120, maxX: 376, maxY: 300)
+        XCTAssertTrue(SwipeReply.startsInSideScroll(x: 200, y: 200, zones: [table]), "inside the table")
+        XCTAssertFalse(SwipeReply.startsInSideScroll(x: 200, y: 60, zones: [table]), "paragraph above the table")
+        XCTAssertFalse(SwipeReply.startsInSideScroll(x: 200, y: 340, zones: [table]), "list below the table")
+        XCTAssertFalse(SwipeReply.startsInSideScroll(x: 5, y: 200, zones: [table]), "card padding left of the table")
+    }
+
+    func testSideScrollZoneEdgesBelongToTheBlock() {
+        let code = SwipeReply.Zone(minX: 14, minY: 40, maxX: 376, maxY: 90)
+        XCTAssertTrue(SwipeReply.startsInSideScroll(x: 14, y: 40, zones: [code]), "top-left corner")
+        XCTAssertTrue(SwipeReply.startsInSideScroll(x: 376, y: 90, zones: [code]), "bottom-right corner")
+        XCTAssertFalse(SwipeReply.startsInSideScroll(x: 376.5, y: 90, zones: [code]))
+        XCTAssertFalse(SwipeReply.startsInSideScroll(x: 200, y: 39.5, zones: [code]))
+    }
+
+    func testNoZonesNeverBlocks() {
+        // 표·코드 없는 카드·사람 말풍선은 영역이 없다 → 종전 그대로 어디서든 밀기.
+        XCTAssertFalse(SwipeReply.startsInSideScroll(x: 0, y: 0, zones: []))
+        XCTAssertFalse(SwipeReply.startsInSideScroll(x: 200, y: 200, zones: []))
+    }
+
+    func testAnyOfSeveralZonesBlocks() {
+        let code = SwipeReply.Zone(minX: 14, minY: 40, maxX: 376, maxY: 90)
+        let table = SwipeReply.Zone(minX: 14, minY: 150, maxX: 376, maxY: 260)
+        XCTAssertTrue(SwipeReply.startsInSideScroll(x: 100, y: 60, zones: [code, table]))
+        XCTAssertTrue(SwipeReply.startsInSideScroll(x: 100, y: 200, zones: [code, table]))
+        XCTAssertFalse(SwipeReply.startsInSideScroll(x: 100, y: 120, zones: [code, table]), "text between the two blocks")
     }
 }

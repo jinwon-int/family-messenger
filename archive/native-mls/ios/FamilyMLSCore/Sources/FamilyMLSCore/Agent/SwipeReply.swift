@@ -52,14 +52,34 @@ public enum SwipeReply {
         dx <= -triggerDistance && abs(dx) > abs(dy) * horizontalDominance
     }
 
-    /// 에이전트 카드 안에 옆으로 미는 블록(코드·표 — `ScrollView(.horizontal)`)이 있으면 밀어서 답장을 붙이지 않는다.
-    /// 그 카드는 꾹 누르기 메뉴 「답장」으로 답한다.
-    public static func hasSideScroll(_ blocks: [AgentMarkdown.Block]) -> Bool {
-        blocks.contains { block in
-            switch block {
-            case .code, .table: return true
-            default: return false
-            }
+    /// 에이전트 카드 안의 옆으로 미는 블록(코드·표 — `ScrollView(.horizontal)`) 한 개의 영역(pt, 행 좌표계 `rowSpace`).
+    /// 종전(#730)엔 이런 블록이 하나라도 있으면 카드 전체에서 밀어서 답장을 껐다. #737(오너 2026-11-10 「소교 보고서에서 밀어서 답장이
+    /// 안 됨」): 에이전트 보고서는 표가 흔해 답장이 가장 많은 카드에서 밀기가 늘 꺼졌다 → **시작점이 이 영역 안일 때만** 끈다.
+    public struct Zone: Equatable, Sendable {
+        public let minX: Double
+        public let minY: Double
+        public let maxX: Double
+        public let maxY: Double
+
+        public init(minX: Double, minY: Double, maxX: Double, maxY: Double) {
+            self.minX = minX
+            self.minY = minY
+            self.maxX = maxX
+            self.maxY = maxY
         }
+
+        /// 경계 포함 — 표 가장자리에서 시작한 끌기도 표 넘기기 몫으로 둔다(넘기기를 답장으로 오인하는 쪽이 더 나쁘다).
+        public func contains(x: Double, y: Double) -> Bool {
+            x >= minX && x <= maxX && y >= minY && y <= maxY
+        }
+    }
+
+    /// 표·코드 영역을 재는 행 좌표계 이름 — 영역 보고(`AgentViews`)와 끌기 시작점(`SwipeToReply`)이 같은 기준을 쓴다.
+    public static let rowSpace = "swipeReplyRow"
+
+    /// 끌기 시작점(행 좌표)이 옆으로 미는 블록 위면 true — 이 끌기는 그 블록의 가로 스크롤 몫이라 밀어서 답장을 시작하지 않는다.
+    /// 영역 밖(제목·문단·목록·카드 여백)에서 시작한 왼쪽 밀기는 종전처럼 답장.
+    public static func startsInSideScroll(x: Double, y: Double, zones: [Zone]) -> Bool {
+        zones.contains { $0.contains(x: x, y: y) }
     }
 }
