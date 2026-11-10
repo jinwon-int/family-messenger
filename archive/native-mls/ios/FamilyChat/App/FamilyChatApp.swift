@@ -50,7 +50,6 @@ struct FamilyChatApp: App {
                     default: break
                     }
                 }
-        }
     }
 }
 
