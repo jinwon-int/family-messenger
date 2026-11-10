@@ -126,4 +126,58 @@ final class SwipeReplyUITests: XCTestCase {
         print("[swipe] summary fling-vs-settled failed=\(failed)")
         XCTAssertEqual(failed, [], "swipe-to-reply failed: \(failed)")
     }
+
+    /// 3차: 표·목록이 든 에이전트 카드(오너가 주로 답하는 보고서). 최신 카드와 그 위 카드의 표 위·아래 글자에서 밀고,
+    /// 대조로 표 칸 위에서 민다(답장이 열리면 안 된다).
+    private func agentSwipe(_ app: XCUIApplication, _ text: String, label: String) -> String {
+        app.buttons["harness-clear"].tap()
+        let el = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", text)).firstMatch
+        guard el.waitForExistence(timeout: 3), el.isHittable else {
+            print("[swipe] \(label) '\(text)' NOT-HITTABLE frame=\(el.frame)")
+            return "not-hittable"
+        }
+        let start = el.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -140, dy: 0)),
+                    withVelocity: XCUIGestureVelocity(rawValue: 500), thenHoldForDuration: 0.05)
+        let replied = app.staticTexts["harness-replied"].label
+        app.buttons["harness-dump"].tap()
+        let trace = app.staticTexts["harness-trace"].label.replacingOccurrences(of: "\n", with: " | ")
+        print("[swipe] \(label) '\(text)' \(replied) frame=\(el.frame) trace: \(trace)")
+        return replied
+    }
+
+    func testAgentCardsLatestAndOlder() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-swipeReplyHarness", "-swipeReplyRows", "6", "-swipeReplyAgent"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["harness-replied"].waitForExistence(timeout: 10))
+        var failed: [String] = []
+        let scroll = app.scrollViews.firstMatch
+        func expect(_ n: Int, _ text: String, _ label: String) {
+            let r = agentSwipe(app, text, label: label)
+            if r != "not-hittable" && r != "replied:\(n)" { failed.append("\(label)") }
+        }
+        // 최신(6) 카드: 아래 문단 · 목록 · 위 문단 · (대조) 표 칸.
+        expect(6, "마지막 문단 6", "latest-last")
+        expect(6, "목록 하나 6", "latest-list")
+        expect(6, "첫 문단 6", "latest-first")
+        let ctrl = agentSwipe(app, "표칸 6", label: "latest-table-control")
+        if ctrl != "replied:none" && ctrl != "not-hittable" { failed.append("latest-table-control") }
+        // 그 위 카드(5·4): 보이도록 천천히(관성 없이) 내린 뒤.
+        for n in [5, 4] {
+            for _ in 0..<4 {
+                let el = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "마지막 문단 \(n)")).firstMatch
+                if el.exists && el.isHittable && el.frame.midY > 300 { break }
+                let from = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.35))
+                from.press(forDuration: 0.05, thenDragTo: from.withOffset(CGVector(dx: 0, dy: 250)), withVelocity: .slow, thenHoldForDuration: 0.4)
+            }
+            expect(n, "마지막 문단 \(n)", "older\(n)-last")
+            expect(n, "목록 하나 \(n)", "older\(n)-list")
+            expect(n, "첫 문단 \(n)", "older\(n)-first")
+            let c = agentSwipe(app, "표칸 \(n)", label: "older\(n)-table-control")
+            if c != "replied:none" && c != "not-hittable" { failed.append("older\(n)-table-control") }
+        }
+        print("[swipe] summary agent failed=\(failed)")
+        XCTAssertEqual(failed, [], "agent swipe-to-reply failed: \(failed)")
+    }
 }

@@ -1428,7 +1428,9 @@ struct SwipeReplyPan: UIGestureRecognizerRepresentable {
             let v = pan.velocity(in: pan.view)
             let local = converter.location(in: .local)
             SwipeReplyTrace.note("begin? v=(\(Int(v.x)),\(Int(v.y))) local=(\(Int(local.x)),\(Int(local.y))) "
-                                 + "view=\(pan.view.map { String(describing: type(of: $0)) } ?? "nil") zones=\(zones.count)")
+                                 + "t=(\(Int(pan.translation(in: pan.view).x)),\(Int(pan.translation(in: pan.view).y))) "
+                                 + "view=\(pan.view.map { String(describing: type(of: $0)) } ?? "nil") zones=\(zones.count)"
+                                 + zones.map { " [\(Int($0.minX)),\(Int($0.minY))-\(Int($0.maxX)),\(Int($0.maxY))]" }.joined())
             guard SwipeReply.shouldBegin(vx: Double(v.x), vy: Double(v.y)) else { return false }
             guard !zones.isEmpty else { return true }
             // 팬은 손가락이 조금 움직인 뒤에 판정한다 — 지금 위치에서 그동안의 이동을 빼 시작점을 구한다.
@@ -2014,12 +2016,35 @@ struct SwipeReplyHarness: View {
         }
     }
 
+    /// `-swipeReplyAgent`: 모든 행을 표·목록이 든 에이전트 카드로(오너가 주로 답하는 보고서 모양).
+    private var agentMode: Bool { ProcessInfo.processInfo.arguments.contains("-swipeReplyAgent") }
+    private static let roster = AgentRoster(actors: ["sogyo"])
+
+    private static func agentBody(_ n: Int) -> String {
+        """
+        ## 보고 \(n)
+
+        첫 문단 \(n)입니다. 밀어서 답장 재현용 글.
+
+        | 항목 | 값 | 비고 |
+        |---|---|---|
+        | 표칸 \(n) | 1 | 표가 가로로 넘치도록 아주 길게 쓴 설명 텍스트가 이 칸에 들어갑니다 |
+        | b | 2 | x |
+
+        - 목록 하나 \(n)
+        - 목록 둘
+
+        마지막 문단 \(n)입니다.
+        """
+    }
+
     private var items: [AppModel.TimelineItem] {
         (1...rows).map { n in
-            let mine = n % 3 == 0
-            let record = MessageRecord(room: "harness", seq: Int64(n), senderDevice: mine ? "me-phone" : "mom-phone",
+            let mine = !agentMode && n % 3 == 0
+            let record = MessageRecord(room: "harness", seq: Int64(n),
+                                       senderDevice: agentMode ? "sogyo-bot" : (mine ? "me-phone" : "mom-phone"),
                                        clientId: "c\(n)", kind: .text,
-                                       body: "메시지 \(n) — 밀어서 답장 재현용 문장입니다",
+                                       body: agentMode ? Self.agentBody(n) : "메시지 \(n) — 밀어서 답장 재현용 문장입니다",
                                        attachment: nil, receivedAt: Date(timeIntervalSince1970: 1_800_000_000 + Double(n) * 60),
                                        decryptedBy: .app)
             return AppModel.TimelineItem(record: record, attachmentBytes: 0)
@@ -2046,7 +2071,9 @@ struct SwipeReplyHarness: View {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(items) { item in
                             MessageRow(item: item, mine: item.record.senderDevice == "me-phone",
-                                       time: item.record.receivedAt,
+                                       // 실제 방처럼 묶음의 마지막 행만 시각(에이전트 모드) — 최신 행과 그 위 행의 모양 차이를 그대로 둔다.
+                                       time: !agentMode || item.id == Int64(rows) ? item.record.receivedAt : nil,
+                                       roster: Self.roster,
                                        reply: { replied = String(item.id) })
                                 .id(item.id)
                         }
