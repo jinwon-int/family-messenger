@@ -61,13 +61,13 @@ struct MarkdownBlocksView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                blockView(block)
+            ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
+                blockView(block, index: index)
             }
         }
     }
 
-    @ViewBuilder private func blockView(_ block: AgentMarkdown.Block) -> some View {
+    @ViewBuilder private func blockView(_ block: AgentMarkdown.Block, index: Int) -> some View {
         switch block {
         case .heading(let level, let text):
             InlineMarkdown(text).font(level <= 1 ? .title3.weight(.bold) : level == 2 ? .headline : .subheadline.weight(.semibold))
@@ -86,11 +86,13 @@ struct MarkdownBlocksView: View {
             }
         case .table(let header, let rows):
             MarkdownTable(header: header, rows: rows)
+                .modifier(SideScrollZoneMark(id: index))
         case .code(let text):
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(text).font(.system(.caption, design: .monospaced)).padding(8)
             }
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
+            .modifier(SideScrollZoneMark(id: index))
         case .quote(let text):
             HStack(spacing: 8) {
                 RoundedRectangle(cornerRadius: 1).fill(p.agent.opacity(0.6)).frame(width: 3)
@@ -99,6 +101,60 @@ struct MarkdownBlocksView: View {
         case .rule:
             Divider()
         }
+    }
+}
+
+/// #737: 옆으로 미는 블록(표·코드)이 자기 영역을 「밀어서 답장」(`SwipeToReply`)에 알리는 통로. 카드 단위로 밀기를 끄던 #730 대신
+/// 끌기 시작점이 이 영역 안일 때만 밀기를 끈다(`SwipeReply.startsInSideScroll`). 밀어서 답장이 없는 곳(nil)에서는 재지 않는다.
+struct SideScrollZoneReporter {
+    /// 블록 번호(카드 안 순서)별 영역 — nil 이면 그 블록이 사라졌다.
+    let report: (_ id: Int, _ zone: SwipeReply.Zone?) -> Void
+}
+
+private struct SideScrollZoneReporterKey: EnvironmentKey {
+    static let defaultValue: SideScrollZoneReporter? = nil
+}
+
+extension EnvironmentValues {
+    var sideScrollZoneReporter: SideScrollZoneReporter? {
+        get { self[SideScrollZoneReporterKey.self] }
+        set { self[SideScrollZoneReporterKey.self] = newValue }
+    }
+}
+
+/// 블록의 영역을 행 좌표(`SwipeReply.rowSpace`)로 재어 바로 보고한다(처음 한 번 + 바뀔 때마다 — `Measured` 와 같은 이유로
+/// PreferenceKey 를 쓰지 않는다). 행 좌표라 타임라인을 스크롤해도 값이 바뀌지 않아 스크롤 중 보고가 생기지 않는다.
+struct SideScrollZoneMark: ViewModifier {
+    let id: Int
+    @Environment(\.sideScrollZoneReporter) private var reporter
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if let reporter {
+            content
+                .background(GeometryReader { geo in
+                    MeasuredZone(zone: SwipeReply.Zone(geo.frame(in: .named(SwipeReply.rowSpace)))) { reporter.report(id, $0) }
+                })
+                .onDisappear { reporter.report(id, nil) }
+        } else {
+            content
+        }
+    }
+}
+
+/// `Measured` 의 영역판.
+struct MeasuredZone: View {
+    let zone: SwipeReply.Zone
+    let report: (SwipeReply.Zone) -> Void
+    var body: some View {
+        Color.clear
+            .onAppear { report(zone) }
+            .onChange(of: zone) { report($0) }
+    }
+}
+
+extension SwipeReply.Zone {
+    init(_ rect: CGRect) {
+        self.init(minX: Double(rect.minX), minY: Double(rect.minY), maxX: Double(rect.maxX), maxY: Double(rect.maxY))
     }
 }
 

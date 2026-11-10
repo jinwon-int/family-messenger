@@ -1028,13 +1028,12 @@ struct MessageRow: View {
 
     private var isAgentRow: Bool { !mine && message.kind == .text && roster.isAgent(message) }
 
-    /// 밀어서 답장(오너 2026-11-09): 꾹 누르기 「답장」이 있는 말풍선·에이전트 카드만. 승인 카드·처리 결과 한 줄은 메뉴가 없어 제외,
-    /// 옆으로 미는 블록(코드·표)이 든 에이전트 카드는 그 스크롤과 겹쳐 제외(메뉴 「답장」은 그대로).
+    /// 밀어서 답장(오너 2026-11-09): 꾹 누르기 「답장」이 있는 말풍선·에이전트 카드만. 승인 카드·처리 결과 한 줄은 메뉴가 없어 제외.
+    /// 옆으로 미는 블록(코드·표)이 든 카드도 붙인다 — 그 블록 위에서 시작한 끌기만 블록 스크롤 몫으로 둔다(#737, `SwipeToReply`).
     private var swipeReply: (() -> Void)? {
         guard let reply, MessageCopy.text(of: message) != nil else { return nil }
         if isAgentRow {
-            guard AgentApproval.request(in: message.body) == nil, AgentApproval.resolution(in: message.body) == nil,
-                  !SwipeReply.hasSideScroll(AgentMarkdown.parse(message.body)) else { return nil }
+            guard AgentApproval.request(in: message.body) == nil, AgentApproval.resolution(in: message.body) == nil else { return nil }
         }
         return reply
     }
@@ -1251,6 +1250,10 @@ struct MessageRow: View {
 /// 시작**(`gestureRecognizerShouldBegin` → `SwipeReply.shouldBegin`)하게 한다 — 세로 끌기는 팬이 아예 시작하지 않아 스크롤이 받는다.
 /// iOS 16·17 은 종전 SwiftUI 경로(그 버전에선 스크롤을 막지 않는다).
 /// `reply` 가 nil 이면(보낼 수 없는 방·대상 아님) 제스처를 끈다 — 뷰 구조는 그대로 두어 말풍선 안 상태(사진 로딩 등)가 다시 만들어지지 않게.
+///
+/// #737(오너 2026-11-10 「소교 보고서에서 밀어서 답장이 안 됨」): 종전엔 코드·표가 든 에이전트 카드 전체에서 밀기를 껐다. 이제 그 블록들이
+/// 행 좌표(`SwipeReply.rowSpace`)로 자기 영역을 알리고(`SideScrollZoneMark`), **시작점이 영역 안인 끌기만** 밀기를 시작하지 않는다 —
+/// 블록 위 가로 끌기는 블록 스크롤이, 문단·제목·목록 위 왼쪽 끌기는 답장이 받는다. 행 좌표라 타임라인 스크롤 중엔 영역 보고가 없다.
 struct SwipeToReply: ViewModifier {
     let reply: (() -> Void)?
     @Environment(\.hande) private var p
@@ -1272,6 +1275,16 @@ struct SwipeToReply: ViewModifier {
     @State private var lock: Lock?
     // iOS 18+ UIKit 경로: 팬이 시작한(=이미 왼쪽 가로로 판정된) 끌기의 이동. 끝나거나 취소되면 nil.
     @State private var panTranslation: CGSize?
+    /// #737: 이 행 안 옆으로 미는 블록(코드·표)의 영역 — 블록 번호별. 표·코드 없는 행은 비어 있다.
+    @State private var zones: [Int: SwipeReply.Zone] = [:]
+
+    private var zoneList: [SwipeReply.Zone] { Array(zones.values) }
+
+    private var zoneReporter: SideScrollZoneReporter {
+        SideScrollZoneReporter { [zones = _zones] id, zone in
+            if zones.wrappedValue[id] != zone { zones.wrappedValue[id] = zone }
+        }
+    }
 
     private var translation: CGSize? {
         if let panTranslation { return panTranslation }
@@ -1290,14 +1303,18 @@ struct SwipeToReply: ViewModifier {
     }
 
     @ViewBuilder func body(content: Content) -> some View {
+        // 좌표계는 `offset` 안쪽(행 원래 자리)에 단다 — 밀리는 동안에도 블록 영역 값이 바뀌지 않게. 끌기 시작 순간엔 offset 이 0 이라
+        // 제스처의 `.local` 과 같은 기준이다.
         let moved = content
+            .coordinateSpace(name: SwipeReply.rowSpace)
+            .environment(\.sideScrollZoneReporter, zoneReporter)
             .offset(x: offset)
             .background(alignment: .trailing) { icon }
             .onChange(of: armed) { on in
                 if on { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
             }
         if #available(iOS 18.0, *) {
-            moved.gesture(SwipeReplyPan(enabled: reply != nil, changed: { panTranslation = $0 }, ended: panEnded))
+            moved.gesture(SwipeReplyPan(enabled: reply != nil, zones: zoneList, changed: { panTranslation = $0 }, ended: panEnded))
         } else {
             moved.simultaneousGesture(drag, including: reply == nil ? .subviews : .all)
         }
@@ -1317,7 +1334,10 @@ struct SwipeToReply: ViewModifier {
             .onChanged { value in
                 guard lock?.start != value.startLocation else { return }
                 let axis = SwipeReply.axis(dx: Double(value.translation.width), dy: Double(value.translation.height))
-                lock = axis.map { Lock(start: value.startLocation, axis: $0) }
+                // #737: 코드·표 위에서 시작한 끌기는 그 블록의 가로 스크롤 몫 — 이 끌기 동안 말풍선은 움직이지 않는다.
+                let inBlock = SwipeReply.startsInSideScroll(x: Double(value.startLocation.x), y: Double(value.startLocation.y),
+                                                            zones: zoneList)
+                lock = axis.map { Lock(start: value.startLocation, axis: inBlock ? .ignore : $0) }
             }
             .onEnded { value in
                 let fire = lock?.start == value.startLocation && lock?.axis == .reply
@@ -1343,24 +1363,28 @@ struct SwipeToReply: ViewModifier {
 
 /// iOS 18+ 밀어서 답장 팬. 시작 순간의 속도가 왼쪽 가로 우세일 때만 시작한다(`SwipeReply.shouldBegin`) — 세로·오른쪽 끌기는
 /// 시작하지 않으므로 타임라인 스크롤·넓은 뒤로가기가 그대로 받는다. 시작한 뒤에는 다른 인식기와 함께 돈다(꾹 누르기 메뉴 등).
+/// #737: 시작점이 코드·표 영역(`zones`, 행 좌표) 안이면 시작하지 않는다 — 그 끌기는 블록의 가로 스크롤이 받는다.
 @available(iOS 18.0, *)
 struct SwipeReplyPan: UIGestureRecognizerRepresentable {
     let enabled: Bool
+    let zones: [SwipeReply.Zone]
     let changed: (CGSize) -> Void
     let ended: (CGSize, _ cancelled: Bool) -> Void
 
-    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator(converter: converter) }
 
     func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
         let pan = UIPanGestureRecognizer()
         pan.maximumNumberOfTouches = 1
         pan.delegate = context.coordinator
         context.coordinator.enabled = enabled
+        context.coordinator.zones = zones
         return pan
     }
 
     func updateUIGestureRecognizer(_ recognizer: UIPanGestureRecognizer, context: Context) {
         context.coordinator.enabled = enabled
+        context.coordinator.zones = zones
     }
 
     func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer, context: Context) {
@@ -1376,11 +1400,23 @@ struct SwipeReplyPan: UIGestureRecognizerRepresentable {
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var enabled = true
+        var zones: [SwipeReply.Zone] = []
+        /// 인식기 위치 → 제스처가 붙은 SwiftUI 뷰의 `.local`(= 행 좌표, 시작 순간 offset 0).
+        let converter: UIGestureRecognizerRepresentableCoordinateSpaceConverter
+
+        init(converter: UIGestureRecognizerRepresentableCoordinateSpaceConverter) {
+            self.converter = converter
+        }
 
         func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
             guard enabled, let pan = recognizer as? UIPanGestureRecognizer else { return false }
             let v = pan.velocity(in: pan.view)
-            return SwipeReply.shouldBegin(vx: Double(v.x), vy: Double(v.y))
+            guard SwipeReply.shouldBegin(vx: Double(v.x), vy: Double(v.y)) else { return false }
+            guard !zones.isEmpty else { return true }
+            // 팬은 손가락이 조금 움직인 뒤에 판정한다 — 지금 위치에서 그동안의 이동을 빼 시작점을 구한다.
+            let now = converter.location(in: .local)
+            let moved = pan.translation(in: pan.view)
+            return !SwipeReply.startsInSideScroll(x: Double(now.x - moved.x), y: Double(now.y - moved.y), zones: zones)
         }
 
         func gestureRecognizer(_ recognizer: UIGestureRecognizer,
