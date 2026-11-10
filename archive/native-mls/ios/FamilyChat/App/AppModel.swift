@@ -29,7 +29,7 @@
 // `POST /v2/devices/candidates` 에 올린다(만료 5분 전 재게시; 404 = 옛 릴레이 → 운영자 흐름, 409 device_exists → ID 재사용 불가).
 // 준비 상태의 바퀴는 `GET /v2/me`(`meEveryRounds` 마다) → 서명할 수 있으면(활성 + registrar 이거나 actor 에 registrar 없음) 우편함을 읽어
 // `candidates` 에 두고, 사람이 지문을 비교해 승인하면 `sign_approval` → `POST /v2/devices/approvals`(409 stale_revision 은 한 번 재서명).
-// 승인 직후 내가 참여한 방 목록을 `siblingQueue` 에 적고 바퀴마다 초대한다(새 기기가 로비 키를 올릴 때까지 재시도, 30분 뒤 🔔 에 알리고 포기).
+// 승인 직후 내가 참여한 방 목록을 `siblingQueue` 에 적고 바퀴마다 초대한다(#616: 새 기기의 로비 키 잔량만큼씩, 진행 없이 하루가 지나면 🔔 에 알리고 포기).
 // 새 기기 쪽은 형제 기기(`from` 이 같은 actor 의 활성 기록)가 보낸 로비 Welcome 을 오너 기기처럼 묻지 않고 받는다.
 import Foundation
 import FamilyMLSCore
@@ -875,7 +875,7 @@ final class AppModel: ObservableObject {
         if yieldToSend() { return }
         try await discoverCandidatesLocked(transport)
         if yieldToSend() { return }
-        try await processSiblingInvitesLocked()
+        try await processSiblingInvitesLocked(transport)
     }
 
     /// 동기화·송신·로비에서 잡힌 오류 하나를 화면 상태로 옮긴다(`ConnectionIssue`): 취소는 무시, 닿지 않음은
@@ -1540,42 +1540,41 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// 형제 기기 초대 대기열(바퀴 끝): TTL 지난 항목은 🔔 에 알리고 버린다; 살아 있는 항목은 방마다 초대 — 아직 명단에 없고 초대할 수 있으면
-    /// `RoomMembership.invite`, 다시 시도할 실패는 남기고, 그 밖의 실패는 🔔 에 남기고 버린다.
-    private func processSiblingInvitesLocked() async throws {
+    /// 형제 기기 초대 대기열(바퀴 끝): TTL(마지막 진행부터) 지난 항목은 🔔 에 알리고 버린다; 살아 있는 항목은 `SiblingInviteQueue.turn` —
+    /// #616: 형제 기기의 로비 키 잔량(`lobbyStatus`)만큼만 방마다 `RoomMembership.invite`, 잔량 0 이면 시도 없이 기다리고(`recheckAt`), 다시 시도할
+    /// 실패는 남기고, 그 밖의 실패는 🔔 에 남기고 버린다.
+    private func processSiblingInvitesLocked(_ transport: RelayTransport) async throws {
         let queue = deps.siblingQueue.load(device: deviceId)
         guard !queue.isEmpty else { return }
-        let (live, expired) = queue.split(now: deps.clock())
+        let now = deps.clock()
+        let (live, expired) = queue.split(now: now)
         for e in expired {
-            record("sibling \(e.target): gave up after \(Int(SelfService.siblingInviteTTL / 60)) min — \(e.rooms.joined(separator: ","))")
+            record("sibling \(e.target): gave up after \(Int(SelfService.siblingInviteTTL / 3600)) h without progress — \(e.rooms.joined(separator: ","))")
             addSiblingNote("sibling-expired:\(e.target)", Strings.siblingGaveUp(e.target, e.rooms))
         }
         var next: [SiblingInviteQueue.Entry] = []
         for e in live {
-            var remaining: [RoomID] = []
-            for room in e.rooms {
-                guard let recordRow = rooms.first(where: { $0.room == room }) else { continue }   // 이 기기에서 사라진 방
-                let view = roomView(recordRow)
-                guard !SelfService.siblingInviteRooms([view], target: e.target).isEmpty else {
-                    if view.pending && view.joined && !view.halted { remaining.append(room) }   // 내 commit 대기 → 다음 바퀴
-                    continue   // 이미 명단에 있음 / 정지 / 참여 안 함 — 끝
-                }
-                do {
-                    try await membership(room).invite(target: e.target, sync: try syncEngine(room))
-                    record("sibling \(e.target): invited into \(room)")
-                    notice = Strings.siblingInvited(e.target, room)
-                } catch RelayError.unauthorized {
-                    throw RelayError.unauthorized
-                } catch {
-                    if Self.isRetryableInviteError(error) {
-                        remaining.append(room)
-                    } else {
-                        record("sibling \(e.target): invite into \(room) failed (giving up) — \(Self.brief(error))")
-                        addSiblingNote("sibling-failed:\(e.target):\(room)", Strings.siblingInviteFailed(e.target, room, Self.brief(error)))
-                    }
-                }
+            let turn = try await SiblingInviteQueue.turn(
+                e, now: now,
+                lobbyLive: { try? await transport.lobbyStatus(device: e.target).live },
+                roomView: { room in self.rooms.first(where: { $0.room == room }).map(self.roomView) },
+                invite: { room in try await self.membership(room).invite(target: e.target, sync: try self.syncEngine(room)) },
+                isRetryable: Self.isRetryableInviteError,
+                isNoKey: { if case MembershipError.noKeyPackage = $0 { return true } else { return false } })
+            for room in turn.invited {
+                record("sibling \(e.target): invited into \(room)")
+                notice = Strings.siblingInvited(e.target, room)
             }
-            if !remaining.isEmpty { next.append(SiblingInviteQueue.Entry(target: e.target, rooms: remaining, since: e.since)) }
+            for failure in turn.failed {
+                record("sibling \(e.target): invite into \(failure.room) failed (giving up) — \(Self.brief(failure.error))")
+                addSiblingNote("sibling-failed:\(e.target):\(failure.room)", Strings.siblingInviteFailed(e.target, failure.room, Self.brief(failure.error)))
+            }
+            if let entry = turn.entry {
+                if let recheck = entry.recheckAt, recheck != e.recheckAt {
+                    record("sibling \(e.target): no lobby key left — \(entry.rooms.count) room(s) wait for a replenish")
+                }
+                next.append(entry)
+            }
         }
         deps.siblingQueue.save(SiblingInviteQueue(next), device: deviceId)
     }

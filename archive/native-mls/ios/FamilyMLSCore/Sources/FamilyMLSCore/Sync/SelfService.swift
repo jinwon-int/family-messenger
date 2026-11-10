@@ -14,8 +14,11 @@ public enum SelfService {
     public static let roleRegistrar = "registrar"
     public static let approvalAction = "approve-device"
     public static let approvalAcceptance = "trusted-device-fingerprint"
-    /// 형제 기기 초대 대기열의 수명 — 새 기기가 활성이 된 뒤 로비 키를 올릴 때까지 기다리되, 영원히는 아니다.
-    public static let siblingInviteTTL: TimeInterval = 30 * 60
+    /// 형제 기기 초대 대기열의 수명 — **마지막 진행**(넣은 때·초대가 하나라도 성공한 때)부터 잰다(#616). 30분 고정이던 때는 새 기기(백그라운드
+    /// 크롬 탭)가 로비 키를 15시간 뒤에야 보충해 9개 방이 영영 빠졌다. 잔량 0 인 동안은 `siblingLobbyRecheck` 마다 잔량만 묻는다. 웹과 같다.
+    public static let siblingInviteTTL: TimeInterval = 24 * 60 * 60
+    /// #616: 형제 기기 로비 키 잔량이 0 일 때 다음에 다시 물을 때까지(바퀴마다 묻지 않게).
+    public static let siblingLobbyRecheck: TimeInterval = 60
     /// 후보 게시의 재게시 여유: 만료(10분) 이만큼 전에 다시 올린다.
     public static let candidateRepostMargin: TimeInterval = 5 * 60
     public static let statusActive = "active"
@@ -239,7 +242,13 @@ public struct SiblingInviteQueue: Equatable {
         public var rooms: [RoomID]
         /// 처음 넣은 시각(Unix 초).
         public var since: TimeInterval
-        public init(target: DeviceID, rooms: [RoomID], since: TimeInterval) { self.target = target; self.rooms = rooms; self.since = since }
+        /// #616: 마지막으로 초대가 성공한 시각(Unix 초). TTL 은 이것(없으면 `since`)부터. 옛 저장값에는 없다(nil).
+        public var progress: TimeInterval?
+        /// #616: 형제 기기 로비 키가 0 이라 이 시각(Unix 초)까지는 잔량도 묻지 않는다.
+        public var recheckAt: TimeInterval?
+        public init(target: DeviceID, rooms: [RoomID], since: TimeInterval, progress: TimeInterval? = nil, recheckAt: TimeInterval? = nil) {
+            self.target = target; self.rooms = rooms; self.since = since; self.progress = progress; self.recheckAt = recheckAt
+        }
     }
 
     public var entries: [Entry]
@@ -260,11 +269,72 @@ public struct SiblingInviteQueue: Equatable {
         return SiblingInviteQueue(next)
     }
 
-    /// 처리할 것과 포기할 것(TTL 지남)으로 나눈다.
+    /// 처리할 것과 포기할 것(마지막 진행 `progress`, 없으면 `since` 부터 TTL 지남)으로 나눈다.
     public func split(now: Date, ttl: TimeInterval = SelfService.siblingInviteTTL) -> (live: [Entry], expired: [Entry]) {
         var live: [Entry] = [], expired: [Entry] = []
-        for e in entries { if now.timeIntervalSince1970 - e.since > ttl { expired.append(e) } else { live.append(e) } }
+        for e in entries { if now.timeIntervalSince1970 - (e.progress ?? e.since) > ttl { expired.append(e) } else { live.append(e) } }
         return (live, expired)
+    }
+
+    /// #616: 이번 차례에 초대를 시도할 방 수. 방마다 형제 기기의 로비 키를 하나씩 쓰는데(상한 8), 17개 방을 한꺼번에 돌면 9번째부터
+    /// 「키 패키지 없음」만 쌓인다. `live` = 형제 기기 `GET /v2/lobby/status` — nil(옛 릴레이·오류)이면 제한 없이 예전처럼.
+    public static func budget(live: Int?) -> Int {
+        guard let live else { return Int.max }
+        return max(0, live)
+    }
+
+    /// #616: 항목 하나의 이번 차례 결과(`turn`).
+    public struct Turn {
+        /// 다음 대기열 항목(남은 방이 없으면 nil).
+        public var entry: Entry?
+        public var invited: [RoomID] = []
+        /// 다시 시도하지 않을 실패(🔔).
+        public var failed: [(room: RoomID, error: Error)] = []
+    }
+
+    /// #616: 대기열 항목 하나의 이번 차례(AppModel `processSiblingInvitesLocked` 가 항목마다 부른다 — 엔진·릴레이 없이 테스트 가능). 웹 `siblingInviteTurn`.
+    /// - `lobbyLive()` → 형제 기기 잔량(nil = 모름). 잔량만큼만 초대하고, 0 이면 시도 없이 `recheckAt` 까지 기다린다.
+    /// - `roomView(room)` → 판정 입력(nil = 이 기기에 없는 방). `invite(room)` 이 던지면 `isRetryable` 이면 남기고,
+    ///   `isNoKey` 면 이번 차례 예산을 0 으로(잔량 수치가 낡았다). `invite` 가 `RelayError.unauthorized` 를 던지면 그대로 올린다.
+    @MainActor
+    public static func turn(_ e: Entry, now: Date, lobbyLive: () async -> Int?, roomView: (RoomID) -> SelfService.RoomView?,
+                            invite: (RoomID) async throws -> Void, isRetryable: (Error) -> Bool, isNoKey: (Error) -> Bool) async throws -> Turn {
+        let t = now.timeIntervalSince1970
+        if let recheckAt = e.recheckAt, t < recheckAt { return Turn(entry: e) }
+        var budget = Self.budget(live: await lobbyLive())
+        var starved = budget == 0
+        var remaining: [RoomID] = []
+        var result = Turn(entry: nil)
+        for room in e.rooms {
+            guard let view = roomView(room) else { continue }   // 이 기기에서 사라진 방
+            guard !SelfService.siblingInviteRooms([view], target: e.target).isEmpty else {
+                if view.pending && view.joined && !view.halted { remaining.append(room) }   // 내 commit 대기 → 다음 바퀴
+                continue   // 이미 명단에 있음 / 정지 / 참여 안 함 — 끝
+            }
+            guard budget > 0 else { remaining.append(room); continue }   // 이번 차례에 쓸 로비 키가 없다
+            budget -= 1
+            do {
+                try await invite(room)
+                result.invited.append(room)
+            } catch RelayError.unauthorized {
+                throw RelayError.unauthorized
+            } catch {
+                if isRetryable(error) {
+                    remaining.append(room)
+                    if isNoKey(error) { budget = 0; starved = true }
+                } else {
+                    result.failed.append((room, error))
+                }
+            }
+        }
+        guard !remaining.isEmpty else { return result }
+        var next = e
+        next.rooms = remaining
+        let progressed = !result.invited.isEmpty
+        if progressed { next.progress = t }
+        next.recheckAt = (starved && !progressed) ? t + SelfService.siblingLobbyRecheck : nil
+        result.entry = next
+        return result
     }
 }
 

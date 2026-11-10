@@ -1,5 +1,5 @@
 // 새 기기 셀프서비스(#574 PR 3) — AppModel 쪽: 등록 대기 바퀴의 후보 게시·재게시·모드, 우편함 발견과 서명 자격, 지문 비교 승인(stale 재서명 ·
-// 불일치 거부), 등록 기기 역할(E5), 형제 기기 초대 대기열(재시도·30분 포기), 형제가 보낸 로비 Welcome 의 자동 수락, /v2/me 주기.
+// 불일치 거부), 등록 기기 역할(E5), 형제 기기 초대 대기열(잔량만큼·진행 없이 하루면 포기, #616), 형제가 보낸 로비 Welcome 의 자동 수락, /v2/me 주기.
 // 가짜 엔진(FakeEngine: policy_fingerprint = 고정 지문, sign_* = 프레임)과 메모리 릴레이(InMemoryRelay 의 기기 셀프서비스 대역) — xcframework 불필요,
 // Linux 스모크(scripts/linux-smoke.sh)에도 복사된다. 실 엔진의 초대 성공은 TwoDeviceScenario 가 다룬다(여기서는 키 패키지 없음 → 재시도 경로).
 import XCTest
@@ -10,7 +10,7 @@ import FamilyMLSCore
 final class SelfServiceFlowTests: XCTestCase {
     private let fp = String(repeating: "f", count: 64)
 
-    /// `now` 를 테스트가 돌린다(후보 재게시 여유 5분 · 대기열 TTL 30분). 릴레이의 시계도 같은 값.
+    /// `now` 를 테스트가 돌린다(후보 재게시 여유 5분 · 대기열 TTL 24시간). 릴레이의 시계도 같은 값.
     private final class Clock { var now = Date(timeIntervalSince1970: 1_700_000_000) }
 
     private func makeModel(actor: String = "owner", relay: RelayTransport, inner: InMemoryRelay, clock: Clock, factory: MlsEngineFactory = FakeFactory(),
@@ -151,7 +151,7 @@ final class SelfServiceFlowTests: XCTestCase {
 
     /// 승인: 지문은 이 기기에서 다시 계산한 값(릴레이 값과 같다) → sign_approval → POST → 체인에 활성 기기 추가, /v2/me 갱신, 형제 초대 대기열에
     /// 내가 참여한 방(MemberFakeEngine: roster = 나)이 오른다. 새 기기가 로비 키를 아직 올리지 않았으니(noKeyPackage) 바퀴마다 다시 시도하고,
-    /// 30분이 지나면 🔔 에 알리고 버린다.
+    /// 진행 없이 TTL 이 지나면 🔔 에 알리고 버린다(#616: 잔량 0 인 동안은 초대 시도 없이 기다린다).
     func testApproveCandidateSignsPostsAndQueuesSiblingInvitesUntilGivingUp() async throws {
         let clock = Clock()
         let relay = InMemoryRelay()
@@ -199,7 +199,7 @@ final class SelfServiceFlowTests: XCTestCase {
         XCTAssertEqual(model.notificationCount, 0)
         let report = model.diagnosticsReport()
         XCTAssertTrue(report.contains("sibling owner-pc-9: invite queue family"), report)
-        XCTAssertTrue(report.contains("sibling owner-pc-9: gave up after 30 min"), report)
+        XCTAssertTrue(report.contains("sibling owner-pc-9: gave up after 24 h without progress"), report)
         XCTAssertFalse(report.contains(key), "no key material in the report")
     }
 

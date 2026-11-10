@@ -60,9 +60,9 @@ enum Strings {
     static func candidateApproved(_ device: String) -> String { "\(device) 기기를 승인했습니다. 이 기기가 참여한 대화방에 자동으로 초대합니다." }
     /// 형제 기기를 어느 방에 초대했다(`notice`).
     static func siblingInvited(_ device: String, _ room: String) -> String { "\(device) 기기를 「\(roomLabel(room))」에 초대했습니다." }
-    /// 🔔 알림: 30분 안에 새 기기가 로비 키를 올리지 않아 초대를 포기했다.
+    /// 🔔 알림: 진행 없이 하루(`SelfService.siblingInviteTTL`) 동안 새 기기의 로비 키가 없어 초대를 포기했다.
     static func siblingGaveUp(_ device: String, _ rooms: [String]) -> String {
-        "\(device) 기기를 \(rooms.map(roomLabel).joined(separator: ", ")) 대화방에 초대하지 못했습니다(30분 동안 로비 키가 없음). 그 기기에서 앱을 열어 두고 이 기기에서 방의 「초대」로 다시 초대하세요."
+        "\(device) 기기를 \(rooms.map(roomLabel).joined(separator: ", ")) 대화방에 초대하지 못했습니다(하루 동안 그 기기의 로비 키가 없음). 그 기기에서 앱을 열어 두고 이 기기에서 방의 「초대」로 다시 초대하세요."
     }
     /// 🔔 알림: 초대가 정책 거절 등으로 실패해 포기했다(다시 시도하지 않는 오류).
     static func siblingInviteFailed(_ device: String, _ room: String, _ reason: String) -> String {

@@ -157,6 +157,116 @@ final class SelfServiceTests: XCTestCase {
         XCTAssertEqual(q.split(now: Date(timeIntervalSince1970: 100)).expired, [])
     }
 
+    // MARK: - #616: 형제 초대가 로비 키 상한(8)에 막혀 9번째 방부터 빠지던 문제
+
+    func testSiblingQueueTTLCountsFromLastProgress() {
+        let q = SiblingInviteQueue([
+            SiblingInviteQueue.Entry(target: "a", rooms: ["x"], since: 0, progress: 10 * 3600),
+            SiblingInviteQueue.Entry(target: "b", rooms: ["x"], since: 0),
+        ])
+        let (live, expired) = q.split(now: Date(timeIntervalSince1970: SelfService.siblingInviteTTL + 1))
+        XCTAssertEqual(live.map(\.target), ["a"])
+        XCTAssertEqual(expired.map(\.target), ["b"])
+        XCTAssertGreaterThanOrEqual(SelfService.siblingInviteTTL, 24 * 3600, "15시간 백그라운드였던 탭(10-30)도 기다린다")
+        XCTAssertEqual(SiblingInviteQueue.budget(live: nil), Int.max, "모르면 예전처럼 제한 없음")
+        XCTAssertEqual(SiblingInviteQueue.budget(live: 3), 3)
+        XCTAssertEqual(SiblingInviteQueue.budget(live: -1), 0)
+    }
+
+    func testOldStoredEntriesDecodeWithoutTheNewFields() throws {
+        let entry = try JSONDecoder().decode(SiblingInviteQueue.Entry.self, from: Data(#"{"target":"t","rooms":["r"],"since":5}"#.utf8))
+        XCTAssertEqual(entry, SiblingInviteQueue.Entry(target: "t", rooms: ["r"], since: 5))
+        XCTAssertNil(entry.progress); XCTAssertNil(entry.recheckAt)
+    }
+
+    private enum InviteFailure: Error { case noKey, refused }
+
+    /// 형제 기기(새 웹 기기) 흉내: 로비 키 상한 8, 초대가 하나씩 쓰고, `replenish()` 가 상한까지 채운다.
+    @MainActor
+    private final class Sibling {
+        var live = 0, statusCalls = 0, inviteCalls = 0
+        var members: Set<RoomID> = []
+        func replenish() { live = 8 }
+        func lobbyLive() async -> Int? { statusCalls += 1; return live }
+        func invite(_ room: RoomID) async throws {
+            inviteCalls += 1
+            guard live > 0 else { throw InviteFailure.noKey }
+            live -= 1; members.insert(room)
+        }
+        func view(_ room: RoomID) -> SelfService.RoomView? {
+            SelfService.RoomView(roomId: room, joined: true, halted: false, pending: false, roster: members.contains(room) ? ["t-web"] : ["me"])
+        }
+    }
+
+    @MainActor
+    private func turn(_ e: SiblingInviteQueue.Entry, _ now: TimeInterval, _ sib: Sibling) async throws -> SiblingInviteQueue.Turn {
+        try await SiblingInviteQueue.turn(e, now: Date(timeIntervalSince1970: now), lobbyLive: { await sib.lobbyLive() },
+                                          roomView: { sib.view($0) }, invite: { try await sib.invite($0) },
+                                          isRetryable: { ($0 as? InviteFailure) == .noKey }, isNoKey: { ($0 as? InviteFailure) == .noKey })
+    }
+
+    /// 10-30 실측: 방 17개 · 로비 키 8개. 잔량만큼만 쓰고, 키가 없으면 기다렸다가 보충되면 마저 들인다 — 실패한 초대 시도 0.
+    @MainActor
+    func testSeventeenRoomsWithEightLobbyKeysAllJoinWithoutFailedInvites() async throws {
+        let sib = Sibling()
+        var entry = SiblingInviteQueue.Entry(target: "t-web", rooms: (1...17).map { "room\($0)" }, since: 0)
+        var now: TimeInterval = 0
+        var r = try await turn(entry, now, sib)
+        XCTAssertEqual(sib.inviteCalls, 0, "잔량 0 이면 404 를 쌓지 않는다")
+        XCTAssertEqual(r.entry?.recheckAt, now + SelfService.siblingLobbyRecheck)
+        entry = try XCTUnwrap(r.entry)
+        let calls = sib.statusCalls
+        _ = try await turn(entry, now + 1, sib)
+        XCTAssertEqual(sib.statusCalls, calls, "다시 물을 시각 전에는 잔량도 묻지 않는다")
+        sib.replenish(); now += SelfService.siblingLobbyRecheck
+        r = try await turn(entry, now, sib)
+        XCTAssertEqual(r.invited.count, 8)
+        XCTAssertEqual(sib.inviteCalls, 8, "9번째 방에서 404 를 내지 않는다")
+        XCTAssertEqual(r.entry?.rooms.count, 9)
+        XCTAssertEqual(r.entry?.progress, now)
+        entry = try XCTUnwrap(r.entry)
+        now += 15 * 3600   // 새 기기 탭이 15시간 백그라운드
+        XCTAssertTrue(SiblingInviteQueue([entry]).split(now: Date(timeIntervalSince1970: now)).expired.isEmpty)
+        r = try await turn(entry, now, sib); entry = try XCTUnwrap(r.entry)
+        XCTAssertTrue(r.invited.isEmpty)
+        sib.replenish(); now += SelfService.siblingLobbyRecheck
+        r = try await turn(entry, now, sib); entry = try XCTUnwrap(r.entry)
+        XCTAssertEqual(r.invited.count, 8)
+        sib.replenish(); now += 1
+        r = try await turn(entry, now, sib)
+        XCTAssertEqual(r.invited, ["room17"])
+        XCTAssertNil(r.entry, "17개 방 모두 들어가면 대기열에서 빠진다")
+        XCTAssertEqual(sib.members.count, 17)
+        XCTAssertEqual(sib.inviteCalls, 17, "실패한 초대 시도 0")
+    }
+
+    /// 잔량 수치가 낡아 noKey 가 나면 그 차례는 멈춘다 · 잔량을 모르면 예전처럼 · 재시도 불가 실패는 failed · unauthorized 는 그대로 올린다.
+    @MainActor
+    func testStaleCountUnknownCountAndFailures() async throws {
+        let e = SiblingInviteQueue.Entry(target: "t-web", rooms: ["a", "b", "c"], since: 0)
+        let open: (RoomID) -> SelfService.RoomView? = { SelfService.RoomView(roomId: $0, joined: true, halted: false, pending: false, roster: []) }
+        var tries = 0
+        var r = try await SiblingInviteQueue.turn(e, now: Date(timeIntervalSince1970: 1), lobbyLive: { 5 }, roomView: open,
+                                                  invite: { _ in tries += 1; throw InviteFailure.noKey },
+                                                  isRetryable: { _ in true }, isNoKey: { ($0 as? InviteFailure) == .noKey })
+        XCTAssertEqual(tries, 1, "첫 noKey 뒤 나머지는 시도하지 않는다")
+        XCTAssertEqual(r.entry?.rooms, ["a", "b", "c"])
+        XCTAssertEqual(r.entry?.recheckAt, 1 + SelfService.siblingLobbyRecheck)
+        var invited: [RoomID] = []
+        r = try await SiblingInviteQueue.turn(e, now: Date(timeIntervalSince1970: 1), lobbyLive: { nil }, roomView: open,
+                                              invite: { room in invited.append(room); if room == "b" { throw InviteFailure.refused } },
+                                              isRetryable: { ($0 as? InviteFailure) == .noKey }, isNoKey: { ($0 as? InviteFailure) == .noKey })
+        XCTAssertEqual(invited, ["a", "b", "c"], "잔량을 모르면 제한 없이")
+        XCTAssertEqual(r.invited, ["a", "c"])
+        XCTAssertEqual(r.failed.map(\.room), ["b"])
+        XCTAssertNil(r.entry)
+        do {
+            _ = try await SiblingInviteQueue.turn(e, now: Date(timeIntervalSince1970: 1), lobbyLive: { 8 }, roomView: open,
+                                                  invite: { _ in throw RelayError.unauthorized }, isRetryable: { _ in true }, isNoKey: { _ in false })
+            XCTFail("unauthorized must propagate")
+        } catch RelayError.unauthorized {}
+    }
+
     func testUserDefaultsQueueStoreRoundTripsAndRemovesWhenEmpty() {
         let suite = "hande-test-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
