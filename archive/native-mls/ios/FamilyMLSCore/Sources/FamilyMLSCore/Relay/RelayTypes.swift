@@ -243,9 +243,11 @@ public struct LobbyStatus: Codable, Equatable {
     public var live: Int
     public var max: Int
     public var ttlSeconds: Int64
-    enum CodingKeys: String, CodingKey { case device, live, max; case ttlSeconds = "ttl_seconds" }
-    public init(device: DeviceID, live: Int, max: Int, ttlSeconds: Int64) {
-        self.device = device; self.live = live; self.max = max; self.ttlSeconds = ttlSeconds
+    /// #616: 이 기기가 commit 으로 내보내진 뒤 다시 추가되지 않은 열린 방. 옛 릴레이는 필드가 없다(nil) → 재탐색하지 않는다(fail-closed).
+    public var excludedRooms: [RoomID]?
+    enum CodingKeys: String, CodingKey { case device, live, max; case ttlSeconds = "ttl_seconds"; case excludedRooms = "excluded_rooms" }
+    public init(device: DeviceID, live: Int, max: Int, ttlSeconds: Int64, excludedRooms: [RoomID]? = nil) {
+        self.device = device; self.live = live; self.max = max; self.ttlSeconds = ttlSeconds; self.excludedRooms = excludedRooms
     }
 }
 

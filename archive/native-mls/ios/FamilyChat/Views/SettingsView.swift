@@ -243,6 +243,16 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("settings-devices")
+                // #616: 내 다른 기기가 빠진 방 주기적 재탐색(기본 켜짐).
+                SectionRow {
+                    Toggle(isOn: Binding(get: { model.siblingRescanEnabled }, set: { model.setSiblingRescanEnabled($0) })) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(Strings.siblingRescanTitle).font(.system(size: 17)).foregroundStyle(p.ink)
+                            Text(Strings.siblingRescanHint).font(.system(size: 13)).foregroundStyle(p.inkDim)
+                        }
+                    }
+                    .accessibilityIdentifier("settings-sibling-rescan")
+                }
             }
         }
     }

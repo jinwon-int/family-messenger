@@ -64,6 +64,11 @@ enum Strings {
     static func siblingGaveUp(_ device: String, _ rooms: [String]) -> String {
         "\(device) 기기를 \(rooms.map(roomLabel).joined(separator: ", ")) 대화방에 초대하지 못했습니다(하루 동안 그 기기의 로비 키가 없음). 그 기기에서 앱을 열어 두고 이 기기에서 방의 「초대」로 다시 초대하세요."
     }
+    /// #616 🔔: 빠진 방 재탐색으로 내 다른 기기를 다시 넣었다.
+    static func siblingRescanned(devices: Int, rooms: Int) -> String { "내 다른 기기 \(devices)대를 대화방 \(rooms)개에 다시 넣었습니다." }
+    /// #616 설정 「기기 관리」 토글.
+    static let siblingRescanTitle = "빠진 방 다시 찾기"
+    static let siblingRescanHint = "앱을 열 때, 최소 6시간 간격으로 확인합니다. 일부러 내보낸 방은 건너뜁니다."
     /// 🔔 알림: 초대가 정책 거절 등으로 실패해 포기했다(다시 시도하지 않는 오류).
     static func siblingInviteFailed(_ device: String, _ room: String, _ reason: String) -> String {
         "\(device) 기기를 「\(roomLabel(room))」에 초대하지 못했습니다: \(reason)"

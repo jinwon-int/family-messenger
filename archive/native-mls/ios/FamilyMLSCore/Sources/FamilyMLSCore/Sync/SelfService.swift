@@ -183,8 +183,10 @@ public enum SelfService {
         public var pending: Bool
         /// 현재 명단(모르면 nil = 명단 검사 없음).
         public var roster: [DeviceID]?
-        public init(roomId: RoomID, joined: Bool, halted: Bool, pending: Bool, roster: [DeviceID]?) {
-            self.roomId = roomId; self.joined = joined; self.halted = halted; self.pending = pending; self.roster = roster
+        /// #616 재탐색: 명단이 이번 실행에서 최신으로 확인됐나. 앱 바퀴는 모든 방을 동기화한 뒤에만 재탐색하므로 기본 true(웹은 방마다 `syncedAt`).
+        public var synced: Bool
+        public init(roomId: RoomID, joined: Bool, halted: Bool, pending: Bool, roster: [DeviceID]?, synced: Bool = true) {
+            self.roomId = roomId; self.joined = joined; self.halted = halted; self.pending = pending; self.roster = roster; self.synced = synced
         }
     }
 
@@ -246,8 +248,10 @@ public struct SiblingInviteQueue: Equatable {
         public var progress: TimeInterval?
         /// #616: 형제 기기 로비 키가 0 이라 이 시각(Unix 초)까지는 잔량도 묻지 않는다.
         public var recheckAt: TimeInterval?
-        public init(target: DeviceID, rooms: [RoomID], since: TimeInterval, progress: TimeInterval? = nil, recheckAt: TimeInterval? = nil) {
-            self.target = target; self.rooms = rooms; self.since = since; self.progress = progress; self.recheckAt = recheckAt
+        /// #616 재탐색이 만든 항목이면 `SiblingRescan.origin` — 포기·실패해도 🔔 를 띄우지 않는다(다음 재탐색이 다시 시도). 옛 저장값·승인 항목은 nil.
+        public var origin: String?
+        public init(target: DeviceID, rooms: [RoomID], since: TimeInterval, progress: TimeInterval? = nil, recheckAt: TimeInterval? = nil, origin: String? = nil) {
+            self.target = target; self.rooms = rooms; self.since = since; self.progress = progress; self.recheckAt = recheckAt; self.origin = origin
         }
     }
 
@@ -255,8 +259,8 @@ public struct SiblingInviteQueue: Equatable {
     public init(_ entries: [Entry] = []) { self.entries = entries }
     public var isEmpty: Bool { entries.isEmpty }
 
-    /// (target, rooms) 를 넣는다 — 같은 target 이 있으면 방을 합치고 시각은 유지. 방이 없으면 그대로.
-    public func enqueued(target: DeviceID, rooms: [RoomID], now: Date) -> SiblingInviteQueue {
+    /// (target, rooms) 를 넣는다 — 같은 target 이 있으면 방을 합치고 시각·출처는 유지. 방이 없으면 그대로.
+    public func enqueued(target: DeviceID, rooms: [RoomID], now: Date, origin: String? = nil) -> SiblingInviteQueue {
         var add: [RoomID] = []
         for room in rooms where !room.isEmpty && !add.contains(room) { add.append(room) }
         guard !add.isEmpty else { return self }
@@ -264,7 +268,7 @@ public struct SiblingInviteQueue: Equatable {
         if let index = next.firstIndex(where: { $0.target == target }) {
             for room in add where !next[index].rooms.contains(room) { next[index].rooms.append(room) }
         } else {
-            next.append(Entry(target: target, rooms: add, since: now.timeIntervalSince1970))
+            next.append(Entry(target: target, rooms: add, since: now.timeIntervalSince1970, origin: origin))
         }
         return SiblingInviteQueue(next)
     }
@@ -367,4 +371,111 @@ public final class UserDefaultsSiblingQueueStore: SiblingQueueStoring {
         if queue.isEmpty { defaults.removeObject(forKey: Self.key(device)); return }
         if let data = try? JSONEncoder().encode(queue.entries) { defaults.set(data, forKey: Self.key(device)) }
     }
+}
+
+// MARK: - 빠진 방 주기적 재탐색(#616, 오너 결정 D1~D3) — 웹 self-service.js `siblingRescanTurn` 과 같은 규칙
+
+/// 승인할 때 한 번 만든 대기열은 하루 뒤 포기하거나 저장값이 사라지면 다시 생기지 않는다. 그래서 앱이 바퀴를 도는 동안 최소 6시간마다
+/// 「내 다른 활성 기기가 빠진 방」을 다시 계산해 같은 대기열(잔량 예산·진행 기준 TTL)에 넣는다.
+/// D1: commit 으로 내보낸 방(`LobbyStatus.excludedRooms`)만 건너뛴다 — 한 번도 안 들어간 방은 대상. nil(옛 릴레이)이면 그 기기는 건너뛴다.
+public enum SiblingRescan {
+    /// D3: 마지막 재탐색 뒤 최소 간격.
+    public static let interval: TimeInterval = 6 * 60 * 60
+    /// 같은 방에 내 기기가 여럿이면 ID 가 가장 작은 기기만 바로 초대하고, 나머지는 이만큼 지나도 빠져 있을 때만.
+    public static let deferral: TimeInterval = 30 * 60
+    /// 대기열 항목 출처 표시.
+    public static let origin = "rescan"
+
+    /// `last` = 마지막 실행 시각(Unix 초), `pending` = ["target|room": 처음 빠진 것을 본 시각](내가 리더가 아닌 방).
+    public struct State: Codable, Equatable {
+        public var last: TimeInterval?
+        public var pending: [String: TimeInterval]
+        public init(last: TimeInterval? = nil, pending: [String: TimeInterval] = [:]) { self.last = last; self.pending = pending }
+    }
+
+    public struct Turn: Equatable {
+        /// false = 참여한 방 중 명단이 최신이 아닌 방이 있어 아무것도 안 했다(상태 그대로, 다음 바퀴에).
+        public var ready: Bool
+        public var enqueue: [(target: DeviceID, rooms: [RoomID])]
+        public var state: State
+        public static func == (a: Turn, b: Turn) -> Bool {
+            a.ready == b.ready && a.state == b.state && a.enqueue.map(\.target) == b.enqueue.map(\.target) && a.enqueue.map(\.rooms) == b.enqueue.map(\.rooms)
+        }
+    }
+
+    /// 내 actor 의 다른 활성 기기 ID(정렬). 내 기록이 체인에 없거나 활성이 아니면 빈 목록.
+    public static func siblings(me: MeResponse?, device: DeviceID) -> [DeviceID] {
+        let devices = me?.devices ?? []
+        guard let mine = devices.first(where: { $0.deviceId == device }), mine.status == "active", !mine.actor.isEmpty else { return [] }
+        return devices.filter { $0.deviceId != device && $0.actor == mine.actor && $0.status == "active" }.map(\.deviceId).sorted()
+    }
+
+    /// 지금 재탐색할 차례인가 — 한 번도 안 했거나 간격이 지났거나, 미뤄 둔 방의 30분이 찼을 때.
+    public static func due(_ state: State, now: Date) -> Bool {
+        let t = now.timeIntervalSince1970
+        guard let last = state.last, t - last < interval else { return true }
+        return state.pending.values.contains { t - $0 >= deferral }
+    }
+
+    /// 재탐색 한 번(순수). `excluded[target]` 이 nil(옛 릴레이·오류)이면 그 기기는 건너뛴다.
+    public static func turn(rooms: [SelfService.RoomView], device: DeviceID, siblings: [DeviceID],
+                            excluded: [DeviceID: [RoomID]?], state: State, now: Date) -> Turn {
+        if rooms.contains(where: { $0.joined && !$0.synced }) { return Turn(ready: false, enqueue: [], state: state) }
+        let t = now.timeIntervalSince1970
+        let mine = Set([device] + siblings)
+        var pending: [String: TimeInterval] = [:]
+        var enqueue: [(target: DeviceID, rooms: [RoomID])] = []
+        for target in siblings {
+            guard let skipped = excluded[target] ?? nil else { continue }   // fail-closed
+            let out = Set(skipped)
+            var take: [RoomID] = []
+            for roomId in SelfService.siblingInviteRooms(rooms, target: target) where !out.contains(roomId) {
+                guard let view = rooms.first(where: { $0.roomId == roomId }) else { continue }
+                let present = (view.roster ?? []).filter { mine.contains($0) }
+                let leader = Set([device] + present).sorted().first ?? device
+                if leader == device { take.append(roomId); continue }
+                let key = "\(target)|\(roomId)"
+                let seen = state.pending[key] ?? t
+                if t - seen >= deferral { take.append(roomId) } else { pending[key] = seen }
+            }
+            if !take.isEmpty { enqueue.append((target, take)) }
+        }
+        return Turn(ready: true, enqueue: enqueue, state: State(last: t, pending: pending))
+    }
+}
+
+/// 재탐색 상태·끄기 스위치 영속(기기별). 앱은 UserDefaults, 테스트는 메모리.
+public protocol SiblingRescanStoring: AnyObject {
+    func load(device: DeviceID) -> SiblingRescan.State
+    func save(_ state: SiblingRescan.State, device: DeviceID)
+    /// 설정 「빠진 방 다시 찾기」 끄기(기본 켜짐 = false).
+    func isOff(device: DeviceID) -> Bool
+    func setOff(_ off: Bool, device: DeviceID)
+}
+
+public final class InMemorySiblingRescanStore: SiblingRescanStoring {
+    private var states: [DeviceID: SiblingRescan.State] = [:]
+    private var off: Set<DeviceID> = []
+    public init() {}
+    public func load(device: DeviceID) -> SiblingRescan.State { states[device] ?? SiblingRescan.State() }
+    public func save(_ state: SiblingRescan.State, device: DeviceID) { states[device] = state }
+    public func isOff(device: DeviceID) -> Bool { off.contains(device) }
+    public func setOff(_ value: Bool, device: DeviceID) { if value { off.insert(device) } else { off.remove(device) } }
+}
+
+/// `hande.siblingRescan.<device>`(JSON) · `hande.siblingRescanOff.<device>`(Bool). 깨진 값은 빈 상태.
+public final class UserDefaultsSiblingRescanStore: SiblingRescanStoring {
+    private let defaults: UserDefaults
+    public init(defaults: UserDefaults) { self.defaults = defaults }
+    public static func key(_ device: DeviceID) -> String { "hande.siblingRescan.\(device)" }
+    public static func offKey(_ device: DeviceID) -> String { "hande.siblingRescanOff.\(device)" }
+    public func load(device: DeviceID) -> SiblingRescan.State {
+        guard let data = defaults.data(forKey: Self.key(device)), let state = try? JSONDecoder().decode(SiblingRescan.State.self, from: data) else { return SiblingRescan.State() }
+        return state
+    }
+    public func save(_ state: SiblingRescan.State, device: DeviceID) {
+        if let data = try? JSONEncoder().encode(state) { defaults.set(data, forKey: Self.key(device)) }
+    }
+    public func isOff(device: DeviceID) -> Bool { defaults.bool(forKey: Self.offKey(device)) }
+    public func setOff(_ off: Bool, device: DeviceID) { if off { defaults.set(true, forKey: Self.offKey(device)) } else { defaults.removeObject(forKey: Self.offKey(device)) } }
 }
