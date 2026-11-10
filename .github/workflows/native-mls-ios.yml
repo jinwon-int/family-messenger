@@ -25,7 +25,8 @@ defaults:
 jobs:
   swift-core-linux:
     name: FamilyMLSCore contract tests (pure Swift, Linux)
-    runs-on: ubuntu-latest
+    # swift-actions/setup-swift@v2 는 Ubuntu 26.04(2026-11 ubuntu-latest)를 지원하지 않는다("Version 26.04 of Ubuntu is not supported") → 24.04 고정.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -68,7 +69,7 @@ jobs:
     # (Core URLSessionRelayTransport) + 실 Go 릴레이(-access-mode disabled · 127.0.0.1 빈 포트 · mktemp -d).
     # 릴레이는 Linux 전용(devicepolicy 의 Openat/Renameat)이고 macOS 러너엔 Docker 가 없어 Linux 에서 돈다 — scripts/linux-smoke.sh.
     name: Isolated relay smoke (ios-ffi on Linux host + Go relay + HTTP)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # setup-swift@v2 의 Ubuntu 26.04 미지원 — 위 swift-core-linux 와 같은 이유
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
