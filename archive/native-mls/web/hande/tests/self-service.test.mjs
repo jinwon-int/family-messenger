@@ -6,6 +6,8 @@ import {
   siblingInviteRooms, enrollModeFrom, readSiblingQueue, writeSiblingQueue, enqueueSiblingInvites, splitSiblingQueue, isRetryableInviteError,
   siblingQueueKey, SIBLING_INVITE_TTL_MS, ROLE_REGISTRAR,
   siblingInviteBudget, nextSiblingEntry, siblingInviteTurn, SIBLING_LOBBY_RECHECK_MS,
+  siblingDevices, rescanDue, siblingRescanTurn, readRescanState, writeRescanState, rescanOff, setRescanOff, siblingRescanKey,
+  SIBLING_RESCAN_INTERVAL_MS, SIBLING_RESCAN_DEFER_MS,
 } from '../self-service.js';
 
 const KEY = 'ab'.repeat(32), FP = 'cd'.repeat(32);
@@ -262,4 +264,101 @@ test('siblingInviteTurn(#616): 잔량 수치가 낡아 404 가 나면 그 차례
     invite: async id => { spent.push(id); }, retryable: [NO_KEY], noKey: NO_KEY});
   assert.deepEqual(spent, ['x']);
   assert.deepEqual(r.entry.rooms, ['pending']);
+});
+
+// ---- #616 빠진 방 주기적 재탐색(오너 D1~D3) ----
+const room = (roomId, roster, extra = {}) => ({roomId, joined: true, halted: null, pending: false, roster, synced: true, ...extra});
+
+test('siblingDevices: 내 actor 의 다른 활성 기기만(정렬) — 철회·다른 actor·나 제외, 내 기록이 없으면 빈 목록', () => {
+  const m = me(dev('mom-web-a'), dev('mom-iphone-b'), dev('mom-android-c', {status: 'revoked'}), dev('dad-pc-d'), dev('mom-android-e'));
+  assert.deepEqual(siblingDevices(m, 'mom-web-a'), ['mom-android-e', 'mom-iphone-b']);
+  assert.deepEqual(siblingDevices(m, 'mom-ghost-z'), []);
+  assert.deepEqual(siblingDevices(me(dev('mom-web-a', {status: 'revoked'}), dev('mom-iphone-b')), 'mom-web-a'), [], '철회된 내가 초대하지 않는다');
+  assert.deepEqual(siblingDevices({subject: 'sub-1'}, 'mom-web-a'), [], '옛 릴레이(/v2/me 에 devices 없음)');
+});
+
+test('rescanDue(D3): 처음 · 6시간 지남 · 미뤄 둔 방의 30분이 참', () => {
+  const t0 = 1_000_000_000;
+  assert.equal(rescanDue({last: null, pending: {}}, t0), true);
+  assert.equal(rescanDue({last: t0, pending: {}}, t0 + SIBLING_RESCAN_INTERVAL_MS - 1), false);
+  assert.equal(rescanDue({last: t0, pending: {}}, t0 + SIBLING_RESCAN_INTERVAL_MS), true);
+  assert.equal(rescanDue({last: t0, pending: {'b|r': t0}}, t0 + SIBLING_RESCAN_DEFER_MS - 1), false);
+  assert.equal(rescanDue({last: t0, pending: {'b|r': t0}}, t0 + SIBLING_RESCAN_DEFER_MS), true);
+});
+
+test('siblingRescanTurn(D1): 방 17개 중 내보낸 2개·정지 1개·이미 있는 1개 제외 → 정확히 13개, 한 번도 안 들어간 방은 대상', () => {
+  const rooms = [];
+  for (let i = 0; i < 17; i++) rooms.push(room(`r${String(i).padStart(2, '0')}`, ['mom-a']));
+  rooms[3] = room('r03', ['mom-a'], {halted: {reason: 'x'}});
+  rooms[4] = room('r04', ['mom-a', 'mom-z']);   // 이미 멤버
+  const excluded = new Map([['mom-z', ['r00', 'r01', 'gone-room']]]);
+  const t = siblingRescanTurn({rooms, device: 'mom-a', siblings: ['mom-z'], excluded, state: {last: null, pending: {}}, now: 5});
+  assert.equal(t.ready, true);
+  assert.deepEqual(t.enqueue, [{target: 'mom-z', rooms: rooms.map(r => r.roomId).filter(r => !['r00', 'r01', 'r03', 'r04'].includes(r))}]);
+  assert.equal(t.enqueue[0].rooms.length, 13);
+  assert.deepEqual(t.state, {last: 5, pending: {}});
+});
+
+test('siblingRescanTurn: 옛 릴레이(excluded null)면 그 기기는 재탐색하지 않는다(fail-closed) · 다른 기기는 그대로', () => {
+  const rooms = [room('family', ['mom-a'])];
+  const t = siblingRescanTurn({rooms, device: 'mom-a', siblings: ['mom-b', 'mom-c'], excluded: new Map([['mom-b', null], ['mom-c', []]]), state: {last: null, pending: {}}, now: 1});
+  assert.deepEqual(t.enqueue, [{target: 'mom-c', rooms: ['family']}]);
+  assert.deepEqual(siblingRescanTurn({rooms, device: 'mom-a', siblings: ['mom-b'], excluded: undefined, state: {last: null, pending: {}}, now: 1}).enqueue, []);
+});
+
+test('siblingRescanTurn: 참여한 방이 이번 세션에 아직 동기화 전이면 아무것도 안 하고 상태도 그대로(낡은 명단으로 초대 금지)', () => {
+  const state = {last: null, pending: {}};
+  const t = siblingRescanTurn({rooms: [room('a', ['mom-a']), room('b', ['mom-a'], {synced: false})], device: 'mom-a', siblings: ['mom-z'], excluded: new Map([['mom-z', []]]), state, now: 9});
+  assert.equal(t.ready, false);
+  assert.deepEqual(t.enqueue, []);
+  assert.equal(t.state, state);
+  const notJoined = siblingRescanTurn({rooms: [room('a', ['mom-a']), room('b', [], {joined: false, synced: false})], device: 'mom-a', siblings: ['mom-z'], excluded: new Map([['mom-z', []]]), state, now: 9});
+  assert.equal(notJoined.ready, true, '참여하지 않은 방은 동기화 여부와 상관없다');
+});
+
+test('siblingRescanTurn: 방마다 초대하는 기기는 하나 — 내 기기 중 ID 가 가장 작은 기기가 바로, 나머지는 30분 뒤에도 빠져 있을 때만', () => {
+  // mom-b(나)와 mom-a(더 작은 ID)가 모두 'family' 에 있고 mom-z 가 빠짐 → 리더는 mom-a.
+  const rooms = [room('family', ['mom-a', 'mom-b']), room('solo', ['mom-b'])];
+  const excluded = new Map([['mom-z', []]]);
+  const siblings = ['mom-a', 'mom-z'];
+  const t1 = siblingRescanTurn({rooms, device: 'mom-b', siblings, excluded, state: {last: null, pending: {}}, now: 100});
+  assert.deepEqual(t1.enqueue, [{target: 'mom-z', rooms: ['solo']}], '내가 유일한 내 기기인 방은 바로');
+  assert.deepEqual(t1.state.pending, {'mom-z|family': 100}, 'family 는 미뤄 둔다');
+  // 30분 안: 아직 미룸(처음 본 시각 유지)
+  const t2 = siblingRescanTurn({rooms, device: 'mom-b', siblings, excluded, state: t1.state, now: 100 + SIBLING_RESCAN_DEFER_MS - 1});
+  assert.deepEqual(t2.enqueue.flatMap(e => e.rooms).includes('family'), false);
+  assert.equal(t2.state.pending['mom-z|family'], 100);
+  // 30분 뒤에도 빠져 있으면 내가 들인다
+  const t3 = siblingRescanTurn({rooms, device: 'mom-b', siblings, excluded, state: t1.state, now: 100 + SIBLING_RESCAN_DEFER_MS});
+  assert.deepEqual(t3.enqueue, [{target: 'mom-z', rooms: ['family', 'solo']}]);
+  assert.deepEqual(t3.state.pending, {});
+  // 리더(mom-a)가 그 사이 들였으면 대상이 아니고 미룸 기록도 사라진다
+  const t4 = siblingRescanTurn({rooms: [room('family', ['mom-a', 'mom-b', 'mom-z'])], device: 'mom-b', siblings, excluded, state: t1.state, now: 100 + SIBLING_RESCAN_DEFER_MS});
+  assert.deepEqual(t4.enqueue, []);
+  assert.deepEqual(t4.state.pending, {});
+  // 리더 쪽에서 보면 바로 들인다
+  const lead = siblingRescanTurn({rooms: [room('family', ['mom-a', 'mom-b'])], device: 'mom-a', siblings: ['mom-b', 'mom-z'], excluded, state: {last: null, pending: {}}, now: 100});
+  assert.deepEqual(lead.enqueue, [{target: 'mom-z', rooms: ['family']}]);
+});
+
+test('재탐색 저장소: 상태 왕복 · 깨진 값은 빈 상태 · 끄기 스위치(기본 켜짐) · 재탐색 출처 표시', () => {
+  const s = memStorage();
+  assert.deepEqual(readRescanState(s, 'mom-a'), {last: null, pending: {}});
+  assert.equal(writeRescanState(s, 'mom-a', {last: 7, pending: {'x|y': 3}}), true);
+  assert.deepEqual(readRescanState(s, 'mom-a'), {last: 7, pending: {'x|y': 3}});
+  s.setItem(siblingRescanKey('mom-a'), '{"last":"no","pending":{"a|b":"x","c|d":4}}');
+  assert.deepEqual(readRescanState(s, 'mom-a'), {last: null, pending: {'c|d': 4}});
+  s.setItem(siblingRescanKey('mom-a'), 'not json');
+  assert.deepEqual(readRescanState(s, 'mom-a'), {last: null, pending: {}});
+  assert.equal(rescanOff(s, 'mom-a'), false);
+  setRescanOff(s, 'mom-a', true);
+  assert.equal(rescanOff(s, 'mom-a'), true);
+  assert.equal(rescanOff(s, 'mom-b'), false, '기기별');
+  setRescanOff(s, 'mom-a', false);
+  assert.equal(rescanOff(s, 'mom-a'), false);
+  const q = enqueueSiblingInvites([], 'mom-z', ['family'], 1, {origin: 'rescan'});
+  assert.deepEqual(q, [{target: 'mom-z', rooms: ['family'], since: 1, origin: 'rescan'}]);
+  const approved = enqueueSiblingInvites([{target: 'mom-z', rooms: ['a'], since: 0}], 'mom-z', ['family'], 1, {origin: 'rescan'});
+  assert.deepEqual(approved, [{target: 'mom-z', rooms: ['a', 'family'], since: 0}], '승인 대기열에 합칠 때는 원래 출처 유지(🔔 유지)');
+  assert.deepEqual(readSiblingQueue((() => { const m = memStorage(); writeSiblingQueue(m, 'mom-a', q); return m; })(), 'mom-a'), q, 'origin 이 저장소를 왕복');
 });

@@ -1494,6 +1494,14 @@ function themeRow(theme, onTheme) {
     hint);
 }
 
+/** #616: 「빠진 방 다시 찾기」 켜고 끄기(기본 켜짐). */
+function rescanRow(on, onRescan) {
+  const t = strings.settings2;
+  return el('label', { class: 'section-row rescan-row', 'data-testid': 'rescan-row' },
+    el('span', { class: 'texts' }, el('span', {}, t.rescanTitle), el('span', { class: 'hint' }, t.rescanHint)),
+    el('input', { type: 'checkbox', checked: on ? true : null, 'aria-label': t.rescanLabel, 'data-testid': 'rescan-toggle', onchange: (event) => onRescan(Boolean(event.target.checked)) }));
+}
+
 /** 설정 칸: 머리 13/600 + 카드(행 48). tone 'danger' 면 머리가 warn 색. */
 const section = (title, body, tone = null) => el('section', { class: `section${tone ? ` ${tone}` : ''}`, 'aria-label': title },
   el('h3', { class: 'section-title' }, title), body);
@@ -1504,7 +1512,7 @@ const sectionRow = (main, aside = null, attrs = {}) => el('div', { class: 'secti
  * 기기 관리 → 위험 구역(「이 기기 지우기」 하나만). 웹에는 서버 바꾸기·로그아웃·버전이 없어 계정·정보 칸은 없다.
  * 운영자용 정보: 지문(묶음) · 이름 · 로그인 주체 · 정책 revision · 등록 정보 복사 · 신뢰 기기 승인(붙여넣기).
  */
-export function openSettingsSheet(root, { deviceId, actor, fingerprint, subject = null, origin = '', policyRevision = null, onCopyRegistration, onOpenApprove = null, onOpenDevices = null, onWipe, onClose, theme = null, onTheme = null }) {
+export function openSettingsSheet(root, { deviceId, actor, fingerprint, subject = null, origin = '', policyRevision = null, onCopyRegistration, onOpenApprove = null, onOpenDevices = null, onWipe, onClose, theme = null, onTheme = null, rescan = null, onRescan = null }) {
   const { dialog, close } = openSheet(root, { className: 'settings', labelledBy: 'settings-title', onClose });
   const t = strings.settings2;
   const operatorInfo = el('details', { class: 'operator-info' },
@@ -1527,7 +1535,8 @@ export function openSettingsSheet(root, { deviceId, actor, fingerprint, subject 
       sectionRow([el('span', { class: 'meta' }, strings.settings.deviceIdLabel), el('code', { class: 'mono' }, deviceId)], copyLink(dialog, () => copyText(deviceId)), { 'data-testid': 'settings-device-id' }),
       operatorInfo)),
     onOpenDevices ? section(t.deviceManage, el('div', { class: 'section-card' },
-      el('button', { type: 'button', class: 'section-row link-row', 'data-testid': 'open-devices', onclick: () => { close(); onOpenDevices(); } }, el('span', {}, strings.settings.openDevices), el('span', { class: 'chevron', 'aria-hidden': 'true' }, '›')))) : null,
+      el('button', { type: 'button', class: 'section-row link-row', 'data-testid': 'open-devices', onclick: () => { close(); onOpenDevices(); } }, el('span', {}, strings.settings.openDevices), el('span', { class: 'chevron', 'aria-hidden': 'true' }, '›')),
+      typeof rescan === 'boolean' && typeof onRescan === 'function' ? rescanRow(rescan, onRescan) : null)) : null,
     section(t.danger, el('div', { class: 'danger-zone' },
       el('p', { class: 'hint' }, t.wipeDangerBody),
       el('button', { type: 'button', class: 'btn-danger block', onclick: () => { close(); onWipe?.(); } }, strings.settings.wipe)), 'danger'),

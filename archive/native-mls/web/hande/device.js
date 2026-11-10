@@ -142,7 +142,9 @@ export function createDevice({device, worker, relay, storage, on = {}, now = () 
     let r;
     try { r = await relay.api('GET', `/v2/lobby/status?device=${encodeURIComponent(target)}`); } catch (_) { return null; }
     if (r.status !== 200 || !Number.isFinite(Number(r.body?.live))) return null;
-    return {live: Math.max(0, Number(r.body.live)), max: Number(r.body.max ?? LOBBY_TARGET)};
+    // #616: excluded_rooms (rooms the target was removed from by commit) — null on an older relay, which turns the rescan off.
+    const excluded = Array.isArray(r.body.excluded_rooms) ? r.body.excluded_rooms.filter(x => typeof x === 'string') : null;
+    return {live: Math.max(0, Number(r.body.live)), max: Number(r.body.max ?? LOBBY_TARGET), excluded};
   }
   // ---- identity store operations (E2 approval) ----
   const utf8 = new TextEncoder(), decoder = new TextDecoder();

@@ -163,13 +163,16 @@ export function writeSiblingQueue(storage, device, queue) {
   } catch (_) { return false; }
 }
 
-/** 대기열에 (target, rooms) 를 넣는다 — 같은 target 이 있으면 방을 합치고 시각은 유지. 방이 없으면 그대로. */
-export function enqueueSiblingInvites(queue, target, rooms, now) {
+/**
+ * 대기열에 (target, rooms) 를 넣는다 — 같은 target 이 있으면 방을 합치고 시각·출처는 유지. 방이 없으면 그대로.
+ * `origin` 'rescan'(#616 재탐색)이 만든 새 항목은 포기·실패해도 🔔 를 띄우지 않는다(app.js processSiblingInvites).
+ */
+export function enqueueSiblingInvites(queue, target, rooms, now, {origin = null} = {}) {
   const add = [...new Set((rooms ?? []).filter((r) => typeof r === 'string' && r))];
   if (!add.length) return queue;
   const existing = queue.find((e) => e.target === target);
   if (existing) return queue.map((e) => (e === existing ? {...e, rooms: [...new Set([...e.rooms, ...add])]} : e));
-  return [...queue, {target, rooms: add, since: now}];
+  return [...queue, origin ? {target, rooms: add, since: now, origin} : {target, rooms: add, since: now}];
 }
 
 /** 처리할 것과 포기할 것(마지막 진행 `progress`, 없으면 `since` 부터 TTL 지남)으로 나눈다. */
@@ -240,4 +243,87 @@ export function isRetryableInviteError(error, retryable = []) {
   if (error?.network) return true;
   const m = String(error?.message ?? '');
   return retryable.some((text) => typeof text === 'string' && text && m.includes(text));
+}
+
+// ---- 빠진 방 주기적 재탐색(#616, 오너 결정 D1~D3) ----
+// 승인할 때 한 번 만든 대기열은 24시간 뒤 포기하거나 저장소가 사라지면 다시 생기지 않는다. 그래서 앱이 열려 있는 동안
+// 최소 6시간마다 「내 다른 활성 기기가 빠진 방」을 다시 계산해 같은 대기열(잔량 예산·진행 기준 TTL)에 넣는다.
+// D1: commit 으로 내보낸 방(릴레이 `GET /v2/lobby/status` excluded_rooms)만 건너뛴다 — 한 번도 안 들어간 방은 대상.
+// 그 필드가 없는 옛 릴레이(null)면 그 기기는 재탐색하지 않는다(fail-closed).
+
+/** D3: 마지막 재탐색 뒤 최소 간격. */
+export const SIBLING_RESCAN_INTERVAL_MS = 6 * 60 * 60_000;
+/** 같은 방에 내 기기가 여럿이면 ID 가 가장 작은 기기만 바로 초대하고, 나머지는 이만큼 지나도 빠져 있을 때만(commit 경합·로비 키 이중 소비 방지). */
+export const SIBLING_RESCAN_DEFER_MS = 30 * 60_000;
+
+export const siblingRescanKey = (device) => `hande:sibling-rescan:${device}`;
+export const siblingRescanOffKey = (device) => `hande:sibling-rescan-off:${device}`;
+
+/** 재탐색 상태: `last` = 마지막 실행 시각, `pending` = {"target|room": 처음 빠진 것을 본 시각}(내가 리더가 아닌 방). */
+export function readRescanState(storage, device) {
+  try {
+    const v = JSON.parse(storage.getItem(siblingRescanKey(device)) || 'null');
+    const pending = {};
+    if (v && v.pending && typeof v.pending === 'object') for (const [k, t] of Object.entries(v.pending)) if (Number.isFinite(t)) pending[k] = t;
+    return {last: Number.isFinite(v?.last) ? v.last : null, pending};
+  } catch (_) { return {last: null, pending: {}}; }
+}
+
+export function writeRescanState(storage, device, state) {
+  try { storage.setItem(siblingRescanKey(device), JSON.stringify(state)); return true; } catch (_) { return false; }
+}
+
+/** 설정의 「다른 기기 빠진 방 다시 찾기」 끄기(기본 켜짐). */
+export function rescanOff(storage, device) {
+  try { return storage.getItem(siblingRescanOffKey(device)) === '1'; } catch (_) { return false; }
+}
+
+export function setRescanOff(storage, device, off) {
+  try { if (off) storage.setItem(siblingRescanOffKey(device), '1'); else storage.removeItem(siblingRescanOffKey(device)); return true; } catch (_) { return false; }
+}
+
+/** 내 actor 의 다른 활성 기기 ID(정렬). 내 기록이 체인에 없으면(옛 릴레이·미등록) 빈 목록. */
+export function siblingDevices(me, device) {
+  const mine = recordOf(me, device);
+  if (!mine || !isActive(mine) || !mine.actor) return [];
+  return devicesOf(me).filter((d) => d.device_id !== device && d.actor === mine.actor && isActive(d)).map((d) => d.device_id).sort();
+}
+
+/** 지금 재탐색할 차례인가 — 한 번도 안 했거나 간격이 지났거나, 미뤄 둔 방의 30분이 찼을 때. */
+export function rescanDue(state, now) {
+  if (!Number.isFinite(state?.last) || now - state.last >= SIBLING_RESCAN_INTERVAL_MS) return true;
+  return Object.values(state.pending ?? {}).some((t) => now - t >= SIBLING_RESCAN_DEFER_MS);
+}
+
+/**
+ * 재탐색 한 번(순수 — app.js rescanSiblings 가 릴레이 조회를 마친 뒤 부른다).
+ * - `rooms`: [{roomId, joined, halted, pending, roster, synced}] — 참여한 방 가운데 이번 세션에 아직 동기화 안 된 방이 있으면
+ *   명단이 낡았을 수 있으므로 아무것도 하지 않는다(`ready: false`, 상태도 그대로 — 다음 틱에 다시).
+ * - `siblings`: siblingDevices 결과. `excluded`: Map(target → string[] | null). null 이면 그 기기는 건너뛴다.
+ * 반환: `{ready, enqueue: [{target, rooms}], state}`.
+ */
+export function siblingRescanTurn({rooms, device, siblings, excluded, state, now}) {
+  const list = Array.isArray(rooms) ? rooms.filter(Boolean) : [];
+  if (list.some((r) => r.joined && !r.synced)) return {ready: false, enqueue: [], state};
+  const pending = {};
+  const enqueue = [];
+  const mine = new Set([device, ...siblings]);
+  for (const target of siblings) {
+    const skip = excluded instanceof Map ? excluded.get(target) : null;
+    if (!Array.isArray(skip)) continue;   // 옛 릴레이·오류 → fail-closed
+    const out = new Set(skip);
+    const take = [];
+    for (const roomId of siblingInviteRooms(list, target)) {
+      if (out.has(roomId)) continue;
+      const r = list.find((x) => x.roomId === roomId);
+      const present = (Array.isArray(r.roster) ? r.roster : []).filter((d) => mine.has(d));
+      const leader = [...new Set([device, ...present])].sort()[0];
+      const key = `${target}|${roomId}`;
+      if (leader === device) { take.push(roomId); continue; }
+      const seen = Number.isFinite(state?.pending?.[key]) ? state.pending[key] : now;
+      if (now - seen >= SIBLING_RESCAN_DEFER_MS) take.push(roomId); else pending[key] = seen;
+    }
+    if (take.length) enqueue.push({target, rooms: take});
+  }
+  return {ready: true, enqueue, state: {last: now, pending}};
 }
