@@ -586,3 +586,37 @@ test('sync 중 들어온 요청은 끝난 뒤 한 번 더 돈다 — 몰려도 �
   await new Promise(r => setTimeout(r, 20));
   assert.equal(gets - base, 2, '끝난 뒤 한 번만 더');
 });
+
+// #760 후속: 입력중이 보이는 동안 TTL+1 s 뒤 그 방을 한 번 더 본다 — watch 요청 사이 빈틈에 온 typing 해제를 놓쳐도 7 s 안에 지운다.
+test('입력중이 보이면 TYPING_RECHECK_MS 뒤 한 번 더 sync — 중복 예약 없음, 입력중 없으면 예약 안 함, stop 이 치운다', async () => {
+  const {TYPING_RECHECK_MS} = await import('../room.js');
+  let typing = ['mom-web'];
+  let gets = 0;
+  const relay = fakeRelay((m, path) => {
+    if (m === 'GET' && path.includes('/events')) gets++;
+    return {status: 200, body: {epoch: 0, revision: 0, events: [], cursor: 0, first_seq: 0, members: [], typing}};
+  });
+  const timers = [];
+  const cleared = [];
+  const {bridge} = fakeWorker();
+  const s = createRoomSession({room: 'family', device: 'owner-web-aaaaaa', database: 'db', worker: bridge, relay, storage: memStorage(), policy: policy(),
+    on: {change: () => {}, message: () => {}, log: () => {}, notice: () => {}},
+    setInterval: () => 1, clearInterval: () => {},
+    setTimeout: (fn, ms) => { timers.push({fn, ms}); return timers.length; }, clearTimeout: id => cleared.push(id)});
+  await s.open(); await s.activate();
+  assert.equal(timers.length, 1, '입력중이 보이면 예약');
+  assert.equal(timers[0].ms, TYPING_RECHECK_MS);
+  await s.sync({quiet: true});
+  assert.equal(timers.length, 1, '이미 예약돼 있으면 다시 걸지 않는다');
+  typing = [];
+  const before = gets;
+  timers[0].fn();
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(gets, before + 1, '예약 시각에 한 번 sync');
+  assert.equal(timers.length, 1, '입력중이 사라졌으면 다시 예약하지 않는다');
+  typing = ['mom-web'];
+  await s.sync({quiet: true});
+  assert.equal(timers.length, 2, '다시 보이면 새로 예약');
+  s.stop();
+  assert.deepEqual(cleared, [2], 'stop 이 남은 예약을 치운다');
+});

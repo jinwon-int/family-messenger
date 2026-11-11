@@ -109,7 +109,11 @@ export function nextDeviceId(dev) {
  * @param {object} [deps.policy]  commit policy functions (injectable for tests)
  * @param {() => number} [deps.now]  clock for the typing throttle (injectable for tests)
  */
-export function createRoomSession({room, device, database, worker, relay, storage, on, policy = {parseStageReport, checkCommit, outerForCommit, resolveUncertainPending}, pollMs = 4000, setInterval: setI = globalThis.setInterval, clearInterval: clearI = globalThis.clearInterval, now = Date.now}) {
+/** 입력중이 보일 때 그 방을 다시 보는 간격 — 릴레이 typing TTL(6 s, server policy TypingTTLSeconds) + 1 s. */
+export const TYPING_RECHECK_MS = 7000;
+
+export function createRoomSession({room, device, database, worker, relay, storage, on, policy = {parseStageReport, checkCommit, outerForCommit, resolveUncertainPending}, pollMs = 4000, setInterval: setI = globalThis.setInterval, clearInterval: clearI = globalThis.clearInterval, setTimeout: setT = globalThis.setTimeout, clearTimeout: clearT = globalThis.clearTimeout, now = Date.now}) {
+  let typingTimer = null;   // #760 후속: 입력중 재확인 타이머(scheduleTypingRecheck)
     const S = {started: false, joined: false, pending: false,
     // #562: other devices the relay reports as typing (last GET /events `typing`, never this device). Not persisted.
     typing: [],
@@ -249,6 +253,9 @@ export function createRoomSession({room, device, database, worker, relay, storag
       if (S.waiting403) { S.waiting403 = false; log('릴레이가 이 기기를 받아들였다(등록 완료)'); }
       // #562: who else is typing right now (old relays send no key → nobody). Shown by the next changed().
       S.typing = Array.isArray(body.typing) ? body.typing : [];
+      // #760 후속: 입력중이 보이는 동안 릴레이 TTL(6 s)+1 s 뒤 이 방을 한 번 더 본다. 기기 단위 watch 는 요청 사이 빈틈에 온
+      // typing 해제를 놓칠 수 있어(행이 생기지 않아 다음 watch 가 알려 주지 않음) 방별 폴링이 60 s 안전망이면 표시가 오래 남는다.
+      if (S.typing.length > 0) scheduleTypingRecheck();
       // #571 B: where the same person (any device) has read up to — only ever grows within a session.
       if (Number.isSafeInteger(body.read_seq) && body.read_seq > S.readSeq) S.readSeq = body.read_seq;
       // Notification setting (mute.go): a GET that started before our own POST /mute answered must not undo it.
@@ -653,7 +660,15 @@ export function createRoomSession({room, device, database, worker, relay, storag
     S.started = false; resetState(); changed();
     log(`방 상태 삭제(${room}) — 재초대를 기다린다`);
   }
-  function stop() { stopPolling(); worker.call(WORKER, 'close_room', {room}).catch(() => {}); S.started = false; }
+  function scheduleTypingRecheck() {
+    if (typingTimer) return;
+    typingTimer = setT(() => { typingTimer = null; sync({quiet: true}).catch(() => {}); }, TYPING_RECHECK_MS);
+  }
+  function stop() {
+    stopPolling();
+    if (typingTimer) { clearT(typingTimer); typingTimer = null; }
+    worker.call(WORKER, 'close_room', {room}).catch(() => {}); S.started = false;
+  }
 
   function registration(subject) {
     return {device_id: device, actor: actorOf(device), subject: subject || strings.app.subjectUnknown, signing_key: S.publicKey, fingerprint: S.fingerprint};
