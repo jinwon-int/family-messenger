@@ -70,6 +70,8 @@ import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -208,6 +210,7 @@ fun HandeRoot(hub: DeviceHub, themeMode: HandeThemeMode = HandeThemeMode.NIGHT, 
             SettingsScreen(
                 ui, onBack = { showSettings = false }, onWipe = wipe, onNoticeShown = hub::clearNotice, themeMode = themeMode, onThemeMode = onThemeMode,
                 relayHost = hub.settings.relayUrl?.substringAfter("://")?.substringBefore('/'), onDevices = onDevices,
+                onSiblingRescan = if (ui.phase is Phase.Ready) hub::setSiblingRescan else null,
             )
             return@CampfireBackground
         }
@@ -1541,7 +1544,7 @@ private fun StatusRow(s: StatusUi) {
 fun SettingsScreen(
     ui: HubUi, onBack: () -> Unit, onWipe: () -> Unit, onNoticeShown: () -> Unit,
     themeMode: HandeThemeMode = HandeThemeMode.NIGHT, onThemeMode: (HandeThemeMode) -> Unit = {},
-    relayHost: String? = null, onDevices: (() -> Unit)? = null,
+    relayHost: String? = null, onDevices: (() -> Unit)? = null, onSiblingRescan: ((Boolean) -> Unit)? = null,
 ) {
     val colors = LocalHandeColors.current
     val context = LocalContext.current
@@ -1633,6 +1636,20 @@ fun SettingsScreen(
                             Text(Strings.devicesTitle, Modifier.weight(1f), color = colors.ink, fontSize = 17.sp)
                             if (ui.candidates.isNotEmpty()) Box(Modifier.size(8.dp).clip(CircleShape).background(colors.ember).semantics { contentDescription = Strings.candidatesTitle })
                             Chevron()
+                        }
+                        // #616 「빠진 방 다시 찾기」(기본 켜짐): 내 다른 기기가 빠진 방을 최소 6시간마다 다시 찾아 초대한다(일부러 내보낸 방은 건너뜀).
+                        if (onSiblingRescan != null) {
+                            SectionRow(onClick = { onSiblingRescan(!ui.siblingRescan) }) {
+                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                    Text(Strings.siblingRescanTitle, color = colors.ink, fontSize = 17.sp)
+                                    Text(Strings.siblingRescanHint, color = colors.inkDim, fontSize = 13.sp, lineHeight = 19.sp)
+                                }
+                                Switch(
+                                    checked = ui.siblingRescan, onCheckedChange = onSiblingRescan,
+                                    colors = SwitchDefaults.colors(checkedTrackColor = colors.ember),
+                                    modifier = Modifier.semantics { contentDescription = Strings.siblingRescanTitle },
+                                )
+                            }
                         }
                     }
                 }

@@ -65,7 +65,14 @@ object Strings {
     fun candidateFailed(reason: String) = "승인하지 못했습니다: $reason"
     fun siblingInvited(target: String, room: String) = "$target 를 $room 에 초대했습니다."
     fun siblingFailed(target: String, room: String, reason: String) = "$target 를 $room 에 초대하지 못했습니다: $reason"
-    fun siblingGaveUp(target: String) = "$target 초대를 30분 동안 하지 못해 그만둡니다. 「참여 요청」 뒤 운영자에게 초대를 부탁하세요."
+    /** 진행 없이 하루(`SelfService.SIBLING_INVITE_TTL_MS`) 동안 그 기기의 로비 키가 없어 초대를 그만뒀다(#616). */
+    fun siblingGaveUp(target: String, rooms: List<String>) =
+        "$target 를 ${rooms.joinToString(", ")} 대화방에 초대하지 못했습니다(하루 동안 그 기기의 로비 키가 없음). 그 기기에서 앱을 열어 두면 「빠진 방 다시 찾기」가 다시 초대합니다."
+    /** #616: 빠진 방 재탐색으로 내 다른 기기를 다시 넣었다. */
+    fun siblingRescanned(devices: Int, rooms: Int) = "내 다른 기기 ${devices}대를 대화방 ${rooms}개에 다시 넣었습니다."
+    /** #616 설정 「기기 관리」 토글(iOS `siblingRescanTitle`·`siblingRescanHint` 와 같은 문구). */
+    const val siblingRescanTitle = "빠진 방 다시 찾기"
+    const val siblingRescanHint = "앱을 열 때, 최소 6시간 간격으로 확인합니다. 일부러 내보낸 방은 건너뜁니다."
 
     const val devicesTitle = "내 기기"
     const val devicesButton = "내 기기"
