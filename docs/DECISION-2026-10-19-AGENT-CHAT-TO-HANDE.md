@@ -27,7 +27,7 @@ Telegram→Matrix 이동은 같은 ccc-node 브리지 안에서 프론트엔드�
 |---|---|---|---|
 | H1 | 봇 하나가 응답하는(agent 모드) 방은 **정확히 1개**. 둘 이상이면 기동 거부 | `archive/native-mls/bot/src/session.rs` "more than one room in agent mode; the responder serves exactly one" · `STEWARD.md` | 노드별 개인방 + 플릿 공용방 구조가 불가능 |
 | H2 | actor = 기기 ID의 첫 `-` 앞 → `bot-<노드>`는 전부 actor `bot` · **actor당 활성 기기 ≤4** | `responder.rs` actor 유도 · `devicepolicy.go` `MaxActivePerActor=4` | 현 이름 규칙으로 **최대 4노드** |
-| H3 | 정책 체인 **revision 상한 64, 컴팩션 미구현**(소진 시 정지) · 기기 총 **32**(폐기 tombstone 영구 포함) | `devicepolicy.go` `MaxDevicePolicyRevisions=64`, `MaxDevicesTotal=32` · [DEVICES-V4.md](../archive/native-mls/server/DEVICES-V4.md) | 10-15 시점 rev 18. 봇 12 등록(+12) + 가족 기기 + 교체·폐기마다 +1 → 소진 가능 |
+| H3 | 정책 체인 **revision 상한 64, 컴팩션 미구현**(소진 시 정지) · 기기 총 **32**(폐기 tombstone 영구 포함 — 2026-11-11 #421 최소 수정으로 active ≤32 · 기록 ≤96 으로 분리) | `devicepolicy.go` `MaxDevicePolicyRevisions=64`, `MaxDevicesTotal=32`(→ `MaxActiveDevicesTotal=32`·`MaxDeviceRecords=96`) · [DEVICES-V4.md](../archive/native-mls/server/DEVICES-V4.md) | 10-15 시점 rev 18. 봇 12 등록(+12) + 가족 기기 + 교체·폐기마다 +1 → 소진 가능 |
 | H4 | actor `bot*` 발신은 turn이 되지 않는다(봇끼리 루프 방지) | `responder.rs`, `session.rs` | 플릿 알림방·노드 간 지목 같은 "봇이 보낸 것을 봇이 읽는" 흐름 전부 차단. 의도된 안전장치라 완화는 설계 결정 |
 | H5 | 릴레이에 long-poll/SSE·rate limit 없음, 봇은 **200 ms 단순 폴링**, 쓰기는 SQLite 단일 연결 + mutex | `session.rs` `POLL`, `server.go` | 12봇 × 방 N개 × 5 req/s 상시 부하가 릴레이 한 프로세스에 집중 |
 

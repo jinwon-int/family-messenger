@@ -42,7 +42,7 @@ v1 `devices` 배열과의 차이는 #177 §3.1의 그것 하나: **actor당 기�
 | `approved_by` | 최대 1회: `{device_id, revision}` — 승인 기기 + 그 승인이 허가한 revision |
 | `roles` | (#574) 역할 집합, 정렬·중복 없음. 현재 `["registrar"]` 하나. 비어 있으면 **키 자체를 쓰지 않는다**(`omitempty`) — #574 이전 레코드의 바이트·`policy_sha256`·체인 링크가 그대로다. 활성 기기에만 있고 tombstone은 비운다 |
 
-불변식(전부 체인 재생 시 강제): 총 ≤32기기, actor당 active ≤4, id·키 전역 유일,
+불변식(전부 체인 재생 시 강제): active ≤32기기(전 actor 합)·기록 총 ≤96(폐기 tombstone 포함 — #421: tombstone 은 id·키 재사용 금지와 `approved_by` 해석에 남아야 하지만 active 상한에서는 뺀다; 96개 최악 기록도 64 KiB 안), actor당 active ≤4, id·키 전역 유일,
 fingerprint=key 해시 일치, `trusted` acceptance에는 `approved_by` 필수, 삭제·재활성
 불가, 불변 필드(id·actor·subject·key·fingerprint·acceptance) 변경 불가, `roles`는 활성
 기기에서만 바뀌고 폐기 시 비워진다.
