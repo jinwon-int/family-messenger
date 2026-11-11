@@ -557,3 +557,32 @@ test('setPollInterval: 양의 정수만 받고, 같은 값·잘못된 값은 무
   s.setPollInterval(4000);
   assert.equal(s.pollMs, 4000);
 });
+
+// #760 후속: sync 가 도는 중에 들어온 요청(기기 단위 watch 의 「바뀜」)은 버리지 않고, 끝난 뒤 한 번만 더 돈다.
+// typing 해제·읽음처럼 행이 생기지 않는 변화는 다음 watch 가 다시 알려 주지 않으므로, 버리면 60 s 안전망까지 화면이 멈춘다.
+test('sync 중 들어온 요청은 끝난 뒤 한 번 더 돈다 — 몰려도 한 번', async () => {
+  let release = () => {};
+  let gets = 0;
+  let hold = false;
+  const relay = fakeRelay(async (m, path) => {
+    if (m === 'GET' && path.includes('/events')) {
+      gets++;
+      if (hold) { hold = false; await new Promise(r => { release = r; }); }
+    }
+    return {status: 200, body: {epoch: 0, revision: 0, events: [], cursor: 0, first_seq: 0, members: []}};
+  });
+  const {bridge} = fakeWorker();
+  const {s} = session({worker: bridge, relay});
+  await s.open(); await s.activate();
+  const base = gets;
+  hold = true;
+  const first = s.sync({quiet: true});
+  await new Promise(r => setImmediate(r));
+  assert.equal(await s.sync({quiet: true}), undefined, '진행 중이면 바로 돌아온다');
+  assert.equal(await s.sync({quiet: true}), undefined);
+  assert.equal(gets - base, 1, '진행 중에는 새 요청을 보내지 않는다');
+  release();
+  await first;
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(gets - base, 2, '끝난 뒤 한 번만 더');
+});

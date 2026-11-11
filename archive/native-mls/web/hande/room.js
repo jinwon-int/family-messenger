@@ -232,7 +232,10 @@ export function createRoomSession({room, device, database, worker, relay, storag
 
   // ---- sync (the smoke's Device.sync, in the browser) ----
   async function sync({quiet = false} = {}) {
-    if (!S.started || S.busy || S.transferring || S.halted) return undefined;
+    if (!S.started || S.transferring || S.halted) return undefined;
+    // #760 후속: 진행 중에 들어온 요청(기기 단위 watch 의 「바뀜」 등)은 버리지 않고 끝난 뒤 한 번 더 돈다 — typing 해제·읽음처럼
+    // 행이 생기지 않는 변화는 다음 watch 가 다시 알려 주지 않으므로, 버리면 60 s 안전망까지 화면이 멈춘다. 몰려도 추가 실행은 한 번.
+    if (S.busy) { S.syncAgain = true; return undefined; }
     S.busy = true;
     try {
       const {status, body} = await relay.api('GET', path(`events?device=${encodeURIComponent(device)}&after=${S.relaySeq}`));
@@ -383,7 +386,10 @@ export function createRoomSession({room, device, database, worker, relay, storag
       save(); markSynced(); changed();
       return undefined;
     } catch (error) { if (!quiet) log('동기화 오류:', error.message); return error; }   // quiet polling: status line only
-    finally { S.busy = false; }
+    finally {
+      S.busy = false;
+      if (S.syncAgain) { S.syncAgain = false; Promise.resolve().then(() => sync({quiet: true})).catch(() => {}); }
+    }
   }
   function emitUndecryptable(ev) {
     on.message?.({kind: 'undecryptable', seq: ev.seq, sender: ev.device, client: '', text: '', ts: Number.isSafeInteger(ev.created_at) ? ev.created_at * 1000 : Date.now()});
