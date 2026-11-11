@@ -299,7 +299,8 @@ def parse(argv=None):
 
 
 def fence_state(args):
-    """0 = active here (snapshot), 1 = another host is active (skip quietly), 2 = unreadable (skip loudly).
+    """0 = active here (snapshot), 1 = another host is active (skip quietly, still prune --dest — #749),
+    2 = unreadable (skip loudly, touch nothing).
 
     An unproven host neither serves nor snapshots, but the active host losing snapshots during a DoH
     outage must be visible: 2 is reported as a failure so the timer/watchdog sees the RPO eroding.
@@ -325,8 +326,20 @@ def main(argv=None):
         print(json.dumps({'pruned': prune(args.dest, args.keep_hours, args.keep_days)}))
         return 0
     fenced = fence_state(args)
+    if fenced == 1:
+        # #749: a standby still owns the archives it made while it was active. The snapshot step is
+        # skipped, but retention must keep running or they never expire (seoseo kept 91 after the
+        # 11-06 cutover). Pruning only deletes this script's own archives under --dest.
+        try:
+            removed = prune(args.dest, args.keep_hours, args.keep_days)
+        except OSError as exc:
+            print('standby prune failed: ' + str(exc), file=sys.stderr)
+            return 1
+        if removed:
+            print(json.dumps({'pruned': removed}))
+        return 0
     if fenced:
-        return 0 if fenced == 1 else 1
+        return 1
     Path(args.state).mkdir(parents=True, exist_ok=True)
     with open(Path(args.state) / '.lock', 'w') as lock:
         try:
