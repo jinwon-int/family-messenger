@@ -27,6 +27,7 @@ import {installSyncRecovery} from './sync-recovery.js';
 import {fileboxConfig} from './filebox.js';
 import {collectAttachments} from './attachments.js';
 import {installShortcuts} from './shortcuts.js';
+import {openRoomsLimited} from './room-open-pool.js';
 import {
   canApprove, isSibling, candidatesFor, approvalArgs, approvalEvidence, rolesActions, nextRoles, rolesArgs, rolesEvidence, recordOf,
   siblingInviteRooms, enrollModeFrom, readSiblingQueue, writeSiblingQueue, enqueueSiblingInvites, splitSiblingQueue, isRetryableInviteError,
@@ -412,7 +413,11 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       app.roomOpen = false;
       // Known rooms open first (their own 4 s polling); the default room is always known.
       const known = new Set(readKnown()); if (opened.migrated || known.size === 0) known.add(app.defaultRoom);
-      for (const roomId of known) { try { await ensureRoom(roomId); } catch (error) { logLine(`방 ${roomId} 열기 실패: ${error.message}`); } }
+      // #752: 방마다 릴레이 왕복이 직렬로 쌓이지 않게 동시성 상한 안에서 연다(시작 순서 = known 순서).
+      const bootStarted = Date.now();
+      const boot = await openRoomsLimited(known, roomId => ensureRoom(roomId),
+        {onError: (roomId, error) => logLine(`방 ${roomId} 열기 실패: ${error.message}`)});
+      logLine(`방 ${boot.opened}개 열림(실패 ${boot.failed}) — ${Date.now() - bootStarted} ms`);
       if (window.matchMedia?.('(min-width: 900px)').matches && app.rooms.size) { app.current = [...app.rooms.keys()][0]; app.roomOpen = true; markRoomRead(app.current); promptConsentOnce(app.current); }
       await refresh();
       app.tick = setInterval(() => refresh().catch(() => {}), TICK_MS);
@@ -444,9 +449,9 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       }
       if (Array.isArray(listed)) {
         app.relayRooms = new Set(listed.filter(r => r.member && ROOM.test(r.room)).map(r => r.room));
-        for (const r of listed) if (r.member && !r.closed && ROOM.test(r.room) && !app.rooms.has(r.room)) {
-          try { await ensureRoom(r.room); } catch (error) { logLine(`방 ${r.room} 열기 실패: ${error.message}`); }
-        }
+        const fresh = listed.filter(r => r.member && !r.closed && ROOM.test(r.room) && !app.rooms.has(r.room)).map(r => r.room);
+        await openRoomsLimited(fresh, roomId => ensureRoom(roomId),
+          {onError: (roomId, error) => logLine(`방 ${roomId} 열기 실패: ${error.message}`)});
         // 목록을 불러올 때(시작·로그인·탭 복귀·틱) 대화방 순서 GET — 최소 60초 간격, 기다리지 않는다(#715 규칙 1).
         orderSync?.pull().catch(() => {});
       }
