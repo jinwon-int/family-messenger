@@ -131,3 +131,39 @@ test('watch-loop.js 가 build.sh 배포 목록과 SHELL_ASSETS 에 있다', asyn
   assert.match(readFileSync(new URL('../build.sh', import.meta.url), 'utf8'), /\swatch-loop\.js\s/);
   assert.ok(SAFETY_POLL_MS > DEFAULT_POLL_MS);
 });
+
+// #760 후속: 변화가 없어도 watch 가 정상 응답하면 「동기화」 줄을 갱신하게 알린다(방별 폴링이 60 s 안전망일 때 줄이 멈춰 보이던 회귀).
+test('onAlive: watch 가 정상 응답하면(변화 없음 포함) 알리고, 미지원·오류면 알리지 않는다', async () => {
+  let alive = 0;
+  const results = [
+    { result: { supported: true, changed: [], errors: {} }, spend: 25000 },
+    { result: { supported: true, changed: ['family'], errors: {} }, spend: 2000 },
+    new Error('net'),
+    { result: { supported: false, changed: [], errors: {} } },
+  ];
+  let t = 0;
+  const loop = createWatchLoop({
+    relay: { async watch() { const next = results.shift(); if (next instanceof Error) throw next; t += next.spend ?? 0; return next.result; } },
+    device: () => 'd', targets: () => [{ room: 'family', after: 1 }],
+    onChanged: async () => {}, onMode: () => {}, onAlive: () => { alive++; },
+    sleep: async (ms) => { t += ms; }, now: () => t,
+  });
+  await loop.step();
+  assert.equal(alive, 1, '변화 없음도 연결 확인');
+  await loop.step();
+  assert.equal(alive, 2);
+  await loop.step();
+  await loop.step();
+  assert.equal(alive, 2, '오류·미지원은 알리지 않는다');
+});
+
+test('onAlive 가 던져도 루프는 계속된다', async () => {
+  const loop = createWatchLoop({
+    relay: { async watch() { return { supported: true, changed: ['family'], errors: {} }; } },
+    device: () => 'd', targets: () => [{ room: 'family', after: 1 }],
+    onChanged: async () => {}, onMode: () => {}, onAlive: () => { throw new Error('render'); },
+    sleep: async () => {}, now: () => 0,
+  });
+  await loop.step();
+  assert.equal(loop.watching, true);
+});
