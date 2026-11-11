@@ -109,7 +109,11 @@ export function nextDeviceId(dev) {
  * @param {object} [deps.policy]  commit policy functions (injectable for tests)
  * @param {() => number} [deps.now]  clock for the typing throttle (injectable for tests)
  */
-export function createRoomSession({room, device, database, worker, relay, storage, on, policy = {parseStageReport, checkCommit, outerForCommit, resolveUncertainPending}, pollMs = 4000, setInterval: setI = globalThis.setInterval, clearInterval: clearI = globalThis.clearInterval, now = Date.now}) {
+/** 입력중이 보일 때 그 방을 다시 보는 간격 — 릴레이 typing TTL(6 s, server policy TypingTTLSeconds) + 1 s. */
+export const TYPING_RECHECK_MS = 7000;
+
+export function createRoomSession({room, device, database, worker, relay, storage, on, policy = {parseStageReport, checkCommit, outerForCommit, resolveUncertainPending}, pollMs = 4000, setInterval: setI = globalThis.setInterval, clearInterval: clearI = globalThis.clearInterval, setTimeout: setT = globalThis.setTimeout, clearTimeout: clearT = globalThis.clearTimeout, now = Date.now}) {
+  let typingTimer = null;   // #760 후속: 입력중 재확인 타이머(scheduleTypingRecheck)
     const S = {started: false, joined: false, pending: false,
     // #562: other devices the relay reports as typing (last GET /events `typing`, never this device). Not persisted.
     typing: [],
@@ -232,7 +236,10 @@ export function createRoomSession({room, device, database, worker, relay, storag
 
   // ---- sync (the smoke's Device.sync, in the browser) ----
   async function sync({quiet = false} = {}) {
-    if (!S.started || S.busy || S.transferring || S.halted) return undefined;
+    if (!S.started || S.transferring || S.halted) return undefined;
+    // #760 후속: 진행 중에 들어온 요청(기기 단위 watch 의 「바뀜」 등)은 버리지 않고 끝난 뒤 한 번 더 돈다 — typing 해제·읽음처럼
+    // 행이 생기지 않는 변화는 다음 watch 가 다시 알려 주지 않으므로, 버리면 60 s 안전망까지 화면이 멈춘다. 몰려도 추가 실행은 한 번.
+    if (S.busy) { S.syncAgain = true; return undefined; }
     S.busy = true;
     try {
       const {status, body} = await relay.api('GET', path(`events?device=${encodeURIComponent(device)}&after=${S.relaySeq}`));
@@ -246,6 +253,9 @@ export function createRoomSession({room, device, database, worker, relay, storag
       if (S.waiting403) { S.waiting403 = false; log('릴레이가 이 기기를 받아들였다(등록 완료)'); }
       // #562: who else is typing right now (old relays send no key → nobody). Shown by the next changed().
       S.typing = Array.isArray(body.typing) ? body.typing : [];
+      // #760 후속: 입력중이 보이는 동안 릴레이 TTL(6 s)+1 s 뒤 이 방을 한 번 더 본다. 기기 단위 watch 는 요청 사이 빈틈에 온
+      // typing 해제를 놓칠 수 있어(행이 생기지 않아 다음 watch 가 알려 주지 않음) 방별 폴링이 60 s 안전망이면 표시가 오래 남는다.
+      if (S.typing.length > 0) scheduleTypingRecheck();
       // #571 B: where the same person (any device) has read up to — only ever grows within a session.
       if (Number.isSafeInteger(body.read_seq) && body.read_seq > S.readSeq) S.readSeq = body.read_seq;
       // Notification setting (mute.go): a GET that started before our own POST /mute answered must not undo it.
@@ -383,7 +393,10 @@ export function createRoomSession({room, device, database, worker, relay, storag
       save(); markSynced(); changed();
       return undefined;
     } catch (error) { if (!quiet) log('동기화 오류:', error.message); return error; }   // quiet polling: status line only
-    finally { S.busy = false; }
+    finally {
+      S.busy = false;
+      if (S.syncAgain) { S.syncAgain = false; Promise.resolve().then(() => sync({quiet: true})).catch(() => {}); }
+    }
   }
   function emitUndecryptable(ev) {
     on.message?.({kind: 'undecryptable', seq: ev.seq, sender: ev.device, client: '', text: '', ts: Number.isSafeInteger(ev.created_at) ? ev.created_at * 1000 : Date.now()});
@@ -647,7 +660,15 @@ export function createRoomSession({room, device, database, worker, relay, storag
     S.started = false; resetState(); changed();
     log(`방 상태 삭제(${room}) — 재초대를 기다린다`);
   }
-  function stop() { stopPolling(); worker.call(WORKER, 'close_room', {room}).catch(() => {}); S.started = false; }
+  function scheduleTypingRecheck() {
+    if (typingTimer) return;
+    typingTimer = setT(() => { typingTimer = null; sync({quiet: true}).catch(() => {}); }, TYPING_RECHECK_MS);
+  }
+  function stop() {
+    stopPolling();
+    if (typingTimer) { clearT(typingTimer); typingTimer = null; }
+    worker.call(WORKER, 'close_room', {room}).catch(() => {}); S.started = false;
+  }
 
   function registration(subject) {
     return {device_id: device, actor: actorOf(device), subject: subject || strings.app.subjectUnknown, signing_key: S.publicKey, fingerprint: S.fingerprint};

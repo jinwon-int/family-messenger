@@ -20,12 +20,13 @@ export const MAX_ROOMS = 64;
  *   targets: () => {room: string, after: number}[],
  *   onChanged: (rooms: string[]) => Promise<unknown>,
  *   onMode: (watching: boolean) => void,
+ *   onAlive?: () => void,
  *   sleep?: (ms: number) => Promise<void>,
  *   now?: () => number,
  *   log?: (line: string) => void,
  * }} deps
  */
-export function createWatchLoop({relay, device, targets, onChanged, onMode, sleep = ms => new Promise(r => setTimeout(r, ms)), now = Date.now, log = () => {}}) {
+export function createWatchLoop({relay, device, targets, onChanged, onMode, onAlive = () => {}, sleep = ms => new Promise(r => setTimeout(r, ms)), now = Date.now, log = () => {}}) {
   let running = false;
   let watching = null;          // null = 아직 모름, true/false = 마지막으로 알린 모드
   let unsupportedUntil = 0;
@@ -52,6 +53,9 @@ export function createWatchLoop({relay, device, targets, onChanged, onMode, slee
       return;
     }
     mode(true);
+    // 변화가 없어 대기만 끝났어도 릴레이와 이어져 있고 놓친 것이 없다는 확인이다 — 「동기화 HH:MM:SS」 줄을 갱신하게 알린다.
+    // (방별 폴링이 60 s 안전망으로 늦춰진 뒤 그 줄이 최대 60 s 멈춰 보이던 회귀 — #760 후속.)
+    try { onAlive(); } catch (_) { /* 화면 갱신 실패가 루프를 멈추지 않는다 */ }
     if (result.changed.length > 0) {
       try { await onChanged(result.changed); } catch (_) { /* 방 sync 실패는 그 방 로그로 — 루프는 계속 */ }
     }
