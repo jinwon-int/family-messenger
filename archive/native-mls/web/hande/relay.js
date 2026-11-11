@@ -101,5 +101,24 @@ export function createRelay({fetch = globalThis.fetch.bind(globalThis), onOfflin
   function putRoomOrder(device, rooms, baseRevision) {
     return api('PUT', '/v2/me/room-order', {device, rooms, base_revision: baseRevision});
   }
-  return {api, roomPath, describe, me, meInfo, blob, postBlob, getRoomOrder, putRoomOrder, get offline() { return offline; }};
+  /**
+   * GET /v2/watch(#755 2a, 릴레이 #424 `server/wait.go`): 여러 방을 요청 하나로 기다린다 — `after` 뒤에 행이 있는 방이 있으면 즉시,
+   * 없으면 처음 바뀐 방(새 글·typing·읽음·알림·닫힘) 또는 `waitMs` 뒤 빈 결과.
+   * @param {string} device
+   * @param {{room: string, after: number}[]} rooms 1~64개
+   * @param {number} waitMs 릴레이 상한 25 000(넘으면 릴레이가 줄인다)
+   * @returns {Promise<{supported: boolean, changed: string[], errors: Record<string, string>}>}
+   *   `supported = false` = #424 이전 릴레이(봉투 없는 404) — 호출자는 방별 4초 폴링을 유지한다. 그 밖의 비정상 응답은 throw.
+   */
+  async function watch(device, rooms, waitMs) {
+    const q = new URLSearchParams({device, wait: String(Math.max(0, Math.floor(waitMs)))});
+    for (const {room, after} of rooms) q.append('room', `${room}:${Math.max(0, Math.floor(after))}`);
+    const {status, body} = await api('GET', `/v2/watch?${q.toString().replaceAll('%3A', ':')}`);
+    if (status === 404 && (body === null || typeof body !== 'object')) return {supported: false, changed: [], errors: {}};
+    if (status !== 200 || !body || !Array.isArray(body.changed)) {
+      const e = new Error(`watch ${describe(status, body)}`); e.status = status; throw e;
+    }
+    return {supported: true, changed: body.changed.filter(r => typeof r === 'string'), errors: body.errors && typeof body.errors === 'object' ? body.errors : {}};
+  }
+  return {api, roomPath, describe, me, meInfo, blob, postBlob, getRoomOrder, putRoomOrder, watch, get offline() { return offline; }};
 }

@@ -22,6 +22,7 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
   last-sent.js                                                   ← 대화창 상단 「내 마지막 말」 바 순수 로직(패밀리챗 이식, #480 C)
   sync-recovery.js preview-loader.js                             ← 탭·온라인 복귀 즉시 동기화 · 미리보기 실패 「다시 시도」(패밀리챗 이식, #544 A·B)
   room-open-pool.js                                              ← 시작·refresh 방 열기를 동시성 상한(6) 안에서 — 방마다 릴레이 왕복이 직렬로 쌓이지 않게(#752)
+  watch-loop.js                                                  ← 기기 단위 `/v2/watch` 대기(#755 2a) — 바뀐 방만 즉시 sync, 방별 폴링은 60 s 안전망, 미지원·오류면 4 s
   attachments.js                                                 ← 보관함 「첨부」 탭 순수 로직(모든 방 첨부 최신순, 패밀리챗 collectAttachments 이식, #544 D)
   agent-consent.js                                               ← AI 참여 동의 판정·기록(참여 뒤 명단 기준, 이 기기 localStorage — #544 E 선택지 3)
   local-room.js                                                  ← 로컬 전용 방(릴레이에 없는 방) 판정 · 「이 기기에서 지우기」 키 정리

@@ -28,6 +28,7 @@ import {fileboxConfig} from './filebox.js';
 import {collectAttachments} from './attachments.js';
 import {installShortcuts} from './shortcuts.js';
 import {openRoomsLimited} from './room-open-pool.js';
+import {createWatchLoop, DEFAULT_POLL_MS, SAFETY_POLL_MS} from './watch-loop.js';
 import {
   canApprove, isSibling, candidatesFor, approvalArgs, approvalEvidence, rolesActions, nextRoles, rolesArgs, rolesEvidence, recordOf,
   siblingInviteRooms, enrollModeFrom, readSiblingQueue, writeSiblingQueue, enqueueSiblingInvites, splitSiblingQueue, isRetryableInviteError,
@@ -286,6 +287,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     // 새로고침 뒤에도 쓰던 글이 남는다(#480 B) — 메모리 초안이 없을 때만 저장분을 올린다.
     if (!app.draft.has(roomId)) { const saved = readDraft(storage, app.device, roomId); if (saved) app.draft.set(roomId, saved); }
     try {
+      if (app.watching) session.setPollInterval(SAFETY_POLL_MS);   // #755 2a: watch 가 도는 중에 열린 방
       await session.open(opts);
       await session.activate();
     } catch (error) { app.rooms.delete(roomId); writeKnown(); throw error; }
@@ -421,6 +423,22 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       if (window.matchMedia?.('(min-width: 900px)').matches && app.rooms.size) { app.current = [...app.rooms.keys()][0]; app.roomOpen = true; markRoomRead(app.current); promptConsentOnce(app.current); }
       await refresh();
       app.tick = setInterval(() => refresh().catch(() => {}), TICK_MS);
+      // #755 2a: 방별 4초 폴링 대신 기기 단위 /v2/watch 대기 — 바뀐 방만 즉시 sync. 미지원·오류면 4초로 되돌린다(watch-loop.js).
+      if (!app.watchLoop) {
+        app.watchLoop = createWatchLoop({
+          relay, device: () => app.device,
+          targets: () => [...app.rooms.values()].filter(R => R.session.state.started && !R.session.state.halted)
+            .map(R => ({room: R.session.room, after: R.session.state.relaySeq})),
+          onChanged: rooms => Promise.all(rooms.map(id => app.rooms.get(id)?.session.sync({quiet: true}).catch(() => {}))),
+          onMode: on => {
+            app.watching = on;
+            for (const R of app.rooms.values()) R.session.setPollInterval(on ? SAFETY_POLL_MS : DEFAULT_POLL_MS);
+            logLine(on ? '즉시 전달(/v2/watch) 사용 — 방별 폴링은 60초 안전망' : '방별 4초 폴링');
+          },
+          log: logLine,
+        });
+        app.watchLoop.start();
+      }
       render();
     } catch (error) {
       fatal((/worker|boot|init_multi/.test(error.message) ? strings.app.workerUnavailable : strings.app.storageUnavailable(error.message)) + ` [${error.message}]`);
