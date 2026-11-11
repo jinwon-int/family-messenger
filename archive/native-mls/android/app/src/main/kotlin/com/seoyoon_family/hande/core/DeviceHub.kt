@@ -22,6 +22,7 @@ import com.seoyoon_family.hande.mls.MlsLobby
 import com.seoyoon_family.hande.mls.MlsMe
 import com.seoyoon_family.hande.mls.MlsPolicyCommit
 import com.seoyoon_family.hande.mls.MlsRoom
+import com.seoyoon_family.hande.mls.MlsWatchRoom
 import com.seoyoon_family.hande.mls.RoomEvent
 import com.seoyoon_family.hande.mls.RoomException
 import com.seoyoon_family.hande.mls.SendResult
@@ -133,6 +134,9 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     private var lobbyStore: FileLobbyStore? = null
     private val rooms = LinkedHashMap<String, Handle>()
     private var loop: Job? = null
+    /** #755: 다음 `watch` 의 방별 커서(틱 끝에 잠금 안에서 찍는다) · 릴레이가 `/v2/watch` 를 모르면 참. */
+    @Volatile private var watchTargets: List<MlsWatchRoom> = emptyList()
+    @Volatile private var watchUnsupported = false
     private var ticks = 0
 
     // ---- 기기 셀프서비스 상태(#574) — 메모리(초대 대기열·「무시」한 후보는 Settings 에 영속) ----
@@ -213,7 +217,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             }
             while (isActive) {
                 tick()
-                delay(POLL_MS)
+                waitForChange()
             }
         }
     }
@@ -343,6 +347,43 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         processSiblingInvites()
         _ui.update { it.copy(rooms = roomList(), connecting = connecting, roomOrderSynced = roomOrder.synced) }
         kickRoomOrder()
+        // #755: 다음 대기에 쓸 방별 커서 — 잠금 안에서 찍고, 대기는 잠금 밖에서 한다(보내기·화면 조작이 막히지 않게).
+        watchTargets = rooms.values.filter { it.halted == null }.mapNotNull { h ->
+            runCatching { MlsWatchRoom(h.name, h.room.syncState().cursor) }.getOrNull()
+        }.take(WATCH_MAX_ROOMS)
+    }
+
+    /**
+     * 틱 사이 대기(#755 1단계). 릴레이가 `GET /v2/watch`(#424)를 알면 방 전체를 요청 하나로 기다렸다가 바뀌는 즉시 다음 틱으로
+     * 간다 — 4초 폴링(방마다 GET)이 「바뀔 때 한 번」이 된다. **잠금을 잡지 않는다**(`MlsLobby.watch` 도 로비 잠금 밖).
+     * 대기는 OkHttp read timeout(15 s)보다 짧게 [WATCH_WAIT_MS]. #424 이전 릴레이(`supported = false`)·오류·준비 전에는 지금처럼
+     * [POLL_MS]. 미지원 판정은 [WATCH_REPROBE_TICKS] 틱마다 다시 확인한다(릴레이가 나중에 올라와도 앱 재시작 없이 붙게).
+     * 틱 간격은 최소 [MIN_TICK_GAP_MS] — typing 처럼 잦은 변화가 틱을 몰아치지 않게.
+     */
+    private suspend fun waitForChange() {
+        val l = lobby
+        val targets = watchTargets
+        if (watchUnsupported && ticks % WATCH_REPROBE_TICKS == 0) watchUnsupported = false
+        if (l == null || _ui.value.phase !is Phase.Ready || targets.isEmpty() || watchUnsupported) {
+            delay(POLL_MS)
+            return
+        }
+        val started = SystemClock.elapsedRealtime()
+        try {
+            val r = l.watch(targets, WATCH_WAIT_MS.toUInt())
+            if (!r.supported) {
+                Log.i(TAG, "watch: relay predates #424 — fixed ${POLL_MS} ms polling")
+                watchUnsupported = true
+                delay(POLL_MS)
+                return
+            }
+        } catch (e: RoomException) {
+            Log.w(TAG, "watch: $e — ${POLL_MS} ms polling this round")
+            delay(POLL_MS)
+            return
+        }
+        val spent = SystemClock.elapsedRealtime() - started
+        if (spent < MIN_TICK_GAP_MS) delay(MIN_TICK_GAP_MS - spent)
     }
 
     /** 화면 목록: 저장된 순서를 먼저, 거기 없는 방은 기본 순서(참여 순서)로 뒤에(#715 규칙 3 · `RoomOrder.apply`). */
@@ -895,6 +936,14 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         /** 엣지 인증 실패 모양: `relay status 301|302|303|307|308|401|403` · `relay error 401: …`. */
         val EDGE_AUTH = Regex("relay (status (30[12378]|401|403)\\b|error 401\\b)")
         const val POLL_MS = 4_000L
+        /** #755 `watch` 대기 — `OkHttpTransport` readTimeout(15 s)보다 짧게. 릴레이 상한은 25 s. */
+        const val WATCH_WAIT_MS = 12_000L
+        /** 틱 사이 최소 간격(변화가 몰려도 틱은 초당 1번까지). */
+        const val MIN_TICK_GAP_MS = 1_000L
+        /** 릴레이 `maxWatchRooms`. */
+        const val WATCH_MAX_ROOMS = 64
+        /** `/v2/watch` 미지원 판정을 다시 확인하는 틱 수(4 s 폴링 기준 ≈ 5분). */
+        const val WATCH_REPROBE_TICKS = 75
         const val LOBBY_TARGET = 8
         const val REPLENISH_EVERY = 15 // ≈ 1분
         /** `GET /v2/me` 주기(#574, 웹 `ME_EVERY_TICKS`) — 체인이 바뀐 직후(승인·역할)에는 바로 다시 읽는다. */
