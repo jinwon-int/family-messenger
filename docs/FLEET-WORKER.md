@@ -59,6 +59,9 @@ task로 실행되므로 승인/취소 입력이 작업 뒤에 막히지 않는�
   `{"type":"tool-result","turn_id":"job-1","tool_id":"…","ok":false,"error":"owner_only"}` — 아래 `tool`
   프레임의 답. `turn_id`·`tool_id`가 대기 중인 호출과 맞아야 하고(아니면 `control.accepted=false`),
   `ok`가 `true`가 아니면 거절로 본다(`error` 문자열이 없으면 `steward_error`).
+- `{"type":"attachment_ack","turn_id":"job-1","sha256":"<12 hex>"}` /
+  `{"type":"attachment_nack","turn_id":"job-1","sha256":"<12 hex>","reason":"…"}` — 실행부가 보낸 나가는
+  `attachment` 프레임의 게시 결과(아래 「나가는 첨부」, #761). 이 프레임을 모르는 실행부는 무시한다.
 
 ### 첨부 turn — `attachment` (#636 · ccc-node#2606, 구현됨 · 양쪽 기본 off)
 
@@ -217,6 +220,72 @@ room_remove / room_close / room_mode`) 호출마다 SDK `can_use_tool` → 이 �
     `kind=status_notice_rate`). 일반 notice 의 분당 상한(`notice_per_min`)과는 별개다. 앱은 5분 갱신이 없으면
     말풍선을 지우므로 브리지는 대기가 남아 있는 동안 ≤2분마다 다시 보낸다. 모르는 `kind` 는 일반 notice 다 —
     옛 봇은 `kind` 를 무시하고 글로 게시하므로 켜는 순서는 **봇 교체 → 브리지 설정**. 저널 `agent_outbound` `kind=status`.
+
+### 나가는 첨부 — `attachment` 출력 프레임 (#761 · ccc-node#2764, 설계 · 양쪽 기본 off)
+
+에이전트가 만든 이미지·파일을 한데 방에 file-v2 첨부로 올린다. 위 「첨부 turn」의 **거울**이다. 파일 바이트와 파일 키는
+프레임에 싣지 않고, 브리지가 spool에 둔 평문 파일의 **경로**만 넘긴다. 암호화·blob 업로드·설명자 게시
+(`archive/native-mls/FILE-V2.md` §3)는 봇이 한다.
+
+```json
+{"type":"attachment","turn_id":"t-12",
+ "attachment":{"v":1,"path":"/…/hande-attachments/out-3f9c…(32 hex).bin","kind":"image","mime":"image/png",
+               "name":"captcha.png","size":421764,"sha256":"<64 hex>"}}
+```
+
+| 키 | 필수 | 규칙 |
+|---|---|---|
+| `turn_id` | ✓ | 봇의 **활성 turn**과 같아야 한다. 다르거나 활성 turn이 없으면 버리고 nack(`stale_turn`)한다. |
+| `attachment.v` | ✓ | 정수 `1`. 다른 값이면 버리고 nack(`bad_version`)한다. |
+| `attachment.path` | ✓ | 절대 경로이고 **spool 디렉터리의 직속 자식**이어야 한다. 이름은 브리지가 만든 무작위 `out-[0-9a-f]{32}\.bin`이다(들어오는 첨부 `[0-9a-f]{32}\.bin`과 접두어로 구분). 사용자가 준 이름이나 turn_id는 넣지 않는다. |
+| `attachment.kind` | ✓ | `image` \| `file`. 브리지의 판별값은 **힌트**다. 봇은 평문 매직 바이트로 다시 판별하고, 그 결과로 설명자 `mime`과 표시 종류를 정한다. |
+| `attachment.mime` | ✓ | 브리지가 판별한 `type/subtype`(힌트). 판별하지 못하면 `application/octet-stream`. |
+| `attachment.name` |  | 표시 이름(FILE-V2 설명자 `name` 규칙: 1~255자, 제어 문자 없음, 마지막 경로 조각만). 양방향 제어 문자가 섞였으면 브리지가 키를 뺀다. |
+| `attachment.size` | ✓ | 평문 바이트 수 = 파일 크기. `1..`봇 상한(FILE-V2 최대 50 MiB). |
+| `attachment.sha256` | ✓ | **평문** sha256(소문자 hex 64자). |
+
+모르는 키는 무시한다. `attachment` JSON은 2KiB를 넘지 않는다.
+
+**봇 처리 순서.** poll loop 밖의 스레드에서 처리한다.
+1. spool 파일을 `O_NOFOLLOW`로 연다. 일반 파일이어야 하고, *other*가 쓸 수 없어야 하며(모드 0600/0640), 크기 = `size`,
+   평문 sha256 = `sha256`, 크기 ≤ 봇 상한이어야 한다.
+2. 매직 바이트로 MIME을 판별한다. 이미지면 `w`·`h`를 채울 수 있으나 선택이다.
+3. FILE-V2 §2·§3을 따른다: 새 키·nonce로 암호화 → `POST …/blobs` → 응답 `id` = `blob` 확인 → 설명자를 활성 turn의
+   **agent 방**에 게시한다(`client_id = file-v2-<uuid>`).
+4. 게시 결과를 **같은 연결**로 한 줄 돌려준다: 성공 `{"type":"attachment_ack","turn_id":…,"sha256":"<앞 12자>"}`,
+   실패 `{"type":"attachment_nack","turn_id":…,"sha256":"<앞 12자>","reason":"<이유>"}`.
+5. 성공이든 실패든 spool 파일을 지운다(`ENOENT`는 정상).
+
+| `reason` | 뜻 |
+| --- | --- |
+| `disabled` | 봇 플래그가 꺼져 있다 |
+| `stale_turn` · `bad_version` · `bad_frame` | 활성 turn 아님 · `v` 다름 · 형식 위반(경로 규칙 포함) |
+| `file` | 파일 없음·링크·모드·크기·sha 불일치 |
+| `oversize` | 봇 상한을 넘었다 |
+| `limit` | turn당 상한(`DEFAULT_ATTACHMENT_OUT_MAX` 4건)을 넘었다 |
+| `upload` · `post` | blob 업로드 실패(403/410 포함) · 설명자 게시 실패(재시도 한도 소진) |
+
+**순서와 수명.**
+- 브리지는 프레임을 `result`보다 **먼저** 보낸다. 봇은 받은 순서대로 게시하므로, 방에서는 첨부가 최종 답보다 앞에
+  보인다. 봇이 `result`를 받았을 때 처리 중인 첨부가 있으면 그 게시가 끝난 뒤 답을 게시한다.
+- 파일을 만드는 쪽은 **브리지**다. `O_CREAT|O_EXCL|O_NOFOLLOW`로 쓰고 fsync한 뒤 프레임을 보낸다.
+  Linux 노드에서는 spool 디렉터리를 따라 0640·그룹 `native-relay-bot`이 되어 봇이 읽고 지울 수 있다. Termux는 한 uid라 0600이다.
+- 지우는 쪽은 **봇**이 우선이다(5번). 브리지는 turn이 끝난 뒤(`result` 전송 후 30초, 또는 연결 종료 시) 남은
+  자기 `out-*.bin`을 지운다(`ENOENT`는 정상). 봇은 시작할 때 spool의 `out-*.bin`도 비운다.
+- 파일 키·설명자 원문·blob id는 봇 메모리 밖으로 나가지 않는다(프레임·저널·inbox 금지). 저널 `agent_outbound` `kind=attachment`에는
+  `kind`·`mime`·`size`·평문 sha256 앞 12자와 결과만 남긴다.
+
+**ack가 없을 때.** 옛 봇은 모르는 `type`을 무시하므로 ack가 오지 않는다. 브리지는 프레임을 보내고 `result` 전까지
+ack를 기다린다(첨부당 최대 60초). 오지 않거나 nack이면 최종 답 끝에 고정 문구
+`📎 첨부를 보내지 못했습니다: <name>(<reason|no_ack>)`를 붙인다. 파일 경로는 문구에 넣지 않는다.
+
+**게이트와 켜는 순서.**
+- 봇: `NATIVE_MLS_BOT_AGENT_ATTACHMENTS_OUT=1`(기본 off). spool은 들어오는 첨부와 같은
+  `NATIVE_MLS_BOT_ATTACHMENT_SPOOL`, 상한도 같은 `NATIVE_MLS_BOT_ATTACHMENT_MAX_BYTES`를 쓴다.
+- ccc-node 한데: `attachment_out_frames`(기본 `false`)와 같은 spool 경로. 전달할 파일은 Telegram·Matrix 자동 전송과
+  같은 규칙(확장자·크기·`PROJECT_ROOT` 확인)으로 고른다. 꺼져 있으면 지금처럼 경로를 글로만 남긴다.
+- 켜는 순서는 **봇 교체·플래그 → 브리지 `attachment_out_frames`**다(이번에는 봇이 받는 쪽이다). 끄는 순서는 반대다.
+- 클라이언트는 사람이 보낸 file-v2와 같은 경로로 표시한다. 봇 발신이라고 다르게 다루지 않는다.
 
 저널: 게시된 두 프레임은 `agent_outbound`의 `kind`가 `interim`·`notice`로 남는다. 입력 중 표시(typing)는
 이 포트에 없고 봇은 릴레이 typing(#562)도 보내지 않는다. iOS `AgentThinking`은 타임라인만 보고 추정하므로
