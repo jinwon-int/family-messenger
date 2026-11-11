@@ -180,7 +180,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       return;
     }
     const rows = orderRooms([...app.rooms.keys()].map(roomRow), app.roomOrder);
-    const anySynced = [...app.rooms.values()].map(R => R.session.state.syncedAt).filter(Boolean).sort().at(-1) ?? app.lastCheckedAt ?? null;
+    // #760 후속: watch 가 정상 응답한 시각(변화 없음 포함)도 「동기화」 시각이다 — 방별 폴링이 60 s 안전망일 때 줄이 멈춰 보이지 않게.
+    const anySynced = [...[...app.rooms.values()].map(R => R.session.state.syncedAt), app.watchAliveAt].filter(Boolean).sort().at(-1) ?? app.lastCheckedAt ?? null;
     const list = {
       rooms: rows, currentRoomId: app.roomOpen ? app.current : null,
       onSelect: openRoomScreen, onOpenMenu: openMenu, onOpenJoin: openJoin, onOpenCreate: openCreate, onOpenBox: toggleBox,
@@ -435,6 +436,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
             for (const R of app.rooms.values()) R.session.setPollInterval(on ? SAFETY_POLL_MS : DEFAULT_POLL_MS);
             logLine(on ? '즉시 전달(/v2/watch) 사용 — 방별 폴링은 60초 안전망' : '방별 4초 폴링');
           },
+          onAlive: () => { app.watchAliveAt = clock(true); render(); },
           log: logLine,
         });
         app.watchLoop.start();
