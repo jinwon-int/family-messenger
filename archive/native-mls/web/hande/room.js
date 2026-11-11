@@ -400,6 +400,15 @@ export function createRoomSession({room, device, database, worker, relay, storag
     changed();
   }
   function stopPolling() { if (S.timer) { clearI(S.timer); S.timer = null; } }
+  /**
+   * 방별 폴링 간격 바꾸기(#755 2a): 기기 단위 `/v2/watch` 가 돌면 앱이 안전망 간격(60 s)으로 늦추고, 미지원·오류면 기본(4 s)으로
+   * 되돌린다. 같은 값이면 아무것도 안 하고, 아직 시작 전(activate 전)이면 다음 activate 가 이 간격을 쓴다.
+   */
+  function setPollInterval(ms) {
+    if (!Number.isSafeInteger(ms) || ms <= 0 || ms === pollMs) return;
+    pollMs = ms;
+    if (S.timer) { clearI(S.timer); S.timer = setI(() => sync({quiet: true}), pollMs); }
+  }
 
   // ---- start / resume ----
   /**
@@ -649,6 +658,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
     get attachmentPending() { return !!attachments?.pending || !!fileV2s?.pending; },
     get joined() { return S.joined; },
     open, activate, sync, create, publishKeyPackage, invite, remove, send, sendAttachment, typing, markRead, setMuted,
-    wipe, stop, registration,
+    wipe, stop, registration, setPollInterval,
+    get pollMs() { return pollMs; },
   };
 }

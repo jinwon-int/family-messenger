@@ -545,3 +545,15 @@ test('status-<uuid> event: on.status only — never a timeline message, never hi
   assert.equal(s.state.relaySeq, 8);
   assert.ok(relay.calls.some(c => c.path.includes('ack=8')), 'the status event is acked like any other');
 });
+
+// #755 2a: 앱이 기기 단위 watch 모드면 방별 폴링을 안전망 간격으로 늦춘다(activate 전이면 다음 activate 가 그 간격을 쓴다).
+test('setPollInterval: 양의 정수만 받고, 같은 값·잘못된 값은 무시한다', () => {
+  const {s} = session({worker: {call: async () => ({ok: true, result: {}})}, relay: fakeRelay(() => ({status: 200, body: {}}))});
+  assert.equal(s.pollMs, 4000);
+  s.setPollInterval(60000);
+  assert.equal(s.pollMs, 60000);
+  for (const bad of [0, -1, 1.5, NaN, '4000']) s.setPollInterval(bad);
+  assert.equal(s.pollMs, 60000);
+  s.setPollInterval(4000);
+  assert.equal(s.pollMs, 4000);
+});
