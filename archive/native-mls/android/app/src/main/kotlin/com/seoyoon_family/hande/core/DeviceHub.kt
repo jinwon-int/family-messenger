@@ -95,6 +95,8 @@ data class HubUi(
     val server: String? = null,
     /** 방 순서를 릴레이와 맞추는가(#715) — 옛 릴레이(404)면 false(이 기기에만 저장). 순서 편집 안내 문구가 고른다. */
     val roomOrderSynced: Boolean = true,
+    /** 설정 「빠진 방 다시 찾기」(#616, 기본 켜짐 — `Settings.siblingRescanOff`). */
+    val siblingRescan: Boolean = true,
 )
 
 class DeviceHub(context: Context, val settings: Settings, private val sealer: KeystoreSealer) {
@@ -149,6 +151,11 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
 
     private inner class Handle(val name: String) {
         var halted: String? = null
+        /** 이번 틱의 `poll` 이 성공했나(#616 재탐색은 참여한 방이 모두 최신일 때만). */
+        var synced = false
+        /** 그룹 명단 캐시(#616): 엔진 `members` 는 `MlsRoom.dispatch` 라 부를 때마다 상태를 다시 쓴다 — 명단은 epoch 가 바뀔 때만 움직이므로 epoch 로 맞춘다. */
+        var rosterEpoch = Long.MIN_VALUE
+        var roster: List<String>? = null
         /** status-v1(#560): 이 방의 보낸이별 최신 작업 상태(메모리만). onMessage·ui() 모두 DeviceHub mutex 안에서 불린다. */
         val statuses = AgentStatusBoard()
         val store = FileRoomStore(
@@ -234,7 +241,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         Log.i(TAG, "boot: rooms=${rooms.size} token=${if (settings.accessToken == null) "none" else "set"}")
         val fp = sha256Hex(l.publicKey())
         Log.i(TAG, "boot: fingerprint ${fp.take(12)}… → probe")
-        _ui.update { it.copy(deviceId = identity, fingerprint = fp, keyCustody = sealer.describe(), rooms = roomList(), server = serverLabel(), roomOrderSynced = roomOrder.synced) }
+        _ui.update { it.copy(deviceId = identity, fingerprint = fp, keyCustody = sealer.describe(), rooms = roomList(), server = serverLabel(), roomOrderSynced = roomOrder.synced, siblingRescan = !settings.siblingRescanOff) }
         probe()
     }
 
@@ -299,8 +306,10 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         linkPreviews.loadSites() // 받았거나 받는 중·재시도 시각 전이면 아무것도 안 한다(일시 실패만 10분 뒤 다시)
         var connecting = false
         for (h in rooms.values.toList()) {
+            h.synced = false
             try {
                 h.room.poll()
+                h.synced = true
             } catch (e: RoomException) {
                 when {
                     e is RoomException.Relay && e.transient -> connecting = true
@@ -321,6 +330,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
                 h.room.setAccessToken(settings.accessToken)
                 rooms[w.room] = h
                 h.room.poll()
+                h.synced = true
                 if (sibling) notice(Strings.siblingWelcome(w.from, w.room))
                 replenish(l)
             }
@@ -329,6 +339,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         }
         if (ticks % REPLENISH_EVERY == 1) runCatching { replenish(l) }
         discoverCandidates(l)
+        rescanSiblings(l)
         processSiblingInvites()
         _ui.update { it.copy(rooms = roomList(), connecting = connecting, roomOrderSynced = roomOrder.synced) }
         kickRoomOrder()
@@ -540,9 +551,100 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         }
     }
 
-    /** 승인 직후: 내가 참여한(정지 아닌) 방마다 새 형제 기기를 초대하도록 대기열에 적는다 — 틱마다 `processSiblingInvites` 가 시도한다. */
+    /**
+     * 한 방의 초대 판정 입력(iOS `roomView`·웹 `roomsView()`): 참여·정지·내 초대 commit 대기(`pendingInvite`)·명단·이번 틱 동기화.
+     * 정지된 방은 어차피 대상이 아니므로 동기화된 것으로 본다(재탐색을 영영 막지 않게).
+     */
+    private fun roomView(h: Handle): SelfService.RoomView {
+        val halted = (h.halted ?: h.store.haltReason()) != null
+        val sync = runCatching { h.room.syncState() }.getOrNull()
+        val joined = sync?.joined ?: false
+        return SelfService.RoomView(
+            h.name, joined, halted, pending = sync?.pendingInvite != null,
+            roster = if (joined && sync != null) roster(h, sync.epoch) else null, synced = h.synced || halted,
+        )
+    }
+
+    /** 그룹 명단(엔진 `members` roster 프레임) — epoch 가 같으면 캐시. 읽지 못하면 null(판정은 「명단 모름」으로). */
+    private fun roster(h: Handle, epoch: Long): List<String>? {
+        if (h.rosterEpoch == epoch && h.roster != null) return h.roster
+        val list = try {
+            SelfService.parseRosterFrame(h.room.dispatch("members", ByteArray(0)))
+        } catch (e: Exception) {
+            Log.w(TAG, "${h.name}: members: $e"); null
+        }
+        h.roster = list
+        h.rosterEpoch = if (list != null) epoch else Long.MIN_VALUE
+        return list
+    }
+
+    /**
+     * 형제 기기의 `GET /v2/lobby/status?device=`(#616): 로비 키 잔량과 commit 으로 내보낸 방(`excluded_rooms`). 코어 요청과 같은 인증 헤더로
+     * 허브가 직접 묻는다(코어 `MlsLobby.status` 는 이 기기만 묻는다). 응답이 없거나 200 이 아니거나 모양이 틀리면 null.
+     */
+    private fun lobbyPeek(target: String): SelfService.LobbyPeek? {
+        val base = settings.relayUrl ?: return null
+        val token = settings.accessToken?.trim()?.takeIf { it.isNotEmpty() }
+        val headers = if (token == null) emptyList() else listOf(HttpHeader(ACCESS_HEADER, token))
+        return try {
+            val r = transport.send("GET", "$base/v2/lobby/status?device=$target", headers, null)
+            if (r.status.toInt() != 200) { Log.w(TAG, "lobby status $target: ${r.status}"); null }
+            else SelfService.parseLobbyStatus(String(r.body, Charsets.UTF_8))
+        } catch (e: RoomException) {
+            Log.w(TAG, "lobby status $target: ${e.message}"); null
+        }
+    }
+
+    /** 재탐색 조회가 실패한 뒤 다시 묻지 않을 때까지(ms, 메모리) — 실패 때 틱(4초)마다 릴레이를 두드리지 않게. */
+    private var rescanRetryAt = 0L
+
+    /**
+     * #616 빠진 방 주기적 재탐색(오너 D1~D3, iOS `rescanSiblingsLocked`·웹 `rescanSiblings`): 최소 6시간마다 내 다른 활성 기기가 빠진 방을
+     * 형제 초대 대기열에 넣는다. commit 으로 내보낸 방(`excluded_rooms`)은 건너뛰고, 그 필드가 없는 옛 릴레이면 그 기기는 재탐색하지 않는다(fail-closed).
+     * 방마다 초대 기기는 하나: 그 방의 내 기기 중 ID 최소가 바로, 나머지는 30분 뒤에도 빠져 있을 때만. 틱의 `poll` 이 끝난 뒤라 명단은 최신이다
+     * (이번 틱에 동기화 못 한 방이 있으면 다음 틱에). 조회 실패는 이번 재탐색을 1분 미룬다.
+     */
+    private fun rescanSiblings(l: MlsLobby) {
+        if (settings.siblingRescanOff) return
+        val identity = l.identity()
+        val siblings = SiblingRescan.siblings(me, identity)
+        if (siblings.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val state = SiblingRescan.decodeState(settings.siblingRescanState)
+        if (!SiblingRescan.due(state, now) || now < rescanRetryAt) return
+        val excluded = HashMap<String, List<String>?>()
+        for (target in siblings) {
+            val peek = lobbyPeek(target) ?: run {
+                Log.w(TAG, "sibling rescan: lobby status $target failed — retry in 1 min")
+                rescanRetryAt = now + SelfService.SIBLING_LOBBY_RECHECK_MS
+                return
+            }
+            excluded[target] = peek.excludedRooms
+        }
+        val turn = SiblingRescan.turn(rooms.values.map(::roomView), identity, siblings, excluded, state, now)
+        if (!turn.ready) return
+        settings.siblingRescanState = SiblingRescan.encodeState(turn.state)
+        val skipped = siblings.filter { excluded[it] == null }
+        if (skipped.isNotEmpty()) Log.i(TAG, "sibling rescan: relay gave no excluded_rooms — skipped ${skipped.joinToString(",")}")
+        if (turn.enqueue.isEmpty()) return
+        var queue = SelfService.decodeSiblingQueue(settings.siblingQueue)
+        for ((target, list) in turn.enqueue) {
+            queue = SelfService.enqueueSiblingInvites(queue, target, list, now, origin = SiblingRescan.ORIGIN)
+            Log.i(TAG, "sibling rescan: $target missing from ${list.joinToString(",")}")
+        }
+        settings.siblingQueue = SelfService.encodeSiblingQueue(queue)
+    }
+
+    /** 설정 「빠진 방 다시 찾기」(#616, 기본 켜짐). 화면 스레드에서 불러도 된다(저장만). */
+    fun setSiblingRescan(on: Boolean) {
+        settings.siblingRescanOff = !on
+        _ui.update { it.copy(siblingRescan = on) }
+        Log.i(TAG, "sibling rescan ${if (on) "on" else "off"}")
+    }
+
+    /** 승인 직후: 새 기기를 들일 방(내가 참여한·정지 아닌·명단에 없는 방)을 대기열에 적는다 — 틱마다 `processSiblingInvites` 가 시도한다. */
     private fun queueSiblingInvites(target: String) {
-        val list = SelfService.siblingInviteRooms(rooms.values.map { SelfService.RoomView(it.name, it.joined(), (it.halted ?: it.store.haltReason()) != null) })
+        val list = SelfService.siblingInviteRooms(rooms.values.map(::roomView), target)
         if (list.isEmpty()) return
         val queue = SelfService.enqueueSiblingInvites(SelfService.decodeSiblingQueue(settings.siblingQueue), target, list, System.currentTimeMillis())
         settings.siblingQueue = SelfService.encodeSiblingQueue(queue)
@@ -555,38 +657,54 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         settings.siblingQueue = SelfService.encodeSiblingQueue(queue)
     }
 
+    /** 코어 초대 한 번 → `SelfService.InviteOutcome`. `Posted` 의 Welcome 은 코어가 `<room>.sync` 에 영속해 두고 다음 `poll` 이 올린다(#574 후속). */
+    private fun inviteOnce(h: Handle, target: String): SelfService.InviteOutcome = try {
+        when (val r = h.room.invite(target)) {
+            is MlsInvite.Invited, is MlsInvite.Posted -> { Log.i(TAG, "sibling $target invited into ${h.name}: $r"); SelfService.InviteOutcome.Invited }
+            is MlsInvite.NoKeyPackage -> SelfService.InviteOutcome.NoKey
+            is MlsInvite.Pending, is MlsInvite.Raced -> SelfService.InviteOutcome.Retry
+        }
+    } catch (ex: RoomException) {
+        if (ex is RoomException.Relay && ex.transient) SelfService.InviteOutcome.Retry
+        else { Log.w(TAG, "sibling $target in ${h.name}: $ex"); SelfService.InviteOutcome.Failed(ex.message ?: "?") }
+    }
+
     /**
-     * 형제 기기 초대(#574, 웹 `processSiblingInvites`): 막 승인된 기기는 다음 틱에야 로비 키를 올리므로 첫 초대는 보통 `NoKeyPackage` —
-     * 방을 대기열에 두고 다음 틱에 다시. `Pending`(내 commit 대기)·`Raced`(방이 먼저 바뀜)도 다시. 그 밖의 오류는 포기하고 알린다.
-     * 30분이 지나면 포기(알림). `Invited`/`Posted` = 끝(Welcome 은 코어가 echo 뒤 올린다).
+     * 형제 기기 초대 대기열(틱 끝, #574 → #616): TTL(마지막 진행부터 24시간) 지난 항목은 알리고 버린다; 살아 있는 항목은 `SelfService.siblingInviteTurn` —
+     * 형제 기기의 로비 키 잔량(`lobbyPeek`)만큼만 방마다 `MlsRoom.invite`, 잔량 0 이면 시도 없이 1분 기다리고(`recheckAt`), `NoKeyPackage`·`Pending`·
+     * `Raced`·일시 오류는 남기고, 그 밖의 실패는 알리고 버린다. 재탐색이 넣은 항목(`origin`)의 포기·실패는 알리지 않는다(다음 재탐색이 다시).
      */
     private fun processSiblingInvites() {
         val queue = SelfService.decodeSiblingQueue(settings.siblingQueue)
         if (queue.isEmpty()) return
-        val (live, expired) = SelfService.splitSiblingQueue(queue, System.currentTimeMillis())
-        for (e in expired) { Log.w(TAG, "sibling ${e.target}: gave up after 30 min (${e.rooms})"); notice(Strings.siblingGaveUp(e.target)) }
+        val now = System.currentTimeMillis()
+        val (live, expired) = SelfService.splitSiblingQueue(queue, now)
+        for (e in expired) {
+            Log.w(TAG, "sibling ${e.target}: gave up after ${SelfService.SIBLING_INVITE_TTL_MS / 3_600_000L} h without progress (${e.rooms})")
+            if (e.origin != SiblingRescan.ORIGIN) notice(Strings.siblingGaveUp(e.target, e.rooms))
+        }
         val next = ArrayList<SelfService.SiblingInvite>()
+        val rescanned = HashSet<String>()
+        var rescannedRooms = 0
         for (e in live) {
-            val remaining = ArrayList<String>()
-            for (room in e.rooms) {
-                val h = rooms[room] ?: continue
-                if ((h.halted ?: h.store.haltReason()) != null || !h.joined()) continue
-                val r = try {
-                    h.room.invite(e.target)
-                } catch (ex: RoomException) {
-                    if (ex is RoomException.Relay && ex.transient) remaining += room
-                    else { Log.w(TAG, "sibling ${e.target} in $room: $ex"); notice(Strings.siblingFailed(e.target, room, ex.message ?: "?")) }
-                    continue
-                }
-                when (r) {
-                    // `Posted` 의 Welcome 은 코어가 `<room>.sync` 에 영속해 두고 다음 `poll` 이 올린다(#574 후속) — 재시작해도 된다.
-                    is MlsInvite.Invited, is MlsInvite.Posted -> { Log.i(TAG, "sibling ${e.target} invited into $room: $r"); notice(Strings.siblingInvited(e.target, room)) }
-                    is MlsInvite.NoKeyPackage, is MlsInvite.Pending, is MlsInvite.Raced -> remaining += room
-                }
+            val turn = SelfService.siblingInviteTurn(
+                e, now,
+                lobbyLive = { lobbyPeek(e.target)?.live },
+                roomView = { room -> rooms[room]?.let(::roomView) },
+                invite = { room -> rooms[room]?.let { inviteOnce(it, e.target) } ?: SelfService.InviteOutcome.Retry },
+            )
+            for (room in turn.invited) notice(Strings.siblingInvited(e.target, room))
+            if (e.origin == SiblingRescan.ORIGIN && turn.invited.isNotEmpty()) { rescanned += e.target; rescannedRooms += turn.invited.size }
+            for ((room, reason) in turn.failed) {
+                Log.w(TAG, "sibling ${e.target}: invite into $room failed (giving up) — $reason")
+                if (e.origin != SiblingRescan.ORIGIN) notice(Strings.siblingFailed(e.target, room, reason))
             }
-            if (remaining.isNotEmpty()) next += e.copy(rooms = remaining)
+            val entry = turn.entry ?: continue
+            if (entry.recheckAt != null && entry.recheckAt != e.recheckAt) Log.i(TAG, "sibling ${e.target}: no lobby key left — ${entry.rooms.size} room(s) wait for a replenish")
+            next += entry
         }
         settings.siblingQueue = SelfService.encodeSiblingQueue(next)
+        if (rescannedRooms > 0) notice(Strings.siblingRescanned(rescanned.size, rescannedRooms))
     }
 
     /**

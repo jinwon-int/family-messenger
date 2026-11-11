@@ -58,6 +58,16 @@ class Settings(context: Context, private val sealer: KeystoreSealer) : RoomOrder
         get() = prefs.getString("sibling_invites", null)?.takeIf { it.isNotBlank() }
         set(value) { if (value.isNullOrBlank()) prefs.edit().remove("sibling_invites").apply() else prefs.edit().putString("sibling_invites", value).apply() }
 
+    /** 빠진 방 재탐색 상태(#616, `SiblingRescan.encodeState` 형식 — 공개 값: 시각·기기 ID·방 이름). */
+    var siblingRescanState: String?
+        get() = prefs.getString("sibling_rescan", null)?.takeIf { it.isNotEmpty() }
+        set(value) { if (value.isNullOrEmpty()) prefs.edit().remove("sibling_rescan").apply() else prefs.edit().putString("sibling_rescan", value).apply() }
+
+    /** 설정 「빠진 방 다시 찾기」 끄기(#616, 기본 켜짐 = false — 켜면 키를 지운다). */
+    var siblingRescanOff: Boolean
+        get() = prefs.getBoolean("sibling_rescan_off", false)
+        set(value) { if (value) prefs.edit().putBoolean("sibling_rescan_off", true).apply() else prefs.edit().remove("sibling_rescan_off").apply() }
+
     /**
      * 「무시」한 새 기기 승인 요청(#574 후속, `SelfService.encodeDismissals` 형식 — 공개 값: 후보 기기 ID·그 후보의 `created_at`).
      * 프로세스가 다시 떠도 숨긴 채로 두고, 후보 TTL(10분)이 지나면 항목이 스스로 만료된다. 비면 지운다.
