@@ -23,3 +23,6 @@ zeroize = "=1.9.0"
 # #636: open file-v2 attachments (FILE-V2 §2, AES-256-GCM). Already in the
 # graph through openmls_rust_crypto; direct (same pin) for `attachment.rs`.
 aes-gcm = { version = "=0.10.3", default-features = false, features = ["aes", "alloc"] }
+# #761: open the bridge's outbound spool file with O_NOFOLLOW|O_NONBLOCK (the
+# values differ per arch). Already in the graph (getrandom, std deps); direct, same pin.
+libc = "=0.2.189"

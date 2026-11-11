@@ -36,6 +36,7 @@
 
 use crate::api::BotError;
 use crate::attachment::{self, AttachmentConfig, Fetcher, Source, Spooled};
+use crate::attachment_out::{self, OutConfig, Sealed, Uploader};
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -154,6 +155,10 @@ pub struct Config {
     /// #636: 「한데」 attachments as agent turns (`docs/FLEET-WORKER.md` "첨부
     /// turn"). `None` (the default) keeps the #514 rule: attachments are skipped.
     pub attachments: Option<AttachmentConfig>,
+    /// #761: agent-made files out to the room (`docs/FLEET-WORKER.md` "나가는
+    /// 첨부"). `None` (the default) answers every `attachment` frame
+    /// `attachment_nack` `disabled`.
+    pub attachments_out: Option<OutConfig>,
 }
 
 impl Config {
@@ -175,6 +180,7 @@ impl Config {
             status_notice_min_secs: DEFAULT_STATUS_NOTICE_MIN_SECS,
             typing: true,
             attachments: None,
+            attachments_out: None,
         }
     }
 }
@@ -234,7 +240,53 @@ pub enum Outbound {
     /// validated and owner-checked). Never posted to the room — the poll loop
     /// runs it and answers with `tool_result()`.
     ToolCall { tool_id: String, name: String, op: String, room: String, arg: String },
+    /// #761: a file-v2 descriptor to post for the turn started by relay seq
+    /// `seq` (the blob is already uploaded). The poll loop encrypts and posts
+    /// it with a `file-v2-<uuid>` client_id and hands it back with
+    /// `Responder::attachment_posted` / `attachment_conflict`. Never text.
+    Attachment { seq: i64, post: OutPost },
 }
+
+/// #761: one uploaded outbound attachment on its way to the room. `Debug`
+/// never prints the descriptor (it carries the file key).
+#[derive(PartialEq, Eq)]
+pub struct OutPost {
+    token: u64,
+    pub descriptor: zeroize::Zeroizing<Vec<u8>>,
+    pub kind: &'static str,
+    pub mime: &'static str,
+    pub size: u64,
+    /// 409 cas_mismatch replays so far.
+    attempts: u32,
+}
+
+impl std::fmt::Debug for OutPost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OutPost").field("kind", &self.kind).field("mime", &self.mime).field("size", &self.size).finish_non_exhaustive()
+    }
+}
+
+/// #761: the one outbound attachment between its frame and its answer. While
+/// it is set the responder reads no further worker frame, so what the worker
+/// sent after it (interims, the `result`) reaches the room after it.
+struct OutFlight {
+    token: u64,
+    turn_id: String,
+    sha12: String,
+    room: String,
+    seq: i64,
+    since: Instant,
+    /// The descriptor went to the poll loop (else: still uploading).
+    posting: bool,
+}
+
+/// #761: an outbound attachment the poll loop never answered (a bug, or an
+/// upload that hangs past the HTTP timeouts) stops holding the turn's frames
+/// after this long; it is answered `upload` / `post`.
+const OUT_STALL: Duration = Duration::from_secs(600);
+/// #761: polls one descriptor may be replayed across after 409 cas_mismatch
+/// (as `MAX_ECHO_ATTEMPTS` for replies); then `post`.
+const OUT_POST_ATTEMPTS: u32 = 8;
 
 /// `room_status` takes no room; `Steward::execute` still shape-checks the
 /// field, so a placeholder identifier rides along.
@@ -372,6 +424,19 @@ pub struct Responder {
     active_spool: Option<PathBuf>,
     /// #636 stage 2: the attachment waiting for its caption, and its deadline.
     held: Option<(Inbound, Instant)>,
+    /// #761: uploads a file-v2 blob for an outbound attachment (set by the poll loop).
+    uploader: Option<Uploader>,
+    /// #761: `attachment` frames counted against the active turn's cap.
+    out_count: usize,
+    /// #761: the outbound attachment in flight (see `OutFlight`).
+    out_flight: Option<OutFlight>,
+    /// #761: a descriptor the poll loop handed back after 409 cas_mismatch;
+    /// re-emitted on the next pump (that poll's GET applied the commit).
+    out_retry: Option<OutPost>,
+    next_out: u64,
+    /// #761: upload results from the helper thread, by token.
+    out_tx: Sender<(u64, Result<Sealed, &'static str>)>,
+    out_rx: Receiver<(u64, Result<Sealed, &'static str>)>,
 }
 
 /// Matrix parity (ccc-node `NOTICE_QUEUED` / `NOTICE_QUEUE_FULL`, same
@@ -403,10 +468,11 @@ fn turn_item(peer_depth: u8, room: String, item: Outbound) -> Routed {
         Outbound::ApprovalResolved { .. } => "approval_resolved",
         Outbound::Uncertain { .. } => "uncertain",
         Outbound::Stopped { .. } => "stopped",
+        Outbound::Attachment { .. } => "attachment",
         _ => "other",
     };
     let seq = match &item {
-        Outbound::Reply { seq, .. } | Outbound::Interim { seq, .. } | Outbound::Status { seq, .. } | Outbound::ApprovalRequest { seq, .. } | Outbound::Uncertain { seq, .. } | Outbound::Stopped { seq } => *seq,
+        Outbound::Reply { seq, .. } | Outbound::Interim { seq, .. } | Outbound::Status { seq, .. } | Outbound::ApprovalRequest { seq, .. } | Outbound::Uncertain { seq, .. } | Outbound::Stopped { seq } | Outbound::Attachment { seq, .. } => *seq,
         _ => 0,
     };
     (room, Outbound::Suppressed { seq, kind })
@@ -488,7 +554,12 @@ impl Responder {
             // Files a previous run left (a turn cut short by a restart).
             attachment::sweep_spool(&attachments.spool_dir);
         }
+        // #761: outbound files a previous run (or bridge) left behind.
+        for dir in [config.attachments.as_ref().map(|a| &a.spool_dir), config.attachments_out.as_ref().map(|a| &a.spool_dir)].into_iter().flatten() {
+            attachment_out::sweep_out(dir);
+        }
         let (prep_tx, prep_rx) = mpsc::channel();
+        let (out_tx, out_rx) = mpsc::channel();
         let mut responder = Responder {
             config,
             child,
@@ -516,6 +587,13 @@ impl Responder {
             preparing: None,
             active_spool: None,
             held: None,
+            uploader: None,
+            out_count: 0,
+            out_flight: None,
+            out_retry: None,
+            next_out: 0,
+            out_tx,
+            out_rx,
         };
         // A turn left active by an earlier run was never confirmed: say so
         // once, clear it, never re-run it.
@@ -536,6 +614,11 @@ impl Responder {
     /// #636: how an attachment turn reaches the relay's blob store.
     pub fn set_fetcher(&mut self, fetcher: Fetcher) {
         self.fetcher = Some(fetcher);
+    }
+
+    /// #761: how an outbound attachment reaches the relay's blob store.
+    pub fn set_uploader(&mut self, uploader: Uploader) {
+        self.uploader = Some(uploader);
     }
 
     /// #423: several agent rooms share this responder (see `Config::room_frames`).
@@ -697,6 +780,14 @@ impl Responder {
     /// #423: `pump` with each item's room (see `Routed`).
     pub fn pump_routed(&mut self) -> Result<Vec<Routed>, BotError> {
         let mut out = std::mem::take(&mut self.pending_items);
+        // #761: an upload that finished, or a descriptor to post again.
+        while let Ok((token, sealed)) = self.out_rx.try_recv() {
+            self.on_uploaded(token, sealed, &mut out);
+        }
+        if let (Some(post), Some(flight)) = (self.out_retry.take(), &self.out_flight) {
+            out.push((flight.room.clone(), Outbound::Attachment { seq: flight.seq, post }));
+        }
+        self.out_stall();
         while let Ok((turn_id, prepared)) = self.prep_rx.try_recv() {
             self.on_prepared(&turn_id, prepared, &mut out)?;
         }
@@ -705,6 +796,12 @@ impl Responder {
             out.append(&mut self.pending_items);
         }
         loop {
+            // #761: nothing the worker sent after an attachment frame is read
+            // until that attachment is posted (or refused): the room shows
+            // them in the order the worker sent them.
+            if self.out_flight.is_some() {
+                break;
+            }
             match self.from_child.try_recv() {
                 Ok(Ok(value)) => self.handle(value, &mut out)?,
                 Ok(Err(reason)) => {
@@ -770,6 +867,7 @@ impl Responder {
         self.last_frame = Instant::now();
         self.interim_sent = 0;
         self.status_sent = 0;
+        self.out_count = 0;
         self.age_notice_due = (self.config.turn_age_notice_secs > 0).then(|| Duration::from_secs(self.config.turn_age_notice_secs));
         let mut frame = serde_json::json!({
             "type": "turn",
@@ -918,6 +1016,12 @@ impl Responder {
             }
             return Ok(());
         }
+        if kind == "attachment" {
+            // #761: answered whatever happens, so read before the active-turn
+            // filter below (a stale one is told so).
+            self.on_attachment_frame(&value);
+            return Ok(());
+        }
         let turn_id = value.get("turn_id").and_then(|v| v.as_str()).unwrap_or("");
         let is_active = self.active.as_ref().is_some_and(|(active, _)| turn_id.is_empty() || turn_id == active.turn_id);
         if !is_active {
@@ -1063,6 +1167,117 @@ impl Responder {
             _ => {}
         }
         Ok(())
+    }
+
+    /// #761: one `attachment` frame (FLEET-WORKER "나가는 첨부"). Checked here
+    /// in contract order — `disabled`, `stale_turn`, `bad_version` /
+    /// `bad_frame`, `limit`, `oversize` — then the file work and the upload
+    /// run on a helper thread (`on_uploaded`). A refused frame's spool file is
+    /// removed here when its path obeys the spool rule (no other path is
+    /// ever touched).
+    fn on_attachment_frame(&mut self, value: &serde_json::Value) {
+        let turn_id = value.get("turn_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let object = value.get("attachment");
+        let sha12 = attachment_out::sha12(object);
+        let spool = self.config.attachments_out.as_ref().map(|c| c.spool_dir.clone()).or_else(|| self.config.attachments.as_ref().map(|c| c.spool_dir.clone()));
+        let named = object.and_then(|a| a.get("path")).and_then(|p| p.as_str()).zip(spool.as_deref()).and_then(|(path, dir)| attachment_out::spool_child(dir, path));
+        let active = self.active.as_ref().filter(|(turn, _)| !turn_id.is_empty() && turn.turn_id == turn_id).map(|(turn, _)| (turn.room.clone(), turn.seq, turn.peer_depth));
+        let room = active.as_ref().map_or(String::new(), |(room, ..)| room.clone());
+        let refuse = |this: &mut Self, reason: &'static str| {
+            if let Some(path) = &named {
+                attachment_out::remove_out(path);
+            }
+            this.answer_out(&turn_id, &sha12, &room, None, Err(reason));
+        };
+        let Some(config) = self.config.attachments_out.clone() else { return refuse(self, "disabled") };
+        let Some((_, seq, depth)) = active else { return refuse(self, "stale_turn") };
+        self.last_frame = Instant::now();
+        if depth > 0 {
+            // #425: a peer turn's output is never posted.
+            return refuse(self, "disabled");
+        }
+        let request = match object.ok_or("bad_frame").and_then(|o| attachment_out::parse_request(o, &config.spool_dir)) {
+            Ok(request) => request,
+            Err(reason) => return refuse(self, reason),
+        };
+        self.out_count += 1;
+        if self.out_count > config.per_turn {
+            return refuse(self, "limit");
+        }
+        if request.size > config.max_bytes.min(attachment::MAX_FILE_V2) {
+            return refuse(self, "oversize");
+        }
+        self.next_out += 1;
+        let token = self.next_out;
+        self.out_flight = Some(OutFlight { token, turn_id, sha12, room: room.clone(), seq, since: Instant::now(), posting: false });
+        let (tx, uploader) = (self.out_tx.clone(), self.uploader.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send((token, attachment_out::send(&request, &room, config.max_bytes, uploader.as_ref())));
+        });
+    }
+
+    /// #761: the helper thread is done. Uploaded → the descriptor goes to the
+    /// poll loop (the answer waits for its post); refused → answered now. A
+    /// result for an attachment no longer in flight (the stall guard already
+    /// answered it) is dropped.
+    fn on_uploaded(&mut self, token: u64, sealed: Result<Sealed, &'static str>, out: &mut Vec<Routed>) {
+        let Some(flight) = self.out_flight.as_mut().filter(|f| f.token == token && !f.posting) else { return };
+        let still_active = self.active.as_ref().is_some_and(|(turn, _)| turn.turn_id == flight.turn_id);
+        match sealed {
+            Ok(sealed) if still_active => {
+                flight.posting = true;
+                let post = OutPost { token, descriptor: sealed.descriptor, kind: sealed.kind, mime: sealed.mime, size: sealed.size, attempts: 0 };
+                out.push((flight.room.clone(), Outbound::Attachment { seq: flight.seq, post }));
+            }
+            other => {
+                // The turn ended while uploading (watchdog, worker gone):
+                // nothing is posted for it.
+                let reason = match other { Ok(_) => "stale_turn", Err(reason) => reason };
+                let flight = self.out_flight.take().expect("checked above");
+                self.answer_out(&flight.turn_id, &flight.sha12, &flight.room, None, Err(reason));
+            }
+        }
+    }
+
+    /// #761: what the poll loop did with an `Outbound::Attachment`:
+    /// `Ok(seq)` = the relay stored the descriptor → `attachment_ack`;
+    /// `Err(reason)` → `attachment_nack` (`post`).
+    pub fn attachment_posted(&mut self, post: OutPost, outcome: Result<i64, &'static str>) {
+        let Some(flight) = self.out_flight.take_if(|f| f.token == post.token) else { return };
+        let info = Some((post.kind, post.mime, post.size));
+        self.answer_out(&flight.turn_id, &flight.sha12, &flight.room, info, outcome.map(|_| ()));
+    }
+
+    /// #761: the descriptor met 409 cas_mismatch; it is posted again on the
+    /// next pump, after that poll applied the commit (bounded like replies).
+    pub fn attachment_conflict(&mut self, mut post: OutPost) {
+        post.attempts += 1;
+        if post.attempts >= OUT_POST_ATTEMPTS {
+            return self.attachment_posted(post, Err("post"));
+        }
+        if self.out_flight.as_ref().is_some_and(|f| f.token == post.token) {
+            self.out_retry = Some(post);
+        }
+    }
+
+    /// #761: the stall guard (`OUT_STALL`).
+    fn out_stall(&mut self) {
+        let Some(flight) = self.out_flight.take_if(|f| f.since.elapsed() > OUT_STALL) else { return };
+        self.out_retry = None;
+        let reason = if flight.posting { "post" } else { "upload" };
+        self.answer_out(&flight.turn_id, &flight.sha12, &flight.room, None, Err(reason));
+    }
+
+    /// #761: `attachment_ack` / `attachment_nack` on the port (the sender's
+    /// connection) and the journal line — kind, mime, size, the sha256 prefix
+    /// and the outcome only.
+    fn answer_out(&mut self, turn_id: &str, sha12: &str, room: &str, info: Option<(&str, &str, u64)>, outcome: Result<(), &'static str>) {
+        let line = match outcome {
+            Ok(()) => serde_json::json!({ "type": "attachment_ack", "turn_id": turn_id, "sha256": sha12 }),
+            Err(reason) => serde_json::json!({ "type": "attachment_nack", "turn_id": turn_id, "sha256": sha12, "reason": reason }),
+        };
+        let written = !self.gone && self.to_child.send(Cmd::Line(line.to_string())).is_ok();
+        crate::session::emit_attachment_out(room, info, sha12, outcome, written);
     }
 
     /// P4: answer the pending `Outbound::ToolCall` of the active turn. Any other
@@ -2852,5 +3067,298 @@ for line in f:
         assert_eq!(att_shown(&pump_until(&mut r, 1)[0])["caption"], "");
         assert_eq!(queue_line(&Offer::Held), None);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // ---- #761: outbound attachments ----
+
+    use crate::attachment_out::tests::{bridge_file, PNG};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    struct Out {
+        r: Responder,
+        f: Feeder,
+        spool: PathBuf,
+        uploads: Arc<Mutex<Vec<Vec<u8>>>>,
+        refuse: Arc<AtomicBool>,
+    }
+
+    /// A responder on a scripted port with outbound attachments on (or only
+    /// inbound ones: the same spool, `disabled` answers) and a fake blob store.
+    fn out_port(tag: &str, on: bool, tweak: impl FnOnce(&mut Config)) -> Out {
+        let spool = spool_dir(&format!("out-{tag}"));
+        let dir = spool.clone();
+        let (mut r, f) = Feeder::connect(&format!("out-{tag}"), move |c| {
+            if on {
+                c.attachments_out = Some(OutConfig { spool_dir: dir, max_bytes: 1_000, per_turn: attachment_out::DEFAULT_ATTACHMENT_OUT_MAX });
+            } else {
+                c.attachments = Some(AttachmentConfig { spool_dir: dir, max_bytes: 1_000, caption_secs: 0 });
+            }
+            tweak(c);
+        });
+        let uploads: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+        let refuse = Arc::new(AtomicBool::new(false));
+        let (seen, no) = (uploads.clone(), refuse.clone());
+        r.set_uploader(Arc::new(move |room, ciphertext| {
+            assert_eq!(room, "agent");
+            if no.load(Ordering::SeqCst) {
+                return Err("relay error 403: not_a_member".into());
+            }
+            seen.lock().unwrap().push(ciphertext.to_vec());
+            Ok(attachment::sha256_hex(ciphertext))
+        }));
+        Out { r, f, spool, uploads, refuse }
+    }
+
+    impl Out {
+        /// Start the owner's turn `seq` and read its `turn` frame off the port.
+        fn turn(&mut self, seq: i64) -> String {
+            assert_eq!(self.r.offer(inbound(seq, "owner-pc", "make a file")).unwrap(), Offer::Started);
+            let frame = self.f.answer();
+            assert_eq!(frame["type"], "turn");
+            frame["turn_id"].as_str().unwrap().to_string()
+        }
+
+        fn attach(&mut self, turn_id: &str, object: serde_json::Value) {
+            self.f.send(serde_json::json!({"type": "attachment", "turn_id": turn_id, "attachment": object}));
+        }
+
+        /// Pump until the bot writes its next line on the port; the items
+        /// pumped meanwhile come back too.
+        fn pump_answer(&mut self) -> (serde_json::Value, Vec<Outbound>) {
+            self.f.stream.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let (mut items, mut line) = (Vec::new(), String::new());
+            loop {
+                items.extend(self.r.pump().unwrap());
+                match self.f.answers.read_line(&mut line) {
+                    Ok(0) => panic!("port closed; pumped {items:?}"),
+                    Ok(_) => break,
+                    Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+                    Err(e) => panic!("{e}"),
+                }
+                assert!(Instant::now() < deadline, "no answer; pumped {items:?}");
+            }
+            self.f.stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            (serde_json::from_str(&line).unwrap(), items)
+        }
+
+        fn nack(&mut self) -> String {
+            let (answer, _) = self.pump_answer();
+            assert_eq!(answer["type"], "attachment_nack", "{answer}");
+            answer["reason"].as_str().unwrap().to_string()
+        }
+
+        /// Pump until an `Attachment` item comes out; nothing else may.
+        fn pump_post(&mut self) -> (i64, OutPost) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let mut got = self.r.pump().unwrap();
+                if let Some(item) = got.pop() {
+                    assert!(got.is_empty(), "{got:?}");
+                    let Outbound::Attachment { seq, post } = item else { panic!("{item:?}") };
+                    return (seq, post);
+                }
+                assert!(Instant::now() < deadline, "no attachment");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+
+    impl Drop for Out {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.spool);
+        }
+    }
+
+    #[test]
+    fn outbound_attachments_off_answer_disabled_and_remove_the_file() {
+        let mut o = out_port("off", false, |_| {});
+        let turn_id = o.turn(5);
+        let (path, object) = bridge_file(&o.spool, PNG);
+        o.attach(&turn_id, object);
+        let (answer, items) = o.pump_answer();
+        assert_eq!(answer, serde_json::json!({"type": "attachment_nack", "turn_id": turn_id, "sha256": &attachment::sha256_hex(PNG)[..12], "reason": "disabled"}));
+        assert!(items.is_empty(), "{items:?}");
+        assert!(!path.exists(), "the bot removes the file in every outcome");
+        assert!(o.uploads.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn outbound_refusals_follow_the_contract_reasons() {
+        // Start-up empties the spool of `out-*.bin` (and only of those).
+        let dir = spool_dir("out-sweep");
+        let (stale, _) = bridge_file(&dir, b"left by a crash");
+        let keep = dir.join("keep.txt");
+        std::fs::write(&keep, b"x").unwrap();
+        let swept = fake(|c| c.attachments_out = Some(OutConfig { spool_dir: dir.clone(), max_bytes: 1_000, per_turn: 4 }), None);
+        assert!(!stale.exists() && keep.exists());
+        drop(swept);
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        let mut o = out_port("refuse", true, |_| {});
+        let outside = spool_dir("out-outside");
+        let turn_id = o.turn(6);
+        let sha12 = attachment::sha256_hex(PNG)[..12].to_string();
+
+        let (path, object) = bridge_file(&o.spool, PNG);
+        o.attach("t-999", object);
+        let (answer, _) = o.pump_answer();
+        assert_eq!(answer, serde_json::json!({"type": "attachment_nack", "turn_id": "t-999", "sha256": sha12, "reason": "stale_turn"}));
+        assert!(!path.exists());
+
+        let (path, mut object) = bridge_file(&o.spool, PNG);
+        object["v"] = 2.into();
+        o.attach(&turn_id, object);
+        assert_eq!(o.nack(), "bad_version");
+        assert!(!path.exists());
+
+        // A path outside the spool is refused and never touched.
+        let (elsewhere, object) = bridge_file(&outside, PNG);
+        o.attach(&turn_id, object);
+        assert_eq!(o.nack(), "bad_frame");
+        assert!(elsewhere.exists());
+        std::fs::remove_dir_all(&outside).unwrap();
+
+        o.f.send(serde_json::json!({"type": "attachment", "turn_id": turn_id}));
+        let (answer, _) = o.pump_answer();
+        assert_eq!((answer["reason"].as_str(), answer["sha256"].as_str()), (Some("bad_frame"), Some("")));
+
+        let (path, mut object) = bridge_file(&o.spool, PNG);
+        object["size"] = 1_001.into();
+        o.attach(&turn_id, object);
+        assert_eq!(o.nack(), "oversize");
+        assert!(!path.exists());
+
+        let (path, mut object) = bridge_file(&o.spool, PNG);
+        object["sha256"] = attachment::sha256_hex(b"something else").into();
+        o.attach(&turn_id, object);
+        assert_eq!(o.nack(), "file");
+        assert!(!path.exists());
+
+        o.refuse.store(true, Ordering::SeqCst);
+        let (path, object) = bridge_file(&o.spool, PNG);
+        o.attach(&turn_id, object);
+        assert_eq!(o.nack(), "upload");
+        assert!(!path.exists());
+        assert!(spool_entries(&o.spool).is_empty(), "{:?}", spool_entries(&o.spool));
+        assert!(o.uploads.lock().unwrap().is_empty());
+        // The turn itself is unharmed.
+        assert!(o.r.active.is_some());
+    }
+
+    #[test]
+    fn outbound_attachment_is_posted_before_the_answer_and_acked() {
+        let mut o = out_port("order", true, |_| {});
+        let turn_id = o.turn(7);
+        let (path, object) = bridge_file(&o.spool, PNG);
+        // The bridge sends the frame first, then goes on at once.
+        o.attach(&turn_id, object);
+        o.f.send(serde_json::json!({"type": "interim", "turn_id": turn_id, "text": "after the file"}));
+        o.f.send(serde_json::json!({"type": "result", "turn_id": turn_id, "status": "complete", "text": "done"}));
+        std::thread::sleep(Duration::from_millis(100));
+        let (seq, post) = o.pump_post();
+        assert_eq!(seq, 7);
+        assert!(!path.exists(), "removed once read");
+        assert_eq!((post.kind, post.mime, post.size), ("image", "image/png", PNG.len() as u64));
+        // What the room will get opens to the bridge's bytes.
+        let descriptor = attachment::parse_descriptor(&post.descriptor).unwrap();
+        let ciphertext = o.uploads.lock().unwrap()[0].clone();
+        assert_eq!(attachment::open_v2(&ciphertext, &descriptor).unwrap().as_slice(), PNG);
+        assert_eq!(descriptor.name.as_deref(), Some("captcha.png"));
+        let shown = format!("{post:?}");
+        assert!(!shown.contains("key") && !shown.contains(&descriptor.blob), "{shown}");
+        // Until the poll loop says how the post went, nothing after it moves.
+        for _ in 0..5 {
+            assert_eq!(o.r.pump().unwrap(), vec![]);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        o.r.attachment_posted(post, Ok(41));
+        assert_eq!(o.f.answer(), serde_json::json!({"type": "attachment_ack", "turn_id": turn_id, "sha256": &attachment::sha256_hex(PNG)[..12]}));
+        assert_eq!(pump_until(&mut o.r, 2), vec![
+            Outbound::Interim { seq: 7, text: "after the file".into() },
+            Outbound::Reply { seq: 7, text: "done".into() },
+        ]);
+        assert!(o.r.active.is_none());
+    }
+
+    #[test]
+    fn a_conflicted_descriptor_is_posted_again_and_then_given_up() {
+        let mut o = out_port("conflict", true, |_| {});
+        let turn_id = o.turn(8);
+        let (_, object) = bridge_file(&o.spool, PNG);
+        o.attach(&turn_id, object);
+        let (_, post) = o.pump_post();
+        let first = post.descriptor.clone();
+        o.r.attachment_conflict(post);
+        let (seq, post) = o.pump_post();
+        assert_eq!((seq, &post.descriptor), (8, &first), "the same descriptor (the upload is not repeated)");
+        o.r.attachment_posted(post, Ok(50));
+        assert_eq!(o.f.answer()["type"], "attachment_ack");
+        assert_eq!(o.uploads.lock().unwrap().len(), 1);
+
+        let (_, object) = bridge_file(&o.spool, PNG);
+        o.attach(&turn_id, object);
+        let (_, mut post) = o.pump_post();
+        for _ in 1..OUT_POST_ATTEMPTS {
+            o.r.attachment_conflict(post);
+            post = o.pump_post().1;
+        }
+        o.r.attachment_conflict(post);
+        assert_eq!(o.nack(), "post");
+        // A refusal from the poll loop (not joined, halted, relay error) is `post` too.
+        let (_, object) = bridge_file(&o.spool, PNG);
+        o.attach(&turn_id, object);
+        let (_, post) = o.pump_post();
+        o.r.attachment_posted(post, Err("post"));
+        assert_eq!(o.f.answer()["reason"], "post");
+    }
+
+    #[test]
+    fn outbound_attachments_are_capped_per_turn() {
+        let mut o = out_port("cap", true, |_| {});
+        o.refuse.store(true, Ordering::SeqCst);
+        let turn_id = o.turn(9);
+        for _ in 0..attachment_out::DEFAULT_ATTACHMENT_OUT_MAX {
+            let (_, object) = bridge_file(&o.spool, PNG);
+            o.attach(&turn_id, object);
+            assert_eq!(o.nack(), "upload");
+        }
+        let (path, object) = bridge_file(&o.spool, PNG);
+        o.attach(&turn_id, object);
+        assert_eq!(o.nack(), "limit");
+        assert!(!path.exists());
+        // The next turn starts from zero.
+        o.f.send(serde_json::json!({"type": "result", "turn_id": turn_id, "status": "complete", "text": "done"}));
+        assert_eq!(pump_until(&mut o.r, 1), vec![Outbound::Reply { seq: 9, text: "done".into() }]);
+        let next = o.turn(10);
+        let (_, object) = bridge_file(&o.spool, PNG);
+        o.attach(&next, object);
+        assert_eq!(o.nack(), "upload");
+    }
+
+    #[test]
+    fn peer_turns_and_ended_turns_post_nothing() {
+        // #425: a peer turn's output is never posted.
+        let mut o = out_port("peer", true, |_| {});
+        assert_eq!(o.r.offer(peer_in("agent", 11, "[alert:nosuk] disk", 1)).unwrap(), Offer::Started);
+        let turn_id = o.f.answer()["turn_id"].as_str().unwrap().to_string();
+        let (path, object) = bridge_file(&o.spool, PNG);
+        o.attach(&turn_id, object);
+        assert_eq!(o.nack(), "disabled");
+        assert!(!path.exists());
+        drop(o);
+
+        // The watchdog ends the turn while the file is uploading: answered
+        // `stale_turn`, nothing reaches the room.
+        let mut o = out_port("ended", true, |c| c.turn_secs = 0);
+        let turn_id = o.turn(12);
+        let (path, object) = bridge_file(&o.spool, PNG);
+        o.attach(&turn_id, object);
+        std::thread::sleep(Duration::from_millis(100));
+        let (answer, items) = o.pump_answer();
+        assert_eq!(answer["reason"], "stale_turn", "{answer}");
+        assert_eq!(items, vec![Outbound::Uncertain { seq: 12, reason: "watchdog".into() }]);
+        assert!(!path.exists());
     }
 }

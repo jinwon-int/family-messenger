@@ -101,9 +101,14 @@ pub fn request_with_timeouts(
     let mut stream = stream;
     let mut req = format!("{method} {path_qs} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n");
     req.push_str(&headers_block);
+    // JSON unless the caller named its own type (#761: the blob upload is raw
+    // ciphertext, `application/octet-stream` like the web `postBlob`).
+    let typed = extra_headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("content-type"));
     match body {
         Some(bytes) => {
-            req.push_str("Content-Type: application/json\r\n");
+            if !typed {
+                req.push_str("Content-Type: application/json\r\n");
+            }
             req.push_str(&format!("Content-Length: {}\r\n", bytes.len()));
         }
         None => req.push_str("Content-Length: 0\r\n"),

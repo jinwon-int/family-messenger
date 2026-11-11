@@ -103,7 +103,7 @@ impl fmt::Debug for Source {
     }
 }
 
-fn is_lower_hex(s: &str, len: usize) -> bool {
+pub(crate) fn is_lower_hex(s: &str, len: usize) -> bool {
     s.len() == len && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
@@ -122,7 +122,7 @@ fn b64url_decode(text: &str) -> Option<Vec<u8>> {
     (again == text).then_some(bytes)
 }
 
-fn is_control(c: char) -> bool {
+pub(crate) fn is_control(c: char) -> bool {
     matches!(c as u32, 0x00..=0x1f | 0x7f..=0x9f)
 }
 
@@ -132,6 +132,11 @@ fn mime_part_ok(part: &str) -> bool {
         && bytes.len() <= 64
         && bytes[0].is_ascii_alphanumeric()
         && bytes.iter().all(|b| b.is_ascii_alphanumeric() || b"!#$&^_.+-".contains(b))
+}
+
+/// FILE-V2 §1 `mime`: ≤ 100 bytes, `type/subtype` (alphanumerics and `!#$&^_.+-`).
+pub(crate) fn is_mime(mime: &str) -> bool {
+    mime.len() <= 100 && mime.split_once('/').is_some_and(|(t, s)| mime_part_ok(t) && mime_part_ok(s))
 }
 
 /// FILE-V2 §1 strict validation (the web `parseDescriptor` rules). Any error
@@ -158,8 +163,7 @@ pub fn parse_descriptor(plaintext: &[u8]) -> Result<Descriptor, &'static str> {
     let nonce_bytes = object.get("nonce").and_then(|v| v.as_str()).and_then(b64url_decode).filter(|n| n.len() == 12).ok_or("nonce")?;
     if let Some(mime) = object.get("mime") {
         let mime = mime.as_str().ok_or("mime")?;
-        let valid = mime.len() <= 100 && mime.split_once('/').is_some_and(|(t, s)| mime_part_ok(t) && mime_part_ok(s));
-        if !valid {
+        if !is_mime(mime) {
             return Err("mime");
         }
     }

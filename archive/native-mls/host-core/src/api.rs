@@ -384,6 +384,13 @@ struct ReadResponse {
     read_seq: i64,
 }
 
+/// `POST /v2/rooms/<room>/blobs` answer (blobs.go `blobResponse`; `size` is
+/// not needed — the caller knows what it sent).
+#[derive(Deserialize)]
+struct BlobPosted {
+    id: String,
+}
+
 // ---- #366 3c: device-level routes (lobby · rooms · push) — server.go/lobby.go/rooms.go/push.go json tags ----
 
 /// `POST /v2/rooms/<room>/keypackages` · `POST /v2/lobby/keypackages` response
@@ -560,9 +567,17 @@ impl Client {
     /// Every contract route carries the CF Access assertion when caller auth
     /// is configured; the relay accepts it on the production header name.
     fn send(&self, method: &str, path_qs: &str, body: Option<&[u8]>) -> Result<http::Response> {
+        self.send_typed(method, path_qs, body, None)
+    }
+
+    /// `send` with an explicit body `Content-Type` (default JSON).
+    fn send_typed(&self, method: &str, path_qs: &str, body: Option<&[u8]>, content_type: Option<&str>) -> Result<http::Response> {
         let mut headers: Vec<(&str, String)> = Vec::new();
         if let Some(token) = self.access.token()? {
             headers.push(("Cf-Access-Jwt-Assertion", token));
+        }
+        if let Some(content_type) = content_type {
+            headers.push(("Content-Type", content_type.to_string()));
         }
         let refs: Vec<(&str, &str)> = headers.iter().map(|(name, value)| (*name, value.as_str())).collect();
         self.transport.send(&self.base, method, path_qs, body, &refs)
@@ -704,6 +719,34 @@ impl Client {
         }
         let resp = self.send("GET", &format!("/v2/rooms/{room}/blobs/{blob}?device={device}"), None)?;
         self.checked(resp)
+    }
+
+    /// `POST /v2/rooms/<room>/blobs?device=<device>`, body = the file-v2
+    /// ciphertext verbatim (FILE-V2 §3 step 2, #761). 201 = stored, 200 = the
+    /// same bytes were already there (content-addressed, so the upload is
+    /// idempotent); either way the answer's `id` comes back, already checked
+    /// to be 64 lowercase hex. The caller compares it with its own
+    /// sha256(ciphertext) — the relay never sees the key. Errors are the
+    /// envelope: 403 `not_a_member` / `device_not_allowed`, 404
+    /// `no_such_room`, 410 `room_closed`, 413 `blob_too_large` /
+    /// `room_bytes_cap` / `device_bytes_cap`.
+    pub fn post_blob(&self, room: &str, device: &str, ciphertext: &[u8]) -> Result<String> {
+        require_identifier("room must match [A-Za-z0-9_-]{1,64}", room)?;
+        require_identifier("device must match [A-Za-z0-9_-]{1,64}", device)?;
+        if ciphertext.is_empty() {
+            return Err(RelayError::Local("blob body must not be empty"));
+        }
+        let resp = self.send_typed(
+            "POST",
+            &format!("/v2/rooms/{room}/blobs?device={device}"),
+            Some(ciphertext),
+            Some("application/octet-stream"),
+        )?;
+        let posted: BlobPosted = serde_json::from_slice(self.checked(resp)?.as_slice())?;
+        if posted.id.len() != 64 || !posted.id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+            return Err(RelayError::Local("relay blob id is not 64 lowercase hex"));
+        }
+        Ok(posted.id)
     }
 
     /// `POST /v2/rooms/<room>/read` `{device, seq}` (#571 B): the device has
@@ -933,6 +976,65 @@ mod tests {
         assert_eq!(seen.lock().unwrap().len(), 1, "nothing invalid reached the transport");
         let gone = Client::with_transport("http://relay:1", Access::None, Box::new(Recording(seen, 404, br#"{"error":"no_such_blob"}"#.to_vec())));
         assert!(matches!(gone.get_blob("agent", "gongyung-bot", &blob), Err(RelayError::Api { status: 404, ref code }) if code == "no_such_blob"));
+    }
+
+    /// #761: the blob POST carries the ciphertext verbatim as
+    /// `application/octet-stream`, reads the `id` of a 201 or a 200 (already
+    /// stored), refuses a malformed id, and maps 403/410 to the envelope.
+    /// Nothing invalid reaches the transport.
+    #[test]
+    fn post_blob_sends_raw_bytes_and_returns_the_checked_id() {
+        use std::sync::{Arc, Mutex};
+        type Seen = Arc<Mutex<Vec<(String, Vec<u8>, Vec<(String, String)>)>>>;
+        struct Recording(Seen, u16, Vec<u8>);
+        impl Transport for Recording {
+            fn send(&self, _base: &str, method: &str, path_qs: &str, body: Option<&[u8]>, h: &[(&str, &str)]) -> Result<http::Response> {
+                let headers = h.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect();
+                self.0.lock().unwrap().push((format!("{method} {path_qs}"), body.unwrap_or_default().to_vec(), headers));
+                Ok(http::Response { status: self.1, body: self.2.clone() })
+            }
+        }
+        let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+        let id = "cd".repeat(32);
+        let client = |status: u16, body: String| Client::with_transport("http://relay:1", Access::None, Box::new(Recording(seen.clone(), status, body.into_bytes())));
+        let ciphertext = vec![0u8, 0xff, 7, 0x0a];
+        assert_eq!(client(201, format!(r#"{{"id":"{id}","size":4}}"#)).post_blob("agent", "gongyung-bot", &ciphertext).unwrap(), id);
+        assert_eq!(client(200, format!(r#"{{"id":"{id}","size":4}}"#)).post_blob("agent", "gongyung-bot", &ciphertext).unwrap(), id, "200 = already stored");
+        {
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen[0].0, "POST /v2/rooms/agent/blobs?device=gongyung-bot");
+            assert_eq!(seen[0].1, ciphertext, "the body is the ciphertext, byte for byte");
+            assert_eq!(seen[0].2, vec![("Content-Type".to_string(), "application/octet-stream".to_string())]);
+        }
+        for bad in [format!(r#"{{"id":"{}"}}"#, id.to_uppercase()), r#"{"id":"abc"}"#.to_string(), r#"{"size":4}"#.to_string()] {
+            assert!(client(201, bad.clone()).post_blob("agent", "gongyung-bot", &ciphertext).is_err(), "{bad}");
+        }
+        let refused = client(403, r#"{"error":"not_a_member"}"#.to_string()).post_blob("agent", "gongyung-bot", &ciphertext);
+        assert!(matches!(refused, Err(RelayError::Api { status: 403, ref code }) if code == "not_a_member"));
+        let closed = client(410, r#"{"error":"room_closed"}"#.to_string()).post_blob("agent", "gongyung-bot", &ciphertext);
+        assert!(matches!(closed, Err(RelayError::Api { status: 410, ref code }) if code == "room_closed"));
+        let before = seen.lock().unwrap().len();
+        let ok = client(201, String::new());
+        assert!(ok.post_blob("bad room", "gongyung-bot", &ciphertext).is_err());
+        assert!(ok.post_blob("agent", "bad/device", &ciphertext).is_err());
+        assert!(ok.post_blob("agent", "gongyung-bot", &[]).is_err());
+        assert_eq!(seen.lock().unwrap().len(), before, "nothing invalid reached the transport");
+    }
+
+    /// #761: an explicit `Content-Type` replaces the JSON default on the wire
+    /// (one header, not two).
+    #[test]
+    fn post_blob_puts_one_octet_stream_content_type_on_the_wire() {
+        let id = "ef".repeat(32);
+        let body: &'static str = Box::leak(format!(r#"{{"id":"{id}","size":3}}"#).into_boxed_str());
+        let (base, server) = serve_once(201, "Created", body);
+        let got = Client::with_access(&base, Access::None).post_blob("agent", "bot-1", b"abc").expect("post");
+        assert_eq!(got, id);
+        let request = server.join().expect("server thread");
+        assert!(request.starts_with("POST /v2/rooms/agent/blobs?device=bot-1 HTTP/1.1\r\n"), "{request}");
+        assert_eq!(request.matches("Content-Type").count(), 1, "{request}");
+        assert!(request.contains("Content-Type: application/octet-stream\r\n"), "{request}");
+        assert!(request.ends_with("\r\n\r\nabc"), "{request}");
     }
 
     /// #755 stage 1: watch builds one request for many rooms, clamps the wait,

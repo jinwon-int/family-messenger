@@ -49,6 +49,7 @@ use native_mls_host::room::history_gap;
 #[cfg(test)]
 use native_mls_host::room::RELAY_BACKOFF_MAX;
 use crate::attachment;
+use crate::attachment_out;
 use crate::health;
 use crate::reply_quote::{self, Recent};
 use crate::responder::{self, Inbound, Outbound, Responder};
@@ -475,10 +476,12 @@ pub fn run(opts: Options) -> Result<(), BotError> {
         Some(config) => {
             let mut responder = Responder::spawn(config.clone(), opts.state_file.as_deref())?;
             responder.set_fetcher(blob_fetcher(&opts.base, &opts.access, &opts.device));
+            responder.set_uploader(blob_uploader(&opts.base, &opts.access, &opts.device));
             emit(&serde_json::json!({
                 "event": "agent_started", "room": opts.room, "device": opts.device,
                 "owner_actor": config.owner_actor, "queue_max": config.queue_max,
                 "turn_secs": config.turn_secs, "turn_max_secs": config.turn_max_secs, "turn_age_notice_secs": config.turn_age_notice_secs, "turn_age_renotice_secs": config.turn_age_renotice_secs, "reply_max_bytes": config.reply_max_bytes, "typing": config.typing,
+                "attachments_out": config.attachments_out.is_some(),
             }));
             Some(responder)
         }
@@ -675,6 +678,12 @@ fn run_rounds(
                     emit(&serde_json::json!({ "event": "agent_outbound_suppressed", "room": item_room, "seq": seq, "kind": kind }));
                     continue;
                 }
+                // #761: a file-v2 descriptor — its own client_id, never text;
+                // the responder answers the bridge once this settles.
+                if let Outbound::Attachment { post, .. } = item {
+                    post_attachment(ctx, rooms, multi, &item_room, post, responder)?;
+                    continue;
+                }
                 // #703: a notice whose sender wants an answer (ack/nack below).
                 let notice_id = match &item {
                     Outbound::Notice { id, .. } => id.clone(),
@@ -819,6 +828,8 @@ fn agent_text(item: &Outbound) -> String {
         Outbound::WorkerGone { reason } => format!("⚠️ 응답기가 멈췄습니다({reason})."),
         // Never posted (P4): the poll loop answers it on the port.
         Outbound::ToolCall { .. } => String::new(),
+        // #761: posted by `post_attachment`, never as text.
+        Outbound::Attachment { .. } => String::new(),
         // Never posted (#425): the poll loop logs it.
         Outbound::Suppressed { .. } => String::new(),
     }
@@ -838,6 +849,7 @@ fn agent_kind(item: &Outbound) -> &'static str {
         Outbound::WorkerGone { .. } => "worker_gone",
         Outbound::ToolCall { .. } => "tool_call",
         Outbound::Suppressed { .. } => "suppressed",
+        Outbound::Attachment { .. } => "attachment",
     }
 }
 
@@ -1213,6 +1225,33 @@ fn blob_fetcher(base: &str, access: &api::Access, device: &str) -> attachment::F
     })
 }
 
+/// #761: the relay blob POST for outbound attachments, run on the
+/// responder's helper thread (its own `Client`: same base, same caller auth).
+fn blob_uploader(base: &str, access: &api::Access, device: &str) -> attachment_out::Uploader {
+    let (base, access, device) = (base.to_string(), access.clone(), device.to_string());
+    std::sync::Arc::new(move |room: &str, ciphertext: &[u8]| {
+        Client::with_access(&base, access.clone()).post_blob(room, &device, ciphertext).map_err(|e| e.to_string())
+    })
+}
+
+/// #761 journal (`agent_outbound` `kind=attachment`): the bot's own kind,
+/// mime and size when known, the plaintext sha256 prefix and the outcome —
+/// never the key, nonce, descriptor, blob id, path or name. `written =
+/// false`: the port was gone, the bridge never got the answer.
+pub(crate) fn emit_attachment_out(room: &str, info: Option<(&str, &str, u64)>, sha12: &str, outcome: Result<(), &str>, written: bool) {
+    let mut event = serde_json::json!({
+        "event": "agent_outbound", "room": room, "kind": "attachment", "sha256": sha12,
+        "outcome": if outcome.is_ok() { "posted" } else { "refused" }, "answered": written,
+    });
+    if let Some((kind, mime, size)) = info {
+        event["attachment"] = serde_json::json!({ "kind": kind, "mime": mime, "size": size });
+    }
+    if let Err(reason) = outcome {
+        event["reason"] = reason.into();
+    }
+    emit(&event);
+}
+
 /// #636 journal: never the key, nonce or blob id — kind, size, sha256 prefix.
 pub(crate) fn emit_attachment_ready(room: &str, seq: i64, spooled: &attachment::Spooled) {
     emit(&serde_json::json!({
@@ -1528,6 +1567,12 @@ fn post_event_retrying(ctx: &Ctx, room: &str, post: &EventPost<'_>, retries: u32
 /// without `/dev/urandom` the fallback mixes the clock and a process counter
 /// (uniqueness per (room, device) is all the relay's dedup key needs).
 fn status_client_id() -> String {
+    uuid_client_id("status")
+}
+
+/// `<prefix>-<uuid v4 shape, lowercase>` (status-v1 `status-…`, FILE-V2 §1
+/// `file-v2-…`).
+fn uuid_client_id(prefix: &str) -> String {
     let mut bytes = [0u8; 16];
     let filled = std::fs::File::open("/dev/urandom")
         .and_then(|mut f| { use std::io::Read; f.read_exact(&mut bytes) })
@@ -1543,7 +1588,73 @@ fn status_client_id() -> String {
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    format!("status-{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
+    format!("{prefix}-{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
+}
+
+/// #761: the bot's room as a `room::SendHost` for a file-v2 descriptor —
+/// FILE-V2 §1 `client_id = file-v2-<uuid>` (the apps then read the plaintext
+/// as a descriptor, never as text). The echo counter is untouched.
+struct FileSender<'s, 'c> {
+    ctx: &'s Ctx<'c>,
+    state: &'s mut RoomState,
+}
+
+impl room::RoomAccess for FileSender<'_, '_> {
+    type Group<'g> = Bound<'g> where Self: 'g;
+    fn sync(&mut self) -> &mut RoomSync { &mut self.state.sync }
+    fn group(&mut self) -> Bound<'_> { bound(self.ctx, self.state) }
+}
+
+impl room::SendHost for FileSender<'_, '_> {
+    fn reserve_client_id(&mut self) -> String { uuid_client_id("file-v2") }
+    fn persist(&mut self) -> Result<(), BotError> { flush(self.ctx, self.state) }
+    fn post(&mut self, room: &str, post: &EventPost<'_>) -> Result<api::EventResponse, BotError> {
+        post_application(self.ctx, room, post)
+    }
+}
+
+/// #761: post one outbound attachment's descriptor (FILE-V2 §3 step 3; the
+/// blob is already uploaded) to the turn's agent room and tell the responder
+/// how it went. Not joined / halted / no agent room → `post` refusal. A 409
+/// cas_mismatch goes back to the responder, which offers it again on the next
+/// pump (after this poll's GET applied the commit). Any other relay error ends
+/// the session, as for a reply (fail closed).
+fn post_attachment(ctx: &Ctx, rooms: &mut [RoomState], multi: bool, item_room: &str, post: responder::OutPost, agent: &mut Responder) -> Result<(), BotError> {
+    let main = if !multi || item_room.is_empty() {
+        rooms.iter_mut().find(|r| r.mode == Mode::Agent)
+    } else {
+        rooms.iter_mut().find(|r| r.room == item_room && r.mode == Mode::Agent)
+    };
+    let Some(main) = main.filter(|r| r.joined && !r.halted) else {
+        emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": item_room, "reason": "attachment_no_room" }));
+        agent.attachment_posted(post, Err("post"));
+        return Ok(());
+    };
+    let outcome = room::send_application(&mut FileSender { ctx, state: main }, ctx.own, &post.descriptor);
+    match outcome {
+        Ok(SendOutcome::Sent { client_id, response }) => {
+            emit(&serde_json::json!({
+                "event": "attachment_posted", "room": main.room, "seq": response.seq, "epoch": response.epoch,
+                "client_id": client_id, "duplicate": response.duplicate,
+            }));
+            agent.attachment_posted(post, Ok(response.seq));
+        }
+        Ok(SendOutcome::Conflict { client_id, error }) => {
+            emit(&serde_json::json!({ "event": "attachment_conflict", "room": main.room, "client_id": client_id, "error": error.to_string() }));
+            agent.attachment_conflict(post);
+        }
+        Ok(SendOutcome::AlreadyDelivered { client_id, error }) => {
+            // A fresh uuid is never reused; refuse rather than guess.
+            emit(&serde_json::json!({ "event": "attachment_dropped", "room": main.room, "client_id": client_id, "error": error.to_string() }));
+            agent.attachment_posted(post, Err("post"));
+        }
+        Err(err) => {
+            emit(&serde_json::json!({ "event": "attachment_dropped", "room": main.room, "error": err.to_string() }));
+            agent.attachment_posted(post, Err("post"));
+            return Err(err);
+        }
+    }
+    Ok(())
 }
 
 /// Encrypt and POST one status line (status-v1, #560) — `publish_echo` with a
@@ -2016,12 +2127,14 @@ pub fn run_steward(opts: StewardOptions) -> Result<(), BotError> {
         Some(config) => {
             let mut responder = Responder::spawn(config.clone(), Some(&opts.rooms_dir.join("responder.state")))?;
             responder.set_fetcher(blob_fetcher(&opts.base, &opts.access, &opts.device));
+            responder.set_uploader(blob_uploader(&opts.base, &opts.access, &opts.device));
             emit(&serde_json::json!({
                 "event": "agent_started", "device": opts.device, "owner_actor": config.owner_actor,
                 "agent_room": rooms.iter().find(|r| r.mode == Mode::Agent).map(|r| r.room.clone()),
                 "agent_rooms": rooms.iter().filter(|r| r.mode == Mode::Agent).map(|r| r.room.clone()).collect::<Vec<_>>(),
                 "room_frames": config.room_frames, "typing": config.typing,
                 "attachments": config.attachments.as_ref().map(|a| serde_json::json!({"spool_dir": a.spool_dir.to_string_lossy(), "max_bytes": a.max_bytes})),
+                "attachments_out": config.attachments_out.as_ref().map(|a| serde_json::json!({"spool_dir": a.spool_dir.to_string_lossy(), "max_bytes": a.max_bytes, "per_turn": a.per_turn})),
             }));
             Some(responder)
         }
@@ -3030,6 +3143,84 @@ for line in sys.stdin:
         assert_eq!(read(), Some(serde_json::json!({"type": "notice_nack", "id": "row-2", "reason": "not_agent_room"})));
         assert_eq!(read(), Some(serde_json::json!({"type": "notice_ack", "id": "row-3", "seq": 23})));
         assert_eq!(read(), None, "nothing for the id-less notice");
+        drop(agent);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #761 end to end through `run_loop`: the worker sends an `attachment`
+    /// frame and, at once, its `result`. The poll loop posts the descriptor
+    /// with a `file-v2-<uuid>` client_id first, the answer after it (the next
+    /// round), and the bridge gets `attachment_ack` on its connection.
+    #[test]
+    fn run_loop_posts_an_outbound_attachment_before_the_answer() {
+        use crate::attachment_out::tests::{bridge_file, PNG};
+        use std::io::{BufRead, BufReader};
+        let page = r#"{"epoch":2,"revision":1,"events":[],"first_seq":5}"#.to_string();
+        let stored = |seq: i64| format!(r#"{{"seq":{seq},"epoch":2,"revision":1,"duplicate":false}}"#);
+        let (base, server) = canned_relay_raw(vec![
+            (200, page.clone()), // round 1: poll (the frame starts the upload)
+            (200, page.clone()), // round 2: poll
+            (200, stored(21)),   // the descriptor
+            (200, page),         // round 3: poll
+            (200, stored(22)),   // the answer
+        ]);
+        let client = Client::with_access(&base, api::Access::None);
+        let ctx = Ctx { client: &client, own: "bot-1", typing: None };
+        let dir = temp_dir("attachment-out");
+        let spool = dir.join("spool");
+        std::fs::create_dir_all(&spool).expect("spool");
+        let sock = dir.join("responder.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).expect("bind");
+        let mut config = responder::Config::new(responder::Transport::Unix(sock), "owner".into());
+        config.typing = false;
+        config.attachments_out = Some(attachment_out::OutConfig { spool_dir: spool.clone(), max_bytes: 1_000, per_turn: 4 });
+        let mut responder = Responder::spawn(config, None).unwrap_or_else(|e| panic!("connect: {e}"));
+        let uploads: std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>> = Default::default();
+        let seen_uploads = uploads.clone();
+        responder.set_uploader(std::sync::Arc::new(move |room: &str, ciphertext: &[u8]| {
+            assert_eq!(room, "soonwook");
+            seen_uploads.lock().unwrap().push(ciphertext.to_vec());
+            Ok(attachment::sha256_hex(ciphertext))
+        }));
+        let (mut feeder, _) = listener.accept().expect("accept");
+        let offer = responder
+            .offer(Inbound { room: "soonwook".into(), seq: 5, sender_device: "owner-pc".into(), text: "사진 만들어 줘".into(), peer_depth: 0, attachment: None })
+            .expect("offer");
+        assert_eq!(offer, responder::Offer::Started);
+        let mut agent = Some(responder);
+        let (path, object) = bridge_file(&spool, PNG);
+        for frame in [
+            serde_json::json!({"type": "attachment", "turn_id": "t-5", "attachment": object}),
+            serde_json::json!({"type": "result", "turn_id": "t-5", "status": "complete", "session_id": "s1", "text": "다 됐어요"}),
+        ] {
+            feeder.write_all(format!("{frame}\n").as_bytes()).expect("feeder write");
+        }
+        std::thread::sleep(Duration::from_millis(300)); // both frames reach the pump in round 1
+        let mut state = joined_room_at("soonwook", 4, Some(dir.join("soonwook.state")));
+        state.device.create().expect("a one-member group to encrypt in");
+        state.mode = Mode::Agent;
+        let mut rooms = vec![state];
+        let err = run_loop(&ctx, &mut rooms, &mut agent, Some(Instant::now() + Duration::from_millis(2500)), None)
+            .expect_err("the deadline ends the loop");
+        assert!(err.to_string().contains("deadline"), "{err}");
+        let seen = server.join().expect("relay");
+        assert_eq!(seen.len(), 5, "{seen:?}");
+        let first_line = |i: usize| seen[i].lines().next().unwrap_or_default().to_string();
+        assert!([0, 1, 3].iter().all(|&i| first_line(i).starts_with("GET /v2/rooms/soonwook/events")), "{seen:?}");
+        assert!(first_line(2).starts_with("POST /v2/rooms/soonwook/events") && seen[2].contains(r#""client_id":"file-v2-"#), "{}", seen[2]);
+        assert!(first_line(4).starts_with("POST /v2/rooms/soonwook/events") && seen[4].contains(r#""client_id":"bot-1-echo-"#), "{}", seen[4]);
+        assert_eq!(uploads.lock().unwrap().len(), 1);
+        assert!(!path.exists(), "the spool file is gone");
+
+        feeder.set_read_timeout(Some(Duration::from_millis(500))).expect("timeout");
+        let mut answers = BufReader::new(feeder);
+        let mut read = || {
+            let mut line = String::new();
+            answers.read_line(&mut line).ok().filter(|n| *n > 0).map(|_| serde_json::from_str::<serde_json::Value>(&line).expect("answer json"))
+        };
+        assert_eq!(read().map(|turn| turn["type"].clone()), Some(serde_json::json!("turn")));
+        assert_eq!(read(), Some(serde_json::json!({"type": "attachment_ack", "turn_id": "t-5", "sha256": &attachment::sha256_hex(PNG)[..12]})));
+        assert_eq!(read(), None);
         drop(agent);
         let _ = std::fs::remove_dir_all(&dir);
     }
