@@ -42,7 +42,8 @@ python3 scripts/native_relay_snapshot.py \
 - 잠금 파일로 동시 실행을 막는다. 삭제는 보존 규칙이 정한 **이 스크립트가 만든 이름**만 건드린다.
 - 보존: 최근 6시간 전량 + 그 이전은 UTC 하루 1개 × 30일. (2026-10-29 48h→6h: 5분 주기×48h=576개×~70MB로 서서·수신 2곳이 각 35~43G를 써서 축소. 5분 단위 복구 지점은 최근 6시간만 보장.) 수신 호스트는 `--prune-only --dest <inbox>`로 같은 규칙 적용.
 - 유닛: `deploy/native-relay/native-relay-snapshot.{service,timer}`(5분, 릴레이 호스트) ·
-  `native-relay-snapshot-prune.{service,timer}`(수신 호스트). 경로는 `/etc/native-relay/snapshot.env`
+  `native-relay-snapshot-prune.{service,timer}`(수신 호스트, **매시** — 하루 1회면 정리 사이에 5분 스냅샷이 하루치
+  쌓여 2026-11-11 공명 수신함이 새벽 직전 약 35~40G까지 찼다. 매시면 최대 약 12G). 경로는 `/etc/native-relay/snapshot.env`
   (`deploy/native-relay/snapshot.env.example`). 체크아웃 경로가 다른 호스트는 drop-in으로 `ExecStart`를 재지정한다.
 - 수신 계정: 스냅샷만 받는 전용 계정 + `authorized_keys`에 `restrict,command="rsync --server ..."` 제한을 권장.
   키 값은 어디에도 기록하지 않는다(경로만).
