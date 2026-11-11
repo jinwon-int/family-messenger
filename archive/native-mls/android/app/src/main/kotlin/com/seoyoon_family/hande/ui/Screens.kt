@@ -222,7 +222,7 @@ fun HandeRoot(hub: DeviceHub, themeMode: HandeThemeMode = HandeThemeMode.NIGHT, 
             return@CampfireBackground
         }
         when (val phase = ui.phase) {
-            Phase.Setup -> SetupScreen(hub.settings, hub::discover) { hub.start(scope) }
+            Phase.Setup -> SetupScreen(hub.settings, hub::discover) { hub.start() }
             is Phase.WaitingEnrollment -> EnrollScreen(ui, phase, onSettings = { showSettings = true }, onWipe = wipe) { hub.retryEnrollment(scope) }
             Phase.NeedsLogin -> {
                 val context = LocalContext.current

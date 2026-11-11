@@ -26,7 +26,7 @@ class MainActivity : ComponentActivity() {
         val app = application as HandeApp
         val initialMode = HandeThemeMode.fromKey(app.settings.theme)
         applyEdgeToEdge(initialMode)
-        app.hub.start(lifecycleScope)
+        app.hub.start()
         setContent {
             var mode by remember { mutableStateOf(initialMode) }
             // 설정에서 바꾸면 시스템 바 아이콘 색도 따라간다(enableEdgeToEdge 는 다시 불러도 된다).
