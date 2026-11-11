@@ -737,7 +737,10 @@ final class AppModel: ObservableObject {
     /// (`WatchWaiter` — 미지원·오류면 지금처럼 `pollInterval`). 백그라운드·준비 전에는 그대로 `pollInterval` 대기. 모드가 바뀌면 진단 기록에 남긴다.
     private func waitForChange() async {
         let interval = deps.syncConfiguration.pollInterval
-        guard let transport, !suspended, phase == .ready, !deviceId.isEmpty else {
+        // 누군가 입력중으로 보이는 동안은 고정 주기 — 릴레이는 지금 기다리는 요청에만 알리므로, 바퀴 사이 빈틈에 온 typing 해제는
+        // 행이 생기지 않아 다음 watch 가 알려 주지 않는다(표시가 대기 상한 25 s 까지 남는다; 웹 #765 와 같은 이유).
+        let someoneTyping = typing.values.contains { !$0.isEmpty }
+        guard let transport, !suspended, phase == .ready, !deviceId.isEmpty, !someoneTyping else {
             try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
             return
         }
