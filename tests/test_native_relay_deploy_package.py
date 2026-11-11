@@ -46,5 +46,34 @@ class NativeRelayCheckoutPathTests(unittest.TestCase):
                     self.assertIn(path.name, EXPECTED)
 
 
+class NativeRelaySnapshotRetentionTests(unittest.TestCase):
+    # 2026-11-11: the receiving-host prune ran once a day (05:10), so 5-minute snapshots piled up for a whole
+    # day between runs (gongmyoung inbox ~35-40G before dawn at 121 MB each). Seoseo had already moved to
+    # hourly with a drop-in; the template is now the source of truth for that.
+
+    @staticmethod
+    def _timer_values(name, key):
+        return [line.split('=', 1)[1].strip() for line in (PKG / name).read_text(encoding='utf-8').splitlines()
+                if line.startswith(key + '=')]
+
+    def test_prune_timer_runs_hourly(self):
+        self.assertEqual(self._timer_values('native-relay-snapshot-prune.timer', 'OnCalendar'), ['hourly'])
+
+    def test_prune_jitter_stays_well_inside_the_hour(self):
+        delays = self._timer_values('native-relay-snapshot-prune.timer', 'RandomizedDelaySec')
+        self.assertEqual(len(delays), 1)
+        match = re.fullmatch(r'(\d+)(min|s)?', delays[0])
+        self.assertIsNotNone(match, delays[0])
+        seconds = int(match.group(1)) * (60 if match.group(2) == 'min' else 1)
+        self.assertLessEqual(seconds, 15 * 60)
+
+    def test_receiving_host_keeps_the_same_window_as_the_sender(self):
+        env = dict(line.split('=', 1) for line in (PKG / 'snapshot.env.example').read_text(encoding='utf-8').splitlines()
+                   if re.match(r'SNAPSHOT_KEEP_(HOURS|DAYS)=', line))
+        service = (PKG / 'native-relay-snapshot-prune.service').read_text(encoding='utf-8')
+        self.assertIn('--keep-hours %s ' % env['SNAPSHOT_KEEP_HOURS'].strip(), service)
+        self.assertIn('--keep-days %s' % env['SNAPSHOT_KEEP_DAYS'].strip(), service)
+
+
 if __name__ == '__main__':
     unittest.main()

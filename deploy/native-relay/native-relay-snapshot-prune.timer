@@ -1,9 +1,12 @@
+# #440 — 수신 호스트 보존 정리는 매시. 하루 1회(05:10)면 다음 정리까지 5분 스냅샷이 하루치(약 290개) 쌓인다
+# — 2026-11-11 공명 실측: 개당 121 MB, 새벽 직전 약 35~40G. 매시면 최대 약 6시간+1시간치 + 하루 1개 30일(약 12G).
+# 서서는 2026-11 drop-in(10-hourly.conf)으로 이미 매시였다 — 이 템플릿이 그 값을 정본으로 받는다.
 [Unit]
-Description=Daily prune of received native-relay snapshots (#440 stage 0)
+Description=Hourly prune of received native-relay snapshots (#440 stage 0)
 
 [Timer]
-OnCalendar=*-*-* 05:10:00 Asia/Seoul
-RandomizedDelaySec=10min
+OnCalendar=hourly
+RandomizedDelaySec=5min
 Persistent=true
 Unit=native-relay-snapshot-prune.service
 
