@@ -16,6 +16,9 @@ public protocol RelayTransport: AnyObject {
     func postEvent(room: RoomID, _ post: EventPost) async throws -> EventPostResponse
     func getEvents(room: RoomID, device: DeviceID, after: Int64, limit: Int, ack: Int64?) async throws -> EventsPage
     func closeRoom(room: RoomID, device: DeviceID) async throws
+    /// `GET /v2/watch?device=&wait=&room=<방>:<after>…`(#755 3): 여러 방을 요청 하나로 기다린다. `nil` = 릴레이가 #424 이전(봉투 없는 404)
+    /// — 호출자는 고정 주기 폴링을 유지한다. 기본 구현은 `nil`(옛 테스트 대역·옛 전송).
+    func watch(device: DeviceID, rooms: [(room: RoomID, after: Int64)], waitMilliseconds: Int) async throws -> WatchResponse?
     // 확장 ①② — L2 가 서버에 넣기 전에는 `.refused(code:"not_found", status:404)` 를 던진다.
     func listRooms(device: DeviceID) async throws -> RoomsResponse
     func registerPush(_ registration: PushRegistration) async throws
@@ -101,6 +104,9 @@ public struct BlobUpload: Equatable, Decodable {
 }
 
 public extension RelayTransport {
+    func watch(device: DeviceID, rooms: [(room: RoomID, after: Int64)], waitMilliseconds: Int) async throws -> WatchResponse? {
+        nil
+    }
     func postLobbyKeyPackages(_ post: KeyPackagePost) async throws -> KeyPackagesResponse {
         throw RelayError.refused(code: "not_found", status: 404)
     }

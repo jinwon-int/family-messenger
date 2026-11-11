@@ -75,6 +75,24 @@ public struct EventsPage: Codable, Equatable {
 }
 
 /// POST /v2/rooms/{room}/typing(#562, server/typing.go `typingPost`) → 204. `clear` = 입력을 멈췄다(신호 삭제).
+/// `GET /v2/watch`(#755 3, 릴레이 #424 `server/wait.go`): `after` 뒤에 행이 있거나 기다리는 동안 바뀐 방(새 글·typing·읽음·알림·닫힘),
+/// 그리고 릴레이가 기다리지 않은 방별 거부(`no_such_room`·`room_closed`).
+public struct WatchResponse: Codable, Equatable {
+    public var changed: [RoomID]
+    public var errors: [String: String]
+
+    public init(changed: [RoomID] = [], errors: [String: String] = [:]) {
+        self.changed = changed
+        self.errors = errors
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        changed = try c.decodeIfPresent([RoomID].self, forKey: .changed) ?? []
+        errors = try c.decodeIfPresent([String: String].self, forKey: .errors) ?? [:]
+    }
+}
+
 public struct TypingPost: Codable, Equatable {
     public var device: DeviceID
     public var clear: Bool

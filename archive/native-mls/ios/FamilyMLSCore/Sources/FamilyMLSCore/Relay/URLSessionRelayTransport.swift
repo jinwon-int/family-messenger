@@ -190,6 +190,33 @@ public final class URLSessionRelayTransport: RelayTransport {
         return try decode(EventsPage.self, await perform(request))
     }
 
+    /// #755 3: 기기 단위 대기. 요청 타임아웃은 대기 + 10 s(기본 `requestTimeout` 30 s 가 25 s 대기와 너무 붙지 않게).
+    /// 봉투 없는 404(#424 이전 릴레이의 Go mux 기본 응답) = `nil`. 그 밖의 비정상은 `relayFailure` 그대로.
+    public func watch(device: DeviceID, rooms: [(room: RoomID, after: Int64)], waitMilliseconds: Int) async throws -> WatchResponse? {
+        let request = try watchRequest(device: device, rooms: rooms, waitMilliseconds: waitMilliseconds)
+        let (status, data) = try await exchange(request)
+        return try Self.watchResult(status: status, data: data)
+    }
+
+    /// `GET /v2/watch?device=&wait=&room=<방>:<after>…` 요청(방 1~64개, `wait` 0~25 000 ms).
+    func watchRequest(device: DeviceID, rooms: [(room: RoomID, after: Int64)], waitMilliseconds: Int) throws -> URLRequest {
+        guard !rooms.isEmpty, rooms.count <= 64 else { throw RelayError.network("watch needs 1...64 rooms") }
+        let wait = min(max(waitMilliseconds, 0), 25_000)
+        var query = [URLQueryItem(name: "device", value: device), URLQueryItem(name: "wait", value: String(wait))]
+        for entry in rooms { query.append(URLQueryItem(name: "room", value: "\(entry.room):\(max(entry.after, 0))")) }
+        var request = try makeRequest(method: "GET", path: "/v2/watch", query: query)
+        request.timeoutInterval = max(requestTimeout, Double(wait) / 1000 + 10)
+        return request
+    }
+
+    /// 응답 해석: 2xx = 디코드, 봉투 없는 404 = `nil`(#424 이전), 그 밖 = `relayFailure`.
+    static func watchResult(status: Int, data: Data) throws -> WatchResponse? {
+        if status == 404, (try? JSONDecoder().decode(RelayErrorBody.self, from: data)) == nil { return nil }
+        guard (200..<300).contains(status) else { throw relayFailure(status: status, data: data) }
+        do { return try JSONDecoder().decode(WatchResponse.self, from: data) }
+        catch { throw RelayError.decoding("WatchResponse: \(error)") }
+    }
+
     public func getBlob(room: RoomID, device: DeviceID, id: String) async throws -> Data {
         try await perform(try getBlobRequest(room: room, device: device, id: id))
     }
