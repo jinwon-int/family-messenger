@@ -143,6 +143,9 @@ type relay struct {
 	// typing is the memory-only typing-indicator state (#562, typing.go);
 	// own mutex, never taken under mu, lazily allocated on first set.
 	typing typingState
+	// changes wakes long-polling readers (#424, wait.go); own mutex, never
+	// taken under mu, zero value ready.
+	changes changeHub
 	// preview is the link preview proxy (#683 phase 2, #690 v2, preview.go);
 	// nil = -link-preview off, routes absent (404).
 	preview *linkPreviewer
@@ -639,6 +642,7 @@ func (s *relay) routes() http.Handler {
 	mux.HandleFunc("POST /v2/rooms/{room}/blobs", s.handlePostBlob)
 	mux.HandleFunc("GET /v2/rooms/{room}/blobs/{id}", s.handleGetBlob)
 	mux.HandleFunc("GET /v2/rooms", s.handleListRooms)
+	mux.HandleFunc("GET /v2/watch", s.handleWatch)
 	// Lobby key packages and pending-Welcome discovery (#380 P5-1, lobby.go).
 	mux.HandleFunc("POST /v2/lobby/keypackages", s.handlePostLobbyKeyPackages)
 	mux.HandleFunc("GET /v2/lobby/keypackages", s.handleConsumeLobbyKeyPackage)
@@ -963,6 +967,7 @@ func (s *relay) handlePostEvent(w http.ResponseWriter, req *http.Request) {
 			// After the commit and outside s.mu: a byte-equal replay already
 			// notified once, so only a fresh row pushes (#275 ②).
 			s.notifyEvent(room, ev.device, ev.kind, ev.clientID, stored.seq)
+			s.changes.notify(room) // #424 long-poll readers
 			// A fresh application event is what the typing signal announced;
 			// a replay changes nothing the reader has not already seen (#562).
 			if ev.kind == "application" {
@@ -1079,10 +1084,25 @@ func (s *relay) handleGetEvents(w http.ResponseWriter, req *http.Request) {
 		}
 		ack = &v
 	}
+	wait, err := parseWait(req.URL.Query().Get("wait"))
+	if err != nil {
+		s.fail(w, http.StatusBadRequest, apiError{Error: "bad_wait"})
+		return
+	}
 	if !s.bindDevice(w, c, device) {
 		return
 	}
+	// #424: subscribe before the first read so a change between that read and
+	// the wait is not lost; without ?wait= nothing changes.
+	var sub *changeSub
+	if wait > 0 {
+		sub = s.changes.subscribe([]string{room})
+		defer s.changes.unsubscribe(sub)
+	}
 	page, err := s.readEvents(room, device, after, limit, ack)
+	if err == nil {
+		page, err = s.waitForEvents(req, sub, room, device, after, limit, wait, page)
+	}
 	var bad badAck
 	switch {
 	case err == nil:
@@ -1143,6 +1163,7 @@ func (s *relay) handleCloseRoom(w http.ResponseWriter, req *http.Request) {
 	switch {
 	case err == nil:
 		writeJSON(w, http.StatusOK, map[string]bool{"closed": true})
+		s.changes.notify(room) // #424: waiting readers re-read and get 410
 	case errors.Is(err, errNoRoom):
 		s.fail(w, http.StatusNotFound, apiError{Error: "no_such_room"})
 	case errors.Is(err, errNotMember):

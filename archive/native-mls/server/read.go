@@ -79,6 +79,7 @@ func (s *relay) handlePostRead(w http.ResponseWriter, req *http.Request) {
 	switch {
 	case err == nil:
 		writeJSON(w, http.StatusOK, readResponse{ReadSeq: seq})
+		s.changes.notify(room) // #424: other devices of the actor see read_seq
 	case errors.As(err, &bad):
 		s.fail(w, http.StatusBadRequest, apiError{Error: "bad_seq", Detail: bad.Error()})
 	case errors.Is(err, errNoRoom):

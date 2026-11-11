@@ -154,6 +154,7 @@ func (s *relay) handlePostTyping(w http.ResponseWriter, req *http.Request) {
 			s.typing.set(room, post.Device, time.Now().Unix(), s.policy.TypingTTLSeconds)
 		}
 		w.WriteHeader(http.StatusNoContent)
+		s.changes.notify(room) // #424: typing shows without waiting out a long-poll
 	case errors.Is(err, errNoRoom):
 		s.fail(w, http.StatusNotFound, apiError{Error: "no_such_room"})
 	case errors.Is(err, errClosed):

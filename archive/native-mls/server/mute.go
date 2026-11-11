@@ -70,6 +70,7 @@ func (s *relay) handlePostMute(w http.ResponseWriter, req *http.Request) {
 	switch {
 	case err == nil:
 		writeJSON(w, http.StatusOK, muteResponse{Muted: muted})
+		s.changes.notify(room) // #424: other devices of the actor see muted
 	case errors.Is(err, errNoRoom):
 		s.fail(w, http.StatusNotFound, apiError{Error: "no_such_room"})
 	case errors.Is(err, errClosed):

@@ -33,6 +33,14 @@ Welcome 타깃 필터링, 바이트 기준 보존/프루닝, `BEGIN IMMEDIATE`(`
 타이핑 표시(#562 PR A, `server/typing.go`): `POST /v2/rooms/{room}/typing` 본문 `{"device","clear"}` → 204, 결과는
 같은 방 멤버의 `GET /v2/rooms/{room}/events` 응답 `typing`(요청 기기 제외, 정렬된 device 목록)에만 실린다 —
 메모리 전용·TTL 6초·테이블·푸시 없음(한도는 `server/DEVICES-V4.md` 서버 안전성).
+long-poll(#424, #755 0단계, `server/wait.go`): `GET /v2/rooms/{room}/events?…&wait=<ms>` — 쪽이 비었으면
+방이 바뀔 때(새 이벤트·typing·read·mute·close)까지 또는 `wait`가 끝날 때까지 기다렸다가 다시 읽는다(상한 25 s,
+넘는 값은 25 s로 줄임, 음수·숫자 아님은 400 `bad_wait`). `ack`는 첫 읽기에서만 적용된다. `wait`가 없으면 지금처럼
+즉시 응답한다(호환). 누가 입력 중인 방은 대기를 TTL(6 s)로 줄인다(만료 표시가 25 s 동안 남지 않게).
+기기당 동시 대기 8개를 넘는 요청은 기다리지 않고 바로 응답한다. 기기 단위 대기 `GET /v2/watch?device=&wait=&room=<방>:<after>`
+(반복, 최대 64개): 이미 `after` 뒤에 행이 있는 방이 있으면 즉시, 없으면 처음 바뀐 방들을 `{"changed":[…]}`로 준다.
+방별 거부(`no_such_room`·`room_closed`)는 `"errors"`에 담고 그 방은 기다리지 않는다. 인증·기기 바인딩은 GET …/events와
+같고 「after 뒤에 행이 있다」 외에 더 드러내지 않는다. 대기 상태는 메모리 전용이며, 재시작하면 대기 요청이 끊기고 클라이언트가 재시도한다.
 status-v1(#560, `STATUS-V1.md`, `server/status.go`): 에이전트의 작업 상태 한 줄은 바깥 `client_id` 가
 `status-<uuid>` 인 application 이벤트다 — 저장·커서·보존은 다른 이벤트와 같지만 **APNs 푸시는 보내지 않는다**
 (몇 초마다 바뀌는 임시 글; 정규형 `^status-[a-f0-9-]{36}$` 만 예외, 그 밖의 `status-…` 는 일반 글).
