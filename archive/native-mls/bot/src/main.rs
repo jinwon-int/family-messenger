@@ -18,6 +18,7 @@ use native_mls_host::policy;
 #[cfg(test)]
 use native_mls_host::b64;
 mod attachment;
+mod attachment_out;
 mod health;
 mod reply_quote;
 mod responder;
@@ -122,16 +123,26 @@ fn main() -> ExitCode {
     // Off unless NATIVE_MLS_BOT_AGENT_ATTACHMENTS=1; then NATIVE_MLS_BOT_ATTACHMENT_SPOOL
     // (absolute, the bridge's `attachment_spool_dir`) is required and
     // NATIVE_MLS_BOT_ATTACHMENT_MAX_BYTES caps the file (default 10,000,000, ≤ 50 MiB).
-    let attachments = if std::env::var("NATIVE_MLS_BOT_AGENT_ATTACHMENTS").ok().is_some_and(|v| v.trim() == "1") {
-        let spool = std::env::var("NATIVE_MLS_BOT_ATTACHMENT_SPOOL").ok().map(|v| std::path::PathBuf::from(v.trim()));
-        let Some(spool_dir) = spool.filter(|p| p.is_absolute()) else {
-            eprintln!("native-mls-bot: NATIVE_MLS_BOT_AGENT_ATTACHMENTS=1 needs an absolute NATIVE_MLS_BOT_ATTACHMENT_SPOOL");
-            return ExitCode::FAILURE;
-        };
-        let max_bytes = env_u64("NATIVE_MLS_BOT_ATTACHMENT_MAX_BYTES")
-            .filter(|v| *v > 0)
-            .unwrap_or(attachment::DEFAULT_MAX_BYTES)
-            .min(attachment::MAX_FILE_V2);
+    // #761: NATIVE_MLS_BOT_AGENT_ATTACHMENTS_OUT=1 (default off) — the agent's files
+    // out to the room (docs/FLEET-WORKER.md "나가는 첨부"). Same spool and cap.
+    let flag_on = |name: &str| std::env::var(name).ok().is_some_and(|v| v.trim() == "1");
+    let (attachments_in, attachments_out) = (flag_on("NATIVE_MLS_BOT_AGENT_ATTACHMENTS"), flag_on("NATIVE_MLS_BOT_AGENT_ATTACHMENTS_OUT"));
+    let spool = std::env::var("NATIVE_MLS_BOT_ATTACHMENT_SPOOL").ok().map(|v| std::path::PathBuf::from(v.trim())).filter(|p| p.is_absolute());
+    let max_bytes = env_u64("NATIVE_MLS_BOT_ATTACHMENT_MAX_BYTES")
+        .filter(|v| *v > 0)
+        .unwrap_or(attachment::DEFAULT_MAX_BYTES)
+        .min(attachment::MAX_FILE_V2);
+    if (attachments_in || attachments_out) && spool.is_none() {
+        eprintln!("native-mls-bot: NATIVE_MLS_BOT_AGENT_ATTACHMENTS=1 / NATIVE_MLS_BOT_AGENT_ATTACHMENTS_OUT=1 need an absolute NATIVE_MLS_BOT_ATTACHMENT_SPOOL");
+        return ExitCode::FAILURE;
+    }
+    let attachments_out = match (&spool, attachments_out) {
+        (Some(spool_dir), true) => Some(attachment_out::OutConfig {
+            spool_dir: spool_dir.clone(), max_bytes, per_turn: attachment_out::DEFAULT_ATTACHMENT_OUT_MAX,
+        }),
+        _ => None,
+    };
+    let attachments = if let (Some(spool_dir), true) = (spool, attachments_in) {
         // Stage 2 caption window: NATIVE_MLS_BOT_ATTACHMENT_CAPTION_SECS (default 10, 0 = off, ≤ 120).
         let caption_secs = env_u64("NATIVE_MLS_BOT_ATTACHMENT_CAPTION_SECS")
             .unwrap_or(attachment::DEFAULT_CAPTION_SECS)
@@ -144,6 +155,7 @@ fn main() -> ExitCode {
         config.room_frames = room_frames;
         config.typing = typing;
         config.attachments = attachments.clone();
+        config.attachments_out = attachments_out.clone();
         if let Some(v) = turn_secs { config.turn_secs = v; config.turn_max_secs = v.saturating_mul(2); }
         if let Some(v) = turn_max_secs { config.turn_max_secs = v; }
         config.turn_max_secs = config.turn_max_secs.max(config.turn_secs);
@@ -236,6 +248,8 @@ fn main() -> ExitCode {
             eprintln!("NATIVE_MLS_BOT_ATTACHMENT_SPOOL (absolute; the bridge's attachment_spool_dir) and names the file in the turn frame;");
             eprintln!("NATIVE_MLS_BOT_ATTACHMENT_MAX_BYTES caps the file (default 10000000); NATIVE_MLS_BOT_ATTACHMENT_CAPTION_SECS (default 10, 0 = off)");
             eprintln!("holds the photo for the sender's next plain text, sent along as its caption (one turn)");
+            eprintln!("env NATIVE_MLS_BOT_AGENT_ATTACHMENTS_OUT=1 (#761): the worker's `attachment` frames (files in the same spool)");
+            eprintln!("are encrypted, uploaded and posted to the room as file-v2 attachments; answered attachment_ack / attachment_nack");
             return ExitCode::FAILURE;
         }
     };

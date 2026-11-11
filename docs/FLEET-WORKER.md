@@ -221,11 +221,13 @@ room_remove / room_close / room_mode`) 호출마다 SDK `can_use_tool` → 이 �
     말풍선을 지우므로 브리지는 대기가 남아 있는 동안 ≤2분마다 다시 보낸다. 모르는 `kind` 는 일반 notice 다 —
     옛 봇은 `kind` 를 무시하고 글로 게시하므로 켜는 순서는 **봇 교체 → 브리지 설정**. 저널 `agent_outbound` `kind=status`.
 
-### 나가는 첨부 — `attachment` 출력 프레임 (#761 · ccc-node#2764, 설계 · 양쪽 기본 off)
+### 나가는 첨부 — `attachment` 출력 프레임 (#761 · ccc-node#2764, 봇 구현됨 · 브리지 설계 · 양쪽 기본 off)
 
 에이전트가 만든 이미지·파일을 한데 방에 file-v2 첨부로 올린다. 위 「첨부 turn」의 **거울**이다. 파일 바이트와 파일 키는
 프레임에 싣지 않고, 브리지가 spool에 둔 평문 파일의 **경로**만 넘긴다. 암호화·blob 업로드·설명자 게시
 (`archive/native-mls/FILE-V2.md` §3)는 봇이 한다.
+봇 구현: `archive/native-mls/bot/src/attachment_out.rs`(경로 규칙·파일 확인·암호화·업로드) + `responder.rs`
+(`on_attachment_frame`·ack/nack·순서) + `session.rs` `post_attachment`(설명자 게시), host-core `Client::post_blob`.
 
 ```json
 {"type":"attachment","turn_id":"t-12",
@@ -263,7 +265,12 @@ room_remove / room_close / room_mode`) 호출마다 SDK `can_use_tool` → 이 �
 | `file` | 파일 없음·링크·모드·크기·sha 불일치 |
 | `oversize` | 봇 상한을 넘었다 |
 | `limit` | turn당 상한(`DEFAULT_ATTACHMENT_OUT_MAX` 4건)을 넘었다 |
-| `upload` · `post` | blob 업로드 실패(403/410 포함) · 설명자 게시 실패(재시도 한도 소진) |
+| `upload` · `post` | blob 업로드 실패(403/410 포함, 응답 `id` ≠ sha256(암호문) 포함) · 설명자 게시 실패(재시도 한도 소진, agent 방 없음·미가입·정지 포함) |
+
+봇 구현의 세부(계약 범위 안에서 정한 것): peer turn(#425, 읽기 전용)의 `attachment`는 게시하지 않고 `disabled`로 답한다.
+`limit`은 형식 검사를 통과한 프레임을 센다(`oversize`·`file`·`upload`로 끝난 것도 한 건). 처리 중 turn이 끝나면(워치독·워커 종료)
+게시하지 않고 `stale_turn`. 설명자가 409 `cas_mismatch`를 만나면 다음 폴에 같은 설명자로 다시 게시하고(업로드는 반복하지 않음),
+8폴 안에 못 하면 `post`. 형식 위반 프레임의 `sha256`이 소문자 hex 64자가 아니면 답의 `sha256`은 빈 문자열이다.
 
 **순서와 수명.**
 - 브리지는 프레임을 `result`보다 **먼저** 보낸다. 봇은 받은 순서대로 게시하므로, 방에서는 첨부가 최종 답보다 앞에
