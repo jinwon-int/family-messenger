@@ -1,3 +1,4 @@
+import datetime
 import io
 import json
 from pathlib import Path
@@ -140,6 +141,46 @@ class SnapshotFenceGateTests(unittest.TestCase):
         with mock.patch.object(fence, 'check', return_value=(1, 'fence: active host is seoseo, not soonwook')):
             self.assertEqual(snap.main(argv), 0)
         self.assertFalse(list(self.dest.glob('relay-*.tar.gz')), 'standby must not produce archives')
+
+    def seed_archives(self):
+        """Archives this host wrote while it was active: one recent, two on the same UTC day 10 days ago, one
+        past keep_days. Fixed clock times on that day so the pair never straddles a UTC midnight."""
+        self.dest.mkdir(parents=True, exist_ok=True)
+        now = snap.utcnow()
+        day = (now - datetime.timedelta(days=10)).replace(hour=1, minute=0, second=0, microsecond=0)
+        names = []
+        for when in (now - datetime.timedelta(hours=1), day, day + datetime.timedelta(hours=1),
+                     now - datetime.timedelta(days=40)):
+            name = snap.snapshot_id(when) + '.tar.gz'
+            (self.dest / name).write_bytes(b'x')
+            (self.dest / name).with_suffix('.gz.sha256').write_text('0  ' + name + '\n')
+            names.append(name)
+        return names
+
+    def test_749_fenced_out_host_still_prunes_its_old_local_archives(self):
+        # Standby after a cutover: the 5-minute archives from its active days must still expire.
+        args = args_for(self.root, self.dest)
+        recent, old_a, old_b, ancient = self.seed_archives()
+        argv = ['--data-dir', args.data_dir, '--policy-dir', args.policy_dir, '--dest', str(self.dest),
+                '--fence', 'soonwook', '--fence-record', 'r.example.test', '--keep-hours', '6', '--keep-days', '30']
+        with mock.patch.object(fence, 'check', return_value=(1, 'fence: active host is seoseo, not soonwook')):
+            self.assertEqual(snap.main(argv), 0)
+        remaining = sorted(p.name for p in self.dest.glob('relay-*.tar.gz'))
+        self.assertIn(recent, remaining, 'inside keep_hours')
+        self.assertIn(old_b, remaining, 'newest of that UTC day is kept')
+        self.assertNotIn(old_a, remaining, 'older archive of the same day is pruned')
+        self.assertNotIn(ancient, remaining, 'past keep_days')
+        self.assertEqual(len(remaining), 2, 'standby must not produce a new archive')
+        self.assertFalse((self.dest / ancient).with_suffix('.gz.sha256').exists())
+
+    def test_749_unreadable_fence_prunes_nothing(self):
+        args = args_for(self.root, self.dest)
+        names = self.seed_archives()
+        argv = ['--data-dir', args.data_dir, '--policy-dir', args.policy_dir, '--dest', str(self.dest),
+                '--fence', 'seoseo', '--fence-record', 'r.example.test']
+        with mock.patch.object(fence, 'check', return_value=(2, 'fence lookup failed')):
+            self.assertEqual(snap.main(argv), 1)
+        self.assertEqual(sorted(p.name for p in self.dest.glob('relay-*.tar.gz')), sorted(names))
 
     def test_N8_skipped_record_is_cleared_by_the_next_success(self):
         args = args_for(self.root, self.dest)
