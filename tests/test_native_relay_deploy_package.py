@@ -68,8 +68,8 @@ class NativeRelaySnapshotRetentionTests(unittest.TestCase):
         self.assertLessEqual(seconds, 15 * 60)
 
     def test_receiving_host_keeps_the_same_window_as_the_sender(self):
-        env = dict(line.split('=', 1) for line in (PKG / 'snapshot.env.example').read_text(encoding='utf-8').splitlines()
-                   if re.match(r'SNAPSHOT_KEEP_(HOURS|DAYS)=', line))
+        lines = (PKG / 'snapshot.env.example').read_text(encoding='utf-8').splitlines()
+        env = dict(line.split('=', 1) for line in lines if re.match(r'SNAPSHOT_KEEP_(HOURS|DAYS)=', line))
         service = (PKG / 'native-relay-snapshot-prune.service').read_text(encoding='utf-8')
         self.assertIn('--keep-hours %s ' % env['SNAPSHOT_KEEP_HOURS'].strip(), service)
         self.assertIn('--keep-days %s' % env['SNAPSHOT_KEEP_DAYS'].strip(), service)
