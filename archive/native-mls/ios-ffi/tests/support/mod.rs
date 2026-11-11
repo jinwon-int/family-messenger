@@ -105,6 +105,8 @@ pub struct Relay {
     /// 참이면 #574 이전(또는 호출자 인증·기기 저장소 없는) 릴레이 흉내: `/v2/me` 는 `{subject}` 만, 셀프서비스 라우트는 봉투 없는 404,
     /// `welcomes` 에 `from` 없음.
     pub no_self_service: AtomicBool,
+    /// 참이면 #424 이전 릴레이 흉내: `GET /v2/watch` 가 봉투 없는 404(Go mux 기본 응답).
+    pub no_watch: AtomicBool,
     /// 한 번만 터지는 전송 고장(#574 후속 — 대기 Welcome 영속): 다음 `POST welcome` / 다음 `GET /events` / 다음 `POST commit` 이
     /// 연결 끊김(transient)으로 실패하고 플래그가 꺼진다. commit 은 릴레이에 **닿지 않는다**(행 없음).
     pub fail_next_welcome: AtomicBool,
@@ -125,6 +127,7 @@ impl Relay {
             refuse_lobby_post: AtomicBool::new(false),
             no_read_route: AtomicBool::new(false),
             no_self_service: AtomicBool::new(false),
+            no_watch: AtomicBool::new(false),
             fail_next_welcome: AtomicBool::new(false),
             fail_next_get: AtomicBool::new(false),
             drop_next_commit: AtomicBool::new(false),
@@ -588,6 +591,39 @@ impl Relay {
         Self::respond(200, serde_json::json!({ "rooms": listing }))
     }
 
+    /// `GET /v2/watch`(#755): 기다리지 않는 흉내 — `after` 뒤에 행이 있는 방은 `changed`, 없는 방은 `errors`(`no_such_room`),
+    /// 닫힌 방은 `room_closed`. 실제 대기는 릴레이 Go 테스트(server/wait_test.go)가 다룬다.
+    fn watch(&self, query: &str) -> Result<HttpResponse, RoomError> {
+        if self.no_watch.load(Ordering::SeqCst) { return Self::bare_404(); }
+        let mut device = "";
+        let mut wait = "";
+        let mut asked: Vec<(String, i64)> = Vec::new();
+        for (k, v) in query.split('&').filter_map(|kv| kv.split_once('=')) {
+            match k {
+                "device" => device = v,
+                "wait" => wait = v,
+                "room" => {
+                    let (name, after) = v.split_once(':').expect("room=<name>:<after>");
+                    asked.push((name.to_string(), after.parse().expect("after")));
+                }
+                other => panic!("unexpected watch param {other}"),
+            }
+        }
+        self.trace.lock().unwrap().push(format!("WATCH {device} wait={wait} rooms={}", asked.len()));
+        let rooms = self.rooms.lock().unwrap();
+        let mut changed = Vec::new();
+        let mut errors = serde_json::Map::new();
+        for (name, after) in asked {
+            match rooms.get(&name) {
+                None => { errors.insert(name, serde_json::json!("no_such_room")); }
+                Some(state) if state.closed => { errors.insert(name, serde_json::json!("room_closed")); }
+                Some(state) if state.rows.iter().any(|r| r.seq > after) => changed.push(name),
+                Some(_) => {}
+            }
+        }
+        Self::respond(200, serde_json::json!({ "changed": changed, "errors": errors }))
+    }
+
     fn register_push(&self, body: &[u8]) -> Result<HttpResponse, RoomError> {
         let reg: serde_json::Value = serde_json::from_slice(body).expect("push registration json");
         let device = reg["device"].as_str().unwrap_or_default().to_string();
@@ -643,6 +679,7 @@ impl HttpTransport for Relay {
         }
         match (method.as_str(), path) {
             ("GET", "/v2/rooms") => self.list_rooms(query),
+            ("GET", "/v2/watch") => self.watch(query),
             ("GET", "/v2/me") => self.get_me(),
             ("POST", "/v2/devices/candidates") => self.post_candidate(&body),
             ("GET", "/v2/devices/candidates") => self.list_candidates(query),

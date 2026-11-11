@@ -199,6 +199,25 @@ pub struct EventsResponse {
     pub read_seq: i64,
 }
 
+/// `GET /v2/watch` (#424 relay `server/wait.go`, #755 stage 1): the rooms
+/// that have rows after the caller's seq, or changed while it waited (a fresh
+/// event, typing, read, mute, close). `errors` carries per-room refusals
+/// (`no_such_room`, `room_closed`) that the relay did not wait on.
+#[derive(Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct WatchResponse {
+    #[serde(default)]
+    pub changed: Vec<String>,
+    #[serde(default)]
+    pub errors: std::collections::BTreeMap<String, String>,
+}
+
+/// Relay cap for `wait` (server `maxEventsWait`); larger values are clamped
+/// by the relay anyway. Hosts pick less when their HTTP stack has a shorter
+/// read timeout (Android OkHttp 15 s → 12 s).
+pub const WATCH_WAIT_MAX_MS: u32 = 25_000;
+/// Relay cap for the room list of one watch (server `maxWatchRooms`).
+pub const WATCH_MAX_ROOMS: usize = 64;
+
 /// The relay's error envelope (server.go `apiError`): the code, plus the
 /// optional fields the self-service routes fill (#574): `detail` says why an
 /// approval was refused, `revision` carries the current policy revision on
@@ -647,6 +666,32 @@ impl Client {
         Ok(events)
     }
 
+    /// `GET /v2/watch?device=&wait=&room=<room>:<after>…` (#755 stage 1): one
+    /// waiting request for many rooms. `Ok(None)` = the relay predates the
+    /// route (a plain 404, not a JSON envelope) — the host keeps its fixed
+    /// polling interval. Waiting happens here, outside any room lock, so a host
+    /// can block a worker thread on it while sends go ahead.
+    pub fn watch(&self, device: &str, rooms: &[(&str, i64)], wait_ms: u32) -> Result<Option<WatchResponse>> {
+        require_identifier("device must match [A-Za-z0-9_-]{1,64}", device)?;
+        if rooms.is_empty() || rooms.len() > WATCH_MAX_ROOMS {
+            return Err(RelayError::Local("watch needs 1..=64 rooms"));
+        }
+        let mut path = format!("/v2/watch?device={device}&wait={}", wait_ms.min(WATCH_WAIT_MAX_MS));
+        for (room, after) in rooms {
+            require_identifier("room must match [A-Za-z0-9_-]{1,64}", room)?;
+            if *after < 0 {
+                return Err(RelayError::Local("watch after must be >= 0"));
+            }
+            path.push_str(&format!("&room={room}:{after}"));
+        }
+        let resp = self.send("GET", &path, None)?;
+        match self.checked(resp) {
+            Ok(body) => Ok(Some(serde_json::from_slice(&body)?)),
+            Err(RelayError::Status { status: 404 }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// `GET /v2/rooms/<room>/blobs/<id>?device=<device>` (FILE-V2 §4, #636):
     /// the opaque file-v2 ciphertext, verbatim. The caller checks length,
     /// sha256 and GCM itself — the relay never sees the key. Errors are the
@@ -888,6 +933,46 @@ mod tests {
         assert_eq!(seen.lock().unwrap().len(), 1, "nothing invalid reached the transport");
         let gone = Client::with_transport("http://relay:1", Access::None, Box::new(Recording(seen, 404, br#"{"error":"no_such_blob"}"#.to_vec())));
         assert!(matches!(gone.get_blob("agent", "gongyung-bot", &blob), Err(RelayError::Api { status: 404, ref code }) if code == "no_such_blob"));
+    }
+
+    /// #755 stage 1: watch builds one request for many rooms, clamps the wait,
+    /// reads changed/errors, maps a pre-#424 relay's plain 404 to `None`, and
+    /// keeps a JSON 4xx an error. Nothing invalid reaches the transport.
+    #[test]
+    fn watch_builds_query_and_maps_an_old_relay_to_none() {
+        use std::sync::{Arc, Mutex};
+        struct Recording(Arc<Mutex<Vec<String>>>, u16, Vec<u8>);
+        impl Transport for Recording {
+            fn send(&self, _base: &str, method: &str, path_qs: &str, _body: Option<&[u8]>, _h: &[(&str, &str)]) -> Result<http::Response> {
+                self.0.lock().unwrap().push(format!("{method} {path_qs}"));
+                Ok(http::Response { status: self.1, body: self.2.clone() })
+            }
+        }
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let body = br#"{"changed":["family"],"errors":{"gone":"room_closed"}}"#.to_vec();
+        let ok = Client::with_transport("http://relay:1", Access::None, Box::new(Recording(seen.clone(), 200, body)));
+        let got = ok.watch("phone", &[("family", 12), ("gone", 0)], 99_000).unwrap().expect("supported");
+        assert_eq!(got.changed, vec!["family".to_string()]);
+        assert_eq!(got.errors.get("gone").map(String::as_str), Some("room_closed"));
+        assert_eq!(seen.lock().unwrap().as_slice(), ["GET /v2/watch?device=phone&wait=25000&room=family:12&room=gone:0".to_string()]);
+
+        let empty = Client::with_transport("http://relay:1", Access::None, Box::new(Recording(seen.clone(), 200, br#"{"changed":[]}"#.to_vec())));
+        assert_eq!(empty.watch("phone", &[("family", 1)], 12_000).unwrap(), Some(WatchResponse::default()));
+
+        let old = Client::with_transport("http://relay:1", Access::None, Box::new(Recording(seen.clone(), 404, b"404 page not found\n".to_vec())));
+        assert_eq!(old.watch("phone", &[("family", 1)], 12_000).unwrap(), None);
+        let refused = Client::with_transport("http://relay:1", Access::None, Box::new(Recording(seen.clone(), 400, br#"{"error":"too_many_rooms"}"#.to_vec())));
+        assert!(matches!(refused.watch("phone", &[("family", 1)], 1), Err(RelayError::Api { status: 400, ref code }) if code == "too_many_rooms"));
+
+        let before = seen.lock().unwrap().len();
+        let many: Vec<(String, i64)> = (0..=WATCH_MAX_ROOMS).map(|i| (format!("r{i}"), 0)).collect();
+        let many_refs: Vec<(&str, i64)> = many.iter().map(|(r, a)| (r.as_str(), *a)).collect();
+        assert!(ok.watch("phone", &[], 1).is_err());
+        assert!(ok.watch("phone", &many_refs, 1).is_err());
+        assert!(ok.watch("bad device", &[("family", 1)], 1).is_err());
+        assert!(ok.watch("phone", &[("bad room", 1)], 1).is_err());
+        assert!(ok.watch("phone", &[("family", -1)], 1).is_err());
+        assert_eq!(seen.lock().unwrap().len(), before, "nothing invalid reached the transport");
     }
 
     /// The file source resolves the current content on every call, so an

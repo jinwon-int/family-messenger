@@ -38,6 +38,28 @@ pub struct MlsLobbyStatus {
     pub ttl_seconds: i64,
 }
 
+/// `watch` 입력 한 줄: 방 이름 + 이 기기가 그 방에서 이미 읽은 위치(`RoomSyncState.cursor`).
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct MlsWatchRoom {
+    pub room: String,
+    pub after: i64,
+}
+
+/// `GET /v2/watch` 결과(#755 1단계). `supported = false` 는 릴레이가 #424 이전이라는 뜻 — 호스트는 고정 주기 폴링을 유지한다.
+/// `changed` 는 행이 생겼거나 기다리는 동안 바뀐 방(새 글·typing·읽음·알림·닫힘), `refused` 는 릴레이가 기다리지 않은 방과 코드.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct MlsWatchResult {
+    pub supported: bool,
+    pub changed: Vec<String>,
+    pub refused: Vec<MlsWatchRefusal>,
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct MlsWatchRefusal {
+    pub room: String,
+    pub code: String,
+}
+
 /// `replenish` 한 번의 결과(화면·테스트).
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct MlsLobbyReport {
@@ -194,6 +216,11 @@ pub trait LobbyObserver: Send + Sync {
 pub struct MlsLobby {
     identity: String,
     inner: Mutex<Inner>,
+    /// `watch`(#755) 재료 — `inner` 잠금 밖. 호출마다 클라이언트를 새로 만들어, 대기(최대 수십 초) 동안 어떤 잠금도 잡지 않는다
+    /// (`set_access_token` 도 막히지 않는다). 토큰은 `set_access_token` 이 `inner` 와 함께 바꾼다.
+    watch_base: String,
+    watch_transport: Arc<dyn HttpTransport>,
+    watch_token: Mutex<Option<String>>,
 }
 
 struct Inner {
@@ -241,7 +268,8 @@ impl MlsLobby {
     /// CF Access 토큰 교체(`None` = 인증 없음). 다음 요청부터 쓴다.
     pub fn set_access_token(&self, token: Option<String>) -> Result<(), RoomError> {
         let mut inner = self.lock()?;
-        inner.client.set_access(match token { Some(t) => Access::Static(t), None => Access::None });
+        inner.client.set_access(match token.clone() { Some(t) => Access::Static(t), None => Access::None });
+        *self.watch_token.lock().map_err(|_| RoomError::Host { reason: "watch token lock poisoned".into() })? = token;
         Ok(())
     }
 
@@ -484,6 +512,25 @@ impl MlsLobby {
         let inner = self.lock()?;
         inner.client.unregister_push(&self.identity).map_err(relay_err)
     }
+
+    /// `GET /v2/watch`(#755 1단계): 여러 방을 요청 하나로 기다린다 — 이미 행이 있는 방이 있으면 즉시, 없으면 처음 바뀐 방들 또는
+    /// `wait_ms` 뒤 빈 결과. **잠금을 잡지 않는다**(전용 `watcher`), 그래서 호스트가 작업 스레드를 여기 묶어 두어도 보내기·로비 조작은
+    /// 그대로 간다. 대기는 호스트 HTTP 읽기 타임아웃보다 짧게(Android OkHttp read 15 s → 12 s). 릴레이가 #424 이전이면
+    /// `supported = false` 로 즉시 돌아온다.
+    pub fn watch(&self, rooms: Vec<MlsWatchRoom>, wait_ms: u32) -> Result<MlsWatchResult, RoomError> {
+        let token = self.watch_token.lock().map_err(|_| RoomError::Host { reason: "watch token lock poisoned".into() })?.clone();
+        let access = match token { Some(t) => Access::Static(t), None => Access::None };
+        let client = Client::with_transport(&self.watch_base, access, Box::new(ForeignTransport(self.watch_transport.clone())));
+        let pairs: Vec<(&str, i64)> = rooms.iter().map(|r| (r.room.as_str(), r.after)).collect();
+        match client.watch(&self.identity, &pairs, wait_ms).map_err(relay_err)? {
+            None => Ok(MlsWatchResult { supported: false, changed: Vec::new(), refused: Vec::new() }),
+            Some(w) => Ok(MlsWatchResult {
+                supported: true,
+                changed: w.changed,
+                refused: w.errors.into_iter().map(|(room, code)| MlsWatchRefusal { room, code }).collect(),
+            }),
+        }
+    }
 }
 
 impl MlsLobby {
@@ -491,8 +538,14 @@ impl MlsLobby {
         identity: String, device: Device, published: Vec<Vec<u8>>, base_url: String, transport: Arc<dyn HttpTransport>,
         observer: Arc<dyn LobbyObserver>,
     ) -> Arc<Self> {
-        let client = Client::with_transport(&base_url, Access::None, Box::new(ForeignTransport(transport)));
-        Arc::new(Self { identity, inner: Mutex::new(Inner { device, published, client, observer }) })
+        let client = Client::with_transport(&base_url, Access::None, Box::new(ForeignTransport(transport.clone())));
+        Arc::new(Self {
+            identity,
+            inner: Mutex::new(Inner { device, published, client, observer }),
+            watch_base: base_url,
+            watch_transport: transport,
+            watch_token: Mutex::new(None),
+        })
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, Inner>, RoomError> {

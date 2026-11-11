@@ -356,3 +356,34 @@ fn lobby_dispatch_is_the_policy_wire_of_the_seed_and_nothing_else() {
     assert!(matches!(err, MlsError::Rejected { .. }), "{err}");
     assert_eq!(ok(phone.replenish(1), "the lobby is still usable").minted, 1);
 }
+
+// ---- #755 1단계: 기기 단위 대기 `GET /v2/watch` ----
+
+#[test]
+fn watch_reports_changed_rooms_and_refusals_and_tolerates_an_old_relay() {
+    use family_mls_ios_ffi::{MlsWatchRefusal, MlsWatchResult, MlsWatchRoom};
+    let h = Harness::new();
+    let (_owner, (peer, _)) = founded_pair(&h);
+    ok(peer.poll(), "peer joins");
+    let (lobby, _) = h.lobby("owner-phone");
+    let cursor = h.relay.rows("room-a").iter().map(|r| r.seq).max().unwrap_or(0);
+    let at = |room: &str, after: i64| MlsWatchRoom { room: room.into(), after };
+    let quiet = ok(lobby.watch(vec![at("room-a", cursor), at("ghost", 0)], 12_000), "watch quiet");
+    assert_eq!(quiet, MlsWatchResult {
+        supported: true, changed: Vec::new(), refused: vec![MlsWatchRefusal { room: "ghost".into(), code: "no_such_room".into() }],
+    });
+    ok(peer.send(b"hello".to_vec()), "send");
+    let busy = ok(lobby.watch(vec![at("room-a", cursor)], 12_000), "watch after a send");
+    assert_eq!((busy.supported, busy.changed.as_slice()), (true, &["room-a".to_string()][..]));
+    assert!(h.trace().iter().any(|t| t == "WATCH owner-phone wait=12000 rooms=1"), "{:?}", h.trace());
+    // 「wait」 상한은 코어가 25 s 로 자른다(릴레이 maxEventsWait).
+    ok(lobby.watch(vec![at("room-a", cursor)], 90_000), "clamped");
+    assert!(h.trace().iter().any(|t| t == "WATCH owner-phone wait=25000 rooms=1"));
+    // #424 이전 릴레이: 봉투 없는 404 → 미지원(호스트는 고정 주기 폴링 유지), 오류 아님.
+    h.relay.no_watch.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(ok(lobby.watch(vec![at("room-a", cursor)], 12_000), "old relay"),
+               MlsWatchResult { supported: false, changed: Vec::new(), refused: Vec::new() });
+    // 잘못된 입력은 전송 전에 거부.
+    assert!(lobby.watch(Vec::new(), 12_000).is_err());
+    assert!(lobby.watch(vec![at("bad room", 0)], 12_000).is_err());
+}
