@@ -34,6 +34,10 @@ final class DesignRound2Tests: XCTestCase {
         XCTAssertEqual(Strings.themeChipDay, "낮불")
         XCTAssertTrue(Strings.themeNightHint.contains("시스템 다크/라이트를 따르지 않습니다"))
         XCTAssertTrue(Strings.themeDayHint.contains("e-ink"))
+        // 대화 읽기 ↑/↓ 이동(오너 2026-11-11) — 칩 순서 = allCases, 기본은 보통.
+        XCTAssertEqual(HardwareKeys.ArrowScrollStep.allCases.map(Strings.arrowStepChip), ["작게", "보통", "크게", "말풍선"])
+        XCTAssertTrue(Strings.arrowStepHint(.standard).contains("기본값"))
+        XCTAssertTrue(Strings.arrowStepHint(.bubble).contains("말풍선 하나씩"))
         XCTAssertEqual(Strings.lockPreviewShort(.always), "항상")
         XCTAssertEqual(Strings.lockPreviewShort(.whenUnlocked), "잠금 해제 시")
         XCTAssertEqual(Strings.lockPreviewShort(.never), "안 함")

@@ -71,6 +71,10 @@ struct RoomView: View {
     @State private var tailAnchor: Int64?
     /// 대화 읽기 ↑/↓ 로 지난번에 옮겨 간 말풍선(seq). 읽기를 새로 시작하면(Esc·End·작성창 복귀) 비운다 — 마지막 말풍선에서 다시 시작.
     @State private var keyCursor: Int64?
+    /// 타임라인 뒤의 UIScrollView — 대화 읽기 ↑/↓ 픽셀 이동(`scrollByPixels`).
+    @State private var timelineScroll = TimelineScrollHandle()
+    /// 설정 「↑/↓ 키 이동」(`HardwareKeys.ArrowScrollStep`) — 기본 보통(보이는 칸의 1/3), 말풍선 = 종전 방식.
+    @AppStorage(HardwareKeys.ArrowScrollStep.storageKey) private var arrowStepRaw = HardwareKeys.ArrowScrollStep.standard.rawValue
     /// 선택 모드(웹 캐럿 모드의 iOS 판): `keyCursor` 말풍선에 점선 테두리. Esc(대화 읽기)로 켜고 Esc 로 끈다.
     @State private var selectingByKey = false
     /// 「복사했어요」(선택 모드 ⌘C).
@@ -111,6 +115,8 @@ struct RoomView: View {
                             .background(GeometryReader { geo in
                                 Measured(value: Double(geo.frame(in: .named("timeline")).maxY)) { topSentinelChanged($0, proxy) }
                             })
+                            // ↑/↓ 픽셀 이동용 — 행 바깥(가로 스크롤 표·코드 블록보다 먼저 타임라인 스크롤 뷰를 만나게).
+                            .background(TimelineScrollViewFinder(handle: timelineScroll))
                         // 오래된 글은 lazy(화면에 보일 때 만든다).
                         LazyVStack(alignment: .leading, spacing: 8) {
                             ForEach(messages.prefix(tailStart)) { item in
@@ -916,8 +922,10 @@ struct RoomView: View {
         withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(id, anchor: .center) }
     }
 
-    /// 대화 읽기 ↑/↓(말풍선 하나씩, `HardwareKeys.scrollTarget`) · End(맨 아래). 위로 가면 따라가기를 끄고, 맨 아래에 닿으면 다시 켠다(「내 마지막 말」 바와 같은 방식).
+    /// 대화 읽기 ↑/↓ · End(맨 아래). ↑/↓ 는 설정 「↑/↓ 키 이동」에 따라 보이는 칸의 비율만큼(`scrollByPixels`) 또는 말풍선 하나씩
+    /// (`HardwareKeys.scrollTarget`). 위로 가면 따라가기를 끄고, 맨 아래에 닿으면 다시 켠다(「내 마지막 말」 바와 같은 방식).
     private func scrollByKey(_ action: HardwareKeys.RoomAction, _ proxy: ScrollViewProxy) {
+        if action == .scrollUp || action == .scrollDown, scrollByPixels(up: action == .scrollUp, proxy) { return }
         let target: HardwareKeys.ScrollTarget? = action == .scrollToLatest
             ? .latest
             : HardwareKeys.scrollTarget(rows: messages.map(\.id), cursor: keyCursor, up: action == .scrollUp)
@@ -936,6 +944,37 @@ struct RoomView: View {
         case nil:
             break
         }
+    }
+
+    /// 설정이 작게·보통·크게면 보이는 칸의 그 비율만큼 픽셀로 옮긴다(`HardwareKeys.pixelScrollTarget`). 처리했으면 true.
+    /// 말풍선 단위이거나 스크롤 뷰·칸 크기를 아직 모르면 false — 호출자가 종전 말풍선 단위로 옮긴다.
+    /// 말풍선 커서(`keyCursor`)는 비운다: 손가락 스크롤과 같은 취급(선택 모드는 마지막 말풍선에서 시작).
+    private func scrollByPixels(up: Bool, _ proxy: ScrollViewProxy) -> Bool {
+        guard let fraction = HardwareKeys.ArrowScrollStep.from(arrowStepRaw).viewportFraction,
+              let scroll = timelineScroll.attached else { return false }
+        let inset = scroll.adjustedContentInset
+        let viewport = Double(scroll.bounds.height - inset.top - inset.bottom)
+        guard viewport > 0 else { return false }
+        let target = HardwareKeys.pixelScrollTarget(offset: Double(scroll.contentOffset.y), viewport: viewport,
+                                                    minOffset: Double(-inset.top),
+                                                    maxOffset: Double(scroll.contentSize.height + inset.bottom - scroll.bounds.height),
+                                                    fraction: fraction, up: up)
+        keyCursor = nil
+        switch target {
+        case .offset(let y)?:
+            followLatest = false
+            // 손가락 끌기와 같게: 바닥 근처에서 ↑ 해도 `refollowIfSettledAtBottom` 이 바로 따라가기를 되돌리지 않게.
+            tracking.lastDrag = Date()
+            model.noteScroll("\(room) key-scroll \(up ? "up" : "down") \(Self.pt(Double(scroll.contentOffset.y)))→\(Self.pt(y)) viewport=\(Self.pt(viewport))")
+            scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: CGFloat(y)), animated: true)
+        case .latest?:
+            followLatest = true
+            hasNewBelow = false
+            scrollToLatest(proxy, animated: true)
+        case nil:
+            break   // 맨 위 ↑ = 제자리(과거 글은 맨 위 표지가 가까워지면 종전처럼 더 읽는다)
+        }
+        return true
     }
 
     private var canSend: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && isReady }

@@ -23,6 +23,9 @@ struct SettingsView: View {
     @Environment(\.hande) private var p
 
     private var theme: HandeThemeMode { HandeThemeMode.from(themeRaw) }
+    /// 대화 읽기 ↑/↓ 이동(RoomView 가 같은 키를 읽는다).
+    @AppStorage(HardwareKeys.ArrowScrollStep.storageKey) private var arrowStepRaw = HardwareKeys.ArrowScrollStep.standard.rawValue
+    private var arrowStep: HardwareKeys.ArrowScrollStep { HardwareKeys.ArrowScrollStep.from(arrowStepRaw) }
 
     var body: some View {
         ScrollView {
@@ -89,18 +92,32 @@ struct SettingsView: View {
             SectionHeader(Strings.themeSection)
             SectionCard {
                 VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 6) {
+                    segment {
                         themeChip(.night, label: Strings.themeChipNight)
                         themeChip(.day, label: Strings.themeChipDay)
                     }
-                    .padding(3)
-                    // 2차-B 낮불: 세그먼트 틀 = 1.5 먹 선(면 없음), 선택 = 먹 면 + 종이 글자 + ✓. 밤: 먹 5% 면, 선택 = 불 면.
-                    .background(RoundedRectangle(cornerRadius: 12).fill(p.isDay ? Color.clear : p.ink.opacity(0.05)))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(p.isDay ? p.stroke : Color.clear, lineWidth: 1.5))
-                    .accessibilityElement(children: .contain)
                     .accessibilityLabel(Strings.themeLabel)
                     .accessibilityIdentifier("settings-theme")
                     Text(theme == .day ? Strings.themeDayHint : Strings.themeNightHint)
+                        .font(.system(size: 14)).foregroundStyle(p.inkDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                // 하드웨어 키보드 대화 읽기 ↑/↓ 한 번의 이동(오너 2026-11-11: 말풍선 하나씩은 너무 많이 움직였다).
+                Rectangle().fill(p.stroke).frame(height: p.lineWidth)   // `SectionRow` 구분선과 같다
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(Strings.arrowStepLabel).font(.system(size: 17)).foregroundStyle(p.ink)
+                    segment {
+                        ForEach(HardwareKeys.ArrowScrollStep.allCases, id: \.self) { step in
+                            chip(Strings.arrowStepChip(step), on: arrowStep == step, id: "settings-arrow-step-\(step.rawValue)") {
+                                arrowStepRaw = step.rawValue
+                            }
+                        }
+                    }
+                    .accessibilityLabel(Strings.arrowStepLabel)
+                    .accessibilityIdentifier("settings-arrow-step")
+                    Text(Strings.arrowStepHint(arrowStep))
                         .font(.system(size: 14)).foregroundStyle(p.inkDim)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -110,9 +127,21 @@ struct SettingsView: View {
         }
     }
 
+    /// 칩 묶음 틀. 2차-B 낮불: 세그먼트 틀 = 1.5 먹 선(면 없음), 선택 = 먹 면 + 종이 글자 + ✓. 밤: 먹 5% 면, 선택 = 불 면.
+    private func segment<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        HStack(spacing: 6) { content() }
+            .padding(3)
+            .background(RoundedRectangle(cornerRadius: 12).fill(p.isDay ? Color.clear : p.ink.opacity(0.05)))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(p.isDay ? p.stroke : Color.clear, lineWidth: 1.5))
+            .accessibilityElement(children: .contain)
+    }
+
     private func themeChip(_ mode: HandeThemeMode, label: String) -> some View {
-        let on = theme == mode
-        return Button { themeRaw = mode.rawValue } label: {
+        chip(label, on: theme == mode, id: "settings-theme-\(mode.rawValue)") { themeRaw = mode.rawValue }
+    }
+
+    private func chip(_ label: String, on: Bool, id: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
             // 낮불 선택: 색 없이 채움 + 기호(✓)로. 읽기 라벨은 글자만(✓는 isSelected 가 말한다).
             Text(on && p.isDay ? "\(label) ✓" : label)
                 .font(.system(size: 15, weight: on ? (p.isDay ? .bold : .semibold) : (p.isDay ? .medium : .regular)))
@@ -123,7 +152,7 @@ struct SettingsView: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(on ? .isSelected : AccessibilityTraits())
-        .accessibilityIdentifier("settings-theme-\(mode.rawValue)")
+        .accessibilityIdentifier(id)
     }
 
     // MARK: 알림 — 새 메시지 알림 · 잠금화면 미리보기(#520: 「항상」이면 붉은 값 + 아래 경고 상자 → 설정 앱).
