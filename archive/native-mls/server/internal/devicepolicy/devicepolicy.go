@@ -42,8 +42,19 @@ const (
 	DevicePolicyVersion      = 4
 	MaxDevicePolicyBytes     = 64 * 1024
 	MaxDevicePolicyRevisions = 64
-	MaxDevicesTotal          = 32
-	MaxActivePerActor        = 4
+	// MaxActiveDevicesTotal bounds the active devices across all actors. Revoked
+	// records (tombstones) do not count (#421): they must stay in the set so an id
+	// or signing key is never reused and every approved_by still resolves, but
+	// counting them froze enrollment once 11 revocations filled the old 32-record
+	// cap (2026-11-06, rev 44).
+	MaxActiveDevicesTotal = 32
+	// MaxDeviceRecords bounds the whole set, tombstones included. 96 worst-case
+	// records (every identifier at its maximum length, approved_by and roles
+	// present) still encode under MaxDevicePolicyBytes — pinned by
+	// TestMaxDeviceRecordsFitPolicyBytes. Revision compaction (#421) is what
+	// eventually retires tombstones.
+	MaxDeviceRecords  = 96
+	MaxActivePerActor = 4
 	// MaxPendingPolicyFiles bounds the leftover staging files (interrupted
 	// writeDevicePolicyRevision writes) a read tolerates before the
 	// directory itself counts as corrupt (G-M7).
@@ -350,11 +361,12 @@ func DecodeSigningKey(hexKey string) ([]byte, error) {
 
 // validateDeviceSet enforces the v4 invariants on a full device set.
 func validateDeviceSet(devices []DeviceV4) error {
-	if len(devices) > MaxDevicesTotal {
-		return fmt.Errorf("too many devices: %d > %d: %w", len(devices), MaxDevicesTotal, ErrDevicePolicyConfig)
+	if len(devices) > MaxDeviceRecords {
+		return fmt.Errorf("too many device records: %d > %d: %w", len(devices), MaxDeviceRecords, ErrDevicePolicyConfig)
 	}
 	ids, keys := map[string]bool{}, map[string]bool{}
 	activePerActor := map[string]int{}
+	active := 0
 	for _, d := range devices {
 		key, err := DecodeSigningKey(d.SigningKey)
 		if err != nil {
@@ -398,6 +410,10 @@ func validateDeviceSet(devices []DeviceV4) error {
 			return fmt.Errorf("revoked device %q still carries roles: %w", d.ID, ErrDevicePolicyConfig)
 		}
 		if d.Status == StatusActive {
+			active++
+			if active > MaxActiveDevicesTotal {
+				return fmt.Errorf("too many active devices: %d > %d: %w", active, MaxActiveDevicesTotal, ErrDevicePolicyConfig)
+			}
 			activePerActor[d.Actor]++
 			if activePerActor[d.Actor] > MaxActivePerActor {
 				return fmt.Errorf("actor %q exceeds %d active devices: %w", d.Actor, MaxActivePerActor, ErrDevicePolicyConfig)
