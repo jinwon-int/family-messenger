@@ -15,6 +15,20 @@ struct FamilyChatApp: App {
 
     var body: some Scene {
         WindowGroup {
+            #if DEBUG
+            // 밀어서 답장 재현 화면(UI 테스트 전용 실행 인자) — 모델 부트스트랩·폴링 없이 행만 그린다.
+            if ProcessInfo.processInfo.arguments.contains("-swipeReplyHarness") {
+                SwipeReplyHarness()
+            } else {
+                mainRoot
+            }
+            #else
+            mainRoot
+            #endif
+        }
+    }
+
+    private var mainRoot: some View {
             RootView()
                 .environmentObject(appDelegate.model)
                 .task {
@@ -36,7 +50,6 @@ struct FamilyChatApp: App {
                     default: break
                     }
                 }
-        }
     }
 }
 

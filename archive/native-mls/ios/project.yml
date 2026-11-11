@@ -231,12 +231,25 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.seoyoon-family.hande.tests
+  # 밀어서 답장 실제 터치 재현(오너 2026-11-10) — 재현 화면 `SwipeReplyHarness`(DEBUG, `-swipeReplyHarness`)를 띄워 민다.
+  FamilyChatUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: FamilyChatUITests
+    dependencies:
+      - target: FamilyChat
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.seoyoon-family.hande.uitests
+        TEST_TARGET_NAME: FamilyChat
 schemes:
   FamilyChat:
     build:
       targets:
         FamilyChat: all
         FamilyChatTests: [test]
+        FamilyChatUITests: [test]
     test:
       config: Debug
-      targets: [FamilyChatTests]
+      targets: [FamilyChatTests, FamilyChatUITests]

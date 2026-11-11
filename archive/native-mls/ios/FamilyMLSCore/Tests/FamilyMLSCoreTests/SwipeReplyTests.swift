@@ -34,8 +34,10 @@ final class SwipeReplyTests: XCTestCase {
         XCTAssertTrue(SwipeReply.shouldReply(dx: -120, dy: 30))
         XCTAssertFalse(SwipeReply.shouldReply(dx: -59.9, dy: 0), "short")
         XCTAssertFalse(SwipeReply.shouldReply(dx: 120, dy: 0), "rightward")
-        XCTAssertFalse(SwipeReply.shouldReply(dx: -90, dy: 60), "ended diagonal: 90 is not > 60 × 1.5")
-        XCTAssertTrue(SwipeReply.shouldReply(dx: -91, dy: 60))
+        // #745: 축은 시작 때 정했다 — 끝에서는 엄지 궤적이 위로 휜 것(약 53°까지)도 답장.
+        XCTAssertTrue(SwipeReply.shouldReply(dx: -90, dy: 60), "thumb arc toward the top: 90 ≥ 60 × 0.75")
+        XCTAssertTrue(SwipeReply.shouldReply(dx: -75, dy: -100), "75 ≥ 100 × 0.75 (boundary)")
+        XCTAssertFalse(SwipeReply.shouldReply(dx: -74, dy: -100), "mostly vertical at release")
     }
 
     func testDirectionDoesNotOverlapBackSwipe() {
@@ -50,8 +52,11 @@ final class SwipeReplyTests: XCTestCase {
     func testPanBeginsOnlyForLeftwardHorizontalVelocity() {
         // TestFlight 107: 말풍선 위 세로 스크롤이 막혔다 — 세로·오른쪽·정지 끌기는 팬이 시작하지 않아야 스크롤이 받는다.
         XCTAssertTrue(SwipeReply.shouldBegin(vx: -400, vy: 50))
-        XCTAssertTrue(SwipeReply.shouldBegin(vx: -151, vy: 100), "151 > 100 × 1.5")
-        XCTAssertFalse(SwipeReply.shouldBegin(vx: -150, vy: 100), "45°-ish diagonal")
+        // #745: 시작 배수 1.2(약 40°) — 위쪽 말풍선의 비스듬한 엄지 출발도 받는다.
+        XCTAssertTrue(SwipeReply.shouldBegin(vx: -150, vy: 100), "150 > 100 × 1.2 (was rejected at 1.5)")
+        XCTAssertTrue(SwipeReply.shouldBegin(vx: -121, vy: 100), "121 > 100 × 1.2")
+        XCTAssertFalse(SwipeReply.shouldBegin(vx: -120, vy: 100), "~40° diagonal")
+        XCTAssertFalse(SwipeReply.shouldBegin(vx: -300, vy: 600), "steep diagonal scroll stays a scroll")
         XCTAssertFalse(SwipeReply.shouldBegin(vx: -20, vy: 600), "vertical scroll up")
         XCTAssertFalse(SwipeReply.shouldBegin(vx: 10, vy: -600), "vertical scroll down")
         XCTAssertFalse(SwipeReply.shouldBegin(vx: 400, vy: 0), "rightward belongs to BackSwipe")

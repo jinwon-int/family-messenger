@@ -1361,8 +1361,21 @@ struct SwipeToReply: ViewModifier {
     }
 }
 
+/// 밀어서 답장 팬의 판정 기록(재현 화면 `SwipeReplyHarness` 용). DEBUG 에서 재현 화면이 받을 곳을 달았을 때만 쓴다 — 출시 빌드는 빈 함수.
+enum SwipeReplyTrace {
+    #if DEBUG
+    static var sink: ((String) -> Void)?
+    #endif
+    static func note(_ line: @autoclosure () -> String) {
+        #if DEBUG
+        sink?(line())
+        #endif
+    }
+}
+
 /// iOS 18+ 밀어서 답장 팬. 시작 순간의 속도가 왼쪽 가로 우세일 때만 시작한다(`SwipeReply.shouldBegin`) — 세로·오른쪽 끌기는
-/// 시작하지 않으므로 타임라인 스크롤·넓은 뒤로가기가 그대로 받는다. 시작한 뒤에는 다른 인식기와 함께 돈다(꾹 누르기 메뉴 등).
+/// 시작하지 않으므로 타임라인 스크롤·넓은 뒤로가기가 그대로 받는다. 시작한 뒤에는 다른 인식기와 함께 돈다(꾹 누르기 메뉴 등) —
+/// 타임라인 세로 스크롤만 예외로, 밀리는 동안 잠근다(#745).
 /// #737: 시작점이 코드·표 영역(`zones`, 행 좌표) 안이면 시작하지 않는다 — 그 끌기는 블록의 가로 스크롤이 받는다.
 @available(iOS 18.0, *)
 struct SwipeReplyPan: UIGestureRecognizerRepresentable {
@@ -1390,6 +1403,9 @@ struct SwipeReplyPan: UIGestureRecognizerRepresentable {
     func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer, context: Context) {
         let t = recognizer.translation(in: recognizer.view)
         let size = CGSize(width: t.x, height: t.y)
+        if recognizer.state != .changed {
+            SwipeReplyTrace.note("pan state=\(recognizer.state.rawValue) t=(\(Int(t.x)),\(Int(t.y)))")
+        }
         switch recognizer.state {
         case .began, .changed: changed(size)
         case .ended: ended(size, false)
@@ -1411,20 +1427,64 @@ struct SwipeReplyPan: UIGestureRecognizerRepresentable {
         func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
             guard enabled, let pan = recognizer as? UIPanGestureRecognizer else { return false }
             let v = pan.velocity(in: pan.view)
+            let local = converter.location(in: .local)
+            SwipeReplyTrace.note("begin? v=(\(Int(v.x)),\(Int(v.y))) local=(\(Int(local.x)),\(Int(local.y))) "
+                                 + "t=(\(Int(pan.translation(in: pan.view).x)),\(Int(pan.translation(in: pan.view).y))) "
+                                 + "view=\(pan.view.map { String(describing: type(of: $0)) } ?? "nil") zones=\(zones.count)"
+                                 + zones.map { " [\(Int($0.minX)),\(Int($0.minY))-\(Int($0.maxX)),\(Int($0.maxY))]" }.joined())
             guard SwipeReply.shouldBegin(vx: Double(v.x), vy: Double(v.y)) else { return false }
             guard !zones.isEmpty else { return true }
             // 팬은 손가락이 조금 움직인 뒤에 판정한다 — 지금 위치에서 그동안의 이동을 빼 시작점을 구한다.
-            let now = converter.location(in: .local)
+            let now = local
             let moved = pan.translation(in: pan.view)
             return !SwipeReply.startsInSideScroll(x: Double(now.x - moved.x), y: Double(now.y - moved.y), zones: zones)
         }
 
+        /// #745: 타임라인의 세로 스크롤 팬인가(가로로 넘치는 표·코드 블록의 스크롤은 아니다 — 그 끌기는 영역 판정이 맡는다).
+        static func isTimelineScrollPan(_ other: UIGestureRecognizer) -> Bool {
+            guard let scroll = other.view as? UIScrollView, other === scroll.panGestureRecognizer else { return false }
+            return scroll.contentSize.width <= scroll.bounds.width + 1
+        }
+
+        /// 다른 인식기(꾹 누르기 메뉴 등)와는 함께 돈다. 타임라인 세로 스크롤과는 함께 돌지 않는다(#745) — 아래 실패 요구와 짝.
         func gestureRecognizer(_ recognizer: UIGestureRecognizer,
                                shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-            true
+            !Self.isTimelineScrollPan(other)
         }
+
+        /// #745: 타임라인 세로 스크롤은 이 팬이 실패한 뒤에 시작한다. 세로 끌기는 시작 판정(`shouldBegin`)에서 곧바로 실패하므로 스크롤은
+        /// 종전과 같고, 왼쪽 밀기가 시작되면 그 끌기 동안 타임라인이 같이 움직이지 않는다 — 종전엔 엄지가 위아래로 조금만 흔들려도
+        /// 화면이 세로로 밀려 말풍선이 손가락 아래에서 빠져나갔다(위쪽 말풍선일수록 엄지 궤적이 비스듬해 잦았다).
+        func gestureRecognizer(_ recognizer: UIGestureRecognizer,
+                               shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+            Self.isTimelineScrollPan(other)
+        }
+
+        #if DEBUG
+        /// 재현 화면 판정 기록: 터치가 이 인식기에 왔는지, 그 순간 타임라인 스크롤이 끌리는 중·감속 중이었는지.
+        func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            SwipeReplyTrace.note("recv \(SwipeReplyTrace.scrollState(from: touch.view))")
+            return true
+        }
+        #endif
     }
 }
+
+#if DEBUG
+extension SwipeReplyTrace {
+    /// 터치한 뷰에서 위로 올라가 처음 만나는 세로 스크롤뷰의 상태(끌기·감속·스크롤 팬 상태).
+    static func scrollState(from view: UIView?) -> String {
+        var v = view
+        while let cur = v {
+            if let sv = cur as? UIScrollView, sv.contentSize.height > sv.bounds.height {
+                return "sv(drag=\(sv.isDragging) decel=\(sv.isDecelerating) track=\(sv.isTracking) pan=\(sv.panGestureRecognizer.state.rawValue))"
+            }
+            v = cur.superview
+        }
+        return "sv(none)"
+    }
+}
+#endif
 
 /// 디자인 2차 2d: 보내는 중인 첨부의 자리 그림 — 200×150(말풍선 모양은 바깥 BubbleShape 18/6), 어두운 두 색 그라데이션 면(낮불은 종이 면),
 /// 아래 덮개에 「사진·파일 보내는 중」 13 + 진행선 3px. 진행률 값이 없으므로 선은 45% 토막이 오가는 부정형(reduce motion·낮불은 고정).
@@ -1949,3 +2009,116 @@ struct BottomAnchoredTimeline: ViewModifier {
 }
 
 /// #472: 맨 위 표지의 아래 끝 y(스크롤 뷰 "timeline" 좌표) — 위로 밀려 있으면 음수, `ScrollFollow.olderPrefetch` 안으로 오면 과거 글을 읽는다.
+
+// 밀어서 답장 재현 화면(DEBUG 전용, 실행 인자 `-swipeReplyHarness`). 오너 2026-11-10 「최신 말풍선은 되는데 두 번째부터 잘 안 됨」을
+// 시뮬레이터 UI 테스트(FamilyChatUITests)로 재현·검증한다. 실제 `MessageRow`·`SwipeToReply` 와 방 타임라인의 제스처 구성
+// (ScrollView 위 동시 DragGesture 두 개 · 바닥 앵커)을 그대로 쓰고, 어느 행이 답장됐는지와 팬 판정 기록(`SwipeReplyTrace`)을 화면에 낸다.
+#if DEBUG
+struct SwipeReplyHarness: View {
+    /// 행 수(`-swipeReplyRows N`, 기본 8 — 한 화면에 다 들어가는 수).
+    let rows: Int
+    @State private var replied = "none"
+    /// 판정 기록은 참조 상자에 모은다 — 끌기 도중 상태를 바꿔 화면을 다시 그리면 재현 조건이 달라진다. 「dump」를 눌러야 보인다.
+    @State private var box = TraceBox()
+    @State private var shown = ""
+    @State private var followLatest = true
+
+    init() {
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-swipeReplyRows"), i + 1 < args.count, let n = Int(args[i + 1]) {
+            rows = max(1, n)
+        } else {
+            rows = 8
+        }
+    }
+
+    /// `-swipeReplyAgent`: 모든 행을 표·목록이 든 에이전트 카드로(오너가 주로 답하는 보고서 모양).
+    private var agentMode: Bool { ProcessInfo.processInfo.arguments.contains("-swipeReplyAgent") }
+    private static let roster = AgentRoster(actors: ["sogyo"])
+
+    private static func agentBody(_ n: Int) -> String {
+        """
+        ## 보고 \(n)
+
+        첫 문단 \(n)입니다. 밀어서 답장 재현용 글.
+
+        | 항목 | 값 | 비고 |
+        |---|---|---|
+        | 표칸 \(n) | 1 | 표가 가로로 넘치도록 아주 길게 쓴 설명 텍스트가 이 칸에 들어갑니다 |
+        | b | 2 | x |
+
+        - 목록 하나 \(n)
+        - 목록 둘
+
+        마지막 문단 \(n)입니다.
+        """
+    }
+
+    private var items: [AppModel.TimelineItem] {
+        (1...rows).map { n in
+            let mine = !agentMode && n % 3 == 0
+            let record = MessageRecord(room: "harness", seq: Int64(n),
+                                       senderDevice: agentMode ? "sogyo-bot" : (mine ? "me-phone" : "mom-phone"),
+                                       clientId: "c\(n)", kind: .text,
+                                       body: agentMode ? Self.agentBody(n) : "메시지 \(n) — 밀어서 답장 재현용 문장입니다",
+                                       attachment: nil, receivedAt: Date(timeIntervalSince1970: 1_800_000_000 + Double(n) * 60),
+                                       decryptedBy: .app)
+            return AppModel.TimelineItem(record: record, attachmentBytes: 0)
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("replied:\(replied)")
+                .accessibilityIdentifier("harness-replied")
+            Text(shown)
+                .font(.caption2)
+                .lineLimit(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("harness-trace")
+            HStack {
+                Button("clear") { replied = "none"; box.lines = []; shown = "" }
+                    .accessibilityIdentifier("harness-clear")
+                Button("dump") { shown = box.lines.suffix(12).joined(separator: "\n") }
+                    .accessibilityIdentifier("harness-dump")
+            }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(items) { item in
+                            MessageRow(item: item, mine: item.record.senderDevice == "me-phone",
+                                       // 실제 방처럼 묶음의 마지막 행만 시각(에이전트 모드) — 최신 행과 그 위 행의 모양 차이를 그대로 둔다.
+                                       time: !agentMode || item.id == Int64(rows) ? item.record.receivedAt : nil,
+                                       roster: Self.roster,
+                                       reply: { replied = String(item.id) })
+                                .id(item.id)
+                        }
+                        Color.clear.frame(height: 1).id(Int64(-2))
+                    }
+                    .padding()
+                }
+                .coordinateSpace(name: "timeline")
+                .modifier(BottomAnchoredTimeline())
+                // 방 화면과 같은 타임라인 동시 제스처 두 개(스크롤 따라가기 · 넓은 뒤로가기).
+                .simultaneousGesture(DragGesture(minimumDistance: 10)
+                    .onChanged { value in
+                        if !box.svDragging {
+                            box.svDragging = true
+                            SwipeReplyTrace.note("sv-drag start t=(\(Int(value.translation.width)),\(Int(value.translation.height)))")
+                        }
+                        if followLatest { followLatest = false }
+                    }
+                    .onEnded { _ in box.svDragging = false })
+                .simultaneousGesture(DragGesture(minimumDistance: 20).onEnded { _ in })
+                .onAppear { proxy.scrollTo(Int64(-2), anchor: .bottom) }
+            }
+        }
+        .onAppear { SwipeReplyTrace.sink = { [box] line in box.lines.append(line) } }
+    }
+}
+final class TraceBox {
+    var lines: [String] = []
+    var svDragging = false
+}
+
+#endif
