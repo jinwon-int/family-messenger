@@ -13,6 +13,46 @@
     <link rel="icon" href="./icons/favicon-16.png" sizes="16x16" type="image/png" />
     <link rel="apple-touch-icon" href="./icons/icon-192.png" />
     <link rel="stylesheet" href="./styles.css" />
+    <!-- #752: main.js 가 import 하는 모듈 전부를 처음부터 한꺼번에 요청한다(import 6단계를 차례로 따라가며 받던 왕복을 줄임).
+         캐시·배포 방식은 그대로(네트워크 우선 · 제자리 교체). 목록은 tests/modulepreload.test.mjs 가 import 폐포와 같은지 검사한다. -->
+    <link rel="modulepreload" href="./agent-choices.js" />
+    <link rel="modulepreload" href="./agent-consent.js" />
+    <link rel="modulepreload" href="./agent-markdown.js" />
+    <link rel="modulepreload" href="./alert-refs.js" />
+    <link rel="modulepreload" href="./app.js" />
+    <link rel="modulepreload" href="./attachment-view.js" />
+    <link rel="modulepreload" href="./attachments.js" />
+    <link rel="modulepreload" href="./commit-policy.js" />
+    <link rel="modulepreload" href="./composer-files.js" />
+    <link rel="modulepreload" href="./device.js" />
+    <link rel="modulepreload" href="./drafts.js" />
+    <link rel="modulepreload" href="./file-v2-outbox.js" />
+    <link rel="modulepreload" href="./file-v2.js" />
+    <link rel="modulepreload" href="./filebox.js" />
+    <link rel="modulepreload" href="./icons.js" />
+    <link rel="modulepreload" href="./identity.js" />
+    <link rel="modulepreload" href="./keyboard.js" />
+    <link rel="modulepreload" href="./last-sent.js" />
+    <link rel="modulepreload" href="./link-preview.js" />
+    <link rel="modulepreload" href="./local-room.js" />
+    <link rel="modulepreload" href="./preview-loader.js" />
+    <link rel="modulepreload" href="./preview-sites.js" />
+    <link rel="modulepreload" href="./read-seq.js" />
+    <link rel="modulepreload" href="./relay-attachments.js" />
+    <link rel="modulepreload" href="./relay.js" />
+    <link rel="modulepreload" href="./room-open-pool.js" />
+    <link rel="modulepreload" href="./room-order.js" />
+    <link rel="modulepreload" href="./room.js" />
+    <link rel="modulepreload" href="./self-service.js" />
+    <link rel="modulepreload" href="./service-links.js" />
+    <link rel="modulepreload" href="./shortcuts.js" />
+    <link rel="modulepreload" href="./status-v1.js" />
+    <link rel="modulepreload" href="./strings.js" />
+    <link rel="modulepreload" href="./sync-recovery.js" />
+    <link rel="modulepreload" href="./theme.js" />
+    <link rel="modulepreload" href="./timeline-caret.js" />
+    <link rel="modulepreload" href="./ui.js" />
+    <link rel="modulepreload" href="./worker-bridge.js" />
   </head>
   <body>
     <div id="app"><p class="boot-note">준비 중…</p></div>
