@@ -29,7 +29,6 @@ import com.seoyoon_family.hande.mls.SendResult
 import com.seoyoon_family.hande.ui.Strings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.delay
@@ -133,7 +132,11 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     private var lobby: MlsLobby? = null
     private var lobbyStore: FileLobbyStore? = null
     private val rooms = LinkedHashMap<String, Handle>()
-    private var loop: Job? = null
+    /**
+     * poll 루프는 허브(프로세스) 수명 scope 에서 돈다(#766 A) — 화면(Activity) scope 에 묶으면 회전·다크모드 전환·Activity 회수 때
+     * 취소된 채 남아 프로세스를 다시 시작할 때까지 새 글이 오지 않는다. 수명 규칙은 `HubLoop`.
+     */
+    private val loop = HubLoop(CoroutineScope(SupervisorJob() + Dispatchers.IO))
     /** #755: 다음 `watch` 의 방별 커서(틱 끝에 잠금 안에서 찍는다) · 릴레이가 `/v2/watch` 를 모르면 참. */
     @Volatile private var watchTargets: List<MlsWatchRoom> = emptyList()
     @Volatile private var watchUnsupported = false
@@ -204,16 +207,16 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         }
     }
 
-    /** 설정 화면이 저장한 뒤 또는 앱 시작 때. 같은 scope 에서 한 번만. */
-    fun start(scope: CoroutineScope) {
-        if (loop != null || !settings.isConfigured) return
+    /** 설정 화면이 저장한 뒤 또는 앱 시작 때. 프로세스에서 한 번만 — 화면이 다시 만들어져 또 불려도 도는 루프는 그대로다(#766 A). */
+    fun start() {
+        if (loop.started || !settings.isConfigured) return
         _ui.update { it.copy(phase = Phase.Starting) }
-        loop = scope.launch(Dispatchers.IO) {
+        loop.start body@{
             try {
                 boot()
             } catch (e: Throwable) {
                 _ui.update { it.copy(phase = Phase.Fatal(e.message ?: e.toString())) }
-                return@launch
+                return@body
             }
             while (isActive) {
                 tick()
@@ -880,11 +883,10 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
      * 이 기기 지우기(#584 Play 「계정 삭제」의 앱 내 경로 · iOS §9-5 상당, 설정 화면의 확인 대화상자 뒤): poll 을 멈추고 로비·방 객체를 닫은 뒤
      * `files/mls`(봉인된 MLS 상태·로비 슬롯·정지 마커) · `messages.db` · SharedPreferences(세션 값·기기 ID 접미 포함) · Keystore 봉인 키를 지운다.
      * 다음 처음 설정은 **새 기기**(새 접미) — 옛 기기 ID 는 릴레이 체인에 남아 다시 쓸 수 없고, 그 폐기(E3)·방 데이터 삭제는 앱 권한 밖이라
-     * 웹 안내(`BuildConfig.DELETE_ACCOUNT_URL`, docs/hande/delete-account.md)로 요청한다. 같은 Activity scope 에서 `start` 를 다시 부를 수 있도록 `loop` 를 비운다.
+     * 웹 안내(`BuildConfig.DELETE_ACCOUNT_URL`, docs/hande/delete-account.md)로 요청한다. 처음 설정 뒤 `start` 를 다시 부를 수 있도록 `loop` 를 멈춘다.
      */
     fun wipeDevice(scope: CoroutineScope) = scope.launch(Dispatchers.IO) {
-        loop?.cancel()
-        loop = null
+        loop.stop()
         mutex.withLock {
             Log.i(TAG, "wipe: closing ${rooms.size} rooms + lobby, deleting local state")
             rooms.values.forEach { h -> runCatching { h.room.close() }.onFailure { e -> Log.w(TAG, "wipe: close ${h.name}: $e") } }
