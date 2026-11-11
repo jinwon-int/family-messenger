@@ -142,6 +142,44 @@ final class HardwareKeysTests: XCTestCase {
         XCTAssertEqual(K.scrollTarget(rows: [], cursor: nil, up: false), .latest)
     }
 
+    func testArrowScrollStepDefaultsToThirdOfViewport() {
+        XCTAssertEqual(K.ArrowScrollStep.from(nil), .medium)          // 저장값 없음 = 보통(1/3)
+        XCTAssertEqual(K.ArrowScrollStep.from("bogus"), .medium)      // 모르는 값 = 보통
+        XCTAssertEqual(K.ArrowScrollStep.from("bubble"), .bubble)     // 종전 말풍선 단위
+        XCTAssertEqual(K.ArrowScrollStep.from("large"), .large)
+        XCTAssertEqual(K.ArrowScrollStep.storageKey, "hande.arrowScrollStep")
+        XCTAssertEqual(K.ArrowScrollStep.medium.viewportFraction, 1.0 / 3.0)
+        XCTAssertNil(K.ArrowScrollStep.bubble.viewportFraction)
+        // 작게 < 보통 < 크게 < 한 화면(겹침이 남는다).
+        let fractions = [K.ArrowScrollStep.small, .medium, .large].compactMap(\.viewportFraction)
+        XCTAssertEqual(fractions, fractions.sorted())
+        XCTAssertLessThan(fractions.last!, 1)
+    }
+
+    func testPixelScrollTargetMovesFractionOfViewport() {
+        // 보이는 칸 600, 위 inset 0, 맨 아래 offset 2000, 1/3 = 200.
+        func t(_ offset: Double, up: Bool, fraction: Double = 1.0 / 3.0) -> K.PixelScrollTarget? {
+            K.pixelScrollTarget(offset: offset, viewport: 600, minOffset: 0, maxOffset: 2000, fraction: fraction, up: up)
+        }
+        XCTAssertEqual(t(2000, up: true), .offset(1800))
+        XCTAssertEqual(t(1000, up: false), .offset(1200))
+        XCTAssertEqual(t(150, up: true), .offset(0))           // 맨 위에서 멈춘다(넘지 않는다)
+        XCTAssertNil(t(0, up: true))                            // 맨 위 ↑ = 제자리
+        XCTAssertEqual(t(1850, up: false), .latest)             // 맨 아래에 닿으면 따라가기 다시 켬
+        XCTAssertEqual(t(2000, up: false), .latest)
+        XCTAssertEqual(t(2000, up: true, fraction: 1.0 / 6.0), .offset(1900))
+        XCTAssertEqual(t(2000, up: true, fraction: 2.0 / 3.0), .offset(1600))
+        // 위 inset(안전 영역 등) 이 있으면 맨 위 offset 은 음수다.
+        XCTAssertEqual(K.pixelScrollTarget(offset: 50, viewport: 600, minOffset: -20, maxOffset: 2000, fraction: 1.0 / 3.0, up: true),
+                       .offset(-20))
+        // 내용이 칸보다 짧다(맨 아래 offset < 맨 위) — ↓ 는 곧 맨 아래.
+        XCTAssertEqual(K.pixelScrollTarget(offset: 0, viewport: 600, minOffset: 0, maxOffset: -100, fraction: 1.0 / 3.0, up: false),
+                       .latest)
+        // 칸 크기를 아직 모름 — 호출자가 말풍선 단위로 대신한다.
+        XCTAssertNil(K.pixelScrollTarget(offset: 0, viewport: 0, minOffset: 0, maxOffset: 2000, fraction: 1.0 / 3.0, up: false))
+        XCTAssertNil(K.pixelScrollTarget(offset: .nan, viewport: 600, minOffset: 0, maxOffset: 2000, fraction: 1.0 / 3.0, up: false))
+    }
+
     func testDeduperKeyPressBeatsGameControllerForComposerReturn() {
         var dedupe = KeyDeduper(window: 0.5)
         XCTAssertTrue(dedupe.accept("key:enter", from: .keyPress, at: 10.000))         // onKeyPress 가 먼저(입력칸보다 앞)

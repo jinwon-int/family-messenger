@@ -154,6 +154,55 @@ public enum HardwareKeys {
         return next < rows.count ? .row(rows[next]) : .latest
     }
 
+    /// 대화 읽기 ↑/↓ 한 번에 움직일 거리 — 설정 「화면」. 오너 2026-11-11: 말풍선 하나씩(`scrollTarget`)은 긴 에이전트 답에서 한 번에
+    /// 너무 많이 움직이고, 화면보다 긴 말풍선은 가운데를 맞추느라 윗부분을 건너뛴다 → 기본은 보이는 칸 높이의 1/3, 종전 방식은 `bubble` 로 남긴다.
+    /// 기기 표시 설정이라 서버 스코프 밖 `UserDefaults.standard`(테마와 같다).
+    public enum ArrowScrollStep: String, CaseIterable, Equatable, Sendable {
+        case small, medium, large, bubble
+
+        public static let storageKey = "hande.arrowScrollStep"
+        public static let standard: ArrowScrollStep = .medium
+
+        /// 저장값이 없거나 모르는 값이면 기본(보통).
+        public static func from(_ raw: String?) -> ArrowScrollStep {
+            raw.flatMap(ArrowScrollStep.init(rawValue:)) ?? standard
+        }
+
+        /// 보이는 칸 높이에 대한 한 번 이동 비율. `bubble` 은 nil(말풍선 단위 — `scrollTarget`).
+        /// 크게(2/3)도 1/3 은 겹쳐 남아 어디까지 읽었는지 놓치지 않는다.
+        public var viewportFraction: Double? {
+            switch self {
+            case .small: return 1.0 / 6.0
+            case .medium: return 1.0 / 3.0
+            case .large: return 2.0 / 3.0
+            case .bubble: return nil
+            }
+        }
+    }
+
+    public enum PixelScrollTarget: Equatable, Sendable {
+        /// 스크롤 위치(contentOffset.y)를 여기로.
+        case offset(Double)
+        /// 맨 아래(최신 글 따라가기 다시 켬) — 말풍선 단위의 `ScrollTarget.latest` 와 같다.
+        case latest
+    }
+
+    /// 대화 읽기 ↑/↓ — 보이는 칸의 `fraction` 만큼(웹의 고정 60px 이동과 같은 픽셀 단위). `offset` = 지금 contentOffset.y,
+    /// `minOffset`·`maxOffset` = 맨 위·맨 아래의 offset(위 inset 은 음수 쪽). 맨 위에서 ↑ 는 nil(제자리),
+    /// ↓ 로 맨 아래에 닿거나 넘으면 `latest`. 칸 크기를 아직 모르면 nil(호출자가 말풍선 단위로 대신한다).
+    public static func pixelScrollTarget(offset: Double, viewport: Double, minOffset: Double, maxOffset: Double,
+                                         fraction: Double, up: Bool) -> PixelScrollTarget? {
+        guard viewport > 0, fraction > 0, offset.isFinite, minOffset.isFinite, maxOffset.isFinite else { return nil }
+        let bottom = max(minOffset, maxOffset)
+        let step = max(1, (viewport * fraction).rounded())
+        if up {
+            guard offset > minOffset + 0.5 else { return nil }
+            return .offset(max(minOffset, offset - step))
+        }
+        let next = offset + step
+        return next >= bottom - 0.5 ? .latest : .offset(next)
+    }
+
     // MARK: 대화 목록
 
     public enum ListAction: Equatable, Sendable {

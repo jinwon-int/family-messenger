@@ -232,6 +232,24 @@ extension Strings {
     static let themeChipDay = "낮불"
     static let themeNightHint = "밤이 기본이에요. 시스템 다크/라이트를 따르지 않습니다."
     static let themeDayHint = "밝은 곳·e-ink 화면용. 종이 바탕에 먹 글자, 움직임이 꺼집니다."
+    /// 설정 「화면」 — 하드웨어 키보드로 대화를 읽을 때 ↑/↓ 한 번의 이동(`HardwareKeys.ArrowScrollStep`).
+    static let arrowStepLabel = "↑/↓ 키 이동"
+    static func arrowStepChip(_ step: HardwareKeys.ArrowScrollStep) -> String {
+        switch step {
+        case .small: return "작게"
+        case .medium: return "보통"
+        case .large: return "크게"
+        case .bubble: return "말풍선"
+        }
+    }
+    static func arrowStepHint(_ step: HardwareKeys.ArrowScrollStep) -> String {
+        switch step {
+        case .small: return "키보드 ↑/↓ 한 번에 화면의 1/6씩 움직여요."
+        case .medium: return "키보드 ↑/↓ 한 번에 화면의 1/3씩 움직여요. 기본값이에요."
+        case .large: return "키보드 ↑/↓ 한 번에 화면의 2/3씩 움직여요."
+        case .bubble: return "키보드 ↑/↓ 한 번에 말풍선 하나씩 움직여요(예전 방식)."
+        }
+    }
     static let pushLabel = "새 메시지 알림"
     /// 설정 행 값(짧게). 긴 설명판 `lockPreview(_:)` 는 측정 기록·접근성용으로 남긴다.
     static func lockPreviewShort(_ value: LockScreenPreview) -> String {
