@@ -21,6 +21,8 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -78,6 +80,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -99,6 +102,9 @@ import androidx.compose.ui.graphics.drawscope.inset
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.seoyoon_family.hande.core.AttachmentFiles
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -170,7 +176,9 @@ import com.seoyoon_family.hande.ui.theme.SectionHeader
 import com.seoyoon_family.hande.ui.theme.SectionRow
 import com.seoyoon_family.hande.ui.theme.StepBar
 import com.seoyoon_family.hande.ui.theme.WarnBox
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -235,7 +243,12 @@ fun HandeRoot(hub: DeviceHub, themeMode: HandeThemeMode = HandeThemeMode.NIGHT, 
                 if (room != null) {
                     // 보고 있는 방의 읽음 위치(#571 후속): 열 때 한 번, 그 뒤 마지막 seq 가 움직일 때마다(새 글·내 전송).
                     LaunchedEffect(room.room, room.messages.lastOrNull()?.seq) { hub.markRead(scope, room.room) }
-                    RoomScreen(room, ui, onBack = { openRoom = null }, onSend = { text -> hub.send(scope, room.room, text) }, onNoticeShown = hub::clearNotice, previews = hub.linkPreviews)
+                    RoomScreen(
+                        room, ui, onBack = { openRoom = null }, onSend = { text -> hub.send(scope, room.room, text) }, onNoticeShown = hub::clearNotice,
+                        previews = hub.linkPreviews,
+                        onOpenAttachment = { seq -> hub.openAttachment(room.room, seq) },
+                        onSendAttachment = { bytes, name -> hub.sendAttachment(scope, room.room, bytes, name) },
+                    )
                 } else if (showDevices) {
                     LaunchedEffect(Unit) { hub.refreshDevices(scope) }
                     DevicesScreen(ui, onBack = { showDevices = false }, onGrant = { hub.setRoles(scope, it, true) }, onRelease = { hub.setRoles(scope, it, false) }, onNoticeShown = hub::clearNotice)
@@ -1140,8 +1153,56 @@ private fun SeatDots(messages: List<MessageUi>) {
  * 꺼진 자리(2차-A §A6): 제목 아래 「불이 꺼진 자리」, 지난 말풍선 60%, 입력창 자리를 안내 상자(`HaltedBox`)로 교체 — 「덮어 두기」(보관)는 Android 에 없어 두지 않는다.
  */
 @Composable
-fun RoomScreen(room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> Unit, onNoticeShown: () -> Unit, previews: LinkPreviews? = null) {
+fun RoomScreen(
+    room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> Unit, onNoticeShown: () -> Unit, previews: LinkPreviews? = null,
+    onOpenAttachment: (suspend (Long) -> AttachmentFiles.OpenResult)? = null,
+    onSendAttachment: ((ByteArray, String?) -> Unit)? = null,
+) {
     val colors = LocalHandeColors.current
+    // #366 C · #338 C 단계 — 첨부: 말풍선을 누르면 열고(이미지는 화면 안 뷰어, 그 밖은 다른 앱으로), 작성창 📎 로 파일을 골라 보낸다.
+    // 연 바이트는 화면 상태에만 있고 이력에는 저장하지 않는다(FILE-V2 §4-2). 한 번에 하나만 연다.
+    val attachScope = rememberCoroutineScope()
+    val attachContext = LocalContext.current
+    var opening by remember(room.room) { mutableStateOf<Long?>(null) }
+    var viewing by remember(room.room) { mutableStateOf<AttachmentFiles.Opened?>(null) }
+    val toast: (String) -> Unit = { text -> android.widget.Toast.makeText(attachContext, text, android.widget.Toast.LENGTH_SHORT).show() }
+    val openAttachment: ((MessageUi) -> Unit)? = onOpenAttachment?.let { open ->
+        { m: MessageUi ->
+            if (opening == null) {
+                opening = m.seq
+                attachScope.launch {
+                    val result = open(m.seq)
+                    opening = null
+                    when (result) {
+                        is AttachmentFiles.Opened ->
+                            if (result.kind == "image") viewing = result else AttachmentIo.openWith(attachContext, result, Strings.attachmentOpenWith)
+                        is AttachmentFiles.OpenFailed -> toast(result.message)
+                    }
+                }
+            }
+        }
+    }
+    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val send = onSendAttachment
+        if (uri != null && send != null) {
+            attachScope.launch {
+                when (val picked = withContext(Dispatchers.IO) { AttachmentIo.readPicked(attachContext, uri) }) {
+                    is AttachmentIo.Picked.Ok -> send(picked.bytes, picked.name)
+                    AttachmentIo.Picked.Empty -> toast(Strings.attachmentEmpty)
+                    AttachmentIo.Picked.TooLarge -> toast(Strings.attachmentTooLarge)
+                    AttachmentIo.Picked.Unreadable -> toast(Strings.attachmentUnreadable)
+                }
+            }
+        }
+    }
+    viewing?.let { v ->
+        AttachmentViewer(
+            v,
+            onShare = { if (!AttachmentIo.share(attachContext, v, Strings.attachmentShare)) toast(Strings.attachmentNoApp) },
+            onOpenWith = { AttachmentIo.openWith(attachContext, v, Strings.attachmentOpenWith) },
+            onClose = { viewing = null },
+        )
+    }
     var draft by rememberSaveable(room.room) { mutableStateOf("") }
     val listState = rememberLazyListState()
     val halted = room.halted
@@ -1181,11 +1242,12 @@ fun RoomScreen(room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> 
             LazyColumn(Modifier.weight(1f).fillMaxWidth().alpha(if (halted != null) 0.6f else 1f), state = listState, contentPadding = PaddingValues(12.dp)) {
                 itemsIndexed(room.messages, key = { _, m -> "${m.sender}-${m.seq}" }) { i, m ->
                     val card = choiceCards.getOrNull(i)
+                    val onAttachment = if (m.attachment) openAttachment?.let { open -> { open(m) } } else null
                     if (card == null) {
-                        MessageRow(m, previews, sites) { id -> onAlertRef(i, id) }
+                        MessageRow(m, previews, sites, opening = opening == m.seq, onAttachment = onAttachment) { id -> onAlertRef(i, id) }
                     } else {
                         Column(Modifier.fillMaxWidth()) {
-                            MessageRow(m, previews, sites) { id -> onAlertRef(i, id) }
+                            MessageRow(m, previews, sites, opening = opening == m.seq, onAttachment = onAttachment) { id -> onAlertRef(i, id) }
                             AgentChoicesCard(m, card, enabled = canChoose, onSend = onSend)
                         }
                     }
@@ -1198,7 +1260,10 @@ fun RoomScreen(room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> 
             } else if (!room.joined) {
                 Text(Strings.notJoined, Modifier.padding(12.dp), color = colors.inkDim)
             } else {
-                Composer(draft, onDraft = { draft = it }, onSend = { onSend(draft.trim()); draft = "" })
+                Composer(
+                    draft, onDraft = { draft = it }, onSend = { onSend(draft.trim()); draft = "" },
+                    onAttach = if (onSendAttachment != null) ({ pickFile.launch(arrayOf("*/*")) }) else null,
+                )
             }
         }
     }
@@ -1240,10 +1305,24 @@ private fun HaltedBox(reason: String) {
 /** 입력창(알약, 면+선) + 보내기(44dp 주황 원 「↑」, 비면 35%). 화면에서 큰 주황 면은 내 말풍선과 이 버튼뿐. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun Composer(draft: String, onDraft: (String) -> Unit, onSend: () -> Unit) {
+private fun Composer(draft: String, onDraft: (String) -> Unit, onSend: () -> Unit, onAttach: (() -> Unit)? = null) {
     val colors = LocalHandeColors.current
     val canSend = draft.isNotBlank()
     Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+        // #366 C: 첨부 보내기(시스템 파일 선택) — 면+선 44dp 원(주황 면은 보내기 버튼만).
+        if (onAttach != null) {
+            Box(
+                Modifier
+                    .padding(bottom = 6.dp)
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(colors.surface)
+                    .border(colors.lineWidth, colors.stroke, CircleShape)
+                    .clickable(role = Role.Button, onClick = onAttach)
+                    .semantics { contentDescription = Strings.attachButton },
+                contentAlignment = Alignment.Center,
+            ) { Icon(HandeIcons.add(colors.ink), contentDescription = null, Modifier.size(20.dp), tint = Color.Unspecified) }
+        }
         OutlinedTextField(
             draft, onDraft, Modifier.weight(1f),
             placeholder = { Text(Strings.composerPlaceholder) }, maxLines = 4,
@@ -1277,6 +1356,8 @@ private fun MessageRow(
     m: MessageUi,
     previews: LinkPreviews? = null,
     sites: PreviewSites.Registry = PreviewSites.FALLBACK,
+    opening: Boolean = false,
+    onAttachment: (() -> Unit)? = null,
     onAlertRef: ((String) -> Unit)? = null,
 ) {
     val colors = LocalHandeColors.current
@@ -1301,8 +1382,10 @@ private fun MessageRow(
         // 에이전트 말풍선은 글 그대로.
         // 말풍선 글은 remember 로 캐시된다 — 그 안 클릭은 늘 최신 콜백(최신 목록·index)을 부르게.
         val latestOnAlertRef by rememberUpdatedState(onAlertRef)
-        val body = remember(m.text, agent, sites) {
-            if (agent) AnnotatedString(m.text) else buildAnnotatedString {
+        val body = remember(m.text, agent, sites, opening, onAttachment != null) {
+            // #366 C: 첨부 말풍선 = 자리 표시 + 「눌러서 열기」/「여는 중…」 한 줄(링크·참조는 찾지 않는다).
+            if (m.attachment) AnnotatedString(if (onAttachment == null) m.text else m.text + "\n" + (if (opening) Strings.attachmentOpening else Strings.attachmentTapHint))
+            else if (agent) AnnotatedString(m.text) else buildAnnotatedString {
                 append(m.text)
                 val found = sites.links(m.text)
                 for (link in found) {
@@ -1327,6 +1410,7 @@ private fun MessageRow(
                 .wrapContentWidth(if (m.mine) Alignment.End else Alignment.Start)
                 .clip(shape)
                 .then(fill)
+                .then(if (onAttachment != null) Modifier.clickable(enabled = !opening, role = Role.Button, onClick = onAttachment) else Modifier)
                 .padding(horizontal = 14.dp, vertical = 11.dp),
             color = if (m.mine) colors.onEmber else colors.ink,
             style = MaterialTheme.typography.bodyLarge,
@@ -1336,6 +1420,35 @@ private fun MessageRow(
         if (!agent && !m.attachment && previews != null) {
             val target = remember(m.text, sites) { sites.target(m.text) }
             if (target != null) LinkPreviewCard(target, previews, siteName = remember(target, sites) { sites.siteOf(target)?.name.orEmpty() })
+        }
+    }
+}
+
+/**
+ * 첨부 이미지 뷰어(#366 C): 검은 바탕 전체 화면 Dialog — 이미지(긴 변 ≤ 2048px 로 줄여 디코딩, 비율 유지) + 아래 「공유」·「다른 앱으로 열기」·「닫기」.
+ * 디코딩은 화면 스레드 밖에서. 디코딩할 수 없으면(형식·손상) 다른 앱으로 넘기고 닫는다. 바이트는 이 화면 상태에만 있다(이력 저장 안 함).
+ */
+@Composable
+private fun AttachmentViewer(opened: AttachmentFiles.Opened, onShare: () -> Unit, onOpenWith: () -> Unit, onClose: () -> Unit) {
+    val decoded by produceState<Any?>(initialValue = Unit, opened) {
+        value = withContext(Dispatchers.Default) { AttachmentIo.decodeImage(opened.bytes) }
+    }
+    LaunchedEffect(decoded) { if (decoded == null) { onOpenWith(); onClose() } }
+    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(Modifier.fillMaxSize().background(Color.Black)) {
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                val bitmap = decoded as? androidx.compose.ui.graphics.ImageBitmap
+                if (bitmap != null) {
+                    Image(bitmap, contentDescription = opened.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+                } else {
+                    Text(Strings.attachmentOpening, color = Color.White)
+                }
+            }
+            Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                TextButton(onClick = onShare) { Text(Strings.attachmentShare, color = Color.White) }
+                TextButton(onClick = onOpenWith) { Text(Strings.attachmentOpenWith, color = Color.White) }
+                TextButton(onClick = onClose) { Text(Strings.close, color = Color.White) }
+            }
         }
     }
 }

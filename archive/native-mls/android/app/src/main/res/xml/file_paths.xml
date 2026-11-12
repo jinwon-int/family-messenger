@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- #366 C: FileProvider 가 내보내는 경로 — 앱 cache 의 attachments/ 만(받은 첨부를 다른 앱으로 열기·공유할 때 쓰는 임시 파일). -->
+<paths>
+    <cache-path name="attachments" path="attachments/" />
+</paths>

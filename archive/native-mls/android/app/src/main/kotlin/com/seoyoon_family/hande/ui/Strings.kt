@@ -141,8 +141,24 @@ object Strings {
     /** 「오늘의 불 세기」 접근성 문구(숫자·그래프 없음 — 조용함/보통/활발). */
     fun fireLevel(level: Int) = "오늘의 불 세기 · " + when (level) { 1 -> "조용함"; 2 -> "보통"; else -> "활발" }
 
-    // 첨부 자리 표시(v1·v2 같은 모양 — 파일 열기는 C 단계). 설명자가 잘못된 file-v2 는 웹 `fileV2Invalid` 와 같은 뜻.
+    // 첨부 자리 표시(v1·v2 같은 모양). 설명자가 잘못된 file-v2 는 웹 `fileV2Invalid` 와 같은 뜻.
     fun attachmentPlaceholder(bytes: Long) = "📎 첨부($bytes B)"
+    // #366 C · #338 C 단계: 첨부 열기·보내기(웹·iOS 와 같은 뜻 — iOS 「첨부를 열 수 없음 — 눌러서 다시 받기」).
+    const val attachmentTapHint = "눌러서 열기"
+    const val attachmentOpening = "여는 중…"
+    const val attachmentOpenFailed = "첨부를 열 수 없음"
+    const val attachmentDamaged = "첨부를 열 수 없음 — 눌러서 다시 받기"
+    const val attachmentOffline = "연결되지 않아 첨부를 받지 못했어요 — 다시 눌러 주세요"
+    const val attachmentGone = "릴레이에 첨부가 더 이상 없어요"
+    const val attachmentSending = "첨부 보내는 중…"
+    const val attachmentSendFailed = "첨부를 보내지 못했어요"
+    const val attachmentTooLarge = "첨부가 너무 커요(최대 50 MiB)"
+    const val attachmentEmpty = "빈 파일은 보낼 수 없어요"
+    const val attachmentUnreadable = "고른 파일을 읽을 수 없어요"
+    const val attachButton = "첨부 보내기"
+    const val attachmentShare = "공유"
+    const val attachmentOpenWith = "다른 앱으로 열기"
+    const val attachmentNoApp = "열 수 있는 앱이 없어요"
     const val fileV2Invalid = "⚠ 첨부 정보가 올바르지 않아 열 수 없음"
     // alert-refs-v1: 플릿 알림의 `#번호` 를 눌렀는데 원래 알림이 이 화면에 없다(웹·iOS 와 같은 문구).
     const val alertRefMissing = "원래 알림이 이 화면에 없어요"

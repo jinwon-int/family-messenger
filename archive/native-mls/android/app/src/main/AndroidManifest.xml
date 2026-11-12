@@ -32,5 +32,16 @@
                 <data android:scheme="hande" android:host="auth" />
             </intent-filter>
         </activity>
+
+        <!-- #366 C: 받은 첨부를 다른 앱으로 열기·공유 — cache/attachments/ 의 임시 파일만(복호화한 바이트는 이력에 저장하지 않는다, FILE-V2 §4-2). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

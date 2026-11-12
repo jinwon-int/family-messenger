@@ -82,7 +82,7 @@ base64url 정규형: RFC 4648 §5 알파벳, `=` 패딩 없음, 다시 인코딩
 - 릴레이: `archive/native-mls/server/blobs.go`.
 - 안드로이드: `archive/native-mls/android/app/src/main/kotlin/com/seoyoon_family/hande/core/FileV2.kt`(설명자 엄격 검증·수신 분류 — #366 3e 부터 공용 Rust 코어
   `fileV2Check`·`fileV2Classify` 를 부르는 얇은 층, 테스트 `FileV2Test.kt`·`FileV2VectorsTest.kt`). 정상 설명자 → 이력 kind `file-v2`(본문 = 「📎 첨부(n B)」 자리 표시, attachment 칸 = 설명자), 잘못된 설명자 →
-  `undecryptable`(평문 버림). blob 받기·열기는 v1 첨부 미리보기와 함께 C 단계(`fileV2Open`). 웹보다 엄격한 점: 중복 키·앞머리 BOM·짝 없는 서로게이트 거부(iOS·봇과 같음).
+  `undecryptable`(평문 버림). 열기·보내기(#366 C): 말풍선을 누르면 `MlsRoom.openFileV2`(blob 받기·검증·복호 — 코어)로 열어 이미지는 화면 안 뷰어, 그 밖은 다른 앱으로(FileProvider, cache `attachments/` 임시 파일 — 이력에는 설명자만), 작성창 📎 = 시스템 파일 선택 → `MlsRoom.sendFileV2`(≤ 50 MiB) → 내 이력 `file-v2` 행. 웹보다 엄격한 점: 중복 키·앞머리 BOM·짝 없는 서로게이트 거부(iOS·봇과 같음).
 - 공용 Rust 코어(#366 3d): `archive/native-mls/host-core/src/file_v2.rs` — 설명자 검증·수신 분류·열기·봉인·내용 판별·저장 이름.
   봇은 이 모듈을 부르고, Android 는 `ios-ffi` 의 `fileV2Check`·`fileV2Classify`·`fileV2Open`·`fileV2Seal`·`fileV2Sniff`·
   `fileV2DisplayName` 으로 같은 코드를 부른다(앱 `FileV2.kt` 는 #366 3e 부터 `fileV2Check`·`fileV2Classify` 를 쓴다). 판정은 iOS 와 같다: 중복 키·앞머리 BOM·짝 없는
