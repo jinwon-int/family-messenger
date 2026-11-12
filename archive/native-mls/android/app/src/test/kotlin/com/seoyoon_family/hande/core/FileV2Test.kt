@@ -1,5 +1,6 @@
-// file-v2 설명자 검증·수신 분류 고정(#499, FILE-V2.md). 웹 `file-v2.js parseDescriptor` 와 같은 판정 — 다른 점은 중복 키 거부 하나.
-// android.* 없이 JVM 에서 돈다(CI `:app:testDebugUnitTest`).
+// file-v2 설명자 검증·수신 분류 고정(#499, FILE-V2.md). #366 3e 부터 판정은 공용 Rust 코어(host-core `file_v2`)가 하고, 이 테스트는
+// 앱의 얇은 층(FileV2 → 저장 행)과 코어의 경계 사례를 함께 고정한다. 웹 `file-v2.js` 와 다른 점(중복 키·BOM·짝 없는 서로게이트 거부)은
+// 공유 벡터의 `lenient` 참고. android.* 없이 JVM 에서 돈다(CI `:app:testDebugUnitTest`, 호스트 cdylib 은 JNA 로).
 package com.seoyoon_family.hande.core
 
 import com.seoyoon_family.hande.ui.Strings
@@ -26,8 +27,6 @@ class FileV2Test {
         val d = parse(minimal)
         assertEquals(blob, d.blob)
         assertEquals(2481920L, d.size)
-        assertContentEquals(ByteArray(32) { it.toByte() }, d.key)
-        assertContentEquals(ByteArray(12) { it.toByte() }, d.nonce)
         assertNull(d.mime); assertNull(d.name); assertNull(d.w); assertNull(d.h)
         assertFalse(d.toString().contains(key), "toString must not leak the key")
     }
@@ -50,7 +49,8 @@ class FileV2Test {
         assertEquals("size", rejected(minimal.replace("2481920", "1.5")))
         assertEquals("size", rejected(minimal.replace("2481920", "-1")))
         assertEquals("size", rejected(minimal.replace("2481920", "\"10\"")))
-        assertEquals("size", rejected(minimal.replace("2481920", "1e400")))
+        // f64 범위 밖 수: 코어(serde_json)는 문서 단계에서 거부한다 — 거부는 같고 사유만 다르다(전 Kotlin·웹은 "size").
+        assertEquals("not json", rejected(minimal.replace("2481920", "1e400")))
         assertEquals(20000L, parse(desc(""","w":20000""")).w)
         assertEquals("w", rejected(desc(""","w":20001""")))
         assertEquals("h", rejected(desc(""","h":0""")))
@@ -87,8 +87,6 @@ class FileV2Test {
         // nonce 는 key 의 앞부분과 같은 문자열이라 필드째 바꾼다
         assertEquals("nonce", rejected(minimal.replace("\"nonce\":\"$nonce\"", "\"nonce\":\"${nonce}AAAA\"")))
         assertEquals("nonce", rejected(minimal.replace("\"nonce\":\"$nonce\"", "\"nonce\":\"\"")))
-        assertNull(FileV2.base64urlDecode("A"))
-        assertContentEquals(byteArrayOf(-1), FileV2.base64urlDecode("_w"))
     }
 
     @Test fun strictJson() {
@@ -116,10 +114,12 @@ class FileV2Test {
     }
 
     @Test fun clientIdShape() {
-        assertTrue(FileV2.isClientId(client))
-        assertFalse(FileV2.isClientId(client.uppercase()))
-        assertFalse(FileV2.isClientId("$client-x"))
-        assertFalse(FileV2.isClientId("file-v1-0f8fad5b-d9cb-469f-a165-70867728950e"))
+        // 정규형 `file-v2-<소문자 uuid>` 만 file-v2 — 접두만 같으면 열지도 글로 보이지도 않는다(undecryptable).
+        assertEquals(MessageSchema.KIND_FILE_V2, FileV2.classify(client, minimal.toByteArray())!!.kind)
+        for (id in listOf(client.uppercase().replace("FILE-V2-", "file-v2-"), "$client-x")) {
+            assertEquals(MessageSchema.KIND_UNDECRYPTABLE, FileV2.classify(id, minimal.toByteArray())!!.kind, id)
+        }
+        assertEquals(MessageSchema.KIND_ATTACHMENT, FileV2.classify("file-v1-0f8fad5b-d9cb-469f-a165-70867728950e", minimal.toByteArray())!!.kind)
     }
 
     // ---- 수신 분류: file-v2 평문(키)은 어떤 경우에도 글로 저장되지 않는다 ----

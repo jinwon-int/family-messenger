@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Linux(또는 macOS) — Android 3 ABI .so + Kotlin 바인딩 (#338 스파이크 A, 네 번째 호스트).
 # 전제: rustup 에 Android std 타겟 3개, cargo-ndk(=4.1.2), ANDROID_NDK_HOME(없으면 ANDROID_NDK_LATEST_HOME → ANDROID_NDK_ROOT).
-# 출력: out/android/jniLibs/<abi>/libfamily_mls_ios_ffi.so, out/android/kotlin/**/*.kt, out/android/jnilibs-sha256.txt, out/android/build-report.txt
+# 출력: out/android/jniLibs/<abi>/libfamily_mls_ios_ffi.so, out/android/kotlin/**/*.kt, out/android/host/<호스트 cdylib>(#366 3e), out/android/jnilibs-sha256.txt, out/android/build-report.txt
 # 16 KB 페이지(#584): 64비트 .so 를 -z max-page-size=16384 로 링크하고 LOAD 정렬을 검증한다(실패 = exit 69).
 # 사용: archive/native-mls/ios-ffi/build-android.sh [--out DIR] [--platform API]   (기본 API 26 = #338 minSdk 제안)
 set -euo pipefail
@@ -37,6 +37,12 @@ for cand in target/debug/libfamily_mls_ios_ffi.so target/debug/libfamily_mls_ios
 done
 [ -n "$host_lib" ] || { echo "host cdylib not found under target/debug" >&2; exit 66; }
 target/debug/uniffi-bindgen generate --library "$host_lib" --language kotlin --out-dir "$out/kotlin"
+
+# 2b) 호스트 cdylib 사본(#366 3e) — 앱 JVM 단위 테스트(:app:testDebugUnitTest)가 JNA 로 싣는다(app/build.gradle.kts `jna.library.path`).
+#     디버그 정보만 뗀다(심벌·uniffi 체크섬 함수는 남음). jniLibs 밖이라 APK·AAB 에는 들어가지 않는다.
+mkdir -p "$out/host"
+cp "$host_lib" "$out/host/"
+strip -S "$out/host/$(basename "$host_lib")" 2>/dev/null || true
 
 # 3) 무결성 목록 + 크기 보고 (#243 2-d 릴리스 무결성 규칙 승계) + 16 KB 페이지 정렬 검증(#584 — 64비트 ABI 의 모든 LOAD 세그먼트 Align ≥ 0x4000)
 ( cd "$out" && find jniLibs -type f -print0 | sort -z | xargs -0 sha256sum > jnilibs-sha256.txt )

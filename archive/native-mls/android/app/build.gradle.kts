@@ -160,6 +160,21 @@ dependencies {
     implementation(libs.androidx.browser)
     // JVM 단위 테스트(AppLogin 순수 로직). kotlin-test-junit 은 Kotlin 핀과 같은 버전, JUnit 4 는 전이 의존.
     testImplementation(libs.kotlin.test.junit)
+    // #366 3e: 단위 테스트가 uniffi 바인딩(코어 `fileV2*` — FileV2)을 부른다. aar 의 JNA 에는 데스크톱 libjnidispatch 가 없으므로 같은 버전의
+    // jar 를 테스트에만 더한다(앱·번들에는 들어가지 않는다). 호스트 cdylib 은 아래 Test 설정의 `jna.library.path`.
+    testImplementation("net.java.dev.jna:jna:${libs.versions.jna.get()}")
+}
+
+// #366 3e: JVM 단위 테스트가 싣는 호스트 cdylib(Linux .so / macOS .dylib) — build-android.sh 가 `<ffiOut>/host` 에 둔다(CI 는 아티팩트째).
+// jniLibs 밖이라 APK·AAB 에는 들어가지 않는다.
+val ffiHostLibDir: File = File(ffiOut, "host")
+tasks.withType<Test>().configureEach {
+    systemProperty("jna.library.path", ffiHostLibDir.absolutePath)
+    doFirst {
+        check(ffiHostLibDir.listFiles().orEmpty().any { it.name.startsWith("libfamily_mls_ios_ffi.") }) {
+            "host cdylib not found under $ffiHostLibDir — run archive/native-mls/ios-ffi/build-android.sh (or pass -PhandeFfiOut=<dir>)"
+        }
+    }
 }
 
 tasks.register("ffiOutCheck") {

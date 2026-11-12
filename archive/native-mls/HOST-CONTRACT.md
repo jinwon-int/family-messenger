@@ -105,16 +105,16 @@
 | `fileV2Seal(plaintext, mime, name?)` → `MlsFileV2Sealed{ciphertext, descriptor, blob}` | §2·§3: 새 무작위 키·nonce(`/dev/urandom`). 호스트는 `ciphertext` 를 `POST …/blobs` 로 올리고 응답 id = `blob` 확인 뒤 `descriptor` 를 `file-v2-<uuid>` 로 게시 |
 | `fileV2Sniff(bytes)` → `MlsFileV2Sniff{mime, kind}` · `fileV2DisplayName(name)` → 이름? | 내용(매직 바이트)으로 MIME · 양방향 제어 문자가 든 이름은 쓰지 않음 |
 
-판정은 공유 벡터 `tests/fixtures/file-v2-vectors.json` 으로 고정한다(웹·Android `FileV2.kt` 와 다른 곳은 항목의 `lenient`).
+판정은 공유 벡터 `tests/fixtures/file-v2-vectors.json` 으로 고정한다(웹과 다른 곳은 항목의 `lenient`). Android 앱 `core/FileV2` 는 #366 3e 부터 이 함수들을 부르는 얇은 층이다(저장 행 kind · body · attachment 로 옮기기만).
 
 ## 6. 아직 코어에 없는 것(호스트가 임시로 하거나 보류)
 - 3c 에서 코어로 들어간 것: 로비 key package 게시·보충(`MlsLobby.replenish`) · 방 목록(`rooms()`) · 푸시 등록(`registerPush`) · 방 닫기(`MlsRoom.closeRoom`) · 로비 Welcome 받아들이기(`MlsRoom.adopt`).
-- 3d 에서 코어로 들어간 것: file-v2 규칙(§2c). **Android 앱 호출부 교체는 후속**: `FileV2.kt`·`DeviceHub` 는 아직 Kotlin 판정을 쓴다(벡터로 코어와 같음을 확인) — 앱 JVM 단위 테스트(`:app:testDebugUnitTest`)가 호스트 `.so` 를 싣지 않아서, 그 테스트 경로를 먼저 마련한다.
+- 3d·3e 에서 코어로 들어간 것: file-v2 규칙(§2c) — Android `FileV2.kt`·`DeviceHub` 는 코어 판정을 쓴다. 앱 JVM 단위 테스트(`:app:testDebugUnitTest`)는 호스트 cdylib(`<ffiOut>/host`, `build-android.sh` 2b)을 JNA 로 싣는다. file-v2 **열기·송신**(blob 받기 → `fileV2Open`, `fileV2Seal` → 업로드)은 앱 C 단계.
 - 남은 것: **첨부 크기 정책**(호스트 `application` 콜백에서 `client_id` `file-v1-…` 판정 뒤 적용) · 푸시 **와이어의 FCM 일반화**(릴레이 #338 G3 — 클라이언트 호출 모양은 그대로) · 로비 key package 의 **방 상태 사본에서의 정리**(`join` 이 남은 것을 모두 지우므로 방 쪽은 자동; 로비 쪽은 `replenish` 가 서버 `live` 기준으로 정리).
 
 ## 7. 검증
 - Rust: `ios-ffi/tests/room_host.rs`(3a, 10 시나리오 — #574 형제 기기 `invite` · 후속의 대기 Welcome 영속·재시작 포함) · `ios-ffi/tests/lobby_host.rs`(3c, 12 시나리오: 보충·상한·게시 실패 롤백·로비 Welcome adopt·import·회수·방 닫기·푸시 + #574 `/v2/me`·후보 게시→승인·역할·로비 `dispatch`) — 대역은 `tests/support/mod.rs`(in-memory 릴레이·관찰자·기기 정책 체인 대역).
 - JVM(Linux, CI `native-mls-android.yml`): [`android/host`](android/) — Kotlin 바인딩 + `JdkHttpTransport`/`FileRoomStore`/`FileLobbyStore` + in-memory 릴레이로 **같은 시나리오**(두 기기 왕복 · 409 재전송 · 영속 뒤 `import` 이어 받기 · 정지 · 로비 보충→adopt→방 목록→닫기→푸시→회수 · 읽음 위치 · #574 후보→승인→역할→형제 초대→adopt). 실행 `android/scripts/jvm-roundtrip.sh`. ⑧ file-v2(§2c): 봉인 → 검증 → 열기 · 변조 거부 · 분류를 Kotlin 에서 코어로.
 - file-v2 판정: `host-core` `file_v2::tests::shared_vectors` · `ios-ffi/tests/file_v2_ffi.rs` · 웹 `file-v2-vectors.test.mjs` · Android `FileV2VectorsTest`(같은 벡터 파일).
-- 호스트 판정(Android `core/SelfService`): `:app:testDebugUnitTest` 의 `SelfServiceTest`(웹 `tests/self-service.test.mjs` 와 같은 경우) · `AppLoginTest.subjectOf*`(등록 JSON `subject` = JWT `sub`).
+- 호스트 판정(Android `core/SelfService`·`core/FileV2`): `:app:testDebugUnitTest` 의 `FileV2Test`·`FileV2VectorsTest`(코어 ffi 경유) · `SelfServiceTest`(웹 `tests/self-service.test.mjs` 와 같은 경우) · `AppLoginTest.subjectOf*`(등록 JSON `subject` = JWT `sub`).
 - 실기기·에뮬레이터(Android 앱)는 #338 B 단계.
