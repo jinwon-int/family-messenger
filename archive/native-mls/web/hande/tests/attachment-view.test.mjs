@@ -26,13 +26,17 @@ test('imageType: 래스터 이미지 4종만 내용으로 판별, HEIC·텍스�
   assert.equal(imageType(null), null);
 });
 
-test('shouldPreview: 첨부 한도(5 MiB)까지 — 3.1 MiB 사진(seq 372)도 판별 대상, 한도 초과·본체 없음·텍스트는 제외', () => {
-  assert.equal(IMAGE_PREVIEW_MAX, MAX_ATTACHMENT);
-  assert.equal(IMAGE_PREVIEW_MAX, 5 * 1024 * 1024);
+test('shouldPreview: 20 MiB(#499 결정 ③)까지 — v1 한도(5 MiB) 사진·3.1 MiB 사진(seq 372)·file-v2 원본 사진은 판별 대상, 상한 초과·본체 없음·텍스트는 제외', () => {
+  assert.equal(IMAGE_PREVIEW_MAX, 20 * 1024 * 1024);
+  assert.ok(IMAGE_PREVIEW_MAX >= MAX_ATTACHMENT, 'v1 첨부 한도보다 낮으면 v1 사진이 파일 행이 된다(seq 372 회귀)');
   const load = async () => JPEG;
   assert.equal(shouldPreview({kind: 'attachment', size: 3_278_613, load}), true);
   assert.equal(shouldPreview({kind: 'attachment', size: MAX_ATTACHMENT, load}), true);
-  assert.equal(shouldPreview({kind: 'attachment', size: MAX_ATTACHMENT + 1, load}), false);
+  assert.equal(shouldPreview({kind: 'attachment', size: MAX_ATTACHMENT + 1, load}), true, 'file-v2 원본 사진(5 MiB 초과)도 그린다');
+  assert.equal(shouldPreview({kind: 'attachment', size: 12_582_912, load}), true);
+  assert.equal(shouldPreview({kind: 'attachment', size: IMAGE_PREVIEW_MAX, load}), true);
+  assert.equal(shouldPreview({kind: 'attachment', size: IMAGE_PREVIEW_MAX + 1, load}), false, '20 MiB 초과는 파일 행(다운로드)');
+  assert.equal(shouldPreview({kind: 'attachment', size: 50 * 1024 * 1024, load}), false);
   assert.equal(shouldPreview({kind: 'attachment', size: 100, load: null}), false);
   assert.equal(shouldPreview({kind: 'text', size: 100, load}), false);
   assert.equal(shouldPreview({kind: 'attachment', size: -1, load}), false);
