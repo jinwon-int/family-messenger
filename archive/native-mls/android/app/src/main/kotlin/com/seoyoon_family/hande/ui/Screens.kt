@@ -1436,7 +1436,7 @@ private fun AgentChoicesCard(m: MessageUi, card: AgentChoices.Card, enabled: Boo
     ) {
         for (item in choices.items) {
             val on = item.number in picked
-            val recommended = choices.recommended == item.number
+            val recommended = item.number in choices.recommendedNumbers // 권장 번호 모두(§1.7 — 접두 `(권장)` 여럿)
             Row(
                 Modifier
                     .fillMaxWidth()

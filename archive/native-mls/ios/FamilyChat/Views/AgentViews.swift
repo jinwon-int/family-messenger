@@ -399,7 +399,7 @@ struct AgentChoicesCard: View {
     /// 선택 표시는 에이전트 파랑(주황은 보내기 버튼만). 탭은 Core `AgentChoices.toggle`(⌥N 과 같은 규칙).
     private func row(_ item: AgentChoices.Item) -> some View {
         let isSelected = selected.contains(item.number)
-        let isRecommended = choices.recommended == item.number
+        let isRecommended = choices.recommendedNumbers.contains(item.number)   // 권장 번호 모두(§1.7 — 접두 `(권장)` 여럿)
         return Button {
             selected = Set(AgentChoices.toggle(selected: Array(selected), number: item.number, mode: choices.mode))
         } label: {

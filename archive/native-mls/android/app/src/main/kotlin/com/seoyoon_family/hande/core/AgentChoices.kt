@@ -13,12 +13,15 @@ data class AgentChoiceItem(val number: Int, val label: String)
 /**
  * 판정 결과: 항목(번호 1..k 연속 — 명시 블록 1~9개) + 권장 번호(없으면 null).
  * §5: `mode`(머리줄의 `하나만`·`one` → ONE, 아니면 MANY)·`explicit`(명시 블록이면 true — `parse` 결과는 언제나 true, §6).
+ * §1.7 `recommendedNumbers`: 권장 번호 모두(오름차순·중복 없음, 없으면 빈 목록) — 메시지의 `권장 N번`(1..k) ∪ 라벨에 `권장` 이 든
+ * 모든 항목(접두 `N. (권장) …` 여럿 가능). 주지 않으면 `recommended` 하나(또는 빈 목록) — 옛 생성자 호출 그대로.
  */
 data class AgentChoices(
     val items: List<AgentChoiceItem>,
     val recommended: Int?,
     val mode: Mode = Mode.MANY,
     val explicit: Boolean = false,
+    val recommendedNumbers: List<Int> = listOfNotNull(recommended),
 ) {
     /** 선택 모드(규격 §5.2). ONE 은 라디오 카드·한 개만 답(§5.1, #671 PR B), MANY 는 복수 선택(#624). */
     enum class Mode { ONE, MANY }
@@ -84,6 +87,16 @@ data class AgentChoices(
             return fromPattern ?: items.firstOrNull { "권장" in it.label }?.number
         }
 
+        /**
+         * 권장 번호 모두(규격 §1.7): 메시지 전체의 `권장 N번` 첫 일치(1..k 일 때) ∪ 라벨에 `권장` 이 든 모든 항목 — 오름차순·중복 없음.
+         * 접두 `N. (권장) …`·접미 `… (권장)` 어느 쪽이든 라벨에 `권장` 이 들어 있으면 된다.
+         */
+        private fun recommendedNumbersOf(normalized: String, items: List<AgentChoiceItem>): List<Int> {
+            val named = RECOMMENDED.find(normalized)?.groupValues?.get(1)?.toInt()
+            // items 는 1..k 오름차순이라 거르기만 하면 오름차순·중복 없음이다.
+            return items.filter { it.number == named || "권장" in it.label }.map { it.number }
+        }
+
         /** v2 명시 블록 하나(판정 중). `mode` 가 null 이면 머리줄이 없는 블록. */
         private class ExplicitBlock(val items: MutableList<AgentChoiceItem>, val mode: Mode?) {
             var invalid = false
@@ -143,7 +156,10 @@ data class AgentChoices(
             finish()
             val f = found ?: return null
             val items = f.items.toList()
-            return AgentChoices(items, recommendedOf(normalized, items), f.mode ?: Mode.MANY, explicit = true)
+            return AgentChoices(
+                items, recommendedOf(normalized, items), f.mode ?: Mode.MANY, explicit = true,
+                recommendedNumbers = recommendedNumbersOf(normalized, items),
+            )
         }
 
         /**

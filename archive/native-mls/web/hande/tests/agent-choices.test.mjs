@@ -29,9 +29,25 @@ test('공유 벡터 explicit 이 실렸다', () => {
 
 for (const v of vectors.explicit) {
   test(`explicit: ${v.name}`, () => {
-    assert.deepEqual(parseChoices(v.text), v.expected);
+    const got = parseChoices(v.text);
+    assert.deepEqual(got, v.expected);
+    // §1.7: 권장 번호 모두 — 기대값이 있으면 언제나 실려 있다(오름차순·중복 없음, 없으면 []).
+    if (v.expected) assert.deepEqual(got.recommendedNumbers, v.expected.recommendedNumbers);
   });
 }
+
+test('공유 벡터 explicit 의 recommendedNumbers: 접두 (권장) 여럿·권장 N번 합치기가 실렸다', () => {
+  const cases = vectors.explicit.filter((v) => v.expected);
+  assert.ok(cases.every((v) => Array.isArray(v.expected.recommendedNumbers)));
+  assert.ok(cases.some((v) => v.expected.recommendedNumbers.length >= 2));
+  for (const v of cases) {
+    const nums = v.expected.recommendedNumbers;
+    assert.deepEqual(nums, [...new Set(nums)].sort((a, b) => a - b), v.name);
+    // recommended 는 그대로(하위 호환): 있으면 recommendedNumbers 안에 있고, 없으면 recommendedNumbers 도 비었다.
+    if (v.expected.recommended === null) assert.deepEqual(nums, [], v.name);
+    else assert.ok(nums.includes(v.expected.recommended), v.name);
+  }
+});
 
 // #671 PR B: `one` 모드 — 행 탭은 바꿔 고르기, 답에 번호가 여럿이면 답이 아니다(closed).
 test('공유 벡터 toggle·answer 가 실렸다', () => {
@@ -118,6 +134,7 @@ test('state: 뒤에 메시지가 없으면 open', () => {
   assert.equal(s.state, 'open');
   assert.equal(s.choices.items.length, 3);
   assert.equal(s.choices.recommended, 2);
+  assert.deepEqual(s.choices.recommendedNumbers, [2]);
 });
 
 test('state: 시스템 줄만 뒤에 있으면 여전히 open', () => {

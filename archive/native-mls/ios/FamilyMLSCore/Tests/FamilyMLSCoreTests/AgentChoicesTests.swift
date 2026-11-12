@@ -59,7 +59,8 @@ final class AgentChoicesTests: XCTestCase {
                 AgentChoices.Item(number: try XCTUnwrap(int(item["number"]), "[\(name)] item.number"),
                                   label: try XCTUnwrap(item["label"] as? String, "[\(name)] item.label"))
             }
-            let want = AgentChoices(items: items, recommended: int(expected["recommended"]))
+            let want = AgentChoices(items: items, recommended: int(expected["recommended"]),
+                                    recommendedNumbers: ints(expected["recommendedNumbers"]))
             XCTAssertEqual(got, want, "[\(name)]")
         }
     }
@@ -87,6 +88,8 @@ final class AgentChoicesTests: XCTestCase {
             let parsed = try XCTUnwrap(got, "[\(name)] expected choices, got nil")
             XCTAssertEqual(parsed.items, items, "[\(name)] items")
             XCTAssertEqual(parsed.recommended, int(expected["recommended"]), "[\(name)] recommended")
+            let recommendedNumbers = try XCTUnwrap(ints(expected["recommendedNumbers"]), "[\(name)] expected.recommendedNumbers")
+            XCTAssertEqual(parsed.recommendedNumbers, recommendedNumbers, "[\(name)] recommendedNumbers")
             XCTAssertEqual(parsed.mode, mode, "[\(name)] mode")
             XCTAssertTrue(parsed.explicit, "[\(name)] explicit")
         }
@@ -280,6 +283,18 @@ final class AgentChoicesTests: XCTestCase {
         let parsed = AgentChoices.parse("권장: \(long)번\n**[답변 필요]**\n1. 가\n2. 나")
         XCTAssertNotNil(parsed)
         XCTAssertNil(parsed?.recommended)
+        XCTAssertEqual(parsed?.recommendedNumbers, [])
+    }
+
+    /// §1.7: 접두 `N. (권장) …` 여러 항목은 모두 권장 — `recommended` 는 예전처럼 첫 항목 하나(하위 호환).
+    func testSeveralPrefixRecommendations() {
+        let parsed = AgentChoices.parse("**[답변 필요]** 여러 개 선택 가능\n1. (권장) PR #12 머지 승인\n2. (권장) 노드 재시작 승인\n3. 보류")
+        XCTAssertEqual(parsed?.recommended, 1)
+        XCTAssertEqual(parsed?.recommendedNumbers, [1, 2])
+        XCTAssertEqual(parsed?.label(of: 1), "(권장) PR #12 머지 승인")
+        // recommendedNumbers 를 주지 않은 옛 생성자는 recommended 하나(또는 빈 배열)로 채운다.
+        XCTAssertEqual(AgentChoices(items: [], recommended: 2).recommendedNumbers, [2])
+        XCTAssertEqual(AgentChoices(items: [], recommended: nil).recommendedNumbers, [])
     }
 
     func testLabelLookup() {

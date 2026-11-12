@@ -42,6 +42,16 @@ function recommendedOf(source, items) {
 }
 
 /**
+ * 권장 번호 모두(규격 §1.7): 메시지 전체의 `권장 N번`(1..k) ∪ 라벨에 `권장` 이 든 모든 항목 — 오름차순·중복 없음, 없으면 [].
+ * 접두 `N. (권장) …`·접미 `… (권장)` 어느 쪽이든 라벨에 `권장` 이 들어 있으면 된다. 여러 항목이 권장일 수 있다.
+ */
+function recommendedNumbersOf(source, items) {
+  const named = RECOMMENDED.exec(source);
+  const n = named ? Number.parseInt(named[1], 10) : 0;
+  return items.filter((it) => it.number === n || it.label.includes('권장')).map((it) => it.number);   // items 는 1..k 오름차순
+}
+
+/**
  * v2(#671, 규격 §5): 에이전트가 `[답변 필요]` 머리줄로 명시한 블록 — 위치·뒤 줄 수·단서어는 보지 않는다.
  * 머리줄 = 펜스 밖, 블록 첫 항목 바로 위의 비어 있지 않은 줄. 마지막 유효 명시 블록(항목 1~9)이 결과.
  * 닫힌 블록은 뒤의 번호 줄로 무효가 되지 않는다(무효는 열린 블록만).
@@ -77,14 +87,17 @@ function parseExplicitChoices(source, lines) {
   }
   finish();
   if (!found) return null;
-  return {items: found.items, recommended: recommendedOf(source, found.items), mode: found.mode, explicit: true};
+  return {
+    items: found.items, recommended: recommendedOf(source, found.items), recommendedNumbers: recommendedNumbersOf(source, found.items),
+    mode: found.mode, explicit: true,
+  };
 }
 
 /**
  * 에이전트 글 본문에서 선택지를 찾는다: 에이전트가 `[답변 필요]` 머리줄로 명시한 블록(§5)만 카드가 된다.
  * 머리줄 없는 번호 목록은 끝에 있어도 카드가 아니다(§6, #671 PR D — v1 의 단서어 추측은 쓰지 않는다).
  * @param {string} text
- * @returns {null | {items: {number: number, label: string}[], recommended: number | null, mode: 'one' | 'many', explicit: true}}
+ * @returns {null | {items: {number: number, label: string}[], recommended: number | null, recommendedNumbers: number[], mode: 'one' | 'many', explicit: true}}
  */
 export function parseChoices(text) {
   if (typeof text !== 'string' || text.length === 0) return null;

@@ -37,7 +37,8 @@ class AgentChoicesTest {
                 AgentChoiceItem((it["number"] as Long).toInt(), it["label"] as String)
             }
             val recommended = (expected["recommended"] as Long?)?.toInt()
-            assertEquals(AgentChoices(items, recommended), got, name)
+            val recommendedNumbers = (expected["recommendedNumbers"] as List<*>?)?.map { (it as Long).toInt() } ?: listOfNotNull(recommended)
+            assertEquals(AgentChoices(items, recommended, recommendedNumbers = recommendedNumbers), got, name)
         }
     }
 
@@ -65,7 +66,11 @@ class AgentChoicesTest {
                 else -> fail("$name: unknown mode ${expected["mode"]}")
             }
             assertEquals(true, expected["explicit"], name)
-            assertEquals(AgentChoices(items, recommended, mode, explicit = true), got, name)
+            // §1.7: 권장 번호 모두 — explicit 기대값에는 언제나 있다.
+            val recommendedNumbers = (expected["recommendedNumbers"] as List<*>? ?: fail("$name: expected.recommendedNumbers"))
+                .map { (it as Long).toInt() }
+            assertEquals(recommendedNumbers, got?.recommendedNumbers, "$name recommendedNumbers")
+            assertEquals(AgentChoices(items, recommended, mode, explicit = true, recommendedNumbers = recommendedNumbers), got, name)
         }
     }
 
@@ -154,7 +159,19 @@ class AgentChoicesTest {
         assertEquals(AgentChoices.State.Open, card.state)
         assertEquals(3, card.choices.items.size)
         assertEquals(2, card.choices.recommended)
+        assertEquals(listOf(2), card.choices.recommendedNumbers)
         assertEquals("롤백 (권장)", card.choices.labelOf(2))
+    }
+
+    // §1.7: 접두 `N. (권장) …` 여러 항목은 모두 권장 — `recommended` 는 예전처럼 첫 항목 하나(하위 호환).
+    @Test fun severalPrefixRecommendations() {
+        val parsed = AgentChoices.parse("**[답변 필요]** 여러 개 선택 가능\n1. (권장) PR #12 머지 승인\n2. (권장) 노드 재시작 승인\n3. 보류")!!
+        assertEquals(1, parsed.recommended)
+        assertEquals(listOf(1, 2), parsed.recommendedNumbers)
+        assertEquals("(권장) PR #12 머지 승인", parsed.labelOf(1))
+        // recommendedNumbers 를 주지 않은 옛 생성자는 recommended 하나(또는 빈 목록)로 채운다.
+        assertEquals(listOf(2), AgentChoices(emptyList(), 2).recommendedNumbers)
+        assertEquals(emptyList<Int>(), AgentChoices(emptyList(), null).recommendedNumbers)
     }
 
     @Test fun answeredWhenMyNextMessageIsTheNumber() {
