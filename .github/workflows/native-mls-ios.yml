@@ -25,14 +25,15 @@ defaults:
 jobs:
   swift-core-linux:
     name: FamilyMLSCore contract tests (pure Swift, Linux)
-    # swift-actions/setup-swift@v2 는 Ubuntu 26.04(2026-11 ubuntu-latest)를 지원하지 않는다("Version 26.04 of Ubuntu is not supported") → 24.04 고정.
-    runs-on: ubuntu-24.04
+    # Swift 는 공식 이미지(swift:6.0-noble = Ubuntu 24.04 + Swift 6.0.x)로 받는다. swift-actions/setup-swift@v2 는
+    # 설치 때마다 `gpg --refresh-keys`로 keyserver.ubuntu.com(hkp)에 붙는데, 서명 검증을 끄거나 키 서버를 바꾸는 옵션이 없어
+    # 2026-11-11 키 서버 장애 때 15분 넘게 매달리다 취소됐다(PR #763 run 43019823197). 이미지는 Docker Hub 에서 받으므로
+    # 키 서버와 무관하고, 러너 OS(26.04 미지원 문제)와도 무관하다.
+    runs-on: ubuntu-latest
+    container: swift:6.0-noble
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: "6.0"
       - name: swift --version
         run: swift --version
       - name: swift test (FamilyMLSCore)
@@ -69,17 +70,27 @@ jobs:
     # (Core URLSessionRelayTransport) + 실 Go 릴레이(-access-mode disabled · 127.0.0.1 빈 포트 · mktemp -d).
     # 릴레이는 Linux 전용(devicepolicy 의 Openat/Renameat)이고 macOS 러너엔 Docker 가 없어 Linux 에서 돈다 — scripts/linux-smoke.sh.
     name: Isolated relay smoke (ios-ffi on Linux host + Go relay + HTTP)
-    runs-on: ubuntu-24.04   # setup-swift@v2 의 Ubuntu 26.04 미지원 — 위 swift-core-linux 와 같은 이유
+    # Swift 는 swift-core-linux 와 같은 이유로 공식 이미지에서 받는다. 이미지엔 curl·python3·gcc(Rust 링커)·rustup 이 없어 먼저 깐다.
+    # 컨테이너 job 에선 runner.temp 컨텍스트가 호스트 경로로 풀리므로 경로는 셸의 $RUNNER_TEMP 만 쓴다.
+    runs-on: ubuntu-latest
+    container: swift:6.0-noble
     timeout-minutes: 20
     steps:
+      - name: Container tools (curl · python3 · gcc)
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends curl ca-certificates python3 gcc
       - uses: actions/checkout@v4
-      - uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: "6.0"
+      # 컨테이너 root 가 러너 uid 소유 체크아웃을 읽으면 git 이 dubious ownership 으로 거부 → go build 의 VCS 스탬프가
+      # `error obtaining VCS status: exit status 128` 로 실패한다(PR #769 run 43138578848). checkout 은 임시 HOME 에만 등록한다.
+      - name: Trust the workspace for git (container uid ≠ checkout owner)
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Pinned Rust toolchain
         run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustc "+$RUST_TOOLCHAIN" --version
+          curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/rustup" toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          "$HOME/.cargo/bin/rustc" "+$RUST_TOOLCHAIN" --version
       - name: Cargo cache
         uses: actions/cache@v4
         with:
@@ -87,7 +98,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             archive/native-mls/ios-ffi/target
-          key: native-mls-ios-ffi-linux-smoke-${{ runner.os }}-${{ hashFiles('archive/native-mls/ios-ffi/Cargo.lock') }}
+          key: native-mls-ios-ffi-linux-smoke-ctr-${{ runner.os }}-${{ hashFiles('archive/native-mls/ios-ffi/Cargo.lock') }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: archive/native-mls/server/go.mod
@@ -116,10 +127,8 @@ jobs:
           curl -fsS "$relay_url/v2/health"
           { echo "SMOKE_DIR=$smoke_dir"; echo "FC_SMOKE_RELAY_URL=$relay_url"; echo "FC_SMOKE_CONTROL_URL=$control_url"; } >> "$GITHUB_ENV"
       - name: Smoke — two devices over the real relay (TwoDeviceScenario)
-        env:
-          FFI_LIB_DIR: ${{ runner.temp }}/ffi-lib
-          FFI_SWIFT_DIR: ${{ runner.temp }}/ffi-swift
         run: |
+          export FFI_LIB_DIR="$RUNNER_TEMP/ffi-lib" FFI_SWIFT_DIR="$RUNNER_TEMP/ffi-swift"
           start=$(date +%s)
           archive/native-mls/ios/scripts/linux-smoke.sh 2>&1 | tee "$RUNNER_TEMP/linux-smoke.log" | tail -n 60
           echo "smoke_test_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
