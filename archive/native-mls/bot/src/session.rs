@@ -642,7 +642,8 @@ fn run_rounds(
         // the room in `agent` mode); the others stay silent (B-H3). A dead
         // worker ends the session: the service manager restarts both halves
         // together rather than leaving a bot that reads everything and answers
-        // nothing.
+        // nothing. #776: a unix-socket port that drops (the bridge restarted)
+        // is retried for `reconnect_secs` first; only then is it "dead".
         // Typing keepalive: the current turn's ending line, if this round posts it.
         let mut typing_ended: Option<&'static str> = None;
         if let Some(responder) = agent.as_mut() {
@@ -1262,6 +1263,17 @@ pub(crate) fn emit_attachment_ready(room: &str, seq: i64, spooled: &attachment::
 
 pub(crate) fn emit_caption_merged(room: &str, attachment_seq: i64, caption_seq: i64) {
     emit(&serde_json::json!({ "event": "agent_caption", "room": room, "seq": attachment_seq, "caption_seq": caption_seq }));
+}
+
+/// #776: the unix-socket port to the responder dropped; the bot keeps
+/// running and retries (`agent_responder_reconnected` or, when the window
+/// runs out, `agent_worker_gone`). `queued` = messages waiting for the port.
+pub(crate) fn emit_responder_lost(reason: &str, queued: usize) {
+    emit(&serde_json::json!({ "event": "agent_responder_lost", "reason": reason, "queued": queued }));
+}
+
+pub(crate) fn emit_responder_reconnected(attempts: u32, after: Duration, queued: usize) {
+    emit(&serde_json::json!({ "event": "agent_responder_reconnected", "attempts": attempts, "after_ms": after.as_millis() as u64, "queued": queued }));
 }
 
 /// #703 journal: the sender's id and the outcome — never the notice text.
