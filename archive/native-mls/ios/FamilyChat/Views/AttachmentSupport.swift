@@ -1,4 +1,6 @@
-// 첨부 보조(§9-4): ① 사진을 256 KiB 안으로 줄이기(JPEG 품질 → 축소 반복) ② 파일을 그대로(한도 검사만) ③ 받은 첨부를 공유용 임시 파일로.
+// 첨부 보조(§9-4): ① 사진 준비 — 한도 안의 웹이 읽는 형식은 원본 그대로, HEIC 는 화질을 유지해 JPEG 로, 한도 초과만 줄이기(JPEG 품질 → 축소 반복)
+// ② 파일을 그대로(한도 검사만) ③ 받은 첨부를 공유용 임시 파일로.
+// 한도: file-v2 송신이 켜져 있으면 50 MiB(#499 4단계 결정 ②, 2026-11-12 — 원본 전송), 꺼져 있으면 v1 5 MiB. 공유 확장과 같은 규칙(ShareHandoff.maxFileBytes).
 // 와이어 형식(원본 바이트·client_id 규칙)은 Core `AttachmentFormat`. 여기는 UIKit 이 필요한 앱 전용 코드 — Linux 스모크 목록에 넣지 말 것.
 import Foundation
 import FamilyMLSCore
@@ -7,17 +9,18 @@ import UIKit
 #endif
 
 enum AttachmentPreparer {
-    static let limit = AttachmentFormat.maxBytes
+    static let limit = ShareHandoff.maxFileBytes()
     /// 축소 하한(긴 변). 이보다 작아져도 한도를 못 맞추면 포기한다(그런 사진은 없다고 봐도 된다 — 320px JPEG q0.3 ≈ 20 KB).
     static let minLongSide: CGFloat = 320
-    static let qualities: [CGFloat] = [0.85, 0.7, 0.55, 0.4, 0.3]
+    /// 첫 품질 0.92 = HEIC → JPEG 변환에서 화질 유지(#499 결정 ②). 50 MiB 한도면 대개 여기서 끝난다. 한도를 못 맞추면 낮춰 간다.
+    static let qualities: [CGFloat] = [0.92, 0.85, 0.7, 0.55, 0.4, 0.3]
 
     /// 파일: 한도 안이면 그대로, 아니면 nil(줄일 수 없다).
     static func prepareFile(_ data: Data) -> Data? { data.count <= limit ? data : nil }
 
     #if canImport(UIKit)
-    /// 사진: 한도 안의 JPEG/PNG/GIF/WebP 는 그대로(웹·NSE 가 읽는 형식). HEIC 나 한도 초과는 JPEG 로 다시 인코드하고,
-    /// 그래도 크면 긴 변을 0.75 배씩 줄인다. 반환 nil = 디코드 실패 또는 줄여도 한도 초과.
+    /// 사진: 한도 안의 JPEG/PNG/GIF/WebP 는 원본 그대로(웹이 읽는 형식 — file-v2 면 50 MiB 까지 원본). HEIC(웹이 못 그림)나
+    /// 한도 초과는 JPEG 로 다시 인코드하고(품질 0.92 부터), 그래도 크면 긴 변을 0.75 배씩 줄인다. 반환 nil = 디코드 실패 또는 줄여도 한도 초과.
     static func preparePhoto(_ data: Data, limit: Int = AttachmentPreparer.limit) -> Data? {
         let mime = AttachmentFormat.sniffMime(data)
         if data.count <= limit, ["image/jpeg", "image/png", "image/gif", "image/webp"].contains(mime) { return data }

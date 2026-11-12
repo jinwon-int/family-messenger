@@ -80,7 +80,7 @@ final class FileV2SendTests: XCTestCase {
         let (model, relay, _) = await readyModel(sendFileV2: true)
         let refused = await model.sendAttachment(room: "family", data: Data(count: FileV2Format.maxFileBytes + 1))
         XCTAssertNil(refused)
-        XCTAssertEqual(model.lastError, Strings.attachmentTooLarge(FileV2Format.maxFileBytes + 1))
+        XCTAssertEqual(model.lastError, Strings.attachmentTooLarge(FileV2Format.maxFileBytes + 1, limit: FileV2Format.maxFileBytes))
         XCTAssertEqual(relay.blobPosts, 0)
     }
 
