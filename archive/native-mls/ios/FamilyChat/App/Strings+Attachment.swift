@@ -1,5 +1,6 @@
 // 첨부(§9-4 "≤256 KiB 첨부") 화면 문구. 앱 전용 — NSE 소스 목록(project.yml)에 넣지 말 것. 한도 초과 문구는 Strings.attachmentTooLarge(AppModel 공용).
 import Foundation
+import FamilyMLSCore
 
 extension Strings {
     static let attachMenu = "첨부"
@@ -26,5 +27,7 @@ extension Strings {
     static let attachmentViewerClose = "닫기"
     static let attachmentViewerHint = "한 번 탭하거나 위나 아래로 밀면 닫기 · 두 손가락으로 확대 · 두 번 탭"
     static func attachmentLoading(_ bytes: Int) -> String { "📎 불러오는 중 · \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))" }
-    static let attachHint = "첨부는 5 MiB 까지입니다. 사진은 자동으로 줄여서 보냅니다. 파일 이름은 보내지 않습니다(받는 쪽에는 종류와 크기만 보입니다)."
+    static let attachHint = FileV2Format.sendDefault
+        ? "첨부는 50 MiB 까지입니다. 사진은 원본 그대로 보냅니다(HEIC 사진은 JPEG 로 바꿔 보냅니다). 파일 이름은 보내지 않습니다(받는 쪽에는 종류와 크기만 보입니다)."
+        : "첨부는 5 MiB 까지입니다. 사진은 자동으로 줄여서 보냅니다. 파일 이름은 보내지 않습니다(받는 쪽에는 종류와 크기만 보입니다)."
 }

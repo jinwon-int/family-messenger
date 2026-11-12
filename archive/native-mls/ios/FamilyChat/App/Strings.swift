@@ -121,9 +121,11 @@ enum Strings {
     /// #643 공유 확장 맡김 전달(AppModel.deliverPendingShares) — Linux 스모크 복사 파일이라 여기에 둔다.
     static func shareRoomGone(_ room: String) -> String { "공유한 내용을 보내지 못했습니다: 이 기기에 「\(roomLabel(room))」 대화방이 없습니다." }
     static let shareFileUnreadable = "공유한 파일 하나를 읽지 못해 보내지 못했습니다. 다시 공유해 주세요."
-    /// 첨부 한도(AttachmentFormat.maxBytes) 초과 — AppModel 이 쓰므로 여기(NSE 공유 파일)에 둔다.
-    static func attachmentTooLarge(_ bytes: Int) -> String {
-        "첨부는 5 MiB(5,242,880바이트) 이하여야 합니다(지금 \(bytes.formatted())바이트). 사진은 자동으로 줄이지만 파일은 줄일 수 없습니다."
+    /// 첨부 한도 초과 — AppModel 이 쓰므로 여기(NSE 공유 파일)에 둔다. `limit` 기본값 = 지금 송신 경로의 한도
+    /// (file-v2 송신 켜짐 50 MiB · 꺼짐 v1 5 MiB, ShareHandoff.maxFileBytes). v1 은 사진을 한도 안으로 줄이지만 file-v2 는 원본을 보낸다.
+    static func attachmentTooLarge(_ bytes: Int, limit: Int = ShareHandoff.maxFileBytes()) -> String {
+        let head = "첨부는 \(limit / (1024 * 1024)) MiB(\(limit.formatted())바이트) 이하여야 합니다(지금 \(bytes.formatted())바이트)."
+        return limit <= AttachmentFormat.maxBytes ? head + " 사진은 자동으로 줄이지만 파일은 줄일 수 없습니다." : head
     }
 
     // 참여 요청(JoinRequestView, §12-E) — 기본 대화방 ID 는 빌드 설정 FC_DEFAULT_ROOM(AppModel.defaultRoom)

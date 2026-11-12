@@ -54,7 +54,8 @@ final class AttachmentTests: XCTestCase {
         let (model, relay) = await readyModel()
         let outcome = await model.sendAttachment(room: "family", data: Data(count: AttachmentFormat.maxBytes + 1))
         XCTAssertNil(outcome)
-        XCTAssertEqual(model.lastError, Strings.attachmentTooLarge(AttachmentFormat.maxBytes + 1))
+        XCTAssertEqual(model.lastError, Strings.attachmentTooLarge(AttachmentFormat.maxBytes + 1, limit: AttachmentFormat.maxBytes))
+        XCTAssertTrue(model.lastError?.contains("5 MiB") == true, "v1 경로 문구는 v1 한도(5 MiB)를 말한다")
         let page = try? await relay.getEvents(room: "family", device: "mom-iphone-a1b2c3", after: 0, limit: 10, ack: nil)
         XCTAssertEqual(page?.events.count ?? 0, 0)
     }
@@ -94,8 +95,30 @@ final class AttachmentTests: XCTestCase {
     }
 
     func testPrepareFileOnlyChecksTheLimit() {
-        XCTAssertEqual(AttachmentPreparer.prepareFile(Data(count: AttachmentFormat.maxBytes)), Data(count: AttachmentFormat.maxBytes))
-        XCTAssertNil(AttachmentPreparer.prepareFile(Data(count: AttachmentFormat.maxBytes + 1)))
+        let limit = AttachmentPreparer.limit
+        XCTAssertEqual(AttachmentPreparer.prepareFile(Data(count: limit))?.count, limit)
+        XCTAssertNil(AttachmentPreparer.prepareFile(Data(count: limit + 1)))
+    }
+
+    // MARK: #499 4단계 결정 ② — file-v2 송신이면 50 MiB 원본
+
+    func testPreparerLimitFollowsTheSendSwitchLikeTheShareExtension() {
+        XCTAssertEqual(AttachmentPreparer.limit, ShareHandoff.maxFileBytes())
+        XCTAssertEqual(ShareHandoff.maxFileBytes(fileV2: true), FileV2Format.maxFileBytes)
+        XCTAssertEqual(ShareHandoff.maxFileBytes(fileV2: false), AttachmentFormat.maxBytes)
+        if FileV2Format.sendDefault { XCTAssertEqual(AttachmentPreparer.limit, 50 * 1024 * 1024) }
+    }
+
+    func testPreparePhotoSendsAJPEGOverTheV1LimitAsTheOriginal() throws {
+        try XCTSkipUnless(FileV2Format.sendDefault, "v1 송신 모드에서는 5 MiB 로 줄인다")
+        let original = Self.jpegHead + Data(repeating: 0x5a, count: AttachmentFormat.maxBytes + 1024)
+        XCTAssertEqual(AttachmentPreparer.preparePhoto(original), original, "웹이 읽는 형식은 한도(50 MiB) 안이면 다시 인코드하지 않는다")
+    }
+
+    func testFileV2TooLargeMessageNamesTheFileV2Limit() {
+        let text = Strings.attachmentTooLarge(FileV2Format.maxFileBytes + 1, limit: FileV2Format.maxFileBytes)
+        XCTAssertTrue(text.contains("50 MiB"))
+        XCTAssertFalse(text.contains("줄이지만"), "file-v2 는 사진을 줄이지 않는다")
     }
 
     // MARK: 공유용 임시 파일

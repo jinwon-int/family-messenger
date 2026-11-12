@@ -1925,7 +1925,7 @@ final class AppModel: ObservableObject {
     @discardableResult
     func sendAttachment(room: RoomID, data: Data) async -> SendOutcome? {
         if deps.sendFileV2 { return await sendFileV2(room: room, data: data) }
-        guard data.count <= AttachmentFormat.maxBytes else { lastError = Strings.attachmentTooLarge(data.count); return nil }
+        guard data.count <= AttachmentFormat.maxBytes else { lastError = Strings.attachmentTooLarge(data.count, limit: AttachmentFormat.maxBytes); return nil }
         let pending = PendingOwn(room: room, kind: .attachment, body: AttachmentFormat.sniffMime(data), attachment: data)
         return await sendOwn(room: room, pending: pending, outgoing: enqueueOutgoing(pending)) { try await $0.send(attachment: data) }
     }
@@ -1934,7 +1934,7 @@ final class AppModel: ObservableObject {
     /// 내 기록은 `.fileV2` 행(body = 내용으로 정한 MIME, attachment = 설명자) — 화면은 다른 기기와 같이 blob 을 받아 연다.
     /// 「다시 보내기」는 원본 바이트로 처음부터(새 키·새 blob — 업로드는 멱등이라 이전 blob 은 보존 기간 뒤 정리된다).
     private func sendFileV2(room: RoomID, data: Data) async -> SendOutcome? {
-        guard (1...FileV2Format.maxFileBytes).contains(data.count) else { lastError = Strings.attachmentTooLarge(data.count); return nil }
+        guard (1...FileV2Format.maxFileBytes).contains(data.count) else { lastError = Strings.attachmentTooLarge(data.count, limit: FileV2Format.maxFileBytes); return nil }
         let mime = AttachmentFormat.sniffMime(data)
         // #647 ①: 사진이면 표시 방향 픽셀 크기를 설명자 w/h 힌트로 싣는다 — 받는 기기가 디코드 전에 말풍선을 최종 크기로 잡는다.
         // 헤더만 읽는다(ImageIO, 디코드 없음). 모르면(이미지 아님·범위 밖·Linux) 빼고 보낸다 — 보내기를 막지 않는다.
@@ -1992,7 +1992,8 @@ final class AppModel: ObservableObject {
             }
             return outcome
         } catch SyncError.attachmentTooLarge(let size) {
-            updateOutgoing(id, room: room) { $0.state = .failed(Strings.attachmentTooLarge(size)) }
+            let limit = pending.kind == .fileV2 ? FileV2Format.maxFileBytes : AttachmentFormat.maxBytes
+            updateOutgoing(id, room: room) { $0.state = .failed(Strings.attachmentTooLarge(size, limit: limit)) }
         } catch SyncError.halted(let reason) {
             updateOutgoing(id, room: room) { $0.state = .failed(Strings.outgoingFailed) }
             halt(reason: reason, room: room)
