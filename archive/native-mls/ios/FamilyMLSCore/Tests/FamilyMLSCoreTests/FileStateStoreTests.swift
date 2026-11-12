@@ -10,7 +10,7 @@ import Darwin
 import Glibc
 #endif
 
-#if canImport(CryptoKit)
+#if canImport(CryptoKit) && !os(Linux)
 import CryptoKit
 #endif
 
@@ -31,7 +31,7 @@ final class FileStateStoreTests: XCTestCase {
     /// 두 인스턴스가 서로의 파일을 읽으려면 같은 봉인 키가 필요하다(Apple = ChaChaPoly 256bit,
     /// 키는 시스템 난수원). Linux CI(Passthrough)는 키가 없어도 파일 교환이 성립한다.
     private func makeSealer() throws -> FileStateSealing {
-        #if canImport(CryptoKit)
+        #if canImport(CryptoKit) && !os(Linux)
         var generator = SystemRandomNumberGenerator()
         var key = Data(count: 32)
         key.withUnsafeMutableBytes { buffer in
@@ -151,7 +151,7 @@ final class FileStateStoreTests: XCTestCase {
     }
 
     /// 봉인 손상(AEAD 태그 불일치) → `.sealing`. 봉인은 Apple(CryptoKit) 경로라 Linux CI 에선 스킵.
-    #if canImport(CryptoKit)
+    #if canImport(CryptoKit) && !os(Linux)
     func testCorruptSealedPayloadThrowsSealing() throws {
         let dir = try makeTempDir()
         let (a, b) = try makePair(dir)
