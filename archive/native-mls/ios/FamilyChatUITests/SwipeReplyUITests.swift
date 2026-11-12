@@ -81,6 +81,19 @@ final class SwipeReplyUITests: XCTestCase {
         XCTAssertGreaterThan(r.moved, 100, "a vertical drag on a bubble must scroll the timeline")
     }
 
+    /// #747: 가로로 넘치는 표는 왼쪽 끝에서 시작한다 — 타임라인의 바닥 앵커(x 0.5)를 물려받아 가운데로 스크롤된 채 첫 열이
+    /// 카드 밖으로 잘리면 안 된다(종전 실측: 첫 열 칸 x=-5.3, 같은 카드의 글자 x=30). 첫 열 칸의 왼쪽 끝 ≥ 같은 카드 글자의 왼쪽 끝.
+    func testWideTableStartsAtLeadingEdge() {
+        let app = launch(["-swipeReplyRows", "6", "-swipeReplyAgent"])
+        let cell = text(app, "표칸 6")
+        let para = text(app, "첫 문단 6")
+        XCTAssertTrue(cell.waitForExistence(timeout: 5), "table cell missing")
+        XCTAssertTrue(para.waitForExistence(timeout: 5), "card text missing")
+        print("[swipe] table-leading cell=\(cell.frame) text=\(para.frame)")
+        XCTAssertGreaterThanOrEqual(cell.frame.minX, para.frame.minX - 1,
+                                    "wide table starts scrolled: first column minX \(cell.frame.minX) < card text minX \(para.frame.minX)")
+    }
+
     /// 표·목록이 든 에이전트 카드(오너가 주로 답하는 보고서): 최신 카드와 그 위 카드의 글자에서는 답장, 표 칸 위에서는 표 몫(답장 없음).
     func testAgentCardsLatestAndOlder() {
         let app = launch(["-swipeReplyRows", "6", "-swipeReplyAgent"])

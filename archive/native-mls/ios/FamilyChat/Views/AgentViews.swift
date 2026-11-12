@@ -91,6 +91,7 @@ struct MarkdownBlocksView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(text).font(.system(.caption, design: .monospaced)).padding(8)
             }
+            .modifier(LeadingSideScrollAnchor())
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
             .modifier(SideScrollZoneMark(id: index))
         case .quote(let text):
@@ -141,6 +142,26 @@ struct SideScrollZoneMark: ViewModifier {
     }
 }
 
+/// #747: 카드 안의 옆으로 미는 블록(표·코드)은 항상 왼쪽 끝에서 시작한다.
+/// 타임라인의 바닥 앵커(`BottomAnchoredTimeline`, `.bottom` = x 0.5)가 안쪽 가로 `ScrollView` 에도 상속돼, 넘치는 표가
+/// 처음부터 가운데로 스크롤된 채 첫 열이 잘려 보였다(시뮬레이터 실측: 첫 열 칸 x=-5.3, 같은 카드의 글자는 x=30).
+/// 바깥이 iOS 18 에서 역할별(`.initialOffset`·`.sizeChanges`)로 거므로 같은 역할에 `.leading` 을 명시해 덮는다.
+/// iOS 16 은 `defaultScrollAnchor` 가 없고 바깥 앵커도 걸리지 않으므로(기본 = 왼쪽 위) 그대로 둔다.
+struct LeadingSideScrollAnchor: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 18, *) {
+            content
+                .defaultScrollAnchor(.leading)
+                .defaultScrollAnchor(.leading, for: .initialOffset)
+                .defaultScrollAnchor(.leading, for: .sizeChanges)
+        } else if #available(iOS 17, *) {
+            content.defaultScrollAnchor(.leading)
+        } else {
+            content
+        }
+    }
+}
+
 /// `Measured` 의 영역판.
 struct MeasuredZone: View {
     let zone: SwipeReply.Zone
@@ -182,6 +203,7 @@ struct MarkdownTable: View {
             }
             .padding(.vertical, 2)
         }
+        .modifier(LeadingSideScrollAnchor())
     }
 }
 
