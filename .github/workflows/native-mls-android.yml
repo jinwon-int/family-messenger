@@ -84,6 +84,9 @@ jobs:
           grep -q 'package com.seoyoon_family.hande.mls' "$(find out/android/kotlin -name '*.kt' | head -1)"
           # #584 Play 16 KB 페이지: build-android.sh 가 64비트 .so 의 LOAD 정렬(≥ 0x4000)을 검증하고 보고서에 적는다 — 그 줄이 있어야 한다.
           grep -q '^16 KB page alignment: ok' out/android/build-report.txt
+          # #366 3e: 앱 JVM 단위 테스트가 싣는 호스트 cdylib(디버그 정보 뗀 사본) — android-app job 이 아티팩트째 받는다.
+          test -s out/android/host/libfamily_mls_ios_ffi.so
+          echo "host cdylib bytes (unit tests only, not packaged): $(stat -c %s out/android/host/libfamily_mls_ios_ffi.so)" | tee -a "$GITHUB_STEP_SUMMARY"
       # ---- #366 3b: JVM(Linux) 왕복 — Kotlin 바인딩 + 호스트 어댑터 + in-memory 릴레이로 MlsRoom 두 기기 시나리오 ----
       - name: JDK 17 (Temurin)
         uses: actions/setup-java@v4
@@ -150,10 +153,10 @@ jobs:
         working-directory: archive/native-mls/android
         run: |
           start=$(date +%s)
-          test -d "$RUNNER_TEMP/ffi-out/kotlin" && test -d "$RUNNER_TEMP/ffi-out/jniLibs"
+          test -d "$RUNNER_TEMP/ffi-out/kotlin" && test -d "$RUNNER_TEMP/ffi-out/jniLibs" && test -d "$RUNNER_TEMP/ffi-out/host"
           gradle --no-daemon --console=plain -PhandeFfiOut="$RUNNER_TEMP/ffi-out" :app:assembleDebug 2>&1 | tail -n 80
           echo "app_build_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: JVM unit tests (AppLogin 순수 로직, B2) · iOS↔Android DDL v1 동기 검사
+      - name: JVM unit tests (AppLogin 순수 로직, B2 · FileV2 → 코어 ffi, #366 3e) · iOS↔Android DDL v1 동기 검사
         working-directory: archive/native-mls/android
         run: |
           gradle --no-daemon --console=plain -PhandeFfiOut="$RUNNER_TEMP/ffi-out" :app:testDebugUnitTest 2>&1 | tail -n 40

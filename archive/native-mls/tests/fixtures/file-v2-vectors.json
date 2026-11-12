@@ -1,5 +1,5 @@
 {
- "_comment": "FILE-V2.md conformance vectors (#366 3d). Checked by host-core `file_v2` (cargo test), web `file-v2.js` (node --test) and Android `FileV2.kt` (JVM unit test). `expect`/`reason` is the host-core decision; an implementation listed in `lenient` accepts that input instead (known, documented difference — senders never produce it). `reason` absent = only the rejection is compared. `hex` = raw bytes when the input is not UTF-8. `classify` follows FILE-V2 §4.1 + STATUS-V1 (web has no classify; host-core and Android check it).",
+ "_comment": "FILE-V2.md conformance vectors (#366 3d). Checked by host-core `file_v2` (cargo test), web `file-v2.js` (node --test) and Android `FileV2.kt` (JVM unit test — since #366 3e it calls the core through ios-ffi). `expect`/`reason` is the host-core decision; an implementation listed in `lenient` accepts that input instead (known, documented difference — senders never produce it). `reason` absent = only the rejection is compared. `hex` = raw bytes when the input is not UTF-8. `classify` follows FILE-V2 §4.1 + STATUS-V1 (web has no classify; host-core and Android check it).",
  "descriptors": [
   {
    "name": "minimal",
@@ -218,6 +218,11 @@
    "reason": "size"
   },
   {
+   "name": "size past the f64 range (reason differs: core 'not json', web 'size')",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":1e400,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "reject"
+  },
+  {
    "name": "padded key",
    "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
    "expect": "reject",
@@ -342,8 +347,7 @@
    "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"name\":\"a\\ud800b\"}",
    "expect": "reject",
    "lenient": [
-    "web",
-    "kotlin"
+    "web"
    ]
   }
  ],
