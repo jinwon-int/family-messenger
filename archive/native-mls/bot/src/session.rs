@@ -691,6 +691,12 @@ fn run_rounds(
                     _ => None,
                 };
                 let notice_id = notice_id.as_deref();
+                // #783: a dead worker ends the session before any room routing —
+                // an alert-only bot has no agent room to route it to.
+                if let Some(event) = worker_gone_event(rooms, multi, &item_room, &item) {
+                    emit(&event);
+                    return Err(BotError::Local("responder worker gone"));
+                }
                 // #423: the item goes to its turn's room (or a notice's own
                 // room); `""` and the single-room wire keep the one agent room.
                 let Some(main) = target_room(rooms, multi, &item_room, &item) else {
@@ -702,6 +708,8 @@ fn run_rounds(
                     typing_ended = typing_end_kind(&item).or(typing_ended);
                 }
                 match &item {
+                    // Handled above (#783); kept so a WorkerGone can never fall
+                    // through to the room-text arm below.
                     Outbound::WorkerGone { reason } => {
                         emit(&serde_json::json!({ "event": "agent_worker_gone", "room": main.room, "reason": reason }));
                         return Err(BotError::Local("responder worker gone"));
@@ -790,6 +798,18 @@ fn health_tick(health: &mut Option<health::Health>, rooms: &[RoomState]) {
             emit(&serde_json::json!({ "event": "health_write_failed", "path": h.path().display().to_string(), "error": err.to_string() }));
         }
     }
+}
+
+/// #783: the `agent_worker_gone` event when `item` is a dead worker, else None.
+/// A dead worker ends the session whatever the room modes are; the event names
+/// the agent room when there is one and `null` otherwise. Routed through
+/// `target_room` first, an alert-only bot (no agent room) dropped it as
+/// `no_agent_room` and kept running with a dead responder, so the service
+/// manager never restarted it onto the new feeder socket.
+fn worker_gone_event(rooms: &mut [RoomState], multi: bool, item_room: &str, item: &Outbound) -> Option<serde_json::Value> {
+    let Outbound::WorkerGone { reason } = item else { return None };
+    let room = target_room(rooms, multi, item_room, item).map(|r| r.room.clone());
+    Some(serde_json::json!({ "event": "agent_worker_gone", "room": room, "reason": reason }))
 }
 
 /// #423: the room one responder item is posted to.
@@ -3607,6 +3627,31 @@ for line in sys.stdin:
         assert_eq!(pick(&mut rooms, true, "dungae", &status("dungae")).as_deref(), Some("dungae"));
         assert_eq!(pick(&mut rooms, true, "fleet", &status("fleet")), None, "no wait line in the alert room");
         assert_eq!(pick(&mut rooms, true, "family", &status("family")), None);
+    }
+
+    /// #783: a dead worker ends the session even on an alert-only bot (the
+    /// Termux `hande-insta-bot`: one `alert` room, no agent room). Routed
+    /// through `target_room`, it was dropped as `no_agent_room` and the bot
+    /// kept a dead responder instead of exiting for its supervisor.
+    #[test]
+    fn worker_gone_ends_the_session_without_an_agent_room() {
+        let gone = Outbound::WorkerGone { reason: "worker stdout closed".into() };
+        let mut alert_only = vec![room_in("insta-news", Mode::Alert)];
+        for multi in [false, true] {
+            assert!(target_room(&mut alert_only, multi, "", &gone).is_none(), "the old path: no_agent_room");
+            let event = worker_gone_event(&mut alert_only, multi, "", &gone).expect("a dead worker always ends the session");
+            assert_eq!(event["event"], "agent_worker_gone");
+            assert_eq!(event["room"], serde_json::Value::Null);
+            assert_eq!(event["reason"], "worker stdout closed");
+        }
+        // With an agent room the event still names it, as before.
+        let mut mixed = vec![room_in("fleet", Mode::Alert), room_in("soonwook", Mode::Agent)];
+        assert_eq!(worker_gone_event(&mut mixed, true, "", &gone).unwrap()["room"], "soonwook");
+        // Every other item is routed as before, never session-ending.
+        let notice = Outbound::Notice { room: "insta-news".into(), text: "n".into(), depth: 1, id: None };
+        let reply = Outbound::Reply { seq: 1, text: "x".into() };
+        assert!(worker_gone_event(&mut alert_only, true, "insta-news", &notice).is_none());
+        assert!(worker_gone_event(&mut mixed, true, "soonwook", &reply).is_none());
     }
 
     #[test]
