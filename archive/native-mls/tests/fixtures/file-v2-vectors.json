@@ -1,0 +1,418 @@
+{
+ "_comment": "FILE-V2.md conformance vectors (#366 3d). Checked by host-core `file_v2` (cargo test), web `file-v2.js` (node --test) and Android `FileV2.kt` (JVM unit test). `expect`/`reason` is the host-core decision; an implementation listed in `lenient` accepts that input instead (known, documented difference — senders never produce it). `reason` absent = only the rejection is compared. `hex` = raw bytes when the input is not UTF-8. `classify` follows FILE-V2 §4.1 + STATUS-V1 (web has no classify; host-core and Android check it).",
+ "descriptors": [
+  {
+   "name": "minimal",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "accept",
+   "size": 29
+  },
+  {
+   "name": "all optional keys",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"mime\":\"image/png\",\"name\":\"사진.png\",\"w\":4032,\"h\":3024}",
+   "expect": "accept",
+   "size": 29
+  },
+  {
+   "name": "key order does not matter",
+   "text": "{\"nonce\":\"oKGio6Slpqeoqaqr\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"v\":2}",
+   "expect": "accept",
+   "size": 29
+  },
+  {
+   "name": "JSON whitespace around and inside",
+   "text": " \n{ \"v\" : 2 ,\t\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\" }\r\n",
+   "expect": "accept",
+   "size": 29
+  },
+  {
+   "name": "v written as 2.0 is the integer 2",
+   "text": "{\"v\":2.0,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "accept",
+   "size": 29
+  },
+  {
+   "name": "size written as 29e0 is the integer 29",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29e0,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "accept",
+   "size": 29
+  },
+  {
+   "name": "size at the 50 MiB cap",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":52428800,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "accept",
+   "size": 52428800
+  },
+  {
+   "name": "w and h at their bounds",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"w\":20000,\"h\":1}",
+   "expect": "accept",
+   "size": 29
+  },
+  {
+   "name": "name of 255 code points (Hangul)",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"name\":\"가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가\"}",
+   "expect": "accept",
+   "size": 29
+  },
+  {
+   "name": "name of 255 code points (astral, 510 UTF-16 units)",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"name\":\"😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀\"}",
+   "expect": "accept",
+   "size": 29
+  },
+  {
+   "name": "name with a JSON unicode escape",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"name\":\"\\uc0ac\\uc9c4.png\"}",
+   "expect": "accept",
+   "size": 29
+  },
+  {
+   "name": "over 4096 bytes",
+   "text": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          {\"v\":2,",
+   "expect": "reject",
+   "reason": "too large"
+  },
+  {
+   "name": "not UTF-8",
+   "hex": "7b22763a32ff7d",
+   "expect": "reject",
+   "reason": "not utf-8"
+  },
+  {
+   "name": "not JSON",
+   "text": "not json",
+   "expect": "reject",
+   "reason": "not json"
+  },
+  {
+   "name": "trailing comma",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",}",
+   "expect": "reject",
+   "reason": "not json"
+  },
+  {
+   "name": "trailing garbage",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"} x",
+   "expect": "reject",
+   "reason": "not json"
+  },
+  {
+   "name": "single-quoted key",
+   "text": "{'v':2}",
+   "expect": "reject",
+   "reason": "not json"
+  },
+  {
+   "name": "array",
+   "text": "[]",
+   "expect": "reject",
+   "reason": "not an object"
+  },
+  {
+   "name": "null",
+   "text": "null",
+   "expect": "reject",
+   "reason": "not an object"
+  },
+  {
+   "name": "string",
+   "text": "\"x\"",
+   "expect": "reject",
+   "reason": "not an object"
+  },
+  {
+   "name": "unknown key",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"extra\":1}",
+   "expect": "reject",
+   "reason": "unknown key"
+  },
+  {
+   "name": "unknown key wins over a missing key",
+   "text": "{\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"extra\":1}",
+   "expect": "reject",
+   "reason": "unknown key"
+  },
+  {
+   "name": "missing v",
+   "text": "{\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "reject",
+   "reason": "missing v"
+  },
+  {
+   "name": "missing nonce",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\"}",
+   "expect": "reject",
+   "reason": "missing nonce"
+  },
+  {
+   "name": "v = 1",
+   "text": "{\"v\":1,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "reject",
+   "reason": "version"
+  },
+  {
+   "name": "v as a string",
+   "text": "{\"v\":\"2\",\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "reject",
+   "reason": "version"
+  },
+  {
+   "name": "v = 2.5",
+   "text": "{\"v\":2.5,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "reject",
+   "reason": "version"
+  },
+  {
+   "name": "uppercase blob",
+   "text": "{\"v\":2,\"blob\":\"85CCB62B89F2866DF3A2A31AF621056988905CDA26061DD4978C6795A545F317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "reject",
+   "reason": "blob"
+  },
+  {
+   "name": "63-char blob",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f31\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "reject",
+   "reason": "blob"
+  },
+  {
+   "name": "blob as a number",
+   "text": "{\"v\":2,\"blob\":1,\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "reject",
+   "reason": "blob"
+  },
+  {
+   "name": "size 0",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":0,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "reject",
+   "reason": "size"
+  },
+  {
+   "name": "size over 50 MiB",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":52428801,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "reject",
+   "reason": "size"
+  },
+  {
+   "name": "negative size",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":-1,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "reject",
+   "reason": "size"
+  },
+  {
+   "name": "fractional size",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":1.5,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "reject",
+   "reason": "size"
+  },
+  {
+   "name": "size as a string",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":\"29\",\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "reject",
+   "reason": "size"
+  },
+  {
+   "name": "size past the JS safe range",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":9007199254740993,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "reject",
+   "reason": "size"
+  },
+  {
+   "name": "padded key",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "reject",
+   "reason": "key"
+  },
+  {
+   "name": "short key",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQID\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "reject",
+   "reason": "key"
+  },
+  {
+   "name": "non-canonical key (spare bits set)",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyB\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "reject",
+   "reason": "key"
+  },
+  {
+   "name": "standard-alphabet key",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"+/IDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "reject",
+   "reason": "key"
+  },
+  {
+   "name": "16-byte nonce",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqrr6ytrg\"}",
+   "expect": "reject",
+   "reason": "nonce"
+  },
+  {
+   "name": "mime without subtype",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"mime\":\"image\"}",
+   "expect": "reject",
+   "reason": "mime"
+  },
+  {
+   "name": "mime with a space",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"mime\":\"image/png \"}",
+   "expect": "reject",
+   "reason": "mime"
+  },
+  {
+   "name": "mime over 100 bytes",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"mime\":\"a/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}",
+   "expect": "reject",
+   "reason": "mime"
+  },
+  {
+   "name": "mime as a number",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"mime\":1}",
+   "expect": "reject",
+   "reason": "mime"
+  },
+  {
+   "name": "empty name",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"name\":\"\"}",
+   "expect": "reject",
+   "reason": "name"
+  },
+  {
+   "name": "name with a C0 control",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"name\":\"a\\u0007b\"}",
+   "expect": "reject",
+   "reason": "name"
+  },
+  {
+   "name": "name with a C1 control",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"name\":\"ab\"}",
+   "expect": "reject",
+   "reason": "name"
+  },
+  {
+   "name": "name of 256 code points",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"name\":\"가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가\"}",
+   "expect": "reject",
+   "reason": "name"
+  },
+  {
+   "name": "name as a number",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"name\":7}",
+   "expect": "reject",
+   "reason": "name"
+  },
+  {
+   "name": "w = 0",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"w\":0}",
+   "expect": "reject",
+   "reason": "w"
+  },
+  {
+   "name": "w over 20000",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"w\":20001}",
+   "expect": "reject",
+   "reason": "w"
+  },
+  {
+   "name": "fractional h",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"h\":1.5}",
+   "expect": "reject",
+   "reason": "h"
+  },
+  {
+   "name": "repeated key (two blobs)",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"blob\":\"0000000000000000000000000000000000000000000000000000000000000000\"}",
+   "expect": "reject",
+   "reason": "not json",
+   "lenient": [
+    "web"
+   ]
+  },
+  {
+   "name": "byte order mark before the object",
+   "text": "﻿{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "expect": "reject",
+   "reason": "not json",
+   "lenient": [
+    "web"
+   ]
+  },
+  {
+   "name": "lone surrogate in name",
+   "text": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"name\":\"a\\ud800b\"}",
+   "expect": "reject",
+   "lenient": [
+    "web",
+    "kotlin"
+   ]
+  }
+ ],
+ "classify": [
+  {
+   "name": "status line",
+   "client_id": "status-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2",
+   "plaintext": "생각 중…",
+   "kind": "status"
+  },
+  {
+   "name": "non-canonical status prefix is text",
+   "client_id": "status-short",
+   "plaintext": "hi",
+   "kind": "text"
+  },
+  {
+   "name": "file-v1 is the file itself",
+   "client_id": "file-v1-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2",
+   "plaintext": "%PDF-1.7",
+   "kind": "file-v1"
+  },
+  {
+   "name": "file-v2 with a valid descriptor",
+   "client_id": "file-v2-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2",
+   "plaintext": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "kind": "file-v2",
+   "size": 29
+  },
+  {
+   "name": "file-v2 with a bad descriptor",
+   "client_id": "file-v2-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2",
+   "plaintext": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":0,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "kind": "undecryptable"
+  },
+  {
+   "name": "file-v2 with text plaintext",
+   "client_id": "file-v2-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2",
+   "plaintext": "안녕",
+   "kind": "undecryptable"
+  },
+  {
+   "name": "uppercase uuid is not canonical",
+   "client_id": "file-v2-0F3C2A9B-1D2E-4F5A-8B6C-7D8E9FA0B1C2",
+   "plaintext": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "kind": "undecryptable"
+  },
+  {
+   "name": "short file-v2 id",
+   "client_id": "file-v2-short",
+   "plaintext": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "kind": "undecryptable"
+  },
+  {
+   "name": "ordinary text",
+   "client_id": "web-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2",
+   "plaintext": "안녕",
+   "kind": "text"
+  },
+  {
+   "name": "descriptor JSON under a text id stays text",
+   "client_id": "web-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2",
+   "plaintext": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
+   "kind": "text"
+  }
+ ],
+ "ciphertext": {
+  "descriptor": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\",\"mime\":\"image/png\",\"name\":\"사진.png\"}",
+  "plaintext_hex": "89504e470d0a1a0a2068616e64652066696c652d763220766563746f72",
+  "ciphertext_hex": "30817321f0bf400e5f66c30595e000e23ebbd5342e5a40f24238a192208844c4010d71ace6fbebaf73a07149cb"
+ }
+}

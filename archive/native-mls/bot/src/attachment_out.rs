@@ -11,10 +11,8 @@
 //! frame, not in the journal, not in `<state>.inbox.json`). The bot removes
 //! the spool file in every outcome; the bridge only sweeps what is left.
 
-use crate::attachment::{self, is_control, is_lower_hex, sha256_hex, FILE_V2_AAD, MAX_DESCRIPTOR_BYTES, MAX_FILE_V2};
-use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::{Aes256Gcm, Nonce};
-use native_mls_host::b64;
+use crate::attachment::{self, is_control, is_lower_hex, sha256_hex, MAX_FILE_V2};
+use native_mls_host::file_v2;
 use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -162,35 +160,15 @@ pub fn read_spooled(request: &Request, max_bytes: u64) -> Result<Zeroizing<Vec<u
     Ok(bytes)
 }
 
-fn b64url(bytes: &[u8]) -> Zeroizing<String> {
-    let standard = Zeroizing::new(b64::encode(bytes));
-    Zeroizing::new(standard.trim_end_matches('=').chars().map(|c| match c { '+' => '-', '/' => '_', other => other }).collect())
-}
-
-/// FILE-V2 §2: AES-256-GCM with a fresh random key and nonce, AAD
-/// `hande-file-v2`. Returns the ciphertext and the §1 descriptor for it.
+/// FILE-V2 §2: AES-256-GCM with a fresh random key and nonce, AAD `hande-file-v2` (host-core
+/// `file_v2::seal`, #366 3d). Returns the ciphertext and the §1 descriptor for it. Errors keep
+/// this module's codes: `bad_frame` (descriptor over 4 KiB, bad name), else `upload`.
 pub fn seal(plaintext: &[u8], mime: &str, name: Option<&str>) -> Result<(Vec<u8>, Zeroizing<Vec<u8>>), &'static str> {
-    let mut secret = Zeroizing::new([0u8; 44]);
-    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(secret.as_mut_slice())).map_err(|_| "upload")?;
-    let (key, nonce) = secret.split_at(32);
-    let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| "upload")?;
-    let ciphertext = cipher.encrypt(Nonce::from_slice(nonce), Payload { msg: plaintext, aad: FILE_V2_AAD }).map_err(|_| "upload")?;
-    let blob = sha256_hex(&ciphertext);
-    let mut text = Zeroizing::new(String::with_capacity(MAX_DESCRIPTOR_BYTES));
-    text.push_str(&format!(r#"{{"v":2,"blob":"{blob}","size":{},"key":""#, plaintext.len()));
-    text.push_str(&b64url(key));
-    text.push_str(r#"","nonce":""#);
-    text.push_str(&b64url(nonce));
-    text.push_str(&format!(r#"","mime":"{mime}""#));
-    if let Some(name) = name {
-        text.push_str(r#","name":"#);
-        text.push_str(&serde_json::to_string(name).map_err(|_| "bad_frame")?);
+    match file_v2::seal(plaintext, mime, name) {
+        Ok(sealed) => Ok((sealed.ciphertext, sealed.descriptor)),
+        Err("too large" | "name") => Err("bad_frame"),
+        Err(_) => Err("upload"),
     }
-    text.push('}');
-    if text.len() > MAX_DESCRIPTOR_BYTES {
-        return Err("bad_frame");
-    }
-    Ok((ciphertext, Zeroizing::new(text.as_bytes().to_vec())))
 }
 
 /// The whole off-loop step for one frame: read and check the spool file,

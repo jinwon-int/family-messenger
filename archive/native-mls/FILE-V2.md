@@ -83,8 +83,15 @@ base64url 정규형: RFC 4648 §5 알파벳, `=` 패딩 없음, 다시 인코딩
 - 안드로이드: `archive/native-mls/android/app/src/main/kotlin/com/seoyoon_family/hande/core/FileV2.kt`(설명자 엄격 검증·수신 분류, 테스트
   `FileV2Test.kt`). 정상 설명자 → 이력 kind `file-v2`(본문 = 「📎 첨부(n B)」 자리 표시, attachment 칸 = 설명자), 잘못된 설명자 →
   `undecryptable`(평문 버림). blob 받기·열기는 v1 첨부 미리보기와 함께 C 단계. 웹보다 엄격한 점: 중복 키·앞머리 BOM 거부.
+- 공용 Rust 코어(#366 3d): `archive/native-mls/host-core/src/file_v2.rs` — 설명자 검증·수신 분류·열기·봉인·내용 판별·저장 이름.
+  봇은 이 모듈을 부르고, Android 는 `ios-ffi` 의 `fileV2Check`·`fileV2Classify`·`fileV2Open`·`fileV2Seal`·`fileV2Sniff`·
+  `fileV2DisplayName` 으로 같은 코드를 부를 수 있다(앱 호출부 교체는 후속). 판정은 iOS 와 같다: 중복 키·앞머리 BOM·짝 없는
+  서로게이트 거부, `2.0`·`29e0` 같은 정수 표기는 정수(웹 `Number.isSafeInteger` 와 같음).
+- **적합성 벡터**: `archive/native-mls/tests/fixtures/file-v2-vectors.json` — host-core(`cargo test`) · ios-ffi(`tests/file_v2_ffi.rs`) ·
+  웹(`web/hande/tests/file-v2-vectors.test.mjs`) · Android(`FileV2VectorsTest.kt`)가 같은 파일을 돈다. 일부러 다른 곳은 항목의
+  `lenient` 에 적는다(웹: 중복 키·BOM·짝 없는 서로게이트를 받음 / Android `FileV2.kt`: 짝 없는 서로게이트를 받음).
 - 봇: 기본은 `file-v2-` 첨부를 에이전트 턴으로 넘기지 않음(#514, `responder.rs`). `NATIVE_MLS_BOT_AGENT_ATTACHMENTS=1`
-  이면(#636) 오너 발신 첨부를 봇이 직접 받아 §4 순서로 검증·복호(`bot/src/attachment.rs`, host-core `Client::get_blob`)하고
+  이면(#636) 오너 발신 첨부를 봇이 직접 받아 §4 순서로 검증·복호(host-core `file_v2`, `bot/src/attachment.rs`, host-core `Client::get_blob`)하고
   평문 파일 **경로**만 에이전트 turn 에 넘긴다 — 설명자·키·blob id 는 봇 밖으로 나가지 않는다(`docs/FLEET-WORKER.md` "첨부 turn").
 - iOS: `archive/native-mls/ios/FamilyMLSCore/Sources/FamilyMLSCore/Sync/FileV2Format.swift`(설명자 엄격 검증, 테스트
   `FileV2FormatTests.swift`), 분류는 `RoomSyncEngine.storeApplication`(앱·NSE 공용). 정상 → `MessageRecord.Kind.fileV2`(저장 값

@@ -15,8 +15,10 @@ use family_mls_browser_experiment::{Device, DECRYPT_FORMAT};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
+mod file;
 mod lobby;
 mod room;
+pub use file::*;
 pub use lobby::*;
 pub use room::*;
 

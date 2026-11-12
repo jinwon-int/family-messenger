@@ -17,3 +17,8 @@ serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 # Key-package refs are caller-chosen opaque strings; `api::ref_hex` pins sha256 hex (same pin as the bot).
 sha2 = "=0.10.9"
+# #366 3d: file-v2 open/seal (FILE-V2 §2, AES-256-GCM) moved here from the bot — same pins as
+# `bot/Cargo.toml`; both are already in every host's graph through the facade (openmls_rust_crypto).
+aes-gcm = { version = "=0.10.3", default-features = false, features = ["aes", "alloc"] }
+# File keys and descriptor text are wiped after use (same pin as the bot and ios-ffi).
+zeroize = "=1.9.0"
