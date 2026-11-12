@@ -1,7 +1,7 @@
 # 홈서버 노드용 시간별 헬스 점검. client API·필수 유닛·마지막 완료 백업 신선도를 점검하고
 # healthy<->unhealthy 전환 시에만 관리방으로 통지한다(0600 상태 파일로 중복 억제).
 # 홈서버가 내려간 경우 관리방 통지는 실패하지만 점검 자체는 journal exit 1로 남는다.
-# 외부 경보(관리방 밖)는 후속 작업이다(docs/FLEET-MATRIX.md).
+# 외부 경보(관리방 밖)는 --push-spool(#395)이 맡는다(docs/TUWUNEL-OPERATIONS.md).
 [Unit]
 Description=Family messenger operations health check (homeserver node)
 After=network-online.target tuwunel.service

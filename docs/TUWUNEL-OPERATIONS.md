@@ -181,9 +181,8 @@ systemctl start family-messenger-backup.service   # 첫 수동 실행으로 기�
   관리방 명령 1회 확인 → 파일 교체(이전 파일 보존) → 헬스 1회 실행.
 - 유닛이 환경 파일을 요구하므로(`EnvironmentFile=`) 설치 전에 restic 환경을 준비한다. 파일이
   없으면 유닛이 시작하지 않는다(의도된 fail-loud).
-- 봇 노드는 `deploy/family-matrix-health.service.example`+`.timer.example`로
-  family-matrix 유닛 활성·홈서버 도달·봇 sync 신선도(`meta.health`)를 점검한다. 관리방 통지는
-  봉인 토큰이 있는 홈서버 노드 유닛이 담당한다. 관리방 밖 경보는 홈서버 노드의 `--push-spool`(#395) 이 맡는다.
+- 관리방 통지는 봉인 토큰이 있는 홈서버 노드 유닛이 담당한다. 관리방 밖 경보는 홈서버 노드의
+  `--push-spool`(#395) 이 맡는다. (Matrix 봇 노드용 `family-matrix-health` 예시는 봇과 함께 #404에서 제거했다.)
 - **호스트 자체가 꺼진 경우**(2026-10-18 하이퍼바이저 재부팅 12분 무인지)는 위 경로가 모두 같이 죽으므로,
   홈서버 **밖** 노드의 `deploy/watchdog/`(`scripts/homeserver_watchdog.py`, #412 A)가 외부 client API 와
   사설망 TCP 도달성을 1분마다 따로 재서 `up`/`edge`/`host_down` 을 3회 연속 확정 → 그 노드 push spool(Telegram

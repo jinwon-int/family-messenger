@@ -85,6 +85,8 @@ E2EE를 유지하면 검증된 라이브러리 외에도 여러 장치의 키 �
 
 ## 기존 작업 재사용
 
+아래 Python 모듈은 #404에서 저장소에서 제거했다(2026-11-12). 계약·테스트는 git 이력에서 참조한다.
+
 - `fleet_core.py`: admission·중복 방지·대기열·outbox·uncertain의 동작 규칙과 회귀 테스트.
 - `fleet_worker.py`: 실제 노드 실행부와 승인·취소 계약. 현재 CLI가 Codex read-only 시험용이라는 제한은 유지한다.
 - `fleet_remote.py`: SSH heartbeat·종료 증거와 Linux cgroup 실행 방식.

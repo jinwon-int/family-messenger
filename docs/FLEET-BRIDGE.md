@@ -1,5 +1,10 @@
 # 전체 플릿의 가족 메신저 참여
 
+> **이력 문서(2026-11-12):** 이 설계를 구현한 Python Matrix 연결부(`scripts/fleet_core.py`·`fleet_matrix*.py`·
+> `fleet_remote.py`·`fleet_worker.py`)는 사용처가 없어 #404에서 제거했다. 에이전트 채팅은
+> [결정 2026-10-19](DECISION-2026-10-19-AGENT-CHAT-TO-HANDE.md)에 따라 「한데」로 옮겼고, 봇 ↔ 응답기 포트는
+> [FLEET-WORKER.md](FLEET-WORKER.md)가 현행이다. 아래 본문의 파일·링크는 git 이력에서 찾는다.
+
 **개발 방향(2026-09-13 갱신):** [결정 D](DECISION-2026-09-13-MATRIX-CRYPTO-STACK.md)로 전달층은 Matrix 스택을
 채택했으므로 아래 Matrix ID·연결부 구성은 **다시 현행 설계**다(2026-09-08의 "새 프로토콜" 보류는 해제).
 구현은 `scripts/fleet_matrix.py` 계열을 확장하며, [ROADMAP 1단계](ROADMAP.md)의
@@ -48,7 +53,7 @@
 ### 가족방 설정 예시
 
 아래 ID·도메인·키는 모두 예시다. 실제 값은 각 노드의 비공개 설정(디렉터리 0700, 파일 0600)에 둔다.
-나머지 필드는 [상시 Matrix 연결부](FLEET-MATRIX.md)의 설정과 같다.
+나머지 필드는 상시 Matrix 연결부(`FLEET-MATRIX.md`, #404에서 제거)의 설정과 같다.
 
 ```json
 {

@@ -15,9 +15,5 @@ ignore = ["E701", "E702", "E231", "E225", "E226", "E228", "E227"]
 "tests/*.py" = ["E402"]
 # Pre-existing compact files: long lines are accepted as-is rather than reformatted wholesale.
 "scripts/admin.py" = ["E501"]
-"scripts/fleet_core.py" = ["E501"]
-"scripts/fleet_matrix.py" = ["E501"]
-"scripts/fleet_matrix_state.py" = ["E501"]
-"scripts/fleet_remote.py" = ["E501"]
 # Frozen native-track smoke drivers (decision D); kept verbatim until they are archived or deleted.
 "tests/native_*_smoke.py" = ["E401", "E501", "E731"]

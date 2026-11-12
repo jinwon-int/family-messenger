@@ -1,29 +1,17 @@
 # 노드 실행부의 상주 JSON 포트
 
-`scripts/fleet_worker.py`는 신뢰된 부모 프로세스의 stdin/stdout으로 ccc-node
-AgentRuntime에 연결한다. Telegram/Matrix 접속이나 새 네트워크 리스너는 만들지 않는다.
-런타임 시임은 ccc-node의 정식 인터페이스 `telegram_bot.contracts`(ccc-node #1756)를
-우선 사용하고, 그 이전 체크아웃에서는 하위 호환 shim인 `telegram_bot.core` 경로로
-자동 폴백한다 — 혼합 플릿 롤아웃에서도 노드 포트가 깨지지 않는다.
-CLI 바인딩은 Telegram 브리지와 **같은 ccc-node `CodexRuntime`**이다. 플래그 없이 실행하면
-시험용 기본값(빈 작업 폴더·read-only·approval=never·메모리 미주입)이고, 아래 하네스
-플래그를 주면 그 노드의 Telegram 경로와 같은 하네스(AGENTS.md·메모리 materializer·
-working-state·승인 정책)에 붙는다. 다른 provider의 실행 정책은 아직 구현되지 않았다.
+이 문서는 native-mls 봇(부모)과 응답기(자식) 사이의 상주 JSON 한 줄 포트를 정한다.
+응답기는 ccc-node AgentRuntime에 연결하고, Telegram/Matrix 접속이나 새 네트워크 리스너는
+만들지 않는다. 부모는 고정된 인자로 실행하고 메시지를 셸 명령에 삽입하지 않는다.
 
-노드의 ccc-node가 설치된 Python으로 실행한다. SDK 의존성과 AI 자격 증명은
-해당 노드에 유지한다. 부모가 고정된 인자로 실행하고 메시지를 셸 명령에 삽입하지 않는다.
+지금 이 포트를 말하는 응답기:
 
-```sh
-# 시험용 기본값(기존과 동일)
-/path/to/ccc-python scripts/fleet_worker.py \
-  --workdir /path/to/pilot-workspace --codex-cli /path/to/ccc-codex
-# 노드 하네스 바인딩(Telegram 브리지와 같은 project root·메모리)
-/path/to/ccc-python scripts/fleet_worker.py \
-  --workdir /root --codex-cli /path/to/ccc-codex \
-  --memory-materializer /path/to/ccc-node/bridge/.../ccc_codex_memory.py \
-  --working-state inherit --approval-policy on-request --sandbox workspaceWrite \
-  --approval-timeout 300
-```
+- **ccc-node 「한데」 브리지** — `bridge/core/hande/transport.py`가 유닉스 소켓
+  (`--responder-unix`)으로 이 포트의 서버 쪽을 맡는다. 공명 운영 경로(2026-10-19~).
+- **Rust `native-responder`** — 아래 「Rust 응답기」 절. 하네스 플래그는 아래 표와 같은 뜻이다.
+
+처음 이 포트를 구현한 Python `scripts/fleet_worker.py`와 Matrix 부모 `scripts/fleet_matrix.py`는
+사용처가 없어 제거했다(#404). 이력은 git에 남아 있다.
 
 ## 하네스 플래그
 
@@ -37,8 +25,7 @@ working-state·승인 정책)에 붙는다. 다른 provider의 실행 정책은 
 | `--approval-timeout` | `120` | 방이 `/approve`에 답할 수 있는 시간(초). 초과하면 거절로 처리한다. |
 | `--model` · `--effort` | 없음 | 비우면 노드 `.codex/config.toml`의 값을 쓴다. |
 
-부모(`fleet_matrix.py`)는 방 종류별로 다른 인자를 줄 수 있다(`worker_argv` = 개인방,
-`worker_argv_family` = 가족방). 가족방은 read-only로 두고 소유자 개인방만 쓰기·승인을
+부모는 방 종류별로 다른 인자를 줄 수 있다. 가족방은 read-only로 두고 소유자 개인방만 쓰기·승인을
 여는 구성이 기본 권장이다. **`--sandbox readOnly`도 파일 시스템 전체 읽기를 허용**하므로,
 하네스 root 아래의 비밀값 노출은 방 참여자 신뢰 범위로 판단한다.
 
@@ -319,7 +306,7 @@ provider 이벤트 iterator를 먼저 취소하지 않고 shield된 실행부에
 
 위 포트를 Python `fleet_worker.py` 대신 **Rust 바이너리** `native-responder`
 (`archive/native-mls/bot/src/bin/native-responder/`)가 말할 수 있다. 부모 쪽 프레임·검증·오류 코드는
-이 문서 그대로이므로 봇(`--responder-unix`/`--responder-argv-json`)과 `fleet_matrix.py`(`worker_argv`)는
+이 문서 그대로이므로 봇(`--responder-unix`/`--responder-argv-json`)은
 바뀌지 않는다. 플래그도 같고, `--adapter-argv-json`(또는 env `NATIVE_RESPONDER_ADAPTER_ARGV_JSON`) 하나가 늘었다.
 
 | 맡는 쪽 | 내용 |
@@ -328,7 +315,7 @@ provider 이벤트 iterator를 먼저 취소하지 않고 shield된 실행부에
 | Python `scripts/ccc_adapter.py` | ccc-node 런타임 import(정식 시임 → core 폴백), `start_or_resume`/`send_turn` 이벤트 중계, SDK 승인 콜백과 in-process steward MCP 핸들러를 Rust에 되묻기, `interrupt`(5초)·`close`(10초), 구 ccc-node fail-closed 검사(`mcp_servers`·`mcp_allowed_tools`) |
 
 어댑터는 정책이 없다 — 받는 `configure` 프레임(런타임·세션 인수, 도구 표·설명·allow-list)을 그대로 쓴다.
-`fleet_worker.py`는 롤백 경로로 남아 있다(공명 실기기 검증 뒤 별도 PR에서 정리).
+롤백 경로였던 `fleet_worker.py`는 #404에서 제거했다. 공명 응답기는 2026-10-19부터 ccc-node 「한데」 브리지다.
 
 ### 어댑터 프로토콜 (Rust ↔ `ccc_adapter.py`, stdio 파이프, JSON 한 줄)
 

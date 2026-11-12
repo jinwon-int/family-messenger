@@ -26,13 +26,13 @@
 - [NATIVE-RELAY-OPERATIONS.md](NATIVE-RELAY-OPERATIONS.md) — 한데 릴레이(native-relay) 오프호스트 스냅샷(`scripts/native_relay_snapshot.py`, 5분 타이머, APNs 키 제외)·복원/드릴(`scripts/native_relay_restore.py`, `--bump-seq` c1 근거)·펜스(`native_relay_fence.py`, DNS TXT 단일 작성자)·반자동 전환(`native_relay_cutover.py`)·전환 뒤 방 재생성 — #440 0·1단계 — **현행**
 - [SYGNAL-DEPLOY.md](SYGNAL-DEPLOY.md) — 푸시 게이트웨이 Sygnal 배포·운영 런북: digest 고정 이미지·VAPID 키 생성과 교체·터널 ingress·검증 체크리스트·조용한 유실 4종 진단. Tuwunel은 벤더 연동이 없어 게이트웨이 없이는 알림이 0건이다. 실제 배포는 별도 승인 후 — **현행**
 
-## 에이전트 연결부(`scripts/fleet_*.py`) — 결정 D로 재사용·확장
+## 에이전트 연결부
 
-- [FLEET-BRIDGE.md](FLEET-BRIDGE.md) — 전체 플릿(노드별 Matrix 신원·운영자 권한·승인/취소·불확실 작업)의 가족 메신저 참여 설계. 가족방·mention 모드는 1단계 — **현행**
-- [FLEET-CORE.md](FLEET-CORE.md) — `fleet_core.py`: 네트워크 없는 수신 허용·큐·outbox·불확실 작업 계약 — **현행**
-- [FLEET-MATRIX.md](FLEET-MATRIX.md) — `fleet_matrix.py`: 암호화 개인방 연결부 설치·최초 장치 신뢰·수신/복구/실행 경계·제어·`SafetyStop` 차단과 운영자 해제 도구(`fleet_matrix_state.py unblock`) — **현행**
-- [FLEET-WORKER.md](FLEET-WORKER.md) — `fleet_worker.py`: 노드 실행부의 상주 JSON 포트(ccc-node AgentRuntime, 현재 Codex read-only 시험 바인딩) — **현행**
-- [FLEET-REMOTE.md](FLEET-REMOTE.md) — `fleet_remote.py`: 운영 서버에서 노드 실행부를 SSH로 호출하는 guardian·heartbeat·종료 확인 계약 — **현행**
+Python Matrix 연결부(`scripts/fleet_core.py`·`fleet_matrix*.py`·`fleet_remote.py`·`fleet_worker.py`)와
+그 문서(FLEET-CORE·FLEET-MATRIX·FLEET-REMOTE·MATRIX-DEVICE-REPIN)는 사용처가 없어 제거했다(#404, git 이력 참조).
+
+- [FLEET-WORKER.md](FLEET-WORKER.md) — 봇 ↔ 응답기 상주 JSON 포트 명세. ccc-node 「한데」 브리지와 Rust `native-responder`가 말한다 — **현행**
+- [FLEET-BRIDGE.md](FLEET-BRIDGE.md) — 전체 플릿의 Matrix 참여 설계(노드별 신원·운영자 권한·승인/취소·불확실 작업). 구현은 제거됨 — **이력**
 
 ## 네이티브 트랙 설계 — 운영 전달층은 Matrix(결정 D). 개발은 병행(결정 E). 수용 기준은 유효
 
