@@ -70,7 +70,8 @@ class InMemoryRelay(private val base: String) : HttpTransport {
     @Synchronized
     override fun send(method: String, url: String, headers: List<HttpHeader>, body: ByteArray?): HttpResponse {
         if (down) throw RoomException.Host("connection refused (test)")
-        check(headers.isEmpty()) { "no access token configured" }
+        // 토큰은 설정하지 않았다 — Access 헤더가 없어야 한다(blob POST 의 Content-Type 은 괜찮다, #366 C).
+        check(headers.all { it.name == "Content-Type" }) { "no access token configured: $headers" }
         val path = url.removePrefix(base)
         val (p, query) = path.split('?', limit = 2).let { it[0] to it.getOrElse(1) { "" } }
         val bytes = body ?: ByteArray(0)
@@ -84,6 +85,9 @@ class InMemoryRelay(private val base: String) : HttpTransport {
                     else -> error("unexpected method $method on events")
                 }
             }
+            // #366 C file-v2 blob 저장소(blobs.go 흉내): 내용 주소 — 같은 바이트는 200, 새로 저장은 201.
+            if (rest.endsWith("/blobs")) { require(method == "POST"); return postBlob(rest.removeSuffix("/blobs"), query, bytes) }
+            if (rest.contains("/blobs/")) { require(method == "GET"); return getBlob(rest.substringBefore("/blobs/"), rest.substringAfter("/blobs/"), query) }
             if (rest.endsWith("/close")) { require(method == "POST"); return closeRoom(rest.removeSuffix("/close"), query) }
             if (rest.endsWith("/read")) { require(method == "POST"); return postRead(rest.removeSuffix("/read"), bytes) }
             if (rest.endsWith("/keypackages")) { require(method == "GET"); return consumeRoomRoute(rest.removeSuffix("/keypackages"), query) }
@@ -104,6 +108,26 @@ class InMemoryRelay(private val base: String) : HttpTransport {
             "DELETE" to "/v2/push/devices" -> unregisterPush(query)
             else -> error("unexpected route $method $p")
         }
+    }
+
+    private val blobs = HashMap<String, ByteArray>()
+    /** 참이면 다음 blob GET 이 첫 바이트 한 비트를 뒤집는다(변조 흉내 — 받는 쪽 `file-v2 integrity`). 한 번만. */
+    @Volatile var corruptNextBlob = false
+    @Synchronized fun blobCount(): Int = blobs.size
+
+    private fun postBlob(room: String, query: String, body: ByteArray): HttpResponse {
+        if (room !in rooms) return respond(404, """{"error":"no_such_room"}""")
+        val id = sha256Hex(body)
+        trace += "BLOB POST ${params(query)["device"]} $room ${body.size} B"
+        val fresh = blobs.put("$room/$id", body.copyOf()) == null
+        return respond(if (fresh) 201 else 200, """{"id":"$id"}""")
+    }
+
+    private fun getBlob(room: String, id: String, query: String): HttpResponse {
+        trace += "BLOB GET ${params(query)["device"]} $room ${id.take(12)}"
+        val bytes = blobs["$room/$id"]?.copyOf() ?: return respond(404, """{"error":"no_such_blob"}""")
+        if (corruptNextBlob) { corruptNextBlob = false; bytes[0] = (bytes[0].toInt() xor 1).toByte() }
+        return HttpResponse(200.toUShort(), bytes)
     }
 
     private fun respond(status: Int, json: String) = HttpResponse(status.toUShort(), json.toByteArray(Charsets.UTF_8))

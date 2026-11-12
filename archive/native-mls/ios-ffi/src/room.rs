@@ -57,6 +57,11 @@ pub(crate) fn relay_err(e: RelayError) -> RoomError {
     }
 }
 
+/// host-core `file_v2` 의 고정 사유 코드 → `Host{"file-v2 <사유>"}`(보낸 쪽 값·키 없음 — 로그 가능).
+fn file_v2_err(reason: &'static str) -> RoomError {
+    RoomError::Host { reason: format!("file-v2 {reason}") }
+}
+
 fn host_err(e: RoomError) -> RelayError {
     RelayError::Detail(e.to_string())
 }
@@ -149,6 +154,25 @@ pub enum SendResult {
     AlreadyDelivered { client_id: String },
 }
 
+/// `send_file_v2` 의 결과(#366 C — FILE-V2 §3): 송신 결과 + 이 기기가 자기 이력에 둘 것.
+/// `descriptor` 는 게시한 설명자 바이트(**파일 키 포함** — 이력 attachment 칸에만, 로그·글 금지). `Debug` 는 길이만 보인다.
+#[derive(uniffi::Record, Clone, PartialEq, Eq)]
+pub struct MlsFileV2Outgoing {
+    pub result: SendResult,
+    pub descriptor: Vec<u8>,
+    pub blob: String,
+    pub size: u64,
+    /// 내용으로 정한 MIME(호스트 힌트가 없을 때) 과 종류(`image`/`file`).
+    pub mime: String,
+    pub kind: String,
+}
+
+impl std::fmt::Debug for MlsFileV2Outgoing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MlsFileV2Outgoing").field("result", &self.result).field("size", &self.size).field("mime", &self.mime).finish_non_exhaustive()
+    }
+}
+
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct PostedEvent {
     pub seq: i64,
@@ -214,14 +238,19 @@ impl api::Transport for ForeignTransport {
 pub struct MlsRoom {
     identity: String,
     inner: Mutex<Inner>,
+    /// file-v2 blob 받기·올리기(#366 C)는 방 잠금 **밖**에서 한다(최대 50 MiB — 그동안 `poll`·`send` 가 막히지 않게, `MlsLobby.watch`
+    /// 와 같은 방식): 호출마다 이 주소·전송·토큰으로 전용 `Client` 를 만든다. 토큰은 `set_access_token` 이 함께 바꾼다.
+    blob_base: String,
+    blob_transport: Arc<dyn HttpTransport>,
+    blob_token: Mutex<Option<String>>,
 }
 
 struct Inner {
     device: Device,
     sync: RoomSync,
     sends: u64,
-    /// 409 cas_mismatch 로 밀린 평문(시도 횟수와 함께) — 다음 poll 뒤 순서대로 다시 보낸다.
-    retry: VecDeque<(Vec<u8>, u32)>,
+    /// 409 cas_mismatch 로 밀린 평문(시도 횟수·client_id 종류와 함께) — 다음 poll 뒤 순서대로 다시 보낸다.
+    retry: VecDeque<Queued>,
     /// 릴레이가 아는 **같은 사람(actor)의** 읽음 위치(#571 B): `GET /events` 의 `read_seq` 와 `mark_read` 의 응답을 max 로 모은다.
     /// 영속하지 않는다 — 다음 `poll` 이 다시 실어 온다(옛 릴레이는 0). MLS 커서·ack 와 무관한 안내 신호다.
     read_seq: i64,
@@ -232,6 +261,14 @@ struct Inner {
     last_welcome: Option<PostedEvent>,
     client: Client,
     observer: Arc<dyn RoomObserver>,
+}
+
+/// 재시도 큐 한 항목. `file_v2` 는 그 평문이 file-v2 설명자라는 표시 — 다시 보낼 때도 `file-v2-<uuid>` 로 나가야 한다
+/// (`<identity>-n` 으로 나가면 받는 쪽이 파일 키가 든 설명자를 글로 보여 준다).
+struct Queued {
+    plaintext: Vec<u8>,
+    attempts: u32,
+    file_v2: bool,
 }
 
 /// 재시도 상한(봇 `MAX_ECHO_ATTEMPTS` 와 같음).
@@ -313,7 +350,7 @@ impl MlsRoom {
         let adopted = Self::assemble(identity, device, sync, 0, base_url, transport, observer);
         {
             let mut inner = adopted.lock()?;
-            let mut host = Host { inner: &mut inner, identity: &adopted.identity };
+            let mut host = Host { inner: &mut inner, identity: &adopted.identity, file_v2: false };
             room::SendHost::persist(&mut host).map_err(relay_err)?;
         }
         Ok(adopted)
@@ -326,7 +363,8 @@ impl MlsRoom {
     /// CF Access 토큰 교체(`None` = 인증 없음). 다음 요청부터 쓴다.
     pub fn set_access_token(&self, token: Option<String>) -> Result<(), RoomError> {
         let mut inner = self.lock()?;
-        inner.client.set_access(match token { Some(t) => Access::Static(t), None => Access::None });
+        inner.client.set_access(match token.clone() { Some(t) => Access::Static(t), None => Access::None });
+        *self.blob_token.lock().map_err(|_| RoomError::Host { reason: "blob token lock poisoned".into() })? = token;
         Ok(())
     }
 
@@ -373,7 +411,7 @@ impl MlsRoom {
     /// 동기화 한 바퀴(봇 `poll_room` 과 같은 순서). 상태가 움직였으면 끝에 영속한다.
     pub fn poll(&self) -> Result<(), RoomError> {
         let mut inner = self.lock()?;
-        let mut host = Host { inner: &mut inner, identity: &self.identity };
+        let mut host = Host { inner: &mut inner, identity: &self.identity, file_v2: false };
         room::poll(&mut host, &self.identity).map_err(relay_err)?;
         if host.sync().dirty {
             room::SendHost::persist(&mut host).map_err(relay_err)?;
@@ -385,7 +423,7 @@ impl MlsRoom {
     pub fn send(&self, plaintext: Vec<u8>) -> Result<SendResult, RoomError> {
         let mut inner = self.lock()?;
         let outcome = {
-            let mut host = Host { inner: &mut inner, identity: &self.identity };
+            let mut host = Host { inner: &mut inner, identity: &self.identity, file_v2: false };
             room::send_application(&mut host, &self.identity, &plaintext).map_err(relay_err)?
         };
         Ok(match outcome {
@@ -393,7 +431,7 @@ impl MlsRoom {
                 SendResult::Sent { client_id, seq: response.seq, epoch: response.epoch, duplicate: response.duplicate }
             }
             SendOutcome::Conflict { client_id, .. } => {
-                inner.retry.push_back((plaintext, 1));
+                inner.retry.push_back(Queued { plaintext, attempts: 1, file_v2: false });
                 inner.observer.event(RoomEvent::Conflict { client_id: client_id.clone(), attempt: 1 });
                 SendResult::Queued { client_id }
             }
@@ -463,7 +501,7 @@ impl MlsRoom {
         inner.last_welcome = None;
         inner.sync.dirty = true;
         {
-            let mut host = Host { inner: &mut inner, identity: &self.identity };
+            let mut host = Host { inner: &mut inner, identity: &self.identity, file_v2: false };
             room::SendHost::persist(&mut host).map_err(relay_err)?;
         }
         let posted = match Self::post_kind_in(&mut inner, &self.identity, "commit", commit, Vec::new()) {
@@ -473,7 +511,7 @@ impl MlsRoom {
                 let _ = dispatch_guarded(&mut inner.device, &self.identity, "clear_pending", &[]);
                 inner.pending_invite = None;
                 inner.sync.dirty = true;
-                let mut host = Host { inner: &mut inner, identity: &self.identity };
+                let mut host = Host { inner: &mut inner, identity: &self.identity, file_v2: false };
                 room::SendHost::persist(&mut host).map_err(relay_err)?;
                 return match err {
                     RelayError::Api { status: 409, ref code } if code == "cas_mismatch" => Ok(MlsInvite::Raced),
@@ -486,7 +524,7 @@ impl MlsRoom {
         }
         inner.sync.dirty = true;
         {
-            let mut host = Host { inner: &mut inner, identity: &self.identity };
+            let mut host = Host { inner: &mut inner, identity: &self.identity, file_v2: false };
             room::poll(&mut host, &self.identity).map_err(relay_err)?;
             if host.sync().dirty {
                 room::SendHost::persist(&mut host).map_err(relay_err)?;
@@ -508,9 +546,66 @@ impl MlsRoom {
             inner.sync.joined = true;
         }
         inner.sync.dirty = true;
-        let mut host = Host { inner: &mut inner, identity: &self.identity };
+        let mut host = Host { inner: &mut inner, identity: &self.identity, file_v2: false };
         room::SendHost::persist(&mut host).map_err(|e| MlsError::Invalid { reason: format!("persist: {e}") })?;
         Ok(output)
+    }
+
+    /// file-v2 첨부 열기(#366 C — FILE-V2 §4.3): 설명자 바이트(이력 attachment 칸 그대로) → `GET …/blobs/<id>`(방 잠금 밖) →
+    /// 길이 → sha256 = blob → AES-256-GCM(AAD) → 크기. 오류: 설명자가 틀리면 `Host{"file-v2 <사유>"}`, 받은 바이트가 어긋나면
+    /// `Host{"file-v2 integrity"}`(다시 받기), 릴레이(403 `not_a_member` · 404 `no_such_blob` · 410 · 전송 실패)는 `Relay{transient}`.
+    pub fn open_file_v2(&self, descriptor: Vec<u8>) -> Result<Vec<u8>, RoomError> {
+        let parsed = native_mls_host::file_v2::parse_descriptor(&descriptor).map_err(file_v2_err)?;
+        let room = self.lock()?.sync.room.clone();
+        let ciphertext = self.blob_client()?.get_blob(&room, &self.identity, &parsed.blob).map_err(relay_err)?;
+        let plaintext = native_mls_host::file_v2::open(&ciphertext, &parsed).map_err(file_v2_err)?;
+        Ok(plaintext.to_vec())
+    }
+
+    /// file-v2 첨부 보내기(#366 C — FILE-V2 §2·§3, 웹 `file-v2-outbox.js`·봇 #761 과 같은 순서): 새 키·nonce 로 봉인 →
+    /// `POST …/blobs`(방 잠금 밖, 멱등) → 응답 id = sha256(암호문) 확인 → 설명자를 바깥 client_id `file-v2-<uuid>` 로 게시
+    /// (암호화 → 영속 → POST, `send` 와 같은 B-H2). 409 cas_mismatch 면 `Queued` — 다음 `poll` 이 **file-v2 client_id 그대로** 다시 보낸다.
+    /// `mime` 이 없으면 내용으로 정한다. `name` 은 FILE-V2 §1 `name` 규칙(1~255자, 제어 문자 없음) — 마지막 경로 조각만 넘긴다.
+    /// 참여 전·정지된 방은 업로드 전에 `Host` 오류. 업로드 뒤 게시가 실패(`Relay` 오류)하면 호스트가 같은 파일로 다시 부르면 된다 —
+    /// 다시 부르면 새 키로 봉인하므로 새 blob 이 생긴다(앞 blob 은 아무 설명자도 가리키지 않는 고아 — 릴레이 보존 정리 몫).
+    pub fn send_file_v2(&self, plaintext: Vec<u8>, mime: Option<String>, name: Option<String>) -> Result<MlsFileV2Outgoing, RoomError> {
+        use native_mls_host::file_v2 as core;
+        let room = {
+            let inner = self.lock()?;
+            if inner.sync.halted {
+                return Err(RoomError::Host { reason: "room is halted".into() });
+            }
+            if !inner.sync.joined {
+                return Err(RoomError::Host { reason: "not a member of this room yet".into() });
+            }
+            inner.sync.room.clone()
+        };
+        let mime = mime.unwrap_or_else(|| core::sniff_mime(&plaintext).to_string());
+        let sealed = core::seal(&plaintext, &mime, name.as_deref()).map_err(file_v2_err)?;
+        let id = self.blob_client()?.post_blob(&room, &self.identity, &sealed.ciphertext).map_err(relay_err)?;
+        if id != sealed.blob {
+            return Err(RoomError::Host { reason: "file-v2 upload id mismatch".into() });
+        }
+        let descriptor = sealed.descriptor.to_vec();
+        let mut inner = self.lock()?;
+        let outcome = {
+            let mut host = Host { inner: &mut inner, identity: &self.identity, file_v2: true };
+            room::send_application(&mut host, &self.identity, &descriptor).map_err(relay_err)?
+        };
+        let result = match outcome {
+            SendOutcome::Sent { client_id, response } => {
+                SendResult::Sent { client_id, seq: response.seq, epoch: response.epoch, duplicate: response.duplicate }
+            }
+            SendOutcome::Conflict { client_id, .. } => {
+                inner.retry.push_back(Queued { plaintext: descriptor.clone(), attempts: 1, file_v2: true });
+                inner.observer.event(RoomEvent::Conflict { client_id: client_id.clone(), attempt: 1 });
+                SendResult::Queued { client_id }
+            }
+            SendOutcome::AlreadyDelivered { client_id, .. } => SendResult::AlreadyDelivered { client_id },
+        };
+        Ok(MlsFileV2Outgoing {
+            result, descriptor, blob: sealed.blob.clone(), size: plaintext.len() as u64, kind: core::kind_for(&mime).to_string(), mime,
+        })
     }
 }
 
@@ -520,13 +615,23 @@ impl MlsRoom {
         identity: String, device: Device, sync: RoomSync, sends: u64, base_url: String,
         transport: Arc<dyn HttpTransport>, observer: Arc<dyn RoomObserver>,
     ) -> Arc<Self> {
-        let client = Client::with_transport(&base_url, Access::None, Box::new(ForeignTransport(transport)));
+        let client = Client::with_transport(&base_url, Access::None, Box::new(ForeignTransport(transport.clone())));
         Arc::new(Self {
             identity,
             inner: Mutex::new(Inner {
                 device, sync, sends, retry: VecDeque::new(), read_seq: 0, pending_invite: None, last_welcome: None, client, observer,
             }),
+            blob_base: base_url,
+            blob_transport: transport,
+            blob_token: Mutex::new(None),
         })
+    }
+
+    /// 방 잠금 밖의 blob 전송용 `Client`(호출마다 새로 — `MlsLobby.watch` 와 같음).
+    fn blob_client(&self) -> Result<Client, RoomError> {
+        let token = self.blob_token.lock().map_err(|_| RoomError::Host { reason: "blob token lock poisoned".into() })?.clone();
+        let access = match token { Some(t) => Access::Static(t), None => Access::None };
+        Ok(Client::with_transport(&self.blob_base, access, Box::new(ForeignTransport(self.blob_transport.clone()))))
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, Inner>, RoomError> {
@@ -540,7 +645,7 @@ impl MlsRoom {
 
     /// 잠금을 쥔 채로 게시(`post_kind`·`invite`·`after_page` 공용): dedup 키 예약 → 영속 → POST.
     fn post_kind_in(inner: &mut Inner, identity: &str, kind: &str, bytes: Vec<u8>, targets: Vec<String>) -> Result<PostedEvent, RelayError> {
-        let mut host = Host { inner, identity };
+        let mut host = Host { inner, identity, file_v2: false };
         let client_id = room::SendHost::reserve_client_id(&mut host);
         host.sync().dirty = true;
         room::SendHost::persist(&mut host)?;
@@ -588,6 +693,9 @@ impl room::MlsGroup for Bound<'_> {
 struct Host<'a> {
     inner: &'a mut Inner,
     identity: &'a str,
+    /// 참이면 이번 송신의 바깥 client_id 를 `file-v2-<uuid>` 로(FILE-V2 §1 — 받는 쪽이 평문을 설명자로 읽고 **글로 보이지 않는다**).
+    /// `send_file_v2` 와 그 재시도만 켠다. 거짓이면 `<identity>-<8 hex>`.
+    file_v2: bool,
 }
 
 impl room::RoomAccess for Host<'_> {
@@ -702,19 +810,22 @@ impl room::RoomHost for Host<'_> {
             }
         }
         let due = std::mem::take(&mut self.inner.retry);
-        for (plaintext, attempts) in due {
+        for Queued { plaintext, attempts, file_v2 } in due {
             if attempts >= MAX_SEND_ATTEMPTS {
                 self.inner.observer.event(RoomEvent::Dropped {
                     bytes: plaintext.len() as u64, error: "send replay attempts exhausted".into(),
                 });
                 continue;
             }
-            match room::send_application(self, own, &plaintext) {
+            self.file_v2 = file_v2;
+            let outcome = room::send_application(self, own, &plaintext);
+            self.file_v2 = false;
+            match outcome {
                 Ok(SendOutcome::Sent { client_id, response }) => self.inner.observer.event(RoomEvent::Replayed {
                     client_id, seq: response.seq, epoch: response.epoch,
                 }),
                 Ok(SendOutcome::Conflict { client_id, .. }) => {
-                    self.inner.retry.push_back((plaintext, attempts + 1));
+                    self.inner.retry.push_back(Queued { plaintext, attempts: attempts + 1, file_v2 });
                     self.inner.observer.event(RoomEvent::Conflict { client_id, attempt: attempts + 1 });
                 }
                 Ok(SendOutcome::AlreadyDelivered { client_id, .. }) => {
@@ -733,6 +844,10 @@ impl room::RoomHost for Host<'_> {
 impl room::SendHost for Host<'_> {
     /// iOS 와 같은 모양 `<identity>-<8 hex>`; 카운터는 영속된다(`RoomSyncState::sends`).
     fn reserve_client_id(&mut self) -> String {
+        if self.file_v2 {
+            // 카운터는 건드리지 않는다(봇 `FileSender` 와 같음) — uuid 는 매번 새것이라 재시작 뒤에도 겹치지 않는다.
+            return native_mls_host::file_v2::new_client_id();
+        }
         self.inner.sends += 1;
         format!("{}-{:08x}", self.identity, self.inner.sends)
     }
