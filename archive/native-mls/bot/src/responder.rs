@@ -102,6 +102,14 @@ pub const DEFAULT_NOTICE_PER_MIN: usize = 10;
 /// A notice raised during a peer turn carries depth + 1, so the bot-to-bot
 /// chain stops after one hop.
 pub const PEER_DEPTH_MAX: u8 = 2;
+/// #776: how long a `Transport::Unix` responder that dropped its connection
+/// (the bridge on the far end restarted) keeps trying to reconnect before the
+/// bot gives up the way it did before #776 (`WorkerGone`, process exit). 0 = no
+/// reconnect. Env `NATIVE_MLS_BOT_RESPONDER_RECONNECT_SECS`.
+pub const DEFAULT_RECONNECT_SECS: u64 = 120;
+/// #776: first reconnect wait; doubles per failed attempt up to `RECONNECT_WAIT_MAX`.
+const RECONNECT_WAIT_FIRST: Duration = Duration::from_millis(250);
+const RECONNECT_WAIT_MAX: Duration = Duration::from_secs(2);
 /// Largest `text` field the bot sends to the worker (fleet_core MAX_TEXT_BYTES
 /// is 16 KiB; the header the worker prepends needs a little room).
 pub(crate) const PROMPT_MAX_BYTES: usize = 15 * 1024;
@@ -159,6 +167,9 @@ pub struct Config {
     /// 첨부"). `None` (the default) answers every `attachment` frame
     /// `attachment_nack` `disabled`.
     pub attachments_out: Option<OutConfig>,
+    /// #776: `Transport::Unix` reconnect window in seconds (0 = off: a lost
+    /// connection ends the session at once, as before). See `DEFAULT_RECONNECT_SECS`.
+    pub reconnect_secs: u64,
 }
 
 impl Config {
@@ -181,6 +192,7 @@ impl Config {
             typing: true,
             attachments: None,
             attachments_out: None,
+            reconnect_secs: DEFAULT_RECONNECT_SECS,
         }
     }
 }
@@ -367,6 +379,55 @@ struct ActiveTurn {
     stop_requested: bool,
 }
 
+/// #776: a `Transport::Unix` responder between a lost connection and the
+/// next one (or giving up). The turn that was active is already reported
+/// `Uncertain`; queued and held messages wait for the new connection.
+struct Reconnect {
+    since: Instant,
+    next_at: Instant,
+    attempt: u32,
+    reason: String,
+}
+
+fn reconnect_wait(attempt: u32) -> Duration {
+    RECONNECT_WAIT_FIRST.saturating_mul(1u32 << attempt.min(8)).min(RECONNECT_WAIT_MAX)
+}
+
+/// The port's two halves: a writer thread fed by `Cmd`s and a reader thread
+/// that turns each output line into a frame (or the error that ends it).
+fn wire(mut stdin: Box<dyn Write + Send>, stdout: Box<dyn std::io::Read + Send>) -> (Sender<Cmd>, Receiver<Result<serde_json::Value, String>>) {
+    let (to_child, cmd_rx) = mpsc::channel::<Cmd>();
+    std::thread::spawn(move || {
+        for cmd in cmd_rx {
+            match cmd {
+                Cmd::Line(line) => {
+                    if stdin.write_all(line.as_bytes()).and_then(|_| stdin.write_all(b"\n")).and_then(|_| stdin.flush()).is_err() {
+                        break;
+                    }
+                }
+                Cmd::Close => break,
+            }
+        }
+    });
+    let (out_tx, from_child) = mpsc::channel();
+    std::thread::spawn(move || {
+        let reader = BufReader::with_capacity(64 * 1024, stdout);
+        for line in reader.lines() {
+            let item = match line {
+                Ok(line) if line.len() > 524_288 => Err("output frame too large".to_string()),
+                Ok(line) => serde_json::from_str::<serde_json::Value>(&line).map_err(|_| "output frame not json".to_string()),
+                Err(err) => Err(format!("stdout read: {err}")),
+            };
+            let fatal = item.is_err();
+            if out_tx.send(item).is_err() || fatal {
+                break;
+            }
+        }
+        let _ = out_tx.send(Err("worker stdout closed".to_string()));
+    });
+    (to_child, from_child)
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct Inbox {
     version: u32,
@@ -437,6 +498,8 @@ pub struct Responder {
     /// #761: upload results from the helper thread, by token.
     out_tx: Sender<(u64, Result<Sealed, &'static str>)>,
     out_rx: Receiver<(u64, Result<Sealed, &'static str>)>,
+    /// #776: `Some` while a `Transport::Unix` port is down and being retried.
+    reconnect: Option<Reconnect>,
 }
 
 /// Matrix parity (ccc-node `NOTICE_QUEUED` / `NOTICE_QUEUE_FULL`, same
@@ -500,7 +563,7 @@ impl Responder {
     /// Spawn the worker. `state_file` (the bot's `--state-file`) locates the
     /// inbox next to it; without one the duplicate guard is memory-only.
     pub fn spawn(config: Config, state_file: Option<&Path>) -> Result<Self, BotError> {
-        let (child, mut stdin, stdout): (Option<Child>, Box<dyn Write + Send>, Box<dyn std::io::Read + Send>) = match &config.transport {
+        let (child, stdin, stdout): (Option<Child>, Box<dyn Write + Send>, Box<dyn std::io::Read + Send>) = match &config.transport {
             Transport::Argv(argv) => {
                 let (program, args) = argv.split_first().ok_or(BotError::Local("responder argv empty"))?;
                 let mut child = Command::new(program)
@@ -520,35 +583,7 @@ impl Responder {
                 (None, Box::new(stream), Box::new(reader))
             }
         };
-        let (to_child, cmd_rx) = mpsc::channel::<Cmd>();
-        std::thread::spawn(move || {
-            for cmd in cmd_rx {
-                match cmd {
-                    Cmd::Line(line) => {
-                        if stdin.write_all(line.as_bytes()).and_then(|_| stdin.write_all(b"\n")).and_then(|_| stdin.flush()).is_err() {
-                            break;
-                        }
-                    }
-                    Cmd::Close => break,
-                }
-            }
-        });
-        let (out_tx, from_child) = mpsc::channel();
-        std::thread::spawn(move || {
-            let reader = BufReader::with_capacity(64 * 1024, stdout);
-            for line in reader.lines() {
-                let item = match line {
-                    Ok(line) if line.len() > 524_288 => Err("output frame too large".to_string()),
-                    Ok(line) => serde_json::from_str::<serde_json::Value>(&line).map_err(|_| "output frame not json".to_string()),
-                    Err(err) => Err(format!("stdout read: {err}")),
-                };
-                let fatal = item.is_err();
-                if out_tx.send(item).is_err() || fatal {
-                    break;
-                }
-            }
-            let _ = out_tx.send(Err("worker stdout closed".to_string()));
-        });
+        let (to_child, from_child) = wire(stdin, stdout);
         let inbox_path = state_file.map(inbox_path);
         if let Some(attachments) = &config.attachments {
             // Files a previous run left (a turn cut short by a restart).
@@ -594,6 +629,7 @@ impl Responder {
             next_out: 0,
             out_tx,
             out_rx,
+            reconnect: None,
         };
         // A turn left active by an earlier run was never confirmed: say so
         // once, clear it, never re-run it.
@@ -660,6 +696,9 @@ impl Responder {
     #[cfg(test)]
     fn is_gone(&self) -> bool { self.gone }
 
+    #[cfg(test)]
+    fn is_reconnecting(&self) -> bool { self.reconnect.is_some() }
+
     /// Offer a decrypted room message. Starts the turn now or queues it.
     /// #636 stage 2: the sender's plain text right after their held attachment
     /// becomes that attachment's caption (one turn); any other message in the
@@ -712,6 +751,15 @@ impl Responder {
     fn enqueue(&mut self, inbound: Inbound) -> Result<Offer, BotError> {
         if self.gone {
             return Ok(Offer::Dropped { reason: "worker_gone" });
+        }
+        // #776: the port is down for a moment (bridge restart): wait for the
+        // new connection instead of starting a turn nobody would receive.
+        if self.reconnect.is_some() {
+            if self.queue.len() >= self.config.queue_max {
+                return Ok(Offer::Dropped { reason: "queue_full" });
+            }
+            self.queue.push_back(inbound);
+            return Ok(Offer::Queued { depth: self.queue.len() - 1 });
         }
         if self.active.is_some() {
             if self.queue.len() >= self.config.queue_max {
@@ -795,22 +843,26 @@ impl Responder {
             self.release_held()?;
             out.append(&mut self.pending_items);
         }
+        if self.reconnect.is_some() {
+            self.try_reconnect(&mut out)?;
+        }
         loop {
             // #761: nothing the worker sent after an attachment frame is read
             // until that attachment is posted (or refused): the room shows
-            // them in the order the worker sent them.
-            if self.out_flight.is_some() {
+            // them in the order the worker sent them. #776: nothing is read
+            // from a port that is down (the old reader only reports its end).
+            if self.out_flight.is_some() || self.reconnect.is_some() {
                 break;
             }
             match self.from_child.try_recv() {
                 Ok(Ok(value)) => self.handle(value, &mut out)?,
                 Ok(Err(reason)) => {
-                    self.fail(reason, &mut out)?;
+                    self.lost(reason, &mut out)?;
                     break;
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    self.fail("worker reader stopped".to_string(), &mut out)?;
+                    self.lost("worker reader stopped".to_string(), &mut out)?;
                     break;
                 }
             }
@@ -844,7 +896,7 @@ impl Responder {
                 }
             }
         }
-        if self.active.is_none() && !self.gone {
+        if self.active.is_none() && !self.gone && self.reconnect.is_none() {
             if let Some(next) = self.queue.pop_front() {
                 self.start(next)?;
             }
@@ -1276,7 +1328,7 @@ impl Responder {
             Ok(()) => serde_json::json!({ "type": "attachment_ack", "turn_id": turn_id, "sha256": sha12 }),
             Err(reason) => serde_json::json!({ "type": "attachment_nack", "turn_id": turn_id, "sha256": sha12, "reason": reason }),
         };
-        let written = !self.gone && self.to_child.send(Cmd::Line(line.to_string())).is_ok();
+        let written = self.port_up() && self.to_child.send(Cmd::Line(line.to_string())).is_ok();
         crate::session::emit_attachment_out(room, info, sha12, outcome, written);
     }
 
@@ -1296,16 +1348,24 @@ impl Responder {
     /// one connection this responder holds, i.e. the sender of the frame (the
     /// session keeps one `Responder` for its life and ends when it is gone).
     /// `Ok(seq)` = posted, the relay stored it at `seq` → `notice_ack`;
-    /// `Err(reason)` = dropped → `notice_nack`. With the worker gone the
-    /// answer is only logged: the sender sees its connection close without
-    /// an ack and re-sends after it reconnects.
+    /// `Err(reason)` = dropped → `notice_nack`. With the worker gone (or, #776,
+    /// the port down and being retried) the answer is only logged: the sender
+    /// sees its connection close without an ack and re-sends after it
+    /// reconnects. An answer is never carried over to the next connection.
     pub fn answer_notice(&mut self, room: &str, id: &str, outcome: Result<i64, &str>) {
         let line = match outcome {
             Ok(seq) => serde_json::json!({ "type": "notice_ack", "id": id, "seq": seq }),
             Err(reason) => serde_json::json!({ "type": "notice_nack", "id": id, "reason": reason }),
         };
-        let written = !self.gone && self.to_child.send(Cmd::Line(line.to_string())).is_ok();
+        let written = self.port_up() && self.to_child.send(Cmd::Line(line.to_string())).is_ok();
         crate::session::emit_notice_answer(room, id, outcome, written);
+    }
+
+    /// The port can carry a frame: not gone, and (#776) not between a lost
+    /// connection and the next one — the old writer may still accept a send
+    /// it will never write.
+    fn port_up(&self) -> bool {
+        !self.gone && self.reconnect.is_none()
     }
 
     fn send_tool_result(&self, turn_id: &str, tool_id: &str, outcome: Result<serde_json::Value, String>) {
@@ -1330,6 +1390,69 @@ impl Responder {
         self.approvals.clear();
         self.pending_tool = None;
         self.write_inbox(None)
+    }
+
+    /// The port ended. #776: a `Transport::Unix` port (a bridge that may just
+    /// be restarting) is retried for `reconnect_secs`; a spawned worker, or a
+    /// window of 0, ends the session as before (`fail`).
+    fn lost(&mut self, reason: String, out: &mut Vec<Routed>) -> Result<(), BotError> {
+        if self.gone || self.reconnect.is_some() {
+            return Ok(());
+        }
+        if !matches!(self.config.transport, Transport::Unix(_)) || self.config.reconnect_secs == 0 {
+            return self.fail(reason, out);
+        }
+        // The active turn's answer cannot arrive on a new connection: report
+        // it once and never re-run it (as after a restart). Queued and held
+        // messages have not reached the bridge yet and wait for the new port.
+        self.release_spool();
+        if let Some((turn, _)) = self.active.take() {
+            out.push(turn_item(turn.peer_depth, turn.room.clone(), Outbound::Uncertain { seq: turn.seq, reason: "responder_restart".to_string() }));
+            self.approvals.clear();
+            self.pending_tool = None;
+            self.write_inbox(None)?;
+        }
+        self.out_flight = None;
+        self.out_retry = None;
+        let _ = self.to_child.send(Cmd::Close);
+        let now = Instant::now();
+        crate::session::emit_responder_lost(&reason, self.queue.len());
+        self.reconnect = Some(Reconnect { since: now, next_at: now, attempt: 0, reason });
+        Ok(())
+    }
+
+    /// #776: one reconnect attempt when it is due. Success swaps in the new
+    /// port (the next pump starts the first queued turn); the window running
+    /// out ends the session the way a dead port did before (`fail`).
+    fn try_reconnect(&mut self, out: &mut Vec<Routed>) -> Result<(), BotError> {
+        let now = Instant::now();
+        match &self.reconnect {
+            Some(state) if now >= state.next_at => {}
+            _ => return Ok(()),
+        }
+        let Transport::Unix(path) = &self.config.transport else { return Ok(()) };
+        let connected = UnixStream::connect(path).and_then(|stream| Ok((stream.try_clone()?, stream)));
+        let window = Duration::from_secs(self.config.reconnect_secs);
+        let Some(mut state) = self.reconnect.take() else { return Ok(()) };
+        match connected {
+            Ok((reader, writer)) => {
+                let (to_child, from_child) = wire(Box::new(writer), Box::new(reader));
+                self.to_child = to_child;
+                self.from_child = from_child;
+                crate::session::emit_responder_reconnected(state.attempt + 1, state.since.elapsed(), self.queue.len());
+                Ok(())
+            }
+            Err(_) => {
+                state.attempt += 1;
+                if state.since.elapsed() >= window {
+                    let reason = format!("{} (reconnect gave up after {} attempts)", state.reason, state.attempt);
+                    return self.fail(reason, out);
+                }
+                state.next_at = now + reconnect_wait(state.attempt);
+                self.reconnect = Some(state);
+                Ok(())
+            }
+        }
     }
 
     fn fail(&mut self, reason: String, out: &mut Vec<Routed>) -> Result<(), BotError> {
@@ -2059,6 +2182,173 @@ for line in sys.stdin:
         assert!(is_room_id("family-acc") && !is_room_id("") && !is_room_id(&"a".repeat(65)) && !is_room_id("방"));
     }
 
+    // ---- #776 unix port reconnect ----
+
+    /// The far end of `Transport::Unix` as a bridge that restarts: it drops
+    /// its listener and socket file, then binds the same path again.
+    struct Bridge {
+        dir: PathBuf,
+        sock: PathBuf,
+        listener: Option<std::os::unix::net::UnixListener>,
+    }
+
+    impl Bridge {
+        fn up(tag: &str) -> Bridge {
+            let dir = std::env::temp_dir().join(format!("bot-reconnect-{tag}-{}-{}", std::process::id(), now_secs()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let sock = dir.join("responder.sock");
+            let mut bridge = Bridge { dir, sock, listener: None };
+            bridge.bind();
+            bridge
+        }
+
+        fn bind(&mut self) {
+            let listener = std::os::unix::net::UnixListener::bind(&self.sock).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            self.listener = Some(listener);
+        }
+
+        fn down(&mut self) {
+            self.listener = None;
+            let _ = std::fs::remove_file(&self.sock);
+        }
+
+        fn config(&self, tweak: impl FnOnce(&mut Config)) -> Config {
+            let mut config = Config::new(Transport::Unix(self.sock.clone()), "owner".into());
+            tweak(&mut config);
+            config
+        }
+
+        /// The bot's connection, pumping `r` meanwhile (the reconnect runs in `pump`).
+        fn accept(&self, r: &mut Responder, out: &mut Vec<Outbound>) -> BufReader<UnixStream> {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                match self.listener.as_ref().expect("bridge is up").accept() {
+                    Ok((stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
+                        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                        return BufReader::new(stream);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+                        out.extend(r.pump().unwrap_or_else(|e| panic!("pump: {e}")));
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(e) => panic!("bot never connected: {e}"),
+                }
+            }
+        }
+    }
+
+    impl Drop for Bridge {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn read_frame(port: &mut BufReader<UnixStream>) -> serde_json::Value {
+        let mut line = String::new();
+        port.read_line(&mut line).unwrap_or_else(|e| panic!("no frame from the bot: {e}"));
+        serde_json::from_str(&line).unwrap_or_else(|e| panic!("frame {line:?}: {e}"))
+    }
+
+    fn pump_while(r: &mut Responder, out: &mut Vec<Outbound>, mut busy: impl FnMut(&Responder, &[Outbound]) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while busy(r, out) && Instant::now() < deadline {
+            out.extend(r.pump().unwrap_or_else(|e| panic!("pump: {e}")));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// The bridge restarts mid-turn: the bot stays up, reports the cut turn
+    /// once (`responder_restart`, never re-run), queues what arrives while the
+    /// socket is gone and sends it on the new connection.
+    #[test]
+    fn unix_port_reconnects_after_the_bridge_restarts() {
+        let mut bridge = Bridge::up("restart");
+        let mut r = Responder::spawn(bridge.config(|_| {}), None).unwrap_or_else(|e| panic!("spawn: {e}"));
+        let mut out = Vec::new();
+        let mut port = bridge.accept(&mut r, &mut out);
+        assert_eq!(r.offer(inbound(1, "owner-pc", "first")).unwrap(), Offer::Started);
+        assert_eq!(read_frame(&mut port)["turn_id"], "t-1");
+
+        bridge.down();
+        drop(port);
+        pump_while(&mut r, &mut out, |r, _| !r.is_reconnecting());
+        assert!(r.is_reconnecting() && !r.is_gone());
+        assert_eq!(out, vec![Outbound::Uncertain { seq: 1, reason: "responder_restart".into() }]);
+        assert_eq!(r.offer(inbound(2, "owner-pc", "second")).unwrap(), Offer::Queued { depth: 0 });
+        assert_eq!(queue_line(&Offer::Queued { depth: 0 }).unwrap(), "⏳ 이 메시지는 대기 순번 1번에 저장되었으며 도착 순서대로 처리됩니다.");
+        // Retrying against no socket keeps the bot alive and quiet.
+        out.clear();
+        for _ in 0..10 {
+            out.extend(r.pump().unwrap());
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        assert!(out.is_empty() && r.is_reconnecting());
+
+        bridge.bind();
+        let mut port = bridge.accept(&mut r, &mut out);
+        pump_while(&mut r, &mut out, |r, _| r.is_reconnecting() || r.active.is_none());
+        assert!(!r.is_reconnecting() && !r.is_gone());
+        let frame = read_frame(&mut port);
+        assert_eq!((frame["type"].as_str(), frame["turn_id"].as_str()), (Some("turn"), Some("t-2")));
+        assert!(frame["prompt"].as_str().unwrap().contains("second"));
+        port.get_mut().write_all(b"{\"type\":\"result\",\"turn_id\":\"t-2\",\"status\":\"complete\",\"session_id\":\"s1\",\"text\":\"ok\"}\n").unwrap();
+        pump_while(&mut r, &mut out, |_, out| !out.contains(&Outbound::Reply { seq: 2, text: "ok".into() }));
+        assert_eq!(out, vec![Outbound::Reply { seq: 2, text: "ok".into() }]);
+        assert!(!out.iter().any(|o| matches!(o, Outbound::WorkerGone { .. })));
+    }
+
+    /// No bridge comes back within the window: the session ends as before
+    /// #776 — every waiting message is reported and `WorkerGone` follows.
+    #[test]
+    fn unix_port_gives_up_after_the_reconnect_window() {
+        let mut bridge = Bridge::up("give-up");
+        let mut r = Responder::spawn(bridge.config(|c| c.reconnect_secs = 1), None).unwrap_or_else(|e| panic!("spawn: {e}"));
+        let mut out = Vec::new();
+        let mut port = bridge.accept(&mut r, &mut out);
+        assert_eq!(r.offer(inbound(1, "owner-pc", "first")).unwrap(), Offer::Started);
+        let _ = read_frame(&mut port);
+        bridge.down();
+        drop(port);
+        pump_while(&mut r, &mut out, |r, _| !r.is_reconnecting());
+        assert_eq!(r.offer(inbound(2, "owner-pc", "second")).unwrap(), Offer::Queued { depth: 0 });
+        let started = Instant::now();
+        pump_while(&mut r, &mut out, |r, _| !r.is_gone());
+        assert!(r.is_gone() && !r.is_reconnecting());
+        assert!(started.elapsed() >= Duration::from_millis(500), "gave up too early: {:?}", started.elapsed());
+        assert_eq!(out[0], Outbound::Uncertain { seq: 1, reason: "responder_restart".into() });
+        assert_eq!(out[1], Outbound::Uncertain { seq: 2, reason: "worker_gone".into() });
+        match &out[2] {
+            Outbound::WorkerGone { reason } => assert!(reason.contains("reconnect gave up"), "{reason}"),
+            other => panic!("expected WorkerGone, got {other:?}"),
+        }
+        assert_eq!(out.len(), 3);
+    }
+
+    /// `reconnect_secs = 0` keeps the pre-#776 behaviour: a lost port ends the session at once.
+    #[test]
+    fn unix_port_without_a_reconnect_window_ends_at_once() {
+        let bridge = Bridge::up("off");
+        let mut r = Responder::spawn(bridge.config(|c| c.reconnect_secs = 0), None).unwrap_or_else(|e| panic!("spawn: {e}"));
+        let mut out = Vec::new();
+        let mut port = bridge.accept(&mut r, &mut out);
+        assert_eq!(r.offer(inbound(1, "owner-pc", "first")).unwrap(), Offer::Started);
+        let _ = read_frame(&mut port);
+        drop(port);
+        pump_while(&mut r, &mut out, |r, _| !r.is_gone());
+        assert!(r.is_gone() && !r.is_reconnecting());
+        assert_eq!(out[0], Outbound::Uncertain { seq: 1, reason: "worker_gone".into() });
+        assert!(matches!(&out[1], Outbound::WorkerGone { reason } if reason == "worker stdout closed"), "{out:?}");
+    }
+
+    #[test]
+    fn reconnect_wait_doubles_and_caps() {
+        let waits: Vec<u128> = (0..6).map(|a| reconnect_wait(a).as_millis()).collect();
+        assert_eq!(waits, vec![250, 500, 1000, 2000, 2000, 2000]);
+        assert_eq!(reconnect_wait(u32::MAX), RECONNECT_WAIT_MAX);
+    }
+
     // ---- #703 notice ack ----
 
     /// A notice sender (alert feeder) on the far end of `Transport::Unix`:
@@ -2169,13 +2459,16 @@ for line in sys.stdin:
         r.answer_notice("soonwook", "row-7", Err("not_joined_or_halted"));
         assert_eq!(feeder.answer(), serde_json::json!({"type": "notice_nack", "id": "row-7", "reason": "not_joined_or_halted"}), "nothing in between: id-less frames get no answer");
 
-        // The sender hung up: the bot sees the port close; a late answer is
-        // only logged (the feeder re-sends its unacked rows after reconnecting).
+        // The sender hung up: the bot sees the port close and (#776) waits to
+        // reconnect instead of ending; a late answer is only logged (the
+        // feeder re-sends its unacked rows after reconnecting).
         drop(feeder);
-        let gone = pump_until(&mut r, 1);
-        assert!(matches!(gone.last(), Some(Outbound::WorkerGone { .. })), "{gone:?}");
+        let mut lost = Vec::new();
+        pump_while(&mut r, &mut lost, |r, _| !r.is_reconnecting());
+        assert!(r.is_reconnecting() && !r.is_gone(), "{lost:?}");
+        assert!(!lost.iter().any(|o| matches!(o, Outbound::WorkerGone { .. })), "{lost:?}");
+        assert!(!r.port_up());
         r.answer_notice("soonwook", "row-8", Ok(22));
-        assert!(r.is_gone());
     }
 
     #[test]

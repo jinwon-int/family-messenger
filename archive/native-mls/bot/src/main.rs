@@ -119,6 +119,9 @@ fn main() -> ExitCode {
     let turn_max_secs = env_u64("NATIVE_MLS_BOT_TURN_MAX_SECS").filter(|v| *v > 0);
     let age_notice_min = env_u64("NATIVE_MLS_BOT_TURN_AGE_NOTICE_MIN");
     let age_renotice_min = env_u64("NATIVE_MLS_BOT_TURN_AGE_RENOTICE_MIN");
+    // #776: --responder-unix reconnect window after the bridge drops the
+    // socket (default 120 s, 0 = end the session at once as before).
+    let reconnect_secs = env_u64("NATIVE_MLS_BOT_RESPONDER_RECONNECT_SECS");
     // #636: 「한데」 attachments as agent turns (docs/FLEET-WORKER.md "첨부 turn").
     // Off unless NATIVE_MLS_BOT_AGENT_ATTACHMENTS=1; then NATIVE_MLS_BOT_ATTACHMENT_SPOOL
     // (absolute, the bridge's `attachment_spool_dir`) is required and
@@ -161,6 +164,7 @@ fn main() -> ExitCode {
         config.turn_max_secs = config.turn_max_secs.max(config.turn_secs);
         if let Some(v) = age_notice_min { config.turn_age_notice_secs = v.saturating_mul(60); }
         if let Some(v) = age_renotice_min { config.turn_age_renotice_secs = v.saturating_mul(60); }
+        if let Some(v) = reconnect_secs { config.reconnect_secs = v; }
         config
     });
     // Review 2 L: every room/device/consumer argument must already be a relay

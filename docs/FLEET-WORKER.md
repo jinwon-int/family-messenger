@@ -8,6 +8,9 @@
 
 - **ccc-node 「한데」 브리지** — `bridge/core/hande/transport.py`가 유닉스 소켓
   (`--responder-unix`)으로 이 포트의 서버 쪽을 맡는다. 공명 운영 경로(2026-10-19~).
+  브리지가 재시작해 연결이 끊기면 봇은 종료하지 않고 같은 소켓에 다시 접속한다(#776, 기본 120초 창).
+  끊길 때 돌던 turn 은 `uncertain`(`responder_restart`)으로 한 번 알리고 재실행하지 않으며, 그 사이 온
+  메시지는 새 연결에서 차례로 시작한다. 연결마다 프레임 상태는 새로 시작한다(이전 연결의 승인·도구·첨부 대기는 넘어오지 않음).
 - **Rust `native-responder`** — 아래 「Rust 응답기」 절. 하네스 플래그는 아래 표와 같은 뜻이다.
 
 처음 이 포트를 구현한 Python `scripts/fleet_worker.py`와 Matrix 부모 `scripts/fleet_matrix.py`는
