@@ -11,10 +11,15 @@
 //! - [`room`]: how a room's events are applied (#366 slice 2a) — rollback guard, two-step
 //!   commit application, pruned-history gap, relay retry rules.
 //!
+//! - [`file_v2`]: file-v2 detached attachments (#366 slice 3d, `FILE-V2.md`) — descriptor
+//!   validation and message classification, AES-256-GCM open/seal, content sniffing, run against
+//!   `archive/native-mls/tests/fixtures/file-v2-vectors.json` like the web and Android code.
+//!
 //! This crate does not link the MLS facade: hosts pass it framed bytes and reports, and adapt
 //! their group object to [`room::MlsGroup`].
 pub mod api;
 pub mod b64;
+pub mod file_v2;
 pub mod http;
 pub mod policy;
 pub mod room;

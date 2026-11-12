@@ -12,24 +12,21 @@
 //! still there when the turn ends (bridge knob off, refused, old worker) is
 //! removed by the responder, and the spool is emptied at start-up.
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::{Aes256Gcm, Nonce};
-use native_mls_host::b64;
-use sha2::{Digest, Sha256};
+use native_mls_host::file_v2;
 use std::fmt;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use zeroize::Zeroizing;
 
-/// FILE-V2 §2: 1 ~ 50 MiB plaintext.
-pub const MAX_FILE_V2: u64 = 50 * 1024 * 1024;
-pub const MAX_DESCRIPTOR_BYTES: usize = 4096;
-pub const FILE_V2_AAD: &[u8] = b"hande-file-v2";
+// #366 3d: the FILE-V2 rules (descriptor, open/seal, sniffing, names) live in host-core
+// `file_v2` — one implementation for the bot and the Android app. This module keeps what only
+// the bot does: the spool, the `turn.attachment` frame and the failure lines.
+pub use file_v2::{display_name, is_control, is_lower_hex, is_mime, kind_for, sha256_hex, sniff_mime, Descriptor};
+pub use file_v2::MAX_FILE_V2;
+
 /// Matches the ccc-node default (`max_document_size_mb` = 10, decimal MB).
 pub const DEFAULT_MAX_BYTES: u64 = 10_000_000;
-const GCM_TAG_BYTES: u64 = 16;
-const MAX_DIMENSION: u64 = 20_000;
 /// #636 stage 2: how long an owner attachment waits for the sender's next
 /// plain text, which then rides along as `attachment.caption` (0 = never wait).
 pub const DEFAULT_CAPTION_SECS: u64 = 10;
@@ -38,12 +35,6 @@ pub const MAX_CAPTION_SECS: u64 = 120;
 pub const MAX_CAPTION_BYTES: usize = 8000;
 /// Frame contract version (`attachment.v`).
 pub const FRAME_VERSION: u64 = 1;
-
-/// ccc-node `core/matrix/media.py` `IMAGE_EXTENSIONS` (minus the `image/jpg`
-/// alias): the bridge stages exactly these as images, so `kind` follows them.
-const IMAGE_MIMES: &[&str] = &[
-    "image/jpeg", "image/png", "image/gif", "image/webp", "image/heic", "image/heif", "image/bmp", "image/tiff",
-];
 
 /// The responder settings for attachment turns (`None` = off, the default).
 #[derive(Clone, Debug)]
@@ -58,22 +49,6 @@ pub struct AttachmentConfig {
 /// `(room, blob id) → ciphertext`. The poll loop installs one bound to its
 /// relay client settings; tests install a fake.
 pub type Fetcher = Arc<dyn Fn(&str, &str) -> Result<Vec<u8>, String> + Send + Sync>;
-
-/// A validated file-v2 descriptor. `Debug` never prints the key or nonce.
-#[derive(Clone)]
-pub struct Descriptor {
-    pub blob: String,
-    pub size: u64,
-    key: Zeroizing<[u8; 32]>,
-    nonce: [u8; 12],
-    pub name: Option<String>,
-}
-
-impl fmt::Debug for Descriptor {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Descriptor").field("size", &self.size).finish_non_exhaustive()
-    }
-}
 
 /// What a queued attachment turn carries until it starts (memory only).
 #[derive(Clone)]
@@ -103,170 +78,15 @@ impl fmt::Debug for Source {
     }
 }
 
-pub(crate) fn is_lower_hex(s: &str, len: usize) -> bool {
-    s.len() == len && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-}
-
-/// RFC 4648 §5 without padding, canonical only (re-encodes to the same text),
-/// like the web `base64urlDecode`.
-fn b64url_decode(text: &str) -> Option<Vec<u8>> {
-    if !text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') || text.len() % 4 == 1 {
-        return None;
-    }
-    let mut standard: String = text.chars().map(|c| match c { '-' => '+', '_' => '/', other => other }).collect();
-    while standard.len() % 4 != 0 {
-        standard.push('=');
-    }
-    let bytes = b64::decode(&standard).ok()?;
-    let again: String = b64::encode(&bytes).trim_end_matches('=').chars().map(|c| match c { '+' => '-', '/' => '_', other => other }).collect();
-    (again == text).then_some(bytes)
-}
-
-pub(crate) fn is_control(c: char) -> bool {
-    matches!(c as u32, 0x00..=0x1f | 0x7f..=0x9f)
-}
-
-fn mime_part_ok(part: &str) -> bool {
-    let bytes = part.as_bytes();
-    !bytes.is_empty()
-        && bytes.len() <= 64
-        && bytes[0].is_ascii_alphanumeric()
-        && bytes.iter().all(|b| b.is_ascii_alphanumeric() || b"!#$&^_.+-".contains(b))
-}
-
-/// FILE-V2 §1 `mime`: ≤ 100 bytes, `type/subtype` (alphanumerics and `!#$&^_.+-`).
-pub(crate) fn is_mime(mime: &str) -> bool {
-    mime.len() <= 100 && mime.split_once('/').is_some_and(|(t, s)| mime_part_ok(t) && mime_part_ok(s))
-}
-
-/// FILE-V2 §1 strict validation (the web `parseDescriptor` rules). Any error
-/// means the message is an unopenable attachment — never a text turn.
+/// FILE-V2 §1 strict validation (host-core `file_v2::parse_descriptor`). Any error means the
+/// message is an unopenable attachment — never a text turn.
 pub fn parse_descriptor(plaintext: &[u8]) -> Result<Descriptor, &'static str> {
-    if plaintext.len() > MAX_DESCRIPTOR_BYTES {
-        return Err("too large");
-    }
-    let text = std::str::from_utf8(plaintext).map_err(|_| "not utf-8")?;
-    let raw: serde_json::Value = serde_json::from_str(text).map_err(|_| "not json")?;
-    let object = raw.as_object().ok_or("not an object")?;
-    const ALLOWED: &[&str] = &["blob", "key", "nonce", "size", "v", "h", "mime", "name", "w"];
-    if object.keys().any(|k| !ALLOWED.contains(&k.as_str())) {
-        return Err("unknown key");
-    }
-    if object.get("v").and_then(|v| v.as_u64()) != Some(2) {
-        return Err("version");
-    }
-    let blob = object.get("blob").and_then(|v| v.as_str()).filter(|b| is_lower_hex(b, 64)).ok_or("blob")?;
-    let size = object.get("size").and_then(|v| v.as_u64()).filter(|s| (1..=MAX_FILE_V2).contains(s)).ok_or("size")?;
-    let key_bytes = Zeroizing::new(
-        object.get("key").and_then(|v| v.as_str()).and_then(b64url_decode).filter(|k| k.len() == 32).ok_or("key")?,
-    );
-    let nonce_bytes = object.get("nonce").and_then(|v| v.as_str()).and_then(b64url_decode).filter(|n| n.len() == 12).ok_or("nonce")?;
-    if let Some(mime) = object.get("mime") {
-        let mime = mime.as_str().ok_or("mime")?;
-        if !is_mime(mime) {
-            return Err("mime");
-        }
-    }
-    let name = match object.get("name") {
-        None => None,
-        Some(value) => {
-            let name = value.as_str().ok_or("name")?;
-            let chars = name.chars().count();
-            if !(1..=255).contains(&chars) || name.chars().any(is_control) {
-                return Err("name");
-            }
-            Some(name.to_string())
-        }
-    };
-    for k in ["w", "h"] {
-        if let Some(value) = object.get(k) {
-            if !value.as_u64().is_some_and(|d| (1..=MAX_DIMENSION).contains(&d)) {
-                return Err("dimension");
-            }
-        }
-    }
-    let mut key = Zeroizing::new([0u8; 32]);
-    key.copy_from_slice(&key_bytes);
-    let mut nonce = [0u8; 12];
-    nonce.copy_from_slice(&nonce_bytes);
-    Ok(Descriptor { blob: blob.to_string(), size, key, nonce, name })
+    file_v2::parse_descriptor(plaintext)
 }
 
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// FILE-V2 §4.3: length `size + 16` → sha256 = `blob` → AES-256-GCM with the
-/// file-v2 AAD → plaintext length = `size`. Every mismatch is `integrity`.
+/// FILE-V2 §4.3 (host-core `file_v2::open`). Every mismatch is `integrity`.
 pub fn open_v2(ciphertext: &[u8], descriptor: &Descriptor) -> Result<Zeroizing<Vec<u8>>, &'static str> {
-    if ciphertext.len() as u64 != descriptor.size + GCM_TAG_BYTES {
-        return Err("integrity");
-    }
-    if sha256_hex(ciphertext) != descriptor.blob {
-        return Err("integrity");
-    }
-    let cipher = Aes256Gcm::new_from_slice(descriptor.key.as_slice()).map_err(|_| "integrity")?;
-    let plaintext = cipher
-        .decrypt(Nonce::from_slice(&descriptor.nonce), Payload { msg: ciphertext, aad: FILE_V2_AAD })
-        .map_err(|_| "integrity")?;
-    let plaintext = Zeroizing::new(plaintext);
-    if plaintext.len() as u64 != descriptor.size {
-        return Err("integrity");
-    }
-    Ok(plaintext)
-}
-
-/// FILE-V2 §4.4: the MIME comes from the content (magic bytes), never from the
-/// descriptor hint.
-pub fn sniff_mime(bytes: &[u8]) -> &'static str {
-    let starts = |magic: &[u8]| bytes.starts_with(magic);
-    if starts(&[0xff, 0xd8, 0xff]) {
-        return "image/jpeg";
-    }
-    if starts(b"\x89PNG\r\n\x1a\n") {
-        return "image/png";
-    }
-    if starts(b"GIF87a") || starts(b"GIF89a") {
-        return "image/gif";
-    }
-    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        return "image/webp";
-    }
-    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
-        match &bytes[8..12] {
-            b"heic" | b"heix" | b"hevc" | b"hevx" | b"heim" | b"heis" => return "image/heic",
-            b"mif1" | b"msf1" => return "image/heif",
-            _ => {}
-        }
-    }
-    if starts(b"BM") && bytes.len() >= 26 {
-        return "image/bmp";
-    }
-    if starts(b"II*\0") || starts(b"MM\0*") {
-        return "image/tiff";
-    }
-    if starts(b"%PDF-") {
-        return "application/pdf";
-    }
-    if starts(b"PK\x03\x04") {
-        return "application/zip";
-    }
-    if !bytes.contains(&0) && std::str::from_utf8(bytes).is_ok() {
-        return "text/plain";
-    }
-    "application/octet-stream"
-}
-
-pub fn kind_for(mime: &str) -> &'static str {
-    if IMAGE_MIMES.contains(&mime) { "image" } else { "file" }
-}
-
-/// FILE-V2 saved-name rule: a name carrying a bidirectional control is not
-/// used (it can disguise an extension); the key is then left out.
-pub fn display_name(name: Option<&str>) -> Option<String> {
-    let name = name?;
-    let bidi = |c: char| matches!(c as u32, 0x061c | 0x200e | 0x200f | 0x202a..=0x202e | 0x2066..=0x2069);
-    (!name.chars().any(bidi)).then(|| name.to_string())
+    file_v2::open(ciphertext, descriptor)
 }
 
 /// One plaintext file left in the spool for the active turn.
@@ -513,7 +333,7 @@ pub(crate) mod tests {
         for text in bad {
             assert!(parse_descriptor(text.as_bytes()).is_err(), "{text}");
         }
-        assert!(parse_descriptor(&vec![b' '; MAX_DESCRIPTOR_BYTES + 1]).is_err());
+        assert!(parse_descriptor(&vec![b' '; file_v2::MAX_DESCRIPTOR_BYTES + 1]).is_err());
         assert!(parse_descriptor(b"\xff\xfe").is_err());
     }
 

@@ -5,6 +5,8 @@ package com.seoyoon_family.hande.host
 
 import com.seoyoon_family.hande.mls.MlsCandidateList
 import com.seoyoon_family.hande.mls.MlsCandidatePost
+import com.seoyoon_family.hande.mls.MlsException
+import com.seoyoon_family.hande.mls.MlsFileV2Kind
 import com.seoyoon_family.hande.mls.MlsInvite
 import com.seoyoon_family.hande.mls.MlsLobbySlot
 import com.seoyoon_family.hande.mls.MlsLobby
@@ -13,6 +15,12 @@ import com.seoyoon_family.hande.mls.MlsRoom
 import com.seoyoon_family.hande.mls.RoomEvent
 import com.seoyoon_family.hande.mls.RoomException
 import com.seoyoon_family.hande.mls.SendResult
+import com.seoyoon_family.hande.mls.fileV2Check
+import com.seoyoon_family.hande.mls.fileV2Classify
+import com.seoyoon_family.hande.mls.fileV2DisplayName
+import com.seoyoon_family.hande.mls.fileV2Open
+import com.seoyoon_family.hande.mls.fileV2Seal
+import com.seoyoon_family.hande.mls.fileV2Sniff
 import java.io.File
 import java.nio.file.Files
 import java.security.MessageDigest
@@ -339,6 +347,34 @@ private fun scenarioSelfService(tmp: File) {
     check(unsupported is MlsCandidatePost.Refused && unsupported.refusal.status.toInt() == 404 && unsupported.refusal.code.isEmpty(), "old relay: bare 404 is a refusal with an empty code ($unsupported)")
 }
 
+/**
+ * ⑧ #366 3d — file-v2 규칙을 Kotlin 에서 Rust(host-core `file_v2`)로 부른다: 검증 · 분류 · 내용 판별 · 봉인 → 열기 왕복 · 변조 거부.
+ * 판정 전체는 `ios-ffi/tests/file_v2_ffi.rs` 가 공유 벡터로 고정한다. 여기서는 JNA 경계(ByteArray · ULong · sealed class · 예외)를 본다.
+ */
+private fun scenarioFileV2() {
+    println("⑧ file-v2 (host-core via ffi)")
+    val uuid = "0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2"
+    val png = byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a) + "hande file-v2 jvm".toByteArray()
+    val sniff = fileV2Sniff(png)
+    check(sniff.mime == "image/png" && sniff.kind == "image", "sniff by content (${sniff.mime}/${sniff.kind})")
+    val sealed = fileV2Seal(png, sniff.mime, "사진.png")
+    val info = fileV2Check(sealed.descriptor)
+    check(info.blob == sealed.blob && info.size == png.size.toULong() && info.name == "사진.png" && info.mime == "image/png", "sealed descriptor validates ($info)")
+    check(sealed.ciphertext.size == png.size + 16, "ciphertext = size + GCM tag")
+    check(fileV2Open(sealed.descriptor, sealed.ciphertext).contentEquals(png), "seal → open round trip")
+    val tampered = sealed.ciphertext.copyOf().also { it[0] = (it[0].toInt() xor 1).toByte() }
+    val integrity = try { fileV2Open(sealed.descriptor, tampered); null } catch (e: MlsException.Rejected) { e.reason }
+    check(integrity == "integrity", "tampered ciphertext is refused ($integrity)")
+    val missing = try { fileV2Check("""{"v":2}""".toByteArray()); null } catch (e: MlsException.Rejected) { e.reason }
+    check(missing == "missing blob", "bad descriptor reason is a fixed code ($missing)")
+    val v2 = fileV2Classify("file-v2-$uuid", sealed.descriptor)
+    check(v2 is MlsFileV2Kind.FileV2 && v2.size == png.size.toULong(), "classify file-v2 ($v2)")
+    check(fileV2Classify("file-v2-${uuid.uppercase()}", sealed.descriptor) is MlsFileV2Kind.Undecryptable, "non-canonical id → undecryptable")
+    check(fileV2Classify("status-$uuid", "생각 중".toByteArray()) is MlsFileV2Kind.Status, "status line → not stored")
+    check(fileV2Classify("web-$uuid", "안녕".toByteArray()) is MlsFileV2Kind.Text, "other ids → text")
+    check(fileV2DisplayName("photo\u202egpj.exe") == null && fileV2DisplayName("사진.jpg") == "사진.jpg", "bidi names are not used")
+}
+
 fun main() {
     val tmp = Files.createTempDirectory("hande-jvm-roundtrip").toFile()
     try {
@@ -349,6 +385,7 @@ fun main() {
         scenarioLobby(tmp)
         scenarioReadSeq(tmp)
         scenarioSelfService(tmp)
+        scenarioFileV2()
     } catch (e: Throwable) {
         failures += "exception: $e"
         e.printStackTrace()
@@ -356,7 +393,7 @@ fun main() {
         tmp.deleteRecursively()
     }
     if (failures.isEmpty()) {
-        println("ROUNDTRIP PASS (7 scenarios)")
+        println("ROUNDTRIP PASS (8 scenarios)")
     } else {
         println("ROUNDTRIP FAIL ${failures.size}: $failures")
         exitProcess(1)
