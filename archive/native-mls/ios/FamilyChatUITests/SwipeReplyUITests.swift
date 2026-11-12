@@ -32,15 +32,18 @@ final class SwipeReplyUITests: XCTestCase {
             print("[swipe] \(label) '\(prefix)' NOT-HITTABLE frame=\(el.frame)")
             return nil
         }
-        let before = el.frame.minY
+        // 밀기 전 frame 을 값으로 잡아 둔다 — `el.frame` 은 읽을 때마다 다시 조회돼, 밀기 뒤에 찍으면 옆으로 스크롤된 위치가 나온다
+        // (#747: 표 칸의 밀기 뒤 x=-5.3 을 처음 위치로 읽어 「처음부터 가운데로 스크롤됨」으로 오진).
+        let startFrame = el.frame
         let start = el.coordinate(withNormalizedOffset: CGVector(dx: x, dy: 0.5))
         start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: dx, dy: dy)),
                     withVelocity: XCUIGestureVelocity(rawValue: 500), thenHoldForDuration: 0.05)
         let replied = app.staticTexts["harness-replied"].label
-        let moved = text(app, prefix).frame.minY - before
+        let endFrame = text(app, prefix).frame
+        let moved = endFrame.minY - startFrame.minY
         app.buttons["harness-dump"].tap()
         let trace = app.staticTexts["harness-trace"].label.replacingOccurrences(of: "\n", with: " | ")
-        print("[swipe] \(label) '\(prefix)' \(replied) moved=\(Int(moved)) frame=\(el.frame) trace: \(trace)")
+        print("[swipe] \(label) '\(prefix)' \(replied) moved=\(Int(moved)) start=\(startFrame) end=\(endFrame) trace: \(trace)")
         return (replied, moved)
     }
 
@@ -81,8 +84,9 @@ final class SwipeReplyUITests: XCTestCase {
         XCTAssertGreaterThan(r.moved, 100, "a vertical drag on a bubble must scroll the timeline")
     }
 
-    /// #747: 가로로 넘치는 표는 왼쪽 끝에서 시작한다 — 타임라인의 바닥 앵커(x 0.5)를 물려받아 가운데로 스크롤된 채 첫 열이
-    /// 카드 밖으로 잘리면 안 된다(종전 실측: 첫 열 칸 x=-5.3, 같은 카드의 글자 x=30). 첫 열 칸의 왼쪽 끝 ≥ 같은 카드 글자의 왼쪽 끝.
+    /// 회귀 지킴(#747): 가로로 넘치는 표는 왼쪽 끝에서 시작한다 — 타임라인의 바닥 앵커(`.bottom`, x 0.5)가 안쪽 가로 스크롤에
+    /// 번져 첫 열이 카드 밖으로 잘리면 안 된다. #747 의 의심은 재현되지 않았다(수정 없는 main 에서도 첫 열 칸 x=30 = 카드 글자 x=30;
+    /// 「x=-5.3」은 밀기 뒤 위치였다). 앵커 구성이 바뀌어도 이 성질이 남는지 지킨다. 첫 열 칸의 왼쪽 끝 ≥ 같은 카드 글자의 왼쪽 끝.
     func testWideTableStartsAtLeadingEdge() {
         let app = launch(["-swipeReplyRows", "6", "-swipeReplyAgent"])
         let cell = text(app, "표칸 6")
