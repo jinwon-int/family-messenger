@@ -112,6 +112,10 @@ pub struct Relay {
     pub fail_next_welcome: AtomicBool,
     pub fail_next_get: AtomicBool,
     pub drop_next_commit: AtomicBool,
+    /// file-v2 blob 저장소(#366 C, blobs.go 흉내): `"<room>/<sha256 hex>"` → 암호문. 내용 주소라 같은 바이트는 200(이미 있음).
+    pub blobs: Mutex<HashMap<String, Vec<u8>>>,
+    /// 참이면 다음 blob GET 이 받은 바이트의 한 비트를 뒤집어 돌려준다(변조·전송 손상 흉내 — 받는 쪽 `integrity`). 한 번만.
+    pub corrupt_next_blob: AtomicBool,
 }
 
 impl Relay {
@@ -131,6 +135,8 @@ impl Relay {
             fail_next_welcome: AtomicBool::new(false),
             fail_next_get: AtomicBool::new(false),
             drop_next_commit: AtomicBool::new(false),
+            blobs: Mutex::new(HashMap::new()),
+            corrupt_next_blob: AtomicBool::new(false),
         })
     }
     fn cut() -> Result<HttpResponse, RoomError> {
@@ -365,6 +371,32 @@ impl Relay {
 
     fn respond(status: u16, body: serde_json::Value) -> Result<HttpResponse, RoomError> {
         Ok(HttpResponse { status, body: serde_json::to_vec(&body).unwrap() })
+    }
+    /// `POST /v2/rooms/{room}/blobs?device=` — 없는 방 404 `no_such_room`, 새로 저장 201 · 이미 있음 200, 둘 다 `{"id"}`.
+    fn post_blob(&self, room: &str, query: &str, body: &[u8]) -> Result<HttpResponse, RoomError> {
+        let device = Self::params(query)["device"].to_string();
+        if !self.rooms.lock().unwrap().contains_key(room) {
+            return Self::respond(404, serde_json::json!({ "error": "no_such_room" }));
+        }
+        let id = Self::sha256_hex(body);
+        self.trace.lock().unwrap().push(format!("BLOB POST {device} {room} {} B", body.len()));
+        let fresh = self.blobs.lock().unwrap().insert(format!("{room}/{id}"), body.to_vec()).is_none();
+        Self::respond(if fresh { 201 } else { 200 }, serde_json::json!({ "id": id }))
+    }
+    /// `GET /v2/rooms/{room}/blobs/{id}?device=` — 암호문 그대로, 없으면 404 `no_such_blob`.
+    fn get_blob(&self, room: &str, id: &str, query: &str) -> Result<HttpResponse, RoomError> {
+        let device = Self::params(query)["device"].to_string();
+        self.trace.lock().unwrap().push(format!("BLOB GET {device} {room} {}", &id[..12.min(id.len())]));
+        match self.blobs.lock().unwrap().get(&format!("{room}/{id}")) {
+            Some(bytes) => {
+                let mut bytes = bytes.clone();
+                if self.corrupt_next_blob.swap(false, Ordering::SeqCst) {
+                    bytes[0] ^= 1;
+                }
+                Ok(HttpResponse { status: 200, body: bytes })
+            }
+            None => Self::respond(404, serde_json::json!({ "error": "no_such_blob" })),
+        }
     }
     fn no_content() -> Result<HttpResponse, RoomError> {
         Ok(HttpResponse { status: 204, body: Vec::new() })
@@ -652,11 +684,22 @@ impl HttpTransport for Relay {
         if self.down.load(Ordering::SeqCst) {
             return Err(RoomError::Host { reason: "connection refused (test)".into() });
         }
-        assert!(headers.is_empty(), "no access token configured");
+        // 토큰은 설정하지 않았다 — Access 헤더가 없어야 한다(blob POST 의 Content-Type 은 괜찮다, #366 C).
+        assert!(headers.iter().all(|h| h.name == "Content-Type"), "no access token configured: {headers:?}");
         let path = url.strip_prefix(BASE).expect("url under base");
         let (path, query) = path.split_once('?').unwrap_or((path, ""));
         let body = body.unwrap_or_default();
         if let Some(rest) = path.strip_prefix("/v2/rooms/") {
+            if let Some((room, tail)) = rest.split_once('/') {
+                if tail == "blobs" {
+                    assert_eq!(method, "POST");
+                    return self.post_blob(room, query, &body);
+                }
+                if let Some(id) = tail.strip_prefix("blobs/") {
+                    assert_eq!(method, "GET");
+                    return self.get_blob(room, id, query);
+                }
+            }
             if let Some(room) = rest.strip_suffix("/events") {
                 return match method.as_str() {
                     "GET" => self.get_events(room, query),

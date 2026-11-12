@@ -347,6 +347,25 @@ pub fn seal(plaintext: &[u8], mime: &str, name: Option<&str>) -> Result<Sealed, 
     seal_with(plaintext, &key, &nonce, mime, name)
 }
 
+/// A fresh outer client id `file-v2-<uuid v4>` (FILE-V2 §1 — the shape [`is_client_id`] accepts). The
+/// relay dedups per device on it, so it must never repeat; `/dev/urandom` with a time+counter
+/// fallback (same as the bot's `uuid_client_id`). A display hint only — the MLS AAD still names the device.
+pub fn new_client_id() -> String {
+    let mut bytes = [0u8; 16];
+    let filled = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)).is_ok();
+    if !filled {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
+        bytes[..8].copy_from_slice(&nanos.to_le_bytes());
+        bytes[8..].copy_from_slice(&COUNTER.fetch_add(1, Ordering::Relaxed).to_le_bytes());
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!("{CLIENT_PREFIX}{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
+}
+
 /// FILE-V2 §4.4: the MIME comes from the content (magic bytes), never from the descriptor hint.
 pub fn sniff_mime(bytes: &[u8]) -> &'static str {
     let starts = |magic: &[u8]| bytes.starts_with(magic);
@@ -505,6 +524,15 @@ pub(crate) mod tests {
         assert_eq!(open(&ct[..ct.len() - 1], &d).unwrap_err(), "integrity");
         let forged = format!(r#"{{"v":2,"blob":"{}","size":29,"key":"{VECTOR_KEY}","nonce":"{VECTOR_NONCE}"}}"#, sha256_hex(&ct));
         assert_eq!(open(&ct, &parse_descriptor(forged.as_bytes()).unwrap()).unwrap_err(), "integrity");
+    }
+
+    #[test]
+    fn new_client_ids_are_canonical_and_fresh() {
+        let a = new_client_id();
+        let b = new_client_id();
+        assert!(is_client_id(&a) && is_client_id(&b), "{a} {b}");
+        assert_ne!(a, b);
+        assert_eq!(classify(&a, b"not a descriptor"), Classified::Undecryptable, "never text");
     }
 
     #[test]

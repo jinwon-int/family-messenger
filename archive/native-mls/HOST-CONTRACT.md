@@ -30,6 +30,8 @@
 | `MlsRoom.adopt(identity, room, state, after, …)` (3c) | **다른 상태로 방을 시작** — 로비 시드로 방을 만들 때(`after` = 0) · 로비 key package 로 받은 Welcome 을 열 때(`after` = `seq - 1`) | 그룹 없음(`dispatch("create")` 또는 Welcome `poll`) · 돌아오기 전에 `persist` 1회 · **방은 전부 `MlsLobby.seedState()` 에서 시작**해야 서명키가 하나다(`new` 는 새 키를 만든다 — 테스트 대역 전용) |
 | `poll()` | 동기화 한 바퀴(ack → GET → gap → 이벤트 순서 처리) → 상태가 움직였으면 `persist` | `Relay{transient}` 면 백오프 뒤 재호출(0.5 s → 30 s) · 정지된 방은 아무것도 안 함 |
 | `send(plaintext)` → `Sent | Queued | AlreadyDelivered` | 암호화 → dedup 키 예약 → **`persist`** → POST(epoch) | `Queued` = 409 cas_mismatch, 다음 `poll` 뒤 자동 재전송(≤8회, `Replayed`/`Dropped` 이벤트) |
+| `sendFileV2(plaintext, mime?, name?)` → `MlsFileV2Outgoing{result, descriptor, blob, size, mime, kind}` (#366 C) | file-v2 첨부 송신(FILE-V2 §2·§3): 새 키·nonce 로 봉인 → `POST …/blobs` (**방 잠금 밖**) → id = sha256(암호문) 확인 → 설명자를 바깥 client_id **`file-v2-<uuid>`** 로 `send` 와 같은 순서(암호화 → 예약 → `persist` → POST)로 게시 | `result` 는 `send` 와 같다. `Queued` 의 재전송도 **file-v2 client_id 그대로**(평문 client_id 로 나가면 받는 앱이 파일 키를 글로 보인다). `descriptor` 는 파일 키를 담는다 — 호스트는 자기 이력 attachment 칸에만 둔다(kind `file-v2`, `Debug` 는 길이만). 참여 전·정지된 방·규칙 위반(`file-v2 size`/`name`)은 업로드 전에 `Host` 오류. `mime` 없으면 내용으로 판별 |
+| `openFileV2(descriptor)` → 평문 (#366 C) | file-v2 첨부 열기(FILE-V2 §4.3): 설명자 검증 → `GET …/blobs/<id>`(**방 잠금 밖**) → 길이 → sha256 → AES-GCM(AAD) → 크기 | `Host("file-v2 integrity")` = 받은 바이트가 어긋남(다시 받기) · `Host("file-v2 <사유>")` = 설명자가 틀림 · 403/404 `no_such_blob`/410·전송 실패는 `Relay{transient}`. 평문은 이력에 저장하지 않는다(미리보기 캐시·임시 공유 파일만, FILE-V2 §4-2) |
 | `dispatch(method, bytes)` | `MlsDevice.dispatch` 와 같은 진입점·같은 롤백(create · key_package · invite_with_commit · remove_pending …) | 성공하면 **즉시 `persist`**(돌려받은 바이트가 릴레이로 나가기 전에 디스크에) · `create`/`join` 은 joined |
 | `postCommit(commit)` · `postWelcome(welcome, targets)` | 이 기기가 만든 commit / Welcome 게시 | 초대: `dispatch("invite_with_commit", kp)` → `u32le len‖commit‖welcome` 분리 → `postCommit` → `poll` 이 `OwnCommitMerged` 를 알리면 → `postWelcome(welcome, [대상])` |
 | `exportState()` · `syncState()` | 수동 스냅샷(디버그·백업) | 영속의 정본은 `persist` 콜백 |
@@ -109,12 +111,12 @@
 
 ## 6. 아직 코어에 없는 것(호스트가 임시로 하거나 보류)
 - 3c 에서 코어로 들어간 것: 로비 key package 게시·보충(`MlsLobby.replenish`) · 방 목록(`rooms()`) · 푸시 등록(`registerPush`) · 방 닫기(`MlsRoom.closeRoom`) · 로비 Welcome 받아들이기(`MlsRoom.adopt`).
-- 3d·3e 에서 코어로 들어간 것: file-v2 규칙(§2c) — Android `FileV2.kt`·`DeviceHub` 는 코어 판정을 쓴다. 앱 JVM 단위 테스트(`:app:testDebugUnitTest`)는 호스트 cdylib(`<ffiOut>/host`, `build-android.sh` 2b)을 JNA 로 싣는다. file-v2 **열기·송신**(blob 받기 → `fileV2Open`, `fileV2Seal` → 업로드)은 앱 C 단계.
+- 3d·3e 에서 코어로 들어간 것: file-v2 규칙(§2c) — Android `FileV2.kt`·`DeviceHub` 는 코어 판정을 쓴다. 앱 JVM 단위 테스트(`:app:testDebugUnitTest`)는 호스트 cdylib(`<ffiOut>/host`, `build-android.sh` 2b)을 JNA 로 싣는다. file-v2 **열기·송신**은 `MlsRoom.openFileV2`·`sendFileV2`(#366 C — blob 전송까지 코어); 앱 화면(말풍선 열기·작성창 첨부)은 앱 C 단계.
 - 남은 것: **첨부 크기 정책**(호스트 `application` 콜백에서 `client_id` `file-v1-…` 판정 뒤 적용) · 푸시 **와이어의 FCM 일반화**(릴레이 #338 G3 — 클라이언트 호출 모양은 그대로) · 로비 key package 의 **방 상태 사본에서의 정리**(`join` 이 남은 것을 모두 지우므로 방 쪽은 자동; 로비 쪽은 `replenish` 가 서버 `live` 기준으로 정리).
 
 ## 7. 검증
 - Rust: `ios-ffi/tests/room_host.rs`(3a, 10 시나리오 — #574 형제 기기 `invite` · 후속의 대기 Welcome 영속·재시작 포함) · `ios-ffi/tests/lobby_host.rs`(3c, 12 시나리오: 보충·상한·게시 실패 롤백·로비 Welcome adopt·import·회수·방 닫기·푸시 + #574 `/v2/me`·후보 게시→승인·역할·로비 `dispatch`) — 대역은 `tests/support/mod.rs`(in-memory 릴레이·관찰자·기기 정책 체인 대역).
-- JVM(Linux, CI `native-mls-android.yml`): [`android/host`](android/) — Kotlin 바인딩 + `JdkHttpTransport`/`FileRoomStore`/`FileLobbyStore` + in-memory 릴레이로 **같은 시나리오**(두 기기 왕복 · 409 재전송 · 영속 뒤 `import` 이어 받기 · 정지 · 로비 보충→adopt→방 목록→닫기→푸시→회수 · 읽음 위치 · #574 후보→승인→역할→형제 초대→adopt). 실행 `android/scripts/jvm-roundtrip.sh`. ⑧ file-v2(§2c): 봉인 → 검증 → 열기 · 변조 거부 · 분류를 Kotlin 에서 코어로.
+- JVM(Linux, CI `native-mls-android.yml`): [`android/host`](android/) — Kotlin 바인딩 + `JdkHttpTransport`/`FileRoomStore`/`FileLobbyStore` + in-memory 릴레이로 **같은 시나리오**(두 기기 왕복 · 409 재전송 · 영속 뒤 `import` 이어 받기 · 정지 · 로비 보충→adopt→방 목록→닫기→푸시→회수 · 읽음 위치 · #574 후보→승인→역할→형제 초대→adopt). 실행 `android/scripts/jvm-roundtrip.sh`. ⑧ file-v2(§2c): 봉인 → 검증 → 열기 · 변조 거부 · 분류를 Kotlin 에서 코어로. ⑨ `MlsRoom.sendFileV2`/`openFileV2`(#366 C): 업로드 → file-v2 게시 → 분류·열기 · 변조 · 409 재전송의 client_id. Rust: `ios-ffi/tests/file_v2_room.rs`.
 - file-v2 판정: `host-core` `file_v2::tests::shared_vectors` · `ios-ffi/tests/file_v2_ffi.rs` · 웹 `file-v2-vectors.test.mjs` · Android `FileV2VectorsTest`(같은 벡터 파일).
 - 호스트 판정(Android `core/SelfService`·`core/FileV2`): `:app:testDebugUnitTest` 의 `FileV2Test`·`FileV2VectorsTest`(코어 ffi 경유) · `SelfServiceTest`(웹 `tests/self-service.test.mjs` 와 같은 경우) · `AppLoginTest.subjectOf*`(등록 JSON `subject` = JWT `sub`).
 - 실기기·에뮬레이터(Android 앱)는 #338 B 단계.

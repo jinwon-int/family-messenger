@@ -7,6 +7,7 @@ import com.seoyoon_family.hande.mls.MlsCandidateList
 import com.seoyoon_family.hande.mls.MlsCandidatePost
 import com.seoyoon_family.hande.mls.MlsException
 import com.seoyoon_family.hande.mls.MlsFileV2Kind
+import com.seoyoon_family.hande.mls.MlsFileV2Outgoing
 import com.seoyoon_family.hande.mls.MlsInvite
 import com.seoyoon_family.hande.mls.MlsLobbySlot
 import com.seoyoon_family.hande.mls.MlsLobby
@@ -35,7 +36,9 @@ private fun check(cond: Boolean, what: String) { if (!cond) { failures += what; 
 private class Device(val identity: String, relay: InMemoryRelay, dir: File) {
     val events = mutableListOf<RoomEvent>()
     val texts = mutableListOf<Triple<Long, String, String>>()
-    val store = FileRoomStore(dir, "room-a", onEvent = { events += it }, onMessage = { seq, sender, _, pt -> texts += Triple(seq, sender, String(pt)) })
+    /** (client_id, 평문) — file-v2 설명자처럼 글이 아닌 메시지를 그대로 본다(#366 C). */
+    val raw = mutableListOf<Pair<String, ByteArray>>()
+    val store = FileRoomStore(dir, "room-a", onEvent = { events += it }, onMessage = { seq, sender, cid, pt -> texts += Triple(seq, sender, String(pt)); raw += cid to pt })
     var room: MlsRoom = MlsRoom(identity, "room-a", BASE, relay, store)
 
     /** 영속된 쌍으로 새 인스턴스를 만든다(재시작 대역). */
@@ -375,6 +378,38 @@ private fun scenarioFileV2() {
     check(fileV2DisplayName("photo\u202egpj.exe") == null && fileV2DisplayName("사진.jpg") == "사진.jpg", "bidi names are not used")
 }
 
+/**
+ * ⑨ #366 C — `MlsRoom.sendFileV2` / `openFileV2` 를 Kotlin 에서: 업로드 → `file-v2-<uuid>` 게시 → 다른 기기가 분류·열기 ·
+ * 409 뒤 재시도도 file-v2 client_id · 변조 바이트는 `RoomException.Host("file-v2 integrity")` · 없는 blob 은 Relay 오류.
+ * 판정 전체는 `ios-ffi/tests/file_v2_room.rs`. 여기서는 JNA 경계(ByteArray 50 MiB 이하 · 레코드 안 enum · 예외 종류)를 본다.
+ */
+private fun scenarioFileV2Room(tmp: File) {
+    println("⑨ file-v2 send/open over MlsRoom")
+    val relay = InMemoryRelay(BASE)
+    val (owner, peer) = founded(relay, File(tmp, "s9"))
+    peer.room.poll()
+    val png = byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a) + ByteArray(300_000) { (it % 251).toByte() }
+    val out: MlsFileV2Outgoing = owner.room.sendFileV2(png, null, "사진.png")
+    val sent = out.result
+    check(sent is SendResult.Sent && sent.clientId.startsWith("file-v2-") && sent.clientId.length == "file-v2-".length + 36, "descriptor posted under file-v2-<uuid> ($sent)")
+    check(out.mime == "image/png" && out.kind == "image" && out.size == png.size.toULong(), "sniffed mime/kind, size (${out.mime}/${out.kind}/${out.size})")
+    check(relay.rows("room-a").any { it.clientId.startsWith("file-v2-") } && relay.blobCount() == 1, "relay holds one blob and the file-v2 row")
+    peer.room.poll()
+    val (cid, descriptor) = peer.raw.last()
+    check(descriptor.contentEquals(out.descriptor), "the peer's MLS plaintext is the descriptor")
+    check(fileV2Classify(cid, descriptor) is MlsFileV2Kind.FileV2, "the peer classifies it as file-v2")
+    check(peer.room.openFileV2(descriptor).contentEquals(png), "the peer opens 300 KB through the relay blob")
+    relay.corruptNextBlob = true
+    val tampered = try { peer.room.openFileV2(descriptor); "opened" } catch (e: RoomException.Host) { e.reason }
+    check(tampered == "file-v2 integrity", "tampered bytes → RoomException.Host(file-v2 integrity) ($tampered)")
+    relay.bumpEpoch("room-a")
+    val queued = owner.room.sendFileV2("%PDF-1.7".toByteArray(), "application/pdf", "r.pdf").result
+    check(queued is SendResult.Queued && queued.clientId.startsWith("file-v2-"), "409 → Queued under a file-v2 id ($queued)")
+    owner.room.poll()
+    val apps = relay.rows("room-a").filter { it.kind == "application" }
+    check(apps.size == 2 && apps.all { it.clientId.startsWith("file-v2-") }, "the replay kept a file-v2 client id (${apps.map { it.clientId }})")
+}
+
 fun main() {
     val tmp = Files.createTempDirectory("hande-jvm-roundtrip").toFile()
     try {
@@ -386,6 +421,7 @@ fun main() {
         scenarioReadSeq(tmp)
         scenarioSelfService(tmp)
         scenarioFileV2()
+        scenarioFileV2Room(tmp)
     } catch (e: Throwable) {
         failures += "exception: $e"
         e.printStackTrace()
@@ -393,7 +429,7 @@ fun main() {
         tmp.deleteRecursively()
     }
     if (failures.isEmpty()) {
-        println("ROUNDTRIP PASS (8 scenarios)")
+        println("ROUNDTRIP PASS (9 scenarios)")
     } else {
         println("ROUNDTRIP FAIL ${failures.size}: $failures")
         exitProcess(1)
