@@ -81,6 +81,10 @@ jobs:
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends curl ca-certificates python3 gcc
       - uses: actions/checkout@v4
+      # 컨테이너 root 가 러너 uid 소유 체크아웃을 읽으면 git 이 dubious ownership 으로 거부 → go build 의 VCS 스탬프가
+      # `error obtaining VCS status: exit status 128` 로 실패한다(PR #769 run 43138578848). checkout 은 임시 HOME 에만 등록한다.
+      - name: Trust the workspace for git (container uid ≠ checkout owner)
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Pinned Rust toolchain
         run: |
           curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
