@@ -9,8 +9,11 @@
 // - Linux(swift-core-linux): 이 툴체인 이미지에는 CryptoKit 도 CryptoKit 호환 `Crypto` 모듈도
 //   없어서(Package.swift 수정 금지로 swift-crypto 추가 불가) 계약이 허용한 두 봉인 모두 컴파일될 수
 //   없다. CONTRACTS §0 L1 행이 정한 Linux 검증 범위(flock·원자 영속·SQLite·generation)를 지키기
-//   위해 `#if canImport(CryptoKit)` 이 거짓인 플랫폼에서만 `PassthroughSealer`(무봉인 통과)로
+//   위해 Linux(또는 CryptoKit 이 없는 플랫폼)에서만 `PassthroughSealer`(무봉인 통과)로
 //   컴파일된다. Apple 빌드는 항상 ChaChaPoly 경로다 — 이 차이는 PR 본문 "증명하지 않은 것"에 기록한다.
+//   조건은 `canImport(CryptoKit) && !os(Linux)`다(FileV2Format 과 같다). linux-smoke.sh 는 스모크 패키지에
+//   `CryptoKit` 대역 모듈(SHA256·SymmetricKey 흉내만)을 두는데, 그 모듈이 먼저 빌드되면 Linux 에서도
+//   `canImport(CryptoKit)` 이 참이 되어 이 파일이 Apple 경로로 컴파일되다 깨진다(#770).
 import Foundation
 
 /// `<room>.state` 페이로드 봉인 경계. 파일 헤더(magic+generation)는 평문, 이 프로토콜의 입출력만 봉인 대상이다.
@@ -22,7 +25,7 @@ public protocol FileStateSealing: AnyObject {
     func open(_ sealed: Data) throws -> Data
 }
 
-#if canImport(CryptoKit)
+#if canImport(CryptoKit) && !os(Linux)
 import CryptoKit
 
 /// 운영 봉인(Apple). 키 소스는 `FileSealKeySource` 로 주입(운영 = Keychain, 테스트 = 정적 키).
@@ -139,8 +142,8 @@ public final class KeychainSealKeySource: FileSealKeySource {
 }
 #endif
 
-#if !canImport(CryptoKit)
-/// 무봉인 통과 — `canImport(CryptoKit)` 이 거짓인 플랫폼(Linux CI)에서만 존재·선택된다.
+#if !canImport(CryptoKit) || os(Linux)
+/// 무봉인 통과 — Linux(또는 CryptoKit 이 없는 플랫폼)에서만 존재·선택된다.
 /// Linux CI 가 검증하는 것은 잠금·원자 영속·generation 기계(CONTRACTS §0 L1)다.
 public final class PassthroughSealer: FileStateSealing {
     public let schemeName = "passthrough(no-cryptokit)"
@@ -152,7 +155,7 @@ public final class PassthroughSealer: FileStateSealing {
 
 /// 플랫폼 기본 봉인: Apple = ChaChaPoly + Keychain 키, 그 외(Linux CI) = Passthrough.
 public func defaultFileSealer() throws -> FileStateSealing {
-    #if canImport(CryptoKit)
+    #if canImport(CryptoKit) && !os(Linux)
     return try ChaChaPolySealer(keySource: KeychainSealKeySource())
     #else
     return PassthroughSealer()

@@ -14,7 +14,7 @@ import Foundation
 import SQLite3
 #endif
 
-#if canImport(CryptoKit)
+#if canImport(CryptoKit) && !os(Linux)
 import CryptoKit
 #endif
 
@@ -477,7 +477,7 @@ public final class FileSQLiteStore: MessageStore, OutboxStore, CursorStore, OwnP
 
 enum Sha256Hex {
     static func of(_ data: Data) throws -> String {
-        #if canImport(CryptoKit)
+        #if canImport(CryptoKit) && !os(Linux)
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         #else
         guard let digest = LibCrypto.sha256(data) else {
@@ -488,7 +488,7 @@ enum Sha256Hex {
     }
 }
 
-#if !canImport(CryptoKit)
+#if !canImport(CryptoKit) || os(Linux)
 /// Linux: 시스템 libcrypto 의 EVP_Digest(EVP_sha256) 한 번 호출. dlsym 만 사용(링크 플래그 불필요).
 enum LibCrypto {
     private static let loaded: Bool = {

@@ -10,7 +10,7 @@ final class FileWipeTests: XCTestCase {
     }
 
     private func makeStateStore(_ dir: URL) throws -> FileStateStore {
-        #if canImport(CryptoKit)
+        #if canImport(CryptoKit) && !os(Linux)
         return try FileStateStore(directory: dir, sealer: ChaChaPolySealer(keySource: StaticSealKeySource(key: Data(repeating: 9, count: 32))))
         #else
         return try FileStateStore(directory: dir, sealer: PassthroughSealer())
