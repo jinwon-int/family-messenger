@@ -173,8 +173,7 @@ class OperationsTimersTest(unittest.TestCase):
         paths = [PKG / name for name in (
             "family-messenger-backup.service", "family-messenger-backup.timer",
             "family-messenger-health.service", "family-messenger-health.timer",
-        )] + [ROOT / "deploy" / "family-matrix-health.service.example",
-              ROOT / "deploy" / "family-matrix-health.timer.example",
+        )] + [
               # #412 A: off-host watchdog units carry host-specific values via the env file only.
               ROOT / "deploy" / "watchdog" / "family-messenger-watchdog.service",
               ROOT / "deploy" / "watchdog" / "family-messenger-watchdog.timer",

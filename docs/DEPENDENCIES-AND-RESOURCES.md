@@ -22,7 +22,7 @@ OWN-SYSTEM.md 구현 순서 1번의 기록 의무("직접/간접 패키지 목�
 | --- | --- | --- | --- |
 | 네이티브 서버 (Go, `server/`) | 2 — `github.com/golang-jwt/jwt/v5` v5.3.1, `github.com/mattn/go-sqlite3` v1.14.52 | go.sum 고유 모듈 2 (직접 2와 동일 — 간접 모듈 추가 없음) | `server/go.mod`, `server/go.sum` |
 | 브라우저 MLS 실험 (WASM) | 8 | 151 (락 전체 외부 패키지 197) | `archive/experiments/openmls-browser/dependencies.json` 고정 기록(패키지별 라이선스·해시 포함). 소스 그래프 기준이며 도달가능성 분석이 아니다 |
-| Matrix 브리지 시험 (Python) | `matrix-nio[e2e]==0.25.2` | 해당 SDK 의존 그래프 | 노드 측 fleet_matrix 연결부와 `tests/tuwunel_smoke.py` 루프백 통합 시험 의존성이다(운영 런타임 의존성 아님) |
+| Matrix 브리지 시험 (Python) | `matrix-nio[e2e]==0.25.2` | 해당 SDK 의존 그래프 | `tests/tuwunel_smoke.py` 루프백 통합 시험 의존성이다(운영 런타임 의존성 아님) |
 | 브라우저 검증 (Python) | `playwright==1.62.0` | 해당 도구 의존 그래프 | 검증 전용이며 메신저 런타임 의존성이 아니다 |
 
 고정 홈서버(`deploy/tuwunel/tuwunel.pins.json` — 업스트림이 체크섬·서명을 공개하지 않으므로 이 기록이 유일한 무결성 기준이다):
