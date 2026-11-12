@@ -364,6 +364,37 @@ final class RelayTransportTests: XCTestCase {
                        .refused(code: "no_live_key_package", status: 404))
     }
 
+    // MARK: - watch (#755 3단계, server/wait.go)
+
+    func testWatchRequestQueryClampAndTimeout() throws {
+        let t = transport(.accessCookie("ck"))
+        let r = try t.watchRequest(device: "owner-iphone", rooms: [(room: "family", after: 12), (room: "gone", after: -3)], waitMilliseconds: 99_000)
+        XCTAssertEqual(r.httpMethod, "GET")
+        XCTAssertEqual(r.url?.path, "/v2/watch")
+        XCTAssertEqual(r.url?.query, "device=owner-iphone&wait=25000&room=family:12&room=gone:0")
+        XCTAssertEqual(r.timeoutInterval, 35, accuracy: 0.001, "대기 25 s + 10 s — 기본 30 s 보다 길게")
+        XCTAssertEqual(r.value(forHTTPHeaderField: "Cookie"), "CF_Authorization=ck")
+        let short = try transport(.accessCookie("ck"), timeout: 30).watchRequest(device: "d", rooms: [(room: "r", after: 1)], waitMilliseconds: 1000)
+        XCTAssertEqual(short.timeoutInterval, 30, accuracy: 0.001)
+        XCTAssertThrowsError(try t.watchRequest(device: "d", rooms: [], waitMilliseconds: 1))
+        let many = (0...64).map { (room: "r\($0)", after: Int64(0)) }
+        XCTAssertThrowsError(try t.watchRequest(device: "d", rooms: many, waitMilliseconds: 1))
+    }
+
+    func testWatchResultMapping() throws {
+        XCTAssertEqual(try URLSessionRelayTransport.watchResult(status: 200, data: body(#"{"changed":["family"],"errors":{"gone":"room_closed"}}"#)),
+                       WatchResponse(changed: ["family"], errors: ["gone": "room_closed"]))
+        XCTAssertEqual(try URLSessionRelayTransport.watchResult(status: 200, data: body(#"{"changed":[]}"#)), WatchResponse())
+        XCTAssertNil(try URLSessionRelayTransport.watchResult(status: 404, data: body("404 page not found\n")), "#424 이전 릴레이 = 미지원")
+        XCTAssertThrowsError(try URLSessionRelayTransport.watchResult(status: 404, data: body(#"{"error":"no_such_room"}"#))) {
+            XCTAssertEqual($0 as? RelayError, .refused(code: "no_such_room", status: 404))
+        }
+        XCTAssertThrowsError(try URLSessionRelayTransport.watchResult(status: 400, data: body(#"{"error":"too_many_rooms"}"#))) {
+            XCTAssertEqual($0 as? RelayError, .refused(code: "too_many_rooms", status: 400))
+        }
+        XCTAssertThrowsError(try URLSessionRelayTransport.watchResult(status: 200, data: body("not json")))
+    }
+
     /// 로비 라우트를 구현하지 않은 전송(옛 테스트 대역·옛 릴레이)은 프로토콜 기본 구현이 404 를 던진다 — 호출자가 "로비 없음" 으로 건너뛴다.
     func testTransportWithoutLobbyDefaultsTo404() async {
         final class Legacy: RelayTransport {
@@ -377,6 +408,12 @@ final class RelayTransportTests: XCTestCase {
             func unregisterPush(device: DeviceID) async throws {}
         }
         let legacy = Legacy()
+        do {
+            let watched = try await legacy.watch(device: "me", rooms: [(room: "r", after: 1)], waitMilliseconds: 1000)
+            XCTAssertNil(watched, "watch 를 구현하지 않은 전송 = 미지원(nil)")
+        } catch {
+            XCTFail("watch 기본 구현은 던지지 않는다: \(error)")
+        }
         await XCTAssertThrowsErrorAsync(try await legacy.lobbyStatus(device: "me")) { XCTAssertEqual($0 as? RelayError, .refused(code: "not_found", status: 404)) }
         await XCTAssertThrowsErrorAsync(try await legacy.lobbyWelcomes(device: "me")) { XCTAssertEqual($0 as? RelayError, .refused(code: "not_found", status: 404)) }
         await XCTAssertThrowsErrorAsync(try await legacy.consumeLobbyKeyPackage(device: "me", target: "you", room: "r")) {

@@ -318,6 +318,8 @@ final class AppModel: ObservableObject {
     private(set) var engine: MlsEngine?
     private var identitySeed: Data?
     private var transport: RelayTransport?
+    /// #755 3단계: 바퀴 사이 `/v2/watch` 대기(모드·재확인 상태를 들고 있다).
+    private let watchWaiter = WatchWaiter()
     private var syncEngines: [RoomID: RoomSyncEngine] = [:]
     /// 아직 서버 확인(seq)을 못 받은 내 메시지의 평문(clientId → 본문). MLS 는 자기 메시지를 복호화하지 못하므로
     /// 내 메시지는 서버가 seq 를 준 순간 여기서 MessageStore 에 쓴다. 앱이 그 전에 끝나면 평문은 사라지고
@@ -727,7 +729,28 @@ final class AppModel: ObservableObject {
             await refresh()
             // #599: 송신에 양보한 바퀴 — 건너뛴 방·부가 작업을 기다리지 않고 다시(송신은 `serial` 에서 이 바퀴보다 먼저 처리된다).
             if syncPreempted { continue }
-            try? await Task.sleep(nanoseconds: UInt64(deps.syncConfiguration.pollInterval * 1_000_000_000))
+            await waitForChange()
+        }
+    }
+
+    /// #755 3단계: 바퀴 사이 대기. 준비된 상태면 `serial` 밖에서 `GET /v2/watch` 로 방 전체를 기다렸다가 바뀌면 곧바로 다음 바퀴
+    /// (`WatchWaiter` — 미지원·오류면 지금처럼 `pollInterval`). 백그라운드·준비 전에는 그대로 `pollInterval` 대기. 모드가 바뀌면 진단 기록에 남긴다.
+    private func waitForChange() async {
+        let interval = deps.syncConfiguration.pollInterval
+        // 누군가 입력중으로 보이는 동안은 고정 주기 — 릴레이는 지금 기다리는 요청에만 알리므로, 바퀴 사이 빈틈에 온 typing 해제는
+        // 행이 생기지 않아 다음 watch 가 알려 주지 않는다(표시가 대기 상한 25 s 까지 남는다; 웹 #765 와 같은 이유).
+        let someoneTyping = typing.values.contains { !$0.isEmpty }
+        guard let transport, !suspended, phase == .ready, !deviceId.isEmpty, !someoneTyping else {
+            try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+            return
+        }
+        let targets: [(room: RoomID, after: Int64)] = rooms.filter { $0.haltedReason == nil }.map { record in
+            (room: record.room, after: max((try? deps.cursors.cursor(room: record.room)) ?? 0, 0))
+        }
+        let before = watchWaiter.watching
+        _ = try? await watchWaiter.wait(transport: transport, device: deviceId, rooms: targets, pollInterval: interval)
+        if watchWaiter.watching != before {
+            record(watchWaiter.watching ? "watch: 즉시 전달(/v2/watch) 사용" : "watch: 고정 주기 폴링(\(Int(interval)) s)")
         }
     }
 
