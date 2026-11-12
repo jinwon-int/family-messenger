@@ -230,8 +230,17 @@ def main():
             dump = alice.evaluate(DUMP, databases['alice']) + bob.evaluate(DUMP, databases['bob'])
             needles = [bytes(text), b'GroupState', b'SignatureKeyPair', b'MessageSecrets', b'alice', b'bob',
                        bytes(rpc(alice, 'status')['public_key']), bytes(rpc(bob, 'status')['public_key'])]
+            # Binary values are hex in the dump, so a short needle's hex can match random ciphertext by
+            # chance: 'bob' = 6 hex digits ~ 2^-24 per offset, enough to fail a run now and then (#773,
+            # same cause as #609/#706). Needles under 8 bytes (the actor labels) are therefore checked as
+            # text only; a leaked plaintext state would still carry the message, the type labels and the
+            # public keys (all >= 8 bytes), which keep the hex check.
             for needle in needles:
-                assert needle.hex() not in dump and needle.decode('latin-1') not in dump, 'plaintext at rest'
+                forms = [('text', needle.decode('latin-1'))] + ([('hex', needle.hex())] if len(needle) >= 8 else [])
+                for form, value in forms:
+                    at = dump.find(value)
+                    assert at < 0, (f'plaintext at rest: needle={needle[:24]!r} len={len(needle)} form={form} '
+                                    f'offset={at}/{len(dump)} context={dump[max(0, at - 24):at + len(value) + 24]!r}')
             proof['checks']['no_plaintext_labels_or_keys_at_rest'] = True
 
             # Read/write IDB transactions across connections provide the serialization.
