@@ -26,6 +26,9 @@ import com.seoyoon_family.hande.mls.MlsWatchRoom
 import com.seoyoon_family.hande.mls.RoomEvent
 import com.seoyoon_family.hande.mls.RoomException
 import com.seoyoon_family.hande.mls.SendResult
+import com.seoyoon_family.hande.mls.fileV2Check
+import com.seoyoon_family.hande.mls.fileV2Sniff
+import com.seoyoon_family.hande.ui.AttachmentIo
 import com.seoyoon_family.hande.ui.Strings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -126,6 +129,11 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     }
     /** 앱 versionName(`min_app.android` 와 견준다, #584). 못 읽으면 "0" — 서버가 최소 버전을 적어 두면 「앱이 오래됨」으로 막힌다. */
     private val appVersion: String = runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "0"
+
+    init {
+        // #366 C: 지난 실행이 남긴 임시 공유 파일(복호화한 첨부)을 지운다 — 이력에는 원래 저장하지 않는다(FILE-V2 §4-2).
+        AttachmentIo.clearShared(context)
+    }
 
     /** 정식 메시지 저장소(B2) — 프로세스에 하나. 내 글 판정은 읽을 때 actor 로(같은 사람의 다른 기기 글도 내 글). */
     private val db = MessageDb(context) { settings.deviceId }
@@ -816,6 +824,62 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             _ui.update { it.copy(rooms = roomList()) }
         } catch (e: RoomException) {
             notice(if (e is RoomException.Relay && e.transient) "연결 중입니다…" else (e.message ?: "전송 안 됨"))
+        }
+    }
+
+    /**
+     * 첨부 열기(#366 C · #338 C 단계): v1 행은 저장된 파일 바이트 그대로, file-v2 행은 설명자로 `MlsRoom.openFileV2`(blob 받기 → 검증 →
+     * 복호 — 코어). 허브 mutex **밖**에서 돈다: 큰 파일을 받는 동안 poll·보내기가 막히지 않게(`MlsRoom` 은 자체 잠금이 있고 받는 동안은
+     * 그 잠금도 놓는다). 결과 바이트는 이력에 저장하지 않는다. MIME·종류는 내용으로 정한다(설명자 힌트를 믿지 않는다, FILE-V2 §4.4).
+     */
+    suspend fun openAttachment(room: String, seq: Long): AttachmentFiles.OpenResult = withContext(Dispatchers.IO) {
+        val h = mutex.withLock { rooms[room] } ?: return@withContext AttachmentFiles.OpenFailed(Strings.attachmentOpenFailed, retry = false)
+        val (kind, stored) = db.attachment(room, seq) ?: return@withContext AttachmentFiles.OpenFailed(Strings.attachmentOpenFailed, retry = false)
+        try {
+            val v2 = kind == MessageSchema.KIND_FILE_V2
+            val name = if (v2) runCatching { fileV2Check(stored).name }.getOrNull() else null
+            val bytes = if (v2) h.room.openFileV2(stored) else stored
+            val sniff = fileV2Sniff(bytes)
+            AttachmentFiles.Opened(bytes, sniff.mime, sniff.kind, AttachmentFiles.safeName(name, sniff.mime))
+        } catch (e: RoomException) {
+            Log.w(TAG, "$room seq $seq: attachment open failed (${e.javaClass.simpleName})")
+            when {
+                e is RoomException.Host && e.reason == "file-v2 integrity" -> AttachmentFiles.OpenFailed(Strings.attachmentDamaged, retry = true)
+                e is RoomException.Relay && e.transient -> AttachmentFiles.OpenFailed(Strings.attachmentOffline, retry = true)
+                e is RoomException.Relay && e.reason.contains("no_such_blob") -> AttachmentFiles.OpenFailed(Strings.attachmentGone, retry = false)
+                else -> AttachmentFiles.OpenFailed(Strings.attachmentOpenFailed, retry = e is RoomException.Relay)
+            }
+        }
+    }
+
+    /**
+     * 첨부 보내기(#366 C): `MlsRoom.sendFileV2`(봉인 → blob 업로드 → 설명자를 `file-v2-<uuid>` 로 게시 — 코어, 409 재전송도 file-v2).
+     * 허브 mutex 밖(업로드가 길 수 있다). 보내졌으면 내 이력에 `file-v2` 행(본문 = 자리 표시, attachment = 설명자 — 파일 키 포함, 글로
+     * 보이지 않는다). 글 보내기와 같이 `Queued` 는 안내만 한다(다음 poll 이 다시 보낸다).
+     */
+    fun sendAttachment(scope: CoroutineScope, room: String, bytes: ByteArray, name: String?) = scope.launch(Dispatchers.IO) {
+        val h = mutex.withLock { rooms[room] } ?: return@launch
+        notice(Strings.attachmentSending)
+        try {
+            val out = h.room.sendFileV2(bytes, null, AttachmentFiles.sendName(name))
+            when (val r = out.result) {
+                is SendResult.Sent -> {
+                    db.insert(room, r.seq, h.room.identity(), r.clientId, MessageSchema.KIND_FILE_V2, Strings.attachmentPlaceholder(out.size.toLong()), out.descriptor)
+                    clearNotice()
+                }
+                is SendResult.Queued -> notice("연결되면 보냅니다")
+                is SendResult.AlreadyDelivered -> clearNotice()
+            }
+            _ui.update { it.copy(rooms = roomList()) }
+        } catch (e: RoomException) {
+            Log.w(TAG, "$room: attachment send failed (${e.javaClass.simpleName})")
+            notice(
+                when {
+                    e is RoomException.Relay && e.transient -> "연결 중입니다…"
+                    e is RoomException.Relay && AttachmentFiles.isSizeRefusal(e.reason) -> Strings.attachmentTooLarge
+                    else -> Strings.attachmentSendFailed
+                },
+            )
         }
     }
 

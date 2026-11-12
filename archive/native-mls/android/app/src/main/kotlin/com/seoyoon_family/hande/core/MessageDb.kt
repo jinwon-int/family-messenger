@@ -79,6 +79,14 @@ class MessageDb(context: Context, private val myDevice: () -> String?) : SQLiteO
             Unit
         }
 
+    /** 첨부 행의 kind 와 attachment 칸(v1 = 파일 바이트, file-v2 = 설명자) — 열기(#366 C)용. 첨부 행이 아니면 null. */
+    fun attachment(room: String, seq: Long): Pair<String, ByteArray>? = synchronized(lock) {
+        readableDatabase.rawQuery(
+            "SELECT kind, attachment FROM messages WHERE room = ? AND seq = ? AND kind IN (?, ?)",
+            arrayOf(room, seq.toString(), KIND_ATTACHMENT, MessageSchema.KIND_FILE_V2),
+        ).use { c -> if (c.moveToFirst() && !c.isNull(1)) c.getString(0) to c.getBlob(1) else null }
+    }
+
     /** 방의 글 전부(seq 순). C 단계에서 페이지 단위로 바꾼다. */
     fun messages(room: String): List<MessageUi> = synchronized(lock) {
         val me = myDevice()
