@@ -860,6 +860,9 @@
      }
     ],
     "recommended": 1,
+    "recommendedNumbers": [
+     1
+    ],
     "mode": "one",
     "explicit": true
    }
@@ -883,6 +886,7 @@
      }
     ],
     "recommended": null,
+    "recommendedNumbers": [],
     "mode": "many",
     "explicit": true
    }
@@ -898,6 +902,7 @@
      }
     ],
     "recommended": null,
+    "recommendedNumbers": [],
     "mode": "many",
     "explicit": true
    }
@@ -917,6 +922,7 @@
      }
     ],
     "recommended": null,
+    "recommendedNumbers": [],
     "mode": "one",
     "explicit": true
    }
@@ -936,6 +942,7 @@
      }
     ],
     "recommended": null,
+    "recommendedNumbers": [],
     "mode": "one",
     "explicit": true
    }
@@ -955,6 +962,7 @@
      }
     ],
     "recommended": null,
+    "recommendedNumbers": [],
     "mode": "one",
     "explicit": true
    }
@@ -974,6 +982,7 @@
      }
     ],
     "recommended": null,
+    "recommendedNumbers": [],
     "mode": "one",
     "explicit": true
    }
@@ -993,6 +1002,7 @@
      }
     ],
     "recommended": null,
+    "recommendedNumbers": [],
     "mode": "many",
     "explicit": true
    }
@@ -1012,6 +1022,7 @@
      }
     ],
     "recommended": null,
+    "recommendedNumbers": [],
     "mode": "one",
     "explicit": true
    }
@@ -1051,6 +1062,9 @@
      }
     ],
     "recommended": 2,
+    "recommendedNumbers": [
+     2
+    ],
     "mode": "one",
     "explicit": true
    }
@@ -1070,6 +1084,7 @@
      }
     ],
     "recommended": null,
+    "recommendedNumbers": [],
     "mode": "many",
     "explicit": true
    }
@@ -1094,6 +1109,7 @@
      }
     ],
     "recommended": null,
+    "recommendedNumbers": [],
     "mode": "one",
     "explicit": true
    }
@@ -1113,6 +1129,7 @@
      }
     ],
     "recommended": null,
+    "recommendedNumbers": [],
     "mode": "many",
     "explicit": true
    }
@@ -1132,6 +1149,7 @@
      }
     ],
     "recommended": null,
+    "recommendedNumbers": [],
     "mode": "many",
     "explicit": true
    }
@@ -1189,6 +1207,7 @@
      }
     ],
     "recommended": null,
+    "recommendedNumbers": [],
     "mode": "many",
     "explicit": true
    }
@@ -1212,6 +1231,9 @@
      }
     ],
     "recommended": 2,
+    "recommendedNumbers": [
+     2
+    ],
     "mode": "one",
     "explicit": true
    }
@@ -1235,6 +1257,10 @@
      }
     ],
     "recommended": 2,
+    "recommendedNumbers": [
+     2,
+     3
+    ],
     "mode": "one",
     "explicit": true
    }
@@ -1243,6 +1269,186 @@
    "name": "header must be the nearest non-blank line above item 1 -> null",
    "text": "**[답변 필요]** 하나만 선택\n\n배경 설명입니다.\n1. 가\n2. 나",
    "expected": null
+  },
+  {
+   "name": "prefix (권장) on one item",
+   "text": "**[답변 필요]** 하나만 선택\n1. 유지\n2. (권장) 롤백\n3. 보류",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "유지"
+     },
+     {
+      "number": 2,
+      "label": "(권장) 롤백"
+     },
+     {
+      "number": 3,
+      "label": "보류"
+     }
+    ],
+    "recommended": 2,
+    "recommendedNumbers": [
+     2
+    ],
+    "mode": "one",
+    "explicit": true
+   }
+  },
+  {
+   "name": "prefix (권장) on two items -> every recommended item",
+   "text": "**[답변 필요]** 여러 개 선택 가능\n1. (권장) A\n2. (권장) B\n3. C",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "(권장) A"
+     },
+     {
+      "number": 2,
+      "label": "(권장) B"
+     },
+     {
+      "number": 3,
+      "label": "C"
+     }
+    ],
+    "recommended": 1,
+    "recommendedNumbers": [
+     1,
+     2
+    ],
+    "mode": "many",
+    "explicit": true
+   }
+  },
+  {
+   "name": "owner example: prefix (권장) on several approvals",
+   "text": "**[답변 필요]** 여러 개 선택 가능\n1. (권장) PR #12 머지 승인\n2. (권장) 노드 재시작 승인\n3. 보류",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "(권장) PR #12 머지 승인"
+     },
+     {
+      "number": 2,
+      "label": "(권장) 노드 재시작 승인"
+     },
+     {
+      "number": 3,
+      "label": "보류"
+     }
+    ],
+    "recommended": 1,
+    "recommendedNumbers": [
+     1,
+     2
+    ],
+    "mode": "many",
+    "explicit": true
+   }
+  },
+  {
+   "name": "mixed prefix and suffix (권장)",
+   "text": "**[답변 필요]** 여러 개 선택 가능\n1. 유지\n2. (권장) **롤백**\n3. 보류\n4. 재배포 (권장)",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "유지"
+     },
+     {
+      "number": 2,
+      "label": "(권장) 롤백"
+     },
+     {
+      "number": 3,
+      "label": "보류"
+     },
+     {
+      "number": 4,
+      "label": "재배포 (권장)"
+     }
+    ],
+    "recommended": 2,
+    "recommendedNumbers": [
+     2,
+     4
+    ],
+    "mode": "many",
+    "explicit": true
+   }
+  },
+  {
+   "name": "권장 N번 sentence plus a (권장) label -> both recommended",
+   "text": "권장: 2번 — 더 안전합니다.\n\n**[답변 필요]** 여러 개 선택 가능\n1. 지금 배포\n2. 내일 배포\n3. (권장) 로그 먼저 확인",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "지금 배포"
+     },
+     {
+      "number": 2,
+      "label": "내일 배포"
+     },
+     {
+      "number": 3,
+      "label": "(권장) 로그 먼저 확인"
+     }
+    ],
+    "recommended": 2,
+    "recommendedNumbers": [
+     2,
+     3
+    ],
+    "mode": "many",
+    "explicit": true
+   }
+  },
+  {
+   "name": "권장 N번 pointing at an item that also says (권장) is listed once",
+   "text": "권장 1번\n**[답변 필요]** 하나만 선택\n1. (권장) 진행\n2. 보류",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "(권장) 진행"
+     },
+     {
+      "number": 2,
+      "label": "보류"
+     }
+    ],
+    "recommended": 1,
+    "recommendedNumbers": [
+     1
+    ],
+    "mode": "one",
+    "explicit": true
+   }
+  },
+  {
+   "name": "no recommendation -> recommendedNumbers empty",
+   "text": "**[답변 필요]** 하나만 선택\n1. 진행\n2. 보류",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "진행"
+     },
+     {
+      "number": 2,
+      "label": "보류"
+     }
+    ],
+    "recommended": null,
+    "recommendedNumbers": [],
+    "mode": "one",
+    "explicit": true
+   }
   }
  ],
  "toggle": [

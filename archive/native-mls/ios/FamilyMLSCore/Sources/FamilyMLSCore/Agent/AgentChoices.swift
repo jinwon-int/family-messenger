@@ -28,14 +28,19 @@ public struct AgentChoices: Equatable {
     public let items: [Item]
     /// 권장 번호(1..items.count) 또는 nil.
     public let recommended: Int?
+    /// 권장 번호 모두(규격 §1.7, 오름차순·중복 없음, 없으면 빈 배열) — 메시지의 `권장 N번`(1..k) ∪ 라벨에 `권장` 이 든 모든 항목.
+    /// 접두 `N. (권장) …` 로 여러 항목을 권장할 수 있다. 카드는 이 번호들 모두에 「권장」 알약을 단다.
+    public let recommendedNumbers: [Int]
     /// 선택 모드.
     public let mode: Mode
     /// v2 `[답변 필요]` 명시 블록에서 나왔는가 — `parse` 결과는 언제나 true(§6).
     public let explicit: Bool
 
-    public init(items: [Item], recommended: Int?, mode: Mode = .many, explicit: Bool = false) {
+    /// `recommendedNumbers` 를 주지 않으면 `recommended` 하나(없으면 빈 배열)로 둔다 — 옛 호출 그대로 컴파일된다.
+    public init(items: [Item], recommended: Int?, recommendedNumbers: [Int]? = nil, mode: Mode = .many, explicit: Bool = false) {
         self.items = items
         self.recommended = recommended
+        self.recommendedNumbers = recommendedNumbers ?? recommended.map { [$0] } ?? []
         self.mode = mode
         self.explicit = explicit
     }
@@ -171,6 +176,7 @@ public struct AgentChoices: Equatable {
         finish()
         guard let found else { return nil }
         return AgentChoices(items: found.items, recommended: recommendedNumber(lines: lines, items: found.items),
+                            recommendedNumbers: recommendedNumberList(lines: lines, items: found.items),
                             mode: found.mode, explicit: true)
     }
 
@@ -454,6 +460,20 @@ public struct AgentChoices: Equatable {
         if let first = firstRecommendedMention(all), first >= 1, first <= items.count { return first }
         let mark = Array("권장".unicodeScalars)
         return items.first { scalarsContain(Array($0.label.unicodeScalars), mark) }?.number
+    }
+
+    /// 권장 번호 모두(§1.7): 메시지 전체의 `권장 N번` 첫 일치(1..k 일 때) ∪ 라벨에 `권장` 이 든 모든 항목 — 오름차순·중복 없음.
+    /// 접두 `N. (권장) …`·접미 `… (권장)` 어느 쪽이든 라벨에 `권장` 이 들어 있으면 된다.
+    static func recommendedNumberList(lines: [[Unicode.Scalar]], items: [Item]) -> [Int] {
+        var all: [Unicode.Scalar] = []
+        for (index, line) in lines.enumerated() {
+            if index > 0 { all.append("\n") }
+            all.append(contentsOf: line)
+        }
+        let named = firstRecommendedMention(all)
+        let mark = Array("권장".unicodeScalars)
+        // items 는 1..k 오름차순이라 거르기만 하면 오름차순·중복 없음이다.
+        return items.filter { $0.number == named || scalarsContain(Array($0.label.unicodeScalars), mark) }.map(\.number)
     }
 
     /// `권장\s*[:：]?\s*([0-9]{1,2})\s*번` 의 첫(가장 왼쪽) 일치의 숫자.

@@ -805,7 +805,7 @@ const finePointer = () => typeof window !== 'undefined' && typeof window.matchMe
 
 /** 말풍선 서명에 더할 카드 서명 — 선택은 빼고, open 일 때만 잠금(보내는 중·쓸 수 없는 방)을 넣는다. */
 const choiceSignature = (choice) => (choice
-  ? [choice.state, choice.numbers ?? null, choice.labels ?? null, choice.choices?.items ?? null, choice.choices?.recommended ?? null, choice.choices?.mode ?? 'many',
+  ? [choice.state, choice.numbers ?? null, choice.labels ?? null, choice.choices?.items ?? null, choice.choices?.recommended ?? null, choice.choices?.recommendedNumbers ?? null, choice.choices?.mode ?? 'many',
     choice.state === 'open' ? Boolean(choice.sending) : null, choice.state === 'open' ? Boolean(choice.disabled) : null]
   : null);
 
@@ -818,7 +818,9 @@ function choiceCard(choice) {
     return el('p', { class: 'choices-answered', 'data-testid': 'choice-answered', title: line }, line);
   }
   if (choice.state !== 'open') { choiceSelection.delete(choice.id); return null; }
-  const { items, recommended } = choice.choices;
+  const { items } = choice.choices;
+  // 권장 알약은 권장 번호 **모두**에(§1.7 recommendedNumbers — 여러 항목이 `(권장)` 일 수 있다). 옛 모양이면 recommended 하나.
+  const recommended = new Set(choice.choices.recommendedNumbers ?? (choice.choices.recommended == null ? [] : [choice.choices.recommended]));
   // #671 PR B: 「하나만」 블록(mode one)은 라디오 — 행 탭은 바꿔 고르기, 보내는 것도 하나다.
   const one = choice.choices.mode === 'one';
   const remembered = choiceSelection.get(choice.id);
@@ -828,13 +830,13 @@ function choiceCard(choice) {
   let busy = false;   // 보내기를 누른 뒤 app 의 결과가 올 때까지(sendText false 면 풀린다)
   const rows = items.map((item) => el('button', {
     type: 'button', role: one ? 'radio' : 'checkbox', class: 'choice-row', 'data-testid': 'choice-row', 'data-number': String(item.number),
-    'aria-label': t.row(item.number, item.label, item.number === recommended),
+    'aria-label': t.row(item.number, item.label, recommended.has(item.number)),
     onclick: () => toggle(item.number),   // many: 행마다 켜고 끈다(#624) · one: 그 행으로 바꾼다(#671 PR B)
   },
   el('span', { class: 'choice-check', 'aria-hidden': 'true' }),
   el('span', { class: 'choice-num', 'aria-hidden': 'true' }, String(item.number)),
   el('span', { class: 'choice-label', 'aria-hidden': 'true' }, item.label),
-  item.number === recommended ? el('span', { class: 'pill choice-recommended', 'aria-hidden': 'true' }, t.recommended) : null));
+  recommended.has(item.number) ? el('span', { class: 'pill choice-recommended', 'aria-hidden': 'true' }, t.recommended) : null));
   const send = el('button', { type: 'button', class: 'primary small choice-send', 'data-testid': 'choice-send', onclick: () => submit() }, t.send);
   const card = el('div', { class: 'choices', role: one ? 'radiogroup' : 'group', 'aria-label': t.region, 'data-testid': 'agent-choices', 'data-mode': one ? 'one' : 'many' },
     el('div', { class: 'choice-list' }, rows), el('div', { class: 'choice-actions' }, send),
