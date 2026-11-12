@@ -3,11 +3,11 @@
 // 있더라도 믿지 않는다. 여기서 판별한 래스터 이미지(JPEG/PNG/GIF/WebP)만 미리보기와
 // 확장자를 얻고, PDF(`%PDF-`, #697)는 새 탭 PDF 뷰어로 열 수 있다. 나머지는 전부 `attachment-<seq>.bin` + 불활성 MIME 으로 남는다.
 // iOS AttachmentFormat.sniffMime / AttachmentSupport(사진은 한도 안의 JPEG/PNG/GIF/WebP 그대로).
-import {MAX_ATTACHMENT} from './relay-attachments.js';
-
-/** 미리보기 판별 상한 = 첨부 한도. iOS 는 #364 결정 B 이후 5 MiB 까지 사진을 그대로 보내므로
- *  (2026-10-20 family seq 372: 3.1 MiB 사진이 "파일"로 보임) 그보다 낮은 상한은 사진을 파일로 만든다. */
-export const IMAGE_PREVIEW_MAX = MAX_ATTACHMENT;
+/** 미리보기 판별 상한 20 MiB (#499 4단계 결정 ③, 2026-11-12). file-v2 는 첨부를 50 MiB 까지 받지만(file-v2.js MAX_FILE_V2)
+ *  휴대폰 원본 사진은 대체로 20 MiB 아래라 그만큼만 내려받아 그린다 — 50 MiB 사진을 디코드하면 휴대폰 브라우저 메모리가 모자란다.
+ *  그보다 큰 첨부는 예전처럼 파일 행(다운로드)으로 남는다. v1 첨부(relay-attachments.js MAX_ATTACHMENT 5 MiB)는 늘 이 안이다
+ *  (2026-10-20 family seq 372: 상한이 첨부 한도보다 낮으면 3.1 MiB 사진이 "파일"로 보였다 — 이 상한은 v1 한도보다 작아지면 안 된다). */
+export const IMAGE_PREVIEW_MAX = 20 * 1024 * 1024;
 
 export const PDF_TYPE = 'application/pdf';
 const EXTENSION = {'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp', [PDF_TYPE]: 'pdf'};

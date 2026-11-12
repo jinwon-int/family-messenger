@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createPreviewLoader } from '../preview-loader.js';
+import { IMAGE_PREVIEW_MAX } from '../attachment-view.js';
 
 const JPEG = (() => { const b = new Uint8Array(16); b.set([0xff, 0xd8, 0xff, 0xe0]); return b; })();
 const TEXT = new TextEncoder().encode('hello, not an image — 16 bytes+');
@@ -60,7 +61,7 @@ test('이미 불러왔거나(image) 불러오는 중(previewBusy)이거나 미�
   await h.loadPreview(entry(load, { image: { url: 'blob:x', type: 'image/png', alt: '' } }));
   await h.loadPreview(entry(load, { previewBusy: true }));
   await h.loadPreview(entry(load, { kind: 'text' }));
-  await h.loadPreview(entry(load, { size: 5 * 1024 * 1024 + 1 }));
+  await h.loadPreview(entry(load, { size: IMAGE_PREVIEW_MAX + 1 }));
   await h.loadPreview(entry(null));
   assert.equal(tries, 0);
   assert.equal(h.changes, 0, '건너뛸 때는 재렌더도 없다');
