@@ -18,18 +18,19 @@
 
 ## health.json (#426, 스키마 v1)
 
-세션이 journal 에만 남기던 릴레이 도달성·403·방 정지 상태를 파일로 투영한다. **값이 바뀔 때**(릴레이 up↔unreachable, 오류 분류, 403, 방 `joined`/`mode`/`halted`/`pending`) 바로 쓰고, 그 밖에는 **30초마다** 다시 쓴다(`cursor`·`epoch`·`attempts` 는 이 주기에 실린다). tmp + rename 원자적 쓰기, 모드 0640. 쓰기 실패는 `health_write_failed` 한 줄만 남기고 세션은 계속 돈다.
+세션이 journal 에만 남기던 릴레이 도달성·403·방 정지 상태를 파일로 투영한다. **값이 바뀔 때**(릴레이 up↔unreachable, 오류 분류, 403, 방 `joined`/`mode`/`halted`/`relay_missing`/`pending`) 바로 쓰고, 그 밖에는 **30초마다** 다시 쓴다(`cursor`·`epoch`·`attempts` 는 이 주기에 실린다). tmp + rename 원자적 쓰기, 모드 0640. 쓰기 실패는 `health_write_failed` 한 줄만 남기고 세션은 계속 돈다.
 
 ```json
 {"version":1,"device":"seoseo-bot","pid":1234,"started":1794260000,"updated":1794270000,
  "relay":{"state":"up","since":1794269900,"attempts":0,"last_error_class":"timeout","outages":3},
  "access":{"last_403":{"code":"device_subject_mismatch","at":1794260000}},
- "rooms":[{"room":"seoseo","joined":true,"mode":"agent","halted":false,"halt_reason":null,"pending":false,"cursor":120,"epoch":4}]}
+ "rooms":[{"room":"seoseo","joined":true,"mode":"agent","halted":false,"halt_reason":null,"relay_missing":false,"pending":false,"cursor":120,"epoch":4}]}
 ```
 
 - `relay.since` = 마지막 전이 시각, `outages` = 이 프로세스가 시작한 뒤 unreachable 로 바뀐 횟수, `last_error_class` = 마지막 끊김의 분류(회복 뒤에도 남음): `refused`·`timeout`(연결 타임아웃)·`read_timeout`(응답 대기 타임아웃, EAGAIN)·`reset`·`protocol`·`gateway`(502–504)·`io`·`other`. 원문·주소는 남기지 않는다.
 - `access.last_403` 은 루프를 끝내는 403 이다. 재시작한 같은 device 의 프로세스가 이어받는다.
 - `halt_reason` 은 `<room>.state.refused` 마커의 `reason` 을 쓰는 순간 복사한 값이다(정본은 마커). 읽을 수 없는 마커는 `unreadable`.
+- `relay_missing`(#814): 이 기기가 릴레이에서 본 적이 있는 방(joined이고 `cursor`나 `epoch`가 0보다 큼)에 릴레이가 404 `no_such_room`을 돌려준다 — 오래된 스냅샷으로 복원하면 스냅샷 뒤에 만든 방이 이렇게 된다. 정지(`halted`)가 아니고 방 상태 파일도 지우지 않는다. 그 방은 계속 폴링하며(라운드당 404 한 번, 다른 방에 영향 없음) 다음에 페이지를 받으면 풀린다. 이벤트는 바뀔 때만 `relay_missing{room, cursor, epoch}` → `relay_present{room}`. `room create` 직후 첫 초대 전(릴레이 방이 아직 없음, cursor·epoch 0)과 joined가 아닌 방은 해당하지 않는다. 연결 실패·5xx는 지금처럼 `relay_unreachable`이다. `room status`와 주기적 `status` 이벤트에도 같은 값이 실린다.
 - 단일 방 `session` 모드는 파일을 쓰지 않는다(steward 전용).
 
 ## 명령

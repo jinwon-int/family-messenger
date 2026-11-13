@@ -250,6 +250,11 @@ struct RoomState {
     /// #728: this room's recent plaintexts (agent mode only; memory only,
     /// wiped on drop) so a ReplyQuote v2 `#seq` can be expanded for the agent.
     recent: Recent,
+    /// #814: the relay answers 404 `no_such_room` for a room it has shown
+    /// this device before (a restore from an older snapshot drops rooms
+    /// founded after it). Memory only — the next poll after a restart finds
+    /// it again; the state file is kept (history, re-founding decisions).
+    relay_missing: bool,
 }
 
 impl std::ops::Deref for RoomState {
@@ -507,14 +512,14 @@ pub fn run(opts: Options) -> Result<(), BotError> {
     }
     let mut rooms = vec![RoomState {
         sync: RoomSync { room: opts.room.clone(), cursor: c0, epoch: e0, joined: j0, joinable: true, dirty: false, acked: c0, ack_sent: 0, ack_disabled: false, halted: halted0.is_some() },
-        echoes: x0, retry: VecDeque::new(), device, state_path: opts.state_file.clone(), mode: if agent.is_some() { Mode::Agent } else { Mode::Echo }, pending: None, recent: Recent::default(),
+        echoes: x0, retry: VecDeque::new(), device, state_path: opts.state_file.clone(), mode: if agent.is_some() { Mode::Agent } else { Mode::Echo }, pending: None, recent: Recent::default(), relay_missing: false,
     }];
     if let Some(watch) = &opts.watch_room {
         // The negative control: a room the bot is never invited to. It must
         // stay unjoined and silent there for the whole session.
         rooms.push(RoomState {
             sync: RoomSync { room: watch.clone(), cursor: 0, epoch: 0, joined: false, joinable: false, dirty: false, acked: 0, ack_sent: 0, ack_disabled: true, halted: false },
-            echoes: 0, retry: VecDeque::new(), device: Device::new(&opts.device).map_err(|_| BotError::Local("device new: identity shape rejected"))?, state_path: None, mode: Mode::Watch, pending: None, recent: Recent::default(),
+            echoes: 0, retry: VecDeque::new(), device: Device::new(&opts.device).map_err(|_| BotError::Local("device new: identity shape rejected"))?, state_path: None, mode: Mode::Watch, pending: None, recent: Recent::default(), relay_missing: false,
         });
     }
     let typing = TypingRoute::new(&opts.base, opts.access.clone());
@@ -789,7 +794,7 @@ fn health_tick(health: &mut Option<health::Health>, rooms: &[RoomState]) {
         .iter()
         .map(|s| health::RoomHealth {
             room: s.room.clone(), joined: s.joined, mode: s.mode.name(), halted: s.halted,
-            pending: s.pending.is_some(), cursor: s.cursor, epoch: s.epoch,
+            relay_missing: s.relay_missing, pending: s.pending.is_some(), cursor: s.cursor, epoch: s.epoch,
             marker: if s.halted { s.state_path.as_deref().map(refused_marker_path) } else { None },
         })
         .collect();
@@ -882,6 +887,35 @@ fn poll_room(ctx: &Ctx, state: &mut RoomState, agent: &mut Option<Responder>) ->
     room::poll(&mut BotRoom { ctx, state, agent }, ctx.own)
 }
 
+/// #814: track whether the relay still has a room this device already saw
+/// there. host-core's `poll` treats 404 `no_such_room` as "not founded yet"
+/// and moves on — right for a room `create`d here whose first invite is not
+/// posted (joined, cursor 0, epoch 0), wrong for a room the relay has shown
+/// before. Such a room is marked `relay_missing` (logged once per
+/// transition, shown in `status` · `room status` · `health.json`) and keeps
+/// being polled like any other: a 404 is one cheap answer per round and the
+/// other rooms are untouched. Connection failures and 5xx never reach this
+/// arm — they stay `relay_unreachable` (#392). A later page clears it.
+fn note_relay_presence(own: &str, state: &mut RoomState, page: &Result<api::EventsResponse, BotError>) {
+    match page {
+        Err(BotError::Api { status: 404, code }) if code == "no_such_room" => {
+            let seen_on_relay = state.joined && (state.cursor > 0 || state.epoch > 0);
+            if seen_on_relay && !state.relay_missing {
+                state.relay_missing = true;
+                emit(&serde_json::json!({
+                    "event": "relay_missing", "room": state.room, "device": own,
+                    "cursor": state.cursor, "epoch": state.epoch, "error": "no_such_room",
+                }));
+            }
+        }
+        Ok(_) if state.relay_missing => {
+            state.relay_missing = false;
+            emit(&serde_json::json!({ "event": "relay_present", "room": state.room, "device": own }));
+        }
+        _ => {}
+    }
+}
+
 /// One room of this bot as a `room::RoomHost` (#366 2b).
 struct BotRoom<'s, 'c> {
     ctx: &'s Ctx<'c>,
@@ -903,7 +937,9 @@ fn bound<'a>(ctx: &'a Ctx, state: &'a mut RoomState) -> Bound<'a> {
 
 impl room::RoomHost for BotRoom<'_, '_> {
     fn fetch(&mut self, room: &str, after: i64, ack: Option<i64>) -> Result<api::EventsResponse, BotError> {
-        self.ctx.client.get_events(room, self.ctx.own, after, ack)
+        let page = self.ctx.client.get_events(room, self.ctx.own, after, ack);
+        note_relay_presence(self.ctx.own, self.state, &page);
+        page
     }
 
     fn report(&mut self, event: SyncEvent<'_>) {
@@ -2146,7 +2182,7 @@ fn load_room(dir: &Path, room: &str, device: &str) -> Result<RoomState, BotError
     let halted = refused_marker_path(&path).exists();
     Ok(RoomState {
         sync: RoomSync { room: room.to_string(), cursor, epoch, joined, joinable: true, dirty: false, acked: cursor, ack_sent: 0, ack_disabled: false, halted },
-        echoes, retry: VecDeque::new(), device: dev, state_path: Some(path), mode: read_mode(dir, room), pending: None, recent: Recent::default(),
+        echoes, retry: VecDeque::new(), device: dev, state_path: Some(path), mode: read_mode(dir, room), pending: None, recent: Recent::default(), relay_missing: false,
     })
 }
 
@@ -2254,7 +2290,7 @@ impl Steward {
                 std::fs::write(room_mode_path(&self.rooms_dir, &cmd.room), mode.name()).map_err(|_| BotError::Local("mode file write"))?;
                 rooms.push(RoomState {
                     sync: RoomSync { room: cmd.room.clone(), cursor: 0, epoch: 0, joined: true, joinable: true, dirty: false, acked: 0, ack_sent: 0, ack_disabled: false, halted: false },
-                    echoes: 0, retry: VecDeque::new(), device: dev, state_path: Some(path), mode, pending: None, recent: Recent::default(),
+                    echoes: 0, retry: VecDeque::new(), device: dev, state_path: Some(path), mode, pending: None, recent: Recent::default(), relay_missing: false,
                 });
                 Ok(serde_json::json!({ "op": "create", "room": cmd.room, "mode": mode.name(), "epoch": 0 }))
             }
@@ -2270,7 +2306,7 @@ impl Steward {
                 std::fs::write(room_mode_path(&self.rooms_dir, &cmd.room), Mode::Silent.name()).map_err(|_| BotError::Local("mode file write"))?;
                 rooms.push(RoomState {
                     sync: RoomSync { room: cmd.room.clone(), cursor: 0, epoch: 0, joined: false, joinable: true, dirty: false, acked: 0, ack_sent: 0, ack_disabled: false, halted: false },
-                    echoes: 0, retry: VecDeque::new(), device: dev, state_path: Some(path), mode: Mode::Silent, pending: None, recent: Recent::default(),
+                    echoes: 0, retry: VecDeque::new(), device: dev, state_path: Some(path), mode: Mode::Silent, pending: None, recent: Recent::default(), relay_missing: false,
                 });
                 Ok(serde_json::json!({ "op": "join", "room": cmd.room, "key_ref": key_ref, "stored": stored }))
             }
@@ -2396,7 +2432,7 @@ impl Steward {
                 "op": "status", "device": self.device,
                 "rooms": rooms.iter().map(|r| serde_json::json!({
                     "room": r.room, "joined": r.joined, "mode": r.mode.name(), "epoch": r.epoch, "cursor": r.cursor,
-                    "halted": r.halted, "pending": r.pending.is_some(),
+                    "halted": r.halted, "relay_missing": r.relay_missing, "pending": r.pending.is_some(),
                 })).collect::<Vec<_>>(),
             })),
             _ => Err(BotError::Local("unknown op (create|join|invite|remove|close|members|mode|status)")),
@@ -2489,7 +2525,7 @@ fn status(rooms: &[RoomState]) {
             serde_json::json!({
                 "room": state.room, "joined": state.joined, "echoes": state.echoes,
                 "cursor": state.cursor, "epoch": state.epoch, "acked": state.ack_sent,
-                "halted": state.halted, "mode": state.mode.name(), "pending": state.pending.is_some(),
+                "halted": state.halted, "relay_missing": state.relay_missing, "mode": state.mode.name(), "pending": state.pending.is_some(),
             })
         })
         .collect();
@@ -2959,7 +2995,7 @@ for line in sys.stdin:
     fn joined_room_at(room: &str, cursor: i64, state_path: Option<PathBuf>) -> RoomState {
         RoomState {
             sync: RoomSync { room: room.into(), cursor, epoch: 2, joined: true, joinable: true, dirty: false, acked: cursor, ack_sent: cursor, ack_disabled: false, halted: false },
-            echoes: 3, retry: VecDeque::new(), device: Device::new("bot-1").unwrap_or_else(|_| panic!("device new")), state_path, mode: Mode::Echo, pending: None, recent: Recent::default(),
+            echoes: 3, retry: VecDeque::new(), device: Device::new("bot-1").unwrap_or_else(|_| panic!("device new")), state_path, mode: Mode::Echo, pending: None, recent: Recent::default(), relay_missing: false,
         }
     }
 
@@ -3036,6 +3072,53 @@ for line in sys.stdin:
         assert_eq!(seen.len(), 2);
         assert!(seen.iter().all(|line| line.starts_with("GET /v2/rooms/family/events?device=bot-1&after=4")), "{seen:?}");
         let _ = std::fs::remove_file(&marker);
+    }
+
+    /// #814: a room the relay showed this device before and now answers 404
+    /// `no_such_room` for (a restore from an older snapshot) is marked
+    /// `relay_missing` — not halted, not an error, so the other rooms keep
+    /// their round. A room `create`d here and not founded yet (cursor 0,
+    /// epoch 0) and an unjoined room are not marked; a 5xx neither sets nor
+    /// clears the mark; the next page clears it.
+    #[test]
+    fn poll_room_marks_a_room_the_relay_lost() {
+        let missing = || (404u16, r#"{"error":"no_such_room"}"#.to_string());
+        let (base, server) = canned_relay_with_status(vec![
+            missing(),                                          // seen room: lost
+            missing(),                                          // still lost (logged once)
+            (503, r#"{"error":"unavailable"}"#.into()),         // relay briefly failing
+            (200, r#"{"epoch":2,"revision":1,"events":[],"first_seq":1}"#.into()), // back
+            missing(),                                          // created here, not founded
+            missing(),                                          // `room join`, not invited yet
+        ]);
+        let client = Client::with_access(&base, api::Access::None);
+        let ctx = Ctx { client: &client, own: "bot-1", typing: None };
+
+        let mut lost = joined_room("rx", 7);
+        poll_room(&ctx, &mut lost, &mut None).unwrap_or_else(|e| panic!("404 poll: {e}"));
+        assert!(lost.relay_missing, "a joined room the relay showed before");
+        assert!(!lost.halted, "reported, not halted");
+        assert_eq!((lost.cursor, lost.epoch, lost.dirty), (7, 2, false), "nothing moved, nothing to persist");
+        poll_room(&ctx, &mut lost, &mut None).unwrap_or_else(|e| panic!("second 404 poll: {e}"));
+        assert!(lost.relay_missing);
+        let err = poll_room(&ctx, &mut lost, &mut None).expect_err("a 503 is a relay error");
+        assert!(!matches!(err, BotError::Api { status: 404, .. }), "{err}");
+        assert!(lost.relay_missing, "a 5xx neither sets nor clears the mark");
+        poll_room(&ctx, &mut lost, &mut None).unwrap_or_else(|e| panic!("page poll: {e}"));
+        assert!(!lost.relay_missing, "a page clears it");
+
+        let mut created = joined_room("fresh", 0);
+        created.epoch = 0;
+        poll_room(&ctx, &mut created, &mut None).unwrap_or_else(|e| panic!("unfounded poll: {e}"));
+        assert!(!created.relay_missing, "`room create` before its first invite is not a lost room");
+
+        let mut waiting = joined_room("asked", 3);
+        waiting.joined = false;
+        poll_room(&ctx, &mut waiting, &mut None).unwrap_or_else(|e| panic!("unjoined poll: {e}"));
+        assert!(!waiting.relay_missing, "an unjoined room has no relay room of its own to lose");
+
+        let seen = server.join().expect("server thread");
+        assert_eq!(seen.len(), 6, "{seen:?}");
     }
 
     /// #392: transport-level failures are transient, contract errors are not;
