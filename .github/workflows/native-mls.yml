@@ -303,3 +303,46 @@ jobs:
           (cd archive/native-mls/bot && cargo "+$RUST_TOOLCHAIN" build --locked --bin native-responder)
           NATIVE_RESPONDER_BIN="$PWD/archive/native-mls/bot/target/debug/native-responder" \
             python3 -m unittest tests.test_native_responder -v
+      # #492 ②: the Termux installer (deploy/install-node-bot-termux.sh) against a stub bot —
+      # enrollment.json without a responder socket, idempotent re-run, svlogd fallback.
+      - name: Termux bot installer (stub binary, fake PREFIX)
+        if: steps.bot-scope.outputs.run == 'true'
+        run: bash archive/native-mls/bot/deploy/install-node-bot-termux.test.sh
+      # #492 ②: Termux (aarch64 Android) runs the bot as a static aarch64-unknown-linux-musl
+      # build (no TLS, no C deps; rust-lld from the pinned toolchain, no cross C toolchain).
+      # Not a release: a 14-day artifact + sha256 for deploy/TERMUX.md.
+      - name: aarch64-musl static build (Termux)
+        if: steps.bot-scope.outputs.run == 'true'
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
+        run: |
+          set -euo pipefail
+          rustup "+$RUST_TOOLCHAIN" target add aarch64-unknown-linux-musl
+          start=$(date +%s)
+          (cd archive/native-mls/bot && cargo "+$RUST_TOOLCHAIN" build --release --locked \
+            --target aarch64-unknown-linux-musl --bin native-mls-bot)
+          bin=archive/native-mls/bot/target/aarch64-unknown-linux-musl/release/native-mls-bot
+          # ELF64 little-endian, e_machine 0xb7 (aarch64), no PT_INTERP (= static, runs on Android).
+          python3 - "$bin" <<'PY'
+          import struct, sys
+          data = open(sys.argv[1], "rb").read()
+          assert data[:6] == b"\x7fELF\x02\x01", "not an ELF64 little-endian file"
+          assert struct.unpack_from("<H", data, 18)[0] == 0xB7, "not aarch64"
+          phoff, = struct.unpack_from("<Q", data, 32)
+          phentsize, phnum = struct.unpack_from("<HH", data, 54)
+          types = [struct.unpack_from("<I", data, phoff + i * phentsize)[0] for i in range(phnum)]
+          assert 3 not in types, "has PT_INTERP: dynamically linked"
+          print("aarch64 static ELF ok")
+          PY
+          mkdir -p "$RUNNER_TEMP/termux-bot"
+          cp "$bin" "$RUNNER_TEMP/termux-bot/native-mls-bot"
+          (cd "$RUNNER_TEMP/termux-bot" && sha256sum native-mls-bot > native-mls-bot.sha256)
+          echo "aarch64_musl_build_seconds=$(( $(date +%s) - start )) sha256=$(cut -d' ' -f1 "$RUNNER_TEMP/termux-bot/native-mls-bot.sha256")" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Upload aarch64-musl bot (Termux)
+        if: steps.bot-scope.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-mls-bot-aarch64-unknown-linux-musl-${{ github.sha }}
+          path: ${{ runner.temp }}/termux-bot
+          retention-days: 14
+          if-no-files-found: error
