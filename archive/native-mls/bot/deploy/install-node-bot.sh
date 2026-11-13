@@ -238,6 +238,12 @@ subject="$(cat "$STATE_DIR/bot/common_name")"
 write_file "$STATE_DIR/bot/enrollment.json" 0600 <<EOF
 {"actor": "$NODE", "device_id": "$DEVICE", "signing_key": "$key", "subject": "$subject"}
 EOF
+# The key no longer comes from the running bot (#492), so this run no longer proves the bot
+# started. Settle briefly and warn (not die): before the hande bridge exists the bot may still
+# be retrying its responder socket, which is expected and must not fail the install.
+sleep 5
+systemctl is-active --quiet native-relay-bot \
+  || say "warning: native-relay-bot is not active ($(systemctl is-active native-relay-bot || true)) — check: journalctl -u native-relay-bot"
 say "bot: $(systemctl is-active native-relay-bot) · timer: $(systemctl is-active native-relay-jwt-refresh.timer)"
 say "enrollment candidate: $STATE_DIR/bot/enrollment.json (0600) — carry it to the relay host for 'native-devices -enroll-first' (operator, approval)."
 say "fingerprint (sha256 of signing key, for the owner's out-of-band check): $(printf '%s' "$key" | xxd -r -p | sha256sum | cut -c1-16)…"
