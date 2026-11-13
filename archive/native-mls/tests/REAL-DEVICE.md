@@ -183,10 +183,14 @@ diff /tmp/served.txt /tmp/committed.txt && echo "manifest IDENTICAL"
 for f in custody.js family_mls_browser_experiment.js family_mls_browser_experiment_bg.wasm; do
   printf '%s ' "$f"; curl -s "$RELAY/app/pkg/$f" | sha256sum | cut -c1-64
 done | sort | diff - <(awk '{print $2" "$1}' /tmp/committed.txt | sort) && echo "bytes MATCH"   # 양쪽 모두 줄 전체(파일명) 기준 정렬
-# 3) 릴레이 바이너리: 서빙 노드에서 sha256 + 빌드 툴체인 기록 (재현 빌드는 핀 툴체인 노드에서)
+# 3) 릴레이 바이너리: 서빙 노드에서 sha256 + 빌드 툴체인 기록 (재현 빌드는 아래 5)의 고정 컨테이너로)
 ssh <relay-node> 'sha256sum /opt/native-relay/bin/native-mls-relay; strings /opt/native-relay/bin/native-mls-relay | grep -oE "go1\.[0-9.]+" | head -1'
 # 4) vcs 판정: 서빙 노드에 go가 없으면 `go version -m` 대신 내장 buildinfo 문자열을 읽는다
 ssh <relay-node> 'strings /opt/native-relay/bin/native-mls-relay | grep -E "vcs\.(revision|modified)=" | sort -u'
+# 5) 독립 재빌드 대조 (#243 2-d): docker 가 있는 아무 노드에서, 4)의 vcs.revision 커밋을 깨끗이 클론해
+#    digest 고정 컨테이너(deploy/native-relay/build/)로 빌드 → 3)의 sha256 과 SHA256SUMS 를 대조
+git clone -q https://github.com/jinwon-int/family-messenger /tmp/fm-repro && cd /tmp/fm-repro && git checkout -q --detach <vcs.revision>
+deploy/native-relay/build/build.sh /tmp/relay-repro && cat /tmp/relay-repro/BUILDINFO
 ```
 
 | 날짜(KST) | 번들 매니페스트 | 바이트 재해시 | 릴레이 sha256(12) · 툴체인 | 수행 |
@@ -196,7 +200,8 @@ ssh <relay-node> 'strings /opt/native-relay/bin/native-mls-relay | grep -E "vcs\
 | 2026-10-06 09:45 | **의도된 혼합**: pkg 매니페스트는 `d47fd52a` 그대로(wasm `450df32c…` — main의 #281 wasm `0d27d28f…` 미배포) + 정적 `relay-app.html` `47b7f1eb…`·`relay-app.js` `2c5e5ba2…`·`relay-attachments.js`(신규) `616a8407…` == main `ea34ff5`(#270 첨부 UI). static 3파일만 교체, 백업 `static-pre-attach-20261006T094534.tgz` | 설치 직후 루프백 3/3 == git blob | `0038886cf4c5` 불변(재시작 없음, MainPID 1941712) | bangtong |
 | 2026-10-06 14:01 | **IDENTICAL** — 혼합 해소: 곽가 clean 클론 `fm-deploy-4e75aca` 핀 툴체인 `build.sh` → `bundle-sha256.txt` 3/3 == 커밋(wasm `0d27d28f…`(#281), js `d9a05287…`, custody `b94b2180…`) = CI → **재현 ✓**; 서빙본 대비 차이 2파일(wasm·매니페스트)만 교체 + #298 `relay-app.html` `5a707c40…`·`relay-app.js` `9ce947b4…` 동시 설치 → 서빙 **18/18 == main `04190a3`**(web 15 + pkg 3), 백업 `static-pre-full-20261006T140112.tgz` | 설치 직후 루프백 18/18 == git blob, `GET /app/pkg/bundle-sha256.txt` == 커밋본 | `0038886cf4c5` 불변(재시작 없음, MainPID 1941712) — 독립 재빌드 대조는 여전히 미수행 | bangtong |
 
-릴레이 바이너리의 **재현 여부는 `go version -m <binary>`의 `vcs.revision`·`vcs.modified`로 판정**한다(sha 일치만으로 "= 커밋 빌드"라고 쓰지 말 것 — 2026-10-03 오판). 재현 빌드(`go build -trimpath` 해시 일치)는 같은 Go 버전이 핀된 노드에서만 의미가 있다 —
+릴레이 바이너리의 **재현 여부는 `go version -m <binary>`의 `vcs.revision`·`vcs.modified`로 판정**한다(sha 일치만으로 "= 커밋 빌드"라고 쓰지 말 것 — 2026-10-03 오판). 재현 빌드(해시 일치)는 **5)의 digest 고정 컨테이너로 만든 바이너리끼리만** 의미가 있다 —
+`native-mls-relay`는 cgo(go-sqlite3)라 Go 버전이 같아도 빌드 호스트의 gcc·binutils·libc가 다르면 해시가 달라진다(2026-10-13 불일치, #243 D9). 배포 바이너리도 같은 컨테이너(`build.sh`)로 빌드해 스테이징해야 대조가 성립한다.
 수행 시 이 표에 "재현 ✓/✗ + 빌드 노드 + 커밋"을 추가한다. 번들의 재현 빌드는 rustc 1.91.1 +
 `wasm32` 툴체인(gwakga)에서 수행한다.
 

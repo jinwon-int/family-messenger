@@ -42,9 +42,10 @@ jobs:
           git fetch --no-tags --depth=1 origin "$base"
           changed="$(git diff --name-only "$base" HEAD)"
           printf 'changed files:\n%s\n' "$changed"
-          # archive/ = the track itself; server/ + requirements = inputs of the trust-gate smokes.
+          # archive/ = the track itself; server/ + requirements = inputs of the trust-gate smokes;
+          # deploy/native-relay/build/ = the pinned relay build container (#243 2-d).
           # here-string, not a pipe: with pipefail, grep -q exiting early would SIGPIPE printf.
-          if grep -qE '^(archive/|server/|requirements-native-test\.txt$|\.github/workflows/native-mls\.yml$)' <<<"$changed"; then
+          if grep -qE '^(archive/|server/|deploy/native-relay/build/|requirements-native-test\.txt$|\.github/workflows/native-mls\.yml$)' <<<"$changed"; then
             echo "run=true" >> "$GITHUB_OUTPUT"; echo "native track touched → full run"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"; echo "no native track change → skip heavy steps"
@@ -54,6 +55,21 @@ jobs:
       - name: Real-device evidence validator selftest (python only)
         if: steps.scope.outputs.run == 'true'
         run: python3 archive/native-mls/tests/real_device_kit.py validate-selftest
+      # Relay reproducibility gate (#243 2-d, D9): the release relay binaries come from the
+      # digest-pinned build container (deploy/native-relay/build/). Two clean builds — fresh
+      # container, empty GOCACHE and module cache each — must produce an identical SHA256SUMS.
+      # Runs before any step writes into the checkout: build.sh refuses a dirty tree, because
+      # the embedded vcs.revision + vcs.modified=false are part of the deploy evidence.
+      - name: Relay reproducibility — two pinned-container builds must hash identically
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          deploy/native-relay/build/build.sh artifacts/relay-repro-a
+          deploy/native-relay/build/build.sh artifacts/relay-repro-b
+          if ! diff artifacts/relay-repro-a/SHA256SUMS artifacts/relay-repro-b/SHA256SUMS; then
+            echo "::error::relay binaries are not reproducible: second build produced different hashes"; exit 1
+          fi
+          echo "reproducible relay manifest:"; cat artifacts/relay-repro-a/SHA256SUMS
       - name: Pinned Rust toolchain
         if: steps.scope.outputs.run == 'true'
         run: |
@@ -236,6 +252,8 @@ jobs:
           path: |
             archive/artifacts/native-*/verification.json
             artifacts/mls-pkg/bundle-sha256.txt
+            artifacts/relay-repro-a/SHA256SUMS
+            artifacts/relay-repro-a/BUILDINFO
 
   # M5 (#177 §7 Q3 답 1): the native MLS bot. A separate job so the browser
   # track keeps its single-job budget and wasm/npm caches untouched; hard cap
