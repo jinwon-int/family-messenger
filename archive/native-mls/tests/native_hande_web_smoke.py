@@ -20,6 +20,7 @@ Receipt: archive/artifacts/native-hande-web-*/verification.json
 """
 import argparse
 import json
+import re
 import secrets
 import shutil
 import socket
@@ -282,6 +283,22 @@ def run_flow(Dev, receipt, screenshot=None, relay_base=None):
     mom.wait_bubble('잘 받았어요 🔥')
     assert mom.device_id() == mom_id, (mom.device_id(), mom_id)
     receipt['checks']['reload_restores_sealed_history_same_device'] = True
+
+    # #766 I: 다시 연 기기는 「첫 화면까지 ms」 한 줄을 앱 기록에 남긴다 — 대화 화면까지 갔고, 구간 합 = 전체.
+    startup = ''
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        startup = next((t for t in reversed(mom.console) if '첫 화면까지' in t and '대화 화면' in t), '')
+        if startup:
+            break
+        time.sleep(0.2)
+    m = re.search(r'첫 화면까지 (\d+) ms \(대화 화면\) — (.+)$', startup)
+    assert m, ('no startup timing line after reload', mom.console[-20:])
+    stages = {name.strip(): int(ms) for name, ms in re.findall(r'([^·]+?) (\d+)(?= · |$)', m.group(2))}
+    assert {'스크립트', '설정', '신원 열기', '방 열기', '방 목록'} <= set(stages), stages
+    assert sum(stages.values()) == int(m.group(1)) > 0, (stages, m.group(1))
+    receipt['checks']['startup_timing_line_logged'] = True
+    receipt['startup_timing'] = {'total_ms': int(m.group(1)), 'stages': stages}
 
     # ---- stage 4: a second room through the LOBBY (#380) — owner creates fam2 and invites mom,
     # who never requested fam2: the invite consumes mom's lobby key; mom (family actor) gets an
