@@ -412,6 +412,124 @@ class CycleTest(unittest.TestCase):
         self.assertTrue(set(rw.ALERT_TIERS.values()) <= {'info', 'notice', 'action', 'critical'})
         self.assertNotIn('info', rw.ALERT_TIERS.values())
 
+    # --- out-of-band copy (#426): a second spool for a channel that does not depend on the relay ---
+
+    def oob_setup(self):
+        self.oob = self.dir / 'oob'
+        self.oob.mkdir()
+        return ('--oob-spool', str(self.oob))
+
+    def oob_records(self):
+        names = sorted(p.name for p in self.oob.iterdir())
+        for n in names:
+            self.assertRegex(n, RECORD_NAME)
+        return [json.loads((self.oob / n).read_text()) for n in names]
+
+    def state_json(self):
+        return json.loads(self.state.read_text())
+
+    def test_oob_copy_is_the_owner_line_only_and_the_primary_is_unchanged(self):
+        extra = self.oob_setup()
+        self.tick('up', 3, extra=extra)
+        self.assertEqual(self.oob_records(), [])
+        runs = self.tick('down', 3, extra=extra)
+        self.assertRegex(runs[-1][1]['oob'], RECORD_NAME)
+        (copy,) = self.oob_records()
+        primary = self.records()[-1]
+        self.assertEqual(copy['text'].splitlines(), primary['text'].splitlines()[:1])
+        self.assertNotIn('@fleet-alert', copy['text'])
+        self.assertNotIn('tier', copy)
+        self.assertEqual((copy['event'], copy['code'], copy['node'], copy['recipient']),
+                         ('health-alert', 'relay_down', 'jingun', 'owner'))
+        self.assertTrue(copy['dedup'].startswith('relay-watchdog-oob:relay_down:'))
+        self.assertEqual(primary['tier'], 'critical')
+        self.assertIn('@fleet-alert opens=', primary['text'])
+        self.assertNotIn('http://h:1', copy['text'])
+        self.assertIsNone(self.state_json()['oob_pending'])
+
+    def test_recovery_and_realert_also_go_out_of_band(self):
+        extra = self.oob_setup()
+        self.tick('up', 3, extra=extra)
+        self.tick('down', 3, extra=extra)
+        self.tick('down', 6 * 60, extra=extra)
+        self.tick('up', 3, extra=extra)
+        self.assertEqual(sorted((r['code'], r['kind']) for r in self.oob_records()),
+                         [('relay_down', 'realert'), ('relay_down', 'transition'), ('relay_recovered', 'transition')])
+        self.assertEqual(len(self.oob_records()), len(self.records()))
+
+    def test_failed_oob_write_does_not_block_the_primary_and_is_retried(self):
+        extra = self.oob_setup()
+        self.tick('up', 3, extra=extra)
+        self.oob.rmdir()
+        runs = self.tick('down', 3, extra=extra)
+        self.assertEqual(runs[-1][0], 1)  # an I/O failure is visible to systemd
+        self.assertEqual(runs[-1][1]['alert'], 'transition:relay_down')  # the primary went out
+        self.assertEqual(runs[-1][1]['oob'], 'failed: ValueError')
+        self.assertEqual(len(self.records()), 1)
+        pending = self.state_json()['oob_pending']
+        self.assertRegex(pending['name'], RECORD_NAME)
+        runs = self.tick('down', 2, extra=extra)  # still missing: keeps trying, no new primary record
+        self.assertEqual([r[1]['oob'] for r in runs], ['failed: ValueError'] * 2)
+        self.assertEqual(len(self.records()), 1)
+        self.oob.mkdir()
+        runs = self.tick('down', 2, extra=extra)
+        self.assertEqual(runs[0], (0, runs[0][1]))
+        self.assertEqual(runs[0][1]['oob'], pending['name'])
+        self.assertEqual(runs[1][1]['oob'], 'none')
+        self.assertEqual([r['code'] for r in self.oob_records()], ['relay_down'])
+        self.assertIsNone(self.state_json()['oob_pending'])
+
+    def test_primary_retry_does_not_send_a_second_oob_copy(self):
+        extra = self.oob_setup()
+        self.tick('up', 3, extra=extra)
+        self.spool.rmdir()
+        runs = self.tick('down', 3, extra=extra)
+        self.assertEqual(runs[-1][1]['alert'], 'failed: ValueError')
+        self.assertRegex(runs[-1][1]['oob'], RECORD_NAME)  # the fallback channel still got it
+        self.assertEqual(len(self.oob_records()), 1)
+        self.spool.mkdir()
+        runs = self.tick('down', 1, extra=extra)
+        self.assertEqual(runs[0][1]['alert'], 'retry:relay_down')
+        self.assertEqual(runs[0][1]['oob'], 'none')
+        self.assertEqual(len(self.oob_records()), 1)
+        self.assertEqual(len(self.records()), 1)
+
+    def test_newer_alert_replaces_an_oob_copy_still_waiting(self):
+        extra = self.oob_setup()
+        self.tick('up', 3, extra=extra)
+        self.oob.rmdir()
+        self.tick('down', 3, extra=extra)
+        self.assertEqual(self.state_json()['oob_pending']['record']['code'], 'relay_down')
+        self.tick('up', 3, extra=extra)
+        self.assertEqual(self.state_json()['oob_pending']['record']['code'], 'relay_recovered')
+        self.oob.mkdir()
+        self.tick('up', 1, extra=extra)
+        self.assertEqual([r['code'] for r in self.oob_records()], ['relay_recovered'])
+
+    def test_without_oob_spool_nothing_changes(self):
+        self.tick('up', 3)
+        runs = self.tick('down', 3)
+        self.assertNotIn('oob', runs[-1][1])
+        self.assertNotIn('oob_pending', self.state_json())
+
+    def test_unusable_oob_pending_in_the_state_file_is_dropped(self):
+        good = {'name': 'health-alert-relay_down-1800000000000.json', 'record': {'text': 'line'}}
+        self.assertEqual(rw.read_oob_pending({'oob_pending': good}), good)
+        bad = [None, 'x', [], {}, {'name': '../x.json', 'record': {'text': 'line'}},
+               {'name': '.hidden.json', 'record': {'text': 'line'}},
+               {'name': good['name'], 'record': 'text'}, {'name': good['name'], 'record': {'text': '  '}},
+               {'name': good['name'], 'record': {'text': 5}}, {'name': 7, 'record': {'text': 'line'}}]
+        for raw in bad:
+            self.assertIsNone(rw.read_oob_pending({'oob_pending': raw}), raw)
+
+    def test_oob_spool_must_differ_from_the_primary_spool(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+            rw.parse_args(['--direct-url', 'http://h:1', '--edge-url', 'https://e',
+                           '--push-spool', str(self.spool), '--oob-spool', str(self.spool / '.' )])
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn('--oob-spool', err.getvalue())
+
     def test_text_never_contains_addresses(self):
         self.tick('up', 3)
         self.tick('down', 3)
