@@ -123,6 +123,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
   base64 -w0 hande-upload.keystore > hande-upload.keystore.b64     # → GitHub secret HANDE_UPLOAD_KEYSTORE_B64
   keytool -list -v -keystore hande-upload.keystore | grep SHA256    # 지문(비밀 아님) — Play Console 「업로드 키 인증서」와 대조
   ```
+  위 `SHA256:` 지문(공개값)을 저장소 **variable `HANDE_UPLOAD_CERT_SHA256`** 에 넣는다(`AA:BB:…` 그대로 또는 소문자 hex) — CI 번들 job 이 AAB 서명자를 이 값과 정확히 비교한다(④). **순서: variable 먼저, secrets 4개는 그다음** — secrets 만 있고 variable 이 없으면 번들 job 이 실패한다. PKCS12 는 키 비밀번호가 저장소 비밀번호와 같다(`HANDE_UPLOAD_KEY_PASSWORD` = `HANDE_UPLOAD_KEYSTORE_PASSWORD` 와 같은 값).
   Play App Signing 에서 **앱 서명 키는 Google 이 생성·보관**(기본) 하고 이 키는 업로드 전용이다. 업로드 키를 잃으면 Play Console 에서 재설정 요청(새 키 인증서 업로드).
 - `isMinifyEnabled = false` 유지: uniffi 바인딩이 JNA 로 심벌을 이름으로 찾고 JNA 자체가 리플렉션 기반이라 R8 keep 규칙을 실기기에서 검증하기 전에는 켜지 않는다(규칙 초안은 `app/build.gradle.kts` 주석).
 
@@ -132,8 +133,9 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ### ④ CI — `android-bundle` job
 - 입력: job 1 의 FFI 아티팩트. 비밀 `HANDE_UPLOAD_KEYSTORE_B64`(base64 키스토어) 가 있으면 러너 `$RUNNER_TEMP` 에 0600 으로 풀고(값은 찍지 않는다) `HANDE_UPLOAD_KEYSTORE_PASSWORD`·`HANDE_UPLOAD_KEY_ALIAS`·`HANDE_UPLOAD_KEY_PASSWORD` 와 함께 Gradle 에 넘긴다. 없으면(포크 PR 포함) `::notice` 와 함께 미서명 번들.
-- 검증(bundletool 없이): `app-release.aab` 존재 · `base/lib/{arm64-v8a,armeabi-v7a,x86_64}/libfamily_mls_ios_ffi.so` 3개 · `libjnidispatch.so` · 서명했으면 `jarsigner -verify -strict` + 서명자 SHA-256 ≠ `DEBUG_SIGNER_SHA256`, 미서명이면 `META-INF/*.{RSA,SF}` 없음. 아티팩트 `hande-android-bundle-<sha>`(14일).
-- 변수(선택, repo **variables**): `HANDE_PRIVACY_URL`·`HANDE_DELETE_URL` — 정책 페이지 주소를 바꿀 때(기본은 아래 ⑤).
+- 검증(bundletool 없이): `app-release.aab` 존재 · `base/lib/{arm64-v8a,armeabi-v7a,x86_64}/libfamily_mls_ios_ffi.so` 3개 · `libjnidispatch.so` · 서명했으면 `jarsigner -verify`(종료 코드 0 + `jar verified` · 「서명 밖 항목」 경고 없음) + 서명자 SHA-256 ≠ `DEBUG_SIGNER_SHA256` + 서명자 SHA-256 = variable `HANDE_UPLOAD_CERT_SHA256`, 미서명이면 `META-INF/*.{RSA,SF}` 없음. 아티팩트 `hande-android-bundle-<sha>`(14일).
+  - `-strict` 를 쓰지 않는 이유: Play 업로드 키는 자체 서명 인증서가 정상인데 strict 는 「PKIX 경로 없음·자체 서명」을 오류로 올려, 서명이 유효해도 `jar verified, with signer errors.` 로 끝난다(#584 코멘트 2026-10-30). 신뢰 체인 대신 **지문 고정**으로 신원을 확인한다 — 엉뚱한 키로 서명된 번들은 지문 불일치로 실패한다.
+- 변수(repo **variables**): `HANDE_UPLOAD_CERT_SHA256` — 업로드 인증서 SHA-256 지문(공개값). **서명 번들에는 필수**(없으면 번들 job 실패), 미서명 번들에서는 읽지 않는다. 업로드 키를 바꾸면 함께 바꾼다. (선택) `HANDE_PRIVACY_URL`·`HANDE_DELETE_URL` — 정책 페이지 주소를 바꿀 때(기본은 아래 ⑤).
 
 ### ⑤ 앱 안 정책 링크 · 계정 삭제(Play 정책)
 - 설정 화면(목록·등록 대기·로그인·오류 화면의 「설정」) 과 처음 설정 화면에 **개인정보처리방침**·**계정 및 데이터 삭제** 링크. 주소는 `BuildConfig.PRIVACY_URL`/`DELETE_ACCOUNT_URL` — 기본 `https://jinwon-int.github.io/family-messenger/hande/privacy` · `…/hande/delete-account`(https 만). 게시는 `.github/workflows/pages.yml`(#584 PR 4: main 의 `docs/hande/**` 변경 → pandoc → `_site/hande/<이름>/index.html` → GitHub Pages, Source = GitHub Actions)이 `https://jinwon-int.github.io/family-messenger/hande/privacy/` · `…/hande/delete-account/`(끝 `/`) 에 올린다 — 기본값의 끝 `/` 없는 경로는 Pages 가 **301** 로 `…/privacy/` 에 보내므로 같은 페이지가 열린다(스토어 콘솔에는 끝 `/` 붙은 정식 주소). **Pages 는 저장소 설정에서 켜야 한다**(`gh api repos/jinwon-int/family-messenger/pages` → 404, 2026-10-29; 오너 항목 `docs/hande/release-checklist.md` 0-1). 주소를 바꾸면 변수 `HANDE_PRIVACY_URL`/`HANDE_DELETE_URL` 과 콘솔 값을 함께. 문서: [`docs/hande/privacy.md`](../../../docs/hande/privacy.md) · [`docs/hande/delete-account.md`](../../../docs/hande/delete-account.md) · Data safety 입력표 [`docs/hande/play-data-safety.md`](../../../docs/hande/play-data-safety.md) · 심사 준비 [`docs/hande/app-store-review.md`](../../../docs/hande/app-store-review.md) · 데모 서버 [`docs/hande/demo-server.md`](../../../docs/hande/demo-server.md) · 체크리스트 [`docs/hande/release-checklist.md`](../../../docs/hande/release-checklist.md).
@@ -141,7 +143,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ### 체크리스트 (코드 밖 — 오너·PR 4)
 1. Play Console 조직 계정($25) — D-U-N-S 는 Apple 가입 때 번호 재사용, 결제 프로필 법인명·주소를 D&B 와 일치.
-2. 업로드 키 생성(②) → GitHub secrets 4개(`HANDE_UPLOAD_KEYSTORE_B64`·`HANDE_UPLOAD_KEYSTORE_PASSWORD`·`HANDE_UPLOAD_KEY_ALIAS`·`HANDE_UPLOAD_KEY_PASSWORD`) → `workflow_dispatch`(version_name) → 서명된 `app-release.aab` 아티팩트 → 내부 테스트 트랙 업로드 → Play App Signing 등록.
+2. 업로드 키 생성(②) → variable `HANDE_UPLOAD_CERT_SHA256`(공개 지문) → GitHub secrets 4개(`HANDE_UPLOAD_KEYSTORE_B64`·`HANDE_UPLOAD_KEYSTORE_PASSWORD`·`HANDE_UPLOAD_KEY_ALIAS`·`HANDE_UPLOAD_KEY_PASSWORD`) → `workflow_dispatch`(version_name) → 서명된 `app-release.aab` 아티팩트 → 내부 테스트 트랙 업로드 → Play App Signing 등록.
 3. 정책 페이지 게시: 오너가 Settings → Pages → Source **GitHub Actions** 를 켜면 `pages.yml` 이 `docs/hande` 를 올린다 → 콘솔 「개인정보처리방침 URL」·「계정 삭제 URL」 에 `…/hande/privacy/`·`…/hande/delete-account/`(다른 호스트로 바꾸면 변수 `HANDE_PRIVACY_URL`/`HANDE_DELETE_URL` 도 함께).
 4. App content: Data safety(`play-data-safety.md`) · 콘텐츠 등급(IARC) · 광고 없음 · App access(심사용 데모 서버·계정 — `docs/hande/demo-server.md`, iOS 와 공용) · 건강/금융 해당 없음 · 뉴스 앱 아님. 전체 순서·역할은 `docs/hande/release-checklist.md` B절.
 5. 내부 테스트 → (조직 계정이라 비공개 테스트 12명×14일 면제) → production 신청.
