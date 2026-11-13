@@ -1292,6 +1292,12 @@ pub(crate) fn emit_responder_lost(reason: &str, queued: usize) {
     emit(&serde_json::json!({ "event": "agent_responder_lost", "reason": reason, "queued": queued }));
 }
 
+/// #776 follow-up: the responder socket was missing at start (the bridge was
+/// still coming up) and a later attempt connected. `attempts` counts all tries.
+pub(crate) fn emit_responder_connect_retried(attempts: u32, after: Duration) {
+    emit(&serde_json::json!({ "event": "agent_responder_connect_retried", "attempts": attempts, "after_ms": after.as_millis() as u64 }));
+}
+
 pub(crate) fn emit_responder_reconnected(attempts: u32, after: Duration, queued: usize) {
     emit(&serde_json::json!({ "event": "agent_responder_reconnected", "attempts": attempts, "after_ms": after.as_millis() as u64, "queued": queued }));
 }
