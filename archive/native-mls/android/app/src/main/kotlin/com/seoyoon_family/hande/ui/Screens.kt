@@ -96,12 +96,14 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.inset
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.seoyoon_family.hande.core.AttachmentFiles
@@ -148,6 +150,7 @@ import com.seoyoon_family.hande.core.SelfService
 import com.seoyoon_family.hande.core.ServerDiscovery
 import com.seoyoon_family.hande.core.Settings
 import com.seoyoon_family.hande.core.StatusUi
+import com.seoyoon_family.hande.core.ThumbnailSizing
 import com.seoyoon_family.hande.ui.theme.CampfireBackground
 import com.seoyoon_family.hande.ui.theme.Chevron
 import com.seoyoon_family.hande.ui.theme.CreamButton
@@ -247,6 +250,7 @@ fun HandeRoot(hub: DeviceHub, themeMode: HandeThemeMode = HandeThemeMode.NIGHT, 
                         room, ui, onBack = { openRoom = null }, onSend = { text -> hub.send(scope, room.room, text) }, onNoticeShown = hub::clearNotice,
                         previews = hub.linkPreviews,
                         onOpenAttachment = { seq -> hub.openAttachment(room.room, seq) },
+                        onAttachmentPreview = { seq -> hub.attachmentPreview(room.room, seq) },
                         onSendAttachment = { bytes, name -> hub.sendAttachment(scope, room.room, bytes, name) },
                     )
                 } else if (showDevices) {
@@ -1157,6 +1161,7 @@ fun RoomScreen(
     room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> Unit, onNoticeShown: () -> Unit, previews: LinkPreviews? = null,
     onOpenAttachment: (suspend (Long) -> AttachmentFiles.OpenResult)? = null,
     onSendAttachment: ((ByteArray, String?) -> Unit)? = null,
+    onAttachmentPreview: (suspend (Long) -> ThumbnailSizing.Preview?)? = null,
 ) {
     val colors = LocalHandeColors.current
     // #366 C · #338 C 단계 — 첨부: 말풍선을 누르면 열고(이미지는 화면 안 뷰어, 그 밖은 다른 앱으로), 작성창 📎 로 파일을 골라 보낸다.
@@ -1243,11 +1248,15 @@ fun RoomScreen(
                 itemsIndexed(room.messages, key = { _, m -> "${m.sender}-${m.seq}" }) { i, m ->
                     val card = choiceCards.getOrNull(i)
                     val onAttachment = if (m.attachment) openAttachment?.let { open -> { open(m) } } else null
+                    // #698 C2: 사진 첨부는 말풍선에 썸네일(보이는 행만 받아 디코드, 메모리 LRU 만).
+                    val thumb = if (m.attachment && onAttachmentPreview != null && onOpenAttachment != null) {
+                        ThumbSource("${room.room}/${m.seq}", preview = { onAttachmentPreview(m.seq) }, open = { onOpenAttachment(m.seq) })
+                    } else null
                     if (card == null) {
-                        MessageRow(m, previews, sites, opening = opening == m.seq, onAttachment = onAttachment) { id -> onAlertRef(i, id) }
+                        MessageRow(m, previews, sites, opening = opening == m.seq, onAttachment = onAttachment, thumb = thumb) { id -> onAlertRef(i, id) }
                     } else {
                         Column(Modifier.fillMaxWidth()) {
-                            MessageRow(m, previews, sites, opening = opening == m.seq, onAttachment = onAttachment) { id -> onAlertRef(i, id) }
+                            MessageRow(m, previews, sites, opening = opening == m.seq, onAttachment = onAttachment, thumb = thumb) { id -> onAlertRef(i, id) }
                             AgentChoicesCard(m, card, enabled = canChoose, onSend = onSend)
                         }
                     }
@@ -1358,6 +1367,7 @@ private fun MessageRow(
     sites: PreviewSites.Registry = PreviewSites.FALLBACK,
     opening: Boolean = false,
     onAttachment: (() -> Unit)? = null,
+    thumb: ThumbSource? = null,
     onAlertRef: ((String) -> Unit)? = null,
 ) {
     val colors = LocalHandeColors.current
@@ -1403,24 +1413,78 @@ private fun MessageRow(
                 }
             }
         }
-        Text(
-            body,
-            Modifier
-                .fillMaxWidth(0.82f)
-                .wrapContentWidth(if (m.mine) Alignment.End else Alignment.Start)
-                .clip(shape)
-                .then(fill)
-                .then(if (onAttachment != null) Modifier.clickable(enabled = !opening, role = Role.Button, onClick = onAttachment) else Modifier)
-                .padding(horizontal = 14.dp, vertical = 11.dp),
-            color = if (m.mine) colors.onEmber else colors.ink,
-            style = MaterialTheme.typography.bodyLarge,
-        )
+        val bubble: @Composable () -> Unit = {
+            Text(
+                body,
+                Modifier
+                    .fillMaxWidth(0.82f)
+                    .wrapContentWidth(if (m.mine) Alignment.End else Alignment.Start)
+                    .clip(shape)
+                    .then(fill)
+                    .then(if (onAttachment != null) Modifier.clickable(enabled = !opening, role = Role.Button, onClick = onAttachment) else Modifier)
+                    .padding(horizontal = 14.dp, vertical = 11.dp),
+                color = if (m.mine) colors.onEmber else colors.ink,
+                style = MaterialTheme.typography.bodyLarge,
+            )
+        }
+        // #698 C2: 사진으로 판별된 첨부는 자리 표시 글 대신 썸네일(누르면 같은 뷰어). 사진이 아니거나 받지 못하면 글 그대로.
+        if (thumb != null) AttachmentThumbnail(thumb, shape, opening, onAttachment, fallback = bubble) else bubble()
         // #683 2단계 · #690 v2: 사람 말풍선(내 글 포함, 첨부 자리 글 제외)의 카드 대상(v2 = preview 사이트의 첫 링크, 폴백 = 첫 x.com 글 링크)
         // → 릴레이 미리보기 카드. 없거나 실패면 아무것도 그리지 않는다.
         if (!agent && !m.attachment && previews != null) {
             val target = remember(m.text, sites) { sites.target(m.text) }
             if (target != null) LinkPreviewCard(target, previews, siteName = remember(target, sites) { sites.siteOf(target)?.name.orEmpty() })
         }
+    }
+}
+
+/**
+ * 말풍선 사진 썸네일(#698 C2): 이 행이 그려질 때만(LazyColumn 의 보이는 항목) 이력에서 시도 여부·w/h 힌트를 읽고, 사진일 만하면 바이트를
+ * 얻어 긴 변 360dp × density 로 디코드한다(`AttachmentThumbs` — 메모리 LRU 만, 디스크 없음). 힌트가 있으면 받기 전에 자리를 최종 크기로
+ * 잡는다(#647). 사진이 아니거나 그릴 수 없거나 받지 못하면 [fallback](자리 표시 말풍선). 누르면 [onClick] — 기존 전체 화면 뷰어.
+ */
+@Composable
+private fun AttachmentThumbnail(thumb: ThumbSource, shape: Shape, opening: Boolean, onClick: (() -> Unit)?, fallback: @Composable () -> Unit) {
+    val colors = LocalHandeColors.current
+    val density = LocalDensity.current.density
+    var preview by remember(thumb.key) { mutableStateOf(AttachmentThumbs.cachedPreview(thumb.key)) }
+    var bitmap by remember(thumb.key) { mutableStateOf(AttachmentThumbs.cached(thumb.key)) }
+    var failed by remember(thumb.key) { mutableStateOf(AttachmentThumbs.knownNotImage(thumb.key)) }
+    LaunchedEffect(thumb.key) {
+        if (bitmap != null || failed) return@LaunchedEffect
+        val p = AttachmentThumbs.preview(thumb)
+        preview = p
+        if (p == null || !p.candidate) {
+            failed = true
+            return@LaunchedEffect
+        }
+        val loaded = AttachmentThumbs.load(thumb, ThumbnailSizing.targetLongSidePx(density))
+        if (loaded == null) failed = true else bitmap = loaded
+    }
+    val b = bitmap
+    val p = preview
+    val dims = when {
+        failed -> null
+        b != null -> ThumbnailSizing.box(b.width, b.height)
+        p != null && p.candidate && p.w != null && p.h != null -> ThumbnailSizing.box(p.w, p.h)
+        else -> null
+    }
+    if (dims == null) {
+        fallback()
+        return
+    }
+    val image = remember(b) { b?.asImageBitmap() }
+    Box(
+        Modifier
+            .size(dims.first.dp, dims.second.dp)
+            .clip(shape)
+            .background(colors.surface)
+            .border(colors.lineWidth, colors.stroke, shape)
+            .then(if (onClick != null) Modifier.clickable(enabled = !opening, role = Role.Button, onClick = onClick) else Modifier)
+            .semantics { contentDescription = Strings.attachmentPhoto },
+        contentAlignment = Alignment.Center,
+    ) {
+        if (image != null) Image(image, contentDescription = null, Modifier.fillMaxSize().alpha(if (opening) 0.6f else 1f), contentScale = ContentScale.Fit)
     }
 }
 
