@@ -181,10 +181,16 @@ def pack(staging, manifest, dest):
     return archive, checksum, digest
 
 
-def push(archive, checksum, target, ssh_key=None, timeout=600, runner=None):
-    """rsync the pair to user@host:/dir; a failing target is reported, never retried silently."""
+def push(archive, checksum, target, ssh_key=None, timeout=600, runner=None, bwlimit=None):
+    """rsync the pair to user@host:/dir; a failing target is reported, never retried silently.
+
+    ``bwlimit`` (KiB/s) caps the transfer for a receiver on a thin line (#426: gongmyoung).
+    """
     ssh = 'ssh -o BatchMode=yes -o ConnectTimeout=15' + (' -i ' + ssh_key if ssh_key else '')
-    command = ['rsync', '-a', '--chmod=F600', '-e', ssh, str(archive), str(checksum), target.rstrip('/') + '/']
+    command = ['rsync', '-a', '--chmod=F600']
+    if bwlimit:
+        command.append('--bwlimit=' + str(int(bwlimit)))
+    command += ['-e', ssh, str(archive), str(checksum), target.rstrip('/') + '/']
     run = runner or subprocess.run
     try:
         proc = run(command, capture_output=True, text=True, timeout=timeout, check=False)
@@ -257,7 +263,9 @@ def snapshot(args):
         archive, checksum, digest = pack(staging, manifest, dest)
     finally:
         shutil.rmtree(staging_root, ignore_errors=True)
-    pushes = [push(archive, checksum, target, args.ssh_key) for target in args.push]
+    timeout = push_timeout(archive.stat().st_size, args.bwlimit)
+    pushes = [push(archive, checksum, target, args.ssh_key, timeout=timeout, bwlimit=args.bwlimit)
+              for target in args.push]
     removed = prune(dest, args.keep_hours, args.keep_days)
     payload = {
         'id': manifest['id'], 'status': 'complete' if all(p['ok'] for p in pushes) else 'push-failed',
@@ -268,6 +276,59 @@ def snapshot(args):
         'pushes': pushes, 'pruned': removed,
     }
     record(args.state, payload)
+    return payload
+
+
+def push_timeout(size_bytes, bwlimit, floor=600):
+    """Seconds allowed for one capped transfer: 1.5x the time the cap needs, plus 2 min, never below ``floor``."""
+    if not bwlimit:
+        return floor
+    return max(floor, int(size_bytes / 1024 / int(bwlimit) * 1.5) + 120)
+
+
+def latest_archive(dest):
+    """Newest archive whose ``.sha256`` sidecar exists and names it (``pack`` writes the sidecar last)."""
+    archives = sorted(((archive_time(p), p) for p in Path(dest).glob('relay-*.tar.gz') if archive_time(p)),
+                      reverse=True)
+    for when, path in archives:
+        checksum = path.with_suffix('.gz.sha256')
+        try:
+            line = checksum.read_text().split()
+        except OSError:
+            continue
+        if len(line) == 2 and line[1] == path.name and re.fullmatch(r'[0-9a-f]{64}', line[0]):
+            return when, path, checksum, line[0]
+    return None
+
+
+def push_latest(args, now=None, runner=None):
+    """#426: ship the newest finished archive to slow receivers on their own schedule.
+
+    The 5-minute snapshot keeps its fast receivers; a thin-line receiver gets the newest archive from a
+    separate, rarer timer with ``--bwlimit`` so a long capped transfer never holds the snapshot lock.
+    Nothing is created or pruned here. An archive older than ``--max-age-minutes`` is refused (RPO alarm).
+    """
+    now = now or utcnow()
+    found = latest_archive(args.dest)
+    if not found:
+        raise RuntimeError('no finished archive in ' + str(args.dest))
+    when, archive, checksum, digest = found
+    age_min = (now - when).total_seconds() / 60
+    if age_min > args.max_age_minutes:
+        raise RuntimeError('newest archive %s is %.0f min old (max %d)' % (archive.name, age_min, args.max_age_minutes))
+    timeout = push_timeout(archive.stat().st_size, args.bwlimit)
+    pushes = [push(archive, checksum, target, args.ssh_key, timeout=timeout, runner=runner, bwlimit=args.bwlimit)
+              for target in args.push]
+    payload = {'mode': 'push-latest', 'at': now.isoformat(timespec='seconds'), 'archive': archive.name,
+               'archive_sha256': digest, 'size': archive.stat().st_size, 'bwlimit': args.bwlimit,
+               'timeout': timeout, 'status': 'complete' if all(p['ok'] for p in pushes) else 'push-failed',
+               'pushes': pushes}
+    state = Path(args.state)
+    state.mkdir(parents=True, exist_ok=True)
+    tmp = state / 'push-latest.json.tmp'
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
+    os.chmod(tmp, 0o600)
+    tmp.rename(state / 'push-latest.json')
     return payload
 
 
@@ -288,12 +349,23 @@ def parse(argv=None):
     parser.add_argument('--prune-only', action='store_true', help='apply retention to --dest and exit')
     parser.add_argument('--fence', help='this host name; snapshot only when the fence TXT names it (#440 stage 1)')
     parser.add_argument('--fence-record', help='fence TXT FQDN (required with --fence)')
+    parser.add_argument('--bwlimit', type=int, help='rsync --bwlimit in KiB/s for every --push of this run (#426)')
+    parser.add_argument('--push-latest', action='store_true',
+                        help='no new snapshot: push the newest finished archive in --dest to --push targets (#426)')
+    parser.add_argument('--max-age-minutes', type=int, default=30,
+                        help='--push-latest refuses an archive older than this (default 30)')
     args = parser.parse_args(argv)
     if bool(args.fence) != bool(args.fence_record):
         parser.error('--fence and --fence-record go together')
+    if args.bwlimit is not None and args.bwlimit <= 0:
+        parser.error('--bwlimit must be a positive KiB/s value')
+    if args.push_latest and args.prune_only:
+        parser.error('--push-latest and --prune-only are exclusive')
+    if args.push_latest and not args.push:
+        parser.error('--push-latest needs at least one --push')
     if not args.state:
         args.state = str(Path(args.dest).parent / 'state')
-    if not args.prune_only and not (args.data_dir and args.policy_dir):
+    if not args.prune_only and not args.push_latest and not (args.data_dir and args.policy_dir):
         parser.error('--data-dir and --policy-dir are required unless --prune-only')
     return args
 
@@ -341,6 +413,21 @@ def main(argv=None):
     if fenced:
         return 1
     Path(args.state).mkdir(parents=True, exist_ok=True)
+    if args.push_latest:
+        # Own lock: a capped transfer may run for many minutes and must not block the 5-minute snapshot.
+        with open(Path(args.state) / '.push-lock', 'w') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print('another push-latest is running', file=sys.stderr)
+                return 2
+            try:
+                payload = push_latest(args)
+            except (RuntimeError, OSError) as exc:
+                print('push-latest failed: ' + str(exc), file=sys.stderr)
+                return 1
+        print(json.dumps({k: payload[k] for k in ('archive', 'archive_sha256', 'bwlimit', 'timeout', 'pushes')}))
+        return 0 if payload['status'] == 'complete' else 1
     with open(Path(args.state) / '.lock', 'w') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

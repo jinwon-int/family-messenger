@@ -7,6 +7,7 @@
 | 파일 | 용도 |
 |---|---|
 | `native-relay-snapshot.service` / `.timer` | 릴레이 호스트에서 5분마다(오너 결정 D1) 온라인 스냅샷 → 로컬 보관 + 수신 호스트 2곳으로 rsync. 경로·대상은 `/etc/native-relay/snapshot.env` (`scripts/native_relay_snapshot.py`) |
+| `native-relay-snapshot-push.service` / `.timer` | **#426 느린 push** — 회선이 얇은 수신 호스트는 5분 대상에서 빼고, 1시간마다 가장 최근 완성 아카이브만 `--bwlimit`으로 보낸다(`--push-latest`, 잠금 따로·새 스냅샷 없음·30분 넘은 아카이브는 거부). 대상·대역은 `SNAPSHOT_SLOW_PUSH_ARGS` |
 | `snapshot.env.example` | 환경 파일 모양(실제 호스트명·키 경로는 호스트에만) |
 | `native-relay-snapshot-prune.service` / `.timer` | 수신 호스트 쪽 보존 정리 — **매시**, 보낸 쪽과 같은 규칙(6 h 전량 + 하루 1개 30일) |
 | `30-fence.conf.example` / `fence.env.example` | **1단계 펜스** — 양쪽 릴레이 유닛 drop-in. DNS TXT `_native-relay-active.<도메인>`이 자기 이름일 때만 기동(`scripts/native_relay_fence.py`, DoH, fail-closed). 스냅샷 유닛도 `SNAPSHOT_FENCE_ARGS`로 같은 게이트 |

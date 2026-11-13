@@ -1,0 +1,25 @@
+# #426 — 회선이 얇은 수신 호스트용 「느린 push」(릴레이 호스트에 설치). 새 스냅샷을 만들지 않는다:
+# native-relay-snapshot.service 가 --dest 에 만든 가장 최근 완성 아카이브(.sha256 짝이 있는 것)를
+# $SNAPSHOT_SLOW_PUSH_ARGS 의 대상에만 --bwlimit 으로 보낸다. 잠금 파일이 따로라(.push-lock) 전송이 길어도
+# 5분 스냅샷을 막지 않는다. --max-age-minutes(기본 30)보다 오래된 아카이브는 보내지 않고 실패로 남긴다(RPO 경보).
+# 같은 펜스($SNAPSHOT_FENCE_ARGS): 대기 호스트에서는 조용히 건너뛴다.
+[Unit]
+Description=family-messenger native-relay snapshot slow push (#426)
+After=network-online.target native-relay-snapshot.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/native-relay/snapshot.env
+ExecStart=/usr/bin/python3 /opt/family-messenger/scripts/native_relay_snapshot.py --push-latest \
+  --dest ${SNAPSHOT_DEST} --state ${SNAPSHOT_STATE} --ssh-key ${SNAPSHOT_SSH_KEY} \
+  $SNAPSHOT_SLOW_PUSH_ARGS $SNAPSHOT_FENCE_ARGS
+TimeoutStartSec=60min
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/native-relay-snapshots
