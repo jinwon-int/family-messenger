@@ -854,7 +854,8 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     fun send(scope: CoroutineScope, room: String, text: String) = scope.launch(Dispatchers.IO) {
         val h = mutex.withLock { rooms[room] } ?: return@launch
         try {
-            val r = mutex.withLock { h.room.send(text.toByteArray(Charsets.UTF_8)) }
+            // Queued 는 다음 poll 이 다시 보낸다 — watch 가 이 방을 changed 로 알리지 않아도 다음 틱에 poll 되게 표시(#766 E, 60 s 안전망까지 밀리지 않게).
+            val r = mutex.withLock { h.room.send(text.toByteArray(Charsets.UTF_8)).also { if (it is SendResult.Queued) h.synced = false } }
             when (r) {
                 is SendResult.Sent -> db.insert(room, r.seq, h.room.identity(), r.clientId, MessageDb.KIND_TEXT, text, null)
                 is SendResult.Queued -> notice("연결되면 보냅니다")
@@ -906,7 +907,10 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
                     db.insert(room, r.seq, h.room.identity(), r.clientId, MessageSchema.KIND_FILE_V2, Strings.attachmentPlaceholder(out.size.toLong()), out.descriptor)
                     clearNotice()
                 }
-                is SendResult.Queued -> notice("연결되면 보냅니다")
+                is SendResult.Queued -> {
+                    mutex.withLock { h.synced = false } // 글 보내기와 같이 다음 틱에 이 방을 poll(#766 E)
+                    notice("연결되면 보냅니다")
+                }
                 is SendResult.AlreadyDelivered -> clearNotice()
             }
             _ui.update { it.copy(rooms = roomList()) }
