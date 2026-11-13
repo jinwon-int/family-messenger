@@ -34,6 +34,8 @@ pub struct RoomHealth {
     pub joined: bool,
     pub mode: &'static str,
     pub halted: bool,
+    /// #814: the relay answers 404 `no_such_room` for a room it showed before.
+    pub relay_missing: bool,
     pub pending: bool,
     pub cursor: i64,
     pub epoch: i64,
@@ -48,7 +50,7 @@ struct Key {
     relay_up: bool,
     class: Option<&'static str>,
     last_403: Option<(String, u64)>,
-    rooms: Vec<(String, bool, &'static str, bool, bool)>,
+    rooms: Vec<(String, bool, &'static str, bool, bool, bool)>,
 }
 
 pub struct Health {
@@ -148,7 +150,7 @@ impl Health {
             relay_up: self.relay_up,
             class: self.last_error_class,
             last_403: self.last_403.clone(),
-            rooms: rooms.iter().map(|r| (r.room.clone(), r.joined, r.mode, r.halted, r.pending)).collect(),
+            rooms: rooms.iter().map(|r| (r.room.clone(), r.joined, r.mode, r.halted, r.relay_missing, r.pending)).collect(),
         }
     }
 
@@ -173,7 +175,7 @@ impl Health {
             "rooms": rooms.iter().map(|r| serde_json::json!({
                 "room": r.room, "joined": r.joined, "mode": r.mode, "halted": r.halted,
                 "halt_reason": if r.halted { r.marker.as_deref().and_then(halt_reason) } else { None },
-                "pending": r.pending, "cursor": r.cursor, "epoch": r.epoch,
+                "relay_missing": r.relay_missing, "pending": r.pending, "cursor": r.cursor, "epoch": r.epoch,
             })).collect::<Vec<_>>(),
         })
     }
@@ -252,7 +254,7 @@ mod tests {
     }
 
     fn room(name: &str, halted: bool, marker: Option<PathBuf>) -> RoomHealth {
-        RoomHealth { room: name.into(), joined: true, mode: "agent", halted, pending: false, cursor: 7, epoch: 2, marker }
+        RoomHealth { room: name.into(), joined: true, mode: "agent", halted, relay_missing: false, pending: false, cursor: 7, epoch: 2, marker }
     }
 
     fn io(kind: std::io::ErrorKind) -> BotError { BotError::Http(HttpError::Io(std::io::Error::from(kind))) }
@@ -293,7 +295,7 @@ mod tests {
         assert!(body["pid"].is_u64());
         assert_eq!(body["relay"], serde_json::json!({"state":"unreachable","since":110,"attempts":3,"last_error_class":"timeout","outages":1}));
         assert_eq!(body["access"]["last_403"], serde_json::json!({"code":"device_subject_mismatch","at":105}));
-        assert_eq!(body["rooms"][0], serde_json::json!({"room":"family","joined":true,"mode":"agent","halted":true,"halt_reason":"history_gap","pending":false,"cursor":7,"epoch":2}));
+        assert_eq!(body["rooms"][0], serde_json::json!({"room":"family","joined":true,"mode":"agent","halted":true,"halt_reason":"history_gap","relay_missing":false,"pending":false,"cursor":7,"epoch":2}));
         assert_eq!(body["rooms"][1]["halt_reason"], serde_json::Value::Null);
         let keys: Vec<_> = body.as_object().unwrap().keys().cloned().collect();
         assert_eq!(keys.len(), 8, "{keys:?}");
@@ -341,6 +343,13 @@ mod tests {
         assert!(!h.observe(&rooms, 105, t0 + Duration::from_secs(5)).unwrap());
         assert!(h.observe(&rooms, 140, t0 + Duration::from_secs(4) + HEARTBEAT).unwrap(), "heartbeat");
         assert_eq!(read(h.path())["updated"], 140);
+        // #814: a room the relay lost is a transition too, and so is its return.
+        rooms[0].relay_missing = true;
+        assert!(h.observe(&rooms, 141, t0 + Duration::from_secs(5) + HEARTBEAT).unwrap(), "relay_missing writes");
+        assert_eq!(read(h.path())["rooms"][0]["relay_missing"], true);
+        rooms[0].relay_missing = false;
+        assert!(h.observe(&rooms, 142, t0 + Duration::from_secs(6) + HEARTBEAT).unwrap(), "its return writes");
+        assert_eq!(read(h.path())["rooms"][0]["relay_missing"], false);
     }
 
     /// Atomic: no tmp left behind, mode 0640, the old file replaced whole.
