@@ -46,6 +46,14 @@ shows. The keys still open are kept in the state file (``open_keys``), so a re-a
 retried write names the same outage. The tier decides *when* an alert is delivered, not
 *through what*: an alert that travels through the relay it watches still waits for it.
 
+``--oob-spool DIR`` writes each new alert a second time, into a spool that some bridge
+*not* depending on the relay consumes (the fallback channel). That copy is the owner's
+one line only: no tier and no ``@fleet-alert`` lines, because a bridge that sends a record
+straight to a chat shows its text as written. The two writes do not gate each other. A
+failed out-of-band write is kept in the state file (``oob_pending``) and retried on the
+next runs; a newer alert replaces an older one still waiting. A retry of the *primary*
+write does not produce a second out-of-band copy.
+
 Exit status: 0 whenever the run itself worked (whatever the relay state); 1 on I/O
 failure (state file, spool record, unreadable access env), 2 on usage errors. Secret
 values are read only to build request headers; they are never printed, logged or stored.
@@ -78,6 +86,7 @@ ALERT_TIERS = {RELAY_DOWN: 'critical', EDGE: 'critical', UP: 'notice'}
 # (the owner spool masks any long unbroken run of key-like characters).
 CONDITION_KEY_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
 MAX_OPEN_KEYS = 8
+OOB_RECORD_NAME_RE = re.compile(r'^health-alert-[a-z_]+-\d{13}\.json$')
 # Answers from Cloudflare Access itself (no origin involved): the edge is alive.
 ACCESS_EDGE_STATUSES = (301, 302, 303, 307, 308, 401, 403)
 ACCESS_KEYS = ('CF_ACCESS_CLIENT_ID', 'CF_ACCESS_CLIENT_SECRET')
@@ -244,6 +253,30 @@ def spool_alert(spool, node, alert, text, now, opens=(), resolves=()):
     return write_spool_record(spool, name, record)
 
 
+def oob_record(node, alert, text, now):
+    """(name, record) of the out-of-band copy: the owner's line, nothing for the alert queue."""
+    code = alert['code']
+    marker = 'transition' if alert['kind'] == 'transition' else str(int(now))
+    record = {'version': 1, 'event': 'health-alert', 'code': code, 'kind': alert['kind'],
+              'node': node, 'recipient': 'owner', 'ts': hw.iso(now), 'status': STATE_LABEL[alert['state']],
+              'text': text,
+              'dedup': 'relay-watchdog-oob:%s:%d:%s' % (code, int(alert['since']), marker)}
+    return 'health-alert-%s-%d.json' % (code, int(now * 1000)), record
+
+
+def read_oob_pending(prev):
+    """An out-of-band copy an earlier run could not write, or None (anything malformed is dropped)."""
+    raw = prev.get('oob_pending')
+    if not isinstance(raw, dict):
+        return None
+    name, record = raw.get('name'), raw.get('record')
+    if not isinstance(name, str) or not OOB_RECORD_NAME_RE.match(name):
+        return None
+    if not isinstance(record, dict) or not isinstance(record.get('text'), str) or not record['text'].strip():
+        return None
+    return {'name': name, 'record': record}
+
+
 # --- run ----------------------------------------------------------------------------
 
 def run(args, now, direct, edge):
@@ -279,6 +312,21 @@ def run(args, now, direct, edge):
             summary['alert'] = 'unspooled:%s:%s' % (alert['kind'], alert['code'])
             state['last_alert'][alert['state']] = now
     state['open_keys'] = open_keys
+    if args.oob_spool:
+        oob = read_oob_pending(prev)
+        if alert is not None and alert['kind'] != 'retry':
+            # A retry repeats an alert whose out-of-band copy was already attempted.
+            name, record = oob_record(args.push_node, alert, summary['text'], now)
+            oob = {'name': name, 'record': record}
+        summary['oob'] = 'none'
+        if oob is not None:
+            try:
+                summary['oob'] = write_spool_record(args.oob_spool, oob['name'], oob['record'])
+                oob = None
+            except (OSError, ValueError) as e:
+                summary['oob'] = 'failed: ' + type(e).__name__
+                code = 1
+        state['oob_pending'] = oob
     hw.write_state(path, state)
     return summary, code
 
@@ -304,6 +352,9 @@ def parse_args(argv):
     p.add_argument('--state', default=DEFAULT_STATE, metavar='FILE', help='JSON state file (default %(default)s)')
     p.add_argument('--push-spool', metavar='DIR',
                    help='ccc push spool directory; alerts are written there as health-alert records')
+    p.add_argument('--oob-spool', metavar='DIR',
+                   help='second spool, consumed by a bridge that does not depend on the relay; '
+                        'each new alert is also written there as the owner line only')
     p.add_argument('--push-node', default=socket.gethostname().split('.')[0], metavar='NAME',
                    help='node label in the alert (default: short hostname)')
     p.add_argument('--once', action='store_true', help='run one probe cycle and exit (the only mode; default)')
@@ -317,6 +368,8 @@ def parse_args(argv):
         p.error('--realert-hours must be positive')
     if args.timeout <= 0:
         p.error('--timeout must be positive')
+    if args.oob_spool and args.push_spool and Path(args.oob_spool).resolve() == Path(args.push_spool).resolve():
+        p.error('--oob-spool must be a different directory from --push-spool')
     return args
 
 
