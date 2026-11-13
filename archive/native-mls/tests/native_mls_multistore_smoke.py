@@ -6,12 +6,18 @@ loopback with Python shuttling the MLS bytes. No relay, no human device.
   context A  owner-web-aaaaaa  MULTI mode  (init_multi → open_room r1 / -lobby / r2)
   context B  mom-web-bbbbbb    SINGLE mode (plain init, room r2) — unchanged worker
   context C  jin-web-cccccc    legacy single-store DB migrated into an identity store
+  context D  dad-web-dddddd    MULTI mode with the unlock cache (#766 C1)
+  context E  sis-web-eeeeee    legacy migration with the unlock cache
 
 Flow: A creates r1 from the identity store and mints two lobby key packages; B
 (single-store) invites A's first lobby package with a Welcome-only `invite`; A
 opens r2 as a lobby clone, joins from the Welcome, exchanges messages with B
 while r1 stays untouched; lobby bookkeeping; negatives; worker restart (resume);
-legacy migration on C.
+legacy migration on C. Then the unlock cache on D and E: `unlock_cache {enabled: true}`
+before `init_multi` makes later starts open the identity store from wrapped record keys
+(no KDF); a tampered record, a validly sealed record holding the wrong keys, a wrong
+passphrase and a start without the message all take the KDF path as before, and the
+cache database holds a non-extractable key and nothing readable.
 
   python3 archive/native-mls/tests/native_mls_multistore_smoke.py --bundle <pkg dir>
 
@@ -41,6 +47,7 @@ ROOM_SCOPED_METHODS = ('status', 'ack', 'operation', 'history_put', 'history_lis
 
 # Device ids, one per browser context (the identity is the device id).
 OWNER, MOM, JIN = 'owner-web-aaaaaa', 'mom-web-bbbbbb', 'jin-web-cccccc'
+DAD, SIS = 'dad-web-dddddd', 'sis-web-eeeeee'
 # Step 7 (migration) uses the fixed names from the stage-4 brief; context C is a
 # fresh browser context, so they cannot collide with anything.
 JIN_LEGACY_DB = 'family-mls-synthetic-legacy-jin'
@@ -49,6 +56,60 @@ JIN_OTHER_DB = 'family-mls-synthetic-ms-jin-other'
 
 
 # ---------------------------------------------------------------- helpers ----
+
+# Unlock cache (#766 C1) — raw IndexedDB access from the page (the worker is stopped, or
+# has closed its cache handle: it opens the cache database per operation).
+JS_IDB = '''
+const openDb = name => new Promise((res, rej) => { const r = indexedDB.open(name); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+const done = q => new Promise((res, rej) => { q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
+const exists = async name => (await indexedDB.databases()).some(d => d.name === name);
+const withCache = async (name, mode, work) => {
+  const db = await openDb(name);
+  try {
+    const tx = db.transaction('cache', mode), store = tx.objectStore('cache');
+    const finished = new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onabort = tx.onerror = () => rej(tx.error); });
+    const value = await work(store, db);
+    await finished;
+    return value;
+  } finally { db.close(); }
+};
+'''
+JS_CACHE_READ = '(async name => {' + JS_IDB + '''
+  if (!await exists(name)) return {exists: false};
+  const {record, stores, version} = await withCache(name, 'readonly', async (store, db) =>
+    ({record: await done(store.get('record')), stores: Array.from(db.objectStoreNames), version: db.version}));
+  if (!record) return {exists: true, stores, version, record: null};
+  let exported = 'exported';
+  try { await crypto.subtle.exportKey('raw', record.key); } catch (e) { exported = e.name; }
+  return {exists: true, stores, version, fields: Object.keys(record).sort(), record_version: record.version,
+    vault: record.vault, capsule: record.capsule, iv: Array.from(record.iv), sealed: Array.from(record.sealed),
+    key: {type: record.key.type, extractable: record.key.extractable, algorithm: record.key.algorithm.name,
+          length: record.key.algorithm.length, usages: Array.from(record.key.usages).sort()},
+    export_attempt: exported};
+})'''
+JS_CACHE_TAMPER = '(async name => {' + JS_IDB + '''
+  await withCache(name, 'readwrite', async store => {
+    const record = await done(store.get('record'));
+    record.sealed[5] ^= 1;
+    await done(store.put(record, 'record'));
+  });
+})'''
+# A record that authenticates (right wrapping key, right additional data) but carries
+# keys that do not open the store: only the worker's own retry can recover from it.
+JS_CACHE_FORGE = '(async ([name, identity, database, passphrase]) => {' + JS_IDB + '''
+  const {unlockCacheAd} = await import('/session-store.js');
+  const sdb = await openDb(database);
+  let custody;
+  try { custody = await done(sdb.transaction('meta').objectStore('meta').get('custody')); } finally { sdb.close(); }
+  const {ad} = await unlockCacheAd({identity, database, custody, passphrase});
+  await withCache(name, 'readwrite', async store => {
+    const record = await done(store.get('record'));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const sealed = new Uint8Array(await crypto.subtle.encrypt({name: 'AES-GCM', iv, additionalData: ad}, record.key, new Uint8Array(64).fill(9)));
+    await done(store.put({...record, iv, sealed}, 'record'));
+  });
+})'''
+JS_DB_EXISTS = 'async name => (await indexedDB.databases()).some(d => d.name === name)'
 
 def parse_members(framed):
     """relay-app.js parseMembers: u32 LE count, then (u32 LE len ‖ identity ‖ 32-byte key)*."""
@@ -163,7 +224,7 @@ def run_flow(browser, host, receipt):
         workers.append(A)
         init_a = timed('init_multi_first', lambda: A.call('init_multi', {
             'identity': OWNER, 'passphrase': passphrase['a'], 'identity_database': db['a_identity']}))
-        assert init_a['fresh'] is True and init_a['migrated'] is False, init_a
+        assert init_a['fresh'] is True and init_a['migrated'] is False and init_a['unlock'] == 'fresh', init_a
         pk = init_a['public_key']
         assert isinstance(pk, list) and len(pk) == 32, ('public_key', pk)
         checks['init_multi_fresh_identity_store'] = True
@@ -266,6 +327,10 @@ def run_flow(browser, host, receipt):
         started = time.monotonic()
         init_again = A.call('init_multi', {'identity': OWNER, 'passphrase': passphrase['a'], 'identity_database': db['a_identity']})
         assert init_again['fresh'] is False and init_again['migrated'] is False and init_again['public_key'] == pk, init_again
+        # No `unlock_cache` message on A: the KDF ran again and nothing was cached (#766 C1).
+        assert init_again['unlock'] == 'kdf', init_again
+        assert A.page.evaluate(JS_DB_EXISTS, db['a_identity'] + '-unlock') is False
+        checks['no_unlock_cache_without_the_message'] = True
         r1_again = A.call('open_room', {'room': 'r1', 'database': db['a_r1'], 'from': 'identity'})
         r2_again = A.call('open_room', {'room': 'r2', 'database': db['a_r2'], 'from': 'lobby'})
         receipt['timings_seconds']['resume_init_multi_plus_two_open_room'] = round(time.monotonic() - started, 3)
@@ -299,6 +364,114 @@ def run_flow(browser, host, receipt):
         other = C.call('open_room', {'room': 'other', 'database': JIN_OTHER_DB, 'from': 'identity'})
         assert other['fresh'] is True and other['public_key'] == pk_c, other
         checks['migrated_identity_clones_new_room_with_same_key'] = True
+
+        # ---- 8. unlock cache (#766 C1): later starts skip the KDF; every miss is the old path ----
+        D = Worker(browser.new_context(), 'D', DAD, receipt, host)
+        workers.append(D)
+        d_identity, d_r1, d_cache = f'{prefix}-d-identity', f'{prefix}-d-r1', f'{prefix}-d-identity-unlock'
+        d_pass = secrets.token_urlsafe(36)
+        d_init = {'identity': DAD, 'passphrase': d_pass, 'identity_database': d_identity}
+        cache = lambda: D.page.evaluate(JS_CACHE_READ, d_cache)   # noqa: E731
+
+        def restart(enable=True):
+            D.stop()
+            D.spawn()
+            if enable:
+                assert D.call('unlock_cache', {'enabled': True}) == {'enabled': True}
+
+        for bad in ({}, {'enabled': 'yes'}, {'enabled': 1}, {'enabled': True, 'x': 1}, None):
+            D.call('unlock_cache', bad, reject=True)
+        assert D.call('unlock_cache', {'enabled': False}) == {'enabled': False}
+        assert D.call('unlock_cache', {'enabled': True}) == {'enabled': True}   # the last one before init_multi counts
+        d_first = timed('unlock_cache_first_start', lambda: D.call('init_multi', d_init))
+        assert d_first['fresh'] is True and d_first['unlock'] == 'fresh', d_first
+        d_pk = d_first['public_key']
+        D.call('unlock_cache', {'enabled': False}, reject=True)   # not after init_multi
+        assert D.call('open_room', {'room': 'r1', 'database': d_r1, 'from': 'identity'})['fresh'] is True
+        D.op('r1', 'create')
+        saved = cache()
+        assert saved['exists'] and saved['stores'] == ['cache'] and saved['version'] == 1, saved
+        assert saved['fields'] == ['capsule', 'iv', 'key', 'sealed', 'vault', 'version'] and saved['record_version'] == 1, saved
+        assert saved['key'] == {'type': 'secret', 'extractable': False, 'algorithm': 'AES-GCM', 'length': 256,
+                                'usages': ['decrypt', 'encrypt']}, saved['key']
+        assert saved['export_attempt'] != 'exported', 'the wrapping key must not be readable'
+        assert len(saved['iv']) == 12 and len(saved['sealed']) == 80, saved
+        checks['unlock_cache_saved_after_first_start_with_non_extractable_key'] = True
+
+        restart()
+        d_fast = timed('unlock_cache_hit_start', lambda: D.call('init_multi', d_init))
+        assert d_fast['unlock'] == 'cache' and d_fast['fresh'] is False and d_fast['public_key'] == d_pk, d_fast
+        r1_fast = D.call('open_room', {'room': 'r1', 'database': d_r1, 'from': 'identity'})
+        assert r1_fast['fresh'] is False and r1_fast['public_key'] == d_pk and D.members('r1') == [DAD], r1_fast
+        assert cache()['sealed'] == saved['sealed'], 'a hit does not rewrite the record'
+        checks['unlock_cache_hit_opens_identity_and_sibling_room_without_kdf'] = True
+
+        # wrong passphrase: the cache does not open for it and the KDF refuses it, as before
+        restart()
+        refused = D.page.evaluate('([name, method, argument]) => call(name, method, argument)',
+                                  [D.name, 'init_multi', {**d_init, 'passphrase': secrets.token_urlsafe(36)}])
+        assert refused.get('ok') is False and refused.get('stage') == 'identity_unlock', refused
+        assert cache()['sealed'] == saved['sealed'], 'a refused start leaves the cache alone'
+        checks['unlock_cache_does_not_open_for_another_passphrase'] = True
+
+        # tampered record → KDF → record rewritten → hit again
+        restart(enable=False)
+        D.page.evaluate(JS_CACHE_TAMPER, d_cache)
+        tampered = cache()['sealed']
+        assert tampered != saved['sealed']
+        restart()
+        d_kdf = timed('unlock_cache_miss_start_kdf', lambda: D.call('init_multi', d_init))
+        assert d_kdf['unlock'] == 'kdf' and d_kdf['fresh'] is False and d_kdf['public_key'] == d_pk, d_kdf
+        rewritten = cache()
+        assert rewritten['sealed'] not in (tampered, saved['sealed']) and rewritten['iv'] != saved['iv'], 'rewritten under a new key and nonce'
+        restart()
+        assert D.call('init_multi', d_init)['unlock'] == 'cache'
+        checks['unlock_cache_tampered_record_falls_back_to_kdf_and_is_rebuilt'] = True
+        assert receipt['timings_seconds']['unlock_cache_hit_start'] < receipt['timings_seconds']['unlock_cache_miss_start_kdf'], receipt['timings_seconds']
+
+        # validly sealed record with the wrong keys → the store refuses them → the worker drops the cache and runs the KDF
+        restart(enable=False)
+        D.page.evaluate(JS_CACHE_FORGE, [d_cache, DAD, d_identity, d_pass])
+        forged = cache()['sealed']
+        restart()
+        d_retry = timed('unlock_cache_wrong_keys_retry_start', lambda: D.call('init_multi', d_init))
+        assert d_retry['unlock'] == 'kdf' and d_retry['fresh'] is False and d_retry['public_key'] == d_pk, d_retry
+        r1_retry = D.call('open_room', {'room': 'r1', 'database': d_r1, 'from': 'identity'})
+        assert r1_retry['fresh'] is False and D.members('r1') == [DAD], r1_retry
+        assert cache()['sealed'] != forged
+        restart()
+        assert D.call('init_multi', d_init)['unlock'] == 'cache'
+        checks['unlock_cache_wrong_keys_are_dropped_and_the_store_still_opens'] = True
+
+        # a start without the message: KDF, and the cache database is gone
+        restart(enable=False)
+        d_off = D.call('init_multi', d_init)
+        assert d_off['unlock'] == 'kdf' and d_off['public_key'] == d_pk, d_off
+        assert D.page.evaluate(JS_DB_EXISTS, d_cache) is False
+        assert D.page.evaluate(JS_DB_EXISTS, d_identity) is True
+        checks['unlock_cache_deleted_when_not_enabled'] = True
+
+        # migration with the cache: the adopted legacy capsule is what the next start opens
+        E = Worker(browser.new_context(), 'E', SIS, receipt, host)
+        workers.append(E)
+        e_legacy, e_identity, e_pass = f'{prefix}-e-legacy', f'{prefix}-e-identity', secrets.token_urlsafe(36)
+        assert E.call('init', {'identity': SIS, 'database': e_legacy, 'room': 'fam', 'passphrase': e_pass})['fresh'] is True
+        E.op(None, 'create')
+        e_pk = E.status()['public_key']
+        e_init = {'identity': SIS, 'passphrase': e_pass, 'identity_database': e_identity, 'legacy': {'database': e_legacy, 'room': 'fam'}}
+        E.stop()
+        E.spawn()
+        E.call('unlock_cache', {'enabled': True})
+        e_migrated = E.call('init_multi', e_init)
+        assert e_migrated['migrated'] is True and e_migrated['unlock'] == 'fresh' and e_migrated['public_key'] == e_pk, e_migrated
+        E.stop()
+        E.spawn()
+        E.call('unlock_cache', {'enabled': True})
+        e_again = E.call('init_multi', e_init)
+        assert e_again['unlock'] == 'cache' and e_again['migrated'] is False and e_again['fresh'] is False and e_again['public_key'] == e_pk, e_again
+        e_fam = E.call('open_room', {'room': 'fam', 'database': e_legacy, 'from': 'identity'})
+        assert e_fam['fresh'] is False and E.members('fam') == [SIS], e_fam
+        checks['unlock_cache_after_legacy_migration_opens_identity_and_legacy_room'] = True
     except BaseException:
         for w in workers:
             print(f'--- {w.label} ({w.name}) console:\n' + '\n'.join(w.console[-60:]), file=sys.stderr)
@@ -344,7 +517,8 @@ def main():
                'assets_sha256': {route: hashlib.sha256(raw).hexdigest() for route, raw in assets.items()},
                'protocol': {
                    'envelope': '{id, method, argument} → {id, ok, result} | {id, ok:false, error}',
-                   'init_multi': '{identity, passphrase, identity_database, legacy?: {database, room}} → {fresh, migrated, public_key[32], revision, cursor}',
+                   'init_multi': "{identity, passphrase, identity_database, legacy?: {database, room}} → {fresh, migrated, public_key[32], revision, cursor, unlock: 'cache'|'kdf'|'fresh'}",
+                   'unlock_cache': '{enabled} before init_multi → {enabled} (#766 C1: later identity-store starts skip the KDF)',
                    'open_room': "{room, database, from: 'identity'|'lobby'} → {fresh, revision, cursor, public_key, history}",
                    'close_room': '{room} → {}', 'reset_room': '{room, database} → {} (unused here)',
                    'room_scoped': {m: '+ room' for m in ROOM_SCOPED_METHODS},

@@ -851,6 +851,7 @@ export const strings = {
   app: {
     starting: '준비 중…',
     deriving: '저장소를 여는 중입니다 — 처음에는 몇 초 걸릴 수 있습니다.',
+    identityUnlock: by => `신원 열기: ${by === 'cache' ? '빠른 길(저장된 키)' : by === 'fresh' ? '새 금고' : '비밀번호 계산(scrypt)'}`,
     fatalTitle: '앱을 시작할 수 없습니다',
     storageUnavailable: (detail) => `기기 저장소를 열 수 없습니다: ${detail}`,
     workerUnavailable: '이 브라우저에서 암호화 워커를 시작하지 못했습니다(Web Worker · WebAssembly · IndexedDB 필요). PC 크롬에서 열어 주세요.',

@@ -7,6 +7,13 @@
 // so the page mints a random one and keeps it in localStorage — the same trust
 // boundary as the IndexedDB it protects (one browser profile), comparable to the iOS
 // Keychain item. A user-chosen lock passphrase is a follow-up (#431).
+//
+// Unlock cache (#766 C1): because that passphrase is 384 random bits sitting next to the
+// store, the custody KDF protects nothing here, so the worker may keep the record keys
+// wrapped under a non-extractable key and skip the KDF on later starts
+// (session-store.js "Unlock cache"). PASSPHRASE_IS_GENERATED is that permission. The
+// day a user chooses the passphrase it must become false for that store: then scrypt
+// is the real control, and the worker deletes the cache when it is not enabled.
 export const ACTOR = /^[a-z][a-z0-9]{1,15}$/;
 export const DEVICE = /^[A-Za-z0-9_-]{1,64}$/;
 export const ROOM = /^[a-z0-9][a-z0-9-]{0,47}$/;
@@ -70,6 +77,10 @@ export function createIdentityStore({storage = globalThis.localStorage, random =
 export const IDENTITY_DATABASE = 'family-mls-synthetic-hande--identity';
 export const LOBBY_DATABASE = 'family-mls-synthetic-hande--lobby';
 export const IDENTITY_ROOM = '-identity', LOBBY_ROOM = '-lobby';
+/** #766 C1: see the header — true only while passphrase() mints the passphrase itself. */
+export const PASSPHRASE_IS_GENERATED = true;
+/** The worker's unlock cache database of the identity store (session-store.js unlockCacheName). */
+export const IDENTITY_UNLOCK_DATABASE = `${IDENTITY_DATABASE}-unlock`;
 /** Durable store database name for a room (worker pattern `family-mls-synthetic-[a-z0-9-]{1,64}`). */
 export function databaseFor(room) {
   if (!ROOM.test(room)) throw new Error('room rejected');

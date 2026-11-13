@@ -253,6 +253,7 @@ export const ledgerItemBytes = x =>
   [x.id, x.method, x.sequence, x.epoch, hex(x.input), hex(x.output), ...(x.rejected === true ? [1] : [])];
 
 const META_VERSION = 4;
+const DB_VERSION = 2;
 const utf8 = s => new TextEncoder().encode(s);
 // Meta fields as JSON; byte arrays as {"$b": hex}. Decoding accepts exactly that shape.
 export const encodeMeta = meta => utf8(JSON.stringify(meta, (_, v) => v instanceof Uint8Array ? {$b: hex(v)} : v));
@@ -346,7 +347,7 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
   function open(name) {
     if (typeof name !== 'string' || !namePattern.test(name)) fail();
     return new Promise((resolve, reject) => {
-      const request = indexedDB.open(name, 2);
+      const request = indexedDB.open(name, DB_VERSION);
       request.onupgradeneeded = event => {
         // A pre-M2 (version 1) database is retained untouched and denied, never
         // regenerated: synthetic profiles are disposable (see PERSISTENCE.md).
@@ -728,4 +729,130 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
   // close() wipes this store's own arrays. Never leaves the worker.
   function sharedKeys() { if (!key || !enc || !custody) fail(); return {auth: key.slice(), enc: enc.slice(), custody: {version: 1, vault: custody.vault, capsule: custody.capsule}}; }
   return {open, close, readCustody, unlock, transaction, metaBytes, sealAux, openAux, sharedKeys};
+}
+
+// ---- Unlock cache (#766 C1): skip the custody KDF on later starts ----
+// Only for a store whose passphrase is machine-generated (hande: 384 random bits kept
+// in the same origin as the capsule — scrypt stretches nothing there). After a KDF
+// unlock the two record keys are wrapped with a NON-EXTRACTABLE AES-GCM key, and the
+// wrapping key and the wrapped keys go into a database of their own next to the store
+// ("<database>-unlock", one object store `cache`, one record `record`):
+//   {version: 1, vault, capsule: sha256 hex of the capsule, key: CryptoKey, iv, sealed}
+// The additional data binds the store format, identity, database, vault, capsule and
+// the passphrase, so a record does not open for another device id, database, capsule
+// or passphrase — a wrong passphrase is still refused by the KDF path exactly as before.
+// It is a cache and nothing else: meta/custody and the passphrase are never touched,
+// every miss (absent, malformed, extractable key, failed open, CryptoKey not storable,
+// no WebCrypto, slow storage) falls back to the KDF, and deleting the database loses
+// nothing. The record keys themselves are never written — only `sealed`.
+// A user-chosen lock passphrase must NOT use it: there scrypt is the actual control.
+export const UNLOCK_CACHE_VERSION = 1;
+export const unlockCacheName = database => `${database}-unlock`;
+const UNLOCK_DOMAIN = 'family-mls-unlock-cache-v1';
+const sha256Hex = async (subtle, bytes) => hex(new Uint8Array(await subtle.digest('SHA-256', bytes)));
+/** Additional data of the wrapped record keys (exported for the browser smoke's forged-record check). */
+export async function unlockCacheAd({identity, database, custody, passphrase}, subtle = globalThis.crypto.subtle) {
+  if (typeof identity !== 'string' || typeof database !== 'string' || typeof passphrase !== 'string' ||
+      typeof custody?.vault !== 'string' || !(custody.capsule instanceof Uint8Array)) fail();
+  const capsule = await sha256Hex(subtle, custody.capsule);
+  const secret = await sha256Hex(subtle, utf8(`${UNLOCK_DOMAIN}/passphrase\0${passphrase}`));
+  return {capsule, ad: utf8(JSON.stringify([UNLOCK_DOMAIN, DB_VERSION, META_VERSION, identity, database, custody.vault, capsule, secret]))};
+}
+const validUnlockRecord = record => exact(record, ['version', 'vault', 'capsule', 'key', 'iv', 'sealed']) &&
+  record.version === UNLOCK_CACHE_VERSION && typeof record.vault === 'string' && /^[0-9a-f]{32}$/.test(record.vault) &&
+  typeof record.capsule === 'string' && /^[0-9a-f]{64}$/.test(record.capsule) &&
+  record.iv instanceof Uint8Array && record.iv.length === 12 &&
+  record.sealed instanceof Uint8Array && record.sealed.length === 64 + 16 &&
+  // The wrapping key must be one the page cannot read out: anything else is not ours.
+  record.key !== null && typeof record.key === 'object' && record.key.type === 'secret' && record.key.extractable === false &&
+  record.key.algorithm?.name === 'AES-GCM' && record.key.algorithm.length === 256;
+/** IndexedDB backing of the unlock cache: read(name) → record | undefined, write(name, record), remove(name). */
+export function idbUnlockStorage(idb) {
+  const open = name => new Promise((resolve, reject) => {
+    const request = idb.open(name, 1);
+    request.onupgradeneeded = event => {
+      if (event.oldVersion !== 0) { request.transaction.abort(); return; }
+      request.result.createObjectStore('cache');
+    };
+    request.onerror = () => reject(new Error('cache unavailable'));
+    request.onblocked = () => reject(new Error('cache blocked'));
+    request.onsuccess = () => {
+      const db = request.result;
+      if (db.objectStoreNames.length !== 1 || !db.objectStoreNames.contains('cache')) { db.close(); reject(new Error('unknown schema')); return; }
+      db.onversionchange = () => db.close();
+      resolve(db);
+    };
+  });
+  const run = async (name, mode, work) => {
+    const db = await open(name);
+    try {
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction('cache', mode);
+        const request = work(tx.objectStore('cache'));
+        tx.onabort = tx.onerror = () => reject(new Error('cache unavailable'));
+        tx.oncomplete = () => resolve(request.result);
+      });
+    } finally { db.close(); }
+  };
+  return {
+    read: name => run(name, 'readonly', store => store.get('record')),
+    write: (name, record) => run(name, 'readwrite', store => store.put(record, 'record')).then(() => {}),
+    remove: name => new Promise((resolve, reject) => {
+      const request = idb.deleteDatabase(name);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(new Error('cache unavailable'));
+      request.onblocked = () => reject(new Error('cache blocked'));
+    }),
+  };
+}
+/**
+ * load({identity, database, custody, passphrase}) → {auth, enc} (32 bytes each, caller owns and wipes) | null
+ * save({identity, database, custody, passphrase, auth, enc}) → whether the record was written
+ * clear(database) → whether the cache database was deleted
+ * None of them throws and each gives up after `timeoutMs` (a miss): the cache may only ever make a start faster.
+ */
+export function createUnlockCache({storage, subtle = globalThis.crypto?.subtle,
+  random = n => globalThis.crypto.getRandomValues(new Uint8Array(n)), timeoutMs = 1000} = {}) {
+  const backing = () => storage ?? (storage = idbUnlockStorage(globalThis.indexedDB));
+  // `late(value)` runs when the work finishes after the deadline, so nothing secret is left unwiped.
+  const bounded = (work, miss, late) => new Promise(resolve => {
+    let settled = false;
+    const timer = setTimeout(() => { settled = true; resolve(miss); }, timeoutMs);
+    Promise.resolve().then(work).then(
+      value => { if (settled) { late?.(value); return; } settled = true; clearTimeout(timer); resolve(value); },
+      () => { if (settled) return; settled = true; clearTimeout(timer); resolve(miss); });
+  });
+  const wipeKeys = keys => { if (keys) wipeAll(keys.auth, keys.enc); };
+  function load(target) {
+    return bounded(async () => {
+      const record = await backing().read(unlockCacheName(target.database));
+      if (!validUnlockRecord(record)) return null;
+      const {capsule, ad} = await unlockCacheAd(target, subtle);
+      if (record.vault !== target.custody.vault || record.capsule !== capsule) return null;
+      const plain = new Uint8Array(await subtle.decrypt({name: 'AES-GCM', iv: record.iv, additionalData: ad}, record.key, record.sealed));
+      try { return plain.length === 64 ? {auth: plain.slice(0, 32), enc: plain.slice(32)} : null; }
+      finally { plain.fill(0); }
+    }, null, wipeKeys);
+  }
+  function save(target) {
+    return bounded(async () => {
+      const {auth, enc} = target;
+      if (!(auth instanceof Uint8Array) || auth.length !== 32 || !(enc instanceof Uint8Array) || enc.length !== 32) return false;
+      const {capsule, ad} = await unlockCacheAd(target, subtle);
+      // A new wrapping key per record: it seals exactly one message, so the nonce can never repeat under it.
+      const key = await subtle.generateKey({name: 'AES-GCM', length: 256}, false, ['encrypt', 'decrypt']);
+      const iv = random(12), plain = new Uint8Array(64);
+      let sealed;
+      try { plain.set(auth); plain.set(enc, 32); sealed = new Uint8Array(await subtle.encrypt({name: 'AES-GCM', iv, additionalData: ad}, key, plain)); }
+      finally { plain.fill(0); }
+      const record = {version: UNLOCK_CACHE_VERSION, vault: target.custody.vault, capsule, key, iv, sealed};
+      if (!validUnlockRecord(record)) return false;
+      await backing().write(unlockCacheName(target.database), record);
+      return true;
+    }, false);
+  }
+  function clear(database) {
+    return bounded(async () => { await backing().remove(unlockCacheName(database)); return true; }, false);
+  }
+  return {load, save, clear};
 }

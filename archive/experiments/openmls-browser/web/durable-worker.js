@@ -15,8 +15,14 @@
 //            `room`. Secrets never cross postMessage: clone bytes are produced and consumed
 //            here, and the custody KDF runs once (sibling stores share the unlocked keys and
 //            the identity store's custody record).
+//            `unlock_cache {enabled}` BEFORE `init_multi` (#766 C1) lets later starts of the
+//            identity store skip that KDF (session-store.js "Unlock cache"). The caller
+//            enables it only for a machine-generated passphrase; without the message —
+//            an older page, or a user-chosen lock passphrase — the cache is not read and
+//            any earlier one is deleted. It is a separate message, not an `init_multi`
+//            field, so an older worker refuses only this message and starts as before.
 import init, * as api from './pkg/family_mls_browser_experiment.js';
-import {createStore, exact, fail, bindEncrypt, bindDecrypt, unframeDecrypt, wipeAll, rejectionDetail} from './session-store.js';
+import {createStore, exact, fail, bindEncrypt, bindDecrypt, unframeDecrypt, wipeAll, rejectionDetail, createUnlockCache} from './session-store.js';
 import {createVault, unlockVault, validPassphrase, sealRecord, openRecord} from './pkg/custody.js';
 import {openHistory, historyName} from './history-store.js';
 const wasm = await init();
@@ -48,6 +54,9 @@ const stores = new Map();
 // passphrase, kept to unlock a store sealed under another capsule (a legacy single-store
 // database being migrated). Worker memory only.
 let shared = null, passphrase = null;
+// multi mode, #766 C1: set by `unlock_cache` before `init_multi`; off unless the caller asks.
+let cacheEnabled = false;
+const unlockCache = createUnlockCache();
 
 function status(ctx, meta) {
   return {revision: meta.revision, cursor: meta.cursor, operations: meta.ledger.map(x => x.id),
@@ -115,6 +124,21 @@ async function unlockShared(opened) {
   try { opened.unlock(keys.auth, keys.enc, custody); } catch (error) { keys.auth.fill(0); keys.enc.fill(0); throw error; }
   return false;
 }
+// Identity store of multi mode (#766 C1): with the unlock cache enabled an existing store
+// opens from the wrapped record keys (no KDF); every miss takes unlockShared unchanged.
+// Returns {fresh, by}: by = 'cache' | 'kdf' | 'fresh' (how the keys were obtained — never a secret).
+async function unlockIdentity(opened, database, useCache) {
+  if (useCache) {
+    const {fresh, custody} = await opened.readCustody();
+    const keys = fresh ? null : await unlockCache.load({identity, database, custody, passphrase});
+    if (keys) {
+      try { opened.unlock(keys.auth, keys.enc, custody); } catch (error) { wipeAll(keys.auth, keys.enc); throw error; }
+      return {fresh: false, by: 'cache'};
+    }
+  }
+  const fresh = await unlockShared(opened);
+  return {fresh, by: fresh ? 'fresh' : 'kdf'};
+}
 const sameBytes = (a, b) => a instanceof Uint8Array && b instanceof Uint8Array && a.length === b.length && a.every((x, i) => x === b[i]);
 
 function openStore(name, database) {
@@ -145,13 +169,16 @@ async function initMulti(argument) {
       legacy.database === argument.identity_database)) fail();
   identity = argument.identity;
   passphrase = validPassphrase(argument.passphrase);
-  const opened = openStore(IDENTITY_ROOM, argument.identity_database);
+  // No cache for this start → none may stay behind (a store that moved to a user-chosen passphrase).
+  if (!cacheEnabled) await unlockCache.clear(argument.identity_database);
+  let opened = openStore(IDENTITY_ROOM, argument.identity_database);
   await opened.open(argument.identity_database);
-  let migrated = false, result;
+  let migrated = false, result, by = 'kdf';
   // Coarse failure stage for the page's fatal screen / self-heal (#431): never a secret.
   let stage = 'identity_unlock';
   try {
-    const fresh = await unlockShared(opened);
+    let fresh;
+    ({fresh, by} = await unlockIdentity(opened, argument.identity_database, cacheEnabled));
     stage = 'identity_initialize';
     if (fresh && legacy !== null && await databaseExists(legacy.database)) {
       // Migration: the signer of a single-store database becomes the identity store.
@@ -178,7 +205,20 @@ async function initMulti(argument) {
         migrated = true;
       } finally { if (blob) wipeAll(blob); old.close(); }
     } else {
-      result = await handleOn(opened, IDENTITY_ROOM, 'initialize');
+      try { result = await handleOn(opened, IDENTITY_ROOM, 'initialize'); }
+      catch (error) {
+        if (by !== 'cache') throw error;
+        // The cached keys did not open the store: the cache is wrong, not the store. Drop it
+        // and unlock the way it always was (a store has its keys fixed once → a new handle).
+        stage = 'identity_unlock';
+        await unlockCache.clear(argument.identity_database);
+        opened.close();
+        opened = openStore(IDENTITY_ROOM, argument.identity_database);
+        await opened.open(argument.identity_database);
+        ({fresh, by} = await unlockIdentity(opened, argument.identity_database, false));
+        stage = 'identity_initialize';
+        result = await handleOn(opened, IDENTITY_ROOM, 'initialize');
+      }
       stores.set(IDENTITY_ROOM, {store: opened, room: IDENTITY_ROOM, database: argument.identity_database, history: null});
       shared = opened.sharedKeys();
     }
@@ -189,7 +229,12 @@ async function initMulti(argument) {
   mode = 'multi';
   const st = stores.get(IDENTITY_ROOM);
   const now = result.fresh ? await statusOf(st) : result;
-  return {fresh: result.fresh === true, migrated, public_key: now.public_key, revision: now.revision, cursor: now.cursor};
+  // Keys that just opened the store (KDF or a new vault) become the next start's fast path.
+  // save() never throws; a failed write only means the next start runs the KDF again.
+  if (cacheEnabled && by !== 'cache') {
+    await unlockCache.save({identity, database: argument.identity_database, custody: shared.custody, passphrase, auth: shared.auth, enc: shared.enc});
+  }
+  return {fresh: result.fresh === true, migrated, public_key: now.public_key, revision: now.revision, cursor: now.cursor, unlock: by};
 }
 function databaseExists(name) {
   return new Promise(resolve => {
@@ -316,6 +361,10 @@ self.onmessage = ({data}) => {
           // Includes losing a fresh-database race to another tab: close and forget the key.
           opened.close(); store = undefined; identity = null; throw error;
         }
+      } else if (method === 'unlock_cache') {
+        // #766 C1: only before init_multi, and only a plain boolean.
+        if (mode || store || !exact(argument, ['enabled']) || typeof argument.enabled !== 'boolean') fail();
+        cacheEnabled = argument.enabled; result = {enabled: cacheEnabled};
       } else if (method === 'init_multi') {
         result = await initMulti(argument);
       } else if (method === 'open_room') {

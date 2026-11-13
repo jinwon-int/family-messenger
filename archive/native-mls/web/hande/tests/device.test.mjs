@@ -257,3 +257,60 @@ test('signRoles / signApproval: 프레임(u32le n ‖ payload ‖ 서명)에서 
   bridge.call = async (name, method, argument) => (argument?.method ? {ok: false, stage: 'sign', detail: 'identity "x@y" invalid'} : {ok: true, result: {}});
   await assert.rejects(() => dev.signRoles(args), /sign_roles 거부/);
 });
+
+// #766 C1: the unlock cache is asked for with its own message before init_multi.
+function startWorker({unlockCacheReply = {ok: true, result: {enabled: true}}, unlock} = {}) {
+  const calls = [];
+  const bridge = {
+    has: () => true, spawn: async () => {}, stop: () => {},
+    async call(name, method, argument) {
+      calls.push([method, argument]);
+      if (method === 'unlock_cache') return unlockCacheReply;
+      if (method === 'init_multi') {
+        const result = {fresh: false, migrated: false, public_key: Array(32).fill(7), revision: 3, cursor: 0};
+        if (unlock !== undefined) result.unlock = unlock;
+        return {ok: true, result};
+      }
+      return {ok: false};
+    },
+  };
+  return {bridge, calls};
+}
+const startArgs = {passphrase: 'p'.repeat(64), identityDatabase: 'family-mls-synthetic-hande--identity'};
+
+test('start: unlockCache sends unlock_cache {enabled: true} before init_multi and reports how the store opened', async () => {
+  const {bridge, calls} = startWorker({unlock: 'cache'});
+  const dev = createDevice({device: 'owner-web-aaaaaa', worker: bridge, relay: fakeRelay(0), storage: memStorage()});
+  const opened = await dev.start({...startArgs, unlockCache: true});
+  assert.deepEqual(calls.map(c => c[0]), ['unlock_cache', 'init_multi']);
+  assert.deepEqual(calls[0][1], {enabled: true});
+  // init_multi's argument is unchanged: an older worker checks its exact keys.
+  assert.deepEqual(Object.keys(calls[1][1]).sort(), ['identity', 'identity_database', 'passphrase']);
+  assert.deepEqual(opened, {fresh: false, migrated: false, unlock: 'cache'});
+  assert.equal(dev.state.unlock, 'cache');
+});
+
+test('start: without unlockCache nothing but init_multi is sent', async () => {
+  for (const unlockCache of [undefined, false, 'true', 1]) {
+    const {bridge, calls} = startWorker({unlock: 'kdf'});
+    const dev = createDevice({device: 'owner-web-aaaaaa', worker: bridge, relay: fakeRelay(0), storage: memStorage()});
+    const opened = await dev.start({...startArgs, unlockCache});
+    assert.deepEqual(calls.map(c => c[0]), ['init_multi'], String(unlockCache));
+    assert.equal(opened.unlock, 'kdf');
+  }
+});
+
+test('start: a worker that refuses unlock_cache (older build) still starts, and reports no unlock path', async () => {
+  const {bridge, calls} = startWorker({unlockCacheReply: {ok: false, error: 'operation rejected'}});
+  const dev = createDevice({device: 'owner-web-aaaaaa', worker: bridge, relay: fakeRelay(0), storage: memStorage()});
+  const opened = await dev.start({...startArgs, unlockCache: true, legacy: {database: 'family-mls-synthetic-hande-fam', room: 'fam'}});
+  assert.deepEqual(calls.map(c => c[0]), ['unlock_cache', 'init_multi']);
+  assert.deepEqual(Object.keys(calls[1][1]).sort(), ['identity', 'identity_database', 'legacy', 'passphrase']);
+  assert.deepEqual(opened, {fresh: false, migrated: false, unlock: null});
+});
+
+test('start: an unknown unlock value from the worker is not passed on', async () => {
+  const {bridge} = startWorker({unlock: 'secret-looking-value'});
+  const dev = createDevice({device: 'owner-web-aaaaaa', worker: bridge, relay: fakeRelay(0), storage: memStorage()});
+  assert.equal((await dev.start({...startArgs, unlockCache: true})).unlock, null);
+});

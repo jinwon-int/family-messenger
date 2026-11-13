@@ -46,6 +46,10 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
 1. **이름 선택**(첫 실행 1회, `.needsActor`): 영문 소문자 이름 → 기기 ID `<actor>-web-<6hex>`(`identity.js`).
    저장소 암호(custody scrypt)는 사람이 입력하지 않고 브라우저가 만들어 localStorage 에 둔다 — 같은 프로필의
    IndexedDB 와 같은 신뢰 경계(iOS Keychain 에 해당). 사용자 잠금 암호는 후속.
+   그 암호가 무작위 384비트라 scrypt 가 지켜 줄 것이 없으므로, 두 번째 시작부터는 워커가 감싸 둔 레코드 키로
+   금고를 연다(#766 C1 — `identity.js` `PASSPHRASE_IS_GENERATED`, PERSISTENCE.md 「잠금 해제 캐시」). 앱 기록의
+   `신원 열기: 빠른 길(저장된 키)|비밀번호 계산(scrypt)|새 금고` 한 줄이 어느 경로였는지 알려 준다. 사용자 잠금 암호를
+   넣는 날에는 그 상수를 꺼야 한다(캐시는 워커가 지운다).
 2. **기기 등록**(`.needsEnrollment`): 워커가 서명키를 만들면 지문·등록 JSON(`device_id`·`actor`·`subject`·
    `signing_key`·`fingerprint`)을 보여 준다. `subject` 는 `GET /v2/me`(엣지 JWT 의 `sub`)로 채운다. 릴레이가
    403 `device_subject_mismatch` 를 돌려주는 동안 이 화면이 4초 폴링으로 기다리고, 운영자가 `-enroll-first` /

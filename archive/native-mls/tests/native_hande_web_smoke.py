@@ -300,6 +300,14 @@ def run_flow(Dev, receipt, screenshot=None, relay_base=None):
     receipt['checks']['startup_timing_line_logged'] = True
     receipt['startup_timing'] = {'total_ms': int(m.group(1)), 'stages': stages}
 
+    # #766 C1: 처음에는 새 금고였고, 다시 연 뒤에는 저장된 키로 연다(비밀번호 계산 없음). 경로 이름만 기록된다.
+    unlocks = [t.split('신원 열기: ', 1)[1] for t in mom.console if '신원 열기: ' in t]
+    assert len(unlocks) >= 2 and unlocks[0].startswith('새 금고') and unlocks[-1].startswith('빠른 길'), unlocks
+    cache_db = mom.page.evaluate("async () => (await indexedDB.databases()).map(d => d.name).filter(n => n.endsWith('-unlock'))")
+    assert cache_db == ['family-mls-synthetic-hande--identity-unlock'], cache_db
+    receipt['checks']['reload_opens_identity_from_unlock_cache'] = True
+    receipt['identity_unlock'] = unlocks
+
     # ---- stage 4: a second room through the LOBBY (#380) — owner creates fam2 and invites mom,
     # who never requested fam2: the invite consumes mom's lobby key; mom (family actor) gets an
     # invite card and accepts with one click; the room is a lobby clone that joins the Welcome.
