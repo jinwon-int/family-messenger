@@ -8,7 +8,8 @@ import FamilyMLSCore
 
 @MainActor
 final class LobbyTests: XCTestCase {
-    private func makeModel(actor: String, relay: RelayTransport, lobbyTarget: Int = 8) -> (AppModel, InMemoryStateStore, InMemoryCursorStore) {
+    private func makeModel(actor: String, relay: RelayTransport, lobbyTarget: Int = 8,
+                           shareDiagnostics: ShareDirectDiagnosticsStore? = nil) -> (AppModel, InMemoryStateStore, InMemoryCursorStore) {
         let state = InMemoryStateStore()
         let cursors = InMemoryCursorStore()
         var deps = AppModel.Dependencies(
@@ -17,6 +18,7 @@ final class LobbyTests: XCTestCase {
             identityProvider: { "\(actor)-iphone-abc123" }, expectedDecryptFormat: { 2 }, makeTransport: { _ in relay })
         deps.actorStore = InMemoryActorStore(actor)
         deps.lobbyTarget = lobbyTarget
+        deps.shareDiagnostics = shareDiagnostics
         return (AppModel(dependencies: deps), state, cursors)
     }
 
@@ -228,6 +230,25 @@ final class LobbyTests: XCTestCase {
         XCTAssertFalse(report.contains("adopt failed seq \(old)"), "the stale Welcome was never tried")
         XCTAssertTrue(report.contains("lobby replenish: live 8 protect 0 prune=true"), report)
         XCTAssertFalse(report.contains("Bearer"), "no credential material in the report")
+        XCTAssertFalse(report.contains(ShareDirectDiagnostics.sectionTitle), "no share-measurement store, no section")
+    }
+
+    /// #664: 공유 확장이 App Group 에 남긴 직접 송신 측정은 「진단 기록 복사」에 `share direct-send:` 구획으로 붙는다(`log:` 앞).
+    /// 결과 없이 임대가 지난 기록은 `did-not-finish` — 확장이 송신 도중 끝났다는 표시를 Mac 없이 읽는다.
+    func testDiagnosticsReportAppendsTheShareExtensionMeasurements() async throws {
+        let container = FileManager.default.temporaryDirectory.appendingPathComponent("share-diag-app-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: container) }
+        let store = ShareDirectDiagnosticsStore(container: container)
+        let started = Date(timeIntervalSince1970: 1_800_000_000)   // 2027-01-15T08:00:00Z
+        store.begin(ShareDirectDiagnostics.Record(startedAt: started, build: "116", pieces: 3, deferred: 1, bytes: 2048,
+                                                  footprintBefore: 18.4, limit: 120))
+
+        let (model, _, _) = makeModel(actor: "owner", relay: CountingRelay(), shareDiagnostics: store)
+        await model.bootstrap()
+        let report = model.diagnosticsReport(now: started.addingTimeInterval(ShareHandoff.sendingLease))
+        XCTAssertTrue(report.contains("\nshare direct-send:\n2027-01-15T08:00:00Z build=116 pieces=3 deferred=1 bytes=2048"
+            + " footprint_mb_before=18.4 limit_mb=120.0 did-not-finish\nlog:"), report)
     }
 }
 

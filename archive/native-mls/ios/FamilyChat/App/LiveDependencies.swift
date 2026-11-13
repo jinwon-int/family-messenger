@@ -167,6 +167,8 @@ extension AppModel.Dependencies {
                 deps.shareTargets = SharedStorage.scopedDefaults(appGroup: config.appGroup, scope: scope)
                 deps.deliverSharesWhenReady = true
                 deps.shareDelivered = Self.removeShareNotification
+                // #664: 공유 확장이 남긴 직접 송신 측정(개수·바이트·MB·초) — 「진단 기록 복사」에 붙인다(읽기만).
+                deps.shareDiagnostics = ShareDirectDiagnosticsStore(container: container)
             }
             serverFields(&deps)
             return deps
