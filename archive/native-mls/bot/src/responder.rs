@@ -393,6 +393,35 @@ fn reconnect_wait(attempt: u32) -> Duration {
     RECONNECT_WAIT_FIRST.saturating_mul(1u32 << attempt.min(8)).min(RECONNECT_WAIT_MAX)
 }
 
+/// #776 follow-up: the first connection to a `Transport::Unix` responder.
+/// At boot the bot can start before the bridge has created its socket; that
+/// used to end the process (`responder socket connect failed`, exit 1, a
+/// 10-second service restart). Retry within the same window and waits as a
+/// lost connection (`reconnect_secs`, `reconnect_wait`); `window` 0 keeps the
+/// single attempt. Runs before the first poll, so nothing is waiting yet.
+fn connect_at_start(path: &Path, window: Duration) -> Result<UnixStream, BotError> {
+    let since = Instant::now();
+    let mut attempt: u32 = 0;
+    loop {
+        match UnixStream::connect(path) {
+            Ok(stream) => {
+                if attempt > 0 {
+                    crate::session::emit_responder_connect_retried(attempt + 1, since.elapsed());
+                }
+                return Ok(stream);
+            }
+            Err(_) => {
+                attempt += 1;
+                let wait = reconnect_wait(attempt);
+                if since.elapsed() + wait > window {
+                    return Err(BotError::Local("responder socket connect failed"));
+                }
+                std::thread::sleep(wait);
+            }
+        }
+    }
+}
+
 /// The port's two halves: a writer thread fed by `Cmd`s and a reader thread
 /// that turns each output line into a frame (or the error that ends it).
 fn wire(mut stdin: Box<dyn Write + Send>, stdout: Box<dyn std::io::Read + Send>) -> (Sender<Cmd>, Receiver<Result<serde_json::Value, String>>) {
@@ -578,7 +607,7 @@ impl Responder {
                 (Some(child), Box::new(stdin), Box::new(stdout))
             }
             Transport::Unix(path) => {
-                let stream = UnixStream::connect(path).map_err(|_| BotError::Local("responder socket connect failed"))?;
+                let stream = connect_at_start(path, Duration::from_secs(config.reconnect_secs))?;
                 let reader = stream.try_clone().map_err(|_| BotError::Local("responder socket clone"))?;
                 (None, Box::new(stream), Box::new(reader))
             }
@@ -2340,6 +2369,53 @@ for line in sys.stdin:
         assert!(r.is_gone() && !r.is_reconnecting());
         assert_eq!(out[0], Outbound::Uncertain { seq: 1, reason: "worker_gone".into() });
         assert!(matches!(&out[1], Outbound::WorkerGone { reason } if reason == "worker stdout closed"), "{out:?}");
+    }
+
+    /// Boot order: the bot starts before the bridge has bound its socket. The
+    /// first connection is retried in the reconnect window instead of exiting.
+    #[test]
+    fn unix_port_waits_for_a_bridge_that_binds_after_start() {
+        let mut bridge = Bridge::up("late-bind");
+        bridge.down();
+        let config = bridge.config(|c| c.reconnect_secs = 10);
+        let sock = bridge.sock.clone();
+        let binder = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(600));
+            let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            listener
+        });
+        let started = Instant::now();
+        let mut r = Responder::spawn(config, None).unwrap_or_else(|e| panic!("spawn: {e}"));
+        assert!(started.elapsed() >= Duration::from_millis(500), "connected before the bind: {:?}", started.elapsed());
+        bridge.listener = Some(binder.join().unwrap());
+        let mut out = Vec::new();
+        let mut port = bridge.accept(&mut r, &mut out);
+        assert_eq!(r.offer(inbound(1, "owner-pc", "hello")).unwrap(), Offer::Started);
+        assert_eq!(read_frame(&mut port)["turn_id"], "t-1");
+        assert!(!r.is_gone() && !r.is_reconnecting() && out.is_empty(), "{out:?}");
+    }
+
+    /// No socket for the whole window: start fails with the pre-follow-up error.
+    #[test]
+    fn unix_port_start_gives_up_after_the_window() {
+        let mut bridge = Bridge::up("start-give-up");
+        bridge.down();
+        let started = Instant::now();
+        let err = Responder::spawn(bridge.config(|c| c.reconnect_secs = 1), None).err().expect("no socket must fail");
+        assert!(err.to_string().contains("responder socket connect failed"), "{err}");
+        assert!(started.elapsed() >= Duration::from_millis(500), "gave up too early: {:?}", started.elapsed());
+        assert!(started.elapsed() < Duration::from_secs(3), "overran the window: {:?}", started.elapsed());
+    }
+
+    /// `reconnect_secs = 0`: one attempt at start, as before.
+    #[test]
+    fn unix_port_start_without_a_window_fails_at_once() {
+        let mut bridge = Bridge::up("start-off");
+        bridge.down();
+        let started = Instant::now();
+        assert!(Responder::spawn(bridge.config(|c| c.reconnect_secs = 0), None).is_err());
+        assert!(started.elapsed() < Duration::from_millis(200), "waited without a window: {:?}", started.elapsed());
     }
 
     #[test]
