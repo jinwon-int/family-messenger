@@ -88,6 +88,33 @@ final class AgentConversationTests: XCTestCase {
         XCTAssertEqual(AgentRoster.displayName(device: "jungin-iphone-1b89e3", names: names), "jungin")
     }
 
+    /// #422 공유 벡터(웹 strings.test.mjs·안드로이드 AgentActorsTest·봇 responder.rs 와 같은 답) — 목록 = project.yml `FC_AGENT_ACTORS` 기본값.
+    func testSharedAgentActorVectors() throws {
+        let relative = "archive/native-mls/tests/fixtures/agent-actors-vectors.json"
+        var dir = URL(fileURLWithPath: #filePath)
+        var root: [String: Any]?
+        for _ in 0..<10 where root == nil {
+            dir.deleteLastPathComponent()
+            let candidate = dir.appendingPathComponent(relative)
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                root = try JSONSerialization.jsonObject(with: Data(contentsOf: candidate)) as? [String: Any]
+            }
+        }
+        let vectors = try XCTUnwrap(root, "agent-actors-vectors.json not found")
+        let actors = try XCTUnwrap(vectors["agent_actors"] as? [String])
+        let listed = AgentRoster(setting: actors.joined(separator: ","))
+        XCTAssertEqual(listed.actors.count, 13, "bot + 노드 12")
+        let cases = try XCTUnwrap(vectors["cases"] as? [[String: Any]])
+        XCTAssertGreaterThanOrEqual(cases.count, 20)
+        for c in cases {
+            let device = try XCTUnwrap(c["device"] as? String)
+            XCTAssertEqual(listed.isAgent(rec(1, device, "hi")), try XCTUnwrap(c["agent"] as? Bool), device)
+        }
+        // `bot*` 접두는 봇의 루프 방지 규칙일 뿐 — 클라이언트는 명시 목록만.
+        let prefixOnly = try XCTUnwrap((vectors["bot_prefix_only"] as? [String: Any])?["devices"] as? [String])
+        for device in prefixOnly { XCTAssertFalse(listed.isAgent(rec(1, device, "hi")), device) }
+    }
+
     func testApprovalParsersMatchTheBotsWording() {
         let req = AgentApproval.request(in: "⚠️ 승인 필요 #12: 방 명령 room_create · mode=silent · room=test-rs\n답장: 「승인 12」 또는 「거절 12」 (owner 만)")
         XCTAssertEqual(req, AgentApproval.Request(number: 12, summary: "방 명령 room_create · mode=silent · room=test-rs"))

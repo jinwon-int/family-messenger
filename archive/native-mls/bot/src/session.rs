@@ -480,7 +480,7 @@ pub fn run(opts: Options) -> Result<(), BotError> {
             emit(&serde_json::json!({
                 "event": "agent_started", "room": opts.room, "device": opts.device,
                 "owner_actor": config.owner_actor, "queue_max": config.queue_max,
-                "turn_secs": config.turn_secs, "turn_max_secs": config.turn_max_secs, "turn_age_notice_secs": config.turn_age_notice_secs, "turn_age_renotice_secs": config.turn_age_renotice_secs, "reply_max_bytes": config.reply_max_bytes, "typing": config.typing,
+                "turn_secs": config.turn_secs, "turn_max_secs": config.turn_max_secs, "turn_age_notice_secs": config.turn_age_notice_secs, "turn_age_renotice_secs": config.turn_age_renotice_secs, "reply_max_bytes": config.reply_max_bytes, "typing": config.typing, "agent_actors": config.agent_actors,
                 "attachments_out": config.attachments_out.is_some(),
             }));
             Some(responder)
@@ -1132,7 +1132,7 @@ fn route_to_agent(state: &mut RoomState, ev: &StoredRow, sender: &[u8], plaintex
             "event": "agent_skipped", "room": state.room, "seq": ev.seq, "from": sender_device, "reason": reason,
         }));
     };
-    if responder::is_bot_actor(&sender_device) {
+    if responder::is_bot_actor(&sender_device, agent.agent_actors()) {
         skipped("bot_actor");
         return Ok(None);
     }
@@ -2187,7 +2187,7 @@ pub fn run_steward(opts: StewardOptions) -> Result<(), BotError> {
                 "event": "agent_started", "device": opts.device, "owner_actor": config.owner_actor,
                 "agent_room": rooms.iter().find(|r| r.mode == Mode::Agent).map(|r| r.room.clone()),
                 "agent_rooms": rooms.iter().filter(|r| r.mode == Mode::Agent).map(|r| r.room.clone()).collect::<Vec<_>>(),
-                "room_frames": config.room_frames, "typing": config.typing,
+                "room_frames": config.room_frames, "typing": config.typing, "agent_actors": config.agent_actors,
                 "attachments": config.attachments.as_ref().map(|a| serde_json::json!({"spool_dir": a.spool_dir.to_string_lossy(), "max_bytes": a.max_bytes})),
                 "attachments_out": config.attachments_out.as_ref().map(|a| serde_json::json!({"spool_dir": a.spool_dir.to_string_lossy(), "max_bytes": a.max_bytes, "per_turn": a.per_turn})),
             }));
@@ -2813,6 +2813,49 @@ for line in sys.stdin:
         let call = Outbound::ToolCall { tool_id: "n1".into(), name: "room_status".into(), op: "status".into(), room: "-".into(), arg: String::new() };
         assert_eq!(agent_kind(&call), "tool_call");
         assert_eq!(agent_text(&call), "");
+    }
+
+    /// #422: a room with two listed agents `a`, `b` and the owner. Agent `a`
+    /// (device `a-bot`) turns only the owner's message: `b-bot` and its own
+    /// `a-bot` are skipped as `bot_actor`. Without the list (default) the same
+    /// `b-bot` message is a turn, as before.
+    #[test]
+    fn agent_actors_are_never_turns() {
+        const ECHO_WORKER: &str = r#"
+import json, sys
+for line in sys.stdin:
+    cmd = json.loads(line)
+    if cmd["type"] == "turn":
+        print(json.dumps({"type": "result", "turn_id": cmd["turn_id"], "status": "complete", "session_id": "s", "text": "답:" + cmd["prompt"]}), flush=True)
+"#;
+        let row = |seq: i64, device: &str| StoredRow {
+            seq, device: device.into(), client_id: format!("{device}-c{seq}"), kind: "application".into(), epoch: 2,
+            bytes: Vec::new(), sha256: String::new(), created_at: 0,
+        };
+        let drain = |agent: &mut Responder, secs: u64| {
+            let deadline = Instant::now() + Duration::from_secs(secs);
+            let mut got = Vec::new();
+            while got.is_empty() && Instant::now() < deadline {
+                got.extend(agent.pump().unwrap_or_else(|e| panic!("pump: {e}")));
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            got
+        };
+        let worker = || responder::Transport::Argv(vec!["python3".into(), "-c".into(), ECHO_WORKER.into()]);
+        let mut config = responder::Config::new(worker(), "owner".into());
+        config.agent_actors = responder::parse_agent_actors("a,b").expect("list");
+        let mut agent = Responder::spawn(config, None).unwrap_or_else(|e| panic!("spawn: {e}"));
+        let mut state = joined_room("pilot", 4);
+        for (seq, device, text) in [(5, "b-bot", "b 의 답"), (6, "a-bot", "a 의 답"), (7, "owner-iphone-1", "안녕")] {
+            assert_eq!(route_to_agent(&mut state, &row(seq, device), device.as_bytes(), text.as_bytes(), &mut agent).unwrap(), None);
+        }
+        assert_eq!(drain(&mut agent, 10), vec![Outbound::Reply { seq: 7, text: "답:안녕".into() }], "only the owner message became a turn");
+        assert!(drain(&mut agent, 2).is_empty(), "no turn for b-bot / a-bot");
+
+        let mut plain = Responder::spawn(responder::Config::new(worker(), "owner".into()), None).unwrap_or_else(|e| panic!("spawn: {e}"));
+        let mut state = joined_room("pilot", 4);
+        route_to_agent(&mut state, &row(5, "b-bot"), b"b-bot", "b 의 답".as_bytes(), &mut plain).unwrap();
+        assert_eq!(drain(&mut plain, 10), vec![Outbound::Reply { seq: 5, text: "답:b 의 답".into() }], "env unset: unchanged");
     }
 
     /// Matrix parity: while a turn runs, each later message is answered with

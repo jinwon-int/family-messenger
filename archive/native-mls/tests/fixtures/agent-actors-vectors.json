@@ -1,0 +1,147 @@
+{
+ "spec": "#422 — 누가 에이전트인가. actor = 기기 ID 첫 `-` 앞; agent_actors 에 있으면 에이전트(웹 strings.js AGENT_ACTORS · 안드로이드 AgentActors.ACTORS · iOS FC_AGENT_ACTORS 기본값 · 봇 NATIVE_MLS_BOT_AGENT_ACTORS 와 같은 목록).",
+ "agent_actors": [
+  "bot",
+  "bangtong",
+  "daegyo",
+  "dungae",
+  "gongmyoung",
+  "gongyung",
+  "gwakga",
+  "jingun",
+  "nosuk",
+  "seoseo",
+  "sogyo",
+  "soonwook",
+  "yukson"
+ ],
+ "cases": [
+  {
+   "device": "bot",
+   "agent": true,
+   "why": "옛 공용 봇 actor"
+  },
+  {
+   "device": "bot-gongmyoung",
+   "agent": true,
+   "why": "옛 bot-<node> — actor bot"
+  },
+  {
+   "device": "bangtong-bot",
+   "agent": true,
+   "why": "새 <node>-bot(#422) — actor = 노드"
+  },
+  {
+   "device": "daegyo-bot",
+   "agent": true,
+   "why": "새 <node>-bot(#422) — actor = 노드"
+  },
+  {
+   "device": "dungae-bot",
+   "agent": true,
+   "why": "새 <node>-bot(#422) — actor = 노드"
+  },
+  {
+   "device": "gongmyoung-bot",
+   "agent": true,
+   "why": "새 <node>-bot(#422) — actor = 노드"
+  },
+  {
+   "device": "gongyung-bot",
+   "agent": true,
+   "why": "새 <node>-bot(#422) — actor = 노드"
+  },
+  {
+   "device": "gwakga-bot",
+   "agent": true,
+   "why": "새 <node>-bot(#422) — actor = 노드"
+  },
+  {
+   "device": "jingun-bot",
+   "agent": true,
+   "why": "새 <node>-bot(#422) — actor = 노드"
+  },
+  {
+   "device": "nosuk-bot",
+   "agent": true,
+   "why": "새 <node>-bot(#422) — actor = 노드"
+  },
+  {
+   "device": "seoseo-bot",
+   "agent": true,
+   "why": "새 <node>-bot(#422) — actor = 노드"
+  },
+  {
+   "device": "sogyo-bot",
+   "agent": true,
+   "why": "새 <node>-bot(#422) — actor = 노드"
+  },
+  {
+   "device": "soonwook-bot",
+   "agent": true,
+   "why": "새 <node>-bot(#422) — actor = 노드"
+  },
+  {
+   "device": "yukson-bot",
+   "agent": true,
+   "why": "새 <node>-bot(#422) — actor = 노드"
+  },
+  {
+   "device": "dungae",
+   "agent": true,
+   "why": "하이픈 없음 → 전체가 actor"
+  },
+  {
+   "device": "owner",
+   "agent": false,
+   "why": "오너 actor"
+  },
+  {
+   "device": "owner-iphone-27a879",
+   "agent": false,
+   "why": "오너 기기"
+  },
+  {
+   "device": "owner-web-87576b",
+   "agent": false,
+   "why": "오너 웹"
+  },
+  {
+   "device": "jungin-iphone-1b89e3",
+   "agent": false,
+   "why": "가족"
+  },
+  {
+   "device": "mom-iphone-1",
+   "agent": false,
+   "why": "모르는 사람"
+  },
+  {
+   "device": "robot-1",
+   "agent": false,
+   "why": "bot 을 포함만 하는 actor"
+  },
+  {
+   "device": "card-bot",
+   "agent": false,
+   "why": "알림 서비스 봇(serviceNames) — 에이전트 아님"
+  },
+  {
+   "device": "fleet-bot",
+   "agent": false,
+   "why": "알림 서비스 봇"
+  },
+  {
+   "device": "dungaex-bot",
+   "agent": false,
+   "why": "노드 이름 접두만 같은 actor"
+  }
+ ],
+ "bot_prefix_only": {
+  "note": "봇(native-mls-bot is_bot_actor)만 루프 방지로 `bot*` 접두 actor 를 모두 에이전트로 본다(목록 무관). 클라이언트는 명시 목록만 — 이 기기들은 클라이언트에선 에이전트가 아니다.",
+  "devices": [
+   "bot2-x",
+   "botty-pc"
+  ]
+ }
+}
