@@ -16,6 +16,20 @@ does NOT halt clients — ``history_gap`` fires on the relay's oldest retained
 seq, which a bump does not move (measured 2026-11-13, #440). What was lost
 after the snapshot stays lost without notice; see NATIVE-RELAY-OPERATIONS.md.
 
+``--clear-lobby-keypackages`` (#812): a restore also brings back lobby key
+packages that were consumed after the snapshot as "unconsumed", while the
+device may already have deleted their secrets. Every device (web
+``device.js``, iOS ``LobbyKeyring``, Android/iOS FFI ``lobby.rs``) counts
+``published - live`` packages from the front of its list as consumed, so the
+two lists drift by one and lobby invites alternate between an unreadable
+Welcome and success. This option deletes every unconsumed row of
+``mls_lobby_keypackages`` (consumed rows stay): each device then sees live 0,
+drops its old secrets and publishes a full new set on its next replenish.
+Until it does, a lobby invite for that device fails openly with 404
+``no_live_key_package`` instead of producing a Welcome nobody can open. Room
+key packages (``mls_keypackages``, a device's 「참여 요청」) are not touched.
+Off by default.
+
 ``--relay-binary`` runs a loopback drill: start the restored tree with
 ``-access-mode disabled``, wait for ``/v2/health``, compare counts with the
 manifest, stop. Isolated environments only — never on the live data directory.
@@ -139,6 +153,23 @@ def bump_seq(db_path, amount):
     return {room: {'before': before[room], 'after': after[room]} for room in before}
 
 
+def clear_lobby_keypackages(db_path):
+    """#812: delete every unconsumed lobby key package; returns {device: rows deleted}."""
+    conn = sqlite3.connect(str(db_path), timeout=5)
+    try:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'mls_lobby_keypackages' not in tables:
+            return {}
+        cleared = {device: count for device, count in conn.execute(
+            'SELECT device, COUNT(*) FROM mls_lobby_keypackages WHERE consumed_by IS NULL '
+            'GROUP BY device ORDER BY device')}
+        conn.execute('DELETE FROM mls_lobby_keypackages WHERE consumed_by IS NULL')
+        conn.commit()
+    finally:
+        conn.close()
+    return cleared
+
+
 def chown_tree(root, owner):
     for current, dirs, files in os.walk(root):
         shutil.chown(current, owner, owner)
@@ -209,6 +240,9 @@ def restore(args, runner=None):
         db_path = Path(args.target_data_dir) / DB_NAME
         bumped = bump_seq(db_path, args.bump_seq)
         summary = summarize_db(db_path)
+        # Counts are compared against the manifest before anything is deleted:
+        # the restored copy itself must match the snapshot.
+        lobby_cleared = clear_lobby_keypackages(db_path) if args.clear_lobby_keypackages else None
         if args.owner:
             for label in ('data', 'policy'):
                 if targets[label] and label in restored:
@@ -217,6 +251,7 @@ def restore(args, runner=None):
             'archive_sha256': digest, 'snapshot_id': manifest['id'], 'snapshot_created_at': manifest['created_at'],
             'restored': restored, 'moved_aside': aside, 'bump_seq': args.bump_seq, 'rooms': bumped,
             'db': summary, 'manifest_db': manifest['db'], 'policy_revision': manifest['policy_revision'],
+            'lobby_keypackages_cleared': lobby_cleared,
         }
         counts_match = summary['counts'] == manifest['db']['counts'] and summary['integrity'] == 'ok'
         result['counts_match'] = counts_match
@@ -236,6 +271,8 @@ def parse(argv=None):
     parser.add_argument('--target-static-dir')
     parser.add_argument('--target-hande-dir')
     parser.add_argument('--bump-seq', type=int, default=0, help='#440-C c1: add N to every room last_seq')
+    parser.add_argument('--clear-lobby-keypackages', action='store_true',
+                        help='#812: delete unconsumed lobby key packages after the copy (devices republish)')
     parser.add_argument('--owner', help='chown data/policy trees to this user (e.g. native-relay)')
     parser.add_argument('--unit', default='native-relay', help='systemd unit that must be inactive')
     parser.add_argument('--skip-unit-check', action='store_true', help='drill into throwaway directories only')
