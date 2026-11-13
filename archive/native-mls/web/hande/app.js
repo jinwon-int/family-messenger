@@ -18,7 +18,7 @@ import {choiceState, composeChoice} from './agent-choices.js';
 import {createWorkerBridge} from './worker-bridge.js';
 import {createRelay} from './relay.js';
 import {createPreviewSites} from './preview-sites.js';
-import {createIdentityStore, databaseFor, ROOM, IDENTITY_DATABASE, LOBBY_DATABASE} from './identity.js';
+import {createIdentityStore, databaseFor, ROOM, IDENTITY_DATABASE, LOBBY_DATABASE, IDENTITY_UNLOCK_DATABASE, PASSPHRASE_IS_GENERATED} from './identity.js';
 import {createRoomSession, nextDeviceId, clock} from './room.js';
 import {createDevice, LOBBY_TARGET} from './device.js';
 import {createPreviewLoader} from './preview-loader.js';
@@ -374,7 +374,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   const deleteDb = name => new Promise(resolve => { const r = indexedDB.deleteDatabase(name); r.onsuccess = r.onerror = r.onblocked = () => resolve(); });
   /** Identity + lobby stores only (never a room store): recreatable from the legacy room database or afresh. */
   async function wipeIdentityStores() {
-    for (const name of [IDENTITY_DATABASE, `${IDENTITY_DATABASE}-history`, LOBBY_DATABASE, `${LOBBY_DATABASE}-history`]) await deleteDb(name);
+    // The unlock cache (#766 C1) goes with the store it opens: wrapping key and wrapped keys together.
+    for (const name of [IDENTITY_DATABASE, `${IDENTITY_DATABASE}-history`, IDENTITY_UNLOCK_DATABASE, LOBBY_DATABASE, `${LOBBY_DATABASE}-history`]) await deleteDb(name);
     storage.removeItem(markerKey());
     for (const k of Object.keys(storage)) if (k.startsWith('hande:lobby:')) storage.removeItem(k);
   }
@@ -392,7 +393,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       let dev = createDevice({device: app.device, worker, relay, storage, on: {log: logLine}});
       let opened;
       try {
-        opened = await dev.start({passphrase: identity.passphrase(), identityDatabase: IDENTITY_DATABASE, legacy});
+        opened = await dev.start({passphrase: identity.passphrase(), identityDatabase: IDENTITY_DATABASE, legacy, unlockCache: PASSPHRASE_IS_GENERATED});
       } catch (error) {
         // Self-heal (2026-10-19 field failure, #431): the identity store was created under
         // another device id (an earlier run rotated the id while the stores stayed) →
@@ -406,7 +407,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
         const prev = identity.restorePrevious();
         if (prev) { app.actor = prev.actor; app.device = prev.device; logLine(`기기 ID 복원: ${prev.restoredFrom} → ${prev.device}`); }
         dev = createDevice({device: app.device, worker, relay, storage, on: {log: logLine}});
-        opened = await dev.start({passphrase: identity.passphrase(), identityDatabase: IDENTITY_DATABASE, legacy});
+        opened = await dev.start({passphrase: identity.passphrase(), identityDatabase: IDENTITY_DATABASE, legacy, unlockCache: PASSPHRASE_IS_GENERATED});
       }
       if (opened.fresh && !opened.migrated && !legacyExists && (storage.getItem(markerKey()) !== null || storage.getItem(`hande:fresh-marker:${legacy.database}`) !== null)) {
         // The stores are new but this browser used this id before (#290): the chain never
@@ -419,7 +420,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
         app.actor = rotated.actor; app.device = rotated.device;
         for (const k of Object.keys(storage)) if (k.startsWith('hande:room:') || k.startsWith('hande:rooms:')) storage.removeItem(k);
         dev = createDevice({device: app.device, worker, relay, storage, on: {log: logLine}});
-        opened = await dev.start({passphrase: identity.passphrase(), identityDatabase: IDENTITY_DATABASE});
+        opened = await dev.start({passphrase: identity.passphrase(), identityDatabase: IDENTITY_DATABASE, unlockCache: PASSPHRASE_IS_GENERATED});
       }
       if (opened.fresh && !opened.migrated && legacyExists) throw new Error(`신원 이전 실패: ${legacy.database}가 있는데 이전되지 않았습니다`);
       storage.setItem(markerKey(), '1');
@@ -428,6 +429,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       app.roomOrder = readRoomOrder(storage, app.device);
       orderSync = createOrderSync();
       if (opened.migrated) logLine(`신원 이전: ${legacy.database} → ${IDENTITY_DATABASE}`);
+      // #766 C1: 금고를 어떻게 열었는지 — 값이 아니라 경로 이름만 남긴다.
+      if (opened.unlock) logLine(strings.app.identityUnlock(opened.unlock));
       app.roomOpen = false;
       // Known rooms open first (their own 4 s polling); the default room is always known.
       const known = new Set(readKnown()); if (opened.migrated || known.size === 0) known.add(app.defaultRoom);

@@ -20,7 +20,7 @@ export const LOBBY_TARGET = 8;   // facade cap on outstanding key packages (`key
 export const LOBBY_CONSUMED_GRACE_MS = 2 * 60_000;
 
 export function createDevice({device, worker, relay, storage, on = {}, now = () => Date.now(), lobbyGraceMs = LOBBY_CONSUMED_GRACE_MS}) {
-  const D = {started: false, fresh: false, migrated: false, publicKey: '', fingerprint: '', lobby: {live: null, max: null, unsupported: false}, enrolled: null,
+  const D = {started: false, fresh: false, migrated: false, unlock: null, publicKey: '', fingerprint: '', lobby: {live: null, max: null, unsupported: false}, enrolled: null,
     selfService: {unsupported: false, posted: null}};   // #574: candidate mailbox / approvals / roles routes (404 on an old relay → never asked again)
   const log = (...parts) => on.log?.(parts.join(' '));
   const publishedKey = `hande:lobby:published:${device}`;
@@ -31,17 +31,24 @@ export function createDevice({device, worker, relay, storage, on = {}, now = () 
   const readConsumed = () => { try { const v = JSON.parse(storage.getItem(consumedKey) || '{}'); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch (_) { return {}; } };
   const writeConsumed = map => { if (Object.keys(map).length) storage.setItem(consumedKey, JSON.stringify(map)); else storage.removeItem(consumedKey); };
 
-  /** Open the identity store (one custody KDF); `legacy` migrates a stage-2 single-room database. */
-  async function start({passphrase, identityDatabase, legacy = null}) {
+  /**
+   * Open the identity store (one custody KDF); `legacy` migrates a stage-2 single-room database.
+   * `unlockCache` (#766 C1, only for a machine-generated passphrase) lets the worker skip that KDF
+   * on later starts. It is its own message before `init_multi`: a worker that does not know it
+   * answers `ok: false` to that message alone and the start goes on exactly as before.
+   */
+  async function start({passphrase, identityDatabase, legacy = null, unlockCache = false}) {
     if (!worker.has(WORKER)) await worker.spawn(WORKER);
+    if (unlockCache === true) await worker.call(WORKER, 'unlock_cache', {enabled: true});
     const argument = {identity: device, passphrase, identity_database: identityDatabase};
     if (legacy) argument.legacy = legacy;
     const r = await worker.call(WORKER, 'init_multi', argument);
     if (!r.ok) { const e = new Error(`init_multi 거부${r.stage ? `: ${r.stage}` : ''}`); e.stage = r.stage ?? null; throw e; }
     D.started = true; D.fresh = r.result.fresh === true; D.migrated = r.result.migrated === true;
+    D.unlock = ['cache', 'kdf', 'fresh'].includes(r.result.unlock) ? r.result.unlock : null;   // null: a worker without the cache
     D.publicKey = hex(Uint8Array.from(r.result.public_key));
     D.fingerprint = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', Uint8Array.from(r.result.public_key))));
-    return {fresh: D.fresh, migrated: D.migrated};
+    return {fresh: D.fresh, migrated: D.migrated, unlock: D.unlock};
   }
   /** Lobby package ref = sha256 hex of its bytes (base64 string or bytes) — the relay's `ref`. */
   const refOf = async bytes => hex(new Uint8Array(await crypto.subtle.digest('SHA-256', typeof bytes === 'string' ? unb64(bytes) : bytes)));

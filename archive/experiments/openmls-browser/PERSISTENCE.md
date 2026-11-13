@@ -329,11 +329,25 @@ durable 레인은 DB 1개 = Session 1개 = 그룹 1개였고, 스냅샷 API 는 
   history_*` 는 `room` 을 싣는다. `-identity`·`-lobby` 는 릴레이 방 이름(`[a-z0-9]` 로 시작)과 충돌하지 않는다.
 - custody: 신원 스토어를 한 번 열 때만 scrypt 를 돌리고, 새 형제 DB 는 신원의 capsule 을 그대로 받으며(같은 레코드 키; AAD 에
   room 이 있어 레코드를 다른 DB 로 옮겨도 열리지 않는다), 다른 capsule 의 DB(레거시 단일 스토어)만 암호로 다시 연다.
+- 잠금 해제 캐시(#766 C1, `session-store.js` `createUnlockCache`): 암호가 **기계가 만든 무작위 값**일 때만(한데: 384비트,
+  capsule 과 같은 출처에 저장 — scrypt 가 늘려 줄 것이 없다) 호출자가 `init_multi` **앞에** `unlock_cache {enabled: true}` 를 보낸다.
+  그러면 KDF 로 푼 뒤 레코드 키 두 개를 **꺼낼 수 없는(non-extractable) AES-GCM 키**로 감싸, 감싸는 키와 감싼 결과를 스토어 옆의
+  별도 DB `<identity_database>-unlock`(오브젝트 스토어 `cache`, 레코드 `record` = `{version, vault, capsule(sha256), key, iv, sealed}`)에
+  둔다. 다음 `init_multi` 는 그 레코드로 연다(KDF 없음 — 스모크 실측 0.02 s 대 2.4 s). 부가 데이터가 스토어 형식·기기 ID·DB 이름·
+  vault·capsule·암호에 묶여 있어 어느 하나라도 다르면 열리지 않는다. **캐시일 뿐이다**: `meta/custody` 와 암호는 건드리지 않고,
+  없음·손상·식별값 불일치·`CryptoKey` 저장 불가·WebCrypto 없음·1 초 초과는 모두 예전 KDF 경로로 가며, 감싼 키가 맞게 풀렸는데
+  스토어가 그 키를 거부하면 워커가 캐시를 지우고 KDF 로 다시 연다. 틀린 암호는 예전처럼 `identity_unlock` 에서 거부된다.
+  감싸지 않은 레코드 키는 저장소에 쓰지 않는다. 메시지 없이 시작하면(옛 페이지, **사용자가 정한 잠금 암호**) 캐시를 읽지 않고
+  남아 있던 것도 지운다 — 그때는 scrypt 가 실제 통제다. `init_multi` 인자는 그대로라 옛 워커는 `unlock_cache` 만 거절하고
+  예전대로 시작한다. 결과의 `unlock` = `cache`|`kdf`|`fresh`(경로 이름, 비밀 아님). 단일 모드 `init` 은 캐시를 쓰지 않는다.
+  위협 모델 비교(같은 출처 스크립트 실행·프로필 복사는 전과 같고, 값만 유출되는 경우는 감싸는 키가 값으로 나가지 않는다)는 #766.
 - 이전(migration): `init_multi` 의 `legacy {database, room}` — 신원 DB 가 새것이고 레거시 DB 가 있으면 레거시를 열어
   `exportIdentity` → 신원 스토어를 그 blob 으로 만들고 **레거시의 custody 레코드를 신원이 물려받는다**(이후 한 KDF). 레거시 DB 는
   그 방의 스토어로 계속 쓴다(`open_room` 에 그 DB 이름). 한데 웹 1차 기기(`<actor>-web-…`, 방 1개)가 이 경로로 올라온다.
 - 증명하는 것/않는 것: 브라우저 스모크 `archive/native-mls/tests/native_mls_multistore_smoke.py` — 신원·로비·방 스토어의 공개키
   동일, 로비 KP 로 초대받은 방을 로비 사본으로 join, 다른 방 불변, 단일 모드 워커와 상호운용, 재시작 후 KDF 1회, 레거시 이전.
+  잠금 해제 캐시: 저장된 키가 non-extractable, 재시작이 캐시로 열림, 다른 암호·손상 레코드·(봉인은 맞지만) 틀린 키·메시지 없는
+  시작이 모두 KDF 경로로 감, 메시지 없이 시작하면 캐시 DB 삭제, 레거시 이전 뒤에도 캐시로 열림.
   정책 체인·릴레이는 바꾸지 않는다(기기당 서명키 1개라는 규칙을 브라우저가 비로소 지킨다).
 
 ## Secret wiping (#231 batch g)

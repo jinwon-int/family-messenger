@@ -172,3 +172,248 @@ test('inheritedDecryptsToEvict: only over MAX_BINARY, only inherited decrypts, o
   const huge = item('huge', 'decrypt', 5_000_000, 5_000_000), small = item('s', 'decrypt', 1_000_000, 1_000_000);
   assert.deepEqual(inheritedDecryptsToEvict([small, huge, item('h2', 'decrypt', 2_000_000, 0)], new Set(['s'])), []);
 });
+
+// ---- #766 C1 unlock cache: WebCrypto is node's own; storage is a map (IndexedDB itself is
+// exercised by the browser smoke, archive/native-mls/tests/native_mls_multistore_smoke.py). ----
+const {createUnlockCache, unlockCacheName, unlockCacheAd, idbUnlockStorage, UNLOCK_CACHE_VERSION} = await import('./session-store.js');
+const mapStorage = () => {
+  const m = new Map();
+  return {m, read: async name => m.get(name), write: async (name, record) => { m.set(name, record); }, remove: async name => { m.delete(name); }};
+};
+const cacheTarget = (over = {}) => ({identity: 'owner-web-aaaaaa', database: 'family-mls-synthetic-hande--identity',
+  custody: {version: 1, vault: 'ab'.repeat(16), capsule: Uint8Array.from({length: 200}, (_, i) => i)},
+  passphrase: 'p'.repeat(64), ...over});
+const recordKeys = () => ({auth: Uint8Array.from({length: 32}, (_, i) => 100 + i), enc: Uint8Array.from({length: 32}, (_, i) => 200 - i)});
+const includesBytes = (hay, needle) => { for (let i = 0; i + needle.length <= hay.length; i++) if (needle.every((v, j) => hay[i + j] === v)) return true; return false; };
+
+test('unlock cache: the database sits next to the store under its own name', () => {
+  assert.equal(unlockCacheName('family-mls-synthetic-hande--identity'), 'family-mls-synthetic-hande--identity-unlock');
+  assert.equal(UNLOCK_CACHE_VERSION, 1);
+});
+
+test('unlock cache: save then load returns the same record keys, as fresh copies', async () => {
+  const storage = mapStorage(), cache = createUnlockCache({storage}), keys = recordKeys();
+  assert.equal(await cache.load(cacheTarget()), null, 'nothing saved yet → miss');
+  assert.equal(await cache.save({...cacheTarget(), ...keys}), true);
+  const loaded = await cache.load(cacheTarget());
+  assert.deepEqual(loaded, recordKeys());
+  assert.deepEqual(keys, recordKeys(), 'save leaves the caller\'s keys alone');
+  loaded.auth.fill(0);
+  assert.deepEqual((await cache.load(cacheTarget())).auth, recordKeys().auth, 'each load is its own copy');
+});
+
+test('unlock cache: the stored record holds a non-extractable key and no raw record key', async () => {
+  const storage = mapStorage(), cache = createUnlockCache({storage}), keys = recordKeys();
+  await cache.save({...cacheTarget(), ...keys});
+  assert.deepEqual([...storage.m.keys()], ['family-mls-synthetic-hande--identity-unlock']);
+  const record = storage.m.get('family-mls-synthetic-hande--identity-unlock');
+  assert.deepEqual(Object.keys(record).sort(), ['capsule', 'iv', 'key', 'sealed', 'vault', 'version']);
+  assert.equal(record.key.extractable, false);
+  assert.equal(record.key.type, 'secret');
+  assert.deepEqual(record.key.algorithm, {name: 'AES-GCM', length: 256});
+  await assert.rejects(crypto.subtle.exportKey('raw', record.key), 'the wrapping key cannot be read out');
+  assert.equal(record.sealed.length, 80);
+  assert.equal(record.iv.length, 12);
+  for (const part of [keys.auth, keys.enc, keys.auth.slice(0, 8), keys.enc.slice(24)]) {
+    assert.equal(includesBytes(record.sealed, part), false, 'no record key bytes at rest');
+  }
+  assert.equal(record.vault, 'ab'.repeat(16));
+  assert.match(record.capsule, /^[0-9a-f]{64}$/);
+  assert.equal(JSON.stringify(record).includes('p'.repeat(32)), false, 'the passphrase is not stored');
+  // Two saves never share a wrapping key or a nonce.
+  const first = {iv: record.iv, sealed: record.sealed, key: record.key};
+  await cache.save({...cacheTarget(), ...keys});
+  const second = storage.m.get('family-mls-synthetic-hande--identity-unlock');
+  assert.notEqual(second.key, first.key);
+  assert.notDeepEqual(second.iv, first.iv);
+  assert.notDeepEqual(second.sealed, first.sealed);
+});
+
+test('unlock cache: another device id, database, vault, capsule or passphrase is a miss', async () => {
+  const storage = mapStorage(), cache = createUnlockCache({storage});
+  await cache.save({...cacheTarget(), ...recordKeys()});
+  const moved = name => storage.m.set(unlockCacheName(name), storage.m.get(unlockCacheName(cacheTarget().database)));
+  moved('family-mls-synthetic-other');
+  const otherCapsule = cacheTarget().custody.capsule.slice(); otherCapsule[7] ^= 1;
+  const misses = {
+    'device id': cacheTarget({identity: 'owner-web-bbbbbb'}),
+    'database (record copied under another name)': cacheTarget({database: 'family-mls-synthetic-other'}),
+    'vault': cacheTarget({custody: {...cacheTarget().custody, vault: 'cd'.repeat(16)}}),
+    'capsule': cacheTarget({custody: {...cacheTarget().custody, capsule: otherCapsule}}),
+    'passphrase': cacheTarget({passphrase: 'q'.repeat(64)}),
+  };
+  for (const [what, target] of Object.entries(misses)) assert.equal(await cache.load(target), null, what);
+  assert.deepEqual(await cache.load(cacheTarget()), recordKeys(), 'the right target still opens');
+  // The additional data is what separates them (store format, identity, database, vault, capsule, passphrase).
+  const ads = await Promise.all([cacheTarget(), ...Object.values(misses)].map(async t => new TextDecoder().decode((await unlockCacheAd(t)).ad)));
+  assert.equal(new Set(ads).size, ads.length);
+  assert.ok(ads[0].startsWith('["family-mls-unlock-cache-v1",2,4,"owner-web-aaaaaa","family-mls-synthetic-hande--identity","' + 'ab'.repeat(16) + '",'));
+  assert.equal(ads[0].includes('p'.repeat(8)), false, 'the passphrase enters only as a digest');
+});
+
+test('unlock cache: a tampered or malformed record is a miss, never an error', async () => {
+  const storage = mapStorage(), cache = createUnlockCache({storage}), name = unlockCacheName(cacheTarget().database);
+  await cache.save({...cacheTarget(), ...recordKeys()});
+  const good = storage.m.get(name);
+  const flip = (bytes, at) => { const b = bytes.slice(); b[at] ^= 1; return b; };
+  const extractable = await crypto.subtle.generateKey({name: 'AES-GCM', length: 256}, true, ['encrypt', 'decrypt']);
+  const shortKey = await crypto.subtle.generateKey({name: 'AES-GCM', length: 128}, false, ['encrypt', 'decrypt']);
+  const otherKey = await crypto.subtle.generateKey({name: 'AES-GCM', length: 256}, false, ['encrypt', 'decrypt']);
+  const hmac = await crypto.subtle.generateKey({name: 'HMAC', hash: 'SHA-256'}, false, ['sign']);
+  const bad = {
+    'sealed flipped (first byte)': {...good, sealed: flip(good.sealed, 0)},
+    'sealed flipped (tag)': {...good, sealed: flip(good.sealed, 79)},
+    'iv flipped': {...good, iv: flip(good.iv, 3)},
+    'sealed too short': {...good, sealed: good.sealed.slice(0, 79)},
+    'sealed too long': {...good, sealed: new Uint8Array(81)},
+    'iv wrong length': {...good, iv: new Uint8Array(16)},
+    'another wrapping key': {...good, key: otherKey},
+    'extractable wrapping key': {...good, key: extractable},
+    '128-bit wrapping key': {...good, key: shortKey},
+    'not an AES-GCM key': {...good, key: hmac},
+    'key is not a key': {...good, key: 'x'}, 'key is null': {...good, key: null},
+    'version': {...good, version: 2}, 'vault shape': {...good, vault: 'AB'.repeat(16)}, 'capsule shape': {...good, capsule: 'ab'},
+    'extra field': {...good, extra: 1}, 'missing field': (({iv, ...rest}) => rest)(good),
+    'arrays as plain arrays': {...good, sealed: Array.from(good.sealed)},
+    'null': null, 'string': 'record', 'array': [good],
+  };
+  for (const [what, record] of Object.entries(bad)) {
+    storage.m.set(name, record);
+    assert.equal(await cache.load(cacheTarget()), null, what);
+  }
+  storage.m.set(name, good);
+  assert.deepEqual(await cache.load(cacheTarget()), recordKeys());
+});
+
+test('unlock cache: a record that authenticates under a readable or weaker wrapping key is still refused', async () => {
+  // Everything about these records is right — additional data, seal, sizes — except the
+  // wrapping key itself, so only the key check stands between them and the record keys.
+  const storage = mapStorage(), cache = createUnlockCache({storage}), name = unlockCacheName(cacheTarget().database);
+  const {capsule, ad} = await unlockCacheAd(cacheTarget());
+  const plain = new Uint8Array(64); plain.set(recordKeys().auth); plain.set(recordKeys().enc, 32);
+  const sealedUnder = async key => {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    return {version: 1, vault: cacheTarget().custody.vault, capsule, key, iv,
+      sealed: new Uint8Array(await crypto.subtle.encrypt({name: 'AES-GCM', iv, additionalData: ad}, key, plain))};
+  };
+  const proper = await crypto.subtle.generateKey({name: 'AES-GCM', length: 256}, false, ['encrypt', 'decrypt']);
+  storage.m.set(name, await sealedUnder(proper));
+  assert.deepEqual(await cache.load(cacheTarget()), recordKeys(), 'the hand-built record is otherwise valid');
+  const extractable = await crypto.subtle.generateKey({name: 'AES-GCM', length: 256}, true, ['encrypt', 'decrypt']);
+  storage.m.set(name, await sealedUnder(extractable));
+  assert.equal(await cache.load(cacheTarget()), null, 'extractable wrapping key');
+  const short = await crypto.subtle.generateKey({name: 'AES-GCM', length: 128}, false, ['encrypt', 'decrypt']);
+  storage.m.set(name, await sealedUnder(short));
+  assert.equal(await cache.load(cacheTarget()), null, '128-bit wrapping key');
+});
+
+test('unlock cache: wrong-size keys are not saved', async () => {
+  const storage = mapStorage(), cache = createUnlockCache({storage});
+  for (const keys of [{auth: new Uint8Array(31), enc: new Uint8Array(32)}, {auth: new Uint8Array(32), enc: new Uint8Array(33)},
+    {auth: Array(32).fill(1), enc: new Uint8Array(32)}, {auth: new Uint8Array(32)}]) {
+    assert.equal(await cache.save({...cacheTarget(), ...keys}), false);
+  }
+  assert.equal(storage.m.size, 0);
+});
+
+test('unlock cache: storage that refuses, throws or never answers is harmless', async () => {
+  // CryptoKey not storable (DataCloneError), a blocked database, a private-mode failure…
+  const refusing = {read: async () => { throw new Error('DataCloneError'); }, write: async () => { throw new Error('DataCloneError'); },
+    remove: async () => { throw new Error('blocked'); }};
+  const a = createUnlockCache({storage: refusing});
+  assert.equal(await a.save({...cacheTarget(), ...recordKeys()}), false);
+  assert.equal(await a.load(cacheTarget()), null);
+  assert.equal(await a.clear(cacheTarget().database), false);
+  const throwing = {read: () => { throw new Error('sync'); }, write: () => { throw new Error('sync'); }, remove: () => { throw new Error('sync'); }};
+  const b = createUnlockCache({storage: throwing});
+  assert.equal(await b.save({...cacheTarget(), ...recordKeys()}), false);
+  assert.equal(await b.load(cacheTarget()), null);
+  assert.equal(await b.clear(cacheTarget().database), false);
+  // Never answers: each call gives up at the deadline instead of holding the start.
+  const hanging = {read: () => new Promise(() => {}), write: () => new Promise(() => {}), remove: () => new Promise(() => {})};
+  const c = createUnlockCache({storage: hanging, timeoutMs: 30});
+  const started = Date.now();
+  assert.equal(await c.load(cacheTarget()), null);
+  assert.equal(await c.save({...cacheTarget(), ...recordKeys()}), false);
+  assert.equal(await c.clear(cacheTarget().database), false);
+  assert.ok(Date.now() - started < 1000, 'bounded by timeoutMs');
+});
+
+test('unlock cache: a load that finishes after the deadline wipes the keys it produced', async () => {
+  const storage = mapStorage(), fast = createUnlockCache({storage});
+  await fast.save({...cacheTarget(), ...recordKeys()});
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const produced = [];
+  const subtle = {digest: (...a) => crypto.subtle.digest(...a),
+    decrypt: async (...a) => { await gate; const plain = new Uint8Array(await crypto.subtle.decrypt(...a)); produced.push(plain); return plain.buffer; }};
+  const slow = createUnlockCache({storage, subtle, timeoutMs: 20});
+  assert.equal(await slow.load(cacheTarget()), null, 'deadline → miss');
+  // The two 32-byte copies the late load hands to nobody are only reachable through the wipe itself.
+  const wiped = [], fill = Uint8Array.prototype.fill;
+  Uint8Array.prototype.fill = function (...args) { if (this.length === 32 && args[0] === 0) wiped.push(Array.from(this)); return fill.apply(this, args); };
+  try {
+    release();
+    await new Promise(resolve => setTimeout(resolve, 20));
+  } finally { Uint8Array.prototype.fill = fill; }
+  assert.equal(produced.length, 1);
+  assert.ok(produced[0].every(v => v === 0), 'the late plaintext is zeroed');
+  assert.deepEqual(wiped, [Array.from(recordKeys().auth), Array.from(recordKeys().enc)], 'and so are both key copies');
+});
+
+test('unlock cache: no WebCrypto means no cache, not a failure', async () => {
+  // What a worker outside a secure context sees: `crypto.subtle` is absent.
+  const storage = mapStorage(), cache = createUnlockCache({storage, subtle: null});
+  assert.equal(await cache.save({...cacheTarget(), ...recordKeys()}), false);
+  assert.equal(await cache.load(cacheTarget()), null);
+  assert.equal(storage.m.size, 0);
+});
+
+test('unlock cache: clear removes exactly the cache database', async () => {
+  const storage = mapStorage(), cache = createUnlockCache({storage});
+  await cache.save({...cacheTarget(), ...recordKeys()});
+  storage.m.set('family-mls-synthetic-hande--identity', 'the store itself');
+  assert.equal(await cache.clear(cacheTarget().database), true);
+  assert.deepEqual([...storage.m.keys()], ['family-mls-synthetic-hande--identity']);
+  assert.equal(await cache.load(cacheTarget()), null);
+  assert.equal(await cache.clear(cacheTarget().database), true, 'clearing nothing is fine');
+});
+
+test('unlock cache: IndexedDB backing opens one store, closes every handle and refuses another schema', async () => {
+  const log = [];
+  const fakeIdb = ({stores = [], oldVersion = 0, value} = {}) => ({
+    open(name, version) {
+      const request = {};
+      const db = {objectStoreNames: {length: stores.length, contains: n => stores.includes(n)},
+        createObjectStore: n => { stores.push(n); db.objectStoreNames.length = stores.length; },
+        close: () => log.push('close'),
+        transaction(store, mode) {
+          log.push(`tx ${store} ${mode}`);
+          const tx = {objectStore: () => ({get: key => { log.push(`get ${key}`); return {result: value}; }, put: (v, key) => { log.push(`put ${key}`); value = v; return {result: key}; }})};
+          queueMicrotask(() => tx.oncomplete());
+          return tx;
+        }};
+      queueMicrotask(() => {
+        log.push(`open ${name} v${version}`);
+        request.result = db;
+        if (stores.length === 0 || oldVersion !== 0) request.onupgradeneeded({oldVersion});
+        request.onsuccess();
+      });
+      return request;
+    },
+    deleteDatabase(name) { const request = {}; queueMicrotask(() => { log.push(`delete ${name}`); request.onsuccess(); }); return request; },
+  });
+  const fresh = idbUnlockStorage(fakeIdb());
+  assert.equal(await fresh.read('db-unlock'), undefined);
+  await fresh.write('db-unlock', {any: 1});
+  await fresh.remove('db-unlock');
+  assert.deepEqual(log, ['open db-unlock v1', 'tx cache readonly', 'get record', 'close',
+    'open db-unlock v1', 'tx cache readwrite', 'put record', 'close', 'delete db-unlock']);
+  log.length = 0;
+  const foreign = idbUnlockStorage(fakeIdb({stores: ['cache', 'other']}));
+  await assert.rejects(foreign.read('db-unlock'), /unknown schema/);
+  assert.deepEqual(log, ['open db-unlock v1', 'close']);
+  // Through the cache, that is just a miss.
+  const cache = createUnlockCache({storage: foreign});
+  assert.equal(await cache.load(cacheTarget()), null);
+});
