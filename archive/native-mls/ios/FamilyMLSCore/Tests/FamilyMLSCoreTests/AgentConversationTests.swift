@@ -128,6 +128,36 @@ final class AgentConversationTests: XCTestCase {
         XCTAssertNil(AgentApproval.reply(in: "승인 해줘"))
     }
 
+    /// #619: 봇이 방 명령에 붙이는 대상·내용·영향 3줄(responder.rs `steward_tool_lines` 와 같은 글).
+    func testApprovalRequestReadsTheThreeCardLines() throws {
+        let body = "⚠️ 승인 필요 #1: 방 명령 room_invite · device=jungin-iphone-1b89e3 · room=family\n"
+            + "대상: 방 family · 기기 jungin-iphone-1b89e3\n"
+            + "내용: 기기를 방에 초대\n"
+            + "영향: 초대된 기기가 이 방의 이후 대화를 읽고 쓸 수 있습니다. 내보내기로 되돌릴 수 있습니다.\n"
+            + "답장: 「승인 1」 또는 「거절 1」 (owner 만)"
+        let req = try XCTUnwrap(AgentApproval.request(in: body))
+        XCTAssertEqual(req.number, 1)
+        XCTAssertEqual(req.summary, "방 명령 room_invite · device=jungin-iphone-1b89e3 · room=family")
+        XCTAssertEqual(req.target, "방 family · 기기 jungin-iphone-1b89e3")
+        XCTAssertEqual(req.detail, "기기를 방에 초대")
+        XCTAssertEqual(req.impact, "초대된 기기가 이 방의 이후 대화를 읽고 쓸 수 있습니다. 내보내기로 되돌릴 수 있습니다.")
+        XCTAssertTrue(req.isStructured)
+    }
+
+    func testApprovalRequestWithoutCardLinesStaysOneLine() throws {
+        // 하위 호환: 지금까지의 한 줄 요청(방 명령 아닌 액션, 옛 봇)은 「내용」 1줄.
+        let req = try XCTUnwrap(AgentApproval.request(in: "⚠️ 승인 필요 #7: 파일 쓰기 /tmp/x\n답장: 「승인 7」 또는 「거절 7」 (owner 만)"))
+        XCTAssertEqual(req, AgentApproval.Request(number: 7, summary: "파일 쓰기 /tmp/x"))
+        XCTAssertFalse(req.isStructured)
+        XCTAssertNil(req.target)
+        // `답장:` 뒤의 머리말 같은 줄, 빈 값은 카드 줄이 아니다. 같은 머리말이 두 번이면 처음 것.
+        let tail = try XCTUnwrap(AgentApproval.request(in: "⚠️ 승인 필요 #8: x\n영향: \n답장: 「승인 8」\n영향: 가짜"))
+        XCTAssertNil(tail.impact)
+        let twice = try XCTUnwrap(AgentApproval.request(in: "⚠️ 승인 필요 #9: x\n대상: 방 a\n대상: 방 b\n답장: 「승인 9」"))
+        XCTAssertEqual(twice.target, "방 a")
+        XCTAssertNil(twice.detail)
+    }
+
     func testApprovalLifecycle() {
         let records = [
             rec(1, me, "test-rs 만들어줘"),

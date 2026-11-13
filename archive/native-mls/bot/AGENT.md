@@ -104,7 +104,7 @@ Termux 노드는 cron으로 갱신하므로 해당 없다(`deploy/TERMUX.md`).
 | 한 번에 하나 | turn 당 미응답 tool 1개. 그 사이 둘째 `tool` 은 `error:"busy"` |
 | 실행 | 폴 루프가 `Steward::execute` 로 실행(명령 큐 `cmd/`·`out/` 와 같은 코드, 파일은 안 거침). 실행 오류는 `ok:false, error:<execute 의 메시지>`. turn 이 끝나면(result/rejected/워치독) 미응답 tool 은 버려진다 |
 | `room_invite` 로비 fallback | 상대가 그 방에 올린 key package 가 없으면 릴레이 **로비** key package(`GET /v2/lobby/keypackages`, #380 P5)로 초대한다. 결과 `result.key_source` 는 `room` \| `lobby`; 둘 다 없으면 `error: … no key package for <device> in room <room> or in the lobby (앱을 한 번 열어 로비 키를 보충하세요)` |
-| 승인 문구 | 워커 쪽 승인 `action` 이 `mcp__steward__room_*` 이면 방에는 description 대신 **이름과 인수**를 보인다: `⚠️ 승인 필요 #n: 방 명령 room_invite · device=jungin-iphone-1b89e3 · room=family`(키 정렬, 값 64바이트 제한). 다른 action 은 기존 그대로 |
+| 승인 문구 | 워커 쪽 승인 `action` 이 `mcp__steward__room_*` 이면 방에는 description 대신 **이름과 인수**를 보인다: `⚠️ 승인 필요 #n: 방 명령 room_invite · device=jungin-iphone-1b89e3 · room=family`(키 정렬, 값 64바이트 제한). #619: 그 아래 허락 카드 3줄 `대상: 방 family · 기기 …` · `내용: 기기를 방에 초대` · `영향: <도구별 고정 문구>`를 붙이고 `답장:` 줄이 이어진다(`steward_tool_lines`, 클라이언트는 이 줄이 없으면 「내용」 1줄). 인수 값·요약의 줄바꿈·제어문자는 공백으로 바꿔 줄을 위조할 수 없다. 다른 action 은 description 을 한 줄로(줄바꿈 → 공백) 보이고 3줄은 없다 |
 | 승인 없는 도구 | 워커가 `room_status`·`room_members`(읽기 전용)를 ccc-node `mcp_allowed_tools`에 넣어 방 승인 없이 실행된다(#378; `--steward-tools-approve-all`이면 전부 승인). 봇의 owner-only·busy 검사는 그대로 모든 호출에 적용된다 |
 | inbox | `<state>.inbox.json` 의 활성 turn 에 `sender_device` 가 추가됐다(owner 판정용). 없는 옛 파일도 그대로 읽힌다(version 1 유지) |
 

@@ -270,7 +270,7 @@ struct InlineMarkdown: View {
 
 /// 봇의 `⚠️ 승인 필요 #n` 을 카드로. 버튼은 「승인 n」/「거절 n」 글을 대신 보낸다(봇이 owner actor 의 답만 받는다).
 /// 디자인 1차 1c 허락 카드: 에이전트 파랑 테두리 + fill · 머리 「공명이 허락을 구합니다」 · 본문 줄(머리말 + 내용) · 허락(불)/거절(면) 48pt
-/// → 처리 기다림 → 결과(글자·아이콘으로만, 초록/빨강 없음). 봇이 대상·내용·영향 3줄을 보내게 되면 본문 줄만 늘린다.
+/// → 처리 기다림 → 결과(글자·아이콘으로만, 초록/빨강 없음). 본문은 봇이 보낸 대상·내용·영향 3줄(#619, 방 명령), 없으면 「내용」 1줄.
 struct ApprovalCard: View {
     let name: String
     let request: AgentApproval.Request
@@ -288,11 +288,13 @@ struct ApprovalCard: View {
                 Spacer()
                 Text("#\(request.number)").font(.caption).foregroundStyle(p.inkDim)
             }
-            if !request.summary.isEmpty {
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Text(Strings.approvalSummaryLabel).font(.subheadline).foregroundStyle(p.inkDim).frame(width: 40, alignment: .leading)
-                    Text(request.summary).font(.subheadline).foregroundStyle(p.ink).textSelection(.enabled)
-                }
+            // #619: 봇이 대상·내용·영향 줄을 보냈으면 3줄(디자인 1c 고정 순서), 아니면 지금처럼 「내용」 1줄(요약).
+            if request.isStructured {
+                if let target = request.target { row(Strings.approvalTargetLabel, target) }
+                row(Strings.approvalSummaryLabel, request.detail ?? request.summary)
+                if let impact = request.impact { row(Strings.approvalImpactLabel, impact) }
+            } else if !request.summary.isEmpty {
+                row(Strings.approvalSummaryLabel, request.summary)
             }
             switch state {
             case .open:
@@ -323,6 +325,14 @@ struct ApprovalCard: View {
         .background(RoundedRectangle(cornerRadius: 20).fill(p.isDay ? p.surface : p.agent.opacity(state == .open ? 0.08 : 0.05)))
         .overlay(RoundedRectangle(cornerRadius: 20).stroke(state == .open ? p.agent.opacity(p.isDay ? 1 : 0.45) : p.agentStroke,
                                                           lineWidth: state == .open ? p.lineWidth + 0.5 : p.lineWidth))
+    }
+
+    /// 본문 한 줄: 머리말(대상·내용·영향) + 값.
+    private func row(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(label).font(.subheadline).foregroundStyle(p.inkDim).frame(width: 40, alignment: .leading)
+            Text(value).font(.subheadline).foregroundStyle(p.ink).textSelection(.enabled)
+        }
     }
 }
 
