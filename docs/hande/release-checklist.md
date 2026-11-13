@@ -35,8 +35,8 @@
 | # | 항목 | 누가 | 의존 | 상태 |
 |---|---|---|---|---|
 | B-1 | Play Console **조직 계정**($25): D-U-N-S = Apple 가입 때 번호 **재사용**, 결제 프로필의 법인명·주소를 D&B 등록과 일치, 조직 도메인 Google 계정 + 법인 서류 + 대표 신분증 검증 | 오너 | #584 결정 코멘트(2026-10-29) | 대기 |
-| B-2 | 업로드 키 생성(PKCS12, 25년+) → GitHub **secrets 4개**(`HANDE_UPLOAD_KEYSTORE_B64`·`HANDE_UPLOAD_KEYSTORE_PASSWORD`·`HANDE_UPLOAD_KEY_ALIAS`·`HANDE_UPLOAD_KEY_PASSWORD`). 키스토어 보관 위치만 Wiki 에 | 오너 | `android/README.md` ② | 대기 |
-| B-3 | `native-mls-android.yml` **workflow_dispatch**(`version_name` 예 `0.2.0`) → 서명된 `app-release.aab` 아티팩트(`hande-android-bundle-<sha>`) · 서명자 ≠ 디버그 키 검증 통과 | 노드(dispatch) / 오너(승인) | `android/README.md` ③④ | 대기 |
+| B-2 | 업로드 키 생성(PKCS12, 25년+) → 저장소 **variable** `HANDE_UPLOAD_CERT_SHA256`(업로드 인증서 SHA-256 지문 — 공개값, **secrets 보다 먼저**) → GitHub **secrets 4개**(`HANDE_UPLOAD_KEYSTORE_B64`·`HANDE_UPLOAD_KEYSTORE_PASSWORD`·`HANDE_UPLOAD_KEY_ALIAS`·`HANDE_UPLOAD_KEY_PASSWORD`). 키스토어 보관 위치만 Wiki 에 | 오너 | `android/README.md` ② | 대기 |
+| B-3 | `native-mls-android.yml` **workflow_dispatch**(`version_name` 예 `0.2.0`) → 서명된 `app-release.aab` 아티팩트(`hande-android-bundle-<sha>`) · 서명자 ≠ 디버그 키 · 서명자 = `HANDE_UPLOAD_CERT_SHA256` 검증 통과 | 노드(dispatch) / 오너(승인) | `android/README.md` ③④ | 대기 |
 | B-4 | 앱 만들기(`com.seoyoon_family.hande`, 한국어) → Play App Signing(Google 생성 키) 수락 → **내부 테스트 트랙**에 AAB 업로드 → 테스터(오너 기기) 설치 확인 | 오너 | B-2·B-3 | 대기 |
 | B-5 | App content › **개인정보처리방침 URL** `…/hande/privacy/`(앱 안 링크와 동일) | 오너 | `docs/hande/privacy.md` | 0-2 뒤 |
 | B-6 | App content › **Data safety**: `play-data-safety.md` §1 그대로 입력(수집 있음 · 전송 암호화 · 삭제 요청 방법 있음 · E2EE 메시지 신고 안 함 · 식별자/이메일/이름/앱 활동) | 오너 | `docs/hande/play-data-safety.md` | 대기 |

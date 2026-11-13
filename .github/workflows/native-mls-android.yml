@@ -2,6 +2,7 @@ name: Native MLS track — Android host
 # 독자 E2EE 트랙의 네 번째 호스트(Android) 스파이크 A (#338 §4). 예산: ubuntu 1 job ≤20분(결정 E 규칙 2).
 # main 필수 체크가 아니므로 워크플로 수준 paths 필터. 운영 서버·실계정 무관. macOS 불필요.
 # 비밀값(#584 Play 출시): `android-bundle` job 만 업로드 키 secret(HANDE_UPLOAD_KEYSTORE_B64 등)을 읽는다 — 없으면(포크 PR 포함) 미서명 번들.
+# 서명 번들이면 서명자 인증서 SHA-256 을 variable `HANDE_UPLOAD_CERT_SHA256`(공개 지문)과 비교한다 — 없으면 그 job 은 실패.
 on:
   workflow_dispatch:
     inputs:
@@ -250,6 +251,8 @@ jobs:
         working-directory: archive/native-mls/android
         env:
           SIGNED: ${{ steps.keystore.outputs.present }}
+          # 업로드 인증서 SHA-256 지문(공개값 — 비밀 아님). 저장소 **variable**. 서명 번들일 때만 읽는다.
+          EXPECTED_UPLOAD_SHA256: ${{ vars.HANDE_UPLOAD_CERT_SHA256 }}
         run: |
           aab=app/build/outputs/bundle/release/app-release.aab
           test -s "$aab"
@@ -267,12 +270,24 @@ jobs:
             echo "16 KB aligned: $so"
           done | tee -a "$GITHUB_STEP_SUMMARY"
           if [ "$SIGNED" = "true" ]; then
-            jarsigner -verify -strict "$aab" > "$RUNNER_TEMP/jarsigner.log" 2>&1 || { cat "$RUNNER_TEMP/jarsigner.log"; echo "AAB signature invalid"; exit 1; }
+            # `-strict` 는 쓰지 않는다: Play 업로드 키는 자체 서명 인증서가 정상인데, strict 는 「PKIX 경로 없음·자체 서명」을 오류로 올려
+            # 서명이 유효해도 "jar verified, with signer errors." 로 실패한다(#584 코멘트 2026-10-30 — 같은 검사를 쓰는 자매 앱의 첫 서명 빌드).
+            # 대신 ① 서명 무결성 = 종료 코드 0 + "jar verified"(미서명이면 "jar is unsigned." 로 종료 코드가 0 이라 문구까지 본다)
+            # ② strict 가 잡던 「서명 밖 항목」은 문구로 계속 거부 ③ 신원 = 인증서 SHA-256 을 variable 과 정확히 비교(신뢰 체인 대신 지문 고정).
+            jarsigner -verify "$aab" > "$RUNNER_TEMP/jarsigner.log" 2>&1 || { head -n 20 "$RUNNER_TEMP/jarsigner.log"; echo "AAB signature invalid"; exit 1; }
+            grep -q '^jar verified' "$RUNNER_TEMP/jarsigner.log" || { head -n 20 "$RUNNER_TEMP/jarsigner.log"; echo "AAB is not signed (no 'jar verified')"; exit 1; }
+            if grep -q 'unsigned entries' "$RUNNER_TEMP/jarsigner.log"; then head -n 20 "$RUNNER_TEMP/jarsigner.log"; echo "AAB has entries outside the signature"; exit 1; fi
             # 업로드 키 지문(비밀 아님 — 인증서 지문)은 커밋된 debug.keystore 와 달라야 한다(release 가 디버그 키로 서명되는 회귀 차단).
             got="$(keytool -printcert -jarfile "$aab" | grep -m1 -oE 'SHA256: [0-9A-F:]+' | cut -d' ' -f2 | tr -d ':' | tr 'A-F' 'a-f')"
             echo "upload signer sha256: $got" | tee -a "$GITHUB_STEP_SUMMARY"
             test -n "$got"
             test "$got" != "$DEBUG_SIGNER_SHA256" || { echo "release bundle is signed with the DEBUG keystore"; exit 1; }
+            # 기대 지문과 정확히 같아야 한다(엉뚱한 키로 서명된 번들 차단). `AA:BB:…`(keytool 출력 그대로)·소문자 hex 둘 다 받는다.
+            # variable 이 없으면 서명자를 확인할 수 없으므로 실패한다 — secrets 를 넣기 전에 variable 을 먼저 넣는다(android/README ②).
+            want="$(printf '%s' "$EXPECTED_UPLOAD_SHA256" | tr -d ': \n' | tr 'A-F' 'a-f')"
+            test -n "$want" || { echo "repository variable HANDE_UPLOAD_CERT_SHA256 is not set — cannot confirm the upload signer (set it to the 'upload signer sha256' printed above once it is checked against the keystore)"; exit 1; }
+            test "$got" = "$want" || { echo "AAB signer $got != HANDE_UPLOAD_CERT_SHA256 $want"; exit 1; }
+            echo "upload signer matches HANDE_UPLOAD_CERT_SHA256" | tee -a "$GITHUB_STEP_SUMMARY"
           else
             # 미서명이어야 한다(META-INF 서명 파일 없음) — 디버그 키로 조용히 서명됐다면 실패.
             if unzip -l "$aab" | grep -qE 'META-INF/.*\.(RSA|DSA|EC|SF)$'; then echo "unexpected signature in an unsigned bundle"; exit 1; fi
