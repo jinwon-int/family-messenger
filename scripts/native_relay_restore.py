@@ -9,11 +9,12 @@ existing target directories aside (never deletes), and copies the tree in.
 
 ``--bump-seq N`` is owner decision #440-C (c1): after a restore from an older
 snapshot the relay would otherwise re-issue sequence numbers that clients have
-already consumed and the clients would skip those events silently (iOS
-RoomSyncEngine halts only when the relay is AHEAD of the cursor). Raising
-``mls_rooms.last_seq`` by N on every room turns the silent loss into an explicit
-``history_gap`` halt that the operator can see and repair. store.go:202 states
-last_seq must never go backwards; this keeps that promise across a restore.
+already consumed and the clients would skip those events silently. Raising
+``mls_rooms.last_seq`` by N on every room keeps new events above every client
+cursor (store.go: last_seq must never go backwards). That is all it does: it
+does NOT halt clients — ``history_gap`` fires on the relay's oldest retained
+seq, which a bump does not move (measured 2026-11-13, #440). What was lost
+after the snapshot stays lost without notice; see NATIVE-RELAY-OPERATIONS.md.
 
 ``--relay-binary`` runs a loopback drill: start the restored tree with
 ``-access-mode disabled``, wait for ``/v2/health``, compare counts with the
