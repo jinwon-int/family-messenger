@@ -137,3 +137,45 @@ func TestEnrollAfterTombstonesFillTheOldCap(t *testing.T) {
 		t.Fatalf("reusing a revoked signing key: got %v", e)
 	}
 }
+
+// #421 rejection logging: each set limit names itself and the count it was
+// refused at through LimitError, while the error text and the sentinel mapping
+// (bad_candidate on the relay) stay what they were.
+func TestLimitErrorsNameTheLimit(t *testing.T) {
+	sameActor := outOfBand(t, "one", MaxActivePerActor+1)
+	for i := range sameActor {
+		sameActor[i].Actor = "one"
+	}
+	records := outOfBand(t, "live", MaxActiveDevicesTotal)
+	for _, d := range outOfBand(t, "gone", MaxDeviceRecords-MaxActiveDevicesTotal+1) {
+		records = append(records, revoked(d))
+	}
+	cases := []struct {
+		name    string
+		devices []DeviceV4
+		limit   string
+		current int
+		max     int
+		text    string
+	}{
+		{"active total", outOfBand(t, "live", MaxActiveDevicesTotal+1), LimitActiveDevices, MaxActiveDevicesTotal + 1, MaxActiveDevicesTotal,
+			fmt.Sprintf("too many active devices: %d > %d: %v", MaxActiveDevicesTotal+1, MaxActiveDevicesTotal, ErrDevicePolicyConfig)},
+		{"records", records, LimitDeviceRecords, MaxDeviceRecords + 1, MaxDeviceRecords,
+			fmt.Sprintf("too many device records: %d > %d: %v", MaxDeviceRecords+1, MaxDeviceRecords, ErrDevicePolicyConfig)},
+		{"per actor", sameActor, LimitActivePerActor, MaxActivePerActor + 1, MaxActivePerActor,
+			fmt.Sprintf("actor %q exceeds %d active devices: %v", "one", MaxActivePerActor, ErrDevicePolicyConfig)},
+	}
+	for _, c := range cases {
+		e := validateDeviceSet(c.devices)
+		var le *LimitError
+		if !errors.As(e, &le) || !errors.Is(e, ErrDevicePolicyConfig) {
+			t.Fatalf("%s: got %v", c.name, e)
+		}
+		if le.Limit != c.limit || le.Current != c.current || le.Max != c.max {
+			t.Fatalf("%s: LimitError = %+v, want %s %d/%d", c.name, *le, c.limit, c.current, c.max)
+		}
+		if e.Error() != c.text {
+			t.Fatalf("%s: message changed: %q, want %q", c.name, e.Error(), c.text)
+		}
+	}
+}

@@ -88,6 +88,35 @@ var (
 	ErrDevicePolicyApproval = errors.New("device approval evidence rejected")
 )
 
+// Limit names carried by LimitError (#421) — the relay logs them as
+// `limit=<name> current=<n> max=<m>`.
+const (
+	LimitActiveDevices   = "active_devices"   // MaxActiveDevicesTotal
+	LimitDeviceRecords   = "device_records"   // MaxDeviceRecords
+	LimitActivePerActor  = "active_per_actor" // MaxActivePerActor
+	LimitPolicyRevisions = "policy_revisions" // MaxDevicePolicyRevisions
+)
+
+// LimitError marks a rejection by one of the size limits above so a caller
+// can log which limit and how far over it was (#421: the 2026-11-05 owner
+// enroll failed as a bare bad_candidate and the cause was found by reading
+// code). Current is what the rejected set or commit would have had, so
+// Current > Max. It reads as — and unwraps to — its sentinel, so the wrapping
+// message and every errors.Is mapping stay exactly as before. No ids.
+type LimitError struct {
+	Limit    string
+	Current  int
+	Max      int
+	sentinel error
+}
+
+func (e *LimitError) Error() string { return e.sentinel.Error() }
+func (e *LimitError) Unwrap() error { return e.sentinel }
+
+func limitErr(limit string, current, max int, sentinel error) *LimitError {
+	return &LimitError{Limit: limit, Current: current, Max: max, sentinel: sentinel}
+}
+
 // DeviceApproval is the durable authorizing evidence written at most once per
 // device: approver device plus the exact policy revision the approval authorizes
 // (the revision that enrolled or revoked the device). A management declaration,
@@ -362,7 +391,8 @@ func DecodeSigningKey(hexKey string) ([]byte, error) {
 // validateDeviceSet enforces the v4 invariants on a full device set.
 func validateDeviceSet(devices []DeviceV4) error {
 	if len(devices) > MaxDeviceRecords {
-		return fmt.Errorf("too many device records: %d > %d: %w", len(devices), MaxDeviceRecords, ErrDevicePolicyConfig)
+		return fmt.Errorf("too many device records: %d > %d: %w", len(devices), MaxDeviceRecords,
+			limitErr(LimitDeviceRecords, len(devices), MaxDeviceRecords, ErrDevicePolicyConfig))
 	}
 	ids, keys := map[string]bool{}, map[string]bool{}
 	activePerActor := map[string]int{}
@@ -412,11 +442,13 @@ func validateDeviceSet(devices []DeviceV4) error {
 		if d.Status == StatusActive {
 			active++
 			if active > MaxActiveDevicesTotal {
-				return fmt.Errorf("too many active devices: %d > %d: %w", active, MaxActiveDevicesTotal, ErrDevicePolicyConfig)
+				return fmt.Errorf("too many active devices: %d > %d: %w", active, MaxActiveDevicesTotal,
+					limitErr(LimitActiveDevices, active, MaxActiveDevicesTotal, ErrDevicePolicyConfig))
 			}
 			activePerActor[d.Actor]++
 			if activePerActor[d.Actor] > MaxActivePerActor {
-				return fmt.Errorf("actor %q exceeds %d active devices: %w", d.Actor, MaxActivePerActor, ErrDevicePolicyConfig)
+				return fmt.Errorf("actor %q exceeds %d active devices: %w", d.Actor, MaxActivePerActor,
+					limitErr(LimitActivePerActor, activePerActor[d.Actor], MaxActivePerActor, ErrDevicePolicyConfig))
 			}
 		}
 	}
@@ -970,7 +1002,8 @@ func (s *DevicePolicyStore) Commit(expected uint64, next PolicyWire4) (DevicePol
 			return e
 		}
 		if old.Revision >= MaxDevicePolicyRevisions {
-			return fmt.Errorf("policy revision space exhausted at %d (compaction not implemented): %w", MaxDevicePolicyRevisions, ErrDevicePolicyState)
+			return fmt.Errorf("policy revision space exhausted at %d (compaction not implemented): %w", MaxDevicePolicyRevisions,
+				limitErr(LimitPolicyRevisions, int(old.Revision)+1, MaxDevicePolicyRevisions, ErrDevicePolicyState))
 		}
 		return writeDevicePolicyRevision(d, expected+1, old.SHA256, next, &out)
 	})

@@ -111,11 +111,12 @@ func main() {
 		if err != nil {
 			log.Fatalf("open device policy: %v", err)
 		}
-		info, _, err := st.Read()
+		info, wire, err := st.Read()
 		if err != nil {
 			log.Fatalf("device policy chain unreadable (run cmd/native-devices -init first): %v", err)
 		}
 		log.Printf("device policy enforcement on (revision %d)", info.Revision)
+		logPolicyHeadroom(info.Revision, wire.Devices)
 		devices = st
 	} else {
 		log.Printf("WARNING: -device-state not set: membership enforcement is OFF, any device may POST")

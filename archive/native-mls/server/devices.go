@@ -202,8 +202,40 @@ func (s *relay) handleListCandidates(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, candidatesResponse{PolicyRevision: info.Revision, Candidates: list})
 }
 
+// Policy headroom warnings (#421): logged when the chain is loaded at startup
+// and after every relay commit, before the hard limits refuse an enroll.
+const (
+	policyRevisionWarnAt = 48 // of devicepolicy.MaxDevicePolicyRevisions (64)
+	activeDevicesWarnAt  = 24 // of devicepolicy.MaxActiveDevicesTotal (32)
+)
+
+// logPolicyHeadroom warns when the chain nears its revision or active-device
+// limit. Counts only — no ids, keys or fingerprints.
+func logPolicyHeadroom(revision uint64, devices []devicepolicy.DeviceV4) {
+	if revision >= policyRevisionWarnAt {
+		log.Printf("devices: WARNING policy near limit: limit=%s current=%d max=%d (compaction #421)",
+			devicepolicy.LimitPolicyRevisions, revision, devicepolicy.MaxDevicePolicyRevisions)
+	}
+	active := 0
+	for _, d := range devices {
+		if d.Status == devicepolicy.StatusActive {
+			active++
+		}
+	}
+	if active >= activeDevicesWarnAt {
+		log.Printf("devices: WARNING policy near limit: limit=%s current=%d max=%d",
+			devicepolicy.LimitActiveDevices, active, devicepolicy.MaxActiveDevicesTotal)
+	}
+}
+
 // policyFailure maps a devicepolicy error to the route's status and code.
+// A size-limit rejection is also logged (#421) — the 4xx body alone never
+// reaches the journal.
 func (s *relay) policyFailure(w http.ResponseWriter, err error, current uint64) {
+	var limit *devicepolicy.LimitError
+	if errors.As(err, &limit) {
+		log.Printf("devices: rejected by policy limit: limit=%s current=%d max=%d", limit.Limit, limit.Current, limit.Max)
+	}
 	switch {
 	case errors.Is(err, devicepolicy.ErrDevicePolicyConflict):
 		s.fail(w, http.StatusConflict, apiError{Error: "stale_revision", Detail: err.Error(), Revision: int64(current)})
@@ -273,6 +305,7 @@ func (s *relay) handlePostApproval(w http.ResponseWriter, req *http.Request) {
 		log.Printf("devices: drop candidate %s: %v", ev.DeviceID, err)
 	}
 	log.Printf("devices: %s enrolled by %s (actor %s) → revision %d", ev.DeviceID, approver, ev.Actor, committed.Revision)
+	logPolicyHeadroom(committed.Revision, next)
 	writeJSON(w, http.StatusCreated, approvalResponse{DeviceID: ev.DeviceID, ApprovedBy: approver, Revision: committed.Revision})
 }
 
@@ -325,6 +358,7 @@ func (s *relay) handlePostRoles(w http.ResponseWriter, req *http.Request) {
 	}
 	roles, _ := devicepolicy.CanonicalRoles(ev.Roles)
 	log.Printf("devices: %s roles=%v set by %s → revision %d", ev.DeviceID, roles, approver, committed.Revision)
+	logPolicyHeadroom(committed.Revision, next)
 	writeJSON(w, http.StatusCreated, approvalResponse{DeviceID: ev.DeviceID, ApprovedBy: approver, Revision: committed.Revision, Roles: roles})
 }
 
