@@ -6,8 +6,8 @@
 
 | # | 항목 | 누가 | 의존 | 상태 |
 |---|---|---|---|---|
-| 0-1 | **GitHub Pages 켜기**: repo Settings → Pages → **Build and deployment → Source: GitHub Actions**(브랜치 소스 아님). 저장소 설정 변경 = 오너 승인 항목 | 오너 | `.github/workflows/pages.yml` | 대기(현재 Pages 404) |
-| 0-2 | PR 4 머지 → `pages.yml` 이 main 푸시로 돌아 `https://jinwon-int.github.io/family-messenger/hande/{,privacy/,delete-account/}` 200 확인 | 노드 | `docs/hande/*.md` | 대기 |
+| 0-1 | **GitHub Pages 켜기**: repo Settings → Pages → **Build and deployment → Source: GitHub Actions**(브랜치 소스 아님). 저장소 설정 변경 = 오너 승인 항목 | 오너 | `.github/workflows/pages.yml` | 완료(2026-10-29, Source: GitHub Actions — #584 코멘트) |
+| 0-2 | PR 4 머지 → `pages.yml` 이 main 푸시로 돌아 `https://jinwon-int.github.io/family-messenger/hande/{,privacy/,delete-account/}` 200 확인 | 노드 | `docs/hande/*.md` | 완료(#590 머지 2026-10-29 · 2026-11-13 세 주소 모두 200) |
 | 0-3 | 방침의 `〔법인명〕` 자리를 스토어 등록 명의(법인명)로 채운다 — Apple·Google 계정의 조직명과 글자 그대로 일치 | 오너(값) → 노드(PR) | `docs/hande/privacy.md` | 대기 |
 | 0-4 | 서버 로그 보존 30일을 실제로 맞춘다(seoseo journald `MaxRetentionSec=30day` 또는 릴레이 유닛의 로그 설정) — 방침 2-1 표의 값 | 노드(배포 승인 뒤) | `docs/hande/privacy.md` 2-1 · `docs/NATIVE-RELAY-OPERATIONS.md` | 대기 |
 | 0-5 | Android `BuildConfig` 기본 URL(`…/hande/privacy`, `…/hande/delete-account`)이 Pages 301 로 열리는지 실기기 확인. 바꾸려면 repo variables `HANDE_PRIVACY_URL`/`HANDE_DELETE_URL` | 노드 | `archive/native-mls/android/app/build.gradle.kts` · `native-mls-android.yml` | 대기 |
@@ -19,7 +19,7 @@
 |---|---|---|---|---|
 | A-1 | App Store Connect 앱 레코드: 이름 「한데」, 번들 ID `com.seoyoon-family.hande`(NSE `…hande.nse`), SKU, 1차 언어 한국어 | 오너 | `archive/native-mls/ios/project.yml` | TestFlight 에 이미 존재(build 9 이력) — App Store 정보 탭만 채우면 됨 |
 | A-2 | **App Store 빌드**: `native-mls-ios-release.yml` 을 `workflow_dispatch` 입력 **`distribution = appstore-public`** 으로 실행(`FC_RELAY_URL` 빈 값 → 첫 화면 = 서버 선택; 기본 `testflight-family` 는 지금까지의 가족 빌드). environment `testflight` 승인·서명·업로드는 같다. 아카이브 검증 단계가 앱·NSE `FamilyChatRelayURL` 빈 값과 Privacy manifest 2개를 확인 | 오너(dispatch 승인) | `.github/workflows/native-mls-ios-release.yml` · `ios/README.md` 「온보딩」5 | 코드 PR 머지 뒤 실행 |
-| A-3 | 개인정보처리방침 URL `…/hande/privacy/` · Privacy Choices URL `…/hande/delete-account/` · 지원 URL `…/hande/` | 오너 | `docs/hande/privacy.md` | 0-2 뒤 |
+| A-3 | 개인정보처리방침 URL `…/hande/privacy/` · Privacy Choices URL `…/hande/delete-account/` · 지원 URL `…/hande/` | 오너 | `docs/hande/privacy.md` | 대기(0-2 완료 — 지금 입력 가능) |
 | A-4 | App Privacy 라벨 입력(Email · Name · User ID · Device ID · Other User Content, Linked, App Functionality, 추적 없음) + 「Emails or Text Messages」 신고 여부 **오너 결정** | 오너 | `docs/hande/app-store-review.md` §1 | 대기 |
 | A-5 | 수출 규정: 질문지 답(표준 알고리즘·비독자·**프랑스 아니오**) + Pricing and Availability 에서 **France 제외** + `ITSAppUsesNonExemptEncryption: false` 유지 | 오너 | `app-store-review.md` §3 · `project.yml` | 대기 |
 | A-6 | **US BIS 자체 분류 보고/공개 소스 예외 — 확인 필요(non-US developer)**: 법률 확인 뒤 결과를 `app-store-review.md` §3-3 ③ 에 기록. 출시를 막지는 않음(Apple 요구 문서 없음) | 오너 | `app-store-review.md` §3-3 | 확인 필요 |
@@ -34,13 +34,13 @@
 
 | # | 항목 | 누가 | 의존 | 상태 |
 |---|---|---|---|---|
-| B-1 | Play Console **조직 계정**($25): D-U-N-S = Apple 가입 때 번호 **재사용**, 결제 프로필의 법인명·주소를 D&B 등록과 일치, 조직 도메인 Google 계정 + 법인 서류 + 대표 신분증 검증 | 오너 | #584 결정 코멘트(2026-10-29) | 대기 |
+| B-1 | Play Console **조직 계정**($25): D-U-N-S = Apple 가입 때 번호 **재사용**, 결제 프로필의 법인명·주소를 D&B 등록과 일치, 조직 도메인 Google 계정 + 법인 서류 + 대표 신분증 검증 | 오너 | #584 결정 코멘트(2026-10-29) | 완료(2026-10-30 조직(법인) 계정 가입 — #584 코멘트 · Wiki DOC-4325 §5) |
 | B-2 | 업로드 키 생성(PKCS12, 25년+) → 저장소 **variable** `HANDE_UPLOAD_CERT_SHA256`(업로드 인증서 SHA-256 지문 — 공개값, **secrets 보다 먼저**) → GitHub **secrets 4개**(`HANDE_UPLOAD_KEYSTORE_B64`·`HANDE_UPLOAD_KEYSTORE_PASSWORD`·`HANDE_UPLOAD_KEY_ALIAS`·`HANDE_UPLOAD_KEY_PASSWORD`). 키스토어 보관 위치만 Wiki 에 | 오너 | `android/README.md` ② | 대기 |
 | B-3 | `native-mls-android.yml` **workflow_dispatch**(`version_name` 예 `0.2.0`) → 서명된 `app-release.aab` 아티팩트(`hande-android-bundle-<sha>`) · 서명자 ≠ 디버그 키 · 서명자 = `HANDE_UPLOAD_CERT_SHA256` 검증 통과 | 노드(dispatch) / 오너(승인) | `android/README.md` ③④ | 대기 |
 | B-4 | 앱 만들기(`com.seoyoon_family.hande`, 한국어) → Play App Signing(Google 생성 키) 수락 → **내부 테스트 트랙**에 AAB 업로드 → 테스터(오너 기기) 설치 확인 | 오너 | B-2·B-3 | 대기 |
-| B-5 | App content › **개인정보처리방침 URL** `…/hande/privacy/`(앱 안 링크와 동일) | 오너 | `docs/hande/privacy.md` | 0-2 뒤 |
+| B-5 | App content › **개인정보처리방침 URL** `…/hande/privacy/`(앱 안 링크와 동일) | 오너 | `docs/hande/privacy.md` | 대기(0-2 완료 — 지금 입력 가능) |
 | B-6 | App content › **Data safety**: `play-data-safety.md` §1 그대로 입력(수집 있음 · 전송 암호화 · 삭제 요청 방법 있음 · E2EE 메시지 신고 안 함 · 식별자/이메일/이름/앱 활동) | 오너 | `docs/hande/play-data-safety.md` | 대기 |
-| B-7 | App content › **계정 삭제**: 「앱 내 삭제 경로 제공」 예 + **웹 삭제 요청 URL** `…/hande/delete-account/` + 「일부 데이터 보관」(사유: 변조 방지 보안 기록 = 체인 tombstone) | 오너 | `delete-account.md` | 0-2 뒤 |
+| B-7 | App content › **계정 삭제**: 「앱 내 삭제 경로 제공」 예 + **웹 삭제 요청 URL** `…/hande/delete-account/` + 「일부 데이터 보관」(사유: 변조 방지 보안 기록 = 체인 tombstone) | 오너 | `delete-account.md` | 대기(0-2 완료 — 지금 입력 가능) |
 | B-8 | App content › **App access**: 로그인 필요 → 데모 서버 도메인·심사관 계정·절차(A-9 와 같은 내용, 1세트) | 오너 | `demo-server.md` | 0-6 뒤 |
 | B-9 | App content › **콘텐츠 등급**(IARC 설문: 사용자 간 소통 있음 · 개인정보 공유 가능 · 폭력/도박 없음) · 광고 없음 · 뉴스 앱 아님 · 건강/금융 해당 없음 · 정부 앱 아님 · 타깃 연령(가족 — 「아동 대상 아님」 선택 시 아동 정책 미적용; 13세 미만 포함하면 가족 정책 요건 — **오너 결정**) | 오너 | `play-data-safety.md` 「콘솔의 다른 선언」 | 대기 |
 | B-10 | 스토어 등록 정보: 아이콘 512 · 피처 그래픽 1024×500 · 스크린샷 2장+ · 짧은/전체 설명(「운영자 서버 필요」 명시) · 카테고리 소셜 · 연락처 이메일 support@rnmaru.com | 오너(확정) / 노드(초안·캡처) | `app-store-review.md` §4 | 대기 |
