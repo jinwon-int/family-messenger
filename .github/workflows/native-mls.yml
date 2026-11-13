@@ -330,6 +330,12 @@ jobs:
       - name: Termux bot installer (stub binary, fake PREFIX)
         if: steps.bot-scope.outputs.run == 'true'
         run: bash archive/native-mls/bot/deploy/install-node-bot-termux.test.sh
+      # #799: the systemd installer's JWT refresh timer — the unit text, the armed check
+      # against a stub systemctl, and a disable → enable round trip of that unit text on the
+      # runner's systemd (the sequence that left the old definition without a next elapse).
+      - name: systemd bot installer — JWT refresh timer (#799)
+        if: steps.bot-scope.outputs.run == 'true'
+        run: bash archive/native-mls/bot/deploy/install-node-bot.test.sh
       # #492 ②: Termux (aarch64 Android) runs the bot as a static aarch64-unknown-linux-musl
       # build (no TLS, no C deps; rust-lld from the pinned toolchain, no cross C toolchain).
       # Not a release: a 14-day artifact + sha256 for deploy/TERMUX.md.

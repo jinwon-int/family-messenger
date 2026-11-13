@@ -11,10 +11,15 @@
 #   1. system user/group native-relay-bot; /var/lib/native-relay-bot/{bot,rooms} 0700
 #   2. /opt/native-relay-bot/bin/native-mls-bot (copied from --binary) + jwt-refresh.sh
 #   3. native-relay-jwt-refresh.{service,timer} (12h): mints the 730h CF Access JWT
-#      from the node's service token env file (--token-env, 0600, never printed)
+#      from the node's service token env file (--token-env, 0600, never printed).
+#      The timer carries no Persistent= (#799): with it, a timer that had fired once
+#      and was then disabled and enabled again in the same boot lost its next elapse
+#      and never ran again, while still reporting enabled/active.
 #   4. native-relay-bot.service (steward <node>-bot, identity/rooms/jwt files,
 #      hardening as the gongmyoung lane) + drop-in 30-agent.conf (responder socket)
-#   5. daemon-reload, one jwt-refresh run, identity bootstrap, enable timer + bot,
+#   5. daemon-reload, enable + restart the timer, one jwt-refresh run through the
+#      service unit, a check that the timer has a next elapse (fails the install
+#      otherwise, #799), identity bootstrap, enable the bot,
 #      then writes the enrollment candidate JSON the relay operator needs
 #      ({actor, device_id, signing_key, subject}) to
 #      /var/lib/native-relay-bot/bot/enrollment.json (0600) — NOT to stdout. The signing
@@ -57,7 +62,7 @@ STATE_DIR="/var/lib/native-relay-bot"
 BIN_DIR="/opt/native-relay-bot/bin"
 UNIT_DIR="/etc/systemd/system"
 
-usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "install-node-bot: $*" >&2; exit 1; }
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -87,6 +92,16 @@ DEVICE="$NODE-bot"
 
 say() { printf '%s\n' "$*"; }
 run() { if [ "$DRY_RUN" = 1 ]; then say "would: $*"; else "$@"; fi; }
+# #799: a timer without a next elapse never fires again, yet `is-enabled`/`is-active`
+# still say enabled/active. Armed = systemd reports a next elapse on either clock
+# (monotonic timers: a time span; calendar timers: a wallclock time). An unreadable
+# answer counts as not armed.
+jwt_timer_armed() {
+  local mono real
+  mono="$(systemctl show native-relay-jwt-refresh.timer -p NextElapseUSecMonotonic --value 2>/dev/null)" || mono=""
+  real="$(systemctl show native-relay-jwt-refresh.timer -p NextElapseUSecRealtime --value 2>/dev/null)" || real=""
+  [ -n "$real" ] || { [ -n "$mono" ] && [ "$mono" != "infinity" ] && [ "$mono" != "0" ]; }
+}
 write_file() { # <path> <mode> [owner]; content on stdin
   local path="$1" mode="$2" owner="${3:-root}" tmp
   if [ "$DRY_RUN" = 1 ]; then say "would write $path ($mode $owner)"; cat >/dev/null; return 0; fi
@@ -139,9 +154,12 @@ write_file "$UNIT_DIR/native-relay-jwt-refresh.timer" 0644 <<'EOF'
 [Unit]
 Description=native-relay JWT refresh every 12h (token lifetime 730h)
 [Timer]
+# No Persistent= here (#799). It only applies to OnCalendar=, and on these monotonic
+# triggers its saved last-trigger time made a timer that was disabled and enabled
+# again in the same boot treat OnBootSec as already spent, with no base left for
+# OnUnitActiveSec: no next elapse, no refresh, and the bot's JWT expired 730h later.
 OnBootSec=2min
 OnUnitActiveSec=12h
-Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
@@ -195,8 +213,18 @@ fi
 # 5. reload, mint, start, enrollment candidate
 if [ "$DRY_RUN" = 1 ]; then say "dry-run: not reloading/starting"; exit 0; fi
 systemctl daemon-reload
-"$BIN_DIR/jwt-refresh.sh"
-systemctl enable --now native-relay-jwt-refresh.timer >/dev/null
+systemctl enable native-relay-jwt-refresh.timer >/dev/null
+# restart, not `enable --now`: a re-run on a node whose timer is already active must
+# pick up a changed unit file (#799).
+systemctl restart native-relay-jwt-refresh.timer
+# Mint through the unit, not by calling the script: the service's activation is the
+# base OnUnitActiveSec counts from, and a timer that had lost its next elapse gets it
+# back here. If the timer has just started the service, this joins that run.
+systemctl start native-relay-jwt-refresh.service \
+  || die "jwt-refresh failed — see: journalctl -u native-relay-jwt-refresh.service"
+armed=0
+for _ in $(seq 1 30); do if jwt_timer_armed; then armed=1; break; fi; sleep 1; done
+[ "$armed" = 1 ] || die "native-relay-jwt-refresh.timer has no next elapse (systemctl list-timers shows n/a) — the JWT would never be refreshed (#799)"
 # identity bootstrap (see header): session run → state file → extract-identity
 IDENTITY="$STATE_DIR/bot/identity.json"
 if [ -s "$IDENTITY" ]; then

@@ -33,6 +33,26 @@ native-mls-bot <base-url> session <room> <device> \
 
 노드마다 **봇 기기 1개 + 방 1개**: `deploy/install-node-bot.sh --node <node> --relay-url http://<릴레이 tailnet>:18921 --relay-public-url https://<릴레이 호스트> --binary <native-mls-bot 빌드> --token-env /root/.config/native-relay/bot-service-token.env` (root). 사용자·디렉터리·바이너리·JWT 갱신 타이머·steward 유닛(`<node>-bot`, actor = `<node>`)·응답기 drop-in(`/run/ccc-hande/responder.sock`, ccc-node 브리지가 서빙)을 만들고, **신원을 부트스트랩**하고(steward 모드는 identity 파일을 만들지 않고 읽기만 하므로, 8초 한도의 `session` 1회 실행으로 state 파일을 만든 뒤 `extract-identity`로 `bot/identity.json`을 뽑고 state는 파기 — 기존 파일이 있으면 유지), `native-mls-bot identity-public-key <node>-bot --identity-file bot/identity.json`(#492, 64 hex = `steward_ready`의 `public_key`, 릴레이·응답기 없이 오프라인 계산; 서브커맨드가 없는 구 바이너리면 저널 `steward_ready` 폴백)으로 공개키를 구해 — 응답기 소켓이 아직 없어도(봇 → 브리지 순서) — 등록 후보 JSON을 `/var/lib/native-relay-bot/bot/enrollment.json`(0600)에 쓴다 — 릴레이 운영자가 `native-devices -enroll-first`에 넣는다(승인). 등록 전 봇은 403을 받으며 재시도한다(정상). 응답기(ccc-node `CCC_CHANNEL=hande`)는 ccc-node `scripts/install-hande-bridge.sh`가 세운다. 되돌리기: `systemctl disable --now native-relay-bot native-relay-jwt-refresh.timer`.
 
+### JWT 갱신 타이머 (#799)
+
+`native-relay-jwt-refresh.timer`는 부팅 2분 뒤와 마지막 실행 12시간 뒤에 증표(730시간)를 다시 받는다. 타이머 정의에 `Persistent=true`를 두지 않는다 — 이 줄이 있으면 한 번 발화한 타이머를 같은 부팅 안에서 `disable --now` 했다가 `enable --now` 했을 때 다음 실행 예정이 사라지고(`enabled`/`active`로는 보인다), 730시간 뒤 봇이 403을 받는다. 설치 스크립트는 타이머를 다시 시작하고 증표를 서비스 유닛으로 한 번 받은 뒤 다음 실행 예정이 있는지 확인하며, 없으면 실패로 끝난다.
+
+```bash
+systemctl list-timers native-relay-jwt-refresh.timer --all --no-pager   # NEXT가 n/a면 멈춘 상태
+```
+
+이미 설치된 노드에 반영하는 순서(노드 변경이라 오너 승인 뒤에만):
+
+```bash
+sed -i '/^Persistent=true$/d' /etc/systemd/system/native-relay-jwt-refresh.timer
+systemctl daemon-reload
+systemctl restart native-relay-jwt-refresh.timer
+systemctl start native-relay-jwt-refresh.service    # 증표 1회 발급 — 멈춰 있던 타이머도 여기서 되살아난다
+systemctl list-timers native-relay-jwt-refresh.timer --all --no-pager
+```
+
+Termux 노드는 cron으로 갱신하므로 해당 없다(`deploy/TERMUX.md`).
+
 ## 바이너리 교체 (플릿 롤아웃 — `deploy/native-mls-bot-swap` · `deploy/native-mls-bot-fleet`)
 
 새 봇 빌드를 노드에 올리는 정본(#676·#703·#731+#733 임시 스크립트를 일반화). **바이너리만 바꾸고 봇만 재시작**한다 — 브리지·설정 무변경. 노드 교체도 봇 재시작이라 **오너 승인 뒤에만** 돌린다(파일럿 1노드 → PASS 확인 → 나머지).
