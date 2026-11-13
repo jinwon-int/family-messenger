@@ -34,12 +34,25 @@ write is retried while the state still matches, and the first ``up`` after insta
 silent. Alerts are ccc push-spool ``health-alert`` records with codes ``relay_down``,
 ``relay_edge`` and ``relay_recovered``; the node's bridge delivers them.
 
+Each record carries a fleet-alert ``tier``. A record without one is queued as ``info``,
+and ``info`` is held for the daily digest: both real alerts this watchdog raised before
+the field existed reached the owner about four and a half hours late. ``relay_down`` and
+``relay_edge`` are ``critical`` (delivered at once, re-notified until answered),
+``relay_recovered`` is ``notice`` (delivered at once, never re-notified). So that a
+recovery also ends the re-notify chain of the outage it closes, a bad-state record ends
+with an ``@fleet-alert opens=<key>`` line and the record that leaves that state with
+``@fleet-alert resolves=<key>``; the fleet alert queue strips those lines from what it
+shows. The keys still open are kept in the state file (``open_keys``), so a re-alert or a
+retried write names the same outage. The tier decides *when* an alert is delivered, not
+*through what*: an alert that travels through the relay it watches still waits for it.
+
 Exit status: 0 whenever the run itself worked (whatever the relay state); 1 on I/O
 failure (state file, spool record, unreadable access env), 2 on usage errors. Secret
 values are read only to build request headers; they are never printed, logged or stored.
 """
 import argparse
 import json
+import re
 from pathlib import Path
 import socket
 import sys
@@ -59,6 +72,12 @@ MAX_TEXT = hw.MAX_TEXT
 UP, EDGE, RELAY_DOWN = hw.UP, hw.EDGE, hw.HOST_DOWN
 STATE_LABEL = {UP: 'up', EDGE: 'edge', RELAY_DOWN: 'relay_down'}
 ALERT_CODES = {RELAY_DOWN: 'relay_down', EDGE: 'relay_edge', UP: 'relay_recovered'}
+# Fleet-alert tier per confirmed state (missing = ``info`` = held for the daily digest).
+ALERT_TIERS = {RELAY_DOWN: 'critical', EDGE: 'critical', UP: 'notice'}
+# Shape the fleet alert queue accepts for a condition key; segments stay short on purpose
+# (the owner spool masks any long unbroken run of key-like characters).
+CONDITION_KEY_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
+MAX_OPEN_KEYS = 8
 # Answers from Cloudflare Access itself (no origin involved): the edge is alive.
 ACCESS_EDGE_STATUSES = (301, 302, 303, 307, 308, 401, 403)
 ACCESS_KEYS = ('CF_ACCESS_CLIENT_ID', 'CF_ACCESS_CLIENT_SECRET')
@@ -180,12 +199,46 @@ def alert_text(node, alert, now, direct, edge, threshold):
     return (head + body)[:MAX_TEXT]
 
 
-def spool_alert(spool, node, alert, text, now):
+def condition_key(state, since):
+    """Names one outage: the confirmed bad state and when it began."""
+    return 'relay-watchdog:%s:%d' % (STATE_LABEL[state], int(since))
+
+
+def read_open_keys(prev):
+    """Condition keys of alerts not yet resolved, as stored by an earlier run (bad entries dropped)."""
+    raw = prev.get('open_keys') if isinstance(prev.get('open_keys'), list) else []
+    keys = []
+    for key in raw:
+        if isinstance(key, str) and CONDITION_KEY_RE.match(key) and key not in keys:
+            keys.append(key)
+    return keys[-MAX_OPEN_KEYS:]
+
+
+def plan_conditions(alert, open_keys):
+    """(opens, resolves, open_keys_after) for one alert.
+
+    A bad state opens its own key and resolves every other key still open (the outage
+    changed shape: edge -> relay_down or back). ``up`` resolves everything open. A
+    re-alert or retry of the same outage opens the same key again, which is harmless.
+    """
+    if alert['state'] == UP:
+        return [], list(open_keys), []
+    key = condition_key(alert['state'], alert['since'])
+    return [key], [k for k in open_keys if k != key], [key]
+
+
+def spool_alert(spool, node, alert, text, now, opens=(), resolves=()):
     code = alert['code']
     marker = 'transition' if alert['kind'] == 'transition' else str(int(now))
+    markers = ['@fleet-alert opens=%s' % key for key in opens]
+    markers += ['@fleet-alert resolves=%s' % key for key in resolves]
+    tail = '\n'.join(markers)
+    # The marker lines must survive whole, so the human line gives up the room for them.
+    lines = [text[:max(0, MAX_TEXT - len(tail) - 1)]] + markers if markers else [text]
     record = {'version': 1, 'event': 'health-alert', 'code': code, 'kind': alert['kind'],
               'node': node, 'recipient': 'owner', 'ts': hw.iso(now), 'status': STATE_LABEL[alert['state']],
-              'text': text,
+              'tier': ALERT_TIERS[alert['state']],
+              'text': '\n'.join(lines),
               'dedup': 'relay-watchdog:%s:%d:%s' % (code, int(alert['since']), marker)}
     name = 'health-alert-%s-%d.json' % (code, int(now * 1000))
     return write_spool_record(spool, name, record)
@@ -201,6 +254,7 @@ def run(args, now, direct, edge):
     state, alert = hw.advance(prev, candidate, now, args.threshold, args.realert_hours * 3600,
                               alert_codes=ALERT_CODES)
     state['last'] = {'direct': direct, 'edge': edge}
+    open_keys = read_open_keys(prev)
     summary = {'state': STATE_LABEL.get(state['state']), 'candidate': STATE_LABEL[candidate],
                'streak': state['streak'], 'threshold': args.threshold, 'transition': state['transition'],
                'since': state['since'], 'direct': direct, 'edge': edge, 'updated': now, 'alert': 'none'}
@@ -208,11 +262,15 @@ def run(args, now, direct, edge):
     if alert is not None:
         text = alert_text(args.push_node, alert, now, direct, edge, args.threshold)
         summary['text'] = text
+        opens, resolves, after = plan_conditions(alert, open_keys)
         if args.push_spool:
             try:
-                summary['record'] = spool_alert(args.push_spool, args.push_node, alert, text, now)
+                summary['record'] = spool_alert(args.push_spool, args.push_node, alert, text, now,
+                                                opens, resolves)
                 summary['alert'] = '%s:%s' % (alert['kind'], alert['code'])
+                summary['tier'] = ALERT_TIERS[alert['state']]
                 state['last_alert'][alert['state']] = now
+                open_keys = after  # only once the record is in the spool; a failed write retries
             except (OSError, ValueError) as e:
                 summary['alert'] = 'failed: ' + type(e).__name__
                 state['pending'] = alert['code']
@@ -220,6 +278,7 @@ def run(args, now, direct, edge):
         else:
             summary['alert'] = 'unspooled:%s:%s' % (alert['kind'], alert['code'])
             state['last_alert'][alert['state']] = now
+    state['open_keys'] = open_keys
     hw.write_state(path, state)
     return summary, code
 
