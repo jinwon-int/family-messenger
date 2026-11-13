@@ -344,6 +344,52 @@ class RestoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             rest.bump_seq(self.target / 'data' / snap.DB_NAME, -1)
 
+    def test_clear_lobby_keypackages_is_off_by_default_and_tolerates_a_missing_table(self):
+        self.assertIsNone(rest.restore(self.restore_args())['lobby_keypackages_cleared'])
+        # The fixture relay predates the lobby (#380): nothing to clear, no error.
+        target = self.root / 'standby2'
+        target.mkdir()
+        result = rest.restore(rest.parse(['--archive', self.archive, '--target-data-dir', str(target / 'data'),
+                                          '--target-policy-dir', str(target / 'policy'),
+                                          '--skip-unit-check', '--clear-lobby-keypackages']))
+        self.assertEqual(result['lobby_keypackages_cleared'], {})
+
+    def test_clear_lobby_keypackages_drops_only_unconsumed_rows(self):
+        """#812: a package consumed after the snapshot comes back unconsumed; clearing every
+        unconsumed row makes each device see live 0 and republish. Consumed rows and room
+        key packages stay; counts are still compared against the manifest before the delete."""
+        source = self.root / 'lobby-source'
+        argv = args_for(source, self.root / 'lobby-snapshots')
+        db = sqlite3.connect(str(source / 'data' / snap.DB_NAME))
+        db.execute("""CREATE TABLE mls_lobby_keypackages (device TEXT NOT NULL, ref TEXT NOT NULL, bytes BLOB NOT NULL,
+            consumed_by TEXT, consumed_room TEXT, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+            PRIMARY KEY (device, ref))""")
+        rows = [('owner-pc', 'a1', None, None), ('owner-pc', 'a2', None, None),
+                ('owner-pc', 'a0', 'bot-1', 'family-acc'), ('owner-iphone', 'b1', None, None)]
+        for device, ref, by, room in rows:
+            db.execute("INSERT INTO mls_lobby_keypackages VALUES (?, ?, x'00', ?, ?, 1, 9999999999)",
+                       (device, ref, by, room))
+        db.execute("INSERT INTO mls_keypackages VALUES ('owner-pc', x'01')")
+        db.commit()
+        db.close()
+        archive = snap.snapshot(argv)['archive']
+        target = self.root / 'lobby-standby'
+        target.mkdir()
+        result = rest.restore(rest.parse(['--archive', archive, '--target-data-dir', str(target / 'data'),
+                                          '--target-policy-dir', str(target / 'policy'),
+                                          '--skip-unit-check', '--clear-lobby-keypackages']))
+        self.assertEqual(result['lobby_keypackages_cleared'], {'owner-iphone': 1, 'owner-pc': 2})
+        self.assertTrue(result['counts_match'], 'the copy matched the manifest before the delete')
+        self.assertEqual(result['db']['counts']['mls_lobby_keypackages'], 4)
+        conn = sqlite3.connect(str(target / 'data' / snap.DB_NAME))
+        try:
+            left = conn.execute('SELECT device, ref, consumed_by FROM mls_lobby_keypackages').fetchall()
+            room_packages = conn.execute('SELECT COUNT(*) FROM mls_keypackages').fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(left, [('owner-pc', 'a0', 'bot-1')], 'consumed rows stay')
+        self.assertEqual(room_packages, 1, 'room key packages are not lobby packages')
+
     def test_existing_target_is_moved_aside_not_deleted(self):
         (self.target / 'data').mkdir()
         (self.target / 'data' / 'old.db').write_text('keep me')
