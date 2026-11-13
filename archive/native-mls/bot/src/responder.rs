@@ -1645,21 +1645,17 @@ pub fn parse_agent_actors(raw: &str) -> Option<Vec<String>> {
 /// attachment of #499 (`archive/native-mls/FILE-V2.md`): `^file-v2-[a-f0-9-]{36}$`.
 /// A file-v2 plaintext is a small UTF-8 JSON descriptor that carries the file's
 /// decryption key, so it must never reach an agent as if it were a text turn.
+/// One rule for every host since #366 3f: host-core `file_v2::is_attachment_client_id`.
 pub fn is_attachment_client_id(client_id: &str) -> bool {
-    match client_id.strip_prefix("file-v1-").or_else(|| client_id.strip_prefix("file-v2-")) {
-        Some(tail) => tail.len() == 36 && tail.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase() || b == b'-'),
-        None => false,
-    }
+    native_mls_host::file_v2::is_attachment_client_id(client_id)
 }
 
 /// status-v1 (#560, `archive/native-mls/STATUS-V1.md`): `^status-[a-f0-9-]{36}$` —
 /// an agent's live status line. Never a turn (another bot's status must not
 /// start a peer turn, the hazard `is_attachment_client_id` guards for files).
+/// host-core `file_v2::is_status_client_id` (#366 3f).
 pub fn is_status_client_id(client_id: &str) -> bool {
-    match client_id.strip_prefix("status-") {
-        Some(tail) => tail.len() == 36 && tail.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || b == b'-'),
-        None => false,
-    }
+    native_mls_host::file_v2::is_status_client_id(client_id)
 }
 
 /// `승인 3` / `거절 3` / `approve #3` / `deny 3` → (n, allow). Anything else → None.

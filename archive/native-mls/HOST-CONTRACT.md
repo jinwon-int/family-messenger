@@ -112,7 +112,12 @@
 ## 6. 아직 코어에 없는 것(호스트가 임시로 하거나 보류)
 - 3c 에서 코어로 들어간 것: 로비 key package 게시·보충(`MlsLobby.replenish`) · 방 목록(`rooms()`) · 푸시 등록(`registerPush`) · 방 닫기(`MlsRoom.closeRoom`) · 로비 Welcome 받아들이기(`MlsRoom.adopt`).
 - 3d·3e 에서 코어로 들어간 것: file-v2 규칙(§2c) — Android `FileV2.kt`·`DeviceHub` 는 코어 판정을 쓴다. 앱 JVM 단위 테스트(`:app:testDebugUnitTest`)는 호스트 cdylib(`<ffiOut>/host`, `build-android.sh` 2b)을 JNA 로 싣는다. file-v2 **열기·송신**은 `MlsRoom.openFileV2`·`sendFileV2`(#366 C — blob 전송까지 코어); 앱 화면(말풍선 열기·작성창 첨부)은 앱 C 단계.
-- 남은 것: **첨부 크기 정책**(호스트 `application` 콜백에서 `client_id` `file-v1-…` 판정 뒤 적용) · 푸시 **와이어의 FCM 일반화**(릴레이 #338 G3 — 클라이언트 호출 모양은 그대로) · 로비 key package 의 **방 상태 사본에서의 정리**(`join` 이 남은 것을 모두 지우므로 방 쪽은 자동; 로비 쪽은 `replenish` 가 서버 `live` 기준으로 정리).
+- 3f 에서 코어로 들어간 것: **첨부 client_id 규칙과 크기 상한**. host-core `file_v2` 의 `is_file_v1_client_id` · `is_status_client_id` · `is_attachment_client_id`(모두 `^<접두>[a-f0-9-]{36}$`)와 `MAX_FILE_V1`(5 MiB) · `MAX_FILE_V2`(50 MiB) · `MAX_DESCRIPTOR_BYTES`(4 KiB).
+  - `classify` 는 정규 `file-v1-<uuid>` 만 `FileV1` 로 본다. 전에는 접두어만 봐서 `file-v1-short` 가 Android 에서 첨부, 웹·iOS·봇에서는 글이었다. 이제 모두 글이다.
+  - 봇 `responder::is_attachment_client_id`·`is_status_client_id` 는 코어 호출이다.
+  - ios-ffi 는 `attachmentLimits()`·`isAttachmentClientId()` 를 노출한다. Android 상수(`FileV2.MAX_FILE_BYTES` 등)는 `const val` 이라 그대로 두고, `FileV2VectorsTest.limitsMatchCore` 가 코어 값과 같음을 고정한다.
+  - 공용 벡터 `tests/fixtures/file-v2-vectors.json` 의 `classify[].attachment` 를 host-core·ios-ffi·Android·웹(v1 `isAttachment`)이 같은 값으로 확인한다. iOS 는 #271 동결이라 코드를 바꾸지 않았고, `SyncAttachmentTests.testClientIdRuleMatchesRelayApp` 이 같은 규칙을 이미 고정한다.
+- 남은 것: 푸시 **와이어의 FCM 일반화**(릴레이 #338 G3 — 클라이언트 호출 모양은 그대로) · 로비 key package 의 **방 상태 사본에서의 정리**(`join` 이 남은 것을 모두 지우므로 방 쪽은 자동; 로비 쪽은 `replenish` 가 서버 `live` 기준으로 정리).
 
 ## 7. 검증
 - Rust: `ios-ffi/tests/room_host.rs`(3a, 10 시나리오 — #574 형제 기기 `invite` · 후속의 대기 Welcome 영속·재시작 포함) · `ios-ffi/tests/lobby_host.rs`(3c, 12 시나리오: 보충·상한·게시 실패 롤백·로비 Welcome adopt·import·회수·방 닫기·푸시 + #574 `/v2/me`·후보 게시→승인·역할·로비 `dispatch`) — 대역은 `tests/support/mod.rs`(in-memory 릴레이·관찰자·기기 정책 체인 대역).

@@ -69,11 +69,43 @@ impl fmt::Debug for Descriptor {
     }
 }
 
+/// Outer relay client-id prefix of a file-v1 message (the MLS plaintext is the file itself).
+pub const FILE_V1_PREFIX: &str = "file-v1-";
+/// Outer relay client-id prefix of an agent status line (STATUS-V1).
+pub const STATUS_PREFIX: &str = "status-";
+/// file-v1 plaintext cap: 5 MiB (#364 decision B; 256 KiB before 2026-10-15). Same value as the
+/// web `relay-attachments.js` `MAX_ATTACHMENT`, the facade `MAX_ATTACHMENT` and iOS
+/// `AttachmentFormat.maxBytes` (a sender-side bound).
+pub const MAX_FILE_V1: u64 = 5 * 1024 * 1024;
+
+/// `^<prefix>[a-f0-9-]{36}$` — the shape shared by every typed client id (web regex, iOS
+/// `AttachmentFormat.isAttachment`, bot responder).
+fn has_uuid_tail(client_id: &str, prefix: &str) -> bool {
+    client_id.len() == prefix.len() + 36
+        && client_id.starts_with(prefix)
+        && client_id[prefix.len()..].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || b == b'-')
+}
+
 /// `^file-v2-[a-f0-9-]{36}$` — a display hint, not authentication (FILE-V2 §1).
 pub fn is_client_id(client_id: &str) -> bool {
-    client_id.len() == CLIENT_PREFIX.len() + 36
-        && client_id.starts_with(CLIENT_PREFIX)
-        && client_id[CLIENT_PREFIX.len()..].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || b == b'-')
+    has_uuid_tail(client_id, CLIENT_PREFIX)
+}
+
+/// `^file-v1-[a-f0-9-]{36}$` — the web `relay-attachments.js` `isAttachment` and iOS
+/// `AttachmentFormat.isAttachment`. Uppercase or short ids are text everywhere (#366 3f).
+pub fn is_file_v1_client_id(client_id: &str) -> bool {
+    has_uuid_tail(client_id, FILE_V1_PREFIX)
+}
+
+/// `^status-[a-f0-9-]{36}$` (STATUS-V1, #560).
+pub fn is_status_client_id(client_id: &str) -> bool {
+    has_uuid_tail(client_id, STATUS_PREFIX)
+}
+
+/// file-v1 or file-v2 by client id alone — never an agent turn, never shown as typed text
+/// (bot responder #636). A file-v2 id with a bad descriptor is still an attachment id.
+pub fn is_attachment_client_id(client_id: &str) -> bool {
+    is_file_v1_client_id(client_id) || is_client_id(client_id)
 }
 
 pub fn is_lower_hex(s: &str, len: usize) -> bool {
@@ -425,7 +457,7 @@ pub fn display_name(name: Option<&str>) -> Option<String> {
 pub enum Classified {
     /// `status-<uuid>`: a transient agent status line — not stored.
     Status,
-    /// `file-v1-…`: the plaintext is the file itself.
+    /// `file-v1-<uuid>`: the plaintext is the file itself.
     FileV1,
     /// `file-v2-<uuid>` with a valid descriptor; `size` is the declared plaintext size.
     FileV2 { size: u64 },
@@ -435,18 +467,14 @@ pub enum Classified {
     Text,
 }
 
-fn is_status_client_id(client_id: &str) -> bool {
-    const PREFIX: &str = "status-";
-    client_id.len() == PREFIX.len() + 36
-        && client_id.starts_with(PREFIX)
-        && client_id[PREFIX.len()..].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || b == b'-')
-}
-
+/// Storage decision for one decrypted application message. file-v1 needs the canonical id
+/// (#366 3f): before, any `file-v1-` prefix was an attachment here while the web, iOS and the bot
+/// showed `file-v1-short` as text.
 pub fn classify(client_id: &str, plaintext: &[u8]) -> Classified {
     if is_status_client_id(client_id) {
         return Classified::Status;
     }
-    if client_id.starts_with("file-v1-") {
+    if is_file_v1_client_id(client_id) {
         return Classified::FileV1;
     }
     if client_id.starts_with(CLIENT_PREFIX) {
@@ -535,6 +563,26 @@ pub(crate) mod tests {
         assert_eq!(classify(&a, b"not a descriptor"), Classified::Undecryptable, "never text");
     }
 
+    /// #366 3f: one client-id rule for file-v1 · file-v2 · status (web regex, iOS, bot).
+    #[test]
+    fn typed_client_ids_need_a_lowercase_uuid_tail() {
+        let uuid = "0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2";
+        for prefix in [FILE_V1_PREFIX, CLIENT_PREFIX, STATUS_PREFIX] {
+            let good = format!("{prefix}{uuid}");
+            assert!(has_uuid_tail(&good, prefix), "{good}");
+            for bad in [prefix.to_owned(), format!("{prefix}short"), format!("{prefix}{}", uuid.to_uppercase()), format!("{good}-x"), format!("x{good}")] {
+                assert!(!has_uuid_tail(&bad, prefix), "{bad}");
+            }
+        }
+        assert!(is_attachment_client_id(&format!("file-v1-{uuid}")));
+        assert!(is_attachment_client_id(&format!("file-v2-{uuid}")));
+        assert!(!is_attachment_client_id(&format!("status-{uuid}")));
+        assert!(!is_attachment_client_id("file-v1-short"));
+        assert_eq!(classify("file-v1-short", b"%PDF"), Classified::Text, "web/iOS/bot show it as text");
+        assert_eq!(classify(&format!("file-v1-{}", uuid.to_uppercase()), b"hi"), Classified::Text);
+        assert_eq!(MAX_FILE_V1, 5_242_880);
+    }
+
     #[test]
     fn sniffing_kind_and_names() {
         assert_eq!(sniff_mime(&[0xff, 0xd8, 0xff, 0xe0]), "image/jpeg");
@@ -586,6 +634,9 @@ pub(crate) mod tests {
                 other => panic!("{name}: kind {other}"),
             };
             assert_eq!(got, want, "{name}");
+            let id = case["client_id"].as_str().unwrap();
+            let attachment = case["attachment"].as_bool().unwrap_or_else(|| panic!("{name}: attachment"));
+            assert_eq!(is_attachment_client_id(id), attachment, "{name}: attachment id");
             n += 1;
         }
         let ct = &doc["ciphertext"];
