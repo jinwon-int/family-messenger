@@ -5,6 +5,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {parseDescriptor, decryptFile} from '../file-v2.js';
+import {isAttachment, MAX_ATTACHMENT} from '../relay-attachments.js';
 
 const vectors = JSON.parse(readFileSync(new URL('../../../tests/fixtures/file-v2-vectors.json', import.meta.url), 'utf8'));
 const unhex = h => Uint8Array.from(h.match(/../g) ?? [], b => parseInt(b, 16));
@@ -30,4 +31,14 @@ test('descriptor vectors: same decision as host-core and Android', () => {
 test('ciphertext vector opens with the web decryptFile', async () => {
   const {descriptor, ciphertext_hex, plaintext_hex} = vectors.ciphertext;
   assert.deepEqual(await decryptFile(unhex(ciphertext_hex), parseDescriptor(descriptor)), unhex(plaintext_hex));
+});
+
+// #366 3f: 웹 v1 `isAttachment` 는 host-core·iOS·봇과 같은 엄격 규칙 — 비정규 `file-v1-…` 은 글이다.
+test('classify vectors: web isAttachment agrees with the file-v1 kind', () => {
+  assert.ok(vectors.classify.some(c => c.client_id.startsWith('file-v1-') && c.kind === 'text'), 'non-canonical v1 cases present');
+  for (const c of vectors.classify) assert.equal(isAttachment(c.client_id), c.kind === 'file-v1', c.name);
+});
+
+test('file-v1 cap is the host-core MAX_FILE_V1 (5 MiB)', () => {
+  assert.equal(MAX_ATTACHMENT, 5 * 1024 * 1024);
 });

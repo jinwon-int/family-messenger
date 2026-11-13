@@ -1,7 +1,8 @@
 //! #366 3d: file-v2 FFI 표면이 공유 벡터 `archive/native-mls/tests/fixtures/file-v2-vectors.json` 을 host-core 와 같게 판정하는지,
 //! 그리고 봉인 → 열기가 FFI 바이트만으로 왕복하는지 본다(Kotlin 은 같은 함수를 JNA 로 부른다 — android `jvm-roundtrip.sh` ⑧).
 use family_mls_ios_ffi::{
-    file_v2_check, file_v2_classify, file_v2_display_name, file_v2_open, file_v2_seal, file_v2_sniff, MlsError, MlsFileV2Kind,
+    attachment_limits, file_v2_check, file_v2_classify, file_v2_display_name, file_v2_open, file_v2_seal, file_v2_sniff,
+    is_attachment_client_id, MlsAttachmentLimits, MlsError, MlsFileV2Kind,
 };
 use serde_json::Value;
 
@@ -58,7 +59,18 @@ fn classify_matches_the_shared_vectors() {
             _ => MlsFileV2Kind::Text,
         };
         assert_eq!(got, want, "{name}");
+        let attachment = case["attachment"].as_bool().unwrap();
+        assert_eq!(is_attachment_client_id(case["client_id"].as_str().unwrap().into()), attachment, "{name}: attachment id");
     }
+}
+
+/// #366 3f: 크기 상한은 코어 한 곳 — Android `FileV2VectorsTest.limitsMatchCore` 가 앱 상수를 이 값에 묶는다.
+#[test]
+fn attachment_limits_are_the_core_constants() {
+    assert_eq!(
+        attachment_limits(),
+        MlsAttachmentLimits { file_v1_max_bytes: 5 * 1024 * 1024, file_v2_max_bytes: 50 * 1024 * 1024, descriptor_max_bytes: 4096 }
+    );
 }
 
 #[test]

@@ -1,5 +1,5 @@
 {
- "_comment": "FILE-V2.md conformance vectors (#366 3d). Checked by host-core `file_v2` (cargo test), web `file-v2.js` (node --test) and Android `FileV2.kt` (JVM unit test — since #366 3e it calls the core through ios-ffi). `expect`/`reason` is the host-core decision; an implementation listed in `lenient` accepts that input instead (known, documented difference — senders never produce it). `reason` absent = only the rejection is compared. `hex` = raw bytes when the input is not UTF-8. `classify` follows FILE-V2 §4.1 + STATUS-V1 (web has no classify; host-core and Android check it).",
+ "_comment": "FILE-V2.md conformance vectors (#366 3d). Checked by host-core `file_v2` (cargo test), web `file-v2.js` (node --test) and Android `FileV2.kt` (JVM unit test — since #366 3e it calls the core through ios-ffi). `expect`/`reason` is the host-core decision; an implementation listed in `lenient` accepts that input instead (known, documented difference — senders never produce it). `reason` absent = only the rejection is compared. `hex` = raw bytes when the input is not UTF-8. `classify` follows FILE-V2 §4.1 + STATUS-V1 (web has no classify; host-core, ios-ffi and Android check it). `attachment` = host-core `is_attachment_client_id` (file-v1 or canonical file-v2 id — #366 3f); the web checks its v1 `isAttachment` against the `file-v1` kind.",
  "descriptors": [
   {
    "name": "minimal",
@@ -356,62 +356,93 @@
    "name": "status line",
    "client_id": "status-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2",
    "plaintext": "생각 중…",
-   "kind": "status"
+   "kind": "status",
+   "attachment": false
   },
   {
    "name": "non-canonical status prefix is text",
    "client_id": "status-short",
    "plaintext": "hi",
-   "kind": "text"
+   "kind": "text",
+   "attachment": false
   },
   {
    "name": "file-v1 is the file itself",
    "client_id": "file-v1-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2",
    "plaintext": "%PDF-1.7",
-   "kind": "file-v1"
+   "kind": "file-v1",
+   "attachment": true
+  },
+  {
+   "name": "short file-v1 id is text (#366 3f — web, iOS and bot agree)",
+   "client_id": "file-v1-short",
+   "plaintext": "%PDF-1.7",
+   "kind": "text",
+   "attachment": false
+  },
+  {
+   "name": "uppercase file-v1 uuid is text",
+   "client_id": "file-v1-0F3C2A9B-1D2E-4F5A-8B6C-7D8E9FA0B1C2",
+   "plaintext": "%PDF-1.7",
+   "kind": "text",
+   "attachment": false
+  },
+  {
+   "name": "file-v1 id with a suffix is text",
+   "client_id": "file-v1-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2-x",
+   "plaintext": "%PDF-1.7",
+   "kind": "text",
+   "attachment": false
   },
   {
    "name": "file-v2 with a valid descriptor",
    "client_id": "file-v2-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2",
    "plaintext": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
    "kind": "file-v2",
-   "size": 29
+   "size": 29,
+   "attachment": true
   },
   {
    "name": "file-v2 with a bad descriptor",
    "client_id": "file-v2-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2",
    "plaintext": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":0,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
-   "kind": "undecryptable"
+   "kind": "undecryptable",
+   "attachment": true
   },
   {
    "name": "file-v2 with text plaintext",
    "client_id": "file-v2-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2",
    "plaintext": "안녕",
-   "kind": "undecryptable"
+   "kind": "undecryptable",
+   "attachment": true
   },
   {
    "name": "uppercase uuid is not canonical",
    "client_id": "file-v2-0F3C2A9B-1D2E-4F5A-8B6C-7D8E9FA0B1C2",
    "plaintext": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
-   "kind": "undecryptable"
+   "kind": "undecryptable",
+   "attachment": false
   },
   {
    "name": "short file-v2 id",
    "client_id": "file-v2-short",
    "plaintext": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
-   "kind": "undecryptable"
+   "kind": "undecryptable",
+   "attachment": false
   },
   {
    "name": "ordinary text",
    "client_id": "web-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2",
    "plaintext": "안녕",
-   "kind": "text"
+   "kind": "text",
+   "attachment": false
   },
   {
    "name": "descriptor JSON under a text id stays text",
    "client_id": "web-0f3c2a9b-1d2e-4f5a-8b6c-7d8e9fa0b1c2",
    "plaintext": "{\"v\":2,\"blob\":\"85ccb62b89f2866df3a2a31af621056988905cda26061dd4978c6795a545f317\",\"size\":29,\"key\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"nonce\":\"oKGio6Slpqeoqaqr\"}",
-   "kind": "text"
+   "kind": "text",
+   "attachment": false
   }
  ],
  "ciphertext": {

@@ -5,6 +5,8 @@
 // android.* 없이 JVM 에서 돈다(CI `:app:testDebugUnitTest`, 호스트 cdylib 은 `<ffiOut>/host`). JSON 읽개는 AgentChoicesTest 의 [MiniJson].
 package com.seoyoon_family.hande.core
 
+import com.seoyoon_family.hande.mls.attachmentLimits
+import com.seoyoon_family.hande.mls.isAttachmentClientId
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -55,6 +57,15 @@ class FileV2VectorsTest {
                 else -> k
             }
             assertEquals(c["kind"] as String, kind, name)
+            assertEquals(c["attachment"] as Boolean, isAttachmentClientId(c["client_id"] as String), "$name: attachment id")
         }
+    }
+
+    /** #366 3f: 앱 상수(`const val` 이라 코어 호출로 바꿀 수 없다)는 코어 `attachmentLimits()` 와 같아야 한다. */
+    @Test fun limitsMatchCore() {
+        val core = attachmentLimits()
+        assertEquals(core.fileV2MaxBytes.toLong(), FileV2.MAX_FILE_BYTES)
+        assertEquals(core.fileV2MaxBytes.toLong(), AttachmentFiles.MAX_SEND_BYTES)
+        assertEquals(core.descriptorMaxBytes.toLong(), FileV2.MAX_DESCRIPTOR_BYTES.toLong())
     }
 }

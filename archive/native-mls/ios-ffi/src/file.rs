@@ -29,7 +29,7 @@ pub struct MlsFileV2Info {
 pub enum MlsFileV2Kind {
     /// `status-<uuid>` — 임시 작업 상태 줄, 저장하지 않는다.
     Status,
-    /// `file-v1-…` — 평문이 파일 자체.
+    /// `file-v1-<uuid>` — 평문이 파일 자체(비정규 id 는 `Text`, #366 3f).
     FileV1,
     /// 올바른 설명자를 가진 `file-v2-<uuid>`.
     FileV2 { size: u64 },
@@ -100,6 +100,33 @@ pub fn file_v2_seal(plaintext: Vec<u8>, mime: String, name: Option<String>) -> R
 pub fn file_v2_sniff(bytes: Vec<u8>) -> MlsFileV2Sniff {
     let mime = core::sniff_mime(&bytes);
     MlsFileV2Sniff { mime: mime.to_owned(), kind: core::kind_for(mime).to_owned() }
+}
+
+/// 첨부 크기 상한(#366 3f) — 호스트는 자기 상수를 이 값과 같게 둔다(Android `FileV2VectorsTest` 가 고정).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MlsAttachmentLimits {
+    /// file-v1 평문 상한 5 MiB(#364 결정 B, 보내는 쪽 기준).
+    pub file_v1_max_bytes: u64,
+    /// file-v2 평문 상한 50 MiB(#499).
+    pub file_v2_max_bytes: u64,
+    /// file-v2 설명자(MLS 평문) 상한 4 KiB.
+    pub descriptor_max_bytes: u64,
+}
+
+/// host-core 의 첨부 크기 상한.
+#[uniffi::export]
+pub fn attachment_limits() -> MlsAttachmentLimits {
+    MlsAttachmentLimits {
+        file_v1_max_bytes: core::MAX_FILE_V1,
+        file_v2_max_bytes: core::MAX_FILE_V2,
+        descriptor_max_bytes: core::MAX_DESCRIPTOR_BYTES as u64,
+    }
+}
+
+/// client_id 만으로 첨부(`file-v1-<uuid>` · `file-v2-<uuid>`)인지 — 웹·iOS·봇과 같은 엄격 규칙(#366 3f).
+#[uniffi::export]
+pub fn is_attachment_client_id(client_id: String) -> bool {
+    core::is_attachment_client_id(&client_id)
 }
 
 /// 저장·표시 이름 규칙: 양방향 제어 문자가 든 이름은 쓰지 않는다(`null`).
