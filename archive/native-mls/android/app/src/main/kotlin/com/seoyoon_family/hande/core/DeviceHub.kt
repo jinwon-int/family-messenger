@@ -149,6 +149,9 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     @Volatile private var watchTargets: List<MlsWatchRoom> = emptyList()
     @Volatile private var watchUnsupported = false
     private var ticks = 0
+    /** #766 E: 마지막 전 방 훑기 · 마지막 로비 쪽 일(초대·후보·재탐색) 시각(`elapsedRealtime`). null = 다음 틱에 바로. 허브 mutex 안에서만. */
+    private var fullSweepAt: Long? = null
+    private var auxAt: Long? = null
 
     // ---- 기기 셀프서비스 상태(#574) — 메모리(초대 대기열·「무시」한 후보는 Settings 에 영속) ----
     /** 마지막 `/v2/me`. 옛 릴레이(봉투 없는 404)면 다시 묻지 않는다(`meUnsupported`). */
@@ -226,9 +229,10 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
                 _ui.update { it.copy(phase = Phase.Fatal(e.message ?: e.toString())) }
                 return@body
             }
+            var wake: WatchPlan.Wake? = null
             while (isActive) {
-                tick()
-                waitForChange()
+                tick(wake)
+                wake = waitForChange()
             }
         }
     }
@@ -307,11 +311,18 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         else -> null
     }
 
-    private suspend fun tick() = mutex.withLock {
+    /**
+     * 한 틱. #766 E: [wake](직전 대기의 결과)로 poll 할 방을 고른다(`WatchPlan.plan`) — watch 가 알려 준 바뀐 방만, 전 방 훑기는 첫 틱 ·
+     * watch 미지원·오류 · 60 s 안전망일 때만. 로비 쪽 일(초대·후보·재탐색)은 `WatchPlan.auxDue` 주기로, 방 목록은 그 앞에서 먼저 화면에 낸다.
+     */
+    private suspend fun tick(wake: WatchPlan.Wake?) = mutex.withLock {
         val l = lobby ?: return@withLock
         ticks += 1
         val phase = _ui.value.phase
         if (phase !is Phase.Ready) {
+            // 준비 단계로 돌아오면 첫 틱처럼 전 방 훑기·로비 쪽 일을 바로 한다.
+            fullSweepAt = null
+            auxAt = null
             if (ticks % 3 == 0) probe()
             // 등록 대기(#574): 아직 403 이면 `/v2/me`(subject·내 기록) 와 후보 게시.
             if (_ui.value.phase is Phase.WaitingEnrollment) enrollTick(l)
@@ -320,7 +331,16 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         if (me == null || ticks % ME_EVERY_TICKS == 1) refreshMe(l)
         linkPreviews.loadSites() // 받았거나 받는 중·재시도 시각 전이면 아무것도 안 한다(일시 실패만 10분 뒤 다시)
         var connecting = false
-        for (h in rooms.values.toList()) {
+        val now = SystemClock.elapsedRealtime()
+        val sweep = WatchPlan.plan(
+            rooms.values.map { h -> WatchPlan.Room(h.name, halted = (h.halted ?: h.store.haltReason()) != null, synced = h.synced) },
+            wake, fullSweepAt, now,
+        )
+        val targets = when (sweep) {
+            is WatchPlan.Sweep.Full -> { fullSweepAt = now; rooms.values.toList() }
+            is WatchPlan.Sweep.Only -> sweep.rooms.mapNotNull { rooms[it] }
+        }
+        for (h in targets) {
             h.synced = false
             try {
                 h.room.poll()
@@ -333,6 +353,29 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
                 }
             }
         }
+        val aux = WatchPlan.auxDue(auxAt, now)
+        // 바뀐 방의 새 글은 로비 쪽 일을 기다리지 않고 먼저 화면에.
+        if (aux && targets.isNotEmpty()) _ui.update { it.copy(rooms = roomList(), connecting = connecting) }
+        if (aux) {
+            auxAt = now
+            if (lobbyAux(l)) connecting = true
+        }
+        if (ticks % REPLENISH_EVERY == 1) runCatching { replenish(l) }
+        processSiblingInvites()
+        _ui.update { it.copy(rooms = roomList(), connecting = connecting, roomOrderSynced = roomOrder.synced) }
+        kickRoomOrder()
+        // #755: 다음 대기에 쓸 방별 커서 — 잠금 안에서 찍고, 대기는 잠금 밖에서 한다(보내기·화면 조작이 막히지 않게).
+        watchTargets = rooms.values.filter { it.halted == null }.mapNotNull { h ->
+            runCatching { MlsWatchRoom(h.name, h.room.syncState().cursor) }.getOrNull()
+        }.take(WATCH_MAX_ROOMS)
+    }
+
+    /**
+     * 로비 쪽 일(#766 E — 틱마다가 아니라 `WatchPlan.AUX_EVERY_MS` 주기): 초대 Welcome 받기 · 승인 후보 · 빠진 방 재탐색.
+     * Welcome 조회가 일시 오류(연결 중)였으면 참.
+     */
+    private fun lobbyAux(l: MlsLobby): Boolean {
+        var connecting = false
         // 로비 Welcome → 모르는 방이면 로비 상태로 받아들인다(HOST-CONTRACT §2b). 운영자(steward)의 초대도, 같은 사람의 다른 기기가
         // 나를 방마다 초대한 것(#574 `from` = 활성 형제 기기)도 묻지 않고 받는다 — 이 앱에는 초대 카드가 없다.
         try {
@@ -352,16 +395,9 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         } catch (e: RoomException) {
             if (e is RoomException.Relay && e.transient) connecting = true else classify(e)?.let { p -> _ui.update { it.copy(phase = p) } }
         }
-        if (ticks % REPLENISH_EVERY == 1) runCatching { replenish(l) }
         discoverCandidates(l)
         rescanSiblings(l)
-        processSiblingInvites()
-        _ui.update { it.copy(rooms = roomList(), connecting = connecting, roomOrderSynced = roomOrder.synced) }
-        kickRoomOrder()
-        // #755: 다음 대기에 쓸 방별 커서 — 잠금 안에서 찍고, 대기는 잠금 밖에서 한다(보내기·화면 조작이 막히지 않게).
-        watchTargets = rooms.values.filter { it.halted == null }.mapNotNull { h ->
-            runCatching { MlsWatchRoom(h.name, h.room.syncState().cursor) }.getOrNull()
-        }.take(WATCH_MAX_ROOMS)
+        return connecting
     }
 
     /**
@@ -370,31 +406,34 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
      * 대기는 OkHttp read timeout(15 s)보다 짧게 [WATCH_WAIT_MS]. #424 이전 릴레이(`supported = false`)·오류·준비 전에는 지금처럼
      * [POLL_MS]. 미지원 판정은 [WATCH_REPROBE_TICKS] 틱마다 다시 확인한다(릴레이가 나중에 올라와도 앱 재시작 없이 붙게).
      * 틱 간격은 최소 [MIN_TICK_GAP_MS] — typing 처럼 잦은 변화가 틱을 몰아치지 않게.
+     * #766 E: watch 결과(바뀐 방·거절된 방)를 돌려준다 — 다음 틱은 그 방만 poll 한다. watch 를 못 썼으면 [WatchPlan.Wake.Unknown](전 방 훑기).
      */
-    private suspend fun waitForChange() {
+    private suspend fun waitForChange(): WatchPlan.Wake {
         val l = lobby
         val targets = watchTargets
         if (watchUnsupported && ticks % WATCH_REPROBE_TICKS == 0) watchUnsupported = false
         if (l == null || _ui.value.phase !is Phase.Ready || targets.isEmpty() || watchUnsupported) {
             delay(POLL_MS)
-            return
+            return WatchPlan.Wake.Unknown
         }
         val started = SystemClock.elapsedRealtime()
-        try {
+        val wake = try {
             val r = l.watch(targets, WATCH_WAIT_MS.toUInt())
             if (!r.supported) {
                 Log.i(TAG, "watch: relay predates #424 — fixed ${POLL_MS} ms polling")
                 watchUnsupported = true
                 delay(POLL_MS)
-                return
+                return WatchPlan.Wake.Unknown
             }
+            WatchPlan.Wake.Watched(targets.map { it.room }.toSet(), r.changed, r.refused.map { it.room })
         } catch (e: RoomException) {
             Log.w(TAG, "watch: $e — ${POLL_MS} ms polling this round")
             delay(POLL_MS)
-            return
+            return WatchPlan.Wake.Unknown
         }
         val spent = SystemClock.elapsedRealtime() - started
         if (spent < MIN_TICK_GAP_MS) delay(MIN_TICK_GAP_MS - spent)
+        return wake
     }
 
     /** 화면 목록: 저장된 순서를 먼저, 거기 없는 방은 기본 순서(참여 순서)로 뒤에(#715 규칙 3 · `RoomOrder.apply`). */
@@ -815,7 +854,8 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     fun send(scope: CoroutineScope, room: String, text: String) = scope.launch(Dispatchers.IO) {
         val h = mutex.withLock { rooms[room] } ?: return@launch
         try {
-            val r = mutex.withLock { h.room.send(text.toByteArray(Charsets.UTF_8)) }
+            // Queued 는 다음 poll 이 다시 보낸다 — watch 가 이 방을 changed 로 알리지 않아도 다음 틱에 poll 되게 표시(#766 E, 60 s 안전망까지 밀리지 않게).
+            val r = mutex.withLock { h.room.send(text.toByteArray(Charsets.UTF_8)).also { if (it is SendResult.Queued) h.synced = false } }
             when (r) {
                 is SendResult.Sent -> db.insert(room, r.seq, h.room.identity(), r.clientId, MessageDb.KIND_TEXT, text, null)
                 is SendResult.Queued -> notice("연결되면 보냅니다")
@@ -867,7 +907,10 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
                     db.insert(room, r.seq, h.room.identity(), r.clientId, MessageSchema.KIND_FILE_V2, Strings.attachmentPlaceholder(out.size.toLong()), out.descriptor)
                     clearNotice()
                 }
-                is SendResult.Queued -> notice("연결되면 보냅니다")
+                is SendResult.Queued -> {
+                    mutex.withLock { h.synced = false } // 글 보내기와 같이 다음 틱에 이 방을 poll(#766 E)
+                    notice("연결되면 보냅니다")
+                }
                 is SendResult.AlreadyDelivered -> clearNotice()
             }
             _ui.update { it.copy(rooms = roomList()) }
@@ -903,7 +946,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     fun reconfigure(scope: CoroutineScope) = scope.launch(Dispatchers.IO) {
         linkPreviews.resetSites() // 새 세션 — 사이트 목록은 준비 단계에서 다시 받는다
         roomOrder.resetSession() // 새 세션 — 방 순서도 준비 단계에서 바로 다시 묻는다(404 판정도 지운다)
-        mutex.withLock { applyAccessToken(); me = null; meUnsupported = false; selfServiceUnsupported = false; nextPostAt = 0L; _ui.update { it.copy(phase = Phase.Starting) }; probe() }
+        mutex.withLock { applyAccessToken(); me = null; meUnsupported = false; selfServiceUnsupported = false; nextPostAt = 0L; fullSweepAt = null; auxAt = null; _ui.update { it.copy(phase = Phase.Starting) }; probe() }
     }
 
     fun retryEnrollment(scope: CoroutineScope) = reconfigure(scope)
@@ -962,6 +1005,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             candidates = emptyList(); candidateRevision = null
             busy.clear(); candidateMessages.clear()
             ticks = 0
+            fullSweepAt = null; auxAt = null
             runCatching { db.wipe() }.onFailure { e -> Log.w(TAG, "wipe: messages.db: $e") }
             if (!dir.deleteRecursively()) Log.w(TAG, "wipe: some files under ${dir.name} could not be deleted")
             dir.mkdirs()
