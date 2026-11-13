@@ -11,6 +11,7 @@ import android.util.Log
 import android.util.LruCache
 import com.seoyoon_family.hande.core.AttachmentFiles
 import com.seoyoon_family.hande.core.ThumbnailSizing
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -69,7 +70,20 @@ object AttachmentThumbs {
         if (knownNotImage(source.key)) return null
         return gate.withPermit {
             bitmaps.get(source.key)?.let { return@withPermit it }
-            when (val r = source.open()) {
+            // 받기·복호(최대 20 MiB × 동시 2)도 메모리가 크다 — 썸네일 실패가 앱을 죽이지 않게 OOM·예외를 여기서 삼킨다(탭하면 뷰어로는 열린다).
+            val opened = try {
+                source.open()
+            } catch (e: OutOfMemoryError) {
+                Log.w(TAG, "thumbnail open out of memory")
+                notImage.put(source.key, true)
+                return@withPermit null
+            } catch (e: CancellationException) {
+                throw e // 행이 화면을 벗어나 취소된 것 — 삼키지 않는다
+            } catch (e: RuntimeException) {
+                Log.w(TAG, "thumbnail open failed: ${e.javaClass.simpleName}")
+                return@withPermit null
+            }
+            when (val r = opened) {
                 is AttachmentFiles.Opened -> {
                     val bmp = if (r.kind == "image") withContext(Dispatchers.Default) { decode(r.bytes, targetLongPx) } else null
                     if (bmp == null) notImage.put(source.key, true) else bitmaps.put(source.key, bmp)
