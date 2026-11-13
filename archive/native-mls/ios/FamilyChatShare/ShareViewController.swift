@@ -158,18 +158,26 @@ final class ShareModel: ObservableObject {
             let plan = ShareDirectSend.plan(item) { ShareHandoffStore.fileSize(store.fileURL(item, $0)) }
             if !plan.direct.isEmpty, store.beginSending(item.id) {
                 sending = true
-                let before = ShareFootprint.megabytes() ?? -1
+                // 실기기 측정(P2 → P3 D-A4 문턱): 조각 수·바이트·메모리·초. 내용·이름·방은 싣지 않는다.
+                // #664: 봉인 **전에** 시작 표시를 App Group 측정 기록에 남긴다 — 확장이 송신 도중 메모리 한도로 죽으면 아래 os_log 도
+                // 결과도 남지 않으므로, 결과 없는 이 표시가 앱의 「진단 기록 복사」에 `did-not-finish` 로 보인다. 쓰기 실패는 송신과 무관.
+                let bytes = plan.directFileBytes { ShareHandoffStore.fileSize(store.fileURL(item, $0)) }
+                let startSample = ShareFootprint.sample()
+                let started = Date()
+                let measurement = ShareDirectDiagnostics.Record(startedAt: started, build: environment.build, plan: plan, bytes: bytes,
+                                                                footprintBefore: startSample?.megabytes, limit: startSample?.limit)
+                environment.diagnostics.begin(measurement)
+                let before = startSample?.megabytes ?? -1
                 let report = await ShareDirectSend.run(plan: plan, item: item.id, store: store,
                                                        sender: ShareDirectSender(engine: engine, store: store, item: item))
                 store.endSending(item.id)
                 sending = false
                 finished = true
-                let after = ShareFootprint.megabytes() ?? -1
-                // 실기기 측정(P2 → P3 D-A4 문턱): 조각 수·바이트·메모리. 내용·방 이름은 싣지 않는다.
-                let bytes = plan.direct.reduce(0) { total, piece in
-                    if case .file(let name) = piece { return total + (ShareHandoffStore.fileSize(store.fileURL(item, name)) ?? 0) }
-                    return total
-                }
+                let endSample = ShareFootprint.sample()
+                let after = endSample?.megabytes ?? -1
+                environment.diagnostics.finish(measurement, ShareDirectDiagnostics.Outcome(
+                    report: report, footprintAfter: endSample?.megabytes, footprintPeak: endSample?.peak,
+                    seconds: Date().timeIntervalSince(started)))
                 ShareDirectEnvironment.log.notice(
                     "direct-send pieces=\(plan.direct.count, privacy: .public) deferred=\(plan.deferred.count, privacy: .public) bytes=\(bytes, privacy: .public) sent=\(report.sent.count, privacy: .public) queued=\(report.queued.count, privacy: .public) refused=\(report.refused.count, privacy: .public) stopped=\(report.stopped ?? "-", privacy: .public) footprint_mb_before=\(before, privacy: .public) footprint_mb_after=\(after, privacy: .public)")
                 if report.needsApp {

@@ -3,6 +3,7 @@
 // 1단계(#643): 맡김 디렉터리와 앱이 써 둔 공유 대상 목록(`ShareHandoff.targetsKey`)만 본다 — `store`·`targets`.
 // 2단계(#669, #664 과제 A): 그 위에 NSE 와 같은 방식으로 MLS 상태·Keychain·FFI 를 열어 직접 보낸다 — `direct`. 열 수 없으면(App Group 없음·
 // 로그인 전·기기 ID 없음·스코프 미생성) nil 이고 확장은 1단계처럼 맡기기만 한다(D-A1 폴백).
+// #664 측정: 직접 송신마다 기록 1건을 App Group 에 남긴다 — `diagnostics`(Core `ShareDirectDiagnosticsStore`), 앱이 「진단 기록 복사」에 붙인다.
 import Foundation
 import FamilyMLSCore
 
@@ -14,6 +15,10 @@ struct ShareEnvironment {
     let targets: [RoomID]
     /// #669 직접 송신 조립. nil = 맡기기만.
     let direct: ShareDirectEnvironment?
+    /// #664 직접 송신 측정 기록(App Group `share-direct-send.json`) — 확장이 쓰고 앱의 「진단 기록 복사」가 읽는다. 개수·바이트·MB·초뿐.
+    let diagnostics: ShareDirectDiagnosticsStore
+    /// 측정 기록에 적는 빌드 번호(`CFBundleVersion` — 앱과 같은 값).
+    let build: String?
 
     static func live(bundle: Bundle = .main) -> ShareEnvironment? {
         func value(_ key: String) -> String? {
@@ -30,6 +35,7 @@ struct ShareEnvironment {
         let scope = ServerScope(baseURL: server.baseURL)
         let targets = scope.defaults(shared).stringArray(forKey: ShareHandoff.targetsKey) ?? []
         return ShareEnvironment(store: ShareHandoffStore(container: container), scope: scope.id, targets: targets,
-                                direct: ShareDirectEnvironment.live(group: group, container: container, server: server))
+                                direct: ShareDirectEnvironment.live(group: group, container: container, server: server),
+                                diagnostics: ShareDirectDiagnosticsStore(container: container), build: value("CFBundleVersion"))
     }
 }

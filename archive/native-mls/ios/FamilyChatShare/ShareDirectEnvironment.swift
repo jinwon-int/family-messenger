@@ -89,9 +89,17 @@ final class ShareDirectSender: ShareDirectSending {
     }
 }
 
-/// 이 프로세스의 물리 메모리(MB) — D-A4 문턱을 확정할 실기기 측정(TestFlight + Console) 재료. 못 읽으면 nil.
+/// 이 프로세스의 물리 메모리(MB) — D-A4 문턱을 확정할 실기기 측정 재료(os_log + #664 측정 기록 → 앱 「진단 기록 복사」). 못 읽으면 nil.
 enum ShareFootprint {
-    static func megabytes() -> Double? {
+    /// 한 번 읽은 값(MB). `peak` = 프로세스가 살아온 동안의 최고치(커널 원장 `ledger_phys_footprint_peak` — 봉인 중 잠깐 치솟은 값도 잡힌다),
+    /// `limit` = 지금 값 + 한도까지 남은 양(`limit_bytes_remaining`, 이 확장 프로세스의 메모리 한도). 커널이 채우지 않으면(0) nil.
+    struct Sample {
+        var megabytes: Double
+        var peak: Double?
+        var limit: Double?
+    }
+
+    static func sample() -> Sample? {
         #if canImport(Darwin)
         var info = task_vm_info_data_t()
         var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
@@ -101,7 +109,14 @@ enum ShareFootprint {
             }
         }
         guard result == KERN_SUCCESS else { return nil }
-        return Double(info.phys_footprint) / 1_048_576
+        let megabyte = 1_048_576.0
+        let footprint = Double(info.phys_footprint)
+        // 구조체는 0 으로 시작한다 — 커널이 그 개정(rev3 최고치 · rev4 남은 양)을 채우지 않았으면 0 으로 남아 nil 이 된다.
+        let peak = Double(info.ledger_phys_footprint_peak)
+        let remaining = Double(info.limit_bytes_remaining)
+        return Sample(megabytes: footprint / megabyte,
+                      peak: peak > 0 ? peak / megabyte : nil,
+                      limit: remaining > 0 ? (footprint + remaining) / megabyte : nil)
         #else
         return nil
         #endif

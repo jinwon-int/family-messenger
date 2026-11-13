@@ -83,6 +83,10 @@ App Store Connect 쪽 답(App Privacy·심사 노트·수출 규정)은 [`docs/h
    - 조립이 안 되면(App Group 없음·로그인 전·기기 ID 없음·스코프 미생성·이 기기가 모르는 방) 1단계처럼 맡기기만.
    - 다 보냈으면 맡김을 지우고 닫는다. 남은 조각이 있으면 로컬 알림 「누르면 한데에서 보냅니다」(잠금화면용 일반 문구, userInfo `room`·`hande.share`).
    - 실기기 측정(P2 → P3): `os_log` subsystem `com.seoyoon-family.hande.share` category `direct-send` 에 조각 수·바이트·`phys_footprint`(MB) 전/후를 남긴다(Console).
+     같은 값에 **최고치**(`footprint_mb_peak`, 프로세스가 살아온 동안의 `ledger_phys_footprint_peak`)·**한도**(`limit_mb`)·**걸린 초**를 더한 기록을
+     App Group 파일 `share-direct-send.json`(최근 20건, `ShareDirectDiagnostics`)에도 남기고, 앱의 🔔 → 「진단 기록 복사」가 `share direct-send:`
+     구획으로 붙인다 — Mac 없이 읽는다(#664). 봉인 **전에** 시작 표시를 먼저 쓰므로, 확장이 송신 도중 메모리 한도로 죽으면 결과 없는 줄이
+     `did-not-finish`(임대 120초 안은 `in-progress`)로 남는다. 기록에는 개수·바이트·MB·초·빌드 번호·멈춤 사유 토큰만 있다(글·파일 이름·방·기기 없음).
 3. **앱이 나머지를 보낸다**: `AppModel.deliverPendingShares()` — 시작(bootstrap 뒤)·전면 복귀·공유 알림 탭에서, 지금 서버 스코프의 맡김(임대 안인 것은 건너뜀)을
    생성 순으로 claim(`item.json` → `claimed.json` rename, 한 번만; **표시된 조각은 빼고** 받는다) → 화면·단축어와 같은 `send(room:text:)`·`sendAttachment(room:data:)`
    → 지움 → 그 방을 연다. 준비 전이면 남기고, 이 기기에 없는 방이면 버리고 알린다. 지난 실행이 보내다 남긴 claim 은 다시 보내지 않고 지운다. 24시간 지난 맡김은 지운다.

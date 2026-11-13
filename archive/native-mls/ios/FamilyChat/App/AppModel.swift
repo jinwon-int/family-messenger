@@ -121,6 +121,9 @@ final class AppModel: ObservableObject {
         var deliverSharesWhenReady = false
         /// #643 맡김 하나를 다 보낸 뒤(맡김 ID) — live() 는 그 공유 알림을 알림 센터에서 지운다.
         var shareDelivered: (String) -> Void = { _ in }
+        /// #664 공유 확장의 직접 송신 측정 기록(App Group `share-direct-send.json`, Core `ShareDirectDiagnosticsStore`) — 확장이 쓰고
+        /// 앱은 「진단 기록 복사」에 붙이기만 한다(`diagnosticsReport`). nil = 구획 없음(테스트 기본·App Group 없는 빌드).
+        var shareDiagnostics: ShareDirectDiagnosticsStore? = nil
         /// #665 내 글의 기록 재료(평문) 영속 — outbox 와 같은 DB(`FileSQLiteStore`). 엔진이 쓰고·기록하고·지운다; 앱은 재시작 뒤
         /// 「연결되면 보냅니다」 말풍선을 여기서 복원하고, 닫힌(reconciled) 글을 새로 암호화해 보낸다. nil = 종전(메모리 평문만, 테스트 기본).
         var ownPending: OwnPendingStore? = nil
@@ -1099,6 +1102,8 @@ final class AppModel: ObservableObject {
 
     /// 🔔 시트 「진단 기록 복사」(웹 `copyDiagnostics` 와 같은 모양): 기기·actor, 방별 `joined/halted/cursor/epoch`, 초대 상태(seq·시도·사유),
     /// 최근 기록. 비밀값 없음 — 기기 ID·방 이름·seq·오류 문구뿐.
+    /// #664: 공유 확장(다른 프로세스)의 직접 송신 측정은 App Group 파일에서 읽어 `share direct-send:` 구획으로 붙인다 — 개수·바이트·MB·초뿐,
+    /// 결과 없는 기록은 `did-not-finish`(확장이 송신 도중 끝남). 화면은 바뀌지 않는다.
     func diagnosticsReport(now: Date = Date()) -> String {
         let actor = ActorName.of(deviceId: deviceId) ?? deps.actorStore.actor ?? "-"
         let roomLines = rooms.map { r -> String in
@@ -1125,6 +1130,7 @@ final class AppModel: ObservableObject {
         lines.append(contentsOf: roomLines)
         lines.append("invites:")
         lines.append(contentsOf: inviteLines)
+        if let share = deps.shareDiagnostics { lines.append(contentsOf: share.lines(now: now)) }
         lines.append("log:")
         lines.append(contentsOf: diagnostics)
         return lines.joined(separator: "\n")
