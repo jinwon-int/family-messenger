@@ -142,7 +142,7 @@ python3 scripts/native_relay_cutover.py @/etc/native-relay/cutover.args --confir
   운영자가 이어서 처리한다(예: fence는 바뀌었는데 start 실패 → 원인 수정 후 `systemctl start`, 그다음 dns부터 수동).
 - 봇은 릴레이 주소를 env 파일 한 곳(`NATIVE_RELAY_URL`, 비밀 없음)에서 읽는다 — 유닛 drop-in `60-relay-url.conf`의
   `ExecStart=… ${NATIVE_RELAY_URL} …` + `EnvironmentFile=/etc/native-relay/bot-relay.env`(공명만 #451 방식 `relay.env`), Termux는 runit
-  `run`이 `$PREFIX/etc/native-relay/bot-relay.env`를 읽는다(#699 P0-d). 재지정 훅 `deploy/native-relay/native-relay-repoint` v2(#702)는
+  `run`이 `$PREFIX/etc/native-relay/bot-relay.env`를 읽는다(#699 P0-d; 없으면 `archive/native-mls/bot/deploy/install-node-bot-termux.sh`가 처음 한 번 만든다, #492). 재지정 훅 `deploy/native-relay/native-relay-repoint` v2(#702)는
   노드별 `repoint.conf`의 봇 목록을 하나씩 재시작하고 `steward_ready`를 확인한다 — `cutover.args`에 노드마다
   `--client-hook ssh -n -o BatchMode=yes <node> /usr/local/sbin/native-relay-repoint <새 릴레이 http URL>` 한 줄(오너 결정 D4). 한데 브리지
   (`ccc-hande-bridge`)는 릴레이 주소를 갖지 않고 봇과 Unix 소켓으로만 통신하므로 재지정 대상이 아니다. JWT 갱신
