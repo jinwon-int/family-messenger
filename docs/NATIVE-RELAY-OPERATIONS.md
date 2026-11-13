@@ -19,7 +19,7 @@
 | 제외 | 근거 |
 |---|---|
 | APNs `.p8` 키 | 오너 결정 #440-A: 대기 호스트는 푸시 없이 운영. `.p8` 또는 `apns` 디렉터리 밑의 파일이 포함 경로에 있으면 **건너뛰지 않고 실패**한다 |
-| 릴레이 바이너리 | 곽가 재현 빌드 → 서서 스테이징(`STAGE-SHA256SUMS`)이 정본. 스냅샷은 데이터만. 교체는 [`deploy/native-relay/native-relay-swap`](../deploy/native-relay/native-relay-swap)로만(rename 교체 + `/v2/health` 확인 + 롤백) |
+| 릴레이 바이너리 | 곽가 재현 빌드 → 서서 스테이징(`STAGE-SHA256SUMS`)이 정본. 빌드는 digest 고정 컨테이너 [`deploy/native-relay/build/build.sh`](../deploy/native-relay/build/build.sh) `<빈 산출 디렉터리>`로만(깨끗한 커밋 클론, 산출 `SHA256SUMS`·`BUILDINFO`; 같은 커밋 2회 빌드 해시 일치는 CI `native-mls`가 네이티브 트랙·빌드 컨테이너를 건드리는 PR과 머지 큐마다 확인). 스냅샷은 데이터만. 교체는 [`deploy/native-relay/native-relay-swap`](../deploy/native-relay/native-relay-swap)로만(rename 교체 + `/v2/health` 확인 + 롤백) |
 | CF 터널 토큰·Access 설정 | 호스트 비밀. 전환 시 CF API로 다시 만든다(1단계) |
 
 ## 스냅샷 (`scripts/native_relay_snapshot.py`)
