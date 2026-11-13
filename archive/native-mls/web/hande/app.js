@@ -28,6 +28,7 @@ import {fileboxConfig} from './filebox.js';
 import {collectAttachments} from './attachments.js';
 import {installShortcuts} from './shortcuts.js';
 import {openRoomsLimited} from './room-open-pool.js';
+import {createStartupTiming, startupLine} from './startup-timing.js';
 import {createWatchLoop, DEFAULT_POLL_MS, SAFETY_POLL_MS} from './watch-loop.js';
 import {
   canApprove, isSibling, candidatesFor, approvalArgs, approvalEvidence, rolesActions, nextRoles, rolesArgs, rolesEvidence, recordOf,
@@ -57,7 +58,11 @@ async function loadConfig() {
 }
 
 // theme: main.js 의 installTheme() 핸들({get, set}) — 설정 시트의 「화면」 행이 쓴다. 없으면(테스트) 행을 숨긴다.
-export function startApp(root, {storage = localStorage, fetch: fetchImpl = globalThis.fetch.bind(globalThis), theme = null} = {}) {
+// now: 「페이지를 연 순간」부터의 ms(시작 구간 계측, #766 I). 없으면(테스트·옛 브라우저) 0 — 계측 줄만 0 으로 남는다.
+export function startApp(root, {storage = localStorage, fetch: fetchImpl = globalThis.fetch.bind(globalThis), theme = null,
+  now = () => globalThis.performance?.now?.() ?? 0} = {}) {
+  const timing = createStartupTiming({now});
+  timing.mark('script');
   const app = {
     phase: 'starting', message: strings.app.starting, error: null, fatal: null,
     actor: null, device: null, subject: null, defaultRoom: DEFAULT_ROOM, dev: null,
@@ -109,7 +114,15 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   function render() {
     if (scheduled) return;
     scheduled = true;
-    queueMicrotask(() => { scheduled = false; updatePhase(); paint(); });
+    queueMicrotask(() => { scheduled = false; updatePhase(); paint(); noteFirstScreen(); });
+  }
+  /** 시작 화면을 처음 벗어난 그리기에서 구간별 소요를 한 줄 남긴다(#766 I). 그 뒤의 그리기에서는 아무것도 하지 않는다. */
+  function noteFirstScreen() {
+    if (timing.finished || app.phase === 'starting') return;
+    const summary = timing.finish(app.phase);
+    if (!summary) return;
+    app.startup = summary;
+    logLine(startupLine(summary));
   }
   function updatePhase() {
     if (app.phase === 'fatal' || app.phase === 'needsActor' || !app.dev?.state.started) return;
@@ -342,6 +355,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   async function boot() {
     if (!globalThis.Worker || !globalThis.WebAssembly || !globalThis.indexedDB) { fatal(strings.app.workerUnavailable); return; }
     const config = await loadConfig();
+    timing.mark('config');
     if (typeof config.defaultRoom === 'string' && ROOM.test(config.defaultRoom)) app.defaultRoom = config.defaultRoom;
     app.filebox = fileboxConfig(config.filebox, {defaultTitle: strings.box.tabFilebox});
     const id = identity.read();
@@ -410,6 +424,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       if (opened.fresh && !opened.migrated && legacyExists) throw new Error(`신원 이전 실패: ${legacy.database}가 있는데 이전되지 않았습니다`);
       storage.setItem(markerKey(), '1');
       app.dev = dev;
+      timing.mark('identity');
       app.roomOrder = readRoomOrder(storage, app.device);
       orderSync = createOrderSync();
       if (opened.migrated) logLine(`신원 이전: ${legacy.database} → ${IDENTITY_DATABASE}`);
@@ -421,6 +436,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       const boot = await openRoomsLimited(known, roomId => ensureRoom(roomId),
         {onError: (roomId, error) => logLine(`방 ${roomId} 열기 실패: ${error.message}`)});
       logLine(`방 ${boot.opened}개 열림(실패 ${boot.failed}) — ${Date.now() - bootStarted} ms`);
+      timing.mark('rooms');
       if (window.matchMedia?.('(min-width: 900px)').matches && app.rooms.size) { app.current = [...app.rooms.keys()][0]; app.roomOpen = true; markRoomRead(app.current); promptConsentOnce(app.current); }
       await refresh();
       app.tick = setInterval(() => refresh().catch(() => {}), TICK_MS);
@@ -460,6 +476,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       if (meDue) await refreshMe();
       let listed;
       try { listed = await app.dev.rooms(); } catch (error) { logLine(`방 목록 실패: ${error.message}`); listed = undefined; }
+      timing.mark('listing');   // 첫 번째 것만 남는다 — 이 응답이 와야 시작 화면을 벗어난다(#766 B)
       app.lastCheckedAt = clock(true);
       if (listed === null) {
         // 403: not on the chain yet — post this device into the relay's candidate mailbox for a sibling to approve
@@ -810,7 +827,9 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     const invites = app.invites.map(i => `${i.room}: seq ${i.seq} ${i.failed ? `failed ${i.failed.tries}x (${i.failed.reason ?? '-'})` : i.busy ? 'busy' : 'new'}`);
     const me = app.me ? `me: subject=${app.me.subject} policy_revision=${app.me.policy_revision ?? '-'} devices=${(app.me.devices ?? []).map(d => `${d.device_id}(${d.status}${d.roles?.length ? ',' + d.roles.join('+') : ''})`).join(' ') || '-'}` : 'me: -';
     const candidates = app.candidates.map(c => `${c.device_id}: fp ${c.fingerprint.slice(0, 8)}… ${c.busy ? 'busy' : c.message ? `error ${c.message}` : 'new'}`);
-    const text = [`hande web diagnostics ${clock(true)} device=${app.device} actor=${app.actor} enroll=${app.enroll.mode}`, me, 'rooms:', ...rooms, 'invites:', ...invites, 'candidates:', ...candidates, 'log:', ...app.logs.slice(-200)].join('\n');
+    // 시작 구간 줄은 기록이 200줄을 넘겨 밀려나도 요약에 남는다(#766 I).
+    const startup = app.startup ? `startup: ${startupLine(app.startup)}` : 'startup: -';
+    const text = [`hande web diagnostics ${clock(true)} device=${app.device} actor=${app.actor} enroll=${app.enroll.mode}`, me, startup, 'rooms:', ...rooms, 'invites:', ...invites, 'candidates:', ...candidates, 'log:', ...app.logs.slice(-200)].join('\n');
     return copy(text);
   }
   function openNotify() { ui.openNotifySheet(root, {invites: inviteRows(), candidates: candidateRows(), notes: noteRows(), onCopyLogs: copyDiagnostics, onClose: () => {}}); }
