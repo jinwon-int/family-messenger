@@ -188,6 +188,51 @@ python3 scripts/native_relay_cutover.py @/etc/native-relay/cutover.args --confir
 2. 운영자 relay-app(`owner-pc`)에서 새 방 개설 → 로비 키패키지로 가족 기기·봇 전원 초대.
 3. 봇(`bot-gongmyoung`)은 재지정 훅으로 새 릴레이를 보고 있으므로 초대만 받으면 된다.
 4. 이전 방은 "이력 보관"으로 둔다(릴레이의 `-reset-room`은 쓰지 않는다 — 영구 삭제).
+5. 플릿 알림방은 운영자 relay-app이 아니라 **알림 봇이 직접 다시 만든다** — 아래.
+
+#### 플릿 알림방 `fleet-alerts` 다시 만들기 (#460 ④)
+
+알림방은 relay host의 steward 봇이 만들고 오너 기기를 초대한 방이다(2026-10-27 설치, 오너 기기 2대 초대 epoch 2).
+
+| 항목 | 값 | 근거 |
+|---|---|---|
+| 정책 actor / 기기 | `fleet` / `fleet-bot` | 봇 commit의 `members[].actor`는 기기 ID의 첫 하이픈 앞이고 릴레이가 정책 actor와 대조한다(DEVICES-V4 G-H3). `fleet-alerts-bot` 같은 기기는 actor `fleet` ≠ `fleet-alerts` → 403 `commit_actor_mismatch` |
+| 봇 유닛 | `hande-fleet-alerts-bot.service`(`native-mls-bot <릴레이> steward fleet-bot --identity-file … --rooms-dir …`) | `repoint.conf.example`의 재지정 대상 |
+| 필수 env | `NATIVE_MLS_BOT_ROOM_FRAMES=1`(= `--room-frames`) | 없으면 `notice`는 agent 방 이름일 때만 게시된다 — alert 방 알림이 버려진다(`bot/STEWARD.md` 「여러 agent 방」) |
+| 송신 | `fleet-alerts-sender-hande.service`(ccc-node, outbox → `notice` 프레임) | Matrix sender와 이중 송신 — 그동안 Matrix가 폴백 |
+| 방 모드 | 설치 때 `alert`(notice만 게시). ok/hold 응답기(ccc-node #2553) 적용 뒤에는 봇 로컬 설정 `agent`(2026-10-27 카나리) | `<rooms-dir>/<방>.mode` — 다시 만들 때 **이전 값과 같게** |
+
+1. **필요한지 먼저 본다.** `native-mls-bot room status - --rooms-dir <dir>`(또는 `<dir>/health.json`의 `rooms[]`)에서 `fleet-alerts`가
+   `joined:true`·`halted:false`이고 오너 기기가 새 알림을 받으면 다시 만들지 않는다(2026-11-06 계획 이전은 재참여 없이 정상이었다).
+2. 송신을 멈추고 이전 모드를 적어 둔다 — 멈춘 동안의 알림은 outbox에 남았다가 6단계에서 나간다.
+   ```bash
+   systemctl stop fleet-alerts-sender-hande
+   cat <dir>/fleet-alerts.mode
+   ```
+3. **방 id를 정한다.**
+   - 릴레이에 이전 `fleet-alerts` 방이 남아 있으면(스냅샷 복원 — 보통의 D3) 같은 id는 쓸 수 없다: 봇의 새 그룹(epoch 0) 첫 commit이
+     CAS에서 거부된다. 이전 방은 이력 보관으로 두고(`room close`·`-reset-room` 금지 — 닫힌 방은 다시 열리지 않는다)
+     `native-mls-bot room mode fleet-alerts silent --rooms-dir <dir>`로 내린 뒤 **새 id**를 쓴다. 새 id는 앱 이름표(웹 `strings.js`
+     `roomNames`, iOS `Strings+Names.swift`, Android `AgentActors.kt`)·ccc-node 송신과 hande 브리지의 방 설정(목록에 없으면
+     `rejected: room-not-allowed`)을 함께 바꿔야 「🔔 플릿 알림」으로 보이고 알림이 그 방으로 간다 — 별도 PR·승인.
+   - 릴레이에 그 방이 없을 때(빈 데이터로 새로 띄운 릴레이)만 같은 id `fleet-alerts`: 봇 유닛을 멈추고 `<dir>/fleet-alerts.state`·
+     `.mode`·`.state.refused`를 보관 디렉터리로 옮긴 뒤 다시 켠다(steward는 아는 방을 다시 만들지 않는다 — `room already known to this steward`).
+4. **만들고 오너 기기를 초대한다**(steward 실행 중, 봇 유닛과 같은 사용자). 오너 기기 = `native-devices -device-state … -inspect`의
+   actor `owner` active 기기.
+   ```bash
+   native-mls-bot room create  <방> alert --rooms-dir <dir>
+   native-mls-bot room invite  <방> <오너 기기> --rooms-dir <dir>   # 기기마다 한 번 — 앞 초대의 pending 이 풀린 뒤(echo → Welcome) 다음
+   native-mls-bot room members <방> --rooms-dir <dir>
+   ```
+   `no key package for <기기> in room <방> or in the lobby`면 그 기기에서 앱을 한 번 열어 로비 키를 보충하고 다시 초대한다.
+5. 2단계 모드가 `agent`였으면 `native-mls-bot room mode <방> agent --rooms-dir <dir>`. 유닛의 `NATIVE_MLS_BOT_ROOM_FRAMES=1`을
+   `systemctl show -p Environment hande-fleet-alerts-bot`(또는 drop-in)으로 확인한다.
+6. `systemctl start fleet-alerts-sender-hande` — 쌓인 알림이 나간다.
+7. **검증**
+   - 오너 기기에서 새 방에 알림이 보이고, 봇 저널에 `notice_acked`(room·seq)가 남는다. 이전 방(silent)에는 새 알림이 없다.
+   - **ok/hold 회신**: action 급 알림 1건(ccc-node 테스트 알림)에 오너 기기에서 `ok <번호>`(또는 카드 [보내기]) → 응답기 reply 영수증 +
+     ack 글 `#<번호> ✅ #<알림> ok 접수 …`가 한데·Matrix 양쪽 방에 게시되고 재통지가 멈춘다(`ALERT-REFS-V1.md` 예시, 2026-10-27 카나리와
+     같은 판정). `hold <번호>`도 같다. 오너가 아닌 기기·봇의 글은 무시돼야 한다.
 
 ## 복원 드릴 (격리 환경 전용)
 
