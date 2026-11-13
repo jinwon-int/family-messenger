@@ -1,0 +1,13 @@
+# #426 — 느린 수신 호스트는 1시간마다(그 호스트의 RPO = 1시간 + 전송 시간). 빠른 수신 호스트는 5분 타이머 그대로.
+# 시각은 5분 스냅샷과 겹치지 않게 :17 근처(겹쳐도 잠금이 따로라 서로 막지 않는다). 변경은 이 타이머의 드롭인으로.
+[Unit]
+Description=Hourly native-relay snapshot slow push (#426)
+
+[Timer]
+OnCalendar=*:17
+RandomizedDelaySec=120
+Persistent=true
+Unit=native-relay-snapshot-push.service
+
+[Install]
+WantedBy=timers.target

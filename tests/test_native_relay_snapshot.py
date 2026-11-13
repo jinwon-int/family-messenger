@@ -158,6 +158,20 @@ class SnapshotTests(unittest.TestCase):
         self.assertTrue(calls[0][-1].endswith('/local/'))
         self.assertTrue(Path(payload['archive']).is_file(), 'local archive survives a failed push')
 
+    def test_bwlimit_reaches_every_rsync_of_a_snapshot_run(self):
+        args = args_for(self.root, self.dest, push=['backup@standby:/inbox'], bwlimit=300)
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append((command, kwargs['timeout']))
+            return mock.Mock(returncode=0, stderr='', stdout='')
+
+        with mock.patch.object(snap.subprocess, 'run', runner):
+            payload = snap.snapshot(args)
+        self.assertEqual(payload['status'], 'complete')
+        self.assertIn('--bwlimit=300', calls[0][0])
+        self.assertGreaterEqual(calls[0][1], 600)
+
     def test_prune_keeps_recent_then_one_per_day(self):
         self.dest.mkdir(parents=True)
         now = datetime.datetime(2026, 10, 19, 12, 0, tzinfo=datetime.timezone.utc)
@@ -184,6 +198,110 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(set(removed), {names[4], names[5], names[6], names[7]})
         for name in removed:
             self.assertFalse((self.dest / name).with_suffix('.gz.sha256').exists())
+
+
+class PushLatestTests(unittest.TestCase):
+    """#426: a thin-line receiver gets the newest finished archive from its own, rarer, capped timer."""
+
+    NOW = datetime.datetime(2026, 11, 13, 9, 0, tzinfo=datetime.timezone.utc)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.dest = self.root / 'local'
+        self.dest.mkdir()
+        self.state = self.root / 'state'
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def archive(self, minutes_ago, sidecar=True, size=2048):
+        when = self.NOW - datetime.timedelta(minutes=minutes_ago)
+        path = self.dest / ('relay-' + when.strftime('%Y%m%dT%H%M%SZ') + '.tar.gz')
+        path.write_bytes(b'x' * size)
+        if sidecar:
+            path.with_suffix('.gz.sha256').write_text(snap.sha256_file(path) + '  ' + path.name + '\n')
+        return path
+
+    def args(self, *extra):
+        return snap.parse(['--dest', str(self.dest), '--state', str(self.state), '--push-latest',
+                           '--push', 'relay-snapshots@thin:/inbox', '--bwlimit', '200'] + list(extra))
+
+    def test_pushes_newest_finished_archive_with_cap_and_records_state(self):
+        self.archive(20)
+        newest = self.archive(5)
+        self.archive(1, sidecar=False)  # still being packed: no sidecar yet
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append((command, kwargs['timeout']))
+            return mock.Mock(returncode=0, stderr='', stdout='')
+
+        payload = snap.push_latest(self.args(), now=self.NOW, runner=runner)
+        self.assertEqual(payload['status'], 'complete')
+        self.assertEqual(payload['archive'], newest.name)
+        self.assertEqual(len(calls), 1)
+        command, timeout = calls[0]
+        self.assertIn('--bwlimit=200', command)
+        self.assertIn(str(newest), command)
+        self.assertEqual(command[-1], 'relay-snapshots@thin:/inbox/')
+        self.assertEqual(timeout, 600)  # tiny file: the floor applies
+        recorded = json.loads((self.state / 'push-latest.json').read_text())
+        self.assertEqual(recorded['archive'], newest.name)
+        self.assertEqual(len(list(self.dest.glob('relay-*.tar.gz'))), 3, 'push-latest never creates or prunes')
+
+    def test_stale_or_missing_archive_is_refused(self):
+        with self.assertRaises(RuntimeError):
+            snap.push_latest(self.args(), now=self.NOW, runner=mock.Mock())
+        self.archive(45)
+        runner = mock.Mock()
+        with self.assertRaisesRegex(RuntimeError, 'min old'):
+            snap.push_latest(self.args(), now=self.NOW, runner=runner)
+        runner.assert_not_called()
+        payload = snap.push_latest(self.args('--max-age-minutes', '60'), now=self.NOW,
+                                   runner=mock.Mock(return_value=mock.Mock(returncode=0, stderr='', stdout='')))
+        self.assertEqual(payload['status'], 'complete')
+
+    def test_sidecar_naming_another_file_is_ignored(self):
+        good = self.archive(10)
+        bad = self.archive(2, sidecar=False)
+        bad.with_suffix('.gz.sha256').write_text('0' * 64 + '  ' + good.name + '\n')
+        self.assertEqual(snap.latest_archive(self.dest)[1], good)
+
+    def test_timeout_scales_with_the_cap(self):
+        self.assertEqual(snap.push_timeout(150 * 1024 * 1024, None), 600)
+        self.assertEqual(snap.push_timeout(150 * 1024 * 1024, 300), int(150 * 1024 / 300 * 1.5) + 120)
+        self.assertEqual(snap.push_timeout(1024, 300), 600)
+
+    def test_parse_rules(self):
+        with self.assertRaises(SystemExit):
+            snap.parse(['--dest', str(self.dest), '--push-latest'])  # no --push
+        with self.assertRaises(SystemExit):
+            snap.parse(['--dest', str(self.dest), '--push-latest', '--push', 'a@b:/c', '--bwlimit', '0'])
+        with self.assertRaises(SystemExit):
+            snap.parse(['--dest', str(self.dest), '--push-latest', '--prune-only', '--push', 'a@b:/c'])
+        args = snap.parse(['--dest', str(self.dest), '--push-latest', '--push', 'a@b:/c'])
+        self.assertIsNone(args.data_dir)  # no relay paths needed
+
+    def test_own_lock_does_not_block_the_snapshot_lock(self):
+        self.archive(3)
+        self.state.mkdir()
+        import fcntl
+        ok = mock.Mock(returncode=0, stderr='', stdout='')
+        with open(self.state / '.lock', 'w') as snapshot_lock:
+            fcntl.flock(snapshot_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)  # a snapshot run is in progress
+            with mock.patch.object(snap.subprocess, 'run', return_value=ok), \
+                    mock.patch.object(snap, 'utcnow', return_value=self.NOW), \
+                    mock.patch('sys.stdout'):
+                rc = snap.main(['--dest', str(self.dest), '--state', str(self.state), '--push-latest',
+                                '--push', 'a@b:/c'])
+        self.assertEqual(rc, 0)
+        with open(self.state / '.push-lock', 'w') as push_lock:
+            fcntl.flock(push_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)  # a push-latest run is in progress
+            with mock.patch('sys.stderr'):
+                rc = snap.main(['--dest', str(self.dest), '--state', str(self.state), '--push-latest',
+                                '--push', 'a@b:/c'])
+        self.assertEqual(rc, 2)
 
 
 class RestoreTests(unittest.TestCase):

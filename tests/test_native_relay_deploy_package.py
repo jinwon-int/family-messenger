@@ -8,6 +8,7 @@ PKG = Path(__file__).parents[1] / 'deploy' / 'native-relay'
 EXPECTED = {
     'native-relay-snapshot.service': 'native_relay_snapshot.py',
     'native-relay-snapshot-prune.service': 'native_relay_snapshot.py',
+    'native-relay-snapshot-push.service': 'native_relay_snapshot.py',
     'native-relay-fence-watch.service': 'native_relay_fence.py',
     '30-fence.conf.example': 'native_relay_fence.py',
     'cutover.args.example': 'native_relay_cutover.py',
@@ -66,6 +67,15 @@ class NativeRelaySnapshotRetentionTests(unittest.TestCase):
         self.assertIsNotNone(match, delays[0])
         seconds = int(match.group(1)) * (60 if match.group(2) == 'min' else 1)
         self.assertLessEqual(seconds, 15 * 60)
+
+    def test_slow_push_runs_hourly_inside_the_archive_age_limit(self):
+        # #426: hourly cadence; the newest archive it picks is at most one 5-minute tick old, far under
+        # the 30-minute --max-age-minutes default, and the push uses its own lock (--push-latest).
+        self.assertEqual(self._timer_values('native-relay-snapshot-push.timer', 'OnCalendar'), ['*:17'])
+        service = (PKG / 'native-relay-snapshot-push.service').read_text(encoding='utf-8')
+        self.assertIn('--push-latest', service)
+        self.assertIn('$SNAPSHOT_SLOW_PUSH_ARGS', service)
+        self.assertNotIn('$SNAPSHOT_PUSH_ARGS', service)
 
     def test_receiving_host_keeps_the_same_window_as_the_sender(self):
         lines = (PKG / 'snapshot.env.example').read_text(encoding='utf-8').splitlines()
