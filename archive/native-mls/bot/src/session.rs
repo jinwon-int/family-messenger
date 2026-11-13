@@ -2056,6 +2056,24 @@ fn load_identity(path: &Path, device: &str) -> Result<Device, BotError> {
     dev.map_err(|_| BotError::Local("identity import rejected"))
 }
 
+/// #492: the signer's public key (64 hex) from the identity file — the value
+/// `steward_ready` reports, computed offline (no relay, no responder). Without
+/// `device` the envelope's own device names the identity.
+pub fn identity_public_key(path: &Path, device: Option<&str>) -> Result<String, BotError> {
+    let device = match device {
+        Some(device) => device.to_string(),
+        None => {
+            let mut raw = std::fs::read(path).map_err(|_| BotError::Local("identity file unreadable"))?;
+            let env = serde_json::from_slice::<IdentityEnvelope>(&raw).map_err(|_| BotError::Local("identity file corrupt"));
+            raw.zeroize();
+            env?.device
+        }
+    };
+    let mut dev = load_identity(path, &device)?;
+    let key = dev.public_key().map_err(|_| BotError::Local("public key"))?;
+    Ok(hex(&key))
+}
+
 /// One-shot migration (#372 P1→P2): split the signer out of an existing
 /// single-room `--state-file` into `--identity-file`. The room state file is
 /// left untouched (it still resumes that room); the identity file lets the
@@ -2144,9 +2162,8 @@ pub fn run_steward(opts: StewardOptions) -> Result<(), BotError> {
     std::fs::create_dir_all(opts.rooms_dir.join("out")).map_err(|_| BotError::Local("rooms dir create"))?;
     // The identity must load before anything else: a steward that cannot
     // reproduce its signer must not touch any room.
-    let mut probe = load_identity(&opts.identity_file, &opts.device)?;
-    let public_key = probe.public_key().map_err(|_| BotError::Local("public key"))?;
-    drop(probe);
+    // #492: the same function as `identity-public-key`, so the two cannot drift.
+    let public_key = identity_public_key(&opts.identity_file, Some(&opts.device))?;
     let mut rooms = Vec::new();
     for room in rooms_on_disk(&opts.rooms_dir)? {
         rooms.push(load_room(&opts.rooms_dir, &room, &opts.device)?);
@@ -2157,7 +2174,7 @@ pub fn run_steward(opts: StewardOptions) -> Result<(), BotError> {
         return Err(BotError::Local("more than one room in agent mode; the responder serves exactly one (start with --room-frames for several)"));
     }
     emit(&serde_json::json!({
-        "event": "steward_ready", "device": opts.device, "public_key": hex(&public_key),
+        "event": "steward_ready", "device": opts.device, "public_key": public_key,
         "rooms": rooms.iter().map(|r| serde_json::json!({"room": r.room, "joined": r.joined, "mode": r.mode.name(), "halted": r.halted})).collect::<Vec<_>>(),
         "max_secs": max_secs,
     }));
@@ -3293,6 +3310,24 @@ for line in sys.stdin:
         let (resumed, cursor, epoch, joined, _) = load_state(Some(&state), "family", "bot-1").expect("load").expect("present");
         assert_eq!((cursor, epoch, joined), (3, 1, true));
         drop(resumed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #492: `identity-public-key` reads the signer's key offline — with the
+    /// device named or taken from the envelope; a foreign device or a missing
+    /// file fails closed.
+    #[test]
+    fn identity_public_key_matches_the_signer() {
+        let dir = temp_dir("identity-pubkey");
+        let identity = dir.join("identity.json");
+        let mut dev = Device::new("bot-1").unwrap_or_else(|_| panic!("device new"));
+        let key = hex(&dev.public_key().expect("public key"));
+        write_identity(&identity, "bot-1", &dev).expect("write identity");
+        assert_eq!(key.len(), 64);
+        assert_eq!(identity_public_key(&identity, Some("bot-1")).expect("named"), key);
+        assert_eq!(identity_public_key(&identity, None).expect("from envelope"), key);
+        assert!(identity_public_key(&identity, Some("bot-2")).is_err(), "foreign device refused");
+        assert!(identity_public_key(&dir.join("missing.json"), None).is_err(), "missing file");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
