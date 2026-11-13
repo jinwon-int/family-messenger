@@ -1,12 +1,38 @@
 // 에이전트(불지기) 판정 고정(한데 디자인 1차) — 웹 `strings.test.mjs` 의 actorOf/isAgentDevice/participantName 과 같은 경우들. android.* 없이 JVM 에서 돈다.
 package com.seoyoon_family.hande.core
 
+import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.test.fail
 
 class AgentActorsTest {
+    // #422 공유 벡터 — 웹 strings.test.mjs·봇 responder.rs·iOS AgentConversationTests 와 같은 답.
+    private val vectors: Map<*, *> by lazy {
+        var dir: File? = File(".").absoluteFile
+        while (dir != null) {
+            val f = File(dir, "archive/native-mls/tests/fixtures/agent-actors-vectors.json")
+            if (f.isFile) return@lazy MiniJson(f.readText(Charsets.UTF_8)).parse() as Map<*, *>
+            dir = dir.parentFile
+        }
+        fail("agent-actors-vectors.json not found above ${File(".").absolutePath}")
+    }
+
+    @Test fun sharedAgentActorVectors() {
+        assertEquals((vectors["agent_actors"] as List<*>).map { it as String }.toSet(), AgentActors.ACTORS)
+        val cases = vectors["cases"] as List<*>
+        assertTrue(cases.size >= 20)
+        for (c in cases) {
+            c as Map<*, *>
+            val device = c["device"] as String
+            assertEquals(c["agent"] as Boolean, AgentActors.isAgentDevice(device), device)
+        }
+        // `bot*` 접두는 봇의 루프 방지 규칙일 뿐 — 클라이언트는 명시 목록만.
+        for (d in (vectors["bot_prefix_only"] as Map<*, *>)["devices"] as List<*>) assertFalse(AgentActors.isAgentDevice(d as String), d)
+    }
+
     @Test fun actorIsTheFirstDashSegment() {
         assertEquals("seoseo", AgentActors.actorOf("seoseo-iphone"))
         assertEquals("jinon", AgentActors.actorOf("jinon-ipad-1a2b3c"))

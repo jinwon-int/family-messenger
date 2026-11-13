@@ -90,6 +90,17 @@ fn main() -> ExitCode {
         Some(_) => (false, args.iter().filter(|a| *a != "--no-typing").cloned().collect::<Vec<_>>()),
         None => (std::env::var("NATIVE_MLS_BOT_TYPING").ok().is_none_or(|v| v.trim() != "0"), args),
     };
+    // #422: `--agent-actors a,b` (env NATIVE_MLS_BOT_AGENT_ACTORS) — actors that are
+    // agents besides the `bot*` prefix (the clients' AGENT_ACTORS); their messages
+    // never become turns. Unset = the prefix rule alone.
+    let (agent_actors_raw, args) = match extract_flag(&args, "--agent-actors") {
+        Some(list) => (list, strip_flag(&args, "--agent-actors")),
+        None => (std::env::var("NATIVE_MLS_BOT_AGENT_ACTORS").unwrap_or_default(), args),
+    };
+    let Some(agent_actors) = responder::parse_agent_actors(&agent_actors_raw) else {
+        eprintln!("native-mls-bot: --agent-actors / NATIVE_MLS_BOT_AGENT_ACTORS must be comma-separated actors matching [A-Za-z0-9_]{{1,64}}");
+        return ExitCode::FAILURE;
+    };
     let owner_ok = api::require_identifier("owner actor must match [A-Za-z0-9_-]{1,64}", &owner_actor).is_ok();
     let responder = match (responder_json, responder_unix) {
         (None, None) => None,
@@ -157,6 +168,7 @@ fn main() -> ExitCode {
     let responder = responder.map(|mut config| {
         config.room_frames = room_frames;
         config.typing = typing;
+        config.agent_actors = agent_actors.clone();
         config.attachments = attachments.clone();
         config.attachments_out = attachments_out.clone();
         if let Some(v) = turn_secs { config.turn_secs = v; config.turn_max_secs = v.saturating_mul(2); }
@@ -247,6 +259,7 @@ fn main() -> ExitCode {
             eprintln!("application message becomes one turn of the stdio worker (docs/FLEET-WORKER.md) instead of an echo;");
             eprintln!("--owner-actor <actor> (env NATIVE_MLS_BOT_OWNER_ACTOR, default owner) answers approvals with 승인 n / 거절 n");
             eprintln!("--room-frames (env NATIVE_MLS_BOT_ROOM_FRAMES=1, #423): several agent rooms on one responder; each turn names its room");
+            eprintln!("--agent-actors <a,b,…> (env NATIVE_MLS_BOT_AGENT_ACTORS, #422): actors that are agents besides bot*; never a turn");
             eprintln!("--no-typing (env NATIVE_MLS_BOT_TYPING=0): do not send the relay typing signal while a turn produces a reply (default on)");
             eprintln!("env NATIVE_MLS_BOT_AGENT_ATTACHMENTS=1 (#636): the owner's photos/files become turns — the bot decrypts them into");
             eprintln!("NATIVE_MLS_BOT_ATTACHMENT_SPOOL (absolute; the bridge's attachment_spool_dir) and names the file in the turn frame;");

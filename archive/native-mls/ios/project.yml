@@ -92,8 +92,9 @@ targets:
         FC_APP_GROUP: ""
         FC_PUSH_TOPIC: $(PRODUCT_BUNDLE_IDENTIFIER)
         FC_DEFAULT_ROOM: family
-        # 봇 actor 기본값(#405). 릴리스 워크플로가 vars.FC_AGENT_ACTORS 로 덮어쓸 수 있다(NSE 와 같은 값).
-        FC_AGENT_ACTORS: bot
+        # 봇 actor 기본값(#405 · #422: 웹 strings.js AGENT_ACTORS 와 같은 목록 = 옛 bot + 12노드, 공유 벡터
+        # tests/fixtures/agent-actors-vectors.json). 릴리스 워크플로가 vars.FC_AGENT_ACTORS 로 덮어쓸 수 있다(NSE 와 같은 값).
+        FC_AGENT_ACTORS: bot,bangtong,daegyo,dungae,gongmyoung,gongyung,gwakga,jingun,nosuk,seoseo,sogyo,soonwook,yukson
         FC_APS_ENVIRONMENT: development
         # 정적 라이브러리 + 헤더 모듈맵: 모듈 검색 경로를 xcframework 헤더로
         OTHER_LDFLAGS: ["-lc++"]
@@ -153,8 +154,8 @@ targets:
         FC_PROFILE_NSE: ""
         FC_RELAY_URL: ""
         FC_APP_GROUP: ""
-        # 봇 actor 기본값(알림 제목 = 노드 닉네임). 릴리스 워크플로가 vars.FC_AGENT_ACTORS 로 덮어쓸 수 있다.
-        FC_AGENT_ACTORS: bot
+        # 봇 actor 기본값(알림 제목 = 노드 닉네임, #422: 앱 타깃과 같은 목록). 릴리스 워크플로가 vars.FC_AGENT_ACTORS 로 덮어쓸 수 있다.
+        FC_AGENT_ACTORS: bot,bangtong,daegyo,dungae,gongmyoung,gongyung,gwakga,jingun,nosuk,seoseo,sogyo,soonwook,yukson
         OTHER_LDFLAGS: ["-lc++"]
   # 공유 확장(#643 1단계 + #669 2단계): 공유 시트에서 받은 글·링크·사진·동영상·파일과 고른 방을 App Group `share-outbox/` 에 **먼저 맡기고**
   # (Core `ShareHandoffStore`, D-A3 크래시 안전) 글·링크·소형 사진(D-A4 문턱 안)은 NSE 와 같은 `RoomSyncEngine`(App Group 의 MLS 상태·

@@ -170,6 +170,11 @@ pub struct Config {
     /// #776: `Transport::Unix` reconnect window in seconds (0 = off: a lost
     /// connection ends the session at once, as before). See `DEFAULT_RECONNECT_SECS`.
     pub reconnect_secs: u64,
+    /// #422: actors (device id up to the first `-`) that are agents besides the
+    /// `bot*` prefix — `--agent-actors` / env `NATIVE_MLS_BOT_AGENT_ACTORS`
+    /// (comma-separated, the clients' `AGENT_ACTORS`). Empty (the default) = the
+    /// prefix rule alone, as before.
+    pub agent_actors: Vec<String>,
 }
 
 impl Config {
@@ -193,6 +198,7 @@ impl Config {
             attachments: None,
             attachments_out: None,
             reconnect_secs: DEFAULT_RECONNECT_SECS,
+            agent_actors: Vec::new(),
         }
     }
 }
@@ -641,6 +647,9 @@ impl Responder {
     }
 
     pub fn owner_actor(&self) -> &str { &self.config.owner_actor }
+
+    /// #422: the listed agent actors (`Config::agent_actors`).
+    pub fn agent_actors(&self) -> &[String] { &self.config.agent_actors }
 
     /// #636: the size cap for attachment turns; `None` = attachments are off.
     pub fn attachment_max_bytes(&self) -> Option<u64> {
@@ -1576,8 +1585,26 @@ pub fn actor_of(device: &str) -> &str {
 
 /// `bot*` actors never trigger a turn (two agents would otherwise answer each
 /// other until the room cap — the same hazard `is_echo_client_id` guards).
-pub fn is_bot_actor(device: &str) -> bool {
-    actor_of(device).starts_with("bot")
+/// #422: nor do the listed agent actors (`<node>-bot` devices → actor `<node>`).
+pub fn is_bot_actor(device: &str, agent_actors: &[String]) -> bool {
+    let actor = actor_of(device);
+    actor.starts_with("bot") || agent_actors.iter().any(|a| a == actor)
+}
+
+/// #422: `--agent-actors` / `NATIVE_MLS_BOT_AGENT_ACTORS` → the list (comma-separated,
+/// blanks ignored like iOS `FC_AGENT_ACTORS`). `None` when an entry is not a relay
+/// identifier (fail closed at startup).
+pub fn parse_agent_actors(raw: &str) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    for actor in raw.split(',').map(str::trim).filter(|a| !a.is_empty()) {
+        if !crate::api::is_identifier(actor) || actor.contains('-') {
+            return None;
+        }
+        if !out.iter().any(|a| a == actor) {
+            out.push(actor.to_string());
+        }
+    }
+    Some(out)
 }
 
 /// relay-app / iOS `AttachmentFormat`: `^file-v1-[a-f0-9-]{36}$`, and the detached
@@ -1824,11 +1851,42 @@ mod tests {
         assert_eq!(actor_of("owner-iphone-27a879"), "owner");
         assert_eq!(actor_of("bot-gongmyoung"), "bot");
         assert_eq!(actor_of("noprefix"), "noprefix");
-        assert!(is_bot_actor("bot-gongmyoung"));
-        assert!(is_bot_actor("bot2-x"));
-        assert!(!is_bot_actor("owner-pc"));
-        assert!(!is_bot_actor("robot-1"), "actor must start with bot, not merely contain it");
-        assert!(!is_bot_actor("mom-iphone-1"));
+        assert!(is_bot_actor("bot-gongmyoung", &[]));
+        assert!(is_bot_actor("bot2-x", &[]));
+        assert!(!is_bot_actor("owner-pc", &[]));
+        assert!(!is_bot_actor("robot-1", &[]), "actor must start with bot, not merely contain it");
+        assert!(!is_bot_actor("mom-iphone-1", &[]));
+        // #422: unset list = the prefix rule alone — a `<node>-bot` device is a person.
+        assert!(!is_bot_actor("dungae-bot", &[]));
+    }
+
+    /// #422: the shared vectors (web `strings.js` `AGENT_ACTORS`, Android `AgentActors`,
+    /// iOS `AgentRoster`) — with the list given, the bot agrees with the clients;
+    /// the `bot*` prefix stays an extra bot-only loop guard.
+    #[test]
+    fn agent_actor_vectors() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/agent-actors-vectors.json");
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).expect("vectors")).expect("vectors json");
+        let list: Vec<String> = doc["agent_actors"].as_array().expect("agent_actors").iter().map(|v| v.as_str().expect("actor").to_string()).collect();
+        assert_eq!(parse_agent_actors(&list.join(",")).as_deref(), Some(list.as_slice()));
+        let cases = doc["cases"].as_array().expect("cases");
+        assert!(cases.len() >= 20);
+        for case in cases {
+            let device = case["device"].as_str().expect("device");
+            assert_eq!(is_bot_actor(device, &list), case["agent"].as_bool().expect("agent"), "{device}");
+        }
+        for device in doc["bot_prefix_only"]["devices"].as_array().expect("bot_prefix_only") {
+            let device = device.as_str().expect("device");
+            assert!(is_bot_actor(device, &[]) && is_bot_actor(device, &list), "{device}");
+        }
+    }
+
+    #[test]
+    fn agent_actors_parse() {
+        assert_eq!(parse_agent_actors(""), Some(vec![]));
+        assert_eq!(parse_agent_actors(" a , b,,a "), Some(vec!["a".to_string(), "b".to_string()]));
+        assert_eq!(parse_agent_actors("a,b c"), None, "not an identifier");
+        assert_eq!(parse_agent_actors("a,dungae-bot"), None, "a device, not an actor");
     }
 
     #[test]

@@ -1,6 +1,7 @@
 // 순수 도우미 테스트(node:test, DOM 없음): node --test archive/native-mls/web/hande/tests/strings.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   ACTOR, ROOM, DEVICE, AGENT_ACTORS, strings, allStringsFilled, peopleNames,
   formatTime, formatClock, dayLabel, dayKey, groupFingerprint, displayName, isAgentDevice, isServiceDevice, actorOf, isMine, relativeTime,
@@ -207,6 +208,15 @@ test('AGENT_ACTORS: 옛 bot + 12노드(iOS FC_AGENT_ACTORS 와 같은 목록)', 
     assert.match(agentNames[node], /^[가-힣]+(✳️|✴️)$/, node);
   }
   assert.ok(!isAgentDevice('owner-web-87576b'));
+});
+
+test('AGENT_ACTORS: 공유 벡터 tests/fixtures/agent-actors-vectors.json(봇·안드로이드·iOS 와 같은 답, #422)', () => {
+  const vectors = JSON.parse(readFileSync(new URL('../../../tests/fixtures/agent-actors-vectors.json', import.meta.url), 'utf8'));
+  assert.deepEqual([...AGENT_ACTORS].sort(), [...vectors.agent_actors].sort());
+  assert.ok(vectors.cases.length >= 20);
+  for (const c of vectors.cases) assert.equal(isAgentDevice(c.device), c.agent, c.device);
+  // `bot*` 접두는 봇의 루프 방지 규칙일 뿐 — 클라이언트는 명시 목록만.
+  for (const device of vectors.bot_prefix_only.devices) assert.equal(isAgentDevice(device), false, device);
 });
 
 test('roomLabel: Matrix 방 이름과 동일, 모르는 방은 ID', () => {
