@@ -191,6 +191,17 @@ fn main() -> ExitCode {
                 .and_then(|()| session::extract_identity(&state_file, room, device, &identity_file)),
             _ => Err(api::BotError::Local("extract-identity needs --state-file and --identity-file")),
         },
+        // #492: print the signer's public key (the `steward_ready` value) offline,
+        // for the enrollment candidate — no relay, no responder, no journal.
+        [cmd, rest @ ..] if cmd == "identity-public-key" && rest.len() <= 1 => match identity_file.clone() {
+            Some(identity_file) => {
+                let device = rest.first().map(String::as_str);
+                device.map_or(Ok(()), |d| api::require_identifier("device must match [A-Za-z0-9_-]{1,64}", d))
+                    .and_then(|()| session::identity_public_key(&identity_file, device))
+                    .map(|key| println!("{key}"))
+            }
+            None => Err(api::BotError::Local("identity-public-key needs --identity-file")),
+        },
         // Operator commands against a running steward (same --rooms-dir).
         [cmd, op, room, rest @ ..] if cmd == "room" && rest.len() <= 1 => match rooms_dir.clone() {
             Some(rooms_dir) => {
@@ -231,6 +242,7 @@ fn main() -> ExitCode {
             eprintln!("usage: native-mls-bot <base-url> health");
             eprintln!("       native-mls-bot <base-url> steward <device> --identity-file <path> --rooms-dir <dir>   (#372 P2)");
             eprintln!("       native-mls-bot extract-identity <room> <device> --state-file <path> --identity-file <path>");
+            eprintln!("       native-mls-bot identity-public-key [<device>] --identity-file <path>   (#492: 64 hex, = steward_ready public_key)");
             eprintln!("       native-mls-bot room <create|join|invite|remove|close|members|mode|status> <room> [<device>|agent|silent|alert] --rooms-dir <dir>");
             eprintln!("       native-mls-bot <base-url> publish <room> <device>");
             eprintln!("       native-mls-bot <base-url> consume <room> <device> <consumer>");

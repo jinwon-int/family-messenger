@@ -17,7 +17,10 @@
 #   5. daemon-reload, one jwt-refresh run, identity bootstrap, enable timer + bot,
 #      then writes the enrollment candidate JSON the relay operator needs
 #      ({actor, device_id, signing_key, subject}) to
-#      /var/lib/native-relay-bot/bot/enrollment.json (0600) — NOT to stdout.
+#      /var/lib/native-relay-bot/bot/enrollment.json (0600) — NOT to stdout. The signing
+#      key comes from `native-mls-bot identity-public-key` (#492), so the file is written
+#      even when the responder socket is not up yet (bot before bridge); the journal's
+#      `steward_ready` line is only the fallback for a binary without that subcommand.
 #
 # Identity bootstrap: steward mode only *loads* an identity file (it refuses to
 # start without one — `identity file unreadable`, observed on the first three
@@ -54,7 +57,7 @@ STATE_DIR="/var/lib/native-relay-bot"
 BIN_DIR="/opt/native-relay-bot/bin"
 UNIT_DIR="/etc/systemd/system"
 
-usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "install-node-bot: $*" >&2; exit 1; }
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -214,14 +217,23 @@ else
   shred -u "$boot_state" 2>/dev/null || rm -f "$boot_state"; rm -f "$boot_log"
   say "identity: created $IDENTITY (0600, signer only)"
 fi
+# #492: the signing key straight from identity.json — the value `steward_ready` reports,
+# computed offline, so enrollment.json does not wait on the responder socket or the journal.
+key="$(runuser -u "$BOT_USER" -- "$BIN_DIR/native-mls-bot" identity-public-key "$DEVICE" --identity-file "$IDENTITY" 2>/dev/null)" || key=""
+[[ "$key" =~ ^[0-9a-f]{64}$ ]] || key=""
 systemctl enable --now native-relay-bot.service >/dev/null
-# steward mode announces itself with `steward_ready` (public_key, rooms); wait for this start's line
-for _ in $(seq 1 30); do
-  key="$(journalctl -u native-relay-bot --since '-2min' --no-pager -o cat 2>/dev/null | grep '"event":"steward_ready"' | tail -1 | sed -E 's/.*"public_key":"([0-9a-f]{64})".*/\1/')"
-  [ -n "$key" ] && [[ "$key" =~ ^[0-9a-f]{64}$ ]] && break
-  sleep 1
-done
-[ -n "${key:-}" ] && [[ "$key" =~ ^[0-9a-f]{64}$ ]] || die "bot started but no steward_ready event in its journal yet — check: journalctl -u native-relay-bot"
+if [ -z "$key" ]; then
+  # Fallback (binary without identity-public-key): steward mode announces itself with
+  # `steward_ready` (public_key, rooms); wait for this start's line. `|| key=""`: a grep
+  # miss under pipefail must keep polling, not end the script silently via set -e.
+  say "identity-public-key unavailable — falling back to steward_ready in the journal"
+  for _ in $(seq 1 30); do
+    key="$(journalctl -u native-relay-bot --since '-2min' --no-pager -o cat 2>/dev/null | grep '"event":"steward_ready"' | tail -1 | sed -E 's/.*"public_key":"([0-9a-f]{64})".*/\1/')" || key=""
+    [ -n "$key" ] && [[ "$key" =~ ^[0-9a-f]{64}$ ]] && break
+    sleep 1
+  done
+  [ -n "${key:-}" ] && [[ "$key" =~ ^[0-9a-f]{64}$ ]] || die "bot started but no steward_ready event in its journal yet — check: journalctl -u native-relay-bot"
+fi
 subject="$(cat "$STATE_DIR/bot/common_name")"
 write_file "$STATE_DIR/bot/enrollment.json" 0600 <<EOF
 {"actor": "$NODE", "device_id": "$DEVICE", "signing_key": "$key", "subject": "$subject"}
