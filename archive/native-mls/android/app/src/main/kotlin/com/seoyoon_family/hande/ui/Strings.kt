@@ -159,6 +159,8 @@ object Strings {
     const val attachmentShare = "공유"
     const val attachmentOpenWith = "다른 앱으로 열기"
     const val attachmentNoApp = "열 수 있는 앱이 없어요"
+    /** #698 C2: 말풍선 썸네일의 접근성 이름(누르면 크게 보기). */
+    const val attachmentPhoto = "사진 첨부 — 눌러서 크게 보기"
     const val fileV2Invalid = "⚠ 첨부 정보가 올바르지 않아 열 수 없음"
     // alert-refs-v1: 플릿 알림의 `#번호` 를 눌렀는데 원래 알림이 이 화면에 없다(웹·iOS 와 같은 문구).
     const val alertRefMissing = "원래 알림이 이 화면에 없어요"

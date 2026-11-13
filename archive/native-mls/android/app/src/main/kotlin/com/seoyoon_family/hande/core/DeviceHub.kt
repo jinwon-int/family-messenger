@@ -29,6 +29,7 @@ import com.seoyoon_family.hande.mls.SendResult
 import com.seoyoon_family.hande.mls.fileV2Check
 import com.seoyoon_family.hande.mls.fileV2Sniff
 import com.seoyoon_family.hande.ui.AttachmentIo
+import com.seoyoon_family.hande.ui.AttachmentThumbs
 import com.seoyoon_family.hande.ui.Strings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -893,6 +894,20 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     }
 
     /**
+     * 말풍선 썸네일을 시도할지 + 자리 크기 힌트(#698 C2). 이력만 읽는다(네트워크·허브 mutex 없음). v1 = 저장된 바이트의 내용 판별,
+     * file-v2 = 설명자의 크기·MIME 힌트로 저절로 받을 범위만 좁힌다(`ThumbnailSizing.fileV2`) — 사진으로 그릴지는 받은 바이트로 정한다.
+     */
+    suspend fun attachmentPreview(room: String, seq: Long): ThumbnailSizing.Preview? = withContext(Dispatchers.IO) {
+        val (kind, stored) = db.attachment(room, seq) ?: return@withContext null
+        if (kind == MessageSchema.KIND_FILE_V2) {
+            val info = runCatching { fileV2Check(stored) }.getOrNull() ?: return@withContext null
+            ThumbnailSizing.fileV2(info.size.toLong(), info.mime, info.w?.toLong(), info.h?.toLong())
+        } else {
+            ThumbnailSizing.Preview(candidate = stored.isNotEmpty() && fileV2Sniff(stored).kind == "image")
+        }
+    }
+
+    /**
      * 첨부 보내기(#366 C): `MlsRoom.sendFileV2`(봉인 → blob 업로드 → 설명자를 `file-v2-<uuid>` 로 게시 — 코어, 409 재전송도 file-v2).
      * 허브 mutex 밖(업로드가 길 수 있다). 보내졌으면 내 이력에 `file-v2` 행(본문 = 자리 표시, attachment = 설명자 — 파일 키 포함, 글로
      * 보이지 않는다). 글 보내기와 같이 `Queued` 는 안내만 한다(다음 poll 이 다시 보낸다).
@@ -1013,6 +1028,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             roomOrder.clear()
             settings.wipe()
             linkPreviews.clear()
+            AttachmentThumbs.clear() // #698 C2: 메모리의 첨부 썸네일
             runCatching { sealer.forget() }.onFailure { e -> Log.w(TAG, "wipe: keystore: $e") }
             _ui.value = HubUi(phase = Phase.Setup, notice = Strings.wipeDone)
             Log.i(TAG, "wipe: done → setup")
