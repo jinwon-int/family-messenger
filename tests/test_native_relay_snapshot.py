@@ -364,10 +364,11 @@ class RestoreTests(unittest.TestCase):
         db.execute("""CREATE TABLE mls_lobby_keypackages (device TEXT NOT NULL, ref TEXT NOT NULL, bytes BLOB NOT NULL,
             consumed_by TEXT, consumed_room TEXT, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
             PRIMARY KEY (device, ref))""")
-        rows = [('owner-pc', 'a1', None, None), ('owner-pc', 'a2', None, None), ('owner-pc', 'a0', 'bot-1', 'family-acc'),
-                ('owner-iphone', 'b1', None, None)]
+        rows = [('owner-pc', 'a1', None, None), ('owner-pc', 'a2', None, None),
+                ('owner-pc', 'a0', 'bot-1', 'family-acc'), ('owner-iphone', 'b1', None, None)]
         for device, ref, by, room in rows:
-            db.execute('INSERT INTO mls_lobby_keypackages VALUES (?, ?, x\'00\', ?, ?, 1, 9999999999)', (device, ref, by, room))
+            db.execute("INSERT INTO mls_lobby_keypackages VALUES (?, ?, x'00', ?, ?, 1, 9999999999)",
+                       (device, ref, by, room))
         db.execute("INSERT INTO mls_keypackages VALUES ('owner-pc', x'01')")
         db.commit()
         db.close()
