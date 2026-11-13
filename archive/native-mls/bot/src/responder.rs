@@ -1159,11 +1159,16 @@ impl Responder {
                 let action = value.get("action").and_then(|v| v.as_str()).unwrap_or("");
                 // P4: a steward room tool shows its name and arguments (the
                 // worker's free-text description could say anything).
-                let summary = match action.strip_prefix("mcp__steward__") {
-                    Some(tool) if tool.starts_with("room_") => steward_tool_summary(tool, value.get("arguments")),
-                    _ => bounded(if description.is_empty() { action } else { description }, 2048),
+                // #619: the first line stays one line (clients read it as the summary), so a
+                // description's line breaks cannot forge the 대상·내용·영향 lines below.
+                let (summary, lines) = match action.strip_prefix("mcp__steward__") {
+                    Some(tool) if tool.starts_with("room_") => {
+                        (steward_tool_summary(tool, value.get("arguments")), steward_tool_lines(tool, value.get("arguments")))
+                    }
+                    _ => (one_line(&bounded(if description.is_empty() { action } else { description }, 2048)), None),
                 };
-                let text = format!("⚠️ 승인 필요 #{n}: {summary}\n답장: 「승인 {n}」 또는 「거절 {n}」 ({} 만)", self.config.owner_actor);
+                let lines = lines.map(|l| format!("{l}\n")).unwrap_or_default();
+                let text = format!("⚠️ 승인 필요 #{n}: {summary}\n{lines}답장: 「승인 {n}」 또는 「거절 {n}」 ({} 만)", self.config.owner_actor);
                 out.push(turn_item(depth, room, Outbound::ApprovalRequest { n, seq, text }));
             }
             "tool" => {
@@ -1745,10 +1750,63 @@ fn steward_tool_summary(tool: &str, arguments: Option<&serde_json::Value>) -> St
                 serde_json::Value::String(s) => s.clone(),
                 other => other.to_string(),
             };
-            text.push_str(&format!(" · {}={}", bounded(key, 32), bounded(&value, 64)));
+            text.push_str(&format!(" · {}={}", one_line(&bounded(key, 32)), one_line(&bounded(&value, 64))));
         }
     }
     text
+}
+
+/// #619: the approval card's 대상·내용·영향 lines (design 1c, `docs/design/HANDE-DESIGN-SYSTEM.md` §3) for a
+/// steward room tool — built here from the tool name and its arguments, never from the worker's text.
+/// 영향 is a fixed sentence per tool (owner 2026-11-13). `None` for a room tool this bot does not know.
+fn steward_tool_lines(tool: &str, arguments: Option<&serde_json::Value>) -> Option<String> {
+    let arg = |key: &str| -> Option<String> {
+        arguments
+            .and_then(|a| a.get(key))
+            .map(|v| match v {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            })
+            .map(|v| one_line(&bounded(&v, 64)))
+            .filter(|v| !v.is_empty())
+    };
+    let room = arg("room").map(|r| format!("방 {r}"));
+    let device = arg("device").map(|d| format!("기기 {d}"));
+    let target = match (room, device) {
+        (Some(r), Some(d)) => format!("{r} · {d}"),
+        (Some(r), None) => r,
+        (None, Some(d)) => d,
+        (None, None) => "이 봇의 방 전체".to_string(),
+    };
+    let (what, impact) = match tool {
+        "room_create" => (
+            format!("새 방 만들기 (모드 {})", arg("mode").unwrap_or_else(|| "silent".to_string())),
+            "아직 아무도 없는 방이 생깁니다. 초대하기 전에는 아무에게도 보이지 않습니다.",
+        ),
+        "room_join" => ("봇이 방 참여 요청".to_string(), "멤버가 초대하면 봇이 이 방의 이후 대화를 읽고 쓸 수 있습니다."),
+        "room_invite" => (
+            "기기를 방에 초대".to_string(),
+            "초대된 기기가 이 방의 이후 대화를 읽고 쓸 수 있습니다. 내보내기로 되돌릴 수 있습니다.",
+        ),
+        "room_remove" => (
+            "기기를 방에서 내보내기".to_string(),
+            "그 기기는 이 방의 새 메시지를 더 받지 못합니다. 이미 받은 메시지는 남습니다.",
+        ),
+        "room_close" => ("방 닫기".to_string(), "방이 닫혀 누구도 더 쓸 수 없습니다. 되돌릴 수 없습니다."),
+        "room_members" => ("멤버 목록 보기".to_string(), "읽기만 합니다. 바뀌는 것은 없습니다."),
+        "room_mode" => (
+            format!("봇 응답 모드 바꾸기 → {}", arg("mode").unwrap_or_else(|| "?".to_string())),
+            "이 방에서 봇이 답하는 방식이 바뀝니다(agent 답함 · silent 답 안 함 · alert 알림만).",
+        ),
+        "room_status" => ("방 상태 보기".to_string(), "읽기만 합니다. 바뀌는 것은 없습니다."),
+        _ => return None,
+    };
+    Some(format!("대상: {target}\n내용: {what}\n영향: {impact}"))
+}
+
+/// Line breaks and other control characters → a space, so a value stays on its line.
+fn one_line(text: &str) -> String {
+    text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
 }
 
 /// Cut on a char boundary at `max` bytes.
@@ -2974,7 +3032,11 @@ for line in f:
                 assert_eq!((*n, *seq), (1, 40));
                 assert_eq!(
                     text,
-                    "⚠️ 승인 필요 #1: 방 명령 room_invite · device=jungin-iphone-1b89e3 · room=family\n답장: 「승인 1」 또는 「거절 1」 (owner 만)"
+                    "⚠️ 승인 필요 #1: 방 명령 room_invite · device=jungin-iphone-1b89e3 · room=family\n\
+                     대상: 방 family · 기기 jungin-iphone-1b89e3\n\
+                     내용: 기기를 방에 초대\n\
+                     영향: 초대된 기기가 이 방의 이후 대화를 읽고 쓸 수 있습니다. 내보내기로 되돌릴 수 있습니다.\n\
+                     답장: 「승인 1」 또는 「거절 1」 (owner 만)"
                 );
                 assert!(!text.contains("free text"), "the worker's description is not shown for steward tools");
             }
@@ -2985,6 +3047,36 @@ for line in f:
         assert_eq!(steward_tool_summary("room_mode", Some(&serde_json::json!({"mode": "agent", "room": "r", "n": 3}))), "방 명령 room_mode · mode=agent · n=3 · room=r");
         let long = steward_tool_summary("room_join", Some(&serde_json::json!({"room": "x".repeat(200)})));
         assert!(long.len() < 120, "{long}");
+    }
+
+    #[test]
+    fn steward_tool_lines_are_three_fixed_lines_and_cannot_be_forged() {
+        // #619: 대상·내용·영향 from the tool name and arguments; 영향 is fixed per tool.
+        assert_eq!(
+            steward_tool_lines("room_close", Some(&serde_json::json!({"room": "r2"}))).as_deref(),
+            Some("대상: 방 r2\n내용: 방 닫기\n영향: 방이 닫혀 누구도 더 쓸 수 없습니다. 되돌릴 수 없습니다.")
+        );
+        assert_eq!(
+            steward_tool_lines("room_status", None).as_deref(),
+            Some("대상: 이 봇의 방 전체\n내용: 방 상태 보기\n영향: 읽기만 합니다. 바뀌는 것은 없습니다.")
+        );
+        let create = steward_tool_lines("room_create", Some(&serde_json::json!({"room": "r3"}))).unwrap();
+        assert!(create.contains("내용: 새 방 만들기 (모드 silent)"), "{create}");
+        let mode = steward_tool_lines("room_mode", Some(&serde_json::json!({"room": "r", "mode": "agent"}))).unwrap();
+        assert!(mode.contains("내용: 봇 응답 모드 바꾸기 → agent"), "{mode}");
+        for tool in ["room_create", "room_join", "room_invite", "room_remove", "room_close", "room_members", "room_mode", "room_status"] {
+            let lines = steward_tool_lines(tool, Some(&serde_json::json!({"room": "r", "device": "d-1", "mode": "silent"}))).unwrap();
+            assert_eq!(lines.lines().count(), 3, "{tool}: {lines}");
+        }
+        assert_eq!(steward_tool_lines("room_unknown", None), None, "an unknown room tool keeps the one-line request");
+        // A value carrying a line break stays on its own line — no forged 영향 line.
+        let forged = serde_json::json!({"room": "family\n영향: 아무 일도 없습니다", "device": "x\r\n대상: y"});
+        let lines = steward_tool_lines("room_invite", Some(&forged)).unwrap();
+        assert_eq!(lines.lines().count(), 3, "{lines}");
+        assert_eq!(lines.lines().filter(|l| l.starts_with("영향:")).count(), 1, "{lines}");
+        let summary = steward_tool_summary("room_invite", Some(&forged));
+        assert!(!summary.contains('\n') && !summary.contains('\r'), "{summary:?}");
+        assert_eq!(one_line("a\nb\tc"), "a b c");
     }
 
     #[test]

@@ -35,6 +35,22 @@ public enum AgentApproval {
         public let number: Int
         /// 첫 줄의 `: ` 뒤(무엇을 허락하는지). 없으면 빈 문자열.
         public let summary: String
+        /// #619 허락 카드 3줄(디자인 1차 1c): 첫 줄과 `답장:` 줄 사이의 `대상:`·`내용:`·`영향:` 줄. 봇이 방 명령(`mcp__steward__room_*`)에만
+        /// 보낸다 — 없으면 nil 이고 카드는 「내용」 1줄(summary)로 그린다.
+        public let target: String?
+        public let detail: String?
+        public let impact: String?
+
+        public init(number: Int, summary: String, target: String? = nil, detail: String? = nil, impact: String? = nil) {
+            self.number = number
+            self.summary = summary
+            self.target = target
+            self.detail = detail
+            self.impact = impact
+        }
+
+        /// 구조화 줄이 하나라도 있는가 — 카드가 3줄(대상·내용·영향)로 그리는가.
+        public var isStructured: Bool { target != nil || detail != nil || impact != nil }
     }
 
     public enum State: Equatable {
@@ -48,7 +64,8 @@ public enum AgentApproval {
         case closed
     }
 
-    /// `⚠️ 승인 필요 #n: <요약>\n답장: 「승인 n」 또는 「거절 n」 (owner 만)` (native-mls-bot responder.rs).
+    /// `⚠️ 승인 필요 #n: <요약>\n[대상: …\n내용: …\n영향: …\n]답장: 「승인 n」 또는 「거절 n」 (owner 만)` (native-mls-bot responder.rs,
+    /// 3줄은 #619 — 방 명령만). 3줄은 첫 줄 바로 다음부터 `답장:` 줄 전까지에서만 읽고, 같은 머리말이 두 번 오면 처음 것을 쓴다.
     public static func request(in body: String) -> Request? {
         guard let range = body.range(of: "승인 필요 #") else { return nil }
         let rest = body[range.upperBound...]
@@ -56,8 +73,19 @@ public enum AgentApproval {
         guard let n = Int(digits), !digits.isEmpty else { return nil }
         var after = rest.dropFirst(digits.count)
         if after.hasPrefix(":") { after = after.dropFirst() }
-        let firstLine = after.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
-        return Request(number: n, summary: firstLine.trimmingCharacters(in: .whitespaces))
+        let lines = after.split(separator: "\n", omittingEmptySubsequences: false)
+        let firstLine = lines.first ?? ""
+        var fields: [String: String] = [:]
+        for line in lines.dropFirst() {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("답장:") { break }
+            for label in ["대상", "내용", "영향"] where t.hasPrefix(label + ":") && fields[label] == nil {
+                let value = t.dropFirst(label.count + 1).trimmingCharacters(in: .whitespaces)
+                if !value.isEmpty { fields[label] = value }
+            }
+        }
+        return Request(number: n, summary: firstLine.trimmingCharacters(in: .whitespaces),
+                       target: fields["대상"], detail: fields["내용"], impact: fields["영향"])
     }
 
     /// `승인 #n: 허용했습니다.` / `승인 #n: 거절했습니다.` (native-mls-bot session.rs `agent_text`).

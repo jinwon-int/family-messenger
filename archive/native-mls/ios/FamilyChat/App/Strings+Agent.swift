@@ -8,8 +8,10 @@ extension Strings {
     static let agentBadgePlain = "불지기(AI 에이전트)"
     static func approvalTitle(_ name: String) -> String { "\(name)\(subjectParticle(name)) 허락을 구합니다" }
     // subjectParticle 은 Strings.swift(타닥타닥 라벨과 공용).
-    /// 허락 카드 본문 줄 머리(디자인 1차: 대상·내용·영향 3줄 고정 — 봇이 아직 한 줄 요약만 보내므로 「내용」 한 줄, 나머지는 봇 쪽 후속).
+    /// 허락 카드 본문 줄 머리(디자인 1차: 대상·내용·영향 3줄 고정). 봇이 방 명령에 3줄을 보낸다(#619) — 그 밖의 요청은 「내용」 한 줄.
+    static let approvalTargetLabel = "대상"
     static let approvalSummaryLabel = "내용"
+    static let approvalImpactLabel = "영향"
     static let approvalAllow = "허락"
     static let approvalDeny = "거절"
     static let approvalAllowed = "허락했습니다"
