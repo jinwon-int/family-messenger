@@ -63,6 +63,8 @@ case "$common/" in
   *) mounts+=(-v "$common:$common:ro") ;;
 esac
 if [ -n "${NATIVE_RELAY_GOMODCACHE_VOLUME:-}" ]; then
+  # 새 named volume 은 root 소유라 아래 --user(비 root, CI 러너) 빌드가 못 쓴다 — 호출자 uid 로 맞춘다(멱등).
+  docker run --rm -v "$NATIVE_RELAY_GOMODCACHE_VOLUME:/gomod" "$image" chown "$(id -u):$(id -g)" /gomod
   mounts+=(-v "$NATIVE_RELAY_GOMODCACHE_VOLUME:/gomod" -e GOMODCACHE=/gomod)
 fi
 # --user: 저장소 소유자와 같은 uid 로 돌려 git 「dubious ownership」 없이 vcs 정보를 읽고,

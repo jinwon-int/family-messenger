@@ -57,13 +57,17 @@ jobs:
         run: python3 archive/native-mls/tests/real_device_kit.py validate-selftest
       # Relay reproducibility gate (#243 2-d, D9): the release relay binaries come from the
       # digest-pinned build container (deploy/native-relay/build/). Two clean builds — fresh
-      # container, empty GOCACHE and module cache each — must produce an identical SHA256SUMS.
+      # container and empty GOCACHE each — must produce an identical SHA256SUMS. The module
+      # cache is one shared docker volume (go.sum-verified, so it cannot change the output):
+      # the second build does not re-download, which keeps proxy hiccups from failing the gate.
       # Runs before any step writes into the checkout: build.sh refuses a dirty tree, because
       # the embedded vcs.revision + vcs.modified=false are part of the deploy evidence.
       - name: Relay reproducibility — two pinned-container builds must hash identically
         if: steps.scope.outputs.run == 'true'
         run: |
           set -euo pipefail
+          export NATIVE_RELAY_GOMODCACHE_VOLUME=relay-repro-gomod
+          docker volume create "$NATIVE_RELAY_GOMODCACHE_VOLUME" >/dev/null
           deploy/native-relay/build/build.sh artifacts/relay-repro-a
           deploy/native-relay/build/build.sh artifacts/relay-repro-b
           if ! diff artifacts/relay-repro-a/SHA256SUMS artifacts/relay-repro-b/SHA256SUMS; then
