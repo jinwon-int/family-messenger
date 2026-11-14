@@ -101,10 +101,9 @@ struct RoomView: View {
                     LastSentBar(room: room, lastSent: last,
                                 earlier: LastSent.earlier(messages.map(\.record), myDevice: model.deviceId,
                                                           since: Calendar.current.startOfDay(for: Date()))) { seq in
-                        followLatest = false
-                        withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(seq, anchor: .center) }
+                        scrollToMessage(seq, proxy)
                     }
-                    .id(room) // 펼침 상태(@State)는 방별 저장값에서 시작 — 방을 바꾸면 새로 만든다.
+                    .id(room) // 펼침 상태(@State)는 접힘에서 시작 — 방을 바꾸면 새로 만든다.
                     Divider()
                 }
                 ScrollView {
@@ -421,6 +420,13 @@ struct RoomView: View {
             toast = Strings.replyTargetMissing
             return
         }
+        scrollToMessage(seq, proxy)
+    }
+
+    /// 타임라인의 그 글(seq)로 — 따라가기를 끄고 가운데로(「내 마지막 말」 바 · 인용 상자 · 플릿 알림 `#번호` 가 같은 이동).
+    /// `lastDrag` 를 지금으로 찍는다: 이동 첫 프레임엔 아직 바닥 근처라 `ScrollFollow.shouldRefollow` 가 따라가기를 다시 켜고
+    /// 바닥 보정(iOS 16)·새 글 추종이 화면을 최하단으로 되돌릴 수 있다(종전 바 이동만 이 가드가 없었다).
+    private func scrollToMessage(_ seq: Int64, _ proxy: ScrollViewProxy) {
         followLatest = false
         tracking.lastDrag = Date()
         withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(seq, anchor: .center) }
@@ -624,9 +630,7 @@ struct RoomView: View {
             toast = Strings.alertRefMissing
             return
         }
-        followLatest = false
-        tracking.lastDrag = Date()
-        withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(seq, anchor: .center) }
+        scrollToMessage(seq, proxy)
     }
 
     private func loadOlder(_ proxy: ScrollViewProxy) {
