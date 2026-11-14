@@ -93,6 +93,7 @@ Host로 추정하지 않고 운영자가 명시해야 켜진다(`-well-known-nam
 | `bbc` | BBC | bbc.com, www.bbc.com, bbc.co.uk, www.bbc.co.uk | ✓ | `/news/articles/{id}` → `https://www.bbc.com/news/articles/{id}` | ichef.bbci.co.uk |
 | `threads` | Threads | threads.net, www.threads.net, threads.com, www.threads.com | 링크만 | — | — |
 | `reuters` | Reuters | reuters.com, www.reuters.com | 링크만 | — | — |
+| `bunjang` | 번개장터 | m.bunjang.co.kr, bunjang.co.kr, www.bunjang.co.kr | 링크만 | — | — |
 
 새 사이트는 레지스트리 한 항목 + (미리보기 사이트면) 경로 규칙 함수 + `normalizeImageURL` 의 호스트별 리터럴 접두 case 만
 추가한다(테스트가 레지스트리·switch 불일치를 잡는다). 릴레이는 고정 허용 호스트에만 https 로 접속하고(UA 기본
