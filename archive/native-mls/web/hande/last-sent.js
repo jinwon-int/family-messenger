@@ -107,5 +107,26 @@ export function dayStart(now = Date.now()) {
   return date.getTime();
 }
 
-/** 접기 상태를 방별로 기억하는 저장소 키(기본 접힘; 펼친 방만 '0'). */
+/**
+ * 예전(#480 C~#819 전) 펼침 상태 저장소 키(펼친 방만 '0'). 지금은 저장하지 않으며,
+ * 방을 열 때 남은 값을 지우고 local-room.js 가 방 정리 때 함께 지우는 데만 쓴다.
+ */
 export const collapsedKey = (roomId) => `hande:lastSent:collapsed:${roomId ?? ''}`;
+
+/**
+ * 펼침 상태는 열려 있는 방 화면 안에서만 산다(#819, iOS #818과 같게). 기본은 접힘이다.
+ * 같은 방을 다시 그릴 때는 유지하고, 방 화면을 새로 만들 때(방 목록으로 나갔다 옴·다른 방·새로고침)
+ * `leave()`로 접는다. 사진 보기는 방 화면 위의 dialog 라 방 화면이 그대로여서 펼침이 남는다.
+ * 방 화면은 한 번에 하나라 펼친 방 하나만 기억한다.
+ */
+export function createExpandState() {
+  let expanded = null; // 펼친 방의 roomId 를 담은 상자(roomId 가 null/'' 이어도 구별되게)
+  return {
+    isCollapsed: (roomId) => !(expanded && expanded.roomId === roomId),
+    set(roomId, collapsed) {
+      if (!collapsed) expanded = { roomId };
+      else if (expanded && expanded.roomId === roomId) expanded = null;
+    },
+    leave() { expanded = null; },
+  };
+}

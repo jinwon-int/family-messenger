@@ -8,7 +8,7 @@ import {
 } from './strings.js';
 import {contentType, downloadSpec, mediaBoxStyle, pendingMedia, dimsAgree, PDF_TYPE} from './attachment-view.js';
 import { pickTransferFile, transferHasFiles } from './composer-files.js';
-import { lastSentView, collapsedKey, sentDayPrefix } from './last-sent.js';
+import { lastSentView, collapsedKey, sentDayPrefix, createExpandState } from './last-sent.js';
 import {fileboxRefreshUrl} from './filebox.js';
 import {attachmentTitle} from './attachments.js';
 import {parseBlocks, inlineSpans, hasMarkdown} from './agent-markdown.js';
@@ -1126,17 +1126,15 @@ function resendBar(pending) {
 
 // ---- 대화창 상단 "내 마지막 말" 바(패밀리챗 #300 이식, #480 C) ----
 // 헤더 아래·타임라인 위의 보통 flex 자식. 같은 방 재렌더에서는 서명이 같으면 붙어 있는 노드를 그대로 둔다.
-// 기본은 접힘: 키가 없으면 접힘, 펼친 방만 '0'으로 기억한다. 접힘에서 바를 누르면 이동 대신 펼치고,
-// 접기는 오른쪽 화살표로만 한다. 펼친 뒤 바를 누르면 그 말풍선으로 스크롤하고 잠깐 밝힌다.
+// 기본은 접힘이고, 펼침은 열려 있는 방 화면 안에서만 유지한다(#819 — iOS #818과 같게). 방 목록으로 나갔다
+// 오거나 다른 방으로 옮기거나 새로고침하면 접힌다(renderShell 이 방 화면을 새로 만들 때 leave). 사진 보기는
+// 방 화면 위의 dialog 라 펼침이 남는다. 접힘에서 바를 누르면 이동 대신 펼치고, 접기는 오른쪽 화살표로만 한다.
+// 펼친 뒤 바를 누르면 그 말풍선으로 스크롤하고 잠깐 밝힌다.
 const FLASH_MS = 1600;
-function readCollapsed(roomId) {
-  try { return globalThis.localStorage?.getItem(collapsedKey(roomId)) !== '0'; } catch (_) { return true; }
-}
-function writeCollapsed(roomId, collapsed) {
-  try {
-    if (collapsed) globalThis.localStorage?.removeItem(collapsedKey(roomId));
-    else globalThis.localStorage?.setItem(collapsedKey(roomId), '0');
-  } catch (_) { /* 저장소가 막혀 있어도 접기는 이번 화면에서만 동작한다 */ }
+const lastSentExpand = createExpandState();
+/** 예전에 저장한 펼침 값(#480 C)을 지운다 — 지금은 저장하지 않는다. */
+function dropLegacyCollapsed(roomId) {
+  try { globalThis.localStorage?.removeItem(collapsedKey(roomId)); } catch (_) { /* 저장소가 막혀 있으면 지울 것도 없다 */ }
 }
 /** 타임라인에서 그 말풍선(data-key)을 찾아 보이게 하고 잠깐 밝힌다. 없으면 false. */
 export function jumpToBubble(list, key) {
@@ -1155,7 +1153,7 @@ function lastSentBar(room) {
   const { lastSent, earlierSent } = lastSentView(room.timeline, { labels: { photo: t.photo, file: t.file } });
   if (!lastSent) return null;
   const roomId = room.roomId;
-  const collapsed = readCollapsed(roomId);
+  const collapsed = lastSentExpand.isCollapsed(roomId);
   const barSignature = (isCollapsed) => JSON.stringify([
     lastSent.key, lastSent.text, lastSent.replies, lastSent.ts,
     earlierSent.map((item) => [item.key, item.text, item.replies, item.ts]), isCollapsed, roomId,
@@ -1170,7 +1168,7 @@ function lastSentBar(room) {
   const bar = el('div', { class: 'last-sent', role: 'region', 'aria-label': t.region, 'data-part': 'lastSent', 'data-testid': 'last-sent', 'data-collapsed': collapsed ? 'true' : 'false', 'data-key': lastSent.key ?? null });
   let toggle = null;
   const setCollapsed = (next) => {
-    writeCollapsed(roomId, next);
+    lastSentExpand.set(roomId, next);
     bar.dataset.collapsed = next ? 'true' : 'false';
     toggle.setAttribute('aria-label', next ? t.expand : t.collapse);
     toggle.setAttribute('aria-expanded', next ? 'false' : 'true');
@@ -1300,7 +1298,13 @@ export function renderShell(root, { list, room, box = null }) {
   const existingShell = root.querySelector('main.shell');
   const existingScreen = existingShell?.querySelector('.room-screen') ?? null;
   const sameRoom = Boolean(room && existingScreen && existingScreen.dataset.roomId === room.roomId);
-  if (existingShell && sameRoom && existingScreen.querySelector('form.composer')) {
+  const patchesRoom = Boolean(existingShell && sameRoom && existingScreen.querySelector('form.composer'));
+  // 방 화면을 새로 만들면(목록으로 나갔다 옴·다른 방·새로고침) 「내 마지막 말」은 접힌 채로 시작한다(#819).
+  if (!patchesRoom) {
+    lastSentExpand.leave();
+    if (room) dropLegacyCollapsed(room.roomId);
+  }
+  if (patchesRoom) {
     updateListPane(existingShell, listPane);
     patchRoomScreen(existingScreen, buildRoom(room), room);
     existingShell.dataset.view = view;
