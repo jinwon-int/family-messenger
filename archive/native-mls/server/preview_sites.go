@@ -95,6 +95,11 @@ var previewSites = []*previewSite{
 		id: "reuters", name: "Reuters",
 		hosts: []string{"reuters.com", "www.reuters.com"},
 	},
+	{
+		// 번개장터 새 매물 알림(bunjang-bot)의 상품 링크 — 링크만, 미리보기 없음.
+		id: "bunjang", name: "번개장터",
+		hosts: []string{"m.bunjang.co.kr", "bunjang.co.kr", "www.bunjang.co.kr"},
+	},
 }
 
 // Derived from previewSites in init; read-only afterwards.

@@ -28,6 +28,7 @@ func TestPreviewRegistryMatchesContract(t *testing.T) {
 		{"bbc", "BBC", []string{"bbc.com", "www.bbc.com", "bbc.co.uk", "www.bbc.co.uk"}, true, []string{"ichef.bbci.co.uk"}},
 		{"threads", "Threads", []string{"threads.net", "www.threads.net", "threads.com", "www.threads.com"}, false, nil},
 		{"reuters", "Reuters", []string{"reuters.com", "www.reuters.com"}, false, nil},
+		{"bunjang", "번개장터", []string{"m.bunjang.co.kr", "bunjang.co.kr", "www.bunjang.co.kr"}, false, nil},
 	}
 	if len(previewSites) != len(want) {
 		t.Fatalf("registry has %d sites, contract %d", len(previewSites), len(want))
@@ -88,6 +89,7 @@ func TestPreviewRegistryImageHostsRebuilt(t *testing.T) {
 	for _, b := range []string{
 		"https://scontent-icn2-1.cdninstagram.com/v/a.jpg", "https://www.threads.net/a.jpg", "https://threads.com/a.jpg",
 		"https://www.reuters.com/a.jpg", "https://reuters.com/a.jpg", "https://www.youtube.com/a.jpg", "https://github.com/a.png",
+		"https://m.bunjang.co.kr/a.jpg", "https://media.bunjang.co.kr/a.jpg",
 		"https://i.ytimg.com.evil.example/a.jpg", "https://ytimg.com/a.jpg", "https://i9.ytimg.com/a.jpg", "https://evilpstatic.net/a.jpg",
 		"https://wikimedia.org/a.jpg", "https://commons.wikimedia.org/a.jpg", "https://githubusercontent.com/a.png",
 		"https://raw.githubusercontent.com/a.png", "https://ichef.bbci.co.uk:443/a.jpg", "https://u@ichef.bbci.co.uk/a.jpg",
@@ -150,7 +152,7 @@ func TestNormalizePreviewURLSites(t *testing.T) {
 	bad := []string{
 		// Link-only sites never preview.
 		"https://www.threads.net/@user/post/ABC", "https://threads.com/@u/post/x", "https://www.reuters.com/world/some-story-2026-11-05/",
-		"https://reuters.com/world/",
+		"https://reuters.com/world/", "https://m.bunjang.co.kr/products/448826665", "https://bunjang.co.kr/products/448826665",
 		// Scheme, userinfo, port, look-alike / unknown hosts.
 		"http://www.youtube.com/watch?v=dQw4w9WgXcQ", "https://user@www.youtube.com/watch?v=dQw4w9WgXcQ",
 		"https://www.youtube.com:443/watch?v=dQw4w9WgXcQ", "https://youtube.com.evil.example/watch?v=dQw4w9WgXcQ",
@@ -345,7 +347,7 @@ func TestPreviewLinkOnlyAndMismatchBadURL(t *testing.T) {
 	}))
 	for _, link := range []string{
 		"https://www.threads.net/@user/post/ABC123", "https://threads.com/@user", "https://www.reuters.com/world/asia-pacific/story-2026-11-05/",
-		"https://reuters.com/", "https://www.youtube.com/@channel", "https://github.com/golang/go/tree/master", "https://www.bbc.com/news",
+		"https://reuters.com/", "https://m.bunjang.co.kr/products/448826665", "https://www.youtube.com/@channel", "https://github.com/golang/go/tree/master", "https://www.bbc.com/news",
 		"https://n.news.naver.com/main/ranking", "https://ja.wikipedia.org/wiki/Tokyo",
 	} {
 		resp, body := getPreview(t, srv, previewQuery(link), nil)
