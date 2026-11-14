@@ -456,8 +456,11 @@ struct AgentChoicesCard: View {
 /// 적으면 지난 날 말로 10개까지 — `LastSent.earlier`)을 보인다.
 /// - 접힘(기본)에서 바를 누르면 이동 대신 펼친다. 이전 말이 없으면 예전처럼 바로 그 메시지로 간다.
 /// - 펼친 뒤 바를 누르면 가장 최근 내 말로, 목록 항목을 누르면 그 말로 간다. 접기는 오른쪽 화살표로만(웹과 같음).
-/// - 펼침 상태는 방별로 기억한다(웹 `hande:lastSent:collapsed:<방>` 과 같은 뜻, 기기 로컬).
+/// - 펼침 상태는 **방에 머무는 동안만** 유지한다 — 방을 나갔다 오면 다시 접힘(오너 2026-11-14). 종전엔 방별로 저장해(UserDefaults)
+///   나갔다 와도 펼쳐져 있었다. 그때 남은 저장값(`legacyExpandedKey`)은 바가 보일 때 지운다.
 /// - 목록은 높이 상한 안에서 스크롤 — 펼쳐도 대화가 가려지지 않게.
+/// - 목록 행의 identity 는 타임라인 행 id(seq, `Int64`)와 **다른 값**(`barRowID`)이어야 한다. 같으면 둘러싼 `ScrollViewReader` 의
+///   `scrollTo(seq)` 가 먼저 만나는 이 목록의 ScrollView 를 움직여, 항목을 눌러도 대화가 그 말로 가지 않았다(오너 2026-11-14).
 struct LastSentBar: View {
     let room: RoomID
     let lastSent: LastSent
@@ -465,7 +468,7 @@ struct LastSentBar: View {
     /// 그 메시지(seq)로 스크롤.
     let jump: (Int64) -> Void
     @Environment(\.hande) private var p
-    @State private var expanded: Bool
+    @State private var expanded = false
 
     /// 펼친 목록이 차지하는 최대 높이(pt) — 10개 이상이어도 대화 칸을 남긴다.
     static let earlierMaxHeight: CGFloat = 260
@@ -477,10 +480,10 @@ struct LastSentBar: View {
         self.lastSent = lastSent
         self.earlier = earlier
         self.jump = jump
-        _expanded = State(initialValue: UserDefaults.standard.bool(forKey: Self.expandedKey(room)))
     }
 
-    static func expandedKey(_ room: RoomID) -> String { "hande.lastSent.expanded.\(room)" }
+    /// 종전(방별 펼침 기억) 저장 키 — 이제 읽지 않고 지우기만 한다.
+    static func legacyExpandedKey(_ room: RoomID) -> String { "hande.lastSent.expanded.\(room)" }
 
     private var showsEarlier: Bool { expanded && !earlier.isEmpty }
 
@@ -534,11 +537,14 @@ struct LastSentBar: View {
             }
         }
         .background(.ultraThinMaterial)
+        .onAppear { UserDefaults.standard.removeObject(forKey: Self.legacyExpandedKey(room)) }
+        // 방을 떠나면 접는다(iPad 처럼 화면이 남아 있어도). 사진 전체 화면 보기로 가려진 것은 떠난 것이 아니다(RoomView.onDisappear 와 같은 기준).
+        .onDisappear { if !PhotoViewerPresence.active { expanded = false } }
     }
 
     private var earlierList: some View {
         LazyVStack(alignment: .leading, spacing: 0) {
-            ForEach(earlier, id: \.record.seq) { item in
+            ForEach(earlier, id: \.barRowID) { item in
                 Button { jump(item.record.seq) } label: { earlierRow(item) }
                     .buttonStyle(.plain)
                     .accessibilityHint(Strings.lastSentJumpHint)
@@ -567,11 +573,14 @@ struct LastSentBar: View {
 
     private func setExpanded(_ next: Bool) {
         withAnimation(.easeOut(duration: 0.15)) { expanded = next }
-        if next { UserDefaults.standard.set(true, forKey: Self.expandedKey(room)) }
-        else { UserDefaults.standard.removeObject(forKey: Self.expandedKey(room)) }
     }
 
     static func preview(_ record: MessageRecord) -> String {
         record.kind.isFile ? Strings.attachmentImage : record.body.replacingOccurrences(of: "\n", with: " ")
     }
+}
+
+private extension LastSent {
+    /// 펼친 목록 행의 identity — 타임라인 행 `.id(seq)`(`Int64`)와 타입부터 달라 `scrollTo(seq)` 가 이 행을 잡지 않는다.
+    var barRowID: String { "last-sent-earlier-\(record.seq)" }
 }
