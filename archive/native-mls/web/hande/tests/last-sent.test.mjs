@@ -1,7 +1,7 @@
 // 「내 마지막 말」 바 순수 로직 테스트(#480 C). node --test archive/native-mls/web/hande/tests/last-sent.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { lastSentEntry, recentSentSummaries, lastSentView, dayStart, collapsedKey, sentDayPrefix, EARLIER_MINIMUM } from '../last-sent.js';
+import { lastSentEntry, recentSentSummaries, lastSentView, dayStart, collapsedKey, sentDayPrefix, EARLIER_MINIMUM, createExpandState } from '../last-sent.js';
 
 const labels = { photo: '[사진]', file: '[파일]' };
 const me = (key, body, ts, extra = {}) => ({ key, kind: 'text', isMe: true, body, ts, ...extra });
@@ -86,4 +86,31 @@ test('dayStart / collapsedKey', () => {
   assert.equal(dayStart(now), new Date(2026, 9, 21, 0, 0, 0, 0).getTime());
   assert.equal(collapsedKey('family'), 'hande:lastSent:collapsed:family');
   assert.equal(collapsedKey(null), 'hande:lastSent:collapsed:');
+});
+
+test('createExpandState: 기본 접힘, 펼침은 그 방에서만, leave() 로 접힘 (#819)', () => {
+  const st = createExpandState();
+  assert.equal(st.isCollapsed('a'), true, '처음에는 접힘');
+  st.set('a', false);
+  assert.equal(st.isCollapsed('a'), false, '같은 방 재렌더는 펼침 유지');
+  assert.equal(st.isCollapsed('b'), true, '다른 방은 접힘');
+  st.set('b', true);
+  assert.equal(st.isCollapsed('a'), false, '다른 방을 접어도 펼친 방은 그대로');
+  st.set('a', true);
+  assert.equal(st.isCollapsed('a'), true, '화살표로 접기');
+  st.set('a', false);
+  st.leave();
+  assert.equal(st.isCollapsed('a'), true, '방 화면을 새로 만들면(나갔다 옴) 접힘');
+  st.set(null, false);
+  assert.equal(st.isCollapsed(null), false, 'roomId 가 null 이어도 구별');
+  assert.equal(st.isCollapsed(''), true);
+  assert.equal(createExpandState().isCollapsed('a'), true, '새로고침(새 상태)은 접힘');
+});
+
+test('ui.js: 펼침 상태를 localStorage 에 저장하지 않는다 (#819)', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(new URL('../ui.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(src, /setItem\(\s*collapsedKey/, '펼침을 저장하면 방을 나갔다 와도 펼친 채로 남는다');
+  assert.doesNotMatch(src, /getItem\(\s*collapsedKey/, '저장값을 읽으면 예전 펼침이 되살아난다');
+  assert.match(src, /lastSentExpand\.leave\(\)/, '방 화면을 새로 만들 때 접어야 한다');
 });
