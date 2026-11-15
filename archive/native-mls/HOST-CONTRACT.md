@@ -117,11 +117,17 @@
   - 봇 `responder::is_attachment_client_id`·`is_status_client_id` 는 코어 호출이다.
   - ios-ffi 는 `attachmentLimits()`·`isAttachmentClientId()` 를 노출한다. Android 상수(`FileV2.MAX_FILE_BYTES` 등)는 `const val` 이라 그대로 두고, `FileV2VectorsTest.limitsMatchCore` 가 코어 값과 같음을 고정한다.
   - 공용 벡터 `tests/fixtures/file-v2-vectors.json` 의 `classify[].attachment` 를 host-core·ios-ffi·Android·웹(v1 `isAttachment`)이 같은 값으로 확인한다. iOS 는 #271 동결이라 코드를 바꾸지 않았고, `SyncAttachmentTests.testClientIdRuleMatchesRelayApp` 이 같은 규칙을 이미 고정한다.
+- 3g 에서 코어로 들어간 것: **기기 셀프서비스(#574) 판정**. host-core `self_service` 의 `is_registrar` · `is_active` · `actor_has_registrar` · `can_approve` · `is_sibling` · `candidates_for` · `next_roles` · `roles_actions` · `sibling_invite_rooms` · `enroll_mode_from` 과 상수(`ROLE_REGISTRAR` · `SIBLING_INVITE_TTL_MS` · `CANDIDATE_TTL_SECONDS` …).
+  - ios-ffi 는 `selfService*` 함수(`selfServiceCanApprove` · `selfServiceRolesActions` · `selfServiceEnrollMode` …)와 `selfServiceConstants()` 를 노출한다. 입력은 `MlsLobby.me()` · `listCandidates()` 가 준 레코드 그대로다.
+  - Android `core/SelfService` 의 같은 이름 함수는 코어 호출이다. `rolesActions` 는 코어의 **체인 순서** 행에 화면 칸(지문·상태·역할)을 붙이고 이 기기를 먼저 둔다(화면 정렬). 상수는 `const val` 이라 그대로 두고 `SelfServiceVectorsTest.constantsMatchCore` 가 고정한다.
+  - 공용 벡터 `tests/fixtures/self-service-vectors.json` 을 host-core · ios-ffi · Android(`SelfServiceVectorsTest`) · 웹(`self-service-vectors.test.mjs`)이 같은 값으로 확인한다. 웹 `self-service.js` 와 iOS `SelfService.swift`(#271 동결)는 코드를 바꾸지 않았다.
+  - 아직 호스트에 있는 것: 형제 초대 **대기열**(`enqueue` · `split` · `budget` · `siblingInviteTurn`)과 **빠진 방 재탐색**(`SiblingRescan`, #616) — 3h 후보. 서명 입력 조립(웹 `approvalArgs` · `rolesArgs`)은 코어 `MlsLobby.approve` · `setRoles` 가 이미 한다.
 - 남은 것: 푸시 **와이어의 FCM 일반화**(릴레이 #338 G3 — 클라이언트 호출 모양은 그대로) · 로비 key package 의 **방 상태 사본에서의 정리**(`join` 이 남은 것을 모두 지우므로 방 쪽은 자동; 로비 쪽은 `replenish` 가 서버 `live` 기준으로 정리).
 
 ## 7. 검증
 - Rust: `ios-ffi/tests/room_host.rs`(3a, 10 시나리오 — #574 형제 기기 `invite` · 후속의 대기 Welcome 영속·재시작 포함) · `ios-ffi/tests/lobby_host.rs`(3c, 12 시나리오: 보충·상한·게시 실패 롤백·로비 Welcome adopt·import·회수·방 닫기·푸시 + #574 `/v2/me`·후보 게시→승인·역할·로비 `dispatch`) — 대역은 `tests/support/mod.rs`(in-memory 릴레이·관찰자·기기 정책 체인 대역).
 - JVM(Linux, CI `native-mls-android.yml`): [`android/host`](android/) — Kotlin 바인딩 + `JdkHttpTransport`/`FileRoomStore`/`FileLobbyStore` + in-memory 릴레이로 **같은 시나리오**(두 기기 왕복 · 409 재전송 · 영속 뒤 `import` 이어 받기 · 정지 · 로비 보충→adopt→방 목록→닫기→푸시→회수 · 읽음 위치 · #574 후보→승인→역할→형제 초대→adopt). 실행 `android/scripts/jvm-roundtrip.sh`. ⑧ file-v2(§2c): 봉인 → 검증 → 열기 · 변조 거부 · 분류를 Kotlin 에서 코어로. ⑨ `MlsRoom.sendFileV2`/`openFileV2`(#366 C): 업로드 → file-v2 게시 → 분류·열기 · 변조 · 409 재전송의 client_id. Rust: `ios-ffi/tests/file_v2_room.rs`.
 - file-v2 판정: `host-core` `file_v2::tests::shared_vectors` · `ios-ffi/tests/file_v2_ffi.rs` · 웹 `file-v2-vectors.test.mjs` · Android `FileV2VectorsTest`(같은 벡터 파일).
+- 셀프서비스 판정(3g): `host-core` `self_service::tests::shared_vectors` · `ios-ffi/tests/self_service_ffi.rs` · 웹 `self-service-vectors.test.mjs` · Android `SelfServiceVectorsTest`(같은 벡터 파일 `self-service-vectors.json`).
 - 호스트 판정(Android `core/SelfService`·`core/FileV2`): `:app:testDebugUnitTest` 의 `FileV2Test`·`FileV2VectorsTest`(코어 ffi 경유) · `SelfServiceTest`(웹 `tests/self-service.test.mjs` 와 같은 경우) · `AppLoginTest.subjectOf*`(등록 JSON `subject` = JWT `sub`).
 - 실기기·에뮬레이터(Android 앱)는 #338 B 단계.

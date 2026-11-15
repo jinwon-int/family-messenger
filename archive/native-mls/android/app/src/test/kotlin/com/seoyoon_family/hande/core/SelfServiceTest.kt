@@ -1,5 +1,5 @@
-// 기기 셀프서비스 판정 고정(#574 PR 4) — 웹 `tests/self-service.test.mjs` 와 같은 경우들. android.* 없이 JVM 에서 돈다
-// (uniffi 레코드는 평범한 data class 라 네이티브 라이브러리를 건드리지 않는다).
+// 기기 셀프서비스 판정 고정(#574 PR 4) — 웹 `tests/self-service.test.mjs` 와 같은 경우들. android.* 없이 JVM 에서 돈다.
+// #366 3g 부터 역할·승인·형제 판정은 코어(`selfService*`)를 JNA 로 부른다(호스트 cdylib 은 `<ffiOut>/host`, 공용 벡터는 `SelfServiceVectorsTest`).
 package com.seoyoon_family.hande.core
 
 import com.seoyoon_family.hande.mls.MlsCandidate
