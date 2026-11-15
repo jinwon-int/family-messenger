@@ -88,7 +88,9 @@ enum ServiceLinks {
         return s.utf8.allSatisfy { (b: UInt8) -> Bool in UInt8(ascii: "0") <= b && b <= UInt8(ascii: "9") }
     }
 
-    /// 말풍선 글: 허용 링크 구간에만 `.link`(누르면 시스템이 연다), 나머지는 글 그대로.
+    /// 말풍선 글: 허용 링크 구간에만 `.link`(누르면 시스템이 연다) + 밑줄, 나머지는 글 그대로.
+    /// 링크는 색이 아니라 밑줄로 구별한다(디자인 시스템 「링크 = 밑줄(색 대신)」 · Android 와 같다). 색은 말풍선이 `.tint` 로 글자색에 맞춘다
+    /// — 앱 tint(불색) 그대로면 밤 테마 내 말풍선(불색 면)에서 링크가 면에 묻혀 안 보였다.
     /// `alertRefs`(플릿 알림 봇 글): 참조 `#번호` 에 `hande-alert://<번호>` — 방 화면의 openURL 이 가로채 원래 알림으로 간다(ALERT-REFS-V1).
     /// 허용 링크와 겹치는 번호는 링크가 이긴다.
     static func attributed(_ text: String, hosts: Set<String> = ServiceLinks.hosts, alertRefs: Bool = false) -> AttributedString {
@@ -97,6 +99,7 @@ enum ServiceLinks {
         for link in found {
             guard let range = Range(link.range, in: value) else { continue }
             value[range].link = link.url
+            value[range].underlineStyle = .single
         }
         guard alertRefs else { return value }
         let scalars = text.unicodeScalars

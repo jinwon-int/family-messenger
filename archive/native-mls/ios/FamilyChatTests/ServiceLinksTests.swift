@@ -30,6 +30,22 @@ final class ServiceLinksTests: XCTestCase {
         XCTAssertEqual(linked, ["https://www.instagram.com/reel/AbC_1-x/", "https://instagram.com/p/XyZ/"])
     }
 
+    /// 말풍선 링크는 색이 아니라 밑줄로 구별한다(디자인 시스템 「링크 = 밑줄(색 대신)」, Android `TextDecoration.Underline` 과 같다).
+    /// 밤 테마 내 말풍선은 면이 불색이라, 링크를 tint(불색)로 칠하면 글자가 면에 묻혀 사라졌다.
+    func testLinksAreUnderlinedAndPlainTextIsNot() {
+        let text = "봐 https://x.com/someone/status/1234567890 재밌다"
+        let attributed = ServiceLinks.attributed(text, hosts: ["x.com"])
+        let runs = Array(attributed.runs)
+        XCTAssertEqual(runs.filter { $0.link != nil }.count, 1)
+        for run in runs {
+            if run.link != nil {
+                XCTAssertEqual(run.underlineStyle, .single)
+            } else {
+                XCTAssertNil(run.underlineStyle)
+            }
+        }
+    }
+
     func testTrailingPunctuationIsNotPartOfTheLink() {
         XCTAssertEqual(hrefs("보기: https://www.instagram.com/p/AAA/). 끝"), ["https://www.instagram.com/p/AAA/"])
     }
