@@ -1265,10 +1265,12 @@ struct MessageRow: View {
         case .undecryptable:
             Text(Strings.undecryptable)
         default:
+            // 링크 색 = 말풍선 글자색(+ ServiceLinks 의 밑줄). 앱 tint(불색)를 그대로 쓰면 밤 테마 내 말풍선(불색 면)에서 링크가 안 보였다.
             if Strings.serviceNames[message.senderActor] != nil {
                 // 서비스 봇(알림 전용): 허용 링크(인스타그램 + 사이트 목록 호스트)를 누를 수 있게.
                 Text(ServiceLinks.attributed(message.body, hosts: ServiceLinks.serviceHosts(previewSites),
                                              alertRefs: message.senderActor == AlertRefs.fleetActor))
+                    .tint(bubbleText)
             } else {
                 // 사람 말풍선: 사이트 목록 호스트 합집합만(#690, 폴백 = x.com 계열). 에이전트 글은 agentRow(링크 지움)로 가서 여기 오지 않는다.
                 if let parsed = ReplyQuote.parse(message.body) {
@@ -1276,9 +1278,11 @@ struct MessageRow: View {
                     VStack(alignment: .leading, spacing: 6) {
                         ReplyQuoteBox(parsed: parsed, open: openReplyTarget)
                         Text(ServiceLinks.attributed(parsed.text, hosts: ServiceLinks.personHosts(previewSites)))
+                            .tint(bubbleText)
                     }
                 } else {
                     Text(ServiceLinks.attributed(message.body, hosts: ServiceLinks.personHosts(previewSites)))
+                        .tint(bubbleText)
                 }
             }
         }
