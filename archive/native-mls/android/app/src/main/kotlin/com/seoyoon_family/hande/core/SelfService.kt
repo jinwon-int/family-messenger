@@ -1,6 +1,9 @@
 // 새 기기 셀프서비스(#574 PR 4) — 순수 판정·조립 함수. 웹 `web/hande/self-service.js` 와 1:1(같은 이름·같은 규칙), android.* 없음 →
 // JVM 단위 테스트(`SelfServiceTest`)로 고정한다. 와이어·서명은 Rust 코어(`MlsLobby.me/postCandidate/listCandidates/approve/setRoles`,
 // `MlsRoom.invite`)가 하고, 여기는 **누가·무엇을** 할 수 있는지만 정한다.
+// #366 3g: 역할·승인·형제 판정(`isRegistrar`·`isActive`·`actorHasRegistrar`·`canApprove`·`isSibling`·`candidatesFor`·`nextRoles`·
+// `rolesActions`·`siblingInviteRooms`·`enrollModeFrom`)은 host-core `self_service` 를 부른다(공용 벡터 `self-service-vectors.json`,
+// `SelfServiceVectorsTest`). 형제 초대 대기열·재탐색은 아직 여기(3h 후보).
 //
 // 서버 계약(server/devices.go · me.go · lobby.go, DEVICES-V4 「셀프서비스 라우트」):
 //   누가 서명할 수 있나(devicepolicy.VerifyApproval/VerifyRoles): 이 기기가 활성이고, (registrar 이거나 같은 actor 에 활성 registrar 가 없을 때).
@@ -8,8 +11,20 @@
 package com.seoyoon_family.hande.core
 
 import com.seoyoon_family.hande.mls.MlsCandidate
+import com.seoyoon_family.hande.mls.MlsEnrollMode
+import com.seoyoon_family.hande.mls.MlsInviteRoom
 import com.seoyoon_family.hande.mls.MlsMe
 import com.seoyoon_family.hande.mls.MlsMeDevice
+import com.seoyoon_family.hande.mls.selfServiceActorHasRegistrar
+import com.seoyoon_family.hande.mls.selfServiceCanApprove
+import com.seoyoon_family.hande.mls.selfServiceCandidatesFor
+import com.seoyoon_family.hande.mls.selfServiceEnrollMode
+import com.seoyoon_family.hande.mls.selfServiceIsActive
+import com.seoyoon_family.hande.mls.selfServiceIsRegistrar
+import com.seoyoon_family.hande.mls.selfServiceIsSibling
+import com.seoyoon_family.hande.mls.selfServiceNextRoles
+import com.seoyoon_family.hande.mls.selfServiceRolesActions
+import com.seoyoon_family.hande.mls.selfServiceSiblingInviteRooms
 
 object SelfService {
     const val ROLE_REGISTRAR = "registrar"
@@ -25,49 +40,34 @@ object SelfService {
     const val CANDIDATE_REPOST_MARGIN_MS = 5 * 60_000L
     /** 후보 우편함 행의 수명(릴레이 `server/devices.go` `candidateTTL` = 10분), 초 — 「무시」 항목도 이만큼 뒤에 만료된다. */
     const val CANDIDATE_TTL_SECONDS = 10 * 60L
-
-    private val HEX64 = Regex("^[a-f0-9]{64}$")
+    // 위 상수는 `const val`(컴파일 시점) 이라 그대로 두고, `SelfServiceVectorsTest.constantsMatchCore` 가 코어 값과 같음을 고정한다.
 
     /** 등록 화면 모드(웹 `enrollModeFrom` 의 세 값). */
     enum class EnrollMode { OPERATOR, SIBLING, ID_TAKEN }
 
-    fun isRegistrar(d: MlsMeDevice): Boolean = ROLE_REGISTRAR in d.roles
-    fun isActive(d: MlsMeDevice): Boolean = d.status == STATUS_ACTIVE
+    fun isRegistrar(d: MlsMeDevice): Boolean = selfServiceIsRegistrar(d)
+    fun isActive(d: MlsMeDevice): Boolean = selfServiceIsActive(d)
 
     /** /v2/me 의 내 기기 기록(없으면 null — 옛 릴레이거나 아직 체인에 없는 기기). */
     fun recordOf(me: MlsMe?, device: String): MlsMeDevice? = me?.devices?.firstOrNull { it.deviceId == device }
 
     /** 이 actor 에 활성 registrar 가 하나라도 있나(devicepolicy.HasRegistrar). */
-    fun actorHasRegistrar(me: MlsMe?, actor: String): Boolean =
-        me?.devices.orEmpty().any { it.actor == actor && isActive(it) && isRegistrar(it) }
+    fun actorHasRegistrar(me: MlsMe?, actor: String): Boolean = selfServiceActorHasRegistrar(me, actor)
 
     /**
      * 이 기기가 같은 actor 의 새 기기를 승인(E2)하거나 역할(E5)에 서명할 수 있나:
      * 활성이고, registrar 이거나 그 actor 에 활성 registrar 가 없다(#574 이전 체인의 「활성 기기면 누구나」 규칙).
      */
-    fun canApprove(me: MlsMe?, device: String): Boolean {
-        val rec = recordOf(me, device) ?: return false
-        if (!isActive(rec)) return false
-        return isRegistrar(rec) || !actorHasRegistrar(me, rec.actor)
-    }
+    fun canApprove(me: MlsMe?, device: String): Boolean = selfServiceCanApprove(me, device)
 
     /** 로비 Welcome 을 보낸 기기(`from`)가 내 형제 기기인가 — 내가 아니고, 체인에 그 ID 의 활성 기록이 있고, 같은 actor. */
-    fun isSibling(from: String?, me: MlsMe?, actor: String?, device: String): Boolean {
-        if (from.isNullOrEmpty() || from == device || actor.isNullOrEmpty()) return false
-        val rec = recordOf(me, from) ?: return false
-        return rec.actor == actor && isActive(rec)
-    }
+    fun isSibling(from: String?, me: MlsMe?, actor: String?, device: String): Boolean = selfServiceIsSibling(from, me, actor, device)
 
     /** 우편함에서 내 actor 의 후보만(모양이 온전한 것만). */
-    fun candidatesFor(list: List<MlsCandidate>, actor: String): List<MlsCandidate> =
-        list.filter { it.actor == actor && HEX64.matches(it.signingKey) && HEX64.matches(it.fingerprint) }
+    fun candidatesFor(list: List<MlsCandidate>, actor: String): List<MlsCandidate> = selfServiceCandidatesFor(list, actor)
 
     /** 역할 목록에 registrar 를 넣거나 빼서 **완전한 정렬 목록**으로(서버 CanonicalRoles 와 같은 모양). */
-    fun nextRoles(roles: List<String>, grant: Boolean): List<String> {
-        val set = roles.toMutableSet()
-        if (grant) set += ROLE_REGISTRAR else set -= ROLE_REGISTRAR
-        return set.sorted()
-    }
+    fun nextRoles(roles: List<String>, grant: Boolean): List<String> = selfServiceNextRoles(roles, grant)
 
     /** 「내 기기」 화면의 한 줄: 체인 기록 + 이 기기가 그 기기에 할 수 있는 역할 변경. */
     data class DeviceRow(
@@ -95,20 +95,16 @@ object SelfService {
      */
     fun rolesActions(me: MlsMe?, device: String): RolesView {
         val all = me?.devices.orEmpty()
-        val self = recordOf(me, device)
-        val canSign = canApprove(me, device)
-        val actor = self?.actor
-        val activeRegistrars = all.count { it.actor == actor && isActive(it) && isRegistrar(it) }
-        val rows = all.map { d ->
-            val registrar = isRegistrar(d)
-            val eligible = canSign && isActive(d) && d.actor == actor
-            val release = eligible && registrar && activeRegistrars - 1 > 0
+        val v = selfServiceRolesActions(me, device)
+        // 코어는 체인 순서로 같은 개수의 행을 돌려준다 — 화면용 칸(지문·상태·역할)은 체인 기록에서 붙인다.
+        check(v.devices.size == all.size && v.devices.zip(all).all { (r, d) -> r.deviceId == d.deviceId }) { "core roles rows out of chain order" }
+        val rows = v.devices.zip(all) { r, d ->
             DeviceRow(
-                deviceId = d.deviceId, actor = d.actor, fingerprint = d.fingerprint, status = d.status, roles = d.roles, registrar = registrar,
-                isSelf = d.deviceId == device, grant = eligible && !registrar, release = release, lastRegistrar = eligible && registrar && !release,
+                deviceId = d.deviceId, actor = d.actor, fingerprint = d.fingerprint, status = d.status, roles = d.roles, registrar = r.registrar,
+                isSelf = r.isSelf, grant = r.grant, release = r.release, lastRegistrar = r.lastRegistrar,
             )
         }
-        return RolesView(canSign, actor, rows.sortedByDescending { it.isSelf })
+        return RolesView(v.canSign, v.actor, rows.sortedByDescending { it.isSelf })
     }
 
     /**
@@ -125,17 +121,20 @@ object SelfService {
      * iOS `siblingInviteRooms(_:target:)`·웹 `siblingInviteRooms` 와 같은 규칙.
      */
     fun siblingInviteRooms(rooms: List<RoomView>, target: String? = null): List<String> =
-        rooms.filter { it.joined && !it.halted && !it.pending && !(target != null && it.roster?.contains(target) == true) }.map { it.room }
+        selfServiceSiblingInviteRooms(rooms.map { MlsInviteRoom(it.room, it.joined, it.halted, it.pending, it.roster) }, target)
 
     /**
      * `POST /v2/devices/candidates` 의 응답 → 등록 화면 모드.
      * 201 = 형제 기기가 승인한다(SIBLING); 409 device_exists = 이 ID 는 다시 쓸 수 없다(ID_TAKEN);
      * 403 first_device_out_of_band·subject_mismatch, 404(옛 릴레이·접근 인증 꺼짐), 그 밖 = 운영자 흐름(OPERATOR).
      */
-    fun enrollModeFrom(status: Int, code: String): EnrollMode = when {
-        status == 201 -> EnrollMode.SIBLING
-        status == 409 && code == "device_exists" -> EnrollMode.ID_TAKEN
-        else -> EnrollMode.OPERATOR
+    fun enrollModeFrom(status: Int, code: String): EnrollMode {
+        if (status !in 0..0xFFFF) return EnrollMode.OPERATOR
+        return when (selfServiceEnrollMode(status.toUShort(), code)) {
+            MlsEnrollMode.SIBLING -> EnrollMode.SIBLING
+            MlsEnrollMode.ID_TAKEN -> EnrollMode.ID_TAKEN
+            MlsEnrollMode.OPERATOR -> EnrollMode.OPERATOR
+        }
     }
 
     /** 후보를 다시 올릴 시각: 만료 5분 전(만료를 모르면 지금부터 5분 뒤). */

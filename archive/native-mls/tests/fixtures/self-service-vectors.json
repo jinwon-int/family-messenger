@@ -1,0 +1,141 @@
+{
+  "about": "#366 3g — device self-service decisions (#574) shared by host-core `self_service` (bot·ios-ffi), Android `core/SelfService` (through the core) and web `hande/self-service.js`. Records use the relay's /v2/me and /v2/devices/candidates JSON shape (snake_case). Cases mirror Android SelfServiceTest · web self-service.test.mjs. `roles_actions.expect.devices` is in chain order (Android shows this device first; that is display order, not a decision).",
+  "version": 1,
+  "constants": {
+    "role_registrar": "registrar",
+    "status_active": "active",
+    "sibling_invite_ttl_ms": 86400000,
+    "sibling_lobby_recheck_ms": 60000,
+    "candidate_repost_margin_ms": 300000,
+    "candidate_ttl_seconds": 600
+  },
+  "mes": {
+    "registrar_and_revoked": {"subject": "person-owner", "policy_revision": 5, "devices": [
+      {"device_id": "owner-iphone", "actor": "owner", "fingerprint": "abababababababababababababababababababababababababababababababab", "status": "active", "acceptance": "trusted-device-fingerprint", "roles": ["registrar"]},
+      {"device_id": "owner-pc", "actor": "owner", "fingerprint": "abababababababababababababababababababababababababababababababab", "status": "revoked", "acceptance": "trusted-device-fingerprint", "roles": []}
+    ]},
+    "revoked_registrar_only": {"subject": "person-owner", "policy_revision": 5, "devices": [
+      {"device_id": "owner-iphone", "actor": "owner", "fingerprint": "abababababababababababababababababababababababababababababababab", "status": "revoked", "acceptance": "trusted-device-fingerprint", "roles": ["registrar"]}
+    ]},
+    "with_registrar": {"subject": "person-owner", "policy_revision": 5, "devices": [
+      {"device_id": "owner-iphone", "actor": "owner", "fingerprint": "abababababababababababababababababababababababababababababababab", "status": "active", "acceptance": "trusted-device-fingerprint", "roles": ["registrar"]},
+      {"device_id": "owner-pc", "actor": "owner", "fingerprint": "abababababababababababababababababababababababababababababababab", "status": "active", "acceptance": "trusted-device-fingerprint", "roles": []}
+    ]},
+    "without_registrar": {"subject": "person-owner", "policy_revision": 5, "devices": [
+      {"device_id": "owner-iphone", "actor": "owner", "fingerprint": "abababababababababababababababababababababababababababababababab", "status": "active", "acceptance": "trusted-device-fingerprint", "roles": []},
+      {"device_id": "owner-pc", "actor": "owner", "fingerprint": "abababababababababababababababababababababababababababababababab", "status": "active", "acceptance": "trusted-device-fingerprint", "roles": []}
+    ]},
+    "revoked_only": {"subject": "person-owner", "policy_revision": 5, "devices": [
+      {"device_id": "owner-pc", "actor": "owner", "fingerprint": "abababababababababababababababababababababababababababababababab", "status": "revoked", "acceptance": "trusted-device-fingerprint", "roles": []}
+    ]},
+    "siblings": {"subject": "person-owner", "policy_revision": 5, "devices": [
+      {"device_id": "owner-iphone", "actor": "owner", "fingerprint": "abababababababababababababababababababababababababababababababab", "status": "active", "acceptance": "trusted-device-fingerprint", "roles": []},
+      {"device_id": "owner-old", "actor": "owner", "fingerprint": "abababababababababababababababababababababababababababababababab", "status": "revoked", "acceptance": "trusted-device-fingerprint", "roles": []},
+      {"device_id": "kid-tablet", "actor": "kid", "fingerprint": "abababababababababababababababababababababababababababababababab", "status": "active", "acceptance": "trusted-device-fingerprint", "roles": []}
+    ]},
+    "roles_mixed": {"subject": "person-owner", "policy_revision": 5, "devices": [
+      {"device_id": "owner-pc", "actor": "owner", "fingerprint": "abababababababababababababababababababababababababababababababab", "status": "active", "acceptance": "trusted-device-fingerprint", "roles": []},
+      {"device_id": "owner-iphone", "actor": "owner", "fingerprint": "abababababababababababababababababababababababababababababababab", "status": "active", "acceptance": "trusted-device-fingerprint", "roles": ["registrar"]},
+      {"device_id": "owner-old", "actor": "owner", "fingerprint": "abababababababababababababababababababababababababababababababab", "status": "revoked", "acceptance": "trusted-device-fingerprint", "roles": []},
+      {"device_id": "kid-tablet", "actor": "kid", "fingerprint": "abababababababababababababababababababababababababababababababab", "status": "active", "acceptance": "trusted-device-fingerprint", "roles": []}
+    ]},
+    "two_registrars": {"subject": "person-owner", "policy_revision": 5, "devices": [
+      {"device_id": "owner-pc", "actor": "owner", "fingerprint": "abababababababababababababababababababababababababababababababab", "status": "active", "acceptance": "trusted-device-fingerprint", "roles": ["registrar"]},
+      {"device_id": "owner-iphone", "actor": "owner", "fingerprint": "abababababababababababababababababababababababababababababababab", "status": "active", "acceptance": "trusted-device-fingerprint", "roles": ["registrar"]}
+    ]}
+  },
+  "actor_has_registrar": [
+    {"name": "active registrar", "me": "registrar_and_revoked", "actor": "owner", "expect": true},
+    {"name": "other actor", "me": "registrar_and_revoked", "actor": "kid", "expect": false},
+    {"name": "a revoked registrar does not count", "me": "revoked_registrar_only", "actor": "owner", "expect": false},
+    {"name": "no /v2/me", "me": null, "actor": "owner", "expect": false}
+  ],
+  "can_approve": [
+    {"name": "registrar of an actor with a registrar", "me": "with_registrar", "device": "owner-iphone", "expect": true},
+    {"name": "non-registrar of an actor with a registrar", "me": "with_registrar", "device": "owner-pc", "expect": false},
+    {"name": "any active device when the actor has no registrar (pre-#574 chain)", "me": "without_registrar", "device": "owner-pc", "expect": true},
+    {"name": "revoked", "me": "revoked_only", "device": "owner-pc", "expect": false},
+    {"name": "not on the chain", "me": "without_registrar", "device": "owner-android", "expect": false},
+    {"name": "no /v2/me", "me": null, "device": "owner-pc", "expect": false}
+  ],
+  "is_sibling": [
+    {"name": "active same-actor device", "me": "siblings", "from": "owner-iphone", "actor": "owner", "device": "owner-android", "expect": true},
+    {"name": "myself", "me": "siblings", "from": "owner-android", "actor": "owner", "device": "owner-android", "expect": false},
+    {"name": "revoked", "me": "siblings", "from": "owner-old", "actor": "owner", "device": "owner-android", "expect": false},
+    {"name": "another actor", "me": "siblings", "from": "kid-tablet", "actor": "owner", "device": "owner-android", "expect": false},
+    {"name": "not on my chain", "me": "siblings", "from": "bot-steward", "actor": "owner", "device": "owner-android", "expect": false},
+    {"name": "empty sender", "me": "siblings", "from": "", "actor": "owner", "device": "owner-android", "expect": false},
+    {"name": "no sender", "me": "siblings", "from": null, "actor": "owner", "device": "owner-android", "expect": false},
+    {"name": "old relay: no /v2/me", "me": null, "from": "owner-iphone", "actor": "owner", "device": "owner-android", "expect": false},
+    {"name": "no actor", "me": "siblings", "from": "owner-iphone", "actor": null, "device": "owner-android", "expect": false},
+    {"name": "empty actor", "me": "siblings", "from": "owner-iphone", "actor": "", "device": "owner-android", "expect": false}
+  ],
+  "candidates_for": [
+    {"name": "well-formed rows of my actor", "actor": "owner", "expect": ["owner-android"], "candidates": [
+      {"device_id": "owner-android", "actor": "owner", "subject": "person-owner", "signing_key": "abababababababababababababababababababababababababababababababab", "fingerprint": "abababababababababababababababababababababababababababababababab", "created_at": 0, "expires_at": 600},
+      {"device_id": "kid-phone", "actor": "kid", "subject": "person-owner", "signing_key": "abababababababababababababababababababababababababababababababab", "fingerprint": "abababababababababababababababababababababababababababababababab", "created_at": 0, "expires_at": 600},
+      {"device_id": "owner-bad", "actor": "owner", "subject": "person-owner", "signing_key": "zz", "fingerprint": "abababababababababababababababababababababababababababababababab", "created_at": 0, "expires_at": 600},
+      {"device_id": "owner-short", "actor": "owner", "subject": "person-owner", "signing_key": "abababababababababababababababababababababababababababababababab", "fingerprint": "ab", "created_at": 0, "expires_at": 600},
+      {"device_id": "owner-upper", "actor": "owner", "subject": "person-owner", "signing_key": "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB", "fingerprint": "abababababababababababababababababababababababababababababababab", "created_at": 0, "expires_at": 600}
+    ]},
+    {"name": "the other actor", "actor": "kid", "expect": ["kid-phone"], "candidates": [
+      {"device_id": "owner-android", "actor": "owner", "subject": "person-owner", "signing_key": "abababababababababababababababababababababababababababababababab", "fingerprint": "abababababababababababababababababababababababababababababababab", "created_at": 0, "expires_at": 600},
+      {"device_id": "kid-phone", "actor": "kid", "subject": "person-owner", "signing_key": "abababababababababababababababababababababababababababababababab", "fingerprint": "abababababababababababababababababababababababababababababababab", "created_at": 0, "expires_at": 600}
+    ]},
+    {"name": "empty mailbox", "actor": "owner", "expect": [], "candidates": []}
+  ],
+  "next_roles": [
+    {"roles": [], "grant": true, "expect": ["registrar"]},
+    {"roles": ["registrar", "registrar"], "grant": true, "expect": ["registrar"]},
+    {"roles": ["registrar"], "grant": false, "expect": []},
+    {"roles": ["registrar", "other"], "grant": true, "expect": ["other", "registrar"]},
+    {"roles": ["other", "registrar", "other"], "grant": false, "expect": ["other"]}
+  ],
+  "roles_actions": [
+    {"name": "registrar: grant to the active same-actor device, cannot release itself (last registrar)", "me": "roles_mixed", "device": "owner-iphone", "expect": {"can_sign": true, "actor": "owner", "devices": [
+      {"device_id": "owner-pc", "registrar": false, "is_self": false, "grant": true, "release": false, "last_registrar": false},
+      {"device_id": "owner-iphone", "registrar": true, "is_self": true, "grant": false, "release": false, "last_registrar": true},
+      {"device_id": "owner-old", "registrar": false, "is_self": false, "grant": false, "release": false, "last_registrar": false},
+      {"device_id": "kid-tablet", "registrar": false, "is_self": false, "grant": false, "release": false, "last_registrar": false}
+    ]}},
+    {"name": "two registrars can release each other", "me": "two_registrars", "device": "owner-iphone", "expect": {"can_sign": true, "actor": "owner", "devices": [
+      {"device_id": "owner-pc", "registrar": true, "is_self": false, "grant": false, "release": true, "last_registrar": false},
+      {"device_id": "owner-iphone", "registrar": true, "is_self": true, "grant": false, "release": true, "last_registrar": false}
+    ]}},
+    {"name": "a non-registrar of an actor with a registrar can do nothing", "me": "roles_mixed", "device": "owner-pc", "expect": {"can_sign": false, "actor": "owner", "devices": [
+      {"device_id": "owner-pc", "registrar": false, "is_self": true, "grant": false, "release": false, "last_registrar": false},
+      {"device_id": "owner-iphone", "registrar": true, "is_self": false, "grant": false, "release": false, "last_registrar": false},
+      {"device_id": "owner-old", "registrar": false, "is_self": false, "grant": false, "release": false, "last_registrar": false},
+      {"device_id": "kid-tablet", "registrar": false, "is_self": false, "grant": false, "release": false, "last_registrar": false}
+    ]}},
+    {"name": "no /v2/me", "me": null, "device": "owner-pc", "expect": {"can_sign": false, "actor": null, "devices": []}}
+  ],
+  "sibling_invite_rooms": [
+    {"name": "joined and not halted", "target": null, "expect": ["family"], "rooms": [
+      {"room": "family", "joined": true, "halted": false, "pending": false, "roster": null},
+      {"room": "pending", "joined": false, "halted": false, "pending": false, "roster": null},
+      {"room": "dead", "joined": true, "halted": true, "pending": false, "roster": null}
+    ]},
+    {"name": "skip a pending invite and rooms whose roster has the target", "target": "owner-android", "expect": ["family", "lacks"], "rooms": [
+      {"room": "family", "joined": true, "halted": false, "pending": false, "roster": null},
+      {"room": "busy", "joined": true, "halted": false, "pending": true, "roster": null},
+      {"room": "has", "joined": true, "halted": false, "pending": false, "roster": ["owner-pc", "owner-android"]},
+      {"room": "lacks", "joined": true, "halted": false, "pending": false, "roster": ["owner-pc"]}
+    ]},
+    {"name": "no target: the roster is not consulted", "target": null, "expect": ["family", "has", "lacks"], "rooms": [
+      {"room": "family", "joined": true, "halted": false, "pending": false, "roster": null},
+      {"room": "busy", "joined": true, "halted": false, "pending": true, "roster": null},
+      {"room": "has", "joined": true, "halted": false, "pending": false, "roster": ["owner-pc", "owner-android"]},
+      {"room": "lacks", "joined": true, "halted": false, "pending": false, "roster": ["owner-pc"]}
+    ]}
+  ],
+  "enroll_mode": [
+    {"status": 201, "code": "", "expect": "sibling"},
+    {"status": 409, "code": "device_exists", "expect": "id-taken"},
+    {"status": 409, "code": "stale_revision", "expect": "operator"},
+    {"status": 403, "code": "first_device_out_of_band", "expect": "operator"},
+    {"status": 403, "code": "subject_mismatch", "expect": "operator"},
+    {"status": 404, "code": "", "expect": "operator"},
+    {"status": 500, "code": "device_policy_unavailable", "expect": "operator"}
+  ]
+}

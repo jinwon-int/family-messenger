@@ -18,9 +18,11 @@ use zeroize::Zeroize;
 mod file;
 mod lobby;
 mod room;
+mod self_service;
 pub use file::*;
 pub use lobby::*;
 pub use room::*;
+pub use self_service::*;
 
 uniffi::setup_scaffolding!();
 
