@@ -190,7 +190,7 @@ struct MarkdownTable: View {
 
 /// 줄 안 서식(굵게·기울임·`코드`·취소선·링크). 해석이 안 되면 원문.
 /// 링크(오너 2026-11-16): `[글자](주소)` 와 글 속 주소 모두 http·https 면 어떤 호스트든 누를 수 있다(`ServiceLinks.agentURL`·`agentLinks`).
-/// 다른 스킴(javascript: 등)·상대 경로·사용자 정보가 붙은 주소는 글자만 남긴다. 코드 안 주소는 글자 그대로.
+/// 다른 스킴(javascript: 등)·상대 경로는 글자만 남긴다(사용자 정보가 붙은 주소는 링크). 코드 안 주소는 글자 그대로.
 struct InlineMarkdown: View {
     let source: String
     init(_ source: String) { self.source = source }
@@ -276,7 +276,7 @@ struct InlineMarkdown: View {
            let parsed = try? AttributedString(markdown: source, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
             value = parsed
         }
-        // 마크다운 링크: http·https(사용자 정보 없음)만 남기고, 나머지는 글자만.
+        // 마크다운 링크: http·https 만 남기고, 나머지는 글자만.
         let linked = value.runs.compactMap { run in run.link.map { (run.range, $0) } }
         for (range, url) in linked { value[range].link = ServiceLinks.agentURL(url.absoluteString) }
         // 글 속 주소: 이미 링크인 곳·코드 안은 건드리지 않는다.

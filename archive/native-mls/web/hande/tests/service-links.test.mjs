@@ -108,12 +108,14 @@ test('에이전트: 끝 문장부호·한국어 낫표·괄호는 주소에서 �
   }
 });
 
-test('에이전트: 다른 스킴·사용자 정보가 붙은 주소는 글 그대로', () => {
-  for (const bad of ['javascript:alert(1)', 'data:text/html,x', 'ftp://a.example/x', 'https://bank.example@evil.example/a', 'https://u:p@a.example/', 'https://', 'hande-alert://3']) {
+test('에이전트: 다른 스킴·호스트 없는 주소는 글 그대로', () => {
+  for (const bad of ['javascript:alert(1)', 'data:text/html,x', 'ftp://a.example/x', 'https://', 'hande-alert://3']) {
     assert.equal(links(agentLinkParts(`보기 ${bad} 끝`)).length, 0, bad);
     assert.equal(join(agentLinkParts(`보기 ${bad} 끝`)), `보기 ${bad} 끝`);
   }
   assert.equal(agentHref('javascript:alert(1)'), null);
+  // 사용자 정보가 붙은 주소도 링크(오너 2026-11-16 「말 그대로 어떤 주소든」).
+  assert.deepEqual(links(agentLinkParts('보기 https://id@a.example/a 와 https://u:p@b.example/ 끝')), ['https://id@a.example/a', 'https://u:p@b.example/']);
   assert.equal(agentHref('HTTPS://A.Example/X'), 'https://a.example/X');
   assert.deepEqual(agentLinkParts(''), ['']);
   assert.deepEqual(agentLinkParts('주소 없음'), ['주소 없음']);

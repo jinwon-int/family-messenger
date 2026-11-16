@@ -78,12 +78,13 @@ class TextLinksTest {
         for ((text, url) in cases) assertEquals(listOf(url), agentUrls(text), text)
     }
 
-    @Test fun agentLinksRejectOtherSchemesAndUserInfo() {
-        for (bad in listOf("javascript:alert(1)", "data:text/html,x", "ftp://a.example/x", "https://bank.example@evil.example/a",
-                           "https://u:p@a.example/", "https://", "hande-alert://3")) {
+    @Test fun agentLinksRejectOtherSchemesAndHostless() {
+        for (bad in listOf("javascript:alert(1)", "data:text/html,x", "ftp://a.example/x", "https://", "hande-alert://3")) {
             assertTrue(TextLinks.agentLinks("보기 $bad 끝").isEmpty(), bad)
         }
         assertNull(TextLinks.agentUrl("javascript:alert(1)"))
+        // 사용자 정보가 붙은 주소도 링크(오너 2026-11-16 「말 그대로 어떤 주소든」).
+        assertEquals(listOf("https://id@a.example/a", "https://u:p@b.example/"), agentUrls("보기 https://id@a.example/a 와 https://u:p@b.example/ 끝"))
         assertNotNull(TextLinks.agentUrl("http://100.64.0.1:8080/x"))
         assertTrue(TextLinks.agentLinks("주소 없음").isEmpty())
     }

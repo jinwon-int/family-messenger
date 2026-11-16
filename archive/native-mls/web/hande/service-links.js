@@ -63,8 +63,8 @@ export function linkParts(text, hosts = linkHosts) {
 
 // ---- 에이전트 말풍선의 링크(오너 2026-11-16 「에이전트가 주는 url 은 어떤 주소든 링크로」) ----
 // 호스트 목록 없이 http·https 주소면 모두 링크(포트 허용 — 노드 내부 주소 `http://100.x.y.z:8080` 같은 것).
-// 그래도 막는 것: 다른 스킴(javascript:·data: 등 — 후보 정규식이 http(s) 만 잡는다), 사용자 정보가 붙은 주소
-// (`https://bank.example@evil.example` 처럼 보이는 곳과 가는 곳이 다른 주소). iOS `ServiceLinks.agentLinks`·Android `TextLinks.agentLinks` 와 같은 규칙.
+// 사용자 정보가 붙은 주소(`https://id@host`)도 링크(오너 2026-11-16 「말 그대로 어떤 주소든」). 막는 것은 다른 스킴
+// (javascript:·data: 등 — 후보 정규식이 http(s) 만 잡는다)과 호스트 없는 주소뿐. iOS `ServiceLinks.agentLinks`·Android `TextLinks.agentLinks` 와 같은 규칙.
 
 /** 에이전트 글의 주소 후보. 한국어 글에서 주소를 감싸는 낫표·괄호(「」『』【】〈〉《》（）)에서 끊는다. */
 const AGENT_CANDIDATE = /https?:\/\/[^\s<>"'`「」『』【】〈〉《》（）]+/giu;
@@ -93,7 +93,7 @@ export function agentHref(candidate) {
     return null;
   }
   if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
-  if (url.username || url.password || !url.hostname) return null;
+  if (!url.hostname) return null;
   return url.href;
 }
 

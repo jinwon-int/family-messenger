@@ -137,8 +137,9 @@ test('링크 문법 [글자](http(s)://…) → link 조각(오너 2026-11-16 �
   assert.deepEqual(inlineSpans('[위키](https://ko.wikipedia.org/wiki/Foo_(bar))'), [
     { style: 'link', text: '위키', href: 'https://ko.wikipedia.org/wiki/Foo_(bar)' },
   ]);
+  assert.deepEqual(inlineSpans('[id](https://id@a.example/x)'), [{ style: 'link', text: 'id', href: 'https://id@a.example/x' }]);
   assert.deepEqual(inlineSpans('[내부](http://100.64.0.1:8080/x)'), [{ style: 'link', text: '내부', href: 'http://100.64.0.1:8080/x' }]);
-  for (const plain of ['[a](javascript:alert(1))', '![p](https://a.example/x.png)', '[a](https://u@evil.example/)', '[a](/relative)', '[](https://a.example)']) {
+  for (const plain of ['[a](javascript:alert(1))', '![p](https://a.example/x.png)', '[a](/relative)', '[](https://a.example)']) {
     assert.ok(inlineSpans(plain).every((span) => span.style === 'text'), plain);
   }
   assert.equal(hasMarkdown('보기 [여기](https://a.example)'), true);

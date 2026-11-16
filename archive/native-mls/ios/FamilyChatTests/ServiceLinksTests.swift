@@ -176,12 +176,13 @@ final class ServiceLinksTests: XCTestCase {
         for (text, href) in cases { XCTAssertEqual(agentHrefs(text), [href], text) }
     }
 
-    func testAgentLinksRejectOtherSchemesAndUserInfo() {
-        for bad in ["javascript:alert(1)", "data:text/html,x", "ftp://a.example/x", "https://bank.example@evil.example/a",
-                    "https://u:p@a.example/", "https://", "hande-alert://3"] {
+    func testAgentLinksRejectOtherSchemesAndHostless() {
+        for bad in ["javascript:alert(1)", "data:text/html,x", "ftp://a.example/x", "https://", "hande-alert://3"] {
             XCTAssertTrue(ServiceLinks.agentLinks(in: "보기 \(bad) 끝").isEmpty, bad)
         }
         XCTAssertNil(ServiceLinks.agentURL("javascript:alert(1)"))
+        // 사용자 정보가 붙은 주소도 링크(오너 2026-11-16 「말 그대로 어떤 주소든」).
+        XCTAssertEqual(agentHrefs("보기 https://id@a.example/a 와 https://u:p@b.example/ 끝"), ["https://id@a.example/a", "https://u:p@b.example/"])
         XCTAssertTrue(ServiceLinks.agentLinks(in: "주소 없음").isEmpty)
     }
 }
