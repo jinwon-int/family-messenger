@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {linkParts, allowedHref, xHosts, linkHosts} from '../service-links.js';
+import {linkParts, allowedHref, xHosts, linkHosts, agentLinkParts, agentHref} from '../service-links.js';
 
 const join = (parts) => parts.map((p) => (typeof p === 'string' ? p : p.text)).join('');
 const links = (parts) => parts.filter((p) => typeof p !== 'string').map((p) => p.href);
@@ -76,4 +76,47 @@ test('기본 호스트 집합은 서비스 봇 집합(기존 호출 그대로)',
   assert.equal(allowedHref('https://www.instagram.com/p/A/'), 'https://www.instagram.com/p/A/');
   assert.equal(allowedHref('https://x.com/a/status/1'), 'https://x.com/a/status/1');
   assert.ok(!xHosts.has('instagram.com'));
+});
+
+// ---- 에이전트 말풍선(오너 2026-11-16): 호스트 제한 없이 http·https 주소면 링크. iOS ServiceLinksTests·Android TextLinksTest 와 같은 벡터. ----
+
+test('에이전트: 어떤 호스트든 http·https 주소는 링크 — 포트 허용, 조각을 이으면 원문', () => {
+  const text = 'PR https://github.com/jinwon-int/family-messenger/pull/825 · 대시보드 http://100.64.0.1:8080/status 그리고 https://example.org';
+  const parts = agentLinkParts(text);
+  assert.equal(join(parts), text);
+  assert.deepEqual(links(parts), [
+    'https://github.com/jinwon-int/family-messenger/pull/825',
+    'http://100.64.0.1:8080/status',
+    'https://example.org/',
+  ]);
+});
+
+test('에이전트: 끝 문장부호·한국어 낫표·괄호는 주소에서 뺀다, 짝 있는 괄호는 남긴다', () => {
+  const cases = [
+    ['확인: https://a.example/x.', 'https://a.example/x'],
+    ['(https://a.example/x)', 'https://a.example/x'],
+    ['「https://a.example/x」 참고', 'https://a.example/x'],
+    ['주소（https://a.example/x）', 'https://a.example/x'],
+    ['https://a.example/x。', 'https://a.example/x'],
+    ['https://ko.wikipedia.org/wiki/Foo_(bar) 보기', 'https://ko.wikipedia.org/wiki/Foo_(bar)'],
+    ['(위키 https://ko.wikipedia.org/wiki/Foo_(bar))', 'https://ko.wikipedia.org/wiki/Foo_(bar)'],
+  ];
+  for (const [text, href] of cases) {
+    const parts = agentLinkParts(text);
+    assert.deepEqual(links(parts), [href], text);
+    assert.equal(join(parts), text, text);
+  }
+});
+
+test('에이전트: 다른 스킴·호스트 없는 주소는 글 그대로', () => {
+  for (const bad of ['javascript:alert(1)', 'data:text/html,x', 'ftp://a.example/x', 'https://', 'hande-alert://3']) {
+    assert.equal(links(agentLinkParts(`보기 ${bad} 끝`)).length, 0, bad);
+    assert.equal(join(agentLinkParts(`보기 ${bad} 끝`)), `보기 ${bad} 끝`);
+  }
+  assert.equal(agentHref('javascript:alert(1)'), null);
+  // 사용자 정보가 붙은 주소도 링크(오너 2026-11-16 「말 그대로 어떤 주소든」).
+  assert.deepEqual(links(agentLinkParts('보기 https://id@a.example/a 와 https://u:p@b.example/ 끝')), ['https://id@a.example/a', 'https://u:p@b.example/']);
+  assert.equal(agentHref('HTTPS://A.Example/X'), 'https://a.example/X');
+  assert.deepEqual(agentLinkParts(''), ['']);
+  assert.deepEqual(agentLinkParts('주소 없음'), ['주소 없음']);
 });

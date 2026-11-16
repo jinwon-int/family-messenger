@@ -12,7 +12,7 @@ import { lastSentView, collapsedKey, sentDayPrefix, createExpandState } from './
 import {fileboxRefreshUrl} from './filebox.js';
 import {attachmentTitle} from './attachments.js';
 import {parseBlocks, inlineSpans, hasMarkdown} from './agent-markdown.js';
-import {linkParts} from './service-links.js';
+import {linkParts, agentLinkParts} from './service-links.js';
 import {parseAlertRefs, isFleetDevice} from './alert-refs.js';
 import {previewTarget, createLinkPreviews} from './link-preview.js';
 import {FALLBACK_LINKS} from './preview-sites.js';
@@ -631,12 +631,18 @@ async function downloadAttachment(entry, button, onOpenAttachment) {
 }
 
 // ---- 에이전트 답장 마크다운(iOS #405 와 같은 블록 규칙) ----
-// agent-markdown.js 가 돌려준 문자열을 el() 로만 넣는다 — 전부 텍스트 노드, innerHTML·링크 이동·원격 이미지 없음.
+// agent-markdown.js 가 돌려준 문자열을 el() 로만 넣는다 — 전부 텍스트 노드, innerHTML·원격 이미지 없음.
+// 링크(오너 2026-11-16): `[글자](주소)` 조각과 글 속 http(s) 주소는 어떤 호스트든 <a>(service-links.js agentLinkParts). 코드 안은 글자 그대로.
+
+const agentAnchor = (href, children) => el('a', { href, target: '_blank', rel: 'noopener noreferrer', class: 'service-link' }, children);
+/** 에이전트 글 → 글자·<a> 조각(http·https 주소면 호스트와 상관없이). */
+const agentLinkNodes = (text) => agentLinkParts(text).map((part) => (typeof part === 'string' ? part : agentAnchor(part.href, part.text)));
 
 // 굵게·기울임·취소선 안쪽은 다시 나눈다(**`코드` 굵게**). 한 겹마다 기호 2자 이상이 줄어 깊이는 글 길이로 묶인다.
-const inlineNodes = (text) => inlineSpans(text).map((span) => {
-  if (span.style === 'text') return span.text;
-  return el(span.style, {}, span.style === 'code' ? span.text : inlineNodes(span.text));
+const inlineNodes = (text) => inlineSpans(text).flatMap((span) => {
+  if (span.style === 'text') return agentLinkNodes(span.text);
+  if (span.style === 'link') return [agentAnchor(span.href, span.text)];
+  return [el(span.style, {}, span.style === 'code' ? span.text : inlineNodes(span.text))];
 });
 
 function markdownBlock(block) {
@@ -937,8 +943,10 @@ function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null, l
   } else if (entry.isAgent && entry.kind === 'text' && hasMarkdown(entry.body)) body = agentMarkdownBody(entry.body);
   // 서비스 봇: 사이트 hosts 합집합 + 인스타그램(#690, 폴백 = v1 linkHosts 와 같음).
   else if (entry.kind === 'text' && isServiceDevice(entry.sender)) body = el('div', { class: 'body' }, serviceLinkNodes(entry.body, links.serviceHosts, isFleetDevice(entry.sender)));
-  // 사람 말풍선: 사이트 hosts 합집합만 누를 수 있게(#690, 폴백 = x.com 계열 #683). 에이전트 말풍선은 그대로(iOS·Android 와 같은 범위).
+  // 사람 말풍선: 사이트 hosts 합집합만 누를 수 있게(#690, 폴백 = x.com 계열 #683).
   else if (entry.kind === 'text' && !entry.isAgent) body = el('div', { class: 'body' }, serviceLinkNodes(entry.body, links.hosts));
+  // 에이전트 말풍선(서식 없는 글): http·https 주소면 어떤 호스트든 링크(오너 2026-11-16, iOS·Android 와 같은 규칙). 미리보기 카드는 없다.
+  else if (entry.kind === 'text' && entry.isAgent) body = el('div', { class: 'body' }, agentLinkNodes(entry.body));
   else body = el('div', { class: 'body' }, entry.body);
   // 사람·서비스 봇 말풍선의 첫 미리보기 사이트 링크 → 미리보기 카드(#683 2단계 · #690). 에이전트 말풍선은 대상이 아니다.
   const preview = entry.kind === 'text' && (isServiceDevice(entry.sender) || !entry.isAgent) && !(entry.isAgent && hasMarkdown(entry.body))

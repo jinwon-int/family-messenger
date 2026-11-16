@@ -1,7 +1,9 @@
 // 에이전트 답장의 마크다운 → 블록·줄 안 조각. 순수 함수(DOM 없음, node --test).
 // 블록 규칙은 iOS FamilyMLSCore/Agent/AgentMarkdown.swift(#405 P1)를 그대로 옮겼다 — 두 화면이 같은 글을 같게 나눈다.
 // 받은 글은 신뢰하지 않는다: 여기서는 문자열만 돌려주고, 화면(ui.js)이 텍스트 노드로만 넣는다(HTML 해석 없음).
-// 링크·이미지 문법은 iOS 와 같이 이동·원격 로드 없이 글자 그대로 둔다.
+// 이미지 문법은 원격 로드 없이 글자 그대로 둔다. 링크 문법 `[글자](http(s)://…)` 는 'link' 조각(오너 2026-11-16 — 에이전트 주소는 링크로,
+// 주소 규칙은 service-links.js `agentHref`). 그 밖의 스킴(javascript: 등)은 글자 그대로.
+import { agentHref } from './service-links.js';
 
 /** 표가 아무리 길어도 화면이 감당할 만큼만(열 8 · 행 60). 넘치는 행은 버리고 끝에 "…" 행을 둔다. */
 export const MAX_COLUMNS = 8;
@@ -174,22 +176,23 @@ export function listItem(line) {
 /**
  * 줄 안 서식: `코드` · 별표 둘 또는 밑줄 둘(굵게) · 별표 하나(기울임) · 물결 둘(취소선). 여기서는 바깥 한 겹만 나누고, 안쪽(코드 제외)은 화면이 같은 함수로 다시 나눈다.
  * 짝이 없는 기호는 글자 그대로 둔다. 밑줄 하나(_x_)는 snake_case 를 깨뜨리므로 다루지 않는다.
- * @returns {{style:'text'|'code'|'strong'|'em'|'del', text:string}[]}
+ * `[글자](http(s)://…)` 는 {style:'link', text, href} — 앞이 `!`(이미지 문법)면 글자 그대로.
+ * @returns {{style:'text'|'code'|'strong'|'em'|'del'|'link', text:string, href?:string}[]}
  */
 export function inlineSpans(text) {
   const source = String(text ?? '');
   const spans = [];
   let plain = '';
-  const push = (style, value) => {
+  const push = (style, value, href) => {
     if (style === 'text') { plain += value; return; }
     if (plain) { spans.push({ style: 'text', text: plain }); plain = ''; }
-    spans.push({ style, text: value });
+    spans.push(href ? { style, text: value, href } : { style, text: value });
   };
   let i = 0;
   while (i < source.length) {
     const rest = source.slice(i);
-    const match = inlineMatch(rest);
-    if (match) { push(match.style, match.text); i += match.length; continue; }
+    const match = (source[i] === '[' && source[i - 1] !== '!' ? linkMatch(rest) : null) ?? inlineMatch(rest);
+    if (match) { push(match.style, match.text, match.href); i += match.length; continue; }
     push('text', source[i]);
     i += 1;
   }
@@ -205,6 +208,14 @@ const INLINE = [
   { style: 'del', re: /^~~(?![\s~])([\s\S]*?[^\s~])~~/, group: 1 },
   { style: 'em', re: /^\*(?![\s*])([^*\n]*?[^\s*])\*(?!\*)/, group: 1 },
 ];
+
+/** `[글자](주소)` — 주소 안 괄호는 한 겹까지(위키백과 `Foo_(bar)`). 열 수 없는 주소면 null(글자 그대로). */
+const LINK = /^\[([^[\]\n]+)\]\((https?:\/\/[^\s()<>]+(?:\([^\s()<>]*\)[^\s()<>]*)*)\)/i;
+function linkMatch(rest) {
+  const m = LINK.exec(rest);
+  const href = m ? agentHref(m[2]) : null;
+  return href ? { style: 'link', text: m[1], href, length: m[0].length } : null;
+}
 
 function inlineMatch(rest) {
   const first = rest[0];

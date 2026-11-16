@@ -1,8 +1,8 @@
 // 말풍선의 링크 — 허용한 호스트의 https 주소만 누를 수 있게 한다(웹 web/hande/service-links.js · Android core/TextLinks.kt 와 같은 규칙).
 // #690 계약 v2: 허용 호스트는 릴레이 `GET /v2/preview/sites`(`PreviewSites`, AppModel 이 세션당 한 번 받아 메모리에 둔다)의 **모든 사이트
 // hosts 합집합** — 사람 말풍선은 그 합집합(`personHosts`), 서비스 봇(알림 전용, 고정 형식 알림만)은 인스타그램 + 합집합(`serviceHosts`).
-// 받기 전·실패·404 는 내장 폴백(`PreviewSites.fallback` = v1: x.com 계열만). 에이전트 카드는 링크를 지운다(Views/AgentViews.swift InlineMarkdown).
-// http·다른 호스트·사용자 정보·포트가 붙은 주소는 글 그대로.
+// 받기 전·실패·404 는 내장 폴백(`PreviewSites.fallback` = v1: x.com 계열만). 사람·서비스 봇 말풍선에서 http·다른 호스트·사용자 정보·포트가
+// 붙은 주소는 글 그대로. 에이전트 카드는 호스트 제한 없는 `agentLinks`(Views/AgentViews.swift InlineMarkdown, 오너 2026-11-16).
 import Foundation
 import FamilyMLSCore
 
@@ -44,6 +44,49 @@ enum ServiceLinks {
                 range = range.lowerBound..<text.index(before: range.upperBound)
             }
             guard range.lowerBound < range.upperBound, let url = allowedURL(String(text[range]), hosts: hosts) else { continue }
+            found.append((NSRange(range, in: text), url))
+        }
+        return found
+    }
+
+    // MARK: 에이전트 말풍선 링크 (오너 2026-11-16 「에이전트가 주는 url 은 어떤 주소든 링크로」)
+    // 호스트 목록 없이 http·https 주소면 모두 링크(포트 허용 — 노드 내부 주소 `http://100.x.y.z:8080` 같은 것).
+    // 사용자 정보가 붙은 주소(`https://id@host`)도 링크(오너 2026-11-16 「말 그대로 어떤 주소든」). 막는 것은 다른 스킴(후보 정규식이
+    // http(s) 만 잡는다)과 호스트 없는 주소뿐.
+    // 웹 service-links.js `agentLinkParts` · Android `TextLinks.agentLinks` 와 같은 규칙·같은 테스트 벡터.
+
+    /// 에이전트 글의 주소 후보. 한국어 글에서 주소를 감싸는 낫표·괄호(「」『』【】〈〉《》（）)에서 끊는다.
+    private static let agentCandidate = try! NSRegularExpression(pattern: "https?://[^\\s<>\"'`「」『』【】〈〉《》（）]+", options: [.caseInsensitive])
+    /// 에이전트 주소 끝에서 떼어 낼 문장부호 — 사람 말풍선 규칙 + 한국어 마침표·쉼표.
+    private static let agentTrailing = trailing.union(["。", "、", "，"])
+
+    /// 에이전트 글의 `http(s)://…` 한 덩어리가 열 수 있는 주소면 그 URL, 아니면 nil(호스트 제한 없음).
+    static func agentURL(_ text: String) -> URL? {
+        guard let parts = URLComponents(string: text),
+              let scheme = parts.scheme?.lowercased(), scheme == "https" || scheme == "http",
+              let host = parts.host, !host.isEmpty,
+              let url = parts.url
+        else { return nil }
+        return url
+    }
+
+    /// 에이전트 글 속 링크의 위치(NSRange, UTF-16)와 URL. 앞에서부터, 겹치지 않게.
+    /// 끝 문장부호는 빼되 `)` 는 주소 안에 짝이 되는 `(` 가 있으면 남긴다(위키백과 `Foo_(bar)`).
+    static func agentLinks(in text: String) -> [(range: NSRange, url: URL)] {
+        let whole = NSRange(text.startIndex..<text.endIndex, in: text)
+        var found: [(range: NSRange, url: URL)] = []
+        for match in agentCandidate.matches(in: text, range: whole) {
+            guard var range = Range(match.range, in: text) else { continue }
+            while range.lowerBound < range.upperBound {
+                let last = text[text.index(before: range.upperBound)]
+                guard agentTrailing.contains(last) else { break }
+                if last == ")" {
+                    let head = text[range]
+                    if head.filter({ $0 == "(" }).count >= head.filter({ $0 == ")" }).count { break }
+                }
+                range = range.lowerBound..<text.index(before: range.upperBound)
+            }
+            guard range.lowerBound < range.upperBound, let url = agentURL(String(text[range])) else { continue }
             found.append((NSRange(range, in: text), url))
         }
         return found

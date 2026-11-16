@@ -123,6 +123,25 @@ test('받은 HTML·링크·이미지 문법은 해석 없이 문자열로만 돌
     { type: 'heading', level: 1, text: '<b>t</b>' }, { type: 'table', header: ['<i>h</i>'], rows: [['<u>c</u>']] },
   ]);
   // ui.js 는 span.style 을 태그 이름으로 쓴다 — 허용 목록 밖의 값이 나오면 안 된다.
-  const allowed = new Set(['text', 'code', 'strong', 'em', 'del']);
-  for (const span of inlineSpans('*a* **b** `c` ~~d~~ __e__ x')) assert.ok(allowed.has(span.style), span.style);
+  const allowed = new Set(['text', 'code', 'strong', 'em', 'del', 'link']);
+  for (const span of inlineSpans('*a* **b** `c` ~~d~~ __e__ [f](https://a.example) x')) assert.ok(allowed.has(span.style), span.style);
+  // 링크 문법은 http(s) 주소일 때만 'link' — javascript: 와 이미지 문법은 글자 그대로.
+  assert.ok(inlineSpans(hostile).every((span) => span.style === 'text'));
+});
+
+test('링크 문법 [글자](http(s)://…) → link 조각(오너 2026-11-16 — 에이전트 주소는 어떤 호스트든 링크)', () => {
+  assert.deepEqual(inlineSpans('[#825](https://github.com/jinwon-int/family-messenger/pull/825) 머지'), [
+    { style: 'link', text: '#825', href: 'https://github.com/jinwon-int/family-messenger/pull/825' },
+    { style: 'text', text: ' 머지' },
+  ]);
+  assert.deepEqual(inlineSpans('[위키](https://ko.wikipedia.org/wiki/Foo_(bar))'), [
+    { style: 'link', text: '위키', href: 'https://ko.wikipedia.org/wiki/Foo_(bar)' },
+  ]);
+  assert.deepEqual(inlineSpans('[id](https://id@a.example/x)'), [{ style: 'link', text: 'id', href: 'https://id@a.example/x' }]);
+  assert.deepEqual(inlineSpans('[내부](http://100.64.0.1:8080/x)'), [{ style: 'link', text: '내부', href: 'http://100.64.0.1:8080/x' }]);
+  for (const plain of ['[a](javascript:alert(1))', '![p](https://a.example/x.png)', '[a](/relative)', '[](https://a.example)']) {
+    assert.ok(inlineSpans(plain).every((span) => span.style === 'text'), plain);
+  }
+  assert.equal(hasMarkdown('보기 [여기](https://a.example)'), true);
+  assert.equal(hasMarkdown('그냥 https://a.example 주소'), false);
 });
