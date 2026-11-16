@@ -620,3 +620,99 @@ test('입력중이 보이면 TYPING_RECHECK_MS 뒤 한 번 더 sync — 중복 �
   s.stop();
   assert.deepEqual(cleared, [2], 'stop 이 남은 예약을 치운다');
 });
+
+// ---- #766 B: 저장분까지만 열고(activate({connect: false})) 첫 sync 는 뒤에서(connect) ----
+// 화면은 저장된 명단·대화로 먼저 그려지지만, 첫 sync 시도가 끝나기 전에는 이 방으로 아무것도 보내지 않는다.
+const STORED_KEY = 'hande:room:family:owner-web-aaaaaa:family-mls-synthetic-hande-family';
+function storedSession({relay, state = {joined: true, relaySeq: 5, epoch: 2, roster: ['owner-pc', 'owner-web-aaaaaa']}}) {
+  const {bridge, w} = fakeWorker({fresh: false, group: ['owner-pc', 'owner-web-aaaaaa']});
+  w.history.push({seq: 4, sender: 'owner-pc', client: 'owner-pc', kind: 'text', text: '저장된 글', bytes: []});
+  const storage = memStorage();
+  storage.setItem(STORED_KEY, JSON.stringify(state));
+  return {...session({worker: bridge, relay, storage}), w};
+}
+const quietRoom = () => ({status: 200, body: {epoch: 2, events: [], cursor: 5, members: []}});
+
+test('activate({connect: false}): 저장된 명단·대화만 올리고 릴레이를 부르지 않는다 — connect() 가 첫 sync 와 폴링을 한 번 시작한다 (#766 B)', async () => {
+  const relay = fakeRelay(quietRoom);
+  const {s, events: ev} = storedSession({relay});
+  await s.open(); await s.activate({connect: false});
+  assert.equal(relay.calls.length, 0, '저장분을 올리는 데 릴레이 왕복이 없다');
+  assert.equal(s.state.started, true); assert.equal(s.state.joined, true);
+  assert.deepEqual(s.state.roster, ['owner-pc', 'owner-web-aaaaaa']);
+  assert.deepEqual(ev.messages.map(m => m.text), ['저장된 글'], '보관된 대화가 올라온다');
+  assert.equal(s.state.live, false); assert.equal(s.state.timer, null); assert.equal(s.state.syncedAt, null);
+  await s.connect();
+  assert.deepEqual(relay.calls.map(c => `${c.method} ${c.path}`), ['GET /v2/rooms/family/events?device=owner-web-aaaaaa&after=5']);
+  assert.equal(s.state.live, true); assert.equal(s.state.timer, 1); assert.notEqual(s.state.syncedAt, null);
+  await s.connect();
+  assert.equal(relay.calls.length, 1, '두 번 불러도 첫 sync·타이머는 한 번');
+  assert.deepEqual(ev.messages.map(m => m.text), ['저장된 글'], '같은 글이 다시 올라오지 않는다');
+});
+
+test('첫 sync 전에는 보내기·첨부·초대·제거·방 만들기·키 게시가 거절되고 워커·릴레이에 아무것도 가지 않는다 (#766 B)', async () => {
+  let posts = 0;
+  const relay = fakeRelay(m => (m === 'GET' ? quietRoom() : (posts++, {status: 201, body: {seq: 6, epoch: 2}})));
+  const {s, w} = storedSession({relay});
+  await s.open(); await s.activate({connect: false});
+  const before = w.calls.length;
+  for (const run of [() => s.send('x'), () => s.sendAttachment(null), () => s.invite('mom-web-bbbbbb'), () => s.remove('owner-pc'), () => s.create(), () => s.publishKeyPackage()]) {
+    await assert.rejects(run, /대화방이 준비되지 않았습니다/);
+  }
+  assert.equal(w.calls.length, before, '워커(MLS 상태)에 아무 작업도 가지 않았다');
+  assert.equal(relay.calls.length, 0);
+  await s.connect();
+  assert.equal(await s.send('hello'), 6);
+  // 보내기 직전 sync → 암호화 → POST 순서(예전 그대로).
+  assert.deepEqual(relay.calls.map(c => c.method), ['GET', 'GET', 'POST']);
+  assert.equal(w.calls.filter(c => c[1] === 'encrypt').length, 1);
+  assert.equal(posts, 1);
+});
+
+test('첫 sync 가 릴레이에 닿지 못해도 시도가 끝나면 예전처럼 열린다 — 보내기는 암호화 전에 연결 실패를 알린다 (#766 B)', async () => {
+  const relay = fakeRelay(() => { const e = new Error('연결 실패'); e.network = true; throw e; });
+  const {s, w, events: ev} = storedSession({relay});
+  await s.open(); await s.activate({connect: false});
+  await s.connect();
+  assert.equal(s.state.live, true); assert.equal(s.state.timer, 1, '방별 폴링(재시도)은 예전처럼 걸린다');
+  assert.equal(s.state.syncedAt, null, '동기화된 적은 없다');
+  assert.deepEqual(ev.messages.map(m => m.text), ['저장된 글']);
+  await assert.rejects(() => s.send('x'), e => e.network === true);
+  assert.equal(w.calls.filter(c => c[1] === 'encrypt').length, 0, '래칫을 쓰기 전에 멈춘다');
+});
+
+test('진행 중인 첫 sync 가 끝나기 전에는 열리지 않는다 (#766 B)', async () => {
+  let release;
+  const held = new Promise(r => { release = r; });
+  const relay = fakeRelay(async () => { await held; return quietRoom(); });
+  const {s, w} = storedSession({relay});
+  await s.open(); await s.activate({connect: false});
+  const connecting = s.connect();
+  await new Promise(r => setTimeout(r, 5));
+  assert.equal(relay.calls.length, 1); assert.equal(s.state.live, false);
+  await assert.rejects(() => s.send('x'), /대화방이 준비되지 않았습니다/);
+  assert.equal(w.calls.filter(c => c[1] === 'encrypt').length, 0);
+  release(); await connecting;
+  assert.equal(s.state.live, true);
+});
+
+test('activate() 기본값은 예전 그대로 — 돌아왔을 때 첫 sync 가 끝나 있고 폴링이 걸려 있다; 다시 open 하면 닫힌다 (#766 B)', async () => {
+  const relay = fakeRelay(quietRoom);
+  const {s} = storedSession({relay});
+  await s.open(); await s.activate();
+  assert.equal(relay.calls.length, 1);
+  assert.equal(s.state.live, true); assert.equal(s.state.timer, 1);
+  await s.open();
+  assert.equal(s.state.live, false, '다시 연 방은 첫 sync 전으로 돌아간다');
+});
+
+test('⛔ 정지된 방은 connect 가 아무것도 하지 않는다 (#766 B)', async () => {
+  const relay = fakeRelay(quietRoom);
+  const halted = {seq: 12, committer: 'owner-pc', reason: 'removed_from_room', detail: '', at: '10:00', removed: true};
+  const {s, events: ev} = storedSession({relay, state: {joined: true, relaySeq: 12, epoch: 2, roster: ['owner-pc', 'owner-web-aaaaaa'], halted}});
+  await s.open(); await s.activate({connect: false});
+  await s.connect();
+  assert.equal(relay.calls.length, 0); assert.equal(s.state.timer, null);
+  assert.ok(ev.messages.some(m => m.kind === 'system' && m.key === 'halt-12'));
+  await assert.rejects(() => s.send('x'));
+});

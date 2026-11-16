@@ -276,15 +276,37 @@ def run_flow(Dev, receipt, screenshot=None, relay_base=None):
         owner.page.screenshot(path=str(screenshot / 'owner-room.png'))
         mom.page.screenshot(path=str(screenshot / 'mom-room.png'))
 
-    # reload: sealed history (#370) restores both rows for mom without re-reading the relay
+    # reload: sealed history (#370) restores both rows for mom without re-reading the relay.
+    # #766 B: every relay answer is held back while the page reopens — the stored room list and
+    # conversation are drawn anyway, and the composer stays locked until the room's first sync.
+    held, holding = [], [True]
+    mom.page.route('**/v2/**', lambda route: held.append(route) if holding[0] else route.continue_())
     mom.reload()
-    mom.open_room()
     mom.wait_bubble('안녕, 한데 웹에서 보냄', timeout=120000)
     mom.wait_bubble('잘 받았어요 🔥')
     assert mom.device_id() == mom_id, (mom.device_id(), mom_id)
+    assert held, 'the reopened page must have asked the relay (requests are held, not absent)'
+    composer = mom.page.evaluate("() => { const c = document.querySelector('[data-testid=\"composer\"]');"
+                                 " return {disabled: c.disabled, placeholder: c.placeholder}; }")
+    assert composer == {'disabled': True, 'placeholder': '지금은 보낼 수 없습니다'}, composer
     receipt['checks']['reload_restores_sealed_history_same_device'] = True
+    receipt['checks']['reload_paints_stored_rooms_before_any_relay_answer'] = True
+    receipt['relay_requests_held_at_stored_paint'] = len(held)
+    holding[0] = False
+    for route in held:
+        try:
+            route.continue_()
+        except Exception:   # noqa: BLE001 — a poll the previous document sent just before the reload went away with it
+            pass
+    mom.page.unroute('**/v2/**')
+    # Once the first sync is through, the composer opens and (wide layout) holds the caret as it did before.
+    mom.page.wait_for_function("() => { const c = document.querySelector('[data-testid=\"composer\"]');"
+                               " return !!c && !c.disabled && c.placeholder === '이야기 나누기…' && document.activeElement === c; }", timeout=30000)
+    receipt['checks']['reload_composer_unlocks_with_focus_after_first_sync'] = True
+    mom.open_room()
+    assert sum('잘 받았어요 🔥' in b for b in mom.bubbles()) == 1, mom.bubbles()   # the relay's answer did not repeat a stored bubble
 
-    # #766 I: 다시 연 기기는 「첫 화면까지 ms」 한 줄을 앱 기록에 남긴다 — 대화 화면까지 갔고, 구간 합 = 전체.
+    # #766 I·B: 다시 연 기기는 「첫 화면까지 ms」 한 줄을 앱 기록에 남긴다 — 저장분으로 그린 대화 화면이고(방 목록 구간 없음), 구간 합 = 전체.
     startup = ''
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
@@ -292,13 +314,16 @@ def run_flow(Dev, receipt, screenshot=None, relay_base=None):
         if startup:
             break
         time.sleep(0.2)
-    m = re.search(r'첫 화면까지 (\d+) ms \(대화 화면\) — (.+)$', startup)
-    assert m, ('no startup timing line after reload', mom.console[-20:])
+    m = re.search(r'첫 화면까지 (\d+) ms \(대화 화면 · 저장분\) — (.+)$', startup)
+    assert m, ('no stored-first startup timing line after reload', mom.console[-20:])
     stages = {name.strip(): int(ms) for name, ms in re.findall(r'([^·]+?) (\d+)(?= · |$)', m.group(2))}
-    assert {'스크립트', '설정', '신원 열기', '방 열기', '방 목록'} <= set(stages), stages
+    assert {'스크립트', '설정', '신원 열기', '방 열기'} <= set(stages) and '방 목록' not in stages, stages
     assert sum(stages.values()) == int(m.group(1)) > 0, (stages, m.group(1))
+    # The rooms' first sync ran after that paint and left its own line (its ms includes the time the answers were held above).
+    sm = re.search(r'방 동기화까지 (\d+) ms$', next((t for t in reversed(mom.console) if '저장분으로 먼저 그림' in t), ''))
+    assert sm and int(sm.group(1)) >= int(m.group(1)), ('no background sync line after the stored paint', mom.console[-20:])
     receipt['checks']['startup_timing_line_logged'] = True
-    receipt['startup_timing'] = {'total_ms': int(m.group(1)), 'stages': stages}
+    receipt['startup_timing'] = {'total_ms': int(m.group(1)), 'stages': stages, 'first_paint': 'stored'}
 
     # #766 C1: 처음에는 새 금고였고, 다시 연 뒤에는 저장된 키로 연다(비밀번호 계산 없음). 경로 이름만 기록된다.
     unlocks = [t.split('신원 열기: ', 1)[1] for t in mom.console if '신원 열기: ' in t]
