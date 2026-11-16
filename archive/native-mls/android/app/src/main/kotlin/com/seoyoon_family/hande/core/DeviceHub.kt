@@ -53,6 +53,11 @@ sealed interface Phase {
     data object Setup : Phase
     data object Starting : Phase
     /**
+     * 저장된 신원·방으로 먼저 연 화면(#766 B) — 릴레이 확인(`probe`) 전이거나 일시 실패 중이다. 목록·대화는 기기에 저장된 것을 보이고,
+     * 세션이 필요한 동작(보내기·첨부·참여 요청·읽음 올리기·기기 관리)과 방 poll 은 `Ready` 까지 하지 않는다(`StoredFirst`).
+     */
+    data object Stored : Phase
+    /**
      * 릴레이가 403 `device_subject_mismatch` — 체인에 없는 기기. `json` 은 등록 JSON(비밀 없음, 운영자 흐름).
      * `mode`(#574): SIBLING = 후보를 올렸고 같은 사람의 다른 기기가 승인한다(`expiresAt` ms 까지 유효, 그 5분 전에 다시 올린다) ·
      * ID_TAKEN = 이 ID 는 다시 쓸 수 없다 · OPERATOR = 첫 기기이거나 셀프서비스 없는 릴레이 — 운영자 CLI.
@@ -238,7 +243,8 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         }
     }
 
-    private suspend fun boot() = mutex.withLock {
+    private suspend fun boot(): Unit = mutex.withLock {
+        val t0 = SystemClock.elapsedRealtime()
         val identity = settings.deviceId ?: error("no identity")
         val base = settings.relayUrl ?: error("no relay url")
         Log.i(TAG, "boot: identity=$identity relay=${base.substringAfter("://").substringBefore('/')}")
@@ -261,8 +267,22 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         Log.i(TAG, "boot: rooms=${rooms.size} token=${if (settings.accessToken == null) "none" else "set"}")
         val fp = sha256Hex(l.publicKey())
         Log.i(TAG, "boot: fingerprint ${fp.take(12)}… → probe")
-        _ui.update { it.copy(deviceId = identity, fingerprint = fp, keyCustody = sealer.describe(), rooms = roomList(), server = serverLabel(), roomOrderSynced = roomOrder.synced, siblingRescan = !settings.siblingRescanOff) }
+        // #766 B: 저장된 신원·방이 있으면 릴레이 응답을 기다리지 않고 저장된 목록·대화부터 보인다(`Phase.Stored`) — probe·sync 는 그 뒤에 이어진다.
+        _ui.update {
+            StoredFirst.loaded(
+                it.copy(deviceId = identity, fingerprint = fp, keyCustody = sealer.describe(), rooms = roomList(), server = serverLabel(), roomOrderSynced = roomOrder.synced, siblingRescan = !settings.siblingRescanOff),
+                identityStored = slot != null,
+            )
+        }
+        val stored = _ui.value.phase is Phase.Stored
+        if (stored) logFirstScreen(t0, "stored")
         probe()
+        if (!stored && _ui.value.phase is Phase.Ready) logFirstScreen(t0, "network")
+    }
+
+    /** 시작 화면을 벗어나기까지(`boot` 시작 기준, #766 B·I) — 출처 이름과 ms 만 남긴다. */
+    private fun logFirstScreen(t0: Long, source: String) {
+        Log.i(TAG, "boot: first screen ${SystemClock.elapsedRealtime() - t0} ms ($source)")
     }
 
     /** 화면에 보일 서버: `.well-known` 의 이름, 없으면 릴레이 호스트(주소 직접 입력). 설정 전이면 null. */
@@ -289,13 +309,14 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             val s = l.status()
             Log.i(TAG, "probe: ok live=${s.live} max=${s.max}")
             val wasWaiting = _ui.value.phase is Phase.WaitingEnrollment
-            _ui.update { it.copy(phase = Phase.Ready, lobbyLive = s.live.toInt(), lobbyMax = s.max.toInt(), connecting = false, notice = if (wasWaiting) Strings.enrolledNow else null) }
+            _ui.update { StoredFirst.probeOk(it, s.live.toInt(), s.max.toInt(), wasWaiting) }
             if (wasWaiting) nextPostAt = 0L
             linkPreviews.loadSites()
         } catch (e: RoomException) {
             Log.w(TAG, "probe: $e")
             val transient = e is RoomException.Relay && e.transient
-            _ui.update { it.copy(phase = classify(e) ?: it.phase, connecting = transient, notice = if (transient || classify(e) != null) it.notice else e.message) }
+            val next = classify(e)
+            _ui.update { StoredFirst.probeFailed(it, next, transient, e.message) }
         }
     }
 
@@ -482,6 +503,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     private fun reorder(change: (List<String>) -> List<String>?) {
         val next = change(_ui.value.rooms.map { it.room }) ?: return
         roomOrder.move(RoomOrder.withHidden(next, roomOrder.order))
+        if (!live()) return // #766 B: 세션 확인 전 — 로컬에만 적어 두고(`roomOrderPending`) 준비 단계의 `kickRoomOrder` 가 올린다
         orderScope.launch {
             orderMutex.withLock { roomOrder.push() }
             _ui.update { it.copy(roomOrderSynced = roomOrder.synced) }
@@ -845,6 +867,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     fun requestJoin(scope: CoroutineScope) = scope.launch(Dispatchers.IO) {
         mutex.withLock {
             val l = lobby ?: return@withLock
+            if (!live()) { notice(Strings.connecting); return@withLock } // #766 B: 로비 키 게시는 세션 확인 뒤에만
             try {
                 replenish(l)
                 notice("참여 요청을 올렸습니다. 운영자가 초대하면 대화방이 나타납니다.")
@@ -854,6 +877,8 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
 
     fun send(scope: CoroutineScope, room: String, text: String) = scope.launch(Dispatchers.IO) {
         val h = mutex.withLock { rooms[room] } ?: return@launch
+        // #766 B: 세션 확인 전(저장된 화면)에는 보내지 않는다 — 화면도 보내기를 꺼 둔다. 위 잠금을 지난 뒤에 본다(boot 의 probe 가 그 잠금 안에서 돈다).
+        if (!live()) { notice(Strings.connecting); return@launch }
         try {
             // Queued 는 다음 poll 이 다시 보낸다 — watch 가 이 방을 changed 로 알리지 않아도 다음 틱에 poll 되게 표시(#766 E, 60 s 안전망까지 밀리지 않게).
             val r = mutex.withLock { h.room.send(text.toByteArray(Charsets.UTF_8)).also { if (it is SendResult.Queued) h.synced = false } }
@@ -878,6 +903,8 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         val (kind, stored) = db.attachment(room, seq) ?: return@withContext AttachmentFiles.OpenFailed(Strings.attachmentOpenFailed, retry = false)
         try {
             val v2 = kind == MessageSchema.KIND_FILE_V2
+            // #766 B: file-v2 는 릴레이에서 blob 을 받는다 — 세션 확인 전(저장된 화면)에는 받지 않는다(다시 누르면 된다). v1 은 저장된 바이트라 그대로 연다.
+            if (v2 && !live()) return@withContext AttachmentFiles.OpenFailed(Strings.attachmentOffline, retry = true)
             val name = if (v2) runCatching { fileV2Check(stored).name }.getOrNull() else null
             val bytes = if (v2) h.room.openFileV2(stored) else stored
             val sniff = fileV2Sniff(bytes)
@@ -914,6 +941,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
      */
     fun sendAttachment(scope: CoroutineScope, room: String, bytes: ByteArray, name: String?) = scope.launch(Dispatchers.IO) {
         val h = mutex.withLock { rooms[room] } ?: return@launch
+        if (!live()) { notice(Strings.connecting); return@launch } // #766 B: 글 보내기와 같이 세션 확인 뒤에만
         notice(Strings.attachmentSending)
         try {
             val out = h.room.sendFileV2(bytes, null, AttachmentFiles.sendName(name))
@@ -952,7 +980,8 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             val seq = Unread.latestSeq(db.messages(room))
             if (seq <= 0L) return@withLock
             settings.markRead(room, seq)
-            runCatching { h.room.markRead(seq) }.onFailure { e -> Log.w(TAG, "markRead $room seq $seq: $e") }
+            // #766 B: 릴레이에 올리는 것은 세션 확인 뒤에만(이 기기의 읽음 위치는 바로 적는다) — `Ready` 가 되면 화면이 다시 부른다.
+            if (live()) runCatching { h.room.markRead(seq) }.onFailure { e -> Log.w(TAG, "markRead $room seq $seq: $e") }
             _ui.update { it.copy(rooms = roomList()) }
         }
     }
@@ -1054,6 +1083,9 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     }
 
     private fun notice(text: String) = _ui.update { it.copy(notice = text) }
+
+    /** 세션이 확인됐나(#766 B, `Phase.Ready`) — 저장된 화면(`Phase.Stored`)에서는 세션이 필요한 동작을 하지 않는다. */
+    private fun live(): Boolean = StoredFirst.live(_ui.value.phase)
 
     private companion object {
         const val TAG = "hande.hub"

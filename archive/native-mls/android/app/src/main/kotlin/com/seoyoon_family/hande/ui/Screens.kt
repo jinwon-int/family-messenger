@@ -242,19 +242,23 @@ fun HandeRoot(hub: DeviceHub, themeMode: HandeThemeMode = HandeThemeMode.NIGHT, 
             }
             is Phase.Fatal -> MessageScreen("앱을 시작할 수 없습니다", phase.message, action = { TextButton(onClick = { showSettings = true }) { Text(Strings.settingsButton) } })
             Phase.Starting -> MessageScreen(Strings.appName, Strings.starting)
-            Phase.Ready -> {
+            // #766 B: `Stored`(저장된 방·대화 먼저 — 세션 확인 전)와 `Ready` 는 같은 가지다 — `Ready` 로 넘어가도 열린 방·스크롤·작성 중인 글이 그대로다.
+            // `Stored` 에서는 세션이 필요한 것(보내기·첨부·선택지 답·링크 미리보기·내 기기)을 꺼 둔다. 「연결 중입니다…」는 `ui.connecting` 이 보인다.
+            Phase.Stored, Phase.Ready -> {
+                val live = phase is Phase.Ready
                 val room = openRoom?.let { name -> ui.rooms.firstOrNull { it.room == name } }
                 if (room != null) {
-                    // 보고 있는 방의 읽음 위치(#571 후속): 열 때 한 번, 그 뒤 마지막 seq 가 움직일 때마다(새 글·내 전송).
-                    LaunchedEffect(room.room, room.messages.lastOrNull()?.seq) { hub.markRead(scope, room.room) }
+                    // 보고 있는 방의 읽음 위치(#571 후속): 열 때 한 번, 그 뒤 마지막 seq 가 움직일 때마다(새 글·내 전송) · 세션이 확인될 때(#766 B).
+                    LaunchedEffect(room.room, room.messages.lastOrNull()?.seq, live) { hub.markRead(scope, room.room) }
                     RoomScreen(
                         room, ui, onBack = { openRoom = null }, onSend = { text -> hub.send(scope, room.room, text) }, onNoticeShown = hub::clearNotice,
-                        previews = hub.linkPreviews,
+                        previews = if (live) hub.linkPreviews else null,
                         onOpenAttachment = { seq -> hub.openAttachment(room.room, seq) },
                         onAttachmentPreview = { seq -> hub.attachmentPreview(room.room, seq) },
                         onSendAttachment = { bytes, name -> hub.sendAttachment(scope, room.room, bytes, name) },
+                        live = live,
                     )
-                } else if (showDevices) {
+                } else if (showDevices && live) {
                     LaunchedEffect(Unit) { hub.refreshDevices(scope) }
                     DevicesScreen(ui, onBack = { showDevices = false }, onGrant = { hub.setRoles(scope, it, true) }, onRelease = { hub.setRoles(scope, it, false) }, onNoticeShown = hub::clearNotice)
                 } else {
@@ -1163,6 +1167,8 @@ fun RoomScreen(
     onOpenAttachment: (suspend (Long) -> AttachmentFiles.OpenResult)? = null,
     onSendAttachment: ((ByteArray, String?) -> Unit)? = null,
     onAttachmentPreview: (suspend (Long) -> ThumbnailSizing.Preview?)? = null,
+    /** 세션이 확인됐나(#766 B, `Phase.Ready`). 아니면 저장된 대화만 보이는 중 — 보내기·첨부·선택지 답을 꺼 둔다. */
+    live: Boolean = true,
 ) {
     val colors = LocalHandeColors.current
     // #366 C · #338 C 단계 — 첨부: 말풍선을 누르면 열고(이미지는 화면 안 뷰어, 그 밖은 다른 앱으로), 작성창 📎 로 파일을 골라 보낸다.
@@ -1225,7 +1231,7 @@ fun RoomScreen(
     LaunchedEffect(room.messages.size, room.statuses.size) { if (total > 0) listState.animateScrollToItem(total - 1) }
     // agent-choices(#620 · §6 #671 PR D): 에이전트가 `[답변 필요]` 로 명시한 번호 선택지 → 말풍선 아래 카드(open/answered). 상태는 타임라인에서 계산(저장 안 함).
     val choiceCards = remember(room.messages) { AgentChoices.cards(room.messages) }
-    val canChoose = halted == null && room.joined
+    val canChoose = halted == null && room.joined && live
     // #690 v2: 이 세션의 미리보기 사이트 목록(받기 전·실패 = v1 폴백). 목록이 도착하면 보이는 말풍선이 링크·카드를 다시 정한다.
     val sitesFlow = remember(previews) { previews?.sites ?: MutableStateFlow(PreviewSites.FALLBACK) }
     val sites by sitesFlow.collectAsStateWithLifecycle()
@@ -1272,7 +1278,8 @@ fun RoomScreen(
             } else {
                 Composer(
                     draft, onDraft = { draft = it }, onSend = { onSend(draft.trim()); draft = "" },
-                    onAttach = if (onSendAttachment != null) ({ pickFile.launch(arrayOf("*/*")) }) else null,
+                    onAttach = if (onSendAttachment != null && live) ({ pickFile.launch(arrayOf("*/*")) }) else null,
+                    enabled = live,
                 )
             }
         }
@@ -1312,12 +1319,12 @@ private fun HaltedBox(reason: String) {
     }
 }
 
-/** 입력창(알약, 면+선) + 보내기(44dp 주황 원 「↑」, 비면 35%). 화면에서 큰 주황 면은 내 말풍선과 이 버튼뿐. */
+/** 입력창(알약, 면+선) + 보내기(44dp 주황 원 「↑」, 비면 35%). 화면에서 큰 주황 면은 내 말풍선과 이 버튼뿐. `enabled` 가 거짓이면(#766 B 세션 확인 전) 글은 쓸 수 있고 보내기만 꺼진다. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun Composer(draft: String, onDraft: (String) -> Unit, onSend: () -> Unit, onAttach: (() -> Unit)? = null) {
+private fun Composer(draft: String, onDraft: (String) -> Unit, onSend: () -> Unit, onAttach: (() -> Unit)? = null, enabled: Boolean = true) {
     val colors = LocalHandeColors.current
-    val canSend = draft.isNotBlank()
+    val canSend = enabled && draft.isNotBlank()
     Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
         // #366 C: 첨부 보내기(시스템 파일 선택) — 면+선 44dp 원(주황 면은 보내기 버튼만).
         if (onAttach != null) {
