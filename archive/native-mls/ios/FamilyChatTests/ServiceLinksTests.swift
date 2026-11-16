@@ -149,4 +149,39 @@ final class ServiceLinksTests: XCTestCase {
             XCTAssertTrue(ServiceLinks.links(in: "보기 \(bad) 끝", hosts: person).isEmpty, bad)
         }
     }
+
+    // MARK: 에이전트 말풍선(오너 2026-11-16) — 호스트 제한 없이 http·https. 웹 tests/service-links.test.mjs · Android TextLinksTest 와 같은 벡터.
+
+    private func agentHrefs(_ text: String) -> [String] { ServiceLinks.agentLinks(in: text).map { $0.url.absoluteString } }
+
+    func testAgentLinksAnyHostHttpAndPort() {
+        let text = "PR https://github.com/jinwon-int/family-messenger/pull/825 · 대시보드 http://100.64.0.1:8080/status 그리고 https://example.org"
+        XCTAssertEqual(agentHrefs(text), [
+            "https://github.com/jinwon-int/family-messenger/pull/825",
+            "http://100.64.0.1:8080/status",
+            "https://example.org",
+        ])
+    }
+
+    func testAgentLinksTrimPunctuationAndKoreanBrackets() {
+        let cases: [(String, String)] = [
+            ("확인: https://a.example/x.", "https://a.example/x"),
+            ("(https://a.example/x)", "https://a.example/x"),
+            ("「https://a.example/x」 참고", "https://a.example/x"),
+            ("주소（https://a.example/x）", "https://a.example/x"),
+            ("https://a.example/x。", "https://a.example/x"),
+            ("https://ko.wikipedia.org/wiki/Foo_(bar) 보기", "https://ko.wikipedia.org/wiki/Foo_(bar)"),
+            ("(위키 https://ko.wikipedia.org/wiki/Foo_(bar))", "https://ko.wikipedia.org/wiki/Foo_(bar)"),
+        ]
+        for (text, href) in cases { XCTAssertEqual(agentHrefs(text), [href], text) }
+    }
+
+    func testAgentLinksRejectOtherSchemesAndUserInfo() {
+        for bad in ["javascript:alert(1)", "data:text/html,x", "ftp://a.example/x", "https://bank.example@evil.example/a",
+                    "https://u:p@a.example/", "https://", "hande-alert://3"] {
+            XCTAssertTrue(ServiceLinks.agentLinks(in: "보기 \(bad) 끝").isEmpty, bad)
+        }
+        XCTAssertNil(ServiceLinks.agentURL("javascript:alert(1)"))
+        XCTAssertTrue(ServiceLinks.agentLinks(in: "주소 없음").isEmpty)
+    }
 }

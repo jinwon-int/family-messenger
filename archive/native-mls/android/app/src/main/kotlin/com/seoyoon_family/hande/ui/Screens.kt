@@ -150,6 +150,7 @@ import com.seoyoon_family.hande.core.SelfService
 import com.seoyoon_family.hande.core.ServerDiscovery
 import com.seoyoon_family.hande.core.Settings
 import com.seoyoon_family.hande.core.StatusUi
+import com.seoyoon_family.hande.core.TextLinks
 import com.seoyoon_family.hande.core.ThumbnailSizing
 import com.seoyoon_family.hande.ui.theme.CampfireBackground
 import com.seoyoon_family.hande.ui.theme.Chevron
@@ -1389,15 +1390,15 @@ private fun MessageRow(
             else -> Modifier.background(colors.surface).border(colors.lineWidth, colors.stroke, shape)
         }
         // #683 · #690 v2: 사람 말풍선의 허용 호스트(사이트 목록 hosts 합집합, 폴백 = x.com 계열) https 주소만 누를 수 있게(웹·iOS 와 같은 규칙).
-        // 에이전트 말풍선은 글 그대로.
+        // 에이전트 말풍선은 http·https 주소면 어떤 호스트든 링크(오너 2026-11-16, `TextLinks.agentLinks`).
         // 말풍선 글은 remember 로 캐시된다 — 그 안 클릭은 늘 최신 콜백(최신 목록·index)을 부르게.
         val latestOnAlertRef by rememberUpdatedState(onAlertRef)
         val body = remember(m.text, agent, sites, opening, onAttachment != null) {
             // #366 C: 첨부 말풍선 = 자리 표시 + 「눌러서 열기」/「여는 중…」 한 줄(링크·참조는 찾지 않는다).
             if (m.attachment) AnnotatedString(if (onAttachment == null) m.text else m.text + "\n" + (if (opening) Strings.attachmentOpening else Strings.attachmentTapHint))
-            else if (agent) AnnotatedString(m.text) else buildAnnotatedString {
+            else buildAnnotatedString {
                 append(m.text)
-                val found = sites.links(m.text)
+                val found = if (agent) TextLinks.agentLinks(m.text) else sites.links(m.text)
                 for (link in found) {
                     addLink(LinkAnnotation.Url(link.url, TextLinkStyles(SpanStyle(textDecoration = TextDecoration.Underline))), link.start, link.end)
                 }

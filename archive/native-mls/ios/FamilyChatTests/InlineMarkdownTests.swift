@@ -32,8 +32,30 @@ final class InlineMarkdownTests: XCTestCase {
         XCTAssertEqual(InlineMarkdown.segments("`a*b*c`"), [S(text: "a*b*c", code: true)])
     }
 
-    func testLinkKeepsOnlyItsText() {
-        XCTAssertEqual(InlineMarkdown.segments("[링크 글자](https://example.com) 끝"), [S(text: "링크 글자 끝")])
+    /// 오너 2026-11-16: 에이전트가 준 주소는 어떤 호스트든 누를 수 있게 — `[글자](주소)` 는 글자에 링크.
+    func testMarkdownLinkKeepsHttpURL() {
+        XCTAssertEqual(InlineMarkdown.segments("[링크 글자](https://example.com) 끝"),
+                       [S(text: "링크 글자", link: URL(string: "https://example.com")), S(text: " 끝")])
+    }
+
+    func testMarkdownLinkWithOtherSchemeKeepsOnlyItsText() {
+        XCTAssertEqual(InlineMarkdown.segments("[눌러](javascript:alert(1)) 끝").compactMap(\.link), [])
+        XCTAssertEqual(InlineMarkdown.segments("[상대](/x) 끝"), [S(text: "상대 끝")])
+    }
+
+    func testBareURLBecomesLinkInPlainAndStyledText() {
+        XCTAssertEqual(InlineMarkdown.segments("대시보드 http://100.64.0.1:8080/status 확인"), [
+            S(text: "대시보드 "),
+            S(text: "http://100.64.0.1:8080/status", link: URL(string: "http://100.64.0.1:8080/status")),
+            S(text: " 확인"),
+        ])
+        let bold = InlineMarkdown.segments("**굵게** https://example.org/a.")
+        XCTAssertEqual(bold.compactMap(\.link), [URL(string: "https://example.org/a")!])
+        XCTAssertEqual(bold.map(\.text).joined(), "굵게 https://example.org/a.")
+    }
+
+    func testURLInsideCodeStaysText() {
+        XCTAssertEqual(InlineMarkdown.segments("`https://example.org` 코드"), [S(text: "https://example.org", code: true), S(text: " 코드")])
     }
 
     func testLoneAsteriskIsText() {

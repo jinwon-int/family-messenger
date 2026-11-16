@@ -50,4 +50,41 @@ class TextLinksTest {
         assertTrue(TextLinks.links("그냥 글").isEmpty())
         assertTrue(TextLinks.links("").isEmpty())
     }
+
+    // ---- 에이전트 말풍선(오너 2026-11-16) — 호스트 제한 없이 http·https. 웹 tests/service-links.test.mjs · iOS ServiceLinksTests 와 같은 벡터. ----
+
+    private fun agentUrls(text: String) = TextLinks.agentLinks(text).map { it.url }
+
+    @Test fun agentLinksAnyHostHttpAndPort() {
+        val text = "PR https://github.com/jinwon-int/family-messenger/pull/825 · 대시보드 http://100.64.0.1:8080/status 그리고 https://example.org"
+        val links = TextLinks.agentLinks(text)
+        assertEquals(
+            listOf("https://github.com/jinwon-int/family-messenger/pull/825", "http://100.64.0.1:8080/status", "https://example.org"),
+            links.map { it.url },
+        )
+        for (l in links) assertEquals(l.url, text.substring(l.start, l.end))
+    }
+
+    @Test fun agentLinksTrimPunctuationAndKoreanBrackets() {
+        val cases = listOf(
+            "확인: https://a.example/x." to "https://a.example/x",
+            "(https://a.example/x)" to "https://a.example/x",
+            "「https://a.example/x」 참고" to "https://a.example/x",
+            "주소（https://a.example/x）" to "https://a.example/x",
+            "https://a.example/x。" to "https://a.example/x",
+            "https://ko.wikipedia.org/wiki/Foo_(bar) 보기" to "https://ko.wikipedia.org/wiki/Foo_(bar)",
+            "(위키 https://ko.wikipedia.org/wiki/Foo_(bar))" to "https://ko.wikipedia.org/wiki/Foo_(bar)",
+        )
+        for ((text, url) in cases) assertEquals(listOf(url), agentUrls(text), text)
+    }
+
+    @Test fun agentLinksRejectOtherSchemesAndUserInfo() {
+        for (bad in listOf("javascript:alert(1)", "data:text/html,x", "ftp://a.example/x", "https://bank.example@evil.example/a",
+                           "https://u:p@a.example/", "https://", "hande-alert://3")) {
+            assertTrue(TextLinks.agentLinks("보기 $bad 끝").isEmpty(), bad)
+        }
+        assertNull(TextLinks.agentUrl("javascript:alert(1)"))
+        assertNotNull(TextLinks.agentUrl("http://100.64.0.1:8080/x"))
+        assertTrue(TextLinks.agentLinks("주소 없음").isEmpty())
+    }
 }

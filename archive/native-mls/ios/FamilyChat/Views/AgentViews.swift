@@ -1,6 +1,7 @@
 // 에이전트 대화 화면 조각(#405 P1): 에이전트 카드(마크다운) · 승인 카드(허락/거절) · 생각 중 · "내 마지막 말" 바.
 // 판정은 모두 Core(AgentMarkdown·AgentApproval·LastSent)가 하고, 여기는 그리기만 한다.
-// 받은 글은 신뢰하지 않는다(웹 rich-text.js 원칙): 링크는 눌러도 열리지 않게 글자로만 두고, 이미지는 그리지 않는다.
+// 받은 글은 신뢰하지 않는다(웹 rich-text.js 원칙): 이미지는 그리지 않는다. 링크는 http·https 주소만 누를 수 있게(어떤 호스트든 —
+// 오너 2026-11-16, 규칙은 `ServiceLinks.agentLinks`), 그 밖의 스킴은 글자로만.
 import SwiftUI
 import Combine
 import FamilyMLSCore
@@ -38,6 +39,8 @@ struct AgentMessageCard: View {
         VStack(alignment: .leading, spacing: 8) {
             AgentHeader(name: name)
             MarkdownBlocksView(blocks: AgentMarkdown.parse(text))
+                // 링크 색 = 카드 글자색(+ InlineMarkdown 의 밑줄) — 디자인 시스템 「링크 = 밑줄(색 대신)」, 말풍선(#824)과 같다.
+                .tint(p.ink)
             // 시간은 카드 오른쪽 아래(오너 2026-10-30 — 전에는 머리줄 오른쪽 위). 글을 다 읽은 자리에 둔다.
             if let time {
                 Text(Strings.messageTime(time)).font(.caption2).foregroundStyle(p.inkDim)
@@ -185,7 +188,9 @@ struct MarkdownTable: View {
     }
 }
 
-/// 줄 안 서식(굵게·기울임·`코드`·취소선). 링크는 글자만 남기고 이동을 끈다. 해석이 안 되면 원문.
+/// 줄 안 서식(굵게·기울임·`코드`·취소선·링크). 해석이 안 되면 원문.
+/// 링크(오너 2026-11-16): `[글자](주소)` 와 글 속 주소 모두 http·https 면 어떤 호스트든 누를 수 있다(`ServiceLinks.agentURL`·`agentLinks`).
+/// 다른 스킴(javascript: 등)·상대 경로·사용자 정보가 붙은 주소는 글자만 남긴다. 코드 안 주소는 글자 그대로.
 struct InlineMarkdown: View {
     let source: String
     init(_ source: String) { self.source = source }
@@ -200,16 +205,17 @@ struct InlineMarkdown: View {
         var italic = false
         var code = false
         var strike = false
+        var link: URL? = nil
 
         func sameStyle(as other: Segment) -> Bool {
-            bold == other.bold && italic == other.italic && code == other.code && strike == other.strike
+            bold == other.bold && italic == other.italic && code == other.code && strike == other.strike && link == other.link
         }
     }
 
     /// 인라인 코드 배경 — 코드 블록(`Color.primary.opacity(0.06)`)과 같은 계열, 줄 안이라 조금 진하게. 새 색 토큰 없음.
     static var codeBackground: Color { Color.primary.opacity(0.10) }
 
-    /// 해석 결과(`attributed`)를 서식이 같은 연속 구간으로 나눈다(링크는 이미 글자만).
+    /// 해석 결과(`attributed`)를 서식이 같은 연속 구간으로 나눈다(링크는 이미 http·https 만 남았다).
     static func segments(_ source: String) -> [Segment] {
         let value = attributed(source)
         var out: [Segment] = []
@@ -220,7 +226,8 @@ struct InlineMarkdown: View {
                 bold: intent.contains(.stronglyEmphasized),
                 italic: intent.contains(.emphasized),
                 code: intent.contains(.code),
-                strike: intent.contains(.strikethrough)
+                strike: intent.contains(.strikethrough),
+                link: intent.contains(.code) ? nil : run.link
             )
             if let last = out.last, last.sameStyle(as: piece) {
                 out[out.count - 1].text += piece.text
@@ -249,6 +256,11 @@ struct InlineMarkdown: View {
             } else {
                 text = text.font(.system(.callout, design: .monospaced))
             }
+        } else if let link = segment.link {
+            var value = AttributedString(segment.text)
+            value.link = link
+            value.underlineStyle = .single
+            text = Text(value)
         } else {
             text = Text(verbatim: segment.text)
         }
@@ -259,11 +271,22 @@ struct InlineMarkdown: View {
     }
 
     static func attributed(_ source: String) -> AttributedString {
-        guard AgentMarkdown.hasInlineMarkup(source),
-              var value = try? AttributedString(markdown: source, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))
-        else { return AttributedString(source) }
-        let linked = value.runs.filter { $0.link != nil }.map(\.range)
-        for range in linked { value[range].link = nil }
+        var value = AttributedString(source)
+        if AgentMarkdown.hasInlineMarkup(source),
+           let parsed = try? AttributedString(markdown: source, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+            value = parsed
+        }
+        // 마크다운 링크: http·https(사용자 정보 없음)만 남기고, 나머지는 글자만.
+        let linked = value.runs.compactMap { run in run.link.map { (run.range, $0) } }
+        for (range, url) in linked { value[range].link = ServiceLinks.agentURL(url.absoluteString) }
+        // 글 속 주소: 이미 링크인 곳·코드 안은 건드리지 않는다.
+        for link in ServiceLinks.agentLinks(in: String(value.characters)) {
+            guard let range = Range(link.range, in: value) else { continue }
+            let skip = value[range].runs.contains { run in
+                run.link != nil || (run.inlinePresentationIntent?.contains(.code) ?? false)
+            }
+            if !skip { value[range].link = link.url }
+        }
         return value
     }
 }
