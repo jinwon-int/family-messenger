@@ -979,6 +979,14 @@ main.shell[data-view="room"] .pane-list { display: none; }
 .bubble .foot { font-size: var(--text-xs); color: var(--text-3); padding: 0 var(--space-1); }
 .bubble[data-me="true"] { align-self: flex-end; align-items: flex-end; }
 .bubble[data-me="true"] .body { background: var(--bubble-me); color: var(--bubble-me-text); border-color: transparent; border-radius: var(--bubble-radius); border-bottom-right-radius: var(--bubble-tail); border-bottom-left-radius: var(--bubble-radius); box-shadow: var(--ember-shadow); }
+/* 내 말풍선의 서식 글(전달·붙여넣은 에이전트 보고서): 불·먹 바탕 위라 글자색은 말풍선 글자색을 따르고, 코드·표 면은 그 글자색을 옅게 깐다. */
+.bubble[data-me="true"] .body.md .md-h, .bubble[data-me="true"] .body.md strong, .bubble[data-me="true"] .body.md del,
+.bubble[data-me="true"] .body.md .md-quote, .bubble[data-me="true"] .body.md .md-list .md-marker { color: inherit; }
+.bubble[data-me="true"] .body.md :not(pre) > code, .bubble[data-me="true"] .body.md .md-code, .bubble[data-me="true"] .body.md th {
+  background: color-mix(in srgb, currentColor 14%, transparent); }
+.bubble[data-me="true"] .body.md :not(pre) > code, .bubble[data-me="true"] .body.md .md-code, .bubble[data-me="true"] .body.md th,
+.bubble[data-me="true"] .body.md td, .bubble[data-me="true"] .body.md .md-quote, .bubble[data-me="true"] .body.md .md-rule {
+  border-color: color-mix(in srgb, currentColor 35%, transparent); }
 /* 내 말풍선 전송 상태(2차-B B3): 연결되면 보냄(queued) = 밤 75% / 낮불 흰 면 + 1.5 먹 점선 · 전송 안 됨(failed) = 밤 면 22% + 1.5 #D9583B / 낮불 흰 면 + 2px #A8321C. */
 .bubble[data-me="true"].queued .body { background: var(--bubble-queued-bg); color: var(--bubble-queued-fg); border: var(--line-w) dashed var(--bubble-queued-line); opacity: var(--bubble-queued-opacity); box-shadow: none; }
 .bubble[data-me="true"].failed .body { background: var(--bubble-failed-bg); color: var(--bubble-failed-fg); border: var(--bubble-failed-w) solid var(--bubble-failed-line); box-shadow: none; }

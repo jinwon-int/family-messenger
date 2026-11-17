@@ -194,8 +194,10 @@ struct MarkdownTable: View {
 struct InlineMarkdown: View {
     let source: String
     init(_ source: String) { self.source = source }
+    /// 사람 말풍선의 서식 글이면 그 말풍선의 허용 호스트(`markdownPersonHosts`), 에이전트 카드면 nil.
+    @Environment(\.markdownPersonHosts) private var personHosts
 
-    var body: some View { Self.text(source) }
+    var body: some View { Self.text(source, personHosts: personHosts) }
 
     /// #711: 해석된 한 구간과 그 서식. 실기기(iOS 27)에서 `Text(AttributedString)`이 굵게만 그리고 기울임·코드는
     /// 기호만 지운 채 일반 글씨로 그려서, 서식을 SwiftUI 기본 처리에 맡기지 않고 구간마다 직접 건다.
@@ -216,8 +218,8 @@ struct InlineMarkdown: View {
     static var codeBackground: Color { Color.primary.opacity(0.10) }
 
     /// 해석 결과(`attributed`)를 서식이 같은 연속 구간으로 나눈다(링크는 이미 http·https 만 남았다).
-    static func segments(_ source: String) -> [Segment] {
-        let value = attributed(source)
+    static func segments(_ source: String, personHosts: Set<String>? = nil) -> [Segment] {
+        let value = attributed(source, personHosts: personHosts)
         var out: [Segment] = []
         for run in value.runs {
             let intent = run.inlinePresentationIntent ?? []
@@ -239,8 +241,8 @@ struct InlineMarkdown: View {
     }
 
     /// 구간을 이어 붙인 한 `Text` — 바깥 `.font(...)`(본문·제목·표 크기)를 그대로 물려받는다.
-    static func text(_ source: String) -> Text {
-        segments(source).reduce(Text(verbatim: "")) { joined, segment in
+    static func text(_ source: String, personHosts: Set<String>? = nil) -> Text {
+        segments(source, personHosts: personHosts).reduce(Text(verbatim: "")) { joined, segment in
             Text("\(joined)\(piece(segment))")
         }
     }
@@ -270,12 +272,13 @@ struct InlineMarkdown: View {
         return text
     }
 
-    static func attributed(_ source: String) -> AttributedString {
+    static func attributed(_ source: String, personHosts: Set<String>? = nil) -> AttributedString {
         var value = AttributedString(source)
         if AgentMarkdown.hasInlineMarkup(source),
            let parsed = try? AttributedString(markdown: source, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
             value = parsed
         }
+        if let personHosts { return personLinked(value, hosts: personHosts) }
         // 마크다운 링크: http·https 만 남기고, 나머지는 글자만.
         let linked = value.runs.compactMap { run in run.link.map { (run.range, $0) } }
         for (range, url) in linked { value[range].link = ServiceLinks.agentURL(url.absoluteString) }
@@ -288,6 +291,55 @@ struct InlineMarkdown: View {
             if !skip { value[range].link = link.url }
         }
         return value
+    }
+
+    /// 사람 말풍선의 서식 글(전달·붙여넣은 에이전트 보고서): 링크는 사람 말풍선 규칙(#690) 그대로 — 허용 호스트의 https 만 링크.
+    /// 그 밖의 `[글자](주소)` 는 링크를 풀고 「글자 (주소)」로 둬 주소를 잃지 않는다(웹 `personMarkdownLink` 와 같다).
+    static func personLinked(_ parsed: AttributedString, hosts: Set<String>) -> AttributedString {
+        var value = AttributedString()
+        // 한 링크가 서식 때문에 여러 run 으로 나뉘어도(`[**굵게** 글](주소)`) 주소는 끝에 한 번만 붙인다.
+        var pending: (url: URL, label: String)?
+        func flush() {
+            if let open = pending, open.label != open.url.absoluteString {
+                value.append(AttributedString(" (\(open.url.absoluteString))"))
+            }
+            pending = nil
+        }
+        for run in parsed.runs {
+            var piece = AttributedString(parsed[run.range])
+            if let open = pending, open.url != run.link { flush() }
+            if let url = run.link {
+                if let allowed = ServiceLinks.allowedURL(url.absoluteString, hosts: hosts) {
+                    piece.link = allowed
+                } else {
+                    piece.link = nil
+                    pending = (url, (pending?.label ?? "") + String(piece.characters))
+                }
+            }
+            value.append(piece)
+        }
+        flush()
+        // 글 속 주소: 허용 호스트만. 이미 링크인 곳·코드 안은 건드리지 않는다.
+        for link in ServiceLinks.links(in: String(value.characters), hosts: hosts) {
+            guard let range = Range(link.range, in: value) else { continue }
+            let skip = value[range].runs.contains { run in
+                run.link != nil || (run.inlinePresentationIntent?.contains(.code) ?? false)
+            }
+            if !skip { value[range].link = link.url }
+        }
+        return value
+    }
+}
+
+private struct MarkdownPersonHostsKey: EnvironmentKey {
+    static let defaultValue: Set<String>? = nil
+}
+
+extension EnvironmentValues {
+    /// 마크다운 블록을 사람 말풍선 안에 그릴 때의 링크 허용 호스트(`ServiceLinks.personHosts`). nil = 에이전트 카드 규칙(어떤 호스트든).
+    var markdownPersonHosts: Set<String>? {
+        get { self[MarkdownPersonHostsKey.self] }
+        set { self[MarkdownPersonHostsKey.self] = newValue }
     }
 }
 

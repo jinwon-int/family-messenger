@@ -64,6 +64,20 @@ final class AgentMarkdownTests: XCTestCase {
         XCTAssertEqual(AgentMarkdown.parse("a | b 는 표가 아니다"), [.paragraph("a | b 는 표가 아니다")])
         XCTAssertEqual(AgentMarkdown.parse("**굵게**만"), [.paragraph("**굵게**만")])
     }
+
+    /// 사람 말풍선은 서식 글만 블록으로 그린다(웹 `hasMarkdown` 과 같은 판정) — 평범한 대화·짝 없는 기호는 평문.
+    func testHasMarkdownOnlyForFormattedText() {
+        for plain in ["안녕 오늘 저녁 뭐 먹어?", "2 * 3 = 6 이고 4 * 5 = 20", "file_name_here 확인", "![img](https://a.b/c.png)",
+                      "https://x.com/a/status/1 봐봐", "a ** b ** c", "[a](javascript:alert(1))", "별 * 하나", ""] {
+            XCTAssertFalse(AgentMarkdown.hasMarkdown(plain), plain)
+        }
+        for formatted in ["**굵게** 해줘", "`ls -al` 실행", "~~취소~~", "*기울임*", "[링크](https://github.com/x)", "# 제목\n본문",
+                          "- 항목1\n- 항목2", "1. 첫째\n2. 둘째", "| a | b |\n|---|---|\n| 1 | 2 |", "```\ncode\n```", "> 인용", "---",
+                          "가격은 *대략* 3만원"] {
+            XCTAssertTrue(AgentMarkdown.hasMarkdown(formatted), formatted)
+        }
+        XCTAssertFalse(AgentMarkdown.hasMarkdown("# 제목\n" + String(repeating: "가", count: AgentMarkdown.maxSource)))
+    }
 }
 
 final class AgentConversationTests: XCTestCase {

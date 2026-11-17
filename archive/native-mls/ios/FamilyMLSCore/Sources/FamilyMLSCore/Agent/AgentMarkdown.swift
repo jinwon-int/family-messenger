@@ -122,6 +122,38 @@ public enum AgentMarkdown {
         text.contains("**") || text.contains("`") || text.contains("__") || text.contains("*") || text.contains("~~") || text.contains("[")
     }
 
+    /// 사람 말풍선을 블록으로 그릴지(에이전트 보고서를 전달·붙여넣은 글 등) — 웹 `agent-markdown.js` `hasMarkdown` 과 같은 판정.
+    /// 문단 아닌 블록(제목·목록·표·코드·인용·구분선)이 있거나, 문단에 짝이 맞는 줄 안 서식(`코드`·굵게·취소선·기울임·`[글자](http(s)://…)`)이
+    /// 있을 때만 참. 평범한 대화는 거짓 — 지금처럼 한 덩어리 평문으로 그린다. 너무 긴 글(`maxSource` 초과)도 평문.
+    public static func hasMarkdown(_ source: String) -> Bool {
+        guard !source.isEmpty, source.utf16.count <= maxSource else { return false }
+        let blocks = parse(source)
+        for block in blocks {
+            guard case .paragraph(let text) = block else { return true }
+            if hasInlineFormatting(text) { return true }
+        }
+        return false
+    }
+
+    /// 이보다 긴 글은 사람 말풍선에서 블록으로 나누지 않는다(렌더 비용 상한, 웹 `MAX_SOURCE` 와 같다).
+    public static let maxSource = 100_000
+
+    /// 짝이 맞는 줄 안 서식 — 웹 `inlineSpans` 의 규칙(INLINE · LINK)을 옮겼다. 밑줄 하나(_x_)는 snake_case 를 깨뜨리므로 보지 않는다.
+    private static let inlinePatterns: [NSRegularExpression] = [
+        "(`+)(?!`)[\\s\\S]*?[^`]\\1(?!`)",
+        "\\*\\*(?![\\s*])[\\s\\S]*?[^\\s*]\\*\\*",
+        "__(?![\\s_])[\\s\\S]*?[^\\s_]__",
+        "~~(?![\\s~])[\\s\\S]*?[^\\s~]~~",
+        "(?<!\\*)\\*(?![\\s*])[^*\\n]*?[^\\s*]\\*(?!\\*)",
+        "(?<!!)\\[[^\\[\\]\\n]+\\]\\(https?://[^\\s()<>]+(?:\\([^\\s()<>]*\\)[^\\s()<>]*)*\\)",
+    ].map { try! NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
+
+    static func hasInlineFormatting(_ text: String) -> Bool {
+        guard hasInlineMarkup(text) else { return false }
+        let whole = NSRange(text.startIndex..<text.endIndex, in: text)
+        return inlinePatterns.contains { $0.firstMatch(in: text, range: whole) != nil }
+    }
+
     static func cells(_ row: String) -> [String] {
         var s = Substring(row.trimmingCharacters(in: .whitespaces))
         if s.hasPrefix("|") { s = s.dropFirst() }
