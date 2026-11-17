@@ -6,6 +6,8 @@ extension Strings {
     /// AI 에이전트 = 불지기(모닥불 용어, 오너 승인). 설정 설명문에는 「불지기(AI 에이전트)」 병기.
     static let agentBadge = "불지기"
     static let agentBadgePlain = "불지기(AI 에이전트)"
+    /// #834 답 아래 스킬 칩 줄(접근성 이름).
+    static let skillsLabel = "사용한 스킬"
     static func approvalTitle(_ name: String) -> String { "\(name)\(subjectParticle(name)) 허락을 구합니다" }
     // subjectParticle 은 Strings.swift(타닥타닥 라벨과 공용).
     /// 허락 카드 본문 줄 머리(디자인 1차: 대상·내용·영향 3줄 고정). 봇이 방 명령에 3줄을 보낸다(#619) — 그 밖의 요청은 「내용」 한 줄.

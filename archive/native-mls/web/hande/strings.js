@@ -461,6 +461,7 @@ export const strings = {
     typing: (names) => (names.length ? `${names.join(', ')}${subjectParticle(names[names.length - 1])} 타닥타닥…` : '타닥타닥…'),
     // 보낸 이 라벨의 불지기 표시: 「공명✴️ · 불지기」(에이전트 = 불지기, 설명문에만 「AI 에이전트」 병기).
     agentBadge: '불지기',
+    skillsLabel: '사용한 스킬',   // #834 답 아래 스킬 칩 줄
     invite: '초대',
     image: '사진',
     viewImage: '크게 보기',

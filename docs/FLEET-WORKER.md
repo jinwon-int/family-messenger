@@ -162,6 +162,14 @@ room_remove / room_close / room_mode`) 호출마다 SDK `can_use_tool` → 이 �
 출력은 `session`, `approval`, `approval-resolved`, `control`, `rejected`, `result`, 그리고
 `--steward-tools`일 때 `tool` 이벤트다.
 
+`result` 의 선택 필드 `skills`(#834, ccc-node#2833) — `{"type":"result",…,"status":"complete","text":…,"skills":["gh-pr-flow","wiki-record"]}`.
+그 턴이 쓴 스킬 이름이다. 브리지 설정 `skill_frames`(기본 `false`)를 켜야 나가며, `complete` 이고 이름이 하나 이상일 때만 붙는다.
+봇은 식별자 모양(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$`) 이름만 첫 등장 순·중복 없이 최대 8개 골라 답 본문 끝에
+`\n\n📘 gh-pr-flow · wiki-record` 한 줄로 붙인다(본문을 먼저 줄여 이 줄은 잘리지 않는다, 늦게 도착한 답도 같다). 웹·iOS 한데는
+빈 줄 뒤 **마지막 줄**이 이 모양일 때만 본문에서 떼어 답 아래 칩으로 그리고 목록 미리보기·복사에서도 뺀다(웹 `splitSkills`,
+iOS `AgentSkills.split`). 옛 앱(Android 포함)에는 이 줄이 글로 보인다. 옛 봇은 모르는 키를 무시하므로 켜는 순서는
+**봇 교체 → 앱 배포 → 브리지 `skill_frames`**.
+
 선택 출력 프레임(#474) — native-mls 봇은 아래 두 프레임을 방에 게시한다. 보내는 쪽은 ccc-node 한데
 전송층(`core/hande/transport.py`)이며 그쪽 설정 `interim_frames`·`notice_frames`(기본 `false`)를 켜야
 나간다. 이 기능이 없는 옛 봇은 두 프레임을 무시하므로(모르는 `type`) 켜는 순서는 **봇 교체 → 브리지 설정**이다.

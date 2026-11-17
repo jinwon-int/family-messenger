@@ -7,6 +7,7 @@
 // AppModel.discoverLobbyWelcomes / acceptInvite).
 import * as screens from './ui.js';
 import {strings, displayName, isAgentDevice, isServiceDevice, isMine, isOneToOne, participantCount, roomLabel, previewLine, relativeTime, typingLabel} from './strings.js';
+import {splitSkills} from './agent-markdown.js';
 import {orderRooms, moveRoom, readRoomOrder, writeRoomOrder, createRoomOrderSync} from './room-order.js';
 import {fireLevel, recentMessageCount} from './icons.js';
 import {readDraft, writeDraft} from './drafts.js';
@@ -143,7 +144,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     const halted = S.halted ? {...S.halted} : null;
     const last = R.entries.filter(e => e.kind === 'text' || e.kind === 'attachment').at(-1);
     // 미리보기: 마크다운 기호를 걷어낸 한 줄, 첨부는 [사진]/[파일](내용 판별 결과) — 패밀리챗 목록과 같은 모양(#480 A).
-    const body = last ? (last.kind === 'attachment' ? (last.image ? strings.rooms.photoPreview : strings.rooms.filePreview) : last.body) : '';
+    // #834: 에이전트 답 끝의 스킬 줄(`📘 …`)은 미리보기에서 뺀다 — 말풍선에서도 본문이 아니라 칩이다.
+    const body = last ? (last.kind === 'attachment' ? (last.image ? strings.rooms.photoPreview : strings.rooms.filePreview) : (last.isAgent ? splitSkills(last.body).body : last.body)) : '';
     // status-v1(#560): 에이전트가 일하는 중이면 그 최신 「⏳ Working …」 줄 — 목록에서 미리보기 자리에 보인다(오너 2026-10-30).
     // 안 읽음·정렬·미리보기 원본(entries)은 그대로다.
     const working = halted ? null : (visibleStatuses(R.statuses).at(-1)?.text ?? null);
