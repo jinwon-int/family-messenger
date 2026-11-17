@@ -8,6 +8,8 @@
 //   - 시작점이 화면 왼쪽 3/5 안(`startZoneFraction`)
 //   - 오른쪽으로 `minimumDistance` 이상 이동
 //   - 가로 이동이 세로 이동의 `horizontalDominance` 배보다 큼 — 타임라인 세로 스크롤·비스듬한 끌기는 뒤로가지 않는다
+//   - #829(오너 2026-11-17): 시작점이 **가로로 넘치는 블록**(표·코드) 위가 아님 — 그 끌기는 블록의 가로 스크롤 몫이다.
+//     종전엔 긴 표를 오른쪽으로 되밀면 표가 움직이면서 목록으로도 나갔다. 화면보다 좁아 넘치지 않는 표는 종전대로 뒤로간다.
 import Foundation
 
 public enum BackSwipe {
@@ -23,10 +25,27 @@ public enum BackSwipe {
     ///   - width: 화면(타임라인) 너비(pt). 아직 재지 못했으면(0 이하) 뒤로가지 않는다.
     ///   - dx: 오른쪽(+)으로 움직인 거리
     ///   - dy: 아래(+)·위(-)로 움직인 거리
-    public static func shouldGoBack(startX: Double, width: Double, dx: Double, dy: Double) -> Bool {
+    ///   - startedOnSideScroll: 시작점이 가로로 넘치는 블록 위였다(`startsOnSideScroll`) — true 면 뒤로가지 않는다(#829)
+    public static func shouldGoBack(startX: Double, width: Double, dx: Double, dy: Double,
+                                    startedOnSideScroll: Bool = false) -> Bool {
+        guard !startedOnSideScroll else { return false }
         guard width > 0, startX >= 0 else { return false }
         guard startX <= width * startZoneFraction else { return false }
         guard dx >= minimumDistance else { return false }
         return dx > abs(dy) * horizontalDominance
+    }
+
+    /// 내용이 칸보다 이만큼(pt) 넘게 넓어야 "옆으로 밀리는" 블록으로 본다 — 반올림 차이로 좁은 표가 걸리지 않게.
+    public static let overflowTolerance = 1.0
+
+    /// 블록(표·코드)의 내용이 칸보다 넓어 실제로 옆으로 밀리는가(#829). 넘치지 않는 블록 위 끌기는 종전대로 뒤로가기 몫이다.
+    public static func overflowsSideways(contentWidth: Double, viewportWidth: Double) -> Bool {
+        viewportWidth > 0 && contentWidth > viewportWidth + overflowTolerance
+    }
+
+    /// 끌기 시작점이 가로로 넘치는 블록 위인가(#829). `blocks` 와 시작점은 같은 좌표(타임라인 칸, 왼쪽 위 = 0,0)여야 한다.
+    /// 경계 포함(`SwipeReply.Zone.contains`) — 표 가장자리에서 시작한 끌기도 표 넘기기로 본다.
+    public static func startsOnSideScroll(x: Double, y: Double, blocks: [SwipeReply.Zone]) -> Bool {
+        blocks.contains { $0.contains(x: x, y: y) }
     }
 }

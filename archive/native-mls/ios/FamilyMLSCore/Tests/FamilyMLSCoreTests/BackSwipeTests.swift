@@ -29,6 +29,35 @@ final class BackSwipeTests: XCTestCase {
         XCTAssertTrue(BackSwipe.shouldGoBack(startX: 50, width: width, dx: 91, dy: -60), "just past the dominance ratio")
     }
 
+    // #829(오너 2026-11-17): 긴 표를 오른쪽으로 되밀면 표가 움직이면서 목록으로도 나갔다.
+    func testDragStartedOnSideScrollBlockDoesNotGoBack() {
+        XCTAssertTrue(BackSwipe.shouldGoBack(startX: 100, width: width, dx: 120, dy: 4, startedOnSideScroll: false))
+        XCTAssertFalse(BackSwipe.shouldGoBack(startX: 100, width: width, dx: 120, dy: 4, startedOnSideScroll: true),
+                       "scrolling a wide table back to its first columns must stay in the room")
+        XCTAssertFalse(BackSwipe.shouldGoBack(startX: 5, width: width, dx: 300, dy: 0, startedOnSideScroll: true),
+                       "the wide swipe is off even from the edge — the system edge swipe is a separate recognizer")
+    }
+
+    func testStartsOnSideScrollUsesBlockAreasInTimelineCoordinates() {
+        let table = SwipeReply.Zone(minX: 16, minY: 300, maxX: 374, maxY: 460)
+        let code = SwipeReply.Zone(minX: 16, minY: 520, maxX: 374, maxY: 560)
+        XCTAssertTrue(BackSwipe.startsOnSideScroll(x: 120, y: 380, blocks: [table, code]))
+        XCTAssertTrue(BackSwipe.startsOnSideScroll(x: 120, y: 540, blocks: [table, code]))
+        XCTAssertTrue(BackSwipe.startsOnSideScroll(x: 16, y: 300, blocks: [table]), "edges count as the block")
+        XCTAssertFalse(BackSwipe.startsOnSideScroll(x: 120, y: 480, blocks: [table, code]), "the paragraph between the blocks")
+        XCTAssertFalse(BackSwipe.startsOnSideScroll(x: 120, y: 299, blocks: [table]))
+        XCTAssertFalse(BackSwipe.startsOnSideScroll(x: 120, y: 380, blocks: []), "no wide block on screen — old behaviour")
+    }
+
+    func testOnlyBlocksThatActuallyOverflowCount() {
+        XCTAssertTrue(BackSwipe.overflowsSideways(contentWidth: 620, viewportWidth: 358))
+        XCTAssertFalse(BackSwipe.overflowsSideways(contentWidth: 300, viewportWidth: 358), "a narrow table does not scroll")
+        XCTAssertFalse(BackSwipe.overflowsSideways(contentWidth: 358.5, viewportWidth: 358), "rounding slack")
+        XCTAssertFalse(BackSwipe.overflowsSideways(contentWidth: 359, viewportWidth: 358), "exactly the tolerance")
+        XCTAssertTrue(BackSwipe.overflowsSideways(contentWidth: 359.1, viewportWidth: 358))
+        XCTAssertFalse(BackSwipe.overflowsSideways(contentWidth: 620, viewportWidth: 0), "not laid out yet")
+    }
+
     func testUnmeasuredWidthOrNegativeStartDoesNotGoBack() {
         XCTAssertFalse(BackSwipe.shouldGoBack(startX: 10, width: 0, dx: 200, dy: 0), "width not measured yet")
         XCTAssertFalse(BackSwipe.shouldGoBack(startX: -1, width: width, dx: 200, dy: 0))

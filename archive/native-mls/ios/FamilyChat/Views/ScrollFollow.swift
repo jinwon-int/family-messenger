@@ -151,6 +151,10 @@ final class ScrollTracking {
     var sentinelBottom: Double = .infinity
     /// 마지막 끌기 변화 시각.
     var lastDrag: Date = .distantPast
+    /// #829: 넓은 뒤로가기 — 지금 끌기의 시작점과, 그 시작점이 가로로 넘치는 블록(표·코드) 위였는지. 끌기마다 처음 한 번 판정해 둔다
+    /// (손을 뗄 때 다시 재면 그사이 타임라인이 움직였을 수 있다).
+    var backSwipeStart: CGPoint?
+    var backSwipeOnSideScroll = false
     /// 다음 런루프에 낼 스크롤 명령이 이미 있다(같은 틱의 요청은 하나로 합친다).
     var pendingScroll = false
     /// 합친 명령의 애니메이션 여부 — 하나라도 즉시면 즉시.

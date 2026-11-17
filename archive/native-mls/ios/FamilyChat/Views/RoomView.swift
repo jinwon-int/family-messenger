@@ -185,11 +185,27 @@ struct RoomView: View {
                 // 오너 2026-11-04: 넓은 뒤로가기 — 타임라인 왼쪽 3/5(2026-11-05 넓힘, 종전 2/5) 안에서 시작해 오른쪽으로 밀고 손을 떼면 목록으로(판정 `BackSwipe`).
                 // 손가락을 따라 밀리지는 않는다(공개 API만). 기본 가장자리 스와이프는 그대로 — 둘 다 와도 `backToList` 는 같은 결과다.
                 // 작성창에는 붙이지 않는다(글자 선택 끌기와 섞이지 않게). 창이 떠 있거나 맨 위가 아니면 쓰지 않는다(`keysBlocked`).
+                // #829(오너 2026-11-17): 가로로 넘치는 표·코드 블록 위에서 시작한 끌기는 그 블록의 스크롤 몫 — 뒤로가지 않는다.
+                // 끌기가 인식된 첫 변화에서 한 번만 잰다(`TimelineScrollHandle.sideScrollBlocks`).
                 .simultaneousGesture(DragGesture(minimumDistance: 20)
+                    .onChanged { value in
+                        guard tracking.backSwipeStart != value.startLocation else { return }
+                        tracking.backSwipeStart = value.startLocation
+                        tracking.backSwipeOnSideScroll = backSwipeStartsOnSideScroll(value.startLocation)
+                    }
                     .onEnded { value in
+                        let onSideScroll = tracking.backSwipeStart == value.startLocation
+                            ? tracking.backSwipeOnSideScroll : backSwipeStartsOnSideScroll(value.startLocation)
+                        tracking.backSwipeStart = nil
+                        if onSideScroll,
+                           BackSwipe.shouldGoBack(startX: Double(value.startLocation.x), width: timelineWidth,
+                                                  dx: Double(value.translation.width), dy: Double(value.translation.height)) {
+                            model.noteScroll("\(room) back-swipe skipped (side-scroll block) x=\(Self.pt(value.startLocation.x)) dx=\(Self.pt(value.translation.width))")
+                        }
                         guard !keysBlocked,
                               BackSwipe.shouldGoBack(startX: Double(value.startLocation.x), width: timelineWidth,
-                                                     dx: Double(value.translation.width), dy: Double(value.translation.height))
+                                                     dx: Double(value.translation.width), dy: Double(value.translation.height),
+                                                     startedOnSideScroll: onSideScroll)
                         else { return }
                         model.noteScroll("\(room) back-swipe x=\(Self.pt(value.startLocation.x)) dx=\(Self.pt(value.translation.width)) width=\(Self.pt(timelineWidth))")
                         navigator.backToList()
@@ -822,6 +838,11 @@ struct RoomView: View {
     }
 
     /// 이 방이 맨 위에 보이지 않거나 창(초대·복사·사진·파일·알림 실패·사진 전체 화면)이 떠 있으면 키를 쓰지 않는다(웹: 시트가 떠 있으면 가로채지 않음).
+    /// #829: 끌기 시작점(타임라인 칸 좌표)이 가로로 넘치는 표·코드 블록 위인가.
+    private func backSwipeStartsOnSideScroll(_ start: CGPoint) -> Bool {
+        BackSwipe.startsOnSideScroll(x: Double(start.x), y: Double(start.y), blocks: timelineScroll.sideScrollBlocks)
+    }
+
     private var keysBlocked: Bool {
         navigator.path.last != room || showInvite || muteFailed || selecting != nil || showPhotoPicker || showFileImporter
             || PhotoViewerPresence.active
