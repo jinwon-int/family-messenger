@@ -80,12 +80,12 @@ export const TIMELINE_ARROW_STEP_PX = 60;
 
 /**
  * 대화 내용 읽기 판정.
+ * 수정키 없는 End는 어디서나 Esc와 같다(오너 2026-11-17 — 예전 대화 내용 End 「맨 아래로」는 없앴다).
+ * 수정키가 붙은 End(Shift+End 선택, Ctrl/⌘+End 글 끝으로)는 편집 동작이라 뺏지 않는다.
  * 작성창에서 Esc 또는 End = 대화 내용(타임라인)으로 포커스를 옮긴다 — 작성 중인 글은 그대로 두고 위 대화를 읽기 위해.
- * End는 Home(방 목록)의 짝이다. 수정키가 붙은 End(Shift+End 선택, Ctrl/⌘+End 글 끝으로)는 편집 동작이라 뺏지 않는다.
- * 대화 내용에서의 End는 브라우저 기본(맨 아래로 스크롤) 그대로 둔다.
  * 대화 내용에 포커스가 있으면 ↑/↓ = 위/아래 스크롤. 돌아가기는 기존 Enter(작성창)·Home(목록).
- * 대화 내용에서 Esc = 캐럿 모드(#284, timeline-caret.js) — 캐럿을 두고 Shift+방향키로 글자를 선택한다.
- * 캐럿 모드에서는 Esc = 스크롤 모드로 복귀, Enter = 작성창, 나머지 키(방향키·Home/End·Page Up/Down
+ * 대화 내용에서 Esc·End = 캐럿 모드(#284, timeline-caret.js) — 캐럿을 두고 Shift+방향키로 글자를 선택한다.
+ * 캐럿 모드에서는 Esc·End = 스크롤 모드로 복귀, Enter = 작성창, 나머지 키(방향키·Home·Page Up/Down
  * ·Shift 조합)는 모두 브라우저 기본(캐럿 이동·선택) — 호출부는 null이어도 다른 단축키로 넘기지 않는다.
  * IME 조합 중 Esc는 조합 취소라 뺏지 않는다(호출부가 isComposing을 거른다).
  * @param {{key?: string, inComposer?: boolean, onTimeline?: boolean, caretMode?: boolean, shiftKey?: boolean, ctrlKey?: boolean, altKey?: boolean, metaKey?: boolean}} input
@@ -95,16 +95,16 @@ export function timelineKeyAction({
   key, inComposer = false, onTimeline = false, caretMode = false, shiftKey = false, ctrlKey = false, altKey = false, metaKey = false,
 } = {}) {
   const modified = shiftKey || ctrlKey || altKey || metaKey;
+  const escLike = key === 'Escape' || (key === 'End' && !modified);
   if (onTimeline && caretMode) {
-    if (key === 'Escape') return 'exit-caret';
+    if (escLike) return 'exit-caret';
     if (key === 'Enter' && !modified) return 'focus-composer';
     return null;
   }
-  if (key === 'Escape') {
+  if (escLike) {
     if (inComposer) return 'focus-timeline';
     return onTimeline ? 'enter-caret' : null;
   }
-  if (key === 'End') return inComposer && !modified ? 'focus-timeline' : null;
   if (!onTimeline) return null;
   if (key === 'ArrowUp') return 'scroll-up';
   if (key === 'ArrowDown') return 'scroll-down';

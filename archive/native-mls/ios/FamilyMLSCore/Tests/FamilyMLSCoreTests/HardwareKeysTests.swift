@@ -25,7 +25,7 @@ final class HardwareKeysTests: XCTestCase {
         XCTAssertEqual(K.roomAction(.init(.upArrow), mode: .reading), .scrollUp)       // 웹 'scroll-up'
         XCTAssertEqual(K.roomAction(.init(.downArrow), mode: .reading), .scrollDown)
         XCTAssertEqual(K.roomAction(.init(.enter), mode: .reading), .focusComposer)    // 웹 viewKeyAction Enter
-        XCTAssertEqual(K.roomAction(.init(.end), mode: .reading), .scrollToLatest)
+        XCTAssertEqual(K.roomAction(.init(.end), mode: .reading), .startSelecting)     // End = Esc(2026-11-17, 「맨 아래로」 없앰)
         XCTAssertEqual(K.roomAction(.init(.escape), mode: .reading), .startSelecting)  // 웹 'enter-caret'
         XCTAssertNil(K.roomAction(.init(.letterC, .command), mode: .reading))          // 고른 말풍선이 없다
 
@@ -35,7 +35,7 @@ final class HardwareKeysTests: XCTestCase {
         XCTAssertEqual(K.roomAction(.init(.enter), mode: .selecting), .openSelection)
         XCTAssertEqual(K.roomAction(.init(.letterC, .command), mode: .selecting), .copySelection)
         XCTAssertEqual(K.roomAction(.init(.escape), mode: .selecting), .readTimeline)  // 웹 'exit-caret'
-        XCTAssertEqual(K.roomAction(.init(.end), mode: .selecting), .scrollToLatest)
+        XCTAssertEqual(K.roomAction(.init(.end), mode: .selecting), .readTimeline)     // End = Esc
         // 웹 캐럿 모드처럼 방을 넘기거나 목록으로 가지 않는다.
         XCTAssertNil(K.roomAction(.init(.pageUp), mode: .selecting))
         XCTAssertNil(K.roomAction(.init(.pageDown), mode: .selecting))

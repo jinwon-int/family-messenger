@@ -140,12 +140,12 @@ export function installShortcuts(root, actions) {
     });
   }
 
-  // 방 화면 단축키: 작성창 Esc·End → 대화 내용, 대화 내용 ↑/↓ 스크롤·Esc 캐럿 모드, 대화형 요소 밖 Enter → 작성창, Home → 목록.
+  // 방 화면 단축키: 작성창 Esc·End → 대화 내용, 대화 내용 ↑/↓ 스크롤·Esc·End 캐럿 모드, 대화형 요소 밖 Enter → 작성창, Home → 목록.
   function onRoomKeys(event) {
     if (event.defaultPrevented) return;
     const composing = event.isComposing || event.keyCode === 229;
     const plainTimeline = event.target?.classList?.contains('timeline') && !event.target.isContentEditable;
-    if (composing && !(plainTimeline && (event.key === 'Escape' || event.key === 'Enter'))) {
+    if (composing && !(plainTimeline && (event.key === 'Escape' || event.key === 'End' || event.key === 'Enter'))) {
       onComposingComposerKey(event);
       return;
     }
@@ -178,7 +178,7 @@ export function installShortcuts(root, actions) {
       } else list.scrollBy({ top: readAction === 'scroll-up' ? -TIMELINE_ARROW_STEP_PX : TIMELINE_ARROW_STEP_PX });
       return;
     }
-    // 캐럿 모드의 나머지 키(방향키·Home/End·Shift 조합)는 브라우저 기본 — Home(목록) 등으로 넘기지 않는다.
+    // 캐럿 모드의 나머지 키(방향키·Home·Shift 조합)는 브라우저 기본 — Home(목록) 등으로 넘기지 않는다.
     if (caretMode) return;
     const action = viewKeyAction({ key: event.key, target: event.target });
     if (!action) return;

@@ -100,12 +100,20 @@ test('작성창 Esc는 대화 내용으로 포커스를 옮긴다', () => {
   assert.equal(timelineKeyAction({ key: 'Escape', onTimeline: true }), 'enter-caret', '대화 내용 Esc는 캐럿 모드(#284)');
 });
 
-test('작성창 End도 Esc처럼 대화 내용으로 포커스를 옮긴다(수정키 없을 때만)', () => {
+test('End는 어디서나 Esc와 같다(수정키 없을 때만, 오너 2026-11-17)', () => {
   assert.equal(timelineKeyAction({ key: 'End', inComposer: true }), 'focus-timeline');
   assert.equal(timelineKeyAction({ key: 'End', inComposer: false }), null, '작성창 밖 End는 뺏지 않는다');
-  assert.equal(timelineKeyAction({ key: 'End', onTimeline: true }), null, '대화 내용 End는 브라우저 기본(맨 아래)');
-  for (const modifier of ['shiftKey', 'ctrlKey', 'altKey', 'metaKey']) {
-    assert.equal(timelineKeyAction({ key: 'End', inComposer: true, [modifier]: true }), null, `${modifier}+End는 편집 동작`);
+  assert.equal(timelineKeyAction({ key: 'End', onTimeline: true }), 'enter-caret', '대화 내용 End = Esc(캐럿 모드) — 「맨 아래로」 없앰');
+  assert.equal(timelineKeyAction({ key: 'End', onTimeline: true, caretMode: true }), 'exit-caret', '캐럿 모드 End = Esc(스크롤 모드로)');
+  for (const where of [{ inComposer: true }, { onTimeline: true }, { onTimeline: true, caretMode: true }]) {
+    assert.equal(
+      timelineKeyAction({ key: 'End', ...where }),
+      timelineKeyAction({ key: 'Escape', ...where }),
+      `End와 Esc가 같은 동작 ${JSON.stringify(where)}`,
+    );
+    for (const modifier of ['shiftKey', 'ctrlKey', 'altKey', 'metaKey']) {
+      assert.equal(timelineKeyAction({ key: 'End', ...where, [modifier]: true }), null, `${modifier}+End는 편집·선택 동작 ${JSON.stringify(where)}`);
+    }
   }
   assert.equal(timelineKeyAction({ key: 'Escape', inComposer: true, shiftKey: true }), 'focus-timeline', 'Esc 규칙은 그대로');
 });
@@ -133,12 +141,14 @@ test('listRevealDelta: 보이는 행은 0, 아래로 가려지면 양수(아래 
   assert.equal(listRevealDelta(), 0);
 });
 
-test('캐럿 모드(#284): Esc=스크롤 모드 복귀, Enter=작성창, 나머지는 브라우저 기본', () => {
+test('캐럿 모드(#284): Esc·End=스크롤 모드 복귀, Enter=작성창, 나머지는 브라우저 기본', () => {
   const caret = { onTimeline: true, caretMode: true };
   assert.equal(timelineKeyAction({ key: 'Escape', ...caret }), 'exit-caret');
+  assert.equal(timelineKeyAction({ key: 'End', ...caret }), 'exit-caret', 'End = Esc(2026-11-17)');
+  assert.equal(timelineKeyAction({ key: 'End', ...caret, shiftKey: true }), null, 'Shift+End는 선택');
   assert.equal(timelineKeyAction({ key: 'Enter', ...caret }), 'focus-composer');
   assert.equal(timelineKeyAction({ key: 'Enter', ...caret, shiftKey: true }), null, '수정키 Enter는 뺏지 않는다(편집은 beforeinput에서 막힘)');
-  for (const key of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown']) {
+  for (const key of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'PageUp', 'PageDown']) {
     assert.equal(timelineKeyAction({ key, ...caret }), null, `${key}는 캐럿 이동`);
     assert.equal(timelineKeyAction({ key, ...caret, shiftKey: true }), null, `Shift+${key}는 선택`);
   }

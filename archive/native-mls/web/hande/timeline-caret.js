@@ -1,6 +1,6 @@
 // 대화 내용 캐럿 모드 — 패밀리챗 web/app/src/timeline-caret.js 를 그대로 이식(#284 → #478).
 //
-// 작성창 End/Esc로 대화 내용(.timeline)에 포커스가 온 뒤 Esc를 한 번 더 누르면, 대화 내용에
+// 작성창 End/Esc로 대화 내용(.timeline)에 포커스가 온 뒤 Esc·End를 한 번 더 누르면, 대화 내용에
 // 캐럿(커서)을 두어 Shift+방향키·Shift+Home/End·Ctrl+Shift+←/→로 글자를 블록 선택하고
 // Ctrl+C로 복사할 수 있게 한다. 웹페이지는 브라우저 캐럿 브라우징(크롬 F7)을 켤 수 없으므로
 // 읽기 전용 contenteditable로 브라우저 기본 캐럿·선택 동작을 빌린다.
@@ -20,7 +20,7 @@ export function isCaretMode(list) {
 
 /**
  * 캐럿 모드를 켠다. 이미 대화 내용에 선택이 있으면 그 자리를, 없으면 보이는 마지막 말풍선의
- * 본문 시작에 캐럿을 둔다(End로 맨 아래를 보고 있으면 최신 메시지).
+ * 본문 시작에 캐럿을 둔다(맨 아래를 보고 있으면 최신 메시지).
  * @param {HTMLElement} list .timeline
  * @returns {boolean} 새로 켰으면 true
  */

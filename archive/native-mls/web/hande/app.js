@@ -996,7 +996,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
 
   window.addEventListener('beforeunload', () => { for (const R of app.rooms.values()) for (const e of R.entries) if (e.image) URL.revokeObjectURL(e.image.url); });
   // 패밀리챗과 같은 전역 단축키(#478): PageUp/Down 방 이동 · Home 목록 · 작성창 Esc/End → 대화 내용 ·
-  // 대화 내용 ↑/↓ 스크롤·Esc 캐럿 모드 · 대화형 요소 밖 Enter → 작성창. 초안은 app.draft(방별)가 지킨다.
+  // 대화 내용 ↑/↓ 스크롤·Esc·End 캐럿 모드 · 대화형 요소 밖 Enter → 작성창. 초안은 app.draft(방별)가 지킨다.
   installShortcuts(root, {
     openRoom: openRoomScreen,
     openRooms: () => { app.roomOpen = false; render(); },

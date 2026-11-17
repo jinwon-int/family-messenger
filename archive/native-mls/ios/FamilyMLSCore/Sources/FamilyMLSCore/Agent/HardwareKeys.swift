@@ -3,11 +3,12 @@
 //
 // 대화방(웹 `listPageNavAction` 'switch' · `timelineKeyAction` · `viewKeyAction`):
 //   PageUp/PageDown = 이전·다음 대화방(작성 중이어도 — 초안은 방별 저장) · Home = 대화 목록
+//   End 는 어디서나 Esc 와 같다(오너 2026-11-17 — 예전 대화 읽기·선택 모드 End 「맨 아래로」는 없앴다).
 //   작성창: Esc·End = 대화 읽기(작성창에서 나와 위 대화를 본다) · Enter = 전송 · Shift+Enter = 줄바꿈(웹 `composerKeyAction`)
-//   대화 읽기: ↑/↓ = 말풍선 하나씩 위·아래 · End = 맨 아래(최신) · Enter = 작성창으로 · Esc = 선택 모드
+//   대화 읽기: ↑/↓ = 말풍선 하나씩 위·아래 · Enter = 작성창으로 · Esc·End = 선택 모드
 //   선택 모드(웹 캐럿 모드 `timeline-caret.js` 의 iOS 판): 말풍선 하나에 점선 테두리 · ↑/↓ = 테두리 이동 ·
 //     Enter = 그 말풍선을 「선택해서 복사」 창으로(창 안에서 Shift+방향키 글자 선택 · ⌘C 복사) · ⌘C = 말풍선 글 전체 복사 ·
-//     Esc = 대화 읽기로 · End = 맨 아래 · PageUp/PageDown/Home 은 쓰지 않는다(웹 캐럿 모드도 방을 넘기지 않음)
+//     Esc·End = 대화 읽기로 · PageUp/PageDown/Home 은 쓰지 않는다(웹 캐럿 모드도 방을 넘기지 않음)
 // 대화 목록(웹 `listPageNavAction` 'navigate' · `listPageMove`):
 //   PageUp/PageDown = 표시 행을 한 칸씩(열지 않음) · Enter = 표시된 행 열기 · 순서 모드에서는 움직이지 않는다(웹 #480 A)
 //
@@ -64,11 +65,9 @@ public enum HardwareKeys {
         /// 대화 읽기에서 작성창으로(웹: 대화형 요소 밖 Enter).
         case focusComposer
         case scrollUp, scrollDown
-        /// 맨 아래(최신 글) — 웹은 타임라인 End 를 브라우저 기본(맨 아래로)에 맡긴다.
-        case scrollToLatest
         /// 작성창 Enter = 보내기 · Shift+Enter = 커서 자리에 줄바꿈.
         case send, newline
-        /// 대화 읽기 Esc = 선택 모드 시작.
+        /// 대화 읽기 Esc·End = 선택 모드 시작.
         case startSelecting
         /// 선택 모드 ↑/↓ = 테두리를 위·아래 말풍선으로.
         case selectUp, selectDown
@@ -95,13 +94,12 @@ public enum HardwareKeys {
         case (.composer, .enter): return .send
         case (.reading, .upArrow): return .scrollUp
         case (.reading, .downArrow): return .scrollDown
-        case (.reading, .end), (.selecting, .end): return .scrollToLatest
         case (.reading, .enter): return .focusComposer
-        case (.reading, .escape): return .startSelecting
+        case (.reading, .escape), (.reading, .end): return .startSelecting
         case (.selecting, .upArrow): return .selectUp
         case (.selecting, .downArrow): return .selectDown
         case (.selecting, .enter): return .openSelection
-        case (.selecting, .escape): return .readTimeline
+        case (.selecting, .escape), (.selecting, .end): return .readTimeline
         default: return nil
         }
     }
