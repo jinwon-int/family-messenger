@@ -1205,8 +1205,8 @@ function lastSentBar(room) {
 
 /** 방 pane. parts 는 재렌더에서 따로따로 맞춘다(patchRoomScreen). */
 function buildRoom(room) {
-  // AI 동의 전에는 작성창을 잠근다(#544 E) — 읽기·내려받기는 그대로.
-  const canCompose = Boolean(room.joined) && !room.halted && !room.consentRequired;
+  // AI 동의 전에는 작성창을 잠근다(#544 E) — 읽기·내려받기는 그대로. 저장분으로 먼저 그린 방은 첫 동기화까지도 잠근다(#766 B, syncing).
+  const canCompose = Boolean(room.joined) && !room.halted && !room.consentRequired && !room.syncing;
   const members = Array.isArray(room.members) ? room.members : [];
   const header = signed(el('header', { class: 'appbar', 'data-part': 'header' },
     el('button', { type: 'button', class: 'icon ghost back', 'aria-label': strings.chat.back, onclick: () => liveProps.get(screen)?.onBack?.() }, '←'),
@@ -1257,7 +1257,7 @@ function buildRoom(room) {
       if (!file) return;
       event.preventDefault();
       const current = liveProps.get(screen);
-      if (current && current.joined && !current.halted && !current.consentRequired) current.onAttach?.(file);
+      if (current && current.joined && !current.halted && !current.consentRequired && !current.syncing) current.onAttach?.(file);
     },
   }, Object.values(parts));
   liveProps.set(screen, room);
@@ -1275,6 +1275,7 @@ const PART_ORDER = ['header', 'banner', 'notice', 'lastSent', 'gate', 'timeline'
 
 /** 같은 방 재렌더: 작성창은 절대 교체하지 않고(IME), 타임라인은 행만 맞추고, 나머지는 서명이 바뀐 것만 교체. */
 function patchRoomScreen(screen, built, room) {
+  const wasSyncing = Boolean(liveProps.get(screen)?.syncing);
   liveProps.set(screen, room);
   if (room.halted) screen.dataset.halted = 'true'; else delete screen.dataset.halted;
   if (built.parts.closed) screen.dataset.closed = 'true'; else delete screen.dataset.closed;
@@ -1286,6 +1287,11 @@ function patchRoomScreen(screen, built, room) {
       const form = old.querySelector('form.composer');
       liveProps.set(form, room);
       applyComposerState(form, { enabled: built.canCompose, sending: room.sending });
+      // #766 B: 첫 동기화가 끝나 작성창이 열리면 넓은 화면에서는 방을 열 때(mount)처럼 커서를 둔다 — 그 사이 다른 곳을 골랐으면 두지 않는다.
+      if (wasSyncing && built.canCompose && isWide() && document.activeElement === document.body) {
+        const textarea = form.querySelector('textarea');
+        textarea.focus(); textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      }
       continue;
     }
     if (!fresh && !old) continue;

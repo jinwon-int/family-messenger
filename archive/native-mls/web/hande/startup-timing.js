@@ -50,7 +50,8 @@ export function createStartupTiming({now = () => 0} = {}) {
 
 /** 앱이 남기는 구간(순서대로)과 기록에 쓰는 말. paint 는 마지막 구간 뒤 첫 화면이 그려지기까지 남은 시간. */
 export const STARTUP_LABELS = {script: '스크립트', config: '설정', identity: '신원 열기', rooms: '방 열기', listing: '방 목록', paint: '그리기'};
-export const STARTUP_PHASE_LABELS = {ready: '대화 화면', enroll: '등록 화면', needsActor: '이름 정하기', fatal: '오류 화면'};
+// stored(#766 B): 릴레이의 방 목록 응답 전에 이 기기에 저장된 방·대화로 그린 대화 화면. ready 는 그 응답 뒤에 그린 것.
+export const STARTUP_PHASE_LABELS = {ready: '대화 화면', stored: '대화 화면 · 저장분', enroll: '등록 화면', needsActor: '이름 정하기', fatal: '오류 화면'};
 
 /** 앱 기록 한 줄. labels: 구간 이름 → 화면 말(없으면 이름 그대로). */
 export function startupLine(summary, {labels = STARTUP_LABELS, phaseLabels = STARTUP_PHASE_LABELS} = {}) {

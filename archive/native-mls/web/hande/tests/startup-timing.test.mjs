@@ -29,6 +29,16 @@ test('앱 기록 한 줄: 화면 말로 바꾸고 전체 ms 를 앞에 둔다', 
   assert.equal(startupLine(null), '');
 });
 
+test('저장분으로 먼저 그린 첫 화면(#766 B)은 화면 이름으로 구분되고 방 목록 구간이 없다', () => {
+  const t = createStartupTiming({ now: clockOf(412, 427, 628, 652, 660, 2000) });
+  for (const name of ['script', 'config', 'identity', 'rooms']) t.mark(name);
+  const s = t.finish('stored');
+  t.mark('listing');   // 그린 뒤에 온 방 목록 응답은 줄에 들어가지 않는다
+  assert.equal(startupLine(s), '첫 화면까지 660 ms (대화 화면 · 저장분) — 스크립트 412 · 설정 15 · 신원 열기 201 · 방 열기 24 · 그리기 8');
+  assert.equal(startupLine(t.summary()), startupLine(s));
+  assert.notEqual(STARTUP_PHASE_LABELS.stored, STARTUP_PHASE_LABELS.ready);
+});
+
 test('마지막 구간과 같은 시각에 끝나면 그리기 구간을 만들지 않는다', () => {
   const t = createStartupTiming({ now: clockOf(100, 100) });
   t.mark('script');
@@ -100,13 +110,15 @@ test('앱이 쓰는 구간·화면에는 모두 화면 말이 있다', () => {
   const marks = [...app.matchAll(/timing\.mark\('([^']+)'\)/g)].map((m) => m[1]);
   assert.deepEqual(marks, ['script', 'config', 'identity', 'rooms', 'listing']);
   for (const name of [...marks, 'paint']) assert.ok(STARTUP_LABELS[name], name);
-  for (const phase of ['ready', 'enroll', 'needsActor', 'fatal']) assert.ok(STARTUP_PHASE_LABELS[phase], phase);
+  for (const phase of ['ready', 'stored', 'enroll', 'needsActor', 'fatal']) assert.ok(STARTUP_PHASE_LABELS[phase], phase);
 });
 
 test('앱 배선: 시작 화면을 벗어난 첫 그리기에서만 끝내고, 진단 복사 요약에도 싣는다', () => {
   const app = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   assert.match(app, /updatePhase\(\); paint\(\); noteFirstScreen\(\);/);
   assert.match(app, /function noteFirstScreen\(\) \{\s*if \(timing\.finished \|\| app\.phase === 'starting'\) return;/);
+  // #766 B: 방 목록 응답 전에 그린 대화 화면은 'stored' 로 끝낸다.
+  assert.match(app, /timing\.finish\(app\.phase === 'ready' && app\.dev\?\.state\.enrolled !== true \? 'stored' : app\.phase\)/);
   assert.match(app, /const startup = app\.startup \? `startup: \$\{startupLine\(app\.startup\)\}` : 'startup: -';/);
   assert.match(app, /, me, startup, 'rooms:',/);
 });

@@ -128,6 +128,9 @@ export function createRoomSession({room, device, database, worker, relay, storag
     expectedRoster: null, pendingWelcome: null, relaySeq: 0, epoch: 0, wcursor: 0, roster: [], timer: null, busy: false,
     // #261: a refused commit halts this device (durable, operator decides); retriedSeq remembers one merge retry per relay seq.
     halted: null, retriedSeq: 0, failedSeq: 0, transferring: false,
+    // #766 B: 이 방을 연 뒤 sync 시도가 한 번이라도 끝났다(성공·실패 무관 — 예전에 activate 가 끝난 시점). 저장분으로 먼저
+    // 그린 방은 그 전까지 보내기·초대·제거·키 게시를 받지 않는다(requireOpen). 저장하지 않는다.
+    live: false,
     waiting403: false, syncedAt: null, fingerprint: '', publicKey: '', revision: 0, historyOn: false};
   let attachments = null;
   let fileV2s = null;   // file-v2 송신 보관함(#499 3단계) — SEND_FILE_V2 또는 시험용 덮어쓰기일 때만 새 파일을 보낸다
@@ -394,7 +397,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
       return undefined;
     } catch (error) { if (!quiet) log('동기화 오류:', error.message); return error; }   // quiet polling: status line only
     finally {
-      S.busy = false;
+      S.busy = false; S.live = true;
       if (S.syncAgain) { S.syncAgain = false; Promise.resolve().then(() => sync({quiet: true})).catch(() => {}); }
     }
   }
@@ -435,7 +438,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
   async function open({from = 'identity', replace = false, startSeq = null} = {}) {
     if (S.transferring) throw new Error('첨부 전송 중');
     stopPolling();
-    S.syncedAt = null;
+    S.syncedAt = null; S.live = false;
     load();
     if (replace && !S.joined) {
       const r = await worker.call(WORKER, 'reset_room', {room, database});
@@ -452,7 +455,8 @@ export function createRoomSession({room, device, database, worker, relay, storag
     if (startSeq !== null && S.relaySeq >= startSeq) { S.relaySeq = startSeq - 1; S.joined = false; save(); }
     return {fresh: opened.result.fresh === true};
   }
-  async function activate() {
+  /** `connect: false`(#766 B) 는 저장분(명단·보관된 대화)까지만 올리고 돌아온다 — 릴레이 왕복은 호출자가 뒤에 connect() 로. */
+  async function activate({connect: now = true} = {}) {
     attachments = attachmentOutbox({storage, key: `hande:attachment:${database}:${room}:${device}`,
       device, encrypt: async bytes => (await roomOp('encrypt', bytes)).output,
       post: payload => relay.api('POST', path('events'), payload)});
@@ -485,12 +489,17 @@ export function createRoomSession({room, device, database, worker, relay, storag
     }
     changed();
     if (S.halted) { emitSystem(S.halted.removed ? strings.room.haltRemoved(S.halted.seq, S.halted.committer) : strings.room.haltRefused(S.halted.seq, S.halted.committer, S.halted.reason), `halt-${S.halted.seq}`); return; }
+    if (now) await connect();
+  }
+  /** 첫 sync 와 방별 폴링 시작 — activate 의 뒷부분. activate({connect: false}) 로 연 방에 한 번 부른다(#766 B). */
+  async function connect() {
+    if (!S.started || S.halted || S.timer) return;
     await sync({quiet: true});
     S.timer = setI(() => sync({quiet: true}), pollMs);
   }
 
   // ---- room actions ----
-  function requireOpen() { if (!S.started || S.halted || S.transferring) throw new Error(S.halted ? strings.room.haltBody : '대화방이 준비되지 않았습니다'); }
+  function requireOpen() { if (!S.started || S.halted || S.transferring || !S.live) throw new Error(S.halted ? strings.room.haltBody : '대화방이 준비되지 않았습니다'); }
   async function create() {
     requireOpen();
     if (S.joined) throw new Error(strings.room.alreadyInRoom);
@@ -678,7 +687,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
     get state() { return S; },
     get attachmentPending() { return !!attachments?.pending || !!fileV2s?.pending; },
     get joined() { return S.joined; },
-    open, activate, sync, create, publishKeyPackage, invite, remove, send, sendAttachment, typing, markRead, setMuted,
+    open, activate, connect, sync, create, publishKeyPackage, invite, remove, send, sendAttachment, typing, markRead, setMuted,
     wipe, stop, registration, setPollInterval,
     get pollMs() { return pollMs; },
   };

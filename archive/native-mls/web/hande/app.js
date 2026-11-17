@@ -5,7 +5,7 @@
 // this device, rooms created or requested here, and rooms a lobby Welcome opens
 // (owner actors join automatically, family devices accept with one tap — iOS
 // AppModel.discoverLobbyWelcomes / acceptInvite).
-import * as ui from './ui.js';
+import * as screens from './ui.js';
 import {strings, displayName, isAgentDevice, isServiceDevice, isMine, isOneToOne, participantCount, roomLabel, previewLine, relativeTime, typingLabel} from './strings.js';
 import {orderRooms, moveRoom, readRoomOrder, writeRoomOrder, createRoomOrderSync} from './room-order.js';
 import {fireLevel, recentMessageCount} from './icons.js';
@@ -59,8 +59,9 @@ async function loadConfig() {
 
 // theme: main.js 의 installTheme() 핸들({get, set}) — 설정 시트의 「화면」 행이 쓴다. 없으면(테스트) 행을 숨긴다.
 // now: 「페이지를 연 순간」부터의 ms(시작 구간 계측, #766 I). 없으면(테스트·옛 브라우저) 0 — 계측 줄만 0 으로 남는다.
+// ui·worker: 화면(ui.js)·워커 브리지 대역 — 테스트(tests/app-start.test.mjs)만 넣는다.
 export function startApp(root, {storage = localStorage, fetch: fetchImpl = globalThis.fetch.bind(globalThis), theme = null,
-  now = () => globalThis.performance?.now?.() ?? 0} = {}) {
+  now = () => globalThis.performance?.now?.() ?? 0, ui = screens, worker = createWorkerBridge()} = {}) {
   const timing = createStartupTiming({now});
   timing.mark('script');
   const app = {
@@ -74,13 +75,13 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     relayRooms: null,                                // 릴레이가 이 기기를 멤버라고 한 방 집합(GET /v2/rooms) — 로컬 전용 방 판정용, 받기 전엔 null
     roomOrder: [], orderEditing: false,              // 대화 목록 고정 순서(이 기기 localStorage, #480 A · 릴레이 room-order v1 동기화 #715)
     notice: null, logs: [], offlineAt: null, tick: null,
+    stored: false,                                   // #766 B: 참여한 방이 이 기기에 저장돼 있다 — 릴레이 응답 전에 저장분으로 먼저 그린다
     // 기기 셀프서비스(#574 PR 2b): /v2/me 본문(정책 revision·내 기기), 등록 화면 모드, 승인할 후보, 🔔 메모.
     me: null, meTick: 0,
     enroll: {mode: 'operator', nextPostAt: 0, expiresAt: null},
     candidates: [], candidateRevision: null, dismissedCandidates: new Set(), notes: [],
   };
   const identity = createIdentityStore({storage});
-  const worker = createWorkerBridge();
   const relay = createRelay({fetch: fetchImpl, onOffline: down => { app.offlineAt = down ? clock() : null; render(); }});
   // 미리보기 사이트 목록(#690 계약 v2): 세션당 한 번 GET /v2/preview/sites. 오기 전·실패면 폴백(v1 = x.com 링크·x status 카드).
   const previewSites = createPreviewSites({fetch: fetchImpl});
@@ -119,7 +120,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   /** 시작 화면을 처음 벗어난 그리기에서 구간별 소요를 한 줄 남긴다(#766 I). 그 뒤의 그리기에서는 아무것도 하지 않는다. */
   function noteFirstScreen() {
     if (timing.finished || app.phase === 'starting') return;
-    const summary = timing.finish(app.phase);
+    // #766 B: 방 목록(/v2/rooms) 응답 전에 그린 대화 화면은 저장분이다 — 줄에서 구분되게 화면 이름을 달리 남긴다.
+    const summary = timing.finish(app.phase === 'ready' && app.dev?.state.enrolled !== true ? 'stored' : app.phase);
     if (!summary) return;
     app.startup = summary;
     logLine(startupLine(summary));
@@ -127,7 +129,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   function updatePhase() {
     if (app.phase === 'fatal' || app.phase === 'needsActor' || !app.dev?.state.started) return;
     const enrolled = app.dev.state.enrolled;
-    app.phase = enrolled === false ? 'enroll' : (enrolled === true || relay.offline) ? 'ready' : 'starting';
+    app.phase = enrolled === false ? 'enroll' : (enrolled === true || relay.offline || app.stored) ? 'ready' : 'starting';
     if (app.phase === 'starting') app.message = strings.app.starting;
   }
   const status = (text, tone = 'info') => ui.setStatus(root, text, tone);
@@ -218,9 +220,11 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
         // 방별 알림(mute.go): 같은 사람의 모든 기기에 한 값. null(옛 릴레이·아직 모름)이면 머리글에 버튼이 없다.
         muted: S.joined && !S.halted ? S.muted : null, onToggleMute: () => toggleMute(app.current),
         notice: null, sending: app.sending || S.transferring,
+        // #766 B: 저장분으로 먼저 그린 방은 첫 sync 시도가 끝날 때까지 작성창·선택지를 잠근다(room.js S.live — 보내기 전제는 예전 그대로).
+        syncing: S.joined && !S.halted && !S.live,
         // 에이전트 선택지(#620): open·answered 인 에이전트 글만. 카드의 [보내기]는 작성창과 같은 sendText 로 줄마다 `"N. 라벨"`(#624)을 보낸다
         // (보내는 중이거나 AI 동의 전이면 false — 카드는 선택을 지킨 채 다시 열린다).
-        choices: choiceStates(app.current, R, {sending: app.sending || S.transferring, disabled: !S.joined || Boolean(S.halted)}),
+        choices: choiceStates(app.current, R, {sending: app.sending || S.transferring, disabled: !S.joined || Boolean(S.halted) || !S.live}),
         // 링크·미리보기 카드 대상(#690): 사이트 목록이 오면 링크 집합이 바뀌고(key), 링크가 있는 말풍선만 다시 그려진다.
         links: previewSites.current,
         onChoose: (numbers, labels) => sendText(composeChoice(numbers, labels)),
@@ -303,7 +307,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     try {
       if (app.watching) session.setPollInterval(SAFETY_POLL_MS);   // #755 2a: watch 가 도는 중에 열린 방
       await session.open(opts);
-      await session.activate();
+      await session.activate({connect: opts.connect !== false});
     } catch (error) { app.rooms.delete(roomId); writeKnown(); throw error; }
     render();
     return R;
@@ -436,11 +440,26 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       const known = new Set(readKnown()); if (opened.migrated || known.size === 0) known.add(app.defaultRoom);
       // #752: 방마다 릴레이 왕복이 직렬로 쌓이지 않게 동시성 상한 안에서 연다(시작 순서 = known 순서).
       const bootStarted = Date.now();
-      const boot = await openRoomsLimited(known, roomId => ensureRoom(roomId),
+      // #766 B: 먼저 저장분만 연다(릴레이 왕복 없음). 참여한 방이 저장돼 있으면 그것으로 먼저 그리고, 방별 첫 sync 와 그 뒤의
+      // refresh(/v2/me·/v2/rooms …)는 예전과 같은 순서로 뒤에서 돈다. 저장분이 없으면(첫 실행 등) 예전처럼 다 끝난 뒤에 그린다.
+      const boot = await openRoomsLimited(known, roomId => ensureRoom(roomId, {connect: false}),
         {onError: (roomId, error) => logLine(`방 ${roomId} 열기 실패: ${error.message}`)});
+      const connectRooms = () => openRoomsLimited([...app.rooms.values()], R => R.session.connect());
+      app.stored = [...app.rooms.values()].some(R => R.session.state.joined);
+      if (!app.stored) await connectRooms();
       logLine(`방 ${boot.opened}개 열림(실패 ${boot.failed}) — ${Date.now() - bootStarted} ms`);
       timing.mark('rooms');
       if (window.matchMedia?.('(min-width: 900px)').matches && app.rooms.size) { app.current = [...app.rooms.keys()][0]; app.roomOpen = true; markRoomRead(app.current); promptConsentOnce(app.current); }
+      if (app.stored) {
+        render();
+        // 순서는 예전 그대로 둔다: 방별 첫 sync 가 끝나기 전에는 refresh(탭 복귀·「지금 동기화」)가 시작되지 않는다.
+        connecting = true;
+        await connectRooms();
+        connecting = false;
+        logLine(`저장분으로 먼저 그림 — 방 동기화까지 ${Math.round(now())} ms`);
+        // 그 사이 명단에 에이전트가 들어왔으면(동의 필요) 보고 있는 방의 안내를 예전처럼 한 번 띄운다.
+        if (app.roomOpen && app.current) promptConsentOnce(app.current);
+      }
       await refresh();
       app.tick = setInterval(() => refresh().catch(() => {}), TICK_MS);
       // #755 2a: 방별 4초 폴링 대신 기기 단위 /v2/watch 대기 — 바뀐 방만 즉시 sync. 미지원·오류면 4초로 되돌린다(watch-loop.js).
@@ -470,16 +489,16 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
    * enrollment screen), lobby Welcomes for rooms this device has not joined (auto-join or
    * invite card), lobby key replenish once enrolled.
    */
-  let refreshing = false;
+  let refreshing = false, connecting = false;   // connecting(#766 B): 저장분으로 먼저 그린 뒤 방별 첫 sync 가 도는 동안
   async function refresh() {
-    if (refreshing || !app.dev?.state.started) return;
+    if (refreshing || connecting || !app.dev?.state.started) return;
     refreshing = true;
     try {
       const meDue = app.meTick++ % ME_EVERY_TICKS === 0;
       if (meDue) await refreshMe();
       let listed;
       try { listed = await app.dev.rooms(); } catch (error) { logLine(`방 목록 실패: ${error.message}`); listed = undefined; }
-      timing.mark('listing');   // 첫 번째 것만 남는다 — 이 응답이 와야 시작 화면을 벗어난다(#766 B)
+      timing.mark('listing');   // 첫 번째 것만 남는다 — 저장분이 없으면 이 응답이 와야 시작 화면을 벗어난다(#766 B)
       app.lastCheckedAt = clock(true);
       if (listed === null) {
         // 403: not on the chain yet — post this device into the relay's candidate mailbox for a sibling to approve
