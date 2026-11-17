@@ -66,4 +66,28 @@ final class InlineMarkdownTests: XCTestCase {
         let source = "**굵게** 일반 *기울임* `코드`"
         XCTAssertEqual(InlineMarkdown.segments(source).map(\.text).joined(), "굵게 일반 기울임 코드")
     }
+
+    // MARK: 사람 말풍선의 서식 글(전달·붙여넣은 에이전트 보고서) — 링크는 사람 규칙(#690) 그대로
+
+    private let xOnly: Set<String> = ["x.com"]
+
+    func testPersonMarkdownLinkToAllowedHostStaysLink() {
+        XCTAssertEqual(InlineMarkdown.segments("[글](https://x.com/a/status/1)", personHosts: xOnly),
+                       [S(text: "글", link: URL(string: "https://x.com/a/status/1"))])
+    }
+
+    func testPersonMarkdownLinkToOtherHostBecomesTextWithAddress() {
+        XCTAssertEqual(InlineMarkdown.segments("[PR](https://github.com/o/r/pull/1) 끝", personHosts: xOnly),
+                       [S(text: "PR (https://github.com/o/r/pull/1) 끝")])
+    }
+
+    func testPersonStyledLinkAddsAddressOnce() {
+        XCTAssertEqual(InlineMarkdown.segments("[**굵게** 글](https://example.com/)", personHosts: xOnly),
+                       [S(text: "굵게", bold: true), S(text: " 글 (https://example.com/)")])
+    }
+
+    func testPersonBareURLOnlyAllowedHostIsLink() {
+        XCTAssertEqual(InlineMarkdown.segments("**봐** https://github.com/x 와 https://x.com/a", personHosts: xOnly),
+                       [S(text: "봐", bold: true), S(text: " https://github.com/x 와 "), S(text: "https://x.com/a", link: URL(string: "https://x.com/a"))])
+    }
 }

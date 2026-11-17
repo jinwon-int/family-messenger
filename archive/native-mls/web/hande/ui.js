@@ -12,7 +12,7 @@ import { lastSentView, collapsedKey, sentDayPrefix, createExpandState } from './
 import {fileboxRefreshUrl} from './filebox.js';
 import {attachmentTitle} from './attachments.js';
 import {parseBlocks, inlineSpans, hasMarkdown} from './agent-markdown.js';
-import {linkParts, agentLinkParts} from './service-links.js';
+import {linkParts, agentLinkParts, personMarkdownLink} from './service-links.js';
 import {parseAlertRefs, isFleetDevice} from './alert-refs.js';
 import {previewTarget, createLinkPreviews} from './link-preview.js';
 import {FALLBACK_LINKS} from './preview-sites.js';
@@ -638,35 +638,49 @@ const agentAnchor = (href, children) => el('a', { href, target: '_blank', rel: '
 /** 에이전트 글 → 글자·<a> 조각(http·https 주소면 호스트와 상관없이). */
 const agentLinkNodes = (text) => agentLinkParts(text).map((part) => (typeof part === 'string' ? part : agentAnchor(part.href, part.text)));
 
-// 굵게·기울임·취소선 안쪽은 다시 나눈다(**`코드` 굵게**). 한 겹마다 기호 2자 이상이 줄어 깊이는 글 길이로 묶인다.
-const inlineNodes = (text) => inlineSpans(text).flatMap((span) => {
-  if (span.style === 'text') return agentLinkNodes(span.text);
-  if (span.style === 'link') return [agentAnchor(span.href, span.text)];
-  return [el(span.style, {}, span.style === 'code' ? span.text : inlineNodes(span.text))];
+/**
+ * 링크 규칙(마크다운 말풍선의 글 조각·`[글자](주소)` 조각을 무엇으로 그릴지). 에이전트 = 어떤 호스트든 링크(오너 2026-11-16).
+ * 사람(전달·붙여넣은 서식 글) = 사람 말풍선과 같은 허용 호스트만 링크, 나머지 `[글자](주소)` 는 「글자 (주소)」 글(#690 규칙 유지).
+ */
+const AGENT_LINKS = { text: agentLinkNodes, link: (span) => [agentAnchor(span.href, span.text)] };
+const personLinks = (hosts) => ({
+  text: (text) => serviceLinkNodes(text, hosts),
+  link: (span) => {
+    const part = personMarkdownLink(span, hosts);
+    return [typeof part === 'string' ? part : agentAnchor(part.href, part.text)];
+  },
 });
 
-function markdownBlock(block) {
+// 굵게·기울임·취소선 안쪽은 다시 나눈다(**`코드` 굵게**). 한 겹마다 기호 2자 이상이 줄어 깊이는 글 길이로 묶인다.
+const inlineNodes = (text, links = AGENT_LINKS) => inlineSpans(text).flatMap((span) => {
+  if (span.style === 'text') return links.text(span.text);
+  if (span.style === 'link') return links.link(span);
+  return [el(span.style, {}, span.style === 'code' ? span.text : inlineNodes(span.text, links))];
+});
+
+function markdownBlock(block, links = AGENT_LINKS) {
+  const inline = (text) => inlineNodes(text, links);
   switch (block.type) {
     case 'heading': {
       const level = Math.min(block.level, 3);
-      return el('p', { class: `md-h md-h${level}`, role: 'heading', 'aria-level': String(level + 2) }, inlineNodes(block.text));
+      return el('p', { class: `md-h md-h${level}`, role: 'heading', 'aria-level': String(level + 2) }, inline(block.text));
     }
     case 'list':
       return el('ul', { class: 'md-list' }, block.items.map((item) => el('li', { class: `md-lvl-${item.level}` },
         el('span', { class: 'md-marker', 'aria-hidden': 'true' }, item.marker ?? '•'),
-        el('span', { class: 'md-item' }, inlineNodes(item.text)))));
+        el('span', { class: 'md-item' }, inline(item.text)))));
     case 'table':
       return el('div', { class: 'md-table' }, el('table', {},
-        el('thead', {}, el('tr', {}, block.header.map((cell) => el('th', { scope: 'col' }, inlineNodes(cell))))),
-        el('tbody', {}, block.rows.map((row) => el('tr', {}, row.map((cell) => el('td', {}, inlineNodes(cell))))))));
+        el('thead', {}, el('tr', {}, block.header.map((cell) => el('th', { scope: 'col' }, inline(cell))))),
+        el('tbody', {}, block.rows.map((row) => el('tr', {}, row.map((cell) => el('td', {}, inline(cell))))))));
     case 'code':
       return el('pre', { class: 'md-code' }, el('code', {}, block.text));
     case 'quote':
-      return el('blockquote', { class: 'md-quote' }, inlineNodes(block.text));
+      return el('blockquote', { class: 'md-quote' }, inline(block.text));
     case 'rule':
       return el('hr', { class: 'md-rule' });
     default:
-      return el('p', { class: 'md-p' }, inlineNodes(block.text));
+      return el('p', { class: 'md-p' }, inline(block.text));
   }
 }
 
@@ -783,7 +797,13 @@ function linkPreviewSlot(text, anchor, links) {
 }
 
 function agentMarkdownBody(text) {
-  return el('div', { class: 'body md', 'data-testid': 'agent-markdown' }, parseBlocks(text).map(markdownBlock));
+  return el('div', { class: 'body md', 'data-testid': 'agent-markdown' }, parseBlocks(text).map((block) => markdownBlock(block)));
+}
+
+/** 사람 말풍선의 서식 글(에이전트 보고서를 전달·붙여넣은 글 등): 에이전트 글과 같은 블록으로 그리되 링크는 사람 규칙. */
+function personMarkdownBody(text, hosts) {
+  const links = personLinks(hosts);
+  return el('div', { class: 'body md', 'data-testid': 'person-markdown' }, parseBlocks(text).map((block) => markdownBlock(block, links)));
 }
 
 /** 미리보기 실패 행(#544 B): 안내 + 「미리보기 다시 시도」. 다시 부르는 동안은 버튼을 잠그고 문구만 바꾼다. */
@@ -943,6 +963,8 @@ function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null, l
   } else if (entry.isAgent && entry.kind === 'text' && hasMarkdown(entry.body)) body = agentMarkdownBody(entry.body);
   // 서비스 봇: 사이트 hosts 합집합 + 인스타그램(#690, 폴백 = v1 linkHosts 와 같음).
   else if (entry.kind === 'text' && isServiceDevice(entry.sender)) body = el('div', { class: 'body' }, serviceLinkNodes(entry.body, links.serviceHosts, isFleetDevice(entry.sender)));
+  // 사람 말풍선의 서식 글(전달·붙여넣은 에이전트 보고서): 에이전트 글과 같은 블록으로 — 링크는 아래 사람 규칙 그대로.
+  else if (entry.kind === 'text' && !entry.isAgent && hasMarkdown(entry.body)) body = personMarkdownBody(entry.body, links.hosts);
   // 사람 말풍선: 사이트 hosts 합집합만 누를 수 있게(#690, 폴백 = x.com 계열 #683).
   else if (entry.kind === 'text' && !entry.isAgent) body = el('div', { class: 'body' }, serviceLinkNodes(entry.body, links.hosts));
   // 에이전트 말풍선(서식 없는 글): http·https 주소면 어떤 호스트든 링크(오너 2026-11-16, iOS·Android 와 같은 규칙). 미리보기 카드는 없다.

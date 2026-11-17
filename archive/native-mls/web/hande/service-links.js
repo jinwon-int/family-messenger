@@ -84,6 +84,19 @@ export function trimTrailing(candidate) {
   return end;
 }
 
+/**
+ * 사람 말풍선의 마크다운 링크 `[글자](주소)`(전달·붙여넣은 에이전트 글): 주소가 허용 호스트(`hosts`)면 `{text, href}`,
+ * 아니면 「글자 (주소)」 글 그대로 — 사람 말풍선의 링크 규칙(#690)은 넓히지 않고 주소도 잃지 않는다.
+ * @param {{text: string, href: string}} link
+ * @param {Set<string>} hosts
+ * @returns {string | {text: string, href: string}}
+ */
+export function personMarkdownLink(link, hosts) {
+  const href = allowedHref(link.href, hosts);
+  if (href) return { text: link.text, href };
+  return link.text === link.href ? link.href : `${link.text} (${link.href})`;
+}
+
 /** 에이전트 글의 `http(s)://…` 한 덩어리가 링크로 열 수 있는 주소면 URL 문자열, 아니면 null(호스트 제한 없음). */
 export function agentHref(candidate) {
   let url;

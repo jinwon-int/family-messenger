@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {linkParts, allowedHref, xHosts, linkHosts, agentLinkParts, agentHref} from '../service-links.js';
+import {linkParts, allowedHref, xHosts, linkHosts, agentLinkParts, agentHref, personMarkdownLink} from '../service-links.js';
 
 const join = (parts) => parts.map((p) => (typeof p === 'string' ? p : p.text)).join('');
 const links = (parts) => parts.filter((p) => typeof p !== 'string').map((p) => p.href);
@@ -119,4 +119,14 @@ test('에이전트: 다른 스킴·호스트 없는 주소는 글 그대로', ()
   assert.equal(agentHref('HTTPS://A.Example/X'), 'https://a.example/X');
   assert.deepEqual(agentLinkParts(''), ['']);
   assert.deepEqual(agentLinkParts('주소 없음'), ['주소 없음']);
+});
+
+test('personMarkdownLink: 사람 말풍선 마크다운 링크는 허용 호스트만 링크, 나머지는 「글자 (주소)」 글', () => {
+  const hosts = new Set(['x.com']);
+  assert.deepEqual(personMarkdownLink({ text: '글', href: 'https://x.com/a/status/1' }, hosts), { text: '글', href: 'https://x.com/a/status/1' });
+  assert.equal(personMarkdownLink({ text: 'PR', href: 'https://github.com/o/r/pull/1' }, hosts), 'PR (https://github.com/o/r/pull/1)');
+  // http 는 허용 호스트여도 링크가 아니다(사람 말풍선은 https 만).
+  assert.equal(personMarkdownLink({ text: '글', href: 'http://x.com/a' }, hosts), '글 (http://x.com/a)');
+  // 글자가 곧 주소면 한 번만.
+  assert.equal(personMarkdownLink({ text: 'https://example.com/', href: 'https://example.com/' }, hosts), 'https://example.com/');
 });

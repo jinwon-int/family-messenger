@@ -1277,14 +1277,26 @@ struct MessageRow: View {
                     // 답장 글(2026-11-09): 인용 상자(원문 요약) + 내 글.
                     VStack(alignment: .leading, spacing: 6) {
                         ReplyQuoteBox(parsed: parsed, open: openReplyTarget)
-                        Text(ServiceLinks.attributed(parsed.text, hosts: ServiceLinks.personHosts(previewSites)))
-                            .tint(bubbleText)
+                        personText(parsed.text)
                     }
                 } else {
-                    Text(ServiceLinks.attributed(message.body, hosts: ServiceLinks.personHosts(previewSites)))
-                        .tint(bubbleText)
+                    personText(message.body)
                 }
             }
+        }
+    }
+
+    /// 사람 말풍선 글. 서식 글(에이전트 보고서를 전달·붙여넣은 글 등 — `AgentMarkdown.hasMarkdown`)은 에이전트 카드와 같은 블록으로 그리되
+    /// 링크는 사람 규칙(사이트 목록 호스트만, #690) 그대로. 평범한 글은 종전처럼 한 덩어리 평문.
+    @ViewBuilder private func personText(_ text: String) -> some View {
+        let hosts = ServiceLinks.personHosts(previewSites)
+        if AgentMarkdown.hasMarkdown(text) {
+            MarkdownBlocksView(blocks: AgentMarkdown.parse(text))
+                .environment(\.markdownPersonHosts, hosts)
+                .tint(bubbleText)
+        } else {
+            Text(ServiceLinks.attributed(text, hosts: hosts))
+                .tint(bubbleText)
         }
     }
 }
