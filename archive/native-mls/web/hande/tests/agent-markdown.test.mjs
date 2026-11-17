@@ -145,3 +145,28 @@ test('링크 문법 [글자](http(s)://…) → link 조각(오너 2026-11-16 �
   assert.equal(hasMarkdown('보기 [여기](https://a.example)'), true);
   assert.equal(hasMarkdown('그냥 https://a.example 주소'), false);
 });
+
+// #834: 답 끝 스킬 줄 → 칩. 봇(responder.rs skills_footer)·iOS(AgentSkills.swift)와 같은 규칙.
+import {splitSkills, MAX_SKILLS} from '../agent-markdown.js';
+
+test('splitSkills: 빈 줄 뒤 마지막 `📘 a · b` 줄만 떼어 칩 목록으로', () => {
+  assert.deepEqual(splitSkills('답입니다.\n\n📘 gh-pr-flow · wiki-record'), {body: '답입니다.', skills: ['gh-pr-flow', 'wiki-record']});
+  assert.deepEqual(splitSkills('## 제목\n- 항목\n\n📘 plugin:skill\n'), {body: '## 제목\n- 항목', skills: ['plugin:skill']});
+  // 선택지 블록 뒤에 붙어도 블록은 본문에 그대로 남는다.
+  const choice = '**[답변 필요]** 하나만 선택\n1. (권장) 진행\n2. 보류';
+  assert.equal(splitSkills(`${choice}\n\n📘 gh-pr-flow`).body, choice);
+});
+
+test('splitSkills: 규칙 밖이면 글 그대로(skills 빈 배열)', () => {
+  for (const text of [
+    '답\n📘 gh-pr-flow',                 // 빈 줄 없이 바로 붙음
+    '📘 gh-pr-flow',                      // 본문 없음
+    '답\n\n📘 gh-pr-flow\n\n덧붙임',      // 마지막 줄이 아님
+    '답\n\n📘 bad name',                  // 공백 든 이름
+    '답\n\n📘 a, b',                       // 구분자가 ` · ` 가 아님
+    '답\n\n📘 ',                          // 이름 없음
+    `답\n\n📘 ${Array.from({length: MAX_SKILLS + 1}, (_, i) => `s${i}`).join(' · ')}`,
+    '답\n\n📘 ' + 'x'.repeat(65),
+  ]) assert.deepEqual(splitSkills(text), {body: text, skills: []}, text);
+  assert.deepEqual(splitSkills(undefined), {body: '', skills: []});
+});

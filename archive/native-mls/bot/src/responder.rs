@@ -1124,7 +1124,7 @@ impl Responder {
                     let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
                     if let (true, false, Some((_, seq, room, depth))) = (complete, text.is_empty(), self.late.remove(at)) {
                         let text = format!("⏱ 늦게 도착한 답(#{seq})\n\n{text}");
-                        out.push(turn_item(depth, room, Outbound::Reply { seq, text: bounded_reply(&text, self.config.reply_max_bytes) }));
+                        out.push(turn_item(depth, room, Outbound::Reply { seq, text: reply_with_skills(&text, &value, self.config.reply_max_bytes) }));
                     } else {
                         // Not a usable answer: the turn will not answer again.
                         self.late.remove(at);
@@ -1210,7 +1210,7 @@ impl Responder {
                 if status == "complete" {
                     let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
                     if !text.is_empty() {
-                        out.push(turn_item(depth, room.clone(), Outbound::Reply { seq, text: bounded_reply(&text, self.config.reply_max_bytes) }));
+                        out.push(turn_item(depth, room.clone(), Outbound::Reply { seq, text: reply_with_skills(&text, &value, self.config.reply_max_bytes) }));
                     }
                 } else {
                     let reason = value.get("reason").and_then(|v| v.as_str()).unwrap_or("uncertain").to_string();
@@ -1817,6 +1817,47 @@ fn bounded(text: &str, max: usize) -> String {
     text[..end].to_string()
 }
 
+/// #834: at most this many skill names in the reply's skill line.
+const MAX_REPLY_SKILLS: usize = 8;
+
+/// #834: a skill name from the bridge's `result.skills` (ccc-node#2833) — identifier-shaped only,
+/// the same rule the bridge applies (`^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$`).
+fn is_skill_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 64
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes.iter().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
+}
+
+/// #834: the reply's skill line, `📘 gh-pr-flow · wiki-record`, from an optional `skills` array of a
+/// `result` frame — valid names, first-seen order, deduplicated, at most [`MAX_REPLY_SKILLS`]. `None`
+/// when there is nothing to show (no key, not an array, no valid name). The apps draw this exact last
+/// line as chips (`📘 ` + names joined by ` · `); an older app shows it as text.
+fn skills_footer(value: &serde_json::Value) -> Option<String> {
+    let mut names: Vec<&str> = Vec::new();
+    for name in value.get("skills")?.as_array()?.iter().filter_map(|v| v.as_str()) {
+        if is_skill_name(name) && !names.contains(&name) {
+            names.push(name);
+            if names.len() == MAX_REPLY_SKILLS {
+                break;
+            }
+        }
+    }
+    (!names.is_empty()).then(|| format!("📘 {}", names.join(" · ")))
+}
+
+/// #834: the bounded reply with the skill line appended last. The body is bounded first with the
+/// line's room taken off, so a long answer never cuts the line (the apps only read a *last* line).
+fn reply_with_skills(text: &str, value: &serde_json::Value, max: usize) -> String {
+    match skills_footer(value) {
+        Some(footer) if footer.len() + 2 < max => {
+            format!("{}\n\n{footer}", bounded_reply(text, max - footer.len() - 2).trim_end())
+        }
+        _ => bounded_reply(text, max),
+    }
+}
+
 fn bounded_reply(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_string();
@@ -2152,6 +2193,11 @@ for line in sys.stdin:
             print(json.dumps({"type": "interim", "turn_id": tid, "kind": "mystery", "text": "plain"}), flush=True)
             print(json.dumps({"type": "interim", "turn_id": tid, "kind": "status", "text": "  "}), flush=True)
             print(json.dumps({"type": "interim", "turn_id": "t-other", "kind": "status", "text": "not this turn"}), flush=True)
+        if cmd["prompt"].startswith("skills"):
+            # #834: the bridge's result.skills (ccc-node#2833), with names the bot must drop.
+            print(json.dumps({"type": "result", "turn_id": tid, "status": "complete", "session_id": "s1", "text": "answer  ",
+                              "skills": ["gh-pr-flow", "bad name", "wiki-record", "gh-pr-flow", 7, "../x", ""]}), flush=True)
+            continue
         if cmd["prompt"].startswith("progress"):
             for i in range(3):
                 print(json.dumps({"type": "interim", "turn_id": tid, "text": "step %d" % i}), flush=True)
@@ -2190,6 +2236,39 @@ for line in sys.stdin:
 
     fn inbound(seq: i64, device: &str, text: &str) -> Inbound {
         Inbound { room: "agent".into(), seq, sender_device: device.into(), text: text.into(), peer_depth: 0, attachment: None }
+    }
+
+    #[test]
+    fn skills_footer_keeps_valid_names_in_order() {
+        let v = serde_json::json!({"skills": ["gh-pr-flow", "bad name", "wiki-record", "gh-pr-flow", 7, "../x", "", "plugin:skill"]});
+        assert_eq!(skills_footer(&v).as_deref(), Some("📘 gh-pr-flow · wiki-record · plugin:skill"));
+        assert_eq!(skills_footer(&serde_json::json!({})), None);
+        assert_eq!(skills_footer(&serde_json::json!({"skills": "gh-pr-flow"})), None);
+        assert_eq!(skills_footer(&serde_json::json!({"skills": ["bad name", 1]})), None);
+        let many: Vec<String> = (0..20).map(|i| format!("s{i}")).collect();
+        let line = skills_footer(&serde_json::json!({ "skills": many })).unwrap();
+        assert_eq!(line.matches(" · ").count(), MAX_REPLY_SKILLS - 1);
+        assert!(!is_skill_name(&"x".repeat(65)) && is_skill_name(&"x".repeat(64)));
+    }
+
+    #[test]
+    fn reply_with_skills_never_cuts_the_skill_line() {
+        let v = serde_json::json!({"skills": ["gh-pr-flow"]});
+        assert_eq!(reply_with_skills("answer", &v, 8192), "answer\n\n📘 gh-pr-flow");
+        assert_eq!(reply_with_skills("answer", &serde_json::json!({}), 8192), "answer");
+        let long = "가".repeat(4000);
+        let reply = reply_with_skills(&long, &v, 1000);
+        assert!(reply.len() <= 1000, "{}", reply.len());
+        assert!(reply.ends_with("\n\n📘 gh-pr-flow"));
+        assert!(reply.contains("(길어서 줄임)"));
+    }
+
+    #[test]
+    fn result_skills_become_the_reply_skill_line() {
+        let mut r = fake(|_| {}, None);
+        assert_eq!(r.offer(inbound(10, "owner-pc", "skills")).unwrap(), Offer::Started);
+        let got = pump_until(&mut r, 1);
+        assert_eq!(got, vec![Outbound::Reply { seq: 10, text: "answer\n\n📘 gh-pr-flow · wiki-record".into() }]);
     }
 
     #[test]

@@ -1391,3 +1391,11 @@ code.fingerprint-inline { font-size: 13px; letter-spacing: 0.04em; overflow-wrap
 .new-messages::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ember); flex: none; }
 .appbar .titles .typing { font-style: normal; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
 .appbar .titles .typing::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--person); flex: none; }
+
+/* #834: 에이전트 답 아래 사용 스킬 칩 — 에이전트 색 톤, 본문보다 작은 글씨. */
+.bubble .skill-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.bubble .skill-chip {
+  font-size: 0.75em; line-height: 1.6; padding: 0 8px; border-radius: 999px;
+  color: var(--agent-text); background: var(--agent-soft); border: 1px var(--agent-border-style) var(--agent-stroke);
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}

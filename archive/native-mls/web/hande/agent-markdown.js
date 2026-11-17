@@ -229,3 +229,26 @@ function inlineMatch(rest) {
   }
   return null;
 }
+
+/** #834: 답 끝 스킬 줄에 담기는 이름 수 상한(봇 MAX_REPLY_SKILLS 와 같다). */
+export const MAX_SKILLS = 8;
+/** #834: 스킬 이름 — 브리지(ccc-node#2833)·봇과 같은 규칙. */
+const SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+const SKILL_LINE = /\n[ \t]*\n📘 ([^\n]+?)[ \t\r\n]*$/;
+
+/**
+ * #834: 에이전트 답의 마지막 줄 `📘 a · b`(봇이 브리지 result.skills 로 붙인 줄)를 떼어 칩 목록으로.
+ * 빈 줄 바로 뒤의 마지막 줄이고, 이름이 1~8개, 모두 규칙에 맞을 때만 뗀다 — 아니면 글 그대로(skills 빈 배열).
+ * iOS FamilyMLSCore/Agent/AgentSkills.swift 와 같은 규칙.
+ * @returns {{body: string, skills: string[]}}
+ */
+export function splitSkills(source) {
+  const text = String(source ?? '');
+  const m = SKILL_LINE.exec(text);
+  if (!m) return {body: text, skills: []};
+  const names = m[1].split(' · ');
+  if (names.length > MAX_SKILLS || !names.every((n) => SKILL_NAME.test(n))) return {body: text, skills: []};
+  const body = text.slice(0, m.index).replace(/[ \t\r\n]+$/, '');
+  if (body.length === 0) return {body: text, skills: []};
+  return {body, skills: [...new Set(names)]};
+}

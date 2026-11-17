@@ -36,11 +36,14 @@ struct AgentMessageCard: View {
     @Environment(\.hande) private var p
 
     var body: some View {
+        // #834: 답 끝 `📘 a · b` 줄은 본문에서 떼어 카드 아래 칩으로(Core `AgentSkills`, 웹 `splitSkills` 와 같은 규칙).
+        let split = AgentSkills.split(text)
         VStack(alignment: .leading, spacing: 8) {
             AgentHeader(name: name)
-            MarkdownBlocksView(blocks: AgentMarkdown.parse(text))
+            MarkdownBlocksView(blocks: AgentMarkdown.parse(split.body))
                 // 링크 색 = 카드 글자색(+ InlineMarkdown 의 밑줄) — 디자인 시스템 「링크 = 밑줄(색 대신)」, 말풍선(#824)과 같다.
                 .tint(p.ink)
+            if !split.skills.isEmpty { SkillChipsRow(skills: split.skills) }
             // 시간은 카드 오른쪽 아래(오너 2026-10-30 — 전에는 머리줄 오른쪽 위). 글을 다 읽은 자리에 둔다.
             if let time {
                 Text(Strings.messageTime(time)).font(.caption2).foregroundStyle(p.inkDim)
@@ -55,6 +58,32 @@ struct AgentMessageCard: View {
         // 복사는 카드 바깥(MessageRow)의 꾹 누르기 메뉴 「복사」·「선택해서 복사」가 맡는다(2026-10-30). 종전 `.textSelection(.enabled)` 는
         // 블록(문단)마다 따로 전체 복사만 됐고, 그 길게 누르기가 카드 메뉴를 가로채서 뺐다.
         .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 18))
+    }
+}
+
+/// #834: 답이 쓴 스킬 칩 줄 — 에이전트 색 톤, 본문보다 작은 글씨. 많으면 가로로 민다.
+struct SkillChipsRow: View {
+    let skills: [String]
+    @Environment(\.hande) private var p
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                ForEach(skills, id: \.self) { name in
+                    Text("📘 \(name)")
+                        .font(.caption2)
+                        .lineLimit(1)
+                        .foregroundStyle(p.agentText)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(p.agentFill))
+                        .overlay(Capsule().stroke(p.agentStroke, style: StrokeStyle(lineWidth: p.lineWidth, dash: p.agentDash)))
+                }
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Strings.skillsLabel)
+        .accessibilityIdentifier("skill-chips")
     }
 }
 

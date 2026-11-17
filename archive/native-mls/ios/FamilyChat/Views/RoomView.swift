@@ -1117,7 +1117,8 @@ struct MessageRow: View {
         } else {
             VStack(alignment: .leading, spacing: 6) {
                 AgentMessageCard(name: name, text: message.body, time: time)
-                    .messageCopyMenu(MessageCopy.text(of: message), select: selectText, reply: reply)
+                    // #834: 복사·답장 글에는 스킬 줄(칩)을 넣지 않는다.
+                    .messageCopyMenu(MessageCopy.text(of: message).map { AgentSkills.split($0).body }, select: selectText, reply: reply)
                 // 선택지(open = 체크 + 보내기, answered = 한 줄). closed 는 말풍선만.
                 if let card = choiceCard, card.state != .closed {
                     AgentChoicesCard(choices: card.choices, state: card.state, enabled: canAnswer && !choiceSending,

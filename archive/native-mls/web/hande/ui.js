@@ -11,7 +11,7 @@ import { pickTransferFile, transferHasFiles } from './composer-files.js';
 import { lastSentView, collapsedKey, sentDayPrefix, createExpandState } from './last-sent.js';
 import {fileboxRefreshUrl} from './filebox.js';
 import {attachmentTitle} from './attachments.js';
-import {parseBlocks, inlineSpans, hasMarkdown} from './agent-markdown.js';
+import {parseBlocks, inlineSpans, hasMarkdown, splitSkills} from './agent-markdown.js';
 import {linkParts, agentLinkParts, personMarkdownLink} from './service-links.js';
 import {parseAlertRefs, isFleetDevice} from './alert-refs.js';
 import {previewTarget, createLinkPreviews} from './link-preview.js';
@@ -922,6 +922,13 @@ export function openChoiceCard(root) {
 const linksSignature = (entry, links) => (entry.kind === 'text' && (isServiceDevice(entry.sender) || !entry.isAgent) && String(entry.body ?? '').includes('https://')
   ? links.key : null);
 
+/** #834: 답이 쓴 스킬 칩 줄(없으면 null). 이름은 splitSkills 가 거른 식별자뿐 — 텍스트 노드로만 넣는다. */
+function skillChips(skills) {
+  if (!skills || skills.length === 0) return null;
+  return el('div', { class: 'skill-chips', 'data-testid': 'skill-chips', 'aria-label': strings.chat.skillsLabel },
+    skills.map((name) => el('span', { class: 'skill-chip', title: name }, `📘 ${name}`)));
+}
+
 function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null, links = FALLBACK_LINKS) {
   const time = formatTime(entry.ts);
   // 전송 상태(2차-B B3): entry.state 'queued'(연결되면 보냄) · 'failed'(전송 안 됨) 가 오면 내 말풍선의 면·선이 바뀐다. 지금 app.js 는 보내기를 기다리므로 주지 않는다(훅만).
@@ -932,6 +939,9 @@ function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null, l
   if (entry.kind === 'system') {
     return signed(el('li', { class: 'system', 'data-key': entry.key, 'data-testid': 'system-row' }, el('span', { class: 'body' }, entry.body), time ? el('span', { class: 'foot' }, time) : null), signature);
   }
+  // #834: 에이전트 답 끝의 `📘 a · b` 줄은 본문에서 떼어 말풍선 아래 칩으로 그린다.
+  const skillSplit = entry.isAgent && entry.kind === 'text' ? splitSkills(entry.body) : null;
+  const agentText = skillSplit ? skillSplit.body : entry.body;
   let body;
   if (entry.kind === 'undecryptable') body = el('div', { class: 'body' }, strings.chat.undecryptable);
   else if (entry.kind === 'attachment') {
@@ -960,7 +970,7 @@ function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null, l
             strings.chat.pdf(humanSize(entry.size ?? 0), entry.fileName)),
           download)
       : el('div', { class: 'body file' }, el('span', { class: 'file-label' }, strings.chat.file(humanSize(entry.size ?? 0), entry.fileName)), previewRetry(entry, onRetryPreview), download);
-  } else if (entry.isAgent && entry.kind === 'text' && hasMarkdown(entry.body)) body = agentMarkdownBody(entry.body);
+  } else if (entry.isAgent && entry.kind === 'text' && hasMarkdown(agentText)) body = agentMarkdownBody(agentText);
   // 서비스 봇: 사이트 hosts 합집합 + 인스타그램(#690, 폴백 = v1 linkHosts 와 같음).
   else if (entry.kind === 'text' && isServiceDevice(entry.sender)) body = el('div', { class: 'body' }, serviceLinkNodes(entry.body, links.serviceHosts, isFleetDevice(entry.sender)));
   // 사람 말풍선의 서식 글(전달·붙여넣은 에이전트 보고서): 에이전트 글과 같은 블록으로 — 링크는 아래 사람 규칙 그대로.
@@ -968,16 +978,17 @@ function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null, l
   // 사람 말풍선: 사이트 hosts 합집합만 누를 수 있게(#690, 폴백 = x.com 계열 #683).
   else if (entry.kind === 'text' && !entry.isAgent) body = el('div', { class: 'body' }, serviceLinkNodes(entry.body, links.hosts));
   // 에이전트 말풍선(서식 없는 글): http·https 주소면 어떤 호스트든 링크(오너 2026-11-16, iOS·Android 와 같은 규칙). 미리보기 카드는 없다.
-  else if (entry.kind === 'text' && entry.isAgent) body = el('div', { class: 'body' }, agentLinkNodes(entry.body));
+  else if (entry.kind === 'text' && entry.isAgent) body = el('div', { class: 'body' }, agentLinkNodes(agentText));
   else body = el('div', { class: 'body' }, entry.body);
   // 사람·서비스 봇 말풍선의 첫 미리보기 사이트 링크 → 미리보기 카드(#683 2단계 · #690). 에이전트 말풍선은 대상이 아니다.
-  const preview = entry.kind === 'text' && (isServiceDevice(entry.sender) || !entry.isAgent) && !(entry.isAgent && hasMarkdown(entry.body))
+  const preview = entry.kind === 'text' && (isServiceDevice(entry.sender) || !entry.isAgent) && !(entry.isAgent && hasMarkdown(agentText))
     ? linkPreviewSlot(entry.body, body, links) : null;
   const foot = [entry.replay ? strings.chat.replay : null, time].filter(Boolean).join(' · ');
   const alertId = entry.kind === 'text' && isFleetDevice(entry.sender) ? parseAlertRefs(entry.body).self : null;   // alert-refs-v1 이동 대상 표시
   return signed(el('li', { class: `bubble kind-${entry.kind}${entry.isAgent ? ' agent' : ''}${sendState ? ` ${sendState}` : ''}`, 'data-key': entry.key, 'data-alert-id': alertId, 'data-me': entry.isMe ? 'true' : 'false', 'data-testid': entry.kind === 'undecryptable' ? 'system-row' : 'bubble' },
     entry.isMe ? null : el('span', { class: 'who' }, senderLabel(entry.senderName || displayName(entry.sender), entry.isAgent)),
     body,
+    skillChips(skillSplit?.skills),
     preview,
     choiceCard(choice),
     foot ? el('span', { class: 'foot' }, foot) : null), signature);
