@@ -853,7 +853,7 @@ struct RoomView: View {
         HardwareKeyRouter.shared.once("key:" + key.rawValue, from: .shortcut) { perform(action, nil) }
     }
 
-    private static let needsScrollProxy: Set<HardwareKeys.RoomAction> = [.scrollUp, .scrollDown, .scrollToLatest, .startSelecting, .selectUp, .selectDown]
+    private static let needsScrollProxy: Set<HardwareKeys.RoomAction> = [.scrollUp, .scrollDown, .startSelecting, .selectUp, .selectDown]
 
     /// 단축키 동작. 창이 떠 있거나 맨 위가 아니면 어느 길이든 쓰지 않는다(띄운 화면이 시트의 다음 응답자라 SwiftUI 단축키도 닿는다).
     private func perform(_ action: HardwareKeys.RoomAction, _ proxy: ScrollViewProxy?) {
@@ -871,7 +871,7 @@ struct RoomView: View {
             keyCursor = nil
             selectingByKey = false
             composerFocused = true   // onChange(of: composerFocused) 가 최신 글로 내려 준다
-        case .scrollUp, .scrollDown, .scrollToLatest:
+        case .scrollUp, .scrollDown:
             selectingByKey = false
             if let proxy { scrollByKey(action, proxy) }
         case .send, .newline:
@@ -926,13 +926,11 @@ struct RoomView: View {
         withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(id, anchor: .center) }
     }
 
-    /// 대화 읽기 ↑/↓ · End(맨 아래). ↑/↓ 는 설정 「↑/↓ 키 이동」에 따라 보이는 칸의 비율만큼(`scrollByPixels`) 또는 말풍선 하나씩
+    /// 대화 읽기 ↑/↓. ↑/↓ 는 설정 「↑/↓ 키 이동」에 따라 보이는 칸의 비율만큼(`scrollByPixels`) 또는 말풍선 하나씩
     /// (`HardwareKeys.scrollTarget`). 위로 가면 따라가기를 끄고, 맨 아래에 닿으면 다시 켠다(「내 마지막 말」 바와 같은 방식).
     private func scrollByKey(_ action: HardwareKeys.RoomAction, _ proxy: ScrollViewProxy) {
-        if action == .scrollUp || action == .scrollDown, scrollByPixels(up: action == .scrollUp, proxy) { return }
-        let target: HardwareKeys.ScrollTarget? = action == .scrollToLatest
-            ? .latest
-            : HardwareKeys.scrollTarget(rows: messages.map(\.id), cursor: keyCursor, up: action == .scrollUp)
+        if scrollByPixels(up: action == .scrollUp, proxy) { return }
+        let target = HardwareKeys.scrollTarget(rows: messages.map(\.id), cursor: keyCursor, up: action == .scrollUp)
         switch target {
         case .row(let id)?:
             keyCursor = id
