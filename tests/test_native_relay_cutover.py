@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / 'scripts'))
 sys.path.insert(0, str(Path(__file__).parent))
 import native_relay_cutover as cut
 import native_relay_snapshot as snap
-from test_native_relay_snapshot import args_for
+from test_native_relay_snapshot import add_blob, args_for, blob_file
 
 ZONE = 'zone123'
 TUNNEL = 'abcd-1234.cfargotunnel.com'
@@ -211,6 +211,47 @@ class CutoverTests(unittest.TestCase):
         self.assertEqual(len(files), 1)
         self.assertNotIn('dns-token-value', files[0].read_text())
         self.assertNotIn('secret', files[0].read_text())
+
+    def blob_inbox(self, mirrored):
+        """A second inbox whose newest archive lists one attachment; ``mirrored`` = its file arrived too."""
+        inbox = self.root / 'snapshots' / 'blob-inbox'
+        args = args_for(self.root / 'blob-source', inbox)
+        content = b'attachment ciphertext'
+        blob_id = add_blob(Path(args.data_dir), 'family-acc', content)
+        snap.snapshot(args)
+        if mirrored:
+            blob_file(inbox / 'blobs', 'family-acc', blob_id, content)
+        argv = self.argv()
+        argv[argv.index('--inbox') + 1] = str(inbox)
+        return argv, blob_id
+
+    def test_blobs_are_shown_in_the_plan_and_placed_by_the_restore(self):
+        argv, blob_id = self.blob_inbox(mirrored=True)
+        cf = FakeCloudflare(); runner = Runner()
+        plan = cut.cutover(cut.parse(argv), self.io(self.down_status(), cf, runner))['plan']
+        self.assertEqual((plan['blobs']['rows'], plan['blobs']['available'], plan['blobs']['missing']), (1, 1, 0))
+        record = cut.cutover(cut.parse(argv + ['--confirm', plan['confirm']]),
+                             self.io(self.down_status(), cf, runner))
+        self.assertEqual(record['status'], 'complete', record)
+        self.assertEqual(record['steps'][2]['detail']['blobs']['summary'],
+                         'blobs: rows=1 placed=1 already=0 missing=0 mismatch=0')
+        self.assertTrue((self.target / 'data' / 'blobs' / 'family-acc' / blob_id).is_file())
+
+    def test_blob_gap_is_recorded_and_exits_3_but_the_cutover_completes(self):
+        argv, blob_id = self.blob_inbox(mirrored=False)
+        cf = FakeCloudflare(); runner = Runner()
+        plan = cut.cutover(cut.parse(argv), self.io(self.down_status(), cf, runner))['plan']
+        self.assertEqual((plan['blobs']['rows'], plan['blobs']['available'], plan['blobs']['missing']), (1, 0, 1))
+        argv += ['--confirm', plan['confirm']]
+        record = cut.cutover(cut.parse(argv), self.io(self.down_status(), cf, runner))
+        self.assertEqual(record['status'], 'complete-with-blob-gaps', record)
+        self.assertEqual([s['step'] for s in record['steps']][-3:], ['dns', 'edge', 'client_hook'])
+        self.assertTrue(all(s['ok'] for s in record['steps']), 'a missing attachment stops nothing')
+        self.assertEqual(record['steps'][2]['detail']['blobs']['missing'], 1)
+        self.assertIn('systemctl start native-relay', runner.commands)
+        self.assertNotIn(blob_id, json.dumps(record))
+        with mock.patch.object(cut, 'cutover', return_value=record), mock.patch('sys.stdout'):
+            self.assertEqual(cut.main(argv), cut.EXIT_HOOKS)
 
     def test_relay_not_healthy_stops_before_dns(self):
         cf = FakeCloudflare(); runner = Runner()

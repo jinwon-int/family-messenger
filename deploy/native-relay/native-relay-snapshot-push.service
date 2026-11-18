@@ -3,6 +3,7 @@
 # $SNAPSHOT_SLOW_PUSH_ARGS 의 대상에만 --bwlimit 으로 보낸다. 잠금 파일이 따로라(.push-lock) 전송이 길어도
 # 5분 스냅샷을 막지 않는다. --max-age-minutes(기본 30)보다 오래된 아카이브는 보내지 않고 실패로 남긴다(RPO 경보).
 # 같은 펜스($SNAPSHOT_FENCE_ARGS): 대기 호스트에서는 조용히 건너뛴다.
+# 그 아카이브의 .blobs 목록에 있는 첨부 파일도 같은 대상의 blobs/ 미러로 보낸다 — 파일이 있는 곳을 알아야 하므로 --data-dir.
 [Unit]
 Description=family-messenger native-relay snapshot slow push (#426)
 After=network-online.target native-relay-snapshot.service
@@ -12,6 +13,7 @@ Wants=network-online.target
 Type=oneshot
 EnvironmentFile=/etc/native-relay/snapshot.env
 ExecStart=/usr/bin/python3 /opt/family-messenger/scripts/native_relay_snapshot.py --push-latest \
+  --data-dir ${RELAY_DATA_DIR} \
   --dest ${SNAPSHOT_DEST} --state ${SNAPSHOT_STATE} --ssh-key ${SNAPSHOT_SSH_KEY} \
   $SNAPSHOT_SLOW_PUSH_ARGS $SNAPSHOT_FENCE_ARGS
 TimeoutStartSec=60min
