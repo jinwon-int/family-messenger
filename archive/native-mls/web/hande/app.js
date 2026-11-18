@@ -29,7 +29,7 @@ import {fileboxConfig} from './filebox.js';
 import {collectAttachments} from './attachments.js';
 import {installShortcuts} from './shortcuts.js';
 import {openRoomsLimited} from './room-open-pool.js';
-import {createStartupTiming, startupLine} from './startup-timing.js';
+import {createStartupTiming, startupLine, readStartupNetwork, startupNetworkLine} from './startup-timing.js';
 import {createWatchLoop, DEFAULT_POLL_MS, SAFETY_POLL_MS} from './watch-loop.js';
 import {
   canApprove, isSibling, candidatesFor, approvalArgs, approvalEvidence, rolesActions, nextRoles, rolesArgs, rolesEvidence, recordOf,
@@ -60,9 +60,10 @@ async function loadConfig() {
 
 // theme: main.js 의 installTheme() 핸들({get, set}) — 설정 시트의 「화면」 행이 쓴다. 없으면(테스트) 행을 숨긴다.
 // now: 「페이지를 연 순간」부터의 ms(시작 구간 계측, #766 I). 없으면(테스트·옛 브라우저) 0 — 계측 줄만 0 으로 남는다.
+// perf: 브라우저 performance(Navigation/Resource Timing) — 첫 화면에서 한 번 읽어 「시작 네트워크」 줄을 만든다. 없으면 줄이 없다.
 // ui·worker: 화면(ui.js)·워커 브리지 대역 — 테스트(tests/app-start.test.mjs)만 넣는다.
 export function startApp(root, {storage = localStorage, fetch: fetchImpl = globalThis.fetch.bind(globalThis), theme = null,
-  now = () => globalThis.performance?.now?.() ?? 0, ui = screens, worker = createWorkerBridge()} = {}) {
+  now = () => globalThis.performance?.now?.() ?? 0, perf = globalThis.performance, ui = screens, worker = createWorkerBridge()} = {}) {
   const timing = createStartupTiming({now});
   timing.mark('script');
   const app = {
@@ -126,6 +127,11 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     if (!summary) return;
     app.startup = summary;
     logLine(startupLine(summary));
+    // 「스크립트」 구간이 리다이렉트·HTML·파일 받기·실행 중 어디였는지 브라우저 타이밍으로 한 줄 더(여기서 한 번만 읽는다).
+    // 읽지 못하면(옛 브라우저·API 없음) 줄을 남기지 않는다 — readStartupNetwork 는 던지지 않는다.
+    app.startupNet = startupNetworkLine(readStartupNetwork({performance: perf, navigator: globalThis.navigator,
+      scriptAt: summary.stages.find(s => s.name === 'script')?.at}));
+    if (app.startupNet) logLine(app.startupNet);
   }
   function updatePhase() {
     if (app.phase === 'fatal' || app.phase === 'needsActor' || !app.dev?.state.started) return;
@@ -853,8 +859,10 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     const candidates = app.candidates.map(c => `${c.device_id}: fp ${c.fingerprint.slice(0, 8)}… ${c.busy ? 'busy' : c.message ? `error ${c.message}` : 'new'}`);
     // 시작 구간 줄은 기록이 200줄을 넘겨 밀려나도 요약에 남는다(#766 I).
     const startup = app.startup ? `startup: ${startupLine(app.startup)}` : 'startup: -';
-    const text = [`hande web diagnostics ${clock(true)} device=${app.device} actor=${app.actor} enroll=${app.enroll.mode}`, me, startup, 'rooms:', ...rooms, 'invites:', ...invites, 'candidates:', ...candidates, 'log:', ...app.logs.slice(-200)].join('\n');
-    return copy(text);
+    const lines = [`hande web diagnostics ${clock(true)} device=${app.device} actor=${app.actor} enroll=${app.enroll.mode}`, me, startup, 'rooms:', ...rooms, 'invites:', ...invites, 'candidates:', ...candidates, 'log:', ...app.logs.slice(-200)];
+    // 「시작 네트워크」 줄은 startup: 바로 아래에 둔다(같은 이유 — 기록에서 밀려나도 요약에 남는다).
+    lines.splice(lines.indexOf('rooms:'), 0, app.startupNet ? `startup-net: ${app.startupNet}` : 'startup-net: -');
+    return copy(lines.join('\n'));
   }
   function openNotify() { ui.openNotifySheet(root, {invites: inviteRows(), candidates: candidateRows(), notes: noteRows(), onCopyLogs: copyDiagnostics, onClose: () => {}}); }
 
