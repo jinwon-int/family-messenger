@@ -106,7 +106,7 @@ function relayRoutes({listed, events = {}, enrolled = true}) {
 const said = (seq, body) => ({seq, device: 'owner-pc', kind: 'application', epoch: 1, bytes: b64(utf8.encode(body)), client_id: `owner-pc-${seq}`, created_at: 1700000100 + seq});
 
 /** startApp 을 띄운다. 화면은 calls(그린 순서)·shell()(마지막 renderShell 모델)로, 타이머는 걸린 것만 모아 둔다(돌리지 않음). */
-function launch(t, {dev, net, wide = true}) {
+function launch(t, {dev, net, wide = true, perf}) {
   const timers = {intervals: [], timeouts: []};
   const listeners = {};   // window 에 건 리스너(탭·온라인 복귀 — sync-recovery.js)
   const globals = {
@@ -129,7 +129,7 @@ function launch(t, {dev, net, wide = true}) {
   const root = {ownerDocument: globals.document, querySelector: () => null, querySelectorAll: () => []};
   const worker = fakeWorker(dev.stores);
   let clock = 0;
-  const app = startApp(root, {storage: dev.storage, fetch: net.fetch, now: () => (clock += 7), ui, worker}).state;
+  const app = startApp(root, {storage: dev.storage, fetch: net.fetch, now: () => (clock += 7), perf, ui, worker}).state;
   const shell = () => calls.findLast(c => c.name === 'renderShell')?.model ?? null;
   const startupLines = () => app.logs.filter(l => l.includes('첫 화면까지'));
   return {app, calls, shell, worker, timers, startupLines, fire: name => listeners[name]()};
@@ -275,6 +275,58 @@ test('저장분으로 그린 뒤 릴레이가 이 기기를 받지 않으면(403
   assert.equal(h.app.phase, 'enroll');
   assert.equal(h.app.startup.phase, 'stored', '계측 줄은 처음 그린 화면 기준으로 한 번');
 });
+
+test('시작 네트워크 줄: 첫 화면 줄 바로 뒤에 한 번 남고 진단 복사 요약에는 startup: 다음 줄 — 주소·식별값은 없다', async t => {
+  // 브라우저 타이밍 대역. 대본 시계는 7 ms 씩 가므로 앱 스크립트 시작(script 구간)은 7 이다 — 그 전에 끝난 파일만 센다.
+  const asked = [];
+  const perf = {getEntriesByType(type) {
+    asked.push(type);
+    if (type === 'navigation') return [{name: 'https://app.example/?from=login', redirectStart: 0, redirectEnd: 0, workerStart: 0, fetchStart: 1, responseStart: 2, responseEnd: 3}];
+    return [
+      {name: 'https://app.example/app.js?v=1', responseEnd: 5, transferSize: 300, encodedBodySize: 9000, decodedBodySize: 30000, workerStart: 4},
+      {name: 'https://app.example/ui.js', responseEnd: 6, transferSize: 4396, encodedBodySize: 4096, decodedBodySize: 9000, workerStart: 4},
+      {name: 'https://app.example/config.json', responseEnd: 9, transferSize: 500, encodedBodySize: 200, decodedBodySize: 200, workerStart: 0},
+      {name: `https://app.example/v2/rooms?device=${ME}`, responseEnd: 6, transferSize: 900, encodedBodySize: 600, decodedBodySize: 600, workerStart: 0},
+    ];
+  }};
+  const net = fakeRelay(relayRoutes({listed: ['family'], events: {family: []}}));
+  const h = launch(t, {dev: device([family()]), net, perf});
+  await until(() => h.shell() && h.app.tick !== null, '첫 화면과 시작 마무리');
+  const expected = '시작 네트워크: 리다이렉트 0 · HTML 요청 1 · HTML 응답 2 · HTML 끝 3 · 파일 2개 (캐시 0 · 재검증 1 · 받음 1 · 전송 5 KB) · 마지막 파일 ui.js 6 · 서비스 워커 경유 2 · 파일 뒤 실행 1 · 스크립트 시작 7';
+  assert.equal(h.app.startupNet, expected);
+  const at = h.app.logs.findIndex(l => l.includes('첫 화면까지'));
+  assert.ok(h.app.logs[at + 1].endsWith(` ${expected}`), '첫 화면 줄 바로 다음 기록');
+  assert.equal(h.app.logs.filter(l => l.includes('시작 네트워크')).length, 1, '다시 그려도 한 번만');
+  assert.equal(h.startupLines().length, 1, '기존 줄은 그대로 한 번');
+  assert.deepEqual(asked, ['navigation', 'resource'], '브라우저 타이밍은 첫 화면에서 한 번만 읽는다');
+
+  // 진단 기록 복사: startup: 줄 바로 아래에 startup-net: 줄.
+  let copied = null;
+  const nav = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {value: {clipboard: {writeText: async text => { copied = text; }}}, configurable: true, writable: true});
+  t.after(() => { if (nav) Object.defineProperty(globalThis, 'navigator', nav); else delete globalThis.navigator; });
+  h.shell().list.onOpenNotify();
+  assert.equal(await h.calls.findLast(c => c.name === 'openNotifySheet').model.onCopyLogs(), true);
+  const lines = copied.split('\n');
+  const i = lines.findIndex(l => l.startsWith('startup: '));
+  assert.match(lines[i], /^startup: 첫 화면까지 \d+ ms \(대화 화면 · 저장분\) — /);
+  assert.equal(lines[i + 1], `startup-net: ${expected}`);
+  assert.equal(lines[i + 2], 'rooms:');
+  assert.doesNotMatch(lines[i + 1], /https?|example|[/?=]|v2|login|config|mom-web/);
+});
+
+// launch 는 전역(window·타이머 …)을 시험 하나에 한 번 바꿔 끼우므로 경우마다 시험을 따로 둔다.
+for (const [what, perf] of [['API 없음', {}], ['읽다가 던짐', {getEntriesByType() { throw new Error('blocked'); }}], ['문서 항목 없음', {getEntriesByType: () => []}]]) {
+  test(`시작 네트워크 줄: 브라우저 타이밍을 읽지 못하면(${what}) 줄 없이 그대로 시작한다`, async t => {
+    const net = fakeRelay(relayRoutes({listed: ['family'], events: {family: []}}));
+    const h = launch(t, {dev: device([family()]), net, perf});
+    await until(() => h.shell() && h.app.tick !== null, '첫 화면과 시작 마무리');
+    assert.equal(h.startupLines().length, 1);
+    assert.equal(h.app.startupNet, '');
+    assert.ok(!h.app.logs.some(l => l.includes('시작 네트워크')));
+    assert.equal(h.app.phase, 'ready');
+  });
+}
 
 test('화면 배선: 작성창은 syncing 동안 잠기고(끌어다 놓기 포함), 풀릴 때 넓은 화면에서만 커서를 둔다', () => {
   const ui = readFileSync(new URL('../ui.js', import.meta.url), 'utf8');
