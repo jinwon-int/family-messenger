@@ -23,7 +23,10 @@ Order of operations, each recorded in the state file:
    peer stop (optional). A peer stop that does not succeed is fatal unless
    ``--peer-unreachable-ok`` — a peer we could not stop may still be serving.
 4. restore  — ``native_relay_restore.py`` into the live directories with
-              ``--bump-seq`` (relay unit must be inactive here).
+              ``--bump-seq`` (relay unit must be inactive here). Attachment
+              files come from the ``blobs`` mirror beside the archive; rows
+              left without a verified file do not stop the cutover — it ends
+              ``complete-with-blob-gaps``, exit 3, and the record lists them.
 5. fence    — set the TXT fence record to this host and wait until a public
               resolver returns it on N consecutive reads (resolver PoPs keep
               the old answer for its TTL — pre-create the record with TTL 60).
@@ -254,9 +257,11 @@ def wait_until(predicate, timeout, interval, sleep=time.sleep, clock=time.monoto
 def plan(args):
     archive = latest_archive(args.inbox)
     summary = restore_module.restore(restore_module.parse(['--archive', str(archive), '--summary-only']))
+    # 'blobs' is shown, not bound into the token: how many attachment files the mirror beside the archive holds.
     planned = {'to': args.to, 'archive': str(archive), 'archive_sha256': summary['archive_sha256'],
-               'manifest': summary['manifest'], 'bump_seq': args.bump_seq, 'hostnames': sorted(args.hostname),
-               'tunnel_target': args.tunnel_target, 'fence_record': args.fence_record}
+               'manifest': summary['manifest'], 'blobs': summary['blobs'], 'bump_seq': args.bump_seq,
+               'hostnames': sorted(args.hostname), 'tunnel_target': args.tunnel_target,
+               'fence_record': args.fence_record}
     planned['confirm'] = confirm_token(planned)
     return planned
 
@@ -333,8 +338,10 @@ def cutover(args, io=None):
             if not result['counts_match']:
                 raise RuntimeError('restored counts do not match the manifest')
             return {'snapshot_id': result['snapshot_id'], 'rooms': result['rooms'],
-                    'moved_aside': result['moved_aside']}
-        step('restore', do_restore)
+                    'moved_aside': result['moved_aside'], 'blobs': result['blobs']}
+        # Not a gate: the database is whole. Attachments without a file answer 404 until they are brought
+        # in by hand, so the run still ends with exit 3 and the record names how many (and which prefixes).
+        blobs_clean = step('restore', do_restore)['blobs']['clean']
 
         dns_token = read_kv_file(args.cf_dns_token_file).get('CF_DNS_TOKEN') if args.cf_dns_token_file else None
         if not dns_token:
@@ -410,6 +417,8 @@ def cutover(args, io=None):
             record['steps'].append({'step': 'client_hook', 'ok': result['exit'] == 0, 'detail': result})
             hook_failures += 0 if result['exit'] == 0 else 1
         record['status'] = 'complete' if not hook_failures else 'complete-with-hook-failures'
+        if record['status'] == 'complete' and not blobs_clean:
+            record['status'] = 'complete-with-blob-gaps'
         return record
     except Exception as exc:  # noqa: BLE001
         record['status'] = 'failed'
@@ -517,7 +526,7 @@ def main(argv=None):
         return EXIT_UNCONFIRMED
     if status in ('dry-run', 'complete'):
         return 0
-    if status == 'complete-with-hook-failures':
+    if status in ('complete-with-hook-failures', 'complete-with-blob-gaps'):
         return EXIT_HOOKS
     return EXIT_FAILED
 

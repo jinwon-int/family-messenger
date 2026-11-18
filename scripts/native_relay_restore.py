@@ -30,11 +30,28 @@ Until it does, a lobby invite for that device fails openly with 404
 key packages (``mls_keypackages``, a device's 「참여 요청」) are not touched.
 Off by default.
 
+Blobs (attachment ciphertext, ``<data-dir>/blobs/<room>/<id>``) are not in
+the archive: the snapshot mirrors them next to it as ``<archive dir>/blobs``.
+After the database is in place every ``mls_blobs`` row of the RESTORED
+database gets its file from the first source that has a good copy — any
+``--blob-source``, then that mirror, then the ``blobs`` directory of the data
+directory that was just moved aside (a restore on a host that held them
+before). A copy is taken only when its size equals the row and its sha256
+equals its name; links are never followed; files land 0600 in 0700
+directories and are chowned with the rest of the data tree. The result
+carries ``blobs`` and stderr gets one line, ``blobs: rows=N placed=N
+already=N missing=N mismatch=N``, with ``INCOMPLETE`` appended when any row
+is left without a verified file. That does not undo or stop the restore (the
+database is whole and the relay answers 404 ``no_such_blob`` for those
+attachments), but the exit code is 3 instead of 0 so it cannot pass unseen.
+``--summary-only`` counts how many rows the mirror could serve, by size only.
+
 ``--relay-binary`` runs a loopback drill: start the restored tree with
 ``-access-mode disabled``, wait for ``/v2/health``, compare counts with the
 manifest, stop. Isolated environments only — never on the live data directory.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -53,9 +70,12 @@ SCRIPTS = Path(__file__).resolve().parent
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from native_relay_snapshot import DB_NAME, sha256_file, summarize_db  # noqa: E402
+from native_relay_snapshot import (BLOB_DIR, BLOB_EXAMPLES, DB_NAME, blob_label, blob_rows,  # noqa: E402
+                                   locate_blob, sha256_file, summarize_db)
 
 LABELS = ('data', 'policy', 'static', 'hande', 'dropin', 'env')
+BLOB_TMP = '.tmp'  # the relay's own upload scratch directory; it empties it at every start (blobs.go)
+EXIT_BLOBS = 3
 
 
 def verify_archive(archive, checksum=None):
@@ -170,6 +190,115 @@ def clear_lobby_keypackages(db_path):
     return cleared
 
 
+def blob_sources(args, aside_data=None):
+    """Where a blob may come from, best first; each is a ``blobs`` directory (``<room>/<id>`` below it)."""
+    sources = [Path(p) for p in args.blob_source] + [Path(args.archive).parent / BLOB_DIR]
+    if aside_data:
+        sources.append(Path(aside_data) / BLOB_DIR)
+    return sources
+
+
+def blob_availability(db_path, sources):
+    """--summary-only: how many blob rows some source could serve, judged by size alone (nothing is read)."""
+    rows, refused = blob_rows(db_path)
+    available = 0
+    for room, blob_id, size in rows:
+        for source in sources:
+            path, info = locate_blob(source, room, blob_id)
+            if path is not None and info.st_size == size:
+                available += 1
+                break
+    return {'rows': len(rows) + refused, 'bytes': sum(size for _, _, size in rows), 'available': available,
+            'missing': len(rows) - available, 'refused': refused, 'sources': [str(s) for s in sources]}
+
+
+def copy_verified(source, partial, size, blob_id, file_mode):
+    """Copy one candidate through a hash; True only when both the size and the sha256 are the row's."""
+    digest = hashlib.sha256()
+    copied = 0
+    reader = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        writer = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, file_mode)
+        try:
+            for chunk in iter(lambda: os.read(reader, 1 << 20), b''):
+                digest.update(chunk)
+                copied += len(chunk)
+                view = memoryview(chunk)
+                while view:
+                    view = view[os.write(writer, view):]
+        finally:
+            os.close(writer)
+    finally:
+        os.close(reader)
+    os.chmod(partial, file_mode)
+    return copied == size and digest.hexdigest() == blob_id
+
+
+def place_blob(root, sources, room, blob_id, size, dir_mode, file_mode):
+    """One row → 'already' | 'placed' | 'missing' (no source has it) | 'mismatch' (only bad copies exist)."""
+    existing, info = locate_blob(root, room, blob_id)
+    if existing is not None and info.st_size == size and sha256_file(existing) == blob_id:
+        return 'already'
+    if existing is None and info == 'unsafe':
+        return 'mismatch'  # a link or special file sits where the blob belongs: never written through
+    bad = existing is not None
+    partial = Path(root) / BLOB_TMP / (blob_id + '.restore')
+    for source in sources:
+        candidate, info = locate_blob(source, room, blob_id)
+        if candidate is None or info.st_size != size:
+            bad = bad or candidate is not None or info == 'unsafe'
+            continue
+        try:
+            if copy_verified(candidate, partial, size, blob_id, file_mode):
+                (Path(root) / room).mkdir(exist_ok=True)
+                os.chmod(Path(root) / room, dir_mode)
+                os.replace(partial, Path(root) / room / blob_id)
+                return 'placed'
+            bad = True
+        finally:
+            partial.unlink(missing_ok=True)
+    return 'mismatch' if bad else 'missing'
+
+
+def place_blobs(db_path, data_dir, sources, dir_mode=0o700, file_mode=0o600):
+    """Give every ``mls_blobs`` row of the restored database its verified file; never raises for one bad blob."""
+    rows, refused = blob_rows(db_path)
+    # A source that is a link (or not a directory) is left out and named, not followed.
+    usable = [s for s in sources if s.is_dir() and not s.is_symlink()]
+    result = {'rows': len(rows) + refused, 'placed': 0, 'already': 0, 'missing': 0, 'mismatch': 0,
+              'refused': refused, 'errors': 0, 'examples': [], 'sources': [str(s) for s in usable],
+              'sources_refused': [str(s) for s in sources if s not in usable and os.path.lexists(s)]}
+    root = Path(data_dir) / BLOB_DIR
+    if rows:
+        for directory in (root, root / BLOB_TMP):
+            directory.mkdir(exist_ok=True)
+            os.chmod(directory, dir_mode)
+    for room, blob_id, size in rows:
+        try:
+            outcome = place_blob(root, usable, room, blob_id, size, dir_mode, file_mode)
+        except OSError as exc:  # unreadable source, full disk: this blob is not there, the restore goes on
+            outcome = 'missing'
+            result['errors'] += 1
+            result.setdefault('first_error', type(exc).__name__ + ': ' + (exc.strerror or ''))
+        result[outcome] += 1
+        if outcome in ('missing', 'mismatch'):
+            result['examples'].append(blob_label(room, blob_id))
+    result['examples'] = result['examples'][:BLOB_EXAMPLES]
+    result['clean'] = not (result['missing'] or result['mismatch'] or result['refused'])
+    result['summary'] = blob_summary(result)
+    return result
+
+
+def blob_summary(result):
+    line = ('blobs: rows=%(rows)d placed=%(placed)d already=%(already)d missing=%(missing)d '
+            'mismatch=%(mismatch)d' % result)
+    if result['refused']:
+        line += ' refused=%d' % result['refused']
+    if not result['clean']:
+        line += ' INCOMPLETE' + (' (' + ', '.join(result['examples']) + ')' if result['examples'] else '')
+    return line
+
+
 def chown_tree(root, owner):
     for current, dirs, files in os.walk(root):
         shutil.chown(current, owner, owner)
@@ -223,7 +352,8 @@ def restore(args, runner=None):
         manifest = verify_tree(root)
         if args.summary_only:
             return {'archive_sha256': digest, 'manifest': {k: manifest[k] for k in
-                                                          ('id', 'created_at', 'source_host', 'policy_revision', 'db')}}
+                                                          ('id', 'created_at', 'source_host', 'policy_revision', 'db')},
+                    'blobs': blob_availability(root / 'data' / DB_NAME, blob_sources(args))}
         if not args.skip_unit_check and unit_active(args.unit, runner):
             raise RuntimeError('relay unit ' + args.unit + ' is active; stop it before restoring')
         targets = {'data': args.target_data_dir, 'policy': args.target_policy_dir,
@@ -243,6 +373,8 @@ def restore(args, runner=None):
         # Counts are compared against the manifest before anything is deleted:
         # the restored copy itself must match the snapshot.
         lobby_cleared = clear_lobby_keypackages(db_path) if args.clear_lobby_keypackages else None
+        # Before the chown below, so the blob tree gets the same owner as the database.
+        blobs = place_blobs(db_path, args.target_data_dir, blob_sources(args, aside.get('data')), *modes['data'])
         if args.owner:
             for label in ('data', 'policy'):
                 if targets[label] and label in restored:
@@ -251,7 +383,7 @@ def restore(args, runner=None):
             'archive_sha256': digest, 'snapshot_id': manifest['id'], 'snapshot_created_at': manifest['created_at'],
             'restored': restored, 'moved_aside': aside, 'bump_seq': args.bump_seq, 'rooms': bumped,
             'db': summary, 'manifest_db': manifest['db'], 'policy_revision': manifest['policy_revision'],
-            'lobby_keypackages_cleared': lobby_cleared,
+            'lobby_keypackages_cleared': lobby_cleared, 'blobs': blobs,
         }
         counts_match = summary['counts'] == manifest['db']['counts'] and summary['integrity'] == 'ok'
         result['counts_match'] = counts_match
@@ -273,6 +405,9 @@ def parse(argv=None):
     parser.add_argument('--bump-seq', type=int, default=0, help='#440-C c1: add N to every room last_seq')
     parser.add_argument('--clear-lobby-keypackages', action='store_true',
                         help='#812: delete unconsumed lobby key packages after the copy (devices republish)')
+    parser.add_argument('--blob-source', action='append', default=[],
+                        help='extra blobs directory (<room>/<id> below it) tried before <archive dir>/blobs '
+                             'and the moved-aside data directory (repeatable)')
     parser.add_argument('--owner', help='chown data/policy trees to this user (e.g. native-relay)')
     parser.add_argument('--unit', default='native-relay', help='systemd unit that must be inactive')
     parser.add_argument('--skip-unit-check', action='store_true', help='drill into throwaway directories only')
@@ -292,8 +427,12 @@ def main(argv=None):
         print('restore failed: ' + str(exc), file=sys.stderr)
         return 1
     print(json.dumps(result, indent=2, sort_keys=True))
-    ok = args.summary_only or (result['counts_match'] and (not args.relay_binary or result['drill']['health'] == 200))
-    return 0 if ok else 1
+    if args.summary_only:
+        return 0
+    print(result['blobs']['summary'], file=sys.stderr)
+    if not (result['counts_match'] and (not args.relay_binary or result['drill']['health'] == 200)):
+        return 1
+    return 0 if result['blobs']['clean'] else EXIT_BLOBS
 
 
 if __name__ == '__main__':

@@ -1,5 +1,6 @@
 # #440 0단계 — 수신 호스트(대기·오프사이트) 쪽 보존 정리. 보낸 쪽과 같은 규칙(6시간 전량 + 하루 1개 30일).
-# 삭제는 이 스크립트가 만든 이름(relay-*.tar.gz + .sha256)만 건드린다.
+# 삭제는 이 스크립트가 만든 이름(relay-*.tar.gz + .sha256 + .blobs)과, 남은 아카이브의 .blobs 목록 어디에도 없는
+# blobs/<방>/<id> 미러 파일만 건드린다(목록 없는 아카이브가 남아 있으면 미러는 그대로 둔다).
 [Unit]
 Description=Prune received native-relay snapshots (#440 stage 0, receiving host)
 

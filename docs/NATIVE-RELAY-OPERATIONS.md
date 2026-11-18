@@ -15,12 +15,14 @@
 | `static/`, `hande/` 서빙 번들 | 번들 sha256은 릴레이 바이너리와 짝이 맞아야 한다(ND-4059 주의) |
 | 릴레이 유닛 drop-in 디렉터리, `relay.env`(issuer/aud/jwks) | 같은 플래그로 다시 띄우기 위한 재료. `relay.env`는 0600 유지 |
 | `manifest.json` — 파일별 sha256 + 방별 `epoch`/`revision`/`last_seq` + 테이블 건수 + 정책 revision + `integrity_check` | 복원 뒤 "무엇이 돌아왔는지" 대조 근거 |
+| 첨부 암호문(blob, file-v2) `data/blobs/<방>/<id>` — **아카이브 안이 아니라** 수신 호스트의 `<수신 디렉터리>/blobs/` 미러로(아래 「첨부(blob) 미러」) | DB에는 `mls_blobs` 행(방·id·크기)만 있고 바이트는 파일이다. 파일 없이 DB만 복원하면 그 첨부는 전부 404 `no_such_blob` |
 
 | 제외 | 근거 |
 |---|---|
 | APNs `.p8` 키 | 오너 결정 #440-A: 대기 호스트는 푸시 없이 운영. `.p8` 또는 `apns` 디렉터리 밑의 파일이 포함 경로에 있으면 **건너뛰지 않고 실패**한다 |
 | 릴레이 바이너리 | 곽가 재현 빌드 → 서서 스테이징(`STAGE-SHA256SUMS`)이 정본. 빌드는 digest 고정 컨테이너 [`deploy/native-relay/build/build.sh`](../deploy/native-relay/build/build.sh) `<빈 산출 디렉터리>`로만(깨끗한 커밋 클론, 산출 `SHA256SUMS`·`BUILDINFO`; 같은 커밋 2회 빌드 해시 일치는 CI `native-mls`가 네이티브 트랙·빌드 컨테이너를 건드리는 PR과 머지 큐마다 확인). 스냅샷은 데이터만. 교체는 [`deploy/native-relay/native-relay-swap`](../deploy/native-relay/native-relay-swap)로만(rename 교체 + `/v2/health` 확인 + 롤백) |
 | CF 터널 토큰·Access 설정 | 호스트 비밀. 전환 시 CF API로 다시 만든다(1단계) |
+| `data/blobs/.tmp/`(올리는 중인 파일), 행이 없는 blob 파일 | 보낼 대상은 **복사한 DB의 `mls_blobs` 행**이 정한다 — 디렉터리를 훑지 않는다. 행 없는 파일은 릴레이 스위퍼가 지울 파일이다 |
 
 ## 스냅샷 (`scripts/native_relay_snapshot.py`)
 
@@ -35,8 +37,10 @@ python3 scripts/native_relay_snapshot.py \
   --ssh-key /etc/native-relay/snapshot-push.key --keep-hours 6 --keep-days 30
 ```
 
-- 산출물: `<dest>/relay-<UTC시각>.tar.gz`(0600) + `.sha256` 사이드카. 상태 디렉터리에 `relay-<시각>.json`과
-  `latest.json`(0600). `status`는 `complete` 또는 `push-failed`(로컬 사본은 남고 종료 코드 1 → systemd 실패로 드러남).
+- 산출물: `<dest>/relay-<UTC시각>.tar.gz`(0600) + `.sha256` 사이드카 + `.blobs` 목록(그 아카이브의 DB가 가리키는 blob,
+  한 줄에 `<방>/<id> <크기>`). 상태 디렉터리에 `relay-<시각>.json`과 `latest.json`(0600). `status`는 `complete`,
+  `push-failed`(아카이브 또는 blob 전송 실패) 또는 `blobs-incomplete`(전송은 됐지만 파일 없는 행이 있다) — `complete`가 아니면
+  로컬 사본은 남고 종료 코드 1 → systemd 실패로 드러난다.
 - 복사본에 `PRAGMA integrity_check`를 돌려 `ok`가 아니면 보관하지 않는다.
 - 심볼릭 링크·특수 파일은 거부한다(복사본이 조용히 다른 것을 가리키는 일을 막는다).
 - 잠금 파일로 동시 실행을 막는다. 삭제는 보존 규칙이 정한 **이 스크립트가 만든 이름**만 건드린다.
@@ -49,6 +53,30 @@ python3 scripts/native_relay_snapshot.py \
   키 값은 어디에도 기록하지 않는다(경로만).
 
 **RPO = 타이머 주기(5분, 오너 결정 D1; 0단계는 15분).** 전환 시 이 창 안의 메시지는 릴레이에서 사라진다 — 아래 c1이 그 손실을 드러낸다.
+
+### 첨부(blob) 미러
+
+첨부는 파일 하나가 최대 약 50 MiB이고 바뀌지 않으며(이름 = 내용의 sha256) 릴레이가 TTL(기본 30일, 읽지 않는 기기가 있으면 그 2배)까지
+보관한다(`archive/native-mls/server/blobs.go` 머리말). 5분마다 만드는 아카이브에 넣으면 아카이브마다 전체가 반복되므로 **아카이브에는 넣지 않고**, push 대상마다
+`<수신 디렉터리>/blobs/<방>/<id>` 미러를 증분으로 채운다(아카이브 push 직후 같은 대상에 rsync 한 번 더, `--ignore-existing`).
+
+- **무엇을 보내는가**: 방금 복사한 DB의 `mls_blobs` 행. 그래서 아카이브와 파일이 서로 맞는다. 방 이름·id는 릴레이와 같은 규칙
+  (방 = 식별자 문자 1~64자, id = 소문자 16진수 64자)을 통과해야 경로가 된다 — 통과하지 못한 행은 `refused`로 센다.
+- **보내지 않는 것**: `.tmp`, 행 없는 파일, 심볼릭 링크·특수 파일, 크기가 행과 다른 파일, `refuse_secret`이 막는 경로(`unsafe`).
+- **파일이 없는 행**: 복사 뒤 릴레이가 그 행을 지워서(보존 만료) 없는 것이면 정상(`pruned`). 행이 아직 살아 있는데 파일이 없으면
+  `missing` — stdout/상태 JSON의 `blobs`에 건수와 `<방>/<id 앞 12자>`만 남고, stderr에
+  `blobs: rows=… listed=… pruned=… missing=… unsafe=… refused=… INCOMPLETE (…)` 한 줄, `status=blobs-incomplete`, 종료 코드 1.
+  그 첨부는 활성 호스트에서 이미 404다 — 파일을 되찾거나 행이 만료될 때까지 유닛이 실패로 남는다(조용히 넘어가지 않게 한 선택).
+- **미러는 push가 지우지 않는다**(`--delete` 없음, 이미 있는 파일은 다시 쓰지 않음). 정리는 수신 호스트의 `--prune-only`가 한다:
+  아카이브 보존 정리 뒤, **남아 있는 어느 아카이브의 `.blobs` 목록에도 없고** 도착한 지 `--keep-hours`가 지난 파일만 지운다.
+  목록 없는 아카이브(이 기능 이전 것)가 하나라도 남아 있거나 아카이브가 하나도 없으면 아무것도 지우지 않는다
+  (출력 `blob_mirror.skipped`). 즉 미러 크기 ≈ 릴레이의 현재 blob 전체 + 최근 `--keep-days` 동안 만료된 것.
+- **느린 push**(`--push-latest`)도 같은 방식이다: 보내는 아카이브의 `.blobs` 목록대로 미러를 채운다. 파일 위치를 알아야 하므로
+  `--data-dir`이 필요하다(유닛 템플릿에 추가됨). 목록이 비어 있지 않은데 `--data-dir`이 없으면 아카이브는 보내고 실패로 끝난다.
+- **처음 켤 때**: 첫 실행이 현재 blob 전체를 대상마다 보낸다. 전송 제한 시간(대역 제한이 없으면 600 s, 있으면 크기에 비례)을
+  넘기면 그 실행은 `push-failed`로 끝나고, 끝난 파일은 남으므로 다음 실행이 이어서 보낸다.
+- 수신 계정의 `authorized_keys` 제한은 수신 디렉터리 **아래 `blobs/`** 쓰기와 rsync `--files-from`·`--ignore-existing` 인자를
+  허용해야 한다(대상 경로는 아카이브와 같은 `<수신 디렉터리>/`다).
 
 ## 복원 (`scripts/native_relay_restore.py`)
 
@@ -66,8 +94,40 @@ python3 scripts/native_relay_restore.py --archive .../relay-<시각>.tar.gz \
 - 순서: 아카이브 sha256 ↔ 사이드카 → 안전 추출(절대 경로·`..`·링크·복수 최상위 거부) → 모든 멤버 sha256 ↔ manifest
   → 유닛 active 검사 → 기존 디렉터리는 `<이름>.pre-restore-<시각>`으로 **옮겨 둠(삭제 없음)** → 복사 → 권한
   (data/policy 0700/0600, static/hande 0755/0644) → `--bump-seq` → 복원본 요약과 manifest 건수 대조(`counts_match`)
-  → (선택) `--clear-lobby-keypackages`: 대조 **뒤에** 미소비 로비 키패키지 삭제, 결과의 `lobby_keypackages_cleared`에 기기별 건수(#812, 아래 「로비 키패키지」).
+  → (선택) `--clear-lobby-keypackages`: 대조 **뒤에** 미소비 로비 키패키지 삭제, 결과의 `lobby_keypackages_cleared`에 기기별 건수(#812, 아래 「로비 키패키지」)
+  → **blob 배치**(아래) → `--owner` chown(blob 포함).
 - 어느 검증이든 실패하면 대상 디렉터리를 건드리기 전에 끝난다.
+
+### blob 배치와 요약 줄
+
+DB를 놓은 뒤, **복원된 DB의 `mls_blobs` 행마다** 파일을 `<data>/blobs/<방>/<id>`(디렉터리 0700, 파일 0600, DB와 같은 소유자)에
+놓는다. 가져오는 곳은 차례로 ① `--blob-source <blobs 디렉터리>`(반복 가능) ② 아카이브 옆 미러 `<아카이브 디렉터리>/blobs`
+③ 방금 옮겨 둔 `data.pre-restore-<시각>/blobs`(전에 활성이던 호스트에서 복원할 때 — 옛 파일은 복사만 하고 그대로 둔다).
+**크기가 행과 같고 sha256이 파일 이름과 같은** 사본만 놓는다. 링크는 따라가지 않고, 링크인 소스는 `sources_refused`에 적힌다.
+
+stderr 마지막 줄(결과 JSON의 `blobs.summary`와 같다)을 확인한다:
+
+```
+blobs: rows=83 placed=83 already=0 missing=0 mismatch=0
+blobs: rows=83 placed=81 already=0 missing=2 mismatch=0 INCOMPLETE (family/0a1b2c3d4e5f, family/9f8e7d6c5b4a)
+```
+
+| 항목 | 뜻 |
+|---|---|
+| `rows` | 복원된 DB의 blob 행 수 |
+| `placed` / `already` | 이번에 놓은 파일 / 이미 있었고 검증을 통과한 파일 |
+| `missing` | 어느 소스에도 없다(읽기 오류 포함 — `blobs.errors`, `blobs.first_error`) |
+| `mismatch` | 사본은 있지만 크기나 sha256이 다르다(또는 그 자리에 링크·특수 파일이 있다). 놓지 않는다 |
+| `refused` | 방 이름·id가 규칙에 맞지 않는 행(0이 아닐 때만 표시). 경로로 만들지 않는다 |
+
+- `missing`·`mismatch`·`refused`가 모두 0이어야 깨끗하다. 아니면 줄 끝에 `INCOMPLETE (<방>/<id 앞 12자>, … 최대 10개)`가 붙고
+  **종료 코드 3**이다. DB 복원은 그대로 유효하다(되돌리지 않는다) — 그 첨부만 릴레이가 404 `no_such_blob`으로 답한다.
+- 메우기: 파일이 남아 있는 곳(옛 활성 호스트의 data 디렉터리, 다른 수신 호스트의 미러)의 `blobs/<방>/<id>`를 같은 경로·권한
+  (0700/0600)·소유자로 가져다 놓는다. 파일 이름이 곧 검증 값이다 — 놓기 전에 `sha256sum`이 이름과 같은지 본다. 릴레이는 요청마다
+  행을 확인하고 파일을 열므로(`blobs.go` `openBlob`) 놓인 뒤의 요청부터 서빙한다. 복원 전이라면 그 디렉터리를 `--blob-source`로
+  주는 편이 낫다(크기·sha256 검증과 권한을 스크립트가 한다).
+- `--summary-only`는 `blobs`에 `rows`·`bytes`·`available`·`missing`을 낸다(미러와 `--blob-source`에 크기가 맞는 파일이 있는지만
+  본다 — 해시는 읽지 않고, 옮겨 둘 디렉터리는 아직 모른다). 전환 계획 단계에서 이 숫자를 먼저 본다.
 
 ### `--bump-seq` — 왜 필요한가 (오너 결정 #440-C, c1)
 
@@ -149,10 +209,10 @@ python3 scripts/native_relay_cutover.py @/etc/native-relay/cutover.args --confir
 | 단계 | 내용 | 멈추는 조건 |
 |---|---|---|
 | probe | peer `/v2/health`(tailnet) **그리고** 엣지 `/v2/health`(CF Access 서비스 토큰, **리다이렉트 불인정** — Access 로그인 페이지는 200이 아니다) 각 3회×60 s. `--edge-health` 없이는 판정 자체를 거부 | 둘 다 실패(`relay-down`)일 때만 진행. `edge-only`·`peer-unreachable`·`healthy`·`edge-unknown`은 exit 10, 무변경 |
-| plan | inbox 최신 아카이브(사이드카 있는 것만)·manifest 요약·**확인 토큰** = sha256(호스트·아카이브·sha·호스트명·터널·펜스 레코드·bump)[:16] | `--confirm` 불일치 → exit 11, 무변경 |
+| plan | inbox 최신 아카이브(사이드카 있는 것만)·manifest 요약·`blobs`(행 수와 inbox 미러에 있는 수 — 토큰에는 들어가지 않는다)·**확인 토큰** = sha256(호스트·아카이브·sha·호스트명·터널·펜스 레코드·bump)[:16] | `--confirm` 불일치 → exit 11, 무변경 |
 | peer_snapshot | (선택) **계획 실행(토큰 없는 1차)에서만** 살아 있는 peer에 마지막 스냅샷 1회 → 그 결과가 계획·토큰에 들어간다. 확인 실행은 새 스냅샷을 찍지 않는다(토큰이 가리키는 아카이브 = 운영자가 본 아카이브) | — |
 | peer_stop | (선택) peer 릴레이 정지(예제 `cutover.args.example`은 `systemctl disable --now` — 정지와 함께 옛 호스트 자동 기동도 끈다). **실패는 치명** — 못 멈춘 peer는 아직 서빙 중일 수 있다. peer 호스트가 죽은 게 확실할 때만 `--peer-unreachable-ok` | exit≠0 |
-| restore | `native_relay_restore.py --bump-seq N --owner native-relay`(유닛 active면 거부) | 건수 불일치 |
+| restore | `native_relay_restore.py --bump-seq N --owner native-relay`(유닛 active면 거부). inbox 미러(와 옮겨 둔 옛 data)에서 blob을 놓고 기록의 `detail.blobs`에 요약을 남긴다 | 건수 불일치. **blob 누락은 멈추지 않는다** — 끝까지 진행하고 `complete-with-blob-gaps` + exit 3 |
 | fence | TXT → 자기 이름, DoH로 **연속 3회** 확인될 때까지 대기(≤300 s, 리졸버 TTL 창) | 미확인 |
 | reprobe | peer·엣지 1회 재확인 — 복원하는 사이 peer가 살아났으면 **여기서 멈춘다**(두 번째 작성자 방지) | 어느 쪽이든 200 |
 | start | `systemctl start native-relay` + 로컬 health 200(≤120 s — 유닛의 ExecStartPre가 옛 값을 한 번 읽어 실패해도 `Restart=on-failure` 30 s 재시도를 기다린다) | 미기동 — **DNS는 아직 옛 호스트** |
@@ -193,8 +253,10 @@ python3 scripts/native_relay_cutover.py @/etc/native-relay/cutover.args --confir
 3. **옛 호스트**: `systemctl stop native-relay-snapshot.timer` 그리고 `systemctl stop native-relay` — 타이머를 멈추지 않으면 plan과
    confirm 사이에 새 아카이브가 도착해 토큰이 어긋난다. 릴레이를 먼저 멈춰야 plan의 `peer_snapshot`이 **마지막 메시지까지** 담는다.
 4. **새 호스트**: `cutover.args --probe-tries 1`(plan — probe `relay-down` → peer_snapshot → 토큰). integrity ok, peer_snapshot exit 0,
-   아카이브 생성 시각 ≥ 중지 시각을 확인한 뒤 `--confirm <토큰>`.
-5. **확인**: 엣지 200, 노드마다 `native-relay-repoint --check` = 새 URL, 새 호스트 첫 스냅샷이 push 대상에 도착, 펜스 TXT = 새 이름.
+   아카이브 생성 시각 ≥ 중지 시각, plan의 `blobs.missing` = 0(0이 아니면 옛 호스트의 스냅샷 실행이 blob 전송까지 끝났는지 —
+   `latest.json`의 `status`·`pushes[].blobs` — 를 먼저 본다)을 확인한 뒤 `--confirm <토큰>`.
+5. **확인**: 엣지 200, 노드마다 `native-relay-repoint --check` = 새 URL, 새 호스트 첫 스냅샷이 push 대상에 도착, 펜스 TXT = 새 이름,
+   기록의 restore `detail.blobs.summary`에 `INCOMPLETE`가 없고 상태가 `complete`(`complete-with-blob-gaps`면 위 「blob 배치와 요약 줄」의 메우기).
 6. **옛 호스트 정리**: `systemctl disable native-relay`(이제 대기 역할 — 자동 재부팅 때 기동 시도→펜스 거부→30 s 재시도 반복과,
    TXT 캐시 창의 split-brain 기동을 막는다; 되돌릴 때는 전환 스크립트의 enable 단계가 다시 켠다), `native-relay-snapshot.timer` 다시 켜기
    (펜스로 skip — 이제 대기 역할), 2단계 feeder 재개. 확인: 옛 호스트 `is-enabled` = disabled, 새 호스트 = enabled.
@@ -277,10 +339,12 @@ python3 scripts/native_relay_restore.py --archive .../relay-<시각>.tar.gz \
 
 - 복원본으로 릴레이를 **루프백·`-access-mode disabled`**로 띄워 `/v2/health` 200을 확인하고 바로 내린다.
   운영 데이터 디렉터리에는 절대 쓰지 않는다(`--skip-unit-check`는 임시 디렉터리에서만).
-- 판정: 종료 코드 0 = 아카이브·멤버 sha256 일치 + `integrity_check` ok + 테이블 건수 manifest 일치 + health 200.
+- 판정: 종료 코드 0 = 아카이브·멤버 sha256 일치 + `integrity_check` ok + 테이블 건수 manifest 일치 + health 200
+  + blob 요약 줄이 깨끗함(`missing=0 mismatch=0`). 종료 코드 3 = 앞의 것은 모두 통과했고 blob만 빠졌다 — 아카이브를 미러가 없는
+  곳으로 옮겨서 드릴하면 이렇게 나온다(미러 `blobs/`를 함께 두거나 `--blob-source`로 준다).
 - 수용 기준(#440 0단계): 스냅샷이 주기 안에 수신 호스트 2곳에 도착하고 성공 JSON이 남으며, 드릴이 위 판정을 통과한다.
 - 월 1회 예방 점검에 포함한다(Wiki 런북, DOC-3436 RB-988 형식): 타이머 active · `latest.json` `status=complete`
-  신선도 · 수신 호스트 inbox 최신 시각 · 드릴 1회.
+  신선도(`blobs.missing` 0) · 수신 호스트 inbox 최신 시각 · `--summary-only`의 `blobs.missing` 0 · 미러 크기(`du inbox/blobs`) · 드릴 1회.
 
 ## 기기 셀프서비스 운영 (#574)
 
