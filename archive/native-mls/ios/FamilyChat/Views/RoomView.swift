@@ -356,6 +356,10 @@ struct RoomView: View {
                 .animation(.easeOut(duration: 0.2), value: model.reconnecting)
                 .animation(.easeOut(duration: 0.2), value: typingLabel)
             }
+            // 오너 2026-11-19: 「내 마지막 말」 여닫기 — 🔔 왼쪽(툴바 항목은 선언 순서대로 왼쪽→오른쪽). 이 방에 내가 한 말이 있을 때만.
+            if lastSent != nil {
+                ToolbarItem(placement: .primaryAction) { lastSentToolbarButton }
+            }
             // 방별 알림(server/mute.go): 🔔 켜짐 / 🔕 꺼짐 — 같은 사람의 모든 기기에 적용. 값을 모르면(옛 릴레이) 버튼이 없다.
             if let muted = model.relayMuted[room] {
                 ToolbarItem(placement: .primaryAction) {
@@ -370,10 +374,6 @@ struct RoomView: View {
                 Button { showInvite = true } label: { Image(systemName: "person.badge.plus") }
                     .accessibilityLabel(Strings.inviteTitle)
                     .disabled(!model.canRequestJoin)
-            }
-            // 오너 2026-11-19: 「내 마지막 말」 여닫기 — 맨 오른쪽. 이 방에 내가 한 말이 있을 때만.
-            if lastSent != nil {
-                ToolbarItem(placement: .primaryAction) { lastSentToolbarButton }
             }
         }
         .sheet(isPresented: $showInvite) { InviteView(room: room).environmentObject(model) }
