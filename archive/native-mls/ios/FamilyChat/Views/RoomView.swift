@@ -81,6 +81,9 @@ struct RoomView: View {
     @State private var toast: String?
     /// 「내 마지막 말」 패널이 내려와 있다(우측 상단 버튼으로 여닫음, 오너 2026-11-19). 방을 나가면 닫는다.
     @State private var showLastSent = false
+    /// 바 가운데 방 이름 왼쪽 끝의 화면 x · 「타닥타닥…」 글자 폭 — 「타닥타닥…」을 뒤로가기와 방 이름 사이 가운데에 두는 데 쓴다.
+    @State private var titleMinX: Double = 0
+    @State private var typingTextWidth: Double = 0
 
 
     var body: some View {
@@ -332,21 +335,38 @@ struct RoomView: View {
             // 제목 칸이 길면 UIKit 이 칸을 옆으로 밀어 방 이름이 화면 가운데에서 벗어난다. 꺼진 자리·연결 중은 작성창 자리 안내·경고 배너가 알린다.
             ToolbarItem(placement: .principal) {
                 Text(Strings.roomLabel(room)).font(.headline).foregroundStyle(p.ink).lineLimit(1)
-                    // 「타닥타닥…」은 방 이름 **왼쪽**에 이름 없이(오너 2026-11-19). 겹쳐 그려(overlay) 제목 칸 폭에 들어가지 않으니
-                    // 방 이름은 가운데 그대로. 오른쪽 끝을 방 이름 왼쪽 끝 − 6 에 맞춘다. 누가 치는지는 VoiceOver 로만 읽는다.
+                    // 방 이름 왼쪽 끝의 화면 위치(「타닥타닥…」 자리 계산).
+                    .background(GeometryReader { geo in
+                        Measured(value: Double(geo.frame(in: .global).minX)) { titleMinX = $0 }
+                    })
+                    // 「타닥타닥…」은 이름 없이, **뒤로가기 화살표와 방 이름 사이 가운데**(오너 2026-11-19 — #846 의 「방 이름 왼쪽 6pt」는
+                    // `alignmentGuide` 가 바 안에서 먹지 않아 방 이름 위에 겹쳤다). 겹쳐 그려(overlay) 제목 칸 폭에 들어가지 않으니 방 이름은
+                    // 가운데 그대로. 폭 0 칸의 가운데 = 방 이름 왼쪽 끝에서 `TypingPlacement.place` 만큼 왼쪽으로 옮긴다(offset — 정렬 기준에 기대지 않음).
+                    // 누가 치는지는 VoiceOver 로만 읽는다.
                     .overlay(alignment: .leading) {
-                        if let label = typingLabel {
-                            HStack(spacing: 4) {
-                                SeatDot(size: 6)
-                                Text(Strings.typing).font(.system(size: 12)).foregroundStyle(p.inkDim)
+                        ZStack {
+                            // 글자 폭 재기(보이지 않음).
+                            typingText.fixedSize().hidden()
+                                .background(GeometryReader { geo in
+                                    Measured(value: Double(geo.size.width)) { typingTextWidth = $0 }
+                                })
+                            if let label = typingLabel {
+                                let place = TypingPlacement.place(titleMinX: titleMinX,
+                                                                  backTrailing: Double(Self.windowLeadingInset) + TypingPlacement.backButtonTrailing,
+                                                                  badgeWidth: TypingPlacement.dotWidth + TypingPlacement.dotSpacing + typingTextWidth)
+                                HStack(spacing: TypingPlacement.dotSpacing) {
+                                    SeatDot(size: TypingPlacement.dotWidth)
+                                    if place.shape == .full { typingText }
+                                }
+                                .fixedSize()
+                                .offset(x: -place.shift)
+                                .transition(.opacity)
+                                .accessibilityElement(children: .ignore)
+                                .accessibilityLabel(label)
+                                .accessibilityIdentifier("room-typing")
                             }
-                            .fixedSize()
-                            .alignmentGuide(.leading) { d in d[.trailing] + 6 }
-                            .transition(.opacity)
-                            .accessibilityElement(children: .ignore)
-                            .accessibilityLabel(label)
-                            .accessibilityIdentifier("room-typing")
                         }
+                        .frame(width: 0)
                     }
                     .animation(.easeOut(duration: 0.2), value: typingLabel)
             }
@@ -383,6 +403,15 @@ struct RoomView: View {
             pickedPhoto = nil
             Task { await sendPhoto(item) }
         }
+    }
+
+    private var typingText: some View {
+        Text(Strings.typing).font(.system(size: 12)).foregroundStyle(p.inkDim)
+    }
+
+    /// 창의 왼쪽 안전 영역(가로 화면의 노치 쪽) — 뒤로가기 버튼이 그만큼 안쪽에서 시작한다.
+    @MainActor static var windowLeadingInset: CGFloat {
+        UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first?.safeAreaInsets.left ?? 0
     }
 
     /// 이 방에서 가장 최근 내 말(없으면 nil — 버튼·패널 모두 없음).
@@ -2052,6 +2081,26 @@ struct DayDivider: View {
 
 /// GeometryReader 가 잰 값을 바로 보고한다(처음 한 번 + 바뀔 때마다). PreferenceKey 축약(`value = nextValue()`)은 build 51 실기기에서
 /// 칸 높이를 한 번도 올리지 못했다(모든 scroll 줄 `viewport=0`) — 상태 보고를 축약 순서에 기대지 않는다.
+/// 「타닥타닥…」 자리(오너 2026-11-19): 뒤로가기 버튼 오른쪽 끝과 방 이름 왼쪽 끝 **사이 가운데**. 화면 x 좌표(pt).
+/// 결과 `shift` = 방 이름 왼쪽 끝에서 배지 가운데까지 왼쪽으로 옮길 거리. 배지가 들어갈 틈이 없으면 점만(`dotOnly`) —
+/// 그때도 방 이름과는 `minGap` 이상 띄운다.
+enum TypingPlacement {
+    /// 뒤로가기 버튼 오른쪽 끝 = 안전 영역 + 바 여백 16 + 버튼 44(iOS 26 둥근 버튼 · 화살표만). 실측이 다르면 이 값만 고친다.
+    static let backButtonTrailing: Double = 16 + 44
+    static let dotWidth: Double = 6
+    static let dotSpacing: Double = 4
+    static let minGap: Double = 4
+
+    enum Shape: Equatable { case full, dotOnly }
+    struct Result: Equatable { let shape: Shape; let shift: Double }
+
+    static func place(titleMinX: Double, backTrailing: Double, badgeWidth: Double) -> Result {
+        let room = titleMinX - backTrailing
+        if room >= badgeWidth + 2 * minGap { return Result(shape: .full, shift: room / 2) }
+        return Result(shape: .dotOnly, shift: max(room / 2, dotWidth / 2 + minGap))
+    }
+}
+
 struct Measured: View {
     let value: Double
     let report: (Double) -> Void
