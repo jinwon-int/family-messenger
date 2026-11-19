@@ -164,8 +164,17 @@ enum Strings {
     static let muteFailed = "알림 설정을 바꾸지 못했습니다. 잠시 뒤 다시 시도해 주세요."
 
     // 초대(InviteView, §12-E)
-    static let inviteTitle = "기기 초대"
-    static let inviteField = "초대할 기기 ID"
+    /// 오너 2026-11-19: 「기기 초대」 → 「사람 초대」. 입력은 기기 ID 지만, 한 사람의 기기 하나가 들어오면 그 기기가 같은 사람의
+    /// 다른 기기를 이 방에 불러온다(#616 「빠진 방 다시 찾기」, 기본 켜짐) — 사용자에게는 사람을 초대하는 일이다.
+    static let inviteTitle = "사람 초대"
+    static let inviteField = "초대할 사람의 기기 ID"
+    /// 초대 창 맨 위 「이 자리에 있는 사람」(오너 2026-11-19).
+    static func membersSection(_ count: Int) -> String { "이 자리에 있는 사람 \(count)명" }
+    static let membersInviteSection = "새로 초대하기"
+    static let memberMe = "나"
+    static let memberAgent = "불지기"
+    static func memberDeviceCount(_ count: Int) -> String { "기기 \(count)대" }
+    static let membersUnavailable = "명단을 아직 읽지 못했어요. 대화가 동기화되면 보입니다."
     static let inviteHint = "상대 기기의 '설정 → 기기 ID'(예: mom-iphone-1a2b3c)를 입력하세요. 상대가 먼저 이 대화방에 '참여 요청'을 해 두었거나, 상대 앱이 로비 키를 올려 두었어야 합니다(앱을 한 번 열면 됩니다). 초대하면 이 방의 암호화 키가 바뀌고(새 epoch) 상대가 대화에 들어옵니다."
     static let inviteButton = "초대"
     static func inviteDone(_ device: String) -> String { "\(device) 기기를 초대했습니다. 상대 앱에서 목록을 새로고침하면 대화가 열립니다." }

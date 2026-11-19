@@ -1550,6 +1550,12 @@ final class AppModel: ObservableObject {
         siblingNotes.append(SiblingNote(id: id, text: text))
     }
 
+    /// 이 방 그룹의 현재 명단(기기 ID) — 초대 창 「이 자리에 있는 사람」(오너 2026-11-19). 읽기만 한다(`RoomMembership.status`).
+    /// 방 상태가 없거나 읽지 못하면 nil.
+    func roomRoster(_ room: RoomID) -> [DeviceID]? {
+        (try? membership(room).status())?.roster
+    }
+
     /// 한 방의 초대 판정 입력(웹 `roomsView()`): 참여·정지·내 commit 대기·명단. 상태를 읽을 수 없으면 참여 안 함으로.
     private func roomView(_ record: RoomRecord) -> SelfService.RoomView {
         let status = (try? membership(record.room).status()) ?? RoomMembership.Status(joined: false, pending: false, roster: nil)
