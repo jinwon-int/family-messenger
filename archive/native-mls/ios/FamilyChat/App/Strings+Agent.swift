@@ -29,6 +29,9 @@ extension Strings {
     static let lastSentCollapse = "내 마지막 말 접기"
     static let lastSentJumpHint = "누르면 그 메시지로 이동"
     static let lastSentEarlierRegion = "이전에 내가 한 말 — 누르면 그 메시지로 이동"
+    /// 우측 상단 버튼(오너 2026-11-19 — 바는 누를 때만 내려온다).
+    static let lastSentShow = "내 마지막 말 보기"
+    static let lastSentHide = "내 마지막 말 닫기"
 
     // agent-choices-v1(#620 · 복수 선택 #624): 에이전트 선택지 카드. 보내기 버튼이 대신 보내는 글은 Core `AgentChoices.compose`
     // (줄마다 `N. 라벨` — 번호보다 내용, 봇·브리지 무변경).
