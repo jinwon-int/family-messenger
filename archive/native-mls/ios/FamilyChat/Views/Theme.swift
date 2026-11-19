@@ -175,6 +175,17 @@ enum Hande {
     static let radiusS: CGFloat = 10
     static let radiusM: CGFloat = 16
     static let radiusL: CGFloat = 24
+    /// 바 오른쪽 아이콘 묶음(오너 2026-11-19 — 대화방·목록 같게): 칸 폭 34 · 칸 사이 2 · 높이 44(누르는 영역, HIG 최소).
+    /// 따로 둔 ToolbarItem 들의 시스템 간격보다 좁아 오른쪽이 짧아진다.
+    static let toolbarIconWidth: CGFloat = 34
+    static let toolbarIconSpacing: CGFloat = 2
+}
+
+extension View {
+    /// 바 오른쪽 아이콘 한 칸(`Hande.toolbarIconWidth` × 44). 묶음 HStack 은 `Hande.toolbarIconSpacing` + `.imageScale(.large)`.
+    func handeToolbarIcon() -> some View {
+        frame(width: Hande.toolbarIconWidth, height: 44).contentShape(Rectangle())
+    }
 }
 
 /// 화면 배경: 밤 남색 → 아래 가운데에서 번지는 불빛. 낮불은 종이 단색.

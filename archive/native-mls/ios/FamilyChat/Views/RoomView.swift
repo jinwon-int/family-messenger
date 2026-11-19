@@ -85,6 +85,8 @@ struct RoomView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // 바 바로 아래 가운데 한 줄: 꺼진 자리 > 연결 중 > 타닥타닥 > 자리 요약(종전엔 바 안 제목 아래 — 오너 2026-11-19 옮김).
+            if hasStatusLine { roomStatusLine }
             // 디자인 2차 2d: 릴레이에 닿지 않는 동안 제목 아래 배너 한 줄(붉은 잉걸 10% 면 + 45% 선, 좌우 16). 연결되면 교체 없이 사라진다.
             if model.reconnecting {
                 HandeBanner(kind: .warn, text: Strings.relayUnreachableBanner)
@@ -328,49 +330,26 @@ struct RoomView: View {
         .navigationTitle(Strings.roomLabel(room))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            // #405 P2: 제목 아래 불가에 둘러앉은 자리(사람 크림색 · 에이전트 파란색).
+            // 오너 2026-11-19: 바 가운데에는 방 이름 한 줄만 — 아래 자리 요약 줄이 길면 제목 칸 폭이 그 줄에 맞춰져 좌우 버튼 사이
+            // 가운데에 못 들어가고, UIKit 이 칸을 옆으로 밀어 방 이름이 화면 가운데에서 벗어났다. 그 줄은 바 바로 아래(`roomStatusLine`)로.
             ToolbarItem(placement: .principal) {
-                VStack(spacing: 4) {
-                    Text(Strings.roomLabel(room)).font(.headline).foregroundStyle(p.ink)
-                    // 제목 아래 한 줄(바 높이에 두 줄만 들어간다): 꺼진 자리 > 연결 중 > 타닥타닥 > 자리 요약.
-                    if haltedReason != nil {
-                        // 디자인 2차 2f: 꺼진 자리는 자리 요약 대신 「불이 꺼진 자리」.
-                        Text(Strings.roomClosedPreview).font(.caption2).foregroundStyle(p.inkDim)
-                    } else if model.reconnecting {
-                        // 릴레이에 닿지 않는 동안만(원문 오류 대신). 동기화가 한 번 성공하면 사라진다.
-                        Text(Strings.connecting).font(.caption2).foregroundStyle(p.inkDim)
-                            .transition(.opacity)
-                    } else if let label = typingLabel {
-                        // #562 → 디자인 2차 2d: 크림 점 6 + 「정인이 타닥타닥…」 13. 릴레이에 닿지 않는 동안은 오래된 신호일 수 있어 보이지 않는다.
-                        HStack(spacing: 6) {
-                            SeatDot(size: 6)
-                            Text(label).font(.system(size: 13)).foregroundStyle(p.inkDim)
-                        }
-                        .transition(.opacity)
-                        .accessibilityElement(children: .combine)
-                    } else {
-                        // 디자인 1차 1c: 제목 아래 자리 요약 — ●●● 가족 3 · ● 불지기 공명.
-                        SeatSummary(glance: glance)
-                    }
-                }
-                .animation(.easeOut(duration: 0.2), value: model.reconnecting)
-                .animation(.easeOut(duration: 0.2), value: typingLabel)
+                Text(Strings.roomLabel(room)).font(.headline).foregroundStyle(p.ink).lineLimit(1)
             }
             // 오너 2026-11-19: 우측 아이콘(💬 · 🔔 · 초대)은 **한 항목 안의 좁은 HStack** — 따로 둔 ToolbarItem 셋은 시스템 간격이 넓어
-            // 오른쪽이 길어지고, 그만큼 제목(방 이름)이 가운데에서 밀렸다. 칸 폭은 `toolbarIconWidth`, 높이 44(누르는 영역 유지).
+            // 오른쪽이 길어지고, 그만큼 제목(방 이름)이 가운데에서 밀렸다. 칸 규격은 `Hande.toolbarIconWidth`·`toolbarIconSpacing`(목록과 같음).
             ToolbarItem(placement: .primaryAction) {
-                HStack(spacing: Self.toolbarIconSpacing) {
+                HStack(spacing: Hande.toolbarIconSpacing) {
                     // 「내 마지막 말」 여닫기 — 🔔 왼쪽. 이 방에 내가 한 말이 있을 때만.
                     if lastSent != nil { lastSentToolbarButton }
                     // 방별 알림(server/mute.go): 🔔 켜짐 / 🔕 꺼짐 — 같은 사람의 모든 기기에 적용. 값을 모르면(옛 릴레이) 버튼이 없다.
                     if let muted = model.relayMuted[room] {
                         Button {
                             Task { if !(await model.setMuted(room: room, muted: !muted)) { muteFailed = true } }
-                        } label: { toolbarIcon(muted ? "bell.slash" : "bell") }
+                        } label: { Image(systemName: muted ? "bell.slash" : "bell").handeToolbarIcon() }
                             .accessibilityLabel(muted ? Strings.unmuteButton : Strings.muteButton)
                             .accessibilityIdentifier("room-mute")
                     }
-                    Button { showInvite = true } label: { toolbarIcon("person.badge.plus") }
+                    Button { showInvite = true } label: { Image(systemName: "person.badge.plus").handeToolbarIcon() }
                         .accessibilityLabel(Strings.inviteTitle)
                         .disabled(!model.canRequestJoin)
                 }
@@ -391,25 +370,53 @@ struct RoomView: View {
         }
     }
 
+    /// 바 아래 줄에 보일 것이 있다(자리 요약은 사람·에이전트가 하나도 없으면 비어 있다 — 그때는 줄 자체를 두지 않는다).
+    private var hasStatusLine: Bool {
+        haltedReason != nil || model.reconnecting || typingLabel != nil || !glance.people.isEmpty || glance.hasAgent
+    }
+
+    /// #405 P2 → 오너 2026-11-19: 방 이름 아래 한 줄(불가에 둘러앉은 자리 — 사람 크림색 · 에이전트 파란색). 바 안에 두면 제목 칸이
+    /// 넓어져 방 이름이 가운데에서 밀려, 바 바로 아래 가운데로 옮겼다. 높이를 고정해 내용이 바뀌어도 대화 칸이 출렁이지 않는다.
+    private var roomStatusLine: some View {
+        Group {
+            if haltedReason != nil {
+                // 디자인 2차 2f: 꺼진 자리는 자리 요약 대신 「불이 꺼진 자리」.
+                Text(Strings.roomClosedPreview).font(.caption2).foregroundStyle(p.inkDim)
+            } else if model.reconnecting {
+                // 릴레이에 닿지 않는 동안만(원문 오류 대신). 동기화가 한 번 성공하면 사라진다.
+                Text(Strings.connecting).font(.caption2).foregroundStyle(p.inkDim)
+                    .transition(.opacity)
+            } else if let label = typingLabel {
+                // #562 → 디자인 2차 2d: 크림 점 6 + 「정인이 타닥타닥…」 13. 릴레이에 닿지 않는 동안은 오래된 신호일 수 있어 보이지 않는다.
+                HStack(spacing: 6) {
+                    SeatDot(size: 6)
+                    Text(label).font(.system(size: 13)).foregroundStyle(p.inkDim)
+                }
+                .transition(.opacity)
+                .accessibilityElement(children: .combine)
+            } else {
+                // 디자인 1차 1c: 자리 요약 — ●●● 가족 3 · ● 불지기 공명.
+                SeatSummary(glance: glance)
+            }
+        }
+        .lineLimit(1)
+        .frame(maxWidth: .infinity)
+        .frame(height: 22)
+        .padding(.bottom, 2)
+        .animation(.easeOut(duration: 0.2), value: model.reconnecting)
+        .animation(.easeOut(duration: 0.2), value: typingLabel)
+        .accessibilityIdentifier("room-status-line")
+    }
+
     /// 이 방에서 가장 최근 내 말(없으면 nil — 버튼·패널 모두 없음).
     private var lastSent: LastSent? { LastSent.find(messages.map(\.record), myDevice: model.deviceId) }
-
-    /// 우측 상단 아이콘 한 칸의 폭·칸 사이(오너 2026-11-19 「간격을 줄여 방 이름을 가운데로」). 높이 44 는 누르는 영역(HIG 최소).
-    static let toolbarIconWidth: CGFloat = 34
-    static let toolbarIconSpacing: CGFloat = 2
-
-    private func toolbarIcon(_ systemName: String) -> some View {
-        Image(systemName: systemName)
-            .frame(width: Self.toolbarIconWidth, height: 44)
-            .contentShape(Rectangle())
-    }
 
     /// 우측 상단 「내 마지막 말」 버튼 — 누르면 패널이 위에서 내려오고, 다시 누르면 올라간다.
     private var lastSentToolbarButton: some View {
         Button {
             withAnimation(.easeOut(duration: 0.2)) { showLastSent.toggle() }
         } label: {
-            toolbarIcon(showLastSent ? "text.bubble.fill" : "text.bubble")
+            Image(systemName: showLastSent ? "text.bubble.fill" : "text.bubble").handeToolbarIcon()
         }
         .accessibilityLabel(showLastSent ? Strings.lastSentHide : Strings.lastSentShow)
         .accessibilityIdentifier("room-last-sent")
