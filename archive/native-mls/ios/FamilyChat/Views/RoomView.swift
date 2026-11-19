@@ -2012,6 +2012,7 @@ struct ImageViewer: View {
             if let shareURL {
                 ShareLink(item: shareURL) { Image(systemName: "square.and.arrow.up") }
                     .accessibilityLabel(Strings.attachmentSave)
+                    .accessibilityIdentifier("photo-viewer-share")
                     .font(.title3.weight(.semibold))
                     .foregroundStyle(.white)
                     .padding(14)
