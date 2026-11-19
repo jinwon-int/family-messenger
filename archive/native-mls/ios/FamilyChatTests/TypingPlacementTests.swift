@@ -25,6 +25,13 @@ final class TypingPlacementTests: XCTestCase {
         XCTAssertEqual(place(0), .init(shape: .dotOnly, shift: TypingPlacement.dotWidth / 2 + TypingPlacement.minGap))
     }
 
+    func testDropsBelowTitleLineButStaysInsideBar() {
+        // 오너 2026-11-20: 방 이름 줄에서 8pt 아래 — 바 높이 안(10 이하)이라 잘리지 않는다.
+        XCTAssertEqual(TypingPlacement.drop, 8)
+        XCTAssertGreaterThan(TypingPlacement.drop, 0)
+        XCTAssertLessThanOrEqual(TypingPlacement.drop, TypingPlacement.maxDrop)
+    }
+
     func testFlameCyclesOneTwoThreeEveryHalfSecond() {
         let base = Date(timeIntervalSinceReferenceDate: 3000)   // 3000 / 0.5 = 6000 → 6000 % 3 = 0 → 1단계
         let levels = (0..<7).map { TypingIndicator.flameLevel(at: base.addingTimeInterval(Double($0) * 0.5 + 0.1)) }
