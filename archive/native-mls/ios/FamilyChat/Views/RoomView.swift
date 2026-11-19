@@ -1682,9 +1682,11 @@ struct AttachmentBubble: View {
     /// 사진 말풍선의 공유 파일(준비되면 URL, 아니면 nil) — 행이 말풍선 옆 공유 아이콘에 쓴다.
     var onShareURL: (URL?) -> Void = { _ in }
     @State private var preview: AttachmentPreview?
-    /// 사진 탭 → 전체 화면 보기(오너 요청 build 30). 확대용 원본은 누를 때 디코드한다.
-    @State private var viewerImage: UIImage?
-    @State private var showViewer = false
+    /// 사진 탭 → 전체 화면 보기(오너 요청 build 30). 확대용 원본은 누를 때 디코드한다. nil = 닫힘(닫으면 원본 비트맵도 놓는다).
+    /// #844: 커버 내용은 이 값을 **인자로** 받는다(`fullScreenCover(item:)`). 종전에는 `isPresented` + 따로 둔 `viewerImage` 였는데 둘 다
+    /// `body` 가 읽지 않는 상태라, 누른 직후 `body` 가 다시 계산되지 않아 커버 클로저가 옛 값(nil)을 봤다 — 내용 없는 검은 커버가 뜨고
+    /// 닫을 수단이 없었다(모델이 알려 `body` 가 다시 돌 때에야 사진이 들어왔다: 4초 폴링 때는 수 초, #763 뒤로는 최대 25초).
+    @State private var viewer: ViewerPhoto?
     /// PDF 탭 → QuickLook 전체 화면 보기(오너 요청 2026-11-06). nil = 닫힘.
     @State private var quickLookURL: URL?
     /// 본체를 끝내 읽지 못했다(재시도 소진) — 「불러오는 중」에 영원히 머물지 않게.
@@ -1779,15 +1781,13 @@ struct AttachmentBubble: View {
             guard url == nil else { return }
             DispatchQueue.main.async { PhotoViewerPresence.active = false }
         }
-        .fullScreenCover(isPresented: $showViewer, onDismiss: {
+        .fullScreenCover(item: $viewer, onDismiss: {
             // 밑의 방 화면이 다시 나타나는 콜백(onAppear)이 지난 뒤에 내린다.
             DispatchQueue.main.async { PhotoViewerPresence.active = false }
-        }) {
-            if let viewerImage {
-                // 실제로 떴을 때만 세운다(못 뜨면 onDismiss 도 없어 영영 남는다).
-                ImageViewer(image: viewerImage, shareURL: preview?.shareURL)
-                    .onAppear { PhotoViewerPresence.active = true }
-            }
+        }) { photo in
+            // 실제로 떴을 때만 세운다(못 뜨면 onDismiss 도 없어 영영 남는다).
+            ImageViewer(image: photo.image, shareURL: preview?.shareURL)
+                .onAppear { PhotoViewerPresence.active = true }
         }
         .task(id: "\(message.seq)#\(reload)") {
             guard preview == nil else { return }
@@ -1857,9 +1857,14 @@ struct AttachmentBubble: View {
     private func openViewer() {
         let original = isV2 ? preview?.shareURL.flatMap { try? Data(contentsOf: $0) } : model.attachment(room: message.room, seq: message.seq)
         guard let data = original, let image = UIImage(data: data) else { return }
-        viewerImage = image
-        showViewer = true
+        viewer = ViewerPhoto(image: image)
     }
+}
+
+/// 전체 화면으로 띄울 사진 한 장(#844) — `fullScreenCover(item:)` 의 항목. 누를 때마다 새 id 라 같은 사진을 다시 눌러도 새로 뜬다.
+struct ViewerPhoto: Identifiable {
+    let id = UUID()
+    let image: UIImage
 }
 
 /// PDF 카드(오너 요청 2026-11-06): 고정 크기(`PDFFirstPage.cardWidth` × 미리보기 칸 + 아래 줄) — 첫 장 미리보기(없으면 문서 아이콘)와
