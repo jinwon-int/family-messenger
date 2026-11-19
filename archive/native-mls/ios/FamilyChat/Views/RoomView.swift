@@ -79,6 +79,8 @@ struct RoomView: View {
     @State private var selectingByKey = false
     /// 「복사했어요」(선택 모드 ⌘C).
     @State private var toast: String?
+    /// 「내 마지막 말」 패널이 내려와 있다(우측 상단 버튼으로 여닫음, 오너 2026-11-19). 방을 나가면 닫는다.
+    @State private var showLastSent = false
 
 
     var body: some View {
@@ -95,17 +97,6 @@ struct RoomView: View {
             // 진입 시 최신 메시지(최하단)로 바로 가고, 새 메시지가 붙으면 따라 내려간다.
             ScrollViewReader { proxy in
               VStack(spacing: 0) {
-                // #405 P1: "내 마지막 말" 바(웹 last-sent.js) — 에이전트에게 무엇을 시켰는지, 답이 몇 개 왔는지.
-                if let last = LastSent.find(messages.map(\.record), myDevice: model.deviceId) {
-                    // 오너 2026-11-01: 펼치면 이전에 내가 한 말(오늘 전부, 적으면 지난 날 말로 10개까지) — 누르면 그 말로 간다.
-                    LastSentBar(room: room, lastSent: last,
-                                earlier: LastSent.earlier(messages.map(\.record), myDevice: model.deviceId,
-                                                          since: Calendar.current.startOfDay(for: Date()))) { seq in
-                        scrollToMessage(seq, proxy)
-                    }
-                    .id(room) // 펼침 상태(@State)는 접힘에서 시작 — 방을 바꾸면 새로 만든다.
-                    Divider()
-                }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
                         // #472: 맨 위 표지의 **실제** 위치 — 위로 읽으러 올라와 표지가 가까워지면 과거 글을 더 읽는다(onAppear 는 삽입 때 한 번만
@@ -163,6 +154,7 @@ struct RoomView: View {
                 .onDisappear {
                     guard !PhotoViewerPresence.active else { return }
                     model.resetTimelineWindow(room: room)
+                    showLastSent = false
                     model.roomHidden(room)   // #659: 바퀴가 이 방을 다시 "변화 없으면 건너뛰기" 대상으로 본다.
                 }
                 // 손가락으로 끌면(위로 읽으러 감) 늦은 이미지 로딩이 화면을 끌어내리지 않게 한다.
@@ -304,6 +296,10 @@ struct RoomView: View {
                     }
                 }
               }
+              // #405 P1 → 오너 2026-11-19: 「내 마지막 말」은 늘 붙어 있지 않고 우측 상단 버튼(`lastSentToolbarButton`)을 누를 때만
+              // 위에서 내려온다. 타임라인 위에 겹쳐 그려(오버레이) 대화 칸 높이가 바뀌지 않는다 — 바닥 기준 스크롤 위치가 흔들리지 않는다.
+              .overlay(alignment: .top) { lastSentPanel(proxy) }
+              .clipped() // 내려오는 동안 제목 줄 위로 삐져나오지 않게.
               // 디자인 2차 2f: 꺼진 자리의 지난 말풍선은 60% 흐림(목록 행 흐림과 같은 값).
               .opacity(haltedReason == nil ? 1 : 0.6)
             }
@@ -360,6 +356,10 @@ struct RoomView: View {
                 .animation(.easeOut(duration: 0.2), value: model.reconnecting)
                 .animation(.easeOut(duration: 0.2), value: typingLabel)
             }
+            // 오너 2026-11-19: 「내 마지막 말」 여닫기 — 🔔 왼쪽(툴바 항목은 선언 순서대로 왼쪽→오른쪽). 이 방에 내가 한 말이 있을 때만.
+            if lastSent != nil {
+                ToolbarItem(placement: .primaryAction) { lastSentToolbarButton }
+            }
             // 방별 알림(server/mute.go): 🔔 켜짐 / 🔕 꺼짐 — 같은 사람의 모든 기기에 적용. 값을 모르면(옛 릴레이) 버튼이 없다.
             if let muted = model.relayMuted[room] {
                 ToolbarItem(placement: .primaryAction) {
@@ -387,6 +387,40 @@ struct RoomView: View {
             guard let item else { return }
             pickedPhoto = nil
             Task { await sendPhoto(item) }
+        }
+    }
+
+    /// 이 방에서 가장 최근 내 말(없으면 nil — 버튼·패널 모두 없음).
+    private var lastSent: LastSent? { LastSent.find(messages.map(\.record), myDevice: model.deviceId) }
+
+    /// 우측 상단 「내 마지막 말」 버튼 — 누르면 패널이 위에서 내려오고, 다시 누르면 올라간다.
+    private var lastSentToolbarButton: some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.2)) { showLastSent.toggle() }
+        } label: {
+            Image(systemName: showLastSent ? "text.bubble.fill" : "text.bubble")
+        }
+        .accessibilityLabel(showLastSent ? Strings.lastSentHide : Strings.lastSentShow)
+        .accessibilityIdentifier("room-last-sent")
+    }
+
+    /// 버튼을 눌렀을 때만 내려오는 「내 마지막 말」 패널(바 + 펼치면 이전에 내가 한 말 — 오너 2026-11-01).
+    /// 말을 눌러 그 자리로 가면 패널은 올라간다(대화를 가리지 않게).
+    @ViewBuilder private func lastSentPanel(_ proxy: ScrollViewProxy) -> some View {
+        if showLastSent, let last = lastSent {
+            VStack(spacing: 0) {
+                LastSentBar(room: room, lastSent: last,
+                            earlier: LastSent.earlier(messages.map(\.record), myDevice: model.deviceId,
+                                                      since: Calendar.current.startOfDay(for: Date()))) { seq in
+                    scrollToMessage(seq, proxy)
+                    withAnimation(.easeOut(duration: 0.2)) { showLastSent = false }
+                }
+                .id(room) // 펼침 상태(@State)는 접힘에서 시작 — 방을 바꾸면 새로 만든다.
+                Divider()
+            }
+            .shadow(color: Color.black.opacity(0.18), radius: 6, y: 3)
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .accessibilityIdentifier("last-sent-panel")
         }
     }
 
