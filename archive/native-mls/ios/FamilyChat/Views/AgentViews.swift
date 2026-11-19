@@ -579,11 +579,13 @@ struct LastSentBar: View {
     /// 이 개수까지는 스크롤 없이 그린다(한 줄 ≈ 40pt → 상한 안).
     static let earlierUnscrolledMax = 5
 
-    init(room: RoomID, lastSent: LastSent, earlier: [LastSent], jump: @escaping (Int64) -> Void) {
+    /// - startExpanded: 처음부터 펼친 채로 그린다(우측 상단 버튼으로 연 패널 — 오너 2026-11-19).
+    init(room: RoomID, lastSent: LastSent, startExpanded: Bool = false, earlier: [LastSent], jump: @escaping (Int64) -> Void) {
         self.room = room
         self.lastSent = lastSent
         self.earlier = earlier
         self.jump = jump
+        _expanded = State(initialValue: startExpanded)
     }
 
     /// 종전(방별 펼침 기억) 저장 키 — 이제 읽지 않고 지우기만 한다.
