@@ -26,7 +26,10 @@ struct ZoomableImageView: UIViewRepresentable {
         scroll.bouncesZoom = true
         scroll.contentInsetAdjustmentBehavior = .never
         scroll.backgroundColor = .black
+        // UI 테스트(PhotoViewerUITests, #844)가 「사진 보기가 실제로 떴다」를 판정하는 표지 — 화면·VoiceOver 에는 드러나지 않는다.
+        scroll.accessibilityIdentifier = "photo-viewer-scroll"
         let imageView = UIImageView(image: image)
+        imageView.accessibilityIdentifier = "photo-viewer-image"
         imageView.contentMode = .scaleAspectFit
         imageView.isUserInteractionEnabled = true
         scroll.addSubview(imageView)

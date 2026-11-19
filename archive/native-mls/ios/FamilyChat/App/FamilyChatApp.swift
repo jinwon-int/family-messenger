@@ -19,6 +19,9 @@ struct FamilyChatApp: App {
             // 밀어서 답장 재현 화면(UI 테스트 전용 실행 인자) — 모델 부트스트랩·폴링 없이 행만 그린다.
             if ProcessInfo.processInfo.arguments.contains("-swipeReplyHarness") {
                 SwipeReplyHarness()
+            } else if ProcessInfo.processInfo.arguments.contains("-photoViewerHarness") {
+                // 사진 보기 재현 화면(#844) — 모델은 넘기기만 하고 부트스트랩하지 않는다(폴링 없음 = 아무것도 알리지 않는 모델).
+                PhotoViewerHarness().environmentObject(appDelegate.model)
             } else {
                 mainRoot
             }
