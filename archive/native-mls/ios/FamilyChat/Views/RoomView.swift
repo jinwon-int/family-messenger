@@ -353,10 +353,13 @@ struct RoomView: View {
                             if let label = typingLabel {
                                 let place = TypingPlacement.place(titleMinX: titleMinX,
                                                                   backTrailing: Double(Self.windowLeadingInset) + TypingPlacement.backButtonTrailing,
-                                                                  badgeWidth: TypingPlacement.dotWidth + TypingPlacement.dotSpacing + typingTextWidth)
+                                                                  fullWidth: TypingPlacement.fullWidth(textWidth: typingTextWidth),
+                                                                  compactWidth: TypingPlacement.compactWidth)
+                                // 오너 2026-11-20: 점 색 = 치는 쪽(에이전트만이면 파랑), 글자 옆에 불 그림 애니메이션(1→2→3, 0.5초씩).
                                 HStack(spacing: TypingPlacement.dotSpacing) {
-                                    SeatDot(size: TypingPlacement.dotWidth)
+                                    SeatDot(agent: typingByAgentOnly, size: TypingPlacement.dotWidth)
                                     if place.shape == .full { typingText }
+                                    if place.shape != .dotOnly { TypingFlame() }
                                 }
                                 .fixedSize()
                                 .offset(x: -place.shift)
@@ -600,12 +603,20 @@ struct RoomView: View {
 
     /// #562: 제목 옆 「입력중…」. 릴레이가 준 기기 가운데 내 다른 기기(같은 actor)는 빼고, 사람(이름)별로 한 번만 센다(기기가 여럿이어도).
     /// 1:1 방(말한 사람 ≤ 2 · 에이전트 없음)은 누구인지 뻔하므로 이름 없이. 아무도 없으면 nil(표시 없음).
-    private var typingLabel: String? {
-        let devices = model.typing[room] ?? []
+    /// 지금 치고 있는 기기(같은 사람의 내 기기는 뺀다).
+    private var typingDevices: [DeviceID] {
         let me = MessageRecord.actor(of: model.deviceId)
+        return (model.typing[room] ?? []).filter { model.deviceId.isEmpty || MessageRecord.actor(of: $0) != me }
+    }
+
+    /// 치는 쪽이 모두 에이전트 — 「타닥타닥…」 앞 점을 파랑으로(오너 2026-11-20).
+    private var typingByAgentOnly: Bool {
+        TypingIndicator.agentOnly(devices: typingDevices, agentActors: model.agentRoster.actors)
+    }
+
+    private var typingLabel: String? {
         var names: [String] = []
-        for device in devices {
-            if !model.deviceId.isEmpty, MessageRecord.actor(of: device) == me { continue }
+        for device in typingDevices {
             let name = AgentRosterNames.person(device)
             if !names.contains(name) { names.append(name) }
         }
@@ -2079,28 +2090,71 @@ struct DayDivider: View {
     }
 }
 
-/// GeometryReader 가 잰 값을 바로 보고한다(처음 한 번 + 바뀔 때마다). PreferenceKey 축약(`value = nextValue()`)은 build 51 실기기에서
-/// 칸 높이를 한 번도 올리지 못했다(모든 scroll 줄 `viewport=0`) — 상태 보고를 축약 순서에 기대지 않는다.
 /// 「타닥타닥…」 자리(오너 2026-11-19): 뒤로가기 버튼 오른쪽 끝과 방 이름 왼쪽 끝 **사이 가운데**. 화면 x 좌표(pt).
-/// 결과 `shift` = 방 이름 왼쪽 끝에서 배지 가운데까지 왼쪽으로 옮길 거리. 배지가 들어갈 틈이 없으면 점만(`dotOnly`) —
-/// 그때도 방 이름과는 `minGap` 이상 띄운다.
+/// 결과 `shift` = 방 이름 왼쪽 끝에서 배지 가운데까지 왼쪽으로 옮길 거리. 배지가 다 들어가지 않으면 점 + 불(`compact`),
+/// 그마저 좁으면 점만(`dotOnly`) — 어느 쪽이든 방 이름과는 `minGap` 이상 띄운다.
 enum TypingPlacement {
     /// 뒤로가기 버튼 오른쪽 끝 = 안전 영역 + 바 여백 16 + 버튼 44(iOS 26 둥근 버튼 · 화살표만). 실측이 다르면 이 값만 고친다.
     static let backButtonTrailing: Double = 16 + 44
     static let dotWidth: Double = 6
     static let dotSpacing: Double = 4
+    /// 「타닥타닥…」 옆 불 그림(FlameIcon) 한 변.
+    static let flameSize: Double = 14
     static let minGap: Double = 4
 
-    enum Shape: Equatable { case full, dotOnly }
+    enum Shape: Equatable { case full, compact, dotOnly }
     struct Result: Equatable { let shape: Shape; let shift: Double }
 
-    static func place(titleMinX: Double, backTrailing: Double, badgeWidth: Double) -> Result {
+    /// 점 + 글자 + 불 / 점 + 불 의 폭.
+    static func fullWidth(textWidth: Double) -> Double { dotWidth + dotSpacing + textWidth + dotSpacing + flameSize }
+    static var compactWidth: Double { dotWidth + dotSpacing + flameSize }
+
+    static func place(titleMinX: Double, backTrailing: Double, fullWidth: Double, compactWidth: Double) -> Result {
         let room = titleMinX - backTrailing
-        if room >= badgeWidth + 2 * minGap { return Result(shape: .full, shift: room / 2) }
+        if room >= fullWidth + 2 * minGap { return Result(shape: .full, shift: room / 2) }
+        if room >= compactWidth + 2 * minGap { return Result(shape: .compact, shift: room / 2) }
         return Result(shape: .dotOnly, shift: max(room / 2, dotWidth / 2 + minGap))
     }
 }
 
+/// 「타닥타닥…」 꾸밈(오너 2026-11-20): 불 그림 세 장(FlameIcon 1→2→3 — 켜진 갈래 수)을 0.5초씩 돌리고,
+/// 앞 점은 치는 쪽이 모두 에이전트면 파랑(`SeatDot(agent:)`), 사람이 하나라도 있으면 크림색.
+enum TypingIndicator {
+    static let frameInterval: TimeInterval = 0.5
+    static let frames = 3
+    /// 그 시각에 보일 불 세기(1…3).
+    static func flameLevel(at date: Date) -> Int {
+        let tick = Int((date.timeIntervalSinceReferenceDate / frameInterval).rounded(.down))
+        return ((tick % frames) + frames) % frames + 1
+    }
+    /// 치는 기기(내 기기 뺀)가 모두 에이전트인가. 비어 있으면 false.
+    static func agentOnly(devices: [DeviceID], agentActors: Set<String>) -> Bool {
+        !devices.isEmpty && devices.allSatisfy { agentActors.contains(MessageRecord.actor(of: $0)) }
+    }
+}
+
+/// 「타닥타닥…」 옆 불 그림. 동작 줄이기가 켜져 있으면 2단계에 멈춘다. 보이는 동안만 0.5초마다 다시 그린다.
+struct TypingFlame: View {
+    var size: CGFloat = CGFloat(TypingPlacement.flameSize)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Group {
+            if reduceMotion {
+                FlameIcon(level: 2, size: size)
+            } else {
+                TimelineView(.periodic(from: .now, by: TypingIndicator.frameInterval)) { context in
+                    FlameIcon(level: TypingIndicator.flameLevel(at: context.date), size: size)
+                }
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
+/// GeometryReader 가 잰 값을 바로 보고한다(처음 한 번 + 바뀔 때마다). PreferenceKey 축약(`value = nextValue()`)은 build 51 실기기에서
+/// 칸 높이를 한 번도 올리지 못했다(모든 scroll 줄 `viewport=0`) — 상태 보고를 축약 순서에 기대지 않는다.
 struct Measured: View {
     let value: Double
     let report: (Double) -> Void
