@@ -356,24 +356,25 @@ struct RoomView: View {
                 .animation(.easeOut(duration: 0.2), value: model.reconnecting)
                 .animation(.easeOut(duration: 0.2), value: typingLabel)
             }
-            // 오너 2026-11-19: 「내 마지막 말」 여닫기 — 🔔 왼쪽(툴바 항목은 선언 순서대로 왼쪽→오른쪽). 이 방에 내가 한 말이 있을 때만.
-            if lastSent != nil {
-                ToolbarItem(placement: .primaryAction) { lastSentToolbarButton }
-            }
-            // 방별 알림(server/mute.go): 🔔 켜짐 / 🔕 꺼짐 — 같은 사람의 모든 기기에 적용. 값을 모르면(옛 릴레이) 버튼이 없다.
-            if let muted = model.relayMuted[room] {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        Task { if !(await model.setMuted(room: room, muted: !muted)) { muteFailed = true } }
-                    } label: { Image(systemName: muted ? "bell.slash" : "bell") }
-                        .accessibilityLabel(muted ? Strings.unmuteButton : Strings.muteButton)
-                        .accessibilityIdentifier("room-mute")
-                }
-            }
+            // 오너 2026-11-19: 우측 아이콘(💬 · 🔔 · 초대)은 **한 항목 안의 좁은 HStack** — 따로 둔 ToolbarItem 셋은 시스템 간격이 넓어
+            // 오른쪽이 길어지고, 그만큼 제목(방 이름)이 가운데에서 밀렸다. 칸 폭은 `toolbarIconWidth`, 높이 44(누르는 영역 유지).
             ToolbarItem(placement: .primaryAction) {
-                Button { showInvite = true } label: { Image(systemName: "person.badge.plus") }
-                    .accessibilityLabel(Strings.inviteTitle)
-                    .disabled(!model.canRequestJoin)
+                HStack(spacing: Self.toolbarIconSpacing) {
+                    // 「내 마지막 말」 여닫기 — 🔔 왼쪽. 이 방에 내가 한 말이 있을 때만.
+                    if lastSent != nil { lastSentToolbarButton }
+                    // 방별 알림(server/mute.go): 🔔 켜짐 / 🔕 꺼짐 — 같은 사람의 모든 기기에 적용. 값을 모르면(옛 릴레이) 버튼이 없다.
+                    if let muted = model.relayMuted[room] {
+                        Button {
+                            Task { if !(await model.setMuted(room: room, muted: !muted)) { muteFailed = true } }
+                        } label: { toolbarIcon(muted ? "bell.slash" : "bell") }
+                            .accessibilityLabel(muted ? Strings.unmuteButton : Strings.muteButton)
+                            .accessibilityIdentifier("room-mute")
+                    }
+                    Button { showInvite = true } label: { toolbarIcon("person.badge.plus") }
+                        .accessibilityLabel(Strings.inviteTitle)
+                        .disabled(!model.canRequestJoin)
+                }
+                .imageScale(.large) // 막대 버튼 항목과 같은 아이콘 크기.
             }
         }
         .sheet(isPresented: $showInvite) { InviteView(room: room).environmentObject(model) }
@@ -393,12 +394,22 @@ struct RoomView: View {
     /// 이 방에서 가장 최근 내 말(없으면 nil — 버튼·패널 모두 없음).
     private var lastSent: LastSent? { LastSent.find(messages.map(\.record), myDevice: model.deviceId) }
 
+    /// 우측 상단 아이콘 한 칸의 폭·칸 사이(오너 2026-11-19 「간격을 줄여 방 이름을 가운데로」). 높이 44 는 누르는 영역(HIG 최소).
+    static let toolbarIconWidth: CGFloat = 34
+    static let toolbarIconSpacing: CGFloat = 2
+
+    private func toolbarIcon(_ systemName: String) -> some View {
+        Image(systemName: systemName)
+            .frame(width: Self.toolbarIconWidth, height: 44)
+            .contentShape(Rectangle())
+    }
+
     /// 우측 상단 「내 마지막 말」 버튼 — 누르면 패널이 위에서 내려오고, 다시 누르면 올라간다.
     private var lastSentToolbarButton: some View {
         Button {
             withAnimation(.easeOut(duration: 0.2)) { showLastSent.toggle() }
         } label: {
-            Image(systemName: showLastSent ? "text.bubble.fill" : "text.bubble")
+            toolbarIcon(showLastSent ? "text.bubble.fill" : "text.bubble")
         }
         .accessibilityLabel(showLastSent ? Strings.lastSentHide : Strings.lastSentShow)
         .accessibilityIdentifier("room-last-sent")
@@ -409,7 +420,8 @@ struct RoomView: View {
     @ViewBuilder private func lastSentPanel(_ proxy: ScrollViewProxy) -> some View {
         if showLastSent, let last = lastSent {
             VStack(spacing: 0) {
-                LastSentBar(room: room, lastSent: last,
+                // 오너 2026-11-19: 버튼으로 열면 처음부터 펼침(이전에 내가 한 말 목록까지).
+                LastSentBar(room: room, lastSent: last, startExpanded: true,
                             earlier: LastSent.earlier(messages.map(\.record), myDevice: model.deviceId,
                                                       since: Calendar.current.startOfDay(for: Date()))) { seq in
                     scrollToMessage(seq, proxy)
