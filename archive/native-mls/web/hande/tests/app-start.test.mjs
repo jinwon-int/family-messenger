@@ -4,6 +4,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {startApp} from '../app.js';
+import {REQUEST_TIMEOUT_MS} from '../relay.js';
 import {b64} from '../room.js';
 
 const ME = 'mom-web-aaaaaa';
@@ -191,6 +192,23 @@ test('저장된 방이 있으면 릴레이 응답을 하나도 받기 전에 방
   assert.equal(await later.room.onSend('이제 보냄'), true);
   assert.ok(h.worker.ops.includes('family:encrypt'));
   assert.ok(net.seen.some(p => p.startsWith('POST /v2/rooms/family/events')));
+});
+
+// #853: 첫 sync 요청이 응답 없이 멈추면(절전 복귀·망 전환) 예전엔 작성창이 영영 잠겼다 — 시간 제한이 지나면 풀린다.
+test('#853 첫 sync 요청이 멈춰도 릴레이 시간 제한이 지나면 작성창 잠금이 풀리고 연결 표시가 뜬다', async t => {
+  const net = fakeRelay(relayRoutes({listed: ['family'], events: {family: []}}), {hold: true});
+  const h = launch(t, {dev: device([family()]), net});
+  await until(() => h.shell() && net.seen.some(isEvents('family')), '저장분 화면 + 첫 sync 요청');
+  assert.equal(h.shell().room.syncing, true, '응답 전에는 잠겨 있다');
+  await sleep(30);
+  assert.equal(h.shell().room.syncing, true, '시간 제한 전에는 계속 잠겨 있다(예전엔 여기서 영영 멈췄다)');
+  const fired = h.timers.timeouts.filter(x => x.ms === REQUEST_TIMEOUT_MS);
+  assert.ok(fired.length > 0, '릴레이 요청마다 시간 제한 타이머가 걸린다');
+  for (const x of fired) x.fn();
+  await until(() => h.shell().room.syncing === false, '시간 제한 뒤 작성창 잠금 해제');
+  assert.equal(h.shell().room.offline, true, '연결 배너');
+  assert.equal(h.app.rooms.get('family').session.state.live, true);
+  net.release();
 });
 
 // 이 시험은 화면·릴레이 호출 순서만 본다(새로 생긴 상태 값은 보지 않는다) — 이 변경 전의 app.js 에서도 그대로 통과한다.
