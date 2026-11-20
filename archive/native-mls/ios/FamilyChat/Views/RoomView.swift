@@ -362,7 +362,8 @@ struct RoomView: View {
                                     if place.shape != .dotOnly { TypingFlame() }
                                 }
                                 .fixedSize()
-                                .offset(x: -place.shift)
+                                // 오너 2026-11-20: 가로 자리는 그대로, 세로는 방 이름 줄보다 `drop` 만큼 아래(바 아래쪽 가장자리).
+                                .offset(x: -place.shift, y: TypingPlacement.drop)
                                 .transition(.opacity)
                                 .accessibilityElement(children: .ignore)
                                 .accessibilityLabel(label)
@@ -2101,6 +2102,9 @@ enum TypingPlacement {
     /// 「타닥타닥…」 옆 불 그림(FlameIcon) 한 변.
     static let flameSize: Double = 14
     static let minGap: Double = 4
+    /// 방 이름 줄 가운데에서 아래로 내리는 거리(오너 2026-11-20 「8pt 내려 바 아래쪽에 붙이기」). 바(44pt) 밖으로 잘리지 않게 10 이하.
+    static let drop: Double = 8
+    static let maxDrop: Double = 10
 
     enum Shape: Equatable { case full, compact, dotOnly }
     struct Result: Equatable { let shape: Shape; let shift: Double }
