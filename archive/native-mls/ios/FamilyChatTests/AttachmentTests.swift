@@ -148,6 +148,44 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: b), Data("B".utf8))
     }
 
+    /// #851: 보낸 쪽 이름 힌트(file-v2 `name`)가 있으면 그 이름으로 내보낸다. 같은 방의 같은 이름 두 개는 seq 폴더로 갈린다.
+    func testTemporaryExportUsesTheSenderNameAndKeepsSameNamesApart() throws {
+        func record(_ seq: Int64, _ mime: String, _ body: String) -> MessageRecord {
+            MessageRecord(room: "family", seq: seq, senderDevice: "dad-pc", clientId: FileV2Format.newClientId(), kind: .attachment,
+                          body: mime, attachment: Data(body.utf8), receivedAt: Date(), decryptedBy: .app)
+        }
+        let name = "교육자료 (1).pptx"
+        let a = try XCTUnwrap(AttachmentExport.temporaryURL(for: record(8, AttachmentFormat.pptxMime, "A"), nameHint: name))
+        let b = try XCTUnwrap(AttachmentExport.temporaryURL(for: record(9, AttachmentFormat.pptxMime, "B"), nameHint: name))
+        XCTAssertEqual(a.lastPathComponent, name)
+        XCTAssertEqual(b.lastPathComponent, name)
+        XCTAssertNotEqual(a, b)
+        XCTAssertEqual(try Data(contentsOf: a), Data("A".utf8))
+        XCTAssertEqual(try Data(contentsOf: b), Data("B".utf8))
+        // 내용은 PDF 인데 이름이 .html — QuickLook 이 PDF 로 열도록 내용의 확장자가 붙는다.
+        let c = try XCTUnwrap(AttachmentExport.temporaryURL(for: record(10, "application/pdf", "%PDF-1.7"), nameHint: "계약서.html"))
+        XCTAssertEqual(c.lastPathComponent, "계약서.html.pdf")
+        XCTAssertEqual(c.pathExtension, "pdf")
+        // 경로 조각은 마지막 것만 — 공유 폴더 밖으로 나가지 않는다. 쓸 수 없는 이름은 종전 이름.
+        let d = try XCTUnwrap(AttachmentExport.temporaryURL(for: record(11, "application/pdf", "%PDF-1.7"), nameHint: "../../../evil.pdf"))
+        XCTAssertEqual(d.lastPathComponent, "evil.pdf")
+        XCTAssertTrue(d.deletingLastPathComponent().path.hasSuffix("/hande-share/family/11"), d.path)
+        let e = try XCTUnwrap(AttachmentExport.temporaryURL(for: record(12, "application/pdf", "%PDF-1.7"), nameHint: ".hidden"))
+        XCTAssertEqual(e.lastPathComponent, "attachment-12.pdf")
+        XCTAssertTrue(e.deletingLastPathComponent().path.hasSuffix("/hande-share/family"), e.path)
+    }
+
+    /// #851: 파일 말풍선 — 이름이 있으면 웹처럼 「📎 이름 · 크기」, 없으면 내용으로 정한 종류(OOXML 은 긴 MIME 대신 짧은 이름).
+    func testFileBubbleTextShowsTheSenderNameOrTheSniffedKind() {
+        let named = Strings.attachmentFile(97_000, AttachmentFormat.pptxMime, name: "교육자료.pptx")
+        XCTAssertTrue(named.hasPrefix("📎 교육자료.pptx · "), named)
+        XCTAssertFalse(named.contains("vnd."), named)
+        let unnamed = Strings.attachmentFile(97_000, AttachmentFormat.pptxMime)
+        XCTAssertTrue(unnamed.hasPrefix("📎 파일 · "), unnamed)
+        XCTAssertTrue(unnamed.hasSuffix(" · PowerPoint"), unnamed)
+        XCTAssertTrue(Strings.attachmentFile(10, "application/x-thing", name: "").hasSuffix(" · application/x-thing"))
+    }
+
     /// #497: 말풍선 미리보기는 축소 디코드 — 긴 변이 말풍선 최대 × 배율을 넘지 않고, 가로세로 비는 지킨다.
     func testThumbnailIsDownsampledForTheBubble() throws {
         let size = CGSize(width: 3000, height: 2000)

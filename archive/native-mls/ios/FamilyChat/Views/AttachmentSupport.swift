@@ -50,16 +50,21 @@ enum AttachmentPreparer {
     #endif
 }
 
-/// 받은 첨부를 공유 시트에 넘길 임시 파일(앱 전용 tmp, 보호 등급 기본). 이름은 웹과 같은 규칙 `attachment-<seq>.<ext>`.
-/// 방마다 하위 폴더 — seq 는 방 안에서만 유일해 두 방의 같은 seq 가 서로 덮어쓰지 않게(#497). 파일 쓰기는 말풍선이 처음 준비될 때
-/// 한 번(`AttachmentPreviewCache`), body 에서 부르지 않는다.
+/// 받은 첨부를 공유 시트에 넘길 임시 파일(앱 전용 tmp, 보호 등급 기본). 이름은 `AttachmentFormat.exportName`(#851): 보낸 쪽 이름 힌트
+/// (file-v2 `name`)가 있으면 그 이름(내용과 확장자가 어긋나면 내용의 확장자를 덧붙인다), 없으면 웹과 같은 `attachment-<seq>.<ext>`.
+/// `record.body` 는 **내용으로 정한** MIME 이어야 한다(v1 = 수신 때 sniff, file-v2 = 복호화한 바이트를 sniff 한 표시용 행).
+/// 방마다 하위 폴더 — seq 는 방 안에서만 유일해 두 방의 같은 seq 가 서로 덮어쓰지 않게(#497). 보낸 이름은 방 안에서도 겹칠 수 있어
+/// (`image.jpg` 두 장) seq 폴더를 하나 더 둔다. 파일 쓰기는 말풍선이 처음 준비될 때 한 번(`AttachmentPreviewCache`), body 에서 부르지 않는다.
 enum AttachmentExport {
-    static func temporaryURL(for record: MessageRecord, bytes override: Data? = nil) -> URL? {
+    static func temporaryURL(for record: MessageRecord, bytes override: Data? = nil, nameHint: String? = nil) -> URL? {
         guard let bytes = override ?? record.attachment else { return nil }
-        let name = "attachment-\(record.seq).\(AttachmentFormat.fileExtension(mime: record.body))"
+        let generated = AttachmentFormat.exportName(seq: record.seq, mime: record.body, nameHint: nil)
+        let name = AttachmentFormat.exportName(seq: record.seq, mime: record.body, nameHint: nameHint)
         let folder = record.room.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "room"
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("hande-share", isDirectory: true)
-            .appendingPathComponent(folder, isDirectory: true).appendingPathComponent(name)
+        var directory = FileManager.default.temporaryDirectory.appendingPathComponent("hande-share", isDirectory: true)
+            .appendingPathComponent(folder, isDirectory: true)
+        if name != generated { directory = directory.appendingPathComponent(String(record.seq), isDirectory: true) }
+        let url = directory.appendingPathComponent(name)
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try bytes.write(to: url, options: [.atomic])

@@ -1791,7 +1791,8 @@ struct AttachmentBubble: View {
                     .accessibilityLabel(Strings.attachmentPDFOpen)
                     .accessibilityAddTraits(.isButton)
             } else {
-                Text(Strings.attachmentFile(byteCount, preview?.mime ?? message.body)).font(.footnote).modifier(AttachmentTextInset())
+                Text(Strings.attachmentFile(byteCount, preview?.mime ?? message.body, name: preview?.name)).font(.footnote)
+                    .lineLimit(3).truncationMode(.middle).modifier(AttachmentTextInset())
             }
             // 사진은 말풍선 바깥 옆 아이콘(`PhotoShareRow`)으로 공유한다 — 말풍선 안 줄이 없어 로딩 뒤 높이가 바뀔 일이 없다(#647).
             if !Self.sharesBeside(message), let url = preview?.shareURL {
@@ -1843,7 +1844,8 @@ struct AttachmentBubble: View {
             let shown = MessageRecord(room: message.room, seq: message.seq, senderDevice: message.senderDevice, clientId: message.clientId,
                                       kind: .attachment, body: AttachmentFormat.sniffMime(bytes), attachment: nil,
                                       receivedAt: message.receivedAt, decryptedBy: message.decryptedBy)
-            preview = await AttachmentPreviewCache.shared.prepare(record: shown, bytes: bytes, scale: displayScale)
+            // #851: 보낸 쪽 이름 힌트는 공유 파일 이름·말풍선 표시에만 — 종류(미리보기·QuickLook)는 위에서 sniff 한 내용으로 정한다.
+            preview = await AttachmentPreviewCache.shared.prepare(record: shown, bytes: bytes, scale: displayScale, nameHint: descriptor.name)
             onShareURL(preview?.shareURL)
             rememberSize()
             onLoaded()

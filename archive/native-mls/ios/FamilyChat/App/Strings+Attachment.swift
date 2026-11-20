@@ -14,7 +14,12 @@ extension Strings {
     static func fileV2Failed(_ bytes: Int) -> String {
         "📎 첨부를 열 수 없음 · \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)) — 눌러서 다시 받기"
     }
-    static func attachmentFile(_ bytes: Int, _ mime: String) -> String { "📎 파일 · \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)) · \(mime)" }
+    /// 파일 말풍선(#851). 보낸 쪽 이름이 있으면 웹과 같은 「📎 이름 · 크기」, 없으면 「📎 파일 · 크기 · 종류」(종류는 내용으로 정한 것).
+    static func attachmentFile(_ bytes: Int, _ mime: String, name: String? = nil) -> String {
+        let size = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+        if let name, !name.isEmpty { return "📎 \(name) · \(size)" }
+        return "📎 파일 · \(size) · \(AttachmentFormat.typeLabel(mime: mime))"
+    }
     static let attachmentSave = "저장·공유"
     /// PDF 카드(받은 바이트로 판별) — 첫 장 미리보기 + 아래 줄, 누르면 QuickLook 으로 바로 본다.
     static func attachmentPDFSize(_ bytes: Int) -> String { "PDF · \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))" }
