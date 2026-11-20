@@ -5,26 +5,57 @@
 // (#251 A-1) and the quiet poll only flips the offline marker.
 import {strings} from './strings.js';
 
-export function createRelay({fetch = globalThis.fetch.bind(globalThis), onOffline = () => {}} = {}) {
+/**
+ * JSON 요청 하나의 시간 제한(#853). 응답이 오지 않는 요청(절전 복귀·망 전환·반쯤 죽은 연결)은 브라우저가 몇 분씩 붙잡을 수
+ * 있는데, 방 sync 가 그 요청을 기다리는 동안 작성창이 잠긴다(#828 `S.live`). 시간이 지나면 네트워크 실패와 같게 끝낸다.
+ */
+export const REQUEST_TIMEOUT_MS = 15_000;
+/** `/v2/watch` 는 릴레이가 `wait` 만큼 붙잡는 게 정상이라, 그 위에 이만큼만 더 기다린다. */
+export const WATCH_TIMEOUT_MARGIN_MS = 10_000;
+
+export function createRelay({fetch = globalThis.fetch.bind(globalThis), onOffline = () => {}, timeoutMs = REQUEST_TIMEOUT_MS} = {}) {
   let offline = false;
   function setOffline(down) {
     if (down === offline) return;
     offline = down; onOffline(down);
   }
-  async function api(method, path, body) {
-    let response;
+  /**
+   * `run(signal)` 을 `ms` 안에 끝낸다. abort 로 실제 요청을 끊고, abort 를 따르지 않는 fetch 도 있으니 race 로도 끝낸다.
+   * 타이머는 호출 시점의 전역 setTimeout 을 쓴다(테스트가 바꿔 끼운 타이머 포함).
+   */
+  function withTimeout(run, ms) {
+    const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+    let timer = null;
+    const expired = new Promise((_, reject) => {
+      timer = globalThis.setTimeout(() => {
+        const e = new Error(`relay request timed out after ${ms} ms`); e.name = 'TimeoutError';
+        try { ctrl?.abort(e); } catch (_) { /* 옛 브라우저: abort(reason) 미지원 */ }
+        reject(e);
+      }, ms);
+    });
+    const work = run(ctrl?.signal);
+    work.catch(() => {});   // race 에서 진 쪽의 늦은 거절이 처리 안 된 거절로 남지 않게
+    return Promise.race([work, expired]).finally(() => globalThis.clearTimeout(timer));
+  }
+  async function api(method, path, body, {timeoutMs: limit = timeoutMs} = {}) {
+    let result;
     try {
-      response = await fetch(path, {method, credentials: 'same-origin',
-        headers: body === undefined ? {} : {'Content-Type': 'application/json'},
-        body: body === undefined ? undefined : JSON.stringify(body)});
+      result = await withTimeout(async signal => {
+        const response = await fetch(path, {method, credentials: 'same-origin',
+          headers: body === undefined ? {} : {'Content-Type': 'application/json'},
+          body: body === undefined ? undefined : JSON.stringify(body), ...(signal ? {signal} : {})});
+        let json = null;
+        try { json = await response.json(); } catch (_) { json = null; }
+        return {response, json};
+      }, limit);
     } catch (error) {
       setOffline(true);
       const wrapped = new Error(strings.relay.networkFailed); wrapped.network = true; wrapped.cause = error;
+      if (error?.name === 'TimeoutError') wrapped.timeout = true;
       throw wrapped;
     }
+    const {response, json} = result;
     setOffline(false);
-    let json = null;
-    try { json = await response.json(); } catch (_) { json = null; }
     if (response.status === 401) { const e = new Error(strings.relay.unauthorized); e.unauthorized = true; throw e; }
     return {status: response.status, body: json};
   }
@@ -113,7 +144,8 @@ export function createRelay({fetch = globalThis.fetch.bind(globalThis), onOfflin
   async function watch(device, rooms, waitMs) {
     const q = new URLSearchParams({device, wait: String(Math.max(0, Math.floor(waitMs)))});
     for (const {room, after} of rooms) q.append('room', `${room}:${Math.max(0, Math.floor(after))}`);
-    const {status, body} = await api('GET', `/v2/watch?${q.toString().replaceAll('%3A', ':')}`);
+    const {status, body} = await api('GET', `/v2/watch?${q.toString().replaceAll('%3A', ':')}`, undefined,
+      {timeoutMs: Math.max(0, Math.floor(waitMs)) + WATCH_TIMEOUT_MARGIN_MS});
     if (status === 404 && (body === null || typeof body !== 'object')) return {supported: false, changed: [], errors: {}};
     if (status !== 200 || !body || !Array.isArray(body.changed)) {
       const e = new Error(`watch ${describe(status, body)}`); e.status = status; throw e;

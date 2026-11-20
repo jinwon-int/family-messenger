@@ -2,7 +2,7 @@
 // node --test archive/native-mls/web/hande/tests/relay.test.mjs
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {createRelay} from '../relay.js';
+import {createRelay, REQUEST_TIMEOUT_MS, WATCH_TIMEOUT_MARGIN_MS} from '../relay.js';
 
 const fetchWith = (status, body) => async () => ({status, json: async () => { if (body === undefined) throw new Error('no body'); return body; }});
 
@@ -42,4 +42,44 @@ test('room-order v1: 404(옛 릴레이)는 throw 하지 않고, 네트워크 실
   assert.deepEqual(await createRelay({fetch: fetchWith(404, {error: 'not_found'})}).getRoomOrder('d'), {status: 404, body: {error: 'not_found'}});
   const down = createRelay({fetch: async () => { throw new TypeError('Failed to fetch'); }});
   await assert.rejects(() => down.putRoomOrder('d', [], 0), e => e.network === true);
+});
+
+// #853: 응답이 오지 않는 요청은 시간 제한 뒤 네트워크 실패로 끝난다 — 방 sync 가 끝나야 작성창이 풀리기 때문(#828 S.live).
+const never = () => new Promise(() => {});
+
+test('#853 시간 제한: abort 를 무시하고 영영 멈춘 fetch 도 timeoutMs 뒤 network·timeout 오류로 끝나고 offline 이 켜진다', async () => {
+  const offline = [];
+  const relay = createRelay({fetch: never, onOffline: down => offline.push(down), timeoutMs: 20});
+  await assert.rejects(() => relay.api('GET', '/v2/rooms/family/events?device=d&after=1'), e => e.network === true && e.timeout === true && e.cause?.name === 'TimeoutError');
+  assert.deepEqual(offline, [true]);
+  assert.equal(relay.offline, true);
+});
+
+test('#853 시간 제한: 요청에 abort 신호를 실어 보내고, 시간이 지나면 그 신호로 실제 요청을 끊는다', async () => {
+  let signal = null;
+  const fetch = (_path, init) => new Promise((_, reject) => { signal = init.signal; init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))); });
+  await assert.rejects(() => createRelay({fetch, timeoutMs: 20}).api('GET', '/v2/me'), e => e.network === true && e.timeout === true);
+  assert.ok(signal instanceof AbortSignal);
+  assert.equal(signal.aborted, true);
+});
+
+test('#853 시간 제한: 머리는 왔는데 본문이 멈춰도 같은 시한 안에서 끝난다', async () => {
+  const fetch = async () => ({status: 200, json: never});
+  await assert.rejects(() => createRelay({fetch, timeoutMs: 20}).api('GET', '/v2/me'), e => e.timeout === true);
+});
+
+test('#853 시간 제한: 기본값·watch 여유, 정상 응답이면 타이머를 지우고 offline 을 끈다', async t => {
+  const armed = []; const cleared = [];
+  const realSet = globalThis.setTimeout; const realClear = globalThis.clearTimeout;
+  globalThis.setTimeout = (fn, ms) => { armed.push(ms); return armed.length; };
+  globalThis.clearTimeout = id => { cleared.push(id); };
+  t.after(() => { globalThis.setTimeout = realSet; globalThis.clearTimeout = realClear; });
+  const offline = [];
+  const relay = createRelay({fetch: fetchWith(200, {subject: 's', changed: []}), onOffline: d => offline.push(d)});
+  assert.equal((await relay.api('GET', '/v2/me')).status, 200);
+  await relay.watch('dev-1', [{room: 'family', after: 3}], 25_000);
+  assert.deepEqual(armed, [REQUEST_TIMEOUT_MS, 25_000 + WATCH_TIMEOUT_MARGIN_MS]);
+  assert.deepEqual(cleared, [1, 2], '응답이 오면 두 타이머 모두 지운다');
+  assert.equal(REQUEST_TIMEOUT_MS, 15_000);
+  assert.deepEqual(offline, [], '처음부터 온라인이면 offline 알림 없음');
 });
