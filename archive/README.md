@@ -26,6 +26,12 @@ allowlist, 2인 고정 `LeafNodeIndex(1)`. 전부 태그 `archive-frozen-2026091
 
 커스터디가 `experiments/openmls-browser/custody/` 단일 스택으로 흡수된 뒤 남은 CI 밖 잔재: `experiments/device-keystore/` 전부(password-worker·probe·세션 레코드 워커와 로컬 번들 고정 증거), 스모크 3종(`device_keystore_smoke.py`·`password_worker_smoke.py`·`session_record_smoke.py`)과 그 파일 검사, 스모크 없던 `web/native-worker.js`·합성 채팅 페이지(`chat.*`·`native.html`)와 해시 증거 3편. 설계 문서 6편은 [`docs/history/native-mls/`](../docs/history/native-mls/)에 이력으로 옮겼다.
 
+## 퇴역 서비스
+
+| 경로 | 내용 | 상태 |
+|---|---|---|
+| [`sygnal/`](sygnal/) | 웹 푸시 게이트웨이 Sygnal 배포 패키지·런북·패키지 검사 ([#787](https://github.com/jinwon-int/family-messenger/issues/787)) | **퇴역.** CI 밖 |
+
 ## 규칙
 
 - CI는 `.github/workflows/native-mls.yml` **1 job ≤25분** (`workflow_dispatch` + `archive/**` 경로 필터). 옛 `mls-experiment.yml`(16 job/535분)은 되돌리지 않는다.
