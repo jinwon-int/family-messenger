@@ -23,6 +23,8 @@ struct AttachmentPreview {
     var pixelSize: PixelSize? = nil
     /// PDF(내용 판별) 첫 장 미리보기 — 시스템 썸네일 서비스가 앱 밖 프로세스에서 그린다(`PDFFirstPage`). 실패하면 nil(카드는 아이콘).
     var pdfFirstPage: UIImage? = nil
+    /// #851: 보낸 쪽 파일 이름 힌트(file-v2 `name`)가 쓸 수 있는 이름일 때 그 저장 이름(`AttachmentFormat.exportName`) — 파일 말풍선의 표시 이름. 없으면 nil.
+    var name: String? = nil
 }
 
 /// 방·seq → 준비물. `NSCache` 는 스레드 안전하고 메모리 압박 때 스스로 비운다(비워지면 말풍선이 다시 준비할 뿐).
@@ -55,21 +57,26 @@ final class AttachmentPreviewCache {
     }
 
     /// 백그라운드에서 축소 디코드 + 공유 파일을 만들고 캐시에 넣는다. 이미 있으면 그대로 돌려준다.
-    func prepare(record: MessageRecord, bytes: Data, scale: CGFloat) async -> AttachmentPreview {
+    /// `nameHint`(#851) = 보낸 쪽 파일 이름 힌트(file-v2 설명자 `name`) — 공유 파일 이름과 말풍선 표시에만 쓴다(종류 판정은 내용).
+    func prepare(record: MessageRecord, bytes: Data, scale: CGFloat, nameHint: String? = nil) async -> AttachmentPreview {
         if let cached = preview(room: record.room, seq: record.seq) { return cached }
         let made = await Task.detached(priority: .userInitiated) { () async -> AttachmentPreview in
             let thumbnail = AttachmentFormat.isImage(mime: record.body) ? AttachmentThumbnail.make(bytes, scale: scale) : nil
             let pixels = thumbnail.flatMap { thumb in
                 ImagePixelSize.probe(bytes) ?? thumb.cgImage.flatMap { PixelSize(width: $0.width, height: $0.height) }
             }
-            let shareURL = AttachmentExport.temporaryURL(for: record, bytes: bytes)
+            let shareURL = AttachmentExport.temporaryURL(for: record, bytes: bytes, nameHint: nameHint)
             // record.body = 받은 바이트를 sniff 한 MIME(v1 수신 때 · file-v2 는 복호화 뒤 `shown`) — 보낸 쪽 힌트가 아니다.
             var firstPage: UIImage?
             if AttachmentFormat.isPDF(mime: record.body), let shareURL {
                 firstPage = await PDFFirstPage.make(url: shareURL, scale: scale)
             }
             return AttachmentPreview(thumbnail: thumbnail, shareURL: shareURL,
-                                     mime: record.body, size: bytes.count, pixelSize: pixels, pdfFirstPage: firstPage)
+                                     mime: record.body, size: bytes.count, pixelSize: pixels, pdfFirstPage: firstPage,
+                                     name: AttachmentFormat.safeFileName(nameHint).map { _ in
+                                         // 보이는 이름 = 실제 저장 이름(내용과 어긋난 확장자는 내용의 확장자가 붙은 채로 보인다).
+                                         AttachmentFormat.exportName(seq: record.seq, mime: record.body, nameHint: nameHint)
+                                     })
         }.value
         cache.setObject(Entry(made), forKey: Self.key(room: record.room, seq: record.seq), cost: Self.cost(of: made))
         return made

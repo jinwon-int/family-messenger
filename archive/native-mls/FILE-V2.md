@@ -61,6 +61,12 @@ base64url 정규형: RFC 4648 §5 알파벳, `=` 패딩 없음, 다시 인코딩
    `GET /v2/rooms/{room}/blobs/{blob}?device=<나>` → 암호문 길이 = `size + 16` → sha256 = `blob` → GCM 복호화(AAD 포함) →
    평문 길이 = `size`. 하나라도 어긋나면 "첨부를 열 수 없음"(재시도 가능) — 타임라인은 계속 동작한다.
 4. 표시: 미리보기 여부와 MIME은 **내용(매직 바이트)으로만** 정한다(v1과 같음). `mime`·`name`은 힌트이며 MIME으로 쓰지 않는다.
+   - `name`은 표시 이름과 저장·공유 파일 이름으로만 쓴다: 마지막 경로 조각 · 앞뒤 공백 제거 · 제어 문자와 양방향 제어 문자(확장자 위장) 없음 ·
+     점으로 시작하지 않음. 맞지 않으면 이름 없이 다룬다(웹 `safeFileName` · 안드로이드 `AttachmentFiles.safeName` · iOS `AttachmentFormat.safeFileName`).
+   - iOS(#851)는 내용으로 종류를 아는 파일의 저장 이름 확장자를 내용에 맞춘다 — 어긋나면 내용의 확장자를 덧붙인다(`계약서.html` + PDF 내용 →
+     `계약서.html.pdf`). 앱 안 미리보기(QuickLook)가 파일 이름으로 종류를 정하기 때문이다. 내용으로 종류를 모르면(그냥 ZIP · 알 수 없는 바이트) 보낸 이름 그대로.
+   - pptx·docx·xlsx는 ZIP 컨테이너라 앞머리만으로는 ZIP이다. iOS는 ZIP 중앙 디렉터리의 항목 이름(`[Content_Types].xml` + 최상위 `ppt/`·`word/`·`xl/` 중 하나)만
+     읽어 가린다(압축 해제·XML 파싱 없음, `AttachmentFormat.officeMime`). 이름 힌트가 없는 첨부(iOS가 보낸 것 · v1)도 제 확장자로 저장된다.
 
 릴레이 응답: 403 `not_a_member`(구성원 아님·제거됨), 404 `no_such_blob`(보존 기간 지남), 410 `room_closed`.
 
