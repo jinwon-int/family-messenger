@@ -9,10 +9,21 @@
 //! 전부 이 시드에서 시작해야 릴레이 정책 체인(기기당 키 1개)과 어긋나지 않는다.
 //!
 //! 보충 규칙(`replenish`): 릴레이는 가장 오래된 것부터 소비·만료(lobby.go `ORDER BY rowid`, 균일 TTL)하므로 서버 `live` 만 알면
-//! 장부(`published`) 앞쪽 `published.len() - live` 개가 소비·만료된 것이다 — 그만큼 로컬 비밀을 `delete_key_package` 로 지워
+//! 장부(`published`) 앞쪽 `published.len() - live` 개가 소비·만료된 것이다 — 그 로컬 비밀을 `delete_key_package` 로 지워
 //! 파사드 상한(8)을 비우고, 부족분을 새로 만들어 게시한다. 비밀은 **게시 전에** 영속한다(persist-before-bytes-leave); 게시에
 //! 실패한 새 key package 는 비밀을 바로 지운다(서버에 없는 키는 로컬 상한만 차지한다).
+//!
+//! 소비분의 비밀은 **그 키로 만든 Welcome 을 받아들이기 전에는 지우지 않는다**(#616, iOS `LobbyKeyring.replenish(protect:)` #518 과
+//! 같은 뜻): 지우면 그 Welcome 은 영영 열 수 없고, 코어 `poll` 은 거부된 Welcome 을 지나가 버린다. 소비분 하나는 다음 순서로 판정한다 —
+//! ① 릴레이가 그 ref 의 Welcome 이 아직 읽히지 않았다고 하면(`GET /v2/lobby/welcomes` `key_package_ref`) 남긴다
+//! ② 그 Welcome 을 본 적이 있고 이제 목록에 없으면(읽고 지나감 = 참여 · 방이 닫힘 · 다시 초대됨) 지운다
+//! ③ 본 적이 없으면 처음 소비분으로 본 때부터 [`CONSUMED_HOLD`] 동안 남긴다 — 소비(`GET /v2/lobby/keypackages`)와 Welcome 게시
+//!    사이에는 틈이 있어, 그 사이에 돈 보충이 비밀을 지우던 것이 #616 의 실기기 증상이다. 그 뒤에는 주인 없는 소비분으로 보고 지운다.
+//! 남긴 것은 장부 **앞쪽에 그대로** 둔다(FIFO 가 유지되어 다음 보충이 같은 것을 다시 판정한다). 남긴 비밀도 파사드 상한(8)을
+//! 차지하므로 그동안은 그만큼 덜 만들어질 수 있다. ①②③ 의 기억(`held`)은 메모리에만 있다 — 재시작하면 ③ 의 시계가 다시 돈다.
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use family_mls_browser_experiment::Device;
 use native_mls_host::api::{self, Access, Client};
@@ -69,6 +80,8 @@ pub struct MlsLobbyReport {
     pub minted: u32,
     /// 소비·만료된 것으로 판단해 로컬 비밀을 지운 수.
     pub pruned: u32,
+    /// 소비·만료된 것으로 판단했지만 지우지 않고 장부 앞쪽에 남긴 수(#616 — 아직 참여하지 않은 Welcome 이 쓸 수 있다).
+    pub kept: u32,
 }
 
 /// 이 기기가 아직 읽지 않은 Welcome 을 들고 있는 방(`GET /v2/lobby/welcomes`). `MlsRoom::adopt(…, seq - 1, …)` 로 받아들인다.
@@ -223,11 +236,24 @@ pub struct MlsLobby {
     watch_token: Mutex<Option<String>>,
 }
 
+/// 소비됐지만 Welcome 을 아직 보지 못한 key package 의 비밀을 남겨 두는 시간(#616). 봇·형제 기기가 로비 키를 소비한 뒤 commit 과
+/// Welcome 을 올리기까지의 틈(재시도 포함)을 덮는다. Welcome 이 목록에 뜬 뒤에는 시간과 상관없이 참여할 때까지 남긴다.
+pub const CONSUMED_HOLD: Duration = Duration::from_secs(10 * 60);
+
+/// 소비분 하나의 기억(#616, 메모리만): 처음 소비분으로 본 때와, 그 ref 의 Welcome 을 대기 목록에서 본 적이 있는지.
+struct Held {
+    since: Instant,
+    seen_waiting: bool,
+}
+
 struct Inner {
     device: Device,
     published: Vec<Vec<u8>>,
     client: Client,
     observer: Arc<dyn LobbyObserver>,
+    /// 소비분의 ref → 기억. 장부에서 빠지면(지움·회수) 같이 지운다.
+    held: HashMap<String, Held>,
+    hold: Duration,
 }
 
 fn require_identifier(what: &str, s: &str) -> Result<(), RoomError> {
@@ -304,22 +330,40 @@ impl MlsLobby {
     }
 
     /// 서버의 미소비 수가 `min(target, 서버 max)` 보다 적으면 그만큼 만들어 게시한다. 먼저 장부 앞쪽(소비·만료분)의 로컬 비밀을
-    /// 지운다. 파사드 상한(8)에 닿으면 거기서 멈춘다(오류 아님). 앱은 시작·포그라운드·방 참여 뒤에 부른다(iOS 와 같은 시점).
+    /// 지운다 — 단, 아직 참여하지 않은 Welcome 이 쓸 수 있는 것은 남긴다(모듈 주석 ①②③, `kept`). 파사드 상한(8)에 닿으면 거기서
+    /// 멈춘다(오류 아님). 앱은 시작·포그라운드·방 참여 뒤에 부른다(iOS 와 같은 시점).
     pub fn replenish(&self, target: u32) -> Result<MlsLobbyReport, RoomError> {
         let mut inner = self.lock()?;
         let status = inner.client.lobby_status(&self.identity).map_err(relay_err)?;
         let goal = (target as u64).min(status.max) as usize;
         let live = status.live as usize;
 
-        // ① 소비·만료분의 로컬 비밀 — 이미 없는(모르는) 것은 거부되지만 장부에서는 뺀다.
+        // ① 소비·만료분의 로컬 비밀 — 아직 참여하지 않은 Welcome 이 쓸 수 있는 것은 장부 앞쪽에 남긴다(#616). 지우는 것은 이미
+        //    없는(모르는) 비밀이어도 장부에서는 뺀다.
         let consumed = inner.published.len().saturating_sub(live);
+        let waiting = if consumed > 0 { Self::waiting_refs(&mut inner, &self.identity)? } else { HashSet::new() };
+        let now = Instant::now();
         let mut pruned = 0u32;
-        let Inner { device, published, .. } = &mut *inner;
+        let Inner { device, published, held, hold, .. } = &mut *inner;
+        let mut kept: Vec<Vec<u8>> = Vec::new();
         for bytes in published.drain(..consumed) {
+            let key_ref = api::ref_hex(&bytes);
+            let memory = held.entry(key_ref.clone()).or_insert(Held { since: now, seen_waiting: false });
+            let keep = waiting.contains(&key_ref) || (!memory.seen_waiting && now.duration_since(memory.since) < *hold);
+            if keep {
+                kept.push(bytes);
+                continue;
+            }
+            held.remove(&key_ref);
             if dispatch_guarded(device, &self.identity, "delete_key_package", &bytes).is_ok() {
                 pruned += 1;
             }
         }
+        let kept_count = kept.len() as u32;
+        published.splice(0..0, kept);
+        // 장부에 없는 ref 의 기억은 버린다(이미 지워진 키를 가리키는 오래된 대기 Welcome 이 `held` 에 쌓이지 않게).
+        let ledger: HashSet<String> = published.iter().map(|bytes| api::ref_hex(bytes)).collect();
+        held.retain(|key_ref, _| ledger.contains(key_ref));
         // ② 부족분 — 파사드가 "key package limit" 으로 거부하면 멈춘다.
         let mut fresh: Vec<Vec<u8>> = Vec::new();
         let mut want = goal.saturating_sub(live);
@@ -334,7 +378,7 @@ impl MlsLobby {
         // ③ 비밀이 먼저 디스크에(persist-before-bytes-leave).
         self.persist(&mut inner)?;
         if fresh.is_empty() {
-            return Ok(MlsLobbyReport { live: status.live as u32, max: status.max as u32, minted: 0, pruned });
+            return Ok(MlsLobbyReport { live: status.live as u32, max: status.max as u32, minted: 0, pruned, kept: kept_count });
         }
         // ④ 게시. 실패하면 서버가 받지 않은 키의 비밀은 버린다 — 다음 보충이 다시 만든다.
         let refs: Vec<(String, Vec<u8>)> = fresh.iter().map(|kp| (api::ref_hex(kp), kp.clone())).collect();
@@ -343,7 +387,7 @@ impl MlsLobby {
             Ok(stored) => {
                 inner.published.extend(fresh.iter().cloned());
                 self.persist(&mut inner)?;
-                Ok(MlsLobbyReport { live: stored.live as u32, max: status.max as u32, minted: fresh.len() as u32, pruned })
+                Ok(MlsLobbyReport { live: stored.live as u32, max: status.max as u32, minted: fresh.len() as u32, pruned, kept: kept_count })
             }
             Err(err) => {
                 let Inner { device, .. } = &mut *inner;
@@ -358,9 +402,12 @@ impl MlsLobby {
 
     /// `GET /v2/lobby/welcomes?device=`: 아직 읽지 않은 Welcome 이 있는 방들. 모르는 방이면 `MlsRoom::adopt(…, seed_state(), seq - 1, …)`
     /// 뒤 `poll` 이 join 한다; 이미 멤버인 방이면 그 방의 `poll` 이 알아서 넘어간다(`WelcomeIgnored`).
+    ///
+    /// 목록에 뜬 `key_package_ref` 는 기억해 둔다(#616): 그 Welcome 을 읽고 지나가 목록에서 빠지면 다음 `replenish` 가 그 비밀을 바로 지운다.
     pub fn welcomes(&self) -> Result<Vec<MlsLobbyWelcome>, RoomError> {
-        let inner = self.lock()?;
+        let mut inner = self.lock()?;
         let list = inner.client.lobby_welcomes(&self.identity).map_err(relay_err)?;
+        Self::note_waiting(&mut inner, list.iter().map(|w| w.key_package_ref.as_str()));
         Ok(list
             .into_iter()
             .map(|w| MlsLobbyWelcome {
@@ -479,10 +526,11 @@ impl MlsLobby {
     pub fn withdraw(&self) -> Result<u64, RoomError> {
         let mut inner = self.lock()?;
         let deleted = inner.client.delete_lobby_key_packages(&self.identity).map_err(relay_err)?;
-        let Inner { device, published, .. } = &mut *inner;
+        let Inner { device, published, held, .. } = &mut *inner;
         for bytes in published.drain(..) {
             let _ = dispatch_guarded(device, &self.identity, "delete_key_package", &bytes);
         }
+        held.clear();
         self.persist(&mut inner)?;
         Ok(deleted)
     }
@@ -541,7 +589,7 @@ impl MlsLobby {
         let client = Client::with_transport(&base_url, Access::None, Box::new(ForeignTransport(transport.clone())));
         Arc::new(Self {
             identity,
-            inner: Mutex::new(Inner { device, published, client, observer }),
+            inner: Mutex::new(Inner { device, published, client, observer, held: HashMap::new(), hold: CONSUMED_HOLD }),
             watch_base: base_url,
             watch_transport: transport,
             watch_token: Mutex::new(None),
@@ -550,6 +598,34 @@ impl MlsLobby {
 
     fn lock(&self) -> Result<MutexGuard<'_, Inner>, RoomError> {
         self.inner.lock().map_err(|_| RoomError::Host { reason: "lobby lock poisoned".into() })
+    }
+
+    /// 소비됐지만 Welcome 을 보지 못한 비밀을 남겨 두는 시간을 바꾼다(기본 [`CONSUMED_HOLD`]). 바인딩에는 내보내지 않는다 — 호스트
+    /// 게이트(`tests/lobby_host.rs`)가 시계를 기다리지 않고 「주인 없는 소비분」 정리를 보려고 쓴다.
+    pub fn set_consumed_hold(&self, hold: Duration) -> Result<(), RoomError> {
+        self.lock()?.hold = hold;
+        Ok(())
+    }
+
+    /// 대기 목록에 뜬 ref 를 기억한다(빈 ref = 방 패키지로 만든 Welcome · 옛 릴레이 → 모름, 건너뛴다).
+    fn note_waiting<'a>(inner: &mut Inner, refs: impl Iterator<Item = &'a str>) {
+        let now = Instant::now();
+        for key_ref in refs.filter(|r| !r.is_empty()) {
+            inner.held.entry(key_ref.to_owned()).or_insert(Held { since: now, seen_waiting: false }).seen_waiting = true;
+        }
+    }
+
+    /// 지금 이 기기를 기다리는 Welcome 들이 쓴 로비 key package 의 ref(`replenish` 가 지우기 전에 묻는다). 로비 Welcome 목록이 없는
+    /// 옛 릴레이(404)는 「모름」 — 빈 집합을 돌려주고, 그때는 [`CONSUMED_HOLD`] 만이 비밀을 지킨다. 그 밖의 오류는 그대로 올린다:
+    /// 무엇이 기다리는지 모르는 채로 비밀을 지우지 않는다(이번 보충은 실패하고 다음 틱이 다시 한다).
+    fn waiting_refs(inner: &mut Inner, identity: &str) -> Result<HashSet<String>, RoomError> {
+        let list = match inner.client.lobby_welcomes(identity) {
+            Ok(list) => list,
+            Err(api::RelayError::Api { status: 404, .. }) | Err(api::RelayError::Status { status: 404 }) => Vec::new(),
+            Err(err) => return Err(relay_err(err)),
+        };
+        Self::note_waiting(inner, list.iter().map(|w| w.key_package_ref.as_str()));
+        Ok(list.into_iter().map(|w| w.key_package_ref).filter(|r| !r.is_empty()).collect())
     }
 
     fn committed(answer: api::Answer<api::PolicyCommitted>) -> Result<MlsPolicyCommit, RoomError> {

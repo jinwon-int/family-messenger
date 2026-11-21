@@ -170,10 +170,16 @@ private fun scenarioLobby(tmp: File) {
     val steward = MlsRoom("bot-steward", "room-b", BASE, relay, stewardStore)
     steward.dispatch("create", ByteArray(0))
     val kp = relay.consumeLobby("owner-phone", "bot-steward", "room-b") ?: error("no lobby package")
+    // #616: 소비와 Welcome 게시 사이에 돈 보충(주기 틱)은 그 키의 비밀을 지우지 않는다 — 지우면 그 Welcome 은 영영 열 수 없다.
+    val gap = lobby.replenish(3u)
+    check(gap.pruned == 0u && gap.kept == 1u && gap.minted == 1u, "a consumed package is kept until its Welcome is joined ($gap)")
     val welcome = steward.dispatch("invite", kp)
     val posted = steward.postWelcome(welcome, listOf("owner-phone"))
     val pending = lobby.welcomes()
     check(pending.size == 1 && pending[0].room == "room-b" && pending[0].seq == posted.seq, "welcomes lists room-b at seq ${posted.seq} ($pending)")
+    check(pending[0].keyPackageRef.isNotEmpty(), "the relay names the lobby package the Welcome used")
+    val waiting = lobby.replenish(3u)
+    check(waiting.pruned == 0u && waiting.kept == 1u && waiting.minted == 0u, "still kept while the Welcome waits ($waiting)")
 
     // adopt: 로비 상태로 방 엔진을 만들고 커서를 Welcome 앞에 둔다 → poll 이 join.
     val texts = mutableListOf<String>()
@@ -191,7 +197,7 @@ private fun scenarioLobby(tmp: File) {
     val rooms = lobby.rooms()
     check(rooms.size == 1 && rooms[0].room == "room-b" && rooms[0].member && !rooms[0].closed, "rooms lists room-b as a membership ($rooms)")
     val after = lobby.replenish(3u)
-    check(after.pruned == 1u && after.minted == 1u, "the consumed package is pruned and replaced ($after)")
+    check(after.pruned == 1u && after.kept == 0u && after.minted == 0u, "the consumed package is pruned once its Welcome is read past ($after)")
 
     // 방 닫기: 멤버 전원 410 room_closed. 없는 방은 false.
     check(steward.closeRoom(), "steward closes room-b")

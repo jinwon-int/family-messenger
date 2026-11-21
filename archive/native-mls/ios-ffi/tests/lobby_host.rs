@@ -2,6 +2,9 @@
 //! in-memory 릴레이(`tests/support`) 위에서 iOS `LobbyKeyring`·릴레이 lobby.go 와 같은 규칙으로 도는지.
 mod support;
 
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
 use family_mls_ios_ffi::{
     MlsCandidate, MlsCandidateList, MlsCandidatePost, MlsLobbySlot, MlsLobby, MlsMe, MlsPolicyCommit, MlsRefusal, MlsRoom, RoomError,
     RoomEvent, SendResult,
@@ -9,7 +12,7 @@ use family_mls_ios_ffi::{
 use support::{founded_pair, ok, Harness, LobbyStore, Observer, BASE, CANDIDATE_TTL_SECONDS, LOBBY_MAX_DEFAULT, SUBJECT};
 
 #[test]
-fn replenish_publishes_up_to_the_target_and_prunes_what_the_relay_consumed() {
+fn replenish_publishes_up_to_the_target_and_prunes_what_nobody_claims_after_the_hold() {
     let h = Harness::new();
     let (lobby, store) = h.lobby("owner-phone");
     assert_eq!(store.count(), 1, "the seed is persisted before anything else");
@@ -30,14 +33,41 @@ fn replenish_publishes_up_to_the_target_and_prunes_what_the_relay_consumed() {
     assert_eq!((again.minted, again.pruned), (0, 0));
     assert_eq!(h.trace().iter().filter(|l| l.starts_with("POST lobby")).count(), 1, "no empty POST");
 
-    // A steward consumes the oldest one → the ledger head is pruned and one is minted.
+    // A steward consumes the oldest one → one is minted, but the consumed secret stays at the ledger head: its Welcome may
+    // still be on the way (#616).
     let consumed = h.relay.consume_lobby("owner-phone", "bot-steward", "room-b").expect("one live package");
     assert_eq!(consumed, store.last().published[0], "the relay hands out the oldest first");
     let topped = ok(lobby.replenish(3), "after a consume");
-    assert_eq!((topped.minted, topped.pruned, topped.live), (1, 1, 3));
+    assert_eq!((topped.minted, topped.pruned, topped.kept, topped.live), (1, 0, 1, 3));
+    assert_eq!(store.last().published.len(), 4);
+    assert_eq!(store.last().published[0], consumed, "kept in place, oldest first");
+    let held = ok(lobby.replenish(3), "still within the hold");
+    assert_eq!((held.minted, held.pruned, held.kept), (0, 0, 1));
+
+    // No Welcome ever names it: once the hold has passed it is an orphan and the next replenish prunes it.
+    ok(lobby.set_consumed_hold(Duration::ZERO), "hold");
+    let swept = ok(lobby.replenish(3), "after the hold");
+    assert_eq!((swept.minted, swept.pruned, swept.kept, swept.live), (0, 1, 0, 3));
     assert_eq!(store.last().published.len(), 3);
     assert!(!store.last().published.contains(&consumed), "the consumed package left the ledger");
     assert_eq!(ok(lobby.published_count(), "count"), 3);
+}
+
+/// The hold is bounded by the facade limit, not by time alone: kept secrets count against the 8, and minting resumes as
+/// they are released.
+#[test]
+fn kept_secrets_count_against_the_facade_limit_until_they_are_released() {
+    let h = Harness::new();
+    let (lobby, _) = h.lobby("owner-phone");
+    ok(lobby.replenish(8), "publish 8");
+    for room in ["room-b", "room-c", "room-d"] {
+        h.relay.consume_lobby("owner-phone", "bot-steward", room).expect("live package");
+    }
+    let full = ok(lobby.replenish(8), "three consumed, none claimed yet");
+    assert_eq!((full.kept, full.pruned, full.minted, full.live), (3, 0, 0, 5), "8 secrets are outstanding — nothing can be minted ({full:?})");
+    ok(lobby.set_consumed_hold(Duration::ZERO), "hold");
+    let freed = ok(lobby.replenish(8), "after the hold");
+    assert_eq!((freed.kept, freed.pruned, freed.minted, freed.live), (0, 3, 3, 8), "{freed:?}");
 }
 
 #[test]
@@ -134,6 +164,113 @@ fn a_welcome_made_from_a_lobby_package_is_adopted_into_a_new_room() {
     assert!(matches!(err, RoomError::Host { .. }), "{err}");
 }
 
+/// 로비 키로 `room` 을 만들어 `phone` 을 초대하는 steward 한 번(봇 `invite` 로비 폴백). 소비한 뒤 `between` 을 부르고 Welcome 을 올린다 —
+/// 실제 릴레이에서도 소비(`GET /v2/lobby/keypackages`)와 Welcome 게시 사이에는 틈이 있다.
+fn steward_invites(h: &Harness, steward: &str, room: &str, phone: &str, between: impl FnOnce()) -> i64 {
+    let (bot, _) = h.room_in(steward, room);
+    ok(bot.dispatch("create".into(), Vec::new()), "create");
+    let kp = h.relay.consume_lobby(phone, steward, room).expect("lobby package");
+    between();
+    let welcome = ok(bot.dispatch("invite".into(), kp), "invite via lobby package");
+    ok(bot.post_welcome(welcome, vec![phone.into()]), "post welcome").seq
+}
+
+/// 로비 Welcome 하나를 받아들인다(`adopt(seq - 1)` → `poll`). 참여했는지를 돌려준다.
+fn adopt_and_poll(h: &Harness, lobby: &MlsLobby, phone: &str, room: &str, seq: i64) -> (std::sync::Arc<MlsRoom>, bool) {
+    let obs = Observer::new(phone, h.trace.clone());
+    let adopted = ok(MlsRoom::adopt(phone.into(), room.into(), ok(lobby.seed_state(), "seed"), seq - 1, BASE.into(), h.relay.clone(), obs.clone()), "adopt");
+    ok(adopted.poll(), "poll");
+    let joined = obs.events().iter().any(|e| matches!(e, RoomEvent::Joined { .. }));
+    (adopted, joined)
+}
+
+/// #616: 보충이 「릴레이가 소비했다」는 것만 보고 비밀을 지우면, 그 키로 만든 Welcome 이 아직 올라오지 않았거나(소비와 게시 사이의 틈)
+/// 아직 받아들이지 않은 경우 그 Welcome 은 영영 열 수 없다. 실기기에서는 대체 키 발급이 Welcome 게시보다 1초 빨랐다.
+#[test]
+fn replenish_keeps_the_secret_of_a_consumed_package_until_its_welcome_is_joined() {
+    let h = Harness::new();
+    let (lobby, store) = h.lobby("owner-phone");
+    ok(lobby.replenish(2), "publish");
+
+    // 틈 ①: 소비됐지만 Welcome 은 아직 없다 — 이때 도는 보충(주기 틱).
+    let seq = steward_invites(&h, "bot-steward", "room-b", "owner-phone", || {
+        let report = ok(lobby.replenish(2), "replenish between the consume and the Welcome");
+        assert_eq!((report.pruned, report.kept, report.minted, report.live), (0, 1, 1, 2), "{report:?}");
+    });
+    assert_eq!(store.last().published.len(), 3, "the consumed package stays at the head of the ledger");
+
+    // 틈 ②: Welcome 이 올라왔지만 아직 받아들이지 않았다 — 또 한 번의 보충.
+    let pending = ok(lobby.welcomes(), "welcomes");
+    assert_eq!((pending.len(), pending[0].seq), (1, seq));
+    assert!(!pending[0].key_package_ref.is_empty(), "the relay names the lobby package the Welcome used");
+    let report = ok(lobby.replenish(2), "replenish while the Welcome waits");
+    assert_eq!((report.pruned, report.kept, report.minted), (0, 1, 0), "{report:?}");
+
+    let (phone, joined) = adopt_and_poll(&h, &lobby, "owner-phone", "room-b", seq);
+    assert!(joined, "the Welcome still opens: its key package secret was kept ({:?})", h.trace());
+
+    // 읽고 지나가면(ack) 그 비밀은 더 필요 없다 — 다음 보충이 바로 지운다.
+    ok(phone.poll(), "ack the page");
+    assert!(ok(lobby.welcomes(), "welcomes after ack").is_empty());
+    let report = ok(lobby.replenish(2), "replenish after the join");
+    assert_eq!((report.pruned, report.kept, report.minted), (1, 0, 0), "{report:?}");
+    assert_eq!(store.last().published.len(), 2);
+}
+
+/// #616: 기기가 꺼져 있는 동안 초대가 여러 개 쌓였을 때 — 하나를 받아들인 뒤의 보충이 나머지 Welcome 의 비밀을 지우면 안 된다.
+#[test]
+fn several_waiting_welcomes_are_all_joined_with_a_replenish_after_each() {
+    let h = Harness::new();
+    let (lobby, _) = h.lobby("owner-phone");
+    ok(lobby.replenish(3), "publish");
+    let seq_b = steward_invites(&h, "bot-b", "room-b", "owner-phone", || {});
+    let seq_c = steward_invites(&h, "bot-c", "room-c", "owner-phone", || {});
+    let seq_d = steward_invites(&h, "bot-d", "room-d", "owner-phone", || {});
+
+    // 호스트의 한 바퀴(`DeviceHub.lobbyAux`): 목록 → 방마다 받아들이기 → 참여 뒤 보충.
+    let pending = ok(lobby.welcomes(), "welcomes");
+    assert_eq!(pending.iter().map(|w| (w.room.as_str(), w.seq)).collect::<Vec<_>>(), [("room-b", seq_b), ("room-c", seq_c), ("room-d", seq_d)]);
+    for w in &pending {
+        let (_, joined) = adopt_and_poll(&h, &lobby, "owner-phone", &w.room, w.seq);
+        assert!(joined, "{} joined ({:?})", w.room, h.trace());
+        ok(lobby.replenish(3), "replenish after a join");
+    }
+}
+
+/// #616: 무엇이 기다리는지 모르면 지우지 않는다 — Welcome 목록을 읽지 못한 보충은 실패하고(다음 틱이 다시 한다), 목록 라우트가
+/// 없는 옛 릴레이에서는 보류 시간만으로 지킨다.
+#[test]
+fn replenish_does_not_prune_blind_when_the_welcome_listing_is_unavailable() {
+    let h = Harness::new();
+    let (lobby, store) = h.lobby("owner-phone");
+    ok(lobby.replenish(2), "publish");
+    let seq = steward_invites(&h, "bot-steward", "room-b", "owner-phone", || {});
+    ok(lobby.set_consumed_hold(Duration::ZERO), "no time-based hold: only the listing protects the secret");
+
+    h.relay.fail_lobby_welcomes.store(true, Ordering::SeqCst);
+    let err = lobby.replenish(2).err().expect("the listing failed");
+    assert!(matches!(err, RoomError::Relay { .. }), "{err}");
+    assert_eq!(store.last().published.len(), 2, "nothing pruned, nothing minted");
+    h.relay.fail_lobby_welcomes.store(false, Ordering::SeqCst);
+
+    let report = ok(lobby.replenish(2), "listing is back");
+    assert_eq!((report.pruned, report.kept, report.minted), (0, 1, 1), "the waiting Welcome protects its package ({report:?})");
+    let (_, joined) = adopt_and_poll(&h, &lobby, "owner-phone", "room-b", seq);
+    assert!(joined, "{:?}", h.trace());
+
+    // 옛 릴레이: 목록이 없으면 보류 시간이 유일한 보호다.
+    let (old, old_store) = h.lobby("owner-tablet");
+    ok(old.replenish(2), "publish");
+    h.relay.no_lobby_welcomes.store(true, Ordering::SeqCst);
+    h.relay.consume_lobby("owner-tablet", "bot-steward", "room-c").expect("live package");
+    let report = ok(old.replenish(2), "old relay, within the hold");
+    assert_eq!((report.pruned, report.kept, report.minted), (0, 1, 1), "{report:?}");
+    ok(old.set_consumed_hold(Duration::ZERO), "hold");
+    let report = ok(old.replenish(2), "old relay, after the hold");
+    assert_eq!((report.pruned, report.kept), (1, 0), "{report:?}");
+    assert_eq!(old_store.last().published.len(), 2);
+}
+
 #[test]
 fn import_restores_the_ledger_and_the_secrets() {
     let h = Harness::new();
@@ -147,8 +284,13 @@ fn import_restores_the_ledger_and_the_secrets() {
     assert_eq!(ok(again.published_count(), "count"), 3);
     h.relay.consume_lobby("owner-phone", "bot-steward", "room-b");
     h.relay.consume_lobby("owner-phone", "bot-steward", "room-c");
+    // 복원 직후에도 소비분은 일단 남긴다(기억은 메모리에만 — 재시작하면 보류 시계가 다시 돈다).
     let report = ok(again.replenish(3), "replenish after import");
-    assert_eq!((report.pruned, report.minted, report.live), (2, 2, 3), "the restored device still knows the old secrets");
+    assert_eq!((report.pruned, report.kept, report.minted, report.live), (0, 2, 2, 3));
+    assert_eq!(again_store.last().published.len(), 5);
+    ok(again.set_consumed_hold(Duration::ZERO), "hold");
+    let report = ok(again.replenish(3), "replenish after the hold");
+    assert_eq!((report.pruned, report.kept, report.minted, report.live), (2, 0, 0, 3), "the restored device still knows the old secrets");
     assert_eq!(again_store.last().published.len(), 3);
 }
 
