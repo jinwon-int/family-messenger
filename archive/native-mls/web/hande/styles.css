@@ -991,6 +991,9 @@ main.shell[data-view="room"] .pane-list { display: none; }
 .bubble[data-me="true"].queued .body { background: var(--bubble-queued-bg); color: var(--bubble-queued-fg); border: var(--line-w) dashed var(--bubble-queued-line); opacity: var(--bubble-queued-opacity); box-shadow: none; }
 .bubble[data-me="true"].failed .body { background: var(--bubble-failed-bg); color: var(--bubble-failed-fg); border: var(--bubble-failed-w) solid var(--bubble-failed-line); box-shadow: none; }
 .bubble.failed .foot { color: var(--warn-text); font-weight: 600; }
+/* #837 보내는 중(sending): 릴레이 응답 전 — 면은 내 말풍선 그대로, 연결되면 보냄과 같은 투명도(낮불은 1 — 아래 줄 「보내는 중…」이 상태를 말한다). */
+.bubble[data-me="true"].sending .body { opacity: var(--bubble-queued-opacity); }
+.bubble .retry-send { min-height: 32px; margin-top: var(--space-1); }
 .bubble.kind-undecryptable .body { color: var(--text-2); font-style: italic; border-style: dashed; background: transparent; }
 /* status-v1(#560): 에이전트 작업 상태 임시 말풍선 — 흐린 톤·한 줄 크기, 답이 오면 사라진다. */
 .bubble.kind-status .body { color: var(--text); font-size: 0.9em; border-style: dashed; border-color: var(--agent-stroke); background: var(--agent-soft); }

@@ -428,6 +428,9 @@ export const strings = {
     placeholderDisabled: '지금은 보낼 수 없습니다',
     send: '보내기',
     sending: '보내는 중…',
+    // 내 말풍선 아래 전송 상태(#837 — iOS Strings.outgoing* 와 같은 말). 'queued' 는 웹 글 보내기에 대기열이 없어 지금은 쓰지 않는다.
+    sendState: { sending: '보내는 중…', queued: '연결되면 보냅니다', failed: '전송 안 됨' },
+    retrySend: '다시 보내기',
     back: '대화 목록으로',
     attach: '첨부',
     lastSent: {

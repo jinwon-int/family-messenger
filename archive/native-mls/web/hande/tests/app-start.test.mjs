@@ -188,8 +188,9 @@ test('저장된 방이 있으면 릴레이 응답을 하나도 받기 전에 방
   assert.equal(h.startupLines().length, 1, '계측 줄은 한 번만');
   assert.ok(h.app.logs.some(l => /저장분으로 먼저 그림 — 방 동기화까지 \d+ ms$/.test(l)));
   assert.ok(!h.calls.some(c => c.name === 'renderStarting' && h.calls.indexOf(c) > h.calls.findIndex(x => x.name === 'renderShell')), '시작 화면으로 돌아가지 않는다');
-  // 동기화 뒤에는 예전처럼 보낸다: 직전 sync → 암호화 → POST.
+  // 동기화 뒤에는 예전처럼 보낸다: 직전 sync → 암호화 → POST(#837: 뒤에서 — 말풍선은 누르는 즉시).
   assert.equal(await later.room.onSend('이제 보냄'), true);
+  await until(() => h.app.rooms.get('family').entries.some(e => e.body === '이제 보냄' && e.state === null && e.seq === 9), '릴레이가 받은 내 글');
   assert.ok(h.worker.ops.includes('family:encrypt'));
   assert.ok(net.seen.some(p => p.startsWith('POST /v2/rooms/family/events')));
 });
@@ -249,17 +250,26 @@ test('릴레이에 닿지 않아도 저장된 대화가 보이고 연결 표시�
   assert.equal(h.app.startup.phase, 'stored');
   assert.ok(h.app.logs.some(l => l.includes('방 목록 실패')));
   // 예전과 같은 재시도: 방별 폴링(4초)과 기기 틱(8초)이 걸려 있다. 첫 sync 시도는 끝났으므로 작성창은 예전처럼 열려 있고,
-  // 보내기는 암호화 전에 연결 실패로 끝난다.
+  // 보내기는 암호화 전에 연결 실패로 끝난다 — #837: 말풍선은 바로 뜨고 「전송 안 됨」으로 바뀐다(래칫은 쓰지 않는다).
   assert.deepEqual(h.timers.intervals.map(i => i.ms).sort((a, b) => a - b), [4000, 8000]);
   assert.equal(down.room.syncing, false);
-  assert.equal(await down.room.onSend('못 보냄'), false);
+  assert.equal(await down.room.onSend('못 보냄'), true);
+  await until(() => h.shell().room.timeline.some(e => e.body === '못 보냄' && e.state === 'failed'), '전송 안 됨 말풍선');
   assert.ok(!h.worker.ops.includes('family:encrypt'));
+  assert.equal(h.shell().room.timeline.filter(e => e.body === '못 보냄').length, 1);
 
   net.down = false;
   for (const timer of h.timers.intervals) timer.fn();
-  await until(() => h.app.dev.state.enrolled === true && !h.shell().room.offline && h.shell().room.timeline.length === 3, '다시 닿은 뒤 반영');
-  assert.deepEqual(bodies(h.shell().room), ['안녕', '잘 받았어요', '돌아와서 받은 글']);
+  await until(() => h.app.dev.state.enrolled === true && !h.shell().room.offline && h.shell().room.timeline.length === 4, '다시 닿은 뒤 반영');
+  assert.deepEqual(bodies(h.shell().room), ['안녕', '잘 받았어요', '돌아와서 받은 글', '못 보냄'], '보내지 못한 글은 맨 아래에 「전송 안 됨」으로 남는다');
   assert.equal(h.shell().list.sync.reconnecting, false);
+  // 「다시 보내기」: 같은 글을 새 보내는 글로 — 이번에는 릴레이가 받고, 말풍선은 여전히 하나다.
+  const failed = h.shell().room.timeline.find(e => e.state === 'failed');
+  h.shell().room.onRetrySend(failed);
+  assert.equal(h.shell().room.timeline.filter(e => e.body === '못 보냄').length, 1);
+  await until(() => h.shell().room.timeline.some(e => e.body === '못 보냄' && e.state === null && e.seq === 9), '다시 보낸 글 확정');
+  assert.deepEqual(bodies(h.shell().room), ['안녕', '잘 받았어요', '돌아와서 받은 글', '못 보냄']);
+  assert.ok(h.worker.ops.includes('family:encrypt'));
 });
 
 test('뒤에서 맞추기: 새 방은 나타나고, 그새 내보내진 방은 ⛔ 로 바뀐다 — 보던 방과 그 대화는 그대로다', async t => {
@@ -352,4 +362,103 @@ test('화면 배선: 작성창은 syncing 동안 잠기고(끌어다 놓기 포�
   assert.match(ui, /current\.joined && !current\.halted && !current\.consentRequired && !current\.syncing\) current\.onAttach/);
   assert.match(ui, /const wasSyncing = Boolean\(liveProps\.get\(screen\)\?\.syncing\);\s*liveProps\.set\(screen, room\);/);
   assert.match(ui, /if \(wasSyncing && built\.canCompose && isWide\(\) && document\.activeElement === document\.body\) \{/);
+});
+
+// ---- #837: 보내는 즉시 「보내는 중」 말풍선 — 작성창이 릴레이 응답을 기다리지 않는다 ----
+
+/** POST 를 붙잡을 수 있는 릴레이: 보낸 글(가짜 워커의 encrypt 는 평문 그대로)을 순서대로 적고, seq 는 10 부터 하나씩. */
+function sendRelay({post = null} = {}) {
+  const routes = relayRoutes({listed: ['family'], events: {family: []}});
+  const net = fakeRelay(routes);
+  const posted = [], held = [];
+  let seq = 9, holding = false;
+  const fetch = net.fetch;
+  net.fetch = async (path, init = {}) => {
+    if (init.method === 'POST' && /\/events$/.test(path)) {
+      const payload = JSON.parse(init.body);
+      if (holding) await new Promise(r => held.push(r));
+      posted.push(new TextDecoder().decode(Uint8Array.from(atob(payload.bytes), c => c.charCodeAt(0))));
+      const r = post?.(payload, posted.length) ?? {status: 201, body: {seq: ++seq, epoch: 1}};
+      return {status: r.status, json: async () => r.body};
+    }
+    return fetch(path, init);
+  };
+  return {net, posted, hold() { holding = true; }, release() { holding = false; for (const go of held.splice(0)) go(); }, get waiting() { return held.length; }};
+}
+const mine = room => room.timeline.filter(e => e.isMe && !['안녕', '잘 받았어요'].includes(e.body));
+const ready = h => h.shell() && h.app.tick !== null && !h.shell().room.syncing;
+
+test('#837 보내기를 누르면 릴레이 응답 전에 「보내는 중」 말풍선이 뜨고 작성창은 잠기지 않는다 — 받으면 그 자리에서 확정, 순서도 그대로', async t => {
+  const r = sendRelay();
+  const dev = device([family()]);
+  const h = launch(t, {dev, net: r.net});
+  await until(() => ready(h), '시작 마무리');
+  r.hold();
+  assert.equal(await h.shell().room.onSend('첫째'), true);
+  // 응답 전: 말풍선 하나(보내는 중), 작성창은 보내는 중 표시 없이 열려 있다 — 곧바로 다음 글을 보낼 수 있다.
+  assert.deepEqual(mine(h.shell().room).map(e => [e.body, e.state]), [['첫째', 'sending']]);
+  assert.equal(h.shell().room.sending, false, '작성창을 잠그지 않는다');
+  assert.equal(await h.shell().room.onSend('둘째'), true);
+  assert.equal(await h.shell().room.onSend('셋째'), true);
+  assert.deepEqual(mine(h.shell().room).map(e => [e.body, e.state]), [['첫째', 'sending'], ['둘째', 'sending'], ['셋째', 'sending']]);
+  await until(() => r.waiting === 1, '첫째 POST 대기');
+  assert.equal(r.waiting, 1, '한 번에 하나씩 — 앞 글이 끝나야 다음 글의 sync·암호화·POST');
+  const first = mine(h.shell().room)[0];
+  r.release();
+  await until(() => mine(h.shell().room).every(e => e.state === null), '모두 확정');
+  assert.deepEqual(r.posted, ['첫째', '둘째', '셋째'], '누른 순서대로 나간다');
+  assert.deepEqual(mine(h.shell().room).map(e => [e.body, e.seq]), [['첫째', 10], ['둘째', 11], ['셋째', 12]]);
+  assert.equal(mine(h.shell().room)[0], first, '새 줄이 아니라 같은 말풍선이 확정된다');
+  assert.equal(new Set(h.shell().room.timeline.map(e => e.key)).size, h.shell().room.timeline.length);
+  assert.deepEqual(dev.stores.get('family').history.slice(2).map(row => [row.text, row.seq]), [['첫째', 10], ['둘째', 11], ['셋째', 12]], '확정된 글은 예전처럼 이력에');
+});
+
+test('#837 보내는 중 글은 이력·저장소에 남지 않는다 — 새로고침 뒤 유령 말풍선이 없다', async t => {
+  const r = sendRelay();
+  const dev = device([family()]);
+  const h = launch(t, {dev, net: r.net});
+  await until(() => ready(h), '시작 마무리');
+  r.hold();
+  await h.shell().room.onSend('가는 중');
+  await until(() => r.waiting === 1, 'POST 대기');
+  const history = () => dev.stores.get('family').history.map(row => row.text);
+  assert.ok(!history().includes('가는 중'), '응답 전에는 보관 이력에 없다');
+  assert.ok(!dev.storage.getItem(`hande:room:family:${ME}:family-mls-synthetic-hande-family`).includes('가는 중'), '방 페이지 상태에도 없다');
+  r.release();
+  await until(() => history().includes('가는 중'), '받은 뒤 이력에 들어감');
+  assert.equal(history().filter(x => x === '가는 중').length, 1);
+});
+
+test('#837 실패하면 그 말풍선이 「전송 안 됨」이 되고, 다시 보내기는 같은 글을 새로 보낸다 — 말풍선은 하나', async t => {
+  const r = sendRelay({post: (_payload, n) => (n === 1 ? {status: 500, body: {error: 'internal'}} : null)});
+  const h = launch(t, {dev: device([family()]), net: r.net});
+  await until(() => ready(h), '시작 마무리');
+  assert.equal(await h.shell().room.onSend('다시 갈 글'), true);
+  await until(() => mine(h.shell().room).some(e => e.state === 'failed'), '전송 안 됨');
+  assert.deepEqual(mine(h.shell().room).map(e => [e.body, e.state]), [['다시 갈 글', 'failed']]);
+  assert.ok(h.calls.some(c => c.name === 'setStatus' && /보내지 못했습니다/.test(c.model)), '사유는 상태줄에');
+  const failed = mine(h.shell().room)[0];
+  h.shell().room.onRetrySend(failed);
+  assert.deepEqual(mine(h.shell().room).map(e => [e.body, e.state]), [['다시 갈 글', 'sending']], '실패 말풍선 대신 새 보내는 중 말풍선');
+  await until(() => mine(h.shell().room).every(e => e.state === null), '다시 보낸 글 확정');
+  assert.deepEqual(mine(h.shell().room).map(e => [e.body, e.seq]), [['다시 갈 글', 10]]);
+  assert.deepEqual(r.posted, ['다시 갈 글', '다시 갈 글'], '다시 보내기는 새로 암호화해 한 번 더 POST');
+});
+
+test('#837 릴레이가 이미 있는 seq 로 답해도(겹쳐 받음) 말풍선은 하나만 남는다', async t => {
+  // seq 2 는 보관 이력에 이미 있는 내 글 — 릴레이가 그 seq 를 다시 돌려주는 경우(중복 POST 의 duplicate 응답).
+  const r = sendRelay({post: () => ({status: 201, body: {seq: 2, epoch: 1, duplicate: true}})});
+  const h = launch(t, {dev: device([family()]), net: r.net});
+  await until(() => ready(h), '시작 마무리');
+  await h.shell().room.onSend('잘 받았어요');
+  await until(() => !h.shell().room.timeline.some(e => e.state === 'sending'), '정리');
+  assert.deepEqual(bodies(h.shell().room), ['안녕', '잘 받았어요']);
+  assert.ok(!h.shell().room.timeline.some(e => e.state));
+});
+
+test('#837 화면 배선: 말풍선 아래 전송 상태와 「다시 보내기」는 실패한 내 글에만', () => {
+  const ui = readFileSync(new URL('../ui.js', import.meta.url), 'utf8');
+  assert.match(ui, /entry\.state === 'sending' \|\| entry\.state === 'queued' \|\| entry\.state === 'failed'/);
+  assert.match(ui, /const retrySend = sendState === 'failed' && onRetrySend/);
+  assert.match(ui, /\(entry\) => liveProps\.get\(screen\)\?\.onRetrySend\?\.\(entry\)/);
 });

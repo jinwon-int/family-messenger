@@ -70,7 +70,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     phase: 'starting', message: strings.app.starting, error: null, fatal: null,
     actor: null, device: null, subject: null, defaultRoom: DEFAULT_ROOM, dev: null,
     rooms: new Map(),          // roomId → {session, entries, entryKeys, readSeq, order, statuses}
-    current: null, roomOpen: false, draft: new Map(), sending: false,
+    current: null, roomOpen: false, draft: new Map(),
     invites: [], adoptFailed: new Map(), dismissed: new Set(), lobbyDue: true, lobbyTick: 0, lobbyRetryAt: null, pendingWelcomeRefs: {set: new Set(), complete: true},
     filebox: null, boxOpen: false, boxTab: 'attachments', boxRefresh: 0, pendingJump: null,   // 오른쪽 보관함 pane: 첨부 탭(#544 D) + 파일보관함 iframe(config.json filebox)
     consentPrompted: new Set(),                      // AI 참여 동의 시트를 이 페이지 세션에서 자동으로 띄운 방(#544 E)
@@ -215,7 +215,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     };
     const R = app.roomOpen && app.current ? app.rooms.get(app.current) : null;
     const room = R ? (() => {
-      const S = R.session.state;
+      const S = R.session.state, roomId = app.current;
       return {roomId: app.current, name: roomLabel(app.current), members: S.roster.slice(), joined: S.joined, halted: S.halted ? {...S.halted} : null,
         timeline: R.entries, draft: app.draft.get(app.current) ?? '', fire: S.halted ? 0 : fireLevel(recentMessageCount(R.entries, Date.now())),
         // status-v1(#560): 에이전트 「⏳ Working …」 임시 말풍선 — 타임라인 맨 아래, entries 밖(안 읽음·미리보기 제외).
@@ -227,12 +227,13 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
         typing: typingLabel(S.typing, {device: app.device, actor: app.actor, roster: S.roster}),
         // 방별 알림(mute.go): 같은 사람의 모든 기기에 한 값. null(옛 릴레이·아직 모름)이면 머리글에 버튼이 없다.
         muted: S.joined && !S.halted ? S.muted : null, onToggleMute: () => toggleMute(app.current),
-        notice: null, sending: app.sending || S.transferring,
+        // #837: 글 보내기는 작성창을 잠그지 않는다(말풍선이 「보내는 중」을 보인다) — 잠그는 것은 첨부 전송뿐.
+        notice: null, sending: S.transferring, onRetrySend: entry => retrySend(roomId, entry),
         // #766 B: 저장분으로 먼저 그린 방은 첫 sync 시도가 끝날 때까지 작성창·선택지를 잠근다(room.js S.live — 보내기 전제는 예전 그대로).
         syncing: S.joined && !S.halted && !S.live,
         // 에이전트 선택지(#620): open·answered 인 에이전트 글만. 카드의 [보내기]는 작성창과 같은 sendText 로 줄마다 `"N. 라벨"`(#624)을 보낸다
         // (보내는 중이거나 AI 동의 전이면 false — 카드는 선택을 지킨 채 다시 열린다).
-        choices: choiceStates(app.current, R, {sending: app.sending || S.transferring, disabled: !S.joined || Boolean(S.halted) || !S.live}),
+        choices: choiceStates(app.current, R, {sending: S.transferring, disabled: !S.joined || Boolean(S.halted) || !S.live}),
         // 링크·미리보기 카드 대상(#690): 사이트 목록이 오면 링크 집합이 바뀌고(key), 링크가 있는 말풍선만 다시 그려진다.
         links: previewSites.current,
         onChoose: (numbers, labels) => sendText(composeChoice(numbers, labels)),
@@ -270,16 +271,20 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   }
   function addEntry(roomId, m) {
     const R = app.rooms.get(roomId);
-    if (!R) return;
+    if (!R) return null;
     // status-v1(#560): 보낸이의 다음 일반 메시지(답·첨부)가 오면 그 보낸이의 작업 상태 말풍선은 끝난다.
     if (m.sender && m.kind !== 'system') clearStatusOnMessage(R.statuses, m.sender, m.seq);
     const key = m.key ?? (m.seq !== null && m.seq !== undefined ? `seq-${m.seq}` : `sys-${R.entries.length}`);
-    if (R.entryKeys.has(key)) return;
+    // #837: 내 send 가 확정한 글(local 이 붙어 온다)은 새 줄을 만들지 않고 그 「보내는 중」 말풍선을 제자리에서 확정한다.
+    if (m.local && !m.state && settleOutgoing(roomId, R, m, key)) return null;
+    if (R.entryKeys.has(key)) return null;
     R.entryKeys.add(key);
     const entry = {key, kind: m.kind, seq: m.seq ?? null, sender: m.sender ?? '', senderName: m.sender ? displayName(m.sender) : '',
       isMe: isMine(m.sender, {device: app.device, actor: app.actor}), isAgent: m.sender ? isAgentDevice(m.sender) : false, isService: m.sender ? isServiceDevice(m.sender) : false, body: m.text ?? '', ts: m.ts ?? null,
       size: m.size ?? 0, image: null, replay: !!m.replay, load: m.load ?? null, fileName: m.fileName ?? null, dims: mediaDims(m.dims),
-      previewFailed: false, previewBusy: false};
+      previewFailed: false, previewBusy: false,
+      // #837 전송 상태: 'sending'(릴레이 응답 대기) · 'failed'(전송 안 됨 — 다시 보내기). 확정된 글·남의 글은 null. 메모리에만 — 새로고침 뒤에는 없다.
+      state: m.state ?? null, local: m.state ? m.local ?? null : null};
     R.entries.push(entry);
     R.entries.sort((a, b) => (a.seq ?? Infinity) - (b.seq ?? Infinity) || 0);
     // 안 읽음은 readSeq 로 판정한다(#541) — 새로고침 뒤 다시 들어오는 보관 이력이 N 배지를 켜지 않게. 열린 방이면 바로 본 것.
@@ -287,6 +292,29 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     // 미리보기(attachment-view.js: 한도 안, 내용 판별만). 실패는 entry.previewFailed 로 남아 말풍선의 「다시 시도」가 다시 부른다(#544 B).
     loadPreview(entry);
     render();
+    return entry;
+  }
+  /**
+   * #837: 릴레이가 받은 내 글(m.local) → 같은 local 의 「보내는 중」 말풍선을 확정한다(키는 그대로 두어 화면 행이 제자리에 남는다).
+   * 그 seq 가 이미 타임라인에 있으면(겹쳐 받음) 보내는 중 말풍선을 지운다 — 어느 쪽이든 말풍선은 하나. 짝이 없으면 false(보통 글로 넣는다).
+   */
+  function settleOutgoing(roomId, R, m, key) {
+    const entry = R.entries.find(e => e.local === m.local && e.state === 'sending');
+    if (!entry) return false;
+    if (R.entryKeys.has(key)) removeEntry(R, entry);
+    else {
+      R.entryKeys.add(key);
+      Object.assign(entry, {seq: m.seq ?? null, ts: m.ts ?? entry.ts, replay: !!m.replay, state: null, local: null});
+      R.entries.sort((a, b) => (a.seq ?? Infinity) - (b.seq ?? Infinity) || 0);
+      if (app.roomOpen && app.current === roomId) markRoomRead(roomId);
+    }
+    render();
+    return true;
+  }
+  function removeEntry(R, entry) {
+    const at = R.entries.indexOf(entry);
+    if (at >= 0) R.entries.splice(at, 1);
+    R.entryKeys.delete(entry.key);
   }
   const loadPreview = createPreviewLoader({createUrl: (bytes, type) => URL.createObjectURL(new Blob([bytes], {type})), onChange: render});
 
@@ -872,17 +900,50 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     try { return await run(); }
     catch (error) { status(error.message, 'danger'); throw error; }
   }
+  /**
+   * 보내기(#837): 누르는 즉시 「보내는 중」 말풍선을 올리고 true — 작성창은 응답을 기다리지 않는다. 릴레이 왕복(sync → 암호화 → POST,
+   * room.js send 의 순서 그대로)은 뒤에서 방마다 누른 순서대로 하나씩 돈다. 받으면 그 말풍선이 확정되고, 실패하면 「전송 안 됨」 + 다시 보내기.
+   * 보낼 수 없는 방(첫 sync 전 #766 B · 정지 · 미참여 · AI 동의 전)은 말풍선 없이 false — 작성창이 글을 되살린다(예전 그대로).
+   * 초안은 작성창이 보내기 직전에 이미 비웠다(ui.js onDraft('')) — 여기서 다시 비우지 않는다(다른 방 초안까지 지우지 않게).
+   */
   async function sendText(text) {
     const s = cur();
-    if (!s || app.sending) return false;
-    if (consentRequired(app.rooms.get(app.current))) { status(strings.consent.blocked, 'warn'); openConsentSheet(app.current); return false; }
-    app.sending = true; render();
-    // 초안은 작성창이 보내기 직전에 이미 비웠다(ui.js onDraft('')). 전송이 끝난 뒤 다시 비우면 그 사이 더 쓴 글이나 —
-    // `await` 동안 다른 방으로 옮겼다면 — 그 방의 초안까지 지운다. 보낸 방은 시작 때 잡아 둔다.
-    const roomId = app.current;
-    try { await s.send(text); markRoomRead(roomId); return true; }
-    catch (error) { status(error.message, 'danger'); return false; }
-    finally { app.sending = false; render(); }
+    if (!s || !text) return false;
+    const roomId = app.current, R = app.rooms.get(roomId);
+    if (consentRequired(R)) { status(strings.consent.blocked, 'warn'); openConsentSheet(roomId); return false; }
+    try { s.checkSend(); } catch (error) { status(error.message, 'danger'); return false; }
+    queueSend(roomId, R, text);
+    return true;
+  }
+  let outgoingSeq = 0;
+  function queueSend(roomId, R, text) {
+    const local = `out-${++outgoingSeq}`;
+    const entry = addEntry(roomId, {kind: 'text', key: local, local, state: 'sending', seq: null, sender: app.device, text, ts: Date.now()});
+    if (!entry) return;
+    // 같은 방의 글은 누른 순서대로 하나씩 — 앞 글의 sync·암호화·POST 가 끝나야 다음 글을 시작한다(순서가 뒤바뀌지 않게).
+    R.sendChain = (R.sendChain ?? Promise.resolve()).then(() => deliver(roomId, R, entry));
+  }
+  async function deliver(roomId, R, entry) {
+    if (entry.state !== 'sending' || !R.entries.includes(entry)) return;
+    try {
+      await R.session.send(entry.body, {local: entry.local});
+      // 성공이면 room.js 가 그 글을 local 과 함께 내보내 settleOutgoing 이 확정했다. 그렇지 않으면 보내는 중으로 남기지 않는다.
+      if (entry.state === 'sending') { entry.state = 'failed'; render(); }
+      markRoomRead(roomId);
+    } catch (error) {
+      entry.state = 'failed';
+      status(error.message, 'danger');
+      render();
+    }
+  }
+  /** 「다시 보내기」(#837, iOS AppModel.retry 와 같은 결): 실패한 말풍선을 지우고 같은 글을 새 보내는 글로 맨 아래에 올린다. */
+  function retrySend(roomId, entry) {
+    const R = app.rooms.get(roomId);
+    if (!R || entry?.state !== 'failed' || !R.entries.includes(entry)) return;
+    if (consentRequired(R)) { status(strings.consent.blocked, 'warn'); openConsentSheet(roomId); return; }
+    try { R.session.checkSend(); } catch (error) { status(error.message, 'danger'); return; }
+    removeEntry(R, entry);
+    queueSend(roomId, R, entry.body);
   }
   async function sendAttachment(file) {
     const s = cur();

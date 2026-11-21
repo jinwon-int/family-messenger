@@ -76,6 +76,8 @@ data class RoomUi(
     val statuses: List<StatusUi> = emptyList(),
     /** 대화 목록 미리보기 자리에 보일 최신 「⏳ Working …」 줄(오너 2026-10-30). 없으면 null. */
     val working: String? = null,
+    /** #837: 아직 확정되지 않은 내 글(누른 순서) — 「보내는 중…」 · 「전송 안 됨」 말풍선, 대화 글 뒤에. 메모리에만(`OutgoingBubbles`). */
+    val outgoing: List<OutgoingUi> = emptyList(),
 )
 
 /** 우편함의 새 기기 승인 요청 카드(#574). `expiresAt`·`createdAt` ms(릴레이가 안 주면 null — 디자인 2차-A 카드의 「요청 HH:mm · HH:mm에 만료」). `message` 는 마지막 실패 사유. */
@@ -143,6 +145,13 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
 
     /** 정식 메시지 저장소(B2) — 프로세스에 하나. 내 글 판정은 읽을 때 actor 로(같은 사람의 다른 기기 글도 내 글). */
     private val db = MessageDb(context) { settings.deviceId }
+    /**
+     * #837: 보내는 글 말풍선(메모리). 보내기는 화면 scope 가 아니라 허브 수명 scope 에서 돈다(#766 A 와 같은 이유 — 회전·Activity 회수로
+     * 취소되면 말풍선이 「보내는 중」에 멈춘다). `sendLock` 이 글을 누른 순서대로 하나씩 보내게 한다.
+     */
+    private val outgoing = OutgoingBubbles()
+    private val sendScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val sendLock = Mutex()
     private var lobby: MlsLobby? = null
     private var lobbyStore: FileLobbyStore? = null
     private val rooms = LinkedHashMap<String, Handle>()
@@ -192,6 +201,15 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
                         Log.w(TAG, "$name: pending welcome for ${e.targets} dropped (commit seq ${e.commitSeq}) → re-queued")
                         for (t in e.targets) requeueSiblingInvite(t, name)
                     }
+                    // #837: 409 로 코어 재시도 큐에 들어갔던 내 글 — 다시 나가면 이력 행으로(말풍선은 빠진다), 버려지면 「전송 안 됨」.
+                    is RoomEvent.Replayed -> {
+                        val text = outgoing.replayed(name, e.clientId)
+                        val me = settings.deviceId
+                        if (text != null && me != null) db.insert(name, e.seq, me, e.clientId, MessageDb.KIND_TEXT, text, null)
+                    }
+                    is RoomEvent.Conflict -> outgoing.conflict(name, e.clientId, e.attempt.toInt())
+                    is RoomEvent.AlreadyDelivered -> outgoing.alreadyDelivered(name, e.clientId)
+                    is RoomEvent.Dropped -> outgoing.dropped(name, e.bytes.toLong())
                     else -> {}
                 }
             },
@@ -220,7 +238,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             val h = halted ?: store.haltReason()
             val now = System.currentTimeMillis()
             val live = if (h == null) statuses.visible(now) else emptyList()
-            return RoomUi(name, joined(), h, messages, unread, statuses = live, working = live.lastOrNull()?.text)
+            return RoomUi(name, joined(), h, messages, unread, statuses = live, working = live.lastOrNull()?.text, outgoing = outgoing.list(name))
         }
     }
 
@@ -364,6 +382,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         }
         for (h in targets) {
             h.synced = false
+            outgoing.beginPoll(h.name) // #837: 이 poll 이 다시 보내는 내 글(재시도 큐)을 순서대로 맞춘다
             try {
                 h.room.poll()
                 h.synced = true
@@ -374,6 +393,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
                     else -> { Log.w(TAG, "poll ${h.name}: $e"); classify(e)?.let { p -> _ui.update { it.copy(phase = p) } }; notice("${h.name}: ${e.message}") }
                 }
             }
+            outgoing.endPoll(h.name, failed = !h.synced)
         }
         val aux = WatchPlan.auxDue(auxAt, now)
         // 바뀐 방의 새 글은 로비 쪽 일을 기다리지 않고 먼저 화면에.
@@ -875,22 +895,76 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         }
     }
 
-    fun send(scope: CoroutineScope, room: String, text: String) = scope.launch(Dispatchers.IO) {
-        val h = mutex.withLock { rooms[room] } ?: return@launch
-        // #766 B: 세션 확인 전(저장된 화면)에는 보내지 않는다 — 화면도 보내기를 꺼 둔다. 위 잠금을 지난 뒤에 본다(boot 의 probe 가 그 잠금 안에서 돈다).
-        if (!live()) { notice(Strings.connecting); return@launch }
-        try {
-            // Queued 는 다음 poll 이 다시 보낸다 — watch 가 이 방을 changed 로 알리지 않아도 다음 틱에 poll 되게 표시(#766 E, 60 s 안전망까지 밀리지 않게).
-            val r = mutex.withLock { h.room.send(text.toByteArray(Charsets.UTF_8)).also { if (it is SendResult.Queued) h.synced = false } }
-            when (r) {
-                is SendResult.Sent -> db.insert(room, r.seq, h.room.identity(), r.clientId, MessageDb.KIND_TEXT, text, null)
-                is SendResult.Queued -> notice("연결되면 보냅니다")
-                is SendResult.AlreadyDelivered -> {}
+    /**
+     * 글 보내기(#837): 누르는 즉시 「보내는 중…」 말풍선을 올린다 — 허브 잠금(동기화 바퀴)을 기다리지 않는다. 보내기 자체(암호화 → POST,
+     * 코어 `send` 그대로)는 뒤에서 누른 순서대로 하나씩. 받으면 이력 행이 되고 말풍선은 빠진다 · 409(Queued)면 「보내는 중」으로 남아 다음 poll 이
+     * 다시 보낸다 · 실패하면 「전송 안 됨」 + 다시 보내기(`retrySend`). 세션 확인 전(#766 B)에는 예전처럼 말풍선 없이 안내만 한다.
+     */
+    fun send(room: String, text: String) {
+        if (!live()) { notice(Strings.connecting); return }
+        outgoing.add(room, text)
+        showOutgoing(room)
+        drainSends(room)
+    }
+
+    /** 「다시 보내기」(#837): 실패한 말풍선을 같은 글의 새 보내는 글로 바꿔 맨 뒤에서 다시 보낸다. */
+    fun retrySend(room: String, id: Long) {
+        if (!live()) { notice(Strings.connecting); return }
+        outgoing.retry(room, id) ?: return
+        showOutgoing(room)
+        drainSends(room)
+    }
+
+    /** 그 방의 보내지 않은 글을 누른 순서대로 하나씩 보낸다. 여러 번 불려도 `sendLock` 이 한 줄로 세운다. */
+    private fun drainSends(room: String) = sendScope.launch {
+        sendLock.withLock {
+            while (true) {
+                val next = outgoing.takeNext(room) ?: break
+                sendOne(room, next.first, next.second)
             }
-            _ui.update { it.copy(rooms = roomList()) }
-        } catch (e: RoomException) {
-            notice(if (e is RoomException.Relay && e.transient) "연결 중입니다…" else (e.message ?: "전송 안 됨"))
         }
+    }
+
+    private suspend fun sendOne(room: String, id: Long, text: String) {
+        try {
+            val h = mutex.withLock { rooms[room] }
+            // #766 B: 세션 확인 전에는 보내지 않는다 — 잠금을 지난 뒤에 다시 본다(boot 의 probe 가 그 잠금 안에서 돈다).
+            if (h == null || !live()) {
+                outgoing.failed(id)
+                if (h != null) notice(Strings.connecting)
+                return
+            }
+            try {
+                mutex.withLock {
+                    when (val r = h.room.send(text.toByteArray(Charsets.UTF_8))) {
+                        is SendResult.Sent -> {
+                            db.insert(room, r.seq, h.room.identity(), r.clientId, MessageDb.KIND_TEXT, text, null)
+                            outgoing.sent(id)
+                        }
+                        // 다음 poll 이 다시 보낸다 — watch 가 이 방을 changed 로 알리지 않아도 다음 틱에 poll 되게 표시(#766 E, 60 s 안전망까지 밀리지 않게).
+                        is SendResult.Queued -> {
+                            h.synced = false
+                            outgoing.queued(room, id)
+                        }
+                        is SendResult.AlreadyDelivered -> outgoing.sent(id)
+                    }
+                    // 이력 행과 말풍선 제거를 한 번에 화면으로 — 같은 글이 두 번 보이거나 잠깐 사라지지 않게.
+                    _ui.update { it.copy(rooms = roomList()) }
+                }
+            } catch (e: RoomException) {
+                outgoing.failed(id)
+                notice(if (e is RoomException.Relay && e.transient) "연결 중입니다…" else (e.message ?: "전송 안 됨"))
+            }
+        } finally {
+            // 취소·예상 밖 오류로 끝났어도 「보내는 중」에 멈추지 않는다.
+            outgoing.failIfSending(id)
+            showOutgoing(room)
+        }
+    }
+
+    /** 보내는 글 말풍선만 화면에 반영(허브 잠금·이력 읽기 없음 — 누른 즉시 그리기 위해). */
+    private fun showOutgoing(room: String) {
+        _ui.update { ui -> ui.copy(rooms = ui.rooms.map { r -> if (r.room == room) r.copy(outgoing = outgoing.list(room)) else r }) }
     }
 
     /**
@@ -1048,6 +1122,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             me = null; meUnsupported = false; selfServiceUnsupported = false; nextPostAt = 0L
             candidates = emptyList(); candidateRevision = null
             busy.clear(); candidateMessages.clear()
+            outgoing.clear()
             ticks = 0
             fullSweepAt = null; auxAt = null
             runCatching { db.wipe() }.onFailure { e -> Log.w(TAG, "wipe: messages.db: $e") }

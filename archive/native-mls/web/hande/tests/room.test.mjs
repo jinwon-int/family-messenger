@@ -716,3 +716,24 @@ test('⛔ 정지된 방은 connect 가 아무것도 하지 않는다 (#766 B)', 
   assert.ok(ev.messages.some(m => m.kind === 'system' && m.key === 'halt-12'));
   await assert.rejects(() => s.send('x'));
 });
+
+test('#837 send(text, {local}): local 은 내보내는 글에만 실리고 릴레이 POST 에는 없다 — checkSend 는 send 와 같은 검사를 동기로 (#766 B)', async () => {
+  const relay = fakeRelay(m => (m === 'GET' ? quietRoom() : {status: 201, body: {seq: 6, epoch: 2}}));
+  const {s, w, events: ev} = storedSession({relay});
+  await s.open(); await s.activate({connect: false});
+  assert.throws(() => s.checkSend(), /대화방이 준비되지 않았습니다/, '첫 sync 전에는 send 와 같이 막는다');
+  assert.equal(relay.calls.length, 0);
+  await s.connect();
+  assert.doesNotThrow(() => s.checkSend());
+  assert.equal(await s.send('hello', {local: 'out-1'}), 6);
+  const post = relay.calls.find(c => c.method === 'POST');
+  assert.deepEqual(Object.keys(post.body).sort(), ['bytes', 'client_id', 'device', 'epoch', 'kind'], '와이어 필드는 예전 그대로');
+  assert.ok(!JSON.stringify(post.body).includes('out-1'));
+  const own = ev.messages.find(m => m.kind === 'text' && m.text === 'hello');
+  assert.equal(own.local, 'out-1');
+  assert.equal(own.seq, 6);
+  assert.ok(!('local' in w.history.at(-1)), '이력 행에도 없다');
+  // local 없이 보내면 예전 모양 그대로(키 없음).
+  assert.equal(await s.send('again'), 6);
+  assert.ok(!('local' in ev.messages.at(-1)));
+});
