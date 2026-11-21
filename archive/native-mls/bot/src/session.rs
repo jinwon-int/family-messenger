@@ -53,6 +53,7 @@ use crate::attachment_out;
 use crate::health;
 use crate::reply_quote::{self, Recent};
 use crate::responder::{self, Inbound, Outbound, Responder};
+use crate::watch::{self, RelayWatch};
 use family_mls_browser_experiment::Device;
 use std::collections::VecDeque;
 use std::io::Write;
@@ -64,6 +65,9 @@ use zeroize::Zeroize;
 /// SIGTERMs the bot long before this. `NATIVE_MLS_BOT_MAX_SECS=0` disables
 /// the deadline for a long-lived deployment (review 2 B-M9).
 const DEFAULT_MAX_SECS: u64 = 300;
+/// One round of the session loop every `POLL`: room reads, steward command,
+/// responder pump, typing keepalive. With the relay watch (#755, `watch.rs`)
+/// the cadence is the same; only the room reads a watch covers are skipped.
 const POLL: Duration = Duration::from_millis(200);
 /// One status heartbeat per second of polling keeps the harness (and CI logs)
 /// informed without flooding stdout.
@@ -83,6 +87,9 @@ pub struct Options {
     /// Agent mode (#354 A1): when set, application messages are offered to the
     /// stdio worker instead of being echoed. `None` = the original echo bot.
     pub responder: Option<responder::Config>,
+    /// #755: wait on the relay's `/v2/watch` between rounds (default); off =
+    /// read every room every round (`--no-relay-watch`).
+    pub relay_watch: bool,
 }
 
 /// What this device does with a room's application messages (#372 P2).
@@ -255,6 +262,12 @@ struct RoomState {
     /// founded after it). Memory only — the next poll after a restart finds
     /// it again; the state file is kept (history, re-founding decisions).
     relay_missing: bool,
+    /// #755: the highest seq the relay scanned for this device's last page
+    /// (`next_after`). It lies past `cursor` when the newest rows are Welcomes
+    /// for other devices, which the relay filters out; the watch offset is
+    /// `max(cursor, scanned)` so such a row does not answer every watch at
+    /// once. Memory only, never the sync cursor, never acked.
+    scanned: i64,
 }
 
 impl std::ops::Deref for RoomState {
@@ -512,30 +525,85 @@ pub fn run(opts: Options) -> Result<(), BotError> {
     }
     let mut rooms = vec![RoomState {
         sync: RoomSync { room: opts.room.clone(), cursor: c0, epoch: e0, joined: j0, joinable: true, dirty: false, acked: c0, ack_sent: 0, ack_disabled: false, halted: halted0.is_some() },
-        echoes: x0, retry: VecDeque::new(), device, state_path: opts.state_file.clone(), mode: if agent.is_some() { Mode::Agent } else { Mode::Echo }, pending: None, recent: Recent::default(), relay_missing: false,
+        echoes: x0, retry: VecDeque::new(), device, state_path: opts.state_file.clone(), mode: if agent.is_some() { Mode::Agent } else { Mode::Echo }, pending: None, recent: Recent::default(), relay_missing: false, scanned: 0,
     }];
     if let Some(watch) = &opts.watch_room {
         // The negative control: a room the bot is never invited to. It must
         // stay unjoined and silent there for the whole session.
         rooms.push(RoomState {
             sync: RoomSync { room: watch.clone(), cursor: 0, epoch: 0, joined: false, joinable: false, dirty: false, acked: 0, ack_sent: 0, ack_disabled: true, halted: false },
-            echoes: 0, retry: VecDeque::new(), device: Device::new(&opts.device).map_err(|_| BotError::Local("device new: identity shape rejected"))?, state_path: None, mode: Mode::Watch, pending: None, recent: Recent::default(), relay_missing: false,
+            echoes: 0, retry: VecDeque::new(), device: Device::new(&opts.device).map_err(|_| BotError::Local("device new: identity shape rejected"))?, state_path: None, mode: Mode::Watch, pending: None, recent: Recent::default(), relay_missing: false, scanned: 0,
         });
     }
     let typing = TypingRoute::new(&opts.base, opts.access.clone());
     let ctx = Ctx { client: &client, own: &opts.device, typing: Some(&typing) };
-    run_loop(&ctx, &mut rooms, &mut agent, deadline, None)
+    let watch = relay_watch(&opts.base, &opts.access, &opts.device, opts.relay_watch);
+    run_loop_watching(&ctx, &mut rooms, &mut agent, deadline, None, watch)
+}
+
+/// #755: the session's relay watch — its own thread and client (`watch.rs`),
+/// or plain polling when switched off. Says so once when it starts off.
+fn relay_watch(base: &str, access: &api::Access, device: &str, enabled: bool) -> RelayWatch {
+    let watch = if enabled { RelayWatch::relay(base, access.clone(), device) } else { RelayWatch::off() };
+    if let Some(reason) = watch.mode().reason().filter(|why| *why != "starting") {
+        emit(&serde_json::json!({ "event": "relay_watch", "device": device, "mode": "poll", "reason": reason }));
+    }
+    watch
+}
+
+/// #755: one `relay_watch` line per mode change — `watch` (the relay answers
+/// `/v2/watch`; rounds read only what it names) or `poll` with the reason
+/// (`unsupported`: an older relay, asked again after `retry_ms`; `error`: the
+/// request failed, retried on the relay backoff; `watcher_gone`).
+fn report_watch(own: &str, shift: Option<watch::Shift>) {
+    let Some(shift) = shift else { return };
+    let mut event = serde_json::json!({
+        "event": "relay_watch", "device": own, "mode": shift.mode.name(), "rooms": shift.rooms, "wait_ms": watch::WAIT_MS,
+    });
+    if let Some(reason) = shift.mode.reason() {
+        event["reason"] = reason.into();
+    }
+    if let Some(error) = shift.error {
+        event["error"] = error.into();
+    }
+    if let Some(retry) = shift.retry {
+        event["retry_ms"] = (retry.as_millis() as u64).into();
+    }
+    emit(&event);
+}
+
+/// #755: work a room's next read does that no relay change announces — a
+/// queued echo replay, an own commit waiting for its echo, an acknowledgement
+/// that is due (`room::poll`'s own condition). Such a room is read every
+/// round, watch or not.
+fn needs_poll(state: &RoomState) -> bool {
+    !state.retry.is_empty() || state.pending.is_some() || (state.joined && !state.ack_disabled && state.acked > state.ack_sent)
+}
+
+/// #755: the rooms one watch waits on and the seq each is read up to. A
+/// halted room is never read again, so it is not waited on either.
+fn watch_targets(rooms: &[RoomState]) -> Vec<(String, i64)> {
+    rooms.iter().filter(|state| !state.halted).map(|state| (state.room.clone(), state.cursor.max(state.scanned).max(0))).collect()
+}
+
+/// `run_loop_watching` without a relay watch: every round reads every room.
+#[cfg(test)]
+fn run_loop(
+    ctx: &Ctx, rooms: &mut Vec<RoomState>, agent: &mut Option<Responder>, deadline: Option<Instant>,
+    steward: Option<&Steward>,
+) -> Result<(), BotError> {
+    run_loop_watching(ctx, rooms, agent, deadline, steward, RelayWatch::off())
 }
 
 /// The polling loop shared by the single-room session and the steward
 /// (#372 P2): poll every room, flush what moved, serve the command queue
 /// (steward only), route the responder's output to the agent room.
-fn run_loop(
+fn run_loop_watching(
     ctx: &Ctx, rooms: &mut Vec<RoomState>, agent: &mut Option<Responder>, deadline: Option<Instant>,
-    steward: Option<&Steward>,
+    steward: Option<&Steward>, mut watch: RelayWatch,
 ) -> Result<(), BotError> {
     let mut keepalive = TypingKeepalive::default();
-    let result = run_rounds(ctx, rooms, agent, deadline, steward, &mut keepalive);
+    let result = run_rounds(ctx, rooms, agent, deadline, steward, &mut keepalive, &mut watch);
     // Leaving with a turn still typing (deadline, a fatal relay error, the
     // worker gone): drop the signal now instead of letting the TTL run out.
     let reason = if agent.as_ref().is_some_and(|r| r.typing_turn() == Err("worker_gone")) { "worker_gone" } else { "shutdown" };
@@ -545,7 +613,7 @@ fn run_loop(
 
 fn run_rounds(
     ctx: &Ctx, rooms: &mut Vec<RoomState>, agent: &mut Option<Responder>, deadline: Option<Instant>,
-    steward: Option<&Steward>, keepalive: &mut TypingKeepalive,
+    steward: Option<&Steward>, keepalive: &mut TypingKeepalive, watch: &mut RelayWatch,
 ) -> Result<(), BotError> {
     let expired = |deadline: Option<Instant>| deadline.is_some_and(|d| Instant::now() >= d);
 
@@ -561,7 +629,14 @@ fn run_rounds(
         }
         let mut round_unreachable: Option<BotError> = None;
         let mut fatal: Option<BotError> = None;
+        // #755: while a relay watch covered the wait that just ended, read
+        // only the rooms it named, rooms it does not carry and rooms with
+        // work of their own; otherwise every room, as before (`watch.rs`).
+        let sweep = watch.sweep(Instant::now());
         for state in rooms.iter_mut() {
+            if !(sweep.reads(&state.room) || needs_poll(state)) {
+                continue;
+            }
             let before = (state.cursor, state.epoch, state.dirty);
             match poll_room(ctx, state, agent) {
                 Ok(()) => {}
@@ -579,6 +654,8 @@ fn run_rounds(
                             "device": ctx.own,
                         }));
                     }
+                    // #755: this room was not read; try again next round.
+                    watch.force_full();
                 }
                 // #392: the relay is restarting or briefly unreachable, and
                 // nothing of this room moved (the page read itself failed).
@@ -628,6 +705,8 @@ fn run_rounds(
                 "event": "relay_unreachable", "device": ctx.own, "attempt": unreachable,
                 "wait_ms": wait.as_millis() as u64, "error": error.to_string(),
             }));
+            // #755: the rooms after the failed one were not read.
+            watch.force_full();
             std::thread::sleep(wait);
             continue;
         }
@@ -640,7 +719,11 @@ fn run_rounds(
         }
         // Steward (#372 P2): one queued operator command per round.
         if let Some(steward) = steward {
-            steward.serve_one(ctx, rooms)?;
+            // #755: a served command may have added a room or posted a commit;
+            // the next round reads every room, as it always did.
+            if steward.serve_one(ctx, rooms)? {
+                watch.force_full();
+            }
         }
         // Agent mode: worker output → the agent room (encrypted and posted like
         // an echo). Only one room carries agent text (legacy: rooms[0]; steward:
@@ -662,6 +745,8 @@ fn run_rounds(
                         None => Err("steward_only".to_string()),
                         Some(steward) => {
                             let cmd = Command { op: op.clone(), room: room.clone(), arg: arg.clone() };
+                            // #755: like a served command — read every room next round.
+                            watch.force_full();
                             match steward.execute(ctx, rooms, &cmd) {
                                 Ok(mut value) => { value["ok"] = serde_json::Value::Bool(true); Ok(value) }
                                 Err(err) => Err(err.to_string()),
@@ -687,7 +772,12 @@ fn run_rounds(
                 // #761: a file-v2 descriptor — its own client_id, never text;
                 // the responder answers the bridge once this settles.
                 if let Outbound::Attachment { post, .. } = item {
-                    post_attachment(ctx, rooms, multi, &item_room, post, responder)?;
+                    if post_attachment(ctx, rooms, multi, &item_room, post, responder)? {
+                        // #755: 409 cas_mismatch — the room moved under us and
+                        // the next pump posts it again; read it first, as the
+                        // next poll always did.
+                        watch.force_full();
+                    }
                     continue;
                 }
                 // #703: a notice whose sender wants an answer (ack/nack below).
@@ -779,10 +869,14 @@ fn run_rounds(
         }
         rounds += 1;
         if rounds % STATUS_EVERY == 0 {
-            status(rooms);
+            status(rooms, watch.mode());
         }
         health_tick(&mut health, rooms);
-        std::thread::sleep(POLL);
+        // #755: the wait between rounds is still `POLL` at most. A watch goes
+        // out after this round's reads (its offsets are the seqs just read)
+        // and its answer ends the wait early; it never lengthens it.
+        report_watch(ctx.own, watch.arm(Instant::now(), || watch_targets(rooms)));
+        report_watch(ctx.own, watch.wait(POLL));
     }
 }
 
@@ -884,7 +978,12 @@ fn poll_room(ctx: &Ctx, state: &mut RoomState, agent: &mut Option<Responder>) ->
     // application in page order) is host-core's `room::poll`; `BotRoom` is the
     // bot's side of it — logging, halt markers, echo/agent/silent, own commits
     // and the echo replay queue.
-    room::poll(&mut BotRoom { ctx, state, agent }, ctx.own)
+    let mut host = BotRoom { ctx, state: &mut *state, agent, scanned: 0 };
+    room::poll(&mut host, ctx.own)?;
+    // #755: only a page that was processed to its end moves the watch offset.
+    let scanned = host.scanned;
+    state.scanned = state.scanned.max(scanned);
+    Ok(())
 }
 
 /// #814: track whether the relay still has a room this device already saw
@@ -921,6 +1020,8 @@ struct BotRoom<'s, 'c> {
     ctx: &'s Ctx<'c>,
     state: &'s mut RoomState,
     agent: &'s mut Option<Responder>,
+    /// #755: `next_after` of the page this poll fetched (0 = none).
+    scanned: i64,
 }
 
 impl room::RoomAccess for BotRoom<'_, '_> {
@@ -939,6 +1040,9 @@ impl room::RoomHost for BotRoom<'_, '_> {
     fn fetch(&mut self, room: &str, after: i64, ack: Option<i64>) -> Result<api::EventsResponse, BotError> {
         let page = self.ctx.client.get_events(room, self.ctx.own, after, ack);
         note_relay_presence(self.ctx.own, self.state, &page);
+        if let Ok(page) = &page {
+            self.scanned = page.next_after;
+        }
         page
     }
 
@@ -1691,9 +1795,10 @@ impl room::SendHost for FileSender<'_, '_> {
 /// blob is already uploaded) to the turn's agent room and tell the responder
 /// how it went. Not joined / halted / no agent room → `post` refusal. A 409
 /// cas_mismatch goes back to the responder, which offers it again on the next
-/// pump (after this poll's GET applied the commit). Any other relay error ends
-/// the session, as for a reply (fail closed).
-fn post_attachment(ctx: &Ctx, rooms: &mut [RoomState], multi: bool, item_room: &str, post: responder::OutPost, agent: &mut Responder) -> Result<(), BotError> {
+/// pump (after this poll's GET applied the commit) — `Ok(true)`, so the
+/// caller makes sure that GET happens (#755). Any other relay error ends the
+/// session, as for a reply (fail closed).
+fn post_attachment(ctx: &Ctx, rooms: &mut [RoomState], multi: bool, item_room: &str, post: responder::OutPost, agent: &mut Responder) -> Result<bool, BotError> {
     let main = if !multi || item_room.is_empty() {
         rooms.iter_mut().find(|r| r.mode == Mode::Agent)
     } else {
@@ -1702,7 +1807,7 @@ fn post_attachment(ctx: &Ctx, rooms: &mut [RoomState], multi: bool, item_room: &
     let Some(main) = main.filter(|r| r.joined && !r.halted) else {
         emit(&serde_json::json!({ "event": "agent_outbound_dropped", "room": item_room, "reason": "attachment_no_room" }));
         agent.attachment_posted(post, Err("post"));
-        return Ok(());
+        return Ok(false);
     };
     let outcome = room::send_application(&mut FileSender { ctx, state: main }, ctx.own, &post.descriptor);
     match outcome {
@@ -1716,6 +1821,7 @@ fn post_attachment(ctx: &Ctx, rooms: &mut [RoomState], multi: bool, item_room: &
         Ok(SendOutcome::Conflict { client_id, error }) => {
             emit(&serde_json::json!({ "event": "attachment_conflict", "room": main.room, "client_id": client_id, "error": error.to_string() }));
             agent.attachment_conflict(post);
+            return Ok(true);
         }
         Ok(SendOutcome::AlreadyDelivered { client_id, error }) => {
             // A fresh uuid is never reused; refuse rather than guess.
@@ -1728,7 +1834,7 @@ fn post_attachment(ctx: &Ctx, rooms: &mut [RoomState], multi: bool, item_room: &
             return Err(err);
         }
     }
-    Ok(())
+    Ok(false)
 }
 
 /// Encrypt and POST one status line (status-v1, #560) — `publish_echo` with a
@@ -2143,6 +2249,8 @@ pub struct StewardOptions {
     pub identity_file: PathBuf,
     pub rooms_dir: PathBuf,
     pub responder: Option<responder::Config>,
+    /// #755: see [`Options::relay_watch`].
+    pub relay_watch: bool,
 }
 
 pub struct Steward {
@@ -2182,7 +2290,7 @@ fn load_room(dir: &Path, room: &str, device: &str) -> Result<RoomState, BotError
     let halted = refused_marker_path(&path).exists();
     Ok(RoomState {
         sync: RoomSync { room: room.to_string(), cursor, epoch, joined, joinable: true, dirty: false, acked: cursor, ack_sent: 0, ack_disabled: false, halted },
-        echoes, retry: VecDeque::new(), device: dev, state_path: Some(path), mode: read_mode(dir, room), pending: None, recent: Recent::default(), relay_missing: false,
+        echoes, retry: VecDeque::new(), device: dev, state_path: Some(path), mode: read_mode(dir, room), pending: None, recent: Recent::default(), relay_missing: false, scanned: 0,
     })
 }
 
@@ -2232,7 +2340,8 @@ pub fn run_steward(opts: StewardOptions) -> Result<(), BotError> {
         None => None,
     };
     let steward = Steward { device: opts.device.clone(), rooms_dir: opts.rooms_dir.clone(), identity_file: opts.identity_file.clone(), multi_agent };
-    run_loop(&ctx, &mut rooms, &mut agent, deadline, Some(&steward))
+    let watch = relay_watch(&opts.base, &opts.access, &opts.device, opts.relay_watch);
+    run_loop_watching(&ctx, &mut rooms, &mut agent, deadline, Some(&steward), watch)
 }
 
 /// One operator command (written by the CLI into `cmd/<id>.json`).
@@ -2246,15 +2355,16 @@ pub struct Command {
 
 impl Steward {
     /// Serve the oldest queued command, if any; its outcome lands in
-    /// `out/<id>.json` and the request file is removed.
-    fn serve_one(&self, ctx: &Ctx, rooms: &mut Vec<RoomState>) -> Result<(), BotError> {
+    /// `out/<id>.json` and the request file is removed. `Ok(true)` = one was
+    /// served.
+    fn serve_one(&self, ctx: &Ctx, rooms: &mut Vec<RoomState>) -> Result<bool, BotError> {
         let cmd_dir = self.rooms_dir.join("cmd");
         let mut names: Vec<String> = match std::fs::read_dir(&cmd_dir) {
             Ok(entries) => entries.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned())
                 .filter(|n| n.ends_with(".json")).collect(),
-            Err(_) => return Ok(()),
+            Err(_) => return Ok(false),
         };
-        if names.is_empty() { return Ok(()); }
+        if names.is_empty() { return Ok(false); }
         names.sort();
         let name = names.remove(0);
         let path = cmd_dir.join(&name);
@@ -2269,7 +2379,7 @@ impl Steward {
         let raw = serde_json::to_vec(&outcome).map_err(|_| BotError::Local("outcome json"))?;
         write_state_file(&self.rooms_dir.join("out").join(&name), &raw)?;
         let _ = std::fs::remove_file(&path);
-        Ok(())
+        Ok(true)
     }
 
     fn execute(&self, ctx: &Ctx, rooms: &mut Vec<RoomState>, cmd: &Command) -> Result<serde_json::Value, BotError> {
@@ -2290,7 +2400,7 @@ impl Steward {
                 std::fs::write(room_mode_path(&self.rooms_dir, &cmd.room), mode.name()).map_err(|_| BotError::Local("mode file write"))?;
                 rooms.push(RoomState {
                     sync: RoomSync { room: cmd.room.clone(), cursor: 0, epoch: 0, joined: true, joinable: true, dirty: false, acked: 0, ack_sent: 0, ack_disabled: false, halted: false },
-                    echoes: 0, retry: VecDeque::new(), device: dev, state_path: Some(path), mode, pending: None, recent: Recent::default(), relay_missing: false,
+                    echoes: 0, retry: VecDeque::new(), device: dev, state_path: Some(path), mode, pending: None, recent: Recent::default(), relay_missing: false, scanned: 0,
                 });
                 Ok(serde_json::json!({ "op": "create", "room": cmd.room, "mode": mode.name(), "epoch": 0 }))
             }
@@ -2306,7 +2416,7 @@ impl Steward {
                 std::fs::write(room_mode_path(&self.rooms_dir, &cmd.room), Mode::Silent.name()).map_err(|_| BotError::Local("mode file write"))?;
                 rooms.push(RoomState {
                     sync: RoomSync { room: cmd.room.clone(), cursor: 0, epoch: 0, joined: false, joinable: true, dirty: false, acked: 0, ack_sent: 0, ack_disabled: false, halted: false },
-                    echoes: 0, retry: VecDeque::new(), device: dev, state_path: Some(path), mode: Mode::Silent, pending: None, recent: Recent::default(), relay_missing: false,
+                    echoes: 0, retry: VecDeque::new(), device: dev, state_path: Some(path), mode: Mode::Silent, pending: None, recent: Recent::default(), relay_missing: false, scanned: 0,
                 });
                 Ok(serde_json::json!({ "op": "join", "room": cmd.room, "key_ref": key_ref, "stored": stored }))
             }
@@ -2518,7 +2628,7 @@ fn emit(value: &serde_json::Value) {
     let _ = out.flush();
 }
 
-fn status(rooms: &[RoomState]) {
+fn status(rooms: &[RoomState], relay_watch: watch::Mode) {
     let rooms: Vec<_> = rooms
         .iter()
         .map(|state| {
@@ -2529,9 +2639,12 @@ fn status(rooms: &[RoomState]) {
             })
         })
         .collect();
-    // #423 (④ input): one GET per room per round — the polling cost grows with
-    // the room count, so say it.
-    emit(&serde_json::json!({ "event": "status", "rooms": rooms, "polls_per_round": rooms.len() }));
+    // #423 (④ input): one GET per room per full round — the polling cost grows
+    // with the room count, so say it. #755: `relay_watch` = `watch` while the
+    // relay watch stands in for those reads (a full round is then the 60 s
+    // safety net), `poll` while every round is a full one, `starting` until
+    // the first watch answers.
+    emit(&serde_json::json!({ "event": "status", "rooms": rooms, "polls_per_round": rooms.len(), "relay_watch": relay_watch.label() }));
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -2995,7 +3108,7 @@ for line in sys.stdin:
     fn joined_room_at(room: &str, cursor: i64, state_path: Option<PathBuf>) -> RoomState {
         RoomState {
             sync: RoomSync { room: room.into(), cursor, epoch: 2, joined: true, joinable: true, dirty: false, acked: cursor, ack_sent: cursor, ack_disabled: false, halted: false },
-            echoes: 3, retry: VecDeque::new(), device: Device::new("bot-1").unwrap_or_else(|_| panic!("device new")), state_path, mode: Mode::Echo, pending: None, recent: Recent::default(), relay_missing: false,
+            echoes: 3, retry: VecDeque::new(), device: Device::new("bot-1").unwrap_or_else(|_| panic!("device new")), state_path, mode: Mode::Echo, pending: None, recent: Recent::default(), relay_missing: false, scanned: 0,
         }
     }
 
@@ -3211,6 +3324,310 @@ for line in sys.stdin:
         assert_eq!(seen.len(), 2, "{seen:?}");
         assert!(seen.iter().all(|l| l.starts_with("GET /v2/rooms/family/events?device=bot-1&after=4")), "{seen:?}");
         assert_eq!(rooms[0].cursor, 4, "nothing moved");
+    }
+
+    /// #755: a relay that serves requests concurrently — the canned one is
+    /// strictly sequential, and a watch stays open while other requests go on.
+    /// One room (`family`); rows come from the test or from a stored POST.
+    #[derive(Clone)]
+    struct WatchRelay {
+        base: String,
+        shared: std::sync::Arc<(std::sync::Mutex<WatchRelayState>, std::sync::Condvar)>,
+    }
+
+    struct WatchRelayState {
+        /// (seq, device, returned to the bot). A row that is not returned is
+        /// still scanned (`next_after`), like a Welcome for another device.
+        rows: Vec<(i64, String, bool)>,
+        /// Request lines with their arrival time.
+        seen: Vec<(Instant, String)>,
+        /// `GET /v2/watch`: 200 = wait for a row past the offset, anything
+        /// else = that status at once with a plain body.
+        watch_status: u16,
+        /// Statuses for the next POSTs (then 200).
+        post_statuses: VecDeque<u16>,
+    }
+
+    impl WatchRelay {
+        fn start(last_seq: i64, watch_status: u16, post_statuses: &[u16]) -> WatchRelay {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+            let base = format!("http://127.0.0.1:{}", listener.local_addr().expect("addr").port());
+            let state = WatchRelayState {
+                rows: vec![(last_seq, "bot-1".into(), true)], seen: Vec::new(), watch_status,
+                post_statuses: post_statuses.iter().copied().collect(),
+            };
+            let relay = WatchRelay { base, shared: std::sync::Arc::new((std::sync::Mutex::new(state), std::sync::Condvar::new())) };
+            let serving = relay.clone();
+            // Detached: the listener lives until the test process ends.
+            std::thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    let relay = serving.clone();
+                    std::thread::spawn(move || relay.serve(stream));
+                }
+            });
+            relay
+        }
+
+        /// Append rows in one step: `(device, returned to the bot)`.
+        fn push(&self, rows: &[(&str, bool)]) -> i64 {
+            let (lock, changed) = &*self.shared;
+            let mut state = lock.lock().expect("relay state");
+            for (device, visible) in rows {
+                let seq = state.rows.last().map_or(0, |r| r.0) + 1;
+                state.rows.push((seq, device.to_string(), *visible));
+            }
+            changed.notify_all();
+            state.rows.last().map_or(0, |r| r.0)
+        }
+
+        fn seen(&self, prefix: &str) -> Vec<(Instant, String)> {
+            self.shared.0.lock().expect("relay state").seen.iter().filter(|(_, line)| line.starts_with(prefix)).cloned().collect()
+        }
+
+        fn serve(&self, mut stream: std::net::TcpStream) {
+            use std::io::Read;
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 4096];
+            let header_end = loop {
+                if let Some(at) = raw.windows(4).position(|w| w == b"\r\n\r\n") { break at + 4; }
+                match stream.read(&mut buf) { Ok(n) if n > 0 => raw.extend_from_slice(&buf[..n]), _ => return }
+            };
+            let head = String::from_utf8_lossy(&raw[..header_end]).to_string();
+            let length: usize = head.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0))).unwrap_or(0);
+            while raw.len() < header_end + length {
+                match stream.read(&mut buf) { Ok(n) if n > 0 => raw.extend_from_slice(&buf[..n]), _ => return }
+            }
+            let line = head.lines().next().unwrap_or_default().to_string();
+            let number_after = |key: &str| -> i64 {
+                line.split(key).nth(1).map(|rest| rest.chars().take_while(char::is_ascii_digit).collect::<String>()).and_then(|n| n.parse().ok()).unwrap_or(0)
+            };
+            let (lock, changed) = &*self.shared;
+            let mut state = lock.lock().expect("relay state");
+            state.seen.push((Instant::now(), line.clone()));
+            let (status, body) = if line.starts_with("GET /v2/watch") {
+                if state.watch_status != 200 {
+                    (state.watch_status, "nothing here".to_string())
+                } else {
+                    let after = number_after("room=family:");
+                    let until = Instant::now() + Duration::from_secs(4);
+                    while state.rows.last().is_some_and(|r| r.0 <= after) && Instant::now() < until {
+                        state = changed.wait_timeout(state, until.saturating_duration_since(Instant::now())).expect("relay wait").0;
+                    }
+                    let moved = state.rows.last().is_some_and(|r| r.0 > after);
+                    (200, if moved { r#"{"changed":["family"]}"#.to_string() } else { r#"{"changed":[]}"#.to_string() })
+                }
+            } else if line.starts_with("GET /v2/rooms/family/events") {
+                let after = number_after("after=");
+                let events: Vec<String> = state.rows.iter().filter(|r| r.0 > after && r.2).map(|(seq, device, _)| {
+                    format!(r#"{{"seq":{seq},"device":"{device}","client_id":"c-{seq}","kind":"application","epoch":2,"bytes":"AQID","sha256":"00","created_at":1}}"#)
+                }).collect();
+                let next_after = state.rows.last().map_or(after, |r| r.0.max(after));
+                (200, format!(r#"{{"epoch":2,"revision":1,"events":[{}],"next_after":{next_after},"first_seq":1}}"#, events.join(",")))
+            } else if line.starts_with("POST /v2/rooms/family/events") {
+                match state.post_statuses.pop_front().unwrap_or(200) {
+                    200 => {
+                        let seq = state.rows.last().map_or(0, |r| r.0) + 1;
+                        state.rows.push((seq, "bot-1".into(), true));
+                        changed.notify_all();
+                        (200, format!(r#"{{"seq":{seq},"epoch":2,"revision":1,"duplicate":false}}"#))
+                    }
+                    status => (status, r#"{"error":"cas_mismatch"}"#.to_string()),
+                }
+            } else {
+                (404, r#"{"error":"not_found"}"#.to_string())
+            };
+            drop(state);
+            let _ = stream.write_all(format!("HTTP/1.1 {status} X\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes());
+        }
+    }
+
+    /// #755: with the relay watch, an idle room costs one read (the first
+    /// round) instead of one every 200 ms, a new row is read as soon as the
+    /// watch answers, and the next watch waits past a row the relay scanned
+    /// but did not return (a Welcome for another device) instead of being
+    /// answered at once for ever.
+    #[test]
+    fn relay_watch_reads_a_room_when_it_changes_not_every_round() {
+        let relay = WatchRelay::start(4, 200, &[]);
+        let client = Client::with_access(&relay.base, api::Access::None);
+        let ctx = Ctx { client: &client, own: "bot-1", typing: None };
+        let mut rooms = vec![joined_room("family", 4)];
+        let pusher = {
+            let relay = relay.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(1300));
+                relay.push(&[("bot-1", true), ("owner", false)]);
+                Instant::now()
+            })
+        };
+        let watch = relay_watch(&relay.base, &api::Access::None, "bot-1", true);
+        let err = run_loop_watching(&ctx, &mut rooms, &mut None, Some(Instant::now() + Duration::from_millis(2500)), None, watch)
+            .expect_err("only the deadline ends the loop");
+        assert!(err.to_string().contains("deadline"), "{err}");
+        let pushed = pusher.join().expect("pusher");
+        assert_eq!((rooms[0].cursor, rooms[0].scanned), (5, 6), "row 5 was read, row 6 only scanned");
+        let reads = relay.seen("GET /v2/rooms/family/events");
+        // Plain polling reads about 12 times in 2.5 s.
+        assert!((2..=4).contains(&reads.len()), "first round + the change: {reads:?}");
+        assert_eq!(reads[0].1, "GET /v2/rooms/family/events?device=bot-1&after=4 HTTP/1.1");
+        let read = reads.iter().find(|(at, _)| *at >= pushed).expect("a read after the row");
+        assert!(read.0.duration_since(pushed) < Duration::from_secs(1), "read when the watch answered: {:?}", read.0.duration_since(pushed));
+        let watches: Vec<String> = relay.seen("GET /v2/watch").into_iter().map(|(_, line)| line).collect();
+        assert_eq!(watches[0], "GET /v2/watch?device=bot-1&wait=12000&room=family:4 HTTP/1.1", "{watches:?}");
+        assert!(watches.last().is_some_and(|line| line.contains("room=family:6")), "the offset is past the scanned row: {watches:?}");
+        assert!(!watches.iter().any(|line| line.contains("room=family:5")), "{watches:?}");
+        assert!(watches.len() <= 4, "one request at a time, a second apart at least: {watches:?}");
+    }
+
+    /// #755 fallback: a relay without `/v2/watch` (plain 404) is asked once and
+    /// polled as before; a watch that fails (500) is polled as before too and
+    /// retried on the backoff. Either way a new row is still found.
+    #[test]
+    fn relay_watch_falls_back_to_polling_on_an_old_relay_or_an_error() {
+        for (status, most_watches) in [(404u16, 1usize), (500, 2)] {
+            let relay = WatchRelay::start(4, status, &[]);
+            let client = Client::with_access(&relay.base, api::Access::None);
+            let ctx = Ctx { client: &client, own: "bot-1", typing: None };
+            let mut rooms = vec![joined_room("family", 4)];
+            let pusher = {
+                let relay = relay.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(600));
+                    relay.push(&[("bot-1", true)]);
+                })
+            };
+            let watch = relay_watch(&relay.base, &api::Access::None, "bot-1", true);
+            let err = run_loop_watching(&ctx, &mut rooms, &mut None, Some(Instant::now() + Duration::from_millis(1500)), None, watch)
+                .expect_err("only the deadline ends the loop");
+            assert!(err.to_string().contains("deadline"), "{status}: {err}");
+            pusher.join().expect("pusher");
+            assert_eq!(rooms[0].cursor, 5, "{status}: found by polling");
+            let reads = relay.seen("GET /v2/rooms/family/events").len();
+            assert!(reads >= 4, "{status}: every round reads the room again ({reads})");
+            let watches = relay.seen("GET /v2/watch").len();
+            assert!((1..=most_watches).contains(&watches), "{status}: {watches} watch requests");
+        }
+    }
+
+    /// #755 off switch: no watch request at all, every round reads the room.
+    #[test]
+    fn relay_watch_off_is_plain_polling() {
+        let relay = WatchRelay::start(4, 200, &[]);
+        let client = Client::with_access(&relay.base, api::Access::None);
+        let ctx = Ctx { client: &client, own: "bot-1", typing: None };
+        let mut rooms = vec![joined_room("family", 4)];
+        let watch = relay_watch(&relay.base, &api::Access::None, "bot-1", false);
+        assert_eq!(watch.mode(), watch::Mode::Poll("disabled"));
+        let err = run_loop_watching(&ctx, &mut rooms, &mut None, Some(Instant::now() + Duration::from_millis(1000)), None, watch)
+            .expect_err("only the deadline ends the loop");
+        assert!(err.to_string().contains("deadline"), "{err}");
+        assert!(relay.seen("GET /v2/watch").is_empty());
+        assert!(relay.seen("GET /v2/rooms/family/events").len() >= 3);
+    }
+
+    /// #755, the constraint: while a watch is held open by a quiet relay, the
+    /// responder's output still leaves within a round — the loop never waits
+    /// on the watch — and work only the next read can do (the replay after a
+    /// 409 cas_mismatch) happens on the next round although the watch named
+    /// nothing.
+    #[test]
+    fn relay_watch_does_not_delay_the_responder_or_a_queued_replay() {
+        use std::io::{BufRead, BufReader};
+        let relay = WatchRelay::start(4, 200, &[409]);
+        let client = Client::with_access(&relay.base, api::Access::None);
+        let ctx = Ctx { client: &client, own: "bot-1", typing: None };
+        let dir = temp_dir("watch-responder");
+        let sock = dir.join("responder.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).expect("bind");
+        let mut config = responder::Config::new(responder::Transport::Unix(sock), "owner".into());
+        config.typing = false;
+        let mut agent = Some(Responder::spawn(config, None).unwrap_or_else(|e| panic!("connect: {e}")));
+        let (mut feeder, _) = listener.accept().expect("accept");
+        let mut answers = BufReader::new(feeder.try_clone().expect("clone"));
+        let writer = std::thread::spawn(move || {
+            // The loop is idle by now: first round done, a watch in flight.
+            std::thread::sleep(Duration::from_millis(700));
+            let frame = serde_json::json!({"type": "notice", "room": "family", "text": "카드 결제", "id": "row-1"});
+            feeder.write_all(format!("{frame}\n").as_bytes()).expect("feeder write");
+            Instant::now()
+        });
+        let mut state = joined_room_at("family", 4, Some(dir.join("family.state")));
+        state.device.create().expect("a one-member group to encrypt in");
+        state.mode = Mode::Agent;
+        let mut rooms = vec![state];
+        let watch = relay_watch(&relay.base, &api::Access::None, "bot-1", true);
+        let err = run_loop_watching(&ctx, &mut rooms, &mut agent, Some(Instant::now() + Duration::from_millis(2500)), None, watch)
+            .expect_err("the deadline ends the loop");
+        assert!(err.to_string().contains("deadline"), "{err}");
+        let written = writer.join().expect("writer");
+        let posts = relay.seen("POST /v2/rooms/family/events");
+        assert_eq!(posts.len(), 2, "the 409 and its replay: {posts:?}");
+        let (first, replay) = (posts[0].0, posts[1].0);
+        // Nominal: within one 200 ms round each. The watch waits 12 s.
+        assert!(first.saturating_duration_since(written) < Duration::from_secs(1), "notice → POST took {:?}", first.saturating_duration_since(written));
+        assert!(replay.duration_since(first) < Duration::from_secs(1), "409 → replay took {:?}", replay.duration_since(first));
+        assert!(rooms[0].retry.is_empty(), "the replay posted it");
+        assert_eq!(rooms[0].cursor, 5, "the stored reply's own row was read when the watch answered");
+        let watches = relay.seen("GET /v2/watch");
+        assert!(watches.first().is_some_and(|(at, _)| *at < written), "a watch was in flight when the notice came: {watches:?}");
+        answers.get_ref().set_read_timeout(Some(Duration::from_millis(500))).expect("timeout");
+        let mut line = String::new();
+        answers.read_line(&mut line).expect("answer");
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&line).expect("answer json"), serde_json::json!({"type": "notice_ack", "id": "row-1", "seq": 5}));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #755: what makes a room be read without a relay change, and what a
+    /// watch waits on.
+    #[test]
+    fn needs_poll_and_watch_targets() {
+        let mut room = joined_room("family", 4);
+        assert!(!needs_poll(&room), "idle: acked == ack_sent, nothing queued");
+        room.retry.push_back((b"again".to_vec(), 1, None));
+        assert!(needs_poll(&room), "a queued replay");
+        room.retry.clear();
+        room.pending = Some(PendingCommit { seq: 5, welcome: None, targets: Vec::new() });
+        assert!(needs_poll(&room), "an own commit waiting for its echo");
+        room.pending = None;
+        room.acked = 5;
+        assert!(needs_poll(&room), "an ack is due");
+        room.ack_disabled = true;
+        assert!(!needs_poll(&room), "the relay refused this device's acks");
+        room.ack_disabled = false;
+        room.joined = false;
+        assert!(!needs_poll(&room), "no ack before joining");
+
+        let mut ahead = joined_room("ahead", 4);
+        ahead.scanned = 9;
+        let mut behind = joined_room("behind", 7);
+        behind.scanned = 3;
+        let mut halted = joined_room("halted", 2);
+        halted.halted = true;
+        assert_eq!(
+            watch_targets(&[ahead, behind, halted, joined_room("fresh", 0)]),
+            vec![("ahead".to_string(), 9), ("behind".to_string(), 7), ("fresh".to_string(), 0)],
+        );
+    }
+
+    /// #755: `scanned` follows the page's `next_after` once the page was
+    /// processed; a page without the field (an older relay) and a failed read
+    /// leave it alone, and the cursor is never moved by it.
+    #[test]
+    fn poll_room_tracks_the_scanned_seq() {
+        let scanned_page = r#"{"epoch":2,"revision":1,"events":[],"next_after":6,"first_seq":1}"#.to_string();
+        let old_page = r#"{"epoch":2,"revision":1,"events":[],"first_seq":1}"#.to_string();
+        let (base, server) = canned_relay_with_status(vec![(200, scanned_page), (200, old_page), (503, "unavailable".into())]);
+        let client = Client::with_access(&base, api::Access::None);
+        let ctx = Ctx { client: &client, own: "bot-1", typing: None };
+        let mut room = joined_room("family", 4);
+        poll_room(&ctx, &mut room, &mut None).unwrap_or_else(|e| panic!("scanned page: {e}"));
+        assert_eq!((room.cursor, room.scanned), (4, 6));
+        poll_room(&ctx, &mut room, &mut None).unwrap_or_else(|e| panic!("old page: {e}"));
+        assert_eq!((room.cursor, room.scanned), (4, 6), "0 = no field, never a step back");
+        poll_room(&ctx, &mut room, &mut None).expect_err("503");
+        assert_eq!((room.cursor, room.scanned), (4, 6));
+        assert_eq!(server.join().expect("server thread").len(), 3);
+        assert_eq!(watch_targets(std::slice::from_ref(&room)), vec![("family".to_string(), 6)]);
     }
 
     /// #426 through `run_loop` (steward): 503 → page → connection refused (the
