@@ -28,6 +28,8 @@ class InMemoryRelay(private val base: String) : HttpTransport {
     private val rooms = HashMap<String, RoomRows>()
     /** 로비 풀: 기기 → key package 바이트, 게시 순(가장 오래된 것부터 소비). */
     private val lobby = HashMap<String, ArrayDeque<ByteArray>>()
+    /** (기기, 방) → 그 방이 마지막으로 소비한 로비 key package 의 ref(sha256 hex) — lobby.go `pendingWelcome.key_package_ref`. */
+    private val lobbyConsumed = HashMap<Pair<String, String>, String>()
     var lobbyMax = 8
     val pushRows = mutableListOf<PushRow>()
     val trace = mutableListOf<String>()
@@ -64,7 +66,9 @@ class InMemoryRelay(private val base: String) : HttpTransport {
     /** steward 가 하는 일(`GET /v2/lobby/keypackages?device=&consumer=&room=`): 가장 오래된 로비 키 하나. */
     @Synchronized fun consumeLobby(device: String, consumer: String, room: String): ByteArray? {
         trace += "CONSUME lobby $device by $consumer for $room"
-        return lobby[device]?.removeFirstOrNull()
+        val bytes = lobby[device]?.removeFirstOrNull() ?: return null
+        lobbyConsumed[device to room] = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+        return bytes
     }
 
     @Synchronized
@@ -376,7 +380,9 @@ class InMemoryRelay(private val base: String) : HttpTransport {
                 ?.let { w ->
                     // #574: 보낸 기기 `from` — 옛 릴레이 흉내에서는 없다.
                     val from = if (noSelfService) "" else ",\"from\":\"${w.device}\""
-                    """{"room":"$name","seq":${w.seq},"epoch":${w.epoch},"created_at":0$from}"""
+                    // #380: 이 방이 소비한 로비 key package 의 ref(방 패키지로 만든 Welcome 은 없다).
+                    val keyRef = lobbyConsumed[device to name]?.let { ",\"key_package_ref\":\"$it\"" } ?: ""
+                    """{"room":"$name","seq":${w.seq},"epoch":${w.epoch},"created_at":0$from$keyRef}"""
                 }
         }
         return respond(200, """{"welcomes":[${welcomes.joinToString(",")}]}""")

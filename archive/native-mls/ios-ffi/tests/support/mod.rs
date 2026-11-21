@@ -93,6 +93,8 @@ pub struct Relay {
     pub rooms: Mutex<HashMap<String, RoomRows>>,
     /// 로비 풀: 기기 → (ref, bytes) 게시 순(가장 오래된 것부터 소비).
     pub lobby: Mutex<HashMap<String, VecDeque<(String, Vec<u8>)>>>,
+    /// (기기, 방) → 그 방이 마지막으로 소비한 로비 key package 의 ref — lobby.go `pendingWelcome.key_package_ref`.
+    pub lobby_consumed: Mutex<HashMap<(String, String), String>>,
     pub lobby_max: Mutex<usize>,
     pub push: Mutex<Vec<PushRow>>,
     pub chain: Mutex<Chain>,
@@ -110,6 +112,10 @@ pub struct Relay {
     /// 한 번만 터지는 전송 고장(#574 후속 — 대기 Welcome 영속): 다음 `POST welcome` / 다음 `GET /events` / 다음 `POST commit` 이
     /// 연결 끊김(transient)으로 실패하고 플래그가 꺼진다. commit 은 릴레이에 **닿지 않는다**(행 없음).
     pub fail_next_welcome: AtomicBool,
+    /// `GET /v2/lobby/welcomes` 가 없는 옛 릴레이 흉내(봉투 없는 404).
+    pub no_lobby_welcomes: AtomicBool,
+    /// `GET /v2/lobby/welcomes` 만 503 으로 실패(다른 라우트는 정상).
+    pub fail_lobby_welcomes: AtomicBool,
     pub fail_next_get: AtomicBool,
     pub drop_next_commit: AtomicBool,
     /// file-v2 blob 저장소(#366 C, blobs.go 흉내): `"<room>/<sha256 hex>"` → 암호문. 내용 주소라 같은 바이트는 200(이미 있음).
@@ -123,6 +129,7 @@ impl Relay {
         Arc::new(Relay {
             rooms: Mutex::new(HashMap::new()),
             lobby: Mutex::new(HashMap::new()),
+            lobby_consumed: Mutex::new(HashMap::new()),
             lobby_max: Mutex::new(LOBBY_MAX_DEFAULT),
             push: Mutex::new(Vec::new()),
             chain: Mutex::new(Chain { revision: 1, ..Chain::default() }),
@@ -133,6 +140,8 @@ impl Relay {
             no_self_service: AtomicBool::new(false),
             no_watch: AtomicBool::new(false),
             fail_next_welcome: AtomicBool::new(false),
+            no_lobby_welcomes: AtomicBool::new(false),
+            fail_lobby_welcomes: AtomicBool::new(false),
             fail_next_get: AtomicBool::new(false),
             drop_next_commit: AtomicBool::new(false),
             blobs: Mutex::new(HashMap::new()),
@@ -363,7 +372,9 @@ impl Relay {
     /// steward 가 하는 일(`GET /v2/lobby/keypackages?device=&consumer=&room=`): 가장 오래된 로비 키 하나를 꺼낸다.
     pub fn consume_lobby(&self, device: &str, consumer: &str, room: &str) -> Option<Vec<u8>> {
         self.trace.lock().unwrap().push(format!("CONSUME lobby {device} by {consumer} for {room}"));
-        self.lobby.lock().unwrap().get_mut(device).and_then(|q| q.pop_front()).map(|(_, bytes)| bytes)
+        let (key_ref, bytes) = self.lobby.lock().unwrap().get_mut(device).and_then(|q| q.pop_front())?;
+        self.lobby_consumed.lock().unwrap().insert((device.to_string(), room.to_string()), key_ref);
+        Some(bytes)
     }
     pub fn push_rows(&self) -> Vec<PushRow> {
         self.push.lock().unwrap().clone()
@@ -578,6 +589,8 @@ impl Relay {
     }
 
     fn lobby_welcomes(&self, query: &str) -> Result<HttpResponse, RoomError> {
+        if self.no_lobby_welcomes.load(Ordering::SeqCst) { return Self::bare_404(); }
+        if self.fail_lobby_welcomes.load(Ordering::SeqCst) { return Self::respond(503, serde_json::json!({ "error": "unavailable" })); }
         let device = Self::params(query)["device"].to_string();
         self.trace.lock().unwrap().push(format!("WELCOMES {device}"));
         let rooms = self.rooms.lock().unwrap();
@@ -597,6 +610,10 @@ impl Relay {
                         let mut w = serde_json::json!({ "room": name, "seq": r.seq, "epoch": r.epoch, "created_at": 0 });
                         // #574: 보낸 기기 — 옛 릴레이 흉내에서는 없다.
                         if !self.no_self_service.load(Ordering::SeqCst) { w["from"] = serde_json::json!(r.device); }
+                        // #380: 이 방이 소비한 로비 key package 의 ref(방 패키지로 만든 Welcome 은 없다).
+                        if let Some(key_ref) = self.lobby_consumed.lock().unwrap().get(&(device.clone(), name.clone())) {
+                            w["key_package_ref"] = serde_json::json!(key_ref);
+                        }
                         w
                     })
             })

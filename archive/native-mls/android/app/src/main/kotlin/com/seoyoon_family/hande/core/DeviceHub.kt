@@ -181,6 +181,8 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     private var candidateRevision: ULong? = null
     private val busy = HashSet<String>()
     private val candidateMessages = HashMap<String, String>()
+    /** #616: 방 → 이번 실행에서 다시 받아들이기를 해 본 가장 큰 Welcome seq(`WelcomeAdopt`). 메모리만 — 재시작하면 한 번 더 해 본다. */
+    private val welcomeRetried = HashMap<String, Long>()
 
     private inner class Handle(val name: String) {
         var halted: String? = null
@@ -420,18 +422,32 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         var connecting = false
         // 로비 Welcome → 모르는 방이면 로비 상태로 받아들인다(HOST-CONTRACT §2b). 운영자(steward)의 초대도, 같은 사람의 다른 기기가
         // 나를 방마다 초대한 것(#574 `from` = 활성 형제 기기)도 묻지 않고 받는다 — 이 앱에는 초대 카드가 없다.
+        // #616: 아는 방이어도 「읽고 지나갔는데 참여하지 못한」 Welcome 은 지금의 로비 상태로 방을 다시 만들어 한 번 더 받아들인다
+        // (`WelcomeAdopt` — 그 방의 엔진 상태는 처음 받아들일 때의 사본이라, 다시 초대받은 Welcome 을 제 `poll` 로는 열 수 없다).
         try {
             for (w in l.welcomes()) {
-                if (rooms.containsKey(w.room)) continue
+                val known = rooms[w.room]
+                val decision = WelcomeAdopt.decide(
+                    known = known != null, joined = known?.joined() ?: false, halted = known?.halted != null,
+                    cursor = known?.let { runCatching { it.room.syncState().cursor }.getOrNull() },
+                    welcomeSeq = w.seq, retriedSeq = welcomeRetried[w.room],
+                )
+                if (decision == WelcomeAdopt.Decision.SKIP) continue
+                val again = decision == WelcomeAdopt.Decision.READOPT
+                if (again) welcomeRetried[w.room] = w.seq // 받아들이기가 또 실패해도 이번 실행에서는 되풀이하지 않는다
                 val sibling = SelfService.isSibling(w.from, me, settings.actor, l.identity())
-                Log.i(TAG, "welcome ${w.room} seq ${w.seq} from=${w.from.ifEmpty { "?" }} sibling=$sibling → adopt")
+                Log.i(TAG, "welcome ${w.room} seq ${w.seq} from=${w.from.ifEmpty { "?" }} sibling=$sibling → ${if (again) "re-adopt (read past, not joined)" else "adopt"}")
+                // 다시 받아들일 때는 옛 방 객체를 먼저 닫는다 — 같은 저장 파일을 두 객체가 쓰지 않게(그룹이 없던 방이라 잃는 것이 없다).
+                if (again) known?.let { old -> runCatching { old.room.close() }.onFailure { e -> Log.w(TAG, "welcome ${w.room}: close before re-adopt: $e") } }
                 val h = Handle(w.room)
                 h.room = MlsRoom.adopt(l.identity(), w.room, l.seedState(), w.seq - 1, settings.relayUrl!!, transport, h.store)
                 h.room.setAccessToken(settings.accessToken)
                 rooms[w.room] = h
                 h.room.poll()
                 h.synced = true
-                if (sibling) notice(Strings.siblingWelcome(w.from, w.room))
+                if (!h.joined()) Log.w(TAG, "welcome ${w.room} seq ${w.seq}: not joined after ${if (again) "re-adopt" else "adopt"} (the Welcome was rejected)")
+                // 다시 받아들이기는 참여했을 때만 알린다 — 비밀이 이미 없는 Welcome 은 실행마다 한 번씩 또 실패할 수 있다.
+                if (sibling && (!again || h.joined())) notice(Strings.siblingWelcome(w.from, w.room))
                 replenish(l)
             }
         } catch (e: RoomException) {
@@ -1116,6 +1132,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             Log.i(TAG, "wipe: closing ${rooms.size} rooms + lobby, deleting local state")
             rooms.values.forEach { h -> runCatching { h.room.close() }.onFailure { e -> Log.w(TAG, "wipe: close ${h.name}: $e") } }
             rooms.clear()
+            welcomeRetried.clear()
             runCatching { lobby?.close() }.onFailure { e -> Log.w(TAG, "wipe: close lobby: $e") }
             lobby = null
             lobbyStore = null
