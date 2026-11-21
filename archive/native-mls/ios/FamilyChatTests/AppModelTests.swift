@@ -36,6 +36,45 @@ final class SwitchableListingRelay: InMemoryRelayWrapper {
     }
 }
 
+/// #836: 방 목록 응답(`GET /v2/rooms`)을 붙잡아 두는 릴레이 — 응답 전에 화면이 무엇인지 본다. `release()` 뒤로는 바로 답한다.
+/// 요청은 메인 액터 밖(전송 호출)에서 들어오므로 상태는 잠금으로 지킨다.
+final class HeldListingRelay: InMemoryRelayWrapper {
+    private let lock = NSLock()
+    private var held = true
+    private var started = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    /// 지금까지 들어온 방 목록 요청 수(붙잡힌 것 포함).
+    var listingsStarted: Int {
+        lock.lock(); defer { lock.unlock() }
+        return started
+    }
+
+    override func listRooms(device: DeviceID) async throws -> RoomsResponse {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            started += 1
+            if held {
+                waiters.append(continuation)
+                lock.unlock()
+            } else {
+                lock.unlock()
+                continuation.resume()
+            }
+        }
+        return try await inner.listRooms(device: device)
+    }
+
+    func release() {
+        lock.lock()
+        held = false
+        let pending = waiters
+        waiters = []
+        lock.unlock()
+        for continuation in pending { continuation.resume() }
+    }
+}
+
 final class RefusingRelay: InMemoryRelayWrapper {
     let error: Error
     init(_ error: Error) { self.error = error }
@@ -254,6 +293,168 @@ final class AppModelTests: XCTestCase {
         enrolling.openingTimedOut()
         XCTAssertEqual(enrolling.phase, .needsEnrollment)
         XCTAssertFalse(enrolling.reconnecting, "after the check settled the timeout changes nothing")
+    }
+
+    // MARK: - #836 저장된 방·대화로 먼저 그리기 + 시작 계측
+
+    /// 지난 실행의 세션(Keychain)이 남은 차가운 시작 — `bootstrap` 이 스스로 로그인한다(테스트가 `login` 을 부르지 않는다).
+    private func coldStartModel(rooms: [RoomRecord], transport: RelayTransport) -> AppModel {
+        var deps = AppModel.Dependencies(
+            engineFactory: FakeFactory(), stateStore: InMemoryStateStore(), messageStore: InMemoryMessageStore(seedRooms: rooms),
+            outbox: InMemoryOutboxStore(), cursors: InMemoryCursorStore(),
+            identityProvider: { "owner-iphone-abc123" }, expectedDecryptFormat: { 2 },
+            makeTransport: { _ in transport })
+        deps.credentials = InMemoryCredentialStore(.bearer("t"))
+        return AppModel(dependencies: deps)
+    }
+
+    private func waitUntil(_ condition: () -> Bool) async throws {
+        for _ in 0..<500 where !condition() { try await Task.sleep(nanoseconds: 2_000_000) }
+    }
+
+    private func startupLines(_ model: AppModel) -> [String] { model.diagnostics.filter { $0.contains("startup:") } }
+
+    /// 수용 기준: 저장된 방이 있는 기기는 방 목록 응답 **전에** 방 목록을 보인다(「연결 중」과 함께). 첫 바퀴는 뒤에서 돌고,
+    /// 답이 오면 같은 목록이 제자리에서 맞춰지고 「연결 중」이 내려간다. 진단 기록에 첫 화면(stored)·첫 동기화 줄이 남는다.
+    func testColdStartWithStoredRoomsShowsTheListBeforeTheRoomListAnswer() async throws {
+        let relay = HeldListingRelay()
+        try await postMomMessage(relay.inner, 1)   // 빈 방 로그는 404 no_such_room — 글 하나로 정상 바퀴를 만든다
+        let model = coldStartModel(rooms: [knownFamily], transport: relay)
+        await model.bootstrap()
+        XCTAssertEqual(model.phase, .ready, "stored rooms are shown without waiting for the relay")
+        XCTAssertEqual(model.listedRooms.map(\.room), ["family"])
+        XCTAssertTrue(model.reconnecting, "the list shows 「연결 중」 until the first round answers")
+        XCTAssertTrue(model.awaitingFirstRound)
+        XCTAssertFalse(model.settled)
+        XCTAssertEqual(relay.listingsStarted, 0, "drawn before any relay request")
+
+        let round = Task { await model.refresh() }
+        try await waitUntil { relay.listingsStarted == 1 }
+        XCTAssertEqual(relay.listingsStarted, 1, "the first round runs in the background")
+        XCTAssertEqual(model.phase, .ready, "still the stored list while the room-list answer is held")
+        XCTAssertTrue(model.reconnecting)
+        relay.release()
+        await round.value
+
+        XCTAssertEqual(model.phase, .ready)
+        XCTAssertFalse(model.reconnecting, "the first answer clears the connecting banner")
+        XCTAssertFalse(model.awaitingFirstRound)
+        XCTAssertTrue(model.settled)
+        XCTAssertEqual(model.rooms.map(\.room), ["family"], "reconciled in place — no duplicate room")
+
+        XCTAssertEqual(model.startup.firstScreen?.screen, "stored")
+        let stages = model.startup.firstScreen?.stages.map(\.name) ?? []
+        XCTAssertEqual(Array(stages.prefix(3)), ["launch", "identity", "rooms"])
+        XCTAssertFalse(stages.contains("listing"), "no relay stage in a stored first screen: \(stages)")
+        XCTAssertEqual(model.startup.firstSync?.screen, "ready")
+        let lines = startupLines(model)
+        XCTAssertEqual(lines.count, 2, "\(lines)")
+        XCTAssertTrue(lines.first?.contains("startup: first screen ") == true, "\(lines)")
+        XCTAssertTrue(lines.first?.contains(" ms (stored) — launch ") == true, "\(lines)")
+        XCTAssertTrue(lines.last?.contains("startup: first sync ") == true, "\(lines)")
+        XCTAssertTrue(lines.last?.hasSuffix(" ms (ready)") == true, "\(lines)")
+        XCTAssertTrue(model.diagnosticsReport().contains("\nstartup: first screen "), "the copied report keeps it in the header")
+
+        await model.refresh()
+        XCTAssertEqual(startupLines(model).count, 2, "later rounds record nothing more")
+    }
+
+    /// 등록이 해제된 기기(403 device_subject_mismatch): 저장된 목록이 먼저 보였다가 첫 바퀴의 답에서 등록 화면으로 — 종전과 같은 끝.
+    func testColdStartWithStoredRoomsThenRevokedDeviceGoesToEnrollment() async throws {
+        let relay = SwitchableListingRelay()
+        relay.listingRefusal = RelayError.refused(code: "device_subject_mismatch", status: 403)
+        let model = coldStartModel(rooms: [knownFamily], transport: relay)
+        await model.bootstrap()
+        XCTAssertEqual(model.phase, .ready)
+        await model.refresh()
+        XCTAssertEqual(model.phase, .needsEnrollment, "the relay's real answer still wins")
+        XCTAssertFalse(model.reconnecting, "the relay answered")
+        XCTAssertFalse(model.awaitingFirstRound)
+        XCTAssertEqual(model.startup.firstSync?.screen, "enroll")
+    }
+
+    /// 세션이 만료됐으면(401) 저장된 목록 뒤 로그인 화면 — 종전(오프닝 → 로그인)과 같은 끝.
+    func testColdStartWithStoredRoomsThenExpiredSessionGoesToLogin() async throws {
+        let relay = SwitchableListingRelay()
+        relay.listingRefusal = RelayError.unauthorized
+        let model = coldStartModel(rooms: [knownFamily], transport: relay)
+        await model.bootstrap()
+        XCTAssertEqual(model.phase, .ready)
+        await model.refresh()
+        XCTAssertEqual(model.phase, .needsLogin)
+        XCTAssertEqual(model.lastError, Strings.sessionExpired)
+        XCTAssertEqual(model.startup.firstSync?.screen, "login")
+    }
+
+    /// 오프라인 시작(저장된 방 있음): 응답 없이 바로 목록 + 「연결 중」, 첫 바퀴가 닿지 않아도 그대로(원문 오류 없음), 닿으면 내려간다 — #654 와 같은 끝.
+    func testColdStartWithStoredRoomsWhileOfflineKeepsTheListWithConnecting() async throws {
+        let relay = InMemoryRelay()
+        try await relay.stop()
+        let model = coldStartModel(rooms: [knownFamily], transport: relay)
+        await model.bootstrap()
+        XCTAssertEqual(model.phase, .ready)
+        XCTAssertTrue(model.reconnecting)
+        await model.refresh()
+        XCTAssertEqual(model.phase, .ready, "an unreachable first round must not look like a revoked device")
+        XCTAssertTrue(model.reconnecting)
+        XCTAssertNil(model.lastError, "no raw network error on screen")
+        XCTAssertTrue(model.settled)
+        XCTAssertEqual(model.startup.firstSync?.screen, "offline")
+        try await relay.start()
+        try await postMomMessage(relay, 1)
+        await model.refresh()
+        XCTAssertEqual(model.phase, .ready)
+        XCTAssertFalse(model.reconnecting, "one successful round clears the banner")
+    }
+
+    /// 저장된 ⛔ 정지도 응답 전에 바로 보인다(재시작 뒤 유지 규칙).
+    func testColdStartWithAStoredHaltShowsItBeforeTheAnswer() async {
+        let halted = RoomRecord(room: "family", epoch: 1, revision: 1, haltedReason: "commit_refused", displayOrder: 0)
+        let relay = HeldListingRelay()
+        let model = coldStartModel(rooms: [halted], transport: relay)
+        await model.bootstrap()
+        XCTAssertEqual(model.phase, .halted("commit_refused"))
+        XCTAssertEqual(model.startup.firstScreen?.screen, "stored")
+        XCTAssertEqual(relay.listingsStarted, 0)
+    }
+
+    /// 새 기기(저장된 방 없음)는 종전처럼 응답을 기다린다: 방 목록 응답 전에는 오프닝(`.checking`), 응답 뒤에 그린다(network).
+    func testColdStartWithoutStoredRoomsWaitsForTheRelayAsBefore() async throws {
+        let relay = HeldListingRelay()
+        let model = coldStartModel(rooms: [], transport: relay)
+        await model.bootstrap()
+        XCTAssertEqual(model.phase, .checking)
+        XCTAssertFalse(model.awaitingFirstRound)
+        XCTAssertNil(model.startup.firstScreen, "still on the opening")
+
+        let round = Task { await model.refresh() }
+        try await waitUntil { relay.listingsStarted == 1 }
+        XCTAssertEqual(model.phase, .checking, "nothing to show until the relay answers")
+        relay.release()
+        await round.value
+
+        XCTAssertEqual(model.phase, .ready)
+        XCTAssertFalse(model.reconnecting)
+        XCTAssertEqual(model.startup.firstScreen?.screen, "network")
+        let stages = model.startup.firstScreen?.stages.map(\.name) ?? []
+        XCTAssertEqual(Array(stages.prefix(5)), ["launch", "identity", "rooms", "listing", "sync"])
+        XCTAssertNil(model.startup.firstSync, "drawn after the answer — no separate first-sync line")
+        let lines = startupLines(model)
+        XCTAssertEqual(lines.count, 1, "\(lines)")
+        XCTAssertTrue(lines.first?.contains(" ms (network) — launch ") == true, "\(lines)")
+    }
+
+    /// 로그인 화면을 거친 시작(첫 실행·세션 만료 뒤)은 종전처럼 첫 확인까지 오프닝 — 저장분 먼저는 저장된 세션의 차가운 시작에만.
+    /// 첫 화면 줄은 그 로그인 화면에서 끝난다.
+    func testLoginFromTheLoginScreenStillChecksFirst() async {
+        let (model, _) = makeModel(rooms: [knownFamily])
+        await model.bootstrap()
+        XCTAssertEqual(model.phase, .needsLogin)
+        XCTAssertEqual(model.startup.firstScreen?.screen, "login")
+        model.login(.bearer("t"))
+        XCTAssertEqual(model.phase, .checking)
+        XCTAssertFalse(model.awaitingFirstRound)
+        XCTAssertFalse(model.reconnecting)
     }
 
     // MARK: - 타이핑 (#562)

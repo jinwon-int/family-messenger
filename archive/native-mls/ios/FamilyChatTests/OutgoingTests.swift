@@ -57,6 +57,37 @@ final class OutgoingTests: XCTestCase {
         XCTAssertGreaterThan(after[0].id, 0)
     }
 
+    /// #836: 저장된 방으로 먼저 연 화면(첫 바퀴 전, 세션 확인 전)에서 보낸 글 — 막지 않고 기존 대기열 동작 그대로다. 닿지 않으면
+    /// 「연결되면 보냅니다」, 연결이 돌아온 첫 바퀴 뒤 한 번 나가고 말풍선이 겹치지 않는다(웹·Android 는 확인 전 보내기를 막았다 — iOS 는 대기열이 있다).
+    func testSendBeforeTheFirstRoundOfAStoredFirstStartUsesTheUsualQueue() async throws {
+        let relay = InMemoryRelay()
+        var deps = AppModel.Dependencies(
+            engineFactory: AnyFactory(MemberFakeFactory()), stateStore: InMemoryStateStore(),
+            messageStore: InMemoryMessageStore(seedRooms: [RoomRecord(room: "family", epoch: 0, revision: 0, haltedReason: nil, displayOrder: 0)]),
+            outbox: InMemoryOutboxStore(), cursors: InMemoryCursorStore(),
+            identityProvider: { "mom-iphone-a1b2c3" }, expectedDecryptFormat: { 2 }, makeTransport: { _ in relay })
+        deps.credentials = InMemoryCredentialStore(.bearer("t"))   // 지난 실행의 세션 — 차가운 시작
+        let model = AppModel(dependencies: deps)
+        try await relay.stop()
+        await model.bootstrap()
+        XCTAssertEqual(model.phase, .ready, "stored-first: the room is open before any relay answer")
+        XCTAssertTrue(model.awaitingFirstRound)
+
+        let outcome = await model.send(room: "family", text: "먼저 쓴 글")
+        XCTAssertNil(outcome, "the sync before the POST fails — nothing reached the outbox")
+        XCTAssertEqual(model.messages(room: "family").map(\.record.body), ["먼저 쓴 글"])
+        XCTAssertEqual(model.messages(room: "family").first?.outgoing, .queued)
+        XCTAssertNil(model.lastError, "the bubble carries the state; no banner text")
+
+        try await relay.start()
+        await model.refresh()
+        XCTAssertFalse(model.awaitingFirstRound)
+        XCTAssertFalse(model.reconnecting)
+        XCTAssertNil(model.outgoing["family"], "resent after the first successful round")
+        XCTAssertEqual(model.messages(room: "family").map(\.record.body), ["먼저 쓴 글"], "sent once — no duplicate bubble")
+        XCTAssertEqual(relay.applicationEvents(room: "family"), 1, "stored once at the relay")
+    }
+
     // MARK: - #497 B 송신 신뢰성
 
     /// 504: 릴레이는 저장했는데 응답을 잃었다. 같은 바이트로 다시 보내 `200 duplicate` — 릴레이에 **한 번만** 저장되고 말풍선은 실제 기록이 잇는다.
