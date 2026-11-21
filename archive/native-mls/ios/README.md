@@ -129,3 +129,25 @@ PageUp/PageDown·Esc 를 먼저 써 버려 SwiftUI 단축키만으로는 Home �
 알림함(🔔) 「기록 복사」로 보내면 된다. 웹 캐럿 모드는 대화 내용 안에서
 글자 단위로 고르지만, iOS 말풍선은 SwiftUI 글이라 커서를 둘 수 없어 「말풍선 고르기 → 선택 창에서 글자 고르기」 두 단계로 옮겼다.
 창(초대·복사·사진·파일·알림함·참여 요청·자리 만들기)이 떠 있으면 대화방 키를 쓰지 않는다.
+
+## 시작 — 저장된 방·대화로 먼저 그리기 + 첫 화면 계측(#836, #766 B·I 의 iOS 판)
+
+1. **저장분 먼저**(`AppModel.openStoredFirst`): 저장된 세션(Keychain)과 저장된 방이 있는 차가운 시작은 방 목록 응답(첫 바퀴)을 기다리지 않고
+   `bootstrap` 끝에서 저장된 방 목록·대화를 연다 — 화면은 #654 의 대체 경로와 같다(방 목록 + 「연결 중입니다…」, 저장된 ⛔ 정지는 정지 화면).
+   첫 바퀴(`refreshLocked`)는 종전 순서·종전 코드 그대로 `runForeground` 가 곧바로 뒤에서 돌고, 그 결과가 상태를 정한다: 성공 → 「연결 중」이
+   내려가고 목록·대화가 제자리에서 맞춰진다 · 403 → 등록 화면 · 401 → 로그인 화면 · 닿지 않음 → 「연결 중」 그대로. 첫 바퀴 뒤의 상태는 #654 경로와 같다.
+   - 저장된 방이 없으면(새 기기) · 로그인 화면을 거쳐 로그인했으면: 종전처럼 첫 바퀴까지 오프닝(`.checking`, 8초 상한).
+   - 첫 바퀴 전의 보내기는 막지 않는다(웹·Android 는 막았다): 송신은 `serial` 에서 그 바퀴 뒤에(#599 양보) 돌고, 닿지 않으면 종전 대기열
+     (「연결되면 보냅니다」·outbox). 읽음 위치·입력중·방 순서 왕복은 「연결 중」 동안 하지 않는다(기존 `reconnecting` 조건).
+     단축어 송신·공유 맡김 전달은 종전처럼 첫 바퀴를 먼저 돈다(`awaitingFirstRound`).
+2. **계측**(Core `Sync/StartupTiming.swift`, Linux 테스트 `StartupTimingTests`): 모델을 만든 순간(앱 시작)부터 첫 화면까지 구간별 ms 를 진단 기록에
+   한 줄, 「진단 기록 복사」 머리에도 같은 줄. 이름과 ms 만(방·기기·주소 없음). 구간 합 = 총합.
+   ```
+   startup: first screen 412 ms (stored) — launch 300 · identity 95 · rooms 17
+   startup: first sync 1180 ms (ready)
+   startup: first screen 1650 ms (network) — launch 300 · identity 95 · rooms 17 · listing 410 · sync 828
+   ```
+   구간: `launch`(모델 생성 → `bootstrap`, 첫 장면·잠금화면 미리보기 설정 읽기) · `identity`(신원 슬롯·지문) · `rooms`(저장된 방·보내지 못한 글·저장된 세션)
+   · `listing`(방 목록 응답) · `sync`(방 동기화·내보내기) · `rest`(남은 시간). 괄호: `stored`(응답 전에 저장분으로) · `network`(응답 뒤) ·
+   `timeout`·`offline`·`error`(#654 대체 경로) · `login`·`enroll`·`server`·`actor`·`fatal`(그 화면). `first sync` 줄은 첫 화면을 첫 바퀴 전에
+   그렸을 때만 — 그 바퀴가 끝난 시각과 결과(ready · halted · enroll · login · offline · error). 변경 전 실행의 `network` 총합과 견준다.

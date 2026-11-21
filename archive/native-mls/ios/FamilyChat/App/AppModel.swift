@@ -2,6 +2,7 @@
 //
 //   starting → needsLogin → checking → (needsEnrollment →) ready ⇄ halted(reason)
 //                                                ↘ fatal(reason)
+//   starting → ready/halted(저장분 먼저, #836: 저장된 세션 + 저장된 방) → 첫 바퀴가 상태를 정한다(그대로 · needsEnrollment · needsLogin)
 //
 // 규칙(설계 승계):
 //  - 지문 외에는 키를 화면·로그에 내지 않는다.
@@ -45,6 +46,7 @@ final class AppModel: ObservableObject {
         case needsLogin
         /// #654: 자격증명은 있고 첫 등록 확인(동기화 한 바퀴) 전 — 오프닝을 보인다. 확인에 실패하면(릴레이에 닿지 않음 등) 등록 화면이 아니라
         /// 저장된 방이 있으면 방 목록 + 「연결 중」으로 간다(`leaveCheckingUnconfirmed`). 실제 미등록은 403 이 `needsEnrollment` 로 보낸다.
+        /// #836: 저장된 세션 + 저장된 방의 차가운 시작은 여기를 거치지 않고 바로 방 목록(`openStoredFirst`) — 새 기기·로그인 직후만 온다.
         case checking
         /// 실제 등록 대기: 릴레이가 403 `device_subject_mismatch` 를 줬거나 방 동기화가 `registrationPending` 이다.
         case needsEnrollment
@@ -99,6 +101,8 @@ final class AppModel: ObservableObject {
         var meEveryRounds = 4
         /// 시계(후보 재게시·대기열 TTL). 테스트가 돌린다.
         var clock: () -> Date = { Date() }
+        /// #836 시작 구간 계측(`StartupTiming`)의 단조 시계(초). 벽시계(`clock`)와 따로 — 시각 맞춤에 흔들리지 않게.
+        var uptime: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
         /// #584 선택한 서버. nil = 아직 고르지 않음 → `.needsServer`. 기본 = 테스트 서버(화면 건너뜀) — live() 가 App Group·빌드 기본값으로 채운다.
         var server: ServerSelection? = .testing
         /// #584 선택 영속(App Group `hande.server`, NSE 도 읽는다). 기본 = 메모리(테스트).
@@ -143,11 +147,20 @@ final class AppModel: ObservableObject {
             if phase == .ready, oldValue != .ready, deps.deliverSharesWhenReady, deps.shareStore != nil {
                 Task { await self.deliverPendingShares() }
             }
+            // #836: 시작 화면(.starting·.checking)을 처음 벗어난 순간 = 첫 화면 — 구간 줄을 진단 기록에 남긴다(실행당 한 번).
+            if Self.isOpening(oldValue), !Self.isOpening(phase) { noteFirstScreen() }
         }
     }
     /// #414: 첫 동기화 한 바퀴가 끝났는가. #654 부터 "등록 확인 중" 자리는 `.checking` 이 따로 맡는다(종전에는 `.needsEnrollment` 를
     /// 빌려 써서, 첫 바퀴가 실패하면 등록된 기기에도 「이 기기 등록」이 떴다).
     @Published private(set) var settled = false
+    /// #836: 저장된 방으로 먼저 연 화면(`openStoredFirst`)이 아직 첫 바퀴의 답을 기다린다 — `phase` 는 `.ready`/`.halted` 지만 릴레이는
+    /// 이 세션을 아직 확인하지 않았다. 첫 바퀴가 끝나면(성공·실패 모두, 취소 제외) 내려가고, 그 뒤는 종전과 같다.
+    private(set) var awaitingFirstRound = false
+    /// #836 시작 → 첫 화면 구간 계측(실행당 한 번, Core `StartupTiming`). 원점 = 모델을 만든 순간(앱 시작 — AppDelegate 가 만든다).
+    private(set) var startup: StartupTiming
+    /// #836: 다음 첫 화면의 이름(방 목록일 때) — 그 화면으로 바꾸기 직전에 적고 `noteFirstScreen` 이 비운다. nil = 응답 뒤에 그림(network).
+    private var startupScreenHint: String?
     /// 로그인 시트가 여는 릴레이 주소(= 선택한 서버). nil 이면 로그인 화면이 버튼 대신 안내를 보인다.
     var relayURL: URL? { deps.relayURL }
     /// #584 선택한 서버(설정 「서버」·로그인 화면 아래). nil = 서버 선택 화면.
@@ -390,12 +403,15 @@ final class AppModel: ObservableObject {
         self.deps = dependencies
         self.push = PushRegistrar(dependencies.push)
         self.localPrefs = LocalPrefs(defaults: dependencies.localDefaults)
+        self.startup = StartupTiming(origin: dependencies.uptime())
     }
 
     // MARK: - 수명주기
 
     func bootstrap() async {
         guard phase == .starting else { return }
+        // #836 구간 `launch`: 모델을 만든 뒤 여기까지(첫 장면·잠금화면 미리보기 설정 읽기).
+        startup.mark("launch", at: deps.uptime())
         if let failure = deps.startupFailure { phase = .fatal(failure); return }
         guard deps.expectedDecryptFormat() == Framing.decryptFormat else {
             phase = .fatal(Strings.decryptFormatMismatch); return
@@ -421,12 +437,21 @@ final class AppModel: ObservableObject {
             deviceId = id
             fingerprint = try engine.fingerprint()
             registration = try EnrollmentRequest(engine: engine, subject: "")
+            startup.mark("identity", at: deps.uptime())   // #836: 신원 슬롯 열기·지문
             rooms = try deps.messageStore.rooms()
             // #665: 지난 실행이 보내지 못한 내 글을 지금 바로 말풍선으로 — 릴레이에 닿기 전(오프라인·로그인 전)에도 보인다.
             for record in rooms { try restoreOwnPending(record.room) }
             // 지난 실행의 세션(Keychain)으로 이어 간다 — 만료됐으면 첫 동기화의 401 이 로그인 화면으로 보낸다.
             if credential == nil, let saved = deps.credentials.load() { login(saved) }
-            phase = credential == nil ? .needsLogin : .checking
+            startup.mark("rooms", at: deps.uptime())   // #836: 저장된 방·보내지 못한 글·저장된 세션
+            if credential == nil {
+                phase = .needsLogin
+            } else if rooms.isEmpty {
+                // 새 기기(저장된 방 없음): 종전처럼 첫 바퀴(등록 확인)까지 오프닝.
+                phase = .checking
+            } else {
+                openStoredFirst()
+            }
         } catch {
             phase = .fatal("\(error)")
         }
@@ -782,7 +807,12 @@ final class AppModel: ObservableObject {
         guard !suspended else { return }
         guard let transport, engine != nil else { return }
         switch phase { case .starting, .needsActor, .needsLogin, .fatal: return; default: break }
-        defer { settled = true }
+        // #836: 이 바퀴가 잡은 오류(nil = 오류 없이 끝남). 취소된 바퀴(화면 `.task` 취소·백그라운드)는 첫 바퀴로 치지 않는다 — 다음 바퀴가 다시 확인한다.
+        var roundIssue: ConnectionIssue?
+        defer {
+            settled = true
+            if roundIssue != .cancelled { endFirstRound(roundIssue) }
+        }
         // #659: 이 바퀴의 방 목록이 알려 준 `last_seq`(옛 릴레이·목록 실패 = 없음). 방 루프가 엔진 힌트로 넘긴다.
         var listedLastSeq: [RoomID: Int64] = [:]
         var listedAt = Date()
@@ -790,11 +820,13 @@ final class AppModel: ObservableObject {
             do {
                 let listing = try await transport.listRooms(device: deviceId)
                 listedAt = Date()
+                startup.mark("listing", at: deps.uptime())   // #836: 첫 화면 전일 때만 남는다(그 뒤는 무시)
                 for room in listing.rooms where !room.closed && (room.member || room.keypackagesOutstanding > 0) {
                     try ensureRoomRecord(room.room)
                 }
                 for room in listing.rooms { if let seq = room.lastSeq { listedLastSeq[room.room] = seq } }
             } catch RelayError.refused(let code, let status) where status == 403 && code == RelayErrorCode.deviceSubjectMismatch.rawValue {
+                startup.mark("listing", at: deps.uptime())
                 phase = .needsEnrollment
                 try await enrollTickLocked(transport)   // #574: 후보 게시(형제 기기가 승인) — 옛 릴레이면 운영자 흐름 그대로
                 return
@@ -846,6 +878,7 @@ final class AppModel: ObservableObject {
                     for case .reconciled(let clientId) in outcomes { try reopenReconciled(room: record.room, clientId: clientId) }
                 }
             }
+            startup.mark("sync", at: deps.uptime())   // #836: 방 동기화·보낼 것 내보내기
             rooms = try deps.messageStore.rooms()
             reconnecting = false
             if pending {
@@ -865,17 +898,21 @@ final class AppModel: ObservableObject {
         } catch {
             noteFailure(error)
             // #654: 첫 확인이 실패했다(취소는 다음 바퀴가 다시 확인) — 등록 화면으로 보내지 않는다.
-            if ConnectionIssue.classify(error, taskCancelled: Task.isCancelled) != .cancelled { leaveCheckingUnconfirmed() }
+            let issue = ConnectionIssue.classify(error, taskCancelled: Task.isCancelled)
+            roundIssue = issue
+            if issue != .cancelled { leaveCheckingUnconfirmed(startupScreen: issue == .unreachable ? "offline" : "error") }
         }
     }
 
     /// #654: 첫 등록 확인(`.checking`)이 답을 얻지 못했다. 이 기기에 저장된 방이 있으면(지난 실행에서 릴레이가 방 목록을 줬다 = 등록 확인됨)
     /// 방 목록으로 가서 「연결 중」(`reconnecting`)을 보이고, 다음 성공 바퀴가 실제 상태를 정한다(정말 해제됐으면 403 → 등록 화면).
-    /// 저장된 방이 없으면(새 기기) 종전처럼 등록 화면.
-    private func leaveCheckingUnconfirmed() {
+    /// 저장된 방이 없으면(새 기기) 종전처럼 등록 화면. `startupScreen` = 이것이 첫 화면이면 계측 줄의 이름(#836).
+    /// #836 부터 저장된 방이 있는 차가운 시작은 `.checking` 을 거치지 않으므로(`openStoredFirst`) 여기는 로그인 직후의 첫 확인이 주로 온다.
+    private func leaveCheckingUnconfirmed(startupScreen: String) {
         guard phase == .checking else { return }
         if let stored = try? deps.messageStore.rooms() { rooms = stored }
         if rooms.isEmpty { phase = .needsEnrollment; return }
+        startupScreenHint = startupScreen
         phase = haltedReasonFromRooms().map { .halted($0) } ?? .ready
     }
 
@@ -884,7 +921,69 @@ final class AppModel: ObservableObject {
     func openingTimedOut() {
         guard phase == .checking else { return }
         reconnecting = true
-        leaveCheckingUnconfirmed()
+        leaveCheckingUnconfirmed(startupScreen: "timeout")
+    }
+
+    /// #836(#766 B): 저장된 방이 있는 기기의 차가운 시작 — 방 목록 응답(첫 바퀴)을 기다리지 않고 저장된 방 목록·대화를 연다.
+    /// 화면은 #654 의 대체 경로(`openingTimedOut`)와 같다: 방 목록 + 「연결 중」(`reconnecting` — 같은 사람의 읽음 위치·타이핑·방 순서
+    /// 왕복도 첫 성공 바퀴까지 미룬다), 저장된 ⛔ 정지는 정지 화면. 첫 바퀴는 종전 순서 그대로 `runForeground` 가 곧바로 뒤에서 돌고,
+    /// 그 결과가 상태를 정한다(성공 → 「연결 중」이 내려감 · 403 → 등록 화면 · 401 → 로그인 · 닿지 않음 → 그대로 「연결 중」).
+    /// 저장된 방이 있다 = 지난 실행에서 릴레이가 방 목록을 줬다(등록 확인됨) — #654 와 같은 근거.
+    /// 그동안의 보내기는 막지 않는다: `sendOwn` 은 `serial` 에서 첫 바퀴 뒤에(#599 양보 포함) 돌고, 닿지 않으면 종전대로 outbox·「연결되면 보냅니다」.
+    private func openStoredFirst() {
+        awaitingFirstRound = true
+        reconnecting = true
+        startupScreenHint = "stored"
+        phase = haltedReasonFromRooms().map { .halted($0) } ?? .ready
+    }
+
+    /// #836: 동기화 한 바퀴가 끝났다(취소 제외, `issue` = 잡은 오류). 저장분으로 먼저 연 화면이면 이제 릴레이의 답을 안다 —
+    /// 계측 줄 `startup: first sync N ms (ready · halted · enroll · login · offline · error)`(실행당 한 번).
+    private func endFirstRound(_ issue: ConnectionIssue?) {
+        // 저장분으로 먼저 연 화면의 「연결 중」은 닿기 전이라 켜 둔 것 — 릴레이가 답했으면(성공·403·401·그 밖의 거절) 내린다. 닿지 않았으면
+        // 그대로(이제는 실제로 닿지 않는 중 — `noteFailure` 가 켠 것과 같다). 그래서 첫 바퀴 뒤의 상태는 #654 경로(`.checking` → 바퀴 → 결과)와 같다.
+        if awaitingFirstRound, issue != .unreachable { reconnecting = false }
+        awaitingFirstRound = false
+        let outcome: String
+        switch issue {
+        case .unreachable?: outcome = "offline"
+        case .other?: outcome = "error"
+        default: outcome = Self.startupName(phase)
+        }
+        if let line = startup.finishFirstSync(outcome, at: deps.uptime()) { record(line) }
+    }
+
+    /// #836: 시작 화면을 벗어났다(`phase` didSet) — 첫 화면 줄. 방 목록이면 어떻게 그렸는지(stored · network · timeout · offline · error),
+    /// 아니면 그 화면 이름(login · enroll · server · actor · fatal). 저장분·오프닝 상한은 첫 바퀴 전에 그렸으므로 그 바퀴의 끝을 한 줄 더 기다린다.
+    private func noteFirstScreen() {
+        let hint = startupScreenHint
+        startupScreenHint = nil
+        let screen: String
+        switch phase {
+        case .ready, .halted: screen = hint ?? "network"
+        default: screen = Self.startupName(phase)
+        }
+        let ahead = screen == "stored" || screen == "timeout"
+        if let line = startup.finish(screen, at: deps.uptime(), awaitingSync: ahead) { record(line) }
+    }
+
+    private static func isOpening(_ phase: Phase) -> Bool {
+        phase == .starting || phase == .checking
+    }
+
+    /// 계측 줄에 쓰는 상태 이름(사유 등 값은 넣지 않는다).
+    private static func startupName(_ phase: Phase) -> String {
+        switch phase {
+        case .starting: return "starting"
+        case .needsServer: return "server"
+        case .needsActor: return "actor"
+        case .needsLogin: return "login"
+        case .checking: return "checking"
+        case .needsEnrollment: return "enroll"
+        case .ready: return "ready"
+        case .halted: return "halted"
+        case .fatal: return "fatal"
+        }
     }
 
     /// 방 루프 뒤 부가 작업(각 1왕복 안팎). #599: 단계마다 줄 선 송신에 양보한다 — 남은 단계는 송신 직후 다음 바퀴가 한다.
@@ -1123,6 +1222,8 @@ final class AppModel: ObservableObject {
         let stamp = ISO8601DateFormatter().string(from: now)
         // 배열 `+` 를 한 식에 여럿 묶으면 Linux Swift 타입체커가 시간 초과한다(CI 2026-10-27) — 단계별 append 로 쓴다.
         var lines: [String] = ["hande ios diagnostics \(stamp) device=\(deviceId) actor=\(actor) phase=\(phase)"]
+        // #836: 시작 → 첫 화면 줄(웹 머리의 `startup:` 과 같은 자리) — 기록이 200줄을 넘겨 밀려나도 머리에 남는다.
+        lines.append(contentsOf: startup.lines)
         // #574: 체인 보기·등록 모드·승인 대기 후보(기기 ID 만 — 키·지문 없음).
         let meLine = me.map { "revision \($0.policyRevision.map { String($0) } ?? "-") devices \($0.devices?.count ?? 0)" } ?? "-"
         lines.append("selfservice: me=\(meLine) enroll=\(enrollment.mode) candidates=\(candidates.map(\.deviceId).joined(separator: ","))")
@@ -1781,7 +1882,8 @@ final class AppModel: ObservableObject {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { return .failed(Strings.shortcutEmpty) }
         await bootstrap()
-        if phase != .ready { await refresh() }
+        // #836: 저장분으로 먼저 연 화면(`awaitingFirstRound`)도 종전처럼 첫 바퀴를 먼저 돈다 — 이 송신이 첫 동기화를 앞지르지 않게.
+        if phase != .ready || awaitingFirstRound { await refresh() }
         guard case .ready = phase else { return .failed(Strings.notReady) }
         guard rooms.contains(where: { $0.room == room }) else { return .failed(Strings.shortcutUnknownRoom(room)) }
         let outcome = await send(room: room, text: body)
@@ -1841,7 +1943,8 @@ final class AppModel: ObservableObject {
         guard !store.pending(scope: scope, now: deps.clock()).isEmpty else { return 0 }
         // 알림을 눌러 차갑게 켜진 경우 시작 작업보다 먼저 올 수 있다 — 단축어처럼 시작과 한 바퀴를 기다린다.
         await bootstrap()
-        if phase != .ready { await refresh() }
+        // #836: 저장분으로 먼저 연 화면(`awaitingFirstRound`)도 종전처럼 첫 바퀴를 먼저 돈다 — 이 송신이 첫 동기화를 앞지르지 않게.
+        if phase != .ready || awaitingFirstRound { await refresh() }
         var delivered = 0
         // 준비를 기다리는 동안 새로 맡겨졌을 수 있으니 다시 읽는다.
         for item in store.pending(scope: scope, now: deps.clock()) {
