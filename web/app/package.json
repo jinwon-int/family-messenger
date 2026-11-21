@@ -17,13 +17,13 @@
     "test:dom": "NODE_OPTIONS=--max-old-space-size=2048 node --test --test-concurrency=4 tests/dom/*.test.mjs"
   },
   "dependencies": {
-    "dompurify": "3.4.16",
+    "dompurify": "3.4.17",
     "matrix-encrypt-attachment": "1.0.3",
     "matrix-js-sdk": "42.3.0"
   },
   "devDependencies": {
     "esbuild": "0.28.2",
-    "happy-dom": "20.14.5",
+    "happy-dom": "21.0.4",
     "jsdom": "30.1.0"
   }
 }
