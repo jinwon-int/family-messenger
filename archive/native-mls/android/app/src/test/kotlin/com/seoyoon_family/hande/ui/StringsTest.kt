@@ -1,6 +1,7 @@
 // 디자인 2차-A 문구 조립 고정(ui/Strings.kt — android.* 없음): 후보 카드 시각 줄·지문 행 접근성·승인 꺼짐 문구. iOS `Strings+Onboarding.swift` 와 같은 결과.
 package com.seoyoon_family.hande.ui
 
+import com.seoyoon_family.hande.core.HardwareKeys
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -42,5 +43,13 @@ class StringsTest {
         assertEquals("✓ 2번 선택 — 롤백", Strings.choiceAnswered(listOf(2), listOf("롤백")))
         assertEquals("✓ 1, 3번 선택 — 유지 · 보류", Strings.choiceAnswered(listOf(1, 3), listOf("유지", "보류")))
         assertEquals("✓ 2번 선택", Strings.choiceAnswered(listOf(2), listOf(null)))
+    }
+
+    /** #833 설정 「↑/↓ 키 이동」 — iOS `Strings.arrowStepChip`/`arrowStepHint` 와 같은 말. */
+    @Test fun arrowStepLabels() {
+        assertEquals("↑/↓ 키 이동", Strings.arrowStepLabel)
+        assertEquals(listOf("작게", "보통", "크게", "말풍선"), HardwareKeys.ArrowScrollStep.entries.map { Strings.arrowStepChip(it) })
+        assertEquals("키보드 ↑/↓ 한 번에 화면의 1/3씩 움직여요. 기본값이에요.", Strings.arrowStepHint(HardwareKeys.ArrowScrollStep.MEDIUM))
+        assertEquals("선택해서 복사", Strings.messageSelectCopy)
     }
 }

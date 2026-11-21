@@ -6,7 +6,7 @@
 
 | 경로 | 역할 |
 |---|---|
-| `app/` | **앱 모듈(B1)**. `core/DeviceHub`(단일 작성자: `MlsLobby` 시드 → 방은 전부 `MlsRoom.adopt`, 전면 4 s poll(릴레이가 `/v2/watch` 를 알면 바뀐 방만 poll · 전 방 훑기는 60 s 안전망 — `core/WatchPlan`, #766 E), 로비 보충, Welcome 받아들이기, 등록 JSON, #574 셀프서비스 틱) · `core/SelfService`(#574 순수 판정 — 웹 `self-service.js` 1:1: `canApprove`·`isSibling`·`candidatesFor`·`rolesActions`·`enrollModeFrom`·형제 초대 대기열) · `core/KeystoreSealer`(Android Keystore AES-GCM 비수출 키, StrongBox 우선 — `FileRoomStore`/`FileLobbyStore` 의 `seal`/`open` 훅; Jetpack Security 미사용, 의존 0) · `core/Settings`(릴레이 주소·서버 이름·이름·봉인된 세션 값·진행 중 로그인 state·형제 초대 대기열·「무시」한 후보(#574 후속) · `wipe`) · `core/ServerDiscovery`(#584 서버 탐색 — 순수: `normalizeBase`·`candidates`·`parseWellKnown`·`compareVersions`·주입 `fetch` 의 `discover`; 전송은 `OkHttpTransport.get`) · `core/MessageDb`+`core/MessageSchema`(정식 저장소 — SQLite, iOS 동결 DDL v1 공유, B2) · `core/AppLogin`+`core/LoginLauncher`(가족 로그인, B2; `subjectOf` = JWT `sub`) · `core/Unread`(안 읽음 판정 — 웹 `read-seq.js`·iOS `Unread` 와 같은 규칙, #571 후속) · `ui/Screens`(설정(서버 찾기) · 등록(운영자/형제 승인 모드) · 로그인 · 목록(제목 아래 서버 이름 · 안 읽음 배지 · 새 기기 승인 카드) · 대화 · 내 기기 · **설정**(#584 Play: 앱 버전·서버·기기 ID · 개인정보처리방침·계정 및 데이터 삭제 링크(`BuildConfig.PRIVACY_URL`/`DELETE_ACCOUNT_URL`) · 「이 기기 지우기」 = `DeviceHub.wipeDevice`)). 전송은 `host/JdkHttpTransport`(OkHttp 는 보류 — 의존 0 으로 충분, 필요 시 같은 trait 로 교체) |
+| `app/` | **앱 모듈(B1)**. `core/DeviceHub`(단일 작성자: `MlsLobby` 시드 → 방은 전부 `MlsRoom.adopt`, 전면 4 s poll(릴레이가 `/v2/watch` 를 알면 바뀐 방만 poll · 전 방 훑기는 60 s 안전망 — `core/WatchPlan`, #766 E), 로비 보충, Welcome 받아들이기, 등록 JSON, #574 셀프서비스 틱) · `core/SelfService`(#574 순수 판정 — 웹 `self-service.js` 1:1: `canApprove`·`isSibling`·`candidatesFor`·`rolesActions`·`enrollModeFrom`·형제 초대 대기열) · `core/KeystoreSealer`(Android Keystore AES-GCM 비수출 키, StrongBox 우선 — `FileRoomStore`/`FileLobbyStore` 의 `seal`/`open` 훅; Jetpack Security 미사용, 의존 0) · `core/Settings`(릴레이 주소·서버 이름·이름·봉인된 세션 값·진행 중 로그인 state·형제 초대 대기열·「무시」한 후보(#574 후속) · `wipe`) · `core/ServerDiscovery`(#584 서버 탐색 — 순수: `normalizeBase`·`candidates`·`parseWellKnown`·`compareVersions`·주입 `fetch` 의 `discover`; 전송은 `OkHttpTransport.get`) · `core/MessageDb`+`core/MessageSchema`(정식 저장소 — SQLite, iOS 동결 DDL v1 공유, B2) · `core/AppLogin`+`core/LoginLauncher`(가족 로그인, B2; `subjectOf` = JWT `sub`) · `core/Unread`(안 읽음 판정 — 웹 `read-seq.js`·iOS `Unread` 와 같은 규칙, #571 후속) · `core/HardwareKeys`·`core/AgentChoiceKeys`(#833 하드웨어 키보드 단축키 판정 — 아래 「하드웨어 키보드 단축키」) · `ui/Screens`(설정(서버 찾기) · 등록(운영자/형제 승인 모드) · 로그인 · 목록(제목 아래 서버 이름 · 안 읽음 배지 · 새 기기 승인 카드) · 대화 · 내 기기 · **설정**(#584 Play: 앱 버전·서버·기기 ID · 개인정보처리방침·계정 및 데이터 삭제 링크(`BuildConfig.PRIVACY_URL`/`DELETE_ACCOUNT_URL`) · 「이 기기 지우기」 = `DeviceHub.wipeDevice`)). 전송은 `host/JdkHttpTransport`(OkHttp 는 보류 — 의존 0 으로 충분, 필요 시 같은 trait 로 교체) |
 | `settings.gradle.kts` · `build.gradle.kts` · `gradle/libs.versions.toml` | Gradle(wrapper jar 는 커밋하지 않는다 — CI 가 Gradle 8.11.1 을 핀으로 설치). 버전 핀은 toml. `app/build.gradle.kts` 가 `-PversionCode`/`-PversionName`·업로드 키 서명·정책 링크 `BuildConfig` 를 읽는다(「Google Play 출시」) |
 | `app/debug.keystore` | **디버그 서명키(PKCS12, 표준 공개 자격 `androiddebugkey`/`android`)** — 커밋해서 CI 디버그 APK 서명을 고정한다. 없으면 러너마다 새 키라 실기기 `adb install -r` 이 `INSTALL_FAILED_UPDATE_INCOMPATIBLE` 로 거부된다(2026-10-20 공융, 재설치 3회 무효). **릴리스 서명에는 절대 쓰지 않는다** — release 는 업로드 키가 없으면 미서명이고(`signingConfig = null`), CI 번들 job 이 release 서명자 ≠ 이 키를 검사한다. CI 가 디버그 APK 서명자 지문을 이 키와 대조한다 |
 | `host/src/main/kotlin/.../host/JdkHttpTransport.kt` | `HttpTransport` — `HttpURLConnection`(Android 에도 있음). 응답이 있으면 상태코드 그대로, 연결 실패만 throw(→ transient). 앱은 OkHttp 로 바꿔도 같은 규칙 |
@@ -53,6 +53,42 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 6. **시작 — 저장된 방·대화 먼저**(#766 B): 저장된 신원(로비 슬롯)과 방이 있으면 `boot` 가 그것을 읽은 직후, 릴레이 응답 전에 저장된 목록·대화를 보인다(`Phase.Stored` — 판정은 `core/StoredFirst`, `StoredFirstTest`). 그동안 제목 자리에 「연결 중입니다…」가 보이고, 세션이 필요한 것(보내기·첨부·선택지 답·참여 요청·읽음 올리기·링크 미리보기·file-v2 받기·방 순서 올리기·방 poll·로비 쪽 일)은 하지 않는다. `probe` 가 성공하면 `Ready`(그 뒤는 전과 같은 틱), 일시 실패면 저장된 화면을 둔 채 전처럼 3틱마다 다시, 401·403 이면 로그인·등록 화면으로 넘어간다. 처음 실행·방 없음은 전과 같이 `probe` 를 기다린다(「준비 중…」). logcat 에 `boot: first screen <ms> ms (stored|network)` 한 줄(이름과 ms 만).
 
 첨부 전송·알림(FCM, D)·정식 아이콘(E)은 범위 밖(Google 로그인·정식 저장소는 B2 에서 들어왔다 — 아래 「B2 결정」).
+
+## 하드웨어 키보드 단축키 — iOS·웹 한데와 같게(#833)
+
+iOS [`../ios/README.md`](../ios/README.md) 「하드웨어 키보드 단축키」 표(웹 한데 휴대폰 세로 = 단일 pane 규칙)를 그대로 옮겼다. 판정은 순수 Kotlin
+`core/HardwareKeys`·`core/AgentChoiceKeys`(android.* 없음 — JVM 테스트 `HardwareKeysTest`·`AgentChoiceKeysTest`, 후자는 공유 벡터
+`tests/fixtures/agent-choices-vectors.json` `keys`), Compose 연결은 `ui/HardwareKeyInput.kt` + `ui/Screens.kt`(대화방·목록). iOS ⌘ 는 **Ctrl**(웹과 같음), ⌥ 는 Alt.
+
+| 키 | 어디서 | 동작 |
+|---|---|---|
+| Enter / Shift+Enter | 작성창 | 전송 / 커서 자리에 줄바꿈. 한글 조합 중 Enter 는 조합 글자까지 보낸다. 화면 키보드(IME 가 보낸 키, `FLAG_SOFT_KEYBOARD`)의 Enter 는 늘 줄바꿈 |
+| PageUp / PageDown | 대화방(작성 중이어도) | 이전·다음 대화방(목록 순서, 끝에서는 그대로 · 초안은 방별 보존) |
+| PageUp / PageDown | 대화 목록 | 표시 행을 한 칸씩(열지 않음, 포커스 색 테두리) — 표시가 없으면 방금 나온 방에서 출발. 순서 모드에서는 움직이지 않음 |
+| Enter | 대화 목록 | 표시된 행 열기 |
+| Home | 대화방 | 대화 목록으로 |
+| Esc · End | 작성창 | 대화 읽기(작성창에서 나옴 — IME 조합 글자는 확정한 뒤) |
+| ↑ / ↓ | 대화 읽기 | 위·아래 스크롤 — 설정 「화면」 「↑/↓ 키 이동」(작게 1/6 · **보통 1/3(기본)** · 크게 2/3 · 말풍선 하나씩), 맨 아래에서 ↓ = 최신 글 |
+| Enter | 대화 읽기 | 작성창으로(최신 글로 내려간다) |
+| Esc · End | 대화 읽기 | **선택 모드**: 말풍선 하나에 점선 테두리(처음은 마지막 말풍선) |
+| ↑ / ↓ | 선택 모드 | 테두리를 위·아래 말풍선으로(복사할 글이 있는 말풍선만 — 첨부 제외, 끝에서 멈춤) |
+| Enter | 선택 모드 | 「선택해서 복사」 창 — 읽기 전용 글 칸에 커서가 들어가 Shift+방향키로 블록을 잡고 Ctrl+C 로 복사(「복사했어요」), 「전체 복사」, Esc·「닫기」로 닫기(선택 모드 유지) |
+| Ctrl+C | 선택 모드 | 말풍선 글 전체 복사(「복사했어요」) |
+| Esc · End | 선택 모드 | 대화 읽기로 (PageUp/PageDown/Home 은 쓰지 않음 — 웹 캐럿 모드와 같음) |
+| Ctrl+V | 대화 읽기 · 선택 모드 | 작성창으로 가서 커서 자리에 붙여넣기(작성창 안의 Ctrl+V 는 입력칸 기본) |
+| Alt+1~9 · Alt+Enter | 대화방(open 선택지 카드, #629) | 그 번호 체크 토글 · 체크가 하나 이상이면 보내기(IME 조합 중이면 쓰지 않음) |
+
+수정키(Ctrl·Alt·Meta·Shift)가 붙은 키는 편집 동작이라 가로채지 않는다(예외: 작성창 Shift+Enter · 선택 모드 Ctrl+C · 대화 읽기·선택 모드 Ctrl+V · 선택지 Alt+숫자/Enter).
+End 는 세 상황 모두에서 Esc 와 같다(#831). 누르고 있어 반복되는 키는 스크롤·테두리 이동·방 넘기기·줄바꿈만 다시 하고, 나머지는 한 번만 한다.
+
+구현 메모:
+- 키는 대화방 뿌리의 `onPreInterceptKeyBeforeSoftKeyboard`(IME **앞** — 한글 조합 중 Esc·End·Home·PageUp/Down·Enter 가 IME 에 먹히지 않게, #722 교훈)와
+  `onPreviewKeyEvent`(IME 뒤 — 작성창 밖 모드만, 앞에서 처리한 키는 오지 않는다)에서 받는다. 작성창 모드는 IME 앞에서만 판정하므로 화면 키보드가 보낸 키는 입력칸 기본 동작 그대로다. 모드 = 작성창 포커스(작성창) · 타임라인 포커스(대화 읽기, 방을 열면 여기) · 키로 고른 말풍선(선택 모드).
+  작성창을 떠날 때(Esc·End·Home·PageUp/Down) `TextFieldValue` 의 조합 구간을 확정한 뒤 옮긴다 — 글은 이미 방별 초안(`SaveableStateHolder`)에 들어 있다.
+- 처리한 키는 KeyDown 과 KeyUp 을 함께 먹는다(`HeldKeys`) — 처리한 Esc 가 시스템 「뒤로」 대체 키가 되어 앱을 뒤로 보내지 않게. 처리하지 않는 상황(대화 목록 등)의 Esc 는 지금처럼 「뒤로」.
+- 창(「선택해서 복사」·사진 뷰어)과 다른 화면(파일 고르기)은 따로 창이라 대화방 키가 닿지 않는다.
+- iOS 에만 있는 것: 두 길 중복 거르기(`KeyDeduper`)·입력칸이 스스로 넣은 줄바꿈 판정(`insertedNewline`) — Compose 는 키를 한 길로 준다. iOS 「⌘↩ 도 전송」은 판정 표 밖의 SwiftUI 단축키라 옮기지 않았다(Ctrl+Enter 는 가로채지 않음).
+- 실기기(블루투스 키보드) 확인 필요: 한글 IME(Gboard·삼성 키보드) 조합 중 키가 앞 단계에서 잡히는지, 처리한 Esc 가 「뒤로」로 새지 않는지, 목록 Esc = 「뒤로」 유지.
 
 ## 의존성 (#177 원칙 5)
 

@@ -53,6 +53,14 @@ class Settings(context: Context, private val sealer: KeystoreSealer) : RoomOrder
         get() = prefs.getString("theme", null)?.takeIf { it.isNotBlank() }
         set(value) { if (value.isNullOrBlank()) prefs.edit().remove("theme").apply() else prefs.edit().putString("theme", value.trim()).apply() }
 
+    /** 설정 「화면」 「↑/↓ 키 이동」(#833 · iOS #768): `HardwareKeys.ArrowScrollStep.raw`(없으면 보통 = 보이는 칸 1/3). 키는 iOS 와 같다. 공개 값. */
+    var arrowScrollStep: String?
+        get() = prefs.getString(HardwareKeys.ArrowScrollStep.STORAGE_KEY, null)?.takeIf { it.isNotBlank() }
+        set(value) {
+            if (value.isNullOrBlank()) prefs.edit().remove(HardwareKeys.ArrowScrollStep.STORAGE_KEY).apply()
+            else prefs.edit().putString(HardwareKeys.ArrowScrollStep.STORAGE_KEY, value).apply()
+        }
+
     /** 형제 기기 초대 대기열(#574, `SelfService.encodeSiblingQueue` 형식 — 공개 값: 기기 ID·방 이름·시각). 비면 지운다. */
     var siblingQueue: String?
         get() = prefs.getString("sibling_invites", null)?.takeIf { it.isNotBlank() }

@@ -3,6 +3,7 @@ package com.seoyoon_family.hande.ui
 
 import com.seoyoon_family.hande.core.AgentActors
 import com.seoyoon_family.hande.core.AppLogin
+import com.seoyoon_family.hande.core.HardwareKeys
 
 object Strings {
     const val appName = "한데"
@@ -325,4 +326,23 @@ object Strings {
     const val wipeDialogConfirm = "지우기"
     /** 낮불 목록의 안 읽음 알약(먹 면 + 종이 글자) — 밤의 주황 점과 같은 뜻(`unread`). */
     const val newPostPill = unread
+
+    // ---- 하드웨어 키보드(#833 — iOS `Strings+Agent.swift`·`Strings+Copy.swift` 와 같은 말)
+    /** 설정 「화면」 — 하드웨어 키보드로 대화를 읽을 때 ↑/↓ 한 번의 이동(`HardwareKeys.ArrowScrollStep`). */
+    const val arrowStepLabel = "↑/↓ 키 이동"
+    fun arrowStepChip(step: HardwareKeys.ArrowScrollStep) = when (step) {
+        HardwareKeys.ArrowScrollStep.SMALL -> "작게"
+        HardwareKeys.ArrowScrollStep.MEDIUM -> "보통"
+        HardwareKeys.ArrowScrollStep.LARGE -> "크게"
+        HardwareKeys.ArrowScrollStep.BUBBLE -> "말풍선"
+    }
+    fun arrowStepHint(step: HardwareKeys.ArrowScrollStep) = when (step) {
+        HardwareKeys.ArrowScrollStep.SMALL -> "키보드 ↑/↓ 한 번에 화면의 1/6씩 움직여요."
+        HardwareKeys.ArrowScrollStep.MEDIUM -> "키보드 ↑/↓ 한 번에 화면의 1/3씩 움직여요. 기본값이에요."
+        HardwareKeys.ArrowScrollStep.LARGE -> "키보드 ↑/↓ 한 번에 화면의 2/3씩 움직여요."
+        HardwareKeys.ArrowScrollStep.BUBBLE -> "키보드 ↑/↓ 한 번에 말풍선 하나씩 움직여요(예전 방식)."
+    }
+    /** 선택 모드 Enter 로 여는 창 — 글 칸에서 Shift+방향키로 블록을 잡고 Ctrl+C 로 복사, Esc 로 닫기. */
+    const val messageSelectCopy = "선택해서 복사"
+    const val messageCopyAll = "전체 복사"
 }
