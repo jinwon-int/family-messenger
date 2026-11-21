@@ -15,6 +15,8 @@
 //   정책 링크 행은 open_in_new. 아이콘은 `ui/theme/HandeIcons.kt`(2차-B 아이콘 세트 + Material Symbols 짝 글리프, 라이브러리 의존 없음).
 // 2차-B 낮불 세부: 꺼진 자리 = 흐림 대신 점선 1.5 회색 테두리 + 회색 글자 · 안 읽음 = 먹 알약 「새 글」 + 이름 800 · 승인 표시 = 먹 채움 + 종이 ✓ · 위험 구역 2px · 토스트 먹 면.
 //   전송 상태 말풍선(#837): 보내는 즉시 「보내는 중…」, 실패하면 「전송 안 됨 · 다시 보내기」(`RoomUi.outgoing` → `OutgoingRow`). 「연결되면」은 없다(대기열 글도 보내는 중).
+// #833 하드웨어 키보드 단축키(iOS 규칙 전체, End = Esc): 대화방(작성창 · 대화 읽기 · 선택 모드 + 「선택해서 복사」 창) · 목록(PageUp/Down 표시 · Enter 열기) ·
+//   선택지 Alt+숫자 — 판정은 `core/HardwareKeys`·`AgentChoiceKeys`, 키 읽기는 `ui/HardwareKeyInput.kt`. 방별 초안은 `SaveableStateHolder`.
 package com.seoyoon_family.hande.ui
 
 import android.content.ActivityNotFoundException
@@ -28,6 +30,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -82,17 +86,23 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.Shape
@@ -100,6 +110,17 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.inset
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreInterceptKeyBeforeSoftKeyboard
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -118,11 +139,13 @@ import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -132,12 +155,16 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.seoyoon_family.hande.BuildConfig
 import com.seoyoon_family.hande.core.AgentActors
+import com.seoyoon_family.hande.core.AgentChoiceKeys
 import com.seoyoon_family.hande.core.AgentChoices
 import com.seoyoon_family.hande.core.AlertRefs
 import com.seoyoon_family.hande.core.AppLogin
 import com.seoyoon_family.hande.core.CandidateUi
 import com.seoyoon_family.hande.core.DeviceHub
 import com.seoyoon_family.hande.core.FingerprintRows
+import com.seoyoon_family.hande.core.HardwareKeys
+import com.seoyoon_family.hande.core.HardwareKeys.RoomAction
+import com.seoyoon_family.hande.core.HardwareKeys.RoomMode
 import com.seoyoon_family.hande.core.HandeThemeMode
 import com.seoyoon_family.hande.core.HubUi
 import com.seoyoon_family.hande.core.LinkPreviews
@@ -204,6 +231,12 @@ fun HandeRoot(hub: DeviceHub, themeMode: HandeThemeMode = HandeThemeMode.NIGHT, 
     var showDevices by rememberSaveable { mutableStateOf(false) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var approveId by rememberSaveable { mutableStateOf<String?>(null) }
+    // #833 하드웨어 키보드: 방마다 화면 상태(작성 중인 글 등)를 따로 둔다 — PageUp/PageDown 으로 방을 넘겨도 초안이 방별로 남는다.
+    // `lastRoom` = 방금 나온 방(목록 PageUp/PageDown 의 출발점). `arrowStep` = 설정 「↑/↓ 키 이동」.
+    val roomStates = rememberSaveableStateHolder()
+    var lastRoom by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(openRoom) { openRoom?.let { lastRoom = it } }
+    var arrowStep by remember { mutableStateOf(HardwareKeys.ArrowScrollStep.from(hub.settings.arrowScrollStep)) }
     val settingsOpen = showSettings && ui.phase !is Phase.Setup
     val approveTarget = approveId
     val approveOpen = !settingsOpen && approveTarget != null && ui.phase is Phase.Ready
@@ -224,6 +257,7 @@ fun HandeRoot(hub: DeviceHub, themeMode: HandeThemeMode = HandeThemeMode.NIGHT, 
                 ui, onBack = { showSettings = false }, onWipe = wipe, onNoticeShown = hub::clearNotice, themeMode = themeMode, onThemeMode = onThemeMode,
                 relayHost = hub.settings.relayUrl?.substringAfter("://")?.substringBefore('/'), onDevices = onDevices,
                 onSiblingRescan = if (ui.phase is Phase.Ready) hub::setSiblingRescan else null,
+                arrowStep = arrowStep, onArrowStep = { arrowStep = it; hub.settings.arrowScrollStep = it.raw },
             )
             return@CampfireBackground
         }
@@ -251,6 +285,7 @@ fun HandeRoot(hub: DeviceHub, themeMode: HandeThemeMode = HandeThemeMode.NIGHT, 
                 if (room != null) {
                     // 보고 있는 방의 읽음 위치(#571 후속): 열 때 한 번, 그 뒤 마지막 seq 가 움직일 때마다(새 글·내 전송) · 세션이 확인될 때(#766 B).
                     LaunchedEffect(room.room, room.messages.lastOrNull()?.seq, live) { hub.markRead(scope, room.room) }
+                    roomStates.SaveableStateProvider(room.room) {
                     RoomScreen(
                         room, ui, onBack = { openRoom = null }, onSend = { text -> hub.send(room.room, text) }, onNoticeShown = hub::clearNotice,
                         onRetrySend = { id -> hub.retrySend(room.room, id) },
@@ -259,7 +294,11 @@ fun HandeRoot(hub: DeviceHub, themeMode: HandeThemeMode = HandeThemeMode.NIGHT, 
                         onAttachmentPreview = { seq -> hub.attachmentPreview(room.room, seq) },
                         onSendAttachment = { bytes, name -> hub.sendAttachment(scope, room.room, bytes, name) },
                         live = live,
+                        // #833 PageUp/PageDown: 목록 순서의 이전·다음 방(끝에서는 그대로).
+                        onSwitchRoom = { step -> HardwareKeys.neighbor(room.room, ui.rooms.map { it.room }, step)?.let { openRoom = it } },
+                        arrowStep = arrowStep,
                     )
+                    }
                 } else if (showDevices && live) {
                     LaunchedEffect(Unit) { hub.refreshDevices(scope) }
                     DevicesScreen(ui, onBack = { showDevices = false }, onGrant = { hub.setRoles(scope, it, true) }, onRelease = { hub.setRoles(scope, it, false) }, onNoticeShown = hub::clearNotice)
@@ -270,6 +309,7 @@ fun HandeRoot(hub: DeviceHub, themeMode: HandeThemeMode = HandeThemeMode.NIGHT, 
                         onCompare = { approveId = it }, onIgnore = { hub.dismissCandidate(scope, it) },
                         onSettings = { showSettings = true }, onNoticeShown = hub::clearNotice,
                         onMoveRoom = hub::moveRoom, onMoveRoomToTop = hub::moveRoomToTop,
+                        anchorRoom = lastRoom,
                     )
                 }
             }
@@ -850,12 +890,33 @@ fun RoomListScreen(
     ui: HubUi, onOpen: (String) -> Unit, onRequestJoin: () -> Unit,
     onCompare: (String) -> Unit, onIgnore: (String) -> Unit, onSettings: () -> Unit, onNoticeShown: () -> Unit,
     onMoveRoom: (String, Int) -> Unit = { _, _ -> }, onMoveRoomToTop: (String) -> Unit = {},
+    /** 방금 나온 방(#833) — 표시가 없을 때 PageUp/PageDown 의 출발점. */
+    anchorRoom: String? = null,
 ) {
     val colors = LocalHandeColors.current
     val snackbar = remember { SnackbarHostState() }
     val canReorder = ui.rooms.size > 1
     var editing by rememberSaveable { mutableStateOf(false) }
     val ordering = editing && canReorder
+    // #833 하드웨어 키보드: PageUp/PageDown = 표시 행을 한 칸씩(열지 않음, 테두리) · Enter = 표시된 행 열기 · 순서 모드에서는 움직이지 않음.
+    // 키를 받으려면 화면 안에 포커스가 있어야 해서 목록 뿌리를 포커스 대상으로 두고 화면이 뜰 때 포커스를 준다. Esc 는 판정하지 않는다(시스템 「뒤로」 그대로).
+    var highlighted by remember { mutableStateOf<Int?>(null) }
+    val listFocus = remember { FocusRequester() }
+    val roomListState = rememberLazyListState()
+    val listKeys = remember { HeldKeys() }
+    LaunchedEffect(Unit) { runCatching { listFocus.requestFocus() } }
+    LaunchedEffect(highlighted) { highlighted?.let { if (it in ui.rooms.indices) roomListState.reveal(it) } }
+    val onListKey: (KeyEvent) -> Boolean = { event ->
+        !event.fromSoftKeyboard() && listKeys.dispatch(event) {
+            val press = event.hardwarePress()
+            val anchor = anchorRoom?.let { a -> ui.rooms.indexOfFirst { it.room == a }.takeIf { it >= 0 } }
+            when (val action = press?.let { HardwareKeys.listAction(it, ui.rooms.size, highlighted, anchor, ordering) }) {
+                is HardwareKeys.ListAction.Highlight -> { highlighted = action.index; true }
+                is HardwareKeys.ListAction.Open -> { onOpen(ui.rooms[action.index].room); true }
+                null -> false
+            }
+        }
+    }
     LaunchedEffect(canReorder) { if (!canReorder) editing = false }
     BackHandler(enabled = ordering) { editing = false }
     val enrolled = ui.notice == Strings.enrolledNow
@@ -891,7 +952,7 @@ fun RoomListScreen(
             )
         },
     ) { pad ->
-        Column(Modifier.padding(pad).fillMaxSize()) {
+        Column(Modifier.padding(pad).fillMaxSize().onPreviewKeyEvent(onListKey).focusRequester(listFocus).focusable()) {
             if (ordering) {
                 OrderHeader(hint = Strings.orderHint(ui.roomOrderSynced), onDone = { editing = false })
             } else {
@@ -930,7 +991,7 @@ fun RoomListScreen(
                 }
             } else {
                 // 아래 여백 88 = FAB 56 + 16 + 16 — 마지막 행이 FAB 에 가리지 않게.
-                LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(top = 6.dp, bottom = 88.dp)) {
+                LazyColumn(Modifier.weight(1f), state = roomListState, contentPadding = PaddingValues(top = 6.dp, bottom = 88.dp)) {
                     if (ordering) {
                         val last = ui.rooms.lastIndex
                         itemsIndexed(ui.rooms, key = { _, r -> r.room }) { i, r ->
@@ -940,7 +1001,7 @@ fun RoomListScreen(
                             )
                         }
                     } else {
-                        items(ui.rooms, key = { it.room }) { r -> RoomRow(r) { onOpen(r.room) } }
+                        itemsIndexed(ui.rooms, key = { _, r -> r.room }) { i, r -> RoomRow(r, highlighted = highlighted == i) { onOpen(r.room) } }
                     }
                 }
             }
@@ -1053,7 +1114,7 @@ private fun OrderStepButton(symbol: String, label: String, enabled: Boolean, onC
  * 낮불(2차-B): 흐림(투명도) 금지 → 점선 1.5 회색 #8A8178 테두리 + 회색 글자 + 장작 · 아이콘 원은 면 대신 먹 선 1.5 · 안 읽음은 주황 점 대신 먹 알약 「새 글」 + 이름 800(작은 점은 e-ink 잔상에 묻힌다).
  */
 @Composable
-private fun RoomRow(r: RoomUi, onOpen: () -> Unit) {
+private fun RoomRow(r: RoomUi, highlighted: Boolean = false, onOpen: () -> Unit) {
     val colors = LocalHandeColors.current
     val day = colors.isDay
     val halted = r.halted != null
@@ -1073,6 +1134,8 @@ private fun RoomRow(r: RoomUi, onOpen: () -> Unit) {
             .clip(shape)
             .background(colors.surface)
             .then(if (closedDay) Modifier.dashedBorder(1.5.dp, colors.ash, shape) else Modifier.border(colors.lineWidth, colors.stroke, shape))
+            // #833 키보드 PageUp/PageDown 으로 표시한 행(열지 않음) — 포커스 색 2dp 테두리.
+            .then(if (highlighted) Modifier.border(2.dp, colors.focus, shape) else Modifier)
             .clickable(onClick = onOpen)
             .padding(horizontal = 14.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -1162,7 +1225,9 @@ private fun SeatDots(messages: List<MessageUi>) {
 /**
  * 대화방(한데 디자인 1차): 말풍선(`MessageRow`) · 작업 상태(`StatusRow`) · 알약 입력창 + 주황 보내기 원(`Composer`).
  * 꺼진 자리(2차-A §A6): 제목 아래 「불이 꺼진 자리」, 지난 말풍선 60%, 입력창 자리를 안내 상자(`HaltedBox`)로 교체 — 「덮어 두기」(보관)는 Android 에 없어 두지 않는다.
+ * 하드웨어 키보드(#833): 판정은 `core/HardwareKeys`·`AgentChoiceKeys`, 모드 = 작성창 포커스(작성창) · 타임라인 포커스(대화 읽기) · 키로 고른 말풍선(선택 모드).
  */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun RoomScreen(
     room: RoomUi, ui: HubUi, onBack: () -> Unit, onSend: (String) -> Unit, onNoticeShown: () -> Unit, previews: LinkPreviews? = null,
@@ -1173,6 +1238,10 @@ fun RoomScreen(
     live: Boolean = true,
     /** #837: 「전송 안 됨」 말풍선의 「다시 보내기」(보내는 글 id). */
     onRetrySend: ((Long) -> Unit)? = null,
+    /** #833 PageUp(-1)/PageDown(+1) — 목록 순서의 이전·다음 방으로. null 이면 키를 먹기만 한다. */
+    onSwitchRoom: ((Int) -> Unit)? = null,
+    /** #833 설정 「↑/↓ 키 이동」. */
+    arrowStep: HardwareKeys.ArrowScrollStep = HardwareKeys.ArrowScrollStep.STANDARD,
 ) {
     val colors = LocalHandeColors.current
     // #366 C · #338 C 단계 — 첨부: 말풍선을 누르면 열고(이미지는 화면 안 뷰어, 그 밖은 다른 앱으로), 작성창 📎 로 파일을 골라 보낸다.
@@ -1239,6 +1308,189 @@ fun RoomScreen(
     // #690 v2: 이 세션의 미리보기 사이트 목록(받기 전·실패 = v1 폴백). 목록이 도착하면 보이는 말풍선이 링크·카드를 다시 정한다.
     val sitesFlow = remember(previews) { previews?.sites ?: MutableStateFlow(PreviewSites.FALLBACK) }
     val sites by sitesFlow.collectAsStateWithLifecycle()
+    val sendDraft: () -> Unit = { onSend(draft.trim()); draft = "" }
+    // 선택지 카드의 체크·보내는 중(글 seq 별) — 카드가 화면 밖(LazyColumn 이 내림)이어도 Alt+숫자·Alt+Enter 가 같은 값을 쓰게 방에 둔다.
+    val choicePicks = remember(room.room) { mutableStateMapOf<Long, List<Int>>() }
+    val choiceSending = remember(room.room) { mutableStateMapOf<Long, Boolean>() }
+    val sendChoice: (Long, String) -> Unit = { seq, text ->
+        // 보낸 글이 타임라인에 오면 카드가 answered 로 바뀐다. 전송이 실패해 글이 안 오면 10초 뒤 다시 켠다.
+        choiceSending[seq] = true
+        onSend(text)
+        attachScope.launch {
+            delay(10_000)
+            choiceSending.remove(seq)
+        }
+    }
+
+    // ---- #833 하드웨어 키보드(iOS RoomView `perform` 과 같은 동작) ----
+    // 작성창 커서·IME 조합은 `composerField`(TextFieldValue), 글의 정본은 `draft`(방별 저장) — 보내고 비우거나 저장값이 돌아와 글이 다르면 끝 커서로 맞춘다.
+    var composerField by remember(room.room) { mutableStateOf(TextFieldValue(draft, TextRange(draft.length))) }
+    fun currentComposer(): TextFieldValue = composerField.let { if (it.text == draft) it else TextFieldValue(draft, TextRange(draft.length)) }
+    val setComposer: (TextFieldValue) -> Unit = { v -> composerField = v; draft = v.text }
+    val clipboard = LocalClipboardManager.current
+    val timelineFocus = remember { FocusRequester() }
+    val composerFocus = remember { FocusRequester() }
+    var composerFocused by remember { mutableStateOf(false) }
+    /** 키로 옮겨 간 말풍선(대화 읽기 말풍선 단위 커서 · 선택 모드 테두리). */
+    var keyCursor by remember(room.room) { mutableStateOf<Long?>(null) }
+    var selectingByKey by remember(room.room) { mutableStateOf(false) }
+    /** 「선택해서 복사」 창에 띄운 글. */
+    var selectCopyText by remember(room.room) { mutableStateOf<String?>(null) }
+    /** Enter 로 작성창에 들어온 시각(uptime ms) — 그 Enter 의 반복으로 초안을 보내지 않게(`HardwareKeys.suppressSend`). */
+    var keyFocusAt by remember { mutableStateOf<Long?>(null) }
+    val roomKeys = remember { HeldKeys() }
+    val hasComposer = halted == null && room.joined
+    // 방을 열면 타임라인에 포커스(= 대화 읽기) — 포커스가 화면 안에 있어야 키가 온다. 손가락으로는 보이는 차이가 없다.
+    LaunchedEffect(Unit) { runCatching { timelineFocus.requestFocus() } }
+
+    fun latestIndex(): Int = maxOf(0, room.messages.size + room.statuses.size - 1)
+    fun commitComposition() {
+        // 한글 등 IME 조합 중인 글자를 확정한 뒤 작성창을 떠난다(#722 교훈 — 조합 글자가 버려지지 않게). 글은 이미 `draft` 에 들어 있다.
+        val v = currentComposer()
+        if (v.composition != null) setComposer(v.copy(composition = null))
+    }
+    fun selectedText(): String? =
+        if (!selectingByKey) null else room.messages.firstOrNull { it.seq == keyCursor && !it.attachment }?.text?.takeIf { it.isNotBlank() }
+    fun select(step: Int) {
+        // 복사할 글이 있는 말풍선만 오간다(첨부 제외).
+        val rows = room.messages.filter { !it.attachment && it.text.isNotBlank() }.map { it.seq }
+        val target = HardwareKeys.selectTarget(rows, keyCursor, step) ?: return
+        keyCursor = target
+        selectingByKey = true
+        val index = room.messages.indexOfFirst { it.seq == target }
+        if (index >= 0) attachScope.launch { listState.reveal(index) }
+    }
+    fun scrollByKey(up: Boolean) {
+        selectingByKey = false
+        val info = listState.layoutInfo
+        val viewport = (info.viewportSize.height - info.beforeContentPadding - info.afterContentPadding).toFloat()
+        val fraction = arrowStep.viewportFraction
+        if (fraction != null && viewport > 0f) {
+            // 작게·보통·크게: 보이는 칸의 비율만큼 픽셀로. 말풍선 커서는 비운다(손가락 스크롤과 같은 취급).
+            keyCursor = null
+            when (val t = HardwareKeys.pixelScroll(viewport, fraction, up, listState.canScrollBackward, listState.canScrollForward)) {
+                is HardwareKeys.PixelScroll.By -> attachScope.launch { listState.animateScrollBy(t.pixels) }
+                HardwareKeys.PixelScroll.Latest -> attachScope.launch { listState.animateScrollToItem(latestIndex()) }
+                null -> {}
+            }
+            return
+        }
+        // 말풍선(또는 칸 크기를 아직 모름): 한 번에 말풍선 하나 — 고른 말풍선을 칸 맨 위에 맞춘다.
+        when (val t = HardwareKeys.scrollTarget(room.messages.map { it.seq }, keyCursor, up)) {
+            is HardwareKeys.ScrollTarget.Row -> {
+                keyCursor = t.seq
+                val index = room.messages.indexOfFirst { it.seq == t.seq }
+                if (index >= 0) attachScope.launch { listState.animateScrollToItem(index) }
+            }
+            HardwareKeys.ScrollTarget.Latest -> {
+                keyCursor = null
+                attachScope.launch { listState.animateScrollToItem(latestIndex()) }
+            }
+            null -> {}
+        }
+    }
+    fun pasteToComposer(): Boolean {
+        if (!hasComposer) return false
+        val clip = clipboard.getText()?.text
+        if (clip.isNullOrBlank()) return true
+        val v = currentComposer()
+        val inserted = HardwareKeys.insertAt(v.text, v.selection.start, v.selection.end, clip)
+        setComposer(TextFieldValue(inserted.text, TextRange(inserted.cursor)))
+        keyCursor = null
+        selectingByKey = false
+        runCatching { composerFocus.requestFocus() }
+        return true
+    }
+    fun performKey(action: RoomAction, event: KeyEvent): Boolean {
+        when (action) {
+            RoomAction.PREVIOUS_ROOM, RoomAction.NEXT_ROOM -> {
+                if (composerFocused) commitComposition()
+                onSwitchRoom?.invoke(if (action == RoomAction.PREVIOUS_ROOM) -1 else 1)
+            }
+            RoomAction.BACK_TO_LIST -> {
+                if (composerFocused) commitComposition()
+                onBack()
+            }
+            RoomAction.READ_TIMELINE -> {
+                // 작성창 → 대화 읽기는 마지막 말풍선부터, 선택 모드 → 대화 읽기는 고르던 자리에서 이어 읽는다.
+                if (composerFocused) commitComposition()
+                if (!selectingByKey) keyCursor = null
+                selectingByKey = false
+                runCatching { timelineFocus.requestFocus() }
+            }
+            RoomAction.FOCUS_COMPOSER -> {
+                if (!hasComposer) return false
+                keyCursor = null
+                selectingByKey = false
+                keyFocusAt = event.nativeKeyEvent.eventTime
+                runCatching { composerFocus.requestFocus() }
+                attachScope.launch { listState.animateScrollToItem(latestIndex()) }
+            }
+            RoomAction.SCROLL_UP -> scrollByKey(up = true)
+            RoomAction.SCROLL_DOWN -> scrollByKey(up = false)
+            RoomAction.SEND -> {
+                // 빈 글·세션 확인 전에는 보내지 않지만 키는 먹는다(작성창에 줄바꿈이 들어가지 않게). 한글 조합 중이면 조합 글자까지 보낸다.
+                val since = keyFocusAt?.let { (event.nativeKeyEvent.eventTime - it) / 1000.0 }
+                if (!HardwareKeys.suppressSend(since) && live && draft.isNotBlank()) {
+                    commitComposition()
+                    sendDraft()
+                }
+            }
+            RoomAction.NEWLINE -> {
+                val v = currentComposer()
+                val inserted = HardwareKeys.insertAt(v.text, v.selection.start, v.selection.end, "\n")
+                setComposer(TextFieldValue(inserted.text, TextRange(inserted.cursor)))
+            }
+            RoomAction.START_SELECTING -> select(0)
+            RoomAction.SELECT_UP -> select(-1)
+            RoomAction.SELECT_DOWN -> select(1)
+            RoomAction.OPEN_SELECTION -> selectedText()?.let { selectCopyText = it }
+            RoomAction.COPY_SELECTION -> selectedText()?.let {
+                clipboard.setText(AnnotatedString(it))
+                toast(Strings.copiedToast)
+            }
+            RoomAction.PASTE_TO_COMPOSER -> return pasteToComposer()
+        }
+        return true
+    }
+    /** 선택지 카드 Alt+1~9 · Alt+Enter(agent-choices-v1 §3.1). 처리했으면 true. open 카드는 마지막 글의 것뿐이다. */
+    fun choiceKey(event: KeyEvent): Boolean {
+        val index = choiceCards.indexOfLast { it?.state == AgentChoices.State.Open }
+        val card = choiceCards.getOrNull(index) ?: return false
+        val m = room.messages.getOrNull(index) ?: return false
+        val picked = choicePicked(card, choicePicks[m.seq].orEmpty())
+        val composing = composerFocused && currentComposer().composition != null
+        val keyCard = AgentChoiceKeys.Card(card.choices.items.size, picked.toSet(), enabled = canChoose && choiceSending[m.seq] != true)
+        val decided = AgentChoiceKeys.decide(event.choiceInput(composing), keyCard) ?: return false
+        if (event.isRepeat()) return true
+        when (decided) {
+            is AgentChoiceKeys.Action.Toggle -> choicePicks[m.seq] = AgentChoices.toggle(picked, decided.number, card.choices.mode)
+            AgentChoiceKeys.Action.Send -> sendChoice(m.seq, AgentChoices.compose(picked, card.choices.items.map { it.label }))
+        }
+        return true
+    }
+    fun roomKey(event: KeyEvent): Boolean {
+        if (event.fromSoftKeyboard()) return false
+        return roomKeys.dispatch(event) {
+            if (choiceKey(event)) return@dispatch true
+            val press = event.hardwarePress() ?: return@dispatch false
+            val mode = when {
+                composerFocused -> RoomMode.COMPOSER
+                selectingByKey -> RoomMode.SELECTING
+                else -> RoomMode.READING
+            }
+            val action = HardwareKeys.roomAction(press, mode) ?: return@dispatch false
+            if (event.isRepeat() && !HardwareKeys.repeats(action)) return@dispatch true
+            performKey(action, event)
+        }
+    }
+    // IME 앞(`onPreInterceptKeyBeforeSoftKeyboard`): 하드웨어 키만 온다 — 작성창 모드는 여기서만 판정한다(한글 조합 중 키가 IME 에 먹히지 않게).
+    // IME 뒤(`onPreviewKeyEvent`): 작성창 밖(대화 읽기·선택 모드)만 — 작성창에 IME 가 보낸 키(화면 키보드 Enter 등)는 판정하지 않고 입력칸 기본 동작 그대로.
+    // 앞에서 처리한 키(Down·Up 모두)는 뒤로 오지 않는다.
+    val onRoomKeyBeforeIme: (KeyEvent) -> Boolean = { event -> roomKey(event) }
+    val onRoomKeyAfterIme: (KeyEvent) -> Boolean = { event -> !composerFocused && roomKey(event) }
+    selectCopyText?.let { text -> SelectCopyDialog(text, onClose = { selectCopyText = null }) }
+
     Scaffold(
         containerColor = Color.Transparent, contentColor = MaterialTheme.colorScheme.onBackground,
         topBar = {
@@ -1254,8 +1506,11 @@ fun RoomScreen(
         },
         snackbarHost = { NoticeHost(ui.notice, onNoticeShown) },
     ) { pad ->
-        Column(Modifier.padding(pad).fillMaxSize().imePadding()) {
-            LazyColumn(Modifier.weight(1f).fillMaxWidth().alpha(if (halted != null) 0.6f else 1f), state = listState, contentPadding = PaddingValues(12.dp)) {
+        Column(Modifier.padding(pad).fillMaxSize().imePadding().onPreInterceptKeyBeforeSoftKeyboard(onRoomKeyBeforeIme).onPreviewKeyEvent(onRoomKeyAfterIme)) {
+            LazyColumn(
+                Modifier.weight(1f).fillMaxWidth().alpha(if (halted != null) 0.6f else 1f).focusRequester(timelineFocus).focusable(),
+                state = listState, contentPadding = PaddingValues(12.dp),
+            ) {
                 itemsIndexed(room.messages, key = { _, m -> "${m.sender}-${m.seq}" }) { i, m ->
                     val card = choiceCards.getOrNull(i)
                     val onAttachment = if (m.attachment) openAttachment?.let { open -> { open(m) } } else null
@@ -1263,13 +1518,20 @@ fun RoomScreen(
                     val thumb = if (m.attachment && onAttachmentPreview != null && onOpenAttachment != null) {
                         ThumbSource("${room.room}/${m.seq}", preview = { onAttachmentPreview(m.seq) }, open = { onOpenAttachment(m.seq) })
                     } else null
+                    // #833 선택 모드: 키로 고른 말풍선 행에 점선 테두리(자리를 차지하지 않게 바깥에 그린다).
+                    Box(Modifier.keySelectionOutline(selectingByKey && keyCursor == m.seq, colors.focus)) {
                     if (card == null) {
                         MessageRow(m, previews, sites, opening = opening == m.seq, onAttachment = onAttachment, thumb = thumb) { id -> onAlertRef(i, id) }
                     } else {
                         Column(Modifier.fillMaxWidth()) {
                             MessageRow(m, previews, sites, opening = opening == m.seq, onAttachment = onAttachment, thumb = thumb) { id -> onAlertRef(i, id) }
-                            AgentChoicesCard(m, card, enabled = canChoose, onSend = onSend)
+                            AgentChoicesCard(
+                                m, card, enabled = canChoose && choiceSending[m.seq] != true,
+                                picked = choicePicked(card, choicePicks[m.seq].orEmpty()), onPicked = { choicePicks[m.seq] = it },
+                                onSend = { text -> sendChoice(m.seq, text) },
+                            )
                         }
+                    }
                     }
                 }
                 // #837: 아직 확정되지 않은 내 글(누른 순서) — 받으면 위의 이력 행이 되고 여기서 빠진다.
@@ -1283,9 +1545,13 @@ fun RoomScreen(
                 Text(Strings.notJoined, Modifier.padding(12.dp), color = colors.inkDim)
             } else {
                 Composer(
-                    draft, onDraft = { draft = it }, onSend = { onSend(draft.trim()); draft = "" },
+                    currentComposer(), onValue = setComposer, onSend = sendDraft,
                     onAttach = if (onSendAttachment != null && live) ({ pickFile.launch(arrayOf("*/*")) }) else null,
                     enabled = live,
+                    fieldModifier = Modifier.focusRequester(composerFocus).onFocusChanged { state ->
+                        composerFocused = state.hasFocus
+                        if (state.hasFocus) selectingByKey = false
+                    },
                 )
             }
         }
@@ -1328,9 +1594,13 @@ private fun HaltedBox(reason: String) {
 /** 입력창(알약, 면+선) + 보내기(44dp 주황 원 「↑」, 비면 35%). 화면에서 큰 주황 면은 내 말풍선과 이 버튼뿐. `enabled` 가 거짓이면(#766 B 세션 확인 전) 글은 쓸 수 있고 보내기만 꺼진다. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun Composer(draft: String, onDraft: (String) -> Unit, onSend: () -> Unit, onAttach: (() -> Unit)? = null, enabled: Boolean = true) {
+private fun Composer(
+    value: TextFieldValue, onValue: (TextFieldValue) -> Unit, onSend: () -> Unit, onAttach: (() -> Unit)? = null, enabled: Boolean = true,
+    /** #833: 포커스(작성창 모드)·포커스 요청을 대화방이 쥔다. */
+    fieldModifier: Modifier = Modifier,
+) {
     val colors = LocalHandeColors.current
-    val canSend = enabled && draft.isNotBlank()
+    val canSend = enabled && value.text.isNotBlank()
     Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
         // #366 C: 첨부 보내기(시스템 파일 선택) — 면+선 44dp 원(주황 면은 보내기 버튼만).
         if (onAttach != null) {
@@ -1347,7 +1617,7 @@ private fun Composer(draft: String, onDraft: (String) -> Unit, onSend: () -> Uni
             ) { Icon(HandeIcons.add(colors.ink), contentDescription = null, Modifier.size(20.dp), tint = Color.Unspecified) }
         }
         OutlinedTextField(
-            draft, onDraft, Modifier.weight(1f),
+            value, onValue, Modifier.weight(1f).then(fieldModifier),
             placeholder = { Text(Strings.composerPlaceholder) }, maxLines = 4,
             shape = RoundedCornerShape(23.dp),
             colors = OutlinedTextFieldDefaults.colors(
@@ -1567,6 +1837,63 @@ private fun AttachmentViewer(opened: AttachmentFiles.Opened, onShare: () -> Unit
 }
 
 /**
+ * 「선택해서 복사」 창(#833, iOS `SelectableTextSheet` 의 Android 판): 선택 모드 Enter 로 연다. 글 칸은 읽기 전용 입력칸이라 하드웨어 키보드로
+ * 커서를 옮기고 Shift+방향키로 블록을 잡을 수 있다(글은 바뀌지 않는다) — Ctrl+C = 잡은 블록 복사(「복사했어요」) · 「전체 복사」 = 글 전체 복사 후 닫기 ·
+ * Esc(시스템 「뒤로」)·「닫기」 = 닫기(대화방 선택 모드는 그대로). 받은 글은 링크로 만들지 않는다.
+ */
+@Composable
+private fun SelectCopyDialog(text: String, onClose: () -> Unit) {
+    val colors = LocalHandeColors.current
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    val focus = remember { FocusRequester() }
+    var field by remember(text) { mutableStateOf(TextFieldValue(text, TextRange(0))) }
+    val copied: () -> Unit = { android.widget.Toast.makeText(context, Strings.copiedToast, android.widget.Toast.LENGTH_SHORT).show() }
+    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    Dialog(onDismissRequest = onClose) {
+        val shape = RoundedCornerShape(28.dp)
+        Column(
+            Modifier.fillMaxWidth().clip(shape).background(MaterialTheme.colorScheme.surfaceContainerHigh).padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(Strings.messageSelectCopy, color = colors.ink, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.semantics { heading() })
+            OutlinedTextField(
+                field,
+                onValueChange = { if (it.text == text) field = it }, // 읽기 전용 — 커서·선택만 바뀐다
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 360.dp)
+                    .focusRequester(focus)
+                    .onPreviewKeyEvent { event ->
+                        // Ctrl+C: 잡은 블록을 복사하고 알린다(입력칸 기본 복사도 같은 글이지만 알림이 없다). 잡은 것이 없으면 그대로 둔다.
+                        val sel = field.selection
+                        val ctrlC = event.type == KeyEventType.KeyDown && event.key == Key.C && event.isCtrlPressed &&
+                            !event.isAltPressed && !event.isMetaPressed && !event.isShiftPressed
+                        if (ctrlC && !sel.collapsed) {
+                            clipboard.setText(AnnotatedString(text.substring(sel.min.coerceIn(0, text.length), sel.max.coerceIn(0, text.length))))
+                            copied()
+                            true
+                        } else {
+                            false
+                        }
+                    },
+                readOnly = true,
+                textStyle = MaterialTheme.typography.bodyLarge,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = colors.focus, unfocusedBorderColor = colors.stroke,
+                    focusedContainerColor = colors.surface, unfocusedContainerColor = colors.surface,
+                    cursorColor = colors.ember, focusedTextColor = colors.ink, unfocusedTextColor = colors.ink,
+                ),
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = onClose) { Text(Strings.close) }
+                TextButton(onClick = { clipboard.setText(AnnotatedString(text)); copied(); onClose() }) { Text(Strings.messageCopyAll) }
+            }
+        }
+    }
+}
+
+/**
  * 링크 미리보기 카드(#683 2단계 · #690 v2): 작은 사이트 이름(응답 `site`, 비면 사이트 목록의 이름) · 제목 1줄 · 본문 최대 4줄 · 이미지(있으면, 최대 높이 200dp, 비율 유지).
  * 화면에 보일 때(`LaunchedEffect` — LazyColumn 은 보이는 항목만 그린다) 한 번 묻고, 결과는 `LinkPreviews` 메모리 캐시. 카드 탭 = 말풍선의 원래 링크 열기.
  * 면+선 카드(남 말풍선과 같은 면) — 내 말풍선 아래에서도 같은 모양(주황 면은 말풍선·보내기 버튼만).
@@ -1614,6 +1941,10 @@ private fun LinkPreviewCard(link: String, previews: LinkPreviews, siteName: Stri
     }
 }
 
+/** 카드에 보일 체크: ONE 카드(「하나만」)는 옛 복수 선택 기억을 버린다 — 카드 탭과 Alt+숫자(#833)가 같은 값을 쓴다. */
+private fun choicePicked(card: AgentChoices.Card, remembered: List<Int>): List<Int> =
+    if (card.choices.mode == AgentChoices.Mode.ONE && remembered.size > 1) emptyList() else remembered
+
 /**
  * 에이전트 선택지 카드(agent-choices-v1 #620 §3 · 복수 선택 #624): 행 = 체크 상자(둥근 사각) + 번호 + 라벨(최대 3줄) + 「권장」 알약.
  * 행을 누르면 그 행 체크를 토글하고(여러 개 가능), 하나라도 체크돼 있을 때만 [보내기] → 평소 전송 경로(`onSend`)로
@@ -1624,7 +1955,12 @@ private fun LinkPreviewCard(link: String, previews: LinkPreviews, siteName: Stri
  * 행 탭은 `AgentChoices.toggle` 로 바꿔 고르기라 [보내기] 는 `N. 라벨` 한 줄이다. MANY·v1 은 그대로.
  */
 @Composable
-private fun AgentChoicesCard(m: MessageUi, card: AgentChoices.Card, enabled: Boolean, onSend: (String) -> Unit) {
+private fun AgentChoicesCard(
+    m: MessageUi, card: AgentChoices.Card, enabled: Boolean,
+    /** 체크(대화방이 글 seq 별로 들고 있다 — §3.1 단축키 Alt+숫자와 공유, #833). 보내는 중이면 대화방이 `enabled` 를 끈다. */
+    picked: List<Int>, onPicked: (List<Int>) -> Unit,
+    onSend: (String) -> Unit,
+) {
     val colors = LocalHandeColors.current
     val choices = card.choices
     val state = card.state
@@ -1638,16 +1974,7 @@ private fun AgentChoicesCard(m: MessageUi, card: AgentChoices.Card, enabled: Boo
     }
     val mode = choices.mode
     val one = mode == AgentChoices.Mode.ONE
-    var remembered by remember(m.seq) { mutableStateOf(listOf<Int>()) }
-    val picked = if (one && remembered.size > 1) emptyList() else remembered // ONE 카드는 옛 복수 선택 기억을 버린다
-    var sending by remember(m.seq) { mutableStateOf(false) }
-    LaunchedEffect(sending) {
-        if (sending) {
-            delay(10_000)
-            sending = false
-        }
-    }
-    val active = enabled && !sending
+    val active = enabled
     val shape = RoundedCornerShape(14.dp)
     Column(
         Modifier
@@ -1667,7 +1994,7 @@ private fun AgentChoicesCard(m: MessageUi, card: AgentChoices.Card, enabled: Boo
                 Modifier
                     .fillMaxWidth()
                     .clickable(enabled = active, role = if (one) Role.RadioButton else Role.Checkbox) {
-                        remembered = AgentChoices.toggle(picked, item.number, mode)
+                        onPicked(AgentChoices.toggle(picked, item.number, mode))
                     }
                     .semantics {
                         contentDescription = Strings.choiceRowLabel(item.number, item.label, recommended)
@@ -1713,10 +2040,7 @@ private fun AgentChoicesCard(m: MessageUi, card: AgentChoices.Card, enabled: Boo
                     .clip(CircleShape)
                     .background(if (canSend) colors.ember else colors.ember.copy(alpha = 0.35f))
                     .clickable(enabled = canSend, role = Role.Button) {
-                        if (picked.isNotEmpty()) {
-                            sending = true
-                            onSend(AgentChoices.compose(picked, choices.items.map { it.label }))
-                        }
+                        if (picked.isNotEmpty()) onSend(AgentChoices.compose(picked, choices.items.map { it.label }))
                     }
                     .semantics { contentDescription = Strings.choiceSendLabel(picked) }
                     .padding(horizontal = 18.dp, vertical = 8.dp),
@@ -1771,6 +2095,8 @@ fun SettingsScreen(
     ui: HubUi, onBack: () -> Unit, onWipe: () -> Unit, onNoticeShown: () -> Unit,
     themeMode: HandeThemeMode = HandeThemeMode.NIGHT, onThemeMode: (HandeThemeMode) -> Unit = {},
     relayHost: String? = null, onDevices: (() -> Unit)? = null, onSiblingRescan: ((Boolean) -> Unit)? = null,
+    /** #833 「↑/↓ 키 이동」(하드웨어 키보드 대화 읽기). */
+    arrowStep: HardwareKeys.ArrowScrollStep = HardwareKeys.ArrowScrollStep.STANDARD, onArrowStep: (HardwareKeys.ArrowScrollStep) -> Unit = {},
 ) {
     val colors = LocalHandeColors.current
     val context = LocalContext.current
@@ -1812,6 +2138,11 @@ fun SettingsScreen(
                         onThemeMode(if (i == 1) HandeThemeMode.DAY else HandeThemeMode.NIGHT)
                     }
                     Text(if (isDay) Strings.themeDayHint else Strings.themeNightHint, Modifier.padding(horizontal = 4.dp), color = colors.inkDim, fontSize = 13.sp, lineHeight = 19.sp)
+                    // #833 · iOS #768: 하드웨어 키보드로 대화를 읽을 때 ↑/↓ 한 번의 이동(기본 보통 = 보이는 칸의 1/3, 말풍선 = 예전 방식).
+                    Text(Strings.arrowStepLabel, Modifier.padding(start = 4.dp, top = 8.dp), color = colors.ink, fontSize = 17.sp)
+                    val steps = HardwareKeys.ArrowScrollStep.entries
+                    HandeSegmented(steps.map { Strings.arrowStepChip(it) }, selected = steps.indexOf(arrowStep)) { i -> onArrowStep(steps[i]) }
+                    Text(Strings.arrowStepHint(arrowStep), Modifier.padding(horizontal = 4.dp), color = colors.inkDim, fontSize = 13.sp, lineHeight = 19.sp)
                 }
             }
             // 이 기기
