@@ -100,7 +100,7 @@ native-mls-bot room status  <room>                  --rooms-dir <dir>   # room �
 
 ## 제약·주의
 
-- 릴레이 재시작·일시 장애(#392): 방 페이지 읽기가 연결 거부·reset·응답 잘림·502/503/504 로 실패하고 그 방이 아직 움직이지 않았으면 세션을 끝내지 않고 기다린다(0.5초부터 두 배, 최대 30초). 이벤트 `relay_unreachable{attempt, wait_ms, error}` → 복구 시 `relay_reachable{after_attempts}`. 페이지 처리 도중(Welcome·echo POST)의 실패는 지금처럼 세션을 끝내 디스크 커서에서 다시 시작한다.
+- 릴레이 재시작·일시 장애(#392): 방 페이지 읽기가 연결 거부·reset·응답 잘림·502/503/504 로 실패하고 그 방이 아직 움직이지 않았으면 세션을 끝내지 않고 기다린다(0.5초부터 두 배, 최대 30초). 이벤트 `relay_unreachable{attempt, wait_ms, error}` → 복구 시 `relay_reachable{after_attempts}`. 페이지 처리 도중(Welcome·echo POST)의 실패는 지금처럼 세션을 끝내 디스크 커서에서 다시 시작한다. 릴레이 대기(#755)의 `/v2/watch` 요청도 이때 끊기며, 봇은 폴링으로 돌아가(`relay_watch{mode: poll, reason: error}`) 위 규칙대로 기다렸다가 릴레이가 돌아오면 다시 watch 를 쓴다.
 - 릴레이는 기기당 방 생성 32개(`RoomsMaxPerDevice`, #380 D3로 16→32). 새 actor 는 기존 방에 commit 할 수 없다 — 사람 기기는 **초대로만** 들어간다.
 - `agent` 방은 기본 한 번에 하나(응답기는 그 방의 메시지만 받고, 답도 그 방에만 쓴다). 여러 개는 아래 `--room-frames`.
 
@@ -120,7 +120,7 @@ native-mls-bot room status  <room>                  --rooms-dir <dir>   # room �
 - `alert` 모드 = 플릿 알림방: `notice` 만 게시하고, 그 방 메시지는 turn 이 되지 않는다(복호화·커서만 진행). 봇끼리의 말 규칙은 #425.
 - 응답기(ccc-node hande 브리지)는 `room` 이 자기 설정 방 목록에 있어야 받는다(없으면 `rejected: room-not-allowed`) — 방을 agent 로
   바꾸기 전에 브리지 방 목록에 먼저 넣는다. 세션은 `(actor, room)` 별로 갈린다.
-- `status` 이벤트의 `polls_per_round` = 한 라운드의 GET 수(방 수). 방을 늘리면 폴링 요청이 비례해 는다(④ #424 측정 입력).
+- `status` 이벤트의 `polls_per_round` = 모든 방을 읽는 라운드의 GET 수(방 수). 방을 늘리면 폴링 요청이 비례해 는다(④ #424 측정 입력). #755: `status.relay_watch` 가 `watch` 면 그런 라운드는 60초 안전망일 때뿐이고 평소에는 릴레이 `/v2/watch` 가 알린 방만 읽는다(`AGENT.md` "릴레이 대기"); `poll` 이면 매 라운드다.
 - 되돌리기: 추가 agent 방을 `room mode <방> silent` 로 돌린 뒤 `--room-frames` 를 뺀다.
 - 실제 릴레이 검증: `tests/native_mls_bot_rooms_smoke.py`(CI native-mls) — steward 봇 2개 + 가짜 응답기로 agent 방 2개·silent 방 1개 라우팅, 재시작 뒤 커서·inbox 보존.
 

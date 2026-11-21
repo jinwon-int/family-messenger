@@ -23,6 +23,7 @@ mod health;
 mod reply_quote;
 mod responder;
 mod session;
+mod watch;
 
 use family_mls_browser_experiment::Device;
 use std::process::ExitCode;
@@ -89,6 +90,14 @@ fn main() -> ExitCode {
     let (typing, args) = match args.iter().position(|a| a == "--no-typing") {
         Some(_) => (false, args.iter().filter(|a| *a != "--no-typing").cloned().collect::<Vec<_>>()),
         None => (std::env::var("NATIVE_MLS_BOT_TYPING").ok().is_none_or(|v| v.trim() != "0"), args),
+    };
+    // Relay watch (#755): on by default — between rounds the bot waits on the
+    // relay's GET /v2/watch and reads only the rooms it names (an older relay
+    // or an error falls back to plain polling by itself). `--no-relay-watch`
+    // (env NATIVE_MLS_BOT_RELAY_WATCH=0) keeps plain polling.
+    let (relay_watch, args) = match args.iter().position(|a| a == "--no-relay-watch") {
+        Some(_) => (false, args.iter().filter(|a| *a != "--no-relay-watch").cloned().collect::<Vec<_>>()),
+        None => (std::env::var("NATIVE_MLS_BOT_RELAY_WATCH").ok().is_none_or(|v| v.trim() != "0"), args),
     };
     // #422: `--agent-actors a,b` (env NATIVE_MLS_BOT_AGENT_ACTORS) — actors that are
     // agents besides the `bot*` prefix (the clients' AGENT_ACTORS); their messages
@@ -192,7 +201,7 @@ fn main() -> ExitCode {
             (Some(identity_file), Some(rooms_dir)) => api::require_identifier("device must match [A-Za-z0-9_-]{1,64}", device)
                 .and_then(|()| session::run_steward(session::StewardOptions {
                     base: base.to_string(), device: device.to_string(), access: access.clone(),
-                    identity_file, rooms_dir, responder: responder.clone(),
+                    identity_file, rooms_dir, responder: responder.clone(), relay_watch,
                 })),
             _ => Err(api::BotError::Local("steward needs --identity-file and --rooms-dir")),
         },
@@ -237,6 +246,7 @@ fn main() -> ExitCode {
                 access: access.clone(),
                 state_file: state_file.clone(),
                 responder: responder.clone(),
+                relay_watch,
             })
         }
         [base, cmd, room, device, watch_room, extra] if cmd == "session" && extra == "--watch" => {
@@ -248,6 +258,7 @@ fn main() -> ExitCode {
                 access: access.clone(),
                 state_file: state_file.clone(),
                 responder: responder.clone(),
+                relay_watch,
             })
         }
         _ => {
@@ -273,6 +284,8 @@ fn main() -> ExitCode {
             eprintln!("--room-frames (env NATIVE_MLS_BOT_ROOM_FRAMES=1, #423): several agent rooms on one responder; each turn names its room");
             eprintln!("--agent-actors <a,b,…> (env NATIVE_MLS_BOT_AGENT_ACTORS, #422): actors that are agents besides bot*; never a turn");
             eprintln!("--no-typing (env NATIVE_MLS_BOT_TYPING=0): do not send the relay typing signal while a turn produces a reply (default on)");
+            eprintln!("--no-relay-watch (env NATIVE_MLS_BOT_RELAY_WATCH=0, #755): read every room every round instead of waiting on the");
+            eprintln!("relay's GET /v2/watch between rounds (default on; an older relay or an error falls back to polling by itself)");
             eprintln!("env NATIVE_MLS_BOT_AGENT_ATTACHMENTS=1 (#636): the owner's photos/files become turns — the bot decrypts them into");
             eprintln!("NATIVE_MLS_BOT_ATTACHMENT_SPOOL (absolute; the bridge's attachment_spool_dir) and names the file in the turn frame;");
             eprintln!("NATIVE_MLS_BOT_ATTACHMENT_MAX_BYTES caps the file (default 10000000); NATIVE_MLS_BOT_ATTACHMENT_CAPTION_SECS (default 10, 0 = off)");

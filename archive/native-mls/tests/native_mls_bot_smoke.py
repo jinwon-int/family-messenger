@@ -40,6 +40,10 @@ Proven here:
      a restart the moment the file carries a fresh token — the file is
      re-read per request.
 
+  w. relay watch (#755): on the first relay the bot reports `relay_watch`
+     mode watch (GET /v2/watch between rounds) and never falls back to
+     polling; the echoes and the private-room cursor above arrive through it.
+
 Transport is the harness (python HTTP to the relay); MLS state lives in the
 browser workers and in the bot process — same split as the v2 relay smoke.
 
@@ -644,6 +648,21 @@ def main():
             main_room = bot.latest_status(ROOM)
             assert main_room['joined'] is True and main_room['echoes'] == 3, main_room
             receipt['checks']['uninvited_room_no_join_no_decrypt_no_posts'] = True
+
+            # --- #755 (bot step): this relay has GET /v2/watch, so the bot
+            # --- waits on it between rounds instead of reading both rooms
+            # --- every 200 ms. It says so once (`relay_watch`, mode watch),
+            # --- never fell back to polling on this healthy relay, and its
+            # --- status lines carry the mode. Everything above (join, echoes,
+            # --- the private room's cursor) was therefore driven by the watch.
+            watching = bot.wait_for(lambda line: line.get('event') == 'relay_watch' and line.get('mode') == 'watch', timeout=30)
+            assert watching['wait_ms'] == 12000, watching
+            with bot.lock:
+                fallbacks = [line for line in bot.lines if line.get('event') == 'relay_watch' and line.get('mode') != 'watch']
+                last_status = [line for line in bot.lines if line.get('event') == 'status'][-1]
+            assert not fallbacks, fallbacks
+            assert last_status.get('relay_watch') == 'watch', last_status
+            receipt['checks']['bot_waits_on_relay_watch'] = True
 
             lines = bot.assert_clean()
             bot.stop()

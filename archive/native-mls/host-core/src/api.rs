@@ -197,6 +197,14 @@ pub struct EventsResponse {
     /// against `max(local, read_seq)`; the bot ignores it.
     #[serde(default)]
     pub read_seq: i64,
+    /// The highest seq the relay scanned for this page (`next_after`). It can
+    /// lie past the last returned event: a Welcome targeted at another device
+    /// is filtered out but still scanned. 0 = a relay that predates the field.
+    /// The sync cursor never uses it; a host may pass `max(cursor, next_after)`
+    /// as its `/v2/watch` offset so that a filtered row does not answer every
+    /// watch at once (#755 bot).
+    #[serde(default)]
+    pub next_after: i64,
 }
 
 /// `GET /v2/watch` (#424 relay `server/wait.go`, #755 stage 1): the rooms
@@ -1285,5 +1293,17 @@ mod tests {
         let page: EventsResponse =
             serde_json::from_str(r#"{"epoch":1,"revision":0,"events":[],"first_seq":0,"read_seq":12}"#).expect("new page");
         assert_eq!(page.read_seq, 12);
+    }
+
+    /// #755 bot: `next_after` (the highest seq scanned, filtered rows included)
+    /// parses when the relay sends it and reads as 0 when it does not.
+    #[test]
+    fn events_page_next_after_is_optional() {
+        let page: EventsResponse =
+            serde_json::from_str(r#"{"epoch":1,"revision":0,"events":[],"first_seq":0}"#).expect("no next_after");
+        assert_eq!(page.next_after, 0);
+        let page: EventsResponse =
+            serde_json::from_str(r#"{"epoch":1,"revision":0,"events":[],"next_after":13,"first_seq":1}"#).expect("next_after");
+        assert_eq!(page.next_after, 13);
     }
 }
