@@ -186,8 +186,11 @@ export function createRoomSession({room, device, database, worker, relay, storag
     }
     return rows.length;
   }
-  function emitText(sender, client, text, seq, ts, replay) {
-    on.message?.({kind: 'text', seq, sender, client: client ?? '', text, ts, replay: !!replay});
+  // local(#837): 이 기기 화면이 「보내는 중」 말풍선에 붙인 ID — 내 send 가 확정한 글에만 실려 그 말풍선과 맞춘다(와이어에는 없다).
+  function emitText(sender, client, text, seq, ts, replay, local = null) {
+    const m = {kind: 'text', seq, sender, client: client ?? '', text, ts, replay: !!replay};
+    if (local) m.local = local;
+    on.message?.(m);
   }
   // dims(#647): file-v2 설명자 w/h 힌트 {w, h} — 화면이 사진을 디코드하기 전에 말풍선 자리를 최종 크기로 잡는다. 없으면 null.
   function emitAttachment(sender, size, seq, ts, loadBytes, fileName = null, dims = null) {
@@ -559,8 +562,16 @@ export function createRoomSession({room, device, database, worker, relay, storag
     log(`${target} 제거 commit 게시(seq ${r.body.seq}) — 반영되면 epoch 전진`);
     await sync();
   }
-  /** Returns the seq of the stored message; the caller keeps the draft on any throw (#251 A-2). */
-  async function send(text) {
+  /** 지금 보낼 수 있나(#837) — send 가 릴레이·워커에 닿기 전에 하는 검사만 동기로. 안 되면 send 와 같은 오류를 던진다. */
+  function checkSend() {
+    requireOpen();
+    if (!S.joined) throw new Error(strings.room.notJoined);
+  }
+  /**
+   * Returns the seq of the stored message; the caller keeps the draft on any throw (#251 A-2).
+   * `local`(#837): the caller's id for its 「보내는 중」 bubble — carried on the emitted message only, never on the wire.
+   */
+  async function send(text, {local = null} = {}) {
     requireOpen();
     if (!text) return null;
     if (!S.joined) throw new Error(strings.room.notJoined);
@@ -573,7 +584,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
         S.epoch = r.body.epoch; save();
         typingSentAt = 0;   // #562: the relay dropped our typing signal when it stored this event — nothing to clear
         const ts = Date.now();
-        emitText(device, device, text, r.body.seq, ts, false);
+        emitText(device, device, text, r.body.seq, ts, false, local);
         await remember({seq: r.body.seq, sender: device, client: device, kind: 'text', text, bytes: []});   // MLS cannot decrypt our own messages
         return r.body.seq;
       }
@@ -687,7 +698,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
     get state() { return S; },
     get attachmentPending() { return !!attachments?.pending || !!fileV2s?.pending; },
     get joined() { return S.joined; },
-    open, activate, connect, sync, create, publishKeyPackage, invite, remove, send, sendAttachment, typing, markRead, setMuted,
+    open, activate, connect, sync, create, publishKeyPackage, invite, remove, checkSend, send, sendAttachment, typing, markRead, setMuted,
     wipe, stop, registration, setPollInterval,
     get pollMs() { return pollMs; },
   };

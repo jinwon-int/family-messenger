@@ -929,10 +929,11 @@ function skillChips(skills) {
     skills.map((name) => el('span', { class: 'skill-chip', title: name }, `📘 ${name}`)));
 }
 
-function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null, links = FALLBACK_LINKS) {
+function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null, links = FALLBACK_LINKS, onRetrySend = null) {
   const time = formatTime(entry.ts);
-  // 전송 상태(2차-B B3): entry.state 'queued'(연결되면 보냄) · 'failed'(전송 안 됨) 가 오면 내 말풍선의 면·선이 바뀐다. 지금 app.js 는 보내기를 기다리므로 주지 않는다(훅만).
-  const sendState = entry.isMe && (entry.state === 'queued' || entry.state === 'failed') ? entry.state : null;
+  // 전송 상태(2차-B B3): entry.state 'sending'(보내는 중, #837) · 'queued'(연결되면 보냄) · 'failed'(전송 안 됨) 가 오면 내 말풍선의 면·선과
+  // 아래 줄이 바뀐다. app.js 는 누르는 즉시 'sending' 말풍선을 올리고, 실패하면 'failed' + 「다시 보내기」(onRetrySend). 웹 글 보내기에는 대기열이 없어 'queued' 는 오지 않는다.
+  const sendState = entry.isMe && (entry.state === 'sending' || entry.state === 'queued' || entry.state === 'failed') ? entry.state : null;
   const signature = JSON.stringify([entry.key, entry.kind, Boolean(entry.isMe), Boolean(entry.isAgent), entry.senderName ?? null, entry.body ?? '', time, entry.size ?? null, entry.image?.url ?? null, Boolean(entry.replay), entry.seq ?? null,
     entry.fileName ?? null, Boolean(entry.previewFailed), Boolean(entry.previewFailed) && Boolean(entry.previewBusy), choiceSignature(choice), sendState,
     entry.dims ? [entry.dims.w, entry.dims.h] : null, pendingMedia(entry), linksSignature(entry, links), entry.pdf?.url ?? null]);
@@ -983,7 +984,10 @@ function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null, l
   // 사람·서비스 봇 말풍선의 첫 미리보기 사이트 링크 → 미리보기 카드(#683 2단계 · #690). 에이전트 말풍선은 대상이 아니다.
   const preview = entry.kind === 'text' && (isServiceDevice(entry.sender) || !entry.isAgent) && !(entry.isAgent && hasMarkdown(agentText))
     ? linkPreviewSlot(entry.body, body, links) : null;
-  const foot = [entry.replay ? strings.chat.replay : null, time].filter(Boolean).join(' · ');
+  const foot = [entry.replay ? strings.chat.replay : null, sendState ? strings.chat.sendState[sendState] : null, time].filter(Boolean).join(' · ');
+  const retrySend = sendState === 'failed' && onRetrySend
+    ? el('button', { type: 'button', class: 'ghost small retry-send', 'data-testid': 'retry-send', onclick: () => onRetrySend(entry) }, strings.chat.retrySend)
+    : null;
   const alertId = entry.kind === 'text' && isFleetDevice(entry.sender) ? parseAlertRefs(entry.body).self : null;   // alert-refs-v1 이동 대상 표시
   return signed(el('li', { class: `bubble kind-${entry.kind}${entry.isAgent ? ' agent' : ''}${sendState ? ` ${sendState}` : ''}`, 'data-key': entry.key, 'data-alert-id': alertId, 'data-me': entry.isMe ? 'true' : 'false', 'data-testid': entry.kind === 'undecryptable' ? 'system-row' : 'bubble' },
     entry.isMe ? null : el('span', { class: 'who' }, senderLabel(entry.senderName || displayName(entry.sender), entry.isAgent)),
@@ -991,7 +995,8 @@ function bubble(entry, onOpenAttachment, onRetryPreview = null, choice = null, l
     skillChips(skillSplit?.skills),
     preview,
     choiceCard(choice),
-    foot ? el('span', { class: 'foot' }, foot) : null), signature);
+    foot ? el('span', { class: 'foot' }, foot) : null,
+    retrySend), signature);
 }
 
 /**
@@ -1010,7 +1015,7 @@ function statusRow(st) {
  * choices: entry 키 → 선택지 상태(#620, app.js 가 open·answered 인 에이전트 글만 넣는다).
  * links: preview-sites.js 링크 집합(#690) — 없으면 폴백(v1).
  */
-function timelineRows(timeline, onOpenAttachment, onRetryPreview = null, choices = null, links = FALLBACK_LINKS) {
+function timelineRows(timeline, onOpenAttachment, onRetryPreview = null, choices = null, links = FALLBACK_LINKS, onRetrySend = null) {
   const rows = [];
   let day = '';
   for (const entry of timeline) {
@@ -1019,7 +1024,7 @@ function timelineRows(timeline, onOpenAttachment, onRetryPreview = null, choices
       day = key;
       rows.push(signed(el('li', { class: 'day-divider', 'data-key': `day:${key}`, role: 'separator' }, el('span', {}, dayLabel(entry.ts))), key));
     }
-    rows.push(bubble(entry, onOpenAttachment, onRetryPreview, choices?.get(entry.key) ?? null, links));
+    rows.push(bubble(entry, onOpenAttachment, onRetryPreview, choices?.get(entry.key) ?? null, links, onRetrySend));
   }
   return rows;
 }
@@ -1261,7 +1266,7 @@ function buildRoom(room) {
   JSON.stringify([room.name, room.roomId, participantCount(members), Boolean(room.halted), room.halted?.reason ?? null, Boolean(room.joined), Boolean(room.onOpenBox), room.typing ?? '', typeof room.muted === 'boolean' ? room.muted : null, room.fire ?? null]));
   const notice = room.notice?.text ? signed(el('p', { class: `status ${room.notice.tone || 'info'}`, role: 'status', 'data-part': 'notice' }, room.notice.text), JSON.stringify(room.notice)) : null;
   const list = el('ul', { class: 'timeline', tabindex: '-1', 'aria-live': 'polite', 'aria-label': strings.chat.timelineLabel, 'data-testid': 'timeline' },
-    room.timeline.length === 0 ? signed(el('li', { class: 'empty', 'data-key': 'empty' }, strings.chat.empty), 'empty') : timelineRows(room.timeline, room.onOpenAttachment, room.onRetryPreview ?? null, room.choices ?? null, room.links ?? FALLBACK_LINKS),
+    room.timeline.length === 0 ? signed(el('li', { class: 'empty', 'data-key': 'empty' }, strings.chat.empty), 'empty') : timelineRows(room.timeline, room.onOpenAttachment, room.onRetryPreview ?? null, room.choices ?? null, room.links ?? FALLBACK_LINKS, (entry) => liveProps.get(screen)?.onRetrySend?.(entry)),
     (Array.isArray(room.statuses) ? room.statuses : []).map(statusRow));
   const badge = el('button', { type: 'button', class: 'new-messages', hidden: true, onclick: () => { list.scrollTop = list.scrollHeight; badge.hidden = true; } }, strings.chat.newMessages);
   list.addEventListener('scroll', () => { if (isNearBottom(list)) badge.hidden = true; });

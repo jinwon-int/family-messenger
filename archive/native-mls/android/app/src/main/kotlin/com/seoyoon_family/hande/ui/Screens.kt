@@ -14,7 +14,7 @@
 //   「이 기기 지우기」 확인 = AlertDialog(반경 28, surfaceContainerHigh) — 바텀시트 없음 · 등록되면 목록 + Snackbar 「등록됐어요 — 불 곁으로 오세요」 · 「등록 정보 공유」 = OutlinedButton + share ·
 //   정책 링크 행은 open_in_new. 아이콘은 `ui/theme/HandeIcons.kt`(2차-B 아이콘 세트 + Material Symbols 짝 글리프, 라이브러리 의존 없음).
 // 2차-B 낮불 세부: 꺼진 자리 = 흐림 대신 점선 1.5 회색 테두리 + 회색 글자 · 안 읽음 = 먹 알약 「새 글」 + 이름 800 · 승인 표시 = 먹 채움 + 종이 ✓ · 위험 구역 2px · 토스트 먹 면.
-//   전송 상태(보내는 중·연결되면·전송 안 됨) 말풍선은 Android 화면 모델(`MessageUi`)에 상태가 없어 그리지 않는다.
+//   전송 상태 말풍선(#837): 보내는 즉시 「보내는 중…」, 실패하면 「전송 안 됨 · 다시 보내기」(`RoomUi.outgoing` → `OutgoingRow`). 「연결되면」은 없다(대기열 글도 보내는 중).
 package com.seoyoon_family.hande.ui
 
 import android.content.ActivityNotFoundException
@@ -144,6 +144,7 @@ import com.seoyoon_family.hande.core.LinkPreviews
 import com.seoyoon_family.hande.core.PreviewSites
 import com.seoyoon_family.hande.core.LoginLauncher
 import com.seoyoon_family.hande.core.MessageUi
+import com.seoyoon_family.hande.core.OutgoingUi
 import com.seoyoon_family.hande.core.Phase
 import com.seoyoon_family.hande.core.RoomUi
 import com.seoyoon_family.hande.core.SelfService
@@ -251,7 +252,8 @@ fun HandeRoot(hub: DeviceHub, themeMode: HandeThemeMode = HandeThemeMode.NIGHT, 
                     // 보고 있는 방의 읽음 위치(#571 후속): 열 때 한 번, 그 뒤 마지막 seq 가 움직일 때마다(새 글·내 전송) · 세션이 확인될 때(#766 B).
                     LaunchedEffect(room.room, room.messages.lastOrNull()?.seq, live) { hub.markRead(scope, room.room) }
                     RoomScreen(
-                        room, ui, onBack = { openRoom = null }, onSend = { text -> hub.send(scope, room.room, text) }, onNoticeShown = hub::clearNotice,
+                        room, ui, onBack = { openRoom = null }, onSend = { text -> hub.send(room.room, text) }, onNoticeShown = hub::clearNotice,
+                        onRetrySend = { id -> hub.retrySend(room.room, id) },
                         previews = if (live) hub.linkPreviews else null,
                         onOpenAttachment = { seq -> hub.openAttachment(room.room, seq) },
                         onAttachmentPreview = { seq -> hub.attachmentPreview(room.room, seq) },
@@ -1169,6 +1171,8 @@ fun RoomScreen(
     onAttachmentPreview: (suspend (Long) -> ThumbnailSizing.Preview?)? = null,
     /** 세션이 확인됐나(#766 B, `Phase.Ready`). 아니면 저장된 대화만 보이는 중 — 보내기·첨부·선택지 답을 꺼 둔다. */
     live: Boolean = true,
+    /** #837: 「전송 안 됨」 말풍선의 「다시 보내기」(보내는 글 id). */
+    onRetrySend: ((Long) -> Unit)? = null,
 ) {
     val colors = LocalHandeColors.current
     // #366 C · #338 C 단계 — 첨부: 말풍선을 누르면 열고(이미지는 화면 안 뷰어, 그 밖은 다른 앱으로), 작성창 📎 로 파일을 골라 보낸다.
@@ -1227,8 +1231,8 @@ fun RoomScreen(
         else android.widget.Toast.makeText(alertContext, Strings.alertRefMissing, android.widget.Toast.LENGTH_SHORT).show()
     }
     // 맨 아래 따라가기: 새 글이나 작업 상태 말풍선이 생기면(사라질 때는 아님) 마지막 항목으로.
-    val total = room.messages.size + room.statuses.size
-    LaunchedEffect(room.messages.size, room.statuses.size) { if (total > 0) listState.animateScrollToItem(total - 1) }
+    val total = room.messages.size + room.outgoing.size + room.statuses.size
+    LaunchedEffect(room.messages.size, room.outgoing.size, room.statuses.size) { if (total > 0) listState.animateScrollToItem(total - 1) }
     // agent-choices(#620 · §6 #671 PR D): 에이전트가 `[답변 필요]` 로 명시한 번호 선택지 → 말풍선 아래 카드(open/answered). 상태는 타임라인에서 계산(저장 안 함).
     val choiceCards = remember(room.messages) { AgentChoices.cards(room.messages) }
     val canChoose = halted == null && room.joined && live
@@ -1268,6 +1272,8 @@ fun RoomScreen(
                         }
                     }
                 }
+                // #837: 아직 확정되지 않은 내 글(누른 순서) — 받으면 위의 이력 행이 되고 여기서 빠진다.
+                items(room.outgoing, key = { "out:${it.id}" }) { o -> OutgoingRow(o, onRetrySend = if (live) onRetrySend else null) }
                 // status-v1(#560): 보낸이별 임시 말풍선 하나 — 키가 보낸이라 제자리에서 본문만 바뀐다.
                 items(room.statuses, key = { "status:${it.sender}" }) { s -> StatusRow(s) }
             }
@@ -1442,6 +1448,41 @@ private fun MessageRow(
         if (!agent && !m.attachment && previews != null) {
             val target = remember(m.text, sites) { sites.target(m.text) }
             if (target != null) LinkPreviewCard(target, previews, siteName = remember(target, sites) { sites.siteOf(target)?.name.orEmpty() })
+        }
+    }
+}
+
+/**
+ * 보내는 글 말풍선(#837, iOS 보내는 글 줄과 같은 말): 내 말풍선 모양 그대로 「보내는 중…」(밤 75% — 낮불은 불투명), 실패하면 면+주의 선 +
+ * 「전송 안 됨」과 「다시 보내기」. 첨부의 진행 표시는 이 이슈 밖이다.
+ */
+@Composable
+private fun OutgoingRow(o: OutgoingUi, onRetrySend: ((Long) -> Unit)?) {
+    val colors = LocalHandeColors.current
+    val shape = RoundedCornerShape(18.dp, 18.dp, 6.dp, 18.dp)
+    Column(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalAlignment = Alignment.End) {
+        val fill = if (o.failed) Modifier.background(colors.surface).border(1.5.dp, colors.warn, shape)
+        else Modifier.background(colors.ember.copy(alpha = if (colors.isDay) 1f else 0.75f))
+        Text(
+            o.text,
+            Modifier
+                .fillMaxWidth(0.82f)
+                .wrapContentWidth(Alignment.End)
+                .clip(shape)
+                .then(fill)
+                .padding(horizontal = 14.dp, vertical = 11.dp),
+            color = if (o.failed) colors.ink else colors.onEmber,
+            style = MaterialTheme.typography.bodyLarge,
+        )
+        Row(Modifier.padding(end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                if (o.failed) Strings.outgoingFailed else Strings.outgoingSending,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (o.failed) colors.warnText else colors.inkDim,
+            )
+            if (o.failed && onRetrySend != null) {
+                TextButton(onClick = { onRetrySend(o.id) }) { Text(Strings.outgoingRetry, color = colors.warnText) }
+            }
         }
     }
 }

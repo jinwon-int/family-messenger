@@ -151,6 +151,10 @@ object Strings {
     const val attachmentOffline = "연결되지 않아 첨부를 받지 못했어요 — 다시 눌러 주세요"
     const val attachmentGone = "릴레이에 첨부가 더 이상 없어요"
     const val attachmentSending = "첨부 보내는 중…"
+    // #837 보내는 글 말풍선 — iOS `Strings.outgoingSending`·`outgoingFailed`·`outgoingRetry` 와 같은 말.
+    const val outgoingSending = "보내는 중…"
+    const val outgoingFailed = "전송 안 됨"
+    const val outgoingRetry = "다시 보내기"
     const val attachmentSendFailed = "첨부를 보내지 못했어요"
     const val attachmentTooLarge = "첨부가 너무 커요(최대 50 MiB)"
     const val attachmentEmpty = "빈 파일은 보낼 수 없어요"
