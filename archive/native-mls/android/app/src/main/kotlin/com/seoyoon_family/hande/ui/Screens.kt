@@ -94,6 +94,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
@@ -159,6 +160,7 @@ import com.seoyoon_family.hande.core.AgentChoiceKeys
 import com.seoyoon_family.hande.core.AgentChoices
 import com.seoyoon_family.hande.core.AlertRefs
 import com.seoyoon_family.hande.core.AppLogin
+import com.seoyoon_family.hande.core.BottomFollow
 import com.seoyoon_family.hande.core.CandidateUi
 import com.seoyoon_family.hande.core.DeviceHub
 import com.seoyoon_family.hande.core.FingerprintRows
@@ -1299,9 +1301,26 @@ fun RoomScreen(
         if (target >= 0) alertScope.launch { listState.animateScrollToItem(target) }
         else android.widget.Toast.makeText(alertContext, Strings.alertRefMissing, android.widget.Toast.LENGTH_SHORT).show()
     }
-    // 맨 아래 따라가기: 새 글이나 작업 상태 말풍선이 생기면(사라질 때는 아님) 마지막 항목으로.
+    // 맨 아래 따라가기: 방에 들어올 때와 새 글이나 작업 상태 말풍선이 생길 때(사라질 때는 아님) 마지막 항목의 아래까지.
+    // 들어올 때는 애니메이션 없이 바로(전자잉크에서 맨 위부터 훑어 내려가지 않게).
     val total = room.messages.size + room.outgoing.size + room.statuses.size
-    LaunchedEffect(room.messages.size, room.outgoing.size, room.statuses.size) { if (total > 0) listState.animateScrollToItem(total - 1) }
+    // 셋을 따로 본다: 에이전트 답이 작업 상태 말풍선을 대신하면(글 +1 · 상태 -1) 합계는 같아도 새 글이다.
+    var shownSizes by remember(room.room) { mutableStateOf<List<Int>?>(null) }
+    LaunchedEffect(room.room, room.messages.size, room.outgoing.size, room.statuses.size) {
+        val now = listOf(room.messages.size, room.outgoing.size, room.statuses.size)
+        val before = shownSizes
+        shownSizes = now
+        val grew = before == null || now.indices.any { now[it] > before[it] }
+        if (total > 0 && grew) listState.scrollToBottom(animated = before != null, itemCount = total)
+    }
+    // 바닥 지키기(iOS `followLatest`): 바닥에 있던 동안 사진 썸네일·링크 카드·선택지 카드가 늦게 그려지거나 키보드로 칸이 줄어
+    // 최신 글이 밀려나면 다시 바닥으로. 손가락·↑ 키로 올려서 멈추면 끈다.
+    LaunchedEffect(room.room, listState) {
+        val follow = BottomFollow()
+        snapshotFlow { listState.isScrollInProgress to listState.canScrollForward }.collect { (moving, canForward) ->
+            if (follow.observe(moving, canForward)) listState.scrollToBottom(animated = false)
+        }
+    }
     // agent-choices(#620 · §6 #671 PR D): 에이전트가 `[답변 필요]` 로 명시한 번호 선택지 → 말풍선 아래 카드(open/answered). 상태는 타임라인에서 계산(저장 안 함).
     val choiceCards = remember(room.messages) { AgentChoices.cards(room.messages) }
     val canChoose = halted == null && room.joined && live
@@ -1343,7 +1362,6 @@ fun RoomScreen(
     // 방을 열면 타임라인에 포커스(= 대화 읽기) — 포커스가 화면 안에 있어야 키가 온다. 손가락으로는 보이는 차이가 없다.
     LaunchedEffect(Unit) { runCatching { timelineFocus.requestFocus() } }
 
-    fun latestIndex(): Int = maxOf(0, room.messages.size + room.statuses.size - 1)
     fun commitComposition() {
         // 한글 등 IME 조합 중인 글자를 확정한 뒤 작성창을 떠난다(#722 교훈 — 조합 글자가 버려지지 않게). 글은 이미 `draft` 에 들어 있다.
         val v = currentComposer()
@@ -1370,7 +1388,8 @@ fun RoomScreen(
             keyCursor = null
             when (val t = HardwareKeys.pixelScroll(viewport, fraction, up, listState.canScrollBackward, listState.canScrollForward)) {
                 is HardwareKeys.PixelScroll.By -> attachScope.launch { listState.animateScrollBy(t.pixels) }
-                HardwareKeys.PixelScroll.Latest -> attachScope.launch { listState.animateScrollToItem(latestIndex()) }
+                // 이미 바닥이면 제자리(예전에는 마지막 말풍선의 위로 올라가 ↓ 를 누를수록 바닥과 위를 오갔다).
+                HardwareKeys.PixelScroll.Latest -> attachScope.launch { listState.scrollToBottom(animated = true) }
                 null -> {}
             }
             return
@@ -1384,7 +1403,7 @@ fun RoomScreen(
             }
             HardwareKeys.ScrollTarget.Latest -> {
                 keyCursor = null
-                attachScope.launch { listState.animateScrollToItem(latestIndex()) }
+                attachScope.launch { listState.scrollToBottom(animated = true) }
             }
             null -> {}
         }
@@ -1424,7 +1443,7 @@ fun RoomScreen(
                 selectingByKey = false
                 keyFocusAt = event.nativeKeyEvent.eventTime
                 runCatching { composerFocus.requestFocus() }
-                attachScope.launch { listState.animateScrollToItem(latestIndex()) }
+                attachScope.launch { listState.scrollToBottom(animated = true) }
             }
             RoomAction.SCROLL_UP -> scrollByKey(up = true)
             RoomAction.SCROLL_DOWN -> scrollByKey(up = false)
