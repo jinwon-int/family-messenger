@@ -186,6 +186,7 @@ import com.seoyoon_family.hande.ui.theme.CampfireBackground
 import com.seoyoon_family.hande.ui.theme.Chevron
 import com.seoyoon_family.hande.ui.theme.CreamButton
 import com.seoyoon_family.hande.ui.theme.DangerButton
+import com.seoyoon_family.hande.ui.theme.DayTickedRow
 import com.seoyoon_family.hande.ui.theme.DetailDisclosure
 import com.seoyoon_family.hande.ui.theme.DotsRow
 import com.seoyoon_family.hande.ui.theme.EmptyCampfireArt
@@ -1135,9 +1136,21 @@ private fun RoomRow(r: RoomUi, highlighted: Boolean = false, onOpen: () -> Unit)
             .alpha(if (halted && !day) 0.6f else 1f)
             .clip(shape)
             .background(colors.surface)
-            .then(if (closedDay) Modifier.dashedBorder(1.5.dp, colors.ash, shape) else Modifier.border(colors.lineWidth, colors.stroke, shape))
-            // #833 키보드 PageUp/PageDown 으로 표시한 행(열지 않음) — 포커스 색 2dp 테두리.
-            .then(if (highlighted) Modifier.border(2.dp, colors.focus, shape) else Modifier)
+            // #833 키보드 PageUp/PageDown 으로 표시한 행(열지 않음). 2dp 포커스 테두리만으로는 안 보였다 — 낮불은 포커스 색(#1A1510)이
+            // 평소 테두리(stroke #1A1510 · 1.5dp)와 같아 0.5dp 차이뿐, 밤은 크림 실선 하나. 그래서 면 + 3dp 테두리 + 왼쪽 6dp 띠로 표시한다.
+            // 낮불은 투명도 금지(2차-B) → 불투명 표시 행 면 #EFE9DC(HandeKit DayTickedRow) · 밤은 크림 14% 면.
+            .then(
+                if (highlighted) {
+                    Modifier
+                        .background(if (day) DayTickedRow else colors.focus.copy(alpha = 0.14f))
+                        .drawBehind { drawRect(colors.focus, size = size.copy(width = 6.dp.toPx())) }
+                        .border(3.dp, colors.focus, shape)
+                } else if (closedDay) {
+                    Modifier.dashedBorder(1.5.dp, colors.ash, shape)
+                } else {
+                    Modifier.border(colors.lineWidth, colors.stroke, shape)
+                },
+            )
             .clickable(onClick = onOpen)
             .padding(horizontal = 14.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,

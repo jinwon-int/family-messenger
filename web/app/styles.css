@@ -319,6 +319,19 @@ ul.rooms { list-style: none; margin: 0; padding: 0; display: flex; flex-directio
 }
 .room-item:hover { background: var(--surface-2); }
 .room-item[aria-current="true"] { border-color: var(--brand); background: var(--brand-soft); }
+/* 키보드(Page Up/Down·Tab·Home 복귀)로 고른 방 — 휴대폰에서도 한눈에 보이게.
+ * 전역 :focus-visible(연보라 #7c9bff, 흰 카드 위 대비 ~2.6:1, 바깥 2px라 목록 스크롤에 잘림)만으로는
+ * 안 보였다. 진한 브랜드색 안쪽 테두리 + 배경 틴트 + 왼쪽 굵은 띠로 표시한다(안쪽이라 잘리지 않음).
+ * Android WebView는 스크립트 포커스에 :focus-visible을 안 줄 때가 있어 main.js가 단 data-kbd-focus도 본다.
+ * 아래 미디어쿼리의 `.pane-list .room-item { box-shadow: none }`보다 우선하도록 .pane-list를 붙인다. */
+.pane-list .room-item:focus-visible,
+.pane-list .room-item[data-kbd-focus]:focus {
+  outline: 3px solid var(--brand);
+  outline-offset: -3px;
+  border-color: var(--brand);
+  background: var(--brand-soft);
+  box-shadow: inset 8px 0 0 var(--brand);
+}
 /* 대화 목록 순서 편집: 행 오른쪽에 ▲▼, PC에서는 행을 끌어 옮긴다. */
 ul.rooms > li.reorderable { display: flex; align-items: stretch; gap: var(--space-2); }
 ul.rooms > li.reorderable .room-item { flex: 1; min-width: 0; cursor: grab; }

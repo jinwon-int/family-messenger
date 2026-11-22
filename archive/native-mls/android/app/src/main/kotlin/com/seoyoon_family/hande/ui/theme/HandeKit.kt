@@ -81,8 +81,8 @@ import com.seoyoon_family.hande.ui.Strings
 /** 반경 토큰(M 16) — `HandeShapes.medium` 과 같은 값. */
 private val KitRadiusM: Dp = 16.dp
 
-/** 낮불 표시 행 면(2차-B: 표시한 행은 #EFE9DC + 굵게). */
-private val DayTickedRow: Color = Color(0xFFEFE9DC)
+/** 낮불 표시 행 면(2차-B: 표시한 행은 #EFE9DC + 굵게). 대화 목록 키보드 강조 행(`Screens.kt` RoomRow)도 같은 면을 쓴다. */
+internal val DayTickedRow: Color = Color(0xFFEFE9DC)
 
 // ---- 온보딩 조각(§A2) ----
 

@@ -587,6 +587,16 @@ function currentListIndex(buttons) {
   return id ? buttons.findIndex((button) => button.dataset.roomId === id) : -1;
 }
 
+/**
+ * 키보드로 고른 방 행에 포커스를 주고 `data-kbd-focus` 표식을 단다. Android WebView는 스크립트
+ * `.focus()`에 `:focus-visible`을 주지 않을 때가 있어(특히 2초 갱신 뒤 복원), 표식+`:focus`로
+ * 선택 행 강조(styles.css `.room-item[data-kbd-focus]:focus`)를 보장한다. 터치 탭은 표식이 없어 강조되지 않는다.
+ */
+function focusRoomButton(button) {
+  button.dataset.kbdFocus = 'true';
+  button.focus({ preventScroll: true });
+}
+
 function restoreRoomListFocus({ force = false } = {}) {
   if (state.listFocusIndex < 0) return;
   const shell = root.querySelector('main.shell');
@@ -605,7 +615,7 @@ function restoreRoomListFocus({ force = false } = {}) {
   const index = remembered >= 0 ? remembered : Math.min(state.listFocusIndex, buttons.length - 1);
   state.listFocusIndex = index;
   state.listFocusRoomId = buttons[index].dataset.roomId;
-  buttons[index].focus({ preventScroll: true });
+  focusRoomButton(buttons[index]);
 }
 
 function installRoomListKeyboardNav() {
@@ -648,7 +658,7 @@ function installRoomListKeyboardNav() {
       return;
     }
     // 단일 pane 목록: 포커스만 옮기되 스크롤은 같은 규칙(보이면 그대로, 가려졌을 때만 가장자리에 맞춤)으로 한다.
-    buttons[next].focus({ preventScroll: true });
+    focusRoomButton(buttons[next]);
     revealRoomInList(nextRoomId);
   });
 }

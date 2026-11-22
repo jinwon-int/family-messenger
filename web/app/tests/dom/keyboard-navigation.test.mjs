@@ -94,6 +94,33 @@ test('Enter opens a room and focuses composer even without a fine pointer; Home 
   assert.equal(document.activeElement.value, '작성 중인 초안', 'Home must not discard the draft');
 });
 
+test('키보드로 고른 방 행은 data-kbd-focus 표식으로 강조된다(Page Up/Down·Home 복귀·2초 갱신 복원); 터치 탭은 표식 없음', async (t) => {
+  const { window, document, buttons, key, refresh } = await app(t);
+  // 터치 탭으로 연 방은 표식이 없다 — 손가락으로 누른 행에 키보드 강조가 남지 않는다.
+  buttons()[0].dispatchEvent(new window.MouseEvent('click', { bubbles: true, detail: 1 }));
+  assert.ok(buttons().every((button) => !('kbdFocus' in button.dataset)), '터치 탭 행에는 키보드 강조가 없다');
+  key('Home');
+  assert.ok(document.activeElement === buttons()[0]);
+  assert.equal(document.activeElement.dataset.kbdFocus, 'true', 'Home으로 돌아온 행도 강조');
+  key('PageDown');
+  assert.ok(document.activeElement === buttons()[1]);
+  assert.equal(document.activeElement.dataset.kbdFocus, 'true', 'Page Down으로 옮긴 행이 강조된다');
+  // 2초 갱신이 목록을 다시 그리면 새 행 요소로 포커스와 표식이 함께 되살아나야 한다.
+  refresh();
+  assert.equal(document.activeElement.dataset.roomId, '!b:example.test');
+  assert.equal(document.activeElement.dataset.kbdFocus, 'true', '목록 갱신 뒤에도 강조 유지');
+});
+
+test('styles.css: 키보드 선택 방 행 강조 규칙이 미디어쿼리 box-shadow:none보다 우선한다', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const css = await readFile(new URL('../../styles.css', import.meta.url), 'utf8');
+  const rule = css.match(/\.pane-list \.room-item:focus-visible,\s*\.pane-list \.room-item\[data-kbd-focus\]:focus\s*\{([^}]*)\}/);
+  assert.ok(rule, '방 행 키보드 강조 규칙이 있어야 한다');
+  assert.match(rule[1], /outline:\s*3px solid var\(--brand\)/);
+  assert.match(rule[1], /outline-offset:\s*-3px/, '목록 스크롤 영역에 잘리지 않게 안쪽 외곽선');
+  assert.match(rule[1], /box-shadow:\s*inset/);
+});
+
 test('pointer-selected room returns to its row and follows room identity after list reordering', async (t) => {
   const { window, document, buttons, key, reorder, refresh } = await app(t, { finePointer: true });
   buttons()[1].dispatchEvent(new window.MouseEvent('click', { bubbles: true, detail: 1 }));
