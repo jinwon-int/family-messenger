@@ -85,10 +85,11 @@ End 는 세 상황 모두에서 Esc 와 같다(#831). 누르고 있어 반복되
 - 키는 대화방 뿌리의 `onPreInterceptKeyBeforeSoftKeyboard`(IME **앞** — 한글 조합 중 Esc·End·Home·PageUp/Down·Enter 가 IME 에 먹히지 않게, #722 교훈)와
   `onPreviewKeyEvent`(IME 뒤 — 작성창 밖 모드만, 앞에서 처리한 키는 오지 않는다)에서 받는다. 작성창 모드는 IME 앞에서만 판정하므로 화면 키보드가 보낸 키는 입력칸 기본 동작 그대로다. 모드 = 작성창 포커스(작성창) · 타임라인 포커스(대화 읽기, 방을 열면 여기) · 키로 고른 말풍선(선택 모드).
   작성창을 떠날 때(Esc·End·Home·PageUp/Down) `TextFieldValue` 의 조합 구간을 확정한 뒤 옮긴다 — 글은 이미 방별 초안(`SaveableStateHolder`)에 들어 있다.
-- 처리한 키는 KeyDown 과 KeyUp 을 함께 먹는다(`HeldKeys`) — 처리한 Esc 가 시스템 「뒤로」 대체 키가 되어 앱을 뒤로 보내지 않게. 처리하지 않는 상황(대화 목록 등)의 Esc 는 지금처럼 「뒤로」.
+- 처리한 키는 KeyDown 과 KeyUp 을 함께 먹는다(`HeldKeys`) — 처리한 Esc 가 시스템 「뒤로」 대체 키가 되어 앱을 뒤로 보내지 않게. 처리하지 않는 상황(대화 목록 등)의 Esc 는 앱이 손대지 않고 기기 기본 동작에 맡긴다 — Esc 를 「뒤로」로 바꾸는지는 기기 키 설정(`Generic.kcm` 의 `key ESCAPE`)에 달렸다. 고7(Onyx Go Color 7 Gen II)은 `base: none` 이라 목록 Esc 가 아무 동작도 하지 않는다(#833 실측, 일부러 그대로 둠).
 - 창(「선택해서 복사」·사진 뷰어)과 다른 화면(파일 고르기)은 따로 창이라 대화방 키가 닿지 않는다.
 - iOS 에만 있는 것: 두 길 중복 거르기(`KeyDeduper`)·입력칸이 스스로 넣은 줄바꿈 판정(`insertedNewline`) — Compose 는 키를 한 길로 준다. iOS 「⌘↩ 도 전송」은 판정 표 밖의 SwiftUI 단축키라 옮기지 않았다(Ctrl+Enter 는 가로채지 않음).
-- 실기기(블루투스 키보드) 확인 필요: 한글 IME(Gboard·삼성 키보드) 조합 중 키가 앞 단계에서 잡히는지, 처리한 Esc 가 「뒤로」로 새지 않는지, 목록 Esc = 「뒤로」 유지.
+- 실기기(블루투스 키보드) 확인 — 고7 + Keychron K3 Max · Gboard(#833, 2026-11-22): 한글 조합 중 작성창 Esc 가 IME 앞에서 잡힘(조합 글자 보존) · 화면 키보드 Enter 는 줄바꿈 · 목록 Esc 는 기기 기본 동작(고7 무동작).
+  남은 것: 삼성 키보드 조합 중 키, 처리한 Esc 가 「뒤로」로 새지 않는지(Esc 를 「뒤로」로 바꾸는 기기에서만 확인 가능).
 
 ## 의존성 (#177 원칙 5)
 
