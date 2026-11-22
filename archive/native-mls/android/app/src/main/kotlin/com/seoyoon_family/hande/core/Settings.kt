@@ -66,6 +66,11 @@ class Settings(context: Context, private val sealer: KeystoreSealer) : RoomOrder
         get() = prefs.getString("sibling_invites", null)?.takeIf { it.isNotBlank() }
         set(value) { if (value.isNullOrBlank()) prefs.edit().remove("sibling_invites").apply() else prefs.edit().putString("sibling_invites", value).apply() }
 
+    /** 다시 받아들이기를 해 본 Welcome(#616, `WelcomeAdopt.encodeRetried` 형식 — 공개 값: 방 이름·seq). 비면 지운다. */
+    var welcomeRetried: String?
+        get() = prefs.getString("welcome_retried", null)?.takeIf { it.isNotBlank() }
+        set(value) { if (value.isNullOrBlank()) prefs.edit().remove("welcome_retried").apply() else prefs.edit().putString("welcome_retried", value).apply() }
+
     /** 빠진 방 재탐색 상태(#616, `SiblingRescan.encodeState` 형식 — 공개 값: 시각·기기 ID·방 이름). */
     var siblingRescanState: String?
         get() = prefs.getString("sibling_rescan", null)?.takeIf { it.isNotEmpty() }

@@ -181,7 +181,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
     private var candidateRevision: ULong? = null
     private val busy = HashSet<String>()
     private val candidateMessages = HashMap<String, String>()
-    /** #616: 방 → 이번 실행에서 다시 받아들이기를 해 본 가장 큰 Welcome seq(`WelcomeAdopt`). 메모리만 — 재시작하면 한 번 더 해 본다. */
+    /** #616: 방 → 다시 받아들이기를 해 본 가장 큰 Welcome seq(`WelcomeAdopt`). `settings.welcomeRetried` 에 저장한다 — 재시작 뒤에도 같은 Welcome 을 되풀이하지 않게. */
     private val welcomeRetried = HashMap<String, Long>()
 
     private inner class Handle(val name: String) {
@@ -284,6 +284,8 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             rooms[name] = h
         }
         applyAccessToken()
+        welcomeRetried.clear()
+        welcomeRetried.putAll(WelcomeAdopt.decodeRetried(settings.welcomeRetried))
         Log.i(TAG, "boot: rooms=${rooms.size} token=${if (settings.accessToken == null) "none" else "set"}")
         val fp = sha256Hex(l.publicKey())
         Log.i(TAG, "boot: fingerprint ${fp.take(12)}… → probe")
@@ -434,7 +436,11 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
                 )
                 if (decision == WelcomeAdopt.Decision.SKIP) continue
                 val again = decision == WelcomeAdopt.Decision.READOPT
-                if (again) welcomeRetried[w.room] = w.seq // 받아들이기가 또 실패해도 이번 실행에서는 되풀이하지 않는다
+                // 해 보기 **전에** 적어 둔다 — 또 실패해도, 도중에 앱이 죽어도 같은 Welcome 을 되풀이하지 않는다(이력을 통째로 다시 읽는 일).
+                if (again) {
+                    welcomeRetried[w.room] = w.seq
+                    settings.welcomeRetried = WelcomeAdopt.encodeRetried(welcomeRetried)
+                }
                 val sibling = SelfService.isSibling(w.from, me, settings.actor, l.identity())
                 Log.i(TAG, "welcome ${w.room} seq ${w.seq} from=${w.from.ifEmpty { "?" }} sibling=$sibling → ${if (again) "re-adopt (read past, not joined)" else "adopt"}")
                 // 다시 받아들일 때는 옛 방 객체를 먼저 닫는다 — 같은 저장 파일을 두 객체가 쓰지 않게(그룹이 없던 방이라 잃는 것이 없다).
@@ -453,6 +459,7 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         } catch (e: RoomException) {
             if (e is RoomException.Relay && e.transient) connecting = true else classify(e)?.let { p -> _ui.update { it.copy(phase = p) } }
         }
+        forgetSettledRetries()
         discoverCandidates(l)
         rescanSiblings(l)
         return connecting
@@ -544,6 +551,16 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
             orderMutex.withLock { roomOrder.push() }
             _ui.update { it.copy(roomOrderSynced = roomOrder.synced) }
         }
+    }
+
+    /** #616: 참여했거나 없어진 방의 「해 본 Welcome」 기록을 지운다(`WelcomeAdopt.pruneRetried`). 바뀌었을 때만 쓴다. */
+    private fun forgetSettledRetries() {
+        if (welcomeRetried.isEmpty()) return
+        val waiting = welcomeRetried.keys.filterTo(HashSet<String>()) { room -> rooms[room]?.let { !it.joined() } == true }
+        val kept = WelcomeAdopt.pruneRetried(welcomeRetried, waiting)
+        if (kept.size == welcomeRetried.size) return
+        welcomeRetried.keys.retainAll(kept.keys)
+        settings.welcomeRetried = WelcomeAdopt.encodeRetried(welcomeRetried)
     }
 
     private fun replenish(l: MlsLobby) {
