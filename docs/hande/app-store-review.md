@@ -26,7 +26,7 @@ Apple 정의(「App privacy details on the App Store」): **「수집」= 기기
 | Identifiers › **Device ID** | 예 | 예 | 아니오 | App Functionality | 앱이 만든 기기 ID `<actor>-iphone-<난수>`(광고 ID·IDFV 아님) + **APNs 토큰**(`push_devices`) |
 | User Content › **Other User Content** | 예 | 예 | 아니오 | App Functionality | 대화방 이름(사용자가 지음, 평문) · 참여 목록 · 읽음 위치 · 발신 시각 = 서버가 읽는 메타데이터 |
 | User Content › **Emails or Text Messages** | **ⓐ 신고하지 않음**(아래) | — | — | — | 내용은 MLS E2EE — 서버·운영자가 읽을 수 없음. 메타데이터는 위 「Other User Content」로 신고 |
-| Photos or Videos · Audio · Files | 신고하지 않음 | | | | 첨부 바이트·파일 키 모두 E2EE. 사진 라이브러리 접근 없음(사용자가 고른 파일만) |
+| Photos or Videos · Audio · Files | 신고하지 않음 | | | | 첨부 바이트·파일 키 모두 E2EE. 사진 라이브러리 **읽기** 접근 없음(보낼 사진은 시스템 선택기로 사용자가 고른 것만). 받은 사진을 공유 시트의 「이미지 저장」으로 사진 앱에 넣을 때만 **추가 전용** 권한(`NSPhotoLibraryAddUsageDescription`, #862)을 쓴다 — 앱은 보관함을 읽지 않는다 |
 | Location · Contacts · Health · Financial · Sensitive · Browsing/Search History · Purchases | 아니오 | | | | 수집·접근 없음 |
 | Usage Data · Diagnostics(Crash/Performance) | 아니오 | | | | 분석·크래시 SDK 없음. 서버 요청 로그는 기기 ID(위 Device ID)와 경로뿐 |
 

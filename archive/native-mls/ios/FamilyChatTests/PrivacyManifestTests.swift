@@ -87,6 +87,20 @@ final class PrivacyManifestTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: share.path), share.path)
     }
 
+    /// #862: 공유 시트의 「이미지 저장」은 호스트 앱 Info.plist 의 `NSPhotoLibraryAddUsageDescription` 이 있어야 한다 — 없으면 받은 사진을
+    /// 사진 앱에 저장할 수 없다. project.yml 원문은 어디서 돌든 확인하고, 실제 번들 값은 호스트 앱에서 도는 경우에만 확인한다.
+    /// 읽기 권한 문구는 없어야 한다(추가 전용 — docs/hande/app-store-review.md §1 「사진 라이브러리 읽기 접근 없음」).
+    func testSaveImageUsageDescriptionIsDeclaredAndAddOnly() throws {
+        let project = try String(contentsOf: Self.iosDir.appendingPathComponent("project.yml"), encoding: .utf8)
+        XCTAssertTrue(project.contains("\n        NSPhotoLibraryAddUsageDescription: "), "project.yml FamilyChat info.properties")
+        XCTAssertFalse(project.contains("NSPhotoLibraryUsageDescription:"), "read access must not be declared")
+        let app = Bundle.main
+        try XCTSkipUnless(app.bundleURL.pathExtension == "app", "hosted test only (Bundle.main = \(app.bundleURL.lastPathComponent))")
+        let purpose = try XCTUnwrap(app.object(forInfoDictionaryKey: "NSPhotoLibraryAddUsageDescription") as? String)
+        XCTAssertFalse(purpose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        XCTAssertNil(app.object(forInfoDictionaryKey: "NSPhotoLibraryUsageDescription"))
+    }
+
     func testPolicyLinksAreTheCanonicalPagesURLs() {
         XCTAssertEqual(PolicyLinks.site.absoluteString, "https://jinwon-int.github.io/family-messenger/hande/")
         XCTAssertEqual(PolicyLinks.privacy.absoluteString, "https://jinwon-int.github.io/family-messenger/hande/privacy/")

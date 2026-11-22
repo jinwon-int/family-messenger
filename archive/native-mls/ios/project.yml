@@ -71,6 +71,10 @@ targets:
             CFBundleURLSchemes: [hande]
         # #666 공유 시트 맨 윗줄 대화 추천: 앱이 기부하는 의도(`ShareSuggestionDonor.live`). 확장 쪽은 `IntentsSupported`.
         NSUserActivityTypes: [INSendMessageIntent]
+        # #862: 공유 시트의 「이미지 저장」(받은 사진 → 사진 앱)에 iOS 가 요구하는 사용 목적 문구. 추가 전용 권한이라 보관함을 읽지 않는다.
+        # 앱은 사진 보관함 API 를 직접 부르지 않는다 — 저장·공유는 `ShareLink` 뿐이고(Views/RoomView.swift), 이 키가 없으면 그 시트의
+        # 「이미지 저장」이 동작하지 않는다. 읽기 권한(NSPhotoLibraryUsageDescription)은 넣지 않는다 — 보낼 사진은 시스템 선택기로 고른다.
+        NSPhotoLibraryAddUsageDescription: "받은 사진을 사진 앱에 저장할 때만 사용합니다."
     # 서명 빌드용 자리(오너가 Team·프로비저닝을 붙일 때). 무서명 CI(CODE_SIGNING_ALLOWED=NO)에서는 적용되지 않는다.
     # aps-environment 는 개발 빌드 = development(릴레이 -apns-host 샌드박스), TestFlight·배포 = production.
     entitlements:
