@@ -5,6 +5,7 @@ package com.seoyoon_family.hande.ui
 
 import android.view.KeyEvent as AndroidKeyEvent
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
@@ -104,6 +105,30 @@ internal fun Modifier.keySelectionOutline(selected: Boolean, color: Color): Modi
             style = Stroke(width = width, pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 4.dp.toPx()))),
         )
     }
+
+/**
+ * 맨 아래(최신 글)로 — 마지막 항목의 **아래**를 칸 아래에 맞춘다(iOS `proxy.scrollTo(last, anchor: .bottom)` 과 같은 뜻).
+ * `animateScrollToItem(last)` 만 쓰면 마지막 항목의 **위**를 칸 위에 맞춘다: 그 항목이 칸보다 길면(긴 에이전트 답) 최신 줄이 안 보이고,
+ * 이미 바닥에서 부르면 오히려 위로 올라간다(바닥에서 ↓ 를 누를 때마다 위로 튀던 원인). 이미 바닥이면 움직이지 않는다.
+ * `itemCount` = 지금 목록의 항목 수 — 방을 막 열어 아직 배치 전(`layoutInfo` 가 비었거나 새 글이 아직 안 들어감)이어도 마지막 항목으로 간다.
+ */
+internal suspend fun LazyListState.scrollToBottom(animated: Boolean, itemCount: Int = layoutInfo.totalItemsCount) {
+    val last = itemCount - 1
+    if (last < 0) return
+    val laidOut = layoutInfo.totalItemsCount == itemCount
+    if (laidOut && !canScrollForward) return
+    if (!laidOut || layoutInfo.visibleItemsInfo.none { it.index == last }) {
+        if (animated) animateScrollToItem(last) else scrollToItem(last)
+    }
+    // 남은 만큼 더 — LazyColumn 은 끝을 넘겨 스크롤하지 않으므로 칸 높이만큼 주면 바닥에서 멈춘다(긴 마지막 항목은 몇 번에 나눠).
+    repeat(BOTTOM_STEPS) {
+        if (!canScrollForward) return
+        val step = layoutInfo.viewportSize.height.coerceAtLeast(1).toFloat()
+        if (animated) animateScrollBy(step) else scrollBy(step)
+    }
+}
+
+private const val BOTTOM_STEPS = 8
 
 /** `index` 항목이 다 보이게 최소한으로 스크롤한다(이미 다 보이면 그대로, 칸보다 크면 위를 맞춘다). */
 internal suspend fun LazyListState.reveal(index: Int) {
