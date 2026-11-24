@@ -1016,7 +1016,10 @@ func devicePolicyRevisionOf(name string) (uint64, bool) {
 	if len(name) != 18 || !strings.HasPrefix(name, "policy-") || !strings.HasSuffix(name, ".json") {
 		return 0, false
 	}
-	n, e := strconv.ParseUint(name[7:13], 10, 64)
+	// Six digits (<= 999999): parse with an explicit 32-bit bound so the value
+	// is provably in range wherever a revision is later converted (CodeQL
+	// go/incorrect-integer-conversion).
+	n, e := strconv.ParseUint(name[7:13], 10, 32)
 	if e != nil || n == 0 || name != devicePolicyRevisionName(n) {
 		return 0, false
 	}
