@@ -15,7 +15,7 @@ import {readReadSeq, writeReadSeq, latestSeq, isUnread} from './read-seq.js';
 import {readConsent, writeConsent, agentsIn, needsConsent} from './agent-consent.js';
 import {isLocalOnlyRoom, forgetRoomKeys} from './local-room.js';
 import {createStatusBoard, applyStatus, clearStatusOnMessage, visibleStatuses} from './status-v1.js';
-import {choiceState, composeChoice} from './agent-choices.js';
+import {choiceState, composeChoice, roomAnswerNeeded} from './agent-choices.js';
 import {createWorkerBridge} from './worker-bridge.js';
 import {createRelay} from './relay.js';
 import {createPreviewSites} from './preview-sites.js';
@@ -155,8 +155,10 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     // status-v1(#560): 에이전트가 일하는 중이면 그 최신 「⏳ Working …」 줄 — 목록에서 미리보기 자리에 보인다(오너 2026-10-30).
     // 안 읽음·정렬·미리보기 원본(entries)은 그대로다.
     const working = halted ? null : (visibleStatuses(R.statuses).at(-1)?.text ?? null);
+    // #870: 마지막 글의 [답변 필요] 카드가 open 이면 목록에 「답변 필요」 — Waiting/Working 줄보다 앞선다(AGENT-CHOICES §7).
+    const answer = halted ? null : roomAnswerNeeded(R.entries);
     // 오늘의 불 세기(디자인 2차-B): 최근 24시간 글 수 → 불꽃 1~3갈래(iOS RoomGlance.fireLevel 과 같은 문턱). 꺼진 자리는 장작.
-    return {roomId, name: roomLabel(roomId), fire: halted ? 0 : fireLevel(recentMessageCount(R.entries, Date.now())), working,
+    return {roomId, name: roomLabel(roomId), fire: halted ? 0 : fireLevel(recentMessageCount(R.entries, Date.now())), working, answer,
       // 1:1 방은 상대가 한 명뿐이라 「이름: 」 접두를 빼고 내용만(2026-10-26 오너).
       preview: last ? previewLine(isOneToOne(S.roster) ? '' : last.senderName, body) : (S.joined ? strings.rooms.noMessages : strings.room.notJoined),
       time: last?.ts ? relativeTime(last.ts, Date.now()) : '', unread: isUnread(R.entries, R.readSeq) && !(app.roomOpen && app.current === roomId),

@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseChoices, choiceReply, composeChoice, choiceState, choiceKeyAction, choiceKeyInput, choiceToggle, choiceAnswer } from '../agent-choices.js';
+import { parseChoices, choiceReply, composeChoice, choiceState, choiceKeyAction, choiceKeyInput, choiceToggle, choiceAnswer, roomAnswerNeeded } from '../agent-choices.js';
 import { installShortcuts } from '../shortcuts.js';
 
 const vectors = JSON.parse(readFileSync(new URL('../../../tests/fixtures/agent-choices-vectors.json', import.meta.url), 'utf8'));
@@ -378,4 +378,22 @@ test('state: 서비스 봇의 명시 블록(플릿 ok/hold)은 하나만 카드,
 test('state: 서비스 봇이라도 머리줄 없는 목록·사람 글은 카드가 없다', () => {
   assert.equal(choiceState([fleet('a', '알림입니다\n1. 하나\n2. 둘')], 0), null);
   assert.equal(choiceState([{ ...fleet('a'), isService: false }], 0), null);   // 사람 글
+});
+
+// ---- #870 방 목록 「답변 필요」(규격 §7) — 공유 벡터 roomList ----
+test('공유 벡터 roomList 가 실렸다', () => {
+  assert.ok(vectors.roomList.length >= 12);
+  assert.ok(vectors.roomList.some((v) => v.expected === null));
+  assert.ok(vectors.roomList.some((v) => v.expected && v.expected.mode === 'many'));
+});
+
+for (const v of vectors.roomList) {
+  test(`roomList: ${v.name}`, () => {
+    assert.deepEqual(roomAnswerNeeded(v.entries), v.expected);
+  });
+}
+
+test('roomAnswerNeeded: 배열이 아니면 null', () => {
+  assert.equal(roomAnswerNeeded(undefined), null);
+  assert.equal(roomAnswerNeeded(null), null);
 });

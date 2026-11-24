@@ -391,6 +391,11 @@ export const strings = {
     fireLevel: (level) => (level >= 3 ? '오늘의 불 세기 활발' : level === 2 ? '오늘의 불 세기 보통' : '오늘의 불 세기 조용함'),
     // 알림을 끈 방(mute.go): 이름 옆 🔕. 보조기기에는 mutedLabel 을 읽는다.
     mutedLabel: '알림 꺼짐',
+    // #870(AGENT-CHOICES §7): 마지막 글의 [답변 필요] 카드가 열린 방 — 이름 옆 알약 + 미리보기 자리에 질문 요약.
+    answerBadge: '답변 필요',
+    answerLabel: '답변이 필요한 질문이 있음',
+    // 한 줄 말줄임이라 짧은 머리(모드·개수)를 앞에 둔다: 「하나만 선택 · 3개 · 1. (권장) A안」.
+    answerPreview: ({mode, count, number, label}) => `${mode === 'many' ? '여러 개 선택' : '하나만 선택'} · ${count}개 · ${number}. ${label}`,
     justNow: '방금',
     minutesAgo: (n) => `${n}분 전`,
     hoursAgo: (n) => `${n}시간 전`,

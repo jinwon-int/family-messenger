@@ -816,6 +816,9 @@ html[data-theme="day"] .room-item:focus-visible { outline: none; box-shadow: ins
 .room-item.unread .preview { color: var(--text); font-weight: 600; }
 /* status-v1(#560): 일하는 중인 방 — 미리보기 자리의 「⏳ Working …」 줄을 에이전트 색으로(오너 2026-10-30). */
 .room-item .preview.working { color: var(--agent-text); font-weight: 600; }
+/* #870(AGENT-CHOICES §7): 답할 카드가 열린 방 — 이름 옆 「답변 필요」 알약(에이전트 색 바탕, 밤·낮불 공통) + 미리보기 자리 질문 요약. */
+.answer-pill { flex: none; display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: 10px; background: var(--agent-text); color: var(--bg); font-size: 12px; font-weight: 700; line-height: 1; white-space: nowrap; }
+.room-item .preview.answer { color: var(--text); font-weight: 600; }
 /* 이름 + 안 읽음 점 묶음: 묶음이 남는 폭을 차지하고 이름만 줄어들며 말줄임된다(점은 항상 보인다) — 패밀리챗(#480 A). */
 .room-item .room-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
 .room-item .room-title .room-name { flex: 0 1 auto; min-width: 0; }
