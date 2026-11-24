@@ -1,0 +1,1757 @@
+{
+ "spec": "archive/native-mls/web/hande/agent-markdown.js — parseBlocks · inlineSpans · hasMarkdown (#887, block rules from iOS AgentMarkdown.swift #405 P1)",
+ "note": "Shared by the web and Android parsers. blocks[].blocks and inline[].spans are the exact return values of the web functions. Link hrefs here are addresses that URL normalisation leaves unchanged.",
+ "limits": {
+  "max_columns": 8,
+  "max_rows": 60,
+  "max_source": 100000
+ },
+ "blocks": [
+  {
+   "name": "bot status reply: paragraphs, table, bullet list with continuation, numbered list",
+   "text": "방 상태를 확인했는데, **`test-rs`라는 방이 없습니다.**\n\n**확인한 내용** (`room_status`)\n| 방 | 모드 | joined |\n|---|---|:---:|\n| `family` | silent | ✅ |\n| `family-acc` | agent | ✅ |\n\n- 봇이 알고 있는 방은 이 두 개뿐입니다.\n- `family-acc`를 말씀하신 것일 수도 있지만\n  짐작으로 바꾸지는 않았습니다.\n\n1. **`family-acc`를 silent로 바꾸기** — 권장\n2. 그대로 두기",
+   "blocks": [
+    {
+     "type": "paragraph",
+     "text": "방 상태를 확인했는데, **`test-rs`라는 방이 없습니다.**"
+    },
+    {
+     "type": "paragraph",
+     "text": "**확인한 내용** (`room_status`)"
+    },
+    {
+     "type": "table",
+     "header": [
+      "방",
+      "모드",
+      "joined"
+     ],
+     "rows": [
+      [
+       "`family`",
+       "silent",
+       "✅"
+      ],
+      [
+       "`family-acc`",
+       "agent",
+       "✅"
+      ]
+     ]
+    },
+    {
+     "type": "list",
+     "items": [
+      {
+       "level": 0,
+       "marker": null,
+       "text": "봇이 알고 있는 방은 이 두 개뿐입니다."
+      },
+      {
+       "level": 0,
+       "marker": null,
+       "text": "`family-acc`를 말씀하신 것일 수도 있지만\n짐작으로 바꾸지는 않았습니다."
+      }
+     ]
+    },
+    {
+     "type": "list",
+     "items": [
+      {
+       "level": 0,
+       "marker": "1.",
+       "text": "**`family-acc`를 silent로 바꾸기** — 권장"
+      },
+      {
+       "level": 0,
+       "marker": "2.",
+       "text": "그대로 두기"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "table glued to the paragraphs around it",
+   "text": "요약\n| a | b |\n|---|---|\n| 1 | 2 |\n끝",
+   "blocks": [
+    {
+     "type": "paragraph",
+     "text": "요약"
+    },
+    {
+     "type": "table",
+     "header": [
+      "a",
+      "b"
+     ],
+     "rows": [
+      [
+       "1",
+       "2"
+      ]
+     ]
+    },
+    {
+     "type": "paragraph",
+     "text": "끝"
+    }
+   ]
+  },
+  {
+   "name": "ragged and over-long table: rows fit the header width, cut at 60 rows with an ellipsis row",
+   "text": "| a | b |\n|---|---|\n| only |\n| x | y | z |\n| r0 |\n| r1 |\n| r2 |\n| r3 |\n| r4 |\n| r5 |\n| r6 |\n| r7 |\n| r8 |\n| r9 |\n| r10 |\n| r11 |\n| r12 |\n| r13 |\n| r14 |\n| r15 |\n| r16 |\n| r17 |\n| r18 |\n| r19 |\n| r20 |\n| r21 |\n| r22 |\n| r23 |\n| r24 |\n| r25 |\n| r26 |\n| r27 |\n| r28 |\n| r29 |\n| r30 |\n| r31 |\n| r32 |\n| r33 |\n| r34 |\n| r35 |\n| r36 |\n| r37 |\n| r38 |\n| r39 |\n| r40 |\n| r41 |\n| r42 |\n| r43 |\n| r44 |\n| r45 |\n| r46 |\n| r47 |\n| r48 |\n| r49 |\n| r50 |\n| r51 |\n| r52 |\n| r53 |\n| r54 |\n| r55 |\n| r56 |\n| r57 |\n| r58 |\n| r59 |\n| r60 |\n| r61 |\n| r62 |\n| r63 |\n| r64 |\n| r65 |\n| r66 |\n| r67 |\n| r68 |\n| r69 |",
+   "blocks": [
+    {
+     "type": "table",
+     "header": [
+      "a",
+      "b"
+     ],
+     "rows": [
+      [
+       "only",
+       ""
+      ],
+      [
+       "x",
+       "y"
+      ],
+      [
+       "r0",
+       ""
+      ],
+      [
+       "r1",
+       ""
+      ],
+      [
+       "r2",
+       ""
+      ],
+      [
+       "r3",
+       ""
+      ],
+      [
+       "r4",
+       ""
+      ],
+      [
+       "r5",
+       ""
+      ],
+      [
+       "r6",
+       ""
+      ],
+      [
+       "r7",
+       ""
+      ],
+      [
+       "r8",
+       ""
+      ],
+      [
+       "r9",
+       ""
+      ],
+      [
+       "r10",
+       ""
+      ],
+      [
+       "r11",
+       ""
+      ],
+      [
+       "r12",
+       ""
+      ],
+      [
+       "r13",
+       ""
+      ],
+      [
+       "r14",
+       ""
+      ],
+      [
+       "r15",
+       ""
+      ],
+      [
+       "r16",
+       ""
+      ],
+      [
+       "r17",
+       ""
+      ],
+      [
+       "r18",
+       ""
+      ],
+      [
+       "r19",
+       ""
+      ],
+      [
+       "r20",
+       ""
+      ],
+      [
+       "r21",
+       ""
+      ],
+      [
+       "r22",
+       ""
+      ],
+      [
+       "r23",
+       ""
+      ],
+      [
+       "r24",
+       ""
+      ],
+      [
+       "r25",
+       ""
+      ],
+      [
+       "r26",
+       ""
+      ],
+      [
+       "r27",
+       ""
+      ],
+      [
+       "r28",
+       ""
+      ],
+      [
+       "r29",
+       ""
+      ],
+      [
+       "r30",
+       ""
+      ],
+      [
+       "r31",
+       ""
+      ],
+      [
+       "r32",
+       ""
+      ],
+      [
+       "r33",
+       ""
+      ],
+      [
+       "r34",
+       ""
+      ],
+      [
+       "r35",
+       ""
+      ],
+      [
+       "r36",
+       ""
+      ],
+      [
+       "r37",
+       ""
+      ],
+      [
+       "r38",
+       ""
+      ],
+      [
+       "r39",
+       ""
+      ],
+      [
+       "r40",
+       ""
+      ],
+      [
+       "r41",
+       ""
+      ],
+      [
+       "r42",
+       ""
+      ],
+      [
+       "r43",
+       ""
+      ],
+      [
+       "r44",
+       ""
+      ],
+      [
+       "r45",
+       ""
+      ],
+      [
+       "r46",
+       ""
+      ],
+      [
+       "r47",
+       ""
+      ],
+      [
+       "r48",
+       ""
+      ],
+      [
+       "r49",
+       ""
+      ],
+      [
+       "r50",
+       ""
+      ],
+      [
+       "r51",
+       ""
+      ],
+      [
+       "r52",
+       ""
+      ],
+      [
+       "r53",
+       ""
+      ],
+      [
+       "r54",
+       ""
+      ],
+      [
+       "r55",
+       ""
+      ],
+      [
+       "r56",
+       ""
+      ],
+      [
+       "r57",
+       ""
+      ],
+      [
+       "…",
+       ""
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "table wider than 8 columns keeps the first 8",
+   "text": "| 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |\n|---|---|---|---|---|---|---|---|---|---|\n| a | b | c | d | e | f | g | h | i | j |",
+   "blocks": [
+    {
+     "type": "table",
+     "header": [
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+      "8"
+     ],
+     "rows": [
+      [
+       "a",
+       "b",
+       "c",
+       "d",
+       "e",
+       "f",
+       "g",
+       "h"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "table separator with alignment colons",
+   "text": "| l | r | c |\n|:---|---:|:---:|\n| 1 | 2 | 3 |",
+   "blocks": [
+    {
+     "type": "table",
+     "header": [
+      "l",
+      "r",
+      "c"
+     ],
+     "rows": [
+      [
+       "1",
+       "2",
+       "3"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "two dashes are not a table separator",
+   "text": "| a | b |\n|--|--|\n| 1 | 2 |",
+   "blocks": [
+    {
+     "type": "paragraph",
+     "text": "| a | b |\n|--|--|\n| 1 | 2 |"
+    }
+   ]
+  },
+  {
+   "name": "escaped pipe is cell text",
+   "text": "| 식 | 뜻 |\n|---|---|\n| a \\| b | 또는 |",
+   "blocks": [
+    {
+     "type": "table",
+     "header": [
+      "식",
+      "뜻"
+     ],
+     "rows": [
+      [
+       "a | b",
+       "또는"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "escaped pipe at the row end keeps the last cell",
+   "text": "| a | b |\n|---|---|\n| x | y \\|",
+   "blocks": [
+    {
+     "type": "table",
+     "header": [
+      "a",
+      "b"
+     ],
+     "rows": [
+      [
+       "x",
+       "y |"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "table without outer pipes, ends at a line without a pipe",
+   "text": "a | b\n---|---\n1 | 2\n끝난 줄\n3 | 4",
+   "blocks": [
+    {
+     "type": "table",
+     "header": [
+      "a",
+      "b"
+     ],
+     "rows": [
+      [
+       "1",
+       "2"
+      ]
+     ]
+    },
+    {
+     "type": "paragraph",
+     "text": "끝난 줄\n3 | 4"
+    }
+   ]
+  },
+  {
+   "name": "a pipe line followed by a bare --- line is a one-row-header table",
+   "text": "a | b\n---\n뒤",
+   "blocks": [
+    {
+     "type": "table",
+     "header": [
+      "a",
+      "b"
+     ],
+     "rows": []
+    },
+    {
+     "type": "paragraph",
+     "text": "뒤"
+    }
+   ]
+  },
+  {
+   "name": "code fence, headings, quote, rule; #hashtag is not a heading",
+   "text": "# 제목\n## 소제목\n```sh\nls -la\n| not | a table |\n```\n> 인용\n> 둘째 줄\n---\n#해시태그",
+   "blocks": [
+    {
+     "type": "heading",
+     "level": 1,
+     "text": "제목"
+    },
+    {
+     "type": "heading",
+     "level": 2,
+     "text": "소제목"
+    },
+    {
+     "type": "code",
+     "text": "ls -la\n| not | a table |"
+    },
+    {
+     "type": "quote",
+     "text": "인용\n둘째 줄"
+    },
+    {
+     "type": "rule"
+    },
+    {
+     "type": "paragraph",
+     "text": "#해시태그"
+    }
+   ]
+  },
+  {
+   "name": "unclosed fence runs to the end",
+   "text": "```\nopen",
+   "blocks": [
+    {
+     "type": "code",
+     "text": "open"
+    }
+   ]
+  },
+  {
+   "name": "indented fence and fence info string",
+   "text": "앞\n  ```kotlin\n  val x = 1\n\n  # not a heading\n  ```\n뒤",
+   "blocks": [
+    {
+     "type": "paragraph",
+     "text": "앞"
+    },
+    {
+     "type": "code",
+     "text": "  val x = 1\n\n  # not a heading"
+    },
+    {
+     "type": "paragraph",
+     "text": "뒤"
+    }
+   ]
+  },
+  {
+   "name": "empty fence",
+   "text": "```\n```",
+   "blocks": [
+    {
+     "type": "code",
+     "text": ""
+    }
+   ]
+  },
+  {
+   "name": "plain single line",
+   "text": "그냥 한 줄",
+   "blocks": [
+    {
+     "type": "paragraph",
+     "text": "그냥 한 줄"
+    }
+   ]
+  },
+  {
+   "name": "empty source",
+   "text": "",
+   "blocks": []
+  },
+  {
+   "name": "blank lines only",
+   "text": "\n \n\t\n",
+   "blocks": []
+  },
+  {
+   "name": "a pipe alone is not a table",
+   "text": "a | b 는 표가 아니다",
+   "blocks": [
+    {
+     "type": "paragraph",
+     "text": "a | b 는 표가 아니다"
+    }
+   ]
+  },
+  {
+   "name": "inline markup stays inside one paragraph",
+   "text": "**굵게**만",
+   "blocks": [
+    {
+     "type": "paragraph",
+     "text": "**굵게**만"
+    }
+   ]
+  },
+  {
+   "name": "paragraph keeps its lines and leading spaces",
+   "text": "첫 줄\n  둘째 줄\n셋째 줄",
+   "blocks": [
+    {
+     "type": "paragraph",
+     "text": "첫 줄\n  둘째 줄\n셋째 줄"
+    }
+   ]
+  },
+  {
+   "name": "list depth by indent, numbered marker, tab indent",
+   "text": "- 하나\n  - 둘\n\t- 셋\n3) 넷",
+   "blocks": [
+    {
+     "type": "list",
+     "items": [
+      {
+       "level": 0,
+       "marker": null,
+       "text": "하나"
+      },
+      {
+       "level": 1,
+       "marker": null,
+       "text": "둘"
+      },
+      {
+       "level": 2,
+       "marker": null,
+       "text": "셋"
+      },
+      {
+       "level": 0,
+       "marker": "3)",
+       "text": "넷"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "list depth is capped at 4",
+   "text": "- a\n          - 깊은 항목\n\t\t\t- 탭 셋",
+   "blocks": [
+    {
+     "type": "list",
+     "items": [
+      {
+       "level": 0,
+       "marker": null,
+       "text": "a"
+      },
+      {
+       "level": 4,
+       "marker": null,
+       "text": "깊은 항목"
+      },
+      {
+       "level": 4,
+       "marker": null,
+       "text": "탭 셋"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bullet characters - * • +",
+   "text": "- a\n* b\n• c\n+ d",
+   "blocks": [
+    {
+     "type": "list",
+     "items": [
+      {
+       "level": 0,
+       "marker": null,
+       "text": "a"
+      },
+      {
+       "level": 0,
+       "marker": null,
+       "text": "b"
+      },
+      {
+       "level": 0,
+       "marker": null,
+       "text": "c"
+      },
+      {
+       "level": 0,
+       "marker": null,
+       "text": "d"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "four-digit number is not a list",
+   "text": "2026. 10. 20.",
+   "blocks": [
+    {
+     "type": "paragraph",
+     "text": "2026. 10. 20."
+    }
+   ]
+  },
+  {
+   "name": "numbered list needs a space after the marker",
+   "text": "1.바로\n12) 열둘\n123. 백이십삼\n1234. 천",
+   "blocks": [
+    {
+     "type": "paragraph",
+     "text": "1.바로"
+    },
+    {
+     "type": "list",
+     "items": [
+      {
+       "level": 0,
+       "marker": "12)",
+       "text": "열둘"
+      },
+      {
+       "level": 0,
+       "marker": "123.",
+       "text": "백이십삼"
+      }
+     ]
+    },
+    {
+     "type": "paragraph",
+     "text": "1234. 천"
+    }
+   ]
+  },
+  {
+   "name": "hyphen glued to the word is not a list",
+   "text": "-하이픈 붙임",
+   "blocks": [
+    {
+     "type": "paragraph",
+     "text": "-하이픈 붙임"
+    }
+   ]
+  },
+  {
+   "name": "list continuation needs an indent; an unindented line ends the list",
+   "text": "- 항목\n  이어짐\n새 문단\n- 다시",
+   "blocks": [
+    {
+     "type": "list",
+     "items": [
+      {
+       "level": 0,
+       "marker": null,
+       "text": "항목\n이어짐"
+      }
+     ]
+    },
+    {
+     "type": "paragraph",
+     "text": "새 문단"
+    },
+    {
+     "type": "list",
+     "items": [
+      {
+       "level": 0,
+       "marker": null,
+       "text": "다시"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "numbered and bullet items share one list until a blank line",
+   "text": "1. 하나\n- 둘\n\n- 셋",
+   "blocks": [
+    {
+     "type": "list",
+     "items": [
+      {
+       "level": 0,
+       "marker": "1.",
+       "text": "하나"
+      },
+      {
+       "level": 0,
+       "marker": null,
+       "text": "둘"
+      }
+     ]
+    },
+    {
+     "type": "list",
+     "items": [
+      {
+       "level": 0,
+       "marker": null,
+       "text": "셋"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "quote then list then quote",
+   "text": "> 인용\n- 목록\n> 다시 인용\n문단",
+   "blocks": [
+    {
+     "type": "quote",
+     "text": "인용"
+    },
+    {
+     "type": "list",
+     "items": [
+      {
+       "level": 0,
+       "marker": null,
+       "text": "목록"
+      }
+     ]
+    },
+    {
+     "type": "quote",
+     "text": "다시 인용"
+    },
+    {
+     "type": "paragraph",
+     "text": "문단"
+    }
+   ]
+  },
+  {
+   "name": "quote marker without a space, empty quote line",
+   "text": ">붙은 인용\n>\n> 셋째",
+   "blocks": [
+    {
+     "type": "quote",
+     "text": "붙은 인용\n\n셋째"
+    }
+   ]
+  },
+  {
+   "name": "heading levels 1 to 6, seven hashes is a paragraph",
+   "text": "# 1\n###### 6\n####### 7",
+   "blocks": [
+    {
+     "type": "heading",
+     "level": 1,
+     "text": "1"
+    },
+    {
+     "type": "heading",
+     "level": 6,
+     "text": "6"
+    },
+    {
+     "type": "paragraph",
+     "text": "####### 7"
+    }
+   ]
+  },
+  {
+   "name": "heading needs a space; a bare # is a paragraph",
+   "text": "#\n#제목아님\n##  두 칸",
+   "blocks": [
+    {
+     "type": "paragraph",
+     "text": "#\n#제목아님"
+    },
+    {
+     "type": "heading",
+     "level": 2,
+     "text": "두 칸"
+    }
+   ]
+  },
+  {
+   "name": "heading keeps inline markup as text and trailing hashes",
+   "text": "### **굵은** 제목 ###",
+   "blocks": [
+    {
+     "type": "heading",
+     "level": 3,
+     "text": "**굵은** 제목 ###"
+    }
+   ]
+  },
+  {
+   "name": "rule variants",
+   "text": "---\n***\n___\n- - -\n* * *\n--\n-*-",
+   "blocks": [
+    {
+     "type": "rule"
+    },
+    {
+     "type": "rule"
+    },
+    {
+     "type": "rule"
+    },
+    {
+     "type": "rule"
+    },
+    {
+     "type": "rule"
+    },
+    {
+     "type": "paragraph",
+     "text": "--\n-*-"
+    }
+   ]
+  },
+  {
+   "name": "CRLF line endings",
+   "text": "# 제목\r\n본문\r\n\r\n- 항목",
+   "blocks": [
+    {
+     "type": "heading",
+     "level": 1,
+     "text": "제목"
+    },
+    {
+     "type": "paragraph",
+     "text": "본문"
+    },
+    {
+     "type": "list",
+     "items": [
+      {
+       "level": 0,
+       "marker": null,
+       "text": "항목"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "received HTML, script and image syntax come back as text only",
+   "text": "<img src=x onerror=alert(1)> [눌러](javascript:alert(1)) ![p](https://evil/x.png) <script>x</script>",
+   "blocks": [
+    {
+     "type": "paragraph",
+     "text": "<img src=x onerror=alert(1)> [눌러](javascript:alert(1)) ![p](https://evil/x.png) <script>x</script>"
+    }
+   ]
+  },
+  {
+   "name": "HTML inside heading and table cells is text",
+   "text": "# <b>t</b>\n| <i>h</i> |\n|---|\n| <u>c</u> |",
+   "blocks": [
+    {
+     "type": "heading",
+     "level": 1,
+     "text": "<b>t</b>"
+    },
+    {
+     "type": "table",
+     "header": [
+      "<i>h</i>"
+     ],
+     "rows": [
+      [
+       "<u>c</u>"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "agent report: heading, bold label list, inline code, link",
+   "text": "## family-messenger#888 CI 통과\n\n### 확정 사실\n- **대상**: [family-messenger#888](https://github.com/jinwon-int/family-messenger/pull/888), head `4f55dd77`\n- **체크**: 14개 모두 성공\n\n### 리스크\n- 화면 확인은 아직입니다.\n\n**[답변 필요]** 여러 개 선택 가능\n1. (권장) `#888 리뷰·머지 승인`\n2. (권장) 원격 브랜치 삭제",
+   "blocks": [
+    {
+     "type": "heading",
+     "level": 2,
+     "text": "family-messenger#888 CI 통과"
+    },
+    {
+     "type": "heading",
+     "level": 3,
+     "text": "확정 사실"
+    },
+    {
+     "type": "list",
+     "items": [
+      {
+       "level": 0,
+       "marker": null,
+       "text": "**대상**: [family-messenger#888](https://github.com/jinwon-int/family-messenger/pull/888), head `4f55dd77`"
+      },
+      {
+       "level": 0,
+       "marker": null,
+       "text": "**체크**: 14개 모두 성공"
+      }
+     ]
+    },
+    {
+     "type": "heading",
+     "level": 3,
+     "text": "리스크"
+    },
+    {
+     "type": "list",
+     "items": [
+      {
+       "level": 0,
+       "marker": null,
+       "text": "화면 확인은 아직입니다."
+      }
+     ]
+    },
+    {
+     "type": "paragraph",
+     "text": "**[답변 필요]** 여러 개 선택 가능"
+    },
+    {
+     "type": "list",
+     "items": [
+      {
+       "level": 0,
+       "marker": "1.",
+       "text": "(권장) `#888 리뷰·머지 승인`"
+      },
+      {
+       "level": 0,
+       "marker": "2.",
+       "text": "(권장) 원격 브랜치 삭제"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "inline": [
+  {
+   "name": "code, strong, em, del, underscore strong",
+   "text": "a **b** `c` *d* ~~e~~ __f__",
+   "spans": [
+    {
+     "style": "text",
+     "text": "a "
+    },
+    {
+     "style": "strong",
+     "text": "b"
+    },
+    {
+     "style": "text",
+     "text": " "
+    },
+    {
+     "style": "code",
+     "text": "c"
+    },
+    {
+     "style": "text",
+     "text": " "
+    },
+    {
+     "style": "em",
+     "text": "d"
+    },
+    {
+     "style": "text",
+     "text": " "
+    },
+    {
+     "style": "del",
+     "text": "e"
+    },
+    {
+     "style": "text",
+     "text": " "
+    },
+    {
+     "style": "strong",
+     "text": "f"
+    }
+   ]
+  },
+  {
+   "name": "code content is not interpreted",
+   "text": "`**x**`",
+   "spans": [
+    {
+     "style": "code",
+     "text": "**x**"
+    }
+   ]
+  },
+  {
+   "name": "nested markup: only the outer layer",
+   "text": "**`test-rs`라는 방이 없습니다.**",
+   "spans": [
+    {
+     "style": "strong",
+     "text": "`test-rs`라는 방이 없습니다."
+    }
+   ]
+  },
+  {
+   "name": "the inner layer splits again with the same function",
+   "text": "`test-rs`라는 방이 없습니다.",
+   "spans": [
+    {
+     "style": "code",
+     "text": "test-rs"
+    },
+    {
+     "style": "text",
+     "text": "라는 방이 없습니다."
+    }
+   ]
+  },
+  {
+   "name": "double backticks hold a backtick, one pad space each side is dropped",
+   "text": "`` a`b ``",
+   "spans": [
+    {
+     "style": "code",
+     "text": "a`b"
+    }
+   ]
+  },
+  {
+   "name": "spaces-only code keeps its spaces",
+   "text": "`  `",
+   "spans": [
+    {
+     "style": "code",
+     "text": "  "
+    }
+   ]
+  },
+  {
+   "name": "code pad is dropped only when both sides have it",
+   "text": "` a` `b ` ` c `",
+   "spans": [
+    {
+     "style": "code",
+     "text": " a"
+    },
+    {
+     "style": "text",
+     "text": " "
+    },
+    {
+     "style": "code",
+     "text": "b "
+    },
+    {
+     "style": "text",
+     "text": " "
+    },
+    {
+     "style": "code",
+     "text": "c"
+    }
+   ]
+  },
+  {
+   "name": "multiplication is text",
+   "text": "2 * 3 * 4",
+   "spans": [
+    {
+     "style": "text",
+     "text": "2 * 3 * 4"
+    }
+   ]
+  },
+  {
+   "name": "snake_case is text",
+   "text": "file_name_here",
+   "spans": [
+    {
+     "style": "text",
+     "text": "file_name_here"
+    }
+   ]
+  },
+  {
+   "name": "unclosed strong is text",
+   "text": "**열기만",
+   "spans": [
+    {
+     "style": "text",
+     "text": "**열기만"
+    }
+   ]
+  },
+  {
+   "name": "lone star is text",
+   "text": "별표 하나 *",
+   "spans": [
+    {
+     "style": "text",
+     "text": "별표 하나 *"
+    }
+   ]
+  },
+  {
+   "name": "unclosed backtick is text",
+   "text": "`닫힘없음",
+   "spans": [
+    {
+     "style": "text",
+     "text": "`닫힘없음"
+    }
+   ]
+  },
+  {
+   "name": "tildes around spaces are text",
+   "text": "~~ 공백 ~~",
+   "spans": [
+    {
+     "style": "text",
+     "text": "~~ 공백 ~~"
+    }
+   ]
+  },
+  {
+   "name": "dunder name is strong (known quirk, same on every app)",
+   "text": "__init__.py",
+   "spans": [
+    {
+     "style": "strong",
+     "text": "init"
+    },
+    {
+     "style": "text",
+     "text": ".py"
+    }
+   ]
+  },
+  {
+   "name": "empty",
+   "text": "",
+   "spans": []
+  },
+  {
+   "name": "triple star: strong inside literal stars",
+   "text": "***both***",
+   "spans": [
+    {
+     "style": "text",
+     "text": "*"
+    },
+    {
+     "style": "strong",
+     "text": "both"
+    },
+    {
+     "style": "text",
+     "text": "*"
+    }
+   ]
+  },
+  {
+   "name": "strong may span lines, em may not",
+   "text": "**첫 줄\n둘째 줄** *첫 줄\n둘째 줄*",
+   "spans": [
+    {
+     "style": "strong",
+     "text": "첫 줄\n둘째 줄"
+    },
+    {
+     "style": "text",
+     "text": " *첫 줄\n둘째 줄*"
+    }
+   ]
+  },
+  {
+   "name": "opening marker followed by a space is text",
+   "text": "** x** * y* ~~ z~~ __ w__",
+   "spans": [
+    {
+     "style": "text",
+     "text": "** x** * y* ~~ z~~ __ w__"
+    }
+   ]
+  },
+  {
+   "name": "ideographic and no-break spaces count as spaces (JS \\s)",
+   "text": "**　x** * y* ~~z　~~ **a　b**",
+   "spans": [
+    {
+     "style": "text",
+     "text": "**　x** * y* ~~z　~~ "
+    },
+    {
+     "style": "strong",
+     "text": "a　b"
+    }
+   ]
+  },
+  {
+   "name": "em stops at the first closing star",
+   "text": "*a* b*",
+   "spans": [
+    {
+     "style": "em",
+     "text": "a"
+    },
+    {
+     "style": "text",
+     "text": " b*"
+    }
+   ]
+  },
+  {
+   "name": "strong directly followed by text",
+   "text": "**굵게**만 그리고 *기울임*도",
+   "spans": [
+    {
+     "style": "strong",
+     "text": "굵게"
+    },
+    {
+     "style": "text",
+     "text": "만 그리고 "
+    },
+    {
+     "style": "em",
+     "text": "기울임"
+    },
+    {
+     "style": "text",
+     "text": "도"
+    }
+   ]
+  },
+  {
+   "name": "del and strong side by side",
+   "text": "~~지움~~**굵게**",
+   "spans": [
+    {
+     "style": "del",
+     "text": "지움"
+    },
+    {
+     "style": "strong",
+     "text": "굵게"
+    }
+   ]
+  },
+  {
+   "name": "backtick run longer than the opener is not a closer",
+   "text": "`a`` b`",
+   "spans": [
+    {
+     "style": "code",
+     "text": "a`` b"
+    }
+   ]
+  },
+  {
+   "name": "a longer backtick opener without a closer is text, the shorter run inside still opens code",
+   "text": "``a` ```b`",
+   "spans": [
+    {
+     "style": "text",
+     "text": "`"
+    },
+    {
+     "style": "code",
+     "text": "a"
+    },
+    {
+     "style": "text",
+     "text": " ``"
+    },
+    {
+     "style": "code",
+     "text": "b"
+    }
+   ]
+  },
+  {
+   "name": "strong closes at the nearest closer; an opener after a space is not a closer",
+   "text": "**a **b** c**",
+   "spans": [
+    {
+     "style": "strong",
+     "text": "a **b"
+    },
+    {
+     "style": "text",
+     "text": " c**"
+    }
+   ]
+  },
+  {
+   "name": "strong closer right after the first one starts a new span",
+   "text": "**a**b**c**",
+   "spans": [
+    {
+     "style": "strong",
+     "text": "a"
+    },
+    {
+     "style": "text",
+     "text": "b"
+    },
+    {
+     "style": "strong",
+     "text": "c"
+    }
+   ]
+  },
+  {
+   "name": "a closer after an ideographic space is not a closer",
+   "text": "**a　**b**",
+   "spans": [
+    {
+     "style": "strong",
+     "text": "a　**b"
+    }
+   ]
+  },
+  {
+   "name": "em is not closed by a double star",
+   "text": "*a** *b*",
+   "spans": [
+    {
+     "style": "text",
+     "text": "*a** "
+    },
+    {
+     "style": "em",
+     "text": "b"
+    }
+   ]
+  },
+  {
+   "name": "del with a trailing tilde",
+   "text": "~~a~~~ ~~~b~~",
+   "spans": [
+    {
+     "style": "del",
+     "text": "a"
+    },
+    {
+     "style": "text",
+     "text": "~ ~"
+    },
+    {
+     "style": "del",
+     "text": "b"
+    }
+   ]
+  },
+  {
+   "name": "underscore strong inside words",
+   "text": "a__b__c __d_e__",
+   "spans": [
+    {
+     "style": "text",
+     "text": "a"
+    },
+    {
+     "style": "strong",
+     "text": "b"
+    },
+    {
+     "style": "text",
+     "text": "c "
+    },
+    {
+     "style": "strong",
+     "text": "d_e"
+    }
+   ]
+  },
+  {
+   "name": "markers at the very end",
+   "text": "a** b__ c~~ d* e`",
+   "spans": [
+    {
+     "style": "text",
+     "text": "a** b__ c~~ d* e`"
+    }
+   ]
+  },
+  {
+   "name": "link: text and href",
+   "text": "[#825](https://github.com/jinwon-int/family-messenger/pull/825) 머지",
+   "spans": [
+    {
+     "style": "link",
+     "text": "#825",
+     "href": "https://github.com/jinwon-int/family-messenger/pull/825"
+    },
+    {
+     "style": "text",
+     "text": " 머지"
+    }
+   ]
+  },
+  {
+   "name": "link: one level of parentheses in the address",
+   "text": "[위키](https://ko.wikipedia.org/wiki/Foo_(bar))",
+   "spans": [
+    {
+     "style": "link",
+     "text": "위키",
+     "href": "https://ko.wikipedia.org/wiki/Foo_(bar)"
+    }
+   ]
+  },
+  {
+   "name": "link: userinfo is allowed",
+   "text": "[id](https://id@a.example/x)",
+   "spans": [
+    {
+     "style": "link",
+     "text": "id",
+     "href": "https://id@a.example/x"
+    }
+   ]
+  },
+  {
+   "name": "link: http and port are allowed",
+   "text": "[내부](http://100.64.0.1:8080/x)",
+   "spans": [
+    {
+     "style": "link",
+     "text": "내부",
+     "href": "http://100.64.0.1:8080/x"
+    }
+   ]
+  },
+  {
+   "name": "link: javascript scheme is text",
+   "text": "[a](javascript:alert(1))",
+   "spans": [
+    {
+     "style": "text",
+     "text": "[a](javascript:alert(1))"
+    }
+   ]
+  },
+  {
+   "name": "link: image syntax is text",
+   "text": "![p](https://a.example/x.png)",
+   "spans": [
+    {
+     "style": "text",
+     "text": "![p](https://a.example/x.png)"
+    }
+   ]
+  },
+  {
+   "name": "link: relative address is text",
+   "text": "[a](/relative)",
+   "spans": [
+    {
+     "style": "text",
+     "text": "[a](/relative)"
+    }
+   ]
+  },
+  {
+   "name": "link: empty label is text",
+   "text": "[](https://a.example/x)",
+   "spans": [
+    {
+     "style": "text",
+     "text": "[](https://a.example/x)"
+    }
+   ]
+  },
+  {
+   "name": "link: label may not hold brackets or a newline",
+   "text": "[a[b]](https://a.example/x) [a\nb](https://a.example/y)",
+   "spans": [
+    {
+     "style": "text",
+     "text": "[a[b]](https://a.example/x) [a\nb](https://a.example/y)"
+    }
+   ]
+  },
+  {
+   "name": "link: a space in the address is text",
+   "text": "[a](https://a.example/x y)",
+   "spans": [
+    {
+     "style": "text",
+     "text": "[a](https://a.example/x y)"
+    }
+   ]
+  },
+  {
+   "name": "link inside strong stays in the strong text (outer layer only)",
+   "text": "**[보기](https://a.example/x) 확인**",
+   "spans": [
+    {
+     "style": "strong",
+     "text": "[보기](https://a.example/x) 확인"
+    }
+   ]
+  },
+  {
+   "name": "link label keeps its markup as text",
+   "text": "[**굵은** 글자](https://a.example/x)",
+   "spans": [
+    {
+     "style": "link",
+     "text": "**굵은** 글자",
+     "href": "https://a.example/x"
+    }
+   ]
+  },
+  {
+   "name": "a bare address is text here (the screen links it)",
+   "text": "그냥 https://a.example/x 주소",
+   "spans": [
+    {
+     "style": "text",
+     "text": "그냥 https://a.example/x 주소"
+    }
+   ]
+  },
+  {
+   "name": "hostile text has no markup spans",
+   "text": "<img src=x onerror=alert(1)> [눌러](javascript:alert(1)) ![p](https://evil/x.png) <script>x</script>",
+   "spans": [
+    {
+     "style": "text",
+     "text": "<img src=x onerror=alert(1)> [눌러](javascript:alert(1)) ![p](https://evil/x.png) <script>x</script>"
+    }
+   ]
+  },
+  {
+   "name": "hostile text inside strong is one strong span",
+   "text": "**<img src=x onerror=alert(1)> [눌러](javascript:alert(1)) ![p](https://evil/x.png) <script>x</script>**",
+   "spans": [
+    {
+     "style": "strong",
+     "text": "<img src=x onerror=alert(1)> [눌러](javascript:alert(1)) ![p](https://evil/x.png) <script>x</script>"
+    }
+   ]
+  }
+ ],
+ "has_markdown": [
+  {
+   "name": "greeting",
+   "text": "안녕하세요",
+   "expected": false
+  },
+  {
+   "name": "two plain lines",
+   "text": "두 줄\n대화",
+   "expected": false
+  },
+  {
+   "name": "arithmetic",
+   "text": "2 * 3 = 6",
+   "expected": false
+  },
+  {
+   "name": "a pipe",
+   "text": "a | b",
+   "expected": false
+  },
+  {
+   "name": "empty",
+   "text": "",
+   "expected": false
+  },
+  {
+   "name": "bare address",
+   "text": "그냥 https://a.example/x 주소",
+   "expected": false
+  },
+  {
+   "name": "hashtag",
+   "text": "#해시태그",
+   "expected": false
+  },
+  {
+   "name": "unclosed markers",
+   "text": "**열기만 `닫힘없음",
+   "expected": false
+  },
+  {
+   "name": "strong",
+   "text": "**굵게**",
+   "expected": true
+  },
+  {
+   "name": "list",
+   "text": "- 목록",
+   "expected": true
+  },
+  {
+   "name": "heading",
+   "text": "# 제목",
+   "expected": true
+  },
+  {
+   "name": "code fence",
+   "text": "```\ncode\n```",
+   "expected": true
+  },
+  {
+   "name": "inline code",
+   "text": "`x`",
+   "expected": true
+  },
+  {
+   "name": "table",
+   "text": "| a |\n|---|",
+   "expected": true
+  },
+  {
+   "name": "rule",
+   "text": "---",
+   "expected": true
+  },
+  {
+   "name": "quote",
+   "text": "> 인용",
+   "expected": true
+  },
+  {
+   "name": "link syntax",
+   "text": "보기 [여기](https://a.example/x)",
+   "expected": true
+  },
+  {
+   "name": "numbered list",
+   "text": "1. 하나",
+   "expected": true
+  },
+  {
+   "name": "second paragraph has markup",
+   "text": "평문\n\n그리고 *기울임*",
+   "expected": true
+  }
+ ]
+}

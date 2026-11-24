@@ -15,6 +15,8 @@ on:
       - "archive/native-mls/ios-ffi/**"
       - "archive/native-mls/host-core/**"
       - "archive/native-mls/android/**"
+      # 웹·iOS 와 같이 읽는 공유 벡터(agent-choices · agent-markdown · alert-refs …) — 벡터만 바뀌어도 Android JVM 테스트가 돌게.
+      - "archive/native-mls/tests/fixtures/**"
       - ".github/workflows/native-mls-android.yml"
 permissions:
   contents: read
