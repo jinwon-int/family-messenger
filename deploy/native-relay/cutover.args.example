@@ -24,6 +24,8 @@ https://relay.example.test/v2/health
 /opt/native-relay/hande
 --bump-seq
 1000
+# 복원 때 미소비 로비 키패키지 비우기는 기본으로 켜져 있다(#812). 끄려면 아래 줄의 '#'를 지운다.
+# --no-clear-lobby-keypackages
 --owner
 native-relay
 --cf-zone-id
