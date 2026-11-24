@@ -100,19 +100,19 @@ object ReplyQuote {
 
     /** 사람이 보는 글자 수(grapheme). */
     fun graphemeCount(s: String): Int {
-        val it = BreakIterator.getCharacterInstance()
-        it.setText(s)
+        val chars = BreakIterator.getCharacterInstance()
+        chars.setText(s)
         var n = 0
-        while (it.next() != BreakIterator.DONE) n++
+        while (chars.next() != BreakIterator.DONE) n++
         return n
     }
 
     private fun graphemePrefix(s: String, count: Int): String {
-        val it = BreakIterator.getCharacterInstance()
-        it.setText(s)
+        val chars = BreakIterator.getCharacterInstance()
+        chars.setText(s)
         var end = 0
-        repeat(count) {
-            val next = it.next()
+        for (i in 0 until count) {
+            val next = chars.next()
             if (next == BreakIterator.DONE) return s
             end = next
         }
