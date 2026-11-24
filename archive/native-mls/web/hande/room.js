@@ -700,6 +700,8 @@ export function createRoomSession({room, device, database, worker, relay, storag
     get joined() { return S.joined; },
     open, activate, connect, sync, create, publishKeyPackage, invite, remove, checkSend, send, sendAttachment, typing, markRead, setMuted,
     wipe, stop, registration, setPollInterval,
+    // #869: 기기가 체인에서 빠지면(403) 앱이 방별 폴링만 멈춘다 — 스토어·상태는 그대로, 재개는 connect().
+    pause: stopPolling,
     get pollMs() { return pollMs; },
   };
 }

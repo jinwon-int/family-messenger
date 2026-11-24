@@ -20,10 +20,13 @@ function frame(members) {
   const u32 = n => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n, true); return [...b]; };
   return [...u32(members.length), ...members.flatMap(id => { const name = utf8.encode(id); return [...u32(name.length), ...name, ...new Uint8Array(32).fill(1)]; })];
 }
-function memStorage() {
-  const m = new Map();
-  return {getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => { m.set(k, String(v)); }, removeItem: k => { m.delete(k); }};
+/** localStorage 처럼 저장된 키가 자기 속성으로 열거된다(Object.keys(storage) — app.js 의 「hande: 키 지우기」가 그렇게 읽는다). */
+class MemStorage {
+  getItem(k) { return Object.hasOwn(this, k) ? this[k] : null; }
+  setItem(k, v) { this[k] = String(v); }
+  removeItem(k) { delete this[k]; }
 }
+const memStorage = () => new MemStorage();
 const text = (seq, sender, body) => ({seq, sender, client: sender, kind: 'text', text: body, bytes: []});
 
 /**
@@ -107,13 +110,13 @@ function relayRoutes({listed, events = {}, enrolled = true}) {
 const said = (seq, body) => ({seq, device: 'owner-pc', kind: 'application', epoch: 1, bytes: b64(utf8.encode(body)), client_id: `owner-pc-${seq}`, created_at: 1700000100 + seq});
 
 /** startApp 을 띄운다. 화면은 calls(그린 순서)·shell()(마지막 renderShell 모델)로, 타이머는 걸린 것만 모아 둔다(돌리지 않음). */
-function launch(t, {dev, net, wide = true, perf}) {
+function launch(t, {dev, net, wide = true, perf, worker: workerOverride = null, idb = null}) {
   const timers = {intervals: [], timeouts: []};
   const listeners = {};   // window 에 건 리스너(탭·온라인 복귀 — sync-recovery.js)
   const globals = {
     window: {matchMedia: () => ({matches: wide}), addEventListener(name, fn) { listeners[name] = fn; }},
     document: {addEventListener() {}, removeEventListener() {}, visibilityState: 'visible'},
-    indexedDB: {databases: async () => [], deleteDatabase: () => ({})},
+    indexedDB: idb ?? {databases: async () => [], deleteDatabase: () => ({})},
     Worker: class {},
     setInterval: (fn, ms) => { timers.intervals.push({fn, ms}); return timers.intervals.length; }, clearInterval() {},
     setTimeout: (fn, ms) => { timers.timeouts.push({fn, ms}); return timers.timeouts.length; }, clearTimeout() {},
@@ -128,7 +131,7 @@ function launch(t, {dev, net, wide = true, perf}) {
   const calls = [];
   const ui = new Proxy({}, {get: (_, name) => (_root, model) => { calls.push({name, model}); return true; }});
   const root = {ownerDocument: globals.document, querySelector: () => null, querySelectorAll: () => []};
-  const worker = fakeWorker(dev.stores);
+  const worker = workerOverride ?? fakeWorker(dev.stores);
   let clock = 0;
   const app = startApp(root, {storage: dev.storage, fetch: net.fetch, now: () => (clock += 7), perf, ui, worker}).state;
   const shell = () => calls.findLast(c => c.name === 'renderShell')?.model ?? null;
@@ -461,4 +464,120 @@ test('#837 화면 배선: 말풍선 아래 전송 상태와 「다시 보내기�
   assert.match(ui, /entry\.state === 'sending' \|\| entry\.state === 'queued' \|\| entry\.state === 'failed'/);
   assert.match(ui, /const retrySend = sendState === 'failed' && onRetrySend/);
   assert.match(ui, /\(entry\) => liveProps\.get\(screen\)\?\.onRetrySend\?\.\(entry\)/);
+});
+
+// ---- #868 · #869: 폐기·예전 기기 ----
+
+/** 지우기가 실제로 끝나는 IndexedDB 대역(deleteDatabase 가 onsuccess 를 부른다) — 지운 이름을 모은다. */
+function resolvingIdb(names = []) {
+  const deleted = [];
+  return {deleted, databases: async () => names.map(name => ({name})),
+    deleteDatabase(name) { deleted.push(name); const r = {}; queueMicrotask(() => r.onsuccess?.()); return r; }};
+}
+const isPolling = R => R.session.state.timer != null;
+
+test('#869 실행 중 403 이면 방별 폴링과 /v2/watch 를 멈추고, 방 목록이 다시 오면 재개한다', async t => {
+  let enrolled = true;
+  const routes = relayRoutes({listed: ['family'], events: {family: []}});
+  const net = fakeRelay((method, path) => (!enrolled && path.startsWith('/v2/rooms?device=')) ? {status: 403, body: {error: 'device_not_allowed'}} : routes(method, path));
+  const h = launch(t, {dev: device([family()]), net});
+  await until(() => h.shell() && h.app.tick !== null, '대화 화면과 시작 마무리');
+  const R = h.app.rooms.get('family');
+  assert.ok(isPolling(R), '처음에는 방별 폴링이 돈다');
+  // 이 기기가 체인에서 빠졌다(폐기) — 다음 틱의 방 목록이 403.
+  enrolled = false;
+  const tick = h.timers.intervals[h.app.tick - 1].fn;
+  await tick();
+  await until(() => h.app.phase === 'enroll', '등록 화면');
+  assert.equal(h.app.syncSuspended, true);
+  assert.equal(isPolling(R), false, '방별 폴링 멈춤');
+  assert.equal(h.app.watchLoop?.running ?? false, false, '/v2/watch 루프 멈춤');
+  const eventsBefore = net.seen.filter(isEvents('family')).length;
+  // 탭 복귀(복귀 동기화)도 멈춘 방을 다시 깨우지 않는다.
+  h.fire('pageshow');
+  await sleep(20);
+  assert.equal(net.seen.filter(isEvents('family')).length, eventsBefore, '멈춘 동안 방 events 요청 없음');
+  // 다시 활성 — 방 목록이 돌아오면 이어서 돈다.
+  enrolled = true;
+  await tick();
+  await until(() => !h.app.syncSuspended && isPolling(R), '재개');
+  assert.ok(net.seen.filter(isEvents('family')).length > eventsBefore, '재개 뒤 방 sync');
+  assert.ok(h.app.logs.some(l => l.includes('방 동기화 멈춤')) && h.app.logs.some(l => l.includes('방 동기화 재개')));
+});
+
+test('#869 /v2/me 가 이 기기를 폐기로 알리면 「폐기됨」 화면 — 후보를 올리지 않고 그 뒤로 릴레이에 묻지 않는다', async t => {
+  const routes = relayRoutes({listed: [], events: {family: []}, enrolled: false});
+  const net = fakeRelay((method, path) => path === '/v2/me'
+    ? {status: 200, body: {subject: 'sub-1', policy_revision: 50, devices: [{device_id: ME, actor: 'mom', fingerprint: 'ab'.repeat(32), status: 'revoked', roles: []}]}}
+    : routes(method, path));
+  const h = launch(t, {dev: device([family()]), net});
+  await until(() => h.calls.findLast(c => c.name === 'renderEnroll')?.model.mode === 'revoked', '폐기 화면');
+  const model = h.calls.findLast(c => c.name === 'renderEnroll').model;
+  assert.equal(h.app.enroll.mode, 'revoked');
+  assert.equal(typeof model.onWipe, 'function', '「이 기기 지우기」는 남는다');
+  assert.ok(!net.seen.some(p => p.startsWith('POST /v2/devices/candidates')), '폐기된 ID 로 후보를 올리지 않는다');
+  const seen = net.seen.length;
+  await h.timers.intervals[h.app.tick - 1].fn();
+  await sleep(20);
+  assert.equal(net.seen.length, seen, '폐기 뒤 틱은 릴레이에 묻지 않는다');
+  assert.equal(isPolling(h.app.rooms.get('family')), false, '방별 폴링도 멈춤');
+});
+
+test('#869 409 device_exists 의 「(지문이 다름)」은 /v2/me 기록 지문이 실제로 다를 때만', async t => {
+  for (const [record, want] of [[null, null], ['ff'.repeat(32), 'fingerprint']]) {
+    const routes = relayRoutes({listed: [], events: {}, enrolled: false});
+    const devices = record ? [{device_id: ME, actor: 'mom', fingerprint: record, status: 'active', roles: []}] : [];
+    const net = fakeRelay((method, path) => {
+      if (path === '/v2/me') return {status: 200, body: {subject: 'sub-1', policy_revision: 7, devices}};
+      if (method === 'POST' && path === '/v2/devices/candidates') return {status: 409, body: {error: 'device_exists'}};
+      return routes(method, path);
+    });
+    const h = launch(t, {dev: device([]), net});
+    await until(() => h.calls.findLast(c => c.name === 'renderEnroll')?.model.mode === 'id-taken', `id-taken (${want})`);
+    const model = h.calls.findLast(c => c.name === 'renderEnroll').model;
+    assert.equal(model.takenReason, want);
+  }
+});
+
+test('#868 예전 기기 저장소를 열 수 없으면(legacy_unlock) 전용 문구와 「한데 저장소 지우고 새 기기로 시작」 — app.dev 없이 지운다', async t => {
+  const dev = device([family()]);
+  const base = fakeWorker(dev.stores);
+  let stopped = 0;
+  const worker = {...base, stop() { stopped++; },
+    async call(name, method, a) { return method === 'init_multi' ? {ok: false, stage: 'legacy_unlock'} : base.call(name, method, a); }};
+  const idb = resolvingIdb(['family-mls-synthetic-hande-family', 'family-mls-synthetic-hande-stray', 'other-app-db']);
+  const net = fakeRelay(relayRoutes({listed: ['family'], events: {family: []}}));
+  const h = launch(t, {dev, net, worker, idb});
+  await until(() => h.calls.at(-1)?.name === 'renderFatal', '시작 실패 화면');
+  const fatal = h.calls.at(-1).model;
+  assert.match(fatal.detail, /예전 기기 저장소를 열 수 없습니다/);
+  assert.doesNotMatch(fatal.detail, /PC 크롬에서 열어 주세요/, '브라우저 기능 안내가 아니다');
+  assert.match(fatal.detail, /\[init_multi 거부: legacy_unlock\]/);
+  assert.equal(typeof fatal.onWipe, 'function', 'app.dev 가 없어도 지우기 버튼');
+  assert.equal(fatal.wipeLabel, '이 브라우저의 한데 저장소 지우고 새 기기로 시작');
+  assert.ok(stopped >= 1, '지우기 전에 워커를 멈춘다(스토어를 쥔 채면 deleteDatabase 가 막힘)');
+  const before = JSON.parse(dev.storage.getItem('hande:identity')).device;
+  fatal.onWipe();
+  const sheet = h.calls.findLast(c => c.name === 'openConfirmSheet').model;
+  assert.equal(sheet.tone, 'danger');
+  await sheet.onConfirm();
+  for (const name of ['family-mls-synthetic-hande--identity', 'family-mls-synthetic-hande--lobby', 'family-mls-synthetic-hande-family',
+    'family-mls-synthetic-hande-family-history', 'family-mls-synthetic-hande-stray']) assert.ok(idb.deleted.includes(name), `${name} 지움`);
+  assert.ok(!idb.deleted.includes('other-app-db'), '한데 저장소가 아닌 DB 는 두기');
+  const after = JSON.parse(dev.storage.getItem('hande:identity'));
+  assert.notEqual(after.device, before, '새 기기 ID');
+  assert.equal(after.previous, before);
+  assert.equal(dev.storage.getItem('hande:passphrase'), null);
+  assert.equal(dev.storage.getItem(`hande:rooms:${ME}`), null, '방 목록 등 hande: 상태 지움');
+  assert.ok(net.seen.every(p => !p.startsWith('DELETE ')), '릴레이에는 아무것도 보내지 않는다');
+});
+
+test('#868 init_multi 와 상관없는 시작 실패에는 저장소 지우기 버튼을 내지 않는다(예전과 같다)', async t => {
+  const dev = device([family()]);
+  const base = fakeWorker(dev.stores);
+  const worker = {...base, async call(name, method, a) { if (method === 'unlock_cache') throw new Error('worker boot timeout'); return base.call(name, method, a); }};
+  const net = fakeRelay(relayRoutes({listed: ['family'], events: {family: []}}));
+  const h = launch(t, {dev, net, worker, idb: resolvingIdb()});
+  await until(() => h.calls.at(-1)?.name === 'renderFatal', '시작 실패 화면');
+  assert.equal(h.calls.at(-1).model.onWipe, null);
 });

@@ -333,6 +333,8 @@ export const strings = {
     title: '앱을 시작할 수 없습니다',
     retry: '다시 시도',
     wipe: '이 기기 지우기',
+    // #868: 신원·레거시 스토어를 열지 못해 app.dev 가 없을 때의 지우기(이 브라우저의 한데 저장소 전체).
+    wipeStores: '이 브라우저의 한데 저장소 지우고 새 기기로 시작',
   },
 
   enroll: {
@@ -357,7 +359,12 @@ export const strings = {
     waitingSibling: '다른 기기의 승인 대기 중',
     siblingExpires: (t) => `승인 요청 유효 ${t}까지 (만료 전에 자동 갱신)`,
     operatorDetails: '다른 기기가 없나요? 운영자 등록 정보',
-    idTaken: '이 기기 ID 는 체인에 이미 있습니다(지문이 다름). 기기 ID 는 다시 쓰지 않으니 「이 기기 지우기」로 새 ID 로 시작하세요.',
+    // #869: 「(지문이 다름)」은 /v2/me 의 기록 지문이 이 기기 지문과 실제로 다를 때만.
+    idTaken: '이 기기 ID 는 체인에 이미 있습니다. 기기 ID 는 다시 쓰지 않으니 「이 기기 지우기」로 새 ID 로 시작하세요.',
+    idTakenFingerprint: '이 기기 ID 는 체인에 이미 있습니다(지문이 다름). 기기 ID 는 다시 쓰지 않으니 「이 기기 지우기」로 새 ID 로 시작하세요.',
+    revoked: '이 기기는 폐기됐습니다. 폐기된 기기 ID 는 다시 승인되지 않으니 「이 기기 지우기」 뒤 새 기기로 등록하세요.',
+    // 폐기·ID 충돌: 승인을 기다리지 않는다(주기 확인·대기 점 없음).
+    notWaitingStopped: '승인을 기다리지 않습니다',
   },
 
   // 오른쪽 보관함 pane(#544 D, 패밀리챗과 같은 탭 2개): 「첨부」(모든 방 첨부 최신순) + 파일보관함 iframe(config.json 이 있을 때만).
@@ -614,6 +621,8 @@ export const strings = {
     title: '이 기기 지우기',
     warning: '이 기기는 새 기기 ID 와 새 지문을 갖게 됩니다. 되돌릴 수 없습니다.\n• 지금 기기 ID 는 다시 쓸 수 없습니다. 운영자가 옛 ID 를 폐기하고 새 ID 를 다시 등록해야 합니다.\n• 모든 대화방에 다시 초대받아야 합니다.\n• 이 기기의 대화 기록과 암호화 이력은 복구할 수 없습니다(다른 기기의 기록은 그대로입니다).\n계속할까요?',
     confirm: '지우고 새 기기로 시작',
+    storesTitle: '이 브라우저의 한데 저장소 지우기',
+    storesWarning: '이 브라우저에 남은 한데 저장소(신원·대화방·예전 기기 저장소)를 모두 지우고 새 기기 ID 로 시작합니다. 되돌릴 수 없습니다.\n• 이 브라우저의 대화 기록과 암호화 이력은 복구할 수 없습니다(다른 기기의 기록은 그대로입니다).\n• 새 기기로 등록 승인을 받고 대화방에 다시 초대받아야 합니다.\n계속할까요?',
     done: '지웠습니다. 새 기기로 시작한 뒤 등록 정보를 운영자에게 다시 전달하세요.',
     failed: (reason) => `지우지 못했습니다: ${reason}. 탭을 모두 닫은 뒤 다시 시도하세요.`,
   },
@@ -864,6 +873,8 @@ export const strings = {
     fatalTitle: '앱을 시작할 수 없습니다',
     storageUnavailable: (detail) => `기기 저장소를 열 수 없습니다: ${detail}`,
     workerUnavailable: '이 브라우저에서 암호화 워커를 시작하지 못했습니다(Web Worker · WebAssembly · IndexedDB 필요). PC 크롬에서 열어 주세요.',
+    // #868: init_multi 가 legacy_open·legacy_unlock·legacy_export 단계에서 거부 — 브라우저 기능이 아니라 예전 기기 저장소 문제.
+    legacyStoreUnavailable: '이 브라우저에 남은 예전 기기 저장소를 열 수 없습니다. 아래 「이 브라우저의 한데 저장소 지우고 새 기기로 시작」으로 새 기기 ID 로 시작할 수 있습니다(이 브라우저의 예전 대화 기록은 지워집니다).',
     subjectUnknown: '<운영자가 CF Access sub로 채움>',
     copied: '복사했습니다',
     copyFailed: '복사하지 못했습니다 — 직접 선택해 복사해 주세요',

@@ -81,6 +81,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     // 기기 셀프서비스(#574 PR 2b): /v2/me 본문(정책 revision·내 기기), 등록 화면 모드, 승인할 후보, 🔔 메모.
     me: null, meTick: 0,
     enroll: {mode: 'operator', nextPostAt: 0, expiresAt: null},
+    syncSuspended: false,   // #869: 403 동안 방별 폴링·/v2/watch 멈춤
+    fatalWipe: false,       // #868: 시작 실패(init_multi 거부) 화면에 저장소 지우기 버튼
     candidates: [], candidateRevision: null, dismissedCandidates: new Set(), notes: [],
   };
   const identity = createIdentityStore({storage});
@@ -184,13 +186,20 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     const ok = await R.session.setMuted(next);
     status(ok ? (next ? strings.chat.mutedDone : strings.chat.unmutedDone) : strings.chat.muteFailed, ok ? 'ok' : 'warn');
   }
+  /** #869: 409 device_exists 가 「같은 ID, 다른 지문」인지 — /v2/me 의 기록 지문이 이 기기 지문과 실제로 다를 때만 'fingerprint'. */
+  function takenReason(fingerprint) {
+    const norm = v => String(v ?? '').toLowerCase().replace(/[^0-9a-f]/g, '');
+    const theirs = norm(recordOf(app.me, app.device)?.fingerprint), mine = norm(fingerprint);
+    return theirs && mine && theirs !== mine ? 'fingerprint' : null;
+  }
   function toggleOrderEdit() { app.orderEditing = !app.orderEditing; render(); }
   function paint() {
     const D = app.dev?.state;
     if (app.phase === 'fatal') {
       // The last log lines ride along so a screenshot is a complete field report (no DevTools).
       const tail = app.logs.slice(-6).join('\n');
-      ui.renderFatal(root, {title: strings.app.fatalTitle, detail: app.fatal + (tail ? `\n\n최근 기록:\n${tail}` : '') + `\n기기 ${app.device ?? '?'}`, onRetry: () => location.reload(), onWipe: D ? confirmWipe : null});
+      ui.renderFatal(root, {title: strings.app.fatalTitle, detail: app.fatal + (tail ? `\n\n최근 기록:\n${tail}` : '') + `\n기기 ${app.device ?? '?'}`, onRetry: () => location.reload(),
+        onWipe: D ? confirmWipe : app.fatalWipe ? confirmWipeStores : null, wipeLabel: D ? null : strings.fatal.wipeStores});
       return;
     }
     if (app.phase === 'needsActor') { ui.renderActorSetup(root, {onSubmit: chooseActor, error: app.error, busy: false}); return; }
@@ -199,7 +208,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       const reg = app.dev.registration(app.subject);
       ui.renderEnroll(root, {deviceId: app.device, actor: app.actor, fingerprint: D.fingerprint, subject: app.subject,
         registrationJson: JSON.stringify(reg, null, 1), waiting: true, lastCheckedAt: app.lastCheckedAt ?? null,
-        mode: app.enroll.mode, expiresAt: app.enroll.expiresAt,
+        mode: app.enroll.mode, expiresAt: app.enroll.expiresAt, takenReason: takenReason(D.fingerprint),
         onCopy: () => copy(JSON.stringify(reg, null, 1)), onCheck: () => refresh().then(render),
         onOpenApprove: null, onWipe: confirmWipe, error: app.error});
       return;
@@ -425,6 +434,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     app.actor = id.actor; app.device = id.device;
     app.phase = 'starting'; app.message = strings.app.deriving; render();
     refreshMe().then(render);
+    let dev = null;
     // 렌더는 기다리지 않는다 — 폴백으로 먼저 그리고, v2 목록이 오면 다시 그린다(타임라인 스크롤 규칙은 updateTimeline 그대로).
     previewSites.load().then(changed => { if (changed) { logLine(`미리보기 사이트 ${previewSites.current.sites.length}곳(v2)`); render(); } });
     try {
@@ -432,7 +442,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       const legacy = {database: databaseFor(app.defaultRoom), room: app.defaultRoom};
       const legacyExists = await dbExists(legacy.database);
       logLine(`시작: 기기 ${app.device}, 레거시 DB ${legacy.database} ${legacyExists ? '있음' : '없음'}, 신원 DB 마커 ${storage.getItem(markerKey()) !== null ? '있음' : '없음'}`);
-      let dev = createDevice({device: app.device, worker, relay, storage, on: {log: logLine}});
+      dev = createDevice({device: app.device, worker, relay, storage, on: {log: logLine}});
       let opened;
       try {
         opened = await dev.start({passphrase: identity.passphrase(), identityDatabase: IDENTITY_DATABASE, legacy, unlockCache: PASSPHRASE_IS_GENERATED});
@@ -515,11 +525,20 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
           onAlive: () => { app.watchAliveAt = clock(true); render(); },
           log: logLine,
         });
-        app.watchLoop.start();
+        if (!app.syncSuspended) app.watchLoop.start();   // #869: 첫 refresh 가 403 이었으면 재개 때 시작한다
       }
       render();
     } catch (error) {
-      fatal((/worker|boot|init_multi/.test(error.message) ? strings.app.workerUnavailable : strings.app.storageUnavailable(error.message)) + ` [${error.message}]`);
+      // #868: 신원·레거시 스토어를 열지 못해 멈추면(init_multi 거부) app.dev 가 없어 「이 기기 지우기」도 없다 — 다시 시도해도
+      // 같은 레거시를 다시 넘기므로 되풀이된다. 이 브라우저의 한데 저장소를 지우고 새 기기 ID 로 시작하는 길을 따로 준다.
+      // legacy_* 단계는 브라우저 기능 문제가 아니라 예전 기기 저장소를 열 수 없는 것이라 문구를 나눈다.
+      const refusedInit = /^init_multi 거부/.test(error.message);
+      const stage = error.stage ?? (/^init_multi 거부: (\S+)/.exec(error.message)?.[1] ?? null);
+      app.fatalWipe = refusedInit;
+      if (refusedInit) { try { dev?.stop(); } catch (_) { /* 워커가 스토어를 쥐고 있으면 지우기(deleteDatabase)가 막힌다 */ } }
+      const lead = refusedInit && /^legacy_/.test(stage ?? '') ? strings.app.legacyStoreUnavailable
+        : /worker|boot|init_multi/.test(error.message) ? strings.app.workerUnavailable : strings.app.storageUnavailable(error.message);
+      fatal(lead + ` [${error.message}]`);
     }
   }
   /**
@@ -530,6 +549,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   let refreshing = false, connecting = false;   // connecting(#766 B): 저장분으로 먼저 그린 뒤 방별 첫 sync 가 도는 동안
   async function refresh() {
     if (refreshing || connecting || !app.dev?.state.started) return;
+    // #869: 체인이 이 기기를 폐기했다 — 다시 승인될 수 없으니 릴레이에 더 묻지 않는다(「이 기기 지우기」만 남는다).
+    if (app.enroll.mode === 'revoked') { render(); return; }
     refreshing = true;
     try {
       const meDue = app.meTick++ % ME_EVERY_TICKS === 0;
@@ -541,10 +562,13 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
       if (listed === null) {
         // 403: not on the chain yet — post this device into the relay's candidate mailbox for a sibling to approve
         // (#574), or keep waiting for the operator. Returns the rooms list once the chain carries this device.
+        // #869: 그동안 열린 방들의 폴링과 /v2/watch 는 멈춘다 — 폐기된 기기가 방마다 거부당하는 요청을 쏟지 않게.
+        suspendRoomSync('체인에 활성 기기가 아님(403)');
         listed = await enrollTick(!meDue);
         if (!Array.isArray(listed)) { render(); return; }
       }
       if (Array.isArray(listed)) {
+        await resumeRoomSync();
         app.relayRooms = new Set(listed.filter(r => r.member && ROOM.test(r.room)).map(r => r.room));
         const fresh = listed.filter(r => r.member && !r.closed && ROOM.test(r.room) && !app.rooms.has(r.room)).map(r => r.room);
         await openRoomsLimited(fresh, roomId => ensureRoom(roomId),
@@ -580,6 +604,24 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     } catch (error) { logLine(`/v2/me 실패: ${error.message}`); }
   }
   /**
+   * #869: 실행 중에 403(체인에 활성 기기 아님 — 폐기·미등록)이 오면 열린 방의 폴링과 기기 단위 /v2/watch 를 멈춘다. 방 스토어와
+   * 페이지 상태는 그대로 두고, 다시 활성이 되면(방 목록이 돌아오면) resumeRoomSync 가 방마다 connect()(첫 sync + 폴링)로 잇는다.
+   */
+  function suspendRoomSync(why) {
+    if (app.syncSuspended) return;
+    app.syncSuspended = true;
+    app.watchLoop?.stop();
+    for (const R of app.rooms.values()) R.session.pause();
+    logLine(`방 동기화 멈춤 — ${why}`);
+  }
+  async function resumeRoomSync() {
+    if (!app.syncSuspended) return;
+    app.syncSuspended = false;
+    logLine('방 동기화 재개 — 체인에 이 기기가 활성');
+    await openRoomsLimited([...app.rooms.values()], R => R.session.connect());
+    app.watchLoop?.start();
+  }
+  /**
    * Enrollment tick on the 403 path. Refreshes /v2/me (unless this tick already did) — when the chain now lists this
    * device as active, re-asks the rooms list and hands it back so the same refresh continues into the ready phase.
    * Otherwise (re-)posts the candidate: first time, and again ~5 min before the 10-min TTL runs out. 404 → the relay has
@@ -589,7 +631,14 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   async function enrollTick(refreshMeFirst) {
     const E = app.enroll, now = Date.now();
     if (refreshMeFirst) await refreshMe();
-    if (recordOf(app.me, app.device)?.status === 'active') {
+    const mine = recordOf(app.me, app.device);
+    if (mine?.status === 'revoked') {
+      // #869: 폐기된 기기 ID 는 다시 승인되지 않는다 — 후보를 올리지 않고 「승인 대기」·주기 확인도 하지 않는다.
+      if (E.mode !== 'revoked') logLine('이 기기는 체인에서 폐기됨 — 후보 게시·승인 대기를 멈춘다(「이 기기 지우기」 뒤 새로 등록)');
+      E.mode = 'revoked'; E.expiresAt = null; E.nextPostAt = Infinity;
+      return null;
+    }
+    if (mine?.status === 'active') {
       try {
         const listed = await app.dev.rooms();
         if (Array.isArray(listed)) { logLine('체인에 이 기기가 올라왔다 — 대화 화면으로'); E.mode = 'operator'; E.expiresAt = null; return listed; }
@@ -811,7 +860,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
     // replenished only after the next adopted Welcome — 15 h later on 2026-10-30. Top up on every return.
     app.lobbyDue = true;
     try { await refresh(); } catch (_) { /* refresh 가 자체 로그를 남긴다 */ }
-    await Promise.all([...app.rooms.values()].map(R => R.session.sync({quiet: true}).catch(() => {})));
+    if (!app.syncSuspended) await Promise.all([...app.rooms.values()].map(R => R.session.sync({quiet: true}).catch(() => {})));
     render();
   }
   async function discoverLobbyWelcomes() {
@@ -1049,6 +1098,28 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   function confirmWipe() {
     ui.openConfirmSheet(root, {title: strings.wipe?.title ?? '이 기기 지우기', body: strings.wipe?.warning ?? '', confirmLabel: strings.wipe?.confirm ?? '지우기', tone: 'danger',
       onConfirm: wipeDevice, onClose: () => {}});
+  }
+  /** #868: 시작 실패 화면(app.dev 없음)의 「이 브라우저의 한데 저장소 지우고 새 기기로 시작」 — 확인 창을 거친다. */
+  function confirmWipeStores() {
+    ui.openConfirmSheet(root, {title: strings.wipe.storesTitle, body: strings.wipe.storesWarning, confirmLabel: strings.wipe.confirm, tone: 'danger',
+      onConfirm: wipeLocalStores, onClose: () => {}});
+  }
+  /**
+   * #868: 신원·로비 스토어, 기본 방(레거시) 저장소, 알려진 방 저장소, 이름 규칙에 맞는 나머지 한데 저장소를 지우고 새 기기 ID 로
+   * 돌린 뒤 다시 연다. 릴레이에는 아무것도 보내지 않는다(이 기기 ID 는 체인에서 이미 폐기됐거나 다시 쓰지 않는다).
+   */
+  async function wipeLocalStores() {
+    try {
+      await wipeIdentityStores();
+      const rooms = new Set([...readKnown(), app.defaultRoom].filter(r => ROOM.test(r)));
+      for (const r of rooms) { const db = databaseFor(r); for (const name of [db, `${db}-history`]) await deleteDb(name); }
+      try { for (const d of await indexedDB.databases()) if (d?.name?.startsWith('family-mls-synthetic-hande-')) await deleteDb(d.name); } catch (_) { /* databases() 없는 브라우저: 위 목록만 */ }
+      for (const k of Object.keys(storage)) if (k.startsWith('hande:') && k !== 'hande:identity' && k !== 'hande:theme') storage.removeItem(k);
+      const next = identity.rotate(); identity.forgetPassphrase();
+      logLine(`이 브라우저의 한데 저장소를 지움 — 다음 시작은 새 기기 ID ${next?.device ?? '?'}`);
+      status(strings.room.wipeDone(next?.device ?? '?'), 'warn');
+      setTimeout(() => location.reload(), 1500);
+    } catch (error) { status(error.message, 'danger'); }
   }
   /** 이 기기 지우기 (iOS §9-5): every store of this identity, the lobby keys on the relay, local state. */
   async function wipeDevice() {
