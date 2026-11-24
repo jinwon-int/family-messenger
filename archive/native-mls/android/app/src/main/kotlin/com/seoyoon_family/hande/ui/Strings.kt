@@ -170,6 +170,11 @@ object Strings {
     const val fileV2Invalid = "⚠ 첨부 정보가 올바르지 않아 열 수 없음"
     // alert-refs-v1: 플릿 알림의 `#번호` 를 눌렀는데 원래 알림이 이 화면에 없다(웹·iOS 와 같은 문구).
     const val alertRefMissing = "원래 알림이 이 화면에 없어요"
+    // #880 말풍선 답장(iOS Strings+Copy 와 같은 문구).
+    const val replyCancel = "답장 취소"
+    fun replyingTo(name: String): String = if (name.isEmpty()) "답장" else "${name}에게 답장"
+    const val replyQuoteOpenHint = "누르면 원래 글로 이동"
+    const val replyTargetMissing = "원래 글이 지금 불러온 대화에 없어요. 위로 올려 이전 대화를 불러온 뒤 다시 눌러 보세요."
 
     const val composerPlaceholder = "이야기 나누기…"
     const val sendButton = "보내기"
