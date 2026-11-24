@@ -323,6 +323,38 @@ public struct AgentChoices: Equatable {
         return result
     }
 
+    /// 방 목록 「답변 필요」(#870, 규격 §7 — 공유 벡터 `roomList`, 웹 `roomAnswerNeeded` 와 같은 답)의 요약.
+    public struct RoomAnswer: Equatable {
+        public let mode: Mode
+        /// 선택지 개수.
+        public let count: Int
+        /// 대표 항목 = 첫 권장 번호(`recommendedNumbers`), 없으면 1번.
+        public let number: Int
+        /// 대표 항목 라벨(§1.6 정리본 — 「(권장)」 접두 포함).
+        public let label: String
+
+        public init(mode: Mode, count: Int, number: Int, label: String) {
+            self.mode = mode
+            self.count = count
+            self.number = number
+            self.label = label
+        }
+    }
+
+    /// 방의 마지막 저장 메시지(글·첨부, 시스템 줄·복호화 실패 제외)의 카드가 `open` 이면 그 요약, 아니면 nil.
+    /// `open` 은 마지막 글에만 생기므로 마지막 글 하나만 본다(`cards` 와 같은 판정). 오너가 답하면 다음 글이 생겨 nil 이 된다.
+    public static func roomAnswer(_ records: [MessageRecord], roster: AgentRoster, myDevice: DeviceID,
+                                  serviceActors: Set<String> = []) -> RoomAnswer? {
+        guard let last = records.last(where: { $0.kind == .text || $0.kind.isFile }),
+              let card = cards([last], roster: roster, myDevice: myDevice, serviceActors: serviceActors)[last.seq],
+              card.state == .open,
+              let first = card.choices.items.first else { return nil }
+        let choices = card.choices
+        let number = choices.recommendedNumbers.first ?? first.number
+        let item = choices.items.first { $0.number == number } ?? first
+        return RoomAnswer(mode: choices.mode, count: choices.items.count, number: item.number, label: item.label)
+    }
+
     /// 선택지 글 seq → 상태(`cards` 의 상태만).
     public static func states(_ records: [MessageRecord], roster: AgentRoster, myDevice: DeviceID,
                               serviceActors: Set<String> = []) -> [Int64: State] {
