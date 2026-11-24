@@ -225,6 +225,7 @@ import com.seoyoon_family.hande.ui.theme.SectionHeader
 import com.seoyoon_family.hande.ui.theme.SectionRow
 import com.seoyoon_family.hande.ui.theme.StepBar
 import com.seoyoon_family.hande.ui.theme.WarnBox
+import com.seoyoon_family.hande.ui.theme.fixedSp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -853,6 +854,19 @@ private fun Pill(text: String, color: Color, fill: Color) {
     Text(text, Modifier.clip(CircleShape).background(fill).padding(horizontal = 8.dp, vertical = 3.dp), color = color, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
 }
 
+/**
+ * 대화 목록 행의 알약(「새 글」·「답변 필요」): 면 색 + 12 굵은 글자 한 줄.
+ * 높이를 20dp 로 고정하면 시스템 글자 크기를 키운 기기(예: 1.3배)에서 글자가 20dp 를 넘어 아래가 잘린다 —
+ * 20dp 는 **최소** 높이로만 두고 글자에 맞춰 자라게 한다. 모서리는 높이의 절반(`CircleShape`)이라 자라도 알약 모양이다.
+ */
+@Composable
+private fun ListPill(label: String, fill: Color, text: Color) {
+    Box(
+        Modifier.heightIn(min = 20.dp).clip(CircleShape).background(fill).padding(horizontal = 7.dp, vertical = 1.dp),
+        contentAlignment = Alignment.Center,
+    ) { Text(label, color = text, fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false) }
+}
+
 /** 「내 기기」(#574 E5): 체인의 내 기기 전부(이 기기 먼저) — 상태·등록 기기 표시·지문, 허용될 때만 부여/해제 링크. 폐기(revoke)는 Android 에 API 가 없어 없다. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1203,13 +1217,10 @@ private fun RoomRow(r: RoomUi, highlighted: Boolean = false, onOpen: () -> Unit)
                     modifier = Modifier.weight(1f, fill = false),
                 )
                 SeatDots(r.messages)
-                // #870(AGENT-CHOICES §7): 마지막 글의 [답변 필요] 카드가 열린 방 — 「새 글」 알약과 같은 치수(20dp · 반경 10 · 12 굵게), 에이전트 색 면.
+                // #870(AGENT-CHOICES §7): 마지막 글의 [답변 필요] 카드가 열린 방 — 「새 글」 알약과 같은 모양(`ListPill`), 에이전트 색 면.
                 if (slot == RoomListSlot.Kind.ANSWER) {
                     Spacer(Modifier.width(6.dp))
-                    Box(
-                        Modifier.height(20.dp).clip(RoundedCornerShape(10.dp)).background(colors.agentText).padding(horizontal = 7.dp),
-                        contentAlignment = Alignment.Center,
-                    ) { Text(Strings.answerNeededPill, color = colors.bgTop, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1) }
+                    ListPill(Strings.answerNeededPill, fill = colors.agentText, text = colors.bgTop)
                 }
             }
             Spacer(Modifier.height(3.dp))
@@ -1235,15 +1246,12 @@ private fun RoomRow(r: RoomUi, highlighted: Boolean = false, onOpen: () -> Unit)
                 modifier = if (answerShown) Modifier.semantics { contentDescription = Strings.answerNeededA11y(answer!!) } else Modifier,
             )
         }
-        // 안 읽음(#571 후속): 밤 = 주황 점 하나 + 빛남(개수 없음 — 글자는 접근성 문구로만) · 낮불 = 먹 알약 「새 글」(20dp · 반경 10 · 종이 12 굵게).
+        // 안 읽음(#571 후속): 밤 = 주황 점 하나 + 빛남(개수 없음 — 글자는 접근성 문구로만) · 낮불 = 먹 알약 「새 글」(`ListPill` — 최소 20dp · 종이 12 굵게).
         // 같은 사람의 다른 기기(PC 웹·iPhone)에서 읽으면 다음 poll 에 꺼진다.
         if (r.unread) {
             Spacer(Modifier.width(8.dp))
             if (day) {
-                Box(
-                    Modifier.height(20.dp).clip(RoundedCornerShape(10.dp)).background(colors.ink).padding(horizontal = 7.dp),
-                    contentAlignment = Alignment.Center,
-                ) { Text(Strings.newPostPill, color = colors.bgTop, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+                ListPill(Strings.newPostPill, fill = colors.ink, text = colors.bgTop)
             } else {
                 Box(
                     Modifier
@@ -2246,7 +2254,7 @@ private fun AgentChoicesCard(
                             .clip(RoundedCornerShape(4.dp))
                             .then(if (on) Modifier.background(colors.ember) else Modifier.border(1.5.dp, colors.inkDim, RoundedCornerShape(4.dp))),
                         contentAlignment = Alignment.Center,
-                    ) { if (on) Text("✓", color = colors.onEmber, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+                    ) { if (on) Text("✓", color = colors.onEmber, fontSize = fixedSp(12.dp), fontWeight = FontWeight.Bold) } // 고정 20dp 상자 안의 표시 — 글자 크기 설정을 따라 커지지 않게
                 }
                 Text("${item.number}", color = colors.agentText, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyLarge)
                 Text(item.label, Modifier.weight(1f), color = colors.ink, style = MaterialTheme.typography.bodyLarge, maxLines = 3, overflow = TextOverflow.Ellipsis)
