@@ -40,6 +40,12 @@ data class AgentChoices(
     /** 말풍선 아래 그릴 카드: 선택지 + 상태. `closed` 는 만들지 않는다(카드 없음). */
     data class Card(val choices: AgentChoices, val state: State)
 
+    /**
+     * 방 목록 「답변 필요」(#870, 규격 §7 — 공유 벡터 `roomList`, 웹 `roomAnswerNeeded`·iOS `AgentChoices.roomAnswer` 와 같은 답).
+     * 대표 항목 = 첫 권장 번호(`recommendedNumbers`), 없으면 1번. 라벨은 §1.6 정리본 그대로(「(권장)」 접두 포함).
+     */
+    data class RoomAnswer(val mode: Mode, val count: Int, val number: Int, val label: String)
+
     companion object {
         private const val WS = "[ \\t\\n]"
         // `.` 대신 줄 끝 문자를 뺀 묶음 — JVM `.`/`$` 의 줄 끝 규칙(마지막 \r 앞에서 `$` 일치 등)이 웹·iOS 와 달라지지 않게 matchEntire 로 쓴다.
@@ -280,6 +286,20 @@ data class AgentChoices(
                 answer(choices, next.text)?.let { return State.Answered(it) }
             }
             return State.Closed
+        }
+
+        /**
+         * #870(규격 §7): 방의 마지막 저장 글의 카드가 `open` 이면 그 요약, 아니면 null. `open` 은 마지막 글에만 생기므로
+         * 마지막 글 하나만 본다(`cards` 와 같은 판정). 오너가 답하면(카드·손으로 친 번호) 다음 글이 생겨 null 이 된다.
+         */
+        fun roomAnswer(messages: List<MessageUi>): RoomAnswer? {
+            val last = messages.lastOrNull() ?: return null
+            if (!isAgentText(last)) return null
+            val choices = parse(last.text) ?: return null
+            val first = choices.items.firstOrNull() ?: return null
+            val number = choices.recommendedNumbers.firstOrNull() ?: first.number
+            val item = choices.items.firstOrNull { it.number == number } ?: first
+            return RoomAnswer(choices.mode, choices.items.size, item.number, item.label)
         }
 
         /** 타임라인 전체 → 글마다 카드(없거나 closed 면 null). 결과 크기 = `messages.size`. */

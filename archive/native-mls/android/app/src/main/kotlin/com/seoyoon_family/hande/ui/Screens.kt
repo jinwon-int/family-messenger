@@ -159,6 +159,7 @@ import com.seoyoon_family.hande.core.AgentActors
 import com.seoyoon_family.hande.core.AgentChoiceKeys
 import com.seoyoon_family.hande.core.AgentChoices
 import com.seoyoon_family.hande.core.AlertRefs
+import com.seoyoon_family.hande.core.RoomListSlot
 import com.seoyoon_family.hande.core.AppLogin
 import com.seoyoon_family.hande.core.BottomFollow
 import com.seoyoon_family.hande.core.CandidateUi
@@ -1129,6 +1130,9 @@ private fun RoomRow(r: RoomUi, highlighted: Boolean = false, onOpen: () -> Unit)
         else -> 1
     }
     val textColor = if (closedDay) colors.ash else colors.ink
+    // #870: 마지막 글의 [답변 필요] 카드가 열렸는가(웹·iOS 와 같은 판정). 저장된 글에서 매번 계산하고 저장하지 않는다.
+    val answer = remember(r.messages) { AgentChoices.roomAnswer(r.messages) }
+    val slot = RoomListSlot.kind(halted = halted, joined = r.joined, working = r.working, answer = answer)
     Row(
         Modifier
             .fillMaxWidth()
@@ -1173,25 +1177,36 @@ private fun RoomRow(r: RoomUi, highlighted: Boolean = false, onOpen: () -> Unit)
                     modifier = Modifier.weight(1f, fill = false),
                 )
                 SeatDots(r.messages)
+                // #870(AGENT-CHOICES §7): 마지막 글의 [답변 필요] 카드가 열린 방 — 「새 글」 알약과 같은 치수(20dp · 반경 10 · 12 굵게), 에이전트 색 면.
+                if (slot == RoomListSlot.Kind.ANSWER) {
+                    Spacer(Modifier.width(6.dp))
+                    Box(
+                        Modifier.height(20.dp).clip(RoundedCornerShape(10.dp)).background(colors.agentText).padding(horizontal = 7.dp),
+                        contentAlignment = Alignment.Center,
+                    ) { Text(Strings.answerNeededPill, color = colors.bgTop, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1) }
+                }
             }
             Spacer(Modifier.height(3.dp))
-            val working = r.working
-            val preview = when {
-                halted -> if (r.halted == "room_closed") Strings.roomClosedPreview else "${Strings.halted} · ${r.halted}"
-                !r.joined -> Strings.notJoined
-                // status-v1(#560): 에이전트가 일하는 중이면 미리보기 자리에 최신 「⏳ Working …」 줄(오너 2026-10-30).
-                working != null -> working
-                else -> r.messages.lastOrNull()?.text ?: ""
+            // 미리보기 자리: 꺼진 자리·참여 전 > 답변 필요(#870) > status-v1 「⏳ Working/대기 중」 줄(#560, 오너 2026-10-30) > 마지막 글.
+            val preview = when (slot) {
+                RoomListSlot.Kind.HALTED -> if (r.halted == "room_closed") Strings.roomClosedPreview else "${Strings.halted} · ${r.halted}"
+                RoomListSlot.Kind.NOT_JOINED -> Strings.notJoined
+                RoomListSlot.Kind.ANSWER -> Strings.answerNeededPreview(answer!!)
+                RoomListSlot.Kind.WORKING -> r.working.orEmpty()
+                RoomListSlot.Kind.PREVIEW -> r.messages.lastOrNull()?.text ?: ""
             }
-            val workingShown = !halted && r.joined && working != null
+            val workingShown = slot == RoomListSlot.Kind.WORKING
+            val answerShown = slot == RoomListSlot.Kind.ANSWER
             Text(
                 preview, fontSize = 15.sp, lineHeight = 20.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 color = when {
+                    answerShown -> colors.ink
                     workingShown -> colors.ember
                     closedDay -> colors.ash
                     else -> colors.inkDim
                 },
-                fontWeight = if (workingShown) FontWeight.SemiBold else FontWeight.Normal,
+                fontWeight = if (workingShown || answerShown) FontWeight.SemiBold else FontWeight.Normal,
+                modifier = if (answerShown) Modifier.semantics { contentDescription = Strings.answerNeededA11y(answer!!) } else Modifier,
             )
         }
         // 안 읽음(#571 후속): 밤 = 주황 점 하나 + 빛남(개수 없음 — 글자는 접근성 문구로만) · 낮불 = 먹 알약 「새 글」(20dp · 반경 10 · 종이 12 굵게).

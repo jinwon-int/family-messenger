@@ -52,4 +52,13 @@ class StringsTest {
         assertEquals("키보드 ↑/↓ 한 번에 화면의 1/3씩 움직여요. 기본값이에요.", Strings.arrowStepHint(HardwareKeys.ArrowScrollStep.MEDIUM))
         assertEquals("선택해서 복사", Strings.messageSelectCopy)
     }
+
+    // #870: 방 목록 「답변 필요」 문구 — 웹 strings.rooms.answerPreview · iOS Strings.answerNeededPreview 와 같은 글
+    @Test fun answerNeededPreviewMatchesWebAndIos() {
+        val one = com.seoyoon_family.hande.core.AgentChoices.RoomAnswer(com.seoyoon_family.hande.core.AgentChoices.Mode.ONE, 3, 1, "(권장) A안으로 진행")
+        assertEquals("하나만 선택 · 3개 · 1. (권장) A안으로 진행", Strings.answerNeededPreview(one))
+        val many = com.seoyoon_family.hande.core.AgentChoices.RoomAnswer(com.seoyoon_family.hande.core.AgentChoices.Mode.MANY, 2, 2, "B")
+        assertEquals("여러 개 선택 · 2개 · 2. B", Strings.answerNeededPreview(many))
+        assertEquals("답변 필요, 여러 개 선택 · 2개 · 2. B", Strings.answerNeededA11y(many))
+    }
 }
