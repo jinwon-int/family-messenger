@@ -273,6 +273,18 @@ def summarize_db(db_path):
     return {'integrity': integrity, 'rooms': rooms, 'counts': counts}
 
 
+POLICY_ARCHIVE = 'policy-archive'
+
+
+def policy_archive_dir(args):
+    """#421: the compaction archive — explicit, or ``policy-archive`` beside the chain directory when it exists."""
+    explicit = getattr(args, 'policy_archive_dir', None)
+    if explicit:
+        return Path(explicit)
+    sibling = Path(args.policy_dir).parent / POLICY_ARCHIVE
+    return sibling if sibling.is_dir() and not sibling.is_symlink() else None
+
+
 def policy_revision(policy_dir):
     revisions = [int(m.group(1)) for m in (POLICY_RE.match(p.name) for p in Path(policy_dir).iterdir()) if m]
     return max(revisions) if revisions else 0
@@ -302,6 +314,13 @@ def stage(args, staging):
 
     for relative, absolute in walk_regular(args.policy_dir):
         add(Path('policy') / relative, absolute)
+    # #421 plan A: revisions moved out of the chain by `native-devices -compact`.
+    # Only present once a chain was compacted, so older restore tools (which
+    # restore known labels only) keep working on snapshots without it.
+    archive_dir = policy_archive_dir(args)
+    if archive_dir:
+        for relative, absolute in walk_regular(archive_dir):
+            add(Path(POLICY_ARCHIVE) / relative, absolute)
     for label, directory in (('static', args.static_dir), ('hande', args.hande_dir), ('dropin', args.dropin_dir)):
         if directory:
             for relative, absolute in walk_regular(directory):
@@ -602,6 +621,8 @@ def parse(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--data-dir', help='relay -data-dir (holds ' + DB_NAME + ' and blobs/)')
     parser.add_argument('--policy-dir', help='relay -device-state directory (policy chain)')
+    parser.add_argument('--policy-archive-dir',
+                        help='#421 compaction archive (default: policy-archive beside --policy-dir, if present)')
     parser.add_argument('--static-dir', help='relay -static-dir (relay-app bundle); optional')
     parser.add_argument('--hande-dir', help='relay -hande-dir (hande web app); optional')
     parser.add_argument('--dropin-dir', help='systemd drop-in directory of the relay unit; optional')

@@ -1068,3 +1068,40 @@ class BlobRestoreTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PolicyArchiveTests(unittest.TestCase):
+    """#421 plan A: the compaction archive beside the chain directory rides along."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.dest = self.root / 'snapshots' / 'local'
+        self.args = args_for(self.root / 'source', self.dest)
+        self.archived = Path(self.args.policy_dir).parent / 'policy-archive' / 'revisions-000001-000002'
+        self.archived.mkdir(parents=True, mode=0o700)
+        (self.archived / 'policy-000001.json').write_text('{"revision":1}\n')
+        (self.archived / 'policy-000002.json').write_text('{"revision":2}\n')
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_snapshot_carries_the_archive_and_restore_places_it_beside_the_chain(self):
+        payload = snap.snapshot(self.args)
+        target = self.root / 'standby'
+        target.mkdir()
+        result = rest.restore(rest.parse(['--archive', payload['archive'],
+                                          '--target-data-dir', str(target / 'data'),
+                                          '--target-policy-dir', str(target / 'policy'), '--skip-unit-check']))
+        self.assertIn('policy-archive', result['restored'])
+        placed = target / 'policy-archive' / 'revisions-000001-000002'
+        self.assertEqual((placed / 'policy-000002.json').read_text(), '{"revision":2}\n')
+        self.assertEqual(oct((target / 'policy-archive').stat().st_mode & 0o777), oct(0o700))
+        self.assertEqual(oct(placed.stat().st_mode & 0o777), oct(0o700))
+        self.assertEqual(oct((placed / 'policy-000001.json').stat().st_mode & 0o777), oct(0o600))
+
+    def test_no_archive_no_label(self):
+        shutil.rmtree(self.archived.parent)
+        payload = snap.snapshot(self.args)
+        names = tarfile.open(payload['archive']).getnames()
+        self.assertFalse(any('policy-archive' in n for n in names), names)

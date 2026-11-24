@@ -394,7 +394,7 @@ runuser -u native-relay -- native-devices -device-state /var/lib/native-relay/po
 ```
 
 대상은 **활성** 기기여야 한다(tombstone에는 역할을 줄 수 없다 — `revoked` 오류). 활성 기기가 하나도 없으면 E1부터다(`-enroll-first`,
-첫 기기가 곧 registrar). 체인은 **최대 256 revision**(2026-11-24 #421 안 B로 64에서 상향, 컴팩션 미구현 — 상향 판을 모든 릴레이 호스트에 배포한 뒤에만 64를 넘긴다, 옛 판은 그 체인을 열지 않는다)이고 경고는 192부터다. 셀프서비스로 revision이 전보다 빨리 는다 — `-inspect`의
+첫 기기가 곧 registrar). 체인은 **최대 256 revision**(재생 기점부터 — 2026-11-24 #421 안 B로 64에서 상향, 컴팩션은 아래 d2 — 상향 판을 모든 릴레이 호스트에 배포한 뒤에만 64를 넘긴다, 옛 판은 그 체인을 열지 않는다)이고 경고는 192부터다. 셀프서비스로 revision이 전보다 빨리 는다 — `-inspect`의
 `revision`을 월 점검에 넣는다.
 
 ### d. 라우트 오류 — 사람이 가져오는 문구 ↔ 원인
@@ -411,6 +411,26 @@ runuser -u native-relay -- native-devices -device-state /var/lib/native-relay/po
 | 404 (라우트 없음) | `-access-mode disabled` 또는 `-device-state` 없는 릴레이, 또는 #578 이전 바이너리 | 운영 릴레이에서 나오면 배포 상태(a) 확인. 웹은 운영자 모드로 조용히 폴백한다 |
 | 500 `device_policy_unavailable` | 체인을 읽지 못함(`pending-*` 잔재·링크 깨짐·권한) | 릴레이 전체가 쓰기 불가 상태다 — `DEVICES-V4.md` 「fail-closed와 CAS」, 스냅샷에서 복원 검토 |
 | 후보가 목록에 안 보임 | 후보 TTL **10분**(5분 전에 자동 재게시) 또는 승인 기기가 승인 자격이 없음(registrar 아님) | 새 기기 화면을 열어 두고 registrar 기기에서 본다 |
+
+### d2. 체인 컴팩션 — `native-devices -compact` (#421 안 A)
+
+revision 공간(재생 기점부터 256, 경고 192)을 되찾는다. 기기 집합·서명 규칙은 바뀌지 않는다.
+
+1. **선행 — 한 방향**: 체크포인트를 아는 판(릴레이 `native-mls-relay`·`native-devices`, 체크아웃의 스냅숏·복원 스크립트)을
+   **활성·대기 호스트 모두**에 먼저 배포한다. 체크포인트 레코드의 `"checkpoint": true` 키를 옛 판(엄격 디코더)은 거부해
+   정책 저장소를 열지 않는다(required 모드면 릴레이 전체가 멈춤) — 배포 전에 컴팩션하지 않는다. 운영 체인 적용은 오너 승인.
+2. **실행**(릴레이 정지 불필요 — 저장소 flock이 릴레이 읽기·커밋과 직렬화한다):
+   ```
+   runuser -u native-relay -- native-devices -device-state /var/lib/native-relay/policy -compact -expected-revision N
+   ```
+   revision N+1 체크포인트(기기 집합 그대로)를 쓰고, 그 아래 revision을 `/var/lib/native-relay/policy-archive/revisions-<first>-<last>/`
+   (0700, `-policy-archive`로 바꿀 수 있음, 체인 디렉터리 밖이어야 함)로 옮긴다. 출력: `revision`·`sha256`·`checkpoint_created`·
+   `archived`·`archive_dir`. 확인: `-inspect`의 revision = N+1, 기기 목록 = 전과 같음, 체인 디렉터리 파일 1개(+lock).
+3. **중단되면**: 체인은 유효하다(체크포인트 + 그 아래 연속 prefix). 같은 명령을 `-expected-revision N+1`로 다시 하면 이동만 마무리한다.
+4. **스냅숏**: `policy-archive`가 있으면 `native_relay_snapshot.py`가 라벨 `policy-archive`로 함께 담고, `native_relay_restore.py`는
+   `--target-policy-dir` 옆(`--target-policy-archive-dir`로 바꿀 수 있음)에 0700/0600으로 둔다. 옛 복원 도구는 이 라벨을 건너뛴다.
+5. **롤백**: 체크포인트 뒤 커밋이 없을 때만 — 릴레이 정지 → 아카이브의 파일을 체인 디렉터리로 되돌리고 체크포인트 파일을 치운다
+   (지우지 말고 옆으로) → 시작. 체크포인트 뒤 커밋이 생겼으면 되돌리지 않는다.
 
 ### e. 롤백 주의 — `roles`가 생긴 뒤에는 체인 스냅샷이 필요하다
 
