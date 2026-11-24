@@ -212,6 +212,33 @@ class CutoverTests(unittest.TestCase):
         self.assertNotIn('dns-token-value', files[0].read_text())
         self.assertNotIn('secret', files[0].read_text())
 
+    def confirmed_restore(self, *extra):
+        """Plan + confirm with the same extra arguments; returns (plan, record)."""
+        cf = FakeCloudflare(); runner = Runner()
+        plan = cut.cutover(cut.parse(self.argv(*extra)), self.io(self.down_status(), cf, runner))['plan']
+        record = cut.cutover(cut.parse(self.argv(*extra, '--confirm', plan['confirm'])),
+                             self.io(self.down_status(), cf, runner))
+        restore = next(s for s in record['steps'] if s['step'] == 'restore')
+        return plan, record, restore
+
+    def test_812_restore_clears_lobby_keypackages_by_default(self):
+        # Owner decision 2026-11-24 (#812): app devices never take a lobby invite after a plain restore.
+        self.assertTrue(cut.parse(self.argv()).clear_lobby_keypackages)
+        self.assertTrue(cut.restore_args(cut.parse(self.argv()), 'a.tar').clear_lobby_keypackages)
+        plan, record, restore = self.confirmed_restore()
+        self.assertIs(plan['clear_lobby_keypackages'], True, 'the plan shows it')
+        self.assertEqual(record['status'], 'complete', record)
+        # The fixture relay predates the lobby table: cleared = {} (ran, nothing to drop) rather than None (not asked).
+        self.assertEqual(restore['detail']['lobby_keypackages_cleared'], {})
+
+    def test_812_no_clear_lobby_keypackages_keeps_them(self):
+        off = cut.parse(self.argv('--no-clear-lobby-keypackages'))
+        self.assertFalse(cut.restore_args(off, 'a.tar').clear_lobby_keypackages)
+        plan, record, restore = self.confirmed_restore('--no-clear-lobby-keypackages')
+        self.assertIs(plan['clear_lobby_keypackages'], False)
+        self.assertEqual(record['status'], 'complete', record)
+        self.assertIsNone(restore['detail']['lobby_keypackages_cleared'])
+
     def blob_inbox(self, mirrored):
         """A second inbox whose newest archive lists one attachment; ``mirrored`` = its file arrived too."""
         inbox = self.root / 'snapshots' / 'blob-inbox'
@@ -357,7 +384,7 @@ class CutoverTests(unittest.TestCase):
         cf = FakeCloudflare(); runner = Runner()
         plan = cut.cutover(cut.parse(self.argv()), self.io(self.down_status(), cf, runner))['plan']
         for variant in (self.argv('--tunnel-target', 'WRONG.cfargotunnel.com'), self.argv('--bump-seq', '0'),
-                        self.argv('--hostname', 'extra.example.test')):
+                        self.argv('--hostname', 'extra.example.test'), self.argv('--no-clear-lobby-keypackages')):
             other = cut.cutover(cut.parse(variant), self.io(self.down_status(), cf, runner))['plan']
             self.assertNotEqual(other['confirm'], plan['confirm'])
 

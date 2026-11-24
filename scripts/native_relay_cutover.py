@@ -23,7 +23,13 @@ Order of operations, each recorded in the state file:
    peer stop (optional). A peer stop that does not succeed is fatal unless
    ``--peer-unreachable-ok`` — a peer we could not stop may still be serving.
 4. restore  — ``native_relay_restore.py`` into the live directories with
-              ``--bump-seq`` (relay unit must be inactive here). Attachment
+              ``--bump-seq`` and, by default, ``--clear-lobby-keypackages``
+              (#812: a restored snapshot revives lobby key packages that were
+              consumed after it, so app devices never take a lobby invite
+              until the unconsumed rows are dropped and they publish afresh;
+              ``--no-clear-lobby-keypackages`` keeps them). Both are in the
+              plan and bound into the confirm token. The relay unit must be
+              inactive here. Attachment
               files come from the ``blobs`` mirror beside the archive; rows
               left without a verified file do not stop the cutover — it ends
               ``complete-with-blob-gaps``, exit 3, and the record lists them.
@@ -227,7 +233,7 @@ def latest_archive(inbox):
 def confirm_token(planned):
     """Bound to everything the cutover will do, not just the archive."""
     material = {k: planned[k] for k in ('to', 'archive', 'archive_sha256', 'hostnames', 'tunnel_target',
-                                        'fence_record', 'bump_seq')}
+                                        'fence_record', 'bump_seq', 'clear_lobby_keypackages')}
     return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()[:16]
 
 
@@ -260,6 +266,7 @@ def plan(args):
     # 'blobs' is shown, not bound into the token: how many attachment files the mirror beside the archive holds.
     planned = {'to': args.to, 'archive': str(archive), 'archive_sha256': summary['archive_sha256'],
                'manifest': summary['manifest'], 'blobs': summary['blobs'], 'bump_seq': args.bump_seq,
+               'clear_lobby_keypackages': args.clear_lobby_keypackages,
                'hostnames': sorted(args.hostname), 'tunnel_target': args.tunnel_target,
                'fence_record': args.fence_record}
     planned['confirm'] = confirm_token(planned)
@@ -275,6 +282,8 @@ def restore_args(args, archive):
             argv += [flag, value]
     if args.skip_unit_check:
         argv.append('--skip-unit-check')
+    if args.clear_lobby_keypackages:
+        argv.append('--clear-lobby-keypackages')
     return restore_module.parse(argv)
 
 
@@ -338,7 +347,8 @@ def cutover(args, io=None):
             if not result['counts_match']:
                 raise RuntimeError('restored counts do not match the manifest')
             return {'snapshot_id': result['snapshot_id'], 'rooms': result['rooms'],
-                    'moved_aside': result['moved_aside'], 'blobs': result['blobs']}
+                    'moved_aside': result['moved_aside'], 'blobs': result['blobs'],
+                    'lobby_keypackages_cleared': result['lobby_keypackages_cleared']}
         # Not a gate: the database is whole. Attachments without a file answer 404 until they are brought
         # in by hand, so the run still ends with exit 3 and the record names how many (and which prefixes).
         blobs_clean = step('restore', do_restore)['blobs']['clean']
@@ -468,6 +478,9 @@ def parse(argv=None):
     parser.add_argument('--target-static-dir')
     parser.add_argument('--target-hande-dir')
     parser.add_argument('--bump-seq', type=int, default=1000, help='#440-C c1 (owner default 1000)')
+    parser.add_argument('--clear-lobby-keypackages', action=argparse.BooleanOptionalAction, default=True,
+                        help='#812 (owner default on): drop unconsumed lobby key packages from the restored copy so '
+                             'devices publish afresh; --no-clear-lobby-keypackages keeps them')
     parser.add_argument('--owner', default='native-relay')
     parser.add_argument('--unit', default='native-relay')
     parser.add_argument('--skip-unit-check', action='store_true', help='drills into throwaway directories only')
