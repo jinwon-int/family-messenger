@@ -203,10 +203,11 @@ func (s *relay) handleListCandidates(w http.ResponseWriter, req *http.Request) {
 }
 
 // Policy headroom warnings (#421): logged when the chain is loaded at startup
-// and after every relay commit, before the hard limits refuse an enroll.
+// and after every relay commit, before the hard limits refuse an enroll. Both at
+// three quarters of their limit, derived so raising a limit moves its warning.
 const (
-	policyRevisionWarnAt = 48 // of devicepolicy.MaxDevicePolicyRevisions (64)
-	activeDevicesWarnAt  = 24 // of devicepolicy.MaxActiveDevicesTotal (32)
+	policyRevisionWarnAt = devicepolicy.MaxDevicePolicyRevisions * 3 / 4 // 192 of 256
+	activeDevicesWarnAt  = devicepolicy.MaxActiveDevicesTotal * 3 / 4    // 24 of 32
 )
 
 // logPolicyHeadroom warns when the chain nears its revision or active-device

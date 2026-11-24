@@ -68,17 +68,22 @@ func TestPolicyHeadroomWarnings(t *testing.T) {
 		return out
 	}
 	// Below both thresholds — tombstones do not count as active.
-	logPolicyHeadroom(47, set(23, 40))
+	revWarn := uint64(policyRevisionWarnAt)
+	if policyRevisionWarnAt != devicepolicy.MaxDevicePolicyRevisions*3/4 || activeDevicesWarnAt != devicepolicy.MaxActiveDevicesTotal*3/4 {
+		t.Fatalf("warn thresholds %d/%d are not 3/4 of %d/%d", policyRevisionWarnAt, activeDevicesWarnAt,
+			devicepolicy.MaxDevicePolicyRevisions, devicepolicy.MaxActiveDevicesTotal)
+	}
+	logPolicyHeadroom(revWarn-1, set(23, 40))
 	if buf.Len() != 0 {
 		t.Fatalf("below thresholds logged:\n%s", buf.String())
 	}
-	logPolicyHeadroom(48, set(23, 0))
-	if got := buf.String(); !strings.Contains(got, "devices: WARNING policy near limit: limit=policy_revisions current=48 max=64") ||
+	logPolicyHeadroom(revWarn, set(23, 0))
+	if got := buf.String(); !strings.Contains(got, fmt.Sprintf("devices: WARNING policy near limit: limit=policy_revisions current=%d max=%d", revWarn, devicepolicy.MaxDevicePolicyRevisions)) ||
 		strings.Contains(got, "limit=active_devices") {
-		t.Fatalf("revision 48 only:\n%s", got)
+		t.Fatalf("revision %d only:\n%s", revWarn, got)
 	}
 	buf.Reset()
-	logPolicyHeadroom(47, set(24, 11))
+	logPolicyHeadroom(revWarn-1, set(24, 11))
 	if got := buf.String(); !strings.Contains(got, "devices: WARNING policy near limit: limit=active_devices current=24 max=32") ||
 		strings.Contains(got, "limit=policy_revisions") {
 		t.Fatalf("24 active only:\n%s", got)

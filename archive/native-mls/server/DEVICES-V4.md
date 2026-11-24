@@ -21,8 +21,9 @@ E1(첫 기기)·E3/E4(폐기)·registrar 전멸 복구는 여전히 운영자 CL
 - 파일: 0600, 정규 파일, nlink=1, `O_NOFOLLOW`. 쓰기 경로는 pending 생성 → fsync →
   close → 대상 부재 확인 → `renameat` → 디렉터리 fsync (v1 `server/internal/access`
   정책 저장소와 같은 커널; 의존성 없이 미러링 — 결정 E 규칙 1).
-- 체인 링크 = 직전 레코드 **원본 파일 바이트**의 sha256. 최대 64 revision — 컴팩션은
-  미구현이고 소진 시 `ErrDevicePolicyState`로 멈춘다(상태 보존).
+- 체인 링크 = 직전 레코드 **원본 파일 바이트**의 sha256. 최대 256 revision(2026-11-24 #421 안 B, 이전 64) — 컴팩션은
+  미구현이고 소진 시 `ErrDevicePolicyState`로 멈춘다(상태 보존). 상한을 올린 판으로 **모든 릴레이 호스트(대기·복원 대상 포함)를
+  바꾼 뒤에만** 체인이 64를 넘어야 한다 — 옛 판은 revision이 더 많은 디렉터리를 열지 않는다(한 방향). 경고는 상한의 3/4(192)부터.
 - 디코더는 엄격(K6): unknown·duplicate·null 필드 거부, `version`은 4만.
 
 ## v4 스키마
@@ -451,7 +452,7 @@ BEGIN IMMEDIATE 트랜잭션으로 기록된다(B2/B3 규율 유지). v2 릴레�
 - v2 릴레이 smoke의 등록된 기기 전환 — M3c PR에서 완료: E1·E2 등록(두 지문 화면
   일치 확인), E2·E3 폐기 증거(브라우저 서명 → Go CLI 검증), E4 revoke-all과 대체 기기의
   새 방. 남는 것은 지문 비교 UI의 **실제 대역외 비교 수행** — 사람.
-- 64 revision 소진 후 컴팩션, E5 restore-history, 파일·봇(M5).
+- revision 상한(256) 소진 전 컴팩션(#421 안 A), E5 restore-history, 파일·봇(M5).
 - 브라우저/실기기 동작 — 이 유닛은 순수 서버 측 Go다.
 - 실제 APNs 전송(Apple 엔드포인트·실 `.p8`·실 기기 토큰) — Go 테스트는 HTTP/2 TLS 가짜
   서버로 경로·헤더·ES256 서명·페이로드 바이트·410 정리를 검사한다. 실 전송은 파이널라이저

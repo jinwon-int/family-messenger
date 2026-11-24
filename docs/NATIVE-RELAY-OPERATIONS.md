@@ -391,7 +391,7 @@ runuser -u native-relay -- native-devices -device-state /var/lib/native-relay/po
 ```
 
 대상은 **활성** 기기여야 한다(tombstone에는 역할을 줄 수 없다 — `revoked` 오류). 활성 기기가 하나도 없으면 E1부터다(`-enroll-first`,
-첫 기기가 곧 registrar). 체인은 **최대 64 revision**(컴팩션 미구현)이라 셀프서비스로 revision이 전보다 빨리 는다 — `-inspect`의
+첫 기기가 곧 registrar). 체인은 **최대 256 revision**(2026-11-24 #421 안 B로 64에서 상향, 컴팩션 미구현 — 상향 판을 모든 릴레이 호스트에 배포한 뒤에만 64를 넘긴다, 옛 판은 그 체인을 열지 않는다)이고 경고는 192부터다. 셀프서비스로 revision이 전보다 빨리 는다 — `-inspect`의
 `revision`을 월 점검에 넣는다.
 
 ### d. 라우트 오류 — 사람이 가져오는 문구 ↔ 원인

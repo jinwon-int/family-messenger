@@ -39,9 +39,15 @@ import (
 )
 
 const (
-	DevicePolicyVersion      = 4
-	MaxDevicePolicyBytes     = 64 * 1024
-	MaxDevicePolicyRevisions = 64
+	DevicePolicyVersion  = 4
+	MaxDevicePolicyBytes = 64 * 1024
+	// MaxDevicePolicyRevisions bounds the chain (compaction not implemented, #421).
+	// Raised 64 → 256 on 2026-11-24 (#421 plan B): rev 50 by then, and revoke also
+	// needs a revision, so exhausting the space would block revoking a lost device.
+	// One-way for a live chain: a binary built with a lower value refuses a
+	// directory holding more revisions (ReadDir bounds below) — every relay host
+	// that may serve or restore this chain must run this value before it passes 64.
+	MaxDevicePolicyRevisions = 256
 	// MaxActiveDevicesTotal bounds the active devices across all actors. Revoked
 	// records (tombstones) do not count (#421): they must stay in the set so an id
 	// or signing key is never reused and every approved_by still resolves, but
