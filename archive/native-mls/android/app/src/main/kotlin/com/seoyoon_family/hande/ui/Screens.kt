@@ -51,6 +51,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -159,6 +160,7 @@ import com.seoyoon_family.hande.core.AgentActors
 import com.seoyoon_family.hande.core.AgentChoiceKeys
 import com.seoyoon_family.hande.core.AgentChoices
 import com.seoyoon_family.hande.core.AlertRefs
+import com.seoyoon_family.hande.core.RoomListReturn
 import com.seoyoon_family.hande.core.RoomListSlot
 import com.seoyoon_family.hande.core.AppLogin
 import com.seoyoon_family.hande.core.BottomFollow
@@ -216,6 +218,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -240,6 +243,9 @@ fun HandeRoot(hub: DeviceHub, themeMode: HandeThemeMode = HandeThemeMode.NIGHT, 
     val roomStates = rememberSaveableStateHolder()
     var lastRoom by rememberSaveable { mutableStateOf<String?>(null) }
     LaunchedEffect(openRoom) { openRoom?.let { lastRoom = it } }
+    // 대화 목록의 스크롤 위치(오너 요청 2026-11-24): 방을 열면 목록 화면이 통째로 빠졌다가 돌아올 때 새로 그려져 늘 맨 위였다.
+    // 목록 밖(여기)에 두고 저장해서, 방에서 나오면(앱의 뒤로·시스템 뒤로 모두) 들어가기 전 위치 그대로 돌아온다(프로세스 복원 포함).
+    val roomListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
     var arrowStep by remember { mutableStateOf(HardwareKeys.ArrowScrollStep.from(hub.settings.arrowScrollStep)) }
     val settingsOpen = showSettings && ui.phase !is Phase.Setup
     val approveTarget = approveId
@@ -314,6 +320,7 @@ fun HandeRoot(hub: DeviceHub, themeMode: HandeThemeMode = HandeThemeMode.NIGHT, 
                         onSettings = { showSettings = true }, onNoticeShown = hub::clearNotice,
                         onMoveRoom = hub::moveRoom, onMoveRoomToTop = hub::moveRoomToTop,
                         anchorRoom = lastRoom,
+                        roomListState = roomListState,
                     )
                 }
             }
@@ -894,8 +901,10 @@ fun RoomListScreen(
     ui: HubUi, onOpen: (String) -> Unit, onRequestJoin: () -> Unit,
     onCompare: (String) -> Unit, onIgnore: (String) -> Unit, onSettings: () -> Unit, onNoticeShown: () -> Unit,
     onMoveRoom: (String, Int) -> Unit = { _, _ -> }, onMoveRoomToTop: (String) -> Unit = {},
-    /** 방금 나온 방(#833) — 표시가 없을 때 PageUp/PageDown 의 출발점. */
+    /** 방금 나온 방(#833) — 표시가 없을 때 PageUp/PageDown 의 출발점. 돌아왔을 때 이 방이 화면에 보이게 한다. */
     anchorRoom: String? = null,
+    /** 목록 스크롤 위치 — 호출자(HandeRoot)가 들고 있어야 방에 들어갔다 나와도 남는다. */
+    roomListState: LazyListState = rememberLazyListState(),
 ) {
     val colors = LocalHandeColors.current
     val snackbar = remember { SnackbarHostState() }
@@ -906,9 +915,16 @@ fun RoomListScreen(
     // 키를 받으려면 화면 안에 포커스가 있어야 해서 목록 뿌리를 포커스 대상으로 두고 화면이 뜰 때 포커스를 준다. Esc 는 판정하지 않는다(시스템 「뒤로」 그대로).
     var highlighted by remember { mutableStateOf<Int?>(null) }
     val listFocus = remember { FocusRequester() }
-    val roomListState = rememberLazyListState()
     val listKeys = remember { HeldKeys() }
     LaunchedEffect(Unit) { runCatching { listFocus.requestFocus() } }
+    // 방에서 돌아왔을 때: 위치는 roomListState 가 그대로 들고 있다. 그 사이 순서가 바뀌어(맨 위로 올림 등) 방금 나온 방이
+    // 화면 밖이면 그 방이 보이게 옮긴다 — 보이면 손대지 않는다. 첫 배치가 끝난 뒤에 판단한다(배치 전에는 보이는 항목이 비어 있다).
+    LaunchedEffect(Unit) {
+        if (anchorRoom == null || ui.rooms.isEmpty()) return@LaunchedEffect
+        snapshotFlow { roomListState.layoutInfo.totalItemsCount }.first { it > 0 }
+        val visible = roomListState.layoutInfo.visibleItemsInfo.map { it.index }
+        RoomListReturn.scrollTarget(ui.rooms.map { it.room }, anchorRoom, visible)?.let { roomListState.scrollToItem(it) }
+    }
     LaunchedEffect(highlighted) { highlighted?.let { if (it in ui.rooms.indices) roomListState.reveal(it) } }
     val onListKey: (KeyEvent) -> Boolean = { event ->
         !event.fromSoftKeyboard() && listKeys.dispatch(event) {
