@@ -965,8 +965,7 @@ fun RoomListScreen(
                         HandeWordmark(size = 34.sp)
                         // 연결 중이면 부제 자리에 그 사실을.
                         Text(if (ui.connecting) Strings.connecting else Strings.campfireSubtitle, color = colors.inkDim, fontSize = 15.sp)
-                        // 워드마크 아래 서버 이름(#584): `.well-known` 의 이름, 없으면 릴레이 호스트 — 다른 운영자의 서버에 붙었을 때 어디인지 보인다.
-                        ui.server?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = colors.inkDim, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        // 서버 이름(#584)은 여기 두지 않는다 — 웹·iOS 목록 머리와 같게 워드마크 + 부제만. 어느 서버인지는 설정 화면 「서버」 줄에 있다.
                     }
                     // #549 · #715: 순서 편집 진입(iOS 「↕ 순서」·웹 reorder 아이콘). 자리가 0~1개면 숨김. 「완료」는 편집 머리에만.
                     if (canReorder) {
