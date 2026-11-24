@@ -302,4 +302,54 @@ final class AgentChoicesTests: XCTestCase {
         XCTAssertEqual(parsed?.label(of: 2), "보류")
         XCTAssertNil(parsed?.label(of: 9))
     }
+
+    // MARK: - #870 방 목록 「답변 필요」(규격 §7) — 공유 벡터 roomList(웹 roomAnswerNeeded 와 같은 답)
+
+    /// 웹 벡터의 entry({kind, body, isAgent, isService, isMe}) → MessageRecord. 에이전트 = `bot`, 서비스 봇 = `fleet-bot`
+    /// (serviceActors `fleet`), 내 글 = `me`, 그 밖 = `other`.
+    private func roomListRecord(_ seq: Int64, _ raw: [String: Any]) throws -> MessageRecord {
+        let device: DeviceID
+        if raw["isMe"] as? Bool == true { device = me }
+        else if raw["isAgent"] as? Bool == true { device = bot }
+        else if raw["isService"] as? Bool == true { device = "fleet-bot" }
+        else { device = other }
+        let kind: MessageRecord.Kind
+        switch raw["kind"] as? String {
+        case "text": kind = .text
+        case "attachment": kind = .attachment
+        case "system": kind = .system
+        default: throw fixtureError("unknown roomList entry kind \(String(describing: raw["kind"]))")
+        }
+        return rec(seq, device, (raw["body"] as? String) ?? "", kind: kind)
+    }
+
+    func testRoomListVectors() throws {
+        let root = try loadRoot()
+        let vectors = try XCTUnwrap(root["roomList"] as? [[String: Any]], "fixture must have a roomList array")
+        XCTAssertGreaterThanOrEqual(vectors.count, 12)
+        for (idx, raw) in vectors.enumerated() {
+            let name = (raw["name"] as? String) ?? "roomList[\(idx)]"
+            let entries = try XCTUnwrap(raw["entries"] as? [[String: Any]], "[\(name)] entries")
+            let records = try entries.enumerated().map { try roomListRecord(Int64($0.offset + 1), $0.element) }
+            let got = AgentChoices.roomAnswer(records, roster: roster, myDevice: me, serviceActors: ["fleet"])
+            guard let expected = raw["expected"] as? [String: Any] else {
+                XCTAssertNil(got, "[\(name)] expected null, got \(String(describing: got))")
+                continue
+            }
+            let mode = try XCTUnwrap(AgentChoices.Mode(rawValue: try XCTUnwrap(expected["mode"] as? String)), "[\(name)] mode")
+            let want = AgentChoices.RoomAnswer(mode: mode,
+                                               count: try XCTUnwrap(int(expected["count"]), "[\(name)] count"),
+                                               number: try XCTUnwrap(int(expected["number"]), "[\(name)] number"),
+                                               label: try XCTUnwrap(expected["label"] as? String, "[\(name)] label"))
+            XCTAssertEqual(got, want, "[\(name)]")
+        }
+    }
+
+    func testRoomAnswerIgnoresUndecryptableTail() {
+        // 복호화 실패 줄은 「저장된 메시지」가 아니다(§2) — 그 뒤에 와도 카드는 열린 채다.
+        let records = [rec(1, bot, choices), rec(2, other, "", kind: .undecryptable)]
+        XCTAssertEqual(AgentChoices.roomAnswer(records, roster: roster, myDevice: me),
+                       AgentChoices.RoomAnswer(mode: .many, count: 3, number: 1, label: "병합"))
+        XCTAssertNil(AgentChoices.roomAnswer([], roster: roster, myDevice: me))
+    }
 }

@@ -52,6 +52,14 @@ extension Strings {
         numbers.isEmpty ? choiceSend : "\(choiceNumberList(numbers))번 보내기"
     }
     /// 번호 목록 표시(오름차순·중복 없음): [3, 1] → 「1, 3」.
+    // #870(AGENT-CHOICES §7): 방 목록 「답변 필요」 — 웹 strings.rooms.answerBadge / answerPreview 와 같은 문구.
+    static let answerNeededPill = "답변 필요"
+    /// 한 줄 말줄임이라 짧은 머리(모드·개수)를 앞에 둔다: 「하나만 선택 · 3개 · 1. (권장) A안」.
+    static func answerNeededPreview(_ a: AgentChoices.RoomAnswer) -> String {
+        "\(a.mode == .many ? "여러 개 선택" : "하나만 선택") · \(a.count)개 · \(a.number). \(a.label)"
+    }
+    /// 화면 낭독기: 「답변 필요, 하나만 선택 · 3개 · 1. …」.
+    static func answerNeededListAccessibility(_ a: AgentChoices.RoomAnswer) -> String { "답변 필요, \(answerNeededPreview(a))" }
     static func choiceNumberList(_ numbers: [Int]) -> String {
         Array(Set(numbers)).sorted().map { String($0) }.joined(separator: ", ")
     }

@@ -14,6 +14,8 @@ struct RoomListView: View {
     @State private var showNotifications = false
     /// #405 P2: 방별 카드 요약(마지막 글·둘러앉은 자리). 목록 진입·새 메시지 때 다시 만든다.
     @State private var glances: [RoomID: RoomGlance] = [:]
+    /// #870(AGENT-CHOICES §7): 마지막 글의 `[답변 필요]` 카드가 열린 방 → 요약(목록 「답변 필요」 알약 + 질문 미리보기).
+    @State private var answers: [RoomID: AgentChoices.RoomAnswer] = [:]
     /// #549: 「↕ 순서」 모드(웹 한데 `orderEditing`) — 행마다 ▲▼, ≡ 끌기, 행 탭으로 방이 열리지 않음. 시스템 `편집` 대신 이 버튼이 켠다.
     @State private var editMode: EditMode = .inactive
     @Environment(\.hande) private var p
@@ -154,7 +156,9 @@ struct RoomListView: View {
                                         unread: Unread.isUnread(last: glance.last, myDevice: model.deviceId, readSeq: readSeq),
                                         muted: model.relayMuted[room.room] == true,
                                         // status-v1(#560, 오너 2026-10-30): 에이전트가 일하는 중이면 미리보기 대신 최신 「⏳ Working …」 줄.
-                                        working: AgentStatusBoard.listLine(model.agentStatuses[room.room] ?? []))
+                                        working: AgentStatusBoard.listLine(model.agentStatuses[room.room] ?? []),
+                                        // #870: 답할 카드가 열린 방은 「답변 필요」가 Working/대기 중 줄보다 앞선다.
+                                        answer: answers[room.room])
                 Group {
                     if orderEditing {
                         // 순서 모드(디자인 2차 2c): 불 세기·미리보기·안 읽음은 숨기고 이름 + 고정 핀 + ▲▼ 만(끝에서는 비활성) + 시스템 ≡ 끌기.
@@ -297,10 +301,16 @@ extension RoomListView {
 
     fileprivate func reloadGlances() {
         var next: [RoomID: RoomGlance] = [:]
+        var nextAnswers: [RoomID: AgentChoices.RoomAnswer] = [:]
+        let services = Set(Strings.serviceNames.keys)   // 플릿 알림 ok/hold 도 답할 카드다(§6.1)
         for room in model.listedRooms {
-            next[room.room] = RoomGlance.make(model.messages(room: room.room).map(\.record), roster: model.agentRoster)
+            let records = model.messages(room: room.room).map(\.record)
+            next[room.room] = RoomGlance.make(records, roster: model.agentRoster)
+            nextAnswers[room.room] = AgentChoices.roomAnswer(records, roster: model.agentRoster, myDevice: model.deviceId,
+                                                             serviceActors: services)
         }
         glances = next
+        answers = nextAnswers
     }
 }
 
@@ -322,6 +332,9 @@ struct CampfireCard: View {
     /// status-v1(#560): 이 방 에이전트의 지금 작업 줄(`⏳ Working — 10s | Bash: …`) — 있으면 미리보기 자리에 에이전트 색으로.
     /// 안 읽음 점·굵기·정렬은 바꾸지 않는다(저장된 글이 아니다). 답이 오거나 5분 지나면 nil → 평소 미리보기.
     var working: String? = nil
+    /// #870(AGENT-CHOICES §7): 마지막 글의 `[답변 필요]` 카드가 열려 있다 — 이름 옆 「답변 필요」 알약 + 미리보기 자리에 질문 요약.
+    /// 미리보기 자리 우선순위: 답변 필요 > Working/대기 중 줄 > 평소 미리보기(웹 `roomPreviewSlot` 과 같다). 꺼진 자리는 평소 미리보기.
+    var answer: AgentChoices.RoomAnswer? = nil
     @Environment(\.hande) private var p
 
     private var out: Bool { room.haltedReason != nil }
@@ -359,8 +372,23 @@ struct CampfireCard: View {
                     if !out && (!glance.people.isEmpty || glance.hasAgent) {
                         SeatDots(people: glance.people.count, agents: glance.agents.count, size: 8).fixedSize()
                     }
+                    if answer != nil && !out {
+                        // 「새 글」 알약과 같은 치수(20pt · 반경 10 · 12/700), 에이전트 색 바탕 — 밤·낮불 공통.
+                        Text(Strings.answerNeededPill)
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(p.bgTop)
+                            .padding(.horizontal, 7)
+                            .frame(height: 20)
+                            .background(Capsule().fill(p.agentText))
+                            .fixedSize()
+                            .accessibilityIdentifier("room-answer")
+                    }
                 }
-                if let working, !out {
+                if let answer, !out {
+                    Text(Strings.answerNeededPreview(answer)).font(.footnote.weight(.semibold))
+                        .foregroundStyle(p.ink).lineLimit(1).truncationMode(.tail)
+                        .accessibilityLabel(Strings.answerNeededListAccessibility(answer))
+                } else if let working, !out {
                     Text(working).font(.footnote.weight(.medium))
                         .foregroundStyle(p.agentText).lineLimit(1).truncationMode(.tail)
                         .accessibilityLabel(Strings.agentWorkingListAccessibility(working))
