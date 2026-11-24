@@ -192,34 +192,37 @@ export function renderStarting(root, { message = strings.app.starting }) {
     brand(), el('div', { class: 'spinner', 'aria-hidden': 'true' }), el('p', { class: 'hint' }, message))));
 }
 
-export function renderFatal(root, { title = strings.fatal.title, detail = '', onRetry = null, onWipe = null }) {
+export function renderFatal(root, { title = strings.fatal.title, detail = '', onRetry = null, onWipe = null, wipeLabel = null }) {
   clearScreen(root);
   root.append(el('main', { class: 'center' }, el('section', { class: 'card hero', role: 'alert' },
     brand('s'), el('h1', {}, title), detail ? el('pre', { class: 'detail' }, detail) : null,
     el('div', { class: 'actions' },
       onRetry ? el('button', { type: 'button', class: 'primary', onclick: onRetry }, strings.fatal.retry) : null,
-      onWipe ? el('button', { type: 'button', class: 'danger', onclick: onWipe }, strings.fatal.wipe) : null))));
+      onWipe ? el('button', { type: 'button', class: 'danger', 'data-testid': 'fatal-wipe', onclick: onWipe }, wipeLabel ?? strings.fatal.wipe) : null))));
 }
 
 /**
  * 기기 등록 화면. mode(#574):
  * - 'operator'(기존): 등록 JSON 을 운영자에게 전달하고 403 이 풀리기를 기다린다.
  * - 'sibling': 릴레이 우편함에 올라갔다 — 큰 지문과 「다른 기기에서 승인해 주세요」, 운영자 JSON 은 접힌 보조 경로.
- * - 'id-taken': 체인에 같은 ID 가 이미 있다(409) — 지우고 새 ID 로 시작하라는 안내.
+ * - 'id-taken': 체인에 같은 ID 가 이미 있다(409) — 지우고 새 ID 로 시작하라는 안내. takenReason='fingerprint' 일 때만 「(지문이 다름)」.
+ * - 'revoked'(#869): /v2/me 가 이 기기를 폐기(revoked)로 알린다 — 다시 승인될 수 없으니 승인 대기·주기 확인 없이 지우기 안내만.
  * statusText 가 오면 상태 줄 문구를 그것으로(없으면 waiting 에 따라 기존 문구).
  */
-export function renderEnroll(root, { deviceId, actor, fingerprint, subject = null, registrationJson = '', waiting = false, lastCheckedAt = null, onCopy, onCheck, onOpenApprove = null, onWipe, error = null, mode = 'operator', statusText = null, expiresAt = null }) {
-  const frame = JSON.stringify([deviceId, actor, fingerprint, subject, registrationJson, error, Boolean(onOpenApprove), mode]);
+export function renderEnroll(root, { deviceId, actor, fingerprint, subject = null, registrationJson = '', waiting = false, lastCheckedAt = null, onCopy, onCheck, onOpenApprove = null, onWipe, error = null, mode = 'operator', statusText = null, expiresAt = null, takenReason = null }) {
+  const frame = JSON.stringify([deviceId, actor, fingerprint, subject, registrationJson, error, Boolean(onOpenApprove), mode, takenReason]);
   const t = strings.onboarding;
   const sibling = mode === 'sibling';
   const taken = mode === 'id-taken';
+  const revoked = mode === 'revoked';
+  const stopped = taken || revoked;   // 승인을 기다리지 않는 상태(#869): 대기 점·「승인을 기다리는 중」·마지막 확인 없음
   // 대기 문구(§A2): 기술값 「(403 device_subject_mismatch)」는 화면에 내지 않는다 — 진단 기록 몫. 형제 모드는 만료 시각만(카운트다운 없음).
-  const text = statusText ?? (sibling
+  const text = statusText ?? (stopped ? strings.enroll.notWaitingStopped : sibling
     ? (expiresAt ? t.enrollWaitingSiblingUntil(formatTime(expiresAt)) : t.enrollWaitingSibling)
     : waiting ? t.enrollWaitingOperator : strings.enroll.notWaiting);
-  const tone = taken ? 'danger' : 'waiting';
-  const extra = lastCheckedAt ? strings.enroll.lastChecked(lastCheckedAt) : '';
-  const statusChildren = () => [taken ? null : seatDots(['p', 'p', 'p'], 'thinking'), el('span', { class: 'text' }, text), extra ? el('span', { class: 'meta' }, extra) : null];
+  const tone = stopped ? 'danger' : 'waiting';
+  const extra = lastCheckedAt && !stopped ? strings.enroll.lastChecked(lastCheckedAt) : '';
+  const statusChildren = () => [stopped ? null : seatDots(['p', 'p', 'p'], 'thinking'), el('span', { class: 'text' }, text), extra ? el('span', { class: 'meta' }, extra) : null];
   const existing = root.querySelector('section.enroll');
   if (existing && signatureOf(existing) === frame) {
     // 폴링 재렌더: 선택한 지문·JSON 을 지키려고 상태 줄만 바꾼다.
@@ -252,7 +255,8 @@ export function renderEnroll(root, { deviceId, actor, fingerprint, subject = nul
       el('span', { class: 'label' }, strings.enroll.fingerprintLabel),
       renderFingerprintRows(fingerprintRows(fingerprint), { 'data-testid': 'enroll-fingerprint', 'data-fingerprint': fingerprint }),
       el('p', { class: 'meta device-caption' }, el('span', { class: 'label' }, strings.enroll.deviceIdLabel, ' '), el('code', { class: 'mono' }, deviceId))),
-    taken ? statusLine(strings.enroll.idTaken, 'danger', { 'data-testid': 'enroll-id-taken' }) : null,
+    taken ? statusLine(takenReason === 'fingerprint' ? strings.enroll.idTakenFingerprint : strings.enroll.idTaken, 'danger', { 'data-testid': 'enroll-id-taken' }) : null,
+    revoked ? statusLine(strings.enroll.revoked, 'danger', { 'data-testid': 'enroll-revoked' }) : null,
     el('p', { class: `status enroll-status ${tone}`, role: 'status' }, statusChildren()),
     statusLine(error, 'danger'),
     el('div', { class: 'onboarding-footer column' },
