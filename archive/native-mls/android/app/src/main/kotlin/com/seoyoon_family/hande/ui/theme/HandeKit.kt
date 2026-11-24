@@ -58,6 +58,7 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.vector.PathParser
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -278,6 +279,13 @@ fun FingerprintList(
     }
 }
 
+/**
+ * 고정 크기(dp) 상자 안에 넣는 표시 글리프(✓ 등)의 글자 크기: 시스템 글자 크기 배율을 상쇄해 언제나 [size] dp 로 그린다.
+ * 글이 아니라 아이콘 노릇을 하는 글자에만 쓴다 — 읽는 글은 sp 그대로(배율을 따른다).
+ */
+@Composable
+fun fixedSp(size: Dp): TextUnit = with(LocalDensity.current) { size.toSp() }
+
 /** 표시 원 22dp: 빈 원(먹 45% · 1.5dp — 낮불 먹) / 켜짐(불 채움 + ✓ 불 위 글자 — 낮불 먹 채움 + 종이 ✓: 주황은 주 버튼 1곳). */
 @Composable
 fun TickCircle(on: Boolean, modifier: Modifier = Modifier) {
@@ -296,7 +304,7 @@ fun TickCircle(on: Boolean, modifier: Modifier = Modifier) {
         },
         contentAlignment = Alignment.Center,
     ) {
-        if (on) Text("✓", color = mark, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        if (on) Text("✓", color = mark, fontSize = fixedSp(12.dp), fontWeight = FontWeight.Bold) // 고정 22dp 원 안의 표시 — 글자 크기 설정을 따라 커지지 않게
     }
 }
 
