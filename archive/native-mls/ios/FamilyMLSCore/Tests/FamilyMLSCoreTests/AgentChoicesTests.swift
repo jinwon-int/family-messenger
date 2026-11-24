@@ -286,6 +286,17 @@ final class AgentChoicesTests: XCTestCase {
         XCTAssertEqual(parsed?.recommendedNumbers, [])
     }
 
+    /// §1.7(#876): 접두 `(권장)` 만 권장 — 부정 표현·다른 뜻·옛 접미·본문 `권장 N번` 은 알약을 받지 않는다.
+    func testRecommendedIsPrefixOnly() {
+        let parsed = AgentChoices.parse("권장: 2번\n**[답변 필요]** 여러 개 선택 가능\n1. **(권장)** 측정부터\n2. 그대로 작성 (권장하지 않음)\n3. 둘 다 추가(비권장)\n4. 재배포 (권장)")
+        XCTAssertEqual(parsed?.recommended, 1)
+        XCTAssertEqual(parsed?.recommendedNumbers, [1])
+        XCTAssertEqual(parsed?.label(of: 1), "(권장) 측정부터")
+        let none = AgentChoices.parse("**[답변 필요]** 하나만 선택\n1. 이슈 코멘트에서 권장한 안\n2. 보류")
+        XCTAssertNil(none?.recommended)
+        XCTAssertEqual(none?.recommendedNumbers, [])
+    }
+
     /// §1.7: 접두 `N. (권장) …` 여러 항목은 모두 권장 — `recommended` 는 예전처럼 첫 항목 하나(하위 호환).
     func testSeveralPrefixRecommendations() {
         let parsed = AgentChoices.parse("**[답변 필요]** 여러 개 선택 가능\n1. (권장) PR #12 머지 승인\n2. (권장) 노드 재시작 승인\n3. 보류")

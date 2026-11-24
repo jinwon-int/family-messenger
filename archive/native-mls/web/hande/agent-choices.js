@@ -13,7 +13,7 @@ const ITEM = /^ {0,3}([0-9]{1,2})[.)][ \t]+([^ \t\n][^\n]*)$/;
 const FENCE = /^[ \t]*```/;
 const BLANK = /^[ \t]*$/;
 const INDENTED = /^( {2,}|\t)/;
-const RECOMMENDED = /권장[ \t\n]*[:：]?[ \t\n]*([0-9]{1,2})[ \t\n]*번/;
+const RECOMMENDED_PREFIX = '(권장)';   // §1.7(#876): 정리된 라벨이 이 글자로 **시작**할 때만 권장
 
 export const MAX_ITEMS = 9;
 
@@ -33,22 +33,18 @@ function headerMode(line) {
   return clean.includes('하나만') || ONE_WORD.test(lower) ? 'one' : 'many';
 }
 
-/** 권장 번호(규격 §1.7): 메시지 전체의 `권장 N번`(1..k) → 라벨에 `권장` 이 든 첫 항목 → null. */
-function recommendedOf(source, items) {
-  const named = RECOMMENDED.exec(source);   // 메시지 전체(펜스 포함)의 첫 일치만
-  const n = named ? Number.parseInt(named[1], 10) : 0;
-  if (n >= 1 && n <= items.length) return n;
-  return items.find((it) => it.label.includes('권장'))?.number ?? null;
+/**
+ * 권장 번호 모두(규격 §1.7, #876): §1.6 으로 정리한 라벨이 `(권장)` 으로 **시작**하는 항목 — 오름차순·중복 없음, 없으면 [].
+ * 접두 `N. (권장) …` 만 권장이다. 라벨 중간·끝의 `권장`(「권장하지 않음」·「비권장」·옛 접미 `… (권장)`)과 본문의 `권장 N번` 은 보지 않는다
+ * — 알약은 언제나 라벨 앞의 `(권장)` 과 같이 다닌다. 여러 항목이 권장일 수 있다.
+ */
+function recommendedNumbersOf(items) {
+  return items.filter((it) => it.label.startsWith(RECOMMENDED_PREFIX)).map((it) => it.number);   // items 는 1..k 오름차순
 }
 
-/**
- * 권장 번호 모두(규격 §1.7): 메시지 전체의 `권장 N번`(1..k) ∪ 라벨에 `권장` 이 든 모든 항목 — 오름차순·중복 없음, 없으면 [].
- * 접두 `N. (권장) …`·접미 `… (권장)` 어느 쪽이든 라벨에 `권장` 이 들어 있으면 된다. 여러 항목이 권장일 수 있다.
- */
-function recommendedNumbersOf(source, items) {
-  const named = RECOMMENDED.exec(source);
-  const n = named ? Number.parseInt(named[1], 10) : 0;
-  return items.filter((it) => it.number === n || it.label.includes('권장')).map((it) => it.number);   // items 는 1..k 오름차순
+/** 권장 번호(규격 §1.7): 권장 번호 모두의 첫 번호, 없으면 null(옛 필드 — 하위 호환). */
+function recommendedOf(items) {
+  return recommendedNumbersOf(items)[0] ?? null;
 }
 
 /**
@@ -56,7 +52,7 @@ function recommendedNumbersOf(source, items) {
  * 머리줄 = 펜스 밖, 블록 첫 항목 바로 위의 비어 있지 않은 줄. 마지막 유효 명시 블록(항목 1~9)이 결과.
  * 닫힌 블록은 뒤의 번호 줄로 무효가 되지 않는다(무효는 열린 블록만).
  */
-function parseExplicitChoices(source, lines) {
+function parseExplicitChoices(lines) {
   let found = null;
   let block = null;   // {items, mode, invalid}
   let prev = null;    // 바로 앞의 비어 있지 않은 줄 {text, fenced}
@@ -88,7 +84,7 @@ function parseExplicitChoices(source, lines) {
   finish();
   if (!found) return null;
   return {
-    items: found.items, recommended: recommendedOf(source, found.items), recommendedNumbers: recommendedNumbersOf(source, found.items),
+    items: found.items, recommended: recommendedOf(found.items), recommendedNumbers: recommendedNumbersOf(found.items),
     mode: found.mode, explicit: true,
   };
 }
@@ -101,8 +97,7 @@ function parseExplicitChoices(source, lines) {
  */
 export function parseChoices(text) {
   if (typeof text !== 'string' || text.length === 0) return null;
-  const source = text.replace(/\r\n/g, '\n');
-  return parseExplicitChoices(source, source.split('\n'));
+  return parseExplicitChoices(text.replace(/\r\n/g, '\n').split('\n'));
 }
 
 const isDigit = (ch) => ch >= '0' && ch <= '9';   // ASCII 만 — 전각 `１` 은 숫자가 아니다
