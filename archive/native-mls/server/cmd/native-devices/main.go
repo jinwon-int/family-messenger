@@ -88,6 +88,8 @@ func run(args []string, out io.Writer) error {
 	revokeAll := fs.String("revoke-all", "", "E4: revoke every active device of this actor")
 	setRoles := fs.String("set-roles", "", "E5: set this active device's roles (-roles; optional -input registrar evidence)")
 	roles := fs.String("roles", "", "with -set-roles: `registrar` or `none`")
+	compact := fs.Bool("compact", false, "#421: checkpoint the current revision and move older revisions to -policy-archive")
+	archive := fs.String("policy-archive", "", "with -compact: archive root (absolute; default: policy-archive next to -device-state)")
 	if e := fs.Parse(args); e != nil {
 		return e
 	}
@@ -96,13 +98,13 @@ func run(args []string, out io.Writer) error {
 	}
 
 	modes := 0
-	for _, on := range []bool{*initMode, *inspect, *enrollFirst, *addDevice, *revoke != "", *revokeAll != "", *setRoles != ""} {
+	for _, on := range []bool{*initMode, *inspect, *enrollFirst, *addDevice, *revoke != "", *revokeAll != "", *setRoles != "", *compact} {
 		if on {
 			modes++
 		}
 	}
 	if *dir == "" || modes != 1 {
-		return errors.New("requires -device-state and exactly one of -init, -inspect, -enroll-first, -add-device, -revoke, -revoke-all, -set-roles")
+		return errors.New("requires -device-state and exactly one of -init, -inspect, -enroll-first, -add-device, -revoke, -revoke-all, -set-roles, -compact")
 	}
 	if !filepath.IsAbs(*dir) {
 		return errors.New("-device-state must be an absolute path")
@@ -113,7 +115,10 @@ func run(args []string, out io.Writer) error {
 	if (*roles != "") != (*setRoles != "") {
 		return errors.New("-roles and -set-roles go together")
 	}
-	mutating := *enrollFirst || *addDevice || *revoke != "" || *revokeAll != "" || *setRoles != ""
+	if *archive != "" && !*compact {
+		return errors.New("-policy-archive applies only to -compact")
+	}
+	mutating := *enrollFirst || *addDevice || *revoke != "" || *revokeAll != "" || *setRoles != "" || *compact
 	if mutating && *expected == 0 {
 		return errors.New("mutations require -expected-revision (exact CAS on the current revision)")
 	}
@@ -138,6 +143,31 @@ func run(args []string, out io.Writer) error {
 			return e
 		}
 		return printView(view(info, policy.Devices), out)
+	case *compact:
+		root := *archive
+		if root == "" {
+			root = filepath.Join(filepath.Dir(filepath.Clean(*dir)), "policy-archive")
+		}
+		if !filepath.IsAbs(root) {
+			return errors.New("-policy-archive must be an absolute path")
+		}
+		res, e := s.Compact(*expected, root)
+		if e != nil {
+			return e
+		}
+		archived := res.Archived
+		if archived == nil {
+			archived = []string{}
+		}
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", " ")
+		return enc.Encode(struct {
+			Revision   uint64   `json:"revision"`
+			SHA256     string   `json:"sha256"`
+			Created    bool     `json:"checkpoint_created"`
+			Archived   []string `json:"archived"`
+			ArchiveDir string   `json:"archive_dir,omitempty"`
+		}{res.Checkpoint.Revision, res.Checkpoint.SHA256, res.Created, archived, res.ArchiveDir})
 	default:
 		info, policy, e := s.Read()
 		if e != nil {

@@ -41,7 +41,8 @@ import (
 const (
 	DevicePolicyVersion  = 4
 	MaxDevicePolicyBytes = 64 * 1024
-	// MaxDevicePolicyRevisions bounds the chain (compaction not implemented, #421).
+	// MaxDevicePolicyRevisions bounds the chain files from the replay base —
+	// genesis, or the newest checkpoint once compacted (Compact, #421 plan A).
 	// Raised 64 → 256 on 2026-11-24 (#421 plan B): rev 50 by then, and revoke also
 	// needs a revision, so exhausting the space would block revoking a lost device.
 	// One-way for a live chain: a binary built with a lower value refuses a
@@ -209,6 +210,11 @@ type PolicyRecord4 struct {
 	Previous     string      `json:"previous_sha256"`
 	PolicySHA256 string      `json:"policy_sha256"`
 	Policy       PolicyWire4 `json:"policy"`
+	// Checkpoint (#421 plan A) marks a compaction record: it carries the device
+	// set of the revision before it unchanged, and replay may start here once
+	// the older revisions are moved to the archive. omitempty keeps every
+	// ordinary record byte-identical to the pre-compaction encoding.
+	Checkpoint bool `json:"checkpoint,omitempty"`
 }
 
 type DevicePolicyInfo struct {
@@ -263,7 +269,7 @@ func devicePolicyAllowedKey(k string) bool {
 	switch k {
 	case "version", "devices", "device_id", "actor", "subject", "signing_key",
 		"fingerprint", "status", "device_revision", "acceptance", "approved_by",
-		"roles", "revision", "previous_sha256", "policy_sha256", "policy":
+		"roles", "revision", "previous_sha256", "policy_sha256", "policy", "checkpoint":
 		return true
 	}
 	return false
@@ -838,24 +844,53 @@ func (s *DevicePolicyStore) locked(fn func(*os.File) error) error {
 	return fn(d)
 }
 
-// records replays the whole chain, strictest first failure wins. A malformed
-// chain reports the observed (highest) revision so a live manager never
-// silently accepts an older state after an error.
+// records replays the chain, strictest first failure wins. A malformed chain
+// reports the observed (highest) revision so a live manager never silently
+// accepts an older state after an error.
 func devicePolicyRecords(d *os.File) (DevicePolicyInfo, PolicyWire4, error) {
-	var info DevicePolicyInfo
-	var current PolicyWire4
+	c, e := devicePolicyChain(d)
+	return c.info, c.policy, e
+}
+
+// policyChain is a replayed chain: the head, its device set, the revision the
+// replay started from (1, or the newest checkpoint — #421 plan A), whether the
+// head itself is that checkpoint, and the revisions below base still in the
+// directory (history not yet moved to the archive).
+type policyChain struct {
+	info       DevicePolicyInfo
+	policy     PolicyWire4
+	base       uint64
+	headIsBase bool
+	below      []string
+}
+
+// devicePolicyChain replays the chain directory. Without a checkpoint it is
+// the whole chain 1..N, exactly as before compaction existed. With one, replay
+// starts at the newest checkpoint C: C..N must be contiguous and link as usual,
+// C must carry the device set of C-1 unchanged when C-1 is still present, and
+// the revisions below C must be one contiguous run ending at C-1 whose last
+// file hashes to C's previous_sha256 — the prefix an interrupted archive move
+// leaves behind. Those are verified as a prefix but not replayed.
+func devicePolicyChain(d *os.File) (policyChain, error) {
+	var c policyChain
 	var observed uint64
 	defer func() {
-		if observed > info.Revision {
-			info.Revision = observed
+		if observed > c.info.Revision {
+			c.info.Revision = observed
 		}
 	}()
+	// ReadDir continues from the descriptor's offset; rewind so a second replay
+	// under the same lock (Compact re-checks after writing its checkpoint)
+	// sees the whole directory.
+	if _, e := d.Seek(0, io.SeekStart); e != nil {
+		return c, ErrDevicePolicyState
+	}
 	entries, e := d.ReadDir(MaxDevicePolicyRevisions + MaxPendingPolicyFiles + 2)
 	if e != nil && e != io.EOF {
-		return info, current, ErrDevicePolicyState
+		return c, ErrDevicePolicyState
 	}
 	if len(entries) > MaxDevicePolicyRevisions+MaxPendingPolicyFiles+1 {
-		return info, current, ErrDevicePolicyState
+		return c, ErrDevicePolicyState
 	}
 	names := []string{}
 	pending := 0
@@ -876,55 +911,127 @@ func devicePolicyRecords(d *os.File) (DevicePolicyInfo, PolicyWire4, error) {
 		if strings.HasPrefix(ent.Name(), "pending-") {
 			pending++
 			if pending > MaxPendingPolicyFiles {
-				return info, current, ErrDevicePolicyState
+				return c, ErrDevicePolicyState
 			}
 			continue
 		}
 		names = append(names, ent.Name())
 	}
 	if len(names) > MaxDevicePolicyRevisions+1 {
-		return info, current, ErrDevicePolicyState
+		return c, ErrDevicePolicyState
 	}
 	sort.Strings(names)
-	for _, name := range names {
-		if len(name) == 18 && strings.HasPrefix(name, "policy-") && strings.HasSuffix(name, ".json") {
-			if n, e := strconv.ParseUint(name[7:13], 10, 64); e == nil && name == devicePolicyRevisionName(n) && n > observed {
-				observed = n
-			}
-		}
-	}
+	revs := make([]uint64, len(names))
 	for i, name := range names {
-		rev := uint64(i + 1)
-		if name != devicePolicyRevisionName(rev) {
-			return info, current, ErrDevicePolicyState
+		n, ok := devicePolicyRevisionOf(name)
+		if ok && n > observed {
+			observed = n
 		}
-		info.Revision = rev
+		if !ok {
+			return c, ErrDevicePolicyState
+		}
+		revs[i] = n
+	}
+	raws := make([][]byte, len(names))
+	recs := make([]PolicyRecord4, len(names))
+	start := 0 // index replay starts from
+	for i, name := range names {
 		b, e := readDevicePolicyFile(d, name)
 		if e != nil {
-			return info, current, e
+			return c, e
 		}
 		rec, e := parseDevicePolicyRecord(b)
-		if e != nil || rec.Revision != rev || rec.Previous != info.SHA256 {
-			return info, current, ErrDevicePolicyState
+		if e != nil || rec.Revision != revs[i] {
+			return c, ErrDevicePolicyState
+		}
+		raws[i], recs[i] = b, rec
+		if rec.Checkpoint {
+			start = i
+		}
+	}
+	if len(names) > 0 && !recs[start].Checkpoint && revs[0] != 1 {
+		return c, ErrDevicePolicyState // no checkpoint: the chain must begin at genesis
+	}
+	// Every name is its own revision; revisions must be contiguous throughout
+	// (a gap anywhere — in the replayed part or in the prefix — fails closed).
+	for i := 1; i < len(revs); i++ {
+		if revs[i] != revs[i-1]+1 {
+			return c, ErrDevicePolicyState
+		}
+	}
+	c.base = 1
+	if len(names) > 0 && recs[start].Checkpoint {
+		cp := recs[start]
+		c.base = cp.Revision
+		if !isHexSHA256(cp.Previous) {
+			return c, ErrDevicePolicyState
+		}
+		if start > 0 {
+			// The prefix still present must end in the revision the checkpoint
+			// links to, and the checkpoint must not have changed its device set.
+			h := sha256.Sum256(raws[start-1])
+			if hex.EncodeToString(h[:]) != cp.Previous {
+				return c, ErrDevicePolicyState
+			}
+			before, _ := json.Marshal(recs[start-1].Policy)
+			after, _ := json.Marshal(cp.Policy)
+			if !bytes.Equal(before, after) {
+				return c, ErrDevicePolicyState
+			}
+			c.below = append(c.below, names[:start]...)
+		}
+	}
+	for i := start; i < len(names); i++ {
+		rec, rev := recs[i], revs[i]
+		c.info.Revision = rev
+		if i == start && rec.Checkpoint {
+			// The checkpoint links to an archived (or prefix) revision; its own
+			// hash chain starts here.
+		} else if rec.Previous != c.info.SHA256 {
+			return c, ErrDevicePolicyState
 		}
 		encoded, _ := json.Marshal(rec.Policy)
 		sum := sha256.Sum256(encoded)
 		if rec.PolicySHA256 != hex.EncodeToString(sum[:]) {
-			return info, current, ErrDevicePolicyState
+			return c, ErrDevicePolicyState
 		}
 		if e := validateDeviceSet(rec.Policy.Devices); e != nil {
-			return info, current, ErrDevicePolicyState
+			return c, ErrDevicePolicyState
 		}
-		if rev > 1 {
-			if e := deviceTransitionV4(current.Devices, rec.Policy.Devices, rev); e != nil {
-				return info, current, ErrDevicePolicyState
+		if i > start {
+			if e := deviceTransitionV4(c.policy.Devices, rec.Policy.Devices, rev); e != nil {
+				return c, ErrDevicePolicyState
 			}
 		}
-		current = rec.Policy
-		h := sha256.Sum256(b)
-		info.SHA256 = hex.EncodeToString(h[:])
+		c.policy = rec.Policy
+		h := sha256.Sum256(raws[i])
+		c.info.SHA256 = hex.EncodeToString(h[:])
 	}
-	return info, current, nil
+	c.headIsBase = len(names) > 0 && recs[len(names)-1].Checkpoint
+	return c, nil
+}
+
+// devicePolicyRevisionOf parses a chain file name (policy-NNNNNN.json).
+func devicePolicyRevisionOf(name string) (uint64, bool) {
+	if len(name) != 18 || !strings.HasPrefix(name, "policy-") || !strings.HasSuffix(name, ".json") {
+		return 0, false
+	}
+	// Six digits (<= 999999): parse with an explicit 32-bit bound so the value
+	// is provably in range wherever a revision is later converted (CodeQL
+	// go/incorrect-integer-conversion).
+	n, e := strconv.ParseUint(name[7:13], 10, 32)
+	if e != nil || n == 0 || name != devicePolicyRevisionName(n) {
+		return 0, false
+	}
+	return n, true
+}
+
+func isHexSHA256(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	_, e := hex.DecodeString(s)
+	return e == nil && strings.ToLower(s) == s
 }
 
 // Read validates and returns the current chain state. An unchanged directory
@@ -973,7 +1080,7 @@ func (s *DevicePolicyStore) Init() (DevicePolicyInfo, error) {
 			}
 		}
 		genesis := PolicyWire4{Version: DevicePolicyVersion, Devices: []DeviceV4{}}
-		return writeDevicePolicyRevision(d, 1, "", genesis, &out)
+		return writeDevicePolicyRevision(d, 1, "", genesis, false, &out)
 	})
 	return out, e
 }
@@ -992,11 +1099,14 @@ func (s *DevicePolicyStore) Commit(expected uint64, next PolicyWire4) (DevicePol
 	var out DevicePolicyInfo
 	e := s.locked(func(d *os.File) error {
 		s.cacheValid = false
-		old, previous, e := devicePolicyRecords(d)
+		chain, e := devicePolicyChain(d)
 		if e != nil {
 			return e
 		}
-		if old.Revision == expected+1 && expected < MaxDevicePolicyRevisions &&
+		old, previous := chain.info, chain.policy
+		// A checkpoint head is never "the immediately preceding outcome" of a
+		// caller's commit (it changes nothing) — do not answer a stale CAS with it.
+		if old.Revision == expected+1 && !chain.headIsBase &&
 			approvalEqualPolicy(previous, next) {
 			out = old // exact replay of the immediately preceding outcome
 			return nil
@@ -1007,11 +1117,15 @@ func (s *DevicePolicyStore) Commit(expected uint64, next PolicyWire4) (DevicePol
 		if e := deviceTransitionV4(previous.Devices, next.Devices, expected+1); e != nil {
 			return e
 		}
-		if old.Revision >= MaxDevicePolicyRevisions {
-			return fmt.Errorf("policy revision space exhausted at %d (compaction not implemented): %w", MaxDevicePolicyRevisions,
-				limitErr(LimitPolicyRevisions, int(old.Revision)+1, MaxDevicePolicyRevisions, ErrDevicePolicyState))
+		// The space is counted from the replay base (genesis or the newest
+		// checkpoint, #421 plan A): revision numbers keep growing across a
+		// compaction, the number of chain files does not.
+		if inChain := old.Revision - chain.base + 1; inChain >= MaxDevicePolicyRevisions {
+			return fmt.Errorf("policy revision space exhausted at %d revisions since revision %d (compact with native-devices -compact): %w",
+				MaxDevicePolicyRevisions, chain.base,
+				limitErr(LimitPolicyRevisions, int(inChain)+1, MaxDevicePolicyRevisions, ErrDevicePolicyState))
 		}
-		return writeDevicePolicyRevision(d, expected+1, old.SHA256, next, &out)
+		return writeDevicePolicyRevision(d, expected+1, old.SHA256, next, false, &out)
 	})
 	return out, e
 }
@@ -1031,7 +1145,95 @@ func randRead(b []byte) (int, error) {
 // writeDevicePolicyRevision mirrors the v1 write path: pending file → fsync →
 // close → target must not exist → renameat → directory fsync. The chain link is
 // the sha256 of the raw file bytes (including the trailing newline).
-func writeDevicePolicyRevision(d *os.File, revision uint64, previousSHA string, policy PolicyWire4, out *DevicePolicyInfo) error {
+// CompactResult reports one Compact call (#421 plan A).
+type CompactResult struct {
+	Checkpoint DevicePolicyInfo // the replay base after this call
+	Created    bool             // a new checkpoint revision was written
+	Archived   []string         // chain files moved out of the chain directory
+	ArchiveDir string           // where they went (empty when nothing moved)
+}
+
+// Compact (#421 plan A) writes checkpoint revision expected+1 carrying the
+// current device set unchanged, then moves every revision below it into a new
+// archiveRoot/revisions-<first>-<last> directory (archiveRoot: absolute, 0700,
+// owned by this user, outside the chain directory). Numbering never restarts,
+// so evidence signed against a base_revision can never match again, and
+// approved_by revisions keep their meaning. Crash-safe: the checkpoint is one
+// atomic rename, and until the move completes the older files are a verified
+// prefix that replay skips (devicePolicyChain). With expected = an existing
+// checkpoint head it only finishes an interrupted move. The device set is not
+// pruned — tombstones stay, so ids and keys are never reused.
+func (s *DevicePolicyStore) Compact(expected uint64, archiveRoot string) (CompactResult, error) {
+	var out CompactResult
+	if !filepath.IsAbs(archiveRoot) || filepath.Clean(archiveRoot) != archiveRoot ||
+		archiveRoot == s.dir || strings.HasPrefix(archiveRoot+string(filepath.Separator), s.dir+string(filepath.Separator)) {
+		return out, fmt.Errorf("archive directory must be absolute, clean and outside the chain directory: %w", ErrDevicePolicyConfig)
+	}
+	e := s.locked(func(d *os.File) error {
+		s.cacheValid = false
+		chain, e := devicePolicyChain(d)
+		if e != nil {
+			return e
+		}
+		if chain.info.Revision == 0 {
+			return ErrDevicePolicyState
+		}
+		if chain.info.Revision != expected {
+			return fmt.Errorf("current revision %d != expected %d: %w", chain.info.Revision, expected, ErrDevicePolicyConflict)
+		}
+		out.Checkpoint = chain.info
+		if !chain.headIsBase {
+			var info DevicePolicyInfo
+			if e := writeDevicePolicyRevision(d, expected+1, chain.info.SHA256, chain.policy, true, &info); e != nil {
+				return e
+			}
+			out.Checkpoint, out.Created = info, true
+			// Re-replay: proves the new head is a valid base and lists the prefix to move.
+			if chain, e = devicePolicyChain(d); e != nil {
+				return e
+			}
+		}
+		if len(chain.below) == 0 {
+			return nil
+		}
+		if e := os.MkdirAll(archiveRoot, 0o700); e != nil {
+			return ErrDevicePolicyState
+		}
+		root, e := devicePrivateDir(archiveRoot)
+		if e != nil {
+			return e
+		}
+		defer root.Close()
+		first, _ := devicePolicyRevisionOf(chain.below[0])
+		last, _ := devicePolicyRevisionOf(chain.below[len(chain.below)-1])
+		sub := fmt.Sprintf("revisions-%06d-%06d", first, last)
+		if e := syscall.Mkdirat(int(root.Fd()), sub, 0o700); e != nil {
+			return ErrDevicePolicyState
+		}
+		fd, e := syscall.Openat(int(root.Fd()), sub, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+		if e != nil {
+			return ErrDevicePolicyState
+		}
+		target := os.NewFile(uintptr(fd), "device policy archive")
+		defer target.Close()
+		out.ArchiveDir = filepath.Join(archiveRoot, sub)
+		// Lowest first: whatever an interruption leaves behind is still one
+		// contiguous run ending at the checkpoint's predecessor.
+		for _, name := range chain.below {
+			if e := syscall.Renameat(int(d.Fd()), name, int(target.Fd()), name); e != nil {
+				return ErrDevicePolicyState
+			}
+			out.Archived = append(out.Archived, name)
+		}
+		if target.Sync() != nil || d.Sync() != nil || root.Sync() != nil {
+			return ErrDevicePolicyState
+		}
+		return nil
+	})
+	return out, e
+}
+
+func writeDevicePolicyRevision(d *os.File, revision uint64, previousSHA string, policy PolicyWire4, checkpoint bool, out *DevicePolicyInfo) error {
 	encodedPolicy, _ := json.Marshal(policy)
 	sum := sha256.Sum256(encodedPolicy)
 	data, e := json.Marshal(PolicyRecord4{
@@ -1039,6 +1241,7 @@ func writeDevicePolicyRevision(d *os.File, revision uint64, previousSHA string, 
 		Previous:     previousSHA,
 		PolicySHA256: hex.EncodeToString(sum[:]),
 		Policy:       policy,
+		Checkpoint:   checkpoint,
 	})
 	if e != nil || len(data)+1 > MaxDevicePolicyBytes {
 		return ErrDevicePolicyConfig

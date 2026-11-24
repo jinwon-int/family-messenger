@@ -73,7 +73,7 @@ if str(SCRIPTS) not in sys.path:
 from native_relay_snapshot import (BLOB_DIR, BLOB_EXAMPLES, DB_NAME, blob_label, blob_rows,  # noqa: E402
                                    locate_blob, sha256_file, summarize_db)
 
-LABELS = ('data', 'policy', 'static', 'hande', 'dropin', 'env')
+LABELS = ('data', 'policy', 'policy-archive', 'static', 'hande', 'dropin', 'env')
 BLOB_TMP = '.tmp'  # the relay's own upload scratch directory; it empties it at every start (blobs.go)
 EXIT_BLOBS = 3
 
@@ -121,6 +121,15 @@ def verify_tree(root):
         if actual != meta['sha256']:
             raise ValueError('sha256 mismatch for ' + relative)
     return manifest
+
+
+def target_policy_archive_dir(args):
+    """#421: where a snapshot's policy-archive goes — explicit, or beside --target-policy-dir."""
+    if getattr(args, 'target_policy_archive_dir', None):
+        return args.target_policy_archive_dir
+    if args.target_policy_dir:
+        return str(Path(args.target_policy_dir).parent / 'policy-archive')
+    return None
 
 
 def unit_active(unit, runner=None):
@@ -357,8 +366,10 @@ def restore(args, runner=None):
         if not args.skip_unit_check and unit_active(args.unit, runner):
             raise RuntimeError('relay unit ' + args.unit + ' is active; stop it before restoring')
         targets = {'data': args.target_data_dir, 'policy': args.target_policy_dir,
+                   'policy-archive': target_policy_archive_dir(args),
                    'static': args.target_static_dir, 'hande': args.target_hande_dir}
-        modes = {'data': (0o700, 0o600), 'policy': (0o700, 0o600), 'static': (0o755, 0o644), 'hande': (0o755, 0o644)}
+        modes = {'data': (0o700, 0o600), 'policy': (0o700, 0o600), 'policy-archive': (0o700, 0o600),
+                 'static': (0o755, 0o644), 'hande': (0o755, 0o644)}
         aside = {}
         restored = []
         for label, target in targets.items():
@@ -376,7 +387,7 @@ def restore(args, runner=None):
         # Before the chown below, so the blob tree gets the same owner as the database.
         blobs = place_blobs(db_path, args.target_data_dir, blob_sources(args, aside.get('data')), *modes['data'])
         if args.owner:
-            for label in ('data', 'policy'):
+            for label in ('data', 'policy', 'policy-archive'):
                 if targets[label] and label in restored:
                     chown_tree(targets[label], args.owner)
         result = {
@@ -400,6 +411,8 @@ def parse(argv=None):
     parser.add_argument('--summary-only', action='store_true', help='verify and print the manifest; write nothing')
     parser.add_argument('--target-data-dir')
     parser.add_argument('--target-policy-dir')
+    parser.add_argument('--target-policy-archive-dir',
+                        help='#421 compaction archive target (default: policy-archive beside --target-policy-dir)')
     parser.add_argument('--target-static-dir')
     parser.add_argument('--target-hande-dir')
     parser.add_argument('--bump-seq', type=int, default=0, help='#440-C c1: add N to every room last_seq')
