@@ -36,7 +36,7 @@ for (const v of vectors.explicit) {
   });
 }
 
-test('공유 벡터 explicit 의 recommendedNumbers: 접두 (권장) 여럿·권장 N번 합치기가 실렸다', () => {
+test('공유 벡터 explicit 의 recommendedNumbers: 접두 (권장) 여럿이 실렸고, 접두 없는 권장 글자는 빠진다(#876)', () => {
   const cases = vectors.explicit.filter((v) => v.expected);
   assert.ok(cases.every((v) => Array.isArray(v.expected.recommendedNumbers)));
   assert.ok(cases.some((v) => v.expected.recommendedNumbers.length >= 2));
@@ -46,7 +46,16 @@ test('공유 벡터 explicit 의 recommendedNumbers: 접두 (권장) 여럿·권
     // recommended 는 그대로(하위 호환): 있으면 recommendedNumbers 안에 있고, 없으면 recommendedNumbers 도 비었다.
     if (v.expected.recommended === null) assert.deepEqual(nums, [], v.name);
     else assert.ok(nums.includes(v.expected.recommended), v.name);
+    // #876: 알약은 언제나 라벨 앞의 `(권장)` 과 같이 다닌다 — 기대값 자체가 접두 규칙과 같아야 한다.
+    assert.deepEqual(nums, v.expected.items.filter((it) => it.label.startsWith('(권장)')).map((it) => it.number), v.name);
+    assert.equal(v.expected.recommended, nums[0] ?? null, v.name);
   }
+  // 접두 없이 `권장` 글자만 든 라벨(부정·다른 뜻·옛 접미)이 벡터에 있고, 그 항목은 권장이 아니다.
+  const bare = cases.flatMap((v) => v.expected.items
+    .filter((it) => it.label.includes('권장') && !it.label.startsWith('(권장)'))
+    .map((it) => ({ name: v.name, number: it.number, nums: v.expected.recommendedNumbers })));
+  assert.ok(bare.length >= 6);
+  for (const b of bare) assert.ok(!b.nums.includes(b.number), `${b.name} #${b.number}`);
 });
 
 // #671 PR B: `one` 모드 — 행 탭은 바꿔 고르기, 답에 번호가 여럿이면 답이 아니다(closed).
@@ -124,7 +133,7 @@ test('parse: 문자열이 아니거나 빈 글은 null', () => {
 
 // ---- 상태(규격 §2) — app.js R.entries 모양 ----
 
-const ASK = '어떻게 할까요?\n**[답변 필요]** 여러 개 선택 가능\n1. 유지\n2. 롤백 (권장)\n3. 보류';
+const ASK = '어떻게 할까요?\n**[답변 필요]** 여러 개 선택 가능\n1. 유지\n2. (권장) 롤백\n3. 보류';
 const agent = (key, body = ASK) => ({ key, kind: 'text', isAgent: true, isMe: false, body });
 const mine = (key, body) => ({ key, kind: 'text', isAgent: false, isMe: true, body });
 const other = (key, body) => ({ key, kind: 'text', isAgent: false, isMe: false, body });
@@ -147,7 +156,7 @@ test('state: 바로 다음이 내 `N` 이면 answered([N]) + 라벨', () => {
     const s = choiceState([agent('b'), mine('c', reply)], 0);
     assert.equal(s.state, 'answered', reply);
     assert.deepEqual(s.numbers, [2]);
-    assert.deepEqual(s.labels, ['롤백 (권장)']);
+    assert.deepEqual(s.labels, ['(권장) 롤백']);
   }
 });
 

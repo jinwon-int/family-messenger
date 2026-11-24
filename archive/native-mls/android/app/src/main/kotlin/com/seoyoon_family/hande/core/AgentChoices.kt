@@ -13,8 +13,8 @@ data class AgentChoiceItem(val number: Int, val label: String)
 /**
  * 판정 결과: 항목(번호 1..k 연속 — 명시 블록 1~9개) + 권장 번호(없으면 null).
  * §5: `mode`(머리줄의 `하나만`·`one` → ONE, 아니면 MANY)·`explicit`(명시 블록이면 true — `parse` 결과는 언제나 true, §6).
- * §1.7 `recommendedNumbers`: 권장 번호 모두(오름차순·중복 없음, 없으면 빈 목록) — 메시지의 `권장 N번`(1..k) ∪ 라벨에 `권장` 이 든
- * 모든 항목(접두 `N. (권장) …` 여럿 가능). 주지 않으면 `recommended` 하나(또는 빈 목록) — 옛 생성자 호출 그대로.
+ * §1.7 `recommendedNumbers`: 권장 번호 모두(오름차순·중복 없음, 없으면 빈 목록) — 라벨이 `(권장)` 으로 **시작**하는
+ * 모든 항목(접두 `N. (권장) …` 여럿 가능, #876). 주지 않으면 `recommended` 하나(또는 빈 목록) — 옛 생성자 호출 그대로.
  */
 data class AgentChoices(
     val items: List<AgentChoiceItem>,
@@ -47,10 +47,10 @@ data class AgentChoices(
     data class RoomAnswer(val mode: Mode, val count: Int, val number: Int, val label: String)
 
     companion object {
-        private const val WS = "[ \\t\\n]"
         // `.` 대신 줄 끝 문자를 뺀 묶음 — JVM `.`/`$` 의 줄 끝 규칙(마지막 \r 앞에서 `$` 일치 등)이 웹·iOS 와 달라지지 않게 matchEntire 로 쓴다.
         private val ITEM = Regex("^ {0,3}([0-9]{1,2})[.)][ \\t]+([^ \\t\\n\\r\\u2028\\u2029][^\\n\\r\\u2028\\u2029]*)$")
-        private val RECOMMENDED = Regex("권장$WS*[:：]?$WS*([0-9]{1,2})$WS*번")
+        /** 권장 접두(§1.7, #876): §1.6 으로 정리한 라벨이 이 글자로 **시작**할 때만 권장이다. */
+        private const val RECOMMENDED_PREFIX = "(권장)"
         private val SPACES = Regex("[ \\t]+")
 
         private fun spaceChar(c: Char) = c == ' ' || c == '\t'
@@ -86,22 +86,17 @@ data class AgentChoices(
             return if ("하나만" in clean || hasWordOne(lower)) Mode.ONE else Mode.MANY
         }
 
-        /** 권장 번호(규격 §1.7): 메시지 전체의 `권장 N번`(1..k) → 라벨에 `권장` 이 든 첫 항목 → null. */
-        private fun recommendedOf(normalized: String, items: List<AgentChoiceItem>): Int? {
-            val k = items.size
-            val fromPattern = RECOMMENDED.find(normalized)?.groupValues?.get(1)?.toInt()?.takeIf { it in 1..k }
-            return fromPattern ?: items.firstOrNull { "권장" in it.label }?.number
-        }
-
         /**
-         * 권장 번호 모두(규격 §1.7): 메시지 전체의 `권장 N번` 첫 일치(1..k 일 때) ∪ 라벨에 `권장` 이 든 모든 항목 — 오름차순·중복 없음.
-         * 접두 `N. (권장) …`·접미 `… (권장)` 어느 쪽이든 라벨에 `권장` 이 들어 있으면 된다.
+         * 권장 번호 모두(규격 §1.7, #876): 라벨이 `(권장)` 으로 **시작**하는 항목 — 오름차순·중복 없음, 없으면 빈 목록.
+         * 접두 `N. (권장) …` 만 권장이다. 라벨 중간·끝의 `권장`(「권장하지 않음」·「비권장」·옛 접미 `… (권장)`)과 본문의 `권장 N번` 은
+         * 보지 않는다 — 알약은 언제나 라벨 앞의 `(권장)` 과 같이 다닌다.
          */
-        private fun recommendedNumbersOf(normalized: String, items: List<AgentChoiceItem>): List<Int> {
-            val named = RECOMMENDED.find(normalized)?.groupValues?.get(1)?.toInt()
+        private fun recommendedNumbersOf(items: List<AgentChoiceItem>): List<Int> =
             // items 는 1..k 오름차순이라 거르기만 하면 오름차순·중복 없음이다.
-            return items.filter { it.number == named || "권장" in it.label }.map { it.number }
-        }
+            items.filter { it.label.startsWith(RECOMMENDED_PREFIX) }.map { it.number }
+
+        /** 권장 번호(규격 §1.7): 권장 번호 모두의 첫 번호, 없으면 null(옛 필드 — 하위 호환). */
+        private fun recommendedOf(items: List<AgentChoiceItem>): Int? = recommendedNumbersOf(items).firstOrNull()
 
         /** v2 명시 블록 하나(판정 중). `mode` 가 null 이면 머리줄이 없는 블록. */
         private class ExplicitBlock(val items: MutableList<AgentChoiceItem>, val mode: Mode?) {
@@ -113,7 +108,7 @@ data class AgentChoices(
          * 머리줄 = 펜스 밖, 블록 첫 항목 바로 위의 비어 있지 않은 줄. 마지막 유효 명시 블록(항목 1~9)이 결과.
          * 닫힌 블록은 뒤의 번호 줄로 무효가 되지 않는다(무효는 열린 블록만).
          */
-        private fun parseExplicit(normalized: String, lines: List<String>): AgentChoices? {
+        private fun parseExplicit(lines: List<String>): AgentChoices? {
             var found: ExplicitBlock? = null
             var block: ExplicitBlock? = null // 열린 블록(닫히면 null)
             var prevText: String? = null // 바로 앞의 비어 있지 않은 줄
@@ -163,8 +158,8 @@ data class AgentChoices(
             val f = found ?: return null
             val items = f.items.toList()
             return AgentChoices(
-                items, recommendedOf(normalized, items), f.mode ?: Mode.MANY, explicit = true,
-                recommendedNumbers = recommendedNumbersOf(normalized, items),
+                items, recommendedOf(items), f.mode ?: Mode.MANY, explicit = true,
+                recommendedNumbers = recommendedNumbersOf(items),
             )
         }
 
@@ -173,8 +168,7 @@ data class AgentChoices(
          * 머리줄 없는 번호 목록은 끝에 있어도 null(§6, #671 PR D — v1 단서어 추측은 쓰지 않는다).
          */
         fun parse(text: String): AgentChoices? {
-            val normalized = text.replace("\r\n", "\n")
-            return parseExplicit(normalized, normalized.split("\n"))
+            return parseExplicit(text.replace("\r\n", "\n").split("\n"))
         }
 
         private fun trimChar(c: Char) = c == ' ' || c == '\t' || c == '\n' || c == '\r'

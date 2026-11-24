@@ -28,7 +28,7 @@ public struct AgentChoices: Equatable {
     public let items: [Item]
     /// 권장 번호(1..items.count) 또는 nil.
     public let recommended: Int?
-    /// 권장 번호 모두(규격 §1.7, 오름차순·중복 없음, 없으면 빈 배열) — 메시지의 `권장 N번`(1..k) ∪ 라벨에 `권장` 이 든 모든 항목.
+    /// 권장 번호 모두(규격 §1.7, 오름차순·중복 없음, 없으면 빈 배열) — 라벨이 `(권장)` 으로 **시작**하는 모든 항목(#876).
     /// 접두 `N. (권장) …` 로 여러 항목을 권장할 수 있다. 카드는 이 번호들 모두에 「권장」 알약을 단다.
     public let recommendedNumbers: [Int]
     /// 선택 모드.
@@ -175,8 +175,8 @@ public struct AgentChoices: Equatable {
         }
         finish()
         guard let found else { return nil }
-        return AgentChoices(items: found.items, recommended: recommendedNumber(lines: lines, items: found.items),
-                            recommendedNumbers: recommendedNumberList(lines: lines, items: found.items),
+        return AgentChoices(items: found.items, recommended: recommendedNumber(items: found.items),
+                            recommendedNumbers: recommendedNumberList(items: found.items),
                             mode: found.mode, explicit: true)
     }
 
@@ -480,53 +480,19 @@ public struct AgentChoices: Equatable {
         return false
     }
 
-    /// 권장 번호: ① 메시지 전체(펜스 포함)의 `권장\s*[:：]?\s*([0-9]{1,2})\s*번` 첫 일치가 1..k → 그 번호,
-    /// ② 아니면 라벨에 `권장` 이 든 첫 항목, ③ 아니면 nil.
-    static func recommendedNumber(lines: [[Unicode.Scalar]], items: [Item]) -> Int? {
-        var all: [Unicode.Scalar] = []
-        for (index, line) in lines.enumerated() {
-            if index > 0 { all.append("\n") }
-            all.append(contentsOf: line)
-        }
-        // 첫 일치만 본다 — 그 번호가 범위 밖이면 라벨 규칙으로(벡터 「권장 N번 out of range falls back to label」).
-        if let first = firstRecommendedMention(all), first >= 1, first <= items.count { return first }
-        let mark = Array("권장".unicodeScalars)
-        return items.first { scalarsContain(Array($0.label.unicodeScalars), mark) }?.number
+    /// 권장 접두(§1.7, #876): §1.6 으로 정리한 라벨이 이 글자로 **시작**할 때만 권장이다.
+    static let recommendedPrefix = Array("(권장)".unicodeScalars)
+
+    /// 권장 번호 모두(§1.7, #876): 라벨이 `(권장)` 으로 시작하는 항목 — 오름차순·중복 없음, 없으면 빈 배열.
+    /// 접두 `N. (권장) …` 만 권장이다. 라벨 중간·끝의 `권장`(「권장하지 않음」·「비권장」·옛 접미 `… (권장)`)과
+    /// 본문의 `권장 N번` 은 보지 않는다 — 알약은 언제나 라벨 앞의 `(권장)` 과 같이 다닌다.
+    static func recommendedNumberList(items: [Item]) -> [Int] {
+        // items 는 1..k 오름차순이라 거르기만 하면 오름차순·중복 없음이다. 스칼라로 비교한다(웹·Android 의 접두 비교와 같게).
+        items.filter { Array($0.label.unicodeScalars).starts(with: recommendedPrefix) }.map(\.number)
     }
 
-    /// 권장 번호 모두(§1.7): 메시지 전체의 `권장 N번` 첫 일치(1..k 일 때) ∪ 라벨에 `권장` 이 든 모든 항목 — 오름차순·중복 없음.
-    /// 접두 `N. (권장) …`·접미 `… (권장)` 어느 쪽이든 라벨에 `권장` 이 들어 있으면 된다.
-    static func recommendedNumberList(lines: [[Unicode.Scalar]], items: [Item]) -> [Int] {
-        var all: [Unicode.Scalar] = []
-        for (index, line) in lines.enumerated() {
-            if index > 0 { all.append("\n") }
-            all.append(contentsOf: line)
-        }
-        let named = firstRecommendedMention(all)
-        let mark = Array("권장".unicodeScalars)
-        // items 는 1..k 오름차순이라 거르기만 하면 오름차순·중복 없음이다.
-        return items.filter { $0.number == named || scalarsContain(Array($0.label.unicodeScalars), mark) }.map(\.number)
-    }
-
-    /// `권장\s*[:：]?\s*([0-9]{1,2})\s*번` 의 첫(가장 왼쪽) 일치의 숫자.
-    static func firstRecommendedMention(_ s: [Unicode.Scalar]) -> Int? {
-        guard s.count >= 2 else { return nil }
-        for start in 0..<(s.count - 1) where s[start] == "권" && s[start + 1] == "장" {
-            var i = start + 2
-            while i < s.count, isSpaceOrNewline(s[i]) { i += 1 }
-            if i < s.count, s[i] == ":" || s[i] == "：" { i += 1 }
-            while i < s.count, isSpaceOrNewline(s[i]) { i += 1 }
-            var value = 0
-            var digits = 0
-            while i < s.count, let d = digitValue(s[i]) {
-                if digits < 2 { value = value * 10 + d }   // 넘침 방지 — 3자리 이상은 일치가 아니다
-                digits += 1
-                i += 1
-            }
-            guard digits >= 1, digits <= 2 else { continue }
-            while i < s.count, isSpaceOrNewline(s[i]) { i += 1 }
-            if i < s.count, s[i] == "번" { return value }
-        }
-        return nil
+    /// 권장 번호: 권장 번호 모두의 첫 번호, 없으면 nil(옛 필드 — 하위 호환).
+    static func recommendedNumber(items: [Item]) -> Int? {
+        recommendedNumberList(items: items).first
     }
 }

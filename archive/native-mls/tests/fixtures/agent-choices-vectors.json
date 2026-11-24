@@ -847,12 +847,12 @@
  "explicit": [
   {
    "name": "header one-mode, list in the middle with many trailing lines",
-   "text": "PR 둘을 올렸습니다.\n\n**[답변 필요]** 하나만 선택\n1. #155 relay 머지 (권장)\n2. #156 relay 머지\n\n확정 사실\n- a\n- b\n- c\n- d",
+   "text": "PR 둘을 올렸습니다.\n\n**[답변 필요]** 하나만 선택\n1. (권장) #155 relay 머지\n2. #156 relay 머지\n\n확정 사실\n- a\n- b\n- c\n- d",
    "expected": {
     "items": [
      {
       "number": 1,
-      "label": "#155 relay 머지 (권장)"
+      "label": "(권장) #155 relay 머지"
      },
      {
       "number": 2,
@@ -1048,7 +1048,7 @@
    "expected": null
   },
   {
-   "name": "recommended from 권장 N번 sentence",
+   "name": "권장 N번 sentence alone is not a recommendation (#876)",
    "text": "권장: 2번 — 더 안전합니다.\n\n**[답변 필요]** 하나만 선택\n1. 지금 배포\n2. 내일 배포",
    "expected": {
     "items": [
@@ -1061,10 +1061,8 @@
       "label": "내일 배포"
      }
     ],
-    "recommended": 2,
-    "recommendedNumbers": [
-     2
-    ],
+    "recommended": null,
+    "recommendedNumbers": [],
     "mode": "one",
     "explicit": true
    }
@@ -1213,7 +1211,7 @@
    }
   },
   {
-   "name": "권장 N번 out of range falls back to label",
+   "name": "suffix (권장) is not a recommendation (#876)",
    "text": "권장: 5번\n\n**[답변 필요]** 하나만 선택\n1. 유지\n2. 롤백 (권장)\n3. 보류",
    "expected": {
     "items": [
@@ -1230,16 +1228,14 @@
       "label": "보류"
      }
     ],
-    "recommended": 2,
-    "recommendedNumbers": [
-     2
-    ],
+    "recommended": null,
+    "recommendedNumbers": [],
     "mode": "one",
     "explicit": true
    }
   },
   {
-   "name": "first label containing 권장 wins when no N번 pattern",
+   "name": "label that merely contains 권장 is not a recommendation (#876)",
    "text": "**[답변 필요]** 하나만 선택\n1. 보류\n2. 권장 — 배포\n3. 권장 아님? 롤백",
    "expected": {
     "items": [
@@ -1256,11 +1252,8 @@
       "label": "권장 아님? 롤백"
      }
     ],
-    "recommended": 2,
-    "recommendedNumbers": [
-     2,
-     3
-    ],
+    "recommended": null,
+    "recommendedNumbers": [],
     "mode": "one",
     "explicit": true
    }
@@ -1351,7 +1344,7 @@
    }
   },
   {
-   "name": "mixed prefix and suffix (권장)",
+   "name": "mixed prefix and suffix (권장) -> prefix only (#876)",
    "text": "**[답변 필요]** 여러 개 선택 가능\n1. 유지\n2. (권장) **롤백**\n3. 보류\n4. 재배포 (권장)",
    "expected": {
     "items": [
@@ -1374,15 +1367,14 @@
     ],
     "recommended": 2,
     "recommendedNumbers": [
-     2,
-     4
+     2
     ],
     "mode": "many",
     "explicit": true
    }
   },
   {
-   "name": "권장 N번 sentence plus a (권장) label -> both recommended",
+   "name": "권장 N번 sentence plus a (권장) label -> the prefixed label only (#876)",
    "text": "권장: 2번 — 더 안전합니다.\n\n**[답변 필요]** 여러 개 선택 가능\n1. 지금 배포\n2. 내일 배포\n3. (권장) 로그 먼저 확인",
    "expected": {
     "items": [
@@ -1399,9 +1391,8 @@
       "label": "(권장) 로그 먼저 확인"
      }
     ],
-    "recommended": 2,
+    "recommended": 3,
     "recommendedNumbers": [
-     2,
      3
     ],
     "mode": "many",
@@ -1447,6 +1438,91 @@
     "recommended": null,
     "recommendedNumbers": [],
     "mode": "one",
+    "explicit": true
+   }
+  },
+  {
+   "name": "negated 권장 in a label is not a recommendation (#876)",
+   "text": "**[답변 필요]** 하나만 선택\n1. (권장) 측정부터 다시\n2. 그대로 PR 작성 (권장하지 않음: 노이즈로 판단됨)\n3. 둘 다 추가(비권장: 알림이 쏟아질 수 있음)\n4. 넘어가기. 권장하지 않아요.",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "(권장) 측정부터 다시"
+     },
+     {
+      "number": 2,
+      "label": "그대로 PR 작성 (권장하지 않음: 노이즈로 판단됨)"
+     },
+     {
+      "number": 3,
+      "label": "둘 다 추가(비권장: 알림이 쏟아질 수 있음)"
+     },
+     {
+      "number": 4,
+      "label": "넘어가기. 권장하지 않아요."
+     }
+    ],
+    "recommended": 1,
+    "recommendedNumbers": [
+     1
+    ],
+    "mode": "one",
+    "explicit": true
+   }
+  },
+  {
+   "name": "권장 used with another meaning mid-label is not a recommendation (#876)",
+   "text": "**[답변 필요]** 여러 개 선택 가능\n1. 기본값으로 켜기. 이슈 코멘트에서 권장한 안입니다.\n2. 새 head 를 보고하고 다시 승인받기 (권장 기본 동작)\n3. (권장 — 급하지 않아요) 다음 빌드 때 같이",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "기본값으로 켜기. 이슈 코멘트에서 권장한 안입니다."
+     },
+     {
+      "number": 2,
+      "label": "새 head 를 보고하고 다시 승인받기 (권장 기본 동작)"
+     },
+     {
+      "number": 3,
+      "label": "(권장 — 급하지 않아요) 다음 빌드 때 같이"
+     }
+    ],
+    "recommended": null,
+    "recommendedNumbers": [],
+    "mode": "many",
+    "explicit": true
+   }
+  },
+  {
+   "name": "prefix (권장) inside emphasis and without a following space (#876)",
+   "text": "**[답변 필요]** 여러 개 선택 가능\n1. **(권장)** 롤백\n2. `(권장)`재배포\n3. （권장） 전각 괄호\n4. [권장] 대괄호",
+   "expected": {
+    "items": [
+     {
+      "number": 1,
+      "label": "(권장) 롤백"
+     },
+     {
+      "number": 2,
+      "label": "(권장)재배포"
+     },
+     {
+      "number": 3,
+      "label": "（권장） 전각 괄호"
+     },
+     {
+      "number": 4,
+      "label": "[권장] 대괄호"
+     }
+    ],
+    "recommended": 1,
+    "recommendedNumbers": [
+     1,
+     2
+    ],
+    "mode": "many",
     "explicit": true
    }
   }

@@ -147,7 +147,7 @@ class AgentChoicesTest {
         assertEquals(listOf(1, 2), AgentChoices.reply(AgentChoices.compose(listOf(2, 1), listOf("**", "B")), 2))
     }
 
-    private val question = "어떻게 할까요?\n**[답변 필요]** 여러 개 선택 가능\n1. 유지\n2. 롤백 (권장)\n3. 보류"
+    private val question = "어떻게 할까요?\n**[답변 필요]** 여러 개 선택 가능\n1. 유지\n2. (권장) 롤백\n3. 보류"
     private fun agent(seq: Long, text: String = question) = MessageUi(seq, "gongmyoung-ab12", text, mine = false)
     private fun me(seq: Long, text: String, attachment: Boolean = false) = MessageUi(seq, "owner-cd34", text, mine = true, attachment = attachment)
     private fun person(seq: Long, text: String) = MessageUi(seq, "jungin-ef56", text, mine = false)
@@ -160,7 +160,18 @@ class AgentChoicesTest {
         assertEquals(3, card.choices.items.size)
         assertEquals(2, card.choices.recommended)
         assertEquals(listOf(2), card.choices.recommendedNumbers)
-        assertEquals("롤백 (권장)", card.choices.labelOf(2))
+        assertEquals("(권장) 롤백", card.choices.labelOf(2))
+    }
+
+    // §1.7(#876): 접두 `(권장)` 만 권장 — 부정 표현·다른 뜻·옛 접미·본문 `권장 N번` 은 알약을 받지 않는다.
+    @Test fun recommendedIsPrefixOnly() {
+        val parsed = AgentChoices.parse("권장: 2번\n**[답변 필요]** 여러 개 선택 가능\n1. **(권장)** 측정부터\n2. 그대로 작성 (권장하지 않음)\n3. 둘 다 추가(비권장)\n4. 재배포 (권장)")!!
+        assertEquals(1, parsed.recommended)
+        assertEquals(listOf(1), parsed.recommendedNumbers)
+        assertEquals("(권장) 측정부터", parsed.labelOf(1))
+        val none = AgentChoices.parse("**[답변 필요]** 하나만 선택\n1. 이슈 코멘트에서 권장한 안\n2. 보류")!!
+        assertNull(none.recommended)
+        assertEquals(emptyList<Int>(), none.recommendedNumbers)
     }
 
     // §1.7: 접두 `N. (권장) …` 여러 항목은 모두 권장 — `recommended` 는 예전처럼 첫 항목 하나(하위 호환).
@@ -193,7 +204,7 @@ class AgentChoicesTest {
 
     @Test fun answeredWhenMyNextMessageIsComposedLines() {
         // 카드 [보내기] 가 보내는 글(줄마다 `N. 라벨`) — 라벨 글은 비교하지 않는다.
-        val sent = AgentChoices.compose(setOf(3, 1), listOf("유지", "롤백 (권장)", "보류"))
+        val sent = AgentChoices.compose(setOf(3, 1), listOf("유지", "(권장) 롤백", "보류"))
         assertEquals("1. 유지\n3. 보류", sent)
         val cards = AgentChoices.cards(listOf(agent(1), me(2, sent)))
         assertEquals(AgentChoices.State.Answered(listOf(1, 3)), cards[0]!!.state)
