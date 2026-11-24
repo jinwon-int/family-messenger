@@ -2,6 +2,7 @@
 package com.seoyoon_family.hande.ui
 
 import com.seoyoon_family.hande.core.AgentActors
+import com.seoyoon_family.hande.core.AgentChoices
 import com.seoyoon_family.hande.core.AppLogin
 import com.seoyoon_family.hande.core.HardwareKeys
 
@@ -326,6 +327,15 @@ object Strings {
     const val wipeDialogConfirm = "지우기"
     /** 낮불 목록의 안 읽음 알약(먹 면 + 종이 글자) — 밤의 주황 점과 같은 뜻(`unread`). */
     const val newPostPill = unread
+
+    // ---- #870(AGENT-CHOICES §7): 방 목록 「답변 필요」 — 웹 strings.rooms.answerBadge/answerPreview · iOS Strings+Agent 와 같은 말
+    /** 마지막 글의 `[답변 필요]` 카드가 열린 방 — 이름 옆 알약(에이전트 색 면 + 종이 글자). */
+    const val answerNeededPill = "답변 필요"
+    /** 미리보기 자리의 질문 요약. 한 줄 말줄임이라 짧은 머리(모드·개수)를 앞에 둔다: 「하나만 선택 · 3개 · 1. (권장) A안」. */
+    fun answerNeededPreview(a: AgentChoices.RoomAnswer): String =
+        "${if (a.mode == AgentChoices.Mode.MANY) "여러 개 선택" else "하나만 선택"} · ${a.count}개 · ${a.number}. ${a.label}"
+    /** 화면 낭독기: 「답변 필요, 하나만 선택 · 3개 · 1. …」. */
+    fun answerNeededA11y(a: AgentChoices.RoomAnswer): String = "$answerNeededPill, ${answerNeededPreview(a)}"
 
     // ---- 하드웨어 키보드(#833 — iOS `Strings+Agent.swift`·`Strings+Copy.swift` 와 같은 말)
     /** 설정 「화면」 — 하드웨어 키보드로 대화를 읽을 때 ↑/↓ 한 번의 이동(`HardwareKeys.ArrowScrollStep`). */
