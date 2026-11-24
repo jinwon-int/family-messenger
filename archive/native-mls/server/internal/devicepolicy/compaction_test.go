@@ -267,3 +267,63 @@ func TestOrdinaryRecordsOmitCheckpoint(t *testing.T) {
 		t.Fatalf("ordinary record carries checkpoint: %s", b)
 	}
 }
+
+// #421 acceptance: a 64-revision synthetic chain compacts to the same active set
+// and fingerprints; the documented rollback (NATIVE-RELAY-OPERATIONS §d2: move
+// the archive back, set the checkpoint aside — only while nothing was committed
+// after it) restores the exact pre-compaction chain; after compacting again an
+// enrollment commits normally.
+func TestCompactAcceptanceRollbackAndEnroll(t *testing.T) {
+	s, dir, devices := chainOf(t, 64)
+	pre, prePolicy := mustRead(t, s)
+	active := func(p PolicyWire4) map[string]string {
+		m := map[string]string{}
+		for _, d := range p.Devices {
+			if d.Status == StatusActive {
+				m[d.ID] = d.Fingerprint
+			}
+		}
+		return m
+	}
+	root := archiveRoot(t)
+	res, e := s.Compact(64, root)
+	if e != nil {
+		t.Fatal(e)
+	}
+	_, post := mustRead(t, mustOpen(t, dir))
+	if a, b := active(prePolicy), active(post); len(a) != 2 || len(a) != len(b) || a[devices[0].ID] != b[devices[0].ID] || a[devices[1].ID] != b[devices[1].ID] {
+		t.Fatalf("active set changed: %v -> %v", a, b)
+	}
+
+	// Rollback: archive back, checkpoint aside (outside the chain directory).
+	for _, name := range res.Archived {
+		if e := os.Rename(filepath.Join(res.ArchiveDir, name), filepath.Join(dir, name)); e != nil {
+			t.Fatal(e)
+		}
+	}
+	aside := filepath.Join(testDir(t), "policy-000065.json.rolled-back")
+	if e := os.Rename(filepath.Join(dir, "policy-000065.json"), aside); e != nil {
+		t.Fatal(e)
+	}
+	back, backPolicy := mustRead(t, mustOpen(t, dir))
+	if back != pre || !approvalEqualPolicy(prePolicy, backPolicy) {
+		t.Fatalf("rollback: %+v want %+v", back, pre)
+	}
+
+	// Compact again (a new archive subdirectory), then enroll a new actor's first device.
+	if e := os.RemoveAll(res.ArchiveDir); e != nil {
+		t.Fatal(e)
+	}
+	if res, e = s.Compact(64, root); e != nil || res.Checkpoint.Revision != 65 {
+		t.Fatalf("second compaction: %+v %v", res, e)
+	}
+	next := append(append([]DeviceV4{}, devices...), outOfBand(t, "new", 1)...)
+	info, e := s.Commit(65, set(next...))
+	if e != nil || info.Revision != 66 {
+		t.Fatalf("enroll after compaction: %+v %v", info, e)
+	}
+	_, final := mustRead(t, mustOpen(t, dir))
+	if got := active(final); len(got) != 3 {
+		t.Fatalf("active after enroll: %v", got)
+	}
+}
