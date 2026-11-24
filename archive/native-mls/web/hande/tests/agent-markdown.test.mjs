@@ -170,3 +170,29 @@ test('splitSkills: 규칙 밖이면 글 그대로(skills 빈 배열)', () => {
   ]) assert.deepEqual(splitSkills(text), {body: text, skills: []}, text);
   assert.deepEqual(splitSkills(undefined), {body: '', skills: []});
 });
+
+// #887: 웹·Android 공유 벡터(archive/native-mls/tests/fixtures/agent-markdown-vectors.json) — Android `AgentMarkdownTest` 가 같은 파일을 돌린다.
+// 벡터의 blocks·spans 는 이 파일 함수들의 반환값 그대로다. 규칙을 바꾸면 벡터도 함께 고쳐 두 앱이 같이 따라오게 한다.
+import { readFileSync } from 'node:fs';
+import { MAX_COLUMNS } from '../agent-markdown.js';
+
+const vectors = JSON.parse(readFileSync(new URL('../../../tests/fixtures/agent-markdown-vectors.json', import.meta.url), 'utf8'));
+
+test('공유 벡터: 상한(열·행·글 길이)', () => {
+  assert.deepEqual(vectors.limits, { max_columns: MAX_COLUMNS, max_rows: MAX_ROWS, max_source: MAX_SOURCE });
+});
+
+test('공유 벡터: parseBlocks', () => {
+  assert.ok(vectors.blocks.length >= 30);
+  for (const c of vectors.blocks) assert.deepEqual(parseBlocks(c.text), c.blocks, c.name);
+});
+
+test('공유 벡터: inlineSpans', () => {
+  assert.ok(vectors.inline.length >= 30);
+  for (const c of vectors.inline) assert.deepEqual(inlineSpans(c.text), c.spans, c.name);
+});
+
+test('공유 벡터: hasMarkdown', () => {
+  assert.ok(vectors.has_markdown.length >= 15);
+  for (const c of vectors.has_markdown) assert.equal(hasMarkdown(c.text), c.expected, c.name);
+});

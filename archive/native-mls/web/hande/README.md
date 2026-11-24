@@ -31,7 +31,7 @@ matrix-js-sdk 없음, 빌드 도구·npm 의존 없음, 플레인 ES 모듈).
   self-service.js                                                ← 기기 셀프서비스 순수 판정(승인 자격·형제 판정·증거 조립·역할 버튼·초대 대기열, #574 PR 2b)
   status-v1.js                                                   ← 에이전트 「⏳ Working …」 임시 말풍선 판정(보낸이별 최신 1개·답 도착/5분 소멸, 저장 안 함 — #560 STATUS-V1.md)
   sw.js sw-policy.js                                             ← 서비스 워커(PWA 설치·오프라인 셸, 네트워크 우선 — #480 D)
-  attachment-view.js agent-markdown.js                           ← 첨부 미리보기 판별 · 에이전트 답장 마크다운(iOS AgentMarkdown 블록 규칙 이식, 텍스트 노드만)
+  attachment-view.js agent-markdown.js                           ← 첨부 미리보기 판별 · 에이전트 답장 마크다운(iOS AgentMarkdown 블록 규칙 이식, 텍스트 노드만 — Android `core/AgentMarkdown` 과 공유 벡터 `tests/fixtures/agent-markdown-vectors.json`, #887)
   room.js device.js relay.js identity.js worker-bridge.js        ← 방 세션(relay-app.js sync 이식)·기기(신원·로비·방 목록)·릴레이·신원
   durable-worker.js session-store.js history-store.js            ← openmls-browser/web 원본 그대로(build.sh 가 복사)
   commit-policy.js relay-attachments.js

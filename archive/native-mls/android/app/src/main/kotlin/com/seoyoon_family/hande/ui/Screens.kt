@@ -168,6 +168,7 @@ import com.seoyoon_family.hande.BuildConfig
 import com.seoyoon_family.hande.core.AgentActors
 import com.seoyoon_family.hande.core.AgentChoiceKeys
 import com.seoyoon_family.hande.core.AgentChoices
+import com.seoyoon_family.hande.core.AgentMarkdown
 import com.seoyoon_family.hande.core.AlertRefs
 import com.seoyoon_family.hande.core.RoomListReturn
 import com.seoyoon_family.hande.core.RoomListSlot
@@ -1759,6 +1760,7 @@ private data class ReplyTarget(val name: String, val seq: Long?, val original: S
  * #880 말풍선 「밀어서 답장」(판정 `SwipeReply` — iOS 와 같은 수치): 왼쪽으로 밀면 말풍선이 손가락을 따라가고 오른쪽 끝에 답장 표시가 드러난다.
  * 문턱을 넘으면 진동 한 번, 그 상태로 손을 떼면 [onReply]. 세로·오른쪽·비스듬한 끌기는 건드리지 않아 타임라인 스크롤이 그대로 받는다.
  * 답장 끌기로 정해진 뒤에만 포인터를 먹는다(그 전의 누르기·링크는 종전 그대로). 놓으면 애니메이션 없이 제자리(전자잉크).
+ * 말풍선 안에서 옆으로 스크롤되는 블록(#887 넘치는 코드 블록) 위에서 시작한 가로 끌기는 그 블록의 스크롤이다 — 답장은 말풍선의 다른 자리를 밀면 된다.
  */
 @Composable
 private fun SwipeToReply(enabled: Boolean, onReply: () -> Unit, content: @Composable () -> Unit) {
@@ -1786,6 +1788,8 @@ private fun SwipeToReply(enabled: Boolean, onReply: () -> Unit, content: @Compos
                         dx = moved.x.toDp().value.toDouble()
                         dy = moved.y.toDp().value.toDouble()
                         if (!change.pressed) break
+                        // #887: 말풍선 안의 옆으로 스크롤되는 블록(넘치는 코드 블록)이 이 끌기를 먼저 받았으면 답장 끌기로 삼지 않는다 — 놓아준다.
+                        if (axis == null && change.isConsumed) break
                         if (axis == null) {
                             axis = SwipeReply.axis(dx, dy)
                             // 세로 스크롤·오른쪽 끌기: 이 끌기는 놓아준다(먹지 않으니 타임라인이 받는다).
@@ -1880,6 +1884,9 @@ private fun MessageRow(
     // #880 답장 글(iOS 와 같이 사람 말풍선만 — 내 글 포함): 인용 상자 + 내 글. 링크·참조·미리보기는 내 글에서만 찾는다.
     val reply = remember(m.text, agent, m.attachment) { if (!agent && !m.attachment) ReplyQuote.parse(m.text) else null }
     val shown = reply?.text ?: m.text
+    // #887 1단계: 에이전트 글이 서식 글(제목·목록·코드·굵게 …)이면 블록으로 그린다. 판정·나누기는 글마다 한 번(`remember`) — 서식이 없거나
+    // 상한(`AgentMarkdown.MAX_SOURCE`)을 넘는 글, 사람 글, 첨부 자리 글은 null 이라 아래 평문 경로 그대로다. 선택지 카드·복사는 원문(m.text) 기준 그대로.
+    val markdown = remember(m.text, agent, m.attachment) { if (agent && !m.attachment) AgentMarkdown.blocksIfMarkdown(m.text) else null }
     Column(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalAlignment = if (m.mine) Alignment.End else Alignment.Start) {
         if (!m.mine) {
             val name = AgentActors.displayName(m.sender)
@@ -1900,9 +1907,11 @@ private fun MessageRow(
         // 에이전트 말풍선은 http·https 주소면 어떤 호스트든 링크(오너 2026-11-16, `TextLinks.agentLinks`).
         // 말풍선 글은 remember 로 캐시된다 — 그 안 클릭은 늘 최신 콜백(최신 목록·index)을 부르게.
         val latestOnAlertRef by rememberUpdatedState(onAlertRef)
-        val body = remember(shown, m.text, agent, sites, opening, onAttachment != null) {
+        val body = remember(shown, m.text, agent, sites, opening, onAttachment != null, markdown != null) {
+            // 서식 글은 `AgentMarkdownBody` 가 블록마다 따로 그린다 — 평문용 글은 만들지 않는다.
+            if (markdown != null) AnnotatedString("")
             // #366 C: 첨부 말풍선 = 자리 표시 + 「눌러서 열기」/「여는 중…」 한 줄(링크·참조는 찾지 않는다).
-            if (m.attachment) AnnotatedString(if (onAttachment == null) m.text else m.text + "\n" + (if (opening) Strings.attachmentOpening else Strings.attachmentTapHint))
+            else if (m.attachment) AnnotatedString(if (onAttachment == null) m.text else m.text + "\n" + (if (opening) Strings.attachmentOpening else Strings.attachmentTapHint))
             else buildAnnotatedString {
                 append(shown)
                 val found = if (agent) TextLinks.agentLinks(shown) else sites.links(shown)
@@ -1930,7 +1939,9 @@ private fun MessageRow(
             .padding(horizontal = 14.dp, vertical = 11.dp)
         val textColor = if (m.mine) colors.onEmber else colors.ink
         val bubble: @Composable () -> Unit = {
-            if (reply == null) {
+            if (markdown != null) {
+                AgentMarkdownBody(markdown, bubbleModifier, textColor)
+            } else if (reply == null) {
                 Text(body, bubbleModifier, color = textColor, style = MaterialTheme.typography.bodyLarge)
             } else {
                 Column(bubbleModifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
