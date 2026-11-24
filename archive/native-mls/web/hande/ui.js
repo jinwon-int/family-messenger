@@ -303,6 +303,19 @@ function fireMark(level, size = 26) {
 }
 
 /**
+ * 방 행 미리보기 자리(#870, AGENT-CHOICES §7): 답변 필요 > status-v1 Working/Waiting 줄(#560) > 원래 미리보기.
+ * 꺼진 자리(정지·닫힘)는 늘 원래 미리보기다. 순수 함수 — DOM 없는 CI 테스트용.
+ * @param {{state?: string, preview?: string, working?: string|null, answer?: {mode: string, count: number, number: number, label: string}|null}} room
+ * @returns {{kind: 'answer'|'working'|'preview', text: string}}
+ */
+export function roomPreviewSlot(room) {
+  const out = room.state === 'halted' || room.state === 'closed';
+  if (!out && room.answer && typeof room.answer.label === 'string') return { kind: 'answer', text: strings.rooms.answerPreview(room.answer) };
+  if (!out && typeof room.working === 'string' && room.working) return { kind: 'working', text: room.working };
+  return { kind: 'preview', text: room.preview || (out ? strings.rooms.closedPreview : strings.rooms.noMessages) };
+}
+
+/**
  * @param {object} room
  * @param {Function} onSelect
  * @param {boolean} active
@@ -313,13 +326,14 @@ function roomListItem(room, onSelect, active, order = null) {
   const out = room.state === 'halted' || room.state === 'closed';
   // 오늘의 불 세기(디자인 2차-B §B2): 불꽃 1~3갈래(app.js 가 24시간 글 수로 계산), 꺼진 자리는 장작(embers-out). 숫자는 화면에 없다.
   const fire = out ? 0 : Math.min(3, Math.max(1, Number(room.fire) || 1));
-  const preview = room.preview || (out ? strings.rooms.closedPreview : strings.rooms.noMessages);
   const unread = Boolean(room.unread) && !out;
   const muted = Boolean(room.muted) && !out;
-  // status-v1(#560): 일하는 중인 방은 미리보기 자리에 최신 「⏳ Working …」 줄(오너 2026-10-30 — 목록에서 작업 중인지 보이게).
-  const working = !out && typeof room.working === 'string' && room.working ? room.working : null;
-  const signature = JSON.stringify([room.roomId, room.name, fire, preview, working, room.time, unread, muted, room.state, Boolean(room.hasAgent), room.members ?? 0, active, order ? [order.index, order.count] : null]);
-  const classes = ['room-item', `state-${room.state}`, unread ? 'unread' : '', room.hasAgent && !out ? 'bright' : '', working ? 'working' : ''].filter(Boolean).join(' ');
+  // 미리보기 자리: 답변 필요(#870) > status-v1 「⏳ Working/대기 중」 줄(#560, 오너 2026-10-30) > 원래 미리보기.
+  const slot = roomPreviewSlot(room);
+  const answer = slot.kind === 'answer';
+  const working = slot.kind === 'working';
+  const signature = JSON.stringify([room.roomId, room.name, fire, slot.kind, slot.text, room.time, unread, muted, room.state, Boolean(room.hasAgent), room.members ?? 0, active, order ? [order.index, order.count] : null]);
+  const classes = ['room-item', `state-${room.state}`, unread ? 'unread' : '', room.hasAgent && !out ? 'bright' : '', working ? 'working' : '', answer ? 'answer-needed' : ''].filter(Boolean).join(' ');
   const name = room.name || room.roomId;
   const content = [
     fireMark(fire),
@@ -335,11 +349,17 @@ function roomListItem(room, onSelect, active, order = null) {
           unread ? el('span', { class: 'unread-badge', title: strings.rooms.unreadLabel },
             el('span', { class: 'unread-dot', 'aria-hidden': 'true' }),
             el('span', { class: 'unread-pill', 'aria-hidden': 'true' }, strings.rooms.unreadBadge),
-            el('span', { class: 'visually-hidden' }, strings.rooms.unreadLabel)) : null),
+            el('span', { class: 'visually-hidden' }, strings.rooms.unreadLabel)) : null,
+          // #870: 답할 카드가 열린 방 — 이름 옆 「답변 필요」 알약(밤·낮불 같은 모양, 안 읽음과 별개).
+          answer ? el('span', { class: 'answer-pill', 'data-testid': 'room-answer', title: strings.rooms.answerLabel },
+            el('span', { 'aria-hidden': 'true' }, strings.rooms.answerBadge),
+            el('span', { class: 'visually-hidden' }, strings.rooms.answerLabel)) : null),
         // 방 목록에는 「에이전트」 배지를 두지 않는다(오너 요청 2026-10-27) — 에이전트 방 강조(bright)는 그대로.
         STATE_LABEL[room.state] ? el('span', { class: `pill state-${room.state}` }, STATE_LABEL[room.state]) : null,
         room.time ? el('span', { class: 'when' }, room.time) : null),
-      working ? el('span', { class: 'preview working', 'data-testid': 'room-working' }, working) : el('span', { class: 'preview' }, preview)),
+      answer ? el('span', { class: 'preview answer', 'data-testid': 'room-answer-preview' }, slot.text)
+        : working ? el('span', { class: 'preview working', 'data-testid': 'room-working' }, slot.text)
+        : el('span', { class: 'preview' }, slot.text)),
   ];
   const rowAttrs = { class: classes, 'data-room-id': room.roomId, 'data-testid': 'room-item', 'data-state': room.state, 'data-members': String(room.members ?? 0), 'aria-current': active ? 'true' : null };
   const dragAttrs = order ? {

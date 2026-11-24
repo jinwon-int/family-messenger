@@ -1589,5 +1589,276 @@
    "reply": "그냥 진행해 주세요",
    "expected": null
   }
+ ],
+ "roomList": [
+  {
+   "name": "open one-mode card: representative = first recommended",
+   "entries": [
+    {
+     "kind": "text",
+     "body": "확인해 줘",
+     "isAgent": false,
+     "isService": false,
+     "isMe": true
+    },
+    {
+     "kind": "text",
+     "body": "결과를 정리했습니다.\n\n**[답변 필요]** 하나만 선택\n1. (권장) A안으로 진행\n2. B안으로 진행\n3. 보류",
+     "isAgent": true,
+     "isService": false,
+     "isMe": false
+    }
+   ],
+   "expected": {
+    "mode": "one",
+    "count": 3,
+    "number": 1,
+    "label": "(권장) A안으로 진행"
+   }
+  },
+  {
+   "name": "no recommended -> item 1",
+   "entries": [
+    {
+     "kind": "text",
+     "body": "**[답변 필요]** 하나만 선택\n1. 지금 배포\n2. 내일 배포",
+     "isAgent": true,
+     "isService": false,
+     "isMe": false
+    }
+   ],
+   "expected": {
+    "mode": "one",
+    "count": 2,
+    "number": 1,
+    "label": "지금 배포"
+   }
+  },
+  {
+   "name": "many-mode: first of several recommended",
+   "entries": [
+    {
+     "kind": "text",
+     "body": "**[답변 필요]** 여러 개 선택 가능\n1. 이슈 등록\n2. (권장) 웹 PR\n3. (권장) iOS PR",
+     "isAgent": true,
+     "isService": false,
+     "isMe": false
+    }
+   ],
+   "expected": {
+    "mode": "many",
+    "count": 3,
+    "number": 2,
+    "label": "(권장) 웹 PR"
+   }
+  },
+  {
+   "name": "answered by card text -> null",
+   "entries": [
+    {
+     "kind": "text",
+     "body": "결과를 정리했습니다.\n\n**[답변 필요]** 하나만 선택\n1. (권장) A안으로 진행\n2. B안으로 진행\n3. 보류",
+     "isAgent": true,
+     "isService": false,
+     "isMe": false
+    },
+    {
+     "kind": "text",
+     "body": "1. (권장) A안으로 진행",
+     "isAgent": false,
+     "isService": false,
+     "isMe": true
+    }
+   ],
+   "expected": null
+  },
+  {
+   "name": "answered by hand-typed number -> null",
+   "entries": [
+    {
+     "kind": "text",
+     "body": "결과를 정리했습니다.\n\n**[답변 필요]** 하나만 선택\n1. (권장) A안으로 진행\n2. B안으로 진행\n3. 보류",
+     "isAgent": true,
+     "isService": false,
+     "isMe": false
+    },
+    {
+     "kind": "text",
+     "body": "2",
+     "isAgent": false,
+     "isService": false,
+     "isMe": true
+    }
+   ],
+   "expected": null
+  },
+  {
+   "name": "my free text after the card also clears it (card closed)",
+   "entries": [
+    {
+     "kind": "text",
+     "body": "결과를 정리했습니다.\n\n**[답변 필요]** 하나만 선택\n1. (권장) A안으로 진행\n2. B안으로 진행\n3. 보류",
+     "isAgent": true,
+     "isService": false,
+     "isMe": false
+    },
+    {
+     "kind": "text",
+     "body": "잠깐만요",
+     "isAgent": false,
+     "isService": false,
+     "isMe": true
+    }
+   ],
+   "expected": null
+  },
+  {
+   "name": "no header -> null",
+   "entries": [
+    {
+     "kind": "text",
+     "body": "다음 단계\n1. 배포\n2. 보류",
+     "isAgent": true,
+     "isService": false,
+     "isMe": false
+    }
+   ],
+   "expected": null
+  },
+  {
+   "name": "another sender after the card -> null",
+   "entries": [
+    {
+     "kind": "text",
+     "body": "결과를 정리했습니다.\n\n**[답변 필요]** 하나만 선택\n1. (권장) A안으로 진행\n2. B안으로 진행\n3. 보류",
+     "isAgent": true,
+     "isService": false,
+     "isMe": false
+    },
+    {
+     "kind": "text",
+     "body": "**[답변 필요]** 하나만 선택\n1. ok 6c9kzj\n2. hold 6c9kzj",
+     "isAgent": false,
+     "isService": true,
+     "isMe": false
+    },
+    {
+     "kind": "text",
+     "body": "다른 이야기",
+     "isAgent": true,
+     "isService": false,
+     "isMe": false
+    }
+   ],
+   "expected": null
+  },
+  {
+   "name": "system line after the card is skipped -> still open",
+   "entries": [
+    {
+     "kind": "text",
+     "body": "결과를 정리했습니다.\n\n**[답변 필요]** 하나만 선택\n1. (권장) A안으로 진행\n2. B안으로 진행\n3. 보류",
+     "isAgent": true,
+     "isService": false,
+     "isMe": false
+    },
+    {
+     "kind": "system",
+     "body": "방 설정이 바뀌었습니다",
+     "isAgent": false,
+     "isService": false,
+     "isMe": false
+    }
+   ],
+   "expected": {
+    "mode": "one",
+    "count": 3,
+    "number": 1,
+    "label": "(권장) A안으로 진행"
+   }
+  },
+  {
+   "name": "agent attachment after the card -> null",
+   "entries": [
+    {
+     "kind": "text",
+     "body": "결과를 정리했습니다.\n\n**[답변 필요]** 하나만 선택\n1. (권장) A안으로 진행\n2. B안으로 진행\n3. 보류",
+     "isAgent": true,
+     "isService": false,
+     "isMe": false
+    },
+    {
+     "kind": "attachment",
+     "body": "",
+     "isAgent": true,
+     "isService": false,
+     "isMe": false
+    }
+   ],
+   "expected": null
+  },
+  {
+   "name": "service bot (fleet alert ok/hold) card counts",
+   "entries": [
+    {
+     "kind": "text",
+     "body": "🔔 action 알림\n[답변 필요] 하나만 선택\n1. ok 6c9kzj\n2. hold 6c9kzj",
+     "isAgent": false,
+     "isService": true,
+     "isMe": false
+    }
+   ],
+   "expected": {
+    "mode": "one",
+    "count": 2,
+    "number": 1,
+    "label": "ok 6c9kzj"
+   }
+  },
+  {
+   "name": "agent plain message after the card closes it (spec §2, limitation)",
+   "entries": [
+    {
+     "kind": "text",
+     "body": "결과를 정리했습니다.\n\n**[답변 필요]** 하나만 선택\n1. (권장) A안으로 진행\n2. B안으로 진행\n3. 보류",
+     "isAgent": true,
+     "isService": false,
+     "isMe": false
+    },
+    {
+     "kind": "text",
+     "body": "CI가 초록이 됐습니다.",
+     "isAgent": true,
+     "isService": false,
+     "isMe": false
+    }
+   ],
+   "expected": null
+  },
+  {
+   "name": "last message is mine -> null",
+   "entries": [
+    {
+     "kind": "text",
+     "body": "안녕하세요",
+     "isAgent": true,
+     "isService": false,
+     "isMe": false
+    },
+    {
+     "kind": "text",
+     "body": "고마워",
+     "isAgent": false,
+     "isService": false,
+     "isMe": true
+    }
+   ],
+   "expected": null
+  },
+  {
+   "name": "empty room -> null",
+   "entries": [],
+   "expected": null
+  }
  ]
 }

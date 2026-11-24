@@ -253,6 +253,26 @@ export function choiceState(entries, index, isMine = (e) => Boolean(e?.isMe)) {
   return {state: 'answered', numbers, labels: numbers.map((n) => choices.items[n - 1].label), choices};
 }
 
+/**
+ * 방 목록 「답변 필요」(#870, 규격 §7 — 공유 벡터 `roomList`): 방의 마지막 저장 글의 카드가 `open` 이면 그 요약.
+ * `open` 은 마지막 글에만 생기므로 방당 최대 1개다. 오너가 답하면(카드·손으로 친 번호) 다음 글이 생겨 null 이 된다.
+ *   null                                       — 답할 카드가 없다
+ *   {mode, count, number, label}               — 대표 항목 = 첫 권장 번호(recommendedNumbers), 없으면 1번
+ * @param {{kind:string, body:string, isAgent:boolean, isService?:boolean, isMe:boolean}[]} entries app.js R.entries
+ */
+export function roomAnswerNeeded(entries) {
+  if (!Array.isArray(entries)) return null;
+  let last = -1;
+  for (let i = entries.length - 1; i >= 0; i--) if (isStoredMessage(entries[i])) { last = i; break; }
+  if (last < 0) return null;
+  const st = choiceState(entries, last);
+  if (!st || st.state !== 'open') return null;
+  const {items, mode, recommendedNumbers} = st.choices;
+  const number = recommendedNumbers?.[0] ?? items[0].number;
+  const item = items.find((it) => it.number === number) ?? items[0];
+  return {mode, count: items.length, number: item.number, label: item.label};
+}
+
 // ---- 키보드 단축키(#629, 규격 §3.1) — 공유 벡터 `keys` ----
 
 /**
