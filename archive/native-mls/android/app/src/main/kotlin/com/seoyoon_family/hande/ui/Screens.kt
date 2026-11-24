@@ -32,19 +32,24 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -122,10 +127,13 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreInterceptKeyBeforeSoftKeyboard
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.seoyoon_family.hande.core.AttachmentFiles
@@ -151,6 +159,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -172,6 +181,8 @@ import com.seoyoon_family.hande.core.HandeThemeMode
 import com.seoyoon_family.hande.core.HubUi
 import com.seoyoon_family.hande.core.LinkPreviews
 import com.seoyoon_family.hande.core.PreviewSites
+import com.seoyoon_family.hande.core.ReplyQuote
+import com.seoyoon_family.hande.core.SwipeReply
 import com.seoyoon_family.hande.core.LoginLauncher
 import com.seoyoon_family.hande.core.MessageUi
 import com.seoyoon_family.hande.core.OutgoingUi
@@ -1193,7 +1204,7 @@ private fun RoomRow(r: RoomUi, highlighted: Boolean = false, onOpen: () -> Unit)
                 RoomListSlot.Kind.NOT_JOINED -> Strings.notJoined
                 RoomListSlot.Kind.ANSWER -> Strings.answerNeededPreview(answer!!)
                 RoomListSlot.Kind.WORKING -> r.working.orEmpty()
-                RoomListSlot.Kind.PREVIEW -> r.messages.lastOrNull()?.text ?: ""
+                RoomListSlot.Kind.PREVIEW -> r.messages.lastOrNull()?.text?.let { ReplyQuote.visibleText(it) } ?: ""
             }
             val workingShown = slot == RoomListSlot.Kind.WORKING
             val answerShown = slot == RoomListSlot.Kind.ANSWER
@@ -1355,7 +1366,14 @@ fun RoomScreen(
     // #690 v2: 이 세션의 미리보기 사이트 목록(받기 전·실패 = v1 폴백). 목록이 도착하면 보이는 말풍선이 링크·카드를 다시 정한다.
     val sitesFlow = remember(previews) { previews?.sites ?: MutableStateFlow(PreviewSites.FALLBACK) }
     val sites by sitesFlow.collectAsStateWithLifecycle()
-    val sendDraft: () -> Unit = { onSend(draft.trim()); draft = "" }
+    // #880 말풍선 답장(iOS `ReplyQuote`): 고른 글을 보낼 때 본문 맨 앞 인용 한 줄로 붙인다(형식 무변경). ✕ 는 답장만 취소(쓰던 글은 그대로).
+    var replying by remember(room.room) { mutableStateOf<ReplyTarget?>(null) }
+    val sendDraft: () -> Unit = {
+        val text = draft.trim()
+        onSend(replying?.let { ReplyQuote.compose(it.name, it.seq, it.original, text) } ?: text)
+        replying = null
+        draft = ""
+    }
     // 선택지 카드의 체크·보내는 중(글 seq 별) — 카드가 화면 밖(LazyColumn 이 내림)이어도 Alt+숫자·Alt+Enter 가 같은 값을 쓰게 방에 둔다.
     val choicePicks = remember(room.room) { mutableStateMapOf<Long, List<Int>>() }
     val choiceSending = remember(room.room) { mutableStateMapOf<Long, Boolean>() }
@@ -1396,7 +1414,21 @@ fun RoomScreen(
         if (v.composition != null) setComposer(v.copy(composition = null))
     }
     fun selectedText(): String? =
-        if (!selectingByKey) null else room.messages.firstOrNull { it.seq == keyCursor && !it.attachment }?.text?.takeIf { it.isNotBlank() }
+        if (!selectingByKey) null
+        else room.messages.firstOrNull { it.seq == keyCursor && !it.attachment }?.text?.let { ReplyQuote.visibleText(it) }?.takeIf { it.isNotBlank() }
+    /** #880 왼쪽으로 민 말풍선에 답장: 답할 글을 정하고 작성창에 커서를 넣는다. 저장된 글이면 릴레이 seq 를 함께(v2 `#번호`). */
+    fun startReply(m: MessageUi) {
+        if (!hasComposer) return
+        replying = ReplyTarget(name = AgentActors.displayName(m.sender), seq = m.seq.takeIf { it > 0 }, original = m.text)
+        keyCursor = null
+        selectingByKey = false
+        runCatching { composerFocus.requestFocus() }
+    }
+    /** #880 인용 상자를 눌렀다: 같은 방의 그 seq 글로. 지금 불러온 대화에 없으면 안내만(iOS 와 같은 문구). */
+    val onReplyQuote: (Long) -> Unit = { seq ->
+        val index = room.messages.indexOfFirst { it.seq == seq }
+        if (index >= 0) alertScope.launch { listState.animateScrollToItem(index) } else toast(Strings.replyTargetMissing)
+    }
     fun select(step: Int) {
         // 복사할 글이 있는 말풍선만 오간다(첨부 제외).
         val rows = room.messages.filter { !it.attachment && it.text.isNotBlank() }.map { it.seq }
@@ -1567,11 +1599,20 @@ fun RoomScreen(
                     } else null
                     // #833 선택 모드: 키로 고른 말풍선 행에 점선 테두리(자리를 차지하지 않게 바깥에 그린다).
                     Box(Modifier.keySelectionOutline(selectingByKey && keyCursor == m.seq, colors.focus)) {
+                    // #880: 말풍선을 왼쪽으로 밀면 답장(선택지 카드는 밀리지 않는다).
+                    val row: @Composable () -> Unit = {
+                        SwipeToReply(enabled = hasComposer, onReply = { startReply(m) }) {
+                            MessageRow(
+                                m, previews, sites, opening = opening == m.seq, onAttachment = onAttachment, thumb = thumb,
+                                onReplyQuote = onReplyQuote,
+                            ) { id -> onAlertRef(i, id) }
+                        }
+                    }
                     if (card == null) {
-                        MessageRow(m, previews, sites, opening = opening == m.seq, onAttachment = onAttachment, thumb = thumb) { id -> onAlertRef(i, id) }
+                        row()
                     } else {
                         Column(Modifier.fillMaxWidth()) {
-                            MessageRow(m, previews, sites, opening = opening == m.seq, onAttachment = onAttachment, thumb = thumb) { id -> onAlertRef(i, id) }
+                            row()
                             AgentChoicesCard(
                                 m, card, enabled = canChoose && choiceSending[m.seq] != true,
                                 picked = choicePicked(card, choicePicks[m.seq].orEmpty()), onPicked = { choicePicks[m.seq] = it },
@@ -1591,6 +1632,7 @@ fun RoomScreen(
             } else if (!room.joined) {
                 Text(Strings.notJoined, Modifier.padding(12.dp), color = colors.inkDim)
             } else {
+                replying?.let { target -> ReplyBanner(target, onCancel = { replying = null }) }
                 Composer(
                     currentComposer(), onValue = setComposer, onSend = sendDraft,
                     onAttach = if (onSendAttachment != null && live) ({ pickFile.launch(arrayOf("*/*")) }) else null,
@@ -1687,6 +1729,113 @@ private fun Composer(
     }
 }
 
+/** #880 답할 글: 보낸 이 이름 · 릴레이 seq(없으면 null) · 원문(인용 요약은 보낼 때 `ReplyQuote.compose` 가 만든다). */
+private data class ReplyTarget(val name: String, val seq: Long?, val original: String)
+
+/**
+ * #880 말풍선 「밀어서 답장」(판정 `SwipeReply` — iOS 와 같은 수치): 왼쪽으로 밀면 말풍선이 손가락을 따라가고 오른쪽 끝에 답장 표시가 드러난다.
+ * 문턱을 넘으면 진동 한 번, 그 상태로 손을 떼면 [onReply]. 세로·오른쪽·비스듬한 끌기는 건드리지 않아 타임라인 스크롤이 그대로 받는다.
+ * 답장 끌기로 정해진 뒤에만 포인터를 먹는다(그 전의 누르기·링크는 종전 그대로). 놓으면 애니메이션 없이 제자리(전자잉크).
+ */
+@Composable
+private fun SwipeToReply(enabled: Boolean, onReply: () -> Unit, content: @Composable () -> Unit) {
+    if (!enabled) {
+        content()
+        return
+    }
+    val colors = LocalHandeColors.current
+    val haptic = LocalHapticFeedback.current
+    val latestOnReply by rememberUpdatedState(onReply)
+    var offsetDp by remember { mutableStateOf(0f) }
+    var armed by remember { mutableStateOf(false) }
+    Box(
+        Modifier.fillMaxWidth().pointerInput(Unit) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                var axis: SwipeReply.Axis? = null
+                var dx = 0.0
+                var dy = 0.0
+                try {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        val moved = change.position - down.position
+                        dx = moved.x.toDp().value.toDouble()
+                        dy = moved.y.toDp().value.toDouble()
+                        if (!change.pressed) break
+                        if (axis == null) {
+                            axis = SwipeReply.axis(dx, dy)
+                            // 세로 스크롤·오른쪽 끌기: 이 끌기는 놓아준다(먹지 않으니 타임라인이 받는다).
+                            if (axis == SwipeReply.Axis.IGNORE) break
+                        }
+                        if (axis == SwipeReply.Axis.REPLY) {
+                            change.consume()
+                            offsetDp = SwipeReply.offset(dx).toFloat()
+                            val now = SwipeReply.shouldReply(dx, dy)
+                            if (now && !armed) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            armed = now
+                        }
+                    }
+                    if (axis == SwipeReply.Axis.REPLY && SwipeReply.shouldReply(dx, dy)) latestOnReply()
+                } finally {
+                    offsetDp = 0f
+                    armed = false
+                }
+            }
+        },
+    ) {
+        Box(Modifier.fillMaxWidth().offset { IntOffset(offsetDp.dp.roundToPx(), 0) }) { content() }
+        if (offsetDp < 0f) {
+            Text(
+                "↩", Modifier.align(Alignment.CenterEnd).padding(end = 12.dp),
+                color = if (armed) colors.ember else colors.inkDim, fontSize = 20.sp, fontWeight = if (armed) FontWeight.Bold else FontWeight.Normal,
+            )
+        }
+    }
+}
+
+/** #880 작성창 위 「OO에게 답장 · 원문 요약 ✕」 띠(iOS `replyBanner`). ✕ 는 답장만 취소한다(쓰던 글은 그대로). */
+@Composable
+private fun ReplyBanner(target: ReplyTarget, onCancel: () -> Unit) {
+    val colors = LocalHandeColors.current
+    val snippet = remember(target.original) { ReplyQuote.snippet(target.original) }
+    Row(
+        Modifier.fillMaxWidth().padding(start = 18.dp, end = 10.dp, top = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("↩", color = colors.ember, fontSize = 15.sp)
+        Column(Modifier.weight(1f)) {
+            Text(Strings.replyingTo(target.name), color = colors.ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(snippet, color = colors.inkDim, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Box(
+            Modifier
+                .size(40.dp)
+                .clip(CircleShape)
+                .clickable(role = Role.Button, onClick = onCancel)
+                .semantics { contentDescription = Strings.replyCancel },
+            contentAlignment = Alignment.Center,
+        ) { Text("✕", color = colors.inkDim, fontSize = 16.sp) }
+    }
+}
+
+/** #880 답장 글의 인용 상자(iOS `ReplyQuoteBox`): 왼쪽 세로줄 + 이름 + 원문 요약(3줄). 번호(seq)가 있으면 눌러서 원래 글로. */
+@Composable
+private fun ReplyQuoteBox(parsed: ReplyQuote.Parsed, tint: Color, onOpen: (() -> Unit)?) {
+    Row(
+        Modifier
+            .height(IntrinsicSize.Min)
+            .then(if (onOpen != null) Modifier.clickable(role = Role.Button, onClickLabel = Strings.replyQuoteOpenHint, onClick = onOpen) else Modifier),
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        Box(Modifier.width(3.dp).fillMaxHeight().clip(RoundedCornerShape(1.5.dp)).background(tint))
+        Column {
+            parsed.name?.let { Text(it, color = tint, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            Text(parsed.snippet, color = tint, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
 /**
  * 말풍선: 남 = 면+선(꼬리 왼쪽 아래 6) · 나 = 불(꼬리 오른쪽 아래 6) · 에이전트 = 파랑 fill 10% + stroke 35%(낮불: 흰 면 + 파랑 점선 1.5).
  * 보낸 이 라벨 = 좌석 점 + 이름(에이전트는 「공명 · 불지기」 파랑). 너비는 82% 까지. 첨부는 본문의 자리 표시 글 그대로(C 단계).
@@ -1699,10 +1848,15 @@ private fun MessageRow(
     opening: Boolean = false,
     onAttachment: (() -> Unit)? = null,
     thumb: ThumbSource? = null,
+    /** #880 인용 상자를 누르면 그 seq 글로. */
+    onReplyQuote: ((Long) -> Unit)? = null,
     onAlertRef: ((String) -> Unit)? = null,
 ) {
     val colors = LocalHandeColors.current
     val agent = !m.mine && AgentActors.isAgentDevice(m.sender)
+    // #880 답장 글(iOS 와 같이 사람 말풍선만 — 내 글 포함): 인용 상자 + 내 글. 링크·참조·미리보기는 내 글에서만 찾는다.
+    val reply = remember(m.text, agent, m.attachment) { if (!agent && !m.attachment) ReplyQuote.parse(m.text) else null }
+    val shown = reply?.text ?: m.text
     Column(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalAlignment = if (m.mine) Alignment.End else Alignment.Start) {
         if (!m.mine) {
             val name = AgentActors.displayName(m.sender)
@@ -1723,18 +1877,18 @@ private fun MessageRow(
         // 에이전트 말풍선은 http·https 주소면 어떤 호스트든 링크(오너 2026-11-16, `TextLinks.agentLinks`).
         // 말풍선 글은 remember 로 캐시된다 — 그 안 클릭은 늘 최신 콜백(최신 목록·index)을 부르게.
         val latestOnAlertRef by rememberUpdatedState(onAlertRef)
-        val body = remember(m.text, agent, sites, opening, onAttachment != null) {
+        val body = remember(shown, m.text, agent, sites, opening, onAttachment != null) {
             // #366 C: 첨부 말풍선 = 자리 표시 + 「눌러서 열기」/「여는 중…」 한 줄(링크·참조는 찾지 않는다).
             if (m.attachment) AnnotatedString(if (onAttachment == null) m.text else m.text + "\n" + (if (opening) Strings.attachmentOpening else Strings.attachmentTapHint))
             else buildAnnotatedString {
-                append(m.text)
-                val found = if (agent) TextLinks.agentLinks(m.text) else sites.links(m.text)
+                append(shown)
+                val found = if (agent) TextLinks.agentLinks(shown) else sites.links(shown)
                 for (link in found) {
                     addLink(LinkAnnotation.Url(link.url, TextLinkStyles(SpanStyle(textDecoration = TextDecoration.Underline))), link.start, link.end)
                 }
                 // alert-refs-v1: 플릿 알림 봇 글의 참조 `#번호` → 원래 알림으로 이동(허용 링크와 겹치면 링크가 이긴다).
                 if (onAlertRef != null && AlertRefs.isFleetDevice(m.sender)) {
-                    for (ref in AlertRefs.parse(m.text).refs) {
+                    for (ref in AlertRefs.parse(shown).refs) {
                         if (found.any { it.start < ref.end && ref.start < it.end }) continue
                         addLink(
                             LinkAnnotation.Clickable("alert:${ref.id}", TextLinkStyles(SpanStyle(textDecoration = TextDecoration.Underline))) { latestOnAlertRef?.invoke(ref.id) },
@@ -1744,26 +1898,31 @@ private fun MessageRow(
                 }
             }
         }
+        val bubbleModifier = Modifier
+            .fillMaxWidth(0.82f)
+            .wrapContentWidth(if (m.mine) Alignment.End else Alignment.Start)
+            .clip(shape)
+            .then(fill)
+            .then(if (onAttachment != null) Modifier.clickable(enabled = !opening, role = Role.Button, onClick = onAttachment) else Modifier)
+            .padding(horizontal = 14.dp, vertical = 11.dp)
+        val textColor = if (m.mine) colors.onEmber else colors.ink
         val bubble: @Composable () -> Unit = {
-            Text(
-                body,
-                Modifier
-                    .fillMaxWidth(0.82f)
-                    .wrapContentWidth(if (m.mine) Alignment.End else Alignment.Start)
-                    .clip(shape)
-                    .then(fill)
-                    .then(if (onAttachment != null) Modifier.clickable(enabled = !opening, role = Role.Button, onClick = onAttachment) else Modifier)
-                    .padding(horizontal = 14.dp, vertical = 11.dp),
-                color = if (m.mine) colors.onEmber else colors.ink,
-                style = MaterialTheme.typography.bodyLarge,
-            )
+            if (reply == null) {
+                Text(body, bubbleModifier, color = textColor, style = MaterialTheme.typography.bodyLarge)
+            } else {
+                Column(bubbleModifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    val openQuote: (() -> Unit)? = reply.seq?.let { seq -> onReplyQuote?.let { jump -> { jump(seq) } } }
+                    ReplyQuoteBox(reply, tint = if (m.mine) colors.onEmber.copy(alpha = 0.8f) else colors.inkDim, onOpen = openQuote)
+                    Text(body, color = textColor, style = MaterialTheme.typography.bodyLarge)
+                }
+            }
         }
         // #698 C2: 사진으로 판별된 첨부는 자리 표시 글 대신 썸네일(누르면 같은 뷰어). 사진이 아니거나 받지 못하면 글 그대로.
         if (thumb != null) AttachmentThumbnail(thumb, shape, opening, onAttachment, fallback = bubble) else bubble()
         // #683 2단계 · #690 v2: 사람 말풍선(내 글 포함, 첨부 자리 글 제외)의 카드 대상(v2 = preview 사이트의 첫 링크, 폴백 = 첫 x.com 글 링크)
         // → 릴레이 미리보기 카드. 없거나 실패면 아무것도 그리지 않는다.
         if (!agent && !m.attachment && previews != null) {
-            val target = remember(m.text, sites) { sites.target(m.text) }
+            val target = remember(shown, sites) { sites.target(shown) }
             if (target != null) LinkPreviewCard(target, previews, siteName = remember(target, sites) { sites.siteOf(target)?.name.orEmpty() })
         }
     }
