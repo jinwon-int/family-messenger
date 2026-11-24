@@ -2174,6 +2174,9 @@ private fun LinkPreviewCard(link: String, previews: LinkPreviews, siteName: Stri
 private fun choicePicked(card: AgentChoices.Card, remembered: List<Int>): List<Int> =
     if (card.choices.mode == AgentChoices.Mode.ONE && remembered.size > 1) emptyList() else remembered
 
+/** 선택지 카드 행의 라벨 줄 수 상한(규격 §3). 웹·iOS 는 3줄, Android 는 6줄. */
+private const val CHOICE_LABEL_MAX_LINES = 6
+
 /**
  * 에이전트 선택지 카드(agent-choices-v1 #620 §3 · 복수 선택 #624): 행 = 체크 상자(둥근 사각) + 번호 + 라벨(최대 3줄) + 「권장」 알약.
  * 행을 누르면 그 행 체크를 토글하고(여러 개 가능), 하나라도 체크돼 있을 때만 [보내기] → 평소 전송 경로(`onSend`)로
@@ -2257,7 +2260,9 @@ private fun AgentChoicesCard(
                     ) { if (on) Text("✓", color = colors.onEmber, fontSize = fixedSp(12.dp), fontWeight = FontWeight.Bold) } // 고정 20dp 상자 안의 표시 — 글자 크기 설정을 따라 커지지 않게
                 }
                 Text("${item.number}", color = colors.agentText, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyLarge)
-                Text(item.label, Modifier.weight(1f), color = colors.ink, style = MaterialTheme.typography.bodyLarge, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                // 라벨은 최대 6줄(규격 §3 — Android 만 6줄, 오너 2026-11-25): 폭이 좁고 글자를 키운 기기(674dp · 배율 1.3)에서는 한 줄이 20자 안팎이라
+                // 3줄이면 승인 대상(PR 번호·head)이 든 긴 선택지의 뒤가 잘린다. 보내는 글은 라벨 전체 그대로다.
+                Text(item.label, Modifier.weight(1f), color = colors.ink, style = MaterialTheme.typography.bodyLarge, maxLines = CHOICE_LABEL_MAX_LINES, overflow = TextOverflow.Ellipsis)
                 if (recommended) Pill(Strings.choiceRecommended, colors.ink, colors.ember.copy(alpha = 0.22f))
             }
         }
