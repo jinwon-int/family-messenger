@@ -251,6 +251,95 @@ final class OutgoingTests: XCTestCase {
         XCTAssertEqual(model.messages(room: "jingun").first?.outgoing, .queued)
     }
 
+    // MARK: - Siri·단축어 「공명에게 묻기」 — 내 글 seq · 에이전트 답 찾기 · 기다리기(AskAgentIntent, 규칙은 AskAgentTests)
+
+    /// 공명 방(`family-acc`)에 참여한 준비된 모델과 그 저장소(에이전트 답을 직접 넣는다). 에이전트 = 기본 roster `bot`.
+    private func askModel() async -> (AppModel, InMemoryMessageStore, InMemoryRelay) {
+        let relay = InMemoryRelay()
+        let store = InMemoryMessageStore(seedRooms: [RoomRecord(room: "family-acc", epoch: 0, revision: 0, haltedReason: nil, displayOrder: 0)])
+        let deps = AppModel.Dependencies(
+            engineFactory: AnyFactory(MemberFakeFactory()), stateStore: InMemoryStateStore(), messageStore: store,
+            outbox: InMemoryOutboxStore(), cursors: InMemoryCursorStore(),
+            identityProvider: { "owner-iphone-a1b2c3" }, expectedDecryptFormat: { 2 }, makeTransport: { _ in relay })
+        let model = AppModel(dependencies: deps)
+        await model.bootstrap(); model.login(.bearer("t")); await model.refresh()
+        return (model, store, relay)
+    }
+
+    private func record(_ seq: Int64, from device: String, _ body: String, kind: MessageRecord.Kind = .text) -> MessageRecord {
+        MessageRecord(room: "family-acc", seq: seq, senderDevice: device, clientId: "c\(seq)", kind: kind, body: body,
+                      attachment: nil, receivedAt: Date(), decryptedBy: .app)
+    }
+
+    func testShortcutSendReportsTheRelaySeqOfMyMessage() async throws {
+        let (model, _, _) = await askModel()
+        XCTAssertEqual(model.phase, .ready)
+        let receipt = await model.shortcutSend(room: "family-acc", text: "[Siri·질문] 오늘 할 일")
+        XCTAssertEqual(receipt.result, .sent)
+        let seq = try XCTUnwrap(receipt.seq, "the anchor for waiting on the reply")
+        XCTAssertEqual(model.messages(room: "family-acc").last?.record.seq, seq)
+        XCTAssertEqual(model.messages(room: "family-acc").last?.record.body, "[Siri·질문] 오늘 할 일")
+    }
+
+    func testShortcutSendWhileRelayIsDownHasNoSeq() async throws {
+        let (model, _, relay) = await askModel()
+        try await relay.stop()
+        let receipt = await model.shortcutSend(room: "family-acc", text: "later")
+        XCTAssertEqual(receipt, AppModel.ShortcutReceipt(result: .queued))
+    }
+
+    func testAgentReplyIsTheFirstAgentTextAfterMyMessage() async throws {
+        let (model, store, _) = await askModel()
+        try store.insert(record(100, from: "bot-gongmyoung", "앞선 답(내 글 전)"))
+        try store.insert(record(101, from: "owner-ipad-d4e5f6", "다른 기기에서 쓴 내 글"))
+        try store.insert(record(102, from: "bot-gongmyoung", "", kind: .text))
+        try store.insert(record(103, from: "bot-gongmyoung", "사진", kind: .attachment))
+        try store.insert(record(104, from: "bot-gongmyoung", "오늘은 세 가지예요."))
+        XCTAssertEqual(model.agentReply(room: "family-acc", after: 100), "오늘은 세 가지예요.", "skips people, empty text and files")
+        XCTAssertNil(model.agentReply(room: "family-acc", after: 104), "nothing after the last agent message")
+    }
+
+    func testAwaitAgentReplyReturnsAnAnswerAlreadyStored() async throws {
+        let (model, store, _) = await askModel()
+        try store.insert(record(10, from: "bot-gongmyoung", "답"))
+        let reply = await model.awaitAgentReply(room: "family-acc", after: 9, timeout: 5)
+        XCTAssertEqual(reply, "답")
+    }
+
+    func testAwaitAgentReplyTimesOut() async {
+        let (model, _, _) = await askModel()
+        let reply = await model.awaitAgentReply(room: "family-acc", after: 0, timeout: 0.2)
+        XCTAssertNil(reply, "no agent answer within the timeout")
+    }
+
+    /// 가짜 시계: 잠자기가 시간을 앞으로 돌린다.
+    private final class FakeClock {
+        var now: TimeInterval = 0
+        var sleeps = 0
+        var polls = 0
+    }
+
+    func testWaitForReplyTimeoutOnAFakeClock() async {
+        let clock = FakeClock()
+        let reply = await AppModel.waitForReply(timeout: 20, step: 0.5, now: { clock.now },
+                                                sleep: { clock.now += $0; clock.sleeps += 1 },
+                                                poll: { clock.polls += 1; return nil })
+        XCTAssertNil(reply)
+        XCTAssertEqual(clock.now, 20, "stops at the deadline")
+        XCTAssertEqual(clock.sleeps, 40)
+        XCTAssertEqual(clock.polls, 41, "checks once more at the deadline, then gives up")
+    }
+
+    func testWaitForReplyReturnsAsSoonAsTheAnswerArrives() async {
+        let clock = FakeClock()
+        let reply = await AppModel.waitForReply(timeout: 20, step: 0.5, now: { clock.now },
+                                                sleep: { clock.now += $0; clock.sleeps += 1 },
+                                                poll: { clock.polls += 1; return clock.polls == 3 ? "답" : nil })
+        XCTAssertEqual(reply, "답")
+        XCTAssertEqual(clock.sleeps, 2)
+        XCTAssertEqual(clock.now, 1)
+    }
+
     // MARK: - #643 공유 확장 맡김 → 앱이 보낸다(deliverPendingShares)
 
     private static let jpegHead = Data([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00])
