@@ -163,10 +163,12 @@ private val TableFontSize = 15.sp
 private val TableLineHeight = 21.sp
 /** 한 열의 최대 너비 = 글자 14자 분량(+ 칸 안쪽 여백). 그보다 긴 칸은 그 열 안에서 줄바꿈한다 — 긴 칸 하나가 표 전체를 옆으로 밀지 않게. */
 private const val TableColumnEms = 14
+/** 말풍선에 맞추려고 열을 깎을 때의 하한 = 글자 8자 분량(+ 칸 안쪽 여백). 이보다 좁히면 한글 한 줄에 두세 낱말도 못 들어가 읽기 어렵다. */
+private const val TableColumnMinEms = 8
 
 /**
  * 표(#887 2단계): 열 너비는 내용에 맞추고(`AgentMarkdown.columnWidths` — 한 열은 14자 분량까지, 자리가 남으면 더 준다), 행 높이는 그 행에서 가장 큰 칸.
- * 말풍선보다 넓으면 그 안에서 가로 스크롤한다. 머리 행 = 면 + 굵게, 칸 사이는 선(낮불도 같은 구성 — 투명도 없이 선·면).
+ * 말풍선보다 조금 넓으면 넓은 열부터 8자 분량까지 깎아 말풍선 안에 맞추고, 그래도 안 되면 깎지 않고 그 안에서 가로 스크롤한다. 머리 행 = 면 + 굵게, 칸 사이는 선(낮불도 같은 구성 — 투명도 없이 선·면).
  * 높이를 고정하지 않는다(#886): 칸 높이는 글에서 나온다. 열·행 상한(8 · 60)과 넘친 행의 `…` 행은 파서가 이미 정리해 준다.
  * 넘치지 않는 표는 스크롤을 켜지 않는다 — 코드 블록과 같이, 그 위에서 시작한 「밀어서 답장」(#880)이 그대로 동작하게.
  */
@@ -177,7 +179,9 @@ private fun TableBlock(table: AgentMarkdown.Block.Table, colors: HandeColors, te
     val cells = remember(table, colors) { (listOf(table.header) + table.rows).map { row -> row.map { inlineText(it, colors) } } }
     val style = MaterialTheme.typography.bodyLarge.copy(fontSize = TableFontSize, lineHeight = TableLineHeight)
     val headerStyle = remember(style) { style.copy(fontWeight = FontWeight.Bold) }
-    val cap = with(LocalDensity.current) { (TableFontSize.toPx() * TableColumnEms).toInt() + (CellPadH * 2).roundToPx() }
+    val density = LocalDensity.current
+    val cap = with(density) { (TableFontSize.toPx() * TableColumnEms).toInt() + (CellPadH * 2).roundToPx() }
+    val floor = with(density) { (TableFontSize.toPx() * TableColumnMinEms).toInt() + (CellPadH * 2).roundToPx() }
     val scroll = rememberScrollState()
     val shape = RoundedCornerShape(8.dp)
     // 말풍선 안에서 쓸 수 있는 너비. 가로 스크롤 안쪽은 너비 제한이 없어 알 수 없으므로, 스크롤 바깥에서 받은 제한을 적어 두고 안쪽 배치가 읽는다
@@ -207,7 +211,7 @@ private fun TableBlock(table: AgentMarkdown.Block.Table, colors: HandeColors, te
         val rows = measurables.size / columns
         // 열의 내용 너비 = 그 열 칸들의 「줄바꿈 없이 그렸을 때」 너비 중 가장 큰 것.
         val natural = IntArray(columns) { c -> (0 until rows).maxOf { r -> measurables[r * columns + c].maxIntrinsicWidth(Constraints.Infinity) } }
-        val widths = AgentMarkdown.columnWidths(natural, cap, available)
+        val widths = AgentMarkdown.columnWidths(natural, cap, available, floor)
         val heights = IntArray(rows) { r -> (0 until columns).maxOf { c -> measurables[r * columns + c].minIntrinsicHeight(widths[c]) } }
         val placeables = measurables.mapIndexed { i, m -> m.measure(Constraints.fixed(widths[i % columns], heights[i / columns])) }
         layout(widths.sum(), heights.sum()) {

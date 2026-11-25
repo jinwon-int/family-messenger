@@ -160,7 +160,8 @@ class AgentMarkdownTest {
     }
 
     @Test fun columnWidthsFitContentThenShareSpareSpace() {
-        fun widths(natural: List<Int>, cap: Int, available: Int) = AgentMarkdown.columnWidths(natural.toIntArray(), cap, available).toList()
+        // floor = cap 이면 3단계(깎기)가 없다 — 1·2단계만 본다.
+        fun widths(natural: List<Int>, cap: Int, available: Int) = AgentMarkdown.columnWidths(natural.toIntArray(), cap, available, floor = cap).toList()
         // 내용이 상한 아래면 내용 너비 그대로 — 자리가 남아도 늘리지 않는다(표는 내용만큼만 차지한다).
         assertEquals(listOf(80, 120, 60), widths(listOf(80, 120, 60), cap = 300, available = 900))
         // 긴 열은 상한에서 줄바꿈. 말풍선에 자리가 없으면 거기서 끝(합이 넘치면 화면이 가로 스크롤).
@@ -177,6 +178,36 @@ class AgentMarkdownTest {
         assertEquals(emptyList(), widths(emptyList(), cap = 300, available = 900))
         assertEquals(listOf(0, 0), widths(listOf(0, 0), cap = 300, available = 900))
         assertEquals(listOf(80, 300), widths(listOf(80, 700), cap = 300, available = 0))
+    }
+
+    @Test fun columnWidthsShrinkWideColumnsToFitBeforeScrolling() {
+        fun widths(natural: List<Int>, cap: Int, available: Int, floor: Int) =
+            AgentMarkdown.columnWidths(natural.toIntArray(), cap, available, floor).toList()
+        // 고7 실측 모양(2026-11-25): 이름 열 478 · 건수 열 108 · 긴 판정 열(상한 550) = 1136 이 말풍선 1016 을 6% 넘었다.
+        // 가장 넓은 열부터 같은 너비로 깎아 꼭 맞춘다 — 좁은 건수 열은 그대로.
+        assertEquals(listOf(454, 108, 454), widths(listOf(478, 108, 900), cap = 550, available = 1016, floor = 330))
+        // 넓은 열 하나만 깎아도 되면 그 열만 줄어든다(둘째로 넓은 열 높이까지 내려오기 전에 맞음).
+        assertEquals(listOf(478, 108, 500), widths(listOf(478, 108, 900), cap = 550, available = 1086, floor = 330))
+        // floor 이하인 열은 건드리지 않는다.
+        assertEquals(listOf(80, 260, 260), widths(listOf(80, 700, 450), cap = 300, available = 600, floor = 200))
+        // floor 까지 깎으면 딱 맞는 경계.
+        assertEquals(listOf(80, 200, 200), widths(listOf(80, 700, 450), cap = 300, available = 480, floor = 200))
+        // floor 까지 깎아도 안 맞으면 깎지 않는다 — 넓은 채로 가로 스크롤(좁은 열 + 스크롤을 함께 주지 않는다).
+        assertEquals(listOf(80, 300, 300), widths(listOf(80, 700, 450), cap = 300, available = 479, floor = 200))
+        assertEquals(listOf(300, 300, 300, 300), widths(listOf(900, 900, 900, 900), cap = 300, available = 700, floor = 250))
+        // 깎은 결과의 합은 말풍선을 넘지 않고, 남는 자리는 열 수보다 적다(정수 나눗셈 자투리뿐).
+        for (available in 900..1135) {
+            val fitted = widths(listOf(478, 108, 900), cap = 550, available = available, floor = 330)
+            assertTrue(fitted.sum() <= available, "available=$available sum=${fitted.sum()}")
+            assertTrue(available - fitted.sum() < 3, "available=$available sum=${fitted.sum()}")
+            assertTrue(fitted.all { it >= 108 } && fitted[1] == 108)
+        }
+        // 넘치지 않으면 3단계는 아무것도 바꾸지 않는다.
+        assertEquals(listOf(478, 108, 300), widths(listOf(478, 108, 300), cap = 550, available = 1016, floor = 330))
+        assertEquals(listOf(150, 750), widths(listOf(150, 1400), cap = 500, available = 900, floor = 330))
+        // floor 가 cap 이상이면 깎을 열이 없다.
+        assertEquals(listOf(80, 300, 300), widths(listOf(80, 700, 450), cap = 300, available = 600, floor = 300))
+        assertEquals(listOf(80, 300, 300), widths(listOf(80, 700, 450), cap = 300, available = 600, floor = 900))
     }
 
     @Test fun nestingStaysShallow() {

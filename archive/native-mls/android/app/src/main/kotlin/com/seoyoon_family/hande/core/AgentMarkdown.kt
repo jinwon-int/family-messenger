@@ -147,11 +147,15 @@ object AgentMarkdown {
     }
 
     /**
-     * 표 열 너비(#887 2단계, 화면 단위는 호출하는 쪽 — 여기서는 정수 계산만): 열마다 내용 너비([natural]) 그대로 주되 한 열은 [cap] 까지
-     * (그보다 긴 칸은 그 열 안에서 줄바꿈). 그래도 말풍선 안([available])에 자리가 남으면 줄바꿈된 열에 왼쪽부터 내용 너비까지 돌려준다.
-     * 합이 [available] 을 넘으면 그대로 둔다 — 화면이 가로 스크롤로 보여 준다(열을 더 좁히지 않는다).
+     * 표 열 너비(#887 2단계, 화면 단위는 호출하는 쪽 — 여기서는 정수 계산만). 세 단계:
+     * 1. 열마다 내용 너비([natural]) 그대로 주되 한 열은 [cap] 까지(그보다 긴 칸은 그 열 안에서 줄바꿈).
+     * 2. 말풍선 안([available])에 자리가 남으면 줄바꿈된 열에 왼쪽부터 내용 너비까지 돌려준다.
+     * 3. 합이 [available] 을 넘으면 [floor] 보다 넓은 열들을 **가장 넓은 것부터 같은 너비로** 깎아 말풍선 안에 맞춘다
+     *    ([floor] 이하인 열은 건드리지 않는다). 고7 실측: 긴 열이 이미 줄바꿈된 3열 표가 말풍선보다 6% 넓어 가로 스크롤이 생겼다.
+     *    모두 [floor] 까지 깎아도 안 맞으면 **깎지 않고** 2단계 너비 그대로 둔다 — 화면이 가로 스크롤로 보여 주므로,
+     *    좁아진 열과 스크롤을 한꺼번에 떠안기지 않는다.
      */
-    fun columnWidths(natural: IntArray, cap: Int, available: Int): IntArray {
+    fun columnWidths(natural: IntArray, cap: Int, available: Int, floor: Int): IntArray {
         val widths = IntArray(natural.size) { minOf(natural[it], cap).coerceAtLeast(0) }
         var spare = available.toLong() - widths.sumOf { it.toLong() }
         for (i in widths.indices) {
@@ -162,7 +166,17 @@ object AgentMarkdown {
             widths[i] += add
             spare -= add
         }
-        return widths
+        if (spare >= 0) return widths
+        // 3단계: 높이 level 을 낮춰 가며 floor 보다 넓은 열을 min(너비, level) 로 깎을 때, 합이 들어가는 가장 높은 level 을 찾는다.
+        fun total(level: Int): Long = widths.sumOf { w -> (if (w > floor) minOf(w, level) else w).toLong() }
+        if (total(floor) > available) return widths
+        var low = floor
+        var high = widths.max()
+        while (low < high) {
+            val mid = low + (high - low + 1) / 2
+            if (total(mid) <= available) low = mid else high = mid - 1
+        }
+        return IntArray(widths.size) { i -> if (widths[i] > floor) minOf(widths[i], low) else widths[i] }
     }
 
     fun isTableSeparator(line: String): Boolean = cells(line).all { part ->
