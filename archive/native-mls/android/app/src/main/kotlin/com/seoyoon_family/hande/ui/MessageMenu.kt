@@ -5,7 +5,6 @@ package com.seoyoon_family.hande.ui
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.widget.Toast
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -72,8 +71,8 @@ internal fun MessageMenu(expanded: Boolean, onDismiss: () -> Unit, text: String,
     val context = LocalContext.current
     val copy: () -> Unit = {
         clipboard.setText(AnnotatedString(text))
-        // Android 13+ 는 시스템이 복사 알림을 띄운다 — 그 아래 버전만 직접 알린다.
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) Toast.makeText(context, Strings.copiedToast, Toast.LENGTH_SHORT).show()
+        // 버전을 가리지 않고 직접 알린다(#894) — Android 13+ 의 시스템 복사 알림은 기기에 따라 없다(고7 실측). 앱의 다른 복사 경로와 같은 동작.
+        Toast.makeText(context, Strings.copiedToast, Toast.LENGTH_SHORT).show()
     }
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
         if (onReply != null) MessageMenuItem(Strings.messageReply, HandeIcons.reply(colors.ink), onDismiss, onReply)
