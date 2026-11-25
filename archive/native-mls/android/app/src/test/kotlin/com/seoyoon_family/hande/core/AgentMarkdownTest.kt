@@ -159,6 +159,26 @@ class AgentMarkdownTest {
         assertEquals(hostile.replace("[b](HTTPS://A.example/y)", "b"), AgentMarkdown.runs(hostile).joinToString("") { it.text })
     }
 
+    @Test fun columnWidthsFitContentThenShareSpareSpace() {
+        fun widths(natural: List<Int>, cap: Int, available: Int) = AgentMarkdown.columnWidths(natural.toIntArray(), cap, available).toList()
+        // 내용이 상한 아래면 내용 너비 그대로 — 자리가 남아도 늘리지 않는다(표는 내용만큼만 차지한다).
+        assertEquals(listOf(80, 120, 60), widths(listOf(80, 120, 60), cap = 300, available = 900))
+        // 긴 열은 상한에서 줄바꿈. 말풍선에 자리가 없으면 거기서 끝(합이 넘치면 화면이 가로 스크롤).
+        assertEquals(listOf(80, 300, 300), widths(listOf(80, 700, 450), cap = 300, available = 600))
+        assertEquals(listOf(300, 300, 300, 300), widths(listOf(900, 900, 900, 900), cap = 300, available = 700))
+        // 자리가 남으면 줄바꿈된 열에 왼쪽부터 내용 너비까지 돌려준다.
+        assertEquals(listOf(80, 700, 300), widths(listOf(80, 700, 450), cap = 300, available = 1080))
+        assertEquals(listOf(80, 700, 420), widths(listOf(80, 700, 450), cap = 300, available = 1200))
+        assertEquals(listOf(80, 700, 450), widths(listOf(80, 700, 450), cap = 300, available = 5000))
+        // 흔한 모양: 짧은 이름 열 + 긴 설명 열 — 설명 열이 말풍선 끝까지 쓴다(더 넓히지는 않는다).
+        assertEquals(listOf(150, 750), widths(listOf(150, 1400), cap = 500, available = 900))
+        // 제한이 없는 자리(Int.MAX_VALUE)에서도 넘치지 않고 내용 너비로 끝난다. 빈 표·0 너비도 안전하다.
+        assertEquals(listOf(80, 700), widths(listOf(80, 700), cap = 300, available = Int.MAX_VALUE))
+        assertEquals(emptyList(), widths(emptyList(), cap = 300, available = 900))
+        assertEquals(listOf(0, 0), widths(listOf(0, 0), cap = 300, available = 900))
+        assertEquals(listOf(80, 300), widths(listOf(80, 700), cap = 300, available = 0))
+    }
+
     @Test fun nestingStaysShallow() {
         // 닫는 기호는 늘 가장 가까운 것이라 같은 기호는 제 안에 다시 들어가지 못한다 — 겹침은 많아야 네 겹(`__` · `~~` · 별표 둘 · 별표 하나).
         assertEquals(

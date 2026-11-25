@@ -146,6 +146,25 @@ object AgentMarkdown {
         else -> row + List(width - row.size) { "" }
     }
 
+    /**
+     * 표 열 너비(#887 2단계, 화면 단위는 호출하는 쪽 — 여기서는 정수 계산만): 열마다 내용 너비([natural]) 그대로 주되 한 열은 [cap] 까지
+     * (그보다 긴 칸은 그 열 안에서 줄바꿈). 그래도 말풍선 안([available])에 자리가 남으면 줄바꿈된 열에 왼쪽부터 내용 너비까지 돌려준다.
+     * 합이 [available] 을 넘으면 그대로 둔다 — 화면이 가로 스크롤로 보여 준다(열을 더 좁히지 않는다).
+     */
+    fun columnWidths(natural: IntArray, cap: Int, available: Int): IntArray {
+        val widths = IntArray(natural.size) { minOf(natural[it], cap).coerceAtLeast(0) }
+        var spare = available.toLong() - widths.sumOf { it.toLong() }
+        for (i in widths.indices) {
+            if (spare <= 0) break
+            val need = natural[i] - widths[i]
+            if (need <= 0) continue
+            val add = minOf(need.toLong(), spare).toInt()
+            widths[i] += add
+            spare -= add
+        }
+        return widths
+    }
+
     fun isTableSeparator(line: String): Boolean = cells(line).all { part ->
         val p = part.removePrefix(":").removeSuffix(":")
         p.length >= 3 && p.all { it == '-' }

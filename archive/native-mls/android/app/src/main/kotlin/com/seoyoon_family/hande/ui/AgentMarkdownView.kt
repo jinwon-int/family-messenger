@@ -1,7 +1,8 @@
 // 에이전트 말풍선의 마크다운 표시(#887 1단계) — 웹 `ui.js markdownBlock` · `styles.css .body.md` 와 같은 구성.
 // 파서(`core/AgentMarkdown`)가 돌려준 문자열을 Text 로만 그린다: 받은 글을 HTML·그림으로 해석하지 않고, 링크는 파서가 걸러 준 http(s) 주소뿐이다.
 // 큰 글자 설정에서 잘리지 않게 높이를 고정하지 않는다(#886) — 글자 크기는 sp, 간격만 dp. 낮불은 투명도 없이 선·면으로 구분한다.
-// 1단계 범위: 제목 · 문단 · 목록 · 인용 · 구분선 · 코드 블록 · 줄 안 굵게/기울임/취소선/코드/링크. 표는 2단계(여기서는 행을 글 줄로), 스킬 칩은 3단계.
+// 범위(#887): 1단계 = 제목 · 문단 · 목록 · 인용 · 구분선 · 코드 블록 · 줄 안 굵게/기울임/취소선/코드/링크. 2단계 = 표(열 너비를 내용에 맞추고 넘치면 가로 스크롤).
+// 스킬 칩은 3단계.
 package com.seoyoon_family.hande.ui
 
 import androidx.compose.foundation.background
@@ -22,12 +23,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
@@ -39,7 +47,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.seoyoon_family.hande.core.AgentMarkdown
@@ -91,7 +101,7 @@ internal fun AgentMarkdownBody(blocks: List<AgentMarkdown.Block>, modifier: Modi
                 )
                 AgentMarkdown.Block.Rule -> Box(Modifier.fillMaxWidth().height(colors.lineWidth).background(colors.stroke))
                 is AgentMarkdown.Block.Code -> CodeBlock(block.text, colors, textColor)
-                is AgentMarkdown.Block.Table -> Text(remember(block, colors) { tableText(block, colors) }, color = textColor, style = base)
+                is AgentMarkdown.Block.Table -> TableBlock(block, colors, textColor)
             }
         }
     }
@@ -148,26 +158,88 @@ private fun AnnotatedString.Builder.appendRuns(text: String, colors: HandeColors
     }
 }
 
+/** 표 글자: 본문보다 한 단계 작게(웹 `--text-s` 와 같은 뜻) — 좁은 화면에서 열이 하나라도 더 들어가게. 크기는 sp 라 큰 글자 설정을 따른다. */
+private val TableFontSize = 15.sp
+private val TableLineHeight = 21.sp
+/** 한 열의 최대 너비 = 글자 14자 분량(+ 칸 안쪽 여백). 그보다 긴 칸은 그 열 안에서 줄바꿈한다 — 긴 칸 하나가 표 전체를 옆으로 밀지 않게. */
+private const val TableColumnEms = 14
+
 /**
- * 표(2단계 전 임시 표시): 머리 행은 굵게, 행마다 한 줄, 칸 사이는 ` | `. 칸 안의 줄 안 서식·링크는 그대로 입힌다.
- * 열 너비 맞춤·가로 스크롤은 2단계(#887)에서 이 함수를 바꾼다 — 원문의 구분선(`|---|`) 줄과 바깥 세로줄은 이미 빠진다.
+ * 표(#887 2단계): 열 너비는 내용에 맞추고(`AgentMarkdown.columnWidths` — 한 열은 14자 분량까지, 자리가 남으면 더 준다), 행 높이는 그 행에서 가장 큰 칸.
+ * 말풍선보다 넓으면 그 안에서 가로 스크롤한다. 머리 행 = 면 + 굵게, 칸 사이는 선(낮불도 같은 구성 — 투명도 없이 선·면).
+ * 높이를 고정하지 않는다(#886): 칸 높이는 글에서 나온다. 열·행 상한(8 · 60)과 넘친 행의 `…` 행은 파서가 이미 정리해 준다.
+ * 넘치지 않는 표는 스크롤을 켜지 않는다 — 코드 블록과 같이, 그 위에서 시작한 「밀어서 답장」(#880)이 그대로 동작하게.
  */
-private fun tableText(table: AgentMarkdown.Block.Table, colors: HandeColors): AnnotatedString = buildAnnotatedString {
-    fun row(cells: List<String>, header: Boolean) {
-        val start = length
-        cells.forEachIndexed { index, cell ->
-            if (index > 0) {
-                val bar = length
-                append(" | ")
-                addStyle(SpanStyle(color = colors.inkDim), bar, length)
+@Composable
+private fun TableBlock(table: AgentMarkdown.Block.Table, colors: HandeColors, textColor: Color) {
+    val columns = table.header.size
+    // 머리 행 + 본문 행. 파서가 모든 행을 머리 폭에 맞춰 주므로(`normalize`) 칸 수는 행마다 같다.
+    val cells = remember(table, colors) { (listOf(table.header) + table.rows).map { row -> row.map { inlineText(it, colors) } } }
+    val style = MaterialTheme.typography.bodyLarge.copy(fontSize = TableFontSize, lineHeight = TableLineHeight)
+    val headerStyle = remember(style) { style.copy(fontWeight = FontWeight.Bold) }
+    val cap = with(LocalDensity.current) { (TableFontSize.toPx() * TableColumnEms).toInt() + (CellPadH * 2).roundToPx() }
+    val scroll = rememberScrollState()
+    val shape = RoundedCornerShape(8.dp)
+    // 말풍선 안에서 쓸 수 있는 너비. 가로 스크롤 안쪽은 너비 제한이 없어 알 수 없으므로, 스크롤 바깥에서 받은 제한을 적어 두고 안쪽 배치가 읽는다
+    // (같은 배치 단계에서 바깥이 먼저 재어지므로 값은 늘 최신이고, 제한이 바뀌면 안쪽도 다시 잰다).
+    var available by remember { mutableIntStateOf(Int.MAX_VALUE) }
+    Layout(
+        content = {
+            cells.forEachIndexed { r, row ->
+                row.forEachIndexed { c, text ->
+                    TableCell(
+                        text = text, header = r == 0, lastColumn = c == columns - 1, lastRow = r == cells.size - 1,
+                        colors = colors, textColor = textColor, style = if (r == 0) headerStyle else style,
+                    )
+                }
             }
-            appendRuns(cell, colors)
+        },
+        modifier = Modifier
+            .layout { measurable, constraints ->
+                available = if (constraints.hasBoundedWidth) constraints.maxWidth else Int.MAX_VALUE
+                val placeable = measurable.measure(constraints)
+                layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+            }
+            .clip(shape)
+            .border(colors.lineWidth, colors.stroke, shape)
+            .horizontalScroll(scroll, enabled = scroll.maxValue in 1 until Int.MAX_VALUE),
+    ) { measurables, _ ->
+        val rows = measurables.size / columns
+        // 열의 내용 너비 = 그 열 칸들의 「줄바꿈 없이 그렸을 때」 너비 중 가장 큰 것.
+        val natural = IntArray(columns) { c -> (0 until rows).maxOf { r -> measurables[r * columns + c].maxIntrinsicWidth(Constraints.Infinity) } }
+        val widths = AgentMarkdown.columnWidths(natural, cap, available)
+        val heights = IntArray(rows) { r -> (0 until columns).maxOf { c -> measurables[r * columns + c].minIntrinsicHeight(widths[c]) } }
+        val placeables = measurables.mapIndexed { i, m -> m.measure(Constraints.fixed(widths[i % columns], heights[i / columns])) }
+        layout(widths.sum(), heights.sum()) {
+            var y = 0
+            for (r in 0 until rows) {
+                var x = 0
+                for (c in 0 until columns) {
+                    placeables[r * columns + c].place(x, y)
+                    x += widths[c]
+                }
+                y += heights[r]
+            }
         }
-        if (header && length > start) addStyle(SpanStyle(fontWeight = FontWeight.Bold), start, length)
     }
-    row(table.header, header = true)
-    for (cells in table.rows) {
-        append('\n')
-        row(cells, header = false)
+}
+
+private val CellPadH = 10.dp
+private val CellPadV = 6.dp
+
+/** 표의 한 칸: 안쪽 여백 + 글. 오른쪽·아래 칸과의 사이에만 선을 긋는다(바깥 테두리는 표가 그린다). 칸 안의 줄 안 서식·링크는 그대로. */
+@Composable
+private fun TableCell(text: AnnotatedString, header: Boolean, lastColumn: Boolean, lastRow: Boolean, colors: HandeColors, textColor: Color, style: TextStyle) {
+    Box(
+        Modifier
+            .then(if (header) Modifier.background(colors.pressed) else Modifier)
+            .drawBehind {
+                val line = colors.lineWidth.toPx()
+                if (!lastColumn) drawRect(colors.stroke, topLeft = Offset(size.width - line, 0f), size = Size(line, size.height))
+                if (!lastRow) drawRect(colors.stroke, topLeft = Offset(0f, size.height - line), size = Size(size.width, line))
+            }
+            .padding(horizontal = CellPadH, vertical = CellPadV),
+    ) {
+        Text(text, color = textColor, style = style)
     }
 }

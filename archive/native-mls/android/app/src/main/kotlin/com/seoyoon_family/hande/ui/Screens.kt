@@ -1760,7 +1760,7 @@ private data class ReplyTarget(val name: String, val seq: Long?, val original: S
  * #880 말풍선 「밀어서 답장」(판정 `SwipeReply` — iOS 와 같은 수치): 왼쪽으로 밀면 말풍선이 손가락을 따라가고 오른쪽 끝에 답장 표시가 드러난다.
  * 문턱을 넘으면 진동 한 번, 그 상태로 손을 떼면 [onReply]. 세로·오른쪽·비스듬한 끌기는 건드리지 않아 타임라인 스크롤이 그대로 받는다.
  * 답장 끌기로 정해진 뒤에만 포인터를 먹는다(그 전의 누르기·링크는 종전 그대로). 놓으면 애니메이션 없이 제자리(전자잉크).
- * 말풍선 안에서 옆으로 스크롤되는 블록(#887 넘치는 코드 블록) 위에서 시작한 가로 끌기는 그 블록의 스크롤이다 — 답장은 말풍선의 다른 자리를 밀면 된다.
+ * 말풍선 안에서 옆으로 스크롤되는 블록(#887 넘치는 코드 블록·표) 위에서 시작한 가로 끌기는 그 블록의 스크롤이다 — 답장은 말풍선의 다른 자리를 밀면 된다.
  */
 @Composable
 private fun SwipeToReply(enabled: Boolean, onReply: () -> Unit, content: @Composable () -> Unit) {
@@ -1788,7 +1788,7 @@ private fun SwipeToReply(enabled: Boolean, onReply: () -> Unit, content: @Compos
                         dx = moved.x.toDp().value.toDouble()
                         dy = moved.y.toDp().value.toDouble()
                         if (!change.pressed) break
-                        // #887: 말풍선 안의 옆으로 스크롤되는 블록(넘치는 코드 블록)이 이 끌기를 먼저 받았으면 답장 끌기로 삼지 않는다 — 놓아준다.
+                        // #887: 말풍선 안의 옆으로 스크롤되는 블록(넘치는 코드 블록·표)이 이 끌기를 먼저 받았으면 답장 끌기로 삼지 않는다 — 놓아준다.
                         if (axis == null && change.isConsumed) break
                         if (axis == null) {
                             axis = SwipeReply.axis(dx, dy)
@@ -1865,7 +1865,7 @@ private fun ReplyQuoteBox(parsed: ReplyQuote.Parsed, tint: Color, onOpen: (() ->
 
 /**
  * 말풍선: 남 = 면+선(꼬리 왼쪽 아래 6) · 나 = 불(꼬리 오른쪽 아래 6) · 에이전트 = 파랑 fill 10% + stroke 35%(낮불: 흰 면 + 파랑 점선 1.5).
- * 보낸 이 라벨 = 좌석 점 + 이름(에이전트는 「공명 · 불지기」 파랑). 너비는 82% 까지. 첨부는 본문의 자리 표시 글 그대로(C 단계).
+ * 보낸 이 라벨 = 좌석 점 + 이름(에이전트는 「공명 · 불지기」 파랑). 너비는 82% 까지(에이전트의 서식 글은 88%). 첨부는 본문의 자리 표시 글 그대로(C 단계).
  */
 @Composable
 private fun MessageRow(
@@ -1930,8 +1930,9 @@ private fun MessageRow(
                 }
             }
         }
+        // 서식 글 말풍선은 조금 더 넓게(웹 `.bubble:has(.body.md)` 의 88% 와 같은 값) — 표·코드 블록이 한 열이라도 더 보이게.
         val bubbleModifier = Modifier
-            .fillMaxWidth(0.82f)
+            .fillMaxWidth(if (markdown != null) 0.88f else 0.82f)
             .wrapContentWidth(if (m.mine) Alignment.End else Alignment.Start)
             .clip(shape)
             .then(fill)
