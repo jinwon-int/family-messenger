@@ -13,7 +13,10 @@ import android.util.Log
 import org.json.JSONObject
 import java.io.File
 
-data class MessageUi(val seq: Long, val sender: String, val text: String, val mine: Boolean, val attachment: Boolean = false)
+/** [undecryptable] = 복호화·검증 실패 행(본문은 자리 표시 글) — 복사·공유·답장 대상이 아니다(`MessageCopy`). */
+data class MessageUi(
+    val seq: Long, val sender: String, val text: String, val mine: Boolean, val attachment: Boolean = false, val undecryptable: Boolean = false,
+)
 
 class MessageDb(context: Context, private val myDevice: () -> String?) : SQLiteOpenHelper(context, DB_NAME, null, MessageSchema.VERSION) {
     private val lock = Any()
@@ -94,8 +97,12 @@ class MessageDb(context: Context, private val myDevice: () -> String?) : SQLiteO
             val out = ArrayList<MessageUi>(c.count)
             while (c.moveToNext()) {
                 val sender = c.getString(1)
-                val attachment = c.getString(2).let { it == KIND_ATTACHMENT || it == MessageSchema.KIND_FILE_V2 }
-                out += MessageUi(c.getLong(0), sender, c.getString(3), mine = MessageSchema.isMine(sender, me), attachment = attachment)
+                val kind = c.getString(2)
+                val attachment = kind == KIND_ATTACHMENT || kind == MessageSchema.KIND_FILE_V2
+                out += MessageUi(
+                    c.getLong(0), sender, c.getString(3), mine = MessageSchema.isMine(sender, me), attachment = attachment,
+                    undecryptable = kind == MessageSchema.KIND_UNDECRYPTABLE,
+                )
             }
             out
         }

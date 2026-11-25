@@ -361,5 +361,10 @@ object Strings {
     }
     /** 선택 모드 Enter 로 여는 창 — 글 칸에서 Shift+방향키로 블록을 잡고 Ctrl+C 로 복사, Esc 로 닫기. */
     const val messageSelectCopy = "선택해서 복사"
+    // 말풍선 꾹 누르기 메뉴(iOS `Strings+Copy` 와 같은 말).
+    const val messageReply = "답장"
+    const val messageCopy = "복사"
+    const val messageShare = "공유"
+    const val messageMenuHint = "메뉴 열기"
     const val messageCopyAll = "전체 복사"
 }
