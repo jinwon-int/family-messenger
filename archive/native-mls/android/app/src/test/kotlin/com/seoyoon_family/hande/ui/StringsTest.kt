@@ -24,6 +24,12 @@ class StringsTest {
         assertEquals("4단계 중 2단계", Strings.onboardingStep(2, Strings.onboardingSteps))
     }
 
+    /** #887 3단계: 스킬 칩 줄 접근성 문구 — 웹 `skillsLabel` 과 같은 머리말. */
+    @Test fun skillChipsLabel() {
+        assertEquals("사용한 스킬: gh-pr-flow, wiki-record", Strings.skillsLabel(listOf("gh-pr-flow", "wiki-record")))
+        assertEquals("사용한 스킬: one", Strings.skillsLabel(listOf("one")))
+    }
+
     /** #549 · #715 순서 편집 — iOS `Strings.orderUp`/`orderDown`/`orderPinTop` 와 같은 말. */
     @Test fun roomOrderLabels() {
         assertEquals("zz-room 위로", Strings.orderUp("zz-room"), "모르는 방은 ID 그대로")

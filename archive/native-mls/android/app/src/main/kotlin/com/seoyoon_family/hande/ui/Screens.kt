@@ -169,6 +169,7 @@ import com.seoyoon_family.hande.core.AgentActors
 import com.seoyoon_family.hande.core.AgentChoiceKeys
 import com.seoyoon_family.hande.core.AgentChoices
 import com.seoyoon_family.hande.core.AgentMarkdown
+import com.seoyoon_family.hande.core.AgentSkills
 import com.seoyoon_family.hande.core.AlertRefs
 import com.seoyoon_family.hande.core.RoomListReturn
 import com.seoyoon_family.hande.core.RoomListSlot
@@ -1883,10 +1884,13 @@ private fun MessageRow(
     val agent = !m.mine && AgentActors.isAgentDevice(m.sender)
     // #880 답장 글(iOS 와 같이 사람 말풍선만 — 내 글 포함): 인용 상자 + 내 글. 링크·참조·미리보기는 내 글에서만 찾는다.
     val reply = remember(m.text, agent, m.attachment) { if (!agent && !m.attachment) ReplyQuote.parse(m.text) else null }
-    val shown = reply?.text ?: m.text
+    // #887 3단계: 에이전트 답 끝의 스킬 줄(`📘 a · b`)은 본문에서 떼어 말풍선 아래 칩으로 그린다(웹·iOS 와 같은 규칙 — `AgentSkills.split`).
+    // 규칙에 안 맞으면 글 그대로(칩 없음). 선택지 카드·답장 인용·복사는 원문(m.text) 기준 그대로다.
+    val skillSplit = remember(m.text, agent, m.attachment) { if (agent && !m.attachment) AgentSkills.split(m.text) else null }
+    val shown = reply?.text ?: skillSplit?.body ?: m.text
     // #887 1단계: 에이전트 글이 서식 글(제목·목록·코드·굵게 …)이면 블록으로 그린다. 판정·나누기는 글마다 한 번(`remember`) — 서식이 없거나
     // 상한(`AgentMarkdown.MAX_SOURCE`)을 넘는 글, 사람 글, 첨부 자리 글은 null 이라 아래 평문 경로 그대로다. 선택지 카드·복사는 원문(m.text) 기준 그대로.
-    val markdown = remember(m.text, agent, m.attachment) { if (agent && !m.attachment) AgentMarkdown.blocksIfMarkdown(m.text) else null }
+    val markdown = remember(shown, agent, m.attachment) { if (agent && !m.attachment) AgentMarkdown.blocksIfMarkdown(shown) else null }
     Column(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalAlignment = if (m.mine) Alignment.End else Alignment.Start) {
         if (!m.mine) {
             val name = AgentActors.displayName(m.sender)
@@ -1954,6 +1958,9 @@ private fun MessageRow(
         }
         // #698 C2: 사진으로 판별된 첨부는 자리 표시 글 대신 썸네일(누르면 같은 뷰어). 사진이 아니거나 받지 못하면 글 그대로.
         if (thumb != null) AttachmentThumbnail(thumb, shape, opening, onAttachment, fallback = bubble) else bubble()
+        // #887 3단계: 답이 쓴 스킬 — 말풍선 아래 칩 줄(서식 글 말풍선과 같은 최대 너비 안에서 여러 줄로 넘어간다).
+        val skills = skillSplit?.skills.orEmpty()
+        if (skills.isNotEmpty()) AgentSkillChips(skills, Modifier.padding(start = 4.dp, top = 6.dp).fillMaxWidth(0.88f))
         // #683 2단계 · #690 v2: 사람 말풍선(내 글 포함, 첨부 자리 글 제외)의 카드 대상(v2 = preview 사이트의 첫 링크, 폴백 = 첫 x.com 글 링크)
         // → 릴레이 미리보기 카드. 없거나 실패면 아무것도 그리지 않는다.
         if (!agent && !m.attachment && previews != null) {
