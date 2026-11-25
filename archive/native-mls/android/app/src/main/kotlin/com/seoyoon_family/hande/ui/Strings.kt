@@ -122,6 +122,8 @@ object Strings {
     const val roomClosedPreview = "불이 꺼진 자리 · 운영자가 닫음"
     /** 에이전트 배지·보낸 이 라벨(「공명 · 불지기」). 설정 설명문에는 「불지기(AI 에이전트)」 병기. */
     const val agentBadge = "불지기"
+    /** #887 3단계 · #834: 답 아래 스킬 칩 줄의 접근성 문구 — 웹 `strings.chat.skillsLabel`(「사용한 스킬」)에 이름을 이어 읽는다. */
+    fun skillsLabel(skills: List<String>): String = "사용한 스킬: ${skills.joinToString(", ")}"
     /** x.com 링크 미리보기 카드(#683 2단계)의 탭 동작 접근성 문구. */
     const val linkPreviewOpen = "링크 열기"
     const val keyCustody = "키 보관"

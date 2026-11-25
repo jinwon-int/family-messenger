@@ -196,3 +196,10 @@ test('공유 벡터: hasMarkdown', () => {
   assert.ok(vectors.has_markdown.length >= 15);
   for (const c of vectors.has_markdown) assert.equal(hasMarkdown(c.text), c.expected, c.name);
 });
+
+// #887 3단계: 스킬 줄 공유 벡터(같은 파일의 `skills`) — Android `AgentSkillsTest` 가 같은 사례를 돌린다.
+test('공유 벡터: splitSkills', () => {
+  assert.equal(vectors.skills.max_skills, MAX_SKILLS);
+  assert.ok(vectors.skills.cases.length >= 25);
+  for (const c of vectors.skills.cases) assert.deepEqual(splitSkills(c.text), { body: c.body, skills: c.skills }, c.name);
+});

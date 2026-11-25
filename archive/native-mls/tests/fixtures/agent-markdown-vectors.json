@@ -1753,5 +1753,214 @@
    "text": "평문\n\n그리고 *기울임*",
    "expected": true
   }
- ]
+ ],
+ "skills": {
+  "max_skills": 8,
+  "cases": [
+   {
+    "name": "last line after a blank line becomes chips",
+    "text": "답입니다.\n\n📘 gh-pr-flow · wiki-record",
+    "body": "답입니다.",
+    "skills": [
+     "gh-pr-flow",
+     "wiki-record"
+    ]
+   },
+   {
+    "name": "trailing newline after the skill line",
+    "text": "## 제목\n- 항목\n\n📘 plugin:skill\n",
+    "body": "## 제목\n- 항목",
+    "skills": [
+     "plugin:skill"
+    ]
+   },
+   {
+    "name": "trailing spaces and blank lines after the skill line",
+    "text": "답\n\n📘 a.b_c-d:e \n \n\n",
+    "body": "답",
+    "skills": [
+     "a.b_c-d:e"
+    ]
+   },
+   {
+    "name": "a choice block before the skill line stays in the body",
+    "text": "**[답변 필요]** 하나만 선택\n1. (권장) 진행\n2. 보류\n\n📘 gh-pr-flow",
+    "body": "**[답변 필요]** 하나만 선택\n1. (권장) 진행\n2. 보류",
+    "skills": [
+     "gh-pr-flow"
+    ]
+   },
+   {
+    "name": "blank line may hold spaces and tabs",
+    "text": "답\n \t\n📘 one",
+    "body": "답",
+    "skills": [
+     "one"
+    ]
+   },
+   {
+    "name": "several blank lines before the skill line",
+    "text": "답\n\n\n\n📘 one · two",
+    "body": "답",
+    "skills": [
+     "one",
+     "two"
+    ]
+   },
+   {
+    "name": "duplicate names are kept once, first seen first",
+    "text": "답\n\n📘 b · a · b · a",
+    "body": "답",
+    "skills": [
+     "b",
+     "a"
+    ]
+   },
+   {
+    "name": "exactly eight names",
+    "text": "답\n\n📘 s0 · s1 · s2 · s3 · s4 · s5 · s6 · s7",
+    "body": "답",
+    "skills": [
+     "s0",
+     "s1",
+     "s2",
+     "s3",
+     "s4",
+     "s5",
+     "s6",
+     "s7"
+    ]
+   },
+   {
+    "name": "a 64-character name",
+    "text": "답\n\n📘 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "body": "답",
+    "skills": [
+     "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    ]
+   },
+   {
+    "name": "body keeps inner blank lines and loses only trailing whitespace",
+    "text": "첫 문단\n\n둘째 문단  \n\n📘 one",
+    "body": "첫 문단\n\n둘째 문단",
+    "skills": [
+     "one"
+    ]
+   },
+   {
+    "name": "no blank line before the skill line",
+    "text": "답\n📘 gh-pr-flow",
+    "body": "답\n📘 gh-pr-flow",
+    "skills": []
+   },
+   {
+    "name": "no body",
+    "text": "📘 gh-pr-flow",
+    "body": "📘 gh-pr-flow",
+    "skills": []
+   },
+   {
+    "name": "whitespace-only body",
+    "text": " \n\n📘 gh-pr-flow",
+    "body": " \n\n📘 gh-pr-flow",
+    "skills": []
+   },
+   {
+    "name": "not the last line",
+    "text": "답\n\n📘 gh-pr-flow\n\n덧붙임",
+    "body": "답\n\n📘 gh-pr-flow\n\n덧붙임",
+    "skills": []
+   },
+   {
+    "name": "a name with a space",
+    "text": "답\n\n📘 bad name",
+    "body": "답\n\n📘 bad name",
+    "skills": []
+   },
+   {
+    "name": "wrong separator",
+    "text": "답\n\n📘 a, b",
+    "body": "답\n\n📘 a, b",
+    "skills": []
+   },
+   {
+    "name": "separator without spaces",
+    "text": "답\n\n📘 a·b",
+    "body": "답\n\n📘 a·b",
+    "skills": []
+   },
+   {
+    "name": "no names",
+    "text": "답\n\n📘 ",
+    "body": "답\n\n📘 ",
+    "skills": []
+   },
+   {
+    "name": "nine names",
+    "text": "답\n\n📘 s0 · s1 · s2 · s3 · s4 · s5 · s6 · s7 · s8",
+    "body": "답\n\n📘 s0 · s1 · s2 · s3 · s4 · s5 · s6 · s7 · s8",
+    "skills": []
+   },
+   {
+    "name": "a 65-character name",
+    "text": "답\n\n📘 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "body": "답\n\n📘 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "skills": []
+   },
+   {
+    "name": "a name that starts with punctuation",
+    "text": "답\n\n📘 -lead",
+    "body": "답\n\n📘 -lead",
+    "skills": []
+   },
+   {
+    "name": "a non-ASCII name",
+    "text": "답\n\n📘 스킬",
+    "body": "답\n\n📘 스킬",
+    "skills": []
+   },
+   {
+    "name": "an empty name between separators",
+    "text": "답\n\n📘 a ·  · b",
+    "body": "답\n\n📘 a ·  · b",
+    "skills": []
+   },
+   {
+    "name": "book emoji without the space",
+    "text": "답\n\n📘gh-pr-flow",
+    "body": "답\n\n📘gh-pr-flow",
+    "skills": []
+   },
+   {
+    "name": "an indented skill line",
+    "text": "답\n\n 📘 gh-pr-flow",
+    "body": "답\n\n 📘 gh-pr-flow",
+    "skills": []
+   },
+   {
+    "name": "CRLF line endings are not a blank line here",
+    "text": "답\r\n\r\n📘 gh-pr-flow",
+    "body": "답\r\n\r\n📘 gh-pr-flow",
+    "skills": []
+   },
+   {
+    "name": "a different emoji",
+    "text": "답\n\n📗 gh-pr-flow",
+    "body": "답\n\n📗 gh-pr-flow",
+    "skills": []
+   },
+   {
+    "name": "plain text",
+    "text": "그냥 답",
+    "body": "그냥 답",
+    "skills": []
+   },
+   {
+    "name": "empty",
+    "text": "",
+    "body": "",
+    "skills": []
+   }
+  ]
+ }
 }
